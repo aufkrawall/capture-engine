@@ -28,11 +28,6 @@ typedef HRESULT(STDMETHODCALLTYPE *PresentSwap_t)(IDirect3DSwapChain9*, CONST RE
 typedef HRESULT(STDMETHODCALLTYPE *Reset_t)(IDirect3DDevice9*, D3DPRESENT_PARAMETERS*);
 typedef HRESULT(STDMETHODCALLTYPE *ResetEx_t)(IDirect3DDevice9Ex*, D3DPRESENT_PARAMETERS*, D3DDISPLAYMODEEX*);
 typedef HRESULT(WINAPI *Direct3DCreate9Ex_t)(UINT, IDirect3D9Ex**);
-typedef HRESULT(STDMETHODCALLTYPE *SetSamplerState_t)(IDirect3DDevice9*, DWORD, D3DSAMPLERSTATETYPE, DWORD);
-typedef HRESULT(STDMETHODCALLTYPE *SetRenderState_t)(IDirect3DDevice9*, D3DRENDERSTATETYPE, DWORD);
-typedef HRESULT(STDMETHODCALLTYPE *CreateRenderTarget_t)(IDirect3DDevice9*, UINT, UINT, D3DFORMAT, D3DMULTISAMPLE_TYPE, DWORD, BOOL, IDirect3DSurface9**, HANDLE*);
-typedef HRESULT(STDMETHODCALLTYPE *CreateOffscreenPlainSurface_t)(IDirect3DDevice9*, UINT, UINT, D3DFORMAT, D3DPOOL, IDirect3DSurface9**, HANDLE*);
-typedef HRESULT(STDMETHODCALLTYPE *SetRenderTarget_t)(IDirect3DDevice9*, DWORD, IDirect3DSurface9*);
 
 // Original function pointers
 static Present_t oPresent = nullptr;
@@ -40,11 +35,6 @@ static PresentEx_t oPresentEx = nullptr;
 static PresentSwap_t oPresentSwap = nullptr;
 static Reset_t oReset = nullptr;
 static ResetEx_t oResetEx = nullptr;
-static SetSamplerState_t oSetSamplerState = nullptr;
-static SetRenderState_t oSetRenderState = nullptr;
-static CreateRenderTarget_t oCreateRenderTarget = nullptr;
-static CreateOffscreenPlainSurface_t oCreateOffscreenPlainSurface = nullptr;
-static SetRenderTarget_t oSetRenderTarget = nullptr;
 
 // Globals
 static PerformanceMetrics g_PerfMetrics;
@@ -57,22 +47,6 @@ static thread_local int g_PresentRecurse = 0;  // Prevent recursive Present call
 static std::atomic<int> g_MaxMSAASamples{0}; // Tracks highest MSAA target seen
 static GraphicsConfig g_FrameConfig; // Frame-local config cache for performance
 
-// Action Cache - Pre-calculated values to avoid string parsing/logic in hot hooks
-struct FrameActions {
-    bool hasSGSSAA;
-    DWORD sgssaaBias;
-    
-    bool overrideAniso;
-    bool forceLinearAniso;
-    DWORD maxAnisotropy;
-    
-    bool overrideMipFilter;
-    DWORD mipFilter;
-    
-    bool overrideMipBias;
-    DWORD mipBias;
-};
-static FrameActions g_Actions;
 
 static HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9* device, const RECT* pSourceRect, const RECT* pDestRect, HWND hDestWindowOverride, const RGNDATA* pDirtyRegion);
 
@@ -149,40 +123,6 @@ static int GetMSAASampleCount(IDirect3DDevice9* device) {
 }
 
 // Proactive apply in Present
-static void ApplySGSSAAProactive(IDirect3DDevice9* device) {
-     const auto& gfx = GetActiveGraphicsConfig();
-     if (!gfx.sgssaa) return;
-     
-     float bias = 0.0f;
-     
-     int msaaSamples = 0;
-     if (gfx.msaaSamples[0] == 'd') {
-         msaaSamples = g_MaxMSAASamples.load();
-         if (msaaSamples <= 0) {
-             msaaSamples = GetMSAASampleCount(device);
-         }
-     }
-
-     if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), bias, msaaSamples)) {
-         DWORD dwBias = *((DWORD*)&bias);
-         for (DWORD i = 0; i < 8; i++) { 
-             oSetSamplerState(device, i, D3DSAMP_MIPMAPLODBIAS, dwBias);
-         }
-         
-         static int logThrottle = 0;
-         if (logThrottle++ % 300 == 0) {
-             EarlyLog("DX9: Proactive SGSSAA: Bias %.2f, MSAA: %d (GLOBAL), SSAA Hacks Applied", bias, msaaSamples);
-         }
-         
-         // Vendor Agnostic: Force Multisample AA RenderState
-         device->SetRenderState(D3DRS_MULTISAMPLEANTIALIAS, TRUE);
-         device->SetRenderState(D3DRS_MULTISAMPLEMASK, 0xFFFFFFFF);
-         
-         // NVIDIA SSAA Fallback Hack (Needed if game resolves internally to non-MSAA backbuffer)
-         // D3DRS_ADAPTIVETESS_Y = 'SSAA'
-         device->SetRenderState((D3DRENDERSTATETYPE)137, 0x41415353);
-     }
-}
 
 // ============================================================================
 // D3D9 Runtime Patching (OBS-style) for Zero-Copy on Legacy Devices
@@ -1357,119 +1297,9 @@ static HRESULT STDMETHODCALLTYPE DetourReset(IDirect3DDevice9* device, D3DPRESEN
 static HRESULT STDMETHODCALLTYPE DetourResetEx(IDirect3DDevice9Ex* device, D3DPRESENT_PARAMETERS* pPresentationParameters, D3DDISPLAYMODEEX* pFullscreenDisplayMode);
 static HRESULT STDMETHODCALLTYPE DetourPresentSwap(IDirect3DSwapChain9* self, const RECT* pSourceRect, const RECT* pDestRect, HWND hDestWindowOverride, const RGNDATA* pDirtyRegion, DWORD dwFlags);
 
-// Hook: SetSamplerState
-static HRESULT STDMETHODCALLTYPE DetourSetSamplerState(IDirect3DDevice9* device, DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD Value) {
-    const auto& act = g_Actions;
 
-    // Fast Path: Check boolean flags only
-    
-    // Anisotropic Filtering
-    if (act.overrideAniso) {
-        if (Type == D3DSAMP_MAGFILTER || Type == D3DSAMP_MINFILTER) {
-             if (act.forceLinearAniso) {
-                  if (Value == D3DTEXF_ANISOTROPIC) Value = D3DTEXF_LINEAR;
-             } else {
-                  Value = D3DTEXF_ANISOTROPIC;
-             }
-        }
-        if (Type == D3DSAMP_MAXANISOTROPY) {
-             Value = act.maxAnisotropy;
-        }
-    }
-        
-    // Mip Mapping
-    if (act.overrideMipFilter && Type == D3DSAMP_MIPFILTER) {
-         Value = act.mipFilter;
-    }
-    
-    // Mip Bias
-    if (Type == D3DSAMP_MIPMAPLODBIAS) {
-         if (act.overrideMipBias) {
-              Value = act.mipBias;
-         } else if (act.hasSGSSAA) {
-              Value = act.sgssaaBias;
-         }
-    }
 
-    return oSetSamplerState(device, Sampler, Type, Value);
-}
-// Hook: SetRenderState
-static HRESULT STDMETHODCALLTYPE DetourSetRenderState(IDirect3DDevice9* device, D3DRENDERSTATETYPE State, DWORD Value) {
-    const auto& gfx = g_FrameConfig;
-    if (gfx.sgssaa) {
-        if (State == D3DRS_MULTISAMPLEANTIALIAS) {
-            Value = TRUE; // Force ON for SGSSAA
-        } else if (State == D3DRS_MULTISAMPLEMASK) {
-            Value = 0xFFFFFFFF; // Force ALL bits for SGSSAA
-        } else if ((int)State == 137) { // NVIDIA SSAA Hack
-             Value = 0x41415353;
-        }
-    }
-    return oSetRenderState(device, State, Value);
-}
 
-// Hook: CreateRenderTarget
-static HRESULT STDMETHODCALLTYPE DetourCreateRenderTarget(IDirect3DDevice9* device, UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality, BOOL Lockable, IDirect3DSurface9** ppSurface, HANDLE* pSharedHandle) {
-    if (MultiSample > 0) {
-        int samples = (int)MultiSample;
-        int currentMax = g_MaxMSAASamples.load();
-        if (samples > currentMax) {
-            g_MaxMSAASamples.store(samples);
-            EarlyLog("DX9: CreateRenderTarget: Global MSAA Level updated to %d samples (%dx%d)", samples, Width, Height);
-        } else {
-             static int logThrottle = 0;
-             if (logThrottle++ % 10 == 0) {
-                 EarlyLog("DX9: CreateRenderTarget: %dx%d Format=%d Samples=%d Quality=%d", Width, Height, (int)Format, (int)MultiSample, (int)MultisampleQuality);
-             }
-        }
-    }
-    return oCreateRenderTarget(device, Width, Height, Format, MultiSample, MultisampleQuality, Lockable, ppSurface, pSharedHandle);
-}
-
-// Hook: CreateOffscreenPlainSurface
-static HRESULT STDMETHODCALLTYPE DetourCreateOffscreenPlainSurface(IDirect3DDevice9* device, UINT Width, UINT Height, D3DFORMAT Format, D3DPOOL Pool, IDirect3DSurface9** ppSurface, HANDLE* pSharedHandle) {
-    // Usually not multisampled, but logging for completeness if needed
-    return oCreateOffscreenPlainSurface(device, Width, Height, Format, Pool, ppSurface, pSharedHandle);
-}
-
-// Hook: SetRenderTarget
-static HRESULT STDMETHODCALLTYPE DetourSetRenderTarget(IDirect3DDevice9* device, DWORD RenderTargetIndex, IDirect3DSurface9* pNewRenderTarget) {
-    HRESULT hr = oSetRenderTarget(device, RenderTargetIndex, pNewRenderTarget);
-
-    // Context-Aware SGSSAA: Activate ONLY when the game actively binds an MSAA surface to index 0
-    if (SUCCEEDED(hr) && RenderTargetIndex == 0 && pNewRenderTarget) {
-        D3DSURFACE_DESC desc;
-        // Check surface description once
-        if (SUCCEEDED(pNewRenderTarget->GetDesc(&desc)) && desc.MultiSampleType > 0) {
-             const auto& gfx = g_FrameConfig;
-             if (gfx.sgssaa) {
-                 float bias = 0.0f;
-                 int samples = (int)desc.MultiSampleType;
-                 
-                 // We pass "d" for default method, but override samples with the actual surface count
-                 if (GetSGSSAABias(true, "d", bias, samples)) {
-                     // 1. Force LOD Bias
-                     DWORD dwBias = *((DWORD*)&bias);
-                     for (DWORD i = 0; i < 4; i++) { 
-                         oSetSamplerState(device, i, D3DSAMP_MIPMAPLODBIAS, dwBias);
-                     }
-                     // 2. Force Render States
-                     oSetRenderState(device, D3DRS_MULTISAMPLEANTIALIAS, TRUE);
-                     oSetRenderState(device, D3DRS_MULTISAMPLEMASK, 0xFFFFFFFF);
-                     // 3. Fallback Hack
-                     oSetRenderState(device, (D3DRENDERSTATETYPE)137, 0x41415353);
-                     
-                     // Log throttled
-                     static int logThrottle = 0;
-                     if (logThrottle++ % 600 == 0) { 
-                         EarlyLog("DX9: SetRenderTarget: ACTIVATE SGSSAA applied! (Bias %.2f, Samples %d)", bias, samples);
-                     }
-                 }
-            }
-        }
-    }
-    return hr;
-}
 
 static void InstallDeviceHooks(IDirect3DDevice9* device) {
     if (!device) return;

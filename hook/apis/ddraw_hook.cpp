@@ -673,26 +673,12 @@ static HRESULT STDMETHODCALLTYPE DetourDirectDraw7CreateSurface(
 }
 
 // Hook: IDirectDrawSurface7::Flip
-static void ApplySGSSAAProactive(IDirect3DDevice7* device) {
-     if (!device || !g_IPC || !g_IPC->GetSharedMem() || !g_IPC->GetSharedMem()->graphicsConfig.sgssaa) return;
-     
-     float bias = 0.0f;
-     const auto& gfx = GetActiveGraphicsConfig();
-     if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), bias)) {
-         DWORD dwBias = *((DWORD*)&bias);
-         // Iterate stages 0-7
-         for (DWORD i = 0; i < 8; i++) { 
-             oSetTextureStageState7(device, i, 19 /*D3DTSS_MIPMAPLODBIAS*/, dwBias);
-         }
-     }
-}
 
 static HRESULT STDMETHODCALLTYPE DetourDDSurface7Flip(
     IDirectDrawSurface7 *surface,
     IDirectDrawSurface7 *destOverride,
     DWORD flags
 ) {
-    if (g_D3D7Device) ApplySGSSAAProactive(g_D3D7Device);
     
     if (g_IPC) {
         std::string mode = g_IPC->GetSharedMem()->graphicsConfig.vsyncMode;
@@ -815,13 +801,6 @@ static HRESULT STDMETHODCALLTYPE DetourSetTextureStageState7(
                   finalBias = *((float*)&Value);
               }
               
-              // 2. SGSSAA Bias
-              if (gfx.sgssaa) {
-                  float sgssaaBias = 0.0f;
-                  if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgssaaBias)) {
-                      finalBias += sgssaaBias;
-                  }
-              }
               
               Value = *((DWORD*)&finalBias);
         }

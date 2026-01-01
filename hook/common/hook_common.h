@@ -13,6 +13,7 @@
 // Global IPC defined in centralized location (main.cpp or here)
 extern IPCClient *g_IPC;
 extern std::atomic<bool> g_ShuttingDown;
+extern std::atomic<bool> g_GraphicsOverridesActive;
 
 // Logging Helper
 void HookLog(const char *fmt, ...);

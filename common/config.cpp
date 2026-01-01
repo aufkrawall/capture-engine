@@ -83,13 +83,14 @@ void CreateDefaultConfig(const std::string &path) {
   cfg << "; ----------------------------------------------------------------------------\n";
   cfg << ";[App.1]\n";
   cfg << ";ProcessName=MyGame.exe\n";
-  cfg << ";Graphics.vsync_mode=off\n";
-  cfg << ";Graphics.anisotropic_filtering=16x\n";
-  cfg << ";Graphics.mip_mapping=trilinear\n";
-  cfg << ";Graphics.mip_bias=-0.5\n";
-  cfg << ";Graphics.cpu_prerender_limit=1\n";
-  cfg << ";Graphics.backbuffer_count=3\n";
-  cfg << ";Overlay.enabled=true\n";
+  cfg << ";vsync_mode=off\n";
+  cfg << ";anisotropic_filtering=16x\n";
+  cfg << ";mip_mapping=trilinear\n";
+  cfg << ";mip_bias=-0.5\n";
+  cfg << ";cpu_prerender_limit=1\n";
+  cfg << ";backbuffer_count=3\n";
+  cfg << ";enabled=true ; This would override Overlay.enabled if it's the only one by that name\n";
+  cfg << ";Overlay.enabled=true ; Or use full path for clarity/disambiguation\n";
   cfg << "\n";
   cfg << "[Injection]\n";
   cfg << "; List of executables to inject into (one per line or comma-separated)\n";
@@ -222,13 +223,14 @@ void CreateDefaultConfig(const std::string &path) {
   cfg << "; Process=game.exe\n";
   cfg << "\n";
   cfg << "; Example: Disable overlay for this process\n";
-  cfg << "; Overlay.enabled=false\n";
+  cfg << "; enabled=false ; (Simplified: matches Overlay.enabled or General.enabled etc. - first match wins)\n";
+  cfg << "; Overlay.enabled=false ; (Explicit)\n";
   cfg << "\n";
   cfg << "; Example: Set custom bitrate for this process\n";
-  cfg << "; Video.bitrate=100Mbps\n";
+  cfg << "; bitrate=100Mbps\n";
   cfg << "\n";
   cfg << "; Example: Force VSync off for this process\n";
-  cfg << "; Graphics.vsync_mode=off\n";
+  cfg << "; vsync_mode=off\n";
 
 
   cfg.close();
@@ -288,16 +290,19 @@ void LoadConfig(const std::string &path, AppConfig &config, const std::string& o
 
   // Helper macro for GetPrivateProfileString with Override Support
   auto GetStr = [&](const char *section, const char *key, const char *def) {
-    // 1. Try Override First: [App.N] Section.Key=Value
     if (!overrideSection.empty()) {
-      std::string overrideKey = std::string(section) + "." + key;
-      GetPrivateProfileStringA(overrideSection.c_str(), overrideKey.c_str(), "", buffer, 4096, path.c_str());
+      // 1. Try Override Explicit: [App.N] Section.Key=Value
+      std::string explicitKey = std::string(section) + "." + key;
+      GetPrivateProfileStringA(overrideSection.c_str(), explicitKey.c_str(), "", buffer, 4096, path.c_str());
       std::string val = buffer;
-      if (!val.empty()) {
-         return val;
-      }
+      if (!val.empty()) return val;
+
+      // 2. Try Override Simplified: [App.N] Key=Value
+      GetPrivateProfileStringA(overrideSection.c_str(), key, "", buffer, 4096, path.c_str());
+      val = buffer;
+      if (!val.empty()) return val;
     }
-    // 2. Fallback to global
+    // 3. Fallback to global
     GetPrivateProfileStringA(section, key, def, buffer, 4096, path.c_str());
     return std::string(buffer);
   };

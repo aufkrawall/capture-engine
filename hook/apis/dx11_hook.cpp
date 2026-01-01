@@ -823,6 +823,7 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device *pDevice,
                                                    const D3D11_SAMPLER_DESC *pSamplerDesc,
                                                    ID3D11SamplerState **ppSamplerState) {
     if (!pSamplerDesc) return oCreateSamplerState(pDevice, pSamplerDesc, ppSamplerState);
+    if (!g_GraphicsOverridesActive.load(std::memory_order_acquire)) return oCreateSamplerState(pDevice, pSamplerDesc, ppSamplerState);
 
     D3D11_SAMPLER_DESC desc = *pSamplerDesc;
     bool modified = false;

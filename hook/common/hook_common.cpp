@@ -8,6 +8,7 @@ char g_ProcessName[260] = "unknown";
 
 IPCClient *g_IPC = nullptr;
 std::atomic<bool> g_ShuttingDown{false};
+std::atomic<bool> g_GraphicsOverridesActive{false};
 
 // Early debug log - writes directly to file without IPC dependency
 // Used for debugging crashes before IPC connects
@@ -250,6 +251,19 @@ const GraphicsConfig& GetActiveGraphicsConfig() {
     }
     // Add other fields as needed
     
+    // Update global performance gating flag
+    bool anyActive = false;
+    if (mergedConfig.vsyncMode != "default" && !mergedConfig.vsyncMode.empty()) anyActive = true;
+    else if (mergedConfig.anisotropicFiltering != "default" && !mergedConfig.anisotropicFiltering.empty()) anyActive = true;
+    else if (mergedConfig.mipMapping != "default" && !mergedConfig.mipMapping.empty()) anyActive = true;
+    else if (mergedConfig.mipBias != "default" && !mergedConfig.mipBias.empty()) anyActive = true;
+    else if (mergedConfig.msaaSamples != "default" && !mergedConfig.msaaSamples.empty()) anyActive = true;
+    else if (mergedConfig.cpuPrerenderLimit > -0.5f) anyActive = true;
+    else if (mergedConfig.backbufferCount > 0) anyActive = true;
+    else if (mergedConfig.sgssaa) anyActive = true;
+    
+    g_GraphicsOverridesActive.store(anyActive, std::memory_order_release);
+
     return mergedConfig;
 }
 

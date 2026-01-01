@@ -553,18 +553,6 @@ static void DrawDX8Overlay(HWND hwnd) {
 }
 
 
-static void ApplySGSSAAProactive(IDirect3DDevice8 *device) {
-     if (!g_IPC || !g_IPC->GetSharedMem() || !g_IPC->GetSharedMem()->graphicsConfig.sgssaa) return;
-     
-     float bias = 0.0f;
-     const auto& gfx = GetActiveGraphicsConfig();
-     if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), bias)) {
-         DWORD dwBias = *((DWORD*)&bias);
-         for (DWORD i = 0; i < 8; i++) { 
-             oD3D8SetTextureStageState(device, i, D3DTSS_MIPMAPLODBIAS, dwBias);
-         }
-     }
-}
 
 static HRESULT STDMETHODCALLTYPE DetourD3D8Present(
     IDirect3DDevice8 *device,
@@ -574,7 +562,6 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8Present(
     const RGNDATA *pDirtyRegion
 ) {
     if (g_ShuttingDown) return D3D_OK;
-    ApplySGSSAAProactive(device);
     // Update performance metrics
     static int64_t qpcFreq = 0;
     if (qpcFreq == 0) {
@@ -735,15 +722,6 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8SetTextureStageState(
              } catch (...) {}
         }
         
-        // SGSSAA
-        if (gfx.sgssaa && Type == 19) {
-             float sgBias = 0.0f;
-             if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgBias)) {
-                 float currentVal = *((float*)&Value);
-                 currentVal += sgBias;
-                 Value = *((DWORD*)&currentVal);
-             }
-        }
     }
     return oD3D8SetTextureStageState(device, Stage, Type, Value);
 }

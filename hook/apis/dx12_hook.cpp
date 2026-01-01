@@ -1066,6 +1066,11 @@ static void STDMETHODCALLTYPE DetourCreateSampler(
         return;
     }
     
+    if (!g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
+        oCreateSampler(pDevice, pDesc, DestDescriptor);
+        return;
+    }
+
     // Debug Log for Sampler Creation
     static int samplerLogCount = 0;
     if (samplerLogCount < 5) {

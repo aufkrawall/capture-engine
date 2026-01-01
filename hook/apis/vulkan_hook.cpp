@@ -2209,6 +2209,10 @@ static VkResult VKAPI_PTR Detour_vkCreateSampler(
     const VkAllocationCallbacks* pAllocator,
     VkSampler* pSampler)
 {
+    if (!g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
+        return o_vkCreateSampler(device, pCreateInfo, pAllocator, pSampler);
+    }
+
     VkSamplerCreateInfo modifiedInfo = *pCreateInfo;
     
     if (g_IPC && g_IPC->GetSharedMem()) {

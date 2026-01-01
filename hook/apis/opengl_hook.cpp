@@ -666,17 +666,6 @@ static void LoadOpenGLExtensions() {
     pglEnable = (glEnable_t)GetProcAddress(GetModuleHandleA("opengl32.dll"), "glEnable");
 }
 
-static void ApplySGSSAA() {
-    const auto& gfx = GetActiveGraphicsConfig();
-    if (!gfx.sgssaa || !pglEnable || !pglMinSampleShading) return;
-    
-    float bias = 0.0f;
-    if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), bias)) {
-        // Force per-sample shading
-        pglEnable(GL_SAMPLE_SHADING);
-        pglMinSampleShading(1.0f);
-    }
-}
 
 // Draw overlay using ImGui OpenGL backend  
 static void DrawOpenGLOverlay(HDC hdc) {
@@ -758,9 +747,8 @@ static void SwapEnd(HDC hdc) {
 // Hook: SwapBuffers (GDI32)
 static BOOL WINAPI DetourSwapBuffers(HDC hdc) {
     SwapBegin(hdc);
-    if (g_IPC && g_IPC->GetSharedMem()) {
+    if (g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
          LoadOpenGLExtensions();
-         ApplySGSSAA();
     }
     BOOL result = oSwapBuffers(hdc);
     SwapEnd(hdc);
