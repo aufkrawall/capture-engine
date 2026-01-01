@@ -3,7 +3,7 @@
 #include "app_audio_capture.h"
 #include "audio_capture.h"
 #include "audio_encoder.h"
-#include "audio_mixer.h"
+
 #include "audio_resampler.h"
 #include "audio_ring_buffer.h" // Pull Model Buffer
 #include "video_encoder.h"
@@ -37,20 +37,12 @@ public:
   };
 
   // Per-track encoder with optional mixing (when multiple sources target same track)
-  struct TrackEncoder {
-    std::unique_ptr<AudioEncoder> encoder;
-    std::unique_ptr<AudioMixer>
-        mixer; // Only used if multiple sources target this track
-    AudioConfig config;
-    int track = 0;
-    std::vector<int>
-        sourceIndices; // Indices into audioSources targeting this track
-  };
+
 
   // Member variables
   std::unique_ptr<VideoEncoder> videoEnc;
   std::vector<AudioSource> audioSources;
-  std::vector<TrackEncoder> trackEncoders;
+
 
   AppConfig config;
   std::recursive_mutex muxMutex; // Must be recursive - WritePacket callback from EncodeFrame
@@ -1008,188 +1000,8 @@ private:
 
 
       // ===================================================================
-      // PULL MODEL (Phase 2): LEGACY MIX/ENCODE LOGIC DISABLED
+      // PULL MODEL (Phase 2): Legacy audio mixing logic removed
       // ===================================================================
-      // The following Mix/Encode logic operated on sourceBuffers[] which
-      // is now EMPTY (not filled anymore). Audio encoding will be driven
-      // by the Video Clock pulling from Ring Buffers.
-      // This section will be replaced by AudioEncodeLoop in Phase 2.
-      // ===================================================================
-      /*
-      // Step 1.5: Keep buffers synchronized by injecting silence for stalled
-      // sources (e.g. WASAPI loopback silence) If one source accumulated
-      // significantly more data than another on the same track, inject silence
-      // to catch up.
-      if (needsMixing) {
-        for (auto &kv : trackSourceIndices) {
-          auto &indices = kv.second;
-          if (indices.size() <= 1)
-            continue;
-
-          size_t maxSamples = 0;
-          for (size_t idx : indices) {
-            if (sourceBuffers[idx].size() > maxSamples)
-              maxSamples = sourceBuffers[idx].size();
-          }
-
-          for (size_t idx : indices) {
-            // If this buffer is lagging behind max by more than 2 chunks (20ms)
-            // AND hasn't received packet recently
-            auto lag = maxSamples - sourceBuffers[idx].size();
-            auto msSinceLast =
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    now - lastPacketTime[idx])
-                    .count();
-
-            // Dynamic silence injection:
-            // If data stopped coming (>100ms) OR we are significantly lagging
-            // (>4800 samples = ~100ms) inject silence to prevent blocking the
-            // mixer.
-            if (lag >= CHUNK_SIZE && (msSinceLast > 100 || lag > 4800)) {
-              // Add silent samples
-              // Use default packet metadata if we haven't received one yet,
-              // otherwise use last
-              if (sourceLastPackets[idx].channels == 0) {
-                sourceLastPackets[idx].channels = 2; // Default assume stereo
-                sourceLastPackets[idx].sampleRate = 48000;
-                sourceLastPackets[idx].timestamp =
-                    0; // Will be fixed by encoder
-              }
-
-              size_t oldSize = sourceBuffers[idx].size();
-              sourceBuffers[idx].resize(oldSize +
-                                        CHUNK_SIZE); // Add one chunk of silence
-              memset(sourceBuffers[idx].data() + oldSize, 0,
-                     CHUNK_SIZE * sizeof(float));
-            }
-          }
-        }
-      }
-
-      // Step 2: For each track that needs mixing, check if all sources have
-      // enough samples
-      if (needsMixing) {
-        for (auto &kv : trackSourceIndices) {
-          int track = kv.first;
-          auto &indices = kv.second;
-          int numSources = (int)indices.size();
-
-          if (numSources <= 1)
-            continue; // Single source, handled below
-
-          // Check if all sources have at least CHUNK_SIZE samples
-          bool allReady = true;
-          for (size_t idx : indices) {
-            if ((int)sourceBuffers[idx].size() < CHUNK_SIZE) {
-              allReady = false;
-              break;
-            }
-          }
-
-          if (!allReady)
-            continue;
-
-          // Mix: sum samples from all sources
-          std::vector<float> mixBuffer(CHUNK_SIZE, 0.0f);
-          // Initialize with first source to ensure we have valid format headers
-          // even if timestamps are 0
-          AudioPacket lastPacket = sourceLastPackets[indices[0]];
-
-          for (size_t idx : indices) {
-            auto &srcBuf = sourceBuffers[idx];
-            for (int i = 0; i < CHUNK_SIZE; i++) {
-              mixBuffer[i] += srcBuf[i];
-            }
-            // Use metadata from active source if possible (latest timestamp)
-            if (sourceLastPackets[idx].timestamp > lastPacket.timestamp) {
-              lastPacket = sourceLastPackets[idx];
-            }
-            // Remove consumed samples
-            srcBuf.erase(srcBuf.begin(), srcBuf.begin() + CHUNK_SIZE);
-          }
-
-          // Clamp values to valid range (Hard Limiting)
-          // This allows full volume mixing (Summing) instead of attenuation (Averaging)
-          // Users prefer louder audio even if it occasionally hits the ceiling (soft clipping)
-          for (auto &s : mixBuffer) {
-            if (s > 1.0f) s = 1.0f;
-            else if (s < -1.0f) s = -1.0f;
-          }
-
-          // Encode mixed samples
-          AudioSource *encoderOwner = nullptr;
-          for (auto &src : audioSources) {
-            if (src.track == track && src.encoder) {
-              encoderOwner = &src;
-              break;
-            }
-          }
-
-          if (encoderOwner && encoderOwner->sharedEncoderPtr) {
-            std::vector<uint8_t> mixedData(CHUNK_SIZE * sizeof(float));
-            memcpy(mixedData.data(), mixBuffer.data(), mixedData.size());
-
-            // CRITICAL: Use fixed sample rate for mixed audio
-            // The mixing assumes all samples are at the same rate (48kHz)
-            const int MIX_SAMPLE_RATE = 48000;
-
-            // Calculate continuous timestamp to prevent jitter
-            int64_t mixTimestamp = 0;
-            if (trackNextTimestamp.find(track) == trackNextTimestamp.end()) {
-                // First chunk: init from source
-                mixTimestamp = lastPacket.timestamp;
-            } else {
-                // Subsequent chunks: strict increment (10ms for 480 samples @ 48kHz)
-                mixTimestamp = trackNextTimestamp[track];
-            }
-            // Advance timestamp for next chunk
-            trackNextTimestamp[track] = mixTimestamp + 10;
-            
-            encoderOwner->sharedEncoderPtr->EncodeSamples(
-                mixedData.data(), (int)mixedData.size(), CHANNELS,
-                MIX_SAMPLE_RATE, 32, 32, CHANNELS * 4, true, // float32
-                mixTimestamp);
-
-            mixCount++;
-            // Log only first 3 and then every 10000 to reduce verbosity
-            if (mixCount <= 3 || mixCount % 10000 == 0) {
-              DLL_Log("AudioLoop: Mixed chunk #%d for track %d (%d sources)",
-                      mixCount, track, numSources);
-            }
-          }
-        }
-      }
-
-      // Step 3: Handle single-source tracks (no mixing needed)
-      for (auto &kv : trackSourceIndices) {
-        // int track = kv.first;
-        auto &indices = kv.second;
-
-        if ((int)indices.size() != 1)
-          continue; // Multi-source handled above
-
-        size_t srcIdx = indices[0];
-        auto &src = audioSources[srcIdx];
-        auto &srcBuf = sourceBuffers[srcIdx];
-        AudioPacket lastPacket = sourceLastPackets[srcIdx]; // Make copy
-
-        // Encode complete chunks
-        while ((int)srcBuf.size() >= CHUNK_SIZE && src.sharedEncoderPtr) {
-          std::vector<uint8_t> data(CHUNK_SIZE * sizeof(float));
-          memcpy(data.data(), srcBuf.data(), data.size());
-          srcBuf.erase(srcBuf.begin(), srcBuf.begin() + CHUNK_SIZE);
-
-          src.sharedEncoderPtr->EncodeSamples(
-              data.data(), (int)data.size(), lastPacket.channels,
-              lastPacket.sampleRate, 32, 32, CHANNELS * 4, true,
-              lastPacket.timestamp);
-        }
-      }
-      */
-      // ===================================================================
-      // END LEGACY LOGIC
-      // ===================================================================
-
 
       if (!gotAnyPacket) {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));

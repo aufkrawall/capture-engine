@@ -706,7 +706,6 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
     // so we cannot reliably detect "real" frames. Our overlay commands cause GPU crashes
     // because FG hijacks the swapchain and backbuffers in ways we don't understand.
     SharedMemoryLayout* shm = g_IPC->GetSharedMem();
-    // bool fgActive = g_FGCompat.IsFGLikelyActive(); // Already checked above
     if (!fgActive && processCapture && shm && shm->overlayConfig.showOverlay && g_Overlay.init && 
         g_Overlay.fence && g_CommandQueue) {
       int bufferIdx = pSwapChain->GetCurrentBackBufferIndex();
