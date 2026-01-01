@@ -62,7 +62,14 @@ public:
   std::vector<int64_t> encodedSamplesPerSource;
 
   int64_t GetLastVideoEncodeTimeUs() const {
-    if (videoEnc) return videoEnc->GetLastFrameEncodeTimeUs();
+    if (videoEnc)
+      return videoEnc->GetLastFrameEncodeTimeUs();
+    return 0;
+  }
+
+  int64_t GetLastFrameFenceWaitUs() const {
+    if (videoEnc)
+      return videoEnc->GetLastFrameFenceWaitUs();
     return 0;
   }
 
@@ -1115,7 +1122,7 @@ MEDIAENGINE_API void MediaEngine_SetSharedMem(void *pSharedMem, void *pShmem) {
 
 MEDIAENGINE_API int64_t MediaEngine_GetLastFrameFenceWaitUs() {
   if (g_Engine) {
-    return g_Engine->GetLastVideoFenceWaitUs();
+    return g_Engine->GetLastFrameFenceWaitUs();
   }
   return 0;
 }
@@ -1162,5 +1169,7 @@ std::recursive_mutex g_D3D11Mutex;
 MEDIAENGINE_API void MediaEngine_LockD3D11() { g_D3D11Mutex.lock(); }
 
 MEDIAENGINE_API void MediaEngine_UnlockD3D11() { g_D3D11Mutex.unlock(); }
+
+
 
 } // extern "C"

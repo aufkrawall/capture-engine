@@ -70,8 +70,9 @@ bool g_IPCReady = false;
 static IDXGISwapChain3 *g_LastSwapChain = nullptr;
 static ID3D12Resource *g_DummyBackBuffer = nullptr;
 static std::mutex g_OverlayMutex;
-static bool g_ImGuiInit = false;
-static int g_ImGuiInitFrameCounter = 0;
+
+// static bool g_ImGuiInit = false;  // Moved to DX12OverlayState
+// static int g_ImGuiInitFrameCounter = 0; // Moved to DX12OverlayState
 
 // FG Real Frame Detection
 static std::atomic<int> g_CommandListsExecutedThisFrame{0};
@@ -141,18 +142,19 @@ static DX12Capture g_DX12Capture;
 static std::mutex g_DX12CaptureMutex;
 static ID3D12Fence *g_DX12CaptureCompletionFence = nullptr;
 
-// --- ImGui ---
-static ID3D12DescriptorHeap *g_SrvDescHeap = nullptr;
-static ID3D12DescriptorHeap *g_RtvDescHeap = nullptr;
-static std::vector<ID3D12Resource *> g_BackBuffers;
-static UINT g_RtvDescriptorSize = 0;
-static UINT g_CachedWidth = 0;
-static UINT g_CachedHeight = 0;
+// --- ImGui & Overlay State ---
+struct DX12OverlayState {
+  // ImGui Resources
+  ID3D12DescriptorHeap *srvDescHeap = nullptr;
+  ID3D12DescriptorHeap *rtvDescHeap = nullptr;
+  std::vector<ID3D12Resource *> backBuffers;
+  UINT rtvDescriptorSize = 0;
+  UINT cachedWidth = 0;
+  UINT cachedHeight = 0;
+  bool imGuiInit = false;
+  int imGuiInitFrameCounter = 0;
 
-static PerformanceMetrics g_PerfMetrics;
-
-// --- Overlay Sync ---
-struct OverlayContext {
+  // Overlay Command/Sync Resources
   ID3D12CommandQueue *overlayQueue = nullptr;
   std::vector<ID3D12CommandAllocator *> allocators;
   ID3D12GraphicsCommandList *cmdList = nullptr;
@@ -162,24 +164,26 @@ struct OverlayContext {
   std::vector<UINT64> fenceValues;
   UINT64 currentFenceValue = 0;
   HANDLE fenceEvent = NULL;
-  int allocIndex = 0;  // Rotating index into allocators (independent of swapchain)
-  static const int ALLOC_POOL_SIZE = 8;  // Large enough to never catch up with GPU
-  bool init = false;
+  int allocIndex = 0;  // Rotating index
+  static const int ALLOC_POOL_SIZE = 8;
+  bool syncInit = false;
 };
-static OverlayContext g_Overlay;
+
+static DX12OverlayState g_State;
+static PerformanceMetrics g_PerfMetrics;
 
 // --- Helper Functions ---
 
 void ShutdownImGui() {
-  if (!g_ImGuiInit) return;
+  if (!g_State.imGuiInit) return;
   HookLog("DX12: Shutting down ImGui...");
   ImGui_ImplDX12_Shutdown();
   g_SharedOverlay.ShutdownImGui();
-  if (g_SrvDescHeap) {
-    g_SrvDescHeap->Release();
-    g_SrvDescHeap = nullptr;
+  if (g_State.srvDescHeap) {
+    g_State.srvDescHeap->Release();
+    g_State.srvDescHeap = nullptr;
   }
-  g_ImGuiInit = false;
+  g_State.imGuiInit = false;
 }
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd,
@@ -194,23 +198,23 @@ void InitImGui(ID3D12Device *device, int buffers, DXGI_FORMAT format,
   desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
   desc.NumDescriptors = 1;
   desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-  if (FAILED(device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&g_SrvDescHeap))))
+  if (FAILED(device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&g_State.srvDescHeap))))
     return;
     
-  ImGui_ImplDX12_Init(device, buffers, format, g_SrvDescHeap,
-                      g_SrvDescHeap->GetCPUDescriptorHandleForHeapStart(),
-                      g_SrvDescHeap->GetGPUDescriptorHandleForHeapStart());
+  ImGui_ImplDX12_Init(device, buffers, format, g_State.srvDescHeap,
+                      g_State.srvDescHeap->GetCPUDescriptorHandleForHeapStart(),
+                      g_State.srvDescHeap->GetGPUDescriptorHandleForHeapStart());
   
   if (g_CommandQueue) {
     ImGui_ImplDX12_SetCommandQueue(g_CommandQueue);
   }
   
-  g_ImGuiInit = true;
+  g_State.imGuiInit = true;
   HookLog("ImGui Initialized with Command Queue: %p", g_CommandQueue);
 }
 
 void DrawOverlay(ID3D12GraphicsCommandList *cmdList) {
-  if (!g_ImGuiInit || !cmdList)
+  if (!g_State.imGuiInit || !cmdList)
     return;
 
   ImGui_ImplDX12_NewFrame();
@@ -225,7 +229,7 @@ void DrawOverlay(ID3D12GraphicsCommandList *cmdList) {
 
   g_SharedOverlay.EndFrame();
   
-  cmdList->SetDescriptorHeaps(1, &g_SrvDescHeap);
+  cmdList->SetDescriptorHeaps(1, &g_State.srvDescHeap);
   ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), cmdList); 
 }
 
@@ -336,163 +340,163 @@ void CheckCaptureInit(IDXGISwapChain3 *pSwapChain) {
 
 void CreateRTVs(ID3D12Device *device, IDXGISwapChain3 *swapChain,
                 int bufferCount) {
-  if (g_RtvDescHeap)
+  if (g_State.rtvDescHeap)
     return; // Cleanup usually handles checks
   D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
   rtvHeapDesc.NumDescriptors = bufferCount;
   rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
   if (FAILED(device->CreateDescriptorHeap(&rtvHeapDesc,
-                                          IID_PPV_ARGS(&g_RtvDescHeap))))
+                                          IID_PPV_ARGS(&g_State.rtvDescHeap))))
     return;
 
-  g_RtvDescriptorSize =
+  g_State.rtvDescriptorSize =
       device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
   D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle =
-      g_RtvDescHeap->GetCPUDescriptorHandleForHeapStart();
+      g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
 
-  g_BackBuffers.resize(bufferCount);
+  g_State.backBuffers.resize(bufferCount);
   for (int i = 0; i < bufferCount; i++) {
-    swapChain->GetBuffer(i, IID_PPV_ARGS(&g_BackBuffers[i]));
-    device->CreateRenderTargetView(g_BackBuffers[i], nullptr, rtvHandle);
-    rtvHandle.ptr += g_RtvDescriptorSize;
+    swapChain->GetBuffer(i, IID_PPV_ARGS(&g_State.backBuffers[i]));
+    device->CreateRenderTargetView(g_State.backBuffers[i], nullptr, rtvHandle);
+    rtvHandle.ptr += g_State.rtvDescriptorSize;
   }
 }
 
 void InitOverlaySync(ID3D12Device *device, int bufferCount) {
-  if (g_Overlay.init)
+  if (g_State.syncInit)
     return;
     
   HRESULT hr;
   
   // Create fence for tracking allocator usage
-  hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_Overlay.fence));
-  if (FAILED(hr) || !g_Overlay.fence) {
+  hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_State.fence));
+  if (FAILED(hr) || !g_State.fence) {
     HookLog("DX12: Failed to create overlay fence: 0x%08X", hr);
     return;
   }
 
   // Use a larger allocator pool (8) with rotating index to prevent GPU starvation
   // Increase pool size if FG is active to handle higher frame inflight count
-  const int poolSize = g_FGCompat.IsFGLikelyActive() ? 16 : OverlayContext::ALLOC_POOL_SIZE;
-  g_Overlay.allocators.resize(poolSize);
-  g_Overlay.fenceValues.resize(poolSize, 0);
+  const int poolSize = g_FGCompat.IsFGLikelyActive() ? 16 : DX12OverlayState::ALLOC_POOL_SIZE;
+  g_State.allocators.resize(poolSize);
+  g_State.fenceValues.resize(poolSize, 0);
   for (int i = 0; i < poolSize; i++) {
     hr = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                   IID_PPV_ARGS(&g_Overlay.allocators[i]));
+                                   IID_PPV_ARGS(&g_State.allocators[i]));
     if (FAILED(hr)) {
       HookLog("DX12: Failed to create overlay allocator %d: 0x%08X", i, hr);
       // Cleanup already created allocators
       for (int j = 0; j < i; j++) {
-        if (g_Overlay.allocators[j]) g_Overlay.allocators[j]->Release();
+        if (g_State.allocators[j]) g_State.allocators[j]->Release();
       }
-      g_Overlay.allocators.clear();
-      g_Overlay.fence->Release();
-      g_Overlay.fence = nullptr;
+      g_State.allocators.clear();
+      g_State.fence->Release();
+      g_State.fence = nullptr;
       return;
     }
   }
 
   hr = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
-                            g_Overlay.allocators[0], nullptr,
-                            IID_PPV_ARGS(&g_Overlay.cmdList));
-  if (FAILED(hr) || !g_Overlay.cmdList) {
+                            g_State.allocators[0], nullptr,
+                            IID_PPV_ARGS(&g_State.cmdList));
+  if (FAILED(hr) || !g_State.cmdList) {
     HookLog("DX12: Failed to create overlay command list: 0x%08X", hr);
-    for (auto alloc : g_Overlay.allocators) {
+    for (auto alloc : g_State.allocators) {
       if (alloc) alloc->Release();
     }
-    g_Overlay.allocators.clear();
-    g_Overlay.fence->Release();
-    g_Overlay.fence = nullptr;
+    g_State.allocators.clear();
+    g_State.fence->Release();
+    g_State.fence = nullptr;
     return;
   }
-  g_Overlay.cmdList->Close();
+  g_State.cmdList->Close();
 
-  g_Overlay.fenceEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
-  g_Overlay.init = true;
+  g_State.fenceEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+  g_State.syncInit = true;
   HookLog("DX12: Overlay sync initialized");
 }
 
 void CleanupOverlay() {
-  if (!g_Overlay.init) return;
+  if (!g_State.syncInit) return;
   
   // Wait for GPU to finish any pending overlay work
-  if (g_Overlay.fence && g_CommandQueue) {
+  if (g_State.fence && g_CommandQueue) {
     HookLog("DX12: CleanupOverlay: Waiting for GPU...");
-    UINT64 waitValue = g_Overlay.currentFenceValue + 1;
-    HRESULT hr_sig = g_CommandQueue->Signal(g_Overlay.fence, waitValue);
+    UINT64 waitValue = g_State.currentFenceValue + 1;
+    HRESULT hr_sig = g_CommandQueue->Signal(g_State.fence, waitValue);
     if (FAILED(hr_sig)) {
         HookLog("DX12: CleanupOverlay: Signal failed: 0x%08X", hr_sig);
     } else {
-        if (g_Overlay.fence->GetCompletedValue() < waitValue) {
-          g_Overlay.fence->SetEventOnCompletion(waitValue, g_Overlay.fenceEvent);
-          WaitForSingleObject(g_Overlay.fenceEvent, 100);  // 100ms max
+        if (g_State.fence->GetCompletedValue() < waitValue) {
+          g_State.fence->SetEventOnCompletion(waitValue, g_State.fenceEvent);
+          WaitForSingleObject(g_State.fenceEvent, 100);  // 100ms max
         }
     }
   }
   HookLog("DX12: CleanupOverlay: Releasing resources...");
   
   // Release event handle
-  if (g_Overlay.fenceEvent) {
-    CloseHandle(g_Overlay.fenceEvent);
-    g_Overlay.fenceEvent = NULL;
+  if (g_State.fenceEvent) {
+    CloseHandle(g_State.fenceEvent);
+    g_State.fenceEvent = NULL;
   }
   
   // Release allocators
-  for (auto alloc : g_Overlay.allocators) {
+  for (auto alloc : g_State.allocators) {
     if (alloc) alloc->Release();
   }
-  g_Overlay.allocators.clear();
-  g_Overlay.fenceValues.clear();
+  g_State.allocators.clear();
+  g_State.fenceValues.clear();
   
   // Release command list
-  if (g_Overlay.cmdList) {
-    g_Overlay.cmdList->Release();
-    g_Overlay.cmdList = nullptr;
+  if (g_State.cmdList) {
+    g_State.cmdList->Release();
+    g_State.cmdList = nullptr;
   }
   
   // Release fences
-  if (g_Overlay.fence) {
-    g_Overlay.fence->Release();
-    g_Overlay.fence = nullptr;
+  if (g_State.fence) {
+    g_State.fence->Release();
+    g_State.fence = nullptr;
   }
-  if (g_Overlay.overlaySyncFence) {
-    g_Overlay.overlaySyncFence->Release();
-    g_Overlay.overlaySyncFence = nullptr;
+  if (g_State.overlaySyncFence) {
+    g_State.overlaySyncFence->Release();
+    g_State.overlaySyncFence = nullptr;
   }
   
   // Release command queue
-  if (g_Overlay.overlayQueue) {
-    g_Overlay.overlayQueue->Release();
-    g_Overlay.overlayQueue = nullptr;
+  if (g_State.overlayQueue) {
+    g_State.overlayQueue->Release();
+    g_State.overlayQueue = nullptr;
   }
   
-  g_Overlay.currentFenceValue = 0;
-  g_Overlay.allocIndex = 0;
-  g_Overlay.init = false;
+  g_State.currentFenceValue = 0;
+  g_State.allocIndex = 0;
+  g_State.syncInit = false;
   
   // CRITICAL: Force ProcessFrame to re-evaluate initialization safety (FG check)
   // by resetting this flag. Prevents ResizeBuffers from blindly re-initializing.
-  g_ImGuiInit = false;
-  g_ImGuiInitFrameCounter = 0;
+  g_State.imGuiInit = false;
+  g_State.imGuiInitFrameCounter = 0;
   HookLog("DX12: CleanupOverlay complete");
 }
 
 void CleanupRTVs() {
-  for (auto *r : g_BackBuffers)
+  for (auto *r : g_State.backBuffers)
     if (r)
       r->Release();
-  g_BackBuffers.clear();
+  g_State.backBuffers.clear();
   if (g_DummyBackBuffer) {
     g_DummyBackBuffer->Release();
     g_DummyBackBuffer = nullptr;
   }
-  if (g_RtvDescHeap) {
-    g_RtvDescHeap->Release();
-    g_RtvDescHeap = nullptr;
+  if (g_State.rtvDescHeap) {
+    g_State.rtvDescHeap->Release();
+    g_State.rtvDescHeap = nullptr;
   }
-  if (g_SrvDescHeap) {
-    g_SrvDescHeap->Release();
-    g_SrvDescHeap = nullptr;
+  if (g_State.srvDescHeap) {
+    g_State.srvDescHeap->Release();
+    g_State.srvDescHeap = nullptr;
   }
 }
 
@@ -636,8 +640,8 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
       g_LastSwapChain = pSwapChain;
       g_LastSwapChain->AddRef();
 
-      g_ImGuiInit = false;
-      g_ImGuiInitFrameCounter = 0;
+      g_State.imGuiInit = false;
+      g_State.imGuiInitFrameCounter = 0;
       
       // Release the local ref from GetDevice
       activeDevice->Release();
@@ -664,7 +668,7 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
   
   // Sync the global queue and ImGui backend with the correct target
   g_CommandQueue = targetQueue;
-  if (g_ImGuiInit) {
+  if (g_State.imGuiInit) {
       ImGui_ImplDX12_SetCommandQueue(g_CommandQueue);
   }
 
@@ -685,19 +689,19 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
     // Defer overlay initialization 
     // CRITICAL: Do NOT initialize ImGui if FG is active or suspended (e.g. at startup)
     bool fgActive = g_FGCompat.IsFGLikelyActive();
-    if (!g_ImGuiInit && !fgActive) {
-      g_ImGuiInitFrameCounter++;
-      if (g_ImGuiInitFrameCounter >= 3) { // Initialize on 3rd frame
+    if (!g_State.imGuiInit && !fgActive) {
+      g_State.imGuiInitFrameCounter++;
+      if (g_State.imGuiInitFrameCounter >= 3) { // Initialize on 3rd frame
         DXGI_SWAP_CHAIN_DESC desc;
         pSwapChain->GetDesc(&desc);
-        g_CachedWidth = desc.BufferDesc.Width;
-        g_CachedHeight = desc.BufferDesc.Height;
+        g_State.cachedWidth = desc.BufferDesc.Width;
+        g_State.cachedHeight = desc.BufferDesc.Height;
         
-        InitImGui(g_Device, OverlayContext::ALLOC_POOL_SIZE, desc.BufferDesc.Format,
+        InitImGui(g_Device, DX12OverlayState::ALLOC_POOL_SIZE, desc.BufferDesc.Format,
                   desc.OutputWindow);
         CreateRTVs(g_Device, pSwapChain, desc.BufferCount);
         InitOverlaySync(g_Device, desc.BufferCount);
-        g_ImGuiInit = true;
+        g_State.imGuiInit = true;
       }
     }
 
@@ -706,47 +710,47 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
     // so we cannot reliably detect "real" frames. Our overlay commands cause GPU crashes
     // because FG hijacks the swapchain and backbuffers in ways we don't understand.
     SharedMemoryLayout* shm = g_IPC->GetSharedMem();
-    if (!fgActive && processCapture && shm && shm->overlayConfig.showOverlay && g_Overlay.init && 
-        g_Overlay.fence && g_CommandQueue) {
+    if (!fgActive && processCapture && shm && shm->overlayConfig.showOverlay && g_State.syncInit && 
+        g_State.fence && g_CommandQueue) {
       int bufferIdx = pSwapChain->GetCurrentBackBufferIndex();
       
       static int logCounter = 0;
       if (logCounter++ % 1000 == 0) {
-        HookLog("DX12: bufferIdx=%d, bufferCount=%zu", bufferIdx, g_BackBuffers.size());
+        HookLog("DX12: bufferIdx=%d, bufferCount=%zu", bufferIdx, g_State.backBuffers.size());
       }
       
-      if (bufferIdx >= (int)g_BackBuffers.size()) {
+      if (bufferIdx >= (int)g_State.backBuffers.size()) {
         return; 
       }
       
       // Use rotating allocator index (8 allocators) to ensure GPU has finished
       // by the time we come back to the same allocator
-      int allocIdx = g_Overlay.allocIndex;
-      g_Overlay.allocIndex = (g_Overlay.allocIndex + 1) % OverlayContext::ALLOC_POOL_SIZE;
+      int allocIdx = g_State.allocIndex;
+      g_State.allocIndex = (g_State.allocIndex + 1) % DX12OverlayState::ALLOC_POOL_SIZE;
       
       // Wait for this allocator's previous work to complete (will be instant with 8 allocators)
-      UINT64 completed = g_Overlay.fence->GetCompletedValue();
-      UINT64 target = g_Overlay.fenceValues[allocIdx];
+      UINT64 completed = g_State.fence->GetCompletedValue();
+      UINT64 target = g_State.fenceValues[allocIdx];
       if (completed < target) {
         // Should rarely happen with 8 allocators - use event wait if needed
-        g_Overlay.fence->SetEventOnCompletion(target, g_Overlay.fenceEvent);
-        WaitForSingleObject(g_Overlay.fenceEvent, INFINITE);
+        g_State.fence->SetEventOnCompletion(target, g_State.fenceEvent);
+        WaitForSingleObject(g_State.fenceEvent, INFINITE);
       }
 
-      auto *alloc = g_Overlay.allocators[allocIdx];
-      auto *list = g_Overlay.cmdList;
+      auto *alloc = g_State.allocators[allocIdx];
+      auto *list = g_State.cmdList;
       alloc->Reset();
       list->Reset(alloc, nullptr);
 
       D3D12_CPU_DESCRIPTOR_HANDLE rtv =
-          g_RtvDescHeap->GetCPUDescriptorHandleForHeapStart();
-      rtv.ptr += (SIZE_T)bufferIdx * g_RtvDescriptorSize;
+          g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
+      rtv.ptr += (SIZE_T)bufferIdx * g_State.rtvDescriptorSize;
       
       // BARRIER 1: Transition to RENDER_TARGET
       D3D12_RESOURCE_BARRIER preBarrier = {};
       preBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
       preBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-      preBarrier.Transition.pResource = g_BackBuffers[bufferIdx];
+      preBarrier.Transition.pResource = g_State.backBuffers[bufferIdx];
       preBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
       preBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
       preBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
@@ -754,10 +758,10 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
 
       list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
 
-      D3D12_VIEWPORT vp = {0, 0, (float)g_CachedWidth, (float)g_CachedHeight,
+      D3D12_VIEWPORT vp = {0, 0, (float)g_State.cachedWidth, (float)g_State.cachedHeight,
                            0, 1};
       list->RSSetViewports(1, &vp);
-      D3D12_RECT scissor = {0, 0, (LONG)g_CachedWidth, (LONG)g_CachedHeight};
+      D3D12_RECT scissor = {0, 0, (LONG)g_State.cachedWidth, (LONG)g_State.cachedHeight};
       list->RSSetScissorRects(1, &scissor);
       
       DrawOverlay(list);
@@ -766,7 +770,7 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
       D3D12_RESOURCE_BARRIER postBarrier = {};
       postBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
       postBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-      postBarrier.Transition.pResource = g_BackBuffers[bufferIdx];
+      postBarrier.Transition.pResource = g_State.backBuffers[bufferIdx];
       postBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
       postBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
       postBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
@@ -780,9 +784,9 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
       g_CommandQueue->ExecuteCommandLists(1, lists);
       
       // Signal fence for this allocator
-      g_Overlay.currentFenceValue++;
-      g_Overlay.fenceValues[allocIdx] = g_Overlay.currentFenceValue;
-      g_CommandQueue->Signal(g_Overlay.fence, g_Overlay.currentFenceValue);
+      g_State.currentFenceValue++;
+      g_State.fenceValues[allocIdx] = g_State.currentFenceValue;
+      g_CommandQueue->Signal(g_State.fence, g_State.currentFenceValue);
     }
 
     // Recording
@@ -1589,7 +1593,7 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain3 *pSwapChain,
   }
   HookLog("DX12: DetourResizeBuffers Capture Cleanup done");
 
-  if (g_ImGuiInit)
+  if (g_State.imGuiInit)
     ImGui_ImplDX12_InvalidateDeviceObjects();
 
   int count = GetActiveGraphicsConfig().backbufferCount;
@@ -1846,31 +1850,10 @@ void DX12Hook::Shutdown() {
   ShutdownImGui();
   
   // Release overlay resources
-  if (g_Overlay.init) {
-    if (g_Overlay.fenceEvent) {
-      CloseHandle(g_Overlay.fenceEvent);
-      g_Overlay.fenceEvent = NULL;
-    }
-    for (auto alloc : g_Overlay.allocators) {
-      if (alloc) alloc->Release();
-    }
-    g_Overlay.allocators.clear();
-    if (g_Overlay.cmdList) { g_Overlay.cmdList->Release(); g_Overlay.cmdList = nullptr; }
-    if (g_Overlay.fence) { g_Overlay.fence->Release(); g_Overlay.fence = nullptr; }
-    if (g_Overlay.overlaySyncFence) { g_Overlay.overlaySyncFence->Release(); g_Overlay.overlaySyncFence = nullptr; }
-    if (g_Overlay.overlayQueue) { g_Overlay.overlayQueue->Release(); g_Overlay.overlayQueue = nullptr; }
-    g_Overlay.init = false;
-  }
+  CleanupOverlay();
   
-  // Release descriptor heaps
-  if (g_SrvDescHeap) { g_SrvDescHeap->Release(); g_SrvDescHeap = nullptr; }
-  if (g_RtvDescHeap) { g_RtvDescHeap->Release(); g_RtvDescHeap = nullptr; }
-  
-  // Release back buffer references
-  for (auto& bb : g_BackBuffers) {
-    if (bb) { bb->Release(); bb = nullptr; }
-  }
-  g_BackBuffers.clear();
+  // Release descriptor heaps and back buffers
+  CleanupRTVs();
 
   // Release captured queues map
   {
