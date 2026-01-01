@@ -11,6 +11,41 @@ extern "C" {
 #include <functional>
 
 #include "cursor_renderer.h"
+#include <filesystem>
+namespace fs = std::filesystem;
+
+// Helper to generate robust output filename
+static std::string GenerateOutputFilename(const VideoConfig& config) {
+  // Default to "captures" subdirectory if outputDir is not specified
+  fs::path outDir = config.outputDir;
+  if (outDir.empty()) {
+      outDir = "captures";
+  }
+  
+  // Create directory if it doesn't exist
+  std::error_code ec;
+  if (!fs::exists(outDir, ec)) {
+      if (fs::create_directories(outDir, ec)) {
+          DLL_Log("[VideoEncoder] Created output directory: %s", outDir.string().c_str());
+      } else {
+          DLL_Log("[VideoEncoder] Failed to create output directory: %s (Error: %d). Fallback to current dir.", 
+                  outDir.string().c_str(), ec.value());
+          outDir = "."; 
+      }
+  } else {
+       // DLL_Log("[VideoEncoder] Output directory exists: %s", outDir.string().c_str());
+  }
+
+  std::string filenameOnly = "capture_" + std::to_string(GetTickCount64()) + "." + config.container;
+  fs::path fullPath = outDir / filenameOnly;
+  
+  // Handle Windows backslashes for FFmpeg
+  std::filesystem::path absPath = std::filesystem::absolute(fullPath, ec);
+  if (!ec) {
+      return absPath.string();
+  }
+  return fullPath.string();
+}
 
 // RAII Wrapper for MediaEngine D3D11 Guard
 class D3D11ScopedLock {
@@ -182,10 +217,7 @@ bool VideoEncoder::Init(const VideoConfig &config, int width, int height,
   av_log_set_level(AV_LOG_DEBUG);
 
   DLL_Log("[VideoEncoder] Step 3: Creating output filename");
-  std::string filenameOnly = "capture_" + std::to_string(GetTickCount64()) + "." + config.container;
-  outputFilename = config.outputDir.empty()
-                       ? filenameOnly
-                       : (config.outputDir + "/" + filenameOnly);
+  outputFilename = GenerateOutputFilename(config);
   DLL_Log("[VideoEncoder] Output file: %s", outputFilename.c_str());
 
   DLL_Log("[VideoEncoder] Step 4: Calling avformat_alloc_output_context2");
@@ -996,10 +1028,10 @@ bool VideoEncoder::Start() {
   }
 
   // If fmtCtx was freed by Stop(), recreate it for the new recording
+  // If fmtCtx was freed by Stop(), recreate it for the new recording
   if (!fmtCtx) {
-    // Generate new output filename
-    outputFilename = "capture_" + std::to_string(GetTickCount()) + "." +
-                     savedConfig.container;
+    // Generate new output filename using robust helper
+    outputFilename = GenerateOutputFilename(savedConfig);
     DLL_Log("[VideoEncoder] Creating new format context for: %s",
             outputFilename.c_str());
 

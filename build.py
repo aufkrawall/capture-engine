@@ -240,27 +240,46 @@ def setup_minhook():
         
         log("MinHook Setup Complete.")
 
-def generate_hash(file_path):
-    """Generate SHA256 hash file for the given file."""
-    if not os.path.exists(file_path):
-        log(f"Warning: Cannot hash missing file {file_path}")
-        return
-        
-    sha256_hash = hashlib.sha256()
-    with open(file_path, "rb") as f:
-        # Read and update hash string value in blocks of 4K
-        for byte_block in iter(lambda: f.read(4096), b""):
-            sha256_hash.update(byte_block)
-            
-    hash_hex = sha256_hash.hexdigest()
-    hash_file = file_path + ".hash"
-    
+def generate_hash_header(dll_paths, header_path):
+    """Generate C++ header with macro definitions for DLL hashes."""
+    log(f"Generating hash header: {header_path}")
     try:
-        with open(hash_file, "w") as f:
-            f.write(hash_hex)
-        log(f"Generated hash for {os.path.basename(file_path)}")
+        with open(header_path, "w") as f:
+            f.write("#pragma once\n\n")
+            
+            for dll_path in dll_paths:
+                if not os.path.exists(dll_path):
+                    log(f"Warning: DLL missing for hash generation: {dll_path}")
+                    continue
+                    
+                sha256_hash = hashlib.sha256()
+                with open(dll_path, "rb") as dll_file:
+                    for byte_block in iter(lambda: dll_file.read(4096), b""):
+                        sha256_hash.update(byte_block)
+                
+                hash_hex = sha256_hash.hexdigest()
+                
+                # Derive macro name from filename (e.g. capture_hook_x64.dll -> HOOK_DLL_HASH_CAPTURE_HOOK_X64)
+                # But requirement was HOOK_DLL_HASH_X64
+                filename = os.path.basename(dll_path).lower()
+                macro_name = "HOOK_DLL_HASH_UNKNOWN"
+                if "x64" in filename:
+                    macro_name = "HOOK_DLL_HASH_X64"
+                elif "x86" in filename:
+                    macro_name = "HOOK_DLL_HASH_X86"
+                
+                f.write(f'#define {macro_name} "{hash_hex}"\n')
+                log(f"Defined {macro_name} = {hash_hex}")
+
     except Exception as e:
-        log(f"Failed to write hash file {hash_file}: {e}")
+        log(f"Failed to generate hash header: {e}")
+        # Write dummy header to ensure compilation doesn't break if hashing fails
+        try:
+             with open(header_path, "w") as f:
+                f.write("#pragma once\n")
+                f.write('#define HOOK_DLL_HASH_X64 ""\n')
+                f.write('#define HOOK_DLL_HASH_X86 ""\n')
+        except: pass
 
 # --- FFmpeg Configuration ---
 FFMPEG_URL = "https://git.ffmpeg.org/ffmpeg.git"
@@ -1034,7 +1053,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         cmd = [curr_clang_exe] + hk_objs + imgui_objs + common_objs + ldflags_hook + ["-o", hk_dll]
         # cmd = [curr_clang_exe] + hk_objs + ldflags_hook + ["-o", hk_dll]
         run_command(cmd, env=curr_env)
-        generate_hash(hk_dll)
+        # generate_hash(hk_dll) # Removed in favor of embedded hash header
 
         # 4. MediaEngine (x64 only for now as requested)
         if arch == "x64":
@@ -1097,7 +1116,16 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 ]
                 cmd = [curr_clang_exe] + me_objs + common_objs + me_ldflags + ffmpeg_import_libs + ["-o", me_dll]
                 run_command(cmd, env=curr_env)
-                generate_hash(me_dll)
+                # generate_hash(me_dll) # MediaEngine doesn't need hash check for injection
+                
+    # 4b. Generate Hash Header for Capture Engine
+    # Must be done AFTER Hook DLLs are built but BEFORE CaptureEngine is compiled
+    dll_paths = [
+        os.path.join(BIN_DIR, "capture_hook_x64.dll"),
+        os.path.join(BIN_DIR, "capture_hook_x86.dll")
+    ]
+    header_path = os.path.join(PROJECT_ROOT, "captureengine", "dll_hash.h")
+    generate_hash_header(dll_paths, header_path)
 
     # Compile and run tests (using x64 objects) if requested
     if should_run_tests:
