@@ -45,6 +45,9 @@ public:
   // Set dropped frames count from capture side (called by capture hooks)
   void SetDroppedFrames(uint32_t count) { localDroppedFrames = count; }
 
+  // Set HDR status (called by backend hooks)
+  void SetHDR(bool enabled) { isHDR = enabled; }
+
 private:
   // Helpers
   void RenderTextWithOutline(const char* text, ImU32 color, bool outline, ImU32 outlineColor, float thickness);
@@ -56,12 +59,15 @@ private:
   char graphicsAPI[16] = "";  // "DX12", "DX11", "Vulkan"
   bool initialized = false;
 
-  // Text update throttling (500ms interval)
-  static constexpr DWORD TEXT_UPDATE_INTERVAL_MS = 500;
+  // Text update throttling
   DWORD lastTextUpdateTime = 0;
+  bool isHDR = false;
 
-  // Cached values (updated every TEXT_UPDATE_INTERVAL_MS)
+  // Cached values (updated every textUpdateInterval)
   float cachedFPS = 0.0f;
+  float cachedAvgFPS = 0.0f;
+  float cached1PercentLow = 0.0f;
+  float cached01PercentLow = 0.0f;
   int cachedRecordingSeconds = 0;
   bool cachedIsRecording = false;
   
@@ -69,6 +75,8 @@ private:
   uint32_t localDroppedFrames = 0;      // Set by capture hooks via SetDroppedFrames()
   uint32_t cachedTotalDroppedFrames = 0; // Combined total from all sources
   
+  SystemMetrics cachedMetrics; 
+
   ImFont* mainFont = nullptr;
 };
 

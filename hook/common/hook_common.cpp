@@ -11,8 +11,15 @@ std::atomic<bool> g_ShuttingDown{false};
 
 // Early debug log - writes directly to file without IPC dependency
 // Used for debugging crashes before IPC connects
+// Only logs if debug_logging is enabled in local config
 void EarlyLog(const char *fmt, ...) {
-  char buffer[256];
+  // Check if debug logging is enabled (default: disabled)
+  // Use local config since IPC may not be available yet
+  if (!g_LocalConfig.debugLogging) {
+    return;
+  }
+  
+  char buffer[512];
   va_list args;
   va_start(args, fmt);
   vsnprintf(buffer, sizeof(buffer), fmt, args);
@@ -219,6 +226,7 @@ const GraphicsConfig& GetActiveGraphicsConfig() {
         mergedConfig.cpuPrerenderLimit = shmGfx.prerenderLimit;
         mergedConfig.backbufferCount = shmGfx.backbufferCount;
         mergedConfig.sgssaa = shmGfx.sgssaa;
+        mergedConfig.disableAutoMipBias = shmGfx.disableAutoMipBias;
     } else {
         // No IPC, stick to defaults
         mergedConfig = GraphicsConfig(); 
@@ -233,6 +241,12 @@ const GraphicsConfig& GetActiveGraphicsConfig() {
     }
     if (g_LocalConfig.graphics.backbufferCount > 0) {
         mergedConfig.backbufferCount = g_LocalConfig.graphics.backbufferCount;
+    }
+    if (g_LocalConfig.graphics.sgssaa) {
+        mergedConfig.sgssaa = g_LocalConfig.graphics.sgssaa;
+    }
+    if (g_LocalConfig.graphics.disableAutoMipBias) {
+        mergedConfig.disableAutoMipBias = g_LocalConfig.graphics.disableAutoMipBias;
     }
     // Add other fields as needed
     

@@ -2068,7 +2068,7 @@ VkResult VKAPI_CALL Detour_vkCreateInstance(
     std::lock_guard<std::recursive_mutex> lock(g_VulkanMutex);
     g_Instance = *pInstance;
     volkLoadInstance(g_Instance);
-    HookLog("Vulkan: Instance Created");
+    EarlyLog("Vulkan: Instance created (handle=%p)", *pInstance);
   }
   return res;
 }
@@ -2845,6 +2845,7 @@ VkResult VKAPI_CALL Detour_vkCreateSwapchainKHR(
     sc.width = pCreateInfo->imageExtent.width;
     sc.height = pCreateInfo->imageExtent.height;
     sc.format = pCreateInfo->imageFormat;
+    EarlyLog("Vulkan: Swapchain created (%ux%u, format=%d)", sc.width, sc.height, sc.format);
 
     uint32_t count;
     if (!o_vkGetSwapchainImagesKHR && o_vkGetDeviceProcAddr) {
@@ -3302,13 +3303,18 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
               g_SharedOverlay.SetIPCClient(g_IPC);
               g_SharedOverlay.SetDroppedFrames(g_VulkanCapture.droppedFrames.load(std::memory_order_relaxed));
               g_SharedOverlay.SetGraphicsAPI("Vulkan");
+              // Detect HDR
+              bool isHDR = (sc.format == VK_FORMAT_R16G16B16A16_SFLOAT || 
+                           sc.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32);
+              g_SharedOverlay.SetHDR(isHDR);
+
               g_SharedOverlay.RenderUI();
     
               g_SharedOverlay.EndFrame();
     
               // Draw into Command Buffer using in-flight frame ring buffer
               // to avoid blocking the game thread
-              static const int MAX_FRAMES_IN_FLIGHT = 3;
+              static const int MAX_FRAMES_IN_FLIGHT = 5; // Use 5 frames for smoother overlay at high GPU load
               static VkFence inFlightFences[MAX_FRAMES_IN_FLIGHT] = {};
               static VkCommandBuffer inFlightCBs[MAX_FRAMES_IN_FLIGHT] = {};
               static int currentFrame = 0;
@@ -3339,19 +3345,16 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
                 fencesCreated = true;
               }
     
-              // Wait for this frame's previous submission to complete (non-blocking
-              // if GPU is fast) This only blocks if GPU is 3+ frames behind, which
-              // would cause stuttering anyway
+              // Wait for this frame's previous submission to complete
+              // Use short timeout (2ms) to prevent overlay flashing at high GPU load
+              // while still not significantly impacting frame pacing
               VkFence fence = inFlightFences[currentFrame];
               VkCommandBuffer cb = inFlightCBs[currentFrame];
     
-              // Non-blocking fence check - skip overlay if previous isn't complete
-              // This trades occasional overlay drops for consistent game frame
-              // pacing
               VkResult fenceResult =
-                  vkWaitForFences(g_Device, 1, &fence, VK_TRUE, 0);
+                  vkWaitForFences(g_Device, 1, &fence, VK_TRUE, 0); // Non-blocking for zero latency
               if (fenceResult == VK_TIMEOUT) {
-                // Previous overlay work not done yet - skip drawing this frame
+                // Previous overlay work not done - skip this frame (rare with 5 in-flight)
                 break;
               }
               vkResetFences(g_Device, 1, &fence);

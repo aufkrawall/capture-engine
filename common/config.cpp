@@ -362,6 +362,7 @@ void LoadConfig(const std::string &path, AppConfig &config, const std::string& o
   config.graphics.cpuPrerenderLimit = GetFloat("Graphics", "cpu_prerender_limit", -1.0f);
   config.graphics.backbufferCount = GetInt("Graphics", "backbuffer_count", 0);
   config.graphics.sgssaa = GetBool("Graphics", "sgssaa", false);
+  config.graphics.disableAutoMipBias = GetBool("Graphics", "disable_auto_mip_bias", false);
 
   // FPS Limiter
   config.fpsLimiter.captureSyncEnabled =
@@ -535,6 +536,17 @@ void LoadConfig(const std::string &path, AppConfig &config, const std::string& o
   config.overlay.loadColorLow = ParseColor(GetStr("Overlay", "load_color_low", ""), 0xFF62972E);  // Greenish
   config.overlay.loadColorMed = ParseColor(GetStr("Overlay", "load_color_med", ""), 0xFF349ED4);  // Amber/Yellow
   config.overlay.loadColorHigh = ParseColor(GetStr("Overlay", "load_color_high", ""), 0xFF333BC2); // Red
+
+  // Update Interval
+  config.overlay.textUpdateInterval = GetInt("Overlay", "text_update_interval", 500);
+
+  // HDR
+  std::string paperWhiteStr = GetStr("Overlay", "hdr_paper_white", "auto");
+  if (paperWhiteStr == "auto") {
+      config.overlay.hdrPaperWhite = 0.0f;
+  } else {
+      config.overlay.hdrPaperWhite = (float)atof(paperWhiteStr.c_str());
+  }
 
   // Video
   config.video.encoder = GetStr("Video", "encoder", "av1_nvenc");

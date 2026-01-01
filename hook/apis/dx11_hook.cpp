@@ -58,7 +58,7 @@ static HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(
     IDXGISwapChain **ppSwapChain, ID3D11Device **ppDevice,
     D3D_FEATURE_LEVEL *pFeatureLevel, ID3D11DeviceContext **ppImmediateContext) {
     
-    HookLog("DX11: D3D11CreateDeviceAndSwapChain called");
+    EarlyLog("DX11: D3D11CreateDeviceAndSwapChain called");
     
     DXGI_SWAP_CHAIN_DESC desc;
     const DXGI_SWAP_CHAIN_DESC *pFinalDesc = pSwapChainDesc;
@@ -427,7 +427,7 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
     g_SharedOverlay.InitImGui(desc.OutputWindow);
     ImGui_ImplDX11_Init(device, context);
     g_ImGuiInitialized = true;
-    HookLog("%s: ImGui initialized", g_DetectedAPI);
+    EarlyLog("%s: ImGui initialized", g_DetectedAPI);
 
     device->Release();
     context->Release();
@@ -436,7 +436,13 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
   ImGui_ImplDX11_NewFrame();
   g_SharedOverlay.BeginFrame();
 
-  // Use shared overlay with dynamically detected API
+  // Determine if HDR is active
+  DXGI_SWAP_CHAIN_DESC desc;
+  pSwapChain->GetDesc(&desc);
+  bool isHDR = (desc.BufferDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT || 
+               desc.BufferDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM);
+  g_SharedOverlay.SetHDR(isHDR);
+
   g_SharedOverlay.SetMetrics(&g_PerfMetrics);
   g_SharedOverlay.SetIPCClient(g_IPC);
   g_SharedOverlay.SetDroppedFrames(g_DX11Capture.droppedFrames.load(std::memory_order_relaxed));
@@ -874,7 +880,7 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device *pDevice,
         }
 
         // SGSSAA Auto-Bias
-        if (gfx.sgssaa) {
+        if (gfx.sgssaa && !gfx.disableAutoMipBias) {
             float sgBias = 0.0f;
             if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgBias)) {
                 desc.MipLODBias += sgBias;

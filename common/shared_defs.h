@@ -105,6 +105,12 @@ struct OverlayConfig {
   uint32_t loadColorLow;     // < 50%
   uint32_t loadColorMed;     // 50-85%
   uint32_t loadColorHigh;    // > 85%
+
+  // Update Intervals
+  uint32_t textUpdateInterval; // ms (default 500)
+
+  // HDR
+  float hdrPaperWhite;         // 0.0 = auto, otherwise manual nits
 };
 
 struct SharedGraphicsConfig {
@@ -116,6 +122,7 @@ struct SharedGraphicsConfig {
   float prerenderLimit;          // -1=default, 0=serial, 0.5=hybrid, >=1 buffered
   int32_t backbufferCount;       // 0=default, 2-6 actual count
   bool sgssaa;                   // Enable Sparse Grid Supersampling
+  bool disableAutoMipBias;       // If true, don't adjust mip bias for SGSSAA
 };
 
 struct alignas(8) CaptureState {

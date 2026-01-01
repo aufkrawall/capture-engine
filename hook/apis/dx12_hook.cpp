@@ -154,6 +154,7 @@ struct DX12OverlayState {
   UINT cachedHeight = 0;
   bool imGuiInit = false;
   int imGuiInitFrameCounter = 0;
+  DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 
   // Overlay Command/Sync Resources
   ID3D12CommandQueue *overlayQueue = nullptr;
@@ -193,6 +194,7 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd,
                                                              LPARAM lParam);
 void InitImGui(ID3D12Device *device, int buffers, DXGI_FORMAT format,
                HWND hwnd) {
+  g_State.format = format;
   g_SharedOverlay.InitImGui(hwnd);
   
   D3D12_DESCRIPTOR_HEAP_DESC desc = {};
@@ -211,7 +213,7 @@ void InitImGui(ID3D12Device *device, int buffers, DXGI_FORMAT format,
   }
   
   g_State.imGuiInit = true;
-  HookLog("ImGui Initialized with Command Queue: %p", g_CommandQueue);
+  EarlyLog("DX12: ImGui initialized (Queue=%p)", g_CommandQueue);
 }
 
 void DrawOverlay(ID3D12GraphicsCommandList *cmdList) {
@@ -226,8 +228,12 @@ void DrawOverlay(ID3D12GraphicsCommandList *cmdList) {
   g_SharedOverlay.SetIPCClient(g_IPC);
   g_SharedOverlay.SetDroppedFrames(g_DX12Capture.droppedFrames.load(std::memory_order_relaxed));
   g_SharedOverlay.SetGraphicsAPI("DX12");
-  g_SharedOverlay.RenderUI();
+  // Detect HDR
+  bool isHDR = (g_State.format == DXGI_FORMAT_R16G16B16A16_FLOAT || 
+               g_State.format == DXGI_FORMAT_R10G10B10A2_UNORM);
+  g_SharedOverlay.SetHDR(isHDR);
 
+  g_SharedOverlay.RenderUI();
   g_SharedOverlay.EndFrame();
   
   cmdList->SetDescriptorHeaps(1, &g_State.srvDescHeap);
@@ -1192,9 +1198,10 @@ static void ModifyStaticSampler(D3D12_STATIC_SAMPLER_DESC& sampler) {
                     case D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT:
                         newFilter = D3D12_FILTER_ANISOTROPIC;
                         break;
-                    case D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR:
                     case D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT:
                         newFilter = D3D12_FILTER_COMPARISON_ANISOTROPIC;
+                        break;
+                    default:
                         break;
                 }
                 sampler.Filter = newFilter;
@@ -1487,8 +1494,7 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory *pThis,
       // Debug: Check Present Address
       if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
            void **vtbl = *reinterpret_cast<void ***>(*ppSwapChain);
-           HookLog("DX12: Game SwapChain Present Address: %p", vtbl[8]);
-           HookLog("DX12: Game SwapChain ResizeBuffers Address: %p", vtbl[13]);
+           EarlyLog("DX12: SwapChain created (Present=%p, ResizeBuffers=%p)", vtbl[8], vtbl[13]);
       }
   }
 

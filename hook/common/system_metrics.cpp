@@ -128,6 +128,7 @@ void SystemMetricsCollector::UpdateGPU() {
     
     // Update GPU usage via PDH - wildcard counters need array retrieval
     static int logCount = 0;
+    static float smoothedGpuUsage = 0.0f; // Smoothed value for stable display
     if (gpuPdhInitialized && gpuQuery && gpuCounter) {
         PDH_STATUS collectStatus = PdhCollectQueryData((PDH_HQUERY)gpuQuery);
         if (collectStatus == ERROR_SUCCESS) {
@@ -141,19 +142,42 @@ void SystemMetricsCollector::UpdateGPU() {
                 if (items) {
                     arrayStatus = PdhGetFormattedCounterArrayA((PDH_HCOUNTER)gpuCounter, PDH_FMT_DOUBLE, &bufSize, &itemCount, items);
                     if (arrayStatus == ERROR_SUCCESS && itemCount > 0) {
-                        // Find max utilization across all engines (Task Manager shows max, not sum)
-                        double maxUtil = 0.0;
+                        // Sum all engine utilizations for the active adapter
+                        // Instance names look like: pid_11308_luid_0x00000000_0x0000C5C8_phys_0_eng_0_engtype_3D
+                        // PDH uses 0x prefix for hex values in instance names
+                        char luidPart[64];
+                        snprintf(luidPart, sizeof(luidPart), "luid_0x%08X_0x%08X", (unsigned int)adapterLuid.HighPart, (unsigned int)adapterLuid.LowPart);
+
+                        double totalUtil = 0.0;
+                        int matchedEngines = 0;
                         for (DWORD i = 0; i < itemCount; i++) {
-                            if (items[i].FmtValue.doubleValue > maxUtil) {
-                                maxUtil = items[i].FmtValue.doubleValue;
+                            const char* instance = items[i].szName;
+                            
+                            // Log first few instances to see the format
+                            if (logCount < 1 && i < 5) {
+                                EarlyLog("GPU PDH Instance[%lu]: %s", i, instance ? instance : "NULL");
+                            }
+
+                            // Filter by LUID to avoid summing across multiple GPUs
+                            if (instance && (strstr(instance, luidPart) || strstr(instance, "luid_") == nullptr)) {
+                                totalUtil += items[i].FmtValue.doubleValue;
+                                matchedEngines++;
                             }
                         }
-                        current.gpuUsage = (float)maxUtil;
+                        
+                        // Cap at 100% (GPU can't be more than 100% utilized)
+                        if (totalUtil > 100.0) totalUtil = 100.0;
+                        
+                        // Apply exponential smoothing (Stronger weight for stability if fluctuating)
+                        const float smoothingWeight = 0.2f; // 20% new, 80% old
+                        smoothedGpuUsage = smoothedGpuUsage * (1.0f - smoothingWeight) + (float)totalUtil * smoothingWeight;
+                        current.gpuUsage = smoothedGpuUsage;
                         current.gpuUsageValid = true;
                         
-                        // Log first few values for debugging
-                        if (logCount < 3) {
-                            EarlyLog("GPU PDH: itemCount=%lu, maxUtil=%.1f%%", itemCount, maxUtil);
+                        // Log for debugging
+                        if (logCount < 5) {
+                            EarlyLog("GPU PDH: items=%lu, matches=%d, total=%.1f%%, smoothed=%.1f%%, LUID=%s", 
+                                     itemCount, matchedEngines, totalUtil, smoothedGpuUsage, luidPart);
                             logCount++;
                         }
                     } else if (logCount < 3) {
@@ -167,9 +191,11 @@ void SystemMetricsCollector::UpdateGPU() {
                 PDH_FMT_COUNTERVALUE displayValue;
                 PDH_STATUS singleStatus = PdhGetFormattedCounterValue((PDH_HCOUNTER)gpuCounter, PDH_FMT_DOUBLE, NULL, &displayValue);
                 if (singleStatus == ERROR_SUCCESS) {
-                    current.gpuUsage = (float)displayValue.doubleValue;
+                    const float smoothingWeight = 0.3f;
+                    smoothedGpuUsage = smoothedGpuUsage * (1.0f - smoothingWeight) + (float)displayValue.doubleValue * smoothingWeight;
+                    current.gpuUsage = smoothedGpuUsage;
                     current.gpuUsageValid = true;
-                    EarlyLog("GPU PDH: Single value=%.1f%%", displayValue.doubleValue);
+                    EarlyLog("GPU PDH: Single value=%.1f%%, smoothed=%.1f%%", displayValue.doubleValue, smoothedGpuUsage);
                 } else {
                     EarlyLog("GPU PDH: Both array(0x%08X) and single(0x%08X) failed", arrayStatus, singleStatus);
                 }

@@ -94,6 +94,7 @@ struct GraphicsConfig {
   float cpuPrerenderLimit = -1.0f;  // -1 = default, 0, 0.5, 1-6
   int backbufferCount = 0;          // 0 = default, 2-6
   bool sgssaa = false;              // Enable Sparse Grid Supersampling
+  bool disableAutoMipBias = false;  // Disable auto mip bias for SGSSAA
 };
 
 struct AppConfig {

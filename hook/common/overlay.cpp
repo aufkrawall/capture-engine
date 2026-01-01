@@ -112,10 +112,16 @@ void Overlay::RenderUI() {
 
     // Update Throttling
     DWORD now = GetTickCount();
-    bool shouldUpdateText = (now - lastTextUpdateTime) >= TEXT_UPDATE_INTERVAL_MS;
+    // Use configurable interval from shared memory
+    bool shouldUpdateText = (now - lastTextUpdateTime) >= cfg.textUpdateInterval;
     if (shouldUpdateText) {
         lastTextUpdateTime = now;
-        if (metrics) cachedFPS = metrics->GetCurrentFPS();
+        if (metrics) {
+            cachedFPS = metrics->GetCurrentFPS();
+            cachedAvgFPS = metrics->GetAverageFPS();
+            cached1PercentLow = metrics->Get1PercentLowFPS();
+            cached01PercentLow = metrics->Get01PercentLowFPS();
+        }
         
         // Update Recording Timer
         if (ipc->IsRecording()) {
@@ -130,9 +136,10 @@ void Overlay::RenderUI() {
             cachedIsRecording = false;
         }
 
-        // Trigger System Metrics Update
+        // Trigger System Metrics Update and Cache
         if (cfg.showCPU || cfg.showRAM || cfg.showGPU || cfg.showVRAM) {
              SystemMetricsCollector::Get().Update();
+             cachedMetrics = SystemMetricsCollector::Get().GetMetrics();
         }
     }
     // Setup Styling
@@ -151,6 +158,7 @@ void Overlay::RenderUI() {
         
         uint32_t color = ipc->GetSharedMem()->overlayConfig.textColor;
         if (color != 0) textColor = color;
+        
     }
     
     float padding = (float)cfg.padding;
@@ -200,6 +208,23 @@ void Overlay::RenderUI() {
     if (ImGui::Begin("Overlay", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav)) {
         
         // Use a table for layout: Label | Value
+        float hdrScale = 1.0f;
+        if (isHDR && ipc && ipc->GetSharedMem()) {
+            float paperWhite = ipc->GetSharedMem()->overlayConfig.hdrPaperWhite;
+            if (paperWhite > 10.0f) {
+                hdrScale = paperWhite / 80.0f;
+            }
+        }
+
+        auto ScaleColor = [&](ImU32 col, float scale) -> ImU32 {
+            if (scale <= 1.0f) return col;
+            // Scale R, G, B components but keep Alpha
+            ImVec4 c = ImGui::ColorConvertU32ToFloat4(col);
+            c.x *= scale;
+            c.y *= scale;
+            c.z *= scale;
+            return ImGui::ColorConvertFloat4ToU32(c);
+        };
         
         bool beginTable = ImGui::BeginTable("HudTable", 2, ImGuiTableFlags_SizingFixedFit);
         if (beginTable) {
@@ -207,37 +232,36 @@ void Overlay::RenderUI() {
             auto RenderRow = [&](const char* label, const char* value, ImU32 labelColor, ImU32 valColor) {
                ImGui::TableNextRow();
                ImGui::TableSetColumnIndex(0);
-               RenderTextWithOutline(label, labelColor, cfg.textOutline, cfg.textOutlineColor, cfg.textOutlineThickness);
+               RenderTextWithOutline(label, ScaleColor(labelColor, hdrScale), cfg.textOutline, cfg.textOutlineColor, cfg.textOutlineThickness);
                ImGui::TableSetColumnIndex(1);
-               RenderTextWithOutline(value, valColor, cfg.textOutline, cfg.textOutlineColor, cfg.textOutlineThickness);
+               RenderTextWithOutline(value, ScaleColor(valColor, hdrScale), cfg.textOutline, cfg.textOutlineColor, cfg.textOutlineThickness);
             };
 
-            SystemMetrics sys = SystemMetricsCollector::Get().GetMetrics();
             char buf[64];
 
             // GPU
             if (cfg.showGPU) {
-                snprintf(buf, 64, "%.0f%%", sys.gpuUsage); // 0% if invalid for now
-                ImU32 valCol = GetLoadColor(sys.gpuUsage, cfg);
+                snprintf(buf, 64, "%.0f%%", cachedMetrics.gpuUsage);
+                ImU32 valCol = GetLoadColor(cachedMetrics.gpuUsage, cfg);
                 RenderRow("GPU", buf, cfg.gpuColor, valCol);
             }
             
             // CPU
             if (cfg.showCPU) {
-                snprintf(buf, 64, "%.0f%%", sys.cpuUsage);
-                ImU32 valCol = GetLoadColor(sys.cpuUsage, cfg);
+                snprintf(buf, 64, "%.0f%%", cachedMetrics.cpuUsage);
+                ImU32 valCol = GetLoadColor(cachedMetrics.cpuUsage, cfg);
                 RenderRow("CPU", buf, cfg.cpuColor, valCol);
             }
             
             // VRAM
             if (cfg.showVRAM) {
-                FormatBytes(buf, 64, sys.vramUsed);
+                FormatBytes(buf, 64, cachedMetrics.vramUsed);
                 RenderRow("VRAM", buf, cfg.vramColor, cfg.textColor);
             }
-
+            
             // RAM
             if (cfg.showRAM) {
-                FormatBytes(buf, 64, sys.ramUsed);
+                FormatBytes(buf, 64, cachedMetrics.ramUsed);
                 RenderRow("RAM", buf, cfg.ramColor, cfg.textColor);
             }
 
@@ -248,16 +272,10 @@ void Overlay::RenderUI() {
                 ImU32 fpsCol = cfg.fpsColor;
                 RenderRow(graphicsAPI[0] ? graphicsAPI : "FPS", buf, cfg.textColor, fpsCol);
                 
-                // FPS Statistics in one line: Avg / 1% Low / 0.1% Low
-                if (metrics) {
-                    float avgFps = metrics->GetAverageFPS();
-                    float low1 = metrics->Get1PercentLowFPS();
-                    float low01 = metrics->Get01PercentLowFPS();
-                    
-                    if (avgFps > 0.0f && low1 > 0.0f && low01 > 0.0f) {
-                        snprintf(buf, 64, "%.0f / %.0f / %.0f FPS", avgFps, low1, low01);
-                        RenderRow("Avg/1%/0.1%", buf, cfg.textColor, cfg.fpsColor);
-                    }
+                // FPS Statistics in one line: Avg / 1% Low / 0.1% Low (using cached values)
+                if (cachedAvgFPS > 0.0f && cached1PercentLow > 0.0f && cached01PercentLow > 0.0f) {
+                    snprintf(buf, 64, "%.0f / %.0f / %.0f FPS", cachedAvgFPS, cached1PercentLow, cached01PercentLow);
+                    RenderRow("Avg/1%/0.1%", buf, cfg.textColor, cfg.fpsColor);
                 }
             }
             
