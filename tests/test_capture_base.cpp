@@ -37,7 +37,6 @@ TEST(CaptureBaseTest, InitialState) {
 
   for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
     EXPECT_EQ(capture.sharedTextureHandles[i], nullptr);
-    EXPECT_EQ(capture.textureFenceValues[i], 0);
   }
 }
 

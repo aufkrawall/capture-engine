@@ -51,6 +51,7 @@ static void UpdateSharedMemoryFromConfig(SharedMemoryLayout* pSharedMem, const A
     pSharedMem->graphicsConfig.prerenderLimit = config.graphics.cpuPrerenderLimit;
     pSharedMem->graphicsConfig.backbufferCount = config.graphics.backbufferCount;
     pSharedMem->graphicsConfig.sgssaa = config.graphics.sgssaa;
+    pSharedMem->configVersion.fetch_add(1, std::memory_order_release);
 
     // Overlay
     pSharedMem->overlayConfig = config.overlay;
@@ -139,6 +140,29 @@ int InjectProcessMain(const AppConfig &config) {
 
   pSharedMem->fenceWaitMode = config.fenceWaitMode;
   pSharedMem->useGameQueue = config.useGameQueue;
+
+  // Create separate Shmem mapping for large buffer
+  wchar_t shmemName[64];
+  GenerateShmemName(shmemName, 64, GetCurrentProcessId());
+  
+  HANDLE hMapShmem = CreateFileMappingW(
+      INVALID_HANDLE_VALUE,
+      NULL,
+      PAGE_READWRITE,
+      0,
+      sizeof(ShmemBuffer),
+      shmemName);
+      
+  ShmemBuffer* pShmem = nullptr;
+  if (hMapShmem) {
+      pShmem = (ShmemBuffer*)MapViewOfFile(hMapShmem, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(ShmemBuffer));
+      if (pShmem) {
+          ZeroMemory(pShmem, sizeof(ShmemBuffer));
+          pSharedMem->shmemMappingCreated = true;
+          pSharedMem->shmemMappingSize = sizeof(ShmemBuffer);
+          LogInfo("[Inject] Created separate Shmem mapping: %ls", shmemName);
+      }
+  }
 
   // Copy FPS limiter settings
   pSharedMem->fpsLimiter.captureSyncEnabled =
@@ -335,6 +359,9 @@ int InjectProcessMain(const AppConfig &config) {
 
   // Cleanup shared memory and handles
   LogInfo("[Inject] Cleaning up...");
+  if (pShmem) UnmapViewOfFile(pShmem);
+  if (hMapShmem) CloseHandle(hMapShmem);
+
   UnmapViewOfFile(pSharedMem);
   CloseHandle(hMapFile);
   

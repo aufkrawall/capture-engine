@@ -11,6 +11,7 @@ public:
   void Disconnect();
 
   SharedMemoryLayout *GetSharedMem() { return pSharedMem; }
+  ShmemBuffer *GetShmem(); // Returns current mapping or attempts to connect if metadata exists
 
   // Check if host requested capture
   bool IsRecording() const {
@@ -20,4 +21,7 @@ public:
 private:
   HANDLE hMapFile;
   SharedMemoryLayout *pSharedMem;
+  
+  HANDLE hMapShmem;
+  ShmemBuffer *pShmem;
 };

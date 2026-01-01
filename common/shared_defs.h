@@ -124,6 +124,25 @@ struct FrameRingBuffer {
   std::atomic<uint32_t> droppedFrames{0}; // Frames dropped due to buffer full
 };
 
+// D3D9 Shmem Fallback Buffer
+// Used when shared handles are not available (e.g. legacy D3D9 on Win11)
+// Moving to separate shared memory to reduce 32-bit address space consumption
+struct ShmemBuffer {
+    static const int MAX_WIDTH = 3840;
+    static const int MAX_HEIGHT = 2160;
+    static const int SLOT_COUNT = 2;
+    
+    // Raw pixel data (RGBA)
+    // 33MB per slot for 4K. 2 slots = 66MB.
+    uint8_t data[SLOT_COUNT][MAX_WIDTH * MAX_HEIGHT * 4];
+    
+    std::atomic<int> writeSlot{0};
+    std::atomic<bool> slotReady[SLOT_COUNT]{false, false};
+    uint32_t validWidth{0};
+    uint32_t validHeight{0};
+    uint32_t pitch{0};
+};
+
 // Main Shared Memory Structure
 struct SharedMemoryLayout {
   // Host -> Hook
@@ -222,24 +241,15 @@ struct SharedMemoryLayout {
     std::atomic<uint32_t> overflowCount{0}; // Tracks lost log entries
   } logs;
 
-  // D3D9 Shmem Fallback Buffer
-  // Used when shared handles are not available (e.g. legacy D3D9 on Win11)
-  // TODO: Move to separate shared memory to reduce 32-bit address space consumption
-  // Limited to 2 slots to save address space in 32-bit processes (33MB * 2 = 66MB for 4K)
-  struct ShmemBuffer {
-      static const int MAX_WIDTH = 3840;
-      static const int MAX_HEIGHT = 2160;
-      static const int SLOT_COUNT = 2;
-      
-      // Raw pixel data (RGBA)
-      // Optimally we'd use a separate mapping, but keeping it here for simplicity
-      // 33MB per slot for 4K. 
-      uint8_t data[SLOT_COUNT][MAX_WIDTH * MAX_HEIGHT * 4];
-      
-      std::atomic<int> writeSlot{0};
-      std::atomic<bool> slotReady[SLOT_COUNT]{false, false};
-      uint32_t validWidth{0};
-      uint32_t validHeight{0};
-      uint32_t pitch{0};
-  } shmem;
+  // Shmem Fallback Metadata
+  bool shmemMappingCreated; // True if separate shmem mapping exists
+  uint32_t shmemMappingSize; // Size of the separate mapping
+  
+  // Cache Invalidation
+  std::atomic<uint32_t> configVersion{0}; // Incremented when config changes
 };
+
+// Generate unique Shmem mapping name
+inline void GenerateShmemName(wchar_t* outName, size_t maxLen, uint32_t pid) {
+  swprintf(outName, maxLen, L"Local\\CE_SHM_%08X", pid);
+}

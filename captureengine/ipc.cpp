@@ -1,9 +1,14 @@
 #include "ipc.h"
 
 IPCManager::IPCManager(const AppConfig &config)
-    : config(config), hMapFile(NULL), pSharedMem(NULL) {}
+    : config(config), hMapFile(NULL), pSharedMem(NULL), hMapShmem(NULL), pShmem(NULL) {}
 
 IPCManager::~IPCManager() {
+  if (pShmem)
+    UnmapViewOfFile(pShmem);
+  if (hMapShmem)
+    CloseHandle(hMapShmem);
+    
   if (pSharedMem)
     UnmapViewOfFile(pSharedMem);
   if (hMapFile)
@@ -37,9 +42,30 @@ bool IPCManager::Init() {
     return false;
   }
 
-  // Initialize memory
+  // Initialize main memory
   ZeroMemory(pSharedMem, sizeof(SharedMemoryLayout));
   pSharedMem->hostPID = GetCurrentProcessId();
+
+  // Create separate Shmem mapping for large buffer
+  wchar_t shmemName[64];
+  GenerateShmemName(shmemName, 64, GetCurrentProcessId());
+  
+  hMapShmem = CreateFileMappingW(
+      INVALID_HANDLE_VALUE,
+      NULL,
+      PAGE_READWRITE,
+      0,
+      sizeof(ShmemBuffer),
+      shmemName);
+      
+  if (hMapShmem) {
+      pShmem = (ShmemBuffer*)MapViewOfFile(hMapShmem, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(ShmemBuffer));
+      if (pShmem) {
+          ZeroMemory(pShmem, sizeof(ShmemBuffer));
+          pSharedMem->shmemMappingCreated = true;
+          pSharedMem->shmemMappingSize = sizeof(ShmemBuffer);
+      }
+  }
 
   // Set initial config
   UpdateConfig(config);
@@ -174,6 +200,8 @@ void IPCManager::UpdateReadIndex(uint32_t readIndex) {
 uint32_t IPCManager::GetReadIndex() const { return localReadIndex; }
 
 SharedMemoryLayout *IPCManager::GetSharedMem() const { return pSharedMem; }
+
+ShmemBuffer *IPCManager::GetShmem() const { return pShmem; }
 
 void IPCManager::PollLogs() {
   if (!pSharedMem)

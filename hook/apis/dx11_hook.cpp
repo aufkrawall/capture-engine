@@ -154,13 +154,12 @@ public:
   
   // sharedTextureHandles are in base class
 
-  void CleanupDX11() {
+  void Cleanup() override {
+    StopCaptureThread();
     // Close shared handles first to prevent leaks
+    CleanupSharedHandles();
+    
     for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
-        if (sharedTextureHandles[i]) {
-            CloseHandle(sharedTextureHandles[i]);
-            sharedTextureHandles[i] = NULL;
-        }
         if (sharedTextures[i])
             sharedTextures[i]->Release();
         sharedTextures[i] = nullptr;
@@ -168,15 +167,9 @@ public:
             copyQueries[i]->Release();
         copyQueries[i] = nullptr;
     }
-    
-    if (fence) fence->Release();
-    fence = nullptr;
-    if (context4) context4->Release();
-    context4 = nullptr;
-    if (sharedFenceHandle) {
-        CloseHandle(sharedFenceHandle);
-        sharedFenceHandle = NULL;
-    }
+
+    if (fence) { fence->Release(); fence = nullptr; }
+    if (context4) { context4->Release(); context4 = nullptr; }
     
     // Release owned D3D11 device (used for DX10 mode)
     if (ownedContext) ownedContext->Release();
@@ -192,7 +185,6 @@ public:
     fenceValue = 0;  // Reset fence value for next session
   }
 
-  void Cleanup() override { CleanupDX11(); }
 
   void CreateSharedResources(uint32_t w, uint32_t h, uint32_t fmt) override {
     // This virtual method is called by CheckCaptureInit or manually
@@ -432,9 +424,7 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
     pSwapChain->GetDesc(&desc);
     g_CachedHwnd = desc.OutputWindow;
 
-    ImGui::CreateContext();
-    ImGui::GetIO().IniFilename = nullptr;  // Don't create imgui.ini in game folder
-    ImGui_ImplWin32_Init(desc.OutputWindow);
+    g_SharedOverlay.InitImGui(desc.OutputWindow);
     ImGui_ImplDX11_Init(device, context);
     g_ImGuiInitialized = true;
     HookLog("%s: ImGui initialized", g_DetectedAPI);
@@ -444,18 +434,16 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
   }
 
   ImGui_ImplDX11_NewFrame();
-  ImGui_ImplWin32_NewFrame();
-  ImGui::NewFrame();
+  g_SharedOverlay.BeginFrame();
 
   // Use shared overlay with dynamically detected API
   g_SharedOverlay.SetMetrics(&g_PerfMetrics);
   g_SharedOverlay.SetIPCClient(g_IPC);
-  g_SharedOverlay.SetHwnd(g_CachedHwnd);
   g_SharedOverlay.SetDroppedFrames(g_DX11Capture.droppedFrames.load(std::memory_order_relaxed));
   g_SharedOverlay.SetGraphicsAPI(g_DetectedAPI);
   g_SharedOverlay.RenderUI();
 
-  ImGui::Render();
+  g_SharedOverlay.EndFrame();
 
   // Set RTV
   ID3D11DeviceContext *context = NULL;
@@ -533,14 +521,9 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
   SharedMemoryLayout* csvShm = (ipc) ? ipc->GetSharedMem() : nullptr;
 
   // Apply VSync Override
-  const GraphicsConfig& gfx = GetActiveGraphicsConfig();
-  std::string mode = gfx.vsyncMode;
-  if (mode != "default") {
-      if (mode == "off") SyncInterval = 0;
-      else if (mode == "fifo") SyncInterval = 1;
-      else if (mode == "adaptive") SyncInterval = 0; // DX11 adaptive approximation
-      // mailbox is handled by swap effect, effectively SyncInterval 0 for flip models
-      else if (mode == "mailbox") SyncInterval = 0;
+  VSyncOverride vsync = GetVSyncOverride();
+  if (vsync.shouldOverride) {
+      SyncInterval = (UINT)vsync.presentInterval;
   }
 
   // Apply Prerender Limit (Hybrid Pacing)
@@ -716,12 +699,9 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain *pSwapChain,
   if (g_ShuttingDown) return oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
   
   // Apply VSync Override
-  std::string mode = GetActiveGraphicsConfig().vsyncMode;
-  if (mode != "default") {
-      if (mode == "off") SyncInterval = 0;
-      else if (mode == "fifo") SyncInterval = 1;
-      else if (mode == "adaptive") SyncInterval = 0;
-      else if (mode == "mailbox") SyncInterval = 0;
+  VSyncOverride vsync = GetVSyncOverride();
+  if (vsync.shouldOverride) {
+      SyncInterval = (UINT)vsync.presentInterval;
   }
   
   // Reuse the same logic as Present, just call Present1 at the end

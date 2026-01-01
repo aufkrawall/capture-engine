@@ -1340,7 +1340,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
   ID3D11Fence *d3d11Fence = nullptr;
 
   if (isShmem) {
-    if (pSharedMem && pSharedMem->shmem.validWidth > 0) {
+    if (pShmem && pSharedMem && pSharedMem->shmemMappingCreated) {
       // Shmem Path: Upload pixels to our owned texture
       int texIdx = 0; // Reuse first shared capture texture (we own it)
       bgraTex = sharedCaptureTextures[texIdx];
@@ -1348,15 +1348,17 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
       if (bgraTex) {
         // Validation of slot
         int slot = (shmemSlot >= 0 && shmemSlot < 2) ? shmemSlot : 0;
-        uint8_t* pSrc = pSharedMem->shmem.data[slot];
+        uint8_t* pSrc = pShmem->data[slot];
         
         if (pSrc) {
            D3D11_BOX box;
-           box.left = 0; box.right = pSharedMem->shmem.validWidth;
-           box.top = 0; box.bottom = pSharedMem->shmem.validHeight;
+           box.left = 0; box.right = pSharedMem->width; // Use current frame resolution
+           box.top = 0; box.bottom = pSharedMem->height;
            box.front = 0; box.back = 1;
            
-           d3d11Context->UpdateSubresource(bgraTex, 0, &box, pSrc, pSharedMem->shmem.pitch, 0);
+           // We need a pitch. Use pSharedMem->width * 4 if not stored in ShmemBuffer
+           // Actually ShmemBuffer has pitch.
+           d3d11Context->UpdateSubresource(bgraTex, 0, &box, pSrc, pShmem->pitch, 0);
         }
         bgraTex->AddRef(); // For consistency with Release() below
         d3d11Fence = nullptr; // No fence for shmem

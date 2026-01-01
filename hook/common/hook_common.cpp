@@ -149,11 +149,22 @@ const GraphicsConfig& GetActiveGraphicsConfig() {
     
     // We should probably merge them into a static instance?
     static GraphicsConfig mergedConfig;
+    static uint32_t lastVersion = 0xFFFFFFFF;
     static uint32_t lastUpdateTick = 0;
     
-    // Only merge occasionally or if needed. For now, simple logic:
-    // This function signature returns a reference, implying a persistent object.
+    uint32_t currentVersion = 0;
+    if (g_IPC && g_IPC->GetSharedMem()) {
+        currentVersion = g_IPC->GetSharedMem()->configVersion.load(std::memory_order_acquire);
+    }
     
+    DWORD now = GetTickCount();
+    if (currentVersion == lastVersion && (now - lastUpdateTick < 1000)) {
+        return mergedConfig;
+    }
+    
+    lastVersion = currentVersion;
+    lastUpdateTick = now;
+
     if (g_IPC && g_IPC->GetSharedMem()) {
         const auto& shmGfx = g_IPC->GetSharedMem()->graphicsConfig;
         mergedConfig.vsyncMode = shmGfx.vsyncMode;

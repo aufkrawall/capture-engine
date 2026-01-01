@@ -1,6 +1,6 @@
 #include "ipc_client.h"
 
-IPCClient::IPCClient() : hMapFile(NULL), pSharedMem(nullptr) {}
+IPCClient::IPCClient() : hMapFile(NULL), pSharedMem(nullptr), hMapShmem(NULL), pShmem(nullptr) {}
 
 IPCClient::~IPCClient() { Disconnect(); }
 
@@ -65,7 +65,36 @@ bool IPCClient::Connect() {
   return false;
 }
 
+ShmemBuffer* IPCClient::GetShmem() {
+    if (pShmem) return pShmem;
+    if (!pSharedMem || !pSharedMem->shmemMappingCreated) return nullptr;
+    
+    // Connect to separate shmem mapping
+    wchar_t shmemName[64];
+    GenerateShmemName(shmemName, 64, pSharedMem->hostPID);
+    
+    hMapShmem = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, shmemName);
+    if (hMapShmem) {
+        pShmem = (ShmemBuffer*)MapViewOfFile(hMapShmem, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(ShmemBuffer));
+        if (pShmem) {
+            EarlyLog("IPC: Connected to Shmem buffer '%ls'", shmemName);
+            return pShmem;
+        }
+        CloseHandle(hMapShmem);
+        hMapShmem = NULL;
+    }
+    return nullptr;
+}
+
 void IPCClient::Disconnect() {
+  if (pShmem) {
+    UnmapViewOfFile(pShmem);
+    pShmem = nullptr;
+  }
+  if (hMapShmem) {
+    CloseHandle(hMapShmem);
+    hMapShmem = NULL;
+  }
   if (pSharedMem) {
     UnmapViewOfFile(pSharedMem);
     pSharedMem = nullptr;

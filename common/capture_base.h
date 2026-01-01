@@ -41,7 +41,6 @@ public:
   // Ring buffer state
   int writeIndex = 0;
   uint64_t fenceValue = 0;
-  uint64_t textureFenceValues[CAPTURE_TEXTURE_COUNT] = {};
 
   // Initialization state
   bool initialized = false;
@@ -102,6 +101,20 @@ public:
       SetEvent(captureEvent);
 
     return true;
+  }
+
+  // Cleanup shared handles to prevent resource leaks
+  void CleanupSharedHandles() {
+    for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
+      if (sharedTextureHandles[i]) {
+        CloseHandle(sharedTextureHandles[i]);
+        sharedTextureHandles[i] = NULL;
+      }
+    }
+    if (sharedFenceHandle) {
+      CloseHandle(sharedFenceHandle);
+      sharedFenceHandle = NULL;
+    }
   }
 
   // Publish shared handles to IPC shared memory

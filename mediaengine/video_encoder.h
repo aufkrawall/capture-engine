@@ -104,6 +104,11 @@ public:
   // Clear audio contexts (needed if AudioEncoder recreates its context)
   void ClearAudioContexts();
 
+  void SetSharedMem(struct SharedMemoryLayout *shm, struct ShmemBuffer *shmBuf = nullptr) {
+      pSharedMem = shm;
+      pShmem = shmBuf;
+  }
+
 private:
   std::function<void(AVPacket *)> onPacket; // Callback member
   AVFormatContext *fmtCtx;
@@ -191,6 +196,7 @@ private:
   
   // Pointer to shared memory layout for SHMEM capture fallback
   struct SharedMemoryLayout *pSharedMem = nullptr;
+  struct ShmemBuffer *pShmem = nullptr;
 
   // Frame counting and logging state (was static, now members for proper reset)
   int encodeFrameCounter = 0;    // Frames encoded in current recording

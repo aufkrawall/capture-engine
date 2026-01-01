@@ -18,6 +18,7 @@ public:
   uint32_t GetReadIndex() const;            // Get current read position
   SharedMemoryLayout *
   GetSharedMem() const; // Get direct pointer (for atomic access)
+  ShmemBuffer *GetShmem() const; // Get direct pointer to fallback buffer
   void PollLogs();
   void
   UpdateThrottleState(uint32_t queueDepth,
@@ -28,6 +29,9 @@ private:
   const AppConfig &config;
   HANDLE hMapFile;
   SharedMemoryLayout *pSharedMem;
+  
+  HANDLE hMapShmem;
+  ShmemBuffer *pShmem;
 
   // For synchronization if we implement sophisticated rings
   uint32_t lastReadLogIndex = 0;

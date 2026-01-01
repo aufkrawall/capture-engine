@@ -538,28 +538,23 @@ static void DrawDDrawOverlay() {
     if (!g_ImGuiInitialized) {
         g_CachedHwnd = g_DDrawCapture.targetHwnd;
         
-        ImGui::CreateContext();
-        ImGui::GetIO().IniFilename = nullptr;
-        ImGui_ImplWin32_Init(g_CachedHwnd);
+        g_SharedOverlay.InitImGui(g_CachedHwnd);
         ImGui_ImplDX9_Init(g_DDrawCapture.d3d9DeviceEx);
         g_ImGuiInitialized = true;
         HookLog("DDraw: ImGui initialized");
     }
     
     ImGui_ImplDX9_NewFrame();
-    ImGui_ImplWin32_NewFrame();
-    ImGui::NewFrame();
+    g_SharedOverlay.BeginFrame();
     
     // Use shared overlay
     g_SharedOverlay.SetMetrics(&g_PerfMetrics);
     g_SharedOverlay.SetIPCClient(g_IPC);
-    g_SharedOverlay.SetHwnd(g_CachedHwnd);
     g_SharedOverlay.SetDroppedFrames(g_DDrawCapture.droppedFrames.load(std::memory_order_relaxed));
     g_SharedOverlay.SetGraphicsAPI("DDraw");
     g_SharedOverlay.RenderUI();
     
-    ImGui::EndFrame();
-    ImGui::Render();
+    g_SharedOverlay.EndFrame();
     
     g_DDrawCapture.d3d9DeviceEx->BeginScene();
     ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());

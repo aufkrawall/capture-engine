@@ -69,6 +69,9 @@ MEDIAENGINE_API int64_t MediaEngine_GetLastFrameFenceWaitUs();
 // Shutdown and cleanup
 MEDIAENGINE_API void MediaEngine_Shutdown();
 
+// Set shared memory pointers for fallback capture paths
+MEDIAENGINE_API void MediaEngine_SetSharedMem(void *pSharedMem, void *pShmem = nullptr);
+
 // Thread synchronization for D3D11 Immediate Context
 // Required because WGC callback and Encoder thread share the same Immediate
 // Context

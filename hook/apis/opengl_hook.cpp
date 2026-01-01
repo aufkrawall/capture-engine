@@ -684,28 +684,23 @@ static void DrawOpenGLOverlay(HDC hdc) {
         HWND hwnd = WindowFromDC(hdc);
         g_CachedHwnd = hwnd;
         
-        ImGui::CreateContext();
-        ImGui::GetIO().IniFilename = nullptr;
-        ImGui_ImplWin32_Init(hwnd);
+        g_SharedOverlay.InitImGui(hwnd);
         ImGui_ImplOpenGL3_Init();
         g_ImGuiInitialized = true;
         HookLog("OpenGL: ImGui initialized");
     }
     
     ImGui_ImplOpenGL3_NewFrame();
-    ImGui_ImplWin32_NewFrame();
-    ImGui::NewFrame();
+    g_SharedOverlay.BeginFrame();
     
     // Use shared overlay
     g_SharedOverlay.SetMetrics(&g_PerfMetrics);
     g_SharedOverlay.SetIPCClient(g_IPC);
-    g_SharedOverlay.SetHwnd(g_CachedHwnd);
     g_SharedOverlay.SetDroppedFrames(g_OpenGLCapture.droppedFrames.load(std::memory_order_relaxed));
     g_SharedOverlay.SetGraphicsAPI("OpenGL");
     g_SharedOverlay.RenderUI();
     
-    ImGui::EndFrame();
-    ImGui::Render();
+    g_SharedOverlay.EndFrame();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }
 
@@ -796,8 +791,7 @@ static BOOL WINAPI DetourWglDeleteContext(HGLRC hglrc) {
     // Cleanup if this was the capture context
     if (g_ImGuiInitialized) {
         ImGui_ImplOpenGL3_Shutdown();
-        ImGui_ImplWin32_Shutdown();
-        ImGui::DestroyContext();
+        g_SharedOverlay.ShutdownImGui();
         g_ImGuiInitialized = false;
     }
     
@@ -1028,8 +1022,7 @@ void OpenGLHook::Shutdown() {
     
     if (g_ImGuiInitialized) {
         ImGui_ImplOpenGL3_Shutdown();
-        ImGui_ImplWin32_Shutdown();
-        ImGui::DestroyContext();
+        g_SharedOverlay.ShutdownImGui();
         g_ImGuiInitialized = false;
     }
     

@@ -72,7 +72,6 @@ static ID3D12Resource *g_DummyBackBuffer = nullptr;
 static std::mutex g_OverlayMutex;
 static bool g_ImGuiInit = false;
 static int g_ImGuiInitFrameCounter = 0;
-static ImGuiContext *g_ImGuiContext = nullptr;
 
 // FG Real Frame Detection
 static std::atomic<int> g_CommandListsExecutedThisFrame{0};
@@ -83,7 +82,8 @@ static std::map<ID3D12Device*, ID3D12CommandQueue*> g_DeviceQueues;
 static std::mutex g_DeviceQueuesMutex;
 
 // --- Capture Resources ---
-struct CaptureContext : public HookCaptureBase {
+class DX12Capture : public HookCaptureBase {
+public:
   ID3D12Resource *sharedTextures[CAPTURE_TEXTURE_COUNT] = {};
   ID3D12Resource *backBufferCache[16] = {nullptr};
   UINT backBufferCount = 0;
@@ -92,7 +92,6 @@ struct CaptureContext : public HookCaptureBase {
   ID3D12Fence *gameSyncFence = nullptr;
   UINT64 gameSyncValue = 0;
   ID3D12CommandAllocator *cmdAlloc[CAPTURE_TEXTURE_COUNT] = {};
-  UINT64 allocFenceValues[CAPTURE_TEXTURE_COUNT] = {};
   ID3D12GraphicsCommandList *cmdList = nullptr;
 
   void CreateSharedResources(uint32_t, uint32_t, uint32_t) override {
@@ -101,17 +100,8 @@ struct CaptureContext : public HookCaptureBase {
   }
 
   void Cleanup() override {
-    // Close shared handles first (HANDLE leaks if not closed)
-    for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
-      if (sharedTextureHandles[i]) {
-        CloseHandle(sharedTextureHandles[i]);
-        sharedTextureHandles[i] = NULL;
-      }
-    }
-    if (sharedFenceHandle) {
-      CloseHandle(sharedFenceHandle);
-      sharedFenceHandle = NULL;
-    }
+    StopCaptureThread();
+    CleanupSharedHandles();
     
     // Release D3D12 resources
     for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
@@ -147,9 +137,9 @@ struct CaptureContext : public HookCaptureBase {
     initialized = false;
   }
 };
-static CaptureContext g_Capture;
-static std::mutex g_CaptureMutex;
-static ID3D12Fence *g_CaptureCompletionFence = nullptr;
+static DX12Capture g_DX12Capture;
+static std::mutex g_DX12CaptureMutex;
+static ID3D12Fence *g_DX12CaptureCompletionFence = nullptr;
 
 // --- ImGui ---
 static ID3D12DescriptorHeap *g_SrvDescHeap = nullptr;
@@ -183,12 +173,11 @@ static OverlayContext g_Overlay;
 void ShutdownImGui() {
   if (!g_ImGuiInit) return;
   HookLog("DX12: Shutting down ImGui...");
-  if (g_ImGuiContext) ImGui::SetCurrentContext(g_ImGuiContext);
   ImGui_ImplDX12_Shutdown();
-  ImGui_ImplWin32_Shutdown();
-  if (g_ImGuiContext) {
-    ImGui::DestroyContext(g_ImGuiContext);
-    g_ImGuiContext = nullptr;
+  g_SharedOverlay.ShutdownImGui();
+  if (g_SrvDescHeap) {
+    g_SrvDescHeap->Release();
+    g_SrvDescHeap = nullptr;
   }
   g_ImGuiInit = false;
 }
@@ -199,18 +188,15 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd,
                                                              LPARAM lParam);
 void InitImGui(ID3D12Device *device, int buffers, DXGI_FORMAT format,
                HWND hwnd) {
-  IMGUI_CHECKVERSION();
-  g_ImGuiContext = ImGui::CreateContext();
-  ImGui::SetCurrentContext(g_ImGuiContext);
-  ImGui::GetIO().IniFilename = nullptr;  // Don't create imgui.ini in game folder
-  ImGui::StyleColorsDark();
+  g_SharedOverlay.InitImGui(hwnd);
+  
   D3D12_DESCRIPTOR_HEAP_DESC desc = {};
   desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
   desc.NumDescriptors = 1;
   desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
   if (FAILED(device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&g_SrvDescHeap))))
     return;
-  ImGui_ImplWin32_Init(hwnd);
+    
   ImGui_ImplDX12_Init(device, buffers, format, g_SrvDescHeap,
                       g_SrvDescHeap->GetCPUDescriptorHandleForHeapStart(),
                       g_SrvDescHeap->GetGPUDescriptorHandleForHeapStart());
@@ -219,7 +205,6 @@ void InitImGui(ID3D12Device *device, int buffers, DXGI_FORMAT format,
     ImGui_ImplDX12_SetCommandQueue(g_CommandQueue);
   }
   
-  ImGui_ImplWin32_EnableDpiAwareness();
   g_ImGuiInit = true;
   HookLog("ImGui Initialized with Command Queue: %p", g_CommandQueue);
 }
@@ -229,28 +214,26 @@ void DrawOverlay(ID3D12GraphicsCommandList *cmdList) {
     return;
 
   ImGui_ImplDX12_NewFrame();
-  ImGui_ImplWin32_NewFrame();
-  ImGui::NewFrame();
+  g_SharedOverlay.BeginFrame();
 
   // Use shared overlay
   g_SharedOverlay.SetMetrics(&g_PerfMetrics);
   g_SharedOverlay.SetIPCClient(g_IPC);
-  g_SharedOverlay.SetHwnd(ImGui::GetMainViewport()->PlatformHandle);
-  g_SharedOverlay.SetDroppedFrames(g_Capture.droppedFrames.load(std::memory_order_relaxed));
+  g_SharedOverlay.SetDroppedFrames(g_DX12Capture.droppedFrames.load(std::memory_order_relaxed));
   g_SharedOverlay.SetGraphicsAPI("DX12");
   g_SharedOverlay.RenderUI();
 
-  ImGui::Render();
+  g_SharedOverlay.EndFrame();
   
   cmdList->SetDescriptorHeaps(1, &g_SrvDescHeap);
   ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), cmdList); 
 }
 
 void CheckCaptureInit(IDXGISwapChain3 *pSwapChain) {
-  if (g_Capture.initialized)
+  if (g_DX12Capture.initialized)
     return;
-  std::lock_guard<std::mutex> lock(g_CaptureMutex);
-  if (g_Capture.initialized)
+  std::lock_guard<std::mutex> lock(g_DX12CaptureMutex);
+  if (g_DX12Capture.initialized)
     return;
 
   if (FAILED(pSwapChain->GetDevice(IID_PPV_ARGS(&g_Device))))
@@ -258,10 +241,10 @@ void CheckCaptureInit(IDXGISwapChain3 *pSwapChain) {
 
   DXGI_SWAP_CHAIN_DESC1 desc;
   pSwapChain->GetDesc1(&desc);
-  g_Capture.width = desc.Width;
-  g_Capture.height = desc.Height;
+  g_DX12Capture.width = desc.Width;
+  g_DX12Capture.height = desc.Height;
 
-  if (!g_Capture.sharedTextures[0]) {
+  if (!g_DX12Capture.sharedTextures[0]) {
     D3D12_RESOURCE_DESC texDesc = {};
     texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     texDesc.Width = desc.Width;
@@ -282,25 +265,25 @@ void CheckCaptureInit(IDXGISwapChain3 *pSwapChain) {
       g_Device->CreateCommittedResource(
           &heapProps, D3D12_HEAP_FLAG_SHARED, &texDesc,
           D3D12_RESOURCE_STATE_COMMON, NULL,
-          IID_PPV_ARGS(&g_Capture.sharedTextures[i]));
-      g_Device->CreateSharedHandle(g_Capture.sharedTextures[i], NULL,
+          IID_PPV_ARGS(&g_DX12Capture.sharedTextures[i]));
+      g_Device->CreateSharedHandle(g_DX12Capture.sharedTextures[i], NULL,
                                    GENERIC_ALL, NULL,
-                                   &g_Capture.sharedTextureHandles[i]);
+                                   &g_DX12Capture.sharedTextureHandles[i]);
     }
   }
 
-  if (pSwapChain && g_Capture.backBufferCount == 0) {
+  if (pSwapChain && g_DX12Capture.backBufferCount == 0) {
     DXGI_SWAP_CHAIN_DESC scDesc;
     pSwapChain->GetDesc(&scDesc);
-    g_Capture.backBufferCount = scDesc.BufferCount;
-    if (g_Capture.backBufferCount > 16)
-      g_Capture.backBufferCount = 16;
-    for (UINT i = 0; i < g_Capture.backBufferCount; i++) {
-      pSwapChain->GetBuffer(i, IID_PPV_ARGS(&g_Capture.backBufferCache[i]));
+    g_DX12Capture.backBufferCount = scDesc.BufferCount;
+    if (g_DX12Capture.backBufferCount > 16)
+      g_DX12Capture.backBufferCount = 16;
+    for (UINT i = 0; i < g_DX12Capture.backBufferCount; i++) {
+      pSwapChain->GetBuffer(i, IID_PPV_ARGS(&g_DX12Capture.backBufferCache[i]));
     }
   }
 
-  if (!g_Capture.captureQueue) {
+  if (!g_DX12Capture.captureQueue) {
     D3D12_COMMAND_QUEUE_DESC queueDesc = {};
     queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     int priority = (g_IPC && g_IPC->GetSharedMem())
@@ -314,40 +297,40 @@ void CheckCaptureInit(IDXGISwapChain3 *pSwapChain) {
       queueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
 
     g_Device->CreateCommandQueue(&queueDesc,
-                                 IID_PPV_ARGS(&g_Capture.captureQueue));
+                                 IID_PPV_ARGS(&g_DX12Capture.captureQueue));
   }
 
-  if (!g_Capture.gameSyncFence)
+  if (!g_DX12Capture.gameSyncFence)
     g_Device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
-                          IID_PPV_ARGS(&g_Capture.gameSyncFence));
-  if (!g_Capture.fence) {
+                          IID_PPV_ARGS(&g_DX12Capture.gameSyncFence));
+  if (!g_DX12Capture.fence) {
     g_Device->CreateFence(0, D3D12_FENCE_FLAG_SHARED,
-                          IID_PPV_ARGS(&g_Capture.fence));
-    g_Device->CreateSharedHandle(g_Capture.fence, NULL, GENERIC_ALL, NULL,
-                                 &g_Capture.sharedFenceHandle);
-    g_Capture.fenceValue = 1;
+                          IID_PPV_ARGS(&g_DX12Capture.fence));
+    g_Device->CreateSharedHandle(g_DX12Capture.fence, NULL, GENERIC_ALL, NULL,
+                                 &g_DX12Capture.sharedFenceHandle);
+    g_DX12Capture.fenceValue = 1;
   }
-  if (!g_CaptureCompletionFence)
+  if (!g_DX12CaptureCompletionFence)
     g_Device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
-                          IID_PPV_ARGS(&g_CaptureCompletionFence));
+                          IID_PPV_ARGS(&g_DX12CaptureCompletionFence));
 
-  if (!g_Capture.cmdAlloc[0]) {
+  if (!g_DX12Capture.cmdAlloc[0]) {
     for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++)
       g_Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                       IID_PPV_ARGS(&g_Capture.cmdAlloc[i]));
+                                       IID_PPV_ARGS(&g_DX12Capture.cmdAlloc[i]));
     g_Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                g_Capture.cmdAlloc[0], nullptr,
-                                IID_PPV_ARGS(&g_Capture.cmdList));
-    g_Capture.cmdList->Close();
+                                g_DX12Capture.cmdAlloc[0], nullptr,
+                                IID_PPV_ARGS(&g_DX12Capture.cmdList));
+    g_DX12Capture.cmdList->Close();
   }
 
   // Use shared method to publish handles to IPC
-  g_Capture.width = desc.Width;
-  g_Capture.height = desc.Height;
-  g_Capture.format = desc.Format;
-  g_Capture.PublishToSharedMemory(g_IPC);
+  g_DX12Capture.width = desc.Width;
+  g_DX12Capture.height = desc.Height;
+  g_DX12Capture.format = desc.Format;
+  g_DX12Capture.PublishToSharedMemory(g_IPC);
 
-  g_Capture.initialized = true;
+  g_DX12Capture.initialized = true;
   HookLog("Capture Resources Initialized");
 }
 
@@ -515,58 +498,58 @@ void CleanupRTVs() {
 
 void AsyncCaptureThreadProc() {
   HookLog("AsyncCaptureThread Started");
-  g_Capture.captureThreadRunning = true;
-  while (!g_Capture.captureThreadShutdown) {
+  g_DX12Capture.captureThreadRunning = true;
+  while (!g_DX12Capture.captureThreadShutdown) {
     // Wait indefinitely for frame signal - more responsive than 16ms timeout
     // At 120+ FPS, frames arrive every 8ms, so 16ms timeout could miss frames
-    DWORD waitResult = WaitForSingleObject(g_Capture.captureEvent, INFINITE);
+    DWORD waitResult = WaitForSingleObject(g_DX12Capture.captureEvent, INFINITE);
     if (waitResult != WAIT_OBJECT_0)
       continue;
 
     // Use loop to drain queue if multiple frames updated
     while (true) {
-      uint32_t wIdx = g_Capture.pendingWriteIdx.load(std::memory_order_acquire);
-      uint32_t rIdx = g_Capture.pendingReadIdx.load(std::memory_order_acquire);
+      uint32_t wIdx = g_DX12Capture.pendingWriteIdx.load(std::memory_order_acquire);
+      uint32_t rIdx = g_DX12Capture.pendingReadIdx.load(std::memory_order_acquire);
       if (rIdx >= wIdx)
         break;
 
       PendingCaptureFrame &frame =
-          g_Capture.pendingRing[rIdx % CAPTURE_RING_SIZE];
+          g_DX12Capture.pendingRing[rIdx % CAPTURE_RING_SIZE];
 
-      std::lock_guard<std::mutex> lock(g_CaptureMutex);
-      if (!g_Capture.initialized) {
-        g_Capture.pendingReadIdx.store(rIdx + 1, std::memory_order_release);
+      std::lock_guard<std::mutex> lock(g_DX12CaptureMutex);
+      if (!g_DX12Capture.initialized) {
+        g_DX12Capture.pendingReadIdx.store(rIdx + 1, std::memory_order_release);
         continue;
       }
 
       // Core processing...
-      ID3D12CommandQueue *activeQueue = g_Capture.captureQueue;
+      ID3D12CommandQueue *activeQueue = g_DX12Capture.captureQueue;
       if (!activeQueue && g_CommandQueue)
         activeQueue = g_CommandQueue; // Fallback
       if (!activeQueue) {
-        g_Capture.pendingReadIdx.store(rIdx + 1, std::memory_order_release);
+        g_DX12Capture.pendingReadIdx.store(rIdx + 1, std::memory_order_release);
         continue;
       }
 
-      if (activeQueue && g_Capture.gameSyncFence && frame.fenceValue > 0) {
-        activeQueue->Wait(g_Capture.gameSyncFence, frame.fenceValue);
+      if (activeQueue && g_DX12Capture.gameSyncFence && frame.fenceValue > 0) {
+        activeQueue->Wait(g_DX12Capture.gameSyncFence, frame.fenceValue);
       }
 
       ID3D12Resource *pBackBuffer = nullptr;
-      if (frame.backBufferIndex < g_Capture.backBufferCount)
-        pBackBuffer = g_Capture.backBufferCache[frame.backBufferIndex];
+      if (frame.backBufferIndex < g_DX12Capture.backBufferCount)
+        pBackBuffer = g_DX12Capture.backBufferCache[frame.backBufferIndex];
       if (!pBackBuffer) {
-        g_Capture.pendingReadIdx.store(rIdx + 1, std::memory_order_release);
+        g_DX12Capture.pendingReadIdx.store(rIdx + 1, std::memory_order_release);
         continue;
       }
 
       // Copy logic
-      int writeIdx = g_Capture.writeIndex;
+      int writeIdx = g_DX12Capture.writeIndex;
       
-      ID3D12Resource *writeTexture = g_Capture.sharedTextures[writeIdx];
+      ID3D12Resource *writeTexture = g_DX12Capture.sharedTextures[writeIdx];
 
-      g_Capture.cmdAlloc[writeIdx]->Reset();
-      g_Capture.cmdList->Reset(g_Capture.cmdAlloc[writeIdx], nullptr);
+      g_DX12Capture.cmdAlloc[writeIdx]->Reset();
+      g_DX12Capture.cmdList->Reset(g_DX12Capture.cmdAlloc[writeIdx], nullptr);
 
       D3D12_RESOURCE_BARRIER barriers[2] = {};
       barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -581,50 +564,48 @@ void AsyncCaptureThreadProc() {
       barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
       barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
 
-      g_Capture.cmdList->ResourceBarrier(2, barriers);
-      g_Capture.cmdList->CopyResource(writeTexture, pBackBuffer);
+      g_DX12Capture.cmdList->ResourceBarrier(2, barriers);
+      g_DX12Capture.cmdList->CopyResource(writeTexture, pBackBuffer);
 
       std::swap(barriers[0].Transition.StateBefore,
                 barriers[0].Transition.StateAfter);
       std::swap(barriers[1].Transition.StateBefore,
                 barriers[1].Transition.StateAfter);
-      g_Capture.cmdList->ResourceBarrier(2, barriers);
-      g_Capture.cmdList->Close();
+      g_DX12Capture.cmdList->ResourceBarrier(2, barriers);
+      g_DX12Capture.cmdList->Close();
 
-      ID3D12CommandList *lists[] = {g_Capture.cmdList};
+      ID3D12CommandList *lists[] = {g_DX12Capture.cmdList};
       activeQueue->ExecuteCommandLists(1, lists);
 
-      g_Capture.fenceValue++;
-      activeQueue->Signal(g_Capture.fence, g_Capture.fenceValue);
-      g_Capture.allocFenceValues[writeIdx] = g_Capture.fenceValue;
+      g_DX12Capture.fenceValue++;
+      activeQueue->Signal(g_DX12Capture.fence, g_DX12Capture.fenceValue);
 
-      if (g_CaptureCompletionFence && frame.completionFenceValue > 0) {
-        activeQueue->Signal(g_CaptureCompletionFence,
+      if (g_DX12CaptureCompletionFence && frame.completionFenceValue > 0) {
+        activeQueue->Signal(g_DX12CaptureCompletionFence,
                             frame.completionFenceValue);
       }
 
-      g_Capture.writeIndex = (g_Capture.writeIndex + 1) % CAPTURE_TEXTURE_COUNT;
+      g_DX12Capture.writeIndex = (g_DX12Capture.writeIndex + 1) % CAPTURE_TEXTURE_COUNT;
 
       // Signal frame ready in IPC ring buffer
-      g_Capture.SignalFrameReady(g_IPC, writeIdx, frame.timestampQPC,
-                                 g_Capture.fenceValue);
+      g_DX12Capture.SignalFrameReady(g_IPC, writeIdx, frame.timestampQPC,
+                                 g_DX12Capture.fenceValue);
 
       // Done processing
-      g_Capture.pendingReadIdx.store(rIdx + 1, std::memory_order_release);
+      g_DX12Capture.pendingReadIdx.store(rIdx + 1, std::memory_order_release);
     }
   }
-  g_Capture.captureThreadRunning = false;
+  g_DX12Capture.captureThreadRunning = false;
   HookLog("AsyncCaptureThread Exiting");
 }
 
 void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
-  // LOCK HIERARCHY: g_OverlayMutex -> g_CaptureMutex
-  // This function acquires g_OverlayMutex first, then g_CaptureMutex (line 639).
+  // LOCK HIERARCHY: g_OverlayMutex -> g_DX12CaptureMutex
+  // This function acquires g_OverlayMutex first, then g_DX12CaptureMutex (line 639).
   // All code paths MUST follow this order to prevent deadlocks.
-  // Never acquire g_CaptureMutex before g_OverlayMutex elsewhere in the codebase.
+  // Never acquire g_DX12CaptureMutex before g_OverlayMutex elsewhere in the codebase.
   std::lock_guard<std::mutex> lock(g_OverlayMutex);
 
-  if (g_ImGuiContext) ImGui::SetCurrentContext(g_ImGuiContext);
 
   // 1. Determine active device and detect change (FSR-FG Proxying)
   ID3D12Device* activeDevice = nullptr;
@@ -640,9 +621,9 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
       CleanupRTVs();
       ShutdownImGui();
       {
-          // Acquire g_CaptureMutex AFTER g_OverlayMutex (respects lock hierarchy)
-          std::lock_guard<std::mutex> capLock(g_CaptureMutex);
-          g_Capture.Cleanup();
+          // Acquire g_DX12CaptureMutex AFTER g_OverlayMutex (respects lock hierarchy)
+          std::lock_guard<std::mutex> capLock(g_DX12CaptureMutex);
+          g_DX12Capture.Cleanup();
       }
       g_LastResourceCleanup = std::chrono::steady_clock::now(); // Mark cleanup time
       
@@ -693,7 +674,7 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
   }
 
   if (g_IPC && g_IPCReady) {
-    if (!g_Capture.initialized) {
+    if (!g_DX12Capture.initialized) {
         // Rate limiting for re-initialization
         auto elapsed = std::chrono::steady_clock::now() - g_LastResourceCleanup;
         if (elapsed > std::chrono::milliseconds(INIT_COOLDOWN_MS)) {
@@ -807,15 +788,15 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
 
     // Recording
     // CRITICAL: Skip capture when FG is active - same reason as overlay skip above
-    if (!fgActive && processCapture && g_IPC->IsRecording() && g_Capture.initialized) {
-      if (!g_Capture.captureThreadRunning) {
-        g_Capture.StartCaptureThread(AsyncCaptureThreadProc);
+    if (!fgActive && processCapture && g_IPC->IsRecording() && g_DX12Capture.initialized) {
+      if (!g_DX12Capture.captureThreadRunning) {
+        g_DX12Capture.StartCaptureThread(AsyncCaptureThreadProc);
       }
 
-      if (g_Capture.gameSyncFence) {
-        g_Capture.gameSyncValue++;
-        g_CommandQueue->Signal(g_Capture.gameSyncFence,
-                               g_Capture.gameSyncValue);
+      if (g_DX12Capture.gameSyncFence) {
+        g_DX12Capture.gameSyncValue++;
+        g_CommandQueue->Signal(g_DX12Capture.gameSyncFence,
+                               g_DX12Capture.gameSyncValue);
       }
 
       // Enqueue
@@ -823,7 +804,7 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
       QueryPerformanceCounter(&qpc);
 
       // Use existing EnqueueFrame helper
-      g_Capture.EnqueueFrame(qpc.QuadPart, g_Capture.gameSyncValue,
+      g_DX12Capture.EnqueueFrame(qpc.QuadPart, g_DX12Capture.gameSyncValue,
                              pSwapChain->GetCurrentBackBufferIndex(),
                              pSwapChain);
     }
@@ -961,12 +942,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
   }
   
   // Apply VSync Override
-  std::string mode = GetActiveGraphicsConfig().vsyncMode;
-  if (mode != "default") {
-      if (mode == "off") SyncInterval = 0;
-      else if (mode == "fifo") SyncInterval = 1;
-      else if (mode == "adaptive") SyncInterval = 0;
-      else if (mode == "mailbox") SyncInterval = 0;
+  VSyncOverride vsync = GetVSyncOverride();
+  if (vsync.shouldOverride) {
+      SyncInterval = (UINT)vsync.presentInterval;
   }
 
   // Apply Prerender Limit (Hybrid Pacing)
@@ -1607,8 +1585,8 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain3 *pSwapChain,
   
   // Release capture resources (backbuffer references)
   {
-      std::lock_guard<std::mutex> lock(g_CaptureMutex);
-      g_Capture.Cleanup();
+      std::lock_guard<std::mutex> lock(g_DX12CaptureMutex);
+      g_DX12Capture.Cleanup();
   }
   HookLog("DX12: DetourResizeBuffers Capture Cleanup done");
 
@@ -1631,7 +1609,7 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain3 *pSwapChain,
 
 DWORD WINAPI UnloadThread(LPVOID lpParam) {
   // Basic unload logic
-  g_Capture.StopCaptureThread();
+  g_DX12Capture.StopCaptureThread();
   Sleep(200);
   g_DX12Hook.Shutdown(); // triggers MH_Disable
   return 0;
@@ -1838,13 +1816,13 @@ void DX12Hook::Shutdown() {
   MH_DisableHook(MH_ALL_HOOKS);
   
   // Stop capture thread and wait for it to finish
-  if (g_Capture.captureThreadRunning) {
+  if (g_DX12Capture.captureThreadRunning) {
     // Signal shutdown - this is what the thread actually checks
-    g_Capture.captureThreadShutdown = true;
+    g_DX12Capture.captureThreadShutdown = true;
     
     // Wake up the capture thread if it's waiting on the event
-    if (g_Capture.captureEvent) {
-      SetEvent(g_Capture.captureEvent);
+    if (g_DX12Capture.captureEvent) {
+      SetEvent(g_DX12Capture.captureEvent);
     }
     
     // Give thread time to exit
@@ -1852,13 +1830,13 @@ void DX12Hook::Shutdown() {
   }
   
   // Wait for GPU to finish all pending work
-  if (g_CommandQueue && g_Capture.fence) {
-    UINT64 waitValue = g_Capture.fenceValue + 1;
-    g_CommandQueue->Signal(g_Capture.fence, waitValue);
-    if (g_Capture.fence->GetCompletedValue() < waitValue) {
+  if (g_CommandQueue && g_DX12Capture.fence) {
+    UINT64 waitValue = g_DX12Capture.fenceValue + 1;
+    g_CommandQueue->Signal(g_DX12Capture.fence, waitValue);
+    if (g_DX12Capture.fence->GetCompletedValue() < waitValue) {
       HANDLE waitEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
       if (waitEvent) {
-        g_Capture.fence->SetEventOnCompletion(waitValue, waitEvent);
+        g_DX12Capture.fence->SetEventOnCompletion(waitValue, waitEvent);
         WaitForSingleObject(waitEvent, 1000); // Max 1 second wait
         CloseHandle(waitEvent);
       }
@@ -1911,7 +1889,7 @@ void DX12Hook::Shutdown() {
   if (g_LastSwapChain) { g_LastSwapChain->Release(); g_LastSwapChain = nullptr; }
   
   // Release capture resources
-  g_Capture.Cleanup();
+  g_DX12Capture.Cleanup();
 
   g_IPCReady = false;
 
@@ -1922,21 +1900,21 @@ void DX12Hook::OnHostDisconnect() {
   HookLog("DX12Hook::OnHostDisconnect() - stopping capture for reconnection");
   
   // Stop capture thread if running (host died mid-recording)
-  if (g_Capture.captureThreadRunning) {
+  if (g_DX12Capture.captureThreadRunning) {
     // Signal shutdown - this is what the thread actually checks
-    g_Capture.captureThreadShutdown = true;
+    g_DX12Capture.captureThreadShutdown = true;
     
     // Wake up the capture thread if it's waiting on the event
-    if (g_Capture.captureEvent) {
-      SetEvent(g_Capture.captureEvent);
+    if (g_DX12Capture.captureEvent) {
+      SetEvent(g_DX12Capture.captureEvent);
     }
     
     // Give thread time to exit
     Sleep(100);
     
     // Reset flags for future recordings
-    g_Capture.captureThreadShutdown = false;
-    g_Capture.captureThreadRunning = false;
+    g_DX12Capture.captureThreadShutdown = false;
+    g_DX12Capture.captureThreadRunning = false;
   }
   
   // Reset IPC ready flag so we re-establish connection

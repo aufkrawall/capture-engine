@@ -1294,6 +1294,13 @@ MEDIAENGINE_API int64_t MediaEngine_GetLastFrameEncodeTimeUs() {
   return 0;
 }
 
+MEDIAENGINE_API void MediaEngine_SetSharedMem(void *pSharedMem, void *pShmem) {
+  if (g_Engine && g_Engine->videoEnc) {
+    g_Engine->videoEnc->SetSharedMem((SharedMemoryLayout *)pSharedMem,
+                                    (ShmemBuffer *)pShmem);
+  }
+}
+
 MEDIAENGINE_API int64_t MediaEngine_GetLastFrameFenceWaitUs() {
   if (g_Engine) {
     return g_Engine->GetLastVideoFenceWaitUs();

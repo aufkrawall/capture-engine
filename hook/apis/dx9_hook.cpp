@@ -356,16 +356,15 @@ public:
     uint32_t prerenderIdx = 0;
     
     void Cleanup() override {
-        CleanupDX9();
+        CleanupDX9(false);
     }
     
     void CleanupDX9(bool permanentFailure = false) {
-        // Release texture handles
+        StopCaptureThread();
+        // Close shared handles first via base class
+        CleanupSharedHandles();
+        
         for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
-            if (sharedTextureHandles[i]) {
-                CloseHandle(sharedTextureHandles[i]);
-                sharedTextureHandles[i] = NULL;
-            }
             if (sharedTextures[i]) {
                 sharedTextures[i]->Release();
                 sharedTextures[i] = nullptr;
@@ -374,10 +373,6 @@ public:
         
         if (fence) { fence->Release(); fence = nullptr; }
         if (context4) { context4->Release(); context4 = nullptr; }
-        if (sharedFenceHandle) {
-            CloseHandle(sharedFenceHandle);
-            sharedFenceHandle = NULL;
-        }
         
         if (copySurface) { copySurface->Release(); copySurface = nullptr; }
         if (sharedTexture9) { sharedTexture9->Release(); sharedTexture9 = nullptr; }
@@ -784,17 +779,16 @@ public:
                     // 3. Copy to Shared Buffer
                     // Use slot 0 or 1 based on idx
                     int slot = idx % 2; // Assuming CAPTURE_TEXTURE_COUNT >= 2
-                    if (g_IPC && g_IPC->GetSharedMem()) {
-                        auto& shmem = g_IPC->GetSharedMem()->shmem;
-                        
+                    ShmemBuffer* shmBuf = g_IPC ? g_IPC->GetShmem() : nullptr;
+                    if (shmBuf) {
                         // Copy parameters
                         uint32_t copyW = width;
                         uint32_t copyH = height;
                         // Avoid buffer overflow
-                        if (copyW > SharedMemoryLayout::ShmemBuffer::MAX_WIDTH) copyW = SharedMemoryLayout::ShmemBuffer::MAX_WIDTH;
-                        if (copyH > SharedMemoryLayout::ShmemBuffer::MAX_HEIGHT) copyH = SharedMemoryLayout::ShmemBuffer::MAX_HEIGHT;
+                        if (copyW > ShmemBuffer::MAX_WIDTH) copyW = ShmemBuffer::MAX_WIDTH;
+                        if (copyH > ShmemBuffer::MAX_HEIGHT) copyH = ShmemBuffer::MAX_HEIGHT;
 
-                        uint8_t* dst = shmem.data[slot];
+                        uint8_t* dst = shmBuf->data[slot];
                         uint8_t* src = (uint8_t*)rect.pBits;
                         uint32_t dstPitch = copyW * 4; // Tight packing
                         
@@ -804,11 +798,11 @@ public:
                         }
                         
                         // Update metadata
-                        shmem.validWidth = copyW;
-                        shmem.validHeight = copyH;
-                        shmem.pitch = dstPitch;
-                        shmem.writeSlot.store(slot);
-                        shmem.slotReady[slot].store(true);
+                        shmBuf->validWidth = copyW;
+                        shmBuf->validHeight = copyH;
+                        shmBuf->pitch = dstPitch;
+                        shmBuf->writeSlot.store(slot);
+                        shmBuf->slotReady[slot].store(true);
                         
                         // 4. Signal Encoder (Index 100+ to indicate shmem slot)
                         // Using 100 + slot as textureIndex
@@ -912,28 +906,23 @@ static void DrawDX9Overlay(IDirect3DDevice9 *device) {
         device->GetCreationParameters(&params);
         g_CachedHwnd = params.hFocusWindow;
         
-        ImGui::CreateContext();
-        ImGui::GetIO().IniFilename = nullptr;
-        ImGui_ImplWin32_Init(g_CachedHwnd);
+        g_SharedOverlay.InitImGui(g_CachedHwnd);
         ImGui_ImplDX9_Init(device);
         g_ImGuiInitialized = true;
         EarlyLog("DX9: ImGui initialized");
     }
     
     ImGui_ImplDX9_NewFrame();
-    ImGui_ImplWin32_NewFrame();
-    ImGui::NewFrame();
+    g_SharedOverlay.BeginFrame();
     
     // Use shared overlay
     g_SharedOverlay.SetMetrics(&g_PerfMetrics);
     g_SharedOverlay.SetIPCClient(g_IPC);
-    g_SharedOverlay.SetHwnd(g_CachedHwnd);
     g_SharedOverlay.SetDroppedFrames(g_DX9Capture.droppedFrames.load(std::memory_order_relaxed));
     g_SharedOverlay.SetGraphicsAPI("DX9");
     g_SharedOverlay.RenderUI();
     
-    ImGui::EndFrame();
-    ImGui::Render();
+    g_SharedOverlay.EndFrame();
     
     if (SUCCEEDED(device->BeginScene())) {
         ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
@@ -1124,16 +1113,12 @@ static HRESULT STDMETHODCALLTYPE DetourReset(
     g_DX9Capture.Cleanup();
     
     // VSync Override
-    // VSync Override
-    {
-        std::string mode = GetActiveGraphicsConfig().vsyncMode;
-        if (mode != "default") {
-            if (mode == "off") pPresentationParameters->PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
-            else if (mode == "fifo") pPresentationParameters->PresentationInterval = D3DPRESENT_INTERVAL_ONE;
-            else if (mode == "adaptive") pPresentationParameters->PresentationInterval = D3DPRESENT_INTERVAL_ONE; // No adaptive in DX9
-            else if (mode == "mailbox") pPresentationParameters->PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE; // Use immediate for mailbox-like behavior
+    if (pPresentationParameters) {
+        VSyncOverride vsync = GetVSyncOverride();
+        if (vsync.shouldOverride) {
+            pPresentationParameters->PresentationInterval = (UINT)vsync.presentInterval;
         }
-        
+            
         // Backbuffer Count Override
         int count = GetActiveGraphicsConfig().backbufferCount;
         if (count >= 2 && count <= 6) {
@@ -1182,14 +1167,10 @@ static HRESULT STDMETHODCALLTYPE DetourResetEx(
     g_DX9Capture.Cleanup();
     
     // VSync Override
-    // VSync Override
-    {
-        std::string mode = GetActiveGraphicsConfig().vsyncMode;
-        if (mode != "default") {
-            if (mode == "off") pPresentationParameters->PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
-            else if (mode == "fifo") pPresentationParameters->PresentationInterval = D3DPRESENT_INTERVAL_ONE;
-            else if (mode == "adaptive") pPresentationParameters->PresentationInterval = D3DPRESENT_INTERVAL_ONE;
-            else if (mode == "mailbox") pPresentationParameters->PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
+    if (pPresentationParameters) {
+        VSyncOverride vsync = GetVSyncOverride();
+        if (vsync.shouldOverride) {
+            pPresentationParameters->PresentationInterval = (UINT)vsync.presentInterval;
         }
 
         // Backbuffer Count Override
@@ -1351,13 +1332,11 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDevice(
     
     // VSync Override for CreateDevice
     // VSync Override for CreateDevice
+    // VSync Override for CreateDevice
     if (pPresentationParameters) {
-        std::string mode = GetActiveGraphicsConfig().vsyncMode;
-        if (mode != "default") {
-            if (mode == "off") pPresentationParameters->PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
-            else if (mode == "fifo") pPresentationParameters->PresentationInterval = D3DPRESENT_INTERVAL_ONE;
-            else if (mode == "adaptive") pPresentationParameters->PresentationInterval = D3DPRESENT_INTERVAL_ONE;
-            else if (mode == "mailbox") pPresentationParameters->PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
+        VSyncOverride vsync = GetVSyncOverride();
+        if (vsync.shouldOverride) {
+            pPresentationParameters->PresentationInterval = (UINT)vsync.presentInterval;
         }
 
         // Backbuffer Count Override

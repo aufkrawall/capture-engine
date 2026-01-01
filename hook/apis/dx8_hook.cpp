@@ -520,9 +520,7 @@ static void DrawDX8Overlay(HWND hwnd) {
     if (!g_ImGuiInitialized) {
         g_CachedHwnd = hwnd;
         
-        ImGui::CreateContext();
-        ImGui::GetIO().IniFilename = nullptr;
-        ImGui_ImplWin32_Init(hwnd);
+        g_SharedOverlay.InitImGui(hwnd);
         ImGui_ImplDX9_Init(g_DX8Capture.d3d9DeviceEx);
         
         // SetTextureStageState is index 61
@@ -537,19 +535,16 @@ static void DrawDX8Overlay(HWND hwnd) {
     }
     
     ImGui_ImplDX9_NewFrame();
-    ImGui_ImplWin32_NewFrame();
-    ImGui::NewFrame();
+    g_SharedOverlay.BeginFrame();
     
     // Use shared overlay
     g_SharedOverlay.SetMetrics(&g_PerfMetrics);
     g_SharedOverlay.SetIPCClient(g_IPC);
-    g_SharedOverlay.SetHwnd(g_CachedHwnd);
     g_SharedOverlay.SetDroppedFrames(g_DX8Capture.droppedFrames.load(std::memory_order_relaxed));
     g_SharedOverlay.SetGraphicsAPI("DX8");
     g_SharedOverlay.RenderUI();
     
-    ImGui::EndFrame();
-    ImGui::Render();
+    g_SharedOverlay.EndFrame();
     
     // Begin scene on our D3D9Ex device
     g_DX8Capture.d3d9DeviceEx->BeginScene();

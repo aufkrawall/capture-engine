@@ -36,6 +36,9 @@ static bool g_UseScreenGrab = false;
 static HANDLE g_hMapFile = NULL;
 static SharedMemoryLayout *g_pSharedMem = nullptr;
 
+static HANDLE g_hMapShmem = NULL;
+static ShmemBuffer *g_pShmem = nullptr;
+
 // Forward declaration
 void MediaLogCallback(const char *msg) { LogInfo("[Media] %s", msg); }
 
@@ -514,6 +517,23 @@ int MediaProcessMain(const AppConfig &config) {
 
   if (g_pSharedMem) {
     // Shared memory connected - determine capture mode based on config
+    
+    // Connect to separate Shmem mapping if available
+    if (g_pSharedMem->shmemMappingCreated) {
+        wchar_t shmemName[64];
+        GenerateShmemName(shmemName, 64, g_pSharedMem->hostPID);
+        g_hMapShmem = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, shmemName);
+        if (g_hMapShmem) {
+            g_pShmem = (ShmemBuffer*)MapViewOfFile(g_hMapShmem, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(ShmemBuffer));
+            if (g_pShmem) {
+                LogInfo("[Media] Connected to separate Shmem mapping '%ls'", shmemName);
+            }
+        }
+    }
+    
+    // Set pointers in MediaEngine
+    MediaEngine_SetSharedMem(g_pSharedMem, g_pShmem);
+
     if (explicitScreengrab) {
       // User explicitly wants screengrab - use WGC for capture
       LogInfo("[Media] Connected to shared memory - using screengrab for capture");
@@ -792,8 +812,8 @@ int MediaProcessMain(const AppConfig &config) {
             qf.isShmem = true;
             qf.shmemSlot = texIdx - 100;
             // Shmem data source has its own width/height
-            qf.width = g_pSharedMem->shmem.validWidth;
-            qf.height = g_pSharedMem->shmem.validHeight;
+            qf.width = (g_pShmem && g_pShmem->validWidth > 0) ? g_pShmem->validWidth : g_pSharedMem->width;
+            qf.height = (g_pShmem && g_pShmem->validHeight > 0) ? g_pShmem->validHeight : g_pSharedMem->height;
             // No shared handle for shmem frames
             qf.sharedHandle = NULL; 
         } else {
@@ -848,6 +868,11 @@ int MediaProcessMain(const AppConfig &config) {
       d3dDevice->Release();
   }
 
+  if (g_pShmem)
+    UnmapViewOfFile(g_pShmem);
+  if (g_hMapShmem)
+    CloseHandle(g_hMapShmem);
+    
   if (g_pSharedMem)
     UnmapViewOfFile(g_pSharedMem);
   if (g_hMapFile)

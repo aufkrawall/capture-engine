@@ -436,7 +436,8 @@ static bool CreateCrossDeviceSemaphore() {
 }
 
 // Vulkan Capture Resources - extends HookCaptureBase for shared logic
-struct VulkanCapture : public HookCaptureBase {
+class VulkanCapture : public HookCaptureBase {
+public:
   VkImage sharedImages[CAPTURE_TEXTURE_COUNT]{};
   VkDeviceMemory sharedMem[CAPTURE_TEXTURE_COUNT]{};
   VkFormat vkFormat = VK_FORMAT_UNDEFINED;
@@ -547,6 +548,9 @@ struct VulkanCapture : public HookCaptureBase {
     // Standard cleanup loop handles sharedImages (which alias mainImage/mainMemory in separate device mode)
     // No extra cleanup needed for CrossDeviceImages on Game Device here.
 
+    // Standard cleanup
+    CleanupSharedHandles();
+
     for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
       if (sharedImages[i])
         vkDestroyImage(device, sharedImages[i], nullptr);
@@ -570,7 +574,6 @@ struct VulkanCapture : public HookCaptureBase {
       copyCompleteSemaphores[i] = VK_NULL_HANDLE;
       presentTriggerSems[i] = VK_NULL_HANDLE;
       copyTriggerSems[i] = VK_NULL_HANDLE;
-      sharedTextureHandles[i] = NULL;
     }
 
     // Destroy Internal Staging Resources
@@ -2851,10 +2854,7 @@ static void InitImGuiVulkan(VkQueue queue) {
   pool_info.pPoolSizes = pool_sizes;
   vkCreateDescriptorPool(g_Device, &pool_info, nullptr, &g_DescriptorPool);
 
-  ImGui::CreateContext();
-  ImGuiIO &io = ImGui::GetIO();
-  io.IniFilename = nullptr; // Don't create imgui.ini in game folder
-  ImGui_ImplWin32_Init(g_hWnd);
+  g_SharedOverlay.InitImGui(g_hWnd);
 
   ImGui_ImplVulkan_InitInfo init_info = {};
   init_info.Instance = g_Instance;
@@ -3163,18 +3163,16 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
           // Interpolated frames often crash if we touch them or submit commands to wrong queue state
           if (isRealFrame) {
               ImGui_ImplVulkan_NewFrame();
-              ImGui_ImplWin32_NewFrame();
-              ImGui::NewFrame();
+              g_SharedOverlay.BeginFrame();
     
               // Use shared overlay
               g_SharedOverlay.SetMetrics(&g_PerfMetrics);
               g_SharedOverlay.SetIPCClient(g_IPC);
-              g_SharedOverlay.SetHwnd(g_hWnd);
               g_SharedOverlay.SetDroppedFrames(g_VulkanCapture.droppedFrames.load(std::memory_order_relaxed));
               g_SharedOverlay.SetGraphicsAPI("Vulkan");
               g_SharedOverlay.RenderUI();
     
-              ImGui::Render();
+              g_SharedOverlay.EndFrame();
     
               // Draw into Command Buffer using in-flight frame ring buffer
               // to avoid blocking the game thread

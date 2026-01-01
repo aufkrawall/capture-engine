@@ -28,7 +28,40 @@ public:
     return dpiScale;
   }
 
-  // Render overlay UI widgets (call between ImGui::NewFrame and ImGui::Render)
+  // Common ImGui initialization (API-agnostic part)
+  void InitImGui(void* hwnd) {
+    if (initialized) return;
+    this->hwnd = hwnd;
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGui::GetIO().IniFilename = nullptr; // Don't create imgui.ini in game folder
+    ImGui_ImplWin32_Init(hwnd);
+    initialized = true;
+  }
+
+  // Common ImGui shutdown
+  void ShutdownImGui() {
+    if (!initialized) return;
+    ImGui_ImplWin32_Shutdown();
+    if (ImGui::GetCurrentContext()) {
+        ImGui::DestroyContext();
+    }
+    initialized = false;
+  }
+
+  // Common ImGui frame lifecycle
+  void BeginFrame() {
+    if (!initialized) return;
+    ImGui_ImplWin32_NewFrame();
+    ImGui::NewFrame();
+  }
+
+  void EndFrame() {
+    if (!initialized) return;
+    ImGui::Render();
+  }
+
+  // Render overlay UI widgets (call between BeginFrame and EndFrame)
   void RenderUI() {
     // Skip if window is minimized or hidden (save resources)
     if (hwnd && IsWindow((HWND)hwnd) && !IsWindowVisible((HWND)hwnd))
@@ -142,6 +175,7 @@ private:
   IPCClient *ipc = nullptr;
   void *hwnd = nullptr;
   char graphicsAPI[16] = "";  // "DX12", "DX11", "Vulkan"
+  bool initialized = false;
 
   // Text update throttling (500ms interval)
   static constexpr DWORD TEXT_UPDATE_INTERVAL_MS = 500;
