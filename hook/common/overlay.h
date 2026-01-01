@@ -117,13 +117,61 @@ public:
     }
 
     // Positioning/Sizing (use dynamic DPI scale)
-    ImGui::SetNextWindowPos(ImVec2(10.0f * dpiScale, 10.0f * dpiScale), ImGuiCond_Always);
-    ImGui::SetNextWindowBgAlpha(0.35f);
+    float padding = 10.0f;
+    OverlayPosition posParams = OverlayPosition::TopLeft;
+
+    if (ipc && ipc->GetSharedMem()) {
+        posParams = ipc->GetSharedMem()->overlayConfig.position;
+        // Use user padding if set, otherwise default to 10
+        if (ipc->GetSharedMem()->overlayConfig.padding > 0)
+            padding = (float)ipc->GetSharedMem()->overlayConfig.padding;
+    }
+
+    float bgAlpha = 0.35f;
+    ImU32 textColor = IM_COL32(255, 255, 255, 255);
+    
+    if (ipc && ipc->GetSharedMem()) {
+        float alpha = ipc->GetSharedMem()->overlayConfig.bgAlpha;
+        if (alpha > 0.0f) bgAlpha = alpha;
+        
+        uint32_t color = ipc->GetSharedMem()->overlayConfig.textColor;
+        if (color != 0) textColor = color;
+    }
+    
+    padding *= dpiScale;
+    
+    ImVec2 windowPos(padding, padding);
+    ImVec2 windowPivot(0.0f, 0.0f);
+    ImVec2 viewportSize = ImGui::GetMainViewport()->Size;
+
+    switch (posParams) {
+    case OverlayPosition::TopLeft:
+        windowPos = ImVec2(padding, padding);
+        windowPivot = ImVec2(0.0f, 0.0f);
+        break;
+    case OverlayPosition::TopRight:
+        windowPos = ImVec2(viewportSize.x - padding, padding);
+        windowPivot = ImVec2(1.0f, 0.0f);
+        break;
+    case OverlayPosition::BottomLeft:
+        windowPos = ImVec2(padding, viewportSize.y - padding);
+        windowPivot = ImVec2(0.0f, 1.0f);
+        break;
+    case OverlayPosition::BottomRight:
+        windowPos = ImVec2(viewportSize.x - padding, viewportSize.y - padding);
+        windowPivot = ImVec2(1.0f, 1.0f);
+        break;
+    }
+
+    ImGui::SetNextWindowPos(windowPos, ImGuiCond_Always, windowPivot);
+    ImGui::SetNextWindowBgAlpha(bgAlpha);
 
     if (ImGui::Begin(
             "Overlay", nullptr,
             ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                 ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav)) {
+      
+      ImGui::PushStyleColor(ImGuiCol_Text, textColor);
 
       ImGui::Text("CaptureEngine");
 
@@ -163,6 +211,8 @@ public:
           }
         }
       }
+      
+      ImGui::PopStyleColor(); // Pop text color
     }
     ImGui::End();
   }

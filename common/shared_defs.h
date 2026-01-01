@@ -56,12 +56,20 @@ enum class OverlayPosition : int {
   BottomRight = 3
 };
 
+enum class LogLevel : int {
+  Error = 0,
+  Warn = 1,
+  Info = 2,
+  Debug = 3
+};
+
 struct OverlayConfig {
   bool showOverlay;
   bool showFPS;
   OverlayPosition position;
   int padding;
-  // ... colors, etc. could be added here
+  float bgAlpha;       // 0.0 - 1.0 (default 0.35f)
+  uint32_t textColor;  // 0xAABBGGRR (default 0xFFFFFFFF)
 };
 
 struct SharedGraphicsConfig {
@@ -151,6 +159,7 @@ struct SharedMemoryLayout {
   uint32_t hostPID;
   bool requestExit;
   bool debugLogging;     // If true, hook logs to logFilePath
+  LogLevel logLevel;     // 0=Error, 1=Warn, 2=Info, 3=Debug (default 2)
   char logFilePath[260]; // Path to log file (captureengine.log)
 
   // Performance (Priority Settings) - Host -> Hook/Encoder

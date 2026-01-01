@@ -787,15 +787,30 @@ bool InjectionManager::ValidateDllSecurity(const std::string &dllPath) {
     std::string hashPath = dllPath + ".hash";
     std::ifstream hashFile(hashPath);
     if (!hashFile) {
-        LogInfo("[Security] No hash file found for %s. Skipping hash check (Dev Build?).", dllPath.c_str());
-        // For production this should fail. For dev, allow?
-        // Plan: "Read the .hash file... This verifies integrity"
-        // Let's Log Warning.
+#ifndef _DEBUG
+        // In Release builds, hash file IS REQUIRED for security
+        LogError("[Security] No hash file found for %s. Security check failed.", dllPath.c_str());
+        return false;
+#else
+        // In Debug, allow missing hash file
+        LogInfo("[Security] No hash file found for %s. Skipping hash check (Debug Build).", dllPath.c_str());
+#endif
     } else {
         std::string expectedHash;
         hashFile >> expectedHash;
         std::string actualHash = ComputeFileHash(dllPath);
-    LogInfo("[Security] Hash verified for %s", dllPath.c_str());
+        
+        // Trim potential whitespace from expectedHash
+        expectedHash.erase(std::remove(expectedHash.begin(), expectedHash.end(), '\r'), expectedHash.end());
+        expectedHash.erase(std::remove(expectedHash.begin(), expectedHash.end(), '\n'), expectedHash.end());
+
+        if (expectedHash != actualHash) {
+            LogError("[Security] Hash mismatch for %s!", dllPath.c_str());
+            LogError("[Security] Expected: %s", expectedHash.c_str());
+            LogError("[Security] Actual:   %s", actualHash.c_str());
+            return false;
+        }
+        LogInfo("[Security] Hash verified for %s", dllPath.c_str());
     }
 
     LogInfo("[Security] DLL security validation passed for %s", dllPath.c_str());

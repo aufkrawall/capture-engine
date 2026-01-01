@@ -16,6 +16,7 @@ extern std::atomic<bool> g_ShuttingDown;
 
 // Logging Helper
 void HookLog(const char *fmt, ...);
+void HookLog(LogLevel level, const char *fmt, ...);
 void EarlyLog(const char *fmt, ...);
 extern char g_ProcessName[260];
   // Debug log independent of IPC

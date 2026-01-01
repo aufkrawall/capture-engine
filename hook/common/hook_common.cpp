@@ -62,18 +62,22 @@ void EarlyLog(const char *fmt, ...) {
   }
 }
 
-void HookLog(const char *fmt, ...) {
-  // Only log if IPC is connected AND debugLogging is true
-  if (!g_IPC || !g_IPC->GetSharedMem() ||
-      !g_IPC->GetSharedMem()->debugLogging) {
-    return; // No IPC yet, or debug logging disabled
+// Internal worker implementation
+static void HookLogInternal(LogLevel level, const char *fmt, va_list args) {
+  // Check filtering
+  if (g_IPC && g_IPC->GetSharedMem()) {
+      if ((int)level > (int)g_IPC->GetSharedMem()->logLevel) {
+          return;
+      }
+      if (!g_IPC->GetSharedMem()->debugLogging) {
+          return;
+      }
+  } else {
+      return; // No IPC
   }
 
-  char buffer[256];
-  va_list args;
-  va_start(args, fmt);
+  char buffer[1024]; // Increased buffer size
   vsnprintf(buffer, sizeof(buffer), fmt, args);
-  va_end(args);
 
   // Keep handle open to avoid open/close overhead every line
   // Thread-safe: protect static file handle with mutex
@@ -99,6 +103,23 @@ void HookLog(const char *fmt, ...) {
     strcpy(hookLogPath, "hook.log");
   }
 
+  // Log Rotation
+  const DWORD MAX_LOG_SIZE = 5 * 1024 * 1024; // 5MB
+  if (hLogFile != INVALID_HANDLE_VALUE) {
+    DWORD size = GetFileSize(hLogFile, NULL);
+    if (size != INVALID_FILE_SIZE && size > MAX_LOG_SIZE) {
+      CloseHandle(hLogFile);
+      hLogFile = INVALID_HANDLE_VALUE;
+      
+      char backupPath[280];
+      strcpy(backupPath, hookLogPath);
+      strcat(backupPath, ".old");
+      
+      DeleteFileA(backupPath);
+      MoveFileA(hookLogPath, backupPath);
+    }
+  }
+
   if (hLogFile == INVALID_HANDLE_VALUE ||
       strcmp(hookLogPath, lastLogPath) != 0) {
     if (hLogFile != INVALID_HANDLE_VALUE)
@@ -115,14 +136,37 @@ void HookLog(const char *fmt, ...) {
   char logLine[1024];
   SYSTEMTIME st;
   GetLocalTime(&st);
+  
+  const char* levelStr = "INFO";
+  switch(level) {
+      case LogLevel::Error: levelStr = "ERROR"; break;
+      case LogLevel::Warn:  levelStr = "WARN"; break;
+      case LogLevel::Debug: levelStr = "DEBUG"; break;
+      default: break;
+  }
+  
   int len =
       snprintf(logLine, sizeof(logLine),
-               "[%04d-%02d-%02d %02d:%02d:%02d] [INFO] [Hook] [%-20s] %s\r\n", 
+               "[%04d-%02d-%02d %02d:%02d:%02d] [%s] [Hook] [%-20s] %s\r\n", 
                st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, 
-               g_ProcessName, buffer);
+               levelStr, g_ProcessName, buffer);
 
   DWORD written;
   WriteFile(hLogFile, logLine, len, &written, NULL);
+}
+
+void HookLog(const char *fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+  HookLogInternal(LogLevel::Info, fmt, args);
+  va_end(args);
+}
+
+void HookLog(LogLevel level, const char *fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+  HookLogInternal(level, fmt, args);
+  va_end(args);
 }
 
 // Helpers for Config Overrides

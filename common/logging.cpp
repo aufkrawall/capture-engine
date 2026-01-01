@@ -45,6 +45,8 @@ void Log(LogLevel level, const char *format, ...) {
     levelStr = "[DEBUG]";
   else if (level == LogLevel::Error)
     levelStr = "[ERROR]";
+  else if (level == LogLevel::Warn)
+    levelStr = "[WARN]";
 
   fprintf(g_LogFile, "[%s] %s ", timeBuf, levelStr);
   vfprintf(g_LogFile, format, args);

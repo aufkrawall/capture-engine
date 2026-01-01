@@ -6,7 +6,7 @@
 void Log_Init(const std::string &filename);
 void Log_Shutdown();
 
-enum class LogLevel { Debug, Info, Error };
+#include "shared_defs.h"
 
 void Log(LogLevel level, const char *format, ...);
 void LogInfo(const char *format, ...);

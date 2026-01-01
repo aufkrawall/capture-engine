@@ -15,18 +15,43 @@ IPCManager::~IPCManager() {
     CloseHandle(hMapFile);
 }
 
+#include <sddl.h>
+
 bool IPCManager::Init() {
   // Host creates the shared memory with PID-based name
   wchar_t sharedMemName[64];
   GenerateSharedMemName(sharedMemName, 64, GetCurrentProcessId());
   
+  // Create Security Descriptor for Low Integrity access (allows sandboxed games/browsers)
+  // D: DACL
+  // (A;;GA;;;SY) - System: Generic All
+  // (A;;GA;;;BA) - Built-in Admins: Generic All
+  // (A;;GA;;;IU) - Interactive User: Generic All
+  // (A;;GA;;;AC) - All Application Packages (UWP): Generic All
+  // S: SACL
+  // (ML;;NW;;;LW) - Mandatory Label: No Write Up, Low Integrity Level
+  SECURITY_ATTRIBUTES sa = {0};
+  sa.nLength = sizeof(sa);
+  sa.bInheritHandle = FALSE;
+  
+  const wchar_t* sddl = L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;IU)(A;;GA;;;AC)S:(ML;;NW;;;LW)";
+  if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SDDL_REVISION_1, &sa.lpSecurityDescriptor, NULL)) {
+      OutputDebugStringA("Failed to create security descriptor from SDDL.");
+      // Fallback to default (might fail for low integrity games)
+      sa.lpSecurityDescriptor = NULL; 
+  }
+  
   hMapFile = CreateFileMappingW(
       INVALID_HANDLE_VALUE,       // Use paging file
-      NULL,                       // Default security
+      sa.lpSecurityDescriptor ? &sa : NULL, // Custom security
       PAGE_READWRITE,             // Read/write access
       0,                          // Maximum object size (high-order DWORD)
       sizeof(SharedMemoryLayout), // Maximum object size (low-order DWORD)
       sharedMemName);             // Name of mapping object
+
+  if (sa.lpSecurityDescriptor) {
+      LocalFree(sa.lpSecurityDescriptor);
+  }
 
   if (hMapFile == NULL) {
     OutputDebugStringA("Could not create file mapping object.");
