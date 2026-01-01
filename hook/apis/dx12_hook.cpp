@@ -7,6 +7,7 @@
 #include "../common/overlay.h"
 #include "../common/performance_metrics.h"
 #include "../common/fg_detection.h"
+#include "../common/system_metrics.h"
 #include "backends/imgui_impl_dx12.h"
 #include "backends/imgui_impl_win32.h"
 #include "imgui.h"
@@ -334,6 +335,10 @@ void CheckCaptureInit(IDXGISwapChain3 *pSwapChain) {
   g_DX12Capture.format = desc.Format;
   g_DX12Capture.PublishToSharedMemory(g_IPC);
 
+  // Initialize SystemMetricsCollector with adapter LUID for GPU stats
+  LUID adapterLuid = g_Device->GetAdapterLuid();
+  SystemMetricsCollector::Get().Initialize(adapterLuid.LowPart, adapterLuid.HighPart);
+
   g_DX12Capture.initialized = true;
   HookLog("Capture Resources Initialized");
 }
@@ -652,6 +657,24 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
   }
   activeDevice->Release();
 
+  // Initialize overlay as early as possible (before queue check)
+  // CRITICAL: Do NOT initialize ImGui if FG is active or suspended (e.g. at startup)
+  bool fgActive = g_FGCompat.IsFGLikelyActive();
+  if (!g_State.imGuiInit && !fgActive && g_Device) {
+      DXGI_SWAP_CHAIN_DESC desc;
+      pSwapChain->GetDesc(&desc);
+      g_State.cachedWidth = desc.BufferDesc.Width;
+      g_State.cachedHeight = desc.BufferDesc.Height;
+      
+      EarlyLog("DX12: Initializing ImGui (device=%p, size=%ux%u)", g_Device, desc.BufferDesc.Width, desc.BufferDesc.Height);
+      InitImGui(g_Device, DX12OverlayState::ALLOC_POOL_SIZE, desc.BufferDesc.Format,
+                desc.OutputWindow);
+      CreateRTVs(g_Device, pSwapChain, desc.BufferCount);
+      InitOverlaySync(g_Device, desc.BufferCount);
+      g_State.imGuiInit = true;
+      EarlyLog("DX12: ImGui initialized successfully");
+  }
+
   // 2. Get the correct queue for this active device
   ID3D12CommandQueue* targetQueue = nullptr;
   {
@@ -684,25 +707,6 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
         if (elapsed > std::chrono::milliseconds(INIT_COOLDOWN_MS)) {
             CheckCaptureInit(pSwapChain);
         }
-    }
-
-    // Defer overlay initialization 
-    // CRITICAL: Do NOT initialize ImGui if FG is active or suspended (e.g. at startup)
-    bool fgActive = g_FGCompat.IsFGLikelyActive();
-    if (!g_State.imGuiInit && !fgActive) {
-      g_State.imGuiInitFrameCounter++;
-      if (g_State.imGuiInitFrameCounter >= 3) { // Initialize on 3rd frame
-        DXGI_SWAP_CHAIN_DESC desc;
-        pSwapChain->GetDesc(&desc);
-        g_State.cachedWidth = desc.BufferDesc.Width;
-        g_State.cachedHeight = desc.BufferDesc.Height;
-        
-        InitImGui(g_Device, DX12OverlayState::ALLOC_POOL_SIZE, desc.BufferDesc.Format,
-                  desc.OutputWindow);
-        CreateRTVs(g_Device, pSwapChain, desc.BufferCount);
-        InitOverlaySync(g_Device, desc.BufferCount);
-        g_State.imGuiInit = true;
-      }
     }
 
     // Overlay - only render if IPC is valid and overlay enabled

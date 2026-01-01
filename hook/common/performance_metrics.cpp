@@ -178,6 +178,85 @@ float PerformanceMetrics::GetCurrentFPS() const {
   return 0.0f;
 }
 
+float PerformanceMetrics::GetAverageFPS() const {
+  // Average FPS over last HISTORY_SIZE frames (240 frames = ~4 seconds at 60fps, ~2 seconds at 120fps)
+  std::lock_guard<std::mutex> lock(m_mutex);
+  float totalMs = 0.0f;
+  int validFrames = 0;
+
+  for (int i = 0; i < HISTORY_SIZE; i++) {
+    float ms = m_history[i];
+    if (ms > 0.0001f && ms < 100.0f) {
+      totalMs += ms;
+      validFrames++;
+    }
+  }
+
+  if (validFrames > 0 && totalMs > 0.0001f) {
+    float avgMs = totalMs / validFrames;
+    return 1000.0f / avgMs;
+  }
+  return 0.0f;
+}
+
+float PerformanceMetrics::Get1PercentLowFPS() const {
+  // 1% low = 99th percentile worst frame times
+  std::lock_guard<std::mutex> lock(m_mutex);
+  std::vector<float> frameTimes;
+  frameTimes.reserve(HISTORY_SIZE);
+
+  for (int i = 0; i < HISTORY_SIZE; i++) {
+    float ms = m_history[i];
+    if (ms > 0.0001f && ms < 100.0f) {
+      frameTimes.push_back(ms);
+    }
+  }
+
+  if (frameTimes.size() < 10) return 0.0f;
+
+  std::sort(frameTimes.begin(), frameTimes.end(), std::greater<float>());
+  int percentileIdx = (int)(frameTimes.size() * 0.01f);
+  if (percentileIdx >= (int)frameTimes.size()) percentileIdx = frameTimes.size() - 1;
+
+  // Average the worst 1% for smoother value
+  float sum = 0.0f;
+  int count = std::max(1, percentileIdx + 1);
+  for (int i = 0; i < count; i++) {
+    sum += frameTimes[i];
+  }
+  float avgWorstMs = sum / count;
+  return 1000.0f / avgWorstMs;
+}
+
+float PerformanceMetrics::Get01PercentLowFPS() const {
+  // 0.1% low = 99.9th percentile worst frame times
+  std::lock_guard<std::mutex> lock(m_mutex);
+  std::vector<float> frameTimes;
+  frameTimes.reserve(HISTORY_SIZE);
+
+  for (int i = 0; i < HISTORY_SIZE; i++) {
+    float ms = m_history[i];
+    if (ms > 0.0001f && ms < 100.0f) {
+      frameTimes.push_back(ms);
+    }
+  }
+
+  if (frameTimes.size() < 100) return 0.0f;
+
+  std::sort(frameTimes.begin(), frameTimes.end(), std::greater<float>());
+  int percentileIdx = (int)(frameTimes.size() * 0.001f);
+  if (percentileIdx >= (int)frameTimes.size()) percentileIdx = frameTimes.size() - 1;
+
+  // Average the worst 0.1% for smoother value
+  float sum = 0.0f;
+  int count = std::max(1, percentileIdx + 1);
+  for (int i = 0; i < count; i++) {
+    sum += frameTimes[i];
+  }
+  float avgWorstMs = sum / count;
+  return 1000.0f / avgWorstMs;
+}
+
 void PerformanceMetrics::GetSmartScale(float &outMin, float &outMax,
                                        float minRangeMs) const {
   outMin = 0.0f;

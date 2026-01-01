@@ -7,6 +7,7 @@
 #include "hook_common.h"
 #include "performance_metrics.h"
 #include "../common/fg_detection.h"
+#include "../common/system_metrics.h"
 #include "../../common/frame_timing.h"
 #include <MinHook.h>
 #include <algorithm>
@@ -2488,6 +2489,27 @@ VkResult VKAPI_CALL Detour_vkCreateDevice(
     g_Device = *pDevice;
     // volkLoadDevice(g_Device); // REMOVED to prevent global pointer hijacking in multi-device scenarios
     HookLog("Vulkan: Device Created (with injected queue & interop extensions)");
+    
+    // Initialize SystemMetricsCollector with adapter LUID for GPU stats
+    // Get LUID from VkPhysicalDeviceIDProperties
+    auto vkGetPhysicalDeviceProperties2 = (PFN_vkGetPhysicalDeviceProperties2)vkGetInstanceProcAddr(g_Instance, "vkGetPhysicalDeviceProperties2");
+    if (!vkGetPhysicalDeviceProperties2)
+      vkGetPhysicalDeviceProperties2 = (PFN_vkGetPhysicalDeviceProperties2)vkGetInstanceProcAddr(g_Instance, "vkGetPhysicalDeviceProperties2KHR");
+    
+    if (vkGetPhysicalDeviceProperties2) {
+      VkPhysicalDeviceIDProperties idProps = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
+      VkPhysicalDeviceProperties2 props2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+      props2.pNext = &idProps;
+      vkGetPhysicalDeviceProperties2(g_PhysDevice, &props2);
+      
+      if (idProps.deviceLUIDValid) {
+        // LUID is 8 bytes: first 4 bytes = LowPart, next 4 bytes = HighPart
+        uint32_t luidLow = *(uint32_t*)&idProps.deviceLUID[0];
+        uint32_t luidHigh = *(uint32_t*)&idProps.deviceLUID[4];
+        SystemMetricsCollector::Get().Initialize(luidLow, luidHigh);
+        HookLog("Vulkan: SystemMetricsCollector initialized with LUID: %08X%08X", luidHigh, luidLow);
+      }
+    }
     
     // Retrieve our private queue immediately
     if (bestInjectionFam != -1) {

@@ -21,6 +21,11 @@ public:
   const float *GetHistoryArray() const { return m_history; }
   int GetHistoryIndex() const { return m_historyIdx; }
   float GetCurrentFPS() const;
+  
+  // FPS Statistics (based on last 5 seconds = 300 frames at 60fps, 600 at 120fps)
+  float GetAverageFPS() const;
+  float Get1PercentLowFPS() const;
+  float Get01PercentLowFPS() const;
 
   // Variance / Stutter detection stats
   double GetWindowStdDev() const { return m_windowStdDev; }

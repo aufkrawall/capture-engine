@@ -19,15 +19,31 @@ void Overlay::InitImGui(void* hwnd) {
     ImGui::GetIO().IniFilename = nullptr; 
     ImGui_ImplWin32_Init(hwnd);
     
+    // Get DPI scale for proper font sizing
+    float dpiScale = GetDpiScale();
+    
     // Load Segoe UI Bold for thicker, prettier text
-    // Default size 18.0f (larger than default 13.0f)
+    // Scale font size by DPI to prevent blurriness
+    float baseFontSize = 16.0f; // Reduced from 18.0f to better match graph size
+    float scaledFontSize = baseFontSize * dpiScale;
+    
     ImGuiIO& io = ImGui::GetIO();
-    mainFont = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeuib.ttf", 18.0f);
+    
+    // Configure font for sharper rendering
+    ImFontConfig fontConfig;
+    fontConfig.OversampleH = 3;  // Horizontal oversampling for sharper text
+    fontConfig.OversampleV = 3;  // Vertical oversampling
+    fontConfig.PixelSnapH = true; // Snap to pixel grid
+    fontConfig.RasterizerMultiply = 1.0f; // No additional boldness
+    
+    mainFont = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeuib.ttf", scaledFontSize, &fontConfig);
     if (!mainFont) {
         // Fallback to standard Segoe UI if Bold missing
-        mainFont = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 18.0f);
+        mainFont = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", scaledFontSize, &fontConfig);
     }
-    // If still null, ImGui uses default font
+    
+    // Build font atlas with proper DPI awareness
+    io.Fonts->Build();
     
     initialized = true;
 }
@@ -119,17 +135,19 @@ void Overlay::RenderUI() {
              SystemMetricsCollector::Get().Update();
         }
     }
-
     // Setup Styling
     float dpiScale = GetDpiScale();
-    ImGui::GetIO().FontGlobalScale = (cfg.fontSize > 0.0f) ? (cfg.fontSize / 13.0f) : dpiScale;
+    // Don't use FontGlobalScale - fonts are already DPI-scaled at load time
     
-    float bgAlpha = 0.7f; // Default less transparent
+    float bgAlpha = 1.0f; // Fully opaque by default
     ImU32 textColor = IM_COL32(255, 255, 255, 255);
     
     if (ipc && ipc->GetSharedMem()) {
         float alpha = ipc->GetSharedMem()->overlayConfig.bgAlpha;
-        if (alpha > 0.0f) bgAlpha = alpha;
+        // Only use config value if it's explicitly set (0.1-1.0 range)
+        if (alpha >= 0.1f && alpha <= 1.0f) {
+            bgAlpha = alpha;
+        }
         
         uint32_t color = ipc->GetSharedMem()->overlayConfig.textColor;
         if (color != 0) textColor = color;
@@ -225,9 +243,22 @@ void Overlay::RenderUI() {
 
             // FPS
             if (cfg.showFPS) {
-                snprintf(buf, 64, "%.0f", cachedFPS);
-                ImU32 fpsCol = cfg.fpsColor; // Could use frametime thresholds?
+                // Main FPS with API label
+                snprintf(buf, 64, "%.0f FPS", cachedFPS);
+                ImU32 fpsCol = cfg.fpsColor;
                 RenderRow(graphicsAPI[0] ? graphicsAPI : "FPS", buf, cfg.textColor, fpsCol);
+                
+                // FPS Statistics in one line: Avg / 1% Low / 0.1% Low
+                if (metrics) {
+                    float avgFps = metrics->GetAverageFPS();
+                    float low1 = metrics->Get1PercentLowFPS();
+                    float low01 = metrics->Get01PercentLowFPS();
+                    
+                    if (avgFps > 0.0f && low1 > 0.0f && low01 > 0.0f) {
+                        snprintf(buf, 64, "%.0f / %.0f / %.0f FPS", avgFps, low1, low01);
+                        RenderRow("Avg/1%/0.1%", buf, cfg.textColor, cfg.fpsColor);
+                    }
+                }
             }
             
             // Recording
@@ -255,14 +286,17 @@ void Overlay::RenderUI() {
              float minScale, maxScale;
              metrics->GetSmartScale(minScale, maxScale);
              
-             // MangoHud-style graph: often filled or specific color
-             // We can use same color as FPS or standard green
+             // Scale graph height by DPI to match font scaling
+             float graphHeight = 40.0f * dpiScale;
+             
+             // MangoHud-style graph with transparent background (no blue)
              ImGui::PushStyleColor(ImGuiCol_PlotLines, cfg.frametimeColor);
+             ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(0, 0, 0, 0)); // Transparent background
              ImGui::PlotLines("##FrameTime", metrics->GetHistoryArray(),
                          PerformanceMetrics::HISTORY_SIZE,
                          metrics->GetHistoryIndex(), nullptr, minScale,
-                         maxScale, ImVec2(ImGui::GetContentRegionAvail().x, 40)); // Slightly taller
-             ImGui::PopStyleColor();
+                         maxScale, ImVec2(ImGui::GetContentRegionAvail().x, graphHeight));
+             ImGui::PopStyleColor(2); // PlotLines + FrameBg
         }
 
     }

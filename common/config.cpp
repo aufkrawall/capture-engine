@@ -510,7 +510,7 @@ void LoadConfig(const std::string &path, AppConfig &config, const std::string& o
   
   // Background: Dark Gray/Black with 0.4 Alpha
   config.overlay.bgColor = ParseColor(GetStr("Overlay", "bg_color", ""), 0xFF111111);
-  config.overlay.bgAlpha = GetFloat("Overlay", "bg_alpha", 0.4f);
+  config.overlay.bgAlpha = GetFloat("Overlay", "bg_alpha", 0.75f);
 
   // Colors: Using MangoHud's default palette
   // Green: 2E9762 -> ImGui: 0xFF62972E
