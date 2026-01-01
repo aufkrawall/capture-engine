@@ -131,6 +131,51 @@ struct QueueFamilyInfo {
     VkQueueFlags flags;
 };
 static std::vector<QueueFamilyInfo> g_QueueFamilies;
+
+// Queue Instance Tracking for Async Present Detection
+struct QueueInstanceInfo {
+    VkQueue queue;
+    uint32_t familyIndex;
+    uint32_t queueIndex;
+    VkQueueFlags flags;
+};
+static std::vector<QueueInstanceInfo> g_QueueInstances;
+static std::mutex g_QueueInstancesMutex;
+
+// Helper to check if a queue is compute-only (no graphics bit)
+static bool IsComputeOnlyQueue(VkQueue queue) {
+    std::lock_guard<std::mutex> lock(g_QueueInstancesMutex);
+    for (const auto& qi : g_QueueInstances) {
+        if (qi.queue == queue) {
+            return (qi.flags & VK_QUEUE_COMPUTE_BIT) && 
+                   !(qi.flags & VK_QUEUE_GRAPHICS_BIT);
+        }
+    }
+    return false;
+}
+
+// Find a graphics-capable queue for overlay rendering
+static VkQueue FindGraphicsQueue() {
+    std::lock_guard<std::mutex> lock(g_QueueInstancesMutex);
+    for (const auto& qi : g_QueueInstances) {
+        if (qi.flags & VK_QUEUE_GRAPHICS_BIT) {
+            return qi.queue;
+        }
+    }
+    return VK_NULL_HANDLE;
+}
+
+// Get queue family index for a given queue
+static uint32_t GetQueueFamilyIndex(VkQueue queue) {
+    std::lock_guard<std::mutex> lock(g_QueueInstancesMutex);
+    for (const auto& qi : g_QueueInstances) {
+        if (qi.queue == queue) {
+            return qi.familyIndex;
+        }
+    }
+    return UINT32_MAX;
+}
+
 static void TryDiscoverAsyncQueue();
 
 // --- Separate Capture Device Implementation ---
@@ -2481,6 +2526,38 @@ void VKAPI_CALL Detour_vkGetDeviceQueue(VkDevice device,
        }
     }
 
+    // Populate Queue Instance Registry for Async Present Detection
+    {
+        std::lock_guard<std::mutex> qlock(g_QueueInstancesMutex);
+        
+        // Get flags from our tracked family info
+        VkQueueFlags flags = 0;
+        if (g_Device == device && queueFamilyIndex < g_QueueFamilies.size()) {
+            flags = g_QueueFamilies[queueFamilyIndex].flags;
+        }
+        
+        // Check if already registered
+        bool alreadyRegistered = false;
+        for (const auto& qi : g_QueueInstances) {
+            if (qi.queue == *pQueue) {
+                alreadyRegistered = true;
+                break;
+            }
+        }
+        
+        if (!alreadyRegistered) {
+            g_QueueInstances.push_back({*pQueue, queueFamilyIndex, queueIndex, flags});
+            
+            const char* typeStr = "Unknown";
+            if (flags & VK_QUEUE_GRAPHICS_BIT) typeStr = "Graphics";
+            else if (flags & VK_QUEUE_COMPUTE_BIT) typeStr = "Compute";
+            else if (flags & VK_QUEUE_TRANSFER_BIT) typeStr = "Transfer";
+            
+            HookLog("Vulkan: Queue %p registered (Family %d, Index %d, Type: %s, Flags: 0x%X)", 
+                    *pQueue, queueFamilyIndex, queueIndex, typeStr, flags);
+        }
+    }
+
     // Only capture the first queue (typically graphics+present capable)
     if (g_Queue == VK_NULL_HANDLE) {
       g_Queue = *pQueue;
@@ -2925,6 +3002,39 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
   bool isRealFrame = (submitCount > 0);
   if (isRealFrame) g_FGCompat.RecordRealFrame();
 
+  // Async Present Detection - Check if present queue is compute-only
+  static bool g_AsyncPresentDetected = false;
+  static VkQueue g_GraphicsQueueForOverlay = VK_NULL_HANDLE;
+  static uint32_t g_PresentQueueFamily = UINT32_MAX;
+  static uint32_t g_OverlayQueueFamily = UINT32_MAX;
+  
+  if (!g_AsyncPresentDetected) {
+    if (IsComputeOnlyQueue(queue)) {
+      g_AsyncPresentDetected = true;
+      g_PresentQueueFamily = GetQueueFamilyIndex(queue);
+      g_GraphicsQueueForOverlay = FindGraphicsQueue();
+      
+      if (g_GraphicsQueueForOverlay != VK_NULL_HANDLE) {
+        g_OverlayQueueFamily = GetQueueFamilyIndex(g_GraphicsQueueForOverlay);
+      }
+      
+      HookLog("Vulkan: *** ASYNC PRESENT DETECTED ***");
+      HookLog("Vulkan: Present queue %p is COMPUTE-ONLY (Family %d)", queue, g_PresentQueueFamily);
+      
+      if (g_GraphicsQueueForOverlay) {
+        HookLog("Vulkan: Found graphics queue %p (Family %d) for overlay rendering", 
+                g_GraphicsQueueForOverlay, g_OverlayQueueFamily);
+        
+        if (g_PresentQueueFamily != g_OverlayQueueFamily) {
+          HookLog("Vulkan: WARNING - Present and overlay queues are in different families");
+          HookLog("Vulkan: Queue family ownership transfers may be needed for correctness");
+        }
+      } else {
+        HookLog("Vulkan: WARNING - No graphics queue found! Overlay will be disabled.");
+      }
+    }
+  }
+
   // Late injection recovery: capture queue if we don't have it
   if (g_Queue == VK_NULL_HANDLE && queue != VK_NULL_HANDLE) {
     g_Queue = queue;
@@ -3263,17 +3373,31 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
               submit.pCommandBuffers = &cb;
               // Note: Don't wait on pPresentInfo->pWaitSemaphores here!
     
+              // Choose queue for overlay submission
+              VkQueue overlayQueue = g_Queue;
+              
+              // If async present is detected, use graphics queue for overlay
+              if (g_AsyncPresentDetected && g_GraphicsQueueForOverlay != VK_NULL_HANDLE) {
+                overlayQueue = g_GraphicsQueueForOverlay;
+              }
+              
+              // Skip overlay if async present but no graphics queue available
+              if (g_AsyncPresentDetected && g_GraphicsQueueForOverlay == VK_NULL_HANDLE) {
+                // Silently skip - already logged warning during detection
+                break;
+              }
+    
               static int frameCount = 0;
               if (frameCount < 3) {
                 HookLog("Vulkan: Submitting overlay draw (frame %d, cb=%p, using "
-                        "g_Queue=%p, present_queue=%p)",
-                        frameCount, cb, g_Queue, queue);
+                        "overlay_queue=%p, present_queue=%p, async=%d)",
+                        frameCount, cb, overlayQueue, queue, g_AsyncPresentDetected);
               }
               frameCount++;
     
               // Submit without blocking - fence will be waited on next time this
-              // slot is used
-              vkQueueSubmit(g_Queue, 1, &submit, fence);
+              // slot is used. This ensures no performance impact or input lag.
+              vkQueueSubmit(overlayQueue, 1, &submit, fence);
     
               // Advance to next frame slot
               currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
