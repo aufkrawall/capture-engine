@@ -248,6 +248,7 @@ private:
 
   // Find or create cursor cache entry
   CursorCacheEntry *GetCursorCacheEntry(HCURSOR handle);
+  bool ConfigureAndOpenCodec();
   void CleanupCursorCache();
 
   bool InitVideoProcessor();

@@ -29,6 +29,10 @@ typedef HRESULT(STDMETHODCALLTYPE *Reset_t)(IDirect3DDevice9*, D3DPRESENT_PARAME
 typedef HRESULT(STDMETHODCALLTYPE *ResetEx_t)(IDirect3DDevice9Ex*, D3DPRESENT_PARAMETERS*, D3DDISPLAYMODEEX*);
 typedef HRESULT(WINAPI *Direct3DCreate9Ex_t)(UINT, IDirect3D9Ex**);
 typedef HRESULT(STDMETHODCALLTYPE *SetSamplerState_t)(IDirect3DDevice9*, DWORD, D3DSAMPLERSTATETYPE, DWORD);
+typedef HRESULT(STDMETHODCALLTYPE *SetRenderState_t)(IDirect3DDevice9*, D3DRENDERSTATETYPE, DWORD);
+typedef HRESULT(STDMETHODCALLTYPE *CreateRenderTarget_t)(IDirect3DDevice9*, UINT, UINT, D3DFORMAT, D3DMULTISAMPLE_TYPE, DWORD, BOOL, IDirect3DSurface9**, HANDLE*);
+typedef HRESULT(STDMETHODCALLTYPE *CreateOffscreenPlainSurface_t)(IDirect3DDevice9*, UINT, UINT, D3DFORMAT, D3DPOOL, IDirect3DSurface9**, HANDLE*);
+typedef HRESULT(STDMETHODCALLTYPE *SetRenderTarget_t)(IDirect3DDevice9*, DWORD, IDirect3DSurface9*);
 
 // Original function pointers
 static Present_t oPresent = nullptr;
@@ -37,6 +41,10 @@ static PresentSwap_t oPresentSwap = nullptr;
 static Reset_t oReset = nullptr;
 static ResetEx_t oResetEx = nullptr;
 static SetSamplerState_t oSetSamplerState = nullptr;
+static SetRenderState_t oSetRenderState = nullptr;
+static CreateRenderTarget_t oCreateRenderTarget = nullptr;
+static CreateOffscreenPlainSurface_t oCreateOffscreenPlainSurface = nullptr;
+static SetRenderTarget_t oSetRenderTarget = nullptr;
 
 // Globals
 static PerformanceMetrics g_PerfMetrics;
@@ -46,6 +54,26 @@ static bool g_HooksInitialized = false;
 static bool g_ResetHooksInstalled = false;
 static std::mutex g_PresentMutex;
 static thread_local int g_PresentRecurse = 0;  // Prevent recursive Present calls on same thread
+static std::atomic<int> g_MaxMSAASamples{0}; // Tracks highest MSAA target seen
+static GraphicsConfig g_FrameConfig; // Frame-local config cache for performance
+
+// Action Cache - Pre-calculated values to avoid string parsing/logic in hot hooks
+struct FrameActions {
+    bool hasSGSSAA;
+    DWORD sgssaaBias;
+    
+    bool overrideAniso;
+    bool forceLinearAniso;
+    DWORD maxAnisotropy;
+    
+    bool overrideMipFilter;
+    DWORD mipFilter;
+    
+    bool overrideMipBias;
+    DWORD mipBias;
+};
+static FrameActions g_Actions;
+
 static HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9* device, const RECT* pSourceRect, const RECT* pDestRect, HWND hDestWindowOverride, const RGNDATA* pDirtyRegion);
 
 // D3D9 format to DXGI format conversion
@@ -63,9 +91,9 @@ static DXGI_FORMAT D3D9ToDXGIFormat(D3DFORMAT format) {
 }
 
 static D3DMULTISAMPLE_TYPE ParseD3D9MSAA(const char* msaa) {
-    if (strcmp(msaa, "2x") == 0) return D3DMULTISAMPLE_2_SAMPLES;
-    if (strcmp(msaa, "4x") == 0) return D3DMULTISAMPLE_4_SAMPLES;
-    if (strcmp(msaa, "8x") == 0) return D3DMULTISAMPLE_8_SAMPLES;
+    if (strcmp(msaa, "2x") == 0 || strcmp(msaa, "2") == 0) return D3DMULTISAMPLE_2_SAMPLES;
+    if (strcmp(msaa, "4x") == 0 || strcmp(msaa, "4") == 0) return D3DMULTISAMPLE_4_SAMPLES;
+    if (strcmp(msaa, "8x") == 0 || strcmp(msaa, "8") == 0) return D3DMULTISAMPLE_8_SAMPLES;
     return D3DMULTISAMPLE_NONE;
 }
 
@@ -77,15 +105,25 @@ static void ApplyMSAAOverride(IDirect3D9* d3d, UINT adapter, D3DDEVTYPE deviceTy
     if (msaa[0] == 'd') return; // default
     
     D3DMULTISAMPLE_TYPE msType = ParseD3D9MSAA(msaa);
+    
+    EarlyLog("DX9: ApplyMSAAOverride checking '%s' (Parsed=%d). BBFormat=%d Windowed=%d", msaa, msType, pp->BackBufferFormat, pp->Windowed);
+
     if (msType != D3DMULTISAMPLE_NONE) {
         DWORD quality;
-        if (SUCCEEDED(d3d->CheckDeviceMultiSampleType(adapter, deviceType, pp->BackBufferFormat, pp->Windowed, msType, &quality))) {
+        // Ensure format is valid for check? If 0 (Unknown), use adapter format?
+        D3DFORMAT fmt = pp->BackBufferFormat;
+        if (fmt == D3DFMT_UNKNOWN) fmt = D3DFMT_X8R8G8B8; // Fallback guess
+        
+        if (SUCCEEDED(d3d->CheckDeviceMultiSampleType(adapter, deviceType, fmt, pp->Windowed, msType, &quality))) {
             pp->MultiSampleType = msType;
             pp->MultiSampleQuality = 0; 
-            pp->SwapEffect = D3DSWAPEFFECT_DISCARD; // Must be DISCARD
-            HookLog("DX9: Forcing MSAA %d samples", (int)msType);
+            pp->SwapEffect = D3DSWAPEFFECT_DISCARD; 
+            // Also clear flags that might conflict
+            pp->Flags &= ~D3DPRESENTFLAG_LOCKABLE_BACKBUFFER;
+            
+            HookLog("DX9: Forcing MSAA %d samples (Format %d)", (int)msType, fmt);
         } else {
-            HookLog("DX9: MSAA %d samples NOT SUPPORTED for this format/device", (int)msType);
+            HookLog("DX9: MSAA %d samples NOT SUPPORTED for Format %d", (int)msType, fmt);
         }
     } else if (strcmp(msaa, "off") == 0) {
         pp->MultiSampleType = D3DMULTISAMPLE_NONE;
@@ -95,17 +133,54 @@ static void ApplyMSAAOverride(IDirect3D9* d3d, UINT adapter, D3DDEVTYPE deviceTy
 }
 
 
+static int GetMSAASampleCount(IDirect3DDevice9* device) {
+    IDirect3DSurface9* rt = nullptr;
+    if (SUCCEEDED(device->GetRenderTarget(0, &rt)) && rt) {
+        D3DSURFACE_DESC desc;
+        HRESULT hr = rt->GetDesc(&desc);
+        rt->Release();
+        if (SUCCEEDED(hr)) {
+            if (desc.MultiSampleType >= D3DMULTISAMPLE_2_SAMPLES && desc.MultiSampleType <= D3DMULTISAMPLE_16_SAMPLES) {
+                return (int)desc.MultiSampleType;
+            }
+        }
+    }
+    return 0;
+}
+
 // Proactive apply in Present
 static void ApplySGSSAAProactive(IDirect3DDevice9* device) {
-     if (!g_IPC || !g_IPC->GetSharedMem() || !g_IPC->GetSharedMem()->graphicsConfig.sgssaa) return;
+     const auto& gfx = GetActiveGraphicsConfig();
+     if (!gfx.sgssaa) return;
      
      float bias = 0.0f;
-     const auto& gfx = GetActiveGraphicsConfig();
-     if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), bias)) {
+     
+     int msaaSamples = 0;
+     if (gfx.msaaSamples[0] == 'd') {
+         msaaSamples = g_MaxMSAASamples.load();
+         if (msaaSamples <= 0) {
+             msaaSamples = GetMSAASampleCount(device);
+         }
+     }
+
+     if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), bias, msaaSamples)) {
          DWORD dwBias = *((DWORD*)&bias);
          for (DWORD i = 0; i < 8; i++) { 
              oSetSamplerState(device, i, D3DSAMP_MIPMAPLODBIAS, dwBias);
          }
+         
+         static int logThrottle = 0;
+         if (logThrottle++ % 300 == 0) {
+             EarlyLog("DX9: Proactive SGSSAA: Bias %.2f, MSAA: %d (GLOBAL), SSAA Hacks Applied", bias, msaaSamples);
+         }
+         
+         // Vendor Agnostic: Force Multisample AA RenderState
+         device->SetRenderState(D3DRS_MULTISAMPLEANTIALIAS, TRUE);
+         device->SetRenderState(D3DRS_MULTISAMPLEMASK, 0xFFFFFFFF);
+         
+         // NVIDIA SSAA Fallback Hack (Needed if game resolves internally to non-MSAA backbuffer)
+         // D3DRS_ADAPTIVETESS_Y = 'SSAA'
+         device->SetRenderState((D3DRENDERSTATETYPE)137, 0x41415353);
      }
 }
 
@@ -930,13 +1005,40 @@ static void DrawDX9Overlay(IDirect3DDevice9 *device) {
     }
 }
 
+// Performance measurement
+struct PresentTiming {
+    int64_t startTime;
+    int64_t overlayTime;
+    int64_t captureTime;
+    int64_t prerenderTime;
+};
+static thread_local PresentTiming g_Timing;
+
 // Present hook helpers
 static void PresentBegin(IDirect3DDevice9 *device, IDirect3DSurface9 *&backBuffer) {
     if (g_ShuttingDown) return;
+    
+    // Start timing
+    // Update frame config cache once per frame to avoid overhead in hot hooks
+    g_FrameConfig = GetActiveGraphicsConfig();
+    
+    // Start timing
+    // Update frame config cache once per frame 
+    g_FrameConfig = GetActiveGraphicsConfig();
+
+    static int64_t qpcFreq = 0;
+    if (qpcFreq == 0) {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        qpcFreq = f.QuadPart;
+    }
+    LARGE_INTEGER qpc;
+    QueryPerformanceCounter(&qpc);
+    g_Timing.startTime = qpc.QuadPart;
+
     g_PresentRecurse++;
     if (g_PresentRecurse == 1) {
         std::lock_guard<std::mutex> lock(g_PresentMutex); // Protect against concurrent calls
-        ApplySGSSAAProactive(device);
         
         // Get backbuffer
         if (FAILED(device->GetRenderTarget(0, &backBuffer))) {
@@ -947,28 +1049,38 @@ static void PresentBegin(IDirect3DDevice9 *device, IDirect3DSurface9 *&backBuffe
         static int frameCount = 0;
         frameCount++;
         IPCClient* ipc = g_IPC;
-        if (frameCount % 60 == 0) {
-             SharedMemoryLayout *shm = ipc ? ipc->GetSharedMem() : nullptr;
-             EarlyLog("DX9: Present called (Frame %d). IPC=%p, SHM=%p, ShowOverlay=%d, Recording=%d", 
-                      frameCount, ipc, shm, 
-                      shm ? shm->overlayConfig.showOverlay : -1,
-                      ipc ? ipc->IsRecording() : -1);
-        }
-
+        
         // Draw overlay
+        int64_t overlayStart = 0;
+        QueryPerformanceCounter(&qpc);
+        overlayStart = qpc.QuadPart;
+
         SharedMemoryLayout *shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
         if (shm && shm->overlayConfig.showOverlay) {
             DrawDX9Overlay(device);
         }
+
+        QueryPerformanceCounter(&qpc);
+        g_Timing.overlayTime = qpc.QuadPart - overlayStart;
         
         // CPU Prerender Limit
-        // CPU Prerender Limit (Hybrid Pacing)
+        int64_t prerenderStart = 0;
+        QueryPerformanceCounter(&qpc);
+        prerenderStart = qpc.QuadPart;
+
         float limit = GetActivePrerenderLimit();
         if (limit > -0.5f) { // Active if >= 0.0
             g_DX9Capture.WaitPrerender(device, limit);
         }
+
+        QueryPerformanceCounter(&qpc);
+        g_Timing.prerenderTime = qpc.QuadPart - prerenderStart;
         
         // Capture logic
+        int64_t captureStart = 0;
+        QueryPerformanceCounter(&qpc);
+        captureStart = qpc.QuadPart;
+
         if (ipc && ipc->IsRecording()) {
             if (!g_DX9Capture.initialized) {
                 EarlyLog("DX9: Recording detected, calling Init...");
@@ -981,15 +1093,23 @@ static void PresentBegin(IDirect3DDevice9 *device, IDirect3DSurface9 *&backBuffe
         } else if (g_DX9Capture.initialized) {
             g_DX9Capture.Cleanup();
         }
+
+        QueryPerformanceCounter(&qpc);
+        g_Timing.captureTime = qpc.QuadPart - captureStart;
         
-        // Update performance metrics
-        static int64_t qpcFreq = 0;
-        if (qpcFreq == 0) {
-            LARGE_INTEGER f;
-            QueryPerformanceFrequency(&f);
-            qpcFreq = f.QuadPart;
+        if (frameCount % 300 == 0) {
+             SharedMemoryLayout *shm = ipc ? ipc->GetSharedMem() : nullptr;
+             
+             // Convert timing to microseconds
+             int64_t overlayUs = (g_Timing.overlayTime * 1000000) / qpcFreq;
+             int64_t captureUs = (g_Timing.captureTime * 1000000) / qpcFreq;
+             int64_t prerenderUs = (g_Timing.prerenderTime * 1000000) / qpcFreq;
+             
+             EarlyLog("DX9: Performance (Frame %d). Overlay: %lld us, WaitPrerender: %lld us, Capture: %lld us", 
+                      frameCount, overlayUs, prerenderUs, captureUs);
         }
-        LARGE_INTEGER qpc;
+
+        // Update performance metrics
         QueryPerformanceCounter(&qpc);
         int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
 
@@ -1035,6 +1155,23 @@ static void PresentBegin(IDirect3DDevice9 *device, IDirect3DSurface9 *&backBuffe
 }
 
 static void PresentEnd(IDirect3DDevice9 *device, IDirect3DSurface9 *backBuffer) {
+    if (g_PresentRecurse == 1) {
+        static int64_t qpcFreq = 0;
+        if (qpcFreq == 0) {
+            LARGE_INTEGER f;
+            QueryPerformanceFrequency(&f);
+            qpcFreq = f.QuadPart;
+        }
+        LARGE_INTEGER qpc;
+        QueryPerformanceCounter(&qpc);
+        int64_t totalTime = qpc.QuadPart - g_Timing.startTime;
+        int64_t totalUs = (totalTime * 1000000) / qpcFreq;
+        
+        // Log if total overhead is excessive (> 5ms)
+        if (totalUs > 5000) {
+            HookLog(LogLevel::Warn, "DX9: High Present Overhead detected: %lld us", totalUs);
+        }
+    }
     g_PresentRecurse--;
 }
 
@@ -1112,8 +1249,10 @@ static HRESULT STDMETHODCALLTYPE DetourReset(
     // Cleanup capture resources
     g_DX9Capture.Cleanup();
     
-    // VSync Override
+    // Config Overrides
     if (pPresentationParameters) {
+        EarlyLog("DX9: Reset: Requested MSAA Type=%d, Quality=%d", pPresentationParameters->MultiSampleType, pPresentationParameters->MultiSampleQuality);
+
         VSyncOverride vsync = GetVSyncOverride();
         if (vsync.shouldOverride) {
             pPresentationParameters->PresentationInterval = (UINT)vsync.presentInterval;
@@ -1142,6 +1281,10 @@ static HRESULT STDMETHODCALLTYPE DetourReset(
 
     HRESULT hr = oReset(device, pPresentationParameters);
     
+    if (SUCCEEDED(hr) && pPresentationParameters) {
+        EarlyLog("DX9: Reset SUCCESS: Final MSAA Type=%d, Quality=%d", pPresentationParameters->MultiSampleType, pPresentationParameters->MultiSampleQuality);
+    }
+    
     // Recreate ImGui resources after reset
     if (g_ImGuiInitialized && SUCCEEDED(hr)) {
         ImGui_ImplDX9_CreateDeviceObjects();
@@ -1166,8 +1309,10 @@ static HRESULT STDMETHODCALLTYPE DetourResetEx(
     // Cleanup capture resources
     g_DX9Capture.Cleanup();
     
-    // VSync Override
+    // Config Overrides
     if (pPresentationParameters) {
+        EarlyLog("DX9: ResetEx: Requested MSAA Type=%d, Quality=%d", pPresentationParameters->MultiSampleType, pPresentationParameters->MultiSampleQuality);
+        
         VSyncOverride vsync = GetVSyncOverride();
         if (vsync.shouldOverride) {
             pPresentationParameters->PresentationInterval = (UINT)vsync.presentInterval;
@@ -1177,11 +1322,15 @@ static HRESULT STDMETHODCALLTYPE DetourResetEx(
         int count = GetActiveGraphicsConfig().backbufferCount;
         if (count >= 2 && count <= 6) {
             pPresentationParameters->BackBufferCount = (UINT)count - 1;
-            HookLog("DX9: CreateDevice: Overriding BackBufferCount to %d", count);
+            HookLog("DX9: ResetEx: Overriding BackBufferCount to %d", count);
         }
     }
 
     HRESULT hr = oResetEx(device, pPresentationParameters, pFullscreenDisplayMode);
+    
+    if (SUCCEEDED(hr) && pPresentationParameters) {
+        EarlyLog("DX9: ResetEx SUCCESS: Final MSAA Type=%d, Quality=%d", pPresentationParameters->MultiSampleType, pPresentationParameters->MultiSampleQuality);
+    }
     
     // Recreate ImGui resources after reset
     if (g_ImGuiInitialized && SUCCEEDED(hr)) {
@@ -1197,6 +1346,10 @@ static HRESULT STDMETHODCALLTYPE DetourResetEx(
 typedef HRESULT(STDMETHODCALLTYPE *CreateDevice_t)(IDirect3D9*, UINT, D3DDEVTYPE, HWND, DWORD, D3DPRESENT_PARAMETERS*, IDirect3DDevice9**);
 static CreateDevice_t oCreateDevice = nullptr;
 
+// Hook: IDirect3D9Ex::CreateDeviceEx (VTable Index 20)
+typedef HRESULT(STDMETHODCALLTYPE *CreateDeviceEx_t)(IDirect3D9Ex*, UINT, D3DDEVTYPE, HWND, DWORD, D3DPRESENT_PARAMETERS*, D3DDISPLAYMODEEX*, IDirect3DDevice9Ex**);
+static CreateDeviceEx_t oCreateDeviceEx = nullptr;
+
 // Forward declarations for detours defined below
 static HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9* device, const RECT* pSourceRect, const RECT* pDestRect, HWND hDestWindowOverride, const RGNDATA* pDirtyRegion);
 static HRESULT STDMETHODCALLTYPE DetourPresentEx(IDirect3DDevice9Ex* device, const RECT* pSourceRect, const RECT* pDestRect, HWND hDestWindowOverride, const RGNDATA* pDirtyRegion, DWORD dwFlags);
@@ -1206,49 +1359,116 @@ static HRESULT STDMETHODCALLTYPE DetourPresentSwap(IDirect3DSwapChain9* self, co
 
 // Hook: SetSamplerState
 static HRESULT STDMETHODCALLTYPE DetourSetSamplerState(IDirect3DDevice9* device, DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD Value) {
-    if (g_IPC && g_IPC->GetSharedMem()) {
-         const auto& gfx = GetActiveGraphicsConfig();
-         // Anisotropic Filtering
-        std::string af = gfx.anisotropicFiltering;
-        if (af != "default") {
-            if (Type == D3DSAMP_MAGFILTER || Type == D3DSAMP_MINFILTER) {
-                 if (af == "off") {
-                      if (Value == D3DTEXF_ANISOTROPIC) Value = D3DTEXF_LINEAR;
-                 } else {
-                      // Only force AF if the game tries to set a filter (don't force if Point/None?)
-                      // Actually users usually want to force AF over everything.
-                      Value = D3DTEXF_ANISOTROPIC;
-                 }
-            }
-            if (Type == D3DSAMP_MAXANISOTROPY) {
-                 if (af == "off") Value = 1;
-                 else if (af == "2x") Value = 2;
-                 else if (af == "4x") Value = 4;
-                 else if (af == "8x") Value = 8;
-                 else Value = 16; // 16x
-            }
-        }
-        
-        // Mip Mapping
-        std::string mip = gfx.mipMapping;
-        if (mip != "default") {
-             if (Type == D3DSAMP_MIPFILTER) {
-                  if (mip == "trilinear") Value = D3DTEXF_LINEAR;
-                  else if (mip == "bilinear") Value = D3DTEXF_POINT; // Bilinear usually implies Point Mip (or Linear Min/Mag + Point Mip)
+    const auto& act = g_Actions;
+
+    // Fast Path: Check boolean flags only
+    
+    // Anisotropic Filtering
+    if (act.overrideAniso) {
+        if (Type == D3DSAMP_MAGFILTER || Type == D3DSAMP_MINFILTER) {
+             if (act.forceLinearAniso) {
+                  if (Value == D3DTEXF_ANISOTROPIC) Value = D3DTEXF_LINEAR;
+             } else {
+                  Value = D3DTEXF_ANISOTROPIC;
              }
         }
-        
-        // Mip Bias
-        std::string bias = gfx.mipBias;
-        if (bias != "default" && Type == D3DSAMP_MIPMAPLODBIAS) {
-             try {
-                // Value is DWORD (float cast to DWORD)
-                float fBias = std::stof(bias);
-                Value = *((DWORD*)&fBias);
-             } catch (...) {}
+        if (Type == D3DSAMP_MAXANISOTROPY) {
+             Value = act.maxAnisotropy;
         }
     }
+        
+    // Mip Mapping
+    if (act.overrideMipFilter && Type == D3DSAMP_MIPFILTER) {
+         Value = act.mipFilter;
+    }
+    
+    // Mip Bias
+    if (Type == D3DSAMP_MIPMAPLODBIAS) {
+         if (act.overrideMipBias) {
+              Value = act.mipBias;
+         } else if (act.hasSGSSAA) {
+              Value = act.sgssaaBias;
+         }
+    }
+
     return oSetSamplerState(device, Sampler, Type, Value);
+}
+// Hook: SetRenderState
+static HRESULT STDMETHODCALLTYPE DetourSetRenderState(IDirect3DDevice9* device, D3DRENDERSTATETYPE State, DWORD Value) {
+    const auto& gfx = g_FrameConfig;
+    if (gfx.sgssaa) {
+        if (State == D3DRS_MULTISAMPLEANTIALIAS) {
+            Value = TRUE; // Force ON for SGSSAA
+        } else if (State == D3DRS_MULTISAMPLEMASK) {
+            Value = 0xFFFFFFFF; // Force ALL bits for SGSSAA
+        } else if ((int)State == 137) { // NVIDIA SSAA Hack
+             Value = 0x41415353;
+        }
+    }
+    return oSetRenderState(device, State, Value);
+}
+
+// Hook: CreateRenderTarget
+static HRESULT STDMETHODCALLTYPE DetourCreateRenderTarget(IDirect3DDevice9* device, UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality, BOOL Lockable, IDirect3DSurface9** ppSurface, HANDLE* pSharedHandle) {
+    if (MultiSample > 0) {
+        int samples = (int)MultiSample;
+        int currentMax = g_MaxMSAASamples.load();
+        if (samples > currentMax) {
+            g_MaxMSAASamples.store(samples);
+            EarlyLog("DX9: CreateRenderTarget: Global MSAA Level updated to %d samples (%dx%d)", samples, Width, Height);
+        } else {
+             static int logThrottle = 0;
+             if (logThrottle++ % 10 == 0) {
+                 EarlyLog("DX9: CreateRenderTarget: %dx%d Format=%d Samples=%d Quality=%d", Width, Height, (int)Format, (int)MultiSample, (int)MultisampleQuality);
+             }
+        }
+    }
+    return oCreateRenderTarget(device, Width, Height, Format, MultiSample, MultisampleQuality, Lockable, ppSurface, pSharedHandle);
+}
+
+// Hook: CreateOffscreenPlainSurface
+static HRESULT STDMETHODCALLTYPE DetourCreateOffscreenPlainSurface(IDirect3DDevice9* device, UINT Width, UINT Height, D3DFORMAT Format, D3DPOOL Pool, IDirect3DSurface9** ppSurface, HANDLE* pSharedHandle) {
+    // Usually not multisampled, but logging for completeness if needed
+    return oCreateOffscreenPlainSurface(device, Width, Height, Format, Pool, ppSurface, pSharedHandle);
+}
+
+// Hook: SetRenderTarget
+static HRESULT STDMETHODCALLTYPE DetourSetRenderTarget(IDirect3DDevice9* device, DWORD RenderTargetIndex, IDirect3DSurface9* pNewRenderTarget) {
+    HRESULT hr = oSetRenderTarget(device, RenderTargetIndex, pNewRenderTarget);
+
+    // Context-Aware SGSSAA: Activate ONLY when the game actively binds an MSAA surface to index 0
+    if (SUCCEEDED(hr) && RenderTargetIndex == 0 && pNewRenderTarget) {
+        D3DSURFACE_DESC desc;
+        // Check surface description once
+        if (SUCCEEDED(pNewRenderTarget->GetDesc(&desc)) && desc.MultiSampleType > 0) {
+             const auto& gfx = g_FrameConfig;
+             if (gfx.sgssaa) {
+                 float bias = 0.0f;
+                 int samples = (int)desc.MultiSampleType;
+                 
+                 // We pass "d" for default method, but override samples with the actual surface count
+                 if (GetSGSSAABias(true, "d", bias, samples)) {
+                     // 1. Force LOD Bias
+                     DWORD dwBias = *((DWORD*)&bias);
+                     for (DWORD i = 0; i < 4; i++) { 
+                         oSetSamplerState(device, i, D3DSAMP_MIPMAPLODBIAS, dwBias);
+                     }
+                     // 2. Force Render States
+                     oSetRenderState(device, D3DRS_MULTISAMPLEANTIALIAS, TRUE);
+                     oSetRenderState(device, D3DRS_MULTISAMPLEMASK, 0xFFFFFFFF);
+                     // 3. Fallback Hack
+                     oSetRenderState(device, (D3DRENDERSTATETYPE)137, 0x41415353);
+                     
+                     // Log throttled
+                     static int logThrottle = 0;
+                     if (logThrottle++ % 600 == 0) { 
+                         EarlyLog("DX9: SetRenderTarget: ACTIVATE SGSSAA applied! (Bias %.2f, Samples %d)", bias, samples);
+                     }
+                 }
+            }
+        }
+    }
+    return hr;
 }
 
 static void InstallDeviceHooks(IDirect3DDevice9* device) {
@@ -1265,13 +1485,7 @@ static void InstallDeviceHooks(IDirect3DDevice9* device) {
         }
     }
     
-    // 2b. Hook SetSamplerState (69)
-    if (!oSetSamplerState) {
-        if (MH_CreateHook((void*)vtable[69], (void*)&DetourSetSamplerState, (void**)&oSetSamplerState) == MH_OK) {
-            MH_EnableHook((void*)vtable[69]);
-            EarlyLog("DX9: SetSamplerState hook installed");
-        }
-    }
+    // High-frequency hooks disabled for performance reasons (SGSSAA deprecated)
 
     // 3. Check for IDirect3DDevice9Ex functions and hook them
     // 3. Check for IDirect3DDevice9Ex functions and hook them
@@ -1331,9 +1545,9 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDevice(
     EarlyLog("DX9: IDirect3D9::CreateDevice called (hFocusWindow=%p)", hFocusWindow);
     
     // VSync Override for CreateDevice
-    // VSync Override for CreateDevice
-    // VSync Override for CreateDevice
     if (pPresentationParameters) {
+        EarlyLog("DX9: CreateDevice: Requested MSAA Type=%d, Quality=%d", pPresentationParameters->MultiSampleType, pPresentationParameters->MultiSampleQuality);
+        
         VSyncOverride vsync = GetVSyncOverride();
         if (vsync.shouldOverride) {
             pPresentationParameters->PresentationInterval = (UINT)vsync.presentInterval;
@@ -1351,9 +1565,18 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDevice(
     }
 
     HRESULT hr = oCreateDevice(self, Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters, ppReturnedDeviceInterface);
-    if (SUCCEEDED(hr) && ppReturnedDeviceInterface && *ppReturnedDeviceInterface) {
-        EarlyLog("DX9: CreateDevice succeeded -> %p", *ppReturnedDeviceInterface);
-        InstallDeviceHooks(*ppReturnedDeviceInterface);
+    if (SUCCEEDED(hr)) {
+        if (pPresentationParameters) {
+            int samples = (int)pPresentationParameters->MultiSampleType;
+            if (samples > g_MaxMSAASamples.load()) {
+                g_MaxMSAASamples.store(samples);
+            }
+            EarlyLog("DX9: CreateDevice SUCCESS: Final MSAA Type=%d, Quality=%d", pPresentationParameters->MultiSampleType, pPresentationParameters->MultiSampleQuality);
+        }
+        if (ppReturnedDeviceInterface && *ppReturnedDeviceInterface) {
+            EarlyLog("DX9: CreateDevice succeeded -> %p", *ppReturnedDeviceInterface);
+            InstallDeviceHooks(*ppReturnedDeviceInterface);
+        }
     }
     return hr;
 }
@@ -1378,6 +1601,46 @@ static IDirect3D9* WINAPI DetourDirect3DCreate9(UINT SDKVersion) {
     return d3d9;
 }
 
+// Hook: IDirect3D9Ex::CreateDeviceEx
+static HRESULT STDMETHODCALLTYPE DetourCreateDeviceEx(IDirect3D9Ex* self, UINT Adapter, D3DDEVTYPE DeviceType, HWND hFocusWindow, DWORD BehaviorFlags, D3DPRESENT_PARAMETERS* pPresentationParameters, D3DDISPLAYMODEEX* pFullscreenDisplayMode, IDirect3DDevice9Ex** ppReturnedDeviceInterface) {
+    EarlyLog("DX9: CreateDeviceEx called (hFocusWindow=%p)", hFocusWindow);
+
+    if (pPresentationParameters) {
+        EarlyLog("DX9: CreateDeviceEx: Requested MSAA Type=%d, Quality=%d", pPresentationParameters->MultiSampleType, pPresentationParameters->MultiSampleQuality);
+
+        VSyncOverride vsync = GetVSyncOverride();
+        if (vsync.shouldOverride) {
+            pPresentationParameters->PresentationInterval = (UINT)vsync.presentInterval;
+        }
+
+        // Backbuffer Count Override
+        int count = GetActiveGraphicsConfig().backbufferCount;
+        if (count >= 2 && count <= 6) {
+            pPresentationParameters->BackBufferCount = (UINT)count - 1;
+            HookLog("DX9: CreateDeviceEx: Overriding BackBufferCount to %d", count);
+        }
+
+        // MSAA Override
+        ApplyMSAAOverride(self, Adapter, DeviceType, pPresentationParameters);
+    }
+
+    HRESULT hr = oCreateDeviceEx(self, Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters, pFullscreenDisplayMode, ppReturnedDeviceInterface);
+    if (SUCCEEDED(hr)) {
+        if (pPresentationParameters) {
+            int samples = (int)pPresentationParameters->MultiSampleType;
+            if (samples > g_MaxMSAASamples.load()) {
+                g_MaxMSAASamples.store(samples);
+            }
+            EarlyLog("DX9: CreateDeviceEx SUCCESS: Final MSAA Type=%d, Quality=%d", pPresentationParameters->MultiSampleType, pPresentationParameters->MultiSampleQuality);
+        }
+        if (ppReturnedDeviceInterface && *ppReturnedDeviceInterface) {
+            EarlyLog("DX9: CreateDeviceEx succeeded -> %p", *ppReturnedDeviceInterface);
+            InstallDeviceHooks(*ppReturnedDeviceInterface);
+        }
+    }
+    return hr;
+}
+
 // Hook: Direct3DCreate9Ex (Export)
 static Direct3DCreate9Ex_t oDirect3DCreate9Ex = nullptr;
 
@@ -1386,10 +1649,20 @@ static HRESULT WINAPI DetourDirect3DCreate9Ex(UINT SDKVersion, IDirect3D9Ex **pp
     HRESULT hr = oDirect3DCreate9Ex(SDKVersion, ppOut);
     if (SUCCEEDED(hr) && ppOut && *ppOut) {
         uintptr_t *vtable = *(uintptr_t**)*ppOut;
+        
+        // Hook CreateDevice (16)
         if (!oCreateDevice) {
             if (MH_CreateHook((void*)vtable[16], (void*)&DetourCreateDevice, (void**)&oCreateDevice) == MH_OK) {
                 MH_EnableHook((void*)vtable[16]);
                 EarlyLog("DX9: IDirect3D9::CreateDevice hook installed via Create9Ex");
+            }
+        }
+        
+        // Hook CreateDeviceEx (20)
+        if (!oCreateDeviceEx) {
+            if (MH_CreateHook((void*)vtable[20], (void*)&DetourCreateDeviceEx, (void**)&oCreateDeviceEx) == MH_OK) {
+                MH_EnableHook((void*)vtable[20]);
+                EarlyLog("DX9: IDirect3D9Ex::CreateDeviceEx hook installed via Create9Ex");
             }
         }
     }

@@ -22,9 +22,9 @@ inline bool GetSGSSAABias(bool sgssaa, const char* msaa, float& outBias, int ove
             // No forced MSAA, so we can't do SGSSAA (unless the game natively uses MSAA, which we can't easily detect globally here)
             // But if overrideSampleCount is 0, we assume we are checking against the forced setting.
             return false;
-        } else if (strcmp(msaa, "2x") == 0) samples = 2;
-        else if (strcmp(msaa, "4x") == 0) samples = 4;
-        else if (strcmp(msaa, "8x") == 0) samples = 8;
+        } else if (strcmp(msaa, "2x") == 0 || strcmp(msaa, "2") == 0) samples = 2;
+        else if (strcmp(msaa, "4x") == 0 || strcmp(msaa, "4") == 0) samples = 4;
+        else if (strcmp(msaa, "8x") == 0 || strcmp(msaa, "8") == 0) samples = 8;
     }
 
     if (samples <= 1) return false;

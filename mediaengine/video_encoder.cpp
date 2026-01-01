@@ -245,35 +245,6 @@ bool VideoEncoder::Init(const VideoConfig &config, int width, int height,
   }
   DLL_Log("[VideoEncoder] Step 6 done, codecCtx=%p", (void *)codecCtx);
 
-  DLL_Log("[VideoEncoder] Step 7: Setting codec context parameters");
-  codecCtx->width = width;
-  codecCtx->height = height;
-  codecCtx->time_base = {1, fps};
-  codecCtx->framerate = {fps, 1};
-  codecCtx->pix_fmt =
-      this->currentIsHDR
-          ? AV_PIX_FMT_P010
-          : AV_PIX_FMT_D3D11; // P010 for HDR, NV12 (D3D11) for SDR
-
-  DLL_Log("[VideoEncoder] Step 8: Setting color properties (HDR=%d)",
-          this->currentIsHDR);
-  if (this->currentIsHDR) {
-    codecCtx->color_range = AVCOL_RANGE_MPEG; // Limited range usually
-    codecCtx->color_primaries = AVCOL_PRI_BT2020;
-    codecCtx->color_trc = AVCOL_TRC_SMPTE2084; // PQ
-    codecCtx->colorspace = AVCOL_SPC_BT2020_NCL;
-    DLL_Log("[VideoEncoder] Configured for Rec.2100 PQ (HDR)");
-  } else {
-    codecCtx->color_range = AVCOL_RANGE_MPEG;
-    codecCtx->color_primaries = AVCOL_PRI_BT709;
-    codecCtx->color_trc = AVCOL_TRC_BT709;
-    codecCtx->colorspace = AVCOL_SPC_BT709;
-  }
-
-  DLL_Log("[VideoEncoder] Step 9: Setting bitrate and flags");
-  codecCtx->bit_rate = 75000000;
-  codecCtx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-
   // Store config for use in EnsureDevice()
   savedConfig = config;
 
@@ -402,6 +373,180 @@ bool VideoEncoder::CreateSharedCaptureTextures(uint32_t w, uint32_t h,
   }
 
   sharedCaptureTexturesCreated = true;
+  return true;
+}
+
+bool VideoEncoder::ConfigureAndOpenCodec() {
+  if (!codecCtx || !fmtCtx) {
+    DLL_Log("[VideoEncoder] ConfigureAndOpenCodec: Missing context(s)");
+    return false;
+  }
+
+  const AVCodec *codec = codecCtx->codec;
+  if (!codec) {
+    codec = avcodec_find_encoder_by_name(savedConfig.encoder.c_str());
+    if (!codec) {
+        DLL_Log("[VideoEncoder] ConfigureAndOpenCodec: Codec not found");
+        return false;
+    }
+  }
+
+  // Build encoder options from savedConfig
+  AVDictionary *opts = nullptr;
+
+  // Log all config settings for debugging
+  DLL_Log("[VideoEncoder] ===== ENCODER SETTINGS FROM CONFIG =====");
+  DLL_Log("[VideoEncoder] encoder=%s", savedConfig.encoder.c_str());
+  DLL_Log("[VideoEncoder] fps=%d", savedConfig.fps);
+  DLL_Log("[VideoEncoder] preset=%s", savedConfig.preset.c_str());
+  DLL_Log("[VideoEncoder] tuning=%s", savedConfig.tuning.c_str());
+  DLL_Log("[VideoEncoder] rate_control=%s", savedConfig.rateControl.c_str());
+  DLL_Log("[VideoEncoder] bitrate=%s", savedConfig.bitrate.c_str());
+  DLL_Log("[VideoEncoder] max_bitrate=%s", savedConfig.maxBitrate.c_str());
+  DLL_Log("[VideoEncoder] profile=%s", savedConfig.profile.c_str());
+  DLL_Log("[VideoEncoder] lookahead=%s",
+          savedConfig.lookahead ? "true" : "false");
+  DLL_Log("[VideoEncoder] aq=%s", savedConfig.aq ? "true" : "false");
+  DLL_Log("[VideoEncoder] b_frames=%d", savedConfig.bFrames);
+  DLL_Log("[VideoEncoder] multipass=%s", savedConfig.multipass.c_str());
+  DLL_Log("[VideoEncoder] keyframe_interval=%d", savedConfig.keyframeInterval);
+  DLL_Log("[VideoEncoder] qp=%d", savedConfig.qp);
+  DLL_Log("[VideoEncoder] ==============================================");
+
+  // Check encoder type for option compatibility
+  bool isAv1 = (savedConfig.encoder.find("av1") != std::string::npos);
+  bool isMF = (savedConfig.encoder.find("_mf") != std::string::npos);
+  bool isNVENC = (savedConfig.encoder.find("_nvenc") != std::string::npos);
+
+  // Apply preset (p1-p7 for NVENC, speed/quality for AMF/QSV - NOT for MF)
+  if (!isMF && !savedConfig.preset.empty()) {
+    av_dict_set(&opts, "preset", savedConfig.preset.c_str(), 0);
+  }
+
+  // Apply tuning (NVENC only)
+  if (isNVENC && !savedConfig.tuning.empty()) {
+    av_dict_set(&opts, "tune", savedConfig.tuning.c_str(), 0);
+  }
+
+  // Set color properties before profile selection
+  if (currentIsHDR) {
+    codecCtx->color_range = AVCOL_RANGE_MPEG;
+    codecCtx->color_primaries = AVCOL_PRI_BT2020;
+    codecCtx->color_trc = AVCOL_TRC_SMPTE2084;
+    codecCtx->colorspace = AVCOL_SPC_BT2020_NCL;
+    codecCtx->pix_fmt = AV_PIX_FMT_P010;
+  } else {
+    codecCtx->color_range = AVCOL_RANGE_MPEG;
+    codecCtx->color_primaries = AVCOL_PRI_BT709;
+    codecCtx->color_trc = AVCOL_TRC_BT709;
+    codecCtx->colorspace = AVCOL_SPC_BT709;
+    codecCtx->pix_fmt = AV_PIX_FMT_D3D11;
+  }
+
+  // Apply rate control mode
+  if (!isMF && !savedConfig.rateControl.empty()) {
+    std::string rc = savedConfig.rateControl;
+    if (rc == "VBR") rc = "vbr";
+    else if (rc == "CBR") rc = "cbr";
+    else if (rc == "CQ" || rc == "CQP" || rc == "constqp") rc = "constqp";
+    av_dict_set(&opts, "rc", rc.c_str(), 0);
+
+    if (isNVENC && (savedConfig.rateControl == "CQ" || savedConfig.rateControl == "CQP")) {
+      av_dict_set_int(&opts, "qp", savedConfig.qp, 0);
+      DLL_Log("[VideoEncoder] Applied NVENC qp=%d for CQ mode", savedConfig.qp);
+    }
+  }
+
+  // Bitrate and max bitrate
+  if (!savedConfig.bitrate.empty()) {
+    std::string br = savedConfig.bitrate;
+    int64_t bitrate_val = 0;
+    if (br.find("Mbps") != std::string::npos) bitrate_val = std::stoll(br.substr(0, br.find("Mbps"))) * 1000000;
+    else if (br.find("Kbps") != std::string::npos) bitrate_val = std::stoll(br.substr(0, br.find("Kbps"))) * 1000;
+    else try { bitrate_val = std::stoll(br); } catch(...) {}
+    if (bitrate_val > 0) codecCtx->bit_rate = bitrate_val;
+  }
+
+  if (!savedConfig.maxBitrate.empty()) {
+    std::string maxbr = savedConfig.maxBitrate;
+    int64_t maxbitrate_val = 0;
+    if (maxbr.find("Mbps") != std::string::npos) maxbitrate_val = std::stoll(maxbr.substr(0, maxbr.find("Mbps"))) * 1000000;
+    else if (maxbr.find("Kbps") != std::string::npos) maxbitrate_val = std::stoll(maxbr.substr(0, maxbr.find("Kbps"))) * 1000;
+    else try { maxbitrate_val = std::stoll(maxbr); } catch(...) {}
+    if (maxbitrate_val > 0) codecCtx->rc_max_rate = maxbitrate_val;
+  }
+
+  if (isNVENC) {
+    av_dict_set(&opts, "rc-lookahead", savedConfig.lookahead ? "32" : "0", 0);
+    if (!isAv1 && savedConfig.aq) {
+      av_dict_set(&opts, "spatial-aq", "1", 0);
+      av_dict_set(&opts, "temporal-aq", "1", 0);
+    }
+    if (!savedConfig.multipass.empty() && savedConfig.multipass != "disabled") {
+      av_dict_set(&opts, "multipass", savedConfig.multipass.c_str(), 0);
+    }
+  }
+
+  codecCtx->max_b_frames = (luidLow == 0 && luidHigh == 0) ? 0 : savedConfig.bFrames;
+  if (savedConfig.keyframeInterval > 0) {
+    codecCtx->gop_size = savedConfig.fps * savedConfig.keyframeInterval;
+  }
+
+  if (!isMF) {
+    std::string profileToUse = savedConfig.profile;
+    if (profileToUse == "auto" || profileToUse.empty()) {
+      bool isH264 = savedConfig.encoder.find("264") != std::string::npos;
+      bool isHEVC = savedConfig.encoder.find("hevc") != std::string::npos || savedConfig.encoder.find("265") != std::string::npos;
+      if (isH264) profileToUse = "high";
+      else if (isHEVC) profileToUse = (codecCtx->color_primaries == AVCOL_PRI_BT2020) ? "main10" : "main";
+    }
+    if (!profileToUse.empty() && !isAv1) av_dict_set(&opts, "profile", profileToUse.c_str(), 0);
+  }
+
+  if (isMF) {
+    if (!savedConfig.mfRateControl.empty()) av_dict_set(&opts, "rate_control", savedConfig.mfRateControl.c_str(), 0);
+    if (savedConfig.mfQuality >= 0 && savedConfig.mfQuality <= 100) av_dict_set_int(&opts, "quality", savedConfig.mfQuality, 0);
+    if (!savedConfig.mfScenario.empty()) av_dict_set(&opts, "scenario", savedConfig.mfScenario.c_str(), 0);
+    av_dict_set_int(&opts, "hw_encoding", savedConfig.mfHwEncoding ? 1 : 0, 0);
+  }
+
+  if (savedConfig.useVFR) {
+    codecCtx->time_base = {1, 1000000};
+    codecCtx->framerate = {savedConfig.fps, 1};
+  } else {
+    codecCtx->time_base = {1, savedConfig.fps};
+    codecCtx->framerate = {savedConfig.fps, 1};
+  }
+  
+  codecCtx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+
+  DLL_Log("[VideoEncoder] Opening Codec with options...");
+  int ret = avcodec_open2(codecCtx, codec, &opts);
+  if (opts) av_dict_free(&opts);
+
+  if (ret < 0) {
+    char errbuf[AV_ERROR_MAX_STRING_SIZE];
+    av_strerror(ret, errbuf, AV_ERROR_MAX_STRING_SIZE);
+    DLL_Log("[VideoEncoder] Failed to open codec: %d. Error details: %s", ret, errbuf);
+    codecOpenFailed = true;
+    return false;
+  }
+
+  DLL_Log("[VideoEncoder] Codec Opened Successfully.");
+  stream = avformat_new_stream(fmtCtx, codec);
+  avcodec_parameters_from_context(stream->codecpar, codecCtx);
+  stream->time_base = codecCtx->time_base;
+  stream->avg_frame_rate = codecCtx->framerate;
+  stream->r_frame_rate = codecCtx->framerate;
+
+  for (auto &actx : audioContexts) {
+    if (actx.codecCtx) {
+      actx.streamIndex = AddAudioStream(actx.config, actx.codecCtx);
+      if (actx.streamIndex >= 0 && audioStreamIndex < 0) audioStreamIndex = actx.streamIndex;
+    }
+  }
+
+  initDone = true;
   return true;
 }
 
@@ -585,12 +730,8 @@ bool VideoEncoder::EnsureDevice() {
   d3d11FramesCtx = av_hwframe_ctx_alloc(d3d11DeviceCtx);
   AVHWFramesContext *d11Frames = (AVHWFramesContext *)d3d11FramesCtx->data;
   d11Frames->format = AV_PIX_FMT_D3D11;
-  // Output textures are NV12 after D3D11 Video Processor conversion
   d11Frames->sw_format = AV_PIX_FMT_NV12;
   
-  // Use OUTPUT dimensions for frames context (post-scaling)
-  // This is calculated later in InitVideoProcessor, but we need a reasonable
-  // default here. If scaling is configured, use those dims; otherwise use input.
   int framesWidth = width;
   int framesHeight = height;
   if (savedConfig.scaling.enabled && 
@@ -598,330 +739,22 @@ bool VideoEncoder::EnsureDevice() {
       savedConfig.scaling.outputHeight > 0) {
     framesWidth = savedConfig.scaling.outputWidth;
     framesHeight = savedConfig.scaling.outputHeight;
-    DLL_Log("[VideoEncoder] Frames context using scaled output: %dx%d",
-            framesWidth, framesHeight);
   }
   
   d11Frames->width = framesWidth;
   d11Frames->height = framesHeight;
-  d11Frames->initial_pool_size = 0; // We provide our own textures
-
-  DLL_Log("[VideoEncoder] Frames context: format=D3D11, sw_format=NV12, %dx%d",
-          framesWidth, framesHeight);
+  d11Frames->initial_pool_size = 0; 
 
   if (av_hwframe_ctx_init(d3d11FramesCtx) < 0) {
     DLL_Log("[VideoEncoder] Failed to init D3D11 frames context");
     return false;
   }
   codecCtx->hw_frames_ctx = av_buffer_ref(d3d11FramesCtx);
-
-  // RESEARCH-BASED FIX:
-  // NVIDIA/FFmpeg docs suggest "3 or more" extra frames to avoid "No decoder
-  // surfaces left" when using B-frames. A value of 5 is a safe, conservative
-  // buffer that improves resilience without triggering TDR (driver timeouts)
-  // like the previous value of 16 did.
   codecCtx->extra_hw_frames = 5;
-
-  // Update codec context dimensions to output size (post-scaling)
-  // This tells the encoder what resolution to produce
   codecCtx->width = framesWidth;
   codecCtx->height = framesHeight;
 
-  const AVCodec *codec = codecCtx->codec; // Already set in Init
-
-  // Build encoder options from savedConfig
-  AVDictionary *opts = nullptr;
-
-  // Log all config settings for debugging
-  DLL_Log("[VideoEncoder] ===== ENCODER SETTINGS FROM CONFIG =====");
-  DLL_Log("[VideoEncoder] encoder=%s", savedConfig.encoder.c_str());
-  DLL_Log("[VideoEncoder] fps=%d", savedConfig.fps);
-  DLL_Log("[VideoEncoder] preset=%s", savedConfig.preset.c_str());
-  DLL_Log("[VideoEncoder] tuning=%s", savedConfig.tuning.c_str());
-  DLL_Log("[VideoEncoder] rate_control=%s", savedConfig.rateControl.c_str());
-  DLL_Log("[VideoEncoder] bitrate=%s", savedConfig.bitrate.c_str());
-  DLL_Log("[VideoEncoder] max_bitrate=%s", savedConfig.maxBitrate.c_str());
-  DLL_Log("[VideoEncoder] profile=%s", savedConfig.profile.c_str());
-  DLL_Log("[VideoEncoder] lookahead=%s",
-          savedConfig.lookahead ? "true" : "false");
-  DLL_Log("[VideoEncoder] aq=%s", savedConfig.aq ? "true" : "false");
-  DLL_Log("[VideoEncoder] b_frames=%d", savedConfig.bFrames);
-  DLL_Log("[VideoEncoder] multipass=%s", savedConfig.multipass.c_str());
-  DLL_Log("[VideoEncoder] keyframe_interval=%d", savedConfig.keyframeInterval);
-  DLL_Log("[VideoEncoder] qp=%d", savedConfig.qp);
-  DLL_Log("[VideoEncoder] ==============================================");
-
-  // Check encoder type for option compatibility
-  bool isAv1 = (savedConfig.encoder.find("av1") != std::string::npos);
-  bool isMF = (savedConfig.encoder.find("_mf") != std::string::npos);
-  bool isNVENC = (savedConfig.encoder.find("_nvenc") != std::string::npos);
-  // bool isAMF = (savedConfig.encoder.find("_amf") != std::string::npos);
-  // bool isQSV = (savedConfig.encoder.find("_qsv") != std::string::npos);
-
-  // Apply preset (p1-p7 for NVENC, speed/quality for AMF/QSV - NOT for MF)
-  if (!isMF && !savedConfig.preset.empty()) {
-    av_dict_set(&opts, "preset", savedConfig.preset.c_str(), 0);
-  }
-
-  // Apply tuning (NVENC only)
-  if (isNVENC && !savedConfig.tuning.empty()) {
-    av_dict_set(&opts, "tune", savedConfig.tuning.c_str(), 0);
-  }
-
-  // Apply rate control mode - NVENC/AMF/QSV specific (MF uses its own
-  // rate_control)
-  if (!isMF && !savedConfig.rateControl.empty()) {
-    // NVENC uses: vbr, cbr, constqp
-    std::string rc = savedConfig.rateControl;
-    // Convert common names to FFmpeg NVENC names
-    if (rc == "VBR")
-      rc = "vbr";
-    else if (rc == "CBR")
-      rc = "cbr";
-    else if (rc == "CQ" || rc == "CQP" || rc == "constqp")
-      rc = "constqp";
-    av_dict_set(&opts, "rc", rc.c_str(), 0);
-
-    // Apply QP value for CQ (Constant Quality) mode on NVENC
-    if (isNVENC &&
-        (savedConfig.rateControl == "CQ" || savedConfig.rateControl == "CQP")) {
-      av_dict_set_int(&opts, "qp", savedConfig.qp, 0);
-      DLL_Log("[VideoEncoder] Applied NVENC qp=%d for CQ mode", savedConfig.qp);
-    }
-  }
-
-  // Parse and apply bitrate (universal - works for all encoders)
-  if (!savedConfig.bitrate.empty()) {
-    std::string br = savedConfig.bitrate;
-    int64_t bitrate_val = 0;
-    if (br.find("Mbps") != std::string::npos) {
-      bitrate_val = std::stoll(br.substr(0, br.find("Mbps"))) * 1000000;
-    } else if (br.find("Kbps") != std::string::npos) {
-      bitrate_val = std::stoll(br.substr(0, br.find("Kbps"))) * 1000;
-    } else {
-      bitrate_val = std::stoll(br);
-    }
-    if (bitrate_val > 0) {
-      codecCtx->bit_rate = bitrate_val;
-      DLL_Log("[VideoEncoder] Applied bitrate: %lld bps", bitrate_val);
-    }
-  }
-
-  // Parse and apply max bitrate (universal)
-  if (!savedConfig.maxBitrate.empty()) {
-    std::string maxbr = savedConfig.maxBitrate;
-    int64_t maxbitrate_val = 0;
-    if (maxbr.find("Mbps") != std::string::npos) {
-      maxbitrate_val =
-          std::stoll(maxbr.substr(0, maxbr.find("Mbps"))) * 1000000;
-    } else if (maxbr.find("Kbps") != std::string::npos) {
-      maxbitrate_val = std::stoll(maxbr.substr(0, maxbr.find("Kbps"))) * 1000;
-    } else {
-      maxbitrate_val = std::stoll(maxbr);
-    }
-    if (maxbitrate_val > 0) {
-      codecCtx->rc_max_rate = maxbitrate_val;
-      DLL_Log("[VideoEncoder] Applied max_bitrate: %lld bps", maxbitrate_val);
-    }
-  }
-
-  // Apply rc-lookahead - NVENC only
-  if (isNVENC) {
-    if (savedConfig.lookahead) {
-      av_dict_set(&opts, "rc-lookahead", "32", 0);
-    } else {
-      av_dict_set(&opts, "rc-lookahead", "0", 0);
-    }
-  }
-
-  // Apply AQ (Adaptive Quantization) - NVENC H.264/HEVC only
-  if (isNVENC && !isAv1 && savedConfig.aq) {
-    av_dict_set(&opts, "spatial-aq", "1", 0);
-    av_dict_set(&opts, "temporal-aq", "1", 0);
-  }
-
-  // Apply B-frames (universal)
-  codecCtx->max_b_frames = savedConfig.bFrames;
-
-  // FRAMEGRAB FIX: Force no B-frames for framegrab mode to avoid encoder timing
-  // issues The encoder's B-frame lookahead causes incorrect PTS values in
-  // output packets
-  if (luidLow == 0 && luidHigh == 0) {
-    codecCtx->max_b_frames = 0;
-    DLL_Log("[VideoEncoder] Framegrab: Forcing max_b_frames=0 for stability");
-  }
-
-  // Apply multipass - NVENC only
-  if (isNVENC && !savedConfig.multipass.empty() &&
-      savedConfig.multipass != "disabled") {
-    av_dict_set(&opts, "multipass", savedConfig.multipass.c_str(), 0);
-  }
-
-  // Apply keyframe interval (GOP size) - universal
-  if (savedConfig.keyframeInterval > 0) {
-    codecCtx->gop_size = savedConfig.fps * savedConfig.keyframeInterval;
-    DLL_Log("[VideoEncoder] Applied gop_size: %d (keyframe every %d seconds)",
-            codecCtx->gop_size, savedConfig.keyframeInterval);
-  }
-
-  // Apply profile - H.264/HEVC only (not AV1, not MF)
-  // Profile selection logic for "auto":
-  //   H.264: high (best quality for SDR)
-  //   HEVC SDR: main, HEVC HDR: main10
-  //   AV1: main (always, no need to set explicitly)
-  if (!isMF) {
-    std::string profileToUse = savedConfig.profile;
-
-    if (profileToUse == "auto" || profileToUse.empty()) {
-      bool isH264 = savedConfig.encoder.find("264") != std::string::npos;
-      bool isHEVC = savedConfig.encoder.find("hevc") != std::string::npos ||
-                    savedConfig.encoder.find("265") != std::string::npos;
-
-      if (isH264) {
-        profileToUse = "high"; // H.264 High profile for best SDR quality
-        DLL_Log("[VideoEncoder] Auto profile: H.264 → high");
-      } else if (isHEVC) {
-        // Check if HDR by looking at color primaries (BT.2020 = HDR)
-        if (codecCtx->color_primaries == AVCOL_PRI_BT2020) {
-          profileToUse = "main10"; // HEVC with HDR needs 10-bit
-          DLL_Log("[VideoEncoder] Auto profile: HEVC HDR → main10");
-        } else {
-          profileToUse = "main"; // HEVC SDR
-          DLL_Log("[VideoEncoder] Auto profile: HEVC SDR → main");
-        }
-      } else if (isAv1) {
-        // AV1: main profile is implicit, no need to set
-        DLL_Log("[VideoEncoder] Auto profile: AV1 → main (implicit)");
-        profileToUse = ""; // Don't set for AV1
-      }
-    }
-
-    if (!profileToUse.empty() && !isAv1) {
-      av_dict_set(&opts, "profile", profileToUse.c_str(), 0);
-    }
-  }
-
-  // Apply Media Foundation encoder settings (h264_mf, hevc_mf, av1_mf)
-  if (isMF) {
-    DLL_Log("[VideoEncoder] ===== MEDIA FOUNDATION SETTINGS =====");
-    DLL_Log("[VideoEncoder] mf_rate_control=%s",
-            savedConfig.mfRateControl.c_str());
-    DLL_Log("[VideoEncoder] mf_quality=%d", savedConfig.mfQuality);
-    DLL_Log("[VideoEncoder] mf_scenario=%s", savedConfig.mfScenario.c_str());
-    DLL_Log("[VideoEncoder] mf_hw_encoding=%s",
-            savedConfig.mfHwEncoding ? "true" : "false");
-    DLL_Log("[VideoEncoder] ======================================");
-
-    // Apply MF rate control mode
-    // MF options: cbr(0), pc_vbr(1), u_vbr(2), quality(3), ld_vbr(4),
-    // g_vbr(5)
-    if (!savedConfig.mfRateControl.empty()) {
-      av_dict_set(&opts, "rate_control", savedConfig.mfRateControl.c_str(), 0);
-    }
-
-    // Apply MF quality (0-100)
-    if (savedConfig.mfQuality >= 0 && savedConfig.mfQuality <= 100) {
-      av_dict_set_int(&opts, "quality", savedConfig.mfQuality, 0);
-    }
-
-    // Apply MF scenario
-    if (!savedConfig.mfScenario.empty()) {
-      av_dict_set(&opts, "scenario", savedConfig.mfScenario.c_str(), 0);
-    }
-
-    // Apply MF hardware encoding flag
-    av_dict_set_int(&opts, "hw_encoding", savedConfig.mfHwEncoding ? 1 : 0, 0);
-  }
-
-  // Apply custom options
-  if (!savedConfig.customOptions.empty()) {
-    DLL_Log("[VideoEncoder] Applying custom options: %s",
-            savedConfig.customOptions.c_str());
-    // Parse key=value pairs separated by spaces or semicolons
-    // For now, log a warning - custom options need more parsing
-  }
-
-  // Note: "delay" and "zerolatency" are x264-specific options.
-  // NVENC uses "zerolatency" tuning instead. Don't set these for NVENC.
-
-  // VFR Support: Update time_base for precision
-  if (savedConfig.useVFR) {
-    codecCtx->time_base = {1, 1000000}; // Microseconds (High Precision)
-    codecCtx->framerate = {savedConfig.fps, 1}; // Target Max FPS (signaling)
-    DLL_Log("[VideoEncoder] VFR Mode Enabled. Timebase set to 1us.");
-  } else {
-    // CFR: Use standard 1/FPS timebase
-    codecCtx->time_base = {1, savedConfig.fps};
-    codecCtx->framerate = {savedConfig.fps, 1};
-  }
-
-  DLL_Log("[VideoEncoder] Opening Codec with options...");
-  int ret = avcodec_open2(codecCtx, codec, &opts);
-
-  // Check for any unused options (indicates unsupported options)
-  if (opts) {
-    AVDictionaryEntry *entry = nullptr;
-    while ((entry = av_dict_get(opts, "", entry, AV_DICT_IGNORE_SUFFIX))) {
-      DLL_Log("[VideoEncoder] WARNING: Unused option: %s=%s", entry->key,
-              entry->value);
-    }
-    av_dict_free(&opts);
-  }
-
-  if (ret < 0) {
-    char errbuf[AV_ERROR_MAX_STRING_SIZE];
-    av_strerror(ret, errbuf, AV_ERROR_MAX_STRING_SIZE);
-    DLL_Log("[VideoEncoder] Failed to open codec: %d. Error details: %s", ret,
-            errbuf);
-    codecOpenFailed = true; // Prevent infinite retry loop
-    return false;
-  }
-  DLL_Log("[VideoEncoder] Codec Opened Successfully.");
-  DLL_Log("[VideoEncoder] FINAL: bitrate=%lld, max_rate=%lld, gop=%d, "
-          "max_b_frames=%d",
-          codecCtx->bit_rate, codecCtx->rc_max_rate, codecCtx->gop_size,
-          codecCtx->max_b_frames);
-
-  stream = avformat_new_stream(fmtCtx, codec);
-  avcodec_parameters_from_context(stream->codecpar, codecCtx);
-
-  // Set stream time_base and avg_frame_rate for proper FPS metadata
-  stream->time_base = codecCtx->time_base;
-  stream->avg_frame_rate = codecCtx->framerate;
-  stream->r_frame_rate = codecCtx->framerate; // Real base frame rate
-  DLL_Log("[VideoEncoder] Stream configured: time_base=%d/%d, fps=%d/%d",
-          stream->time_base.num, stream->time_base.den,
-          stream->avg_frame_rate.num, stream->avg_frame_rate.den);
-
-  // Add audio stream AFTER video stream to ensure correct stream indices
-  // (video=0, audio=1, audio=2, ...)
-  // Support multiple audio streams for different tracks
-  if (!audioContexts.empty()) {
-    for (auto &actx : audioContexts) {
-      if (actx.codecCtx) {
-        actx.streamIndex = AddAudioStream(actx.config, actx.codecCtx);
-        if (actx.streamIndex >= 0) {
-          DLL_Log("[VideoEncoder] Added audio stream at index %d for track %d",
-                  actx.streamIndex, actx.track);
-        }
-      }
-    }
-    // For backward compatibility, set audioStreamIndex to first stream
-    if (!audioContexts.empty() && audioContexts[0].streamIndex >= 0) {
-      audioStreamIndex = audioContexts[0].streamIndex;
-    }
-  } else if (savedAudioCodecCtx) {
-    // Fallback for legacy single-source mode
-    audioStreamIndex = AddAudioStream(savedAudioConfig, savedAudioCodecCtx);
-    if (audioStreamIndex >= 0) {
-      DLL_Log(
-          "[VideoEncoder] Added audio stream at index %d after video stream",
-          audioStreamIndex);
-    }
-  }
-
-  initDone = true;
-  return true;
+  return ConfigureAndOpenCodec();
 }
 
 int VideoEncoder::AddAudioStream(const AudioConfig &config,
@@ -1058,20 +891,16 @@ bool VideoEncoder::Start() {
       return false;
     }
 
-    // Reset basic codec parameters (dimensions will be set in EnsureDevice)
     codecCtx->width = width;
     codecCtx->height = height;
-    codecCtx->time_base = {1, 120}; // Default, will be updated
-    codecCtx->framerate = {120, 1};
-    codecCtx->pix_fmt = AV_PIX_FMT_D3D11;
-    codecCtx->color_range = AVCOL_RANGE_MPEG;
-    codecCtx->color_primaries = AVCOL_PRI_BT709;
-    codecCtx->color_trc = AVCOL_TRC_BT709;
-    codecCtx->colorspace = AVCOL_SPC_BT709;
-    codecCtx->bit_rate = 75000000;
-    codecCtx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-
+    codecCtx->pix_fmt = currentIsHDR ? AV_PIX_FMT_P010 : AV_PIX_FMT_D3D11;
+    
     DLL_Log("[VideoEncoder] Recreated codec context for new recording");
+    
+    if (d3d11FramesCtx) {
+        codecCtx->hw_frames_ctx = av_buffer_ref(d3d11FramesCtx);
+        codecCtx->extra_hw_frames = 5;
+    }
   }
 
   // Reset flags that block recording if previous recording had issues
