@@ -1,0 +1,41 @@
+#pragma once
+
+#include "../common/config.h"
+#include <string>
+#include <vector>
+#include <windows.h>
+
+class InjectionManager {
+public:
+  InjectionManager(const AppConfig &config);
+  ~InjectionManager();
+
+  // Check running processes and inject if needed
+  void Update();
+
+  // Force remove injection from specific PID
+  void Eject(DWORD pid);
+
+  // Eject all
+  void EjectAll();
+
+  // Check if any process is currently injected
+  bool HasActiveInjections() const;
+
+private:
+  const AppConfig &config;
+  std::string hookDllPathX64;
+  std::string hookDllPathX86;
+
+  struct InjectedProcess {
+    DWORD pid;
+    std::string name;
+    HANDLE hProcess;
+  };
+
+  std::vector<InjectedProcess> injectedProcesses;
+
+  bool IsWhitelisted(const std::string &processName);
+  bool IsAlreadyInjected(DWORD pid);
+  bool Inject(DWORD pid, const std::string &processName);
+};

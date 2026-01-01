@@ -1,0 +1,9 @@
+#include <winuser.h>
+#include "resource.h"
+
+// Manifest resource - ID 1 is for EXE main manifest
+1 RT_MANIFEST "captureengine.manifest"
+
+// Icons
+IDI_ICON_IDLE      ICON "icon_idle.ico"
+IDI_ICON_RECORDING ICON "icon_recording.ico"

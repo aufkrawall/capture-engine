@@ -1,0 +1,43 @@
+# Build and dependency directories
+build/
+ffmpeg_build/
+external/imgui/
+external/minhook/
+external/volk/
+
+# Compiled binaries and objects
+*.o
+*.obj
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.map
+
+# Build logs
+build_log.txt
+build_error.log
+hook.log
+capture.log
+
+# IDE and temporary files
+.vs/
+.vscode/
+*.swp
+*.swo
+*.user
+*.suo
+*.orig
+*~
+bin/
+obj/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Local config
+config.ini
+testappconfig.ini

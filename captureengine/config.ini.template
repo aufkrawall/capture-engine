@@ -1,0 +1,318 @@
+; ============================================================================
+; CaptureEngine Configuration File
+; ============================================================================
+; This file contains all configuration options with their possible values.
+; Lines starting with ; are comments.
+; ============================================================================
+
+[General]
+; Enable debug logging to captureengine.log
+; Values: true, false
+debug_logging=true
+
+; Capture method to use for screen capture
+; Values: inject (DX12 hook injection), screengrab (desktop frame grab), auto (auto-detect)
+capture_method=inject
+
+[Injection]
+; Comma-separated list of executables to inject into
+; List of executables to inject into (one per line or comma-separated)
+; Use double quotes for names with spaces: "My Game.exe"
+; Leave empty to inject into all compatible processes (not recommended)
+whitelist=(
+StrangeBrigade_DX12.exe
+StrangeBrigade_Vulkan.exe
+)
+
+[Performance]
+; CPU process priority: idle, below_normal, normal, above_normal, high, realtime
+priority=normal
+
+; GPU priority for encoder (-7 to 7, 0 = normal)
+gpu_priority=0
+
+; Priority for GPU copy queue (captures): low, normal, high
+copy_queue_priority=normal
+
+[FpsLimiter]
+; Enable FPS limiter synced to recording FPS (recommended for smooth captures)
+capture_sync_enabled=true
+
+; Multiplier for capture sync (1 = match recording fps, 2 = 2x recording fps)
+capture_sync_multiplier=1
+
+; Enable general FPS limiter (independent of recording)
+general_enabled=false
+
+; Target FPS for general limiter
+general_fps=120
+
+[Graphics]
+; Force VSync mode: default (use game setting), off, fifo (on), adaptive, mailbox
+vsync_mode=default
+
+; Force Anisotropic Filtering: default, off, 2x, 4x, 8x, 16x
+anisotropic_filtering=default
+
+; Force MipMapping Filter: default, bilinear, trilinear
+mip_mapping=default
+
+; Force Mip LOD Bias: default, 0, or float value (e.g. -0.5 for sharper textures)
+mip_bias=default
+
+; Force MSAA Samples: default, off, 2x, 4x, 8x
+msaa_samples=default
+
+; CPU Prerender Limit: -1 (default), 0, 0.5, 1-6
+cpu_prerender_limit=-1
+
+; VSync Backbuffer Queue Length: 0 (default), 1, 2, 3, 4, 5, 6
+backbuffer_count=0
+
+; Enable Sparse Grid Supersampling (SGSSAA)
+sgssaa=false
+
+
+[Overlay]
+; Show recording status overlay in game
+; Values: true, false
+enabled=true
+
+; Position of the overlay on screen
+; Values: TopLeft, TopRight, BottomLeft, BottomRight
+position=TopLeft
+
+; Padding in pixels from screen edge
+padding=10
+
+; Show FPS counter in overlay
+; Values: true, false
+show_fps=true
+
+[Video]
+; ============================================================================
+; Video Encoder Settings
+; ============================================================================
+
+; Video encoder to use
+; Values: 
+;   ---- NVIDIA (Tested & Recommended) ----
+;   av1_nvenc    - NVIDIA AV1 (RTX 40+)
+;   hevc_nvenc   - NVIDIA HEVC/H.265 (GTX 10+)
+;   h264_nvenc   - NVIDIA H.264 (GTX 6+)
+;   ---- AMD (Experimental - Not Tested) ----
+;   av1_amf      - AMD AV1 (RX 7000+)
+;   hevc_amf     - AMD HEVC (RX 400+)
+;   h264_amf     - AMD H.264
+;   ---- Intel (Experimental - Not Tested) ----
+;   av1_qsv      - Intel AV1 (Arc)
+;   hevc_qsv     - Intel HEVC
+;   h264_qsv     - Intel H.264
+;   ---- Windows Media Foundation (Fallback) ----
+;   av1_mf       - AV1 (requires AV1 codec extension)
+;   hevc_mf      - HEVC (requires HEVC codec extension)
+;   h264_mf      - H.264 (always available)
+encoder=av1_mf
+
+; Target framerate in FPS
+fps=120
+
+; Container format
+; Values: mkv, mp4, mov
+container=mkv
+
+; Output directory for recordings
+; Leave empty to use the same directory as the executable
+output_dir=
+
+; Rate control mode (universal)
+; Values: VBR (variable bitrate), CBR (constant), CQ (constant quality/QP)
+rate_control=VBR
+
+; Target bitrate (for VBR/CBR)
+; Format: <number>Mbps, <number>Kbps, or raw number in bps
+bitrate=75Mbps
+
+; Maximum bitrate cap (for VBR)
+max_bitrate=150Mbps
+
+; Keyframe interval in seconds
+keyframe_interval=2
+
+; Encoder profile (codec-dependent)
+; H.264: baseline, main, high
+; HEVC: main, main10
+; AV1: main (profile not used for most AV1 encoders)
+profile=high
+
+; Number of B-frames (0 for lowest latency)
+b_frames=0
+
+; Custom encoder options (FFmpeg format, advanced users)
+; Example: -surfaces 64
+custom_options=
+
+; Capture mouse cursor in recording
+; Values: true, false
+capture_cursor=true
+
+[NVENC]
+; ============================================================================
+; NVIDIA NVENC Encoder Settings
+; ============================================================================
+; These settings apply only when using NVIDIA encoders:
+;   h264_nvenc, hevc_nvenc, av1_nvenc
+
+; Encoder preset - trading quality vs speed
+; Values: p1 (fastest) to p7 (slowest/best quality)
+preset=p1
+
+; Tuning hint for encoder optimization
+; Values:
+;   hq       - High Quality (default, best quality)
+;   ll       - Low Latency (reduced latency, good for streaming)
+;   ull      - Ultra Low Latency (minimal latency)
+;   lossless - Lossless encoding
+tuning=hq
+
+; Multipass encoding for improved quality
+; Values:
+;   disabled - Single pass (fastest)
+;   qres     - Quarter resolution first pass
+;   fullres  - Full resolution first pass (best quality)
+multipass=disabled
+
+; Quality parameter for CQ (Constant Quality) mode
+; Values: 0-51 (lower = better quality, larger files)
+; Only used when rate_control=CQ in [Video] section
+; Typical values: 18-23 for high quality, 24-28 for balanced
+qp=23
+
+; Enable lookahead for improved quality (adds latency)
+; Values: true, false
+; Lookahead depth is automatically set to 32 frames when enabled
+lookahead=false
+
+; Adaptive quantization for improved quality in complex scenes
+; Values: true, false
+; Enables both spatial and temporal AQ (not available for AV1)
+aq=false
+
+; B-frame reference mode
+; Values:
+;   disabled - No B-frame references (lowest latency)
+;   each     - Each B-frame as reference
+;   middle   - Middle B-frame as reference
+b_ref_mode=disabled
+
+[MediaFoundation]
+; ============================================================================
+; Media Foundation Encoder Settings (h264_mf, hevc_mf)
+; ============================================================================
+; These settings apply when using Windows Media Foundation encoders.
+; These are the Windows built-in encoders that work on any GPU.
+
+; Rate control mode for MF encoder
+; Values:
+;   cbr        - Constant Bitrate (uses bitrate from [Video] section)
+;   pc_vbr     - Peak Constrained VBR (uses bitrate + max_bitrate from [Video])
+;   u_vbr      - Unconstrained VBR (uses bitrate from [Video])
+;   quality    - Quality mode (uses quality setting below, ignores bitrate)
+;   ld_vbr     - Low Delay VBR (uses bitrate from [Video])
+;   g_vbr      - Global VBR (uses bitrate from [Video])
+; NOTE: For CBR/VBR modes, bitrate and max_bitrate are taken from [Video] section
+rate_control=pc_vbr
+
+; Quality target for quality-based rate control
+; Values: 0-100 (higher = better quality, larger files)
+quality=80
+
+; Usage scenario hint for encoder optimization
+; Values:
+;   live_streaming  - Optimized for streaming (low latency)
+;   archive         - Optimized for quality/storage
+;   camera_record   - Optimized for camera recording
+;   video_conference- Optimized for video calls
+scenario=live_streaming
+
+; Force hardware encoding (GPU acceleration)
+; Values: true (use GPU encoder), false (allow CPU fallback)
+hw_encoding=true
+
+[Audio]
+; ============================================================================
+; System Audio Settings (Desktop/Game Audio)
+; ============================================================================
+
+; Enable system audio capture
+; Values: true, false
+enabled=true
+
+; Audio codec
+; Values: 
+;   alac  - Apple Lossless (recommended for archival)
+;   aac   - AAC (good quality, smaller files)
+;   opus  - Opus (excellent quality/size ratio)
+;   flac  - FLAC (lossless, larger files)
+;   pcm   - Uncompressed PCM (largest files)
+codec=alac
+
+; Audio bitrate in Kbps (for lossy codecs like AAC/Opus)
+; Ignored for lossless codecs (ALAC, FLAC, PCM)
+bitrate=192
+
+; Sample rate in Hz
+; Values: default (use source rate), 44100, 48000, 96000
+sample_rate=default
+
+; Bit depth for audio samples
+; Values: default (use source depth), 16, 24, 32
+; Note: Some codecs may not support all bit depths
+bit_depth=default
+
+; Downmix surround to stereo
+; Values: true, false
+downmix=false
+
+[Microphone]
+; ============================================================================
+; Microphone Settings
+; ============================================================================
+
+; Enable microphone capture
+; Values: true, false
+enabled=false
+
+; Device name or ID (leave empty for default microphone)
+device=
+
+; Audio track number for microphone (1-8)
+; Set to different track than system audio to keep them separate
+; Set to same track as system audio to mix them together
+; Audio track index (1-8). Supports multiple tracks separated by comma, e.g. "1,2"
+track=1
+
+[AppAudio.1]
+; ============================================================================
+; Per-Application Audio Capture (Windows 11)
+; ============================================================================
+; Capture audio from a specific application instead of system-wide
+; Requires Windows 10 build 20348+ or Windows 11
+
+; Enable per-app audio capture for this source
+; Values: true, false
+enabled=false
+
+; Process name to capture audio from
+; Example: chrome.exe, Discord.exe, Spotify.exe
+process=
+
+; Audio track(s) to route this app's audio to
+; Supports multiple tracks: 1,2 routes to both track 1 and 2
+track=3
+
+[AppAudio.2]
+; Second per-app audio source (e.g., for Discord on separate track)
+enabled=false
+process=
+track=4

@@ -1,0 +1,196 @@
+#include "performance_metrics.h"
+#include <cstring>
+
+PerformanceMetrics::PerformanceMetrics() {
+  memset(m_history, 0, sizeof(m_history));
+  m_historyIdx = 0;
+  m_lastFrameTimeUs = 0;
+  m_frameCounter = 0;
+
+  memset(m_frameTimeWindow, 0, sizeof(m_frameTimeWindow));
+  m_windowIndex = 0;
+  m_windowFilled = false;
+
+  m_windowVariance = 0.0;
+  m_windowStdDev = 0.0;
+
+  m_isRecording = false;
+  m_baselineMean = 0;
+  m_baselineM2 = 0;
+  m_baselineCount = 0;
+  m_recordingMean = 0;
+  m_recordingM2 = 0;
+  m_recordingCount = 0;
+  m_lastBaselineVariance = 0;
+  m_stutterDetected = false;
+
+  m_csvFile = nullptr;
+}
+
+PerformanceMetrics::~PerformanceMetrics() { DisableCSVLogging(); }
+
+void PerformanceMetrics::EnableCSVLogging(const char *logPath) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_csvFile) {
+    fclose(m_csvFile);
+  }
+  m_csvFile = fopen(logPath, "w");
+  if (m_csvFile) {
+    // Write CSV header
+    fprintf(m_csvFile,
+            "Frame,Timestamp_us,FrameTime_us,FrameTime_ms,FPS,Recording\n");
+    fflush(m_csvFile);
+    m_frameCounter = 0;
+  }
+}
+
+void PerformanceMetrics::DisableCSVLogging() {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_csvFile) {
+    fclose(m_csvFile);
+    m_csvFile = nullptr;
+  }
+}
+
+void PerformanceMetrics::SetRecording(bool isRecording) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_isRecording != isRecording) {
+    if (isRecording) {
+      // STARTING: Snapshot baseline variance
+      if (m_baselineCount > VARIANCE_WINDOW) {
+        m_lastBaselineVariance = m_baselineM2 / m_baselineCount;
+      }
+
+      // Reset recording stats
+      m_recordingMean = 0;
+      m_recordingM2 = 0;
+      m_recordingCount = 0;
+      m_stutterDetected = false;
+    }
+    // STOPPING: No specific action needed for stats retention
+    // (could reset baseline if we wanted, but keeping it is fine)
+
+    m_isRecording = isRecording;
+  }
+}
+
+void PerformanceMetrics::Update(int64_t currentQpcUs) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  int64_t frameToFrameUs = 0;
+  if (m_lastFrameTimeUs > 0) {
+    frameToFrameUs = currentQpcUs - m_lastFrameTimeUs;
+  }
+  m_lastFrameTimeUs = currentQpcUs;
+
+  // Ignore first frame or jumps
+  if (frameToFrameUs <= 0)
+    return;
+
+  m_frameCounter++;
+
+  // 1. Update Plot History
+  float frameTimeMs = (float)frameToFrameUs / 1000.0f;
+  m_history[m_historyIdx] = frameTimeMs;
+  m_historyIdx = (m_historyIdx + 1) % HISTORY_SIZE;
+
+  // 2. Write to CSV if enabled (debug mode)
+  if (m_csvFile) {
+    float fps = (frameToFrameUs > 0) ? (1000000.0f / frameToFrameUs) : 0.0f;
+    fprintf(m_csvFile, "%lld,%lld,%lld,%.3f,%.1f,%d\n",
+            (long long)m_frameCounter, (long long)currentQpcUs,
+            (long long)frameToFrameUs, frameTimeMs, fps, m_isRecording ? 1 : 0);
+    // Flush periodically (every 100 frames) to avoid data loss
+    if (m_frameCounter % 100 == 0) {
+      fflush(m_csvFile);
+    }
+  }
+
+  // 2. Update Rolling Window
+  m_frameTimeWindow[m_windowIndex] = frameToFrameUs;
+  m_windowIndex = (m_windowIndex + 1) % VARIANCE_WINDOW;
+  if (m_windowIndex == 0)
+    m_windowFilled = true;
+
+  // 3. Welford's Online Variance (Stable)
+  if (m_isRecording) {
+    m_recordingCount++;
+    double delta = frameToFrameUs - m_recordingMean;
+    m_recordingMean += delta / m_recordingCount;
+    double delta2 = frameToFrameUs - m_recordingMean;
+    m_recordingM2 += delta * delta2;
+  } else {
+    m_baselineCount++;
+    double delta = frameToFrameUs - m_baselineMean;
+    m_baselineMean += delta / m_baselineCount;
+    double delta2 = frameToFrameUs - m_baselineMean;
+    m_baselineM2 += delta * delta2;
+  }
+
+  // 4. Calculate Window Variance/StdDev (Snapshot)
+  // Re-calculate from window for immediate feedback (simplest for display)
+  if (m_windowFilled || m_windowIndex > 10) {
+    int count = m_windowFilled ? VARIANCE_WINDOW : m_windowIndex;
+    double sum = 0;
+    double sumSq = 0;
+    for (int i = 0; i < count; i++) {
+      sum += m_frameTimeWindow[i];
+      sumSq += (double)m_frameTimeWindow[i] * m_frameTimeWindow[i];
+    }
+    double mean = sum / count;
+    double var = (sumSq / count) - (mean * mean);
+    m_windowVariance = (var > 0) ? var : 0;
+    m_windowStdDev = sqrt(m_windowVariance);
+  }
+
+  // 5. Stutter Detection Logic
+  if (m_isRecording && m_recordingCount > 240 && m_lastBaselineVariance > 1.0) {
+    double currentRecVar =
+        (m_recordingCount > 1) ? (m_recordingM2 / m_recordingCount) : 0.0;
+    double ratio = currentRecVar / m_lastBaselineVariance;
+    if (ratio > 2.0) {
+      m_stutterDetected = true;
+    } else if (ratio < 1.5) {
+      m_stutterDetected = false;
+    }
+  }
+}
+
+float PerformanceMetrics::GetCurrentFPS() const {
+  // Average over last 60 frames for stable FPS display
+  // This avoids jumpy values from double-present patterns or occasional spikes
+  const int AVERAGE_FRAMES = 60;
+  float totalMs = 0.0f;
+  int validFrames = 0;
+
+  for (int i = 0; i < AVERAGE_FRAMES; i++) {
+    int idx = (m_historyIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
+    float ms = m_history[idx];
+    if (ms > 0.0001f && ms < 100.0f) { // Valid frame time (0.01ms to 100ms)
+      totalMs += ms;
+      validFrames++;
+    }
+  }
+
+  if (validFrames > 0 && totalMs > 0.0001f) {
+    float avgMs = totalMs / validFrames;
+    return 1000.0f / avgMs;
+  }
+  return 0.0f;
+}
+
+void PerformanceMetrics::GetSmartScale(float &outMin, float &outMax,
+                                       float minRangeMs) const {
+  outMin = 0.0f;
+  float maxVal = 0.0f;
+  for (int i = 0; i < HISTORY_SIZE; i++) {
+    if (m_history[i] > maxVal)
+      maxVal = m_history[i];
+  }
+  // Ensure we show at least the minimum range (e.g. 33ms)
+  // Add 10% headroom if we exceed it
+  if (maxVal < minRangeMs) {
+    outMax = minRangeMs;
+  } else {
+    outMax = maxVal * 1.1f;
+  }
+}
