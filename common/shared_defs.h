@@ -64,12 +64,47 @@ enum class LogLevel : int {
 };
 
 struct OverlayConfig {
+  // Master toggle
   bool showOverlay;
+  
+  // Display Elements
   bool showFPS;
+  bool showFrameTime;        // Frame time graph
+  bool showCPU;              // CPU usage %
+  bool showGPU;              // GPU usage %
+  bool showRAM;              // RAM usage
+  bool showVRAM;             // VRAM usage
+  bool showRecording;        // Recording status/timer
+
+  // Layout
   OverlayPosition position;
   int padding;
-  float bgAlpha;       // 0.0 - 1.0 (default 0.35f)
-  uint32_t textColor;  // 0xAABBGGRR (default 0xFFFFFFFF)
+  bool compactMode;          // Minimal padding/spacing
+  bool horizontalMode;       // Horizontal layout
+  float fontSize;            // 0 = auto (DPI scaled)
+  float roundedCorners;      // 0 = sharp
+
+  // Colors (0xAABBGGRR format) - 0 means use default styling
+  uint32_t bgColor;          // Background color
+  float bgAlpha;             // Background alpha (0.0 - 1.0)
+  
+  uint32_t fpsColor;
+  uint32_t cpuColor;
+  uint32_t gpuColor;
+  uint32_t ramColor;
+  uint32_t vramColor;
+  uint32_t frametimeColor;
+  uint32_t textColor;        // Default text color
+
+  // Text Outline
+  bool textOutline;
+  uint32_t textOutlineColor;
+  float textOutlineThickness;
+
+  // Load Colors (for CPU/GPU color interpolation)
+  uint32_t loadColorLow;     // < 50%
+  uint32_t loadColorMed;     // 50-85%
+  uint32_t loadColorHigh;    // > 85%
 };
 
 struct SharedGraphicsConfig {

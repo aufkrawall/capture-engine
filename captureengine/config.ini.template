@@ -74,20 +74,45 @@ sgssaa=false
 
 
 [Overlay]
-; Show recording status overlay in game
-; Values: true, false
+; Show overlay in hooked applications
 enabled=true
 
-; Position of the overlay on screen
-; Values: TopLeft, TopRight, BottomLeft, BottomRight
+; Position: TopLeft, TopRight, BottomLeft, BottomRight
 position=TopLeft
-
-; Padding in pixels from screen edge
 padding=10
 
-; Show FPS counter in overlay
-; Values: true, false
+; === Display Elements ===
+; Toggle individual HUD elements
 show_fps=true
+show_frametime=true
+show_cpu=true
+show_gpu=true
+show_ram=true
+show_vram=true
+show_recording=true
+
+; === Appearance ===
+; Compact mode: reduced spacing/padding
+compact_mode=false
+; Horizontal layout: elements in a row
+horizontal_mode=false
+; Font size: 0 (auto-scaled), or pixel size
+font_size=0
+; Rounded corners radius (0 = sharp)
+rounded_corners=8
+
+; === Styling ===
+; Text outline improves visibility on bright backgrounds
+text_outline=true
+
+; Colors (Hex RRGGBB) - Leave empty to use default MangoHud-style theme
+; fps_color=
+; cpu_color=
+; gpu_color=
+; ram_color=
+; vram_color=
+; bg_color=
+; bg_alpha=0.4
 
 [Video]
 ; ============================================================================

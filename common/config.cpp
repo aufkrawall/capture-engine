@@ -461,25 +461,80 @@ void LoadConfig(const std::string &path, AppConfig &config, const std::string& o
     return res;
   };
 
-  // Overlay
-  config.overlay.showOverlay = GetBool(
-      "Overlay", "enabled", true); // Requirement: "overlay-active marker"
-  // Wait, requirement: "add config option do enable/disable the overlay-active
-  // marker" And "always visible" text? The user said "overlay in the upper left
-  // ... always visible". I will assume enabled=true by default.
+  // Helper to parse Hex Color (RRGGBB -> 0xAABBGGRR for ImGui)
+  auto ParseColor = [&](const std::string& hexStr, uint32_t defaultColor) -> uint32_t {
+      if (hexStr.empty()) return defaultColor;
+      std::string clean = hexStr;
+      if (clean.size() > 0 && clean[0] == '#') clean.erase(0, 1);
+      
+      try {
+          uint32_t rgb = std::stoul(clean, nullptr, 16);
+          // Convert RRGGBB to 0xAABBGGRR (ImGui format)
+          uint32_t r = (rgb >> 16) & 0xFF;
+          uint32_t g = (rgb >> 8) & 0xFF;
+          uint32_t b = rgb & 0xFF;
+          return 0xFF000000 | (b << 16) | (g << 8) | r;
+      } catch (...) {
+          return defaultColor;
+      }
+  };
 
+  // Overlay
+  config.overlay.showOverlay = GetBool("Overlay", "enabled", true);
+  
   std::string pos = GetStr("Overlay", "position", "TopLeft");
-  if (pos == "TopRight")
-    config.overlay.position = OverlayPosition::TopRight;
-  else if (pos == "BottomLeft")
-    config.overlay.position = OverlayPosition::BottomLeft;
-  else if (pos == "BottomRight")
-    config.overlay.position = OverlayPosition::BottomRight;
-  else
-    config.overlay.position = OverlayPosition::TopLeft;
+  if (pos == "TopRight") config.overlay.position = OverlayPosition::TopRight;
+  else if (pos == "BottomLeft") config.overlay.position = OverlayPosition::BottomLeft;
+  else if (pos == "BottomRight") config.overlay.position = OverlayPosition::BottomRight;
+  else config.overlay.position = OverlayPosition::TopLeft;
 
   config.overlay.padding = GetInt("Overlay", "padding", 10);
+  
+  // Display Elements - Defaults similar to MangoHud standard
   config.overlay.showFPS = GetBool("Overlay", "show_fps", true);
+  config.overlay.showFrameTime = GetBool("Overlay", "show_frametime", true);
+  config.overlay.showCPU = GetBool("Overlay", "show_cpu", true);
+  config.overlay.showGPU = GetBool("Overlay", "show_gpu", true);
+  config.overlay.showRAM = GetBool("Overlay", "show_ram", true);
+  config.overlay.showVRAM = GetBool("Overlay", "show_vram", true);
+  config.overlay.showRecording = GetBool("Overlay", "show_recording", true);
+
+  // Layout
+  config.overlay.compactMode = GetBool("Overlay", "compact_mode", false);
+  config.overlay.horizontalMode = GetBool("Overlay", "horizontal_mode", false);
+  config.overlay.fontSize = GetFloat("Overlay", "font_size", 0.0f);
+  config.overlay.roundedCorners = GetFloat("Overlay", "rounded_corners", 8.0f); // Default 8px rounding
+
+  // Visual Styling - MangoHud Inspired Defaults
+  // 0xAABBGGRR format
+  
+  // Background: Dark Gray/Black with 0.4 Alpha
+  config.overlay.bgColor = ParseColor(GetStr("Overlay", "bg_color", ""), 0xFF111111);
+  config.overlay.bgAlpha = GetFloat("Overlay", "bg_alpha", 0.4f);
+
+  // Colors: Using MangoHud's default palette
+  // Green: 2E9762 -> ImGui: 0xFF62972E
+  // Purple: C26693 -> ImGui: 0xFF9366C2
+  // Orange: AD5F26 -> ImGui: 0xFF265FAD
+  // White/Greenish for FPS: B8FA05 -> ImGui: 0xFF05FAB8
+  
+  config.overlay.fpsColor = ParseColor(GetStr("Overlay", "fps_color", ""), 0xFF05FAB8);
+  config.overlay.cpuColor = ParseColor(GetStr("Overlay", "cpu_color", ""), 0xFF62972E);
+  config.overlay.gpuColor = ParseColor(GetStr("Overlay", "gpu_color", ""), 0xFF62972E);
+  config.overlay.ramColor = ParseColor(GetStr("Overlay", "ram_color", ""), 0xFF9366C2);
+  config.overlay.vramColor = ParseColor(GetStr("Overlay", "vram_color", ""), 0xFF265FAD);
+  config.overlay.frametimeColor = ParseColor(GetStr("Overlay", "frametime_color", ""), 0xFF00FF00);
+  config.overlay.textColor = ParseColor(GetStr("Overlay", "text_color", ""), 0xFFFFFFFF);
+
+  // Text Outline
+  config.overlay.textOutline = GetBool("Overlay", "text_outline", true);
+  config.overlay.textOutlineColor = ParseColor(GetStr("Overlay", "text_outline_color", ""), 0xFF000000);
+  config.overlay.textOutlineThickness = GetFloat("Overlay", "text_outline_thickness", 1.5f);
+
+  // Load Colors (Green -> Yellow -> Red)
+  config.overlay.loadColorLow = ParseColor(GetStr("Overlay", "load_color_low", ""), 0xFF62972E);  // Greenish
+  config.overlay.loadColorMed = ParseColor(GetStr("Overlay", "load_color_med", ""), 0xFF349ED4);  // Amber/Yellow
+  config.overlay.loadColorHigh = ParseColor(GetStr("Overlay", "load_color_high", ""), 0xFF333BC2); // Red
 
   // Video
   config.video.encoder = GetStr("Video", "encoder", "av1_nvenc");

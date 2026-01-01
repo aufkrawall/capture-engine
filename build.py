@@ -1020,6 +1020,8 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             "-lgdi32",
             "-lopengl32",
             "-lversion", # For GetFileVersionInfo
+            "-ldxgi",    # Needed for VRAM query
+            "-lpdh",     # Needed for CPU usage
             # "-ldwmapi", # Removed for dynamic loading
             "-lavrt",
             # "-ld3dcompiler", # Removed for dynamic loading
