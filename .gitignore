@@ -41,3 +41,6 @@ __pycache__/
 # Local config
 config.ini
 testappconfig.ini
+
+# Backups
+backups/
