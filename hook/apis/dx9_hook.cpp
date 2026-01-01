@@ -480,6 +480,9 @@ public:
             // Store LUID
             luidLow = desc.AdapterLuid.LowPart;
             luidHigh = desc.AdapterLuid.HighPart;
+            
+            // Initialize SystemMetricsCollector with adapter LUID for GPU stats
+            SystemMetricsCollector::Get().Initialize(luidLow, luidHigh);
             break; // Use first adapter for now
         }
         factory->Release();

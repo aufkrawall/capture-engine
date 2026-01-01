@@ -13,11 +13,14 @@ SystemMetricsCollector& SystemMetricsCollector::Get() {
     return instance;
 }
 
-SystemMetricsCollector::SystemMetricsCollector() {
-    InitPDH();
-}
+SystemMetricsCollector::SystemMetricsCollector() {}
 
 SystemMetricsCollector::~SystemMetricsCollector() {
+    stopThread = true;
+    if (updateThread.joinable()) {
+        updateThread.join();
+    }
+
     if (cpuQuery) {
         PdhCloseQuery((PDH_HQUERY)cpuQuery);
         cpuQuery = nullptr;
@@ -25,6 +28,18 @@ SystemMetricsCollector::~SystemMetricsCollector() {
     if (gpuQuery) {
         PdhCloseQuery((PDH_HQUERY)gpuQuery);
         gpuQuery = nullptr;
+    }
+    if (cachedAdapter) {
+        ((IUnknown*)cachedAdapter)->Release();
+        cachedAdapter = nullptr;
+    }
+    if (cachedFactory) {
+        ((IUnknown*)cachedFactory)->Release();
+        cachedFactory = nullptr;
+    }
+    if (pdhBuffer) {
+        free(pdhBuffer);
+        pdhBuffer = nullptr;
     }
 }
 
@@ -49,15 +64,67 @@ void SystemMetricsCollector::InitPDH() {
 
 void SystemMetricsCollector::Initialize(int32_t luidLow, int32_t luidHigh) {
     std::lock_guard<std::mutex> lock(mutex);
+    if (adapterLuid.LowPart == (DWORD)luidLow && adapterLuid.HighPart == (LONG)luidHigh) {
+        // Even if LUID matches, ensure the thread is running
+        if (!threadRunning) {
+            stopThread = false;
+            updateThread = std::thread(&SystemMetricsCollector::BackgroundUpdateLoop, this);
+            threadRunning = true;
+        }
+        return; 
+    }
+
     adapterLuid.LowPart = luidLow;
     adapterLuid.HighPart = luidHigh;
+    
+    // Pre-compute LUID search string for PDH
+    snprintf(cachedLuidPart, sizeof(cachedLuidPart), "luid_0x%08X_0x%08X", (unsigned int)luidHigh, (unsigned int)luidLow);
+    
+    // Invalidate cached DXGI resources
+    if (cachedAdapter) {
+        ((IUnknown*)cachedAdapter)->Release();
+        cachedAdapter = nullptr;
+    }
+    
+    EarlyLog("SystemMetricsCollector: Initialized with LUID %s", cachedLuidPart);
+
+    if (!threadRunning) {
+        stopThread = false;
+        updateThread = std::thread(&SystemMetricsCollector::BackgroundUpdateLoop, this);
+        threadRunning = true;
+    }
+}
+
+void SystemMetricsCollector::BackgroundUpdateLoop() {
+    EarlyLog("SystemMetricsCollector: Background thread started");
+    
+    // Initial PDH setup if not done
+    if (!pdhInitialized) {
+        InitPDH();
+    }
+
+    while (!stopThread) {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            UpdateCPU();
+            UpdateRAM();
+            UpdateGPU();
+        }
+        
+        // Sleep for 500ms (standard overlay update interval)
+        // We can use a smaller interval if we want smoother updates
+        for (int i = 0; i < 50 && !stopThread; i++) {
+            Sleep(10);
+        }
+    }
+    
+    threadRunning = false;
+    EarlyLog("SystemMetricsCollector: Background thread exiting");
 }
 
 void SystemMetricsCollector::Update() {
-    std::lock_guard<std::mutex> lock(mutex);
-    UpdateCPU();
-    UpdateRAM();
-    UpdateGPU();
+    // No-op - background thread handles updates
+    // Keeping this to maintain API compatibility with existing hooks
 }
 
 void SystemMetricsCollector::UpdateCPU() {
@@ -138,53 +205,54 @@ void SystemMetricsCollector::UpdateGPU() {
             PDH_STATUS arrayStatus = PdhGetFormattedCounterArrayA((PDH_HCOUNTER)gpuCounter, PDH_FMT_DOUBLE, &bufSize, &itemCount, NULL);
             
             if (arrayStatus == PDH_MORE_DATA && bufSize > 0) {
-                PDH_FMT_COUNTERVALUE_ITEM_A* items = (PDH_FMT_COUNTERVALUE_ITEM_A*)malloc(bufSize);
-                if (items) {
-                    arrayStatus = PdhGetFormattedCounterArrayA((PDH_HCOUNTER)gpuCounter, PDH_FMT_DOUBLE, &bufSize, &itemCount, items);
-                    if (arrayStatus == ERROR_SUCCESS && itemCount > 0) {
-                        // Sum all engine utilizations for the active adapter
-                        // Instance names look like: pid_11308_luid_0x00000000_0x0000C5C8_phys_0_eng_0_engtype_3D
-                        // PDH uses 0x prefix for hex values in instance names
-                        char luidPart[64];
-                        snprintf(luidPart, sizeof(luidPart), "luid_0x%08X_0x%08X", (unsigned int)adapterLuid.HighPart, (unsigned int)adapterLuid.LowPart);
+                // Resize cached buffer if needed
+                if (bufSize > pdhBufferSize) {
+                    void* newBuf = realloc(pdhBuffer, bufSize);
+                    if (newBuf) {
+                        pdhBuffer = newBuf;
+                        pdhBufferSize = bufSize;
+                    }
+                }
 
+                if (pdhBuffer) {
+                    PDH_FMT_COUNTERVALUE_ITEM_A* items = (PDH_FMT_COUNTERVALUE_ITEM_A*)pdhBuffer;
+                    arrayStatus = PdhGetFormattedCounterArrayA((PDH_HCOUNTER)gpuCounter, PDH_FMT_DOUBLE, &pdhBufferSize, &itemCount, items);
+                    if (arrayStatus == ERROR_SUCCESS && itemCount > 0) {
                         double totalUtil = 0.0;
                         int matchedEngines = 0;
                         for (DWORD i = 0; i < itemCount; i++) {
                             const char* instance = items[i].szName;
                             
-                            // Log first few instances to see the format
-                            if (logCount < 1 && i < 5) {
+                            // Log first few instances only once ever
+                            static bool instancesLogged = false;
+                            if (!instancesLogged && i < 10) {
                                 EarlyLog("GPU PDH Instance[%lu]: %s", i, instance ? instance : "NULL");
+                                if (i == 9 || i == itemCount - 1) instancesLogged = true;
                             }
 
                             // Filter by LUID to avoid summing across multiple GPUs
-                            if (instance && (strstr(instance, luidPart) || strstr(instance, "luid_") == nullptr)) {
+                            if (instance && (strstr(instance, cachedLuidPart) || strstr(instance, "luid_") == nullptr)) {
                                 totalUtil += items[i].FmtValue.doubleValue;
                                 matchedEngines++;
                             }
                         }
                         
-                        // Cap at 100% (GPU can't be more than 100% utilized)
                         if (totalUtil > 100.0) totalUtil = 100.0;
                         
-                        // Apply exponential smoothing (Stronger weight for stability if fluctuating)
-                        const float smoothingWeight = 0.2f; // 20% new, 80% old
+                        const float smoothingWeight = 0.2f;
                         smoothedGpuUsage = smoothedGpuUsage * (1.0f - smoothingWeight) + (float)totalUtil * smoothingWeight;
                         current.gpuUsage = smoothedGpuUsage;
                         current.gpuUsageValid = true;
                         
-                        // Log for debugging
                         if (logCount < 5) {
                             EarlyLog("GPU PDH: items=%lu, matches=%d, total=%.1f%%, smoothed=%.1f%%, LUID=%s", 
-                                     itemCount, matchedEngines, totalUtil, smoothedGpuUsage, luidPart);
+                                     itemCount, matchedEngines, totalUtil, smoothedGpuUsage, cachedLuidPart);
                             logCount++;
                         }
                     } else if (logCount < 3) {
                         EarlyLog("GPU PDH: GetArray failed (0x%08X), items=%lu", arrayStatus, itemCount);
                         logCount++;
                     }
-                    free(items);
                 }
             } else if (logCount < 3) {
                 // Try single value as fallback
@@ -195,21 +263,22 @@ void SystemMetricsCollector::UpdateGPU() {
                     smoothedGpuUsage = smoothedGpuUsage * (1.0f - smoothingWeight) + (float)displayValue.doubleValue * smoothingWeight;
                     current.gpuUsage = smoothedGpuUsage;
                     current.gpuUsageValid = true;
-                    EarlyLog("GPU PDH: Single value=%.1f%%, smoothed=%.1f%%", displayValue.doubleValue, smoothedGpuUsage);
-                } else {
-                    EarlyLog("GPU PDH: Both array(0x%08X) and single(0x%08X) failed", arrayStatus, singleStatus);
                 }
                 logCount++;
             }
         }
     }
     
-    // VRAM Usage via DXGI (unchanged)
+    // VRAM Usage via DXGI
     if (adapterLuid.LowPart == 0 && adapterLuid.HighPart == 0) return;
 
-    IDXGIFactory4* pFactory = nullptr;
-    if (CreateDXGIFactory1(__uuidof(IDXGIFactory4), (void**)&pFactory) == S_OK) {
-        IDXGIAdapter3* pAdapter = nullptr;
+    // Use cached resources if available
+    if (!cachedFactory) {
+        CreateDXGIFactory1(__uuidof(IDXGIFactory4), (void**)&cachedFactory);
+    }
+
+    if (cachedFactory && !cachedAdapter) {
+        IDXGIFactory4* pFactory = (IDXGIFactory4*)cachedFactory;
         LUID targetLuid = adapterLuid;
         IDXGIAdapter1* tempAdapter = nullptr;
         for (UINT i = 0; pFactory->EnumAdapters1(i, &tempAdapter) != DXGI_ERROR_NOT_FOUND; ++i) {
@@ -217,22 +286,25 @@ void SystemMetricsCollector::UpdateGPU() {
             tempAdapter->GetDesc1(&desc);
             if (desc.AdapterLuid.LowPart == targetLuid.LowPart && 
                 desc.AdapterLuid.HighPart == targetLuid.HighPart) {
-                tempAdapter->QueryInterface(__uuidof(IDXGIAdapter3), (void**)&pAdapter);
+                tempAdapter->QueryInterface(__uuidof(IDXGIAdapter3), (void**)&cachedAdapter);
                 tempAdapter->Release();
                 break;
             }
             tempAdapter->Release();
         }
-        
-        if (pAdapter) {
-            DXGI_QUERY_VIDEO_MEMORY_INFO videoMemoryInfo;
-            if (pAdapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &videoMemoryInfo) == S_OK) {
-                current.vramUsed = videoMemoryInfo.CurrentUsage;
-                current.vramTotal = videoMemoryInfo.Budget; 
-            }
+    }
+    
+    if (cachedAdapter) {
+        IDXGIAdapter3* pAdapter = (IDXGIAdapter3*)cachedAdapter;
+        DXGI_QUERY_VIDEO_MEMORY_INFO videoMemoryInfo;
+        if (pAdapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &videoMemoryInfo) == S_OK) {
+            current.vramUsed = videoMemoryInfo.CurrentUsage;
+            current.vramTotal = videoMemoryInfo.Budget; 
+        } else {
+            // If query fails, maybe adapter is stale? Reset for next time.
             pAdapter->Release();
+            cachedAdapter = nullptr;
         }
-        pFactory->Release();
     }
 }
 

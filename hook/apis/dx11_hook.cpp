@@ -250,6 +250,9 @@ public:
             luidLow = adapterDesc.AdapterLuid.LowPart;
             luidHigh = adapterDesc.AdapterLuid.HighPart;
             
+            // Initialize SystemMetricsCollector with adapter LUID for GPU stats
+            SystemMetricsCollector::Get().Initialize(luidLow, luidHigh);
+            
             // Create D3D11 device on same adapter
             if (!CreateD3D11DeviceForAdapter(adapter)) {
                 adapter->Release();
@@ -297,6 +300,10 @@ public:
             adapter->GetDesc(&adapterDesc);
             luidLow = adapterDesc.AdapterLuid.LowPart;
             luidHigh = adapterDesc.AdapterLuid.HighPart;
+            
+            // Initialize SystemMetricsCollector with adapter LUID for GPU stats
+            SystemMetricsCollector::Get().Initialize(luidLow, luidHigh);
+            
             adapter->Release();
           }
           dxgiDevice->Release();

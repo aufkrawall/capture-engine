@@ -2,6 +2,8 @@
 #include <cstdint>
 #include <mutex>
 #include <Windows.h>
+#include <thread>
+#include <atomic>
 
 struct SystemMetrics {
   float cpuUsage;       // 0-100%
@@ -35,6 +37,12 @@ private:
   void UpdateCPU();
   void UpdateRAM();
   void UpdateGPU();
+  void BackgroundUpdateLoop();
+
+  // Threading
+  std::thread updateThread;
+  std::atomic<bool> stopThread{false};
+  std::atomic<bool> threadRunning{false};
 
   // PDH (CPU)
   void* cpuQuery = nullptr;   // Type: PDH_HQUERY
@@ -44,11 +52,17 @@ private:
   // PDH (GPU) - Using Performance Counters
   void* gpuQuery = nullptr;      // Type: PDH_HQUERY
   void* gpuCounter = nullptr;    // Type: PDH_HCOUNTER
-  void* gpuMemCounter = nullptr; // Type: PDH_HCOUNTER for dedicated memory
   bool gpuPdhInitialized = false;
 
   // GPU (DXGI for VRAM)
   LUID adapterLuid = {0, 0};
+  void* cachedFactory = nullptr;   // IDXGIFactory4*
+  void* cachedAdapter = nullptr;   // IDXGIAdapter3*
+  
+  // Cached PDH resources
+  void* pdhBuffer = nullptr;       // Allocated buffer for PDH array
+  DWORD pdhBufferSize = 0;
+  char cachedLuidPart[64] = {};
   
   SystemMetrics current{};
   std::mutex mutex;

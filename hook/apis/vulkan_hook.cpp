@@ -3134,9 +3134,22 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
 
   g_PerfMetrics.Update(us);
 
+  // --- Timing Diagnostics (log slow operations) ---
+  static int diagLogCount = 0;
+  static int64_t diagLastUs = 0;
+  int64_t diagStartUs = us;
+  auto diagTime = [&]() -> int64_t {
+      LARGE_INTEGER now;
+      QueryPerformanceCounter(&now);
+      return (now.QuadPart * 1000000) / qpcFreq;
+  };
+  int64_t diagT0 = diagTime();
+
   // Apply FPS limiter FIRST for precise frame pacing
   g_SharedFpsLimiter.SetIPCClient(g_IPC);
   g_SharedFpsLimiter.Apply();
+  
+  int64_t diagT1 = diagTime();
 
   // --- Prerender Limit Simulation ---
   if (g_Device != VK_NULL_HANDLE) {
@@ -3444,6 +3457,16 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
         }
       }
     }
+  }
+  
+  int64_t diagT2 = diagTime();
+  
+  // Log slow frames (>2ms overhead from our code)
+  int64_t diagOverheadUs = diagT2 - diagT0;
+  if (diagOverheadUs > 2000 && diagLogCount < 50) {
+      EarlyLog("Vulkan SLOW: Total=%lldus, Limiter=%lldus, Overlay=%lldus",
+               diagOverheadUs, diagT1 - diagT0, diagT2 - diagT1);
+      diagLogCount++;
   }
 
   // Video capture BEFORE Present - must copy while we still own the swapchain image

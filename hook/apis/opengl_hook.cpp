@@ -299,6 +299,10 @@ public:
                 adapter->GetDesc(&desc);
                 luidLow = desc.AdapterLuid.LowPart;
                 luidHigh = desc.AdapterLuid.HighPart;
+                
+                // Initialize SystemMetricsCollector with adapter LUID for GPU stats
+                SystemMetricsCollector::Get().Initialize(luidLow, luidHigh);
+                
                 adapter->Release();
             }
             dxgiDevice->Release();
