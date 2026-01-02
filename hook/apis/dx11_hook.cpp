@@ -32,6 +32,7 @@ static const char* g_DetectedAPI = "DX11"; // Will be set to "DX10" if DX10 devi
 // Prerender Limit Fencing
 static std::vector<ID3D11Query*> g_PrerenderQueries;
 static uint64_t g_PrerenderFrameIndex = 0;
+static int64_t g_LastSleepUs = 0;
 
 typedef HRESULT(STDMETHODCALLTYPE *Present_t)(IDXGISwapChain *pSwapChain,
                                               UINT SyncInterval, UINT Flags);
@@ -542,14 +543,19 @@ static void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
     }
 
     if (!g_PrerenderQueries.empty()) {
+        bool isFractional = (limit > 0.01f && limit < 1.0f);
+        
         if (limit == 0.0f) {
+            // Strict Serial: Wait for current frame
             ID3D11Query* q = g_PrerenderQueries[g_PrerenderFrameIndex % g_PrerenderQueries.size()];
             ctx->End(q);
             while (ctx->GetData(q, nullptr, 0, 0) == S_FALSE) {
                 SwitchToThread();
             }
         } else {
-            int effectiveLimit = (limit < 1.0f) ? 1 : (int)limit;
+            // Buffered Limit: For fractional limits (e.g., 0.5), we use Buffered 1 (Lookback 2)
+            // This allows GPU overlap while pacing provides the idle gap.
+            int effectiveLimit = isFractional ? 1 : (int)limit;
             int lookback = effectiveLimit + 1;
 
             ID3D11Query* currentQ = g_PrerenderQueries[g_PrerenderFrameIndex % g_PrerenderQueries.size()];
@@ -563,14 +569,22 @@ static void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
             }
         }
         g_PrerenderFrameIndex++;
-    }
-
-    // Hybrid Pacing (Sub-frame sleep)
-    if (limit > 0.01f && limit < 1.0f) {
-        float fps = g_PerfMetrics.GetCurrentFPS();
-        double avgFrameTimeUs = (fps > 1.0f) ? (1000000.0 / fps) : 16666.0;
-        int64_t sleepUs = (int64_t)(avgFrameTimeUs * (1.0 - limit) * 0.70);
-        if (sleepUs > 0) PrecisionSleep(sleepUs);
+        
+        // Strict Serial + Fixed Idle Gap for fractional limits
+        if (isFractional) {
+            // effectiveLimit already set to 0 for Strict Serial above
+            
+            // After the wait completes, calculate and apply a fixed idle gap
+            float fps = g_PerfMetrics.GetCurrentFPS();
+            double targetFrameTimeUs = (fps > 1.0f) ? (1000000.0 / fps) : 16666.0;
+            
+            // Fixed Idle Gap = TargetFrameTime * (1.0 - limit) * 0.10
+            int64_t idleGapUs = (int64_t)(targetFrameTimeUs * (1.0 - limit) * 0.10);
+            if (idleGapUs > 0) {
+                if (idleGapUs > 10000) idleGapUs = 10000; // Cap at 10ms
+                PrecisionSleep(idleGapUs);
+            }
+        }
     }
 
     ctx->Release();

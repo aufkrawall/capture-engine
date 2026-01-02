@@ -123,6 +123,7 @@ static bool g_SampleRateShadingSupported = false; // Track if device supports/ha
 static bool g_SamplerAnisotropySupported = false; // Track if device supports/has enabled anisotropy
 static std::vector<VkFence> g_PrerenderFences;
 static uint64_t g_PrerenderFrameIndex = 0;
+static int64_t g_LastSleepUs = 0;
 static VkDevice g_PrerenderDevice = VK_NULL_HANDLE; // Device required for fence creation
 
 struct QueueFamilyInfo {
@@ -3197,15 +3198,11 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
               // limit=2 -> effective 2 -> Lookback 3.
               // Lookback = effective + 1.
               
-              int effectiveLimit = (limit < 1.0f) ? 1 : (int)limit;
+              bool isFractional = (limit > 0.01f && limit < 1.0f);
+              int effectiveLimit = isFractional ? 1 : (int)limit;
               size_t lookback = effectiveLimit + 1; // Wait for Frame (i - lookback)
               
-              size_t needed = lookback + 1; // Ring buffer size needs to hold Lookback+1 fences? 
-              // Example: Lookback 2. We access index % Size.
-              // We need fences for 0, 1, 2 to distinguish them?
-              // Lookback 2 means at frame 2, we wait 0.
-              // So active fences: 0, 1, 2. (Current is 2).
-              // So Size = max_lookback + 1.
+              size_t needed = lookback + 1; // Ring buffer size
               
               if (g_PrerenderFences.size() != needed) {
                    for (auto f : g_PrerenderFences) vkDestroyFence(g_Device, f, nullptr);
@@ -3224,27 +3221,29 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
               size_t size = g_PrerenderFences.size();
               
               // Frame Pacing Wait (Lookback)
-              if (g_PrerenderFrameIndex >= (uint64_t)lookback) {
-                  VkFence oldFence = g_PrerenderFences[(g_PrerenderFrameIndex - lookback) % size];
-                  vkWaitForFences(g_Device, 1, &oldFence, VK_TRUE, 2000000000); 
-                  vkResetFences(g_Device, 1, &oldFence); 
-              }
+              // For fractional limits, lookback is 2 (Buffered 1).
+              VkFence oldFence = g_PrerenderFences[(g_PrerenderFrameIndex + size - lookback) % size];
+              vkWaitForFences(g_Device, 1, &oldFence, VK_TRUE, 2000000000); 
+              vkResetFences(g_Device, 1, &oldFence); 
               
               VkFence currentFence = g_PrerenderFences[g_PrerenderFrameIndex % size];
               vkResetFences(g_Device, 1, &currentFence);
               vkQueueSubmit(queue, 0, nullptr, currentFence);
               
-              // Hybrid Pacing: If limit < 1.0, sleep to delay next CPU frame
-              if (limit < 1.0f) {
-                  float fps = g_PerfMetrics.GetCurrentFPS();
-                  double avgFrameTimeUs = (fps > 1.0f) ? (1000000.0 / fps) : 16666.0;
+              // Strict Serial + Fixed Idle Gap for fractional limits
+              if (isFractional) {
+                  // effectiveLimit already set to 0 for Strict Serial above
                   
-                  // Sleep = FrameTime * (1.0 - limit)
-                  // Apply 0.70 Safety Factor to prevent over-sleeping (GPU starvation)
-                  // caused by OS timer jitter or CPU spikes.
-                  // This biases towards "Hitting the Fence" (High Util) rather than "Empty Queue" (Stutter).
-                  int64_t sleepUs = (int64_t)(avgFrameTimeUs * (1.0 - limit) * 0.70);
-                  if (sleepUs > 0) PrecisionSleep(sleepUs);
+                  // After the wait completes, calculate and apply a fixed idle gap
+                  float fps = g_PerfMetrics.GetCurrentFPS();
+                  double targetFrameTimeUs = (fps > 1.0f) ? (1000000.0 / fps) : 16666.0;
+                  
+                  // Fixed Idle Gap = TargetFrameTime * (1.0 - limit) * 0.10
+                  int64_t idleGapUs = (int64_t)(targetFrameTimeUs * (1.0 - limit) * 0.10);
+                  if (idleGapUs > 0) {
+                      if (idleGapUs > 10000) idleGapUs = 10000; // Cap at 10ms
+                      PrecisionSleep(idleGapUs);
+                  }
               }
               
               g_PrerenderFrameIndex++;

@@ -221,10 +221,10 @@ void CheckAndInstallHooks() {
     std::lock_guard<std::mutex> lock(g_HookMutex);
 
     if (!g_DX12Hook && GetModuleHandleA("d3d12.dll")) {
-        HookLog("Detected d3d12.dll. Installing DX12 hooks...");
+        EarlyLog("Detected d3d12.dll. Installing DX12 hooks...");
         g_DX12Hook = new DX12Hook();
         g_DX12Hook->Init();
-        HookLog("DX12 hooks installed");
+        EarlyLog("DX12 hooks installed");
     }
 
     if (!g_DX11Hook && GetModuleHandleA("d3d11.dll")) {
@@ -412,7 +412,9 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   HookLog("All kernel32 hooks enabled");
 
   // Initial Check
+  EarlyLog("HookThread: About to call CheckAndInstallHooks (d3d12=%p)", GetModuleHandleA("d3d12.dll"));
   CheckAndInstallHooks();
+  EarlyLog("HookThread: CheckAndInstallHooks returned");
 
   EarlyLog("HookThread: All hooks installed, entering exit monitor loop");
 

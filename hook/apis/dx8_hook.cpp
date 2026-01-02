@@ -143,6 +143,7 @@ static bool g_HooksInitialized = false;
 // Prerender Limit State
 static std::vector<IDirect3DQuery9*> g_PrerenderQueries;
 static uint64_t g_PrerenderFrameIndex = 0;
+static int64_t g_LastSleepUs = 0;
 
 static void ApplyPrerenderLimitDX8(IDirect3DDevice8* device, float limit);
 
@@ -503,6 +504,8 @@ static void ApplyPrerenderLimitDX8(IDirect3DDevice8* device, float limit) {
         g_PrerenderQueries.resize(16, nullptr);
     }
 
+    bool isFractional = (limit > 0.01f && limit < 1.0f);
+
     if (limit == 0.0f) {
         // Strict Serial (Wait for current frame)
         IDirect3DQuery9* q = g_PrerenderQueries[g_PrerenderFrameIndex % g_PrerenderQueries.size()];
@@ -517,7 +520,9 @@ static void ApplyPrerenderLimitDX8(IDirect3DDevice8* device, float limit) {
             }
         }
     } else {
-        int effectiveLimit = (limit < 1.0f) ? 1 : (int)limit;
+        // Buffered Limit: For fractional limits (e.g., 0.5), we use Buffered 1 (Lookback 2)
+        // This allows GPU overlap while pacing provides the idle gap.
+        int effectiveLimit = isFractional ? 1 : (int)limit;
         int lookback = effectiveLimit + 1;
 
         IDirect3DQuery9* currentQ = g_PrerenderQueries[g_PrerenderFrameIndex % g_PrerenderQueries.size()];
@@ -538,13 +543,20 @@ static void ApplyPrerenderLimitDX8(IDirect3DDevice8* device, float limit) {
     }
     g_PrerenderFrameIndex++;
 
-    // Hybrid Pacing (Sleep-based sub-frame limiting)
-    // 0.5 mode: Wait for 1 frame ahead, but sleep half a frame time
-    if (limit > 0.01f && limit < 1.0f) {
+    // Strict Serial + Fixed Idle Gap for fractional limits
+    if (isFractional) {
+        // effectiveLimit already set to 0 for Strict Serial above
+        
+        // After the wait completes, calculate and apply a fixed idle gap
         float fps = g_PerfMetrics.GetCurrentFPS();
-        double avgFrameTimeUs = (fps > 1.0f) ? (1000000.0 / fps) : 16666.0;
-        int64_t sleepUs = (int64_t)(avgFrameTimeUs * (1.0 - limit) * 0.70); // 0.70 Safety Factor
-        if (sleepUs > 0) PrecisionSleep(sleepUs);
+        double targetFrameTimeUs = (fps > 1.0f) ? (1000000.0 / fps) : 16666.0;
+        
+        // Fixed Idle Gap = TargetFrameTime * (1.0 - limit) * 0.10
+        int64_t idleGapUs = (int64_t)(targetFrameTimeUs * (1.0 - limit) * 0.10);
+        if (idleGapUs > 0) {
+            if (idleGapUs > 10000) idleGapUs = 10000; // Cap at 10ms
+            PrecisionSleep(idleGapUs);
+        }
     }
 }
 

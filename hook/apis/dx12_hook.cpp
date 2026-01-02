@@ -89,6 +89,7 @@ static HANDLE g_PrerenderEvent = NULL;
 static UINT64 g_PrerenderValue = 0;
 static std::vector<UINT64> g_PrerenderHistory;
 static uint64_t g_PrerenderFrameIndex = 0;
+static int64_t g_LastSleepUs = 0;
 
 // --- Capture Resources ---
 class DX12Capture : public HookCaptureBase {
@@ -635,7 +636,12 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
       return;
   }
   
-  if (activeDevice != g_Device || pSwapChain != g_LastSwapChain) {
+  // Distinguish between initial setup and device change
+  bool isInitialSetup = (g_Device == nullptr);
+  bool deviceChanged = (!isInitialSetup && (activeDevice != g_Device || pSwapChain != g_LastSwapChain));
+  
+  if (deviceChanged) {
+      // Device/swapchain CHANGE - cleanup old resources and exit
       HookLog("DX12: Device or Swapchain change detected (Device: %p -> %p, SC: %p -> %p). Resetting resources...", 
               g_Device, activeDevice, g_LastSwapChain, pSwapChain);
       g_FGCompat.OnDeviceChange(); // Notify FG detection
@@ -668,6 +674,15 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
       // ENSURE EARLY EXIT: Resources (Command List, Allocators) have been released.
       return;
   }
+  
+  if (isInitialSetup) {
+      // INITIAL SETUP - capture device/swapchain and CONTINUE (no cleanup needed, no early exit)
+      EarlyLog("DX12: Initial device capture (Device: %p, SC: %p)", activeDevice, pSwapChain);
+      g_Device = activeDevice;
+      g_Device->AddRef();
+      g_LastSwapChain = pSwapChain;
+      g_LastSwapChain->AddRef();
+  }
   activeDevice->Release();
 
   // Initialize overlay as early as possible (before queue check)
@@ -695,6 +710,12 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
       if (g_DeviceQueues.count(g_Device)) {
           targetQueue = g_DeviceQueues[g_Device];
       }
+  }
+  
+  // Fallback: use g_CommandQueue directly if device-mapped queue not found
+  // This handles the case where ExecuteCommandLists captured a different device pointer
+  if (!targetQueue && g_CommandQueue) {
+      targetQueue = g_CommandQueue;
   }
   
   if (!targetQueue) {
@@ -845,15 +866,23 @@ static void ApplyPrerenderLimit(float limit) {
     }
 
     // Manual Fencing (Hard Limit)
+    bool isFractional = (limit > 0.01f && limit < 1.0f);
+    
     if (limit == 0.0f) {
+        // Strict Serial (Wait for current frame)
         g_PrerenderValue++;
         g_CommandQueue->Signal(g_PrerenderFence, g_PrerenderValue);
         if (g_PrerenderFence->GetCompletedValue() < g_PrerenderValue) {
             g_PrerenderFence->SetEventOnCompletion(g_PrerenderValue, g_PrerenderEvent);
             WaitForSingleObject(g_PrerenderEvent, INFINITE);
         }
+    } else if (isFractional) {
+        // Fractional limits: Sleep is now handled AFTER Present returns
+        // See post-Present sleep in DetourPresent
+        // No pre-Present processing needed for fractional limits
     } else {
-        int effectiveLimit = (limit < 1.0f) ? 1 : (int)limit;
+        // Buffered Limit (integer limits > 1)
+        int effectiveLimit = (int)limit;
         int lookback = effectiveLimit + 1;
         
         g_PrerenderValue++;
@@ -871,14 +900,6 @@ static void ApplyPrerenderLimit(float limit) {
                 g_PrerenderHistory.erase(g_PrerenderHistory.begin(), g_PrerenderHistory.end() - 17);
             }
         }
-    }
-
-    // Hybrid Pacing (Sleep-based sub-frame limiting)
-    if (limit > 0.01f && limit < 1.0f) {
-        float fps = g_PerfMetrics.GetCurrentFPS();
-        double avgFrameTimeUs = (fps > 1.0f) ? (1000000.0 / fps) : 16666.0;
-        int64_t sleepUs = (int64_t)(avgFrameTimeUs * (1.0 - limit) * 0.70); // 0.70 Safety Factor
-        if (sleepUs > 0) PrecisionSleep(sleepUs);
     }
 }
 
@@ -936,7 +957,13 @@ HRESULT STDMETHODCALLTYPE DetourGetBuffer(IDXGISwapChain *pSwapChain, UINT Buffe
 
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
                                         UINT SyncInterval, UINT Flags) {
-  HookLog("DX12: DetourPresent called (SyncInterval=%u, Flags=%u)", SyncInterval, Flags);
+  // Diagnostic: Log first few Present calls to trace timing
+  static int presentCount = 0;
+  if (presentCount < 5) {
+      EarlyLog("DX12: DetourPresent #%d (g_Device=%p, g_CommandQueue=%p, imGuiInit=%d)", 
+               presentCount, g_Device, g_CommandQueue, g_State.imGuiInit ? 1 : 0);
+      presentCount++;
+  }
   static int64_t qpcFreq = 0;
   if (qpcFreq == 0) {
     LARGE_INTEGER f;
@@ -1048,6 +1075,24 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
   }
 
   HRESULT hr = oPresent(pSwapChain, SyncInterval, Flags);
+  
+  // Post-Present sleep for fractional limits
+  // Sleep AFTER Present returns - GPU has just finished its frame and is idle
+  float postLimit = GetActivePrerenderLimit();
+  bool isPostFractional = (postLimit > 0.01f && postLimit < 1.0f);
+  if (isPostFractional) {
+      float fps = g_PerfMetrics.GetCurrentFPS();
+      double targetFrameTimeUs = (fps > 1.0f) ? (1000000.0 / fps) : 16666.0;
+      
+      // Fixed Idle Gap = TargetFrameTime * (1.0 - limit) * 0.10
+      // For limit=0.5 at 60fps: 16666 * 0.5 * 0.10 = ~833us
+      int64_t idleGapUs = (int64_t)(targetFrameTimeUs * (1.0 - postLimit) * 0.10);
+      if (idleGapUs > 0) {
+          if (idleGapUs > 10000) idleGapUs = 10000; // Cap at 10ms
+          PrecisionSleep(idleGapUs);
+      }
+  }
+  
   return hr;
 }
 
@@ -1430,7 +1475,7 @@ DetourExecuteCommandLists(ID3D12CommandQueue *pThis, UINT NumCommandLists,
   // FG: Track command list execution for real frame detection
   g_CommandListsExecutedThisFrame.fetch_add(1, std::memory_order_relaxed);
 
-  /*
+  // Capture queue if not yet available (enables first-frame overlay)
   if (pThis && pThis->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
     ID3D12Device* dev = nullptr;
     if (SUCCEEDED(pThis->GetDevice(IID_PPV_ARGS(&dev)))) {
@@ -1447,11 +1492,10 @@ DetourExecuteCommandLists(ID3D12CommandQueue *pThis, UINT NumCommandLists,
         if (g_CommandQueue) g_CommandQueue->Release();
         g_CommandQueue = pThis;
         g_CommandQueue->AddRef();
-        HookLog("DX12: ExecuteCommandLists: Updated g_CommandQueue to %p", g_CommandQueue);
+        EarlyLog("DX12: ExecuteCommandLists: Captured queue %p", g_CommandQueue);
     }
   }
-  */
-  HookLog("DX12: Calling original ExecuteCommandLists...");
+  
   oExecuteCommandLists(pThis, NumCommandLists, ppCommandLists);
 }
 
@@ -1469,6 +1513,7 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory *pThis,
                                                 IUnknown *pDevice,
                                                 DXGI_SWAP_CHAIN_DESC *pDesc,
                                                 IDXGISwapChain **ppSwapChain) {
+  EarlyLog("DX12: DetourCreateSwapChain called (pDevice=%p, pDesc=%p)", pDevice, pDesc);
   if (!pDesc) return DXGI_ERROR_INVALID_CALL;
   if (pDevice) {
     ID3D12CommandQueue *queue = nullptr;
@@ -1546,9 +1591,19 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory *pThis,
 
   HRESULT hr = oCreateSwapChain(pThis, pDevice, &modifiedDesc, ppSwapChain);
   
-  if (g_IPC) {
-      // Debug: Check Present Address
-      if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
+  if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
+       // Capture g_LastSwapChain immediately to prevent false-positive "Device Changed" detection
+       // in ProcessFrame (which triggers 3s suspend for FG safety)
+       IDXGISwapChain3 *swapChain3 = nullptr;
+       if (SUCCEEDED((*ppSwapChain)->QueryInterface(__uuidof(IDXGISwapChain3), (void **)&swapChain3))) {
+           // Release old if held (though we treat it as weak ptr usually, but let's be safe)
+           // Actually ProcessFrame uses it as weak ptr for comparison. 
+           // But to be consistent with ProcessFrame logic, checking against what we just created.
+           g_LastSwapChain = swapChain3;
+           swapChain3->Release(); // Don't hold ref, just store address for comparison
+       }
+
+      if (g_IPC) {
            void **vtbl = *reinterpret_cast<void ***>(*ppSwapChain);
            EarlyLog("DX12: SwapChain created (Present=%p, ResizeBuffers=%p)", vtbl[8], vtbl[13]);
       }
@@ -1562,6 +1617,7 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(
     const DXGI_SWAP_CHAIN_DESC1 *pDesc,
     const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFullscreenDesc,
     IDXGIOutput *pRestrictToOutput, IDXGISwapChain1 **ppSwapChain) {
+  EarlyLog("DX12: DetourCreateSwapChainForHwnd called (pDevice=%p)", pDevice);
   if (!pDesc) return DXGI_ERROR_INVALID_CALL;
   if (pDevice) {
     ID3D12CommandQueue *queue = nullptr;
@@ -1626,8 +1682,20 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(
       } 
   }
 
-  return oCreateSwapChainForHwnd(pThis, pDevice, hWnd, &modifiedDesc, pFullscreenDesc,
+  HRESULT hr = oCreateSwapChainForHwnd(pThis, pDevice, hWnd, &modifiedDesc, pFullscreenDesc,
                                  pRestrictToOutput, ppSwapChain);
+                                 
+  if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
+       // Capture g_LastSwapChain immediately to prevent false-positive "Device Changed" detection
+       // in ProcessFrame (which triggers 3s suspend for FG safety)
+       IDXGISwapChain3 *swapChain3 = nullptr;
+       if (SUCCEEDED((*ppSwapChain)->QueryInterface(__uuidof(IDXGISwapChain3), (void **)&swapChain3))) {
+           g_LastSwapChain = swapChain3;
+           swapChain3->Release(); 
+       }
+  }
+  
+  return hr;
 }
 
 HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain3 *pSwapChain,
@@ -1725,7 +1793,7 @@ HRESULT WINAPI DetourD3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL Min
 
 // DX12Hook Implementation
 void DX12Hook::Init() {
-  HookLog("DX12Hook::Init() called.");
+  EarlyLog("DX12Hook::Init() called - installing hooks");
 
   WNDCLASSEX wc = {sizeof(WNDCLASSEX),    CS_CLASSDC, DefWindowProc, 0L,   0L,
                    GetModuleHandle(NULL), NULL,       NULL,          NULL, NULL,

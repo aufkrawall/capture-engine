@@ -50,6 +50,7 @@ static std::mutex g_PresentMutex;
 static thread_local int g_PresentRecurse = 0;  // Prevent recursive Present calls on same thread
 static std::atomic<int> g_MaxMSAASamples{0}; // Tracks highest MSAA target seen
 static GraphicsConfig g_FrameConfig; // Frame-local config cache for performance
+static int64_t g_LastSleepUs = 0;
 
 
 static HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9* device, const RECT* pSourceRect, const RECT* pDestRect, HWND hDestWindowOverride, const RGNDATA* pDirtyRegion);
@@ -862,56 +863,77 @@ public:
     void WaitPrerender(IDirect3DDevice9* device, float limit) {
         if (limit < 0.0f) return;
         
-        // Effective Limit Integer (Queue Size)
-        // If limit < 1.0 (Hybrid), we want minimal queue (1 frame ahead)
-        uint32_t queueSize = (uint32_t)limit;
-        if (limit < 1.0f) queueSize = 1; 
-        if (queueSize < 1) queueSize = 1; // Minimum 1
-
-        // Ensure query array is sized correctly
-        // We need queueSize + 1 slots for ring buffer logic?
-        // No, if limit is 1, we issue query N, and check N-1.
-        // So we need limit+1 slots.
-        size_t needed = queueSize + 1;
+        bool isFractional = (limit > 0.01f && limit < 1.0f);
         
-        if (prerenderQueries.size() != needed) {
-            for (auto& q : prerenderQueries) if (q.query) q.query->Release();
-            prerenderQueries.clear();
-            prerenderQueries.resize(needed);
-            prerenderIdx = 0;
-        }
-        
-        uint32_t oldestIdx = (prerenderIdx + 1) % (uint32_t)prerenderQueries.size();
-        if (prerenderQueries[oldestIdx].query) {
-            // Wait for oldest event query (Fence)
-            HRESULT hr;
-            while ((hr = prerenderQueries[oldestIdx].query->GetData(nullptr, 0, D3DGETDATA_FLUSH)) == S_FALSE) {
-                // Spin/Yield loop
-                // D3DGETDATA_FLUSH forces GPU to make progress
-                Sleep(0); 
+        if (limit == 0.0f) {
+            // Strict Serial: Wait for current frame
+            if (prerenderQueries.size() != 1) {
+                for (auto& q : prerenderQueries) if (q.query) q.query->Release();
+                prerenderQueries.clear();
+                prerenderQueries.resize(1);
+                prerenderIdx = 0;
             }
-        }
-        
-        // Push New Fence
-        uint32_t currentIdx = prerenderIdx % (uint32_t)prerenderQueries.size();
-        if (!prerenderQueries[currentIdx].query) {
-            device->CreateQuery(D3DQUERYTYPE_EVENT, &prerenderQueries[currentIdx].query);
-        }
-        if (prerenderQueries[currentIdx].query) {
-            prerenderQueries[currentIdx].query->Issue(D3DISSUE_END);
-        }
-        
-        // Hybrid Pacing Sleep logic (if limit < 1.0)
-        // This runs AFTER fence wait (so we know GPU is within range), 
-        // effectively delaying THIS CPU frame submission.
-        if (limit > 0.01f && limit < 1.0f) {
-             float fps = g_PerfMetrics.GetCurrentFPS();
-             double avgFrameTimeUs = (fps > 1.0f) ? (1000000.0 / fps) : 16666.0;
-             int64_t sleepUs = (int64_t)(avgFrameTimeUs * (1.0 - limit) * 0.70); // 0.70 Safety Factor
-             if (sleepUs > 0) PrecisionSleep(sleepUs);
-        }
 
-        prerenderIdx++;
+            uint32_t currentIdx = 0;
+            if (!prerenderQueries[currentIdx].query) {
+                device->CreateQuery(D3DQUERYTYPE_EVENT, &prerenderQueries[currentIdx].query);
+            }
+            if (prerenderQueries[currentIdx].query) {
+                prerenderQueries[currentIdx].query->Issue(D3DISSUE_END);
+                while (prerenderQueries[currentIdx].query->GetData(nullptr, 0, D3DGETDATA_FLUSH) == S_FALSE) {
+                    Sleep(0);
+                }
+            }
+        } else {
+            // Buffered Limit: For fractional limits (e.g., 0.5), we use Buffered 1 (Lookback 2)
+            int effectiveLimit = isFractional ? 1 : (int)limit;
+            int lookback = effectiveLimit + 1;
+            size_t needed = 16; // Use fixed size for simplicity in DX9 ring buffer
+            
+            if (prerenderQueries.size() != needed) {
+                for (auto& q : prerenderQueries) if (q.query) q.query->Release();
+                prerenderQueries.clear();
+                prerenderQueries.resize(needed);
+                prerenderIdx = 0;
+            }
+            
+            // Wait for lookback frame
+            if (prerenderIdx >= (uint32_t)lookback) {
+                uint32_t waitIdx = (prerenderIdx - lookback) % (uint32_t)prerenderQueries.size();
+                if (prerenderQueries[waitIdx].query) {
+                    while (prerenderQueries[waitIdx].query->GetData(nullptr, 0, D3DGETDATA_FLUSH) == S_FALSE) {
+                        Sleep(0); 
+                    }
+                }
+            }
+            
+            // Push New Fence
+            uint32_t currentIdx = prerenderIdx % (uint32_t)prerenderQueries.size();
+            if (!prerenderQueries[currentIdx].query) {
+                device->CreateQuery(D3DQUERYTYPE_EVENT, &prerenderQueries[currentIdx].query);
+            }
+            if (prerenderQueries[currentIdx].query) {
+                prerenderQueries[currentIdx].query->Issue(D3DISSUE_END);
+            }
+            
+            // Strict Serial + Fixed Idle Gap for fractional limits
+            if (isFractional) {
+                // effectiveLimit already set to 0 for Strict Serial above
+                
+                // After the wait completes, calculate and apply a fixed idle gap
+                float fps = g_PerfMetrics.GetCurrentFPS();
+                double targetFrameTimeUs = (fps > 1.0f) ? (1000000.0 / fps) : 16666.0;
+                
+                // Fixed Idle Gap = TargetFrameTime * (1.0 - limit) * 0.10
+                int64_t idleGapUs = (int64_t)(targetFrameTimeUs * (1.0 - limit) * 0.10);
+                if (idleGapUs > 0) {
+                    if (idleGapUs > 10000) idleGapUs = 10000; // Cap at 10ms
+                    PrecisionSleep(idleGapUs);
+                }
+            }
+
+            prerenderIdx++;
+        }
     }
 };
 
@@ -1615,6 +1637,30 @@ void DX9Hook::Init() {
     }
     
     EarlyLog("DX9Hook::Init() Passive Complete");
+    
+    // Skip Active Hooking if a different graphics API is the primary renderer
+    // This prevents creating a dummy D3D9 device that pollutes logs
+    // Note: DX8 and DDraw use d3d9.dll internally for some operations, so we still allow active init for those
+    const char* skipReason = nullptr;
+    if (GetModuleHandleA("d3d12.dll")) {
+        skipReason = "d3d12.dll (DX12 game)";
+    } else if (GetModuleHandleA("d3d11.dll")) {
+        skipReason = "d3d11.dll (DX11 game)";
+    } else if (GetModuleHandleA("d3d10.dll") || GetModuleHandleA("d3d10_1.dll")) {
+        skipReason = "d3d10.dll (DX10 game)";
+    } else if (GetModuleHandleA("vulkan-1.dll")) {
+        skipReason = "vulkan-1.dll (Vulkan game)";
+    } else if (GetModuleHandleA("opengl32.dll")) {
+        // OpenGL is tricky - many apps load it for detection but don't use it
+        // Only skip if we have strong evidence of OpenGL rendering (wglMakeCurrent called)
+        // For now, skip anyway since false positives are less harmful than log pollution
+        skipReason = "opengl32.dll (OpenGL game)";
+    }
+    
+    if (skipReason) {
+        EarlyLog("DX9: %s detected, skipping active init", skipReason);
+        return;
+    }
     
     // Active Hooking: Create a dummy device to force vtable hooks
     // This is needed for "late" injection where the game has already created its device
