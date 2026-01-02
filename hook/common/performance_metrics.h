@@ -8,7 +8,8 @@
 
 class PerformanceMetrics {
 public:
-  static const int HISTORY_SIZE = 240;
+  static const int HISTORY_SIZE = 8192; // covers 15s at >500 FPS
+  static const int GRAPH_HISTORY_SIZE = 240; // visual window
   static const int VARIANCE_WINDOW = 120;
 
   PerformanceMetrics();
@@ -20,6 +21,7 @@ public:
   // Get plotting data for ImGui
   const float *GetHistoryArray() const { return m_history; }
   int GetHistoryIndex() const { return m_historyIdx; }
+  void GetLastHistory(float *outBuffer, int count) const;
   float GetCurrentFPS() const;
   
   // FPS Statistics (based on last 5 seconds = 300 frames at 60fps, 600 at 120fps)

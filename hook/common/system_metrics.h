@@ -54,6 +54,11 @@ private:
   void* gpuCounter = nullptr;    // Type: PDH_HCOUNTER
   bool gpuPdhInitialized = false;
 
+  // PDH (VRAM)
+  void* vramQuery = nullptr;     // Type: PDH_HQUERY
+  void* vramCounter = nullptr;   // Type: PDH_HCOUNTER
+  bool vramPdhInitialized = false;
+
   // GPU (DXGI for VRAM)
   LUID adapterLuid = {0, 0};
   void* cachedFactory = nullptr;   // IDXGIFactory4*

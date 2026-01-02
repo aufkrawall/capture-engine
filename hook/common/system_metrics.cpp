@@ -41,6 +41,10 @@ SystemMetricsCollector::~SystemMetricsCollector() {
         free(pdhBuffer);
         pdhBuffer = nullptr;
     }
+    if (vramQuery) {
+        PdhCloseQuery((PDH_HQUERY)vramQuery);
+        vramQuery = nullptr;
+    }
 }
 
 void SystemMetricsCollector::InitPDH() {
@@ -148,64 +152,34 @@ void SystemMetricsCollector::UpdateRAM() {
 }
 
 void SystemMetricsCollector::UpdateGPU() {
-    // Initialize GPU PDH counters if not done yet
-    // Note: This is called from Update() which already holds the mutex
+    // 1. GPU Load via PDH Engine counters (System-Wide, filtered by engine type)
     if (!gpuPdhInitialized && gpuQuery == nullptr) {
         PDH_HQUERY query = nullptr;
-        PDH_STATUS openStatus = PdhOpenQueryA(NULL, 0, &query);
-        if (openStatus == ERROR_SUCCESS) {
+        if (PdhOpenQueryA(NULL, 0, &query) == ERROR_SUCCESS) {
             gpuQuery = (void*)query;
-            
             PDH_HCOUNTER counter = nullptr;
-            PDH_STATUS status;
-            
-            // Windows Task Manager uses GPU Engine utilization
-            // Use wildcard to sum all GPU engines
-            status = PdhAddEnglishCounterA(query, "\\GPU Engine(*)\\Utilization Percentage", 0, &counter);
-            
+            PDH_STATUS status = PdhAddEnglishCounterA(query, "\\GPU Engine(*)\\Utilization Percentage", 0, &counter);
+            if (status != ERROR_SUCCESS) {
+                status = PdhAddCounterA(query, "\\GPU Engine(*)\\Utilization Percentage", 0, &counter);
+            }
             if (status == ERROR_SUCCESS) {
                 gpuCounter = (void*)counter;
-                // Need to collect data twice for rate-based counters
-                PdhCollectQueryData(query);
-                Sleep(100); // Small delay for first sample
                 PdhCollectQueryData(query);
                 gpuPdhInitialized = true;
-                EarlyLog("GPU PDH: Initialized with GPU Engine wildcard");
+                EarlyLog("GPU Load: Initialized");
             } else {
-                EarlyLog("GPU PDH: GPU Engine failed (0x%08X), trying localized...", status);
-                // Try localized counter names
-                status = PdhAddCounterA(query, "\\GPU Engine(*)\\Utilization Percentage", 0, &counter);
-                if (status == ERROR_SUCCESS) {
-                    gpuCounter = (void*)counter;
-                    PdhCollectQueryData(query);
-                    Sleep(100);
-                    PdhCollectQueryData(query);
-                    gpuPdhInitialized = true;
-                    EarlyLog("GPU PDH: Initialized with localized counter");
-                } else {
-                    EarlyLog("GPU PDH: All attempts failed (0x%08X)", status);
-                    PdhCloseQuery(query);
-                    gpuQuery = nullptr;
-                }
+                PdhCloseQuery(query);
+                gpuQuery = nullptr;
             }
-        } else {
-            EarlyLog("GPU PDH: PdhOpenQuery failed (0x%08X)", openStatus);
         }
     }
-    
-    // Update GPU usage via PDH - wildcard counters need array retrieval
-    static int logCount = 0;
-    static float smoothedGpuUsage = 0.0f; // Smoothed value for stable display
+
+    static float smoothedGpuUsage = 0.0f;
     if (gpuPdhInitialized && gpuQuery && gpuCounter) {
-        PDH_STATUS collectStatus = PdhCollectQueryData((PDH_HQUERY)gpuQuery);
-        if (collectStatus == ERROR_SUCCESS) {
-            // Wildcard counters return multiple values - need array retrieval
-            DWORD bufSize = 0;
-            DWORD itemCount = 0;
-            PDH_STATUS arrayStatus = PdhGetFormattedCounterArrayA((PDH_HCOUNTER)gpuCounter, PDH_FMT_DOUBLE, &bufSize, &itemCount, NULL);
-            
-            if (arrayStatus == PDH_MORE_DATA && bufSize > 0) {
-                // Resize cached buffer if needed
+        if (PdhCollectQueryData((PDH_HQUERY)gpuQuery) == ERROR_SUCCESS) {
+            DWORD bufSize = 0, itemCount = 0;
+            PdhGetFormattedCounterArrayA((PDH_HCOUNTER)gpuCounter, PDH_FMT_DOUBLE, &bufSize, &itemCount, NULL);
+            if (bufSize > 0) {
                 if (bufSize > pdhBufferSize) {
                     void* newBuf = realloc(pdhBuffer, bufSize);
                     if (newBuf) {
@@ -213,97 +187,106 @@ void SystemMetricsCollector::UpdateGPU() {
                         pdhBufferSize = bufSize;
                     }
                 }
-
                 if (pdhBuffer) {
                     PDH_FMT_COUNTERVALUE_ITEM_A* items = (PDH_FMT_COUNTERVALUE_ITEM_A*)pdhBuffer;
-                    arrayStatus = PdhGetFormattedCounterArrayA((PDH_HCOUNTER)gpuCounter, PDH_FMT_DOUBLE, &pdhBufferSize, &itemCount, items);
-                    if (arrayStatus == ERROR_SUCCESS && itemCount > 0) {
-                        double totalUtil = 0.0;
-                        int matchedEngines = 0;
+                    if (PdhGetFormattedCounterArrayA((PDH_HCOUNTER)gpuCounter, PDH_FMT_DOUBLE, &pdhBufferSize, &itemCount, items) == ERROR_SUCCESS) {
+                        double sum3D = 0, sumCompute = 0, sumVideo = 0, sumVR = 0;
                         for (DWORD i = 0; i < itemCount; i++) {
                             const char* instance = items[i].szName;
-                            
-                            // Log first few instances only once ever
-                            static bool instancesLogged = false;
-                            if (!instancesLogged && i < 10) {
-                                EarlyLog("GPU PDH Instance[%lu]: %s", i, instance ? instance : "NULL");
-                                if (i == 9 || i == itemCount - 1) instancesLogged = true;
-                            }
-
-                            // Filter by LUID to avoid summing across multiple GPUs
-                            if (instance && (strstr(instance, cachedLuidPart) || strstr(instance, "luid_") == nullptr)) {
-                                totalUtil += items[i].FmtValue.doubleValue;
-                                matchedEngines++;
+                            if (instance && items[i].FmtValue.CStatus == ERROR_SUCCESS) {
+                                if (strstr(instance, cachedLuidPart) || strstr(instance, "luid_") == nullptr) {
+                                    double val = items[i].FmtValue.doubleValue;
+                                    if (strstr(instance, "engtype_3D")) sum3D += val;
+                                    else if (strstr(instance, "engtype_Compute")) sumCompute += val;
+                                    else if (strstr(instance, "VideoDecode") || strstr(instance, "VideoEncode")) sumVideo += val;
+                                    else if (strstr(instance, "engtype_VR")) sumVR += val;
+                                }
                             }
                         }
                         
-                        if (totalUtil > 100.0) totalUtil = 100.0;
+                        // Final Load is the MAX of the core engine categories
+                        // Each category is limited to 100% to avoid driver measurement artifacts
+                        double maxLoad = std::max({std::min(100.0, sum3D), std::min(100.0, sumCompute), std::min(100.0, sumVideo), std::min(100.0, sumVR)});
                         
-                        const float smoothingWeight = 0.2f;
-                        smoothedGpuUsage = smoothedGpuUsage * (1.0f - smoothingWeight) + (float)totalUtil * smoothingWeight;
+                        const float smoothingWeight = 0.65f; // Increased for better "latest information" feel
+                        smoothedGpuUsage = smoothedGpuUsage * (1.0f - smoothingWeight) + (float)maxLoad * smoothingWeight;
                         current.gpuUsage = smoothedGpuUsage;
                         current.gpuUsageValid = true;
-                        
-                        if (logCount < 5) {
-                            EarlyLog("GPU PDH: items=%lu, matches=%d, total=%.1f%%, smoothed=%.1f%%, LUID=%s", 
-                                     itemCount, matchedEngines, totalUtil, smoothedGpuUsage, cachedLuidPart);
-                            logCount++;
-                        }
-                    } else if (logCount < 3) {
-                        EarlyLog("GPU PDH: GetArray failed (0x%08X), items=%lu", arrayStatus, itemCount);
-                        logCount++;
                     }
                 }
-            } else if (logCount < 3) {
-                // Try single value as fallback
-                PDH_FMT_COUNTERVALUE displayValue;
-                PDH_STATUS singleStatus = PdhGetFormattedCounterValue((PDH_HCOUNTER)gpuCounter, PDH_FMT_DOUBLE, NULL, &displayValue);
-                if (singleStatus == ERROR_SUCCESS) {
-                    const float smoothingWeight = 0.3f;
-                    smoothedGpuUsage = smoothedGpuUsage * (1.0f - smoothingWeight) + (float)displayValue.doubleValue * smoothingWeight;
-                    current.gpuUsage = smoothedGpuUsage;
-                    current.gpuUsageValid = true;
-                }
-                logCount++;
             }
         }
     }
-    
-    // VRAM Usage via DXGI
-    if (adapterLuid.LowPart == 0 && adapterLuid.HighPart == 0) return;
 
-    // Use cached resources if available
-    if (!cachedFactory) {
-        CreateDXGIFactory1(__uuidof(IDXGIFactory4), (void**)&cachedFactory);
+    // 2. VRAM Usage via PDH Adapter Memory (System-Wide)
+    if (!vramPdhInitialized && vramQuery == nullptr) {
+        PDH_HQUERY query = nullptr;
+        if (PdhOpenQueryA(NULL, 0, &query) == ERROR_SUCCESS) {
+            vramQuery = (void*)query;
+            PDH_HCOUNTER counter = nullptr;
+            PDH_STATUS status = PdhAddEnglishCounterA(query, "\\GPU Adapter Memory(*)\\Dedicated Usage", 0, &counter);
+            if (status != ERROR_SUCCESS) {
+                status = PdhAddCounterA(query, "\\GPU Adapter Memory(*)\\Dedicated Usage", 0, &counter);
+            }
+            if (status == ERROR_SUCCESS) {
+                vramCounter = (void*)counter;
+                PdhCollectQueryData(query);
+                vramPdhInitialized = true;
+                EarlyLog("VRAM: Initialized");
+            } else {
+                PdhCloseQuery(query);
+                vramQuery = nullptr;
+            }
+        }
     }
 
+    static float smoothedVramUsed = 0.0f;
+    if (vramPdhInitialized && vramQuery && vramCounter) {
+        if (PdhCollectQueryData((PDH_HQUERY)vramQuery) == ERROR_SUCCESS) {
+            DWORD bufSize = 0, itemCount = 0;
+            PdhGetFormattedCounterArrayA((PDH_HCOUNTER)vramCounter, PDH_FMT_DOUBLE, &bufSize, &itemCount, NULL);
+            if (bufSize > 0) {
+                static void* vramBuffer = nullptr;
+                static DWORD vramBufferSize = 0;
+                if (bufSize > vramBufferSize) {
+                    void* newBuf = realloc(vramBuffer, bufSize);
+                    if (newBuf) { vramBuffer = newBuf; vramBufferSize = bufSize; }
+                }
+                if (vramBuffer) {
+                    PDH_FMT_COUNTERVALUE_ITEM_A* items = (PDH_FMT_COUNTERVALUE_ITEM_A*)vramBuffer;
+                    if (PdhGetFormattedCounterArrayA((PDH_HCOUNTER)vramCounter, PDH_FMT_DOUBLE, &vramBufferSize, &itemCount, items) == ERROR_SUCCESS) {
+                        for (DWORD i = 0; i < itemCount; i++) {
+                            const char* instance = items[i].szName;
+                            if (instance && strstr(instance, cachedLuidPart) && items[i].FmtValue.CStatus == ERROR_SUCCESS) {
+                                float rawVram = (float)items[i].FmtValue.doubleValue;
+                                if (smoothedVramUsed == 0.0f) smoothedVramUsed = rawVram;
+                                else smoothedVramUsed = smoothedVramUsed * 0.6f + rawVram * 0.4f;
+                                current.vramUsed = (uint64_t)smoothedVramUsed;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // VRAM Total still via DXGI
+    if (adapterLuid.LowPart == 0 && adapterLuid.HighPart == 0) return;
+    if (!cachedFactory) CreateDXGIFactory1(__uuidof(IDXGIFactory4), (void**)&cachedFactory);
     if (cachedFactory && !cachedAdapter) {
         IDXGIFactory4* pFactory = (IDXGIFactory4*)cachedFactory;
-        LUID targetLuid = adapterLuid;
         IDXGIAdapter1* tempAdapter = nullptr;
         for (UINT i = 0; pFactory->EnumAdapters1(i, &tempAdapter) != DXGI_ERROR_NOT_FOUND; ++i) {
             DXGI_ADAPTER_DESC1 desc;
             tempAdapter->GetDesc1(&desc);
-            if (desc.AdapterLuid.LowPart == targetLuid.LowPart && 
-                desc.AdapterLuid.HighPart == targetLuid.HighPart) {
+            if (desc.AdapterLuid.LowPart == adapterLuid.LowPart && desc.AdapterLuid.HighPart == adapterLuid.HighPart) {
                 tempAdapter->QueryInterface(__uuidof(IDXGIAdapter3), (void**)&cachedAdapter);
+                current.vramTotal = desc.DedicatedVideoMemory;
                 tempAdapter->Release();
                 break;
             }
             tempAdapter->Release();
-        }
-    }
-    
-    if (cachedAdapter) {
-        IDXGIAdapter3* pAdapter = (IDXGIAdapter3*)cachedAdapter;
-        DXGI_QUERY_VIDEO_MEMORY_INFO videoMemoryInfo;
-        if (pAdapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &videoMemoryInfo) == S_OK) {
-            current.vramUsed = videoMemoryInfo.CurrentUsage;
-            current.vramTotal = videoMemoryInfo.Budget; 
-        } else {
-            // If query fails, maybe adapter is stale? Reset for next time.
-            pAdapter->Release();
-            cachedAdapter = nullptr;
         }
     }
 }

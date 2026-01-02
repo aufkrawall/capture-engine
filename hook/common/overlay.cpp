@@ -24,7 +24,7 @@ void Overlay::InitImGui(void* hwnd) {
     
     // Load Segoe UI Bold for thicker, prettier text
     // Scale font size by DPI to prevent blurriness
-    float baseFontSize = 16.0f; // Reduced from 18.0f to better match graph size
+    float baseFontSize = 18.0f; // Increased from 16.0f per user request
     float scaledFontSize = baseFontSize * dpiScale;
     
     ImGuiIO& io = ImGui::GetIO();
@@ -310,9 +310,13 @@ void Overlay::RenderUI() {
              // MangoHud-style graph with transparent background (no blue)
              ImGui::PushStyleColor(ImGuiCol_PlotLines, cfg.frametimeColor);
              ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(0, 0, 0, 0)); // Transparent background
-             ImGui::PlotLines("##FrameTime", metrics->GetHistoryArray(),
-                         PerformanceMetrics::HISTORY_SIZE,
-                         metrics->GetHistoryIndex(), nullptr, minScale,
+             
+             float graphBuf[PerformanceMetrics::GRAPH_HISTORY_SIZE];
+             metrics->GetLastHistory(graphBuf, PerformanceMetrics::GRAPH_HISTORY_SIZE);
+
+             ImGui::PlotLines("##FrameTime", graphBuf,
+                         PerformanceMetrics::GRAPH_HISTORY_SIZE,
+                         0, nullptr, minScale,
                          maxScale, ImVec2(ImGui::GetContentRegionAvail().x, graphHeight));
              ImGui::PopStyleColor(2); // PlotLines + FrameBg
         }
