@@ -249,6 +249,20 @@ const GraphicsConfig& GetActiveGraphicsConfig() {
     if (g_LocalConfig.graphics.disableAutoMipBias) {
         mergedConfig.disableAutoMipBias = g_LocalConfig.graphics.disableAutoMipBias;
     }
+    
+    // Missing overrides added to fix regression
+    if (g_LocalConfig.graphics.anisotropicFiltering != "default" && !g_LocalConfig.graphics.anisotropicFiltering.empty()) {
+        mergedConfig.anisotropicFiltering = g_LocalConfig.graphics.anisotropicFiltering;
+    }
+    if (g_LocalConfig.graphics.mipMapping != "default" && !g_LocalConfig.graphics.mipMapping.empty()) {
+        mergedConfig.mipMapping = g_LocalConfig.graphics.mipMapping;
+    }
+    if (g_LocalConfig.graphics.mipBias != "default" && !g_LocalConfig.graphics.mipBias.empty()) {
+        mergedConfig.mipBias = g_LocalConfig.graphics.mipBias;
+    }
+    if (g_LocalConfig.graphics.msaaSamples != "default" && !g_LocalConfig.graphics.msaaSamples.empty()) {
+        mergedConfig.msaaSamples = g_LocalConfig.graphics.msaaSamples;
+    }
     // Add other fields as needed
     
     // Update global performance gating flag

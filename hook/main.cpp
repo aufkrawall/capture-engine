@@ -334,6 +334,8 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
       std::string configPath = dir + "\\config.ini";
       
       LoadConfig(configPath, g_LocalConfig);
+      // Prime the graphics override state immediately
+      GetActiveGraphicsConfig();
       EarlyLog("HookThread: Local config loaded from %s. PrerenderLimit=%.2f", 
           configPath.c_str(), g_LocalConfig.graphics.cpuPrerenderLimit);
   }
@@ -427,6 +429,10 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     } else {
         Sleep(100);
     }
+    
+    // Periodically update active graphics config state 
+    // This ensures g_GraphicsOverridesActive is updated even if no hooks are calling it yet
+    GetActiveGraphicsConfig();
     
     // If signaled OR timeout, we check logic
     // (Timeout is needed for Exit/IPC checks)

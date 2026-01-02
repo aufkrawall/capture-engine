@@ -51,15 +51,40 @@ static void UpdateSharedMemoryFromConfig(SharedMemoryLayout* pSharedMem, const A
     pSharedMem->graphicsConfig.prerenderLimit = config.graphics.cpuPrerenderLimit;
     pSharedMem->graphicsConfig.backbufferCount = config.graphics.backbufferCount;
     pSharedMem->graphicsConfig.sgssaa = config.graphics.sgssaa;
+    pSharedMem->graphicsConfig.disableAutoMipBias = config.graphics.disableAutoMipBias;
     pSharedMem->configVersion.fetch_add(1, std::memory_order_release);
 
     // Overlay
     pSharedMem->overlayConfig = config.overlay;
+
+    // Performance / Priority
+    pSharedMem->gpuPriority = config.video.gpuPriority;
+    if (config.copyQueuePriority == "low")
+        pSharedMem->copyQueuePriority = 0;
+    else if (config.copyQueuePriority == "high")
+        pSharedMem->copyQueuePriority = 2;
+    else
+        pSharedMem->copyQueuePriority = 1;
+
+    // Synchronization
+    pSharedMem->fenceWaitMode = config.fenceWaitMode;
+    pSharedMem->useGameQueue = config.useGameQueue;
+
+    // FPS Limiter
+    pSharedMem->fpsLimiter.captureSyncEnabled = config.fpsLimiter.captureSyncEnabled;
+    pSharedMem->fpsLimiter.captureSyncMultiplier = config.fpsLimiter.captureSyncMultiplier;
+    pSharedMem->fpsLimiter.generalEnabled = config.fpsLimiter.generalEnabled;
+    pSharedMem->fpsLimiter.generalFps = config.fpsLimiter.generalFps;
+    // Note: captureFps is usually set dynamically during recording start, 
+    // but we can update it here if it's based on config.video.fps
+    pSharedMem->fpsLimiter.captureFps = config.video.fps;
+    pSharedMem->fpsLimiter.useVFR = config.video.useVFR;
     
-    LogInfo("[Inject] Updated SharedMem Config: VSync=%s, AF=%s, BackBuffers=%d", 
+    LogInfo("[Inject] Updated SharedMem Config: VSync=%s, AF=%s, FPS Limit=%d (%s)", 
             pSharedMem->graphicsConfig.vsyncMode, 
             pSharedMem->graphicsConfig.anisotropicFiltering,
-            pSharedMem->graphicsConfig.backbufferCount);
+            pSharedMem->fpsLimiter.generalFps,
+            pSharedMem->fpsLimiter.generalEnabled ? "ON" : "OFF");
 }
 
 int InjectProcessMain(const AppConfig &config) {

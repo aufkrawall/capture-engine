@@ -3461,10 +3461,14 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
   int64_t diagT2 = diagTime();
   
   // Log slow frames (>2ms overhead from our code)
-  int64_t diagOverheadUs = diagT2 - diagT0;
-  if (diagOverheadUs > 2000 && diagLogCount < 50) {
+  // Exclude limiter time, as that's intentional waiting
+  int64_t totalOverheadUs = diagT2 - diagT0;
+  int64_t limiterTimeUs = diagT1 - diagT0;
+  int64_t internalOverheadUs = totalOverheadUs - limiterTimeUs;
+  
+  if (internalOverheadUs > 2000 && diagLogCount < 50) {
       EarlyLog("Vulkan SLOW: Total=%lldus, Limiter=%lldus, Overlay=%lldus",
-               diagOverheadUs, diagT1 - diagT0, diagT2 - diagT1);
+               totalOverheadUs, limiterTimeUs, diagT2 - diagT1);
       diagLogCount++;
   }
 
