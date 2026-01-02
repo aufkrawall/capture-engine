@@ -29,6 +29,10 @@ static ID3D11RenderTargetView *g_mainRenderTargetView = NULL;
 static bool g_IsDX10Device = false;
 static const char* g_DetectedAPI = "DX11"; // Will be set to "DX10" if DX10 device detected
 
+// Prerender Limit Fencing
+static std::vector<ID3D11Query*> g_PrerenderQueries;
+static uint64_t g_PrerenderFrameIndex = 0;
+
 typedef HRESULT(STDMETHODCALLTYPE *Present_t)(IDXGISwapChain *pSwapChain,
                                               UINT SyncInterval, UINT Flags);
 typedef HRESULT(STDMETHODCALLTYPE *ResizeBuffers_t)(IDXGISwapChain *pSwapChain,
@@ -514,6 +518,65 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain *pSwapChain,
   return hr;
 }
 
+// --- Prerender Limit Support ---
+static void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
+    if (limit < 0.0f) return;
+
+    ID3D11Device* dev = nullptr;
+    if (FAILED(pSwapChain->GetDevice(IID_PPV_ARGS(&dev)))) return;
+
+    ID3D11DeviceContext* ctx = nullptr;
+    dev->GetImmediateContext(&ctx);
+
+    if (g_PrerenderQueries.empty() || g_PrerenderQueries[0] == nullptr) {
+        g_PrerenderQueries.clear();
+        for (int i = 0; i < 16; i++) {
+            D3D11_QUERY_DESC qd = {};
+            qd.Query = D3D11_QUERY_EVENT;
+            ID3D11Query* q = nullptr;
+            if (SUCCEEDED(dev->CreateQuery(&qd, &q))) {
+                g_PrerenderQueries.push_back(q);
+            }
+        }
+        HookLog("DX11: Created manual prerender query ring buffer (size: %d)", (int)g_PrerenderQueries.size());
+    }
+
+    if (!g_PrerenderQueries.empty()) {
+        if (limit == 0.0f) {
+            ID3D11Query* q = g_PrerenderQueries[g_PrerenderFrameIndex % g_PrerenderQueries.size()];
+            ctx->End(q);
+            while (ctx->GetData(q, nullptr, 0, 0) == S_FALSE) {
+                SwitchToThread();
+            }
+        } else {
+            int effectiveLimit = (limit < 1.0f) ? 1 : (int)limit;
+            int lookback = effectiveLimit + 1;
+
+            ID3D11Query* currentQ = g_PrerenderQueries[g_PrerenderFrameIndex % g_PrerenderQueries.size()];
+            ctx->End(currentQ);
+
+            if (g_PrerenderFrameIndex >= (uint64_t)lookback) {
+                ID3D11Query* waitQ = g_PrerenderQueries[(g_PrerenderFrameIndex - lookback) % g_PrerenderQueries.size()];
+                while (ctx->GetData(waitQ, nullptr, 0, 0) == S_FALSE) {
+                    SwitchToThread();
+                }
+            }
+        }
+        g_PrerenderFrameIndex++;
+    }
+
+    // Hybrid Pacing (Sub-frame sleep)
+    if (limit > 0.01f && limit < 1.0f) {
+        float fps = g_PerfMetrics.GetCurrentFPS();
+        double avgFrameTimeUs = (fps > 1.0f) ? (1000000.0 / fps) : 16666.0;
+        int64_t sleepUs = (int64_t)(avgFrameTimeUs * (1.0 - limit) * 0.70);
+        if (sleepUs > 0) PrecisionSleep(sleepUs);
+    }
+
+    ctx->Release();
+    dev->Release();
+}
+
 HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
                                             UINT SyncInterval, UINT Flags) {
   static int64_t qpcFreq = 0;
@@ -539,55 +602,25 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
       SyncInterval = (UINT)vsync.presentInterval;
   }
 
-  // Apply Prerender Limit (Hybrid Pacing)
+  // Apply Prerender Limit
   float limit = GetActivePrerenderLimit();
   if (limit >= 0.0f) {
-      static bool prerenderLimitSet = false;
       static float lastLimit = -2.0f;
-      
-      // Update Latency (Queue Size) if changed
       if (fabs(limit - lastLimit) > 0.001f) {
           ID3D11Device* dev = nullptr;
           if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&dev)))) {
               IDXGIDevice1* dxgiDev = nullptr;
               if (SUCCEEDED(dev->QueryInterface(IID_PPV_ARGS(&dxgiDev)))) {
-                   // Map limit to integer latency
-                   // 0 -> 1 (Strict)
-                   // 0.5 -> 1 (Buffered + Sleep)
-                   // 1 -> 1
-                   // 2 -> 2
-                   // If limit < 1, we set latency 1 to allow strictly 1 frame (or overlap if < 1).
-                   // Wait, "MaximumFrameLatency" of 1 means 1 frame queued? Or 1 frame in flight?
-                   // Docs say: "The number of frames that can be queued".
-                   // 1 = Serial? No, 1 = 1 buffered.
-                   // 0 is invalid/driver default?
-                   // Actually DXGI default is 3.
-                   
                    UINT effectiveLatency = (limit < 1.0f) ? 1 : (UINT)limit;
-                   if (effectiveLatency < 1) effectiveLatency = 1;
-
                    dxgiDev->SetMaximumFrameLatency(effectiveLatency);
                    dxgiDev->Release();
-                   HookLog("DX11: Set maximum frame latency to %d (Active Limit: %.2f)", effectiveLatency, limit);
+                   HookLog("DX11: Set maximum DXGI latency to %d (Active Limit: %.2f)", effectiveLatency, limit);
               }
               dev->Release();
           }
           lastLimit = limit;
       }
-      
-      // Strict Serial (Limit 0) Logic (DX11)
-      // Since Latency=1 allows 1 frame, we need to Wait to ensure queue is empty.
-      // But we can only wait on queries/fences.
-      // We don't have a reliable "Frame Fence" here unless we inject one?
-      // For now, Limit 0 with Latency 1 is "Low Latency" but not "Strict Serial".
-      
-      // Hybrid Pacing (Limit 0.x)
-      if (limit > 0.01f && limit < 1.0f) {
-           float fps = g_PerfMetrics.GetCurrentFPS();
-           double avgFrameTimeUs = (fps > 1.0f) ? (1000000.0 / fps) : 16666.0;
-           int64_t sleepUs = (int64_t)(avgFrameTimeUs * (1.0 - limit) * 0.70); // 0.70 Safety Factor
-           if (sleepUs > 0) PrecisionSleep(sleepUs);
-      }
+      ApplyPrerenderLimit(pSwapChain, limit);
   }
 
   if (!csvLoggingInitialized && csvShm && csvShm->debugLogging) {
@@ -710,11 +743,31 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain *pSwapChain,
                                              UINT SyncInterval, UINT PresentFlags,
                                              const DXGI_PRESENT_PARAMETERS *pPresentParameters) {
   if (g_ShuttingDown) return oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
-  
   // Apply VSync Override
   VSyncOverride vsync = GetVSyncOverride();
   if (vsync.shouldOverride) {
       SyncInterval = (UINT)vsync.presentInterval;
+  }
+
+  // Apply Prerender Limit
+  float limit = GetActivePrerenderLimit();
+  if (limit >= 0.0f) {
+      static float lastLimit = -2.0f;
+      if (fabs(limit - lastLimit) > 0.001f) {
+          ID3D11Device* dev = nullptr;
+          if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&dev)))) {
+              IDXGIDevice1* dxgiDev = nullptr;
+              if (SUCCEEDED(dev->QueryInterface(IID_PPV_ARGS(&dxgiDev)))) {
+                   UINT effectiveLatency = (limit < 1.0f) ? 1 : (UINT)limit;
+                   dxgiDev->SetMaximumFrameLatency(effectiveLatency);
+                   dxgiDev->Release();
+                   HookLog("DX11: Set maximum DXGI latency to %d (Active Limit: %.2f)", effectiveLatency, limit);
+              }
+              dev->Release();
+          }
+          lastLimit = limit;
+      }
+      ApplyPrerenderLimit(pSwapChain, limit);
   }
   
   // Reuse the same logic as Present, just call Present1 at the end

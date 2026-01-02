@@ -702,7 +702,7 @@ void InjectionManager::Eject(DWORD pid) {
           HANDLE hThread = CreateRemoteThread(hProcess, NULL, 0, pFreeLibrary,
                                               (LPVOID)hMods[i], 0, NULL);
           if (hThread) {
-            WaitForSingleObject(hThread, 2000);
+            WaitForSingleObject(hThread, 500);
             CloseHandle(hThread);
           }
           break;

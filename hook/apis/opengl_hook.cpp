@@ -3,6 +3,7 @@
 #include "../common/capture_base.h"
 #include "../common/fps_limiter.h"
 #include "../common/overlay.h"
+#include "../common/frame_timing.h"
 #include "hook_common.h"
 #include "performance_metrics.h"
 #include <MinHook.h>
@@ -26,6 +27,8 @@ typedef unsigned char GLboolean;
 typedef float GLfloat;
 typedef double GLdouble;
 typedef unsigned int GLbitfield;
+typedef struct __GLsync *GLsync;
+typedef uint64_t GLuint64;
 
 // OpenGL constants
 #define GL_FALSE                          0
@@ -42,6 +45,9 @@ typedef unsigned int GLbitfield;
 #define GL_STREAM_READ                    0x88E1
 #define GL_PIXEL_PACK_BUFFER              0x88EB
 #define GL_READ_ONLY                      0x88B8
+#define GL_SYNC_GPU_COMMANDS_COMPLETE     0x9117
+#define GL_SYNC_FLUSH_COMMANDS_BIT        0x00000001
+#define GL_TIMEOUT_IGNORED                0xFFFFFFFFFFFFFFFFull
 
 // Function pointer typedefs for WGL hooks
 typedef BOOL (WINAPI *SwapBuffers_t)(HDC);
@@ -86,6 +92,9 @@ typedef GLboolean (*glUnmapBuffer_t)(GLenum);
 typedef GLenum (*glGetError_t)(void);
 typedef void (*glFlush_t)(void);
 typedef void (*glFinish_t)(void);
+typedef GLsync (*glFenceSync_t)(GLenum, GLbitfield);
+typedef void (*glDeleteSync_t)(GLsync);
+typedef GLenum (*glClientWaitSync_t)(GLsync, GLbitfield, GLuint64);
 
 // Original function pointers
 static SwapBuffers_t oSwapBuffers = nullptr;
@@ -132,6 +141,9 @@ typedef void (WINAPI *glTexImage2DMultisample_t)(GLenum, GLsizei, GLenum, GLsize
 typedef void (WINAPI *glEnable_t)(GLenum);
 static glFlush_t pglFlush = nullptr;
 static glFinish_t pglFinish = nullptr;
+static glFenceSync_t pglFenceSync = nullptr;
+static glDeleteSync_t pglDeleteSync = nullptr;
+static glClientWaitSync_t pglClientWaitSync = nullptr;
 // SGSSAA Extensions
 #define GL_SAMPLE_SHADING                 0x8C36
 #define GL_MIN_SAMPLE_SHADING_VALUE       0x8C37
@@ -150,8 +162,56 @@ static HWND g_CachedHwnd = NULL;
 static bool g_HooksInitialized = false;
 static bool g_FunctionsLoaded = false;
 static bool g_NVInteropAvailable = false;
-static int g_SwapRecurse = 0;
 static HDC g_CaptureHDC = NULL;
+static int g_SwapRecurse = 0;
+
+// Prerender Limit State
+static std::vector<GLsync> g_PrerenderSyncs;
+static uint64_t g_PrerenderFrameIndex = 0;
+
+static void ApplyPrerenderLimitGL(float limit) {
+    if (limit < 0.0f || !pglFinish) return;
+
+    if (limit == 0.0f) {
+        // Strict Serial: Wait for CURRENT frame to finish
+        pglFinish();
+    } else {
+        if (!pglFenceSync) return;
+
+        int effectiveLimit = (limit < 1.0f) ? 1 : (int)limit;
+        int lookback = effectiveLimit + 1;
+
+        if (g_PrerenderSyncs.empty()) {
+            g_PrerenderSyncs.resize(16, nullptr);
+        }
+
+        // Wait for oldest
+        if (g_PrerenderFrameIndex >= (uint64_t)lookback) {
+            GLsync waitSync = g_PrerenderSyncs[(g_PrerenderFrameIndex - lookback) % g_PrerenderSyncs.size()];
+            if (waitSync) {
+                pglClientWaitSync(waitSync, GL_SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED);
+                pglDeleteSync(waitSync);
+                g_PrerenderSyncs[(g_PrerenderFrameIndex - lookback) % g_PrerenderSyncs.size()] = nullptr;
+            }
+        }
+
+        // Create new sync for current frame
+        GLsync currentSync = pglFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        g_PrerenderSyncs[g_PrerenderFrameIndex % g_PrerenderSyncs.size()] = currentSync;
+        g_PrerenderFrameIndex++;
+    }
+
+    // Hybrid Pacing (Sleep-based sub-frame limiting)
+    if (limit > 0.01f && limit < 1.0f) {
+        float fps = g_PerfMetrics.GetCurrentFPS();
+        double avgFrameTimeUs = (fps > 1.0f) ? (1000000.0 / fps) : 16666.0;
+        int64_t sleepUs = (int64_t)(avgFrameTimeUs * (1.0 - limit) * 0.70); // 0.70 Safety Factor
+        if (sleepUs > 0) {
+            // Include frame_timing.h if not already
+            PrecisionSleep(sleepUs);
+        }
+    }
+}
 
 // OpenGL Capture class with D3D11 interop
 class OpenGLCapture : public HookCaptureBase {
@@ -630,6 +690,9 @@ static bool LoadGLFunctions() {
     LOAD_GL(glReadPixels);
     LOAD_GL(glMapBuffer);
     LOAD_GL(glUnmapBuffer);
+    LOAD_GL(glFenceSync);
+    LOAD_GL(glDeleteSync);
+    LOAD_GL(glClientWaitSync);
     
     // Check for WGL_NV_DX_interop
     wglDXOpenDeviceNV = (wglDXOpenDeviceNV_t)wglGetProcAddress_ptr("wglDXOpenDeviceNV");
@@ -702,8 +765,10 @@ static void SwapBegin(HDC hdc) {
     if (g_SwapRecurse == 0) {
         if (!g_FunctionsLoaded) {
             LoadGLFunctions();
+            // Restore context if needed? LoadGLFunctions uses opengl32.dll mostly.
         }
     }
+    // We increments recurse BEFORE potential early returns to keep it balanced.
     g_SwapRecurse++;
 }
 
@@ -745,6 +810,11 @@ static void SwapEnd(HDC hdc) {
         // Apply FPS limiter
         g_SharedFpsLimiter.SetIPCClient(g_IPC);
         g_SharedFpsLimiter.Apply();
+
+        // CPU Prerender Limit
+        if (g_IPC && g_IPC->GetSharedMem()->graphicsConfig.prerenderLimit >= 0) {
+            ApplyPrerenderLimitGL(g_IPC->GetSharedMem()->graphicsConfig.prerenderLimit);
+        }
     }
 }
 

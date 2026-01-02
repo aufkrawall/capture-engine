@@ -5,6 +5,7 @@
 #include "../common/overlay.h"
 #include "hook_common.h"
 #include "performance_metrics.h"
+#include "../common/frame_timing.h"
 #include <MinHook.h>
 #include <cstdint>
 #include <d3d9.h>
@@ -139,6 +140,12 @@ static bool g_ImGuiInitialized = false;
 static HWND g_CachedHwnd = NULL;
 static bool g_HooksInitialized = false;
 
+// Prerender Limit State
+static std::vector<IDirect3DQuery9*> g_PrerenderQueries;
+static uint64_t g_PrerenderFrameIndex = 0;
+
+static void ApplyPrerenderLimitDX8(IDirect3DDevice8* device, float limit);
+
 // DX8 Capture class using D3D9Ex shared surface wrapper
 class DX8Capture : public HookCaptureBase {
 public:
@@ -160,13 +167,6 @@ public:
     
     // Cached D3D8 device
     IDirect3DDevice8 *d3d8Device = nullptr;
-    
-    // CPU Prerender Limit
-    struct QuerySlot {
-        IDirect3DQuery9* query = nullptr; // Using D3D9Ex device for sync
-    };
-    std::vector<QuerySlot> prerenderQueries;
-    uint32_t prerenderIdx = 0;
     
     void Cleanup() override {
         CleanupDX8();
@@ -200,11 +200,11 @@ public:
         if (d3d9DeviceEx) { d3d9DeviceEx->Release(); d3d9DeviceEx = nullptr; }
         if (d3d9Ex) { d3d9Ex->Release(); d3d9Ex = nullptr; }
         
-        for (auto& q : prerenderQueries) {
-            if (q.query) q.query->Release();
+        for (auto& q : g_PrerenderQueries) {
+            if (q) q->Release();
         }
-        prerenderQueries.clear();
-        prerenderIdx = 0;
+        g_PrerenderQueries.clear();
+        g_PrerenderFrameIndex = 0;
         
         d3d8Device = nullptr;
         initialized = false;
@@ -217,6 +217,7 @@ public:
     }
     
     bool CreateD3D9ExWrapper(HWND hwnd) {
+        if (d3d9DeviceEx) return true;
         // Create D3D9Ex calls dynamic
         HMODULE d3d9 = GetModuleHandleA("d3d9.dll");
         if (!d3d9) d3d9 = LoadLibraryA("d3d9.dll");
@@ -479,38 +480,73 @@ public:
         SignalFrameReady(g_IPC, idx, us / 1000, fenceValue);
         AdvanceWriteIndex();
     }
-    
-    void WaitPrerender(int32_t limit) {
-        if (limit <= 0 || !d3d9DeviceEx) return;
-        
-        if (prerenderQueries.size() != (size_t)limit + 1) {
-            for (auto& q : prerenderQueries) if (q.query) q.query->Release();
-            prerenderQueries.clear();
-            prerenderQueries.resize(limit + 1);
-            prerenderIdx = 0;
-        }
-        
-        uint32_t oldestIdx = (prerenderIdx + 1) % (uint32_t)prerenderQueries.size();
-        if (prerenderQueries[oldestIdx].query) {
-            while (prerenderQueries[oldestIdx].query->GetData(nullptr, 0, D3DGETDATA_FLUSH) == S_FALSE) {
-                std::this_thread::yield();
-            }
-        }
-        
-        uint32_t currentIdx = prerenderIdx % (uint32_t)prerenderQueries.size();
-        if (!prerenderQueries[currentIdx].query) {
-            d3d9DeviceEx->CreateQuery(D3DQUERYTYPE_EVENT, &prerenderQueries[currentIdx].query);
-        }
-        
-        if (prerenderQueries[currentIdx].query) {
-            prerenderQueries[currentIdx].query->Issue(D3DISSUE_END);
-        }
-        
-        prerenderIdx++;
-    }
 };
 
 static DX8Capture g_DX8Capture;
+
+static void ApplyPrerenderLimitDX8(IDirect3DDevice8* device, float limit) {
+    if (limit < 0.0f) return;
+
+    // We need D3D9Ex device for queries
+    if (!g_DX8Capture.d3d9DeviceEx) {
+        // Find window from device
+        HWND hwnd = g_CachedHwnd;
+        if (!hwnd) hwnd = GetForegroundWindow();
+        if (hwnd) {
+            if (!g_DX8Capture.CreateD3D9ExWrapper(hwnd)) return;
+        } else return;
+    }
+
+    IDirect3DDevice9Ex* dev = g_DX8Capture.d3d9DeviceEx;
+
+    if (g_PrerenderQueries.empty()) {
+        g_PrerenderQueries.resize(16, nullptr);
+    }
+
+    if (limit == 0.0f) {
+        // Strict Serial (Wait for current frame)
+        IDirect3DQuery9* q = g_PrerenderQueries[g_PrerenderFrameIndex % g_PrerenderQueries.size()];
+        if (!q) {
+            dev->CreateQuery(D3DQUERYTYPE_EVENT, &q);
+            g_PrerenderQueries[g_PrerenderFrameIndex % g_PrerenderQueries.size()] = q;
+        }
+        if (q) {
+            q->Issue(D3DISSUE_END);
+            while (q->GetData(nullptr, 0, D3DGETDATA_FLUSH) == S_FALSE) {
+                SwitchToThread();
+            }
+        }
+    } else {
+        int effectiveLimit = (limit < 1.0f) ? 1 : (int)limit;
+        int lookback = effectiveLimit + 1;
+
+        IDirect3DQuery9* currentQ = g_PrerenderQueries[g_PrerenderFrameIndex % g_PrerenderQueries.size()];
+        if (!currentQ) {
+            dev->CreateQuery(D3DQUERYTYPE_EVENT, &currentQ);
+            g_PrerenderQueries[g_PrerenderFrameIndex % g_PrerenderQueries.size()] = currentQ;
+        }
+        if (currentQ) currentQ->Issue(D3DISSUE_END);
+
+        if (g_PrerenderFrameIndex >= (uint64_t)lookback) {
+            IDirect3DQuery9* waitQ = g_PrerenderQueries[(g_PrerenderFrameIndex - lookback) % g_PrerenderQueries.size()];
+            if (waitQ) {
+                while (waitQ->GetData(nullptr, 0, D3DGETDATA_FLUSH) == S_FALSE) {
+                    SwitchToThread();
+                }
+            }
+        }
+    }
+    g_PrerenderFrameIndex++;
+
+    // Hybrid Pacing (Sleep-based sub-frame limiting)
+    // 0.5 mode: Wait for 1 frame ahead, but sleep half a frame time
+    if (limit > 0.01f && limit < 1.0f) {
+        float fps = g_PerfMetrics.GetCurrentFPS();
+        double avgFrameTimeUs = (fps > 1.0f) ? (1000000.0 / fps) : 16666.0;
+        int64_t sleepUs = (int64_t)(avgFrameTimeUs * (1.0 - limit) * 0.70); // 0.70 Safety Factor
+        if (sleepUs > 0) PrecisionSleep(sleepUs);
+    }
+}
 
 // Draw overlay using ImGui DX9 backend (on our D3D9Ex wrapper device)
 static void DrawDX8Overlay(HWND hwnd) {
@@ -594,8 +630,8 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8Present(
     }
     
     // CPU Prerender Limit
-    if (g_IPC && g_IPC->GetSharedMem()->graphicsConfig.prerenderLimit > 0) {
-        g_DX8Capture.WaitPrerender(g_IPC->GetSharedMem()->graphicsConfig.prerenderLimit);
+    if (g_IPC && g_IPC->GetSharedMem()->graphicsConfig.prerenderLimit >= 0) {
+        ApplyPrerenderLimitDX8(device, g_IPC->GetSharedMem()->graphicsConfig.prerenderLimit);
     }
     
     // Draw overlay

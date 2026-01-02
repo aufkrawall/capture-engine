@@ -356,12 +356,12 @@ int ControllerMain(HINSTANCE hInstance) {
 
   // Create tray icon
   LogInfo("[Controller] Creating tray icon...");
-  TrayIcon tray(
+  auto tray = std::make_unique<TrayIcon>(
       hInstance, []() { g_Running = false; },
       []() {
         ShellExecuteA(NULL, "open", g_ConfigPath.c_str(), NULL, NULL, SW_SHOW);
       });
-  g_Tray = &tray;
+  g_Tray = tray.get();
 
   // Register hotkeys
   LogInfo("[Controller] Registering hotkeys...");
@@ -432,9 +432,12 @@ int ControllerMain(HINSTANCE hInstance) {
     Sleep(10);
   }
 
-  // Cleanup
+  // Cleanup UI immediately for responsiveness
   g_Tray = nullptr;
+  tray.reset();
   UnregisterHotKey(NULL, HOTKEY_ID_RECORD);
+  
+  // Now perform slow process shutdown
   ShutdownChildProcesses();
 
   LogInfo("[Controller] Exiting");

@@ -83,6 +83,13 @@ static constexpr int INIT_COOLDOWN_MS = 200; // Wait 200ms after cleanup before 
 static std::map<ID3D12Device*, ID3D12CommandQueue*> g_DeviceQueues;
 static std::mutex g_DeviceQueuesMutex;
 
+// Prerender Limit Fencing
+static ID3D12Fence* g_PrerenderFence = nullptr;
+static HANDLE g_PrerenderEvent = NULL;
+static UINT64 g_PrerenderValue = 0;
+static std::vector<UINT64> g_PrerenderHistory;
+static uint64_t g_PrerenderFrameIndex = 0;
+
 // --- Capture Resources ---
 class DX12Capture : public HookCaptureBase {
 public:
@@ -824,6 +831,57 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
   }
 }
 
+// --- Prerender Limit Support ---
+static void ApplyPrerenderLimit(float limit) {
+    if (limit < 0.0f || g_CommandQueue == nullptr || g_Device == nullptr) return;
+
+    if (g_PrerenderFence == nullptr) {
+        if (FAILED(g_Device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_PrerenderFence)))) return;
+        g_PrerenderEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+        g_PrerenderValue = 0;
+        g_PrerenderHistory.clear();
+        g_PrerenderFrameIndex = 0;
+        HookLog("DX12: Created manual prerender fence and event");
+    }
+
+    // Manual Fencing (Hard Limit)
+    if (limit == 0.0f) {
+        g_PrerenderValue++;
+        g_CommandQueue->Signal(g_PrerenderFence, g_PrerenderValue);
+        if (g_PrerenderFence->GetCompletedValue() < g_PrerenderValue) {
+            g_PrerenderFence->SetEventOnCompletion(g_PrerenderValue, g_PrerenderEvent);
+            WaitForSingleObject(g_PrerenderEvent, INFINITE);
+        }
+    } else {
+        int effectiveLimit = (limit < 1.0f) ? 1 : (int)limit;
+        int lookback = effectiveLimit + 1;
+        
+        g_PrerenderValue++;
+        g_CommandQueue->Signal(g_PrerenderFence, g_PrerenderValue);
+        g_PrerenderHistory.push_back(g_PrerenderValue);
+        
+        if (g_PrerenderHistory.size() >= (size_t)lookback) {
+            UINT64 waitValue = g_PrerenderHistory[g_PrerenderHistory.size() - lookback];
+            if (waitValue > 0 && g_PrerenderFence->GetCompletedValue() < waitValue) {
+                g_PrerenderFence->SetEventOnCompletion(waitValue, g_PrerenderEvent);
+                WaitForSingleObject(g_PrerenderEvent, INFINITE);
+            }
+            // Keep history manageable
+            if (g_PrerenderHistory.size() > 32) {
+                g_PrerenderHistory.erase(g_PrerenderHistory.begin(), g_PrerenderHistory.end() - 17);
+            }
+        }
+    }
+
+    // Hybrid Pacing (Sleep-based sub-frame limiting)
+    if (limit > 0.01f && limit < 1.0f) {
+        float fps = g_PerfMetrics.GetCurrentFPS();
+        double avgFrameTimeUs = (fps > 1.0f) ? (1000000.0 / fps) : 16666.0;
+        int64_t sleepUs = (int64_t)(avgFrameTimeUs * (1.0 - limit) * 0.70); // 0.70 Safety Factor
+        if (sleepUs > 0) PrecisionSleep(sleepUs);
+    }
+}
+
 // --- Hooks ---
 
 HRESULT STDMETHODCALLTYPE DetourGetBuffer(IDXGISwapChain *pSwapChain, UINT Buffer, REFIID riid, void **ppSurface) {
@@ -960,29 +1018,17 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
       SyncInterval = (UINT)vsync.presentInterval;
   }
 
-  // Apply Prerender Limit (Hybrid Pacing)
+  // Apply Prerender Limit
   float limit = GetActivePrerenderLimit();
   if (limit >= 0.0f) {
-      static bool prerenderLimitSet = false;
       static float lastLimit = -2.0f;
-      
       if (fabs(limit - lastLimit) > 0.001f) {
            UINT effectiveLatency = (limit < 1.0f) ? 1 : (UINT)limit;
-           if (effectiveLatency < 1) effectiveLatency = 1;
-
            pSwapChain->SetMaximumFrameLatency(effectiveLatency);
-           prerenderLimitSet = true;
-           HookLog("DX12: Set maximum frame latency to %d (Active Limit: %.2f)", effectiveLatency, limit);
+           HookLog("DX12: Set maximum DXGI latency to %d (Active Limit: %.2f)", effectiveLatency, limit);
            lastLimit = limit;
       }
-      
-      // Hybrid Pacing (Limit 0.x)
-      if (limit > 0.01f && limit < 1.0f) {
-           float fps = g_PerfMetrics.GetCurrentFPS();
-           double avgFrameTimeUs = (fps > 1.0f) ? (1000000.0 / fps) : 16666.0;
-           int64_t sleepUs = (int64_t)(avgFrameTimeUs * (1.0 - limit) * 0.70); // 0.70 Safety Factor
-           if (sleepUs > 0) PrecisionSleep(sleepUs);
-      }
+      ApplyPrerenderLimit(limit);
   }
 
   // Sanitize Flags for VSync
@@ -1026,18 +1072,23 @@ DetourPresent1(IDXGISwapChain3 *pSwapChain, UINT SyncInterval, UINT Flags,
   UINT oldInterval = SyncInterval;
   UINT oldFlags = Flags;
 
-  // Override VSync for Present1 too
-  if (g_IPC) {
-      auto* shm = g_IPC->GetSharedMem();
-      if (shm) {
-          const char* mode = shm->graphicsConfig.vsyncMode;
-          if (mode[0] != 'd') { // not default
-              if (mode[0] == 'o' && strncmp(mode, "off", 3) == 0) SyncInterval = 0;
-              else if (mode[0] == 'f' && strncmp(mode, "fifo", 4) == 0) SyncInterval = 1;
-              else if (mode[0] == 'a' && strncmp(mode, "adaptive", 8) == 0) SyncInterval = 0;
-              else if (mode[0] == 'm' && strncmp(mode, "mailbox", 7) == 0) SyncInterval = 0;
-          }
+  // Apply VSync Override
+  VSyncOverride vsync = GetVSyncOverride();
+  if (vsync.shouldOverride) {
+      SyncInterval = (UINT)vsync.presentInterval;
+  }
+
+  // Apply Prerender Limit
+  float limit = GetActivePrerenderLimit();
+  if (limit >= 0.0f) {
+      static float lastLimit = -2.0f;
+      if (fabs(limit - lastLimit) > 0.001f) {
+           UINT effectiveLatency = (limit < 1.0f) ? 1 : (UINT)limit;
+           pSwapChain->SetMaximumFrameLatency(effectiveLatency);
+           HookLog("DX12: Set maximum DXGI latency to %d (Active Limit: %.2f)", effectiveLatency, limit);
+           lastLimit = limit;
       }
+      ApplyPrerenderLimit(limit);
   }
 
   // Sanitize Flags for VSync

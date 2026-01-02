@@ -353,7 +353,7 @@ int InjectProcessMain(const AppConfig &config) {
   // Signal hook to exit
   LogInfo("[Inject] Signaling hook to exit...");
   pSharedMem->requestExit = true;
-  Sleep(500); // Give hook time to unload
+  Sleep(200); // Give hook time to unload
 
   // Cleanup injector (ejects all hooks)
   // Destructor handles this

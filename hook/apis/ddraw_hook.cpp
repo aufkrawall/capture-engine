@@ -5,6 +5,7 @@
 #include "../common/overlay.h"
 #include "hook_common.h"
 #include "performance_metrics.h"
+#include "../common/frame_timing.h"
 #include <MinHook.h>
 #include <cstdint>
 #include <d3d9.h>
@@ -126,28 +127,51 @@ static std::vector<IDirectDrawSurface7*> g_PrerenderSurfaces;
 static uint32_t g_PrerenderIdx = 0;
 static IDirect3DDevice7* g_D3D7Device = nullptr;
 
-static void WaitPrerenderDDraw(IDirectDrawSurface7* surface, int limit) {
-    if (limit <= 0) return;
-    
-    if (g_PrerenderSurfaces.size() != (size_t)limit + 1) {
-        g_PrerenderSurfaces.assign(limit + 1, nullptr);
-        g_PrerenderIdx = 0;
-    }
-    
-    uint32_t oldestIdx = (g_PrerenderIdx + 1) % (uint32_t)g_PrerenderSurfaces.size();
-    if (g_PrerenderSurfaces[oldestIdx]) {
+static void ApplyPrerenderLimitDDraw(IDirectDrawSurface7* surface, float limit) {
+    if (limit < 0.0f) return;
+
+    if (limit == 0.0f) {
+        // Strict Serial: Wait for CURRENT surface to finish flip
+        // (This should be called AFTER the actual Flip call)
         typedef HRESULT (STDMETHODCALLTYPE *GetFlipStatus_t)(IDirectDrawSurface7*, DWORD);
-        void **vtable = *(void***)g_PrerenderSurfaces[oldestIdx];
+        void **vtable = *(void***)surface;
         GetFlipStatus_t pGetFlipStatus = (GetFlipStatus_t)vtable[13]; // GetFlipStatus is index 13
         
-        // 0x887600FA = DDERR_WASSTILLDRAWING, 1 = DDGFS_ISFLIPDONE
-        while (pGetFlipStatus(g_PrerenderSurfaces[oldestIdx], 1) == 0x887600FA) {
+        while (pGetFlipStatus(surface, 1 /* DDGFS_ISFLIPDONE */) == 0x887600FA /* DDERR_WASSTILLDRAWING */) {
             std::this_thread::yield();
         }
+    } else {
+        int effectiveLimit = (limit < 1.0f) ? 1 : (int)limit;
+        int lookback = effectiveLimit + 1;
+
+        if (g_PrerenderSurfaces.size() != (size_t)lookback) {
+            g_PrerenderSurfaces.assign(lookback, nullptr);
+            g_PrerenderIdx = 0;
+        }
+
+        uint32_t waitIdx = g_PrerenderIdx % (uint32_t)g_PrerenderSurfaces.size();
+        if (g_PrerenderSurfaces[waitIdx]) {
+            IDirectDrawSurface7* waitSurf = g_PrerenderSurfaces[waitIdx];
+            typedef HRESULT (STDMETHODCALLTYPE *GetFlipStatus_t)(IDirectDrawSurface7*, DWORD);
+            void **vtable = *(void***)waitSurf;
+            GetFlipStatus_t pGetFlipStatus = (GetFlipStatus_t)vtable[13];
+            
+            while (pGetFlipStatus(waitSurf, 1) == 0x887600FA) {
+                std::this_thread::yield();
+            }
+        }
+        
+        g_PrerenderSurfaces[waitIdx] = surface;
+        g_PrerenderIdx++;
     }
-    
-    g_PrerenderSurfaces[g_PrerenderIdx % (uint32_t)g_PrerenderSurfaces.size()] = surface;
-    g_PrerenderIdx++;
+
+    // Hybrid Pacing (Sleep-based sub-frame limiting)
+    if (limit > 0.01f && limit < 1.0f) {
+        float fps = g_PerfMetrics.GetCurrentFPS();
+        double avgFrameTimeUs = (fps > 1.0f) ? (1000000.0 / fps) : 16666.0;
+        int64_t sleepUs = (int64_t)(avgFrameTimeUs * (1.0 - limit) * 0.70); // 0.70 Safety Factor
+        if (sleepUs > 0) PrecisionSleep(sleepUs);
+    }
 }
 
 // DirectDraw Capture class
@@ -695,12 +719,17 @@ static HRESULT STDMETHODCALLTYPE DetourDDSurface7Flip(
         }
     }
 
-    // CPU Prerender Limit
-    if (g_IPC && g_IPC->GetSharedMem()->graphicsConfig.prerenderLimit > 0) {
-        WaitPrerenderDDraw(surface, g_IPC->GetSharedMem()->graphicsConfig.prerenderLimit);
+    // CPU Prerender Limit (Buffered)
+    if (g_IPC && g_IPC->GetSharedMem()->graphicsConfig.prerenderLimit > 0.0f) {
+        ApplyPrerenderLimitDDraw(surface, g_IPC->GetSharedMem()->graphicsConfig.prerenderLimit);
     }
 
     HRESULT hr = oDDSurface7Flip(surface, destOverride, flags);
+    
+    // CPU Prerender Limit (Serial)
+    if (g_IPC && g_IPC->GetSharedMem()->graphicsConfig.prerenderLimit == 0.0f) {
+        ApplyPrerenderLimitDDraw(surface, 0.0f);
+    }
     
     // Capture after flip (primary surface now has the rendered frame)
     HandleCapture(surface);
