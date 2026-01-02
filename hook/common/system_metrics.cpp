@@ -5,6 +5,8 @@
 #include <dxgi1_4.h>
 #include <algorithm>
 #include <cstdio>
+#include <map>
+#include <string>
 
 // PDH Lib is linked via build.py
 
@@ -115,9 +117,8 @@ void SystemMetricsCollector::BackgroundUpdateLoop() {
             UpdateGPU();
         }
         
-        // Sleep for 500ms (standard overlay update interval)
-        // We can use a smaller interval if we want smoother updates
-        for (int i = 0; i < 50 && !stopThread; i++) {
+        // Sleep for 200ms (Faster updates for better stability)
+        for (int i = 0; i < 20 && !stopThread; i++) {
             Sleep(10);
         }
     }
@@ -190,26 +191,41 @@ void SystemMetricsCollector::UpdateGPU() {
                 if (pdhBuffer) {
                     PDH_FMT_COUNTERVALUE_ITEM_A* items = (PDH_FMT_COUNTERVALUE_ITEM_A*)pdhBuffer;
                     if (PdhGetFormattedCounterArrayA((PDH_HCOUNTER)gpuCounter, PDH_FMT_DOUBLE, &pdhBufferSize, &itemCount, items) == ERROR_SUCCESS) {
-                        double sum3D = 0, sumCompute = 0, sumVideo = 0, sumVR = 0;
+                        double totalLoad = 0;
                         for (DWORD i = 0; i < itemCount; i++) {
                             const char* instance = items[i].szName;
                             if (instance && items[i].FmtValue.CStatus == ERROR_SUCCESS) {
                                 if (strstr(instance, cachedLuidPart) || strstr(instance, "luid_") == nullptr) {
-                                    double val = items[i].FmtValue.doubleValue;
-                                    if (strstr(instance, "engtype_3D")) sum3D += val;
-                                    else if (strstr(instance, "engtype_Compute")) sumCompute += val;
-                                    else if (strstr(instance, "VideoDecode") || strstr(instance, "VideoEncode")) sumVideo += val;
-                                    else if (strstr(instance, "engtype_VR")) sumVR += val;
+                                    // Robust Aggregation: Sum EVERYTHING for this GPU
+                                    // excluding only video recording/decode noise
+                                    bool isVideo = strstr(instance, "VideoDecode") || strstr(instance, "VideoEncode") || 
+                                                   strstr(instance, "OFA_0") || strstr(instance, "JPEG_Decode");
+                                    
+                                    if (!isVideo) {
+                                        totalLoad += items[i].FmtValue.doubleValue;
+                                    }
                                 }
                             }
                         }
                         
-                        // Final Load is the MAX of the core engine categories
-                        // Each category is limited to 100% to avoid driver measurement artifacts
-                        double maxLoad = std::max({std::min(100.0, sum3D), std::min(100.0, sumCompute), std::min(100.0, sumVideo), std::min(100.0, sumVR)});
+                        if (totalLoad > 100.0) totalLoad = 100.0;
                         
-                        const float smoothingWeight = 0.65f; // Increased for better "latest information" feel
-                        smoothedGpuUsage = smoothedGpuUsage * (1.0f - smoothingWeight) + (float)maxLoad * smoothingWeight;
+                        // --- Peak-Hold Filter (1 Second Window) ---
+                        // Maintain a history of the last 5 samples (1s @ 200ms update rate).
+                        // We report the MAX of these samples to eliminate temporal PDH under-reporting.
+                        static float gpuLoadHistory[5] = {0.0f};
+                        static int historyIdx = 0;
+                        gpuLoadHistory[historyIdx] = (float)totalLoad;
+                        historyIdx = (historyIdx + 1) % 5;
+
+                        float peakLoad = 0.0f;
+                        for (int i = 0; i < 5; i++) {
+                            if (gpuLoadHistory[i] > peakLoad) peakLoad = gpuLoadHistory[i];
+                        }
+                        
+                        // Use responsive smoothing on the peak value for a "liquid" feel
+                        const float smoothingWeight = (peakLoad > smoothedGpuUsage) ? 0.65f : 0.4f; 
+                        smoothedGpuUsage = smoothedGpuUsage * (1.0f - smoothingWeight) + peakLoad * smoothingWeight;
                         current.gpuUsage = smoothedGpuUsage;
                         current.gpuUsageValid = true;
                     }

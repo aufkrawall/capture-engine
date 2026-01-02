@@ -191,7 +191,7 @@ float PerformanceMetrics::GetAverageFPS() const {
     
     totalMs += ms;
     count++;
-    if (totalMs >= 15000.0f) break; // 15s window reached
+    if (totalMs >= 5000.0f) break; // 5s window reached
   }
 
   if (count > 0 && totalMs > 0.0001f) {
@@ -214,7 +214,7 @@ float PerformanceMetrics::Get1PercentLowFPS() const {
     
     frameTimes.push_back(ms);
     totalMs += ms;
-    if (totalMs >= 15000.0f) break;
+    if (totalMs >= 5000.0f) break;
   }
 
   if (frameTimes.size() < 10) return 0.0f;
@@ -248,7 +248,7 @@ float PerformanceMetrics::Get01PercentLowFPS() const {
     
     frameTimes.push_back(ms);
     totalMs += ms;
-    if (totalMs >= 15000.0f) break;
+    if (totalMs >= 5000.0f) break;
   }
 
   if (frameTimes.size() < 100) return 0.0f;
