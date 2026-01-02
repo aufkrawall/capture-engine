@@ -1815,25 +1815,9 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D *bgraTexture, int64_t pts,
   ID3D11Texture2D *nv12Tex = nullptr;
 
   // Scoped Lock for D3D11 Immediate Context (protects Blt/CopyResource)
-  bool convertSuccess = false;
-  {
-    LARGE_INTEGER t1, t2;
-    static int64_t freq = 0;
-    if (!freq)
-      QueryPerformanceFrequency((LARGE_INTEGER *)&freq);
-    QueryPerformanceCounter(&t1);
-
-    D3D11ScopedLock lock;
-    convertSuccess = ConvertBGRAtoNV12(bgraTexture, &nv12Tex, cursorVisible,
+  bool convertSuccess = ConvertBGRAtoNV12(bgraTexture, &nv12Tex, cursorVisible,
                                        cursorX, cursorY);
-
-    QueryPerformanceCounter(&t2);
-    double holdTime = (double)(t2.QuadPart - t1.QuadPart) * 1000.0 / freq;
-    if (holdTime > 2.0) { // Log if we hold lock > 2ms
-      DLL_Log("[VideoEnc-Perf] Held D3D11 Lock for %.3fms", holdTime);
-    }
-  }
-
+  
   if (!convertSuccess) {
     DLL_Log("[VideoEncoder] Frame %d: GPU color conversion failed",
             encodeFrameCounter);
@@ -1859,14 +1843,26 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D *bgraTexture, int64_t pts,
   d3d11Frame->data[0] = (uint8_t *)nv12Tex;
   d3d11Frame->data[1] = 0;
 
-  // Calculate PTS - use frame counter for CFR (Constant Frame Rate)
+  // Calculate PTS based on elapsed time (VFR support)
+  // pts is in milliseconds (from DxgiCapture/WGC)
   if (startPts < 0) {
     startPts = pts;
     DLL_Log("[VideoEncoder] Framegrab recording started at PTS %lld", startPts);
   }
-  // CFR: Each frame is exactly 1/fps second apart
-  // Note: encodeFrameCounter is 1-based (incremented before this), so subtract 1 for 0-based PTS
-  d3d11Frame->pts = encodeFrameCounter - 1;
+
+  // Convert real elapsed time to codec frame timing
+  // Formula: FramePTS = (ElapsedMS * FPS) / 1000
+  // This preserves time gaps (VFR) instead of crushing them (CFR)
+  int fps = 60; // Default
+  if (codecCtx && codecCtx->framerate.num > 0) {
+    fps = codecCtx->framerate.num;
+  }
+  
+  int64_t elapsedMs = pts - startPts;
+  if (elapsedMs < 0) elapsedMs = 0;
+  
+  // Use av_rescale to prevent overflow: (elapsedMs * fps) / 1000
+  d3d11Frame->pts = av_rescale(elapsedMs, fps, 1000);
 
   // Debug: Log input frame PTS
   if (encodeFrameCounter < 20 || encodeFrameCounter % 100 == 0) {
@@ -1909,6 +1905,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D *bgraTexture, int64_t pts,
   drainPackets();
 
   int ret = avcodec_send_frame(codecCtx, d3d11Frame);
+
   int retries = 0;
   while (ret == AVERROR(EAGAIN) && retries < 10) {
     drainPackets();

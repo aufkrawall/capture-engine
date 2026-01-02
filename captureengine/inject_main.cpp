@@ -329,8 +329,9 @@ int InjectProcessMain(const AppConfig &config) {
     // Skip injection when capture_method=screengrab - user explicitly wants WGC only
     // Update injector (process pending WMI injections)
     // Run this every tick (10ms) for responsiveness
-    if (config.captureMethod != "screengrab" &&
-        config.captureMethod != "framegrab") {
+    // Skip injection when capture_method=screengrab (unless overlay force-enabled via whitelist)
+    bool allowInjection = (config.captureMethod != "screengrab" && config.captureMethod != "framegrab");
+    if (allowInjection || !config.overlayWhitelist.empty()) {
       injector.Update();
     }
 

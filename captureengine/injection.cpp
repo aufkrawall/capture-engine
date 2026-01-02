@@ -92,12 +92,24 @@ bool InjectionManager::IsWhitelisted(const std::string &processName) {
       }
   }
 
-  // Strict Whitelist Mode
-  if (config.gameWhitelist.empty()) {
+  // Strict Whitelist Mode (WMI only injects explicit whitelist entries)
+  if (config.gameWhitelist.empty() && config.overlayWhitelist.empty()) {
     return false;
   }
 
+  // Check Game Whitelist
   for (const auto &item : config.gameWhitelist) {
+    std::string lowerItem = item;
+    std::transform(lowerItem.begin(), lowerItem.end(), lowerItem.begin(),
+                   ::tolower);
+    if (lowerName == lowerItem)
+      return true;
+    if (lowerName.find(lowerItem) != std::string::npos)
+      return true;
+  }
+
+  // Check Overlay Whitelist
+  for (const auto &item : config.overlayWhitelist) {
     std::string lowerItem = item;
     std::transform(lowerItem.begin(), lowerItem.end(), lowerItem.begin(),
                    ::tolower);

@@ -11,7 +11,7 @@
 debug_logging=true
 
 ; Capture method to use for screen capture
-; Values: inject (DX12 hook injection), screengrab (desktop frame grab), auto (auto-detect)
+; Values: inject (DX12 hook injection), screengrab (WGC window capture), desktop_dup (DXGI monitor capture), auto (auto-detect)
 capture_method=inject
 
 [Injection]

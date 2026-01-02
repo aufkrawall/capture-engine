@@ -474,6 +474,9 @@ public:
       firstVideoFrameMs = timestamp;
       DLL_Log("MediaEngine: First video frame at %lld ms - syncing audio", timestamp);
       
+      // Reset elapsed clock for audio sync
+      videoElapsedMs.store(0);
+      
       // Set recording start for all audio encoders to match video start (Microseconds)
       for (auto &src : audioSources) {
         if (src.sharedEncoderPtr) {
@@ -481,6 +484,9 @@ public:
         }
       }
     }
+
+    // Update video elapsed time for audio clock sync
+    videoElapsedMs.store(timestamp - firstVideoFrameMs);
 
     videoEnc->EncodeFrameD3D11((ID3D11Texture2D *)texture, timestamp, width,
                                height);
@@ -1158,6 +1164,14 @@ MEDIAENGINE_API ID3D11Device *MediaEngine_GetD3D11Device() {
 
   DLL_Log("[MediaEngine] Created shared D3D11 device (Feature Level: 0x%x)",
           featureLevel);
+  // Enable Multithreaded protection for D3D11 device
+  ID3D11Multithread *pMultithread = nullptr;
+  if (SUCCEEDED(g_SharedD3D11Device->QueryInterface(__uuidof(ID3D11Multithread), (void**)&pMultithread))) {
+      pMultithread->SetMultithreadProtected(TRUE);
+      pMultithread->Release();
+      DLL_Log("[Media] D3D11 Multithread protection ENABLED");
+  }
+
   return g_SharedD3D11Device;
 }
 

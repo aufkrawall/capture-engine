@@ -5,14 +5,19 @@
 #include "../common/process_ipc.h"
 #include "../common/shared_defs.h"
 #include "../mediaengine/mediaengine.h"
+#include "../mediaengine/mediaengine.h"
 #include "wgc_capture.h"
+#include "dxgi_capture.h"
 #include <Windows.h>
 #include <atomic>
 #include <chrono>
 #include <d3d11.h>
 #include <thread>
+#include <mutex>
 #include <timeapi.h>
 #include <psapi.h>
+#include <algorithm>
+#include <string>
 
 #ifdef _MSC_VER
 #pragma comment(lib, "winmm.lib")
@@ -29,7 +34,9 @@ static QueuedFrame g_LastFrame;
 static bool g_HasLastFrame = false;
 
 // Screengrab mode components
+// Screengrab mode components
 static std::unique_ptr<WGCCapture> g_WgcCap;
+static std::unique_ptr<DxgiCapture> g_DxgiCap;
 static bool g_UseScreenGrab = false;
 
 // Shared memory for hook communication
@@ -40,7 +47,63 @@ static HANDLE g_hMapShmem = NULL;
 static ShmemBuffer *g_pShmem = nullptr;
 
 // Forward declaration
+void StopRecording();
+void StartRecording(const AppConfig &config);
 void MediaLogCallback(const char *msg) { LogInfo("[Media] %s", msg); }
+
+// Helper: Get process name from PID
+// Window finding helper
+struct WindowSearch {
+    DWORD pid;
+    HWND hwnd;
+};
+
+static BOOL CALLBACK EnumWindowsCallback(HWND hwnd, LPARAM lParam) {
+    WindowSearch* search = (WindowSearch*)lParam;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == search->pid) {
+        // Look for the main visible window
+        // Checks: Visible, not child
+        // Note: Removed title check as some games have empty titles during init
+        if (IsWindowVisible(hwnd) && GetWindow(hwnd, GW_OWNER) == 0) {
+            // Priority: Logic to prefer "cleaner" windows if multiple exist?
+            // For now, take first visible top-level window.
+            // Check styles to avoid tool windows
+            LONG_PTR styles = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+            if (!(styles & WS_EX_TOOLWINDOW)) {
+                search->hwnd = hwnd;
+                return FALSE; // Found, stop
+            }
+        }
+    }
+    return TRUE;
+}
+
+static HWND GetMainWindowForProcess(DWORD pid) {
+    WindowSearch search = { pid, NULL };
+    EnumWindows(EnumWindowsCallback, (LPARAM)&search);
+    return search.hwnd;
+}
+
+static std::string GetProcessNameFromPID(DWORD pid) {
+    char buffer[MAX_PATH] = "unknown";
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+    if (hProcess) {
+        if (GetModuleBaseNameA(hProcess, NULL, buffer, MAX_PATH)) {
+            // Success
+        }
+        CloseHandle(hProcess);
+    }
+    // Strip path if present
+    std::string name = buffer;
+    size_t lastSlash = name.find_last_of("\\/");
+    if (lastSlash != std::string::npos) {
+        name = name.substr(lastSlash + 1);
+    }
+    return name;
+} // End helper
+
 
 // ============================================================================
 // Async WGC Capture Thread (like DX12's AsyncCaptureThreadProc)
@@ -233,6 +296,7 @@ void EncoderThreadFunc(const AppConfig &config) {
             frameToProcess->format, frameToProcess->isHDR,
             frameToProcess->isShmem, frameToProcess->shmemSlot);
       } else {
+        // D3D11 lock is handled internally by MediaEngine_ProcessFrameD3D11
         MediaEngine_ProcessFrameD3D11(
             frameToProcess->texture, frameToProcess->timestamp,
             frameToProcess->width, frameToProcess->height);
@@ -318,6 +382,13 @@ void StartRecording(const AppConfig &config) {
 
   g_Recording = true;
   g_EncoderRunning = true;
+  
+  // Update Shared Memory State for Overlay
+  if (g_pSharedMem) {
+      g_pSharedMem->runtimeState.isRecording.store(true, std::memory_order_release);
+      g_pSharedMem->runtimeState.recordingStartTime.store(GetTickCount64(), std::memory_order_release);
+  }
+
   g_EncoderThread = std::thread(EncoderThreadFunc, std::ref(config));
   SetThreadPriority(g_EncoderThread.native_handle(), THREAD_PRIORITY_NORMAL);
 
@@ -352,6 +423,65 @@ void StartRecording(const AppConfig &config) {
     g_WgcCaptureThread = std::thread(WgcCaptureThreadFunc, std::ref(config));
     SetThreadPriority(g_WgcCaptureThread.native_handle(), THREAD_PRIORITY_NORMAL);
     LogInfo("[Media] WGC capture with direct callback started");
+    LogInfo("[Media] WGC capture with direct callback started");
+  } else if (g_UseScreenGrab && g_DxgiCap) {
+      if (g_DxgiCap->StartCapture()) {
+          LogInfo("[Media] DXGI Desktop Duplication capture started");
+          
+          // Start thread to poll frames from DDAPI
+          g_WgcCaptureShutdown = false;
+          // Reuse WgcCaptureThreadFunc logic but for polling DXGI?
+          // Actually, we can reuse the same thread or spawn a new one. 
+          // Let's spawn a specific thread for DXGI since WGC thread expects callbacks.
+          
+          g_WgcCaptureThread = std::thread([](const AppConfig& cfg) {
+               LogInfo("[DXGI Thread] Started");
+               g_WgcCaptureRunning = true;
+               
+               auto lastLog = GetTickCount64();
+               int framesLogged = 0;
+               
+               while (!g_WgcCaptureShutdown && g_DxgiCap) {
+                   WGCCapturedFrame frame;
+                   bool gotFrame = g_DxgiCap->GetNextFrame(frame, g_IsEncoderBottlenecked);
+                   
+                   if (gotFrame) {
+                       // Push to queue
+                       QueuedFrame qf;
+                       qf.isInjectMode = false;
+                       qf.texture = frame.texture; // Already AddRef'd
+                       qf.width = frame.width;
+                       qf.height = frame.height;
+                       qf.timestamp = frame.timestamp;
+                       
+                       if (!g_FrameQueue.Push(qf, g_IsEncoderBottlenecked)) {
+                           frame.texture->Release();
+                           // dropped
+                       } else {
+                           framesLogged++;
+                       }
+                   } else {
+                       // No frame - yield
+                       std::this_thread::yield();
+                   }
+                   
+                   auto now = GetTickCount64();
+                   if (now - lastLog > 1000) {
+                        LogInfo("[DXGI Diag] FPS: %d, Queue: %d", framesLogged, g_FrameQueue.Size());
+                        framesLogged = 0;
+                        lastLog = now;
+                   }
+               }
+               g_WgcCaptureRunning = false;
+               LogInfo("[DXGI Thread] Stopped");
+          }, std::ref(config));
+          
+          SetThreadPriority(g_WgcCaptureThread.native_handle(), THREAD_PRIORITY_ABOVE_NORMAL);
+      } else {
+          LogError("[Media] Failed to start DXGI capture");
+          StopRecording();
+          return;
+      }
   }
 
   LogInfo("[Media] Recording started");
@@ -409,9 +539,27 @@ void StopRecording() {
               g_WgcDroppedFrames.load(std::memory_order_relaxed));
     }
     g_WgcCap->StopCapture();
+  } else if (g_UseScreenGrab && g_DxgiCap) {
+      g_WgcCaptureShutdown = true;
+      if (g_WgcCaptureThread.joinable()) {
+          g_WgcCaptureThread.join();
+      }
+      g_DxgiCap->StopCapture();
+  }
+
+  if (g_EncoderThread.joinable()) {
+    LogInfo("[Media] Waiting for encoder finalization...");
+    g_EncoderThread.join();
   }
 
   g_Recording = false;
+  
+  // Update Shared Memory State for Overlay
+  if (g_pSharedMem) {
+      g_pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
+      g_pSharedMem->runtimeState.recordingStartTime.store(0, std::memory_order_release);
+  }
+
   LogInfo("[Media] Recording stopped");
 }
 
@@ -459,12 +607,10 @@ int MediaProcessMain(const AppConfig &config) {
   // - "screengrab" = always use WGC
   // - "inject" = always use shared memory (fail if not available)
   // - "auto" = prefer inject if shared memory exists, else screengrab
-
   ID3D11Device *d3dDevice = nullptr;
   ID3D11DeviceContext *d3dContext = nullptr;
-
-  // Determine capture mode
-  bool explicitScreengrab = (config.captureMethod == "screengrab" || config.captureMethod == "framegrab");
+  
+  bool explicitScreengrab = (config.captureMethod == "screengrab" || config.captureMethod == "framegrab" || config.captureMethod == "desktop_dup");
   if (explicitScreengrab) {
     g_UseScreenGrab = true;
     LogInfo("[Media] Using screengrab mode (explicit)");
@@ -534,11 +680,12 @@ int MediaProcessMain(const AppConfig &config) {
     // Set pointers in MediaEngine
     MediaEngine_SetSharedMem(g_pSharedMem, g_pShmem);
 
+    // Initial mode setup
     if (explicitScreengrab) {
-      // User explicitly wants screengrab - use WGC for capture
+      g_UseScreenGrab = true;
       LogInfo("[Media] Connected to shared memory - using screengrab for capture");
     } else {
-      // inject or auto mode - use inject mode for capture
+      // Default to inject mode (will switch if dynamic whitelist matches later)
       g_UseScreenGrab = false;
       LogInfo("[Media] Connected to shared memory - using inject mode");
     }
@@ -568,7 +715,18 @@ int MediaProcessMain(const AppConfig &config) {
     } else {
       d3dDevice->GetImmediateContext(&d3dContext);
 
-      if (WGCCapture::IsSupported()) {
+      if (config.captureMethod == "desktop_dup") {
+           LogInfo("[Media] Initializing Desktop Duplication...");
+           g_DxgiCap = std::make_unique<DxgiCapture>();
+           if (g_DxgiCap->Init(d3dDevice, 0)) { // Monitor 0, mutex handled internally
+               LogInfo("[Media] Desktop Duplication initialized");
+           } else {
+               LogError("[Media] Desktop Duplication init failed");
+               MediaEngine_Shutdown();
+               timeEndPeriod(1);
+               return 1;
+           }
+      } else if (WGCCapture::IsSupported()) {
         g_WgcCap = std::make_unique<WGCCapture>();
         if (g_WgcCap->Init(d3dDevice)) {
           LogInfo("[Media] WGC capture initialized%s", 
@@ -638,13 +796,163 @@ int MediaProcessMain(const AppConfig &config) {
           g_pSharedMem->runtimeState.ackRecordingStarted.store(true, std::memory_order_release);
         }
       }
-      // Check for stop recording command
+    // Check for stop recording command
       if (g_pSharedMem->runtimeState.cmdStopRecording.load(std::memory_order_acquire)) {
         g_pSharedMem->runtimeState.cmdStopRecording.store(false, std::memory_order_release);
         if (g_Recording) {
-          StopRecording();
-          g_pSharedMem->runtimeState.ackRecordingStopped.store(true, std::memory_order_release);
+            StopRecording();
+            g_pSharedMem->runtimeState.ackRecordingStopped.store(true, std::memory_order_release);
         }
+      }
+      
+      // =================================================================================
+      // WGC Window Detection (Periodic Scan - Injection Independent)
+      // Allows manual target definition in config (anti-cheat compatible)
+      // =================================================================================
+      static DWORD lastWindowScanTime = 0;
+      static HWND currentCapturedWindow = NULL;
+      
+      DWORD now = GetTickCount();
+      if (!config.wgcWindowTitles.empty() && (now - lastWindowScanTime > 1000)) {
+          lastWindowScanTime = now;
+          
+          struct WgcSearchContext {
+             const std::vector<std::string>* targets;
+             HWND result;
+          };
+          
+          WgcSearchContext ctx = { &config.wgcWindowTitles, NULL };
+          
+          EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
+              WgcSearchContext* context = (WgcSearchContext*)lParam;
+              if (!IsWindowVisible(hwnd)) return TRUE; // Skip invisible
+              if (GetWindow(hwnd, GW_OWNER) != 0) return TRUE; // Skip owned/child windows
+              
+              char title[256];
+              GetWindowTextA(hwnd, title, sizeof(title));
+              // Don't skip empty titles yet - might match by executable name
+              
+              std::string titleStr = title;
+              // Case-insensitive check
+              std::transform(titleStr.begin(), titleStr.end(), titleStr.begin(), ::tolower);
+              
+              for (const auto& target : *context->targets) {
+                  std::string targetLower = target;
+                  std::transform(targetLower.begin(), targetLower.end(), targetLower.begin(), ::tolower);
+                  
+                  // 1. Try Title Match
+                  if (!titleStr.empty() && titleStr.find(targetLower) != std::string::npos) {
+                      context->result = hwnd;
+                      return FALSE; // Found
+                  }
+                  
+                  // 2. Try Executable Name Match (if target ends in .exe)
+                  if (targetLower.length() > 4 && targetLower.substr(targetLower.length() - 4) == ".exe") {
+                      DWORD pid = 0;
+                      GetWindowThreadProcessId(hwnd, &pid);
+                      std::string procName = GetProcessNameFromPID(pid);
+                      std::transform(procName.begin(), procName.end(), procName.begin(), ::tolower);
+                      
+                      if (procName == targetLower) {
+                           context->result = hwnd;
+                           return FALSE; // Found
+                      }
+                  }
+              }
+              return TRUE;
+          }, (LPARAM)&ctx);
+          
+          HWND foundWindow = ctx.result;
+          
+          if (foundWindow && foundWindow != currentCapturedWindow) {
+              LogInfo("[Media] WGC Trigger: Found window (0x%p) matching config. Switching capture...", foundWindow); 
+              
+              g_UseScreenGrab = true;
+              g_WgcCap.reset();
+              g_WgcCap = std::make_unique<WGCCapture>();
+              
+              if (g_WgcCap->InitForWindow(d3dDevice, foundWindow)) {
+                  g_WgcCap->SetCaptureCursor(config.video.captureCursor);
+                  LogInfo("[Media] WGC re-initialized for Window 0x%p", foundWindow);
+                  currentCapturedWindow = foundWindow;
+              } else {
+                  LogError("[Media] Failed to init WGC for found window.");
+                  g_WgcCap.reset();
+                  g_WgcCap = std::make_unique<WGCCapture>();
+                  g_WgcCap->Init(d3dDevice); // Fallback to monitor
+                  currentCapturedWindow = NULL; // Retry next scan
+              }
+          } else if (!foundWindow && currentCapturedWindow != NULL) {
+               // Window lost? (Closed?)
+               if (!IsWindow(currentCapturedWindow)) {
+                   LogInfo("[Media] Captured window 0x%p no longer valid. Reverting to monitor/inject.", currentCapturedWindow);
+                   currentCapturedWindow = NULL;
+                   // Revert to Monitor or standard behavior
+                   // If we rely on whitelist injection, we might just wait.
+                   // For now, keep WGC active but init fallback
+                   g_WgcCap.reset();
+                   g_WgcCap = std::make_unique<WGCCapture>();
+                   g_WgcCap->Init(d3dDevice);
+               }
+          }
+      }
+
+      // Monitor sourcePid to detect when a game connects, and force WGC if it's on the overlay whitelist
+      static uint32_t lastSourcePid = 0;
+      uint32_t currentSourcePid = g_pSharedMem->sourcePid;
+      
+      if (currentSourcePid != 0 && currentSourcePid != lastSourcePid) {
+          lastSourcePid = currentSourcePid;
+          std::string procName = GetProcessNameFromPID(currentSourcePid);
+          LogInfo("[Media] Hook connected: %s (PID: %u)", procName.c_str(), currentSourcePid);
+          
+          bool forceWGC = false;
+          if (!config.overlayWhitelist.empty()) {
+              std::string lowerName = procName;
+              std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
+              
+              for (const auto& item : config.overlayWhitelist) {
+                  std::string lowerItem = item;
+                  std::transform(lowerItem.begin(), lowerItem.end(), lowerItem.begin(), ::tolower);
+                  if (lowerName == lowerItem || lowerName.find(lowerItem) != std::string::npos) {
+                      forceWGC = true;
+                      LogInfo("[Media] Overlay Whitelist Match! Forcing WGC for %s", procName.c_str());
+                      break;
+                  }
+              }
+          }
+          
+          if (forceWGC) {
+              g_UseScreenGrab = true;
+              
+              // PERFORMANCE OPTIMIZATION: Try to target specific game window instead of Monitor
+              // This is critical for DX9/Legacy games where Monitor Capture causes high DWM overhead
+              HWND hGameWindow = GetMainWindowForProcess(currentSourcePid);
+              if (hGameWindow) {
+                  LogInfo("[Media] Whitelist Optimization: Found main window 0x%p. Switching WGC to Window Mode.", hGameWindow);
+                  
+                  // Re-initialize WGC for Window
+                  g_WgcCap.reset();
+                  g_WgcCap = std::make_unique<WGCCapture>();
+                  if (g_WgcCap->InitForWindow(d3dDevice, hGameWindow)) {
+                      g_WgcCap->SetCaptureCursor(config.video.captureCursor);
+                      LogInfo("[Media] WGC re-initialized for Window Capture");
+                  } else {
+                      LogError("[Media] Failed to init WGC for window - falling back to Monitor");
+                      g_WgcCap.reset(); // Reset failed state
+                      g_WgcCap = std::make_unique<WGCCapture>();
+                      g_WgcCap->Init(d3dDevice); // Fallback
+                  }
+              } else {
+                 LogInfo("[Media] Whitelist: No main window found for PID %u. Using Monitor Capture.", currentSourcePid);
+              }
+
+          } else if (config.captureMethod != "screengrab" && config.captureMethod != "framegrab") {
+              // Reset to inject mode if not explicit screengrab and not whitelisted
+              // (Only reset if we are in auto/inject mode)
+              g_UseScreenGrab = false; 
+              LogInfo("[Media] Using Inject Mode (Default)");
+          }
       }
     }
     

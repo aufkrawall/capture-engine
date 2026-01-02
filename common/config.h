@@ -112,6 +112,9 @@ struct AppConfig {
   int fenceWaitMode = 1;         // 0=always, 1=first_only, 2=never (debug)
   bool useGameQueue = false;     // Use game's command queue for capture (reduces GPU contention)
   std::vector<std::string> gameWhitelist;
+  std::vector<std::string> overlayWhitelist;
+  std::vector<std::string> wgcWindowTitles;
+
 
   // Graphics Overrides
   GraphicsConfig graphics;

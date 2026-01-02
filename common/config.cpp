@@ -386,15 +386,18 @@ void LoadConfig(const std::string &path, AppConfig &config, const std::string& o
     std::string line;
     bool inInjection = false;
     bool inWhitelist = false;
+    bool inOverlayWhitelist = false;
+    bool inWgcWindowDetection = false;
+
     
-    auto AddEntry = [&](std::string entry) {
+    auto AddEntry = [&](std::string entry, std::vector<std::string>& targetList) {
         // trim spaces, quotes and brackets
         entry.erase(0, entry.find_first_not_of(" \t\r\n\"()"));
         entry.erase(entry.find_last_not_of(" \t\r\n\"()") + 1);
         if (!entry.empty()) {
             // Check for duplicates
-            if (std::find(config.gameWhitelist.begin(), config.gameWhitelist.end(), entry) == config.gameWhitelist.end()) {
-                config.gameWhitelist.push_back(entry);
+            if (std::find(targetList.begin(), targetList.end(), entry) == targetList.end()) {
+                targetList.push_back(entry);
             }
         }
     };
@@ -426,16 +429,59 @@ void LoadConfig(const std::string &path, AppConfig &config, const std::string& o
               std::stringstream ss(rest);
               std::string item;
               while (std::getline(ss, item, ',')) {
-                  AddEntry(item);
+                  AddEntry(item, config.gameWhitelist);
               }
           }
           inWhitelist = true;
+          inOverlayWhitelist = false;
+        } else if (trimmed.find("overlay_whitelist=") == 0 || trimmed.find("overlay-whitelist=") == 0) {
+            // Handle both underscore and hyphen for usability
+            size_t eqPos = trimmed.find('=');
+            std::string rest = trimmed.substr(eqPos + 1);
+            if (!rest.empty()) {
+                std::stringstream ss(rest);
+                std::string item;
+                while (std::getline(ss, item, ',')) {
+                    AddEntry(item, config.overlayWhitelist);
+                }
+            }
+            inWhitelist = false;
+            inOverlayWhitelist = true;
+            inWgcWindowDetection = false;
+        } else if (trimmed.find("wgc-window-detection=") == 0 || trimmed.find("wgc_window_detection=") == 0) {
+            size_t eqPos = trimmed.find('=');
+            std::string rest = trimmed.substr(eqPos + 1);
+            if (!rest.empty()) {
+                std::stringstream ss(rest);
+                std::string item;
+                while (std::getline(ss, item, ',')) {
+                    AddEntry(item, config.wgcWindowTitles);
+                }
+            }
+            inWhitelist = false;
+            inOverlayWhitelist = false;
+            inWgcWindowDetection = true;
         } else if (inWhitelist) {
           if (trimmed.find('=') != std::string::npos) {
               inWhitelist = false; // New key starts
+              // Re-evaluate line if it's a new key? No, loop continues next iteration?
+              // Actually invalid INI but we handle graceful exit from whitelist block
           } else {
-              AddEntry(line); // Use original line to preserve spaces if any (though unlikely for exe names)
+              AddEntry(line, config.gameWhitelist); 
           }
+        } else if (inOverlayWhitelist) {
+            if (trimmed.find('=') != std::string::npos) {
+                inOverlayWhitelist = false;
+            } else {
+                AddEntry(line, config.overlayWhitelist);
+            }
+        } else if (inWgcWindowDetection) {
+            if (trimmed.find('=') != std::string::npos) {
+                inWgcWindowDetection = false;
+            } else {
+                AddEntry(line, config.wgcWindowTitles);
+            }
+
         }
       }
     }

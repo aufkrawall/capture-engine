@@ -423,11 +423,6 @@ public:
         prerenderQueries.clear();
         prerenderIdx = 0;
         
-        useShmem = false;
-        shmemPitch = 0;
-        shmemCurTex = 0;
-        shmemCopyWait = 0;
-        
         if (permanentFailure) {
             initializationFailed = true;
         } else {
@@ -634,7 +629,7 @@ public:
         }
         
         if (FAILED(hr) || !sharedTexture9 || !sharedHandle9) {
-            EarlyLog("DX9: Shared texture failed (hr=0x%08x), falling back to shmem capture", hr);
+            EarlyLog("DX9: Shared texture failed (hr=0x%08x, tex=%p, handle=%p), falling back to Shmem...", hr, sharedTexture9, sharedHandle9);
             
             // Fallback to shmem capture
             if (sharedTexture9) { sharedTexture9->Release(); sharedTexture9 = nullptr; }
@@ -1349,9 +1344,6 @@ static void InstallDeviceHooks(IDirect3DDevice9* device) {
     
     /*
     // 6. Hook SwapChain Present (index 3)
-    
-    /*
-    // 6. Hook SwapChain Present (index 3)
     IDirect3DSwapChain9 *swapChain = nullptr;
     if (SUCCEEDED(device->GetSwapChain(0, &swapChain)) && swapChain) {
         uintptr_t *swapVtable = *(uintptr_t**)swapChain;
@@ -1395,6 +1387,15 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDevice(
 
         // MSAA Override
         ApplyMSAAOverride(self, Adapter, DeviceType, pPresentationParameters);
+
+        HookLog("DX9: CreateDevice Flags In: 0x%X", BehaviorFlags);
+
+        // CUDA requirement: Multithreaded device, No Pure Device (for GetRenderTarget etc compliance)
+        BehaviorFlags |= D3DCREATE_MULTITHREADED;
+        BehaviorFlags &= ~D3DCREATE_PUREDEVICE;
+        
+        HookLog("DX9: CreateDevice Flags Out: 0x%X", BehaviorFlags);
+        HookLog("DX9: CreateDevice Flags Out: 0x%X", BehaviorFlags);
     }
 
     HRESULT hr = oCreateDevice(self, Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters, ppReturnedDeviceInterface);
@@ -1420,7 +1421,7 @@ static Direct3DCreate9_t oDirect3DCreate9 = nullptr;
 
 static IDirect3D9* WINAPI DetourDirect3DCreate9(UINT SDKVersion) {
     EarlyLog("DX9: Direct3DCreate9 called (Intercepted)");
-    
+
     IDirect3D9 *d3d9 = oDirect3DCreate9(SDKVersion);
     if (d3d9) {
         uintptr_t *vtable = *(uintptr_t**)d3d9;
@@ -1433,6 +1434,7 @@ static IDirect3D9* WINAPI DetourDirect3DCreate9(UINT SDKVersion) {
     }
     return d3d9;
 }
+
 
 // Hook: IDirect3D9Ex::CreateDeviceEx
 static HRESULT STDMETHODCALLTYPE DetourCreateDeviceEx(IDirect3D9Ex* self, UINT Adapter, D3DDEVTYPE DeviceType, HWND hFocusWindow, DWORD BehaviorFlags, D3DPRESENT_PARAMETERS* pPresentationParameters, D3DDISPLAYMODEEX* pFullscreenDisplayMode, IDirect3DDevice9Ex** ppReturnedDeviceInterface) {
@@ -1453,8 +1455,8 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDeviceEx(IDirect3D9Ex* self, UINT A
             HookLog("DX9: CreateDeviceEx: Overriding BackBufferCount to %d", count);
         }
 
-        // MSAA Override
-        ApplyMSAAOverride(self, Adapter, DeviceType, pPresentationParameters);
+        // CUDA requirement: Multithreaded device
+        BehaviorFlags |= D3DCREATE_MULTITHREADED;
     }
 
     HRESULT hr = oCreateDeviceEx(self, Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters, pFullscreenDisplayMode, ppReturnedDeviceInterface);
