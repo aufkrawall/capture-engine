@@ -1531,10 +1531,13 @@ static IDirect3D9* WINAPI DetourDirect3DCreate9(UINT SDKVersion) {
     IDirect3D9 *d3d9 = oDirect3DCreate9(SDKVersion);
     if (d3d9) {
         uintptr_t *vtable = *(uintptr_t**)d3d9;
-        if (!oCreateDevice) {
-            if (MH_CreateHook((void*)vtable[16], (void*)&DetourCreateDevice, (void**)&oCreateDevice) == MH_OK) {
-                MH_EnableHook((void*)vtable[16]);
-                EarlyLog("DX9: IDirect3D9::CreateDevice hook installed");
+        // Validation and Hook
+        if (vtable && !IsBadReadPtr(vtable, sizeof(void*) * 17)) {
+            if (!oCreateDevice) {
+                if (MH_CreateHook((void*)vtable[16], (void*)&DetourCreateDevice, (void**)&oCreateDevice) == MH_OK) {
+                    MH_EnableHook((void*)vtable[16]);
+                    EarlyLog("DX9: IDirect3D9::CreateDevice hook installed");
+                }
             }
         }
     }
@@ -1639,8 +1642,6 @@ void DX9Hook::Init() {
     EarlyLog("DX9Hook::Init() Passive Complete");
     
     // Skip Active Hooking if a different graphics API is the primary renderer
-    // This prevents creating a dummy D3D9 device that pollutes logs
-    // Note: DX8 and DDraw use d3d9.dll internally for some operations, so we still allow active init for those
     const char* skipReason = nullptr;
     if (GetModuleHandleA("d3d12.dll")) {
         skipReason = "d3d12.dll (DX12 game)";
@@ -1650,12 +1651,10 @@ void DX9Hook::Init() {
         skipReason = "d3d10.dll (DX10 game)";
     } else if (GetModuleHandleA("vulkan-1.dll")) {
         skipReason = "vulkan-1.dll (Vulkan game)";
-    } else if (GetModuleHandleA("opengl32.dll")) {
-        // OpenGL is tricky - many apps load it for detection but don't use it
-        // Only skip if we have strong evidence of OpenGL rendering (wglMakeCurrent called)
-        // For now, skip anyway since false positives are less harmful than log pollution
-        skipReason = "opengl32.dll (OpenGL game)";
-    }
+    } 
+    
+    // Note: opengl32.dll check removed. Many DX9 games load it but don't use it.
+    // We want active init to ensure reliable hooking even in those cases.
     
     if (skipReason) {
         EarlyLog("DX9: %s detected, skipping active init", skipReason);

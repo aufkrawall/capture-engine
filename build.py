@@ -942,14 +942,18 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         curr_clang_exe = os.path.join(curr_clang_bin, "clang++.exe")
         curr_pkg_config = os.path.join(curr_clang_bin, "pkg-config.exe")
         
-        curr_cflags = ["-std=c++20", "-O0", "-g", "-fno-stack-protector", "-ffunction-sections", "-fdata-sections", "-Wall", "-D_WIN32_WINNT=0x0A00",
+        curr_cflags = ["-std=c++20", "-O2", "-flto", "-fno-stack-protector", "-ffunction-sections", "-fdata-sections", "-Wall", "-D_WIN32_WINNT=0x0A00",
                       "-I" + os.path.join(PROJECT_ROOT, "common"),
                       "-I" + IMGUI_DIR]
+        # if arch == "x64":
+        #    curr_cflags.append("-flto")
+        #    mingw_lib = os.path.join(MSYS2_DIR, 'clang64', 'lib')
         if arch == "x64":
-            curr_cflags.append("-flto")
-            mingw_lib = os.path.join(MSYS2_DIR, 'clang64', 'lib')
+             mingw_lib = os.path.join(MSYS2_DIR, 'clang64', 'lib')
+
         if arch == "x86":
             curr_cflags.append("-m32")
+            curr_cflags.append("-mstackrealign")
             try:
                 # Use --target to get correct 32-bit lib path
                 cmd = [clang_bin, "-print-libgcc-file-name", "--target=i686-w64-mingw32"]

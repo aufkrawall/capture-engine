@@ -30,7 +30,7 @@ extern char g_ProcessName[260];
 extern AppConfig g_LocalConfig;
 
 // Helper to get active config (Local > IPC)
-const GraphicsConfig& GetActiveGraphicsConfig();
+GraphicsConfig GetActiveGraphicsConfig();
 float GetActivePrerenderLimit();
 
 // Helper to apply VSync override (reduces duplication across DX9/11/12)

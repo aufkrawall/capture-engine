@@ -568,33 +568,39 @@ bool InjectionManager::Inject(DWORD pid, const std::string &processName) {
     pLoadLibrary = (LPVOID)GetProcAddress(GetModuleHandleA("kernel32.dll"),
                                           "LoadLibraryA");
   } else {
-    // 32-bit target, need to find 32-bit kernel32 base
-    HMODULE hMods[1024];
-    DWORD cbNeeded;
-    if (EnumProcessModulesEx(hProcess, hMods, sizeof(hMods), &cbNeeded,
-                             LIST_MODULES_32BIT)) {
-      for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
-        char szModName[MAX_PATH];
-        if (GetModuleFileNameExA(hProcess, hMods[i], szModName,
-                                 sizeof(szModName))) {
-          if (std::string(szModName).find("kernel32.dll") !=
-                  std::string::npos ||
-              std::string(szModName).find("KERNEL32.DLL") !=
-                  std::string::npos) {
-            
-            // USE REMOTE PE PARSING
-            pLoadLibrary = GetRemoteProcAddress(hProcess, hMods[i], "LoadLibraryA");
-            
-            if (pLoadLibrary)
-                LogInfo("Resolved LoadLibraryA in x86 process at 0x%p (Base: 0x%p)", pLoadLibrary, hMods[i]);
-            else
-                LogError("Failed to resolve LoadLibraryA in x86 process via PE parsing");
+    // 32-bit target (WoW64)
+    // We must wait for kernel32.dll to be loaded. It might take a moment during startup.
+    int maxRetries = 20; // 2 seconds (20 * 100ms)
+    
+    for (int retry = 0; retry < maxRetries; retry++) {
+        HMODULE hMods[1024];
+        DWORD cbNeeded;
+        if (EnumProcessModulesEx(hProcess, hMods, sizeof(hMods), &cbNeeded, LIST_MODULES_32BIT)) {
+          for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
+            char szModName[MAX_PATH];
+            if (GetModuleFileNameExA(hProcess, hMods[i], szModName, sizeof(szModName))) {
+              std::string modName = szModName;
+              // Case insensitive check
+              std::transform(modName.begin(), modName.end(), modName.begin(), ::tolower);
+              
+              if (modName.find("kernel32.dll") != std::string::npos) {
+                // Found kernel32!
+                pLoadLibrary = GetRemoteProcAddress(hProcess, hMods[i], "LoadLibraryA");
                 
-            break;
+                if (pLoadLibrary)
+                    LogInfo("Resolved LoadLibraryA in x86 process at 0x%p (Base: 0x%p)", pLoadLibrary, hMods[i]);
+                else
+                    LogError("Failed to resolve LoadLibraryA in x86 process via PE parsing");
+                goto found_kernel32;
+              }
+            }
           }
         }
-      }
+        Sleep(100); // Wait for WoW64 init
     }
+    LogError("Timeout waiting for kernel32.dll in WoW64 process");
+    
+    found_kernel32:;
   }
 
   if (!pLoadLibrary) {

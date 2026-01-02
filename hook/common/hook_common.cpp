@@ -178,32 +178,14 @@ void HookLog(LogLevel level, const char *fmt, ...) {
 }
 
 // Helpers for Config Overrides
-const GraphicsConfig& GetActiveGraphicsConfig() {
-    // If local override is used/loaded, it might have valid data.
-    // However, AppConfig init sets defaults (-1.0f).
-    // We want to merge: Local Override > Global IPC.
-    // Since we return a reference, we can't merge on the fly easily without a static buffer.
-    // But most hooks just read fields.
-    // Let's rely on g_IPC for base, and g_LocalConfig for specific overrides.
-    // Actually, to keep it simple: return g_IPC's config if available, but
-    // we need to access fields individually.
-    // Wait, the callers use `const auto& gfx = GetActiveGraphicsConfig();`
-    // If we return one or the other, we miss partial overrides.
-    // But our config system works on "Section Overrides".
-    // If [Graphics] is overridden in config.ini, it overrides ALL of [Graphics]?
-    // No, LoadConfig logic reads defaults. If config.ini has [Graphics], it fills it.
-    // But it fills defaults (-1.0) if missing in ini.
-    // Global config has values.
-    
-    // PROBLEM: g_LocalConfig might be partial.
-    // If we return g_LocalConfig, we might get -1.0 for some fields if they were missing in local ini,
-    // while Global config has proper values.
-    
-    // We should probably merge them into a static instance?
+GraphicsConfig GetActiveGraphicsConfig() {
     static GraphicsConfig mergedConfig;
     static uint32_t lastVersion = 0xFFFFFFFF;
     static uint32_t lastUpdateTick = 0;
+    static std::mutex configMutex;
     
+    std::lock_guard<std::mutex> lock(configMutex);
+
     uint32_t currentVersion = 0;
     if (g_IPC && g_IPC->GetSharedMem()) {
         currentVersion = g_IPC->GetSharedMem()->configVersion.load(std::memory_order_acquire);
