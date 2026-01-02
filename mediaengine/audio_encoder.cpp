@@ -275,11 +275,11 @@ void AudioEncoder::EncodeSamples(const uint8_t *data, int sizeBytes,
     lastPacketTimestampMs = 0;
     lastInputTimestamp = -1;  // CRITICAL: Reset to prevent false discontinuity detection
     if (audioFifo) av_audio_fifo_reset(audioFifo);
-    if (resampler) resampler->ResetClockTracking();  // Reset compensation state
+    if (resampler) resampler->Reset(); // FULL RESET (Clears buffers + drift)
     
     pendingStartUs = 0;
     needsReset = false;
-    DLL_Log("[AudioEnc] Reset complete - audio will start from PTS=0");
+    DLL_Log("[AudioEnc] Reset complete - audio will start from PTS=0 with fade-in");
   }
 
   // CRITICAL: Discard audio samples that arrive before first video frame
@@ -411,6 +411,63 @@ void AudioEncoder::EncodeSamples(const uint8_t *data, int sizeBytes,
   // Write resampled data to FIFO
   int ret =
       av_audio_fifo_write(audioFifo, (void **)resampledData, convertedSamples);
+  
+  // Apply 50ms fade-in to the new samples if at the very start of recording
+  // 50ms @ 48kHz = 2400 samples
+  const int FADE_SAMPLES = codecCtx->sample_rate / 20;
+  if (samplesCount < FADE_SAMPLES) {
+      int samplesToFade = convertedSamples;
+      int channels = codecCtx->ch_layout.nb_channels;
+      
+      // If planar, we must handle all planes
+      int numPlanes = av_sample_fmt_is_planar(codecCtx->sample_fmt) ? channels : 1;
+      int planeSamples = av_sample_fmt_is_planar(codecCtx->sample_fmt) ? 1 : channels;
+
+      for (int p = 0; p < numPlanes; p++) {
+          if (codecCtx->sample_fmt == AV_SAMPLE_FMT_FLT || codecCtx->sample_fmt == AV_SAMPLE_FMT_FLTP) {
+              float* fData = (float*)resampledData[p];
+              for (int i = 0; i < samplesToFade; i++) {
+                  int64_t currentSmp = samplesCount + i;
+                  float gain = (float)currentSmp / FADE_SAMPLES;
+                  if (gain > 1.0f) gain = 1.0f;
+                  if (gain < 0.0f) gain = 0.0f;
+                  
+                  if (numPlanes == 1) { // Interleaved
+                      for (int c = 0; c < channels; c++) fData[i * channels + c] *= gain;
+                  } else { // Planar
+                      fData[i] *= gain;
+                  }
+              }
+          } else if (codecCtx->sample_fmt == AV_SAMPLE_FMT_S16 || codecCtx->sample_fmt == AV_SAMPLE_FMT_S16P) {
+              int16_t* sData = (int16_t*)resampledData[p];
+              for (int i = 0; i < samplesToFade; i++) {
+                  int64_t currentSmp = samplesCount + i;
+                  float gain = (float)currentSmp / FADE_SAMPLES;
+                  if (gain > 1.0f) gain = 1.0f;
+                  
+                  if (numPlanes == 1) {
+                      for (int c = 0; c < channels; c++) sData[i * channels + c] = (int16_t)(sData[i * channels + c] * gain);
+                  } else {
+                      sData[i] = (int16_t)(sData[i] * gain);
+                  }
+              }
+          } else if (codecCtx->sample_fmt == AV_SAMPLE_FMT_S32 || codecCtx->sample_fmt == AV_SAMPLE_FMT_S32P) {
+              int32_t* sData = (int32_t*)resampledData[p];
+              for (int i = 0; i < samplesToFade; i++) {
+                  int64_t currentSmp = samplesCount + i;
+                  float gain = (float)currentSmp / FADE_SAMPLES;
+                  if (gain > 1.0f) gain = 1.0f;
+                  
+                  if (numPlanes == 1) {
+                      for (int c = 0; c < channels; c++) sData[i * channels + c] = (int32_t)(sData[i * channels + c] * gain);
+                  } else {
+                      sData[i] = (int32_t)(sData[i] * gain);
+                  }
+              }
+          }
+      }
+  }
+
   if (ret < convertedSamples) {
     DLL_Log("[AudioEnc] Failed to write to audio FIFO");
   }
@@ -773,12 +830,18 @@ void AudioEncoder::Flush() {
               int channels = codecCtx->ch_layout.nb_channels;
               
               while (samplesNeeded > 0) {
-                  int samplesToWrite = (int)std::min((int64_t)frame_size, samplesNeeded);
-                  frame->nb_samples = samplesToWrite;
+                  // For most encoders, we MUST send exactly frame_size samples.
+                  // If we need fewer, we still send a full frame to be safe.
+                  int samplesToPrepare = (int)std::min((int64_t)frame_size, samplesNeeded);
                   
-                  // Zero out the data
+                  // If fixed frame size, always send full frame
+                  int samplesToSend = (codecCtx->frame_size > 0) ? codecCtx->frame_size : samplesToPrepare;
+                  
+                  frame->nb_samples = samplesToSend;
+                  
+                  // Zero out the entire frame buffer (padding extra if needed)
                   for (int i = 0; i < AV_NUM_DATA_POINTERS && frame->data[i]; i++) {
-                      int planeSize = samplesToWrite * sampleSize;
+                      int planeSize = samplesToSend * sampleSize;
                       if (!av_sample_fmt_is_planar(codecCtx->sample_fmt)) {
                           planeSize *= channels; // Interleaved
                       }
@@ -786,13 +849,43 @@ void AudioEncoder::Flush() {
                   }
                   
                   frame->pts = samplesCount;
-                  samplesCount += samplesToWrite;
-                  samplesNeeded -= samplesToWrite;
+                  samplesCount += samplesToPrepare; // We only "consumed" what we needed
+                  samplesNeeded -= samplesToPrepare;
                   
                   ret = avcodec_send_frame(codecCtx, frame);
+                  if (ret == AVERROR(EAGAIN)) {
+                      // Drain loop inline
+                      while (true) {
+                          AVPacket *pkt = av_packet_alloc();
+                          int dret = avcodec_receive_packet(codecCtx, pkt);
+                          if (dret < 0) {
+                              av_packet_free(&pkt);
+                              break;
+                          }
+                          pkt->stream_index = streamIndex;
+                          if (onPacket) onPacket(pkt);
+                          av_packet_free(&pkt);
+                      }
+                      // Retry sending the frame
+                      ret = avcodec_send_frame(codecCtx, frame);
+                  }
+                  
                   if (ret < 0) {
                       DLL_Log("[AudioEncoder] Error sending silence frame: %d", ret);
                       break;
+                  }
+
+                  // Drain packets after each frame to keep buffers moving
+                  while (true) {
+                      AVPacket *pkt = av_packet_alloc();
+                      int dret = avcodec_receive_packet(codecCtx, pkt);
+                      if (dret < 0) {
+                          av_packet_free(&pkt);
+                          break;
+                      }
+                      pkt->stream_index = streamIndex;
+                      if (onPacket) onPacket(pkt);
+                      av_packet_free(&pkt);
                   }
               }
           }
@@ -804,7 +897,7 @@ void AudioEncoder::Flush() {
   // sending EOF. The NULL frame should only be sent in destructor when truly
   // closing forever.
 
-  // Drain packets
+  // Final drain
   while (true) {
     AVPacket *pkt = av_packet_alloc();
     int ret = avcodec_receive_packet(codecCtx, pkt);

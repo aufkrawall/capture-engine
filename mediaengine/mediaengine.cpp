@@ -31,6 +31,7 @@ public:
     AudioEncoder *sharedEncoderPtr =
         nullptr; // Always points to the encoder to use
     std::unique_ptr<AudioRingBuffer> ringBuffer; // Pull Model Buffer (Writer=Capture, Reader=Encoder)
+    std::unique_ptr<AudioResampler> resampler;  // Resampler for this source (to standard format)
     AudioConfig config;
     int track = 0; // Target track number
     AudioConfig::SourceType sourceType = AudioConfig::SystemAudio;
@@ -427,6 +428,14 @@ public:
         if (src.sharedEncoderPtr) {
           src.sharedEncoderPtr->SetRecordingStart(timestamp * 1000);
         }
+        // CRITICAL: Clear ring buffers now!
+        // This drops any audio captured while waiting for the first video frame.
+        if (src.ringBuffer) {
+           src.ringBuffer->Clear();
+        }
+        if (src.resampler) {
+           src.resampler->Reset();
+        }
       }
     }
 
@@ -481,6 +490,14 @@ public:
       for (auto &src : audioSources) {
         if (src.sharedEncoderPtr) {
           src.sharedEncoderPtr->SetRecordingStart(timestamp * 1000);
+        }
+        // CRITICAL: Clear ring buffers now!
+        // This drops any audio captured while waiting for the first video frame.
+        if (src.ringBuffer) {
+           src.ringBuffer->Clear();
+        }
+        if (src.resampler) {
+           src.resampler->Reset();
         }
       }
     }
@@ -903,8 +920,6 @@ private:
     const int CHANNELS = 2;
     const int CHUNK_SIZE = MIX_CHUNK_SAMPLES * CHANNELS;
 
-    std::vector<std::vector<float>> sourceBuffers(audioSources.size());
-    std::vector<std::unique_ptr<AudioResampler>> sourceResamplers(audioSources.size());
     std::vector<int64_t> sourceTimestamps(audioSources.size(), 0);
     std::map<int, int64_t> trackNextTimestamp; // Track continuous timestamps for mixing
     std::vector<AudioPacket> sourceLastPackets(audioSources.size());
@@ -952,8 +967,8 @@ private:
 
           // Use AudioResampler to standardize all sources to 48kHz Float Stereo
           // This creates a unified timeline for the mixer
-          if (!sourceResamplers[srcIdx]) {
-            sourceResamplers[srcIdx] = std::make_unique<AudioResampler>();
+          if (!src.resampler) {
+            src.resampler = std::make_unique<AudioResampler>();
           }
 
           // Define target format for mixing (48kHz, Stereo, Float)
@@ -972,15 +987,15 @@ private:
           inputFmt.blockAlign = (packet.channels * packet.bitsPerSample) / 8;
 
           // Initialize/Reinitialize resampler if needed
-          if (!sourceResamplers[srcIdx]->IsReady() || 
-               sourceResamplers[srcIdx]->GetOutputFormat().sampleRate != targetFmt.sampleRate) {
-             sourceResamplers[srcIdx]->Init(inputFmt, targetFmt);
+          if (!src.resampler->IsReady() || 
+               src.resampler->GetOutputFormat().sampleRate != targetFmt.sampleRate) {
+             src.resampler->Init(inputFmt, targetFmt);
           }
 
           uint8_t **resampledData = nullptr;
           int outSamples = 0;
           
-          if (sourceResamplers[srcIdx]->Process(packet.data.data(), (int)packet.data.size(), 
+          if (src.resampler->Process(packet.data.data(), (int)packet.data.size(), 
                                                 &resampledData, &outSamples)) {
              if (outSamples > 0 && resampledData && resampledData[0]) {
                  int numFloats = outSamples * targetFmt.channels;

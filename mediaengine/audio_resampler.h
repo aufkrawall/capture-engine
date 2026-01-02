@@ -106,14 +106,14 @@ public:
   void AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSamplesOutput);
 
   /**
+   * Reset the resampler internal state and buffers.
+   */
+  bool Reset();
+
+  /**
    * Reset clock drift tracking (call at start of recording).
    */
-  void ResetClockTracking() { 
-    lastDriftSamples = 0; 
-    compensationActive = false;
-    smoothedDrift = 0.0;
-    currentDelta = 0;
-  }
+  void ResetClockTracking();
 
 private:
   SwrContext *swrCtx;

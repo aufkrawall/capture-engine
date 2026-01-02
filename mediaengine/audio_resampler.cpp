@@ -274,6 +274,21 @@ void AudioResampler::FreeOutputBuffer(uint8_t **data) {
   }
 }
 
+bool AudioResampler::Reset() {
+  if (!swrCtx) return false;
+  
+  int ret = swr_init(swrCtx);
+  ResetClockTracking();
+  return (ret >= 0);
+}
+
+void AudioResampler::ResetClockTracking() {
+  lastDriftSamples = 0; 
+  compensationActive = false;
+  smoothedDrift = 0.0;
+  currentDelta = 0;
+}
+
 void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSamplesOutput) {
   if (!swrCtx || videoElapsedMs <= 0 || outFmt.sampleRate <= 0) {
     return;
@@ -292,8 +307,9 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
   // Alpha 0.1 means we trust history 90%, new reading 10%.
   smoothedDrift = (smoothedDrift * 0.9) + ((double)driftSamples * 0.1);
   
-  // Only apply compensation if SMOOTHED drift exceeds threshold (5ms)
-  const int64_t driftThreshold = (outFmt.sampleRate * 5) / 1000;  // 5ms in samples
+  // Only apply compensation if SMOOTHED drift exceeds threshold (60ms)
+  // Higher threshold (60ms instead of 5ms) prevents fighting frame pacing jitter (8-33ms).
+  const int64_t driftThreshold = (outFmt.sampleRate * 60) / 1000;
   
   int32_t targetDelta = 0;
   
