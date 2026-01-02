@@ -339,6 +339,21 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
       EarlyLog("HookThread: Local config loaded from %s. PrerenderLimit=%.2f", 
           configPath.c_str(), g_LocalConfig.graphics.cpuPrerenderLimit);
   }
+  
+  // Track last write time for Hot Reloading
+  FILETIME g_ConfigLastWriteTime = {};
+  {
+      char dllPath[MAX_PATH];
+      GetModuleFileNameA(g_hModule, dllPath, MAX_PATH);
+      std::string pathString = dllPath;
+      std::string dir = pathString.substr(0, pathString.find_last_of("\\/"));
+      std::string configPath = dir + "\\config.ini";
+      
+      WIN32_FILE_ATTRIBUTE_DATA fileInfo;
+      if (GetFileAttributesExA(configPath.c_str(), GetFileExInfoStandard, &fileInfo)) {
+          g_ConfigLastWriteTime = fileInfo.ftLastWriteTime;
+      }
+  }
 
   // Init IPC loop
   g_IPC = new IPCClient();
@@ -433,6 +448,31 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     // Periodically update active graphics config state 
     // This ensures g_GraphicsOverridesActive is updated even if no hooks are calling it yet
     GetActiveGraphicsConfig();
+    
+    // --- Hot Reloading ---
+    static int hotReloadTick = 0;
+    if (++hotReloadTick > 10) { // Check every 1s (10 * 100ms)
+        hotReloadTick = 0;
+        char dllPath[MAX_PATH];
+        GetModuleFileNameA(g_hModule, dllPath, MAX_PATH);
+        std::string pathString = dllPath;
+        std::string dir = pathString.substr(0, pathString.find_last_of("\\/"));
+        std::string configPath = dir + "\\config.ini";
+        
+        WIN32_FILE_ATTRIBUTE_DATA fileInfo;
+        if (GetFileAttributesExA(configPath.c_str(), GetFileExInfoStandard, &fileInfo)) {
+            if (CompareFileTime(&fileInfo.ftLastWriteTime, &g_ConfigLastWriteTime) != 0) {
+                 // Update timestamp first to avoid loop if load fails
+                 g_ConfigLastWriteTime = fileInfo.ftLastWriteTime;
+                 
+                 LoadConfig(configPath, g_LocalConfig);
+                 // Force override update
+                 GetActiveGraphicsConfig();
+                 
+                 HookLog("Hot Reload: Config updated from file!");
+            }
+        }
+    }
     
     // If signaled OR timeout, we check logic
     // (Timeout is needed for Exit/IPC checks)
