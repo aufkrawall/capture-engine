@@ -27,6 +27,8 @@ typedef HRESULT(STDMETHODCALLTYPE *PresentEx_t)(IDirect3DDevice9Ex*, CONST RECT*
 typedef HRESULT(STDMETHODCALLTYPE *PresentSwap_t)(IDirect3DSwapChain9*, CONST RECT*, CONST RECT*, HWND, CONST RGNDATA*, DWORD);
 typedef HRESULT(STDMETHODCALLTYPE *Reset_t)(IDirect3DDevice9*, D3DPRESENT_PARAMETERS*);
 typedef HRESULT(STDMETHODCALLTYPE *ResetEx_t)(IDirect3DDevice9Ex*, D3DPRESENT_PARAMETERS*, D3DDISPLAYMODEEX*);
+typedef HRESULT(STDMETHODCALLTYPE *SetSamplerState_t)(IDirect3DDevice9*, DWORD, D3DSAMPLERSTATETYPE, DWORD);
+typedef HRESULT(STDMETHODCALLTYPE *SetTextureStageState_t)(IDirect3DDevice9*, DWORD, D3DTEXTURESTAGESTATETYPE, DWORD);
 typedef HRESULT(WINAPI *Direct3DCreate9Ex_t)(UINT, IDirect3D9Ex**);
 
 // Original function pointers
@@ -35,6 +37,8 @@ static PresentEx_t oPresentEx = nullptr;
 static PresentSwap_t oPresentSwap = nullptr;
 static Reset_t oReset = nullptr;
 static ResetEx_t oResetEx = nullptr;
+static SetSamplerState_t oSetSamplerState = nullptr;
+static SetTextureStageState_t oSetTextureStageState = nullptr;
 
 // Globals
 static PerformanceMetrics g_PerfMetrics;
@@ -49,6 +53,8 @@ static GraphicsConfig g_FrameConfig; // Frame-local config cache for performance
 
 
 static HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9* device, const RECT* pSourceRect, const RECT* pDestRect, HWND hDestWindowOverride, const RGNDATA* pDirtyRegion);
+static HRESULT STDMETHODCALLTYPE DetourSetSamplerState(IDirect3DDevice9* device, DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD Value);
+static HRESULT STDMETHODCALLTYPE DetourSetTextureStageState(IDirect3DDevice9* device, DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD Value);
 
 // D3D9 format to DXGI format conversion
 static DXGI_FORMAT D3D9ToDXGIFormat(D3DFORMAT format) {
@@ -1113,6 +1119,69 @@ static void PresentEnd(IDirect3DDevice9 *device, IDirect3DSurface9 *backBuffer) 
     g_PresentRecurse--;
 }
 
+static HRESULT STDMETHODCALLTYPE DetourSetSamplerState(IDirect3DDevice9* device, DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD Value) {
+    if (g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
+        if (g_IPC && g_IPC->GetSharedMem()) {
+            const auto& gfx = GetActiveGraphicsConfig();
+
+            if (Type == D3DSAMP_MAXANISOTROPY) {
+                const char* af = gfx.anisotropicFiltering.c_str();
+                if (af[0] != 'd') {
+                    if (af[0] == 'o') Value = 1;
+                    else if (af[0] == '2') Value = 2;
+                    else if (af[0] == '4') Value = 4;
+                    else if (af[0] == '8') Value = 8;
+                    else Value = 16;
+                }
+            } else if (Type == D3DSAMP_MINFILTER || Type == D3DSAMP_MAGFILTER || Type == D3DSAMP_MIPFILTER) {
+                const char* mip = gfx.mipMapping.c_str();
+                if (mip[0] != 'd') {
+                    bool isAniso = (gfx.anisotropicFiltering != "default" && gfx.anisotropicFiltering != "off");
+
+                    if (mip[0] == 't') { // trilinear
+                        Value = D3DTEXF_LINEAR;
+                    } else if (mip[0] == 'b') { // bilinear
+                        if (Type == D3DSAMP_MIPFILTER) Value = D3DTEXF_POINT;
+                        else Value = D3DTEXF_LINEAR;
+                    } else if (mip[0] == 'n') { // nearest
+                        Value = D3DTEXF_POINT;
+                    }
+
+                    if (isAniso && (Type == D3DSAMP_MINFILTER || Type == D3DSAMP_MAGFILTER)) {
+                        Value = D3DTEXF_ANISOTROPIC;
+                    }
+                }
+            } else if (Type == D3DSAMP_MIPMAPLODBIAS) {
+                const char* biasStr = gfx.mipBias.c_str();
+                if (biasStr[0] != 'd') {
+                    char* end;
+                    float bias = strtof(biasStr, &end);
+                    if (end != biasStr) {
+                         Value = *((DWORD*)&bias);
+                    }
+                }
+
+                // Auto-bias
+                if (gfx.sgssaa && !gfx.disableAutoMipBias) {
+                    float sgBias = 0.0f;
+                    if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgBias)) {
+                        float currentBias = *((float*)&Value);
+                        currentBias += sgBias;
+                        Value = *((DWORD*)&currentBias);
+                    }
+                }
+            }
+        }
+    }
+    return oSetSamplerState(device, Sampler, Type, Value);
+}
+
+static HRESULT STDMETHODCALLTYPE DetourSetTextureStageState(IDirect3DDevice9* device, DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD Value) {
+    // D3D9 does not use SetTextureStageState for filtering/mipbias overrides.
+    // Those have moved to SetSamplerState.
+    return oSetTextureStageState(device, Stage, Type, Value);
+}
+
 // Hook: IDirect3DDevice9::Present
 static HRESULT STDMETHODCALLTYPE DetourPresent(
     IDirect3DDevice9 *device,
@@ -1313,7 +1382,22 @@ static void InstallDeviceHooks(IDirect3DDevice9* device) {
         }
     }
     
-    // High-frequency hooks disabled for performance reasons (SGSSAA deprecated)
+    // High-frequency hooks enabled for parity
+    // 2. Hook SetSamplerState (69)
+    if (!oSetSamplerState) {
+        if (MH_CreateHook((void*)vtable[69], (void*)&DetourSetSamplerState, (void**)&oSetSamplerState) == MH_OK) {
+            MH_EnableHook((void*)vtable[69]);
+            EarlyLog("DX9: SetSamplerState hook installed");
+        }
+    }
+
+    // 2.5 Hook SetTextureStageState (67)
+    if (!oSetTextureStageState) {
+        if (MH_CreateHook((void*)vtable[67], (void*)&DetourSetTextureStageState, (void**)&oSetTextureStageState) == MH_OK) {
+            MH_EnableHook((void*)vtable[67]);
+            EarlyLog("DX9: SetTextureStageState hook installed");
+        }
+    }
 
     // 3. Check for IDirect3DDevice9Ex functions and hook them
     // 3. Check for IDirect3DDevice9Ex functions and hook them
