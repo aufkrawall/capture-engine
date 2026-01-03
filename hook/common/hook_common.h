@@ -14,6 +14,8 @@
 extern IPCClient *g_IPC;
 extern std::atomic<bool> g_ShuttingDown;
 extern std::atomic<bool> g_GraphicsOverridesActive;
+struct SharedMemoryLayout;
+extern SharedMemoryLayout* g_pSharedMem;
 
 // Logging Helper
 void HookLog(const char *fmt, ...);

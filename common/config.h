@@ -96,6 +96,53 @@ struct GraphicsConfig {
   int backbufferCount = 0;          // 0 = default, 2-6
   bool sgssaa = false;              // Enable Sparse Grid Supersampling
   bool disableAutoMipBias = false;  // Disable auto mip bias for SGSSAA
+  std::string dlssAutoExposure;     // "default", "on", "off"
+  std::string dlssExposureNormalization;
+
+  // DLSS Presets (Super Resolution)
+  std::string dlssPresetDLAA;
+  std::string dlssPresetQuality;
+  std::string dlssPresetBalanced;
+  std::string dlssPresetPerformance;
+  std::string dlssPresetUltraPerformance;
+  std::string dlssPresetUltraQuality;
+
+  // Global Presets
+  std::string dlssSRPreset;         // "default", "A"..."K"
+  std::string dlssRRPreset;         // "default", "A"..."G"
+
+  // Ray Reconstruction Presets
+  std::string dlssRRPresetDLAA;
+  std::string dlssRRPresetQuality;
+  std::string dlssRRPresetBalanced;
+  std::string dlssRRPresetPerformance;
+  std::string dlssRRPresetUltraPerformance;
+  std::string dlssRRPresetUltraQuality;
+
+  // DLSS Sharpening: "default", "off", or float value (0.0 to 1.0)
+  std::string dlssSharpening;
+
+  // Internal parsed versions for efficiency
+  struct {
+      uint32_t presetDLAA = 0;
+      uint32_t presetQuality = 0;
+      uint32_t presetBalanced = 0;
+      uint32_t presetPerformance = 0;
+      uint32_t presetUltraPerformance = 0;
+      uint32_t presetUltraQuality = 0;
+
+      uint32_t srPreset = 0; // Global
+      uint32_t rrPreset = 0; // Global
+
+      uint32_t rrPresetDLAA = 0;
+      uint32_t rrPresetQuality = 0;
+      uint32_t rrPresetBalanced = 0;
+      uint32_t rrPresetPerformance = 0;
+      uint32_t rrPresetUltraPerformance = 0;
+      uint32_t rrPresetUltraQuality = 0;
+
+      float dlssSharpening = -2.0f; // -2.0 = default, -1.0 = off, else value
+  } parsed;
 };
 
 struct AppConfig {
@@ -140,3 +187,8 @@ struct AppConfig {
 // Global Config Instance Access
 // overrideProcessName: Optional process name (e.g. "game.exe") to force app-specific overrides
 void LoadConfig(const std::string &path, AppConfig &config, const std::string& overrideProcessName = "");
+
+// Parsing helpers
+uint32_t ParseDlssPreset(const std::string& val);
+uint32_t ParseDlssRRPreset(const std::string& val);
+float ParseDlssSharpening(const std::string& val);

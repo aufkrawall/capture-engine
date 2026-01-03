@@ -5,6 +5,7 @@
 #include "apis/dx8_hook.h"
 #include "apis/opengl_hook.h"
 #include "apis/vulkan_hook.h"
+#include "apis/nvngx_hook.h"
 #include "common/hook_common.h"
 #include "common/ipc_client.h"
 #include "common/fg_detection.h"
@@ -280,6 +281,9 @@ void CheckAndInstallHooks() {
             fgDetected = true;
         }
     }
+
+    // Install NGX hooks if DLL is present
+    NVNGXHook::Get().Install();
 }
 
 DWORD WINAPI HookThread(LPVOID lpParam) {

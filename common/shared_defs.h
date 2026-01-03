@@ -123,6 +123,29 @@ struct SharedGraphicsConfig {
   int32_t backbufferCount;       // 0=default, 2-6 actual count
   bool sgssaa;                   // Enable Sparse Grid Supersampling
   bool disableAutoMipBias;       // If true, don't adjust mip bias for SGSSAA
+  char dlssAutoExposure[32];     // "default", "on", "off"
+  char dlssExposureNormalization[32]; // "default", "on", "off"
+
+  // DLSS Presets (Super Resolution) - 0=Default, 1-11 = A-K
+  uint32_t dlssPresetDLAA;
+  uint32_t dlssPresetQuality;
+  uint32_t dlssPresetBalanced;
+  uint32_t dlssPresetPerformance;
+  uint32_t dlssPresetUltraPerformance;
+  uint32_t dlssPresetUltraQuality;
+
+  // Ray Reconstruction Presets - 0=Default, 1-7 = A-G
+  uint32_t dlssRRPresetDLAA;
+  uint32_t dlssRRPresetQuality;
+  uint32_t dlssRRPresetBalanced;
+  uint32_t dlssRRPresetPerformance;
+  uint32_t dlssRRPresetUltraPerformance;
+  uint32_t dlssRRPresetUltraQuality;
+
+  uint32_t dlssSRPreset;         // Global SR preset
+  uint32_t dlssRRPreset;         // Global RR preset
+
+  float dlssSharpening;          // -2.0 = default, -1.0 = off, else value
 };
 
 struct alignas(8) CaptureState {

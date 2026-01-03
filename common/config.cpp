@@ -12,6 +12,34 @@ bool ParseBool(const std::string &val) {
   return lower == "true" || lower == "1" || lower == "yes" || lower == "on";
 }
 
+// Helper to parse DLSS presets (A-K -> 1-11, Default -> 0)
+uint32_t ParseDlssPreset(const std::string& val) {
+  if (val.empty() || _stricmp(val.c_str(), "default") == 0) return 0;
+  char c = toupper(val[0]);
+  if (c >= 'A' && c <= 'K') return (uint32_t)(c - 'A' + 1);
+  return 0;
+}
+
+// Helper to parse Ray Reconstruction presets (A-G -> 1-7, Default -> 0)
+uint32_t ParseDlssRRPreset(const std::string& val) {
+    if (val.empty() || _stricmp(val.c_str(), "default") == 0) return 0;
+    char c = toupper(val[0]);
+    if (c >= 'A' && c <= 'G') return (uint32_t)(c - 'A' + 1);
+    return 0;
+}
+
+// Helper to parse DLSS sharpening (-2.0 default, -1.0 off, 0.0-1.0 value)
+float ParseDlssSharpening(const std::string& val) {
+    if (val.empty() || _stricmp(val.c_str(), "default") == 0) return -2.0f;
+    if (_stricmp(val.c_str(), "off") == 0) return -1.0f;
+    try {
+        float f = std::stof(val);
+        return f; // Clamp if necessary? Usually NGX handles 0.0-1.0
+    } catch (...) {
+        return -2.0f;
+    }
+}
+
 // Helper to parse generic
 template <typename T> T ParseValue(const std::string &val) {
   if (val.empty())
@@ -79,6 +107,37 @@ void CreateDefaultConfig(const std::string &path) {
   cfg << "sgssaa=false\n";
   cfg << "; Disable auto-calculation of mip bias (use if textures are too blurry/sharp)\n";
   cfg << "disable_auto_mip_bias=false\n";
+  cfg << "; Force DLSS Auto Exposure: default (use game setting), on, off\n";
+  cfg << "dlss_auto_exposure=default\n";
+  cfg << "dlss_exposure_normalization=default\n";
+  cfg << "\n";
+  cfg << "; DLSS Render Presets (Super Resolution): default, A, B, C, D, E, F, G, H, I, J, K\n";
+  cfg << "; Preset K is recommended for DLSS 3.7+ (Transformer-based)\n";
+  cfg << "; Global override for all quality levels:\n";
+  cfg << "dlss_sr_preset=default\n";
+  cfg << "\n";
+  cfg << "; Individual quality level overrides:\n";
+  cfg << "dlss_preset_dlaa=default\n";
+  cfg << "dlss_preset_quality=default\n";
+  cfg << "dlss_preset_balanced=default\n";
+  cfg << "dlss_preset_performance=default\n";
+  cfg << "dlss_preset_ultra_performance=default\n";
+  cfg << "dlss_preset_ultra_quality=default\n";
+  cfg << "\n";
+  cfg << "; DLSS Ray Reconstruction Presets: default, A, B, C, D, E, F, G\n";
+  cfg << "; Global override for all quality levels:\n";
+  cfg << "dlss_rr_preset=default\n";
+  cfg << "\n";
+  cfg << "; Individual quality level overrides:\n";
+  cfg << "dlss_rr_preset_dlaa=default\n";
+  cfg << "dlss_rr_preset_quality=default\n";
+  cfg << "dlss_rr_preset_balanced=default\n";
+  cfg << "dlss_rr_preset_performance=default\n";
+  cfg << "dlss_rr_preset_ultra_performance=default\n";
+  cfg << "dlss_rr_preset_ultra_quality=default\n";
+  cfg << "\n";
+  cfg << "; DLSS Sharpening: default, off, or a float value from 0.0 to 1.0\n";
+  cfg << "dlss_sharpening=default\n";
   cfg << "\n";
   cfg << "; ----------------------------------------------------------------------------\n";
   cfg << "; Per-Process Overrides Example\n";
@@ -407,10 +466,49 @@ void LoadConfig(const std::string &path, AppConfig &config, const std::string& o
   config.graphics.mipBias = GetStr("Graphics", "mip_bias", "default");
   config.graphics.msaaSamples = GetStr("Graphics", "msaa_samples", "default");
   config.graphics.cpuPrerenderLimit = GetFloat("Graphics", "cpu_prerender_limit", -1.0f);
-  config.graphics.cpuPrerenderLimit = GetFloat("Graphics", "cpu_prerender_limit", -1.0f);
   config.graphics.backbufferCount = GetInt("Graphics", "backbuffer_count", 0);
   config.graphics.sgssaa = GetBool("Graphics", "sgssaa", false);
   config.graphics.disableAutoMipBias = GetBool("Graphics", "disable_auto_mip_bias", false);
+  config.graphics.dlssAutoExposure = GetStr("Graphics", "dlss_auto_exposure", "default");
+  config.graphics.dlssExposureNormalization = GetStr("Graphics", "dlss_exposure_normalization", "default");
+  
+  // DLSS Presets
+  config.graphics.dlssPresetDLAA = GetStr("Graphics", "dlss_preset_dlaa", "default");
+  config.graphics.dlssPresetQuality = GetStr("Graphics", "dlss_preset_quality", "default");
+  config.graphics.dlssPresetBalanced = GetStr("Graphics", "dlss_preset_balanced", "default");
+  config.graphics.dlssPresetPerformance = GetStr("Graphics", "dlss_preset_performance", "default");
+  config.graphics.dlssPresetUltraPerformance = GetStr("Graphics", "dlss_preset_ultra_performance", "default");
+  config.graphics.dlssPresetUltraQuality = GetStr("Graphics", "dlss_preset_ultra_quality", "default");
+  config.graphics.dlssSRPreset = GetStr("Graphics", "dlss_sr_preset", "default");
+
+  // RR Presets
+  config.graphics.dlssRRPresetDLAA = GetStr("Graphics", "dlss_rr_preset_dlaa", "default");
+  config.graphics.dlssRRPresetQuality = GetStr("Graphics", "dlss_rr_preset_quality", "default");
+  config.graphics.dlssRRPresetBalanced = GetStr("Graphics", "dlss_rr_preset_balanced", "default");
+  config.graphics.dlssRRPresetPerformance = GetStr("Graphics", "dlss_rr_preset_performance", "default");
+  config.graphics.dlssRRPresetUltraPerformance = GetStr("Graphics", "dlss_rr_preset_ultra_performance", "default");
+  config.graphics.dlssRRPresetUltraQuality = GetStr("Graphics", "dlss_rr_preset_ultra_quality", "default");
+  config.graphics.dlssRRPreset = GetStr("Graphics", "dlss_rr_preset", "default");
+  config.graphics.dlssSharpening = GetStr("Graphics", "dlss_sharpening", "default");
+
+  // Fill parsed versions for efficiency
+  config.graphics.parsed.presetDLAA = ParseDlssPreset(config.graphics.dlssPresetDLAA);
+  config.graphics.parsed.presetQuality = ParseDlssPreset(config.graphics.dlssPresetQuality);
+  config.graphics.parsed.presetBalanced = ParseDlssPreset(config.graphics.dlssPresetBalanced);
+  config.graphics.parsed.presetPerformance = ParseDlssPreset(config.graphics.dlssPresetPerformance);
+  config.graphics.parsed.presetUltraPerformance = ParseDlssPreset(config.graphics.dlssPresetUltraPerformance);
+  config.graphics.parsed.presetUltraQuality = ParseDlssPreset(config.graphics.dlssPresetUltraQuality);
+  config.graphics.parsed.srPreset = ParseDlssPreset(config.graphics.dlssSRPreset);
+
+  config.graphics.parsed.rrPresetDLAA = ParseDlssRRPreset(config.graphics.dlssRRPresetDLAA);
+  config.graphics.parsed.rrPresetQuality = ParseDlssRRPreset(config.graphics.dlssRRPresetQuality);
+  config.graphics.parsed.rrPresetBalanced = ParseDlssRRPreset(config.graphics.dlssRRPresetBalanced);
+  config.graphics.parsed.rrPresetPerformance = ParseDlssRRPreset(config.graphics.dlssRRPresetPerformance);
+  config.graphics.parsed.rrPresetUltraPerformance = ParseDlssRRPreset(config.graphics.dlssRRPresetUltraPerformance);
+  config.graphics.parsed.rrPresetUltraQuality = ParseDlssRRPreset(config.graphics.dlssRRPresetUltraQuality);
+  config.graphics.parsed.rrPreset = ParseDlssRRPreset(config.graphics.dlssRRPreset);
+
+  config.graphics.parsed.dlssSharpening = ParseDlssSharpening(config.graphics.dlssSharpening);
 
   // FPS Limiter
   config.fpsLimiter.captureSyncEnabled =

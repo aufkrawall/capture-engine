@@ -210,6 +210,27 @@ GraphicsConfig GetActiveGraphicsConfig() {
         mergedConfig.backbufferCount = shmGfx.backbufferCount;
         mergedConfig.sgssaa = shmGfx.sgssaa;
         mergedConfig.disableAutoMipBias = shmGfx.disableAutoMipBias;
+        mergedConfig.dlssAutoExposure = shmGfx.dlssAutoExposure;
+        mergedConfig.dlssExposureNormalization = shmGfx.dlssExposureNormalization;
+        
+        mergedConfig.parsed.presetDLAA = shmGfx.dlssPresetDLAA;
+        mergedConfig.parsed.presetQuality = shmGfx.dlssPresetQuality;
+        mergedConfig.parsed.presetBalanced = shmGfx.dlssPresetBalanced;
+        mergedConfig.parsed.presetPerformance = shmGfx.dlssPresetPerformance;
+        mergedConfig.parsed.presetUltraPerformance = shmGfx.dlssPresetUltraPerformance;
+        mergedConfig.parsed.presetUltraQuality = shmGfx.dlssPresetUltraQuality;
+
+        mergedConfig.parsed.rrPresetDLAA = shmGfx.dlssRRPresetDLAA;
+        mergedConfig.parsed.rrPresetQuality = shmGfx.dlssRRPresetQuality;
+        mergedConfig.parsed.rrPresetBalanced = shmGfx.dlssRRPresetBalanced;
+        mergedConfig.parsed.rrPresetPerformance = shmGfx.dlssRRPresetPerformance;
+        mergedConfig.parsed.rrPresetUltraPerformance = shmGfx.dlssRRPresetUltraPerformance;
+        mergedConfig.parsed.rrPresetUltraQuality = shmGfx.dlssRRPresetUltraQuality;
+
+        mergedConfig.parsed.srPreset = shmGfx.dlssSRPreset;
+        mergedConfig.parsed.rrPreset = shmGfx.dlssRRPreset;
+
+        mergedConfig.parsed.dlssSharpening = shmGfx.dlssSharpening;
     } else {
         // No IPC, stick to defaults
         mergedConfig = GraphicsConfig(); 
@@ -231,6 +252,12 @@ GraphicsConfig GetActiveGraphicsConfig() {
     if (g_LocalConfig.graphics.disableAutoMipBias) {
         mergedConfig.disableAutoMipBias = g_LocalConfig.graphics.disableAutoMipBias;
     }
+    if (g_LocalConfig.graphics.dlssAutoExposure != "default" && !g_LocalConfig.graphics.dlssAutoExposure.empty()) {
+        mergedConfig.dlssAutoExposure = g_LocalConfig.graphics.dlssAutoExposure;
+    }
+    if (g_LocalConfig.graphics.dlssExposureNormalization != "default" && !g_LocalConfig.graphics.dlssExposureNormalization.empty()) {
+        mergedConfig.dlssExposureNormalization = g_LocalConfig.graphics.dlssExposureNormalization;
+    }
     
     // Missing overrides added to fix regression
     if (g_LocalConfig.graphics.anisotropicFiltering != "default" && !g_LocalConfig.graphics.anisotropicFiltering.empty()) {
@@ -245,6 +272,29 @@ GraphicsConfig GetActiveGraphicsConfig() {
     if (g_LocalConfig.graphics.msaaSamples != "default" && !g_LocalConfig.graphics.msaaSamples.empty()) {
         mergedConfig.msaaSamples = g_LocalConfig.graphics.msaaSamples;
     }
+    
+    // Apply Preset Overrides from g_LocalConfig
+    if (g_LocalConfig.graphics.parsed.presetDLAA > 0) mergedConfig.parsed.presetDLAA = g_LocalConfig.graphics.parsed.presetDLAA;
+    if (g_LocalConfig.graphics.parsed.presetQuality > 0) mergedConfig.parsed.presetQuality = g_LocalConfig.graphics.parsed.presetQuality;
+    if (g_LocalConfig.graphics.parsed.presetBalanced > 0) mergedConfig.parsed.presetBalanced = g_LocalConfig.graphics.parsed.presetBalanced;
+    if (g_LocalConfig.graphics.parsed.presetPerformance > 0) mergedConfig.parsed.presetPerformance = g_LocalConfig.graphics.parsed.presetPerformance;
+    if (g_LocalConfig.graphics.parsed.presetUltraPerformance > 0) mergedConfig.parsed.presetUltraPerformance = g_LocalConfig.graphics.parsed.presetUltraPerformance;
+    if (g_LocalConfig.graphics.parsed.presetUltraQuality > 0) mergedConfig.parsed.presetUltraQuality = g_LocalConfig.graphics.parsed.presetUltraQuality;
+
+    if (g_LocalConfig.graphics.parsed.rrPresetDLAA > 0) mergedConfig.parsed.rrPresetDLAA = g_LocalConfig.graphics.parsed.rrPresetDLAA;
+    if (g_LocalConfig.graphics.parsed.rrPresetQuality > 0) mergedConfig.parsed.rrPresetQuality = g_LocalConfig.graphics.parsed.rrPresetQuality;
+    if (g_LocalConfig.graphics.parsed.rrPresetBalanced > 0) mergedConfig.parsed.rrPresetBalanced = g_LocalConfig.graphics.parsed.rrPresetBalanced;
+    if (g_LocalConfig.graphics.parsed.rrPresetPerformance > 0) mergedConfig.parsed.rrPresetPerformance = g_LocalConfig.graphics.parsed.rrPresetPerformance;
+    if (g_LocalConfig.graphics.parsed.rrPresetUltraPerformance > 0) mergedConfig.parsed.rrPresetUltraPerformance = g_LocalConfig.graphics.parsed.rrPresetUltraPerformance;
+    if (g_LocalConfig.graphics.parsed.rrPresetUltraQuality > 0) mergedConfig.parsed.rrPresetUltraQuality = g_LocalConfig.graphics.parsed.rrPresetUltraQuality;
+
+    // Apply Global Preset Overrides from g_LocalConfig
+    if (g_LocalConfig.graphics.parsed.srPreset > 0) mergedConfig.parsed.srPreset = g_LocalConfig.graphics.parsed.srPreset;
+    if (g_LocalConfig.graphics.parsed.rrPreset > 0) mergedConfig.parsed.rrPreset = g_LocalConfig.graphics.parsed.rrPreset;
+
+    if (g_LocalConfig.graphics.parsed.dlssSharpening > -1.5f) {
+        mergedConfig.parsed.dlssSharpening = g_LocalConfig.graphics.parsed.dlssSharpening;
+    }
     // Add other fields as needed
     
     // Update global performance gating flag
@@ -257,6 +307,12 @@ GraphicsConfig GetActiveGraphicsConfig() {
     else if (mergedConfig.cpuPrerenderLimit > -0.5f) anyActive = true;
     else if (mergedConfig.backbufferCount > 0) anyActive = true;
     else if (mergedConfig.sgssaa) anyActive = true;
+    else if (mergedConfig.dlssAutoExposure != "default" && !mergedConfig.dlssAutoExposure.empty()) anyActive = true;
+    else if (mergedConfig.dlssExposureNormalization != "default" && !mergedConfig.dlssExposureNormalization.empty()) anyActive = true;
+    else if (mergedConfig.parsed.presetDLAA > 0 || mergedConfig.parsed.presetQuality > 0) anyActive = true;
+    else if (mergedConfig.parsed.rrPresetDLAA > 0 || mergedConfig.parsed.rrPresetQuality > 0) anyActive = true;
+    else if (mergedConfig.parsed.srPreset > 0 || mergedConfig.parsed.rrPreset > 0) anyActive = true;
+    else if (mergedConfig.parsed.dlssSharpening > -1.5f) anyActive = true;
     
     g_GraphicsOverridesActive.store(anyActive, std::memory_order_release);
 
