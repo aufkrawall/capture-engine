@@ -21,6 +21,8 @@ extern SharedMemoryLayout* g_pSharedMem;
 void HookLog(const char *fmt, ...);
 void HookLog(LogLevel level, const char *fmt, ...);
 void EarlyLog(const char *fmt, ...);
+void NVNGXLog(const char *fmt, ...);
+void ReportLUID(uint32_t low, uint32_t high);
 extern char g_ProcessName[260];
   // Debug log independent of IPC
 

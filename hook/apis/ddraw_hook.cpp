@@ -299,6 +299,9 @@ public:
                 adapter->GetDesc(&desc);
                 luidLow = desc.AdapterLuid.LowPart;
                 luidHigh = desc.AdapterLuid.HighPart;
+                
+                // Report LUID to shared memory for out-of-process polling
+                ReportLUID(luidLow, luidHigh);
                 adapter->Release();
             }
             dxgiDevice->Release();

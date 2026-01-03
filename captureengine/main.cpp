@@ -46,6 +46,8 @@ static FFmpegDllPathInitializer g_ffmpegDllInitializer;
 extern int InjectProcessMain(const AppConfig &config);
 extern int MediaProcessMain(const AppConfig &config);
 extern int LimiterProcessMain(const AppConfig &config);
+extern int LoggerProcessMain(const AppConfig &config);
+extern int SensorProcessMain(const AppConfig &config);
 
 // Hotkey IDs
 #define HOTKEY_ID_RECORD 1
@@ -69,6 +71,8 @@ static std::string g_DeferredLaunchPath;
 static HANDLE g_hInjectProcess = NULL;
 static HANDLE g_hMediaProcess = NULL;
 static HANDLE g_hLimiterProcess = NULL;
+static HANDLE g_hLoggerProcess = NULL;
+static HANDLE g_hSensorProcess = NULL;
 
 // IPC clients for child processes
 static std::unique_ptr<ProcessIPCClient> g_InjectClient;
@@ -164,7 +168,8 @@ bool ConnectToChildProcesses(DWORD timeoutMs) {
       if (!g_LimiterClient->Connect(100))
         allConnected = false;
     }
-
+    // Note: Logger and Sensors don't use pipe IPC yet, they use shared memory/files
+    
     if (allConnected)
       return true;
     Sleep(100);
@@ -242,7 +247,7 @@ void ShutdownChildProcesses() {
   SendCommandToAll(ProcessCommand::Shutdown);
 
   // Wait for processes to exit
-  HANDLE handles[3];
+  HANDLE handles[5]; // Increased size for Logger and Sensor
   int handleCount = 0;
 
   if (g_hLimiterProcess)
@@ -251,6 +256,10 @@ void ShutdownChildProcesses() {
     handles[handleCount++] = g_hMediaProcess;
   if (g_hInjectProcess)
     handles[handleCount++] = g_hInjectProcess;
+  if (g_hLoggerProcess)
+    handles[handleCount++] = g_hLoggerProcess;
+  if (g_hSensorProcess)
+    handles[handleCount++] = g_hSensorProcess;
 
   if (handleCount > 0) {
     DWORD result = WaitForMultipleObjects(handleCount, handles, TRUE, 5000);
@@ -263,6 +272,10 @@ void ShutdownChildProcesses() {
         TerminateProcess(g_hMediaProcess, 1);
       if (g_hInjectProcess)
         TerminateProcess(g_hInjectProcess, 1);
+      if (g_hLoggerProcess)
+        TerminateProcess(g_hLoggerProcess, 1);
+      if (g_hSensorProcess)
+        TerminateProcess(g_hSensorProcess, 1);
     }
   }
 
@@ -273,10 +286,16 @@ void ShutdownChildProcesses() {
     CloseHandle(g_hMediaProcess);
   if (g_hInjectProcess)
     CloseHandle(g_hInjectProcess);
+  if (g_hLoggerProcess)
+    CloseHandle(g_hLoggerProcess);
+  if (g_hSensorProcess)
+    CloseHandle(g_hSensorProcess);
 
   g_hLimiterProcess = NULL;
   g_hMediaProcess = NULL;
   g_hInjectProcess = NULL;
+  g_hLoggerProcess = NULL;
+  g_hSensorProcess = NULL;
 }
 
 // Monitor child processes for crashes
@@ -338,6 +357,9 @@ int ControllerMain(HINSTANCE hInstance) {
     ShutdownChildProcesses();
     return 1;
   }
+ 
+  g_hLoggerProcess = SpawnChildProcess(ProcessMode::Logger, g_ConfigPath.c_str());
+  g_hSensorProcess = SpawnChildProcess(ProcessMode::Sensors, g_ConfigPath.c_str());
 
   // Wait for IPC connections
   LogInfo("[Controller] Waiting for child processes to connect...");
@@ -520,6 +542,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                                 : mode == ProcessMode::Inject   ? "Inject"
                                 : mode == ProcessMode::Media    ? "Media"
                                 : mode == ProcessMode::Limiter  ? "Limiter"
+                                : mode == ProcessMode::Logger   ? "Logger"
+                                : mode == ProcessMode::Sensors  ? "Sensors"
                                                                 : "Unknown");
   }
 
@@ -558,6 +582,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     break;
   case ProcessMode::Limiter:
     result = LimiterProcessMain(g_Config);
+    break;
+  case ProcessMode::Logger:
+    result = LoggerProcessMain(g_Config);
+    break;
+  case ProcessMode::Sensors:
+    result = SensorProcessMain(g_Config);
     break;
   }
 

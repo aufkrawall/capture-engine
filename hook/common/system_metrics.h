@@ -29,6 +29,9 @@ public:
   // Thread-safe snapshot
   SystemMetrics GetMetrics();
 
+  // Explicitly set VRAM Total (safe to call from main thread hooks)
+  void SetVRAMTotal(uint64_t totalBytes);
+
 private:
   SystemMetricsCollector();
   ~SystemMetricsCollector();

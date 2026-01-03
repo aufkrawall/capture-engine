@@ -52,6 +52,43 @@ static bool IsSafeString(const char* s) {
     return true; 
 }
 
+static void LogOncePerParam(const char* param, const char* msg, ...) {
+    static CRITICAL_SECTION s_cs;
+    static volatile LONG s_csInit = 0;
+    static std::vector<std::pair<std::string, std::string>> s_LastLogs;
+
+    // Thread-safe CS init
+    if (InterlockedCompareExchange(&s_csInit, 1, 0) == 0) {
+        InitializeCriticalSection(&s_cs);
+        InterlockedExchange(&s_csInit, 2);
+    }
+    while (s_csInit < 2) { Sleep(0); }
+
+    // Format for comparison (private stack buffer)
+    char buffer[1024];
+    va_list args;
+    va_start(args, msg);
+    vsnprintf(buffer, sizeof(buffer), msg, args);
+    va_end(args);
+
+    EnterCriticalSection(&s_cs);
+    for (auto& entry : s_LastLogs) {
+        if (entry.first == param) {
+            if (entry.second == buffer) {
+                LeaveCriticalSection(&s_cs);
+                return; // Same message, skip
+            }
+            entry.second = buffer;
+            LeaveCriticalSection(&s_cs);
+            NVNGXLog("%s", buffer);
+            return;
+        }
+    }
+    s_LastLogs.push_back({param, buffer});
+    LeaveCriticalSection(&s_cs);
+    NVNGXLog("%s", buffer);
+}
+
 void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InName, int InValue) {
     if (IsSafeString(InName)) {
 
@@ -59,12 +96,12 @@ void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InNam
             std::string mode = GetActiveGraphicsConfig().dlssAutoExposure;
             if (mode == "on") {
                 if (!(InValue & NVSDK_NGX_DLSS_Feature_Flags_AutoExposure)) {
-                    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) EarlyLog("NVNGX: Forcing AutoExposure flag ON (was 0x%X)", InValue);
+                    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) LogOncePerParam(InName, "NVNGX: Forcing AutoExposure flag ON (was 0x%X)", InValue);
                     InValue |= NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
                 }
             } else if (mode == "off") {
                 if (InValue & NVSDK_NGX_DLSS_Feature_Flags_AutoExposure) {
-                    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) EarlyLog("NVNGX: Forcing AutoExposure flag OFF (was 0x%X)", InValue);
+                    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) LogOncePerParam(InName, "NVNGX: Forcing AutoExposure flag OFF (was 0x%X)", InValue);
                     InValue &= ~NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
                 }
             }
@@ -72,6 +109,7 @@ void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InNam
             std::string mode = GetActiveGraphicsConfig().dlssAutoExposure;
             if (mode == "on") InValue = 1;
             else if (mode == "off") InValue = 0;
+            if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) LogOncePerParam(InName, "NVNGX: Forcing AutoExposure to %d", InValue);
         } else {
              const auto& cfg = GetActiveGraphicsConfig();
             
@@ -89,7 +127,7 @@ void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InNam
             if (isDlssPreset) {
                 uint32_t finalPreset = specificOverride > 0 ? specificOverride : cfg.parsed.srPreset;
                 if (finalPreset > 0) {
-                    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) EarlyLog("NVNGX: Overriding DLSS preset (SetI) %s = %u (was %d)", InName, finalPreset, InValue);
+                    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) LogOncePerParam(InName, "NVNGX: Overriding DLSS preset (SetI) %s = %u (was %d)", InName, finalPreset, InValue);
                     InValue = (int)finalPreset;
                 }
             } else {
@@ -107,7 +145,7 @@ void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InNam
                 if (isRRPreset) {
                     uint32_t finalRRPreset = specificRROverride > 0 ? specificRROverride : cfg.parsed.rrPreset;
                     if (finalRRPreset > 0) {
-                        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) EarlyLog("NVNGX: Overriding RR preset (SetI) %s = %u (was %d)", InName, finalRRPreset, InValue);
+                        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) LogOncePerParam(InName, "NVNGX: Overriding RR preset (SetI) %s = %u (was %d)", InName, finalRRPreset, InValue);
                         InValue = (int)finalRRPreset;
                     }
                 }
@@ -143,7 +181,7 @@ void STDMETHODCALLTYPE Hooked_SetUI(NVSDK_NGX_Parameter* pThis, const char* InNa
             if (isDlssPreset) {
                 uint32_t finalPreset = specificOverride > 0 ? specificOverride : cfg.parsed.srPreset;
                 if (finalPreset > 0) {
-                    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) EarlyLog("NVNGX: Overriding DLSS preset %s = %u (was %u)", InName, finalPreset, InValue);
+                    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) LogOncePerParam(InName, "NVNGX: Overriding DLSS preset %s = %u (was %u)", InName, finalPreset, InValue);
                     InValue = finalPreset;
                 }
             } else {
@@ -161,7 +199,7 @@ void STDMETHODCALLTYPE Hooked_SetUI(NVSDK_NGX_Parameter* pThis, const char* InNa
                 if (isRRPreset) {
                     uint32_t finalRRPreset = specificRROverride > 0 ? specificRROverride : cfg.parsed.rrPreset;
                     if (finalRRPreset > 0) {
-                        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) EarlyLog("NVNGX: Overriding RR preset %s = %u (was %u)", InName, finalRRPreset, InValue);
+                        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) LogOncePerParam(InName, "NVNGX: Overriding RR preset %s = %u (was %u)", InName, finalRRPreset, InValue);
                         InValue = finalRRPreset;
                     }
                 }
@@ -177,7 +215,7 @@ void STDMETHODCALLTYPE Hooked_SetF(NVSDK_NGX_Parameter* pThis, const char* InNam
 
         if (cfg.dlssExposureNormalization == "on") {
             if (strcmp(InName, NVSDK_NGX_Parameter_ExposureScale) == 0 || strcmp(InName, NVSDK_NGX_Parameter_PreExposure) == 0) {
-                if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) EarlyLog("NVNGX: Normalizing exposure %s = 1.0", InName);
+                if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) LogOncePerParam(InName, "NVNGX: Normalizing exposure %s = 1.0", InName);
                 InValue = 1.0f;
             }
         } else if (cfg.dlssExposureNormalization == "off") {
@@ -189,7 +227,7 @@ void STDMETHODCALLTYPE Hooked_SetF(NVSDK_NGX_Parameter* pThis, const char* InNam
                 float overrideVal = cfg.parsed.dlssSharpening;
                 if (overrideVal < -0.5f) overrideVal = 0.0f; // "off" = 0.0
                 
-                if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) EarlyLog("NVNGX: Overriding sharpness = %.2f (was %.2f)", overrideVal, InValue);
+                if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) LogOncePerParam(InName, "NVNGX: Overriding sharpness = %.2f (was %.2f)", overrideVal, InValue);
                 InValue = overrideVal;
             }
         }
@@ -217,7 +255,7 @@ void EnsureVTableHooks(NVSDK_NGX_Parameter* pParams) {
     }
 
     if (!alreadyHooked) {
-        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) EarlyLog("NVNGX: Installing typed hooks on VTable at %p", vtable);
+        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) NVNGXLog("NVNGX: Installing typed hooks on VTable at %p", vtable);
         
         auto Install = [&](int idx, LPVOID pHook, LPVOID* ppOrig) {
             if (!vtable[idx] || *ppOrig) return;
@@ -239,7 +277,7 @@ void EnsureVTableHooks(NVSDK_NGX_Parameter* pParams) {
     std::string mode = cfg.dlssAutoExposure;
     if (mode == "on" || mode == "off") {
         int val = (mode == "on") ? 1 : 0;
-        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) EarlyLog("NVNGX: Injecting initial %s = %d", NVSDK_NGX_Parameter_AutoExposure, val);
+        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) LogOncePerParam(NVSDK_NGX_Parameter_AutoExposure, "NVNGX: Injecting initial %s = %d", NVSDK_NGX_Parameter_AutoExposure, val);
         if (vtable[3]) ((PFN_SetI)vtable[3])(pParams, NVSDK_NGX_Parameter_AutoExposure, val);
         if (vtable[4]) ((PFN_SetUI)vtable[4])(pParams, NVSDK_NGX_Parameter_AutoExposure, (unsigned int)val);
     }
@@ -247,7 +285,7 @@ void EnsureVTableHooks(NVSDK_NGX_Parameter* pParams) {
     // Initial Injection for Presets (via SetUI VT[4] and SetI VT[3])
     auto InjectPreset = [&](const char* name, uint32_t val) {
         if (val > 0) {
-             if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) EarlyLog("NVNGX: Injecting initial %s = %u", name, val);
+             if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) LogOncePerParam(name, "NVNGX: Injecting initial %s = %u", name, val);
              
              // Try via SetUI (Standard)
              if (vtable[4]) ((PFN_SetUI)vtable[4])(pParams, name, val);
@@ -275,7 +313,7 @@ void EnsureVTableHooks(NVSDK_NGX_Parameter* pParams) {
     if (cfg.parsed.dlssSharpening > -1.5f && vtable[6]) {
         float overrideVal = cfg.parsed.dlssSharpening;
         if (overrideVal < -0.5f) overrideVal = 0.0f; // "off" = 0.0
-        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) EarlyLog("NVNGX: Injecting initial sharpness = %.2f", overrideVal);
+        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) LogOncePerParam(NVSDK_NGX_Parameter_Sharpness, "NVNGX: Injecting initial sharpness = %.2f", overrideVal);
         ((PFN_SetF)vtable[6])(pParams, NVSDK_NGX_Parameter_Sharpness, overrideVal);
     }
 
@@ -328,7 +366,7 @@ void NVNGXHook::Install() {
         if (pProc) {
             if (MH_CreateHook(pProc, pHook, ppOrig) == MH_OK) {
                 MH_EnableHook(pProc);
-                EarlyLog("NVNGX: Factory %s detoured", name);
+                NVNGXLog("NVNGX: Factory %s detoured", name);
             }
         }
     };

@@ -1007,6 +1007,26 @@ static void PresentBegin(IDirect3DDevice9 *device, IDirect3DSurface9 *&backBuffe
     if (g_PresentRecurse == 1) {
         std::lock_guard<std::mutex> lock(g_PresentMutex); // Protect against concurrent calls
         
+        static bool luidReported = false;
+        if (!luidReported) {
+             IDirect3D9* d3d = nullptr;
+             if (SUCCEEDED(device->GetDirect3D(&d3d))) {
+                 D3DDEVICE_CREATION_PARAMETERS cp;
+                 if (SUCCEEDED(device->GetCreationParameters(&cp))) {
+                     IDirect3D9Ex* d3dEx = nullptr;
+                     if (SUCCEEDED(d3d->QueryInterface(IID_PPV_ARGS(&d3dEx)))) {
+                         LUID luid;
+                         if (SUCCEEDED(d3dEx->GetAdapterLUID(cp.AdapterOrdinal, &luid))) {
+                             ReportLUID(luid.LowPart, luid.HighPart);
+                         }
+                         d3dEx->Release();
+                     }
+                 }
+                 d3d->Release();
+                 luidReported = true;
+             }
+        }
+        
         // Get backbuffer
         if (FAILED(device->GetRenderTarget(0, &backBuffer))) {
             backBuffer = nullptr;
@@ -1147,50 +1167,83 @@ static HRESULT STDMETHODCALLTYPE DetourSetSamplerState(IDirect3DDevice9* device,
         if (g_IPC && g_IPC->GetSharedMem()) {
             const auto& gfx = GetActiveGraphicsConfig();
 
-            if (Type == D3DSAMP_MAXANISOTROPY) {
-                const char* af = gfx.anisotropicFiltering.c_str();
-                if (af[0] != 'd') {
-                    if (af[0] == 'o') Value = 1;
-                    else if (af[0] == '2') Value = 2;
-                    else if (af[0] == '4') Value = 4;
-                    else if (af[0] == '8') Value = 8;
-                    else Value = 16;
-                }
-            } else if (Type == D3DSAMP_MINFILTER || Type == D3DSAMP_MAGFILTER || Type == D3DSAMP_MIPFILTER) {
-                const char* mip = gfx.mipMapping.c_str();
-                if (mip[0] != 'd') {
-                    bool isAniso = (gfx.anisotropicFiltering != "default" && gfx.anisotropicFiltering != "off");
+            // Start checking for exclusions (UI, non-mipmapped textures)
+            bool shouldOverride = true;
 
-                    if (mip[0] == 't') { // trilinear
-                        Value = D3DTEXF_LINEAR;
-                    } else if (mip[0] == 'b') { // bilinear
-                        if (Type == D3DSAMP_MIPFILTER) Value = D3DTEXF_POINT;
-                        else Value = D3DTEXF_LINEAR;
-                    } else if (mip[0] == 'n') { // nearest
-                        Value = D3DTEXF_POINT;
+            // Check 1: Current MipFilter state
+            // If the application has explicitly set MIPFILTER to NONE, it likely doesn't want mipmapping (e.g. UI)
+            // Note: We are hooking SetSamplerState, so we need to know the *current* state or the *intended* state?
+            // The user calls SetSamplerState to CHANGE a state.
+            // If they are changing MIN/MAG filter, we should respect if MIP filter is currently NONE.
+            // If they are changing MIP filter, we check the Value.
+
+            if (Type == D3DSAMP_MIPFILTER) {
+                 if (Value == D3DTEXF_NONE) shouldOverride = false;
+            } else {
+                 DWORD currentMipFilter = D3DTEXF_NONE;
+                 device->GetSamplerState(Sampler, D3DSAMP_MIPFILTER, &currentMipFilter);
+                 if (currentMipFilter == D3DTEXF_NONE) shouldOverride = false;
+            }
+
+            // Check 2: Texture Mip Levels
+            // This is the most robust check. If the bound texture has only 1 level, it has no mipmaps.
+            if (shouldOverride) {
+                IDirect3DBaseTexture9* pTex = nullptr;
+                HRESULT hr = device->GetTexture(Sampler, &pTex);
+                if (SUCCEEDED(hr) && pTex) {
+                    if (pTex->GetLevelCount() == 1) {
+                        shouldOverride = false;
+                    }
+                    pTex->Release();
+                }
+            }
+
+            if (shouldOverride) {
+                if (Type == D3DSAMP_MAXANISOTROPY) {
+                    const char* af = gfx.anisotropicFiltering.c_str();
+                    if (af[0] != 'd') {
+                        if (af[0] == 'o') Value = 1;
+                        else if (af[0] == '2') Value = 2;
+                        else if (af[0] == '4') Value = 4;
+                        else if (af[0] == '8') Value = 8;
+                        else Value = 16;
+                    }
+                } else if (Type == D3DSAMP_MINFILTER || Type == D3DSAMP_MAGFILTER || Type == D3DSAMP_MIPFILTER) {
+                    const char* mip = gfx.mipMapping.c_str();
+                    if (mip[0] != 'd') {
+                        bool isAniso = (gfx.anisotropicFiltering != "default" && gfx.anisotropicFiltering != "off");
+
+                        if (mip[0] == 't') { // trilinear
+                            Value = D3DTEXF_LINEAR;
+                        } else if (mip[0] == 'b') { // bilinear
+                            if (Type == D3DSAMP_MIPFILTER) Value = D3DTEXF_POINT;
+                            else Value = D3DTEXF_LINEAR;
+                        } else if (mip[0] == 'n') { // nearest
+                            Value = D3DTEXF_POINT;
+                        }
+
+                        if (isAniso && (Type == D3DSAMP_MINFILTER || Type == D3DSAMP_MAGFILTER)) {
+                            Value = D3DTEXF_ANISOTROPIC;
+                        }
+                    }
+                } else if (Type == D3DSAMP_MIPMAPLODBIAS) {
+                    const char* biasStr = gfx.mipBias.c_str();
+                    if (biasStr[0] != 'd') {
+                        char* end;
+                        float bias = strtof(biasStr, &end);
+                        if (end != biasStr) {
+                             Value = *((DWORD*)&bias);
+                        }
                     }
 
-                    if (isAniso && (Type == D3DSAMP_MINFILTER || Type == D3DSAMP_MAGFILTER)) {
-                        Value = D3DTEXF_ANISOTROPIC;
-                    }
-                }
-            } else if (Type == D3DSAMP_MIPMAPLODBIAS) {
-                const char* biasStr = gfx.mipBias.c_str();
-                if (biasStr[0] != 'd') {
-                    char* end;
-                    float bias = strtof(biasStr, &end);
-                    if (end != biasStr) {
-                         Value = *((DWORD*)&bias);
-                    }
-                }
-
-                // Auto-bias
-                if (gfx.sgssaa && !gfx.disableAutoMipBias) {
-                    float sgBias = 0.0f;
-                    if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgBias)) {
-                        float currentBias = *((float*)&Value);
-                        currentBias += sgBias;
-                        Value = *((DWORD*)&currentBias);
+                    // Auto-bias
+                    if (gfx.sgssaa && !gfx.disableAutoMipBias) {
+                        float sgBias = 0.0f;
+                        if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgBias)) {
+                            float currentBias = *((float*)&Value);
+                            currentBias += sgBias;
+                            Value = *((DWORD*)&currentBias);
+                        }
                     }
                 }
             }

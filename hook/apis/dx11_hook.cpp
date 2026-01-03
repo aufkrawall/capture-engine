@@ -156,6 +156,22 @@ static HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(
         }
 
         if (!ppImmediateContext && ctx) ctx->Release();
+        
+        // Explicitly set VRAM Total to prevent background thread crash
+        if (ppDevice && *ppDevice) {
+            IDXGIDevice* dxgiDevice = nullptr;
+            if (SUCCEEDED((*ppDevice)->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice))) {
+                 IDXGIAdapter* adapter = nullptr;
+                 if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter))) {
+                     DXGI_ADAPTER_DESC desc;
+                     if (SUCCEEDED(adapter->GetDesc(&desc))) {
+                        SystemMetricsCollector::Get().SetVRAMTotal(desc.DedicatedVideoMemory);
+                     }
+                     adapter->Release();
+                 }
+                 dxgiDevice->Release();
+            }
+        }
     }
     
     return hr;
@@ -432,6 +448,7 @@ public:
             
             // Initialize SystemMetricsCollector with adapter LUID for GPU stats
             SystemMetricsCollector::Get().Initialize(luidLow, luidHigh);
+            SystemMetricsCollector::Get().SetVRAMTotal(adapterDesc.DedicatedVideoMemory);
             
             // Create D3D11 device on same adapter
             if (!CreateD3D11DeviceForAdapter(adapter)) {
@@ -615,22 +632,29 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
     ImGui_ImplDX11_Init(device, context);
     g_ImGuiInitialized = true;
     EarlyLog("%s: ImGui initialized", g_DetectedAPI);
+    
+    // Cache these for reuse - some games have broken GetImmediateContext on subsequent calls
+    g_pd3dDevice = device;
+    g_pd3dDeviceContext = context;
+    // Keep references (don't release here)
 
     // Initialize System Metrics (CPU/GPU/RAM)
+    EarlyLog("%s: Initializing SystemMetrics...", g_DetectedAPI);
     IDXGIDevice* dxgiDev = nullptr;
     if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&dxgiDev)))) {
         IDXGIAdapter* adapter = nullptr;
         if (SUCCEEDED(dxgiDev->GetAdapter(&adapter))) {
             DXGI_ADAPTER_DESC adapterDesc;
             adapter->GetDesc(&adapterDesc);
+            EarlyLog("%s: Calling SystemMetricsCollector::Initialize...", g_DetectedAPI);
             SystemMetricsCollector::Get().Initialize(adapterDesc.AdapterLuid.LowPart, adapterDesc.AdapterLuid.HighPart);
+            EarlyLog("%s: SystemMetrics initialized OK", g_DetectedAPI);
             adapter->Release();
         }
         dxgiDev->Release();
     }
 
-    device->Release();
-    context->Release();
+    EarlyLog("%s: First frame init complete", g_DetectedAPI);
   }
 
   ImGui_ImplDX11_NewFrame();
@@ -651,24 +675,31 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
 
   g_SharedOverlay.EndFrame();
 
-  // Set RTV
-  ID3D11DeviceContext *context = NULL;
-  ID3D11Device *device = NULL;
-  pSwapChain->GetDevice(IID_PPV_ARGS(&device));
-  device->GetImmediateContext(&context);
-
-  if (!g_mainRenderTargetView) {
-    ID3D11Texture2D *backbuffer = nullptr;
-    pSwapChain->GetBuffer(0, IID_PPV_ARGS(&backbuffer));
-    device->CreateRenderTargetView(backbuffer, NULL, &g_mainRenderTargetView);
-    backbuffer->Release();
+  // Use cached device/context - some games have broken GetImmediateContext on re-acquire
+  if (!g_pd3dDevice || !g_pd3dDeviceContext) {
+      EarlyLog("%s: No cached device/context!", g_DetectedAPI);
+      return;
   }
 
-  context->OMSetRenderTargets(1, &g_mainRenderTargetView, NULL);
-  ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+  if (!g_mainRenderTargetView) {
+    EarlyLog("%s: Creating RTV...", g_DetectedAPI);
+    ID3D11Texture2D *backbuffer = nullptr;
+    HRESULT hr = pSwapChain->GetBuffer(0, IID_PPV_ARGS(&backbuffer));
+    if (FAILED(hr) || !backbuffer) {
+        EarlyLog("%s: GetBuffer FAILED hr=0x%08X", g_DetectedAPI, hr);
+        return;
+    }
+    hr = g_pd3dDevice->CreateRenderTargetView(backbuffer, NULL, &g_mainRenderTargetView);
+    backbuffer->Release();
+    if (FAILED(hr)) {
+        EarlyLog("%s: CreateRTV FAILED hr=0x%08X", g_DetectedAPI, hr);
+        return;
+    }
+    EarlyLog("%s: RTV created OK", g_DetectedAPI);
+  }
 
-  device->Release();
-  context->Release();
+  g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, NULL);
+  ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 }
 
 // Handle SwapChain resize - must release RTV and reinitialize ImGui
@@ -803,6 +834,23 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
               desc.Windowed, desc.BufferCount, 
               desc.SwapEffect, desc.Flags);
            loggedSC = true;
+
+           // Report LUID when logging swapchain first time
+           ID3D11Device* dev = nullptr;
+           if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&dev)))) {
+               IDXGIDevice* dxgiDev = nullptr;
+               if (SUCCEEDED(dev->QueryInterface(IID_PPV_ARGS(&dxgiDev)))) {
+                   IDXGIAdapter* adapter = nullptr;
+                   if (SUCCEEDED(dxgiDev->GetAdapter(&adapter))) {
+                       DXGI_ADAPTER_DESC adesc;
+                       adapter->GetDesc(&adesc);
+                       ReportLUID(adesc.AdapterLuid.LowPart, adesc.AdapterLuid.HighPart);
+                       adapter->Release();
+                   }
+                   dxgiDev->Release();
+               }
+               dev->Release();
+           }
       }
   }
 
@@ -1111,8 +1159,19 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device *pDevice,
 
     D3D11_SAMPLER_DESC desc = *pSamplerDesc;
     bool modified = false;
+    bool debug = false;
+    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) {
+        debug = true;
+    }
 
-    if (g_IPC) {
+    // Check if overrides should be applied
+    // 1. MaxLOD == 0.0f implies mipmapping is disabled (clamped to base level)
+    // 2. MinLOD == MaxLOD implies a single level is selected
+    bool overridesAllowed = true;
+    if (pSamplerDesc->MaxLOD == 0.0f) overridesAllowed = false;
+    if (pSamplerDesc->MinLOD == pSamplerDesc->MaxLOD) overridesAllowed = false;
+
+    if (overridesAllowed && g_IPC) {
         const auto& gfx = GetActiveGraphicsConfig();
         // Anisotropic Filtering
         std::string af = gfx.anisotropicFiltering;
@@ -1174,10 +1233,17 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device *pDevice,
         }
     }
 
+    HRESULT hr;
     if (modified) {
-        return oCreateSamplerState(pDevice, &desc, ppSamplerState);
+        hr = oCreateSamplerState(pDevice, &desc, ppSamplerState);
+        if (FAILED(hr) && debug) {
+            EarlyLog("DX11: CreateSamplerState FAILED with modified desc (hr=0x%08X). Filter=0x%X Bias=%.2f Aniso=%u", 
+                     hr, desc.Filter, desc.MipLODBias, desc.MaxAnisotropy);
+        }
+    } else {
+        hr = oCreateSamplerState(pDevice, pSamplerDesc, ppSamplerState);
     }
-    return oCreateSamplerState(pDevice, pSamplerDesc, ppSamplerState);
+    return hr;
 }
 
 void DX11Hook::Init() {

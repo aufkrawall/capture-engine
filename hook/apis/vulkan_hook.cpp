@@ -22,6 +22,7 @@
 #include <d3d11.h>
 #include <d3d11_4.h> // For ID3D11Fence
 #include <dxgi.h>
+#include <dxgi1_4.h>
 
 static uint32_t MapVulkanFormatToDXGI(VkFormat format) {
   switch (format) {
@@ -2216,6 +2217,12 @@ static VkResult VKAPI_PTR Detour_vkCreateSampler(
         return o_vkCreateSampler(device, pCreateInfo, pAllocator, pSampler);
     }
 
+    // Check if overrides should be applied
+    // If maxLod is very small, mipmaps are effectively disabled
+    if (pCreateInfo->maxLod <= 0.25f) {
+         return o_vkCreateSampler(device, pCreateInfo, pAllocator, pSampler);
+    }
+
     VkSamplerCreateInfo modifiedInfo = *pCreateInfo;
     
     if (g_IPC && g_IPC->GetSharedMem()) {
@@ -2515,6 +2522,28 @@ VkResult VKAPI_CALL Detour_vkCreateDevice(
         uint32_t luidHigh = *(uint32_t*)&idProps.deviceLUID[4];
         SystemMetricsCollector::Get().Initialize(luidLow, luidHigh);
         HookLog("Vulkan: SystemMetricsCollector initialized with LUID: %08X%08X", luidHigh, luidLow);
+        ReportLUID(luidLow, luidHigh);
+
+        // Set VRAM Total explicitly to prevent background thread crash
+        IDXGIFactory4* factory = nullptr;
+        if (SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory4), (void**)&factory))) {
+            IDXGIAdapter* adapter = nullptr;
+            LUID targetLuid;
+            targetLuid.LowPart = luidLow;
+            targetLuid.HighPart = luidHigh;
+            
+            for (UINT i = 0; factory->EnumAdapters(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+                DXGI_ADAPTER_DESC desc;
+                adapter->GetDesc(&desc);
+                if (desc.AdapterLuid.LowPart == targetLuid.LowPart && desc.AdapterLuid.HighPart == targetLuid.HighPart) {
+                    SystemMetricsCollector::Get().SetVRAMTotal(desc.DedicatedVideoMemory);
+                    adapter->Release();
+                    break;
+                }
+                adapter->Release();
+            }
+            factory->Release();
+        }
       }
     }
     

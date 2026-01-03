@@ -1170,7 +1170,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             ce_objs.append(rc_obj)
 
         log("Linking CaptureEngine x64...")
-        ce_ldflags = ["-mwindows", "-static", "-static-libgcc", "-static-libstdc++", "-flto", "-Wl,--gc-sections", "-s", "-ld3d11", "-ldxgi", "-luser32", "-lshell32", "-lshlwapi", "-lpsapi", "-lwinmm", "-lavrt", "-lruntimeobject", "-lole32", "-loleaut32", "-ldbghelp", "-lwbemuuid", "-lbcrypt", "-lwintrust", me_lib]
+        ce_ldflags = ["-mwindows", "-static", "-static-libgcc", "-static-libstdc++", "-flto", "-Wl,--gc-sections", "-s", "-ld3d11", "-ldxgi", "-luser32", "-lshell32", "-lshlwapi", "-lpsapi", "-lwinmm", "-lavrt", "-lruntimeobject", "-lole32", "-loleaut32", "-ldbghelp", "-lwbemuuid", "-lbcrypt", "-lwintrust", "-lpdh", "-lntdll", me_lib]
         # Delay-load mediaengine.dll to allow early DLL path setup
         ce_ldflags.append("-Wl,--delayload,mediaengine.dll")
         # Need to link against delayimp for delay loading to work

@@ -13,6 +13,10 @@ ProcessMode ParseProcessMode(int argc, char *argv[]) {
         return ProcessMode::Media;
       if (strcmp(mode, "limiter") == 0)
         return ProcessMode::Limiter;
+      if (strcmp(mode, "logger") == 0)
+        return ProcessMode::Logger;
+      if (strcmp(mode, "sensors") == 0)
+        return ProcessMode::Sensors;
     }
   }
   return ProcessMode::Controller;
@@ -34,6 +38,10 @@ ProcessMode ParseProcessMode(LPSTR lpCmdLine) {
     return ProcessMode::Media;
   if (strncmp(modeStr, "limiter", 7) == 0)
     return ProcessMode::Limiter;
+  if (strncmp(modeStr, "logger", 6) == 0)
+    return ProcessMode::Logger;
+  if (strncmp(modeStr, "sensors", 7) == 0)
+    return ProcessMode::Sensors;
 
   return ProcessMode::Controller;
 }
@@ -46,6 +54,10 @@ const char *GetLogFileName(ProcessMode mode) {
     return "media.log";
   case ProcessMode::Limiter:
     return "limiter.log";
+  case ProcessMode::Logger:
+    return "logger.log";
+  case ProcessMode::Sensors:
+    return "sensors.log";
   case ProcessMode::Controller:
   default:
     return "captureengine.log";
@@ -342,10 +354,12 @@ HANDLE SpawnChildProcess(ProcessMode mode, const char *configPath) {
 
   // Build command line with mode flag
   char cmdLine[MAX_PATH * 2];
-  const char *modeStr = (mode == ProcessMode::Inject)    ? "inject"
-                        : (mode == ProcessMode::Media)   ? "media"
-                        : (mode == ProcessMode::Limiter) ? "limiter"
-                                                         : "controller";
+  const char *modeStr = "controller";
+  if (mode == ProcessMode::Inject) modeStr = "inject";
+  else if (mode == ProcessMode::Media) modeStr = "media";
+  else if (mode == ProcessMode::Limiter) modeStr = "limiter";
+  else if (mode == ProcessMode::Logger) modeStr = "logger";
+  else if (mode == ProcessMode::Sensors) modeStr = "sensors";
 
   if (configPath && configPath[0]) {
     snprintf(cmdLine, sizeof(cmdLine), "\"%s\" --mode=%s --config=\"%s\"",

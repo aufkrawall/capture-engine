@@ -3,6 +3,7 @@
 #include "../common/process_ipc.h"
 #include "../common/shared_defs.h"
 #include "injection.h"
+#include "host_metrics.h"
 #include <Windows.h>
 #include <atomic>
 #include <psapi.h>
@@ -384,19 +385,7 @@ int InjectProcessMain(const AppConfig &config) {
       injector.Update();
     }
 
-    // Poll hook logs from shared memory
-    uint32_t writeIdx =
-        pSharedMem->logs.writeIndex.load(std::memory_order_acquire);
-    while (lastReadLogIndex < writeIdx) {
-      if (writeIdx - lastReadLogIndex > 16) {
-        lastReadLogIndex = writeIdx - 16;
-      }
-      const char *msg = pSharedMem->logs.buffer[lastReadLogIndex % 16];
-      LogInfo("[Hook] %s", msg);
-      lastReadLogIndex++;
-    }
-
-    Sleep(10); // Main loop sleep (low latency for IPC/Logs)
+    Sleep(10); // Main loop sleep (low latency for IPC)
   }
 
   // Signal hook to exit

@@ -6,7 +6,7 @@
 #include <string>
 
 // Process modes - determined by command-line flag
-enum class ProcessMode { Controller = 0, Inject = 1, Media = 2, Limiter = 3 };
+enum class ProcessMode { Controller = 0, Inject = 1, Media = 2, Limiter = 3, Logger = 4, Sensors = 5 };
 
 // Commands sent from Controller to child processes
 enum class ProcessCommand : uint32_t {

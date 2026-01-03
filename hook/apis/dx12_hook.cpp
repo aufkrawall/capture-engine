@@ -353,6 +353,23 @@ void CheckCaptureInit(IDXGISwapChain3 *pSwapChain) {
   LUID adapterLuid = g_Device->GetAdapterLuid();
   SystemMetricsCollector::Get().Initialize(adapterLuid.LowPart, adapterLuid.HighPart);
 
+  // Set VRAM Total explicitly to prevent background thread crash
+  IDXGIFactory4* factory = nullptr;
+  if (SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory4), (void**)&factory))) {
+      IDXGIAdapter* adapter = nullptr;
+      for (UINT i = 0; factory->EnumAdapters(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+          DXGI_ADAPTER_DESC desc;
+          adapter->GetDesc(&desc);
+          if (desc.AdapterLuid.LowPart == adapterLuid.LowPart && desc.AdapterLuid.HighPart == adapterLuid.HighPart) {
+              SystemMetricsCollector::Get().SetVRAMTotal(desc.DedicatedVideoMemory);
+              adapter->Release();
+              break;
+          }
+          adapter->Release();
+      }
+      factory->Release();
+  }
+
   g_DX12Capture.initialized = true;
   HookLog("Capture Resources Initialized");
 }
@@ -1178,7 +1195,12 @@ static void STDMETHODCALLTYPE DetourCreateSampler(
     D3D12_SAMPLER_DESC desc = *pDesc;
     bool modified = false;
 
-    if (g_IPC) {
+    // Check availability of mipmaps
+    bool overridesAllowed = true;
+    if (pDesc->MaxLOD == 0.0f) overridesAllowed = false;
+    if (pDesc->MinLOD == pDesc->MaxLOD) overridesAllowed = false;
+
+    if (overridesAllowed && g_IPC) {
         const auto& gfx = GetActiveGraphicsConfig();
 
         // Anisotropic Filtering
@@ -1534,7 +1556,9 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory *pThis,
           
           if (g_Device) g_Device->Release();
           g_Device = dev; // Keep the reference from GetDevice
-          // HookLog("CreateSwapChain: Captured Device %p", g_Device);
+
+          LUID luid = dev->GetAdapterLuid();
+          ReportLUID(luid.LowPart, luid.HighPart);
       }
       HookLog("CreateSwapChain: Captured Queue %p", g_CommandQueue);
     }
@@ -1761,6 +1785,9 @@ HRESULT WINAPI DetourD3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL Min
     if (SUCCEEDED(hr) && ppDevice && *ppDevice) {
         HookLog("DX12: Capturing Device via D3D12CreateDevice hook");
         ID3D12Device* dev = (ID3D12Device*)*ppDevice;
+        LUID luid = dev->GetAdapterLuid();
+        ReportLUID(luid.LowPart, luid.HighPart);
+
         void** vtbl = *reinterpret_cast<void***>(dev);
         
         static bool hookedSampler = false;

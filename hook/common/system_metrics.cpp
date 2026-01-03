@@ -73,6 +73,12 @@ SystemMetricsCollector::~SystemMetricsCollector() {
 }
 
 void SystemMetricsCollector::InitPDH() {
+    if (strstr(g_ProcessName, "SonsOfTheForest") != nullptr) {
+        EarlyLog("SystemMetricsCollector: PDH disabled for %s to prevent crash.", g_ProcessName);
+        return;
+    }
+
+    EarlyLog("SystemMetricsCollector: InitPDH started");
     PDH_HQUERY query = nullptr;
     if (PdhOpenQueryA(NULL, 0, &query) == ERROR_SUCCESS) {
         cpuQuery = (void*)query;
@@ -81,13 +87,19 @@ void SystemMetricsCollector::InitPDH() {
             cpuCounter = (void*)counter;
             PdhCollectQueryData(query);
             pdhInitialized = true;
+            EarlyLog("SystemMetricsCollector: InitPDH success (English)");
         } else {
              if (PdhAddCounterA(query, "\\Processor(_Total)\\% Processor Time", 0, &counter) == ERROR_SUCCESS) {
                 cpuCounter = (void*)counter;
                 PdhCollectQueryData(query);
                 pdhInitialized = true;
+                EarlyLog("SystemMetricsCollector: InitPDH success (Local)");
+             } else {
+                EarlyLog("SystemMetricsCollector: InitPDH failed to add counter");
              }
         }
+    } else {
+        EarlyLog("SystemMetricsCollector: InitPDH PdhOpenQueryA failed");
     }
 }
 
@@ -126,18 +138,60 @@ void SystemMetricsCollector::Initialize(int32_t luidLow, int32_t luidHigh) {
 
 void SystemMetricsCollector::BackgroundUpdateLoop() {
     EarlyLog("SystemMetricsCollector: Background thread started");
+    static bool loggedIPCMode = false;
     
-    // Initial PDH setup if not done
-    if (!pdhInitialized) {
-        InitPDH();
-    }
-
     while (!stopThread) {
-        {
+        bool usedIPC = false;
+        
+        // Prioritize IPC (Host-provided) metrics
+        if (g_IPC && g_IPC->GetSharedMem()) {
+            auto& shm = g_IPC->GetSharedMem()->systemMetrics;
+            float cpu = shm.cpuUsage.load(std::memory_order_relaxed);
+            // Heuristic: if CPU usage > 0, assume host is writing stats
+            if (cpu > 0.0f || shm.gpuUsage.load(std::memory_order_relaxed) > 0.0f) {
+                if (!loggedIPCMode) {
+                    EarlyLog("SystemMetricsCollector: Using Host (IPC) metrics");
+                    loggedIPCMode = true;
+                }
+                std::lock_guard<std::mutex> lock(mutex);
+                current.cpuUsage = cpu;
+                current.ramUsed = (uint64_t)(shm.ramUsage.load(std::memory_order_relaxed) * 1024.0f * 1024.0f * 1024.0f);
+                current.gpuUsage = shm.gpuUsage.load(std::memory_order_relaxed);
+                current.vramUsed = (uint64_t)(shm.vramUsage.load(std::memory_order_relaxed) * 1024.0f * 1024.0f);
+                
+                uint64_t vTotal = shm.vramTotal.load(std::memory_order_relaxed);
+                if (vTotal > 0) current.vramTotal = vTotal;
+                
+                current.cpuMaxCoreUsage = (float)shm.maxCoreLoad.load(std::memory_order_relaxed);
+                current.gpuUsageValid = true;
+                usedIPC = true;
+            }
+        }
+
+        if (!usedIPC) {
+            static bool loggedFallback = false;
+            if (!loggedFallback) {
+                EarlyLog("SystemMetricsCollector: IPC stats not available yet, falling back to local");
+                loggedFallback = true;
+            }
+
             std::lock_guard<std::mutex> lock(mutex);
+            
+            // Lazy PDH init if we are falling back to local
+            if (!pdhInitialized) {
+                InitPDH();
+            }
+
+            // Granular logging for fallback loop
+            static int loopCount = 0;
+            if (loopCount % 50 == 0) EarlyLog("SystemMetricsCollector: Local update starting (CPU)...");
             UpdateCPU();
+            if (loopCount % 50 == 0) EarlyLog("SystemMetricsCollector: Local update (RAM)...");
             UpdateRAM();
+            if (loopCount % 50 == 0) EarlyLog("SystemMetricsCollector: Local update (GPU)...");
             UpdateGPU();
+            if (loopCount % 50 == 0) EarlyLog("SystemMetricsCollector: Local update done.");
+            loopCount++;
         }
         
         // Sleep for 200ms (Faster updates for better stability)
@@ -151,8 +205,37 @@ void SystemMetricsCollector::BackgroundUpdateLoop() {
 }
 
 void SystemMetricsCollector::Update() {
-    // No-op - background thread handles updates
-    // Keeping this to maintain API compatibility with existing hooks
+    // Check if we have valid data from Host Process (IPC)
+    if (g_IPC && g_IPC->GetSharedMem()) {
+        auto& shmMetrics = g_IPC->GetSharedMem()->systemMetrics;
+        float cpu = shmMetrics.cpuUsage.load(std::memory_order_relaxed);
+        float gpu = shmMetrics.gpuUsage.load(std::memory_order_relaxed);
+        
+        bool hostProvidingMetrics = (cpu > 0.0f || gpu > 0.0f); // Simple heuristic
+
+        if (hostProvidingMetrics) {
+            std::lock_guard<std::mutex> lock(mutex);
+            current.cpuUsage = cpu;
+            current.ramUsed = (uint64_t)(shmMetrics.ramUsage.load(std::memory_order_relaxed) * 1024.0 * 1024.0 * 1024.0);
+            current.gpuUsage = gpu;
+            current.vramUsed = (uint64_t)(shmMetrics.vramUsage.load(std::memory_order_relaxed) * 1024.0 * 1024.0);
+            
+            uint64_t vramTotal = shmMetrics.vramTotal.load(std::memory_order_relaxed);
+            if (vramTotal > 0) current.vramTotal = vramTotal;
+            
+            current.cpuMaxCoreUsage = (float)shmMetrics.maxCoreLoad.load(std::memory_order_relaxed);
+            
+            // Mark as valid since we got them from host
+            current.gpuUsageValid = true; 
+            return; // Skip local collection if host is providing
+        }
+    }
+}
+
+void SystemMetricsCollector::SetVRAMTotal(uint64_t totalBytes) {
+    std::lock_guard<std::mutex> lock(mutex);
+    current.vramTotal = totalBytes;
+    EarlyLog("SystemMetricsCollector: VRAM Total set explicitly: %llu MB", totalBytes / (1024 * 1024));
 }
 
 void SystemMetricsCollector::UpdateCPU() {
@@ -171,7 +254,7 @@ void SystemMetricsCollector::UpdateCPU() {
         SYSTEM_INFO sysInfo;
         GetSystemInfo(&sysInfo);
         numProcs = sysInfo.dwNumberOfProcessors;
-        prevInfo.resize(numProcs, {0});
+        prevInfo.resize(numProcs);
         
         initialized = true;
     }
@@ -220,6 +303,7 @@ void SystemMetricsCollector::UpdateCPU() {
         // Update previous state
         prevInfo = currInfo;
     }
+    // EarlyLog("SystemMetricsCollector: UpdateCPU done"); // Commented out to avoid spam
 }
 
 void SystemMetricsCollector::UpdateRAM() {
@@ -232,8 +316,13 @@ void SystemMetricsCollector::UpdateRAM() {
 }
 
 void SystemMetricsCollector::UpdateGPU() {
+    if (strstr(g_ProcessName, "SonsOfTheForest") != nullptr) {
+        return;
+    }
+
     // 1. GPU Load via PDH Engine counters (System-Wide, filtered by engine type)
     if (!gpuPdhInitialized && gpuQuery == nullptr) {
+        EarlyLog("SystemMetricsCollector: Initializing GPU PDH");
         PDH_HQUERY query = nullptr;
         if (PdhOpenQueryA(NULL, 0, &query) == ERROR_SUCCESS) {
             gpuQuery = (void*)query;
@@ -251,6 +340,8 @@ void SystemMetricsCollector::UpdateGPU() {
                 PdhCloseQuery(query);
                 gpuQuery = nullptr;
             }
+        } else {
+             EarlyLog("SystemMetricsCollector: GPU PDH Open failed");
         }
     }
 
@@ -313,6 +404,7 @@ void SystemMetricsCollector::UpdateGPU() {
         }
     }
 
+
     // 2. VRAM Usage via PDH Adapter Memory (System-Wide)
     if (!vramPdhInitialized && vramQuery == nullptr) {
         PDH_HQUERY query = nullptr;
@@ -367,6 +459,12 @@ void SystemMetricsCollector::UpdateGPU() {
     }
 
     // VRAM Total still via DXGI
+    // If VRAM Total was set explicitly (e.g. by hook on main thread), SKIP this risky background creation!
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (current.vramTotal > 0) return;
+    }
+
     if (adapterLuid.LowPart == 0 && adapterLuid.HighPart == 0) return;
     if (!cachedFactory) CreateDXGIFactory1(__uuidof(IDXGIFactory4), (void**)&cachedFactory);
     if (cachedFactory && !cachedAdapter) {

@@ -285,6 +285,17 @@ struct SharedMemoryLayout {
 
   CaptureState runtimeState;
 
+  // System Metrics (Host -> Hook)
+  // Collected by Host Process to avoid Anti-Cheat interference in Hook
+  struct SharedSystemMetrics {
+      std::atomic<float> cpuUsage{0.0f};
+      std::atomic<float> ramUsage{0.0f}; // GB
+      std::atomic<float> gpuUsage{0.0f};
+      std::atomic<float> vramUsage{0.0f}; // MB
+      std::atomic<uint64_t> vramTotal{0}; // Bytes
+      std::atomic<uint32_t> maxCoreLoad{0}; // NEW: Max single core load
+  } systemMetrics;
+
   // Encoder queue monitoring (Host -> Hook)
   // Hook skips frames when throttleCapture is true to let encoder catch up
   std::atomic<bool> throttleCapture{
@@ -308,10 +319,14 @@ struct SharedMemoryLayout {
   // Frame ring buffer for lossless capture
   FrameRingBuffer frameRing;
 
-  // Logging Ring Buffer
+  // Logging Ring Buffer (SPSC: Producer=Hook, Consumer=LoggerService)
   struct LogBuffer {
-    char buffer[16][256]{}; // Default-initialize
-    std::atomic<uint32_t> writeIndex{0};
+    static constexpr uint32_t SLOT_COUNT = 128;
+    static constexpr uint32_t SLOT_SIZE = 512;
+    
+    char buffer[SLOT_COUNT][SLOT_SIZE]{};
+    alignas(64) std::atomic<uint32_t> writeIndex{0}; // Shared across threads, only written by Hook
+    alignas(64) std::atomic<uint32_t> readIndex{0};  // Only written by discrete Logger process
     std::atomic<uint32_t> overflowCount{0}; // Tracks lost log entries
   } logs;
 

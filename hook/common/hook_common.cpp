@@ -12,138 +12,149 @@ std::atomic<bool> g_GraphicsOverridesActive{false};
 
 // Early debug log - writes directly to file without IPC dependency
 // Used for debugging crashes before IPC connects
-// Only logs if debug_logging is enabled in local config
-void EarlyLog(const char *fmt, ...) {
-  // Check if debug logging is enabled (default: disabled)
-  // Use local config since IPC may not be available yet
-  if (!g_LocalConfig.debugLogging) {
-    return;
-  }
+static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list args) {
+  static CRITICAL_SECTION s_cs;
+  static volatile LONG s_csInitialized = 0;
+  static char s_logDir[MAX_PATH] = {0};
+  static HANDLE s_hMutex = NULL;
   
-  char buffer[512];
+  static thread_local bool s_isLogging = false;
+  if (s_isLogging) return;
+  s_isLogging = true;
+
+  if (InterlockedCompareExchange(&s_csInitialized, 1, 0) == 0) {
+      InitializeCriticalSection(&s_cs);
+      InterlockedExchange(&s_csInitialized, 2);
+  }
+  while (s_csInitialized < 2) { Sleep(0); }
+  
+  EnterCriticalSection(&s_cs);
+  
+  if (!s_hMutex) {
+      s_hMutex = CreateMutexA(NULL, FALSE, "Global\\Antigravity_Log_Mutex_v5");
+      if (!s_hMutex) s_hMutex = CreateMutexA(NULL, FALSE, "Local\\Antigravity_Log_Mutex_v5");
+  }
+  if (s_hMutex) WaitForSingleObject(s_hMutex, INFINITE);
+
+  static char s_formatBuffer[4096];
+  static char s_lineBuffer[8192];
+
+  if (g_ProcessName[0] == '\0') {
+      char fullPath[MAX_PATH];
+      if (GetModuleFileNameA(NULL, fullPath, MAX_PATH)) {
+          char* lastSlash = strrchr(fullPath, '\\');
+          if (lastSlash) strcpy(g_ProcessName, lastSlash + 1);
+          else strcpy(g_ProcessName, fullPath);
+      }
+  }
+
+  int len_buf = vsnprintf(s_formatBuffer, sizeof(s_formatBuffer), fmt, args);
+  if (len_buf < 0) len_buf = 0;
+  if (len_buf >= (int)sizeof(s_formatBuffer)) len_buf = (int)sizeof(s_formatBuffer) - 1;
+
+  SYSTEMTIME st;
+  GetLocalTime(&st);
+  DWORD tid = GetCurrentThreadId();
+  
+  int len = snprintf(s_lineBuffer, sizeof(s_lineBuffer),
+                     "[%02d:%02d:%02d.%03d] [T:%04X] [%s] %s",
+                     st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+                     tid, g_ProcessName, s_formatBuffer);
+  
+  if (len > 0) {
+      if (len >= (int)sizeof(s_lineBuffer)) len = (int)sizeof(s_lineBuffer) - 1;
+
+      // --- PRIMARY: Push to Shared Memory Ring Buffer ---
+      if (g_IPC && g_IPC->GetSharedMem()) {
+          auto& logs = g_IPC->GetSharedMem()->logs;
+          uint32_t wIdx = logs.writeIndex.load(std::memory_order_relaxed);
+          uint32_t rIdx = logs.readIndex.load(std::memory_order_acquire);
+          
+          if (wIdx < rIdx + SharedMemoryLayout::LogBuffer::SLOT_COUNT) {
+              char* slot = logs.buffer[wIdx % SharedMemoryLayout::LogBuffer::SLOT_COUNT];
+              snprintf(slot, SharedMemoryLayout::LogBuffer::SLOT_SIZE, "[%s] %s", baseFilename, s_lineBuffer);
+              logs.writeIndex.store(wIdx + 1, std::memory_order_release);
+              
+              if (s_hMutex) ReleaseMutex(s_hMutex);
+              LeaveCriticalSection(&s_cs);
+              s_isLogging = false;
+              return;
+          } else {
+              logs.overflowCount.fetch_add(1, std::memory_order_relaxed);
+          }
+      }
+
+      // --- FALLBACK: Direct File Logging (Early Init or Buffer Full) ---
+      if (s_logDir[0] == '\0') {
+          HMODULE hMod = NULL;
+          if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)&EarlyLog, &hMod)) {
+              char fullPath[MAX_PATH];
+              GetModuleFileNameA(hMod, fullPath, MAX_PATH);
+              char *lastSlash = strrchr(fullPath, '\\');
+              if (lastSlash) {
+                  *lastSlash = '\0';
+                  strcat(fullPath, "\\logs");
+                  CreateDirectoryA(fullPath, NULL);
+                  strcpy(s_logDir, fullPath);
+              }
+          }
+      }
+
+      if (s_logDir[0] != '\0') {
+          char fullLogPath[MAX_PATH];
+          snprintf(fullLogPath, sizeof(fullLogPath), "%s\\%s", s_logDir, baseFilename);
+          HANDLE hFile = CreateFileA(fullLogPath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                    NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, NULL);
+          if (hFile != INVALID_HANDLE_VALUE) {
+              DWORD written;
+              WriteFile(hFile, s_lineBuffer, len, &written, NULL);
+              WriteFile(hFile, "\r\n", 2, &written, NULL);
+              CloseHandle(hFile);
+          }
+      }
+  }
+
+  if (s_hMutex) ReleaseMutex(s_hMutex);
+  LeaveCriticalSection(&s_cs);
+  s_isLogging = false;
+}
+
+void EarlyLog(const char *fmt, ...) {
+  if (!g_LocalConfig.debugLogging) return;
   va_list args;
   va_start(args, fmt);
-  vsnprintf(buffer, sizeof(buffer), fmt, args);
+  LogToFileAtomic("hook_debug.log", fmt, args);
   va_end(args);
-  
-  // Write to logs/ directory relative to the hook DLL
-  char logPath[MAX_PATH];
-  HMODULE hMod = NULL;
-  GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                     (LPCSTR)&EarlyLog, &hMod);
-  GetModuleFileNameA(hMod, logPath, MAX_PATH);
-  
-  // Find directory part
-  char *lastSlash = strrchr(logPath, '\\');
-  if (lastSlash) {
-    *lastSlash = '\0'; // Cut off filename
-    strcat(logPath, "\\logs"); // Append logs dir
-    
-    // Create directory only once
-    static bool logDirCreated = false;
-    if (!logDirCreated) {
-      CreateDirectoryA(logPath, NULL); // Ensure directory exists
-      logDirCreated = true;
-    }
-    
-    strcat(logPath, "\\hook_debug.log"); // Append filename
-  } else {
-    strcpy(logPath, "hook_debug.log");
-  }
-  
-  HANDLE hFile = CreateFileA(logPath, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                              NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-  if (hFile != INVALID_HANDLE_VALUE) {
-    SetFilePointer(hFile, 0, NULL, FILE_END);
-    
-    char logLine[1024];
-    SYSTEMTIME st;
-    GetLocalTime(&st);
-    int len = snprintf(logLine, sizeof(logLine),
-                       "[%04d-%02d-%02d %02d:%02d:%02d.%03d] [%-20s] %s\r\n",
-                       st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, 
-                       g_ProcessName, buffer);
-    
-    DWORD written;
-    WriteFile(hFile, logLine, len, &written, NULL);
-    CloseHandle(hFile);
+}
+
+void NVNGXLog(const char *fmt, ...) {
+  if (!g_LocalConfig.debugLogging) return;
+  va_list args;
+  va_start(args, fmt);
+  LogToFileAtomic("nvngx_debug.log", fmt, args);
+  va_end(args);
+}
+
+void ReportLUID(uint32_t low, uint32_t high) {
+  if (g_IPC && g_IPC->GetSharedMem()) {
+      if (g_IPC->GetSharedMem()->luidLowPart != (int32_t)low || 
+          g_IPC->GetSharedMem()->luidHighPart != (int32_t)high) {
+          g_IPC->GetSharedMem()->luidLowPart = (int32_t)low;
+          g_IPC->GetSharedMem()->luidHighPart = (int32_t)high;
+          HookLog("Common: Reported LUID to SHM: 0x%08X_%08X", high, low);
+      }
   }
 }
 
 // Internal worker implementation
 static void HookLogInternal(LogLevel level, const char *fmt, va_list args) {
-  // Check filtering
   if (g_IPC && g_IPC->GetSharedMem()) {
-      if ((int)level > (int)g_IPC->GetSharedMem()->logLevel) {
-          return;
-      }
-      if (!g_IPC->GetSharedMem()->debugLogging) {
-          return;
-      }
-  } else {
-      return; // No IPC
+      if ((int)level > (int)g_IPC->GetSharedMem()->logLevel) return;
+      if (!g_IPC->GetSharedMem()->debugLogging) return;
   }
-
-  char buffer[1024]; // Increased buffer size
-  vsnprintf(buffer, sizeof(buffer), fmt, args);
-
-  // Keep handle open to avoid open/close overhead every line
-  // Thread-safe: protect static file handle with mutex
-  static std::mutex s_logMutex;
-  static HANDLE hLogFile = INVALID_HANDLE_VALUE;
-  static char lastLogPath[280] = {0};
   
-  std::lock_guard<std::mutex> lock(s_logMutex);
-
-  const char *logPath = g_IPC->GetSharedMem()->logFilePath;
-  if (!logPath || logPath[0] == '\0')
-    return;
-
-  char hookLogPath[280];
-  const char *lastSlash = strrchr(logPath, '\\');
-  if (!lastSlash)
-    lastSlash = strrchr(logPath, '/');
-  if (lastSlash) {
-    size_t dirLen = lastSlash - logPath + 1;
-    memcpy(hookLogPath, logPath, dirLen);
-    strcpy(hookLogPath + dirLen, "hook.log");
-  } else {
-    strcpy(hookLogPath, "hook.log");
-  }
-
-  // Log Rotation
-  const DWORD MAX_LOG_SIZE = 5 * 1024 * 1024; // 5MB
-  if (hLogFile != INVALID_HANDLE_VALUE) {
-    DWORD size = GetFileSize(hLogFile, NULL);
-    if (size != INVALID_FILE_SIZE && size > MAX_LOG_SIZE) {
-      CloseHandle(hLogFile);
-      hLogFile = INVALID_HANDLE_VALUE;
-      
-      char backupPath[280];
-      strcpy(backupPath, hookLogPath);
-      strcat(backupPath, ".old");
-      
-      DeleteFileA(backupPath);
-      MoveFileA(hookLogPath, backupPath);
-    }
-  }
-
-  if (hLogFile == INVALID_HANDLE_VALUE ||
-      strcmp(hookLogPath, lastLogPath) != 0) {
-    if (hLogFile != INVALID_HANDLE_VALUE)
-      CloseHandle(hLogFile);
-    hLogFile = CreateFileA(hookLogPath, GENERIC_WRITE,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
-                           OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hLogFile == INVALID_HANDLE_VALUE)
-      return;
-    strcpy(lastLogPath, hookLogPath);
-    SetFilePointer(hLogFile, 0, NULL, FILE_END);
-  }
-
-  char logLine[1024];
-  SYSTEMTIME st;
-  GetLocalTime(&st);
+  static char buffer[4096];
+  vsnprintf(buffer, sizeof(buffer), fmt, args);
   
   const char* levelStr = "INFO";
   switch(level) {
@@ -153,14 +164,7 @@ static void HookLogInternal(LogLevel level, const char *fmt, va_list args) {
       default: break;
   }
   
-  int len =
-      snprintf(logLine, sizeof(logLine),
-               "[%04d-%02d-%02d %02d:%02d:%02d] [%s] [Hook] [%-20s] %s\r\n", 
-               st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, 
-               levelStr, g_ProcessName, buffer);
-
-  DWORD written;
-  WriteFile(hLogFile, logLine, len, &written, NULL);
+  EarlyLog("[%s] %s", levelStr, buffer);
 }
 
 void HookLog(const char *fmt, ...) {
