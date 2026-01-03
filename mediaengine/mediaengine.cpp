@@ -8,6 +8,7 @@
 #include "audio_ring_buffer.h" // Pull Model Buffer
 #include "video_encoder.h"
 #include <chrono>
+#include <deque>
 #include <iostream>
 #include <map>
 #include <mutex>
@@ -32,10 +33,17 @@ public:
         nullptr; // Always points to the encoder to use
     std::unique_ptr<AudioRingBuffer> ringBuffer; // Pull Model Buffer (Writer=Capture, Reader=Encoder)
     std::unique_ptr<AudioResampler> resampler;  // Resampler for this source (to standard format)
+    
+    // Per-source drift compensation (Phase 2 of AV Sync overhaul)
+    std::unique_ptr<AudioResampler> syncResampler;  // 48kHz->48kHz resampler with drift compensation
+    std::deque<float> postResampleBuffer;           // Buffer after sync resampling for exact framing
+    int64_t syncSamplesOutput = 0;                  // Total samples output by syncResampler (for drift calculation)
+    
     AudioConfig config;
     int track = 0; // Target track number
     AudioConfig::SourceType sourceType = AudioConfig::SystemAudio;
   };
+
 
   // Per-track encoder with optional mixing (when multiple sources target same track)
 
@@ -192,6 +200,24 @@ public:
           source.ringBuffer = std::make_unique<AudioRingBuffer>(capacity);
           DLL_Log("MediaEngine::Init RingBuffer created. Cap=%zu samples", capacity);
 
+          // INIT SYNC RESAMPLER (Per-source drift compensation)
+          // 48kHz Stereo Float -> 48kHz Stereo Float with swr_set_compensation support
+          source.syncResampler = std::make_unique<AudioResampler>();
+          AudioResampler::InputFormat syncInFmt;
+          syncInFmt.sampleRate = 48000;
+          syncInFmt.channels = 2;
+          syncInFmt.bitsPerSample = 32;
+          syncInFmt.validBitsPerSample = 32;
+          syncInFmt.isFloat = true;
+          syncInFmt.blockAlign = 8;
+          AudioResampler::OutputFormat syncOutFmt;
+          syncOutFmt.sampleRate = 48000;
+          syncOutFmt.channels = 2;
+          syncOutFmt.sampleFmt = AV_SAMPLE_FMT_FLT;
+          source.syncResampler->Init(syncInFmt, syncOutFmt);
+          DLL_Log("MediaEngine::Init SyncResampler created for source %zu", i);
+
+
           DLL_Log("MediaEngine::Init Created new encoder for track %d (source "
                   "%zu, type=%d)",
                   track, i, (int)audioConfig.sourceType);
@@ -223,6 +249,23 @@ public:
           size_t capacity = iSampleRate * 2 * 2;
           source.ringBuffer = std::make_unique<AudioRingBuffer>(capacity);
           DLL_Log("MediaEngine::Init RingBuffer created (shared). Cap=%zu samples", capacity);
+
+          // INIT SYNC RESAMPLER (Per-source drift compensation)
+          source.syncResampler = std::make_unique<AudioResampler>();
+          AudioResampler::InputFormat syncInFmt;
+          syncInFmt.sampleRate = 48000;
+          syncInFmt.channels = 2;
+          syncInFmt.bitsPerSample = 32;
+          syncInFmt.validBitsPerSample = 32;
+          syncInFmt.isFloat = true;
+          syncInFmt.blockAlign = 8;
+          AudioResampler::OutputFormat syncOutFmt;
+          syncOutFmt.sampleRate = 48000;
+          syncOutFmt.channels = 2;
+          syncOutFmt.sampleFmt = AV_SAMPLE_FMT_FLT;
+          source.syncResampler->Init(syncInFmt, syncOutFmt);
+          DLL_Log("MediaEngine::Init SyncResampler created (shared) for source %zu", i);
+
 
           DLL_Log("MediaEngine::Init Audio source %zu shares encoder for track "
                   "%d (type=%d)",
@@ -312,6 +355,13 @@ public:
             DLL_Log("MediaEngine: Cleared stale ringBuffer with %zu samples", prevAvail);
           }
         }
+        
+        // DRIFT COMPENSATION: Reset sync state for new recording
+        if (src.syncResampler) {
+          src.syncResampler->Reset();
+        }
+        src.postResampleBuffer.clear();
+        src.syncSamplesOutput = 0;
       }
 
       // Start all audio sources
@@ -408,6 +458,13 @@ public:
       if (src.ringBuffer) {
         src.ringBuffer->Clear();
       }
+      
+      // DRIFT COMPENSATION: Clear sync buffers and reset counters
+      if (src.syncResampler) {
+        src.syncResampler->Reset();
+      }
+      src.postResampleBuffer.clear();
+      src.syncSamplesOutput = 0;
     }
 
     // Reset video frame tracking for next recording
@@ -666,14 +723,11 @@ public:
       std::vector<float> mixBuffer(totalFloats, 0.0f);
       int activeSources = 0;
       
-      // Pull from each source and sum into mix buffer
+      // Pull from each source with drift compensation and sum into mix buffer
       for (size_t srcIdx : srcIndices) {
         auto &src = audioSources[srcIdx];
         
         // Check for dropped samples (ring buffer overflow)
-        // NOTE: We only LOG this, we do NOT advance the encoded counter.
-        // The video-driven pull mechanism already handles sync correctly.
-        // Advancing the counter here would cause audio to be skipped.
         size_t droppedFloats = src.ringBuffer->GetAndClearDroppedSamples();
         if (droppedFloats > 0) {
           size_t droppedSamples = droppedFloats / CHANNELS;
@@ -681,26 +735,101 @@ public:
                   droppedSamples, (int)srcIdx);
         }
         
-        // Pull from ring buffer
-        std::vector<float> srcData(totalFloats);
-        size_t samplesRead = src.ringBuffer->Read(srcData.data(), totalFloats);
+        // =====================================================
+        // DRIFT COMPENSATION via syncResampler
+        // =====================================================
+        // Target latency: ~20ms (960 samples @ 48kHz)
+        const int64_t TARGET_LATENCY_SAMPLES = 960;
         
-        if (samplesRead == 0) {
-          // Buffer underflow - this source has no data (game paused/silence)
-          // Continue to next source, counter will be updated below for ALL sources
-          continue;
+        if (src.syncResampler && src.syncResampler->IsReady()) {
+          size_t rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS; // Samples per channel
+          int64_t rbError = (int64_t)rbAvailable - TARGET_LATENCY_SAMPLES;
+          
+          // Connect Ring Buffer Error to Drift Compensator
+          // Logic Corrected (Session 3):
+          // If rbError > 0 (Too Full), Source is Fast. We need to DRAIN FASTER.
+          // Consumption: Input 100 -> Output 90 (Compress). 
+          // swr_set_compensation needs NEGATIVE delta (Remove samples).
+          // Our code calls swr(-delta). So delta must be POSITIVE.
+          // AdjustForClockDrift calculates: drift = output - expected.
+          // We need drift > 0.
+          // So we need drift = rbError (since rbError > 0).
+          // 
+          // If rbError < 0 (Too Empty), Source is Slow. We need to DRAIN SLOWER.
+          // Consumption: Input 90 -> Output 100 (Stretch).
+          // swr_set_compensation needs POSITIVE delta (Add samples).
+          // Our code calls swr(-delta). So delta must be NEGATIVE.
+          // We need drift < 0.
+          // So we need drift = rbError (since rbError < 0).
+          //
+          // Verification:
+          // drift = output - expected
+          // we want drift = rbError
+          // rbError = output - expected
+          // expected = output - rbError
+          
+          int64_t fakeExpectedSamples = src.syncSamplesOutput - rbError;
+          
+          // Convert back to "Video Time" for the API signature
+          // expected = (time * rate) / 1000
+          // time = (expected * 1000) / rate
+          int64_t correctedVideoTimeMs = (fakeExpectedSamples * 1000) / SAMPLE_RATE;
+          
+          // Ensure we don't pass negative time if buffer is empty at start
+          if (correctedVideoTimeMs < 0) correctedVideoTimeMs = 0;
+
+          src.syncResampler->AdjustForClockDrift(correctedVideoTimeMs, src.syncSamplesOutput);
+          
+          // Debug log occasionally
+          static int driftLogCounter = 0;
+          if (driftLogCounter++ % 1000 == 0 && abs(rbError) > 100) {
+             // Show calculated drift (which is output - expected = output - (output - rbError) = rbError)
+             DLL_Log("[PullAudio] Src %d Buffer Level: %zu (Err: %lld) -> Comp Drift: %lld", 
+                     (int)srcIdx, rbAvailable, rbError, rbError);
+          }
         }
         
-        // Pad with silence if partial read
-        if (samplesRead < totalFloats) {
-          memset(srcData.data() + samplesRead, 0, (totalFloats - samplesRead) * sizeof(float));
+        // Pull available audio from ring buffer and resample into postResampleBuffer
+        size_t rbFloats = src.ringBuffer->GetAvailable();
+        if (rbFloats > 0 && src.syncResampler && src.syncResampler->IsReady()) {
+          // Read up to 10ms chunks to limit latency
+          size_t chunkFloats = std::min(rbFloats, (size_t)(SAMPLE_RATE / 100 * CHANNELS));
+          std::vector<float> rbData(chunkFloats);
+          size_t actualRead = src.ringBuffer->Read(rbData.data(), chunkFloats);
+          
+          if (actualRead > 0) {
+            // Resample through syncResampler
+            uint8_t **resampledData = nullptr;
+            int outSamples = 0;
+            if (src.syncResampler->Process((uint8_t*)rbData.data(), (int)(actualRead * sizeof(float)),
+                                           &resampledData, &outSamples)) {
+              if (outSamples > 0 && resampledData && resampledData[0]) {
+                float* outFloats = (float*)resampledData[0];
+                int numFloats = outSamples * CHANNELS;
+                src.postResampleBuffer.insert(src.postResampleBuffer.end(), outFloats, outFloats + numFloats);
+                src.syncSamplesOutput += outSamples;
+              }
+              AudioResampler::FreeOutputBuffer(resampledData);
+            }
+          }
         }
+        
+        // Pop exactly totalFloats from postResampleBuffer for mixing
+        std::vector<float> srcData(totalFloats, 0.0f);
+        size_t available = src.postResampleBuffer.size();
+        size_t toCopy = std::min(available, totalFloats);
+        
+        if (toCopy > 0) {
+          std::copy(src.postResampleBuffer.begin(), src.postResampleBuffer.begin() + toCopy, srcData.begin());
+          src.postResampleBuffer.erase(src.postResampleBuffer.begin(), src.postResampleBuffer.begin() + toCopy);
+          activeSources++;
+        }
+        // If toCopy < totalFloats, the rest is already zero (silence padding)
         
         // Sum into mix buffer
         for (size_t i = 0; i < totalFloats; i++) {
           mixBuffer[i] += srcData[i];
         }
-        activeSources++;
       }
       
       // If ALL sources for this track are silent (game pause), SKIP encoding entirely.

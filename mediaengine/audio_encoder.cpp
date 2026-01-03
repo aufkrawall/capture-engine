@@ -365,6 +365,10 @@ void AudioEncoder::EncodeSamples(const uint8_t *data, int sizeBytes,
   uint8_t **resampledData = nullptr;
   int convertedSamples = 0;
   
+  // NOTE: Clock drift compensation is now handled upstream in MediaEngine::PullAndEncodeAudio
+  // using per-source syncResamplers. This block is disabled to prevent conflicts.
+  // The videoTimeGetter callback is still available for monitoring if needed.
+  #if 0
   // Apply clock drift compensation BEFORE resampling so it affects this batch
   // This adjusts the resampler ratio to produce fewer/more output samples
   // CRITICAL: Use resampledSamplesTotal (FIFO input) not samplesCount (encoder output)
@@ -394,6 +398,7 @@ void AudioEncoder::EncodeSamples(const uint8_t *data, int sizeBytes,
       }
     }
   }
+  #endif
   
   if (!resampler->Process(data, sizeBytes, &resampledData, &convertedSamples)) {
     DLL_Log("[AudioEnc] Resample failed");
