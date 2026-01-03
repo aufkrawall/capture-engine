@@ -2547,6 +2547,19 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D *bgraTexture,
     // if it fixes INVALIDARG. If it looks squashed at edges, we can refine
     // source clipping later. Squashed is better than dropping frames.
 
+    // If resolution scaling is enabled (e.g. 4K -> 1080p), we must scale the cursor
+    // coordinates to match the output texture dimensions. The VideoProcessor applies
+    // the cursor overlay to the DESTINATION surface.
+    if (scalingEnabled) {
+      float scaleX = (float)outputWidth / (float)width;
+      float scaleY = (float)outputHeight / (float)height;
+      
+      cursorRect.left = (LONG)(cursorRect.left * scaleX);
+      cursorRect.top = (LONG)(cursorRect.top * scaleY);
+      cursorRect.right = (LONG)(cursorRect.right * scaleX);
+      cursorRect.bottom = (LONG)(cursorRect.bottom * scaleY);
+    }
+    
     // Clipping bounds use OUTPUT dimensions when scaling
     int frameW = scalingEnabled ? outputWidth : width;
     int frameH = scalingEnabled ? outputHeight : height;

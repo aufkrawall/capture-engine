@@ -138,20 +138,15 @@ public:
           d3dContext_->CopyResource(cachedTexture_, texture);
           MediaEngine_UnlockD3D11();
           
-          // Get timestamp
+          // Pass Raw QPC to MediaEngine
           LARGE_INTEGER t;
           QueryPerformanceCounter(&t);
-          if (qpcFreq_ == 0) {
-            LARGE_INTEGER f;
-            QueryPerformanceFrequency(&f);
-            qpcFreq_ = f.QuadPart;
-          }
-          int64_t timestampMs = (t.QuadPart * 1000) / qpcFreq_;
+          int64_t timestampQPC = t.QuadPart;
           
           // Call the frame callback to push to queue
           if (frameCallback_) {
             cachedTexture_->AddRef();
-            frameCallback_(cachedTexture_, cachedWidth_, cachedHeight_, timestampMs);
+            frameCallback_(cachedTexture_, cachedWidth_, cachedHeight_, timestampQPC);
           }
           
           callbackFrameCount_.fetch_add(1, std::memory_order_relaxed);
@@ -386,19 +381,9 @@ public:
           d3dContext_->CopyResource(cachedTexture_, texture);
           MediaEngine_UnlockD3D11();
 
+          // Pass Raw QPC
           QueryPerformanceCounter(&t2);
-          QueryPerformanceFrequency(&freq);
-
-          // Convert QPC to milliseconds for consistency with original WGC mode
-          int64_t timestampMs = (t2.QuadPart * 1000) / freq.QuadPart;
-          frameTimestamp_ = t2.QuadPart;
-
-          // Populate Output Frame
-          frame.texture = cachedTexture_;
-          frame.texture->AddRef();
-          frame.width = cachedWidth_;
-          frame.height = cachedHeight_;
-          frame.timestamp = timestampMs; // Use consistent ms unit
+          frame.timestamp = t2.QuadPart;
           success = true;
         }
         texture->Release();

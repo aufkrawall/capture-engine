@@ -807,6 +807,49 @@ void AudioEncoder::Flush() {
         frame->nb_samples = samplesToEncode;
         ret = av_audio_fifo_read(audioFifo, (void **)frame->data, samplesToEncode);
         if (ret > 0) {
+          // Apply 50ms fade-out to prevent click at recording end
+          const int FADE_SAMPLES = codecCtx->sample_rate / 20;  // 50ms @ 48kHz = 2400 samples
+          int fadeStart = std::max(0, samplesToEncode - FADE_SAMPLES);
+          int channels = codecCtx->ch_layout.nb_channels;
+          int numPlanes = av_sample_fmt_is_planar(codecCtx->sample_fmt) ? channels : 1;
+          
+          for (int p = 0; p < numPlanes && frame->data[p]; p++) {
+              if (codecCtx->sample_fmt == AV_SAMPLE_FMT_FLT || codecCtx->sample_fmt == AV_SAMPLE_FMT_FLTP) {
+                  float* fData = (float*)frame->data[p];
+                  for (int i = fadeStart; i < samplesToEncode; i++) {
+                      float fadePos = (float)(samplesToEncode - 1 - i) / FADE_SAMPLES;
+                      float gain = fadePos < 1.0f ? fadePos : 1.0f;
+                      if (numPlanes == 1) { // Interleaved
+                          for (int c = 0; c < channels; c++) fData[i * channels + c] *= gain;
+                      } else { // Planar
+                          fData[i] *= gain;
+                      }
+                  }
+              } else if (codecCtx->sample_fmt == AV_SAMPLE_FMT_S16 || codecCtx->sample_fmt == AV_SAMPLE_FMT_S16P) {
+                  int16_t* sData = (int16_t*)frame->data[p];
+                  for (int i = fadeStart; i < samplesToEncode; i++) {
+                      float fadePos = (float)(samplesToEncode - 1 - i) / FADE_SAMPLES;
+                      float gain = fadePos < 1.0f ? fadePos : 1.0f;
+                      if (numPlanes == 1) {
+                          for (int c = 0; c < channels; c++) sData[i * channels + c] = (int16_t)(sData[i * channels + c] * gain);
+                      } else {
+                          sData[i] = (int16_t)(sData[i] * gain);
+                      }
+                  }
+              } else if (codecCtx->sample_fmt == AV_SAMPLE_FMT_S32 || codecCtx->sample_fmt == AV_SAMPLE_FMT_S32P) {
+                  int32_t* sData = (int32_t*)frame->data[p];
+                  for (int i = fadeStart; i < samplesToEncode; i++) {
+                      float fadePos = (float)(samplesToEncode - 1 - i) / FADE_SAMPLES;
+                      float gain = fadePos < 1.0f ? fadePos : 1.0f;
+                      if (numPlanes == 1) {
+                          for (int c = 0; c < channels; c++) sData[i * channels + c] = (int32_t)(sData[i * channels + c] * gain);
+                      } else {
+                          sData[i] = (int32_t)(sData[i] * gain);
+                      }
+                  }
+              }
+          }
+          
           frame->pts = samplesCount;
           samplesCount += samplesToEncode;
           avcodec_send_frame(codecCtx, frame);

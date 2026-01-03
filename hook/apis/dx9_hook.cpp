@@ -826,7 +826,7 @@ public:
                         
                         // 4. Signal Encoder (Index 100+ to indicate shmem slot)
                         // Using 100 + slot as textureIndex
-                        SignalFrameReady(g_IPC, 100 + slot, us / 1000, 0); 
+                        SignalFrameReady(g_IPC, 100 + slot, qpc.QuadPart, 0); 
                     }
                     shmemSurfaces[idx]->UnlockRect();
                 }
@@ -850,9 +850,10 @@ public:
                 );
                 
                 if (useFences && fence && context4) {
-                        SignalFrameReady(g_IPC, idx, us / 1000, fenceValue);
+                        // PASS RAW QPC
+                        SignalFrameReady(g_IPC, idx, qpc.QuadPart, fenceValue);
                 } else {
-                    SignalFrameReady(g_IPC, idx, us / 1000, 0);
+                    SignalFrameReady(g_IPC, idx, qpc.QuadPart, 0);
                 }
                 
                 AdvanceWriteIndex();

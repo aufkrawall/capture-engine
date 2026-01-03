@@ -10,6 +10,29 @@
 
 // PDH Lib is linked via build.py
 
+// Definitions for NtQuerySystemInformation
+typedef LONG KPRIORITY;
+typedef enum _SYSTEM_INFORMATION_CLASS_LITERAL {
+    SystemProcessorPerformanceInformation = 8,
+} SYSTEM_INFORMATION_CLASS_LITERAL;
+
+typedef struct _SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION {
+    LARGE_INTEGER IdleTime;
+    LARGE_INTEGER KernelTime;
+    LARGE_INTEGER UserTime;
+    LARGE_INTEGER DpcTime;
+    LARGE_INTEGER InterruptTime;
+    ULONG InterruptCount;
+} SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION;
+
+typedef NTSTATUS (WINAPI *NtQuerySystemInformationPtr)(
+    ULONG SystemInformationClass,
+    PVOID SystemInformation,
+    ULONG SystemInformationLength,
+    PULONG ReturnLength
+);
+
+
 SystemMetricsCollector& SystemMetricsCollector::Get() {
     static SystemMetricsCollector instance;
     return instance;
@@ -133,13 +156,69 @@ void SystemMetricsCollector::Update() {
 }
 
 void SystemMetricsCollector::UpdateCPU() {
-    if (!pdhInitialized) return;
+    static NtQuerySystemInformationPtr NtQuerySystemInformation = nullptr;
+    static std::vector<SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION> prevInfo;
+    static int numProcs = 0;
+    static bool initialized = false;
 
-    if (PdhCollectQueryData((PDH_HQUERY)cpuQuery) == ERROR_SUCCESS) {
-        PDH_FMT_COUNTERVALUE displayValue;
-        if (PdhGetFormattedCounterValue((PDH_HCOUNTER)cpuCounter, PDH_FMT_DOUBLE, NULL, &displayValue) == ERROR_SUCCESS) {
-            current.cpuUsage = (float)displayValue.doubleValue;
+    // One-time initialization
+    if (!initialized) {
+        HMODULE hNtDll = GetModuleHandleA("ntdll.dll");
+        if (hNtDll) {
+            NtQuerySystemInformation = (NtQuerySystemInformationPtr)GetProcAddress(hNtDll, "NtQuerySystemInformation");
         }
+        
+        SYSTEM_INFO sysInfo;
+        GetSystemInfo(&sysInfo);
+        numProcs = sysInfo.dwNumberOfProcessors;
+        prevInfo.resize(numProcs, {0});
+        
+        initialized = true;
+    }
+
+    if (!NtQuerySystemInformation || numProcs == 0) return;
+
+    std::vector<SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION> currInfo(numProcs);
+    ULONG len = 0;
+    
+    // Query System Processor Performance Information (Class 8)
+    NTSTATUS status = NtQuerySystemInformation(8, currInfo.data(), sizeof(SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION) * numProcs, &len);
+
+    if (status >= 0) { // success
+        uint64_t totalBusy = 0;
+        uint64_t totalTime = 0;
+        float maxCore = 0.0f;
+
+        for (int i = 0; i < numProcs; i++) {
+            uint64_t idle = currInfo[i].IdleTime.QuadPart - prevInfo[i].IdleTime.QuadPart;
+            uint64_t kernel = currInfo[i].KernelTime.QuadPart - prevInfo[i].KernelTime.QuadPart;
+            uint64_t user = currInfo[i].UserTime.QuadPart - prevInfo[i].UserTime.QuadPart;
+
+            // In SystemProcessorPerformanceInformation, KernelTime INCLUDES IdleTime.
+            // So:
+            // Total Time = KernelTime + UserTime (which is RealKernel + Idle + User)
+            // Busy Time = Total Time - IdleTime
+            
+            uint64_t total = kernel + user;
+            uint64_t busy = (total > idle) ? (total - idle) : 0;
+
+            if (total > 0) {
+                float coreLoad = (float)busy / total * 100.0f;
+                if (coreLoad > 100.0f) coreLoad = 100.0f; // Clamp due to timing jitter
+                if (coreLoad > maxCore) maxCore = coreLoad;
+
+                totalBusy += busy;
+                totalTime += total;
+            }
+        }
+
+        if (totalTime > 0) {
+            current.cpuUsage = (float)totalBusy / totalTime * 100.0f;
+            current.cpuMaxCoreUsage = maxCore;
+        }
+        
+        // Update previous state
+        prevInfo = currInfo;
     }
 }
 

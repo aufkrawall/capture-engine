@@ -195,9 +195,8 @@ bool DxgiCapture::GetNextFrame(WGCCapturedFrame& frame, bool skipCopy) {
                       success = false; 
                   }
                  
-                  // Timestamp: Convert QPC to Milliseconds (matching WGC)
-                  LARGE_INTEGER freq, qpc;
-                  QueryPerformanceFrequency(&freq);
+                  // Timestamp: Pass Raw QPC (MediaEngine converts to MS)
+                  LARGE_INTEGER qpc;
                   
                   // Use driver timestamp if available, otherwise current QPC
                   int64_t ticks = impl_->frameInfo_.LastPresentTime.QuadPart;
@@ -207,7 +206,7 @@ bool DxgiCapture::GetNextFrame(WGCCapturedFrame& frame, bool skipCopy) {
                       LogDebug("[DXGI] LastPresentTime was 0, using QPC for timestamp.");
                   }
                   
-                  frame.timestamp = (ticks * 1000) / freq.QuadPart;
+                  frame.timestamp = ticks;
  
                   success = true;
               }

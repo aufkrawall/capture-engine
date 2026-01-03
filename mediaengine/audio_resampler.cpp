@@ -302,37 +302,52 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
   int64_t driftSamples = audioSamplesOutput - expectedSamples;
   
   // 1. SMOOTHING STAGE (Low Pass Filter)
-  // Drift readings can allow jitter (Frame Pacing noise).
+  // Drift readings can jitter due to frame pacing noise.
   // We use an exponential moving average to find the trend.
-  // Alpha 0.1 means we trust history 90%, new reading 10%.
-  smoothedDrift = (smoothedDrift * 0.9) + ((double)driftSamples * 0.1);
+  // Alpha 0.05 means we trust history 95%, new reading 5% - more stable than 0.1
+  smoothedDrift = (smoothedDrift * 0.95) + ((double)driftSamples * 0.05);
   
-  // Only apply compensation if SMOOTHED drift exceeds threshold (60ms)
-  // Higher threshold (60ms instead of 5ms) prevents fighting frame pacing jitter (8-33ms).
-  const int64_t driftThreshold = (outFmt.sampleRate * 60) / 1000;
+  // TWO-TIER DRIFT COMPENSATION:
+  // Tier 1: Large drift (>50ms) - fast correction at 0.5% max pitch
+  // Tier 2: Small drift (>15ms) - slow correction at 0.1% max pitch (~1.7 cents)
+  // This ensures both sudden large drifts and gradual small drifts are corrected.
+  
+  const int64_t largeDriftThreshold = (outFmt.sampleRate * 50) / 1000;  // 50ms = 2400 samples @ 48kHz
+  const int64_t smallDriftThreshold = (outFmt.sampleRate * 15) / 1000;  // 15ms = 720 samples @ 48kHz
   
   int32_t targetDelta = 0;
+  int32_t maxDelta = 0;
   
-  if (std::abs(smoothedDrift) > driftThreshold) {
-    // We have persistent drift.
-    // Target correction: Correct 100% of drift over 1 second.
+  double absDrift = std::abs(smoothedDrift);
+  
+  if (absDrift > largeDriftThreshold) {
+    // TIER 1: Large drift - correction with imperceptible pitch shift
+    // Target: correct 100% of drift over 1 second
     targetDelta = (int32_t)(smoothedDrift);
     
-    // Clamp target to prevent audible pitch artifacts
-    // Original: 5% (Too high!). New: 0.5% (~8 cents max detune).
-    // 0.5% of 48000 = 240 samples.
-    const int32_t maxDelta = outFmt.sampleRate / 200; 
+    // Max 0.05% pitch shift (~0.8 cents - completely imperceptible)
+    // Human JND for pitch is ~5 cents, 0.8 cents is well below that
+    maxDelta = outFmt.sampleRate / 2000;  // 24 samples @ 48kHz
     
-    if (targetDelta > maxDelta) targetDelta = maxDelta;
-    if (targetDelta < -maxDelta) targetDelta = -maxDelta;
+  } else if (absDrift > smallDriftThreshold) {
+    // TIER 2: Small drift - gentle correction
+    // Target: correct 50% of drift over 1 second (slower convergence)
+    targetDelta = (int32_t)(smoothedDrift * 0.5);
+    
+    // Max 0.02% pitch shift (~0.3 cents - completely inaudible)
+    maxDelta = outFmt.sampleRate / 5000;  // ~10 samples @ 48kHz
   }
+  // else: drift < 15ms - no correction needed (within acceptable tolerance)
+  
+  // Clamp to max delta
+  if (targetDelta > maxDelta) targetDelta = maxDelta;
+  if (targetDelta < -maxDelta) targetDelta = -maxDelta;
   
   // 2. RATE LIMITING STAGE (Inertia)
   // Don't jump from 0 to targetDelta instantly. Move slowly.
-  // Max change per update: 2 samples.
-  // At 60fps update rate, this allows changing correction by 120 samples/sec.
-  // This prevents "Wow" (sudden pitch bends).
-  const int32_t maxChange = 2;
+  // Max change per update: 4 samples (faster than before to reach target quicker)
+  // At 60fps update rate, this allows changing correction by 240 samples/sec.
+  const int32_t maxChange = 4;
   
   if (currentDelta < targetDelta) {
       currentDelta += maxChange;
@@ -348,8 +363,8 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
       int ret = swr_set_compensation(swrCtx, -currentDelta, outFmt.sampleRate);
       
       if (ret >= 0) {
-          // Log only on significant changes
-          if (!compensationActive || std::abs(currentDelta - (int32_t)lastDriftSamples) > 10) {
+          // Log only on significant changes (every 20 samples delta change)
+          if (!compensationActive || std::abs(currentDelta - (int32_t)lastDriftSamples) > 20) {
              DLL_Log("[AudioResampler] Drift Comp: smoothed=%.1f, target=%d, current=%d (%.3f%%)",
                      smoothedDrift, targetDelta, currentDelta, 
                      (double)currentDelta * 100.0 / outFmt.sampleRate);
@@ -357,7 +372,7 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
           
           if (currentDelta != 0) {
              compensationActive = true;
-             lastDriftSamples = currentDelta; // Reuse var for log tracking
+             lastDriftSamples = currentDelta; // Track for log delta
           } else {
              compensationActive = false;
              DLL_Log("[AudioResampler] Drift stabilized.");

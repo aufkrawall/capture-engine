@@ -611,6 +611,7 @@ void AsyncCaptureThreadProc() {
       g_DX12Capture.writeIndex = (g_DX12Capture.writeIndex + 1) % CAPTURE_TEXTURE_COUNT;
 
       // Signal frame ready in IPC ring buffer
+      // PASS RAW QPC: MediaEngine converts to MS using trusted frequency
       g_DX12Capture.SignalFrameReady(g_IPC, writeIdx, frame.timestampQPC,
                                  g_DX12Capture.fenceValue);
 

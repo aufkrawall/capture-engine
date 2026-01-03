@@ -1769,6 +1769,7 @@ static void AsyncCaptureThreadProc() {
                   HookLog("Vulkan: Async - Frame %d Ready (Fence=%llu)", writeIdx, signalValue);
               }
           }
+          // PASS RAW QPC: MediaEngine converts to MS using trusted frequency
           g_VulkanCapture.SignalFrameReady(g_IPC, writeIdx, frame.timestampQPC, signalValue);
 
       } else {
@@ -1843,6 +1844,7 @@ static void AsyncCaptureThreadProc() {
                   std::lock_guard<std::recursive_mutex> lock(g_VulkanMutex);
                   vkQueueSubmit(g_AsyncQueue, 1, &submit, VK_NULL_HANDLE);
               }
+              // PASS RAW QPC: MediaEngine converts to MS using trusted frequency
               g_VulkanCapture.SignalFrameReady(g_IPC, writeIdx, frame.timestampQPC, signalValue);
           }
       }

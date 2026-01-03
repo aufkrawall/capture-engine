@@ -6,7 +6,8 @@
 #include <atomic>
 
 struct SystemMetrics {
-  float cpuUsage;       // 0-100%
+  float cpuUsage;       // 0-100% (Total)
+  float cpuMaxCoreUsage;// 0-100% (Max Single Core)
   uint64_t ramUsed;     // Bytes
   uint64_t ramTotal;    // Bytes
   uint64_t vramUsed;    // Bytes (local video memory)

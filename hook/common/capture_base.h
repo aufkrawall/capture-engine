@@ -19,10 +19,10 @@ public:
 
   // Signal frame ready - accepts IPCClient for backward compatibility
   void SignalFrameReady(IPCClient* ipc, int textureIndex, 
-                        int64_t timestampMs, uint64_t gpuFenceValue) {
+                        int64_t timestamp, uint64_t gpuFenceValue) {
     if (ipc && ipc->GetSharedMem()) {
       CaptureBase::SignalFrameReady(ipc->GetSharedMem(), textureIndex, 
-                                    timestampMs, gpuFenceValue);
+                                    timestamp, gpuFenceValue);
     }
   }
 };

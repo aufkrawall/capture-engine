@@ -480,10 +480,11 @@ void AppAudioCapture::CaptureLoop() {
     }
 
     // Heartbeat for silence synthesis - use high-resolution timer
-    // GetTickCount64 has ~15ms resolution which causes drift over long recordings
-    static auto lastRealTime = std::chrono::steady_clock::now();
-    static int64_t synthesizedMs = 0;  // Track how much silence we've synthesized
-    static bool heartbeatInit = false;
+    // NOTE: These must be non-static to support multiple AppAudioCapture instances
+    // (e.g., one for game, one for Brave) - each needs independent timing
+    auto& lastRealTime = m_lastRealTime;
+    int64_t& synthesizedMs = m_synthesizedMs;
+    bool& heartbeatInit = m_heartbeatInit;
     
     if (!heartbeatInit) {
       lastRealTime = std::chrono::steady_clock::now();

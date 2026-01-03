@@ -478,7 +478,8 @@ public:
             context4->Signal(fence, fenceValue);
         }
         
-        SignalFrameReady(g_IPC, idx, us / 1000, fenceValue);
+        // PASS RAW QPC
+        SignalFrameReady(g_IPC, idx, qpc.QuadPart, fenceValue);
         AdvanceWriteIndex();
     }
 };

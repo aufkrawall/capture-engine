@@ -709,7 +709,8 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
          g_DX11Capture.fenceValue++;
          g_DX11Capture.context4->Signal(g_DX11Capture.fence, g_DX11Capture.fenceValue);
          
-         g_DX11Capture.SignalFrameReady(ipc, idx, us / 1000, g_DX11Capture.fenceValue);
+         // PASS RAW QPC: MediaEngine converts to MS
+         g_DX11Capture.SignalFrameReady(ipc, idx, qpc.QuadPart, g_DX11Capture.fenceValue);
          g_DX11Capture.AdvanceWriteIndex();
       } else if (captureContext) {
           // Fallback Path using Queries (Potentially Blocking)
@@ -726,7 +727,8 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
           // Wait for copy to complete 
           g_DX11Capture.WaitForCopy(captureContext, idx, 5);
     
-          g_DX11Capture.SignalFrameReady(ipc, idx, us / 1000, 0);
+          // PASS RAW QPC: MediaEngine converts to MS
+          g_DX11Capture.SignalFrameReady(ipc, idx, qpc.QuadPart, 0);
           g_DX11Capture.AdvanceWriteIndex();
       }
     }
@@ -856,7 +858,8 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain *pSwapChain,
          captureContext->CopyResource(g_DX11Capture.sharedTextures[idx], backbuffer);
          g_DX11Capture.fenceValue++;
          g_DX11Capture.context4->Signal(g_DX11Capture.fence, g_DX11Capture.fenceValue);
-         g_DX11Capture.SignalFrameReady(g_IPC, idx, us / 1000, g_DX11Capture.fenceValue);
+         // PASS RAW QPC
+         g_DX11Capture.SignalFrameReady(g_IPC, idx, qpc.QuadPart, g_DX11Capture.fenceValue);
          g_DX11Capture.AdvanceWriteIndex();
       } else if (captureContext) {
           if (g_DX11Capture.copyQueries[idx]) {

@@ -199,7 +199,7 @@ void Overlay::RenderUI() {
         ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(2, 0));
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2, 1));
     } else {
-        ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(5, 2)); // Slightly increased padding
+        ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(12, 2)); // Increased padding for column separation
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6, 4));
     }
 
@@ -248,7 +248,7 @@ void Overlay::RenderUI() {
             
             // CPU
             if (cfg.showCPU) {
-                snprintf(buf, 64, "%.0f%%", cachedMetrics.cpuUsage);
+                snprintf(buf, 64, "%.0f%% (%.0f%%)", cachedMetrics.cpuUsage, cachedMetrics.cpuMaxCoreUsage);
                 ImU32 valCol = GetLoadColor(cachedMetrics.cpuUsage, cfg);
                 RenderRow("CPU", buf, cfg.cpuColor, valCol);
             }

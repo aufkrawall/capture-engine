@@ -145,7 +145,7 @@ public:
 
   // Signal frame ready to IPC ring buffer
   void SignalFrameReady(SharedMemoryLayout *sharedMem, int textureIndex, 
-                        int64_t timestampMs, uint64_t gpuFenceValue) {
+                        int64_t timestamp, uint64_t gpuFenceValue) {
     if (!sharedMem)
       return;
 
@@ -154,7 +154,7 @@ public:
     auto &slot = ring.slots[wIdx % FRAME_RING_SIZE];
     
     // Write frame metadata
-    slot.timestamp = timestampMs;
+    slot.timestamp = timestamp;
     slot.textureIndex = textureIndex;
     slot.fenceValue = gpuFenceValue;
     

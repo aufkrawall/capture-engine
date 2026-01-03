@@ -19,7 +19,7 @@
 
 class MediaEngine {
 public:
-  MediaEngine() : recording(false), audioRunning(false), firstVideoFrameMs(0), lastVideoFrameMs(0), videoElapsedMs(0) {}
+  MediaEngine() : recording(false), audioRunning(false), firstVideoFrameMs(0), lastVideoFrameMs(0), videoElapsedMs(0), recordingStartTime() {}
   ~MediaEngine() { StopRecording(); }
 
   // Multi-source audio support
@@ -52,9 +52,12 @@ public:
   // Audio thread
   std::thread audioThread;
   std::atomic<bool> audioRunning;
+  std::atomic<bool> audioSyncPending{false};  // Pause AudioLoop writes during buffer clear
+  std::chrono::steady_clock::time_point recordingStartTime; // CaptureEngine clock start time
   int64_t firstVideoFrameMs;  // Timestamp of first video frame for A/V sync
   int64_t lastVideoFrameMs;   // Timestamp of last video frame for audio trimming
   std::atomic<int64_t> videoElapsedMs;  // Elapsed video time in ms for audio clock sync
+  std::atomic<int64_t> recordingStartSystemQPCMs{0}; // Start time in System QPC MS (for Audio Alignment)
   
   // Get current video elapsed time for audio clock compensation
   int64_t GetVideoElapsedMs() const { return videoElapsedMs.load(); }
@@ -73,11 +76,20 @@ public:
       return videoEnc->GetLastFrameFenceWaitUs();
     return 0;
   }
+  
+  // Trusted System QPC Frequency
+  int64_t qpcFreq = 0;
 
   bool Init(const AppConfig *config) {
     std::lock_guard<std::recursive_mutex> lock(muxMutex);
     DLL_Log("MediaEngine::Init starting");
-    DLL_Log("MediaEngine::Init config ptr=%p", (void *)config);
+    
+    // Initialize QPC Frequency
+    LARGE_INTEGER f;
+    QueryPerformanceFrequency(&f);
+    qpcFreq = f.QuadPart;
+    DLL_Log("MediaEngine: Trusted QPC Frequency: %lld", qpcFreq);
+
     this->config = *config;
 
     // Setup Video (Alloc Only)
@@ -285,6 +297,7 @@ public:
       // CRITICAL: Reset video clock for new recording to prevent stale timestamps
       firstVideoFrameMs = 0;  // Reset for new recording
       videoElapsedMs.store(0); // CRITICAL: Reset video clock for new recording to prevent stale timestamps
+      recordingStartSystemQPCMs.store(0); // CRITICAL: Reset QPC start time for new recording
 
       // PULL MODEL: Reset audio encoding state for new recording
       encodedSamplesPerSource.clear();
@@ -411,22 +424,38 @@ public:
   }
 
   void ProcessFrame(uint64_t handle, uint64_t fenceHandle, uint64_t fenceVal,
-                    int64_t timestamp, int32_t luidLow, int32_t luidHigh,
+                    int64_t timestampQPC, int32_t luidLow, int32_t luidHigh,
                     uint32_t sourcePid, uint32_t width, uint32_t height,
                     uint32_t format, bool isHDR, bool isShmem = false, int shmemSlot = 0) {
     std::lock_guard<std::recursive_mutex> lock(muxMutex);
     if (!videoEnc || !recording)
       return;
 
-    // On first video frame, sync audio to this timestamp for 0ms A/V desync
-    if (firstVideoFrameMs == 0) {
-      firstVideoFrameMs = timestamp;
-      DLL_Log("MediaEngine: First inject frame at %lld ms - syncing audio", timestamp);
+    // Use CaptureEngine's steady_clock for duration to avoid Game QPC / Frequency mismatch issues
+    auto now = std::chrono::steady_clock::now();
+    
+    // Calculate QPC based timestamp for debugging/Legacy Start Time
+    int64_t debugTimestamp = (qpcFreq > 0) ? (timestampQPC * 1000) / qpcFreq : timestampQPC;
+
+    if (this->firstVideoFrameMs == 0) {
+      this->firstVideoFrameMs = debugTimestamp; // Store QPC-based start for logs
+      this->recordingStartTime = now;
+      
+      // Capture System QPC for accurate Audio Alignment
+      LARGE_INTEGER qpc, freq;
+      QueryPerformanceCounter(&qpc);
+      QueryPerformanceFrequency(&freq);
+      this->recordingStartSystemQPCMs = (qpc.QuadPart * 1000) / freq.QuadPart;
+      
+      DLL_Log("MediaEngine: First inject frame at %lld ms (QPC: %lld) - syncing audio (SystemQPC: %lld)", 
+              debugTimestamp, timestampQPC, this->recordingStartSystemQPCMs.load());
       
       // Set recording start for all audio encoders to match video start (Microseconds)
+      // SYNC FIX: Pause AudioLoop writes during buffer clear to prevent race
+      audioSyncPending.store(true);
       for (auto &src : audioSources) {
         if (src.sharedEncoderPtr) {
-          src.sharedEncoderPtr->SetRecordingStart(timestamp * 1000);
+          src.sharedEncoderPtr->SetRecordingStart(debugTimestamp * 1000);
         }
         // CRITICAL: Clear ring buffers now!
         // This drops any audio captured while waiting for the first video frame.
@@ -437,21 +466,25 @@ public:
            src.resampler->Reset();
         }
       }
+      audioSyncPending.store(false);
     }
+    
+    // Calculate Real Elapsed Time
+    int64_t realElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - this->recordingStartTime).count();
+    
+    // Update Atomic Member (for Audio Thread / Pull)
+    this->videoElapsedMs.store(realElapsedMs);
 
     // Maybe we want preview later? For now, recording only.
     videoEnc->SetAdapterLUID(luidLow, luidHigh);
     bool res = videoEnc->EncodeFrame((HANDLE)handle, (HANDLE)fenceHandle,
-                                     fenceVal, timestamp, sourcePid, width,
+                                     fenceVal, realElapsedMs, sourcePid, width,
                                      height, format, isHDR, isShmem, shmemSlot);
     (void)res; // Avoid unused warn if not logging success here
 
     // Track last video frame timestamp for audio trimming
-    lastVideoFrameMs = timestamp;
+    lastVideoFrameMs = realElapsedMs;
     
-    // Update video elapsed time for audio clock sync
-    videoElapsedMs.store(timestamp - firstVideoFrameMs);
-
     // Update audio stream index for all sources
     for (size_t i = 0; i < audioSources.size(); i++) {
       auto &src = audioSources[i];
@@ -464,32 +497,48 @@ public:
 
     static int logCount = 0;
     if (logCount++ % 60 == 0) {
-      DLL_Log("MediaEngine: Sending Frame ts=%lld", timestamp);
+      DLL_Log("MediaEngine: Sending Frame ts=%lld", debugTimestamp);
     }
 
     // PULL MODEL: Encode audio for this video frame (same as screengrab mode)
-    PullAndEncodeAudio(timestamp);
+    PullAndEncodeAudio(debugTimestamp);
   }
 
   // Direct D3D11 texture processing for screengrab mode (zero-copy)
-  void ProcessFrameD3D11(void *texture, int64_t timestamp, uint32_t width,
+  // Direct D3D11 texture processing for screengrab mode (zero-copy)
+  void ProcessFrameD3D11(void *texture, int64_t timestampQPC, uint32_t width,
                          uint32_t height) {
     std::lock_guard<std::recursive_mutex> lock(muxMutex);
     if (!videoEnc || !recording)
       return;
 
-    // On first video frame, sync audio to this timestamp for 0ms A/V desync
-    if (firstVideoFrameMs == 0) {
-      firstVideoFrameMs = timestamp;
-      DLL_Log("MediaEngine: First video frame at %lld ms - syncing audio", timestamp);
+    // Use CaptureEngine's steady_clock for duration to avoid Game QPC / Frequency mismatch issues
+    auto now = std::chrono::steady_clock::now();
+    int64_t debugTimestamp = (qpcFreq > 0) ? (timestampQPC * 1000) / qpcFreq : timestampQPC;
+
+    if (this->firstVideoFrameMs == 0) {
+      this->firstVideoFrameMs = debugTimestamp;
+      this->recordingStartTime = now;
+      
+      // Capture System QPC for accurate Audio Alignment
+      LARGE_INTEGER qpc, freq;
+      QueryPerformanceCounter(&qpc);
+      QueryPerformanceFrequency(&freq);
+      this->recordingStartSystemQPCMs = (qpc.QuadPart * 1000) / freq.QuadPart;
+      
+      // Start of recording logic
+      DLL_Log("MediaEngine: First D3D11 frame at %lld ms (QPC: %lld) (SystemQPC: %lld)", 
+              debugTimestamp, timestampQPC, this->recordingStartSystemQPCMs.load());
       
       // Reset elapsed clock for audio sync
       videoElapsedMs.store(0);
       
       // Set recording start for all audio encoders to match video start (Microseconds)
+      // SYNC FIX: Pause AudioLoop writes during buffer clear to prevent race
+      audioSyncPending.store(true);
       for (auto &src : audioSources) {
         if (src.sharedEncoderPtr) {
-          src.sharedEncoderPtr->SetRecordingStart(timestamp * 1000);
+          src.sharedEncoderPtr->SetRecordingStart(debugTimestamp * 1000);
         }
         // CRITICAL: Clear ring buffers now!
         // This drops any audio captured while waiting for the first video frame.
@@ -500,16 +549,20 @@ public:
            src.resampler->Reset();
         }
       }
+      audioSyncPending.store(false);
     }
 
-    // Update video elapsed time for audio clock sync
-    videoElapsedMs.store(timestamp - firstVideoFrameMs);
+    // Calculate Real Elapsed Time
+    int64_t realElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - this->recordingStartTime).count();
+    
+    // Update Atomic Member (for Audio Thread / Pull)
+    this->videoElapsedMs.store(realElapsedMs);
 
-    videoEnc->EncodeFrameD3D11((ID3D11Texture2D *)texture, timestamp, width,
+    videoEnc->EncodeFrameD3D11((ID3D11Texture2D *)texture, realElapsedMs, width,
                                height);
 
     // Track last video frame timestamp for audio trimming
-    lastVideoFrameMs = timestamp;
+    lastVideoFrameMs = realElapsedMs;
 
     // Update audio stream index for all sources
     for (size_t i = 0; i < audioSources.size(); i++) {
@@ -522,12 +575,12 @@ public:
 
     static int logCount = 0;
     if (logCount++ % 60 == 0) {
-      DLL_Log("MediaEngine: ScreenGrab frame ts=%lld %dx%d", timestamp, width,
+      DLL_Log("MediaEngine: ScreenGrab frame ts=%lld %dx%d", debugTimestamp, width,
               height);
     }
 
     // PULL MODEL: Encode audio for this video frame
-    PullAndEncodeAudio(timestamp);
+    PullAndEncodeAudio(debugTimestamp);
   }
 
   // PULL MODEL: Pull audio from RingBuffers and encode based on Video PTS
@@ -595,7 +648,11 @@ public:
               
               // Warp all source counters
               for (size_t srcIdx : srcIndices) {
-                  encodedSamplesPerSource[srcIdx] += warpAmount;
+                encodedSamplesPerSource[srcIdx] += warpAmount;
+                // Also flush the ring buffer to match the warp (prevent overflow)
+                if (audioSources[srcIdx].ringBuffer) {
+                    audioSources[srcIdx].ringBuffer->Skip((size_t)warpAmount * CHANNELS); 
+                }
               }
               
               // Update samplesToEncode to only encode the remaining small chunk
@@ -613,11 +670,15 @@ public:
       for (size_t srcIdx : srcIndices) {
         auto &src = audioSources[srcIdx];
         
-        // Check for dropped samples
+        // Check for dropped samples (ring buffer overflow)
+        // NOTE: We only LOG this, we do NOT advance the encoded counter.
+        // The video-driven pull mechanism already handles sync correctly.
+        // Advancing the counter here would cause audio to be skipped.
         size_t droppedFloats = src.ringBuffer->GetAndClearDroppedSamples();
         if (droppedFloats > 0) {
+          size_t droppedSamples = droppedFloats / CHANNELS;
           DLL_Log("[PullAudio] WARNING: Ring buffer overflow - %zu samples dropped for src=%d",
-                  droppedFloats, (int)srcIdx);
+                  droppedSamples, (int)srcIdx);
         }
         
         // Pull from ring buffer
@@ -1004,7 +1065,26 @@ private:
                  // sourceBuffers[srcIdx].resize(oldSize + numFloats);
                  
                  // PULL MODEL (Phase 2): Write to Ring Buffer only
-                 if (src.ringBuffer) {
+                 // SYNC FIX: Skip write if video thread is clearing buffers
+                 if (src.ringBuffer && !audioSyncPending.load()) {
+                     // Check for startup delay (Audio arriving late relative to Video Start)
+                     int64_t startQPC = recordingStartSystemQPCMs.load();
+                     if (startQPC != 0 && sourceTimestamps[srcIdx] == 0) {
+                         // First packet alignment using System QPC
+                         int64_t pTime = packet.timestamp; // Packet comes with Absolute QPC MS
+                         int64_t diff = pTime - startQPC;
+                         
+                         if (diff > 5) { 
+                             // Audio is Late - Insert Silence Padding
+                             // e.g. AppAudioCapture started 500ms after Video
+                             int samples = (int)(diff * 48); // 48 samples/ms
+                             // Stereo (2 channels)
+                             std::vector<float> silence(samples * 2, 0.0f); 
+                             src.ringBuffer->Write(silence.data(), silence.size());
+                             DLL_Log("[AudioLoop] Sync: Inserting %d samples (%lld ms) padding for src %d (Late Start)", samples, diff, (int)srcIdx);
+                         } 
+                     }
+                     
                      size_t written = src.ringBuffer->Write((float*)resampledData[0], numFloats);
                      if (written < numFloats) {
                          // Only log overflow occasionally to avoid log spam
@@ -1014,7 +1094,7 @@ private:
                                      (int)srcIdx, numFloats, written);
                          }
                      }
-                 } else {
+                 } else if (!src.ringBuffer) {
                      DLL_Log("[AudioLoop] ERROR: No RingBuffer for source %d", (int)srcIdx);
                  }
              }

@@ -586,7 +586,8 @@ public:
                 wglDXUnlockObjectsNV(nvDevice, 1, &nvTextureHandles[idx]);
             }
             
-            SignalFrameReady(g_IPC, idx, us / 1000, 0);
+            // PASS RAW QPC
+            SignalFrameReady(g_IPC, idx, qpc.QuadPart, 0);
         } else if (usePBO) {
             // PBO async readback
             int readPBO = currentPBO;
@@ -609,7 +610,8 @@ public:
             pglBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
             
             currentPBO = writePBO;
-            SignalFrameReady(g_IPC, idx, us / 1000, 0);
+            // PASS RAW QPC
+            SignalFrameReady(g_IPC, idx, qpc.QuadPart, 0);
         }
         
         AdvanceWriteIndex();
