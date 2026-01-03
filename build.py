@@ -1194,10 +1194,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
     
     # Copy License files
     log("Copying License files...")
-    root_license = os.path.join(PROJECT_ROOT, "LICENSE.txt")
-    if os.path.exists(root_license):
-        shutil.copy2(root_license, os.path.join(BIN_DIR, "LICENSE.txt"))
-        log("Copied root LICENSE.txt to bin/")
     
     licenses_src = os.path.join(PROJECT_ROOT, "licenses")
     licenses_dst = os.path.join(BIN_DIR, "licenses")

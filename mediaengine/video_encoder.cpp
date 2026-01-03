@@ -1485,8 +1485,8 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
   // 5. Wrap NV12 D3D11 Texture in AVFrame
   AVFrame *d3d11Frame = av_frame_alloc();
   d3d11Frame->format = AV_PIX_FMT_D3D11;
-  d3d11Frame->width = width;
-  d3d11Frame->height = height;
+  d3d11Frame->width = scalingEnabled ? outputWidth : width;
+  d3d11Frame->height = scalingEnabled ? outputHeight : height;
   d3d11Frame->hw_frames_ctx = av_buffer_ref(d3d11FramesCtx);
 
   d3d11Frame->buf[0] =
@@ -1829,8 +1829,8 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D *bgraTexture, int64_t pts,
   // Wrap NV12 D3D11 Texture in AVFrame
   AVFrame *d3d11Frame = av_frame_alloc();
   d3d11Frame->format = AV_PIX_FMT_D3D11;
-  d3d11Frame->width = width;
-  d3d11Frame->height = height;
+  d3d11Frame->width = scalingEnabled ? outputWidth : width;
+  d3d11Frame->height = scalingEnabled ? outputHeight : height;
   d3d11Frame->hw_frames_ctx = av_buffer_ref(d3d11FramesCtx);
 
   d3d11Frame->buf[0] =
@@ -2225,6 +2225,21 @@ bool VideoEncoder::InitVideoProcessor() {
     } else {
       DLL_Log("[VideoProcessor] Scaling filter: bilinear (no edge enhancement)");
     }
+    
+    // CRITICAL: Set source and destination rectangles for scaling
+    // Without these, VideoProcessorBlt fails with E_INVALIDARG
+    RECT sourceRect = {0, 0, (LONG)inputWidth, (LONG)inputHeight};
+    RECT destRect = {0, 0, (LONG)outputWidth, (LONG)outputHeight};
+    
+    // Stream 0: Source rect = full input frame
+    videoContext->VideoProcessorSetStreamSourceRect(videoProcessor, 0, TRUE, &sourceRect);
+    // Stream 0: Dest rect = full output frame (scaled)
+    videoContext->VideoProcessorSetStreamDestRect(videoProcessor, 0, TRUE, &destRect);
+    // Output target = full output surface
+    videoContext->VideoProcessorSetOutputTargetRect(videoProcessor, TRUE, &destRect);
+    
+    DLL_Log("[VideoProcessor] Scaling rects: source=%dx%d dest=%dx%d",
+            inputWidth, inputHeight, outputWidth, outputHeight);
   }
 
   // Configure color space: Full RGB input -> Limited YCbCr output
@@ -2532,7 +2547,10 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D *bgraTexture,
     // if it fixes INVALIDARG. If it looks squashed at edges, we can refine
     // source clipping later. Squashed is better than dropping frames.
 
-    RECT frameRect = {0, 0, width, height};
+    // Clipping bounds use OUTPUT dimensions when scaling
+    int frameW = scalingEnabled ? outputWidth : width;
+    int frameH = scalingEnabled ? outputHeight : height;
+    RECT frameRect = {0, 0, frameW, frameH};
     RECT clippedRect;
     if (IntersectRect(&clippedRect, &frameRect, &cursorRect)) {
       // Only draw if visible
