@@ -2141,7 +2141,7 @@ bool VideoEncoder::InitVideoProcessor() {
   contentDesc.InputHeight = inputHeight;
   contentDesc.OutputWidth = outputWidth;
   contentDesc.OutputHeight = outputHeight;
-  contentDesc.Usage = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
+  contentDesc.Usage = (savedConfig.scaling.quality == "best") ? D3D11_VIDEO_USAGE_OPTIMAL_QUALITY : D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
 
   hr = videoDevice->CreateVideoProcessorEnumerator(&contentDesc,
                                                    &videoProcessorEnum);
@@ -2172,32 +2172,9 @@ bool VideoEncoder::InitVideoProcessor() {
 
   // Configure scaling filter if scaling is enabled
   if (scalingEnabled) {
-    // Determine if upscaling or downscaling
-    bool isUpscaling = (outputWidth > inputWidth || outputHeight > inputHeight);
-    
-    // Get filter name from config (auto, bilinear, bicubic, lanczos)
-    std::string filterName = savedConfig.scaling.filter;
-    std::transform(filterName.begin(), filterName.end(), filterName.begin(), ::tolower);
-    
-    // For "auto": use lanczos for upscaling (sharper), bicubic for downscaling
-    if (filterName == "auto") {
-      filterName = isUpscaling ? "lanczos" : "bicubic";
-    }
-    
-    // Map filter names to D3D11 VP settings
-    // D3D11 Video Processor uses edge enhancement for sharpening
-    // Higher enhancement = sharper (like lanczos), lower = smoother (like bilinear)
-    bool enableEdgeEnhancement = false;
-    int edgeEnhancementLevel = 0;  // 0-100 range for VP filter level
-    
-    if (filterName == "lanczos") {
-      enableEdgeEnhancement = true;
-      edgeEnhancementLevel = 50;  // Moderate sharpening for lanczos-like output
-    } else if (filterName == "bicubic") {
-      enableEdgeEnhancement = true;
-      edgeEnhancementLevel = 25;  // Light sharpening for bicubic-like output
-    }
-    // bilinear = no edge enhancement (default VP behavior)
+    // Map sharpness (0-100) directly to D3D11 VP edge enhancement
+    bool enableEdgeEnhancement = (savedConfig.scaling.sharpness > 0);
+    int edgeEnhancementLevel = savedConfig.scaling.sharpness;
     
     if (enableEdgeEnhancement) {
       // Check if edge enhancement is supported
@@ -2217,13 +2194,13 @@ bool VideoEncoder::InitVideoProcessor() {
             videoProcessor, 0, D3D11_VIDEO_PROCESSOR_FILTER_EDGE_ENHANCEMENT,
             TRUE, filterValue);
         
-        DLL_Log("[VideoProcessor] Scaling filter: %s (edge enhancement=%d, range=%d-%d)",
-                filterName.c_str(), filterValue, filterRange.Minimum, filterRange.Maximum);
+        DLL_Log("[VideoProcessor] Scaling: quality=%s, sharpness=%d (filterValue=%d, range=%d-%d)",
+                savedConfig.scaling.quality.c_str(), edgeEnhancementLevel, filterValue, filterRange.Minimum, filterRange.Maximum);
       } else {
-        DLL_Log("[VideoProcessor] Edge enhancement not supported, using default scaling");
+        DLL_Log("[VideoProcessor] Edge enhancement (sharpness) not supported by hardware");
       }
     } else {
-      DLL_Log("[VideoProcessor] Scaling filter: bilinear (no edge enhancement)");
+      DLL_Log("[VideoProcessor] Scaling: quality=%s, sharpness=0 (disabled)", savedConfig.scaling.quality.c_str());
     }
     
     // CRITICAL: Set source and destination rectangles for scaling

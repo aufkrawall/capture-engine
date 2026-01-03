@@ -29,7 +29,8 @@ struct AudioConfig {
 struct ScalingConfig {
   bool enabled = false;                     // Disabled by default
   std::string outputResolution = "native";  // "native", "720p", "1080p", "1440p", "4k", or "WxH"
-  std::string filter = "auto";              // "auto", "bilinear", "bicubic", "lanczos"
+  std::string quality = "normal";           // "normal", "best" (Usage mapping)
+  int sharpness = 0;                        // 0-100 (Edge Enhancement level)
   
   // Parsed output dimensions (0 = use native/input)
   int outputWidth = 0;

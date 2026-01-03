@@ -203,9 +203,10 @@ void CreateDefaultConfig(const std::string &path) {
   cfg << "; Output resolution: native (use input), 720p, 1080p, 1440p, 4k, or WxH format\n";
   cfg << "; Examples: 1080p, 2560x1440, 1920x1080\n";
   cfg << "output_resolution=native\n";
-  cfg << "; Scaling filter: auto, bilinear, bicubic, lanczos\n";
-  cfg << "; auto = lanczos for upscaling, bicubic for downscaling\n";
-  cfg << "filter=auto\n";
+  cfg << "; Scaling quality: normal (fastest), best (highest quality)\n";
+  cfg << "quality=best\n";
+  cfg << "; Scaling sharpness: 0 to 100 (adds edge enhancement/sharpening)\n";
+  cfg << "sharpness=0\n";
   cfg << "\n";
   cfg << "[Audio]\n";
 
@@ -678,7 +679,25 @@ void LoadConfig(const std::string &path, AppConfig &config, const std::string& o
   // GPU Scaling settings (from [Scaling] section)
   config.video.scaling.enabled = GetBool("Scaling", "enabled", false);
   config.video.scaling.outputResolution = GetStr("Scaling", "output_resolution", "native");
-  config.video.scaling.filter = GetStr("Scaling", "filter", "auto");
+  config.video.scaling.outputResolution = GetStr("Scaling", "output_resolution", "native");
+  
+  // NEW: Honest configuration
+  config.video.scaling.quality = GetStr("Scaling", "quality", "normal");
+  config.video.scaling.sharpness = GetInt("Scaling", "sharpness", 0);
+
+  // Backward compatibility: Convert "filter" to quality/sharpness if "filter" is set and "sharpness" is 0
+  std::string legacyFilter = GetStr("Scaling", "filter", "");
+  if (!legacyFilter.empty() && legacyFilter != "auto" && config.video.scaling.sharpness == 0) {
+      std::transform(legacyFilter.begin(), legacyFilter.end(), legacyFilter.begin(), ::tolower);
+      if (legacyFilter == "lanczos") {
+          config.video.scaling.quality = "best";
+          config.video.scaling.sharpness = 50;
+      } else if (legacyFilter == "bicubic") {
+          config.video.scaling.quality = "best";
+          config.video.scaling.sharpness = 25;
+      }
+      // bilinear maps to the default (normal/0) or explicit override
+  }
   
   // Parse output resolution string to dimensions
   std::string res = config.video.scaling.outputResolution;
