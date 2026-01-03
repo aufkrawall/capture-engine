@@ -270,11 +270,14 @@ static void InstallVTableHooks(ID3D11Device *pDevice, ID3D11DeviceContext* pCont
     if (pDevice) {
         void **pDeviceVTable = *(void ***)pDevice;
         if (oCreateSamplerState == NULL) {
-            if (MH_CreateHook(pDeviceVTable[43], (LPVOID)&DetourCreateSamplerState,
+        if (oCreateSamplerState == NULL) {
+            // Index 23 is CreateSamplerState
+            if (MH_CreateHook(pDeviceVTable[23], (LPVOID)&DetourCreateSamplerState,
                               (LPVOID *)&oCreateSamplerState) == MH_OK) {
-                MH_EnableHook(pDeviceVTable[43]);
+                MH_EnableHook(pDeviceVTable[23]);
                 HookLog("DX11: CreateSamplerState hook installed");
             }
+        }
         }
     }
 
@@ -1191,18 +1194,28 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device *pDevice,
                 else if (af == "4x") maxAniso = 4;
                 else if (af == "8x") maxAniso = 8;
                 
-                // Keep comparison flat if present
-                bool comparison = (desc.Filter >= D3D11_FILTER_COMPARISON_MIN_MAG_MIP_POINT);
-                
-                desc.Filter = comparison ? D3D11_FILTER_COMPARISON_ANISOTROPIC : D3D11_FILTER_ANISOTROPIC;
-                desc.MaxAnisotropy = maxAniso;
-                modified = true;
+                // CRITICAL: D3D11 forbids Anisotropic Filtering if any address mode is BORDER.
+                if (desc.AddressU == D3D11_TEXTURE_ADDRESS_BORDER || 
+                    desc.AddressV == D3D11_TEXTURE_ADDRESS_BORDER || 
+                    desc.AddressW == D3D11_TEXTURE_ADDRESS_BORDER) {
+                    // Skip AF override for Border address mode
+                } else {
+                    // Keep comparison flat if present
+                    bool comparison = (desc.Filter >= D3D11_FILTER_COMPARISON_MIN_MAG_MIP_POINT);
+                    
+                    desc.Filter = comparison ? D3D11_FILTER_COMPARISON_ANISOTROPIC : D3D11_FILTER_ANISOTROPIC;
+                    desc.MaxAnisotropy = maxAniso;
+                    modified = true;
+                }
             }
         }
 
         // Mip Mapping (Filter Override)
         std::string mip = gfx.mipMapping;
-        if (mip != "default") {
+        // Don't override filter for MipMapping if Anisotropy is already enabled (AF implies Trilinear)
+        bool isAniso = (desc.Filter == D3D11_FILTER_ANISOTROPIC || desc.Filter == D3D11_FILTER_COMPARISON_ANISOTROPIC);
+        
+        if (mip != "default" && !isAniso) {
             // This is complex because we need to preserve Min/Mag filters if possible, or just force standard
             // We will just force standard Trilinear/Bilinear for simplicity
              if (mip == "trilinear") {
