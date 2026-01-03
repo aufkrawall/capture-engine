@@ -186,8 +186,8 @@ void CreateDefaultConfig(const std::string &path) {
   cfg << "hdr_paper_white=auto\n";
   cfg << "\n";
   cfg << "; Colors (Hex #RRGGBB)\n";
-  cfg << "bg_color=#111111\n";
-  cfg << "bg_alpha=0.75\n";
+  cfg << "bg_color=#000000\n";
+  cfg << "bg_alpha=0.50\n";
   cfg << "text_color=#FFFFFF\n";
   cfg << "text_outline=true\n";
   cfg << "text_outline_color=#000000\n";
@@ -701,9 +701,9 @@ void LoadConfig(const std::string &path, AppConfig &config, const std::string& o
   // Visual Styling - MangoHud Inspired Defaults
   // 0xAABBGGRR format
   
-  // Background: Dark Gray/Black with 0.4 Alpha
-  config.overlay.bgColor = ParseColor(GetStr("Overlay", "bg_color", ""), 0xFF111111);
-  config.overlay.bgAlpha = GetFloat("Overlay", "bg_alpha", 0.75f);
+  // Background: Black with 0.5 Alpha
+  config.overlay.bgColor = ParseColor(GetStr("Overlay", "bg_color", ""), 0xFF000000);
+  config.overlay.bgAlpha = GetFloat("Overlay", "bg_alpha", 0.50f);
 
   // Colors: Using MangoHud's default palette
   // Green: 2E9762 -> ImGui: 0xFF62972E
