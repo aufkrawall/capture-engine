@@ -105,11 +105,12 @@ static void UpdateSharedMemoryFromConfig(SharedMemoryLayout* pSharedMem, const A
     pSharedMem->fpsLimiter.captureFps = config.video.fps;
     pSharedMem->fpsLimiter.useVFR = config.video.useVFR;
     
-    LogInfo("[Inject] Updated SharedMem Config: VSync=%s, AF=%s, FPS Limit=%d (%s)", 
+    LogInfo("[Inject] Updated SharedMem Config: VSync=%s, AF=%s, FPS Limit=%d (%s), CaptureOverlay=%d", 
             pSharedMem->graphicsConfig.vsyncMode, 
             pSharedMem->graphicsConfig.anisotropicFiltering,
             pSharedMem->fpsLimiter.generalFps,
-            pSharedMem->fpsLimiter.generalEnabled ? "ON" : "OFF");
+            pSharedMem->fpsLimiter.generalEnabled ? "ON" : "OFF",
+            pSharedMem->overlayConfig.captureIncludeOverlay);
 }
 
 int InjectProcessMain(const AppConfig &config) {
