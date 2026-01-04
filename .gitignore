@@ -1,26 +1,26 @@
 # Build and dependency directories
-build/
+build/msys64
+build/obj
 ffmpeg_build/
-external/imgui/
-external/minhook/
-external/volk/
+external/*
+licenses*
 
 # Compiled binaries and objects
 *.o
 *.obj
-*.exe
 *.dll
 *.pdb
 *.ilk
 *.exp
 *.lib
 *.map
+*.mkv
+*.xz
+*.exe
+*.dll
+*.old
 
 # Build logs
-build_log.txt
-build_error.log
-hook.log
-capture.log
 
 # IDE and temporary files
 .vs/
@@ -31,7 +31,6 @@ capture.log
 *.suo
 *.orig
 *~
-bin/
 obj/
 
 # Python cache

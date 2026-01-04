@@ -961,7 +961,9 @@ static void DrawDX9Overlay(IDirect3DDevice9 *device) {
     g_SharedOverlay.SetMetrics(&g_PerfMetrics);
     g_SharedOverlay.SetIPCClient(g_IPC);
     g_SharedOverlay.SetDroppedFrames(g_DX9Capture.droppedFrames.load(std::memory_order_relaxed));
-    g_SharedOverlay.SetGraphicsAPI("DX9");
+    const char* finalApi = "DX9";
+    if (GetModuleHandleA("vulkan-1.dll") || GetModuleHandleA("winevulkan.dll")) finalApi = "DX9 (DXVK)";
+    g_SharedOverlay.SetGraphicsAPI(finalApi);
     g_SharedOverlay.RenderUI();
     
     g_SharedOverlay.EndFrame();
@@ -1248,9 +1250,23 @@ static HRESULT STDMETHODCALLTYPE DetourSetSamplerState(IDirect3DDevice9* device,
                     const char* biasStr = gfx.mipBias.c_str();
                     if (biasStr[0] != 'd') {
                         char* end;
-                        float bias = strtof(biasStr, &end);
+                        float configBias = strtof(biasStr, &end);
                         if (end != biasStr) {
-                             Value = *((DWORD*)&bias);
+                             float originalBias = *((float*)&Value);
+                             std::string mode = gfx.mipBiasMode;
+
+                             if (mode == "offset") {
+                                 float finalBias = originalBias + configBias;
+                                 Value = *((DWORD*)&finalBias);
+                             } else if (mode == "base") {
+                                 if (originalBias < 0.0f) {
+                                     float finalBias = originalBias + configBias;
+                                     Value = *((DWORD*)&finalBias);
+                                 }
+                             } else {
+                                 // Strict (default)
+                                 Value = *((DWORD*)&configBias);
+                             }
                         }
                     }
 

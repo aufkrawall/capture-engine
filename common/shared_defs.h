@@ -118,6 +118,7 @@ struct SharedGraphicsConfig {
   char anisotropicFiltering[32]; // "default", "off", "2x", "4x", "8x", "16x"
   char mipMapping[32];           // "default", "bilinear", "trilinear"
   char mipBias[32];              // "default", "0.0", "-0.5", etc.
+  char mipBiasMode[32];          // "strict", "offset", "base"
   char msaaSamples[32];          // "default", "off", "2x", "4x", "8x"
   float prerenderLimit;          // -1=default, 0=serial, 0.5=hybrid, >=1 buffered
   int32_t backbufferCount;       // 0=default, 2-6 actual count

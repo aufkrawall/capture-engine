@@ -979,7 +979,20 @@ static void WINAPI DetourGlTexParameterf(GLenum target, GLenum pname, GLfloat pa
         std::string bias = gfx.mipBias;
         if (bias != "default" && pname == 0x8501) {
              try {
-                param = std::stof(bias);
+                float userBias = std::stof(bias);
+                float originalBias = param;
+                std::string mode = gfx.mipBiasMode;
+                
+                if (mode == "offset") {
+                    param = originalBias + userBias;
+                } else if (mode == "base") {
+                    if (originalBias < 0.0f) {
+                        param = originalBias + userBias;
+                    }
+                } else {
+                    // Strict
+                    param = userBias;
+                }
              } catch (...) {}
         }
         

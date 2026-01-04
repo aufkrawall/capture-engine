@@ -849,20 +849,26 @@ static HRESULT STDMETHODCALLTYPE DetourSetTextureStageState7(
         // Mip Bias
         if (Type == 19 /*D3DTSS_MIPMAPLODBIAS*/) {
               std::string bias = gfx.mipBias;
-              float finalBias = 0.0f;
+              float finalBias = *((float*)&Value); // Default to app value
               
-              // 1. User specified bias
               if (bias != "default") {
                   try {
-                    finalBias = std::stof(bias);
+                      float userBias = std::stof(bias);
+                      float originalBias = *((float*)&Value);
+                      std::string mode = gfx.mipBiasMode;
+
+                      if (mode == "offset") {
+                          finalBias = originalBias + userBias;
+                      } else if (mode == "base") {
+                          if (originalBias < 0.0f) {
+                              finalBias = originalBias + userBias;
+                          }
+                      } else {
+                          // Strict
+                          finalBias = userBias;
+                      }
                   } catch (...) {}
-              } else {
-                  // If default, check if we want to preserve app value?
-                  // For now, assume app value is 0 unless we track it.
-                  // But standard behavior: Value contains app's requested bias.
-                  finalBias = *((float*)&Value);
               }
-              
               
               Value = *((DWORD*)&finalBias);
         }

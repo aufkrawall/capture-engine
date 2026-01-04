@@ -205,169 +205,118 @@ static uint8_t* ScanPattern(uint8_t* start, size_t size, const char* pattern, co
     return nullptr;
 }
 
-// Helper for memory patching
-static bool ApplyNvidiaLodBiasFix() {
-    // Use EarlyLog to ensure visibility during init, and log every time (or just once)
-    bool enabled = g_LocalConfig.graphics.vulkanNvidiaLodBiasFix;
+// Helper: Apply a specific whitelisted pattern patch
+static int ApplyWhitelistedPattern(uint8_t* start, size_t size, const uint8_t* pattern, size_t patternLen, const uint8_t* patch, size_t patchLen, const char* name) {
+    int hits = 0;
+    uint8_t* p = start;
+    uint8_t* end = start + size - patternLen;
     
-    static bool loggedOnce = false;
-    if (!loggedOnce) {
-        EarlyLog("Vulkan: ApplyNvidiaLodBiasFix invoked. Config=%s", enabled ? "TRUE" : "FALSE");
-        loggedOnce = true;
-    }
-
-    if (!enabled) return false;
-
-    // Check if already applied? (Assuming we want to try until success)
-    static bool applied = false;
-    if (applied) return true;
-
-    HMODULE hModule = NULL;
-    bool is64Bit = false;
-
-#if defined(_WIN64)
-    hModule = GetModuleHandleA("nvoglv64.dll");
-    is64Bit = true;
-#else
-    hModule = GetModuleHandleA("nvoglv32.dll");
-    is64Bit = false;
-#endif
-
-    if (!hModule) {
-        // Driver not loaded yet.
-        return false;
-    }
-
-    // Only log scan start once per module load attempt to avoid spam
-    static bool scanLogged = false;
-    if (!scanLogged) {
-        EarlyLog("Vulkan: Scanning %s for NVIDIA LOD Bias pattern...", is64Bit ? "nvoglv64.dll" : "nvoglv32.dll");
-        scanLogged = true;
-    }
-
-    MODULEINFO modInfo;
-    if (!GetModuleInformation(GetCurrentProcess(), hModule, &modInfo, sizeof(modInfo))) {
-        EarlyLog("Vulkan: Failed to get module info.");
-        return false;
-    }
-
-    uint8_t* startAddr = (uint8_t*)modInfo.lpBaseOfDll;
-    size_t size = modInfo.SizeOfImage;
-    uint8_t* endAddr = startAddr + size;
-
-    // Pattern Definition - Use EXACT canonical patterns from reference
-    // NO wildcards - if these fail, driver version is genuinely different
-    
-    size_t patternLen = 0;
-    size_t patchLen = 0;
-    const uint8_t* scanPattern = nullptr;
-    const uint8_t* patchBytes = nullptr;
-    
-    if (is64Bit) {
-        // x64: Hit 6 Pattern (Driver ~2024+)
-        // Logic matches variable assignment to [RBP+8], like old driver.
-        // Problem: MOV [RBP+8], EDI is 3 bytes. We need 7 bytes for patch.
-        // Solution: Consumes Prev instruction (MOV [RBP+0], RAX) which is 4 bytes.
-        // Total Space: 4 (Prev) + 3 (Target) + 7 (Next) = 14 bytes.
-        // Patch: 7 bytes (MOV [RBP+8], 10) + 7 bytes (MOV [RBP+C], 10). Fits exactly.
-        
-        static const uint8_t p64_find[] = {
-            0x48, 0x89, 0x45, 0x00,             // MOV [RBP+0], RAX
-            0x89, 0x7D, 0x08,                   // MOV [RBP+8], EDI
-            0xC7, 0x45, 0x0C, 0x10, 0x00, 0x00, 0x00 // MOV [RBP+C], 0x10
-        };
-        static const uint8_t p64_patch[] = {
-            0xC7, 0x45, 0x08, 0x10, 0x00, 0x00, 0x00, // MOV [RBP+8], 0x10
-            0xC7, 0x45, 0x0C, 0x10, 0x00, 0x00, 0x00  // MOV [RBP+C], 0x10
-        };
-        scanPattern = p64_find;
-        patchBytes = p64_patch;
-        patternLen = sizeof(p64_find);
-        patchLen = sizeof(p64_patch);
-    } else {
-        // x86: Pattern from reference (may also need updating for newer drivers)
-        // Find:    8B CE C7 40 08 00 00 00 00
-        // Replace: 8B CE C7 40 08 10 00 00 00
-        static const uint8_t p32_find[] = {
-            0x8B, 0xCE,                         // MOV ECX, ESI
-            0xC7, 0x40, 0x08, 0x00, 0x00, 0x00, 0x00  // MOV [EAX+8], 0x00
-        };
-        static const uint8_t p32_patch[] = {
-            0x8B, 0xCE,                         // MOV ECX, ESI (unchanged)
-            0xC7, 0x40, 0x08, 0x10, 0x00, 0x00, 0x00  // MOV [EAX+8], 0x10
-        };
-        scanPattern = p32_find;
-        patchBytes = p32_patch;
-        patternLen = sizeof(p32_find);
-        patchLen = sizeof(p32_patch);
-    }
-
-    // Simple exact-match scan (no wildcards)
-    uint8_t* found = nullptr;
-    for (uint8_t* p = startAddr; p < endAddr - patternLen; p++) {
-        if (memcmp(p, scanPattern, patternLen) == 0) {
-            found = p;
-            break;
-        }
-    }
-    
-    if (found) {
-        EarlyLog("Vulkan: Found EXACT pattern at %p. Applying patch...", found);
-
-        DWORD oldProtect;
-        if (VirtualProtect(found, patchLen, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-            memcpy(found, patchBytes, patchLen);
-            VirtualProtect(found, patchLen, oldProtect, &oldProtect);
-            FlushInstructionCache(GetCurrentProcess(), found, patchLen);
-            
-            EarlyLog("Vulkan: NVIDIA LOD Bias Fix applied successfully!");
-            applied = true;
-            return true;
-        } else {
-            EarlyLog("Vulkan: Failed to change memory protection!");
-        }
-    } else {
-        // Pattern not found - run comprehensive diagnostic scan
-        static bool diagRan = false;
-        if (!diagRan) {
-            EarlyLog("Vulkan: EXACT pattern not found. Running diagnostic scan for 0x10 constant stores...");
-            
-            // Search for: C7 40 ?? 10 00 00 00 (MOV [RAX+off], 0x10)
-            // and:        C7 41 ?? 10 00 00 00 (MOV [RCX+off], 0x10)
-            // These are the characteristic stores we're looking for
-            int hits = 0;
-            const int maxHits = 10;
-            
-            for (uint8_t* p = startAddr; p < endAddr - 20 && hits < maxHits; p++) {
-                // Look for C7 4X YY 10 00 00 00 where X is 0-7 (different registers) and YY is small offset
-                if (p[0] == 0xC7 && (p[1] & 0xF8) == 0x40 && p[3] == 0x10 && p[4] == 0x00 && p[5] == 0x00 && p[6] == 0x00) {
-                    uint8_t offset = p[2];
-                    // Only care about small offsets (0x00-0x20) which are likely struct fields
-                    if (offset <= 0x20) {
-                        // Dump 24 bytes before and 8 bytes after
-                        uint8_t* dumpStart = (p >= startAddr + 16) ? p - 16 : startAddr;
-                        EarlyLog("Vulkan: Hit %d at %p (off=0x%02X): -16: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X | %02X %02X %02X %02X %02X %02X %02X",
-                            hits, p, offset,
-                            dumpStart[0], dumpStart[1], dumpStart[2], dumpStart[3],
-                            dumpStart[4], dumpStart[5], dumpStart[6], dumpStart[7],
-                            dumpStart[8], dumpStart[9], dumpStart[10], dumpStart[11],
-                            dumpStart[12], dumpStart[13], dumpStart[14], dumpStart[15],
-                            p[0], p[1], p[2], p[3], p[4], p[5], p[6]);
-                        hits++;
-                    }
-                }
+    while (p < end) {
+        if (memcmp(p, pattern, patternLen) == 0) {
+            DWORD old;
+            if (VirtualProtect(p, patchLen, PAGE_EXECUTE_READWRITE, &old)) {
+                memcpy(p, patch, patchLen);
+                VirtualProtect(p, patchLen, old, &old);
+                FlushInstructionCache(GetCurrentProcess(), p, patchLen);
+                hits++;
+                EarlyLog("Vulkan: Shotgun Patch [%s] applied at %p", name, p);
             }
-            
-            if (hits == 0) {
-                EarlyLog("Vulkan: No characteristic 0x10 stores found. Pattern may have changed completely.");
-            } else {
-                EarlyLog("Vulkan: Found %d candidates. Look for consecutive stores to +0x08 and +0x0C offsets.", hits);
-            }
-            diagRan = true;
         }
+        p++;
     }
-    return false;
+    return hits;
 }
+
+static int ApplyShotgunWhitelists(uint8_t* start, size_t size) {
+    int totalHits = 0;
+
+    // --- Shotgun V3 Register-Agnostic Patterns ---
+    // Targets: EAX(0), ECX(1), EDX(2), EBX(3), EBP(5), ESI(6), EDI(7)
+    uint8_t targetRegs[] = { 0, 1, 2, 3, 5, 6, 7 };
+
+    // A: Universal Triple/Quad Zero (04, 08, 0C, 10 or 08, 0C, 10)
+    for (uint8_t reg : targetRegs) {
+        uint8_t mod = 0x40 + reg;
+        const char* regName = (reg == 6 ? "ESI" : (reg == 7 ? "EDI" : (reg == 0 ? "EAX" : "GPR")));
+
+        // Quad Zero (04, 08, 0C, 10) - 28 bytes
+        uint8_t pQ4[] = { 0xC7, mod, 0x04, 0x00, 0x00, 0x00, 0x00,
+                          0xC7, mod, 0x08, 0x00, 0x00, 0x00, 0x00,
+                          0xC7, mod, 0x0C, 0x00, 0x00, 0x00, 0x00,
+                          0xC7, mod, 0x10, 0x00, 0x00, 0x00, 0x00 };
+        uint8_t hQ4[] = { 0xC7, mod, 0x04, 0x00, 0x00, 0x00, 0x00,
+                          0xC7, mod, 0x08, 0x10, 0x00, 0x00, 0x00,
+                          0xC7, mod, 0x0C, 0x10, 0x00, 0x00, 0x00,
+                          0xC7, mod, 0x10, 0x10, 0x00, 0x00, 0x00 };
+        totalHits += ApplyWhitelistedPattern(start, size, pQ4, 28, hQ4, 28, regName);
+
+        // Triple Zero (08, 0C, 10) - 21 bytes
+        uint8_t pZ3[] = { 0xC7, mod, 0x08, 0x00, 0x00, 0x00, 0x00, 
+                          0xC7, mod, 0x0C, 0x00, 0x00, 0x00, 0x00,
+                          0xC7, mod, 0x10, 0x00, 0x00, 0x00, 0x00 };
+        uint8_t hZ3[] = { 0xC7, mod, 0x08, 0x10, 0x00, 0x00, 0x00, 
+                          0xC7, mod, 0x0C, 0x10, 0x00, 0x00, 0x00,
+                          0xC7, mod, 0x10, 0x10, 0x00, 0x00, 0x00 };
+        totalHits += ApplyWhitelistedPattern(start, size, pZ3, 21, hZ3, 21, regName);
+
+        // Handle + Double Zero (89 4X 08, C7 4X 0C, C7 4X 10) - 17 bytes
+        uint8_t pHZ2[] = { 0x89, mod, 0x08, 
+                           0xC7, mod, 0x0C, 0x00, 0x00, 0x00, 0x00,
+                           0xC7, mod, 0x10, 0x00, 0x00, 0x00, 0x00 };
+        uint8_t hHZ2[] = { 0x89, mod, 0x08, 
+                           0xC7, mod, 0x0C, 0x10, 0x00, 0x00, 0x00,
+                           0xC7, mod, 0x10, 0x10, 0x00, 0x00, 0x00 };
+        totalHits += ApplyWhitelistedPattern(start, size, pHZ2, 17, hHZ2, 17, regName);
+    }
+
+    // B: SHRD Variant (Aged version)
+    uint8_t pEDI_S1[] = { 0x0F, 0xAC, 0xC1, 0x02, 0x8B, 0x45, 0x08, 0xC7, 0x47, 0x08, 0x00, 0x00, 0x00, 0x00, 0xC7, 0x47, 0x0C, 0x00, 0x00, 0x00, 0x00 };
+    uint8_t hEDI_S1[] = { 0x0F, 0xAC, 0xC1, 0x02, 0x8B, 0x45, 0x08, 0xC7, 0x47, 0x08, 0x10, 0x00, 0x00, 0x00, 0xC7, 0x47, 0x0C, 0x10, 0x00, 0x00, 0x00 };
+    totalHits += ApplyWhitelistedPattern(start, size, pEDI_S1, 21, hEDI_S1, 21, "SHRD");
+
+    // C: REP MOVSD Context (F3 A5 C7 4x 0C...)
+    for (uint8_t reg : targetRegs) {
+        uint8_t mod = 0x40 + reg;
+        uint8_t pREP[] = { 0xF3, 0xA5, 0xC7, mod, 0x0C, 0x00, 0x00, 0x00, 0x00, 0xC7, mod, 0x10, 0x00, 0x00, 0x00, 0x00 };
+        uint8_t hREP[] = { 0xF3, 0xA5, 0xC7, mod, 0x0C, 0x10, 0x00, 0x00, 0x00, 0xC7, mod, 0x10, 0x10, 0x00, 0x00, 0x00 };
+        totalHits += ApplyWhitelistedPattern(start, size, pREP, 16, hREP, 16, "REP_MOVSD");
+    }
+
+    return totalHits;
+}
+
+static int ApplyAllWhitelistedPatches(uint8_t* start, size_t size) {
+    return ApplyShotgunWhitelists(start, size);
+}
+
+static void ScanForAllResets(uint8_t* start, size_t size) {
+    const char* regNames[] = { "EAX", "ECX", "EDX", "EBX", "ESP", "EBP", "ESI", "EDI" };
+    EarlyLog("Vulkan: Starting Broad Scan for 'MOV [Reg+0C], 0'...");
+    for (int reg = 0; reg < 8; reg++) {
+        if (reg == 4) continue;
+        uint8_t modRM = 0x40 + reg;
+        uint8_t pattern[] = { 0xC7, modRM, 0x0C, 0x00, 0x00, 0x00, 0x00 };
+        uint8_t* p = start;
+        uint8_t* end = start + size - 8;
+        while (p < end) {
+            if (memcmp(p, pattern, sizeof(pattern)) == 0) {
+                EarlyLog("Vulkan: Broad Scan Found: MOV [%s+0C], 0 at %p", regNames[reg], p);
+                uint8_t* dumpStart = (p > start + 16) ? p - 16 : start;
+                uint8_t* dumpEnd = (p + 32 < start + size) ? p + 32 : start + size;
+                char buf[128] = {0}; std::string dump;
+                for (uint8_t* d = dumpStart; d < dumpEnd; d++) { snprintf(buf, sizeof(buf), "%02X ", *d); dump += buf; }
+                EarlyLog("Vulkan: Context: %s", dump.c_str());
+            }
+            p++;
+        }
+    }
+    EarlyLog("Vulkan: Broad Scan Complete.");
+}
+
+// Helper for memory patching
+// Helper for memory patching
+// (Removed NVIDIA LOD Bias Fix logic)
+
 
 static void TryDiscoverAsyncQueue();
 
@@ -2260,14 +2209,18 @@ VkResult VKAPI_CALL Detour_vkCreateInstance(
   if (g_InVulkanHook) return o_vkCreateInstance(pCreateInfo, pAllocator, pInstance);
   VulkanHookGuard guard;
 
+  // Try to apply NVIDIA LOD fix BEFORE instance creation
+  // This catches any samplers/instances created during driver initialization triggered by o_vkCreateInstance.
+  // ApplyNvidiaLodBiasFix removed
+
   VkResult res = o_vkCreateInstance(pCreateInfo, pAllocator, pInstance);
   if (res == VK_SUCCESS) {
     std::lock_guard<std::recursive_mutex> lock(g_VulkanMutex);
     g_Instance = *pInstance;
     volkLoadInstance(g_Instance);
     
-    // Check for NVIDIA LOD fix (now that ICDs are likely loaded)
-    ApplyNvidiaLodBiasFix();
+    // Re-verify after load just in case driver was deferred-loaded
+    // ApplyNvidiaLodBiasFix removed
     
     EarlyLog("Vulkan: Instance created (handle=%p)", *pInstance);
   }
@@ -3987,7 +3940,7 @@ void VulkanHook::Init() {
   HookLog("VulkanHook::Init()");
 
   // Try to apply NVIDIA LOD Bias fix early
-  ApplyNvidiaLodBiasFix();
+  // ApplyNvidiaLodBiasFix removed
 
   if (volkInitialize() != VK_SUCCESS) {
       HookLog("VulkanHook: Failed to initialize volk. Vulkan not available.");

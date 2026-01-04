@@ -107,6 +107,8 @@ void CreateDefaultConfig(const std::string &path) {
   cfg << "mip_mapping=default\n";
   cfg << "; Force Mip LOD Bias: default, 0, or float value (e.g. -0.5 for sharper textures)\n";
   cfg << "mip_bias=default\n";
+  cfg << "; Mip Bias Mode: strict (force value), offset (add to game value), base (offset only if negative)\n";
+  cfg << "mip_bias_mode=strict\n";
   cfg << "; Force MSAA Samples: default, off, 2x, 4x, 8x\n";
   cfg << "msaa_samples=default\n";
   cfg << "; CPU Prerender Limit: -1 (default), 0, 0.5, 1-6\n";
@@ -155,6 +157,13 @@ void CreateDefaultConfig(const std::string &path) {
   cfg << "dlss_rr_dll_path=\n";
   cfg << "dlss_fg_dll_path=\n";
   cfg << "streamline_dll_path=\n";
+  cfg << "\n";
+  cfg << "; Custom File Detours (Force loading specific files from custom paths)\n";
+  cfg << "; Format: custom-file-detour-N=filename\n";
+  cfg << ";         custom-file-detour-N-path=path/to/file\n";
+  cfg << "; Example:\n";
+  cfg << "; custom-file-detour-1=nvoglv32.dll\n";
+  cfg << "; custom-file-detour-1-path=C:\\PatchedDrivers\\nvoglv32.dll\n";
   cfg << "\n";
   cfg << "; Force DLSS Debug Overlay (requires 3.1.11+ DLLs): default, on, off\n";
   cfg << "dlss_debug_overlay=default\n";
@@ -493,6 +502,7 @@ void LoadConfig(const std::string &path, AppConfig &config, const std::string& o
   config.graphics.anisotropicFiltering = GetStr("Graphics", "anisotropic_filtering", "default");
   config.graphics.mipMapping = GetStr("Graphics", "mip_mapping", "default");
   config.graphics.mipBias = GetStr("Graphics", "mip_bias", "default");
+  config.graphics.mipBiasMode = GetStr("Graphics", "mip_bias_mode", "strict");
   config.graphics.msaaSamples = GetStr("Graphics", "msaa_samples", "default");
   config.graphics.cpuPrerenderLimit = GetFloat("Graphics", "cpu_prerender_limit", -1.0f);
   config.graphics.backbufferCount = GetInt("Graphics", "backbuffer_count", 0);
@@ -525,9 +535,8 @@ void LoadConfig(const std::string &path, AppConfig &config, const std::string& o
   config.graphics.dlssRrDllPath = GetStr("Graphics", "dlss_rr_dll_path", "");
   config.graphics.dlssFgDllPath = GetStr("Graphics", "dlss_fg_dll_path", "");
   config.graphics.streamlineDllPath = GetStr("Graphics", "streamline_dll_path", "");
-
+  
   config.graphics.dlssDebugOverlay = GetStr("Graphics", "dlss_debug_overlay", "default");
-  config.graphics.vulkanNvidiaLodBiasFix = GetBool("Graphics", "nvidia_lod_bias_fix", false);
 
   // Fill parsed versions for efficiency
   config.graphics.parsed.presetDLAA = ParseDlssPreset(config.graphics.dlssPresetDLAA);

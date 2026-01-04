@@ -209,6 +209,7 @@ GraphicsConfig GetActiveGraphicsConfig() {
         mergedConfig.anisotropicFiltering = shmGfx.anisotropicFiltering;
         mergedConfig.mipMapping = shmGfx.mipMapping;
         mergedConfig.mipBias = shmGfx.mipBias;
+        mergedConfig.mipBiasMode = shmGfx.mipBiasMode;
         mergedConfig.msaaSamples = shmGfx.msaaSamples;
         mergedConfig.cpuPrerenderLimit = shmGfx.prerenderLimit;
         mergedConfig.backbufferCount = shmGfx.backbufferCount;

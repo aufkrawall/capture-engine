@@ -785,7 +785,21 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8SetTextureStageState(
         if (bias != "default" && Type == 19 /*D3DTSS_MIPMAPLODBIAS*/) {
              try {
                 float fBias = std::stof(bias);
-                Value = *((DWORD*)&fBias);
+                float originalBias = *((float*)&Value);
+                std::string mode = gfx.mipBiasMode;
+                
+                if (mode == "offset") {
+                    float finalBias = originalBias + fBias;
+                    Value = *((DWORD*)&finalBias);
+                } else if (mode == "base") {
+                    if (originalBias < 0.0f) {
+                        float finalBias = originalBias + fBias;
+                        Value = *((DWORD*)&finalBias);
+                    }
+                } else {
+                    // Strict
+                    Value = *((DWORD*)&fBias);
+                }
              } catch (...) {}
         }
         

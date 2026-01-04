@@ -4,6 +4,7 @@
 #include <Windows.h>
 #include <string>
 #include <vector>
+#include <map>
 
 #define CAPTURE_VERSION "1.1.0-dev"
 // Use predefined macros for build date/time
@@ -91,6 +92,7 @@ struct GraphicsConfig {
   std::string anisotropicFiltering; // "off", "2x", "4x", "8x", "16x"
   std::string mipMapping;           // "bilinear", "trilinear"
   std::string mipBias;              // "default", "0", "0.5", "-0.5", etc.
+  std::string mipBiasMode = "strict"; // "strict", "offset", "base"
   std::string msaaSamples;          // "off", "2x", "4x", "8x"
   float cpuPrerenderLimit = -1.0f;  // -1 = default, 0, 0.5, 1-6
   int backbufferCount = 0;          // 0 = default, 2-6
@@ -152,9 +154,6 @@ struct GraphicsConfig {
   
   // Debug
   std::string dlssDebugOverlay; // "default", "on", "off"
-  
-  // Vulkan/OpenGL Fixes
-  bool vulkanNvidiaLodBiasFix; // Force FERMI_UNOPT_LOD_SPREAD
 };
 
 struct AppConfig {

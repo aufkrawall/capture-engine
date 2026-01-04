@@ -235,7 +235,9 @@ void DrawOverlay(ID3D12GraphicsCommandList *cmdList) {
   g_SharedOverlay.SetMetrics(&g_PerfMetrics);
   g_SharedOverlay.SetIPCClient(g_IPC);
   g_SharedOverlay.SetDroppedFrames(g_DX12Capture.droppedFrames.load(std::memory_order_relaxed));
-  g_SharedOverlay.SetGraphicsAPI("DX12");
+  const char* finalApi = "DX12";
+  if (GetModuleHandleA("vulkan-1.dll") || GetModuleHandleA("winevulkan.dll")) finalApi = "DX12 (VKD3D)";
+  g_SharedOverlay.SetGraphicsAPI(finalApi);
   // Detect HDR
   bool isHDR = (g_State.format == DXGI_FORMAT_R16G16B16A16_FLOAT || 
                g_State.format == DXGI_FORMAT_R10G10B10A2_UNORM);
@@ -1256,14 +1258,28 @@ static void STDMETHODCALLTYPE DetourCreateSampler(
         }
         
         // Mip Bias
-        const char* bias = gfx.mipBias.c_str();
-        if (bias[0] != 'd') {
+        const char* biasStr = gfx.mipBias.c_str();
+        if (biasStr[0] != 'd') {
              char* end;
-             float val = strtof(bias, &end);
-             if (end != bias) {
-                desc.MipLODBias = val;
+             float val = strtof(biasStr, &end);
+             if (end != biasStr) {
+                float originalBias = pDesc->MipLODBias;
+                std::string mode = gfx.mipBiasMode;
+                
+                if (mode == "offset") {
+                    desc.MipLODBias = originalBias + val;
+                } else if (mode == "base") {
+                    if (originalBias < 0.0f) {
+                        desc.MipLODBias = originalBias + val;
+                    } else {
+                        desc.MipLODBias = originalBias;
+                    }
+                } else {
+                    // Strict
+                    desc.MipLODBias = val;
+                }
                 modified = true;
-                HookLog("DX12: CreateSampler: Forced MipBias %.2f", val);
+                HookLog("DX12: CreateSampler: Forced MipBias %.2f (Mode: %s, Orig: %.2f)", desc.MipLODBias, mode.c_str(), originalBias);
              }
         }
 
@@ -1356,11 +1372,24 @@ static void ModifyStaticSampler(D3D12_STATIC_SAMPLER_DESC& sampler) {
     }
 
     // 3. Mip Bias
-    std::string bias = gfx.mipBias;
-    if (bias != "default") {
+    std::string biasStr = gfx.mipBias;
+    if (biasStr != "default") {
         try {
-            sampler.MipLODBias += std::stof(bias);
-            HookLog("DX12: Static Sampler: Forced MipBias %.2f", sampler.MipLODBias);
+            float val = std::stof(biasStr);
+            float originalBias = sampler.MipLODBias;
+            std::string mode = gfx.mipBiasMode;
+
+            if (mode == "offset") {
+                sampler.MipLODBias = originalBias + val;
+            } else if (mode == "base") {
+                if (originalBias < 0.0f) {
+                    sampler.MipLODBias = originalBias + val;
+                }
+            } else {
+                // Strict
+                sampler.MipLODBias = val;
+            }
+            HookLog("DX12: Static Sampler: Forced MipBias %.2f (Mode: %s, Orig: %.2f)", sampler.MipLODBias, mode.c_str(), originalBias);
         } catch(...) {}
     }
 }

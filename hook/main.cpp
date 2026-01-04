@@ -19,7 +19,6 @@
 #include <mutex>
 #include <atomic>
 #include <algorithm>
-#include <filesystem>
 
 HMODULE g_hModule = NULL;
 
@@ -210,23 +209,31 @@ std::string GetRedirectedPath(const std::string& requestedPath) {
 
         std::string overridePath;
 
-        // 1. DLSS Super Resolution
-        if (filenameLower == "nvngx_dlss.dll") {
-            overridePath = g_LocalConfig.graphics.dlssSrDllPath;
-        } 
-        // 2. DLSS Frame Generation
-        else if (filenameLower == "nvngx_dlssg.dll") {
-            overridePath = g_LocalConfig.graphics.dlssFgDllPath;
-        } 
-        // 3. DLSS Ray Reconstruction (Denoiser)
-        else if (filenameLower == "nvngx_dlssd.dll") {
-            overridePath = g_LocalConfig.graphics.dlssRrDllPath;
-        }
-        // 4. Streamline and related components
-        else if (filenameLower.find("sl.") == 0 || 
-                 filenameLower == "nvngx_deepdvc.dll" || 
-                 filenameLower == "nvlowlatencyvk.dll") {
-            overridePath = g_LocalConfig.graphics.streamlineDllPath;
+        // 0. Custom Detours (Removed)
+        // auto it = g_LocalConfig.graphics.customFileDetours.find(filenameLower);
+        // if (it != g_LocalConfig.graphics.customFileDetours.end()) {
+        //      overridePath = it->second;
+        // }
+
+        // 1. DLSS/Streamline Logic - Only if no custom detour set
+        if (overridePath.empty()) {
+            if (filenameLower == "nvngx_dlss.dll") {
+                overridePath = g_LocalConfig.graphics.dlssSrDllPath;
+            } 
+            // 2. DLSS Frame Generation
+            else if (filenameLower == "nvngx_dlssg.dll") {
+                overridePath = g_LocalConfig.graphics.dlssFgDllPath;
+            } 
+            // 3. DLSS Ray Reconstruction (Denoiser)
+            else if (filenameLower == "nvngx_dlssd.dll") {
+                overridePath = g_LocalConfig.graphics.dlssRrDllPath;
+            }
+            // 4. Streamline and related components
+            else if (filenameLower.find("sl.") == 0 || 
+                     filenameLower == "nvngx_deepdvc.dll" || 
+                     filenameLower == "nvlowlatencyvk.dll") {
+                overridePath = g_LocalConfig.graphics.streamlineDllPath;
+            }
         }
 
         if (!overridePath.empty()) {
@@ -571,9 +578,10 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     HookLog("IPC Connection FAILED!");
   }
 
-  // Init MinHook Global
+  // Init MinHook Global (may already be initialized from DllMain for early hooks)
   EarlyLog("HookThread: Initializing MinHook...");
-  if (MH_Initialize() != MH_OK) {
+  MH_STATUS mhStatus = MH_Initialize();
+  if (mhStatus != MH_OK && mhStatus != MH_ERROR_ALREADY_INITIALIZED) {
     EarlyLog("HookThread: MinHook init FAILED!");
     HookLog("Failed to initialize MinHook!");
     return 0;
@@ -813,6 +821,12 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     g_hModule = hinstDLL; // Use hinstDLL for g_hModule
     DisableThreadLibraryCalls(hinstDLL);
     
+    // 0. Set early environment variables for NVIDIA Driver
+    // Use _putenv_s for safety, fallback to _putenv
+    _putenv("FERMI_UNOPT_LOD_SPREAD=1");
+    // Also try the other common one just in case
+    _putenv("NIAGARA_UNOPT_LOD_SPREAD=1");
+
     // --- Identification ---
     char exeName[MAX_PATH];
     GetModuleFileNameA(NULL, exeName, MAX_PATH);
@@ -825,7 +839,8 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
         lowerName[i] = (char)tolower(fileName[i]);
         lowerName[i+1] = '\0';
     }
-    
+
+
     // 1. Blacklist (Total Skip, no threads, no logs)
     const char* blackList[] = {
         "svchost.exe", "explorer.exe", "dwm.exe", "csrss.exe", "lsass.exe",
