@@ -16,6 +16,8 @@
 #include <d3d11.h>
 #include <d3d11_1.h> // For ID3D11DeviceContext1
 #include <d3d11_4.h> // For ID3D11Fence and ID3D11Device5
+#include <dxgi1_2.h> // Required for IDXGIResource1 and CreateSharedHandle
+#include <d3dcompiler.h>
 #include <dxgi1_2.h> // For LUID
 #include <imgui.h>
 
@@ -351,6 +353,10 @@ public:
   bool useFences = false;
   UINT64 fenceValue = 0;
   
+  // Keyed Mutex Support (Proper Fix)
+  IDXGIKeyedMutex *keyedMutexes[CAPTURE_TEXTURE_COUNT]{};
+  bool useKeyedMutex = false;
+  
   // sharedTextureHandles are in base class
 
   void Cleanup() override {
@@ -370,16 +376,23 @@ public:
     if (fence) { fence->Release(); fence = nullptr; }
     if (context4) { context4->Release(); context4 = nullptr; }
     
-    // Release owned D3D11 device (used for DX10 mode)
     if (ownedContext) ownedContext->Release();
     ownedContext = nullptr;
     if (ownedDevice) ownedDevice->Release();
     ownedDevice = nullptr;
     
+    for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
+        if (keyedMutexes[i]) {
+            keyedMutexes[i]->Release();
+            keyedMutexes[i] = nullptr;
+        }
+    }
+    
     cachedDevice = nullptr;
     cachedContext = nullptr;
     initialized = false;
     useFences = false;
+    useKeyedMutex = false;
     isDX10Mode = false;
     fenceValue = 0;  // Reset fence value for next session
   }
@@ -522,50 +535,83 @@ public:
     texDesc.Usage = D3D11_USAGE_DEFAULT;
     texDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
     texDesc.CPUAccessFlags = 0;
-    texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
-
-    // Try to enable Fences (DX11.3) - only for DX11 native mode
-    if (!isDX10Mode) {
-        ID3D11Device5* device5 = nullptr;
-        if (SUCCEEDED(captureDevice->QueryInterface(IID_PPV_ARGS(&device5)))) {
-            if (SUCCEEDED(device5->CreateFence(0, D3D11_FENCE_FLAG_SHARED, IID_PPV_ARGS(&fence)))) {
-                ID3D11DeviceContext* ctx = nullptr;
-                captureDevice->GetImmediateContext(&ctx);
-                if (SUCCEEDED(ctx->QueryInterface(IID_PPV_ARGS(&context4)))) {
-                    IDXGIResource* res = nullptr;
-                    if (SUCCEEDED(fence->QueryInterface(IID_PPV_ARGS(&res)))) {
-                        res->GetSharedHandle(&sharedFenceHandle);
-                        res->Release();
-                        useFences = true;
-                        HookLog("DX11: ID3D11Fence support enabled");
-                    }
-                }
-                ctx->Release();
-            }
-            device5->Release();
-        }
-    }
     
-    if (!useFences) {
-        HookLog("%s: Fence not available, using query-based sync", isDX10Mode ? "DX10" : "DX11");
+    // Use plain shared textures with NT Handles for cross-process sharing
+    // Synchronization is handled via D3D11 Fence (DX11.3+) or no sync fallback
+    texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
+    useKeyedMutex = false; // Disabled - using Fence instead
+
+    // Try to create D3D11 Fence for async GPU synchronization (DX11.3+)
+    ID3D11Device5 *device5 = nullptr;
+    if (SUCCEEDED(captureDevice->QueryInterface(IID_PPV_ARGS(&device5)))) {
+        HRESULT hr = device5->CreateFence(0, D3D11_FENCE_FLAG_SHARED, IID_PPV_ARGS(&fence));
+        if (SUCCEEDED(hr)) {
+            // Get shared fence handle for cross-process
+            hr = fence->CreateSharedHandle(NULL, GENERIC_ALL, NULL, &sharedFenceHandle);
+            if (SUCCEEDED(hr)) {
+                // Get Context4 for Signal()
+                ID3D11DeviceContext *immCtx = nullptr;
+                captureDevice->GetImmediateContext(&immCtx);
+                if (SUCCEEDED(immCtx->QueryInterface(IID_PPV_ARGS(&context4)))) {
+                    useFences = true;
+                    EarlyLog("DX11: D3D11 Fence created (async GPU sync enabled)");
+                } else {
+                    EarlyLog("DX11: Warning - ID3D11DeviceContext4 not available");
+                }
+                immCtx->Release();
+            } else {
+                EarlyLog("DX11: Warning - Fence shared handle creation failed");
+                fence->Release();
+                fence = nullptr;
+            }
+        } else {
+            EarlyLog("DX11: Warning - Fence creation failed (hr=0x%08x)", hr);
+        }
+        device5->Release();
+    } else {
+        EarlyLog("DX11: ID3D11Device5 not available (DX11.3 required for Fences)");
     }
+
 
     bool success = true;
     for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
       HRESULT hr = captureDevice->CreateTexture2D(&texDesc, NULL, &sharedTextures[i]);
       if (SUCCEEDED(hr)) {
-        IDXGIResource *pResource = NULL;
-        sharedTextures[i]->QueryInterface(IID_PPV_ARGS(&pResource));
-        pResource->GetSharedHandle(&sharedTextureHandles[i]);
-        pResource->Release();
-        
-        // Create query for GPU sync only if fences are NOT used
-        if (!useFences) {
-            D3D11_QUERY_DESC queryDesc = {};
-            queryDesc.Query = D3D11_QUERY_EVENT;
-            captureDevice->CreateQuery(&queryDesc, &copyQueries[i]);
+        IDXGIResource1 *pResource1 = NULL;
+        // Use IDXGIResource1 for NT Handles
+        if (SUCCEEDED(sharedTextures[i]->QueryInterface(IID_PPV_ARGS(&pResource1)))) {
+            hr = pResource1->CreateSharedHandle(NULL, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, NULL, &sharedTextureHandles[i]);
+            pResource1->Release();
+        } else {
+            // Fallback to legacy KMT if Resource1 not valid (should not happen with NTHANDLE flag)
+            // But if we requested NTHANDLE, GetSharedHandle (KMT) will fail on some drivers.
+            // We should log this specific failure path.
+            IDXGIResource *pResource = NULL;
+            if (SUCCEEDED(sharedTextures[i]->QueryInterface(IID_PPV_ARGS(&pResource)))) {
+                pResource->GetSharedHandle(&sharedTextureHandles[i]);
+                pResource->Release();
+                EarlyLog("DX11: Warning - Fallback to KMT handle for KeyedMutex (NT Handle QI failed)");
+            } else {
+                EarlyLog("DX11: Error - Failed to get any shared handle interface for texture %d", i);
+            }
         }
+        
+        if (sharedTextureHandles[i] == NULL) {
+            EarlyLog("DX11: Critical - Shared Handle is NULL for texture %d", i);
+            success = false;
+        } else {
+            EarlyLog("DX11: Created Texture %d Handle %p", i, sharedTextureHandles[i]);
+        }
+        
       } else {
+        // Fallback to legacy shared if NT Handle not supported
+         if (hr == E_INVALIDARG) {
+             EarlyLog("DX11: NT Handle not supported, falling back to legacy shared textures");
+             texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+             i--; // Retry this index
+             continue;
+         }
+      
         success = false;
         HookLog("%s: Failed to create texture %d (hr=0x%08x)", isDX10Mode ? "DX10" : "DX11", i, hr);
       }
@@ -576,8 +622,10 @@ public:
         PublishToSharedMemory(g_IPC);
       }
       initialized = true;
-      HookLog("%s Capture Initialized: %dx%d (LUID: %08x)", isDX10Mode ? "DX10" : "DX11", 
-              width, height, luidLow);
+      EarlyLog("%s Capture Initialized: %dx%d (Fence: %s)", isDX10Mode ? "DX10" : "DX11", 
+              width, height, useFences ? "ON" : "OFF");
+    } else {
+      EarlyLog("%s Capture Init FAILED (success=false)", isDX10Mode ? "DX10" : "DX11");
     }
   }
   
@@ -919,6 +967,9 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
   bool isRecording = ipc && ipc->IsRecording();
   g_PerfMetrics.SetRecording(isRecording);
 
+  // Track whether overlay was already drawn (for skip_capture path)
+  bool overlayDrawn = false;
+  
   // Capture Logic
   if (ipc && isRecording) {
     // Try to get D3D11 device first; if fails, this is a DX10 game
@@ -953,39 +1004,48 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
     ID3D11Texture2D *backbuffer = nullptr;
     pSwapChain->GetBuffer(0, IID_PPV_ARGS(&backbuffer));
 
-    if (backbuffer && g_DX11Capture.initialized) {
-      int idx = g_DX11Capture.writeIndex;
-      ID3D11DeviceContext *captureContext = g_DX11Capture.GetCaptureContext();
-      
-      if (g_DX11Capture.useFences && g_DX11Capture.fence && g_DX11Capture.context4) {
-         // Async Path using Fences (Non-blocking) - DX11 only
-         captureContext->CopyResource(g_DX11Capture.sharedTextures[idx], backbuffer);
-         
-         g_DX11Capture.fenceValue++;
-         g_DX11Capture.context4->Signal(g_DX11Capture.fence, g_DX11Capture.fenceValue);
-         
-         // PASS RAW QPC: MediaEngine converts to MS
-         g_DX11Capture.SignalFrameReady(ipc, idx, qpc.QuadPart, g_DX11Capture.fenceValue);
-         g_DX11Capture.AdvanceWriteIndex();
-      } else if (captureContext) {
-          // Fallback Path using Queries (Potentially Blocking)
-          if (g_DX11Capture.copyQueries[idx]) {
-            captureContext->Begin(g_DX11Capture.copyQueries[idx]);
-          }
-          
-          captureContext->CopyResource(g_DX11Capture.sharedTextures[idx], backbuffer);
-          
-          if (g_DX11Capture.copyQueries[idx]) {
-            captureContext->End(g_DX11Capture.copyQueries[idx]);
-          }
-          
-          // Wait for copy to complete 
-          g_DX11Capture.WaitForCopy(captureContext, idx, 5);
-    
-          // PASS RAW QPC: MediaEngine converts to MS
-          g_DX11Capture.SignalFrameReady(ipc, idx, qpc.QuadPart, 0);
-          g_DX11Capture.AdvanceWriteIndex();
+    // Get shared memory for overlay config
+    SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+    bool captureIncludeOverlay = shm ? shm->overlayConfig.captureIncludeOverlay : false;
+    bool shouldDrawOverlay = shm && shm->overlayConfig.showOverlay;
+
+    // Lambda for capture operation
+    auto doCapture = [&]() {
+      if (backbuffer && g_DX11Capture.initialized) {
+        int idx = g_DX11Capture.writeIndex;
+        ID3D11DeviceContext *captureContext = g_DX11Capture.GetCaptureContext();
+        
+        if (captureContext) {
+            captureContext->CopyResource(g_DX11Capture.sharedTextures[idx], backbuffer);
+            
+            uint64_t signalValue = 0;
+            if (g_DX11Capture.useFences && g_DX11Capture.context4 && g_DX11Capture.fence) {
+                g_DX11Capture.fenceValue++;
+                signalValue = g_DX11Capture.fenceValue;
+                g_DX11Capture.context4->Signal(g_DX11Capture.fence, signalValue);
+            }
+            
+            g_DX11Capture.SignalFrameReady(ipc, idx, qpc.QuadPart, signalValue);
+            g_DX11Capture.AdvanceWriteIndex();
+        }
       }
+    };
+
+    // Lambda for overlay drawing
+    auto doOverlay = [&]() {
+      if (shouldDrawOverlay) {
+        DrawDX11Overlay(pSwapChain);
+        overlayDrawn = true;
+      }
+    };
+
+    // Order capture/overlay based on config
+    if (captureIncludeOverlay) {
+      doOverlay();   // Draw overlay first
+      doCapture();   // Then capture (includes overlay)
+    } else {
+      doCapture();   // Capture first (clean frame)
+      doOverlay();   // Then draw overlay (visible but not recorded)
     }
 
     if (backbuffer)
@@ -997,15 +1057,18 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
   }
 
 skip_capture:
-  // Draw Overlay - add null check
-  SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
-  if (shm && shm->overlayConfig.showOverlay) {
-    DrawDX11Overlay(pSwapChain);
+  // Draw overlay if we skipped the capture path or overlay wasn't already drawn
+  if (!overlayDrawn) {
+    SharedMemoryLayout* shmSkip = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+    if (shmSkip && shmSkip->overlayConfig.showOverlay) {
+      DrawDX11Overlay(pSwapChain);
+    }
   }
-
+  
   // Apply shared FPS limiter
   g_SharedFpsLimiter.SetIPCClient(g_IPC);
   g_SharedFpsLimiter.Apply();
+
 
   return oPresent(pSwapChain, SyncInterval, Flags);
 }
@@ -1112,22 +1175,17 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain *pSwapChain,
       int idx = g_DX11Capture.writeIndex;
       ID3D11DeviceContext *captureContext = g_DX11Capture.GetCaptureContext();
       
-      if (g_DX11Capture.useFences && g_DX11Capture.fence && g_DX11Capture.context4) {
-         captureContext->CopyResource(g_DX11Capture.sharedTextures[idx], backbuffer);
-         g_DX11Capture.fenceValue++;
-         g_DX11Capture.context4->Signal(g_DX11Capture.fence, g_DX11Capture.fenceValue);
-         // PASS RAW QPC
-         g_DX11Capture.SignalFrameReady(g_IPC, idx, qpc.QuadPart, g_DX11Capture.fenceValue);
-         g_DX11Capture.AdvanceWriteIndex();
+      if (g_DX11Capture.useKeyedMutex && g_DX11Capture.keyedMutexes[idx]) {
+          // KEYED MUTEX PATH
+          if (g_DX11Capture.keyedMutexes[idx]->AcquireSync(0, 0) == S_OK) {
+              captureContext->CopyResource(g_DX11Capture.sharedTextures[idx], backbuffer);
+              g_DX11Capture.keyedMutexes[idx]->ReleaseSync(1);
+              g_DX11Capture.SignalFrameReady(g_IPC, idx, qpc.QuadPart, 0);
+              g_DX11Capture.AdvanceWriteIndex();
+          }
       } else if (captureContext) {
-          if (g_DX11Capture.copyQueries[idx]) {
-            captureContext->Begin(g_DX11Capture.copyQueries[idx]);
-          }
+          // Legacy Fallback
           captureContext->CopyResource(g_DX11Capture.sharedTextures[idx], backbuffer);
-          if (g_DX11Capture.copyQueries[idx]) {
-            captureContext->End(g_DX11Capture.copyQueries[idx]);
-          }
-          g_DX11Capture.WaitForCopy(captureContext, idx, 5);
           g_DX11Capture.SignalFrameReady(g_IPC, idx, us / 1000, 0);
           g_DX11Capture.AdvanceWriteIndex();
       }

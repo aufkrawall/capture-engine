@@ -131,6 +131,11 @@ private:
   // Smoothing state for drift correction
   double smoothedDrift = 0.0;
   int32_t currentDelta = 0;
+  
+  // PI Controller State
+  double integralError = 0.0;
+  const double Kp = 0.1;   // Proportional Gain: Respond to immediate error
+  const double Ki = 0.005; // Integral Gain: Accumulate error to correct constant skew
 
   // Detect and handle 24-bit in 32-bit container
   AVSampleFormat DetermineInputFormat() const;

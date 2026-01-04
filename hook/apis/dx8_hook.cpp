@@ -626,35 +626,50 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8Present(
     int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
     g_PerfMetrics.Update(us);
     
-    // Capture logic
-    if (g_IPC && g_IPC->IsRecording()) {
-        if (!g_DX8Capture.initialized) {
-            // Get window from device
-            HWND hwnd = hDestWindowOverride;
-            if (!hwnd) {
-                // Try to get window from device
-                hwnd = GetForegroundWindow();
-            }
-            g_DX8Capture.Init(device, hwnd);
-        }
-        
-        if (g_DX8Capture.initialized) {
-            g_DX8Capture.CaptureFrame(device);
-        }
-    } else if (g_DX8Capture.initialized) {
-        g_DX8Capture.Cleanup();
-    }
+    SharedMemoryLayout *shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+    bool captureIncludeOverlay = shm ? shm->overlayConfig.captureIncludeOverlay : true;
+    bool shouldDrawOverlay = shm && shm->overlayConfig.showOverlay;
+    bool isRecording = g_IPC && g_IPC->IsRecording();
+    
+    // Lambda for capture operation
+    auto doCapture = [&]() {
+      if (isRecording) {
+          if (!g_DX8Capture.initialized) {
+              HWND hwnd = hDestWindowOverride;
+              if (!hwnd) {
+                  hwnd = GetForegroundWindow();
+              }
+              g_DX8Capture.Init(device, hwnd);
+          }
+          
+          if (g_DX8Capture.initialized) {
+              g_DX8Capture.CaptureFrame(device);
+          }
+      } else if (g_DX8Capture.initialized) {
+          g_DX8Capture.Cleanup();
+      }
+    };
+    
+    // Lambda for overlay drawing
+    auto doOverlay = [&]() {
+      if (shouldDrawOverlay) {
+          HWND hwnd = hDestWindowOverride ? hDestWindowOverride : GetForegroundWindow();
+          DrawDX8Overlay(hwnd);
+      }
+    };
     
     // CPU Prerender Limit
     if (g_IPC && g_IPC->GetSharedMem()->graphicsConfig.prerenderLimit >= 0) {
         ApplyPrerenderLimitDX8(device, g_IPC->GetSharedMem()->graphicsConfig.prerenderLimit);
     }
     
-    // Draw overlay
-    SharedMemoryLayout *shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
-    if (shm && shm->overlayConfig.showOverlay) {
-        HWND hwnd = hDestWindowOverride ? hDestWindowOverride : GetForegroundWindow();
-        DrawDX8Overlay(hwnd);
+    // Order capture/overlay based on config
+    if (captureIncludeOverlay) {
+        doOverlay();   // Draw overlay first
+        doCapture();   // Then capture (includes overlay)
+    } else {
+        doCapture();   // Capture first (clean frame)
+        doOverlay();   // Then draw overlay (visible but not recorded)
     }
     
     // Call original

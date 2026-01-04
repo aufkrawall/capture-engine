@@ -66,7 +66,7 @@ enum class LogLevel : int {
 struct OverlayConfig {
   // Master toggle
   bool showOverlay;
-  
+  bool captureIncludeOverlay;  // Include overlay in video recordings
   // Display Elements
   bool showFPS;
   bool showFrameTime;        // Frame time graph

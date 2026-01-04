@@ -1043,9 +1043,15 @@ static void PresentBegin(IDirect3DDevice9 *device, IDirect3DSurface9 *&backBuffe
         overlayStart = qpc.QuadPart;
 
         SharedMemoryLayout *shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
-        if (shm && shm->overlayConfig.showOverlay) {
-            DrawDX9Overlay(device);
-        }
+        bool captureIncludeOverlay = shm ? shm->overlayConfig.captureIncludeOverlay : true;
+        bool shouldDrawOverlay = shm && shm->overlayConfig.showOverlay;
+        
+        // Lambda for overlay drawing
+        auto doOverlay = [&]() {
+          if (shouldDrawOverlay) {
+              DrawDX9Overlay(device);
+          }
+        };
 
         QueryPerformanceCounter(&qpc);
         g_Timing.overlayTime = qpc.QuadPart - overlayStart;
@@ -1068,17 +1074,29 @@ static void PresentBegin(IDirect3DDevice9 *device, IDirect3DSurface9 *&backBuffe
         QueryPerformanceCounter(&qpc);
         captureStart = qpc.QuadPart;
 
-        if (ipc && ipc->IsRecording()) {
-            if (!g_DX9Capture.initialized) {
-                EarlyLog("DX9: Recording detected, calling Init...");
-                g_DX9Capture.Init(device);
-            }
-            
-            if (g_DX9Capture.initialized && backBuffer) {
-                g_DX9Capture.CaptureFrame(device, backBuffer);
-            }
-        } else if (g_DX9Capture.initialized) {
-            g_DX9Capture.Cleanup();
+        // Lambda for capture operation
+        auto doCapture = [&]() {
+          if (ipc && ipc->IsRecording()) {
+              if (!g_DX9Capture.initialized) {
+                  EarlyLog("DX9: Recording detected, calling Init...");
+                  g_DX9Capture.Init(device);
+              }
+              
+              if (g_DX9Capture.initialized && backBuffer) {
+                  g_DX9Capture.CaptureFrame(device, backBuffer);
+              }
+          } else if (g_DX9Capture.initialized) {
+              g_DX9Capture.Cleanup();
+          }
+        };
+        
+        // Order capture/overlay based on config
+        if (captureIncludeOverlay) {
+            doOverlay();   // Draw overlay first
+            doCapture();   // Then capture (includes overlay)
+        } else {
+            doCapture();   // Capture first (clean frame)
+            doOverlay();   // Then draw overlay (visible but not recorded)
         }
 
         QueryPerformanceCounter(&qpc);

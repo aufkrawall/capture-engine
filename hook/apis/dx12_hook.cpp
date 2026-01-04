@@ -761,114 +761,120 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
         }
     }
 
-    // Overlay - only render if IPC is valid and overlay enabled
-    // CRITICAL: Skip overlay when FG is active - FG runtimes also call ExecuteCommandLists
-    // so we cannot reliably detect "real" frames. Our overlay commands cause GPU crashes
-    // because FG hijacks the swapchain and backbuffers in ways we don't understand.
     SharedMemoryLayout* shm = g_IPC->GetSharedMem();
-    if (!fgActive && processCapture && shm && shm->overlayConfig.showOverlay && g_State.syncInit && 
-        g_State.fence && g_CommandQueue) {
-      int bufferIdx = pSwapChain->GetCurrentBackBufferIndex();
-      
-      static int logCounter = 0;
-      if (logCounter++ % 1000 == 0) {
-        HookLog("DX12: bufferIdx=%d, bufferCount=%zu", bufferIdx, g_State.backBuffers.size());
+    bool captureIncludeOverlay = shm ? shm->overlayConfig.captureIncludeOverlay : true;
+    bool shouldDrawOverlay = shm && shm->overlayConfig.showOverlay;
+    bool overlayDrawn = false;
+
+    // Lambda for overlay drawing
+    auto doOverlay = [&]() {
+      // CRITICAL: Skip overlay when FG is active - FG runtimes also call ExecuteCommandLists
+      if (!fgActive && processCapture && shouldDrawOverlay && g_State.syncInit && 
+          g_State.fence && g_CommandQueue) {
+        int bufferIdx = pSwapChain->GetCurrentBackBufferIndex();
+        
+        static int logCounter = 0;
+        if (logCounter++ % 1000 == 0) {
+          HookLog("DX12: bufferIdx=%d, bufferCount=%zu", bufferIdx, g_State.backBuffers.size());
+        }
+        
+        if (bufferIdx >= (int)g_State.backBuffers.size()) {
+          return; 
+        }
+        
+        int allocIdx = g_State.allocIndex;
+        g_State.allocIndex = (g_State.allocIndex + 1) % DX12OverlayState::ALLOC_POOL_SIZE;
+        
+        UINT64 completed = g_State.fence->GetCompletedValue();
+        UINT64 target = g_State.fenceValues[allocIdx];
+        if (completed < target) {
+          g_State.fence->SetEventOnCompletion(target, g_State.fenceEvent);
+          WaitForSingleObject(g_State.fenceEvent, INFINITE);
+        }
+
+        auto *alloc = g_State.allocators[allocIdx];
+        auto *list = g_State.cmdList;
+        alloc->Reset();
+        list->Reset(alloc, nullptr);
+
+        D3D12_CPU_DESCRIPTOR_HANDLE rtv =
+            g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
+        rtv.ptr += (SIZE_T)bufferIdx * g_State.rtvDescriptorSize;
+        
+        D3D12_RESOURCE_BARRIER preBarrier = {};
+        preBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        preBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+        preBarrier.Transition.pResource = g_State.backBuffers[bufferIdx];
+        preBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        preBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+        preBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        list->ResourceBarrier(1, &preBarrier);
+
+        list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+
+        D3D12_VIEWPORT vp = {0, 0, (float)g_State.cachedWidth, (float)g_State.cachedHeight, 0, 1};
+        list->RSSetViewports(1, &vp);
+        D3D12_RECT scissor = {0, 0, (LONG)g_State.cachedWidth, (LONG)g_State.cachedHeight};
+        list->RSSetScissorRects(1, &scissor);
+        
+        DrawOverlay(list);
+
+        D3D12_RESOURCE_BARRIER postBarrier = {};
+        postBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        postBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+        postBarrier.Transition.pResource = g_State.backBuffers[bufferIdx];
+        postBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        postBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        postBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+        list->ResourceBarrier(1, &postBarrier);
+
+        list->Close();
+
+        ID3D12CommandList *lists[] = {list};
+        g_CommandQueue->ExecuteCommandLists(1, lists);
+        
+        g_State.currentFenceValue++;
+        g_State.fenceValues[allocIdx] = g_State.currentFenceValue;
+        g_CommandQueue->Signal(g_State.fence, g_State.currentFenceValue);
+        
+        overlayDrawn = true;
       }
-      
-      if (bufferIdx >= (int)g_State.backBuffers.size()) {
-        return; 
+    };
+
+    // Lambda for capture operation
+    auto doCapture = [&]() {
+      // CRITICAL: Skip capture when FG is active
+      if (!fgActive && processCapture && g_IPC->IsRecording() && g_DX12Capture.initialized) {
+        if (!g_DX12Capture.captureThreadRunning) {
+          g_DX12Capture.StartCaptureThread(AsyncCaptureThreadProc);
+        }
+
+        if (g_DX12Capture.gameSyncFence) {
+          g_DX12Capture.gameSyncValue++;
+          g_CommandQueue->Signal(g_DX12Capture.gameSyncFence,
+                                 g_DX12Capture.gameSyncValue);
+        }
+
+        LARGE_INTEGER qpc;
+        QueryPerformanceCounter(&qpc);
+
+        g_DX12Capture.EnqueueFrame(qpc.QuadPart, g_DX12Capture.gameSyncValue,
+                               pSwapChain->GetCurrentBackBufferIndex(),
+                               pSwapChain);
       }
-      
-      // Use rotating allocator index (8 allocators) to ensure GPU has finished
-      // by the time we come back to the same allocator
-      int allocIdx = g_State.allocIndex;
-      g_State.allocIndex = (g_State.allocIndex + 1) % DX12OverlayState::ALLOC_POOL_SIZE;
-      
-      // Wait for this allocator's previous work to complete (will be instant with 8 allocators)
-      UINT64 completed = g_State.fence->GetCompletedValue();
-      UINT64 target = g_State.fenceValues[allocIdx];
-      if (completed < target) {
-        // Should rarely happen with 8 allocators - use event wait if needed
-        g_State.fence->SetEventOnCompletion(target, g_State.fenceEvent);
-        WaitForSingleObject(g_State.fenceEvent, INFINITE);
-      }
+    };
 
-      auto *alloc = g_State.allocators[allocIdx];
-      auto *list = g_State.cmdList;
-      alloc->Reset();
-      list->Reset(alloc, nullptr);
-
-      D3D12_CPU_DESCRIPTOR_HANDLE rtv =
-          g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
-      rtv.ptr += (SIZE_T)bufferIdx * g_State.rtvDescriptorSize;
-      
-      // BARRIER 1: Transition to RENDER_TARGET
-      D3D12_RESOURCE_BARRIER preBarrier = {};
-      preBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-      preBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-      preBarrier.Transition.pResource = g_State.backBuffers[bufferIdx];
-      preBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-      preBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-      preBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-      list->ResourceBarrier(1, &preBarrier);
-
-      list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-
-      D3D12_VIEWPORT vp = {0, 0, (float)g_State.cachedWidth, (float)g_State.cachedHeight,
-                           0, 1};
-      list->RSSetViewports(1, &vp);
-      D3D12_RECT scissor = {0, 0, (LONG)g_State.cachedWidth, (LONG)g_State.cachedHeight};
-      list->RSSetScissorRects(1, &scissor);
-      
-      DrawOverlay(list);
-
-      // BARRIER 2: Transition back to PRESENT
-      D3D12_RESOURCE_BARRIER postBarrier = {};
-      postBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-      postBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-      postBarrier.Transition.pResource = g_State.backBuffers[bufferIdx];
-      postBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-      postBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-      postBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-      list->ResourceBarrier(1, &postBarrier);
-
-      list->Close();
-
-      ID3D12CommandList *lists[] = {list};
-      
-      // Execute on game's queue directly (simpler, more compatible)
-      g_CommandQueue->ExecuteCommandLists(1, lists);
-      
-      // Signal fence for this allocator
-      g_State.currentFenceValue++;
-      g_State.fenceValues[allocIdx] = g_State.currentFenceValue;
-      g_CommandQueue->Signal(g_State.fence, g_State.currentFenceValue);
-    }
-
-    // Recording
-    // CRITICAL: Skip capture when FG is active - same reason as overlay skip above
-    if (!fgActive && processCapture && g_IPC->IsRecording() && g_DX12Capture.initialized) {
-      if (!g_DX12Capture.captureThreadRunning) {
-        g_DX12Capture.StartCaptureThread(AsyncCaptureThreadProc);
-      }
-
-      if (g_DX12Capture.gameSyncFence) {
-        g_DX12Capture.gameSyncValue++;
-        g_CommandQueue->Signal(g_DX12Capture.gameSyncFence,
-                               g_DX12Capture.gameSyncValue);
-      }
-
-      // Enqueue
-      LARGE_INTEGER qpc;
-      QueryPerformanceCounter(&qpc);
-
-      // Use existing EnqueueFrame helper
-      g_DX12Capture.EnqueueFrame(qpc.QuadPart, g_DX12Capture.gameSyncValue,
-                             pSwapChain->GetCurrentBackBufferIndex(),
-                             pSwapChain);
+    // Order capture/overlay based on config
+    if (captureIncludeOverlay) {
+      doOverlay();   // Draw overlay first
+      doCapture();   // Then capture (includes overlay)
+    } else {
+      doCapture();   // Capture first (clean frame)
+      doOverlay();   // Then draw overlay (visible but not recorded)
     }
   }
 }
+
 
 // --- Prerender Limit Support ---
 static void ApplyPrerenderLimit(float limit) {

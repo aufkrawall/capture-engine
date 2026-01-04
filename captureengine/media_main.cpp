@@ -1143,9 +1143,16 @@ int MediaProcessMain(const AppConfig &config) {
         qf.format = g_pSharedMem->format;
         qf.ringIndex = localReadIdx;
 
-        if (g_FrameQueue.Push(qf, g_IsEncoderBottlenecked)) {
+        bool pushed = g_FrameQueue.Push(qf, g_IsEncoderBottlenecked);
+        if (pushed) {
           localReadIdx++;
+          static int pushCount = 0;
+          if (pushCount++ % 60 == 0) {
+              LogInfo("[Media] Pushed frame to queue: PID=%u Handle=%p Slot=%d QueueSize=%d",
+                      qf.sourcePid, qf.sharedHandle, slotIdx, (int)g_FrameQueue.Size());
+          }
         } else {
+          LogInfo("[Media] FrameQueue.Push FAILED (queue full?)");
           break;
         }
 

@@ -3304,7 +3304,16 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
     InitImGuiVulkan(g_Queue);
   }
 
-  if (g_ImGuiInit && g_Device != VK_NULL_HANDLE) {
+  // Check if we should defer overlay drawing until after capture
+  bool captureIncludeOverlay = true;
+  bool deferOverlay = false;
+  if (g_IPC && g_IPC->GetSharedMem()) {
+    captureIncludeOverlay = g_IPC->GetSharedMem()->overlayConfig.captureIncludeOverlay;
+    // Defer overlay if: recording enabled AND captureIncludeOverlay is false
+    deferOverlay = !captureIncludeOverlay && isRecording;
+  }
+
+  if (g_ImGuiInit && g_Device != VK_NULL_HANDLE && !deferOverlay) {
     bool showOverlay = true;
     bool showFPS = true;
     if (g_IPC && g_IPC->GetSharedMem()) {
@@ -3669,6 +3678,117 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
           return o_vkQueuePresentKHR(queue, &newPresent);
         }
         break;
+      }
+    }
+  }
+  // Deferred overlay: draw overlay AFTER capture but BEFORE present when captureIncludeOverlay=false
+  static int deferLogCount = 0;
+  if (deferOverlay) {
+    if (deferLogCount < 10) {
+      HookLog("Vulkan: deferOverlay=true, g_ImGuiInit=%d, g_Device=%p, isRealFrame=%d", 
+              g_ImGuiInit, g_Device, isRealFrame);
+      deferLogCount++;
+    }
+  }
+  
+  if (deferOverlay && g_ImGuiInit && g_Device != VK_NULL_HANDLE && isRealFrame) {
+    bool showOverlay = true;
+    if (g_IPC && g_IPC->GetSharedMem()) {
+      showOverlay = g_IPC->GetSharedMem()->overlayConfig.showOverlay;
+    }
+    
+    static int deferredDrawCount = 0;
+    if (deferredDrawCount < 5) {
+      HookLog("Vulkan: Drawing DEFERRED overlay (showOverlay=%d, swapchains=%d)", 
+              showOverlay, pPresentInfo->swapchainCount);
+      deferredDrawCount++;
+    }
+    
+    if (showOverlay && pPresentInfo->swapchainCount > 0) {
+      for (auto &sc : g_Swapchains) {
+        if (sc.swapchain == pPresentInfo->pSwapchains[0]) {
+          uint32_t idx = pPresentInfo->pImageIndices[0];
+          if (idx < sc.framebuffers.size() && sc.framebuffers[idx]) {
+            // Draw deferred overlay
+            ImGui_ImplVulkan_NewFrame();
+            g_SharedOverlay.BeginFrame();
+            g_SharedOverlay.SetMetrics(&g_PerfMetrics);
+            g_SharedOverlay.SetIPCClient(g_IPC);
+            g_SharedOverlay.SetDroppedFrames(g_VulkanCapture.droppedFrames.load(std::memory_order_relaxed));
+            g_SharedOverlay.SetGraphicsAPI("Vulkan");
+            bool isHDR = (sc.format == VK_FORMAT_R16G16B16A16_SFLOAT || 
+                         sc.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32);
+            g_SharedOverlay.SetHDR(isHDR);
+            g_SharedOverlay.RenderUI();
+            g_SharedOverlay.EndFrame();
+            
+            // Use rotating command buffer for deferred overlay
+            static const int MAX_DEFERRED_FRAMES = 3;
+            static VkFence deferredFences[MAX_DEFERRED_FRAMES] = {};
+            static VkCommandBuffer deferredCBs[MAX_DEFERRED_FRAMES] = {};
+            static int deferredFrame = 0;
+            static bool deferredInit = false;
+            
+            if (!deferredInit && g_CommandPool) {
+              VkCommandBufferAllocateInfo alloc_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+              alloc_info.commandPool = g_CommandPool;
+              alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+              alloc_info.commandBufferCount = MAX_DEFERRED_FRAMES;
+              vkAllocateCommandBuffers(g_Device, &alloc_info, deferredCBs);
+              
+              VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+              fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+              for (int i = 0; i < MAX_DEFERRED_FRAMES; i++) {
+                vkCreateFence(g_Device, &fenceInfo, nullptr, &deferredFences[i]);
+              }
+              deferredInit = true;
+            }
+            
+            if (deferredInit) {
+              VkFence fence = deferredFences[deferredFrame];
+              VkCommandBuffer cb = deferredCBs[deferredFrame];
+              
+              vkWaitForFences(g_Device, 1, &fence, VK_TRUE, 0);
+              vkResetFences(g_Device, 1, &fence);
+              vkResetCommandBuffer(cb, 0);
+              
+              VkCommandBufferBeginInfo begin_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+              begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+              vkBeginCommandBuffer(cb, &begin_info);
+              
+              VkRenderPassBeginInfo rp_begin = {};
+              rp_begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+              rp_begin.renderPass = g_RenderPass;
+              rp_begin.framebuffer = sc.framebuffers[idx];
+              rp_begin.renderArea.offset = {0, 0};
+              rp_begin.renderArea.extent = {sc.width, sc.height};
+              vkCmdBeginRenderPass(cb, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
+              
+              VkViewport viewport = {};
+              viewport.width = (float)sc.width;
+              viewport.height = (float)sc.height;
+              viewport.maxDepth = 1.0f;
+              vkCmdSetViewport(cb, 0, 1, &viewport);
+              
+              VkRect2D scissor = {};
+              scissor.extent = {sc.width, sc.height};
+              vkCmdSetScissor(cb, 0, 1, &scissor);
+              
+              ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cb);
+              
+              vkCmdEndRenderPass(cb);
+              vkEndCommandBuffer(cb);
+              
+              VkSubmitInfo submit = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+              submit.commandBufferCount = 1;
+              submit.pCommandBuffers = &cb;
+              vkQueueSubmit(g_Queue, 1, &submit, fence);
+              
+              deferredFrame = (deferredFrame + 1) % MAX_DEFERRED_FRAMES;
+            }
+          }
+          break;
+        }
       }
     }
   }

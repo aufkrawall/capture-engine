@@ -182,6 +182,7 @@ private:
   // Octo-buffered support (8 textures to prevent overwrite race)
   ID3D11Texture2D *cachedSharedTextures[8] = {};
   HANDLE cachedTextureHandles[8] = {};
+  IDXGIKeyedMutex *cachedKeyedMutexes[8] = {}; // Added for KeyedMutex sync
   HANDLE cachedFenceHandle = nullptr;
   ID3D11Fence *cachedD3D11Fence = nullptr;
   uint32_t cachedSourcePid = 0;

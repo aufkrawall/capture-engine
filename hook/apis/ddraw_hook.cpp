@@ -640,28 +640,44 @@ static void HandleCapture(IDirectDrawSurface7 *primarySurface) {
     int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
     g_PerfMetrics.Update(us);
     
-    // Capture logic
-    if (g_IPC && g_IPC->IsRecording()) {
-        if (!g_DDrawCapture.initialized) {
-            uint32_t w = 0, h = 0;
-            if (GetSurfaceSize(primarySurface, w, h) && w > 0 && h > 0) {
-                HWND hwnd = GetForegroundWindow();
-                g_DDrawCapture.Init(primarySurface, hwnd, w, h);
-            }
-        }
-        
-        if (g_DDrawCapture.initialized) {
-            // Use GDI-based capture for simplicity and compatibility
-            g_DDrawCapture.CaptureFrameViaGDI(primarySurface);
-        }
-    } else if (g_DDrawCapture.initialized) {
-        g_DDrawCapture.Cleanup();
-    }
-    
-    // Draw overlay
     SharedMemoryLayout *shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
-    if (shm && shm->overlayConfig.showOverlay) {
-        DrawDDrawOverlay();
+    bool captureIncludeOverlay = shm ? shm->overlayConfig.captureIncludeOverlay : true;
+    bool shouldDrawOverlay = shm && shm->overlayConfig.showOverlay;
+    bool isRecording = g_IPC && g_IPC->IsRecording();
+    
+    // Lambda for capture operation
+    auto doCapture = [&]() {
+      if (isRecording) {
+          if (!g_DDrawCapture.initialized) {
+              uint32_t w = 0, h = 0;
+              if (GetSurfaceSize(primarySurface, w, h) && w > 0 && h > 0) {
+                  HWND hwnd = GetForegroundWindow();
+                  g_DDrawCapture.Init(primarySurface, hwnd, w, h);
+              }
+          }
+          
+          if (g_DDrawCapture.initialized) {
+              g_DDrawCapture.CaptureFrameViaGDI(primarySurface);
+          }
+      } else if (g_DDrawCapture.initialized) {
+          g_DDrawCapture.Cleanup();
+      }
+    };
+    
+    // Lambda for overlay drawing
+    auto doOverlay = [&]() {
+      if (shouldDrawOverlay) {
+          DrawDDrawOverlay();
+      }
+    };
+    
+    // Order capture/overlay based on config
+    if (captureIncludeOverlay) {
+        doOverlay();   // Draw overlay first
+        doCapture();   // Then capture (includes overlay)
+    } else {
+        doCapture();   // Capture first (clean frame)
+        doOverlay();   // Then draw overlay (visible but not recorded)
     }
     
     // Apply FPS limiter

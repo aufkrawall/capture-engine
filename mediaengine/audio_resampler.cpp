@@ -307,37 +307,45 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
   // Alpha 0.05 means we trust history 95%, new reading 5% - more stable than 0.1
   smoothedDrift = (smoothedDrift * 0.95) + ((double)driftSamples * 0.05);
   
-  // TWO-TIER DRIFT COMPENSATION:
-  // Tier 1: Large drift (>50ms) - fast correction at 0.5% max pitch
-  // Tier 2: Small drift (>15ms) - slow correction at 0.1% max pitch (~1.7 cents)
-  // This ensures both sudden large drifts and gradual small drifts are corrected.
+  // CONTINUOUS PI CONTROLLER:
+  // Instead of thresholds ("Panic Mode"), we use a continuous control loop.
+  // This allows the system to "learn" the constant clock drift (Integral term)
+  // and apply a constant, smooth correction without pitch wobbling.
   
-  const int64_t largeDriftThreshold = (outFmt.sampleRate * 50) / 1000;  // 50ms = 2400 samples @ 48kHz
-  const int64_t smallDriftThreshold = (outFmt.sampleRate * 15) / 1000;  // 15ms = 720 samples @ 48kHz
-  
+  // Variables declaration
   int32_t targetDelta = 0;
   int32_t maxDelta = 0;
   
-  double absDrift = std::abs(smoothedDrift);
+  // 1. Integral Term (Accumulate Error)
+  // We accumulate the smoothed drift.
+  // Ki factor determines how fast we learn the constant offset.
+  integralError += smoothedDrift;
   
-  if (absDrift > largeDriftThreshold) {
-    // TIER 1: Large drift - correction with imperceptible pitch shift
-    // Target: correct 100% of drift over 1 second
-    targetDelta = (int32_t)(smoothedDrift);
-    
-    // Max 0.05% pitch shift (~0.8 cents - completely imperceptible)
-    // Human JND for pitch is ~5 cents, 0.8 cents is well below that
-    maxDelta = outFmt.sampleRate / 2000;  // 24 samples @ 48kHz
-    
-  } else if (absDrift > smallDriftThreshold) {
-    // TIER 2: Small drift - gentle correction
-    // Target: correct 50% of drift over 1 second (slower convergence)
-    targetDelta = (int32_t)(smoothedDrift * 0.5);
-    
-    // Max 0.02% pitch shift (~0.3 cents - completely inaudible)
-    maxDelta = outFmt.sampleRate / 5000;  // ~10 samples @ 48kHz
+  // Anti-Windup: Clamp Integral term to reasonable limits (+/- 2% max pitch)
+  // 2% of 48000 is 960 samples.
+  const double MAX_INTEGRAL_CORRECTION = outFmt.sampleRate * 0.02;
+  if (integralError * Ki > MAX_INTEGRAL_CORRECTION) integralError = MAX_INTEGRAL_CORRECTION / Ki;
+  if (integralError * Ki < -MAX_INTEGRAL_CORRECTION) integralError = -MAX_INTEGRAL_CORRECTION / Ki;
+  
+  // 2. Calculate Correction (PI Control)
+  // TargetDelta = (Kp * Error) + (Ki * Integral)
+  double correction = (Kp * smoothedDrift) + (Ki * integralError);
+  
+  targetDelta = (int32_t)correction;
+  
+  // 3. Absolute Safety Limits
+  // Hard clamp to +/- 2% to prevent any extreme resampling artifacts
+  // This matches the previous "Panic Mode" limit
+  maxDelta = outFmt.sampleRate / 50; 
+  
+  // Log extreme correction (Logic Debug)
+  if (std::abs(targetDelta) > maxDelta) {
+      static int limitLogCounter = 0;
+      if (limitLogCounter++ % 100 == 0) {
+          DLL_Log("[AudioResampler] PI Control Saturated! Req=%d, Max=%d (Drift=%.1f, Int=%.1f)", 
+                  targetDelta, maxDelta, smoothedDrift, integralError);
+      }
   }
-  // else: drift < 15ms - no correction needed (within acceptable tolerance)
   
   // Clamp to max delta
   if (targetDelta > maxDelta) targetDelta = maxDelta;

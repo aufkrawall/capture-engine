@@ -674,6 +674,7 @@ void LoadConfig(const std::string &path, AppConfig &config, const std::string& o
 
   // Overlay
   config.overlay.showOverlay = GetBool("Overlay", "enabled", true);
+  config.overlay.captureIncludeOverlay = GetBool("Overlay", "capture_include_overlay", true);
   
   std::string pos = GetStr("Overlay", "position", "TopLeft");
   if (pos == "TopRight") config.overlay.position = OverlayPosition::TopRight;

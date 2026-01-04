@@ -1062,6 +1062,11 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
   if (!recordingRequested)
     return false;
 
+  // Debug: Log every 60th frame entry to verify loop
+  if (encodeFrameCounter % 60 == 0) {
+      DLL_Log("[VideoEncoder] EncodeFrame Entry: PID=%u Handle=%p FenceVal=%llu", sourcePid, sharedHandle, fenceValue);
+  }
+
   if (!initDone || isHDR != currentIsHDR) {
     if (initDone) {
       DLL_Log("[VideoEncoder] HDR Mode changed (New=%d, Old=%d). "
@@ -1199,6 +1204,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
 
   ID3D11Texture2D *bgraTex = nullptr;
   ID3D11Fence *d3d11Fence = nullptr;
+  int cacheSlot = -1; // Moved out of else block for KeyedMutex lookup
 
   if (isShmem) {
     if (pShmem && pSharedMem && pSharedMem->shmemMappingCreated) {
@@ -1228,7 +1234,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
   } else {
   // Check cache for valid fence and texture (Quad-Buffered Cache)
   // Texture caching works independently of fence (for D3D11 KMT path)
-  int cacheSlot = -1;
+  cacheSlot = -1;
   bool skipFence = (fenceValue == 0 || fenceHandle == 0 ||
                     fenceHandle == INVALID_HANDLE_VALUE);
   bool fenceValid =
@@ -1373,22 +1379,26 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
     if (cachedSharedTextures[targetSlot]) {
       cachedSharedTextures[targetSlot]->Release();
     }
+    // Note: KeyedMutex cache removed - using fence sync
 
     cachedSharedTextures[targetSlot] = bgraTex;
     cachedSharedTextures[targetSlot]->AddRef();
     cachedTextureHandles[targetSlot] = sharedHandle;
+    
+    // Note: KeyedMutex removed - using D3D11 Fence for sync
 
     CloseHandle(hProcess);
-    // Note: Removed verbose per-frame logging - texture cache churning is expected
-    // due to 8-texture ring vs 4-slot cache
+    cacheSlot = targetSlot;
   }
   } // End of isShmem else block
 
-  // 2. Wait on D3D11 Fence
+  // 2. Wait on Synchronization using D3D11 Fence (KeyedMutex removed)
   // PROTECTED: Immediate Context access
   D3D11ScopedLock lock;
 
   HRESULT hr = S_OK;
+  
+  // D3D11 FENCE PATH (Async GPU sync)
   if (d3d11Fence) {
     // CPU-side timeout to prevent GPU hangs (Resilience improvement)
     if (!fenceEvent) {
@@ -1403,15 +1413,13 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
             // Frame is too late or GPU is hung - skip this frame
             DLL_Log("[VideoEncoder] Frame %d: GPU Fence Timeout (50ms) - Skipping", encodeFrameCounter);
             bgraTex->Release(); 
-            // Don't release fence here as it's cached/ref-counted above?
-            // Yes, we AddRef'd it. We decrement ref below.
-            d3d11Fence->Release(); // Release the local ref
+            d3d11Fence->Release();
             d3d11Fence = nullptr;
             return false;
         }
     }
   
-    // Reverted to ASYNC GPU Wait as per user request (plus CPU timeout check above)
+    // Async GPU Wait (plus CPU timeout check above)
     d3d11Context->Wait(d3d11Fence, fenceValue);
   }
 
@@ -1478,6 +1486,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
     bgraTex->Release();
     return false;
   }
+  // Note: KeyedMutex ReleaseSync removed - using fence sync
   auto afterConvert = PerfTimer::now();
   stats.colorConvertMs = PerfTimer::elapsed_ms(beforeConvert, afterConvert);
   bgraTex->Release(); // No longer needed after conversion

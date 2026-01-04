@@ -519,9 +519,12 @@ public:
         if (src.ringBuffer) {
            src.ringBuffer->Clear();
         }
-        if (src.resampler) {
-           src.resampler->Reset();
+        // Critical: Clear ring buffers to discard stale audio
+        if (src.ringBuffer) {
+           src.ringBuffer->Clear();
         }
+        // NOTE: Do NOT reset src.resampler here. It is used by AudioLoop thread.
+        // Clearing ring buffer is sufficient to sync start.
       }
       audioSyncPending.store(false);
     }
@@ -599,12 +602,14 @@ public:
         }
         // CRITICAL: Clear ring buffers now!
         // This drops any audio captured while waiting for the first video frame.
+        // Critical: Clear ring buffers now!
         if (src.ringBuffer) {
            src.ringBuffer->Clear();
         }
-        if (src.resampler) {
-           src.resampler->Reset();
-        }
+        // NOTE: Do NOT reset src.resampler here. Used by AudioLoop.
+        // if (src.resampler) {
+        //    src.resampler->Reset();
+        // }
       }
       audioSyncPending.store(false);
     }

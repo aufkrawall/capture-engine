@@ -804,23 +804,40 @@ static void SwapEnd(HDC hdc) {
         int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
         g_PerfMetrics.Update(us);
         
-        // Capture logic
-        if (g_IPC && g_IPC->IsRecording()) {
-            if (!g_OpenGLCapture.initialized) {
-                g_OpenGLCapture.Init(hdc);
-            }
-            
-            if (g_OpenGLCapture.initialized) {
-                g_OpenGLCapture.CaptureFrame();
-            }
-        } else if (g_OpenGLCapture.initialized) {
-            g_OpenGLCapture.Cleanup();
-        }
-        
-        // Draw overlay
         SharedMemoryLayout *shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
-        if (shm && shm->overlayConfig.showOverlay) {
-            DrawOpenGLOverlay(hdc);
+        bool captureIncludeOverlay = shm ? shm->overlayConfig.captureIncludeOverlay : true;
+        bool shouldDrawOverlay = shm && shm->overlayConfig.showOverlay;
+        bool isRecording = g_IPC && g_IPC->IsRecording();
+        
+        // Lambda for capture operation
+        auto doCapture = [&]() {
+          if (isRecording) {
+              if (!g_OpenGLCapture.initialized) {
+                  g_OpenGLCapture.Init(hdc);
+              }
+              
+              if (g_OpenGLCapture.initialized) {
+                  g_OpenGLCapture.CaptureFrame();
+              }
+          } else if (g_OpenGLCapture.initialized) {
+              g_OpenGLCapture.Cleanup();
+          }
+        };
+        
+        // Lambda for overlay drawing
+        auto doOverlay = [&]() {
+          if (shouldDrawOverlay) {
+              DrawOpenGLOverlay(hdc);
+          }
+        };
+        
+        // Order capture/overlay based on config
+        if (captureIncludeOverlay) {
+            doOverlay();   // Draw overlay first
+            doCapture();   // Then capture (includes overlay)
+        } else {
+            doCapture();   // Capture first (clean frame)
+            doOverlay();   // Then draw overlay (visible but not recorded)
         }
         
         // Apply FPS limiter
