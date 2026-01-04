@@ -8,6 +8,7 @@
 #include "performance_metrics.h"
 #include <MinHook.h>
 #include <backends/imgui_impl_dx11.h>
+#include <backends/imgui_impl_dx10.h>
 #include <backends/imgui_impl_win32.h>
 #include <cstdint>
 #include <cstdio>
@@ -24,12 +25,18 @@
 // Globals
 static ID3D11Device *g_pd3dDevice = NULL;
 static ID3D11DeviceContext *g_pd3dDeviceContext = NULL;
-static IDXGISwapChain *g_pSwapChain = NULL;
 static ID3D11RenderTargetView *g_mainRenderTargetView = NULL;
 
-// DX10 vs DX11 detection
+static ID3D10Device *g_pd3d10Device = NULL;
+static ID3D10RenderTargetView *g_mainRenderTargetView10 = NULL;
+
+static IDXGISwapChain *g_pSwapChain = NULL;
+
 static bool g_IsDX10Device = false;
-static const char* g_DetectedAPI = "DX11"; // Will be set to "DX10" if DX10 device detected
+static const char* g_DetectedAPI = "DX11"; 
+
+static bool g_IsDX11Active = false;
+static bool g_IsDX10Active = false;
 
 // Prerender Limit Fencing
 static std::vector<ID3D11Query*> g_PrerenderQueries;
@@ -55,6 +62,13 @@ typedef HRESULT(STDMETHODCALLTYPE *CreateSamplerState_t)(ID3D11Device *pDevice,
                                                          const D3D11_SAMPLER_DESC *pSamplerDesc,
                                                          ID3D11SamplerState **ppSamplerState);
 static CreateSamplerState_t oCreateSamplerState = NULL;
+
+// D3D10 CreateSamplerState hook
+typedef HRESULT(STDMETHODCALLTYPE *CreateSamplerState10_t)(ID3D10Device *pDevice,
+                                                            const D3D10_SAMPLER_DESC *pSamplerDesc,
+                                                            ID3D10SamplerState **ppSamplerState);
+static CreateSamplerState10_t oCreateSamplerState10 = NULL;
+
 typedef HRESULT(WINAPI *D3D11CreateDeviceAndSwapChain_t)(
     IDXGIAdapter *, D3D_DRIVER_TYPE, HMODULE, UINT, const D3D_FEATURE_LEVEL *,
     UINT, UINT, const DXGI_SWAP_CHAIN_DESC *, IDXGISwapChain **,
@@ -72,11 +86,37 @@ static ResizeBuffers_t oResizeBuffers = NULL; // Moved up
 static HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT Flags);
 static HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS *pPresentParameters);
 static HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain *pSwapChain, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags);
-static HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain *pSwapChain, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags);
 static void InstallVTableHooks(ID3D11Device *pDevice, ID3D11DeviceContext* pContext, IDXGISwapChain* pSwapChain);
-static void HookDXGIFactory(ID3D11Device* pDevice);
+static void HookDXGIFactory(IUnknown* pDevice);
 
 static D3D11CreateDeviceAndSwapChain_t oD3D11CreateDeviceAndSwapChain = NULL;
+
+typedef HRESULT(WINAPI *D3D10CreateDeviceAndSwapChain_t)(
+    IDXGIAdapter*, D3D10_DRIVER_TYPE, HMODULE, UINT, UINT, DXGI_SWAP_CHAIN_DESC*,
+    IDXGISwapChain**, ID3D10Device**);
+static D3D10CreateDeviceAndSwapChain_t oD3D10CreateDeviceAndSwapChain = NULL;
+
+typedef HRESULT(WINAPI *D3D10CreateDeviceAndSwapChain1_t)(
+    IDXGIAdapter*, D3D10_DRIVER_TYPE, HMODULE, UINT, D3D10_FEATURE_LEVEL1, UINT,
+    DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**, ID3D10Device1**);
+static D3D10CreateDeviceAndSwapChain1_t oD3D10CreateDeviceAndSwapChain1 = NULL;
+
+typedef HRESULT(WINAPI *D3D10CreateDevice_t)(IDXGIAdapter *, D3D10_DRIVER_TYPE, HMODULE, UINT, UINT, ID3D10Device **);
+static D3D10CreateDevice_t oD3D10CreateDevice = NULL;
+
+typedef HRESULT(WINAPI *D3D10CreateDevice1_t)(IDXGIAdapter *, D3D10_DRIVER_TYPE, HMODULE, UINT, D3D10_FEATURE_LEVEL1, UINT, ID3D10Device1 **);
+static D3D10CreateDevice1_t oD3D10CreateDevice1 = NULL;
+
+typedef HRESULT(WINAPI *CreateDXGIFactory_t)(REFIID, void **);
+static CreateDXGIFactory_t oCreateDXGIFactory = NULL;
+
+typedef HRESULT(WINAPI *CreateDXGIFactory1_t)(REFIID, void **);
+static CreateDXGIFactory1_t oCreateDXGIFactory1 = NULL;
+
+typedef HRESULT(WINAPI *CreateDXGIFactory2_t)(UINT, REFIID, void **);
+static CreateDXGIFactory2_t oCreateDXGIFactory2 = NULL;
+
+static void HookDXGIFactoryInstance(IUnknown* factory);
 
 static HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(
     IDXGIAdapter *pAdapter, D3D_DRIVER_TYPE DriverType, HMODULE Software,
@@ -179,6 +219,118 @@ static HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(
     return hr;
 }
 
+static HRESULT WINAPI DetourD3D10CreateDeviceAndSwapChain(
+    IDXGIAdapter *pAdapter, D3D10_DRIVER_TYPE DriverType, HMODULE Software,
+    UINT Flags, UINT SDKVersion, DXGI_SWAP_CHAIN_DESC *pSwapChainDesc,
+    IDXGISwapChain **ppSwapChain, ID3D10Device **ppDevice) {
+    
+    EarlyLog("DX10: D3D10CreateDeviceAndSwapChain called");
+    
+    DXGI_SWAP_CHAIN_DESC desc;
+    DXGI_SWAP_CHAIN_DESC *pFinalDesc = pSwapChainDesc;
+    
+    if (pSwapChainDesc) {
+        const GraphicsConfig& gfx = GetActiveGraphicsConfig();
+        desc = *pSwapChainDesc;
+        bool modified = false;
+        
+        int count = gfx.backbufferCount;
+        if (count >= 2 && count <= 6) {
+            desc.BufferCount = (UINT)count;
+            modified = true;
+        }
+        
+        if (modified) pFinalDesc = &desc;
+    }
+    
+    HRESULT hr = oD3D10CreateDeviceAndSwapChain(pAdapter, DriverType, Software, Flags, SDKVersion, pFinalDesc, ppSwapChain, ppDevice);
+    
+    if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
+        InstallVTableHooks(NULL, NULL, *ppSwapChain);
+    }
+    return hr;
+}
+
+static HRESULT WINAPI DetourD3D10CreateDeviceAndSwapChain1(
+    IDXGIAdapter *pAdapter, D3D10_DRIVER_TYPE DriverType, HMODULE Software,
+    UINT Flags, D3D10_FEATURE_LEVEL1 HardwareLevel, UINT SDKVersion,
+    DXGI_SWAP_CHAIN_DESC *pSwapChainDesc, IDXGISwapChain **ppSwapChain,
+    ID3D10Device1 **ppDevice) {
+    
+    EarlyLog("DX10.1: D3D10CreateDeviceAndSwapChain1 called");
+    
+    DXGI_SWAP_CHAIN_DESC desc;
+    DXGI_SWAP_CHAIN_DESC *pFinalDesc = pSwapChainDesc;
+    
+    if (pSwapChainDesc) {
+        const GraphicsConfig& gfx = GetActiveGraphicsConfig();
+        desc = *pSwapChainDesc;
+        bool modified = false;
+        
+        int count = gfx.backbufferCount;
+        if (count >= 2 && count <= 6) {
+            desc.BufferCount = (UINT)count;
+            modified = true;
+        }
+        
+        if (modified) pFinalDesc = &desc;
+    }
+    
+    HRESULT hr = oD3D10CreateDeviceAndSwapChain1(pAdapter, DriverType, Software, Flags, HardwareLevel, SDKVersion, pFinalDesc, ppSwapChain, ppDevice);
+    
+    if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
+        InstallVTableHooks(NULL, NULL, *ppSwapChain);
+    }
+    return hr;
+}
+
+static HRESULT WINAPI DetourD3D10CreateDevice(
+    IDXGIAdapter *pAdapter, D3D10_DRIVER_TYPE DriverType, HMODULE Software,
+    UINT Flags, UINT SDKVersion, ID3D10Device **ppDevice) {
+    
+    HRESULT hr = oD3D10CreateDevice(pAdapter, DriverType, Software, Flags, SDKVersion, ppDevice);
+    if (SUCCEEDED(hr) && ppDevice && *ppDevice) {
+        HookDXGIFactory(*ppDevice);
+    }
+    return hr;
+}
+
+static HRESULT WINAPI DetourD3D10CreateDevice1(
+    IDXGIAdapter *pAdapter, D3D10_DRIVER_TYPE DriverType, HMODULE Software,
+    UINT Flags, D3D10_FEATURE_LEVEL1 HardwareLevel, UINT SDKVersion,
+    ID3D10Device1 **ppDevice) {
+    
+    HRESULT hr = oD3D10CreateDevice1(pAdapter, DriverType, Software, Flags, HardwareLevel, SDKVersion, ppDevice);
+    if (SUCCEEDED(hr) && ppDevice && *ppDevice) {
+        HookDXGIFactory(*ppDevice);
+    }
+    return hr;
+}
+
+static HRESULT WINAPI DetourCreateDXGIFactory(REFIID riid, void **ppFactory) {
+    HRESULT hr = oCreateDXGIFactory(riid, ppFactory);
+    if (SUCCEEDED(hr) && ppFactory && *ppFactory) {
+        HookDXGIFactoryInstance((IUnknown*)*ppFactory);
+    }
+    return hr;
+}
+
+static HRESULT WINAPI DetourCreateDXGIFactory1(REFIID riid, void **ppFactory) {
+    HRESULT hr = oCreateDXGIFactory1(riid, ppFactory);
+    if (SUCCEEDED(hr) && ppFactory && *ppFactory) {
+        HookDXGIFactoryInstance((IUnknown*)*ppFactory);
+    }
+    return hr;
+}
+
+static HRESULT WINAPI DetourCreateDXGIFactory2(UINT Flags, REFIID riid, void **ppFactory) {
+    HRESULT hr = oCreateDXGIFactory2(Flags, riid, ppFactory);
+    if (SUCCEEDED(hr) && ppFactory && *ppFactory) {
+        HookDXGIFactoryInstance((IUnknown*)*ppFactory);
+    }
+    return hr;
+}
+
 static HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory *pFactory, IUnknown *pDevice, DXGI_SWAP_CHAIN_DESC *pDesc, IDXGISwapChain **ppSwapChain) {
     if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) {
         if (pDesc) {
@@ -198,6 +350,9 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory *pFactory, I
              InstallVTableHooks(pD3D11Device, ctx, *ppSwapChain);
              if (ctx) ctx->Release();
              pD3D11Device->Release();
+        } else {
+             // Fallback for D3D10/10.1 or other versions
+             InstallVTableHooks(NULL, NULL, *ppSwapChain);
         }
     }
     return hr;
@@ -221,41 +376,54 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2 *pFa
              InstallVTableHooks(pD3D11Device, ctx, *ppSwapChain);
              if (ctx) ctx->Release();
              pD3D11Device->Release();
+        } else {
+             // Fallback for D3D10/10.1 or other versions
+             InstallVTableHooks(NULL, NULL, *ppSwapChain);
         }
     }
     return hr;
 }
 
-static void HookDXGIFactory(ID3D11Device* pDevice) {
+static void HookDXGIFactoryInstance(IUnknown* factory) {
+    if (!factory) return;
+    
+    IDXGIFactory* pFactory = nullptr;
+    if (SUCCEEDED(factory->QueryInterface(__uuidof(IDXGIFactory), (void**)&pFactory))) {
+        void** vtable = *(void***)pFactory;
+        
+        // Hook CreateSwapChain (Index 10)
+        if (oCreateSwapChain == NULL) {
+            if (MH_CreateHook(vtable[10], (LPVOID)&DetourCreateSwapChain, (LPVOID*)&oCreateSwapChain) == MH_OK) {
+                MH_EnableHook(vtable[10]);
+                HookLog("DX11: Hooked IDXGIFactory::CreateSwapChain");
+            }
+        }
+        
+        // Hook CreateSwapChainForHwnd (Index 15 on IDXGIFactory2)
+        IDXGIFactory2* factory2 = nullptr;
+        if (SUCCEEDED(pFactory->QueryInterface(__uuidof(IDXGIFactory2), (void**)&factory2))) {
+            void** vtable2 = *(void***)factory2;
+            if (oCreateSwapChainForHwnd == NULL) {
+                 if (MH_CreateHook(vtable2[15], (LPVOID)&DetourCreateSwapChainForHwnd, (LPVOID*)&oCreateSwapChainForHwnd) == MH_OK) {
+                    MH_EnableHook(vtable2[15]);
+                    HookLog("DX11: Hooked IDXGIFactory2::CreateSwapChainForHwnd");
+                }
+            }
+            factory2->Release();
+        }
+        pFactory->Release();
+    }
+}
+
+static void HookDXGIFactory(IUnknown* pDevice) {
+    if (!pDevice) return;
     IDXGIDevice* dxgiDevice = nullptr;
     if (SUCCEEDED(pDevice->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice))) {
         IDXGIAdapter* adapter = nullptr;
         if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter))) {
             IDXGIFactory* factory = nullptr;
             if (SUCCEEDED(adapter->GetParent(__uuidof(IDXGIFactory), (void**)&factory))) {
-                void** vtable = *(void***)factory;
-                
-                // Hook CreateSwapChain (Index 10)
-                if (oCreateSwapChain == NULL) {
-                    if (MH_CreateHook(vtable[10], (LPVOID)&DetourCreateSwapChain, (LPVOID*)&oCreateSwapChain) == MH_OK) {
-                        MH_EnableHook(vtable[10]);
-                        HookLog("DX11: Hooked IDXGIFactory::CreateSwapChain");
-                    }
-                }
-                
-                // Hook CreateSwapChainForHwnd (Index 15 on IDXGIFactory2)
-                IDXGIFactory2* factory2 = nullptr;
-                if (SUCCEEDED(factory->QueryInterface(__uuidof(IDXGIFactory2), (void**)&factory2))) {
-                    void** vtable2 = *(void***)factory2;
-                    if (oCreateSwapChainForHwnd == NULL) {
-                         if (MH_CreateHook(vtable2[15], (LPVOID)&DetourCreateSwapChainForHwnd, (LPVOID*)&oCreateSwapChainForHwnd) == MH_OK) {
-                            MH_EnableHook(vtable2[15]);
-                            HookLog("DX11: Hooked IDXGIFactory2::CreateSwapChainForHwnd");
-                        }
-                    }
-                    factory2->Release();
-                }
-                
+                HookDXGIFactoryInstance(factory);
                 factory->Release();
             }
             adapter->Release();
@@ -265,21 +433,41 @@ static void HookDXGIFactory(ID3D11Device* pDevice) {
 }
 
 static HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device *pDevice, const D3D11_SAMPLER_DESC *pSamplerDesc, ID3D11SamplerState **ppSamplerState);
+static HRESULT STDMETHODCALLTYPE DetourCreateSamplerState10(ID3D10Device *pDevice, const D3D10_SAMPLER_DESC *pSamplerDesc, ID3D10SamplerState **ppSamplerState);
 
 // Helper to install vtable hooks
 static void InstallVTableHooks(ID3D11Device *pDevice, ID3D11DeviceContext* pContext, IDXGISwapChain* pSwapChain) {
-    // Hook Device methods
+    // Hook D3D11 Device methods
     if (pDevice) {
         void **pDeviceVTable = *(void ***)pDevice;
         if (oCreateSamplerState == NULL) {
-        if (oCreateSamplerState == NULL) {
-            // Index 23 is CreateSamplerState
+            // Index 23 is CreateSamplerState for D3D11
             if (MH_CreateHook(pDeviceVTable[23], (LPVOID)&DetourCreateSamplerState,
                               (LPVOID *)&oCreateSamplerState) == MH_OK) {
                 MH_EnableHook(pDeviceVTable[23]);
                 HookLog("DX11: CreateSamplerState hook installed");
             }
         }
+    }
+    
+    // ALSO try to hook D3D10 device from swapchain (Windows D3D10/D3D11 interop means both will succeed)
+    // We need to hook D3D10 CreateSamplerState for D3D10 games regardless of whether D3D11 QI succeeds
+    if (pSwapChain && oCreateSamplerState10 == NULL) {
+        ID3D10Device *pDevice10 = nullptr;
+        HRESULT hr = pSwapChain->GetDevice(__uuidof(ID3D10Device), (void**)&pDevice10);
+        if (SUCCEEDED(hr) && pDevice10) {
+            HookLog("DX10: Got D3D10 device from swapchain, hooking CreateSamplerState...");
+            void **pDeviceVTable = *(void ***)pDevice10;
+            // Index 87 is CreateSamplerState for D3D10
+            MH_STATUS status = MH_CreateHook(pDeviceVTable[87], (LPVOID)&DetourCreateSamplerState10,
+                              (LPVOID *)&oCreateSamplerState10);
+            if (status == MH_OK) {
+                MH_EnableHook(pDeviceVTable[87]);
+                HookLog("DX10: CreateSamplerState hook installed");
+            } else {
+                HookLog("DX10: MH_CreateHook failed for CreateSamplerState, status=%d", status);
+            }
+            pDevice10->Release();
         }
     }
 
@@ -307,12 +495,6 @@ static void InstallVTableHooks(ID3D11Device *pDevice, ID3D11DeviceContext* pCont
 
         // Present1 (Index 22) - For DXGI 1.2+
         if (oPresent1 == NULL) {
-             // Only if vtable is large enough? DXGI 1.2 implies it is.
-             // We can check device feature level or just try.
-             // Safest is to try IO try/catch or just trust it's there on Win10+
-             // But MinHook handles invalid pointers gracefully-ish? No. 
-             // We assume DXGI 1.2 is present on target systems (Win 11).
-             // To be safe, we can check IID_IDXGISwapChain1
              IDXGISwapChain1* sc1 = nullptr;
              if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc1)))) {
                  void **pSC1VTable = *(void ***)sc1;
@@ -651,69 +833,146 @@ public:
 
 static DX11Capture g_DX11Capture;
 
-void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
-  // For DX10 games, we need to get a D3D11 device for ImGui
-  // Try DX11 first, fallback to creating one for DX10
-  if (!g_ImGuiInitialized) {
-    ID3D11Device *device = NULL;
-    ID3D11DeviceContext *context = NULL;
-    
-    // Try to get DX11 device directly
-    if (FAILED(pSwapChain->GetDevice(IID_PPV_ARGS(&device)))) {
-        // DX10 game - need to create a D3D11 device for ImGui
-        // Use the capture class's owned device if available
-        if (g_DX11Capture.ownedDevice) {
-            device = g_DX11Capture.ownedDevice;
-            device->AddRef(); // Balance the Release below
-            context = g_DX11Capture.ownedContext;
-            context->AddRef();
-        } else {
-            HookLog("DrawDX11Overlay: No D3D11 device available for DX10 game");
+static void DrawDX10Overlay(IDXGISwapChain *pSwapChain, HWND currentHwnd, int frameCount) {
+    ID3D10Device* device = nullptr;
+    if (FAILED(pSwapChain->GetDevice(__uuidof(ID3D10Device), (void**)&device))) {
+        if (FAILED(pSwapChain->GetDevice(__uuidof(ID3D10Device1), (void**)&device))) {
             return;
         }
-    } else {
-        device->GetImmediateContext(&context);
     }
 
-    DXGI_SWAP_CHAIN_DESC desc;
-    pSwapChain->GetDesc(&desc);
-    g_CachedHwnd = desc.OutputWindow;
+    if (g_ImGuiInitialized && currentHwnd != g_CachedHwnd) {
+        EarlyLog("DX10: HWND changed from %p to %p. Re-initializing ImGui.", g_CachedHwnd, currentHwnd);
+        ImGui_ImplDX10_Shutdown();
+        ImGui_ImplWin32_Shutdown();
+        ImGui::DestroyContext();
+        g_ImGuiInitialized = false;
+        g_IsDX10Active = false;
+    }
 
-    g_SharedOverlay.InitImGui(desc.OutputWindow);
-    ImGui_ImplDX11_Init(device, context);
-    g_ImGuiInitialized = true;
-    EarlyLog("%s: ImGui initialized", g_DetectedAPI);
-    
-    // Cache these for reuse - some games have broken GetImmediateContext on subsequent calls
-    g_pd3dDevice = device;
-    g_pd3dDeviceContext = context;
-    // Keep references (don't release here)
+    if (!g_ImGuiInitialized) {
+        g_CachedHwnd = currentHwnd;
+        g_SharedOverlay.InitImGui(currentHwnd);
+        ImGui_ImplDX10_Init(device);
+        g_ImGuiInitialized = true;
+        g_IsDX10Active = true;
+        g_pd3d10Device = device;
+        EarlyLog("DX10: ImGui initialized for HWND %p", currentHwnd);
+    }
 
-    // Initialize System Metrics (CPU/GPU/RAM)
-    EarlyLog("%s: Initializing SystemMetrics...", g_DetectedAPI);
-    IDXGIDevice* dxgiDev = nullptr;
-    if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&dxgiDev)))) {
-        IDXGIAdapter* adapter = nullptr;
-        if (SUCCEEDED(dxgiDev->GetAdapter(&adapter))) {
-            DXGI_ADAPTER_DESC adapterDesc;
-            adapter->GetDesc(&adapterDesc);
-            EarlyLog("%s: Calling SystemMetricsCollector::Initialize...", g_DetectedAPI);
-            SystemMetricsCollector::Get().Initialize(adapterDesc.AdapterLuid.LowPart, adapterDesc.AdapterLuid.HighPart);
-            EarlyLog("%s: SystemMetrics initialized OK", g_DetectedAPI);
-            adapter->Release();
+    static IDXGISwapChain* lastSC = nullptr;
+    if (!g_mainRenderTargetView10 || pSwapChain != lastSC) {
+        if (g_mainRenderTargetView10) {
+            g_mainRenderTargetView10->Release();
+            g_mainRenderTargetView10 = nullptr;
         }
-        dxgiDev->Release();
+        
+        ID3D10Texture2D *backbuffer = nullptr;
+        if (SUCCEEDED(pSwapChain->GetBuffer(0, IID_PPV_ARGS(&backbuffer)))) {
+            device->CreateRenderTargetView(backbuffer, NULL, &g_mainRenderTargetView10);
+            backbuffer->Release();
+        }
+        lastSC = pSwapChain;
     }
 
-    EarlyLog("%s: First frame init complete", g_DetectedAPI);
-  }
+    // Determine if HDR is active (rare in DX10, but possible via DXGI)
+    DXGI_SWAP_CHAIN_DESC dsc;
+    pSwapChain->GetDesc(&dsc);
+    bool isHDR = (dsc.BufferDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT || 
+                 dsc.BufferDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM);
+    g_SharedOverlay.SetHDR(isHDR);
 
-  ImGui_ImplDX11_NewFrame();
-  g_SharedOverlay.BeginFrame();
+    g_SharedOverlay.SetMetrics(&g_PerfMetrics);
+    g_SharedOverlay.SetIPCClient(g_IPC);
+    g_SharedOverlay.SetDroppedFrames(g_DX11Capture.droppedFrames.load(std::memory_order_relaxed));
+    g_SharedOverlay.SetGraphicsAPI("DX10");
+    
+    ImGui_ImplDX10_NewFrame();
+    g_SharedOverlay.BeginFrame();
+    g_SharedOverlay.RenderUI();
+    g_SharedOverlay.EndFrame();
 
-  // Determine if HDR is active
+    device->OMSetRenderTargets(1, &g_mainRenderTargetView10, NULL);
+    ImGui_ImplDX10_RenderDrawData(ImGui::GetDrawData());
+    
+    device->Release();
+}
+
+void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
+  static IDXGISwapChain* lastSwapChain = nullptr;
+  static HWND lastHwnd = NULL;
+  static int frameCount = 0;
+  
+  frameCount++;
+  
   DXGI_SWAP_CHAIN_DESC desc;
   pSwapChain->GetDesc(&desc);
+  HWND currentHwnd = desc.OutputWindow;
+
+  if (frameCount % 60 == 0) {
+      EarlyLog("DX: DrawOverlay frame %d on SC %p (HWND %p, %ux%u)", 
+               frameCount, pSwapChain, currentHwnd, desc.BufferDesc.Width, desc.BufferDesc.Height);
+  }
+
+  // Check for D3D10 FIRST (D3D11 interop means D3D11 QI succeeds even for D3D10 devices!)
+  ID3D10Device *device10 = NULL;
+  if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D10Device), (void**)&device10))) {
+      device10->Release();
+      // It's a D3D10 swapchain - use native D3D10 rendering
+      DrawDX10Overlay(pSwapChain, currentHwnd, frameCount);
+      return;
+  }
+  
+  // Try D3D10.1
+  ID3D10Device1 *device10_1 = NULL;
+  if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D10Device1), (void**)&device10_1))) {
+      device10_1->Release();
+      DrawDX10Overlay(pSwapChain, currentHwnd, frameCount);
+      return;
+  }
+
+  // If we reach here, it's a true DX11 swapchain
+  ID3D11Device *device11 = NULL;
+  if (FAILED(pSwapChain->GetDevice(IID_PPV_ARGS(&device11)))) {
+      return; // Unknown device type
+  }
+  ID3D11Device *device = device11;
+  ID3D11DeviceContext *context = NULL;
+  device->GetImmediateContext(&context);
+
+  if (g_ImGuiInitialized && currentHwnd != g_CachedHwnd) {
+      EarlyLog("DX11: HWND changed from %p to %p. Re-initializing ImGui.", g_CachedHwnd, currentHwnd);
+      ImGui_ImplDX11_Shutdown();
+      ImGui_ImplWin32_Shutdown();
+      ImGui::DestroyContext();
+      g_ImGuiInitialized = false;
+      g_IsDX11Active = false;
+  }
+
+  if (!g_ImGuiInitialized) {
+      g_CachedHwnd = currentHwnd;
+      lastHwnd = currentHwnd;
+
+      g_SharedOverlay.InitImGui(currentHwnd);
+      ImGui_ImplDX11_Init(device, context);
+      g_ImGuiInitialized = true;
+      g_IsDX11Active = true;
+      EarlyLog("DX11: ImGui initialized for HWND %p", currentHwnd);
+      
+      g_pd3dDevice = device;
+      g_pd3dDeviceContext = context;
+  }
+
+  // Detect HWND change (multi-window apps)
+  if (currentHwnd != lastHwnd) {
+      EarlyLog("DX11: HWND changed from %p to %p. Overlay might not be visible on new window without re-init.", lastHwnd, currentHwnd);
+      // We don't re-init ImGui fully here yet as it's dangerous, but we log it.
+      // However, we should at least update some internal state if needed.
+      lastHwnd = currentHwnd;
+  }
+
+  // Determine if HDR is active
+  // Re-use desc from above if needed
   bool isHDR = (desc.BufferDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT || 
                desc.BufferDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM);
   g_SharedOverlay.SetHDR(isHDR);
@@ -722,18 +981,21 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
   g_SharedOverlay.SetIPCClient(g_IPC);
   g_SharedOverlay.SetDroppedFrames(g_DX11Capture.droppedFrames.load(std::memory_order_relaxed));
   g_SharedOverlay.SetGraphicsAPI(g_DetectedAPI);
+  
+  ImGui_ImplDX11_NewFrame();
+  g_SharedOverlay.BeginFrame();
   g_SharedOverlay.RenderUI();
-
   g_SharedOverlay.EndFrame();
 
   // Use cached device/context - some games have broken GetImmediateContext on re-acquire
-  if (!g_pd3dDevice || !g_pd3dDeviceContext) {
-      EarlyLog("%s: No cached device/context!", g_DetectedAPI);
-      return;
-  }
-
-  if (!g_mainRenderTargetView) {
-    EarlyLog("%s: Creating RTV...", g_DetectedAPI);
+  if (!g_mainRenderTargetView || pSwapChain != lastSwapChain) {
+    if (g_mainRenderTargetView) {
+        g_mainRenderTargetView->Release();
+        g_mainRenderTargetView = nullptr;
+    }
+    
+    EarlyLog("%s: Creating RTV for SwapChain %p (%ux%u)...", g_DetectedAPI, pSwapChain, desc.BufferDesc.Width, desc.BufferDesc.Height);
+    
     ID3D11Texture2D *backbuffer = nullptr;
     HRESULT hr = pSwapChain->GetBuffer(0, IID_PPV_ARGS(&backbuffer));
     if (FAILED(hr) || !backbuffer) {
@@ -746,10 +1008,29 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
         EarlyLog("%s: CreateRTV FAILED hr=0x%08X", g_DetectedAPI, hr);
         return;
     }
+    lastSwapChain = pSwapChain;
     EarlyLog("%s: RTV created OK", g_DetectedAPI);
   }
 
+  // DEBUG: Clear to pink every 120 frames to see if we are drawing on the right window
+  if (frameCount % 120 == 0) {
+      float pink[4] = { 1.0f, 0.0f, 1.0f, 1.0f }; // Magenta/Pink
+      g_pd3dDeviceContext->ClearRenderTargetView(g_mainRenderTargetView, pink);
+      EarlyLog("DX11: Cleared screen to PINK for frame %d on SC %p", frameCount, pSwapChain);
+  }
+
   g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, NULL);
+  
+  // Explicitly set viewport
+  D3D11_VIEWPORT vp;
+  vp.Width = (float)desc.BufferDesc.Width;
+  vp.Height = (float)desc.BufferDesc.Height;
+  vp.MinDepth = 0.0f;
+  vp.MaxDepth = 1.0f;
+  vp.TopLeftX = 0;
+  vp.TopLeftY = 0;
+  g_pd3dDeviceContext->RSSetViewports(1, &vp);
+
   ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 }
 
@@ -765,10 +1046,15 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain *pSwapChain,
     g_mainRenderTargetView->Release();
     g_mainRenderTargetView = nullptr;
   }
+  if (g_mainRenderTargetView10) {
+    g_mainRenderTargetView10->Release();
+    g_mainRenderTargetView10 = nullptr;
+  }
   
   // Invalidate ImGui device objects (they reference old backbuffer)
   if (g_ImGuiInitialized) {
-    ImGui_ImplDX11_InvalidateDeviceObjects();
+    if (g_IsDX11Active) ImGui_ImplDX11_InvalidateDeviceObjects();
+    if (g_IsDX10Active) ImGui_ImplDX10_InvalidateDeviceObjects();
   }
   
   // Apply backbuffer count override
@@ -783,7 +1069,8 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain *pSwapChain,
   
   // Recreate ImGui device objects after resize
   if (g_ImGuiInitialized && SUCCEEDED(hr)) {
-    ImGui_ImplDX11_CreateDeviceObjects();
+    if (g_IsDX11Active) ImGui_ImplDX11_CreateDeviceObjects();
+    if (g_IsDX10Active) ImGui_ImplDX10_CreateDeviceObjects();
   }
   
   return hr;
@@ -1317,32 +1604,256 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device *pDevice,
     return hr;
 }
 
+// Hook: D3D10 CreateSamplerState - Same logic as D3D11 version
+HRESULT STDMETHODCALLTYPE DetourCreateSamplerState10(ID3D10Device *pDevice,
+                                                     const D3D10_SAMPLER_DESC *pSamplerDesc,
+                                                     ID3D10SamplerState **ppSamplerState) {
+    if (!pSamplerDesc) return oCreateSamplerState10(pDevice, pSamplerDesc, ppSamplerState);
+    if (!g_GraphicsOverridesActive.load(std::memory_order_acquire)) return oCreateSamplerState10(pDevice, pSamplerDesc, ppSamplerState);
+
+    D3D10_SAMPLER_DESC desc = *pSamplerDesc;
+    bool modified = false;
+    bool debug = false;
+    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) {
+        debug = true;
+    }
+
+    // Check if overrides should be applied
+    bool overridesAllowed = true;
+    if (pSamplerDesc->MaxLOD == 0.0f) overridesAllowed = false;
+    if (pSamplerDesc->MinLOD == pSamplerDesc->MaxLOD) overridesAllowed = false;
+
+    if (overridesAllowed && g_IPC) {
+        const auto& gfx = GetActiveGraphicsConfig();
+        // Anisotropic Filtering
+        std::string af = gfx.anisotropicFiltering;
+        if (af != "default") {
+            if (af == "off") {
+                if ((desc.Filter & D3D10_FILTER_ANISOTROPIC) || (desc.Filter == D3D10_FILTER_ANISOTROPIC)) {
+                    desc.Filter = D3D10_FILTER_MIN_MAG_MIP_LINEAR;
+                    desc.MaxAnisotropy = 1;
+                    modified = true;
+                }
+            } else {
+                int maxAniso = 16;
+                if (af == "2x") maxAniso = 2;
+                else if (af == "4x") maxAniso = 4;
+                else if (af == "8x") maxAniso = 8;
+                
+                if (desc.AddressU == D3D10_TEXTURE_ADDRESS_BORDER || 
+                    desc.AddressV == D3D10_TEXTURE_ADDRESS_BORDER || 
+                    desc.AddressW == D3D10_TEXTURE_ADDRESS_BORDER) {
+                    // Skip AF override for Border address mode
+                } else {
+                    desc.Filter = D3D10_FILTER_ANISOTROPIC;
+                    desc.MaxAnisotropy = maxAniso;
+                    modified = true;
+                }
+            }
+        }
+
+        // Mip Mapping
+        std::string mip = gfx.mipMapping;
+        bool isAniso = (desc.Filter == D3D10_FILTER_ANISOTROPIC);
+        
+        if (mip != "default" && !isAniso) {
+            if (mip == "trilinear") {
+                desc.Filter = D3D10_FILTER_MIN_MAG_MIP_LINEAR;
+                modified = true;
+            } else if (mip == "bilinear") {
+                desc.Filter = D3D10_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+                modified = true;
+            }
+        }
+
+        // Mip Bias
+        std::string bias = gfx.mipBias;
+        if (bias != "default") {
+            try {
+                desc.MipLODBias = std::stof(bias);
+                modified = true;
+            } catch (...) {}
+        }
+
+        // SGSSAA Auto-Bias
+        if (gfx.sgssaa && !gfx.disableAutoMipBias) {
+            float sgBias = 0.0f;
+            if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgBias)) {
+                desc.MipLODBias += sgBias;
+                modified = true;
+            }
+        }
+    }
+
+    HRESULT hr;
+    if (modified) {
+        hr = oCreateSamplerState10(pDevice, &desc, ppSamplerState);
+        if (FAILED(hr) && debug) {
+            EarlyLog("DX10: CreateSamplerState FAILED with modified desc (hr=0x%08X). Filter=0x%X Bias=%.2f Aniso=%u", 
+                     hr, desc.Filter, desc.MipLODBias, desc.MaxAnisotropy);
+        } else if (debug) {
+            static int logCount = 0;
+            if (logCount++ < 5) {
+                EarlyLog("DX10: CreateSamplerState overridden. Filter=0x%X Bias=%.2f Aniso=%u", 
+                         desc.Filter, desc.MipLODBias, desc.MaxAnisotropy);
+            }
+        }
+    } else {
+        hr = oCreateSamplerState10(pDevice, pSamplerDesc, ppSamplerState);
+    }
+    return hr;
+}
+
 void DX11Hook::Init() {
-  HookLog("DX11Hook::Init() - Lazy Hooking Mode");
+  HookLog("DX11Hook::Init()");
 
-  // We only hook D3D11CreateDeviceAndSwapChain directly here.
-  // The VTable hooks (Present, etc.) are installed lazily when the game calls CreateDevice.
-  
-  HMODULE hD3D11 = LoadLibraryA("d3d11.dll");
-  if (!hD3D11) {
-    HookLog("DX11Hook: D3D11 DLL not found.");
-    return;
+  // 1. Hook D3D11 primary entry point
+  HMODULE hD3D11 = GetModuleHandleA("d3d11.dll");
+  if (hD3D11) {
+    oD3D11CreateDeviceAndSwapChain = (D3D11CreateDeviceAndSwapChain_t)GetProcAddress(hD3D11, "D3D11CreateDeviceAndSwapChain");
+    if (oD3D11CreateDeviceAndSwapChain) {
+      if (MH_CreateHook((LPVOID)oD3D11CreateDeviceAndSwapChain, (LPVOID)&DetourD3D11CreateDeviceAndSwapChain,
+                        (LPVOID *)&oD3D11CreateDeviceAndSwapChain) == MH_OK) {
+        MH_EnableHook((LPVOID)oD3D11CreateDeviceAndSwapChain);
+        HookLog("DX11: D3D11CreateDeviceAndSwapChain hook installed.");
+      }
+    }
   }
 
-  typedef HRESULT (WINAPI *PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN)(IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT, const D3D_FEATURE_LEVEL*, UINT, UINT, const DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**, ID3D11Device**, D3D_FEATURE_LEVEL*, ID3D11DeviceContext**);
-  PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN pD3D11CreateDeviceAndSwapChain = (PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN)GetProcAddress(hD3D11, "D3D11CreateDeviceAndSwapChain");
-
-  if (!pD3D11CreateDeviceAndSwapChain) {
-      HookLog("DX11Hook: D3D11CreateDeviceAndSwapChain export not found.");
-      return;
+  // 2. Hook D3D10 entry points
+  HMODULE hD3D10 = GetModuleHandleA("d3d10.dll");
+  if (hD3D10) {
+    oD3D10CreateDeviceAndSwapChain = (D3D10CreateDeviceAndSwapChain_t)GetProcAddress(hD3D10, "D3D10CreateDeviceAndSwapChain");
+    if (oD3D10CreateDeviceAndSwapChain) {
+      if (MH_CreateHook((LPVOID)oD3D10CreateDeviceAndSwapChain, (LPVOID)&DetourD3D10CreateDeviceAndSwapChain,
+                        (LPVOID *)&oD3D10CreateDeviceAndSwapChain) == MH_OK) {
+        MH_EnableHook((LPVOID)oD3D10CreateDeviceAndSwapChain);
+        HookLog("DX11: D3D10CreateDeviceAndSwapChain hook installed.");
+      }
+    }
+    
+    oD3D10CreateDevice = (D3D10CreateDevice_t)GetProcAddress(hD3D10, "D3D10CreateDevice");
+    if (oD3D10CreateDevice) {
+      if (MH_CreateHook((LPVOID)oD3D10CreateDevice, (LPVOID)&DetourD3D10CreateDevice,
+                        (LPVOID *)&oD3D10CreateDevice) == MH_OK) {
+        MH_EnableHook((LPVOID)oD3D10CreateDevice);
+        HookLog("DX11: D3D10CreateDevice hook installed.");
+      }
+    }
   }
 
-  if (MH_CreateHook((LPVOID)pD3D11CreateDeviceAndSwapChain, (LPVOID)&DetourD3D11CreateDeviceAndSwapChain,
-                    (LPVOID *)&oD3D11CreateDeviceAndSwapChain) == MH_OK) {
-    MH_EnableHook((LPVOID)pD3D11CreateDeviceAndSwapChain);
-    HookLog("DX11: D3D11CreateDeviceAndSwapChain hook installed.");
+  HMODULE hD3D10_1 = GetModuleHandleA("d3d10_1.dll");
+  if (hD3D10_1) {
+    oD3D10CreateDeviceAndSwapChain1 = (D3D10CreateDeviceAndSwapChain1_t)GetProcAddress(hD3D10_1, "D3D10CreateDeviceAndSwapChain1");
+    if (oD3D10CreateDeviceAndSwapChain1) {
+      if (MH_CreateHook((LPVOID)oD3D10CreateDeviceAndSwapChain1, (LPVOID)&DetourD3D10CreateDeviceAndSwapChain1,
+                        (LPVOID *)&oD3D10CreateDeviceAndSwapChain1) == MH_OK) {
+        MH_EnableHook((LPVOID)oD3D10CreateDeviceAndSwapChain1);
+        HookLog("DX11: D3D10CreateDeviceAndSwapChain1 hook installed.");
+      }
+    }
+    
+    oD3D10CreateDevice1 = (D3D10CreateDevice1_t)GetProcAddress(hD3D10_1, "D3D10CreateDevice1");
+    if (oD3D10CreateDevice1) {
+      if (MH_CreateHook((LPVOID)oD3D10CreateDevice1, (LPVOID)&DetourD3D10CreateDevice1,
+                        (LPVOID *)&oD3D10CreateDevice1) == MH_OK) {
+        MH_EnableHook((LPVOID)oD3D10CreateDevice1);
+        HookLog("DX11: D3D10CreateDevice1 hook installed.");
+      }
+    }
   } else {
-      HookLog("DX11: Failed to hook D3D11CreateDeviceAndSwapChain.");
+      HookLog("DX11: d3d10_1.dll not loaded, skipping hooks.");
+  }
+
+  // 3. Hook DXGI Factory entry points
+  HMODULE hDXGI = GetModuleHandleA("dxgi.dll");
+  if (hDXGI) {
+      oCreateDXGIFactory = (CreateDXGIFactory_t)GetProcAddress(hDXGI, "CreateDXGIFactory");
+      if (oCreateDXGIFactory) {
+          MH_CreateHook((LPVOID)oCreateDXGIFactory, (LPVOID)&DetourCreateDXGIFactory, (LPVOID*)&oCreateDXGIFactory);
+          MH_EnableHook((LPVOID)oCreateDXGIFactory);
+      }
+      oCreateDXGIFactory1 = (CreateDXGIFactory1_t)GetProcAddress(hDXGI, "CreateDXGIFactory1");
+      if (oCreateDXGIFactory1) {
+          MH_CreateHook((LPVOID)oCreateDXGIFactory1, (LPVOID)&DetourCreateDXGIFactory1, (LPVOID*)&oCreateDXGIFactory1);
+          MH_EnableHook((LPVOID)oCreateDXGIFactory1);
+      }
+      oCreateDXGIFactory2 = (CreateDXGIFactory2_t)GetProcAddress(hDXGI, "CreateDXGIFactory2");
+      if (oCreateDXGIFactory2) {
+          MH_CreateHook((LPVOID)oCreateDXGIFactory2, (LPVOID)&DetourCreateDXGIFactory2, (LPVOID*)&oCreateDXGIFactory2);
+          MH_EnableHook((LPVOID)oCreateDXGIFactory2);
+      }
+      HookLog("DX11: DXGI Factory creation hooks installed.");
+  }
+
+  // 4. Early DXGI Factory Hooking (via dummy device)
+  // We create a dummy device to get a factory and hook it early. 
+  // This helps when games create devices via D3D11CreateDevice and then create swapchains via factory.
+  if (hD3D11) {
+      ID3D11Device* dummyDevice = nullptr;
+      D3D_FEATURE_LEVEL fl;
+      if (SUCCEEDED(D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, NULL, 0, D3D11_SDK_VERSION, &dummyDevice, &fl, NULL))) {
+          HookDXGIFactory(dummyDevice);
+          dummyDevice->Release();
+      }
+  }
+
+  // 5. Scan for EXISTING swapchains (late injection scenario)
+  // If the game already created the device/swapchain before we injected,
+  // we need to hook the vtable of an EXISTING swapchain.
+  // We do this by creating a temporary swapchain using the hooked factory,
+  // which will also trigger our InstallVTableHooks.
+  HookLog("DX11: Scanning for pre-existing swapchains...");
+  
+  // First, try D3D10 route (the game is D3D10)
+  if (hD3D10) {
+      typedef HRESULT(WINAPI *PFN_D3D10CreateDevice)(IDXGIAdapter*, D3D10_DRIVER_TYPE, HMODULE, UINT, UINT, ID3D10Device**);
+      PFN_D3D10CreateDevice pD3D10CD = (PFN_D3D10CreateDevice)GetProcAddress(hD3D10, "D3D10CreateDevice");
+      if (pD3D10CD) {
+          ID3D10Device* tempDevice = nullptr;
+          // Use the REAL function, not our detour, to create a temp device
+          HRESULT hr = pD3D10CD(NULL, D3D10_DRIVER_TYPE_HARDWARE, NULL, 0, D3D10_SDK_VERSION, &tempDevice);
+          if (SUCCEEDED(hr) && tempDevice) {
+              // Get DXGI factory from temp device
+              IDXGIDevice* dxgiDev = nullptr;
+              if (SUCCEEDED(tempDevice->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDev))) {
+                  IDXGIAdapter* adapter = nullptr;
+                  if (SUCCEEDED(dxgiDev->GetAdapter(&adapter))) {
+                      IDXGIFactory* factory = nullptr;
+                      if (SUCCEEDED(adapter->GetParent(__uuidof(IDXGIFactory), (void**)&factory))) {
+                          // Create a temp hidden window for temp swapchain
+                          HWND tempHwnd = CreateWindowExA(0, "STATIC", "TempDXGI", WS_OVERLAPPEDWINDOW, 
+                                                           0, 0, 100, 100, NULL, NULL, GetModuleHandle(NULL), NULL);
+                          if (tempHwnd) {
+                              DXGI_SWAP_CHAIN_DESC scd = {};
+                              scd.BufferCount = 1;
+                              scd.BufferDesc.Width = 100;
+                              scd.BufferDesc.Height = 100;
+                              scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+                              scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+                              scd.OutputWindow = tempHwnd;
+                              scd.SampleDesc.Count = 1;
+                              scd.Windowed = TRUE;
+                              scd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+                              
+                              IDXGISwapChain* tempSC = nullptr;
+                              // This call goes through our detour and will install vtable hooks!
+                              hr = factory->CreateSwapChain(tempDevice, &scd, &tempSC);
+                              if (SUCCEEDED(hr) && tempSC) {
+                                  HookLog("DX11: Temp D3D10 swapchain created to install vtable hooks");
+                                  tempSC->Release();
+                              }
+                              DestroyWindow(tempHwnd);
+                          }
+                          factory->Release();
+                      }
+                      adapter->Release();
+                  }
+                  dxgiDev->Release();
+              }
+              tempDevice->Release();
+          }
+      }
   }
 }
 
@@ -1361,6 +1872,10 @@ void DX11Hook::Shutdown() {
   if (g_mainRenderTargetView) {
     g_mainRenderTargetView->Release();
     g_mainRenderTargetView = nullptr;
+  }
+  if (g_mainRenderTargetView10) {
+    g_mainRenderTargetView10->Release();
+    g_mainRenderTargetView10 = nullptr;
   }
 }
 

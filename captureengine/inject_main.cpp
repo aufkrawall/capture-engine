@@ -174,6 +174,7 @@ int InjectProcessMain(const AppConfig &config) {
   ZeroMemory(pSharedMem, sizeof(SharedMemoryLayout));
   pSharedMem->hostPID = GetCurrentProcessId();
   pSharedMem->debugLogging = config.debugLogging;
+  pSharedMem->logLevel = LogLevel::Info;
 
   // Copy log path
   std::string logPath = config.logFilePath;

@@ -966,7 +966,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         # 1. Compile ImGui
         log(f"Compiling ImGui {arch}...")
         imgui_src_files = glob.glob(os.path.join(IMGUI_DIR, "*.cpp")) + \
-                         [os.path.join(IMGUI_DIR, "backends", f) for f in ["imgui_impl_dx12.cpp", "imgui_impl_dx11.cpp", "imgui_impl_dx9.cpp", "imgui_impl_opengl3.cpp", "imgui_impl_vulkan.cpp", "imgui_impl_win32.cpp"]]
+                         [os.path.join(IMGUI_DIR, "backends", f) for f in ["imgui_impl_dx12.cpp", "imgui_impl_dx11.cpp", "imgui_impl_dx10.cpp", "imgui_impl_dx9.cpp", "imgui_impl_opengl3.cpp", "imgui_impl_vulkan.cpp", "imgui_impl_win32.cpp"]]
         
         imgui_objs = []
         src_obj_pairs = []
@@ -1016,6 +1016,9 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             "-static-libstdc++",
             "-L" + std_lib_path if arch == "x86" else "-L" + mingw_lib,
             "-ld3d9",
+            "-ld3d10",
+            "-ld3d11",
+            "-ld3dcompiler",
             "-ldxguid",
             "-lws2_32",
             "-lole32",

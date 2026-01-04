@@ -103,6 +103,7 @@ void IPCManager::UpdateConfig(const AppConfig &config) {
     return;
   pSharedMem->overlayConfig = config.overlay;
   pSharedMem->debugLogging = config.debugLogging;
+  pSharedMem->logLevel = LogLevel::Info;
 
   // Copy log file path for hook logging
   strncpy(pSharedMem->logFilePath, config.logFilePath.c_str(),

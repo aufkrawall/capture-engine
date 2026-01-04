@@ -5,6 +5,16 @@
 #include <fstream>
 #include <sstream>
 
+// Helper to trim specific characters from both ends
+std::string Trim(const std::string& s, const char* chars = " \t\r\n\"()") {
+    std::string res = s;
+    res.erase(0, res.find_first_not_of(chars));
+    size_t last = res.find_last_not_of(chars);
+    if (last != std::string::npos) res.erase(last + 1);
+    else res.clear();
+    return res;
+}
+
 // Helper to parse bool
 bool ParseBool(const std::string &val) {
   std::string lower = val;
@@ -148,6 +158,9 @@ void CreateDefaultConfig(const std::string &path) {
   cfg << "\n";
   cfg << "; Force DLSS Debug Overlay (requires 3.1.11+ DLLs): default, on, off\n";
   cfg << "dlss_debug_overlay=default\n";
+  cfg << "\n";
+  cfg << "; Fix for NVIDIA LOD Bias in Vulkan/OpenGL (forces FERMI_UNOPT_LOD_SPREAD)\n";
+  cfg << "nvidia_lod_bias_fix=false\n";
   cfg << "\n";
   cfg << "; ----------------------------------------------------------------------------\n";
   cfg << "; Per-Process Overrides Example\n";
@@ -384,17 +397,23 @@ void LoadConfig(const std::string &path, AppConfig &config, const std::string& o
       
       // Check process name in this section (try Process then ProcessName)
       GetPrivateProfileStringA(appSec, "Process", "", buffer, 4096, path.c_str());
-      std::string configProc = buffer;
+      std::string configProc = Trim(buffer);
       if (configProc.empty()) {
           GetPrivateProfileStringA(appSec, "ProcessName", "", buffer, 4096, path.c_str());
-          configProc = buffer;
+          configProc = Trim(buffer);
       }
       
       if (!configProc.empty()) {
-        std::transform(configProc.begin(), configProc.end(), configProc.begin(), ::tolower);
-        if (configProc == procNameLower) {
+        // Automatic Whitelisting: Any process defined in an App section is a target
+        if (std::find(config.gameWhitelist.begin(), config.gameWhitelist.end(), configProc) == config.gameWhitelist.end()) {
+            config.gameWhitelist.push_back(configProc);
+        }
+
+        std::string configProcLower = configProc;
+        std::transform(configProcLower.begin(), configProcLower.end(), configProcLower.begin(), ::tolower);
+        if (configProcLower == procNameLower) {
           overrideSection = appSec;
-          break; // Found match
+          // Note: We don't break here because we want to collect all App.N processes into the whitelist
         }
       }
     }
@@ -508,6 +527,7 @@ void LoadConfig(const std::string &path, AppConfig &config, const std::string& o
   config.graphics.streamlineDllPath = GetStr("Graphics", "streamline_dll_path", "");
 
   config.graphics.dlssDebugOverlay = GetStr("Graphics", "dlss_debug_overlay", "default");
+  config.graphics.vulkanNvidiaLodBiasFix = GetBool("Graphics", "nvidia_lod_bias_fix", false);
 
   // Fill parsed versions for efficiency
   config.graphics.parsed.presetDLAA = ParseDlssPreset(config.graphics.dlssPresetDLAA);
@@ -550,9 +570,7 @@ void LoadConfig(const std::string &path, AppConfig &config, const std::string& o
 
     
     auto AddEntry = [&](std::string entry, std::vector<std::string>& targetList) {
-        // trim spaces, quotes and brackets
-        entry.erase(0, entry.find_first_not_of(" \t\r\n\"()"));
-        entry.erase(entry.find_last_not_of(" \t\r\n\"()") + 1);
+        entry = Trim(entry);
         if (!entry.empty()) {
             // Check for duplicates
             if (std::find(targetList.begin(), targetList.end(), entry) == targetList.end()) {

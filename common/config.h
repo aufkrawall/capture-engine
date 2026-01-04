@@ -152,6 +152,9 @@ struct GraphicsConfig {
   
   // Debug
   std::string dlssDebugOverlay; // "default", "on", "off"
+  
+  // Vulkan/OpenGL Fixes
+  bool vulkanNvidiaLodBiasFix; // Force FERMI_UNOPT_LOD_SPREAD
 };
 
 struct AppConfig {

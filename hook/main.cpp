@@ -393,11 +393,11 @@ void CheckAndInstallHooks() {
         EarlyLog("DX12 hooks installed");
     }
 
-    if (!g_DX11Hook && GetModuleHandleA("d3d11.dll")) {
-        HookLog("Detected d3d11.dll. Installing DX11 hooks...");
+    if (!g_DX11Hook && (GetModuleHandleA("d3d11.dll") || GetModuleHandleA("d3d10.dll") || GetModuleHandleA("d3d10_1.dll"))) {
+        HookLog("Detected D3D10/11. Installing hooks...");
         g_DX11Hook = new DX11Hook();
         g_DX11Hook->Init();
-        HookLog("DX11 hooks installed");
+        HookLog("D3D10/11 hooks installed");
     }
 
     if (!g_DX9Hook && GetModuleHandleA("d3d9.dll")) {
@@ -755,26 +755,49 @@ static bool IsWhitelistedFast(const char* processName) {
             if (file.is_open()) {
                 std::string line;
                 bool inInjection = false;
+                bool inAppSection = false;
                 while (std::getline(file, line)) {
                     // Primitive section detection
                     if (line.find("[Injection]") != std::string::npos) {
                         inInjection = true;
+                        inAppSection = false;
                         continue;
                     }
-                    if (inInjection && line.find("[") == 0) {
+                    if (line.find("[App.") != std::string::npos) {
+                        inAppSection = true;
                         inInjection = false;
+                        continue;
+                    }
+                    if ((inInjection || inAppSection) && line.find("[") == 0) {
+                        inInjection = false;
+                        inAppSection = false;
                         break;
                     }
                     
                     if (inInjection) {
-                        // Check if line contains our process name (case-insensitiveish)
+                        // Check if line contains our process name
                         std::string lowerLine = line;
                         std::transform(lowerLine.begin(), lowerLine.end(), lowerLine.begin(), ::tolower);
+                        
+                        // Strip quotes and parens for matching
+                        lowerLine.erase(std::remove(lowerLine.begin(), lowerLine.end(), '\"'), lowerLine.end());
+                        lowerLine.erase(std::remove(lowerLine.begin(), lowerLine.end(), '('), lowerLine.end());
+                        lowerLine.erase(std::remove(lowerLine.begin(), lowerLine.end(), ')'), lowerLine.end());
+
                         if (lowerLine.find(name) != std::string::npos) {
-                             // Extra check: make sure it's not a comment
                              if (lowerLine.find(";") == std::string::npos) {
                                  return true;
                              }
+                        }
+                    } else if (inAppSection) {
+                        // Check Process= or ProcessName=
+                        std::string lowerLine = line;
+                        std::transform(lowerLine.begin(), lowerLine.end(), lowerLine.begin(), ::tolower);
+                        if (lowerLine.find("process") != std::string::npos && lowerLine.find("=") != std::string::npos) {
+                            lowerLine.erase(std::remove(lowerLine.begin(), lowerLine.end(), '\"'), lowerLine.end());
+                            if (lowerLine.find(name) != std::string::npos) {
+                                return true;
+                            }
                         }
                     }
                 }
@@ -851,8 +874,9 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     }
 
     if (g_ProcessCategory == ProcessCategory::Blacklisted) {
-        // Immediate unload for blacklisted/non-whitelisted processes
-        return FALSE; 
+        // Return TRUE so the DLL stays loaded (needed for CBT hook export),
+        // but we don't start any threads or install any hooks.
+        return TRUE; 
     }
 
     // 4. Initial Graphics API Check (for whitelisted games)

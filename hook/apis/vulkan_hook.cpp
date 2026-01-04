@@ -23,6 +23,8 @@
 #include <d3d11_4.h> // For ID3D11Fence
 #include <dxgi.h>
 #include <dxgi1_4.h>
+#include <psapi.h> // For GetModuleInformation
+#pragma comment(lib, "psapi.lib")
 
 static uint32_t MapVulkanFormatToDXGI(VkFormat format) {
   switch (format) {
@@ -179,7 +181,198 @@ static uint32_t GetQueueFamilyIndex(VkQueue queue) {
     return UINT32_MAX;
 }
 
+
+
+
+
+// Helper for memory patching
+// Helper to scan memory with mask
+// Mask: 'x' = match, '?' = wild
+static uint8_t* ScanPattern(uint8_t* start, size_t size, const char* pattern, const char* mask) {
+    size_t patternLen = strlen(mask);
+    uint8_t* end = start + size - patternLen;
+    
+    for (uint8_t* p = start; p < end; p++) {
+        bool match = true;
+        for (size_t i = 0; i < patternLen; i++) {
+            if (mask[i] == 'x' && p[i] != (uint8_t)pattern[i]) {
+                match = false;
+                break;
+            }
+        }
+        if (match) return p;
+    }
+    return nullptr;
+}
+
+// Helper for memory patching
+static bool ApplyNvidiaLodBiasFix() {
+    // Use EarlyLog to ensure visibility during init, and log every time (or just once)
+    bool enabled = g_LocalConfig.graphics.vulkanNvidiaLodBiasFix;
+    
+    static bool loggedOnce = false;
+    if (!loggedOnce) {
+        EarlyLog("Vulkan: ApplyNvidiaLodBiasFix invoked. Config=%s", enabled ? "TRUE" : "FALSE");
+        loggedOnce = true;
+    }
+
+    if (!enabled) return false;
+
+    // Check if already applied? (Assuming we want to try until success)
+    static bool applied = false;
+    if (applied) return true;
+
+    HMODULE hModule = NULL;
+    bool is64Bit = false;
+
+#if defined(_WIN64)
+    hModule = GetModuleHandleA("nvoglv64.dll");
+    is64Bit = true;
+#else
+    hModule = GetModuleHandleA("nvoglv32.dll");
+    is64Bit = false;
+#endif
+
+    if (!hModule) {
+        // Driver not loaded yet.
+        return false;
+    }
+
+    // Only log scan start once per module load attempt to avoid spam
+    static bool scanLogged = false;
+    if (!scanLogged) {
+        EarlyLog("Vulkan: Scanning %s for NVIDIA LOD Bias pattern...", is64Bit ? "nvoglv64.dll" : "nvoglv32.dll");
+        scanLogged = true;
+    }
+
+    MODULEINFO modInfo;
+    if (!GetModuleInformation(GetCurrentProcess(), hModule, &modInfo, sizeof(modInfo))) {
+        EarlyLog("Vulkan: Failed to get module info.");
+        return false;
+    }
+
+    uint8_t* startAddr = (uint8_t*)modInfo.lpBaseOfDll;
+    size_t size = modInfo.SizeOfImage;
+    uint8_t* endAddr = startAddr + size;
+
+    // Pattern Definition - Use EXACT canonical patterns from reference
+    // NO wildcards - if these fail, driver version is genuinely different
+    
+    size_t patternLen = 0;
+    size_t patchLen = 0;
+    const uint8_t* scanPattern = nullptr;
+    const uint8_t* patchBytes = nullptr;
+    
+    if (is64Bit) {
+        // x64: Hit 6 Pattern (Driver ~2024+)
+        // Logic matches variable assignment to [RBP+8], like old driver.
+        // Problem: MOV [RBP+8], EDI is 3 bytes. We need 7 bytes for patch.
+        // Solution: Consumes Prev instruction (MOV [RBP+0], RAX) which is 4 bytes.
+        // Total Space: 4 (Prev) + 3 (Target) + 7 (Next) = 14 bytes.
+        // Patch: 7 bytes (MOV [RBP+8], 10) + 7 bytes (MOV [RBP+C], 10). Fits exactly.
+        
+        static const uint8_t p64_find[] = {
+            0x48, 0x89, 0x45, 0x00,             // MOV [RBP+0], RAX
+            0x89, 0x7D, 0x08,                   // MOV [RBP+8], EDI
+            0xC7, 0x45, 0x0C, 0x10, 0x00, 0x00, 0x00 // MOV [RBP+C], 0x10
+        };
+        static const uint8_t p64_patch[] = {
+            0xC7, 0x45, 0x08, 0x10, 0x00, 0x00, 0x00, // MOV [RBP+8], 0x10
+            0xC7, 0x45, 0x0C, 0x10, 0x00, 0x00, 0x00  // MOV [RBP+C], 0x10
+        };
+        scanPattern = p64_find;
+        patchBytes = p64_patch;
+        patternLen = sizeof(p64_find);
+        patchLen = sizeof(p64_patch);
+    } else {
+        // x86: Pattern from reference (may also need updating for newer drivers)
+        // Find:    8B CE C7 40 08 00 00 00 00
+        // Replace: 8B CE C7 40 08 10 00 00 00
+        static const uint8_t p32_find[] = {
+            0x8B, 0xCE,                         // MOV ECX, ESI
+            0xC7, 0x40, 0x08, 0x00, 0x00, 0x00, 0x00  // MOV [EAX+8], 0x00
+        };
+        static const uint8_t p32_patch[] = {
+            0x8B, 0xCE,                         // MOV ECX, ESI (unchanged)
+            0xC7, 0x40, 0x08, 0x10, 0x00, 0x00, 0x00  // MOV [EAX+8], 0x10
+        };
+        scanPattern = p32_find;
+        patchBytes = p32_patch;
+        patternLen = sizeof(p32_find);
+        patchLen = sizeof(p32_patch);
+    }
+
+    // Simple exact-match scan (no wildcards)
+    uint8_t* found = nullptr;
+    for (uint8_t* p = startAddr; p < endAddr - patternLen; p++) {
+        if (memcmp(p, scanPattern, patternLen) == 0) {
+            found = p;
+            break;
+        }
+    }
+    
+    if (found) {
+        EarlyLog("Vulkan: Found EXACT pattern at %p. Applying patch...", found);
+
+        DWORD oldProtect;
+        if (VirtualProtect(found, patchLen, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+            memcpy(found, patchBytes, patchLen);
+            VirtualProtect(found, patchLen, oldProtect, &oldProtect);
+            FlushInstructionCache(GetCurrentProcess(), found, patchLen);
+            
+            EarlyLog("Vulkan: NVIDIA LOD Bias Fix applied successfully!");
+            applied = true;
+            return true;
+        } else {
+            EarlyLog("Vulkan: Failed to change memory protection!");
+        }
+    } else {
+        // Pattern not found - run comprehensive diagnostic scan
+        static bool diagRan = false;
+        if (!diagRan) {
+            EarlyLog("Vulkan: EXACT pattern not found. Running diagnostic scan for 0x10 constant stores...");
+            
+            // Search for: C7 40 ?? 10 00 00 00 (MOV [RAX+off], 0x10)
+            // and:        C7 41 ?? 10 00 00 00 (MOV [RCX+off], 0x10)
+            // These are the characteristic stores we're looking for
+            int hits = 0;
+            const int maxHits = 10;
+            
+            for (uint8_t* p = startAddr; p < endAddr - 20 && hits < maxHits; p++) {
+                // Look for C7 4X YY 10 00 00 00 where X is 0-7 (different registers) and YY is small offset
+                if (p[0] == 0xC7 && (p[1] & 0xF8) == 0x40 && p[3] == 0x10 && p[4] == 0x00 && p[5] == 0x00 && p[6] == 0x00) {
+                    uint8_t offset = p[2];
+                    // Only care about small offsets (0x00-0x20) which are likely struct fields
+                    if (offset <= 0x20) {
+                        // Dump 24 bytes before and 8 bytes after
+                        uint8_t* dumpStart = (p >= startAddr + 16) ? p - 16 : startAddr;
+                        EarlyLog("Vulkan: Hit %d at %p (off=0x%02X): -16: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X | %02X %02X %02X %02X %02X %02X %02X",
+                            hits, p, offset,
+                            dumpStart[0], dumpStart[1], dumpStart[2], dumpStart[3],
+                            dumpStart[4], dumpStart[5], dumpStart[6], dumpStart[7],
+                            dumpStart[8], dumpStart[9], dumpStart[10], dumpStart[11],
+                            dumpStart[12], dumpStart[13], dumpStart[14], dumpStart[15],
+                            p[0], p[1], p[2], p[3], p[4], p[5], p[6]);
+                        hits++;
+                    }
+                }
+            }
+            
+            if (hits == 0) {
+                EarlyLog("Vulkan: No characteristic 0x10 stores found. Pattern may have changed completely.");
+            } else {
+                EarlyLog("Vulkan: Found %d candidates. Look for consecutive stores to +0x08 and +0x0C offsets.", hits);
+            }
+            diagRan = true;
+        }
+    }
+    return false;
+}
+
 static void TryDiscoverAsyncQueue();
+
+
+
 
 // --- Separate Capture Device Implementation ---
 
@@ -2072,6 +2265,10 @@ VkResult VKAPI_CALL Detour_vkCreateInstance(
     std::lock_guard<std::recursive_mutex> lock(g_VulkanMutex);
     g_Instance = *pInstance;
     volkLoadInstance(g_Instance);
+    
+    // Check for NVIDIA LOD fix (now that ICDs are likely loaded)
+    ApplyNvidiaLodBiasFix();
+    
     EarlyLog("Vulkan: Instance created (handle=%p)", *pInstance);
   }
   return res;
@@ -3018,6 +3215,11 @@ static void InitImGuiVulkan(VkQueue queue) {
 VkResult VKAPI_CALL
 Detour_vkQueueSubmit(VkQueue queue, uint32_t submitCount,
                      const VkSubmitInfo *pSubmits, VkFence fence) {
+  static int submitTotal = 0;
+  if (++submitTotal % 100 == 0) {
+      HookLog("Vulkan: Detour_vkQueueSubmit (Total %d, queue=%p)", submitTotal, queue);
+  }
+
   if (g_InVulkanHook) {
       if (o_vkQueueSubmit) return o_vkQueueSubmit(queue, submitCount, pSubmits, fence);
       return VK_SUCCESS;
@@ -3043,6 +3245,11 @@ Detour_vkQueueSubmit(VkQueue queue, uint32_t submitCount,
 
 VkResult VKAPI_CALL
 Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
+  static int presentCount = 0;
+  if (++presentCount % 60 == 0) { // Log every 60 frames to avoid spamming
+      HookLog("Vulkan: Detour_vkQueuePresentKHR (Frame %d, queue=%p)", presentCount, queue);
+  }
+
   if (g_InVulkanHook) {
       if (o_vkQueuePresentKHR) return o_vkQueuePresentKHR(queue, pPresentInfo);
       return VK_SUCCESS;
@@ -3169,7 +3376,7 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
   // --- Timing Diagnostics (log slow operations) ---
   static int diagLogCount = 0;
   static int64_t diagLastUs = 0;
-  int64_t diagStartUs = us;
+
   auto diagTime = [&]() -> int64_t {
       LARGE_INTEGER now;
       QueryPerformanceCounter(&now);
@@ -3681,11 +3888,12 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
 
 PFN_vkVoidFunction VKAPI_CALL Detour_vkGetInstanceProcAddr(VkInstance instance,
                                                            const char *pName) {
+  HookLog("Vulkan: vkGetInstanceProcAddr(%p, %s)", instance, pName ? pName : "NULL");
   PFN_vkVoidFunction res = o_vkGetInstanceProcAddr(instance, pName);
   if (!res || !pName)
     return res;
 
-  if (g_Instance == VK_NULL_HANDLE && instance != VK_NULL_HANDLE) {
+  if (instance != VK_NULL_HANDLE && g_Instance == VK_NULL_HANDLE) {
       g_Instance = instance;
       HookLog("Vulkan: Recovered instance handle from vkGetInstanceProcAddr");
   }
@@ -3715,6 +3923,7 @@ PFN_vkVoidFunction VKAPI_CALL Detour_vkGetInstanceProcAddr(VkInstance instance,
 
 PFN_vkVoidFunction VKAPI_CALL Detour_vkGetDeviceProcAddr(VkDevice device,
                                                          const char *pName) {
+  HookLog("Vulkan: vkGetDeviceProcAddr(%p, %s)", device, pName ? pName : "NULL");
   PFN_vkVoidFunction res = o_vkGetDeviceProcAddr(device, pName);
   if (!res || !pName)
     return res;
@@ -3777,26 +3986,31 @@ PFN_vkVoidFunction VKAPI_CALL Detour_vkGetDeviceProcAddr(VkDevice device,
 void VulkanHook::Init() {
   HookLog("VulkanHook::Init()");
 
+  // Try to apply NVIDIA LOD Bias fix early
+  ApplyNvidiaLodBiasFix();
+
   if (volkInitialize() != VK_SUCCESS) {
       HookLog("VulkanHook: Failed to initialize volk. Vulkan not available.");
       return;
   }
 
   HMODULE hVulkan = GetModuleHandleA("vulkan-1.dll");
+  HookLog("VulkanHook: hVulkan=%p", hVulkan);
   if (!hVulkan)
     return;
 
   auto CreateHook = [&](const char *name, void *detour, void **original) {
     void *addr = (void *)GetProcAddress(hVulkan, name);
-    if (!addr) {
-      // Try getting it from the loader if it's not exported directly?
-      // Usually these are exported.
-    }
+    HookLog("Vulkan: Hooking %s at %p", name, addr);
     if (addr) {
       if (MH_CreateHook(addr, detour, original) == MH_OK) {
         MH_EnableHook(addr);
         HookLog("Vulkan Hook: %s enabled", name);
+      } else {
+        HookLog("Vulkan Hook: %s FAILED (MH_CreateHook)", name);
       }
+    } else {
+      HookLog("Vulkan Hook: %s FAILED (GetProcAddress)", name);
     }
   };
 
