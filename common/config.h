@@ -149,6 +149,9 @@ struct GraphicsConfig {
   std::string dlssRrDllPath;
   std::string dlssFgDllPath;
   std::string streamlineDllPath;
+  
+  // Debug
+  std::string dlssDebugOverlay; // "default", "on", "off"
 };
 
 struct AppConfig {

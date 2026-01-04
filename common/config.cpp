@@ -146,6 +146,9 @@ void CreateDefaultConfig(const std::string &path) {
   cfg << "dlss_fg_dll_path=\n";
   cfg << "streamline_dll_path=\n";
   cfg << "\n";
+  cfg << "; Force DLSS Debug Overlay (requires 3.1.11+ DLLs): default, on, off\n";
+  cfg << "dlss_debug_overlay=default\n";
+  cfg << "\n";
   cfg << "; ----------------------------------------------------------------------------\n";
   cfg << "; Per-Process Overrides Example\n";
   cfg << "; ----------------------------------------------------------------------------\n";
@@ -503,6 +506,8 @@ void LoadConfig(const std::string &path, AppConfig &config, const std::string& o
   config.graphics.dlssRrDllPath = GetStr("Graphics", "dlss_rr_dll_path", "");
   config.graphics.dlssFgDllPath = GetStr("Graphics", "dlss_fg_dll_path", "");
   config.graphics.streamlineDllPath = GetStr("Graphics", "streamline_dll_path", "");
+
+  config.graphics.dlssDebugOverlay = GetStr("Graphics", "dlss_debug_overlay", "default");
 
   // Fill parsed versions for efficiency
   config.graphics.parsed.presetDLAA = ParseDlssPreset(config.graphics.dlssPresetDLAA);

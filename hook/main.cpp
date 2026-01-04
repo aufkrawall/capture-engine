@@ -81,6 +81,10 @@ typedef BOOL(WINAPI *CreateProcessW_t)(LPCWSTR, LPWSTR, LPSECURITY_ATTRIBUTES, L
 CreateProcessA_t OriginalCreateProcessA = nullptr;
 CreateProcessW_t OriginalCreateProcessW = nullptr;
 
+// Registry Hook Typedefs (for DLSS Debug Overlay)
+typedef LSTATUS(WINAPI *RegQueryValueExW_t)(HKEY hKey, LPCWSTR lpValueName, LPDWORD lpReserved, LPDWORD lpType, LPBYTE lpData, LPDWORD lpcbData);
+RegQueryValueExW_t OriginalRegQueryValueExW = nullptr;
+
 // Helper: Inject our DLL into a suspended child process
 void InjectIntoChild(HANDLE hProcess, HANDLE hThread) {
     char dllPath[MAX_PATH];
@@ -265,6 +269,30 @@ std::string GetRedirectedPath(const std::string& requestedPath) {
         // Fallback
     }
     return "";
+}
+
+// Hooked RegQueryValueExW - For DLSS Debug Overlay
+LSTATUS WINAPI HookedRegQueryValueExW(HKEY hKey, LPCWSTR lpValueName, LPDWORD lpReserved, LPDWORD lpType, LPBYTE lpData, LPDWORD lpcbData) {
+    LSTATUS status = OriginalRegQueryValueExW(hKey, lpValueName, lpReserved, lpType, lpData, lpcbData);
+    
+    // Check if probing for DLSS Indicator
+    if (lpValueName && _wcsicmp(lpValueName, L"ShowDlssIndicator") == 0) {
+        // Only if we have a config override
+        if (!g_LocalConfig.graphics.dlssDebugOverlay.empty() && g_LocalConfig.graphics.dlssDebugOverlay != "default") {
+             // If caller provided buffer to read data
+             if (lpData && lpcbData && *lpcbData >= 4) {
+                 DWORD* outData = (DWORD*)lpData;
+                 if (g_LocalConfig.graphics.dlssDebugOverlay == "on") {
+                     *outData = 0x400; // Force ON
+                     // HookLog("RegQueryValueExW: Force-enabled DLSS Indicator");
+                 } else if (g_LocalConfig.graphics.dlssDebugOverlay == "off") {
+                     *outData = 0; // Force OFF
+                 }
+                 return ERROR_SUCCESS; // Pretend we succeeded even if registry key didn't exist
+             }
+        }
+    }
+    return status;
 }
 
 // Hooked Functions - Signal Event & Redirect
@@ -565,6 +593,15 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   MH_CreateHookApi(L"kernel32", "CreateProcessA", (LPVOID)&HookedCreateProcessA, (LPVOID*)&OriginalCreateProcessA);
   MH_CreateHookApi(L"kernel32", "CreateProcessW", (LPVOID)&HookedCreateProcessW, (LPVOID*)&OriginalCreateProcessW);
   
+  // Install RegQueryValueExW for DLSS Debug Overlay
+  // We use MinHook on advapi32.dll. It's almost always loaded.
+  if (GetModuleHandleA("advapi32.dll")) {
+      HookLog("Installing RegQueryValueExW hook for DLSS Overlay support...");
+      MH_CreateHookApi(L"advapi32", "RegQueryValueExW", (LPVOID)&HookedRegQueryValueExW, (LPVOID*)&OriginalRegQueryValueExW);
+  } else {
+      HookLog("advapi32.dll not loaded yet (!) - skipping RegQueryValueExW hook");
+  }
+
   // Enable all hooks at once (more efficient than per-hook enable)
   MH_EnableHook(MH_ALL_HOOKS);
   HookLog("All kernel32 hooks enabled");
