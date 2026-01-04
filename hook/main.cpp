@@ -18,6 +18,8 @@
 #include <windows.h>
 #include <mutex>
 #include <atomic>
+#include <algorithm>
+#include <filesystem>
 
 HMODULE g_hModule = NULL;
 
@@ -191,27 +193,162 @@ HANDLE g_hCheckHooksEvent = NULL;
 
 // Forward declaration
 void CheckAndInstallHooks();
+// DLL Redirection Helper
+// DLL Redirection Helper
+std::string GetRedirectedPath(const std::string& requestedPath) {
+    if (requestedPath.empty()) return "";
 
-// Hooked Functions - Signal Event ONLY
+    try {
+        std::filesystem::path path(requestedPath);
+        std::string filename = path.filename().string();
+        std::string filenameLower = filename;
+        std::transform(filenameLower.begin(), filenameLower.end(), filenameLower.begin(), ::tolower);
+
+        std::string overridePath;
+
+        // 1. DLSS Super Resolution
+        if (filenameLower == "nvngx_dlss.dll") {
+            overridePath = g_LocalConfig.graphics.dlssSrDllPath;
+        } 
+        // 2. DLSS Frame Generation
+        else if (filenameLower == "nvngx_dlssg.dll") {
+            overridePath = g_LocalConfig.graphics.dlssFgDllPath;
+        } 
+        // 3. DLSS Ray Reconstruction (Denoiser)
+        else if (filenameLower == "nvngx_dlssd.dll") {
+            overridePath = g_LocalConfig.graphics.dlssRrDllPath;
+        }
+        // 4. Streamline and related components
+        else if (filenameLower.find("sl.") == 0 || 
+                 filenameLower == "nvngx_deepdvc.dll" || 
+                 filenameLower == "nvlowlatencyvk.dll") {
+            overridePath = g_LocalConfig.graphics.streamlineDllPath;
+        }
+
+        if (!overridePath.empty()) {
+            std::filesystem::path cfgPath(overridePath);
+            std::filesystem::path finalPath;
+
+            // Simple Heuristic: 
+            // If the configured path has an extension (like .dll), assume it's a full file path.
+            // But if it's for Streamline, we really want the folder if matching other files.
+            // 
+            // Universal Logic:
+            // 1. If we are replacing "nvngx_dlss.dll", and config is "folder/nvngx_dlss.dll", use it.
+            // 2. If config is "folder", append "nvngx_dlss.dll".
+            // 3. For Streamline, if config is "file.dll", take parent folder, then append requested filename.
+
+            if (cfgPath.has_extension()) {
+                // It looks like a file.
+                // If it ends with the SAME filename as requested, just use it.
+                std::string cfgFilename = cfgPath.filename().string();
+                std::string cfgFilenameLower = cfgFilename;
+                std::transform(cfgFilenameLower.begin(), cfgFilenameLower.end(), cfgFilenameLower.begin(), ::tolower);
+
+                if (cfgFilenameLower == filenameLower) {
+                     finalPath = cfgPath;
+                } else {
+                     // Config points to a file, but we want a potentially different file (common in Streamline case)
+                     // Or user pointed to "dlss.dll" but we are loading "dlssg.dll" (shouldn't happen with separate configs but safe to handle)
+                     finalPath = cfgPath.parent_path() / filename;
+                }
+            } else {
+                // It looks like a directory. Append the requested filename.
+                finalPath = cfgPath / filename;
+            }
+            
+            HookLog("Redirecting %s to: %s", filename.c_str(), finalPath.string().c_str());
+            return finalPath.string();
+        }
+
+    } catch (...) {
+        // Fallback
+    }
+    return "";
+}
+
+// Hooked Functions - Signal Event & Redirect
 HMODULE WINAPI HookedLoadLibraryA(LPCSTR lpLibFileName) {
+    if (lpLibFileName) {
+        std::string redirect = GetRedirectedPath(lpLibFileName);
+        if (!redirect.empty()) {
+            HMODULE hMod = OriginalLoadLibraryA(redirect.c_str());
+            if (hMod && g_hCheckHooksEvent) SetEvent(g_hCheckHooksEvent);
+            return hMod;
+        }
+    }
     HMODULE hMod = OriginalLoadLibraryA(lpLibFileName);
     if (hMod && g_hCheckHooksEvent) SetEvent(g_hCheckHooksEvent);
     return hMod;
 }
 
 HMODULE WINAPI HookedLoadLibraryW(LPCWSTR lpLibFileName) {
+    if (lpLibFileName) {
+        // Convert to UTF-8 for check
+        char pathUtf8[MAX_PATH];
+        WideCharToMultiByte(CP_UTF8, 0, lpLibFileName, -1, pathUtf8, MAX_PATH, NULL, NULL);
+        std::string redirect = GetRedirectedPath(pathUtf8);
+        
+        if (!redirect.empty()) {
+            // Convert back to Wide for LoadLibraryW if needed, or just use A?
+            // Safer to use W with W
+            std::wstring redirectW;
+            int len = MultiByteToWideChar(CP_UTF8, 0, redirect.c_str(), -1, NULL, 0);
+            if (len > 0) {
+                redirectW.resize(len);
+                MultiByteToWideChar(CP_UTF8, 0, redirect.c_str(), -1, &redirectW[0], len);
+                // Remove null terminator added by resize if strictly needed, but usually LoadLibraryW handles it
+                if (redirectW.back() == L'\0') redirectW.pop_back();
+
+                HMODULE hMod = OriginalLoadLibraryW(redirectW.c_str());
+                if (hMod && g_hCheckHooksEvent) SetEvent(g_hCheckHooksEvent);
+                return hMod;
+            }
+        }
+    }
     HMODULE hMod = OriginalLoadLibraryW(lpLibFileName);
     if (hMod && g_hCheckHooksEvent) SetEvent(g_hCheckHooksEvent);
     return hMod;
 }
 
 HMODULE WINAPI HookedLoadLibraryExA(LPCSTR lpLibFileName, HANDLE hFile, DWORD dwFlags) {
+    if (lpLibFileName) {
+        std::string redirect = GetRedirectedPath(lpLibFileName);
+        if (!redirect.empty()) {
+             // Use OriginalLoadLibraryA for the redirect to simplify (Ex flags might conflict with absolute path? usually ok)
+             // But let's stick to ExA to respect flags if possible, filtering flags that shouldn't apply to absolute path?
+             // Actually, usually users just want to load the DLL.
+             // LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR might be an issue.
+             // Let's try to trust the user path is absolute.
+             HMODULE hMod = OriginalLoadLibraryExA(redirect.c_str(), hFile, dwFlags); 
+             if (hMod && g_hCheckHooksEvent) SetEvent(g_hCheckHooksEvent);
+             return hMod;
+        }
+    }
     HMODULE hMod = OriginalLoadLibraryExA(lpLibFileName, hFile, dwFlags);
     if (hMod && g_hCheckHooksEvent) SetEvent(g_hCheckHooksEvent);
     return hMod;
 }
 
 HMODULE WINAPI HookedLoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dwFlags) {
+    if (lpLibFileName) {
+        char pathUtf8[MAX_PATH];
+        WideCharToMultiByte(CP_UTF8, 0, lpLibFileName, -1, pathUtf8, MAX_PATH, NULL, NULL);
+        std::string redirect = GetRedirectedPath(pathUtf8);
+        if (!redirect.empty()) {
+             std::wstring redirectW;
+             int len = MultiByteToWideChar(CP_UTF8, 0, redirect.c_str(), -1, NULL, 0);
+             if (len > 0) {
+                 redirectW.resize(len);
+                 MultiByteToWideChar(CP_UTF8, 0, redirect.c_str(), -1, &redirectW[0], len);
+                 if (redirectW.back() == L'\0') redirectW.pop_back();
+                 
+                 HMODULE hMod = OriginalLoadLibraryExW(redirectW.c_str(), hFile, dwFlags);
+                 if (hMod && g_hCheckHooksEvent) SetEvent(g_hCheckHooksEvent);
+                 return hMod;
+             }
+        }
+    }
     HMODULE hMod = OriginalLoadLibraryExW(lpLibFileName, hFile, dwFlags);
     if (hMod && g_hCheckHooksEvent) SetEvent(g_hCheckHooksEvent);
     return hMod;

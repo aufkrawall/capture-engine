@@ -143,6 +143,12 @@ struct GraphicsConfig {
 
       float dlssSharpening = -2.0f; // -2.0 = default, -1.0 = off, else value
   } parsed;
+
+  // DLL Overrides
+  std::string dlssSrDllPath;
+  std::string dlssRrDllPath;
+  std::string dlssFgDllPath;
+  std::string streamlineDllPath;
 };
 
 struct AppConfig {

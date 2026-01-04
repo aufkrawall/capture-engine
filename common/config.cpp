@@ -139,6 +139,13 @@ void CreateDefaultConfig(const std::string &path) {
   cfg << "; DLSS Sharpening: default, off, or a float value from 0.0 to 1.0\n";
   cfg << "dlss_sharpening=default\n";
   cfg << "\n";
+  cfg << "; DLL Overrides (Absolute paths to force loading specific DLL versions)\n";
+  cfg << "; Use these to override the game's bundled DLSS/Streamline DLLs with your own.\n";
+  cfg << "dlss_sr_dll_path=\n";
+  cfg << "dlss_rr_dll_path=\n";
+  cfg << "dlss_fg_dll_path=\n";
+  cfg << "streamline_dll_path=\n";
+  cfg << "\n";
   cfg << "; ----------------------------------------------------------------------------\n";
   cfg << "; Per-Process Overrides Example\n";
   cfg << "; ----------------------------------------------------------------------------\n";
@@ -490,6 +497,12 @@ void LoadConfig(const std::string &path, AppConfig &config, const std::string& o
   config.graphics.dlssRRPresetUltraQuality = GetStr("Graphics", "dlss_rr_preset_ultra_quality", "default");
   config.graphics.dlssRRPreset = GetStr("Graphics", "dlss_rr_preset", "default");
   config.graphics.dlssSharpening = GetStr("Graphics", "dlss_sharpening", "default");
+
+  // DLL Overrides
+  config.graphics.dlssSrDllPath = GetStr("Graphics", "dlss_sr_dll_path", "");
+  config.graphics.dlssRrDllPath = GetStr("Graphics", "dlss_rr_dll_path", "");
+  config.graphics.dlssFgDllPath = GetStr("Graphics", "dlss_fg_dll_path", "");
+  config.graphics.streamlineDllPath = GetStr("Graphics", "streamline_dll_path", "");
 
   // Fill parsed versions for efficiency
   config.graphics.parsed.presetDLAA = ParseDlssPreset(config.graphics.dlssPresetDLAA);
