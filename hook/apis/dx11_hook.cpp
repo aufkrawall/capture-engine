@@ -3,6 +3,7 @@
 #include "../common/capture_base.h"
 #include "../common/fps_limiter.h"
 #include "../common/overlay.h"
+#include "../common/fg_detection.h"
 #include "hook_common.h"
 #include "../../common/frame_timing.h"
 #include "performance_metrics.h"
@@ -17,10 +18,12 @@
 #include <d3d11.h>
 #include <d3d11_1.h> // For ID3D11DeviceContext1
 #include <d3d11_4.h> // For ID3D11Fence and ID3D11Device5
+#include <d3d12.h>   // For ID3D12CommandQueue detection
 #include <dxgi1_2.h> // Required for IDXGIResource1 and CreateSharedHandle
+#include <dxgi1_4.h> // For IDXGISwapChain3
 #include <d3dcompiler.h>
-#include <dxgi1_2.h> // For LUID
 #include <imgui.h>
+
 
 // Globals
 static ID3D11Device *g_pd3dDevice = NULL;
@@ -391,16 +394,29 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2 *pFa
     HRESULT hr = oCreateSwapChainForHwnd(pFactory, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
     
     if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
-        ID3D11Device* pD3D11Device = nullptr;
-        if (SUCCEEDED((*ppSwapChain)->GetDevice(__uuidof(ID3D11Device), (void**)&pD3D11Device))) {
-             ID3D11DeviceContext* ctx = nullptr;
-             pD3D11Device->GetImmediateContext(&ctx);
-             InstallVTableHooks(pD3D11Device, ctx, *ppSwapChain);
-             if (ctx) ctx->Release();
-             pD3D11Device->Release();
+        // First try D3D12 - DX12 games create swapchains via DXGI too
+        ID3D12CommandQueue* pD3D12Queue = nullptr;
+        if (pDevice && SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D12CommandQueue), (void**)&pD3D12Queue))) {
+             HookLog("DX11: CreateSwapChainForHwnd - Detected DX12 CommandQueue.");
+             // IMPORTANT: Do NOT install DX12 hooks here!
+             // FG runtimes (DLSS-G, FSR-FG) load their DLLs AFTER the first swapchain is created,
+             // then recreate the swapchain. If we hook here, those hooks become invalid.
+             // Let the DX12 hook's own initialization handle Present hooks safely.
+             HookLog("DX11: Skipping DX12 hook installation from DX11 path (FG safety)");
+             pD3D12Queue->Release();
         } else {
-             // Fallback for D3D10/10.1 or other versions
-             InstallVTableHooks(NULL, NULL, *ppSwapChain);
+            // DX11 path - original logic
+            ID3D11Device* pD3D11Device = nullptr;
+            if (SUCCEEDED((*ppSwapChain)->GetDevice(__uuidof(ID3D11Device), (void**)&pD3D11Device))) {
+                 ID3D11DeviceContext* ctx = nullptr;
+                 pD3D11Device->GetImmediateContext(&ctx);
+                 InstallVTableHooks(pD3D11Device, ctx, *ppSwapChain);
+                 if (ctx) ctx->Release();
+                 pD3D11Device->Release();
+            } else {
+                 // Fallback for D3D10/10.1 or other versions
+                 InstallVTableHooks(NULL, NULL, *ppSwapChain);
+            }
         }
     }
     return hr;

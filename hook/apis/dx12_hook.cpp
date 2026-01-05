@@ -415,7 +415,7 @@ void InitOverlaySync(ID3D12Device *device, int bufferCount) {
 
   // Use a larger allocator pool (8) with rotating index to prevent GPU starvation
   // Increase pool size if FG is active to handle higher frame inflight count
-  const int poolSize = g_FGCompat.IsFGLikelyActive() ? 16 : DX12OverlayState::ALLOC_POOL_SIZE;
+  const int poolSize = g_FGCompat.IsFGActive() ? 16 : DX12OverlayState::ALLOC_POOL_SIZE;
   g_State.allocators.resize(poolSize);
   g_State.fenceValues.resize(poolSize, 0);
   for (int i = 0; i < poolSize; i++) {
@@ -706,9 +706,10 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
   activeDevice->Release();
 
   // Initialize overlay as early as possible (before queue check)
-  // CRITICAL: Do NOT initialize ImGui if FG is active or suspended (e.g. at startup)
-  bool fgActive = g_FGCompat.IsFGLikelyActive();
-  if (!g_State.imGuiInit && !fgActive && g_Device) {
+  // CRITICAL: Do NOT initialize ImGui if FG is active/suspended (e.g. at startup)
+  bool fgActive = g_FGCompat.IsFGActive();
+  bool fgSuspended = g_FGCompat.IsSuspended();
+  if (!g_State.imGuiInit && !fgActive && !fgSuspended && g_Device) {
       DXGI_SWAP_CHAIN_DESC desc;
       pSwapChain->GetDesc(&desc);
       g_State.cachedWidth = desc.BufferDesc.Width;
@@ -770,8 +771,15 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
 
     // Lambda for overlay drawing
     auto doOverlay = [&]() {
-      // CRITICAL: Skip overlay when FG is active - FG runtimes also call ExecuteCommandLists
-      if (!fgActive && processCapture && shouldDrawOverlay && g_State.syncInit && 
+      // CRITICAL: Skip overlay when FG is active/suspended - FG runtimes also call ExecuteCommandLists
+      if (fgActive || fgSuspended) {
+          static int fgSkipLog = 0;
+          if (fgSkipLog++ % 300 == 0) {
+              HookLog("DX12: Skipping overlay (fgActive=%d, fgSuspended=%d)", fgActive ? 1 : 0, fgSuspended ? 1 : 0);
+          }
+          return;
+      }
+      if (processCapture && shouldDrawOverlay && g_State.syncInit && 
           g_State.fence && g_CommandQueue) {
         int bufferIdx = pSwapChain->GetCurrentBackBufferIndex();
         
@@ -999,17 +1007,12 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
   LARGE_INTEGER qpc;
   QueryPerformanceCounter(&qpc);
 
-  // FG: Record every present call to track output FPS
-  g_FGCompat.RecordPresentCall();
-
-  // FG: Check if this present call had associated command lists executed
-  // If not, it's likely an interpolated frame
+  // FG: Get command lists executed this frame and record in FG detector
   int cmdListCount = g_CommandListsExecutedThisFrame.exchange(0);
   bool isRealFrame = (cmdListCount > 0);
   
-  if (isRealFrame) {
-      g_FGCompat.RecordRealFrame();
-  }
+  // Record frame for FG behavioral detection (handles both real and interpolated)
+  g_FGCompat.RecordFrame(cmdListCount);
 
   // Convert to microseconds
   int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
@@ -1125,14 +1128,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
 HRESULT STDMETHODCALLTYPE
 DetourPresent1(IDXGISwapChain3 *pSwapChain, UINT SyncInterval, UINT Flags,
                const DXGI_PRESENT_PARAMETERS *pPresentParameters) {
-  HookLog("DX12: DetourPresent1 called (SyncInterval=%u, Flags=%u)", SyncInterval, Flags);
-  // FG: Record Present call
-  g_FGCompat.RecordPresentCall();
-  
-  // FG: Real frame detection
+  // FG: Record frame for behavioral detection
   int cmdListCount = g_CommandListsExecutedThisFrame.exchange(0);
   bool isRealFrame = (cmdListCount > 0);
-  if (isRealFrame) g_FGCompat.RecordRealFrame();
+  g_FGCompat.RecordFrame(cmdListCount);
 
   ProcessFrame(pSwapChain, isRealFrame);
 
@@ -1947,16 +1946,29 @@ void DX12Hook::Init() {
   s = MH_CreateHook(scVTable[9], (LPVOID)DetourGetBuffer, (LPVOID *)&oGetBuffer);
   if (s != MH_OK) HookLog("Failed to hook GetBuffer: %s", MH_StatusToString(s));
 
-  s = MH_CreateHook(scVTable[8], (LPVOID)DetourPresent, (LPVOID *)&oPresent);
-  if (s != MH_OK) HookLog("Failed to hook Present: %s", MH_StatusToString(s));
+  // CRITICAL: Check for FG runtime BEFORE installing Present hooks
+  // FG runtimes (DLSS-G, FSR-FG) create proxy swapchains that conflict with our hooks
+  auto fgType = g_FGCompat.DetectLoadedFGRuntime();
+  bool skipPresentHooks = (fgType != FGCompatibility::FGType::None);
   
-  s = MH_CreateHook(scVTable[22], (LPVOID)DetourPresent1, (LPVOID *)&oPresent1);
-  if (s != MH_OK) HookLog("Failed to hook Present1: %s", MH_StatusToString(s));
+  if (skipPresentHooks) {
+      HookLog("DX12Hook: FG Runtime detected (%d) - SKIPPING Present/ResizeBuffers hooks to avoid crash", (int)fgType);
+      g_FGCompat.SuspendFor(5000); // 5 seconds suspend for overlay
+  } else {
+      s = MH_CreateHook(scVTable[8], (LPVOID)DetourPresent, (LPVOID *)&oPresent);
+      if (s == MH_OK) HookLog("DX12: Present hook installed (vtable[8]=%p)", scVTable[8]);
+      else HookLog("DX12: Failed to hook Present: %s", MH_StatusToString(s));
+      
+      s = MH_CreateHook(scVTable[22], (LPVOID)DetourPresent1, (LPVOID *)&oPresent1);
+      if (s == MH_OK) HookLog("DX12: Present1 hook installed (vtable[22]=%p)", scVTable[22]);
+      else HookLog("DX12: Failed to hook Present1: %s", MH_StatusToString(s));
+      
+      s = MH_CreateHook(scVTable[13], (LPVOID)DetourResizeBuffers,
+                    (LPVOID *)&oResizeBuffers);
+      if (s != MH_OK) HookLog("Failed to hook ResizeBuffers: %s", MH_StatusToString(s));
+  }
   
-  s = MH_CreateHook(scVTable[13], (LPVOID)DetourResizeBuffers,
-                (LPVOID *)&oResizeBuffers);
-  if (s != MH_OK) HookLog("Failed to hook ResizeBuffers: %s", MH_StatusToString(s));
-  
+  // ExecuteCommandLists is safe to hook even with FG
   s = MH_CreateHook(cqVTable[10], (LPVOID)DetourExecuteCommandLists,
                 (LPVOID *)&oExecuteCommandLists);
   if (s != MH_OK) HookLog("Failed to hook ExecuteCommandLists: %s", MH_StatusToString(s));
@@ -1989,12 +2001,7 @@ void DX12Hook::Init() {
       }
   }
 
-  // Early FG Detection
-  if (g_FGCompat.DetectLoadedFGRuntime() != FGCompatibility::FGType::None) {
-      HookLog("DX12Hook: FG Runtime detected at init - triggering safety suspend");
-      g_FGCompat.SuspendFor(5000); // 5 seconds suspend on startup if FG is present
-  }
-
+  // FG detection now happens earlier - before Present hooks are installed
   MH_EnableHook(MH_ALL_HOOKS);
   HookLog("DX12Hook: MinHook enabled.");
 
@@ -2007,6 +2014,48 @@ void DX12Hook::Init() {
   if (factory)
     factory->Release();
   DestroyWindow(hWnd);
+}
+
+// Helper function callable from dx11_hook.cpp to install DX12 hooks on actual game swapchain
+// This is needed because UE5/DLSS games create swapchains via DXGI which triggers DX11 hooks first
+bool InstallDX12HooksOnSwapchain(IDXGISwapChain3* pSwapChain) {
+    if (!pSwapChain) return false;
+    
+    void** scVTable = *(void***)pSwapChain;
+    bool anyInstalled = false;
+    
+    if (oPresent == nullptr) {
+        MH_STATUS s = MH_CreateHook(scVTable[8], (LPVOID)DetourPresent, (LPVOID*)&oPresent);
+        if (s == MH_OK) {
+            MH_EnableHook(scVTable[8]);
+            HookLog("DX12: Present hook installed on game swapchain (vtable[8]=%p)", scVTable[8]);
+            anyInstalled = true;
+        } else {
+            HookLog("DX12: Failed to hook Present on game swapchain: %s", MH_StatusToString(s));
+        }
+    }
+    
+    if (oPresent1 == nullptr) {
+        MH_STATUS s = MH_CreateHook(scVTable[22], (LPVOID)DetourPresent1, (LPVOID*)&oPresent1);
+        if (s == MH_OK) {
+            MH_EnableHook(scVTable[22]);
+            HookLog("DX12: Present1 hook installed on game swapchain (vtable[22]=%p)", scVTable[22]);
+            anyInstalled = true;
+        } else {
+            HookLog("DX12: Failed to hook Present1 on game swapchain: %s", MH_StatusToString(s));
+        }
+    }
+    
+    if (oResizeBuffers == nullptr) {
+        MH_STATUS s = MH_CreateHook(scVTable[13], (LPVOID)DetourResizeBuffers, (LPVOID*)&oResizeBuffers);
+        if (s == MH_OK) {
+            MH_EnableHook(scVTable[13]);
+            HookLog("DX12: ResizeBuffers hook installed on game swapchain");
+            anyInstalled = true;
+        }
+    }
+    
+    return anyInstalled;
 }
 
 void DX12Hook::Shutdown() {

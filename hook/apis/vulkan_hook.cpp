@@ -3213,13 +3213,10 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
       o_vkQueuePresentKHR = (PFN_vkQueuePresentKHR)o_vkGetDeviceProcAddr(g_Device, "vkQueuePresentKHR");
   }
 
-  // FG: Record Present call
-  g_FGCompat.RecordPresentCall();
-  
-  // FG: Real frame detection
+  // FG: Record frame for behavioral detection
   int submitCount = g_QueueSubmitsThisFrame.exchange(0);
   bool isRealFrame = (submitCount > 0);
-  if (isRealFrame) g_FGCompat.RecordRealFrame();
+  g_FGCompat.RecordFrame(submitCount);
 
   // Async Present Detection - Check if present queue is compute-only
   static bool g_AsyncPresentDetected = false;

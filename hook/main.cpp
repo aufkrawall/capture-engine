@@ -743,10 +743,9 @@ static DWORD WINAPI HookThreadWrapper(LPVOID lpParam) {
 static bool IsWhitelistedFast(const char* processName) {
     if (!processName || processName[0] == '\0') return false;
 
-    // 1. Check for test/debug matches if debug is enabled (hardcoded convenience)
+    // 1. Prepare name for matching
     std::string name = processName;
     std::transform(name.begin(), name.end(), name.begin(), ::tolower);
-    if (name.find("_test.exe") != std::string::npos) return true;
 
     // 2. Load whitelist from config.ini
     char dllPath[MAX_PATH];
@@ -841,43 +840,11 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     }
 
 
-    // 1. Blacklist (Total Skip, no threads, no logs)
-    const char* blackList[] = {
-        "svchost.exe", "explorer.exe", "dwm.exe", "csrss.exe", "lsass.exe",
-        "services.exe", "wininit.exe", "winlogon.exe", "smss.exe", "taskmgr.exe",
-        "chrome.exe", "firefox.exe", "msedge.exe", "discord.exe", "slack.exe",
-        "code.exe", "devenv.exe", "cmd.exe", "powershell.exe", "conhost.exe",
-        "searchhost.exe", "startmenuexperiencehost.exe", "textinputhost.exe",
-        "captureengine.exe", "steamwebhelper.exe", "epicwebhelper.exe",
-        "gldriverquery64.exe", "searchindexer.exe", "searchapp.exe", "searchprotocolhost.exe",
-        "compattelrunner.exe", "fontdrvhost.exe", "smartscreen.exe",
-        "ctfmon.exe", "wudfhost.exe", "spoolsv.exe", "audiodg.exe",
-        "rundll32.exe", "unsecapp.exe", "werfault.exe", "wmiadap.exe",
-        "conhost.exe", "applicationframehost.exe", "shellexperiencehost.exe",
-        "systemsettings.exe", "startmenuexperiencehost.exe",
-        "kate.exe", "notepad.exe", "antigravity.exe",
-        NULL
-    };
-    
-    for (int i = 0; blackList[i] != NULL; i++) {
-        if (strstr(lowerName, blackList[i]) != NULL) {
-            g_ProcessCategory = ProcessCategory::Blacklisted;
-            break; 
-        }
-    }
+    // 1. Whitelist Only Policy
+    // We default to "Blacklisted" (Skip) unless explicitly whitelisted.
+    // This handles system processes, launchers (Steam), and unrelated apps automatically.
 
-    // 2. Launchers (CreateProcess hook only, no IPC)
-    const char* launcherList[] = {
-        "steam.exe", "epicgameslauncher.exe", "galaxyclient.exe", "origin.exe",
-        "upc.exe", "uplay.exe", "battlenet.exe", "eadesktop.exe",
-        NULL
-    };
-
-    for (int i = 0; launcherList[i] != NULL; i++) {
-        if (strstr(lowerName, launcherList[i]) != NULL) {
-            g_ProcessCategory = ProcessCategory::Launcher;
-        }
-    }
+    // (Launcher list removed)
     
 
     // 3. Whitelist check (The "Default-to-Blacklist" Policy)

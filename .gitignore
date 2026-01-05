@@ -19,6 +19,8 @@ licenses*
 *.exe
 *.dll
 *.old
+*.log
+*.csv
 
 # Build logs
 
