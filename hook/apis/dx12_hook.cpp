@@ -994,51 +994,39 @@ HRESULT STDMETHODCALLTYPE DetourGetBuffer(IDXGISwapChain *pSwapChain, UINT Buffe
 
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
                                         UINT SyncInterval, UINT Flags) {
-  // FG-SAFE: Instead of passthrough, we now support overlay drawing with FG active
-  // The key is to detect device/swapchain changes and reinitialize as needed
+  // FG OVERLAY SUPPORT: Time-limited passthrough for FG stabilization
+  // After FG is detected, passthrough for ~8 seconds to let swapchain recreation settle,
+  // then enable normal overlay path. This allows overlay to work with FG games.
+  static bool fgDetected = false;
+  static std::chrono::steady_clock::time_point fgDetectedTime;
+  static bool fgStabilized = false;
+  static int fgLogCount = 0;
   
-  // Check if FG was detected at runtime - log once for diagnostics
-  static bool fgModeLogged = false;
-  if (!fgModeLogged && g_FGCompat.DetectLoadedFGRuntime() != FGCompatibility::FGType::None) {
-      fgModeLogged = true;
-      EarlyLog("DX12: DetourPresent - FG detected, overlay will draw on ALL frames (no passthrough)");
-  }
-  
-  // FG-SAFE: Check if device has changed (FG may have recreated swapchain/device)
-  ID3D12Device* currentDevice = nullptr;
-  if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D12Device), (void**)&currentDevice))) {
-      if (currentDevice != nullptr && currentDevice != g_Device) {
-          if (g_Device == nullptr) {
-              // First time setting device - no cleanup needed
-              EarlyLog("DX12: First device capture: %p", currentDevice);
-              g_Device = currentDevice;
-          } else {
-              // Device actually changed - cleanup old overlay
-              EarlyLog("DX12: Device changed! Old=%p New=%p - will reinitialize overlay", g_Device, currentDevice);
-              if (g_State.imGuiInit) {
-                  std::lock_guard<std::mutex> lock(g_OverlayMutex);
-                  CleanupOverlay();
-                  g_State.imGuiInit = false;
-              }
-              g_Device = currentDevice;
-          }
-          // Try to get command queue from device
-          std::lock_guard<std::mutex> qlock(g_DeviceQueuesMutex);
-          auto it = g_DeviceQueues.find(currentDevice);
-          if (it != g_DeviceQueues.end()) {
-              g_CommandQueue = it->second;
-          }
+  if (!fgDetected) {
+      if (g_FGCompat.DetectLoadedFGRuntime() != FGCompatibility::FGType::None) {
+          fgDetected = true;
+          fgDetectedTime = std::chrono::steady_clock::now();
+          EarlyLog("DX12: DetourPresent - FG detected, passthrough for 8 seconds to stabilize");
       }
-      currentDevice->Release();
   }
   
-  // Diagnostic: Log first few Present calls to trace timing
-  static int presentCount = 0;
-  if (presentCount < 5) {
-      EarlyLog("DX12: DetourPresent #%d (g_Device=%p, g_CommandQueue=%p, imGuiInit=%d)", 
-               presentCount, g_Device, g_CommandQueue, g_State.imGuiInit ? 1 : 0);
-      presentCount++;
+  // During stabilization period: passthrough only
+  if (fgDetected && !fgStabilized) {
+      auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - fgDetectedTime).count();
+      
+      if (elapsed >= 8000) {
+          fgStabilized = true;
+          EarlyLog("DX12: FG stabilization complete - enabling overlay");
+      } else {
+          // Still stabilizing - passthrough but record metrics
+          int cmdListCount = g_CommandListsExecutedThisFrame.exchange(0);
+          g_FGCompat.RecordFrame(cmdListCount);
+          return oPresent(pSwapChain, SyncInterval, Flags);
+      }
   }
+  
+  // Normal overlay path (works for both FG-stabilized and non-FG)
   static int64_t qpcFreq = 0;
   if (qpcFreq == 0) {
     LARGE_INTEGER f;

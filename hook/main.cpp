@@ -740,6 +740,13 @@ static DWORD WINAPI HookThreadWrapper(LPVOID lpParam) {
   return HookThread(lpParam);
 }
 
+// Unload thread for blacklisted processes - releases DLL file lock
+static DWORD WINAPI UnloadSelfThread(LPVOID) {
+    Sleep(100); // Small delay to let DllMain complete
+    FreeLibraryAndExitThread(g_hModule, 0);
+    return 0;
+}
+
 static bool IsWhitelistedFast(const char* processName) {
     if (!processName || processName[0] == '\0') return false;
 
@@ -856,9 +863,10 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     }
 
     if (g_ProcessCategory == ProcessCategory::Blacklisted) {
-        // Return TRUE so the DLL stays loaded (needed for CBT hook export),
-        // but we don't start any threads or install any hooks.
-        return TRUE; 
+        // ANTI-CHEAT SAFE: Return FALSE to tell Windows to fully unload this DLL
+        // from non-whitelisted processes. This leaves no trace in the process.
+        // The CBT hook mechanism will handle this gracefully.
+        return FALSE; 
     }
 
     // 4. Initial Graphics API Check (for whitelisted games)
