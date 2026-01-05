@@ -774,11 +774,12 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
 
     // Lambda for overlay drawing
     auto doOverlay = [&]() {
-      // CRITICAL: Skip overlay when FG is active/suspended - FG runtimes also call ExecuteCommandLists
-      if (fgActive || fgSuspended) {
+      // Only skip overlay during FG stabilization (fgSuspended), NOT when FG is active
+      // This allows overlay to work with FG games after the initial stabilization period
+      if (fgSuspended) {
           static int fgSkipLog = 0;
           if (fgSkipLog++ % 300 == 0) {
-              HookLog("DX12: Skipping overlay (fgActive=%d, fgSuspended=%d)", fgActive ? 1 : 0, fgSuspended ? 1 : 0);
+              HookLog("DX12: Skipping overlay (fgSuspended=%d)", fgSuspended ? 1 : 0);
           }
           return;
       }
@@ -791,7 +792,15 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
           HookLog("DX12: bufferIdx=%d, bufferCount=%zu", bufferIdx, g_State.backBuffers.size());
         }
         
-        if (bufferIdx >= (int)g_State.backBuffers.size()) {
+        // FG-SAFE: Get backbuffer fresh from swapchain each frame
+        // FG proxy may invalidate cached backbuffers
+        ID3D12Resource* currentBackBuffer = nullptr;
+        HRESULT hrGet = pSwapChain->GetBuffer(bufferIdx, IID_PPV_ARGS(&currentBackBuffer));
+        if (FAILED(hrGet) || !currentBackBuffer) {
+          static int getFailLog = 0;
+          if (getFailLog++ % 100 == 0) {
+            HookLog("DX12: GetBuffer failed for bufferIdx=%d (hr=0x%08X)", bufferIdx, hrGet);
+          }
           return; 
         }
         
@@ -810,14 +819,16 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
         alloc->Reset();
         list->Reset(alloc, nullptr);
 
+        // FG-SAFE: Create fresh RTV for currentBackBuffer
         D3D12_CPU_DESCRIPTOR_HANDLE rtv =
             g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
         rtv.ptr += (SIZE_T)bufferIdx * g_State.rtvDescriptorSize;
+        g_Device->CreateRenderTargetView(currentBackBuffer, nullptr, rtv);
         
         D3D12_RESOURCE_BARRIER preBarrier = {};
         preBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         preBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-        preBarrier.Transition.pResource = g_State.backBuffers[bufferIdx];
+        preBarrier.Transition.pResource = currentBackBuffer;  // Use fresh buffer
         preBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         preBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
         preBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
@@ -835,7 +846,7 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
         D3D12_RESOURCE_BARRIER postBarrier = {};
         postBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         postBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-        postBarrier.Transition.pResource = g_State.backBuffers[bufferIdx];
+        postBarrier.Transition.pResource = currentBackBuffer;  // Use fresh buffer
         postBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         postBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
         postBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
@@ -851,6 +862,9 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
         g_CommandQueue->Signal(g_State.fence, g_State.currentFenceValue);
         
         overlayDrawn = true;
+        
+        // FG-SAFE: Release the buffer we acquired
+        currentBackBuffer->Release();
       }
     };
 
@@ -994,39 +1008,26 @@ HRESULT STDMETHODCALLTYPE DetourGetBuffer(IDXGISwapChain *pSwapChain, UINT Buffe
 
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
                                         UINT SyncInterval, UINT Flags) {
-  // FG OVERLAY SUPPORT: Time-limited passthrough for FG stabilization
-  // After FG is detected, passthrough for ~8 seconds to let swapchain recreation settle,
-  // then enable normal overlay path. This allows overlay to work with FG games.
+  // FG PASSTHROUGH: Permanently passthrough when FG detected
+  // Multiple overlay approaches crashed (fresh backbuffers, barriers, delays).
+  // FG overlay requires different approach - research RTSS methodology.
   static bool fgDetected = false;
-  static std::chrono::steady_clock::time_point fgDetectedTime;
-  static bool fgStabilized = false;
-  static int fgLogCount = 0;
   
   if (!fgDetected) {
       if (g_FGCompat.DetectLoadedFGRuntime() != FGCompatibility::FGType::None) {
           fgDetected = true;
-          fgDetectedTime = std::chrono::steady_clock::now();
-          EarlyLog("DX12: DetourPresent - FG detected, passthrough for 8 seconds to stabilize");
+          EarlyLog("DX12: DetourPresent - FG detected, permanent passthrough for stability");
       }
   }
   
-  // During stabilization period: passthrough only
-  if (fgDetected && !fgStabilized) {
-      auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::steady_clock::now() - fgDetectedTime).count();
-      
-      if (elapsed >= 8000) {
-          fgStabilized = true;
-          EarlyLog("DX12: FG stabilization complete - enabling overlay");
-      } else {
-          // Still stabilizing - passthrough but record metrics
-          int cmdListCount = g_CommandListsExecutedThisFrame.exchange(0);
-          g_FGCompat.RecordFrame(cmdListCount);
-          return oPresent(pSwapChain, SyncInterval, Flags);
-      }
+  if (fgDetected) {
+      // Record frame for FG metrics even in passthrough
+      int cmdListCount = g_CommandListsExecutedThisFrame.exchange(0);
+      g_FGCompat.RecordFrame(cmdListCount);
+      return oPresent(pSwapChain, SyncInterval, Flags);
   }
   
-  // Normal overlay path (works for both FG-stabilized and non-FG)
+  // Non-FG path: normal overlay rendering
   static int64_t qpcFreq = 0;
   if (qpcFreq == 0) {
     LARGE_INTEGER f;
