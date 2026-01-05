@@ -1,4 +1,5 @@
 #include "overlay.h"
+#include "fg_detection.h"
 #include <cstdio>
 #include <string>
 
@@ -276,6 +277,27 @@ void Overlay::RenderUI() {
                 if (cachedAvgFPS > 0.0f && cached1PercentLow > 0.0f && cached01PercentLow > 0.0f) {
                     snprintf(buf, 64, "%.0f / %.0f / %.0f FPS", cachedAvgFPS, cached1PercentLow, cached01PercentLow);
                     RenderRow("Avg/1%/0.1%", buf, cfg.textColor, cfg.fpsColor);
+                }
+                
+                // FG Indicator - show DLSS FG 2x, FSR FG 2x, DLSS MFG 3x/4x when active
+                extern FGCompatibility g_FGCompat;
+                auto fgType = g_FGCompat.GetDetectedType();
+                if (fgType != FGCompatibility::FGType::None && g_FGCompat.IsFGActive()) {
+                    int mult = g_FGCompat.GetFGMultiplier();
+                    const char* fgName = "";
+                    switch (fgType) {
+                        case FGCompatibility::FGType::DLSS_FG: fgName = "DLSS FG"; break;
+                        case FGCompatibility::FGType::FSR_FG: fgName = "FSR FG"; break;
+                        case FGCompatibility::FGType::DLSS_MSFG: fgName = "DLSS MFG"; break;
+                        default: fgName = "FG"; break;
+                    }
+                    if (mult > 1) {
+                        snprintf(buf, 64, "%s %dx", fgName, mult);
+                    } else {
+                        snprintf(buf, 64, "%s", fgName);
+                    }
+                    // Render FG indicator with subtle cyan color
+                    RenderRow("", buf, cfg.textColor, IM_COL32(100, 200, 255, 255));
                 }
             }
             

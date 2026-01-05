@@ -994,16 +994,42 @@ HRESULT STDMETHODCALLTYPE DetourGetBuffer(IDXGISwapChain *pSwapChain, UINT Buffe
 
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
                                         UINT SyncInterval, UINT Flags) {
-  // CRITICAL: Check if FG was detected at runtime (via LoadLibrary hook)
-  // If FG is active, our hooks are on the old/invalid swapchain - just passthrough
-  // g_FGPassthroughMode is a global, checked by both DetourPresent and DetourPresent1
-  if (!g_FGPassthroughMode && g_FGCompat.DetectLoadedFGRuntime() != FGCompatibility::FGType::None) {
-      g_FGPassthroughMode = true;
-      EarlyLog("DX12: DetourPresent - FG detected at runtime, switching to passthrough mode");
+  // FG-SAFE: Instead of passthrough, we now support overlay drawing with FG active
+  // The key is to detect device/swapchain changes and reinitialize as needed
+  
+  // Check if FG was detected at runtime - log once for diagnostics
+  static bool fgModeLogged = false;
+  if (!fgModeLogged && g_FGCompat.DetectLoadedFGRuntime() != FGCompatibility::FGType::None) {
+      fgModeLogged = true;
+      EarlyLog("DX12: DetourPresent - FG detected, overlay will draw on ALL frames (no passthrough)");
   }
-  if (g_FGPassthroughMode) {
-      // FG has taken over - don't do anything, just call original
-      return oPresent(pSwapChain, SyncInterval, Flags);
+  
+  // FG-SAFE: Check if device has changed (FG may have recreated swapchain/device)
+  ID3D12Device* currentDevice = nullptr;
+  if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D12Device), (void**)&currentDevice))) {
+      if (currentDevice != nullptr && currentDevice != g_Device) {
+          if (g_Device == nullptr) {
+              // First time setting device - no cleanup needed
+              EarlyLog("DX12: First device capture: %p", currentDevice);
+              g_Device = currentDevice;
+          } else {
+              // Device actually changed - cleanup old overlay
+              EarlyLog("DX12: Device changed! Old=%p New=%p - will reinitialize overlay", g_Device, currentDevice);
+              if (g_State.imGuiInit) {
+                  std::lock_guard<std::mutex> lock(g_OverlayMutex);
+                  CleanupOverlay();
+                  g_State.imGuiInit = false;
+              }
+              g_Device = currentDevice;
+          }
+          // Try to get command queue from device
+          std::lock_guard<std::mutex> qlock(g_DeviceQueuesMutex);
+          auto it = g_DeviceQueues.find(currentDevice);
+          if (it != g_DeviceQueues.end()) {
+              g_CommandQueue = it->second;
+          }
+      }
+      currentDevice->Release();
   }
   
   // Diagnostic: Log first few Present calls to trace timing
@@ -1143,11 +1169,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
 HRESULT STDMETHODCALLTYPE
 DetourPresent1(IDXGISwapChain3 *pSwapChain, UINT SyncInterval, UINT Flags,
                const DXGI_PRESENT_PARAMETERS *pPresentParameters) {
-  // CRITICAL: If FG was detected at runtime, passthrough (same as DetourPresent)
-  extern bool g_FGPassthroughMode; // Shared with DetourPresent
-  if (g_FGPassthroughMode) {
-      return oPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
-  }
+  // FG-SAFE: No more passthrough mode - overlay draws on all frames
+  // Device change detection is handled in DetourPresent
   
   // FG: Record frame for behavioral detection
   int cmdListCount = g_CommandListsExecutedThisFrame.exchange(0);
