@@ -80,6 +80,9 @@ static std::atomic<int> g_CommandListsExecutedThisFrame{0};
 static std::chrono::steady_clock::time_point g_LastResourceCleanup;
 static constexpr int INIT_COOLDOWN_MS = 200; // Wait 200ms after cleanup before re-init
 
+// FG Passthrough Mode - when FG is detected at runtime via LoadLibrary, Present hooks bypass
+bool g_FGPassthroughMode = false;
+
 static std::map<ID3D12Device*, ID3D12CommandQueue*> g_DeviceQueues;
 static std::mutex g_DeviceQueuesMutex;
 
@@ -991,6 +994,18 @@ HRESULT STDMETHODCALLTYPE DetourGetBuffer(IDXGISwapChain *pSwapChain, UINT Buffe
 
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
                                         UINT SyncInterval, UINT Flags) {
+  // CRITICAL: Check if FG was detected at runtime (via LoadLibrary hook)
+  // If FG is active, our hooks are on the old/invalid swapchain - just passthrough
+  // g_FGPassthroughMode is a global, checked by both DetourPresent and DetourPresent1
+  if (!g_FGPassthroughMode && g_FGCompat.DetectLoadedFGRuntime() != FGCompatibility::FGType::None) {
+      g_FGPassthroughMode = true;
+      EarlyLog("DX12: DetourPresent - FG detected at runtime, switching to passthrough mode");
+  }
+  if (g_FGPassthroughMode) {
+      // FG has taken over - don't do anything, just call original
+      return oPresent(pSwapChain, SyncInterval, Flags);
+  }
+  
   // Diagnostic: Log first few Present calls to trace timing
   static int presentCount = 0;
   if (presentCount < 5) {
@@ -1128,6 +1143,12 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
 HRESULT STDMETHODCALLTYPE
 DetourPresent1(IDXGISwapChain3 *pSwapChain, UINT SyncInterval, UINT Flags,
                const DXGI_PRESENT_PARAMETERS *pPresentParameters) {
+  // CRITICAL: If FG was detected at runtime, passthrough (same as DetourPresent)
+  extern bool g_FGPassthroughMode; // Shared with DetourPresent
+  if (g_FGPassthroughMode) {
+      return oPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+  }
+  
   // FG: Record frame for behavioral detection
   int cmdListCount = g_CommandListsExecutedThisFrame.exchange(0);
   bool isRealFrame = (cmdListCount > 0);
