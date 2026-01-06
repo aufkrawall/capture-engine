@@ -224,6 +224,10 @@ void FGCompatibility::OnSwapchainRecreation() {
     
     HookLog("FG: Swapchain recreation #%d (delta=%lldms) - FG may have toggled", count, deltaMs);
     
+    // CRITICAL: Suspend overlay during swapchain recreation to prevent stale resource access
+    // This prevents E_ABORT crashes when Present is called with old resources
+    SuspendFor(5000);  // 5 seconds to allow transition
+    
     // Re-detect runtime DLLs (they might have loaded/unloaded)
     DetectLoadedFGRuntime();
     
