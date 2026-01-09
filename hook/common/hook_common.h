@@ -2,6 +2,7 @@
 
 #include "ipc_client.h"
 #include <atomic>
+#include <cstddef>
 #include <format>
 #include <iostream>
 #include <mutex>
@@ -9,13 +10,14 @@
 #include <vector>
 #include <windows.h>
 
-
 // Global IPC defined in centralized location (main.cpp or here)
 extern IPCClient *g_IPC;
 extern std::atomic<bool> g_ShuttingDown;
 extern std::atomic<bool> g_GraphicsOverridesActive;
 struct SharedMemoryLayout;
 extern SharedMemoryLayout* g_pSharedMem;
+
+class PerformanceMetrics;
 
 // Logging Helper
 void HookLog(const char *fmt, ...);
@@ -47,3 +49,7 @@ struct VSyncOverride {
     bool useMailbox = false;  // DX11/12: use DXGI_SWAP_EFFECT_FLIP_DISCARD for mailbox
 };
 VSyncOverride GetVSyncOverride();
+
+bool BuildLogFilePathForModuleAddress(const void* address, const char* fileName, char* outPath, size_t outPathLen);
+
+void TryEnableFrameTimeCSVLogging(SharedMemoryLayout* shm, const void* address, PerformanceMetrics& metrics, const char* apiName, bool& inOutInitialized);

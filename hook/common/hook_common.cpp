@@ -1,10 +1,59 @@
 #include "hook_common.h"
+#include "performance_metrics.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <windows.h>
 
 char g_ProcessName[260] = "unknown";
+
+bool BuildLogFilePathForModuleAddress(const void* address, const char* fileName, char* outPath, size_t outPathLen) {
+  if (!outPath || outPathLen == 0) return false;
+  outPath[0] = '\0';
+  if (!fileName || fileName[0] == '\0') return false;
+
+  HMODULE hMod = NULL;
+  if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                              GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                          (LPCSTR)address, &hMod) || !hMod) {
+    return false;
+  }
+
+  char modulePath[MAX_PATH];
+  DWORD n = GetModuleFileNameA(hMod, modulePath, MAX_PATH);
+  if (n == 0 || n >= MAX_PATH) return false;
+
+  char* lastSlash = strrchr(modulePath, '\\');
+  if (!lastSlash) return false;
+  *lastSlash = '\0';
+
+  char logDir[MAX_PATH];
+  int written = snprintf(logDir, sizeof(logDir), "%s\\logs", modulePath);
+  if (written <= 0 || written >= (int)sizeof(logDir)) return false;
+
+  CreateDirectoryA(logDir, NULL);
+
+  written = snprintf(outPath, outPathLen, "%s\\%s", logDir, fileName);
+  if (written <= 0 || (size_t)written >= outPathLen) {
+    outPath[0] = '\0';
+    return false;
+  }
+
+  return true;
+}
+
+void TryEnableFrameTimeCSVLogging(SharedMemoryLayout* shm, const void* address, PerformanceMetrics& metrics, const char* apiName, bool& inOutInitialized) {
+  if (inOutInitialized) return;
+  if (!shm || !shm->debugLogging) return;
+
+  char csvPath[MAX_PATH];
+  if (BuildLogFilePathForModuleAddress(address, "frame_times.csv", csvPath, sizeof(csvPath))) {
+    metrics.EnableCSVLogging(csvPath);
+    HookLog("%s: Frame time CSV logging enabled (%s)", apiName ? apiName : "API", csvPath);
+  }
+
+  inOutInitialized = true;
+}
 
 IPCClient *g_IPC = nullptr;
 std::atomic<bool> g_ShuttingDown{false};
@@ -43,8 +92,13 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
       char fullPath[MAX_PATH];
       if (GetModuleFileNameA(NULL, fullPath, MAX_PATH)) {
           char* lastSlash = strrchr(fullPath, '\\');
-          if (lastSlash) strcpy(g_ProcessName, lastSlash + 1);
-          else strcpy(g_ProcessName, fullPath);
+          if (lastSlash) {
+              strncpy(g_ProcessName, lastSlash + 1, sizeof(g_ProcessName) - 1);
+              g_ProcessName[sizeof(g_ProcessName) - 1] = '\0';
+          } else {
+              strncpy(g_ProcessName, fullPath, sizeof(g_ProcessName) - 1);
+              g_ProcessName[sizeof(g_ProcessName) - 1] = '\0';
+          }
       }
   }
 
@@ -70,7 +124,7 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
           uint32_t wIdx = logs.writeIndex.load(std::memory_order_relaxed);
           uint32_t rIdx = logs.readIndex.load(std::memory_order_acquire);
           
-          if (wIdx < rIdx + SharedMemoryLayout::LogBuffer::SLOT_COUNT) {
+          if ((uint32_t)(wIdx - rIdx) < SharedMemoryLayout::LogBuffer::SLOT_COUNT) {
               char* slot = logs.buffer[wIdx % SharedMemoryLayout::LogBuffer::SLOT_COUNT];
               snprintf(slot, SharedMemoryLayout::LogBuffer::SLOT_SIZE, "[%s] %s", baseFilename, s_lineBuffer);
               logs.writeIndex.store(wIdx + 1, std::memory_order_release);
@@ -86,16 +140,13 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
 
       // --- FALLBACK: Direct File Logging (Early Init or Buffer Full) ---
       if (s_logDir[0] == '\0') {
-          HMODULE hMod = NULL;
-          if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)&EarlyLog, &hMod)) {
-              char fullPath[MAX_PATH];
-              GetModuleFileNameA(hMod, fullPath, MAX_PATH);
-              char *lastSlash = strrchr(fullPath, '\\');
+          char tmpPath[MAX_PATH];
+          if (BuildLogFilePathForModuleAddress((const void*)&EarlyLog, baseFilename, tmpPath, sizeof(tmpPath))) {
+              char* lastSlash = strrchr(tmpPath, '\\');
               if (lastSlash) {
                   *lastSlash = '\0';
-                  strcat(fullPath, "\\logs");
-                  CreateDirectoryA(fullPath, NULL);
-                  strcpy(s_logDir, fullPath);
+                  strncpy(s_logDir, tmpPath, sizeof(s_logDir) - 1);
+                  s_logDir[sizeof(s_logDir) - 1] = '\0';
               }
           }
       }

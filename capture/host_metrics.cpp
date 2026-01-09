@@ -1,4 +1,5 @@
 #include "host_metrics.h"
+#include "../common/logging.h"
 #include <iostream>
 #include <algorithm>
 #include <thread>
@@ -23,18 +24,19 @@ namespace scan_host {
     );
 
     void HostMetricsState::Initialize() {
+        static bool loggedInit = false;
+        
         if (!pdhInitialized) {
             if (PdhOpenQueryA(NULL, 0, &cpuQuery) == ERROR_SUCCESS) {
-                // Total CPU
                 PdhAddEnglishCounterA(cpuQuery, "\\Processor(_Total)\\% Processor Time", 0, &cpuCounter);
                 PdhCollectQueryData(cpuQuery);
                 pdhInitialized = true;
+                if (!loggedInit) LogInfo("[HostMetrics] CPU PDH initialized");
             }
         }
         
         if (!gpuPdhInitialized) {
             if (PdhOpenQueryA(NULL, 0, &gpuQuery) == ERROR_SUCCESS) {
-                // GPU Engines
                 PDH_STATUS status = PdhAddEnglishCounterA(gpuQuery, "\\GPU Engine(*)\\Utilization Percentage", 0, &gpuCounter);
                 if (status != ERROR_SUCCESS) {
                      status = PdhAddCounterA(gpuQuery, "\\GPU Engine(*)\\Utilization Percentage", 0, &gpuCounter);
@@ -43,7 +45,9 @@ namespace scan_host {
                 if (status == ERROR_SUCCESS) {
                     PdhCollectQueryData(gpuQuery);
                     gpuPdhInitialized = true;
+                    if (!loggedInit) LogInfo("[HostMetrics] GPU PDH initialized");
                 } else {
+                    if (!loggedInit) LogError("[HostMetrics] GPU PDH failed: 0x%08X", status);
                     PdhCloseQuery(gpuQuery);
                     gpuQuery = nullptr;
                 }
@@ -52,7 +56,6 @@ namespace scan_host {
         
         if (!vramPdhInitialized) {
             if (PdhOpenQueryA(NULL, 0, &vramQuery) == ERROR_SUCCESS) {
-                // VRAM Dedicated
                  PDH_STATUS status = PdhAddEnglishCounterA(vramQuery, "\\GPU Adapter Memory(*)\\Dedicated Usage", 0, &vramCounter);
                  if (status != ERROR_SUCCESS) {
                      status = PdhAddCounterA(vramQuery, "\\GPU Adapter Memory(*)\\Dedicated Usage", 0, &vramCounter);
@@ -60,12 +63,16 @@ namespace scan_host {
                  if (status == ERROR_SUCCESS) {
                      PdhCollectQueryData(vramQuery);
                      vramPdhInitialized = true;
+                     if (!loggedInit) LogInfo("[HostMetrics] VRAM PDH initialized");
                  } else {
+                     if (!loggedInit) LogError("[HostMetrics] VRAM PDH failed: 0x%08X", status);
                      PdhCloseQuery(vramQuery);
                      vramQuery = nullptr;
                  }
             }
         }
+        
+        loggedInit = true;
     }
 
     void HostMetricsState::Cleanup() {
@@ -128,27 +135,64 @@ namespace scan_host {
                       PDH_FMT_COUNTERVALUE_ITEM_A* items = (PDH_FMT_COUNTERVALUE_ITEM_A*)g_HostMetrics.pdhBuffer;
                       if (PdhGetFormattedCounterArrayA(g_HostMetrics.gpuCounter, PDH_FMT_DOUBLE, &g_HostMetrics.pdhBufferSize, &itemCount, items) == ERROR_SUCCESS) {
                           double totalLoad = 0;
+                          int matchCount = 0;
                           for (DWORD i = 0; i < itemCount; i++) {
                               if (strstr(items[i].szName, luidStr)) {
-                                  // Simplified logic: Just capture basic 3D/Compute loads if possible, or SUM ALL?
-                                  // For now, mirroring hook logic: Sum all non-video
                                   bool isVideo = strstr(items[i].szName, "VideoDecode") || strstr(items[i].szName, "VideoEncode");
                                   if (!isVideo) {
                                       totalLoad += items[i].FmtValue.doubleValue;
+                                      matchCount++;
                                   }
                               }
                           }
                           if (totalLoad > 100.0) totalLoad = 100.0;
                           shm->systemMetrics.gpuUsage.store((float)totalLoad, std::memory_order_relaxed);
+                          
+                          static int gpuLogCount = 0;
+                          if (gpuLogCount++ < 3) {
+                              LogInfo("[HostMetrics] GPU: %.1f%% (%d engines matched for %s, %d total)", 
+                                      totalLoad, matchCount, luidStr, itemCount);
+                          }
                       }
                  }
              }
         }
         
-        // VRAM Usage - Simplified for now regarding buffer reuse
-        // Using valid checks just in case
+        // VRAM Usage
         if (g_HostMetrics.vramPdhInitialized && g_HostMetrics.vramCounter) {
              PdhCollectQueryData(g_HostMetrics.vramQuery);
+             
+             DWORD bufSize = 0, itemCount = 0;
+             PdhGetFormattedCounterArrayA(g_HostMetrics.vramCounter, PDH_FMT_LARGE, &bufSize, &itemCount, NULL);
+             if (bufSize > 0) {
+                 // Use a separate buffer for VRAM to avoid conflicts
+                 static void* vramBuffer = nullptr;
+                 static DWORD vramBufferSize = 0;
+                 
+                 if (bufSize > vramBufferSize) {
+                     void* newBuf = realloc(vramBuffer, bufSize);
+                     if (newBuf) {
+                         vramBuffer = newBuf;
+                         vramBufferSize = bufSize;
+                     }
+                 }
+                 
+                 if (vramBuffer) {
+                     PDH_FMT_COUNTERVALUE_ITEM_A* items = (PDH_FMT_COUNTERVALUE_ITEM_A*)vramBuffer;
+                     if (PdhGetFormattedCounterArrayA(g_HostMetrics.vramCounter, PDH_FMT_LARGE, &vramBufferSize, &itemCount, items) == ERROR_SUCCESS) {
+                         int64_t maxVram = 0;
+                         for (DWORD i = 0; i < itemCount; i++) {
+                             if (strstr(items[i].szName, luidStr)) {
+                                 if (items[i].FmtValue.largeValue > maxVram) {
+                                     maxVram = items[i].FmtValue.largeValue;
+                                 }
+                             }
+                         }
+                         // Store as MB for shared memory
+                         shm->systemMetrics.vramUsage.store((float)(maxVram / (1024.0 * 1024.0)), std::memory_order_relaxed);
+                     }
+                 }
+             }
         }
     }
 }

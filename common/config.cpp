@@ -737,6 +737,7 @@ void LoadConfig(const std::string &path, AppConfig &config, const std::string& o
   config.overlay.showRAM = GetBool("Overlay", "show_ram", true);
   config.overlay.showVRAM = GetBool("Overlay", "show_vram", true);
   config.overlay.showRecording = GetBool("Overlay", "show_recording", true);
+  config.overlay.showFG = GetBool("Overlay", "show_fg", true);
 
   // Layout
   config.overlay.compactMode = GetBool("Overlay", "compact_mode", false);
@@ -770,10 +771,10 @@ void LoadConfig(const std::string &path, AppConfig &config, const std::string& o
   config.overlay.textOutlineColor = ParseColor(GetStr("Overlay", "text_outline_color", ""), 0xFF000000);
   config.overlay.textOutlineThickness = GetFloat("Overlay", "text_outline_thickness", 1.5f);
 
-  // Load Colors (Green -> Yellow -> Red)
+  // Load Colors (Green -> Yellow -> Red) - ImGui uses ABGR format
   config.overlay.loadColorLow = ParseColor(GetStr("Overlay", "load_color_low", ""), 0xFF62972E);  // Greenish
-  config.overlay.loadColorMed = ParseColor(GetStr("Overlay", "load_color_med", ""), 0xFF349ED4);  // Amber/Yellow
-  config.overlay.loadColorHigh = ParseColor(GetStr("Overlay", "load_color_high", ""), 0xFF333BC2); // Red
+  config.overlay.loadColorMed = ParseColor(GetStr("Overlay", "load_color_med", ""), 0xFF00CFFF);  // Amber/Yellow
+  config.overlay.loadColorHigh = ParseColor(GetStr("Overlay", "load_color_high", ""), 0xFF0000FF); // Pure Red
 
   // Update Interval
   config.overlay.textUpdateInterval = GetInt("Overlay", "text_update_interval", 500);

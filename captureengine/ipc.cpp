@@ -1,4 +1,7 @@
 #include "ipc.h"
+#include "../common/logging.h"
+#include <cstdio>
+#include <cstring>
 
 IPCManager::IPCManager(const AppConfig &config)
     : config(config), hMapFile(NULL), pSharedMem(NULL), hMapShmem(NULL), pShmem(NULL) {}
@@ -164,6 +167,8 @@ void IPCManager::UpdateConfig(const AppConfig &config) {
       dst.backbufferCount = src.backbufferCount;
       dst.sgssaa = src.sgssaa;
   }
+
+  pSharedMem->configVersion.fetch_add(1, std::memory_order_acq_rel);
 }
 
 bool IPCManager::GetLatestFrame(SharedMemoryLayout &outState) {
@@ -240,23 +245,22 @@ void IPCManager::PollLogs() {
     return;
 
   // Simple ring buffer reader
+  const uint32_t kMaxBacklog = 16;
   uint32_t writeIdx =
       pSharedMem->logs.writeIndex.load(std::memory_order_acquire);
   while (lastReadLogIndex < writeIdx) {
     // Don't read more than 16 lines back to avoid reading stale overwritten
     // data if we fell way behind (though in this design we just read
     // sequential) If we are way behind, jump to start?
-    if (writeIdx - lastReadLogIndex > 16) {
-      lastReadLogIndex = writeIdx - 16;
+    if (writeIdx - lastReadLogIndex > kMaxBacklog) {
+      lastReadLogIndex = writeIdx - kMaxBacklog;
     }
 
-    const char *msg = pSharedMem->logs.buffer[lastReadLogIndex % 16];
+    const char *msg = pSharedMem->logs.buffer[lastReadLogIndex % SharedMemoryLayout::LogBuffer::SLOT_COUNT];
     // Log it
     printf("[Hook] %s\n", msg);
     // Also to file via LogInfo if available, but I don't have LogInfo here?
     // Use std::cout or similar, or include logging.h
-    // Assuming logging.h is available
-    extern void LogInfo(const char *fmt, ...);
     LogInfo("[Hook] %s", msg);
 
     lastReadLogIndex++;

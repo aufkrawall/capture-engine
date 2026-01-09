@@ -791,79 +791,152 @@ void AudioEncoder::Flush() {
             durationUs, maxSamples, samplesCount);
   }
 
+  const int fixedFrameSize = codecCtx->frame_size;
+  if (fixedFrameSize > 0 && maxSamples != INT64_MAX) {
+    int64_t rem = maxSamples % fixedFrameSize;
+    if (rem != 0) {
+      maxSamples += (fixedFrameSize - rem);
+    }
+  }
+
+  auto drainPackets = [&]() {
+    while (true) {
+      AVPacket *pkt = av_packet_alloc();
+      int dret = avcodec_receive_packet(codecCtx, pkt);
+      if (dret == AVERROR(EAGAIN) || dret == AVERROR_EOF) {
+        av_packet_free(&pkt);
+        break;
+      }
+      if (dret < 0) {
+        av_packet_free(&pkt);
+        break;
+      }
+      pkt->stream_index = streamIndex;
+      if (onPacket)
+        onPacket(pkt);
+      av_packet_free(&pkt);
+    }
+  };
+
   // Encode any remaining samples in FIFO (up to maxSamples limit)
   int fifoSize = audioFifo ? av_audio_fifo_size(audioFifo) : 0;
   if (fifoSize > 0 && frame) {
-    // Calculate how many samples we can still encode
-    int64_t remainingAllowed = maxSamples - samplesCount;
-    if (remainingAllowed <= 0) {
-      DLL_Log("[AudioEncoder] Already at sample limit, discarding %d buffered samples", fifoSize);
-      av_audio_fifo_reset(audioFifo);
-    } else {
-      // Only encode up to the allowed limit
-      int samplesToEncode = std::min((int64_t)fifoSize, remainingAllowed);
-      if (samplesToEncode < fifoSize) {
-        DLL_Log("[AudioEncoder] Trimming buffered audio: %d -> %d samples (discarding %d)",
-                fifoSize, samplesToEncode, fifoSize - samplesToEncode);
+    int frame_size = codecCtx->frame_size ? codecCtx->frame_size : 4096;
+    int sampleSize = av_get_bytes_per_sample(codecCtx->sample_fmt);
+    int channels = codecCtx->ch_layout.nb_channels;
+    bool planar = av_sample_fmt_is_planar(codecCtx->sample_fmt) != 0;
+    int numPlanes = planar ? channels : 1;
+
+    while (fifoSize > 0) {
+      int64_t remainingAllowed = maxSamples - samplesCount;
+      if (remainingAllowed <= 0) {
+        DLL_Log("[AudioEncoder] Already at sample limit, discarding %d buffered samples", fifoSize);
+        av_audio_fifo_reset(audioFifo);
+        break;
       }
-      
-      int ret = av_frame_make_writable(frame);
-      if (ret >= 0 && samplesToEncode > 0) {
-        frame->nb_samples = samplesToEncode;
-        ret = av_audio_fifo_read(audioFifo, (void **)frame->data, samplesToEncode);
-        if (ret > 0) {
-          // Apply 50ms fade-out to prevent click at recording end
-          const int FADE_SAMPLES = codecCtx->sample_rate / 20;  // 50ms @ 48kHz = 2400 samples
-          int fadeStart = std::max(0, samplesToEncode - FADE_SAMPLES);
-          int channels = codecCtx->ch_layout.nb_channels;
-          int numPlanes = av_sample_fmt_is_planar(codecCtx->sample_fmt) ? channels : 1;
-          
-          for (int p = 0; p < numPlanes && frame->data[p]; p++) {
-              if (codecCtx->sample_fmt == AV_SAMPLE_FMT_FLT || codecCtx->sample_fmt == AV_SAMPLE_FMT_FLTP) {
-                  float* fData = (float*)frame->data[p];
-                  for (int i = fadeStart; i < samplesToEncode; i++) {
-                      float fadePos = (float)(samplesToEncode - 1 - i) / FADE_SAMPLES;
-                      float gain = fadePos < 1.0f ? fadePos : 1.0f;
-                      if (numPlanes == 1) { // Interleaved
-                          for (int c = 0; c < channels; c++) fData[i * channels + c] *= gain;
-                      } else { // Planar
-                          fData[i] *= gain;
-                      }
-                  }
-              } else if (codecCtx->sample_fmt == AV_SAMPLE_FMT_S16 || codecCtx->sample_fmt == AV_SAMPLE_FMT_S16P) {
-                  int16_t* sData = (int16_t*)frame->data[p];
-                  for (int i = fadeStart; i < samplesToEncode; i++) {
-                      float fadePos = (float)(samplesToEncode - 1 - i) / FADE_SAMPLES;
-                      float gain = fadePos < 1.0f ? fadePos : 1.0f;
-                      if (numPlanes == 1) {
-                          for (int c = 0; c < channels; c++) sData[i * channels + c] = (int16_t)(sData[i * channels + c] * gain);
-                      } else {
-                          sData[i] = (int16_t)(sData[i] * gain);
-                      }
-                  }
-              } else if (codecCtx->sample_fmt == AV_SAMPLE_FMT_S32 || codecCtx->sample_fmt == AV_SAMPLE_FMT_S32P) {
-                  int32_t* sData = (int32_t*)frame->data[p];
-                  for (int i = fadeStart; i < samplesToEncode; i++) {
-                      float fadePos = (float)(samplesToEncode - 1 - i) / FADE_SAMPLES;
-                      float gain = fadePos < 1.0f ? fadePos : 1.0f;
-                      if (numPlanes == 1) {
-                          for (int c = 0; c < channels; c++) sData[i * channels + c] = (int32_t)(sData[i * channels + c] * gain);
-                      } else {
-                          sData[i] = (int32_t)(sData[i] * gain);
-                      }
-                  }
-              }
-          }
-          
-          frame->pts = samplesCount;
-          samplesCount += samplesToEncode;
-          avcodec_send_frame(codecCtx, frame);
+
+      int samplesToRead = (int)std::min<int64_t>((int64_t)fifoSize, std::min<int64_t>((int64_t)frame_size, remainingAllowed));
+      int samplesToSend = (codecCtx->frame_size > 0) ? codecCtx->frame_size : samplesToRead;
+
+      if (samplesToSend <= 0)
+        break;
+
+      if (frame->nb_samples != samplesToSend) {
+        av_frame_unref(frame);
+        frame->nb_samples = samplesToSend;
+        frame->format = codecCtx->sample_fmt;
+        av_channel_layout_copy(&frame->ch_layout, &codecCtx->ch_layout);
+        frame->sample_rate = codecCtx->sample_rate;
+        int bret = av_frame_get_buffer(frame, 0);
+        if (bret < 0) {
+          break;
         }
       }
+
+      int ret = av_frame_make_writable(frame);
+      if (ret < 0) {
+        break;
+      }
+
+      int rret = av_audio_fifo_read(audioFifo, (void **)frame->data, samplesToRead);
+      if (rret < samplesToRead) {
+        break;
+      }
+
+      if (samplesToSend > samplesToRead) {
+        int framePlaneStride = sampleSize * (planar ? 1 : channels);
+        int padBytes = (samplesToSend - samplesToRead) * framePlaneStride;
+        for (int p = 0; p < numPlanes && frame->data[p]; p++) {
+          uint8_t *dst = (uint8_t *)frame->data[p] + (samplesToRead * framePlaneStride);
+          memset(dst, 0, padBytes);
+        }
+      }
+
+      if (samplesToRead == fifoSize) {
+        const int FADE_SAMPLES = codecCtx->sample_rate / 20;
+        int fadeStart = std::max(0, samplesToRead - FADE_SAMPLES);
+
+        for (int p = 0; p < numPlanes && frame->data[p]; p++) {
+          if (codecCtx->sample_fmt == AV_SAMPLE_FMT_FLT || codecCtx->sample_fmt == AV_SAMPLE_FMT_FLTP) {
+            float *fData = (float *)frame->data[p];
+            for (int i = fadeStart; i < samplesToRead; i++) {
+              float fadePos = (float)(samplesToRead - 1 - i) / FADE_SAMPLES;
+              float gain = fadePos < 1.0f ? fadePos : 1.0f;
+              if (numPlanes == 1) {
+                for (int c = 0; c < channels; c++)
+                  fData[i * channels + c] *= gain;
+              } else {
+                fData[i] *= gain;
+              }
+            }
+          } else if (codecCtx->sample_fmt == AV_SAMPLE_FMT_S16 || codecCtx->sample_fmt == AV_SAMPLE_FMT_S16P) {
+            int16_t *sData = (int16_t *)frame->data[p];
+            for (int i = fadeStart; i < samplesToRead; i++) {
+              float fadePos = (float)(samplesToRead - 1 - i) / FADE_SAMPLES;
+              float gain = fadePos < 1.0f ? fadePos : 1.0f;
+              if (numPlanes == 1) {
+                for (int c = 0; c < channels; c++)
+                  sData[i * channels + c] = (int16_t)(sData[i * channels + c] * gain);
+              } else {
+                sData[i] = (int16_t)(sData[i] * gain);
+              }
+            }
+          } else if (codecCtx->sample_fmt == AV_SAMPLE_FMT_S32 || codecCtx->sample_fmt == AV_SAMPLE_FMT_S32P) {
+            int32_t *sData = (int32_t *)frame->data[p];
+            for (int i = fadeStart; i < samplesToRead; i++) {
+              float fadePos = (float)(samplesToRead - 1 - i) / FADE_SAMPLES;
+              float gain = fadePos < 1.0f ? fadePos : 1.0f;
+              if (numPlanes == 1) {
+                for (int c = 0; c < channels; c++)
+                  sData[i * channels + c] = (int32_t)(sData[i * channels + c] * gain);
+              } else {
+                sData[i] = (int32_t)(sData[i] * gain);
+              }
+            }
+          }
+        }
+      }
+
+      frame->pts = samplesCount;
+      samplesCount += samplesToSend;
+
+      ret = avcodec_send_frame(codecCtx, frame);
+      if (ret == AVERROR(EAGAIN)) {
+        drainPackets();
+        ret = avcodec_send_frame(codecCtx, frame);
+      }
+      if (ret < 0) {
+        break;
+      }
+      drainPackets();
+
+      fifoSize = av_audio_fifo_size(audioFifo);
     }
   }
 
   // Padding: If audio is shorter than video (due to dropouts at the end), fill with silence
+  // Also calculate exact discard padding for sample-accurate end trimming
+  int64_t discardPaddingSamples = 0;
   if (recordingEndUs > 0 && maxSamples != INT64_MAX) {
       int64_t samplesNeeded = maxSamples - samplesCount;
       if (samplesNeeded > 0) {
@@ -897,8 +970,8 @@ void AudioEncoder::Flush() {
                   }
                   
                   frame->pts = samplesCount;
-                  samplesCount += samplesToPrepare; // We only "consumed" what we needed
-                  samplesNeeded -= samplesToPrepare;
+                  samplesCount += samplesToSend;
+                  samplesNeeded -= samplesToSend;
                   
                   ret = avcodec_send_frame(codecCtx, frame);
                   if (ret == AVERROR(EAGAIN)) {
@@ -924,19 +997,21 @@ void AudioEncoder::Flush() {
                   }
 
                   // Drain packets after each frame to keep buffers moving
-                  while (true) {
-                      AVPacket *pkt = av_packet_alloc();
-                      int dret = avcodec_receive_packet(codecCtx, pkt);
-                      if (dret < 0) {
-                          av_packet_free(&pkt);
-                          break;
-                      }
-                      pkt->stream_index = streamIndex;
-                      if (onPacket) onPacket(pkt);
-                      av_packet_free(&pkt);
-                  }
+                  drainPackets();
               }
           }
+      }
+      
+      // Calculate exact discard padding for sample-accurate trimming
+      // We aligned maxSamples to frame_size boundary, so we may have extra samples
+      int64_t durationUs = recordingEndUs - recordingStartUs;
+      int64_t targetSamples = av_rescale_rnd(durationUs, codecCtx->sample_rate, 1000000, AV_ROUND_DOWN);
+      discardPaddingSamples = samplesCount - targetSamples;
+      
+      if (discardPaddingSamples > 0 && discardPaddingSamples < codecCtx->frame_size) {
+          DLL_Log("[AudioEncoder] Setting trailing_padding for sample-accurate end: %lld samples (target=%lld, actual=%lld)",
+                  discardPaddingSamples, targetSamples, samplesCount);
+          codecCtx->trailing_padding = (int)discardPaddingSamples;
       }
   }
 

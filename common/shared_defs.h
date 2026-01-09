@@ -75,6 +75,7 @@ struct OverlayConfig {
   bool showRAM;              // RAM usage
   bool showVRAM;             // VRAM usage
   bool showRecording;        // Recording status/timer
+  bool showFG;               // Frame Generation status
 
   // Layout
   OverlayPosition position;

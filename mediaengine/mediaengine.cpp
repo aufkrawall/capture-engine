@@ -915,6 +915,23 @@ public:
       for (size_t srcIdx : srcIndices) {
         encodedSamplesPerSource[srcIdx] += samplesToEncode;
       }
+      
+      // A/V SYNC MONITORING: Periodic check for drift detection
+      // Log every ~60 seconds (6000 frames @ 100fps, 7200 @ 120fps)
+      static int syncCheckCounter = 0;
+      if (syncCheckCounter++ % 6000 == 0 && firstSrcIdx < encodedSamplesPerSource.size()) {
+        int64_t videoMs = videoElapsedMs.load();
+        int64_t audioSamples = encodedSamplesPerSource[firstSrcIdx];
+        int64_t audioMs = (audioSamples * 1000) / SAMPLE_RATE;
+        int64_t avDrift = audioMs - videoMs;
+        
+        DLL_Log("[A/V SYNC CHECK] Track %d: Video=%lld ms, Audio=%lld ms, Drift=%lld ms", 
+                track, videoMs, audioMs, avDrift);
+        
+        if (std::abs(avDrift) > 100) {
+          DLL_Log("[A/V SYNC WARNING] Track %d drift exceeds 100ms! Investigate potential sync issues.", track);
+        }
+      }
     }
   }
 

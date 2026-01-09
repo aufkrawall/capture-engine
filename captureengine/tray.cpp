@@ -1,6 +1,9 @@
 #include "tray.h"
 #include <shellapi.h>
 
+static constexpr UINT_PTR BLINK_TIMER_ID = 1001;
+static constexpr UINT BLINK_INTERVAL_MS = 300;
+
 TrayIcon::TrayIcon(HINSTANCE hInstance, std::function<void()> onQuit,
                    std::function<void()> onOpenConfig)
     : hInstance(hInstance), onQuit(onQuit), onOpenConfig(onOpenConfig) {
@@ -9,6 +12,10 @@ TrayIcon::TrayIcon(HINSTANCE hInstance, std::function<void()> onQuit,
 }
 
 TrayIcon::~TrayIcon() {
+  if (blinkTimerId) {
+    KillTimer(hWnd, blinkTimerId);
+    blinkTimerId = 0;
+  }
   Shell_NotifyIconA(NIM_DELETE, &nid);
   DestroyWindow(hWnd);
 }
@@ -59,15 +66,62 @@ LRESULT CALLBACK TrayIcon::WndProc(HWND hWnd, UINT message, WPARAM wParam,
   TrayIcon *pThis = (TrayIcon *)GetWindowLongPtr(hWnd, GWLP_USERDATA);
 
   if (message == WM_TRAYICON) {
+    if (pThis && pThis->shuttingDown) {
+      // Ignore all clicks during shutdown
+      return 0;
+    }
     if (lParam == WM_LBUTTONUP) {
       if (pThis && pThis->onOpenConfig)
         pThis->onOpenConfig();
     } else if (lParam == WM_RBUTTONUP) {
-      // Right-click closes the program immediately
-      if (pThis && pThis->onQuit)
+      // Right-click starts shutdown (don't hide icon yet)
+      if (pThis && pThis->onQuit) {
+        pThis->StartShutdownAnimation();
         pThis->onQuit();
+      }
+    }
+  } else if (message == WM_TIMER && wParam == BLINK_TIMER_ID) {
+    if (pThis) {
+      pThis->UpdateBlinkState();
     }
   }
 
   return DefWindowProc(hWnd, message, wParam, lParam);
+}
+
+void TrayIcon::StartShutdownAnimation() {
+  if (shuttingDown) return;
+  
+  shuttingDown = true;
+  blinkState = false;
+  
+  // Update tooltip to show shutting down
+  strcpy_s(nid.szTip, "Capture Engine (Shutting down...)");
+  Shell_NotifyIconA(NIM_MODIFY, &nid);
+  
+  // Start blink timer
+  blinkTimerId = SetTimer(hWnd, BLINK_TIMER_ID, BLINK_INTERVAL_MS, NULL);
+}
+
+void TrayIcon::UpdateBlinkState() {
+  blinkState = !blinkState;
+  
+  if (blinkState) {
+    // Show icon (normal)
+    nid.hIcon = hIconIdle ? hIconIdle : LoadIcon(NULL, IDI_APPLICATION);
+  } else {
+    // Hide icon (blank) - use a transparent/empty state
+    // We achieve "blink" by alternating with the recording icon or dimming
+    nid.hIcon = hIconRecording ? hIconRecording : LoadIcon(NULL, IDI_WINLOGO);
+  }
+  
+  Shell_NotifyIconA(NIM_MODIFY, &nid);
+}
+
+void TrayIcon::Remove() {
+  if (blinkTimerId) {
+    KillTimer(hWnd, blinkTimerId);
+    blinkTimerId = 0;
+  }
+  Shell_NotifyIconA(NIM_DELETE, &nid);
 }

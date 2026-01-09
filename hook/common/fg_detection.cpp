@@ -34,12 +34,17 @@ const char* FGCompatibility::GetFGTypeName(FGType type) const {
 }
 
 FGCompatibility::FGType FGCompatibility::DetectLoadedFGRuntime() {
+    // Only detect once per session to avoid overhead
+    static bool detectionDone = false;
+    static FGType cachedResult = FGType::None;
+    
+    if (detectionDone) {
+        return cachedResult;
+    }
+    
     FGType result = FGType::None;
     
     // Check for DLSS FG / MSFG DLLs
-    // nvngx_dlssg.dll - DLSS Frame Generation
-    // sl.dlss_g.dll - Streamline DLSS-G plugin
-    // nvngx.dll with specific features - general DLSS
     HMODULE dlssg = GetModuleHandleW(L"nvngx_dlssg.dll");
     HMODULE slDlssG = GetModuleHandleW(L"sl.dlss_g.dll");
     HMODULE streamline = GetModuleHandleW(L"sl.interposer.dll");
@@ -52,14 +57,11 @@ FGCompatibility::FGType FGCompatibility::DetectLoadedFGRuntime() {
     if (streamline) {
         HookLog("FG: Streamline interposer detected (%p) - DLSS FG likely", streamline);
         if (result == FGType::None) {
-            result = FGType::DLSS_FG;  // Assume DLSS FG if streamline present
+            result = FGType::DLSS_FG;
         }
     }
     
     // Check for FSR FG DLLs
-    // amd_fidelityfx_fg.dll - FSR Frame Generation
-    // ffx_fsr3upscaler_x64.dll - FSR 3 upscaler (often comes with FG)
-    // ffx_frameinterpolation_x64.dll - Explicit FG DLL
     HMODULE fsrFg = GetModuleHandleW(L"amd_fidelityfx_fg.dll");
     HMODULE ffxFsr3 = GetModuleHandleW(L"ffx_fsr3upscaler_x64.dll");
     HMODULE ffxFrameInterp = GetModuleHandleW(L"ffx_frameinterpolation_x64.dll");
@@ -68,14 +70,12 @@ FGCompatibility::FGType FGCompatibility::DetectLoadedFGRuntime() {
         result = FGType::FSR_FG;
         HookLog("FG: Detected FSR FG DLL (amd_fidelityfx_fg=%p, ffx_frameinterpolation=%p)", fsrFg, ffxFrameInterp);
     } else if (ffxFsr3) {
-        // FSR3 upscaler present - FG might be available
         HookLog("FG: FSR3 upscaler detected (%p) - FG may be available", ffxFsr3);
-        if (result == FGType::None) {
-            // Don't assume FG is active, just note it's possible
-        }
     }
     
     detectedRuntime.store(result);
+    cachedResult = result;
+    detectionDone = true;
     
     if (result != FGType::None) {
         HookLog("FG: Runtime detection complete: %s", GetFGTypeName(result));
@@ -87,6 +87,9 @@ FGCompatibility::FGType FGCompatibility::DetectLoadedFGRuntime() {
 void FGCompatibility::RecordFrame(int commandListsExecuted) {
     int64_t now = GetCurrentTimeUs();
     bool isRealFrame = (commandListsExecuted > 0);
+    
+    // Store last command list count for frame classification
+    lastCmdListCount.store(commandListsExecuted);
     
     // Store in circular buffer
     int idx = historyIndex.fetch_add(1) % WINDOW_SIZE;
@@ -213,7 +216,29 @@ void FGCompatibility::DetectPattern() {
 }
 
 bool FGCompatibility::IsFGActive() const {
-    return cachedMultiplier.load() >= 2;
+    // FG is active if:
+    // 1. FG DLLs are loaded (runtime detected)
+    // 2. Output FPS is high enough to suggest frame generation (> 100 FPS typically)
+    // This handles the case where command list detection doesn't work
+    // because FG also executes command lists for interpolated frames
+    
+    auto runtime = detectedRuntime.load();
+    if (runtime == FGType::None) {
+        return false;  // No FG DLLs loaded
+    }
+    
+    // Check if multiplier detected (traditional detection)
+    if (cachedMultiplier.load() >= 2) {
+        return true;
+    }
+    
+    // FPS-based heuristic: if output FPS > 100 with FG DLLs loaded, likely active
+    float outputFPS = cachedOutputFPS.load();
+    if (outputFPS > 100.0f) {
+        return true;
+    }
+    
+    return false;
 }
 
 void FGCompatibility::OnSwapchainRecreation() {
@@ -224,9 +249,9 @@ void FGCompatibility::OnSwapchainRecreation() {
     
     HookLog("FG: Swapchain recreation #%d (delta=%lldms) - FG may have toggled", count, deltaMs);
     
-    // CRITICAL: Suspend overlay during swapchain recreation to prevent stale resource access
-    // This prevents E_ABORT crashes when Present is called with old resources
-    SuspendFor(5000);  // 5 seconds to allow transition
+    // Suspend during swapchain recreation to allow buffers to stabilize
+    // ResizeBuffers invalidates all references - need time for cleanup
+    SuspendFor(500);  // 500ms to allow transition
     
     // Re-detect runtime DLLs (they might have loaded/unloaded)
     DetectLoadedFGRuntime();

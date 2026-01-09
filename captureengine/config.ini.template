@@ -90,6 +90,7 @@ show_gpu=true
 show_ram=true
 show_vram=true
 show_recording=true
+show_fg=true
 
 ; === Appearance ===
 ; Compact mode: reduced spacing/padding

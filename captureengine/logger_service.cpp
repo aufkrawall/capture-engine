@@ -2,6 +2,8 @@
 #include "../common/shared_defs.h"
 #include "../common/logging.h"
 #include <windows.h>
+#include <cstdio>
+#include <cstring>
 #include <vector>
 #include <map>
 #include <string>
@@ -16,6 +18,7 @@ int LoggerProcessMain(const AppConfig& config) {
     LogInfo("[Logger] Dedicated logging service started");
     
     std::map<uint32_t, Session> sessions;
+    std::map<std::string, HANDLE> openFiles;
     char logsDir[MAX_PATH];
     
     // Get logs directory
@@ -23,8 +26,13 @@ int LoggerProcessMain(const AppConfig& config) {
     char* lastSlash = strrchr(logsDir, '\\');
     if (lastSlash) {
         *lastSlash = '\0';
-        strcat(logsDir, "\\logs");
-        CreateDirectoryA(logsDir, NULL);
+        char tmpDir[MAX_PATH];
+        int written = snprintf(tmpDir, sizeof(tmpDir), "%s\\logs", logsDir);
+        if (written > 0 && written < (int)sizeof(tmpDir)) {
+            CreateDirectoryA(tmpDir, NULL);
+            strncpy(logsDir, tmpDir, sizeof(logsDir) - 1);
+            logsDir[sizeof(logsDir) - 1] = '\0';
+        }
     }
 
     while (true) {
@@ -107,20 +115,28 @@ int LoggerProcessMain(const AppConfig& config) {
                 if (message[0] != '\0') {
                     char fullPath[MAX_PATH];
                     snprintf(fullPath, sizeof(fullPath), "%s\\%s", logsDir, filename);
-                    
-                    HANDLE hFile = CreateFileA(fullPath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                              NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+
+                    HANDLE hFile = INVALID_HANDLE_VALUE;
+                    auto itFile = openFiles.find(fullPath);
+                    if (itFile != openFiles.end()) {
+                        hFile = itFile->second;
+                    } else {
+                        hFile = CreateFileA(fullPath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                            NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+                        openFiles[fullPath] = hFile;
+                    }
+
                     if (hFile != INVALID_HANDLE_VALUE) {
                         DWORD written;
                         WriteFile(hFile, message, (DWORD)strlen(message), &written, NULL);
                         WriteFile(hFile, "\r\n", 2, &written, NULL);
-                        CloseHandle(hFile);
                     }
                 }
 
                 readIdx++;
-                s.shm->logs.readIndex.store(readIdx, std::memory_order_release);
             }
+
+            s.shm->logs.readIndex.store(readIdx, std::memory_order_release);
 
             // Optional: Remove dead sessions (maybe if they haven't updated in X seconds?)
             // For now, keep them.

@@ -262,8 +262,31 @@ void ShutdownChildProcesses() {
     handles[handleCount++] = g_hSensorProcess;
 
   if (handleCount > 0) {
-    DWORD result = WaitForMultipleObjects(handleCount, handles, TRUE, 5000);
-    if (result == WAIT_TIMEOUT) {
+    // Use MsgWaitForMultipleObjects to keep processing messages (for tray animation)
+    DWORD startTime = GetTickCount();
+    DWORD timeout = 5000;
+    bool allExited = false;
+    
+    while (!allExited && (GetTickCount() - startTime) < timeout) {
+      DWORD remaining = timeout - (GetTickCount() - startTime);
+      DWORD waitTime = (remaining < 100) ? remaining : 100;
+      DWORD result = MsgWaitForMultipleObjects(handleCount, handles, TRUE, 
+                                                waitTime, QS_ALLINPUT);
+      
+      if (result == WAIT_OBJECT_0 + handleCount) {
+        // Messages available - process them to keep tray animation running
+        MSG msg;
+        while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+          TranslateMessage(&msg);
+          DispatchMessage(&msg);
+        }
+      } else if (result != WAIT_TIMEOUT) {
+        // All processes exited
+        allExited = true;
+      }
+    }
+    
+    if (!allExited) {
       LogInfo(
           "[Controller] Some processes didn't exit cleanly, terminating...");
       if (g_hLimiterProcess)
@@ -454,13 +477,20 @@ int ControllerMain(HINSTANCE hInstance) {
     Sleep(10);
   }
 
-  // Cleanup UI immediately for responsiveness
-  g_Tray = nullptr;
-  tray.reset();
+  // Unregister hotkeys first
   UnregisterHotKey(NULL, HOTKEY_ID_RECORD);
   
-  // Now perform slow process shutdown
+  // Keep tray icon alive during shutdown (animation already started by right-click handler)
+  // Process messages during shutdown so animation continues
+  LogInfo("[Controller] Shutting down child processes...");
   ShutdownChildProcesses();
+  
+  // Now remove tray icon after shutdown is complete
+  if (tray) {
+    tray->Remove();
+  }
+  g_Tray = nullptr;
+  tray.reset();
 
   LogInfo("[Controller] Exiting");
   return 0;

@@ -301,6 +301,19 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
   // Calculate drift: positive = audio ahead (too many samples), negative = audio behind
   int64_t driftSamples = audioSamplesOutput - expectedSamples;
   
+  // STEADY-STATE GUARD: Only apply pitch correction for small, steady-state drift.
+  // Large drift (>200 samples = ~4ms @ 48kHz) indicates buffering/scheduling issues,
+  // not true clock drift. Real clock drift is ppm-level and accumulates slowly.
+  // For large drift, let silence/zero-fill handle continuity without pitch shifting.
+  const int64_t STEADY_STATE_THRESHOLD = 200;
+  if (std::abs(driftSamples) > STEADY_STATE_THRESHOLD) {
+    static int largeSkipCounter = 0;
+    if (largeSkipCounter++ % 100 == 0) {
+      DLL_Log("[AudioResampler] Large drift (%lld samples) - skipping pitch correction (buffering/scheduling)", driftSamples);
+    }
+    return;
+  }
+  
   // 1. SMOOTHING STAGE (Low Pass Filter)
   // Drift readings can jitter due to frame pacing noise.
   // We use an exponential moving average to find the trend.
@@ -321,9 +334,10 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
   // Ki factor determines how fast we learn the constant offset.
   integralError += smoothedDrift;
   
-  // Anti-Windup: Clamp Integral term to reasonable limits (+/- 2% max pitch)
-  // 2% of 48000 is 960 samples.
-  const double MAX_INTEGRAL_CORRECTION = outFmt.sampleRate * 0.02;
+  // Anti-Windup: Clamp Integral term to reasonable limits (+/- 0.2% max pitch)
+  // Reduced from 2% to 0.2% - still 100x larger than real clock drift (ppm-level)
+  // but inaudible to human ear (~3.5 cents pitch shift vs 35 cents at 2%)
+  const double MAX_INTEGRAL_CORRECTION = outFmt.sampleRate * 0.002;
   if (integralError * Ki > MAX_INTEGRAL_CORRECTION) integralError = MAX_INTEGRAL_CORRECTION / Ki;
   if (integralError * Ki < -MAX_INTEGRAL_CORRECTION) integralError = -MAX_INTEGRAL_CORRECTION / Ki;
   
@@ -334,9 +348,9 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
   targetDelta = (int32_t)correction;
   
   // 3. Absolute Safety Limits
-  // Hard clamp to +/- 2% to prevent any extreme resampling artifacts
-  // This matches the previous "Panic Mode" limit
-  maxDelta = outFmt.sampleRate / 50; 
+  // Hard clamp to +/- 0.2% to prevent audible pitch artifacts
+  // 0.2% of 48000 is 96 samples/sec (inaudible, ~3.5 cents)
+  maxDelta = outFmt.sampleRate / 500; 
   
   // Log extreme correction (Logic Debug)
   if (std::abs(targetDelta) > maxDelta) {

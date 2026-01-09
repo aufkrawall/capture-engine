@@ -19,6 +19,8 @@
 #include <mutex>
 #include <atomic>
 #include <algorithm>
+#include <cctype>
+#include <cstring>
 
 HMODULE g_hModule = NULL;
 
@@ -448,8 +450,8 @@ void CheckAndInstallHooks() {
     static bool fgDetected = false;
     if (!fgDetected) {
         if (g_FGCompat.DetectLoadedFGRuntime() != FGCompatibility::FGType::None) {
-            HookLog("Main: FG Runtime detected via LoadLibrary - triggering safety suspend");
-            g_FGCompat.SuspendFor(5000); 
+            HookLog("Main: FG Runtime detected via LoadLibrary");
+            g_FGCompat.SuspendFor(500);  // Allow FG to initialize before overlay 
             fgDetected = true;
         }
     }
@@ -838,7 +840,8 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     GetModuleFileNameA(NULL, exeName, MAX_PATH);
     char* fileLastSlash = strrchr(exeName, '\\');
     char* fileName = fileLastSlash ? (fileLastSlash + 1) : exeName;
-    strcpy(g_ProcessName, fileName);
+    strncpy(g_ProcessName, fileName, sizeof(g_ProcessName) - 1);
+    g_ProcessName[sizeof(g_ProcessName) - 1] = '\0';
     
     char lowerName[MAX_PATH];
     for (int i = 0; fileName[i]; i++) {

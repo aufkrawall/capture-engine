@@ -151,18 +151,24 @@ public:
 
     auto &ring = sharedMem->frameRing;
     uint32_t wIdx = ring.writeIndex.load(std::memory_order_relaxed);
+    uint32_t rIdx = ring.readIndex.load(std::memory_order_acquire);
+    if ((uint32_t)(wIdx - rIdx) >= (uint32_t)FRAME_RING_SIZE) {
+      ring.droppedFrames.fetch_add(1, std::memory_order_relaxed);
+      return;
+    }
     auto &slot = ring.slots[wIdx % FRAME_RING_SIZE];
     
     // Write frame metadata
     slot.timestamp = timestamp;
     slot.textureIndex = textureIndex;
     slot.fenceValue = gpuFenceValue;
+    slot.frameIndex = wIdx;
     
     // Memory barrier: Ensure all above writes are visible before setting valid flag
     // This prevents the reader from seeing valid=1 with stale/uninitialized data
     std::atomic_thread_fence(std::memory_order_release);
     
-    slot.valid = 1;
+    slot.valid.store(1, std::memory_order_release);
     
     // Publish write index with release semantics to synchronize with reader
     ring.writeIndex.store(wIdx + 1, std::memory_order_release);

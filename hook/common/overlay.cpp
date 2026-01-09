@@ -268,7 +268,6 @@ void Overlay::RenderUI() {
 
             // FPS
             if (cfg.showFPS) {
-                // Main FPS with API label
                 snprintf(buf, 64, "%.0f FPS", cachedFPS);
                 ImU32 fpsCol = cfg.fpsColor;
                 RenderRow(graphicsAPI[0] ? graphicsAPI : "FPS", buf, cfg.textColor, fpsCol);
@@ -279,25 +278,30 @@ void Overlay::RenderUI() {
                     RenderRow("Avg/1%/0.1%", buf, cfg.textColor, cfg.fpsColor);
                 }
                 
-                // FG Indicator - show DLSS FG 2x, FSR FG 2x, DLSS MFG 3x/4x when active
+                // FG Indicator - show DLSS 2xFG, FSR 2xFG, DLSS 3xMFG, DLSS 4xMFG when active
+                // Uses FPS-based heuristic: FG DLLs loaded + FPS > 100 = FG active
                 extern FGCompatibility g_FGCompat;
-                auto fgType = g_FGCompat.GetDetectedType();
-                if (fgType != FGCompatibility::FGType::None && g_FGCompat.IsFGActive()) {
+                auto fgType = g_FGCompat.DetectLoadedFGRuntime();
+                if (cfg.showFG && fgType != FGCompatibility::FGType::None && g_FGCompat.IsFGActive()) {
                     int mult = g_FGCompat.GetFGMultiplier();
-                    const char* fgName = "";
+                    if (mult < 2) mult = 2; // FG is at least 2x
+                    
                     switch (fgType) {
-                        case FGCompatibility::FGType::DLSS_FG: fgName = "DLSS FG"; break;
-                        case FGCompatibility::FGType::FSR_FG: fgName = "FSR FG"; break;
-                        case FGCompatibility::FGType::DLSS_MSFG: fgName = "DLSS MFG"; break;
-                        default: fgName = "FG"; break;
+                        case FGCompatibility::FGType::DLSS_FG: 
+                            snprintf(buf, 64, "DLSS %dxFG", mult);
+                            break;
+                        case FGCompatibility::FGType::FSR_FG: 
+                            snprintf(buf, 64, "FSR %dxFG", mult);
+                            break;
+                        case FGCompatibility::FGType::DLSS_MSFG: 
+                            snprintf(buf, 64, "DLSS %dxMFG", mult);
+                            break;
+                        default: 
+                            snprintf(buf, 64, "FG %dx", mult);
+                            break;
                     }
-                    if (mult > 1) {
-                        snprintf(buf, 64, "%s %dx", fgName, mult);
-                    } else {
-                        snprintf(buf, 64, "%s", fgName);
-                    }
-                    // Render FG indicator with subtle cyan color
-                    RenderRow("", buf, cfg.textColor, IM_COL32(100, 200, 255, 255));
+                    // Render FG indicator with cyan color
+                    RenderRow("FG", buf, IM_COL32(100, 200, 255, 255), IM_COL32(100, 200, 255, 255));
                 }
             }
             

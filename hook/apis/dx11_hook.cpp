@@ -1396,26 +1396,7 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
       ApplyPrerenderLimit(pSwapChain, limit);
   }
 
-  if (!csvLoggingInitialized && csvShm && csvShm->debugLogging) {
-      char modulePath[MAX_PATH];
-      HMODULE hModule = NULL;
-      GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                             GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                         (LPCSTR)&DetourDX11Present, &hModule);
-      if (hModule) {
-          GetModuleFileNameA(hModule, modulePath, MAX_PATH);
-          char *lastSlash = strrchr(modulePath, '\\');
-          if (lastSlash) {
-              *lastSlash = '\0';
-              strcat(modulePath, "\\logs");
-              CreateDirectoryA(modulePath, NULL);
-              strcat(modulePath, "\\frame_times.csv");
-              g_PerfMetrics.EnableCSVLogging(modulePath);
-              HookLog("DX11: Frame time CSV logging enabled (%s)", modulePath);
-          }
-      }
-      csvLoggingInitialized = true;
-  }
+  TryEnableFrameTimeCSVLogging(csvShm, (const void*)&DetourDX11Present, g_PerfMetrics, "DX11", csvLoggingInitialized);
 
   g_PerfMetrics.Update(us);
   

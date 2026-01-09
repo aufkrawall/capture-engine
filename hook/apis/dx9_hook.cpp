@@ -594,6 +594,13 @@ public:
         // If legacy D3D9, we need to patch the runtime to force shared handle creation
         if (!isD3D9Ex) {
             g_D3D9Module = GetModuleHandleA("d3d9.dll");
+            // Check if we are hooked/wrapped and the real D3D9 is renamed
+            HMODULE hSysD3D9 = GetModuleHandleA("d3d9_system.dll");
+            if (hSysD3D9) {
+                 EarlyLog("DX9: Detected d3d9_system.dll. Using that for patching instead of d3d9.dll.");
+                 g_D3D9Module = hSysD3D9;
+            }
+
             if (g_D3D9Module) {
                 g_D3D9PatchIndex = FindD3D9Patch(g_D3D9Module);
                 if (g_D3D9PatchIndex >= 0) {
@@ -1123,27 +1130,7 @@ static void PresentBegin(IDirect3DDevice9 *device, IDirect3DSurface9 *&backBuffe
         // Initialize CSV logging once - only if debug logging is enabled
         static bool csvLoggingInitialized = false;
         SharedMemoryLayout* csvShm = (ipc) ? ipc->GetSharedMem() : nullptr;
-        if (!csvLoggingInitialized && csvShm && csvShm->debugLogging) {
-            char modulePath[MAX_PATH];
-            HMODULE hModule = NULL;
-            // Get module handle from DetourPresent which is static in this file
-            GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                               (LPCSTR)&DetourPresent, &hModule);
-            if (hModule) {
-                GetModuleFileNameA(hModule, modulePath, MAX_PATH);
-                char *lastSlash = strrchr(modulePath, '\\');
-                if (lastSlash) {
-                    *lastSlash = '\0';
-                    strcat(modulePath, "\\logs");
-                    CreateDirectoryA(modulePath, NULL);
-                    strcat(modulePath, "\\frame_times.csv");
-                    g_PerfMetrics.EnableCSVLogging(modulePath);
-                    HookLog("DX9: Frame time CSV logging enabled (%s)", modulePath);
-                }
-            }
-            csvLoggingInitialized = true;
-        }
+        TryEnableFrameTimeCSVLogging(csvShm, (const void*)&DetourPresent, g_PerfMetrics, "DX9", csvLoggingInitialized);
 
         g_PerfMetrics.Update(us);
         

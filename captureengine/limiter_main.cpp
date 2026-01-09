@@ -97,6 +97,12 @@ void ApplyFramePacing(SharedMemoryLayout *shm) {
     if (captureFps > 0 && multiplier >= 1 && multiplier <= 8) {
       intervalTicks = g_QpcFreq.QuadPart / (captureFps * multiplier);
       limiterActive = true;
+      static bool loggedOnce = false;
+      if (!loggedOnce) {
+        LogInfo("[Limiter] Capture sync: captureFps=%d, mult=%d, targetFps=%d, intervalTicks=%lld",
+                captureFps, multiplier, captureFps * multiplier, intervalTicks);
+        loggedOnce = true;
+      }
     }
   } else if (shm->fpsLimiter.generalEnabled) {
     int targetFps = shm->fpsLimiter.generalFps;

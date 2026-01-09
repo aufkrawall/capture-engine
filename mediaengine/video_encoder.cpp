@@ -906,6 +906,22 @@ bool VideoEncoder::Start() {
   // Reset flags that block recording if previous recording had issues
   codecOpenFailed = false;
 
+  // Pre-warm device and codec to reduce first-frame latency
+  // This moves heavy initialization (D3D11 device, codec open, video processor)
+  // from first frame to Start() call, avoiding game stutter on recording start
+  if ((luidLow != 0 || luidHigh != 0) && !initDone) {
+      DLL_Log("[VideoEncoder] Pre-warming device and codec...");
+      auto prewarmStart = PerfTimer::now();
+      
+      if (!EnsureDevice()) {
+          DLL_Log("[VideoEncoder] Pre-warm failed, will retry on first frame");
+      } else {
+          auto prewarmEnd = PerfTimer::now();
+          double prewarmMs = PerfTimer::elapsed_ms(prewarmStart, prewarmEnd);
+          DLL_Log("[VideoEncoder] Pre-warm complete in %.2fms (device init, codec open)", prewarmMs);
+      }
+  }
+
   recordingRequested = true;
   DLL_Log("[VideoEncoder] Start Recording Requested (Deferred).");
   

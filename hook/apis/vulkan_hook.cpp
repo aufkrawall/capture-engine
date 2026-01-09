@@ -3291,27 +3291,8 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
 
   // Enable CSV logging for frame times (one-time init, only if debug logging enabled)
   static bool csvLoggingInitialized = false;
-  if (!csvLoggingInitialized && g_IPC && g_IPC->GetSharedMem()->debugLogging) {
-    // Get module path for CSV file - put next to the DLL
-    char modulePath[MAX_PATH] = {};
-    HMODULE hModule = nullptr;
-    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-                       (LPCSTR)&Detour_vkQueuePresentKHR, &hModule);
-    if (hModule) {
-      GetModuleFileNameA(hModule, modulePath, MAX_PATH);
-      // Remove DLL name, keep directory
-      char *lastSlash = strrchr(modulePath, '\\');
-      if (lastSlash) {
-        *lastSlash = '\0';
-        strcat(modulePath, "\\logs");
-        CreateDirectoryA(modulePath, NULL);
-        strcat(modulePath, "\\frame_times.csv");
-        g_PerfMetrics.EnableCSVLogging(modulePath);
-        HookLog("Vulkan: Frame time CSV logging enabled (%s)", modulePath);
-      }
-    }
-    csvLoggingInitialized = true;
-  }
+  SharedMemoryLayout* csvShm = (g_IPC) ? g_IPC->GetSharedMem() : nullptr;
+  TryEnableFrameTimeCSVLogging(csvShm, (const void*)&Detour_vkQueuePresentKHR, g_PerfMetrics, "Vulkan", csvLoggingInitialized);
 
   // Track recording state for performance metrics
   static bool lastRecordingState = false;
@@ -3333,12 +3314,7 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
       return (now.QuadPart * 1000000) / qpcFreq;
   };
   int64_t diagT0 = diagTime();
-
-  // Apply FPS limiter FIRST for precise frame pacing
-  g_SharedFpsLimiter.SetIPCClient(g_IPC);
-  g_SharedFpsLimiter.Apply();
-  
-  int64_t diagT1 = diagTime();
+  int64_t diagT1 = diagT0; // Will be set after prerender limit
 
   // --- Prerender Limit Simulation ---
   if (g_Device != VK_NULL_HANDLE) {
@@ -3438,6 +3414,12 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
           }
       }
   }
+
+  // Apply FPS limiter AFTER prerender limit to avoid compounding waits
+  // (prerender wait + limiter wait would double the frame time)
+  g_SharedFpsLimiter.SetIPCClient(g_IPC);
+  g_SharedFpsLimiter.Apply();
+  diagT1 = diagTime();
 
   // Late injection recovery: try to recover device/queue if missing
   static bool recoveryAttempted = false;

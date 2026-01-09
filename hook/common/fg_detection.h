@@ -26,6 +26,9 @@ public:
     float GetOutputFPS() const { return cachedOutputFPS.load(); }
     float GetBaseFPS() const { return cachedBaseFPS.load(); }
     
+    // Get last recorded command list count (for real vs interpolated frame detection)
+    int GetLastCmdListCount() const { return lastCmdListCount.load(); }
+    
     // Events
     void OnSwapchainRecreation();
     void OnDeviceChange();
@@ -68,6 +71,7 @@ private:
     std::atomic<int> debugLogCounter{0};
     std::atomic<int> consecutiveRealFrames{0};
     std::atomic<int> consecutiveInterpolatedFrames{0};
+    std::atomic<int> lastCmdListCount{0};
     
     // Safety suspend
     std::atomic<int64_t> suspendUntilUs{0};

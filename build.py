@@ -46,7 +46,6 @@ PACKAGES = [
     "mingw-w64-clang-x86_64-vulkan-headers",
     "mingw-w64-clang-x86_64-vulkan-loader",
     "mingw-w64-clang-x86_64-MinHook",
-    "mingw-w64-clang-x86_64-MinHook",
     "mingw-w64-i686-toolchain",
     "mingw-w64-i686-clang",
     "mingw-w64-i686-vulkan-headers",
@@ -944,7 +943,8 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         
         curr_cflags = ["-std=c++20", "-O2", "-flto", "-fno-stack-protector", "-ffunction-sections", "-fdata-sections", "-Wall", "-D_WIN32_WINNT=0x0A00",
                       "-I" + os.path.join(PROJECT_ROOT, "common"),
-                      "-I" + IMGUI_DIR]
+                      "-I" + IMGUI_DIR,
+                      "-I" + os.path.join(MINHOOK_DIR, "include")]
         # if arch == "x64":
         #    curr_cflags.append("-flto")
         #    mingw_lib = os.path.join(MSYS2_DIR, 'clang64', 'lib')
@@ -1063,36 +1063,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         # cmd = [curr_clang_exe] + hk_objs + ldflags_hook + ["-o", hk_dll]
         run_command(cmd, env=curr_env)
         # generate_hash(hk_dll) # Removed in favor of embedded hash header
-
-        # 3b. Compile d3d9 Wrapper
-        log(f"Compiling d3d9 Wrapper {arch}...")
-        wrapper_dir = os.path.join(PROJECT_ROOT, "wrapper", "d3d9")
-        wrapper_src = os.path.join(wrapper_dir, "d3d9_wrapper.cpp")
-        wrapper_def = os.path.join(wrapper_dir, "d3d9.def")
-        
-        if os.path.exists(wrapper_src):
-            wrapper_dll = os.path.join(BIN_DIR, f"d3d9_wrapper_{arch}.dll")
-            wrapper_obj = os.path.join(curr_obj_dir, "d3d9_wrapper.o")
-            
-            # Use same cflags 
-            compile_object(curr_env, curr_clang_exe, curr_cflags, wrapper_src, wrapper_obj)
-            
-            wrapper_ldflags = [
-                "-shared", "-static", "-static-libgcc", "-static-libstdc++", 
-                "-s", "-Wl,--gc-sections", "-flto", "-fuse-ld=lld",
-                "-luser32", "-ldxguid", "-luuid",
-                wrapper_def
-            ]
-            
-            if arch == "x86":
-                 if std_lib_path:
-                    wrapper_ldflags.insert(0, "-L" + std_lib_path)
-            else: # x64
-                 if 'mingw_lib' in locals():
-                    wrapper_ldflags.insert(0, "-L" + mingw_lib)
-
-            cmd = [curr_clang_exe] + [wrapper_obj] + wrapper_ldflags + ["-o", wrapper_dll]
-            run_command(cmd, env=curr_env)
 
         # 4. MediaEngine (x64 only for now as requested)
         if arch == "x64":

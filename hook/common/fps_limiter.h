@@ -2,6 +2,7 @@
 
 #include "hook_common.h"
 #include "ipc_client.h"
+#include <atomic>
 #include <intrin.h>
 #include <windows.h>
 #include <timeapi.h>  // For timeBeginPeriod/timeEndPeriod
@@ -166,7 +167,8 @@ public:
           qpcFrequency = freq.QuadPart;
       }
       
-      HookLog("FPS Limiter: Events Initialized (target: %d FPS)", targetFps);
+      HookLog("FPS Limiter: Events Initialized (target: %d FPS, captureFps=%d, mult=%d)", 
+              targetFps, shm->fpsLimiter.captureFps, shm->fpsLimiter.captureSyncMultiplier);
     }
     
     // In test mode (dbgShm), we might assume events are initialized or not needed for SmartWait test
@@ -199,7 +201,17 @@ public:
           if (waitResult == WAIT_TIMEOUT) {
             // Limiter didn't respond in time - track but don't block
             missedFrames++;
+            static int logCount = 0;
+            if (logCount++ < 10) {
+              HookLog("FPS Limiter: TIMEOUT waiting for release (missed=%u)", missedFrames);
+            }
             return;
+          }
+      } else {
+          static bool loggedNoEvent = false;
+          if (!loggedNoEvent) {
+            HookLog("FPS Limiter: No releaseEvent available!");
+            loggedNoEvent = true;
           }
       }
 
@@ -207,6 +219,11 @@ public:
           shm->fpsLimiter.targetTimeTicks.load(std::memory_order_acquire);
       if (target > 0) {
         SmartWait(target);
+      } else {
+          static int logCount = 0;
+          if (logCount++ < 10) {
+            HookLog("FPS Limiter: targetTimeTicks is %lld (not waiting)", target);
+          }
       }
     } else {
       // Fallback: spin wait on release count (no event available)
