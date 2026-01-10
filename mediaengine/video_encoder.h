@@ -199,6 +199,9 @@ private:
   struct SharedMemoryLayout *pSharedMem = nullptr;
   struct ShmemBuffer *pShmem = nullptr;
 
+  std::atomic<uint64_t> lastEncoderOverloadTickMs{0};
+  std::atomic<uint64_t> lastMuxOverloadTickMs{0};
+
   // Frame counting and logging state (was static, now members for proper reset)
   int encodeFrameCounter = 0;    // Frames encoded in current recording
   int64_t lastEncodeTimeUs = 0;  // Duration of last frame encoding (pure encode time)
@@ -285,5 +288,6 @@ private:
   const size_t MAX_QUEUE_BYTES = 512 * 1024 * 1024; 
 
   void AsyncWriteLoop();
+  void PublishRuntimeState();
 };
 

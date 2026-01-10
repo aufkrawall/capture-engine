@@ -373,6 +373,8 @@ void StartRecording(const AppConfig &config) {
   if (g_pSharedMem) {
     g_pSharedMem->runtimeState.duplicateFrames = 0;
     g_pSharedMem->runtimeState.lateFrames = 0;
+    g_pSharedMem->runtimeState.encoderOverloadFlags.store(0, std::memory_order_relaxed);
+    g_pSharedMem->runtimeState.muxQueueBytes.store(0, std::memory_order_relaxed);
   }
 
   if (!MediaEngine_StartRecording()) {
@@ -510,7 +512,7 @@ void StopRecording() {
           (uint64_t)frame.sharedHandle, (uint64_t)frame.fenceHandle,
           frame.fenceValue, frame.timestamp, frame.luidLow, frame.luidHigh,
           frame.sourcePid, frame.width, frame.height, frame.format,
-          frame.isHDR);
+          frame.isHDR, frame.isShmem, frame.shmemSlot);
     } else {
       MediaEngine_ProcessFrameD3D11(frame.texture, frame.timestamp,
                                     frame.width, frame.height);
@@ -547,17 +549,14 @@ void StopRecording() {
       g_DxgiCap->StopCapture();
   }
 
-  if (g_EncoderThread.joinable()) {
-    LogInfo("[Media] Waiting for encoder finalization...");
-    g_EncoderThread.join();
-  }
-
   g_Recording = false;
   
   // Update Shared Memory State for Overlay
   if (g_pSharedMem) {
       g_pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
       g_pSharedMem->runtimeState.recordingStartTime.store(0, std::memory_order_release);
+      g_pSharedMem->runtimeState.encoderOverloadFlags.store(0, std::memory_order_relaxed);
+      g_pSharedMem->runtimeState.muxQueueBytes.store(0, std::memory_order_relaxed);
   }
 
   LogInfo("[Media] Recording stopped");

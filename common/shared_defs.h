@@ -160,6 +160,9 @@ struct alignas(8) CaptureState {
   std::atomic<uint32_t> duplicateFrames{0};  // Same frame re-encoded (no new frame available)
   std::atomic<uint32_t> lateFrames{0};       // Encode time exceeded frame budget
 
+  std::atomic<uint32_t> encoderOverloadFlags{0};
+  std::atomic<uint32_t> muxQueueBytes{0};
+
   // Command flags (controller -> media process via shared memory)
   // Using std::atomic for proper cross-process visibility and memory ordering
   std::atomic<bool> cmdStartRecording{false};

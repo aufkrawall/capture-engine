@@ -1047,28 +1047,72 @@ void VideoEncoder::WriteFrame(AVPacket *pkt) {
   }
 
   // ASYNC WRITE: Push to queue instead of writing directly
-  // Pre-check queue size to avoid wasting CPU on packet cloning if queue is full
-  if (currentQueueBytes.load(std::memory_order_relaxed) > MAX_QUEUE_BYTES) {
-      static int dropLogCount = 0;
-      if (dropLogCount++ % 60 == 0) {
-           DLL_Log("[VideoEncoder] WARNING: Packet queue full (%zu bytes) - Network/Disk too slow? DROPPING FRAME.", currentQueueBytes.load());
-      }
-      return; // Skip cloning entirely
+
+  // IMPORTANT: Never drop encoded packets, it causes visible corruption.
+  // Instead apply backpressure to the encode thread.
+  // If storage is extremely slow, this will manifest as stutter/dropped input frames
+  // (FrameQueue will drop/duplicate), but the bitstream stays valid.
+  for (;;) {
+    size_t qBytes = currentQueueBytes.load(std::memory_order_relaxed);
+    if (qBytes <= MAX_QUEUE_BYTES) {
+      break;
+    }
+
+    lastMuxOverloadTickMs.store(GetTickCount64(), std::memory_order_relaxed);
+    PublishRuntimeState();
+
+    static int overloadLogCount = 0;
+    if (overloadLogCount++ % 60 == 0) {
+      DLL_Log("[VideoEncoder] WARNING: Packet queue overloaded (%zu bytes) - applying backpressure", qBytes);
+    }
+
+    // Wait briefly for writer to drain.
+    std::unique_lock<std::mutex> lock(queueMutex);
+    queueCV.wait_for(lock, std::chrono::milliseconds(2), [this] {
+      return currentQueueBytes.load(std::memory_order_relaxed) <= MAX_QUEUE_BYTES || isStopping || !writerRunning;
+    });
+    if (isStopping || !writerRunning) {
+      break;
+    }
   }
-  
+
   AVPacket *clonePkt = av_packet_clone(pkt);
   if (clonePkt) {
+    {
       std::lock_guard<std::mutex> lock(queueMutex);
-      
-      // Double-check after acquiring lock (TOCTOU protection)
-      if (currentQueueBytes > MAX_QUEUE_BYTES) {
-          av_packet_free(&clonePkt);
-      } else {
-          packetQueue.push(clonePkt);
-          currentQueueBytes += clonePkt->size + sizeof(AVPacket);
-          queueCV.notify_one();
-      }
+      packetQueue.push(clonePkt);
+      currentQueueBytes += clonePkt->size + sizeof(AVPacket);
+    }
+    PublishRuntimeState();
+    queueCV.notify_one();
   }
+}
+
+void VideoEncoder::PublishRuntimeState() {
+  if (!pSharedMem) {
+    return;
+  }
+
+  // Keep this cheap and lock-free: only atomics.
+  uint32_t flags = 0;
+  uint64_t nowMs = GetTickCount64();
+
+  constexpr uint64_t kOverloadHoldMs = 1000;
+  uint64_t encTick = lastEncoderOverloadTickMs.load(std::memory_order_relaxed);
+  uint64_t muxTick = lastMuxOverloadTickMs.load(std::memory_order_relaxed);
+
+  if (encTick != 0 && (nowMs - encTick) <= kOverloadHoldMs) {
+    flags |= 1u;
+  }
+  if (muxTick != 0 && (nowMs - muxTick) <= kOverloadHoldMs) {
+    flags |= 2u;
+  }
+
+  pSharedMem->runtimeState.encoderOverloadFlags.store(flags, std::memory_order_relaxed);
+
+  size_t qBytes = currentQueueBytes.load(std::memory_order_relaxed);
+  uint32_t qBytes32 = (qBytes > 0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)qBytes;
+  pSharedMem->runtimeState.muxQueueBytes.store(qBytes32, std::memory_order_relaxed);
 }
 
 bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
@@ -1589,6 +1633,10 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
   int ret = avcodec_send_frame(codecCtx, d3d11Frame);
   int retries = 0;
   while (ret == AVERROR(EAGAIN) && retries < 10) {
+    if (retries == 0) {
+      lastEncoderOverloadTickMs.store(GetTickCount64(), std::memory_order_relaxed);
+      PublishRuntimeState();
+    }
     // Encoder buffer full, drain packets and retry
     drainPackets();
     ret = avcodec_send_frame(codecCtx, d3d11Frame);
@@ -1933,6 +1981,10 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D *bgraTexture, int64_t pts,
 
   int retries = 0;
   while (ret == AVERROR(EAGAIN) && retries < 10) {
+    if (retries == 0) {
+      lastEncoderOverloadTickMs.store(GetTickCount64(), std::memory_order_relaxed);
+      PublishRuntimeState();
+    }
     drainPackets();
     ret = avcodec_send_frame(codecCtx, d3d11Frame);
     retries++;

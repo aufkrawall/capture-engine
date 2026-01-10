@@ -1174,11 +1174,17 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
   // Note: fgActive and fgSuspended are defined at start of ProcessFrame
   if (!g_State.imGuiInit && !fgActive && !fgSuspended && g_Device) {
       // Check if another renderer backend (e.g. Vulkan) already initialized ImGui
-      ImGuiIO& io = ImGui::GetIO();
-      if (io.BackendRendererUserData != nullptr) {
-          EarlyLog("DX12: Skipping ImGui init - another backend already active");
-          g_State.imGuiInit = true;  // Mark as handled to avoid repeated checks
-      } else {
+      ImGuiContext* existingCtx = ImGui::GetCurrentContext();
+      if (existingCtx) {
+          ImGuiIO& io = ImGui::GetIO();
+          if (io.BackendRendererUserData != nullptr) {
+              EarlyLog("DX12: Skipping ImGui init - another backend already active");
+              g_State.imGuiInit = true;  // Mark as handled to avoid repeated checks
+              // Continue normal processing; just don't initialize DX12 ImGui backend.
+          }
+      }
+
+      {
           DXGI_SWAP_CHAIN_DESC desc;
           pSwapChain->GetDesc(&desc);
           g_State.cachedWidth = desc.BufferDesc.Width;

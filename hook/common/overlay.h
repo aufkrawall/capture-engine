@@ -58,6 +58,7 @@ private:
   void *hwnd = nullptr;
   char graphicsAPI[16] = "";  // "DX12", "DX11", "Vulkan"
   bool initialized = false;
+  ImGuiContext* context = nullptr;
 
   // Text update throttling
   DWORD lastTextUpdateTime = 0;

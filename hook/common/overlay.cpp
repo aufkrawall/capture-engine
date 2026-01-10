@@ -16,7 +16,8 @@ void Overlay::InitImGui(void* hwnd) {
     if (initialized) return;
     this->hwnd = hwnd;
     IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
+    context = ImGui::CreateContext();
+    ImGui::SetCurrentContext(context);
     ImGui::GetIO().IniFilename = nullptr; 
     ImGui_ImplWin32_Init(hwnd);
     
@@ -51,21 +52,25 @@ void Overlay::InitImGui(void* hwnd) {
 
 void Overlay::ShutdownImGui() {
     if (!initialized) return;
+    if (context) ImGui::SetCurrentContext(context);
     ImGui_ImplWin32_Shutdown();
-    if (ImGui::GetCurrentContext()) {
-        ImGui::DestroyContext();
+    if (context) {
+        ImGui::DestroyContext(context);
+        context = nullptr;
     }
     initialized = false;
 }
 
 void Overlay::BeginFrame() {
     if (!initialized) return;
+    if (context) ImGui::SetCurrentContext(context);
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 }
 
 void Overlay::EndFrame() {
     if (!initialized) return;
+    if (context) ImGui::SetCurrentContext(context);
     ImGui::Render();
 }
 
@@ -103,6 +108,8 @@ void Overlay::RenderTextWithOutline(const char* text, ImU32 color, bool outline,
 }
 
 void Overlay::RenderUI() {
+    if (!initialized || !context) return;
+    ImGui::SetCurrentContext(context);
     if (hwnd && IsWindow((HWND)hwnd) && !IsWindowVisible((HWND)hwnd)) return;
     if (!ipc || !ipc->GetSharedMem()) return;
 
@@ -313,6 +320,31 @@ void Overlay::RenderUI() {
                      ImGui::TableSetColumnIndex(0);
                      // Span 2 columns
                      RenderTextWithOutline(buf, IM_COL32(255, 50, 50, 255), cfg.textOutline, cfg.textOutlineColor, cfg.textOutlineThickness);
+
+                     uint32_t overloadFlags = mem.runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
+                     if (overloadFlags != 0) {
+                         const bool encOver = (overloadFlags & 1u) != 0;
+                         const bool muxOver = (overloadFlags & 2u) != 0;
+                         if (encOver && muxOver) {
+                             snprintf(buf, 64, "ENC+I/O OVERLOAD");
+                         } else if (encOver) {
+                             snprintf(buf, 64, "ENC OVERLOAD");
+                         } else {
+                             snprintf(buf, 64, "I/O OVERLOAD");
+                         }
+                         ImGui::TableNextRow();
+                         ImGui::TableSetColumnIndex(0);
+                         RenderTextWithOutline(buf, IM_COL32(255, 140, 0, 255), cfg.textOutline, cfg.textOutlineColor, cfg.textOutlineThickness);
+
+                         if (muxOver) {
+                             uint32_t qBytes = mem.runtimeState.muxQueueBytes.load(std::memory_order_relaxed);
+                             double qMB = (double)qBytes / (1024.0 * 1024.0);
+                             snprintf(buf, 64, "MuxQ %.0f MB", qMB);
+                             ImGui::TableNextRow();
+                             ImGui::TableSetColumnIndex(0);
+                             RenderTextWithOutline(buf, IM_COL32(255, 140, 0, 255), cfg.textOutline, cfg.textOutlineColor, cfg.textOutlineThickness);
+                         }
+                     }
                  }
             }
 
