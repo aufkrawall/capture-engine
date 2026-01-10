@@ -170,8 +170,7 @@ VideoEncoder::VideoEncoder()
       d3d11Context(nullptr), initDone(false), cachedSourcePid(0),
       lastEncodeTimeUs(0),
       videoDevice(nullptr), videoContext(nullptr), videoProcessor(nullptr),
-      videoProcessorEnum(nullptr), nv12StagingTextures{nullptr},
-      outputViews{nullptr}, currentNV12Buffer(0), inputView(nullptr),
+      videoProcessorEnum(nullptr), currentNV12Buffer(0), inputView(nullptr),
       videoProcessorInit(false), fenceEvent(nullptr) {}
 
 VideoEncoder::~VideoEncoder() {
@@ -2338,7 +2337,18 @@ bool VideoEncoder::InitVideoProcessor() {
   ID3D11Device *baseDevice = nullptr;
   d3d11Device->QueryInterface(__uuidof(ID3D11Device), (void **)&baseDevice);
 
-  for (int i = 0; i < NV12_BUFFER_COUNT; i++) {
+  nv12BufferCount = savedConfig.lookahead ? 40 : 3;
+  if (nv12BufferCount < 3) {
+    nv12BufferCount = 3;
+  }
+  if (nv12BufferCount > 64) {
+    nv12BufferCount = 64;
+  }
+  nv12StagingTextures.assign(nv12BufferCount, nullptr);
+  outputViews.assign(nv12BufferCount, nullptr);
+  currentNV12Buffer = 0;
+
+  for (int i = 0; i < nv12BufferCount; i++) {
     hr = baseDevice->CreateTexture2D(&nv12Desc, nullptr,
                                      &nv12StagingTextures[i]);
     if (FAILED(hr)) {
@@ -2346,6 +2356,7 @@ bool VideoEncoder::InitVideoProcessor() {
               "HR=%x",
               i, hr);
       baseDevice->Release();
+      CleanupVideoProcessor();
       return false;
     }
 
@@ -2360,13 +2371,14 @@ bool VideoEncoder::InitVideoProcessor() {
     if (FAILED(hr)) {
       DLL_Log("[VideoProcessor] Failed to create output view %d. HR=%x", i, hr);
       baseDevice->Release();
+      CleanupVideoProcessor();
       return false;
     }
   }
   baseDevice->Release();
   DLL_Log("[VideoProcessor] Created %d NV12 staging textures at %dx%d "
           "(triple buffering)",
-          NV12_BUFFER_COUNT, outputWidth, outputHeight);
+          nv12BufferCount, outputWidth, outputHeight);
 
   // Create BGRA staging texture for Desktop Duplication
   // compatibility DD textures often have D3D11_BIND_RENDER_TARGET
@@ -2648,21 +2660,25 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D *bgraTexture,
   // Return current buffer and advance to next
   *nv12Output = nv12StagingTextures[bufIdx];
   nv12StagingTextures[bufIdx]->AddRef(); // Caller will release
-  currentNV12Buffer = (currentNV12Buffer + 1) % NV12_BUFFER_COUNT;
+  currentNV12Buffer = (currentNV12Buffer + 1) % nv12BufferCount;
   return true;
 }
 
 void VideoEncoder::CleanupVideoProcessor() {
-  for (int i = 0; i < NV12_BUFFER_COUNT; i++) {
-    if (outputViews[i]) {
-      outputViews[i]->Release();
-      outputViews[i] = nullptr;
-    }
-    if (nv12StagingTextures[i]) {
-      nv12StagingTextures[i]->Release();
-      nv12StagingTextures[i] = nullptr;
+  for (auto *view : outputViews) {
+    if (view) {
+      view->Release();
     }
   }
+  for (auto *tex : nv12StagingTextures) {
+    if (tex) {
+      tex->Release();
+    }
+  }
+  outputViews.clear();
+  nv12StagingTextures.clear();
+  currentNV12Buffer = 0;
+
   // Cleanup cursor overlay resources (LRU cache)
   CleanupCursorCache();
 

@@ -13,7 +13,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
-
+#include <cstdint>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -218,10 +218,10 @@ private:
   ID3D11VideoProcessor *videoProcessor = nullptr;
   ID3D11VideoProcessorEnumerator *videoProcessorEnum = nullptr;
 
-  // Triple-buffered NV12 staging textures to reduce encoder stalls
-  static const int NV12_BUFFER_COUNT = 3;
-  ID3D11Texture2D *nv12StagingTextures[NV12_BUFFER_COUNT] = {nullptr};
-  ID3D11VideoProcessorOutputView *outputViews[NV12_BUFFER_COUNT] = {nullptr};
+  // NV12 staging texture pool (sized dynamically; NVENC lookahead can require many in-flight frames)
+  int nv12BufferCount = 3;
+  std::vector<ID3D11Texture2D *> nv12StagingTextures;
+  std::vector<ID3D11VideoProcessorOutputView *> outputViews;
   int currentNV12Buffer = 0;
 
   // BGRA staging texture for Desktop Duplication compatibility

@@ -181,7 +181,7 @@ void EncoderThreadFunc(const AppConfig &config) {
   double smoothedEncodeMs = 0.0;
   double frameIntervalMs = 1000.0 / config.video.fps;
 
-  while (g_EncoderRunning) {
+  while (g_EncoderRunning || g_FrameQueue.Size() > 0) {
     // Debug log once per second
     static DWORD lastThreadLog = 0;
     if (GetTickCount() - lastThreadLog > 1000) {
@@ -222,33 +222,37 @@ void EncoderThreadFunc(const AppConfig &config) {
       }
     }
 
-    // Wait for next frame interval (CFR Pacing) using high-resolution timer
-    LARGE_INTEGER now;
-    QueryPerformanceCounter(&now);
-    int64_t waitTicks = nextSampleTime.QuadPart - now.QuadPart;
+    // Wait for next frame interval (CFR pacing) only while actively recording.
+    // During stop/drain, do NOT pace; drain queued frames ASAP to avoid shared
+    // texture slots being overwritten before encode.
+    if (g_EncoderRunning) {
+      LARGE_INTEGER now;
+      QueryPerformanceCounter(&now);
+      int64_t waitTicks = nextSampleTime.QuadPart - now.QuadPart;
 
-    if (waitTicks > 0 && hTimer) {
-      // Convert ticks to 100ns units for waitable timer (negative = relative)
-      int64_t wait100ns = (waitTicks * 10000000) / qpcFreq.QuadPart;
-      LARGE_INTEGER dueTime;
-      dueTime.QuadPart = -wait100ns;  // Negative = relative time
-      if (SetWaitableTimer(hTimer, &dueTime, 0, NULL, NULL, FALSE)) {
-        WaitForSingleObject(hTimer, INFINITE);
+      if (waitTicks > 0 && hTimer) {
+        // Convert ticks to 100ns units for waitable timer (negative = relative)
+        int64_t wait100ns = (waitTicks * 10000000) / qpcFreq.QuadPart;
+        LARGE_INTEGER dueTime;
+        dueTime.QuadPart = -wait100ns;  // Negative = relative time
+        if (SetWaitableTimer(hTimer, &dueTime, 0, NULL, NULL, FALSE)) {
+          WaitForSingleObject(hTimer, INFINITE);
+        }
+      } else if (waitTicks > qpcFreq.QuadPart / 1000) {
+        // Fallback: use Sleep for waits > 1ms if no timer
+        int64_t waitMs = (waitTicks * 1000) / qpcFreq.QuadPart;
+        if (waitMs > 1) {
+          Sleep((DWORD)waitMs - 1);
+        }
       }
-    } else if (waitTicks > qpcFreq.QuadPart / 1000) {
-      // Fallback: use Sleep for waits > 1ms if no timer
-      int64_t waitMs = (waitTicks * 1000) / qpcFreq.QuadPart;
-      if (waitMs > 1) {
-        Sleep((DWORD)waitMs - 1);
+
+      nextSampleTime.QuadPart += targetIntervalTicks;
+
+      // Handle lag
+      QueryPerformanceCounter(&now);
+      if (now.QuadPart > nextSampleTime.QuadPart + targetIntervalTicks * 2) {
+        nextSampleTime = now;
       }
-    }
-
-    nextSampleTime.QuadPart += targetIntervalTicks;
-
-    // Handle lag
-    QueryPerformanceCounter(&now);
-    if (now.QuadPart > nextSampleTime.QuadPart + targetIntervalTicks * 2) {
-      nextSampleTime = now;
     }
 
     // Try to get a frame
@@ -275,11 +279,20 @@ void EncoderThreadFunc(const AppConfig &config) {
         }
         g_HasLastFrame = true;
       }
-    } else if (g_HasLastFrame) {
-      // Re-encode last frame (normal CFR behavior when game FPS < video FPS)
-      // Note: Not counted as indicator - low game FPS is expected scenario
-      frameToProcess = &g_LastFrame;
-      isDuplicate = true;
+    } else if (g_HasLastFrame && g_EncoderRunning) {
+      // Re-encode last frame only for non-inject mode.
+      // In inject mode the shared texture slot may be overwritten after the fence
+      // has advanced, causing "back-and-forth" jitter (content no longer matches
+      // the timestamp).
+      if (!g_LastFrame.isInjectMode) {
+        frameToProcess = &g_LastFrame;
+        isDuplicate = true;
+      }
+    }
+
+    // During stop/drain: if queue is empty, we're done.
+    if (!g_EncoderRunning && !popped) {
+      break;
     }
 
     if (frameToProcess) {
@@ -495,62 +508,43 @@ void StopRecording() {
 
   LogInfo("[Media] Stopping recording...");
 
-  // Signal encoder thread to stop, but let it drain remaining frames first
-  // The encoder thread will process all remaining queue items before exiting
-  g_EncoderRunning = false;
-  if (g_EncoderThread.joinable()) {
-    g_EncoderThread.join();
-  }
-  
-  // Now drain any remaining frames that were added after thread stop signal
-  // This ensures no frames are lost at the end of recording
-  QueuedFrame frame;
-  int drainedCount = 0;
-  while (g_FrameQueue.Pop(frame, 0)) {
-    if (frame.isInjectMode) {
-      MediaEngine_ProcessFrame(
-          (uint64_t)frame.sharedHandle, (uint64_t)frame.fenceHandle,
-          frame.fenceValue, frame.timestamp, frame.luidLow, frame.luidHigh,
-          frame.sourcePid, frame.width, frame.height, frame.format,
-          frame.isHDR, frame.isShmem, frame.shmemSlot);
-    } else {
-      MediaEngine_ProcessFrameD3D11(frame.texture, frame.timestamp,
-                                    frame.width, frame.height);
-      if (frame.texture) {
-        frame.texture->Release();
-      }
-    }
-    drainedCount++;
-  }
-  if (drainedCount > 0) {
-    LogInfo("[Media] Drained %d remaining frames before stopping", drainedCount);
-  }
-  
-  g_FrameQueue.Clear();
+  // Stop accepting new frames ASAP (prevents new shared-texture frames being
+  // enqueued while the encoder thread is trying to drain).
+  g_Recording = false;
 
-  MediaEngine_StopRecording();
-
+  // Stop capture sources first so no new frames are enqueued while draining.
   if (g_UseScreenGrab && g_WgcCap) {
-    // Stop WGC capture thread first
     if (g_WgcCaptureRunning) {
       g_WgcCaptureShutdown = true;
       if (g_WgcCaptureThread.joinable()) {
         g_WgcCaptureThread.join();
       }
-      LogInfo("[Media] WGC capture thread stopped (dropped frames: %u)", 
+      LogInfo("[Media] WGC capture thread stopped (dropped frames: %u)",
               g_WgcDroppedFrames.load(std::memory_order_relaxed));
     }
     g_WgcCap->StopCapture();
   } else if (g_UseScreenGrab && g_DxgiCap) {
-      g_WgcCaptureShutdown = true;
-      if (g_WgcCaptureThread.joinable()) {
-          g_WgcCaptureThread.join();
-      }
-      g_DxgiCap->StopCapture();
+    g_WgcCaptureShutdown = true;
+    if (g_WgcCaptureThread.joinable()) {
+      g_WgcCaptureThread.join();
+    }
+    g_DxgiCap->StopCapture();
   }
 
-  g_Recording = false;
-  
+  // Signal encoder thread to stop, but let it drain remaining frames first
+  // The encoder thread will process all remaining queue items before exiting
+  g_EncoderRunning = false;
+
+  if (g_EncoderThread.joinable()) {
+    g_EncoderThread.join();
+  }
+
+  // Drop any frames that arrived during shutdown without encoding them.
+  g_FrameQueue.Clear();
+
+  // Finalize the file only after we are done encoding/draining.
+  MediaEngine_StopRecording();
+
   // Update Shared Memory State for Overlay
   if (g_pSharedMem) {
       g_pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
