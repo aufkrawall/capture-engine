@@ -255,6 +255,8 @@ private:
   bool ConfigureAndOpenCodec();
   void CleanupCursorCache();
 
+  void CleanupResources();
+
   bool InitVideoProcessor();
   void CleanupVideoProcessor();
   bool ConvertBGRAtoNV12(ID3D11Texture2D *bgraTexture,

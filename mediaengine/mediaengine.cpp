@@ -73,6 +73,8 @@ public:
   // Pull Model: Track encoded samples per source for progressive encoding
   std::vector<int64_t> encodedSamplesPerSource;
 
+  std::map<int, bool> trackWasSilent;
+
   int64_t GetLastVideoEncodeTimeUs() const {
     if (videoEnc)
       return videoEnc->GetLastFrameEncodeTimeUs();
@@ -345,6 +347,8 @@ public:
       // PULL MODEL: Reset audio encoding state for new recording
       encodedSamplesPerSource.clear();
       encodedSamplesPerSource.resize(audioSources.size(), 0);
+
+      trackWasSilent.clear();
       
       // PULL MODEL: CRITICAL - Clear ring buffers to start fresh
       for (auto &src : audioSources) {
@@ -423,11 +427,10 @@ public:
     // NEW: Use exact encoded video duration for sample-perfect sync
     if (videoEnc) {
       int64_t durationUs = videoEnc->GetEncodedDurationUs();
-      int64_t startUs = firstVideoFrameMs * 1000;
-      int64_t endUs = startUs + durationUs;
+      int64_t endUs = durationUs;
       
       DLL_Log("MediaEngine: Setting audio end time. Start: %lld us, Dur: %lld us, End: %lld us", 
-              startUs, durationUs, endUs);
+              0LL, durationUs, endUs);
 
       for (auto &src : audioSources) {
         if (src.sharedEncoderPtr) {
@@ -512,7 +515,7 @@ public:
       audioSyncPending.store(true);
       for (auto &src : audioSources) {
         if (src.sharedEncoderPtr) {
-          src.sharedEncoderPtr->SetRecordingStart(debugTimestamp * 1000);
+          src.sharedEncoderPtr->SetRecordingStart(0);
         }
         // CRITICAL: Clear ring buffers now!
         // This drops any audio captured while waiting for the first video frame.
@@ -598,7 +601,7 @@ public:
       audioSyncPending.store(true);
       for (auto &src : audioSources) {
         if (src.sharedEncoderPtr) {
-          src.sharedEncoderPtr->SetRecordingStart(debugTimestamp * 1000);
+          src.sharedEncoderPtr->SetRecordingStart(0);
         }
         // CRITICAL: Clear ring buffers now!
         // This drops any audio captured while waiting for the first video frame.
@@ -651,9 +654,12 @@ public:
     if (!recording || audioSources.empty())
       return;
 
-    // Use the pre-computed relative video elapsed time
-    // videoElapsedMs is updated in ProcessFrame/ProcessFrameD3D11 and is already relative
-    int64_t audioTargetMs = videoElapsedMs.load();
+    // Drive audio purely from the encoded video timeline (frame-count CFR), not wall-clock.
+    // This prevents long-term drift and guarantees sample-perfect A/V sync.
+    int64_t audioTargetMs = 0;
+    if (videoEnc) {
+      audioTargetMs = videoEnc->GetEncodedDurationUs() / 1000;
+    }
     
     // Safety: if video elapsed time is somehow negative or 0, skip
     if (audioTargetMs <= 0)
@@ -845,8 +851,11 @@ public:
       // Otherwise, the Audio Stream timestamps stop advancing, and av_interleaved_write_frame
       // will BUFFER VIDEO PACKETS INDEFINITELY waiting for audio to catch up. 
       // This causes the 32GB RAM leak.
+
+      bool applyTransitionFade = false;
       
       if (activeSources == 0) {
+        trackWasSilent[track] = true;
         /* 
            Logic:
            1. Create a zeroed buffer matching totalFloats.
@@ -865,6 +874,11 @@ public:
         // We still 'processed' the mix (it's just silence)
         // Encode below...
       } else {
+         auto it = trackWasSilent.find(track);
+         if (it != trackWasSilent.end() && it->second) {
+           applyTransitionFade = true;
+         }
+         trackWasSilent[track] = false;
          // Perform mixing for active sources
          // (Existing logic moved here or just fall through since mixBuffer is already correct?)
          // mixBuffer is already zeroed.
@@ -880,6 +894,21 @@ public:
 
       
       // Soft clipping: Clamp values to [-1, 1] to prevent distortion
+      {
+        const int64_t FADE_SAMPLES = SAMPLE_RATE / 20; // 50ms
+        int64_t trackPos = encodedSamplesPerSource[firstSrcIdx];
+        int64_t fadeStart = applyTransitionFade ? 0 : trackPos;
+        if (trackPos < FADE_SAMPLES || applyTransitionFade) {
+          for (int64_t s = 0; s < samplesToEncode; s++) {
+            int64_t global = fadeStart + s;
+            float gain = (global >= FADE_SAMPLES) ? 1.0f : (float)global / (float)FADE_SAMPLES;
+            size_t base = (size_t)s * CHANNELS;
+            mixBuffer[base + 0] *= gain;
+            mixBuffer[base + 1] *= gain;
+          }
+        }
+      }
+
       if (activeSources > 1) {
         for (auto &s : mixBuffer) {
           if (s > 1.0f) s = 1.0f;
@@ -1167,9 +1196,6 @@ private:
           packetCount++;
           sourceLastPackets[srcIdx] = packet;
           lastPacketTime[srcIdx] = now;
-          if (sourceTimestamps[srcIdx] == 0) {
-            sourceTimestamps[srcIdx] = packet.timestamp;
-          }
 
           if (packetCount <= 3 || packetCount % 1000 == 0) {
             DLL_Log("AudioLoop: Packet #%d src=%d track=%d, size=%d",
@@ -1230,12 +1256,18 @@ private:
                              // e.g. AppAudioCapture started 500ms after Video
                              int samples = (int)(diff * 48); // 48 samples/ms
                              // Stereo (2 channels)
-                             std::vector<float> silence(samples * 2, 0.0f); 
-                             src.ringBuffer->Write(silence.data(), silence.size());
-                             DLL_Log("[AudioLoop] Sync: Inserting %d samples (%lld ms) padding for src %d (Late Start)", samples, diff, (int)srcIdx);
+                             size_t freeFloats = src.ringBuffer->GetFree();
+                             int maxSamples = (int)(freeFloats / 2);
+                             if (samples > maxSamples) samples = maxSamples;
+                             if (samples > 0) {
+                               std::vector<float> silence(samples * 2, 0.0f);
+                               src.ringBuffer->Write(silence.data(), silence.size());
+                               DLL_Log("[AudioLoop] Sync: Inserting %d samples (%lld ms) padding for src %d (Late Start)", samples, diff, (int)srcIdx);
+                             }
                          } 
                      }
                      
+                     sourceTimestamps[srcIdx] = packet.timestamp;
                      size_t written = src.ringBuffer->Write((float*)resampledData[0], numFloats);
                      if (written < numFloats) {
                          // Only log overflow occasionally to avoid log spam

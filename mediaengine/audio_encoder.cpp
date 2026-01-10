@@ -8,7 +8,7 @@ extern "C" {
 AudioEncoder::AudioEncoder()
     : codecCtx(nullptr), resampler(nullptr), frame(nullptr), samplesCount(0),
       streamIndex(-1), initDone(false), audioFifo(nullptr),
-      savedCodecId(AV_CODEC_ID_NONE), firstTimestamp(-1), recordingStartUs(0),
+      savedCodecId(AV_CODEC_ID_NONE), firstTimestamp(-1), recordingStartUs(-1),
       recordingEndUs(0) {
   currentInputFormat = {};
 }
@@ -284,7 +284,7 @@ void AudioEncoder::EncodeSamples(const uint8_t *data, int sizeBytes,
 
   // CRITICAL: Discard audio samples that arrive before first video frame
   // This ensures 0ms A/V sync - audio should not be encoded until video starts
-  if (recordingStartUs == 0) {
+  if (recordingStartUs < 0) {
     // Recording start not set yet (waiting for first video frame)
     // Silently discard this audio data
     return;
@@ -675,7 +675,7 @@ void AudioEncoder::Stop() {
   samplesCount = 0;
   streamIndex = -1; // Critical for next run
   firstTimestamp = -1;
-  recordingStartUs = 0;
+  recordingStartUs = -1;
   recordingEndUs = 0;
   resampledSamplesTotal = 0;  // Reset resampler output counter for next recording
   lastInputTimestamp = -1;    // Reset continuity tracking
@@ -780,7 +780,7 @@ void AudioEncoder::Flush() {
   // Calculate maximum samples to encode based on video duration
   // This ensures audio ends exactly when video ends (Microsecond precision)
   int64_t maxSamples = INT64_MAX; // No limit by default
-  if (recordingEndUs > 0 && recordingStartUs > 0 && recordingEndUs > recordingStartUs) {
+  if (recordingEndUs > 0 && recordingStartUs >= 0 && recordingEndUs >= recordingStartUs) {
     int64_t durationUs = recordingEndUs - recordingStartUs;
     
     // av_rescale_rnd for precise sample count from microseconds

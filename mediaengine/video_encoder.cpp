@@ -1179,17 +1179,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
       
       // Allocate custom buffer (256KB) for improved write performance
       const int bufferSize = 256 * 1024;
-      unsigned char* buffer = (unsigned char*)av_malloc(bufferSize);
-      if (buffer) {
-        // Replace the default buffer with our larger one
-        // Note: FFmpeg will free this buffer when closing
-        av_free(fmtCtx->pb->buffer);
-        fmtCtx->pb->buffer = buffer;
-        fmtCtx->pb->buffer_size = bufferSize;
-        fmtCtx->pb->buf_ptr = buffer;
-        fmtCtx->pb->buf_end = buffer + bufferSize;
-        DLL_Log("[VideoEncoder] Using 256KB AVIO buffer for improved I/O");
-      }
+      [[maybe_unused]] unsigned char* buffer = nullptr;
     }
 
     // Debug: Log stream info before write_header
@@ -1210,6 +1200,19 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
       av_strerror(ret, errbuf, sizeof(errbuf));
       DLL_Log("Failed to write header: %d (%s)", ret, errbuf);
       return false;
+    }
+
+    // Force header to hit disk immediately. This prevents 0KB files when subsequent
+    // writes fail and makes I/O errors surface at the true failure point.
+    if (fmtCtx->pb) {
+      avio_flush(fmtCtx->pb);
+      if (fmtCtx->pb->error < 0) {
+        DLL_Log("Failed to flush header: %d", fmtCtx->pb->error);
+        if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
+          avio_closep(&fmtCtx->pb);
+        }
+        return false;
+      }
     }
     fileOpened = true;
   }
@@ -2038,6 +2041,113 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D *bgraTexture, int64_t pts,
   return true;
 }
 
+void VideoEncoder::CleanupResources() {
+  // Free any queued packets (defensive)
+  {
+    std::lock_guard<std::mutex> lock(queueMutex);
+    while (!packetQueue.empty()) {
+      AVPacket *pkt = packetQueue.front();
+      packetQueue.pop();
+      av_packet_free(&pkt);
+    }
+  }
+
+  currentQueueBytes = 0;
+
+  if (stream)
+    stream = nullptr;
+  if (fmtCtx) {
+    avformat_free_context(fmtCtx);
+    fmtCtx = nullptr;
+  }
+  if (codecCtx) {
+    avcodec_free_context(&codecCtx);
+    codecCtx = nullptr;
+  }
+
+  if (d3d11Context) {
+    d3d11Context->Release();
+    d3d11Context = nullptr;
+  }
+  if (d3d11Device) {
+    d3d11Device->Release();
+    d3d11Device = nullptr;
+  }
+
+  if (d3d11DeviceCtx)
+    av_buffer_unref(&d3d11DeviceCtx);
+  if (d3d11FramesCtx)
+    av_buffer_unref(&d3d11FramesCtx);
+
+  if (cudaDeviceCtx)
+    av_buffer_unref(&cudaDeviceCtx);
+  if (cudaFramesCtx)
+    av_buffer_unref(&cudaFramesCtx);
+  if (hwDeviceCtx)
+    av_buffer_unref(&hwDeviceCtx);
+  if (hwFramesCtx)
+    av_buffer_unref(&hwFramesCtx);
+
+  for (int i = 0; i < 8; i++) {
+    if (cachedSharedTextures[i]) {
+      cachedSharedTextures[i]->Release();
+      cachedSharedTextures[i] = nullptr;
+    }
+    cachedTextureHandles[i] = nullptr;
+  }
+
+  if (cachedD3D11Fence) {
+    cachedD3D11Fence->Release();
+    cachedD3D11Fence = nullptr;
+  }
+  cachedFenceHandle = nullptr;
+  cachedSourcePid = 0;
+
+  for (int i = 0; i < 8; i++) {
+    if (sharedCaptureTextures[i]) {
+      sharedCaptureTextures[i]->Release();
+      sharedCaptureTextures[i] = nullptr;
+    }
+    if (sharedCaptureHandles[i]) {
+      CloseHandle(sharedCaptureHandles[i]);
+      sharedCaptureHandles[i] = nullptr;
+    }
+  }
+  if (sharedCaptureFence) {
+    sharedCaptureFence->Release();
+    sharedCaptureFence = nullptr;
+  }
+  if (sharedCaptureFenceHandle) {
+    CloseHandle(sharedCaptureFenceHandle);
+    sharedCaptureFenceHandle = nullptr;
+  }
+  sharedCaptureTexturesCreated = false;
+
+  if (bgraStagingTexture) {
+    bgraStagingTexture->Release();
+    bgraStagingTexture = nullptr;
+  }
+
+  CleanupVideoProcessor();
+  CleanupCursorCache();
+#ifdef HAS_CUDA
+  CleanupCuda();
+#endif
+
+  initDone = false;
+  fileOpened = false;
+  startPts = -1;
+  inputFrameCount = 0;
+  outputFrameCount = 0;
+  skippedFrameCount = 0;
+  duplicatedFrameCount = 0;
+  encodeFrameCounter = 0;
+  lastLogFrameCount = 0;
+  nextOutputTime_ms = -1;
+  lastEncodeTimeUs = 0;
+  lastFenceWaitUs = 0;
+}
+
 void VideoEncoder::Stop() {
   bool wasRecording = recordingRequested;
   recordingRequested = false;
@@ -2067,89 +2177,7 @@ void VideoEncoder::Stop() {
       fileOpened = false;
   }
 
-  // --- FULL RESOURCE CLEANUP ---
-  if (stream) stream = nullptr;
-  if (fmtCtx) {
-    avformat_free_context(fmtCtx);
-    fmtCtx = nullptr;
-  }
-  if (codecCtx) {
-    avcodec_free_context(&codecCtx);
-    codecCtx = nullptr;
-  }
-
-  if (d3d11Context) {
-    d3d11Context->Release();
-    d3d11Context = nullptr;
-  }
-  if (d3d11Device) {
-    d3d11Device->Release();
-    d3d11Device = nullptr;
-  }
-  
-  if (d3d11DeviceCtx) av_buffer_unref(&d3d11DeviceCtx);
-  if (d3d11FramesCtx) av_buffer_unref(&d3d11FramesCtx);
-
-  // Clean up unused members
-  if (cudaDeviceCtx) av_buffer_unref(&cudaDeviceCtx);
-  if (cudaFramesCtx) av_buffer_unref(&cudaFramesCtx);
-  if (hwDeviceCtx) av_buffer_unref(&hwDeviceCtx);
-  if (hwFramesCtx) av_buffer_unref(&hwFramesCtx);
-
-  // Clean up cached shared textures (Quad-buffering)
-  for (int i = 0; i < 8; i++) { // Using 8 as per header
-    if (cachedSharedTextures[i]) {
-      cachedSharedTextures[i]->Release();
-      cachedSharedTextures[i] = nullptr;
-    }
-    cachedTextureHandles[i] = nullptr;
-  }
-  
-  if (cachedD3D11Fence) {
-    cachedD3D11Fence->Release();
-    cachedD3D11Fence = nullptr;
-  }
-  cachedFenceHandle = nullptr;
-  cachedSourcePid = 0;
-
-  // Cleanup shared capture textures
-  for (int i = 0; i < 8; i++) {
-    if (sharedCaptureTextures[i]) {
-      sharedCaptureTextures[i]->Release();
-      sharedCaptureTextures[i] = nullptr;
-    }
-    sharedCaptureHandles[i] = nullptr;
-  }
-  if (sharedCaptureFence) {
-      sharedCaptureFence->Release();
-      sharedCaptureFence = nullptr;
-  }
-  sharedCaptureFenceHandle = nullptr;
-  sharedCaptureTexturesCreated = false;
-
-  if (bgraStagingTexture) {
-      bgraStagingTexture->Release();
-      bgraStagingTexture = nullptr;
-  }
-
-  CleanupVideoProcessor();
-  CleanupCursorCache();
-#ifdef HAS_CUDA
-  CleanupCuda();
-#endif
-  initDone = false;
-  fileOpened = false;
-  startPts = -1;
-  inputFrameCount = 0;
-  outputFrameCount = 0;
-  skippedFrameCount = 0;
-  duplicatedFrameCount = 0;
-  encodeFrameCounter = 0;
-  lastLogFrameCount = 0;
-  nextOutputTime_ms = -1;
-  lastEncodeTimeUs = 0;
-  lastFenceWaitUs = 0;
-  currentQueueBytes = 0;
+  CleanupResources();
 }
 
 // ============================================================================
@@ -3180,6 +3208,13 @@ void VideoEncoder::AsyncWriteLoop() {
             fileOpened = false;
             DLL_Log("[VideoEncoder] Async Finalize: Output file closed.");
         }
+
+        // IMPORTANT: we still hold queueMutex (lock) here.
+        // CleanupResources() also locks queueMutex to drain packetQueue.
+        // Unlock first to avoid self-deadlock during finalize.
+        lock.unlock();
+
+        CleanupResources();
         
         isStopping = false;
         writerRunning = false;
