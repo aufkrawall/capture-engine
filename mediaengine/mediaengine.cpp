@@ -1254,18 +1254,8 @@ private:
                          if (diff > 5) { 
                              // Audio is Late - Insert Silence Padding
                              // e.g. AppAudioCapture started 500ms after Video
-                             int samples = (int)(diff * 48); // 48 samples/ms
-                             // Stereo (2 channels)
-                             size_t freeFloats = src.ringBuffer->GetFree();
-                             int maxSamples = (int)(freeFloats / 2);
-                             if (samples > maxSamples) samples = maxSamples;
-                             if (samples > 0) {
-                               std::vector<float> silence(samples * 2, 0.0f);
-                               src.ringBuffer->Write(silence.data(), silence.size());
-                               DLL_Log("[AudioLoop] Sync: Inserting %d samples (%lld ms) padding for src %d (Late Start)", samples, diff, (int)srcIdx);
-                             }
                          } 
-                     }
+                      }
                      
                      sourceTimestamps[srcIdx] = packet.timestamp;
                      size_t written = src.ringBuffer->Write((float*)resampledData[0], numFloats);
