@@ -1156,6 +1156,14 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
   g_SharedOverlay.RenderUI();
   g_SharedOverlay.EndFrame();
 
+  {
+    static int overlayStateLogCounter = 0;
+    const auto drawRes = g_SharedOverlay.GetLastDrawResult();
+    if (drawRes != Overlay::DrawResult::Drawn || (overlayStateLogCounter++ % 300 == 0)) {
+      EarlyLog("DX11: Overlay state: %s (HWND=%p)", g_SharedOverlay.GetLastDrawReason(), currentHwnd);
+    }
+  }
+
   // Use cached device/context - some games have broken GetImmediateContext on re-acquire
   if (!g_mainRenderTargetView || pSwapChain != lastSwapChain) {
     if (g_mainRenderTargetView) {
@@ -1179,13 +1187,6 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
     }
     lastSwapChain = pSwapChain;
     EarlyLog("%s: RTV created OK", g_DetectedAPI);
-  }
-
-  // DEBUG: Clear to pink every 120 frames to see if we are drawing on the right window
-  if (frameCount % 120 == 0) {
-      float pink[4] = { 1.0f, 0.0f, 1.0f, 1.0f }; // Magenta/Pink
-      g_pd3dDeviceContext->ClearRenderTargetView(g_mainRenderTargetView, pink);
-      EarlyLog("DX11: Cleared screen to PINK for frame %d on SC %p", frameCount, pSwapChain);
   }
 
   g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, NULL);
@@ -2240,6 +2241,45 @@ void DX11Hook::Init() {
               }
               tempDevice->Release();
           }
+      }
+  }
+
+  // If D3D10 isn't loaded (common for pure DX11 apps), still force install the Present hook
+  // by creating a dummy D3D11 device+swapchain via the original D3D11CreateDeviceAndSwapChain.
+  if (hD3D11 && oD3D11CreateDeviceAndSwapChain) {
+      HWND tempHwnd = CreateWindowExA(0, "STATIC", "TempD3D11", WS_OVERLAPPEDWINDOW,
+                                      0, 0, 100, 100, NULL, NULL, GetModuleHandle(NULL), NULL);
+      if (tempHwnd) {
+          DXGI_SWAP_CHAIN_DESC scd = {};
+          scd.BufferCount = 1;
+          scd.BufferDesc.Width = 100;
+          scd.BufferDesc.Height = 100;
+          scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+          scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+          scd.OutputWindow = tempHwnd;
+          scd.SampleDesc.Count = 1;
+          scd.Windowed = TRUE;
+          scd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+
+          D3D_FEATURE_LEVEL flOut = D3D_FEATURE_LEVEL_11_0;
+          D3D_FEATURE_LEVEL flReq[] = {D3D_FEATURE_LEVEL_11_0};
+          ID3D11Device* dev = nullptr;
+          ID3D11DeviceContext* ctx = nullptr;
+          IDXGISwapChain* sc = nullptr;
+
+          HRESULT hr = oD3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+                                                      D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                                                      flReq, 1, D3D11_SDK_VERSION,
+                                                      &scd, &sc, &dev, &flOut, &ctx);
+          if (SUCCEEDED(hr) && sc) {
+              InstallVTableHooks(dev, ctx, sc);
+              HookLog("DX11: Temp D3D11 swapchain created to install vtable hooks");
+          }
+
+          if (sc) sc->Release();
+          if (ctx) ctx->Release();
+          if (dev) dev->Release();
+          DestroyWindow(tempHwnd);
       }
   }
 }

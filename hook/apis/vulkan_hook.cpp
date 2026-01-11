@@ -2167,16 +2167,6 @@ typedef VkResult(VKAPI_PTR *PFN_vkQueueSubmit)(VkQueue queue, uint32_t submitCou
 typedef void(VKAPI_PTR *PFN_vkDestroySwapchainKHR)(
     VkDevice device, VkSwapchainKHR swapchain,
     const VkAllocationCallbacks *pAllocator);
-typedef VkResult(VKAPI_PTR *PFN_vkCreateWin32SurfaceKHR)(
-    VkInstance instance, const VkWin32SurfaceCreateInfoKHR *pCreateInfo,
-    const VkAllocationCallbacks *pAllocator, VkSurfaceKHR *pSurface);
-typedef PFN_vkVoidFunction(VKAPI_PTR *PFN_vkGetInstanceProcAddr)(
-    VkInstance instance, const char *pName);
-typedef PFN_vkVoidFunction(VKAPI_PTR *PFN_vkGetDeviceProcAddr)(
-    VkDevice device, const char *pName);
-typedef VkResult (VKAPI_PTR *PFN_vkCreateGraphicsPipelines)(VkDevice, VkPipelineCache, uint32_t, const VkGraphicsPipelineCreateInfo*, const VkAllocationCallbacks*, VkPipeline*);
-typedef VkResult (VKAPI_PTR *PFN_vkCreateSampler)(VkDevice, const VkSamplerCreateInfo*, const VkAllocationCallbacks*, VkSampler*);
-
 static PFN_vkCreateInstance o_vkCreateInstance = nullptr;
 static PFN_vkCreateDevice o_vkCreateDevice = nullptr;
 static PFN_vkGetDeviceQueue o_vkGetDeviceQueue = nullptr;
@@ -2651,7 +2641,7 @@ VkResult VKAPI_CALL Detour_vkCreateDevice(
   if (res == VK_SUCCESS) {
     g_PhysDevice = physicalDevice;
     g_Device = *pDevice;
-    // volkLoadDevice(g_Device); // REMOVED to prevent global pointer hijacking in multi-device scenarios
+    volkLoadDevice(g_Device);
     HookLog("Vulkan: Device Created (with injected queue & interop extensions)");
     
     // Initialize SystemMetricsCollector with adapter LUID for GPU stats
@@ -2844,6 +2834,9 @@ VkResult VKAPI_CALL Detour_vkAcquireNextImageKHR(
   return o_vkAcquireNextImageKHR(device, swapchain, timeout, semaphore, fence,
                                  pImageIndex);
 }
+
+PFN_vkVoidFunction VKAPI_CALL Detour_vkGetDeviceProcAddr(VkDevice device,
+                                                        const char *pName);
 
 void VKAPI_CALL
 Detour_vkDestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain,
@@ -3118,6 +3111,11 @@ static void InitImGuiVulkan(VkQueue queue) {
 
   HookLog("Vulkan: Initializing ImGui...");
 
+  // Ensure volk has device-level function pointers.
+  // With VK_NO_PROTOTYPES builds, ImGui Vulkan backend relies on vk* symbols
+  // being populated by volk.
+  volkLoadDevice(g_Device);
+
   // Descriptor Pool
   VkDescriptorPoolSize pool_sizes[] = {
       {VK_DESCRIPTOR_TYPE_SAMPLER, 1000},
@@ -3157,6 +3155,16 @@ static void InitImGuiVulkan(VkQueue queue) {
   init_info.Allocator = nullptr;
   init_info.CheckVkResultFn = nullptr;
   init_info.RenderPass = g_RenderPass;
+
+  // Load functions for VK_NO_PROTOTYPES builds to avoid assertion/crash.
+  // imgui_impl_vulkan.cpp expects g_FunctionsLoaded=true.
+  ImGui_ImplVulkan_LoadFunctions(
+      [](const char* name, void*) -> PFN_vkVoidFunction {
+        if (g_Device == VK_NULL_HANDLE) return nullptr;
+        if (o_vkGetDeviceProcAddr) return o_vkGetDeviceProcAddr(g_Device, name);
+        return vkGetDeviceProcAddr(g_Device, name);
+      },
+      nullptr);
 
   ImGui_ImplVulkan_Init(&init_info);
   ImGui_ImplVulkan_CreateFontsTexture();
@@ -3828,6 +3836,7 @@ PFN_vkVoidFunction VKAPI_CALL Detour_vkGetInstanceProcAddr(VkInstance instance,
   if (instance != VK_NULL_HANDLE && g_Instance == VK_NULL_HANDLE) {
       g_Instance = instance;
       HookLog("Vulkan: Recovered instance handle from vkGetInstanceProcAddr");
+      volkLoadInstance(g_Instance);
   }
 
   if (strcmp(pName, "vkCreateInstance") == 0)
@@ -3840,15 +3849,46 @@ PFN_vkVoidFunction VKAPI_CALL Detour_vkGetInstanceProcAddr(VkInstance instance,
     return (PFN_vkVoidFunction)Detour_vkCreateWin32SurfaceKHR;
   if (strcmp(pName, "vkGetInstanceProcAddr") == 0)
     return (PFN_vkVoidFunction)Detour_vkGetInstanceProcAddr;
+  if (strcmp(pName, "vkGetDeviceProcAddr") == 0)
+    return (PFN_vkVoidFunction)Detour_vkGetDeviceProcAddr;
   
   // Also handle common device/extension functions in InstanceProcAddr 
   // as some games resolve everything through it.
   if (strcmp(pName, "vkCreateSwapchainKHR") == 0)
+  {
+    o_vkCreateSwapchainKHR = (PFN_vkCreateSwapchainKHR)res;
     return (PFN_vkVoidFunction)Detour_vkCreateSwapchainKHR;
+  }
+  if (strcmp(pName, "vkGetSwapchainImagesKHR") == 0)
+  {
+    o_vkGetSwapchainImagesKHR = (PFN_vkGetSwapchainImagesKHR)res;
+    return (PFN_vkVoidFunction)Detour_vkGetSwapchainImagesKHR;
+  }
   if (strcmp(pName, "vkGetDeviceQueue") == 0)
+  {
+    o_vkGetDeviceQueue = (PFN_vkGetDeviceQueue)res;
     return (PFN_vkVoidFunction)Detour_vkGetDeviceQueue;
+  }
+  if (strcmp(pName, "vkAcquireNextImageKHR") == 0)
+  {
+    o_vkAcquireNextImageKHR = (PFN_vkAcquireNextImageKHR)res;
+    return (PFN_vkVoidFunction)Detour_vkAcquireNextImageKHR;
+  }
+  if (strcmp(pName, "vkDestroySwapchainKHR") == 0)
+  {
+    o_vkDestroySwapchainKHR = (PFN_vkDestroySwapchainKHR)res;
+    return (PFN_vkVoidFunction)Detour_vkDestroySwapchainKHR;
+  }
   if (strcmp(pName, "vkQueuePresentKHR") == 0)
+  {
+    o_vkQueuePresentKHR = (PFN_vkQueuePresentKHR)res;
     return (PFN_vkVoidFunction)Detour_vkQueuePresentKHR;
+  }
+  if (strcmp(pName, "vkQueueSubmit") == 0)
+  {
+    o_vkQueueSubmit = (PFN_vkQueueSubmit)res;
+    return (PFN_vkVoidFunction)Detour_vkQueueSubmit;
+  }
 
   return res;
 }
@@ -3863,6 +3903,7 @@ PFN_vkVoidFunction VKAPI_CALL Detour_vkGetDeviceProcAddr(VkDevice device,
   if (g_Device == VK_NULL_HANDLE && device != VK_NULL_HANDLE) {
       g_Device = device;
       HookLog("Vulkan: Recovered device handle from vkGetDeviceProcAddr");
+      volkLoadDevice(g_Device);
   }
 
   if (strcmp(pName, "vkGetDeviceQueue") == 0) {
@@ -3872,6 +3913,14 @@ PFN_vkVoidFunction VKAPI_CALL Detour_vkGetDeviceProcAddr(VkDevice device,
   if (strcmp(pName, "vkGetDeviceQueue2") == 0) {
     o_vkGetDeviceQueue2 = (PFN_vkGetDeviceQueue2)res;
     return (PFN_vkVoidFunction)Detour_vkGetDeviceQueue2;
+  }
+  if (strcmp(pName, "vkAcquireNextImageKHR") == 0) {
+    o_vkAcquireNextImageKHR = (PFN_vkAcquireNextImageKHR)res;
+    return (PFN_vkVoidFunction)Detour_vkAcquireNextImageKHR;
+  }
+  if (strcmp(pName, "vkDestroySwapchainKHR") == 0) {
+    o_vkDestroySwapchainKHR = (PFN_vkDestroySwapchainKHR)res;
+    return (PFN_vkVoidFunction)Detour_vkDestroySwapchainKHR;
   }
   if (strcmp(pName, "vkCreateSwapchainKHR") == 0) {
     o_vkCreateSwapchainKHR = (PFN_vkCreateSwapchainKHR)res;
@@ -3946,37 +3995,19 @@ void VulkanHook::Init() {
     }
   };
 
+  // IMPORTANT: Hook as little as possible via vulkan-1.dll exports.
+  // Some exports are forwarded/stubs and MinHook patching can crash (observed for vkAcquireNextImageKHR).
+  // We rely on vkGetInstanceProcAddr/vkGetDeviceProcAddr to detour most functions.
+  CreateHook("vkGetInstanceProcAddr", (void *)&Detour_vkGetInstanceProcAddr,
+             (void **)&o_vkGetInstanceProcAddr);
+  CreateHook("vkGetDeviceProcAddr", (void *)&Detour_vkGetDeviceProcAddr,
+             (void **)&o_vkGetDeviceProcAddr);
   CreateHook("vkCreateInstance", (void *)&Detour_vkCreateInstance,
              (void **)&o_vkCreateInstance);
   CreateHook("vkCreateDevice", (void *)&Detour_vkCreateDevice,
              (void **)&o_vkCreateDevice);
   CreateHook("vkCreateWin32SurfaceKHR", (void *)&Detour_vkCreateWin32SurfaceKHR,
              (void **)&o_vkCreateWin32SurfaceKHR);
-  
-  // Capture-critical functions that might be called directly or via ProcAddr
-  CreateHook("vkCreateSampler", (void *)&Detour_vkCreateSampler,
-             (void **)&o_vkCreateSampler);
-  CreateHook("vkCreateSwapchainKHR", (void *)&Detour_vkCreateSwapchainKHR,
-             (void **)&o_vkCreateSwapchainKHR);
-  CreateHook("vkGetDeviceQueue", (void *)&Detour_vkGetDeviceQueue,
-             (void **)&o_vkGetDeviceQueue);
-  CreateHook("vkGetDeviceQueue2", (void *)&Detour_vkGetDeviceQueue2,
-             (void **)&o_vkGetDeviceQueue2);
-
-  // Device-level functions are hooked via vkGetDeviceProcAddr interception.
-  // We don't need to call CreateHook for them here.
-  CreateHook("vkAcquireNextImageKHR", (void *)&Detour_vkAcquireNextImageKHR,
-             (void **)&o_vkAcquireNextImageKHR);
-  CreateHook("vkDestroySwapchainKHR", (void *)&Detour_vkDestroySwapchainKHR,
-             (void **)&o_vkDestroySwapchainKHR);
-  CreateHook("vkQueuePresentKHR", (void *)&Detour_vkQueuePresentKHR,
-             (void **)&o_vkQueuePresentKHR);
-  CreateHook("vkQueueSubmit", (void *)&Detour_vkQueueSubmit,
-             (void **)&o_vkQueueSubmit);
-  CreateHook("vkGetInstanceProcAddr", (void *)&Detour_vkGetInstanceProcAddr,
-             (void **)&o_vkGetInstanceProcAddr);
-  CreateHook("vkGetDeviceProcAddr", (void *)&Detour_vkGetDeviceProcAddr,
-             (void **)&o_vkGetDeviceProcAddr);
 }
 
 void VulkanHook::Shutdown() {

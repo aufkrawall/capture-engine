@@ -402,7 +402,11 @@ void CheckAndInstallHooks() {
         EarlyLog("DX12 hooks installed");
     }
 
-    if (!g_DX11Hook && (GetModuleHandleA("d3d11.dll") || GetModuleHandleA("d3d10.dll") || GetModuleHandleA("d3d10_1.dll"))) {
+    // IMPORTANT: Don't install DX11 hooks in DX12 processes.
+    // Our hook DLL links against D3D11, so d3d11.dll may be loaded even for DX12 apps.
+    // Installing DX11 Present hooks can interfere with DX12 swapchains and crash.
+    if (!g_DX11Hook && !GetModuleHandleA("d3d12.dll") &&
+        (GetModuleHandleA("d3d11.dll") || GetModuleHandleA("d3d10.dll") || GetModuleHandleA("d3d10_1.dll"))) {
         HookLog("Detected D3D10/11. Installing hooks...");
         g_DX11Hook = new DX11Hook();
         g_DX11Hook->Init();

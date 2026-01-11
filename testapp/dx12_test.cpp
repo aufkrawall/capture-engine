@@ -11,6 +11,7 @@
 #define _WIN32_WINNT 0x0A00
 #include <DirectXMath.h>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <d3d12.h>
@@ -184,7 +185,7 @@ bool InitDX12(HWND hwnd) {
 void Render() {
   auto now = std::chrono::high_resolution_clock::now();
   float elapsed = std::chrono::duration<float>(now - g_StartTime).count();
-  g_BarPosition = fmodf(elapsed * 0.5f, 1.0f);
+  g_BarPosition = (float)std::fmod((double)(elapsed * 0.5f), 1.0);
 
   g_CommandAllocators[g_FrameIndex]->Reset();
   g_CommandList->Reset(g_CommandAllocators[g_FrameIndex].Get(), nullptr);

@@ -108,15 +108,32 @@ void Overlay::RenderTextWithOutline(const char* text, ImU32 color, bool outline,
 }
 
 void Overlay::RenderUI() {
-    if (!initialized || !context) return;
+    lastDrawResult = DrawResult::Unknown;
+    if (!initialized) {
+        lastDrawResult = DrawResult::SkippedNotInitialized;
+        return;
+    }
+    if (!context) {
+        lastDrawResult = DrawResult::SkippedNoContext;
+        return;
+    }
     ImGui::SetCurrentContext(context);
-    if (hwnd && IsWindow((HWND)hwnd) && !IsWindowVisible((HWND)hwnd)) return;
-    if (!ipc || !ipc->GetSharedMem()) return;
+    if (hwnd && IsWindow((HWND)hwnd) && !IsWindowVisible((HWND)hwnd)) {
+        lastDrawResult = DrawResult::SkippedWindowHidden;
+        return;
+    }
+    if (!ipc || !ipc->GetSharedMem()) {
+        lastDrawResult = DrawResult::SkippedNoIPC;
+        return;
+    }
 
     auto& mem = *ipc->GetSharedMem();
     const auto& cfg = mem.overlayConfig;
 
-    if (!cfg.showOverlay) return;
+    if (!cfg.showOverlay) {
+        lastDrawResult = DrawResult::SkippedShowDisabled;
+        return;
+    }
 
     // Update Throttling
     DWORD now = GetTickCount();
@@ -386,4 +403,6 @@ void Overlay::RenderUI() {
 
     ImGui::PopStyleVar(3); // Rounding + CellPadding + ItemSpacing
     ImGui::PopStyleColor(2); // WinBg, Border
+
+    lastDrawResult = DrawResult::Drawn;
 }

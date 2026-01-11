@@ -870,6 +870,15 @@ def compile_testapps(env, clang_exe, cflags):
     testapp_src_dir = os.path.join(PROJECT_ROOT, "testapp")
     testapp_bin_dir = os.path.join(testapp_src_dir, "bin")
     os.makedirs(testapp_bin_dir, exist_ok=True)
+
+    # Optional: also build 32-bit variants if 32-bit toolchain is available.
+    x86_bin_dir = os.path.join(testapp_bin_dir, "x86")
+    os.makedirs(x86_bin_dir, exist_ok=True)
+    clang_exe_x86 = os.path.join(MSYS2_DIR, 'mingw32', 'bin', 'clang++.exe')
+    have_x86 = os.path.exists(clang_exe_x86)
+    # NOTE: mingw32 clang toolchain can't reliably link LTO bitcode in our setup.
+    # Build x86 test apps without -flto.
+    cflags_x86 = [f for f in cflags if f != "-flto"]
     
     # DX12 Test App
     dx12_src = os.path.join(testapp_src_dir, "dx12_test.cpp")
@@ -881,6 +890,13 @@ def compile_testapps(env, clang_exe, cflags):
         cmd = [clang_exe] + cflags + [dx12_src] + dx12_ldflags + ["-o", dx12_exe]
         run_command(cmd, env=env)
         log(f"Built: {dx12_exe}")
+
+        if have_x86:
+            log("Compiling dx12_test.exe (x86)...")
+            dx12_exe_x86 = os.path.join(x86_bin_dir, "dx12_test.exe")
+            cmd = [clang_exe_x86] + cflags_x86 + [dx12_src] + dx12_ldflags + ["-o", dx12_exe_x86]
+            run_command(cmd, env=env)
+            log(f"Built: {dx12_exe_x86}")
     
     # DX11 Test App
     dx11_src = os.path.join(testapp_src_dir, "dx11_test.cpp")
@@ -893,6 +909,13 @@ def compile_testapps(env, clang_exe, cflags):
         run_command(cmd, env=env)
         log(f"Built: {dx11_exe}")
 
+        if have_x86:
+            log("Compiling dx11_test.exe (x86)...")
+            dx11_exe_x86 = os.path.join(x86_bin_dir, "dx11_test.exe")
+            cmd = [clang_exe_x86] + cflags_x86 + [dx11_src] + dx11_ldflags + ["-o", dx11_exe_x86]
+            run_command(cmd, env=env)
+            log(f"Built: {dx11_exe_x86}")
+
     # DX9 Test App
     dx9_src = os.path.join(testapp_src_dir, "dx9_test.cpp")
     dx9_exe = os.path.join(testapp_bin_dir, "dx9_test.exe")
@@ -903,6 +926,13 @@ def compile_testapps(env, clang_exe, cflags):
         cmd = [clang_exe] + cflags + [dx9_src] + dx9_ldflags + ["-o", dx9_exe]
         run_command(cmd, env=env)
         log(f"Built: {dx9_exe}")
+
+        if have_x86:
+            log("Compiling dx9_test.exe (x86)...")
+            dx9_exe_x86 = os.path.join(x86_bin_dir, "dx9_test.exe")
+            cmd = [clang_exe_x86] + cflags_x86 + [dx9_src] + dx9_ldflags + ["-o", dx9_exe_x86]
+            run_command(cmd, env=env)
+            log(f"Built: {dx9_exe_x86}")
 
     # Vulkan Test App
     vulkan_src = os.path.join(testapp_src_dir, "vulkan_test.cpp")
@@ -915,6 +945,16 @@ def compile_testapps(env, clang_exe, cflags):
         cmd = [clang_exe] + cflags + [vulkan_src] + vulkan_ldflags + ["-o", vulkan_exe]
         run_command(cmd, env=env)
         log(f"Built: {vulkan_exe}")
+
+        if have_x86:
+            log("Compiling vulkan_test.exe (x86)...")
+            vulkan_exe_x86 = os.path.join(x86_bin_dir, "vulkan_test.exe")
+            vulkan_lib_x86 = os.path.join(MSYS2_DIR, 'mingw32', 'lib', 'libvulkan-1.dll.a')
+            vulkan_ldflags_x86 = ["-static", "-static-libgcc", "-static-libstdc++",
+                                  vulkan_lib_x86, "-lgdi32", "-luser32", "-lshcore"]
+            cmd = [clang_exe_x86] + cflags_x86 + [vulkan_src] + vulkan_ldflags_x86 + ["-o", vulkan_exe_x86]
+            run_command(cmd, env=env)
+            log(f"Built: {vulkan_exe_x86}")
 
 def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
     ensure_dirs()

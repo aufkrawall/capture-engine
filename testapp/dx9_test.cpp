@@ -1,6 +1,7 @@
 // DX9 Test App for Capture + FPS Limiter Testing
 #define WIN32_LEAN_AND_MEAN
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <d3d9.h>
@@ -55,7 +56,7 @@ void Render() {
     if (!g_pd3dDevice) return;
     auto now = std::chrono::high_resolution_clock::now();
     float elapsed = std::chrono::duration<float>(now - g_StartTime).count();
-    g_BarPosition = fmodf(elapsed * 0.5f, 1.0f);
+    g_BarPosition = (float)std::fmod((double)(elapsed * 0.5f), 1.0);
 
     g_pd3dDevice->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_XRGB(25, 25, 25), 1.0f, 0);
     if (SUCCEEDED(g_pd3dDevice->BeginScene())) {

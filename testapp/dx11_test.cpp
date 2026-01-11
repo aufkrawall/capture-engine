@@ -3,9 +3,11 @@
 #define WINVER 0x0A00
 #define _WIN32_WINNT 0x0A00
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <d3d11.h>
+#include <d3d11_1.h>
 #include <dxgi.h>
 #include <shellscalingapi.h>
 #include <windows.h>
@@ -41,6 +43,7 @@ void LoadConfig() {
 const wchar_t* WINDOW_CLASS = L"CaptureTestDX11";
 ComPtr<ID3D11Device> g_Device;
 ComPtr<ID3D11DeviceContext> g_Context;
+ComPtr<ID3D11DeviceContext1> g_Context1;
 ComPtr<IDXGISwapChain> g_SwapChain;
 ComPtr<ID3D11RenderTargetView> g_Rtv;
 
@@ -69,9 +72,13 @@ bool InitDX11(HWND hwnd) {
     sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
 
     D3D_FEATURE_LEVEL featureLevels[] = { D3D_FEATURE_LEVEL_11_0 };
-    if (FAILED(D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, featureLevels, 1, D3D11_SDK_VERSION, &sd, &g_SwapChain, &g_Device, nullptr, &g_Context))) {
+    UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+    if (FAILED(D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, featureLevels, 1, D3D11_SDK_VERSION, &sd, &g_SwapChain, &g_Device, nullptr, &g_Context))) {
         return false;
     }
+
+    // Optional: Use D3D11.1 ClearView to clear a sub-rect (needed for moving bar)
+    g_Context.As(&g_Context1);
 
     ComPtr<ID3D11Texture2D> backBuffer;
     g_SwapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer));
@@ -82,7 +89,10 @@ bool InitDX11(HWND hwnd) {
 void Render() {
     auto now = std::chrono::high_resolution_clock::now();
     float elapsed = std::chrono::duration<float>(now - g_StartTime).count();
-    g_BarPosition = fmodf(elapsed * 0.5f, 1.0f);
+    g_BarPosition = (float)std::fmod((double)(elapsed * 0.5f), 1.0);
+
+    ID3D11RenderTargetView* rtvs[] = { g_Rtv.Get() };
+    g_Context->OMSetRenderTargets(1, rtvs, nullptr);
 
     float clearColor[] = { 0.1f, 0.1f, 0.1f, 1.0f };
     g_Context->ClearRenderTargetView(g_Rtv.Get(), clearColor);
@@ -94,20 +104,16 @@ void Render() {
     }
     g_Context->ClearRenderTargetView(g_Rtv.Get(), clearColor);
 
-    // Draw Bar (as a viewport/scissor or just clear subset if we had d3d11_1)
-    // For simplicity in minimal test app, we use ClearView if available or just viewport
     D3D11_RECT rect = { (LONG)(g_BarPosition * (g_WindowWidth - 100)), g_WindowHeight / 2 - 50, (LONG)(g_BarPosition * (g_WindowWidth - 100) + 100), g_WindowHeight / 2 + 50 };
-    // Minimal D3D11 doesn't have ClearView, so we'd need a shader or just use a Scissor
-    // But let's keep it simple: just clearing the whole screen is enough for capture testing.
-    // If we want a moving bar, we can use a viewport.
-    D3D11_VIEWPORT vp = { (float)rect.left, (float)rect.top, 100.0f, 100.0f, 0.0f, 1.0f };
-    g_Context->RSSetViewports(1, &vp);
     float barColor[] = { 1.0f, 1.0f, 1.0f, 1.0f };
-    g_Context->ClearRenderTargetView(g_Rtv.Get(), barColor);
-    
-    // Reset viewport
-    D3D11_VIEWPORT fullVp = { 0, 0, (float)g_WindowWidth, (float)g_WindowHeight, 0.0f, 1.0f };
-    g_Context->RSSetViewports(1, &fullVp);
+    if (g_Context1) {
+        // Clear only the rectangle region (this creates the visible moving bar)
+        g_Context1->ClearView(g_Rtv.Get(), barColor, &rect, 1);
+    } else {
+        // Fallback: without ClearView we can't clear sub-rects with ClearRenderTargetView.
+        // Keep a full-screen clear so the app still displays something.
+        g_Context->ClearRenderTargetView(g_Rtv.Get(), barColor);
+    }
 
     g_SwapChain->Present(g_VSync, 0);
 }

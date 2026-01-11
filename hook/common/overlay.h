@@ -12,6 +12,16 @@
 // Each graphics API calls RenderUI() after setting up ImGui frame
 class Overlay {
 public:
+  enum class DrawResult {
+    Unknown = 0,
+    Drawn,
+    SkippedNotInitialized,
+    SkippedNoContext,
+    SkippedWindowHidden,
+    SkippedNoIPC,
+    SkippedShowDisabled,
+  };
+
   void SetMetrics(PerformanceMetrics *m) { metrics = m; }
   void SetIPCClient(IPCClient *ipc) { this->ipc = ipc; }
   void SetHwnd(void *hwnd) { this->hwnd = hwnd; }
@@ -41,6 +51,19 @@ public:
 
   // Render overlay UI widgets (call between BeginFrame and EndFrame)
   void RenderUI();
+
+  DrawResult GetLastDrawResult() const { return lastDrawResult; }
+  const char* GetLastDrawReason() const {
+    switch (lastDrawResult) {
+    case DrawResult::Drawn: return "drawn";
+    case DrawResult::SkippedNotInitialized: return "not_initialized";
+    case DrawResult::SkippedNoContext: return "no_context";
+    case DrawResult::SkippedWindowHidden: return "window_hidden";
+    case DrawResult::SkippedNoIPC: return "no_ipc";
+    case DrawResult::SkippedShowDisabled: return "show_disabled";
+    default: return "unknown";
+    }
+  }
   
   // Set dropped frames count from capture side (called by capture hooks)
   void SetDroppedFrames(uint32_t count) { localDroppedFrames = count; }
@@ -79,6 +102,8 @@ private:
   SystemMetrics cachedMetrics; 
 
   ImFont* mainFont = nullptr;
+
+  DrawResult lastDrawResult = DrawResult::Unknown;
 };
 
 // Global overlay instance (defined in overlay.cpp)

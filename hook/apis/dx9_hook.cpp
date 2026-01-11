@@ -974,6 +974,14 @@ static void DrawDX9Overlay(IDirect3DDevice9 *device) {
     g_SharedOverlay.RenderUI();
     
     g_SharedOverlay.EndFrame();
+
+    {
+        static int overlayStateLogCounter = 0;
+        const auto drawRes = g_SharedOverlay.GetLastDrawResult();
+        if (drawRes != Overlay::DrawResult::Drawn || (overlayStateLogCounter++ % 300 == 0)) {
+            EarlyLog("DX9: Overlay state: %s (HWND=%p)", g_SharedOverlay.GetLastDrawReason(), g_CachedHwnd);
+        }
+    }
     
     if (SUCCEEDED(device->BeginScene())) {
         ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
@@ -1720,8 +1728,6 @@ void DX9Hook::Init() {
     const char* skipReason = nullptr;
     if (GetModuleHandleA("d3d12.dll")) {
         skipReason = "d3d12.dll (DX12 game)";
-    } else if (GetModuleHandleA("d3d11.dll")) {
-        skipReason = "d3d11.dll (DX11 game)";
     } else if (GetModuleHandleA("d3d10.dll") || GetModuleHandleA("d3d10_1.dll")) {
         skipReason = "d3d10.dll (DX10 game)";
     } else if (GetModuleHandleA("vulkan-1.dll")) {
