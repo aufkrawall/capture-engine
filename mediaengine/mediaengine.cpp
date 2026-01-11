@@ -339,6 +339,10 @@ public:
       // NOTE: Don't set recording start time here!
       // We defer this to the first video frame in ProcessFrameD3D11 for perfect A/V sync.
       // Audio data captured before first video frame will be discarded.
+      // IMPORTANT: Prevent ringbuffer from filling/overflowing before first video frame.
+      // We intentionally discard audio until the first video frame establishes the timeline.
+      audioSyncPending.store(true);
+
       // CRITICAL: Reset video clock for new recording to prevent stale timestamps
       firstVideoFrameMs = 0;  // Reset for new recording
       videoElapsedMs.store(0); // CRITICAL: Reset video clock for new recording to prevent stale timestamps
@@ -754,6 +758,25 @@ public:
         
         if (src.syncResampler && src.syncResampler->IsReady()) {
           size_t rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS; // Samples per channel
+
+          // HARD LATENCY CAP: If audio capture runs ahead while video timeline isn't advancing
+          // (e.g. no new frames yet at start), the ring buffer will accumulate and eventually
+          // overflow, dropping early audio and creating "silence bursts" / delayed start.
+          // Keep only a small bounded lead.
+          const int64_t MAX_LEAD_SAMPLES = SAMPLE_RATE / 5; // 200ms
+          if ((int64_t)rbAvailable > TARGET_LATENCY_SAMPLES + MAX_LEAD_SAMPLES) {
+            int64_t dropSamples = (int64_t)rbAvailable - (TARGET_LATENCY_SAMPLES + MAX_LEAD_SAMPLES);
+            if (dropSamples > 0 && src.ringBuffer) {
+              src.ringBuffer->Skip((size_t)dropSamples * CHANNELS);
+              static int dropLogCounter = 0;
+              if (dropLogCounter++ % 100 == 0) {
+                DLL_Log("[PullAudio] Src %d ahead by %lld samples - dropping %lld to cap latency", 
+                        (int)srcIdx, (int64_t)rbAvailable - TARGET_LATENCY_SAMPLES, dropSamples);
+              }
+              rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
+            }
+          }
+
           int64_t rbError = (int64_t)rbAvailable - TARGET_LATENCY_SAMPLES;
           
           // Connect Ring Buffer Error to Drift Compensator
@@ -800,24 +823,47 @@ public:
           }
         }
         
-        // Pull available audio from ring buffer and resample into postResampleBuffer
-        size_t rbFloats = src.ringBuffer->GetAvailable();
-        if (rbFloats > 0 && src.syncResampler && src.syncResampler->IsReady()) {
-          // Read up to 10ms chunks to limit latency
-          size_t chunkFloats = std::min(rbFloats, (size_t)(SAMPLE_RATE / 100 * CHANNELS));
-          std::vector<float> rbData(chunkFloats);
-          size_t actualRead = src.ringBuffer->Read(rbData.data(), chunkFloats);
-          
-          if (actualRead > 0) {
+        // Pull available audio from ring buffer and resample into postResampleBuffer.
+        // IMPORTANT: We must be able to drain more than ~10ms per call.
+        // At recording start, video PTS can jump (e.g. first frames arrive late),
+        // while audio capture threads may have already buffered/synthesized that interval.
+        // If we only drain 10ms, the ring buffer overflows and we drop early audio,
+        // causing the exact "silence / brief sound / silence / delayed" symptom.
+        if (src.syncResampler && src.syncResampler->IsReady()) {
+          const size_t MAX_CHUNK_FLOATS = (size_t)(SAMPLE_RATE * CHANNELS / 10); // 100ms
+          while (src.postResampleBuffer.size() < totalFloats) {
+            size_t rbFloats = src.ringBuffer->GetAvailable();
+            if (rbFloats == 0) {
+              break;
+            }
+
+            size_t needFloats = totalFloats - src.postResampleBuffer.size();
+            size_t chunkFloats = std::min(rbFloats, needFloats);
+            chunkFloats = std::min(chunkFloats, MAX_CHUNK_FLOATS);
+
+            // Keep channel alignment (interleaved stereo)
+            chunkFloats -= (chunkFloats % CHANNELS);
+            if (chunkFloats == 0) {
+              break;
+            }
+
+            std::vector<float> rbData(chunkFloats);
+            size_t actualRead = src.ringBuffer->Read(rbData.data(), chunkFloats);
+            if (actualRead == 0) {
+              break;
+            }
+
             // Resample through syncResampler
             uint8_t **resampledData = nullptr;
             int outSamples = 0;
-            if (src.syncResampler->Process((uint8_t*)rbData.data(), (int)(actualRead * sizeof(float)),
+            if (src.syncResampler->Process((uint8_t *)rbData.data(),
+                                           (int)(actualRead * sizeof(float)),
                                            &resampledData, &outSamples)) {
               if (outSamples > 0 && resampledData && resampledData[0]) {
-                float* outFloats = (float*)resampledData[0];
+                float *outFloats = (float *)resampledData[0];
                 int numFloats = outSamples * CHANNELS;
-                src.postResampleBuffer.insert(src.postResampleBuffer.end(), outFloats, outFloats + numFloats);
+                src.postResampleBuffer.insert(src.postResampleBuffer.end(), outFloats,
+                                              outFloats + numFloats);
                 src.syncSamplesOutput += outSamples;
               }
               AudioResampler::FreeOutputBuffer(resampledData);
