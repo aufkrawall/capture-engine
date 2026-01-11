@@ -1304,6 +1304,11 @@ private:
                       }
                      
                      sourceTimestamps[srcIdx] = packet.timestamp;
+                     size_t freeFloats = src.ringBuffer->GetFree();
+                     if (freeFloats < (size_t)numFloats) {
+                         size_t needDrop = (size_t)numFloats - freeFloats;
+                         src.ringBuffer->Skip(needDrop);
+                     }
                      size_t written = src.ringBuffer->Write((float*)resampledData[0], numFloats);
                      if (written < numFloats) {
                          // Only log overflow occasionally to avoid log spam
@@ -1313,6 +1318,8 @@ private:
                                      (int)srcIdx, numFloats, written);
                          }
                      }
+                 } else if (src.ringBuffer && audioSyncPending.load()) {
+                     sourceTimestamps[srcIdx] = packet.timestamp;
                  } else if (!src.ringBuffer) {
                      DLL_Log("[AudioLoop] ERROR: No RingBuffer for source %d", (int)srcIdx);
                  }
