@@ -24,6 +24,8 @@ licenses*
 *.txt
 
 # Build logs
+build_log.txt
+
 
 # IDE and temporary files
 .vs/
