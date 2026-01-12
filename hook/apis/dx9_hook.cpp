@@ -21,6 +21,10 @@
 #include <vector>
 #include <thread>
 
+#ifndef D3DPRESENT_FORCEIMMEDIATE
+#define D3DPRESENT_FORCEIMMEDIATE 0x00000100L
+#endif
+
 // Function pointer typedefs for hooked functions
 typedef HRESULT(STDMETHODCALLTYPE *Present_t)(IDirect3DDevice9*, CONST RECT*, CONST RECT*, HWND, CONST RGNDATA*);
 typedef HRESULT(STDMETHODCALLTYPE *PresentEx_t)(IDirect3DDevice9Ex*, CONST RECT*, CONST RECT*, HWND, CONST RGNDATA*, DWORD);
@@ -51,6 +55,235 @@ static thread_local int g_PresentRecurse = 0;  // Prevent recursive Present call
 static std::atomic<int> g_MaxMSAASamples{0}; // Tracks highest MSAA target seen
 static GraphicsConfig g_FrameConfig; // Frame-local config cache for performance
 static int64_t g_LastSleepUs = 0;
+static bool g_WindowedPresent = true;
+
+typedef HRESULT (WINAPI *DwmFlush_t)();
+static DwmFlush_t g_DwmFlush = nullptr;
+static int g_RefreshHzCached = 0;
+static DWORD g_RefreshHzLastTick = 0;
+static int64_t g_QpcFreqCached = 0;
+static thread_local int64_t g_LastPacedQpc = 0;
+static thread_local HANDLE g_PaceTimer = nullptr;
+
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+
+static void EnsureDwmFlushLoaded() {
+    if (g_DwmFlush) return;
+    HMODULE hDwm = GetModuleHandleA("dwmapi.dll");
+    if (!hDwm) hDwm = LoadLibraryA("dwmapi.dll");
+    if (!hDwm) return;
+    g_DwmFlush = (DwmFlush_t)GetProcAddress(hDwm, "DwmFlush");
+}
+
+static int64_t GetQpcFreqCached() {
+    if (g_QpcFreqCached == 0) {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        g_QpcFreqCached = f.QuadPart;
+    }
+    return g_QpcFreqCached;
+}
+
+static HANDLE GetPaceTimerHandle() {
+    if (g_PaceTimer) return g_PaceTimer;
+
+    // Prefer high-resolution timers when available (Win10+).
+    typedef HANDLE (WINAPI *CreateWaitableTimerExW_t)(
+        LPSECURITY_ATTRIBUTES,
+        LPCWSTR,
+        DWORD,
+        DWORD
+    );
+
+    HMODULE hKernel32 = GetModuleHandleA("kernel32.dll");
+    CreateWaitableTimerExW_t pCreateWaitableTimerExW = hKernel32
+        ? (CreateWaitableTimerExW_t)GetProcAddress(hKernel32, "CreateWaitableTimerExW")
+        : nullptr;
+
+    if (pCreateWaitableTimerExW) {
+        g_PaceTimer = pCreateWaitableTimerExW(
+            nullptr,
+            nullptr,
+            CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+            TIMER_ALL_ACCESS
+        );
+    }
+    if (!g_PaceTimer) {
+        g_PaceTimer = CreateWaitableTimerW(nullptr, FALSE, nullptr);
+    }
+    return g_PaceTimer;
+}
+
+static void WaitUsHighRes(int64_t waitUs) {
+    if (waitUs <= 0) return;
+    HANDLE timer = GetPaceTimerHandle();
+    if (!timer) return;
+
+    LARGE_INTEGER due;
+    due.QuadPart = -(waitUs * 10); // relative in 100ns
+    if (SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) {
+        WaitForSingleObject(timer, INFINITE);
+    }
+}
+
+static int GetDesktopRefreshHzCached() {
+    DWORD now = GetTickCount();
+    if (g_RefreshHzCached > 0 && (now - g_RefreshHzLastTick) < 2000) {
+        return g_RefreshHzCached;
+    }
+    g_RefreshHzLastTick = now;
+
+    const int oldHz = g_RefreshHzCached;
+    int hz = 0;
+    HDC hdc = GetDC(nullptr);
+    if (hdc) {
+        hz = GetDeviceCaps(hdc, VREFRESH);
+        ReleaseDC(nullptr, hdc);
+    }
+    if (hz <= 1 || hz > 1000) hz = 60;
+    g_RefreshHzCached = hz;
+    if (hz != oldHz) {
+        HookLog("DX9: Desktop refresh reported as %d Hz", hz);
+    }
+    return hz;
+}
+
+static void PaceToRefreshQpc() {
+    const int hz = GetDesktopRefreshHzCached();
+    const int64_t qpcFreq = GetQpcFreqCached();
+    if (hz <= 0 || qpcFreq <= 0) return;
+
+    const int64_t frameTicks = qpcFreq / (int64_t)hz;
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+
+    if (g_LastPacedQpc == 0) {
+        g_LastPacedQpc = now.QuadPart;
+        return;
+    }
+
+    // If we were stalled for a while (e.g. alt-tab), reset to avoid weird catch-up behavior.
+    if (now.QuadPart - g_LastPacedQpc > frameTicks * 4) {
+        g_LastPacedQpc = now.QuadPart;
+        return;
+    }
+
+    int64_t target = g_LastPacedQpc + frameTicks;
+    if (now.QuadPart < target) {
+        for (;;) {
+            QueryPerformanceCounter(&now);
+            if (now.QuadPart >= target) break;
+            int64_t remainingTicks = target - now.QuadPart;
+            int64_t remainingUs = (remainingTicks * 1000000) / qpcFreq;
+
+            // Use high-res waitable timer for the bulk of the wait.
+            // Keep a small spin/yield tail to hit the target accurately.
+            if (remainingUs > 2000) {
+                WaitUsHighRes(remainingUs - 1000);
+            } else {
+                YieldProcessor();
+            }
+        }
+    }
+    g_LastPacedQpc = target;
+}
+
+static void MaybeWaitForVSyncAfterPresent(int64_t presentUs) {
+    VSyncOverride vsync = GetVSyncOverride();
+    if (!vsync.shouldOverride || vsync.presentInterval <= 0) return;
+    const int hz = GetDesktopRefreshHzCached();
+    const bool windowed = g_WindowedPresent;
+    const bool shouldPace = windowed && (presentUs < 3000);
+    {
+        static thread_local int lastHz = 0;
+        static thread_local int lastShouldPace = -1;
+        static thread_local DWORD lastTick = 0;
+        DWORD now = GetTickCount();
+        if (hz != lastHz || (int)shouldPace != lastShouldPace || (now - lastTick) > 2000) {
+            HookLog(
+                "DX9: VSyncPace state: windowed=%d interval=%d presentUs=%lld hz=%d pace=%d",
+                windowed ? 1 : 0,
+                vsync.presentInterval,
+                (long long)presentUs,
+                hz,
+                shouldPace ? 1 : 0
+            );
+            lastHz = hz;
+            lastShouldPace = shouldPace ? 1 : 0;
+            lastTick = now;
+        }
+    }
+
+    if (!windowed) return;
+    if (!shouldPace) return;
+
+    const int64_t expectedUs = (hz > 0) ? (1000000LL / (int64_t)hz) : 0;
+
+    // If DwmFlush ever starts blocking at an unexpected cadence (e.g. ~10ms -> ~100Hz),
+    // we can't "undo" that wait after the fact. In that situation, temporarily stop
+    // calling DwmFlush and use pure QPC pacing to the desktop refresh instead.
+    static DWORD s_DwmDisabledUntilTick = 0;
+    static int s_DwmBadCadenceCount = 0;
+
+    // Prefer DwmFlush when available. It blocks against DWM's compositor timing and avoids
+    // double-pacing (which can create weird stable cadences like ~100 FPS).
+    EnsureDwmFlushLoaded();
+    const DWORD nowTick = GetTickCount();
+    if (g_DwmFlush && nowTick >= s_DwmDisabledUntilTick) {
+        const int64_t qpcFreq = GetQpcFreqCached();
+        LARGE_INTEGER t0, t1;
+        QueryPerformanceCounter(&t0);
+        g_DwmFlush();
+        QueryPerformanceCounter(&t1);
+        const int64_t dwmUs = (qpcFreq > 0) ? ((t1.QuadPart - t0.QuadPart) * 1000000) / qpcFreq : 0;
+
+        // If DwmFlush blocks, only accept it if it matches the expected refresh cadence.
+        // Some systems can report an unexpected compositor cadence (e.g. ~100Hz) which would
+        // incorrectly cap FPS even when the desktop reports 144Hz.
+        bool acceptDwm = false;
+        if (dwmUs > 3000 && expectedUs > 0) {
+            // Tight tolerance: DwmFlush should be close to 1 / desktop_hz.
+            // We intentionally reject ~10ms (100Hz) when desktop is 144Hz (~6.94ms).
+            const int64_t lower = (expectedUs * 85) / 100;
+            const int64_t upper = (expectedUs * 115) / 100;
+            acceptDwm = (dwmUs >= lower && dwmUs <= upper);
+
+            static DWORD lastDecisionLogTick = 0;
+            static int lastAccept = -1;
+            const DWORD nowTick = GetTickCount();
+            if (lastAccept != (acceptDwm ? 1 : 0) || (nowTick - lastDecisionLogTick) > 2000) {
+                lastDecisionLogTick = nowTick;
+                lastAccept = acceptDwm ? 1 : 0;
+                HookLog("DX9: DwmFlush pacing: dwmUs=%lld expectedUs=%lld hz=%d accept=%d", dwmUs, expectedUs, hz, acceptDwm ? 1 : 0);
+            }
+        }
+
+        if (acceptDwm) {
+            s_DwmBadCadenceCount = 0;
+            return;
+        }
+
+        // If DwmFlush blocked but at an unexpected cadence, disable it for a bit so we
+        // don't keep paying that wrong wait every frame.
+        if (dwmUs > 3000 && expectedUs > 0) {
+            s_DwmBadCadenceCount++;
+            if (s_DwmBadCadenceCount >= 3) {
+                s_DwmBadCadenceCount = 0;
+                s_DwmDisabledUntilTick = nowTick + 5000;
+                HookLog("DX9: DwmFlush disabled for 5000ms (dwmUs=%lld expectedUs=%lld hz=%d)", dwmUs, expectedUs, hz);
+            }
+        } else {
+            s_DwmBadCadenceCount = 0;
+        }
+
+        // If DwmFlush didn't actually block (or blocked at an unexpected cadence), fall back.
+    }
+
+    // Fallback: deterministic pacer to the desktop refresh.
+    PaceToRefreshQpc();
+}
 
 
 static HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9* device, const RECT* pSourceRect, const RECT* pDestRect, HWND hDestWindowOverride, const RGNDATA* pDirtyRegion);
@@ -1035,12 +1268,34 @@ static void PresentBegin(IDirect3DDevice9 *device, IDirect3DSurface9 *&backBuffe
                          LUID luid;
                          if (SUCCEEDED(d3dEx->GetAdapterLUID(cp.AdapterOrdinal, &luid))) {
                              ReportLUID(luid.LowPart, luid.HighPart);
+                             SystemMetricsCollector::Get().Initialize((int32_t)luid.LowPart, (int32_t)luid.HighPart);
+                             luidReported = true;
                          }
                          d3dEx->Release();
                      }
+
+                     // Fallback for non-Ex: map D3D9 adapter ordinal to a DXGI adapter index.
+                     // This is usually correct on single-GPU systems and is good enough to feed
+                     // the out-of-process metrics poller.
+                     if (!luidReported) {
+                         IDXGIFactory1* factory = nullptr;
+                         if (SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&factory)) && factory) {
+                             IDXGIAdapter1* adapter = nullptr;
+                             if (SUCCEEDED(factory->EnumAdapters1(cp.AdapterOrdinal, &adapter)) && adapter) {
+                                 DXGI_ADAPTER_DESC1 desc;
+                                 if (SUCCEEDED(adapter->GetDesc1(&desc))) {
+                                     ReportLUID(desc.AdapterLuid.LowPart, desc.AdapterLuid.HighPart);
+                                     SystemMetricsCollector::Get().Initialize((int32_t)desc.AdapterLuid.LowPart, (int32_t)desc.AdapterLuid.HighPart);
+                                     SystemMetricsCollector::Get().SetVRAMTotal(desc.DedicatedVideoMemory);
+                                     luidReported = true;
+                                 }
+                                 adapter->Release();
+                             }
+                             factory->Release();
+                         }
+                     }
                  }
                  d3d->Release();
-                 luidReported = true;
              }
         }
         
@@ -1295,10 +1550,17 @@ static HRESULT STDMETHODCALLTYPE DetourPresent(
     HWND hDestWindowOverride,
     CONST RGNDATA *pDirtyRegion
 ) {
+    LARGE_INTEGER p0;
+    LARGE_INTEGER p1;
     IDirect3DSurface9 *backBuffer = nullptr;
     PresentBegin(device, backBuffer);
+    QueryPerformanceCounter(&p0);
     HRESULT hr = oPresent(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
+    QueryPerformanceCounter(&p1);
     PresentEnd(device, backBuffer);
+    int64_t qpcFreq = GetQpcFreqCached();
+    int64_t presentUs = qpcFreq ? ((p1.QuadPart - p0.QuadPart) * 1000000) / qpcFreq : 0;
+    MaybeWaitForVSyncAfterPresent(presentUs);
     return hr;
 }
 
@@ -1311,10 +1573,27 @@ static HRESULT STDMETHODCALLTYPE DetourPresentEx(
     CONST RGNDATA *pDirtyRegion,
     DWORD dwFlags
 ) {
+    LARGE_INTEGER p0;
+    LARGE_INTEGER p1;
+    VSyncOverride vsync = GetVSyncOverride();
+    if (vsync.shouldOverride && vsync.presentInterval > 0) {
+        const DWORD oldFlags = dwFlags;
+        dwFlags &= ~D3DPRESENT_FORCEIMMEDIATE;
+        dwFlags &= ~D3DPRESENT_DONOTWAIT;
+        static int logCount = 0;
+        if (oldFlags != dwFlags && logCount++ < 10) {
+            HookLog("DX9: PresentEx: Cleared flags for VSync (old=0x%08X new=0x%08X)", oldFlags, dwFlags);
+        }
+    }
     IDirect3DSurface9 *backBuffer = nullptr;
     PresentBegin(device, backBuffer);
+    QueryPerformanceCounter(&p0);
     HRESULT hr = oPresentEx(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
+    QueryPerformanceCounter(&p1);
     PresentEnd(device, backBuffer);
+    int64_t qpcFreq = GetQpcFreqCached();
+    int64_t presentUs = qpcFreq ? ((p1.QuadPart - p0.QuadPart) * 1000000) / qpcFreq : 0;
+    MaybeWaitForVSyncAfterPresent(presentUs);
     return hr;
 }
 
@@ -1327,6 +1606,18 @@ static HRESULT STDMETHODCALLTYPE DetourPresentSwap(
     CONST RGNDATA *pDirtyRegion,
     DWORD dwFlags
 ) {
+    LARGE_INTEGER p0;
+    LARGE_INTEGER p1;
+    VSyncOverride vsync = GetVSyncOverride();
+    if (vsync.shouldOverride && vsync.presentInterval > 0) {
+        const DWORD oldFlags = dwFlags;
+        dwFlags &= ~D3DPRESENT_FORCEIMMEDIATE;
+        dwFlags &= ~D3DPRESENT_DONOTWAIT;
+        static int logCount = 0;
+        if (oldFlags != dwFlags && logCount++ < 10) {
+            HookLog("DX9: SwapChain Present: Cleared flags for VSync (old=0x%08X new=0x%08X)", oldFlags, dwFlags);
+        }
+    }
     IDirect3DSurface9 *backBuffer = nullptr;
     IDirect3DDevice9 *device = nullptr;
     
@@ -1335,13 +1626,18 @@ static HRESULT STDMETHODCALLTYPE DetourPresentSwap(
             PresentBegin(device, backBuffer);
         }
     }
-    
+    QueryPerformanceCounter(&p0);
     HRESULT hr = oPresentSwap(swap, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
+    QueryPerformanceCounter(&p1);
     
     if (device) {
         PresentEnd(device, backBuffer);
         device->Release();
     }
+
+    int64_t qpcFreq = GetQpcFreqCached();
+    int64_t presentUs = qpcFreq ? ((p1.QuadPart - p0.QuadPart) * 1000000) / qpcFreq : 0;
+    MaybeWaitForVSyncAfterPresent(presentUs);
     
     return hr;
 }
@@ -1363,11 +1659,21 @@ static HRESULT STDMETHODCALLTYPE DetourReset(
     
     // Config Overrides
     if (pPresentationParameters) {
+        g_WindowedPresent = !!pPresentationParameters->Windowed;
         EarlyLog("DX9: Reset: Requested MSAA Type=%d, Quality=%d", pPresentationParameters->MultiSampleType, pPresentationParameters->MultiSampleQuality);
 
         VSyncOverride vsync = GetVSyncOverride();
         if (vsync.shouldOverride) {
             pPresentationParameters->PresentationInterval = (UINT)vsync.presentInterval;
+
+            // Avoid being pinned to an undesired refresh rate (e.g. 100Hz) in exclusive fullscreen.
+            if (!pPresentationParameters->Windowed && vsync.presentInterval > 0 && pPresentationParameters->FullScreen_RefreshRateInHz != 0) {
+                static int logCount = 0;
+                if (logCount++ < 10) {
+                    HookLog("DX9: Reset: Clearing FullScreen_RefreshRateInHz (was %u)", pPresentationParameters->FullScreen_RefreshRateInHz);
+                }
+                pPresentationParameters->FullScreen_RefreshRateInHz = 0;
+            }
         }
             
         // Backbuffer Count Override
@@ -1423,11 +1729,20 @@ static HRESULT STDMETHODCALLTYPE DetourResetEx(
     
     // Config Overrides
     if (pPresentationParameters) {
+        g_WindowedPresent = !!pPresentationParameters->Windowed;
         EarlyLog("DX9: ResetEx: Requested MSAA Type=%d, Quality=%d", pPresentationParameters->MultiSampleType, pPresentationParameters->MultiSampleQuality);
         
         VSyncOverride vsync = GetVSyncOverride();
         if (vsync.shouldOverride) {
             pPresentationParameters->PresentationInterval = (UINT)vsync.presentInterval;
+
+            if (!pPresentationParameters->Windowed && vsync.presentInterval > 0 && pPresentationParameters->FullScreen_RefreshRateInHz != 0) {
+                static int logCount = 0;
+                if (logCount++ < 10) {
+                    HookLog("DX9: ResetEx: Clearing FullScreen_RefreshRateInHz (was %u)", pPresentationParameters->FullScreen_RefreshRateInHz);
+                }
+                pPresentationParameters->FullScreen_RefreshRateInHz = 0;
+            }
         }
 
         // Backbuffer Count Override
@@ -1507,8 +1822,8 @@ static void InstallDeviceHooks(IDirect3DDevice9* device) {
     // 3. Check for IDirect3DDevice9Ex functions and hook them
     // 3. Check for IDirect3DDevice9Ex functions and hook them
     IDirect3DDevice9Ex *deviceEx = nullptr;
-    static const GUID IID_IDirect3DDevice9Ex = {0xb18b10ce, 0x263e, 0x42f4, {0xa4, 0xa0, 0x29, 0x1c, 0x18, 0xd4, 0x51, 0x2c}};
-    if (SUCCEEDED(device->QueryInterface(IID_IDirect3DDevice9Ex, (void**)&deviceEx))) {
+    HRESULT qhr = device->QueryInterface(__uuidof(IDirect3DDevice9Ex), (void**)&deviceEx);
+    if (SUCCEEDED(qhr)) {
         EarlyLog("DX9: Device supports D3D9Ex interfaces");
         uintptr_t *vtableEx = *(uintptr_t**)deviceEx;
         
@@ -1529,22 +1844,29 @@ static void InstallDeviceHooks(IDirect3DDevice9* device) {
         }
         
         deviceEx->Release();
+    } else {
+        EarlyLog("DX9: QueryInterface(IDirect3DDevice9Ex) failed (hr=0x%08X)", (unsigned)qhr);
     }
-    
-    /*
+
     // 6. Hook SwapChain Present (index 3)
+    // Some games (notably D3D9Ex titles) present through the swapchain and may pass flags
+    // that bypass PresentationInterval. Hooking swapchain Present allows us to enforce VSync.
     IDirect3DSwapChain9 *swapChain = nullptr;
     if (SUCCEEDED(device->GetSwapChain(0, &swapChain)) && swapChain) {
         uintptr_t *swapVtable = *(uintptr_t**)swapChain;
         if (!oPresentSwap) {
             if (MH_CreateHook((void*)swapVtable[3], (void*)&DetourPresentSwap, (void**)&oPresentSwap) == MH_OK) {
-                MH_EnableHook((void*)swapVtable[3]);
-                EarlyLog("DX9: SwapChain Present hook installed");
+                if (MH_EnableHook((void*)swapVtable[3]) == MH_OK) {
+                    EarlyLog("DX9: SwapChain Present hook installed");
+                } else {
+                    EarlyLog("DX9: SwapChain Present hook enable FAILED");
+                }
+            } else {
+                EarlyLog("DX9: SwapChain Present hook create FAILED");
             }
         }
         swapChain->Release();
     }
-    */
 }
 
 static HRESULT STDMETHODCALLTYPE DetourCreateDevice(
@@ -1560,11 +1882,20 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDevice(
     
     // VSync Override for CreateDevice
     if (pPresentationParameters) {
+        g_WindowedPresent = !!pPresentationParameters->Windowed;
         EarlyLog("DX9: CreateDevice: Requested MSAA Type=%d, Quality=%d", pPresentationParameters->MultiSampleType, pPresentationParameters->MultiSampleQuality);
         
         VSyncOverride vsync = GetVSyncOverride();
         if (vsync.shouldOverride) {
             pPresentationParameters->PresentationInterval = (UINT)vsync.presentInterval;
+
+            if (!pPresentationParameters->Windowed && vsync.presentInterval > 0 && pPresentationParameters->FullScreen_RefreshRateInHz != 0) {
+                static int logCount = 0;
+                if (logCount++ < 10) {
+                    HookLog("DX9: CreateDevice: Clearing FullScreen_RefreshRateInHz (was %u)", pPresentationParameters->FullScreen_RefreshRateInHz);
+                }
+                pPresentationParameters->FullScreen_RefreshRateInHz = 0;
+            }
         }
 
         // Backbuffer Count Override
@@ -1633,11 +1964,20 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDeviceEx(IDirect3D9Ex* self, UINT A
     EarlyLog("DX9: CreateDeviceEx called (hFocusWindow=%p)", hFocusWindow);
 
     if (pPresentationParameters) {
+        g_WindowedPresent = !!pPresentationParameters->Windowed;
         EarlyLog("DX9: CreateDeviceEx: Requested MSAA Type=%d, Quality=%d", pPresentationParameters->MultiSampleType, pPresentationParameters->MultiSampleQuality);
 
         VSyncOverride vsync = GetVSyncOverride();
         if (vsync.shouldOverride) {
             pPresentationParameters->PresentationInterval = (UINT)vsync.presentInterval;
+
+            if (!pPresentationParameters->Windowed && vsync.presentInterval > 0 && pPresentationParameters->FullScreen_RefreshRateInHz != 0) {
+                static int logCount = 0;
+                if (logCount++ < 10) {
+                    HookLog("DX9: CreateDeviceEx: Clearing FullScreen_RefreshRateInHz (was %u)", pPresentationParameters->FullScreen_RefreshRateInHz);
+                }
+                pPresentationParameters->FullScreen_RefreshRateInHz = 0;
+            }
         }
 
         // Backbuffer Count Override

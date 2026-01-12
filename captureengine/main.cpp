@@ -81,6 +81,23 @@ static std::unique_ptr<ProcessIPCClient> g_LimiterClient;
 
 static TrayIcon *g_Tray = nullptr;
 
+static void PurgeAllLogsInDir(const std::string& logsDir) {
+  CreateDirectoryA(logsDir.c_str(), NULL);
+  const char* patterns[] = {"\\*.log", "\\*.csv"};
+  for (int p = 0; p < 2; p++) {
+    std::string pattern = logsDir + patterns[p];
+    WIN32_FIND_DATAA ffd;
+    HANDLE hFind = FindFirstFileA(pattern.c_str(), &ffd);
+    if (hFind == INVALID_HANDLE_VALUE) continue;
+    do {
+      if (ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+      std::string filePath = logsDir + "\\" + ffd.cFileName;
+      DeleteFileA(filePath.c_str());
+    } while (FindNextFileA(hFind, &ffd));
+    FindClose(hFind);
+  }
+}
+
 // Launch game suspended and inject immediately (The only way to guarantee API overrides)
 // If the target looks like a launcher (not the actual game exe), we just start it normally
 // and let WMI + CreateProcess hooks in already-injected processes catch the real game
@@ -508,6 +525,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
   std::string exePath = buffer;
   std::string baseDir = exePath.substr(0, exePath.find_last_of("\\/"));
   g_ConfigPath = baseDir + "\\config.ini";
+
+  PurgeAllLogsInDir(baseDir + "\\logs");
   
   // NOTE: FFmpeg DLL path is set by static initializer (FFmpegDllPathInitializer)
   // before WinMain runs, so we don't need to set it here

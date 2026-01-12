@@ -17,6 +17,7 @@
 #include "lod_helper.h"
 #include <imgui.h>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 // D3D11 includes for intermediate path (D3D11 textures with KMT handles)
 #include <d3d11.h>
@@ -124,6 +125,7 @@ static std::recursive_mutex g_VulkanMutex;
 static bool separateDeviceActive = false; // Global tracking for Separate Device Mode
 static bool g_SampleRateShadingSupported = false; // Track if device supports/has enabled sample shading
 static bool g_SamplerAnisotropySupported = false; // Track if device supports/has enabled anisotropy
+static float g_MaxSamplerAnisotropy = 0.0f;
 static std::vector<VkFence> g_PrerenderFences;
 static uint64_t g_PrerenderFrameIndex = 0;
 static int64_t g_LastSleepUs = 0;
@@ -146,6 +148,30 @@ struct QueueInstanceInfo {
 };
 static std::vector<QueueInstanceInfo> g_QueueInstances;
 static std::mutex g_QueueInstancesMutex;
+
+ static constexpr int MAX_TRACKED_GRAPHICS_QUEUES = 8;
+ static VkQueue g_TrackedGraphicsQueues[MAX_TRACKED_GRAPHICS_QUEUES] = {VK_NULL_HANDLE};
+ static std::atomic<int> g_TrackedGraphicsQueueCount{0};
+
+ static bool IsTrackedGraphicsQueue(VkQueue queue) {
+     int count = g_TrackedGraphicsQueueCount.load(std::memory_order_acquire);
+     for (int i = 0; i < count; i++) {
+         if (g_TrackedGraphicsQueues[i] == queue) return true;
+     }
+     return false;
+ }
+
+ static void TrackGraphicsQueue(VkQueue queue) {
+     if (queue == VK_NULL_HANDLE) return;
+     int count = g_TrackedGraphicsQueueCount.load(std::memory_order_acquire);
+     for (int i = 0; i < count; i++) {
+         if (g_TrackedGraphicsQueues[i] == queue) return;
+     }
+     if (count < MAX_TRACKED_GRAPHICS_QUEUES) {
+         g_TrackedGraphicsQueues[count] = queue;
+         g_TrackedGraphicsQueueCount.store(count + 1, std::memory_order_release);
+     }
+ }
 
 // Helper to check if a queue is compute-only (no graphics bit)
 static bool IsComputeOnlyQueue(VkQueue queue) {
@@ -976,6 +1002,7 @@ public:
       dedicatedInfo.pNext = &importInfo;
       dedicatedInfo.image = sharedImages[i];
 
+      // Get memory requirements
       VkMemoryRequirements memReq;
       vkGetImageMemoryRequirements(g_Device, sharedImages[i], &memReq);
 
@@ -1005,7 +1032,7 @@ public:
         return false;
       }
 
-      res = vkBindImageMemory(g_Device, sharedImages[i], sharedMem[i], 0);
+      res = vkBindImageMemory(g_Device, sharedImages[i], this->sharedMem[i], 0);
       if (res != VK_SUCCESS) {
         HookLog("Vulkan: Failed to bind imported memory %d: %d", i, res);
         CleanupD3D11();
@@ -1243,14 +1270,26 @@ public:
         VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     poolInfo.queueFamilyIndex = g_QueueFamily;
     poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    vkCreateCommandPool(g_Device, &poolInfo, nullptr, &captureCommandPool);
+
+    VkResult res =
+        vkCreateCommandPool(g_Device, &poolInfo, nullptr, &captureCommandPool);
+    if (res != VK_SUCCESS) {
+      HookLog("Vulkan: Failed to create command pool: %d", res);
+      return false;
+    }
 
     VkCommandBufferAllocateInfo allocInfoCB = {
         VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     allocInfoCB.commandPool = captureCommandPool;
     allocInfoCB.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     allocInfoCB.commandBufferCount = CAPTURE_TEXTURE_COUNT;
-    vkAllocateCommandBuffers(g_Device, &allocInfoCB, captureCommandBuffers);
+
+    res =
+        vkAllocateCommandBuffers(g_Device, &allocInfoCB, captureCommandBuffers);
+    if (res != VK_SUCCESS) {
+      HookLog("Vulkan: Failed to allocate command buffers: %d", res);
+      return false;
+    }
 
     // Create timeline semaphore for synchronization
     // (We use the encoder's fence for sync, so just create a placeholder)
@@ -1267,8 +1306,13 @@ public:
 
     VkSemaphoreCreateInfo semInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     semInfo.pNext = &timelineTypeInfo;
-    vkCreateSemaphore(g_Device, &semInfo, nullptr, &timelineSemaphore);
 
+    res = vkCreateSemaphore(g_Device, &semInfo, nullptr, &timelineSemaphore);
+    if (res != VK_SUCCESS) {
+      HookLog("Vulkan: Failed to create exportable timeline semaphore: %d", res);
+      return false;
+    }
+    
     // Use the encoder's fence handle for synchronization
     sharedFenceHandle = (HANDLE)enc.fenceHandle;
 
@@ -1749,6 +1793,7 @@ struct VulkanSwapchain {
   std::vector<VkFramebuffer> framebuffers;
   uint32_t width, height;
   VkFormat format;
+  VkSharingMode sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
   void Cleanup() {
     for (auto fb : framebuffers) {
@@ -2164,9 +2209,28 @@ typedef VkResult(VKAPI_PTR *PFN_vkQueuePresentKHR)(
 typedef VkResult(VKAPI_PTR *PFN_vkQueueSubmit)(VkQueue queue, uint32_t submitCount,
                                                const VkSubmitInfo *pSubmits,
                                                VkFence fence);
+typedef VkResult(VKAPI_PTR *PFN_vkQueueSubmit2)(VkQueue queue, uint32_t submitCount,
+                                                const VkSubmitInfo2 *pSubmits,
+                                                VkFence fence);
+typedef void(VKAPI_PTR *PFN_vkUpdateDescriptorSets)(VkDevice device,
+                                                    uint32_t descriptorWriteCount,
+                                                    const VkWriteDescriptorSet *pDescriptorWrites,
+                                                    uint32_t descriptorCopyCount,
+                                                    const VkCopyDescriptorSet *pDescriptorCopies);
 typedef void(VKAPI_PTR *PFN_vkDestroySwapchainKHR)(
     VkDevice device, VkSwapchainKHR swapchain,
     const VkAllocationCallbacks *pAllocator);
+typedef void(VKAPI_PTR *PFN_vkDestroySampler)(VkDevice device, VkSampler sampler,
+                                              const VkAllocationCallbacks *pAllocator);
+typedef VkResult(VKAPI_PTR *PFN_vkCreateDescriptorUpdateTemplate)(
+    VkDevice device, const VkDescriptorUpdateTemplateCreateInfo *pCreateInfo,
+    const VkAllocationCallbacks *pAllocator, VkDescriptorUpdateTemplate *pDescriptorUpdateTemplate);
+typedef void(VKAPI_PTR *PFN_vkDestroyDescriptorUpdateTemplate)(
+    VkDevice device, VkDescriptorUpdateTemplate descriptorUpdateTemplate,
+    const VkAllocationCallbacks *pAllocator);
+typedef void(VKAPI_PTR *PFN_vkUpdateDescriptorSetWithTemplate)(
+    VkDevice device, VkDescriptorSet descriptorSet,
+    VkDescriptorUpdateTemplate descriptorUpdateTemplate, const void *pData);
 static PFN_vkCreateInstance o_vkCreateInstance = nullptr;
 static PFN_vkCreateDevice o_vkCreateDevice = nullptr;
 static PFN_vkGetDeviceQueue o_vkGetDeviceQueue = nullptr;
@@ -2175,6 +2239,8 @@ static PFN_vkGetSwapchainImagesKHR o_vkGetSwapchainImagesKHR = nullptr;
 static PFN_vkAcquireNextImageKHR o_vkAcquireNextImageKHR = nullptr;
 static PFN_vkQueuePresentKHR o_vkQueuePresentKHR = nullptr;
 static PFN_vkQueueSubmit o_vkQueueSubmit = nullptr;
+static PFN_vkQueueSubmit2 o_vkQueueSubmit2KHR = nullptr;
+static PFN_vkQueueSubmit2 o_vkQueueSubmit2 = nullptr;
 static PFN_vkDestroySwapchainKHR o_vkDestroySwapchainKHR = nullptr;
 static PFN_vkCreateWin32SurfaceKHR o_vkCreateWin32SurfaceKHR = nullptr;
 static PFN_vkGetDeviceQueue2 o_vkGetDeviceQueue2 = nullptr;
@@ -2186,10 +2252,126 @@ static PFN_vkCreateRenderPass o_vkCreateRenderPass = nullptr;
 static PFN_vkCreateRenderPass2 o_vkCreateRenderPass2 = nullptr;
 static PFN_vkCreateGraphicsPipelines o_vkCreateGraphicsPipelines = nullptr;
 static PFN_vkCreateSampler o_vkCreateSampler = nullptr;
-
+static PFN_vkUpdateDescriptorSets o_vkUpdateDescriptorSets = nullptr;
+static PFN_vkDestroySampler o_vkDestroySampler = nullptr;
+static PFN_vkCreateDescriptorUpdateTemplate o_vkCreateDescriptorUpdateTemplate = nullptr;
+static PFN_vkCreateDescriptorUpdateTemplate o_vkCreateDescriptorUpdateTemplateKHR = nullptr;
+static PFN_vkDestroyDescriptorUpdateTemplate o_vkDestroyDescriptorUpdateTemplate = nullptr;
+static PFN_vkDestroyDescriptorUpdateTemplate o_vkDestroyDescriptorUpdateTemplateKHR = nullptr;
+static PFN_vkUpdateDescriptorSetWithTemplate o_vkUpdateDescriptorSetWithTemplate = nullptr;
+static PFN_vkUpdateDescriptorSetWithTemplate o_vkUpdateDescriptorSetWithTemplateKHR = nullptr;
 
 static VkCommandPool g_CommandPool = VK_NULL_HANDLE;
 static std::vector<VkCommandBuffer> g_CommandBuffers;
+
+struct SamplerRecord {
+  VkDevice device = VK_NULL_HANDLE;
+  VkSamplerCreateInfo baseCI = {};
+  VkSampler forcedSampler = VK_NULL_HANDLE;
+};
+
+static std::mutex g_SamplerMutex;
+static std::unordered_map<VkSampler, SamplerRecord> g_SamplerRecords;
+
+struct DescriptorTemplateEntry {
+  VkDescriptorType descriptorType;
+  uint32_t descriptorCount;
+  size_t offset;
+  size_t stride;
+};
+
+struct DescriptorTemplateRecord {
+  VkDevice device = VK_NULL_HANDLE;
+  std::vector<DescriptorTemplateEntry> entries;
+};
+
+static std::mutex g_TemplateMutex;
+static std::unordered_map<VkDescriptorUpdateTemplate, DescriptorTemplateRecord> g_TemplateRecords;
+
+static VkSampler GetOrCreateForcedSampler(VkSampler originalSampler, const GraphicsConfig &gfx) {
+  std::lock_guard<std::mutex> lock(g_SamplerMutex);
+  auto it = g_SamplerRecords.find(originalSampler);
+  if (it == g_SamplerRecords.end()) return VK_NULL_HANDLE;
+
+  SamplerRecord &rec = it->second;
+  if (rec.forcedSampler != VK_NULL_HANDLE) return rec.forcedSampler;
+  if (rec.device == VK_NULL_HANDLE) return VK_NULL_HANDLE;
+
+  VkSamplerCreateInfo ci = rec.baseCI;
+
+  int anisotropyLevel = 1;
+  const char *afStr = gfx.anisotropicFiltering.c_str();
+  if (afStr && afStr[0] != '\0' && strncmp(afStr, "default", 7) != 0) {
+    if (strncmp(afStr, "off", 3) == 0) {
+      anisotropyLevel = 1;
+    } else {
+      char *endPtr = nullptr;
+      long parsed = strtol(afStr, &endPtr, 10);
+      if (endPtr != afStr && parsed > 0) {
+        anisotropyLevel = (int)parsed;
+      } else if (sscanf(afStr, "%dx", &anisotropyLevel) != 1) {
+        anisotropyLevel = 1;
+      }
+    }
+  }
+
+  if (anisotropyLevel > 1 && g_SamplerAnisotropySupported && !ci.unnormalizedCoordinates) {
+    ci.anisotropyEnable = VK_TRUE;
+    float target = (float)anisotropyLevel;
+    if (g_MaxSamplerAnisotropy > 0.0f && target > g_MaxSamplerAnisotropy) {
+      target = g_MaxSamplerAnisotropy;
+    }
+    ci.maxAnisotropy = target;
+
+    ci.minFilter = VK_FILTER_LINEAR;
+    ci.magFilter = VK_FILTER_LINEAR;
+  }
+
+  const bool allowMipOverrides = (ci.maxLod > 0.25f);
+
+  const char *biasStr = gfx.mipBias.c_str();
+  if (allowMipOverrides && biasStr && biasStr[0] != '\0' && strncmp(biasStr, "default", 7) != 0) {
+    float userBias = 0.0f;
+    if (sscanf(biasStr, "%f", &userBias) == 1) {
+      const std::string &mode = gfx.mipBiasMode;
+      if (mode == "offset") {
+        ci.mipLodBias = rec.baseCI.mipLodBias + userBias;
+      } else if (mode == "base") {
+        if (userBias < 0.0f) {
+          ci.mipLodBias = rec.baseCI.mipLodBias + userBias;
+        }
+      } else {
+        ci.mipLodBias = userBias;
+      }
+    }
+  }
+
+  const char *mmStr = gfx.mipMapping.c_str();
+  if (allowMipOverrides && mmStr && mmStr[0] != '\0' && strncmp(mmStr, "default", 7) != 0) {
+    if (strncmp(mmStr, "bilinear", 8) == 0) {
+      ci.minFilter = VK_FILTER_LINEAR;
+      ci.magFilter = VK_FILTER_LINEAR;
+      ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    } else if (strncmp(mmStr, "trilinear", 9) == 0) {
+      ci.minFilter = VK_FILTER_LINEAR;
+      ci.magFilter = VK_FILTER_LINEAR;
+      ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    } else if (strncmp(mmStr, "nearest", 7) == 0) {
+      ci.minFilter = VK_FILTER_NEAREST;
+      ci.magFilter = VK_FILTER_NEAREST;
+      ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    }
+  }
+
+  VkSampler forced = VK_NULL_HANDLE;
+  VkResult r = o_vkCreateSampler(rec.device, &ci, nullptr, &forced);
+  if (r != VK_SUCCESS) {
+    return VK_NULL_HANDLE;
+  }
+
+  rec.forcedSampler = forced;
+  return forced;
+}
 
 // -- Detours --
 
@@ -2353,20 +2535,35 @@ static VkResult VKAPI_PTR Detour_vkCreateSampler(
     const VkAllocationCallbacks* pAllocator,
     VkSampler* pSampler)
 {
-    if (!g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
-        return o_vkCreateSampler(device, pCreateInfo, pAllocator, pSampler);
+    static int s_createSamplerCallCount = 0;
+    s_createSamplerCallCount++;
+    if (s_createSamplerCallCount <= 5) {
+        HookLog("Vulkan: Detour_vkCreateSampler called (#%d) o_vkCreateSampler=%p IPC=%p SharedMem=%p",
+                s_createSamplerCallCount, (void*)o_vkCreateSampler, 
+                (void*)g_IPC, g_IPC ? (void*)g_IPC->GetSharedMem() : nullptr);
     }
 
-    // Check if overrides should be applied
-    // If maxLod is very small, mipmaps are effectively disabled
-    if (pCreateInfo->maxLod <= 0.25f) {
-         return o_vkCreateSampler(device, pCreateInfo, pAllocator, pSampler);
+    if (!o_vkCreateSampler) {
+        HookLog("Vulkan: ERROR - o_vkCreateSampler is NULL!");
+        return VK_ERROR_INITIALIZATION_FAILED;
     }
 
     VkSamplerCreateInfo modifiedInfo = *pCreateInfo;
     
     if (g_IPC && g_IPC->GetSharedMem()) {
          const auto& gfx = GetActiveGraphicsConfig();
+
+         const bool allowMipOverrides = (pCreateInfo->maxLod > 0.25f);
+
+         const bool anyOverrides =
+             (gfx.anisotropicFiltering != "default" && !gfx.anisotropicFiltering.empty()) ||
+             (gfx.mipMapping != "default" && !gfx.mipMapping.empty()) ||
+             (gfx.mipBias != "default" && !gfx.mipBias.empty()) ||
+             (gfx.sgssaa);
+
+         if (!anyOverrides) {
+             return o_vkCreateSampler(device, pCreateInfo, pAllocator, pSampler);
+         }
          
          // Anisotropy override
          int anisotropyLevel = 1;
@@ -2375,31 +2572,53 @@ static VkResult VKAPI_PTR Detour_vkCreateSampler(
              if (strncmp(afStr, "off", 3) == 0) {
                  anisotropyLevel = 1;
              } else {
-                 if (sscanf(afStr, "%dx", &anisotropyLevel) != 1) {
-                     anisotropyLevel = 1;
+                 char* endPtr = nullptr;
+                 long parsed = strtol(afStr, &endPtr, 10);
+                 if (endPtr != afStr && parsed > 0) {
+                    anisotropyLevel = (int)parsed;
+                 } else if (sscanf(afStr, "%dx", &anisotropyLevel) != 1) {
+                    anisotropyLevel = 1;
                  }
              }
          }
 
          if (anisotropyLevel > 1) {
-             if (g_SamplerAnisotropySupported) {
+             if (g_SamplerAnisotropySupported && !pCreateInfo->unnormalizedCoordinates) {
                  modifiedInfo.anisotropyEnable = VK_TRUE;
-                 modifiedInfo.maxAnisotropy = (float)anisotropyLevel;
+                 float target = (float)anisotropyLevel;
+                 if (g_MaxSamplerAnisotropy > 0.0f && target > g_MaxSamplerAnisotropy) {
+                    target = g_MaxSamplerAnisotropy;
+                 }
+                 modifiedInfo.maxAnisotropy = target;
+
+                 // Vulkan spec requirement: when anisotropyEnable is VK_TRUE,
+                 // minFilter and magFilter must be VK_FILTER_LINEAR.
+                 modifiedInfo.minFilter = VK_FILTER_LINEAR;
+                 modifiedInfo.magFilter = VK_FILTER_LINEAR;
              }
          }
          
          // Mip Bias Override
          const char* biasStr = gfx.mipBias.c_str();
-         if (biasStr && biasStr[0] != '\0' && strncmp(biasStr, "default", 7) != 0) {
+         if (allowMipOverrides && biasStr && biasStr[0] != '\0' && strncmp(biasStr, "default", 7) != 0) {
              float userBias = 0.0f;
              if (sscanf(biasStr, "%f", &userBias) == 1) {
-                 modifiedInfo.mipLodBias = userBias;
+                 const std::string& mode = gfx.mipBiasMode;
+                 if (mode == "offset") {
+                    modifiedInfo.mipLodBias = pCreateInfo->mipLodBias + userBias;
+                 } else if (mode == "base") {
+                    if (userBias < 0.0f) {
+                      modifiedInfo.mipLodBias = pCreateInfo->mipLodBias + userBias;
+                    }
+                 } else {
+                    modifiedInfo.mipLodBias = userBias;
+                 }
              }
          }
 
          // Mip Mapping Override (Texture Filtering)
          const char* mmStr = gfx.mipMapping.c_str();
-         if (mmStr && mmStr[0] != '\0' && strncmp(mmStr, "default", 7) != 0) {
+         if (allowMipOverrides && mmStr && mmStr[0] != '\0' && strncmp(mmStr, "default", 7) != 0) {
              if (strncmp(mmStr, "bilinear", 8) == 0) {
                  modifiedInfo.minFilter = VK_FILTER_LINEAR;
                  modifiedInfo.magFilter = VK_FILTER_LINEAR;
@@ -2417,12 +2636,270 @@ static VkResult VKAPI_PTR Detour_vkCreateSampler(
          
          // SGSSAA Auto-Bias (Adds to existing bias)
          float sgssaaBias = 0.0f;
-         if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgssaaBias)) {
+         if (allowMipOverrides && GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgssaaBias)) {
              modifiedInfo.mipLodBias += sgssaaBias;
+         }
+
+         static int s_samplerOverrideLogCount = 0;
+         if (s_samplerOverrideLogCount < 10) {
+             s_samplerOverrideLogCount++;
+             HookLog(
+                 "Vulkan: CreateSampler override (af=%s maxLod=%.2f allowMip=%d unnorm=%d) "
+                 "Aniso: %d/%.1f -> %d/%.1f  Filter: %d/%d/%d  Bias: %.3f -> %.3f",
+                 gfx.anisotropicFiltering.c_str(), pCreateInfo->maxLod,
+                 allowMipOverrides ? 1 : 0, (int)pCreateInfo->unnormalizedCoordinates,
+                 (int)pCreateInfo->anisotropyEnable, (double)pCreateInfo->maxAnisotropy,
+                 (int)modifiedInfo.anisotropyEnable, (double)modifiedInfo.maxAnisotropy,
+                 (int)modifiedInfo.minFilter, (int)modifiedInfo.magFilter, (int)modifiedInfo.mipmapMode,
+                 (double)pCreateInfo->mipLodBias, (double)modifiedInfo.mipLodBias);
          }
     }
     
-    return o_vkCreateSampler(device, &modifiedInfo, pAllocator, pSampler);
+    VkResult res = o_vkCreateSampler(device, &modifiedInfo, pAllocator, pSampler);
+    if (res == VK_SUCCESS && pSampler && *pSampler != VK_NULL_HANDLE && pCreateInfo) {
+      SamplerRecord rec;
+      rec.device = device;
+      rec.baseCI = *pCreateInfo;
+      {
+        std::lock_guard<std::mutex> lock(g_SamplerMutex);
+        g_SamplerRecords[*pSampler] = rec;
+      }
+    }
+    return res;
+}
+
+static void VKAPI_PTR Detour_vkDestroySampler(VkDevice device, VkSampler sampler,
+                                             const VkAllocationCallbacks *pAllocator) {
+  if (!o_vkDestroySampler) return;
+
+  VkSampler forced = VK_NULL_HANDLE;
+  {
+    std::lock_guard<std::mutex> lock(g_SamplerMutex);
+    auto it = g_SamplerRecords.find(sampler);
+    if (it != g_SamplerRecords.end()) {
+      forced = it->second.forcedSampler;
+      g_SamplerRecords.erase(it);
+    }
+  }
+
+  if (forced != VK_NULL_HANDLE && forced != sampler) {
+    o_vkDestroySampler(device, forced, nullptr);
+  }
+  o_vkDestroySampler(device, sampler, pAllocator);
+}
+
+static void VKAPI_PTR Detour_vkUpdateDescriptorSets(
+    VkDevice device, uint32_t descriptorWriteCount,
+    const VkWriteDescriptorSet *pDescriptorWrites, uint32_t descriptorCopyCount,
+    const VkCopyDescriptorSet *pDescriptorCopies) {
+  if (!o_vkUpdateDescriptorSets) return;
+
+  if (!g_IPC || !g_IPC->GetSharedMem() || !pDescriptorWrites || descriptorWriteCount == 0) {
+    o_vkUpdateDescriptorSets(device, descriptorWriteCount, pDescriptorWrites, descriptorCopyCount, pDescriptorCopies);
+    return;
+  }
+
+  const auto &gfx = GetActiveGraphicsConfig();
+  const bool afActive = (gfx.anisotropicFiltering != "default" && !gfx.anisotropicFiltering.empty() && gfx.anisotropicFiltering != "off");
+  const bool anyMip = (gfx.mipMapping != "default" && !gfx.mipMapping.empty()) ||
+                      (gfx.mipBias != "default" && !gfx.mipBias.empty()) ||
+                      (gfx.sgssaa);
+
+  if (!afActive && !anyMip) {
+    o_vkUpdateDescriptorSets(device, descriptorWriteCount, pDescriptorWrites, descriptorCopyCount, pDescriptorCopies);
+    return;
+  }
+
+  bool anyChanged = false;
+  std::vector<VkWriteDescriptorSet> writes(descriptorWriteCount);
+  std::vector<VkDescriptorImageInfo> imageInfos;
+  imageInfos.reserve(64);
+
+  for (uint32_t i = 0; i < descriptorWriteCount; i++) {
+    writes[i] = pDescriptorWrites[i];
+    VkWriteDescriptorSet &w = writes[i];
+
+    const bool isSamplerWrite = (w.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER) ||
+                                (w.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    if (!isSamplerWrite || w.descriptorCount == 0 || !w.pImageInfo) {
+      continue;
+    }
+
+    const size_t base = imageInfos.size();
+    imageInfos.insert(imageInfos.end(), w.pImageInfo, w.pImageInfo + w.descriptorCount);
+    w.pImageInfo = imageInfos.data() + base;
+
+    for (uint32_t j = 0; j < w.descriptorCount; j++) {
+      VkDescriptorImageInfo &di = (VkDescriptorImageInfo &)w.pImageInfo[j];
+      if (di.sampler == VK_NULL_HANDLE) continue;
+
+      VkSampler forced = GetOrCreateForcedSampler(di.sampler, gfx);
+      if (forced != VK_NULL_HANDLE) {
+        di.sampler = forced;
+        anyChanged = true;
+      }
+    }
+  }
+
+  if (!anyChanged) {
+    o_vkUpdateDescriptorSets(device, descriptorWriteCount, pDescriptorWrites, descriptorCopyCount, pDescriptorCopies);
+    return;
+  }
+
+  o_vkUpdateDescriptorSets(device, descriptorWriteCount, writes.data(), descriptorCopyCount, pDescriptorCopies);
+}
+
+static VkResult VKAPI_PTR Detour_vkCreateDescriptorUpdateTemplate(
+    VkDevice device, const VkDescriptorUpdateTemplateCreateInfo *pCreateInfo,
+    const VkAllocationCallbacks *pAllocator,
+    VkDescriptorUpdateTemplate *pDescriptorUpdateTemplate) {
+  
+  static int s_templateCreateCount = 0;
+  s_templateCreateCount++;
+  if (s_templateCreateCount <= 5) {
+    HookLog("Vulkan: Detour_vkCreateDescriptorUpdateTemplate called (#%d) o_core=%p o_khr=%p entries=%u",
+            s_templateCreateCount, (void*)o_vkCreateDescriptorUpdateTemplate, 
+            (void*)o_vkCreateDescriptorUpdateTemplateKHR,
+            pCreateInfo ? pCreateInfo->descriptorUpdateEntryCount : 0);
+  }
+
+  PFN_vkCreateDescriptorUpdateTemplate origFn = o_vkCreateDescriptorUpdateTemplate;
+  if (!origFn) origFn = o_vkCreateDescriptorUpdateTemplateKHR;
+  if (!origFn) {
+    HookLog("Vulkan: ERROR - No original vkCreateDescriptorUpdateTemplate!");
+    return VK_ERROR_EXTENSION_NOT_PRESENT;
+  }
+
+  VkResult res = origFn(device, pCreateInfo, pAllocator, pDescriptorUpdateTemplate);
+  if (res != VK_SUCCESS || !pDescriptorUpdateTemplate || !pCreateInfo) return res;
+
+  DescriptorTemplateRecord rec;
+  rec.device = device;
+  rec.entries.reserve(pCreateInfo->descriptorUpdateEntryCount);
+
+  for (uint32_t i = 0; i < pCreateInfo->descriptorUpdateEntryCount; i++) {
+    const VkDescriptorUpdateTemplateEntry &e = pCreateInfo->pDescriptorUpdateEntries[i];
+    DescriptorTemplateEntry entry;
+    entry.descriptorType = e.descriptorType;
+    entry.descriptorCount = e.descriptorCount;
+    entry.offset = e.offset;
+    entry.stride = e.stride;
+    rec.entries.push_back(entry);
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(g_TemplateMutex);
+    g_TemplateRecords[*pDescriptorUpdateTemplate] = std::move(rec);
+  }
+
+  return res;
+}
+
+static void VKAPI_PTR Detour_vkDestroyDescriptorUpdateTemplate(
+    VkDevice device, VkDescriptorUpdateTemplate descriptorUpdateTemplate,
+    const VkAllocationCallbacks *pAllocator) {
+  
+  PFN_vkDestroyDescriptorUpdateTemplate origFn = o_vkDestroyDescriptorUpdateTemplate;
+  if (!origFn) origFn = o_vkDestroyDescriptorUpdateTemplateKHR;
+  if (!origFn) return;
+
+  {
+    std::lock_guard<std::mutex> lock(g_TemplateMutex);
+    g_TemplateRecords.erase(descriptorUpdateTemplate);
+  }
+
+  origFn(device, descriptorUpdateTemplate, pAllocator);
+}
+
+static void VKAPI_PTR Detour_vkUpdateDescriptorSetWithTemplate(
+    VkDevice device, VkDescriptorSet descriptorSet,
+    VkDescriptorUpdateTemplate descriptorUpdateTemplate, const void *pData) {
+  
+  static int s_templateUpdateCount = 0;
+  s_templateUpdateCount++;
+  if (s_templateUpdateCount <= 5) {
+    HookLog("Vulkan: Detour_vkUpdateDescriptorSetWithTemplate called (#%d) o_core=%p o_khr=%p",
+            s_templateUpdateCount, (void*)o_vkUpdateDescriptorSetWithTemplate, 
+            (void*)o_vkUpdateDescriptorSetWithTemplateKHR);
+  }
+
+  PFN_vkUpdateDescriptorSetWithTemplate origFn = o_vkUpdateDescriptorSetWithTemplate;
+  if (!origFn) origFn = o_vkUpdateDescriptorSetWithTemplateKHR;
+  if (!origFn) {
+    HookLog("Vulkan: ERROR - No original vkUpdateDescriptorSetWithTemplate!");
+    return;
+  }
+
+  if (!g_IPC || !g_IPC->GetSharedMem() || !pData) {
+    origFn(device, descriptorSet, descriptorUpdateTemplate, pData);
+    return;
+  }
+
+  const auto &gfx = GetActiveGraphicsConfig();
+  const bool afActive = (gfx.anisotropicFiltering != "default" && 
+                         !gfx.anisotropicFiltering.empty() && 
+                         gfx.anisotropicFiltering != "off");
+  const bool anyMip = (gfx.mipMapping != "default" && !gfx.mipMapping.empty()) ||
+                      (gfx.mipBias != "default" && !gfx.mipBias.empty()) ||
+                      (gfx.sgssaa);
+
+  if (!afActive && !anyMip) {
+    origFn(device, descriptorSet, descriptorUpdateTemplate, pData);
+    return;
+  }
+
+  DescriptorTemplateRecord rec;
+  {
+    std::lock_guard<std::mutex> lock(g_TemplateMutex);
+    auto it = g_TemplateRecords.find(descriptorUpdateTemplate);
+    if (it == g_TemplateRecords.end()) {
+      origFn(device, descriptorSet, descriptorUpdateTemplate, pData);
+      return;
+    }
+    rec = it->second;
+  }
+
+  std::vector<uint8_t> modifiedData;
+  bool anyChanged = false;
+
+  for (const auto &entry : rec.entries) {
+    const bool isSamplerType = (entry.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER) ||
+                               (entry.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    if (!isSamplerType) continue;
+
+    for (uint32_t j = 0; j < entry.descriptorCount; j++) {
+      size_t itemOffset = entry.offset + j * entry.stride;
+      const VkDescriptorImageInfo *imgInfo = 
+          reinterpret_cast<const VkDescriptorImageInfo *>(static_cast<const uint8_t *>(pData) + itemOffset);
+
+      if (imgInfo->sampler == VK_NULL_HANDLE) continue;
+
+      VkSampler forced = GetOrCreateForcedSampler(imgInfo->sampler, gfx);
+      if (forced != VK_NULL_HANDLE && forced != imgInfo->sampler) {
+        if (modifiedData.empty()) {
+          size_t totalSize = 0;
+          for (const auto &e : rec.entries) {
+            size_t end = e.offset + e.descriptorCount * e.stride;
+            if (end > totalSize) totalSize = end;
+          }
+          totalSize += sizeof(VkDescriptorImageInfo);
+          modifiedData.resize(totalSize);
+          memcpy(modifiedData.data(), pData, totalSize);
+        }
+
+        VkDescriptorImageInfo *modImgInfo = 
+            reinterpret_cast<VkDescriptorImageInfo *>(modifiedData.data() + itemOffset);
+        modImgInfo->sampler = forced;
+        anyChanged = true;
+      }
+    }
+  }
+
+  if (anyChanged && !modifiedData.empty()) {
+    origFn(device, descriptorSet, descriptorUpdateTemplate, modifiedData.data());
+  } else {
+    origFn(device, descriptorSet, descriptorUpdateTemplate, pData);
+  }
 }
 
 VkResult VKAPI_CALL Detour_vkCreateWin32SurfaceKHR(
@@ -2643,6 +3120,12 @@ VkResult VKAPI_CALL Detour_vkCreateDevice(
     g_Device = *pDevice;
     volkLoadDevice(g_Device);
     HookLog("Vulkan: Device Created (with injected queue & interop extensions)");
+
+    {
+      VkPhysicalDeviceProperties props = {};
+      vkGetPhysicalDeviceProperties(g_PhysDevice, &props);
+      g_MaxSamplerAnisotropy = props.limits.maxSamplerAnisotropy;
+    }
     
     // Initialize SystemMetricsCollector with adapter LUID for GPU stats
     // Get LUID from VkPhysicalDeviceIDProperties
@@ -2724,15 +3207,18 @@ void VKAPI_CALL Detour_vkGetDeviceQueue(VkDevice device,
        }
     }
 
-    // Populate Queue Instance Registry for Async Present Detection
+    VkQueueFlags flagsForQueue = 0;
+    if (g_Device == device && queueFamilyIndex < g_QueueFamilies.size()) {
+        flagsForQueue = g_QueueFamilies[queueFamilyIndex].flags;
+    }
+
+    if (flagsForQueue & VK_QUEUE_GRAPHICS_BIT) {
+        TrackGraphicsQueue(*pQueue);
+    }
+
     {
         std::lock_guard<std::mutex> qlock(g_QueueInstancesMutex);
-        
-        // Get flags from our tracked family info
-        VkQueueFlags flags = 0;
-        if (g_Device == device && queueFamilyIndex < g_QueueFamilies.size()) {
-            flags = g_QueueFamilies[queueFamilyIndex].flags;
-        }
+        VkQueueFlags flags = flagsForQueue;
         
         // Check if already registered
         bool alreadyRegistered = false;
@@ -2787,7 +3273,36 @@ void VKAPI_CALL Detour_vkGetDeviceQueue2(VkDevice device,
        }
     }
 
-    // Only capture the first queue (typically graphics+present capable)
+    VkQueueFlags flagsForQueue = 0;
+    if (g_Device == device && pQueueInfo->queueFamilyIndex < g_QueueFamilies.size()) {
+        flagsForQueue = g_QueueFamilies[pQueueInfo->queueFamilyIndex].flags;
+    }
+
+    if (flagsForQueue & VK_QUEUE_GRAPHICS_BIT) {
+        TrackGraphicsQueue(*pQueue);
+    }
+
+    {
+        std::lock_guard<std::mutex> qlock(g_QueueInstancesMutex);
+        VkQueueFlags flags = flagsForQueue;
+        bool alreadyRegistered = false;
+        for (const auto& qi : g_QueueInstances) {
+            if (qi.queue == *pQueue) {
+                alreadyRegistered = true;
+                break;
+            }
+        }
+        if (!alreadyRegistered) {
+            g_QueueInstances.push_back({*pQueue, pQueueInfo->queueFamilyIndex, pQueueInfo->queueIndex, flags});
+            const char* typeStr = "Unknown";
+            if (flags & VK_QUEUE_GRAPHICS_BIT) typeStr = "Graphics";
+            else if (flags & VK_QUEUE_COMPUTE_BIT) typeStr = "Compute";
+            else if (flags & VK_QUEUE_TRANSFER_BIT) typeStr = "Transfer";
+            HookLog("Vulkan: Queue %p registered (Queue2) (Family %d, Index %d, Type: %s, Flags: 0x%X)",
+                    *pQueue, pQueueInfo->queueFamilyIndex, pQueueInfo->queueIndex, typeStr, flags);
+        }
+    }
+
     if (g_Queue == VK_NULL_HANDLE) {
       g_Queue = *pQueue;
       g_QueueFamily = pQueueInfo->queueFamilyIndex;
@@ -2980,8 +3495,10 @@ VkResult VKAPI_CALL Detour_vkCreateSwapchainKHR(
   TryDiscoverAsyncQueue();
 
   VkSwapchainCreateInfoKHR modifiedCI = *pCreateInfo;
-  
-  g_FGCompat.OnSwapchainRecreation(); // Notify FG detection
+
+  if (pCreateInfo && pCreateInfo->oldSwapchain != VK_NULL_HANDLE) {
+    g_FGCompat.OnSwapchainRecreation();
+  }
 
     // VSync Override
     {
@@ -3024,6 +3541,7 @@ VkResult VKAPI_CALL Detour_vkCreateSwapchainKHR(
     sc.width = pCreateInfo->imageExtent.width;
     sc.height = pCreateInfo->imageExtent.height;
     sc.format = pCreateInfo->imageFormat;
+    sc.sharingMode = modifiedCI.imageSharingMode;
     EarlyLog("Vulkan: Swapchain created (%ux%u, format=%d)", sc.width, sc.height, sc.format);
 
     uint32_t count;
@@ -3045,8 +3563,10 @@ VkResult VKAPI_CALL Detour_vkCreateSwapchainKHR(
       attachment.samples = VK_SAMPLE_COUNT_1_BIT;
       attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
       attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-      attachment.initialLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-      attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+      // Image arrives in COLOR_ATTACHMENT_OPTIMAL (from our pre-render barrier)
+      // and leaves in COLOR_ATTACHMENT_OPTIMAL (our post-render barrier handles -> PRESENT_SRC)
+      attachment.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      attachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
       VkAttachmentReference color_attachment = {};
       color_attachment.attachment = 0;
@@ -3194,14 +3714,85 @@ Detour_vkQueueSubmit(VkQueue queue, uint32_t submitCount,
       }
   }
 
-  // FG: Track command list execution for real frame detection
-  // We check if this is likely the main graphics queue submission
-  if (g_Queue == VK_NULL_HANDLE || queue == g_Queue) {
-       g_QueueSubmitsThisFrame.fetch_add(submitCount, std::memory_order_relaxed);
+  bool countThisSubmit = IsTrackedGraphicsQueue(queue);
+  if (!countThisSubmit) {
+      int knownGfxQueues = g_TrackedGraphicsQueueCount.load(std::memory_order_relaxed);
+      if (knownGfxQueues == 0 && (g_Queue == VK_NULL_HANDLE || queue == g_Queue)) {
+          countThisSubmit = true;
+      }
+  }
+  if (countThisSubmit) {
+      g_QueueSubmitsThisFrame.fetch_add((int)submitCount, std::memory_order_relaxed);
   }
   
   if (!o_vkQueueSubmit) return VK_ERROR_INITIALIZATION_FAILED;
   return o_vkQueueSubmit(queue, submitCount, pSubmits, fence);
+}
+
+VkResult VKAPI_CALL
+Detour_vkQueueSubmit2(VkQueue queue, uint32_t submitCount,
+                      const VkSubmitInfo2 *pSubmits, VkFence fence) {
+  static int submit2Total = 0;
+  if (++submit2Total % 100 == 0) {
+      HookLog("Vulkan: Detour_vkQueueSubmit2 (Total %d, queue=%p)", submit2Total, queue);
+  }
+
+  if (g_InVulkanHook) {
+      if (o_vkQueueSubmit2) return o_vkQueueSubmit2(queue, submitCount, pSubmits, fence);
+      return VK_SUCCESS;
+  }
+  VulkanHookGuard guard;
+
+  if (!o_vkQueueSubmit2 && o_vkGetDeviceProcAddr && g_Device != VK_NULL_HANDLE) {
+      o_vkQueueSubmit2 = (PFN_vkQueueSubmit2)o_vkGetDeviceProcAddr(g_Device, "vkQueueSubmit2");
+  }
+
+  bool countThisSubmit = IsTrackedGraphicsQueue(queue);
+  if (!countThisSubmit) {
+      int knownGfxQueues = g_TrackedGraphicsQueueCount.load(std::memory_order_relaxed);
+      if (knownGfxQueues == 0 && (g_Queue == VK_NULL_HANDLE || queue == g_Queue)) {
+          countThisSubmit = true;
+      }
+  }
+  if (countThisSubmit) {
+      g_QueueSubmitsThisFrame.fetch_add((int)submitCount, std::memory_order_relaxed);
+  }
+
+  if (!o_vkQueueSubmit2) return VK_ERROR_INITIALIZATION_FAILED;
+  return o_vkQueueSubmit2(queue, submitCount, pSubmits, fence);
+}
+
+VkResult VKAPI_CALL
+Detour_vkQueueSubmit2KHR(VkQueue queue, uint32_t submitCount,
+                         const VkSubmitInfo2 *pSubmits, VkFence fence) {
+  static int submit2KHRTotal = 0;
+  if (++submit2KHRTotal % 100 == 0) {
+      HookLog("Vulkan: Detour_vkQueueSubmit2KHR (Total %d, queue=%p)", submit2KHRTotal, queue);
+  }
+
+  if (g_InVulkanHook) {
+      if (o_vkQueueSubmit2KHR) return o_vkQueueSubmit2KHR(queue, submitCount, pSubmits, fence);
+      return VK_SUCCESS;
+  }
+  VulkanHookGuard guard;
+
+  if (!o_vkQueueSubmit2KHR && o_vkGetDeviceProcAddr && g_Device != VK_NULL_HANDLE) {
+      o_vkQueueSubmit2KHR = (PFN_vkQueueSubmit2)o_vkGetDeviceProcAddr(g_Device, "vkQueueSubmit2KHR");
+  }
+
+  bool countThisSubmit = IsTrackedGraphicsQueue(queue);
+  if (!countThisSubmit) {
+      int knownGfxQueues = g_TrackedGraphicsQueueCount.load(std::memory_order_relaxed);
+      if (knownGfxQueues == 0 && (g_Queue == VK_NULL_HANDLE || queue == g_Queue)) {
+          countThisSubmit = true;
+      }
+  }
+  if (countThisSubmit) {
+      g_QueueSubmitsThisFrame.fetch_add((int)submitCount, std::memory_order_relaxed);
+  }
+
+  if (!o_vkQueueSubmit2KHR) return VK_ERROR_INITIALIZATION_FAILED;
+  return o_vkQueueSubmit2KHR(queue, submitCount, pSubmits, fence);
 }
 
 VkResult VKAPI_CALL
@@ -3226,6 +3817,10 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
   bool isRealFrame = (submitCount > 0);
   g_FGCompat.RecordFrame(submitCount);
 
+  bool fgRuntimeDetected = (g_FGCompat.DetectLoadedFGRuntime() != FGCompatibility::FGType::None);
+  bool fgSuspended = fgRuntimeDetected && g_FGCompat.IsSuspended();
+  bool allowOverlayFrame = (!fgRuntimeDetected || isRealFrame) && !fgSuspended;
+
   // Async Present Detection - Check if present queue is compute-only
   static bool g_AsyncPresentDetected = false;
   static VkQueue g_GraphicsQueueForOverlay = VK_NULL_HANDLE;
@@ -3248,6 +3843,12 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
       if (g_GraphicsQueueForOverlay) {
         HookLog("Vulkan: Found graphics queue %p (Family %d) for overlay rendering", 
                 g_GraphicsQueueForOverlay, g_OverlayQueueFamily);
+
+        if (g_GraphicsQueueForOverlay != VK_NULL_HANDLE && g_OverlayQueueFamily != UINT32_MAX) {
+          g_Queue = g_GraphicsQueueForOverlay;
+          g_QueueFamily = g_OverlayQueueFamily;
+          TrackGraphicsQueue(g_GraphicsQueueForOverlay);
+        }
         
         if (g_PresentQueueFamily != g_OverlayQueueFamily) {
           HookLog("Vulkan: WARNING - Present and overlay queues are in different families");
@@ -3468,6 +4069,13 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
       loggedOnce = true;
     }
 
+    // DEBUG: Track overlay render decisions
+    static int dbgPresentNum = 0;
+    static int dbgOverlayDrawn = 0;
+    static int dbgOverlaySkipped = 0;
+    static int dbgLastLogFrame = 0;
+    dbgPresentNum++;
+    
     if (showOverlay) {
       // Find swapchain
       bool foundSwapchain = false;
@@ -3484,12 +4092,22 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
           }
           if (!sc.framebuffers[idx]) {
             HookLog("Vulkan: ERROR - framebuffer[%u] is NULL", idx);
+            dbgOverlaySkipped++;
             break;
           }
           
           // FG: Only render overlay on REAL frames
           // Interpolated frames often crash if we touch them or submit commands to wrong queue state
-          if (isRealFrame) {
+          if (!allowOverlayFrame) {
+              dbgOverlaySkipped++;
+              if (dbgPresentNum - dbgLastLogFrame > 60) {
+                HookLog("Vulkan: DEBUG - Overlay SKIPPED (FG/notReal) present#%d isReal=%d fgSuspended=%d",
+                        dbgPresentNum, isRealFrame, fgSuspended);
+                dbgLastLogFrame = dbgPresentNum;
+              }
+              break;
+          }
+          
               ImGui_ImplVulkan_NewFrame();
               g_SharedOverlay.BeginFrame();
     
@@ -3509,20 +4127,93 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
     
               // Draw into Command Buffer using in-flight frame ring buffer
               // to avoid blocking the game thread
-              static const int MAX_FRAMES_IN_FLIGHT = 5; // Use 5 frames for smoother overlay at high GPU load
+              static constexpr int MAX_FRAMES_IN_FLIGHT = 5; // Use 5 frames for smoother overlay at high GPU load
               static VkFence inFlightFences[MAX_FRAMES_IN_FLIGHT] = {};
               static VkCommandBuffer inFlightCBs[MAX_FRAMES_IN_FLIGHT] = {};
+              static VkSemaphore inFlightSemaphores[MAX_FRAMES_IN_FLIGHT] = {};
               static int currentFrame = 0;
               static bool fencesCreated = false;
-    
+              static uint32_t commandPoolQueueFamily = UINT32_MAX;
+              struct RetiredOverlayPool {
+                VkCommandPool pool;
+                VkFence fences[MAX_FRAMES_IN_FLIGHT];
+                VkSemaphore semaphores[MAX_FRAMES_IN_FLIGHT];
+                bool valid;
+              };
+              static RetiredOverlayPool retiredPools[4] = {};
+
+              for (int r = 0; r < 4; r++) {
+                if (!retiredPools[r].valid) continue;
+                bool allDone = true;
+                for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+                  VkFence rf = retiredPools[r].fences[i];
+                  if (!rf) continue;
+                  VkResult st = vkWaitForFences(g_Device, 1, &rf, VK_TRUE, 0);
+                  if (st == VK_TIMEOUT) {
+                    allDone = false;
+                    break;
+                  }
+                }
+                if (allDone) {
+                  for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+                    if (retiredPools[r].fences[i]) {
+                      vkDestroyFence(g_Device, retiredPools[r].fences[i], nullptr);
+                      retiredPools[r].fences[i] = VK_NULL_HANDLE;
+                    }
+                    if (retiredPools[r].semaphores[i]) {
+                      vkDestroySemaphore(g_Device, retiredPools[r].semaphores[i], nullptr);
+                      retiredPools[r].semaphores[i] = VK_NULL_HANDLE;
+                    }
+                  }
+                  if (retiredPools[r].pool) {
+                    vkDestroyCommandPool(g_Device, retiredPools[r].pool, nullptr);
+                    retiredPools[r].pool = VK_NULL_HANDLE;
+                  }
+                  retiredPools[r].valid = false;
+                }
+              }
+
+              if (commandPoolQueueFamily != UINT32_MAX && commandPoolQueueFamily != g_QueueFamily) {
+                if (g_CommandPool != VK_NULL_HANDLE) {
+                  int freeSlot = -1;
+                  for (int r = 0; r < 4; r++) {
+                    if (!retiredPools[r].valid) {
+                      freeSlot = r;
+                      break;
+                    }
+                  }
+                  if (freeSlot < 0) {
+                    break;
+                  }
+
+                  retiredPools[freeSlot].pool = g_CommandPool;
+                  for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+                    retiredPools[freeSlot].fences[i] = inFlightFences[i];
+                    retiredPools[freeSlot].semaphores[i] = inFlightSemaphores[i];
+                    inFlightFences[i] = VK_NULL_HANDLE;
+                    inFlightSemaphores[i] = VK_NULL_HANDLE;
+                    inFlightCBs[i] = VK_NULL_HANDLE;
+                  }
+                  retiredPools[freeSlot].valid = true;
+                }
+
+                g_CommandPool = VK_NULL_HANDLE;
+                fencesCreated = false;
+                currentFrame = 0;
+                commandPoolQueueFamily = UINT32_MAX;
+              }
+
               if (!g_CommandPool) {
                 VkCommandPoolCreateInfo pool_info = {
                     VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
                 pool_info.queueFamilyIndex = g_QueueFamily;
                 pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
                 vkCreateCommandPool(g_Device, &pool_info, nullptr, &g_CommandPool);
+                if (g_CommandPool != VK_NULL_HANDLE) {
+                  commandPoolQueueFamily = g_QueueFamily;
+                }
               }
-    
+
               // Create fences and command buffers once
               if (!fencesCreated) {
                 VkCommandBufferAllocateInfo alloc_info = {
@@ -3537,19 +4228,40 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
                 for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
                   vkCreateFence(g_Device, &fenceInfo, nullptr, &inFlightFences[i]);
                 }
+                VkSemaphoreCreateInfo semInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+                for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+                  vkCreateSemaphore(g_Device, &semInfo, nullptr, &inFlightSemaphores[i]);
+                }
                 fencesCreated = true;
               }
     
               // Wait for this frame's previous submission to complete
               // Use short timeout (2ms) to prevent overlay flashing at high GPU load
               // while still not significantly impacting frame pacing
-              VkFence fence = inFlightFences[currentFrame];
-              VkCommandBuffer cb = inFlightCBs[currentFrame];
-    
-              VkResult fenceResult =
-                  vkWaitForFences(g_Device, 1, &fence, VK_TRUE, 0); // Non-blocking for zero latency
-              if (fenceResult == VK_TIMEOUT) {
-                // Previous overlay work not done - skip this frame (rare with 5 in-flight)
+              VkFence fence = VK_NULL_HANDLE;
+              VkCommandBuffer cb = VK_NULL_HANDLE;
+
+              bool foundFreeSlot = false;
+              for (int attempt = 0; attempt < MAX_FRAMES_IN_FLIGHT; attempt++) {
+                fence = inFlightFences[currentFrame];
+                cb = inFlightCBs[currentFrame];
+                VkResult fenceResult =
+                    vkWaitForFences(g_Device, 1, &fence, VK_TRUE, 0); // Non-blocking for zero latency
+                if (fenceResult != VK_TIMEOUT) {
+                  foundFreeSlot = true;
+                  break;
+                }
+                currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+              }
+              if (!foundFreeSlot) {
+                // Previous overlay work not done - skip this frame
+                dbgOverlaySkipped++;
+                if (dbgPresentNum - dbgLastLogFrame > 60) {
+                  HookLog("Vulkan: DEBUG - Overlay SKIPPED (no free fence slot) frame=%d drawn=%d skipped=%d", 
+                          dbgPresentNum, dbgOverlayDrawn, dbgOverlaySkipped);
+                  dbgLastLogFrame = dbgPresentNum;
+                }
+                currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
                 break;
               }
               vkResetFences(g_Device, 1, &fence);
@@ -3566,6 +4278,35 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
               rp_begin.framebuffer = sc.framebuffers[idx];
               rp_begin.renderArea.offset = {0, 0};
               rp_begin.renderArea.extent = {sc.width, sc.height};
+
+              // CRITICAL: Wait for ALL prior rendering to complete before drawing overlay.
+              // The game may not provide wait semaphores (waitSems=0), so we must ensure
+              // synchronization via pipeline barriers with proper stage/access masks.
+              VkImageMemoryBarrier toColor = {};
+              toColor.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+              // srcAccessMask: Wait for prior color writes to be visible
+              toColor.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+              toColor.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+              toColor.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+              toColor.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+              toColor.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+              toColor.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+              toColor.image = sc.images[idx];
+              toColor.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+              toColor.subresourceRange.baseMipLevel = 0;
+              toColor.subresourceRange.levelCount = 1;
+              toColor.subresourceRange.baseArrayLayer = 0;
+              toColor.subresourceRange.layerCount = 1;
+
+              // srcStageMask: Wait for ALL prior commands (game's rendering) to complete
+              // This is essential when the game provides no wait semaphores
+              vkCmdPipelineBarrier(cb,
+                                   VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                   0,
+                                   0, nullptr,
+                                   0, nullptr,
+                                   1, &toColor);
               vkCmdBeginRenderPass(cb, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
     
               // Set viewport and scissor for the overlay rendering
@@ -3586,12 +4327,48 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
               ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cb);
     
               vkCmdEndRenderPass(cb);
+
+              VkImageMemoryBarrier toPresent = {};
+              toPresent.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+              toPresent.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+              toPresent.dstAccessMask = 0;
+              toPresent.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+              toPresent.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+              toPresent.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+              toPresent.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+              toPresent.image = sc.images[idx];
+              toPresent.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+              toPresent.subresourceRange.baseMipLevel = 0;
+              toPresent.subresourceRange.levelCount = 1;
+              toPresent.subresourceRange.baseArrayLayer = 0;
+              toPresent.subresourceRange.layerCount = 1;
+
+              vkCmdPipelineBarrier(cb,
+                                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                   VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                   0,
+                                   0, nullptr,
+                                   0, nullptr,
+                                   1, &toPresent);
               vkEndCommandBuffer(cb);
     
+              VkSemaphore overlayDoneSem = inFlightSemaphores[currentFrame];
+
               VkSubmitInfo submit = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
               submit.commandBufferCount = 1;
               submit.pCommandBuffers = &cb;
-              // Note: Don't wait on pPresentInfo->pWaitSemaphores here!
+              submit.signalSemaphoreCount = 1;
+              submit.pSignalSemaphores = &overlayDoneSem;
+
+              // Wait on the app's present wait semaphores (GPU-side dependency only).
+              // This prevents racing the game's rendering and reduces overlay flicker.
+              std::vector<VkPipelineStageFlags> overlayWaitStages;
+              if (pPresentInfo && pPresentInfo->waitSemaphoreCount > 0 && pPresentInfo->pWaitSemaphores) {
+                overlayWaitStages.resize(pPresentInfo->waitSemaphoreCount, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+                submit.waitSemaphoreCount = pPresentInfo->waitSemaphoreCount;
+                submit.pWaitSemaphores = pPresentInfo->pWaitSemaphores;
+                submit.pWaitDstStageMask = overlayWaitStages.data();
+              }
     
               // Choose queue for overlay submission
               VkQueue overlayQueue = g_Queue;
@@ -3607,11 +4384,16 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
                 break;
               }
     
+              dbgOverlayDrawn++;
+              
+              // DEBUG: Log every 120 frames to track overlay health
               static int frameCount = 0;
-              if (frameCount < 3) {
-                HookLog("Vulkan: Submitting overlay draw (frame %d, cb=%p, using "
-                        "overlay_queue=%p, present_queue=%p, async=%d)",
-                        frameCount, cb, overlayQueue, queue, g_AsyncPresentDetected);
+              if (frameCount < 3 || (dbgPresentNum - dbgLastLogFrame > 120)) {
+                HookLog("Vulkan: Submitting overlay (present#%d, drawn=%d, skipped=%d, imgIdx=%u, sameQ=%d, waitSems=%u)",
+                        dbgPresentNum, dbgOverlayDrawn, dbgOverlaySkipped, idx,
+                        (overlayQueue == queue) ? 1 : 0,
+                        pPresentInfo->waitSemaphoreCount);
+                dbgLastLogFrame = dbgPresentNum;
               }
               frameCount++;
     
@@ -3621,11 +4403,31 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
     
               // Advance to next frame slot
               currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
-          } // if (isRealFrame)
+
+              // Synchronization strategy depends on whether overlay and present use the same queue
+              // CRITICAL: We already consumed the app's wait semaphores in our overlay submit above.
+              // Binary semaphores can only be waited on ONCE per signal.
+              // We MUST NOT pass the original pPresentInfo because it still references those semaphores!
+              VkPresentInfoKHR modifiedPresent = *pPresentInfo;
+              
+              if (overlayQueue == queue) {
+                // SAME QUEUE: Vulkan guarantees submission order execution.
+                // Overlay submit completes before present executes (queue ordering).
+                // Set waitSemaphoreCount=0 since we already consumed them.
+                modifiedPresent.waitSemaphoreCount = 0;
+                modifiedPresent.pWaitSemaphores = nullptr;
+                return o_vkQueuePresentKHR(queue, &modifiedPresent);
+              } else {
+                // DIFFERENT QUEUES (async present): Need our semaphore to synchronize
+                modifiedPresent.waitSemaphoreCount = 1;
+                modifiedPresent.pWaitSemaphores = &overlayDoneSem;
+                return o_vkQueuePresentKHR(queue, &modifiedPresent);
+              }
           break;
         }
       }
       if (!foundSwapchain) {
+        dbgOverlaySkipped++;
         static bool loggedOnce = false;
         if (!loggedOnce) {
           HookLog("Vulkan: WARNING - No matching swapchain found in present "
@@ -3843,8 +4645,42 @@ PFN_vkVoidFunction VKAPI_CALL Detour_vkGetInstanceProcAddr(VkInstance instance,
     return (PFN_vkVoidFunction)Detour_vkCreateInstance;
   if (strcmp(pName, "vkCreateDevice") == 0)
     return (PFN_vkVoidFunction)Detour_vkCreateDevice;
-  if (strcmp(pName, "vkCreateSampler") == 0)
+  if (strcmp(pName, "vkCreateSampler") == 0) {
+    o_vkCreateSampler = (PFN_vkCreateSampler)res;
     return (PFN_vkVoidFunction)Detour_vkCreateSampler;
+  }
+  if (strcmp(pName, "vkUpdateDescriptorSets") == 0) {
+    o_vkUpdateDescriptorSets = (PFN_vkUpdateDescriptorSets)res;
+    return (PFN_vkVoidFunction)Detour_vkUpdateDescriptorSets;
+  }
+  if (strcmp(pName, "vkDestroySampler") == 0) {
+    o_vkDestroySampler = (PFN_vkDestroySampler)res;
+    return (PFN_vkVoidFunction)Detour_vkDestroySampler;
+  }
+  if (strcmp(pName, "vkCreateDescriptorUpdateTemplate") == 0) {
+    o_vkCreateDescriptorUpdateTemplate = (PFN_vkCreateDescriptorUpdateTemplate)res;
+    return (PFN_vkVoidFunction)Detour_vkCreateDescriptorUpdateTemplate;
+  }
+  if (strcmp(pName, "vkCreateDescriptorUpdateTemplateKHR") == 0) {
+    o_vkCreateDescriptorUpdateTemplateKHR = (PFN_vkCreateDescriptorUpdateTemplate)res;
+    return (PFN_vkVoidFunction)Detour_vkCreateDescriptorUpdateTemplate;
+  }
+  if (strcmp(pName, "vkDestroyDescriptorUpdateTemplate") == 0) {
+    o_vkDestroyDescriptorUpdateTemplate = (PFN_vkDestroyDescriptorUpdateTemplate)res;
+    return (PFN_vkVoidFunction)Detour_vkDestroyDescriptorUpdateTemplate;
+  }
+  if (strcmp(pName, "vkDestroyDescriptorUpdateTemplateKHR") == 0) {
+    o_vkDestroyDescriptorUpdateTemplateKHR = (PFN_vkDestroyDescriptorUpdateTemplate)res;
+    return (PFN_vkVoidFunction)Detour_vkDestroyDescriptorUpdateTemplate;
+  }
+  if (strcmp(pName, "vkUpdateDescriptorSetWithTemplate") == 0) {
+    o_vkUpdateDescriptorSetWithTemplate = (PFN_vkUpdateDescriptorSetWithTemplate)res;
+    return (PFN_vkVoidFunction)Detour_vkUpdateDescriptorSetWithTemplate;
+  }
+  if (strcmp(pName, "vkUpdateDescriptorSetWithTemplateKHR") == 0) {
+    o_vkUpdateDescriptorSetWithTemplateKHR = (PFN_vkUpdateDescriptorSetWithTemplate)res;
+    return (PFN_vkVoidFunction)Detour_vkUpdateDescriptorSetWithTemplate;
+  }
   if (strcmp(pName, "vkCreateWin32SurfaceKHR") == 0)
     return (PFN_vkVoidFunction)Detour_vkCreateWin32SurfaceKHR;
   if (strcmp(pName, "vkGetInstanceProcAddr") == 0)
@@ -3888,6 +4724,16 @@ PFN_vkVoidFunction VKAPI_CALL Detour_vkGetInstanceProcAddr(VkInstance instance,
   {
     o_vkQueueSubmit = (PFN_vkQueueSubmit)res;
     return (PFN_vkVoidFunction)Detour_vkQueueSubmit;
+  }
+  if (strcmp(pName, "vkQueueSubmit2") == 0)
+  {
+    o_vkQueueSubmit2 = (PFN_vkQueueSubmit2)res;
+    return (PFN_vkVoidFunction)Detour_vkQueueSubmit2;
+  }
+  if (strcmp(pName, "vkQueueSubmit2KHR") == 0)
+  {
+    o_vkQueueSubmit2KHR = (PFN_vkQueueSubmit2)res;
+    return (PFN_vkVoidFunction)Detour_vkQueueSubmit2KHR;
   }
 
   return res;
@@ -3934,6 +4780,38 @@ PFN_vkVoidFunction VKAPI_CALL Detour_vkGetDeviceProcAddr(VkDevice device,
     o_vkCreateSampler = (PFN_vkCreateSampler)res;
     return (PFN_vkVoidFunction)Detour_vkCreateSampler;
   }
+  if (strcmp(pName, "vkUpdateDescriptorSets") == 0) {
+    o_vkUpdateDescriptorSets = (PFN_vkUpdateDescriptorSets)res;
+    return (PFN_vkVoidFunction)Detour_vkUpdateDescriptorSets;
+  }
+  if (strcmp(pName, "vkDestroySampler") == 0) {
+    o_vkDestroySampler = (PFN_vkDestroySampler)res;
+    return (PFN_vkVoidFunction)Detour_vkDestroySampler;
+  }
+  if (strcmp(pName, "vkCreateDescriptorUpdateTemplate") == 0) {
+    o_vkCreateDescriptorUpdateTemplate = (PFN_vkCreateDescriptorUpdateTemplate)res;
+    return (PFN_vkVoidFunction)Detour_vkCreateDescriptorUpdateTemplate;
+  }
+  if (strcmp(pName, "vkCreateDescriptorUpdateTemplateKHR") == 0) {
+    o_vkCreateDescriptorUpdateTemplateKHR = (PFN_vkCreateDescriptorUpdateTemplate)res;
+    return (PFN_vkVoidFunction)Detour_vkCreateDescriptorUpdateTemplate;
+  }
+  if (strcmp(pName, "vkDestroyDescriptorUpdateTemplate") == 0) {
+    o_vkDestroyDescriptorUpdateTemplate = (PFN_vkDestroyDescriptorUpdateTemplate)res;
+    return (PFN_vkVoidFunction)Detour_vkDestroyDescriptorUpdateTemplate;
+  }
+  if (strcmp(pName, "vkDestroyDescriptorUpdateTemplateKHR") == 0) {
+    o_vkDestroyDescriptorUpdateTemplateKHR = (PFN_vkDestroyDescriptorUpdateTemplate)res;
+    return (PFN_vkVoidFunction)Detour_vkDestroyDescriptorUpdateTemplate;
+  }
+  if (strcmp(pName, "vkUpdateDescriptorSetWithTemplate") == 0) {
+    o_vkUpdateDescriptorSetWithTemplate = (PFN_vkUpdateDescriptorSetWithTemplate)res;
+    return (PFN_vkVoidFunction)Detour_vkUpdateDescriptorSetWithTemplate;
+  }
+  if (strcmp(pName, "vkUpdateDescriptorSetWithTemplateKHR") == 0) {
+    o_vkUpdateDescriptorSetWithTemplateKHR = (PFN_vkUpdateDescriptorSetWithTemplate)res;
+    return (PFN_vkVoidFunction)Detour_vkUpdateDescriptorSetWithTemplate;
+  }
   if (strcmp(pName, "vkCreateImage") == 0) {
     o_vkCreateImage = (PFN_vkCreateImage)res;
     return (PFN_vkVoidFunction)Detour_vkCreateImage;
@@ -3957,6 +4835,14 @@ PFN_vkVoidFunction VKAPI_CALL Detour_vkGetDeviceProcAddr(VkDevice device,
   if (strcmp(pName, "vkQueueSubmit") == 0) {
     o_vkQueueSubmit = (PFN_vkQueueSubmit)res;
     return (PFN_vkVoidFunction)Detour_vkQueueSubmit;
+  }
+  if (strcmp(pName, "vkQueueSubmit2") == 0) {
+    o_vkQueueSubmit2 = (PFN_vkQueueSubmit2)res;
+    return (PFN_vkVoidFunction)Detour_vkQueueSubmit2;
+  }
+  if (strcmp(pName, "vkQueueSubmit2KHR") == 0) {
+    o_vkQueueSubmit2KHR = (PFN_vkQueueSubmit2)res;
+    return (PFN_vkVoidFunction)Detour_vkQueueSubmit2KHR;
   }
   if (strcmp(pName, "vkGetDeviceProcAddr") == 0)
     return (PFN_vkVoidFunction)Detour_vkGetDeviceProcAddr;
@@ -4008,6 +4894,39 @@ void VulkanHook::Init() {
              (void **)&o_vkCreateDevice);
   CreateHook("vkCreateWin32SurfaceKHR", (void *)&Detour_vkCreateWin32SurfaceKHR,
              (void **)&o_vkCreateWin32SurfaceKHR);
+
+  // Fallback: some games call vulkan-1.dll exports directly (no ProcAddr lookup).
+  // These exports appear safe to hook and are required for overlay/capture to trigger.
+  CreateHook("vkQueuePresentKHR", (void *)&Detour_vkQueuePresentKHR,
+             (void **)&o_vkQueuePresentKHR);
+  CreateHook("vkQueueSubmit", (void *)&Detour_vkQueueSubmit,
+             (void **)&o_vkQueueSubmit);
+  CreateHook("vkQueueSubmit2", (void *)&Detour_vkQueueSubmit2,
+             (void **)&o_vkQueueSubmit2);
+  CreateHook("vkQueueSubmit2KHR", (void *)&Detour_vkQueueSubmit2KHR,
+             (void **)&o_vkQueueSubmit2KHR);
+  CreateHook("vkUpdateDescriptorSets", (void *)&Detour_vkUpdateDescriptorSets,
+             (void **)&o_vkUpdateDescriptorSets);
+  CreateHook("vkDestroySampler", (void *)&Detour_vkDestroySampler,
+             (void **)&o_vkDestroySampler);
+  CreateHook("vkCreateSwapchainKHR", (void *)&Detour_vkCreateSwapchainKHR,
+             (void **)&o_vkCreateSwapchainKHR);
+
+  // Critical for AF forcing - game may call these directly without ProcAddr lookup
+  CreateHook("vkCreateSampler", (void *)&Detour_vkCreateSampler,
+             (void **)&o_vkCreateSampler);
+  CreateHook("vkCreateDescriptorUpdateTemplate", (void *)&Detour_vkCreateDescriptorUpdateTemplate,
+             (void **)&o_vkCreateDescriptorUpdateTemplate);
+  CreateHook("vkCreateDescriptorUpdateTemplateKHR", (void *)&Detour_vkCreateDescriptorUpdateTemplate,
+             (void **)&o_vkCreateDescriptorUpdateTemplateKHR);
+  CreateHook("vkDestroyDescriptorUpdateTemplate", (void *)&Detour_vkDestroyDescriptorUpdateTemplate,
+             (void **)&o_vkDestroyDescriptorUpdateTemplate);
+  CreateHook("vkDestroyDescriptorUpdateTemplateKHR", (void *)&Detour_vkDestroyDescriptorUpdateTemplate,
+             (void **)&o_vkDestroyDescriptorUpdateTemplateKHR);
+  CreateHook("vkUpdateDescriptorSetWithTemplate", (void *)&Detour_vkUpdateDescriptorSetWithTemplate,
+             (void **)&o_vkUpdateDescriptorSetWithTemplate);
+  CreateHook("vkUpdateDescriptorSetWithTemplateKHR", (void *)&Detour_vkUpdateDescriptorSetWithTemplate,
+             (void **)&o_vkUpdateDescriptorSetWithTemplateKHR);
 }
 
 void VulkanHook::Shutdown() {

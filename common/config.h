@@ -6,9 +6,7 @@
 #include <vector>
 #include <map>
 
-#define CAPTURE_VERSION "1.1.0-dev"
-// Use predefined macros for build date/time
-#define BUILD_TIMESTAMP __DATE__ " " __TIME__
+#include "build_version.h"
 
 struct AudioConfig {
   enum SourceType { SystemAudio, Microphone, AppAudio };

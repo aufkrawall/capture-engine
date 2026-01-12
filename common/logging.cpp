@@ -1,4 +1,5 @@
 #include "logging.h"
+#include "config.h"
 #include <cstdarg>
 #include <cstdio>
 #include <ctime>
@@ -15,6 +16,10 @@ void Log_Init(const std::string &filename) {
   // Use filesystem to resolve absolute if needed, but relative usually works
   // for cwd
   g_LogFile = fopen(filename.c_str(), "w"); // Overwrite on new run
+  if (g_LogFile) {
+    fprintf(g_LogFile, "[BUILD] Version=%s Built=%s\\n", CAPTURE_VERSION, BUILD_TIMESTAMP);
+    fflush(g_LogFile);
+  }
 }
 
 void Log_Shutdown() {

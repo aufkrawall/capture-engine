@@ -12,6 +12,7 @@ import hashlib
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from multiprocessing import cpu_count
+import re
 
 # --- Configuration ---
 BUILD_DIR_NAME = "build"
@@ -93,6 +94,40 @@ def run_command(cmd, env=None, cwd=None, input_str=None, fail_exit=True):
         if fail_exit:
             sys.exit(1)
         return ""
+
+def bump_and_write_build_version():
+    version_path = os.path.join(PROJECT_ROOT, "common", "build_version.h")
+    os.makedirs(os.path.dirname(version_path), exist_ok=True)
+
+    build_number = 0
+    if os.path.exists(version_path):
+        try:
+            with open(version_path, "r", encoding="utf-8") as f:
+                txt = f.read()
+            m = re.search(r"#define\s+BUILD_NUMBER\s+(\d+)", txt)
+            if m:
+                build_number = int(m.group(1))
+        except Exception as e:
+            log(f"Warning: Failed to read existing build version: {e}")
+
+    build_number += 1
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    version_str = f"1.1.0-dev+build.{build_number}"
+
+    contents = (
+        "#pragma once\n\n"
+        f"#define BUILD_NUMBER {build_number}\n"
+        f"#define CAPTURE_VERSION \"{version_str}\"\n"
+        f"#define BUILD_TIMESTAMP \"{timestamp}\"\n"
+    )
+
+    try:
+        with open(version_path, "w", encoding="utf-8") as f:
+            f.write(contents)
+        log(f"Build version bumped: {version_str}")
+    except Exception as e:
+        log(f"ERROR: Failed to write {version_path}: {e}")
+        sys.exit(1)
 
 def setup_msys2():
     if not os.path.exists(MSYS2_DIR):
@@ -934,6 +969,24 @@ def compile_testapps(env, clang_exe, cflags):
             run_command(cmd, env=env)
             log(f"Built: {dx9_exe_x86}")
 
+    # DX10 Test App
+    dx10_src = os.path.join(testapp_src_dir, "dx10_test.cpp")
+    dx10_exe = os.path.join(testapp_bin_dir, "dx10_test.exe")
+    if os.path.exists(dx10_src):
+        log("Compiling dx10_test.exe...")
+        dx10_ldflags = ["-static", "-static-libgcc", "-static-libstdc++",
+                        "-ld3d10", "-ldxgi", "-ld3dcompiler", "-lgdi32", "-luser32", "-lshcore"]
+        cmd = [clang_exe] + cflags + [dx10_src] + dx10_ldflags + ["-o", dx10_exe]
+        run_command(cmd, env=env)
+        log(f"Built: {dx10_exe}")
+
+        if have_x86:
+            log("Compiling dx10_test.exe (x86)...")
+            dx10_exe_x86 = os.path.join(x86_bin_dir, "dx10_test.exe")
+            cmd = [clang_exe_x86] + cflags_x86 + [dx10_src] + dx10_ldflags + ["-o", dx10_exe_x86]
+            run_command(cmd, env=env)
+            log(f"Built: {dx10_exe_x86}")
+
     # Vulkan Test App
     vulkan_src = os.path.join(testapp_src_dir, "vulkan_test.cpp")
     vulkan_exe = os.path.join(testapp_bin_dir, "vulkan_test.exe")
@@ -1313,6 +1366,8 @@ def main():
         except: pass
     
     log("=== Starting Build ===")
+
+    bump_and_write_build_version()
     
     # Always clean object files to avoid struct layout mismatches
     if os.path.exists(OBJ_DIR):

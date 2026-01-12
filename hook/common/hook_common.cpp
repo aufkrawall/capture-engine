@@ -157,6 +157,16 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
           HANDLE hFile = CreateFileA(fullLogPath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
                                     NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, NULL);
           if (hFile != INVALID_HANDLE_VALUE) {
+              LARGE_INTEGER sz;
+              sz.QuadPart = 0;
+              if (GetFileSizeEx(hFile, &sz) && sz.QuadPart == 0) {
+                  char header[512];
+                  int hlen = snprintf(header, sizeof(header), "[BUILD] Version=%s Built=%s\r\n", CAPTURE_VERSION, BUILD_TIMESTAMP);
+                  if (hlen > 0) {
+                      DWORD hwritten;
+                      WriteFile(hFile, header, (DWORD)hlen, &hwritten, NULL);
+                  }
+              }
               DWORD written;
               WriteFile(hFile, s_lineBuffer, len, &written, NULL);
               WriteFile(hFile, "\r\n", 2, &written, NULL);
