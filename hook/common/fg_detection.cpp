@@ -34,14 +34,13 @@ const char* FGCompatibility::GetFGTypeName(FGType type) const {
 }
 
 FGCompatibility::FGType FGCompatibility::DetectLoadedFGRuntime() {
-    // Only detect once per session to avoid overhead
-    static bool detectionDone = false;
-    static FGType cachedResult = FGType::None;
-    
-    if (detectionDone) {
-        return cachedResult;
+    int64_t now = GetCurrentTimeUs();
+    int64_t last = lastRuntimeDetectUs.load();
+    if (last != 0 && (now - last) < 500000) {
+        return detectedRuntime.load();
     }
-    
+    lastRuntimeDetectUs.store(now);
+
     FGType result = FGType::None;
     
     // Check for DLSS FG / MSFG DLLs
@@ -73,14 +72,11 @@ FGCompatibility::FGType FGCompatibility::DetectLoadedFGRuntime() {
         HookLog("FG: FSR3 upscaler detected (%p) - FG may be available", ffxFsr3);
     }
     
-    detectedRuntime.store(result);
-    cachedResult = result;
-    detectionDone = true;
-    
-    if (result != FGType::None) {
-        HookLog("FG: Runtime detection complete: %s", GetFGTypeName(result));
+    FGType prev = detectedRuntime.exchange(result);
+    if (prev != result) {
+        HookLog("FG: Runtime changed: %s -> %s", GetFGTypeName(prev), GetFGTypeName(result));
     }
-    
+
     return result;
 }
 
@@ -254,6 +250,7 @@ void FGCompatibility::OnSwapchainRecreation() {
     SuspendFor(500);  // 500ms to allow transition
     
     // Re-detect runtime DLLs (they might have loaded/unloaded)
+    lastRuntimeDetectUs.store(0);
     DetectLoadedFGRuntime();
     
     // Reset consecutive counters to allow re-detection
@@ -263,6 +260,7 @@ void FGCompatibility::OnSwapchainRecreation() {
 
 void FGCompatibility::OnDeviceChange() {
     HookLog("FG: Device change detected - re-detecting FG runtime");
+    lastRuntimeDetectUs.store(0);
     DetectLoadedFGRuntime();
 }
 

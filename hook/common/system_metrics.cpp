@@ -147,8 +147,10 @@ void SystemMetricsCollector::BackgroundUpdateLoop() {
         if (g_IPC && g_IPC->GetSharedMem()) {
             auto& shm = g_IPC->GetSharedMem()->systemMetrics;
             float cpu = shm.cpuUsage.load(std::memory_order_relaxed);
-            // Heuristic: if CPU usage > 0, assume host is writing stats
-            if (cpu > 0.0f || shm.gpuUsage.load(std::memory_order_relaxed) > 0.0f) {
+            float gpu = shm.gpuUsage.load(std::memory_order_relaxed);
+            float vramMB = shm.vramUsage.load(std::memory_order_relaxed);
+            // Heuristic: host always provides CPU/RAM; only trust GPU/VRAM when non-zero
+            if (cpu > 0.0f) {
                 if (!loggedIPCMode) {
                     EarlyLog("SystemMetricsCollector: Using Host (IPC) metrics");
                     loggedIPCMode = true;
@@ -156,15 +158,17 @@ void SystemMetricsCollector::BackgroundUpdateLoop() {
                 std::lock_guard<std::mutex> lock(mutex);
                 current.cpuUsage = cpu;
                 current.ramUsed = (uint64_t)(shm.ramUsage.load(std::memory_order_relaxed) * 1024.0f * 1024.0f * 1024.0f);
-                current.gpuUsage = shm.gpuUsage.load(std::memory_order_relaxed);
-                current.vramUsed = (uint64_t)(shm.vramUsage.load(std::memory_order_relaxed) * 1024.0f * 1024.0f);
+                if (gpu > 0.0f || vramMB > 0.0f) {
+                    current.gpuUsage = gpu;
+                    current.vramUsed = (uint64_t)(vramMB * 1024.0f * 1024.0f);
+                    current.gpuUsageValid = true;
+                    usedIPC = true;
+                }
                 
                 uint64_t vTotal = shm.vramTotal.load(std::memory_order_relaxed);
                 if (vTotal > 0) current.vramTotal = vTotal;
                 
                 current.cpuMaxCoreUsage = (float)shm.maxCoreLoad.load(std::memory_order_relaxed);
-                current.gpuUsageValid = true;
-                usedIPC = true;
             }
         }
 
@@ -175,8 +179,6 @@ void SystemMetricsCollector::BackgroundUpdateLoop() {
                 loggedFallback = true;
             }
 
-            std::lock_guard<std::mutex> lock(mutex);
-            
             // Lazy PDH init if we are falling back to local
             if (!pdhInitialized) {
                 InitPDH();
@@ -210,24 +212,23 @@ void SystemMetricsCollector::Update() {
         auto& shmMetrics = g_IPC->GetSharedMem()->systemMetrics;
         float cpu = shmMetrics.cpuUsage.load(std::memory_order_relaxed);
         float gpu = shmMetrics.gpuUsage.load(std::memory_order_relaxed);
+        float vramMB = shmMetrics.vramUsage.load(std::memory_order_relaxed);
         
-        bool hostProvidingMetrics = (cpu > 0.0f || gpu > 0.0f); // Simple heuristic
-
-        if (hostProvidingMetrics) {
+        if (cpu > 0.0f) {
             std::lock_guard<std::mutex> lock(mutex);
             current.cpuUsage = cpu;
             current.ramUsed = (uint64_t)(shmMetrics.ramUsage.load(std::memory_order_relaxed) * 1024.0 * 1024.0 * 1024.0);
-            current.gpuUsage = gpu;
-            current.vramUsed = (uint64_t)(shmMetrics.vramUsage.load(std::memory_order_relaxed) * 1024.0 * 1024.0);
+            if (gpu > 0.0f || vramMB > 0.0f) {
+                current.gpuUsage = gpu;
+                current.vramUsed = (uint64_t)(vramMB * 1024.0 * 1024.0);
+                current.gpuUsageValid = true;
+            }
             
             uint64_t vramTotal = shmMetrics.vramTotal.load(std::memory_order_relaxed);
             if (vramTotal > 0) current.vramTotal = vramTotal;
             
             current.cpuMaxCoreUsage = (float)shmMetrics.maxCoreLoad.load(std::memory_order_relaxed);
-            
-            // Mark as valid since we got them from host
-            current.gpuUsageValid = true; 
-            return; // Skip local collection if host is providing
+            return;
         }
     }
 }
@@ -296,7 +297,9 @@ void SystemMetricsCollector::UpdateCPU() {
         }
 
         if (totalTime > 0) {
-            current.cpuUsage = (float)totalBusy / totalTime * 100.0f;
+            float cpuUsage = (float)totalBusy / totalTime * 100.0f;
+            std::lock_guard<std::mutex> lock(mutex);
+            current.cpuUsage = cpuUsage;
             current.cpuMaxCoreUsage = maxCore;
         }
         
@@ -310,8 +313,11 @@ void SystemMetricsCollector::UpdateRAM() {
     MEMORYSTATUSEX memInfo;
     memInfo.dwLength = sizeof(MEMORYSTATUSEX);
     if (GlobalMemoryStatusEx(&memInfo)) {
-        current.ramUsed = memInfo.ullTotalPhys - memInfo.ullAvailPhys;
-        current.ramTotal = memInfo.ullTotalPhys;
+        uint64_t used = memInfo.ullTotalPhys - memInfo.ullAvailPhys;
+        uint64_t total = memInfo.ullTotalPhys;
+        std::lock_guard<std::mutex> lock(mutex);
+        current.ramUsed = used;
+        current.ramTotal = total;
     }
 }
 
@@ -319,6 +325,11 @@ void SystemMetricsCollector::UpdateGPU() {
     if (strstr(g_ProcessName, "SonsOfTheForest") != nullptr) {
         return;
     }
+
+    float newGpuUsage = 0.0f;
+    bool newGpuUsageValid = false;
+    uint64_t newVramUsed = 0;
+    bool haveVramUsed = false;
 
     // 1. GPU Load via PDH Engine counters (System-Wide, filtered by engine type)
     if (!gpuPdhInitialized && gpuQuery == nullptr) {
@@ -396,8 +407,8 @@ void SystemMetricsCollector::UpdateGPU() {
                         // Use responsive smoothing on the peak value for a "liquid" feel
                         const float smoothingWeight = (peakLoad > smoothedGpuUsage) ? 0.65f : 0.4f; 
                         smoothedGpuUsage = smoothedGpuUsage * (1.0f - smoothingWeight) + peakLoad * smoothingWeight;
-                        current.gpuUsage = smoothedGpuUsage;
-                        current.gpuUsageValid = true;
+                        newGpuUsage = smoothedGpuUsage;
+                        newGpuUsageValid = true;
                     }
                 }
             }
@@ -448,7 +459,8 @@ void SystemMetricsCollector::UpdateGPU() {
                                 float rawVram = (float)items[i].FmtValue.doubleValue;
                                 if (smoothedVramUsed == 0.0f) smoothedVramUsed = rawVram;
                                 else smoothedVramUsed = smoothedVramUsed * 0.6f + rawVram * 0.4f;
-                                current.vramUsed = (uint64_t)smoothedVramUsed;
+                                newVramUsed = (uint64_t)smoothedVramUsed;
+                                haveVramUsed = true;
                                 break;
                             }
                         }
@@ -462,7 +474,17 @@ void SystemMetricsCollector::UpdateGPU() {
     // If VRAM Total was set explicitly (e.g. by hook on main thread), SKIP this risky background creation!
     {
         std::lock_guard<std::mutex> lock(mutex);
-        if (current.vramTotal > 0) return;
+        if (current.vramTotal > 0) {
+            // Still apply GPU/VRAM-USED updates even if total is known.
+            if (newGpuUsageValid) {
+                current.gpuUsage = newGpuUsage;
+                current.gpuUsageValid = true;
+            }
+            if (haveVramUsed) {
+                current.vramUsed = newVramUsed;
+            }
+            return;
+        }
     }
 
     if (adapterLuid.LowPart == 0 && adapterLuid.HighPart == 0) return;
@@ -475,11 +497,26 @@ void SystemMetricsCollector::UpdateGPU() {
             tempAdapter->GetDesc1(&desc);
             if (desc.AdapterLuid.LowPart == adapterLuid.LowPart && desc.AdapterLuid.HighPart == adapterLuid.HighPart) {
                 tempAdapter->QueryInterface(__uuidof(IDXGIAdapter3), (void**)&cachedAdapter);
-                current.vramTotal = desc.DedicatedVideoMemory;
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    current.vramTotal = desc.DedicatedVideoMemory;
+                }
                 tempAdapter->Release();
                 break;
             }
             tempAdapter->Release();
+        }
+    }
+
+    // Apply the computed GPU/VRAM values (short lock, no PDH/DXGI inside the lock)
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (newGpuUsageValid) {
+            current.gpuUsage = newGpuUsage;
+            current.gpuUsageValid = true;
+        }
+        if (haveVramUsed) {
+            current.vramUsed = newVramUsed;
         }
     }
 }

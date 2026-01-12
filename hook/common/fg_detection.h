@@ -44,6 +44,8 @@ public:
 private:
     // DLL-based detection result
     std::atomic<FGType> detectedRuntime{FGType::None};
+
+    std::atomic<int64_t> lastRuntimeDetectUs{0};
     
     // Behavioral detection result  
     std::atomic<FGType> activeBehavior{FGType::None};

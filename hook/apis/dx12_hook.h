@@ -11,3 +11,6 @@ public:
 
   // Provide access to detected addresses if needed, or keep internal.
 };
+
+ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain);
+ void DX12_OnSwapchainResizeBegin();

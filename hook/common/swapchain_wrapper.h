@@ -8,6 +8,7 @@
 // Forward declarations
 void EarlyLog(const char* fmt, ...);
 void HookLog(const char* fmt, ...);
+void DX12_OnSwapchainResizeBegin();
 
 // Callback for overlay drawing - set by dx12_hook.cpp
 typedef void (*OverlayDrawCallback)(IDXGISwapChain3* pSwapChain, ID3D12CommandQueue* pQueue);
@@ -23,6 +24,8 @@ class OverlaySwapChainWrapper : public IDXGISwapChain4 {
 public:
     OverlaySwapChainWrapper(IDXGISwapChain* pReal, ID3D12CommandQueue* pQueue)
         : m_pReal(pReal), m_pQueue(pQueue), m_refs(1) {
+        if (m_pReal) m_pReal->AddRef();
+        if (m_pQueue) m_pQueue->AddRef();
         
         // Try to get IDXGISwapChain4 interface
         if (FAILED(pReal->QueryInterface(IID_PPV_ARGS(&m_pReal4)))) {
@@ -43,6 +46,7 @@ public:
         if (m_pReal4) m_pReal4->Release();
         if (m_pReal3) m_pReal3->Release();
         if (m_pReal1) m_pReal1->Release();
+        if (m_pQueue) m_pQueue->Release();
         if (m_pReal) m_pReal->Release();
     }
 
@@ -64,6 +68,12 @@ public:
         if (riid == __uuidof(IDXGISwapChain1) && m_pReal1) {
             AddRef();
             *ppvObj = static_cast<IDXGISwapChain1*>(this);
+            return S_OK;
+        }
+
+        if (riid == __uuidof(IDXGISwapChain2) && m_pReal3) {
+            AddRef();
+            *ppvObj = static_cast<IDXGISwapChain2*>(this);
             return S_OK;
         }
         
@@ -138,6 +148,7 @@ public:
     HRESULT STDMETHODCALLTYPE ResizeBuffers(UINT BufferCount, UINT Width, UINT Height, 
                                             DXGI_FORMAT NewFormat, UINT SwapChainFlags) override {
         EarlyLog("OverlaySwapChainWrapper: ResizeBuffers %ux%u", Width, Height);
+        DX12_OnSwapchainResizeBegin();
         return m_pReal->ResizeBuffers(BufferCount, Width, Height, NewFormat, SwapChainFlags);
     }
     HRESULT STDMETHODCALLTYPE ResizeTarget(const DXGI_MODE_DESC* pNewTargetParameters) override {
@@ -230,6 +241,7 @@ public:
                                              UINT SwapChainFlags, const UINT* pCreationNodeMask,
                                              IUnknown* const* ppPresentQueue) override {
         EarlyLog("OverlaySwapChainWrapper: ResizeBuffers1 %ux%u", Width, Height);
+        DX12_OnSwapchainResizeBegin();
         return m_pReal3 ? m_pReal3->ResizeBuffers1(BufferCount, Width, Height, Format, SwapChainFlags, 
                                                     pCreationNodeMask, ppPresentQueue) : E_NOTIMPL;
     }

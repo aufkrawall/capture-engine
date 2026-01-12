@@ -18,6 +18,7 @@ struct NVSDK_NGX_Parameter {
 #define NVSDK_NGX_Parameter_ExposureScale "DLSS.Exposure.Scale"
 #define NVSDK_NGX_Parameter_PreExposure "DLSS.Pre.Exposure"
 #define NVSDK_NGX_Parameter_Sharpness "DLSS.Sharpness"
+#define NVSDK_NGX_Parameter_Sharpness_Alt "Sharpness"
 
 // DLSS Preset Hints
 #define NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA "DLSS.Hint.Render.Preset.DLAA"
@@ -37,6 +38,9 @@ struct NVSDK_NGX_Parameter {
 
 // Bit 6 in CreateFlags is AutoExposure
 const int NVSDK_NGX_DLSS_Feature_Flags_AutoExposure = 1 << 6;
+
+// Bit 5 in CreateFlags is DoSharpening
+const int NVSDK_NGX_DLSS_Feature_Flags_DoSharpening = 1 << 5;
 
 // --- Typed VTable Hooks ---
 typedef void (STDMETHODCALLTYPE *PFN_SetI)(NVSDK_NGX_Parameter* pThis, const char* InName, int InValue);
@@ -103,6 +107,27 @@ void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InNam
                 if (InValue & NVSDK_NGX_DLSS_Feature_Flags_AutoExposure) {
                     if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) LogOncePerParam(InName, "NVNGX: Forcing AutoExposure flag OFF (was 0x%X)", InValue);
                     InValue &= ~NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
+                }
+            }
+
+            // DLSS sharpening is controlled by both a float parameter (Sharpness) AND a feature flag.
+            // Setting sharpness to 0 does not necessarily disable sharpening unless this bit is cleared.
+            const auto &cfg = GetActiveGraphicsConfig();
+            if (cfg.parsed.dlssSharpening > -1.5f) {
+                // Treat explicit 0 as "off" (matches user expectation in our config).
+                const bool forceDisableSharpening = (cfg.parsed.dlssSharpening < 0.0001f);
+                if (forceDisableSharpening) {
+                    if (InValue & NVSDK_NGX_DLSS_Feature_Flags_DoSharpening) {
+                        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging)
+                            LogOncePerParam(InName, "NVNGX: Forcing DoSharpening flag OFF (was 0x%X)", InValue);
+                        InValue &= ~NVSDK_NGX_DLSS_Feature_Flags_DoSharpening;
+                    }
+                } else {
+                    if (!(InValue & NVSDK_NGX_DLSS_Feature_Flags_DoSharpening)) {
+                        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging)
+                            LogOncePerParam(InName, "NVNGX: Forcing DoSharpening flag ON (was 0x%X)", InValue);
+                        InValue |= NVSDK_NGX_DLSS_Feature_Flags_DoSharpening;
+                    }
                 }
             }
         } else if (strcmp(InName, NVSDK_NGX_Parameter_AutoExposure) == 0) {
@@ -222,7 +247,7 @@ void STDMETHODCALLTYPE Hooked_SetF(NVSDK_NGX_Parameter* pThis, const char* InNam
             // Explicitly off - do nothing, let game control it
         }
 
-        if (strcmp(InName, NVSDK_NGX_Parameter_Sharpness) == 0) {
+        if (strcmp(InName, NVSDK_NGX_Parameter_Sharpness) == 0 || strcmp(InName, NVSDK_NGX_Parameter_Sharpness_Alt) == 0) {
             if (cfg.parsed.dlssSharpening > -1.5f) {
                 float overrideVal = cfg.parsed.dlssSharpening;
                 if (overrideVal < -0.5f) overrideVal = 0.0f; // "off" = 0.0
@@ -313,8 +338,13 @@ void EnsureVTableHooks(NVSDK_NGX_Parameter* pParams) {
     if (cfg.parsed.dlssSharpening > -1.5f && vtable[6]) {
         float overrideVal = cfg.parsed.dlssSharpening;
         if (overrideVal < -0.5f) overrideVal = 0.0f; // "off" = 0.0
-        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) LogOncePerParam(NVSDK_NGX_Parameter_Sharpness, "NVNGX: Injecting initial sharpness = %.2f", overrideVal);
+        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) {
+            LogOncePerParam(NVSDK_NGX_Parameter_Sharpness, "NVNGX: Injecting initial sharpness = %.2f", overrideVal);
+        }
+
+        // Try both names for compatibility
         ((PFN_SetF)vtable[6])(pParams, NVSDK_NGX_Parameter_Sharpness, overrideVal);
+        ((PFN_SetF)vtable[6])(pParams, NVSDK_NGX_Parameter_Sharpness_Alt, overrideVal);
     }
 
 }

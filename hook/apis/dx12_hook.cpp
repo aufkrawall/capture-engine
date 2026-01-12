@@ -36,6 +36,19 @@
 extern void* g_VulkanHook;
 static bool IsVulkanPrimary() { return g_VulkanHook != nullptr; }
 
+ static bool IsUnityProcess() {
+     static LONG s_init = 0;
+     static bool s_isUnity = false;
+     if (InterlockedCompareExchange(&s_init, 1, 0) == 0) {
+         s_isUnity = (GetModuleHandleA("UnityPlayer.dll") != nullptr);
+         InterlockedExchange(&s_init, 2);
+     }
+     while (s_init < 2) {
+         Sleep(0);
+     }
+     return s_isUnity;
+ }
+
 // --- Forward Declarations ---
 typedef HRESULT(STDMETHODCALLTYPE *PresentPtr)(IDXGISwapChain3 *, UINT, UINT);
 typedef HRESULT(STDMETHODCALLTYPE *Present1Ptr)(
@@ -77,6 +90,14 @@ bool g_IPCReady = false;
 static IDXGISwapChain3 *g_LastSwapChain = nullptr;
 static ID3D12Resource *g_DummyBackBuffer = nullptr;
 static std::mutex g_OverlayMutex;
+static std::atomic<bool> g_InSwapchainResizeCleanup{false};
+
+static std::atomic<bool> g_FGQueueLocked{false};
+static std::mutex        g_FGQueueLockMutex;
+static ID3D12CommandQueue* g_FGLockedQueue = nullptr;
+
+static std::atomic<bool> g_FGNeedsDrain{false};
+static std::atomic<uint64_t> g_FGNextDrainAttemptUs{0};
 
 // static bool g_ImGuiInit = false;  // Moved to DX12OverlayState
 // static int g_ImGuiInitFrameCounter = 0; // Moved to DX12OverlayState
@@ -247,6 +268,9 @@ static PerformanceMetrics g_PerfMetrics;
 // Forward declaration for DrawOverlay
 void DrawOverlay(ID3D12GraphicsCommandList* list);
 
+// Forward declaration for external access
+void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture);
+
 // ============================================================================
 // FG OVERLAY CALLBACK - Called from swapchain wrapper's Present BEFORE FG
 // This is the key to overlay support with Frame Generation
@@ -357,6 +381,18 @@ void ShutdownImGui() {
   HookLog("DX12: Shutting down ImGui...");
   ImGui_ImplDX12_Shutdown();
   g_SharedOverlay.ShutdownImGui();
+
+  // FG: when overlay is torn down, release any locked queue.
+  {
+    std::lock_guard<std::mutex> lock(g_FGQueueLockMutex);
+    if (g_FGLockedQueue) {
+      g_FGLockedQueue->Release();
+      g_FGLockedQueue = nullptr;
+    }
+    g_FGQueueLocked.store(false, std::memory_order_relaxed);
+  }
+  g_FGNeedsDrain.store(true, std::memory_order_relaxed);
+  g_FGNextDrainAttemptUs.store(0, std::memory_order_relaxed);
   if (g_State.srvDescHeap) {
     g_State.srvDescHeap->Release();
     g_State.srvDescHeap = nullptr;
@@ -577,6 +613,84 @@ void CreateRTVs(ID3D12Device *device, IDXGISwapChain3 *swapChain,
     device->CreateRenderTargetView(g_State.backBuffers[i], nullptr, rtvHandle);
     rtvHandle.ptr += g_State.rtvDescriptorSize;
   }
+}
+
+void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
+  if (!pSwapChain) return;
+
+  static int64_t qpcFreq = 0;
+  if (qpcFreq == 0) {
+    LARGE_INTEGER f;
+    QueryPerformanceFrequency(&f);
+    qpcFreq = f.QuadPart;
+  }
+
+  LARGE_INTEGER qpc;
+  QueryPerformanceCounter(&qpc);
+  int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
+  g_PerfMetrics.Update(us);
+  if (g_IPC) {
+    g_PerfMetrics.SetRecording(g_IPC->IsRecording());
+  }
+
+  IDXGISwapChain3* sc3 = nullptr;
+  if (FAILED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3))) || !sc3) {
+    return;
+  }
+
+  ProcessFrame(sc3, true);
+  sc3->Release();
+}
+
+// ============================================================================
+// DRAIN QUEUE - SpecialK approach for FG compatibility
+// IMPORTANT: Do NOT run this every frame; it can stall the render/present thread.
+// Instead, only drain on transitions (swapchain recreation / init) and with backoff.
+// ============================================================================
+static bool WaitFenceWithTimeout(ID3D12Fence* fence, UINT64 value, HANDLE eventHandle, DWORD timeoutMs) {
+    if (!fence || !eventHandle) return false;
+    if (fence->GetCompletedValue() >= value) return true;
+    HRESULT hr = fence->SetEventOnCompletion(value, eventHandle);
+    if (FAILED(hr)) return false;
+    DWORD result = WaitForSingleObject(eventHandle, timeoutMs);
+    return result == WAIT_OBJECT_0;
+}
+
+static bool DrainCommandQueue(ID3D12CommandQueue* queue, DWORD timeoutMs) {
+    if (!g_State.syncInit || !g_State.fence || !queue) {
+        return false;
+    }
+    
+    // Signal a new fence value and wait for it
+    // This ensures ALL previously submitted work has completed
+    g_State.currentFenceValue++;
+    UINT64 drainValue = g_State.currentFenceValue;
+    
+    HRESULT hr = queue->Signal(g_State.fence, drainValue);
+    if (FAILED(hr)) {
+        EarlyLog("DX12 FG: DrainCommandQueue Signal failed: 0x%08X", hr);
+        return false;
+    }
+
+    if (!WaitFenceWithTimeout(g_State.fence, drainValue, g_State.fenceEvent, timeoutMs)) {
+        EarlyLog("DX12 FG: DrainCommandQueue timeout waiting for GPU");
+        return false;
+    }
+    
+    // Update all allocator fence values to current
+    for (int i = 0; i < DX12OverlayState::ALLOC_POOL_SIZE; i++) {
+        if (g_State.fenceValues[i] < drainValue) {
+            g_State.fenceValues[i] = drainValue;
+        }
+    }
+    
+    static bool drainLogOnce = false;
+    if (!drainLogOnce) {
+        EarlyLog("DX12 FG: DrainCommandQueue completed (fence=%llu)", drainValue);
+        drainLogOnce = true;
+    }
+    
+    return true;
 }
 
 void InitOverlaySync(ID3D12Device *device, int bufferCount) {
@@ -841,6 +955,58 @@ void CleanupRTVs() {
     g_State.srvDescHeap = nullptr;
   }
 }
+void DX12_OnSwapchainResizeBegin() {
+  bool expected = false;
+  if (!g_InSwapchainResizeCleanup.compare_exchange_strong(expected, true)) {
+    return; // already cleaning up
+  }
+
+  g_LastSwapchainCreation = std::chrono::steady_clock::now();
+  g_FGSwapchainStabilized = false;
+
+  std::unique_lock<std::mutex> lock(g_OverlayMutex, std::defer_lock);
+  for (int i = 0; i < 200; i++) {
+    if (lock.try_lock()) break;
+    Sleep(1);
+  }
+  if (!lock.owns_lock()) {
+    g_InSwapchainResizeCleanup.store(false);
+    return;
+  }
+
+  if (g_DummyBackBuffer) {
+    g_DummyBackBuffer->Release();
+    g_DummyBackBuffer = nullptr;
+  }
+
+  g_FGCompat.OnSwapchainRecreation();
+
+  // FG: swapchain recreation means any previously selected queue may be invalid
+  // and we may need a one-time drain again after resources are rebuilt.
+  {
+    std::lock_guard<std::mutex> lock(g_FGQueueLockMutex);
+    if (g_FGLockedQueue) {
+      g_FGLockedQueue->Release();
+      g_FGLockedQueue = nullptr;
+    }
+    g_FGQueueLocked.store(false, std::memory_order_relaxed);
+  }
+  g_FGNeedsDrain.store(true, std::memory_order_relaxed);
+  g_FGNextDrainAttemptUs.store(0, std::memory_order_relaxed);
+  CleanupOverlay();
+  CleanupRTVs();
+
+  {
+    std::lock_guard<std::mutex> capLock(g_DX12CaptureMutex);
+    g_DX12Capture.Cleanup();
+  }
+
+  if (g_State.imGuiInit) {
+    ImGui_ImplDX12_InvalidateDeviceObjects();
+  }
+
+  g_InSwapchainResizeCleanup.store(false);
+}
 
 // ============================================================================
 // NATIVE INTERFACE QUERY (for FG overlay compatibility)
@@ -998,7 +1164,7 @@ void AsyncCaptureThreadProc() {
       
       barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
       barriers[0].Transition.pResource = pBackBuffer;
-      barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+      barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
       barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
       barriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
       
@@ -1053,8 +1219,35 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
 
   // FG STATE: Determine FG active and stabilization status for overlay rendering
   bool fgActive = (g_FGCompat.DetectLoadedFGRuntime() != FGCompatibility::FGType::None);
+  int64_t fgSinceSwapchainMs = -1;
+  if (fgActive && !g_FGSwapchainStabilized.load()) {
+      if (g_LastSwapchainCreation.time_since_epoch().count() == 0) {
+          g_LastSwapchainCreation = std::chrono::steady_clock::now();
+      }
+      auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - g_LastSwapchainCreation).count();
+      fgSinceSwapchainMs = elapsed;
+      if (elapsed >= FG_STABILIZATION_MS) {
+          g_FGSwapchainStabilized = true;
+
+          static bool s_loggedStabilized = false;
+          if (!s_loggedStabilized) {
+              HookLog("DX12 FG: Swapchain stabilized after %lld ms - overlay may draw now", (long long)elapsed);
+              s_loggedStabilized = true;
+          }
+      }
+  }
+  if (fgActive && fgSinceSwapchainMs < 0 && g_LastSwapchainCreation.time_since_epoch().count() != 0) {
+      fgSinceSwapchainMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - g_LastSwapchainCreation).count();
+  }
   bool fgStabilized = fgActive && g_FGSwapchainStabilized.load();
   bool fgSuspended = g_FGCompat.IsSuspended();
+
+  // Talos/UE may resize multiple times during startup with Streamline swapchain provider.
+  // Waiting for full stabilization can mean the overlay never appears. Use a shorter
+  // ready delay so we can draw once things are minimally settled.
+  const bool fgReadyForOverlay = (!fgActive) || (fgSinceSwapchainMs >= 100);
   
   // FG SAFETY: When FG active + suspended, skip ALL operations entirely
   // No device access during suspension to prevent GPU crashes during FG toggle
@@ -1243,6 +1436,20 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
     SharedMemoryLayout* shm = g_IPC->GetSharedMem();
     bool captureIncludeOverlay = shm ? shm->overlayConfig.captureIncludeOverlay : true;
     bool shouldDrawOverlay = shm && shm->overlayConfig.showOverlay;
+
+    static int s_overlayGateLog = 0;
+    if (s_overlayGateLog++ % 300 == 0) {
+        HookLog("DX12 FG: Gate state show=%d include=%d imGui=%d rtv=%p active=%d stabilized=%d ready=%d suspended=%d msSinceSC=%lld", 
+                shouldDrawOverlay ? 1 : 0,
+                captureIncludeOverlay ? 1 : 0,
+                g_State.imGuiInit ? 1 : 0,
+                g_State.rtvDescHeap,
+                fgActive ? 1 : 0,
+                fgStabilized ? 1 : 0,
+                fgReadyForOverlay ? 1 : 0,
+                fgSuspended ? 1 : 0,
+                (long long)fgSinceSwapchainMs);
+    }
     bool overlayDrawn = false;
 
     // Lambda for overlay drawing - FG-SAFE implementation using NATIVE INTERFACES
@@ -1250,11 +1457,11 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
     // (not proxies) for overlay rendering. Query native interfaces once when FG stabilizes.
     auto doOverlay = [&]() {
       // FG SAFETY: Only draw if stabilized and not currently suspended
-      if (fgSuspended || (fgActive && !fgStabilized)) {
+      if (fgSuspended || (fgActive && !fgReadyForOverlay)) {
           static int fgSuspendLog = 0;
           if (fgSuspendLog++ % 120 == 0) {
-              HookLog("DX12 FG: Skipping overlay (active=%d, stabilized=%d, suspended=%d)", 
-                      fgActive ? 1 : 0, fgStabilized ? 1 : 0, fgSuspended ? 1 : 0);
+              HookLog("DX12 FG: Skipping overlay (active=%d, stabilized=%d, ready=%d, suspended=%d)", 
+                      fgActive ? 1 : 0, fgStabilized ? 1 : 0, fgReadyForOverlay ? 1 : 0, fgSuspended ? 1 : 0);
           }
           g_FGDebugOverlaySkips++;
           return;
@@ -1266,7 +1473,7 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
       // FG MODE: Query native interfaces once when FG becomes stabilized
       // Per SpecialK/OptiScaler research: Use GUID {ADEC44E2-61F0-45C3-AD9F-1B37379284FF}
       // to get non-proxy interfaces from Streamline
-      if (fgActive && fgStabilized && !g_NativeInterfacesQueried) {
+      if (fgActive && fgReadyForOverlay && !g_NativeInterfacesQueried) {
           QueryNativeInterfaces(g_Device, g_CommandQueue, pSwapChain);
           static bool fgNativeLog = false;
           if (!fgNativeLog) {
@@ -1277,20 +1484,39 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
       }
       
       // Determine which interfaces to use for overlay
-      // When FG active with native interfaces: use native swapchain/queue
-      // Otherwise: use proxied interfaces (normal mode)
+      // When FG active: use game's command queue (not separate overlay queue)
+      // This matches SpecialK's approach to avoid queue conflicts with DLSS FG
       IDXGISwapChain3* overlaySwapChain = pSwapChain;
       ID3D12CommandQueue* overlayQueue = g_CommandQueue;
       ID3D12Device* overlayDevice = g_Device;
+
+      // FG MODE: lock to a stable queue once we start drawing, to prevent queue flapping
+      // (Talos uses multiple DIRECT queues; picking the wrong one can stall fence waits)
+      if (fgActive) {
+          if (g_FGQueueLocked.load(std::memory_order_relaxed)) {
+              overlayQueue = g_FGLockedQueue;
+          } else if (overlayQueue) {
+              std::lock_guard<std::mutex> lock(g_FGQueueLockMutex);
+              if (!g_FGQueueLocked.load(std::memory_order_relaxed) && overlayQueue) {
+                  g_FGLockedQueue = overlayQueue;
+                  g_FGLockedQueue->AddRef();
+                  g_FGQueueLocked.store(true, std::memory_order_relaxed);
+                  EarlyLog("DX12 FG: Locked overlay command queue to %p", g_FGLockedQueue);
+              }
+          }
+      }
       
+      // SpecialK approach: Always use game's command queue for overlay
+      // to avoid conflicts with DLSS FG's internal queue management
+      // (even when native interfaces are available)
       if (fgActive && g_UsingNativeInterfaces) {
           if (g_NativeSwapChain) overlaySwapChain = g_NativeSwapChain;
-          if (g_NativeCommandQueue) overlayQueue = g_NativeCommandQueue;
           if (g_NativeDevice) overlayDevice = g_NativeDevice;
+          // Keep game's command queue - don't use native queue
           
           static bool fgNativeModeLog = false;
           if (!fgNativeModeLog) {
-              EarlyLog("DX12 FG: Using native interfaces for overlay (SC=%p, Queue=%p, Dev=%p)",
+              EarlyLog("DX12 FG: Using native SC/Dev but game queue for overlay (SC=%p, Queue=%p, Dev=%p)",
                        overlaySwapChain, overlayQueue, overlayDevice);
               fgNativeModeLog = true;
           }
@@ -1300,16 +1526,6 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
       // so skip the normal overlay drawing here
       if (fgActive && g_UsingSwapChainWrapper) {
           // Overlay is handled by the wrapper - don't draw here
-          return;
-      }
-      
-      // FG MODE: Skip overlay if FG active but no wrapper (fallback safety)
-      if (fgActive && !g_UsingSwapChainWrapper) {
-          static int fgSkipLog = 0;
-          if (fgSkipLog++ % 1000 == 0) {
-              HookLog("DX12 FG: Overlay disabled - FG active without wrapper");
-          }
-          g_FGDebugOverlaySkips++;
           return;
       }
       
@@ -1323,7 +1539,38 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
       }
       
       // Use g_State resources with selected queue/swapchain (native when FG active)
-      if (!processCapture || !g_State.syncInit || !g_State.fence || !overlayQueue) return;
+      // NOTE: Overlay must not depend on processCapture/isRealFrame (intro videos, UI frames, etc.)
+      if (!g_State.syncInit || !g_State.fence || !overlayQueue) return;
+      
+      // FG MODE: Drain ONLY on transitions (and with backoff), never every frame.
+      if (fgActive && g_FGNeedsDrain.load(std::memory_order_relaxed)) {
+          const uint64_t nowUs = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::steady_clock::now().time_since_epoch()).count();
+          const uint64_t nextUs = g_FGNextDrainAttemptUs.load(std::memory_order_relaxed);
+          if (nowUs >= nextUs) {
+              static bool fgDrainLog = false;
+              if (!fgDrainLog) {
+                  EarlyLog("DX12 FG: Draining queue before overlay draw (one-time / transition)");
+                  fgDrainLog = true;
+              }
+
+              // Very short timeout to avoid freezing the render thread.
+              if (DrainCommandQueue(overlayQueue, 2)) {
+                  g_FGNeedsDrain.store(false, std::memory_order_relaxed);
+              } else {
+                  // Backoff: avoid hammering the queue every frame
+                  g_FGNextDrainAttemptUs.store(nowUs + 250000 /* 250ms */, std::memory_order_relaxed);
+                  static int drainFailLog = 0;
+                  if (drainFailLog++ % 20 == 0) {
+                      EarlyLog("DX12 FG: DrainCommandQueue failed; backing off 250ms and skipping overlay");
+                  }
+                  return;
+              }
+          } else {
+              // Not time to retry yet; skip overlay to avoid stalls
+              return;
+          }
+      }
       
       // FG MODE: Use native swapchain for buffer index and GetBuffer
       int bufferIdx = overlaySwapChain->GetCurrentBackBufferIndex();
@@ -1352,8 +1599,21 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
       UINT64 completed = g_State.fence->GetCompletedValue();
       UINT64 target = g_State.fenceValues[allocIdx];
       if (completed < target) {
-          g_State.fence->SetEventOnCompletion(target, g_State.fenceEvent);
-          WaitForSingleObject(g_State.fenceEvent, INFINITE);
+          if (fgActive) {
+              // Never block indefinitely on the render/present thread in FG mode.
+              // If fence doesn't complete quickly, skip overlay this frame.
+              if (!WaitFenceWithTimeout(g_State.fence, target, g_State.fenceEvent, 5)) {
+                  static int fgAllocWaitLog = 0;
+                  if (fgAllocWaitLog++ % 200 == 0) {
+                      EarlyLog("DX12 FG: Allocator fence wait timeout (target=%llu completed=%llu) - skipping overlay", target, completed);
+                  }
+                  currentBackBuffer->Release();
+                  return;
+              }
+          } else {
+              g_State.fence->SetEventOnCompletion(target, g_State.fenceEvent);
+              WaitForSingleObject(g_State.fenceEvent, INFINITE);
+          }
       }
       
       auto *alloc = g_State.allocators[allocIdx];
@@ -1375,11 +1635,8 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
       preBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
       preBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
       preBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-      // FG MODE: Skip explicit barriers - FG proxy manages backbuffer state
-      // Per SpecialK research: explicit barriers conflict with FG runtime's state management
-      if (!fgActive) {
-          list->ResourceBarrier(1, &preBarrier);
-      }
+      // SpecialK approach: Always perform state transitions, even with FG active
+      list->ResourceBarrier(1, &preBarrier);
       
       list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
       
@@ -1397,10 +1654,8 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
       postBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
       postBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
       postBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-      // FG MODE: Skip explicit barriers
-      if (!fgActive) {
-          list->ResourceBarrier(1, &postBarrier);
-      }
+      // SpecialK approach: Always perform state transitions, even with FG active
+      list->ResourceBarrier(1, &postBarrier);
       
       list->Close();
       
@@ -1645,28 +1900,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
   // Convert to microseconds
   int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
 
-  // Initialize CSV logging once - only if debug logging is enabled
-  static bool csvLoggingInitialized = false;
-  SharedMemoryLayout* csvShm = (g_IPC) ? g_IPC->GetSharedMem() : nullptr;
-  TryEnableFrameTimeCSVLogging(csvShm, (const void*)&DetourPresent, g_PerfMetrics, "DX12", csvLoggingInitialized);
-
   g_PerfMetrics.Update(us);
 
   // Update recording state for CSV logging
   bool isRecording = g_IPC && g_IPC->IsRecording();
   g_PerfMetrics.SetRecording(isRecording);
-
-  // ProcessFrame MUST run to initialize ImGui and other overlay resources
-  // The FG-safe skipping is handled INSIDE doOverlay() when FG active but not ready
-  ProcessFrame(pSwapChain, isRealFrame);
-
-  // Apply shared FPS limiter
-  // DISABLED when FG active - FPS limiter interferes with FG timing and causes FG to disable itself
-  // DISABLED when Vulkan is primary - NVIDIA promotes Vulkan to DXGI, causing double-limiting
-  if (!fgActive && !IsVulkanPrimary()) {
-      g_SharedFpsLimiter.SetIPCClient(g_IPC);
-      g_SharedFpsLimiter.Apply();
-  }
 
   UINT oldInterval = SyncInterval;
   UINT oldFlags = Flags;
@@ -1718,6 +1956,19 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
       }
   }
 
+  // SpecialK approach: Draw overlay BEFORE calling original Present
+  // This allows the overlay to be composited with the frame before FG processes it
+  ProcessFrame(pSwapChain, isRealFrame);
+  
+  // Apply shared FPS limiter BEFORE Present (when not FG active)
+  // DISABLED when FG active - FPS limiter interferes with FG timing and causes FG to disable itself
+  // DISABLED when Vulkan is primary - NVIDIA promotes Vulkan to DXGI, causing double-limiting
+  if (!fgActive && !IsVulkanPrimary()) {
+      g_SharedFpsLimiter.SetIPCClient(g_IPC);
+      g_SharedFpsLimiter.Apply();
+  }
+
+  // Now call the original Present
   HRESULT hr = oPresent(pSwapChain, SyncInterval, Flags);
   
   // Post-Present sleep for fractional limits
@@ -1830,6 +2081,9 @@ static void STDMETHODCALLTYPE DetourCreateSampler(
     if (pDesc->MaxLOD == 0.0f) overridesAllowed = false;
     if (pDesc->MinLOD == pDesc->MaxLOD) overridesAllowed = false;
 
+    bool userBiasActive = false;
+    float userBiasVal = 0.0f;
+
     if (overridesAllowed && g_IPC) {
         const auto& gfx = GetActiveGraphicsConfig();
 
@@ -1885,6 +2139,8 @@ static void STDMETHODCALLTYPE DetourCreateSampler(
              char* end;
              float val = strtof(biasStr, &end);
              if (end != biasStr) {
+                userBiasActive = true;
+                userBiasVal = val;
                 float originalBias = pDesc->MipLODBias;
                 std::string mode = gfx.mipBiasMode;
                 
@@ -1910,6 +2166,13 @@ static void STDMETHODCALLTYPE DetourCreateSampler(
         if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgssaaBias)) {
              desc.MipLODBias += sgssaaBias;
              modified = true;
+        }
+
+        if (userBiasActive && userBiasVal < 0.0f && !gfx.sgssaa && IsUnityProcess()) {
+            if (desc.MipLODBias < -0.5f) {
+                desc.MipLODBias = -0.5f;
+                modified = true;
+            }
         }
     }
     
@@ -1995,9 +2258,13 @@ static void ModifyStaticSampler(D3D12_STATIC_SAMPLER_DESC& sampler) {
 
     // 3. Mip Bias
     std::string biasStr = gfx.mipBias;
+    bool userBiasActive = false;
+    float userBiasVal = 0.0f;
     if (biasStr != "default") {
         try {
             float val = std::stof(biasStr);
+            userBiasActive = true;
+            userBiasVal = val;
             float originalBias = sampler.MipLODBias;
             std::string mode = gfx.mipBiasMode;
 
@@ -2013,6 +2280,12 @@ static void ModifyStaticSampler(D3D12_STATIC_SAMPLER_DESC& sampler) {
             }
             HookLog("DX12: Static Sampler: Forced MipBias %.2f (Mode: %s, Orig: %.2f)", sampler.MipLODBias, mode.c_str(), originalBias);
         } catch(...) {}
+    }
+
+    if (userBiasActive && userBiasVal < 0.0f && !gfx.sgssaa && IsUnityProcess()) {
+        if (sampler.MipLODBias < -0.5f) {
+            sampler.MipLODBias = -0.5f;
+        }
     }
 }
 
@@ -2168,7 +2441,9 @@ DetourExecuteCommandLists(ID3D12CommandQueue *pThis, UINT NumCommandLists,
         dev->Release();
     }
     
-    if (g_CommandQueue != pThis) {
+    const bool fgActive = g_FGCompat.IsFGActive();
+    const bool queueLocked = g_FGQueueLocked.load(std::memory_order_relaxed);
+    if ((!fgActive || !queueLocked) && g_CommandQueue != pThis) {
         if (g_CommandQueue) g_CommandQueue->Release();
         g_CommandQueue = pThis;
         g_CommandQueue->AddRef();

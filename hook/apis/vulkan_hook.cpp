@@ -27,6 +27,19 @@
 #include <psapi.h> // For GetModuleInformation
 #pragma comment(lib, "psapi.lib")
 
+ static bool IsUnityProcess() {
+     static LONG s_init = 0;
+     static bool s_isUnity = false;
+     if (InterlockedCompareExchange(&s_init, 1, 0) == 0) {
+         s_isUnity = (GetModuleHandleA("UnityPlayer.dll") != nullptr);
+         InterlockedExchange(&s_init, 2);
+     }
+     while (s_init < 2) {
+         Sleep(0);
+     }
+     return s_isUnity;
+ }
+
 static uint32_t MapVulkanFormatToDXGI(VkFormat format) {
   switch (format) {
   case VK_FORMAT_R8G8B8A8_UNORM:
@@ -1794,6 +1807,9 @@ struct VulkanSwapchain {
   uint32_t width, height;
   VkFormat format;
   VkSharingMode sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  uint32_t currentImageIndex = 0;  // Track current image index for overlay rendering
+  bool imageAcquiredThisFrame = false;  // Track if image was acquired this frame
+  bool overlayDrawnThisFrame = false;  // Track if overlay was drawn this frame
 
   void Cleanup() {
     for (auto fb : framebuffers) {
@@ -1807,6 +1823,11 @@ struct VulkanSwapchain {
     images.clear();
   }
 };
+
+// Global variables for tracking current frame
+// (Used for debugging, not for overlay rendering)
+static uint32_t g_CurrentImageIndex = 0;
+static VkSwapchainKHR g_CurrentSwapchain = VK_NULL_HANDLE;
 static std::vector<VulkanSwapchain> g_Swapchains;
 
 // Note: Vulkan async capture code enabled
@@ -2337,11 +2358,19 @@ static VkSampler GetOrCreateForcedSampler(VkSampler originalSampler, const Graph
       if (mode == "offset") {
         ci.mipLodBias = rec.baseCI.mipLodBias + userBias;
       } else if (mode == "base") {
-        if (userBias < 0.0f) {
+        if (rec.baseCI.mipLodBias < 0.0f) {
           ci.mipLodBias = rec.baseCI.mipLodBias + userBias;
+        } else {
+          ci.mipLodBias = rec.baseCI.mipLodBias;
         }
       } else {
         ci.mipLodBias = userBias;
+      }
+
+      if (!gfx.sgssaa && userBias < 0.0f && IsUnityProcess()) {
+        if (ci.mipLodBias < -0.5f) {
+          ci.mipLodBias = -0.5f;
+        }
       }
     }
   }
@@ -2607,11 +2636,19 @@ static VkResult VKAPI_PTR Detour_vkCreateSampler(
                  if (mode == "offset") {
                     modifiedInfo.mipLodBias = pCreateInfo->mipLodBias + userBias;
                  } else if (mode == "base") {
-                    if (userBias < 0.0f) {
+                    if (pCreateInfo->mipLodBias < 0.0f) {
                       modifiedInfo.mipLodBias = pCreateInfo->mipLodBias + userBias;
+                    } else {
+                      modifiedInfo.mipLodBias = pCreateInfo->mipLodBias;
                     }
                  } else {
                     modifiedInfo.mipLodBias = userBias;
+                 }
+
+                 if (!gfx.sgssaa && userBias < 0.0f && IsUnityProcess()) {
+                   if (modifiedInfo.mipLodBias < -0.5f) {
+                     modifiedInfo.mipLodBias = -0.5f;
+                   }
                  }
              }
          }
@@ -3346,8 +3383,23 @@ VkResult VKAPI_CALL Detour_vkAcquireNextImageKHR(
       o_vkAcquireNextImageKHR = (PFN_vkAcquireNextImageKHR)o_vkGetDeviceProcAddr(device, "vkAcquireNextImageKHR");
   }
   if (!o_vkAcquireNextImageKHR) return VK_ERROR_INITIALIZATION_FAILED;
-  return o_vkAcquireNextImageKHR(device, swapchain, timeout, semaphore, fence,
+  
+  VkResult result = o_vkAcquireNextImageKHR(device, swapchain, timeout, semaphore, fence,
                                  pImageIndex);
+  
+  // Track the current image index for overlay rendering in vkQueueSubmit
+  if (result == VK_SUCCESS && pImageIndex) {
+    std::lock_guard<std::recursive_mutex> lock(g_VulkanMutex);
+    for (auto &sc : g_Swapchains) {
+      if (sc.swapchain == swapchain) {
+        sc.currentImageIndex = *pImageIndex;
+        sc.imageAcquiredThisFrame = true;
+        break;
+      }
+    }
+  }
+  
+  return result;
 }
 
 PFN_vkVoidFunction VKAPI_CALL Detour_vkGetDeviceProcAddr(VkDevice device,
@@ -3693,6 +3745,9 @@ static void InitImGuiVulkan(VkQueue queue) {
   HookLog("Vulkan: ImGui Initialized Successfully");
 }
 
+// NOTE: DrawOverlayToSwapchain helper function removed - overlay is drawn inline in vkQueuePresentKHR
+// The vkQueueSubmit approach doesn't work because we don't know the image index until present time.
+
 VkResult VKAPI_CALL
 Detour_vkQueueSubmit(VkQueue queue, uint32_t submitCount,
                      const VkSubmitInfo *pSubmits, VkFence fence) {
@@ -3724,6 +3779,11 @@ Detour_vkQueueSubmit(VkQueue queue, uint32_t submitCount,
   if (countThisSubmit) {
       g_QueueSubmitsThisFrame.fetch_add((int)submitCount, std::memory_order_relaxed);
   }
+  
+  // Draw overlay in vkQueueSubmit when game provides no semaphores
+  // DISABLED: This approach doesn't work because vkQueueSubmit is called BEFORE
+  // vkQueuePresentKHR, so we don't know which image index to draw to yet.
+  // The overlay is now drawn only in vkQueuePresentKHR.
   
   if (!o_vkQueueSubmit) return VK_ERROR_INITIALIZATION_FAILED;
   return o_vkQueueSubmit(queue, submitCount, pSubmits, fence);
@@ -3820,6 +3880,30 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
   bool fgRuntimeDetected = (g_FGCompat.DetectLoadedFGRuntime() != FGCompatibility::FGType::None);
   bool fgSuspended = fgRuntimeDetected && g_FGCompat.IsSuspended();
   bool allowOverlayFrame = (!fgRuntimeDetected || isRealFrame) && !fgSuspended;
+
+  // Reset frame flags for next frame
+  {
+    std::lock_guard<std::recursive_mutex> lock(g_VulkanMutex);
+    for (auto &sc : g_Swapchains) {
+      sc.imageAcquiredThisFrame = false;
+      sc.overlayDrawnThisFrame = false;
+    }
+    
+    // Store current image index for overlay drawing in vkQueueSubmit
+    if (pPresentInfo->swapchainCount > 0 && pPresentInfo->pImageIndices) {
+      g_CurrentSwapchain = pPresentInfo->pSwapchains[0];
+      g_CurrentImageIndex = pPresentInfo->pImageIndices[0];
+      
+      // Mark the swapchain as having an image acquired
+      for (auto &sc : g_Swapchains) {
+        if (sc.swapchain == g_CurrentSwapchain) {
+          sc.imageAcquiredThisFrame = true;
+          sc.currentImageIndex = g_CurrentImageIndex;
+          break;
+        }
+      }
+    }
+  }
 
   // Async Present Detection - Check if present queue is compute-only
   static bool g_AsyncPresentDetected = false;
@@ -4077,7 +4161,9 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
     dbgPresentNum++;
     
     if (showOverlay) {
-      // Find swapchain
+      // Find swapchain and draw overlay
+      // Use fence wait to ensure GPU is idle before drawing overlay
+      // This prevents the game from overwriting our overlay
       bool foundSwapchain = false;
       for (auto &sc : g_Swapchains) {
         if (sc.swapchain == pPresentInfo->pSwapchains[0]) {
@@ -4085,9 +4171,7 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
           uint32_t idx = pPresentInfo->pImageIndices[0];
 
           if (idx >= sc.framebuffers.size()) {
-            HookLog(
-                "Vulkan: ERROR - framebuffer index %u out of range (size %zu)",
-                idx, sc.framebuffers.size());
+            HookLog("Vulkan: ERROR - framebuffer index %u out of range (size %zu)", idx, sc.framebuffers.size());
             break;
           }
           if (!sc.framebuffers[idx]) {
@@ -4095,349 +4179,218 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
             dbgOverlaySkipped++;
             break;
           }
-          
-          // FG: Only render overlay on REAL frames
-          // Interpolated frames often crash if we touch them or submit commands to wrong queue state
-          if (!allowOverlayFrame) {
-              dbgOverlaySkipped++;
-              if (dbgPresentNum - dbgLastLogFrame > 60) {
-                HookLog("Vulkan: DEBUG - Overlay SKIPPED (FG/notReal) present#%d isReal=%d fgSuspended=%d",
-                        dbgPresentNum, isRealFrame, fgSuspended);
-                dbgLastLogFrame = dbgPresentNum;
-              }
-              break;
+          if (idx >= sc.images.size()) {
+            HookLog("Vulkan: ERROR - image index %u out of range (size %zu)", idx, sc.images.size());
+            break;
+          }
+          if (sc.images[idx] == VK_NULL_HANDLE) {
+            HookLog("Vulkan: ERROR - image[%u] is NULL", idx);
+            dbgOverlaySkipped++;
+            break;
           }
           
-              ImGui_ImplVulkan_NewFrame();
-              g_SharedOverlay.BeginFrame();
-    
-              // Use shared overlay
-              g_SharedOverlay.SetMetrics(&g_PerfMetrics);
-              g_SharedOverlay.SetIPCClient(g_IPC);
-              g_SharedOverlay.SetDroppedFrames(g_VulkanCapture.droppedFrames.load(std::memory_order_relaxed));
-              g_SharedOverlay.SetGraphicsAPI("Vulkan");
-              // Detect HDR
-              bool isHDR = (sc.format == VK_FORMAT_R16G16B16A16_SFLOAT || 
-                           sc.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32);
-              g_SharedOverlay.SetHDR(isHDR);
-
-              g_SharedOverlay.RenderUI();
-    
-              g_SharedOverlay.EndFrame();
-    
-              // Draw into Command Buffer using in-flight frame ring buffer
-              // to avoid blocking the game thread
-              static constexpr int MAX_FRAMES_IN_FLIGHT = 5; // Use 5 frames for smoother overlay at high GPU load
-              static VkFence inFlightFences[MAX_FRAMES_IN_FLIGHT] = {};
-              static VkCommandBuffer inFlightCBs[MAX_FRAMES_IN_FLIGHT] = {};
-              static VkSemaphore inFlightSemaphores[MAX_FRAMES_IN_FLIGHT] = {};
-              static int currentFrame = 0;
-              static bool fencesCreated = false;
-              static uint32_t commandPoolQueueFamily = UINT32_MAX;
-              struct RetiredOverlayPool {
-                VkCommandPool pool;
-                VkFence fences[MAX_FRAMES_IN_FLIGHT];
-                VkSemaphore semaphores[MAX_FRAMES_IN_FLIGHT];
-                bool valid;
-              };
-              static RetiredOverlayPool retiredPools[4] = {};
-
-              for (int r = 0; r < 4; r++) {
-                if (!retiredPools[r].valid) continue;
-                bool allDone = true;
-                for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-                  VkFence rf = retiredPools[r].fences[i];
-                  if (!rf) continue;
-                  VkResult st = vkWaitForFences(g_Device, 1, &rf, VK_TRUE, 0);
-                  if (st == VK_TIMEOUT) {
-                    allDone = false;
-                    break;
-                  }
-                }
-                if (allDone) {
-                  for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-                    if (retiredPools[r].fences[i]) {
-                      vkDestroyFence(g_Device, retiredPools[r].fences[i], nullptr);
-                      retiredPools[r].fences[i] = VK_NULL_HANDLE;
-                    }
-                    if (retiredPools[r].semaphores[i]) {
-                      vkDestroySemaphore(g_Device, retiredPools[r].semaphores[i], nullptr);
-                      retiredPools[r].semaphores[i] = VK_NULL_HANDLE;
-                    }
-                  }
-                  if (retiredPools[r].pool) {
-                    vkDestroyCommandPool(g_Device, retiredPools[r].pool, nullptr);
-                    retiredPools[r].pool = VK_NULL_HANDLE;
-                  }
-                  retiredPools[r].valid = false;
-                }
-              }
-
-              if (commandPoolQueueFamily != UINT32_MAX && commandPoolQueueFamily != g_QueueFamily) {
-                if (g_CommandPool != VK_NULL_HANDLE) {
-                  int freeSlot = -1;
-                  for (int r = 0; r < 4; r++) {
-                    if (!retiredPools[r].valid) {
-                      freeSlot = r;
-                      break;
-                    }
-                  }
-                  if (freeSlot < 0) {
-                    break;
-                  }
-
-                  retiredPools[freeSlot].pool = g_CommandPool;
-                  for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-                    retiredPools[freeSlot].fences[i] = inFlightFences[i];
-                    retiredPools[freeSlot].semaphores[i] = inFlightSemaphores[i];
-                    inFlightFences[i] = VK_NULL_HANDLE;
-                    inFlightSemaphores[i] = VK_NULL_HANDLE;
-                    inFlightCBs[i] = VK_NULL_HANDLE;
-                  }
-                  retiredPools[freeSlot].valid = true;
-                }
-
-                g_CommandPool = VK_NULL_HANDLE;
-                fencesCreated = false;
-                currentFrame = 0;
-                commandPoolQueueFamily = UINT32_MAX;
-              }
-
-              if (!g_CommandPool) {
-                VkCommandPoolCreateInfo pool_info = {
-                    VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-                pool_info.queueFamilyIndex = g_QueueFamily;
-                pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-                vkCreateCommandPool(g_Device, &pool_info, nullptr, &g_CommandPool);
-                if (g_CommandPool != VK_NULL_HANDLE) {
-                  commandPoolQueueFamily = g_QueueFamily;
-                }
-              }
-
-              // Create fences and command buffers once
-              if (!fencesCreated) {
-                VkCommandBufferAllocateInfo alloc_info = {
-                    VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-                alloc_info.commandPool = g_CommandPool;
-                alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-                alloc_info.commandBufferCount = MAX_FRAMES_IN_FLIGHT;
-                vkAllocateCommandBuffers(g_Device, &alloc_info, inFlightCBs);
-    
-                VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-                fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT; // Start signaled
-                for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-                  vkCreateFence(g_Device, &fenceInfo, nullptr, &inFlightFences[i]);
-                }
-                VkSemaphoreCreateInfo semInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-                for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-                  vkCreateSemaphore(g_Device, &semInfo, nullptr, &inFlightSemaphores[i]);
-                }
-                fencesCreated = true;
-              }
-    
-              // Wait for this frame's previous submission to complete
-              // Use short timeout (2ms) to prevent overlay flashing at high GPU load
-              // while still not significantly impacting frame pacing
-              VkFence fence = VK_NULL_HANDLE;
-              VkCommandBuffer cb = VK_NULL_HANDLE;
-
-              bool foundFreeSlot = false;
-              for (int attempt = 0; attempt < MAX_FRAMES_IN_FLIGHT; attempt++) {
-                fence = inFlightFences[currentFrame];
-                cb = inFlightCBs[currentFrame];
-                VkResult fenceResult =
-                    vkWaitForFences(g_Device, 1, &fence, VK_TRUE, 0); // Non-blocking for zero latency
-                if (fenceResult != VK_TIMEOUT) {
-                  foundFreeSlot = true;
-                  break;
-                }
-                currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
-              }
-              if (!foundFreeSlot) {
-                // Previous overlay work not done - skip this frame
-                dbgOverlaySkipped++;
-                if (dbgPresentNum - dbgLastLogFrame > 60) {
-                  HookLog("Vulkan: DEBUG - Overlay SKIPPED (no free fence slot) frame=%d drawn=%d skipped=%d", 
-                          dbgPresentNum, dbgOverlayDrawn, dbgOverlaySkipped);
-                  dbgLastLogFrame = dbgPresentNum;
-                }
-                currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
-                break;
-              }
-              vkResetFences(g_Device, 1, &fence);
-              vkResetCommandBuffer(cb, 0);
-    
-              VkCommandBufferBeginInfo begin_info = {
-                  VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-              begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-              vkBeginCommandBuffer(cb, &begin_info);
-    
-              VkRenderPassBeginInfo rp_begin = {};
-              rp_begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-              rp_begin.renderPass = g_RenderPass;
-              rp_begin.framebuffer = sc.framebuffers[idx];
-              rp_begin.renderArea.offset = {0, 0};
-              rp_begin.renderArea.extent = {sc.width, sc.height};
-
-              // CRITICAL: Wait for ALL prior rendering to complete before drawing overlay.
-              // The game may not provide wait semaphores (waitSems=0), so we must ensure
-              // synchronization via pipeline barriers with proper stage/access masks.
-              VkImageMemoryBarrier toColor = {};
-              toColor.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-              // srcAccessMask: Wait for prior color writes to be visible
-              toColor.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
-              toColor.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-              toColor.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-              toColor.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-              toColor.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-              toColor.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-              toColor.image = sc.images[idx];
-              toColor.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-              toColor.subresourceRange.baseMipLevel = 0;
-              toColor.subresourceRange.levelCount = 1;
-              toColor.subresourceRange.baseArrayLayer = 0;
-              toColor.subresourceRange.layerCount = 1;
-
-              // srcStageMask: Wait for ALL prior commands (game's rendering) to complete
-              // This is essential when the game provides no wait semaphores
-              vkCmdPipelineBarrier(cb,
-                                   VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                                   0,
-                                   0, nullptr,
-                                   0, nullptr,
-                                   1, &toColor);
-              vkCmdBeginRenderPass(cb, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
-    
-              // Set viewport and scissor for the overlay rendering
-              VkViewport viewport = {};
-              viewport.x = 0.0f;
-              viewport.y = 0.0f;
-              viewport.width = (float)sc.width;
-              viewport.height = (float)sc.height;
-              viewport.minDepth = 0.0f;
-              viewport.maxDepth = 1.0f;
-              vkCmdSetViewport(cb, 0, 1, &viewport);
-    
-              VkRect2D scissor = {};
-              scissor.offset = {0, 0};
-              scissor.extent = {sc.width, sc.height};
-              vkCmdSetScissor(cb, 0, 1, &scissor);
-    
-              ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cb);
-    
-              vkCmdEndRenderPass(cb);
-
-              VkImageMemoryBarrier toPresent = {};
-              toPresent.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-              toPresent.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-              toPresent.dstAccessMask = 0;
-              toPresent.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-              toPresent.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-              toPresent.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-              toPresent.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-              toPresent.image = sc.images[idx];
-              toPresent.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-              toPresent.subresourceRange.baseMipLevel = 0;
-              toPresent.subresourceRange.levelCount = 1;
-              toPresent.subresourceRange.baseArrayLayer = 0;
-              toPresent.subresourceRange.layerCount = 1;
-
-              vkCmdPipelineBarrier(cb,
-                                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                                   VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                                   0,
-                                   0, nullptr,
-                                   0, nullptr,
-                                   1, &toPresent);
-              vkEndCommandBuffer(cb);
-    
-              VkSemaphore overlayDoneSem = inFlightSemaphores[currentFrame];
-
-              VkSubmitInfo submit = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
-              submit.commandBufferCount = 1;
-              submit.pCommandBuffers = &cb;
-              submit.signalSemaphoreCount = 1;
-              submit.pSignalSemaphores = &overlayDoneSem;
-
-              // Wait on the app's present wait semaphores (GPU-side dependency only).
-              // This prevents racing the game's rendering and reduces overlay flicker.
-              std::vector<VkPipelineStageFlags> overlayWaitStages;
-              if (pPresentInfo && pPresentInfo->waitSemaphoreCount > 0 && pPresentInfo->pWaitSemaphores) {
-                overlayWaitStages.resize(pPresentInfo->waitSemaphoreCount, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
-                submit.waitSemaphoreCount = pPresentInfo->waitSemaphoreCount;
-                submit.pWaitSemaphores = pPresentInfo->pWaitSemaphores;
-                submit.pWaitDstStageMask = overlayWaitStages.data();
-              }
-    
-              // Choose queue for overlay submission
-              VkQueue overlayQueue = g_Queue;
-              
-              // If async present is detected, use graphics queue for overlay
-              if (g_AsyncPresentDetected && g_GraphicsQueueForOverlay != VK_NULL_HANDLE) {
-                overlayQueue = g_GraphicsQueueForOverlay;
-              }
-              
-              // Skip overlay if async present but no graphics queue available
-              if (g_AsyncPresentDetected && g_GraphicsQueueForOverlay == VK_NULL_HANDLE) {
-                // Silently skip - already logged warning during detection
-                break;
-              }
-    
-              dbgOverlayDrawn++;
-              
-              // DEBUG: Log every 120 frames to track overlay health
-              static int frameCount = 0;
-              if (frameCount < 3 || (dbgPresentNum - dbgLastLogFrame > 120)) {
-                HookLog("Vulkan: Submitting overlay (present#%d, drawn=%d, skipped=%d, imgIdx=%u, sameQ=%d, waitSems=%u)",
-                        dbgPresentNum, dbgOverlayDrawn, dbgOverlaySkipped, idx,
-                        (overlayQueue == queue) ? 1 : 0,
-                        pPresentInfo->waitSemaphoreCount);
-                dbgLastLogFrame = dbgPresentNum;
-              }
-              frameCount++;
-    
-              // Submit without blocking - fence will be waited on next time this
-              // slot is used. This ensures no performance impact or input lag.
-              vkQueueSubmit(overlayQueue, 1, &submit, fence);
-    
-              // Advance to next frame slot
-              currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
-
-              // Synchronization strategy depends on whether overlay and present use the same queue
-              // CRITICAL: We already consumed the app's wait semaphores in our overlay submit above.
-              // Binary semaphores can only be waited on ONCE per signal.
-              // We MUST NOT pass the original pPresentInfo because it still references those semaphores!
-              VkPresentInfoKHR modifiedPresent = *pPresentInfo;
-              
-              if (overlayQueue == queue) {
-                // SAME QUEUE: Vulkan guarantees submission order execution.
-                // Overlay submit completes before present executes (queue ordering).
-                // Set waitSemaphoreCount=0 since we already consumed them.
-                modifiedPresent.waitSemaphoreCount = 0;
-                modifiedPresent.pWaitSemaphores = nullptr;
-                return o_vkQueuePresentKHR(queue, &modifiedPresent);
-              } else {
-                // DIFFERENT QUEUES (async present): Need our semaphore to synchronize
-                modifiedPresent.waitSemaphoreCount = 1;
-                modifiedPresent.pWaitSemaphores = &overlayDoneSem;
-                return o_vkQueuePresentKHR(queue, &modifiedPresent);
-              }
-          break;
-        }
-      }
-      if (!foundSwapchain) {
-        dbgOverlaySkipped++;
-        static bool loggedOnce = false;
-        if (!loggedOnce) {
-          HookLog("Vulkan: WARNING - No matching swapchain found in present "
-                  "(swapchains: %zu)",
-                  g_Swapchains.size());
-          loggedOnce = true;
+          // FG: Only render overlay on REAL frames
+          if (!allowOverlayFrame) {
+            dbgOverlaySkipped++;
+            if (dbgPresentNum - dbgLastLogFrame > 60) {
+              HookLog("Vulkan: DEBUG - Overlay SKIPPED (FG/notReal) present#%d isReal=%d fgSuspended=%d",
+                      dbgPresentNum, isRealFrame, fgSuspended);
+              dbgLastLogFrame = dbgPresentNum;
+            }
+            break;
+          }
+          
+          // NOTE: We intentionally do NOT use vkQueueWaitIdle here.
+          // vkQueueWaitIdle causes FPS drop and doesn't fix flickering anyway.
+          // The pipeline barrier in the command buffer provides GPU-side synchronization.
+          // Flickering with no wait semaphores is a limitation of how Strange Brigade
+          // handles VSync - when in-game VSync is off, the game doesn't provide semaphores.
+          
+          // Check required resources before drawing overlay
+          if (g_RenderPass == VK_NULL_HANDLE) {
+            HookLog("Vulkan: ERROR - g_RenderPass is NULL, skipping overlay");
+            break;
+          }
+          if (g_CommandPool == VK_NULL_HANDLE) {
+            // Create command pool if not available
+            VkCommandPoolCreateInfo poolInfo = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+            poolInfo.queueFamilyIndex = g_QueueFamily;
+            poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+            VkResult poolResult = vkCreateCommandPool(g_Device, &poolInfo, nullptr, &g_CommandPool);
+            if (poolResult != VK_SUCCESS || g_CommandPool == VK_NULL_HANDLE) {
+              HookLog("Vulkan: ERROR - Failed to create command pool: %d", poolResult);
+              break;
+            }
+          }
+          
+          // Now draw the overlay (GPU is idle, safe to draw)
+          ImGui_ImplVulkan_NewFrame();
+          g_SharedOverlay.BeginFrame();
+          
+          g_SharedOverlay.SetMetrics(&g_PerfMetrics);
+          g_SharedOverlay.SetIPCClient(g_IPC);
+          g_SharedOverlay.SetDroppedFrames(g_VulkanCapture.droppedFrames.load(std::memory_order_relaxed));
+          g_SharedOverlay.SetGraphicsAPI("Vulkan");
+          
+          bool isHDR = (sc.format == VK_FORMAT_R16G16B16A16_SFLOAT || sc.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32);
+          g_SharedOverlay.SetHDR(isHDR);
+          
+          g_SharedOverlay.RenderUI();
+          g_SharedOverlay.EndFrame();
+          
+          // Record overlay command buffer
+          // Use only 2 frames in flight to match typical swapchain depth
+          // This provides tighter synchronization without excessive latency
+          static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
+          static VkFence inFlightFences[MAX_FRAMES_IN_FLIGHT] = {};
+          static VkCommandBuffer inFlightCBs[MAX_FRAMES_IN_FLIGHT] = {};
+          static VkSemaphore inFlightSemaphores[MAX_FRAMES_IN_FLIGHT] = {};
+          static int currentFrame = 0;
+          static bool fencesCreated = false;
+          
+          if (!fencesCreated) {
+            VkCommandBufferAllocateInfo allocInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+            allocInfo.commandPool = g_CommandPool;
+            allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            allocInfo.commandBufferCount = MAX_FRAMES_IN_FLIGHT;
+            vkAllocateCommandBuffers(g_Device, &allocInfo, inFlightCBs);
+            
+            VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+            fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+            for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+              vkCreateFence(g_Device, &fenceInfo, nullptr, &inFlightFences[i]);
+            }
+            
+            VkSemaphoreCreateInfo semInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+            for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+              vkCreateSemaphore(g_Device, &semInfo, nullptr, &inFlightSemaphores[i]);
+            }
+            fencesCreated = true;
+          }
+          
+          // Wait for this frame's previous submission
+          vkWaitForFences(g_Device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
+          vkResetFences(g_Device, 1, &inFlightFences[currentFrame]);
+          vkResetCommandBuffer(inFlightCBs[currentFrame], 0);
+          
+          VkCommandBuffer cb = inFlightCBs[currentFrame];
+          VkCommandBufferBeginInfo beginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+          beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+          vkBeginCommandBuffer(cb, &beginInfo);
+          
+          // CRITICAL: Global memory barrier to wait for ALL prior queue work
+          // This ensures the game's rendering is complete before we draw overlay.
+          // ReShade uses semaphores, but when game provides none, we need this barrier.
+          // This is stronger than just the image barrier below.
+          VkMemoryBarrier globalBarrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+          globalBarrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+          globalBarrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+          vkCmdPipelineBarrier(cb, 
+                               VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                               VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                               0, 1, &globalBarrier, 0, nullptr, 0, nullptr);
+          
+          // Transition to color attachment
+          VkImageMemoryBarrier toColor = {};
+          toColor.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+          toColor.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+          toColor.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+          toColor.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+          toColor.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+          toColor.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+          toColor.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+          toColor.image = sc.images[idx];
+          toColor.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+          toColor.subresourceRange.baseMipLevel = 0;
+          toColor.subresourceRange.levelCount = 1;
+          toColor.subresourceRange.baseArrayLayer = 0;
+          toColor.subresourceRange.layerCount = 1;
+          
+          vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &toColor);
+          
+          // Render pass
+          VkRenderPassBeginInfo rpBegin = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+          rpBegin.renderPass = g_RenderPass;
+          rpBegin.framebuffer = sc.framebuffers[idx];
+          rpBegin.renderArea.offset = {0, 0};
+          rpBegin.renderArea.extent = {sc.width, sc.height};
+          vkCmdBeginRenderPass(cb, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+          
+          VkViewport viewport = {0.0f, 0.0f, (float)sc.width, (float)sc.height, 0.0f, 1.0f};
+          vkCmdSetViewport(cb, 0, 1, &viewport);
+          
+          VkRect2D scissor = {{0, 0}, {sc.width, sc.height}};
+          vkCmdSetScissor(cb, 0, 1, &scissor);
+          
+          ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cb);
+          vkCmdEndRenderPass(cb);
+          
+          // Transition back to present
+          VkImageMemoryBarrier toPresent = {};
+          toPresent.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+          toPresent.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+          toPresent.dstAccessMask = 0;
+          toPresent.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+          toPresent.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+          toPresent.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+          toPresent.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+          toPresent.image = sc.images[idx];
+          toPresent.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+          toPresent.subresourceRange.baseMipLevel = 0;
+          toPresent.subresourceRange.levelCount = 1;
+          toPresent.subresourceRange.baseArrayLayer = 0;
+          toPresent.subresourceRange.layerCount = 1;
+          
+          vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &toPresent);
+          vkEndCommandBuffer(cb);
+          
+          // Submit overlay
+          VkSemaphore overlayDoneSem = inFlightSemaphores[currentFrame];
+          VkSubmitInfo submit = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+          submit.commandBufferCount = 1;
+          submit.pCommandBuffers = &cb;
+          submit.signalSemaphoreCount = 1;
+          submit.pSignalSemaphores = &overlayDoneSem;
+          
+          if (pPresentInfo->waitSemaphoreCount > 0 && pPresentInfo->pWaitSemaphores) {
+            std::vector<VkPipelineStageFlags> waitStages(pPresentInfo->waitSemaphoreCount, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+            submit.waitSemaphoreCount = pPresentInfo->waitSemaphoreCount;
+            submit.pWaitSemaphores = pPresentInfo->pWaitSemaphores;
+            submit.pWaitDstStageMask = waitStages.data();
+          }
+          
+          vkQueueSubmit(queue, 1, &submit, inFlightFences[currentFrame]);
+          
+          // NOTE: When game provides NO semaphores (waitSemaphoreCount == 0), overlay
+          // may flicker in some games like Strange Brigade with in-game VSync OFF.
+          // This is a fundamental limitation - without game-provided semaphores,
+          // we cannot synchronize without blocking CPU (which kills FPS).
+          // 
+          // SOLUTION: Enable in-game VSync for stable overlay in affected games.
+          // When in-game VSync is ON, games typically provide proper semaphores.
+          
+          currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+          
+          dbgOverlayDrawn++;
+          if (dbgPresentNum - dbgLastLogFrame > 120) {
+            HookLog("Vulkan: Submitting overlay (present#%d, drawn=%d, skipped=%d, imgIdx=%u, waitSems=%u)",
+                    dbgPresentNum, dbgOverlayDrawn, dbgOverlaySkipped, idx, pPresentInfo->waitSemaphoreCount);
+            dbgLastLogFrame = dbgPresentNum;
+          }
+          
+          // Present waits on overlay semaphore
+          VkPresentInfoKHR modifiedPresent = *pPresentInfo;
+          modifiedPresent.waitSemaphoreCount = 1;
+          modifiedPresent.pWaitSemaphores = &overlayDoneSem;
+          return o_vkQueuePresentKHR(queue, &modifiedPresent);
         }
       }
     }
   }
+  
+  // Present the frame (no overlay drawn or overlay disabled)
   
   int64_t diagT2 = diagTime();
   

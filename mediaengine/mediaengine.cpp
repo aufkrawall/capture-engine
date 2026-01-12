@@ -658,12 +658,10 @@ public:
     if (!recording || audioSources.empty())
       return;
 
-    // Drive audio purely from the encoded video timeline (frame-count CFR), not wall-clock.
-    // This prevents long-term drift and guarantees sample-perfect A/V sync.
-    int64_t audioTargetMs = 0;
-    if (videoEnc) {
-      audioTargetMs = videoEnc->GetEncodedDurationUs() / 1000;
-    }
+    // Drive audio from the same timeline as video PTS (real elapsed time since recording start).
+    // Using the *encoded* duration can lag under encoder/writer backpressure, causing the audio
+    // ring buffer to build up and forcing discontinuous sample drops (audible crackling).
+    int64_t audioTargetMs = this->videoElapsedMs.load();
     
     // Safety: if video elapsed time is somehow negative or 0, skip
     if (audioTargetMs <= 0)

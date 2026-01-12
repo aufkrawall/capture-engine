@@ -7,6 +7,7 @@
 #include "hook_common.h"
 #include "../../common/frame_timing.h"
 #include "performance_metrics.h"
+#include "dx12_hook.h"
 #include <MinHook.h>
 #include <backends/imgui_impl_dx11.h>
 #include <backends/imgui_impl_dx10.h>
@@ -23,6 +24,7 @@
 #include <dxgi1_4.h> // For IDXGISwapChain3
 #include <d3dcompiler.h>
 #include <imgui.h>
+ #include <mutex>
 
 
 // Globals
@@ -41,10 +43,25 @@ static const char* g_DetectedAPI = "DX11";
 static bool g_IsDX11Active = false;
 static bool g_IsDX10Active = false;
 
+ static std::mutex g_ImGuiFrameMutex;
+
 // Prerender Limit Fencing
 static std::vector<ID3D11Query*> g_PrerenderQueries;
 static uint64_t g_PrerenderFrameIndex = 0;
 static int64_t g_LastSleepUs = 0;
+
+ static bool IsUnityProcess() {
+     static LONG s_init = 0;
+     static bool s_isUnity = false;
+     if (InterlockedCompareExchange(&s_init, 1, 0) == 0) {
+         s_isUnity = (GetModuleHandleA("UnityPlayer.dll") != nullptr);
+         InterlockedExchange(&s_init, 2);
+     }
+     while (s_init < 2) {
+         Sleep(0);
+     }
+     return s_isUnity;
+ }
 
 typedef HRESULT(STDMETHODCALLTYPE *Present_t)(IDXGISwapChain *pSwapChain,
                                               UINT SyncInterval, UINT Flags);
@@ -1052,13 +1069,16 @@ static void DrawDX10Overlay(IDXGISwapChain *pSwapChain, HWND currentHwnd, int fr
     }
     g_SharedOverlay.SetGraphicsAPI(api);
     
-    ImGui_ImplDX10_NewFrame();
-    g_SharedOverlay.BeginFrame();
-    g_SharedOverlay.RenderUI();
-    g_SharedOverlay.EndFrame();
+    {
+      std::lock_guard<std::mutex> lock(g_ImGuiFrameMutex);
+      ImGui_ImplDX10_NewFrame();
+      g_SharedOverlay.BeginFrame();
+      g_SharedOverlay.RenderUI();
+      g_SharedOverlay.EndFrame();
 
-    device->OMSetRenderTargets(1, &g_mainRenderTargetView10, NULL);
-    ImGui_ImplDX10_RenderDrawData(ImGui::GetDrawData());
+      device->OMSetRenderTargets(1, &g_mainRenderTargetView10, NULL);
+      ImGui_ImplDX10_RenderDrawData(ImGui::GetDrawData());
+    }
     
     device->Release();
 }
@@ -1151,6 +1171,7 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
   }
   g_SharedOverlay.SetGraphicsAPI(finalApi);
   
+  std::lock_guard<std::mutex> lock(g_ImGuiFrameMutex);
   ImGui_ImplDX11_NewFrame();
   g_SharedOverlay.BeginFrame();
   g_SharedOverlay.RenderUI();
@@ -1210,6 +1231,14 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain *pSwapChain,
                                                UINT Height, DXGI_FORMAT NewFormat,
                                                UINT SwapChainFlags) {
   HookLog("DX11: ResizeBuffers called (%dx%d)", Width, Height);
+
+  {
+    ID3D12Device* d12Dev = nullptr;
+    if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&d12Dev))) && d12Dev) {
+      d12Dev->Release();
+      DX12_OnSwapchainResizeBegin();
+    }
+  }
   
   // Release render target view before resize
   if (g_mainRenderTargetView) {
@@ -1331,6 +1360,54 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
   LARGE_INTEGER qpc;
   QueryPerformanceCounter(&qpc);
   int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
+
+  // Apply overrides early so they also affect the DX11->DX12 fallback path.
+  // (D2R uses a DX12 swapchain that can land in this DX11 Present hook.)
+  // Apply VSync Override
+  VSyncOverride vsyncEarly = GetVSyncOverride();
+  if (vsyncEarly.shouldOverride) {
+      SyncInterval = (UINT)vsyncEarly.presentInterval;
+      if (SyncInterval > 0) {
+          Flags &= ~DXGI_PRESENT_ALLOW_TEARING;
+      }
+  }
+
+  // Apply Prerender Limit
+  float limitEarly = GetActivePrerenderLimit();
+  if (limitEarly >= 0.0f) {
+      static float lastLimitEarly = -2.0f;
+      if (fabs(limitEarly - lastLimitEarly) > 0.001f) {
+          ID3D11Device* dev = nullptr;
+          if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&dev)))) {
+              IDXGIDevice1* dxgiDev = nullptr;
+              if (SUCCEEDED(dev->QueryInterface(IID_PPV_ARGS(&dxgiDev)))) {
+                   UINT effectiveLatency = (limitEarly < 1.0f) ? 1 : (UINT)limitEarly;
+                   dxgiDev->SetMaximumFrameLatency(effectiveLatency);
+                   dxgiDev->Release();
+                   HookLog("DX11: Set maximum DXGI latency to %d (Active Limit: %.2f)", effectiveLatency, limitEarly);
+              }
+              dev->Release();
+          }
+          lastLimitEarly = limitEarly;
+      }
+      ApplyPrerenderLimit(pSwapChain, limitEarly);
+  }
+
+  // DX12 swapchains can land in this hook (DXGI interop). In that case, route to DX12 overlay/capture.
+  // This also serves as a fallback when DX12 Present hooks are unavailable due to MinHook conflicts.
+  {
+    ID3D12Device* d12Dev = nullptr;
+    if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&d12Dev))) && d12Dev) {
+      d12Dev->Release();
+      DX12_ProcessFrameExternal(pSwapChain);
+
+      // Apply shared FPS limiter
+      g_SharedFpsLimiter.SetIPCClient(g_IPC);
+      g_SharedFpsLimiter.Apply();
+
+      return oPresent(pSwapChain, SyncInterval, Flags);
+    }
+  }
   
   // LOG ONCE: Actual SwapChain Desc
   static bool loggedSC = false;
@@ -1575,6 +1652,22 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain *pSwapChain,
   bool isRecording = ipc && ipc->IsRecording();
   g_PerfMetrics.SetRecording(isRecording);
 
+  // DX12 swapchains can land in this hook (DXGI interop). Route to DX12 overlay/capture.
+  // This also serves as a fallback when DX12 Present hooks are unavailable due to MinHook conflicts.
+  {
+    ID3D12Device* d12Dev = nullptr;
+    if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&d12Dev))) && d12Dev) {
+      d12Dev->Release();
+      DX12_ProcessFrameExternal(pSwapChain);
+
+      // Apply shared FPS limiter
+      g_SharedFpsLimiter.SetIPCClient(g_IPC);
+      g_SharedFpsLimiter.Apply();
+
+      return oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
+    }
+  }
+
   // Capture Logic
   if (g_IPC && g_IPC->IsRecording()) {
     // Try to get D3D11 device first; if fails, this is a DX10 game
@@ -1725,11 +1818,31 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device *pDevice,
 
         // Mip Bias
         std::string bias = gfx.mipBias;
+        bool userBiasActive = false;
+        float userBiasVal = 0.0f;
         if (bias != "default") {
-             try {
-                desc.MipLODBias = std::stof(bias);
+            try {
+                userBiasVal = std::stof(bias);
+                userBiasActive = true;
+
+                float originalBias = pSamplerDesc->MipLODBias;
+                std::string mode = gfx.mipBiasMode;
+
+                if (mode == "offset") {
+                    desc.MipLODBias = originalBias + userBiasVal;
+                } else if (mode == "base") {
+                    if (originalBias < 0.0f) {
+                        desc.MipLODBias = originalBias + userBiasVal;
+                    } else {
+                        desc.MipLODBias = originalBias;
+                    }
+                } else {
+                    desc.MipLODBias = userBiasVal;
+                }
+
                 modified = true;
-             } catch (...) {}
+            } catch (...) {
+            }
         }
 
         // SGSSAA Auto-Bias
@@ -1737,6 +1850,13 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device *pDevice,
             float sgBias = 0.0f;
             if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgBias)) {
                 desc.MipLODBias += sgBias;
+                modified = true;
+            }
+        }
+
+        if (userBiasActive && userBiasVal < 0.0f && !gfx.sgssaa && IsUnityProcess()) {
+            if (desc.MipLODBias < -0.5f) {
+                desc.MipLODBias = -0.5f;
                 modified = true;
             }
         }
@@ -1825,11 +1945,31 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState10(ID3D10Device *pDevice,
 
         // Mip Bias
         std::string bias = gfx.mipBias;
+        bool userBiasActive = false;
+        float userBiasVal = 0.0f;
         if (bias != "default") {
             try {
-                desc.MipLODBias = std::stof(bias);
+                userBiasVal = std::stof(bias);
+                userBiasActive = true;
+
+                float originalBias = pSamplerDesc->MipLODBias;
+                std::string mode = gfx.mipBiasMode;
+
+                if (mode == "offset") {
+                    desc.MipLODBias = originalBias + userBiasVal;
+                } else if (mode == "base") {
+                    if (originalBias < 0.0f) {
+                        desc.MipLODBias = originalBias + userBiasVal;
+                    } else {
+                        desc.MipLODBias = originalBias;
+                    }
+                } else {
+                    desc.MipLODBias = userBiasVal;
+                }
+
                 modified = true;
-            } catch (...) {}
+            } catch (...) {
+            }
         }
 
         // SGSSAA Auto-Bias
@@ -1837,6 +1977,13 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState10(ID3D10Device *pDevice,
             float sgBias = 0.0f;
             if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgBias)) {
                 desc.MipLODBias += sgBias;
+                modified = true;
+            }
+        }
+
+        if (userBiasActive && userBiasVal < 0.0f && !gfx.sgssaa && IsUnityProcess()) {
+            if (desc.MipLODBias < -0.5f) {
+                desc.MipLODBias = -0.5f;
                 modified = true;
             }
         }
