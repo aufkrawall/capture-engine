@@ -26,6 +26,11 @@
 #include <imgui.h>
  #include <mutex>
 
+// Forward declaration for cross-file DX12 overlay invalidation
+// Called when FSR4SwapchainProvider creates a new swapchain to signal pending cleanup
+// Uses atomic flag to avoid cross-thread deadlocks - DX12 thread does actual cleanup
+extern void DX12_SignalFSR4SwapchainRecreated();
+
 
 // Globals
 static ID3D11Device *g_pd3dDevice = NULL;
@@ -49,6 +54,10 @@ static bool g_IsDX10Active = false;
 static std::vector<ID3D11Query*> g_PrerenderQueries;
 static uint64_t g_PrerenderFrameIndex = 0;
 static int64_t g_LastSleepUs = 0;
+
+// Cross-function tracking for FSR4/FG swapchain recreation detection
+// Shared between DetourCreateSwapChain and DetourCreateSwapChainForHwnd
+static bool g_FirstGameSwapchainCreated = false;
 
  static bool IsUnityProcess() {
      static LONG s_init = 0;
@@ -385,6 +394,20 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory *pFactory, I
     HRESULT hr = oCreateSwapChain(pFactory, pDevice, pDesc, ppSwapChain);
     
     if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
+        // FSR4/FG swapchain recreation detection (shared with CreateSwapChainForHwnd)
+        bool isGameSizedSwapchain = pDesc && pDesc->BufferDesc.Width >= 1920 && pDesc->BufferDesc.Height >= 1080;
+        if (isGameSizedSwapchain) {
+            if (g_FirstGameSwapchainCreated) {
+                // Recreation - likely FG taking over
+                HookLog("DX11: CreateSwapChain: Game-sized swapchain recreated - invalidating DX12 overlay");
+                DX12_SignalFSR4SwapchainRecreated();
+            } else {
+                g_FirstGameSwapchainCreated = true;
+                HookLog("DX11: CreateSwapChain: First game-sized swapchain created (%ux%u)",
+                        pDesc->BufferDesc.Width, pDesc->BufferDesc.Height);
+            }
+        }
+        
         ID3D11Device* pD3D11Device = nullptr;
         if (SUCCEEDED((*ppSwapChain)->GetDevice(__uuidof(ID3D11Device), (void**)&pD3D11Device))) {
              ID3D11DeviceContext* ctx = nullptr;
@@ -408,13 +431,37 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2 *pFa
         }
     }
 
+    // CRITICAL FG FIX: Signal BEFORE swapchain creation for recreation scenario
+    // FSR4 starts using the new swapchain immediately after oCreateSwapChainForHwnd returns,
+    // so we must clean up BEFORE returning control to avoid use-after-free.
+    bool isGameSizedSwapchain = pDesc && pDesc->Width >= 1920 && pDesc->Height >= 1080;
+    if (isGameSizedSwapchain && g_FirstGameSwapchainCreated) {
+        // This is a RECREATION of game swapchain - signal cleanup BEFORE creation
+        HookLog("DX11: CreateSwapChainForHwnd: Game-sized swapchain recreation detected - signaling cleanup BEFORE create");
+        DX12_SignalFSR4SwapchainRecreated();
+        // Give DX12 thread a moment to process the signal
+        Sleep(10);
+    }
+
     HRESULT hr = oCreateSwapChainForHwnd(pFactory, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
     
     if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
+        // Post-creation tracking
+        if (isGameSizedSwapchain) {
+            if (!g_FirstGameSwapchainCreated) {
+                g_FirstGameSwapchainCreated = true;
+                HookLog("DX11: CreateSwapChainForHwnd: First game-sized swapchain created (%ux%u)",
+                        pDesc->Width, pDesc->Height);
+            }
+        }
+        
         // First try D3D12 - DX12 games create swapchains via DXGI too
         ID3D12CommandQueue* pD3D12Queue = nullptr;
         if (pDevice && SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D12CommandQueue), (void**)&pD3D12Queue))) {
              HookLog("DX11: CreateSwapChainForHwnd - Detected DX12 CommandQueue.");
+             // Signal for DX12 thread to handle cleanup (avoid cross-thread deadlock)
+             HookLog("DX11: FSR4/FG DX12 queue detected - signaling for DX12 thread cleanup");
+             DX12_SignalFSR4SwapchainRecreated();
              // IMPORTANT: Do NOT install DX12 hooks here!
              // FG runtimes (DLSS-G, FSR-FG) load their DLLs AFTER the first swapchain is created,
              // then recreate the swapchain. If we hook here, those hooks become invalid.

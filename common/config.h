@@ -98,6 +98,7 @@ struct GraphicsConfig {
   bool disableAutoMipBias = false;  // Disable auto mip bias for SGSSAA
   std::string dlssAutoExposure;     // "default", "on", "off"
   std::string dlssExposureNormalization;
+  bool forceRayReconstruction = false; // Force "Supported" for Ray Reconstruction
 
   // DLSS Presets (Super Resolution)
   std::string dlssPresetDLAA;

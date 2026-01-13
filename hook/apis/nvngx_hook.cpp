@@ -13,6 +13,15 @@ struct NVSDK_NGX_Parameter {
     virtual ~NVSDK_NGX_Parameter() {} 
 };
 
+struct NVSDK_NGX_FeatureDiscoveryInfo;
+struct NVSDK_NGX_FeatureRequirement;
+
+typedef NVSDK_NGX_Result (STDMETHODCALLTYPE *PFN_NVSDK_NGX_GetFeatureRequirements)(void* InAdapter, const NVSDK_NGX_FeatureDiscoveryInfo* InDiscoveryInfo, NVSDK_NGX_FeatureRequirement* OutSupported);
+
+static PFN_NVSDK_NGX_GetFeatureRequirements oGetFeatureRequirements_D3D11 = nullptr;
+static PFN_NVSDK_NGX_GetFeatureRequirements oGetFeatureRequirements_D3D12 = nullptr;
+static PFN_NVSDK_NGX_GetFeatureRequirements oGetFeatureRequirements_VULKAN = nullptr;
+
 #define NVSDK_NGX_Parameter_AutoExposure "DLSS.AutoExposure"
 #define NVSDK_NGX_Parameter_CreateFlags "DLSS.Feature.Create.Flags"
 #define NVSDK_NGX_Parameter_ExposureScale "DLSS.Exposure.Scale"
@@ -35,6 +44,9 @@ struct NVSDK_NGX_Parameter {
 #define NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Performance "RayReconstruction.Hint.Render.Preset.Performance"
 #define NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraPerformance "RayReconstruction.Hint.Render.Preset.UltraPerformance"
 #define NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraQuality "RayReconstruction.Hint.Render.Preset.UltraQuality"
+
+#define NVSDK_NGX_Parameter_RayReconstruction_Available "RayReconstruction.Available"
+#define NVSDK_NGX_Parameter_RayReconstruction_FeatureInitResult "RayReconstruction.FeatureInitResult"
 
 // Bit 6 in CreateFlags is AutoExposure
 const int NVSDK_NGX_DLSS_Feature_Flags_AutoExposure = 1 << 6;
@@ -347,6 +359,21 @@ void EnsureVTableHooks(NVSDK_NGX_Parameter* pParams) {
         ((PFN_SetF)vtable[6])(pParams, NVSDK_NGX_Parameter_Sharpness_Alt, overrideVal);
     }
 
+    // Force Ray Reconstruction Availability
+    if (cfg.forceRayReconstruction) {
+        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) {
+            LogOncePerParam("NVNGX_ForceRR_Caps", "NVNGX: Injecting RayReconstruction.Available=1 and FeatureInitResult=1");
+        }
+        // Force available = 1 (true)
+        if (vtable[3]) ((PFN_SetI)vtable[3])(pParams, NVSDK_NGX_Parameter_RayReconstruction_Available, 1);
+        if (vtable[4]) ((PFN_SetUI)vtable[4])(pParams, NVSDK_NGX_Parameter_RayReconstruction_Available, 1);
+        
+        // Force init result = 0 (Success/Supported check usually looks for 0 or 1 depending on param, but FeatureInitResult is often a success code 0 or 1)
+        // Actually FeatureInitResult usually stores the NVSDK_NGX_Result. 1 = Success.
+        if (vtable[3]) ((PFN_SetI)vtable[3])(pParams, NVSDK_NGX_Parameter_RayReconstruction_FeatureInitResult, 1);
+        if (vtable[4]) ((PFN_SetUI)vtable[4])(pParams, NVSDK_NGX_Parameter_RayReconstruction_FeatureInitResult, 1);
+    }
+
 }
 
 // --- Factory Hooks ---
@@ -384,6 +411,83 @@ NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_GetParams_VULKAN(NVSDK_NGX_Parameter**
 NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_AllocParams_VULKAN(NVSDK_NGX_Parameter** p) { return Hooked_ProcessParameters(oAllocateParameters_VULKAN, p, "AllocParams_VULKAN"); }
 NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_GetCaps_VULKAN(NVSDK_NGX_Parameter** p) { return Hooked_ProcessParameters(oGetCapabilityParameters_VULKAN, p, "GetCaps_VULKAN"); }
 
+// Definition matching nvsdk_ngx_defs.h
+typedef struct NVSDK_NGX_Application_Identifier
+{
+    unsigned int IdentifierType; // Enum in reality but size int
+    union v {
+        struct {
+            const char* ProjectId;
+            int EngineType;
+            const char* EngineVersion;
+        } ProjectDesc;
+        unsigned long long ApplicationId;
+    } v;
+} NVSDK_NGX_Application_Identifier;
+
+typedef struct NVSDK_NGX_FeatureDiscoveryInfo
+{
+    unsigned int SDKVersion;
+    int FeatureID;
+    NVSDK_NGX_Application_Identifier Identifier;
+    const wchar_t* ApplicationDataPath;
+    const void* FeatureInfo;
+} NVSDK_NGX_FeatureDiscoveryInfo;
+
+typedef struct NVSDK_NGX_FeatureRequirement
+{
+    int FeatureSupported; // 0 = Supported
+    unsigned int MinHWArchitecture;
+    char MinOSVersion[255];
+} NVSDK_NGX_FeatureRequirement;
+
+NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_ProcessFeatureRequirements(PFN_NVSDK_NGX_GetFeatureRequirements original, void* InAdapter, const NVSDK_NGX_FeatureDiscoveryInfo* InDiscoveryInfo, NVSDK_NGX_FeatureRequirement* OutSupported) {
+    NVSDK_NGX_Result res = NVSDK_NGX_Result_Success;
+    
+    // Call original first to populate real data
+    if (original) {
+        res = original(InAdapter, InDiscoveryInfo, OutSupported);
+    } else {
+        // Fallback if original missing (unlikely if hooked)
+        res = (NVSDK_NGX_Result)0xBAD00000; // Fail
+    }
+
+    if (InDiscoveryInfo && OutSupported) {
+        // Feature 13 is Ray Reconstruction
+        if (InDiscoveryInfo->FeatureID == 13) {
+             const auto& cfg = GetActiveGraphicsConfig();
+             if (cfg.forceRayReconstruction) {
+                 if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) {
+                    LogOncePerParam("GetFeatureRequirements_13", "NVNGX: Spoofing Ray Reconstruction (Feature 13) as SUPPORTED");
+                 }
+                 
+                 // Force Success Result
+                 res = NVSDK_NGX_Result_Success;
+                 
+                 // Force Structure
+                 OutSupported->FeatureSupported = 0; // NVSDK_NGX_FeatureSupportResult_Supported
+                 
+                 // Fill placeholders if empty
+                 if (OutSupported->MinHWArchitecture == 0) OutSupported->MinHWArchitecture = 0; // Supported
+                 if (OutSupported->MinOSVersion[0] == 0) strcpy_s(OutSupported->MinOSVersion, "10.0.19041");
+             }
+        }
+    }
+    return res;
+}
+
+NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_GetFeatureRequirements_D3D11(void* InAdapter, const NVSDK_NGX_FeatureDiscoveryInfo* InDiscoveryInfo, NVSDK_NGX_FeatureRequirement* OutSupported) {
+    return Hooked_ProcessFeatureRequirements(oGetFeatureRequirements_D3D11, InAdapter, InDiscoveryInfo, OutSupported);
+}
+
+NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_GetFeatureRequirements_D3D12(void* InAdapter, const NVSDK_NGX_FeatureDiscoveryInfo* InDiscoveryInfo, NVSDK_NGX_FeatureRequirement* OutSupported) {
+    return Hooked_ProcessFeatureRequirements(oGetFeatureRequirements_D3D12, InAdapter, InDiscoveryInfo, OutSupported);
+}
+
+NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_GetFeatureRequirements_VULKAN(void* InAdapter, const NVSDK_NGX_FeatureDiscoveryInfo* InDiscoveryInfo, NVSDK_NGX_FeatureRequirement* OutSupported) {
+    return Hooked_ProcessFeatureRequirements(oGetFeatureRequirements_VULKAN, InAdapter, InDiscoveryInfo, OutSupported);
+}
+
 void NVNGXHook::Install() {
     if (m_Installed.exchange(true)) return;
 
@@ -412,6 +516,10 @@ void NVNGXHook::Install() {
     InstallFactory("NVSDK_NGX_VULKAN_GetParameters", (LPVOID)&Hooked_GetParams_VULKAN, (LPVOID*)&oGetParameters_VULKAN);
     InstallFactory("NVSDK_NGX_VULKAN_AllocateParameters", (LPVOID)&Hooked_AllocParams_VULKAN, (LPVOID*)&oAllocateParameters_VULKAN);
     InstallFactory("NVSDK_NGX_VULKAN_GetCapabilityParameters", (LPVOID)&Hooked_GetCaps_VULKAN, (LPVOID*)&oGetCapabilityParameters_VULKAN);
+
+    InstallFactory("NVSDK_NGX_D3D11_GetFeatureRequirements", (LPVOID)&Hooked_GetFeatureRequirements_D3D11, (LPVOID*)&oGetFeatureRequirements_D3D11);
+    InstallFactory("NVSDK_NGX_D3D12_GetFeatureRequirements", (LPVOID)&Hooked_GetFeatureRequirements_D3D12, (LPVOID*)&oGetFeatureRequirements_D3D12);
+    InstallFactory("NVSDK_NGX_VULKAN_GetFeatureRequirements", (LPVOID)&Hooked_GetFeatureRequirements_VULKAN, (LPVOID*)&oGetFeatureRequirements_VULKAN);
 }
 
 void NVNGXHook::Uninstall() {

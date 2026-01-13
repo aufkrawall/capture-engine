@@ -1072,7 +1072,8 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
 
         # 2. Compile Common
         log(f"Compiling Common {arch}...")
-        common_src = glob.glob(os.path.join(PROJECT_ROOT, "common", "*.cpp"))
+        common_src = glob.glob(os.path.join(PROJECT_ROOT, "common", "*.cpp")) + \
+                     glob.glob(os.path.join(PROJECT_ROOT, "common", "utils", "*.cpp"))
         common_objs = []
         src_obj_pairs = []
         for src in common_src:

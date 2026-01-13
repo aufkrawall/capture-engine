@@ -43,6 +43,29 @@ FGCompatibility::FGType FGCompatibility::DetectLoadedFGRuntime() {
 
     FGType result = FGType::None;
     
+    // Check for FSR FG DLLs FIRST (Prioritize detection to avoid wrapper usage if FSR is present)
+    HMODULE fsrFg = GetModuleHandleW(L"amd_fidelityfx_fg.dll");
+    HMODULE ffxFsr3 = GetModuleHandleW(L"ffx_fsr3upscaler_x64.dll");
+    HMODULE ffxFrameInterp = GetModuleHandleW(L"ffx_frameinterpolation_x64.dll");
+    
+    if (fsrFg || ffxFrameInterp) {
+        result = FGType::FSR_FG;
+        HookLog("FG: Detected FSR FG DLL (amd_fidelityfx_fg=%p, ffx_frameinterpolation=%p)", fsrFg, ffxFrameInterp);
+    } else if (ffxFsr3) {
+        // FSR3 upscaler often implies FG capability in FSR3 games
+        result = FGType::FSR_FG;
+        HookLog("FG: FSR3 upscaler detected (%p) - Treating as FSR FG for safety", ffxFsr3);
+    }
+
+    // If FSR FG is detected, return immediately to ensure wrapper is disabled.
+    if (result == FGType::FSR_FG) {
+        FGType prev = detectedRuntime.exchange(result);
+        if (prev != result) {
+            HookLog("FG: Runtime changed: %s -> %s (FSR Priority)", GetFGTypeName(prev), GetFGTypeName(result));
+        }
+        return result;
+    }
+    
     // Check for DLSS FG / MSFG DLLs
     HMODULE dlssg = GetModuleHandleW(L"nvngx_dlssg.dll");
     HMODULE slDlssG = GetModuleHandleW(L"sl.dlss_g.dll");
@@ -58,18 +81,6 @@ FGCompatibility::FGType FGCompatibility::DetectLoadedFGRuntime() {
         if (result == FGType::None) {
             result = FGType::DLSS_FG;
         }
-    }
-    
-    // Check for FSR FG DLLs
-    HMODULE fsrFg = GetModuleHandleW(L"amd_fidelityfx_fg.dll");
-    HMODULE ffxFsr3 = GetModuleHandleW(L"ffx_fsr3upscaler_x64.dll");
-    HMODULE ffxFrameInterp = GetModuleHandleW(L"ffx_frameinterpolation_x64.dll");
-    
-    if (fsrFg || ffxFrameInterp) {
-        result = FGType::FSR_FG;
-        HookLog("FG: Detected FSR FG DLL (amd_fidelityfx_fg=%p, ffx_frameinterpolation=%p)", fsrFg, ffxFrameInterp);
-    } else if (ffxFsr3) {
-        HookLog("FG: FSR3 upscaler detected (%p) - FG may be available", ffxFsr3);
     }
     
     FGType prev = detectedRuntime.exchange(result);

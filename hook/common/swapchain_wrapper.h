@@ -19,6 +19,14 @@ extern OverlayDrawCallback g_OverlayDrawCallback;
 static const GUID IID_OverlaySwapChainWrapper = 
     {0xce8a33b4, 0x1405, 0x424c, {0xae, 0x88, 0x0d, 0x3e, 0x9d, 0x46, 0xc9, 0x14}};
 
+// Streamline Native Interface GUID - BLOCK this to prevent Streamline from unwrapping our wrapper
+// {ADEC44E2-61F0-45C3-AD9F-1B37379284FF}
+// Per SpecialK research: When FG runtimes (DLSS-G, FSR-G) query this GUID, they're trying to
+// detect and unwrap any proxy wrappers. By returning E_NOINTERFACE, we prevent them from
+// seeing our wrapper, which avoids crashes during FG processing.
+static const GUID IID_StreamlineNativeInterfaceBlock = 
+    {0xADEC44E2, 0x61F0, 0x45C3, {0xAD, 0x9F, 0x1B, 0x37, 0x37, 0x92, 0x84, 0xFF}};
+
 // Swapchain wrapper that intercepts Present to draw overlay BEFORE FG processing
 class OverlaySwapChainWrapper : public IDXGISwapChain4 {
 public:
@@ -53,6 +61,20 @@ public:
     // IUnknown
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObj) override {
         if (!ppvObj) return E_POINTER;
+        
+        // CRITICAL: Block Streamline from unwrapping our wrapper!
+        // Per SpecialK research, returning E_NOINTERFACE prevents FG runtimes (DLSS-G, FSR-G)
+        // from detecting our wrapper as a proxy, avoiding crashes during FG processing.
+        // This is THE key fix for the FSR FG overlay crash.
+        if (riid == IID_StreamlineNativeInterfaceBlock) {
+            static bool logOnce = true;
+            if (logOnce) {
+                EarlyLog("OverlaySwapChainWrapper: Blocking Streamline native interface query (FG compat)");
+                logOnce = false;
+            }
+            *ppvObj = nullptr;
+            return E_NOINTERFACE;
+        }
         
         // Return our wrapper for swapchain interfaces
         if (riid == IID_OverlaySwapChainWrapper ||

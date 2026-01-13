@@ -1,4 +1,6 @@
 #include "apis/dx12_hook.h"
+#include "../common/utils/scanner.h"
+#include <psapi.h>
 #include "apis/dx11_hook.h"
 #include "apis/dx9_hook.h"
 #include "apis/ddraw_hook.h"
@@ -75,6 +77,16 @@ LoadLibraryA_t OriginalLoadLibraryA = nullptr;
 LoadLibraryW_t OriginalLoadLibraryW = nullptr;
 LoadLibraryExA_t OriginalLoadLibraryExA = nullptr;
 LoadLibraryExW_t OriginalLoadLibraryExW = nullptr;
+
+typedef LPSTR(WINAPI *GetCommandLineA_t)();
+typedef LPWSTR(WINAPI *GetCommandLineW_t)();
+GetCommandLineA_t OriginalGetCommandLineA = nullptr;
+GetCommandLineW_t OriginalGetCommandLineW = nullptr;
+
+typedef int(WINAPI *getmainargs_t)(int *argc, char ***argv, char ***env, int doWildCard, void *startInfo);
+typedef int(WINAPI *wgetmainargs_t)(int *argc, wchar_t ***argv, wchar_t ***env, int doWildCard, void *startInfo);
+static getmainargs_t Original_getmainargs = nullptr;
+static wgetmainargs_t Original_wgetmainargs = nullptr;
 
 // CreateProcess Hook Typedefs for child process injection
 typedef BOOL(WINAPI *CreateProcessA_t)(LPCSTR, LPSTR, LPSECURITY_ATTRIBUTES, LPSECURITY_ATTRIBUTES, BOOL, DWORD, LPVOID, LPCSTR, LPSTARTUPINFOA, LPPROCESS_INFORMATION);
@@ -305,6 +317,95 @@ LSTATUS WINAPI HookedRegQueryValueExW(HKEY hKey, LPCWSTR lpValueName, LPDWORD lp
 }
 
 // Hooked Functions - Signal Event & Redirect
+static std::string g_SpoofedCmdLineA;
+static std::wstring g_SpoofedCmdLineW;
+
+LPSTR WINAPI HookedGetCommandLineA() {
+    LPSTR original = OriginalGetCommandLineA();
+    
+    // Only spoof if config is loaded and feature forced
+    if (g_LocalConfig.graphics.forceRayReconstruction) {
+        static bool s_Logged = false;
+        if (!s_Logged) {
+            HookLog("HookedGetCommandLineA called. Original: %s", original ? original : "<null>");
+            s_Logged = true;
+        }
+
+        if (g_SpoofedCmdLineA.empty()) {
+            if (original) g_SpoofedCmdLineA = original;
+            
+            // Check if argument already exists to avoid duplication
+            if (g_SpoofedCmdLineA.find("r.NGX.DLSS.denoisermode") == std::string::npos) {
+                 g_SpoofedCmdLineA += " -r.NGX.DLSS.denoisermode=1";
+                 // Also force the RR feature cvar just in case (some plugins use this)
+                 g_SpoofedCmdLineA += " -r.NGX.DLSS.RayReconstruction=1";
+                 HookLog("HookedGetCommandLineA: Appended CVar flags.");
+            }
+        }
+        return (LPSTR)g_SpoofedCmdLineA.c_str();
+    }
+    return original;
+}
+
+LPWSTR WINAPI HookedGetCommandLineW() {
+    LPWSTR original = OriginalGetCommandLineW();
+
+    if (g_LocalConfig.graphics.forceRayReconstruction) {
+        static bool s_Logged = false;
+        if (!s_Logged) {
+            // wchar conversion for logging
+            char buf[2048];
+            WideCharToMultiByte(CP_UTF8, 0, original, -1, buf, 2048, NULL, NULL);
+            HookLog("HookedGetCommandLineW called. Original: %s", buf);
+            s_Logged = true;
+        }
+
+        if (g_SpoofedCmdLineW.empty()) {
+            if (original) g_SpoofedCmdLineW = original;
+            
+            if (g_SpoofedCmdLineW.find(L"r.NGX.DLSS.denoisermode") == std::wstring::npos) {
+                 g_SpoofedCmdLineW += L" -r.NGX.DLSS.denoisermode=1";
+                 g_SpoofedCmdLineW += L" -r.NGX.DLSS.RayReconstruction=1";
+                 HookLog("HookedGetCommandLineW: Appended CVar flags.");
+            }
+        }
+        return (LPWSTR)g_SpoofedCmdLineW.c_str();
+    }
+    return original;
+}
+
+// CRT Hook Wrappers
+int WINAPI Hooked_getmainargs(int *argc, char ***argv, char ***env, int doWildCard, void *startInfo) {
+    int result = Original_getmainargs(argc, argv, env, doWildCard, startInfo);
+    if (g_LocalConfig.graphics.forceRayReconstruction && result == 0 && *argc > 0) {
+        HookLog("Hooked_getmainargs called. Argc=%d", *argc);
+        // TODO: Modify argv here if GetCommandLine fails
+    }
+    return result;
+}
+
+int WINAPI Hooked_wgetmainargs(int *argc, wchar_t ***argv, wchar_t ***env, int doWildCard, void *startInfo) {
+    int result = Original_wgetmainargs(argc, argv, env, doWildCard, startInfo);
+    if (g_LocalConfig.graphics.forceRayReconstruction && result == 0 && *argc > 0) {
+        HookLog("Hooked_wgetmainargs called. Argc=%d", *argc);
+        // Proactive modification: Allocate new argv and append
+        // This is risky but standard for this kind of override
+        /*
+        static std::vector<wchar_t*> newArgv;
+        if (newArgv.empty()) {
+            for (int i = 0; i < *argc; i++) newArgv.push_back((*argv)[i]);
+            static wchar_t* arg1 = _wcsdup(L"-r.NGX.DLSS.denoisermode=1");
+            newArgv.push_back(arg1);
+            *argv = newArgv.data();
+            *argc += 1;
+            HookLog("Hooked_wgetmainargs: Injected argument.");
+        }
+        */
+    }
+    return result;
+}
+
+// Hooked Functions - Signal Event & Redirect
 HMODULE WINAPI HookedLoadLibraryA(LPCSTR lpLibFileName) {
     if (lpLibFileName) {
         std::string redirect = GetRedirectedPath(lpLibFileName);
@@ -389,6 +490,217 @@ HMODULE WINAPI HookedLoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile, DWORD d
     HMODULE hMod = OriginalLoadLibraryExW(lpLibFileName, hFile, dwFlags);
     if (hMod && g_hCheckHooksEvent) SetEvent(g_hCheckHooksEvent);
     return hMod;
+}
+
+// ----------------------------------------------------------------------------
+// UE5 CVar Enforcer using Pattern Scanning
+// ----------------------------------------------------------------------------
+namespace UE5 {
+    // IConsoleManager Interface (Virtual Table Reconstruction)
+    // We only need FindConsoleVariable.
+    
+    // Virtual Table Layout (Estimated for UE4/5):
+    // 0: Destructor
+    // ...
+    // FindConsoleVariable is often index 3 (UE4.27 to UE5.3 often consistent)
+    // but can vary.
+    
+    // A safer, albeit more complex, approach is to find the CVar directly by name string scan.
+    
+    class IConsoleVariable {
+    public:
+        virtual ~IConsoleVariable() {}
+        virtual void Set(const wchar_t* Value, uint32_t SetBy = 0) = 0; 
+        virtual void Set(const char* Value, uint32_t SetBy = 0) = 0; 
+        virtual void Set(int32_t Value, uint32_t SetBy = 0) = 0;
+        virtual void Set(float Value, uint32_t SetBy = 0) = 0;
+        // The above is a GUESS. The actual interface has overloads.
+        // Usually Set(const TCHAR* InValue, EConsoleVariableSetBy InSetBy) is the main one.
+        // EConsoleVariableSetBy: SetByCommandline = 0x00000002.
+    };
+    
+    // We will use a "manual vtable call" helper to avoid interface mismatches.
+    template<typename T>
+    T GetVFunc(void* instance, int index) {
+        uintptr_t* vtable = *((uintptr_t**)instance);
+        return (T)vtable[index];
+    }
+    
+    // IConsoleManager::FindConsoleVariable is usually index 3 or 4.
+    // IConsoleVariable::Set is usually index 0, 1, or 2 (Set has overloads).
+    // Let's assume standard UE4/5 layout:
+    // IConsoleManager:
+    // 0: ~
+    // 1: RegisterConsoleObject
+    // 2: UnregisterConsoleObject
+    // 3: FindConsoleObject(name)
+    // 4: FindConsoleVariable(name) <--- Target
+    
+    // IConsoleVariable:
+    // 0: ~
+    // 1: Set(const TCHAR* InValue, uint32 SetBy)
+    // 2: ...
+    
+    typedef void* (*FindConsoleVariable_t)(void* mgr, const wchar_t* name);
+    typedef void (*Set_t)(void* cvar, const wchar_t* value, uint32_t setBy);
+
+    void EnforceRR() {
+        if (!g_LocalConfig.graphics.forceRayReconstruction) return;
+
+        static uintptr_t s_ConsoleManagerPtr = 0;
+        static bool s_AttemptedScan = false;
+        
+        HMODULE hMain = GetModuleHandleA(NULL);
+        if (!hMain) return;
+
+        if (!s_ConsoleManagerPtr && !s_AttemptedScan) {
+             s_AttemptedScan = true;
+             
+             // Strategy 1: Scan for "r.DumpingMovie" (Core CVar) string ref
+             // This is a very safe anchor.
+             uintptr_t refStr = Scanner::ScanForStringRef(hMain, "r.DumpingMovie");
+             if (!refStr) {
+                 // Try another one "r.AmbientOcclusionLevels"
+                 refStr = Scanner::ScanForStringRef(hMain, "r.AmbientOcclusionLevels");
+             }
+             
+             if (refStr) {
+                 // refStr points to the LEA/MOV instruction loading the string.
+                 // We look backwards for the call to IConsoleManager::Get()
+                 // usually within 50 bytes.
+                 // Pattern: CALL Get; ...; LEA RDX, String
+                 
+                 uint8_t* p = (uint8_t*)refStr;
+                 for (int i = 0; i < 100; i++) {
+                     // Check for CALL (E8)
+                     if (*(p - i) == 0xE8) {
+                         // This MIGHT be IConsoleManager::Get()
+                         // Let's check where it goes.
+                         int32_t offset = *(int32_t*)(p - i + 1);
+                         uintptr_t funcAddr = (uintptr_t)(p - i + 5 + offset);
+                         
+                         // Check if specific function pattern: MOV RAX, [Global]; RET
+                         // 48 8B 05 ?? ?? ?? ?? C3
+                         if (*(uint8_t*)funcAddr == 0x48 && *(uint8_t*)(funcAddr+1) == 0x8B && *(uint8_t*)(funcAddr+7) == 0xC3) {
+                             // Found it!
+                             int32_t gOffset = *(int32_t*)(funcAddr + 3);
+                             s_ConsoleManagerPtr = funcAddr + 7 + gOffset; // The Global Variable Address
+                             HookLog("UE5: Found ConsoleManager singleton at %p (via r.DumpingMovie)", (void*)s_ConsoleManagerPtr);
+                             break;
+                         }
+                     }
+                 }
+             }
+             
+             // Strategy 2: If finding Get() failed, try finding GConsoleManager global directly via AOB
+             if (!s_ConsoleManagerPtr) {
+                 // Generic pattern for "MOV RCX, [GConsoleManager]"
+                 // 48 8B 0D ?? ?? ?? ?? 48 85 C9 75 ?? E8
+                 uintptr_t aob = Scanner::Scan(hMain, "48 8B 0D ?? ?? ?? ?? 48 85 C9 75 ?? E8");
+                 if (aob) {
+                     int32_t offset = *(int32_t*)(aob + 3);
+                     s_ConsoleManagerPtr = aob + 7 + offset;
+                     HookLog("UE5: Found ConsoleManager singleton at %p (via AOB)", (void*)s_ConsoleManagerPtr);
+                 }
+             }
+        }
+
+        if (s_ConsoleManagerPtr) {
+            void* mgr = *(void**)s_ConsoleManagerPtr;
+            HookLog("UE5: GConsoleManager Value at %p is %p", (void*)s_ConsoleManagerPtr, mgr);
+            
+            bool safeToUseMgr = false;
+            if (mgr) {
+                // ... verify vtable ...
+                 MEMORY_BASIC_INFORMATION mbi;
+                 if (VirtualQuery((void*)mgr, &mbi, sizeof(mbi)) && 
+                     (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READWRITE))) {
+                     safeToUseMgr = true;
+                 } else {
+                     HookLog("UE5: GConsoleManager points to invalid memory!");
+                 }
+            }
+
+            if (safeToUseMgr) {
+                // Probe VTable for FindConsoleVariable
+                // We test indices 3, 4, 5
+                static int s_ValidFindIndex = -1;
+                
+                if (s_ValidFindIndex == -1) {
+                    for (int idx : {4, 3, 5}) {
+                         FindConsoleVariable_t fn = GetVFunc<FindConsoleVariable_t>(mgr, idx);
+                         if (!fn) continue;
+                         
+                         // Check if points to executable memory
+                         MEMORY_BASIC_INFORMATION mbi;
+                         if (VirtualQuery((void*)fn, &mbi, sizeof(mbi))) {
+                             if (!(mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) {
+                                 continue;
+                             }
+                         }
+                         
+                         // Try "r.vsync"
+                         // Wrap in try/except if possible (not standard C++) but we don't have it.
+                         // We rely on memory check.
+                         void* check = fn(mgr, L"r.vsync");
+                          // If it returns null, it might just be not found?
+                          // But r.vsync is standard.
+                          // Try "r.DumpingMovie" which we scanned for?
+                         if (check) {
+                             s_ValidFindIndex = idx;
+                             HookLog("UE5: Confirmed FindConsoleVariable at VTable Index %d", idx);
+                             break;
+                         }
+                    }
+                    if (s_ValidFindIndex == -1) {
+                        HookLog("UE5: Failed to find FindConsoleVariable (Probed 3, 4, 5)");
+                        // Prevent retry spam
+                        s_ValidFindIndex = -2;
+                        // DO NOT RETURN! FALLTHROUGH TO FALLBACK
+                    }
+                }
+                
+                if (s_ValidFindIndex >= 0) {
+                     FindConsoleVariable_t fnFind = GetVFunc<FindConsoleVariable_t>(mgr, s_ValidFindIndex);
+                     
+                     // 1. Denoiser Mode
+                     void* cvarMode = fnFind(mgr, L"r.NGX.DLSS.denoisermode");
+                     if (cvarMode) {
+                         static Set_t fnSet = nullptr; 
+                         if (!fnSet) fnSet = GetVFunc<Set_t>(cvarMode, 1); 
+                         
+                         if (fnSet) {
+                             fnSet(cvarMode, L"1", 0x02); 
+                             HookLog("UE5: Force Set r.NGX.DLSS.denoisermode=1");
+                         }
+                     } else {
+                         static bool s_LogOnce = false;
+                         if (!s_LogOnce) {
+                             HookLog("UE5: CVar 'r.NGX.DLSS.denoisermode' NOT FOUND via Manager.");
+                             s_LogOnce = true;
+                         }
+                     }
+                     
+                     // 2. Ray Reconstruction
+                     void* cvarRR = fnFind(mgr, L"r.NGX.DLSS.RayReconstruction");
+                     if (cvarRR) {
+                         static Set_t fnSet = nullptr; 
+                         if (!fnSet) fnSet = GetVFunc<Set_t>(cvarRR, 1); 
+                         
+                         if (fnSet) {
+                             fnSet(cvarRR, L"1", 0x02); 
+                             HookLog("UE5: Force Set r.NGX.DLSS.RayReconstruction=1");
+                         }
+                     }
+                     // If we succeeded here, we can return.
+                     // But if CVars were not found, Fallback might find them if Manager lookup is broken?
+                     // Unlikely. If Manager is valid, lookup should work.
+                }
+            }
+        }
+        
+
+    }
 }
 
 // Centralized Hook Detection Logic (Executed by HookThread)
@@ -601,7 +913,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   MH_CreateHookApi(L"kernel32", "LoadLibraryW", (LPVOID)&HookedLoadLibraryW, (LPVOID*)&OriginalLoadLibraryW);
   MH_CreateHookApi(L"kernel32", "LoadLibraryExA", (LPVOID)&HookedLoadLibraryExA, (LPVOID*)&OriginalLoadLibraryExA);
   MH_CreateHookApi(L"kernel32", "LoadLibraryExW", (LPVOID)&HookedLoadLibraryExW, (LPVOID*)&OriginalLoadLibraryExW);
-  
+
   // Install CreateProcess hooks for child process injection (Launcher Support)
   HookLog("Installing CreateProcess hooks for launcher support...");
   MH_CreateHookApi(L"kernel32", "CreateProcessA", (LPVOID)&HookedCreateProcessA, (LPVOID*)&OriginalCreateProcessA);
@@ -637,9 +949,18 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
         Sleep(100);
     }
     
+    DWORD now = GetTickCount();
+
     // Periodically update active graphics config state 
     // This ensures g_GraphicsOverridesActive is updated even if no hooks are calling it yet
     GetActiveGraphicsConfig();
+    
+    // --- UE5 Enforce RR ---
+    static DWORD s_LastRRCheck = 0;
+    if (now - s_LastRRCheck > 2000) {
+        s_LastRRCheck = now;
+        UE5::EnforceRR(); 
+    }
     
     // --- Hot Reloading ---
     static int hotReloadTick = 0;
@@ -753,7 +1074,7 @@ static DWORD WINAPI UnloadSelfThread(LPVOID) {
     return 0;
 }
 
-static bool IsWhitelistedFast(const char* processName) {
+static bool checkEarlyConfig(const char* processName, bool* outForceRR) {
     if (!processName || processName[0] == '\0') return false;
 
     // 1. Prepare name for matching
@@ -768,59 +1089,70 @@ static bool IsWhitelistedFast(const char* processName) {
         if (lastSlash != std::string::npos) {
             path = path.substr(0, lastSlash + 1) + "config.ini";
             
-            // We use a simple but effective check: see if the process name exists in the file
-            // as part of the [Injection] whitelist. 
-            // To be fast and safe in DllMain, we read the file once.
             std::ifstream file(path);
             if (file.is_open()) {
                 std::string line;
                 bool inInjection = false;
                 bool inAppSection = false;
+                bool isTargetApp = false;
+                bool whitelisted = false;
+
                 while (std::getline(file, line)) {
                     // Primitive section detection
                     if (line.find("[Injection]") != std::string::npos) {
                         inInjection = true;
                         inAppSection = false;
+                        isTargetApp = false;
                         continue;
                     }
                     if (line.find("[App.") != std::string::npos) {
                         inAppSection = true;
                         inInjection = false;
+                        isTargetApp = false;
                         continue;
                     }
                     if ((inInjection || inAppSection) && line.find("[") == 0) {
                         inInjection = false;
                         inAppSection = false;
+                        isTargetApp = false;
                         break;
                     }
                     
-                    if (inInjection) {
-                        // Check if line contains our process name
-                        std::string lowerLine = line;
-                        std::transform(lowerLine.begin(), lowerLine.end(), lowerLine.begin(), ::tolower);
-                        
-                        // Strip quotes and parens for matching
-                        lowerLine.erase(std::remove(lowerLine.begin(), lowerLine.end(), '\"'), lowerLine.end());
-                        lowerLine.erase(std::remove(lowerLine.begin(), lowerLine.end(), '('), lowerLine.end());
-                        lowerLine.erase(std::remove(lowerLine.begin(), lowerLine.end(), ')'), lowerLine.end());
+                    std::string lowerLine = line;
+                    std::transform(lowerLine.begin(), lowerLine.end(), lowerLine.begin(), ::tolower);
 
-                        if (lowerLine.find(name) != std::string::npos) {
-                             if (lowerLine.find(";") == std::string::npos) {
-                                 return true;
+                    if (inInjection) {
+                         // Whitelist check
+                         std::string sanity = lowerLine;
+                         sanity.erase(std::remove(sanity.begin(), sanity.end(), '\"'), sanity.end());
+                         sanity.erase(std::remove(sanity.begin(), sanity.end(), '('), sanity.end());
+                         sanity.erase(std::remove(sanity.begin(), sanity.end(), ')'), sanity.end());
+                         if (sanity.find(name) != std::string::npos && sanity.find(";") == std::string::npos) {
+                             whitelisted = true;
+                         }
+                    } else if (inAppSection) {
+                        if (lowerLine.find("process") != std::string::npos && lowerLine.find("=") != std::string::npos) {
+                             if (lowerLine.find(name) != std::string::npos) {
+                                  whitelisted = true;
+                                  isTargetApp = true;
+                             } else {
+                                  isTargetApp = false;
                              }
                         }
-                    } else if (inAppSection) {
-                        // Check Process= or ProcessName=
-                        std::string lowerLine = line;
-                        std::transform(lowerLine.begin(), lowerLine.end(), lowerLine.begin(), ::tolower);
-                        if (lowerLine.find("process") != std::string::npos && lowerLine.find("=") != std::string::npos) {
-                            lowerLine.erase(std::remove(lowerLine.begin(), lowerLine.end(), '\"'), lowerLine.end());
-                            if (lowerLine.find(name) != std::string::npos) {
-                                return true;
+                        
+                        if (isTargetApp && outForceRR) {
+                            if (lowerLine.find("dlss_force_ray_reconstruction") != std::string::npos && lowerLine.find("true") != std::string::npos) {
+                                *outForceRR = true;
+                                // EarlyLog("DllMain: ForceRayReconstruction found for %s", processName); 
                             }
                         }
                     }
                 }
+                if (*outForceRR) {
+                         // Hacky log since EarlyLog might not be initialized or safe in DllMain reader
+                         // OutputDebugStringA("CaptureHook: Force RR Enabled via Early Config\n");
+                }
+                return whitelisted;
             }
         }
     }
@@ -863,9 +1195,34 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
 
     // 3. Whitelist check (The "Default-to-Blacklist" Policy)
     if (g_ProcessCategory == ProcessCategory::PotentialGame) {
-        if (!IsWhitelistedFast(fileName)) {
+        bool forceRR = false;
+        if (!checkEarlyConfig(fileName, &forceRR)) {
             // Not in whitelist -> treat as blacklisted to avoid injection bomb
             g_ProcessCategory = ProcessCategory::Blacklisted;
+        } else {
+            // It is whitelisted and game.
+            // Check if we need early hooks (RR enforcement)
+            if (forceRR) {
+                // Pre-populate global config so the hook works
+                g_LocalConfig.graphics.forceRayReconstruction = true;
+                
+                // Initialize MinHook NOW
+                if (MH_Initialize() == MH_OK) {
+                     MH_CreateHookApi(L"kernel32", "GetCommandLineA", (LPVOID)&HookedGetCommandLineA, (LPVOID*)&OriginalGetCommandLineA);
+                     MH_CreateHookApi(L"kernel32", "GetCommandLineW", (LPVOID)&HookedGetCommandLineW, (LPVOID*)&OriginalGetCommandLineW);
+                     
+                     // Try hooking CRT start args too
+                     HMODULE hUCRT = GetModuleHandleA("ucrtbase.dll");
+                     if (!hUCRT) hUCRT = GetModuleHandleA("msvcrt.dll");
+                     if (hUCRT) {
+                         MH_CreateHookApi(L"msvcrt", "__getmainargs", (LPVOID)&Hooked_getmainargs, (LPVOID*)&Original_getmainargs);
+                         MH_CreateHookApi(L"msvcrt", "__wgetmainargs", (LPVOID)&Hooked_wgetmainargs, (LPVOID*)&Original_wgetmainargs);
+                         // Also check ucrtbase export names
+                     }
+
+                     MH_EnableHook(MH_ALL_HOOKS);
+                }
+            }
         }
     }
 
@@ -890,7 +1247,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
 
     HANDLE hThread = CreateThread(NULL, 0, HookThreadWrapper, NULL, 0, NULL);
     if (hThread) {
-        SetThreadPriority(hThread, THREAD_PRIORITY_BELOW_NORMAL);
+        SetThreadPriority(hThread, THREAD_PRIORITY_HIGHEST);
         CloseHandle(hThread);
     }
     

@@ -510,6 +510,7 @@ void LoadConfig(const std::string &path, AppConfig &config, const std::string& o
   config.graphics.disableAutoMipBias = GetBool("Graphics", "disable_auto_mip_bias", false);
   config.graphics.dlssAutoExposure = GetStr("Graphics", "dlss_auto_exposure", "default");
   config.graphics.dlssExposureNormalization = GetStr("Graphics", "dlss_exposure_normalization", "default");
+  config.graphics.forceRayReconstruction = GetBool("Graphics", "dlss_force_ray_reconstruction", false);
   
   // DLSS Presets
   config.graphics.dlssPresetDLAA = GetStr("Graphics", "dlss_preset_dlaa", "default");

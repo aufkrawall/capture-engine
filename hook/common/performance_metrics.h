@@ -39,6 +39,9 @@ public:
   void GetSmartScale(float &outMin, float &outMax,
                      float minRangeMs = 33.0f) const;
 
+  // Get maximum frame time in the last N seconds (for latency indicator)
+  float GetMaxFrameTime(float windowSeconds) const;
+
   // State management
   void SetRecording(bool isRecording);
 

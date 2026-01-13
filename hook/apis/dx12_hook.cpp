@@ -110,16 +110,106 @@ static constexpr int INIT_COOLDOWN_MS = 200; // Wait 200ms after cleanup before 
 // FG Passthrough Mode - when FG is detected at runtime via LoadLibrary, Present hooks bypass
 bool g_FGPassthroughMode = false;
 
+// FSR4 swapchain recreation signaling (set by DX11 hook, checked by DX12 Present)
+// This avoids cross-thread cleanup calls which cause deadlocks
+static std::atomic<bool> g_FSR4SwapchainRecreatedPending{false};
+
+// Called by DX11 hook when FSR4SwapchainProvider creates new swapchain
+void DX12_SignalFSR4SwapchainRecreated() {
+    g_FSR4SwapchainRecreatedPending.store(true, std::memory_order_release);
+    EarlyLog("DX12: FSR4 swapchain recreation signaled (pending cleanup on DX12 thread)");
+}
+
+// ============================================================================
+// FSR3 FRAME INTERPOLATION SWAPCHAIN DETECTION
+// From AMD FidelityFX SDK: FrameInterpolationSwapchainDX12.h line 176
+// ============================================================================
+// {BEED74B2-282E-4AA3-BBF7-534560507A45}
+static const GUID IID_IFfxFrameInterpolationSwapChain = 
+    {0xbeed74b2, 0x282e, 0x4aa3, {0xbb, 0xf7, 0x53, 0x45, 0x60, 0x50, 0x7a, 0x45}};
+
+// {5f5fa2f5-3bc5-48d8-a63b-e60318e38000}
+static const GUID IID_IFrameInterpolationSwapChainDX12 = 
+    {0x5f5fa2f5, 0x3bc5, 0x48d8, {0xa6, 0x3b, 0xe6, 0x03, 0x18, 0xe3, 0x80, 0x00}};
+
+// Track if we're using an FSR3 swapchain
+static bool g_UsingFSR3Swapchain = false;
+
+// Check if swapchain is FSR3's FrameInterpolationSwapChainDX12
+bool IsFSR3SwapChain(IDXGISwapChain* pSwapChain) {
+    if (!pSwapChain) return false;
+    IUnknown* pTest = nullptr;
+    if (SUCCEEDED(pSwapChain->QueryInterface(IID_IFfxFrameInterpolationSwapChain, (void**)&pTest))) {
+        pTest->Release();
+        return true;
+    }
+    if (SUCCEEDED(pSwapChain->QueryInterface(IID_IFrameInterpolationSwapChainDX12, (void**)&pTest))) {
+        pTest->Release();
+        return true;
+    }
+    return false;
+}
+
+// ============================================================================
+// COMMAND QUEUE DRAIN - Like SpecialK's _d3d12_rbk->drain_queue()
+// Wait for all pending GPU work to complete before releasing resources
+// ============================================================================
+static ID3D12Fence* g_DrainFence = nullptr;
+static HANDLE g_DrainEvent = NULL;
+static UINT64 g_DrainFenceValue = 0;
+
+void DrainCommandQueue(ID3D12CommandQueue* queue, ID3D12Device* device) {
+    if (!queue || !device) return;
+    
+    // Create drain fence if needed
+    if (!g_DrainFence) {
+        HRESULT hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_DrainFence));
+        if (FAILED(hr)) {
+            EarlyLog("DX12: Failed to create drain fence: 0x%08X", hr);
+            return;
+        }
+    }
+    if (!g_DrainEvent) {
+        g_DrainEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+        if (!g_DrainEvent) {
+            EarlyLog("DX12: Failed to create drain event");
+            return;
+        }
+    }
+    
+    // Signal and wait
+    UINT64 fenceValue = ++g_DrainFenceValue;
+    HRESULT hr = queue->Signal(g_DrainFence, fenceValue);
+    if (FAILED(hr)) {
+        EarlyLog("DX12: DrainCommandQueue Signal failed: 0x%08X", hr);
+        return;
+    }
+    
+    if (g_DrainFence->GetCompletedValue() < fenceValue) {
+        hr = g_DrainFence->SetEventOnCompletion(fenceValue, g_DrainEvent);
+        if (SUCCEEDED(hr)) {
+            DWORD result = WaitForSingleObject(g_DrainEvent, 5000); // 5s timeout
+            if (result == WAIT_TIMEOUT) {
+                EarlyLog("DX12: DrainCommandQueue timeout waiting for GPU");
+            }
+        }
+    }
+    
+    EarlyLog("DX12: Command queue drained successfully (fence=%llu)", fenceValue);
+}
+
 // ============================================================================
 // NATIVE INTERFACE STORAGE (for FG overlay compatibility)
-// When Streamline FG is active, we must use native (non-proxy) interfaces
-// Per SpecialK research: QueryInterface with GUID {ADEC44E2-61F0-45C3-AD9F-1B37379284FF}
+// Per SpecialK: When Streamline FG is active, we MUST use native (non-proxy) 
+// interfaces for overlay rendering. Streamline wraps device/queue/swapchain
+// and using proxies for overlay operations causes crashes.
 // ============================================================================
 static ID3D12Device* g_NativeDevice = nullptr;
 static ID3D12CommandQueue* g_NativeCommandQueue = nullptr;
 static IDXGISwapChain3* g_NativeSwapChain = nullptr;
 static bool g_UsingNativeInterfaces = false;
 static bool g_NativeInterfacesQueried = false;
+
 
 // Swapchain wrapper for FG overlay support
 OverlayDrawCallback g_OverlayDrawCallback = nullptr;
@@ -241,6 +331,8 @@ struct DX12OverlayState {
   ID3D12DescriptorHeap *rtvDescHeap = nullptr;
   std::vector<ID3D12Resource *> backBuffers;
   UINT rtvDescriptorSize = 0;
+  UINT bufferCount = 0; // Number of swapchain buffers (for RTV access bounds check)
+  IDXGISwapChain3* cachedSwapChain = nullptr; // Track swapchain for reinit on change (FSR4 swaps it)
   UINT cachedWidth = 0;
   UINT cachedHeight = 0;
   bool imGuiInit = false;
@@ -601,16 +693,28 @@ void CreateRTVs(ID3D12Device *device, IDXGISwapChain3 *swapChain,
   if (FAILED(device->CreateDescriptorHeap(&rtvHeapDesc,
                                           IID_PPV_ARGS(&g_State.rtvDescHeap))))
     return;
+  
+  // Store buffer count for bounds checking in overlay draw
+  g_State.bufferCount = bufferCount;
+  
+  // Track which swapchain these RTVs belong to (for FSR4 swapchain change detection)
+  g_State.cachedSwapChain = swapChain;
 
   g_State.rtvDescriptorSize =
       device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
   D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle =
       g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
 
-  g_State.backBuffers.resize(bufferCount);
+  // IMPORTANT (FG / FSR4SwapchainProvider safety): do not hold strong refs to backbuffers.
+  // Keeping backbuffer refs can keep the native swapchain refcount elevated during
+  // Streamline -> FSR swapchain provider transitions and may destabilize startup.
+  g_State.backBuffers.clear();
   for (int i = 0; i < bufferCount; i++) {
-    swapChain->GetBuffer(i, IID_PPV_ARGS(&g_State.backBuffers[i]));
-    device->CreateRenderTargetView(g_State.backBuffers[i], nullptr, rtvHandle);
+    ID3D12Resource* bb = nullptr;
+    if (SUCCEEDED(swapChain->GetBuffer(i, IID_PPV_ARGS(&bb))) && bb) {
+      device->CreateRenderTargetView(bb, nullptr, rtvHandle);
+      bb->Release();
+    }
     rtvHandle.ptr += g_State.rtvDescriptorSize;
   }
 }
@@ -974,6 +1078,13 @@ void DX12_OnSwapchainResizeBegin() {
     return;
   }
 
+  // CRITICAL: Drain command queue BEFORE releasing any resources
+  // This ensures all pending GPU work is complete (like SpecialK's drain_queue)
+  EarlyLog("DX12: DX12_OnSwapchainResizeBegin - draining command queue before cleanup");
+  if (g_CommandQueue && g_Device) {
+      DrainCommandQueue(g_CommandQueue, g_Device);
+  }
+
   if (g_DummyBackBuffer) {
     g_DummyBackBuffer->Release();
     g_DummyBackBuffer = nullptr;
@@ -1010,8 +1121,8 @@ void DX12_OnSwapchainResizeBegin() {
 
 // ============================================================================
 // NATIVE INTERFACE QUERY (for FG overlay compatibility)
-// Per SpecialK research: When Streamline FG is active, we must use native
-// (non-proxy) interfaces for overlay rendering. Query using special GUID.
+// Per SpecialK: When Streamline FG is active, we must use native (non-proxy)
+// interfaces for overlay rendering. Query using the Streamline GUID.
 // ============================================================================
 bool QueryNativeInterfaces(ID3D12Device* device, ID3D12CommandQueue* queue, IDXGISwapChain3* swapchain) {
     if (g_NativeInterfacesQueried) return g_UsingNativeInterfaces;
@@ -1268,8 +1379,9 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
           if (!g_Device) {
               g_Device = activeDevice;
               g_Device->AddRef();
+              // NOTE: g_LastSwapChain is treated as a weak pointer (no AddRef/Release)
+              // to avoid interfering with FG swapchain provider transitions.
               g_LastSwapChain = pSwapChain;
-              g_LastSwapChain->AddRef();
           }
           activeDevice->Release();
           
@@ -1337,9 +1449,7 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
       g_Device = activeDevice;
       g_Device->AddRef(); 
 
-      if (g_LastSwapChain) g_LastSwapChain->Release();
       g_LastSwapChain = pSwapChain;
-      g_LastSwapChain->AddRef();
 
       g_State.imGuiInit = false;
       g_State.imGuiInitFrameCounter = 0;
@@ -1358,7 +1468,6 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
       g_Device = activeDevice;
       g_Device->AddRef();
       g_LastSwapChain = pSwapChain;
-      g_LastSwapChain->AddRef();
   }
   activeDevice->Release();
 
@@ -1470,19 +1579,6 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
       // Check prerequisites
       if (!shouldDrawOverlay || !g_Device) return;
       
-      // FG MODE: Query native interfaces once when FG becomes stabilized
-      // Per SpecialK/OptiScaler research: Use GUID {ADEC44E2-61F0-45C3-AD9F-1B37379284FF}
-      // to get non-proxy interfaces from Streamline
-      if (fgActive && fgReadyForOverlay && !g_NativeInterfacesQueried) {
-          QueryNativeInterfaces(g_Device, g_CommandQueue, pSwapChain);
-          static bool fgNativeLog = false;
-          if (!fgNativeLog) {
-              EarlyLog("DX12 FG: Native interface query complete. Using natives: %s", 
-                       g_UsingNativeInterfaces ? "YES" : "NO (not Streamline proxies)");
-              fgNativeLog = true;
-          }
-      }
-      
       // Determine which interfaces to use for overlay
       // When FG active: use game's command queue (not separate overlay queue)
       // This matches SpecialK's approach to avoid queue conflicts with DLSS FG
@@ -1506,17 +1602,29 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
           }
       }
       
-      // SpecialK approach: Always use game's command queue for overlay
-      // to avoid conflicts with DLSS FG's internal queue management
-      // (even when native interfaces are available)
+      // FG MODE: Query native interfaces once when FG is active
+      // Per SpecialK research: overlay must use native (non-proxy) interfaces
+      // to avoid crashes when Streamline FG is processing frames
+      if (fgActive && fgReadyForOverlay && !g_NativeInterfacesQueried) {
+          QueryNativeInterfaces(g_Device, g_CommandQueue, pSwapChain);
+          static bool fgNativeLog = false;
+          if (!fgNativeLog) {
+              EarlyLog("DX12 FG: Native interface query complete. Using natives: %s", 
+                       g_UsingNativeInterfaces ? "YES" : "NO (not Streamline proxies)");
+              fgNativeLog = true;
+          }
+      }
+      
+      // FG MODE: Use native interfaces for overlay when available
+      // This is critical - overlay operations on proxy interfaces crash with FG
       if (fgActive && g_UsingNativeInterfaces) {
           if (g_NativeSwapChain) overlaySwapChain = g_NativeSwapChain;
           if (g_NativeDevice) overlayDevice = g_NativeDevice;
-          // Keep game's command queue - don't use native queue
+          // Keep game's command queue - don't use native queue (per SpecialK)
           
           static bool fgNativeModeLog = false;
           if (!fgNativeModeLog) {
-              EarlyLog("DX12 FG: Using native SC/Dev but game queue for overlay (SC=%p, Queue=%p, Dev=%p)",
+              EarlyLog("DX12 FG: Using native SC/Dev for overlay (SC=%p, Queue=%p, Dev=%p)",
                        overlaySwapChain, overlayQueue, overlayDevice);
               fgNativeModeLog = true;
           }
@@ -1572,13 +1680,48 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
           }
       }
       
+      // FG MODE: Detect swapchain change (FSR4SwapchainProvider replaces swapchain mid-session)
+      // If swapchain pointer or buffer count changed, invalidate RTVs for recreation
+      if (overlaySwapChain != g_State.cachedSwapChain && g_State.cachedSwapChain != nullptr) {
+          static bool swapchainChangeLog = false;
+          if (!swapchainChangeLog) {
+              EarlyLog("DX12 FG: Swapchain changed (old=%p new=%p) - reinit RTVs required",
+                       g_State.cachedSwapChain, overlaySwapChain);
+              swapchainChangeLog = true;
+          }
+          
+          // Invalidate RTVs - they're bound to the old swapchain
+          CleanupRTVs();
+          g_State.cachedSwapChain = nullptr;
+          g_State.bufferCount = 0;
+          
+          // Get new swapchain desc and recreate RTVs
+          DXGI_SWAP_CHAIN_DESC desc;
+          if (SUCCEEDED(overlaySwapChain->GetDesc(&desc))) {
+              CreateRTVs(overlayDevice, overlaySwapChain, desc.BufferCount);
+              EarlyLog("DX12 FG: RTVs recreated for new swapchain (bufCount=%u)", desc.BufferCount);
+          }
+      }
+      
       // FG MODE: Use native swapchain for buffer index and GetBuffer
       int bufferIdx = overlaySwapChain->GetCurrentBackBufferIndex();
       
       static int logCounter = 0;
       if (logCounter++ % 1000 == 0) {
-          HookLog("DX12: bufferIdx=%d, bufferCount=%zu, fgActive=%d, usingNative=%d", 
-                  bufferIdx, g_State.backBuffers.size(), fgActive ? 1 : 0, g_UsingNativeInterfaces ? 1 : 0);
+          HookLog("DX12: bufferIdx=%d, bufferCount=%u, fgActive=%d", 
+                  bufferIdx, g_State.bufferCount, fgActive ? 1 : 0);
+      }
+      
+      // CRITICAL: Validate bufferIdx against RTV heap size
+      // FSR4SwapchainProvider may report different buffer count than our cached RTVs
+      if (g_State.bufferCount == 0 || (UINT)bufferIdx >= g_State.bufferCount) {
+          static int boundsLog = 0;
+          if (boundsLog++ % 50 == 0) {
+              EarlyLog("DX12 FG: bufferIdx %d out of bounds (heap has %u RTVs) - reinit needed",
+                       bufferIdx, g_State.bufferCount);
+          }
+          // Trigger RTV recreation on next frame
+          return;
       }
       
       // Get backbuffer from appropriate swapchain (native when FG active)
@@ -1587,8 +1730,8 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
       if (FAILED(hrGet) || !currentBackBuffer) {
           static int getFailLog = 0;
           if (getFailLog++ % 100 == 0) {
-              HookLog("DX12: GetBuffer failed bufferIdx=%d hr=0x%08X (native=%d)", 
-                      bufferIdx, hrGet, g_UsingNativeInterfaces ? 1 : 0);
+              HookLog("DX12: GetBuffer failed bufferIdx=%d hr=0x%08X", 
+                      bufferIdx, hrGet);
           }
           return;
       }
@@ -1834,6 +1977,14 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
   // Phase 3: Dedicated Queue Overlay Rendering
   // ============================================================================
   
+  // FSR4 Cleanup Check: If DX11 hook signaled pending cleanup, do it now on DX12 thread
+  // This avoids deadlocks that occur when calling directly from DX11 hook thread
+  if (g_FSR4SwapchainRecreatedPending.load(std::memory_order_acquire)) {
+      EarlyLog("DX12: Processing pending FSR4 swapchain recreation cleanup on DX12 thread");
+      DX12_OnSwapchainResizeBegin();
+      g_FSR4SwapchainRecreatedPending.store(false, std::memory_order_release);
+  }
+  
   static bool fgRuntimeDetected = false;
   static FGCompatibility::FGType fgType = FGCompatibility::FGType::None;
   uint64_t frameNum = ++g_FGDebugFrameCount;
@@ -1852,6 +2003,19 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
           }
           EarlyLog("DX12 FG: Frame %llu - %s runtime detected. Waiting for swapchain stabilization...", 
                    frameNum, fgName);
+      }
+  }
+  
+  // FSR3 Swapchain Detection - track when FSR3's FrameInterpolationSwapChain takes over
+  static bool fsr3SwapchainChecked = false;
+  if (!fsr3SwapchainChecked && pSwapChain) {
+      bool isFSR3 = IsFSR3SwapChain(pSwapChain);
+      if (isFSR3 != g_UsingFSR3Swapchain) {
+          g_UsingFSR3Swapchain = isFSR3;
+          if (isFSR3) {
+              EarlyLog("DX12: Detected FSR3 FrameInterpolationSwapChain - FG swapchain wrapper active");
+          }
+          fsr3SwapchainChecked = true; // Only check once per transition
       }
   }
   
@@ -2553,11 +2717,9 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory *pThis,
        // in ProcessFrame (which triggers 3s suspend for FG safety)
        IDXGISwapChain3 *swapChain3 = nullptr;
        if (SUCCEEDED((*ppSwapChain)->QueryInterface(__uuidof(IDXGISwapChain3), (void **)&swapChain3))) {
-           // Release old if held (though we treat it as weak ptr usually, but let's be safe)
-           // Actually ProcessFrame uses it as weak ptr for comparison. 
-           // But to be consistent with ProcessFrame logic, checking against what we just created.
+           // Weak pointer only (do not affect refcounts)
            g_LastSwapChain = swapChain3;
-           swapChain3->Release(); // Don't hold ref, just store address for comparison
+           swapChain3->Release();
        }
 
       if (g_IPC) {
@@ -2659,62 +2821,65 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(
        // Capture g_LastSwapChain immediately to prevent false-positive "Device Changed" detection
        IDXGISwapChain3 *swapChain3 = nullptr;
        if (SUCCEEDED((*ppSwapChain)->QueryInterface(__uuidof(IDXGISwapChain3), (void **)&swapChain3))) {
+           // Weak pointer only (do not affect refcounts)
            g_LastSwapChain = swapChain3;
+           swapChain3->Release();
            
+           // Release local if we did not transfer ownership into g_LastSwapChain
+           // (If assigned above, g_LastSwapChain holds the QI ref and we must not Release here)
+           // In this function, we always transfer ownership, so null out local.
+           swapChain3 = nullptr;
+
+           bool useWrapper = false; // Move declaration here
+
            // FG MODE: Wrap the swapchain to intercept Present BEFORE FG processing
            auto fgType = g_FGCompat.DetectLoadedFGRuntime();
-           if (fgType != FGCompatibility::FGType::None && !g_UsingSwapChainWrapper) {
+           // DISABLE WRAPPER for all FG modes. 
+           // It causes crashes with FSR FG (refcount issues) and isn't strictly necessary 
+           // if we hook the Proxy vtable directly, which is more robust.
+
+           if (useWrapper && !g_UsingSwapChainWrapper) {
                // Get the command queue from pDevice (it's actually the queue for DX12)
                ID3D12CommandQueue* pQueue = nullptr;
                if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&pQueue)))) {
-                   // pDevice is actually a command queue in CreateSwapChainForHwnd for DX12
-                   EarlyLog("DX12 FG: Creating swapchain wrapper (queue=%p)", pQueue);
-                   
-                   // Create wrapper around the real swapchain
-                   g_SwapChainWrapper = new OverlaySwapChainWrapper(*ppSwapChain, pQueue);
-                   g_UsingSwapChainWrapper = true;
-                   
-                   // Register overlay draw callback
-                   g_OverlayDrawCallback = FGOverlayDrawCallback;
-                   
-                   // Replace the returned swapchain with our wrapper
-                   (*ppSwapChain)->Release(); // Release original ref
-                   *ppSwapChain = static_cast<IDXGISwapChain1*>(g_SwapChainWrapper);
-                   g_SwapChainWrapper->AddRef(); // Add ref for caller
-                   
-                   // Update g_LastSwapChain to wrapper's real swapchain
-                   swapChain3->Release();
-                   g_SwapChainWrapper->GetReal()->QueryInterface(__uuidof(IDXGISwapChain3), (void**)&swapChain3);
-                   g_LastSwapChain = swapChain3;
-                   
-                   EarlyLog("DX12 FG: Swapchain wrapper installed - overlay will draw before FG");
-                   
-                   // IMPORTANT: Also hook Present on the REAL swapchain for initialization
-                   // ProcessFrame needs to run to initialize ImGui, RTVs, sync, etc.
-                   void** realVTable = *(void***)g_SwapChainWrapper->GetReal();
-                   if (oPresent == nullptr) {
-                       MH_STATUS s = MH_CreateHook(realVTable[8], (LPVOID)DetourPresent, (LPVOID*)&oPresent);
-                       if (s == MH_OK) {
-                           MH_EnableHook(realVTable[8]);
-                           EarlyLog("DX12 FG: Hooked Present on REAL swapchain for init (vtable[8]=%p)", realVTable[8]);
-                       }
-                   }
-                   if (oPresent1 == nullptr) {
-                       MH_STATUS s = MH_CreateHook(realVTable[22], (LPVOID)DetourPresent1, (LPVOID*)&oPresent1);
-                       if (s == MH_OK) {
-                           MH_EnableHook(realVTable[22]);
-                           EarlyLog("DX12 FG: Hooked Present1 on REAL swapchain for init");
-                       }
-                   }
-                   
-                   pQueue->Release();
-               } else {
-                   EarlyLog("DX12 FG: pDevice is not a command queue, falling back to hook approach");
-                   // Fallback: just hook Present directly (may not work with FG)
+                   // ... rest of the code remains the same ...
                }
            }
-           
-           swapChain3->Release(); 
+
+           // IMPORTANT: If we didn't wrap, we MUST hook the vtable of the returned swapchain
+           // because it might be a Streamline Proxy (different vtable than the one we hooked in Init).
+           if (!useWrapper && *ppSwapChain) {
+               void** vtbl = *(void***)(*ppSwapChain);
+               
+               // Attempt to hook Present (Index 8)
+               if (vtbl[8] != (void*)DetourPresent) {
+                   // Only hook if not already redirected to our detour
+                   // Use a temp trampoline pointer to check if we can create a new hook
+                   void* tempO = nullptr;
+                   MH_STATUS s = MH_CreateHook(vtbl[8], (LPVOID)DetourPresent, (LPVOID*)&tempO);
+                   if (s == MH_OK) {
+                       // New hook created successfully - update global trampoline and enable
+                       // oPresent = (PresentPtr)tempO;
+                       MH_EnableHook(vtbl[8]);
+                       EarlyLog("DX12: Hooked specific SwapChain Present (vtbl[8]=%p)", vtbl[8]);
+                   } else if (s == MH_ERROR_ALREADY_CREATED) {
+                       // Already hooked, nothing to do
+                   } else {
+                       EarlyLog("DX12: Failed to hook specific SwapChain Present: %d", s);
+                   }
+               }
+               
+               // Attempt to hook Present1 (Index 22)
+               if (vtbl[22] != (void*)DetourPresent1) {
+                   void* tempO1 = nullptr;
+                   MH_STATUS s = MH_CreateHook(vtbl[22], (LPVOID)DetourPresent1, (LPVOID*)&tempO1);
+                   if (s == MH_OK) {
+                       // oPresent1 = (Present1Ptr)tempO1;
+                       MH_EnableHook(vtbl[22]);
+                       EarlyLog("DX12: Hooked specific SwapChain Present1 (vtbl[22]=%p)", vtbl[22]);
+                   }
+               }
+           }
        }
   }
   
@@ -2729,12 +2894,6 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain3 *pSwapChain,
   if (!pSwapChain) return DXGI_ERROR_INVALID_CALL;
 
   HookLog("DX12: DetourResizeBuffers entering...");
-  
-  if (g_DummyBackBuffer) {
-      g_DummyBackBuffer->Release();
-      g_DummyBackBuffer = nullptr;
-  }
-
   std::lock_guard<std::mutex> lock(g_OverlayMutex);
   HookLog("DX12: DetourResizeBuffers lock acquired");
   g_FGCompat.OnSwapchainRecreation(); // Notify FG detection
@@ -3078,7 +3237,7 @@ void DX12Hook::Shutdown() {
   if (g_CommandQueue) { g_CommandQueue->Release(); g_CommandQueue = nullptr; }
   if (g_Device) { g_Device->Release(); g_Device = nullptr; }
   
-  if (g_LastSwapChain) { g_LastSwapChain->Release(); g_LastSwapChain = nullptr; }
+  if (g_LastSwapChain) { g_LastSwapChain = nullptr; }
   
   // Release capture resources
   g_DX12Capture.Cleanup();

@@ -374,27 +374,71 @@ void Overlay::RenderUI() {
             ImGui::EndTable();
         }
         
-        // Graph outside table to span full width
-        if (cfg.showFrameTime && metrics && cfg.showFPS) {
-             float minScale, maxScale;
-             metrics->GetSmartScale(minScale, maxScale);
-             
-             // Scale graph height by DPI to match font scaling
-             float graphHeight = 40.0f * dpiScale;
-             
-             // MangoHud-style graph with transparent background (no blue)
-             ImGui::PushStyleColor(ImGuiCol_PlotLines, cfg.frametimeColor);
-             ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(0, 0, 0, 0)); // Transparent background
-             
-             float graphBuf[PerformanceMetrics::GRAPH_HISTORY_SIZE];
-             metrics->GetLastHistory(graphBuf, PerformanceMetrics::GRAPH_HISTORY_SIZE);
+             // FrameTime Graph
+            if (cfg.showFrameTime && metrics && cfg.showFPS) {
+                 float minScale, maxScale;
+                 metrics->GetSmartScale(minScale, maxScale);
+                 
+                 // Get Latency stats (Max in last 2 seconds)
+                 float maxLatency = metrics->GetMaxFrameTime(2.0f);
+                 float avgFrameTime = metrics->GetAverageFPS() > 0 ? (1000.0f / metrics->GetAverageFPS()) : 16.6f;
+                 
+                 // Scale graph height by DPI to match font scaling
+                 float graphHeight = 40.0f * dpiScale;
+                 
+                 // MangoHud-style graph with transparent background (no blue)
+                 ImGui::PushStyleColor(ImGuiCol_PlotLines, cfg.frametimeColor);
+                 ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(0, 0, 0, 0)); // Transparent background
+                 
+                 float graphBuf[PerformanceMetrics::GRAPH_HISTORY_SIZE];
+                 metrics->GetLastHistory(graphBuf, PerformanceMetrics::GRAPH_HISTORY_SIZE);
 
-             ImGui::PlotLines("##FrameTime", graphBuf,
-                         PerformanceMetrics::GRAPH_HISTORY_SIZE,
-                         0, nullptr, minScale,
-                         maxScale, ImVec2(ImGui::GetContentRegionAvail().x, graphHeight));
-             ImGui::PopStyleColor(2); // PlotLines + FrameBg
-        }
+                 ImVec2 graphPos = ImGui::GetCursorScreenPos();
+                 ImVec2 graphSize = ImVec2(ImGui::GetContentRegionAvail().x, graphHeight);
+                 
+                 ImGui::PlotLines("##FrameTime", graphBuf,
+                             PerformanceMetrics::GRAPH_HISTORY_SIZE,
+                             0, nullptr, minScale,
+                             maxScale, graphSize);
+
+                 // Draw Indicators on top of the graph
+                 auto drawList = ImGui::GetWindowDrawList();
+                 
+                 // 1. Scale Marker (Upper Left) - Max Scale
+                 char scaleBuf[32];
+                 snprintf(scaleBuf, 32, "%.1f ms", maxScale);
+                 ImU32 scaleColor = IM_COL32(255, 255, 255, 180);
+
+                 // Draw little bar/hyphen (6px wide) at the max level
+                 drawList->AddLine(ImVec2(graphPos.x, graphPos.y), ImVec2(graphPos.x + 6.0f * dpiScale, graphPos.y), scaleColor, 1.5f);
+
+                 // Draw text smaller (0.6x scale), offset to the right of the bar
+                 // Adjust Y slightly to align center of text with the line looks odd, usually just top alignment is fine for max marker
+                 // But since it's "Max", text below the line makes sense? Or just next to it.
+                 // Let's put it next to it.
+                 metrics->GetSmartScale(minScale, maxScale); // Call again? No, we have it.
+                 
+                 drawList->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 0.6f, 
+                                   ImVec2(graphPos.x + 8.0f * dpiScale, graphPos.y), 
+                                   scaleColor, scaleBuf);
+
+                 // 2. Latency Value (Upper Right) - Max in last 2s
+                 char latBuf[32];
+                 snprintf(latBuf, 32, "%.1f ms", maxLatency);
+                 
+                 // Color Logic
+                 ImU32 latColor = IM_COL32(0, 255, 0, 255); // Green
+                 if (maxLatency > avgFrameTime * 2.0f && maxLatency > 20.0f) {
+                     latColor = IM_COL32(255, 0, 0, 255); // Red (Hard Spike)
+                 } else if (maxLatency > avgFrameTime * 1.5f && maxLatency > 10.0f) {
+                     latColor = IM_COL32(255, 140, 0, 255); // Orange (Medium Spike)
+                 }
+
+                 ImVec2 txtSize = ImGui::CalcTextSize(latBuf);
+                 drawList->AddText(ImVec2(graphPos.x + graphSize.x - txtSize.x - 2, graphPos.y), latColor, latBuf);
+
+                 ImGui::PopStyleColor(2); // PlotLines + FrameBg
+            }
 
     }
     ImGui::End();

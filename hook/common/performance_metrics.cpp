@@ -284,18 +284,56 @@ void PerformanceMetrics::GetSmartScale(float &outMin, float &outMax,
   outMin = 0.0f;
   float maxVal = 0.0f;
   
+  // Calculate average frame time for heuristic
+  float totalMs = 0.0f;
+  int count = 0;
+
   // Only scale based on what's visible in the graph
   for (int i = 0; i < GRAPH_HISTORY_SIZE; i++) {
     int idx = (m_historyIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
     float ms = m_history[idx];
     if (ms > maxVal) maxVal = ms;
     if (ms <= 0.0001f) break; 
+    
+    totalMs += ms;
+    count++;
   }
   
+  float avgMs = (count > 0) ? (totalMs / count) : 16.6f;
+
   // Ensure we show at least the minimum range (e.g. 33ms)
-  if (maxVal < minRangeMs) {
-    outMax = minRangeMs;
+  // AND ensure we show at least 3x the average frame time to prevent zoom-in on jitter
+  float dynamicMin = avgMs * 3.0f;
+  float lowerBound = std::max(minRangeMs, dynamicMin);
+
+  if (maxVal < lowerBound) {
+    outMax = lowerBound;
   } else {
     outMax = maxVal * 1.1f;
   }
+}
+
+float PerformanceMetrics::GetMaxFrameTime(float windowSeconds) const {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  float maxMs = 0.0f;
+  float accumTime = 0.0f;
+  
+  // Iterate backwards through history
+  for (int i = 0; i < HISTORY_SIZE; i++) {
+    int idx = (m_historyIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
+    float ms = m_history[idx];
+    
+    if (ms <= 0.0001f) break;
+    
+    if (ms > maxMs) maxMs = ms;
+    
+    accumTime += ms;
+    // Safety break if we simply have too many samples, but 
+    // ms is in milliseconds, windowSeconds is in seconds.
+    if (accumTime >= windowSeconds * 1000.0f) {
+        break;
+    }
+  }
+  
+  return maxMs;
 }
