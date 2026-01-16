@@ -38,9 +38,14 @@ public:
     }
     return dpiScale;
   }
+  
+  bool IsInitialized() const { return initialized; }
 
   // Common ImGui initialization (API-agnostic part)
   void InitImGui(void* hwnd);
+  
+  // Headless initialization for Vulkan layer (no Win32 backend)
+  void InitImGuiHeadless();
 
   // Common ImGui shutdown
   void ShutdownImGui();
@@ -81,6 +86,7 @@ private:
   void *hwnd = nullptr;
   char graphicsAPI[16] = "";  // "DX12", "DX11", "Vulkan"
   bool initialized = false;
+  bool headless = false; 
   ImGuiContext* context = nullptr;
 
   // Text update throttling

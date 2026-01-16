@@ -61,12 +61,52 @@ void Overlay::InitImGui(void* hwnd) {
     io.Fonts->Build();
     
     initialized = true;
+    headless = false;
+}
+
+void Overlay::InitImGuiHeadless() {
+    if (initialized) return;
+    this->hwnd = nullptr;
+    IMGUI_CHECKVERSION();
+    context = ImGui::CreateContext();
+    ImGui::SetCurrentContext(context);
+    ImGui::GetIO().IniFilename = nullptr; 
+    
+    // No ImGui_ImplWin32_Init
+    
+    // Default DPI scale for headless (layer can update font scale later if needed)
+    // Default to 1.5 (High DPI) so it's readable on 4K.
+    // Ideally we should detect system DPI or read from config.
+    float dpiScale = 1.5f;
+    
+    // Load Segoe UI Bold for thicker, prettier text
+    float baseFontSize = 18.0f; 
+    float scaledFontSize = baseFontSize * dpiScale;
+    
+    ImGuiIO& io = ImGui::GetIO();
+    
+    // Configure font for sharper rendering
+    ImFontConfig fontConfig;
+    fontConfig.OversampleH = 3; 
+    fontConfig.OversampleV = 3;
+    fontConfig.PixelSnapH = true; 
+    fontConfig.RasterizerMultiply = 1.0f;
+    
+    mainFont = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeuib.ttf", scaledFontSize, &fontConfig);
+    if (!mainFont) {
+        mainFont = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", scaledFontSize, &fontConfig);
+    }
+    
+    io.Fonts->Build();
+    
+    initialized = true;
+    headless = true;
 }
 
 void Overlay::ShutdownImGui() {
     if (!initialized) return;
     if (context) ImGui::SetCurrentContext(context);
-    ImGui_ImplWin32_Shutdown();
+    if (!headless) ImGui_ImplWin32_Shutdown();
     if (context) {
         ImGui::DestroyContext(context);
         context = nullptr;
@@ -77,7 +117,7 @@ void Overlay::ShutdownImGui() {
 void Overlay::BeginFrame() {
     if (!initialized) return;
     if (context) ImGui::SetCurrentContext(context);
-    ImGui_ImplWin32_NewFrame();
+    if (!headless) ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 }
 
@@ -136,7 +176,22 @@ void Overlay::RenderUI() {
         return;
     }
     if (!ipc || !ipc->GetSharedMem()) {
-        lastDrawResult = DrawResult::SkippedNoIPC;
+        // Fallback: Draw "Waiting for connection" if initialized but no IPC
+        if (initialized && context) {
+            ImGui::SetCurrentContext(context);
+            if (!hwnd || (IsWindow((HWND)hwnd) && IsWindowVisible((HWND)hwnd))) {
+                 // Setup basic window for the message
+                ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_Always);
+                ImGui::SetNextWindowBgAlpha(0.5f);
+                if (ImGui::Begin("OverlayFallback", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav)) {
+                    ImGui::TextColored(ImVec4(1, 0, 0, 1), "CaptureEngine: Waiting for connection...");
+                    ImGui::End();
+                    lastDrawResult = DrawResult::Drawn;
+                }
+            }
+        } else {
+             lastDrawResult = DrawResult::SkippedNoIPC;
+        }
         return;
     }
 

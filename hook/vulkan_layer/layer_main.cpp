@@ -25,42 +25,20 @@ std::mutex g_DeviceMapMutex;
 std::unordered_map<VkDevice, CEDeviceDispatch> g_DeviceMap;
 
 // Logging
-static FILE* g_LogFile = nullptr;
-static std::mutex g_LogMutex;
-
+// Redirected to IPC Host Process
 void LayerLog(const char* fmt, ...) {
-    std::lock_guard<std::mutex> lock(g_LogMutex);
+    static char buf[4096];
     
-    if (!g_LogFile) {
-        std::string logPath = g_LayerState.configPath;
-        if (logPath.empty()) {
-            logPath = GetConfigPath();
-        }
-        // Replace config.ini with logs/layer_debug.log
-        size_t pos = logPath.rfind("config.ini");
-        if (pos != std::string::npos) {
-            logPath = logPath.substr(0, pos) + "logs\\layer_debug.log";
-        } else {
-            logPath = "layer_debug.log";
-        }
-        g_LogFile = fopen(logPath.c_str(), "a");
-    }
-    
-    if (g_LogFile) {
-        SYSTEMTIME st;
-        GetLocalTime(&st);
-        fprintf(g_LogFile, "[%02d:%02d:%02d.%03d] [%s] ", 
-                st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
-                g_LayerState.processName.c_str());
-        
-        va_list args;
-        va_start(args, fmt);
-        vfprintf(g_LogFile, fmt, args);
-        va_end(args);
-        
-        fprintf(g_LogFile, "\n");
-        fflush(g_LogFile);
-    }
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+
+    // Send to Host
+    LayerIPC_Log("%s", buf);
+
+    // Keep stderr for local console debugging
+    fprintf(stderr, "[CE Layer] %s\n", buf);
 }
 
 // Get path to config.ini (same directory as captureengine.exe)
@@ -219,7 +197,8 @@ CEDeviceDispatch* GetDeviceDispatch(VkDevice device) {
 
 // Layer negotiation - required for Vulkan loader
 extern "C" __declspec(dllexport) VkResult VKAPI_CALL 
-CE_vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct) {
+vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct) {
+    fprintf(stderr, "[CE Layer] vkNegotiateLoaderLayerInterfaceVersion called\n");
     if (!pVersionStruct) return VK_ERROR_INITIALIZATION_FAILED;
     
     if (pVersionStruct->sType != LAYER_NEGOTIATE_INTERFACE_STRUCT) {
@@ -232,8 +211,8 @@ CE_vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStr
     }
     pVersionStruct->loaderLayerInterfaceVersion = 2;
     
-    pVersionStruct->pfnGetInstanceProcAddr = CE_vkGetInstanceProcAddr;
-    pVersionStruct->pfnGetDeviceProcAddr = CE_vkGetDeviceProcAddr;
+    pVersionStruct->pfnGetInstanceProcAddr = vkGetInstanceProcAddr;
+    pVersionStruct->pfnGetDeviceProcAddr = vkGetDeviceProcAddr;
     pVersionStruct->pfnGetPhysicalDeviceProcAddr = nullptr; // Not needed
     
     // Initialize layer state on first call
@@ -257,30 +236,30 @@ CE_vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStr
 
 // Instance proc addr lookup
 extern "C" __declspec(dllexport) PFN_vkVoidFunction VKAPI_CALL 
-CE_vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
+vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
     if (!pName) return nullptr;
     
     // Layer-level functions (no instance needed)
     if (strcmp(pName, "vkNegotiateLoaderLayerInterfaceVersion") == 0) {
-        return (PFN_vkVoidFunction)CE_vkNegotiateLoaderLayerInterfaceVersion;
+        return (PFN_vkVoidFunction)vkNegotiateLoaderLayerInterfaceVersion;
     }
     if (strcmp(pName, "vkGetInstanceProcAddr") == 0) {
-        return (PFN_vkVoidFunction)CE_vkGetInstanceProcAddr;
+        return (PFN_vkVoidFunction)vkGetInstanceProcAddr;
     }
     if (strcmp(pName, "vkCreateInstance") == 0) {
-        return (PFN_vkVoidFunction)CE_vkCreateInstance;
+        return (PFN_vkVoidFunction)vkCreateInstance;
     }
     
     // Instance-level functions
     if (instance != VK_NULL_HANDLE) {
         if (strcmp(pName, "vkDestroyInstance") == 0) {
-            return (PFN_vkVoidFunction)CE_vkDestroyInstance;
+            return (PFN_vkVoidFunction)vkDestroyInstance;
         }
         if (strcmp(pName, "vkCreateDevice") == 0) {
-            return (PFN_vkVoidFunction)CE_vkCreateDevice;
+            return (PFN_vkVoidFunction)vkCreateDevice;
         }
         if (strcmp(pName, "vkGetDeviceProcAddr") == 0) {
-            return (PFN_vkVoidFunction)CE_vkGetDeviceProcAddr;
+            return (PFN_vkVoidFunction)vkGetDeviceProcAddr;
         }
         
         // Chain to next layer/driver
@@ -295,33 +274,36 @@ CE_vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
 
 // Device proc addr lookup
 extern "C" __declspec(dllexport) PFN_vkVoidFunction VKAPI_CALL 
-CE_vkGetDeviceProcAddr(VkDevice device, const char* pName) {
+vkGetDeviceProcAddr(VkDevice device, const char* pName) {
     if (!pName) return nullptr;
     
     // Device-level functions we intercept
     if (strcmp(pName, "vkGetDeviceProcAddr") == 0) {
-        return (PFN_vkVoidFunction)CE_vkGetDeviceProcAddr;
+        return (PFN_vkVoidFunction)vkGetDeviceProcAddr;
     }
     if (strcmp(pName, "vkDestroyDevice") == 0) {
-        return (PFN_vkVoidFunction)CE_vkDestroyDevice;
+        return (PFN_vkVoidFunction)vkDestroyDevice;
     }
     
     // Only intercept these if whitelisted
     if (g_LayerState.whitelisted) {
         if (strcmp(pName, "vkCreateSwapchainKHR") == 0) {
-            return (PFN_vkVoidFunction)CE_vkCreateSwapchainKHR;
+            return (PFN_vkVoidFunction)vkCreateSwapchainKHR;
         }
         if (strcmp(pName, "vkDestroySwapchainKHR") == 0) {
-            return (PFN_vkVoidFunction)CE_vkDestroySwapchainKHR;
+            return (PFN_vkVoidFunction)vkDestroySwapchainKHR;
         }
         if (strcmp(pName, "vkAcquireNextImageKHR") == 0) {
-            return (PFN_vkVoidFunction)CE_vkAcquireNextImageKHR;
+            return (PFN_vkVoidFunction)vkAcquireNextImageKHR;
         }
         if (strcmp(pName, "vkQueuePresentKHR") == 0) {
-            return (PFN_vkVoidFunction)CE_vkQueuePresentKHR;
+            return (PFN_vkVoidFunction)vkQueuePresentKHR;
         }
         if (strcmp(pName, "vkCreateSampler") == 0) {
-            return (PFN_vkVoidFunction)CE_vkCreateSampler;
+            return (PFN_vkVoidFunction)vkCreateSampler;
+        }
+        if (strcmp(pName, "vkGetDeviceQueue") == 0) {
+            return (PFN_vkVoidFunction)vkGetDeviceQueue;
         }
     }
     
@@ -344,10 +326,6 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
             break;
         case DLL_PROCESS_DETACH:
             LayerIPC_Shutdown();
-            if (g_LogFile) {
-                fclose(g_LogFile);
-                g_LogFile = nullptr;
-            }
             break;
     }
     return TRUE;

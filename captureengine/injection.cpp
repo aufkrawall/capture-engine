@@ -11,10 +11,9 @@
 #include <bcrypt.h>
 #include <iomanip>
 #include <sstream>
-#include <fstream>
-#include <algorithm>
-#include "dll_hash.h" // Generated during build
-#include <wintrust.h>
+# include <fstream>
+# include <algorithm>
+# include <wintrust.h>
 #include <softpub.h>
 
 #pragma comment(lib, "wintrust.lib")
@@ -799,42 +798,6 @@ bool InjectionManager::ValidateDllSecurity(const std::string &dllPath) {
              // Implementing as Warning for Dev environment to avoid blocking testing if permissions are weird on MSYS2
              // return false; 
         }
-    }
-
-    // 3. Hash Verification (Embedded Header Strategy)
-    std::string expectedHash;
-    std::string actualHash = ComputeFileHash(dllPath);
-
-    // Identify which DLL this is to match with correct macro
-    std::string filename = dllPath.substr(dllPath.find_last_of("\\/") + 1);
-    std::transform(filename.begin(), filename.end(), filename.begin(), ::tolower);
-
-    if (filename.find("x64") != std::string::npos) {
-#ifdef HOOK_DLL_HASH_X64
-        expectedHash = HOOK_DLL_HASH_X64;
-#endif
-    } else if (filename.find("x86") != std::string::npos) {
-#ifdef HOOK_DLL_HASH_X86
-        expectedHash = HOOK_DLL_HASH_X86;
-#endif
-    }
-
-    if (expectedHash.empty()) {
-        // Fallback or missing hash definition
-#ifndef _DEBUG
-        LogError("[Security] No embedded hash found for %s. Rebuild CaptureEngine.", dllPath.c_str());
-        return false;
-#else
-        LogInfo("[Security] No embedded hash found for %s. Skipping (Debug Build).", dllPath.c_str());
-#endif
-    } else {
-        if (expectedHash != actualHash) {
-            LogError("[Security] Hash mismatch for %s!", dllPath.c_str());
-            LogError("[Security] Expected (Embedded): %s", expectedHash.c_str());
-            LogError("[Security] Actual (Disk):      %s", actualHash.c_str());
-            return false;
-        }
-        LogInfo("[Security] Hash verified for %s", dllPath.c_str());
     }
 
     LogInfo("[Security] DLL security validation passed for %s", dllPath.c_str());

@@ -1,136 +1,97 @@
 /**
- * VK_LAYER_CE_overlay - Minimal IPC Client
+ * VK_LAYER_CE_overlay - IPC Implementation
  * 
- * Simplified IPC for the Vulkan layer to communicate with captureengine.
- * Shares texture handles and receives capture commands.
+ * Uses standard IPCClient to communicate with CaptureEngine.
+ * Determines overlay config, styling, and publishes texture handles.
  */
 
 #include "layer_main.h"
-#include <windows.h>
-#include <atomic>
+#include "../common/ipc_client.h"
+#include <cstdio>
+#include <cstdarg>
 
-// Shared memory structure (must match captureengine's version)
-#pragma pack(push, 1)
-struct LayerSharedMem {
-    // Connection info
-    uint32_t magic;                     // 'CEVL' for CaptureEngine Vulkan Layer
-    uint32_t version;
-    DWORD layerPid;
-    
-    // Texture export handles (for zero-copy capture)
-    HANDLE textureHandles[4];           // Up to 4 swapchain images
-    uint32_t textureCount;
-    uint32_t width;
-    uint32_t height;
-    uint32_t format;                    // VkFormat
-    
-    // Frame timing
-    uint64_t frameCount;
-    uint64_t lastPresentTime;
-    float currentFPS;
-    float avgFPS;
-    
-    // Capture commands (from captureengine)
-    uint32_t captureRequested;          // 0 = none, 1 = start, 2 = stop
-    uint32_t overlayVisible;            // 1 = show overlay
-    
-    // Status
-    uint32_t captureActive;
-    uint32_t overlayActive;
-};
-#pragma pack(pop)
+// Global IPC Client
+IPCClient g_IPCClient;
+// Shared globals needed by system_metrics.cpp and other common files
+IPCClient* g_IPC = &g_IPCClient;
+char g_ProcessName[260] = "CaptureLayer";
+// Dummy config to satisfy EarlyLog if it checks g_LocalConfig (though our shim doesn't)
+// Actually system_metrics uses EarlyLog which we redirect.
+// But does system_metrics use g_LocalConfig directly?
+// No, it uses EarlyLog.
 
-// IPC state
-static HANDLE g_LayerSharedMemHandle = nullptr;
-static LayerSharedMem* g_LayerSharedMem = nullptr;
-static std::atomic<bool> g_IPCConnected{false};
+#include "../common/hook_common.h" // For definitions if needed
+// Define globals from hook_common.h that we are missing because we don't link hook_common.cpp
+std::atomic<bool> g_ShuttingDown{false};
+// g_GraphicsOverridesActive is definition in hook_common.cpp, but do we need it?
+// Only if we use GetActiveGraphicsConfig. Overlay.cpp doesn't uses it.
 
-// Create unique shared memory name for this process
-static std::string GetSharedMemName() {
-    char name[64];
-    snprintf(name, sizeof(name), "Local\\CE_VK_LAYER_%08X", GetCurrentProcessId());
-    return std::string(name);
+
+// Shim for IPCClient and FGDetection logging
+void EarlyLog(const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    char buf[1024];
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    LayerLog("%s", buf);
+}
+
+void HookLog(const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    char buf[1024];
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    LayerLog("%s", buf);
 }
 
 // Initialize layer IPC
 bool LayerIPC_Init() {
-    if (g_IPCConnected) return true;
+    if (g_IPCClient.GetSharedMem()) return true;
     
-    std::string shmName = GetSharedMemName();
+    // Get process name
+    GetModuleFileNameA(NULL, g_ProcessName, sizeof(g_ProcessName));
+    char* p = strrchr(g_ProcessName, '\\');
+    if (p) strcpy(g_ProcessName, p + 1);
     
-    // Create shared memory
-    g_LayerSharedMemHandle = CreateFileMappingA(
-        INVALID_HANDLE_VALUE,
-        nullptr,
-        PAGE_READWRITE,
-        0,
-        sizeof(LayerSharedMem),
-        shmName.c_str()
-    );
-    
-    if (!g_LayerSharedMemHandle) {
-        LayerLog("Layer IPC: Failed to create shared memory: %d", GetLastError());
-        return false;
+    // Connect to host
+    if (g_IPCClient.Connect()) {
+        LayerLog("Layer IPC: Connected to Host PID %d", g_IPCClient.GetSharedMem()->hostPID);
+        return true;
     }
     
-    // Map view
-    g_LayerSharedMem = (LayerSharedMem*)MapViewOfFile(
-        g_LayerSharedMemHandle,
-        FILE_MAP_ALL_ACCESS,
-        0, 0,
-        sizeof(LayerSharedMem)
-    );
-    
-    if (!g_LayerSharedMem) {
-        LayerLog("Layer IPC: Failed to map shared memory: %d", GetLastError());
-        CloseHandle(g_LayerSharedMemHandle);
-        g_LayerSharedMemHandle = nullptr;
-        return false;
-    }
-    
-    // Initialize
-    memset(g_LayerSharedMem, 0, sizeof(LayerSharedMem));
-    g_LayerSharedMem->magic = 0x4C564543; // 'CEVL'
-    g_LayerSharedMem->version = 1;
-    g_LayerSharedMem->layerPid = GetCurrentProcessId();
-    g_LayerSharedMem->overlayVisible = 1; // Show overlay by default
-    
-    g_IPCConnected = true;
-    LayerLog("Layer IPC: Initialized shared memory '%s'", shmName.c_str());
-    
-    return true;
+    // Fallback: If host not running, we might still want to succeed init 
+    // but we can't render overlay without config.
+    LayerLog("Layer IPC: Failed to connect to host.");
+    return false;
 }
 
 // Shutdown layer IPC
 void LayerIPC_Shutdown() {
-    if (g_LayerSharedMem) {
-        UnmapViewOfFile(g_LayerSharedMem);
-        g_LayerSharedMem = nullptr;
-    }
-    if (g_LayerSharedMemHandle) {
-        CloseHandle(g_LayerSharedMemHandle);
-        g_LayerSharedMemHandle = nullptr;
-    }
-    g_IPCConnected = false;
+    g_IPCClient.Disconnect();
     LayerLog("Layer IPC: Shutdown");
 }
 
 // Check if IPC is connected
 bool LayerIPC_IsConnected() {
-    return g_IPCConnected;
+    return g_IPCClient.GetSharedMem() != nullptr;
 }
 
 // Update shared texture handles (called when swapchain created)
 void LayerIPC_SetTextures(HANDLE* handles, uint32_t count, uint32_t width, uint32_t height, uint32_t format) {
-    if (!g_LayerSharedMem) return;
+    auto* mem = g_IPCClient.GetSharedMem();
+    if (!mem) return;
     
-    g_LayerSharedMem->textureCount = count > 4 ? 4 : count;
-    g_LayerSharedMem->width = width;
-    g_LayerSharedMem->height = height;
-    g_LayerSharedMem->format = format;
+    // Write metadata
+    mem->width = width;
+    mem->height = height;
+    mem->format = format;
     
-    for (uint32_t i = 0; i < g_LayerSharedMem->textureCount; i++) {
-        g_LayerSharedMem->textureHandles[i] = handles[i];
+    // Write handles (up to 8 supported by layout)
+    uint32_t maxHandles = 8;
+    for (uint32_t i = 0; i < count && i < maxHandles; i++) {
+        mem->sharedHandles[i] = (uint64_t)handles[i];
     }
     
     LayerLog("Layer IPC: Published %d textures (%dx%d)", count, width, height);
@@ -138,34 +99,92 @@ void LayerIPC_SetTextures(HANDLE* handles, uint32_t count, uint32_t width, uint3
 
 // Update frame timing (called each present)
 void LayerIPC_UpdateFrameTiming(uint64_t frameCount, float fps, float avgFps) {
-    if (!g_LayerSharedMem) return;
+    auto* mem = g_IPCClient.GetSharedMem();
+    if (!mem) return;
     
-    g_LayerSharedMem->frameCount = frameCount;
-    g_LayerSharedMem->currentFPS = fps;
-    g_LayerSharedMem->avgFPS = avgFps;
-    QueryPerformanceCounter((LARGE_INTEGER*)&g_LayerSharedMem->lastPresentTime);
+    // Update runtime state directly (atomics)
+    mem->runtimeState.currentFPS.store(fps, std::memory_order_relaxed);
+    mem->runtimeState.gameFPS.store(avgFps, std::memory_order_relaxed);
+    
+    // We don't have a reliable QPC sync here yet without hooking QueryPerformanceCounter
+    // but overlay uses GetTickCount64 usually for recording time
 }
 
-// Check if overlay should be shown (from captureengine command)
+// Check if overlay should be shown
 bool LayerIPC_ShouldShowOverlay() {
-    if (!g_LayerSharedMem) return true; // Default to showing
-    return g_LayerSharedMem->overlayVisible != 0;
+    auto* mem = g_IPCClient.GetSharedMem();
+    if (!mem) return true; // Default to showing if no IPC? Or default hidden? Default hidden is safer. 
+                           // But if user just launched game without captureengine, they won't see overlay anyway.
+                           // Actually standard behavior is to default to hidden if no config.
+                           // But for testing 'TRUE' is better.
+    return mem->overlayConfig.showOverlay;
 }
 
-// Check if capture is requested (from captureengine command)  
+// Check if capture is requested
 bool LayerIPC_IsCaptureRequested() {
-    if (!g_LayerSharedMem) return false;
-    return g_LayerSharedMem->captureRequested == 1;
+    auto* mem = g_IPCClient.GetSharedMem();
+    if (!mem) return false;
+    return mem->runtimeState.isRecording.load(std::memory_order_relaxed);
 }
 
 // Set capture active status
 void LayerIPC_SetCaptureActive(bool active) {
-    if (!g_LayerSharedMem) return;
-    g_LayerSharedMem->captureActive = active ? 1 : 0;
+    auto* mem = g_IPCClient.GetSharedMem();
+    if (!mem) return;
+    // Layer doesn't strictly own 'isRecording', the host does. 
+    // But we might want to flag that we are actively capturing?
+    // 'runtimeState.isRecording' is authoritative from Host.
+    // The previous implementation used a local flag?
+    // Let's leave this as no-op for now unless we need to ack.
 }
 
 // Set overlay active status
 void LayerIPC_SetOverlayActive(bool active) {
-    if (!g_LayerSharedMem) return;
-    g_LayerSharedMem->overlayActive = active ? 1 : 0;
+    // No specific field in SharedMemoryLayout for "Overlay Active Ack"
+}
+
+// IPC Logging implementation
+// Replicates hook_common.cpp LogToFileAtomic/HookLog logic but purely over IPC
+void LayerIPC_Log(const char* fmt, ...) {
+    if (!g_IPCClient.GetSharedMem()) return;
+
+    auto* mem = g_IPCClient.GetSharedMem();
+    if (!mem->debugLogging) return; // Hook respects debug flag
+
+    static char s_formatBuffer[4096];
+    static char s_lineBuffer[8192];
+    static std::mutex s_logMutex;
+
+    std::lock_guard<std::mutex> lock(s_logMutex);
+
+    va_list args;
+    va_start(args, fmt);
+    int len_buf = vsnprintf(s_formatBuffer, sizeof(s_formatBuffer), fmt, args);
+    va_end(args);
+
+    if (len_buf < 0) len_buf = 0;
+
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    DWORD tid = GetCurrentThreadId();
+
+    int len = snprintf(s_lineBuffer, sizeof(s_lineBuffer),
+                        "[%02d:%02d:%02d.%03d] [T:%04X] [%s] %s",
+                        st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+                        tid, g_ProcessName, s_formatBuffer);
+    
+    if (len > 0) {
+        auto& logs = mem->logs;
+        uint32_t wIdx = logs.writeIndex.load(std::memory_order_relaxed);
+        uint32_t rIdx = logs.readIndex.load(std::memory_order_acquire);
+        
+        if ((uint32_t)(wIdx - rIdx) < SharedMemoryLayout::LogBuffer::SLOT_COUNT) {
+            char* slot = logs.buffer[wIdx % SharedMemoryLayout::LogBuffer::SLOT_COUNT];
+            // Uses fixed baseFilename "Layer" for identification on host side
+            snprintf(slot, SharedMemoryLayout::LogBuffer::SLOT_SIZE, "[Layer] %s", s_lineBuffer);
+            logs.writeIndex.store(wIdx + 1, std::memory_order_release);
+        } else {
+            logs.overflowCount.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
 }

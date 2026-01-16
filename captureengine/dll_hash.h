@@ -1,4 +1,0 @@
-#pragma once
-
-#define HOOK_DLL_HASH_X64 "39fef464f62ac724249cdf7dbffa4560c06ddbe50cb5c10dabf3fc288bb43ba1"
-#define HOOK_DLL_HASH_X86 "3fe50b9faeb6f852819e6175e05acba0244257fa8491ff193b5db8a359602d81"

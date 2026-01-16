@@ -12,7 +12,7 @@
 #pragma once
 
 #define VK_USE_PLATFORM_WIN32_KHR
-#define VK_NO_PROTOTYPES
+// #define VK_NO_PROTOTYPES // Defined in build.py
 #include <vulkan/vulkan.h>
 #include <vulkan/vk_layer.h>
 
@@ -31,7 +31,7 @@
 struct CELayerState {
     bool initialized = false;
     bool whitelisted = false;          // Process is in config.ini whitelist
-    bool overlayEnabled = false;       // Overlay should be rendered
+    bool overlayEnabled = true;        // Overlay should be rendered
     bool captureEnabled = false;       // Capture is active
     std::string processName;
     std::string configPath;
@@ -127,21 +127,23 @@ std::string GetConfigPath();
 
 // Layer entry points (exported)
 extern "C" {
-    __declspec(dllexport) VkResult VKAPI_CALL CE_vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct);
-    __declspec(dllexport) PFN_vkVoidFunction VKAPI_CALL CE_vkGetInstanceProcAddr(VkInstance instance, const char* pName);
-    __declspec(dllexport) PFN_vkVoidFunction VKAPI_CALL CE_vkGetDeviceProcAddr(VkDevice device, const char* pName);
+    __declspec(dllexport) VkResult VKAPI_CALL vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct);
+    __declspec(dllexport) PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char* pName);
+    __declspec(dllexport) PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, const char* pName);
 }
 
 // Layer-intercepted functions
-VkResult VKAPI_CALL CE_vkCreateInstance(const VkInstanceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkInstance* pInstance);
-void VKAPI_CALL CE_vkDestroyInstance(VkInstance instance, const VkAllocationCallbacks* pAllocator);
-VkResult VKAPI_CALL CE_vkCreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDevice* pDevice);
-void VKAPI_CALL CE_vkDestroyDevice(VkDevice device, const VkAllocationCallbacks* pAllocator);
-VkResult VKAPI_CALL CE_vkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreateInfoKHR* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSwapchainKHR* pSwapchain);
-void VKAPI_CALL CE_vkDestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain, const VkAllocationCallbacks* pAllocator);
-VkResult VKAPI_CALL CE_vkAcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout, VkSemaphore semaphore, VkFence fence, uint32_t* pImageIndex);
-VkResult VKAPI_CALL CE_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo);
-VkResult VKAPI_CALL CE_vkCreateSampler(VkDevice device, const VkSamplerCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSampler* pSampler);
+VkResult VKAPI_CALL vkCreateInstance(const VkInstanceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkInstance* pInstance);
+void VKAPI_CALL vkDestroyInstance(VkInstance instance, const VkAllocationCallbacks* pAllocator);
+VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDevice* pDevice);
+void VKAPI_CALL vkDestroyDevice(VkDevice device, const VkAllocationCallbacks* pAllocator);
+VkResult VKAPI_CALL vkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreateInfoKHR* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSwapchainKHR* pSwapchain);
+void VKAPI_CALL vkDestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain, const VkAllocationCallbacks* pAllocator);
+VkResult VKAPI_CALL vkAcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout, VkSemaphore semaphore, VkFence fence, uint32_t* pImageIndex);
+VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo);
+VkResult VKAPI_CALL vkCreateSampler(VkDevice device, const VkSamplerCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSampler* pSampler);
+void VKAPI_CALL vkGetDeviceQueue(VkDevice device, uint32_t queueFamilyIndex, uint32_t queueIndex, VkQueue* pQueue);
+uint32_t GetQueueFamilyIndex(VkQueue queue);
 
 // Overlay functions
 void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkExtent2D extent, uint32_t imageCount, VkImage* images);
@@ -163,6 +165,7 @@ bool LayerIPC_ShouldShowOverlay();
 bool LayerIPC_IsCaptureRequested();
 void LayerIPC_SetCaptureActive(bool active);
 void LayerIPC_SetOverlayActive(bool active);
+void LayerIPC_Log(const char* fmt, ...);
 
 // Logging
 void LayerLog(const char* fmt, ...);

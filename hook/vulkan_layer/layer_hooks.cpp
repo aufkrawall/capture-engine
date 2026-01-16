@@ -31,9 +31,41 @@ static std::unordered_map<VkSwapchainKHR, SwapchainState> g_SwapchainMap;
 // Queue tracking
 static std::mutex g_QueueMapMutex;
 static std::unordered_map<VkQueue, VkDevice> g_QueueToDevice;
+static std::unordered_map<VkQueue, uint32_t> g_QueueFamilyMap;
+
+// vkGetDeviceQueue
+void VKAPI_CALL vkGetDeviceQueue(
+    VkDevice device,
+    uint32_t queueFamilyIndex,
+    uint32_t queueIndex,
+    VkQueue* pQueue)
+{
+    CEDeviceDispatch* disp = GetDeviceDispatch(device);
+    if (!disp || !disp->GetDeviceQueue) {
+        return;
+    }
+
+    disp->GetDeviceQueue(device, queueFamilyIndex, queueIndex, pQueue);
+    
+    if (pQueue && *pQueue != VK_NULL_HANDLE) {
+        std::lock_guard<std::mutex> lock(g_QueueMapMutex);
+        g_QueueToDevice[*pQueue] = device;
+        g_QueueFamilyMap[*pQueue] = queueFamilyIndex;
+    }
+}
+
+// Get queue family index
+uint32_t GetQueueFamilyIndex(VkQueue queue) {
+    std::lock_guard<std::mutex> lock(g_QueueMapMutex);
+    auto it = g_QueueFamilyMap.find(queue);
+    if (it != g_QueueFamilyMap.end()) {
+        return it->second;
+    }
+    return VK_QUEUE_FAMILY_IGNORED;
+}
 
 // vkCreateInstance
-VkResult VKAPI_CALL CE_vkCreateInstance(
+VkResult VKAPI_CALL vkCreateInstance(
     const VkInstanceCreateInfo* pCreateInfo,
     const VkAllocationCallbacks* pAllocator,
     VkInstance* pInstance)
@@ -108,7 +140,7 @@ VkResult VKAPI_CALL CE_vkCreateInstance(
 }
 
 // vkDestroyInstance
-void VKAPI_CALL CE_vkDestroyInstance(
+void VKAPI_CALL vkDestroyInstance(
     VkInstance instance,
     const VkAllocationCallbacks* pAllocator)
 {
@@ -127,7 +159,7 @@ void VKAPI_CALL CE_vkDestroyInstance(
 }
 
 // vkCreateDevice
-VkResult VKAPI_CALL CE_vkCreateDevice(
+VkResult VKAPI_CALL vkCreateDevice(
     VkPhysicalDevice physicalDevice,
     const VkDeviceCreateInfo* pCreateInfo,
     const VkAllocationCallbacks* pAllocator,
@@ -294,7 +326,7 @@ VkResult VKAPI_CALL CE_vkCreateDevice(
 }
 
 // vkDestroyDevice
-void VKAPI_CALL CE_vkDestroyDevice(
+void VKAPI_CALL vkDestroyDevice(
     VkDevice device,
     const VkAllocationCallbacks* pAllocator)
 {
@@ -331,7 +363,7 @@ void VKAPI_CALL CE_vkDestroyDevice(
 }
 
 // vkCreateSwapchainKHR
-VkResult VKAPI_CALL CE_vkCreateSwapchainKHR(
+VkResult VKAPI_CALL vkCreateSwapchainKHR(
     VkDevice device,
     const VkSwapchainCreateInfoKHR* pCreateInfo,
     const VkAllocationCallbacks* pAllocator,
@@ -387,7 +419,7 @@ VkResult VKAPI_CALL CE_vkCreateSwapchainKHR(
 }
 
 // vkDestroySwapchainKHR
-void VKAPI_CALL CE_vkDestroySwapchainKHR(
+void VKAPI_CALL vkDestroySwapchainKHR(
     VkDevice device,
     VkSwapchainKHR swapchain,
     const VkAllocationCallbacks* pAllocator)
@@ -416,7 +448,7 @@ void VKAPI_CALL CE_vkDestroySwapchainKHR(
 }
 
 // vkAcquireNextImageKHR - track current image index
-VkResult VKAPI_CALL CE_vkAcquireNextImageKHR(
+VkResult VKAPI_CALL vkAcquireNextImageKHR(
     VkDevice device,
     VkSwapchainKHR swapchain,
     uint64_t timeout,
@@ -443,7 +475,7 @@ VkResult VKAPI_CALL CE_vkAcquireNextImageKHR(
 }
 
 // vkQueuePresentKHR - main hook for overlay and capture
-VkResult VKAPI_CALL CE_vkQueuePresentKHR(
+VkResult VKAPI_CALL vkQueuePresentKHR(
     VkQueue queue,
     const VkPresentInfoKHR* pPresentInfo)
 {
@@ -511,7 +543,7 @@ VkResult VKAPI_CALL CE_vkQueuePresentKHR(
 }
 
 // vkCreateSampler - override anisotropic filtering
-VkResult VKAPI_CALL CE_vkCreateSampler(
+VkResult VKAPI_CALL vkCreateSampler(
     VkDevice device,
     const VkSamplerCreateInfo* pCreateInfo,
     const VkAllocationCallbacks* pAllocator,

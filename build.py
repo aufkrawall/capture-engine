@@ -300,47 +300,6 @@ def setup_minhook():
         
         log("MinHook Setup Complete.")
 
-def generate_hash_header(dll_paths, header_path):
-    """Generate C++ header with macro definitions for DLL hashes."""
-    log(f"Generating hash header: {header_path}")
-    try:
-        with open(header_path, "w") as f:
-            f.write("#pragma once\n\n")
-            
-            for dll_path in dll_paths:
-                if not os.path.exists(dll_path):
-                    log(f"Warning: DLL missing for hash generation: {dll_path}")
-                    continue
-                    
-                sha256_hash = hashlib.sha256()
-                with open(dll_path, "rb") as dll_file:
-                    for byte_block in iter(lambda: dll_file.read(4096), b""):
-                        sha256_hash.update(byte_block)
-                
-                hash_hex = sha256_hash.hexdigest()
-                
-                # Derive macro name from filename (e.g. capture_hook_x64.dll -> HOOK_DLL_HASH_CAPTURE_HOOK_X64)
-                # But requirement was HOOK_DLL_HASH_X64
-                filename = os.path.basename(dll_path).lower()
-                macro_name = "HOOK_DLL_HASH_UNKNOWN"
-                if "x64" in filename:
-                    macro_name = "HOOK_DLL_HASH_X64"
-                elif "x86" in filename:
-                    macro_name = "HOOK_DLL_HASH_X86"
-                
-                f.write(f'#define {macro_name} "{hash_hex}"\n')
-                log(f"Defined {macro_name} = {hash_hex}")
-
-    except Exception as e:
-        log(f"Failed to generate hash header: {e}")
-        # Write dummy header to ensure compilation doesn't break if hashing fails
-        try:
-             with open(header_path, "w") as f:
-                f.write("#pragma once\n")
-                f.write('#define HOOK_DLL_HASH_X64 ""\n')
-                f.write('#define HOOK_DLL_HASH_X86 ""\n')
-        except: pass
-
 # --- FFmpeg Configuration ---
 FFMPEG_URL = "https://git.ffmpeg.org/ffmpeg.git"
 FFNVCODEC_URL = "https://git.videolan.org/git/ffmpeg/nv-codec-headers.git"
@@ -827,7 +786,7 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
     # Add VPL for QSV symbols, ole32/gdi32/uuid as VPL deps
     ldflags_test = ["-static-libgcc", "-static-libstdc++", "-Wl,--allow-multiple-definition",
                     "-lgtest", "-lgtest_main", "-lwinmm", "-lshlwapi",
-                    "-ld3d11", "-ldxgi", "-ld3dcompiler", "-lgdi32", "-luser32", "-ldwmapi", "-lavrt",
+                    "-ld3d11", "-ldxgi", "-ld3dcompiler", "-lgdi32", "-luser32", "-ldwmapi", "-lavrt", "-lpdh", "-lshcore",
                     "-lole32", "-lmfplat", "-lmfuuid", "-lbcrypt", "-lsecur32", "-lws2_32", "-lmmdevapi",
                     "-lvpl", "-luuid",  # VPL for QSV
                     "-lshaderc_combined", "-lglslang", "-lSPIRV-Tools", "-lSPIRV-Tools-opt", "-lSPIRV-Tools-link",
@@ -871,6 +830,8 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
 
     # 4. Compile hook/common for tests
     hook_common_src = glob.glob(os.path.join(PROJECT_ROOT, "hook", "common", "*.cpp"))
+    # Exclude overlay.cpp as it requires ImGui linking which tests don't have
+    hook_common_src = [f for f in hook_common_src if "overlay.cpp" not in f]
     hook_common_objs = []
     src_obj_pairs = []
     for src in hook_common_src:
@@ -1052,10 +1013,17 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         os.path.join(layer_dir, "layer_overlay.cpp"),
         os.path.join(layer_dir, "layer_capture.cpp"),
         os.path.join(layer_dir, "layer_ipc.cpp"),  # Minimal IPC for layer
+        # Common sources needed for standard overlay
+        os.path.join(PROJECT_ROOT, "hook", "common", "overlay.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "common", "ipc_client.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "common", "system_metrics.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "common", "performance_metrics.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "common", "fg_detection.cpp"),
     ]
     
     # ImGui sources for the layer
     imgui_sources = glob.glob(os.path.join(IMGUI_DIR, "*.cpp")) + [
+        os.path.join(IMGUI_DIR, "backends", "imgui_impl_vulkan.cpp"),
         os.path.join(IMGUI_DIR, "backends", "imgui_impl_win32.cpp"),
     ]
     
@@ -1065,6 +1033,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         "-I" + os.path.join(PROJECT_ROOT, "hook", "common"),
         "-I" + IMGUI_DIR,
         "-DVK_NO_PROTOTYPES",
+        "-DIMGUI_IMPL_VULKAN_NO_PROTOTYPES",
     ]
     
     layer_objs = []
@@ -1118,21 +1087,29 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         vulkan_lib,
         "-lgdi32",
         "-luser32",
+        "-lpdh",
+        "-ldxgi",
+        "-lshcore",
         "-o", layer_dll,
     ]
     
+    if arch == "x86":
+        ldflags.append("-Wl,--kill-at")
+        ldflags.append("-static")
+        
     cmd = [clang_exe] + layer_objs + ldflags
     try:
         run_command(cmd, env=env)
         log(f"Built: {layer_dll}")
         
-        # Copy layer manifest
-        manifest_src = os.path.join(layer_dir, "VK_LAYER_CE_overlay.json")
-        manifest_dst = os.path.join(bin_dir, "VK_LAYER_CE_overlay.json")
-        if os.path.exists(manifest_src):
-            import shutil
-            shutil.copy2(manifest_src, manifest_dst)
-            log(f"Copied: {manifest_dst}")
+        # Copy layer manifests
+        for m in ["VK_LAYER_CE_overlay.json", "VK_LAYER_CE_overlay_x86.json"]:
+            m_src = os.path.join(layer_dir, m)
+            m_dst = os.path.join(bin_dir, m)
+            if os.path.exists(m_src):
+                import shutil
+                shutil.copy2(m_src, m_dst)
+                log(f"Copied: {m_dst}")
     except Exception as e:
         log(f"Error linking layer: {e}")
 
@@ -1539,14 +1516,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 run_command(cmd, env=curr_env)
                 # generate_hash(me_dll) # MediaEngine doesn't need hash check for injection
                 
-    # 4b. Generate Hash Header for Capture Engine
-    # Must be done AFTER Hook DLLs are built but BEFORE CaptureEngine is compiled
-    dll_paths = [
-        os.path.join(BIN_DIR, "capture_hook_x64.dll"),
-        os.path.join(BIN_DIR, "capture_hook_x86.dll")
-    ]
-    header_path = os.path.join(PROJECT_ROOT, "captureengine", "dll_hash.h")
-    generate_hash_header(dll_paths, header_path)
 
     # Compile and run tests (using x64 objects) if requested
     if should_run_tests:
