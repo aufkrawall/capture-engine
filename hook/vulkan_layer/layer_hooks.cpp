@@ -116,6 +116,8 @@ VkResult VKAPI_CALL vkCreateInstance(
     LOAD_INSTANCE_FUNC(EnumeratePhysicalDevices);
     LOAD_INSTANCE_FUNC(EnumerateDeviceExtensionProperties);
     LOAD_INSTANCE_FUNC(GetPhysicalDeviceProperties);
+    LOAD_INSTANCE_FUNC(GetPhysicalDeviceProperties2);
+    LOAD_INSTANCE_FUNC(GetPhysicalDeviceMemoryProperties);
     LOAD_INSTANCE_FUNC(GetPhysicalDeviceQueueFamilyProperties);
     LOAD_INSTANCE_FUNC(CreateDevice);
     LOAD_INSTANCE_FUNC(DestroySurfaceKHR);

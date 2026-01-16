@@ -1,6 +1,8 @@
 #include "layer_main.h"
 #include "../common/overlay.h"
 #include "../common/ipc_client.h"
+#include "../common/performance_metrics.h"
+#include "../common/system_metrics.h"
 #include <vector>
 #include <chrono>
 #include <string>
@@ -27,11 +29,8 @@ struct OverlayState {
     VkExtent2D extent = {0, 0};
     VkFormat format = VK_FORMAT_B8G8R8A8_UNORM;
     
-    // FPS tracking
-    uint64_t frameCount = 0;
-    std::chrono::steady_clock::time_point lastFpsTime;
-    float currentFps = 0.0f;
-    uint64_t framesThisSecond = 0;
+    // Performance metrics
+    PerformanceMetrics* metrics = nullptr;
 };
 
 static std::mutex g_OverlayMutex;
@@ -75,7 +74,45 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     state.physicalDevice = disp->physicalDevice;
     state.extent = extent;
     state.format = format;
-    state.lastFpsTime = std::chrono::steady_clock::now();
+    
+    // Initialize system metrics collector with GPU LUID and VRAM info
+    uint32_t luidLow = 0;
+    uint32_t luidHigh = 0;
+    
+    CEInstanceDispatch* instDisp = GetInstanceDispatch(state.instance);
+    if (instDisp) {
+        // Query LUID
+        if (instDisp->GetPhysicalDeviceProperties2) {
+            VkPhysicalDeviceIDProperties idProps = {};
+            idProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+            
+            VkPhysicalDeviceProperties2 props2 = {};
+            props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+            props2.pNext = &idProps;
+            
+            instDisp->GetPhysicalDeviceProperties2(state.physicalDevice, &props2);
+            
+            if (idProps.deviceLUIDValid) {
+                memcpy(&luidLow, &idProps.deviceLUID[0], 4);
+                memcpy(&luidHigh, &idProps.deviceLUID[4], 4);
+                LayerLog("Layer: Detected GPU LUID: 0x%08X_%08X", luidHigh, luidLow);
+            }
+        }
+        
+        // Query VRAM size
+        if (instDisp->GetPhysicalDeviceMemoryProperties) {
+            VkPhysicalDeviceMemoryProperties memProps;
+            instDisp->GetPhysicalDeviceMemoryProperties(state.physicalDevice, &memProps);
+            for (uint32_t i = 0; i < memProps.memoryHeapCount; i++) {
+                if (memProps.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
+                    SystemMetricsCollector::Get().SetVRAMTotal(memProps.memoryHeaps[i].size);
+                    break;
+                }
+            }
+        }
+    }
+    
+    SystemMetricsCollector::Get().Initialize(luidLow, luidHigh); 
     
     // Store swapchain images
     state.swapchainImages.resize(imageCount);
@@ -226,6 +263,7 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         }
     }
     
+    state.metrics = new PerformanceMetrics();
     state.initialized = true;
     g_OverlayStates[device] = state;
     
@@ -268,6 +306,10 @@ void CleanupOverlay(VkDevice device)
         }
         if (state.descriptorPool && disp->DestroyDescriptorPool) {
             disp->DestroyDescriptorPool(device, state.descriptorPool, nullptr);
+        }
+        if (state.metrics) {
+            delete state.metrics;
+            state.metrics = nullptr;
         }
     }
     
@@ -341,19 +383,30 @@ void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex,
         }
     }
     
-    // Update FPS calculation
-    state.frameCount++;
-    state.framesThisSecond++;
-    auto now = std::chrono::steady_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - state.lastFpsTime).count();
-    if (elapsed >= 1000) {
-        state.currentFps = (float)state.framesThisSecond * 1000.0f / (float)elapsed;
-        state.framesThisSecond = 0;
-        state.lastFpsTime = now;
+    // Update Performance Metrics
+    static int64_t qpcFreq = 0;
+    if (qpcFreq == 0) {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        qpcFreq = f.QuadPart;
     }
+
+    LARGE_INTEGER qpc;
+    QueryPerformanceCounter(&qpc);
+    int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
+    if (state.metrics) {
+        state.metrics->Update(us);
+    }
+
+    // Update IPC values 
+    static uint64_t frameCount = 0;
+    frameCount++;
+    LayerIPC_UpdateFrameTiming(frameCount, state.metrics ? state.metrics->GetCurrentFPS() : 0.0f, state.metrics ? state.metrics->GetAverageFPS() : 0.0f);
     
-    // Update IPC values
-    LayerIPC_UpdateFrameTiming(state.frameCount, state.currentFps, state.currentFps);
+    // Ensure Shared Overlay knows about our metrics
+    if (state.metrics) {
+        g_SharedOverlay.SetMetrics(state.metrics);
+    }
     
     // Start ImGui Frame
     ImGui_ImplVulkan_NewFrame();

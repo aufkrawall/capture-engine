@@ -47,6 +47,8 @@ struct CEInstanceDispatch {
     PFN_vkEnumeratePhysicalDevices EnumeratePhysicalDevices = nullptr;
     PFN_vkEnumerateDeviceExtensionProperties EnumerateDeviceExtensionProperties = nullptr;
     PFN_vkGetPhysicalDeviceProperties GetPhysicalDeviceProperties = nullptr;
+    PFN_vkGetPhysicalDeviceProperties2 GetPhysicalDeviceProperties2 = nullptr;
+    PFN_vkGetPhysicalDeviceMemoryProperties GetPhysicalDeviceMemoryProperties = nullptr;
     PFN_vkGetPhysicalDeviceQueueFamilyProperties GetPhysicalDeviceQueueFamilyProperties = nullptr;
     PFN_vkCreateDevice CreateDevice = nullptr;
     PFN_vkDestroySurfaceKHR DestroySurfaceKHR = nullptr;

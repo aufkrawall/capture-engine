@@ -15,7 +15,7 @@ static const GUID IID_CWrapD3D12Device_Check =
 
 extern "C" {
 
-#define D3D12_EXPORT __declspec(dllexport)
+// #define D3D12_EXPORT __declspec(dllexport)
 
 D3D12_EXPORT HRESULT D3D12Wrapper_CreateDevice(
     IUnknown* pAdapter,

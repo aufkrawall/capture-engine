@@ -1243,7 +1243,20 @@ def compile_d3d12_wrappers_msvc(env):
 
     # 5. Create DLL
     log(f"[MSVC] Linking {os.path.basename(dll_out)}...")
-    link_cmd = [link_exe, "/nologo", "/DLL", f"/OUT:{dll_out}", f"/IMPLIB:{implib_out}"] + obj_files
+    
+    sdk_lib_um = os.path.join(win_sdk_root, "Lib", win_sdk_ver, "um", "x64")
+    sdk_lib_ucrt = os.path.join(win_sdk_root, "Lib", win_sdk_ver, "ucrt", "x64")
+    
+    link_cmd = [
+        link_exe, "/nologo", "/DLL", 
+        f"/OUT:{dll_out}", 
+        f"/IMPLIB:{implib_out}",
+        f"/LIBPATH:{msvc_lib}",
+        f"/LIBPATH:{sdk_lib_um}",
+        f"/LIBPATH:{sdk_lib_ucrt}",
+        "d3d12.lib", "dxgi.lib", "user32.lib", "kernel32.lib", "uuid.lib"
+    ] + obj_files
+    
     try:
         res = subprocess.run(link_cmd, env=msvc_env, capture_output=True, text=True)
         if res.returncode != 0:
