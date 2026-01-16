@@ -1,4 +1,5 @@
 #include "fg_detection.h"
+#include "hook_common.h"
 #include <cstring>
 #include <cmath>
 
@@ -113,11 +114,14 @@ void FGCompatibility::RecordFrame(int commandListsExecuted) {
         consecutiveRealFrames.store(0);
     }
     
-    // Debug logging (rate limited)
+    // Debug logging (first 300 frames to analyze pattern)
     int logCount = debugLogCounter.fetch_add(1);
-    if (logCount < 10 || (logCount % 120 == 0)) {
-        HookLog("FG: Frame #%d: cmdLists=%d, isReal=%d, consReal=%d, consInterp=%d",
-                total, commandListsExecuted, isRealFrame ? 1 : 0,
+    // Always log first few frames, then periodic checks
+    // Force logs for now to debug 2x vs 4x issue
+    if (true) {
+        FGType type = detectedRuntime.load();
+        EarlyLog("FG: Frame #%d: cmdLists=%d, isReal=%d, type=%d, consReal=%d, consInterp=%d",
+                total, commandListsExecuted, isRealFrame ? 1 : 0, (int)type,
                 consecutiveRealFrames.load(), consecutiveInterpolatedFrames.load());
     }
     
@@ -143,16 +147,51 @@ void FGCompatibility::UpdateMetrics() {
     int64_t minTs = INT64_MAX;
     int64_t maxTs = 0;
     
-    // Scan the window
+    // Calculate metrics using Chronological Analysis (Histogram of Intervals)
+    int currentHead = historyIndex.load();
+    int startIdx = currentHead % WINDOW_SIZE;
+    
+    // Dynamic Thresholding: Find max work per frame to filter out "partial" presents
+    int maxCmdLists = 0;
     for (int i = 0; i < WINDOW_SIZE; i++) {
-        const auto& f = frameHistory[i];
-        if (f.timestampUs > windowStartUs && f.timestampUs <= now) {
-            totalFrames++;
-            if (f.commandLists > 0) {
-                realFrames++;
+        if (frameHistory[i].timestampUs > windowStartUs) {
+             if (frameHistory[i].commandLists > maxCmdLists) {
+                 maxCmdLists = frameHistory[i].commandLists;
+             }
+        }
+    }
+    
+    // Threshold: 50% of peak work, but at least 2
+    int workThreshold = (maxCmdLists > 4) ? (maxCmdLists / 2) : 2;
+
+    int lastRealLogicalIdx = -1;
+    int intervalCounts[16] = {0}; // Track intervals 1..15
+    int totalIntervals = 0;
+
+    for (int i = 0; i < WINDOW_SIZE; i++) {
+        int idx = (startIdx + i) % WINDOW_SIZE;
+        const auto& f = frameHistory[idx];
+        
+        // Skip invalid or out-of-window frames
+        if (f.timestampUs <= windowStartUs || f.timestampUs > now) continue;
+        
+        totalFrames++;
+        if (f.timestampUs < minTs) minTs = f.timestampUs;
+        if (f.timestampUs > maxTs) maxTs = f.timestampUs;
+
+        // Use dynamic threshold instead of just > 0
+        if (f.commandLists > workThreshold) {
+            realFrames++;
+            
+            // Interval Analysis
+            if (lastRealLogicalIdx != -1) {
+                int interval = i - lastRealLogicalIdx;
+                if (interval > 0 && interval < 16) {
+                    intervalCounts[interval]++;
+                    totalIntervals++;
+                }
             }
-            if (f.timestampUs < minTs) minTs = f.timestampUs;
-            if (f.timestampUs > maxTs) maxTs = f.timestampUs;
+            lastRealLogicalIdx = i;
         }
     }
     
@@ -172,21 +211,51 @@ void FGCompatibility::UpdateMetrics() {
     cachedOutputFPS.store(outputFPS);
     cachedBaseFPS.store(baseFPS);
     
-    // Calculate multiplier
+    // Determine Multiplier from Histogram Mode
     int mult = 1;
-    if (realFrames > 0 && totalFrames > realFrames) {
-        float ratio = (float)totalFrames / (float)realFrames;
-        mult = (int)std::round(ratio);
-        if (mult < 1) mult = 1;
-        if (mult > 4) mult = 4;  // Cap at 4x (MSFG max)
+    if (totalIntervals > 5) { // Need meaningful sample size
+        int bestInterval = 1;
+        int maxCount = 0;
+        
+        // Find dominant interval
+        for (int k = 1; k < 16; k++) {
+            if (intervalCounts[k] > maxCount) {
+                maxCount = intervalCounts[k];
+                bestInterval = k;
+            }
+        }
+        
+        // Confidence check: Dominant interval must be significant (> 50% of intervals)
+        // Or at least significantly better than others.
+        // For simplicity, just pick the winner if it has regular support
+        float confidence = (float)maxCount / (float)totalIntervals;
+        
+        if (confidence > 0.4f) { // Low threshold to allow switching, but prevents random noise
+            mult = bestInterval;
+        } else {
+             // Fallback to ratio if histogram is too noisy? 
+             // Or keep previous multiplier to avoid flicker?
+             mult = cachedMultiplier.load(); 
+        }
+
+        if (mult > 4) mult = 4;
+    } else {
+        // Fallback for low sample count (start up)
+        if (realFrames > 0) {
+             float ratio = (float)totalFrames / (float)realFrames;
+             if (ratio >= 3.5f) mult = 4;
+             else if (ratio >= 2.5f) mult = 3;
+             else if (ratio >= 1.5f) mult = 2;
+        }
     }
     
     int prevMult = cachedMultiplier.exchange(mult);
     
     // Log on multiplier change
     if (prevMult != mult) {
-        HookLog("FG: Multiplier changed: %dx -> %dx (total=%d, real=%d, outputFPS=%.1f, baseFPS=%.1f)",
-                prevMult, mult, totalFrames, realFrames, outputFPS, baseFPS);
+        HookLog("FG: Multiplier changed: %dx -> %dx (total=%d, real=%d, outputFPS=%.1f, baseFPS=%.1f, ModeConfidence=%.2f)",
+                prevMult, mult, totalFrames, realFrames, outputFPS, baseFPS, 
+                (totalIntervals > 0) ? ((float)intervalCounts[mult]/totalIntervals) : 0.0f);
     }
 }
 

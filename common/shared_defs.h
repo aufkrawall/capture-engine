@@ -301,6 +301,20 @@ struct SharedMemoryLayout {
       std::atomic<uint32_t> maxCoreLoad{0}; // NEW: Max single core load
   } systemMetrics;
 
+  // DLSS State (Hook -> Host)
+  struct DLSSState {
+      std::atomic<bool> srActive{false};
+      std::atomic<bool> rrActive{false};
+      std::atomic<char> srPreset{'?'};      // 'A'-'K' or '?'
+      std::atomic<char> rrPreset{'?'};      // 'A'-'G' or '?'
+      std::atomic<float> renderScale{0.0f}; // e.g. 1.5 for Quality (100/66)
+      std::atomic<int32_t> versionMajor{0};
+      std::atomic<int32_t> versionMinor{0};
+      std::atomic<int32_t> versionPatch{0};
+      std::atomic<int32_t> qualityMode{-1}; // -1=Unknown, 0=Perf, 1=Bal, 2=Qual, 3=UltraPerf, 4=UltraQual, 5=DLAA
+      std::atomic<bool> fgActive{false};    // Redundant with g_FGCompat but useful for IPC/Host visibility
+  } dlssState;
+
   // Encoder queue monitoring (Host -> Hook)
   // Hook skips frames when throttleCapture is true to let encoder catch up
   std::atomic<bool> throttleCapture{

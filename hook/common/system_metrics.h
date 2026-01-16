@@ -4,6 +4,7 @@
 #include <Windows.h>
 #include <thread>
 #include <atomic>
+#include <string>
 
 struct SystemMetrics {
   float cpuUsage;       // 0-100% (Total)
@@ -31,10 +32,21 @@ public:
 
   // Explicitly set VRAM Total (safe to call from main thread hooks)
   void SetVRAMTotal(uint64_t totalBytes);
+  
+  // Explicit shutdown - call before DLL unload to stop background thread
+  void Shutdown();
+
+  // Hardware Names
+  const char* GetCPUName() const { return cachedCpuName.c_str(); }
+  const char* GetGPUName() const { return cachedGpuName.c_str(); }
 
 private:
   SystemMetricsCollector();
-  ~SystemMetricsCollector();
+  ~SystemMetricsCollector(); // Keep destructor private/protected? Standard singleton.
+
+  std::string cachedCpuName = "CPU";
+  std::string cachedGpuName = "GPU";
+  void DetectHardwareNames();
   
   // Helpers
   void InitPDH();

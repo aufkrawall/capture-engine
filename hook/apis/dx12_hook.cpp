@@ -13,7 +13,7 @@
 #include "backends/imgui_impl_dx12.h"
 #include "backends/imgui_impl_win32.h"
 #include "imgui.h"
-#include <MinHook.h>
+#include <../wrappers/minhook_shim.h>
 #include <atomic>
 #include <avrt.h>
 #include <cmath>
@@ -96,6 +96,7 @@ static std::atomic<bool> g_FGQueueLocked{false};
 static std::mutex        g_FGQueueLockMutex;
 static ID3D12CommandQueue* g_FGLockedQueue = nullptr;
 
+static std::atomic<bool> g_IsQueueFromSwapchain{false};
 static std::atomic<bool> g_FGNeedsDrain{false};
 static std::atomic<uint64_t> g_FGNextDrainAttemptUs{0};
 
@@ -751,6 +752,13 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
   if (FAILED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3))) || !sc3) {
     return;
   }
+
+  // Record frame stats for FG logic (CRITICAL: This path is used when DX11 hook handles Present)
+  int cmdListCount = g_CommandListsExecutedThisFrame.exchange(0);
+  if (g_FGDebugFrameCount < 12000) { 
+      EarlyLog("DX12: ProcessFrameExternal - RecordFrame cmdListCount=%d", cmdListCount);
+  }
+  g_FGCompat.RecordFrame(cmdListCount);
 
   ProcessFrame(sc3, true);
   sc3->Release();
@@ -1980,6 +1988,18 @@ HRESULT STDMETHODCALLTYPE DetourGetBuffer(IDXGISwapChain *pSwapChain, UINT Buffe
 
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
                                         UINT SyncInterval, UINT Flags) {
+  // Debug: Log that hook is being called (once)
+  static bool loggedOnce = false;
+  static int callCount = 0;
+  callCount++;
+  if (!loggedOnce) {
+      HookLog("DX12: >>> DetourPresent CALLED! (first call, oPresent=%p)", oPresent);
+      loggedOnce = true;
+  }
+  if (callCount % 600 == 0) { // Log every ~10 seconds at 60fps
+      HookLog("DX12: DetourPresent still active (call #%d)", callCount);
+  }
+  
   // ============================================================================
   // FG OVERLAY SUPPORT - Per Streamline SDK research
   // Phase 1: FG Runtime Detection
@@ -2059,6 +2079,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
   
   // Record frame for FG metrics
   int cmdListCount = g_CommandListsExecutedThisFrame.exchange(0);
+  if (g_FGDebugFrameCount < 12000) { // Log first ~3 minutes
+      EarlyLog("DX12: Present - RecordFrame cmdListCount=%d", cmdListCount);
+  }
   g_FGCompat.RecordFrame(cmdListCount);
   
   // FG Swapchain Stabilization Check (DLSS FG only now - reduced delay for constant overlay)
@@ -2444,20 +2467,29 @@ static void ModifyStaticSampler(D3D12_STATIC_SAMPLER_DESC& sampler) {
             
             if (isAF) {
                 D3D12_FILTER newFilter = sampler.Filter;
+                bool canForceAF = false;
+
                 switch (sampler.Filter) {
                     case D3D12_FILTER_MIN_MAG_MIP_LINEAR:
                     case D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT:
                         newFilter = D3D12_FILTER_ANISOTROPIC;
+                        canForceAF = true;
                         break;
                     case D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT:
                         newFilter = D3D12_FILTER_COMPARISON_ANISOTROPIC;
+                        canForceAF = true;
                         break;
                     default:
+                        // Don't force AF on other filter types (e.g. Point, or unknown)
                         break;
                 }
-                sampler.Filter = newFilter;
-                sampler.MaxAnisotropy = maxAniso;
-                HookLog("DX12: Static Sampler: Forced AF %dx", maxAniso);
+
+                if (canForceAF) {
+                    sampler.Filter = newFilter;
+                    sampler.MaxAnisotropy = maxAniso;
+                    // Move logging to caller or rate limit if strictly needed
+                    // HookLog("DX12: Static Sampler: Forced AF %dx", maxAniso); 
+                }
             }
         }
     }
@@ -2519,7 +2551,11 @@ HRESULT WINAPI DetourSerializeRootSignature(
         return oSerializeRootSignature(pRootSignature, Version, ppBlob, ppErrorBlob);
     }
     
-    HookLog("DX12: SerializeRootSignature intercepted (%d static samplers)", pRootSignature->NumStaticSamplers);
+    static int logCount = 0;
+    if (logCount < 5) {
+        HookLog("DX12: SerializeRootSignature intercepted (%d static samplers)", pRootSignature->NumStaticSamplers);
+        logCount++;
+    }
     
     // Create a copy of the root signature desc with modified static samplers
     D3D12_ROOT_SIGNATURE_DESC modifiedDesc = *pRootSignature;
@@ -2564,8 +2600,12 @@ HRESULT WINAPI DetourSerializeVersionedRootSignature(
         return oSerializeVersionedRootSignature(pRootSignature, ppBlob, ppErrorBlob);
     }
     
-    HookLog("DX12: SerializeVersionedRootSignature intercepted (Version=%d, %d static samplers)", 
-            pRootSignature->Version, numSamplers);
+    static int logCount = 0;
+    if (logCount < 5) {
+        HookLog("DX12: SerializeVersionedRootSignature intercepted (Version=%d, %d static samplers)", 
+                pRootSignature->Version, numSamplers);
+        logCount++;
+    }
     
     // Create a copy with modified static samplers
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC modifiedDesc = *pRootSignature;
@@ -2646,29 +2686,80 @@ void STDMETHODCALLTYPE
 DetourExecuteCommandLists(ID3D12CommandQueue *pThis, UINT NumCommandLists,
                           ID3D12CommandList *const *ppCommandLists) {
   // FG: Track command list execution for real frame detection
-  g_CommandListsExecutedThisFrame.fetch_add(1, std::memory_order_relaxed);
+  // 
+  // Key insight for MFG detection with DLSS FG:
+  // - Real frames: Render queue executes multiple command lists in a batch (Num >= 2)
+  // - Interpolated frames: Only have single command list executions (Num = 1) for compose/present
+  // 
+  // With DLSS FG, there are 2 queues:
+  // 1. Presentation queue (g_CommandQueue from swapchain) - always Num=1 per present
+  // 2. Render queue (different queue) - Num=2-3+ for scene rendering, only on real frames
+  // 
+  // Strategy: Count command lists from ANY DIRECT queue, but only if Num > 1.
+  // This filters out the presentation work (always Num=1) and only captures real render work.
+  // With 4x MFG: 1 frame per 4 presents has render work (ratio ~4.0)
+  
+  // Check if FG runtime DLL is loaded
+  const auto fgType = g_FGCompat.GetDllDetectedType();
+  const bool fgDllLoaded = (fgType == FGCompatibility::FGType::DLSS_FG || 
+                            fgType == FGCompatibility::FGType::DLSS_MSFG ||
+                            fgType == FGCompatibility::FGType::FSR_FG);
+  
+  // Count command lists - strategy depends on FG state
+  if (fgDllLoaded) {
+      // FG active: Only count batches with Num > 2 (real render work, not presentation or overhead)
+      // This captures work from ANY DIRECT queue. Log analysis shows overhead/interpolated frames 
+      // can have Num=2, while real frames have Num=3+.
+      if (NumCommandLists > 2) {
+          g_CommandListsExecutedThisFrame.fetch_add(NumCommandLists, std::memory_order_relaxed);
+      }
+  } else {
+      // No FG: Count from g_CommandQueue only (original behavior)
+      if (pThis == g_CommandQueue) {
+          g_CommandListsExecutedThisFrame.fetch_add(NumCommandLists, std::memory_order_relaxed);
+      }
+  }
+  
+  // Debug logging (first 50 only)
+  // Debug logging disabled to prevent contention
+  /*
+  static std::atomic<int> s_logCmd{0};
+  int count = s_logCmd.fetch_add(1);
+  if (count < 50) { 
+     EarlyLog("DX12: ExecuteCommandLists: Num=%u, Queue=%p (Active=%p, Match=%d, FG_DLL=%d)", 
+              NumCommandLists, pThis, g_CommandQueue, (pThis == g_CommandQueue), fgDllLoaded);
+  }
+  if (count > 2000) s_logCmd.store(0);
+  */
 
   // Capture queue if not yet available (enables first-frame overlay)
-  if (pThis && pThis->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
+  // Cache queue type by tracking in g_DeviceQueues map - avoid repeated GetDesc() calls
+  bool isDirectQueue = false;
+  if (pThis) {
     ID3D12Device* dev = nullptr;
     if (SUCCEEDED(pThis->GetDevice(IID_PPV_ARGS(&dev)))) {
         std::lock_guard<std::mutex> lock(g_DeviceQueuesMutex);
-        if (g_DeviceQueues.count(dev) == 0 || g_DeviceQueues[dev] != pThis) {
-             if (g_DeviceQueues.count(dev)) g_DeviceQueues[dev]->Release();
-             g_DeviceQueues[dev] = pThis;
-             pThis->AddRef();
+        // Check if this queue is in our tracked map (implies it's DIRECT)
+        if (g_DeviceQueues.count(dev) && g_DeviceQueues[dev] == pThis) {
+            isDirectQueue = true;
+        } else if (pThis->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
+            // New DIRECT queue - track it
+            if (g_DeviceQueues.count(dev)) g_DeviceQueues[dev]->Release();
+            g_DeviceQueues[dev] = pThis;
+            pThis->AddRef();
+            isDirectQueue = true;
         }
         dev->Release();
     }
-    
-    const bool fgActive = g_FGCompat.IsFGActive();
-    const bool queueLocked = g_FGQueueLocked.load(std::memory_order_relaxed);
-    if ((!fgActive || !queueLocked) && g_CommandQueue != pThis) {
-        if (g_CommandQueue) g_CommandQueue->Release();
-        g_CommandQueue = pThis;
-        g_CommandQueue->AddRef();
-        EarlyLog("DX12: ExecuteCommandLists: Captured queue %p", g_CommandQueue);
-    }
+  }
+  
+  // Queue capture heuristic - only when FG DLL is NOT loaded (to prevent flapping during FG)
+  // Once FG DLL is loaded, we lock in the currently captured queue as the presentation queue
+  if (isDirectQueue && !fgDllLoaded && !g_IsQueueFromSwapchain && g_CommandQueue != pThis) {
+      if (g_CommandQueue) g_CommandQueue->Release();
+      g_CommandQueue = pThis;
+      g_CommandQueue->AddRef();
+      EarlyLog("DX12: ExecuteCommandLists: Captured queue %p (Heuristic)", g_CommandQueue);
   }
   
   oExecuteCommandLists(pThis, NumCommandLists, ppCommandLists);
@@ -2680,9 +2771,17 @@ typedef HRESULT (STDMETHODCALLTYPE *PFN_CreateSwapChain)(IDXGIFactory *, IUnknow
 typedef HRESULT (STDMETHODCALLTYPE *PFN_CreateSwapChainForHwnd)(
     IDXGIFactory2 *, IUnknown *, HWND, const DXGI_SWAP_CHAIN_DESC1 *,
     const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *, IDXGIOutput *, IDXGISwapChain1 **);
+typedef HRESULT (STDMETHODCALLTYPE *PFN_CreateSwapChainForCoreWindow)(
+    IDXGIFactory2 *, IUnknown *, IUnknown *, const DXGI_SWAP_CHAIN_DESC1 *,
+    IDXGIOutput *, IDXGISwapChain1 **);
+typedef HRESULT (STDMETHODCALLTYPE *PFN_CreateSwapChainForComposition)(
+    IDXGIFactory2 *, IUnknown *, const DXGI_SWAP_CHAIN_DESC1 *,
+    IDXGIOutput *, IDXGISwapChain1 **);
 
 PFN_CreateSwapChain oCreateSwapChain = nullptr;
 PFN_CreateSwapChainForHwnd oCreateSwapChainForHwnd = nullptr;
+PFN_CreateSwapChainForCoreWindow oCreateSwapChainForCoreWindow = nullptr;
+PFN_CreateSwapChainForComposition oCreateSwapChainForComposition = nullptr;
 
 HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory *pThis,
                                                 IUnknown *pDevice,
@@ -2697,6 +2796,8 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory *pThis,
       // Release old queue before capturing new one
       if (g_CommandQueue) g_CommandQueue->Release();
       g_CommandQueue = queue; // Keep the reference from QueryInterface
+      g_IsQueueFromSwapchain = true;
+      EarlyLog("DX12: DetourCreateSwapChain: Auth Queue %p captured from Swapchain", g_CommandQueue);
       
       ID3D12Device* dev = nullptr;
       if (SUCCEEDED(queue->GetDevice(IID_PPV_ARGS(&dev)))) {
@@ -2808,6 +2909,8 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(
       // Release old queue before capturing new one
       if (g_CommandQueue) g_CommandQueue->Release();
       g_CommandQueue = queue; // Keep the reference from QueryInterface
+      g_IsQueueFromSwapchain = true;
+      EarlyLog("DX12: DetourCreateSwapChainForHwnd: Auth Queue %p captured from Swapchain", g_CommandQueue);
       
       ID3D12Device* dev = nullptr;
       if (SUCCEEDED(queue->GetDevice(IID_PPV_ARGS(&dev)))) {
@@ -2886,60 +2989,70 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(
            // In this function, we always transfer ownership, so null out local.
            swapChain3 = nullptr;
 
-           bool useWrapper = false; // Move declaration here
-
-           // FG MODE: Wrap the swapchain to intercept Present BEFORE FG processing
-           auto fgType = g_FGCompat.DetectLoadedFGRuntime();
-           // DISABLE WRAPPER for all FG modes. 
-           // It causes crashes with FSR FG (refcount issues) and isn't strictly necessary 
-           // if we hook the Proxy vtable directly, which is more robust.
-
-           if (useWrapper && !g_UsingSwapChainWrapper) {
-               // Get the command queue from pDevice (it's actually the queue for DX12)
-               ID3D12CommandQueue* pQueue = nullptr;
-               if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&pQueue)))) {
-                   // ... rest of the code remains the same ...
-               }
-           }
+           bool useWrapper = false; 
 
            // IMPORTANT: If we didn't wrap, we MUST hook the vtable of the returned swapchain
            // because it might be a Streamline Proxy (different vtable than the one we hooked in Init).
            if (!useWrapper && *ppSwapChain) {
                void** vtbl = *(void***)(*ppSwapChain);
                
-               // Attempt to hook Present (Index 8)
-               if (vtbl[8] != (void*)DetourPresent) {
-                   // Only hook if not already redirected to our detour
-                   // Use a temp trampoline pointer to check if we can create a new hook
-                   void* tempO = nullptr;
-                   MH_STATUS s = MH_CreateHook(vtbl[8], (LPVOID)DetourPresent, (LPVOID*)&tempO);
-                   if (s == MH_OK) {
-                       // New hook created successfully - update global trampoline and enable
-                       // oPresent = (PresentPtr)tempO;
-                       MH_EnableHook(vtbl[8]);
-                       EarlyLog("DX12: Hooked specific SwapChain Present (vtbl[8]=%p)", vtbl[8]);
-                   } else if (s == MH_ERROR_ALREADY_CREATED) {
-                       // Already hooked, nothing to do
-                   } else {
-                       EarlyLog("DX12: Failed to hook specific SwapChain Present: %d", s);
-                   }
-               }
+                // Attempt to hook Present (Index 8)
+                if (vtbl[8] != (void*)DetourPresent) {
+                    void* tempO = nullptr;
+                    MH_STATUS s = MH_CreateHook(&vtbl[8], (LPVOID)DetourPresent, (LPVOID*)&tempO);
+                    if (s == MH_OK) {
+                        EarlyLog("DX12: Hooked specific SwapChain Present (vtbl[8]=%p)", vtbl[8]);
+                    }
+                }
                
-               // Attempt to hook Present1 (Index 22)
-               if (vtbl[22] != (void*)DetourPresent1) {
-                   void* tempO1 = nullptr;
-                   MH_STATUS s = MH_CreateHook(vtbl[22], (LPVOID)DetourPresent1, (LPVOID*)&tempO1);
-                   if (s == MH_OK) {
-                       // oPresent1 = (Present1Ptr)tempO1;
-                       MH_EnableHook(vtbl[22]);
-                       EarlyLog("DX12: Hooked specific SwapChain Present1 (vtbl[22]=%p)", vtbl[22]);
-                   }
-               }
+                // Attempt to hook Present1 (Index 22)
+                if (vtbl[22] != (void*)DetourPresent1) {
+                    void* tempO1 = nullptr;
+                    MH_STATUS s = MH_CreateHook(&vtbl[22], (LPVOID)DetourPresent1, (LPVOID*)&tempO1);
+                    if (s == MH_OK) {
+                        EarlyLog("DX12: Hooked specific SwapChain Present1 (vtbl[22]=%p)", vtbl[22]);
+                    }
+                }
            }
        }
   }
   
   return hr;
+}
+
+HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForCoreWindow(
+    IDXGIFactory2 *pThis, IUnknown *pDevice, IUnknown *pWindow,
+    const DXGI_SWAP_CHAIN_DESC1 *pDesc, IDXGIOutput *pRestrictToOutput,
+    IDXGISwapChain1 **ppSwapChain) {
+    EarlyLog("DX12: DetourCreateSwapChainForCoreWindow called (pDevice=%p, pWindow=%p)", pDevice, pWindow);
+    if (pDevice) {
+        ID3D12CommandQueue *queue = nullptr;
+        if (SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D12CommandQueue), (void **)&queue))) {
+            if (g_CommandQueue) g_CommandQueue->Release();
+            g_CommandQueue = queue;
+            g_IsQueueFromSwapchain = true;
+            EarlyLog("DX12: DetourCreateSwapChainForCoreWindow: Auth Queue %p captured", g_CommandQueue);
+        }
+        g_FGCompat.OnSwapchainRecreation();
+    }
+    return oCreateSwapChainForCoreWindow(pThis, pDevice, pWindow, pDesc, pRestrictToOutput, ppSwapChain);
+}
+
+HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForComposition(
+    IDXGIFactory2 *pThis, IUnknown *pDevice, const DXGI_SWAP_CHAIN_DESC1 *pDesc,
+    IDXGIOutput *pRestrictToOutput, IDXGISwapChain1 **ppSwapChain) {
+    EarlyLog("DX12: DetourCreateSwapChainForComposition called (pDevice=%p)", pDevice);
+    if (pDevice) {
+        ID3D12CommandQueue *queue = nullptr;
+        if (SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D12CommandQueue), (void **)&queue))) {
+            if (g_CommandQueue) g_CommandQueue->Release();
+            g_CommandQueue = queue;
+            g_IsQueueFromSwapchain = true;
+            EarlyLog("DX12: DetourCreateSwapChainForComposition: Auth Queue %p captured", g_CommandQueue);
+        }
+        g_FGCompat.OnSwapchainRecreation();
+    }
+    return oCreateSwapChainForComposition(pThis, pDevice, pDesc, pRestrictToOutput, ppSwapChain);
 }
 
 HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain3 *pSwapChain,
@@ -2991,7 +3104,7 @@ DWORD WINAPI UnloadThread(LPVOID lpParam) {
 }
 
 typedef HRESULT (WINAPI *PFN_D3D12_CREATE_DEVICE)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
-PFN_D3D12_CREATE_DEVICE oD3D12CreateDevice = nullptr;
+static PFN_D3D12_CREATE_DEVICE oD3D12CreateDevice = nullptr;
 
 HRESULT WINAPI DetourD3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL MinimumFeatureLevel, REFIID riid, void** ppDevice) {
     HRESULT hr = oD3D12CreateDevice(pAdapter, MinimumFeatureLevel, riid, ppDevice);
@@ -3006,9 +3119,8 @@ HRESULT WINAPI DetourD3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL Min
         static bool hookedSampler = false;
         if (!hookedSampler) {
             // Index 22 is CreateSampler in ID3D12Device
-            MH_STATUS s = MH_CreateHook(vtbl[22], (LPVOID)DetourCreateSampler, (LPVOID*)&oCreateSampler);
+            MH_STATUS s = MH_CreateHook(&vtbl[22], (LPVOID)DetourCreateSampler, (LPVOID*)&oCreateSampler);
             if (s == MH_OK) {
-                MH_EnableHook(vtbl[22]);
                 HookLog("DX12: Hooked CreateSampler (early export)");
                 hookedSampler = true;
             } else if (s == MH_ERROR_ALREADY_CREATED) {
@@ -3019,9 +3131,8 @@ HRESULT WINAPI DetourD3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL Min
         static bool hookedCreateResource = false;
         if (!hookedCreateResource) {
             // Index 27 is CreateCommittedResource
-            MH_STATUS s = MH_CreateHook(vtbl[27], (LPVOID)DetourCreateCommittedResource, (LPVOID*)&oCreateCommittedResource);
+            MH_STATUS s = MH_CreateHook(&vtbl[27], (LPVOID)DetourCreateCommittedResource, (LPVOID*)&oCreateCommittedResource);
             if (s == MH_OK) {
-                MH_EnableHook(vtbl[27]);
                 HookLog("DX12: Hooked CreateCommittedResource");
                 hookedCreateResource = true;
             } else if (s == MH_ERROR_ALREADY_CREATED) {
@@ -3114,15 +3225,23 @@ void DX12Hook::Init() {
   HookLog("DX12: Dummy ResizeBuffers Address: %p", scVTable[13]);
 
   MH_STATUS s;
-  s = MH_CreateHook(facVTable[10], (LPVOID)DetourCreateSwapChain,
+  s = MH_CreateHook(&facVTable[10], (LPVOID)DetourCreateSwapChain,
                 (LPVOID *)&oCreateSwapChain);
   if (s != MH_OK) HookLog("Failed to hook CreateSwapChain: %s", MH_StatusToString(s));
 
-  s = MH_CreateHook(facVTable[15], (LPVOID)DetourCreateSwapChainForHwnd,
+  s = MH_CreateHook(&facVTable[15], (LPVOID)DetourCreateSwapChainForHwnd,
                 (LPVOID *)&oCreateSwapChainForHwnd);
   if (s != MH_OK) HookLog("Failed to hook CreateSwapChainForHwnd: %s", MH_StatusToString(s));
+
+  s = MH_CreateHook(&facVTable[16], (LPVOID)DetourCreateSwapChainForCoreWindow,
+                (LPVOID *)&oCreateSwapChainForCoreWindow);
+  if (s != MH_OK) HookLog("Failed to hook CreateSwapChainForCoreWindow: %s", MH_StatusToString(s));
+
+  s = MH_CreateHook(&facVTable[24], (LPVOID)DetourCreateSwapChainForComposition,
+                (LPVOID *)&oCreateSwapChainForComposition);
+  if (s != MH_OK) HookLog("Failed to hook CreateSwapChainForComposition: %s", MH_StatusToString(s));
   
-  s = MH_CreateHook(scVTable[9], (LPVOID)DetourGetBuffer, (LPVOID *)&oGetBuffer);
+  s = MH_CreateHook(&scVTable[9], (LPVOID)DetourGetBuffer, (LPVOID *)&oGetBuffer);
   if (s != MH_OK) HookLog("Failed to hook GetBuffer: %s", MH_StatusToString(s));
 
   // Check for FG runtime BEFORE installing Present hooks
@@ -3134,26 +3253,26 @@ void DX12Hook::Init() {
       HookLog("DX12Hook: FG Runtime detected (%d) - SKIPPING Present/ResizeBuffers hooks (use CreateSwapChainForHwnd hook instead)", (int)fgType);
       g_FGCompat.SuspendFor(100); // Minimal suspend - swapchain wrapper handles FG safely
   } else {
-      s = MH_CreateHook(scVTable[8], (LPVOID)DetourPresent, (LPVOID *)&oPresent);
+      s = MH_CreateHook(&scVTable[8], (LPVOID)DetourPresent, (LPVOID *)&oPresent);
       if (s == MH_OK) HookLog("DX12: Present hook installed (vtable[8]=%p)", scVTable[8]);
       else HookLog("DX12: Failed to hook Present: %s", MH_StatusToString(s));
       
-      s = MH_CreateHook(scVTable[22], (LPVOID)DetourPresent1, (LPVOID *)&oPresent1);
+      s = MH_CreateHook(&scVTable[22], (LPVOID)DetourPresent1, (LPVOID *)&oPresent1);
       if (s == MH_OK) HookLog("DX12: Present1 hook installed (vtable[22]=%p)", scVTable[22]);
       else HookLog("DX12: Failed to hook Present1: %s", MH_StatusToString(s));
       
-      s = MH_CreateHook(scVTable[13], (LPVOID)DetourResizeBuffers,
+      s = MH_CreateHook(&scVTable[13], (LPVOID)DetourResizeBuffers,
                     (LPVOID *)&oResizeBuffers);
       if (s != MH_OK) HookLog("Failed to hook ResizeBuffers: %s", MH_StatusToString(s));
   }
   
   // ExecuteCommandLists is safe to hook even with FG
-  s = MH_CreateHook(cqVTable[10], (LPVOID)DetourExecuteCommandLists,
+  s = MH_CreateHook(&cqVTable[10], (LPVOID)DetourExecuteCommandLists,
                 (LPVOID *)&oExecuteCommandLists);
   if (s != MH_OK) HookLog("Failed to hook ExecuteCommandLists: %s", MH_StatusToString(s));
   
   // Hook CreateSampler (Index 22)
-  MH_CreateHook(devVTable[22], (LPVOID)DetourCreateSampler, (LPVOID *)&oCreateSampler);
+  MH_CreateHook(&devVTable[22], (LPVOID)DetourCreateSampler, (LPVOID *)&oCreateSampler);
 
   // Hook Root Signature Serialization (export hooks for Static Sampler override)
   // These are the key to forcing AF in DX12 games that use static samplers
@@ -3204,9 +3323,8 @@ bool InstallDX12HooksOnSwapchain(IDXGISwapChain3* pSwapChain) {
     bool anyInstalled = false;
     
     if (oPresent == nullptr) {
-        MH_STATUS s = MH_CreateHook(scVTable[8], (LPVOID)DetourPresent, (LPVOID*)&oPresent);
+        MH_STATUS s = MH_CreateHook(&scVTable[8], (LPVOID)DetourPresent, (LPVOID*)&oPresent);
         if (s == MH_OK) {
-            MH_EnableHook(scVTable[8]);
             HookLog("DX12: Present hook installed on game swapchain (vtable[8]=%p)", scVTable[8]);
             anyInstalled = true;
         } else {
@@ -3215,9 +3333,8 @@ bool InstallDX12HooksOnSwapchain(IDXGISwapChain3* pSwapChain) {
     }
     
     if (oPresent1 == nullptr) {
-        MH_STATUS s = MH_CreateHook(scVTable[22], (LPVOID)DetourPresent1, (LPVOID*)&oPresent1);
+        MH_STATUS s = MH_CreateHook(&scVTable[22], (LPVOID)DetourPresent1, (LPVOID*)&oPresent1);
         if (s == MH_OK) {
-            MH_EnableHook(scVTable[22]);
             HookLog("DX12: Present1 hook installed on game swapchain (vtable[22]=%p)", scVTable[22]);
             anyInstalled = true;
         } else {
@@ -3226,9 +3343,8 @@ bool InstallDX12HooksOnSwapchain(IDXGISwapChain3* pSwapChain) {
     }
     
     if (oResizeBuffers == nullptr) {
-        MH_STATUS s = MH_CreateHook(scVTable[13], (LPVOID)DetourResizeBuffers, (LPVOID*)&oResizeBuffers);
+        MH_STATUS s = MH_CreateHook(&scVTable[13], (LPVOID)DetourResizeBuffers, (LPVOID*)&oResizeBuffers);
         if (s == MH_OK) {
-            MH_EnableHook(scVTable[13]);
             HookLog("DX12: ResizeBuffers hook installed on game swapchain");
             anyInstalled = true;
         }

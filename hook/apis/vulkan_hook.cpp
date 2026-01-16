@@ -9,7 +9,7 @@
 #include "../common/fg_detection.h"
 #include "../common/system_metrics.h"
 #include "../../common/frame_timing.h"
-#include <MinHook.h>
+#include <../wrappers/minhook_shim.h>
 #include <algorithm>
 #include <backends/imgui_impl_vulkan.h>
 #include <backends/imgui_impl_win32.h>
@@ -2265,8 +2265,9 @@ static PFN_vkQueueSubmit2 o_vkQueueSubmit2 = nullptr;
 static PFN_vkDestroySwapchainKHR o_vkDestroySwapchainKHR = nullptr;
 static PFN_vkCreateWin32SurfaceKHR o_vkCreateWin32SurfaceKHR = nullptr;
 static PFN_vkGetDeviceQueue2 o_vkGetDeviceQueue2 = nullptr;
-static PFN_vkGetInstanceProcAddr o_vkGetInstanceProcAddr = nullptr;
-static PFN_vkGetDeviceProcAddr o_vkGetDeviceProcAddr = nullptr;
+// Non-static for IAT patching access from iat_hook.cpp
+PFN_vkGetInstanceProcAddr o_vkGetInstanceProcAddr = nullptr;
+PFN_vkGetDeviceProcAddr o_vkGetDeviceProcAddr = nullptr;
 
 static PFN_vkCreateImage o_vkCreateImage = nullptr;
 static PFN_vkCreateRenderPass o_vkCreateRenderPass = nullptr;
@@ -4801,6 +4802,15 @@ PFN_vkVoidFunction VKAPI_CALL Detour_vkGetDeviceProcAddr(VkDevice device,
     return (PFN_vkVoidFunction)Detour_vkGetDeviceProcAddr;
 
   return res;
+}
+
+// Exported versions of the detours for IAT patching access
+extern "C" PFN_vkVoidFunction VKAPI_CALL VK_DetourGetInstanceProcAddr(VkInstance instance, const char* pName) {
+    return Detour_vkGetInstanceProcAddr(instance, pName);
+}
+
+extern "C" PFN_vkVoidFunction VKAPI_CALL VK_DetourGetDeviceProcAddr(VkDevice device, const char* pName) {
+    return Detour_vkGetDeviceProcAddr(device, pName);
 }
 
 void VulkanHook::Init() {

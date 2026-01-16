@@ -10,6 +10,19 @@ Overlay g_SharedOverlay;
 static void FormatBytes(char* buf, size_t size, uint64_t bytes) {
     float gib = (float)bytes / (1024.0f * 1024.0f * 1024.0f);
     snprintf(buf, size, "%.1f GiB", gib);
+    snprintf(buf, size, "%.1f GiB", gib);
+}
+
+static const char* GetQualityString(int mode) {
+    switch (mode) {
+        case 0: return "Perf";
+        case 1: return "Bal";
+        case 2: return "Qual";
+        case 3: return "UltPerf";
+        case 4: return "UltQual";
+        case 5: return "DLAA";
+        default: return "";
+    }
 }
 
 void Overlay::InitImGui(void* hwnd) {
@@ -262,33 +275,65 @@ void Overlay::RenderUI() {
                RenderTextWithOutline(value, ScaleColor(valColor, hdrScale), cfg.textOutline, cfg.textOutlineColor, cfg.textOutlineThickness);
             };
 
-            char buf[64];
 
-            // GPU
-            if (cfg.showGPU) {
-                snprintf(buf, 64, "%.0f%%", cachedMetrics.gpuUsage);
-                ImU32 valCol = GetLoadColor(cachedMetrics.gpuUsage, cfg);
-                RenderRow("GPU", buf, cfg.gpuColor, valCol);
-            }
-            
-            // CPU
-            if (cfg.showCPU) {
-                snprintf(buf, 64, "%.0f%% (%.0f%%)", cachedMetrics.cpuUsage, cachedMetrics.cpuMaxCoreUsage);
-                ImU32 valCol = GetLoadColor(cachedMetrics.cpuUsage, cfg);
-                RenderRow("CPU", buf, cfg.cpuColor, valCol);
-            }
-            
-            // VRAM
-            if (cfg.showVRAM) {
-                FormatBytes(buf, 64, cachedMetrics.vramUsed);
-                RenderRow("VRAM", buf, cfg.vramColor, cfg.textColor);
-            }
-            
-            // RAM
-            if (cfg.showRAM) {
-                FormatBytes(buf, 64, cachedMetrics.ramUsed);
-                RenderRow("RAM", buf, cfg.ramColor, cfg.textColor);
-            }
+            auto RenderRowBytes = [&](const char* label, uint64_t used, uint64_t total, ImU32 labelColor, ImU32 valColor) {
+               ImGui::TableNextRow();
+               ImGui::TableSetColumnIndex(0);
+               RenderTextWithOutline(label, ScaleColor(labelColor, hdrScale), cfg.textOutline, cfg.textOutlineColor, cfg.textOutlineThickness);
+               ImGui::TableSetColumnIndex(1);
+               
+               // Render "4.50 GB"
+               char buf[32];
+               float gbUsed = (float)used / (1024.0f * 1024.0f * 1024.0f);
+               snprintf(buf, 32, "%.2f GB", gbUsed);
+               RenderTextWithOutline(buf, ScaleColor(valColor, hdrScale), cfg.textOutline, cfg.textOutlineColor, cfg.textOutlineThickness);
+               
+               // Render " of 16.00 GB" smaller
+               if (total == 0 && strstr(label, "RAM")) {
+                   // Fallback: Fetch RAM total directly if missing
+                   MEMORYSTATUSEX memLoc;
+                   memLoc.dwLength = sizeof(MEMORYSTATUSEX);
+                   if (GlobalMemoryStatusEx(&memLoc)) {
+                       total = memLoc.ullTotalPhys;
+                   }
+               }
+
+               if (total > 0) {
+                   ImGui::SameLine();
+                   ImGui::SetWindowFontScale(0.75f); // 75% size for total
+                   float gbTotal = (float)total / (1024.0f * 1024.0f * 1024.0f);
+                   snprintf(buf, 32, " of %.2f GB", gbTotal);
+                   // Use generic text color for the suffix
+                   RenderTextWithOutline(buf, ScaleColor(cfg.textColor, hdrScale), cfg.textOutline, cfg.textOutlineColor, cfg.textOutlineThickness);
+                   ImGui::SetWindowFontScale(1.0f);
+               }
+            };
+
+             char buf[64];
+
+             // GPU
+             if (cfg.showGPU) {
+                 snprintf(buf, 64, "%.0f%%", cachedMetrics.gpuUsage);
+                 ImU32 valCol = GetLoadColor(cachedMetrics.gpuUsage, cfg);
+                 RenderRow(SystemMetricsCollector::Get().GetGPUName(), buf, cfg.gpuColor, valCol);
+             }
+             
+             // CPU
+             if (cfg.showCPU) {
+                 snprintf(buf, 64, "%.0f%% (%.0f%%)", cachedMetrics.cpuUsage, cachedMetrics.cpuMaxCoreUsage);
+                 ImU32 valCol = GetLoadColor(cachedMetrics.cpuUsage, cfg);
+                 RenderRow(SystemMetricsCollector::Get().GetCPUName(), buf, cfg.cpuColor, valCol);
+             }
+             
+             // VRAM
+             if (cfg.showVRAM) {
+                 RenderRowBytes("VRAM", cachedMetrics.vramUsed, cachedMetrics.vramTotal, cfg.vramColor, cfg.textColor);
+             }
+             
+             // RAM
+             if (cfg.showRAM) {
+                 RenderRowBytes("RAM", cachedMetrics.ramUsed, cachedMetrics.ramTotal, cfg.ramColor, cfg.textColor);
+             }
 
             // FPS
             if (cfg.showFPS) {
@@ -302,30 +347,109 @@ void Overlay::RenderUI() {
                     RenderRow("Avg/1%/0.1%", buf, cfg.textColor, cfg.fpsColor);
                 }
                 
-                // FG Indicator - show DLSS 2xFG, FSR 2xFG, DLSS 3xMFG, DLSS 4xMFG when active
-                // Uses FPS-based heuristic: FG DLLs loaded + FPS > 100 = FG active
+                // DLSS / FG Status Line
+                // Shows: DLSS SR [Preset] [Scale]x | DLSS RR [Preset] | [FG Status] | v[Version]
+                
+                // 1. DLSS SR Status
+                auto& dlss = mem.dlssState;
+                bool showDlssLine = false;
+                std::string dlssText = "";
+                
+                if (dlss.srActive) {
+                    char srBuf[64];
+                    char preset = dlss.srPreset.load();
+                    float scale = dlss.renderScale.load();
+                    int qMode = dlss.qualityMode.load();
+                    const char* qStr = GetQualityString(qMode);
+                    
+                    char qBuf[16] = "";
+                    if (qStr[0]) snprintf(qBuf, 16, " %s", qStr);
+                    
+                    if (preset != '?') {
+                         if (qStr[0]) snprintf(srBuf, 64, "DLSS SR %c %s", preset, qStr);
+                         else snprintf(srBuf, 64, "DLSS SR %c %.1fx", preset, scale); // Fallback to scale if Q unknown
+                    } else {
+                        // If preset unknown (common without NvApi), show Quality/Scale if possible or just "DLSS SR"
+                        if (qStr[0]) snprintf(srBuf, 64, "DLSS SR %s", qStr);
+                        else snprintf(srBuf, 64, "DLSS SR %.1fx", scale);
+                    }
+                    dlssText += srBuf;
+                    showDlssLine = true;
+                }
+                
+                // 2. DLSS RR Status
+                if (dlss.rrActive) {
+                    if (!dlssText.empty()) dlssText += " | ";
+                    char rrBuf[32];
+                    char preset = dlss.rrPreset.load();
+                     if (preset != '?') {
+                         snprintf(rrBuf, 32, "RR %c", preset);
+                    } else {
+                        snprintf(rrBuf, 32, "RR On");
+                    }
+                    dlssText += rrBuf;
+                    showDlssLine = true;
+                }
+
+                // 3. FG Status (Integrated)
+                // Reuse existing FG logic but ensure string is separated
                 extern FGCompatibility g_FGCompat;
                 auto fgType = g_FGCompat.DetectLoadedFGRuntime();
-                if (cfg.showFG && fgType != FGCompatibility::FGType::None && g_FGCompat.IsFGActive()) {
-                    int mult = g_FGCompat.GetFGMultiplier();
-                    if (mult < 2) mult = 2; // FG is at least 2x
-                    
-                    switch (fgType) {
+                bool fgActive = g_FGCompat.IsFGActive();
+                
+                // Also check our captured state from NVNGX
+                if (dlss.fgActive.load()) fgActive = true; 
+
+                if (cfg.showFG && (fgType != FGCompatibility::FGType::None || fgActive)) {
+                     int mult = g_FGCompat.GetFGMultiplier();
+                     if (mult < 2) mult = 2; // FG implies at least 2x
+                     
+                     char fgBuf[32];
+                     switch (fgType) {
                         case FGCompatibility::FGType::DLSS_FG: 
-                            snprintf(buf, 64, "DLSS %dxFG", mult);
+                            snprintf(fgBuf, 32, "FG %dx", mult);
                             break;
                         case FGCompatibility::FGType::FSR_FG: 
-                            snprintf(buf, 64, "FSR %dxFG", mult);
+                            snprintf(fgBuf, 32, "FSR FG %dx", mult);
                             break;
                         case FGCompatibility::FGType::DLSS_MSFG: 
-                            snprintf(buf, 64, "DLSS %dxMFG", mult);
+                            snprintf(fgBuf, 32, "MSFG %dx", mult);
                             break;
                         default: 
-                            snprintf(buf, 64, "FG %dx", mult);
+                            snprintf(fgBuf, 32, "FG %dx", mult);
                             break;
                     }
-                    // Render FG indicator with cyan color
-                    RenderRow("FG", buf, IM_COL32(100, 200, 255, 255), IM_COL32(100, 200, 255, 255));
+                    
+                    if (!dlssText.empty()) dlssText += " | ";
+                    dlssText += fgBuf;
+                    showDlssLine = true;
+                }
+                
+                // 4. Version display REMOVED as per user request
+
+                if (showDlssLine) {
+                     // Render the unified line
+                     // Use a distinct color (Cyan-ish)
+                     ImU32 dlssColor = IM_COL32(100, 220, 255, 255);
+                     
+                     // Reset to first column to span or use custom logic
+                     // The HudTable has 2 columns. We can use TableHeader or span.
+                     // Or just put it in the "Label" column and let it overflow? No.
+                     // Better: "DLSS" as label, Rest as value.
+                     
+                     // If text is long, might need spanning.
+                     // Let's try: Label="DLSS", Value="SR 1.5x | FG 2x | v3.7.0"
+                     // If SR not active but FG is: Label="FG", Value="DLSS 2xFG ..."
+                     
+                     const char* label = "DLSS";
+                     if (!dlss.srActive && fgActive) label = "FG";
+                     
+                     static int reportLog = 0;
+                     if (reportLog++ % 120 == 0) {
+                         HookLog("OVERLAY REPORT: Label='%s' Text='%s'", label, dlssText.c_str());
+                     }
+
+                     RenderRow(label, dlssText.c_str(), dlssColor, dlssColor);
                 }
             }
             

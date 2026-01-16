@@ -1,0 +1,526 @@
+/**
+ * IAT (Import Address Table) Patching Implementation
+ * 
+ * Provides MinHook-free API hooking by modifying import tables.
+ */
+
+#include "iat_hook.h"
+#include "wrapper_hooks.h"
+#include "hook_common.h"
+#include "../apis/dx11_hook.h"
+// Note: vulkan_hook.h not included - Vulkan hooks are now in VK_LAYER_CE_overlay
+#include <tlhelp32.h>
+#include <psapi.h>
+#include <mutex>
+#include <unordered_map>
+
+#pragma comment(lib, "psapi.lib")
+
+namespace IATHook {
+
+// Track patched entries for restoration
+struct PatchedEntry {
+    HMODULE targetModule;
+    std::string sourceModule;
+    std::string functionName;
+    void* hookFunction;
+    void* originalFunction;
+    void** iatEntry;
+};
+
+static std::mutex g_PatchLock;
+static std::vector<PatchedEntry> g_PatchedEntries;
+static bool g_Initialized = false;
+
+// ============================================================================
+// PE Parsing Helpers
+// ============================================================================
+
+static IMAGE_IMPORT_DESCRIPTOR* GetImportDescriptor(HMODULE module) {
+    auto dosHeader = reinterpret_cast<IMAGE_DOS_HEADER*>(module);
+    if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE) return nullptr;
+    
+    auto ntHeaders = reinterpret_cast<IMAGE_NT_HEADERS*>(
+        reinterpret_cast<BYTE*>(module) + dosHeader->e_lfanew);
+    if (ntHeaders->Signature != IMAGE_NT_SIGNATURE) return nullptr;
+    
+    auto importDir = &ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    if (importDir->VirtualAddress == 0) return nullptr;
+    
+    return reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(
+        reinterpret_cast<BYTE*>(module) + importDir->VirtualAddress);
+}
+
+static IMAGE_EXPORT_DIRECTORY* GetExportDirectory(HMODULE module, DWORD* exportSize = nullptr) {
+    auto dosHeader = reinterpret_cast<IMAGE_DOS_HEADER*>(module);
+    if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE) return nullptr;
+    
+    auto ntHeaders = reinterpret_cast<IMAGE_NT_HEADERS*>(
+        reinterpret_cast<BYTE*>(module) + dosHeader->e_lfanew);
+    if (ntHeaders->Signature != IMAGE_NT_SIGNATURE) return nullptr;
+    
+    auto exportDir = &ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (exportDir->VirtualAddress == 0) return nullptr;
+    
+    if (exportSize) *exportSize = exportDir->Size;
+    
+    return reinterpret_cast<IMAGE_EXPORT_DIRECTORY*>(
+        reinterpret_cast<BYTE*>(module) + exportDir->VirtualAddress);
+}
+
+// ============================================================================
+// Core IAT Patching
+// ============================================================================
+
+bool PatchIAT(
+    HMODULE targetModule,
+    const char* sourceModule,
+    const char* functionName,
+    void* hookFunction,
+    void** outOriginal)
+{
+    if (!targetModule) targetModule = GetModuleHandle(nullptr);
+    if (!sourceModule || !functionName || !hookFunction) return false;
+    
+    auto importDesc = GetImportDescriptor(targetModule);
+    if (!importDesc) return false;
+    
+    // Find the import descriptor for the source module
+    while (importDesc->Name != 0) {
+        auto moduleName = reinterpret_cast<const char*>(
+            reinterpret_cast<BYTE*>(targetModule) + importDesc->Name);
+        
+        if (_stricmp(moduleName, sourceModule) == 0) {
+            // Found the module - now find the function
+            auto thunkData = reinterpret_cast<IMAGE_THUNK_DATA*>(
+                reinterpret_cast<BYTE*>(targetModule) + importDesc->OriginalFirstThunk);
+            auto iatEntry = reinterpret_cast<IMAGE_THUNK_DATA*>(
+                reinterpret_cast<BYTE*>(targetModule) + importDesc->FirstThunk);
+            
+            while (thunkData->u1.AddressOfData != 0) {
+                if (!(thunkData->u1.Ordinal & IMAGE_ORDINAL_FLAG)) {
+                    auto importByName = reinterpret_cast<IMAGE_IMPORT_BY_NAME*>(
+                        reinterpret_cast<BYTE*>(targetModule) + thunkData->u1.AddressOfData);
+                    
+                    if (strcmp(importByName->Name, functionName) == 0) {
+                        // Found the function - patch the IAT entry
+                        DWORD oldProtect;
+                        if (VirtualProtect(&iatEntry->u1.Function, sizeof(void*), 
+                                           PAGE_READWRITE, &oldProtect)) {
+                            
+                            // Save original
+                            if (outOriginal) {
+                                *outOriginal = reinterpret_cast<void*>(iatEntry->u1.Function);
+                            }
+                            
+                            // Patch
+                            iatEntry->u1.Function = reinterpret_cast<ULONG_PTR>(hookFunction);
+                            
+                            VirtualProtect(&iatEntry->u1.Function, sizeof(void*), 
+                                          oldProtect, &oldProtect);
+                            
+                            // Track for restoration
+                            std::lock_guard<std::mutex> lock(g_PatchLock);
+                            g_PatchedEntries.push_back({
+                                targetModule,
+                                sourceModule,
+                                functionName,
+                                hookFunction,
+                                outOriginal ? *outOriginal : nullptr,
+                                reinterpret_cast<void**>(&iatEntry->u1.Function)
+                            });
+                            
+                            WrapperLog("IAT: Patched %s!%s in module %p", 
+                                       sourceModule, functionName, targetModule);
+                            return true;
+                        }
+                    }
+                }
+                ++thunkData;
+                ++iatEntry;
+            }
+        }
+        ++importDesc;
+    }
+    
+    return false;
+}
+
+bool PatchIATAllModules(
+    const char* sourceModule,
+    const char* functionName,
+    void* hookFunction,
+    void** outOriginal)
+{
+    bool anyPatched = false;
+    
+    // Get list of all loaded modules
+    HMODULE modules[1024];
+    DWORD needed;
+    if (EnumProcessModules(GetCurrentProcess(), modules, sizeof(modules), &needed)) {
+        int count = needed / sizeof(HMODULE);
+        
+        for (int i = 0; i < count; ++i) {
+            void* orig = nullptr;
+            if (PatchIAT(modules[i], sourceModule, functionName, hookFunction, &orig)) {
+                if (outOriginal && !*outOriginal) {
+                    *outOriginal = orig;
+                }
+                anyPatched = true;
+            }
+        }
+    }
+    
+    // Also patch main exe
+    if (!anyPatched) {
+        anyPatched = PatchIAT(nullptr, sourceModule, functionName, hookFunction, outOriginal);
+    }
+    
+    return anyPatched;
+}
+
+bool RestoreIAT(
+    HMODULE targetModule,
+    const char* sourceModule,
+    const char* functionName,
+    void* originalFunction)
+{
+    std::lock_guard<std::mutex> lock(g_PatchLock);
+    
+    for (auto it = g_PatchedEntries.begin(); it != g_PatchedEntries.end(); ++it) {
+        if (it->targetModule == targetModule &&
+            _stricmp(it->sourceModule.c_str(), sourceModule) == 0 &&
+            it->functionName == functionName) {
+            
+            DWORD oldProtect;
+            if (VirtualProtect(it->iatEntry, sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+                *it->iatEntry = originalFunction ? originalFunction : it->originalFunction;
+                VirtualProtect(it->iatEntry, sizeof(void*), oldProtect, &oldProtect);
+                
+                g_PatchedEntries.erase(it);
+                return true;
+            }
+            break;
+        }
+    }
+    
+    return false;
+}
+
+// ============================================================================
+// EAT Patching (for hooking exports)
+// ============================================================================
+
+bool PatchEAT(
+    HMODULE exportingModule,
+    const char* functionName,
+    void* hookFunction,
+    void** outOriginal)
+{
+    DWORD exportSize = 0;
+    auto exportDir = GetExportDirectory(exportingModule, &exportSize);
+    if (!exportDir) return false;
+    
+    auto names = reinterpret_cast<DWORD*>(
+        reinterpret_cast<BYTE*>(exportingModule) + exportDir->AddressOfNames);
+    auto ordinals = reinterpret_cast<WORD*>(
+        reinterpret_cast<BYTE*>(exportingModule) + exportDir->AddressOfNameOrdinals);
+    auto functions = reinterpret_cast<DWORD*>(
+        reinterpret_cast<BYTE*>(exportingModule) + exportDir->AddressOfFunctions);
+    
+    for (DWORD i = 0; i < exportDir->NumberOfNames; ++i) {
+        auto name = reinterpret_cast<const char*>(
+            reinterpret_cast<BYTE*>(exportingModule) + names[i]);
+        
+        if (strcmp(name, functionName) == 0) {
+            DWORD funcRVA = functions[ordinals[i]];
+            
+            // Save original
+            if (outOriginal) {
+                *outOriginal = reinterpret_cast<void*>(
+                    reinterpret_cast<BYTE*>(exportingModule) + funcRVA);
+            }
+            
+            // Calculate new RVA
+            DWORD newRVA = static_cast<DWORD>(
+                reinterpret_cast<BYTE*>(hookFunction) - 
+                reinterpret_cast<BYTE*>(exportingModule));
+            
+            DWORD oldProtect;
+            if (VirtualProtect(&functions[ordinals[i]], sizeof(DWORD), 
+                              PAGE_READWRITE, &oldProtect)) {
+                functions[ordinals[i]] = newRVA;
+                VirtualProtect(&functions[ordinals[i]], sizeof(DWORD), 
+                              oldProtect, &oldProtect);
+                
+                WrapperLog("EAT: Patched %s", functionName);
+                return true;
+            }
+            break;
+        }
+    }
+    
+    return false;
+}
+
+// ============================================================================
+// DXGI/D3D Hook Initialization
+// ============================================================================
+
+} // namespace IATHook
+
+// Forward declarations for wrapped functions (from wrapper_hooks.cpp)
+// These are in global namespace, not IATHook namespace
+extern HRESULT WINAPI Wrapped_CreateDXGIFactory(REFIID riid, void** ppFactory);
+extern HRESULT WINAPI Wrapped_CreateDXGIFactory1(REFIID riid, void** ppFactory);
+extern HRESULT WINAPI Wrapped_CreateDXGIFactory2(UINT Flags, REFIID riid, void** ppFactory);
+
+#ifdef ENABLE_D3D12_WRAPPER
+extern HRESULT WINAPI Wrapped_D3D12CreateDevice(
+    IUnknown* pAdapter, D3D_FEATURE_LEVEL MinimumFeatureLevel,
+    REFIID riid, void** ppDevice);
+#endif
+
+// Original function pointers (defined in wrapper_hooks.cpp)
+extern PFN_CreateDXGIFactory  oCreateDXGIFactory;
+extern PFN_CreateDXGIFactory1 oCreateDXGIFactory1;
+extern PFN_CreateDXGIFactory2 oCreateDXGIFactory2;
+#ifdef ENABLE_D3D12_WRAPPER
+extern PFN_D3D12CreateDevice  oD3D12CreateDevice;
+#endif
+
+namespace IATHook {
+
+bool InitializeDXGIHooks() {
+    WrapperLog("IAT: Initializing DXGI hooks...");
+    bool success = true;
+    
+    // Get dxgi.dll - if not loaded, we'll hook when it loads
+    HMODULE hDXGI = GetModuleHandleA("dxgi.dll");
+    if (!hDXGI) {
+        hDXGI = LoadLibraryA("dxgi.dll");
+    }
+    
+    if (hDXGI) {
+        // Get original functions from dxgi.dll
+        oCreateDXGIFactory = reinterpret_cast<PFN_CreateDXGIFactory>(
+            GetProcAddress(hDXGI, "CreateDXGIFactory"));
+        oCreateDXGIFactory1 = reinterpret_cast<PFN_CreateDXGIFactory1>(
+            GetProcAddress(hDXGI, "CreateDXGIFactory1"));
+        oCreateDXGIFactory2 = reinterpret_cast<PFN_CreateDXGIFactory2>(
+            GetProcAddress(hDXGI, "CreateDXGIFactory2"));
+        
+        // Patch IAT in all modules
+        void* dummy;
+        if (!PatchIATAllModules("dxgi.dll", "CreateDXGIFactory", 
+                                 (void*)Wrapped_CreateDXGIFactory, &dummy)) {
+            WrapperLog("IAT: CreateDXGIFactory not found in IAT (may not be imported)");
+        }
+        
+        if (!PatchIATAllModules("dxgi.dll", "CreateDXGIFactory1",
+                                 (void*)Wrapped_CreateDXGIFactory1, &dummy)) {
+            WrapperLog("IAT: CreateDXGIFactory1 not found in IAT");
+        }
+        
+        if (!PatchIATAllModules("dxgi.dll", "CreateDXGIFactory2",
+                                 (void*)Wrapped_CreateDXGIFactory2, &dummy)) {
+            WrapperLog("IAT: CreateDXGIFactory2 not found in IAT");
+        }
+        
+        WrapperLog("IAT: DXGI hooks initialized");
+    } else {
+        WrapperLog("IAT: dxgi.dll not loaded");
+        success = false;
+    }
+    
+    return success;
+}
+
+bool InitializeD3D12Hooks() {
+#ifdef ENABLE_D3D12_WRAPPER
+    WrapperLog("IAT: Initializing D3D12 hooks...");
+    
+    HMODULE hD3D12 = GetModuleHandleA("d3d12.dll");
+    if (!hD3D12) {
+        hD3D12 = LoadLibraryA("d3d12.dll");
+    }
+    
+    if (hD3D12) {
+        oD3D12CreateDevice = reinterpret_cast<PFN_D3D12CreateDevice>(
+            GetProcAddress(hD3D12, "D3D12CreateDevice"));
+        
+        void* dummy;
+        if (!PatchIATAllModules("d3d12.dll", "D3D12CreateDevice",
+                                 (void*)Wrapped_D3D12CreateDevice, &dummy)) {
+            WrapperLog("IAT: D3D12CreateDevice not found in IAT");
+        }
+        
+        WrapperLog("IAT: D3D12 hooks initialized");
+        return true;
+    }
+    
+    WrapperLog("IAT: d3d12.dll not loaded");
+#endif
+    return false;
+}
+
+bool InitializeD3D11Hooks() {
+    WrapperLog("IAT: Initializing D3D11 hooks...");
+    
+    HMODULE hD3D11 = GetModuleHandleA("d3d11.dll");
+    if (!hD3D11) {
+        hD3D11 = LoadLibraryA("d3d11.dll");
+    }
+    
+    if (hD3D11) {
+        // Get original D3D11CreateDeviceAndSwapChain
+        // oD3D11CreateDeviceAndSwapChain and DX11_DetourCreateDeviceAndSwapChain are declared in dx11_hook.h
+        
+        ::oD3D11CreateDeviceAndSwapChain = reinterpret_cast<PFN_D3D11CreateDeviceAndSwapChain>(
+            GetProcAddress(hD3D11, "D3D11CreateDeviceAndSwapChain"));
+        
+        void* dummy;
+        if (PatchIATAllModules("d3d11.dll", "D3D11CreateDeviceAndSwapChain",
+                               (void*)::DX11_DetourCreateDeviceAndSwapChain, &dummy)) {
+            WrapperLog("IAT: Patched D3D11CreateDeviceAndSwapChain");
+        } else {
+            WrapperLog("IAT: D3D11CreateDeviceAndSwapChain not found in IAT");
+        }
+        
+        WrapperLog("IAT: D3D11 hooks initialized");
+        return true;
+    }
+    
+    return false;
+}
+
+bool InitializeD3D9Hooks() {
+    WrapperLog("IAT: Initializing D3D9 hooks...");
+    
+    HMODULE hD3D9 = GetModuleHandleA("d3d9.dll");
+    if (!hD3D9) {
+        hD3D9 = LoadLibraryA("d3d9.dll");
+    }
+    
+    if (hD3D9) {
+        // D3D9 hooks - external declarations needed
+        WrapperLog("IAT: D3D9 hooks initialized");
+        return true;
+    }
+    
+    return false;
+}
+
+// Note: InitializeVulkanHooks removed - Vulkan is now handled by VK_LAYER_CE_overlay
+// The Vulkan layer approach provides better compatibility and doesn't require IAT patching
+
+bool InitializeKernel32Hooks(
+    void* LoadLibraryAHook, void** pOriginalLoadLibraryA,
+    void* LoadLibraryWHook, void** pOriginalLoadLibraryW,
+    void* LoadLibraryExAHook, void** pOriginalLoadLibraryExA,
+    void* LoadLibraryExWHook, void** pOriginalLoadLibraryExW,
+    void* CreateProcessAHook, void** pOriginalCreateProcessA,
+    void* CreateProcessWHook, void** pOriginalCreateProcessW)
+{
+    WrapperLog("IAT: Initializing kernel32 hooks...");
+    
+    HMODULE hKernel32 = GetModuleHandleA("kernel32.dll");
+    if (!hKernel32) {
+        WrapperLog("IAT: kernel32.dll not loaded (unexpected!)");
+        return false;
+    }
+    
+    bool success = true;
+    
+    // Get original function addresses
+    if (pOriginalLoadLibraryA) {
+        *pOriginalLoadLibraryA = (void*)GetProcAddress(hKernel32, "LoadLibraryA");
+    }
+    if (pOriginalLoadLibraryW) {
+        *pOriginalLoadLibraryW = (void*)GetProcAddress(hKernel32, "LoadLibraryW");
+    }
+    if (pOriginalLoadLibraryExA) {
+        *pOriginalLoadLibraryExA = (void*)GetProcAddress(hKernel32, "LoadLibraryExA");
+    }
+    if (pOriginalLoadLibraryExW) {
+        *pOriginalLoadLibraryExW = (void*)GetProcAddress(hKernel32, "LoadLibraryExW");
+    }
+    if (pOriginalCreateProcessA) {
+        *pOriginalCreateProcessA = (void*)GetProcAddress(hKernel32, "CreateProcessA");
+    }
+    if (pOriginalCreateProcessW) {
+        *pOriginalCreateProcessW = (void*)GetProcAddress(hKernel32, "CreateProcessW");
+    }
+    
+    // Patch LoadLibrary* in all modules
+    void* dummy;
+    if (LoadLibraryAHook) {
+        PatchIATAllModules("kernel32.dll", "LoadLibraryA", LoadLibraryAHook, &dummy);
+    }
+    if (LoadLibraryWHook) {
+        PatchIATAllModules("kernel32.dll", "LoadLibraryW", LoadLibraryWHook, &dummy);
+    }
+    if (LoadLibraryExAHook) {
+        PatchIATAllModules("kernel32.dll", "LoadLibraryExA", LoadLibraryExAHook, &dummy);
+    }
+    if (LoadLibraryExWHook) {
+        PatchIATAllModules("kernel32.dll", "LoadLibraryExW", LoadLibraryExWHook, &dummy);
+    }
+    
+    // Patch CreateProcess* in all modules
+    if (CreateProcessAHook) {
+        PatchIATAllModules("kernel32.dll", "CreateProcessA", CreateProcessAHook, &dummy);
+    }
+    if (CreateProcessWHook) {
+        PatchIATAllModules("kernel32.dll", "CreateProcessW", CreateProcessWHook, &dummy);
+    }
+    
+    WrapperLog("IAT: kernel32 hooks initialized");
+    return success;
+}
+
+bool InitializeAdvapi32Hooks(
+    void* RegQueryValueExWHook, void** pOriginalRegQueryValueExW)
+{
+    WrapperLog("IAT: Initializing advapi32 hooks...");
+    
+    HMODULE hAdvapi32 = GetModuleHandleA("advapi32.dll");
+    if (!hAdvapi32) {
+        WrapperLog("IAT: advapi32.dll not loaded");
+        return false;
+    }
+    
+    // Get original function address
+    if (pOriginalRegQueryValueExW) {
+        *pOriginalRegQueryValueExW = (void*)GetProcAddress(hAdvapi32, "RegQueryValueExW");
+    }
+    
+    // Patch in all modules
+    void* dummy;
+    if (RegQueryValueExWHook) {
+        PatchIATAllModules("advapi32.dll", "RegQueryValueExW", RegQueryValueExWHook, &dummy);
+    }
+    
+    WrapperLog("IAT: advapi32 hooks initialized");
+    return true;
+}
+
+void ShutdownIATHooks() {
+    std::lock_guard<std::mutex> lock(g_PatchLock);
+    
+    // Restore all patched entries
+    for (auto& entry : g_PatchedEntries) {
+        DWORD oldProtect;
+        if (VirtualProtect(entry.iatEntry, sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+            *entry.iatEntry = entry.originalFunction;
+            VirtualProtect(entry.iatEntry, sizeof(void*), oldProtect, &oldProtect);
+        }
+    }
+    
+    g_PatchedEntries.clear();
+    g_Initialized = false;
+    
+    WrapperLog("IAT: All hooks restored");
+}
+
+} // namespace IATHook

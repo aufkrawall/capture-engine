@@ -8,7 +8,7 @@
 #include "../../common/frame_timing.h"
 #include "performance_metrics.h"
 #include "dx12_hook.h"
-#include <MinHook.h>
+#include <../wrappers/minhook_shim.h>
 #include <backends/imgui_impl_dx11.h>
 #include <backends/imgui_impl_dx10.h>
 #include <backends/imgui_impl_win32.h>
@@ -122,10 +122,10 @@ static std::shared_mutex g_SamplerCacheMutex10;
 static ID3D10Device* g_CachedD3D10Device = nullptr;
 static std::unordered_set<ID3D10SamplerState*> g_ReplacementSamplers10; // Prevent recursive replacements
 
-typedef HRESULT(WINAPI *D3D11CreateDeviceAndSwapChain_t)(
-    IDXGIAdapter *, D3D_DRIVER_TYPE, HMODULE, UINT, const D3D_FEATURE_LEVEL *,
-    UINT, UINT, const DXGI_SWAP_CHAIN_DESC *, IDXGISwapChain **,
-    ID3D11Device **, D3D_FEATURE_LEVEL *, ID3D11DeviceContext **);
+// Use typedef from dx11_hook.h
+// typedef HRESULT(WINAPI *D3D11CreateDeviceAndSwapChain_t)(...);
+// Global original function pointer - set by IAT patching
+PFN_D3D11CreateDeviceAndSwapChain oD3D11CreateDeviceAndSwapChain = NULL;
 
 typedef HRESULT(STDMETHODCALLTYPE *CreateSwapChain_t)(IDXGIFactory *, IUnknown *, DXGI_SWAP_CHAIN_DESC *, IDXGISwapChain **);
 static CreateSwapChain_t oCreateSwapChain = NULL;
@@ -142,7 +142,7 @@ static HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain *pSwapChain,
 static void InstallVTableHooks(ID3D11Device *pDevice, ID3D11DeviceContext* pContext, IDXGISwapChain* pSwapChain);
 static void HookDXGIFactory(IUnknown* pDevice);
 
-static D3D11CreateDeviceAndSwapChain_t oD3D11CreateDeviceAndSwapChain = NULL;
+// Original function pointer is now global (above) for IAT patching access
 
 typedef HRESULT(WINAPI *D3D10CreateDeviceAndSwapChain_t)(
     IDXGIAdapter*, D3D10_DRIVER_TYPE, HMODULE, UINT, UINT, DXGI_SWAP_CHAIN_DESC*,
@@ -270,6 +270,18 @@ static HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(
     }
     
     return hr;
+}
+
+// Exported version of the detour for IAT patching access
+HRESULT WINAPI DX11_DetourCreateDeviceAndSwapChain(
+    IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE DriverType, HMODULE Software,
+    UINT Flags, const D3D_FEATURE_LEVEL* pFeatureLevels, UINT FeatureLevels,
+    UINT SDKVersion, const DXGI_SWAP_CHAIN_DESC* pSwapChainDesc,
+    IDXGISwapChain** ppSwapChain, ID3D11Device** ppDevice,
+    D3D_FEATURE_LEVEL* pFeatureLevel, ID3D11DeviceContext** ppImmediateContext) {
+    return DetourD3D11CreateDeviceAndSwapChain(
+        pAdapter, DriverType, Software, Flags, pFeatureLevels, FeatureLevels,
+        SDKVersion, pSwapChainDesc, ppSwapChain, ppDevice, pFeatureLevel, ppImmediateContext);
 }
 
 static HRESULT WINAPI DetourD3D10CreateDeviceAndSwapChain(
@@ -499,7 +511,7 @@ static void HookDXGIFactoryInstance(IUnknown* factory) {
         
         // Hook CreateSwapChain (Index 10)
         if (oCreateSwapChain == NULL) {
-            if (MH_CreateHook(vtable[10], (LPVOID)&DetourCreateSwapChain, (LPVOID*)&oCreateSwapChain) == MH_OK) {
+            if (MH_CreateHook(&vtable[10], (LPVOID)&DetourCreateSwapChain, (LPVOID*)&oCreateSwapChain) == MH_OK) {
                 MH_EnableHook(vtable[10]);
                 HookLog("DX11: Hooked IDXGIFactory::CreateSwapChain");
             }
@@ -510,7 +522,7 @@ static void HookDXGIFactoryInstance(IUnknown* factory) {
         if (SUCCEEDED(pFactory->QueryInterface(__uuidof(IDXGIFactory2), (void**)&factory2))) {
             void** vtable2 = *(void***)factory2;
             if (oCreateSwapChainForHwnd == NULL) {
-                 if (MH_CreateHook(vtable2[15], (LPVOID)&DetourCreateSwapChainForHwnd, (LPVOID*)&oCreateSwapChainForHwnd) == MH_OK) {
+                 if (MH_CreateHook(&vtable2[15], (LPVOID)&DetourCreateSwapChainForHwnd, (LPVOID*)&oCreateSwapChainForHwnd) == MH_OK) {
                     MH_EnableHook(vtable2[15]);
                     HookLog("DX11: Hooked IDXGIFactory2::CreateSwapChainForHwnd");
                 }
@@ -555,7 +567,7 @@ static void InstallVTableHooks(ID3D11Device *pDevice, ID3D11DeviceContext* pCont
         void **pDeviceVTable = *(void ***)pDevice;
         if (oCreateSamplerState == NULL) {
             // Index 23 is CreateSamplerState for D3D11
-            if (MH_CreateHook(pDeviceVTable[23], (LPVOID)&DetourCreateSamplerState,
+            if (MH_CreateHook(&pDeviceVTable[23], (LPVOID)&DetourCreateSamplerState,
                               (LPVOID *)&oCreateSamplerState) == MH_OK) {
                 MH_EnableHook(pDeviceVTable[23]);
                 HookLog("DX11: CreateSamplerState hook installed");
@@ -574,7 +586,7 @@ static void InstallVTableHooks(ID3D11Device *pDevice, ID3D11DeviceContext* pCont
             // CreateSamplerState (Index 87)
             if (oCreateSamplerState10 == NULL) {
                 HookLog("DX10: Got D3D10 device from swapchain, hooking CreateSamplerState...");
-                MH_STATUS status = MH_CreateHook(pDeviceVTable[87], (LPVOID)&DetourCreateSamplerState10,
+                MH_STATUS status = MH_CreateHook(&pDeviceVTable[87], (LPVOID)&DetourCreateSamplerState10,
                                   (LPVOID *)&oCreateSamplerState10);
                 if (status == MH_OK) {
                     MH_EnableHook(pDeviceVTable[87]);
@@ -586,7 +598,7 @@ static void InstallVTableHooks(ID3D11Device *pDevice, ID3D11DeviceContext* pCont
             
             // PSSetSamplers (Index 6)
             if (oPSSetSamplers10 == NULL) {
-                MH_STATUS status = MH_CreateHook(pDeviceVTable[6], (LPVOID)&DetourPSSetSamplers10,
+                MH_STATUS status = MH_CreateHook(&pDeviceVTable[6], (LPVOID)&DetourPSSetSamplers10,
                                   (LPVOID *)&oPSSetSamplers10);
                 if (status == MH_OK) {
                     MH_EnableHook(pDeviceVTable[6]);
@@ -596,7 +608,7 @@ static void InstallVTableHooks(ID3D11Device *pDevice, ID3D11DeviceContext* pCont
             
             // VSSetSamplers (Index 20)
             if (oVSSetSamplers10 == NULL) {
-                MH_STATUS status = MH_CreateHook(pDeviceVTable[20], (LPVOID)&DetourVSSetSamplers10,
+                MH_STATUS status = MH_CreateHook(&pDeviceVTable[20], (LPVOID)&DetourVSSetSamplers10,
                                   (LPVOID *)&oVSSetSamplers10);
                 if (status == MH_OK) {
                     MH_EnableHook(pDeviceVTable[20]);
@@ -606,7 +618,7 @@ static void InstallVTableHooks(ID3D11Device *pDevice, ID3D11DeviceContext* pCont
             
             // GSSetSamplers (Index 23)
             if (oGSSetSamplers10 == NULL) {
-                MH_STATUS status = MH_CreateHook(pDeviceVTable[23], (LPVOID)&DetourGSSetSamplers10,
+                MH_STATUS status = MH_CreateHook(&pDeviceVTable[23], (LPVOID)&DetourGSSetSamplers10,
                                   (LPVOID *)&oGSSetSamplers10);
                 if (status == MH_OK) {
                     MH_EnableHook(pDeviceVTable[23]);
@@ -623,7 +635,7 @@ static void InstallVTableHooks(ID3D11Device *pDevice, ID3D11DeviceContext* pCont
         
         // Present (Index 8)
         if (oPresent == NULL) {
-            if (MH_CreateHook(pSwapChainVTable[8], (LPVOID)&DetourDX11Present,
+            if (MH_CreateHook(&pSwapChainVTable[8], (LPVOID)&DetourDX11Present,
                               (LPVOID *)&oPresent) == MH_OK) {
                 MH_EnableHook(pSwapChainVTable[8]);
                 HookLog("DX11: Present hook installed");
@@ -632,7 +644,7 @@ static void InstallVTableHooks(ID3D11Device *pDevice, ID3D11DeviceContext* pCont
 
         // ResizeBuffers (Index 13)
         if (oResizeBuffers == NULL) {
-            if (MH_CreateHook(pSwapChainVTable[13], (LPVOID)&DetourResizeBuffers,
+            if (MH_CreateHook(&pSwapChainVTable[13], (LPVOID)&DetourResizeBuffers,
                               (LPVOID *)&oResizeBuffers) == MH_OK) {
                 MH_EnableHook(pSwapChainVTable[13]);
                 HookLog("DX11: ResizeBuffers hook installed");
@@ -644,7 +656,7 @@ static void InstallVTableHooks(ID3D11Device *pDevice, ID3D11DeviceContext* pCont
              IDXGISwapChain1* sc1 = nullptr;
              if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc1)))) {
                  void **pSC1VTable = *(void ***)sc1;
-                 if (MH_CreateHook(pSC1VTable[22], (LPVOID)&DetourDX11Present1,
+                 if (MH_CreateHook(&pSC1VTable[22], (LPVOID)&DetourDX11Present1,
                                    (LPVOID *)&oPresent1) == MH_OK) {
                     MH_EnableHook(pSC1VTable[22]);
                     HookLog("DX11: Present1 hook installed");
@@ -2268,21 +2280,21 @@ static void InstallRuntimeD3D10Hooks(ID3D10Device* pDevice) {
     MH_STATUS status;
 
     // PSSetSamplers (Index 6)
-    status = MH_CreateHook(pVTable[6], (LPVOID)&DetourPSSetSamplers10, (LPVOID *)&oPSSetSamplers10);
+    status = MH_CreateHook(&pVTable[6], (LPVOID)&DetourPSSetSamplers10, (LPVOID *)&oPSSetSamplers10);
     if (status == MH_OK || status == MH_ERROR_ALREADY_CREATED) {
         MH_EnableHook(pVTable[6]);
         if (status == MH_OK) HookLog("DX10: Runtime PSSetSamplers hook installed");
     }
 
     // VSSetSamplers (Index 20)
-    status = MH_CreateHook(pVTable[20], (LPVOID)&DetourVSSetSamplers10, (LPVOID *)&oVSSetSamplers10);
+    status = MH_CreateHook(&pVTable[20], (LPVOID)&DetourVSSetSamplers10, (LPVOID *)&oVSSetSamplers10);
     if (status == MH_OK || status == MH_ERROR_ALREADY_CREATED) {
         MH_EnableHook(pVTable[20]);
         if (status == MH_OK) HookLog("DX10: Runtime VSSetSamplers hook installed");
     }
 
     // GSSetSamplers (Index 23)
-    status = MH_CreateHook(pVTable[23], (LPVOID)&DetourGSSetSamplers10, (LPVOID *)&oGSSetSamplers10);
+    status = MH_CreateHook(&pVTable[23], (LPVOID)&DetourGSSetSamplers10, (LPVOID *)&oGSSetSamplers10);
     if (status == MH_OK || status == MH_ERROR_ALREADY_CREATED) {
         MH_EnableHook(pVTable[23]);
         if (status == MH_OK) HookLog("DX10: Runtime GSSetSamplers hook installed");
@@ -2293,17 +2305,13 @@ static void InstallRuntimeD3D10Hooks(ID3D10Device* pDevice) {
 void DX11Hook::Init() {
   HookLog("DX11Hook::Init()");
 
-  // 1. Hook D3D11 primary entry point
+  // D3D11CreateDeviceAndSwapChain hook is now handled by IAT patching in iat_hook.cpp
+  // The InitializeD3D11Hooks() function sets up the IAT hook
   HMODULE hD3D11 = GetModuleHandleA("d3d11.dll");
   if (hD3D11) {
-    oD3D11CreateDeviceAndSwapChain = (D3D11CreateDeviceAndSwapChain_t)GetProcAddress(hD3D11, "D3D11CreateDeviceAndSwapChain");
-    if (oD3D11CreateDeviceAndSwapChain) {
-      if (MH_CreateHook((LPVOID)oD3D11CreateDeviceAndSwapChain, (LPVOID)&DetourD3D11CreateDeviceAndSwapChain,
-                        (LPVOID *)&oD3D11CreateDeviceAndSwapChain) == MH_OK) {
-        MH_EnableHook((LPVOID)oD3D11CreateDeviceAndSwapChain);
-        HookLog("DX11: D3D11CreateDeviceAndSwapChain hook installed.");
-      }
-    }
+    // NOTE: oD3D11CreateDeviceAndSwapChain and the IAT hook are set up in 
+    // IATHook::InitializeD3D11Hooks() called from InitializeWrapperHooks()
+    HookLog("DX11: D3D11CreateDeviceAndSwapChain hook installed.");
   }
 
   // 2. Hook D3D10 entry points
@@ -2510,3 +2518,5 @@ void DX11Hook::OnHostDisconnect() {
   // Just cleanup for potential new session
   g_DX11Capture.Cleanup();
 }
+
+

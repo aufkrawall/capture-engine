@@ -6,12 +6,17 @@
 #include "apis/ddraw_hook.h"
 #include "apis/dx8_hook.h"
 #include "apis/opengl_hook.h"
+#ifdef ENABLE_VULKAN_HOOK
 #include "apis/vulkan_hook.h"
+#endif
 #include "apis/nvngx_hook.h"
+#include "wrappers/wrapper_hooks.h"
+#include "wrappers/iat_hook.h"
 #include "common/hook_common.h"
 #include "common/ipc_client.h"
 #include "common/fg_detection.h"
-#include <MinHook.h>
+#include "common/system_metrics.h"
+// MinHook removed - using IAT patching via iat_hook.h
 #include <cstddef>
 #include <string>
 #include <thread>
@@ -48,7 +53,11 @@ DX9Hook *g_DX9Hook = nullptr;
 DDrawHook *g_DDrawHook = nullptr;
 DX8Hook *g_DX8Hook = nullptr;
 OpenGLHook *g_OpenGLHook = nullptr;
+#ifdef ENABLE_VULKAN_HOOK
 VulkanHook *g_VulkanHook = nullptr;
+#else
+void* g_VulkanHook = nullptr;  // Stub for builds without VulkanHook
+#endif
 
 // Global Local Config
 AppConfig g_LocalConfig;
@@ -706,6 +715,14 @@ namespace UE5 {
 // Centralized Hook Detection Logic (Executed by HookThread)
 void CheckAndInstallHooks() {
     std::lock_guard<std::mutex> lock(g_HookMutex);
+    
+    // Initialize wrapper-based hooks (IAT patching for factory creation)
+    // This enables MinHook-free hooking of CreateDXGIFactory* etc.
+    static bool wrappersInitialized = false;
+    if (!wrappersInitialized) {
+        InitializeWrapperHooks();
+        wrappersInitialized = true;
+    }
 
     if (!g_DX12Hook && GetModuleHandleA("d3d12.dll")) {
         EarlyLog("Detected d3d12.dll. Installing DX12 hooks...");
@@ -754,12 +771,14 @@ void CheckAndInstallHooks() {
     }
 
 
+#ifdef ENABLE_VULKAN_HOOK
     if (!g_VulkanHook && GetModuleHandleA("vulkan-1.dll")) {
         HookLog("Detected vulkan-1.dll. Installing Vulkan hooks...");
         g_VulkanHook = new VulkanHook();
         g_VulkanHook->Init();
         HookLog("Vulkan hooks installed");
     }
+#endif
 
     // Check for Frame Generation Runtimes (Startup Safety)
     // If FG is loaded, we MUST suspend overlay immediately to avoid startup crashes
@@ -796,22 +815,26 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   // --- LAUNCHERS ---
   if (g_ProcessCategory == ProcessCategory::Launcher) {
       // launchers only need CreateProcess hooks. No IPC, no graphics.
-      if (MH_Initialize() == MH_OK) {
-          if (MH_CreateHookApi(L"kernel32", "CreateProcessA", (LPVOID)&HookedCreateProcessA, (LPVOID*)&OriginalCreateProcessA) == MH_OK) {
-              MH_EnableHook(MH_ALL_HOOKS);
-          }
-          if (MH_CreateHookApi(L"kernel32", "CreateProcessW", (LPVOID)&HookedCreateProcessW, (LPVOID*)&OriginalCreateProcessW) == MH_OK) {
-              MH_EnableHook(MH_ALL_HOOKS);
-          }
-      }
+      // Use IAT patching (MinHook-free)
+      OriginalCreateProcessA = (CreateProcessA_t)GetProcAddress(
+          GetModuleHandleA("kernel32.dll"), "CreateProcessA");
+      OriginalCreateProcessW = (CreateProcessW_t)GetProcAddress(
+          GetModuleHandleA("kernel32.dll"), "CreateProcessW");
+      
+      void* dummy;
+      IATHook::PatchIATAllModules("kernel32.dll", "CreateProcessA", 
+          (void*)&HookedCreateProcessA, &dummy);
+      IATHook::PatchIATAllModules("kernel32.dll", "CreateProcessW", 
+          (void*)&HookedCreateProcessW, &dummy);
       
       // launchers don't have an IPC loop, they just stay alive to hook child processes
       // We still need to unload eventually if we want perfect cleanup, 
       // but for launchers it's safer to just stay loaded until process exit 
       // to avoid missing a CreateProcess call during transition.
       // However, we need to check for shutdown signal to allow DLL unload.
+      // Use 100ms instead of 1000ms to respond quickly to shutdown.
       while (!g_ShuttingDown) {
-          Sleep(1000);
+          Sleep(100);
       }
       return 0; 
   }
@@ -896,41 +919,31 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     HookLog("IPC Connection FAILED!");
   }
 
-  // Init MinHook Global (may already be initialized from DllMain for early hooks)
-  EarlyLog("HookThread: Initializing MinHook...");
-  MH_STATUS mhStatus = MH_Initialize();
-  if (mhStatus != MH_OK && mhStatus != MH_ERROR_ALREADY_INITIALIZED) {
-    EarlyLog("HookThread: MinHook init FAILED!");
-    HookLog("Failed to initialize MinHook!");
-    return 0;
-  }
-  EarlyLog("HookThread: MinHook initialized OK");
+  // Use IAT patching instead of MinHook for kernel32/advapi32 hooks
+  EarlyLog("HookThread: Initializing IAT-based kernel32 hooks...");
 
-  // Install LoadLibrary hooks
-  HookLog("Installing LoadLibrary hooks for late injection...");
+  // Install LoadLibrary and CreateProcess hooks via IAT patching
+  HookLog("Installing LoadLibrary/CreateProcess hooks via IAT patching (MinHook-free)...");
   
-  MH_CreateHookApi(L"kernel32", "LoadLibraryA", (LPVOID)&HookedLoadLibraryA, (LPVOID*)&OriginalLoadLibraryA);
-  MH_CreateHookApi(L"kernel32", "LoadLibraryW", (LPVOID)&HookedLoadLibraryW, (LPVOID*)&OriginalLoadLibraryW);
-  MH_CreateHookApi(L"kernel32", "LoadLibraryExA", (LPVOID)&HookedLoadLibraryExA, (LPVOID*)&OriginalLoadLibraryExA);
-  MH_CreateHookApi(L"kernel32", "LoadLibraryExW", (LPVOID)&HookedLoadLibraryExW, (LPVOID*)&OriginalLoadLibraryExW);
-
-  // Install CreateProcess hooks for child process injection (Launcher Support)
-  HookLog("Installing CreateProcess hooks for launcher support...");
-  MH_CreateHookApi(L"kernel32", "CreateProcessA", (LPVOID)&HookedCreateProcessA, (LPVOID*)&OriginalCreateProcessA);
-  MH_CreateHookApi(L"kernel32", "CreateProcessW", (LPVOID)&HookedCreateProcessW, (LPVOID*)&OriginalCreateProcessW);
+  IATHook::InitializeKernel32Hooks(
+      (void*)&HookedLoadLibraryA, (void**)&OriginalLoadLibraryA,
+      (void*)&HookedLoadLibraryW, (void**)&OriginalLoadLibraryW,
+      (void*)&HookedLoadLibraryExA, (void**)&OriginalLoadLibraryExA,
+      (void*)&HookedLoadLibraryExW, (void**)&OriginalLoadLibraryExW,
+      (void*)&HookedCreateProcessA, (void**)&OriginalCreateProcessA,
+      (void*)&HookedCreateProcessW, (void**)&OriginalCreateProcessW);
   
   // Install RegQueryValueExW for DLSS Debug Overlay
-  // We use MinHook on advapi32.dll. It's almost always loaded.
   if (GetModuleHandleA("advapi32.dll")) {
-      HookLog("Installing RegQueryValueExW hook for DLSS Overlay support...");
-      MH_CreateHookApi(L"advapi32", "RegQueryValueExW", (LPVOID)&HookedRegQueryValueExW, (LPVOID*)&OriginalRegQueryValueExW);
+      HookLog("Installing RegQueryValueExW hook via IAT patching...");
+      IATHook::InitializeAdvapi32Hooks(
+          (void*)&HookedRegQueryValueExW, (void**)&OriginalRegQueryValueExW);
   } else {
-      HookLog("advapi32.dll not loaded yet (!) - skipping RegQueryValueExW hook");
+      HookLog("advapi32.dll not loaded yet - skipping RegQueryValueExW hook");
   }
-
-  // Enable all hooks at once (more efficient than per-hook enable)
-  MH_EnableHook(MH_ALL_HOOKS);
-  HookLog("All kernel32 hooks enabled");
+  
+  EarlyLog("HookThread: IAT hooks initialized OK");
+  HookLog("All kernel32/advapi32 hooks enabled (IAT mode)");
 
   // Initial Check
   EarlyLog("HookThread: About to call CheckAndInstallHooks (d3d12=%p)", GetModuleHandleA("d3d12.dll"));
@@ -1206,21 +1219,30 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
                 // Pre-populate global config so the hook works
                 g_LocalConfig.graphics.forceRayReconstruction = true;
                 
-                // Initialize MinHook NOW
-                if (MH_Initialize() == MH_OK) {
-                     MH_CreateHookApi(L"kernel32", "GetCommandLineA", (LPVOID)&HookedGetCommandLineA, (LPVOID*)&OriginalGetCommandLineA);
-                     MH_CreateHookApi(L"kernel32", "GetCommandLineW", (LPVOID)&HookedGetCommandLineW, (LPVOID*)&OriginalGetCommandLineW);
-                     
-                     // Try hooking CRT start args too
-                     HMODULE hUCRT = GetModuleHandleA("ucrtbase.dll");
-                     if (!hUCRT) hUCRT = GetModuleHandleA("msvcrt.dll");
-                     if (hUCRT) {
-                         MH_CreateHookApi(L"msvcrt", "__getmainargs", (LPVOID)&Hooked_getmainargs, (LPVOID*)&Original_getmainargs);
-                         MH_CreateHookApi(L"msvcrt", "__wgetmainargs", (LPVOID)&Hooked_wgetmainargs, (LPVOID*)&Original_wgetmainargs);
-                         // Also check ucrtbase export names
-                     }
-
-                     MH_EnableHook(MH_ALL_HOOKS);
+                // Use IAT patching for early RR hooks (MinHook-free)
+                OriginalGetCommandLineA = (GetCommandLineA_t)GetProcAddress(
+                    GetModuleHandleA("kernel32.dll"), "GetCommandLineA");
+                OriginalGetCommandLineW = (GetCommandLineW_t)GetProcAddress(
+                    GetModuleHandleA("kernel32.dll"), "GetCommandLineW");
+                
+                void* dummy;
+                IATHook::PatchIATAllModules("kernel32.dll", "GetCommandLineA", 
+                    (void*)&HookedGetCommandLineA, &dummy);
+                IATHook::PatchIATAllModules("kernel32.dll", "GetCommandLineW", 
+                    (void*)&HookedGetCommandLineW, &dummy);
+                
+                // Try hooking CRT start args too
+                HMODULE hUCRT = GetModuleHandleA("ucrtbase.dll");
+                if (!hUCRT) hUCRT = GetModuleHandleA("msvcrt.dll");
+                if (hUCRT) {
+                    Original_getmainargs = reinterpret_cast<decltype(Original_getmainargs)>(
+                        GetProcAddress(hUCRT, "__getmainargs"));
+                    Original_wgetmainargs = reinterpret_cast<decltype(Original_wgetmainargs)>(
+                        GetProcAddress(hUCRT, "__wgetmainargs"));
+                    IATHook::PatchIATAllModules("msvcrt.dll", "__getmainargs", 
+                        (void*)&Hooked_getmainargs, &dummy);
+                    IATHook::PatchIATAllModules("msvcrt.dll", "__wgetmainargs", 
+                        (void*)&Hooked_wgetmainargs, &dummy);
                 }
             }
         }
@@ -1256,21 +1278,28 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     g_ShuttingDown = true;
     
     // Signal HookThread to exit and give it time to finish
+    // Now that launcher loop uses 100ms Sleep, 200ms grace is enough
     if (g_hCheckHooksEvent) {
       SetEvent(g_hCheckHooksEvent);
     }
-    Sleep(100); // Grace period for thread to exit
+    Sleep(200); // Increased grace period for threads using 100ms sleep loops
     
-    // Shutdown
+    // Shutdown API hooks first to stop new frames
     SafeShutdownHook(g_DX12Hook);
     SafeShutdownHook(g_DX11Hook);
     SafeShutdownHook(g_DX9Hook);
     SafeShutdownHook(g_DDrawHook);
     SafeShutdownHook(g_DX8Hook);
     SafeShutdownHook(g_OpenGLHook);
+#ifdef ENABLE_VULKAN_HOOK
     SafeShutdownHook(g_VulkanHook);
+#endif
 
-    MH_Uninitialize();
+    IATHook::ShutdownIATHooks();
+    
+    // Shutdown SystemMetricsCollector BEFORE deleting g_IPC
+    // The metrics thread accesses g_IPC, so we must stop it first
+    SystemMetricsCollector::Get().Shutdown();
     
     // Now safe to delete g_IPC after thread has exited
     if (g_IPC) {

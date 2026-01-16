@@ -166,6 +166,37 @@ void IPCManager::UpdateConfig(const AppConfig &config) {
       dst.prerenderLimit = src.cpuPrerenderLimit;
       dst.backbufferCount = src.backbufferCount;
       dst.sgssaa = src.sgssaa;
+      dst.disableAutoMipBias = src.disableAutoMipBias;
+      
+      strncpy(dst.dlssAutoExposure, src.dlssAutoExposure.c_str(), sizeof(dst.dlssAutoExposure)-1);
+      dst.dlssAutoExposure[sizeof(dst.dlssAutoExposure)-1] = '\0';
+      
+      strncpy(dst.dlssExposureNormalization, src.dlssExposureNormalization.c_str(), sizeof(dst.dlssExposureNormalization)-1);
+      dst.dlssExposureNormalization[sizeof(dst.dlssExposureNormalization)-1] = '\0';
+
+      // Synced parsed IDs for hook to use efficiently
+      dst.dlssPresetDLAA = src.parsed.presetDLAA;
+      dst.dlssPresetQuality = src.parsed.presetQuality;
+      dst.dlssPresetBalanced = src.parsed.presetBalanced;
+      dst.dlssPresetPerformance = src.parsed.presetPerformance;
+      dst.dlssPresetUltraPerformance = src.parsed.presetUltraPerformance;
+      dst.dlssPresetUltraQuality = src.parsed.presetUltraQuality;
+
+      dst.dlssRRPresetDLAA = src.parsed.rrPresetDLAA;
+      dst.dlssRRPresetQuality = src.parsed.rrPresetQuality;
+      dst.dlssRRPresetBalanced = src.parsed.rrPresetBalanced;
+      dst.dlssRRPresetPerformance = src.parsed.rrPresetPerformance;
+      dst.dlssRRPresetUltraPerformance = src.parsed.rrPresetUltraPerformance;
+      dst.dlssRRPresetUltraQuality = src.parsed.rrPresetUltraQuality;
+
+      dst.dlssSRPreset = src.parsed.srPreset;
+      dst.dlssRRPreset = src.parsed.rrPreset;
+      
+      if (src.parsed.srPreset > 0) {
+          LogInfo("[IPC] Syncing SRPreset ID: %u", src.parsed.srPreset);
+      }
+
+      dst.dlssSharpening = src.parsed.dlssSharpening;
   }
 
   pSharedMem->configVersion.fetch_add(1, std::memory_order_acq_rel);

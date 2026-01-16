@@ -435,17 +435,17 @@ void LoadConfig(const std::string &path, AppConfig &config, const std::string& o
       // 1. Try Override Explicit: [App.N] Section.Key=Value
       std::string explicitKey = std::string(section) + "." + key;
       GetPrivateProfileStringA(overrideSection.c_str(), explicitKey.c_str(), "", buffer, 4096, path.c_str());
-      std::string val = buffer;
+      std::string val = Trim(buffer);
       if (!val.empty()) return val;
 
       // 2. Try Override Simplified: [App.N] Key=Value
       GetPrivateProfileStringA(overrideSection.c_str(), key, "", buffer, 4096, path.c_str());
-      val = buffer;
+      val = Trim(buffer);
       if (!val.empty()) return val;
     }
     // 3. Fallback to global
     GetPrivateProfileStringA(section, key, def, buffer, 4096, path.c_str());
-    return std::string(buffer);
+    return Trim(buffer);
   };
 
   auto GetInt = [&](const char *section, const char *key, int def) {
@@ -558,6 +558,16 @@ void LoadConfig(const std::string &path, AppConfig &config, const std::string& o
   config.graphics.parsed.rrPreset = ParseDlssRRPreset(config.graphics.dlssRRPreset);
 
   config.graphics.parsed.dlssSharpening = ParseDlssSharpening(config.graphics.dlssSharpening);
+
+  // Log parsed presets for debugging
+  if (config.debugLogging) {
+      LogInfo("Config: Parsed dlss_sr_preset='%s' -> ID %u", 
+              config.graphics.dlssSRPreset.c_str(), config.graphics.parsed.srPreset);
+      if (config.graphics.parsed.srPreset > 0) {
+          LogInfo("Config: Global SR Preset Override Active: '%c'", 
+                  (config.graphics.parsed.srPreset <= 13) ? ('A' + config.graphics.parsed.srPreset - 1) : '?');
+      }
+  }
 
   // FPS Limiter
   config.fpsLimiter.captureSyncEnabled =

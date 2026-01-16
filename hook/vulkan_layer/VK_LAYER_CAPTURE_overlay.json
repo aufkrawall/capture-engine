@@ -1,0 +1,24 @@
+{
+    "file_format_version": "1.2.0",
+    "layer": {
+        "name": "VK_LAYER_CAPTURE_overlay",
+        "type": "GLOBAL",
+        "library_path": ".\\VkLayer_capture.dll",
+        "api_version": "1.3.0",
+        "implementation_version": "1",
+        "description": "Capture Overlay and Zero-Copy Capture Layer",
+        "functions": {
+            "vkNegotiateLoaderLayerInterfaceVersion": "vkNegotiateLoaderLayerInterfaceVersion",
+            "vkGetInstanceProcAddr": "Capture_vkGetInstanceProcAddr",
+            "vkGetDeviceProcAddr": "Capture_vkGetDeviceProcAddr"
+        },
+        "instance_extensions": [],
+        "device_extensions": [],
+        "enable_environment": {
+            "ENABLE_CAPTURE_LAYER": "1"
+        },
+        "disable_environment": {
+            "DISABLE_CAPTURE_LAYER": "1"
+        }
+    }
+}

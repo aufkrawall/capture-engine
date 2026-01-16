@@ -6,7 +6,7 @@
 #include "../common/overlay.h"
 #include "hook_common.h"
 #include "performance_metrics.h"
-#include <MinHook.h>
+#include <../wrappers/minhook_shim.h>
 #include <backends/imgui_impl_dx9.h>
 #include <backends/imgui_impl_win32.h>
 #include <cstdint>

@@ -49,6 +49,7 @@ struct VSyncOverride {
     bool useMailbox = false;  // DX11/12: use DXGI_SWAP_EFFECT_FLIP_DISCARD for mailbox
 };
 VSyncOverride GetVSyncOverride();
+void ProcessVSyncOverride(UINT& SyncInterval, UINT& Flags);
 
 bool BuildLogFilePathForModuleAddress(const void* address, const char* fileName, char* outPath, size_t outPathLen);
 

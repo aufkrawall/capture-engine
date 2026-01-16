@@ -1,0 +1,22 @@
+{
+    "file_format_version": "1.2.0",
+    "layer": {
+        "name": "VK_LAYER_CE_overlay",
+        "type": "GLOBAL",
+        "library_path": ".\\\\VK_LAYER_CE_overlay.dll",
+        "api_version": "1.3.0",
+        "implementation_version": "1",
+        "description": "CaptureEngine Overlay and Recording Layer",
+        "functions": {
+            "vkGetInstanceProcAddr": "CE_vkGetInstanceProcAddr",
+            "vkGetDeviceProcAddr": "CE_vkGetDeviceProcAddr",
+            "vkNegotiateLoaderLayerInterfaceVersion": "CE_vkNegotiateLoaderLayerInterfaceVersion"
+        },
+        "enable_environment": {
+            "CE_VULKAN_LAYER": "1"
+        },
+        "disable_environment": {
+            "DISABLE_CE_VULKAN_LAYER": "1"
+        }
+    }
+}

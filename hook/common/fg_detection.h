@@ -20,6 +20,7 @@ public:
     // State queries
     bool IsFGActive() const;
     FGType GetDetectedType() const { return activeBehavior.load(); }
+    FGType GetDllDetectedType() const { return detectedRuntime.load(); } // DLL-based, not behavioral
     int GetFGMultiplier() const { return cachedMultiplier.load(); }
     
     // FPS metrics

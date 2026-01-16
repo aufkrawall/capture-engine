@@ -77,7 +77,12 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
   }
   while (s_csInitialized < 2) { Sleep(0); }
   
-  EnterCriticalSection(&s_cs);
+  if (!TryEnterCriticalSection(&s_cs)) {
+      // If we can't get the lock immediately, it might be held by a suspended thread
+      // (classic DllMain deadlock scenario). Just drop the log.
+      if (s_hMutex) ReleaseMutex(s_hMutex);
+      return;
+  }
   
   if (!s_hMutex) {
       s_hMutex = CreateMutexA(NULL, FALSE, "Global\\Antigravity_Log_Mutex_v5");
@@ -297,12 +302,27 @@ GraphicsConfig GetActiveGraphicsConfig() {
         mergedConfig.parsed.rrPreset = shmGfx.dlssRRPreset;
 
         mergedConfig.parsed.dlssSharpening = shmGfx.dlssSharpening;
+
+        if (shmGfx.dlssSRPreset > 0) {
+            static uint32_t lastLoggedSHM = 0;
+            if (shmGfx.dlssSRPreset != lastLoggedSHM) {
+                HookLog("Config: Received SRPreset %u from SHM", shmGfx.dlssSRPreset);
+                lastLoggedSHM = shmGfx.dlssSRPreset;
+            }
+        }
     } else {
         // No IPC, stick to defaults
         mergedConfig = GraphicsConfig(); 
     }
     
     // Apply Overrides from g_LocalConfig
+    if (g_LocalConfig.graphics.parsed.srPreset > 0) {
+        static uint32_t lastLoggedLocal = 0;
+        if (g_LocalConfig.graphics.parsed.srPreset != lastLoggedLocal) {
+            HookLog("Config: Local srPreset is %u", g_LocalConfig.graphics.parsed.srPreset);
+            lastLoggedLocal = g_LocalConfig.graphics.parsed.srPreset;
+        }
+    }
     if (g_LocalConfig.graphics.cpuPrerenderLimit > -0.5f) {
         mergedConfig.cpuPrerenderLimit = g_LocalConfig.graphics.cpuPrerenderLimit;
     }
@@ -422,3 +442,20 @@ VSyncOverride GetVSyncOverride() {
     
     return result;
 }
+
+// Process VSync override on Present parameters
+void ProcessVSyncOverride(UINT& SyncInterval, UINT& Flags) {
+    VSyncOverride override = GetVSyncOverride();
+    if (!override.shouldOverride) return;
+    
+    // Apply the sync interval override
+    SyncInterval = override.presentInterval;
+    
+    // Flag manipulation for mailbox mode
+    if (override.useMailbox) {
+        // DXGI_PRESENT_ALLOW_TEARING requires sync interval 0
+        SyncInterval = 0;
+        Flags |= 0x200; // DXGI_PRESENT_ALLOW_TEARING
+    }
+}
+

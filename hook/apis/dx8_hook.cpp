@@ -6,7 +6,7 @@
 #include "hook_common.h"
 #include "performance_metrics.h"
 #include "../common/frame_timing.h"
-#include <MinHook.h>
+#include <../wrappers/minhook_shim.h>
 #include <cstdint>
 #include <d3d9.h>
 #include <d3d11.h>
