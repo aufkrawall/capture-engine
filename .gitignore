@@ -1,9 +1,9 @@
 # Build and dependency directories
-build/msys64
-build/obj
-ffmpeg_build/
+build/*
+ffmpeg_build/*
 external/*
 licenses*
+installed/*
 
 # Compiled binaries and objects
 *.o
@@ -23,10 +23,6 @@ licenses*
 *.csv
 *.txt
 
-# Build logs
-build_log.txt
-
-
 # IDE and temporary files
 .vs/
 .vscode/
@@ -42,9 +38,5 @@ obj/
 __pycache__/
 *.pyc
 
-# Local config
-config.ini
-testappconfig.ini
-
-# Backups
-backups/
+# Generated version file
+common/build_version.h

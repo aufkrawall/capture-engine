@@ -22,11 +22,12 @@ bool ParseBool(const std::string &val) {
   return lower == "true" || lower == "1" || lower == "yes" || lower == "on";
 }
 
-// Helper to parse DLSS presets (A-K -> 1-11, Default -> 0)
+// Helper to parse DLSS presets (A-M -> 1-13, Default -> 0)
+// DLSS 3.10.5+ added L and M presets beyond the original A-K
 uint32_t ParseDlssPreset(const std::string& val) {
   if (val.empty() || _stricmp(val.c_str(), "default") == 0) return 0;
   char c = toupper(val[0]);
-  if (c >= 'A' && c <= 'K') return (uint32_t)(c - 'A' + 1);
+  if (c >= 'A' && c <= 'M') return (uint32_t)(c - 'A' + 1);
   return 0;
 }
 
@@ -123,8 +124,8 @@ void CreateDefaultConfig(const std::string &path) {
   cfg << "dlss_auto_exposure=default\n";
   cfg << "dlss_exposure_normalization=default\n";
   cfg << "\n";
-  cfg << "; DLSS Render Presets (Super Resolution): default, A, B, C, D, E, F, G, H, I, J, K\n";
-  cfg << "; Preset K is recommended for DLSS 3.7+ (Transformer-based)\n";
+  cfg << "; DLSS Render Presets (Super Resolution): default, A, B, C, D, E, F, G, H, I, J, K, L, M\n";
+  cfg << "; Presets L and M require DLSS 3.10.5+\n";
   cfg << "; Global override for all quality levels:\n";
   cfg << "dlss_sr_preset=default\n";
   cfg << "\n";

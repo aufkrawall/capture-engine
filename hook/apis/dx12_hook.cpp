@@ -114,6 +114,16 @@ bool g_FGPassthroughMode = false;
 // This avoids cross-thread cleanup calls which cause deadlocks
 static std::atomic<bool> g_FSR4SwapchainRecreatedPending{false};
 
+// Swapchain invalidation flag - set BEFORE new swapchain created to prevent overlay crash
+// This flag is checked at multiple points in DetourPresent to abort safely
+static std::atomic<bool> g_SwapchainInvalid{false};
+
+// Called by DX11 hook BEFORE FSR4SwapchainProvider creates new swapchain
+void DX12_InvalidateSwapchain() {
+    g_SwapchainInvalid.store(true, std::memory_order_release);
+    EarlyLog("DX12: Swapchain marked INVALID - overlay will abort on next Present check");
+}
+
 // Called by DX11 hook when FSR4SwapchainProvider creates new swapchain
 void DX12_SignalFSR4SwapchainRecreated() {
     g_FSR4SwapchainRecreatedPending.store(true, std::memory_order_release);
@@ -1977,71 +1987,105 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
   // Phase 3: Dedicated Queue Overlay Rendering
   // ============================================================================
   
+  // CRITICAL: Check if swapchain is being invalidated by FSR4 swapchain recreation
+  // If so, skip ALL overlay operations and just passthrough Present
+  if (g_SwapchainInvalid.load(std::memory_order_acquire)) {
+      // Swapchain is being replaced - abort overlay, just passthrough
+      EarlyLog("DX12: Swapchain INVALID - skipping ALL overlay, passthrough only");
+      g_FGDebugOverlaySkips++;
+      return oPresent(pSwapChain, SyncInterval, Flags);
+  }
+  
   // FSR4 Cleanup Check: If DX11 hook signaled pending cleanup, do it now on DX12 thread
   // This avoids deadlocks that occur when calling directly from DX11 hook thread
   if (g_FSR4SwapchainRecreatedPending.load(std::memory_order_acquire)) {
       EarlyLog("DX12: Processing pending FSR4 swapchain recreation cleanup on DX12 thread");
       DX12_OnSwapchainResizeBegin();
       g_FSR4SwapchainRecreatedPending.store(false, std::memory_order_release);
+      // Clear invalidation flag after cleanup is done
+      g_SwapchainInvalid.store(false, std::memory_order_release);
+      EarlyLog("DX12: Swapchain invalidation cleared - overlay may resume");
   }
   
-  static bool fgRuntimeDetected = false;
   static FGCompatibility::FGType fgType = FGCompatibility::FGType::None;
+  static FGCompatibility::FGType lastFgType = FGCompatibility::FGType::None;
   uint64_t frameNum = ++g_FGDebugFrameCount;
   
-  // FG Runtime Detection (once per session)
-  if (!fgRuntimeDetected) {
-      fgType = g_FGCompat.DetectLoadedFGRuntime();
-      if (fgType != FGCompatibility::FGType::None) {
-          fgRuntimeDetected = true;
-          const char* fgName = "Unknown";
-          switch (fgType) {
+  // FG Runtime Detection - CONTINUOUS to handle runtime switching
+  // Check every 100 frames to detect FG enable/disable/switch
+  static uint64_t lastTypeCheck = 0;
+  if (frameNum - lastTypeCheck >= 100 || fgType == FGCompatibility::FGType::None) {
+      lastTypeCheck = frameNum;
+      FGCompatibility::FGType newFgType = g_FGCompat.DetectLoadedFGRuntime();
+      
+      if (newFgType != lastFgType) {
+          const char* fgName = "None";
+          switch (newFgType) {
               case FGCompatibility::FGType::DLSS_FG: fgName = "DLSS FG"; break;
               case FGCompatibility::FGType::FSR_FG: fgName = "FSR FG"; break;
               case FGCompatibility::FGType::DLSS_MSFG: fgName = "DLSS Multi-FG"; break;
               default: break;
           }
-          EarlyLog("DX12 FG: Frame %llu - %s runtime detected. Waiting for swapchain stabilization...", 
-                   frameNum, fgName);
+          EarlyLog("DX12 FG: Frame %llu - FG runtime changed to: %s", frameNum, fgName);
+          lastFgType = newFgType;
+          
+          // If switching TO FSR FG, log warning
+          if (newFgType == FGCompatibility::FGType::FSR_FG) {
+              EarlyLog("DX12 FG: FSR FG detected - overlay DISABLED (temporary workaround)");
+          }
       }
+      fgType = newFgType;
   }
   
-  // FSR3 Swapchain Detection - track when FSR3's FrameInterpolationSwapChain takes over
-  static bool fsr3SwapchainChecked = false;
-  if (!fsr3SwapchainChecked && pSwapChain) {
+  // FSR3 Swapchain Detection - check continuously for FSR3 wrapper
+  if (pSwapChain) {
       bool isFSR3 = IsFSR3SwapChain(pSwapChain);
       if (isFSR3 != g_UsingFSR3Swapchain) {
           g_UsingFSR3Swapchain = isFSR3;
           if (isFSR3) {
-              EarlyLog("DX12: Detected FSR3 FrameInterpolationSwapChain - FG swapchain wrapper active");
+              EarlyLog("DX12: Detected FSR3 FrameInterpolationSwapChain - disabling overlay");
+          } else {
+              EarlyLog("DX12: FSR3 swapchain wrapper no longer active");
           }
-          fsr3SwapchainChecked = true; // Only check once per transition
       }
+  }
+  
+  // FSR FG SKIP: Disable overlay entirely when FSR FG is detected (temporary workaround)
+  bool fsrFGActive = (fgType == FGCompatibility::FGType::FSR_FG) || g_UsingFSR3Swapchain;
+  if (fsrFGActive) {
+      g_FGDebugOverlaySkips++;
+      return oPresent(pSwapChain, SyncInterval, Flags);
   }
   
   // Record frame for FG metrics
   int cmdListCount = g_CommandListsExecutedThisFrame.exchange(0);
   g_FGCompat.RecordFrame(cmdListCount);
   
-  // FG Swapchain Stabilization Check
-  bool fgActive = fgRuntimeDetected;
+  // FG Swapchain Stabilization Check (DLSS FG only now - reduced delay for constant overlay)
+  // DLSS FG uses much shorter stabilization (100ms instead of 500ms) for minimal overlay gap
+  bool dlssFGActive = (fgType == FGCompatibility::FGType::DLSS_FG || 
+                       fgType == FGCompatibility::FGType::DLSS_MSFG);
+  bool fgActive = dlssFGActive;
   bool fgStabilized = false;
+  
+  // Very short stabilization for DLSS FG - just 100ms to minimize overlay gap
+  constexpr int DLSS_STABILIZATION_MS = 100;
   
   if (fgActive) {
       auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - g_LastSwapchainCreation).count();
       
-      if (elapsed >= FG_STABILIZATION_MS) {
+      if (elapsed >= DLSS_STABILIZATION_MS) {
           if (!g_FGSwapchainStabilized) {
               g_FGSwapchainStabilized = true;
-              EarlyLog("DX12 FG: Frame %llu - Swapchain stabilized after %lld ms (creations: %d). Enabling overlay.",
-                       frameNum, elapsed, g_SwapchainCreationCount.load());
+              EarlyLog("DX12 FG: Frame %llu - DLSS swapchain stabilized after %lld ms. Overlay enabled.",
+                       frameNum, elapsed);
           }
           fgStabilized = true;
       } else {
-          // Still stabilizing - passthrough with debug log every 100 frames
-          if (frameNum % 100 == 0) {
-              EarlyLog("DX12 FG: Frame %llu - Stabilizing... %lld/%d ms", frameNum, elapsed, FG_STABILIZATION_MS);
+          // Still stabilizing - brief passthrough
+          if (frameNum % 50 == 0) {
+              EarlyLog("DX12 FG: Frame %llu - DLSS stabilizing... %lld/%d ms", frameNum, elapsed, DLSS_STABILIZATION_MS);
           }
           g_FGDebugOverlaySkips++;
           return oPresent(pSwapChain, SyncInterval, Flags);
@@ -2122,7 +2166,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
 
   // SpecialK approach: Draw overlay BEFORE calling original Present
   // This allows the overlay to be composited with the frame before FG processes it
-  ProcessFrame(pSwapChain, isRealFrame);
+  // CRITICAL: Second invalidation check - catches mid-Present invalidation
+  if (!g_SwapchainInvalid.load(std::memory_order_acquire)) {
+      ProcessFrame(pSwapChain, isRealFrame);
+  }
   
   // Apply shared FPS limiter BEFORE Present (when not FG active)
   // DISABLED when FG active - FPS limiter interferes with FG timing and causes FG to disable itself
@@ -2130,6 +2177,15 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
   if (!fgActive && !IsVulkanPrimary()) {
       g_SharedFpsLimiter.SetIPCClient(g_IPC);
       g_SharedFpsLimiter.Apply();
+  }
+
+  // CRITICAL: Third invalidation check before calling oPresent
+  // If swapchain became invalid, the pSwapChain pointer may be stale
+  if (g_SwapchainInvalid.load(std::memory_order_acquire)) {
+      EarlyLog("DX12: Swapchain INVALID detected before oPresent - aborting frame");
+      g_FSR4SwapchainRecreatedPending.store(false, std::memory_order_release);
+      g_SwapchainInvalid.store(false, std::memory_order_release);
+      return S_OK;  // Return success to avoid game thinking Present failed
   }
 
   // Now call the original Present

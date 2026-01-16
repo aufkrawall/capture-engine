@@ -30,6 +30,8 @@
 // Called when FSR4SwapchainProvider creates a new swapchain to signal pending cleanup
 // Uses atomic flag to avoid cross-thread deadlocks - DX12 thread does actual cleanup
 extern void DX12_SignalFSR4SwapchainRecreated();
+// Called BEFORE new swapchain creation to immediately invalidate overlay (checked throughout Present)
+extern void DX12_InvalidateSwapchain();
 
 
 // Globals
@@ -431,21 +433,23 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2 *pFa
         }
     }
 
-    // CRITICAL FG FIX: Signal BEFORE swapchain creation for recreation scenario
-    // FSR4 starts using the new swapchain immediately after oCreateSwapChainForHwnd returns,
-    // so we must clean up BEFORE returning control to avoid use-after-free.
+    // CRITICAL FG FIX: Track game-sized swapchain recreation for FG overlay safety
+    // We DON'T invalidate BEFORE creation - that can cause DXGI lock issues (E_ACCESSDENIED)
+    // Instead, we invalidate AFTER successful recreation to clean up stale overlay resources
     bool isGameSizedSwapchain = pDesc && pDesc->Width >= 1920 && pDesc->Height >= 1080;
-    if (isGameSizedSwapchain && g_FirstGameSwapchainCreated) {
-        // This is a RECREATION of game swapchain - signal cleanup BEFORE creation
-        HookLog("DX11: CreateSwapChainForHwnd: Game-sized swapchain recreation detected - signaling cleanup BEFORE create");
-        DX12_SignalFSR4SwapchainRecreated();
-        // Give DX12 thread a moment to process the signal
-        Sleep(10);
-    }
+    bool wasRecreation = isGameSizedSwapchain && g_FirstGameSwapchainCreated;
 
+    HookLog("DX11: BEFORE oCreateSwapChainForHwnd call");
     HRESULT hr = oCreateSwapChainForHwnd(pFactory, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
+    HookLog("DX11: AFTER oCreateSwapChainForHwnd call (hr=0x%08X)", hr);
     
     if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
+        // Post-creation: Signal invalidation ONLY for successful recreation
+        if (wasRecreation) {
+            HookLog("DX11: CreateSwapChainForHwnd: Game-sized swapchain RECREATED successfully - invalidating overlay");
+            DX12_InvalidateSwapchain();
+            DX12_SignalFSR4SwapchainRecreated();
+        }
         // Post-creation tracking
         if (isGameSizedSwapchain) {
             if (!g_FirstGameSwapchainCreated) {

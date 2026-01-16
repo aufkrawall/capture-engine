@@ -22,6 +22,10 @@ MSYS2_URL = "https://repo.msys2.org/distrib/x86_64/msys2-base-x86_64-20240113.ta
 MSYS2_DIR = os.path.join(BUILD_DIR, "msys64")
 OBJ_DIR = os.path.join(BUILD_DIR, "obj")
 BIN_DIR = os.path.join(BUILD_DIR, "bin")
+INSTALLED_DIR = os.path.join(PROJECT_ROOT, "installed")
+CAPTURE_BIN_DIR = os.path.join(INSTALLED_DIR, "captureengine")
+TESTAPP_BIN_DIR = os.path.join(INSTALLED_DIR, "testapp")
+BIN_DIR = CAPTURE_BIN_DIR # output captureengine binaries to installed\captureengine
 LOG_FILE = os.path.join(PROJECT_ROOT, "build_log.txt")
 
 IMGUI_URL = "https://github.com/ocornut/imgui/archive/refs/tags/v1.91.5.zip"
@@ -96,21 +100,43 @@ def run_command(cmd, env=None, cwd=None, input_str=None, fail_exit=True):
         return ""
 
 def bump_and_write_build_version():
-    version_path = os.path.join(PROJECT_ROOT, "common", "build_version.h")
-    os.makedirs(os.path.dirname(version_path), exist_ok=True)
+    version_header_path = os.path.join(PROJECT_ROOT, "common", "build_version.h")
+    # Store build number in build directory (not tracked by git)
+    build_num_path = os.path.join(BUILD_DIR, "build_number.txt")
+    
+    os.makedirs(BUILD_DIR, exist_ok=True)
+    os.makedirs(os.path.dirname(version_header_path), exist_ok=True)
 
     build_number = 0
-    if os.path.exists(version_path):
+    
+    # Try to read local build number
+    if os.path.exists(build_num_path):
         try:
-            with open(version_path, "r", encoding="utf-8") as f:
+            with open(build_num_path, "r") as f:
+                build_number = int(f.read().strip())
+        except Exception as e:
+             log(f"Warning: Failed to read {build_num_path}: {e}")
+
+    # Fallback/Seed: If no local counter, try to read from existing header to continuity
+    # (Optional: user wanted to get rid of "weird git contraption", but seeding once is safe)
+    if build_number == 0 and os.path.exists(version_header_path):
+         try:
+            with open(version_header_path, "r", encoding="utf-8") as f:
                 txt = f.read()
             m = re.search(r"#define\s+BUILD_NUMBER\s+(\d+)", txt)
             if m:
                 build_number = int(m.group(1))
-        except Exception as e:
-            log(f"Warning: Failed to read existing build version: {e}")
+         except: pass
 
     build_number += 1
+    
+    # Save new build number
+    try:
+        with open(build_num_path, "w") as f:
+            f.write(str(build_number))
+    except Exception as e:
+        log(f"Warning: Failed to write {build_num_path}: {e}")
+
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     version_str = f"1.1.0-dev+build.{build_number}"
 
@@ -122,11 +148,11 @@ def bump_and_write_build_version():
     )
 
     try:
-        with open(version_path, "w", encoding="utf-8") as f:
+        with open(version_header_path, "w", encoding="utf-8") as f:
             f.write(contents)
         log(f"Build version bumped: {version_str}")
     except Exception as e:
-        log(f"ERROR: Failed to write {version_path}: {e}")
+        log(f"ERROR: Failed to write {version_header_path}: {e}")
         sys.exit(1)
 
 def setup_msys2():
@@ -591,7 +617,7 @@ def compile_custom_ffmpeg(skip_updates=False):
     # Check for any avcodec DLL (version number varies)
     avcodec_dlls = glob.glob(os.path.join(ffmpeg_bin_dst, "avcodec-*.dll"))
     if avcodec_dlls:
-        log("FFmpeg DLLs already exist in bin/ffmpeg - skipping whole FFmpeg setup to avoid permission locks.")
+        log("FFmpeg DLLs already exist in target ffmpeg dir - skipping whole FFmpeg setup to avoid permission locks.")
         return
 
     # Use internal builder
@@ -645,7 +671,7 @@ def compile_custom_ffmpeg(skip_updates=False):
     
     if not needs_rebuild:
         # Even if we don't rebuild, let's ensure DLLs are in bin/ffmpeg
-        log("FFmpeg up to date, ensuring DLLs are in bin/ffmpeg...")
+        log("FFmpeg up to date, ensuring DLLs are in target ffmpeg dir...")
     else:
         log("Building Custom FFmpeg (this may take a while)...")
         try:
@@ -673,7 +699,7 @@ def compile_custom_ffmpeg(skip_updates=False):
         
         for f in glob.glob(os.path.join(ffmpeg_bin_src, "*.dll")):
             shutil.copy(f, ffmpeg_bin_dst)
-            log(f"Copied {os.path.basename(f)} to bin/ffmpeg")
+            log(f"Copied {os.path.basename(f)} to ffmpeg dir")
         
         # Copy MSYS2 runtime dependencies that FFmpeg DLLs need
         msys_bin = os.path.join(MSYS2_DIR, "clang64", "bin")
@@ -713,7 +739,8 @@ def get_env_x86():
 
 def ensure_dirs():
     os.makedirs(OBJ_DIR, exist_ok=True)
-    os.makedirs(BIN_DIR, exist_ok=True)
+    os.makedirs(CAPTURE_BIN_DIR, exist_ok=True)
+    os.makedirs(TESTAPP_BIN_DIR, exist_ok=True)
     os.makedirs(os.path.join(OBJ_DIR, "common"), exist_ok=True)
     os.makedirs(os.path.join(OBJ_DIR, "mediaengine"), exist_ok=True)
     os.makedirs(os.path.join(OBJ_DIR, "hook"), exist_ok=True)
@@ -903,7 +930,7 @@ def compile_testapps(env, clang_exe, cflags):
     log("Compiling Test Applications...")
     
     testapp_src_dir = os.path.join(PROJECT_ROOT, "testapp")
-    testapp_bin_dir = os.path.join(testapp_src_dir, "bin")
+    testapp_bin_dir = TESTAPP_BIN_DIR
     os.makedirs(testapp_bin_dir, exist_ok=True)
 
     # Optional: also build 32-bit variants if 32-bit toolchain is available.
@@ -1009,6 +1036,252 @@ def compile_testapps(env, clang_exe, cflags):
             run_command(cmd, env=env)
             log(f"Built: {vulkan_exe_x86}")
 
+def compile_vulkan_layer(env, clang_exe, cflags, arch):
+    """Compile VK_LAYER_CE_overlay - Vulkan implicit layer for overlay and capture"""
+    log(f"Compiling Vulkan Layer ({arch})...")
+    
+    layer_dir = os.path.join(PROJECT_ROOT, "hook", "vulkan_layer")
+    bin_dir = CAPTURE_BIN_DIR
+    obj_dir = os.path.join(PROJECT_ROOT, "build", "obj", arch, "vulkan_layer")
+    os.makedirs(obj_dir, exist_ok=True)
+    
+    # Layer source files
+    layer_sources = [
+        os.path.join(layer_dir, "layer_main.cpp"),
+        os.path.join(layer_dir, "layer_hooks.cpp"),
+        os.path.join(layer_dir, "layer_overlay.cpp"),
+        os.path.join(layer_dir, "layer_capture.cpp"),
+        os.path.join(layer_dir, "layer_ipc.cpp"),  # Minimal IPC for layer
+    ]
+    
+    # ImGui sources for the layer
+    imgui_sources = glob.glob(os.path.join(IMGUI_DIR, "*.cpp")) + [
+        os.path.join(IMGUI_DIR, "backends", "imgui_impl_win32.cpp"),
+    ]
+    
+    # Compile layer sources
+    layer_cflags = cflags + [
+        "-I" + layer_dir,
+        "-I" + os.path.join(PROJECT_ROOT, "hook", "common"),
+        "-I" + IMGUI_DIR,
+        "-DVK_NO_PROTOTYPES",
+    ]
+    
+    layer_objs = []
+    
+    # Compile layer sources
+    for src in layer_sources:
+        if not os.path.exists(src):
+            log(f"Warning: Layer source not found: {src}")
+            continue
+        basename = os.path.splitext(os.path.basename(src))[0]
+        obj = os.path.join(obj_dir, basename + ".o")
+        cmd = [clang_exe] + layer_cflags + ["-c", src, "-o", obj]
+        try:
+            run_command(cmd, env=env)
+            layer_objs.append(obj)
+        except Exception as e:
+            log(f"Warning: Failed to compile {src}: {e}")
+    
+    # Compile ImGui sources for layer
+    imgui_obj_dir = os.path.join(obj_dir, "imgui")
+    os.makedirs(imgui_obj_dir, exist_ok=True)
+    
+    for src in imgui_sources:
+        if not os.path.exists(src):
+            continue
+        basename = os.path.splitext(os.path.basename(src))[0]
+        obj = os.path.join(imgui_obj_dir, basename + ".o")
+        cmd = [clang_exe] + layer_cflags + ["-c", src, "-o", obj]
+        try:
+            run_command(cmd, env=env)
+            layer_objs.append(obj)
+        except Exception as e:
+            log(f"Warning: Failed to compile {src}: {e}")
+    
+    if not layer_objs:
+        log("Error: No layer objects compiled")
+        return
+    
+    # Link layer DLL
+    if arch == "x64":
+        layer_dll = os.path.join(bin_dir, "VK_LAYER_CE_overlay.dll")
+        vulkan_lib = os.path.join(MSYS2_DIR, 'clang64', 'lib', 'libvulkan-1.dll.a')
+    else:
+        layer_dll = os.path.join(bin_dir, "VK_LAYER_CE_overlay_x86.dll")
+        vulkan_lib = os.path.join(MSYS2_DIR, 'mingw32', 'lib', 'libvulkan-1.dll.a')
+    
+    ldflags = [
+        "-shared",
+        "-static-libgcc",
+        "-static-libstdc++",
+        vulkan_lib,
+        "-lgdi32",
+        "-luser32",
+        "-o", layer_dll,
+    ]
+    
+    cmd = [clang_exe] + layer_objs + ldflags
+    try:
+        run_command(cmd, env=env)
+        log(f"Built: {layer_dll}")
+        
+        # Copy layer manifest
+        manifest_src = os.path.join(layer_dir, "VK_LAYER_CE_overlay.json")
+        manifest_dst = os.path.join(bin_dir, "VK_LAYER_CE_overlay.json")
+        if os.path.exists(manifest_src):
+            import shutil
+            shutil.copy2(manifest_src, manifest_dst)
+            log(f"Copied: {manifest_dst}")
+    except Exception as e:
+        log(f"Error linking layer: {e}")
+
+
+def compile_d3d12_wrappers_msvc(env):
+    """
+    Compile D3D12 wrappers using MSVC.
+    Required because MinGW ABI is incompatible with D3D12 headers (WIDL_EXPLICIT_AGGREGATE_RETURNS).
+    """
+    log("Checking for MSVC to compile D3D12 wrappers...")
+    
+    # 1. Detect MSVC
+    vs_root = r"C:\Program Files\Microsoft Visual Studio\2022\Community"
+    if not os.path.exists(vs_root):
+         vs_root = r"C:\Program Files\Microsoft Visual Studio\18\Community" # As seen in previous script
+    
+    # helper to find latest version in a dir
+    def find_latest_version(path):
+        if not os.path.exists(path): return None
+        versions = [d for d in os.listdir(path) if os.path.isdir(os.path.join(path, d)) and d[0].isdigit()]
+        if not versions: return None
+        return sorted(versions)[-1]
+
+    # Find MSVC Tools
+    msvc_tools_root = os.path.join(vs_root, "VC", "Tools", "MSVC")
+    msvc_ver = find_latest_version(msvc_tools_root)
+    
+    if not msvc_ver:
+        log("Warning: MSVC Tools not found. Skipping D3D12 wrappers (MSVC).")
+        return False, None
+
+    msvc_bin = os.path.join(msvc_tools_root, msvc_ver, "bin", "Hostx64", "x64")
+    msvc_include = os.path.join(msvc_tools_root, msvc_ver, "include")
+    msvc_lib = os.path.join(msvc_tools_root, msvc_ver, "lib", "x64")
+    
+    cl_exe = os.path.join(msvc_bin, "cl.exe")
+    link_exe = os.path.join(msvc_bin, "link.exe")
+    
+    
+    if not os.path.exists(cl_exe):
+        log(f"Warning: cl.exe not found at {cl_exe}")
+        return False, None
+
+    # 2. Detect Windows SDK
+    win_sdk_root = r"C:\Program Files (x86)\Windows Kits\10"
+    win_sdk_include = os.path.join(win_sdk_root, "Include")
+    win_sdk_ver = find_latest_version(win_sdk_include)
+    
+    if not win_sdk_ver:
+        log("Warning: Windows SDK not found.")
+        return False, None
+
+    sdk_include_um = os.path.join(win_sdk_include, win_sdk_ver, "um")
+    sdk_include_shared = os.path.join(win_sdk_include, win_sdk_ver, "shared")
+    sdk_include_ucrt = os.path.join(win_sdk_include, win_sdk_ver, "ucrt")
+    # sdk_lib_um = os.path.join(win_sdk_root, "Lib", win_sdk_ver, "um", "x64")
+    # sdk_lib_ucrt = os.path.join(win_sdk_root, "Lib", win_sdk_ver, "ucrt", "x64")
+
+    # 3. Setup paths
+    obj_dir = os.path.join(BUILD_DIR, "obj", "msvc_x64")
+    os.makedirs(obj_dir, exist_ok=True)
+    dll_out = os.path.join(BIN_DIR, "d3d12_wrappers.dll")
+    implib_out = os.path.join(BUILD_DIR, "lib", "d3d12_wrappers.lib")
+    os.makedirs(os.path.dirname(implib_out), exist_ok=True)
+
+    sources = [
+        os.path.join(PROJECT_ROOT, "hook", "wrappers", "d3d12_device_wrap.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "wrappers", "d3d12_commandqueue_wrap.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "wrappers", "d3d12_wrapper_interface.cpp"),
+    ]
+
+    include_paths = [
+        msvc_include,
+        sdk_include_um,
+        sdk_include_shared,
+        sdk_include_ucrt,
+        os.path.join(PROJECT_ROOT, "hook", "wrappers"),
+        os.path.join(PROJECT_ROOT, "hook", "apis"),
+        os.path.join(PROJECT_ROOT, "hook", "common"),
+        os.path.join(PROJECT_ROOT, "common"),
+    ]
+
+    # 4. Compile
+    cflags = [
+        "/nologo", "/c", "/O2", "/MD", "/EHsc", "/W3", "/std:c++20",
+        "/DUNICODE", "/D_UNICODE", "/DWIN32", "/D_WINDOWS"
+    ]
+    for inc in include_paths:
+        cflags.append(f"/I{inc}")
+
+    obj_files = []
+    
+    # Set MSVC environment (PATH)
+    msvc_env = env.copy()
+    msvc_env["PATH"] = msvc_bin + os.pathsep + msvc_env.get("PATH", "")
+
+    for src in sources:
+        if not os.path.exists(src):
+            log(f"Warning: Source not found: {src}")
+            continue
+            
+        basename = os.path.splitext(os.path.basename(src))[0]
+        obj = os.path.join(obj_dir, basename + ".obj")
+        
+        # Check timestamp
+        if os.path.exists(obj) and os.path.getmtime(obj) > os.path.getmtime(src):
+            obj_files.append(obj)
+            continue
+            
+        log(f"[MSVC] Compiling {basename}...")
+        cmd = [cl_exe] + cflags + [f"/Fo{obj}", src]
+        
+        try:
+            res = subprocess.run(cmd, env=msvc_env, capture_output=True, text=True)
+            if res.returncode != 0:
+                log(f"Error compiling {basename}:")
+                log(res.stdout)
+                log(res.stderr)
+                return False, None
+            obj_files.append(obj)
+        except Exception as e:
+            log(f"Exception compiling {basename}: {e}")
+            return False, None
+
+    if not obj_files and not os.path.exists(implib_out):
+        log("No MSVC objects compiled and implib doesn't exist.")
+        return False, None
+    elif not obj_files and os.path.exists(implib_out):
+         log("[MSVC] Lib already up to date.")
+         return True, implib_out
+
+    # 5. Create DLL
+    log(f"[MSVC] Linking {os.path.basename(dll_out)}...")
+    link_cmd = [link_exe, "/nologo", "/DLL", f"/OUT:{dll_out}", f"/IMPLIB:{implib_out}"] + obj_files
+    try:
+        res = subprocess.run(link_cmd, env=msvc_env, capture_output=True, text=True)
+        if res.returncode != 0:
+            log(f"Error linking DLL:")
+            log(res.stdout)
+            log(res.stderr)
+            return False, None
+    except Exception as e:
+        log(f"Exception linking DLL: {e}")
+        return False, None
+        
+    log(f"[MSVC] Successfully built {dll_out}")
+    return True, implib_out
+
+
 def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
     ensure_dirs()
     setup_imgui()
@@ -1020,6 +1293,21 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
     cflags = ["-std=c++20", "-O3", "-flto", "-ffast-math", "-ffunction-sections", "-fdata-sections", "-Wall", "-D_WIN32_WINNT=0x0A00",
               "-I" + os.path.join(PROJECT_ROOT, "common"),
               "-I" + IMGUI_DIR]
+
+    # Compile D3D12 wrappers (MSVC)
+    has_d3d12_msvc, msvc_lib_path = compile_d3d12_wrappers_msvc(env)
+    
+    
+    # Create dummy MSVC libs to satisfy LLD when linking against MSVC objects/import libs
+    dummy_lib_dir = os.path.join(BUILD_DIR, "dummy_libs")
+    os.makedirs(dummy_lib_dir, exist_ok=True)
+    ar_exe = os.path.join(clang_bin, "llvm-ar.exe")
+    if os.path.exists(ar_exe):
+        for lib in ["libmsvcprt.a", "libOLDNAMES.a"]:
+            path = os.path.join(dummy_lib_dir, lib)
+            if not os.path.exists(path):
+                # Create empty archive
+                subprocess.run([ar_exe, "rc", path], env=env)
     
     # --- Architecture Loop ---
     for arch in ["x64", "x86"]:
@@ -1059,7 +1347,9 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         # 1. Compile ImGui
         log(f"Compiling ImGui {arch}...")
         imgui_src_files = glob.glob(os.path.join(IMGUI_DIR, "*.cpp")) + \
-                         [os.path.join(IMGUI_DIR, "backends", f) for f in ["imgui_impl_dx12.cpp", "imgui_impl_dx11.cpp", "imgui_impl_dx10.cpp", "imgui_impl_dx9.cpp", "imgui_impl_opengl3.cpp", "imgui_impl_vulkan.cpp", "imgui_impl_win32.cpp"]]
+                         [os.path.join(IMGUI_DIR, "backends", f) for f in ["imgui_impl_dx12.cpp", "imgui_impl_dx11.cpp", "imgui_impl_dx10.cpp", "imgui_impl_dx9.cpp", "imgui_impl_opengl3.cpp", "imgui_impl_win32.cpp"]]
+                         # NOTE: imgui_impl_vulkan.cpp is in Vulkan layer, not main hook
+
         
         imgui_objs = []
         src_obj_pairs = []
@@ -1087,7 +1377,20 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         log(f"Compiling Hook DLL {arch}...")
         hk_src = glob.glob(os.path.join(PROJECT_ROOT, "hook", "*.cpp")) + \
                  glob.glob(os.path.join(PROJECT_ROOT, "hook", "common", "*.cpp")) + \
-                 glob.glob(os.path.join(PROJECT_ROOT, "hook", "apis", "*.cpp"))
+                 glob.glob(os.path.join(PROJECT_ROOT, "hook", "apis", "*.cpp")) + \
+                 glob.glob(os.path.join(PROJECT_ROOT, "hook", "wrappers", "*.cpp"))
+        
+        # Exclude D3D12 device/commandqueue wrappers due to MinGW ABI incompatibility
+        # (MSYS2's D3D12 headers use WIDL_EXPLICIT_AGGREGATE_RETURNS which has different vtable layout)
+        # d3d12_wrapper_interface.cpp is compiled by MSVC and linked as a static lib
+        # vulkan_hook.cpp is excluded - replaced by VK_LAYER_CE_overlay (Vulkan layer)
+        excluded_files = [
+            os.path.join(PROJECT_ROOT, "hook", "wrappers", "d3d12_device_wrap.cpp"),
+            os.path.join(PROJECT_ROOT, "hook", "wrappers", "d3d12_commandqueue_wrap.cpp"),
+            os.path.join(PROJECT_ROOT, "hook", "wrappers", "d3d12_wrapper_interface.cpp"),
+            os.path.join(PROJECT_ROOT, "hook", "apis", "vulkan_hook.cpp"),  # Using Vulkan layer instead
+        ]
+        hk_src = [f for f in hk_src if f not in excluded_files]
         
         mh_src = [os.path.join(MINHOOK_DIR, "src", f) for f in ["buffer.c", "hook.c", "trampoline.c"]]
         if arch == "x64" and os.path.exists(os.path.join(MINHOOK_DIR, "src", "hde", "hde64.c")):
@@ -1095,7 +1398,8 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         elif arch == "x86" and os.path.exists(os.path.join(MINHOOK_DIR, "src", "hde", "hde32.c")):
             mh_src.append(os.path.join(MINHOOK_DIR, "src", "hde", "hde32.c"))
         hk_src += mh_src
-        hk_src.append(os.path.join(PROJECT_ROOT, "external", "volk", "volk.c"))
+        # volk removed - using vulkan layer instead
+        # hk_src.append(os.path.join(PROJECT_ROOT, "external", "volk", "volk.c"))
 
         # hk_src = [os.path.join(PROJECT_ROOT, "hook", "minimal_main.cpp")]
 
@@ -1120,6 +1424,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             "-luser32", # For GetWindowRect etc
             "-lgdi32",
             "-lopengl32",
+            os.path.join(MSYS2_DIR, 'clang64' if arch == "x64" else 'mingw32', 'lib', 'libvulkan-1.dll.a'),  # Vulkan overlay
             "-lversion", # For GetFileVersionInfo
             "-ldxgi",    # Needed for VRAM query
             "-lpdh",     # Needed for CPU usage
@@ -1135,12 +1440,25 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             # ldflags_hook.append("-flto")
             pass
         
-        hk_cflags = curr_cflags + ["-DVK_NO_PROTOTYPES"] + [
+        hk_cflags = curr_cflags + ["-DVK_NO_PROTOTYPES"] + [  # Vulkan hooks now in layer
             "-I" + os.path.join(PROJECT_ROOT, "hook", "common"),
             "-I" + os.path.join(PROJECT_ROOT, "hook", "apis"),
-            "-I" + os.path.join(MINHOOK_DIR, "include"),
-            "-I" + os.path.join(MINHOOK_DIR, "src")
+            "-I" + os.path.join(PROJECT_ROOT, "hook", "wrappers"),
+            "-I" + MINHOOK_DIR + "/include",
+            "-I" + MINHOOK_DIR + "/src"
         ]
+        
+        # Check for MSVC-compiled D3D12 wrappers
+        d3d12_lib = os.path.join(BUILD_DIR, "lib", "d3d12_wrappers.lib")
+        if arch == "x64" and os.path.exists(d3d12_lib):
+            log("Found MSVC-compiled D3D12 wrappers, enabling D3D12 wrapper support...")
+            hk_cflags.append("-DENABLE_D3D12_WRAPPER")
+            ldflags_hook.append(d3d12_lib)
+            ldflags_hook.append("-L" + dummy_lib_dir)
+            if has_d3d12_msvc:
+                 # Ensure proper rebuild if MSVC lib changed?
+                 pass
+
         
         hk_objs = []
         src_obj_pairs = []
@@ -1280,6 +1598,14 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
     # 6. Compile Test Applications (DX12 and Vulkan test apps)
     compile_testapps(env, os.path.join(clang_bin, "clang++.exe"), cflags)
 
+    # 7. Compile Vulkan Layer (VK_LAYER_CE_overlay) - both architectures
+    compile_vulkan_layer(env, os.path.join(clang_bin, "clang++.exe"), cflags, "x64")
+    # x86 layer using mingw32 toolchain
+    x86_clang = os.path.join(MSYS2_DIR, "mingw32", "bin", "clang++.exe")
+    if os.path.exists(x86_clang):
+        x86_cflags = ["-std=c++20", "-O3", "-m32", "-Wall", "-D_WIN32_WINNT=0x0A00"]
+        compile_vulkan_layer(env, x86_clang, x86_cflags, "x86")
+
     # Cleanup import libraries
     me_lib = os.path.join(BIN_DIR, "libmediaengine.dll.a")
     if os.path.exists(me_lib): 
@@ -1298,7 +1624,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         if os.path.exists(licenses_dst):
             shutil.rmtree(licenses_dst)
         shutil.copytree(licenses_src, licenses_dst)
-        log("Copied licenses/ directory to bin/")
+        log("Copied licenses/ directory to installed/captureengine/")
 
     log("Build Complete.")
 
