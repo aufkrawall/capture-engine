@@ -13,6 +13,7 @@
 #include <string>
 #include <string>
 #include <timeapi.h>
+#include <winreg.h>
 #include "injection.h"
 
 #ifdef _MSC_VER
@@ -359,9 +360,70 @@ void CheckChildProcessHealth() {
   checkProcess(g_hLimiterProcess, "Limiter");
 }
 
+
+
+// Registry Helpers for Ephemeral Vulkan Layer Registration
+static void Registry_ManageImplicitLayer(bool install) {
+    HKEY hKey;
+    // HKCU is safer and sufficient for local user
+    if (RegCreateKeyExA(HKEY_CURRENT_USER, "Software\\Khronos\\Vulkan\\ImplicitLayers", 
+                        0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
+        
+        char buffer[MAX_PATH];
+        GetModuleFileNameA(NULL, buffer, MAX_PATH);
+        std::string exePath = buffer;
+        std::string baseDir = exePath.substr(0, exePath.find_last_of("\\/"));
+        
+        const char* jsons[] = { "VK_LAYER_CE_overlay.json", "VK_LAYER_CE_overlay_x86.json" };
+        
+        for (const char* json : jsons) {
+            std::string fullPath = baseDir + "\\" + json;
+            if (install) {
+                DWORD data = 0;
+                RegSetValueExA(hKey, fullPath.c_str(), 0, REG_DWORD, (const BYTE*)&data, sizeof(data));
+                LogInfo("[Controller] Registered Vulkan Layer: %s", json);
+            } else {
+                RegDeleteValueA(hKey, fullPath.c_str());
+                LogInfo("[Controller] Unregistered Vulkan Layer: %s", json);
+            }
+        }
+        RegCloseKey(hKey);
+    } else {
+        LogError("[Controller] Failed to access Vulkan ImplicitLayers registry key.");
+    }
+}
+
+// RAII Wrapper for guaranteed cleanup
+class ScopedVulkanRegistration {
+public:
+    ScopedVulkanRegistration() { Registry_ManageImplicitLayer(true); }
+    ~ScopedVulkanRegistration() { Registry_ManageImplicitLayer(false); }
+};
+
+// Global pointer for emergency cleanup
+static ScopedVulkanRegistration* g_VulkanReg = nullptr;
+
+BOOL WINAPI ControllerConsoleHandler(DWORD ctrlType) {
+    if (ctrlType == CTRL_C_EVENT || ctrlType == CTRL_BREAK_EVENT || ctrlType == CTRL_CLOSE_EVENT) {
+         LogInfo("[Controller] Console Interrupted. Cleaning up...");
+         if (g_VulkanReg) {
+             Registry_ManageImplicitLayer(false); // Force cleanup
+         }
+         g_Running = false;
+         return TRUE;
+    }
+    return FALSE;
+}
+
 // Controller main function
 int ControllerMain(HINSTANCE hInstance) {
   LogInfo("[Controller] Starting...");
+  
+  SetConsoleCtrlHandler(ControllerConsoleHandler, TRUE);
+  
+  // Ephemeral Registration (RAII)
+  ScopedVulkanRegistration vulkanReg;
+  g_VulkanReg = &vulkanReg;
 
   // Create IPC clients
   g_InjectClient = std::make_unique<ProcessIPCClient>(ProcessMode::Inject);
@@ -499,8 +561,13 @@ int ControllerMain(HINSTANCE hInstance) {
   
   // Keep tray icon alive during shutdown (animation already started by right-click handler)
   // Process messages during shutdown so animation continues
+
+
   LogInfo("[Controller] Shutting down child processes...");
   ShutdownChildProcesses();
+  
+  // Reset global pointer (destructor of ScopedVulkanRegistration will handle cleanup)
+  g_VulkanReg = nullptr;
   
   // Now remove tray icon after shutdown is complete
   if (tray) {

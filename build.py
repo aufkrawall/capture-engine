@@ -1150,6 +1150,26 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         
         log(f"Generated Manifest: {manifest_path}")
 
+        # CLEANUP: Ensure this layer is NOT registered globally in the registry.
+        # It should ONLY be registered ephemerally by captureengine.exe at runtime.
+        try:
+             import winreg
+             key_path = r"Software\Khronos\Vulkan\ImplicitLayers"
+             try:
+                 key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE | winreg.KEY_READ)
+                 # Check if value exists and delete it
+                 try:
+                     winreg.DeleteValue(key, manifest_path)
+                     log(f"Cleaned legacy registry key for: {manifest_name}")
+                 except FileNotFoundError:
+                     pass # Key doesn't exist, good.
+                 winreg.CloseKey(key)
+             except FileNotFoundError:
+                 pass # Interface key doesn't exist, good.
+        except Exception as e:
+             log(f"Warning: Failed to clean registry keys: {e}")
+
+
     except Exception as e:
         log(f"Error linking layer: {e}")
 

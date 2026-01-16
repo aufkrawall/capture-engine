@@ -33,7 +33,7 @@ extern char g_ProcessName[260];
 
 // Local Config (Loaded by Hook for Per-App Overrides)
 #include "../../common/config.h"
-extern AppConfig g_LocalConfig;
+extern AppConfig* g_pLocalConfig;
 
 // Helper to get active config (Local > IPC)
 GraphicsConfig GetActiveGraphicsConfig();

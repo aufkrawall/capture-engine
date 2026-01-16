@@ -56,7 +56,8 @@ void* g_VulkanHook = nullptr;  // Stub for builds without VulkanHook
 #endif
 
 // Global Local Config
-AppConfig g_LocalConfig;
+// Global Local Config
+AppConfig* g_pLocalConfig = nullptr;
 
 // Helper to safely delete hooks
 template<typename T>
@@ -235,23 +236,23 @@ std::string GetRedirectedPath(const std::string& requestedPath) {
         // }
 
         // 1. DLSS/Streamline Logic - Only if no custom detour set
-        if (overridePath.empty()) {
+        if (overridePath.empty() && g_pLocalConfig) {
             if (filenameLower == "nvngx_dlss.dll") {
-                overridePath = g_LocalConfig.graphics.dlssSrDllPath;
+                overridePath = g_pLocalConfig->graphics.dlssSrDllPath;
             } 
             // 2. DLSS Frame Generation
             else if (filenameLower == "nvngx_dlssg.dll") {
-                overridePath = g_LocalConfig.graphics.dlssFgDllPath;
+                overridePath = g_pLocalConfig->graphics.dlssFgDllPath;
             } 
             // 3. DLSS Ray Reconstruction (Denoiser)
             else if (filenameLower == "nvngx_dlssd.dll") {
-                overridePath = g_LocalConfig.graphics.dlssRrDllPath;
+                overridePath = g_pLocalConfig->graphics.dlssRrDllPath;
             }
             // 4. Streamline and related components
             else if (filenameLower.find("sl.") == 0 || 
                      filenameLower == "nvngx_deepdvc.dll" || 
                      filenameLower == "nvlowlatencyvk.dll") {
-                overridePath = g_LocalConfig.graphics.streamlineDllPath;
+                overridePath = g_pLocalConfig->graphics.streamlineDllPath;
             }
         }
 
@@ -304,14 +305,14 @@ LSTATUS WINAPI HookedRegQueryValueExW(HKEY hKey, LPCWSTR lpValueName, LPDWORD lp
     // Check if probing for DLSS Indicator
     if (lpValueName && _wcsicmp(lpValueName, L"ShowDlssIndicator") == 0) {
         // Only if we have a config override
-        if (!g_LocalConfig.graphics.dlssDebugOverlay.empty() && g_LocalConfig.graphics.dlssDebugOverlay != "default") {
+        if (g_pLocalConfig && !g_pLocalConfig->graphics.dlssDebugOverlay.empty() && g_pLocalConfig->graphics.dlssDebugOverlay != "default") {
              // If caller provided buffer to read data
              if (lpData && lpcbData && *lpcbData >= 4) {
                  DWORD* outData = (DWORD*)lpData;
-                 if (g_LocalConfig.graphics.dlssDebugOverlay == "on") {
+                 if (g_pLocalConfig->graphics.dlssDebugOverlay == "on") {
                      *outData = 0x400; // Force ON
                      // HookLog("RegQueryValueExW: Force-enabled DLSS Indicator");
-                 } else if (g_LocalConfig.graphics.dlssDebugOverlay == "off") {
+                 } else if (g_pLocalConfig->graphics.dlssDebugOverlay == "off") {
                      *outData = 0; // Force OFF
                  }
                  return ERROR_SUCCESS; // Pretend we succeeded even if registry key didn't exist
@@ -329,7 +330,7 @@ LPSTR WINAPI HookedGetCommandLineA() {
     LPSTR original = OriginalGetCommandLineA();
     
     // Only spoof if config is loaded and feature forced
-    if (g_LocalConfig.graphics.forceRayReconstruction) {
+    if (g_pLocalConfig && g_pLocalConfig->graphics.forceRayReconstruction) {
         static bool s_Logged = false;
         if (!s_Logged) {
             HookLog("HookedGetCommandLineA called. Original: %s", original ? original : "<null>");
@@ -355,7 +356,7 @@ LPSTR WINAPI HookedGetCommandLineA() {
 LPWSTR WINAPI HookedGetCommandLineW() {
     LPWSTR original = OriginalGetCommandLineW();
 
-    if (g_LocalConfig.graphics.forceRayReconstruction) {
+    if (g_pLocalConfig && g_pLocalConfig->graphics.forceRayReconstruction) {
         static bool s_Logged = false;
         if (!s_Logged) {
             // wchar conversion for logging
@@ -382,7 +383,7 @@ LPWSTR WINAPI HookedGetCommandLineW() {
 // CRT Hook Wrappers
 int WINAPI Hooked_getmainargs(int *argc, char ***argv, char ***env, int doWildCard, void *startInfo) {
     int result = Original_getmainargs(argc, argv, env, doWildCard, startInfo);
-    if (g_LocalConfig.graphics.forceRayReconstruction && result == 0 && *argc > 0) {
+    if (g_pLocalConfig && g_pLocalConfig->graphics.forceRayReconstruction && result == 0 && *argc > 0) {
         HookLog("Hooked_getmainargs called. Argc=%d", *argc);
         // TODO: Modify argv here if GetCommandLine fails
     }
@@ -391,7 +392,7 @@ int WINAPI Hooked_getmainargs(int *argc, char ***argv, char ***env, int doWildCa
 
 int WINAPI Hooked_wgetmainargs(int *argc, wchar_t ***argv, wchar_t ***env, int doWildCard, void *startInfo) {
     int result = Original_wgetmainargs(argc, argv, env, doWildCard, startInfo);
-    if (g_LocalConfig.graphics.forceRayReconstruction && result == 0 && *argc > 0) {
+    if (g_pLocalConfig && g_pLocalConfig->graphics.forceRayReconstruction && result == 0 && *argc > 0) {
         HookLog("Hooked_wgetmainargs called. Argc=%d", *argc);
         // Proactive modification: Allocate new argv and append
         // This is risky but standard for this kind of override
@@ -550,7 +551,7 @@ namespace UE5 {
     typedef void (*Set_t)(void* cvar, const wchar_t* value, uint32_t setBy);
 
     void EnforceRR() {
-        if (!g_LocalConfig.graphics.forceRayReconstruction) return;
+        if (!g_pLocalConfig || !g_pLocalConfig->graphics.forceRayReconstruction) return;
 
         static uintptr_t s_ConsoleManagerPtr = 0;
         static bool s_AttemptedScan = false;
@@ -846,11 +847,12 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
       std::string dir = pathString.substr(0, pathString.find_last_of("\\/"));
       std::string configPath = dir + "\\config.ini";
       
-      LoadConfig(configPath, g_LocalConfig);
+      if (!g_pLocalConfig) g_pLocalConfig = new AppConfig();
+      LoadConfig(configPath, *g_pLocalConfig);
       // Prime the graphics override state immediately
       GetActiveGraphicsConfig();
       EarlyLog("HookThread: Local config loaded from %s. PrerenderLimit=%.2f", 
-          configPath.c_str(), g_LocalConfig.graphics.cpuPrerenderLimit);
+          configPath.c_str(), g_pLocalConfig->graphics.cpuPrerenderLimit);
   }
   
   // Track last write time for Hot Reloading
@@ -987,7 +989,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
                  // Update timestamp first to avoid loop if load fails
                  g_ConfigLastWriteTime = fileInfo.ftLastWriteTime;
                  
-                 LoadConfig(configPath, g_LocalConfig);
+                 if (g_pLocalConfig) LoadConfig(configPath, *g_pLocalConfig);
                  // Force override update
                  GetActiveGraphicsConfig();
                  
@@ -1137,8 +1139,6 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     
 
 
-    _putenv("FERMI_UNOPT_LOD_SPREAD=1");
-    _putenv("NIAGARA_UNOPT_LOD_SPREAD=1");
 
     char exeName[MAX_PATH];
     GetModuleFileNameA(NULL, exeName, MAX_PATH);
@@ -1148,38 +1148,38 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     g_ProcessName[sizeof(g_ProcessName) - 1] = '\0';
 
     if (g_ProcessCategory == ProcessCategory::PotentialGame) {
-        if (!isProcessWhitelistedFast(fileName)) {
-            g_ProcessCategory = ProcessCategory::Blacklisted;
-            EarlyLog("DllMain: Process '%s' blacklisted (not found in whitelist)", fileName);
+        if (_stricmp(fileName, "captureengine.exe") == 0 || _stricmp(fileName, "captureengine_x86.exe") == 0) {
+            g_ProcessCategory = ProcessCategory::InternalTool;
+            EarlyLog("DllMain: Process '%s' identified as InternalTool", fileName);
+        } else if (isProcessWhitelistedFast(fileName)) {
+             // Whitelisted Game
+             if (!g_pLocalConfig) {
+                 g_pLocalConfig = new AppConfig();
+             }
+             _putenv("FERMI_UNOPT_LOD_SPREAD=1");
+             _putenv("NIAGARA_UNOPT_LOD_SPREAD=1");
+             EarlyLog("DllMain: Process '%s' is a Whitelisted Game", fileName);
         } else {
-            if (_stricmp(fileName, "captureengine.exe") == 0 || _stricmp(fileName, "captureengine_x86.exe") == 0) {
-                g_ProcessCategory = ProcessCategory::InternalTool;
-                EarlyLog("DllMain: Process '%s' identified as InternalTool", fileName);
-            } else {
-                 EarlyLog("DllMain: Process '%s' is a Whitelisted Game", fileName);
-            }
+             // Not whitelisted - assume blacklist
+             g_ProcessCategory = ProcessCategory::Blacklisted;
+             // DO NOT LOG - Silent Rejection
         }
     }
 
 
     if (g_ProcessCategory == ProcessCategory::Blacklisted) {
         g_isDormant = true;
-        EarlyLog("DllMain: Fast Eject triggering for '%s'", fileName);
-        
-        // Fast Eject: Spawn a thread to unload ourselves immediately
-        // This avoids the overhead of staying resident in non-target processes
-        HANDLE hThread = CreateThread(NULL, 0, EjectThread, hinstDLL, 0, NULL);
-        if (hThread) {
-            CloseHandle(hThread);
-        }
-        
-        return TRUE; 
+        // Optimization: Do NOT Unload (return FALSE).
+        // Returning FALSE causes the OS to retry loading repeatedly for global CBT hooks,
+        // causing massive CPU usage and system slowness.
+        // Instead, we return TRUE but stay dormant (no threads, no allocations).
     }
 
     if (g_isDormant) {
-        EarlyLog("DllMain: Process '%s' is dormant, skipping hooks", fileName);
+        // Silent return
         return TRUE;
     }
+
 
     if (g_ProcessCategory == ProcessCategory::PotentialGame) {
         if (!(GetModuleHandleA("d3d12.dll") || GetModuleHandleA("d3d11.dll") ||

@@ -186,7 +186,7 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
 }
 
 void EarlyLog(const char *fmt, ...) {
-  if (!g_LocalConfig.debugLogging) return;
+  if (!g_pLocalConfig || !g_pLocalConfig->debugLogging) return;
   va_list args;
   va_start(args, fmt);
   LogToFileAtomic("hook_debug.log", fmt, args);
@@ -194,7 +194,7 @@ void EarlyLog(const char *fmt, ...) {
 }
 
 void NVNGXLog(const char *fmt, ...) {
-  if (!g_LocalConfig.debugLogging) return;
+  if (!g_pLocalConfig || !g_pLocalConfig->debugLogging) return;
   va_list args;
   va_start(args, fmt);
   LogToFileAtomic("nvngx_debug.log", fmt, args);
@@ -316,70 +316,73 @@ GraphicsConfig GetActiveGraphicsConfig() {
     }
     
     // Apply Overrides from g_LocalConfig
-    if (g_LocalConfig.graphics.parsed.srPreset > 0) {
-        static uint32_t lastLoggedLocal = 0;
-        if (g_LocalConfig.graphics.parsed.srPreset != lastLoggedLocal) {
-            HookLog("Config: Local srPreset is %u", g_LocalConfig.graphics.parsed.srPreset);
-            lastLoggedLocal = g_LocalConfig.graphics.parsed.srPreset;
+    // Apply Overrides from g_pLocalConfig
+    if (g_pLocalConfig) {
+        if (g_pLocalConfig->graphics.parsed.srPreset > 0) {
+            static uint32_t lastLoggedLocal = 0;
+            if (g_pLocalConfig->graphics.parsed.srPreset != lastLoggedLocal) {
+                HookLog("Config: Local srPreset is %u", g_pLocalConfig->graphics.parsed.srPreset);
+                lastLoggedLocal = g_pLocalConfig->graphics.parsed.srPreset;
+            }
         }
-    }
-    if (g_LocalConfig.graphics.cpuPrerenderLimit > -0.5f) {
-        mergedConfig.cpuPrerenderLimit = g_LocalConfig.graphics.cpuPrerenderLimit;
-    }
-    if (g_LocalConfig.graphics.vsyncMode != "default" && !g_LocalConfig.graphics.vsyncMode.empty()) {
-        mergedConfig.vsyncMode = g_LocalConfig.graphics.vsyncMode;
-    }
-    if (g_LocalConfig.graphics.backbufferCount > 0) {
-        mergedConfig.backbufferCount = g_LocalConfig.graphics.backbufferCount;
-    }
-    if (g_LocalConfig.graphics.sgssaa) {
-        mergedConfig.sgssaa = g_LocalConfig.graphics.sgssaa;
-    }
-    if (g_LocalConfig.graphics.disableAutoMipBias) {
-        mergedConfig.disableAutoMipBias = g_LocalConfig.graphics.disableAutoMipBias;
-    }
-    if (g_LocalConfig.graphics.dlssAutoExposure != "default" && !g_LocalConfig.graphics.dlssAutoExposure.empty()) {
-        mergedConfig.dlssAutoExposure = g_LocalConfig.graphics.dlssAutoExposure;
-    }
-    if (g_LocalConfig.graphics.dlssExposureNormalization != "default" && !g_LocalConfig.graphics.dlssExposureNormalization.empty()) {
-        mergedConfig.dlssExposureNormalization = g_LocalConfig.graphics.dlssExposureNormalization;
-    }
-    
-    // Missing overrides added to fix regression
-    if (g_LocalConfig.graphics.anisotropicFiltering != "default" && !g_LocalConfig.graphics.anisotropicFiltering.empty()) {
-        mergedConfig.anisotropicFiltering = g_LocalConfig.graphics.anisotropicFiltering;
-    }
-    if (g_LocalConfig.graphics.mipMapping != "default" && !g_LocalConfig.graphics.mipMapping.empty()) {
-        mergedConfig.mipMapping = g_LocalConfig.graphics.mipMapping;
-    }
-    if (g_LocalConfig.graphics.mipBias != "default" && !g_LocalConfig.graphics.mipBias.empty()) {
-        mergedConfig.mipBias = g_LocalConfig.graphics.mipBias;
-    }
-    if (g_LocalConfig.graphics.msaaSamples != "default" && !g_LocalConfig.graphics.msaaSamples.empty()) {
-        mergedConfig.msaaSamples = g_LocalConfig.graphics.msaaSamples;
-    }
-    
-    // Apply Preset Overrides from g_LocalConfig
-    if (g_LocalConfig.graphics.parsed.presetDLAA > 0) mergedConfig.parsed.presetDLAA = g_LocalConfig.graphics.parsed.presetDLAA;
-    if (g_LocalConfig.graphics.parsed.presetQuality > 0) mergedConfig.parsed.presetQuality = g_LocalConfig.graphics.parsed.presetQuality;
-    if (g_LocalConfig.graphics.parsed.presetBalanced > 0) mergedConfig.parsed.presetBalanced = g_LocalConfig.graphics.parsed.presetBalanced;
-    if (g_LocalConfig.graphics.parsed.presetPerformance > 0) mergedConfig.parsed.presetPerformance = g_LocalConfig.graphics.parsed.presetPerformance;
-    if (g_LocalConfig.graphics.parsed.presetUltraPerformance > 0) mergedConfig.parsed.presetUltraPerformance = g_LocalConfig.graphics.parsed.presetUltraPerformance;
-    if (g_LocalConfig.graphics.parsed.presetUltraQuality > 0) mergedConfig.parsed.presetUltraQuality = g_LocalConfig.graphics.parsed.presetUltraQuality;
+        if (g_pLocalConfig->graphics.cpuPrerenderLimit > -0.5f) {
+            mergedConfig.cpuPrerenderLimit = g_pLocalConfig->graphics.cpuPrerenderLimit;
+        }
+        if (g_pLocalConfig->graphics.vsyncMode != "default" && !g_pLocalConfig->graphics.vsyncMode.empty()) {
+            mergedConfig.vsyncMode = g_pLocalConfig->graphics.vsyncMode;
+        }
+        if (g_pLocalConfig->graphics.backbufferCount > 0) {
+            mergedConfig.backbufferCount = g_pLocalConfig->graphics.backbufferCount;
+        }
+        if (g_pLocalConfig->graphics.sgssaa) {
+            mergedConfig.sgssaa = g_pLocalConfig->graphics.sgssaa;
+        }
+        if (g_pLocalConfig->graphics.disableAutoMipBias) {
+            mergedConfig.disableAutoMipBias = g_pLocalConfig->graphics.disableAutoMipBias;
+        }
+        if (g_pLocalConfig->graphics.dlssAutoExposure != "default" && !g_pLocalConfig->graphics.dlssAutoExposure.empty()) {
+            mergedConfig.dlssAutoExposure = g_pLocalConfig->graphics.dlssAutoExposure;
+        }
+        if (g_pLocalConfig->graphics.dlssExposureNormalization != "default" && !g_pLocalConfig->graphics.dlssExposureNormalization.empty()) {
+            mergedConfig.dlssExposureNormalization = g_pLocalConfig->graphics.dlssExposureNormalization;
+        }
+        
+        // Missing overrides added to fix regression
+        if (g_pLocalConfig->graphics.anisotropicFiltering != "default" && !g_pLocalConfig->graphics.anisotropicFiltering.empty()) {
+            mergedConfig.anisotropicFiltering = g_pLocalConfig->graphics.anisotropicFiltering;
+        }
+        if (g_pLocalConfig->graphics.mipMapping != "default" && !g_pLocalConfig->graphics.mipMapping.empty()) {
+            mergedConfig.mipMapping = g_pLocalConfig->graphics.mipMapping;
+        }
+        if (g_pLocalConfig->graphics.mipBias != "default" && !g_pLocalConfig->graphics.mipBias.empty()) {
+            mergedConfig.mipBias = g_pLocalConfig->graphics.mipBias;
+        }
+        if (g_pLocalConfig->graphics.msaaSamples != "default" && !g_pLocalConfig->graphics.msaaSamples.empty()) {
+            mergedConfig.msaaSamples = g_pLocalConfig->graphics.msaaSamples;
+        }
+        
+        // Apply Preset Overrides from g_pLocalConfig
+        if (g_pLocalConfig->graphics.parsed.presetDLAA > 0) mergedConfig.parsed.presetDLAA = g_pLocalConfig->graphics.parsed.presetDLAA;
+        if (g_pLocalConfig->graphics.parsed.presetQuality > 0) mergedConfig.parsed.presetQuality = g_pLocalConfig->graphics.parsed.presetQuality;
+        if (g_pLocalConfig->graphics.parsed.presetBalanced > 0) mergedConfig.parsed.presetBalanced = g_pLocalConfig->graphics.parsed.presetBalanced;
+        if (g_pLocalConfig->graphics.parsed.presetPerformance > 0) mergedConfig.parsed.presetPerformance = g_pLocalConfig->graphics.parsed.presetPerformance;
+        if (g_pLocalConfig->graphics.parsed.presetUltraPerformance > 0) mergedConfig.parsed.presetUltraPerformance = g_pLocalConfig->graphics.parsed.presetUltraPerformance;
+        if (g_pLocalConfig->graphics.parsed.presetUltraQuality > 0) mergedConfig.parsed.presetUltraQuality = g_pLocalConfig->graphics.parsed.presetUltraQuality;
 
-    if (g_LocalConfig.graphics.parsed.rrPresetDLAA > 0) mergedConfig.parsed.rrPresetDLAA = g_LocalConfig.graphics.parsed.rrPresetDLAA;
-    if (g_LocalConfig.graphics.parsed.rrPresetQuality > 0) mergedConfig.parsed.rrPresetQuality = g_LocalConfig.graphics.parsed.rrPresetQuality;
-    if (g_LocalConfig.graphics.parsed.rrPresetBalanced > 0) mergedConfig.parsed.rrPresetBalanced = g_LocalConfig.graphics.parsed.rrPresetBalanced;
-    if (g_LocalConfig.graphics.parsed.rrPresetPerformance > 0) mergedConfig.parsed.rrPresetPerformance = g_LocalConfig.graphics.parsed.rrPresetPerformance;
-    if (g_LocalConfig.graphics.parsed.rrPresetUltraPerformance > 0) mergedConfig.parsed.rrPresetUltraPerformance = g_LocalConfig.graphics.parsed.rrPresetUltraPerformance;
-    if (g_LocalConfig.graphics.parsed.rrPresetUltraQuality > 0) mergedConfig.parsed.rrPresetUltraQuality = g_LocalConfig.graphics.parsed.rrPresetUltraQuality;
+        if (g_pLocalConfig->graphics.parsed.rrPresetDLAA > 0) mergedConfig.parsed.rrPresetDLAA = g_pLocalConfig->graphics.parsed.rrPresetDLAA;
+        if (g_pLocalConfig->graphics.parsed.rrPresetQuality > 0) mergedConfig.parsed.rrPresetQuality = g_pLocalConfig->graphics.parsed.rrPresetQuality;
+        if (g_pLocalConfig->graphics.parsed.rrPresetBalanced > 0) mergedConfig.parsed.rrPresetBalanced = g_pLocalConfig->graphics.parsed.rrPresetBalanced;
+        if (g_pLocalConfig->graphics.parsed.rrPresetPerformance > 0) mergedConfig.parsed.rrPresetPerformance = g_pLocalConfig->graphics.parsed.rrPresetPerformance;
+        if (g_pLocalConfig->graphics.parsed.rrPresetUltraPerformance > 0) mergedConfig.parsed.rrPresetUltraPerformance = g_pLocalConfig->graphics.parsed.rrPresetUltraPerformance;
+        if (g_pLocalConfig->graphics.parsed.rrPresetUltraQuality > 0) mergedConfig.parsed.rrPresetUltraQuality = g_pLocalConfig->graphics.parsed.rrPresetUltraQuality;
 
-    // Apply Global Preset Overrides from g_LocalConfig
-    if (g_LocalConfig.graphics.parsed.srPreset > 0) mergedConfig.parsed.srPreset = g_LocalConfig.graphics.parsed.srPreset;
-    if (g_LocalConfig.graphics.parsed.rrPreset > 0) mergedConfig.parsed.rrPreset = g_LocalConfig.graphics.parsed.rrPreset;
+        // Apply Global Preset Overrides from g_pLocalConfig
+        if (g_pLocalConfig->graphics.parsed.srPreset > 0) mergedConfig.parsed.srPreset = g_pLocalConfig->graphics.parsed.srPreset;
+        if (g_pLocalConfig->graphics.parsed.rrPreset > 0) mergedConfig.parsed.rrPreset = g_pLocalConfig->graphics.parsed.rrPreset;
 
-    if (g_LocalConfig.graphics.parsed.dlssSharpening > -1.5f) {
-        mergedConfig.parsed.dlssSharpening = g_LocalConfig.graphics.parsed.dlssSharpening;
+        if (g_pLocalConfig->graphics.parsed.dlssSharpening > -1.5f) {
+            mergedConfig.parsed.dlssSharpening = g_pLocalConfig->graphics.parsed.dlssSharpening;
+        }
     }
     // Add other fields as needed
     
