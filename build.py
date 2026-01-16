@@ -903,99 +903,110 @@ def compile_testapps(env, clang_exe, cflags):
     # Build x86 test apps without -flto.
     cflags_x86 = [f for f in cflags if f != "-flto"]
     
+    # Collect all build tasks
+    tasks = []
+    
+    def add_task(desc, cmd, cwd=None):
+        tasks.append((desc, cmd, cwd))
+
     # DX12 Test App
     dx12_src = os.path.join(testapp_src_dir, "dx12_test.cpp")
     dx12_exe = os.path.join(testapp_bin_dir, "dx12_test.exe")
     if os.path.exists(dx12_src):
-        log("Compiling dx12_test.exe...")
         dx12_ldflags = ["-static", "-static-libgcc", "-static-libstdc++", 
                         "-ld3d12", "-ldxgi", "-ld3dcompiler", "-lgdi32", "-luser32", "-lshcore"]
         cmd = [clang_exe] + cflags + [dx12_src] + dx12_ldflags + ["-o", dx12_exe]
-        run_command(cmd, env=env)
-        log(f"Built: {dx12_exe}")
+        add_task("dx12_test.exe", cmd)
 
         if have_x86:
-            log("Compiling dx12_test.exe (x86)...")
             dx12_exe_x86 = os.path.join(x86_bin_dir, "dx12_test.exe")
             cmd = [clang_exe_x86] + cflags_x86 + [dx12_src] + dx12_ldflags + ["-o", dx12_exe_x86]
-            run_command(cmd, env=env)
-            log(f"Built: {dx12_exe_x86}")
+            add_task("dx12_test.exe (x86)", cmd)
     
     # DX11 Test App
     dx11_src = os.path.join(testapp_src_dir, "dx11_test.cpp")
     dx11_exe = os.path.join(testapp_bin_dir, "dx11_test.exe")
     if os.path.exists(dx11_src):
-        log("Compiling dx11_test.exe...")
         dx11_ldflags = ["-static", "-static-libgcc", "-static-libstdc++", 
                         "-ld3d11", "-ldxgi", "-lgdi32", "-luser32", "-lshcore"]
         cmd = [clang_exe] + cflags + [dx11_src] + dx11_ldflags + ["-o", dx11_exe]
-        run_command(cmd, env=env)
-        log(f"Built: {dx11_exe}")
+        add_task("dx11_test.exe", cmd)
 
         if have_x86:
-            log("Compiling dx11_test.exe (x86)...")
             dx11_exe_x86 = os.path.join(x86_bin_dir, "dx11_test.exe")
             cmd = [clang_exe_x86] + cflags_x86 + [dx11_src] + dx11_ldflags + ["-o", dx11_exe_x86]
-            run_command(cmd, env=env)
-            log(f"Built: {dx11_exe_x86}")
+            add_task("dx11_test.exe (x86)", cmd)
 
     # DX9 Test App
     dx9_src = os.path.join(testapp_src_dir, "dx9_test.cpp")
     dx9_exe = os.path.join(testapp_bin_dir, "dx9_test.exe")
     if os.path.exists(dx9_src):
-        log("Compiling dx9_test.exe...")
         dx9_ldflags = ["-static", "-static-libgcc", "-static-libstdc++", 
                        "-ld3d9", "-lgdi32", "-luser32"]
         cmd = [clang_exe] + cflags + [dx9_src] + dx9_ldflags + ["-o", dx9_exe]
-        run_command(cmd, env=env)
-        log(f"Built: {dx9_exe}")
+        add_task("dx9_test.exe", cmd)
 
         if have_x86:
-            log("Compiling dx9_test.exe (x86)...")
             dx9_exe_x86 = os.path.join(x86_bin_dir, "dx9_test.exe")
             cmd = [clang_exe_x86] + cflags_x86 + [dx9_src] + dx9_ldflags + ["-o", dx9_exe_x86]
-            run_command(cmd, env=env)
-            log(f"Built: {dx9_exe_x86}")
+            add_task("dx9_test.exe (x86)", cmd)
 
     # DX10 Test App
     dx10_src = os.path.join(testapp_src_dir, "dx10_test.cpp")
     dx10_exe = os.path.join(testapp_bin_dir, "dx10_test.exe")
     if os.path.exists(dx10_src):
-        log("Compiling dx10_test.exe...")
         dx10_ldflags = ["-static", "-static-libgcc", "-static-libstdc++",
                         "-ld3d10", "-ldxgi", "-ld3dcompiler", "-lgdi32", "-luser32", "-lshcore"]
         cmd = [clang_exe] + cflags + [dx10_src] + dx10_ldflags + ["-o", dx10_exe]
-        run_command(cmd, env=env)
-        log(f"Built: {dx10_exe}")
+        add_task("dx10_test.exe", cmd)
 
         if have_x86:
-            log("Compiling dx10_test.exe (x86)...")
             dx10_exe_x86 = os.path.join(x86_bin_dir, "dx10_test.exe")
             cmd = [clang_exe_x86] + cflags_x86 + [dx10_src] + dx10_ldflags + ["-o", dx10_exe_x86]
-            run_command(cmd, env=env)
-            log(f"Built: {dx10_exe_x86}")
+            add_task("dx10_test.exe (x86)", cmd)
 
     # Vulkan Test App
     vulkan_src = os.path.join(testapp_src_dir, "vulkan_test.cpp")
     vulkan_exe = os.path.join(testapp_bin_dir, "vulkan_test.exe")
     if os.path.exists(vulkan_src):
-        log("Compiling vulkan_test.exe...")
         vulkan_lib = os.path.join(MSYS2_DIR, 'clang64', 'lib', 'libvulkan-1.dll.a')
         vulkan_ldflags = ["-static", "-static-libgcc", "-static-libstdc++",
                           vulkan_lib, "-lgdi32", "-luser32", "-lshcore"]
         cmd = [clang_exe] + cflags + [vulkan_src] + vulkan_ldflags + ["-o", vulkan_exe]
-        run_command(cmd, env=env)
-        log(f"Built: {vulkan_exe}")
+        add_task("vulkan_test.exe", cmd)
 
         if have_x86:
-            log("Compiling vulkan_test.exe (x86)...")
             vulkan_exe_x86 = os.path.join(x86_bin_dir, "vulkan_test.exe")
             vulkan_lib_x86 = os.path.join(MSYS2_DIR, 'mingw32', 'lib', 'libvulkan-1.dll.a')
             vulkan_ldflags_x86 = ["-static", "-static-libgcc", "-static-libstdc++",
                                   vulkan_lib_x86, "-lgdi32", "-luser32", "-lshcore"]
             cmd = [clang_exe_x86] + cflags_x86 + [vulkan_src] + vulkan_ldflags_x86 + ["-o", vulkan_exe_x86]
-            run_command(cmd, env=env)
-            log(f"Built: {vulkan_exe_x86}")
+            add_task("vulkan_test.exe (x86)", cmd)
+
+    # Execute all tasks in parallel
+    if not tasks:
+        return
+
+    def compile_app(t):
+        desc, cmd, cwd = t
+        log(f"Compiling {desc}...")
+        try:
+            subprocess.run(cmd, env=env, cwd=cwd, check=True, capture_output=True, text=True)
+            log(f"Built: {desc}")
+        except subprocess.CalledProcessError as e:
+            log(f"ERROR compiling {desc}:")
+            log(e.stdout)
+            log(e.stderr)
+            raise e
+
+    log(f"Compiling {len(tasks)} Test Apps in parallel...")
+    with ThreadPoolExecutor(max_workers=cpu_count()) as executor:
+        futures = [executor.submit(compile_app, t) for t in tasks]
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception:
+                sys.exit(1)
 
 def compile_vulkan_layer(env, clang_exe, cflags, arch):
     """Compile VK_LAYER_CE_overlay - Vulkan implicit layer for overlay and capture"""
@@ -1038,52 +1049,53 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
     
     layer_objs = []
     
-    # Compile layer sources
-    for src in layer_sources:
-        if not os.path.exists(src):
-            log(f"Warning: Layer source not found: {src}")
-            continue
-        basename = os.path.splitext(os.path.basename(src))[0]
-        obj = os.path.join(obj_dir, basename + ".o")
-        cmd = [clang_exe] + layer_cflags + ["-c", src, "-o", obj]
-        try:
-            run_command(cmd, env=env)
-            layer_objs.append(obj)
-        except Exception as e:
-            log(f"Warning: Failed to compile {src}: {e}")
+    # Compile all sources in parallel
+    src_obj_pairs = []
     
-    # Compile ImGui sources for layer
+    # helper to add sources
+    def add_sources(sources, dest_obj_dir):
+        for src in sources:
+            if not os.path.exists(src):
+                log(f"Warning: Layer source not found: {src}")
+                continue
+            basename = os.path.splitext(os.path.basename(src))[0]
+            obj = os.path.join(dest_obj_dir, basename + ".o")
+            src_obj_pairs.append((src, obj))
+            layer_objs.append(obj)
+
+    add_sources(layer_sources, obj_dir)
+    
     imgui_obj_dir = os.path.join(obj_dir, "imgui")
     os.makedirs(imgui_obj_dir, exist_ok=True)
+    add_sources(imgui_sources, imgui_obj_dir)
     
-    for src in imgui_sources:
-        if not os.path.exists(src):
-            continue
-        basename = os.path.splitext(os.path.basename(src))[0]
-        obj = os.path.join(imgui_obj_dir, basename + ".o")
-        cmd = [clang_exe] + layer_cflags + ["-c", src, "-o", obj]
-        try:
-            run_command(cmd, env=env)
-            layer_objs.append(obj)
-        except Exception as e:
-            log(f"Warning: Failed to compile {src}: {e}")
-    
-    if not layer_objs:
-        log("Error: No layer objects compiled")
+    if not src_obj_pairs:
+        log("Error: No layer sources found.")
         return
+
+    # Run parallel compilation
+    compiled, skipped = parallel_compile(env, clang_exe, layer_cflags, src_obj_pairs)
+    if compiled > 0:
+        log(f"Vulkan Layer ({arch}): compiled {compiled}, skipped {skipped}")
     
     # Link layer DLL
     if arch == "x64":
-        layer_dll = os.path.join(bin_dir, "VK_LAYER_CE_overlay.dll")
+        layer_dll_name = "VK_LAYER_CE_overlay.dll"
         vulkan_lib = os.path.join(MSYS2_DIR, 'clang64', 'lib', 'libvulkan-1.dll.a')
     else:
-        layer_dll = os.path.join(bin_dir, "VK_LAYER_CE_overlay_x86.dll")
+        layer_dll_name = "VK_LAYER_CE_overlay_x86.dll"
         vulkan_lib = os.path.join(MSYS2_DIR, 'mingw32', 'lib', 'libvulkan-1.dll.a')
     
+    layer_dll = os.path.join(bin_dir, layer_dll_name)
+    
+    # Use .def file for exports to avoid attributes mismatch with official headers
+    layer_def = os.path.join(layer_dir, "layer.def")
+
     ldflags = [
         "-shared",
         "-static-libgcc",
         "-static-libstdc++",
+        layer_def,
         vulkan_lib,
         "-lgdi32",
         "-luser32",
@@ -1102,14 +1114,42 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         run_command(cmd, env=env)
         log(f"Built: {layer_dll}")
         
-        # Copy layer manifests
-        for m in ["VK_LAYER_CE_overlay.json", "VK_LAYER_CE_overlay_x86.json"]:
-            m_src = os.path.join(layer_dir, m)
-            m_dst = os.path.join(bin_dir, m)
-            if os.path.exists(m_src):
-                import shutil
-                shutil.copy2(m_src, m_dst)
-                log(f"Copied: {m_dst}")
+        # Generate layer manifest JSON dynamically
+        # This ensures the path is always correct and current
+        import json
+        
+        manifest_name = "VK_LAYER_CE_overlay.json" if arch == "x64" else "VK_LAYER_CE_overlay_x86.json"
+        manifest_path = os.path.join(bin_dir, manifest_name)
+        
+        # Absolute path to the DLL we just built
+        # Escape backslashes for JSON
+        abs_dll_path = os.path.abspath(layer_dll)
+        
+        manifest = {
+            "file_format_version": "1.2.0",
+            "layer": {
+                "name": "VK_LAYER_CE_overlay" if arch == "x64" else "VK_LAYER_CE_overlay_x86",
+                "type": "GLOBAL",
+                "library_path": abs_dll_path, # JSON serializer handles escaping
+                "api_version": "1.3.0",
+                "implementation_version": "1",
+                "description": "CaptureEngine Overlay and Recording Layer",
+                "functions": {
+                    "vkGetInstanceProcAddr": "vkGetInstanceProcAddr",
+                    "vkGetDeviceProcAddr": "vkGetDeviceProcAddr",
+                    "vkNegotiateLoaderLayerInterfaceVersion": "vkNegotiateLoaderLayerInterfaceVersion"
+                },
+                "disable_environment": {
+                    "DISABLE_CE_VULKAN_LAYER": "1"
+                }
+            }
+        }
+        
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f, indent=4)
+        
+        log(f"Generated Manifest: {manifest_path}")
+
     except Exception as e:
         log(f"Error linking layer: {e}")
 
@@ -1206,6 +1246,9 @@ def compile_d3d12_wrappers_msvc(env):
     msvc_env = env.copy()
     msvc_env["PATH"] = msvc_bin + os.pathsep + msvc_env.get("PATH", "")
 
+    # Parallel Compilation Logic for MSVC
+    src_obj_pairs = []
+    
     for src in sources:
         if not os.path.exists(src):
             log(f"Warning: Source not found: {src}")
@@ -1218,21 +1261,34 @@ def compile_d3d12_wrappers_msvc(env):
         if os.path.exists(obj) and os.path.getmtime(obj) > os.path.getmtime(src):
             obj_files.append(obj)
             continue
-            
-        log(f"[MSVC] Compiling {basename}...")
-        cmd = [cl_exe] + cflags + [f"/Fo{obj}", src]
         
-        try:
-            res = subprocess.run(cmd, env=msvc_env, capture_output=True, text=True)
-            if res.returncode != 0:
-                log(f"Error compiling {basename}:")
-                log(res.stdout)
-                log(res.stderr)
-                return False, None
-            obj_files.append(obj)
-        except Exception as e:
-            log(f"Exception compiling {basename}: {e}")
-            return False, None
+        src_obj_pairs.append((src, obj))
+
+    if src_obj_pairs:
+        log(f"[MSVC] Compiling {len(src_obj_pairs)} files in parallel...")
+        
+        def compile_msvc_obj(args):
+            src, obj = args
+            basename = os.path.splitext(os.path.basename(src))[0]
+            log(f"[MSVC] Compiling {basename}...")
+            cmd = [cl_exe] + cflags + [f"/Fo{obj}", src]
+            
+            try:
+                res = subprocess.run(cmd, env=msvc_env, capture_output=True, text=True)
+                if res.returncode != 0:
+                    return None, f"Error compiling {basename}:\n{res.stdout}\n{res.stderr}"
+                return obj, None
+            except Exception as e:
+                return None, f"Exception compiling {basename}: {e}"
+
+        with ThreadPoolExecutor(max_workers=cpu_count()) as executor:
+            futures = [executor.submit(compile_msvc_obj, pair) for pair in src_obj_pairs]
+            for future in as_completed(futures):
+                obj, error = future.result()
+                if error:
+                    log(error)
+                    sys.exit(1)
+                obj_files.append(obj)
 
     if not obj_files and not os.path.exists(implib_out):
         log("No MSVC objects compiled and implib doesn't exist.")
@@ -1247,6 +1303,10 @@ def compile_d3d12_wrappers_msvc(env):
     sdk_lib_um = os.path.join(win_sdk_root, "Lib", win_sdk_ver, "um", "x64")
     sdk_lib_ucrt = os.path.join(win_sdk_root, "Lib", win_sdk_ver, "ucrt", "x64")
     
+    log(f"[MSVC] MSVC Lib Path: {msvc_lib}")
+    log(f"[MSVC] SDK Lib UM Path: {sdk_lib_um}")
+    log(f"[MSVC] SDK Lib UCRT Path: {sdk_lib_ucrt}")
+    
     link_cmd = [
         link_exe, "/nologo", "/DLL", 
         f"/OUT:{dll_out}", 
@@ -1254,7 +1314,8 @@ def compile_d3d12_wrappers_msvc(env):
         f"/LIBPATH:{msvc_lib}",
         f"/LIBPATH:{sdk_lib_um}",
         f"/LIBPATH:{sdk_lib_ucrt}",
-        "d3d12.lib", "dxgi.lib", "user32.lib", "kernel32.lib", "uuid.lib"
+        "d3d12.lib", "dxgi.lib", "dxguid.lib", "user32.lib", "kernel32.lib", "uuid.lib",
+        "ucrt.lib", "msvcrt.lib", "vcruntime.lib"
     ] + obj_files
     
     try:
@@ -1263,9 +1324,11 @@ def compile_d3d12_wrappers_msvc(env):
             log(f"Error linking DLL:")
             log(res.stdout)
             log(res.stderr)
+            sys.exit(1) # Fail build immediately
             return False, None
     except Exception as e:
         log(f"Exception linking DLL: {e}")
+        sys.exit(1) # Fail build immediately
         return False, None
         
     log(f"[MSVC] Successfully built {dll_out}")
@@ -1286,6 +1349,9 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
 
     # Compile D3D12 wrappers (MSVC)
     has_d3d12_msvc, msvc_lib_path = compile_d3d12_wrappers_msvc(env)
+    if not has_d3d12_msvc:
+        log("Error: MSVC D3D12 wrappers failed to build!")
+        sys.exit(1)
     
     
     # Create dummy MSVC libs to satisfy LLD when linking against MSVC objects/import libs
@@ -1443,7 +1509,13 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         if arch == "x64" and os.path.exists(d3d12_lib):
             log("Found MSVC-compiled D3D12 wrappers, enabling D3D12 wrapper support...")
             hk_cflags.append("-DENABLE_D3D12_WRAPPER")
+            
+            # Use Delay Load for d3d12_wrappers.dll to avoid dependency issues
+            # The hook DLL will manually load it in DllMain from its own directory
             ldflags_hook.append(d3d12_lib)
+            ldflags_hook.append("-Wl,--delayload=d3d12_wrappers.dll")
+            ldflags_hook.append("-ldelayimp") # MinGW delay load helper
+            
             ldflags_hook.append("-L" + dummy_lib_dir)
             if has_d3d12_msvc:
                  # Ensure proper rebuild if MSVC lib changed?

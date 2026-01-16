@@ -9,11 +9,25 @@
 #include "d3d12_device_wrap.h"
 #include "d3d12_commandqueue_wrap.h"
 
+#define _CRT_SECURE_NO_WARNINGS
+#include <windows.h>
+#include <stdio.h>
+#include <stdarg.h>
+
+void WrapperLog(const char* fmt, ...) {
+    char buf[1024];
+    va_list args;
+    va_start(args, fmt);
+    _vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    OutputDebugStringA(buf);
+}
+
+extern "C" {
+
 // Wrapper GUID for identification
 static const GUID IID_CWrapD3D12Device_Check = 
 { 0x12345678, 0xabcd, 0xef12, { 0x34, 0x56, 0x78, 0x90, 0x12, 0x34, 0x56, 0x78 } };
-
-extern "C" {
 
 // #define D3D12_EXPORT __declspec(dllexport)
 

@@ -13,6 +13,7 @@
 
 #define VK_USE_PLATFORM_WIN32_KHR
 // #define VK_NO_PROTOTYPES // Defined in build.py
+
 #include <vulkan/vulkan.h>
 #include <vulkan/vk_layer.h>
 
@@ -124,14 +125,18 @@ CEInstanceDispatch* GetInstanceDispatch(VkInstance instance);
 CEDeviceDispatch* GetDeviceDispatch(VkDevice device);
 
 // Whitelist checking
-bool CheckProcessWhitelist();
-std::string GetConfigPath();
+// Whitelist checking
+// bool CheckProcessWhitelist(); // Removed - using internal IsProcessWhitelistedFast
+// std::string GetConfigPath(); // Removed
+
+
+
 
 // Layer entry points (exported)
 extern "C" {
-    __declspec(dllexport) VkResult VKAPI_CALL vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct);
-    __declspec(dllexport) PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char* pName);
-    __declspec(dllexport) PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, const char* pName);
+    VkResult VKAPI_CALL vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct);
+    PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char* pName);
+    PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, const char* pName);
 }
 
 // Layer-intercepted functions

@@ -622,7 +622,8 @@ void LoadConfig(const std::string &path, AppConfig &config, const std::string& o
       if (inInjection) {
         if (trimmed.find("whitelist=") == 0) {
           std::string rest = trimmed.substr(10);
-          if (!rest.empty()) {
+          rest = Trim(rest);
+          if (!rest.empty() && rest != "(" && rest != ")") {
               // Parse comma-separated
               std::stringstream ss(rest);
               std::string item;
@@ -633,10 +634,10 @@ void LoadConfig(const std::string &path, AppConfig &config, const std::string& o
           inWhitelist = true;
           inOverlayWhitelist = false;
         } else if (trimmed.find("overlay_whitelist=") == 0 || trimmed.find("overlay-whitelist=") == 0) {
-            // Handle both underscore and hyphen for usability
             size_t eqPos = trimmed.find('=');
             std::string rest = trimmed.substr(eqPos + 1);
-            if (!rest.empty()) {
+            rest = Trim(rest);
+            if (!rest.empty() && rest != "(" && rest != ")") {
                 std::stringstream ss(rest);
                 std::string item;
                 while (std::getline(ss, item, ',')) {
@@ -649,7 +650,8 @@ void LoadConfig(const std::string &path, AppConfig &config, const std::string& o
         } else if (trimmed.find("wgc-window-detection=") == 0 || trimmed.find("wgc_window_detection=") == 0) {
             size_t eqPos = trimmed.find('=');
             std::string rest = trimmed.substr(eqPos + 1);
-            if (!rest.empty()) {
+            rest = Trim(rest);
+            if (!rest.empty() && rest != "(" && rest != ")") {
                 std::stringstream ss(rest);
                 std::string item;
                 while (std::getline(ss, item, ',')) {
@@ -661,25 +663,22 @@ void LoadConfig(const std::string &path, AppConfig &config, const std::string& o
             inWgcWindowDetection = true;
         } else if (inWhitelist) {
           if (trimmed.find('=') != std::string::npos) {
-              inWhitelist = false; // New key starts
-              // Re-evaluate line if it's a new key? No, loop continues next iteration?
-              // Actually invalid INI but we handle graceful exit from whitelist block
-          } else {
+              inWhitelist = false; 
+          } else if (trimmed != "(" && trimmed != ")") {
               AddEntry(line, config.gameWhitelist); 
           }
         } else if (inOverlayWhitelist) {
             if (trimmed.find('=') != std::string::npos) {
                 inOverlayWhitelist = false;
-            } else {
+            } else if (trimmed != "(" && trimmed != ")") {
                 AddEntry(line, config.overlayWhitelist);
             }
         } else if (inWgcWindowDetection) {
             if (trimmed.find('=') != std::string::npos) {
                 inWgcWindowDetection = false;
-            } else {
+            } else if (trimmed != "(" && trimmed != ")") {
                 AddEntry(line, config.wgcWindowTitles);
             }
-
         }
       }
     }

@@ -7,6 +7,9 @@
 #include <Windows.h>
 #include <atomic>
 #include <psapi.h>
+#include <filesystem>
+
+namespace fs = std::filesystem;
 
 static std::atomic<bool> g_Running{true};
 
@@ -114,6 +117,44 @@ static void UpdateSharedMemoryFromConfig(SharedMemoryLayout* pSharedMem, const A
             pSharedMem->overlayConfig.captureIncludeOverlay);
 }
 
+static void PopulateWhitelistCache(DiscoveryInfo* pDisc, const AppConfig& config) {
+    if (!pDisc) return;
+    memset(pDisc->processWhitelist, 0, sizeof(pDisc->processWhitelist));
+    
+    char* p = pDisc->processWhitelist;
+    char* end = pDisc->processWhitelist + sizeof(pDisc->processWhitelist) - 2; // -2 for double null
+    
+    auto addName = [&](const std::string& name) {
+        if (name.empty()) return;
+        size_t len = name.length();
+        if (p + len + 1 < end) {
+            std::string lower = name;
+            std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+            memcpy(p, lower.c_str(), len);
+            p += len;
+            *p++ = '\0';
+        }
+    };
+    
+    for (const auto& name : config.gameWhitelist) {
+        addName(name);
+        LogInfo("[Inject] Added game to whitelist cache: %s", name.c_str());
+    }
+    for (const auto& name : config.overlayWhitelist) {
+        addName(name);
+        LogInfo("[Inject] Added overlay target to whitelist cache: %s", name.c_str());
+    }
+    
+    // Always whitelist our test processes too
+    if (config.debugLogging) {
+        addName("dx12_test.exe");
+        addName("dx11_test.exe");
+        addName("vulkan_test.exe");
+    }
+    
+    *p = '\0'; // Double null terminator
+}
+
 int InjectProcessMain(const AppConfig &config) {
   // Register console control handler
   SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
@@ -131,6 +172,9 @@ int InjectProcessMain(const AppConfig &config) {
   std::string exePath = buffer;
   std::string baseDir = exePath.substr(0, exePath.find_last_of("\\/"));
   std::string configPath = baseDir + "\\config.ini";
+
+  HHOOK hCBTHook = NULL;
+  HMODULE hHookDll = NULL;
 
   // Create shared memory with unique name based on our PID
   wchar_t sharedMemName[64];
@@ -156,7 +200,7 @@ int InjectProcessMain(const AppConfig &config) {
     return 1;
   }
 
-  // Create discovery shared memory (fixed name for hook to find us quickly)
+  // Discovery shared memory
   HANDLE hDiscoveryFile = CreateFileMappingW(
       INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0,
       sizeof(DiscoveryInfo), SHARED_MEM_DISCOVERY);
@@ -167,8 +211,27 @@ int InjectProcessMain(const AppConfig &config) {
     if (pDiscovery) {
       pDiscovery->injectPid = GetCurrentProcessId();
       pDiscovery->magic = DISCOVERY_MAGIC;
-      LogInfo("[Inject] Created discovery memory");
+      PopulateWhitelistCache(pDiscovery, config);
+      LogInfo("[Inject] Created discovery memory with whitelist cache");
     }
+  }
+
+  // Install global CBT hook for early injection
+  hHookDll = LoadLibraryA(fs::path(baseDir).append("capture_hook_x64.dll").string().c_str());
+  if (hHookDll) {
+    HOOKPROC proc = (HOOKPROC)GetProcAddress(hHookDll, "CBTHookProc");
+    if (proc) {
+      hCBTHook = SetWindowsHookExA(WH_CBT, proc, hHookDll, 0);
+      if (hCBTHook) {
+        LogInfo("[Inject] Installed global CBT hook for x64 processes");
+      } else {
+        LogError("[Inject] Failed to install global CBT hook: %d", GetLastError());
+      }
+    } else {
+      LogError("[Inject] Failed to find CBTHookProc in hook DLL");
+    }
+  } else {
+    LogError("[Inject] Failed to load hook DLL for global hook installation");
   }
 
   // Initialize shared memory
@@ -253,42 +316,7 @@ int InjectProcessMain(const AppConfig &config) {
 
   LogInfo("[Inject] Shared memory created and initialized");
 
-  // --- CBT Hook Global Injection (SpecialK-style) ---
-  // This installs a system-wide hook that causes Windows to load our DLL
-  // into EVERY process that creates a window. Much earlier than WMI.
-  HHOOK hCBTHookX64 = NULL;
-  HHOOK hCBTHookX86 = NULL;
-  
-  // Get paths to our hook DLLs
-  char exePathBuf[MAX_PATH];
-  GetModuleFileNameA(NULL, exePathBuf, MAX_PATH);
-  std::string exeDir = std::string(exePathBuf).substr(0, std::string(exePathBuf).find_last_of("\\/"));
-  std::string hookDllX64 = exeDir + "\\capture_hook_x64.dll";
-  std::string hookDllX86 = exeDir + "\\capture_hook_x86.dll";
-  
-  // Load our hook DLLs and get the CBTHookProc export
-  HMODULE hDllX64 = LoadLibraryA(hookDllX64.c_str());
-  if (hDllX64) {
-      HOOKPROC hookProc = (HOOKPROC)GetProcAddress(hDllX64, "CBTHookProc");
-      if (hookProc) {
-          hCBTHookX64 = SetWindowsHookExA(WH_CBT, hookProc, hDllX64, 0);
-          if (hCBTHookX64) {
-              LogInfo("[Inject] CBT Global Hook installed (x64)");
-          } else {
-              LogError("[Inject] Failed to install CBT hook x64: %d", GetLastError());
-          }
-      } else {
-          LogError("[Inject] CBTHookProc not found in x64 DLL");
-      }
-  } else {
-      LogError("[Inject] Failed to load hook DLL x64: %d", GetLastError());
-  }
-  
-  // Also install 32-bit hook for 32-bit games (requires 32-bit helper process on 64-bit Windows)
-  // For now, we skip x86 as it requires a separate 32-bit process to call SetWindowsHookEx
-  // TODO: Implement 32-bit global hook via helper process
-  
-  // Initialize injector (WMI fallback for processes that don't create windows)
+  // Initialize injector (WMI based)
   InjectionManager injector(config);
   
   // Register callback to reload config on injection
@@ -415,23 +443,18 @@ int InjectProcessMain(const AppConfig &config) {
     CloseHandle(hDiscoveryFile);
   }
   
-  // Unhook CBT global hooks
-  if (hCBTHookX64) {
-      UnhookWindowsHookEx(hCBTHookX64);
-      LogInfo("[Inject] CBT Hook x64 removed");
-  }
-  if (hCBTHookX86) {
-      UnhookWindowsHookEx(hCBTHookX86);
-      LogInfo("[Inject] CBT Hook x86 removed");
-  }
-  if (hDllX64) {
-      FreeLibrary(hDllX64);
-  }
-  
   // Close limiter event handles
   if (hLimiterReleaseEvent) CloseHandle(hLimiterReleaseEvent);
   if (hLimiterRequestEvent) CloseHandle(hLimiterRequestEvent);
+  if (hCBTHook) {
+    UnhookWindowsHookEx(hCBTHook);
+    LogInfo("[Inject] Uninstalled global CBT hook");
+  }
 
-  LogInfo("[Inject] Process exiting");
+  if (hHookDll) {
+      FreeLibrary(hHookDll);
+  }
+  
+  LogInfo("[Inject] Injector shutdown complete.");
   return 0;
 }

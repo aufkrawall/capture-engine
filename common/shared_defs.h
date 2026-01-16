@@ -17,6 +17,9 @@ static const int FRAME_RING_SIZE = 16;
 struct DiscoveryInfo {
   uint32_t injectPid;      // PID of inject process (owner of main shared memory)
   uint32_t magic;          // Magic number to verify validity (0xCE12CAFE)
+  
+  // Whitelist Cache - Null-separated strings, double-null terminated
+  char processWhitelist[1024];
 };
 static const uint32_t DISCOVERY_MAGIC = 0xCE12CAFE;
 

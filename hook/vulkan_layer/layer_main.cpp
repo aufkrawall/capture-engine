@@ -14,6 +14,7 @@
 #include <cctype>
 #include <vector>
 #include <cstring>
+#include "../../common/shared_defs.h"
 
 // Global state
 CELayerState g_LayerState;
@@ -41,107 +42,9 @@ void LayerLog(const char* fmt, ...) {
     fprintf(stderr, "[CE Layer] %s\n", buf);
 }
 
-// Get path to config.ini (same directory as captureengine.exe)
-std::string GetConfigPath() {
-    // First check environment variable set by captureengine
-    char envPath[MAX_PATH] = {0};
-    if (GetEnvironmentVariableA("CE_CONFIG_PATH", envPath, MAX_PATH) > 0) {
-        return std::string(envPath);
-    }
-    
-    // Fallback: look for config.ini in layer DLL directory
-    char dllPath[MAX_PATH] = {0};
-    HMODULE hModule = nullptr;
-    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                       (LPCSTR)&GetConfigPath, &hModule);
-    if (hModule) {
-        GetModuleFileNameA(hModule, dllPath, MAX_PATH);
-        std::string path(dllPath);
-        size_t pos = path.rfind('\\');
-        if (pos != std::string::npos) {
-            return path.substr(0, pos + 1) + "config.ini";
-        }
-    }
-    
-    return "config.ini";
-}
-
-// Parse whitelist from config.ini
-static std::vector<std::string> ParseWhitelist(const std::string& configPath) {
-    std::vector<std::string> whitelist;
-    std::ifstream file(configPath);
-    if (!file.is_open()) {
-        return whitelist;
-    }
-    
-    std::string line;
-    bool inInjectionSection = false;
-    bool inWhitelist = false;
-    
-    while (std::getline(file, line)) {
-        // Trim whitespace
-        size_t start = line.find_first_not_of(" \t\r\n");
-        if (start == std::string::npos) continue;
-        size_t end = line.find_last_not_of(" \t\r\n");
-        line = line.substr(start, end - start + 1);
-        
-        // Skip comments
-        if (line.empty() || line[0] == ';' || line[0] == '#') continue;
-        
-        // Check for section headers
-        if (line[0] == '[') {
-            inInjectionSection = (line == "[Injection]");
-            inWhitelist = false;
-            continue;
-        }
-        
-        // Parse whitelist in [Injection] section
-        if (inInjectionSection) {
-            if (line.find("whitelist=") == 0 || line.find("whitelist=(") == 0) {
-                inWhitelist = true;
-                // Check if it's a single-line or multi-line whitelist
-                size_t eqPos = line.find('=');
-                std::string value = line.substr(eqPos + 1);
-                // Remove leading (
-                if (!value.empty() && value[0] == '(') {
-                    value = value.substr(1);
-                }
-                // Trim
-                size_t vs = value.find_first_not_of(" \t\"");
-                size_t ve = value.find_last_not_of(" \t\")");
-                if (vs != std::string::npos && ve != std::string::npos && vs <= ve) {
-                    std::string entry = value.substr(vs, ve - vs + 1);
-                    if (!entry.empty() && entry != "(") {
-                        whitelist.push_back(entry);
-                    }
-                }
-                continue;
-            }
-            
-            if (inWhitelist) {
-                // End of whitelist
-                if (line[0] == ')') {
-                    inWhitelist = false;
-                    continue;
-                }
-                // Parse entry
-                size_t vs = line.find_first_not_of(" \t\"");
-                size_t ve = line.find_last_not_of(" \t\")");
-                if (vs != std::string::npos && ve != std::string::npos && vs <= ve) {
-                    std::string entry = line.substr(vs, ve - vs + 1);
-                    if (!entry.empty()) {
-                        whitelist.push_back(entry);
-                    }
-                }
-            }
-        }
-    }
-    
-    return whitelist;
-}
-
-// Check if current process is in whitelist
-bool CheckProcessWhitelist() {
+// Helper: Fast Process Whitelist Check using Shared Memory
+// Avoids unsafe File I/O (config.ini) in arbitrary processes.
+static bool IsProcessWhitelistedFast() {
     // Get process name
     char exePath[MAX_PATH] = {0};
     GetModuleFileNameA(nullptr, exePath, MAX_PATH);
@@ -149,37 +52,59 @@ bool CheckProcessWhitelist() {
     
     // Extract just the filename
     size_t pos = fullPath.rfind('\\');
-    g_LayerState.processName = (pos != std::string::npos) ? fullPath.substr(pos + 1) : fullPath;
+    std::string processName = (pos != std::string::npos) ? fullPath.substr(pos + 1) : fullPath;
     
-    // Get config path
-    g_LayerState.configPath = GetConfigPath();
-    
-    // Parse whitelist
-    std::vector<std::string> whitelist = ParseWhitelist(g_LayerState.configPath);
-    
-    if (whitelist.empty()) {
-        LayerLog("Layer: No whitelist found in config, disabling");
-        return false;
+    // Store for layer state
+    g_LayerState.processName = processName;
+
+    // 1. Internal Whitelist
+    if (_stricmp(processName.c_str(), "captureengine.exe") == 0 || _stricmp(processName.c_str(), "captureengine_x86.exe") == 0) {
+        LayerLog("IsProcessWhitelistedFast: Process '%s' matched internal whitelist", processName.c_str());
+        return true;
     }
     
-    // Case-insensitive comparison
-    std::string processLower = g_LayerState.processName;
-    std::transform(processLower.begin(), processLower.end(), processLower.begin(), 
-                   [](unsigned char c) { return std::tolower(c); });
-    
-    for (const auto& entry : whitelist) {
-        std::string entryLower = entry;
-        std::transform(entryLower.begin(), entryLower.end(), entryLower.begin(),
-                       [](unsigned char c) { return std::tolower(c); });
-        if (processLower == entryLower) {
-            LayerLog("Layer: Process '%s' is WHITELISTED", g_LayerState.processName.c_str());
-            return true;
+    // 2. Shared Memory Whitelist Cache
+    // If shared memory is not available or empty, we default to NOT whitelisted.
+    HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+    if (hDisc) {
+        DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
+        bool found = false;
+        if (pDisc) {
+            if (pDisc->magic == DISCOVERY_MAGIC) {
+                const char* p = pDisc->processWhitelist;
+                const char* end = pDisc->processWhitelist + sizeof(pDisc->processWhitelist);
+                
+                LayerLog("IsProcessWhitelistedFast: Checking SM whitelist for '%s'...", processName.c_str());
+
+                while (p < end && *p != '\0') {
+                    if (_stricmp(processName.c_str(), p) == 0) {
+                        found = true;
+                        break;
+                    }
+                    p += strlen(p) + 1;
+                }
+            } else {
+                 LayerLog("IsProcessWhitelistedFast: Shared Memory Magic mismatch! (Expected %X, Got %X)", DISCOVERY_MAGIC, pDisc->magic);
+            }
+            UnmapViewOfFile(pDisc);
+        } else {
+            LayerLog("IsProcessWhitelistedFast: Failed to MapViewOfFile!");
         }
+        CloseHandle(hDisc);
+        if (found) {
+            LayerLog("IsProcessWhitelistedFast: Process '%s' is WHITELISTED (SM Match)", processName.c_str());
+            return true;
+        } else {
+            LayerLog("IsProcessWhitelistedFast: Process '%s' NOT found in SM whitelist", processName.c_str());
+        }
+    } else {
+        LayerLog("IsProcessWhitelistedFast: Failed to OpenFileMappingW (%S), err=%d", SHARED_MEM_DISCOVERY, GetLastError());
     }
     
-    LayerLog("Layer: Process '%s' is NOT whitelisted, layer inactive", g_LayerState.processName.c_str());
+    LayerLog("Layer: Process '%s' is NOT whitelisted (SM check failed), layer inactive", processName.c_str());
     return false;
 }
+
 
 // Get dispatch table for instance
 CEInstanceDispatch* GetInstanceDispatch(VkInstance instance) {
@@ -196,7 +121,7 @@ CEDeviceDispatch* GetDeviceDispatch(VkDevice device) {
 }
 
 // Layer negotiation - required for Vulkan loader
-extern "C" __declspec(dllexport) VkResult VKAPI_CALL 
+extern "C" VkResult VKAPI_CALL 
 vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct) {
     fprintf(stderr, "[CE Layer] vkNegotiateLoaderLayerInterfaceVersion called\n");
     if (!pVersionStruct) return VK_ERROR_INITIALIZATION_FAILED;
@@ -218,7 +143,7 @@ vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct
     // Initialize layer state on first call
     if (!g_LayerState.initialized) {
         g_LayerState.initialized = true;
-        g_LayerState.whitelisted = CheckProcessWhitelist();
+        g_LayerState.whitelisted = IsProcessWhitelistedFast();
         g_LayerState.overlayEnabled = g_LayerState.whitelisted;
         g_LayerState.captureEnabled = g_LayerState.whitelisted;
         
@@ -235,7 +160,7 @@ vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct
 }
 
 // Instance proc addr lookup
-extern "C" __declspec(dllexport) PFN_vkVoidFunction VKAPI_CALL 
+extern "C" PFN_vkVoidFunction VKAPI_CALL 
 vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
     if (!pName) return nullptr;
     
@@ -273,7 +198,7 @@ vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
 }
 
 // Device proc addr lookup
-extern "C" __declspec(dllexport) PFN_vkVoidFunction VKAPI_CALL 
+extern "C" PFN_vkVoidFunction VKAPI_CALL 
 vkGetDeviceProcAddr(VkDevice device, const char* pName) {
     if (!pName) return nullptr;
     
@@ -318,6 +243,9 @@ vkGetDeviceProcAddr(VkDevice device, const char* pName) {
     return nullptr;
 }
 
+// Include needed for shutdown
+#include "../common/system_metrics.h"
+
 // DLL entry point
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
     switch (fdwReason) {
@@ -325,6 +253,10 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
             DisableThreadLibraryCalls(hinstDLL);
             break;
         case DLL_PROCESS_DETACH:
+            // Important: Shutdown metrics thread before IPC or static destruction
+            // This prevents the background thread from accessing destroyed IPC objects
+            SystemMetricsCollector::Get().Shutdown();
+            
             LayerIPC_Shutdown();
             break;
     }

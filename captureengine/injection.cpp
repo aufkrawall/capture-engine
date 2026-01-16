@@ -101,10 +101,14 @@ bool InjectionManager::IsWhitelisted(const std::string &processName) {
     std::string lowerItem = item;
     std::transform(lowerItem.begin(), lowerItem.end(), lowerItem.begin(),
                    ::tolower);
-    if (lowerName == lowerItem)
+    if (lowerName == lowerItem) {
+      LogInfo("[WMI] Whitelist match (Exact): %s matches %s", processName.c_str(), item.c_str());
       return true;
-    if (lowerName.find(lowerItem) != std::string::npos)
+    }
+    if (lowerName.find(lowerItem) != std::string::npos) {
+      LogInfo("[WMI] Whitelist match (Partial): %s matches %s", processName.c_str(), item.c_str());
       return true;
+    }
   }
 
   // Check Overlay Whitelist
@@ -112,10 +116,14 @@ bool InjectionManager::IsWhitelisted(const std::string &processName) {
     std::string lowerItem = item;
     std::transform(lowerItem.begin(), lowerItem.end(), lowerItem.begin(),
                    ::tolower);
-    if (lowerName == lowerItem)
+    if (lowerName == lowerItem) {
+      LogInfo("[WMI] Overlay target match (Exact): %s matches %s", processName.c_str(), item.c_str());
       return true;
-    if (lowerName.find(lowerItem) != std::string::npos)
+    }
+    if (lowerName.find(lowerItem) != std::string::npos) {
+      LogInfo("[WMI] Overlay target match (Partial): %s matches %s", processName.c_str(), item.c_str());
       return true;
+    }
   }
   return false;
 }

@@ -8,7 +8,7 @@
 #pragma once
 
 #include "wrapper_base.h"
-#include "hook_common.h"
+#include "../common/hook_common.h"
 #include <dxgi1_6.h>
 #include <d3d12.h>
 #include <atomic>

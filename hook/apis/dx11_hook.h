@@ -7,7 +7,7 @@ class DX11Hook : public GraphicsHook {
 public:
   void Init() override;
   void Shutdown() override;
-  void OnHostDisconnect();  // Called when captureengine disconnects
+  void OnHostDisconnect() override;  // Called when captureengine disconnects
 };
 
 // D3D11 function typedefs for IAT patching

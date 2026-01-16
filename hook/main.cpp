@@ -34,17 +34,13 @@ HMODULE g_hModule = NULL;
 enum class ProcessCategory {
     PotentialGame,
     Launcher,
+    InternalTool,
     Blacklisted
 };
 static ProcessCategory g_ProcessCategory = ProcessCategory::PotentialGame;
-static bool g_isSkippedProcess = false; // Backward compatibility for some logic
 
-// CBT Hook Callback - Called by Windows when this DLL is loaded via SetWindowsHookEx
-// This is the entry point for global injection
-extern "C" __declspec(dllexport) LRESULT CALLBACK CBTHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
-    // Just pass through - the real work happens in DllMain/HookThread when we're loaded
-    return CallNextHookEx(NULL, nCode, wParam, lParam);
-}
+static bool g_isDormant = false;
+static bool g_isSkippedProcess = false; 
 
 // Global Hook Pointers
 DX12Hook *g_DX12Hook = nullptr;
@@ -1023,11 +1019,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
       break;
     }
     
-    // Check if host process is still alive
-    static DWORD lastKnownHostPID = 0;
-    
     if (hostPID != 0) {
-      lastKnownHostPID = hostPID;
       HANDLE hHost = OpenProcess(SYNCHRONIZE, FALSE, hostPID);
       if (hHost) {
         DWORD waitResultHost = WaitForSingleObject(hHost, 0); // Immediate check
@@ -1050,7 +1042,6 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
         if (g_IPC->Connect()) {
           EarlyLog("HookThread: Reconnected to new host");
           HookLog("IPC Reconnected to new captureengine instance!");
-          lastKnownHostPID = 0; 
           CheckAndInstallHooks();
         } else {
            // Host not found, maybe it closed?
@@ -1087,190 +1078,152 @@ static DWORD WINAPI UnloadSelfThread(LPVOID) {
     return 0;
 }
 
-static bool checkEarlyConfig(const char* processName, bool* outForceRR) {
-    if (!processName || processName[0] == '\0') return false;
+extern "C" __declspec(dllexport) LRESULT CALLBACK CBTHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    return CallNextHookEx(NULL, nCode, wParam, lParam);
+}
 
-    // 1. Prepare name for matching
-    std::string name = processName;
-    std::transform(name.begin(), name.end(), name.begin(), ::tolower);
+// Thread to safely eject the DLL
+static DWORD WINAPI EjectThread(LPVOID lpParam) {
+    FreeLibraryAndExitThread((HMODULE)lpParam, 0);
+    return 0;
+}
 
-    // 2. Load whitelist from config.ini
-    char dllPath[MAX_PATH];
-    if (GetModuleFileNameA(g_hModule, dllPath, MAX_PATH)) {
-        std::string path = dllPath;
-        size_t lastSlash = path.find_last_of("\\/");
-        if (lastSlash != std::string::npos) {
-            path = path.substr(0, lastSlash + 1) + "config.ini";
-            
-            std::ifstream file(path);
-            if (file.is_open()) {
-                std::string line;
-                bool inInjection = false;
-                bool inAppSection = false;
-                bool isTargetApp = false;
-                bool whitelisted = false;
 
-                while (std::getline(file, line)) {
-                    // Primitive section detection
-                    if (line.find("[Injection]") != std::string::npos) {
-                        inInjection = true;
-                        inAppSection = false;
-                        isTargetApp = false;
-                        continue;
-                    }
-                    if (line.find("[App.") != std::string::npos) {
-                        inAppSection = true;
-                        inInjection = false;
-                        isTargetApp = false;
-                        continue;
-                    }
-                    if ((inInjection || inAppSection) && line.find("[") == 0) {
-                        inInjection = false;
-                        inAppSection = false;
-                        isTargetApp = false;
+
+static bool isProcessWhitelistedFast(const char* name) {
+    if (!name) return false;
+
+    // 1. Internal Whitelist
+    if (_stricmp(name, "captureengine.exe") == 0 || _stricmp(name, "captureengine_x86.exe") == 0) {
+        return true;
+    }
+    
+    // 2. Shared Memory Whitelist Cache
+    // If shared memory is not available or empty, we default to NOT whitelisted.
+    // This avoids unsafe file I/O in sandboxed processes.
+    HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+    if (hDisc) {
+        DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
+        bool found = false;
+        if (pDisc) {
+            if (pDisc->magic == DISCOVERY_MAGIC) {
+                const char* p = pDisc->processWhitelist;
+                const char* end = pDisc->processWhitelist + sizeof(pDisc->processWhitelist);
+                
+                while (p < end && *p != '\0') {
+                    if (_stricmp(name, p) == 0) {
+                        found = true;
                         break;
                     }
-                    
-                    std::string lowerLine = line;
-                    std::transform(lowerLine.begin(), lowerLine.end(), lowerLine.begin(), ::tolower);
-
-                    if (inInjection) {
-                         // Whitelist check
-                         std::string sanity = lowerLine;
-                         sanity.erase(std::remove(sanity.begin(), sanity.end(), '\"'), sanity.end());
-                         sanity.erase(std::remove(sanity.begin(), sanity.end(), '('), sanity.end());
-                         sanity.erase(std::remove(sanity.begin(), sanity.end(), ')'), sanity.end());
-                         if (sanity.find(name) != std::string::npos && sanity.find(";") == std::string::npos) {
-                             whitelisted = true;
-                         }
-                    } else if (inAppSection) {
-                        if (lowerLine.find("process") != std::string::npos && lowerLine.find("=") != std::string::npos) {
-                             if (lowerLine.find(name) != std::string::npos) {
-                                  whitelisted = true;
-                                  isTargetApp = true;
-                             } else {
-                                  isTargetApp = false;
-                             }
-                        }
-                        
-                        if (isTargetApp && outForceRR) {
-                            if (lowerLine.find("dlss_force_ray_reconstruction") != std::string::npos && lowerLine.find("true") != std::string::npos) {
-                                *outForceRR = true;
-                                // EarlyLog("DllMain: ForceRayReconstruction found for %s", processName); 
-                            }
-                        }
-                    }
+                    p += strlen(p) + 1;
                 }
-                if (*outForceRR) {
-                         // Hacky log since EarlyLog might not be initialized or safe in DllMain reader
-                         // OutputDebugStringA("CaptureHook: Force RR Enabled via Early Config\n");
-                }
-                return whitelisted;
             }
+            UnmapViewOfFile(pDisc);
         }
+        CloseHandle(hDisc);
+        if (found) return true;
     }
+    
+    // 3. Fallback: REMOVED. Strict whitelist only.
+    
     return false;
 }
 
 extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
                        LPVOID lpReserved) {
   if (ul_reason_for_call == DLL_PROCESS_ATTACH) {
-    g_hModule = hinstDLL; // Use hinstDLL for g_hModule
+    g_hModule = hinstDLL;
     DisableThreadLibraryCalls(hinstDLL);
     
-    // 0. Set early environment variables for NVIDIA Driver
-    // Use _putenv_s for safety, fallback to _putenv
+
+
     _putenv("FERMI_UNOPT_LOD_SPREAD=1");
-    // Also try the other common one just in case
     _putenv("NIAGARA_UNOPT_LOD_SPREAD=1");
 
-    // --- Identification ---
     char exeName[MAX_PATH];
     GetModuleFileNameA(NULL, exeName, MAX_PATH);
     char* fileLastSlash = strrchr(exeName, '\\');
     char* fileName = fileLastSlash ? (fileLastSlash + 1) : exeName;
     strncpy(g_ProcessName, fileName, sizeof(g_ProcessName) - 1);
     g_ProcessName[sizeof(g_ProcessName) - 1] = '\0';
-    
-    char lowerName[MAX_PATH];
-    for (int i = 0; fileName[i]; i++) {
-        lowerName[i] = (char)tolower(fileName[i]);
-        lowerName[i+1] = '\0';
-    }
 
-
-    // 1. Whitelist Only Policy
-    // We default to "Blacklisted" (Skip) unless explicitly whitelisted.
-    // This handles system processes, launchers (Steam), and unrelated apps automatically.
-
-    // (Launcher list removed)
-    
-
-    // 3. Whitelist check (The "Default-to-Blacklist" Policy)
     if (g_ProcessCategory == ProcessCategory::PotentialGame) {
-        bool forceRR = false;
-        if (!checkEarlyConfig(fileName, &forceRR)) {
-            // Not in whitelist -> treat as blacklisted to avoid injection bomb
+        if (!isProcessWhitelistedFast(fileName)) {
             g_ProcessCategory = ProcessCategory::Blacklisted;
+            EarlyLog("DllMain: Process '%s' blacklisted (not found in whitelist)", fileName);
         } else {
-            // It is whitelisted and game.
-            // Check if we need early hooks (RR enforcement)
-            if (forceRR) {
-                // Pre-populate global config so the hook works
-                g_LocalConfig.graphics.forceRayReconstruction = true;
-                
-                // Use IAT patching for early RR hooks (MinHook-free)
-                OriginalGetCommandLineA = (GetCommandLineA_t)GetProcAddress(
-                    GetModuleHandleA("kernel32.dll"), "GetCommandLineA");
-                OriginalGetCommandLineW = (GetCommandLineW_t)GetProcAddress(
-                    GetModuleHandleA("kernel32.dll"), "GetCommandLineW");
-                
-                void* dummy;
-                IATHook::PatchIATAllModules("kernel32.dll", "GetCommandLineA", 
-                    (void*)&HookedGetCommandLineA, &dummy);
-                IATHook::PatchIATAllModules("kernel32.dll", "GetCommandLineW", 
-                    (void*)&HookedGetCommandLineW, &dummy);
-                
-                // Try hooking CRT start args too
-                HMODULE hUCRT = GetModuleHandleA("ucrtbase.dll");
-                if (!hUCRT) hUCRT = GetModuleHandleA("msvcrt.dll");
-                if (hUCRT) {
-                    Original_getmainargs = reinterpret_cast<decltype(Original_getmainargs)>(
-                        GetProcAddress(hUCRT, "__getmainargs"));
-                    Original_wgetmainargs = reinterpret_cast<decltype(Original_wgetmainargs)>(
-                        GetProcAddress(hUCRT, "__wgetmainargs"));
-                    IATHook::PatchIATAllModules("msvcrt.dll", "__getmainargs", 
-                        (void*)&Hooked_getmainargs, &dummy);
-                    IATHook::PatchIATAllModules("msvcrt.dll", "__wgetmainargs", 
-                        (void*)&Hooked_wgetmainargs, &dummy);
-                }
+            if (_stricmp(fileName, "captureengine.exe") == 0 || _stricmp(fileName, "captureengine_x86.exe") == 0) {
+                g_ProcessCategory = ProcessCategory::InternalTool;
+                EarlyLog("DllMain: Process '%s' identified as InternalTool", fileName);
+            } else {
+                 EarlyLog("DllMain: Process '%s' is a Whitelisted Game", fileName);
             }
         }
     }
 
+
     if (g_ProcessCategory == ProcessCategory::Blacklisted) {
-        // ANTI-CHEAT SAFE: Return FALSE to tell Windows to fully unload this DLL
-        // from non-whitelisted processes. This leaves no trace in the process.
-        // The CBT hook mechanism will handle this gracefully.
-        return FALSE; 
+        g_isDormant = true;
+        EarlyLog("DllMain: Fast Eject triggering for '%s'", fileName);
+        
+        // Fast Eject: Spawn a thread to unload ourselves immediately
+        // This avoids the overhead of staying resident in non-target processes
+        HANDLE hThread = CreateThread(NULL, 0, EjectThread, hinstDLL, 0, NULL);
+        if (hThread) {
+            CloseHandle(hThread);
+        }
+        
+        return TRUE; 
     }
 
-    // 4. Initial Graphics API Check (for whitelisted games)
+    if (g_isDormant) {
+        EarlyLog("DllMain: Process '%s' is dormant, skipping hooks", fileName);
+        return TRUE;
+    }
+
     if (g_ProcessCategory == ProcessCategory::PotentialGame) {
-        bool hasGraphicsAPI = (
-            GetModuleHandleA("d3d12.dll") || GetModuleHandleA("d3d11.dll") ||
-            GetModuleHandleA("d3d9.dll") || GetModuleHandleA("vulkan-1.dll") ||
-            GetModuleHandleA("opengl32.dll") || GetModuleHandleA("d3d8.dll")
-        );
-        if (!hasGraphicsAPI) {
+        if (!(GetModuleHandleA("d3d12.dll") || GetModuleHandleA("d3d11.dll") ||
+              GetModuleHandleA("d3d9.dll") || GetModuleHandleA("vulkan-1.dll") ||
+              GetModuleHandleA("opengl32.dll") || GetModuleHandleA("d3d8.dll"))) {
             g_isSkippedProcess = true;
+            EarlyLog("DllMain: Process '%s' skipped (No Graphics API modules found)", fileName);
+        } else {
+             // If we are a potential game and NOT skipped, let's preload dependencies now.
+             // Only load if we are actually going to hook.
+             
+            // Pre-load dependencies (d3d12_wrappers.dll) from our own directory
+            // This is required because we inject into games that won't have it in their path.
+            // We use DelayLoad in build.py so the OS loader doesn't fail before we get here.
+            char modulePath[MAX_PATH];
+            if (GetModuleFileNameA(hinstDLL, modulePath, MAX_PATH)) {
+                 std::string path(modulePath);
+                 size_t lastSlash = path.find_last_of("\\/");
+                 if (lastSlash != std::string::npos) {
+                     std::string dir = path.substr(0, lastSlash);
+                     std::string wrapperDll = dir + "\\d3d12_wrappers.dll";
+                     
+                     EarlyLog("DllMain: Pre-loading d3d12_wrappers.dll from %s", wrapperDll.c_str());
+                     
+                     // Safe to load? d3d12_wrappers.dll has trivial DllMain.
+                     // We suppress error mode to avoid popups if missing.
+                     UINT oldMode = SetErrorMode(SEM_FAILCRITICALERRORS);
+                     HMODULE hWrapper = LoadLibraryA(wrapperDll.c_str());
+                     if (!hWrapper) {
+                         EarlyLog("DllMain: Failed to load wrapper DLL! Err=%d", GetLastError());
+                     }
+                     SetErrorMode(oldMode);
+                 }
+            }
         }
     }
 
-    HANDLE hThread = CreateThread(NULL, 0, HookThreadWrapper, NULL, 0, NULL);
-    if (hThread) {
-        SetThreadPriority(hThread, THREAD_PRIORITY_HIGHEST);
-        CloseHandle(hThread);
+    if (g_ProcessCategory != ProcessCategory::InternalTool) {
+        EarlyLog("DllMain: Spawning HookThread for '%s'", fileName);
+        HANDLE hThread = CreateThread(NULL, 0, HookThreadWrapper, NULL, 0, NULL);
+        if (hThread) {
+            SetThreadPriority(hThread, THREAD_PRIORITY_HIGHEST);
+            CloseHandle(hThread);
+        }
     }
     
     return TRUE;
