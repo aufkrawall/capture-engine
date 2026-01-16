@@ -3116,11 +3116,15 @@ HRESULT WINAPI DetourD3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL Min
 
         void** vtbl = *reinterpret_cast<void***>(dev);
         
+        static std::mutex s_HookMutex;
+        std::lock_guard<std::mutex> lock(s_HookMutex);
+
         static bool hookedSampler = false;
         if (!hookedSampler) {
             // Index 22 is CreateSampler in ID3D12Device
             MH_STATUS s = MH_CreateHook(&vtbl[22], (LPVOID)DetourCreateSampler, (LPVOID*)&oCreateSampler);
             if (s == MH_OK) {
+                MH_EnableHook(&vtbl[22]);
                 HookLog("DX12: Hooked CreateSampler (early export)");
                 hookedSampler = true;
             } else if (s == MH_ERROR_ALREADY_CREATED) {
@@ -3133,6 +3137,7 @@ HRESULT WINAPI DetourD3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL Min
             // Index 27 is CreateCommittedResource
             MH_STATUS s = MH_CreateHook(&vtbl[27], (LPVOID)DetourCreateCommittedResource, (LPVOID*)&oCreateCommittedResource);
             if (s == MH_OK) {
+                MH_EnableHook(&vtbl[27]);
                 HookLog("DX12: Hooked CreateCommittedResource");
                 hookedCreateResource = true;
             } else if (s == MH_ERROR_ALREADY_CREATED) {
