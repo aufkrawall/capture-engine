@@ -9,6 +9,8 @@
 #include "../common/ipc_client.h"
 #include <cstdio>
 #include <cstdarg>
+#include <dxgiformat.h>
+#include <vulkan/vulkan.h>
 
 // Global IPC Client
 IPCClient g_IPCClient;
@@ -46,6 +48,23 @@ void HookLog(const char* fmt, ...) {
     LayerLog("%s", buf);
 }
 
+uint32_t VkFormatToDXGI(uint32_t vkFormat) {
+    switch (vkFormat) {
+        case 44: // VK_FORMAT_B8G8R8A8_UNORM
+            return 87; // DXGI_FORMAT_B8G8R8A8_UNORM
+        case 37: // VK_FORMAT_R8G8B8A8_UNORM
+            return 28; // DXGI_FORMAT_R8G8B8A8_UNORM
+        case 50: // VK_FORMAT_B8G8R8A8_SRGB
+            return 87; // Map SRGB to UNORM for D3D11 shared resource
+        case 43: // VK_FORMAT_R8G8B8A8_SRGB
+            return 28;
+        case 97: // VK_FORMAT_R16G16B16A16_SFLOAT
+            return 10; // DXGI_FORMAT_R16G16B16A16_FLOAT
+        default:
+            return 87; // Default to BGRA8
+    }
+}
+
 // Initialize layer IPC
 bool LayerIPC_Init() {
     if (g_IPCClient.GetSharedMem()) return true;
@@ -78,10 +97,15 @@ bool LayerIPC_IsConnected() {
     return g_IPCClient.GetSharedMem() != nullptr;
 }
 
+// Global texture count
+static uint32_t g_PublishedTextureCount = 2;
+
 // Update shared texture handles (called when swapchain created)
 void LayerIPC_SetTextures(HANDLE* handles, uint32_t count, uint32_t width, uint32_t height, uint32_t format) {
     auto* mem = g_IPCClient.GetSharedMem();
     if (!mem) return;
+    
+    g_PublishedTextureCount = (count > 0 && count <= 8) ? count : 2;
     
     // Write metadata
     mem->width = width;
@@ -103,20 +127,16 @@ void LayerIPC_UpdateFrameTiming(uint64_t frameCount, float fps, float avgFps) {
     if (!mem) return;
     
     // Update runtime state directly (atomics)
+    // mem->runtimeState.currentFPS.store(fps, std::memory_order_relaxed); // Missing in CaptureState? 
+    // Wait, CaptureState has currentFPS (atomic double).
     mem->runtimeState.currentFPS.store(fps, std::memory_order_relaxed);
     mem->runtimeState.gameFPS.store(avgFps, std::memory_order_relaxed);
-    
-    // We don't have a reliable QPC sync here yet without hooking QueryPerformanceCounter
-    // but overlay uses GetTickCount64 usually for recording time
 }
 
 // Check if overlay should be shown
 bool LayerIPC_ShouldShowOverlay() {
     auto* mem = g_IPCClient.GetSharedMem();
-    if (!mem) return true; // Default to showing if no IPC? Or default hidden? Default hidden is safer. 
-                           // But if user just launched game without captureengine, they won't see overlay anyway.
-                           // Actually standard behavior is to default to hidden if no config.
-                           // But for testing 'TRUE' is better.
+    if (!mem) return true; 
     return mem->overlayConfig.showOverlay;
 }
 
@@ -131,16 +151,48 @@ bool LayerIPC_IsCaptureRequested() {
 void LayerIPC_SetCaptureActive(bool active) {
     auto* mem = g_IPCClient.GetSharedMem();
     if (!mem) return;
-    // Layer doesn't strictly own 'isRecording', the host does. 
-    // But we might want to flag that we are actively capturing?
-    // 'runtimeState.isRecording' is authoritative from Host.
-    // The previous implementation used a local flag?
-    // Let's leave this as no-op for now unless we need to ack.
+    // ...
 }
 
 // Set overlay active status
 void LayerIPC_SetOverlayActive(bool active) {
     // No specific field in SharedMemoryLayout for "Overlay Active Ack"
+}
+
+void LayerIPC_SetLUID(int32_t low, int32_t high) {
+    auto* mem = g_IPCClient.GetSharedMem();
+    if (!mem) return;
+    
+    mem->luidLowPart = low;
+    mem->luidHighPart = high;
+    // LayerLog("Layer IPC: Set LUID %08x:%08x", high, low);
+}
+
+uint32_t LayerIPC_GetWriteIndex() {
+    auto* mem = g_IPCClient.GetSharedMem();
+    if (!mem) return 0;
+    return mem->frameRing.writeIndex.load(std::memory_order_acquire); // Use frameRing
+}
+
+void LayerIPC_IncrementWriteIndex(uint64_t timestamp) {
+    auto* mem = g_IPCClient.GetSharedMem();
+    if (!mem) return;
+    
+    // Update timestamp for the current slot
+    auto& ring = mem->frameRing;
+    uint32_t wIdx = ring.writeIndex.load(std::memory_order_relaxed);
+    
+    uint32_t slot = wIdx % FRAME_RING_SIZE;
+    if (slot < FRAME_RING_SIZE) {
+        ring.slots[slot].timestamp = (int64_t)timestamp;
+        ring.slots[slot].frameIndex = wIdx;
+        ring.slots[slot].textureIndex = wIdx % g_PublishedTextureCount; // Use tracked count
+        ring.slots[slot].sourcePid = GetCurrentProcessId();
+        ring.slots[slot].valid.store(1, std::memory_order_release);
+    }
+    
+    // Increment write index to signal new frame
+    ring.writeIndex.store(wIdx + 1, std::memory_order_release);
 }
 
 // IPC Logging implementation
@@ -169,9 +221,9 @@ void LayerIPC_Log(const char* fmt, ...) {
     DWORD tid = GetCurrentThreadId();
 
     int len = snprintf(s_lineBuffer, sizeof(s_lineBuffer),
-                        "[%02d:%02d:%02d.%03d] [T:%04X] [%s] %s",
+                        "[%02d:%02d:%02d.%03d] [T:%04lX] [%s] %s",
                         st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
-                        tid, g_ProcessName, s_formatBuffer);
+                        (unsigned long)tid, g_ProcessName, s_formatBuffer);
     
     if (len > 0) {
         auto& logs = mem->logs;

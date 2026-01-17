@@ -40,6 +40,15 @@ static const GUID IID_CWrapD3D12Device =
 static const GUID IID_CWrapD3D12CommandQueue = 
 { 0xd4e5f678, 0x90ab, 0xcdef, { 0x12, 0x34, 0x56, 0x78, 0x90, 0x12, 0x34, 0x56 } };
 
+// {A0B1C2D3-E4F5-6789-0123-456789ABCDEF}
+static const GUID IID_ICWrapDXGIAdapter = 
+{ 0xa0b1c2d3, 0xe4f5, 0x6789, { 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef } };
+
+// Interface for unwrapping
+struct ICWrapDXGIAdapter : public IUnknown {
+    virtual IDXGIAdapter* GetReal() = 0;
+};
+
 // ============================================================================
 // Known FG Runtime Unwrap GUIDs - Block these to prevent unwrapping
 // ============================================================================

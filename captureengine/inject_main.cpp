@@ -449,6 +449,13 @@ int InjectProcessMain(const AppConfig &config) {
   if (hCBTHook) {
     UnhookWindowsHookEx(hCBTHook);
     LogInfo("[Inject] Uninstalled global CBT hook");
+    
+    // Broadcast WM_NULL to wake up processes and process the unhook event
+    // This helps release the DLL lock from processes like DataExchangeHost
+    // SendMessageTimeout prevents hanging if a window is unresponsive
+    DWORD_PTR dwResult;
+    SendMessageTimeoutA(HWND_BROADCAST, WM_NULL, 0, 0, SMTO_ABORTIFHUNG | SMTO_NOTIMEOUTIFNOTHUNG, 100, &dwResult);
+    LogInfo("[Inject] Broadcasted WM_NULL to flush hooks");
   }
 
   if (hHookDll) {

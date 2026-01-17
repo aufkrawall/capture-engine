@@ -7,6 +7,7 @@
 #include "layer_main.h"
 #include <vector>
 #include <cstring>
+#include "../common/fps_limiter.h"
 
 // Forward declarations from loader chain
 static PFN_vkGetInstanceProcAddr g_fpNextGetInstanceProcAddr = nullptr;
@@ -96,10 +97,40 @@ VkResult VKAPI_CALL vkCreateInstance(
         return VK_ERROR_INITIALIZATION_FAILED;
     }
     
+    // If whitelisted, try to enable physical device properties 2 extension
+    std::vector<const char*> enabledExtensions;
+    VkInstanceCreateInfo modifiedCreateInfo = *pCreateInfo;
+    
+    if (g_LayerState.whitelisted) {
+        for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; i++) {
+            enabledExtensions.push_back(pCreateInfo->ppEnabledExtensionNames[i]);
+        }
+        
+        bool hasProp2 = false;
+        for (const auto& ext : enabledExtensions) {
+            if (strcmp(ext, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME) == 0) {
+                hasProp2 = true;
+                break;
+            }
+        }
+        
+        if (!hasProp2) {
+            enabledExtensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+            modifiedCreateInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
+            modifiedCreateInfo.ppEnabledExtensionNames = enabledExtensions.data();
+            LayerLog("Layer: Adding instance extension %s", VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+        }
+    }
+
     // Call down the chain
-    VkResult result = fpCreateInstance(pCreateInfo, pAllocator, pInstance);
+    VkResult result = fpCreateInstance(&modifiedCreateInfo, pAllocator, pInstance);
     if (result != VK_SUCCESS) {
-        return result;
+        // Fallback if our extension caused failure (unlikely for Prop2)
+        if (g_LayerState.whitelisted && modifiedCreateInfo.enabledExtensionCount > pCreateInfo->enabledExtensionCount) {
+             LayerLog("Layer: vkCreateInstance failed with added extensions, retrying original");
+             result = fpCreateInstance(pCreateInfo, pAllocator, pInstance);
+        }
+        if (result != VK_SUCCESS) return result;
     }
     
     // Create dispatch table for this instance
@@ -221,6 +252,8 @@ VkResult VKAPI_CALL vkCreateDevice(
             "VK_KHR_external_memory_win32",
             "VK_KHR_external_semaphore",
             "VK_KHR_external_semaphore_win32",
+            "VK_KHR_dedicated_allocation",
+            "VK_KHR_get_memory_requirements2",
         };
         
         // Check if extensions are already enabled, if not add them
@@ -293,6 +326,7 @@ VkResult VKAPI_CALL vkCreateDevice(
     LOAD_DEVICE_FUNC(CmdBeginRenderPass);
     LOAD_DEVICE_FUNC(CmdEndRenderPass);
     LOAD_DEVICE_FUNC(CmdPipelineBarrier);
+    LOAD_DEVICE_FUNC(CmdCopyImage);
     LOAD_DEVICE_FUNC(CmdClearAttachments);
     LOAD_DEVICE_FUNC(CreateSampler);
     LOAD_DEVICE_FUNC(DestroySampler);
@@ -323,6 +357,32 @@ VkResult VKAPI_CALL vkCreateDevice(
     }
     
     LayerLog("Layer: vkCreateDevice succeeded (device=%p)", device);
+
+    // Query Device LUID (Critical for Multi-GPU Shared Resources)
+    if (g_LayerState.whitelisted && instance != VK_NULL_HANDLE) {
+        VkPhysicalDeviceIDPropertiesKHR idProps = {};
+        idProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES_KHR;
+        
+        VkPhysicalDeviceProperties2KHR props2 = {};
+        props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2_KHR;
+        props2.pNext = &idProps;
+
+        // Try to get GetPhysicalDeviceProperties2 from instance dispatch
+        CEInstanceDispatch* instDisp = GetInstanceDispatch(instance);
+        if (instDisp && instDisp->GetPhysicalDeviceProperties2) {
+             instDisp->GetPhysicalDeviceProperties2(physicalDevice, &props2);
+             
+             if (idProps.deviceLUIDValid) {
+                  // Propagate LUID to capture engine
+                  LUID luid;
+                  memcpy(&luid, idProps.deviceLUID, sizeof(LUID));
+                  LayerLog("Layer: Device LUID: %08x-%08x", luid.HighPart, luid.LowPart);
+                  LayerIPC_SetLUID(luid.LowPart, luid.HighPart);
+             } else {
+                  LayerLog("Layer: Device LUID not valid");
+             }
+        }
+    }
     
     return VK_SUCCESS;
 }
@@ -376,8 +436,12 @@ VkResult VKAPI_CALL vkCreateSwapchainKHR(
         return VK_ERROR_INITIALIZATION_FAILED;
     }
     
+    // Ensure swapchain images can be used as transfer source for capture
+    VkSwapchainCreateInfoKHR modifiedInfo = *pCreateInfo;
+    modifiedInfo.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    
     // Call down the chain
-    VkResult result = disp->CreateSwapchainKHR(device, pCreateInfo, pAllocator, pSwapchain);
+    VkResult result = disp->CreateSwapchainKHR(device, &modifiedInfo, pAllocator, pSwapchain);
     if (result != VK_SUCCESS) {
         return result;
     }
@@ -521,6 +585,9 @@ VkResult VKAPI_CALL vkQueuePresentKHR(
     if (presentCount % 600 == 0) {
         LayerLog("Layer: vkQueuePresentKHR (frame %d, queue=%p)", presentCount, queue);
     }
+
+    // Apply FPS Limiter
+    g_SharedFpsLimiter.Apply();
     
     // Render overlay and capture before present
     if (g_LayerState.overlayEnabled && pPresentInfo->swapchainCount > 0) {
@@ -533,11 +600,10 @@ VkResult VKAPI_CALL vkQueuePresentKHR(
     if (g_LayerState.captureEnabled && pPresentInfo->swapchainCount > 0) {
         std::lock_guard<std::mutex> lock(g_SwapchainMapMutex);
         auto it = g_SwapchainMap.find(pPresentInfo->pSwapchains[0]);
-        if (it != g_SwapchainMap.end() && it->second.currentImageIndex < it->second.images.size()) {
-            VkImage srcImage = it->second.images[it->second.currentImageIndex];
-            // TODO: Capture frame
-            // CaptureFrame(device, queue, srcImage, it->second.currentImageIndex);
-        }
+            if (it->second.currentImageIndex < it->second.images.size()) {
+                VkImage srcImage = it->second.images[it->second.currentImageIndex];
+                CaptureFrame(device, queue, srcImage, it->second.currentImageIndex);
+            }
     }
     
     // Call the real present

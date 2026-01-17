@@ -15,6 +15,7 @@
 #include <vector>
 #include <cstring>
 #include "../../common/shared_defs.h"
+#include "../common/fps_limiter.h"
 
 // Global state
 CELayerState g_LayerState;
@@ -140,11 +141,19 @@ vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct
     pVersionStruct->pfnGetDeviceProcAddr = vkGetDeviceProcAddr;
     pVersionStruct->pfnGetPhysicalDeviceProcAddr = nullptr; // Not needed
     
+    // Initialize IPC
+    if (!g_IPCClient.GetSharedMem()) {
+        g_IPCClient.Connect();
+    }
+    
+    // Initialize FPS Limiter with IPC
+    g_SharedFpsLimiter.SetIPCClient(&g_IPCClient);
+
     // Initialize layer state on first call
     if (!g_LayerState.initialized) {
         g_LayerState.initialized = true;
         g_LayerState.whitelisted = IsProcessWhitelistedFast();
-        g_LayerState.overlayEnabled = g_LayerState.whitelisted;
+        g_LayerState.overlayEnabled = g_LayerState.whitelisted; // Initialize capture (lazy init handled in CaptureFrame/CreateSwapchain)
         g_LayerState.captureEnabled = g_LayerState.whitelisted;
         
         if (g_LayerState.whitelisted) {

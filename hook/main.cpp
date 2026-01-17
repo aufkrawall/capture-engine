@@ -1162,7 +1162,26 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
         } else {
              // Not whitelisted - assume blacklist
              g_ProcessCategory = ProcessCategory::Blacklisted;
-             // DO NOT LOG - Silent Rejection
+             // DO NOT LOG - Silent Rejection (default)
+             
+             // "Proper" Fix for File Locks:
+             // We allow specific, known-background processes to self-unload.
+             // This avoids the "Infinite Loop" issue of returning FALSE, but frees the file lock
+             // a few milliseconds after load. 
+             // We do NOT do this for explorer.exe or critical UI processes where a hook callback
+             // into unloaded memory would be catastrophic.
+             if (_stricmp(fileName, "DataExchangeHost.exe") == 0 ||
+                 _stricmp(fileName, "WidgetBoard.exe") == 0 ||
+                 _stricmp(fileName, "msedgewebview2.exe") == 0 ||
+                 _stricmp(fileName, "SearchHost.exe") == 0 ||
+                 _stricmp(fileName, "StartMenuExperienceHost.exe") == 0 ||
+                 _stricmp(fileName, "RuntimeBroker.exe") == 0 ||
+                 _stricmp(fileName, "cbdhsvc.exe") == 0 || 
+                 _stricmp(fileName, "ClipboardUserService.exe") == 0) {
+                 
+                 HANDLE hThread = CreateThread(NULL, 0, UnloadSelfThread, NULL, 0, NULL);
+                 if (hThread) CloseHandle(hThread);
+             }
         }
     }
 

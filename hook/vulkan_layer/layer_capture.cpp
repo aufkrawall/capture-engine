@@ -7,9 +7,16 @@
 
 #include "layer_main.h"
 #include <vector>
+#include <dxgi.h>
+#include <d3d11.h>
+
+#ifndef DXGI_SHARED_RESOURCE_READ
+#define DXGI_SHARED_RESOURCE_READ 0x80000000L
+#define DXGI_SHARED_RESOURCE_WRITE 1
+#endif
 
 // Capture state per device
-struct CaptureState {
+struct VulkanCaptureState {
     bool initialized = false;
     VkDevice device = VK_NULL_HANDLE;
     VkFormat format = VK_FORMAT_UNDEFINED;
@@ -33,7 +40,7 @@ struct CaptureState {
 };
 
 static std::mutex g_CaptureMutex;
-static std::unordered_map<VkDevice, CaptureState> g_CaptureStates;
+static std::unordered_map<VkDevice, VulkanCaptureState> g_CaptureStates;
 
 // Initialize capture for a swapchain
 void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat format,
@@ -53,7 +60,7 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         // Could implement a staging buffer fallback here
     }
     
-    CaptureState state = {};
+    VulkanCaptureState state = {};
     state.device = device;
     state.format = format;
     state.extent = extent;
@@ -107,6 +114,64 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         }
     }
     
+    // Get physical device memory properties for choosing memory type
+    VkPhysicalDeviceMemoryProperties memProps;
+    CEInstanceDispatch* instDisp = GetInstanceDispatch(disp->instance);
+    if (!instDisp || !instDisp->GetPhysicalDeviceMemoryProperties) {
+        LayerLog("Layer Capture: Cannot get physical device memory properties");
+        return;
+    }
+    instDisp->GetPhysicalDeviceMemoryProperties(disp->physicalDevice, &memProps);
+
+    auto FindMemoryType = [&](uint32_t typeFilter, VkMemoryPropertyFlags properties) -> uint32_t {
+        for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
+            if ((typeFilter & (1 << i)) && (memProps.memoryTypes[i].propertyFlags & properties) == properties) {
+                return i;
+            }
+        }
+        return 0; // Fallback
+    };
+
+    // Check capabilities for external memory export
+    {
+        VkPhysicalDeviceExternalImageFormatInfoKHR externalInfoReq = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO_KHR };
+        externalInfoReq.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT;
+
+        VkImageFormatProperties2 formatProps = { VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2 };
+        VkExternalImageFormatPropertiesKHR externalProps = { VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES_KHR };
+        formatProps.pNext = &externalProps;
+
+        VkPhysicalDeviceImageFormatInfo2 formatInfo = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2 };
+        formatInfo.format = format;
+        formatInfo.type = VK_IMAGE_TYPE_2D;
+        formatInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        formatInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        formatInfo.pNext = &externalInfoReq;
+
+        PFN_vkGetPhysicalDeviceImageFormatProperties2KHR pfnGetProps2 = (PFN_vkGetPhysicalDeviceImageFormatProperties2KHR)
+            instDisp->GetInstanceProcAddr(disp->instance, "vkGetPhysicalDeviceImageFormatProperties2KHR");
+
+        if (pfnGetProps2) {
+            VkResult res = pfnGetProps2(disp->physicalDevice, &formatInfo, &formatProps);
+            if (res == VK_SUCCESS) {
+                LayerLog("Layer Capture: Handle type OPAQUE_WIN32_BIT supported. Export flags: %x, Compatible handles: %x",
+                         externalProps.externalMemoryProperties.externalMemoryFeatures,
+                         externalProps.externalMemoryProperties.compatibleHandleTypes);
+            } else {
+                LayerLog("Layer Capture: WARNING: vkGetPhysicalDeviceImageFormatProperties2KHR returned %d for OPAQUE_WIN32_BIT", res);
+            }
+            // Check KMT Support
+             externalInfoReq.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT;
+             res = pfnGetProps2(disp->physicalDevice, &formatInfo, &formatProps);
+             if (res == VK_SUCCESS) {
+                LayerLog("Layer Capture: Handle type D3D11_TEXTURE_KMT_BIT supported. Export flags: %x",
+                         externalProps.externalMemoryProperties.externalMemoryFeatures);
+             } else {
+                LayerLog("Layer Capture: D3D11_TEXTURE_KMT_BIT query failed: %d", res);
+             }
+        }
+    }
+
     // Create staging images with external memory for zero-copy export
     if (disp->GetMemoryWin32HandleKHR) {
         state.stagingImages.resize(imageCount);
@@ -129,7 +194,7 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
             imageInfo.arrayLayers = 1;
             imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
             imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-            imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+            imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
             imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
             imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
             
@@ -142,15 +207,29 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
             VkMemoryRequirements memReqs;
             disp->GetImageMemoryRequirements(device, state.stagingImages[i], &memReqs);
             
+            // NT Handle Export Info
+            SECURITY_ATTRIBUTES sa = {};
+            sa.nLength = sizeof(sa);
+            sa.bInheritHandle = TRUE;
+            sa.lpSecurityDescriptor = nullptr;
+
             VkExportMemoryAllocateInfo exportInfo = {};
             exportInfo.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
+            exportInfo.pNext = nullptr; // KMT doesn't use Win32HandleInfo
             exportInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT;
             
+            // Dedicated Allocation Info
+            VkMemoryDedicatedAllocateInfoKHR dedicatedInfo = {};
+            dedicatedInfo.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO_KHR;
+            dedicatedInfo.pNext = &exportInfo;
+            dedicatedInfo.image = state.stagingImages[i];
+            dedicatedInfo.buffer = VK_NULL_HANDLE;
+
             VkMemoryAllocateInfo allocInfo = {};
             allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-            allocInfo.pNext = &exportInfo;
+            allocInfo.pNext = &dedicatedInfo; // Chain dedicated -> export -> nt_export
             allocInfo.allocationSize = memReqs.size;
-            allocInfo.memoryTypeIndex = 0; // TODO: Find suitable memory type
+            allocInfo.memoryTypeIndex = FindMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
             
             if (disp->AllocateMemory(device, &allocInfo, nullptr, &state.exportedMemories[i]) != VK_SUCCESS) {
                 LayerLog("Layer Capture: Failed to allocate memory for image %d", i);
@@ -159,16 +238,16 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
             
             disp->BindImageMemory(device, state.stagingImages[i], state.exportedMemories[i], 0);
             
-            // Get Win32 handle for D3D11 import
+            // Get Win32 KMT handle
             VkMemoryGetWin32HandleInfoKHR handleInfo = {};
             handleInfo.sType = VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR;
             handleInfo.memory = state.exportedMemories[i];
             handleInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT;
             
             if (disp->GetMemoryWin32HandleKHR(device, &handleInfo, &state.exportedHandles[i]) != VK_SUCCESS) {
-                LayerLog("Layer Capture: Failed to get Win32 handle for image %d", i);
+                LayerLog("Layer Capture: Failed to get Win32 KMT handle for image %d", i);
             } else {
-                LayerLog("Layer Capture: Got export handle %p for image %d", state.exportedHandles[i], i);
+                LayerLog("Layer Capture: Got export KMT handle %p for image %d", state.exportedHandles[i], i);
             }
         }
     }
@@ -180,7 +259,7 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     if (!state.exportedHandles.empty()) {
         LayerIPC_SetTextures(state.exportedHandles.data(), 
                             static_cast<uint32_t>(state.exportedHandles.size()),
-                            extent.width, extent.height, static_cast<uint32_t>(format));
+                            extent.width, extent.height, VkFormatToDXGI(format));
     }
     
     LayerLog("Layer Capture: Initialized for device %p (%dx%d, %d images)", 
@@ -197,7 +276,7 @@ void CleanupCapture(VkDevice device)
         return;
     }
     
-    CaptureState& state = it->second;
+    VulkanCaptureState& state = it->second;
     CEDeviceDispatch* disp = GetDeviceDispatch(device);
     
     if (disp) {
@@ -243,7 +322,7 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
         return;
     }
     
-    CaptureState& state = it->second;
+    VulkanCaptureState& state = it->second;
     CEDeviceDispatch* disp = GetDeviceDispatch(device);
     if (!disp) return;
     
@@ -303,8 +382,19 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
     copyRegion.dstSubresource.layerCount = 1;
     copyRegion.extent = {state.extent.width, state.extent.height, 1};
     
-    // Note: vkCmdCopyImage not in dispatch table, would need to add it
-    // For now this is a stub - the actual copy would be done here
+    disp->CmdCopyImage(cmd, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                      dstImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
+    
+    // Transition destination image to SHARED layout (must be ready for D3D11)
+    // For NT handles, we usually transition to TRANSFER_DST_OPTIMAL or SHADER_READ_ONLY
+    // but D3D11 usually expects it to be ready.
+    // Actually, for External Memory, the layout transitions are tricky.
+    // Let's use GENERAL or SHADER_READ_ONLY_OPTIMAL.
+    
+    dstBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    dstBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    dstBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    dstBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     
     // Transition source back to present
     srcBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
@@ -312,10 +402,11 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
     srcBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     srcBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     
+    VkImageMemoryBarrier postBarriers[] = { srcBarrier, dstBarrier };
     disp->CmdPipelineBarrier(cmd,
         VK_PIPELINE_STAGE_TRANSFER_BIT,
         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-        0, 0, nullptr, 0, nullptr, 1, &srcBarrier);
+        0, 0, nullptr, 0, nullptr, 2, postBarriers);
     
     disp->EndCommandBuffer(cmd);
     
@@ -327,6 +418,7 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
     
     disp->QueueSubmit(queue, 1, &submitInfo, fence);
     
-    // TODO: Signal IPC to captureengine that frame is ready
-    // The exported handle can be used by captureengine to import into D3D11
+    // Signal IPC that a new frame is available
+    // We use the imageIndex to tell captureengine which buffer to read
+    LayerIPC_IncrementWriteIndex(0); // TODO: Pass actual timestamp if available
 }

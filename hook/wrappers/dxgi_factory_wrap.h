@@ -8,6 +8,7 @@
 
 #include "wrapper_base.h"
 #include "dxgi_swapchain_wrap.h"
+#include "dxgi_adapter_wrap.h"
 #include <dxgi1_6.h>
 
 /**

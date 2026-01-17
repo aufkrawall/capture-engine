@@ -14,6 +14,10 @@ extern "C" {
 #include <filesystem>
 namespace fs = std::filesystem;
 
+#ifndef D3D11_FORMAT_SUPPORT_SHAREABLE
+#define D3D11_FORMAT_SUPPORT_SHAREABLE 0x2000
+#endif
+
 // Helper to generate robust output filename
 static std::string GenerateOutputFilename(const VideoConfig& config) {
   // Default to "captures" subdirectory if outputDir is not specified
@@ -168,7 +172,7 @@ VideoEncoder::VideoEncoder()
       hwFramesCtx(nullptr), cudaDeviceCtx(nullptr), cudaFramesCtx(nullptr),
       d3d11DeviceCtx(nullptr), d3d11FramesCtx(nullptr), d3d11Device(nullptr),
       d3d11Context(nullptr), initDone(false), cachedSourcePid(0),
-      lastEncodeTimeUs(0),
+      lastEncodeTimeUs(0), width(0), height(0),
       videoDevice(nullptr), videoContext(nullptr), videoProcessor(nullptr),
       videoProcessorEnum(nullptr), currentNV12Buffer(0), inputView(nullptr),
       videoProcessorInit(false), fenceEvent(nullptr) {}
@@ -573,22 +577,38 @@ bool VideoEncoder::EnsureDevice() {
   // 1. Find Adapter by LUID
   IDXGIAdapter *targetAdapter = nullptr;
   if (luidLow != 0 || luidHigh != 0) {
-    IDXGIFactory1 *factory = nullptr;
-    if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
-      IDXGIAdapter *adapter = nullptr;
-      for (UINT i = 0;
-           factory->EnumAdapters(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
-        DXGI_ADAPTER_DESC desc;
-        adapter->GetDesc(&desc);
-        if (desc.AdapterLuid.LowPart == luidLow &&
-            desc.AdapterLuid.HighPart == luidHigh) {
-          targetAdapter = adapter;
-          DLL_Log("[VideoEncoder] Found Adapter matching LUID");
-          break;
+    LUID searchLuid;
+    searchLuid.LowPart = (DWORD)luidLow;
+    searchLuid.HighPart = (LONG)luidHigh;
+
+    DLL_Log("[VideoEncoder] Searching for Adapter with LUID: %08x-%08x", searchLuid.HighPart, searchLuid.LowPart);
+
+    IDXGIFactory4 *factory4 = nullptr;
+    if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory4)))) {
+        if (SUCCEEDED(factory4->EnumAdapterByLuid(searchLuid, IID_PPV_ARGS(&targetAdapter)))) {
+             DLL_Log("[VideoEncoder] Found Adapter matching LUID via IDXGIFactory4");
         }
-        adapter->Release();
-      }
-      factory->Release();
+        factory4->Release();
+    }
+
+    if (!targetAdapter) {
+        IDXGIFactory1 *factory = nullptr;
+        if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
+          IDXGIAdapter *adapter = nullptr;
+          for (UINT i = 0;
+               factory->EnumAdapters(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+            DXGI_ADAPTER_DESC desc;
+            adapter->GetDesc(&desc);
+            if (desc.AdapterLuid.LowPart == searchLuid.LowPart &&
+                desc.AdapterLuid.HighPart == searchLuid.HighPart) {
+              targetAdapter = adapter;
+              DLL_Log("[VideoEncoder] Found Adapter matching LUID via manual scan");
+              break;
+            }
+            adapter->Release();
+          }
+          factory->Release();
+        }
     }
   }
 
@@ -609,9 +629,9 @@ bool VideoEncoder::EnsureDevice() {
     DLL_Log("[VideoEncoder] Using shared D3D11 device for framegrab");
   } else {
     // Inject mode - create device on specific adapter
-    DLL_Log("[VideoEncoder] Creating D3D11 Device...");
+    DLL_Log("[VideoEncoder] Creating D3D11 Device (Flags: BGRA + VIDEO)...");
 
-    UINT createDeviceFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+    UINT createDeviceFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
 #ifdef _DEBUG
 // createDeviceFlags |= D3D11_CREATE_DEVICE_DEBUG; // Optional
 #endif
@@ -634,7 +654,7 @@ bool VideoEncoder::EnsureDevice() {
       targetAdapter->Release();
 
     if (FAILED(hr)) {
-      DLL_Log("[VideoEncoder] D3D11CreateDevice Failed: 0x%x", hr);
+      DLL_Log("[VideoEncoder] D3D11CreateDevice Failed: 0x%x (Target: %p)", hr, targetAdapter);
       return false;
     }
     DLL_Log("[VideoEncoder] D3D11 Device Created (Feature Level: 0x%x)",
@@ -908,8 +928,9 @@ bool VideoEncoder::Start() {
   // Pre-warm device and codec to reduce first-frame latency
   // This moves heavy initialization (D3D11 device, codec open, video processor)
   // from first frame to Start() call, avoiding game stutter on recording start
-  if ((luidLow != 0 || luidHigh != 0) && !initDone) {
-      DLL_Log("[VideoEncoder] Pre-warming device and codec...");
+  // IMPORTANT: Only pre-warm if we already have valid dimensions from common discovery
+  if ((luidLow != 0 || luidHigh != 0) && width > 0 && height > 0 && !initDone) {
+      DLL_Log("[VideoEncoder] Pre-warming device and codec (%dx%d)...", width, height);
       auto prewarmStart = PerfTimer::now();
       
       if (!EnsureDevice()) {
@@ -1146,12 +1167,16 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
     }
   }
 
-  // Use captured frame dimensions if not yet set
-  if (this->width == 0 || this->height == 0) {
+  // Use captured frame dimensions if not yet set or changed
+  if (this->width != width || this->height != height) {
+    if (this->width == 0) {
+      DLL_Log("[VideoEncoder] Initial resolution discovered: %dx%d (Input: %dx%d)", width, height, width, height);
+    } else {
+      DLL_Log("[VideoEncoder] Resolution CHANGE detected: %dx%d -> %dx%d", this->width, this->height, width, height);
+      // For now we might need to recreate the encoder, but let's at least update the variables
+    }
     this->width = width;
     this->height = height;
-    DLL_Log("[VideoEncoder] Using captured frame dimensions: %dx%d", width,
-            height);
   }
 
   if (!EnsureDevice())
@@ -1400,18 +1425,41 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
     HANDLE dupTex = nullptr;
     HRESULT hr = E_FAIL;
 
-    // Try NT handle path (requires duplication)
-    if (DuplicateHandle(hProcess, sharedHandle, GetCurrentProcess(), &dupTex, 0,
-                        FALSE, DUPLICATE_SAME_ACCESS)) {
-      hr = d3d11Device->OpenSharedResource1(dupTex, IID_PPV_ARGS(&bgraTex));
-      CloseHandle(dupTex);
-    }
+    if (sharedHandle == NULL) {
+        DLL_Log("[VideoEncoder] Frame %d: Error: sharedHandle is NULL", encodeFrameCounter);
+    } else {
+        // Diagnostic: Check format shareability
+        UINT formatSupport = 0;
+        d3d11Device->CheckFormatSupport(DXGI_FORMAT_B8G8R8A8_UNORM, &formatSupport);
+        if (!(formatSupport & D3D11_FORMAT_SUPPORT_SHAREABLE)) {
+            DLL_Log("[VideoEncoder] CRITICAL WARNING: DXGI_FORMAT_B8G8R8A8_UNORM (87) does NOT support SHAREABLE! Flags=%x", formatSupport);
+        }
 
-    // If NT path failed or duplication failed, try KMT handle path
-    // (OpenSharedResource)
-    if (FAILED(hr)) {
-      hr =
-          d3d11Device->OpenSharedResource(sharedHandle, IID_PPV_ARGS(&bgraTex));
+        /* NT Handle Path Disabled for KMT Fallback
+        // Try NT handle path first - usually preferred for modern interop
+        HANDLE dupTex = nullptr;
+        if (DuplicateHandle(hProcess, sharedHandle, GetCurrentProcess(), &dupTex, 0,
+                             FALSE, DUPLICATE_SAME_ACCESS)) {
+          hr = d3d11Device->OpenSharedResource1(dupTex, IID_PPV_ARGS(&bgraTex));
+          if (FAILED(hr)) {
+                // Log failure details...
+                DXGI_ADAPTER_DESC desc;
+                // ... (existing logging code) ...
+               DLL_Log("[VideoEncoder] Frame %d: OpenSharedResource1(dup=%p) failed HR=%x...", 
+                       encodeFrameCounter, dupTex, hr);
+          }
+          CloseHandle(dupTex);
+        }
+        */
+        hr = E_FAIL; // Ensure we fall through to KMT
+
+        // If NT path failed, try KMT path as direct fallback
+        if (FAILED(hr)) {
+          hr = d3d11Device->OpenSharedResource(sharedHandle, IID_PPV_ARGS(&bgraTex));
+          if (SUCCEEDED(hr)) {
+               DLL_Log("[VideoEncoder] Frame %d: Opened handle %p via KMT path", encodeFrameCounter, sharedHandle);
+          }
+        }
     }
 
     if (FAILED(hr)) {

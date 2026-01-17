@@ -1102,6 +1102,11 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         "-lpdh",
         "-ldxgi",
         "-lshcore",
+        "-lwinmm",
+        "-luser32",
+        "-lpdh",
+        "-ldxgi",
+        "-lshcore",
         "-o", layer_dll,
     ]
     
@@ -1110,6 +1115,23 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         ldflags.append("-static")
         
     cmd = [clang_exe] + layer_objs + ldflags
+    
+    # Robust handling for locked DLLs (DataExchangeHost etc.)
+    if os.path.exists(layer_dll):
+        try:
+            os.remove(layer_dll)
+        except OSError:
+            log(f"[Warning] {os.path.basename(layer_dll)} is locked. Attempting to rename...")
+            try:
+                    import time
+                    import random
+                    trash_name = f"{layer_dll}.trash.{int(time.time())}.{random.randint(1000,9999)}"
+                    os.rename(layer_dll, trash_name)
+                    log(f"[Info] Renamed locked Layer DLL to {os.path.basename(trash_name)}")
+            except OSError as e:
+                    log(f"[Error] Failed to rename locked Layer DLL: {e}")
+                    # sys.exit(1) # Don't exit, try linking anyway? No, it will fail.
+                    
     try:
         run_command(cmd, env=env)
         log(f"Built: {layer_dll}")
@@ -1398,7 +1420,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         curr_clang_exe = os.path.join(curr_clang_bin, "clang++.exe")
         curr_pkg_config = os.path.join(curr_clang_bin, "pkg-config.exe")
         
-        curr_cflags = ["-std=c++20", "-O2", "-flto", "-fno-stack-protector", "-ffunction-sections", "-fdata-sections", "-Wall", "-D_WIN32_WINNT=0x0A00",
+        curr_cflags = ["-std=c++20", "-O2", "-flto", "-fno-stack-protector", "-ffunction-sections", "-fdata-sections", "-Wall", "-Wno-microsoft-exception-spec", "-D_WIN32_WINNT=0x0A00",
                       "-I" + os.path.join(PROJECT_ROOT, "common"),
                       "-I" + IMGUI_DIR,
                       "-I" + os.path.join(MINHOOK_DIR, "include")]
@@ -1553,6 +1575,24 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         parallel_compile(curr_env, curr_clang_exe, hk_cflags, src_obj_pairs)
         
         log(f"Linking Hook DLL {arch}...")
+        
+        # Robust handling for locked DLLs (e.g. by DataExchangeHost with CBT hooks)
+        if os.path.exists(hk_dll):
+            try:
+                os.remove(hk_dll)
+            except OSError:
+                log(f"[Warning] {os.path.basename(hk_dll)} is locked. Attempting to rename...")
+                try:
+                     # Rename to .trash in timestamped format
+                     import time
+                     import random
+                     trash_name = f"{hk_dll}.trash.{int(time.time())}.{random.randint(1000,9999)}"
+                     os.rename(hk_dll, trash_name)
+                     log(f"[Info] Renamed locked DLL to {os.path.basename(trash_name)}")
+                except OSError as e:
+                     log(f"[Error] Failed to rename locked DLL: {e}")
+                     sys.exit(1)
+
         cmd = [curr_clang_exe] + hk_objs + imgui_objs + common_objs + ldflags_hook + ["-o", hk_dll]
         # cmd = [curr_clang_exe] + hk_objs + ldflags_hook + ["-o", hk_dll]
         run_command(cmd, env=curr_env)

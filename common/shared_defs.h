@@ -185,6 +185,7 @@ struct alignas(8) FrameSlot {
   int64_t timestamp;    // QPC timestamp (ticks, not ms - use QPCToMs for conversion)
   uint32_t frameIndex;  // Sequential frame number from hook
   int32_t textureIndex; // Index of shared texture (0-7)
+  uint32_t sourcePid;   // Source process ID (required for OpenProcess/DuplicateHandle)
   std::atomic<uint32_t> valid{0}; // 1 if slot has unread data, 0 if empty/consumed
   uint32_t padding;     // Explicit padding to reach 32 bytes (8+8+4+4+4+4=32)
 };
