@@ -1,5 +1,6 @@
 #define VK_USE_PLATFORM_WIN32_KHR
 #include "vulkan_hook.h"
+#include "../wrappers/iat_hook.h"
 #include "../common/capture_base.h"
 #include "../common/fps_limiter.h"
 #include "../common/overlay.h"
@@ -9,7 +10,6 @@
 #include "../common/fg_detection.h"
 #include "../common/system_metrics.h"
 #include "../../common/frame_timing.h"
-#include <../wrappers/minhook_shim.h>
 #include <algorithm>
 #include <backends/imgui_impl_vulkan.h>
 #include <backends/imgui_impl_win32.h>
@@ -4830,18 +4830,14 @@ void VulkanHook::Init() {
     return;
 
   auto CreateHook = [&](const char *name, void *detour, void **original) {
-    void *addr = (void *)GetProcAddress(hVulkan, name);
-    HookLog("Vulkan: Hooking %s at %p", name, addr);
-    if (addr) {
-      if (MH_CreateHook(addr, detour, original) == MH_OK) {
-        MH_EnableHook(addr);
-        HookLog("Vulkan Hook: %s enabled", name);
-      } else {
-        HookLog("Vulkan Hook: %s FAILED (MH_CreateHook)", name);
-      }
-    } else {
-      HookLog("Vulkan Hook: %s FAILED (GetProcAddress)", name);
-    }
+    // Register for dynamic loading via GetProcAddress
+    IATHook::RegisterDynamicHook(name, detour, original);
+    
+    // Patch explicit imports in all modules
+    void* dummy;
+    IATHook::PatchIATAllModules("vulkan-1.dll", name, detour, &dummy);
+    
+    HookLog("Vulkan Hook: %s registered (IAT/Dynamic)", name);
   };
 
   // IMPORTANT: Hook as little as possible via vulkan-1.dll exports.

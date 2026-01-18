@@ -6,7 +6,7 @@
 #include "hook_common.h"
 #include "performance_metrics.h"
 #include "../common/frame_timing.h"
-#include <../wrappers/minhook_shim.h>
+#include "../wrappers/vtable_hook.h"
 #include <cstdint>
 #include <d3d9.h>
 #include <d3d11.h>
@@ -939,8 +939,7 @@ void DDrawHook::Init() {
     typedef HRESULT (STDMETHODCALLTYPE *CreateSurface_t)(IDirectDraw7*, void*, IDirectDrawSurface7**, void*);
     
     // Hook CreateSurface on IDirectDraw7 (index 6)
-    if (MH_CreateHook(ddraw7VTable[6], (LPVOID)&DetourDirectDraw7CreateSurface, (LPVOID*)&oDDraw7CreateSurface) == MH_OK) {
-        MH_EnableHook(ddraw7VTable[6]);
+    if (VTableHook::Create(&ddraw7VTable[6], (LPVOID)&DetourDirectDraw7CreateSurface, (LPVOID*)&oDDraw7CreateSurface) == VTableHook::Success) {
         HookLog("DDraw: CreateSurface hook installed");
     }
 
@@ -954,16 +953,14 @@ void DDrawHook::Init() {
         void **surfaceVTable = *(void***)dummySurface;
         
         // Hook Flip
-        if (MH_CreateHook(surfaceVTable[DDSURFACE7_VTABLE_FLIP], (LPVOID)&DetourDDSurface7Flip,
-                         (LPVOID*)&oDDSurface7Flip) == MH_OK) {
-            MH_EnableHook(surfaceVTable[DDSURFACE7_VTABLE_FLIP]);
+        if (VTableHook::Create(&surfaceVTable[DDSURFACE7_VTABLE_FLIP], (LPVOID)&DetourDDSurface7Flip,
+                         (LPVOID*)&oDDSurface7Flip) == VTableHook::Success) {
             HookLog("DDraw: Flip hook installed");
         }
         
         // Hook Blt
-        if (MH_CreateHook(surfaceVTable[DDSURFACE7_VTABLE_BLT], (LPVOID)&DetourDDSurface7Blt,
-                         (LPVOID*)&oDDSurface7Blt) == MH_OK) {
-            MH_EnableHook(surfaceVTable[DDSURFACE7_VTABLE_BLT]);
+        if (VTableHook::Create(&surfaceVTable[DDSURFACE7_VTABLE_BLT], (LPVOID)&DetourDDSurface7Blt,
+                         (LPVOID*)&oDDSurface7Blt) == VTableHook::Success) {
             HookLog("DDraw: Blt hook installed");
         }
         
@@ -997,14 +994,13 @@ void DDrawHook::Init() {
                  Release_t pReleaseD3D7Device = (Release_t)d3d7DeviceVTable[2];
 
                  // SetTextureStageState is index 35
-                  if (MH_CreateHook(d3d7DeviceVTable[35], (LPVOID)&DetourSetTextureStageState7, (LPVOID*)&oSetTextureStageState7) == MH_OK) {
-                       MH_EnableHook(d3d7DeviceVTable[35]);
+                  // SetTextureStageState is index 35
+                  if (VTableHook::Create(&d3d7DeviceVTable[35], (LPVOID)&DetourSetTextureStageState7, (LPVOID*)&oSetTextureStageState7) == VTableHook::Success) {
                        HookLog("DDraw: SetTextureStageState hook installed");
                   }
                   
                   // SetRenderState is index 13
-                  if (MH_CreateHook(d3d7DeviceVTable[13], (LPVOID)&DetourSetRenderState7, (LPVOID*)&oSetRenderState7) == MH_OK) {
-                       MH_EnableHook(d3d7DeviceVTable[13]);
+                  if (VTableHook::Create(&d3d7DeviceVTable[13], (LPVOID)&DetourSetRenderState7, (LPVOID*)&oSetRenderState7) == VTableHook::Success) {
                        HookLog("DDraw: SetRenderState hook installed");
                   }
 

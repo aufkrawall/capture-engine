@@ -1,6 +1,9 @@
 #include "d3d9_device_wrap.h"
 #include "hook_common.h"
 #include <d3d9.h>
+#include "../common/system_metrics.h"
+#include "lod_helper.h"
+#include "../apis/dx9_hook.h"
 
 // Forward declarations for Overlay Logic (from dx9_hook.cpp)
 // Avoid including dx9_hook.h to prevent include path issues
@@ -118,21 +121,100 @@ HRESULT STDMETHODCALLTYPE CWrapD3D9Device::PresentEx(const RECT* pSourceRect, co
 // ============================================================================
 
 HRESULT STDMETHODCALLTYPE CWrapD3D9Device::SetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD Value) {
-    DWORD newValue = Value;
-    
-    if (m_MaxAnisotropy > 1) {
-        if (Type == D3DSAMP_MAXANISOTROPY) {
-            // Force max anisotropy
-            newValue = m_MaxAnisotropy;
-        } else if (Type == D3DSAMP_MAGFILTER || Type == D3DSAMP_MINFILTER) {
-            // Force anisotropic filtering
-            if (Value == D3DTEXF_LINEAR || Value == D3DTEXF_POINT) {
-                newValue = D3DTEXF_ANISOTROPIC;
+    if (g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
+        // Ported from dx9_hook.cpp DetourSetSamplerState
+        const auto& gfx = GetActiveGraphicsConfig();
+
+        // Start checking for exclusions (UI, non-mipmapped textures)
+        bool shouldOverride = true;
+
+        // Check 1: Current MipFilter state
+        if (Type == D3DSAMP_MIPFILTER) {
+                if (Value == D3DTEXF_NONE) shouldOverride = false;
+        } else {
+                DWORD currentMipFilter = D3DTEXF_NONE;
+                m_pReal->GetSamplerState(Sampler, D3DSAMP_MIPFILTER, &currentMipFilter);
+                if (currentMipFilter == D3DTEXF_NONE) shouldOverride = false;
+        }
+
+        // Check 2: Texture Mip Levels
+        if (shouldOverride) {
+            IDirect3DBaseTexture9* pTex = nullptr;
+            HRESULT hr = m_pReal->GetTexture(Sampler, &pTex);
+            if (SUCCEEDED(hr) && pTex) {
+                if (pTex->GetLevelCount() == 1) {
+                    shouldOverride = false;
+                }
+                pTex->Release();
+            }
+        }
+
+        if (shouldOverride) {
+            if (Type == D3DSAMP_MAXANISOTROPY) {
+                const char* af = gfx.anisotropicFiltering.c_str();
+                if (af[0] != 'd') {
+                    if (af[0] == 'o') Value = 1;
+                    else if (af[0] == '2') Value = 2;
+                    else if (af[0] == '4') Value = 4;
+                    else if (af[0] == '8') Value = 8;
+                    else Value = 16;
+                }
+            } else if (Type == D3DSAMP_MINFILTER || Type == D3DSAMP_MAGFILTER || Type == D3DSAMP_MIPFILTER) {
+                const char* mip = gfx.mipMapping.c_str();
+                if (mip[0] != 'd') {
+                    bool isAniso = (gfx.anisotropicFiltering != "default" && gfx.anisotropicFiltering != "off");
+
+                    if (mip[0] == 't') { // trilinear
+                        Value = D3DTEXF_LINEAR;
+                    } else if (mip[0] == 'b') { // bilinear
+                        if (Type == D3DSAMP_MIPFILTER) Value = D3DTEXF_POINT;
+                        else Value = D3DTEXF_LINEAR;
+                    } else if (mip[0] == 'n') { // nearest
+                        Value = D3DTEXF_POINT;
+                    }
+
+                    if (isAniso && (Type == D3DSAMP_MINFILTER || Type == D3DSAMP_MAGFILTER)) {
+                        Value = D3DTEXF_ANISOTROPIC;
+                    }
+                }
+            } else if (Type == D3DSAMP_MIPMAPLODBIAS) {
+                const char* biasStr = gfx.mipBias.c_str();
+                if (biasStr[0] != 'd') {
+                    char* end;
+                    float configBias = strtof(biasStr, &end);
+                    if (end != biasStr) {
+                            float originalBias = *((float*)&Value);
+                            std::string mode = gfx.mipBiasMode;
+
+                            if (mode == "offset") {
+                                float finalBias = originalBias + configBias;
+                                Value = *((DWORD*)&finalBias);
+                            } else if (mode == "base") {
+                                if (originalBias < 0.0f) {
+                                    float finalBias = originalBias + configBias;
+                                    Value = *((DWORD*)&finalBias);
+                                }
+                            } else {
+                                // Strict (default)
+                                Value = *((DWORD*)&configBias);
+                            }
+                    }
+                }
+
+                // Auto-bias
+                if (gfx.sgssaa && !gfx.disableAutoMipBias) {
+                    float sgBias = 0.0f;
+                    if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgBias)) {
+                        float currentBias = *((float*)&Value);
+                        currentBias += sgBias;
+                        Value = *((DWORD*)&currentBias);
+                    }
+                }
             }
         }
     }
     
-    return m_pReal->SetSamplerState(Sampler, Type, newValue);
+    return m_pReal->SetSamplerState(Sampler, Type, Value);
 }
 
 HRESULT STDMETHODCALLTYPE CWrapD3D9Device::GetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD* pValue) {

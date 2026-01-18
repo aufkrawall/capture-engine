@@ -31,8 +31,7 @@ LOG_FILE = os.path.join(PROJECT_ROOT, "build_log.txt")
 IMGUI_URL = "https://github.com/ocornut/imgui/archive/refs/tags/v1.91.5.zip"
 IMGUI_DIR = os.path.join(PROJECT_ROOT, "external", "imgui")
 IMGUI_DIR = os.path.join(PROJECT_ROOT, "external", "imgui")
-MINHOOK_URL = "https://github.com/TsudaKageyu/minhook/archive/refs/tags/v1.3.3.zip"
-MINHOOK_DIR = os.path.join(PROJECT_ROOT, "external", "minhook")
+
 FFMPEG_DIR = os.path.join(PROJECT_ROOT, "external", "ffmpeg")
 
 PACKAGES = [
@@ -50,7 +49,7 @@ PACKAGES = [
     "mingw-w64-clang-x86_64-nasm",
     "mingw-w64-clang-x86_64-vulkan-headers",
     "mingw-w64-clang-x86_64-vulkan-loader",
-    "mingw-w64-clang-x86_64-MinHook",
+
     "mingw-w64-i686-toolchain",
     "mingw-w64-i686-clang",
     "mingw-w64-i686-vulkan-headers",
@@ -281,24 +280,7 @@ def patch_imgui():
     
     log("ImGui patches applied successfully.")
 
-def setup_minhook():
-    if not os.path.exists(MINHOOK_DIR):
-        log("Downloading MinHook Source...")
-        zip_path = os.path.join(BUILD_DIR, "minhook.zip")
-        urllib.request.urlretrieve(MINHOOK_URL, zip_path)
-        
-        log("Extracting MinHook...")
-        external_dir = os.path.join(PROJECT_ROOT, "external")
-        os.makedirs(external_dir, exist_ok=True)
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(external_dir)
-        
-        # Rename minhook-1.3.3 to minhook
-        src = os.path.join(external_dir, "minhook-1.3.3")
-        if os.path.exists(src):
-            os.rename(src, MINHOOK_DIR)
-        
-        log("MinHook Setup Complete.")
+
 
 # --- FFmpeg Configuration ---
 FFMPEG_URL = "https://git.ffmpeg.org/ffmpeg.git"
@@ -1388,7 +1370,7 @@ def compile_d3d12_wrappers_msvc(env, arch):
 def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
     ensure_dirs()
     setup_imgui()
-    setup_minhook()
+
     compile_custom_ffmpeg(skip_updates=skip_updates) # Ensure FFmpeg is ready
     clang_exe = os.path.join(clang_bin, "clang++.exe")
     pkg_config = os.path.join(clang_bin, "pkg-config.exe")
@@ -1437,8 +1419,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         
         curr_cflags = ["-std=c++20", "-O2", "-flto", "-fno-stack-protector", "-ffunction-sections", "-fdata-sections", "-Wall", "-Wno-microsoft-exception-spec", "-D_WIN32_WINNT=0x0A00",
                       "-I" + os.path.join(PROJECT_ROOT, "common"),
-                      "-I" + IMGUI_DIR,
-                      "-I" + os.path.join(MINHOOK_DIR, "include")]
+                      "-I" + IMGUI_DIR]
         # if arch == "x64":
         #    curr_cflags.append("-flto")
         #    mingw_lib = os.path.join(MSYS2_DIR, 'clang64', 'lib')
@@ -1505,12 +1486,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         ]
         hk_src = [f for f in hk_src if f not in excluded_files]
         
-        mh_src = [os.path.join(MINHOOK_DIR, "src", f) for f in ["buffer.c", "hook.c", "trampoline.c"]]
-        if arch == "x64" and os.path.exists(os.path.join(MINHOOK_DIR, "src", "hde", "hde64.c")):
-            mh_src.append(os.path.join(MINHOOK_DIR, "src", "hde", "hde64.c"))
-        elif arch == "x86" and os.path.exists(os.path.join(MINHOOK_DIR, "src", "hde", "hde32.c")):
-            mh_src.append(os.path.join(MINHOOK_DIR, "src", "hde", "hde32.c"))
-        hk_src += mh_src
+        # mh_src removed
         # volk removed - using vulkan layer instead
         # hk_src.append(os.path.join(PROJECT_ROOT, "external", "volk", "volk.c"))
 
@@ -1556,9 +1532,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         hk_cflags = curr_cflags + ["-DVK_NO_PROTOTYPES"] + [  # Vulkan hooks now in layer
             "-I" + os.path.join(PROJECT_ROOT, "hook", "common"),
             "-I" + os.path.join(PROJECT_ROOT, "hook", "apis"),
-            "-I" + os.path.join(PROJECT_ROOT, "hook", "wrappers"),
-            "-I" + MINHOOK_DIR + "/include",
-            "-I" + MINHOOK_DIR + "/src"
+            "-I" + os.path.join(PROJECT_ROOT, "hook", "wrappers")
         ]
         
         # Check for MSVC-compiled D3D12 wrappers

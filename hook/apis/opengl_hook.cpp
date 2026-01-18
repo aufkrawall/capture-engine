@@ -6,7 +6,7 @@
 #include "../common/frame_timing.h"
 #include "hook_common.h"
 #include "performance_metrics.h"
-#include <../wrappers/minhook_shim.h>
+#include "../wrappers/iat_hook.h"
 #include <backends/imgui_impl_opengl3.h>
 #include <backends/imgui_impl_win32.h>
 #include <cstdint>
@@ -1051,78 +1051,38 @@ void OpenGLHook::Init() {
     }
     
     // Hook SwapBuffers (GDI32)
-    LPVOID pSwapBuffers = (LPVOID)GetProcAddress(gdi32Module, "SwapBuffers");
-    if (pSwapBuffers) {
-        if (MH_CreateHook(pSwapBuffers, (LPVOID)&DetourSwapBuffers, (LPVOID*)&oSwapBuffers) == MH_OK) {
-            MH_EnableHook(pSwapBuffers);
-            HookLog("OpenGL: SwapBuffers hook installed");
-        }
-    }
-    
+    // Register for dynamic loading via GetProcAddress
+    IATHook::RegisterDynamicHook("SwapBuffers", (LPVOID)&DetourSwapBuffers, (LPVOID*)&oSwapBuffers);
+    // Patch explicit imports
+    void* dummy;
+    IATHook::PatchIATAllModules("gdi32.dll", "SwapBuffers", (LPVOID)&DetourSwapBuffers, &dummy);
+
     // Hook wglSwapBuffers
-    LPVOID pWglSwapBuffers = (LPVOID)GetProcAddress(glModule, "wglSwapBuffers");
-    if (pWglSwapBuffers) {
-        if (MH_CreateHook(pWglSwapBuffers, (LPVOID)&DetourWglSwapBuffers, (LPVOID*)&oWglSwapBuffers) == MH_OK) {
-            MH_EnableHook(pWglSwapBuffers);
-            HookLog("OpenGL: wglSwapBuffers hook installed");
-        }
-    }
+    IATHook::RegisterDynamicHook("wglSwapBuffers", (LPVOID)&DetourWglSwapBuffers, (LPVOID*)&oWglSwapBuffers);
+    IATHook::PatchIATAllModules("opengl32.dll", "wglSwapBuffers", (LPVOID)&DetourWglSwapBuffers, &dummy);
     
     // Hook wglSwapLayerBuffers
-    LPVOID pWglSwapLayerBuffers = (LPVOID)GetProcAddress(glModule, "wglSwapLayerBuffers");
-    if (pWglSwapLayerBuffers) {
-        if (MH_CreateHook(pWglSwapLayerBuffers, (LPVOID)&DetourWglSwapLayerBuffers, (LPVOID*)&oWglSwapLayerBuffers) == MH_OK) {
-            MH_EnableHook(pWglSwapLayerBuffers);
-            HookLog("OpenGL: wglSwapLayerBuffers hook installed");
-        }
-    }
+    IATHook::RegisterDynamicHook("wglSwapLayerBuffers", (LPVOID)&DetourWglSwapLayerBuffers, (LPVOID*)&oWglSwapLayerBuffers);
+    IATHook::PatchIATAllModules("opengl32.dll", "wglSwapLayerBuffers", (LPVOID)&DetourWglSwapLayerBuffers, &dummy);
     
     // Hook wglDeleteContext
-    LPVOID pWglDeleteContext = (LPVOID)GetProcAddress(glModule, "wglDeleteContext");
-    if (pWglDeleteContext) {
-        if (MH_CreateHook(pWglDeleteContext, (LPVOID)&DetourWglDeleteContext, (LPVOID*)&oWglDeleteContext) == MH_OK) {
-            MH_EnableHook(pWglDeleteContext);
-            HookLog("OpenGL: wglDeleteContext hook installed");
-        }
-    }
+    IATHook::RegisterDynamicHook("wglDeleteContext", (LPVOID)&DetourWglDeleteContext, (LPVOID*)&oWglDeleteContext);
+    IATHook::PatchIATAllModules("opengl32.dll", "wglDeleteContext", (LPVOID)&DetourWglDeleteContext, &dummy);
     
     // Hook wglGetProcAddress
-    LPVOID pWglGetProcAddress = (LPVOID)GetProcAddress(glModule, "wglGetProcAddress");
-    if (pWglGetProcAddress) {
-        if (MH_CreateHook(pWglGetProcAddress, (LPVOID)&DetourWglGetProcAddress, (LPVOID*)&oWglGetProcAddress) == MH_OK) {
-            MH_EnableHook(pWglGetProcAddress);
-            HookLog("OpenGL: wglGetProcAddress hook installed");
-        }
-    }
+    // Critical for intercepting extensions
+    IATHook::RegisterDynamicHook("wglGetProcAddress", (LPVOID)&DetourWglGetProcAddress, (LPVOID*)&oWglGetProcAddress);
+    IATHook::PatchIATAllModules("opengl32.dll", "wglGetProcAddress", (LPVOID)&DetourWglGetProcAddress, &dummy);
     
     // Hook Core GL functions (glTexParameter)
-    // Note: These might be used directly from opengl32.dll
-    LPVOID pGlTexParameteri = (LPVOID)GetProcAddress(glModule, "glTexParameteri");
-    if (pGlTexParameteri) {
-        // We need to fetch the original ptr to call it inside our detour. 
-        // pglTexParameteri was loaded in LoadGLFunctions via wglGetProcAddress or GetProcAddress.
-        // But LoadGLFunctions runs LATER (on first swap). 
-        // We should set pglTexParameteri here if possible, or use a trampoline.
-        // MinHook creates a trampoline. We can cast the original back.
-        // Wait, pglTexParameteri global is used by the detour.
-        
-        // Let's use a separate original pointer for the hook trampoline
-        if (MH_CreateHook(pGlTexParameteri, (LPVOID)&DetourGlTexParameteri, (LPVOID*)&pglTexParameteri) == MH_OK) {
-             MH_EnableHook(pGlTexParameteri);
-             HookLog("OpenGL: glTexParameteri hook installed");
-        }
-    }
-    
-    LPVOID pGlTexParameterf = (LPVOID)GetProcAddress(glModule, "glTexParameterf");
-    if (pGlTexParameterf) {
-        if (MH_CreateHook(pGlTexParameterf, (LPVOID)&DetourGlTexParameterf, (LPVOID*)&pglTexParameterf) == MH_OK) {
-             MH_EnableHook(pGlTexParameterf);
-             HookLog("OpenGL: glTexParameterf hook installed");
-        }
-    }
+    IATHook::RegisterDynamicHook("glTexParameteri", (LPVOID)&DetourGlTexParameteri, (LPVOID*)&pglTexParameteri);
+    IATHook::PatchIATAllModules("opengl32.dll", "glTexParameteri", (LPVOID)&DetourGlTexParameteri, &dummy);
+
+    IATHook::RegisterDynamicHook("glTexParameterf", (LPVOID)&DetourGlTexParameterf, (LPVOID*)&pglTexParameterf);
+    IATHook::PatchIATAllModules("opengl32.dll", "glTexParameterf", (LPVOID)&DetourGlTexParameterf, &dummy);
     
     g_HooksInitialized = true;
-    HookLog("OpenGLHook: All hooks installed");
+    HookLog("OpenGLHook: All hooks registered (IAT/Dynamic)");
 }
 
 void OpenGLHook::Shutdown() {
@@ -1135,6 +1095,7 @@ void OpenGLHook::Shutdown() {
     }
     
     g_OpenGLCapture.Cleanup();
+    // IAT hooks remain until process exit
 }
 
 void OpenGLHook::OnHostDisconnect() {

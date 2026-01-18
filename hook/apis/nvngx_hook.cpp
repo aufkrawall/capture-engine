@@ -1,6 +1,7 @@
 #include "nvngx_hook.h"
 #include "hook_common.h"
-#include <../wrappers/minhook_shim.h>
+#include "../wrappers/vtable_hook.h"
+#include "../wrappers/iat_hook.h"
 #include <mutex>
 #include <vector>
 
@@ -421,9 +422,7 @@ void EnsureVTableHooks(NVSDK_NGX_Parameter* pParams) {
         
         auto Install = [&](int idx, LPVOID pHook, LPVOID* ppOrig) {
             if (!vtable[idx] || *ppOrig) return;
-            if (MH_CreateHook(vtable[idx], pHook, ppOrig) == MH_OK) {
-                MH_EnableHook(vtable[idx]);
-            }
+            VTableHook::Create(&vtable[idx], pHook, ppOrig);
         };
 
         Install(3, (LPVOID)&Hooked_SetI, (LPVOID*)&oSetI);
@@ -951,14 +950,17 @@ void NVNGXHook::Install() {
     
     if (!hNGX) { m_Installed = false; return; }
 
+    // Register Dynamic Hook for GetProcAddress interception
+    // and Patch IAT for static imports
     auto InstallFactory = [&](const char* name, LPVOID pHook, LPVOID* ppOrig) {
-        LPVOID pProc = (LPVOID)GetProcAddress(hNGX, name);
-        if (pProc) {
-            if (MH_CreateHook(pProc, pHook, ppOrig) == MH_OK) {
-                MH_EnableHook(pProc);
-                NVNGXLog("NVNGX: Factory %s detoured", name);
-            }
-        }
+        // Register for dynamic loading via GetProcAddress
+        IATHook::RegisterDynamicHook(name, pHook, ppOrig);
+        
+        // Patch explicit imports in all modules (for _nvngx.dll etc)
+        void* dummy;
+        IATHook::PatchIATAllModules("_nvngx.dll", name, pHook, &dummy);
+        IATHook::PatchIATAllModules("nvngx.dll", name, pHook, &dummy);
+        IATHook::PatchIATAllModules("sl.dlss.dll", name, pHook, &dummy);
     };
 
     InstallFactory("NVSDK_NGX_D3D11_GetParameters", (LPVOID)&Hooked_GetParams_D3D11, (LPVOID*)&oGetParameters_D3D11);
@@ -984,5 +986,5 @@ void NVNGXHook::Install() {
 
 void NVNGXHook::Uninstall() {
     if (!m_Installed.exchange(false)) return;
-    MH_DisableHook(MH_ALL_HOOKS);
+    // IAT hooks are permanent until process exit usually
 }

@@ -25,8 +25,19 @@ struct PatchedEntry {
     std::string functionName;
     void* hookFunction;
     void* originalFunction;
+    // void* originalFunction; // Duplicate removed
     void** iatEntry;
 };
+
+// Dynamic hook registry
+struct DynamicHookEntry {
+    void* hookFunction;
+    void** outOriginal;
+};
+
+static std::mutex g_DynamicHookLock;
+static std::unordered_map<std::string, DynamicHookEntry> g_DynamicHooks;
+static FARPROC (WINAPI *oGetProcAddress)(HMODULE, LPCSTR) = nullptr;
 
 static std::mutex g_PatchLock;
 static std::vector<PatchedEntry> g_PatchedEntries;
@@ -317,9 +328,28 @@ extern HRESULT WINAPI Wrapped_D3D12CreateDevice(
 extern PFN_CreateDXGIFactory  oCreateDXGIFactory;
 extern PFN_CreateDXGIFactory1 oCreateDXGIFactory1;
 extern PFN_CreateDXGIFactory2 oCreateDXGIFactory2;
-#ifdef ENABLE_D3D12_WRAPPER
 extern PFN_D3D12CreateDevice  oD3D12CreateDevice;
-#endif
+extern PFN_D3D12CreateDevice  oD3D12CreateDevice;
+
+// D3D12 Root Signature hooks (from dx12_hook.cpp)
+typedef HRESULT(WINAPI *PFN_D3D12_SERIALIZE_ROOT_SIGNATURE)(
+    const D3D12_ROOT_SIGNATURE_DESC*, D3D_ROOT_SIGNATURE_VERSION, ID3DBlob**, ID3DBlob**);
+typedef HRESULT(WINAPI *PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE)(
+    const D3D12_VERSIONED_ROOT_SIGNATURE_DESC*, ID3DBlob**, ID3DBlob**);
+
+extern PFN_D3D12_SERIALIZE_ROOT_SIGNATURE oSerializeRootSignature;
+extern PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE oSerializeVersionedRootSignature;
+
+extern HRESULT WINAPI DetourSerializeRootSignature(
+    const D3D12_ROOT_SIGNATURE_DESC* pRootSignature,
+    D3D_ROOT_SIGNATURE_VERSION Version,
+    ID3DBlob** ppBlob,
+    ID3DBlob** ppErrorBlob);
+
+extern HRESULT WINAPI DetourSerializeVersionedRootSignature(
+    const D3D12_VERSIONED_ROOT_SIGNATURE_DESC* pRootSignature,
+    ID3DBlob** ppBlob,
+    ID3DBlob** ppErrorBlob);
 
 namespace IATHook {
 
@@ -382,6 +412,25 @@ bool InitializeD3D12Hooks() {
         }
         
         WrapperLog("IAT: D3D12 hooks initialized");
+        
+        // Also hook D3D12SerializeRootSignature and D3D12SerializeVersionedRootSignature
+        // These are exported by d3d12.dll
+        oSerializeRootSignature = reinterpret_cast<PFN_D3D12_SERIALIZE_ROOT_SIGNATURE>(
+            GetProcAddress(hD3D12, "D3D12SerializeRootSignature"));
+            
+        oSerializeVersionedRootSignature = reinterpret_cast<PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE>(
+            GetProcAddress(hD3D12, "D3D12SerializeVersionedRootSignature"));
+            
+        if (oSerializeRootSignature) {
+            PatchIATAllModules("d3d12.dll", "D3D12SerializeRootSignature", (void*)DetourSerializeRootSignature, &dummy);
+            WrapperLog("IAT: Hooked D3D12SerializeRootSignature");
+        }
+        
+        if (oSerializeVersionedRootSignature) {
+            PatchIATAllModules("d3d12.dll", "D3D12SerializeVersionedRootSignature", (void*)DetourSerializeVersionedRootSignature, &dummy);
+            WrapperLog("IAT: Hooked D3D12SerializeVersionedRootSignature");
+        }
+        
         return true;
     }
     
@@ -473,13 +522,10 @@ bool InitializeD3D9Hooks() {
             GetProcAddress(hD3D9, "Direct3DCreate9Ex"));
             
         void* dummy;
-        bool patched = false;
-        
         // Patch Direct3DCreate9
         if (PatchIATAllModules("d3d9.dll", "Direct3DCreate9", 
                               (void*)Wrapped_Direct3DCreate9, &dummy)) {
             WrapperLog("IAT: Patched Direct3DCreate9");
-            patched = true;
         } else {
             // Also try explicit GetProcAddress target for late binding
             if (oDirect3DCreate9) {
@@ -493,7 +539,6 @@ bool InitializeD3D9Hooks() {
         if (PatchIATAllModules("d3d9.dll", "Direct3DCreate9Ex",
                               (void*)Wrapped_Direct3DCreate9Ex, &dummy)) {
             WrapperLog("IAT: Patched Direct3DCreate9Ex");
-            patched = true;
         } else {
             WrapperLog("IAT: Direct3DCreate9Ex not found in IAT");
         }
@@ -616,6 +661,63 @@ void ShutdownIATHooks() {
     g_Initialized = false;
     
     WrapperLog("IAT: All hooks restored");
+}
+
+
+// ============================================================================
+// Dynamic Hooking Implementation (GetProcAddress)
+// ============================================================================
+
+FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
+    // Call original first to get the real address
+    FARPROC proc = nullptr;
+    if (oGetProcAddress) {
+        proc = oGetProcAddress(hModule, lpProcName);
+    }
+    
+    // If getting address failed, or if name is invalid (ordinal), return result immediately
+    if (!proc || (uintptr_t)lpProcName < 0x10000) {
+        return proc;
+    }
+    
+    // Check if we have a hook for this function name
+    std::lock_guard<std::mutex> lock(g_DynamicHookLock);
+    auto it = g_DynamicHooks.find(lpProcName);
+    if (it != g_DynamicHooks.end()) {
+        // We found a hook!
+        // Store the original address if requested
+        if (it->second.outOriginal && *it->second.outOriginal == nullptr) {
+            *it->second.outOriginal = (void*)proc;
+        }
+        
+        // Return our hook address
+        // WrapperLog("IAT: Dynamic hook hit for %s", lpProcName);
+        return (FARPROC)it->second.hookFunction;
+    }
+    
+    return proc;
+}
+
+void RegisterDynamicHook(const char* functionName, void* hookFunction, void** outOriginal) {
+    std::lock_guard<std::mutex> lock(g_DynamicHookLock);
+    g_DynamicHooks[functionName] = { hookFunction, outOriginal };
+}
+
+void InitializeGetProcAddressHook() {
+    WrapperLog("IAT: Initializing GetProcAddress hook for dynamic interception...");
+    
+    HMODULE hKernel32 = GetModuleHandleA("kernel32.dll");
+    if (!hKernel32) return;
+    
+    oGetProcAddress = (FARPROC(WINAPI*)(HMODULE, LPCSTR))GetProcAddress(hKernel32, "GetProcAddress");
+    
+    if (oGetProcAddress) {
+        void* dummy;
+        PatchIATAllModules("kernel32.dll", "GetProcAddress", (void*)DetourGetProcAddress, &dummy);
+        WrapperLog("IAT: GetProcAddress hook initialized");
+    } else {
+        WrapperLog("IAT: Failed to get GetProcAddress address");
+    }
 }
 
 } // namespace IATHook

@@ -6,7 +6,7 @@
 #include "hook_common.h"
 #include "performance_metrics.h"
 #include "../common/frame_timing.h"
-#include <../wrappers/minhook_shim.h>
+#include "../wrappers/vtable_hook.h"
 #include <cstdint>
 #include <d3d9.h>
 #include <d3d11.h>
@@ -578,8 +578,7 @@ static void DrawDX8Overlay(HWND hwnd) {
         // SetTextureStageState is index 61
         if (g_DX8Capture.d3d8Device) {
             void **vTable = *(void***)g_DX8Capture.d3d8Device;
-            MH_CreateHook(vTable[61], (LPVOID)&DetourD3D8SetTextureStageState, (LPVOID *)&oD3D8SetTextureStageState);
-            MH_EnableHook(vTable[61]);
+            VTableHook::Create(&vTable[61], (LPVOID)&DetourD3D8SetTextureStageState, (LPVOID *)&oD3D8SetTextureStageState);
         }
         
         g_DX8HooksInitialized = true;
@@ -913,16 +912,14 @@ void DX8Hook::Init() {
         void **deviceVTable = *(void***)dummyDevice;
         
         // Hook Present (index 15)
-        if (MH_CreateHook(deviceVTable[D3D8_VTABLE_PRESENT], (LPVOID)&DetourD3D8Present, 
-                         (LPVOID*)&oD3D8Present) == MH_OK) {
-            MH_EnableHook(deviceVTable[D3D8_VTABLE_PRESENT]);
+        if (VTableHook::Create(&deviceVTable[D3D8_VTABLE_PRESENT], (LPVOID)&DetourD3D8Present, 
+                         (LPVOID*)&oD3D8Present) == VTableHook::Success) {
             HookLog("DX8: Present hook installed");
         }
         
         // Hook Reset (index 14)
-        if (MH_CreateHook(deviceVTable[D3D8_VTABLE_RESET], (LPVOID)&DetourD3D8Reset,
-                         (LPVOID*)&oD3D8Reset) == MH_OK) {
-            MH_EnableHook(deviceVTable[D3D8_VTABLE_RESET]);
+        if (VTableHook::Create(&deviceVTable[D3D8_VTABLE_RESET], (LPVOID)&DetourD3D8Reset,
+                         (LPVOID*)&oD3D8Reset) == VTableHook::Success) {
             HookLog("DX8: Reset hook installed");
         }
         
@@ -930,17 +927,15 @@ void DX8Hook::Init() {
         // Verify index: 0(QI)..14(Reset)..15(Present)..23(CreateTex)..61(SetTex)..63(SetTSS)
         // Ref: https://github.com/crosire/d3d8to9/blob/master/source/d3d8to9.hpp
         // SetTextureStageState is indeed 63.
-        if (MH_CreateHook(deviceVTable[63], (LPVOID)&DetourD3D8SetTextureStageState,
-                         (LPVOID*)&oD3D8SetTextureStageState) == MH_OK) {
-            MH_EnableHook(deviceVTable[63]);
+        if (VTableHook::Create(&deviceVTable[63], (LPVOID)&DetourD3D8SetTextureStageState,
+                         (LPVOID*)&oD3D8SetTextureStageState) == VTableHook::Success) {
             HookLog("DX8: SetTextureStageState hook installed");
         }
         
         // Hook CreateDevice (index 15 in IDirect3D8)
         // We need to hook the vtable of the d3d8 object we created
-        if (MH_CreateHook(d3d8VTable[15], (LPVOID)&DetourD3D8CreateDevice,
-                         (LPVOID*)&oD3D8CreateDevice) == MH_OK) {
-            MH_EnableHook(d3d8VTable[15]);
+        if (VTableHook::Create(&d3d8VTable[15], (LPVOID)&DetourD3D8CreateDevice,
+                         (LPVOID*)&oD3D8CreateDevice) == VTableHook::Success) {
             HookLog("DX8: CreateDevice hook installed");
         }
         

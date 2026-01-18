@@ -6,7 +6,7 @@
 #include "../common/overlay.h"
 #include "hook_common.h"
 #include "performance_metrics.h"
-#include <../wrappers/minhook_shim.h>
+#include "../wrappers/vtable_hook.h"
 #include <backends/imgui_impl_dx9.h>
 #include <backends/imgui_impl_win32.h>
 #include <cstdint>
@@ -1800,8 +1800,7 @@ static void InstallDeviceHooks(IDirect3DDevice9* device) {
 
     // 1. Hook Present (17)
     if (!oPresent) {
-        if (MH_CreateHook((void*)vtable[17], (void*)&DetourPresent, (void**)&oPresent) == MH_OK) {
-            MH_EnableHook((void*)vtable[17]);
+        if (VTableHook::Create(&vtable[17], (void*)&DetourPresent, (void**)&oPresent) == VTableHook::Success) {
             EarlyLog("DX9: Present hook installed");
         }
     }
@@ -1809,16 +1808,14 @@ static void InstallDeviceHooks(IDirect3DDevice9* device) {
     // High-frequency hooks enabled for parity
     // 2. Hook SetSamplerState (69)
     if (!oSetSamplerState) {
-        if (MH_CreateHook((void*)vtable[69], (void*)&DetourSetSamplerState, (void**)&oSetSamplerState) == MH_OK) {
-            MH_EnableHook((void*)vtable[69]);
+        if (VTableHook::Create(&vtable[69], (void*)&DetourSetSamplerState, (void**)&oSetSamplerState) == VTableHook::Success) {
             EarlyLog("DX9: SetSamplerState hook installed");
         }
     }
 
     // 2.5 Hook SetTextureStageState (67)
     if (!oSetTextureStageState) {
-        if (MH_CreateHook((void*)vtable[67], (void*)&DetourSetTextureStageState, (void**)&oSetTextureStageState) == MH_OK) {
-            MH_EnableHook((void*)vtable[67]);
+        if (VTableHook::Create(&vtable[67], (void*)&DetourSetTextureStageState, (void**)&oSetTextureStageState) == VTableHook::Success) {
             EarlyLog("DX9: SetTextureStageState hook installed");
         }
     }
@@ -1833,16 +1830,14 @@ static void InstallDeviceHooks(IDirect3DDevice9* device) {
         
         // Hook ResetEx (129)
         if (!oResetEx) {
-            if (MH_CreateHook((void*)vtableEx[129], (void*)&DetourResetEx, (void**)&oResetEx) == MH_OK) {
-                MH_EnableHook((void*)vtableEx[129]);
+            if (VTableHook::Create(&vtableEx[129], (void*)&DetourResetEx, (void**)&oResetEx) == VTableHook::Success) {
                 EarlyLog("DX9: ResetEx hook installed");
             }
         }
         
         // Hook PresentEx (132)
         if (!oPresentEx) {
-            if (MH_CreateHook((void*)vtableEx[132], (void*)&DetourPresentEx, (void**)&oPresentEx) == MH_OK) {
-                MH_EnableHook((void*)vtableEx[132]);
+            if (VTableHook::Create(&vtableEx[132], (void*)&DetourPresentEx, (void**)&oPresentEx) == VTableHook::Success) {
                 EarlyLog("DX9: PresentEx hook installed");
             }
         }
@@ -1859,14 +1854,10 @@ static void InstallDeviceHooks(IDirect3DDevice9* device) {
     if (SUCCEEDED(device->GetSwapChain(0, &swapChain)) && swapChain) {
         uintptr_t *swapVtable = *(uintptr_t**)swapChain;
         if (!oPresentSwap) {
-            if (MH_CreateHook((void*)swapVtable[3], (void*)&DetourPresentSwap, (void**)&oPresentSwap) == MH_OK) {
-                if (MH_EnableHook((void*)swapVtable[3]) == MH_OK) {
-                    EarlyLog("DX9: SwapChain Present hook installed");
-                } else {
-                    EarlyLog("DX9: SwapChain Present hook enable FAILED");
-                }
+            if (VTableHook::Create(&swapVtable[3], (void*)&DetourPresentSwap, (void**)&oPresentSwap) == VTableHook::Success) {
+                 EarlyLog("DX9: SwapChain Present hook installed");
             } else {
-                EarlyLog("DX9: SwapChain Present hook create FAILED");
+                 EarlyLog("DX9: SwapChain Present hook create FAILED");
             }
         }
         swapChain->Release();
@@ -1952,8 +1943,7 @@ static IDirect3D9* WINAPI DetourDirect3DCreate9(UINT SDKVersion) {
         // Validation and Hook
         if (vtable && !IsBadReadPtr(vtable, sizeof(void*) * 17)) {
             if (!oCreateDevice) {
-                if (MH_CreateHook((void*)vtable[16], (void*)&DetourCreateDevice, (void**)&oCreateDevice) == MH_OK) {
-                    MH_EnableHook((void*)vtable[16]);
+                if (VTableHook::Create(&vtable[16], (void*)&DetourCreateDevice, (void**)&oCreateDevice) == VTableHook::Success) {
                     EarlyLog("DX9: IDirect3D9::CreateDevice hook installed");
                 }
             }
@@ -2023,16 +2013,14 @@ static HRESULT WINAPI DetourDirect3DCreate9Ex(UINT SDKVersion, IDirect3D9Ex **pp
         
         // Hook CreateDevice (16)
         if (!oCreateDevice) {
-            if (MH_CreateHook((void*)vtable[16], (void*)&DetourCreateDevice, (void**)&oCreateDevice) == MH_OK) {
-                MH_EnableHook((void*)vtable[16]);
+            if (VTableHook::Create(&vtable[16], (void*)&DetourCreateDevice, (void**)&oCreateDevice) == VTableHook::Success) {
                 EarlyLog("DX9: IDirect3D9::CreateDevice hook installed via Create9Ex");
             }
         }
         
         // Hook CreateDeviceEx (20)
         if (!oCreateDeviceEx) {
-            if (MH_CreateHook((void*)vtable[20], (void*)&DetourCreateDeviceEx, (void**)&oCreateDeviceEx) == MH_OK) {
-                MH_EnableHook((void*)vtable[20]);
+            if (VTableHook::Create(&vtable[20], (void*)&DetourCreateDeviceEx, (void**)&oCreateDeviceEx) == VTableHook::Success) {
                 EarlyLog("DX9: IDirect3D9Ex::CreateDeviceEx hook installed via Create9Ex");
             }
         }
@@ -2050,21 +2038,14 @@ void DX9Hook::Init() {
     }
     
     // Hook Export Functions
-    void* pD3DCreate9 = (void*)GetProcAddress(d3d9Module, "Direct3DCreate9");
-    if (pD3DCreate9 && !oDirect3DCreate9) {
-        if (MH_CreateHook(pD3DCreate9, (void*)&DetourDirect3DCreate9, (void**)&oDirect3DCreate9) == MH_OK) {
-            MH_EnableHook(pD3DCreate9);
-            EarlyLog("DX9: Direct3DCreate9 hook installed");
-        }
-    }
+    // NOTE: Removed MinHook export hooks. We rely on IAT hooking (in iat_hook.cpp)
+    // or active VTable hooking (below) for DX9.
     
+    // Check if Direct3DCreate9(Ex) are available for active hooking fallback
+    void* pD3DCreate9 = (void*)GetProcAddress(d3d9Module, "Direct3DCreate9");
     void* pD3DCreate9Ex = (void*)GetProcAddress(d3d9Module, "Direct3DCreate9Ex");
-    if (pD3DCreate9Ex && !oDirect3DCreate9Ex) {
-        if (MH_CreateHook(pD3DCreate9Ex, (void*)&DetourDirect3DCreate9Ex, (void**)&oDirect3DCreate9Ex) == MH_OK) {
-            MH_EnableHook(pD3DCreate9Ex);
-            EarlyLog("DX9: Direct3DCreate9Ex hook installed");
-        }
-    }
+    
+    // We do NOT hook these exports here anymore.
     
     EarlyLog("DX9Hook::Init() Passive Complete");
     

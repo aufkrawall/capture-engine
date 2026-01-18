@@ -89,6 +89,22 @@ bool InitializeAdvapi32Hooks(
     void* RegQueryValueExWHook, void** pOriginalRegQueryValueExW);
 
 /**
+ * Register a hook for GetProcAddress interception.
+ * Used for dynamic hooking of APIs loaded via GetProcAddress (e.g. OpenGL, NVNGX).
+ * 
+ * @param functionName Name of the function to intercept (e.g. "wglSwapBuffers")
+ * @param hookFunction Your replacement function pointer
+ * @param outOriginal  Pointer to variable that will hold the original function address
+ */
+void RegisterDynamicHook(const char* functionName, void* hookFunction, void** outOriginal);
+
+/**
+ * Initialize GetProcAddress hook to enable dynamic hooking.
+ * Should be called once during initialization.
+ */
+void InitializeGetProcAddressHook();
+
+/**
  * Cleanup all IAT patches
  */
 void ShutdownIATHooks();

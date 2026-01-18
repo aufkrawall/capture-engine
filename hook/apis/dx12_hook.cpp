@@ -22,7 +22,7 @@
 
 extern "C" __declspec(dllexport) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue);
 
-#include <../wrappers/minhook_shim.h>
+#include "../wrappers/vtable_hook.h"
 #include <atomic>
 #include <avrt.h>
 #include <cmath>
@@ -89,8 +89,8 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue *pThis, UINT
 void HookQueueVTable(ID3D12CommandQueue* queue);
 static CreateSamplerPtr oCreateSampler = nullptr;
 static CreateCommittedResourcePtr oCreateCommittedResource = nullptr;
-static PFN_D3D12_SERIALIZE_ROOT_SIGNATURE oSerializeRootSignature = nullptr;
-static PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE oSerializeVersionedRootSignature = nullptr;
+PFN_D3D12_SERIALIZE_ROOT_SIGNATURE oSerializeRootSignature = nullptr;
+PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE oSerializeVersionedRootSignature = nullptr;
 
 typedef HRESULT(STDMETHODCALLTYPE *GetBufferPtr)(IDXGISwapChain *, UINT, REFIID, void **);
 static GetBufferPtr oGetBuffer = nullptr;
@@ -3023,13 +3023,12 @@ void HookQueueVTable(ID3D12CommandQueue* queue) {
     if (!hookedQueueMethods) {
         void** qVtbl = *reinterpret_cast<void***>(queue);
         // Index 10 is ExecuteCommandLists
-        MH_STATUS s = MH_CreateHook(&qVtbl[10], (LPVOID)DetourExecuteCommandLists, (LPVOID*)&oExecuteCommandLists);
-        if (s == MH_OK || s == MH_ERROR_ALREADY_CREATED) {
-            MH_EnableHook(&qVtbl[10]);
+        // Index 10 is ExecuteCommandLists
+        if (VTableHook::Create(&qVtbl[10], (LPVOID)DetourExecuteCommandLists, (LPVOID*)&oExecuteCommandLists) == VTableHook::Success) {
             EarlyLog("DX12: Hooked ExecuteCommandLists on Queue VTable");
             hookedQueueMethods = true;
         } else {
-            HookLog("DX12: Failed to hook ExecuteCommandLists: %s", MH_StatusToString(s));
+            HookLog("DX12: Failed to hook ExecuteCommandLists");
         }
     }
 }
@@ -3708,12 +3707,11 @@ HRESULT WINAPI DetourD3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL Min
         static bool hookedSampler = false;
         if (!hookedSampler) {
             // Index 22 is CreateSampler in ID3D12Device
-            MH_STATUS s = MH_CreateHook(&vtbl[22], (LPVOID)DetourCreateSampler, (LPVOID*)&oCreateSampler);
-            if (s == MH_OK) {
-                MH_EnableHook(&vtbl[22]);
+            VTableHook::Status s = VTableHook::Create(&vtbl[22], (LPVOID)DetourCreateSampler, (LPVOID*)&oCreateSampler);
+            if (s == VTableHook::Success) {
                 HookLog("DX12: Hooked CreateSampler (early export)");
                 hookedSampler = true;
-            } else if (s == MH_ERROR_ALREADY_CREATED) {
+            } else if (s == VTableHook::ErrorAlreadyCreated) {
                  hookedSampler = true;
             }
         }
@@ -3721,12 +3719,11 @@ HRESULT WINAPI DetourD3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL Min
         static bool hookedCreateResource = false;
         if (!hookedCreateResource) {
             // Index 27 is CreateCommittedResource
-            MH_STATUS s = MH_CreateHook(&vtbl[27], (LPVOID)DetourCreateCommittedResource, (LPVOID*)&oCreateCommittedResource);
-            if (s == MH_OK) {
-                MH_EnableHook(&vtbl[27]);
+            VTableHook::Status s = VTableHook::Create(&vtbl[27], (LPVOID)DetourCreateCommittedResource, (LPVOID*)&oCreateCommittedResource);
+            if (s == VTableHook::Success) {
                 HookLog("DX12: Hooked CreateCommittedResource");
                 hookedCreateResource = true;
-            } else if (s == MH_ERROR_ALREADY_CREATED) {
+            } else if (s == VTableHook::ErrorAlreadyCreated) {
                  hookedCreateResource = true;
             }
         }
@@ -3743,15 +3740,13 @@ HRESULT WINAPI DetourD3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL Min
                 void** qVtbl = *reinterpret_cast<void***>(dummyQueue);
                 
                 // Index 10 is ExecuteCommandLists
-                MH_STATUS s = MH_CreateHook(&qVtbl[10], (LPVOID)DetourExecuteCommandLists, (LPVOID*)&oExecuteCommandLists);
-                if (s == MH_OK) {
-                    MH_EnableHook(&qVtbl[10]);
+                VTableHook::Status s = VTableHook::Create(&qVtbl[10], (LPVOID)DetourExecuteCommandLists, (LPVOID*)&oExecuteCommandLists);
+                if (s == VTableHook::Success) {
                     HookLog("DX12: Hooked ExecuteCommandLists (via lazy queue creation)");
-                } else if (s == MH_ERROR_ALREADY_CREATED) {
-                    MH_EnableHook(&qVtbl[10]);
+                } else if (s == VTableHook::ErrorAlreadyCreated) {
                     HookLog("DX12: Enabled existing ExecuteCommandLists hook");
                 } else {
-                    HookLog("DX12: Failed to hook ExecuteCommandLists: %s", MH_StatusToString(s));
+                    HookLog("DX12: Failed to hook ExecuteCommandLists: %s", VTableHook::StatusToString(s));
                 }
                 
                 dummyQueue->Release();
@@ -3781,18 +3776,9 @@ void DX12Hook::Init() {
 
 #ifdef ENABLE_D3D12_WRAPPER
   // Hook D3D12CreateDevice export to catch early device creation
-  // On 32-bit, we use IAT hooks (in wrapper_hooks.cpp) to catch this, so skip MinHook to avoid conflict
-#ifdef _WIN64
-  MH_STATUS s_dev = MH_CreateHookApi(L"d3d12.dll", "D3D12CreateDevice", (LPVOID)DetourD3D12CreateDevice, (LPVOID*)&oD3D12CreateDevice);
-  if (s_dev == MH_OK) {
-      MH_EnableHook((LPVOID)oD3D12CreateDevice);
-      HookLog("DX12: Hooked D3D12CreateDevice export.");
-  } else {
-      HookLog("DX12: Failed to hook D3D12CreateDevice export: %s", MH_StatusToString(s_dev));
-  }
-#else
-  HookLog("DX12: Skipping MinHook for D3D12CreateDevice on 32-bit (using IAT wrapper instead)");
-#endif
+  // On 32-bit, we use IAT hooks (in wrapper_hooks.cpp) to catch this.
+  // We now trust IAT hooks for 64-bit as well, eliminating MinHook dependency.
+  HookLog("DX12: Skipping MinHook for D3D12CreateDevice (using IAT wrapper instead)");
 #endif // ENABLE_D3D12_WRAPPER
 
   typedef HRESULT (WINAPI *PFN_CREATE_DXGI_FACTORY1)(REFIID, void**);
@@ -3810,51 +3796,32 @@ void DX12Hook::Init() {
   if (factory) {
       void **facVTable = *reinterpret_cast<void ***>(factory);
       
-      MH_STATUS s;
-      s = MH_CreateHook(&facVTable[10], (LPVOID)DetourCreateSwapChain,
+      VTableHook::Status s;
+      s = VTableHook::Create(&facVTable[10], (LPVOID)DetourCreateSwapChain,
                     (LPVOID *)&oCreateSwapChain);
-      if (s != MH_OK) HookLog("Failed to hook CreateSwapChain: %s", MH_StatusToString(s));
+      if (s != VTableHook::Success) HookLog("Failed to hook CreateSwapChain: %s", VTableHook::StatusToString(s));
 
-      s = MH_CreateHook(&facVTable[15], (LPVOID)DetourCreateSwapChainForHwnd,
+      s = VTableHook::Create(&facVTable[15], (LPVOID)DetourCreateSwapChainForHwnd,
                     (LPVOID *)&oCreateSwapChainForHwnd);
-      if (s != MH_OK) HookLog("Failed to hook CreateSwapChainForHwnd: %s", MH_StatusToString(s));
+      if (s != VTableHook::Success) HookLog("Failed to hook CreateSwapChainForHwnd: %s", VTableHook::StatusToString(s));
 
-      s = MH_CreateHook(&facVTable[16], (LPVOID)DetourCreateSwapChainForCoreWindow,
+      s = VTableHook::Create(&facVTable[16], (LPVOID)DetourCreateSwapChainForCoreWindow,
                     (LPVOID *)&oCreateSwapChainForCoreWindow);
-      if (s != MH_OK) HookLog("Failed to hook CreateSwapChainForCoreWindow: %s", MH_StatusToString(s));
+      if (s != VTableHook::Success) HookLog("Failed to hook CreateSwapChainForCoreWindow: %s", VTableHook::StatusToString(s));
 
-      s = MH_CreateHook(&facVTable[24], (LPVOID)DetourCreateSwapChainForComposition,
+      s = VTableHook::Create(&facVTable[24], (LPVOID)DetourCreateSwapChainForComposition,
                     (LPVOID *)&oCreateSwapChainForComposition);
-      if (s != MH_OK) HookLog("Failed to hook CreateSwapChainForComposition: %s", MH_StatusToString(s));
+      if (s != VTableHook::Success) HookLog("Failed to hook CreateSwapChainForComposition: %s", VTableHook::StatusToString(s));
       
       factory->Release();
   } else {
       HookLog("DX12: Failed to create temporary DXGI Factory. SwapChain hooking may fail.");
   }
 
-  // Hook Root Signature Serialization (export hooks for Static Sampler override)
-  void* pSerializeRootSig = (void*)GetProcAddress(hD3D12, "D3D12SerializeRootSignature");
-  void* pSerializeVersionedRootSig = (void*)GetProcAddress(hD3D12, "D3D12SerializeVersionedRootSignature");
-  
-  if (pSerializeRootSig) {
-      MH_STATUS s = MH_CreateHook(pSerializeRootSig, (LPVOID)DetourSerializeRootSignature, (LPVOID*)&oSerializeRootSignature);
-      if (s == MH_OK) {
-          MH_EnableHook(pSerializeRootSig);
-          HookLog("DX12: Hooked D3D12SerializeRootSignature");
-      }
-  }
-  
-  if (pSerializeVersionedRootSig) {
-      MH_STATUS s = MH_CreateHook(pSerializeVersionedRootSig, (LPVOID)DetourSerializeVersionedRootSignature, (LPVOID*)&oSerializeVersionedRootSignature);
-      if (s == MH_OK) {
-          MH_EnableHook(pSerializeVersionedRootSig);
-          HookLog("DX12: Hooked D3D12SerializeVersionedRootSignature");
-      }
-  }
+  // NOTE: Export hooks (SerializeRootSignature) removed here.
+  // They are now handled by IAT/EAT patching in iat_hook.cpp.
 
-  // Enable all queued hooks
-  MH_EnableHook(MH_ALL_HOOKS);
-  HookLog("DX12Hook: MinHook enabled (Lazy Init Complete).");
+  HookLog("DX12Hook: VTableHook initialized (Lazy Init Complete).");
 }
 
 // Helper function callable from dx11_hook.cpp to install DX12 hooks on actual game swapchain
@@ -3866,28 +3833,28 @@ bool InstallDX12HooksOnSwapchain(IDXGISwapChain3* pSwapChain) {
     bool anyInstalled = false;
     
     if (oPresent == nullptr) {
-        MH_STATUS s = MH_CreateHook(&scVTable[8], (LPVOID)DetourPresent, (LPVOID*)&oPresent);
-        if (s == MH_OK) {
+        VTableHook::Status s = VTableHook::Create(&scVTable[8], (LPVOID)DetourPresent, (LPVOID*)&oPresent);
+        if (s == VTableHook::Success) {
             HookLog("DX12: Present hook installed on game swapchain (vtable[8]=%p)", scVTable[8]);
             anyInstalled = true;
         } else {
-            HookLog("DX12: Failed to hook Present on game swapchain: %s", MH_StatusToString(s));
+            HookLog("DX12: Failed to hook Present on game swapchain: %s", VTableHook::StatusToString(s));
         }
     }
     
     if (oPresent1 == nullptr) {
-        MH_STATUS s = MH_CreateHook(&scVTable[22], (LPVOID)DetourPresent1, (LPVOID*)&oPresent1);
-        if (s == MH_OK) {
+        VTableHook::Status s = VTableHook::Create(&scVTable[22], (LPVOID)DetourPresent1, (LPVOID*)&oPresent1);
+        if (s == VTableHook::Success) {
             HookLog("DX12: Present1 hook installed on game swapchain (vtable[22]=%p)", scVTable[22]);
             anyInstalled = true;
         } else {
-            HookLog("DX12: Failed to hook Present1 on game swapchain: %s", MH_StatusToString(s));
+            HookLog("DX12: Failed to hook Present1 on game swapchain: %s", VTableHook::StatusToString(s));
         }
     }
     
     if (oResizeBuffers == nullptr) {
-        MH_STATUS s = MH_CreateHook(&scVTable[13], (LPVOID)DetourResizeBuffers, (LPVOID*)&oResizeBuffers);
-        if (s == MH_OK) {
+        VTableHook::Status s = VTableHook::Create(&scVTable[13], (LPVOID)DetourResizeBuffers, (LPVOID*)&oResizeBuffers);
+        if (s == VTableHook::Success) {
             HookLog("DX12: ResizeBuffers hook installed on game swapchain");
             anyInstalled = true;
         }
@@ -3900,7 +3867,8 @@ void DX12Hook::Shutdown() {
   HookLog("DX12Hook::Shutdown()");
   
   // First disable hooks to stop new frames from coming in
-  MH_DisableHook(MH_ALL_HOOKS);
+  // No disable needed for VTable hooks as we don't unpatch on shutdown currently
+  // MH_DisableHook(MH_ALL_HOOKS);
   
   // Stop capture thread and wait for it to finish
   if (g_DX12Capture.captureThreadRunning) {

@@ -9,11 +9,8 @@
 #include "d3d9_device_wrap.h"
 #include "iat_hook.h"
 #include "hook_common.h"
-#include "minhook_shim.h"
+// MinHook shim removed
 
-// Set to 1 to use IAT patching instead of MinHook for factory/create hooks
-// This is the path to eliminating MinHook entirely
-#define USE_IAT_HOOKS 1
 
 // ============================================================================
 // Original Function Pointers
@@ -485,11 +482,7 @@ HRESULT WINAPI Wrapped_Direct3DCreate9Ex(UINT SDKVersion, IDirect3D9Ex** ppD3D) 
 bool InitializeWrapperHooks() {
     if (g_WrappersActive) return true;
     
-    WrapperLog("Wrapper: Initializing wrapper hooks...");
-    
-#if USE_IAT_HOOKS
-    // Use IAT patching - no MinHook dependency for these hooks
-    WrapperLog("Wrapper: Using IAT patching mode (MinHook-free)");
+    WrapperLog("Wrapper: Initializing wrapper hooks (IAT mode)...");
     
     bool success = true;
     WrapperLog("Wrapper: Initializing DXGI hooks...");
@@ -507,176 +500,6 @@ bool InitializeWrapperHooks() {
     g_WrappersActive = true;
     WrapperLog("Wrapper: IAT initialization complete");
     return success;
-    
-#else
-    // Legacy MinHook path
-    WrapperLog("Wrapper: Using MinHook mode");
-    
-    // Get DXGI module
-    HMODULE hDXGI = GetModuleHandleA("dxgi.dll");
-    if (!hDXGI) {
-        hDXGI = LoadLibraryA("dxgi.dll");
-    }
-    
-#ifdef ENABLE_D3D12_WRAPPER
-    // Get D3D12 module
-    HMODULE hD3D12 = GetModuleHandleA("d3d12.dll");
-    if (!hD3D12) {
-        hD3D12 = LoadLibraryA("d3d12.dll");
-    }
-#endif
-    
-    bool success = true;
-    
-    // Hook DXGI factory creation
-    if (hDXGI) {
-        FARPROC pCreateDXGIFactory = GetProcAddress(hDXGI, "CreateDXGIFactory");
-        FARPROC pCreateDXGIFactory1 = GetProcAddress(hDXGI, "CreateDXGIFactory1");
-        FARPROC pCreateDXGIFactory2 = GetProcAddress(hDXGI, "CreateDXGIFactory2");
-        
-        if (pCreateDXGIFactory) {
-            if (MH_CreateHook((LPVOID)pCreateDXGIFactory, (LPVOID)&Wrapped_CreateDXGIFactory, 
-                              (LPVOID*)&oCreateDXGIFactory) == MH_OK) {
-                MH_EnableHook((LPVOID)pCreateDXGIFactory);
-                WrapperLog("Wrapper: Hooked CreateDXGIFactory");
-            }
-        }
-        
-        if (pCreateDXGIFactory1) {
-            if (MH_CreateHook((LPVOID)pCreateDXGIFactory1, (LPVOID)&Wrapped_CreateDXGIFactory1,
-                              (LPVOID*)&oCreateDXGIFactory1) == MH_OK) {
-                MH_EnableHook((LPVOID)pCreateDXGIFactory1);
-                WrapperLog("Wrapper: Hooked CreateDXGIFactory1");
-            }
-        }
-        
-        if (pCreateDXGIFactory2) {
-            if (MH_CreateHook((LPVOID)pCreateDXGIFactory2, (LPVOID)&Wrapped_CreateDXGIFactory2,
-                              (LPVOID*)&oCreateDXGIFactory2) == MH_OK) {
-                MH_EnableHook((LPVOID)pCreateDXGIFactory2);
-                WrapperLog("Wrapper: Hooked CreateDXGIFactory2");
-            }
-        }
-    }
-    
-#ifdef ENABLE_D3D12_WRAPPER
-    // Hook D3D12 device creation
-    if (hD3D12) {
-        FARPROC pD3D12CreateDevice = GetProcAddress(hD3D12, "D3D12CreateDevice");
-        
-        if (pD3D12CreateDevice) {
-            if (MH_CreateHook((LPVOID)pD3D12CreateDevice, (LPVOID)&Wrapped_D3D12CreateDevice,
-                              (LPVOID*)&oD3D12CreateDevice) == MH_OK) {
-                MH_EnableHook((LPVOID)pD3D12CreateDevice);
-                WrapperLog("Wrapper: Hooked D3D12CreateDevice");
-            }
-        }
-    }
-#endif
-    
-    // Hook D3D11 device creation
-    HMODULE hD3D11 = GetModuleHandleA("d3d11.dll");
-    if (!hD3D11) {
-        hD3D11 = LoadLibraryA("d3d11.dll");
-    }
-    
-    if (hD3D11) {
-        FARPROC pD3D11CreateDevice = GetProcAddress(hD3D11, "D3D11CreateDevice");
-        FARPROC pD3D11CreateDeviceAndSwapChain = GetProcAddress(hD3D11, "D3D11CreateDeviceAndSwapChain");
-        
-        if (pD3D11CreateDevice) {
-            if (MH_CreateHook((LPVOID)pD3D11CreateDevice, (LPVOID)&Wrapped_D3D11CreateDevice,
-                              (LPVOID*)&oD3D11CreateDevice) == MH_OK) {
-                MH_EnableHook((LPVOID)pD3D11CreateDevice);
-                WrapperLog("Wrapper: Hooked D3D11CreateDevice");
-            }
-        }
-        
-        if (pD3D11CreateDeviceAndSwapChain) {
-            if (MH_CreateHook((LPVOID)pD3D11CreateDeviceAndSwapChain, (LPVOID)&Wrapped_D3D11CreateDeviceAndSwapChain,
-                              (LPVOID*)&oD3D11CreateDeviceAndSwapChain) == MH_OK) {
-                MH_EnableHook((LPVOID)pD3D11CreateDeviceAndSwapChain);
-                WrapperLog("Wrapper: Hooked D3D11CreateDeviceAndSwapChain");
-            }
-        }
-    }
-    
-    // Hook D3D10 device creation
-    HMODULE hD3D10 = GetModuleHandleA("d3d10.dll");
-    if (!hD3D10) {
-        hD3D10 = LoadLibraryA("d3d10.dll");
-    }
-    
-    if (hD3D10) {
-        FARPROC pD3D10CreateDevice = GetProcAddress(hD3D10, "D3D10CreateDevice");
-        FARPROC pD3D10CreateDeviceAndSwapChain = GetProcAddress(hD3D10, "D3D10CreateDeviceAndSwapChain");
-        
-        if (pD3D10CreateDevice) {
-            if (MH_CreateHook((LPVOID)pD3D10CreateDevice, (LPVOID)&Wrapped_D3D10CreateDevice,
-                              (LPVOID*)&oD3D10CreateDevice) == MH_OK) {
-                MH_EnableHook((LPVOID)pD3D10CreateDevice);
-                WrapperLog("Wrapper: Hooked D3D10CreateDevice");
-            }
-        }
-        
-        if (pD3D10CreateDeviceAndSwapChain) {
-            if (MH_CreateHook((LPVOID)pD3D10CreateDeviceAndSwapChain, (LPVOID)&Wrapped_D3D10CreateDeviceAndSwapChain,
-                              (LPVOID*)&oD3D10CreateDeviceAndSwapChain) == MH_OK) {
-                MH_EnableHook((LPVOID)pD3D10CreateDeviceAndSwapChain);
-                WrapperLog("Wrapper: Hooked D3D10CreateDeviceAndSwapChain");
-            }
-        }
-    }
-    
-    // Hook D3D10.1 device creation
-    HMODULE hD3D10_1 = GetModuleHandleA("d3d10_1.dll");
-    if (!hD3D10_1) {
-        hD3D10_1 = LoadLibraryA("d3d10_1.dll");
-    }
-    
-    if (hD3D10_1) {
-        FARPROC pD3D10CreateDevice1 = GetProcAddress(hD3D10_1, "D3D10CreateDevice1");
-        
-        if (pD3D10CreateDevice1) {
-            if (MH_CreateHook((LPVOID)pD3D10CreateDevice1, (LPVOID)&Wrapped_D3D10CreateDevice1,
-                              (LPVOID*)&oD3D10CreateDevice1) == MH_OK) {
-                MH_EnableHook((LPVOID)pD3D10CreateDevice1);
-                WrapperLog("Wrapper: Hooked D3D10CreateDevice1");
-            }
-        }
-    }
-    
-    // Hook D3D9 creation functions
-    HMODULE hD3D9 = GetModuleHandleA("d3d9.dll");
-    if (!hD3D9) {
-        hD3D9 = LoadLibraryA("d3d9.dll");
-    }
-    
-    if (hD3D9) {
-        FARPROC pDirect3DCreate9 = GetProcAddress(hD3D9, "Direct3DCreate9");
-        FARPROC pDirect3DCreate9Ex = GetProcAddress(hD3D9, "Direct3DCreate9Ex");
-        
-        if (pDirect3DCreate9) {
-            if (MH_CreateHook((LPVOID)pDirect3DCreate9, (LPVOID)&Wrapped_Direct3DCreate9,
-                              (LPVOID*)&oDirect3DCreate9) == MH_OK) {
-                MH_EnableHook((LPVOID)pDirect3DCreate9);
-                WrapperLog("Wrapper: Hooked Direct3DCreate9");
-            }
-        }
-        
-        if (pDirect3DCreate9Ex) {
-            if (MH_CreateHook((LPVOID)pDirect3DCreate9Ex, (LPVOID)&Wrapped_Direct3DCreate9Ex,
-                              (LPVOID*)&oDirect3DCreate9Ex) == MH_OK) {
-                MH_EnableHook((LPVOID)pDirect3DCreate9Ex);
-                WrapperLog("Wrapper: Hooked Direct3DCreate9Ex");
-            }
-        }
-    }
-    
-    g_WrappersActive = true;
-    WrapperLog("Wrapper: Initialization complete");
-    return success;
-#endif // USE_IAT_HOOKS
 }
 
 void ShutdownWrapperHooks() {
@@ -684,12 +507,7 @@ void ShutdownWrapperHooks() {
     
     WrapperLog("Wrapper: Shutting down wrapper hooks...");
     
-#if USE_IAT_HOOKS
     IATHook::ShutdownIATHooks();
-#else
-    // Disable all MinHook hooks
-    MH_DisableHook(MH_ALL_HOOKS);
-#endif
     
     g_WrappersActive = false;
 }
