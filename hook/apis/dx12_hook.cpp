@@ -15,6 +15,9 @@
 #include "imgui.h"
 #include "../wrappers/wrapper_base.h"
 #include "../wrappers/wrapper_hooks.h"
+#ifdef ENABLE_D3D12_WRAPPER
+#include "../wrappers/d3d12_wrapper_interface.h"
+#endif
 #include <../wrappers/minhook_shim.h>
 #include <atomic>
 #include <avrt.h>
@@ -3131,6 +3134,39 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory *pThis,
                                                 IUnknown *pDevice,
                                                 DXGI_SWAP_CHAIN_DESC *pDesc,
                                                 IDXGISwapChain **ppSwapChain) {
+  // Check if pDevice is a D3D12 device or queue, and if it is wrapped.
+  // If it is NOT wrapped, it implies it's a driver-internal device (e.g. Vulkan Promotion),
+  // and we should NOT wrap the swapchain to avoid interference.
+#ifdef ENABLE_D3D12_WRAPPER
+  if (pDevice) {
+      ID3D12Device* pD12Device = nullptr;
+      if (SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D12Device), (void**)&pD12Device))) {
+          bool isWrapped = D3D12Wrapper_IsDeviceWrapped(pD12Device);
+          pD12Device->Release();
+          if (!isWrapped) {
+              HookLog("DX12: DetourCreateSwapChain: Skipping wrap for unwrapped (internal) device.");
+              return oCreateSwapChain(pThis, pDevice, pDesc, ppSwapChain);
+          }
+      } else {
+          // If passed a Queue, get device from it
+          ID3D12CommandQueue* pQueue = nullptr;
+          if (SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D12CommandQueue), (void**)&pQueue))) {
+               if (SUCCEEDED(pQueue->GetDevice(IID_PPV_ARGS(&pD12Device)))) {
+                   bool isWrapped = D3D12Wrapper_IsDeviceWrapped(pD12Device);
+                   pD12Device->Release();
+                   pQueue->Release();
+                   if (!isWrapped) {
+                        HookLog("DX12: DetourCreateSwapChain: Skipping wrap for unwrapped (internal) queue/device.");
+                        return oCreateSwapChain(pThis, pDevice, pDesc, ppSwapChain);
+                   }
+               } else {
+                   pQueue->Release();
+               }
+          }
+      }
+  }
+#endif
+
   EarlyLog("DX12: DetourCreateSwapChain called (pDevice=%p, pDesc=%p)", pDevice, pDesc);
   if (!pDesc) return DXGI_ERROR_INVALID_CALL;
   if (pDevice) {
@@ -3256,6 +3292,37 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(
            swapCount, pDevice, hWnd, pDesc ? pDesc->Width : 0, pDesc ? pDesc->Height : 0);
   
   if (!pDesc) return DXGI_ERROR_INVALID_CALL;
+
+  // Check if pDevice is a D3D12 device or queue, and if it is wrapped.
+#ifdef ENABLE_D3D12_WRAPPER
+  if (pDevice) {
+      ID3D12Device* pD12Device = nullptr;
+      if (SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D12Device), (void**)&pD12Device))) {
+          bool isWrapped = D3D12Wrapper_IsDeviceWrapped(pD12Device);
+          pD12Device->Release();
+          if (!isWrapped) {
+              HookLog("DX12: DetourCreateSwapChainForHwnd: Skipping wrap for unwrapped (internal) device.");
+              return oCreateSwapChainForHwnd(pThis, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
+          }
+      } else {
+          ID3D12CommandQueue* pQueue = nullptr;
+          if (SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D12CommandQueue), (void**)&pQueue))) {
+               if (SUCCEEDED(pQueue->GetDevice(IID_PPV_ARGS(&pD12Device)))) {
+                   bool isWrapped = D3D12Wrapper_IsDeviceWrapped(pD12Device);
+                   pD12Device->Release();
+                   pQueue->Release();
+                   if (!isWrapped) {
+                        HookLog("DX12: DetourCreateSwapChainForHwnd: Skipping wrap for unwrapped (internal) queue/device.");
+                        return oCreateSwapChainForHwnd(pThis, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
+                   }
+               } else {
+                   pQueue->Release();
+               }
+          }
+      }
+  }
+#endif
+
   if (pDevice) {
     ID3D12CommandQueue *queue = nullptr;
     if (SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D12CommandQueue),
@@ -3360,6 +3427,34 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForCoreWindow(
     const DXGI_SWAP_CHAIN_DESC1 *pDesc, IDXGIOutput *pRestrictToOutput,
     IDXGISwapChain1 **ppSwapChain) {
     EarlyLog("DX12: DetourCreateSwapChainForCoreWindow called (pDevice=%p, pWindow=%p)", pDevice, pWindow);
+
+#ifdef ENABLE_D3D12_WRAPPER
+    if (pDevice) {
+        ID3D12Device* pD12Device = nullptr;
+        if (SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D12Device), (void**)&pD12Device))) {
+            bool isWrapped = D3D12Wrapper_IsDeviceWrapped(pD12Device);
+            pD12Device->Release();
+            if (!isWrapped) {
+                 return oCreateSwapChainForCoreWindow(pThis, pDevice, pWindow, pDesc, pRestrictToOutput, ppSwapChain);
+            }
+        } else {
+            ID3D12CommandQueue* pQueue = nullptr;
+            if (SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D12CommandQueue), (void**)&pQueue))) {
+                 if (SUCCEEDED(pQueue->GetDevice(IID_PPV_ARGS(&pD12Device)))) {
+                     bool isWrapped = D3D12Wrapper_IsDeviceWrapped(pD12Device);
+                     pD12Device->Release();
+                     pQueue->Release();
+                     if (!isWrapped) {
+                          return oCreateSwapChainForCoreWindow(pThis, pDevice, pWindow, pDesc, pRestrictToOutput, ppSwapChain);
+                     }
+                 } else {
+                     pQueue->Release();
+                 }
+            }
+        }
+    }
+#endif
+
     if (pDevice) {
         ID3D12CommandQueue *queue = nullptr;
         if (SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D12CommandQueue), (void **)&queue))) {
@@ -3386,6 +3481,34 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForComposition(
     IDXGIFactory2 *pThis, IUnknown *pDevice, const DXGI_SWAP_CHAIN_DESC1 *pDesc,
     IDXGIOutput *pRestrictToOutput, IDXGISwapChain1 **ppSwapChain) {
     EarlyLog("DX12: DetourCreateSwapChainForComposition called (pDevice=%p)", pDevice);
+
+#ifdef ENABLE_D3D12_WRAPPER
+    if (pDevice) {
+        ID3D12Device* pD12Device = nullptr;
+        if (SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D12Device), (void**)&pD12Device))) {
+            bool isWrapped = D3D12Wrapper_IsDeviceWrapped(pD12Device);
+            pD12Device->Release();
+            if (!isWrapped) {
+                 return oCreateSwapChainForComposition(pThis, pDevice, pDesc, pRestrictToOutput, ppSwapChain);
+            }
+        } else {
+            ID3D12CommandQueue* pQueue = nullptr;
+            if (SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D12CommandQueue), (void**)&pQueue))) {
+                 if (SUCCEEDED(pQueue->GetDevice(IID_PPV_ARGS(&pD12Device)))) {
+                     bool isWrapped = D3D12Wrapper_IsDeviceWrapped(pD12Device);
+                     pD12Device->Release();
+                     pQueue->Release();
+                     if (!isWrapped) {
+                          return oCreateSwapChainForComposition(pThis, pDevice, pDesc, pRestrictToOutput, ppSwapChain);
+                     }
+                 } else {
+                     pQueue->Release();
+                 }
+            }
+        }
+    }
+#endif
+
     if (pDevice) {
         ID3D12CommandQueue *queue = nullptr;
         if (SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D12CommandQueue), (void **)&queue))) {
