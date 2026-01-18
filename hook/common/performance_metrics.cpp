@@ -86,6 +86,8 @@ void PerformanceMetrics::Update(int64_t currentQpcUs) {
   if (frameToFrameUs <= 0)
     return;
 
+
+
   m_frameCounter++;
 
   // 1. Update Plot History

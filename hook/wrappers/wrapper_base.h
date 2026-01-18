@@ -41,13 +41,46 @@ static const GUID IID_CWrapD3D12CommandQueue =
 { 0xd4e5f678, 0x90ab, 0xcdef, { 0x12, 0x34, 0x56, 0x78, 0x90, 0x12, 0x34, 0x56 } };
 
 // {A0B1C2D3-E4F5-6789-0123-456789ABCDEF}
-static const GUID IID_ICWrapDXGIAdapter = 
+static const GUID IID_CWrapDXGIAdapter = 
 { 0xa0b1c2d3, 0xe4f5, 0x6789, { 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef } };
+
+// {E5F67890-ABCD-EF12-3456-789012345678}
+static const GUID IID_CWrapD3D11Device = 
+{ 0xe5f67890, 0xabcd, 0xef12, { 0x34, 0x56, 0x78, 0x90, 0x12, 0x34, 0x56, 0x78 } };
 
 // Interface for unwrapping
 struct ICWrapDXGIAdapter : public IUnknown {
     virtual IDXGIAdapter* GetReal() = 0;
 };
+
+// Generic unwrapping helper
+template<typename T>
+inline T* DeWrap(T* p) {
+    if (!p) return nullptr;
+    T* pReal = nullptr;
+    // We try multiple private IIDs because we don't know the exact type of p
+    if (SUCCEEDED(p->QueryInterface(IID_CWrapD3D11Device, (void**)&pReal))) {
+        pReal->Release();
+        return pReal;
+    }
+    if (SUCCEEDED(p->QueryInterface(IID_CWrapD3D12Device, (void**)&pReal))) {
+        pReal->Release();
+        return pReal;
+    }
+    if (SUCCEEDED(p->QueryInterface(IID_CWrapDXGISwapChain, (void**)&pReal))) {
+        pReal->Release();
+        return pReal;
+    }
+    if (SUCCEEDED(p->QueryInterface(IID_CWrapDXGIFactory, (void**)&pReal))) {
+        pReal->Release();
+        return pReal;
+    }
+    if (SUCCEEDED(p->QueryInterface(IID_CWrapD3D12CommandQueue, (void**)&pReal))) {
+        pReal->Release();
+        return pReal;
+    }
+    return p; // Not a wrapper or unknown wrapper
+}
 
 // ============================================================================
 // Known FG Runtime Unwrap GUIDs - Block these to prevent unwrapping

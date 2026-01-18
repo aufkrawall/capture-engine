@@ -1232,10 +1232,14 @@ struct PresentTiming {
 static thread_local PresentTiming g_Timing;
 
 // Present hook helpers
-static void PresentBegin(IDirect3DDevice9 *device, IDirect3DSurface9 *&backBuffer) {
+void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) {
     if (g_ShuttingDown) return;
     
-    // Start timing
+    static int debugLogCount = 0;
+    if (debugLogCount++ < 60) {
+        HookLog("DX9 Debug: PresentBegin frame=%d. IPC=%p. SHM=%p. ImGuiConfig=%d.", 
+            debugLogCount, g_IPC, (g_IPC ? g_IPC->GetSharedMem() : nullptr), (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->overlayConfig.showOverlay));
+    }
     // Update frame config cache once per frame to avoid overhead in hot hooks
     g_FrameConfig = GetActiveGraphicsConfig();
     
@@ -1411,7 +1415,7 @@ static void PresentBegin(IDirect3DDevice9 *device, IDirect3DSurface9 *&backBuffe
     }
 }
 
-static void PresentEnd(IDirect3DDevice9 *device, IDirect3DSurface9 *backBuffer) {
+void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer) {
     if (g_PresentRecurse == 1) {
         static int64_t qpcFreq = 0;
         if (qpcFreq == 0) {
@@ -1553,11 +1557,11 @@ static HRESULT STDMETHODCALLTYPE DetourPresent(
     LARGE_INTEGER p0;
     LARGE_INTEGER p1;
     IDirect3DSurface9 *backBuffer = nullptr;
-    PresentBegin(device, backBuffer);
+    DX9_PresentBegin(device, backBuffer);
     QueryPerformanceCounter(&p0);
     HRESULT hr = oPresent(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
     QueryPerformanceCounter(&p1);
-    PresentEnd(device, backBuffer);
+    DX9_PresentEnd(device, backBuffer);
     int64_t qpcFreq = GetQpcFreqCached();
     int64_t presentUs = qpcFreq ? ((p1.QuadPart - p0.QuadPart) * 1000000) / qpcFreq : 0;
     MaybeWaitForVSyncAfterPresent(presentUs);
@@ -1586,11 +1590,11 @@ static HRESULT STDMETHODCALLTYPE DetourPresentEx(
         }
     }
     IDirect3DSurface9 *backBuffer = nullptr;
-    PresentBegin(device, backBuffer);
+    DX9_PresentBegin(device, backBuffer);
     QueryPerformanceCounter(&p0);
     HRESULT hr = oPresentEx(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
     QueryPerformanceCounter(&p1);
-    PresentEnd(device, backBuffer);
+    DX9_PresentEnd(device, backBuffer);
     int64_t qpcFreq = GetQpcFreqCached();
     int64_t presentUs = qpcFreq ? ((p1.QuadPart - p0.QuadPart) * 1000000) / qpcFreq : 0;
     MaybeWaitForVSyncAfterPresent(presentUs);
@@ -1623,7 +1627,7 @@ static HRESULT STDMETHODCALLTYPE DetourPresentSwap(
     
     if (g_PresentRecurse == 0) {
         if (SUCCEEDED(swap->GetDevice(&device))) {
-            PresentBegin(device, backBuffer);
+            DX9_PresentBegin(device, backBuffer);
         }
     }
     QueryPerformanceCounter(&p0);
@@ -1631,7 +1635,7 @@ static HRESULT STDMETHODCALLTYPE DetourPresentSwap(
     QueryPerformanceCounter(&p1);
     
     if (device) {
-        PresentEnd(device, backBuffer);
+        DX9_PresentEnd(device, backBuffer);
         device->Release();
     }
 
@@ -2064,13 +2068,23 @@ void DX9Hook::Init() {
     
     EarlyLog("DX9Hook::Init() Passive Complete");
     
+    // Check for test apps that force DX9 but might load other DLLs
+    bool isTestApp = false;
+    char modPath[MAX_PATH] = {};
+    if (GetModuleFileNameA(nullptr, modPath, MAX_PATH)) {
+        const char* exeName = strrchr(modPath, '\\');
+        exeName = exeName ? exeName + 1 : modPath;
+        if (strnicmp(exeName, "dx9_test", 8) == 0) isTestApp = true;
+    }
+
     // Skip Active Hooking if a different graphics API is the primary renderer
     const char* skipReason = nullptr;
-    if (GetModuleHandleA("d3d12.dll")) {
+    if (GetModuleHandleA("d3d12.dll") && !isTestApp) {
         skipReason = "d3d12.dll (DX12 game)";
-    } else if (GetModuleHandleA("d3d10.dll") || GetModuleHandleA("d3d10_1.dll")) {
+    } else if ((GetModuleHandleA("d3d10.dll") || GetModuleHandleA("d3d10_1.dll")) && !isTestApp) {
+        // DX10 usually implies D3D10 is primary, unless it's a test app
         skipReason = "d3d10.dll (DX10 game)";
-    } else if (GetModuleHandleA("vulkan-1.dll")) {
+    } else if (GetModuleHandleA("vulkan-1.dll") && !isTestApp) {
         skipReason = "vulkan-1.dll (Vulkan game)";
     } 
     

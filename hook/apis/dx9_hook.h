@@ -4,6 +4,12 @@
 // DX9 Hook - captures games using Direct3D 9/9Ex
 // Uses D3D11 interop for shared textures since D3D9 shared surfaces
 // aren't compatible with modern encoding pipelines
+// Shared Overlay Logic (used by both MinHook and Wrapper)
+#include <d3d9.h>
+
+void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer);
+void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer);
+
 class DX9Hook : public GraphicsHook {
 public:
     void Init() override;

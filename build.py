@@ -1196,7 +1196,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         log(f"Error linking layer: {e}")
 
 
-def compile_d3d12_wrappers_msvc(env):
+def compile_d3d12_wrappers_msvc(env, arch):
     """
     Compile D3D12 wrappers using MSVC.
     Required because MinGW ABI is incompatible with D3D12 headers (WIDL_EXPLICIT_AGGREGATE_RETURNS).
@@ -1223,9 +1223,16 @@ def compile_d3d12_wrappers_msvc(env):
         log("Warning: MSVC Tools not found. Skipping D3D12 wrappers (MSVC).")
         return False, None
 
-    msvc_bin = os.path.join(msvc_tools_root, msvc_ver, "bin", "Hostx64", "x64")
+    # Detect architecture tools
     msvc_include = os.path.join(msvc_tools_root, msvc_ver, "include")
-    msvc_lib = os.path.join(msvc_tools_root, msvc_ver, "lib", "x64")
+    if arch == "x64":
+        msvc_bin = os.path.join(msvc_tools_root, msvc_ver, "bin", "Hostx64", "x64")
+        msvc_lib = os.path.join(msvc_tools_root, msvc_ver, "lib", "x64")
+        sdk_arch = "x64"
+    else:
+        msvc_bin = os.path.join(msvc_tools_root, msvc_ver, "bin", "Hostx64", "x86")
+        msvc_lib = os.path.join(msvc_tools_root, msvc_ver, "lib", "x86")
+        sdk_arch = "x86"
     
     cl_exe = os.path.join(msvc_bin, "cl.exe")
     link_exe = os.path.join(msvc_bin, "link.exe")
@@ -1251,10 +1258,11 @@ def compile_d3d12_wrappers_msvc(env):
     # sdk_lib_ucrt = os.path.join(win_sdk_root, "Lib", win_sdk_ver, "ucrt", "x64")
 
     # 3. Setup paths
-    obj_dir = os.path.join(BUILD_DIR, "obj", "msvc_x64")
+    obj_dir = os.path.join(BUILD_DIR, "obj", f"msvc_{arch}")
     os.makedirs(obj_dir, exist_ok=True)
-    dll_out = os.path.join(BIN_DIR, "d3d12_wrappers.dll")
-    implib_out = os.path.join(BUILD_DIR, "lib", "d3d12_wrappers.lib")
+    suffix = "" if arch == "x64" else "_x86"
+    dll_out = os.path.join(BIN_DIR, f"d3d12_wrappers{suffix}.dll")
+    implib_out = os.path.join(BUILD_DIR, "lib", f"d3d12_wrappers{suffix}.lib")
     os.makedirs(os.path.dirname(implib_out), exist_ok=True)
 
     sources = [
@@ -1276,7 +1284,7 @@ def compile_d3d12_wrappers_msvc(env):
 
     # 4. Compile
     cflags = [
-        "/nologo", "/c", "/O2", "/MD", "/EHsc", "/W3", "/std:c++20",
+        "/nologo", "/c", "/O2", "/MT", "/EHsc", "/W3", "/std:c++20",
         "/DUNICODE", "/D_UNICODE", "/DWIN32", "/D_WINDOWS"
     ]
     for inc in include_paths:
@@ -1342,8 +1350,8 @@ def compile_d3d12_wrappers_msvc(env):
     # 5. Create DLL
     log(f"[MSVC] Linking {os.path.basename(dll_out)}...")
     
-    sdk_lib_um = os.path.join(win_sdk_root, "Lib", win_sdk_ver, "um", "x64")
-    sdk_lib_ucrt = os.path.join(win_sdk_root, "Lib", win_sdk_ver, "ucrt", "x64")
+    sdk_lib_um = os.path.join(win_sdk_root, "Lib", win_sdk_ver, "um", sdk_arch)
+    sdk_lib_ucrt = os.path.join(win_sdk_root, "Lib", win_sdk_ver, "ucrt", sdk_arch)
     
     log(f"[MSVC] MSVC Lib Path: {msvc_lib}")
     log(f"[MSVC] SDK Lib UM Path: {sdk_lib_um}")
@@ -1357,7 +1365,7 @@ def compile_d3d12_wrappers_msvc(env):
         f"/LIBPATH:{sdk_lib_um}",
         f"/LIBPATH:{sdk_lib_ucrt}",
         "d3d12.lib", "dxgi.lib", "dxguid.lib", "user32.lib", "kernel32.lib", "uuid.lib",
-        "ucrt.lib", "msvcrt.lib", "vcruntime.lib"
+        "libucrt.lib", "libcmt.lib", "libvcruntime.lib"
     ] + obj_files
     
     try:
@@ -1390,8 +1398,15 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
               "-I" + IMGUI_DIR]
 
     # Compile D3D12 wrappers (MSVC)
-    has_d3d12_msvc, msvc_lib_path = compile_d3d12_wrappers_msvc(env)
-    if not has_d3d12_msvc:
+    has_d3d12_msvc_x64, msvc_lib_path_x64 = compile_d3d12_wrappers_msvc(env, "x64")
+    has_d3d12_msvc_x86, msvc_lib_path_x86 = compile_d3d12_wrappers_msvc(env, "x86")
+    
+    # We'll use these results later when building hook DLLs
+    msvc_d3d12_status = {
+        "x64": (has_d3d12_msvc_x64, msvc_lib_path_x64),
+        "x86": (has_d3d12_msvc_x86, msvc_lib_path_x86)
+    }
+    if not has_d3d12_msvc_x64 and not has_d3d12_msvc_x86:
         log("Error: MSVC D3D12 wrappers failed to build!")
         sys.exit(1)
     
@@ -1526,7 +1541,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             "-lversion", # For GetFileVersionInfo
             "-ldxgi",    # Needed for VRAM query
             "-lpdh",     # Needed for CPU usage
-            # "-ldwmapi", # Removed for dynamic loading
+            "-lpsapi",   # Needed for IAT patching (EnumProcessModules)
             "-lavrt",
             # "-ld3dcompiler", # Removed for dynamic loading
             # "-Wl,--delayload,D3DCOMPILER_47.dll",
@@ -1547,19 +1562,21 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         ]
         
         # Check for MSVC-compiled D3D12 wrappers
-        d3d12_lib = os.path.join(BUILD_DIR, "lib", "d3d12_wrappers.lib")
-        if arch == "x64" and os.path.exists(d3d12_lib):
-            log("Found MSVC-compiled D3D12 wrappers, enabling D3D12 wrapper support...")
+        has_msvc_d3d12, d3d12_lib = msvc_d3d12_status.get(arch, (False, None))
+        if has_msvc_d3d12 and d3d12_lib and os.path.exists(d3d12_lib):
+            log(f"Enabling D3D12 wrapper support for {arch}...")
             hk_cflags.append("-DENABLE_D3D12_WRAPPER")
             
             # Use Delay Load for d3d12_wrappers.dll to avoid dependency issues
-            # The hook DLL will manually load it in DllMain from its own directory
+            suffix = "" if arch == "x64" else "_x86"
+            dll_base = f"d3d12_wrappers{suffix}.dll"
+            
             ldflags_hook.append(d3d12_lib)
-            ldflags_hook.append("-Wl,--delayload=d3d12_wrappers.dll")
+            ldflags_hook.append(f"-Wl,--delayload={dll_base}")
             ldflags_hook.append("-ldelayimp") # MinGW delay load helper
             
             ldflags_hook.append("-L" + dummy_lib_dir)
-            if has_d3d12_msvc:
+            if has_msvc_d3d12:
                  # Ensure proper rebuild if MSVC lib changed?
                  pass
 

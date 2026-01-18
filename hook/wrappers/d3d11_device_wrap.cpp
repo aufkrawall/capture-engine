@@ -75,6 +75,11 @@ void CWrapD3D11Device::ApplySamplerOverrides(D3D11_SAMPLER_DESC* pDesc) {
 HRESULT STDMETHODCALLTYPE CWrapD3D11Device::QueryInterface(REFIID riid, void** ppvObj) {
     if (!ppvObj) return E_POINTER;
     
+    if (riid == IID_CWrapD3D11Device) {
+        *ppvObj = m_pReal;
+        return S_OK;
+    }
+    
     if (riid == IID_IUnknown || riid == IID_ID3D11Device) {
         AddRef();
         *ppvObj = static_cast<ID3D11Device*>(this);

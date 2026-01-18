@@ -86,6 +86,11 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::QueryInterface(REFIID riid, void** 
         return S_OK;
     }
     
+    if (riid == IID_CWrapDXGIFactory) {
+        *ppvObj = m_pReal;
+        return S_OK;
+    }
+
     if (riid == IID_IUnknown || riid == IID_IDXGIObject || 
         riid == IID_IDXGIFactory || riid == IID_IDXGIFactory1 || riid == IID_IDXGIFactory2) {
         AddRef();
@@ -210,7 +215,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChain(IUnknown* pDevice,
     WrapperLog("DXGI Factory: CreateSwapChain called");
 
     IDXGISwapChain* pRealSwapChain = nullptr;
-    HRESULT hr = m_pReal->CreateSwapChain(pDevice, pDesc, &pRealSwapChain);
+    HRESULT hr = m_pReal->CreateSwapChain(DeWrap(pDevice), pDesc, &pRealSwapChain);
 
     if (SUCCEEDED(hr) && pRealSwapChain) {
         // Wrap the swapchain
@@ -271,7 +276,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForHwnd(
                pDesc ? pDesc->Width : 0, pDesc ? pDesc->Height : 0);
 
     IDXGISwapChain1* pRealSwapChain = nullptr;
-    HRESULT hr = m_pReal->CreateSwapChainForHwnd(pDevice, hWnd, pDesc, pFullscreenDesc,
+    HRESULT hr = m_pReal->CreateSwapChainForHwnd(DeWrap(pDevice), hWnd, pDesc, pFullscreenDesc,
                                                    pRestrictToOutput, &pRealSwapChain);
 
     if (SUCCEEDED(hr) && pRealSwapChain) {
@@ -296,7 +301,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForCoreWindow(
     WrapperLog("DXGI Factory: CreateSwapChainForCoreWindow called");
 
     IDXGISwapChain1* pRealSwapChain = nullptr;
-    HRESULT hr = m_pReal->CreateSwapChainForCoreWindow(pDevice, pWindow, pDesc,
+    HRESULT hr = m_pReal->CreateSwapChainForCoreWindow(DeWrap(pDevice), pWindow, pDesc,
                                                         pRestrictToOutput, &pRealSwapChain);
 
     if (SUCCEEDED(hr) && pRealSwapChain) {
@@ -347,7 +352,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForComposition(
     WrapperLog("DXGI Factory: CreateSwapChainForComposition called");
     
     IDXGISwapChain1* pRealSwapChain = nullptr;
-    HRESULT hr = m_pReal->CreateSwapChainForComposition(pDevice, pDesc, pRestrictToOutput, &pRealSwapChain);
+    HRESULT hr = m_pReal->CreateSwapChainForComposition(DeWrap(pDevice), pDesc, pRestrictToOutput, &pRealSwapChain);
     
     if (SUCCEEDED(hr) && pRealSwapChain) {
         auto* pWrapper = new CWrapDXGISwapChain(pRealSwapChain, pDevice);

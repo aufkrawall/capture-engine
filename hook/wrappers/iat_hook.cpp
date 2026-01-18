@@ -86,17 +86,32 @@ bool PatchIAT(
     if (!importDesc) return false;
     
     // Find the import descriptor for the source module
+    bool moduleFound = false;
     while (importDesc->Name != 0) {
         auto moduleName = reinterpret_cast<const char*>(
             reinterpret_cast<BYTE*>(targetModule) + importDesc->Name);
         
+        // Logs every module we encounter during search for target
+        // WrapperLog("IAT Debug: Module found in IAT: %s", moduleName);
+
         if (_stricmp(moduleName, sourceModule) == 0) {
+            moduleFound = true;
             // Found the module - now find the function
             auto thunkData = reinterpret_cast<IMAGE_THUNK_DATA*>(
                 reinterpret_cast<BYTE*>(targetModule) + importDesc->OriginalFirstThunk);
             auto iatEntry = reinterpret_cast<IMAGE_THUNK_DATA*>(
                 reinterpret_cast<BYTE*>(targetModule) + importDesc->FirstThunk);
             
+            // Check for OriginalFirstThunk == 0 case (Borland/Old Linkers)
+            if (importDesc->OriginalFirstThunk == 0) {
+                thunkData = iatEntry;
+            }
+
+            if (!thunkData) {
+                 WrapperLog("IAT: INT is null for %s in %p", sourceModule, targetModule);
+                 break; 
+            }
+
             while (thunkData->u1.AddressOfData != 0) {
                 if (!(thunkData->u1.Ordinal & IMAGE_ORDINAL_FLAG)) {
                     auto importByName = reinterpret_cast<IMAGE_IMPORT_BY_NAME*>(
@@ -118,6 +133,8 @@ bool PatchIAT(
                             
                             VirtualProtect(&iatEntry->u1.Function, sizeof(void*), 
                                           oldProtect, &oldProtect);
+                            
+                            WrapperLog("IAT: Successfully patched %s!%s in module %p", sourceModule, functionName, targetModule);
                             
                             // Track for restoration
                             std::lock_guard<std::mutex> lock(g_PatchLock);
@@ -143,6 +160,10 @@ bool PatchIAT(
         ++importDesc;
     }
     
+    if (!moduleFound && targetModule == GetModuleHandle(nullptr)) {
+        // WrapperLog("IAT Debug: Module %s not imported by EXE", sourceModule);
+    }
+    
     return false;
 }
 
@@ -162,6 +183,17 @@ bool PatchIATAllModules(
         
         for (int i = 0; i < count; ++i) {
             void* orig = nullptr;
+            
+            // helpful for debugging - see which modules we actually scan
+            WCHAR szModName[MAX_PATH];
+            if (GetModuleFileNameExW(GetCurrentProcess(), modules[i], szModName, MAX_PATH)) {
+                 std::wstring wsModName(szModName);
+                 if (wsModName.find(L"capture_hook") != std::wstring::npos ||
+                     wsModName.find(L"d3d12_wrappers") != std::wstring::npos) {
+                     continue; // Skip our own modules to avoid recursion
+                 }
+            }
+
             if (PatchIAT(modules[i], sourceModule, functionName, hookFunction, &orig)) {
                 if (outOriginal && !*outOriginal) {
                     *outOriginal = orig;
@@ -297,9 +329,6 @@ bool InitializeDXGIHooks() {
     
     // Get dxgi.dll - if not loaded, we'll hook when it loads
     HMODULE hDXGI = GetModuleHandleA("dxgi.dll");
-    if (!hDXGI) {
-        hDXGI = LoadLibraryA("dxgi.dll");
-    }
     
     if (hDXGI) {
         // Get original functions from dxgi.dll
@@ -341,9 +370,6 @@ bool InitializeD3D12Hooks() {
     WrapperLog("IAT: Initializing D3D12 hooks...");
     
     HMODULE hD3D12 = GetModuleHandleA("d3d12.dll");
-    if (!hD3D12) {
-        hD3D12 = LoadLibraryA("d3d12.dll");
-    }
     
     if (hD3D12) {
         oD3D12CreateDevice = reinterpret_cast<PFN_D3D12CreateDevice>(
@@ -368,9 +394,6 @@ bool InitializeD3D11Hooks() {
     WrapperLog("IAT: Initializing D3D11 hooks...");
     
     HMODULE hD3D11 = GetModuleHandleA("d3d11.dll");
-    if (!hD3D11) {
-        hD3D11 = LoadLibraryA("d3d11.dll");
-    }
     
     if (hD3D11) {
         // Get original D3D11CreateDeviceAndSwapChain
@@ -378,13 +401,29 @@ bool InitializeD3D11Hooks() {
         
         ::oD3D11CreateDeviceAndSwapChain = reinterpret_cast<PFN_D3D11CreateDeviceAndSwapChain>(
             GetProcAddress(hD3D11, "D3D11CreateDeviceAndSwapChain"));
+            
+        ::oD3D11CreateDevice = reinterpret_cast<PFN_D3D11CreateDevice>(
+            GetProcAddress(hD3D11, "D3D11CreateDevice"));
         
         void* dummy;
+        bool patched = false;
+        
+        // Patch D3D11CreateDeviceAndSwapChain
         if (PatchIATAllModules("d3d11.dll", "D3D11CreateDeviceAndSwapChain",
-                               (void*)::DX11_DetourCreateDeviceAndSwapChain, &dummy)) {
+                               (void*)::Wrapped_D3D11CreateDeviceAndSwapChain, &dummy)) { // Use Wrapped_, not DX11_Detour
             WrapperLog("IAT: Patched D3D11CreateDeviceAndSwapChain");
+            patched = true;
         } else {
             WrapperLog("IAT: D3D11CreateDeviceAndSwapChain not found in IAT");
+        }
+        
+        // Patch D3D11CreateDevice
+        if (PatchIATAllModules("d3d11.dll", "D3D11CreateDevice",
+                               (void*)::Wrapped_D3D11CreateDevice, &dummy)) {
+            WrapperLog("IAT: Patched D3D11CreateDevice");
+            patched = true;
+        } else {
+            WrapperLog("IAT: D3D11CreateDevice not found in IAT");
         }
         
         WrapperLog("IAT: D3D11 hooks initialized");
@@ -394,20 +433,76 @@ bool InitializeD3D11Hooks() {
     return false;
 }
 
+bool InitializeD3D10Hooks() {
+    WrapperLog("IAT: Initializing D3D10 hooks...");
+    
+    HMODULE hD3D10 = GetModuleHandleA("d3d10.dll");
+    
+    if (hD3D10) {
+        ::oD3D10CreateDevice = (PFN_D3D10CreateDevice)GetProcAddress(hD3D10, "D3D10CreateDevice");
+        ::oD3D10CreateDeviceAndSwapChain = (PFN_D3D10CreateDeviceAndSwapChain)GetProcAddress(hD3D10, "D3D10CreateDeviceAndSwapChain");
+        
+        void* dummy;
+        PatchIATAllModules("d3d10.dll", "D3D10CreateDevice", (void*)::Wrapped_D3D10CreateDevice, &dummy);
+        PatchIATAllModules("d3d10.dll", "D3D10CreateDeviceAndSwapChain", (void*)::Wrapped_D3D10CreateDeviceAndSwapChain, &dummy);
+        
+        // D3D10.1
+        HMODULE hD3D10_1 = GetModuleHandleA("d3d10_1.dll");
+        if (hD3D10_1) {
+            ::oD3D10CreateDevice1 = (PFN_D3D10CreateDevice1)GetProcAddress(hD3D10_1, "D3D10CreateDevice1");
+            PatchIATAllModules("d3d10_1.dll", "D3D10CreateDevice1", (void*)::Wrapped_D3D10CreateDevice1, &dummy);
+        }
+        
+        WrapperLog("IAT: D3D10 hooks initialized");
+        return true;
+    }
+    return false;
+}
+
+
 bool InitializeD3D9Hooks() {
     WrapperLog("IAT: Initializing D3D9 hooks...");
     
     HMODULE hD3D9 = GetModuleHandleA("d3d9.dll");
-    if (!hD3D9) {
-        hD3D9 = LoadLibraryA("d3d9.dll");
-    }
     
     if (hD3D9) {
-        // D3D9 hooks - external declarations needed
+        // Get original functions
+        oDirect3DCreate9 = reinterpret_cast<PFN_Direct3DCreate9>(
+            GetProcAddress(hD3D9, "Direct3DCreate9"));
+        oDirect3DCreate9Ex = reinterpret_cast<PFN_Direct3DCreate9Ex>(
+            GetProcAddress(hD3D9, "Direct3DCreate9Ex"));
+            
+        void* dummy;
+        bool patched = false;
+        
+        // Patch Direct3DCreate9
+        if (PatchIATAllModules("d3d9.dll", "Direct3DCreate9", 
+                              (void*)Wrapped_Direct3DCreate9, &dummy)) {
+            WrapperLog("IAT: Patched Direct3DCreate9");
+            patched = true;
+        } else {
+            // Also try explicit GetProcAddress target for late binding
+            if (oDirect3DCreate9) {
+                // If IAT search failed, it might be due to ordinal-only or forwarded export.
+                // But generally "Direct3DCreate9" is by name.
+                WrapperLog("IAT: Direct3DCreate9 not found in IAT");
+            }
+        }
+        
+        // Patch Direct3DCreate9Ex
+        if (PatchIATAllModules("d3d9.dll", "Direct3DCreate9Ex",
+                              (void*)Wrapped_Direct3DCreate9Ex, &dummy)) {
+            WrapperLog("IAT: Patched Direct3DCreate9Ex");
+            patched = true;
+        } else {
+            WrapperLog("IAT: Direct3DCreate9Ex not found in IAT");
+        }
+        
         WrapperLog("IAT: D3D9 hooks initialized");
         return true;
     }
     
+    WrapperLog("IAT: d3d9.dll not loaded");
     return false;
 }
 

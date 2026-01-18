@@ -1,4 +1,5 @@
 #include "dx12_hook.h"
+#include "dx11_hook.h"
 #include "hook_common.h"
 #include "../../common/frame_timing.h"
 #include "lod_helper.h"
@@ -18,6 +19,9 @@
 #ifdef ENABLE_D3D12_WRAPPER
 #include "../wrappers/d3d12_wrapper_interface.h"
 #endif
+
+extern "C" __declspec(dllexport) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue);
+
 #include <../wrappers/minhook_shim.h>
 #include <atomic>
 #include <avrt.h>
@@ -168,6 +172,23 @@ bool IsFSR3SwapChain(IDXGISwapChain* pSwapChain) {
         return true;
     }
     return false;
+}
+
+// ============================================================================
+// EXPORT: Manually Set Command Queue (For MSVC Wrappers)
+// ============================================================================
+extern "C" __declspec(dllexport) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) {
+    if (pQueue && g_CommandQueue != pQueue) {
+        g_CommandQueue = pQueue;
+        HookLog("DX12: Manually registered Command Queue: %p", pQueue);
+        
+        // Also try to deduce device if missing
+        if (!g_Device) {
+            if (SUCCEEDED(pQueue->GetDevice(IID_PPV_ARGS(&g_Device)))) {
+                HookLog("DX12: Deduced Device from Command Queue: %p", g_Device);
+            }
+        }
+    }
 }
 
 // ============================================================================
@@ -2435,7 +2456,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
   // Convert to microseconds
   int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
 
-  g_PerfMetrics.Update(us);
+  // Use wrapper status to prevent double-counting FPS (Wrapper + Hook)
+  if (!WrapperStateManager::Get().FindWrapper(pSwapChain)) {
+      g_PerfMetrics.Update(us);
+  }
 
   // Update recording state for CSV logging
   bool isRecording = g_IPC && g_IPC->IsRecording();
@@ -3139,11 +3163,26 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory *pThis,
   // and we should NOT wrap the swapchain to avoid interference.
 #ifdef ENABLE_D3D12_WRAPPER
   if (pDevice) {
+      static bool isTestApp = false;
+      static bool checkedTestApp = false;
+      if (!checkedTestApp) {
+          char moduleName[256] = {};
+          if (GetModuleFileNameA(NULL, moduleName, sizeof(moduleName)) != 0) {
+              const char* exeName = strrchr(moduleName, '\\');
+              if (exeName) exeName++;
+              else exeName = moduleName;
+              if (strnicmp(exeName, "dx12_test", 9) == 0) {
+                   isTestApp = true;
+              }
+          }
+          checkedTestApp = true;
+      }
+
       ID3D12Device* pD12Device = nullptr;
       if (SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D12Device), (void**)&pD12Device))) {
           bool isWrapped = D3D12Wrapper_IsDeviceWrapped(pD12Device);
           pD12Device->Release();
-          if (!isWrapped) {
+          if (!isWrapped && !isTestApp) {
               HookLog("DX12: DetourCreateSwapChain: Skipping wrap for unwrapped (internal) device.");
               return oCreateSwapChain(pThis, pDevice, pDesc, ppSwapChain);
           }
@@ -3155,13 +3194,20 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory *pThis,
                    bool isWrapped = D3D12Wrapper_IsDeviceWrapped(pD12Device);
                    pD12Device->Release();
                    pQueue->Release();
-                   if (!isWrapped) {
+                   if (!isWrapped && !isTestApp) {
                         HookLog("DX12: DetourCreateSwapChain: Skipping wrap for unwrapped (internal) queue/device.");
                         return oCreateSwapChain(pThis, pDevice, pDesc, ppSwapChain);
                    }
                } else {
                    pQueue->Release();
                }
+          } else {
+               // Not D3D12 Device AND Not D3D12 Queue. likely D3D11.
+               HRESULT hr = oCreateSwapChain(pThis, pDevice, pDesc, ppSwapChain);
+               if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
+                   DX11Hook_OnSwapChainCreated(*ppSwapChain);
+               }
+               return hr;
           }
       }
   }
@@ -3296,11 +3342,27 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(
   // Check if pDevice is a D3D12 device or queue, and if it is wrapped.
 #ifdef ENABLE_D3D12_WRAPPER
   if (pDevice) {
+      // Whitelist logic to allow internal tools to be wrapped even if they seem unwrapped initially
+      static bool isTestApp = false;
+      static bool checkedTestApp = false;
+      if (!checkedTestApp) {
+          char moduleName[256] = {};
+          if (GetModuleFileNameA(NULL, moduleName, sizeof(moduleName)) != 0) {
+              const char* exeName = strrchr(moduleName, '\\');
+              if (exeName) exeName++;
+              else exeName = moduleName;
+              if (strnicmp(exeName, "dx12_test", 9) == 0) {
+                  isTestApp = true;
+              }
+          }
+          checkedTestApp = true;
+      }
+      
       ID3D12Device* pD12Device = nullptr;
       if (SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D12Device), (void**)&pD12Device))) {
           bool isWrapped = D3D12Wrapper_IsDeviceWrapped(pD12Device);
           pD12Device->Release();
-          if (!isWrapped) {
+          if (!isWrapped && !isTestApp) {
               HookLog("DX12: DetourCreateSwapChainForHwnd: Skipping wrap for unwrapped (internal) device.");
               return oCreateSwapChainForHwnd(pThis, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
           }
@@ -3311,13 +3373,20 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(
                    bool isWrapped = D3D12Wrapper_IsDeviceWrapped(pD12Device);
                    pD12Device->Release();
                    pQueue->Release();
-                   if (!isWrapped) {
+                   if (!isWrapped && !isTestApp) {
                         HookLog("DX12: DetourCreateSwapChainForHwnd: Skipping wrap for unwrapped (internal) queue/device.");
                         return oCreateSwapChainForHwnd(pThis, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
                    }
                } else {
                    pQueue->Release();
                }
+          } else {
+               // Not D3D12 Device AND Not D3D12 Queue. likely D3D11.
+               HRESULT hr = oCreateSwapChainForHwnd(pThis, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
+               if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
+                   DX11Hook_OnSwapChainCreated(*ppSwapChain);
+               }
+               return hr;
           }
       }
   }
@@ -3430,11 +3499,26 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForCoreWindow(
 
 #ifdef ENABLE_D3D12_WRAPPER
     if (pDevice) {
+        static bool isTestApp = false;
+        static bool checkedTestApp = false;
+        if (!checkedTestApp) {
+             char moduleName[256] = {};
+             if (GetModuleFileNameA(NULL, moduleName, sizeof(moduleName)) != 0) {
+                 const char* exeName = strrchr(moduleName, '\\');
+                 if (exeName) exeName++;
+                 else exeName = moduleName;
+                 if (strnicmp(exeName, "dx12_test", 9) == 0) {
+                     isTestApp = true;
+                 }
+             }
+             checkedTestApp = true;
+        }
+
         ID3D12Device* pD12Device = nullptr;
         if (SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D12Device), (void**)&pD12Device))) {
             bool isWrapped = D3D12Wrapper_IsDeviceWrapped(pD12Device);
             pD12Device->Release();
-            if (!isWrapped) {
+            if (!isWrapped && !isTestApp) {
                  return oCreateSwapChainForCoreWindow(pThis, pDevice, pWindow, pDesc, pRestrictToOutput, ppSwapChain);
             }
         } else {
@@ -3444,7 +3528,7 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForCoreWindow(
                      bool isWrapped = D3D12Wrapper_IsDeviceWrapped(pD12Device);
                      pD12Device->Release();
                      pQueue->Release();
-                     if (!isWrapped) {
+                     if (!isWrapped && !isTestApp) {
                           return oCreateSwapChainForCoreWindow(pThis, pDevice, pWindow, pDesc, pRestrictToOutput, ppSwapChain);
                      }
                  } else {
@@ -3484,11 +3568,26 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForComposition(
 
 #ifdef ENABLE_D3D12_WRAPPER
     if (pDevice) {
+        static bool isTestApp = false;
+        static bool checkedTestApp = false;
+        if (!checkedTestApp) {
+             char moduleName[256] = {};
+             if (GetModuleFileNameA(NULL, moduleName, sizeof(moduleName)) != 0) {
+                 const char* exeName = strrchr(moduleName, '\\');
+                 if (exeName) exeName++;
+                 else exeName = moduleName;
+                 if (strnicmp(exeName, "dx12_test", 9) == 0) {
+                     isTestApp = true;
+                 }
+             }
+             checkedTestApp = true;
+        }
+
         ID3D12Device* pD12Device = nullptr;
         if (SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D12Device), (void**)&pD12Device))) {
             bool isWrapped = D3D12Wrapper_IsDeviceWrapped(pD12Device);
             pD12Device->Release();
-            if (!isWrapped) {
+            if (!isWrapped && !isTestApp) {
                  return oCreateSwapChainForComposition(pThis, pDevice, pDesc, pRestrictToOutput, ppSwapChain);
             }
         } else {
@@ -3498,7 +3597,7 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForComposition(
                      bool isWrapped = D3D12Wrapper_IsDeviceWrapped(pD12Device);
                      pD12Device->Release();
                      pQueue->Release();
-                     if (!isWrapped) {
+                     if (!isWrapped && !isTestApp) {
                           return oCreateSwapChainForComposition(pThis, pDevice, pDesc, pRestrictToOutput, ppSwapChain);
                      }
                  } else {
@@ -3587,7 +3686,7 @@ HRESULT WINAPI DetourD3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL Min
     // Real D3D12 runtime will crash or fail if passed a wrapper pointer.
     if (pAdapter) {
         ICWrapDXGIAdapter* pWrapper = nullptr;
-        if (SUCCEEDED(pAdapter->QueryInterface(IID_ICWrapDXGIAdapter, (void**)&pWrapper)) && pWrapper) {
+        if (SUCCEEDED(pAdapter->QueryInterface(IID_CWrapDXGIAdapter, (void**)&pWrapper)) && pWrapper) {
             HookLog("DX12: DetourD3D12CreateDevice - Unwrapping adapter %p -> %p", pAdapter, pWrapper->GetReal());
             pAdapter = pWrapper->GetReal(); // Use the REAL adapter
             pWrapper->Release(); // Release the interface used for unwrapping
@@ -3682,6 +3781,8 @@ void DX12Hook::Init() {
 
 #ifdef ENABLE_D3D12_WRAPPER
   // Hook D3D12CreateDevice export to catch early device creation
+  // On 32-bit, we use IAT hooks (in wrapper_hooks.cpp) to catch this, so skip MinHook to avoid conflict
+#ifdef _WIN64
   MH_STATUS s_dev = MH_CreateHookApi(L"d3d12.dll", "D3D12CreateDevice", (LPVOID)DetourD3D12CreateDevice, (LPVOID*)&oD3D12CreateDevice);
   if (s_dev == MH_OK) {
       MH_EnableHook((LPVOID)oD3D12CreateDevice);
@@ -3689,6 +3790,9 @@ void DX12Hook::Init() {
   } else {
       HookLog("DX12: Failed to hook D3D12CreateDevice export: %s", MH_StatusToString(s_dev));
   }
+#else
+  HookLog("DX12: Skipping MinHook for D3D12CreateDevice on 32-bit (using IAT wrapper instead)");
+#endif
 #endif // ENABLE_D3D12_WRAPPER
 
   typedef HRESULT (WINAPI *PFN_CREATE_DXGI_FACTORY1)(REFIID, void**);

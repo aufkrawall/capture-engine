@@ -53,49 +53,40 @@ typedef HRESULT(WINAPI* PFN_D3D11CreateDeviceAndSwapChain)(
     D3D_FEATURE_LEVEL* pFeatureLevel,
     ID3D11DeviceContext** ppImmediateContext);
 
-static PFN_D3D11CreateDevice oD3D11CreateDevice = nullptr;
-static PFN_D3D11CreateDeviceAndSwapChain oD3D11CreateDeviceAndSwapChain = nullptr;
+// Removed static to allow external access (match wrapper_hooks.h)
+PFN_D3D11CreateDevice oD3D11CreateDevice = nullptr;
+// PFN_D3D11CreateDeviceAndSwapChain oD3D11CreateDeviceAndSwapChain = nullptr; // Defined in dx11_hook.cpp
 
-// D3D10 function pointers
-typedef HRESULT(WINAPI* PFN_D3D10CreateDevice)(
-    IDXGIAdapter* pAdapter,
-    D3D10_DRIVER_TYPE DriverType,
-    HMODULE Software,
-    UINT Flags,
-    UINT SDKVersion,
-    ID3D10Device** ppDevice);
 
-typedef HRESULT(WINAPI* PFN_D3D10CreateDevice1)(
-    IDXGIAdapter* pAdapter,
-    D3D10_DRIVER_TYPE DriverType,
-    HMODULE Software,
-    UINT Flags,
-    D3D10_FEATURE_LEVEL1 HardwareLevel,
-    UINT SDKVersion,
-    ID3D10Device1** ppDevice);
+// D3D10 function pointers definitions
+// Removed static
+PFN_D3D10CreateDevice oD3D10CreateDevice = nullptr;
+PFN_D3D10CreateDevice1 oD3D10CreateDevice1 = nullptr;
+PFN_D3D10CreateDeviceAndSwapChain oD3D10CreateDeviceAndSwapChain = nullptr;
 
-typedef HRESULT(WINAPI* PFN_D3D10CreateDeviceAndSwapChain)(
-    IDXGIAdapter* pAdapter,
-    D3D10_DRIVER_TYPE DriverType,
-    HMODULE Software,
-    UINT Flags,
-    UINT SDKVersion,
-    DXGI_SWAP_CHAIN_DESC* pSwapChainDesc,
-    IDXGISwapChain** ppSwapChain,
-    ID3D10Device** ppDevice);
-
-static PFN_D3D10CreateDevice oD3D10CreateDevice = nullptr;
-static PFN_D3D10CreateDevice1 oD3D10CreateDevice1 = nullptr;
-static PFN_D3D10CreateDeviceAndSwapChain oD3D10CreateDeviceAndSwapChain = nullptr;
+// ... (existing code)
 
 // D3D9 function pointers
 typedef IDirect3D9* (WINAPI* PFN_Direct3DCreate9)(UINT SDKVersion);
 typedef HRESULT (WINAPI* PFN_Direct3DCreate9Ex)(UINT SDKVersion, IDirect3D9Ex** ppD3D);
 
-static PFN_Direct3DCreate9 oDirect3DCreate9 = nullptr;
-static PFN_Direct3DCreate9Ex oDirect3DCreate9Ex = nullptr;
+PFN_Direct3DCreate9 oDirect3DCreate9 = nullptr;
+PFN_Direct3DCreate9Ex oDirect3DCreate9Ex = nullptr;
 
 static bool g_WrappersActive = false;
+
+void WrapperLog(const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    char buf[4096];
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    
+    // Log to EarlyLog (which goes to hook_debug.log)
+    EarlyLog("%s", buf);
+    // Also use OutputDebugString for external debuggers
+    OutputDebugStringA(buf);
+}
 
 
 // ============================================================================
@@ -190,14 +181,50 @@ HRESULT WINAPI Wrapped_D3D12CreateDevice(
     
     WrapperLog("Wrapper: D3D12CreateDevice called (feature level=0x%X)", MinimumFeatureLevel);
     
-    if (!oD3D12CreateDevice) return E_FAIL;
+    if (!oD3D12CreateDevice) {
+        WrapperLog("Wrapper: FATAL - oD3D12CreateDevice is NULL");
+        return E_FAIL;
+    }
     
+    WrapperLog("Wrapper: Call oD3D12CreateDevice at %p", oD3D12CreateDevice);
+    
+    // Unwrap adapter if needed (crucial if we are chained)
+    if (pAdapter) {
+         // Check for IID_CWrapDXGIAdapter (we don't have header included here easily?)
+         // We can use the simple Unwrappable interface check or just trust our IAT didn't hook internal calls?
+         // For now, let's assume nullptr like the test app uses.
+    }
+
     // Create the real device first
     ID3D12Device* pRealDevice = nullptr;
     HRESULT hr = oD3D12CreateDevice(pAdapter, MinimumFeatureLevel, IID_PPV_ARGS(&pRealDevice));
+    WrapperLog("Wrapper: oD3D12CreateDevice returned hr=0x%08X, pRealDevice=%p", hr, pRealDevice);
     
     if (SUCCEEDED(hr) && pRealDevice) {
         // Use the C interface to wrap it (calls into MSVC-compiled code)
+        
+        // DEBUG: Manual load check to diagnose crash
+        static bool s_CheckedDll = false;
+        if (!s_CheckedDll) {
+            s_CheckedDll = true;
+            HMODULE hWrap = LoadLibraryA("d3d12_wrappers.dll");
+            if (!hWrap) {
+                // Try with x86 suffix just in case
+                hWrap = LoadLibraryA("d3d12_wrappers_x86.dll");
+            }
+            
+            if (!hWrap) {
+                WrapperLog("Wrapper: FATAL - Could not manually load d3d12_wrappers.dll/x86! Err=%d", GetLastError());
+            } else {
+                WrapperLog("Wrapper: Manually loaded d3d12_wrappers at %p", hWrap);
+                void* pProc = (void*)GetProcAddress(hWrap, "_D3D12Wrapper_WrapDevice@4"); // Stdcall decoration
+                if (!pProc) pProc = (void*)GetProcAddress(hWrap, "D3D12Wrapper_WrapDevice"); // Undecorated?
+                
+                if (pProc) WrapperLog("Wrapper: Found D3D12Wrapper_WrapDevice at %p", pProc);
+                else WrapperLog("Wrapper: FATAL - Could not find D3D12Wrapper_WrapDevice export! Err=%d", GetLastError());
+            }
+        }
+
         ID3D12Device* pWrapped = D3D12Wrapper_WrapDevice(pRealDevice);
         pRealDevice->Release(); // Wrapper took ownership
         
@@ -237,7 +264,7 @@ HRESULT WINAPI Wrapped_D3D11CreateDevice(
     
     ID3D11Device* pRealDevice = nullptr;
     ID3D11DeviceContext* pRealContext = nullptr;
-    HRESULT hr = oD3D11CreateDevice(pAdapter, DriverType, Software, Flags, 
+    HRESULT hr = oD3D11CreateDevice(DeWrap(pAdapter), DriverType, Software, Flags, 
                                       pFeatureLevels, FeatureLevels, SDKVersion,
                                       ppDevice ? &pRealDevice : nullptr,
                                       pFeatureLevel,
@@ -280,7 +307,7 @@ HRESULT WINAPI Wrapped_D3D11CreateDeviceAndSwapChain(
     IDXGISwapChain* pRealSwapChain = nullptr;
     ID3D11DeviceContext* pRealContext = nullptr;
     
-    HRESULT hr = oD3D11CreateDeviceAndSwapChain(pAdapter, DriverType, Software, Flags,
+    HRESULT hr = oD3D11CreateDeviceAndSwapChain(DeWrap(pAdapter), DriverType, Software, Flags,
                                                   pFeatureLevels, FeatureLevels, SDKVersion,
                                                   pSwapChainDesc,
                                                   ppSwapChain ? &pRealSwapChain : nullptr,
@@ -330,7 +357,7 @@ HRESULT WINAPI Wrapped_D3D10CreateDevice(
     if (!oD3D10CreateDevice) return E_FAIL;
     
     ID3D10Device* pRealDevice = nullptr;
-    HRESULT hr = oD3D10CreateDevice(pAdapter, DriverType, Software, Flags, SDKVersion, &pRealDevice);
+    HRESULT hr = oD3D10CreateDevice(DeWrap(pAdapter), DriverType, Software, Flags, SDKVersion, &pRealDevice);
     
     if (SUCCEEDED(hr) && pRealDevice && ppDevice) {
         auto* pWrapper = new CWrapD3D10Device(pRealDevice);
@@ -356,7 +383,7 @@ HRESULT WINAPI Wrapped_D3D10CreateDevice1(
     if (!oD3D10CreateDevice1) return E_FAIL;
     
     ID3D10Device1* pRealDevice = nullptr;
-    HRESULT hr = oD3D10CreateDevice1(pAdapter, DriverType, Software, Flags, HardwareLevel, SDKVersion, &pRealDevice);
+    HRESULT hr = oD3D10CreateDevice1(DeWrap(pAdapter), DriverType, Software, Flags, HardwareLevel, SDKVersion, &pRealDevice);
     
     if (SUCCEEDED(hr) && pRealDevice && ppDevice) {
         // Cast to base and wrap
@@ -386,7 +413,7 @@ HRESULT WINAPI Wrapped_D3D10CreateDeviceAndSwapChain(
     ID3D10Device* pRealDevice = nullptr;
     IDXGISwapChain* pRealSwapChain = nullptr;
     
-    HRESULT hr = oD3D10CreateDeviceAndSwapChain(pAdapter, DriverType, Software, Flags, SDKVersion,
+    HRESULT hr = oD3D10CreateDeviceAndSwapChain(DeWrap(pAdapter), DriverType, Software, Flags, SDKVersion,
                                                   pSwapChainDesc,
                                                   ppSwapChain ? &pRealSwapChain : nullptr,
                                                   ppDevice ? &pRealDevice : nullptr);
@@ -465,9 +492,15 @@ bool InitializeWrapperHooks() {
     WrapperLog("Wrapper: Using IAT patching mode (MinHook-free)");
     
     bool success = true;
+    WrapperLog("Wrapper: Initializing DXGI hooks...");
     success &= IATHook::InitializeDXGIHooks();
+    WrapperLog("Wrapper: Initializing D3D10 hooks...");
+    success &= IATHook::InitializeD3D10Hooks();
+    WrapperLog("Wrapper: Initializing D3D11 hooks...");
     success &= IATHook::InitializeD3D11Hooks();
+    WrapperLog("Wrapper: Initializing D3D12 hooks...");
     success &= IATHook::InitializeD3D12Hooks();
+    WrapperLog("Wrapper: Initializing D3D9 hooks...");
     success &= IATHook::InitializeD3D9Hooks();
     // Note: Vulkan hooks are now in VK_LAYER_CE_overlay (Vulkan layer approach)
     

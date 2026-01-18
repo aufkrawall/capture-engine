@@ -11,16 +11,15 @@
 
 // External overlay function (from dx12_hook.cpp or dx11_hook.cpp)
 // These will be linked at runtime
+// External overlay functions (implemented in dx11_hook.cpp / dx12_hook.cpp)
+extern void DrawDX11Overlay(IDXGISwapChain* pSwapChain);
+extern void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain);
+#include <cstdint>
+extern void DX11_UpdatePerformanceMetrics(int64_t qpcUs);
+
 static bool g_OverlayEnabled = true;
 
-void WrapperLog(const char* fmt, ...) {
-    char buffer[1024];
-    va_list args;
-    va_start(args, fmt);
-    vsnprintf(buffer, sizeof(buffer), fmt, args);
-    va_end(args);
-    HookLog("%s", buffer);
-}
+// WrapperLog now defined in wrapper_hooks.cpp
 
 // ============================================================================
 // Constructor / Destructor
@@ -51,7 +50,17 @@ CWrapDXGISwapChain::CWrapDXGISwapChain(IDXGISwapChain* pReal, IUnknown* pDevice)
             m_hWnd = desc.OutputWindow;
         }
         
-        WrapperLog("DXGI Wrapper: swapchain wrapper created (real=%p, hwnd=%p) - lazy promotion enabled", pReal, m_hWnd);
+        // Detect D3D12 - check if device is an ID3D12CommandQueue
+        if (pDevice) {
+            ID3D12CommandQueue* pQueue = nullptr;
+            if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&pQueue)))) {
+                m_IsD3D12 = true;
+                pQueue->Release();
+            }
+        }
+        
+        WrapperLog("DXGI Wrapper: swapchain wrapper created (real=%p, hwnd=%p, isD3D12=%d) - lazy promotion enabled", 
+                   pReal, m_hWnd, m_IsD3D12);
     } else {
         WrapperLog("DXGI Wrapper: swapchain wrapper created (pReal=null)");
     }
@@ -140,9 +149,29 @@ void CWrapDXGISwapChain::DrawOverlay() {
     if (!g_OverlayEnabled) return;
     if (WrapperStateManager::Get().swapchainInvalid.load()) return;
     
-    // Call external overlay drawing function
-    // This is implemented in dx12_hook.cpp/dx11_hook.cpp
-    // DrawOverlayOnSwapchain(m_pReal, m_pD3D12Queue);
+    // Self-Healing: Ensure this wrapper is registered
+    // This handles cases where creation hooking might have been bypassed or failed
+    if (!WrapperStateManager::Get().FindWrapper(m_pReal)) {
+        static bool s_LoggedMissing = false;
+        if (!s_LoggedMissing) {
+             WrapperLog("DXGI Wrapper: Self-Registering missing swapchain wrapper (real=%p)", m_pReal);
+             s_LoggedMissing = true;
+        }
+        WrapperStateManager::Get().RegisterSwapchain(this, m_pReal);
+    }
+
+    static int drawCount = 0;
+    if (++drawCount % 60 == 0) {
+        WrapperLog("DXGI Wrapper: DrawOverlay called (SC=%p, IsD3D12=%d, Count=%d)", m_pReal, m_IsD3D12, drawCount);
+    }
+
+    // Dispatch to the correct API-specific overlay drawer
+    if (m_IsD3D12) {
+        DX12_ProcessFrameExternal(m_pReal);
+    } else {
+        // Fallback for DX11/DX10
+        DrawDX11Overlay(m_pReal);
+    }
 }
 
 // ============================================================================
@@ -162,10 +191,9 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::QueryInterface(REFIID riid, void**
         return E_NOINTERFACE;
     }
     
-    // Return ourselves for our own GUID
+    // Return real for our own GUID to support safe unwrapping
     if (riid == IID_CWrapDXGISwapChain) {
-        AddRef();
-        *ppvObj = this;
+        *ppvObj = m_pReal;
         return S_OK;
     }
     
@@ -259,6 +287,20 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetDevice(REFIID riid, void** ppDe
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Flags) {
     std::lock_guard<std::mutex> lock(m_ResourceLock);
     
+    // Update Performance Metrics
+    if (!m_IsD3D12) {
+        static int64_t qpcFreq = 0;
+        if (qpcFreq == 0) {
+            LARGE_INTEGER f;
+            QueryPerformanceFrequency(&f);
+            qpcFreq = f.QuadPart;
+        }
+        LARGE_INTEGER qpc;
+        QueryPerformanceCounter(&qpc);
+        int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
+        DX11_UpdatePerformanceMetrics(us);
+    }
+    
     // Apply VSync override
     ProcessVSyncOverride(SyncInterval, Flags);
     
@@ -348,6 +390,20 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetCoreWindow(REFIID refiid, void*
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT PresentFlags,
                                                         const DXGI_PRESENT_PARAMETERS* pPresentParameters) {
     std::lock_guard<std::mutex> lock(m_ResourceLock);
+    
+    // Update Performance Metrics
+    if (!m_IsD3D12) {
+        static int64_t qpcFreq = 0;
+        if (qpcFreq == 0) {
+            LARGE_INTEGER f;
+            QueryPerformanceFrequency(&f);
+            qpcFreq = f.QuadPart;
+        }
+        LARGE_INTEGER qpc;
+        QueryPerformanceCounter(&qpc);
+        int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
+        DX11_UpdatePerformanceMetrics(us);
+    }
     
     // Apply VSync override
     ProcessVSyncOverride(SyncInterval, PresentFlags);
@@ -489,6 +545,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::SetHDRMetaData(DXGI_HDR_METADATA_T
 
 void WrapperStateManager::RegisterSwapchain(CWrapDXGISwapChain* pWrapper, IDXGISwapChain* pReal) {
     std::lock_guard<std::mutex> lock(m_Lock);
+    WrapperLog("WrapperStateManager: Registering SC Real=%p -> Wrapper=%p", pReal, pWrapper);
     for (int i = 0; i < MAX_SWAPCHAINS; ++i) {
         if (m_Wrappers[i] == nullptr) {
             m_Wrappers[i] = pWrapper;

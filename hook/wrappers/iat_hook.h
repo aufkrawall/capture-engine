@@ -64,6 +64,7 @@ bool PatchEAT(
  * Patches CreateDXGIFactory*, D3D11CreateDevice*, etc.
  */
 bool InitializeDXGIHooks();
+bool InitializeD3D10Hooks();
 bool InitializeD3D11Hooks();
 bool InitializeD3D12Hooks();
 bool InitializeD3D9Hooks();

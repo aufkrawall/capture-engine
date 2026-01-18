@@ -24,5 +24,12 @@ HRESULT WINAPI DX11_DetourCreateDeviceAndSwapChain(
     IDXGISwapChain** ppSwapChain, ID3D11Device** ppDevice,
     D3D_FEATURE_LEVEL* pFeatureLevel, ID3D11DeviceContext** ppImmediateContext);
 
+// Manual Hook Activation (for DXGI/DX12 interop fallbacks)
+void DX11Hook_OnSwapChainCreated(IDXGISwapChain* pSwapChain);
+
+// Update metrics for wrapper calls
+#include <cstdint>
+void DX11_UpdatePerformanceMetrics(int64_t qpcUs);
+
 // Original function pointer (set by IAT patching)
 extern PFN_D3D11CreateDeviceAndSwapChain oD3D11CreateDeviceAndSwapChain;

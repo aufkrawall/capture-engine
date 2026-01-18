@@ -15,6 +15,7 @@ CWrapD3D12CommandQueue::CWrapD3D12CommandQueue(ID3D12CommandQueue* pReal, CWrapD
     , m_pDevice(pDevice)
     , m_RefCount(1)
     , m_Type(D3D12_COMMAND_LIST_TYPE_DIRECT)
+    , m_bRegistered(false)
 {
     if (pReal) {
         pReal->AddRef();
@@ -41,8 +42,9 @@ HRESULT STDMETHODCALLTYPE CWrapD3D12CommandQueue::QueryInterface(REFIID riid, vo
     if (!ppvObj) return E_POINTER;
     
     if (riid == IID_CWrapD3D12CommandQueue) {
-        AddRef();
-        *ppvObj = this;
+        // Return REAL object for unwrapping
+        m_pReal->AddRef();
+        *ppvObj = m_pReal;
         return S_OK;
     }
     
@@ -130,9 +132,37 @@ void STDMETHODCALLTYPE CWrapD3D12CommandQueue::CopyTileMappings(
 void STDMETHODCALLTYPE CWrapD3D12CommandQueue::ExecuteCommandLists(
     UINT NumCommandLists, ID3D12CommandList* const* ppCommandLists) {
     
-    // This is where we could intercept for capture
-    // For now, just forward to real queue
-    // TODO: Add capture interception logic
+    // Register this queue with the main hook if not already done
+    // Use a static flag relative to THIS queue instance to avoid repeated lookups
+    if (!m_bRegistered) {
+        typedef void (*DX12_SetCommandQueueFn)(ID3D12CommandQueue*);
+        static DX12_SetCommandQueueFn pFn = nullptr;
+        static bool s_LookupAttempted = false;
+
+        if (!s_LookupAttempted) {
+            HMODULE hMod = GetModuleHandleA("VK_LAYER_CE_overlay_x86.dll");
+            if (!hMod) hMod = GetModuleHandleA("capture_hook_x86.dll");
+            if (!hMod) hMod = GetModuleHandleA("VK_LAYER_CE_overlay.dll"); // 64-bit fallback naming
+            if (!hMod) hMod = GetModuleHandleA("capture_hook_x64.dll");
+
+            if (hMod) {
+                pFn = (DX12_SetCommandQueueFn)GetProcAddress(hMod, "DX12_SetCommandQueue");
+                if (pFn) {
+                     WrapperLog("D3D12 CommandQueue Wrapper: Found DX12_SetCommandQueue at %p", pFn);
+                } else {
+                     WrapperLog("D3D12 CommandQueue Wrapper: DX12_SetCommandQueue exported function NOT FOUND in %p", hMod);
+                }
+            } else {
+                 WrapperLog("D3D12 CommandQueue Wrapper: Hook DLL not found in process!");
+            }
+            s_LookupAttempted = true;
+        }
+
+        if (pFn) {
+            pFn(m_pReal);
+            m_bRegistered = true;
+        }
+    }
     
     m_pReal->ExecuteCommandLists(NumCommandLists, ppCommandLists);
 }

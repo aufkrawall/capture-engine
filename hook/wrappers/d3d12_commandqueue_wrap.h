@@ -62,4 +62,5 @@ private:
     CWrapD3D12Device* m_pDevice;
     LONG m_RefCount;
     D3D12_COMMAND_LIST_TYPE m_Type;
+    bool m_bRegistered;
 };

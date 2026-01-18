@@ -1,4 +1,5 @@
 #include "dx11_hook.h"
+#include "../wrappers/wrapper_base.h"
 #include "lod_helper.h"
 #include "../common/capture_base.h"
 #include "../common/fps_limiter.h"
@@ -24,7 +25,8 @@
 #include <dxgi1_4.h> // For IDXGISwapChain3
 #include <d3dcompiler.h>
 #include <imgui.h>
- #include <mutex>
+#include "../wrappers/wrapper_base.h"
+#include <mutex>
 
 // Forward declaration for cross-file DX12 overlay invalidation
 // Called when FSR4SwapchainProvider creates a new swapchain to signal pending cleanup
@@ -284,6 +286,30 @@ HRESULT WINAPI DX11_DetourCreateDeviceAndSwapChain(
         SDKVersion, pSwapChainDesc, ppSwapChain, ppDevice, pFeatureLevel, ppImmediateContext);
 }
 
+void DX11Hook_OnSwapChainCreated(IDXGISwapChain* pSwapChain);
+
+// Update metrics for wrapper calls
+void DX11_UpdatePerformanceMetrics(int64_t qpcUs);
+
+void DX11Hook_OnSwapChainCreated(IDXGISwapChain* pSwapChain) {
+    if (!pSwapChain) return;
+    
+    // Check if it's really a D3D11 swapchain
+    ID3D11Device* pDevice = nullptr;
+    if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D11Device), (void**)&pDevice))) {
+        ID3D11DeviceContext* pContext = nullptr;
+        pDevice->GetImmediateContext(&pContext);
+        
+        HookLog("DX11: Manual Hook Activation triggered for SwapChain %p", pSwapChain);
+        InstallVTableHooks(pDevice, pContext, pSwapChain);
+        
+        if (pContext) pContext->Release();
+        pDevice->Release();
+    }
+}
+
+
+
 static HRESULT WINAPI DetourD3D10CreateDeviceAndSwapChain(
     IDXGIAdapter *pAdapter, D3D10_DRIVER_TYPE DriverType, HMODULE Software,
     UINT Flags, UINT SDKVersion, DXGI_SWAP_CHAIN_DESC *pSwapChainDesc,
@@ -405,7 +431,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory *pFactory, I
         }
     }
 
-    HRESULT hr = oCreateSwapChain(pFactory, pDevice, pDesc, ppSwapChain);
+    HRESULT hr = oCreateSwapChain(pFactory, DeWrap(pDevice), pDesc, ppSwapChain);
     
     if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
         // FSR4/FG swapchain recreation detection (shared with CreateSwapChainForHwnd)
@@ -452,7 +478,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2 *pFa
     bool wasRecreation = isGameSizedSwapchain && g_FirstGameSwapchainCreated;
 
     HookLog("DX11: BEFORE oCreateSwapChainForHwnd call");
-    HRESULT hr = oCreateSwapChainForHwnd(pFactory, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
+    HRESULT hr = oCreateSwapChainForHwnd(pFactory, DeWrap(pDevice), hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
     HookLog("DX11: AFTER oCreateSwapChainForHwnd call (hr=0x%08X)", hr);
     
     if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
@@ -670,6 +696,12 @@ static void InstallVTableHooks(ID3D11Device *pDevice, ID3D11DeviceContext* pCont
 // static ResizeBuffers_t oResizeBuffers = NULL; // Moved to top
 
 static PerformanceMetrics g_PerfMetrics;
+
+// Update metrics for wrapper calls
+void DX11_UpdatePerformanceMetrics(int64_t qpcUs) {
+    g_PerfMetrics.Update(qpcUs);
+}
+
 static bool g_ImGuiInitialized = false;
 static HWND g_CachedHwnd = NULL;
 
@@ -1165,6 +1197,7 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
   // Check for D3D10 FIRST (D3D11 interop means D3D11 QI succeeds even for D3D10 devices!)
   ID3D10Device *device10 = NULL;
   if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D10Device), (void**)&device10))) {
+      if (frameCount % 60 == 0) EarlyLog("DX: Identified as D3D10 device");
       device10->Release();
       // It's a D3D10 swapchain - use native D3D10 rendering
       DrawDX10Overlay(pSwapChain, currentHwnd, frameCount);
@@ -1174,6 +1207,7 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
   // Try D3D10.1
   ID3D10Device1 *device10_1 = NULL;
   if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D10Device1), (void**)&device10_1))) {
+      if (frameCount % 60 == 0) EarlyLog("DX: Identified as D3D10.1 device");
       device10_1->Release();
       DrawDX10Overlay(pSwapChain, currentHwnd, frameCount);
       return;
@@ -1181,9 +1215,12 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
 
   // If we reach here, it's a true DX11 swapchain
   ID3D11Device *device11 = NULL;
-  if (FAILED(pSwapChain->GetDevice(IID_PPV_ARGS(&device11)))) {
+  HRESULT hrDevice = pSwapChain->GetDevice(IID_PPV_ARGS(&device11));
+  if (FAILED(hrDevice)) {
+      if (frameCount % 60 == 0) EarlyLog("DX: FAILED to get D3D11 device (hr=0x%08X)", hrDevice);
       return; // Unknown device type
   }
+  if (frameCount % 60 == 0) EarlyLog("DX: Identified as D3D11 device %p", device11);
   ID3D11Device *device = device11;
   ID3D11DeviceContext *context = NULL;
   device->GetImmediateContext(&context);
@@ -1418,6 +1455,13 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
     QueryPerformanceFrequency(&f);
     qpcFreq = f.QuadPart;
   }
+  
+  static int presentCount = 0;
+  if (++presentCount % 60 == 0) {
+      CWrapDXGISwapChain* wrapper = WrapperStateManager::Get().FindWrapper(pSwapChain);
+      EarlyLog("DX11 Hook: DetourDX11Present called (count=%d, SC=%p) -> Wrapper=%p", presentCount, pSwapChain, wrapper);
+  }
+
   if (g_ShuttingDown) return oPresent(pSwapChain, SyncInterval, Flags);
 
   LARGE_INTEGER qpc;
@@ -1539,7 +1583,10 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
 
   TryEnableFrameTimeCSVLogging(csvShm, (const void*)&DetourDX11Present, g_PerfMetrics, "DX11", csvLoggingInitialized);
 
-  g_PerfMetrics.Update(us);
+  // Use wrapper status to prevent double-counting FPS (Wrapper + Hook)
+  if (!WrapperStateManager::Get().FindWrapper(pSwapChain)) {
+      g_PerfMetrics.Update(us);
+  }
   
   // Update recording state for CSV logging
   bool isRecording = ipc && ipc->IsRecording();
@@ -1654,6 +1701,12 @@ skip_capture:
 HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain *pSwapChain,
                                              UINT SyncInterval, UINT PresentFlags,
                                              const DXGI_PRESENT_PARAMETERS *pPresentParameters) {
+  static int presentCount1 = 0;
+  if (++presentCount1 % 60 == 0) {
+      CWrapDXGISwapChain* wrapper = WrapperStateManager::Get().FindWrapper(pSwapChain);
+      EarlyLog("DX11 Hook: DetourDX11Present1 called (count=%d, SC=%p) -> Wrapper=%p", presentCount1, pSwapChain, wrapper);
+  }
+
   if (g_ShuttingDown) return oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
   // Apply VSync Override
   VSyncOverride vsync = GetVSyncOverride();
@@ -1707,7 +1760,10 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain *pSwapChain,
   LARGE_INTEGER qpc;
   QueryPerformanceCounter(&qpc);
   int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
-  g_PerfMetrics.Update(us);
+  // Use wrapper status to prevent double-counting FPS (Wrapper + Hook)
+  if (!WrapperStateManager::Get().FindWrapper(pSwapChain)) {
+      g_PerfMetrics.Update(us);
+  }
   
   // Note: CSV logging is handled in DetourDX11Present, which covers initial setup.
   // We just need to ensure the recording state is updated here too if Present1 is the primary path.

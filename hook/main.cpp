@@ -715,11 +715,7 @@ void CheckAndInstallHooks() {
     
     // Initialize wrapper-based hooks (IAT patching for factory creation)
     // This enables MinHook-free hooking of CreateDXGIFactory* etc.
-    static bool wrappersInitialized = false;
-    if (!wrappersInitialized) {
-        InitializeWrapperHooks();
-        wrappersInitialized = true;
-    }
+    InitializeWrapperHooks();
 
     if (!g_DX12Hook && GetModuleHandleA("d3d12.dll")) {
         EarlyLog("Detected d3d12.dll. Installing DX12 hooks...");
@@ -793,8 +789,26 @@ void CheckAndInstallHooks() {
 }
 
 DWORD WINAPI HookThread(LPVOID lpParam) {
-  // No early logging in DllMain anymore. Use EarlyLog here if needed.
-  // EarlyLog("HookThread: Started (PID=%d)", GetCurrentProcessId());
+  // Load Local Config (to support per-app overrides) EARLY
+  {
+      char dllPath[MAX_PATH];
+      GetModuleFileNameA(g_hModule, dllPath, MAX_PATH);
+      std::string pathString = dllPath;
+      std::string dir = pathString.substr(0, pathString.find_last_of("\\/"));
+      std::string configPath = dir + "\\config.ini";
+      
+      if (!g_pLocalConfig) g_pLocalConfig = new AppConfig();
+      LoadConfig(configPath, *g_pLocalConfig);
+      // Prime the graphics override state immediately
+      GetActiveGraphicsConfig();
+  }
+
+  // FAST PATH: Install IAT wrappers immediately before anything else
+  // This helps catch early startup API calls in fast-loading processes.
+  InitializeWrapperHooks();
+  CheckAndInstallHooks();
+  
+  EarlyLog("HookThread: Started (PID=%d)", GetCurrentProcessId());
 
   // Create Event for Async Hook Checks
   g_hCheckHooksEvent = CreateEvent(NULL, FALSE, FALSE, NULL); // Auto-reset
@@ -839,21 +853,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   // --- POTENTIAL GAMES ---
   EarlyLog("HookThread: Potential game detected. Watchdog started.");
 
-  // Load Local Config (to support per-app overrides)
-  {
-      char dllPath[MAX_PATH];
-      GetModuleFileNameA(g_hModule, dllPath, MAX_PATH);
-      std::string pathString = dllPath;
-      std::string dir = pathString.substr(0, pathString.find_last_of("\\/"));
-      std::string configPath = dir + "\\config.ini";
-      
-      if (!g_pLocalConfig) g_pLocalConfig = new AppConfig();
-      LoadConfig(configPath, *g_pLocalConfig);
-      // Prime the graphics override state immediately
-      GetActiveGraphicsConfig();
-      EarlyLog("HookThread: Local config loaded from %s. PrerenderLimit=%.2f", 
-          configPath.c_str(), g_pLocalConfig->graphics.cpuPrerenderLimit);
-  }
+  // Config was already loaded early in HookThread
   
   // Track last write time for Hot Reloading
   FILETIME g_ConfigLastWriteTime = {};
@@ -944,9 +944,10 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   HookLog("All kernel32/advapi32 hooks enabled (IAT mode)");
 
   // Initial Check
-  EarlyLog("HookThread: About to call CheckAndInstallHooks (d3d12=%p)", GetModuleHandleA("d3d12.dll"));
-  CheckAndInstallHooks();
-  EarlyLog("HookThread: CheckAndInstallHooks returned");
+  // CheckAndInstallHooks moved to start of HookThread for faster response
+  // EarlyLog("HookThread: About to call CheckAndInstallHooks (d3d12=%p)", GetModuleHandleA("d3d12.dll"));
+  // CheckAndInstallHooks();
+  // EarlyLog("HookThread: CheckAndInstallHooks returned");
 
   EarlyLog("HookThread: All hooks installed, entering exit monitor loop");
 
@@ -1126,9 +1127,108 @@ static bool isProcessWhitelistedFast(const char* name) {
         if (found) return true;
     }
     
-    // 3. Fallback: REMOVED. Strict whitelist only.
+    // 3. Config.ini Whitelist (Early Read)
+    // Construct path to config.ini relative to our DLL
+    char dllPath[MAX_PATH];
+    if (GetModuleFileNameA(g_hModule, dllPath, MAX_PATH)) {
+        // PERF OPTIMIZATION:
+        // Do not perform disk I/O for system processes (System32/SysWOW64)
+        // This prevents slowdowns during massive system process spawn events.
+        char exePath[MAX_PATH];
+        if (GetModuleFileNameA(NULL, exePath, MAX_PATH)) {
+            // Check for System32/SysWOW64
+            // Fast check: look for "Windows\\" and "System32" or "SysWOW64"
+            // We use strstr which is fast enough.
+            _strlwr_s(exePath, MAX_PATH); 
+            if (strstr(exePath, "\\windows\\system32\\") || strstr(exePath, "\\windows\\syswow64\\")) {
+                 return false;
+            }
+        }
+
+        char* lastSlash = strrchr(dllPath, '\\');
+        if (lastSlash) {
+            *lastSlash = '\0'; // Strip filename
+            strncat(dllPath, "\\config.ini", MAX_PATH - strlen(dllPath) - 1);
+            
+            // Read whitelist string
+            char whitelistBuf[1024];
+            if (GetPrivateProfileStringA("Injection", "ProcessWhitelist", "", whitelistBuf, sizeof(whitelistBuf), dllPath) > 0) {
+                // Tokenize comma-separated
+                char* context = nullptr;
+                char* token = strtok_s(whitelistBuf, ",", &context);
+                while (token) {
+                    // Trim spaces
+                    while (*token == ' ') token++;
+                    char* end = token + strlen(token) - 1;
+                    while (end > token && *end == ' ') *end-- = '\0';
+                    
+                    if (_stricmp(name, token) == 0) {
+                         return true;
+                    }
+                    token = strtok_s(nullptr, ",", &context);
+                }
+            }
+        }
+    }
     
     return false;
+}
+
+// Adaptive Unload Helper using Environment Variables
+// Returns TRUE if we should Unload, FALSE if we should Stay Loaded (and Lock)
+static bool ShouldSelfUnloadAdaptive(const char* fileName) {
+    if (!fileName) return false;
+
+    // Safety Override: NEVER unload from Critical Shell Processes.
+    // Unloading from Explorer/DWM can cause shell restarts or crashes due to 
+    // race conditions with the CBT hook callback.
+    if (_stricmp(fileName, "explorer.exe") == 0 || 
+        _stricmp(fileName, "dwm.exe") == 0 ||
+        _stricmp(fileName, "lsass.exe") == 0 ||
+        _stricmp(fileName, "csrss.exe") == 0) {
+        return false;
+    }
+
+    // 2. Adaptive Logic for Unknown/Blacklisted Processes
+    char envBuf[64];
+    DWORD len = GetEnvironmentVariableA("CE_HOOK_STRIKE", envBuf, 64);
+    
+    uint64_t now = GetTickCount64();
+    
+    if (len == 0) {
+        // [State: First Load]
+        // Assumption: Passively safe to unload (optimistic).
+        // Action: Mark timestamp, Unload.
+        std::string ts = std::to_string(now);
+        SetEnvironmentVariableA("CE_HOOK_STRIKE", ts.c_str());
+        return true; 
+    } 
+    else {
+        // [State: Reloaded]
+        // Check if we are "Locked"
+        if (strcmp(envBuf, "LOCKED") == 0) {
+            return false; // Stay Loaded
+        }
+
+        // Calculate delta
+        uint64_t lastTime = _strtoui64(envBuf, nullptr, 10);
+        uint64_t dt = now - lastTime;
+        
+        if (dt < 1000) {
+            // [State: Fast Reload Loop Detected (<1s)]
+            // We are being spammed (Explorer/UI). Unloading causes lag.
+            // Action: Lock permanently, Stay Loaded.
+            SetEnvironmentVariableA("CE_HOOK_STRIKE", "LOCKED");
+            return false;
+        } else {
+            // [State: Slow Reload (>1s)]
+            // Just a periodic wake-up (Service).
+            // Action: Reset timestamp, Unload again.
+            std::string ts = std::to_string(now);
+            SetEnvironmentVariableA("CE_HOOK_STRIKE", ts.c_str());
+            return true;
+        }
+    }
 }
 
 extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
@@ -1136,9 +1236,6 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
   if (ul_reason_for_call == DLL_PROCESS_ATTACH) {
     g_hModule = hinstDLL;
     DisableThreadLibraryCalls(hinstDLL);
-    
-
-
 
     char exeName[MAX_PATH];
     GetModuleFileNameA(NULL, exeName, MAX_PATH);
@@ -1152,7 +1249,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
             g_ProcessCategory = ProcessCategory::InternalTool;
             EarlyLog("DllMain: Process '%s' identified as InternalTool", fileName);
         } else if (isProcessWhitelistedFast(fileName)) {
-             // Whitelisted Game
+             // Whitelisted Game (Shared Mem OR Config)
              if (!g_pLocalConfig) {
                  g_pLocalConfig = new AppConfig();
              }
@@ -1165,25 +1262,14 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
              // DO NOT LOG - Silent Rejection (default)
              
              // "Proper" Fix for File Locks:
-             // We allow specific, known-background processes to self-unload.
-             // This avoids the "Infinite Loop" issue of returning FALSE, but frees the file lock
-             // a few milliseconds after load. 
-             // We do NOT do this for explorer.exe or critical UI processes where a hook callback
-             // into unloaded memory would be catastrophic.
-             if (_stricmp(fileName, "DataExchangeHost.exe") == 0 ||
-                 _stricmp(fileName, "WidgetBoard.exe") == 0 ||
-                 _stricmp(fileName, "msedgewebview2.exe") == 0 ||
-                 _stricmp(fileName, "SearchHost.exe") == 0 ||
-                 _stricmp(fileName, "StartMenuExperienceHost.exe") == 0 ||
-                 _stricmp(fileName, "RuntimeBroker.exe") == 0 ||
-                 _stricmp(fileName, "cbdhsvc.exe") == 0 || 
-                 _stricmp(fileName, "ClipboardUserService.exe") == 0) {
-                 
+             // Use Adaptive Strategy to unload from Services while staying loaded in Explorer
+             if (ShouldSelfUnloadAdaptive(fileName)) {
                  HANDLE hThread = CreateThread(NULL, 0, UnloadSelfThread, NULL, 0, NULL);
                  if (hThread) CloseHandle(hThread);
              }
         }
     }
+    // ...
 
 
     if (g_ProcessCategory == ProcessCategory::Blacklisted) {
@@ -1206,37 +1292,46 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
               GetModuleHandleA("opengl32.dll") || GetModuleHandleA("d3d8.dll"))) {
             g_isSkippedProcess = true;
             EarlyLog("DllMain: Process '%s' skipped (No Graphics API modules found)", fileName);
-        } else {
-             // If we are a potential game and NOT skipped, let's preload dependencies now.
-             // Only load if we are actually going to hook.
-             
-            // Pre-load dependencies (d3d12_wrappers.dll) from our own directory
-            // This is required because we inject into games that won't have it in their path.
-            // We use DelayLoad in build.py so the OS loader doesn't fail before we get here.
-            char modulePath[MAX_PATH];
-            if (GetModuleFileNameA(hinstDLL, modulePath, MAX_PATH)) {
-                 std::string path(modulePath);
-                 size_t lastSlash = path.find_last_of("\\/");
-                 if (lastSlash != std::string::npos) {
-                     std::string dir = path.substr(0, lastSlash);
-                     std::string wrapperDll = dir + "\\d3d12_wrappers.dll";
-                     
-                     EarlyLog("DllMain: Pre-loading d3d12_wrappers.dll from %s", wrapperDll.c_str());
-                     
-                     // Safe to load? d3d12_wrappers.dll has trivial DllMain.
-                     // We suppress error mode to avoid popups if missing.
-                     UINT oldMode = SetErrorMode(SEM_FAILCRITICALERRORS);
-                     HMODULE hWrapper = LoadLibraryA(wrapperDll.c_str());
-                     if (!hWrapper) {
-                         EarlyLog("DllMain: Failed to load wrapper DLL! Err=%d", GetLastError());
-                     }
-                     SetErrorMode(oldMode);
-                 }
-            }
         }
     }
 
     if (g_ProcessCategory != ProcessCategory::InternalTool) {
+        // Pre-load dependencies (d3d12_wrappers) from our own directory
+        // This is CRITICAL for 32-bit where we need the absolute path.
+        // We moved this out of PotentialGame check to ensure it always happens.
+        char modulePath[MAX_PATH];
+        if (GetModuleFileNameA(hinstDLL, modulePath, MAX_PATH)) {
+             std::string path(modulePath);
+             size_t lastSlash = path.find_last_of("\\/");
+             if (lastSlash != std::string::npos) {
+                 std::string dir = path.substr(0, lastSlash);
+                 
+#ifdef _WIN64
+                 std::string wrapperDll = dir + "\\d3d12_wrappers.dll";
+#else
+                 std::string wrapperDll = dir + "\\d3d12_wrappers_x86.dll";
+#endif
+                 
+                 EarlyLog("DllMain: Pre-loading wrapper DLL from %s", wrapperDll.c_str());
+                 
+                 UINT oldMode = SetErrorMode(SEM_FAILCRITICALERRORS);
+                 HMODULE hWrapper = LoadLibraryA(wrapperDll.c_str());
+                 if (!hWrapper) {
+                     EarlyLog("DllMain: Failed to load wrapper DLL! Err=%d", GetLastError());
+                 } else {
+                     EarlyLog("DllMain: Successfully loaded wrapper DLL at %p", hWrapper);
+                 }
+                 SetErrorMode(oldMode);
+             }
+        }
+
+        // RACE CONDITION FIX: Initialize wrappers (IAT patching) immediately in DllMain.
+        // Waiting for HookThread is too late for fast-starting 32-bit apps like dx12_test.
+        // InitializeWrapperHooks is safe to call multiple times (has internal guard)
+        // and IAT patching is generally safe in DllMain (no GetModuleHandle loop for *other* modules yet, just specific ones).
+        EarlyLog("DllMain: Initializing IAT hooks immediately to prevent race conditions...");
+        InitializeWrapperHooks();
+        
         EarlyLog("DllMain: Spawning HookThread for '%s'", fileName);
         HANDLE hThread = CreateThread(NULL, 0, HookThreadWrapper, NULL, 0, NULL);
         if (hThread) {

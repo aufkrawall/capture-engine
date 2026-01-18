@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <cstdio>
 
+#pragma pack(push, 8)
+
 // IPC Constants - base names, actual names are generated with process ID for uniqueness
 #define SHARED_MEM_BASE_NAME L"Local\\CE_SM_"
 // Discovery shared memory - fixed name, contains inject process PID for fast lookup
@@ -365,3 +367,5 @@ struct SharedMemoryLayout {
 inline void GenerateShmemName(wchar_t* outName, size_t maxLen, uint32_t pid) {
   swprintf(outName, maxLen, L"Local\\CE_SHM_%08X", pid);
 }
+
+#pragma pack(pop)

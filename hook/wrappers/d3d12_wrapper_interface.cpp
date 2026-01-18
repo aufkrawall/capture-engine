@@ -21,6 +21,13 @@ void WrapperLog(const char* fmt, ...) {
     _vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
     OutputDebugStringA(buf);
+    
+    // Append to file for debugging
+    FILE* f = fopen("msvc_debug.log", "a");
+    if (f) {
+        fprintf(f, "%s\n", buf);
+        fclose(f);
+    }
 }
 
 extern "C" {
@@ -31,7 +38,7 @@ extern "C" {
 
 // #define D3D12_EXPORT __declspec(dllexport)
 
-D3D12_EXPORT HRESULT D3D12Wrapper_CreateDevice(
+D3D12_EXPORT HRESULT WINAPI D3D12Wrapper_CreateDevice(
     IUnknown* pAdapter,
     D3D_FEATURE_LEVEL MinimumFeatureLevel,
     REFIID riid,
@@ -58,7 +65,7 @@ D3D12_EXPORT HRESULT D3D12Wrapper_CreateDevice(
     return hr;
 }
 
-D3D12_EXPORT ID3D12Device* D3D12Wrapper_WrapDevice(ID3D12Device* pRealDevice)
+D3D12_EXPORT ID3D12Device* WINAPI D3D12Wrapper_WrapDevice(ID3D12Device* pRealDevice)
 {
     if (!pRealDevice) return nullptr;
     
@@ -76,7 +83,7 @@ D3D12_EXPORT ID3D12Device* D3D12Wrapper_WrapDevice(ID3D12Device* pRealDevice)
     return pWrapper;
 }
 
-D3D12_EXPORT ID3D12Device* D3D12Wrapper_UnwrapDevice(ID3D12Device* pDevice)
+D3D12_EXPORT ID3D12Device* WINAPI D3D12Wrapper_UnwrapDevice(ID3D12Device* pDevice)
 {
     if (!pDevice) return nullptr;
 
@@ -95,7 +102,7 @@ D3D12_EXPORT ID3D12Device* D3D12Wrapper_UnwrapDevice(ID3D12Device* pDevice)
     return pDevice;
 }
 
-D3D12_EXPORT BOOL D3D12Wrapper_IsDeviceWrapped(ID3D12Device* pDevice)
+D3D12_EXPORT BOOL WINAPI D3D12Wrapper_IsDeviceWrapped(ID3D12Device* pDevice)
 {
     if (!pDevice) return FALSE;
 
@@ -107,7 +114,7 @@ D3D12_EXPORT BOOL D3D12Wrapper_IsDeviceWrapped(ID3D12Device* pDevice)
     return FALSE;
 }
 
-D3D12_EXPORT ID3D12CommandQueue* D3D12Wrapper_WrapCommandQueue(ID3D12CommandQueue* pRealQueue, ID3D12Device* pDevice)
+D3D12_EXPORT ID3D12CommandQueue* WINAPI D3D12Wrapper_WrapCommandQueue(ID3D12CommandQueue* pRealQueue, ID3D12Device* pDevice)
 {
     if (!pRealQueue) return nullptr;
     
@@ -117,7 +124,7 @@ D3D12_EXPORT ID3D12CommandQueue* D3D12Wrapper_WrapCommandQueue(ID3D12CommandQueu
     return pWrapper;
 }
 
-D3D12_EXPORT ID3D12CommandQueue* D3D12Wrapper_UnwrapCommandQueue(ID3D12CommandQueue* pQueue)
+D3D12_EXPORT ID3D12CommandQueue* WINAPI D3D12Wrapper_UnwrapCommandQueue(ID3D12CommandQueue* pQueue)
 {
     if (!pQueue) return nullptr;
     

@@ -1,13 +1,11 @@
-/**
- * D3D9 Device Wrapper Implementation
- * 
- * Key overrides:
- * - Present/PresentEx: VSync override
- * - SetSamplerState: Anisotropic filtering override
- */
-
 #include "d3d9_device_wrap.h"
 #include "hook_common.h"
+#include <d3d9.h>
+
+// Forward declarations for Overlay Logic (from dx9_hook.cpp)
+// Avoid including dx9_hook.h to prevent include path issues
+void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer);
+void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer);
 
 // GUID for wrapper identification
 static const GUID IID_CWrapD3D9Device = 
@@ -83,13 +81,25 @@ ULONG STDMETHODCALLTYPE CWrapD3D9Device::Release() {
 // ============================================================================
 
 HRESULT STDMETHODCALLTYPE CWrapD3D9Device::Present(const RECT* pSourceRect, const RECT* pDestRect, HWND hDestWindowOverride, const RGNDATA* pDirtyRegion) {
-    // TODO: Draw overlay here before present
-    return m_pReal->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
+    // Draw Overlay using shared logic
+    IDirect3DSurface9* backBuffer = nullptr;
+    // We pass m_pReal (Real Device) to the overlay drawer because it expects a real device to setup state block
+    // Using 'this' (Wrapped Device) would recurse infinitely if overlay drawer calls SetRenderState/etc on 'this'
+    DX9_PresentBegin(m_pReal, backBuffer);
+    
+    HRESULT hr = m_pReal->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
+    
+    DX9_PresentEnd(m_pReal, backBuffer);
+    return hr;
 }
 
 HRESULT STDMETHODCALLTYPE CWrapD3D9Device::PresentEx(const RECT* pSourceRect, const RECT* pDestRect, HWND hDestWindowOverride, const RGNDATA* pDirtyRegion, DWORD dwFlags) {
     if (!m_pRealEx) return E_NOTIMPL;
     
+    // Draw Overlay
+    IDirect3DSurface9* backBuffer = nullptr;
+    DX9_PresentBegin(m_pReal, backBuffer);
+
     // Apply VSync override
     DWORD flags = dwFlags;
     if (m_ForceVSync) {
@@ -97,7 +107,10 @@ HRESULT STDMETHODCALLTYPE CWrapD3D9Device::PresentEx(const RECT* pSourceRect, co
     }
     // TODO: Could add D3DPRESENT_DONOTWAIT if disabling VSync
     
-    return m_pRealEx->PresentEx(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, flags);
+    HRESULT hr = m_pRealEx->PresentEx(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, flags);
+    
+    DX9_PresentEnd(m_pReal, backBuffer);
+    return hr;
 }
 
 // ============================================================================

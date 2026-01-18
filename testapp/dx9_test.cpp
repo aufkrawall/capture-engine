@@ -75,6 +75,9 @@ void Render() {
 }
 
 int main(int argc, char* argv[]) {
+    // Give time for hook thread to initialize export hooks
+    Sleep(500); 
+
     SetProcessDPIAware();
     LoadConfig();
     if (argc >= 3) { g_WindowWidth = atoi(argv[1]); g_WindowHeight = atoi(argv[2]); }

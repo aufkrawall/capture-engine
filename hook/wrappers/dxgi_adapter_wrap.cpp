@@ -77,9 +77,9 @@ void CWrapDXGIAdapter::PromoteInterfaces() {
 HRESULT STDMETHODCALLTYPE CWrapDXGIAdapter::QueryInterface(REFIID riid, void** ppvObj) {
     if (!ppvObj) return E_POINTER;
     
-    if (riid == IID_ICWrapDXGIAdapter) {
-        AddRef();
-        *ppvObj = static_cast<ICWrapDXGIAdapter*>(this);
+    // Return real for our own GUID to support safe unwrapping
+    if (riid == IID_CWrapDXGIAdapter) {
+        *ppvObj = m_pReal;
         return S_OK;
     }
 
