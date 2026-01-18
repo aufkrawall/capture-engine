@@ -5,6 +5,7 @@
  */
 
 #include "layer_main.h"
+#include "vulkan_layer.h"
 #include <vector>
 #include <cstring>
 #include "../common/fps_limiter.h"
@@ -473,8 +474,9 @@ VkResult VKAPI_CALL vkCreateSwapchainKHR(
     
     // Initialize overlay and capture for this swapchain
     if (g_LayerState.overlayEnabled) {
+        HWND hwnd = VulkanLayerState::Get().GetSurfaceWindow(pCreateInfo->surface);
         InitializeOverlay(device, swapchain, pCreateInfo->imageFormat, 
-                         pCreateInfo->imageExtent, imageCount, images.data());
+                         pCreateInfo->imageExtent, imageCount, images.data(), hwnd);
     }
     if (g_LayerState.captureEnabled) {
         InitializeCapture(device, swapchain, pCreateInfo->imageFormat,

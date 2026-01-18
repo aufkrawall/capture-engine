@@ -1016,16 +1016,18 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
     # Layer source files
     layer_sources = [
         os.path.join(layer_dir, "layer_main.cpp"),
-        os.path.join(layer_dir, "layer_hooks.cpp"),
+        os.path.join(layer_dir, "vulkan_layer.cpp"),
+        os.path.join(layer_dir, "layer_ipc.cpp"),
         os.path.join(layer_dir, "layer_overlay.cpp"),
         os.path.join(layer_dir, "layer_capture.cpp"),
-        os.path.join(layer_dir, "layer_ipc.cpp"),  # Minimal IPC for layer
+        os.path.join(layer_dir, "layer_bridge.cpp"),
         # Common sources needed for standard overlay
         os.path.join(PROJECT_ROOT, "hook", "common", "overlay.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "common", "fg_detection.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "common", "ipc_client.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "common", "system_metrics.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "common", "performance_metrics.cpp"),
-        os.path.join(PROJECT_ROOT, "hook", "common", "fg_detection.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "common", "input_manager.cpp"),
     ]
     
     # ImGui sources for the layer
@@ -1041,6 +1043,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         "-I" + IMGUI_DIR,
         "-DVK_NO_PROTOTYPES",
         "-DIMGUI_IMPL_VULKAN_NO_PROTOTYPES",
+        "-DVK_USE_PLATFORM_WIN32_KHR",
     ]
     
     layer_objs = []

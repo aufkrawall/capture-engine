@@ -11,6 +11,7 @@
 #include "../common/system_metrics.h"
 #include "../common/streamline_compat.h"
 #include "../common/swapchain_wrapper.h"
+#include "../common/input_manager.h"
 #include "backends/imgui_impl_dx12.h"
 #include "backends/imgui_impl_win32.h"
 #include "imgui.h"
@@ -561,6 +562,8 @@ bool InitImGui(ID3D12Device *device, int buffers, DXGI_FORMAT format,
 
   g_State.format = format;
   g_SharedOverlay.InitImGui(hwnd);
+  // Hook Input
+  InputManager::Get().HookWindow(hwnd);
 
   // DIAGNOSTIC CACHE: Try creating a non-shader visible heap first (sanity check)
   {

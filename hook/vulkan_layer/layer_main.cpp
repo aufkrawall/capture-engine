@@ -1,273 +1,157 @@
 /**
- * VK_LAYER_CE_overlay - Main Layer Implementation
+ * VK_LAYER_CE_overlay - Entry Points
  * 
- * Entry points and dispatch table management.
- * Includes whitelist checking from config.ini.
+ * Implements vkGetInstanceProcAddr and vkGetDeviceProcAddr.
+ * Handles layer negotiation and delegation to Capture_ hooks.
  */
 
 #include "layer_main.h"
-#include <cstdio>
-#include <cstdarg>
-#include <fstream>
-#include <sstream>
-#include <algorithm>
-#include <cctype>
-#include <vector>
 #include <cstring>
-#include "../../common/shared_defs.h"
-#include "../common/fps_limiter.h"
 
-// Global state
+// Global states
 CELayerState g_LayerState;
 
-// Dispatch table storage
-std::mutex g_InstanceMapMutex;
-std::unordered_map<VkInstance, CEInstanceDispatch> g_InstanceMap;
-std::mutex g_DeviceMapMutex;
-std::unordered_map<VkDevice, CEDeviceDispatch> g_DeviceMap;
+// Forward declarations
+extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL CELayer_vkGetInstanceProcAddr(VkInstance instance, const char* pName);
+extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL CELayer_vkGetDeviceProcAddr(VkDevice device, const char* pName);
 
-// Logging
-// Redirected to IPC Host Process
+// Logging implementation
 void LayerLog(const char* fmt, ...) {
-    static char buf[4096];
-    
     va_list args;
     va_start(args, fmt);
+    char buf[2048];
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
 
-    // Send to Host
-    LayerIPC_Log("%s", buf);
+    // Output to debug console
+    OutputDebugStringA(buf);
+    OutputDebugStringA("\n");
 
-    // Keep stderr for local console debugging
-    fprintf(stderr, "[CE Layer] %s\n", buf);
-}
+    // Also to stderr
+    fprintf(stderr, "[VulkanLayer] %s\n", buf);
+    fflush(stderr);
 
-// Helper: Fast Process Whitelist Check using Shared Memory
-// Avoids unsafe File I/O (config.ini) in arbitrary processes.
-static bool IsProcessWhitelistedFast() {
-    // Get process name
-    char exePath[MAX_PATH] = {0};
-    GetModuleFileNameA(nullptr, exePath, MAX_PATH);
-    std::string fullPath(exePath);
-    
-    // Extract just the filename
-    size_t pos = fullPath.rfind('\\');
-    std::string processName = (pos != std::string::npos) ? fullPath.substr(pos + 1) : fullPath;
-    
-    // Store for layer state
-    g_LayerState.processName = processName;
-
-    // 1. Internal Whitelist
-    if (_stricmp(processName.c_str(), "captureengine.exe") == 0 || _stricmp(processName.c_str(), "captureengine_x86.exe") == 0) {
-        LayerLog("IsProcessWhitelistedFast: Process '%s' matched internal whitelist", processName.c_str());
-        return true;
+    // Also to IPC if connected
+    if (LayerIPC_IsConnected()) {
+        LayerIPC_Log("%s", buf);
     }
-    
-    // 2. Shared Memory Whitelist Cache
-    // If shared memory is not available or empty, we default to NOT whitelisted.
-    HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
-    if (hDisc) {
-        DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
-        bool found = false;
-        if (pDisc) {
-            if (pDisc->magic == DISCOVERY_MAGIC) {
-                const char* p = pDisc->processWhitelist;
-                const char* end = pDisc->processWhitelist + sizeof(pDisc->processWhitelist);
-                
-                LayerLog("IsProcessWhitelistedFast: Checking SM whitelist for '%s'...", processName.c_str());
-
-                while (p < end && *p != '\0') {
-                    if (_stricmp(processName.c_str(), p) == 0) {
-                        found = true;
-                        break;
-                    }
-                    p += strlen(p) + 1;
-                }
-            } else {
-                 LayerLog("IsProcessWhitelistedFast: Shared Memory Magic mismatch! (Expected %X, Got %X)", DISCOVERY_MAGIC, pDisc->magic);
-            }
-            UnmapViewOfFile(pDisc);
-        } else {
-            LayerLog("IsProcessWhitelistedFast: Failed to MapViewOfFile!");
-        }
-        CloseHandle(hDisc);
-        if (found) {
-            LayerLog("IsProcessWhitelistedFast: Process '%s' is WHITELISTED (SM Match)", processName.c_str());
-            return true;
-        } else {
-            LayerLog("IsProcessWhitelistedFast: Process '%s' NOT found in SM whitelist", processName.c_str());
-        }
-    } else {
-        LayerLog("IsProcessWhitelistedFast: Failed to OpenFileMappingW (%S), err=%d", SHARED_MEM_DISCOVERY, GetLastError());
-    }
-    
-    LayerLog("Layer: Process '%s' is NOT whitelisted (SM check failed), layer inactive", processName.c_str());
-    return false;
 }
 
+// ============================================================================
+// Layer Negotiation
+// ============================================================================
 
-// Get dispatch table for instance
-CEInstanceDispatch* GetInstanceDispatch(VkInstance instance) {
-    std::lock_guard<std::mutex> lock(g_InstanceMapMutex);
-    auto it = g_InstanceMap.find(instance);
-    return (it != g_InstanceMap.end()) ? &it->second : nullptr;
-}
-
-// Get dispatch table for device
-CEDeviceDispatch* GetDeviceDispatch(VkDevice device) {
-    std::lock_guard<std::mutex> lock(g_DeviceMapMutex);
-    auto it = g_DeviceMap.find(device);
-    return (it != g_DeviceMap.end()) ? &it->second : nullptr;
-}
-
-// Layer negotiation - required for Vulkan loader
-extern "C" VkResult VKAPI_CALL 
-vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct) {
-    fprintf(stderr, "[CE Layer] vkNegotiateLoaderLayerInterfaceVersion called\n");
-    if (!pVersionStruct) return VK_ERROR_INITIALIZATION_FAILED;
-    
-    if (pVersionStruct->sType != LAYER_NEGOTIATE_INTERFACE_STRUCT) {
-        return VK_ERROR_INITIALIZATION_FAILED;
-    }
-    
-    // We support interface version 2
+extern "C" VKAPI_ATTR VkResult VKAPI_CALL 
+CELayer_vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct) {
     if (pVersionStruct->loaderLayerInterfaceVersion < 2) {
         return VK_ERROR_INITIALIZATION_FAILED;
     }
-    pVersionStruct->loaderLayerInterfaceVersion = 2;
     
-    pVersionStruct->pfnGetInstanceProcAddr = vkGetInstanceProcAddr;
-    pVersionStruct->pfnGetDeviceProcAddr = vkGetDeviceProcAddr;
-    pVersionStruct->pfnGetPhysicalDeviceProcAddr = nullptr; // Not needed
-    
-    // Initialize IPC
-    if (!g_IPCClient.GetSharedMem()) {
-        g_IPCClient.Connect();
+    // Whitelist check: If not whitelisted, return initialization failure 
+    // to let the loader skip our layer entirely for this process.
+    if (!LayerIPC_Init()) {
+        // LayerIPC_Init returns true if connected (and sets g_LayerState.whitelisted)
+        // If it fails to connect, we might want to check the standalone config.
+        // But for transparency and preventing crashes in browsers, returning failure here is safest.
+        return VK_ERROR_INITIALIZATION_FAILED;
     }
-    
-    // Initialize FPS Limiter with IPC
-    g_SharedFpsLimiter.SetIPCClient(&g_IPCClient);
 
-    // Initialize layer state on first call
+    if (!g_LayerState.whitelisted) {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+
+    pVersionStruct->loaderLayerInterfaceVersion = 2;
+    pVersionStruct->pfnGetInstanceProcAddr = CELayer_vkGetInstanceProcAddr;
+    pVersionStruct->pfnGetDeviceProcAddr = CELayer_vkGetDeviceProcAddr;
+    pVersionStruct->pfnGetPhysicalDeviceProcAddr = nullptr;
+
+    // One-time initialization logic
     if (!g_LayerState.initialized) {
         g_LayerState.initialized = true;
-        g_LayerState.whitelisted = IsProcessWhitelistedFast();
-        g_LayerState.overlayEnabled = g_LayerState.whitelisted; // Initialize capture (lazy init handled in CaptureFrame/CreateSwapchain)
-        g_LayerState.captureEnabled = g_LayerState.whitelisted;
-        
-        if (g_LayerState.whitelisted) {
-            LayerLog("Layer: CE_vkNegotiateLoaderLayerInterfaceVersion - Layer ACTIVE");
-            // Initialize IPC for communication with captureengine
-            if (LayerIPC_Init()) {
-                LayerIPC_SetOverlayActive(true);
-            }
-        }
+        LayerLog("Vulkan Layer Negotiated for whitelisted process. Interface Version: %d", pVersionStruct->loaderLayerInterfaceVersion);
     }
-    
+
+    LayerLog("Vulkan Layer: Negotiate Version Success");
     return VK_SUCCESS;
 }
 
-// Instance proc addr lookup
-extern "C" PFN_vkVoidFunction VKAPI_CALL 
-vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
+// ============================================================================
+// ProcAddr Implementations
+// ============================================================================
+
+extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL 
+CELayer_vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
     if (!pName) return nullptr;
-    
+    // LayerLog("CELayer_vkGetInstanceProcAddr(inst=%p, name=%s)", instance, pName);
+
     // Layer-level functions (no instance needed)
     if (strcmp(pName, "vkNegotiateLoaderLayerInterfaceVersion") == 0) {
-        return (PFN_vkVoidFunction)vkNegotiateLoaderLayerInterfaceVersion;
+        return (PFN_vkVoidFunction)CELayer_vkNegotiateLoaderLayerInterfaceVersion;
     }
     if (strcmp(pName, "vkGetInstanceProcAddr") == 0) {
-        return (PFN_vkVoidFunction)vkGetInstanceProcAddr;
+        return (PFN_vkVoidFunction)CELayer_vkGetInstanceProcAddr;
     }
     if (strcmp(pName, "vkCreateInstance") == 0) {
-        return (PFN_vkVoidFunction)vkCreateInstance;
+        LayerLog("CELayer_vkGetInstanceProcAddr: %s", pName);
+        return (PFN_vkVoidFunction)Capture_vkCreateInstance;
     }
-    
+    if (strcmp(pName, "vkCreateDevice") == 0) {
+        LayerLog("CELayer_vkGetInstanceProcAddr: %s", pName);
+        return (PFN_vkVoidFunction)Capture_vkCreateDevice;
+    }
+    if (strcmp(pName, "vkEnumeratePhysicalDevices") == 0) {
+        return (PFN_vkVoidFunction)Capture_vkEnumeratePhysicalDevices;
+    }
+    if (strcmp(pName, "vkEnumerateInstanceLayerProperties") == 0 ||
+        strcmp(pName, "vkEnumerateInstanceExtensionProperties") == 0) {
+        return nullptr; // Let loader handle these or implement if needed
+    }
+
+    if (!instance) return nullptr;
+
     // Instance-level functions
-    if (instance != VK_NULL_HANDLE) {
-        if (strcmp(pName, "vkDestroyInstance") == 0) {
-            return (PFN_vkVoidFunction)vkDestroyInstance;
-        }
-        if (strcmp(pName, "vkCreateDevice") == 0) {
-            return (PFN_vkVoidFunction)vkCreateDevice;
-        }
-        if (strcmp(pName, "vkGetDeviceProcAddr") == 0) {
-            return (PFN_vkVoidFunction)vkGetDeviceProcAddr;
-        }
-        
-        // Chain to next layer/driver
-        CEInstanceDispatch* disp = GetInstanceDispatch(instance);
-        if (disp && disp->GetInstanceProcAddr) {
-            return disp->GetInstanceProcAddr(instance, pName);
-        }
+    if (strcmp(pName, "vkDestroyInstance") == 0) return (PFN_vkVoidFunction)Capture_vkDestroyInstance;
+    if (strcmp(pName, "vkCreateDevice") == 0) return (PFN_vkVoidFunction)Capture_vkCreateDevice;
+    if (strcmp(pName, "vkCreateWin32SurfaceKHR") == 0) return (PFN_vkVoidFunction)Capture_vkCreateWin32SurfaceKHR;
+
+    // Device-level functions obtained through instance GIPA
+    if (strcmp(pName, "vkGetDeviceProcAddr") == 0) return (PFN_vkVoidFunction)CELayer_vkGetDeviceProcAddr;
+    if (strcmp(pName, "vkGetDeviceQueue") == 0) return (PFN_vkVoidFunction)Capture_vkGetDeviceQueue;
+    if (strcmp(pName, "vkCreateSwapchainKHR") == 0) return (PFN_vkVoidFunction)Capture_vkCreateSwapchainKHR;
+    if (strcmp(pName, "vkDestroySwapchainKHR") == 0) return (PFN_vkVoidFunction)Capture_vkDestroySwapchainKHR;
+    if (strcmp(pName, "vkGetSwapchainImagesKHR") == 0) return (PFN_vkVoidFunction)Capture_vkGetSwapchainImagesKHR;
+    if (strcmp(pName, "vkAcquireNextImageKHR") == 0) return (PFN_vkVoidFunction)Capture_vkAcquireNextImageKHR;
+    if (strcmp(pName, "vkQueuePresentKHR") == 0) return (PFN_vkVoidFunction)Capture_vkQueuePresentKHR;
+    if (strcmp(pName, "vkCreateSampler") == 0) return (PFN_vkVoidFunction)Capture_vkCreateSampler;
+
+    // Default: chain to next layer
+    InstanceDispatch* disp = VulkanLayerState::Get().GetInstanceDispatch(instance);
+    if (disp && disp->fp_vkGetInstanceProcAddr) {
+        return disp->fp_vkGetInstanceProcAddr(instance, pName);
     }
-    
+
     return nullptr;
 }
 
-// Device proc addr lookup
-extern "C" PFN_vkVoidFunction VKAPI_CALL 
-vkGetDeviceProcAddr(VkDevice device, const char* pName) {
-    if (!pName) return nullptr;
-    
-    // Device-level functions we intercept
-    if (strcmp(pName, "vkGetDeviceProcAddr") == 0) {
-        return (PFN_vkVoidFunction)vkGetDeviceProcAddr;
+extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL 
+CELayer_vkGetDeviceProcAddr(VkDevice device, const char* pName) {
+    if (!pName || !device) return nullptr;
+    // LayerLog("CELayer_vkGetDeviceProcAddr(dev=%p, name=%s)", device, pName);
+
+    if (strcmp(pName, "vkGetDeviceProcAddr") == 0) return (PFN_vkVoidFunction)CELayer_vkGetDeviceProcAddr;
+    if (strcmp(pName, "vkGetDeviceQueue") == 0) return (PFN_vkVoidFunction)Capture_vkGetDeviceQueue;
+    if (strcmp(pName, "vkDestroyDevice") == 0) return (PFN_vkVoidFunction)Capture_vkDestroyDevice;
+    if (strcmp(pName, "vkCreateSwapchainKHR") == 0) return (PFN_vkVoidFunction)Capture_vkCreateSwapchainKHR;
+    if (strcmp(pName, "vkDestroySwapchainKHR") == 0) return (PFN_vkVoidFunction)Capture_vkDestroySwapchainKHR;
+    if (strcmp(pName, "vkGetSwapchainImagesKHR") == 0) return (PFN_vkVoidFunction)Capture_vkGetSwapchainImagesKHR;
+    if (strcmp(pName, "vkAcquireNextImageKHR") == 0) return (PFN_vkVoidFunction)Capture_vkAcquireNextImageKHR;
+    if (strcmp(pName, "vkQueuePresentKHR") == 0) return (PFN_vkVoidFunction)Capture_vkQueuePresentKHR;
+    if (strcmp(pName, "vkCreateSampler") == 0) return (PFN_vkVoidFunction)Capture_vkCreateSampler;
+
+    DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
+    if (disp && disp->fp_vkGetDeviceProcAddr) {
+        return disp->fp_vkGetDeviceProcAddr(device, pName);
     }
-    if (strcmp(pName, "vkDestroyDevice") == 0) {
-        return (PFN_vkVoidFunction)vkDestroyDevice;
-    }
-    
-    // Only intercept these if whitelisted
-    if (g_LayerState.whitelisted) {
-        if (strcmp(pName, "vkCreateSwapchainKHR") == 0) {
-            return (PFN_vkVoidFunction)vkCreateSwapchainKHR;
-        }
-        if (strcmp(pName, "vkDestroySwapchainKHR") == 0) {
-            return (PFN_vkVoidFunction)vkDestroySwapchainKHR;
-        }
-        if (strcmp(pName, "vkAcquireNextImageKHR") == 0) {
-            return (PFN_vkVoidFunction)vkAcquireNextImageKHR;
-        }
-        if (strcmp(pName, "vkQueuePresentKHR") == 0) {
-            return (PFN_vkVoidFunction)vkQueuePresentKHR;
-        }
-        if (strcmp(pName, "vkCreateSampler") == 0) {
-            return (PFN_vkVoidFunction)vkCreateSampler;
-        }
-        if (strcmp(pName, "vkGetDeviceQueue") == 0) {
-            return (PFN_vkVoidFunction)vkGetDeviceQueue;
-        }
-    }
-    
-    // Chain to next layer/driver
-    if (device != VK_NULL_HANDLE) {
-        CEDeviceDispatch* disp = GetDeviceDispatch(device);
-        if (disp && disp->GetDeviceProcAddr) {
-            return disp->GetDeviceProcAddr(device, pName);
-        }
-    }
-    
+
     return nullptr;
-}
-
-// Include needed for shutdown
-#include "../common/system_metrics.h"
-
-// DLL entry point
-BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
-    switch (fdwReason) {
-        case DLL_PROCESS_ATTACH:
-            DisableThreadLibraryCalls(hinstDLL);
-            break;
-        case DLL_PROCESS_DETACH:
-            // Important: Shutdown metrics thread before IPC or static destruction
-            // This prevents the background thread from accessing destroyed IPC objects
-            SystemMetricsCollector::Get().Shutdown();
-            
-            LayerIPC_Shutdown();
-            break;
-    }
-    return TRUE;
 }

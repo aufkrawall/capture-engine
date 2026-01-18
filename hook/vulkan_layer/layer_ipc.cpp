@@ -29,24 +29,7 @@ std::atomic<bool> g_ShuttingDown{false};
 // Only if we use GetActiveGraphicsConfig. Overlay.cpp doesn't uses it.
 
 
-// Shim for IPCClient and FGDetection logging
-void EarlyLog(const char* fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    char buf[1024];
-    vsnprintf(buf, sizeof(buf), fmt, args);
-    va_end(args);
-    LayerLog("%s", buf);
-}
-
-void HookLog(const char* fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    char buf[1024];
-    vsnprintf(buf, sizeof(buf), fmt, args);
-    va_end(args);
-    LayerLog("%s", buf);
-}
+// Log shims moved to layer_bridge.cpp
 
 uint32_t VkFormatToDXGI(uint32_t vkFormat) {
     switch (vkFormat) {
@@ -67,22 +50,56 @@ uint32_t VkFormatToDXGI(uint32_t vkFormat) {
 
 // Initialize layer IPC
 bool LayerIPC_Init() {
-    if (g_IPCClient.GetSharedMem()) return true;
+    if (g_IPCClient.GetSharedMem()) return g_LayerState.whitelisted;
     
     // Get process name
-    GetModuleFileNameA(NULL, g_ProcessName, sizeof(g_ProcessName));
-    char* p = strrchr(g_ProcessName, '\\');
+    char fullPath[MAX_PATH];
+    GetModuleFileNameA(NULL, fullPath, sizeof(fullPath));
+    char* p = strrchr(fullPath, '\\');
     if (p) strcpy(g_ProcessName, p + 1);
+    else strcpy(g_ProcessName, fullPath);
     
     // Connect to host
     if (g_IPCClient.Connect()) {
         LayerLog("Layer IPC: Connected to Host PID %d", g_IPCClient.GetSharedMem()->hostPID);
+        
+        // Check Whitelist Cache in Discovery Shared Memory
+        // Replicating isProcessWhitelistedFast logic
+        bool whitelisted = false;
+        
+        HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+        if (hDisc) {
+            DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
+            if (pDisc) {
+                if (pDisc->magic == DISCOVERY_MAGIC) {
+                    const char* pw = pDisc->processWhitelist;
+                    const char* end = pDisc->processWhitelist + sizeof(pDisc->processWhitelist);
+                    
+                    while (pw < end && *pw != '\0') {
+                        if (_stricmp(g_ProcessName, pw) == 0) {
+                            whitelisted = true;
+                            break;
+                        }
+                        pw += strlen(pw) + 1;
+                    }
+                }
+                UnmapViewOfFile(pDisc);
+            }
+            CloseHandle(hDisc);
+        }
+        
+        g_LayerState.whitelisted = whitelisted;
+        if (!whitelisted) {
+             LayerLog("Layer IPC: Process '%s' NOT whitelisted. Layer dormant.", g_ProcessName);
+             g_IPCClient.Disconnect(); // Don't stay connected if dormant
+             return false;
+        }
+
+        LayerLog("Layer IPC: Process '%s' whitelisted. Layer active.", g_ProcessName);
         return true;
     }
     
-    // Fallback: If host not running, we might still want to succeed init 
-    // but we can't render overlay without config.
-    LayerLog("Layer IPC: Failed to connect to host.");
+    LayerLog("Layer IPC: Failed to connect to host. Layer dormant.");
     return false;
 }
 

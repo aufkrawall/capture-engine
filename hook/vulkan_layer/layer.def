@@ -1,5 +1,5 @@
 LIBRARY VK_LAYER_CE_overlay
 EXPORTS
-vkNegotiateLoaderLayerInterfaceVersion
-vkGetInstanceProcAddr
-vkGetDeviceProcAddr
+    vkGetInstanceProcAddr = CELayer_vkGetInstanceProcAddr
+    vkGetDeviceProcAddr = CELayer_vkGetDeviceProcAddr
+    vkNegotiateLoaderLayerInterfaceVersion = CELayer_vkNegotiateLoaderLayerInterfaceVersion

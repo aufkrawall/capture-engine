@@ -13,6 +13,7 @@
 #include <backends/imgui_impl_dx11.h>
 #include <backends/imgui_impl_dx10.h>
 #include <backends/imgui_impl_win32.h>
+#include "../common/input_manager.h"
 #include <cstdint>
 #include <cstdio>
 #include <d3d10.h>    // For DX10 detection
@@ -1116,6 +1117,9 @@ static void DrawDX10Overlay(IDXGISwapChain *pSwapChain, HWND currentHwnd, int fr
     if (!g_ImGuiInitialized) {
         g_CachedHwnd = currentHwnd;
         g_SharedOverlay.InitImGui(currentHwnd);
+        // Hook Input
+        InputManager::Get().HookWindow(currentHwnd);
+
         ImGui_ImplDX10_Init(device);
         g_ImGuiInitialized = true;
         g_IsDX10Active = true;
@@ -1229,6 +1233,9 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
       lastHwnd = currentHwnd;
 
       g_SharedOverlay.InitImGui(currentHwnd);
+      // Hook Input
+      InputManager::Get().HookWindow(currentHwnd);
+      
       ImGui_ImplDX11_Init(device, context);
       g_ImGuiInitialized = true;
       g_IsDX11Active = true;

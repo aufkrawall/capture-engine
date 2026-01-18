@@ -1237,12 +1237,16 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     g_hModule = hinstDLL;
     DisableThreadLibraryCalls(hinstDLL);
 
-    char exeName[MAX_PATH];
-    GetModuleFileNameA(NULL, exeName, MAX_PATH);
-    char* fileLastSlash = strrchr(exeName, '\\');
-    char* fileName = fileLastSlash ? (fileLastSlash + 1) : exeName;
-    strncpy(g_ProcessName, fileName, sizeof(g_ProcessName) - 1);
-    g_ProcessName[sizeof(g_ProcessName) - 1] = '\0';
+    char fullPath[MAX_PATH];
+    char* fileName = nullptr;
+    if (GetModuleFileNameA(NULL, fullPath, MAX_PATH)) {
+        char* fileLastSlash = strrchr(fullPath, '\\');
+        fileName = fileLastSlash ? (fileLastSlash + 1) : fullPath;
+        strncpy(g_ProcessName, fileName, sizeof(g_ProcessName) - 1);
+        g_ProcessName[sizeof(g_ProcessName) - 1] = '\0';
+    } else {
+        fileName = (char*)"unknown";
+    }
 
     if (g_ProcessCategory == ProcessCategory::PotentialGame) {
         if (_stricmp(fileName, "captureengine.exe") == 0 || _stricmp(fileName, "captureengine_x86.exe") == 0) {
@@ -1296,42 +1300,60 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     }
 
     if (g_ProcessCategory != ProcessCategory::InternalTool) {
-        // Pre-load dependencies (d3d12_wrappers) from our own directory
-        // This is CRITICAL for 32-bit where we need the absolute path.
-        // We moved this out of PotentialGame check to ensure it always happens.
-        char modulePath[MAX_PATH];
-        if (GetModuleFileNameA(hinstDLL, modulePath, MAX_PATH)) {
-             std::string path(modulePath);
-             size_t lastSlash = path.find_last_of("\\/");
-             if (lastSlash != std::string::npos) {
-                 std::string dir = path.substr(0, lastSlash);
-                 
+        // CRITICAL: Only initialize hooks and dependencies if we have a graphics API.
+        // For processes without graphics APIs (launchers, tools, etc.), we skip hook
+        // installation entirely to prevent crashes in non-whitelisted processes.
+        bool hasGraphicsAPI = (
+            GetModuleHandleA("d3d12.dll") != NULL ||
+            GetModuleHandleA("d3d11.dll") != NULL ||
+            GetModuleHandleA("d3d10.dll") != NULL ||
+            GetModuleHandleA("d3d9.dll") != NULL ||
+            GetModuleHandleA("vulkan-1.dll") != NULL ||
+            GetModuleHandleA("opengl32.dll") != NULL ||
+            GetModuleHandleA("d3d8.dll") != NULL ||
+            GetModuleHandleA("ddraw.dll") != NULL
+        );
+
+        if (hasGraphicsAPI) {
+            // Pre-load dependencies (d3d12_wrappers) from our own directory
+            // This is CRITICAL for 32-bit where we need the absolute path.
+            char modulePath[MAX_PATH];
+            if (GetModuleFileNameA(hinstDLL, modulePath, MAX_PATH)) {
+                 std::string path(modulePath);
+                 size_t lastSlash = path.find_last_of("\\/");
+                 if (lastSlash != std::string::npos) {
+                     std::string dir = path.substr(0, lastSlash);
+
 #ifdef _WIN64
-                 std::string wrapperDll = dir + "\\d3d12_wrappers.dll";
+                     std::string wrapperDll = dir + "\\d3d12_wrappers.dll";
 #else
-                 std::string wrapperDll = dir + "\\d3d12_wrappers_x86.dll";
+                     std::string wrapperDll = dir + "\\d3d12_wrappers_x86.dll";
 #endif
-                 
-                 EarlyLog("DllMain: Pre-loading wrapper DLL from %s", wrapperDll.c_str());
-                 
-                 UINT oldMode = SetErrorMode(SEM_FAILCRITICALERRORS);
-                 HMODULE hWrapper = LoadLibraryA(wrapperDll.c_str());
-                 if (!hWrapper) {
-                     EarlyLog("DllMain: Failed to load wrapper DLL! Err=%d", GetLastError());
-                 } else {
-                     EarlyLog("DllMain: Successfully loaded wrapper DLL at %p", hWrapper);
+
+                     EarlyLog("DllMain: Pre-loading wrapper DLL from %s", wrapperDll.c_str());
+
+                     UINT oldMode = SetErrorMode(SEM_FAILCRITICALERRORS);
+                     HMODULE hWrapper = LoadLibraryA(wrapperDll.c_str());
+                     if (!hWrapper) {
+                         EarlyLog("DllMain: Failed to load wrapper DLL! Err=%d", GetLastError());
+                     } else {
+                         EarlyLog("DllMain: Successfully loaded wrapper DLL at %p", hWrapper);
+                     }
+                     SetErrorMode(oldMode);
                  }
-                 SetErrorMode(oldMode);
-             }
+            }
+
+            // RACE CONDITION FIX: Initialize wrappers (IAT patching) immediately in DllMain.
+            // Waiting for HookThread is too late for fast-starting 32-bit apps like dx12_test.
+            // InitializeWrapperHooks is safe to call multiple times (has internal guard)
+            // and IAT patching is generally safe in DllMain (no GetModuleHandle loop for *other* modules yet, just specific ones).
+            // SAFETY: Only do this for processes with graphics APIs to avoid hooking non-target processes.
+            EarlyLog("DllMain: Initializing IAT hooks immediately to prevent race conditions...");
+            InitializeWrapperHooks();
+        } else {
+            EarlyLog("DllMain: Skipping hook initialization (no graphics API detected)");
         }
 
-        // RACE CONDITION FIX: Initialize wrappers (IAT patching) immediately in DllMain.
-        // Waiting for HookThread is too late for fast-starting 32-bit apps like dx12_test.
-        // InitializeWrapperHooks is safe to call multiple times (has internal guard)
-        // and IAT patching is generally safe in DllMain (no GetModuleHandle loop for *other* modules yet, just specific ones).
-        EarlyLog("DllMain: Initializing IAT hooks immediately to prevent race conditions...");
-        InitializeWrapperHooks();
-        
         EarlyLog("DllMain: Spawning HookThread for '%s'", fileName);
         HANDLE hThread = CreateThread(NULL, 0, HookThreadWrapper, NULL, 0, NULL);
         if (hThread) {

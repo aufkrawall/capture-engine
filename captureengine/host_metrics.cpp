@@ -53,7 +53,7 @@ namespace scan_host {
         
         if (!vramPdhInitialized) {
             if (PdhOpenQueryA(NULL, 0, &vramQuery) == ERROR_SUCCESS) {
-                // VRAM Dedicated
+                // VRAM Dedicated Usage (only - Total via DXGI instead)
                  PDH_STATUS status = PdhAddEnglishCounterA(vramQuery, "\\GPU Adapter Memory(*)\\Dedicated Usage", 0, &vramCounter);
                  if (status != ERROR_SUCCESS) {
                      status = PdhAddCounterA(vramQuery, "\\GPU Adapter Memory(*)\\Dedicated Usage", 0, &vramCounter);
@@ -61,10 +61,22 @@ namespace scan_host {
                  if (status == ERROR_SUCCESS) {
                      PdhCollectQueryData(vramQuery);
                      vramPdhInitialized = true;
+                     LogInfo("[Metrics] VRAM Usage PDH initialized successfully");
                  } else {
+                     LogInfo("[Metrics] VRAM Usage PDH init failed with status: 0x%X", status);
                      PdhCloseQuery(vramQuery);
                      vramQuery = nullptr;
                  }
+            }
+        }
+
+        // Initialize DXGI factory for VRAM Total queries
+        if (!dxgiFactory) {
+            HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&dxgiFactory);
+            if (SUCCEEDED(hr)) {
+                LogInfo("[Metrics] DXGI Factory created for VRAM Total queries");
+            } else {
+                LogInfo("[Metrics] Failed to create DXGI Factory: 0x%X", hr);
             }
         }
     }
@@ -74,9 +86,41 @@ namespace scan_host {
         if (gpuQuery) PdhCloseQuery(gpuQuery);
         if (vramQuery) PdhCloseQuery(vramQuery);
         if (pdhBuffer) free(pdhBuffer);
-        
+        if (dxgiFactory) dxgiFactory->Release();
+
         cpuQuery = gpuQuery = vramQuery = nullptr;
+        dxgiFactory = nullptr;
         pdhInitialized = gpuPdhInitialized = vramPdhInitialized = false;
+        cachedVRAMTotal = 0;
+        cachedAdapterLuid = {0, 0};
+    }
+
+    uint64_t HostMetricsState::QueryVRAMTotalFromDXGI(int32_t luidLow, int32_t luidHigh) {
+        if (!dxgiFactory) return 0;
+
+        // Check if we have cached value for this LUID
+        if (cachedVRAMTotal > 0 && cachedAdapterLuid.LowPart == (DWORD)luidLow && cachedAdapterLuid.HighPart == (LONG)luidHigh) {
+            return cachedVRAMTotal;
+        }
+
+        IDXGIAdapter1* adapter = nullptr;
+        for (UINT i = 0; dxgiFactory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+            DXGI_ADAPTER_DESC1 desc;
+            if (SUCCEEDED(adapter->GetDesc1(&desc))) {
+                if (desc.AdapterLuid.LowPart == (DWORD)luidLow && desc.AdapterLuid.HighPart == (LONG)luidHigh) {
+                    cachedVRAMTotal = desc.DedicatedVideoMemory;
+                    cachedAdapterLuid = desc.AdapterLuid;
+                    LogInfo("[Metrics] DXGI: Found VRAM Total %llu MB for LUID %08x:%08x",
+                        cachedVRAMTotal / (1024 * 1024), desc.AdapterLuid.HighPart, desc.AdapterLuid.LowPart);
+                    adapter->Release();
+                    return cachedVRAMTotal;
+                }
+            }
+            adapter->Release();
+        }
+
+        LogInfo("[Metrics] DXGI: No adapter found matching LUID %08x:%08x", luidHigh, luidLow);
+        return 0;
     }
 
     void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t luid) {
@@ -224,6 +268,18 @@ namespace scan_host {
                       shm->systemMetrics.vramUsage.store((float)vramMB, std::memory_order_relaxed);
                   }
              }
+        }
+
+        // VRAM Total via DXGI (64-bit host queries for 32-bit processes)
+        if (luid != 0) {
+            uint64_t vramTotal = g_HostMetrics.QueryVRAMTotalFromDXGI((int32_t)low, (int32_t)high);
+            if (vramTotal > 0) {
+                shm->systemMetrics.vramTotal.store(vramTotal, std::memory_order_relaxed);
+                if (debugLogging) {
+                    LogInfo("[Metrics] VRAM Total: %llu MB written to shared memory",
+                        vramTotal / (1024 * 1024));
+                }
+            }
         }
     }
 }

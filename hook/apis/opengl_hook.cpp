@@ -10,6 +10,7 @@
 #include <backends/imgui_impl_opengl3.h>
 #include <backends/imgui_impl_opengl2.h>
 #include <backends/imgui_impl_win32.h>
+#include "../common/input_manager.h"
 #include <cstdint>
 #include <cstdio>
 #include <d3d11.h>
@@ -837,6 +838,9 @@ static void DrawOpenGLOverlay(HDC hdc) {
         g_CachedHwnd = hwnd;
         HookLog("OpenGL: WindowFromDC(0x%p) returned HWND=0x%p", hdc, hwnd);
         
+        // Hook Input
+        InputManager::Get().HookWindow(hwnd);
+
         g_SharedOverlay.InitImGui(hwnd);
         
         if (g_LegacyContext) {
