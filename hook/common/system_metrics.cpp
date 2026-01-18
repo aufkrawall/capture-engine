@@ -39,7 +39,10 @@ SystemMetricsCollector& SystemMetricsCollector::Get() {
     return instance;
 }
 
-SystemMetricsCollector::SystemMetricsCollector() {}
+SystemMetricsCollector::SystemMetricsCollector() : 
+    threadRunning(false), stopThread(false), 
+    pdhInitialized(false), gpuPdhInitialized(false), vramPdhInitialized(false)
+{}
 
 SystemMetricsCollector::~SystemMetricsCollector() {
     stopThread = true;
@@ -129,36 +132,45 @@ void SystemMetricsCollector::InitPDH() {
 }
 
 void SystemMetricsCollector::Initialize(int32_t luidLow, int32_t luidHigh) {
-    std::lock_guard<std::mutex> lock(mutex);
-    if (adapterLuid.LowPart == (DWORD)luidLow && adapterLuid.HighPart == (LONG)luidHigh) {
-        // Even if LUID matches, ensure the thread is running
-        if (!threadRunning) {
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        
+        // If LUID matches, just ensure thread is running
+        if (adapterLuid.LowPart == (DWORD)luidLow && adapterLuid.HighPart == (LONG)luidHigh) {
+             if (!threadRunning) {
+                 EarlyLog("SystemMetricsCollector: LUID matches but thread not running. Starting...");
+                 stopThread = false;
+                 updateThread = std::thread(&SystemMetricsCollector::BackgroundUpdateLoop, this);
+                 threadRunning = true;
+             }
+             return;
+        }
+
+        // New LUID
+        adapterLuid.LowPart = luidLow;
+        adapterLuid.HighPart = luidHigh;
+        snprintf(cachedLuidPart, sizeof(cachedLuidPart), "luid_0x%08X_0x%08X", (unsigned int)luidHigh, (unsigned int)luidLow);
+        
+        // Invalidate cached resources
+        if (cachedAdapter) {
+            ((IUnknown*)cachedAdapter)->Release();
+            cachedAdapter = nullptr;
+        }
+    }
+    
+    EarlyLog("SystemMetricsCollector: Initialized with LUID %s. ThreadRunning=%d", cachedLuidPart, threadRunning.load());
+    DetectHardwareNames(); 
+
+    if (!threadRunning) {
+        EarlyLog("SystemMetricsCollector: Starting Background Thread...");
+        try {
             stopThread = false;
             updateThread = std::thread(&SystemMetricsCollector::BackgroundUpdateLoop, this);
             threadRunning = true;
+            EarlyLog("SystemMetricsCollector: Background Thread started successfully.");
+        } catch (...) {
+            EarlyLog("SystemMetricsCollector: Failed to start background thread (Exception)!");
         }
-        return; 
-    }
-
-    adapterLuid.LowPart = luidLow;
-    adapterLuid.HighPart = luidHigh;
-    
-    // Pre-compute LUID search string for PDH
-    snprintf(cachedLuidPart, sizeof(cachedLuidPart), "luid_0x%08X_0x%08X", (unsigned int)luidHigh, (unsigned int)luidLow);
-    
-    // Invalidate cached DXGI resources
-    if (cachedAdapter) {
-        ((IUnknown*)cachedAdapter)->Release();
-        cachedAdapter = nullptr;
-    }
-    
-    EarlyLog("SystemMetricsCollector: Initialized with LUID %s", cachedLuidPart);
-    DetectHardwareNames(); // Fetch detailed hardware strings
-
-    if (!threadRunning) {
-        stopThread = false;
-        updateThread = std::thread(&SystemMetricsCollector::BackgroundUpdateLoop, this);
-        threadRunning = true;
     }
 }
 
@@ -167,6 +179,10 @@ void SystemMetricsCollector::BackgroundUpdateLoop() {
     static bool loggedIPCMode = false;
     
     while (!stopThread) {
+        static int loopTrace = 0;
+        if (loopTrace % 100 == 0) EarlyLog("SystemMetricsCollector: Loop Iteration %d", loopTrace);
+        loopTrace++;
+
         bool usedIPC = false;
         
         // Prioritize IPC (Host-provided) metrics
@@ -220,6 +236,11 @@ void SystemMetricsCollector::BackgroundUpdateLoop() {
             UpdateGPU();
             if (loopCount % 50 == 0) EarlyLog("SystemMetricsCollector: Local update done.");
             loopCount++;
+        } else {
+             // IPC Active: We still need VRAM Total if missing (Host doesn't send it)
+             if (current.vramTotal == 0) {
+                 UpdateVRAMTotal();
+             }
         }
         
         // Sleep for 200ms (Faster updates for better stability)
@@ -501,42 +522,8 @@ void SystemMetricsCollector::UpdateGPU() {
 
     // VRAM Total still via DXGI
     // If VRAM Total was set explicitly (e.g. by hook on main thread), SKIP this risky background creation!
-    {
-        std::lock_guard<std::mutex> lock(mutex);
-        if (current.vramTotal > 0) {
-            // Still apply GPU/VRAM-USED updates even if total is known.
-            if (newGpuUsageValid) {
-                current.gpuUsage = newGpuUsage;
-                current.gpuUsageValid = true;
-            }
-            if (haveVramUsed) {
-                current.vramUsed = newVramUsed;
-            }
-            return;
-        }
-    }
-
-    if (adapterLuid.LowPart == 0 && adapterLuid.HighPart == 0) return;
-    if (!cachedFactory) CreateDXGIFactory1(__uuidof(IDXGIFactory4), (void**)&cachedFactory);
-    if (cachedFactory && !cachedAdapter) {
-        IDXGIFactory4* pFactory = (IDXGIFactory4*)cachedFactory;
-        IDXGIAdapter1* tempAdapter = nullptr;
-        for (UINT i = 0; pFactory->EnumAdapters1(i, &tempAdapter) != DXGI_ERROR_NOT_FOUND; ++i) {
-            DXGI_ADAPTER_DESC1 desc;
-            tempAdapter->GetDesc1(&desc);
-            if (desc.AdapterLuid.LowPart == adapterLuid.LowPart && desc.AdapterLuid.HighPart == adapterLuid.HighPart) {
-                tempAdapter->QueryInterface(__uuidof(IDXGIAdapter3), (void**)&cachedAdapter);
-                {
-                    std::lock_guard<std::mutex> lock(mutex);
-                    current.vramTotal = desc.DedicatedVideoMemory;
-                }
-                tempAdapter->Release();
-                break;
-            }
-            tempAdapter->Release();
-        }
-    }
-
+    UpdateVRAMTotal();
+    
     // Apply the computed GPU/VRAM values (short lock, no PDH/DXGI inside the lock)
     {
         std::lock_guard<std::mutex> lock(mutex);
@@ -546,6 +533,57 @@ void SystemMetricsCollector::UpdateGPU() {
         }
         if (haveVramUsed) {
             current.vramUsed = newVramUsed;
+        }
+    }
+}
+
+void SystemMetricsCollector::UpdateVRAMTotal() {
+    static bool loggedEntry = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (!loggedEntry) {
+            EarlyLog("UpdateVRAMTotal: Entry. current.vramTotal=%llu, LUID=%08x:%08x", 
+                current.vramTotal, adapterLuid.HighPart, adapterLuid.LowPart);
+            loggedEntry = true;
+        }
+
+        if (current.vramTotal > 0) {
+            return; // Already have it.
+        }
+    }
+
+    if (adapterLuid.LowPart == 0 && adapterLuid.HighPart == 0) return;
+    if (!cachedFactory) CreateDXGIFactory1(__uuidof(IDXGIFactory4), (void**)&cachedFactory);
+    if (cachedFactory && !cachedAdapter) {
+        IDXGIFactory4* pFactory = (IDXGIFactory4*)cachedFactory;
+        IDXGIAdapter1* tempAdapter = nullptr;
+        static bool s_LoggedEnum = false;
+        
+        // Log once per detection attempt
+        if (adapterLuid.LowPart != 0 || adapterLuid.HighPart != 0) {
+             if (!s_LoggedEnum) EarlyLog("UpdateGPU: Searching for LUID %08x:%08x", adapterLuid.HighPart, adapterLuid.LowPart);
+        }
+
+        for (UINT i = 0; pFactory->EnumAdapters1(i, &tempAdapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+            DXGI_ADAPTER_DESC1 desc;
+            tempAdapter->GetDesc1(&desc);
+            
+            if (!s_LoggedEnum) {
+                EarlyLog("UpdateGPU: Checking Adapter %d: LUID %08x:%08x", i, desc.AdapterLuid.HighPart, desc.AdapterLuid.LowPart);
+            }
+
+            if (desc.AdapterLuid.LowPart == adapterLuid.LowPart && desc.AdapterLuid.HighPart == adapterLuid.HighPart) {
+                tempAdapter->QueryInterface(__uuidof(IDXGIAdapter3), (void**)&cachedAdapter);
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    current.vramTotal = desc.DedicatedVideoMemory;
+                    EarlyLog("UpdateGPU: Found match! VRAM Total: %llu bytes", desc.DedicatedVideoMemory);
+                }
+                s_LoggedEnum = true;
+                tempAdapter->Release();
+                break;
+            }
+            tempAdapter->Release();
         }
     }
 }

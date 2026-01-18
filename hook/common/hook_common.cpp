@@ -1,5 +1,6 @@
 #include "hook_common.h"
 #include "performance_metrics.h"
+#include "system_metrics.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -202,6 +203,9 @@ void NVNGXLog(const char *fmt, ...) {
 }
 
 void ReportLUID(uint32_t low, uint32_t high) {
+  // Always initialize local metrics collector first
+  SystemMetricsCollector::Get().Initialize(low, high);
+
   if (g_IPC && g_IPC->GetSharedMem()) {
       if (g_IPC->GetSharedMem()->luidLowPart != (int32_t)low || 
           g_IPC->GetSharedMem()->luidHighPart != (int32_t)high) {

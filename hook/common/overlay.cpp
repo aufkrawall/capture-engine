@@ -344,7 +344,7 @@ void Overlay::RenderUI() {
                RenderTextWithOutline(buf, ScaleColor(valColor, hdrScale), cfg.textOutline, cfg.textOutlineColor, cfg.textOutlineThickness);
                
                // Render " of 16.00 GB" smaller
-               if (total == 0 && strstr(label, "RAM")) {
+               if (total == 0 && strcmp(label, "RAM") == 0) {
                    // Fallback: Fetch RAM total directly if missing
                    MEMORYSTATUSEX memLoc;
                    memLoc.dwLength = sizeof(MEMORYSTATUSEX);

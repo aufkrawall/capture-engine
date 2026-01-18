@@ -14,6 +14,18 @@
 #include <stdio.h>
 #include <stdarg.h>
 
+// Helper to check config (basic implementation since we don't link full hook_common)
+static bool IsDebugLoggingEnabled() {
+    static bool s_Checked = false;
+    static bool s_Enabled = false;
+    if (!s_Checked) {
+        // Try to read config.ini from CWD
+        s_Enabled = GetPrivateProfileIntA("Capture", "DebugLogging", 0, ".\\config.ini") != 0;
+        s_Checked = true;
+    }
+    return s_Enabled;
+}
+
 void WrapperLog(const char* fmt, ...) {
     char buf[1024];
     va_list args;
@@ -22,11 +34,17 @@ void WrapperLog(const char* fmt, ...) {
     va_end(args);
     OutputDebugStringA(buf);
     
-    // Append to file for debugging
-    FILE* f = fopen("msvc_debug.log", "a");
-    if (f) {
-        fprintf(f, "%s\n", buf);
-        fclose(f);
+    // Append to file for debugging (only if enabled)
+    if (IsDebugLoggingEnabled()) {
+        struct stat st = {0};
+        // Create logs dir if needed (simple check)
+        CreateDirectoryA("logs", NULL);
+        
+        FILE* f = fopen("logs\\msvc_debug.log", "a");
+        if (f) {
+            fprintf(f, "%s\n", buf);
+            fclose(f);
+        }
     }
 }
 

@@ -1853,6 +1853,18 @@ def main():
                 os.remove(csv_file)
             except Exception as e:
                 log(f"Warning: Could not delete {csv_file}: {e}")
+
+    # Clean legacy log files from root/bin
+    legacy_logs = [
+        os.path.join(BIN_DIR, "msvc_debug.log"),
+        os.path.join(PROJECT_ROOT, "msvc_debug.log"), 
+        os.path.join(BIN_DIR, "Layer"),
+        os.path.join(PROJECT_ROOT, "Layer")
+    ]
+    for f in legacy_logs:
+        if os.path.exists(f):
+            try: os.remove(f); log(f"Removed legacy log: {f}")
+            except: pass
     
     setup_msys2()
     env, clang_bin = get_env()

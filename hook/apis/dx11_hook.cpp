@@ -1521,23 +1521,34 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
               desc.SwapEffect, desc.Flags);
            loggedSC = true;
 
-           // Report LUID when logging swapchain first time
-           ID3D11Device* dev = nullptr;
-           if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&dev)))) {
-               IDXGIDevice* dxgiDev = nullptr;
-               if (SUCCEEDED(dev->QueryInterface(IID_PPV_ARGS(&dxgiDev)))) {
-                   IDXGIAdapter* adapter = nullptr;
-                   if (SUCCEEDED(dxgiDev->GetAdapter(&adapter))) {
-                       DXGI_ADAPTER_DESC adesc;
-                       adapter->GetDesc(&adesc);
-                       ReportLUID(adesc.AdapterLuid.LowPart, adesc.AdapterLuid.HighPart);
-                       adapter->Release();
-                   }
-                   dxgiDev->Release();
-               }
-               dev->Release();
-           }
       }
+  }
+
+  // Report LUID (Always run this once)
+  static bool luidReported = false;
+  if (!luidReported) {
+       ID3D11Device* dev = nullptr;
+       // Try D3D11 path first
+       if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&dev)))) {
+           IDXGIDevice* dxgiDev = nullptr;
+           if (SUCCEEDED(dev->QueryInterface(IID_PPV_ARGS(&dxgiDev)))) {
+               IDXGIAdapter* adapter = nullptr;
+               if (SUCCEEDED(dxgiDev->GetAdapter(&adapter))) {
+                   DXGI_ADAPTER_DESC adesc;
+                   adapter->GetDesc(&adesc);
+                   ReportLUID(adesc.AdapterLuid.LowPart, adesc.AdapterLuid.HighPart);
+                   EarlyLog("DX11: Reported LUID %08x:%08x", adesc.AdapterLuid.HighPart, adesc.AdapterLuid.LowPart);
+                   adapter->Release();
+                   luidReported = true;
+               }
+               dxgiDev->Release();
+           }
+           dev->Release();
+       } else {
+            // Fallback for DX10? 
+            // DX10 swapchains usually work with GetDevice(D3D11) if wrapped, but if not we might need another path.
+            // For now, the existing logic relied on GetDevice(IID_ID3D11Device), so we keep it.
+       }
   }
 
   // Initialize CSV logging once - only if debug logging is enabled

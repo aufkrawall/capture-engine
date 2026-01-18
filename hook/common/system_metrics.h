@@ -53,6 +53,7 @@ private:
   void UpdateCPU();
   void UpdateRAM();
   void UpdateGPU();
+  void UpdateVRAMTotal();
   void BackgroundUpdateLoop();
 
   // Threading
