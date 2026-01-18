@@ -204,14 +204,14 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::GetWindowAssociation(HWND* pWindowH
     return m_pReal->GetWindowAssociation(pWindowHandle);
 }
 
-HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChain(IUnknown* pDevice, 
+HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChain(IUnknown* pDevice,
                                                               DXGI_SWAP_CHAIN_DESC* pDesc,
                                                               IDXGISwapChain** ppSwapChain) {
     WrapperLog("DXGI Factory: CreateSwapChain called");
-    
+
     IDXGISwapChain* pRealSwapChain = nullptr;
     HRESULT hr = m_pReal->CreateSwapChain(pDevice, pDesc, &pRealSwapChain);
-    
+
     if (SUCCEEDED(hr) && pRealSwapChain) {
         // Wrap the swapchain
         auto* pWrapper = new CWrapDXGISwapChain(pRealSwapChain, pDevice);
@@ -221,7 +221,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChain(IUnknown* pDevice,
     } else {
         *ppSwapChain = nullptr;
     }
-    
+
     return hr;
 }
 
@@ -267,13 +267,13 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForHwnd(
     IDXGIOutput* pRestrictToOutput,
     IDXGISwapChain1** ppSwapChain) {
     
-    WrapperLog("DXGI Factory: CreateSwapChainForHwnd called (%ux%u)", 
+    WrapperLog("DXGI Factory: CreateSwapChainForHwnd called (%ux%u)",
                pDesc ? pDesc->Width : 0, pDesc ? pDesc->Height : 0);
-    
+
     IDXGISwapChain1* pRealSwapChain = nullptr;
-    HRESULT hr = m_pReal->CreateSwapChainForHwnd(pDevice, hWnd, pDesc, pFullscreenDesc, 
+    HRESULT hr = m_pReal->CreateSwapChainForHwnd(pDevice, hWnd, pDesc, pFullscreenDesc,
                                                    pRestrictToOutput, &pRealSwapChain);
-    
+
     if (SUCCEEDED(hr) && pRealSwapChain) {
         // Wrap the swapchain
         auto* pWrapper = new CWrapDXGISwapChain(pRealSwapChain, pDevice);
@@ -283,7 +283,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForHwnd(
     } else {
         *ppSwapChain = nullptr;
     }
-    
+
     return hr;
 }
 
@@ -294,11 +294,11 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForCoreWindow(
     IDXGISwapChain1** ppSwapChain) {
     
     WrapperLog("DXGI Factory: CreateSwapChainForCoreWindow called");
-    
+
     IDXGISwapChain1* pRealSwapChain = nullptr;
-    HRESULT hr = m_pReal->CreateSwapChainForCoreWindow(pDevice, pWindow, pDesc, 
+    HRESULT hr = m_pReal->CreateSwapChainForCoreWindow(pDevice, pWindow, pDesc,
                                                         pRestrictToOutput, &pRealSwapChain);
-    
+
     if (SUCCEEDED(hr) && pRealSwapChain) {
         auto* pWrapper = new CWrapDXGISwapChain(pRealSwapChain, pDevice);
         *ppSwapChain = pWrapper;
@@ -306,7 +306,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForCoreWindow(
     } else {
         *ppSwapChain = nullptr;
     }
-    
+
     return hr;
 }
 

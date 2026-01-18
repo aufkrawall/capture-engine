@@ -25,9 +25,9 @@ void WrapperLog(const char* fmt, ...) {
 
 extern "C" {
 
-// Wrapper GUID for identification
-static const GUID IID_CWrapD3D12Device_Check = 
-{ 0x12345678, 0xabcd, 0xef12, { 0x34, 0x56, 0x78, 0x90, 0x12, 0x34, 0x56, 0x78 } };
+// Wrapper GUID for identification - use same GUID as wrapper_base.h for consistency
+// {C3D4E5F6-7890-ABCD-EF12-345678901234}
+#include "wrapper_base.h"
 
 // #define D3D12_EXPORT __declspec(dllexport)
 
@@ -64,7 +64,7 @@ D3D12_EXPORT ID3D12Device* D3D12Wrapper_WrapDevice(ID3D12Device* pRealDevice)
     
     // Check if already wrapped
     void* test = nullptr;
-    if (SUCCEEDED(pRealDevice->QueryInterface(IID_CWrapD3D12Device_Check, &test))) {
+    if (SUCCEEDED(pRealDevice->QueryInterface(IID_CWrapD3D12Device, &test))) {
         // Already wrapped, return as-is (QI added a ref)
         pRealDevice->AddRef();
         ((IUnknown*)test)->Release();
@@ -79,17 +79,17 @@ D3D12_EXPORT ID3D12Device* D3D12Wrapper_WrapDevice(ID3D12Device* pRealDevice)
 D3D12_EXPORT ID3D12Device* D3D12Wrapper_UnwrapDevice(ID3D12Device* pDevice)
 {
     if (!pDevice) return nullptr;
-    
-    // Try to query for our wrapper interface
+
+    // Try to query for our wrapper interface using the public GUID
     void* pWrapper = nullptr;
-    if (SUCCEEDED(pDevice->QueryInterface(IID_CWrapD3D12Device_Check, &pWrapper))) {
+    if (SUCCEEDED(pDevice->QueryInterface(IID_CWrapD3D12Device, &pWrapper))) {
         CWrapD3D12Device* pReal = static_cast<CWrapD3D12Device*>((IUnknown*)pWrapper);
         ID3D12Device* result = pReal->GetReal();
         result->AddRef();
         ((IUnknown*)pWrapper)->Release();
         return result;
     }
-    
+
     // Not wrapped, return as-is
     pDevice->AddRef();
     return pDevice;
@@ -98,9 +98,9 @@ D3D12_EXPORT ID3D12Device* D3D12Wrapper_UnwrapDevice(ID3D12Device* pDevice)
 D3D12_EXPORT BOOL D3D12Wrapper_IsDeviceWrapped(ID3D12Device* pDevice)
 {
     if (!pDevice) return FALSE;
-    
+
     void* test = nullptr;
-    if (SUCCEEDED(pDevice->QueryInterface(IID_CWrapD3D12Device_Check, &test))) {
+    if (SUCCEEDED(pDevice->QueryInterface(IID_CWrapD3D12Device, &test))) {
         ((IUnknown*)test)->Release();
         return TRUE;
     }

@@ -1,11 +1,13 @@
 /**
  * DXGI Swapchain Wrapper Implementation
- * 
+ *
  * Core implementation for safe overlay drawing with FG runtimes.
  */
 
 #include "dxgi_swapchain_wrap.h"
 #include "hook_common.h"
+#include "d3d12_wrapper_interface.h"
+#include <windows.h>
 
 // External overlay function (from dx12_hook.cpp or dx11_hook.cpp)
 // These will be linked at runtime
@@ -37,31 +39,35 @@ CWrapDXGISwapChain::CWrapDXGISwapChain(IDXGISwapChain* pReal, IUnknown* pDevice)
     , m_Version(0)
     , m_OverlayResourcesValid(false)
     , m_IsD3D12(false)
+    , m_Promoted(false)
 {
+    // MINIMAL: Just store the real swapchain pointer and AddRef it
     if (pReal) {
         pReal->AddRef();
-        PromoteInterfaces();
         
-        // Get window handle
+        // Get window handle directly (simple call)
         DXGI_SWAP_CHAIN_DESC desc = {};
         if (SUCCEEDED(pReal->GetDesc(&desc))) {
             m_hWnd = desc.OutputWindow;
         }
-    }
-    
-    if (pDevice) {
-        pDevice->AddRef();
         
-        // Check if this is a D3D12 command queue
-        if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&m_pD3D12Queue)))) {
-            m_IsD3D12 = true;
-            WrapperLog("DXGI Wrapper: Created D3D12 swapchain wrapper (real=%p)", pReal);
-        } else {
-            WrapperLog("DXGI Wrapper: Created D3D11 swapchain wrapper (real=%p)", pReal);
-        }
+        WrapperLog("DXGI Wrapper: swapchain wrapper created (real=%p, hwnd=%p) - lazy promotion enabled", pReal, m_hWnd);
+    } else {
+        WrapperLog("DXGI Wrapper: swapchain wrapper created (pReal=null)");
     }
     
+    // Skip all device handling - it can crash
     WrapperStateManager::Get().RegisterSwapchain(this, pReal);
+}
+
+// Lazy promotion - only promote when actually needed
+void CWrapDXGISwapChain::EnsurePromoted() {
+    if (m_Promoted || !m_pReal) return;
+    
+    WrapperLog("DXGI Wrapper: Lazy promoting swapchain...");
+    PromoteInterfaces();
+    m_Promoted = true;
+    WrapperLog("DXGI Wrapper: Lazy promotion complete (version=%d)", m_Version);
 }
 
 CWrapDXGISwapChain::CWrapDXGISwapChain(IDXGISwapChain1* pReal, IUnknown* pDevice)
@@ -94,18 +100,34 @@ CWrapDXGISwapChain::~CWrapDXGISwapChain() {
 void CWrapDXGISwapChain::PromoteInterfaces() {
     if (!m_pReal) return;
     
-    // Try to get higher versions
-    if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal4)))) {
-        m_Version = 4;
-    } else if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal3)))) {
-        m_Version = 3;
-    } else if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal2)))) {
-        m_Version = 2;
-    } else if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal1)))) {
-        m_Version = 1;
+    // CRITICAL: For Strange Brigade, wrap QueryInterface calls in try/catch
+    // to prevent crashes from failing QueryInterface
+    try {
+        // Query ALL interfaces sequentially to ensure all supported pointers are populated.
+        // m_Version will be set to the highest one found.
+        
+        if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal1)))) {
+            m_Version = 1;
+        }
+
+        if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal2)))) {
+            m_Version = 2;
+        }
+
+        if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal3)))) {
+            m_Version = 3;
+        }
+
+        if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal4)))) {
+            m_Version = 4;
+        }
+
+        WrapperLog("DXGI Wrapper: Promoted to version %d", m_Version);
+    } catch (...) {
+        WrapperLog("DXGI Wrapper: PromoteInterfaces caught exception");
     }
     
-    WrapperLog("DXGI Wrapper: Swapchain promoted to version %d", m_Version);
+    WrapperLog("DXGI Wrapper: Swapchain version = %d", m_Version);
 }
 
 void CWrapDXGISwapChain::CleanupOverlayResources() {
@@ -129,6 +151,9 @@ void CWrapDXGISwapChain::DrawOverlay() {
 
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::QueryInterface(REFIID riid, void** ppvObj) {
     if (!ppvObj) return E_POINTER;
+
+    // Ensure we have probed for all available interfaces (Lazy Promotion)
+    EnsurePromoted();
     
     // Block known FG runtime unwrap attempts
     if (IsUnwrapAttemptGUID(riid)) {

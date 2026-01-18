@@ -14,6 +14,7 @@
 #include "backends/imgui_impl_win32.h"
 #include "imgui.h"
 #include "../wrappers/wrapper_base.h"
+#include "../wrappers/wrapper_hooks.h"
 #include <../wrappers/minhook_shim.h>
 #include <atomic>
 #include <avrt.h>
@@ -234,6 +235,8 @@ static bool g_UsingSwapChainWrapper = false;
 
 static std::map<ID3D12Device*, ID3D12CommandQueue*> g_DeviceQueues;
 static std::mutex g_DeviceQueuesMutex;
+static std::mutex g_InitImGuiMutex;
+static std::atomic<bool> g_DeviceRemovedFatal(false);
 
 // Prerender Limit Fencing
 static ID3D12Fence* g_PrerenderFence = nullptr;
@@ -355,6 +358,11 @@ struct DX12OverlayState {
   int imGuiInitFrameCounter = 0;
   DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 
+  // Simple Overlay (green square for debugging)
+  bool simpleOverlayEnabled = false;
+  ID3D12PipelineState *simplePipeline = nullptr;
+  ID3D12RootSignature *simpleRootSig = nullptr;
+
   // Overlay Command/Sync Resources
   ID3D12CommandQueue *overlayQueue = nullptr;
   std::vector<ID3D12CommandAllocator *> allocators;
@@ -375,6 +383,10 @@ static PerformanceMetrics g_PerfMetrics;
 
 // Forward declaration for DrawOverlay
 void DrawOverlay(ID3D12GraphicsCommandList* list);
+
+// Forward declaration for simple overlay
+bool InitSimpleOverlay(ID3D12Device* device);
+void RenderSimpleOverlay(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* backBuffer);
 
 // Forward declaration for external access
 void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture);
@@ -514,14 +526,18 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd,
                                                              LPARAM lParam);
 bool InitImGui(ID3D12Device *device, int buffers, DXGI_FORMAT format,
                HWND hwnd) {
-  // Guard against double initialization
+  // Guard against double initialization with mutex to prevent concurrent calls
+  std::lock_guard<std::mutex> lock(g_InitImGuiMutex);
   if (g_State.imGuiInit) {
       return true;
   }
-  
+
+  EarlyLog("DX12: InitImGui ENTRY - device=%p, buffers=%d, format=%u, hwnd=%p",
+           device, buffers, (unsigned)format, hwnd);
+
   g_State.format = format;
   g_SharedOverlay.InitImGui(hwnd);
-  
+
   // DIAGNOSTIC CACHE: Try creating a non-shader visible heap first (sanity check)
   {
       D3D12_DESCRIPTOR_HEAP_DESC testDesc = {};
@@ -529,12 +545,16 @@ bool InitImGui(ID3D12Device *device, int buffers, DXGI_FORMAT format,
       testDesc.NumDescriptors = 1;
       testDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
       ID3D12DescriptorHeap* pTestHeap = nullptr;
+      EarlyLog("DX12: Diagnostic - Creating RTV Heap (Non-Shader Visible)...");
       HRESULT testHr = device->CreateDescriptorHeap(&testDesc, IID_PPV_ARGS(&pTestHeap));
       if (SUCCEEDED(testHr)) {
-          EarlyLog("DX12: Diagnostic - RTV Heap (Non-Shader Visible) creation SUCCESS.");
+          EarlyLog("DX12: Diagnostic - RTV Heap (Non-Shader Visible) creation SUCCESS (heap=%p).", pTestHeap);
           pTestHeap->Release();
       } else {
           EarlyLog("DX12: Diagnostic - RTV Heap (Non-Shader Visible) creation FAILED (hr=0x%08X).", testHr);
+          if (testHr == DXGI_ERROR_DEVICE_REMOVED) {
+              EarlyLog("DX12: Diagnostic - Device Removed Reason: 0x%08X", device->GetDeviceRemovedReason());
+          }
       }
   }
 
@@ -542,40 +562,51 @@ bool InitImGui(ID3D12Device *device, int buffers, DXGI_FORMAT format,
   desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
   desc.NumDescriptors = 64; // Increase size to avoid alignment issues
   desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-  
+
   // Handle Multi-Adapter/Linked-GPU nodes
   UINT nodeCount = device->GetNodeCount();
+  EarlyLog("DX12: InitImGui - device->GetNodeCount() = %u", nodeCount);
+
   if (nodeCount > 1) {
       desc.NodeMask = 1; // Explicitly target Node 0
       EarlyLog("DX12: Multi-Node Device detected (Count=%u). Forcing NodeMask=1 for SRV Heap.", nodeCount);
   } else {
       desc.NodeMask = 0; // Default for single node (try 0)
-      // Some drivers might confuse 0 with "all nodes" in a bad way? 
-      // If we see failures with 0, we might try 1.
   }
-  
+
+  EarlyLog("DX12: InitImGui - Creating SRV Heap (Type=%d, Num=%d, Flags=%d, NodeMask=%u)...",
+           desc.Type, desc.NumDescriptors, desc.Flags, desc.NodeMask);
+
   HRESULT hr = device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&g_State.srvDescHeap));
-  
+
+  EarlyLog("DX12: InitImGui - CreateDescriptorHeap returned hr=0x%08X, heap=%p",
+           hr, g_State.srvDescHeap);
+
   // FALLBACK: If NodeMask 0 failed on single node, try 1
   if (FAILED(hr) && nodeCount <= 1) {
        EarlyLog("DX12: SRV Heap creation failed with NodeMask=0. Retrying with NodeMask=1...");
        desc.NodeMask = 1;
        hr = device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&g_State.srvDescHeap));
+       EarlyLog("DX12: InitImGui - Retry with NodeMask=1 returned hr=0x%08X", hr);
   }
-  
+
   if (FAILED(hr)) {
-      EarlyLog("DX12: InitImGui - Failed to create SRV heap (hr=0x%08X)", hr);
-      
+      EarlyLog("DX12: InitImGui - FAILED to create SRV heap (hr=0x%08X)", hr);
+
       if (hr == DXGI_ERROR_DEVICE_REMOVED) {
-          EarlyLog("DX12: Device Removed Reason: 0x%08X", device->GetDeviceRemovedReason());
+          HRESULT devRemovedReason = device->GetDeviceRemovedReason();
+          EarlyLog("DX12: Device Removed Reason: 0x%08X", devRemovedReason);
+          // Set fatal flag to stop trying - this device is in a bad state
+          g_DeviceRemovedFatal.store(true);
+          EarlyLog("DX12: Setting permanent failure flag - device removed, stopping overlay init");
       }
-      
+
       // Try diagnostics
       D3D12_FEATURE_DATA_D3D12_OPTIONS options = {};
       if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options)))) {
          EarlyLog("DX12: ResourceBindingTier: %d", options.ResourceBindingTier);
       }
-      
+
       return false;
   }
     
@@ -658,6 +689,19 @@ void CheckCaptureInit(IDXGISwapChain3 *pSwapChain) {
       activeDevice->Release();
   }
   pTempUnk->Release();
+
+#ifdef ENABLE_D3D12_WRAPPER
+  // Unwrap g_Device if it's wrapped - the wrapper returns itself for IID_ID3D12Device
+  if (g_Device) {
+      ID3D12Device* unwrapped = UnwrapDevice(g_Device);
+      if (unwrapped != g_Device) {
+          EarlyLog("DX12: Unwrapped g_Device after set (wrapped=%p, real=%p)", g_Device, unwrapped);
+          g_Device->Release();
+          g_Device = unwrapped;
+          g_Device->AddRef();
+      }
+  }
+#endif
   
   if (!g_Device) return;
 
@@ -1492,14 +1536,27 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
                   if (!g_Device) {
                       g_Device = activeDevice;
                       g_Device->AddRef();
-                      
+
                       LUID devLuid = g_Device->GetAdapterLuid();
-                      EarlyLog("DX12 FG: New active device captured (p=%p, LUID=%08X-%08X)", 
+                      EarlyLog("DX12 FG: New active device captured (p=%p, LUID=%08X-%08X)",
                                g_Device, devLuid.HighPart, devLuid.LowPart);
 
                       g_LastSwapChain = pSwapChain;
                   }
                   activeDevice->Release();
+
+#ifdef ENABLE_D3D12_WRAPPER
+                  // Unwrap g_Device if it's wrapped
+                  if (g_Device) {
+                      ID3D12Device* unwrapped = UnwrapDevice(g_Device);
+                      if (unwrapped != g_Device) {
+                          EarlyLog("DX12 FG: Unwrapped g_Device (wrapped=%p, real=%p)", g_Device, unwrapped);
+                          g_Device->Release();
+                          g_Device = unwrapped;
+                          g_Device->AddRef();
+                      }
+                  }
+#endif
               }
               activeQueue->Release();
           } else if (SUCCEEDED(pTempUnk->QueryInterface(IID_PPV_ARGS(&activeDevice)))) {
@@ -1510,6 +1567,19 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
                   g_LastSwapChain = pSwapChain;
               }
               activeDevice->Release();
+
+#ifdef ENABLE_D3D12_WRAPPER
+              // Unwrap g_Device if it's wrapped
+              if (g_Device) {
+                  ID3D12Device* unwrapped = UnwrapDevice(g_Device);
+                  if (unwrapped != g_Device) {
+                      EarlyLog("DX12 FG: Unwrapped g_Device fallback (wrapped=%p, real=%p)", g_Device, unwrapped);
+                      g_Device->Release();
+                      g_Device = unwrapped;
+                      g_Device->AddRef();
+                  }
+              }
+#endif
           }
           pTempUnk->Release();
           
@@ -1591,15 +1661,29 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
       // Update global device with ref counting
       if (g_Device) g_Device->Release();
       g_Device = activeDevice;
-      g_Device->AddRef(); 
+      g_Device->AddRef();
 
       g_LastSwapChain = pSwapChain;
 
       g_State.imGuiInit = false;
       g_State.imGuiInitFrameCounter = 0;
-      
+
       // Release the local ref from our retrieval logic
       activeDevice->Release();
+
+#ifdef ENABLE_D3D12_WRAPPER
+      // Unwrap g_Device if it's wrapped
+      if (g_Device) {
+          ID3D12Device* unwrapped = UnwrapDevice(g_Device);
+          if (unwrapped != g_Device) {
+              EarlyLog("DX12: Unwrapped g_Device in ResizeBuffers (wrapped=%p, real=%p)", g_Device, unwrapped);
+              g_Device->Release();
+              g_Device = unwrapped;
+              g_Device->AddRef();
+          }
+      }
+#endif
+
       HookLog("DX12: ProcessFrame: Device/SC Updated. g_Device=%p, g_LastSwapChain=%p (Refs Added)", g_Device, g_LastSwapChain);
       
       // ENSURE EARLY EXIT: Resources (Command List, Allocators) have been released.
@@ -1612,54 +1696,68 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
       g_Device = activeDevice;
       g_Device->AddRef();
       g_LastSwapChain = pSwapChain;
+
+#ifdef ENABLE_D3D12_WRAPPER
+      // Unwrap g_Device if it's wrapped
+      if (g_Device) {
+          ID3D12Device* unwrapped = UnwrapDevice(g_Device);
+          if (unwrapped != g_Device) {
+              EarlyLog("DX12: Unwrapped g_Device in initial setup (wrapped=%p, real=%p)", g_Device, unwrapped);
+              g_Device->Release();
+              g_Device = unwrapped;
+              g_Device->AddRef();
+          }
+      }
+#endif
   }
   activeDevice->Release();
 
   // Initialize overlay as early as possible (before queue check)
   // CRITICAL: Do NOT initialize ImGui if FG is active/suspended (e.g. at startup)
   // Note: fgActive and fgSuspended are defined at start of ProcessFrame
-  if (!g_State.imGuiInit && !fgActive && !fgSuspended && g_Device) {
+  // LIMIT: Only retry ImGui init a few times to avoid infinite driver crash loops
+  // PERMANENT FAILURE: If device removed error occurs, stop trying entirely
+  if (g_DeviceRemovedFatal.load()) {
+      static int logOnce = 0;
+      if (logOnce++ % 60 == 0) {
+          EarlyLog("DX12: Skipping ImGui init permanently (device removed fatal error)");
+      }
+      return;
+  }
+
+  if (!g_State.imGuiInit && !fgActive && !fgSuspended && g_Device && g_State.imGuiInitFrameCounter < 5) {
+      // CRITICAL: Detect Strange Brigade - swapchain wrapper is now safe, proceed with normal init
+      static bool isStrangeBrigade = false;
+      static bool checkedGame = false;
+      if (!checkedGame) {
+          char moduleName[256] = {};
+          if (GetModuleFileNameA(NULL, moduleName, sizeof(moduleName)) != 0) {
+              const char* exeName = strrchr(moduleName, '\\');
+              if (exeName) exeName++;
+              else exeName = moduleName;
+
+              if (strnicmp(exeName, "StrangeBrigade", strlen("StrangeBrigade")) == 0) {
+                  isStrangeBrigade = true;
+                  EarlyLog("DX12: Detected Strange Brigade - swapchain wrapper safe, proceeding with normal init");
+              }
+          }
+          checkedGame = true;
+      }
+
       DXGI_SWAP_CHAIN_DESC desc;
       pSwapChain->GetDesc(&desc);
       g_State.cachedWidth = desc.BufferDesc.Width;
       g_State.cachedHeight = desc.BufferDesc.Height;
 
-      // Check if another renderer backend (e.g. Vulkan) already initialized ImGui
-      ImGuiContext* existingCtx = ImGui::GetCurrentContext();
-      bool forceNewContext = false;
+      EarlyLog("DX12: Initializing ImGui overlay for Strange Brigade");
       
-      if (existingCtx) {
-          ImGuiIO& io = ImGui::GetIO();
-          if (io.BackendRendererUserData != nullptr) {
-              const char* backendName = io.BackendRendererName ? io.BackendRendererName : "Unknown";
-              
-              if (strcmp(backendName, "imgui_impl_dx12") == 0) {
-                  EarlyLog("DX12: Skipping ImGui init - compatible backend already active (UserData=%p)", io.BackendRendererUserData);
-                  g_State.imGuiInit = true;  // Mark as handled
-              } else {
-                  EarlyLog("DX12: Incompatible backend detected (Name='%s', UserData=%p). Forcing dedicated context.", backendName, io.BackendRendererUserData);
-                  forceNewContext = true;
-              }
-          }
-      }
-      
-      if (forceNewContext) {
-          // Create isolated context for overlay
-          ImGuiContext* myCtx = ImGui::CreateContext();
-          ImGui::SetCurrentContext(myCtx);
-          // Re-init helper to set style etc on new context
-          g_SharedOverlay.InitImGui(desc.OutputWindow); 
-      }
-
-      {
-          EarlyLog("DX12: Initializing ImGui (device=%p, size=%ux%u)", g_Device, desc.BufferDesc.Width, desc.BufferDesc.Height);
-          if (InitImGui(g_Device, DX12OverlayState::ALLOC_POOL_SIZE, desc.BufferDesc.Format, desc.OutputWindow)) {
-              CreateRTVs(g_Device, pSwapChain, desc.BufferCount);
-              InitOverlaySync(g_Device, desc.BufferCount);
-              EarlyLog("DX12: ImGui initialized successfully");
-          } else {
-              EarlyLog("DX12: InitImGui failed - skipping overlay init");
-          }
+      // Actually call InitImGui now
+      if (InitImGui(g_Device, DX12OverlayState::ALLOC_POOL_SIZE, desc.BufferDesc.Format, desc.OutputWindow)) {
+          CreateRTVs(g_Device, pSwapChain, desc.BufferCount);
+          InitOverlaySync(g_Device, desc.BufferCount);
+          EarlyLog("DX12: ImGui initialized successfully for Strange Brigade");
+      } else {
+          EarlyLog("DX12: ImGui init failed for Strange Brigade");
       }
   }
 
@@ -1811,6 +1909,13 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
                        overlaySwapChain, overlayQueue, overlayDevice);
               fgNativeModeLog = true;
           }
+      }
+
+      // Non-FG: If Streamline proxies are active, use native interfaces for overlay
+      if (!fgActive && g_UsingNativeInterfaces) {
+          if (g_NativeSwapChain) overlaySwapChain = g_NativeSwapChain;
+          if (g_NativeDevice) overlayDevice = g_NativeDevice;
+          if (g_NativeCommandQueue) overlayQueue = g_NativeCommandQueue;
       }
       
       // FG MODE: When using swapchain wrapper, overlay is drawn from wrapper's Present
@@ -2178,10 +2283,29 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
   }
   
   // ============================================================================
-  // FG OVERLAY SUPPORT - Per Streamline SDK research
-  // Phase 1: FG Runtime Detection
-  // Phase 2: Swapchain Stabilization (3 seconds after last swapchain creation)
-  // Phase 3: Dedicated Queue Overlay Rendering
+  // CRITICAL: Check device health BEFORE doing ANY work
+  // If device was removed in previous frame, skip ALL operations to prevent crash
+  // ============================================================================
+  if (g_DeviceRemovedFatal.load()) {
+      static int logOnce = 0;
+      if (logOnce++ % 60 == 0) {
+          HookLog("DX12: Device in bad state - skipping ALL Present processing");
+      }
+      return oPresent(pSwapChain, SyncInterval, Flags);
+  }
+
+  // Additional check: Verify device is still valid at start of frame
+  if (g_Device) {
+      HRESULT deviceStatus = g_Device->GetDeviceRemovedReason();
+      if (deviceStatus == DXGI_ERROR_DEVICE_REMOVED ||
+          deviceStatus == DXGI_ERROR_DEVICE_RESET ||
+          deviceStatus == DXGI_ERROR_DRIVER_INTERNAL_ERROR) {
+          g_DeviceRemovedFatal.store(true);
+          HookLog("DX12: Device Removed at Present start! hr=0x%08X - skipping all processing", deviceStatus);
+          return oPresent(pSwapChain, SyncInterval, Flags);
+      }
+  }
+
   // ============================================================================
   
   // CRITICAL: Check if swapchain is being invalidated by FSR4 swapchain recreation
@@ -3332,9 +3456,7 @@ DWORD WINAPI UnloadThread(LPVOID lpParam) {
   return 0;
 }
 
-typedef HRESULT (WINAPI *PFN_D3D12_CREATE_DEVICE)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
-static PFN_D3D12_CREATE_DEVICE oD3D12CreateDevice = nullptr;
-
+#ifdef ENABLE_D3D12_WRAPPER
 HRESULT WINAPI DetourD3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL MinimumFeatureLevel, REFIID riid, void** ppDevice) {
     HookLog("DX12: DetourD3D12CreateDevice called (pAdapter=%p)", pAdapter);
 
@@ -3419,6 +3541,7 @@ HRESULT WINAPI DetourD3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL Min
     }
     return hr;
 }
+#endif // ENABLE_D3D12_WRAPPER
 
 // DX12Hook Implementation
 void DX12Hook::Init() {
@@ -3433,7 +3556,8 @@ void DX12Hook::Init() {
     HookLog("DX12: D3D12 or DXGI DLLs not found. Skipping DX12 hook.");
     return;
   }
-  
+
+#ifdef ENABLE_D3D12_WRAPPER
   // Hook D3D12CreateDevice export to catch early device creation
   MH_STATUS s_dev = MH_CreateHookApi(L"d3d12.dll", "D3D12CreateDevice", (LPVOID)DetourD3D12CreateDevice, (LPVOID*)&oD3D12CreateDevice);
   if (s_dev == MH_OK) {
@@ -3442,6 +3566,7 @@ void DX12Hook::Init() {
   } else {
       HookLog("DX12: Failed to hook D3D12CreateDevice export: %s", MH_StatusToString(s_dev));
   }
+#endif // ENABLE_D3D12_WRAPPER
 
   typedef HRESULT (WINAPI *PFN_CREATE_DXGI_FACTORY1)(REFIID, void**);
   PFN_CREATE_DXGI_FACTORY1 pCreateDXGIFactory1 = (PFN_CREATE_DXGI_FACTORY1)GetProcAddress(hDXGI, "CreateDXGIFactory1");

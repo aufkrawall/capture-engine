@@ -146,8 +146,10 @@ private:
     
     // Overlay state
     bool m_IsD3D12;
+    bool m_Promoted; // Lazy promotion flag
     
     // Helper methods
+    void EnsurePromoted(); // Lazy promotion - only when needed
     void PromoteInterfaces();
     void CleanupOverlayResources();
     void DrawOverlay();

@@ -8,6 +8,7 @@
 #include "d3d12_device_wrap.h"
 #include "d3d12_commandqueue_wrap.h"
 #include "hook_common.h"
+#include "wrapper_base.h"
 
 // ============================================================================
 // Constructor / Destructor
@@ -64,7 +65,7 @@ HRESULT STDMETHODCALLTYPE CWrapD3D12Device::QueryInterface(REFIID riid, void** p
         *ppvObj = this;
         return S_OK;
     }
-    
+
     if (riid == IID_IUnknown || riid == IID_ID3D12Object || riid == IID_ID3D12Device) {
         AddRef();
         *ppvObj = static_cast<ID3D12Device*>(this);
