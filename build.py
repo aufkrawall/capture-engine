@@ -965,6 +965,20 @@ def compile_testapps(env, clang_exe, cflags):
             cmd = [clang_exe_x86] + cflags_x86 + [vulkan_src] + vulkan_ldflags_x86 + ["-o", vulkan_exe_x86]
             add_task("vulkan_test.exe (x86)", cmd)
 
+    # OpenGL Test App
+    opengl_src = os.path.join(testapp_src_dir, "opengl_test.cpp")
+    opengl_exe = os.path.join(testapp_bin_dir, "opengl_test.exe")
+    if os.path.exists(opengl_src):
+        opengl_ldflags = ["-static", "-static-libgcc", "-static-libstdc++", 
+                        "-lopengl32", "-lglu32", "-lgdi32", "-luser32", "-lshcore"]
+        cmd = [clang_exe] + cflags + [opengl_src] + opengl_ldflags + ["-o", opengl_exe]
+        add_task("opengl_test.exe", cmd)
+
+        if have_x86:
+            opengl_exe_x86 = os.path.join(x86_bin_dir, "opengl_test.exe")
+            cmd = [clang_exe_x86] + cflags_x86 + [opengl_src] + opengl_ldflags + ["-o", opengl_exe_x86]
+            add_task("opengl_test.exe (x86)", cmd)
+
     # Execute all tasks in parallel
     if not tasks:
         return
@@ -1332,6 +1346,22 @@ def compile_d3d12_wrappers_msvc(env, arch):
     # 5. Create DLL
     log(f"[MSVC] Linking {os.path.basename(dll_out)}...")
     
+    # Robust handling for locked DLLs
+    if os.path.exists(dll_out):
+        try:
+            os.remove(dll_out)
+        except OSError:
+            log(f"[Warning] {os.path.basename(dll_out)} is locked. Attempting to rename...")
+            try:
+                import time
+                import random
+                trash_name = f"{dll_out}.trash.{int(time.time())}.{random.randint(1000,9999)}"
+                os.rename(dll_out, trash_name)
+                log(f"[Info] Renamed locked DLL to {os.path.basename(trash_name)}")
+            except OSError as e:
+                log(f"[Error] Failed to rename locked DLL: {e}")
+                return False, None
+    
     sdk_lib_um = os.path.join(win_sdk_root, "Lib", win_sdk_ver, "um", sdk_arch)
     sdk_lib_ucrt = os.path.join(win_sdk_root, "Lib", win_sdk_ver, "ucrt", sdk_arch)
     
@@ -1356,11 +1386,11 @@ def compile_d3d12_wrappers_msvc(env, arch):
             log(f"Error linking DLL:")
             log(res.stdout)
             log(res.stderr)
-            sys.exit(1) # Fail build immediately
+            # sys.exit(1) # Don't fail entire build, just disable D3D12 wrappers for this arch
             return False, None
     except Exception as e:
         log(f"Exception linking DLL: {e}")
-        sys.exit(1) # Fail build immediately
+        # sys.exit(1) 
         return False, None
         
     log(f"[MSVC] Successfully built {dll_out}")
@@ -1441,7 +1471,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         # 1. Compile ImGui
         log(f"Compiling ImGui {arch}...")
         imgui_src_files = glob.glob(os.path.join(IMGUI_DIR, "*.cpp")) + \
-                         [os.path.join(IMGUI_DIR, "backends", f) for f in ["imgui_impl_dx12.cpp", "imgui_impl_dx11.cpp", "imgui_impl_dx10.cpp", "imgui_impl_dx9.cpp", "imgui_impl_opengl3.cpp", "imgui_impl_win32.cpp"]]
+                         [os.path.join(IMGUI_DIR, "backends", f) for f in ["imgui_impl_dx12.cpp", "imgui_impl_dx11.cpp", "imgui_impl_dx10.cpp", "imgui_impl_dx9.cpp", "imgui_impl_opengl3.cpp", "imgui_impl_opengl2.cpp", "imgui_impl_win32.cpp"]]
                          # NOTE: imgui_impl_vulkan.cpp is in Vulkan layer, not main hook
 
         

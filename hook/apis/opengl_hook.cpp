@@ -8,6 +8,7 @@
 #include "performance_metrics.h"
 #include "../wrappers/iat_hook.h"
 #include <backends/imgui_impl_opengl3.h>
+#include <backends/imgui_impl_opengl2.h>
 #include <backends/imgui_impl_win32.h>
 #include <cstdint>
 #include <cstdio>
@@ -24,6 +25,7 @@ typedef int GLint;
 typedef int GLsizei;
 typedef unsigned int GLuint;
 typedef unsigned char GLboolean;
+typedef unsigned char GLubyte;
 typedef float GLfloat;
 typedef double GLdouble;
 typedef unsigned int GLbitfield;
@@ -56,6 +58,7 @@ typedef BOOL (WINAPI *wglSwapLayerBuffers_t)(HDC, UINT);
 typedef BOOL (WINAPI *wglDeleteContext_t)(HGLRC);
 typedef PROC (WINAPI *wglGetProcAddress_t)(LPCSTR);
 typedef BOOL (WINAPI *wglSwapIntervalEXT_t)(int);
+typedef BOOL (WINAPI *wglMakeCurrent_t)(HDC, HGLRC);
 
 // WGL_NV_DX_interop - for sharing GL textures with D3D11
 typedef BOOL (WINAPI *wglDXSetResourceShareHandleNV_t)(void*, HANDLE);
@@ -66,35 +69,39 @@ typedef BOOL (WINAPI *wglDXUnregisterObjectNV_t)(HANDLE, HANDLE);
 typedef BOOL (WINAPI *wglDXLockObjectsNV_t)(HANDLE, GLint, HANDLE*);
 typedef BOOL (WINAPI *wglDXUnlockObjectsNV_t)(HANDLE, GLint, HANDLE*);
 
-// OpenGL function pointers
-typedef GLuint (*glCreateShader_t)(GLenum);
-typedef void (*glGenTextures_t)(GLsizei, GLuint*);
-typedef void (*glDeleteTextures_t)(GLsizei, const GLuint*);
-typedef void (*glBindTexture_t)(GLenum, GLuint);
-typedef void (*glTexImage2D_t)(GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const GLvoid*);
-typedef void (*glTexParameteri_t)(GLenum, GLenum, GLint);
-typedef void (*glTexParameterf_t)(GLenum, GLenum, GLfloat);
-typedef void (*glTexParameteriv_t)(GLenum, GLenum, const GLint*);
-typedef void (*glTexParameterfv_t)(GLenum, GLenum, const GLfloat*);
-typedef void (*glGenFramebuffers_t)(GLsizei, GLuint*);
-typedef void (*glDeleteFramebuffers_t)(GLsizei, const GLuint*);
-typedef void (*glBindFramebuffer_t)(GLenum, GLuint);
-typedef void (*glFramebufferTexture2D_t)(GLenum, GLenum, GLenum, GLuint, GLint);
-typedef GLenum (*glCheckFramebufferStatus_t)(GLenum);
-typedef void (*glBlitFramebuffer_t)(GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum);
-typedef void (*glGenBuffers_t)(GLsizei, GLuint*);
-typedef void (*glDeleteBuffers_t)(GLsizei, const GLuint*);
-typedef void (*glBindBuffer_t)(GLenum, GLuint);
-typedef void (*glBufferData_t)(GLenum, ptrdiff_t, const GLvoid*, GLenum);
-typedef void (*glReadPixels_t)(GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, GLvoid*);
-typedef void* (*glMapBuffer_t)(GLenum, GLenum);
-typedef GLboolean (*glUnmapBuffer_t)(GLenum);
-typedef GLenum (*glGetError_t)(void);
-typedef void (*glFlush_t)(void);
-typedef void (*glFinish_t)(void);
-typedef GLsync (*glFenceSync_t)(GLenum, GLbitfield);
-typedef void (*glDeleteSync_t)(GLsync);
-typedef GLenum (*glClientWaitSync_t)(GLsync, GLbitfield, GLuint64);
+// OpenGL function pointer typedefs (with WINAPI for x86 compatibility)
+typedef void (WINAPI *glGenTextures_t)(GLsizei, GLuint*);
+typedef void (WINAPI *glDeleteTextures_t)(GLsizei, const GLuint*);
+typedef void (WINAPI *glBindTexture_t)(GLenum, GLuint);
+typedef void (WINAPI *glTexImage2D_t)(GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const GLvoid*);
+typedef void (WINAPI *glTexParameteri_t)(GLenum, GLenum, GLint);
+typedef void (WINAPI *glTexParameterf_t)(GLenum, GLenum, GLfloat);
+typedef void (WINAPI *glTexParameteriv_t)(GLenum, GLenum, const GLint*);
+typedef void (WINAPI *glTexParameterfv_t)(GLenum, GLenum, const GLfloat*);
+typedef void (WINAPI *glGenFramebuffers_t)(GLsizei, GLuint*);
+typedef void (WINAPI *glDeleteFramebuffers_t)(GLsizei, const GLuint*);
+typedef void (WINAPI *glBindFramebuffer_t)(GLenum, GLuint);
+typedef void (WINAPI *glFramebufferTexture2D_t)(GLenum, GLenum, GLenum, GLuint, GLint);
+typedef GLenum (WINAPI *glCheckFramebufferStatus_t)(GLenum);
+typedef void (WINAPI *glBlitFramebuffer_t)(GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum);
+typedef void (WINAPI *glGenBuffers_t)(GLsizei, GLuint*);
+typedef void (WINAPI *glDeleteBuffers_t)(GLsizei, const GLuint*);
+typedef void (WINAPI *glBindBuffer_t)(GLenum, GLuint);
+typedef void (WINAPI *glBufferData_t)(GLenum, ptrdiff_t, const GLvoid*, GLenum);
+typedef void (WINAPI *glReadPixels_t)(GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, GLvoid*);
+typedef void* (WINAPI *glMapBuffer_t)(GLenum, GLenum);
+typedef GLboolean (WINAPI *glUnmapBuffer_t)(GLenum);
+typedef GLenum (WINAPI *glGetError_t)(void);
+typedef void (WINAPI *glFlush_t)(void);
+typedef void (WINAPI *glFinish_t)(void);
+typedef GLsync (WINAPI *glFenceSync_t)(GLenum, GLbitfield);
+typedef void (WINAPI *glDeleteSync_t)(GLsync);
+typedef GLenum (WINAPI *glClientWaitSync_t)(GLsync, GLbitfield, GLuint64);
+
+typedef void (WINAPI *glRenderbufferStorageMultisample_t)(GLenum, GLsizei, GLenum, GLsizei, GLsizei);
+typedef void (WINAPI *glTexImage2DMultisample_t)(GLenum, GLsizei, GLenum, GLsizei, GLsizei, GLboolean);
+typedef void (WINAPI *glEnable_t)(GLenum);
+typedef void (WINAPI *glMinSampleShading_t)(GLfloat);
 
 // Original function pointers
 static SwapBuffers_t oSwapBuffers = nullptr;
@@ -103,6 +110,7 @@ static wglSwapLayerBuffers_t oWglSwapLayerBuffers = nullptr;
 static wglDeleteContext_t oWglDeleteContext = nullptr;
 static wglGetProcAddress_t oWglGetProcAddress = nullptr;
 static wglSwapIntervalEXT_t oWglSwapIntervalEXT = nullptr;
+static wglMakeCurrent_t oWglMakeCurrent = nullptr;
 
 // WGL_NV_DX_interop function pointers
 static wglDXOpenDeviceNV_t wglDXOpenDeviceNV = nullptr;
@@ -135,25 +143,24 @@ static glReadPixels_t pglReadPixels = nullptr;
 static glMapBuffer_t pglMapBuffer = nullptr;
 static glUnmapBuffer_t pglUnmapBuffer = nullptr;
 static glGetError_t pglGetError = nullptr;
-
-typedef void (WINAPI *glRenderbufferStorageMultisample_t)(GLenum, GLsizei, GLenum, GLsizei, GLsizei);
-typedef void (WINAPI *glTexImage2DMultisample_t)(GLenum, GLsizei, GLenum, GLsizei, GLsizei, GLboolean);
-typedef void (WINAPI *glEnable_t)(GLenum);
 static glFlush_t pglFlush = nullptr;
 static glFinish_t pglFinish = nullptr;
 static glFenceSync_t pglFenceSync = nullptr;
 static glDeleteSync_t pglDeleteSync = nullptr;
 static glClientWaitSync_t pglClientWaitSync = nullptr;
+static glEnable_t pglEnable = nullptr;
+static glMinSampleShading_t pglMinSampleShading = nullptr;
+static glRenderbufferStorageMultisample_t pglRenderbufferStorageMultisample = nullptr;
+static glTexImage2DMultisample_t pglTexImage2DMultisample = nullptr;
+
+// End of standard GL pointers
+
 // SGSSAA Extensions
 #define GL_SAMPLE_SHADING                 0x8C36
 #define GL_MIN_SAMPLE_SHADING_VALUE       0x8C37
 #define GL_TEXTURE_LOD_BIAS               0x8501
 
-typedef void (WINAPI *glMinSampleShading_t)(GLfloat);
-static glMinSampleShading_t pglMinSampleShading = nullptr;
-static glRenderbufferStorageMultisample_t pglRenderbufferStorageMultisample = nullptr;
-static glTexImage2DMultisample_t pglTexImage2DMultisample = nullptr;
-static glEnable_t pglEnable = nullptr;
+// Consolidated multisample pointers
 
 // Globals
 static PerformanceMetrics g_PerfMetrics;
@@ -164,6 +171,9 @@ static bool g_FunctionsLoaded = false;
 static bool g_NVInteropAvailable = false;
 static HDC g_CaptureHDC = NULL;
 static int g_SwapRecurse = 0;
+static bool g_LegacyContext = false;
+static bool g_VersionChecked = false;
+static bool g_LuidReported = false;
 
 // Prerender Limit State
 static std::vector<GLsync> g_PrerenderSyncs;
@@ -486,18 +496,38 @@ public:
         return true;
     }
     
-    void Init(HDC hdc) {
-        if (initialized)
+    void Init(HDC hDC) {
+        if (initialized) return;
+        HookLog("OpenGLCapture: Init(HDC=0x%p)", hDC);
+        
+        // Safety: Ensure required functions are loaded
+        if (!pglGenFramebuffers || !pglBindFramebuffer || !pglFramebufferTexture2D || !pglCheckFramebufferStatus) {
+            HookLog("OpenGLCapture: FBO extensions not available. FBO capture disabled.");
             return;
-            
-        g_CaptureHDC = hdc;
+        }
+
+        // Initialize D3D11 for interop
+        if (!CreateD3D11Device()) {
+            HookLog("OpenGLCapture: Failed to initialize D3D11. Capture disabled.");
+            return;
+        }
+        
+        // Share with GL if NVIDIA
+        if (g_NVInteropAvailable && wglDXOpenDeviceNV && wglDXRegisterObjectNV) {
+            // This block was likely intended to be part of InitNVInterop or similar,
+            // but the instruction places it here.
+            // The original code for getting window size and creating FBOs should follow.
+        }
+
+        g_CaptureHDC = hDC;
         
         // Get window size
-        HWND hwnd = WindowFromDC(hdc);
+        HWND hwnd = WindowFromDC(hDC); // Changed hdc to hDC
         RECT rect;
-        GetClientRect(hwnd, &rect);
-        width = rect.right - rect.left;
-        height = rect.bottom - rect.top;
+        if (GetClientRect(hwnd, &rect)) {
+            width = rect.right - rect.left;
+            height = rect.bottom - rect.top;
+        }
         format = DXGI_FORMAT_B8G8R8A8_UNORM;
         
         if (width == 0 || height == 0) {
@@ -673,7 +703,7 @@ static bool LoadGLFunctions() {
     HMODULE gl = GetModuleHandleA("opengl32.dll");
     if (!gl) return false;
     
-    typedef void* (*wglGetProcAddress_t)(const char*);
+    typedef PROC (WINAPI *wglGetProcAddress_t)(LPCSTR);
     wglGetProcAddress_t wglGetProcAddress_ptr = (wglGetProcAddress_t)GetProcAddress(gl, "wglGetProcAddress");
     if (!wglGetProcAddress_ptr) return false;
     
@@ -736,7 +766,7 @@ static void LoadOpenGLExtensions() {
     if (!hRC) return;
     
     // Use oWglGetProcAddress if available, otherwise assume standard loading
-    typedef void* (*wglGetProcAddress_t)(const char*);
+    typedef PROC (WINAPI *wglGetProcAddress_t)(LPCSTR);
     wglGetProcAddress_t wglGetProcAddress_ptr = nullptr;
     if (oWglGetProcAddress) wglGetProcAddress_ptr = (wglGetProcAddress_t)oWglGetProcAddress;
     else wglGetProcAddress_ptr = (wglGetProcAddress_t)GetProcAddress(GetModuleHandleA("opengl32.dll"), "wglGetProcAddress");
@@ -749,20 +779,86 @@ static void LoadOpenGLExtensions() {
     pglEnable = (glEnable_t)GetProcAddress(GetModuleHandleA("opengl32.dll"), "glEnable");
 }
 
+// Detect GPU LUID for system metrics
+static void DetectGPU(HDC hdc) {
+    if (g_LuidReported) return;
+
+    HMODULE hD3D11 = GetModuleHandleA("d3d11.dll");
+    if (!hD3D11) hD3D11 = LoadLibraryA("d3d11.dll");
+    if (!hD3D11) return;
+
+    typedef HRESULT (WINAPI *PFN_D3D11_CREATE_DEVICE)(IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT, const D3D_FEATURE_LEVEL*, UINT, UINT, ID3D11Device**, D3D_FEATURE_LEVEL*, ID3D11DeviceContext**);
+    PFN_D3D11_CREATE_DEVICE pD3D11CreateDevice = (PFN_D3D11_CREATE_DEVICE)GetProcAddress(hD3D11, "D3D11CreateDevice");
+    if (!pD3D11CreateDevice) return;
+
+    ID3D11Device* device = nullptr;
+    ID3D11DeviceContext* context = nullptr;
+    D3D_FEATURE_LEVEL featureLevel;
+    D3D_FEATURE_LEVEL featureLevels[] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1 };
+
+    HRESULT hr = pD3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, featureLevels, 2, D3D11_SDK_VERSION, &device, &featureLevel, &context);
+    if (SUCCEEDED(hr)) {
+        IDXGIDevice* dxgiDevice = nullptr;
+        if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&dxgiDevice)))) {
+            IDXGIAdapter* adapter = nullptr;
+            if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter))) {
+                DXGI_ADAPTER_DESC desc;
+                adapter->GetDesc(&desc);
+                
+                uint32_t lLow = desc.AdapterLuid.LowPart;
+                uint32_t lHigh = desc.AdapterLuid.HighPart;
+                
+                SystemMetricsCollector::Get().Initialize(lLow, lHigh);
+                ReportLUID(lLow, lHigh);
+                
+                g_LuidReported = true;
+                HookLog("OpenGL: GPU Detected via D3D11 Interop (LUID: %08x)", lLow);
+                
+                adapter->Release();
+            }
+            dxgiDevice->Release();
+        }
+        context->Release();
+        device->Release();
+    }
+}
 
 // Draw overlay using ImGui OpenGL backend  
+// Draw overlay using ImGui OpenGL backend  
 static void DrawOpenGLOverlay(HDC hdc) {
+    static int frameCount = 0;
+    bool diag = (frameCount++ < 10);
+    if (diag) HookLog("OpenGL: DrawOpenGLOverlay starting for frame %d (HDC=0x%p)", frameCount, hdc);
+
     if (!g_ImGuiInitialized) {
+        HookLog("OpenGL: Initializing ImGui...");
+        DetectGPU(hdc);
         HWND hwnd = WindowFromDC(hdc);
         g_CachedHwnd = hwnd;
+        HookLog("OpenGL: WindowFromDC(0x%p) returned HWND=0x%p", hdc, hwnd);
         
         g_SharedOverlay.InitImGui(hwnd);
-        ImGui_ImplOpenGL3_Init();
+        
+        if (g_LegacyContext) {
+            HookLog("OpenGL: Init GL2 Backend...");
+            ImGui_ImplOpenGL2_Init();
+            HookLog("OpenGL: Legacy ImGui (OpenGL2) initialized");
+        } else {
+            HookLog("OpenGL: Init GL3 Backend...");
+            ImGui_ImplOpenGL3_Init();
+            HookLog("OpenGL: Modern ImGui (OpenGL3) initialized");
+        }
         g_ImGuiInitialized = true;
-        HookLog("OpenGL: ImGui initialized");
     }
     
-    ImGui_ImplOpenGL3_NewFrame();
+
+    
+    // HookLog("OpenGL: NewFrame");
+    if (g_LegacyContext) {
+        ImGui_ImplOpenGL2_NewFrame();
+    } else {
+        ImGui_ImplOpenGL3_NewFrame();
+    }
     g_SharedOverlay.BeginFrame();
     
     // Use shared overlay
@@ -773,18 +869,100 @@ static void DrawOpenGLOverlay(HDC hdc) {
     g_SharedOverlay.RenderUI();
     
     g_SharedOverlay.EndFrame();
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    
+    // HookLog("OpenGL: RenderDrawData");
+    if (g_LegacyContext) {
+        ImGui_ImplOpenGL2_RenderDrawData(ImGui::GetDrawData());
+    } else {
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    }
+    
+    if (diag) {
+        HookLog("OpenGL: DrawOpenGLOverlay finished. LastResult=%d", (int)g_SharedOverlay.GetLastDrawResult());
+    }
 }
 
 // Swap hook logic
 static void SwapBegin(HDC hdc) {
     if (g_SwapRecurse == 0) {
         if (!g_FunctionsLoaded) {
+            HookLog("OpenGL: First SwapBegin - Loading functions...");
             LoadGLFunctions();
-            // Restore context if needed? LoadGLFunctions uses opengl32.dll mostly.
+            HookLog("OpenGL: Functions loaded.");
+        }
+        
+        if (g_FunctionsLoaded && !g_VersionChecked) {
+             typedef const GLubyte* (WINAPI *glGetString_t)(GLenum);
+             glGetString_t pglGetString = (glGetString_t)GetProcAddress(GetModuleHandleA("opengl32.dll"), "glGetString");
+             if (pglGetString) {
+                 const GLubyte* verStr = pglGetString(0x1F02 /*GL_VERSION*/);
+                 if (verStr) {
+                     HookLog("OpenGL: Version String: %s", (const char*)verStr);
+                     int major = verStr[0] - '0';
+                     if (major < 3) {
+                         g_LegacyContext = true;
+                         HookLog("OpenGL: Legacy Context detected (%s). Switching to GL2 backend.", (const char*)verStr);
+                     } else {
+                         HookLog("OpenGL: Modern Context detected (%s). Using GL3 backend.", (const char*)verStr);
+                     }
+                     g_VersionChecked = true;
+                 } else {
+                     // If glGetString is NULL, it's likely we don't have a current context yet.
+                     // We remain in !g_VersionChecked so we can try again next SwapBuffers.
+                     // HookLog("OpenGL: glGetString returned NULL - waiting for current context...");
+                 }
+             } else {
+                 HookLog("OpenGL: Failed to get glGetString address!");
+                 g_LegacyContext = true; // Assume legacy if we can't check
+                 g_VersionChecked = true;
+             }
         }
     }
     // We increments recurse BEFORE potential early returns to keep it balanced.
+    if (g_SwapRecurse == 0) {
+        static int swapFrameCount = 0;
+        bool diagSwap = (swapFrameCount++ < 10);
+        if (g_FunctionsLoaded) {
+            SharedMemoryLayout *shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+            bool shouldDraw = shm && shm->overlayConfig.showOverlay;
+            if (diagSwap) HookLog("OpenGL: SwapBegin(HDC=0x%p) - shm=%p, shouldDraw=%d, isRecording=%d", 
+                                  hdc, shm, (int)shouldDraw, (int)(g_IPC && g_IPC->IsRecording()));
+            
+            bool captureIncludeOverlay = shm ? shm->overlayConfig.captureIncludeOverlay : true;
+            bool shouldDrawOverlay = shouldDraw;
+            bool isRecording = g_IPC && g_IPC->IsRecording();
+
+            // Lambda for capture operation
+            auto doCapture = [hdc, isRecording]() {
+                if (isRecording) {
+                    if (!g_OpenGLCapture.initialized && !g_LegacyContext) {
+                        g_OpenGLCapture.Init(hdc);
+                    }
+                    if (g_OpenGLCapture.initialized) {
+                        g_OpenGLCapture.CaptureFrame();
+                    }
+                } else if (g_OpenGLCapture.initialized) {
+                    g_OpenGLCapture.Cleanup();
+                }
+            };
+
+            // Lambda for overlay drawing
+            auto doOverlay = [hdc, shouldDrawOverlay]() {
+                if (shouldDrawOverlay) {
+                    DrawOpenGLOverlay(hdc);
+                }
+            };
+
+            // Order capture/overlay based on config
+            if (captureIncludeOverlay) {
+                doOverlay();   // Draw overlay first
+                if (!g_LegacyContext) doCapture();   // Then capture
+            } else {
+                if (!g_LegacyContext) doCapture();   // Capture first
+                doOverlay();   // Then draw overlay
+            }
+        }
+    }
     g_SwapRecurse++;
 }
 
@@ -804,41 +982,7 @@ static void SwapEnd(HDC hdc) {
         int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
         g_PerfMetrics.Update(us);
         
-        SharedMemoryLayout *shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
-        bool captureIncludeOverlay = shm ? shm->overlayConfig.captureIncludeOverlay : true;
-        bool shouldDrawOverlay = shm && shm->overlayConfig.showOverlay;
-        bool isRecording = g_IPC && g_IPC->IsRecording();
-        
-        // Lambda for capture operation
-        auto doCapture = [&]() {
-          if (isRecording) {
-              if (!g_OpenGLCapture.initialized) {
-                  g_OpenGLCapture.Init(hdc);
-              }
-              
-              if (g_OpenGLCapture.initialized) {
-                  g_OpenGLCapture.CaptureFrame();
-              }
-          } else if (g_OpenGLCapture.initialized) {
-              g_OpenGLCapture.Cleanup();
-          }
-        };
-        
-        // Lambda for overlay drawing
-        auto doOverlay = [&]() {
-          if (shouldDrawOverlay) {
-              DrawOpenGLOverlay(hdc);
-          }
-        };
-        
-        // Order capture/overlay based on config
-        if (captureIncludeOverlay) {
-            doOverlay();   // Draw overlay first
-            doCapture();   // Then capture (includes overlay)
-        } else {
-            doCapture();   // Capture first (clean frame)
-            doOverlay();   // Then draw overlay (visible but not recorded)
-        }
+        // Order capture/overlay logic was moved to SwapBegin
         
         // Apply FPS limiter
         g_SharedFpsLimiter.SetIPCClient(g_IPC);
@@ -853,29 +997,38 @@ static void SwapEnd(HDC hdc) {
 
 // Hook: SwapBuffers (GDI32)
 static BOOL WINAPI DetourSwapBuffers(HDC hdc) {
+    HookLog("OpenGL: DetourSwapBuffers(0x%p) entering", hdc);
     SwapBegin(hdc);
     if (g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
          LoadOpenGLExtensions();
     }
+    HookLog("OpenGL: DetourSwapBuffers calling original");
     BOOL result = oSwapBuffers(hdc);
     SwapEnd(hdc);
+    HookLog("OpenGL: DetourSwapBuffers returning %d", result);
     return result;
 }
 
 
 // Hook: wglSwapBuffers
 static BOOL WINAPI DetourWglSwapBuffers(HDC hdc) {
+    HookLog("OpenGL: DetourWglSwapBuffers(0x%p) entering", hdc);
     SwapBegin(hdc);
+    HookLog("OpenGL: DetourWglSwapBuffers calling original");
     BOOL result = oWglSwapBuffers(hdc);
     SwapEnd(hdc);
+    HookLog("OpenGL: DetourWglSwapBuffers returning %d", result);
     return result;
 }
 
 // Hook: wglSwapLayerBuffers
 static BOOL WINAPI DetourWglSwapLayerBuffers(HDC hdc, UINT fuPlanes) {
+    HookLog("OpenGL: DetourWglSwapLayerBuffers(0x%p) entering", hdc);
     SwapBegin(hdc);
+    HookLog("OpenGL: DetourWglSwapLayerBuffers calling original");
     BOOL result = oWglSwapLayerBuffers(hdc, fuPlanes);
     SwapEnd(hdc);
+    HookLog("OpenGL: DetourWglSwapLayerBuffers returning %d", result);
     return result;
 }
 
@@ -1009,9 +1162,19 @@ static void WINAPI DetourGlTexParameterf(GLenum target, GLenum pname, GLfloat pa
      if (pglTexParameterf) pglTexParameterf(target, pname, param);
 }
 
+static BOOL WINAPI DetourWglMakeCurrent(HDC hdc, HGLRC hrc) {
+    if (hrc) HookLog("OpenGL: wglMakeCurrent(HDC=0x%p, HGLRC=0x%p)", hdc, hrc);
+    return oWglMakeCurrent(hdc, hrc);
+}
+
 // Hook: wglGetProcAddress
 static PROC WINAPI DetourWglGetProcAddress(LPCSTR lpszProc) {
     if (!lpszProc) return NULL;
+    
+    // Log important requests
+    if (strstr(lpszProc, "Context") || strstr(lpszProc, "Swap")) {
+        HookLog("OpenGL: wglGetProcAddress('%s')", lpszProc);
+    }
     
     // Check for VSync hook
     if (strcmp(lpszProc, "wglSwapIntervalEXT") == 0) {
@@ -1054,32 +1217,35 @@ void OpenGLHook::Init() {
     // Register for dynamic loading via GetProcAddress
     IATHook::RegisterDynamicHook("SwapBuffers", (LPVOID)&DetourSwapBuffers, (LPVOID*)&oSwapBuffers);
     // Patch explicit imports
-    void* dummy;
-    IATHook::PatchIATAllModules("gdi32.dll", "SwapBuffers", (LPVOID)&DetourSwapBuffers, &dummy);
+    IATHook::PatchIATAllModules("gdi32.dll", "SwapBuffers", (LPVOID)&DetourSwapBuffers, (LPVOID*)&oSwapBuffers);
 
     // Hook wglSwapBuffers
     IATHook::RegisterDynamicHook("wglSwapBuffers", (LPVOID)&DetourWglSwapBuffers, (LPVOID*)&oWglSwapBuffers);
-    IATHook::PatchIATAllModules("opengl32.dll", "wglSwapBuffers", (LPVOID)&DetourWglSwapBuffers, &dummy);
+    IATHook::PatchIATAllModules("opengl32.dll", "wglSwapBuffers", (LPVOID)&DetourWglSwapBuffers, (LPVOID*)&oWglSwapBuffers);
     
     // Hook wglSwapLayerBuffers
     IATHook::RegisterDynamicHook("wglSwapLayerBuffers", (LPVOID)&DetourWglSwapLayerBuffers, (LPVOID*)&oWglSwapLayerBuffers);
-    IATHook::PatchIATAllModules("opengl32.dll", "wglSwapLayerBuffers", (LPVOID)&DetourWglSwapLayerBuffers, &dummy);
+    IATHook::PatchIATAllModules("opengl32.dll", "wglSwapLayerBuffers", (LPVOID)&DetourWglSwapLayerBuffers, (LPVOID*)&oWglSwapLayerBuffers);
     
     // Hook wglDeleteContext
     IATHook::RegisterDynamicHook("wglDeleteContext", (LPVOID)&DetourWglDeleteContext, (LPVOID*)&oWglDeleteContext);
-    IATHook::PatchIATAllModules("opengl32.dll", "wglDeleteContext", (LPVOID)&DetourWglDeleteContext, &dummy);
+    IATHook::PatchIATAllModules("opengl32.dll", "wglDeleteContext", (LPVOID)&DetourWglDeleteContext, (LPVOID*)&oWglDeleteContext);
     
     // Hook wglGetProcAddress
     // Critical for intercepting extensions
     IATHook::RegisterDynamicHook("wglGetProcAddress", (LPVOID)&DetourWglGetProcAddress, (LPVOID*)&oWglGetProcAddress);
-    IATHook::PatchIATAllModules("opengl32.dll", "wglGetProcAddress", (LPVOID)&DetourWglGetProcAddress, &dummy);
+    IATHook::PatchIATAllModules("opengl32.dll", "wglGetProcAddress", (LPVOID)&DetourWglGetProcAddress, (LPVOID*)&oWglGetProcAddress);
     
     // Hook Core GL functions (glTexParameter)
     IATHook::RegisterDynamicHook("glTexParameteri", (LPVOID)&DetourGlTexParameteri, (LPVOID*)&pglTexParameteri);
-    IATHook::PatchIATAllModules("opengl32.dll", "glTexParameteri", (LPVOID)&DetourGlTexParameteri, &dummy);
+    IATHook::PatchIATAllModules("opengl32.dll", "glTexParameteri", (LPVOID)&DetourGlTexParameteri, (LPVOID*)&pglTexParameteri);
 
     IATHook::RegisterDynamicHook("glTexParameterf", (LPVOID)&DetourGlTexParameterf, (LPVOID*)&pglTexParameterf);
-    IATHook::PatchIATAllModules("opengl32.dll", "glTexParameterf", (LPVOID)&DetourGlTexParameterf, &dummy);
+    IATHook::PatchIATAllModules("opengl32.dll", "glTexParameterf", (LPVOID)&DetourGlTexParameterf, (LPVOID*)&pglTexParameterf);
+    
+    // Hook wglMakeCurrent
+    IATHook::RegisterDynamicHook("wglMakeCurrent", (LPVOID)&DetourWglMakeCurrent, (LPVOID*)&oWglMakeCurrent);
+    IATHook::PatchIATAllModules("opengl32.dll", "wglMakeCurrent", (LPVOID)&DetourWglMakeCurrent, (LPVOID*)&oWglMakeCurrent);
     
     g_HooksInitialized = true;
     HookLog("OpenGLHook: All hooks registered (IAT/Dynamic)");
@@ -1089,7 +1255,11 @@ void OpenGLHook::Shutdown() {
     HookLog("OpenGLHook::Shutdown()");
     
     if (g_ImGuiInitialized) {
-        ImGui_ImplOpenGL3_Shutdown();
+        if (g_LegacyContext) {
+            ImGui_ImplOpenGL2_Shutdown();
+        } else {
+            ImGui_ImplOpenGL3_Shutdown();
+        }
         g_SharedOverlay.ShutdownImGui();
         g_ImGuiInitialized = false;
     }

@@ -1342,6 +1342,14 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     
     return TRUE;
   } else if (ul_reason_for_call == DLL_PROCESS_DETACH) {
+    // CRITICAL FIX: If we never initialized (blacklisted/dormant), 
+    // we MUST NOT execute cleanup logic (Sleep, Locks, etc.)
+    // Attempting to sleep or wait on locks in a blacklisted process during shutdown
+    // can cause deadlocks or crashes (e.g. Brave/Chrome watchdog).
+    if (g_isDormant) {
+        return TRUE;
+    }
+
     g_ShuttingDown = true;
     
     // Signal HookThread to exit and give it time to finish

@@ -1450,6 +1450,10 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
   if (++presentCount % 60 == 0) {
       CWrapDXGISwapChain* wrapper = WrapperStateManager::Get().FindWrapper(pSwapChain);
       EarlyLog("DX11 Hook: DetourDX11Present called (count=%d, SC=%p) -> Wrapper=%p", presentCount, pSwapChain, wrapper);
+      if (wrapper == nullptr) {
+          // Check if ANY wrapper exists for a different pointer (potential mismatch)
+          // But WrapperStateManager doesn't support that easily.
+      }
   }
 
   if (g_ShuttingDown) return oPresent(pSwapChain, SyncInterval, Flags);

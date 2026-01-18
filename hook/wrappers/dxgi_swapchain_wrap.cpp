@@ -570,7 +570,7 @@ void WrapperStateManager::UnregisterSwapchain(CWrapDXGISwapChain* pWrapper) {
 CWrapDXGISwapChain* WrapperStateManager::FindWrapper(IDXGISwapChain* pReal) {
     std::lock_guard<std::mutex> lock(m_Lock);
     for (int i = 0; i < MAX_SWAPCHAINS; ++i) {
-        if (m_RealSwapchains[i] == pReal) {
+        if (m_RealSwapchains[i] == pReal || m_Wrappers[i] == (CWrapDXGISwapChain*)pReal) {
             return m_Wrappers[i];
         }
     }

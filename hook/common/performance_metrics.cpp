@@ -80,6 +80,13 @@ void PerformanceMetrics::Update(int64_t currentQpcUs) {
   if (m_lastFrameTimeUs > 0) {
     frameToFrameUs = currentQpcUs - m_lastFrameTimeUs;
   }
+
+  // Debounce: ignore calls that are too close together (< 200us)
+  // This happens when both a Wrapper and a Hook call Update for the same frame.
+  if (m_lastFrameTimeUs > 0 && frameToFrameUs < 200) {
+      return;
+  }
+
   m_lastFrameTimeUs = currentQpcUs;
 
   // Ignore first frame or jumps
