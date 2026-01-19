@@ -288,7 +288,9 @@ void ShutdownChildProcesses() {
     while (!allExited && (GetTickCount() - startTime) < timeout) {
       DWORD remaining = timeout - (GetTickCount() - startTime);
       DWORD waitTime = (remaining < 100) ? remaining : 100;
-      DWORD result = MsgWaitForMultipleObjects(handleCount, handles, TRUE, 
+      
+      // bWaitAll MUST be FALSE to process messages while waiting
+      DWORD result = MsgWaitForMultipleObjects(handleCount, handles, FALSE, 
                                                 waitTime, QS_ALLINPUT);
       
       if (result == WAIT_OBJECT_0 + handleCount) {
@@ -298,9 +300,19 @@ void ShutdownChildProcesses() {
           TranslateMessage(&msg);
           DispatchMessage(&msg);
         }
-      } else if (result != WAIT_TIMEOUT) {
-        // All processes exited
-        allExited = true;
+      } else if (result >= WAIT_OBJECT_0 && result < WAIT_OBJECT_0 + handleCount) {
+        // At least one process exited, re-evaluate all processes
+        bool foundActive = false;
+        for (int i = 0; i < handleCount; i++) {
+          DWORD exitCode;
+          if (GetExitCodeProcess(handles[i], &exitCode) && exitCode == STILL_ACTIVE) {
+            foundActive = true;
+            break;
+          }
+        }
+        if (!foundActive) allExited = true;
+      } else {
+        // Timeout or other error
       }
     }
     
@@ -561,7 +573,9 @@ int ControllerMain(HINSTANCE hInstance) {
   
   // Keep tray icon alive during shutdown (animation already started by right-click handler)
   // Process messages during shutdown so animation continues
-
+  if (g_Tray) {
+      g_Tray->StartShutdownAnimation();
+  }
 
   LogInfo("[Controller] Shutting down child processes...");
   ShutdownChildProcesses();

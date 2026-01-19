@@ -37,6 +37,7 @@ private:
   
   HICON hIconIdle = nullptr;
   HICON hIconRecording = nullptr;
+  HICON hIconShutdown = nullptr;
   
   bool shuttingDown = false;
   bool blinkState = false;

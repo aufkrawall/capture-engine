@@ -66,9 +66,9 @@ static bool IsVulkanPrimary() { return g_VulkanHook != nullptr; }
  }
 
 // --- Forward Declarations ---
-typedef HRESULT(STDMETHODCALLTYPE *PresentPtr)(IDXGISwapChain3 *, UINT, UINT);
+typedef HRESULT(STDMETHODCALLTYPE *PresentPtr)(IDXGISwapChain *, UINT, UINT);
 typedef HRESULT(STDMETHODCALLTYPE *Present1Ptr)(
-    IDXGISwapChain3 *, UINT, UINT, const DXGI_PRESENT_PARAMETERS *);
+    IDXGISwapChain *, UINT, UINT, const DXGI_PRESENT_PARAMETERS *);
 typedef HRESULT(STDMETHODCALLTYPE *ResizeBuffersPtr)(IDXGISwapChain3 *, UINT,
                                                      UINT, UINT, DXGI_FORMAT,
                                                      UINT);
@@ -107,7 +107,7 @@ extern DX12Hook g_DX12Hook;
 ID3D12Device *g_Device = nullptr;
 ID3D12CommandQueue *g_CommandQueue = nullptr;
 bool g_IPCReady = false;
-static IDXGISwapChain3 *g_LastSwapChain = nullptr;
+static IDXGISwapChain *g_LastSwapChain = nullptr;
 static ID3D12Resource *g_DummyBackBuffer = nullptr;
 static std::mutex g_OverlayMutex;
 static std::atomic<bool> g_InSwapchainResizeCleanup{false};
@@ -360,7 +360,7 @@ bool InitSimpleOverlay(ID3D12Device* device);
 void RenderSimpleOverlay(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* backBuffer);
 
 // Forward declaration for external access
-void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture);
+void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture);
 
 // ============================================================================
 // FG OVERLAY CALLBACK - Called from swapchain wrapper's Present BEFORE FG
@@ -1191,9 +1191,19 @@ void CleanupNativeInterfaces() {
 
 // AsyncCaptureThreadProc removed.
 
-void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
+void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
+  if (!pSwapChain) return;
+  
   // LOCK HIERARCHY: g_OverlayMutex -> g_DX12CaptureMutex
   std::lock_guard<std::mutex> lock(g_OverlayMutex);
+
+  static uint64_t lastLogTime = 0;
+  uint64_t now = GetTickCount64();
+  bool shouldLog = (now - lastLogTime > 2000); // Log every 2 seconds
+  if (shouldLog) {
+      HookLog("DX12: ProcessFrame Entry (pSwapChain=%p, processCapture=%d)", pSwapChain, processCapture);
+      lastLogTime = now;
+  }
 
   // FG STATE detection
   bool fgActive = (g_FGCompat.DetectLoadedFGRuntime() != FGCompatibility::FGType::None);
@@ -1221,12 +1231,23 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
   }
   pTempUnk->Release();
 
-  if (!activeDevice) return;
+  if (!activeDevice) {
+      if (shouldLog) HookLog("DX12: ProcessFrame - Failed to get activeDevice from swapchain");
+      return;
+  }
+  
+  // Try to upgrade to SC3 internally
+  IDXGISwapChain3* sc3 = nullptr;
+  pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3));
+  if (!sc3) {
+      if (shouldLog) HookLog("DX12: ProcessFrame - Swapchain is not IDXGISwapChain3 - some features may be degraded");
+  }
   
   bool isInitialSetup = (g_Device == nullptr);
   bool deviceChanged = (!isInitialSetup && (activeDevice != g_Device || pSwapChain != g_LastSwapChain));
   
   if (deviceChanged) {
+      EarlyLog("DX12: ProcessFrame - Device or Swapchain change detected! (Old SC=%p, New SC=%p)", g_LastSwapChain, pSwapChain);
       g_FGCompat.OnDeviceChange(); 
       CleanupOverlay();
       CleanupRTVs();
@@ -1287,7 +1308,12 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
       }
   }
   if (!targetQueue && g_CommandQueue) targetQueue = g_CommandQueue;
-  if (!targetQueue) return;
+  
+  if (!targetQueue) {
+      if (shouldLog) HookLog("DX12: ProcessFrame - No CommandQueue found for capture!");
+      if (sc3) sc3->Release();
+      return;
+  }
   g_CommandQueue = targetQueue;
 
   if (g_State.imGuiInit) {
@@ -1296,23 +1322,29 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
 
   // 3. Initialize Shared Capture
   if (g_CommandQueue) {
-      g_SharedCaptureD3D12.Initialize(g_Device, pSwapChain, g_CommandQueue);
+      if (!g_SharedCaptureD3D12.IsActive()) {
+          bool ok = g_SharedCaptureD3D12.Initialize(g_Device, pSwapChain, g_CommandQueue);
+          HookLog("DX12: ProcessFrame - SharedCaptureD3D12::Initialize %s", ok ? "SUCCESS" : "FAILED");
+      }
   }
 
   // 4. Initialize Overlay
-  if (!g_State.imGuiInit) {
+  if (!g_State.imGuiInit && sc3) {
       DXGI_SWAP_CHAIN_DESC desc;
-      if (FAILED(pSwapChain->GetDesc(&desc))) return;
+      if (FAILED(pSwapChain->GetDesc(&desc))) {
+          sc3->Release();
+          return;
+      }
       g_State.cachedWidth = desc.BufferDesc.Width;
       g_State.cachedHeight = desc.BufferDesc.Height;
 
-      if (!InitImGui(g_Device, DX12OverlayState::ALLOC_POOL_SIZE, desc.BufferDesc.Format, desc.OutputWindow)) return;
-      
-      IDXGISwapChain3* sc3 = nullptr;
-      if (SUCCEEDED(pSwapChain->QueryInterface(__uuidof(IDXGISwapChain3), (void**)&sc3))) {
-           CreateRTVs(g_Device, sc3, desc.BufferCount);
-           sc3->Release();
+      HookLog("DX12: ProcessFrame - Initializing Overlay (w=%u, h=%u)", g_State.cachedWidth, g_State.cachedHeight);
+      if (!InitImGui(g_Device, DX12OverlayState::ALLOC_POOL_SIZE, desc.BufferDesc.Format, desc.OutputWindow)) {
+          sc3->Release();
+          return;
       }
+      
+      CreateRTVs(g_Device, sc3, desc.BufferCount);
       InitOverlaySync(g_Device, desc.BufferCount);
   }
 
@@ -1359,7 +1391,7 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
       list->Reset(alloc, nullptr);
       
       // Get backbuffer
-      UINT bufferIdx = pSwapChain->GetCurrentBackBufferIndex();
+      UINT bufferIdx = sc3 ? sc3->GetCurrentBackBufferIndex() : 0;
       ID3D12Resource* backBuffer = nullptr;
       if (SUCCEEDED(pSwapChain->GetBuffer(bufferIdx, IID_PPV_ARGS(&backBuffer))) && backBuffer) {
            // Transition to RenderTarget
@@ -1406,17 +1438,29 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
   };
 
   auto doCapture = [&]() {
+      static uint64_t lastCapLog = 0;
+      bool capShouldLog = (now - lastCapLog > 5000); // Video log every 5s
+      
       static uint64_t fgCaptureCounter = 0;
       bool shouldCapture = true;
       if (fgActive) {
           fgCaptureCounter++;
           shouldCapture = (fgCaptureCounter % 4 == 0);
       }
-      if (shouldCapture && processCapture && g_IPC && g_IPC->IsRecording()) {
+      
+      bool isRecording = g_IPC && g_IPC->IsRecording();
+      if (capShouldLog && isRecording) {
+          HookLog("DX12: doCapture - isRecording=1, shouldCapture=%d, processCapture=%d, active=%d", 
+                  shouldCapture, processCapture, g_SharedCaptureD3D12.IsActive());
+          lastCapLog = now;
+      }
+
+      if (shouldCapture && processCapture && isRecording) {
           SharedMemoryLayout* shm = g_IPC->GetSharedMem();
           if (shm && g_SharedCaptureD3D12.IsActive()) {
               std::lock_guard<std::mutex> capLock(g_DX12CaptureMutex);
-              if (g_SharedCaptureD3D12.CaptureFrame(pSwapChain->GetCurrentBackBufferIndex())) {
+              UINT bbIdx = sc3 ? sc3->GetCurrentBackBufferIndex() : 0;
+              if (g_SharedCaptureD3D12.CaptureFrame(bbIdx)) {
                   SharedFrameDescriptor desc;
                   if (g_SharedCaptureD3D12.GetCurrentFrame(&desc)) {
                       // 1. Sync handles to shm (Zero-copy handles)
@@ -1437,13 +1481,26 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
                           slot.sourcePid = GetCurrentProcessId();
                           slot.valid.store(1, std::memory_order_release);
                           
+                          if (capShouldLog) HookLog("DX12: doCapture - Frame Pushed: index=%u, tex=%d, wIdx=%u", 
+                                                    desc.frameNumber, desc.textureIndex, wIdx);
                           shm->frameRing.writeIndex.store(nextIdx, std::memory_order_release);
                       } else {
                           // Buffer overflow - capture engine falling behind
+                          if (capShouldLog) HookLog("DX12: doCapture - RING BUFFER FULL (rIdx=%u, wIdx=%u)", 
+                                                    shm->frameRing.readIndex.load(), wIdx);
                           shm->frameRing.droppedFrames.fetch_add(1, std::memory_order_relaxed);
                       }
+                  } else {
+                      if (capShouldLog) HookLog("DX12: doCapture - GetCurrentFrame FAILED");
+                  }
+              } else {
+                  if (capShouldLog) {
+                      UINT logBbIdx = sc3 ? sc3->GetCurrentBackBufferIndex() : 0;
+                      HookLog("DX12: doCapture - CaptureFrame FAILED (idx=%u)", logBbIdx);
                   }
               }
+          } else {
+              if (capShouldLog && !g_SharedCaptureD3D12.IsActive()) HookLog("DX12: doCapture - SharedCaptureD3D12 NOT ACTIVE");
           }
       }
   };
@@ -1455,6 +1512,8 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
       doCapture();
       doOverlay();
   }
+
+  if (sc3) sc3->Release();
 }
 
 // --- Prerender Limit Support ---
@@ -1572,7 +1631,7 @@ HRESULT STDMETHODCALLTYPE DetourGetBuffer(IDXGISwapChain *pSwapChain, UINT Buffe
     return hr;
 }
 
-HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
+HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
                                         UINT SyncInterval, UINT Flags) {
   // Debug: Log that hook is being called (once)
   static bool loggedOnce = false;
@@ -1771,7 +1830,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
       static float lastLimit = -2.0f;
       if (fabs(limit - lastLimit) > 0.001f) {
            UINT effectiveLatency = (limit < 1.0f) ? 1 : (UINT)limit;
-           pSwapChain->SetMaximumFrameLatency(effectiveLatency);
+           IDXGISwapChain3* scTemp = nullptr;
+           if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&scTemp)))) {
+               scTemp->SetMaximumFrameLatency(effectiveLatency);
+               scTemp->Release();
+           }
            HookLog("DX12: Set maximum DXGI latency to %d (Active Limit: %.2f)", effectiveLatency, limit);
            lastLimit = limit;
       }
@@ -1842,7 +1905,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
 }
 
 HRESULT STDMETHODCALLTYPE
-DetourPresent1(IDXGISwapChain3 *pSwapChain, UINT SyncInterval, UINT Flags,
+DetourPresent1(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT Flags,
                const DXGI_PRESENT_PARAMETERS *pPresentParameters) {
   // FG-SAFE: No more passthrough mode - overlay draws on all frames
   // Device change detection is handled in DetourPresent
@@ -1876,9 +1939,13 @@ DetourPresent1(IDXGISwapChain3 *pSwapChain, UINT SyncInterval, UINT Flags,
   float limit = GetActivePrerenderLimit();
   if (limit >= 0.0f) {
       static float lastLimit = -2.0f;
-      if (fabs(limit - lastLimit) > 0.001f) {
+      if (std::abs(limit - lastLimit) > 0.001f) {
            UINT effectiveLatency = (limit < 1.0f) ? 1 : (UINT)limit;
-           pSwapChain->SetMaximumFrameLatency(effectiveLatency);
+           IDXGISwapChain3* scTemp = nullptr;
+           if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&scTemp)))) {
+               scTemp->SetMaximumFrameLatency(effectiveLatency);
+               scTemp->Release();
+           }
            HookLog("DX12: Set maximum DXGI latency to %d (Active Limit: %.2f)", effectiveLatency, limit);
            lastLimit = limit;
       }

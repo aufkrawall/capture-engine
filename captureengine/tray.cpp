@@ -2,7 +2,7 @@
 #include <shellapi.h>
 
 static constexpr UINT_PTR BLINK_TIMER_ID = 1001;
-static constexpr UINT BLINK_INTERVAL_MS = 300;
+static constexpr UINT BLINK_INTERVAL_MS = 500;
 
 TrayIcon::TrayIcon(HINSTANCE hInstance, std::function<void()> onQuit,
                    std::function<void()> onOpenConfig)
@@ -40,6 +40,7 @@ void TrayIcon::InitWindow() {
 void TrayIcon::InitIcon() {
   hIconIdle = (HICON)LoadImageA(hInstance, MAKEINTRESOURCEA(IDI_ICON_IDLE), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE | LR_SHARED);
   hIconRecording = (HICON)LoadImageA(hInstance, MAKEINTRESOURCEA(IDI_ICON_RECORDING), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE | LR_SHARED);
+  hIconShutdown = (HICON)LoadImageA(hInstance, MAKEINTRESOURCEA(IDI_ICON_SHUTDOWN), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE | LR_SHARED);
 
   ZeroMemory(&nid, sizeof(nid));
   nid.cbSize = sizeof(NOTIFYICONDATAA);
@@ -110,11 +111,11 @@ void TrayIcon::UpdateBlinkState() {
     // Show icon (normal)
     nid.hIcon = hIconIdle ? hIconIdle : LoadIcon(NULL, IDI_APPLICATION);
   } else {
-    // Hide icon (blank) - use a transparent/empty state
-    // We achieve "blink" by alternating with the recording icon or dimming
-    nid.hIcon = hIconRecording ? hIconRecording : LoadIcon(NULL, IDI_WINLOGO);
+    // Show shutdown icon (orange placeholder)
+    nid.hIcon = hIconShutdown ? hIconShutdown : LoadIcon(NULL, IDI_WINLOGO);
   }
   
+  // LogInfo("Tray blinking: state=%d", blinkState);
   Shell_NotifyIconA(NIM_MODIFY, &nid);
 }
 
