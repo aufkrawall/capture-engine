@@ -981,12 +981,27 @@ public:
     }
 
     if (success) {
+      // Create GPU synchronization queries for each texture
+      // These queries are used to ensure CopyResource completes before reusing the texture
+      D3D11_QUERY_DESC queryDesc = {};
+      queryDesc.Query = D3D11_QUERY_EVENT;
+      queryDesc.MiscFlags = 0;
+
+      for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
+        HRESULT queryHr = captureDevice->CreateQuery(&queryDesc, &copyQueries[i]);
+        if (FAILED(queryHr)) {
+          HookLog("%s: Failed to create copy query %d (hr=0x%08x)", isDX10Mode ? "DX10" : "DX11", i, queryHr);
+          copyQueries[i] = nullptr;
+        }
+      }
+
       if (g_IPC) {
         PublishToSharedMemory(g_IPC);
       }
       initialized = true;
-      EarlyLog("%s Capture Initialized: %dx%d (Fence: %s)", isDX10Mode ? "DX10" : "DX11", 
-              width, height, useFences ? "ON" : "OFF");
+      EarlyLog("%s Capture Initialized: %dx%d (Fence: %s, Queries: %s)", isDX10Mode ? "DX10" : "DX11",
+              width, height, useFences ? "ON" : "OFF",
+              (copyQueries[0] != nullptr) ? "ON" : "OFF");
     } else {
       EarlyLog("%s Capture Init FAILED (success=false)", isDX10Mode ? "DX10" : "DX11");
     }
@@ -1651,17 +1666,32 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
       if (backbuffer && g_DX11Capture.initialized) {
         int idx = g_DX11Capture.writeIndex;
         ID3D11DeviceContext *captureContext = g_DX11Capture.GetCaptureContext();
-        
+
         if (captureContext) {
+            // Wait for previous copy to this texture to complete (synchronization)
+            // This prevents copying to a texture that's still being used by the consumer
+            if (!g_DX11Capture.WaitForCopy(captureContext, idx, 10)) {
+                static int timeoutLogCount = 0;
+                if (timeoutLogCount++ % 60 == 0) {
+                    HookLog("DX11: Copy query timeout on texture %d - may cause frame corruption", idx);
+                }
+            }
+
             captureContext->CopyResource(g_DX11Capture.sharedTextures[idx], backbuffer);
-            
+
+            // Issue a query to signal when this copy completes
+            // This allows the next frame to wait for this copy before reusing the texture
+            if (g_DX11Capture.copyQueries[idx]) {
+                captureContext->End(g_DX11Capture.copyQueries[idx]);
+            }
+
             uint64_t signalValue = 0;
             if (g_DX11Capture.useFences && g_DX11Capture.context4 && g_DX11Capture.fence) {
                 g_DX11Capture.fenceValue++;
                 signalValue = g_DX11Capture.fenceValue;
                 g_DX11Capture.context4->Signal(g_DX11Capture.fence, signalValue);
             }
-            
+
             g_DX11Capture.SignalFrameReady(ipc, idx, qpc.QuadPart, signalValue);
             g_DX11Capture.AdvanceWriteIndex();
         }
@@ -1836,9 +1866,9 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain *pSwapChain,
     if (backbuffer && g_DX11Capture.initialized) {
       int idx = g_DX11Capture.writeIndex;
       ID3D11DeviceContext *captureContext = g_DX11Capture.GetCaptureContext();
-      
+
       if (g_DX11Capture.useKeyedMutex && g_DX11Capture.keyedMutexes[idx]) {
-          // KEYED MUTEX PATH
+          // KEYED MUTEX PATH (already synchronized via keyed mutex)
           if (g_DX11Capture.keyedMutexes[idx]->AcquireSync(0, 0) == S_OK) {
               captureContext->CopyResource(g_DX11Capture.sharedTextures[idx], backbuffer);
               g_DX11Capture.keyedMutexes[idx]->ReleaseSync(1);
@@ -1846,8 +1876,22 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain *pSwapChain,
               g_DX11Capture.AdvanceWriteIndex();
           }
       } else if (captureContext) {
-          // Legacy Fallback
+          // Legacy Fallback with query synchronization
+          // Wait for previous copy to complete before overwriting
+          if (!g_DX11Capture.WaitForCopy(captureContext, idx, 10)) {
+              static int timeoutLogCount2 = 0;
+              if (timeoutLogCount2++ % 60 == 0) {
+                  HookLog("DX11: Copy query timeout on texture %d (legacy path)", idx);
+              }
+          }
+
           captureContext->CopyResource(g_DX11Capture.sharedTextures[idx], backbuffer);
+
+          // Issue query for next frame synchronization
+          if (g_DX11Capture.copyQueries[idx]) {
+              captureContext->End(g_DX11Capture.copyQueries[idx]);
+          }
+
           g_DX11Capture.SignalFrameReady(g_IPC, idx, us / 1000, 0);
           g_DX11Capture.AdvanceWriteIndex();
       }

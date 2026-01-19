@@ -29,6 +29,7 @@ extern "C" __declspec(dllexport) void DX12_SetCommandQueue(ID3D12CommandQueue* p
 #include <cmath>
 #include <condition_variable>
 #include <d3d12.h>
+#include <d3d11.h>
 #include <dxgi1_4.h>
 #include <fstream>
 #include <intrin.h>
@@ -306,7 +307,27 @@ void FGOverlayDrawCallback(IDXGISwapChain3* pSwapChain, ID3D12CommandQueue* pQue
 // --- Capture Resources ---
 class DX12Capture : public HookCaptureBase {
 public:
-  ID3D12Resource *sharedTextures[CAPTURE_TEXTURE_COUNT] = {};
+  // Zero-Copy Video Capture Architecture (No D3D11On12):
+  // We use D3D12 textures with NT shared handles that D3D11 can open directly.
+  // DX12 resources can be exported with NT handles via ID3D12Resource::CreateSharedHandle.
+  // D3D11 can open these handles via OpenSharedResource1 (no D3D11On12 needed).
+  //
+  // Pipeline:
+  //   1. DX12 backbuffer → D3D12 shared texture (CopyResource)
+  //   2. D3D12 shared texture → NT handle export (ID3D12Resource::CreateSharedHandle)
+  //   3. D3D11 opens handle → D3D11 shared texture (OpenSharedResource1)
+  //   4. D3D11 shared texture → FFmpeg D3D11VA (zero-copy import)
+  //
+  // This works because DX12 and D3D11 on the same adapter support NT handle sharing.
+
+  // D3D11 device and context (for opening D3D12 shared handles)
+  ID3D11Device *d3d11Device = nullptr;
+  ID3D11DeviceContext *d3d11Context = nullptr;
+  ID3D11Texture2D *d3d11SharedTextures[CAPTURE_TEXTURE_COUNT] = {};  // D3D11 textures opened from D3D12 handles
+  HANDLE d3d12SharedHandles[CAPTURE_TEXTURE_COUNT] = {};  // NT handles exported from D3D12
+
+  // D3D12 capture resources
+  ID3D12Resource *sharedTextures[CAPTURE_TEXTURE_COUNT] = {};  // D3D12 textures with shared handles
   ID3D12Resource *backBufferCache[16] = {nullptr};
   UINT backBufferCount = 0;
   ID3D12Fence *fence = nullptr;
@@ -325,12 +346,37 @@ public:
   void Cleanup() override {
     StopCaptureThread();
     CleanupSharedHandles();
-    
+
+    // Release D3D11 resources
+    for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
+      if (d3d11SharedTextures[i]) {
+        d3d11SharedTextures[i]->Release();
+        d3d11SharedTextures[i] = nullptr;
+      }
+      if (d3d12SharedHandles[i]) {
+        CloseHandle(d3d12SharedHandles[i]);
+        d3d12SharedHandles[i] = nullptr;
+      }
+    }
+    if (d3d11Context) {
+      d3d11Context->Release();
+      d3d11Context = nullptr;
+    }
+    if (d3d11Device) {
+      d3d11Device->Release();
+      d3d11Device = nullptr;
+    }
+
     // Release D3D12 resources
     for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
-      if (sharedTextures[i])
+      if (sharedTextures[i]) {
         sharedTextures[i]->Release();
-      sharedTextures[i] = nullptr;
+        sharedTextures[i] = nullptr;
+      }
+      if (dxgiResources[i]) {
+        dxgiResources[i]->Release();
+        dxgiResources[i] = nullptr;
+      }
       if (cmdAlloc[i])
         cmdAlloc[i]->Release();
       cmdAlloc[i] = nullptr;
@@ -351,7 +397,7 @@ public:
     if (captureQueue)
       captureQueue->Release();
     captureQueue = nullptr;
-    
+
     // Release cached backbuffer references (prevents GPU memory leak on resize)
     for (UINT i = 0; i < backBufferCount; i++) {
       if (backBufferCache[i]) {
@@ -360,7 +406,7 @@ public:
       }
     }
     backBufferCount = 0;
-    
+
     initialized = false;
   }
 };
@@ -737,31 +783,55 @@ void CheckCaptureInit(IDXGISwapChain3 *pSwapChain) {
   g_DX12Capture.width = desc.Width;
   g_DX12Capture.height = desc.Height;
 
-  if (!g_DX12Capture.sharedTextures[0]) {
-    D3D12_RESOURCE_DESC texDesc = {};
-    texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    texDesc.Width = desc.Width;
-    texDesc.Height = desc.Height;
-    texDesc.DepthOrArraySize = 1;
-    texDesc.MipLevels = 1;
-    texDesc.Format = desc.Format;
-    texDesc.SampleDesc.Count = 1;
-    texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    texDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET |
-                    D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
+  // Create D3D11 device and shared textures for media encoder compatibility
+  // D3D12 shared resources cannot be opened by D3D11's OpenSharedResource,
+  // so we create D3D11 textures on the same GPU adapter.
+  if (!g_DX12Capture.d3d11Device) {
+    // Get DXGI adapter from D3D12 device using LUID
+    LUID adapterLuid = g_Device->GetAdapterLuid();
+    IDXGIAdapter* adapter = nullptr;
+    IDXGIFactory4* factory = nullptr;
 
-    D3D12_HEAP_PROPERTIES heapProps = {D3D12_HEAP_TYPE_DEFAULT,
-                                       D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
-                                       D3D12_MEMORY_POOL_UNKNOWN, 1, 1};
+    HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory4), (void**)&factory);
+    if (SUCCEEDED(hr)) {
+      for (UINT i = 0; factory->EnumAdapters(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+        DXGI_ADAPTER_DESC desc;
+        adapter->GetDesc(&desc);
+        if (desc.AdapterLuid.LowPart == adapterLuid.LowPart &&
+            desc.AdapterLuid.HighPart == adapterLuid.HighPart) {
+          break;  // Found matching adapter
+        }
+        adapter->Release();
+        adapter = nullptr;
+      }
+      factory->Release();
+    }
 
-    for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
-      g_Device->CreateCommittedResource(
-          &heapProps, D3D12_HEAP_FLAG_SHARED, &texDesc,
-          D3D12_RESOURCE_STATE_COMMON, NULL,
-          IID_PPV_ARGS(&g_DX12Capture.sharedTextures[i]));
-      g_Device->CreateSharedHandle(g_DX12Capture.sharedTextures[i], NULL,
-                                   GENERIC_ALL, NULL,
-                                   &g_DX12Capture.sharedTextureHandles[i]);
+    if (adapter) {
+      // Create D3D11 device on the same adapter
+      D3D_FEATURE_LEVEL featureLevel;
+      hr = D3D11CreateDevice(
+        adapter,
+        D3D_DRIVER_TYPE_UNKNOWN,
+        nullptr,
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT,  // Required for shared resources
+        nullptr, 0,
+        D3D11_SDK_VERSION,
+        &g_DX12Capture.d3d11Device,
+        &featureLevel,
+        &g_DX12Capture.d3d11Context
+      );
+
+      if (SUCCEEDED(hr)) {
+        HookLog("DX12: Created D3D11 device on same adapter (FL=0x%X)", featureLevel);
+
+        // Publish the D3D11 device creation to shared memory (for encoder to use)
+        // The actual texture opening will happen when encoder opens the shared D3D12 handles
+      } else {
+        HookLog("DX12: Failed to create D3D11 device: HR=%X", hr);
+      }
+
+      adapter->Release();
     }
   }
 
@@ -817,6 +887,140 @@ void CheckCaptureInit(IDXGISwapChain3 *pSwapChain) {
                                 g_DX12Capture.cmdAlloc[0], nullptr,
                                 IID_PPV_ARGS(&g_DX12Capture.cmdList));
     g_DX12Capture.cmdList->Close();
+  }
+
+  // Create D3D12 textures with NT shared handles (no D3D11On12 needed)
+  // DX12 can export shared handles that D3D11 can open via OpenSharedResource1
+  if (!g_DX12Capture.sharedTextures[0]) {
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+    heapProps.CreationNodeMask = 1;
+    heapProps.VisibleNodeMask = 1;
+
+    D3D12_RESOURCE_DESC texDesc = {};
+    texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    texDesc.Alignment = 0;
+    texDesc.Width = desc.Width;
+    texDesc.Height = desc.Height;
+    texDesc.DepthOrArraySize = 1;
+    texDesc.MipLevels = 1;
+    texDesc.Format = desc.Format;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.SampleDesc.Quality = 0;
+    texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    texDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+    for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
+      HRESULT hr = g_Device->CreateCommittedResource(
+        &heapProps,
+        D3D12_HEAP_FLAG_SHARED,  // Enable NT handle sharing
+        &texDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        nullptr,
+        IID_PPV_ARGS(&g_DX12Capture.sharedTextures[i])
+      );
+
+      if (SUCCEEDED(hr)) {
+        // Export NT shared handle that D3D11 can open
+        hr = g_DX12Capture.sharedTextures[i]->CreateSharedHandle(
+          nullptr,
+          GENERIC_ALL,
+          nullptr,
+          &g_DX12Capture.d3d12SharedHandles[i]
+        );
+
+        if (SUCCEEDED(hr)) {
+          // Open the D3D12 resource in D3D11 (no D3D11On12 needed!)
+          ID3D11Texture2D* d3d11Texture = nullptr;
+          hr = g_DX12Capture.d3d11Device->OpenSharedResource1(
+            g_DX12Capture.d3d12SharedHandles[i],
+            __uuidof(ID3D11Texture2D),
+            (void**)&d3d11Texture
+          );
+
+          if (SUCCEEDED(hr) && d3d11Texture) {
+            g_DX12Capture.d3d11SharedTextures[i] = d3d11Texture;
+            HookLog("DX12: Created D3D12 texture %d with shared handle=%llX (opened in D3D11)",
+                    i, (uint64_t)g_DX12Capture.d3d12SharedHandles[i]);
+          } else {
+            HookLog("DX12: Failed to open D3D12 shared handle in D3D11: HR=%X", hr);
+            CloseHandle(g_DX12Capture.d3d12SharedHandles[i]);
+            g_DX12Capture.d3d12SharedHandles[i] = nullptr;
+          }
+        } else {
+          HookLog("DX12: Failed to create shared handle for D3D12 texture %d: HR=%X", i, hr);
+        }
+      } else {
+        HookLog("DX12: Failed to create D3D12 texture %d: HR=%X", i, hr);
+      }
+    }
+
+    // Update shared texture handles in base class (use D3D12 handles)
+    memcpy(g_DX12Capture.sharedTextureHandles, g_DX12Capture.d3d12SharedHandles,
+           sizeof(g_DX12Capture.sharedTextureHandles));
+  }
+    heapProps.CreationNodeMask = 1;
+    heapProps.VisibleNodeMask = 1;
+
+    D3D12_RESOURCE_DESC texDesc = {};
+    texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    texDesc.Alignment = 0;
+    texDesc.Width = desc.Width;
+    texDesc.Height = desc.Height;
+    texDesc.DepthOrArraySize = 1;
+    texDesc.MipLevels = 1;
+    texDesc.Format = desc.Format;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.SampleDesc.Quality = 0;
+    texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    texDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+    for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
+      HRESULT hr = g_Device->CreateCommittedResource(
+        &heapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &texDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        nullptr,
+        IID_PPV_ARGS(&g_DX12Capture.d3d12StagingTextures[i])
+      );
+      if (SUCCEEDED(hr)) {
+        HookLog("DX12: Created D3D12 staging texture %d for capture", i);
+      } else {
+        HookLog("DX12: Failed to create D3D12 staging texture %d: HR=%X", i, hr);
+      }
+    }
+  }
+
+  // Create D3D11On12 device for D3D12 → D3D11 interop
+  // This is SEPARATE from the pure D3D11 device used for shared textures.
+  // The D3D11On12 device is used ONLY to wrap D3D12 resources for copying.
+  if (!g_DX12Capture.d3d11On12Device) {
+    ID3D11Device* d3d11On12Device = nullptr;
+    ID3D11DeviceContext* d3d11On12Context = nullptr;
+
+    // Use D3D11On12CreateDevice to create a D3D11 device that wraps the D3D12 device
+    UINT d3d11Flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+    HRESULT hr = D3D11On12CreateDevice(
+      g_Device,
+      d3d11Flags,
+      nullptr,  // feature levels
+      0,        // feature level count
+      nullptr,  // command queues
+      0,        // queue count
+      0,        // node mask
+      &d3d11On12Device,
+      &d3d11On12Context,
+      nullptr   // obtained feature level
+    );
+
+    if (SUCCEEDED(hr)) {
+      g_DX12Capture.d3d11On12Device = d3d11On12Device;
+      g_DX12Capture.d3d11On12Context = d3d11On12Context;
+      HookLog("DX12: Created D3D11On12 device for D3D12->D3D11 interop");
+    } else {
+      HookLog("DX12: Failed to create D3D11On12 device: HR=%X", hr);
+    }
   }
 
   // Use shared method to publish handles to IPC
@@ -1487,6 +1691,9 @@ void AsyncCaptureThreadProc() {
         activeQueue->Signal(g_DX12CaptureCompletionFence, completionFenceValue);
       }
 
+      // Signal frame ready - the D3D12 shared texture is now ready
+      // The D3D11 side has already opened the shared handle during initialization
+      // No additional D3D12->D3D11 copy needed - the resource is shared between both APIs
       g_DX12Capture.SignalFrameReady(g_IPC, writeIdx, timestampQPC, fenceVal);
       g_DX12Capture.pendingReadIdx.store(rIdx + 1, std::memory_order_release);
     }

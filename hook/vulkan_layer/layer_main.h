@@ -25,6 +25,7 @@ void LayerIPC_Shutdown();
 bool LayerIPC_IsConnected();
 void LayerIPC_SetTextures(HANDLE* handles, uint32_t count, uint32_t width, uint32_t height, uint32_t format);
 uint32_t VkFormatToDXGI(uint32_t vkFormat);
+bool IsVkFormatCompatibleWithDXGI(VkFormat vkFormat);
 void LayerIPC_UpdateFrameTiming(uint64_t frameCount, float fps, float avgFps);
 bool LayerIPC_ShouldShowOverlay();
 bool LayerIPC_IsCaptureRequested();
