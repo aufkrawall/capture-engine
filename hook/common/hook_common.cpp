@@ -187,7 +187,10 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
 }
 
 void EarlyLog(const char *fmt, ...) {
-  if (!g_pLocalConfig || !g_pLocalConfig->debugLogging) return;
+  // If config is loaded, respect the debugLogging flag.
+  // If not yet loaded (early DllMain), allow logging to catch startup issues.
+  if (g_pLocalConfig && !g_pLocalConfig->debugLogging) return;
+  
   va_list args;
   va_start(args, fmt);
   LogToFileAtomic("hook_debug.log", fmt, args);

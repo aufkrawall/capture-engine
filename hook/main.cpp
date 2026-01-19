@@ -1101,10 +1101,7 @@ extern "C" __declspec(dllexport) LRESULT CALLBACK CBTHookProc(int nCode, WPARAM 
 }
 
 // Thread to safely eject the DLL
-static DWORD WINAPI EjectThread(LPVOID lpParam) {
-    FreeLibraryAndExitThread((HMODULE)lpParam, 0);
-    return 0;
-}
+
 
 
 
@@ -1116,9 +1113,8 @@ static bool isProcessWhitelistedFast(const char* name) {
         return true;
     }
     
-    // 2. Shared Memory Whitelist Cache
-    // If shared memory is not available or empty, we default to NOT whitelisted.
-    // This avoids unsafe file I/O in sandboxed processes.
+    // 2. Shared Memory Whitelist Cache (Fastest & Safest)
+    // Reliance on Shared Memory avoids Disk I/O in DllMain.
     HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
     if (hDisc) {
         DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
@@ -1142,108 +1138,30 @@ static bool isProcessWhitelistedFast(const char* name) {
         if (found) return true;
     }
     
-    // 3. Config.ini Whitelist (Early Read)
-    // Construct path to config.ini relative to our DLL
-    char dllPath[MAX_PATH];
-    if (GetModuleFileNameA(g_hModule, dllPath, MAX_PATH)) {
-        // PERF OPTIMIZATION:
-        // Do not perform disk I/O for system processes (System32/SysWOW64)
-        // This prevents slowdowns during massive system process spawn events.
-        char exePath[MAX_PATH];
-        if (GetModuleFileNameA(NULL, exePath, MAX_PATH)) {
-            // Check for System32/SysWOW64
-            // Fast check: look for "Windows\\" and "System32" or "SysWOW64"
-            // We use strstr which is fast enough.
-            _strlwr_s(exePath, MAX_PATH); 
-            if (strstr(exePath, "\\windows\\system32\\") || strstr(exePath, "\\windows\\syswow64\\")) {
-                 return false;
-            }
-        }
-
-        char* lastSlash = strrchr(dllPath, '\\');
-        if (lastSlash) {
-            *lastSlash = '\0'; // Strip filename
-            strncat(dllPath, "\\config.ini", MAX_PATH - strlen(dllPath) - 1);
-            
-            // Read whitelist string
-            char whitelistBuf[1024];
-            if (GetPrivateProfileStringA("Injection", "ProcessWhitelist", "", whitelistBuf, sizeof(whitelistBuf), dllPath) > 0) {
-                // Tokenize comma-separated
-                char* context = nullptr;
-                char* token = strtok_s(whitelistBuf, ",", &context);
-                while (token) {
-                    // Trim spaces
-                    while (*token == ' ') token++;
-                    char* end = token + strlen(token) - 1;
-                    while (end > token && *end == ' ') *end-- = '\0';
-                    
-                    if (_stricmp(name, token) == 0) {
-                         return true;
-                    }
-                    token = strtok_s(nullptr, ",", &context);
-                }
-            }
-        }
-    }
-    
+    // Config.ini fallback removed from DllMain - safer to stay dormant if 
+    // CaptureEngine hasn't explicitly whitelisted via Shared Memory yet.
     return false;
 }
 
-// Adaptive Unload Helper using Environment Variables
-// Returns TRUE if we should Unload, FALSE if we should Stay Loaded (and Lock)
-static bool ShouldSelfUnloadAdaptive(const char* fileName) {
-    if (!fileName) return false;
-
-    // Safety Override: NEVER unload from Critical Shell Processes.
-    // Unloading from Explorer/DWM can cause shell restarts or crashes due to 
-    // race conditions with the CBT hook callback.
-    if (_stricmp(fileName, "explorer.exe") == 0 || 
-        _stricmp(fileName, "dwm.exe") == 0 ||
-        _stricmp(fileName, "lsass.exe") == 0 ||
-        _stricmp(fileName, "csrss.exe") == 0) {
-        return false;
-    }
-
-    // 2. Adaptive Logic for Unknown/Blacklisted Processes
-    char envBuf[64];
-    DWORD len = GetEnvironmentVariableA("CE_HOOK_STRIKE", envBuf, 64);
-    
-    uint64_t now = GetTickCount64();
-    
-    if (len == 0) {
-        // [State: First Load]
-        // Assumption: Passively safe to unload (optimistic).
-        // Action: Mark timestamp, Unload.
-        std::string ts = std::to_string(now);
-        SetEnvironmentVariableA("CE_HOOK_STRIKE", ts.c_str());
-        return true; 
-    } 
-    else {
-        // [State: Reloaded]
-        // Check if we are "Locked"
-        if (strcmp(envBuf, "LOCKED") == 0) {
-            return false; // Stay Loaded
-        }
-
-        // Calculate delta
-        uint64_t lastTime = _strtoui64(envBuf, nullptr, 10);
-        uint64_t dt = now - lastTime;
-        
-        if (dt < 1000) {
-            // [State: Fast Reload Loop Detected (<1s)]
-            // We are being spammed (Explorer/UI). Unloading causes lag.
-            // Action: Lock permanently, Stay Loaded.
-            SetEnvironmentVariableA("CE_HOOK_STRIKE", "LOCKED");
-            return false;
-        } else {
-            // [State: Slow Reload (>1s)]
-            // Just a periodic wake-up (Service).
-            // Action: Reset timestamp, Unload again.
-            std::string ts = std::to_string(now);
-            SetEnvironmentVariableA("CE_HOOK_STRIKE", ts.c_str());
-            return true;
-        }
-    }
+// Helper: Identify Service Processes for Safe Unload
+static bool IsServiceProcess(const char* name) {
+    if (!name) return false;
+    // These processes are safe to unload from (services, non-interactive).
+    // Returning FALSE in DllMain allows the OS to unload us cleanly.
+    return (_stricmp(name, "svchost.exe") == 0 ||
+            _stricmp(name, "lsass.exe") == 0 ||
+            _stricmp(name, "services.exe") == 0 ||
+            _stricmp(name, "smss.exe") == 0 ||
+            _stricmp(name, "wininit.exe") == 0 ||
+            _stricmp(name, "csrss.exe") == 0 ||
+            _stricmp(name, "conhost.exe") == 0 ||
+            _stricmp(name, "dllhost.exe") == 0 || // COM Surrogate
+            _stricmp(name, "sihost.exe") == 0 ||
+            _stricmp(name, "pwahelper.exe") == 0 ||
+            _stricmp(name, "PerfWatson.exe") == 0 ||
+            _stricmp(name, "DataExchangeHost.exe") == 0 ||
+            _stricmp(name, "GamebarFTServer.exe") == 0 ||
+            _stricmp(name, "ApplicationFrameHost.exe") == 0); // SpecialK lists this
 }
 
 extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
@@ -1252,51 +1170,51 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     g_hModule = hinstDLL;
     DisableThreadLibraryCalls(hinstDLL);
 
-    char fullPath[MAX_PATH];
-    char* fileName = nullptr;
+    char fullPath[MAX_PATH] = {0};
+    char* fileName = (char*)"unknown";
     if (GetModuleFileNameA(NULL, fullPath, MAX_PATH)) {
         char* fileLastSlash = strrchr(fullPath, '\\');
         fileName = fileLastSlash ? (fileLastSlash + 1) : fullPath;
         strncpy(g_ProcessName, fileName, sizeof(g_ProcessName) - 1);
         g_ProcessName[sizeof(g_ProcessName) - 1] = '\0';
-    } else {
-        fileName = (char*)"unknown";
     }
 
-    if (g_ProcessCategory == ProcessCategory::PotentialGame) {
-        if (_stricmp(fileName, "captureengine.exe") == 0 || _stricmp(fileName, "captureengine_x86.exe") == 0) {
-            g_ProcessCategory = ProcessCategory::InternalTool;
-            EarlyLog("DllMain: Process '%s' identified as InternalTool", fileName);
-        } else if (isProcessWhitelistedFast(fileName)) {
-             // Whitelisted Game (Shared Mem OR Config)
-             if (!g_pLocalConfig) {
-                 g_pLocalConfig = new AppConfig();
-             }
-             _putenv("FERMI_UNOPT_LOD_SPREAD=1");
-             _putenv("NIAGARA_UNOPT_LOD_SPREAD=1");
-             EarlyLog("DllMain: Process '%s' is a Whitelisted Game", fileName);
-        } else {
-             // Not whitelisted - assume blacklist
-             g_ProcessCategory = ProcessCategory::Blacklisted;
-             // DO NOT LOG - Silent Rejection (default)
-             
-             // "Proper" Fix for File Locks:
-             // Use Adaptive Strategy to unload from Services while staying loaded in Explorer
-             if (ShouldSelfUnloadAdaptive(fileName)) {
-                 HANDLE hThread = CreateThread(NULL, 0, UnloadSelfThread, NULL, 0, NULL);
-                 if (hThread) CloseHandle(hThread);
-             }
-        }
+    // 1. SAFE UNLOAD: Services and non-interactive helpers
+    // These processes should unload the DLL immediately and cleanly.
+    if (IsServiceProcess(fileName)) {
+        return FALSE; // Detach immediately
     }
-    // ...
 
-
-    if (g_ProcessCategory == ProcessCategory::Blacklisted) {
+    // 2. DORMANT MODE: Shell, Critical UI, and Internal processes
+    // These MUST stay loaded to avoid the "Unload Loop" (repeated injection),
+    // but they must remain completely inert.
+    if (_stricmp(fileName, "explorer.exe") == 0 || 
+        _stricmp(fileName, "dwm.exe") == 0 ||
+        _stricmp(fileName, "winlogon.exe") == 0 ||
+        _stricmp(fileName, "captureengine.exe") == 0 ||
+        _stricmp(fileName, "captureengine_x86.exe") == 0) {
+        
         g_isDormant = true;
-        // Optimization: Do NOT Unload (return FALSE).
-        // Returning FALSE causes the OS to retry loading repeatedly for global CBT hooks,
-        // causing massive CPU usage and system slowness.
-        // Instead, we return TRUE but stay dormant (no threads, no allocations).
+        return TRUE; // Stay loaded but totally inert
+    }
+
+    // 2. WHITELIST CHECK: Fast & Inert
+    if (isProcessWhitelistedFast(fileName)) {
+        // Whitelisted Game (Shared Mem OR Config - but we only use ShMem now in WhitelistFast)
+        if (!g_pLocalConfig) {
+            g_pLocalConfig = new AppConfig();
+        }
+        _putenv("FERMI_UNOPT_LOD_SPREAD=1");
+        _putenv("NIAGARA_UNOPT_LOD_SPREAD=1");
+        EarlyLog("DllMain: Process '%s' is a Whitelisted Game", fileName);
+    } else {
+        // Not whitelisted - assume blacklist
+        g_ProcessCategory = ProcessCategory::Blacklisted;
+        g_isDormant = true;
+        
+        // NO Self-Unload thread anymore. It causes crashes during CBT callbacks.
+        // NO Adaptive Strategy. Just stay dormant.
+        return TRUE;
     }
 
     if (g_isDormant) {

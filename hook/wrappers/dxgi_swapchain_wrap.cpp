@@ -14,6 +14,7 @@
 // External overlay functions (implemented in dx11_hook.cpp / dx12_hook.cpp)
 extern void DrawDX11Overlay(IDXGISwapChain* pSwapChain);
 extern void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain);
+extern "C" __declspec(dllimport) void DX12_SetCommandQueue(IUnknown* pQueue);
 #include <cstdint>
 extern void DX11_UpdatePerformanceMetrics(int64_t qpcUs);
 
@@ -55,6 +56,11 @@ CWrapDXGISwapChain::CWrapDXGISwapChain(IDXGISwapChain* pReal, IUnknown* pDevice)
             ID3D12CommandQueue* pQueue = nullptr;
             if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&pQueue)))) {
                 m_IsD3D12 = true;
+                
+                // CRITICAL: Register the command queue with the DX12 hook system
+                // handles the case where CreateSwapChainForHwnd detour was bypassed or called before hook was ready
+                DX12_SetCommandQueue(pQueue);
+                
                 pQueue->Release();
             }
         }

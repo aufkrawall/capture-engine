@@ -138,9 +138,12 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory1(REFIID riid, void** ppFactory) {
             pRealFactory->Release();
             WrapperLog("Wrapper: Created wrapped factory1");
         } else {
+            WrapperLog("Wrapper: CreateDXGIFactory1 - FAILED to QueryInterface Factory2. Returning real factory.");
             hr = pRealFactory->QueryInterface(riid, ppFactory);
             pRealFactory->Release();
         }
+    } else {
+        WrapperLog("Wrapper: CreateDXGIFactory1 - oCreateDXGIFactory1 FAILED or returned NULL. hr=0x%08X", hr);
     }
     
     return hr;
@@ -160,6 +163,8 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory2(UINT Flags, REFIID riid, void** ppFact
         pWrapper->Release();
         pRealFactory->Release();
         WrapperLog("Wrapper: Created wrapped factory2");
+    } else {
+        WrapperLog("Wrapper: CreateDXGIFactory2 - oCreateDXGIFactory2 FAILED or returned NULL. hr=0x%08X", hr);
     }
     
     return hr;

@@ -187,7 +187,11 @@ bool IsFSR3SwapChain(IDXGISwapChain* pSwapChain) {
 extern "C" __declspec(dllexport) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) {
     if (pQueue && g_CommandQueue != pQueue) {
         g_CommandQueue = pQueue;
+        pQueue->AddRef(); // For our global pointer
         HookLog("DX12: Manually registered Command Queue: %p", pQueue);
+        
+        // Ensure ExecuteCommandLists is hooked on this queue
+        HookQueueVTable(pQueue);
         
         // Also try to deduce device if missing
         if (!g_Device) {
@@ -736,6 +740,16 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
   IDXGISwapChain3* sc3 = nullptr;
   if (FAILED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3))) || !sc3) {
     return;
+  }
+
+  // SELF-HEALING: If command queue is missing, try to capture it from the swapchain
+  if (!g_CommandQueue) {
+      ID3D12CommandQueue* queue = nullptr;
+      if (SUCCEEDED(sc3->GetDevice(IID_PPV_ARGS(&queue)))) {
+          HookLog("DX12: ProcessFrameExternal: Self-healing captured Command Queue %p", queue);
+          DX12_SetCommandQueue(queue);
+          queue->Release();
+      }
   }
 
   // Record frame stats for FG logic (CRITICAL: This path is used when DX11 hook handles Present)
@@ -1323,8 +1337,17 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
   // 3. Initialize Shared Capture
   if (g_CommandQueue) {
       if (!g_SharedCaptureD3D12.IsActive()) {
+          // If we haven't connected to IPC yet, we might want to wait or skip.
+          // SharedCaptureD3D12::Initialize now has verbose logging to pinpoint failures.
           bool ok = g_SharedCaptureD3D12.Initialize(g_Device, pSwapChain, g_CommandQueue);
-          HookLog("DX12: ProcessFrame - SharedCaptureD3D12::Initialize %s", ok ? "SUCCESS" : "FAILED");
+          static int failCount = 0;
+          if (!ok) {
+              if (failCount++ % 60 == 0) {
+                  HookLog("DX12: ProcessFrame - SharedCaptureD3D12::Initialize FAILED (Count: %d)", failCount);
+              }
+          } else {
+              HookLog("DX12: ProcessFrame - SharedCaptureD3D12::Initialize SUCCESS");
+          }
       }
   }
 
@@ -2738,12 +2761,18 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(
 #endif
 
   if (pDevice) {
+    // IGNORE dummy swapchain from proactive hooking
+    if (pDesc && pDesc->Width == 1 && pDesc->Height == 1) {
+        HookLog("DX12: DetourCreateSwapChainForHwnd: Ignoring 1x1 dummy swapchain queue capture.");
+        return oCreateSwapChainForHwnd(pThis, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
+    }
+
     ID3D12CommandQueue *queue = nullptr;
     if (SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D12CommandQueue),
                                           (void **)&queue))) {
       // Release old queue before capturing new one
       if (g_CommandQueue) g_CommandQueue->Release();
-      g_CommandQueue = queue; // Keep the reference from QueryInterface
+      g_CommandQueue = queue; // Keep the reference
       g_IsQueueFromSwapchain = true;
       EarlyLog("DX12: DetourCreateSwapChainForHwnd: Auth Queue %p captured from Swapchain", g_CommandQueue);
       
@@ -3140,9 +3169,9 @@ void DX12Hook::Init() {
 
   // Create a temporary factory to get VTable for SwapChain creation hooks
   IDXGIFactory4 *factory = nullptr;
-  pCreateDXGIFactory1(IID_PPV_ARGS(&factory));
+  HRESULT hr = pCreateDXGIFactory1(IID_PPV_ARGS(&factory));
 
-  if (factory) {
+  if (factory && SUCCEEDED(hr)) {
       void **facVTable = *reinterpret_cast<void ***>(factory);
       
       VTableHook::Status s;
@@ -3162,9 +3191,82 @@ void DX12Hook::Init() {
                     (LPVOID *)&oCreateSwapChainForComposition);
       if (s != VTableHook::Success) HookLog("Failed to hook CreateSwapChainForComposition: %s", VTableHook::StatusToString(s));
       
+      // Proactive SwapChain VTable Hooking
+      // Create a dummy device and swapchain to get the VTable for Present
+      HookLog("DX12: Attempting proactive swapchain VTable hooking...");
+      
+      typedef HRESULT (WINAPI *PFN_D3D12_CREATE_DEVICE)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
+      PFN_D3D12_CREATE_DEVICE pD3D12CreateDevice = (PFN_D3D12_CREATE_DEVICE)GetProcAddress(hD3D12, "D3D12CreateDevice");
+
+      ID3D12Device* dummyDevice = nullptr;
+      if (pD3D12CreateDevice && SUCCEEDED(pD3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&dummyDevice)))) {
+          D3D12_COMMAND_QUEUE_DESC queueDesc = {};
+          queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+          ID3D12CommandQueue* dummyQueue = nullptr;
+          if (SUCCEEDED(dummyDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&dummyQueue)))) {
+              DXGI_SWAP_CHAIN_DESC1 scDesc = {};
+              scDesc.Width = 1;
+              scDesc.Height = 1;
+              scDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+              scDesc.SampleDesc.Count = 1;
+              scDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+              scDesc.BufferCount = 2;
+              scDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+
+              // GUARD: If DetourCreateSwapChainForHwnd already triggered (e.g. by game startup)
+              // and oPresent is already set, we might be about to double-hook if we are not careful.
+              // However, VTableHook::Create handles existing hooks. 
+              // The main goal here is to avoid the "ALREADY SET" log spam when everything is working.
+              HWND hwnd = CreateWindowA("STATIC", "Dummy", WS_OVERLAPPEDWINDOW, 0, 0, 1, 1, NULL, NULL, NULL, NULL);
+              if (hwnd) {
+                  IDXGISwapChain1* sc1 = nullptr;
+                  if (SUCCEEDED(factory->CreateSwapChainForHwnd(dummyQueue, hwnd, &scDesc, nullptr, nullptr, &sc1))) {
+                      HookLog("DX12: Dummy swapchain created successfully.");
+                      IDXGISwapChain3* sc3 = nullptr;
+                      HRESULT sqi = sc1->QueryInterface(IID_PPV_ARGS(&sc3));
+                      if (SUCCEEDED(sqi)) {
+                          HookLog("DX12: Dummy swapchain obtained SC3 interface.");
+                          // Hook Present and Present1 directly on the VTable
+                          void** scVTable = *(void***)sc3;
+                          
+                          if (oPresent == nullptr) {
+                              VTableHook::Status s = VTableHook::Create(&scVTable[8], (LPVOID)DetourPresent, (LPVOID*)&oPresent);
+                              HookLog("DX12: Proactive VTable hook: Present (vtable[8]) Status=%d", (int)s);
+                          } else {
+                              HookLog("DX12: Proactive VTable hook: Present ALREADY SET (%p)", oPresent);
+                          }
+                          
+                          if (oPresent1 == nullptr) {
+                              VTableHook::Status s = VTableHook::Create(&scVTable[22], (LPVOID)DetourPresent1, (LPVOID*)&oPresent1);
+                              HookLog("DX12: Proactive VTable hook: Present1 (vtable[22]) Status=%d", (int)s);
+                          } else {
+                              HookLog("DX12: Proactive VTable hook: Present1 ALREADY SET (%p)", oPresent1);
+                          }
+                          
+                          sc3->Release();
+                      } else {
+                          HookLog("DX12: Dummy swapchain FAILED to obtain SC3 interface (hr=0x%08X).", sqi);
+                      }
+                      sc1->Release();
+                  } else {
+                      HookLog("DX12: Dummy swapchain creation FAILED.");
+                  }
+                  DestroyWindow(hwnd);
+              } else {
+                  HookLog("DX12: Dummy window creation FAILED.");
+              }
+              dummyQueue->Release();
+          } else {
+              HookLog("DX12: Dummy queue creation FAILED.");
+          }
+          dummyDevice->Release();
+      } else {
+          HookLog("DX12: Failed to create dummy device for proactive hooking.");
+      }
+
       factory->Release();
   } else {
-      HookLog("DX12: Failed to create temporary DXGI Factory. SwapChain hooking may fail.");
+      HookLog("DX12: Failed to create temporary DXGI Factory (hr=0x%08X). SwapChain hooking may fail.", hr);
   }
 
   // NOTE: Export hooks (SerializeRootSignature) removed here.

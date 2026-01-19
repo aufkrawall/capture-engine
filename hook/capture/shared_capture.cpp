@@ -5,6 +5,7 @@
  */
 
 #include "shared_capture.h"
+#include "../common/hook_common.h"
 #include <string>
 #include <unordered_map>
 
@@ -279,45 +280,53 @@ bool SharedCaptureD3D12::Initialize(ID3D12Device* pDevice, IDXGISwapChain* pSwap
     m_pCommandQueue = pCommandQueue;
     
     if (FAILED(pSwapChain->QueryInterface(IID_PPV_ARGS(&m_pSwapChain)))) {
+        EarlyLog("DX12: SharedCapture - Failed to Get IDXGISwapChain3");
         return false;
     }
     
     // Get swapchain description
     DXGI_SWAP_CHAIN_DESC desc;
     if (FAILED(pSwapChain->GetDesc(&desc))) {
+        EarlyLog("DX12: SharedCapture - Failed to Get SwapChain Desc");
         return false;
     }
     
     // Create fence for synchronization
     if (FAILED(pDevice->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&m_Fence)))) {
+        EarlyLog("DX12: SharedCapture - Failed to Create Fence");
         return false;
     }
 
     // Create shared handle for fence
     if (FAILED(pDevice->CreateSharedHandle(m_Fence.Get(), nullptr, GENERIC_ALL, nullptr, &m_FenceShareHandle))) {
+        EarlyLog("DX12: SharedCapture - Failed to Create Shared Handle for Fence");
         return false;
     }
     
     m_FenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     if (!m_FenceEvent) {
+        EarlyLog("DX12: SharedCapture - Failed to Create Fence Event");
         return false;
     }
     
     // Create command allocator and list
     if (FAILED(pDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, 
                                                 IID_PPV_ARGS(&m_CommandAllocator)))) {
+        EarlyLog("DX12: SharedCapture - Failed to Create Command Allocator");
         return false;
     }
     
     if (FAILED(pDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
                                            m_CommandAllocator.Get(), nullptr,
                                            IID_PPV_ARGS(&m_CommandList)))) {
+        EarlyLog("DX12: SharedCapture - Failed to Create Command List");
         return false;
     }
     m_CommandList->Close();
     
     // Create shared resources
     if (!CreateSharedResources(desc.BufferDesc.Width, desc.BufferDesc.Height, desc.BufferDesc.Format)) {
+        EarlyLog("DX12: SharedCapture - Failed to Create Shared Resources");
         return false;
     }
     
@@ -352,6 +361,7 @@ bool SharedCaptureD3D12::CreateSharedResources(UINT width, UINT height, DXGI_FOR
         );
         
         if (FAILED(hr)) {
+            EarlyLog("DX12: SharedCapture - Failed to Create Shared Resource %d (hr=0x%08X)", i, hr);
             return false;
         }
         
@@ -365,6 +375,7 @@ bool SharedCaptureD3D12::CreateSharedResources(UINT width, UINT height, DXGI_FOR
         );
         
         if (FAILED(hr)) {
+            EarlyLog("DX12: SharedCapture - Failed to Create Shared Handle for Resource %d (hr=0x%08X)", i, hr);
             return false;
         }
     }
