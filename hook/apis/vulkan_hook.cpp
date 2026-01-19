@@ -690,39 +690,13 @@ public:
   VkSemaphore presentTriggerSems[CAPTURE_TEXTURE_COUNT] = {};
   VkSemaphore copyTriggerSems[CAPTURE_TEXTURE_COUNT] = {};
 
-  // D3D11 intermediate path: Create D3D11 textures that both Vulkan and
-  // D3D11 can access. Vulkan copies to these, encoder opens via KMT handles.
-  ID3D11Device *d3d11Device = nullptr;
-  ID3D11DeviceContext *d3d11Context = nullptr;
-  ID3D11Texture2D *d3d11Textures[CAPTURE_TEXTURE_COUNT] = {};
-  HANDLE d3d11TextureHandles[CAPTURE_TEXTURE_COUNT] = {}; // KMT handles
-  ID3D11Fence *d3d11Fence = nullptr;
-  HANDLE d3d11FenceHandle = nullptr;
-  bool usingD3D11Path = false;
+  // D3D11 intermediate path removed - using pure Vulkan External Memory
+
 
   void CleanupD3D11() {
-    for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
-      if (d3d11Textures[i]) {
-        d3d11Textures[i]->Release();
-        d3d11Textures[i] = nullptr;
-      }
-      d3d11TextureHandles[i] = nullptr;
-    }
-    if (d3d11Fence) {
-      d3d11Fence->Release();
-      d3d11Fence = nullptr;
-    }
-    d3d11FenceHandle = nullptr;
-    if (d3d11Context) {
-      d3d11Context->Release();
-      d3d11Context = nullptr;
-    }
-    if (d3d11Device) {
-      d3d11Device->Release();
-      d3d11Device = nullptr;
-    }
-    usingD3D11Path = false;
+      // No-op
   }
+
 
   void CleanupVulkan(VkDevice device) {
     StopCaptureThread();
@@ -1380,8 +1354,9 @@ public:
       return;
     }
 
-    // Use member variable, do not redeclare!
-    separateDeviceActive = false;
+    // Attempt to enable separate device
+    separateDeviceActive = false; 
+
 
     // --- Create Internal Staging Resources (100% Stable for Graphics Queue) ---
     for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
@@ -1427,26 +1402,28 @@ public:
         vkBindImageMemory(g_Device, g_InternalStagingImages[i], g_InternalStagingMemories[i], 0);
     }
 
-    // --- OPTIMIZED PATH: Single-Copy Architecture ---
-    // Use D3D11 shared textures directly (imported into Vulkan).
-    // The async queue on the GAME device copies swapchain → D3D11 texture in ONE operation.
-    // This matches DX12 efficiency (1 copy vs previous 2 copies).
-    // No separate capture device needed - eliminates complexity and overhead.
-    
-    if (g_AsyncQueue != VK_NULL_HANDLE && g_AsyncQueueFamily != UINT32_MAX) {
-        // Create D3D11 textures and import them into Vulkan for direct copy
-        if (CreateD3D11SharedResources(width, height, format)) {
-            separateDeviceActive = false;  // We're NOT using separate device anymore
-            usingD3D11Path = true;
-            HookLog("Vulkan: Using Optimized Single-Copy Path (Async Queue on Game Device)");
+    // --- OPTIMIZED PATH: Separate Capture Device (Zero Copy) ---
+    // Try to create a separate device for capture to minimize game queue impact.
+    if (CreateCaptureDevice()) {
+        separateDeviceActive = true;
+        if (CreateCrossDeviceImages(width, height, vkFormat) && CreateCrossDeviceSemaphore()) {
+             HookLog("Vulkan: Separate Capture Device Active (Zero-Copy)");
+             // We still use sharedImages on the game device (aliased or exported)
+             // The Inline Path below will create them.
+             // Wait, CreateCrossDeviceImages creates them!
         } else {
-            HookLog("Vulkan: D3D11 shared resources failed, falling back to inline path");
+             HookLog("Vulkan: Failed to create cross-device resources");
+             separateDeviceActive = false;
         }
     }
 
     // --- Path B: Inline Path (Fallback) ---
     // Only use this if D3D11 path didn't succeed
-    if (!separateDeviceActive && !usingD3D11Path) {
+    // --- Path B: Inline Path (Standard Zero-Copy) ---
+    // Used if Separate Device failed or not optimal. 
+    // Exports textures directly from Game Device.
+    if (!separateDeviceActive) {
+
         HookLog("Vulkan: Using Inline Path (Fallback)");
         
         for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
@@ -4443,8 +4420,9 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
           g_VulkanCapture.CreateSharedResources(sc.width, sc.height, (uint32_t)sc.format);
           
           if (g_VulkanCapture.initialized) {
-              if (g_VulkanCapture.usingD3D11Path) {
-                  HookLog("Vulkan: D3D11 path initialized successfully");
+              if (separateDeviceActive) {
+                  HookLog("Vulkan: Separate Device path initialized successfully");
+
               } else {
                   HookLog("Vulkan: Vulkan path initialized successfully");
               }
@@ -4463,57 +4441,8 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
             // Capture the write index before advancing (if needed)
             int textureIdx = g_VulkanCapture.writeIndex;
             
-            // OPTIMIZATION: For D3D11 path, skip game queue copy - let async thread do single-copy
-            // This matches DX12 efficiency: swapchain → D3D11 texture in ONE operation on async queue
-            if (g_VulkanCapture.usingD3D11Path && !separateDeviceActive) {
-                // Create a semaphore to signal when swapchain is ready for async copy
-                VkSemaphore asyncReadySem = g_VulkanCapture.copyCompleteSemaphores[textureIdx];
-                
-                // Submit a minimal command to transition swapchain and signal the semaphore
-                // The async thread will wait on this before doing the actual copy
-                VkCommandBuffer cmd = g_VulkanCapture.captureCommandBuffers[textureIdx];
-                vkResetCommandBuffer(cmd, 0);
-                VkCommandBufferBeginInfo beginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-                beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-                vkBeginCommandBuffer(cmd, &beginInfo);
-                // No actual work - just a synchronization point
-                vkEndCommandBuffer(cmd);
-                
-                VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
-                submitInfo.commandBufferCount = 1;
-                submitInfo.pCommandBuffers = &cmd;
-                
-                // Wait for app's rendering to complete
-                std::vector<VkPipelineStageFlags> waitStages(pPresentInfo->waitSemaphoreCount, VK_PIPELINE_STAGE_TRANSFER_BIT);
-                submitInfo.waitSemaphoreCount = pPresentInfo->waitSemaphoreCount;
-                submitInfo.pWaitSemaphores = pPresentInfo->pWaitSemaphores;
-                submitInfo.pWaitDstStageMask = waitStages.data();
-                
-                // Signal: async thread can proceed AND present can proceed
-                VkSemaphore signalSems[] = {asyncReadySem, g_VulkanCapture.presentTriggerSems[textureIdx]};
-                submitInfo.signalSemaphoreCount = 2;
-                submitInfo.pSignalSemaphores = signalSems;
-                
-                {
-                    std::lock_guard<std::recursive_mutex> lock(g_VulkanMutex);
-                    vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
-                }
-                
-                // Enqueue for async thread (will do the actual copy)
-                g_VulkanCapture.EnqueueFrame(us, 0, textureIdx, 
-                                            (void*)sc.images[imageIndex], 
-                                            (uint64_t)asyncReadySem);
-                g_VulkanCapture.writeIndex = (textureIdx + 1) % CAPTURE_TEXTURE_COUNT;
-                
-                // Present waits on presentTriggerSem (signals after game queue submit)
-                VkPresentInfoKHR newPresent = *pPresentInfo;
-                newPresent.waitSemaphoreCount = 1;
-                newPresent.pWaitSemaphores = &g_VulkanCapture.presentTriggerSems[textureIdx];
-                
-                return o_vkQueuePresentKHR(queue, &newPresent);
-            }
-            
             // --- LEGACY PATH: Copy on game queue (for separateDeviceActive or fallback) ---
+
             std::vector<VkSemaphore> waitSemaphores;
             for(uint32_t i=0; i<pPresentInfo->waitSemaphoreCount; i++) {
                 waitSemaphores.push_back(pPresentInfo->pWaitSemaphores[i]);

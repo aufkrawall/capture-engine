@@ -170,7 +170,8 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory2(UINT Flags, REFIID riid, void** ppFact
 // ============================================================================
 
 #ifdef ENABLE_D3D12_WRAPPER
-HRESULT WINAPI Wrapped_D3D12CreateDevice(
+// Mark as dllexport to ensure function is accessible for IAT patching
+__declspec(dllexport) HRESULT WINAPI Wrapped_D3D12CreateDevice(
     IUnknown* pAdapter,
     D3D_FEATURE_LEVEL MinimumFeatureLevel,
     REFIID riid,

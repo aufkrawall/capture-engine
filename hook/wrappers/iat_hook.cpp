@@ -398,20 +398,21 @@ bool InitializeDXGIHooks() {
 bool InitializeD3D12Hooks() {
 #ifdef ENABLE_D3D12_WRAPPER
     WrapperLog("IAT: Initializing D3D12 hooks...");
-    
+
     HMODULE hD3D12 = GetModuleHandleA("d3d12.dll");
-    
+
     if (hD3D12) {
         oD3D12CreateDevice = reinterpret_cast<PFN_D3D12CreateDevice>(
             GetProcAddress(hD3D12, "D3D12CreateDevice"));
-        
+
         void* dummy;
-        if (!PatchIATAllModules("d3d12.dll", "D3D12CreateDevice",
-                                 (void*)Wrapped_D3D12CreateDevice, &dummy)) {
+        bool patchResult = PatchIATAllModules("d3d12.dll", "D3D12CreateDevice",
+                                                (void*)Wrapped_D3D12CreateDevice, &dummy);
+        if (!patchResult) {
             WrapperLog("IAT: D3D12CreateDevice not found in IAT");
         }
-        
-        WrapperLog("IAT: D3D12 hooks initialized");
+
+        WrapperLog("IAT: D3D12 hooks initialized (patchResult=%d)", patchResult);
         
         // Also hook D3D12SerializeRootSignature and D3D12SerializeVersionedRootSignature
         // These are exported by d3d12.dll

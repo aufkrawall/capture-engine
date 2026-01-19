@@ -8,12 +8,15 @@
 #pragma once
 
 #include <d3d11.h>
+#include <d3d11_1.h>
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <wrl/client.h>
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <string>
+#include <unordered_map>
 
 using Microsoft::WRL::ComPtr;
 
@@ -29,6 +32,7 @@ struct SharedFrameDescriptor {
     UINT64 fenceValue;             // Sync fence value
     UINT64 presentTime;            // QPC timestamp
     UINT frameNumber;              // Monotonic frame counter
+    int32_t textureIndex;          // Index of shared texture (0-1)
     bool ready;                    // Frame is ready for consumption
 };
 
@@ -116,6 +120,13 @@ public:
     void ReleaseFrame(UINT frameNumber) override;
     bool IsActive() const override { return m_Active; }
     
+    // Get shared handles for IPC sync
+    HANDLE GetSharedHandle(int index) const { return (index >= 0 && index < 2) ? m_SharedHandles[index] : nullptr; }
+    HANDLE GetFenceShareHandle() const { return m_FenceShareHandle; }
+    
+    // Reset resources (e.g. on swapchain resize)
+    void Reset();
+    
 private:
     bool CreateSharedResources(UINT width, UINT height, DXGI_FORMAT format);
     
@@ -129,6 +140,7 @@ private:
     
     // Fence for synchronization
     ComPtr<ID3D12Fence> m_Fence;
+    HANDLE m_FenceShareHandle;
     HANDLE m_FenceEvent;
     UINT64 m_FenceValue;
     

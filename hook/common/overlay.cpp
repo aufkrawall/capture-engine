@@ -6,6 +6,47 @@
 // Global overlay instance
 Overlay g_SharedOverlay;
 
+// Helper to get system DPI scale (without window handle, for Vulkan layer)
+// Uses primary monitor DPI
+// Define DPI types for mingw compatibility
+#ifndef MONITOR_DPI_TYPE
+typedef enum {
+    MDT_EFFECTIVE_DPI = 0,
+    MDT_ANGULAR_DPI = 1,
+    MDT_RAW_DPI = 2,
+    MDT_DEFAULT = MDT_EFFECTIVE_DPI
+} MONITOR_DPI_TYPE;
+#endif
+
+static float GetSystemDPIScale() {
+    UINT xdpi = 96, ydpi = 96;
+
+    // Try Windows 8.1+ API first
+    typedef HRESULT(WINAPI* PFN_GetDpiForMonitor)(HMONITOR, MONITOR_DPI_TYPE, UINT*, UINT*);
+    static HINSTANCE shcore_dll = ::LoadLibraryA("shcore.dll");
+    static PFN_GetDpiForMonitor GetDpiForMonitorFn = nullptr;
+
+    if (GetDpiForMonitorFn == nullptr && shcore_dll != nullptr) {
+        GetDpiForMonitorFn = (PFN_GetDpiForMonitor)::GetProcAddress(shcore_dll, "GetDpiForMonitor");
+    }
+
+    if (GetDpiForMonitorFn != nullptr) {
+        POINT pt = {1, 1};
+        HMONITOR monitor = ::MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY);
+        GetDpiForMonitorFn(monitor, MDT_EFFECTIVE_DPI, &xdpi, &ydpi);
+    } else {
+#ifndef NOGDI
+        // Fallback to GDI
+        HDC dc = ::GetDC(nullptr);
+        xdpi = ::GetDeviceCaps(dc, LOGPIXELSX);
+        ydpi = ::GetDeviceCaps(dc, LOGPIXELSY);
+        ::ReleaseDC(nullptr, dc);
+#endif
+    }
+
+    return xdpi / 96.0f;
+}
+
 // Helper to format bytes to GiB string
 static void FormatBytes(char* buf, size_t size, uint64_t bytes) {
     float gib = (float)bytes / (1024.0f * 1024.0f * 1024.0f);
@@ -70,33 +111,32 @@ void Overlay::InitImGuiHeadless() {
     IMGUI_CHECKVERSION();
     context = ImGui::CreateContext();
     ImGui::SetCurrentContext(context);
-    ImGui::GetIO().IniFilename = nullptr; 
-    
+    ImGui::GetIO().IniFilename = nullptr;
+
     // No ImGui_ImplWin32_Init
-    
-    // Default DPI scale for headless (layer can update font scale later if needed)
-    // Default to 1.5 (High DPI) so it's readable on 4K.
-    // Ideally we should detect system DPI or read from config.
-    float dpiScale = 1.5f;
-    
+
+    // Detect system DPI for headless mode (Vulkan layer)
+    // Uses primary monitor DPI detection
+    float dpiScale = GetSystemDPIScale();
+
     // Load Segoe UI Bold for thicker, prettier text
-    float baseFontSize = 18.0f; 
+    float baseFontSize = 18.0f;
     float scaledFontSize = baseFontSize * dpiScale;
-    
+
     ImGuiIO& io = ImGui::GetIO();
-    
+
     // Configure font for sharper rendering
     ImFontConfig fontConfig;
-    fontConfig.OversampleH = 3; 
+    fontConfig.OversampleH = 3;
     fontConfig.OversampleV = 3;
-    fontConfig.PixelSnapH = true; 
+    fontConfig.PixelSnapH = true;
     fontConfig.RasterizerMultiply = 1.0f;
-    
+
     mainFont = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeuib.ttf", scaledFontSize, &fontConfig);
     if (!mainFont) {
         mainFont = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", scaledFontSize, &fontConfig);
     }
-    
+
     io.Fonts->Build();
     
     initialized = true;
@@ -180,8 +220,10 @@ void Overlay::RenderUI() {
         if (initialized && context) {
             ImGui::SetCurrentContext(context);
             if (!hwnd || (IsWindow((HWND)hwnd) && IsWindowVisible((HWND)hwnd))) {
-                 // Setup basic window for the message
-                ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_Always);
+                 // Setup basic window for the message - scale position by DPI
+                float dpiScale = GetDpiScale();
+                float scaledPadding = 20.0f * dpiScale;
+                ImGui::SetNextWindowPos(ImVec2(scaledPadding, scaledPadding), ImGuiCond_Always);
                 ImGui::SetNextWindowBgAlpha(0.5f);
                 if (ImGui::Begin("OverlayFallback", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav)) {
                     ImGui::TextColored(ImVec4(1, 0, 0, 1), "CaptureEngine: Waiting for connection...");

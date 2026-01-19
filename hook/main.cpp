@@ -12,8 +12,10 @@
 #include "apis/nvngx_hook.h"
 #include "wrappers/wrapper_hooks.h"
 #include "wrappers/iat_hook.h"
+#include "wrappers/iat_hook.h"
 #include "common/hook_common.h"
 #include "common/ipc_client.h"
+#include "capture/shared_capture.h"
 #include "common/fg_detection.h"
 #include "common/system_metrics.h"
 // MinHook removed - using IAT patching via iat_hook.h
@@ -1005,6 +1007,19 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     if (waitResult == WAIT_OBJECT_0) {
         // Event signaled - run detection
         CheckAndInstallHooks();
+    }
+    
+    // Check for recording state changes
+    static bool s_WasRecording = false;
+    bool isRecording = false;
+    if (g_IPC && g_IPC->IsRecording()) {
+        isRecording = true;
+    }
+    
+    if (isRecording != s_WasRecording) {
+        s_WasRecording = isRecording;
+        CaptureManager::Get().SetCaptureEnabled(isRecording);
+        HookLog("Capture state changed: %s", isRecording ? "ENABLED" : "DISABLED");
     }
     
     // Always check for exit/IPC maintenance on every loop iteration

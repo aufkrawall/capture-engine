@@ -17,6 +17,11 @@
 #include "imgui.h"
 #include "../wrappers/wrapper_base.h"
 #include "../wrappers/wrapper_hooks.h"
+#include "../capture/shared_capture.h" // Added for shared capture
+
+// Global SharedCapture instance for DX12
+static SharedCaptureD3D12 g_SharedCaptureD3D12;
+
 #ifdef ENABLE_D3D12_WRAPPER
 #include "../wrappers/d3d12_wrapper_interface.h"
 #endif
@@ -305,114 +310,9 @@ static std::atomic<uint64_t> g_FGDebugResourceFails{0};
 void FGOverlayDrawCallback(IDXGISwapChain3* pSwapChain, ID3D12CommandQueue* pQueue);
 
 // --- Capture Resources ---
-class DX12Capture : public HookCaptureBase {
-public:
-  // Zero-Copy Video Capture Architecture (No D3D11On12):
-  // We use D3D12 textures with NT shared handles that D3D11 can open directly.
-  // DX12 resources can be exported with NT handles via ID3D12Resource::CreateSharedHandle.
-  // D3D11 can open these handles via OpenSharedResource1 (no D3D11On12 needed).
-  //
-  // Pipeline:
-  //   1. DX12 backbuffer → D3D12 shared texture (CopyResource)
-  //   2. D3D12 shared texture → NT handle export (ID3D12Resource::CreateSharedHandle)
-  //   3. D3D11 opens handle → D3D11 shared texture (OpenSharedResource1)
-  //   4. D3D11 shared texture → FFmpeg D3D11VA (zero-copy import)
-  //
-  // This works because DX12 and D3D11 on the same adapter support NT handle sharing.
-
-  // D3D11 device and context (for opening D3D12 shared handles)
-  ID3D11Device *d3d11Device = nullptr;
-  ID3D11DeviceContext *d3d11Context = nullptr;
-  ID3D11Texture2D *d3d11SharedTextures[CAPTURE_TEXTURE_COUNT] = {};  // D3D11 textures opened from D3D12 handles
-  HANDLE d3d12SharedHandles[CAPTURE_TEXTURE_COUNT] = {};  // NT handles exported from D3D12
-
-  // D3D12 capture resources
-  ID3D12Resource *sharedTextures[CAPTURE_TEXTURE_COUNT] = {};  // D3D12 textures with shared handles
-  ID3D12Resource *backBufferCache[16] = {nullptr};
-  UINT backBufferCount = 0;
-  ID3D12Fence *fence = nullptr;
-  ID3D12CommandQueue *captureQueue = nullptr;
-  ID3D12Fence *gameSyncFence = nullptr;
-  HANDLE gameSyncEvent = nullptr;  // CPU-side wait event for FG compatibility
-  UINT64 gameSyncValue = 0;
-  ID3D12CommandAllocator *cmdAlloc[CAPTURE_TEXTURE_COUNT] = {};
-  ID3D12GraphicsCommandList *cmdList = nullptr;
-
-  void CreateSharedResources(uint32_t, uint32_t, uint32_t) override {
-    // DX12 creates resources lazily in CheckCaptureInit() when swapchain is available
-    // This override intentionally empty - DX12 needs swapchain context for DXGI feature level
-  }
-
-  void Cleanup() override {
-    StopCaptureThread();
-    CleanupSharedHandles();
-
-    // Release D3D11 resources
-    for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
-      if (d3d11SharedTextures[i]) {
-        d3d11SharedTextures[i]->Release();
-        d3d11SharedTextures[i] = nullptr;
-      }
-      if (d3d12SharedHandles[i]) {
-        CloseHandle(d3d12SharedHandles[i]);
-        d3d12SharedHandles[i] = nullptr;
-      }
-    }
-    if (d3d11Context) {
-      d3d11Context->Release();
-      d3d11Context = nullptr;
-    }
-    if (d3d11Device) {
-      d3d11Device->Release();
-      d3d11Device = nullptr;
-    }
-
-    // Release D3D12 resources
-    for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
-      if (sharedTextures[i]) {
-        sharedTextures[i]->Release();
-        sharedTextures[i] = nullptr;
-      }
-      if (dxgiResources[i]) {
-        dxgiResources[i]->Release();
-        dxgiResources[i] = nullptr;
-      }
-      if (cmdAlloc[i])
-        cmdAlloc[i]->Release();
-      cmdAlloc[i] = nullptr;
-    }
-    if (fence)
-      fence->Release();
-    fence = nullptr;
-    if (gameSyncFence)
-      gameSyncFence->Release();
-    gameSyncFence = nullptr;
-    if (gameSyncEvent) {
-      CloseHandle(gameSyncEvent);
-      gameSyncEvent = nullptr;
-    }
-    if (cmdList)
-      cmdList->Release();
-    cmdList = nullptr;
-    if (captureQueue)
-      captureQueue->Release();
-    captureQueue = nullptr;
-
-    // Release cached backbuffer references (prevents GPU memory leak on resize)
-    for (UINT i = 0; i < backBufferCount; i++) {
-      if (backBufferCache[i]) {
-        backBufferCache[i]->Release();
-        backBufferCache[i] = nullptr;
-      }
-    }
-    backBufferCount = 0;
-
-    initialized = false;
-  }
-};
-static DX12Capture g_DX12Capture;
+// Legacy DX12Capture class removed. Using SharedCaptureD3D12.
 static std::mutex g_DX12CaptureMutex;
-static ID3D12Fence *g_DX12CaptureCompletionFence = nullptr;
+
 
 // --- ImGui & Overlay State ---
 struct DX12OverlayState {
@@ -714,7 +614,7 @@ void DrawOverlay(ID3D12GraphicsCommandList *cmdList) {
   // Use shared overlay
   g_SharedOverlay.SetMetrics(&g_PerfMetrics);
   g_SharedOverlay.SetIPCClient(g_IPC);
-  g_SharedOverlay.SetDroppedFrames(g_DX12Capture.droppedFrames.load(std::memory_order_relaxed));
+  g_SharedOverlay.SetDroppedFrames(0); // Legacy dropped frames removed
   const char* finalApi = "DX12";
   // Check for VKD3D-Proton - specifically check for vkd3d DLLs, not just vulkan-1.dll
   // vulkan-1.dll alone can be loaded by NVIDIA drivers even in native DX12 games
@@ -734,11 +634,13 @@ void DrawOverlay(ID3D12GraphicsCommandList *cmdList) {
   ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), cmdList); 
 }
 
+// Replaces CheckCaptureInit
 void CheckCaptureInit(IDXGISwapChain3 *pSwapChain) {
-  if (g_DX12Capture.initialized)
+  if (g_SharedCaptureD3D12.IsActive())
     return;
+    
   std::lock_guard<std::mutex> lock(g_DX12CaptureMutex);
-  if (g_DX12Capture.initialized)
+  if (g_SharedCaptureD3D12.IsActive())
     return;
 
   IUnknown* pTempUnk = nullptr;
@@ -747,11 +649,15 @@ void CheckCaptureInit(IDXGISwapChain3 *pSwapChain) {
   
   ID3D12Device* activeDevice = nullptr;
   ID3D12CommandQueue* activeQueue = nullptr;
+  // Get Queue first as it is common in D3D12
   if (SUCCEEDED(pTempUnk->QueryInterface(IID_PPV_ARGS(&activeQueue)))) {
       if (SUCCEEDED(activeQueue->GetDevice(IID_PPV_ARGS(&activeDevice)))) {
-          if (g_Device) g_Device->Release();
-          g_Device = activeDevice;
-          g_Device->AddRef();
+          // Update global device if needed
+          if (activeDevice != g_Device) {
+             if (g_Device) g_Device->Release();
+             g_Device = activeDevice;
+             g_Device->AddRef();
+          }
           activeDevice->Release();
       }
       activeQueue->Release();
@@ -762,297 +668,16 @@ void CheckCaptureInit(IDXGISwapChain3 *pSwapChain) {
       activeDevice->Release();
   }
   pTempUnk->Release();
-
-#ifdef ENABLE_D3D12_WRAPPER
-  // Unwrap g_Device if it's wrapped - the wrapper returns itself for IID_ID3D12Device
-  if (g_Device) {
-      ID3D12Device* unwrapped = UnwrapDevice(g_Device);
-      if (unwrapped != g_Device) {
-          EarlyLog("DX12: Unwrapped g_Device after set (wrapped=%p, real=%p)", g_Device, unwrapped);
-          g_Device->Release();
-          g_Device = unwrapped;
-          g_Device->AddRef();
-      }
-  }
-#endif
-  
   if (!g_Device) return;
 
-  DXGI_SWAP_CHAIN_DESC1 desc;
-  pSwapChain->GetDesc1(&desc);
-  g_DX12Capture.width = desc.Width;
-  g_DX12Capture.height = desc.Height;
-
-  // Create D3D11 device and shared textures for media encoder compatibility
-  // D3D12 shared resources cannot be opened by D3D11's OpenSharedResource,
-  // so we create D3D11 textures on the same GPU adapter.
-  if (!g_DX12Capture.d3d11Device) {
-    // Get DXGI adapter from D3D12 device using LUID
-    LUID adapterLuid = g_Device->GetAdapterLuid();
-    IDXGIAdapter* adapter = nullptr;
-    IDXGIFactory4* factory = nullptr;
-
-    HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory4), (void**)&factory);
-    if (SUCCEEDED(hr)) {
-      for (UINT i = 0; factory->EnumAdapters(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
-        DXGI_ADAPTER_DESC desc;
-        adapter->GetDesc(&desc);
-        if (desc.AdapterLuid.LowPart == adapterLuid.LowPart &&
-            desc.AdapterLuid.HighPart == adapterLuid.HighPart) {
-          break;  // Found matching adapter
-        }
-        adapter->Release();
-        adapter = nullptr;
+  // Initialize Shared Capture
+  // Use g_CommandQueue (which should be set by now via ProcessFrame)
+      if (g_CommandQueue) {
+          g_SharedCaptureD3D12.Initialize(g_Device, pSwapChain, g_CommandQueue);
+          HookLog("SharedCaptureD3D12 Initialized.");
       }
-      factory->Release();
-    }
-
-    if (adapter) {
-      // Create D3D11 device on the same adapter
-      D3D_FEATURE_LEVEL featureLevel;
-      hr = D3D11CreateDevice(
-        adapter,
-        D3D_DRIVER_TYPE_UNKNOWN,
-        nullptr,
-        D3D11_CREATE_DEVICE_BGRA_SUPPORT,  // Required for shared resources
-        nullptr, 0,
-        D3D11_SDK_VERSION,
-        &g_DX12Capture.d3d11Device,
-        &featureLevel,
-        &g_DX12Capture.d3d11Context
-      );
-
-      if (SUCCEEDED(hr)) {
-        HookLog("DX12: Created D3D11 device on same adapter (FL=0x%X)", featureLevel);
-
-        // Publish the D3D11 device creation to shared memory (for encoder to use)
-        // The actual texture opening will happen when encoder opens the shared D3D12 handles
-      } else {
-        HookLog("DX12: Failed to create D3D11 device: HR=%X", hr);
-      }
-
-      adapter->Release();
-    }
-  }
-
-  if (pSwapChain && g_DX12Capture.backBufferCount == 0) {
-    DXGI_SWAP_CHAIN_DESC scDesc;
-    pSwapChain->GetDesc(&scDesc);
-    g_DX12Capture.backBufferCount = scDesc.BufferCount;
-    if (g_DX12Capture.backBufferCount > 16)
-      g_DX12Capture.backBufferCount = 16;
-    for (UINT i = 0; i < g_DX12Capture.backBufferCount; i++) {
-      pSwapChain->GetBuffer(i, IID_PPV_ARGS(&g_DX12Capture.backBufferCache[i]));
-    }
-  }
-
-  if (!g_DX12Capture.captureQueue) {
-    D3D12_COMMAND_QUEUE_DESC queueDesc = {};
-    queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-    int priority = (g_IPC && g_IPC->GetSharedMem())
-                       ? g_IPC->GetSharedMem()->copyQueuePriority
-                       : 1;
-    if (priority == 0)
-      queueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
-    else if (priority == 2)
-      queueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_HIGH;
-    else
-      queueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
-
-    g_Device->CreateCommandQueue(&queueDesc,
-                                 IID_PPV_ARGS(&g_DX12Capture.captureQueue));
-  }
-
-  if (!g_DX12Capture.gameSyncFence) {
-    g_Device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
-                          IID_PPV_ARGS(&g_DX12Capture.gameSyncFence));
-    g_DX12Capture.gameSyncEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
-  }
-  if (!g_DX12Capture.fence) {
-    g_Device->CreateFence(0, D3D12_FENCE_FLAG_SHARED,
-                          IID_PPV_ARGS(&g_DX12Capture.fence));
-    g_Device->CreateSharedHandle(g_DX12Capture.fence, NULL, GENERIC_ALL, NULL,
-                                 &g_DX12Capture.sharedFenceHandle);
-    g_DX12Capture.fenceValue = 1;
-  }
-  if (!g_DX12CaptureCompletionFence)
-    g_Device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
-                          IID_PPV_ARGS(&g_DX12CaptureCompletionFence));
-
-  if (!g_DX12Capture.cmdAlloc[0]) {
-    for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++)
-      g_Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                       IID_PPV_ARGS(&g_DX12Capture.cmdAlloc[i]));
-    g_Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                g_DX12Capture.cmdAlloc[0], nullptr,
-                                IID_PPV_ARGS(&g_DX12Capture.cmdList));
-    g_DX12Capture.cmdList->Close();
-  }
-
-  // Create D3D12 textures with NT shared handles (no D3D11On12 needed)
-  // DX12 can export shared handles that D3D11 can open via OpenSharedResource1
-  if (!g_DX12Capture.sharedTextures[0]) {
-    D3D12_HEAP_PROPERTIES heapProps = {};
-    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
-    heapProps.CreationNodeMask = 1;
-    heapProps.VisibleNodeMask = 1;
-
-    D3D12_RESOURCE_DESC texDesc = {};
-    texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    texDesc.Alignment = 0;
-    texDesc.Width = desc.Width;
-    texDesc.Height = desc.Height;
-    texDesc.DepthOrArraySize = 1;
-    texDesc.MipLevels = 1;
-    texDesc.Format = desc.Format;
-    texDesc.SampleDesc.Count = 1;
-    texDesc.SampleDesc.Quality = 0;
-    texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    texDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
-
-    for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
-      HRESULT hr = g_Device->CreateCommittedResource(
-        &heapProps,
-        D3D12_HEAP_FLAG_SHARED,  // Enable NT handle sharing
-        &texDesc,
-        D3D12_RESOURCE_STATE_COPY_DEST,
-        nullptr,
-        IID_PPV_ARGS(&g_DX12Capture.sharedTextures[i])
-      );
-
-      if (SUCCEEDED(hr)) {
-        // Export NT shared handle that D3D11 can open
-        hr = g_DX12Capture.sharedTextures[i]->CreateSharedHandle(
-          nullptr,
-          GENERIC_ALL,
-          nullptr,
-          &g_DX12Capture.d3d12SharedHandles[i]
-        );
-
-        if (SUCCEEDED(hr)) {
-          // Open the D3D12 resource in D3D11 (no D3D11On12 needed!)
-          ID3D11Texture2D* d3d11Texture = nullptr;
-          hr = g_DX12Capture.d3d11Device->OpenSharedResource1(
-            g_DX12Capture.d3d12SharedHandles[i],
-            __uuidof(ID3D11Texture2D),
-            (void**)&d3d11Texture
-          );
-
-          if (SUCCEEDED(hr) && d3d11Texture) {
-            g_DX12Capture.d3d11SharedTextures[i] = d3d11Texture;
-            HookLog("DX12: Created D3D12 texture %d with shared handle=%llX (opened in D3D11)",
-                    i, (uint64_t)g_DX12Capture.d3d12SharedHandles[i]);
-          } else {
-            HookLog("DX12: Failed to open D3D12 shared handle in D3D11: HR=%X", hr);
-            CloseHandle(g_DX12Capture.d3d12SharedHandles[i]);
-            g_DX12Capture.d3d12SharedHandles[i] = nullptr;
-          }
-        } else {
-          HookLog("DX12: Failed to create shared handle for D3D12 texture %d: HR=%X", i, hr);
-        }
-      } else {
-        HookLog("DX12: Failed to create D3D12 texture %d: HR=%X", i, hr);
-      }
-    }
-
-    // Update shared texture handles in base class (use D3D12 handles)
-    memcpy(g_DX12Capture.sharedTextureHandles, g_DX12Capture.d3d12SharedHandles,
-           sizeof(g_DX12Capture.sharedTextureHandles));
-  }
-    heapProps.CreationNodeMask = 1;
-    heapProps.VisibleNodeMask = 1;
-
-    D3D12_RESOURCE_DESC texDesc = {};
-    texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    texDesc.Alignment = 0;
-    texDesc.Width = desc.Width;
-    texDesc.Height = desc.Height;
-    texDesc.DepthOrArraySize = 1;
-    texDesc.MipLevels = 1;
-    texDesc.Format = desc.Format;
-    texDesc.SampleDesc.Count = 1;
-    texDesc.SampleDesc.Quality = 0;
-    texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    texDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
-
-    for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
-      HRESULT hr = g_Device->CreateCommittedResource(
-        &heapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &texDesc,
-        D3D12_RESOURCE_STATE_COPY_DEST,
-        nullptr,
-        IID_PPV_ARGS(&g_DX12Capture.d3d12StagingTextures[i])
-      );
-      if (SUCCEEDED(hr)) {
-        HookLog("DX12: Created D3D12 staging texture %d for capture", i);
-      } else {
-        HookLog("DX12: Failed to create D3D12 staging texture %d: HR=%X", i, hr);
-      }
-    }
-  }
-
-  // Create D3D11On12 device for D3D12 → D3D11 interop
-  // This is SEPARATE from the pure D3D11 device used for shared textures.
-  // The D3D11On12 device is used ONLY to wrap D3D12 resources for copying.
-  if (!g_DX12Capture.d3d11On12Device) {
-    ID3D11Device* d3d11On12Device = nullptr;
-    ID3D11DeviceContext* d3d11On12Context = nullptr;
-
-    // Use D3D11On12CreateDevice to create a D3D11 device that wraps the D3D12 device
-    UINT d3d11Flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
-    HRESULT hr = D3D11On12CreateDevice(
-      g_Device,
-      d3d11Flags,
-      nullptr,  // feature levels
-      0,        // feature level count
-      nullptr,  // command queues
-      0,        // queue count
-      0,        // node mask
-      &d3d11On12Device,
-      &d3d11On12Context,
-      nullptr   // obtained feature level
-    );
-
-    if (SUCCEEDED(hr)) {
-      g_DX12Capture.d3d11On12Device = d3d11On12Device;
-      g_DX12Capture.d3d11On12Context = d3d11On12Context;
-      HookLog("DX12: Created D3D11On12 device for D3D12->D3D11 interop");
-    } else {
-      HookLog("DX12: Failed to create D3D11On12 device: HR=%X", hr);
-    }
-  }
-
-  // Use shared method to publish handles to IPC
-  g_DX12Capture.width = desc.Width;
-  g_DX12Capture.height = desc.Height;
-  g_DX12Capture.format = desc.Format;
-  g_DX12Capture.PublishToSharedMemory(g_IPC);
-
-  // Initialize SystemMetricsCollector with adapter LUID for GPU stats
-  LUID adapterLuid = g_Device->GetAdapterLuid();
-  SystemMetricsCollector::Get().Initialize(adapterLuid.LowPart, adapterLuid.HighPart);
-
-  // Set VRAM Total explicitly to prevent background thread crash
-  IDXGIFactory4* factory = nullptr;
-  if (SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory4), (void**)&factory))) {
-      IDXGIAdapter* adapter = nullptr;
-      for (UINT i = 0; factory->EnumAdapters(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
-          DXGI_ADAPTER_DESC desc;
-          adapter->GetDesc(&desc);
-          if (desc.AdapterLuid.LowPart == adapterLuid.LowPart && desc.AdapterLuid.HighPart == adapterLuid.HighPart) {
-              SystemMetricsCollector::Get().SetVRAMTotal(desc.DedicatedVideoMemory);
-              adapter->Release();
-              break;
-          }
-          adapter->Release();
-      }
-      factory->Release();
-  }
-
-  g_DX12Capture.initialized = true;
-  HookLog("Capture Resources Initialized");
 }
+
 
 void CreateRTVs(ID3D12Device *device, IDXGISwapChain3 *swapChain,
                 int bufferCount) {
@@ -1487,7 +1112,7 @@ void DX12_OnSwapchainResizeBegin() {
 
   {
     std::lock_guard<std::mutex> capLock(g_DX12CaptureMutex);
-    g_DX12Capture.Cleanup();
+    g_SharedCaptureD3D12.Reset();
   }
 
   if (g_State.imGuiInit) {
@@ -1564,303 +1189,28 @@ void CleanupNativeInterfaces() {
     EarlyLog("DX12 FG: Native interfaces cleaned up");
 }
 
-void AsyncCaptureThreadProc() {
-  HookLog("AsyncCaptureThread Started");
-  g_DX12Capture.captureThreadRunning = true;
-  static uint64_t captureFrameCount = 0;
-  static uint64_t lastLogFrame = 0;
-  
-  while (!g_DX12Capture.captureThreadShutdown) {
-    // Wait for frame signal with timeout to allow checking shutdown flag
-    DWORD waitResult = WaitForSingleObject(g_DX12Capture.captureEvent, 100);
-    if (waitResult == WAIT_TIMEOUT)
-      continue;
-    if (waitResult != WAIT_OBJECT_0)
-      continue;
-
-    // Use loop to drain queue if multiple frames updated
-    while (true) {
-      uint32_t wIdx = g_DX12Capture.pendingWriteIdx.load(std::memory_order_acquire);
-      uint32_t rIdx = g_DX12Capture.pendingReadIdx.load(std::memory_order_acquire);
-      if (rIdx >= wIdx)
-        break;
-
-      PendingCaptureFrame &frame =
-          g_DX12Capture.pendingRing[rIdx % CAPTURE_RING_SIZE];
-
-      // Snapshot data under mutex, then release before GPU work
-      ID3D12CommandQueue *activeQueue = nullptr;
-      ID3D12Resource *pBackBuffer = nullptr;
-      ID3D12Resource *writeTexture = nullptr;
-      ID3D12CommandAllocator *cmdAlloc = nullptr;
-      ID3D12GraphicsCommandList *cmdList = nullptr;
-      ID3D12Fence *captureFence = nullptr;
-      int writeIdx = 0;
-      UINT64 fenceVal = 0;
-      int64_t timestampQPC = frame.timestampQPC;
-      UINT64 frameFenceValue = frame.fenceValue;
-      UINT64 completionFenceValue = frame.completionFenceValue;
-      
-      {
-        std::lock_guard<std::mutex> lock(g_DX12CaptureMutex);
-        if (!g_DX12Capture.initialized) {
-          g_DX12Capture.pendingReadIdx.store(rIdx + 1, std::memory_order_release);
-          continue;
-        }
-        
-        activeQueue = g_DX12Capture.captureQueue;
-        if (!activeQueue) activeQueue = g_CommandQueue;
-        
-        if (frame.backBufferIndex < g_DX12Capture.backBufferCount)
-          pBackBuffer = g_DX12Capture.backBufferCache[frame.backBufferIndex];
-        
-        writeIdx = g_DX12Capture.writeIndex;
-        writeTexture = g_DX12Capture.sharedTextures[writeIdx];
-        cmdAlloc = g_DX12Capture.cmdAlloc[writeIdx];
-        cmdList = g_DX12Capture.cmdList;
-        captureFence = g_DX12Capture.fence;
-        
-        // Update writeIndex while holding lock
-        g_DX12Capture.writeIndex = (writeIdx + 1) % CAPTURE_TEXTURE_COUNT;
-        g_DX12Capture.fenceValue++;
-        fenceVal = g_DX12Capture.fenceValue;
-      }
-      // Mutex released - now do GPU work without holding it
-      
-      captureFrameCount++;
-      
-      if (!activeQueue || !pBackBuffer || !writeTexture || !cmdAlloc || !cmdList) {
-        if (captureFrameCount % 100 == 1) {
-          HookLog("AsyncCapture[%llu]: Missing resources", captureFrameCount);
-        }
-        g_DX12Capture.pendingReadIdx.store(rIdx + 1, std::memory_order_release);
-        continue;
-      }
-
-      // GPU-side wait for game to finish rendering before our copy commands
-      // This is critical - ensures backbuffer is in correct state when we copy
-      if (activeQueue && g_DX12Capture.gameSyncFence && frameFenceValue > 0) {
-        activeQueue->Wait(g_DX12Capture.gameSyncFence, frameFenceValue);
-      }
-
-      // Build and execute command list - OUTSIDE mutex
-      cmdAlloc->Reset();
-      cmdList->Reset(cmdAlloc, nullptr);
-
-      // Barriers for backbuffer and shared texture
-      // Use COMMON state - backbuffer decays to COMMON after Present
-      D3D12_RESOURCE_BARRIER barriers[2] = {};
-      
-      barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-      barriers[0].Transition.pResource = pBackBuffer;
-      barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-      barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
-      barriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-      
-      barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-      barriers[1].Transition.pResource = writeTexture;
-      barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-      barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-      barriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-
-      cmdList->ResourceBarrier(2, barriers);
-      cmdList->CopyResource(writeTexture, pBackBuffer);
-
-      // Transition back to COMMON
-      std::swap(barriers[0].Transition.StateBefore, barriers[0].Transition.StateAfter);
-      std::swap(barriers[1].Transition.StateBefore, barriers[1].Transition.StateAfter);
-      cmdList->ResourceBarrier(2, barriers);
-      
-      HRESULT closeHr = cmdList->Close();
-      if (FAILED(closeHr)) {
-        HookLog("AsyncCapture[%llu]: Close failed: 0x%08X", captureFrameCount, closeHr);
-        g_DX12Capture.pendingReadIdx.store(rIdx + 1, std::memory_order_release);
-        continue;
-      }
-
-      if (captureFrameCount - lastLogFrame >= 100) {
-        HookLog("AsyncCapture: Processed %llu frames", captureFrameCount);
-        lastLogFrame = captureFrameCount;
-      }
-
-      ID3D12CommandList *lists[] = {cmdList};
-      activeQueue->ExecuteCommandLists(1, lists);
-      activeQueue->Signal(captureFence, fenceVal);
-
-      if (g_DX12CaptureCompletionFence && completionFenceValue > 0) {
-        activeQueue->Signal(g_DX12CaptureCompletionFence, completionFenceValue);
-      }
-
-      // Signal frame ready - the D3D12 shared texture is now ready
-      // The D3D11 side has already opened the shared handle during initialization
-      // No additional D3D12->D3D11 copy needed - the resource is shared between both APIs
-      g_DX12Capture.SignalFrameReady(g_IPC, writeIdx, timestampQPC, fenceVal);
-      g_DX12Capture.pendingReadIdx.store(rIdx + 1, std::memory_order_release);
-    }
-  }
-  g_DX12Capture.captureThreadRunning = false;
-  HookLog("AsyncCaptureThread Exiting");
-}
+// AsyncCaptureThreadProc removed.
 
 void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
   // LOCK HIERARCHY: g_OverlayMutex -> g_DX12CaptureMutex
-  // This function acquires g_OverlayMutex first, then g_DX12CaptureMutex (line 639).
-  // All code paths MUST follow this order to prevent deadlocks.
-  // Never acquire g_DX12CaptureMutex before g_OverlayMutex elsewhere in the codebase.
   std::lock_guard<std::mutex> lock(g_OverlayMutex);
 
-  // FG STATE: Determine FG active and stabilization status for overlay rendering
+  // FG STATE detection
   bool fgActive = (g_FGCompat.DetectLoadedFGRuntime() != FGCompatibility::FGType::None);
-  int64_t fgSinceSwapchainMs = -1;
-  if (fgActive && !g_FGSwapchainStabilized.load()) {
-      if (g_LastSwapchainCreation.time_since_epoch().count() == 0) {
-          g_LastSwapchainCreation = std::chrono::steady_clock::now();
-      }
-      auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::steady_clock::now() - g_LastSwapchainCreation).count();
-      fgSinceSwapchainMs = elapsed;
-      if (elapsed >= FG_STABILIZATION_MS) {
-          g_FGSwapchainStabilized = true;
-
-          static bool s_loggedStabilized = false;
-          if (!s_loggedStabilized) {
-              HookLog("DX12 FG: Swapchain stabilized after %lld ms - overlay may draw now", (long long)elapsed);
-              s_loggedStabilized = true;
-          }
-      }
-  }
-  if (fgActive && fgSinceSwapchainMs < 0 && g_LastSwapchainCreation.time_since_epoch().count() != 0) {
-      fgSinceSwapchainMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::steady_clock::now() - g_LastSwapchainCreation).count();
-  }
-  bool fgStabilized = fgActive && g_FGSwapchainStabilized.load();
   bool fgSuspended = g_FGCompat.IsSuspended();
-
-  // Talos/UE may resize multiple times during startup with Streamline swapchain provider.
-  // Waiting for full stabilization can mean the overlay never appears. Use a shorter
-  // ready delay so we can draw once things are minimally settled.
-  const bool fgReadyForOverlay = (!fgActive) || (fgSinceSwapchainMs >= 100);
   
   // FG SAFETY: When FG active + suspended, skip ALL operations entirely
-  // No device access during suspension to prevent GPU crashes during FG toggle
   if (fgActive && fgSuspended) {
-      static int suspendSkipLog = 0;
-      if (suspendSkipLog++ % 300 == 0) {
-          EarlyLog("DX12 FG: ProcessFrame fully skipped (fgSuspended)");
-      }
-      return;
-  }
-  
-  // FG SAFETY: When FG active + ImGui not initialized (but not suspended), 
-  // only do minimal device operations for overlay init
-  if (fgActive && !g_State.imGuiInit) {
-      // Minimal initialization path for ImGui only
-      IUnknown* pTempUnk = nullptr;
-      if (pSwapChain && SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&pTempUnk)))) {
-          ID3D12Device* activeDevice = nullptr;
-          ID3D12CommandQueue* activeQueue = nullptr;
-          
-          // In D3D12, GetDevice returns the Command Queue!
-          if (SUCCEEDED(pTempUnk->QueryInterface(IID_PPV_ARGS(&activeQueue)))) {
-              // Now get the device from the queue
-              if (SUCCEEDED(activeQueue->GetDevice(IID_PPV_ARGS(&activeDevice)))) {
-                  // Ensure queue is hooked
-                  HookQueueVTable(activeQueue);
-                  
-                  if (!g_Device) {
-                      g_Device = activeDevice;
-                      g_Device->AddRef();
-
-                      LUID devLuid = g_Device->GetAdapterLuid();
-                      EarlyLog("DX12 FG: New active device captured (p=%p, LUID=%08X-%08X)",
-                               g_Device, devLuid.HighPart, devLuid.LowPart);
-
-                      g_LastSwapChain = pSwapChain;
-                  }
-                  activeDevice->Release();
-
-#ifdef ENABLE_D3D12_WRAPPER
-                  // Unwrap g_Device if it's wrapped
-                  if (g_Device) {
-                      ID3D12Device* unwrapped = UnwrapDevice(g_Device);
-                      if (unwrapped != g_Device) {
-                          EarlyLog("DX12 FG: Unwrapped g_Device (wrapped=%p, real=%p)", g_Device, unwrapped);
-                          g_Device->Release();
-                          g_Device = unwrapped;
-                          g_Device->AddRef();
-                      }
-                  }
-#endif
-              }
-              activeQueue->Release();
-          } else if (SUCCEEDED(pTempUnk->QueryInterface(IID_PPV_ARGS(&activeDevice)))) {
-              // Fallback if some driver actually returns the device directly
-              if (!g_Device) {
-                  g_Device = activeDevice;
-                  g_Device->AddRef();
-                  g_LastSwapChain = pSwapChain;
-              }
-              activeDevice->Release();
-
-#ifdef ENABLE_D3D12_WRAPPER
-              // Unwrap g_Device if it's wrapped
-              if (g_Device) {
-                  ID3D12Device* unwrapped = UnwrapDevice(g_Device);
-                  if (unwrapped != g_Device) {
-                      EarlyLog("DX12 FG: Unwrapped g_Device fallback (wrapped=%p, real=%p)", g_Device, unwrapped);
-                      g_Device->Release();
-                      g_Device = unwrapped;
-                      g_Device->AddRef();
-                  }
-              }
-#endif
-          }
-          pTempUnk->Release();
-          
-          // Try to initialize overlay resources if not done
-          if (g_Device && !fgSuspended) {
-              DXGI_SWAP_CHAIN_DESC desc;
-              if (SUCCEEDED(pSwapChain->GetDesc(&desc))) {
-                  g_State.cachedWidth = desc.BufferDesc.Width;
-                  g_State.cachedHeight = desc.BufferDesc.Height;
-                  
-                  static int initAttemptLog = 0;
-                  if (initAttemptLog++ % 100 == 0) {
-                      EarlyLog("DX12 FG: Attempting overlay init (imGui=%d, rtv=%p, sync=%d)", 
-                               g_State.imGuiInit ? 1 : 0, g_State.rtvDescHeap, g_State.syncInit ? 1 : 0);
-                  }
-                  
-                  // Initialize all overlay resources needed for FG overlay
-                  if (!g_State.imGuiInit) {
-                      InitImGui(g_Device, DX12OverlayState::ALLOC_POOL_SIZE, desc.BufferDesc.Format, desc.OutputWindow);
-                  }
-                  if (!g_State.rtvDescHeap) {
-                      IDXGISwapChain3* sc3 = nullptr;
-                      if (SUCCEEDED(pSwapChain->QueryInterface(__uuidof(IDXGISwapChain3), (void**)&sc3))) {
-                          CreateRTVs(g_Device, sc3, desc.BufferCount);
-                          sc3->Release();
-                      }
-                  }
-                  if (!g_State.syncInit) {
-                      InitOverlaySync(g_Device, desc.BufferCount);
-                  }
-              }
-          }
-      }
-      // Skip ALL other operations when FG active + not ready
       return;
   }
 
-  // 1. Determine active device and detect change (FSR-FG Proxying)
+  // 1. Determine active device and detect change
   IUnknown* pTempUnk = nullptr;
-  if (!pSwapChain || FAILED(pSwapChain->GetDevice(IID_PPV_ARGS(&pTempUnk)))) {
-      return;
-  }
+  if (!pSwapChain || FAILED(pSwapChain->GetDevice(IID_PPV_ARGS(&pTempUnk)))) return;
 
   ID3D12Device* activeDevice = nullptr;
   ID3D12CommandQueue* activeQueue = nullptr;
   
-  // In D3D12, GetDevice returns the Command Queue!
   if (SUCCEEDED(pTempUnk->QueryInterface(IID_PPV_ARGS(&activeQueue)))) {
       if (SUCCEEDED(activeQueue->GetDevice(IID_PPV_ARGS(&activeDevice)))) {
           HookQueueVTable(activeQueue);
@@ -1873,70 +1223,50 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
 
   if (!activeDevice) return;
   
-  // Distinguish between initial setup and device change
   bool isInitialSetup = (g_Device == nullptr);
   bool deviceChanged = (!isInitialSetup && (activeDevice != g_Device || pSwapChain != g_LastSwapChain));
   
   if (deviceChanged) {
-      // Device/swapchain CHANGE - cleanup old resources and exit
-      HookLog("DX12: Device or Swapchain change detected (Device: %p -> %p, SC: %p -> %p). Resetting resources...", 
-              g_Device, activeDevice, g_LastSwapChain, pSwapChain);
-      g_FGCompat.OnDeviceChange(); // Notify FG detection
+      g_FGCompat.OnDeviceChange(); 
       CleanupOverlay();
       CleanupRTVs();
       ShutdownImGui();
       {
-          // Acquire g_DX12CaptureMutex AFTER g_OverlayMutex (respects lock hierarchy)
           std::lock_guard<std::mutex> capLock(g_DX12CaptureMutex);
-          g_DX12Capture.Cleanup();
+          if (g_SharedCaptureD3D12.IsActive()) {
+              g_SharedCaptureD3D12.Reset();
+          }
       }
-      g_LastResourceCleanup = std::chrono::steady_clock::now(); // Mark cleanup time
       
-      // Update global device with ref counting
       if (g_Device) g_Device->Release();
       g_Device = activeDevice;
       g_Device->AddRef();
-
       g_LastSwapChain = pSwapChain;
-
       g_State.imGuiInit = false;
-      g_State.imGuiInitFrameCounter = 0;
-
-      // Release the local ref from our retrieval logic
       activeDevice->Release();
 
 #ifdef ENABLE_D3D12_WRAPPER
-      // Unwrap g_Device if it's wrapped
       if (g_Device) {
           ID3D12Device* unwrapped = UnwrapDevice(g_Device);
           if (unwrapped != g_Device) {
-              EarlyLog("DX12: Unwrapped g_Device in ResizeBuffers (wrapped=%p, real=%p)", g_Device, unwrapped);
               g_Device->Release();
               g_Device = unwrapped;
               g_Device->AddRef();
           }
       }
 #endif
-
-      HookLog("DX12: ProcessFrame: Device/SC Updated. g_Device=%p, g_LastSwapChain=%p (Refs Added)", g_Device, g_LastSwapChain);
-      
-      // ENSURE EARLY EXIT: Resources (Command List, Allocators) have been released.
       return;
   }
   
   if (isInitialSetup) {
-      // INITIAL SETUP - capture device/swapchain and CONTINUE (no cleanup needed, no early exit)
-      EarlyLog("DX12: Initial device capture (Device: %p, SC: %p)", activeDevice, pSwapChain);
       g_Device = activeDevice;
       g_Device->AddRef();
       g_LastSwapChain = pSwapChain;
 
 #ifdef ENABLE_D3D12_WRAPPER
-      // Unwrap g_Device if it's wrapped
       if (g_Device) {
           ID3D12Device* unwrapped = UnwrapDevice(g_Device);
           if (unwrapped != g_Device) {
-              EarlyLog("DX12: Unwrapped g_Device in initial setup (wrapped=%p, real=%p)", g_Device, unwrapped);
               g_Device->Release();
               g_Device = unwrapped;
               g_Device->AddRef();
@@ -1946,56 +1276,9 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
   }
   activeDevice->Release();
 
-  // Initialize overlay as early as possible (before queue check)
-  // CRITICAL: Do NOT initialize ImGui if FG is active/suspended (e.g. at startup)
-  // Note: fgActive and fgSuspended are defined at start of ProcessFrame
-  // LIMIT: Only retry ImGui init a few times to avoid infinite driver crash loops
-  // PERMANENT FAILURE: If device removed error occurs, stop trying entirely
-  if (g_DeviceRemovedFatal.load()) {
-      static int logOnce = 0;
-      if (logOnce++ % 60 == 0) {
-          EarlyLog("DX12: Skipping ImGui init permanently (device removed fatal error)");
-      }
-      return;
-  }
+  if (g_DeviceRemovedFatal.load()) return;
 
-  if (!g_State.imGuiInit && !fgActive && !fgSuspended && g_Device && g_State.imGuiInitFrameCounter < 5) {
-      // CRITICAL: Detect Strange Brigade - swapchain wrapper is now safe, proceed with normal init
-      static bool isStrangeBrigade = false;
-      static bool checkedGame = false;
-      if (!checkedGame) {
-          char moduleName[256] = {};
-          if (GetModuleFileNameA(NULL, moduleName, sizeof(moduleName)) != 0) {
-              const char* exeName = strrchr(moduleName, '\\');
-              if (exeName) exeName++;
-              else exeName = moduleName;
-
-              if (strnicmp(exeName, "StrangeBrigade", strlen("StrangeBrigade")) == 0) {
-                  isStrangeBrigade = true;
-                  EarlyLog("DX12: Detected Strange Brigade - swapchain wrapper safe, proceeding with normal init");
-              }
-          }
-          checkedGame = true;
-      }
-
-      DXGI_SWAP_CHAIN_DESC desc;
-      pSwapChain->GetDesc(&desc);
-      g_State.cachedWidth = desc.BufferDesc.Width;
-      g_State.cachedHeight = desc.BufferDesc.Height;
-
-      EarlyLog("DX12: Initializing ImGui overlay for Strange Brigade");
-      
-      // Actually call InitImGui now
-      if (InitImGui(g_Device, DX12OverlayState::ALLOC_POOL_SIZE, desc.BufferDesc.Format, desc.OutputWindow)) {
-          CreateRTVs(g_Device, pSwapChain, desc.BufferCount);
-          InitOverlaySync(g_Device, desc.BufferCount);
-          EarlyLog("DX12: ImGui initialized successfully for Strange Brigade");
-      } else {
-          EarlyLog("DX12: ImGui init failed for Strange Brigade");
-      }
-  }
-
-  // 2. Get the correct queue for this active device
+  // 2. Get the correct queue
   ID3D12CommandQueue* targetQueue = nullptr;
   {
       std::lock_guard<std::mutex> devLock(g_DeviceQueuesMutex);
@@ -2003,389 +1286,176 @@ void ProcessFrame(IDXGISwapChain3 *pSwapChain, bool processCapture) {
           targetQueue = g_DeviceQueues[g_Device];
       }
   }
-  
-  // Fallback: use g_CommandQueue directly if device-mapped queue not found
-  // This handles the case where ExecuteCommandLists captured a different device pointer
-  if (!targetQueue && g_CommandQueue) {
-      targetQueue = g_CommandQueue;
-  }
-  
-  if (!targetQueue) {
-      // If we haven't intercepted any queue for this device yet, we can't draw the overlay.
-      return;
-  }
-  
-  // Sync the global queue and ImGui backend with the correct target
+  if (!targetQueue && g_CommandQueue) targetQueue = g_CommandQueue;
+  if (!targetQueue) return;
   g_CommandQueue = targetQueue;
-
-  // CROSS-CHECK: Is the device from swapchain the same as device from queue?
-  ID3D12Device* queueDevice = nullptr;
-  if (g_CommandQueue && SUCCEEDED(g_CommandQueue->GetDevice(IID_PPV_ARGS(&queueDevice)))) {
-      if (queueDevice != g_Device) {
-          LUID qLuid = queueDevice->GetAdapterLuid();
-          LUID sLuid = g_Device ? g_Device->GetAdapterLuid() : LUID{0,0};
-          
-          EarlyLog("DX12: DEVICE MISMATCH! SwapChain Device=%p (LUID=%08X-%08X), Queue Device=%p (LUID=%08X-%08X)",
-                   g_Device, sLuid.HighPart, sLuid.LowPart, queueDevice, qLuid.HighPart, qLuid.LowPart);
-          
-          // CRITICAL: Prefer the device from the rendering queue for resource creation!
-          if (!g_State.imGuiInit) {
-              EarlyLog("DX12: Switching g_Device to Queue-Device for ImGui initialization.");
-              if (g_Device) g_Device->Release();
-              g_Device = queueDevice;
-              g_Device->AddRef();
-          }
-      }
-      queueDevice->Release();
-  }
 
   if (g_State.imGuiInit) {
       ImGui_ImplDX12_SetCommandQueue(g_CommandQueue);
   }
 
-  if (g_IPC && !g_IPCReady) {
-    if (g_IPC->Connect())
-      g_IPCReady = true;
+  // 3. Initialize Shared Capture
+  if (g_CommandQueue) {
+      g_SharedCaptureD3D12.Initialize(g_Device, pSwapChain, g_CommandQueue);
   }
 
-  if (g_IPC && g_IPCReady) {
-    if (!g_DX12Capture.initialized) {
-        // Rate limiting for re-initialization
-        auto elapsed = std::chrono::steady_clock::now() - g_LastResourceCleanup;
-        if (elapsed > std::chrono::milliseconds(INIT_COOLDOWN_MS)) {
-            CheckCaptureInit(pSwapChain);
-        }
-    }
+  // 4. Initialize Overlay
+  if (!g_State.imGuiInit) {
+      DXGI_SWAP_CHAIN_DESC desc;
+      if (FAILED(pSwapChain->GetDesc(&desc))) return;
+      g_State.cachedWidth = desc.BufferDesc.Width;
+      g_State.cachedHeight = desc.BufferDesc.Height;
 
-    SharedMemoryLayout* shm = g_IPC->GetSharedMem();
-    bool captureIncludeOverlay = shm ? shm->overlayConfig.captureIncludeOverlay : true;
-    bool shouldDrawOverlay = shm && shm->overlayConfig.showOverlay;
+      if (!InitImGui(g_Device, DX12OverlayState::ALLOC_POOL_SIZE, desc.BufferDesc.Format, desc.OutputWindow)) return;
+      
+      IDXGISwapChain3* sc3 = nullptr;
+      if (SUCCEEDED(pSwapChain->QueryInterface(__uuidof(IDXGISwapChain3), (void**)&sc3))) {
+           CreateRTVs(g_Device, sc3, desc.BufferCount);
+           sc3->Release();
+      }
+      InitOverlaySync(g_Device, desc.BufferCount);
+  }
 
-    static int s_overlayGateLog = 0;
-    if (s_overlayGateLog++ % 300 == 0) {
-        HookLog("DX12 FG: Gate state show=%d include=%d imGui=%d rtv=%p active=%d stabilized=%d ready=%d suspended=%d msSinceSC=%lld", 
-                shouldDrawOverlay ? 1 : 0,
-                captureIncludeOverlay ? 1 : 0,
-                g_State.imGuiInit ? 1 : 0,
-                g_State.rtvDescHeap,
-                fgActive ? 1 : 0,
-                fgStabilized ? 1 : 0,
-                fgReadyForOverlay ? 1 : 0,
-                fgSuspended ? 1 : 0,
-                (long long)fgSinceSwapchainMs);
-    }
-    bool overlayDrawn = false;
+  if (g_IPC && !g_IPCReady) {
+    if (g_IPC->Connect()) g_IPCReady = true;
+  }
 
-    // Lambda for overlay drawing - FG-SAFE implementation using NATIVE INTERFACES
-    // Per SpecialK research: When Streamline FG is active, we MUST use native interfaces
-    // (not proxies) for overlay rendering. Query native interfaces once when FG stabilizes.
-    auto doOverlay = [&]() {
-      // FG SAFETY: Only draw if stabilized and not currently suspended
-      if (fgSuspended || (fgActive && !fgReadyForOverlay)) {
-          static int fgSuspendLog = 0;
-          if (fgSuspendLog++ % 120 == 0) {
-              HookLog("DX12 FG: Skipping overlay (active=%d, stabilized=%d, ready=%d, suspended=%d)", 
-                      fgActive ? 1 : 0, fgStabilized ? 1 : 0, fgReadyForOverlay ? 1 : 0, fgSuspended ? 1 : 0);
-          }
-          g_FGDebugOverlaySkips++;
-          return;
-      }
-      
-      // Check prerequisites
-      if (!shouldDrawOverlay || !g_Device) return;
-      
-      // Determine which interfaces to use for overlay
-      // When FG active: use game's command queue (not separate overlay queue)
-      // This matches SpecialK's approach to avoid queue conflicts with DLSS FG
-      IDXGISwapChain3* overlaySwapChain = pSwapChain;
-      ID3D12CommandQueue* overlayQueue = g_CommandQueue;
-      ID3D12Device* overlayDevice = g_Device;
+  bool captureIncludeOverlay = false;
+  bool shouldDrawOverlay = false;
+  if (g_IPC) {
+      SharedMemoryLayout* shm = g_IPC->GetSharedMem();
+      captureIncludeOverlay = shm ? shm->overlayConfig.captureIncludeOverlay : true;
+      shouldDrawOverlay = shm && shm->overlayConfig.showOverlay;
+  }
 
-      // FG MODE: lock to a stable queue once we start drawing, to prevent queue flapping
-      // (Talos uses multiple DIRECT queues; picking the wrong one can stall fence waits)
-      if (fgActive) {
-          if (g_FGQueueLocked.load(std::memory_order_relaxed)) {
-              overlayQueue = g_FGLockedQueue;
-          } else if (overlayQueue) {
-              std::lock_guard<std::mutex> lock(g_FGQueueLockMutex);
-              if (!g_FGQueueLocked.load(std::memory_order_relaxed) && overlayQueue) {
-                  g_FGLockedQueue = overlayQueue;
-                  g_FGLockedQueue->AddRef();
-                  g_FGQueueLocked.store(true, std::memory_order_relaxed);
-                  EarlyLog("DX12 FG: Locked overlay command queue to %p", g_FGLockedQueue);
-              }
-          }
-      }
-      
-      // FG MODE: Query native interfaces once when FG is active
-      // Per SpecialK research: overlay must use native (non-proxy) interfaces
-      // to avoid crashes when Streamline FG is processing frames
-      if (fgActive && fgReadyForOverlay && !g_NativeInterfacesQueried) {
-          QueryNativeInterfaces(g_Device, g_CommandQueue, pSwapChain);
-          static bool fgNativeLog = false;
-          if (!fgNativeLog) {
-              EarlyLog("DX12 FG: Native interface query complete. Using natives: %s", 
-                       g_UsingNativeInterfaces ? "YES" : "NO (not Streamline proxies)");
-              fgNativeLog = true;
-          }
-      }
-      
-      // FG MODE: Use native interfaces for overlay when available
-      // This is critical - overlay operations on proxy interfaces crash with FG
-      if (fgActive && g_UsingNativeInterfaces) {
-          if (g_NativeSwapChain) overlaySwapChain = g_NativeSwapChain;
-          if (g_NativeDevice) overlayDevice = g_NativeDevice;
-          // Keep game's command queue - don't use native queue (per SpecialK)
-          
-          static bool fgNativeModeLog = false;
-          if (!fgNativeModeLog) {
-              EarlyLog("DX12 FG: Using native SC/Dev for overlay (SC=%p, Queue=%p, Dev=%p)",
-                       overlaySwapChain, overlayQueue, overlayDevice);
-              fgNativeModeLog = true;
-          }
-      }
+  // No manual preparation needed, DrawOverlay handles it.
 
-      // Non-FG: If Streamline proxies are active, use native interfaces for overlay
-      if (!fgActive && g_UsingNativeInterfaces) {
-          if (g_NativeSwapChain) overlaySwapChain = g_NativeSwapChain;
-          if (g_NativeDevice) overlayDevice = g_NativeDevice;
-          if (g_NativeCommandQueue) overlayQueue = g_NativeCommandQueue;
-      }
+  // Define Lambdas
+  auto doOverlay = [&]() {
+      if (!shouldDrawOverlay || !g_Device || !g_State.cmdList || !g_State.imGuiInit || !g_State.syncInit) return;
       
-      // FG MODE: When using swapchain wrapper, overlay is drawn from wrapper's Present
-      // so skip the normal overlay drawing here
-      if (fgActive && g_UsingSwapChainWrapper) {
-          // Overlay is handled by the wrapper - don't draw here
-          return;
-      }
+      // Mutex is already held by ProcessFrame caller
+      // std::lock_guard<std::mutex> overlayLock(g_OverlayMutex); // Redundant
       
-      // Check ImGui is initialized - required for DrawOverlay
-      if (!g_State.imGuiInit) {
-          static int imguiSkipLog = 0;
-          if (imguiSkipLog++ % 300 == 0) {
-              HookLog("DX12: Skipping overlay - ImGui not initialized yet");
-          }
-          return;
-      }
-      
-      // Use g_State resources with selected queue/swapchain (native when FG active)
-      // NOTE: Overlay must not depend on processCapture/isRealFrame (intro videos, UI frames, etc.)
-      if (!g_State.syncInit || !g_State.fence || !overlayQueue) return;
-      
-      // FG MODE: Drain ONLY on transitions (and with backoff), never every frame.
-      if (fgActive && g_FGNeedsDrain.load(std::memory_order_relaxed)) {
-          const uint64_t nowUs = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
-              std::chrono::steady_clock::now().time_since_epoch()).count();
-          const uint64_t nextUs = g_FGNextDrainAttemptUs.load(std::memory_order_relaxed);
-          if (nowUs >= nextUs) {
-              static bool fgDrainLog = false;
-              if (!fgDrainLog) {
-                  EarlyLog("DX12 FG: Draining queue before overlay draw (one-time / transition)");
-                  fgDrainLog = true;
-              }
-
-              // Very short timeout to avoid freezing the render thread.
-              if (DrainCommandQueue(overlayQueue, 2)) {
-                  g_FGNeedsDrain.store(false, std::memory_order_relaxed);
-              } else {
-                  // Backoff: avoid hammering the queue every frame
-                  g_FGNextDrainAttemptUs.store(nowUs + 250000 /* 250ms */, std::memory_order_relaxed);
-                  static int drainFailLog = 0;
-                  if (drainFailLog++ % 20 == 0) {
-                      EarlyLog("DX12 FG: DrainCommandQueue failed; backing off 250ms and skipping overlay");
-                  }
-                  return;
-              }
-          } else {
-              // Not time to retry yet; skip overlay to avoid stalls
-              return;
-          }
-      }
-      
-      // FG MODE: Detect swapchain change (FSR4SwapchainProvider replaces swapchain mid-session)
-      // If swapchain pointer or buffer count changed, invalidate RTVs for recreation
-      if (overlaySwapChain != g_State.cachedSwapChain && g_State.cachedSwapChain != nullptr) {
-          static bool swapchainChangeLog = false;
-          if (!swapchainChangeLog) {
-              EarlyLog("DX12 FG: Swapchain changed (old=%p new=%p) - reinit RTVs required",
-                       g_State.cachedSwapChain, overlaySwapChain);
-              swapchainChangeLog = true;
-          }
-          
-          // Invalidate RTVs - they're bound to the old swapchain
-          CleanupRTVs();
-          g_State.cachedSwapChain = nullptr;
-          g_State.bufferCount = 0;
-          
-          // Get new swapchain desc and recreate RTVs
-          DXGI_SWAP_CHAIN_DESC desc;
-          if (SUCCEEDED(overlaySwapChain->GetDesc(&desc))) {
-              CreateRTVs(overlayDevice, overlaySwapChain, desc.BufferCount);
-              EarlyLog("DX12 FG: RTVs recreated for new swapchain (bufCount=%u)", desc.BufferCount);
-          }
-      }
-      
-      // FG MODE: Use native swapchain for buffer index and GetBuffer
-      int bufferIdx = overlaySwapChain->GetCurrentBackBufferIndex();
-      
-      static int logCounter = 0;
-      if (logCounter++ % 1000 == 0) {
-          HookLog("DX12: bufferIdx=%d, bufferCount=%u, fgActive=%d", 
-                  bufferIdx, g_State.bufferCount, fgActive ? 1 : 0);
-      }
-      
-      // CRITICAL: Validate bufferIdx against RTV heap size
-      // FSR4SwapchainProvider may report different buffer count than our cached RTVs
-      if (g_State.bufferCount == 0 || (UINT)bufferIdx >= g_State.bufferCount) {
-          static int boundsLog = 0;
-          if (boundsLog++ % 50 == 0) {
-              EarlyLog("DX12 FG: bufferIdx %d out of bounds (heap has %u RTVs) - reinit needed",
-                       bufferIdx, g_State.bufferCount);
-          }
-          // Trigger RTV recreation on next frame
-          return;
-      }
-      
-      // Get backbuffer from appropriate swapchain (native when FG active)
-      ID3D12Resource* currentBackBuffer = nullptr;
-      HRESULT hrGet = overlaySwapChain->GetBuffer(bufferIdx, IID_PPV_ARGS(&currentBackBuffer));
-      if (FAILED(hrGet) || !currentBackBuffer) {
-          static int getFailLog = 0;
-          if (getFailLog++ % 100 == 0) {
-              HookLog("DX12: GetBuffer failed bufferIdx=%d hr=0x%08X", 
-                      bufferIdx, hrGet);
-          }
-          return;
-      }
-      
+      // Need a valid allocator
       int allocIdx = g_State.allocIndex;
       g_State.allocIndex = (g_State.allocIndex + 1) % DX12OverlayState::ALLOC_POOL_SIZE;
       
-      UINT64 completed = g_State.fence->GetCompletedValue();
-      UINT64 target = g_State.fenceValues[allocIdx];
-      if (completed < target) {
-          if (fgActive) {
-              // Never block indefinitely on the render/present thread in FG mode.
-              // If fence doesn't complete quickly, skip overlay this frame.
-              if (!WaitFenceWithTimeout(g_State.fence, target, g_State.fenceEvent, 5)) {
-                  static int fgAllocWaitLog = 0;
-                  if (fgAllocWaitLog++ % 200 == 0) {
-                      EarlyLog("DX12 FG: Allocator fence wait timeout (target=%llu completed=%llu) - skipping overlay", target, completed);
-                  }
-                  currentBackBuffer->Release();
-                  return;
-              }
-          } else {
+      // Sync
+      if (g_State.fence) {
+          UINT64 completed = g_State.fence->GetCompletedValue();
+          UINT64 target = g_State.fenceValues[allocIdx];
+          if (completed < target) {
               g_State.fence->SetEventOnCompletion(target, g_State.fenceEvent);
-              WaitForSingleObject(g_State.fenceEvent, INFINITE);
+              WaitForSingleObject(g_State.fenceEvent, 50);
           }
       }
       
-      auto *alloc = g_State.allocators[allocIdx];
-      auto *list = g_State.cmdList;
+      auto* alloc = g_State.allocators[allocIdx];
+      auto* list = g_State.cmdList;
+      if (!alloc || !list) return;
+      
       alloc->Reset();
       list->Reset(alloc, nullptr);
       
-      D3D12_CPU_DESCRIPTOR_HANDLE rtv =
-          g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
-      rtv.ptr += (SIZE_T)bufferIdx * g_State.rtvDescriptorSize;
-      
-      // Use appropriate device for RTV creation (native when FG active)
-      overlayDevice->CreateRenderTargetView(currentBackBuffer, nullptr, rtv);
-      
-      D3D12_RESOURCE_BARRIER preBarrier = {};
-      preBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-      preBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-      preBarrier.Transition.pResource = currentBackBuffer;
-      preBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-      preBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-      preBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-      // SpecialK approach: Always perform state transitions, even with FG active
-      list->ResourceBarrier(1, &preBarrier);
-      
-      list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-      
-      D3D12_VIEWPORT vp = {0, 0, (float)g_State.cachedWidth, (float)g_State.cachedHeight, 0, 1};
-      list->RSSetViewports(1, &vp);
-      D3D12_RECT scissor = {0, 0, (LONG)g_State.cachedWidth, (LONG)g_State.cachedHeight};
-      list->RSSetScissorRects(1, &scissor);
-      
-      DrawOverlay(list);
-      
-      D3D12_RESOURCE_BARRIER postBarrier = {};
-      postBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-      postBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-      postBarrier.Transition.pResource = currentBackBuffer;
-      postBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-      postBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-      postBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-      // SpecialK approach: Always perform state transitions, even with FG active
-      list->ResourceBarrier(1, &postBarrier);
-      
-      list->Close();
-      
-      // Execute on appropriate queue (native when FG active)
-      ID3D12CommandList *lists[] = {list};
-      overlayQueue->ExecuteCommandLists(1, lists);
-      
-      g_State.currentFenceValue++;
-      g_State.fenceValues[allocIdx] = g_State.currentFenceValue;
-      overlayQueue->Signal(g_State.fence, g_State.currentFenceValue);
-      
-      // FG MODE: Wait for overlay draw to complete before returning
-      // This ensures FG runtime sees finished backbuffer state
-      if (fgActive) {
-          g_State.fence->SetEventOnCompletion(g_State.currentFenceValue, g_State.fenceEvent);
-          WaitForSingleObject(g_State.fenceEvent, 50); // 50ms max wait
-          g_FGDebugOverlayDraws++;
-      }
-      
-      overlayDrawn = true;
-      currentBackBuffer->Release();
-    };
+      // Get backbuffer
+      UINT bufferIdx = pSwapChain->GetCurrentBackBufferIndex();
+      ID3D12Resource* backBuffer = nullptr;
+      if (SUCCEEDED(pSwapChain->GetBuffer(bufferIdx, IID_PPV_ARGS(&backBuffer))) && backBuffer) {
+           // Transition to RenderTarget
+           D3D12_RESOURCE_BARRIER barrier = {};
+           barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+           barrier.Transition.pResource = backBuffer;
+           barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+           barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+           barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+           list->ResourceBarrier(1, &barrier);
 
-    // Lambda for capture operation
-    auto doCapture = [&]() {
-      // With FG: capture every 4th frame to minimize GPU contention
-      // FG is sensitive to queue operations - reduce capture frequency significantly
+           // RTV
+           D3D12_CPU_DESCRIPTOR_HANDLE rtv = g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
+           rtv.ptr += (SIZE_T)bufferIdx * g_State.rtvDescriptorSize;
+           g_Device->CreateRenderTargetView(backBuffer, nullptr, rtv);
+           list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+           
+           // Viewport
+           D3D12_VIEWPORT vp = {0, 0, (float)g_State.cachedWidth, (float)g_State.cachedHeight, 0, 1};
+           list->RSSetViewports(1, &vp);
+           D3D12_RECT scissor = {0, 0, (LONG)g_State.cachedWidth, (LONG)g_State.cachedHeight};
+           list->RSSetScissorRects(1, &scissor);
+
+           DrawOverlay(list);
+
+           // Transition back
+           barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+           barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+           list->ResourceBarrier(1, &barrier);
+           
+           list->Close();
+           
+           ID3D12CommandList* lists[] = {list};
+           g_CommandQueue->ExecuteCommandLists(1, lists);
+           
+           if (g_State.fence) {
+               g_State.currentFenceValue++;
+               g_State.fenceValues[allocIdx] = g_State.currentFenceValue;
+               g_CommandQueue->Signal(g_State.fence, g_State.currentFenceValue);
+           }
+           
+           backBuffer->Release();
+      }
+  };
+
+  auto doCapture = [&]() {
       static uint64_t fgCaptureCounter = 0;
       bool shouldCapture = true;
       if (fgActive) {
           fgCaptureCounter++;
-          shouldCapture = (fgCaptureCounter % 4 == 0);  // Capture every 4th frame only
+          shouldCapture = (fgCaptureCounter % 4 == 0);
       }
-      
-      if (shouldCapture && processCapture && g_IPC->IsRecording() && g_DX12Capture.initialized) {
-        if (!g_DX12Capture.captureThreadRunning) {
-          g_DX12Capture.StartCaptureThread(AsyncCaptureThreadProc);
-        }
-
-        if (g_DX12Capture.gameSyncFence) {
-          g_DX12Capture.gameSyncValue++;
-          g_CommandQueue->Signal(g_DX12Capture.gameSyncFence,
-                                 g_DX12Capture.gameSyncValue);
-        }
-
-        LARGE_INTEGER qpc;
-        QueryPerformanceCounter(&qpc);
-
-        g_DX12Capture.EnqueueFrame(qpc.QuadPart, g_DX12Capture.gameSyncValue,
-                               pSwapChain->GetCurrentBackBufferIndex(),
-                               pSwapChain);
+      if (shouldCapture && processCapture && g_IPC && g_IPC->IsRecording()) {
+          SharedMemoryLayout* shm = g_IPC->GetSharedMem();
+          if (shm && g_SharedCaptureD3D12.IsActive()) {
+              std::lock_guard<std::mutex> capLock(g_DX12CaptureMutex);
+              if (g_SharedCaptureD3D12.CaptureFrame(pSwapChain->GetCurrentBackBufferIndex())) {
+                  SharedFrameDescriptor desc;
+                  if (g_SharedCaptureD3D12.GetCurrentFrame(&desc)) {
+                      // 1. Sync handles to shm (Zero-copy handles)
+                      shm->sharedHandles[0] = (uint64_t)g_SharedCaptureD3D12.GetSharedHandle(0);
+                      shm->sharedHandles[1] = (uint64_t)g_SharedCaptureD3D12.GetSharedHandle(1);
+                      shm->fenceShareHandle = (uint64_t)g_SharedCaptureD3D12.GetFenceShareHandle();
+                      
+                      // 2. Push to ring buffer (Lock-free SPSC)
+                      uint32_t wIdx = shm->frameRing.writeIndex.load(std::memory_order_relaxed);
+                      uint32_t nextIdx = (wIdx + 1) % FRAME_RING_SIZE;
+                      
+                      if (nextIdx != shm->frameRing.readIndex.load(std::memory_order_acquire)) {
+                          FrameSlot& slot = shm->frameRing.slots[wIdx];
+                          slot.fenceValue = desc.fenceValue;
+                          slot.timestamp = desc.presentTime;
+                          slot.frameIndex = desc.frameNumber;
+                          slot.textureIndex = desc.textureIndex;
+                          slot.sourcePid = GetCurrentProcessId();
+                          slot.valid.store(1, std::memory_order_release);
+                          
+                          shm->frameRing.writeIndex.store(nextIdx, std::memory_order_release);
+                      } else {
+                          // Buffer overflow - capture engine falling behind
+                          shm->frameRing.droppedFrames.fetch_add(1, std::memory_order_relaxed);
+                      }
+                  }
+              }
+          }
       }
-    };
+  };
 
-    // Order capture/overlay based on config
-    if (captureIncludeOverlay) {
-      doOverlay();   // Draw overlay first
-      doCapture();   // Then capture (includes overlay)
-    } else {
-      doCapture();   // Capture first (clean frame)
-      doOverlay();   // Then draw overlay (visible but not recorded)
-    }
+  if (captureIncludeOverlay) {
+      doOverlay();
+      doCapture();
+  } else {
+      doCapture();
+      doOverlay();
   }
 }
-
 
 // --- Prerender Limit Support ---
 static void ApplyPrerenderLimit(float limit) {
@@ -2624,7 +1694,6 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
   bool dlssFGActive = (fgType == FGCompatibility::FGType::DLSS_FG || 
                        fgType == FGCompatibility::FGType::DLSS_MSFG);
   bool fgActive = dlssFGActive;
-  bool fgStabilized = false;
   
   // Very short stabilization for DLSS FG - just 100ms to minimize overlay gap
   constexpr int DLSS_STABILIZATION_MS = 100;
@@ -2639,7 +1708,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain3 *pSwapChain,
               EarlyLog("DX12 FG: Frame %llu - DLSS swapchain stabilized after %lld ms. Overlay enabled.",
                        frameNum, elapsed);
           }
-          fgStabilized = true;
+
       } else {
           // Still stabilizing - brief passthrough
           if (frameNum % 50 == 0) {
@@ -3858,7 +2927,9 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain3 *pSwapChain,
   // Release capture resources (backbuffer references)
   {
       std::lock_guard<std::mutex> lock(g_DX12CaptureMutex);
-      g_DX12Capture.Cleanup();
+      if (g_SharedCaptureD3D12.IsActive()) {
+          g_SharedCaptureD3D12.Reset();
+      }
   }
   HookLog("DX12: DetourResizeBuffers Capture Cleanup done");
 
@@ -3881,7 +2952,8 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain3 *pSwapChain,
 
 DWORD WINAPI UnloadThread(LPVOID lpParam) {
   // Basic unload logic
-  g_DX12Capture.StopCaptureThread();
+  // g_DX12Capture.StopCaptureThread(); // Removed
+
   Sleep(200);
   g_DX12Hook.Shutdown(); // triggers MH_Disable
   return 0;
@@ -4080,34 +3152,6 @@ void DX12Hook::Shutdown() {
   // No disable needed for VTable hooks as we don't unpatch on shutdown currently
   // MH_DisableHook(MH_ALL_HOOKS);
   
-  // Stop capture thread and wait for it to finish
-  if (g_DX12Capture.captureThreadRunning) {
-    // Signal shutdown - this is what the thread actually checks
-    g_DX12Capture.captureThreadShutdown = true;
-    
-    // Wake up the capture thread if it's waiting on the event
-    if (g_DX12Capture.captureEvent) {
-      SetEvent(g_DX12Capture.captureEvent);
-    }
-    
-    // Give thread time to exit
-    Sleep(100);
-  }
-  
-  // Wait for GPU to finish all pending work
-  if (g_CommandQueue && g_DX12Capture.fence) {
-    UINT64 waitValue = g_DX12Capture.fenceValue + 1;
-    g_CommandQueue->Signal(g_DX12Capture.fence, waitValue);
-    if (g_DX12Capture.fence->GetCompletedValue() < waitValue) {
-      HANDLE waitEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-      if (waitEvent) {
-        g_DX12Capture.fence->SetEventOnCompletion(waitValue, waitEvent);
-        WaitForSingleObject(waitEvent, 1000); // Max 1 second wait
-        CloseHandle(waitEvent);
-      }
-    }
-  }
-  
   // Shutdown ImGui before releasing D3D12 resources
   ShutdownImGui();
   
@@ -4132,8 +3176,10 @@ void DX12Hook::Shutdown() {
   
   if (g_LastSwapChain) { g_LastSwapChain = nullptr; }
   
-  // Release capture resources
-  g_DX12Capture.Cleanup();
+  // Release capture resources (SharedCaptureD3D12)
+  if (g_SharedCaptureD3D12.IsActive()) {
+      g_SharedCaptureD3D12.Reset();
+  }
 
   g_IPCReady = false;
 
@@ -4141,25 +3187,10 @@ void DX12Hook::Shutdown() {
 }
 
 void DX12Hook::OnHostDisconnect() {
-  HookLog("DX12Hook::OnHostDisconnect() - stopping capture for reconnection");
+  HookLog("DX12Hook::OnHostDisconnect() - reset for reconnection");
   
-  // Stop capture thread if running (host died mid-recording)
-  if (g_DX12Capture.captureThreadRunning) {
-    // Signal shutdown - this is what the thread actually checks
-    g_DX12Capture.captureThreadShutdown = true;
-    
-    // Wake up the capture thread if it's waiting on the event
-    if (g_DX12Capture.captureEvent) {
-      SetEvent(g_DX12Capture.captureEvent);
-    }
-    
-    // Give thread time to exit
-    Sleep(100);
-    
-    // Reset flags for future recordings
-    g_DX12Capture.captureThreadShutdown = false;
-    g_DX12Capture.captureThreadRunning = false;
-  }
+  // SharedCapture doesn't have a separate thread to stop manually,
+  // but we can reset it if needed. For now, keep it alive or let next init handle it.
   
   // Reset IPC ready flag so we re-establish connection
   g_IPCReady = false;

@@ -1505,6 +1505,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         hk_src = glob.glob(os.path.join(PROJECT_ROOT, "hook", "*.cpp")) + \
                  glob.glob(os.path.join(PROJECT_ROOT, "hook", "common", "*.cpp")) + \
                  glob.glob(os.path.join(PROJECT_ROOT, "hook", "apis", "*.cpp")) + \
+                 glob.glob(os.path.join(PROJECT_ROOT, "hook", "capture", "*.cpp")) + \
                  glob.glob(os.path.join(PROJECT_ROOT, "hook", "wrappers", "*.cpp"))
         
         # Exclude D3D12 device/commandqueue wrappers due to MinGW ABI incompatibility
@@ -1565,6 +1566,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         hk_cflags = curr_cflags + ["-DVK_NO_PROTOTYPES"] + [  # Vulkan hooks now in layer
             "-I" + os.path.join(PROJECT_ROOT, "hook", "common"),
             "-I" + os.path.join(PROJECT_ROOT, "hook", "apis"),
+            "-I" + os.path.join(PROJECT_ROOT, "hook", "capture"),
             "-I" + os.path.join(PROJECT_ROOT, "hook", "wrappers")
         ]
         

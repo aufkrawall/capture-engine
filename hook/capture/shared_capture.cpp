@@ -210,6 +210,7 @@ void SharedCaptureD3D11::ReleaseFrame(UINT frameNumber) {
 
 SharedCaptureD3D12::SharedCaptureD3D12()
     : m_SharedHandles{nullptr, nullptr}
+    , m_FenceShareHandle(nullptr)
     , m_FenceEvent(nullptr)
     , m_FenceValue(0)
     , m_WriteIndex(0)
@@ -227,11 +228,46 @@ SharedCaptureD3D12::~SharedCaptureD3D12() {
         m_FenceEvent = nullptr;
     }
     
+    if (m_FenceShareHandle) {
+        CloseHandle(m_FenceShareHandle);
+        m_FenceShareHandle = nullptr;
+    }
+    
     for (int i = 0; i < 2; i++) {
         if (m_SharedHandles[i]) {
             CloseHandle(m_SharedHandles[i]);
             m_SharedHandles[i] = nullptr;
         }
+    }
+}
+
+void SharedCaptureD3D12::Reset() {
+    m_Active = false;
+    
+    // Release ComPtrs
+    m_pDevice.Reset();
+    m_pCommandQueue.Reset();
+    m_pSwapChain.Reset();
+    m_Fence.Reset();
+    m_CommandAllocator.Reset();
+    m_CommandList.Reset();
+    
+    for (int i = 0; i < 2; i++) {
+        m_SharedResources[i].Reset();
+        if (m_SharedHandles[i]) {
+            CloseHandle(m_SharedHandles[i]);
+            m_SharedHandles[i] = nullptr;
+        }
+    }
+    
+    if (m_FenceEvent) {
+        CloseHandle(m_FenceEvent);
+        m_FenceEvent = nullptr;
+    }
+    
+    if (m_FenceShareHandle) {
+        CloseHandle(m_FenceShareHandle);
+        m_FenceShareHandle = nullptr;
     }
 }
 
@@ -254,6 +290,11 @@ bool SharedCaptureD3D12::Initialize(ID3D12Device* pDevice, IDXGISwapChain* pSwap
     
     // Create fence for synchronization
     if (FAILED(pDevice->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&m_Fence)))) {
+        return false;
+    }
+
+    // Create shared handle for fence
+    if (FAILED(pDevice->CreateSharedHandle(m_Fence.Get(), nullptr, GENERIC_ALL, nullptr, &m_FenceShareHandle))) {
         return false;
     }
     
@@ -391,6 +432,7 @@ bool SharedCaptureD3D12::CaptureFrame(UINT backBufferIndex) {
         m_CurrentFrame.fenceValue = m_FenceValue;
         m_CurrentFrame.presentTime = qpc.QuadPart;
         m_CurrentFrame.frameNumber = ++m_FrameCounter;
+        m_CurrentFrame.textureIndex = (int32_t)writeIdx;
         m_CurrentFrame.ready = true;
     }
     
