@@ -15,15 +15,19 @@
 #include "backends/imgui_impl_dx12.h"
 #include "backends/imgui_impl_win32.h"
 #include "imgui.h"
-#include "../wrappers/wrapper_base.h"
+#include "../wrappers/d3d12_wrapper_interface.h"
 #include "../wrappers/wrapper_hooks.h"
 #include "../capture/shared_capture.h" // Added for shared capture
 
 // Global SharedCapture instance for DX12
 static SharedCaptureD3D12 g_SharedCaptureD3D12;
 
+// Global DX12Hook instance
+DX12Hook g_dx12HookInstance;
+
 #ifdef ENABLE_D3D12_WRAPPER
 #include "../wrappers/d3d12_wrapper_interface.h"
+#include "../wrappers/dxgi_swapchain_wrap.h" // For wrapper detection if needed
 #endif
 
 extern "C" __declspec(dllexport) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue);
@@ -72,6 +76,10 @@ typedef HRESULT(STDMETHODCALLTYPE *Present1Ptr)(
 typedef HRESULT(STDMETHODCALLTYPE *ResizeBuffersPtr)(IDXGISwapChain3 *, UINT,
                                                      UINT, UINT, DXGI_FORMAT,
                                                      UINT);
+typedef HRESULT(STDMETHODCALLTYPE *ResizeBuffers1Ptr)(IDXGISwapChain3 *, UINT, UINT, UINT,
+                                                      DXGI_FORMAT, UINT,
+                                                      const UINT *,
+                                                      IUnknown *const *);
 typedef void(STDMETHODCALLTYPE *ExecuteCommandListsPtr)(
     ID3D12CommandQueue *, UINT, ID3D12CommandList *const *);
 typedef void(STDMETHODCALLTYPE *CreateSamplerPtr)(ID3D12Device *, const D3D12_SAMPLER_DESC *, D3D12_CPU_DESCRIPTOR_HANDLE);
@@ -89,6 +97,7 @@ typedef HRESULT(WINAPI *PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE)(
 static PresentPtr oPresent = nullptr;
 static Present1Ptr oPresent1 = nullptr;
 static ResizeBuffersPtr oResizeBuffers = nullptr;
+static ResizeBuffers1Ptr oResizeBuffers1 = nullptr;
 static ExecuteCommandListsPtr oExecuteCommandLists = nullptr;
 
 // Forward declarations
@@ -1491,12 +1500,27 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
                       shm->sharedHandles[1] = (uint64_t)g_SharedCaptureD3D12.GetSharedHandle(1);
                       shm->fenceShareHandle = (uint64_t)g_SharedCaptureD3D12.GetFenceShareHandle();
                       
-                      // 2. Push to ring buffer (Lock-free SPSC)
-                      uint32_t wIdx = shm->frameRing.writeIndex.load(std::memory_order_relaxed);
-                      uint32_t nextIdx = (wIdx + 1) % FRAME_RING_SIZE;
+                      // METADATA PROPAGATION
+                      shm->width = desc.width;
+                      shm->height = desc.height;
+                      shm->format = desc.format;
                       
-                      if (nextIdx != shm->frameRing.readIndex.load(std::memory_order_acquire)) {
-                          FrameSlot& slot = shm->frameRing.slots[wIdx];
+                      // Update LUID if not set (or changed)
+                      if (shm->luidLowPart == 0 && shm->luidHighPart == 0 && g_Device) {
+                          LUID luid = g_Device->GetAdapterLuid();
+                          shm->luidLowPart = luid.LowPart;
+                          shm->luidHighPart = luid.HighPart;
+                          if (capShouldLog) HookLog("DX12: doCapture - Propagated LUID: %08x-%08x", luid.HighPart, luid.LowPart);
+                      }
+                      
+                      // 2. Push to ring buffer (Lock-free SPSC)
+                      // NOTE: writeIndex and readIndex are RAW monotonic counters (not wrapped)
+                      // Slot access uses modulo, but index comparison uses difference
+                      uint32_t wIdx = shm->frameRing.writeIndex.load(std::memory_order_relaxed);
+                      uint32_t rIdx = shm->frameRing.readIndex.load(std::memory_order_acquire);
+                      
+                      if ((uint32_t)(wIdx - rIdx) < (uint32_t)FRAME_RING_SIZE) {
+                          FrameSlot& slot = shm->frameRing.slots[wIdx % FRAME_RING_SIZE];
                           slot.fenceValue = desc.fenceValue;
                           slot.timestamp = desc.presentTime;
                           slot.frameIndex = desc.frameNumber;
@@ -1506,11 +1530,11 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
                           
                           if (capShouldLog) HookLog("DX12: doCapture - Frame Pushed: index=%u, tex=%d, wIdx=%u", 
                                                     desc.frameNumber, desc.textureIndex, wIdx);
-                          shm->frameRing.writeIndex.store(nextIdx, std::memory_order_release);
+                          shm->frameRing.writeIndex.store(wIdx + 1, std::memory_order_release);
                       } else {
                           // Buffer overflow - capture engine falling behind
                           if (capShouldLog) HookLog("DX12: doCapture - RING BUFFER FULL (rIdx=%u, wIdx=%u)", 
-                                                    shm->frameRing.readIndex.load(), wIdx);
+                                                    rIdx, wIdx);
                           shm->frameRing.droppedFrames.fetch_add(1, std::memory_order_relaxed);
                       }
                   } else {
@@ -2761,44 +2785,45 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(
 #endif
 
   if (pDevice) {
-    // IGNORE dummy swapchain from proactive hooking
-    if (pDesc && pDesc->Width == 1 && pDesc->Height == 1) {
-        HookLog("DX12: DetourCreateSwapChainForHwnd: Ignoring 1x1 dummy swapchain queue capture.");
-        return oCreateSwapChainForHwnd(pThis, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
+    // IGNORE dummy swapchain from proactive hooking (Queue Capture only)
+    bool isDummy = (pDesc && pDesc->Width == 1 && pDesc->Height == 1);
+    
+    if (isDummy) {
+        HookLog("DX12: DetourCreateSwapChainForHwnd: Ignoring 1x1 dummy swapchain queue capture (Hooks will still be installed).");
+    } else {
+        ID3D12CommandQueue *queue = nullptr;
+        if (SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D12CommandQueue),
+                                              (void **)&queue))) {
+            // Release old queue before capturing new one
+            if (g_CommandQueue) g_CommandQueue->Release();
+            g_CommandQueue = queue; // Keep the reference
+            g_IsQueueFromSwapchain = true;
+            EarlyLog("DX12: DetourCreateSwapChainForHwnd: Auth Queue %p captured from Swapchain", g_CommandQueue);
+            
+            // Ensure ExecuteCommandLists is hooked on this queue
+            HookQueueVTable(queue);
+            
+            ID3D12Device* dev = nullptr;
+            if (SUCCEEDED(queue->GetDevice(IID_PPV_ARGS(&dev)))) {
+                std::lock_guard<std::mutex> lock(g_DeviceQueuesMutex);
+                // If we already have a queue for this device, release it
+                if (g_DeviceQueues.count(dev)) g_DeviceQueues[dev]->Release();
+                g_DeviceQueues[dev] = queue;
+                queue->AddRef(); // One for the map
+                
+                if (g_Device) g_Device->Release();
+                g_Device = dev; // Keep the reference from GetDevice
+                
+                // FG: Cleanup dedicated overlay queue if device changed
+                if (g_OverlayQueueInitialized) {
+                    EarlyLog("DX12 FG: Device changed during swapchain creation, cleaning up overlay queue");
+                    CleanupDedicatedOverlayQueue();
+                }
+            }
+            HookLog("CreateSwapChainForHwnd #%d: Captured Queue %p", swapCount, g_CommandQueue);
+        }
+        g_FGCompat.OnSwapchainRecreation(); // Notify FG detection (triggers suspend)
     }
-
-    ID3D12CommandQueue *queue = nullptr;
-    if (SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D12CommandQueue),
-                                          (void **)&queue))) {
-      // Release old queue before capturing new one
-      if (g_CommandQueue) g_CommandQueue->Release();
-      g_CommandQueue = queue; // Keep the reference
-      g_IsQueueFromSwapchain = true;
-      EarlyLog("DX12: DetourCreateSwapChainForHwnd: Auth Queue %p captured from Swapchain", g_CommandQueue);
-      
-      // Ensure ExecuteCommandLists is hooked on this queue
-      HookQueueVTable(queue);
-      
-      ID3D12Device* dev = nullptr;
-      if (SUCCEEDED(queue->GetDevice(IID_PPV_ARGS(&dev)))) {
-          std::lock_guard<std::mutex> lock(g_DeviceQueuesMutex);
-          // If we already have a queue for this device, release it
-          if (g_DeviceQueues.count(dev)) g_DeviceQueues[dev]->Release();
-          g_DeviceQueues[dev] = queue;
-          queue->AddRef(); // One for the map
-          
-          if (g_Device) g_Device->Release();
-          g_Device = dev; // Keep the reference from GetDevice
-          
-          // FG: Cleanup dedicated overlay queue if device changed
-          if (g_OverlayQueueInitialized) {
-              EarlyLog("DX12 FG: Device changed during swapchain creation, cleaning up overlay queue");
-              CleanupDedicatedOverlayQueue();
-          }
-      }
-      HookLog("CreateSwapChainForHwnd #%d: Captured Queue %p", swapCount, g_CommandQueue);
-    }
-    g_FGCompat.OnSwapchainRecreation(); // Notify FG detection (triggers suspend)
   }
 
   DXGI_SWAP_CHAIN_DESC1 modifiedDesc = *pDesc;
@@ -3009,6 +3034,7 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain3 *pSwapChain,
                                               UINT Height,
                                               DXGI_FORMAT NewFormat,
                                               UINT SwapChainFlags) {
+  HookLog("DX12: DetourResizeBuffers called (Width=%u, Height=%u)", Width, Height);
   if (!pSwapChain) return DXGI_ERROR_INVALID_CALL;
 
   HookLog("DX12: DetourResizeBuffers entering...");
@@ -3043,33 +3069,98 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain3 *pSwapChain,
                                SwapChainFlags);
   HookLog("DX12: original ResizeBuffers returned 0x%08X", hr);
 
+  // POST-RESIZE: Capture Command Queue if needed (Self-Healing)
+  // This is critical for cases where the initial swapchain was a 1x1 dummy (ignored)
+  // and is now being resized to a real resolution.
+  if (SUCCEEDED(hr) && !g_CommandQueue) {
+      if (Width > 1 && Height > 1) { // Only capture if resolution is valid
+          IUnknown* pDevice = nullptr;
+          if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&pDevice)))) {
+               ID3D12CommandQueue* queue = nullptr;
+               if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&queue)))) {
+                   HookLog("DX12: ResizeBuffers: Self-healing captured Command Queue %p", queue);
+                   DX12_SetCommandQueue(queue); 
+                   queue->Release();
+               }
+               pDevice->Release();
+          }
+      }
+  }
+
+  return hr;
+}
+
+HRESULT STDMETHODCALLTYPE DetourResizeBuffers1(IDXGISwapChain3 *pSwapChain,
+                                               UINT BufferCount, UINT Width,
+                                               UINT Height,
+                                               DXGI_FORMAT NewFormat,
+                                               UINT SwapChainFlags,
+                                               const UINT *pCreationNodeMask,
+                                               IUnknown *const *ppPresentQueue) {
+  HookLog("DX12: DetourResizeBuffers1 called (Width=%u, Height=%u)", Width, Height);
+  if (!pSwapChain) return DXGI_ERROR_INVALID_CALL;
+
+  HookLog("DX12: DetourResizeBuffers1 entering...");
+  std::lock_guard<std::mutex> lock(g_OverlayMutex);
+  
+  g_FGCompat.OnSwapchainRecreation();
+  CleanupOverlay();
+  CleanupRTVs();
+
+  {
+      std::lock_guard<std::mutex> lock(g_DX12CaptureMutex);
+      if (g_SharedCaptureD3D12.IsActive()) {
+          g_SharedCaptureD3D12.Reset();
+      }
+  }
+
+  if (g_State.imGuiInit) ImGui_ImplDX12_InvalidateDeviceObjects();
+
+  int count = GetActiveGraphicsConfig().backbufferCount;
+  if (count >= 2 && count <= 6) {
+      BufferCount = (UINT)count;
+      HookLog("DX12: ResizeBuffers1: Overriding BufferCount to %d", count);
+  }
+
+  HookLog("DX12: Calling original ResizeBuffers1...");
+  HRESULT hr = oResizeBuffers1(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags, pCreationNodeMask, ppPresentQueue);
+  HookLog("DX12: original ResizeBuffers1 returned 0x%08X", hr);
+
+  if (SUCCEEDED(hr) && !g_CommandQueue) {
+       if (Width > 1 && Height > 1) {
+           IUnknown* pDevice = nullptr;
+           if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&pDevice)))) {
+                ID3D12CommandQueue* queue = nullptr;
+                if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&queue)))) {
+                    HookLog("DX12: ResizeBuffers1: Self-healing captured Command Queue %p", queue);
+                    DX12_SetCommandQueue(queue);
+                    queue->Release();
+                }
+                pDevice->Release();
+           }
+       }
+  }
+
   return hr;
 }
 
 DWORD WINAPI UnloadThread(LPVOID lpParam) {
-  // Basic unload logic
-  // g_DX12Capture.StopCaptureThread(); // Removed
-
   Sleep(200);
-  g_DX12Hook.Shutdown(); // triggers MH_Disable
+  g_DX12Hook.Shutdown(); 
   return 0;
 }
 
 #ifdef ENABLE_D3D12_WRAPPER
 HRESULT WINAPI DetourD3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL MinimumFeatureLevel, REFIID riid, void** ppDevice) {
     HookLog("DX12: DetourD3D12CreateDevice called (pAdapter=%p)", pAdapter);
-
-    // CRITICAL: If pAdapter is our wrapper, we MUST unwrap it before passing to D3D12!
-    // Real D3D12 runtime will crash or fail if passed a wrapper pointer.
     if (pAdapter) {
         ICWrapDXGIAdapter* pWrapper = nullptr;
         if (SUCCEEDED(pAdapter->QueryInterface(IID_CWrapDXGIAdapter, (void**)&pWrapper)) && pWrapper) {
             HookLog("DX12: DetourD3D12CreateDevice - Unwrapping adapter %p -> %p", pAdapter, pWrapper->GetReal());
-            pAdapter = pWrapper->GetReal(); // Use the REAL adapter
-            pWrapper->Release(); // Release the interface used for unwrapping
+            pAdapter = pWrapper->GetReal();
+            pWrapper->Release();
         }
     }
-
     HRESULT hr = oD3D12CreateDevice(pAdapter, MinimumFeatureLevel, riid, ppDevice);
     if (SUCCEEDED(hr) && ppDevice && *ppDevice) {
         HookLog("DX12: Capturing Device via D3D12CreateDevice hook");
@@ -3078,73 +3169,48 @@ HRESULT WINAPI DetourD3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL Min
         ReportLUID(luid.LowPart, luid.HighPart);
 
         void** vtbl = *reinterpret_cast<void***>(dev);
-        
         static std::mutex s_HookMutex;
         std::lock_guard<std::mutex> lock(s_HookMutex);
 
         static bool hookedSampler = false;
         if (!hookedSampler) {
-            // Index 22 is CreateSampler in ID3D12Device
             VTableHook::Status s = VTableHook::Create(&vtbl[22], (LPVOID)DetourCreateSampler, (LPVOID*)&oCreateSampler);
-            if (s == VTableHook::Success) {
-                HookLog("DX12: Hooked CreateSampler (early export)");
-                hookedSampler = true;
-            } else if (s == VTableHook::ErrorAlreadyCreated) {
-                 hookedSampler = true;
-            }
+            if (s == VTableHook::Success || s == VTableHook::ErrorAlreadyCreated) hookedSampler = true;
         }
         
         static bool hookedCreateResource = false;
         if (!hookedCreateResource) {
-            // Index 27 is CreateCommittedResource
             VTableHook::Status s = VTableHook::Create(&vtbl[27], (LPVOID)DetourCreateCommittedResource, (LPVOID*)&oCreateCommittedResource);
-            if (s == VTableHook::Success) {
-                HookLog("DX12: Hooked CreateCommittedResource");
-                hookedCreateResource = true;
-            } else if (s == VTableHook::ErrorAlreadyCreated) {
-                 hookedCreateResource = true;
-            }
+            if (s == VTableHook::Success || s == VTableHook::ErrorAlreadyCreated) hookedCreateResource = true;
         }
         
-        // LAZY HOOKING: Hook ExecuteCommandLists using a dummy queue from this real device
-        // We do this here because we removed the dummy device creation from Init()
         static bool hookedQueue = false;
         if (!hookedQueue) {
             D3D12_COMMAND_QUEUE_DESC queueDesc = {};
             queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-            
             ID3D12CommandQueue* dummyQueue = nullptr;
             if (SUCCEEDED(dev->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&dummyQueue))) && dummyQueue) {
                 void** qVtbl = *reinterpret_cast<void***>(dummyQueue);
-                
-                // Index 10 is ExecuteCommandLists
                 VTableHook::Status s = VTableHook::Create(&qVtbl[10], (LPVOID)DetourExecuteCommandLists, (LPVOID*)&oExecuteCommandLists);
-                if (s == VTableHook::Success) {
-                    HookLog("DX12: Hooked ExecuteCommandLists (via lazy queue creation)");
-                } else if (s == VTableHook::ErrorAlreadyCreated) {
-                    HookLog("DX12: Enabled existing ExecuteCommandLists hook");
-                } else {
-                    HookLog("DX12: Failed to hook ExecuteCommandLists: %s", VTableHook::StatusToString(s));
-                }
-                
+                if (s == VTableHook::Success) HookLog("DX12: Hooked ExecuteCommandLists (via lazy queue creation)");
                 dummyQueue->Release();
-            } else {
-                HookLog("DX12: Failed to create dummy queue for hooking ExecuteCommandLists");
             }
             hookedQueue = true;
         }
     }
     return hr;
 }
-#endif // ENABLE_D3D12_WRAPPER
+#endif
 
-// DX12Hook Implementation
 void DX12Hook::Init() {
+  static std::mutex s_InitMutex;
+  static bool s_InitDone = false;
+  
+  std::lock_guard<std::mutex> lock(s_InitMutex);
+  if (s_InitDone) return;
+  s_InitDone = true;
+
   EarlyLog("DX12Hook::Init() called - installing SAFE hooks (Lazy Mode)");
-
-  // NOTE: Removed dummy window and device creation to prevent crashes in some games (Strange Brigade)
-  // when injected early via CBT hooks. We now rely on hooking exports and lazy initialization.
-
   HMODULE hD3D12 = LoadLibraryA("d3d12.dll");
   HMODULE hDXGI = LoadLibraryA("dxgi.dll");
   if (!hD3D12 || !hDXGI) {
@@ -3153,48 +3219,38 @@ void DX12Hook::Init() {
   }
 
 #ifdef ENABLE_D3D12_WRAPPER
-  // Hook D3D12CreateDevice export to catch early device creation
-  // On 32-bit, we use IAT hooks (in wrapper_hooks.cpp) to catch this.
-  // We now trust IAT hooks for 64-bit as well, eliminating MinHook dependency.
   HookLog("DX12: Skipping MinHook for D3D12CreateDevice (using IAT wrapper instead)");
-#endif // ENABLE_D3D12_WRAPPER
+#endif
 
   typedef HRESULT (WINAPI *PFN_CREATE_DXGI_FACTORY1)(REFIID, void**);
-  PFN_CREATE_DXGI_FACTORY1 pCreateDXGIFactory1 = (PFN_CREATE_DXGI_FACTORY1)GetProcAddress(hDXGI, "CreateDXGIFactory1");
+  PFN_CREATE_DXGI_FACTORY1 pCreateDXGIFactory1 = nullptr;
+  
+  // Use wrapper pointer if available to avoid recursion
+  if (oCreateDXGIFactory1) {
+      pCreateDXGIFactory1 = (PFN_CREATE_DXGI_FACTORY1)oCreateDXGIFactory1;
+      HookLog("DX12: Using existing oCreateDXGIFactory1 from wrapper");
+  } else {
+      pCreateDXGIFactory1 = (PFN_CREATE_DXGI_FACTORY1)GetProcAddress(hDXGI, "CreateDXGIFactory1");
+  }
 
   if (!pCreateDXGIFactory1) {
     HookLog("DX12: Failed to find CreateDXGIFactory1 entry point.");
     return;
   }
 
-  // Create a temporary factory to get VTable for SwapChain creation hooks
   IDXGIFactory4 *factory = nullptr;
   HRESULT hr = pCreateDXGIFactory1(IID_PPV_ARGS(&factory));
 
   if (factory && SUCCEEDED(hr)) {
       void **facVTable = *reinterpret_cast<void ***>(factory);
+      VTableHook::Create(&facVTable[10], (LPVOID)DetourCreateSwapChain, (LPVOID *)&oCreateSwapChain);
+      VTableHook::Create(&facVTable[15], (LPVOID)DetourCreateSwapChainForHwnd, (LPVOID *)&oCreateSwapChainForHwnd);
+      VTableHook::Create(&facVTable[16], (LPVOID)DetourCreateSwapChainForCoreWindow, (LPVOID *)&oCreateSwapChainForCoreWindow);
+      VTableHook::Create(&facVTable[24], (LPVOID)DetourCreateSwapChainForComposition, (LPVOID *)&oCreateSwapChainForComposition);
       
-      VTableHook::Status s;
-      s = VTableHook::Create(&facVTable[10], (LPVOID)DetourCreateSwapChain,
-                    (LPVOID *)&oCreateSwapChain);
-      if (s != VTableHook::Success) HookLog("Failed to hook CreateSwapChain: %s", VTableHook::StatusToString(s));
-
-      s = VTableHook::Create(&facVTable[15], (LPVOID)DetourCreateSwapChainForHwnd,
-                    (LPVOID *)&oCreateSwapChainForHwnd);
-      if (s != VTableHook::Success) HookLog("Failed to hook CreateSwapChainForHwnd: %s", VTableHook::StatusToString(s));
-
-      s = VTableHook::Create(&facVTable[16], (LPVOID)DetourCreateSwapChainForCoreWindow,
-                    (LPVOID *)&oCreateSwapChainForCoreWindow);
-      if (s != VTableHook::Success) HookLog("Failed to hook CreateSwapChainForCoreWindow: %s", VTableHook::StatusToString(s));
-
-      s = VTableHook::Create(&facVTable[24], (LPVOID)DetourCreateSwapChainForComposition,
-                    (LPVOID *)&oCreateSwapChainForComposition);
-      if (s != VTableHook::Success) HookLog("Failed to hook CreateSwapChainForComposition: %s", VTableHook::StatusToString(s));
-      
-      // Proactive SwapChain VTable Hooking
-      // Create a dummy device and swapchain to get the VTable for Present
       HookLog("DX12: Attempting proactive swapchain VTable hooking...");
-      
+      // Proactive logic for Present/Present1 is here in original... 
+      // Simplified for restoration:
       typedef HRESULT (WINAPI *PFN_D3D12_CREATE_DEVICE)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
       PFN_D3D12_CREATE_DEVICE pD3D12CreateDevice = (PFN_D3D12_CREATE_DEVICE)GetProcAddress(hD3D12, "D3D12CreateDevice");
 
@@ -3205,114 +3261,76 @@ void DX12Hook::Init() {
           ID3D12CommandQueue* dummyQueue = nullptr;
           if (SUCCEEDED(dummyDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&dummyQueue)))) {
               DXGI_SWAP_CHAIN_DESC1 scDesc = {};
-              scDesc.Width = 1;
-              scDesc.Height = 1;
-              scDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-              scDesc.SampleDesc.Count = 1;
-              scDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-              scDesc.BufferCount = 2;
-              scDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+              scDesc.Width = 1; scDesc.Height = 1; scDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+              scDesc.SampleDesc.Count = 1; scDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+              scDesc.BufferCount = 2; scDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
 
-              // GUARD: If DetourCreateSwapChainForHwnd already triggered (e.g. by game startup)
-              // and oPresent is already set, we might be about to double-hook if we are not careful.
-              // However, VTableHook::Create handles existing hooks. 
-              // The main goal here is to avoid the "ALREADY SET" log spam when everything is working.
               HWND hwnd = CreateWindowA("STATIC", "Dummy", WS_OVERLAPPEDWINDOW, 0, 0, 1, 1, NULL, NULL, NULL, NULL);
               if (hwnd) {
                   IDXGISwapChain1* sc1 = nullptr;
                   if (SUCCEEDED(factory->CreateSwapChainForHwnd(dummyQueue, hwnd, &scDesc, nullptr, nullptr, &sc1))) {
-                      HookLog("DX12: Dummy swapchain created successfully.");
                       IDXGISwapChain3* sc3 = nullptr;
-                      HRESULT sqi = sc1->QueryInterface(IID_PPV_ARGS(&sc3));
-                      if (SUCCEEDED(sqi)) {
-                          HookLog("DX12: Dummy swapchain obtained SC3 interface.");
-                          // Hook Present and Present1 directly on the VTable
+                      if (SUCCEEDED(sc1->QueryInterface(IID_PPV_ARGS(&sc3)))) {
                           void** scVTable = *(void***)sc3;
-                          
-                          if (oPresent == nullptr) {
-                              VTableHook::Status s = VTableHook::Create(&scVTable[8], (LPVOID)DetourPresent, (LPVOID*)&oPresent);
-                              HookLog("DX12: Proactive VTable hook: Present (vtable[8]) Status=%d", (int)s);
-                          } else {
-                              HookLog("DX12: Proactive VTable hook: Present ALREADY SET (%p)", oPresent);
-                          }
-                          
-                          if (oPresent1 == nullptr) {
-                              VTableHook::Status s = VTableHook::Create(&scVTable[22], (LPVOID)DetourPresent1, (LPVOID*)&oPresent1);
-                              HookLog("DX12: Proactive VTable hook: Present1 (vtable[22]) Status=%d", (int)s);
-                          } else {
-                              HookLog("DX12: Proactive VTable hook: Present1 ALREADY SET (%p)", oPresent1);
-                          }
-                          
+                          if (oPresent == nullptr) VTableHook::Create(&scVTable[8], (LPVOID)DetourPresent, (LPVOID*)&oPresent);
+                          if (oPresent1 == nullptr) VTableHook::Create(&scVTable[22], (LPVOID)DetourPresent1, (LPVOID*)&oPresent1);
                           sc3->Release();
-                      } else {
-                          HookLog("DX12: Dummy swapchain FAILED to obtain SC3 interface (hr=0x%08X).", sqi);
                       }
                       sc1->Release();
-                  } else {
-                      HookLog("DX12: Dummy swapchain creation FAILED.");
                   }
                   DestroyWindow(hwnd);
-              } else {
-                  HookLog("DX12: Dummy window creation FAILED.");
               }
               dummyQueue->Release();
-          } else {
-              HookLog("DX12: Dummy queue creation FAILED.");
           }
           dummyDevice->Release();
-      } else {
-          HookLog("DX12: Failed to create dummy device for proactive hooking.");
       }
-
       factory->Release();
-  } else {
-      HookLog("DX12: Failed to create temporary DXGI Factory (hr=0x%08X). SwapChain hooking may fail.", hr);
   }
-
-  // NOTE: Export hooks (SerializeRootSignature) removed here.
-  // They are now handled by IAT/EAT patching in iat_hook.cpp.
-
   HookLog("DX12Hook: VTableHook initialized (Lazy Init Complete).");
 }
 
-// Helper function callable from dx11_hook.cpp to install DX12 hooks on actual game swapchain
-// This is needed because UE5/DLSS games create swapchains via DXGI which triggers DX11 hooks first
 bool InstallDX12HooksOnSwapchain(IDXGISwapChain3* pSwapChain) {
     if (!pSwapChain) return false;
-    
     void** scVTable = *(void***)pSwapChain;
     bool anyInstalled = false;
     
     if (oPresent == nullptr) {
-        VTableHook::Status s = VTableHook::Create(&scVTable[8], (LPVOID)DetourPresent, (LPVOID*)&oPresent);
-        if (s == VTableHook::Success) {
-            HookLog("DX12: Present hook installed on game swapchain (vtable[8]=%p)", scVTable[8]);
-            anyInstalled = true;
-        } else {
-            HookLog("DX12: Failed to hook Present on game swapchain: %s", VTableHook::StatusToString(s));
-        }
+        if (VTableHook::Create(&scVTable[8], (LPVOID)DetourPresent, (LPVOID*)&oPresent) == VTableHook::Success) anyInstalled = true;
     }
-    
     if (oPresent1 == nullptr) {
-        VTableHook::Status s = VTableHook::Create(&scVTable[22], (LPVOID)DetourPresent1, (LPVOID*)&oPresent1);
-        if (s == VTableHook::Success) {
-            HookLog("DX12: Present1 hook installed on game swapchain (vtable[22]=%p)", scVTable[22]);
-            anyInstalled = true;
-        } else {
-            HookLog("DX12: Failed to hook Present1 on game swapchain: %s", VTableHook::StatusToString(s));
-        }
+        if (VTableHook::Create(&scVTable[22], (LPVOID)DetourPresent1, (LPVOID*)&oPresent1) == VTableHook::Success) anyInstalled = true;
     }
-    
-    if (oResizeBuffers == nullptr) {
+    // Check and hook ResizeBuffers (13)
+    if (scVTable[13] != DetourResizeBuffers) {
+        HookLog("DX12: ResizeBuffers (vtable[13]) not hooked on this swapchain. Installing...");
         VTableHook::Status s = VTableHook::Create(&scVTable[13], (LPVOID)DetourResizeBuffers, (LPVOID*)&oResizeBuffers);
         if (s == VTableHook::Success) {
-            HookLog("DX12: ResizeBuffers hook installed on game swapchain");
-            anyInstalled = true;
+             HookLog("DX12: ResizeBuffers hook installed on game swapchain (vtable[13])");
+             anyInstalled = true;
+        } else {
+             HookLog("DX12: ResizeBuffers hook failed: %s", VTableHook::StatusToString(s));
         }
+    } else {
+        HookLog("DX12: ResizeBuffers ALREADY hooked on this swapchain (vtable[13]).");
+    }
+
+    // Check and hook ResizeBuffers1 (39)
+    if (scVTable[39] != DetourResizeBuffers1) {
+        HookLog("DX12: ResizeBuffers1 (vtable[39]) not hooked on this swapchain. Installing...");
+        VTableHook::Status s = VTableHook::Create(&scVTable[39], (LPVOID)DetourResizeBuffers1, (LPVOID*)&oResizeBuffers1);
+        if (s == VTableHook::Success) {
+            HookLog("DX12: ResizeBuffers1 hook installed on game swapchain (vtable[39])");
+            anyInstalled = true;
+        } else {
+             // HookLog("DX12: ResizeBuffers1 hook failed/skipped: %s", VTableHook::StatusToString(s));
+        }
+    } else {
+        HookLog("DX12: ResizeBuffers1 ALREADY hooked on this swapchain (vtable[39]).");
     }
     
     return anyInstalled;
 }
+
 
 void DX12Hook::Shutdown() {
   HookLog("DX12Hook::Shutdown()");

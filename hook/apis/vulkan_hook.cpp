@@ -4487,9 +4487,10 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
         if (completionSem != VK_NULL_HANDLE) {
           int usedTextureIdx = (g_VulkanCapture.writeIndex + CAPTURE_TEXTURE_COUNT - 1) %
                   CAPTURE_TEXTURE_COUNT;
+          // PASS RAW QPC: MediaEngine converts to MS using trusted frequency
           g_VulkanCapture.SignalFrameReady(
               g_IPC, usedTextureIdx,
-              us / 1000, g_VulkanCapture.fenceValue);
+              qpc.QuadPart, g_VulkanCapture.fenceValue);
           
           // CRITICAL FIX: Make Present wait on Capture completion
           // This serializes Render -> Capture -> Present

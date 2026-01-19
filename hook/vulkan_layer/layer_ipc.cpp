@@ -271,6 +271,52 @@ void LayerIPC_IncrementWriteIndex(uint64_t timestamp) {
     ring.writeIndex.store(wIdx + 1, std::memory_order_release);
 }
 
+// Get pointer to the ShmemBuffer for CPU staging
+void* LayerIPC_GetShmemBuffer() {
+    return g_IPCClient.GetShmem();
+}
+
+// Set dimensions for SHMEM mode (updates SharedMemoryLayout)
+void LayerIPC_SetShmemDimensions(uint32_t width, uint32_t height, uint32_t format) {
+    auto* mem = g_IPCClient.GetSharedMem();
+    if (!mem) return;
+    
+    mem->width = width;
+    mem->height = height;
+    mem->format = format;
+    LayerLog("Layer IPC: Set SHMEM dimensions %ux%u format=%u", width, height, format);
+}
+
+// Signal frame ready for SHMEM mode (textureIndex >= 100)
+void LayerIPC_SignalFrameReady(int32_t textureIndex) {
+    auto* mem = g_IPCClient.GetSharedMem();
+    if (!mem) return;
+    
+    auto& ring = mem->frameRing;
+    uint32_t wIdx = ring.writeIndex.load(std::memory_order_relaxed);
+    uint32_t rIdx = ring.readIndex.load(std::memory_order_acquire);
+    
+    // Check if ring buffer has space
+    if ((uint32_t)(wIdx - rIdx) >= (uint32_t)FRAME_RING_SIZE) {
+        ring.droppedFrames.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    
+    uint32_t slot = wIdx % FRAME_RING_SIZE;
+    
+    LARGE_INTEGER qpc;
+    QueryPerformanceCounter(&qpc);
+    
+    ring.slots[slot].timestamp = qpc.QuadPart;
+    ring.slots[slot].frameIndex = wIdx;
+    ring.slots[slot].textureIndex = textureIndex;  // >= 100 indicates SHMEM mode
+    ring.slots[slot].sourcePid = GetCurrentProcessId();
+    ring.slots[slot].fenceValue = 0;
+    ring.slots[slot].valid.store(1, std::memory_order_release);
+    
+    ring.writeIndex.store(wIdx + 1, std::memory_order_release);
+}
+
 // IPC Logging implementation
 // Replicates hook_common.cpp LogToFileAtomic/HookLog logic but purely over IPC
 void LayerIPC_Log(const char* fmt, ...) {

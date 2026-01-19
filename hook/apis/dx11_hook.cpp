@@ -1892,7 +1892,7 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain *pSwapChain,
               captureContext->End(g_DX11Capture.copyQueries[idx]);
           }
 
-          g_DX11Capture.SignalFrameReady(g_IPC, idx, us / 1000, 0);
+          g_DX11Capture.SignalFrameReady(g_IPC, idx, qpc.QuadPart, 0);
           g_DX11Capture.AdvanceWriteIndex();
       }
     }

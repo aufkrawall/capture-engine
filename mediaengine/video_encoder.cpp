@@ -1435,25 +1435,22 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
             DLL_Log("[VideoEncoder] CRITICAL WARNING: DXGI_FORMAT_B8G8R8A8_UNORM (87) does NOT support SHAREABLE! Flags=%x", formatSupport);
         }
 
-        /* NT Handle Path Disabled for KMT Fallback
         // Try NT handle path first - usually preferred for modern interop
-        HANDLE dupTex = nullptr;
         if (DuplicateHandle(hProcess, sharedHandle, GetCurrentProcess(), &dupTex, 0,
                              FALSE, DUPLICATE_SAME_ACCESS)) {
+          // Use OpenSharedResource1 for NT handles
           hr = d3d11Device->OpenSharedResource1(dupTex, IID_PPV_ARGS(&bgraTex));
           if (FAILED(hr)) {
-                // Log failure details...
-                DXGI_ADAPTER_DESC desc;
-                // ... (existing logging code) ...
-               DLL_Log("[VideoEncoder] Frame %d: OpenSharedResource1(dup=%p) failed HR=%x...", 
+               DLL_Log("[VideoEncoder] Frame %d: OpenSharedResource1(dup=%p) failed HR=%x. Falling back to KMT...", 
                        encodeFrameCounter, dupTex, hr);
+          } else {
+               // Success - dupTex is now managed by D3D11 runtime (?), but we should close our handle if Open succeeded?
+               // MSDN: "The OpenSharedResource1 ... validates the handle ... and adds a reference"
+               // We still own dupTex and must close it.
           }
           CloseHandle(dupTex);
         }
-        */
-        hr = E_FAIL; // Ensure we fall through to KMT
 
-        // If NT path failed, try KMT path as direct fallback
         if (FAILED(hr)) {
           hr = d3d11Device->OpenSharedResource(sharedHandle, IID_PPV_ARGS(&bgraTex));
           if (SUCCEEDED(hr)) {

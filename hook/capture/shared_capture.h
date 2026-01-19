@@ -134,7 +134,7 @@ private:
     ComPtr<ID3D12CommandQueue> m_pCommandQueue;
     ComPtr<IDXGISwapChain3> m_pSwapChain;
     
-    // Double-buffered shared heaps for zero-copy
+    // D3D12 shared resources (can be opened by D3D11 encoder cross-process)
     ComPtr<ID3D12Resource> m_SharedResources[2];
     HANDLE m_SharedHandles[2];
     

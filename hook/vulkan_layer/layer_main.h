@@ -36,6 +36,11 @@ void LayerIPC_IncrementWriteIndex(uint64_t timestamp);
 void LayerIPC_Log(const char* fmt, ...);
 void LayerIPC_SetLUID(int32_t low, int32_t high);
 
+// SHMEM mode functions (for Vulkan CPU staging)
+void* LayerIPC_GetShmemBuffer();
+void LayerIPC_SetShmemDimensions(uint32_t width, uint32_t height, uint32_t format);
+void LayerIPC_SignalFrameReady(int32_t textureIndex);
+
 // Logging
 void LayerLog(const char* fmt, ...);
 

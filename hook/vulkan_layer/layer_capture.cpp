@@ -1,37 +1,45 @@
 /**
- * VK_LAYER_CE_overlay - Zero-Copy Capture
+ * VK_LAYER_CE_overlay - Zero-Copy Capture via D3D11 Interop
  *
- * External Memory Type Priority:
- * 1. VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE_BIT - Modern D3D12 interop
- * 2. VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT - D3D11 interop (NT handles)
- * 3. VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT - Legacy fallback
+ * OLD WORKING APPROACH:
+ * Creates D3D11 textures with KMT sharing, imports them into Vulkan.
+ * Vulkan copies to D3D11 textures, encoder opens KMT handles cross-process.
+ * This is GPU zero-copy and proven to work.
  */
 
 #include "vulkan_layer.h"
 #include "layer_main.h"
+#include "../../common/shared_defs.h"
 #include <vector>
+#include <d3d11.h>
+#include <d3d11_4.h>
 #include <dxgi.h>
+#include <dxgi1_4.h>
 
 struct VulkanCaptureState {
     bool initialized = false;
     VkDevice device = VK_NULL_HANDLE;
-    VkFormat format = VK_FORMAT_UNDEFINED;
+    VkFormat vkFormat = VK_FORMAT_UNDEFINED;
     VkExtent2D extent = {0, 0};
     uint32_t imageCount = 0;
-    std::vector<HANDLE> exportedHandles;
-    std::vector<VkDeviceMemory> exportedMemories;
-    std::vector<VkImage> stagingImages;
-    std::vector<VkSemaphore> copySemaphores;
+    
+    // D3D11 intermediate path - creates D3D11 textures that Vulkan imports
+    // KMT handles work cross-process with encoder
+    ID3D11Device* d3d11Device = nullptr;
+    ID3D11DeviceContext* d3d11Context = nullptr;
+    ID3D11Texture2D* d3d11Textures[4] = {};
+    HANDLE d3d11TextureHandles[4] = {};  // KMT handles for cross-process sharing
+    uint32_t dxgiFormat = 0;
+    
+    // Vulkan imported images (reference D3D11 textures)
+    std::vector<VkImage> importedImages;
+    std::vector<VkDeviceMemory> importedMemories;
+    
     std::vector<VkFence> copyFences;
     VkCommandPool commandPool = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> commandBuffers;
-    VkExternalMemoryHandleTypeFlagBits selectedExternalMemoryType;  // Track which type we're using
-
-    // Timeline semaphore support (Vulkan 1.2+ or VK_KHR_timeline_semaphore)
-    bool useTimelineSemaphores = false;
-    VkSemaphore timelineSemaphore = VK_NULL_HANDLE;
-    uint64_t timelineValue = 0;
-    std::vector<uint64_t> timelineValues;  // Per-frame timeline values
+    
+    uint32_t currentWriteIndex = 0;
 };
 
 static std::mutex g_CaptureMutex;
@@ -55,33 +63,32 @@ uint32_t FindMemoryType(VkDevice device, uint32_t typeFilter, VkMemoryPropertyFl
     return 0;
 }
 
-// Try external memory types in priority order
-struct ExternalMemoryTypeInfo {
-    VkExternalMemoryHandleTypeFlagBits type;
-    const char* name;
-};
-
-// Zero-Copy Video Capture: Force D3D11_TEXTURE for FFmpeg D3D11VA compatibility
-// All exported textures must be D3D11-compatible since the encoder uses D3D11VA
-// D3D12_RESOURCE cannot be opened by D3D11's OpenSharedResource, so we skip it
-static const ExternalMemoryTypeInfo g_ExternalMemoryTypes[] = {
-    { VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT, "D3D11_TEXTURE (primary for D3D11VA)" },
-    { VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT, "D3D11_TEXTURE_KMT (legacy fallback)" }
-    // REMOVED: D3D12_RESOURCE - not compatible with FFmpeg D3D11VA
-};
-static constexpr int g_NumExternalMemoryTypes = 2;
-
-// Check if an external memory type is supported
-bool IsExternalMemoryTypeSupported(VkPhysicalDevice physicalDevice, VkExternalMemoryHandleTypeFlagBits type) {
-    // For zero-copy D3D11VA compatibility, we only support D3D11 texture types
-    if (type == VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT) {
-        return true;  // Primary choice - NT handles for D3D11
+// Format conversion helpers
+static uint32_t VkFormatToDXGI(VkFormat format) {
+    switch (format) {
+        case VK_FORMAT_R8G8B8A8_UNORM:
+        case VK_FORMAT_R8G8B8A8_SRGB:
+            return 28; // DXGI_FORMAT_R8G8B8A8_UNORM
+        case VK_FORMAT_B8G8R8A8_UNORM:
+        case VK_FORMAT_B8G8R8A8_SRGB:
+            return 87; // DXGI_FORMAT_B8G8R8A8_UNORM
+        case VK_FORMAT_R16G16B16A16_SFLOAT:
+            return 10; // DXGI_FORMAT_R16G16B16A16_FLOAT
+        case VK_FORMAT_A2R10G10B10_UNORM_PACK32:
+            return 24; // DXGI_FORMAT_R10G10B10A2_UNORM
+        default:
+            return 87; // Fallback to BGRA
     }
-    if (type == VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT) {
-        return true;  // Legacy fallback - KMT handles
+}
+
+static VkFormat DXGIToVkFormat(uint32_t dxgiFormat) {
+    switch (dxgiFormat) {
+        case 87: return VK_FORMAT_B8G8R8A8_UNORM;
+        case 28: return VK_FORMAT_R8G8B8A8_UNORM;
+        case 10: return VK_FORMAT_R16G16B16A16_SFLOAT;
+        case 24: return VK_FORMAT_A2R10G10B10_UNORM_PACK32;
+        default: return VK_FORMAT_B8G8R8A8_UNORM;
     }
-    // D3D12_RESOURCE is NOT supported - incompatible with D3D11VA
-    return false;
 }
 
 /**
@@ -151,12 +158,6 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     LayerLog("Vulkan Layer: InitializeCapture(device=%p, images=%d, size=%dx%d, vkFormat=%d)",
              device, imageCount, extent.width, extent.height, format);
 
-    // Check format compatibility first
-    if (!IsVkFormatCompatibleWithDXGI(format)) {
-        LayerLog("Vulkan Layer: [Warning] Format %d may not be compatible with DXGI shared resources", format);
-        // Continue anyway - some formats may work despite not being explicitly supported
-    }
-
     std::lock_guard<std::mutex> lock(g_CaptureMutex);
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (!disp) {
@@ -169,7 +170,13 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     state.format = format;
     state.extent = extent;
     state.imageCount = imageCount;
-    state.selectedExternalMemoryType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_FLAG_BITS_MAX_ENUM;  // Invalid initially
+
+    // Get shared memory pointer for CPU staging
+    state.pShmemBuffer = LayerIPC_GetShmemBuffer();
+    if (!state.pShmemBuffer) {
+        LayerLog("Vulkan Layer: [Error] No shared memory buffer available for CPU staging");
+        return;
+    }
 
     VkCommandPoolCreateInfo cpInfo = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, nullptr, VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, 0 };
     if (disp->fp_vkCreateCommandPool(device, &cpInfo, nullptr, &state.commandPool) != VK_SUCCESS) {
@@ -190,122 +197,75 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     if (state.useTimelineSemaphores) {
         state.timelineValues.resize(imageCount, 0);
         if (!CreateTimelineSemaphore(device, disp, &state.timelineSemaphore)) {
-            state.useTimelineSemaphores = false;  // Fallback to binary fences
+            state.useTimelineSemaphores = false;
             state.timelineSemaphore = VK_NULL_HANDLE;
         }
     }
 
-    state.stagingImages.resize(imageCount);
-    state.exportedMemories.resize(imageCount);
-    state.exportedHandles.resize(imageCount);
+    // Create CPU staging buffers (host-visible, mappable)
+    // GPU external memory doesn't work cross-process, so we copy to CPU then to shared memory
+    uint32_t bytesPerPixel = GetBytesPerPixel(format);
+    state.bufferSize = (VkDeviceSize)extent.width * extent.height * bytesPerPixel;
+    
+    state.stagingBuffers.resize(imageCount);
+    state.stagingMemories.resize(imageCount);
+    state.stagingMapped.resize(imageCount);
 
-    // Try each external memory type in priority order
-    bool resourceCreated = false;
-    for (int typeIdx = 0; typeIdx < g_NumExternalMemoryTypes; typeIdx++) {
-        const ExternalMemoryTypeInfo& typeInfo = g_ExternalMemoryTypes[typeIdx];
-        VkExternalMemoryHandleTypeFlagBits externalType = typeInfo.type;
-
-        // Check if this type is supported
-        VkPhysicalDevice physicalDevice = disp->physicalDevice;
-        if (!IsExternalMemoryTypeSupported(physicalDevice, externalType)) {
-            continue;
+    // Create CPU staging buffers for each swapchain image
+    // We only need 2 buffers for double-buffering regardless of swapchain image count
+    const uint32_t numStagingBuffers = 2;
+    state.stagingBuffers.resize(numStagingBuffers);
+    state.stagingMemories.resize(numStagingBuffers);
+    state.stagingMapped.resize(numStagingBuffers);
+    
+    LayerLog("Vulkan Layer: Creating %u CPU staging buffers (%llu bytes each)", numStagingBuffers, state.bufferSize);
+    
+    for (uint32_t i = 0; i < numStagingBuffers; i++) {
+        VkBufferCreateInfo bufferInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+        bufferInfo.size = state.bufferSize;
+        bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        
+        VkResult bufResult = disp->fp_vkCreateBuffer(device, &bufferInfo, nullptr, &state.stagingBuffers[i]);
+        if (bufResult != VK_SUCCESS) {
+            LayerLog("Vulkan Layer: [Error] Failed to create staging buffer %u (vk result: %d)", i, bufResult);
+            return;
         }
-
-        LayerLog("Vulkan Layer: Trying external memory type %s...", typeInfo.name);
-
-        // Try to create resources with this type
-        bool success = true;
-        for (uint32_t i = 0; i < imageCount; i++) {
-            VkExternalMemoryImageCreateInfo extMemInfo = { VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO, nullptr, externalType };
-            VkImageCreateInfo imageInfo = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, &extMemInfo };
-            imageInfo.imageType = VK_IMAGE_TYPE_2D;
-            imageInfo.format = format;
-            imageInfo.extent = {extent.width, extent.height, 1};
-            imageInfo.mipLevels = 1;
-            imageInfo.arrayLayers = 1;
-            imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-            imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-            imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-
-            VkImage testImage = VK_NULL_HANDLE;
-            VkResult imageResult = disp->fp_vkCreateImage(device, &imageInfo, nullptr, &testImage);
-
-            if (imageResult != VK_SUCCESS || testImage == VK_NULL_HANDLE) {
-                LayerLog("Vulkan Layer: Failed to create image with %s (vk result: %d) - trying next type", typeInfo.name, imageResult);
-                success = false;
-                break;
-            }
-
-            VkMemoryRequirements memReqs;
-            disp->fp_vkGetImageMemoryRequirements(device, testImage, &memReqs);
-
-            VkExportMemoryAllocateInfo exportInfo = { VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO, nullptr, externalType };
-            VkMemoryAllocateInfo allocInfo = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &exportInfo, memReqs.size, 0 };
-            allocInfo.memoryTypeIndex = FindMemoryType(device, memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-            VkDeviceMemory testMemory = VK_NULL_HANDLE;
-            VkResult memResult = disp->fp_vkAllocateMemory(device, &allocInfo, nullptr, &testMemory);
-
-            if (memResult != VK_SUCCESS || testMemory == VK_NULL_HANDLE) {
-                LayerLog("Vulkan Layer: Failed to allocate memory with %s (vk result: %d) - trying next type", typeInfo.name, memResult);
-                disp->fp_vkDestroyImage(device, testImage, nullptr);
-                success = false;
-                break;
-            }
-
-            // If we get here, this external memory type works!
-            state.stagingImages[i] = testImage;
-            state.exportedMemories[i] = testMemory;
-            disp->fp_vkBindImageMemory(device, state.stagingImages[i], state.exportedMemories[i], 0);
-
-            // Get the export handle
-            if (disp->fp_vkGetMemoryWin32HandleKHR) {
-                VkMemoryGetWin32HandleInfoKHR handleInfo = { VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR, nullptr, state.exportedMemories[i], externalType };
-                VkResult handleResult = disp->fp_vkGetMemoryWin32HandleKHR(device, &handleInfo, &state.exportedHandles[i]);
-
-                if (handleResult != VK_SUCCESS || state.exportedHandles[i] == NULL) {
-                    LayerLog("Vulkan Layer: Failed to get handle with %s (vk result: %d) - trying next type", typeInfo.name, handleResult);
-                    success = false;
-                    break;
-                }
-            } else {
-                LayerLog("Vulkan Layer: vkGetMemoryWin32HandleKHR not available!");
-                success = false;
-                break;
-            }
+        
+        VkMemoryRequirements memReqs;
+        disp->fp_vkGetBufferMemoryRequirements(device, state.stagingBuffers[i], &memReqs);
+        
+        // Find host-visible, host-coherent memory for CPU access
+        uint32_t memTypeIndex = FindMemoryType(device, memReqs.memoryTypeBits, 
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        
+        VkMemoryAllocateInfo allocInfo = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+        allocInfo.allocationSize = memReqs.size;
+        allocInfo.memoryTypeIndex = memTypeIndex;
+        
+        VkResult memResult = disp->fp_vkAllocateMemory(device, &allocInfo, nullptr, &state.stagingMemories[i]);
+        if (memResult != VK_SUCCESS) {
+            LayerLog("Vulkan Layer: [Error] Failed to allocate staging memory %u (vk result: %d)", i, memResult);
+            return;
         }
-
-        if (success) {
-            state.selectedExternalMemoryType = externalType;
-            LayerLog("Vulkan Layer: Successfully created resources with %s", typeInfo.name);
-            resourceCreated = true;
-            break;  // Success! Stop trying other types
-        } else {
-            // Clean up any partial resources from this attempt
-            for (uint32_t i = 0; i < imageCount; i++) {
-                if (state.exportedMemories[i]) {
-                    disp->fp_vkFreeMemory(device, state.exportedMemories[i], nullptr);
-                    state.exportedMemories[i] = VK_NULL_HANDLE;
-                }
-                if (state.stagingImages[i]) {
-                    disp->fp_vkDestroyImage(device, state.stagingImages[i], nullptr);
-                    state.stagingImages[i] = VK_NULL_HANDLE;
-                }
-                state.exportedHandles[i] = NULL;
-            }
+        
+        disp->fp_vkBindBufferMemory(device, state.stagingBuffers[i], state.stagingMemories[i], 0);
+        
+        // Persistently map the buffer
+        VkResult mapResult = disp->fp_vkMapMemory(device, state.stagingMemories[i], 0, state.bufferSize, 0, &state.stagingMapped[i]);
+        if (mapResult != VK_SUCCESS) {
+            LayerLog("Vulkan Layer: [Error] Failed to map staging memory %u (vk result: %d)", i, mapResult);
+            return;
         }
     }
-
-    if (!resourceCreated) {
-        LayerLog("Vulkan Layer: [Error] Failed to create resources with any external memory type!");
-        return;
-    }
-
+    
+    LayerLog("Vulkan Layer: CPU staging buffers created successfully");
+    
+    // Publish dimensions to shared memory (textureIndex >= 100 indicates SHMEM mode)
+    LayerIPC_SetShmemDimensions(extent.width, extent.height, VkFormatToDXGI(format));
+    
     state.initialized = true;
     g_CaptureStates[device] = state;
-    if (!state.exportedHandles.empty()) {
-        LayerIPC_SetTextures(state.exportedHandles.data(), (uint32_t)state.exportedHandles.size(), extent.width, extent.height, VkFormatToDXGI(format));
-    }
 }
 
 void CleanupCapture(VkDevice device) {
@@ -317,10 +277,13 @@ void CleanupCapture(VkDevice device) {
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (disp) {
         disp->fp_vkDeviceWaitIdle(device);
-        for (uint32_t i = 0; i < state.stagingImages.size(); i++) {
-            if (state.stagingImages[i]) disp->fp_vkDestroyImage(device, state.stagingImages[i], nullptr);
-            if (state.exportedMemories[i]) disp->fp_vkFreeMemory(device, state.exportedMemories[i], nullptr);
-            if (state.exportedHandles[i]) CloseHandle(state.exportedHandles[i]);
+        // Clean up CPU staging buffers
+        for (uint32_t i = 0; i < state.stagingBuffers.size(); i++) {
+            if (state.stagingMapped[i] && state.stagingMemories[i]) {
+                disp->fp_vkUnmapMemory(device, state.stagingMemories[i]);
+            }
+            if (state.stagingBuffers[i]) disp->fp_vkDestroyBuffer(device, state.stagingBuffers[i], nullptr);
+            if (state.stagingMemories[i]) disp->fp_vkFreeMemory(device, state.stagingMemories[i], nullptr);
         }
         for (auto fence : state.copyFences) disp->fp_vkDestroyFence(device, fence, nullptr);
         if (state.timelineSemaphore) {
@@ -343,77 +306,58 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
         return;
     }
 
-    // Validate image index bounds
-    if (imageIndex >= state.stagingImages.size()) {
-        static int indexErrorLogCount = 0;
-        if (indexErrorLogCount++ % 60 == 0) {
-            LayerLog("Vulkan Layer: [Warning] Image index %u out of bounds (max: %zu)",
-                     imageIndex, state.stagingImages.size());
-        }
+    // Use double-buffering for staging buffers (0 or 1)
+    uint32_t bufferIndex = state.currentShmemSlot % 2;
+    
+    // Validate staging buffer exists
+    if (bufferIndex >= state.stagingBuffers.size() || !state.stagingBuffers[bufferIndex]) {
         return;
     }
 
     // Check for device lost state
     static std::atomic<bool> s_deviceLostReported{false};
-    if (state.initialized && !s_deviceLostReported.load()) {
-        // Try a lightweight operation to check device health
-        // (actual check happens via error returns below)
-    }
 
-    VkFence fence = state.copyFences[imageIndex];
+    // Use fence from imageIndex (we have fences per swapchain image)
+    uint32_t fenceIndex = imageIndex % state.copyFences.size();
+    VkFence fence = state.copyFences[fenceIndex];
 
     // Use 100ms timeout instead of UINT64_MAX to prevent potential hangs
-    // 100ms in nanoseconds = 100,000,000
     constexpr uint64_t FENCE_TIMEOUT_NS = 100000000;
     VkResult waitResult = disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, FENCE_TIMEOUT_NS);
 
     if (waitResult != VK_SUCCESS) {
         if (waitResult == VK_ERROR_DEVICE_LOST) {
-            LayerLog("Vulkan Layer: [Critical] DEVICE_LOST detected during fence wait - cleaning up capture");
+            LayerLog("Vulkan Layer: [Critical] DEVICE_LOST detected during fence wait");
             s_deviceLostReported.store(true);
             CleanupCapture(device);
             return;
         }
         if (waitResult == VK_TIMEOUT) {
-            static int timeoutLogCount = 0;
-            if (timeoutLogCount++ % 60 == 0) {
-                LayerLog("Vulkan Layer: [Warning] Fence timeout (100ms) on image %u - skipping capture frame", imageIndex);
-            }
-            return; // Skip this frame if fence is still signaled
-        } else {
-            static int waitErrorLogCount = 0;
-            if (waitErrorLogCount++ % 60 == 0) {
-                LayerLog("Vulkan Layer: [Error] vkWaitForFences failed: %d - skipping capture frame", waitResult);
-            }
-            return;
+            return; // Skip this frame
         }
+        return;
     }
 
     VkResult resetResult = disp->fp_vkResetFences(device, 1, &fence);
     if (resetResult == VK_ERROR_DEVICE_LOST) {
-        LayerLog("Vulkan Layer: [Critical] DEVICE_LOST during fence reset - cleaning up capture");
         s_deviceLostReported.store(true);
         CleanupCapture(device);
         return;
     }
 
-    VkCommandBuffer cmd = state.commandBuffers[imageIndex];
+    uint32_t cmdIndex = imageIndex % state.commandBuffers.size();
+    VkCommandBuffer cmd = state.commandBuffers[cmdIndex];
     VkCommandBufferBeginInfo beginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
     VkResult beginResult = disp->fp_vkBeginCommandBuffer(cmd, &beginInfo);
-    if (beginResult == VK_ERROR_DEVICE_LOST) {
-        LayerLog("Vulkan Layer: [Critical] DEVICE_LOST during BeginCommandBuffer - cleaning up capture");
-        s_deviceLostReported.store(true);
-        CleanupCapture(device);
-        return;
-    }
     if (beginResult != VK_SUCCESS) {
-        static int beginErrorLogCount = 0;
-        if (beginErrorLogCount++ % 60 == 0) {
-            LayerLog("Vulkan Layer: [Error] vkBeginCommandBuffer failed: %d", beginResult);
+        if (beginResult == VK_ERROR_DEVICE_LOST) {
+            s_deviceLostReported.store(true);
+            CleanupCapture(device);
         }
         return;
     }
 
+    // Transition source image to transfer source
     VkImageMemoryBarrier srcBarrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
     srcBarrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
     srcBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
@@ -422,31 +366,36 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
     srcBarrier.image = srcImage;
     srcBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 
-    VkImageMemoryBarrier dstBarrier = srcBarrier;
-    dstBarrier.srcAccessMask = 0;
-    dstBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    dstBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    dstBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    dstBarrier.image = state.stagingImages[imageIndex];
+    disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 
+                                   0, 0, nullptr, 0, nullptr, 1, &srcBarrier);
 
-    VkImageMemoryBarrier barriers[] = { srcBarrier, dstBarrier };
-    disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 2, barriers);
+    // Copy image to buffer (GPU -> CPU staging buffer)
+    VkBufferImageCopy region = {};
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;  // Tightly packed
+    region.bufferImageHeight = 0;
+    region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    region.imageOffset = { 0, 0, 0 };
+    region.imageExtent = { state.extent.width, state.extent.height, 1 };
+    
+    disp->fp_vkCmdCopyImageToBuffer(cmd, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 
+                                     state.stagingBuffers[bufferIndex], 1, &region);
 
-    VkImageCopy copy = { {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0,0,0}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0,0,0}, {state.extent.width, state.extent.height, 1} };
-    disp->fp_vkCmdCopyImage(cmd, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, state.stagingImages[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
-
+    // Transition source image back to present
+    srcBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    srcBarrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
     srcBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     srcBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    dstBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    dstBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 2, barriers);
+    disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 
+                                   0, 0, nullptr, 0, nullptr, 1, &srcBarrier);
 
     VkResult endResult = disp->fp_vkEndCommandBuffer(cmd);
-    if (endResult == VK_ERROR_DEVICE_LOST) {
-        LayerLog("Vulkan Layer: [Critical] DEVICE_LOST during EndCommandBuffer - cleaning up capture");
-        s_deviceLostReported.store(true);
-        CleanupCapture(device);
+    if (endResult != VK_SUCCESS) {
+        if (endResult == VK_ERROR_DEVICE_LOST) {
+            s_deviceLostReported.store(true);
+            CleanupCapture(device);
+        }
         return;
     }
     if (endResult != VK_SUCCESS) {
@@ -460,20 +409,46 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
     VkSubmitInfo submit = { VK_STRUCTURE_TYPE_SUBMIT_INFO, nullptr, 0, nullptr, nullptr, 1, &cmd };
     VkResult submitResult = disp->fp_vkQueueSubmit(queue, 1, &submit, fence);
     if (submitResult == VK_ERROR_DEVICE_LOST) {
-        LayerLog("Vulkan Layer: [Critical] DEVICE_LOST during QueueSubmit - cleaning up capture");
+        LayerLog("Vulkan Layer: [Critical] DEVICE_LOST during QueueSubmit");
         s_deviceLostReported.store(true);
         CleanupCapture(device);
         return;
     }
     if (submitResult != VK_SUCCESS) {
-        static int submitErrorLogCount = 0;
-        if (submitErrorLogCount++ % 60 == 0) {
-            LayerLog("Vulkan Layer: [Error] vkQueueSubmit failed: %d", submitResult);
-        }
         return;
     }
 
-    // Reset device lost flag on successful capture
+    // Wait for GPU copy to complete (synchronous - required for CPU access)
+    waitResult = disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, FENCE_TIMEOUT_NS);
+    if (waitResult != VK_SUCCESS) {
+        return;
+    }
+
+    // Copy from staging buffer to shared memory
+    if (state.pShmemBuffer && state.stagingMapped[bufferIndex]) {
+        ShmemBuffer* shmem = static_cast<ShmemBuffer*>(state.pShmemBuffer);
+        uint32_t shmemSlot = state.currentShmemSlot % ShmemBuffer::SLOT_COUNT;
+        
+        // Calculate copy size (clamp to max supported resolution)
+        uint32_t copyWidth = (state.extent.width <= ShmemBuffer::MAX_WIDTH) ? state.extent.width : ShmemBuffer::MAX_WIDTH;
+        uint32_t copyHeight = (state.extent.height <= ShmemBuffer::MAX_HEIGHT) ? state.extent.height : ShmemBuffer::MAX_HEIGHT;
+        size_t copySize = (size_t)copyWidth * copyHeight * 4;  // RGBA
+        
+        // Copy to shared memory slot
+        memcpy(shmem->data[shmemSlot], state.stagingMapped[bufferIndex], copySize);
+        
+        // Update shmem metadata
+        shmem->validWidth = copyWidth;
+        shmem->validHeight = copyHeight;
+        shmem->pitch = copyWidth * 4;
+        shmem->slotReady[shmemSlot].store(true, std::memory_order_release);
+        shmem->writeSlot.store(shmemSlot, std::memory_order_release);
+        
+        // Signal frame ready with textureIndex = 100 + slot (indicates SHMEM mode)
+        LayerIPC_SignalFrameReady(100 + shmemSlot);
+        
+        state.currentShmemSlot++;
+    }
+
     s_deviceLostReported.store(false);
-    LayerIPC_IncrementWriteIndex(0);
 }

@@ -115,6 +115,122 @@ static std::atomic<bool> g_WgcCaptureShutdown{false};
 static HANDLE g_WgcCaptureEvent = NULL;
 static std::atomic<uint32_t> g_WgcDroppedFrames{0};
 
+// ============================================================================
+// Inject Capture Thread (Bridging Ring Buffer -> FrameQueue)
+// ============================================================================
+static std::thread g_InjectCaptureThread;
+static std::atomic<bool> g_InjectCaptureRunning{false};
+static std::atomic<bool> g_InjectCaptureShutdown{false};
+
+void InjectCaptureThreadFunc(const AppConfig &config) {
+  LogInfo("[Inject Thread] Started - polling shared memory ring buffer");
+  g_InjectCaptureRunning = true;
+
+  if (!g_pSharedMem) {
+    LogError("[Inject Thread] Failed - Shared memory is NULL");
+    g_InjectCaptureRunning = false;
+    return;
+  }
+
+  // Local read index tracks what WE have pushed to the FrameQueue
+  // This is distinct from the shared readIndex, which is updated by EncoderThread
+  // only AFTER it releases the slot.
+  uint32_t localReadIndex = g_pSharedMem->frameRing.readIndex.load(std::memory_order_acquire);
+  
+  DWORD lastLog = GetTickCount();
+  uint32_t pushedCount = 0;
+  uint32_t emptySpinCount = 0;
+
+  while (!g_InjectCaptureShutdown && g_Recording) {
+      // 1. Check for new frames
+      uint32_t writeIndex = g_pSharedMem->frameRing.writeIndex.load(std::memory_order_acquire);
+      
+      if (writeIndex != localReadIndex) {
+          // New data available!
+          emptySpinCount = 0;
+          
+          uint32_t index = localReadIndex % FRAME_RING_SIZE;
+          FrameSlot& slot = g_pSharedMem->frameRing.slots[index];
+          
+          if (slot.valid.load(std::memory_order_acquire)) {
+              QueuedFrame qf;
+              qf.isInjectMode = true;
+              qf.ringIndex = localReadIndex;  // Raw counter, not slot index
+              qf.timestamp = slot.timestamp;
+              
+              // CRITICAL: Populate ALL required fields from shared memory
+              // These are needed by MediaEngine_ProcessFrame to open shared textures
+              int32_t texIdx = slot.textureIndex;
+              
+              // Check for SHMEM mode (textureIndex >= 100 indicates CPU staging path)
+              if (texIdx >= 100) {
+                  qf.isShmem = true;
+                  qf.shmemSlot = texIdx - 100;
+                  qf.sharedHandle = nullptr;
+                  qf.fenceHandle = nullptr;
+                  qf.fenceValue = 0;
+              } else {
+                  qf.isShmem = false;
+                  qf.shmemSlot = 0;
+                  // Get shared texture handle for this texture index (0-7)
+                  if (texIdx >= 0 && texIdx < 8) {
+                      qf.sharedHandle = (HANDLE)g_pSharedMem->sharedHandles[texIdx];
+                  } else {
+                      qf.sharedHandle = (HANDLE)g_pSharedMem->sharedHandles[0];
+                  }
+                  qf.fenceHandle = (HANDLE)g_pSharedMem->fenceShareHandle;
+                  qf.fenceValue = slot.fenceValue;
+              }
+              
+              qf.sourcePid = slot.sourcePid;
+              qf.width = g_pSharedMem->width;
+              qf.height = g_pSharedMem->height;
+              qf.format = g_pSharedMem->format;
+              qf.luidLow = g_pSharedMem->luidLowPart;
+              qf.luidHigh = g_pSharedMem->luidHighPart;
+              qf.isHDR = (g_pSharedMem->format == 10); // DXGI_FORMAT_R16G16B16A16_FLOAT
+              
+              if (g_FrameQueue.Push(qf, g_IsEncoderBottlenecked)) {
+                  pushedCount++;
+                  localReadIndex++;  // Raw counter, wraps naturally on overflow
+                  // We do NOT update shared readIndex here. That happens in EncoderThread.
+              } else {
+                  // Queue full - wait a bit and retry? Or drop?
+                  // If we drop, we must advance localReadIndex AND update shared readIndex immediately
+                  // to free the slot for the producer.
+                  // For now, let's just yield and retry next loop (backpressure).
+                  std::this_thread::yield();
+              }
+          } else {
+              // Slot invalid? weird race. Skip.
+              localReadIndex++;  // Raw counter
+          }
+      } else {
+          // No new frames - sleep briefly to avoid burning CPU
+          // High performance: yield or sub-ms sleep
+          emptySpinCount++;
+          if (emptySpinCount > 1000) {
+              Sleep(1);
+          } else {
+              std::this_thread::yield();
+          }
+      }
+
+      DWORD now = GetTickCount();
+      if (now - lastLog >= 2000) {
+          if (pushedCount > 0) {
+              LogInfo("[Inject Thread] Pushed %u frames to encoder (wIdx=%u, lRadIdx=%u)", 
+                      pushedCount, writeIndex, localReadIndex);
+              pushedCount = 0;
+          }
+          lastLog = now;
+      }
+  }
+
+  g_InjectCaptureRunning = false;
+  LogInfo("[Inject Thread] Stopped");
+}
+
 void WgcCaptureThreadFunc(const AppConfig &config) {
   // OBS-STYLE: Frames are pushed directly from WinRT callback
   // This thread only monitors and logs diagnostics
@@ -497,6 +613,13 @@ void StartRecording(const AppConfig &config) {
           StopRecording();
           return;
       }
+  } else if (!g_UseScreenGrab) {
+      // INJECT MODE: Start the polling thread
+      LogInfo("[Media] Starting InjectCaptureThread for Shared Memory Capture");
+      g_InjectCaptureShutdown = false;
+      g_InjectCaptureThread = std::thread(InjectCaptureThreadFunc, std::ref(config));
+      // High priority to ensure we pick up frames quickly
+      SetThreadPriority(g_InjectCaptureThread.native_handle(), THREAD_PRIORITY_ABOVE_NORMAL);
   }
 
   LogInfo("[Media] Recording started");
@@ -519,16 +642,14 @@ void StopRecording() {
       if (g_WgcCaptureThread.joinable()) {
         g_WgcCaptureThread.join();
       }
-      LogInfo("[Media] WGC capture thread stopped (dropped frames: %u)",
-              g_WgcDroppedFrames.load(std::memory_order_relaxed));
+      g_DxgiCap->StopCapture();
     }
-    g_WgcCap->StopCapture();
-  } else if (g_UseScreenGrab && g_DxgiCap) {
-    g_WgcCaptureShutdown = true;
-    if (g_WgcCaptureThread.joinable()) {
-      g_WgcCaptureThread.join();
-    }
-    g_DxgiCap->StopCapture();
+  } else { // Inject mode
+      // Shutdown Inject Thread
+      g_InjectCaptureShutdown = true;
+      if (g_InjectCaptureThread.joinable()) {
+          g_InjectCaptureThread.join();
+      }
   }
 
   // Signal encoder thread to stop, but let it drain remaining frames first

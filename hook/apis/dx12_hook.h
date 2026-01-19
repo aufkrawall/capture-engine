@@ -2,6 +2,7 @@
 #include "graphics_hook.h"
 #include <d3d12.h>
 #include <dxgi1_4.h>
+#include <mutex>
 
 class DX12Hook : public GraphicsHook {
 public:
@@ -11,6 +12,9 @@ public:
 
   // Provide access to detected addresses if needed, or keep internal.
 };
+
+extern DX12Hook g_dx12HookInstance;
+
 
  void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain);
  void DX12_OnSwapchainResizeBegin();

@@ -163,6 +163,7 @@ public:
     slot.textureIndex = textureIndex;
     slot.fenceValue = gpuFenceValue;
     slot.frameIndex = wIdx;
+    slot.sourcePid = GetCurrentProcessId();
     
     // Memory barrier: Ensure all above writes are visible before setting valid flag
     // This prevents the reader from seeing valid=1 with stale/uninitialized data

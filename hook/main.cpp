@@ -721,8 +721,8 @@ void CheckAndInstallHooks() {
 
     if (!g_DX12Hook && GetModuleHandleA("d3d12.dll")) {
         EarlyLog("Detected d3d12.dll. Installing DX12 hooks...");
-        g_DX12Hook = new DX12Hook();
-        g_DX12Hook->Init();
+        g_DX12Hook = &g_dx12HookInstance; // Use global static instance
+        g_DX12Hook->Init(); // Idempotent (safe to call multiple times)
         EarlyLog("DX12 hooks installed");
     }
 
@@ -1315,7 +1315,8 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     Sleep(200); // Increased grace period for threads using 100ms sleep loops
     
     // Shutdown API hooks first to stop new frames
-    SafeShutdownHook(g_DX12Hook);
+    if (g_DX12Hook) { g_DX12Hook->Shutdown(); g_DX12Hook = nullptr; } // No delete for static instance
+    // SafeShutdownHook(g_DX12Hook); // DO NOT USE - double free risk
     SafeShutdownHook(g_DX11Hook);
     SafeShutdownHook(g_DX9Hook);
     SafeShutdownHook(g_DDrawHook);

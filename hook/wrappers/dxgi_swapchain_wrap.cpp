@@ -339,6 +339,19 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers(UINT BufferCount, UI
     
     // CRITICAL: Clean up overlay resources BEFORE resize
     CleanupOverlayResources();
+
+    // D3D12 Capture Fix: Re-register Command Queue if this is a resize from a dummy 1x1 state
+    if (m_IsD3D12 && Width > 0 && Height > 0 && m_pDevice) {
+        // We can safely try to QI and set the queue again. 
+        // DX12_SetCommandQueue handles deduplication or updates.
+        // This ensures that if we ignored the 1x1 queue capture, we catch it now.
+        ID3D12CommandQueue* pQueue = nullptr;
+        if (SUCCEEDED(m_pDevice->QueryInterface(IID_PPV_ARGS(&pQueue)))) {
+             WrapperLog("DXGI Wrapper: ResizeBuffers triggers CommandQueue capture/refresh.");
+             DX12_SetCommandQueue(pQueue);
+             pQueue->Release();
+        }
+    }
     
     // Call real ResizeBuffers
     HRESULT hr = m_pReal->ResizeBuffers(BufferCount, Width, Height, NewFormat, SwapChainFlags);
@@ -524,6 +537,16 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers1(UINT BufferCount, U
     // CRITICAL: Clean up overlay resources BEFORE resize
     CleanupOverlayResources();
     
+    // D3D12 Capture Fix: Re-register Command Queue if this is a resize from a dummy 1x1 state
+    if (m_IsD3D12 && Width > 0 && Height > 0 && m_pDevice) {
+        ID3D12CommandQueue* pQueue = nullptr;
+        if (SUCCEEDED(m_pDevice->QueryInterface(IID_PPV_ARGS(&pQueue)))) {
+             WrapperLog("DXGI Wrapper: ResizeBuffers1 triggers CommandQueue capture/refresh.");
+             DX12_SetCommandQueue(pQueue);
+             pQueue->Release();
+        }
+    }
+
     if (!m_pReal3) return DXGI_ERROR_UNSUPPORTED;
     
     HRESULT hr = m_pReal3->ResizeBuffers1(BufferCount, Width, Height, Format, SwapChainFlags,

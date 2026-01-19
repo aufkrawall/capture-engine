@@ -245,7 +245,7 @@ SharedCaptureD3D12::~SharedCaptureD3D12() {
 void SharedCaptureD3D12::Reset() {
     m_Active = false;
     
-    // Release ComPtrs
+    // Release D3D12 ComPtrs
     m_pDevice.Reset();
     m_pCommandQueue.Reset();
     m_pSwapChain.Reset();
@@ -324,7 +324,7 @@ bool SharedCaptureD3D12::Initialize(ID3D12Device* pDevice, IDXGISwapChain* pSwap
     }
     m_CommandList->Close();
     
-    // Create shared resources
+    // Create D3D12 shared resources with correct flags (proven to work in old code)
     if (!CreateSharedResources(desc.BufferDesc.Width, desc.BufferDesc.Height, desc.BufferDesc.Format)) {
         EarlyLog("DX12: SharedCapture - Failed to Create Shared Resources");
         return false;
@@ -337,35 +337,48 @@ bool SharedCaptureD3D12::Initialize(ID3D12Device* pDevice, IDXGISwapChain* pSwap
 }
 
 bool SharedCaptureD3D12::CreateSharedResources(UINT width, UINT height, DXGI_FORMAT format) {
-    D3D12_RESOURCE_DESC desc = {};
-    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    desc.Width = width;
-    desc.Height = height;
-    desc.DepthOrArraySize = 1;
-    desc.MipLevels = 1;
-    desc.Format = format;
-    desc.SampleDesc.Count = 1;
-    desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER;
+    // OLD CODE APPROACH: Create D3D12 shared resources with correct flags
+    // D3D11 encoder CAN open D3D12 shared resources cross-process with DuplicateHandle + OpenSharedResource1
     
+    EarlyLog("DX12: CreateSharedResources - w=%u h=%u fmt=%d", width, height, format);
+    
+    D3D12_RESOURCE_DESC texDesc = {};
+    texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    texDesc.Width = width;
+    texDesc.Height = height;
+    texDesc.DepthOrArraySize = 1;
+    texDesc.MipLevels = 1;
+    texDesc.Format = format;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    // KEY: Old working flags - RENDER_TARGET + SIMULTANEOUS_ACCESS (NO CROSS_ADAPTER)
+    texDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
+
     D3D12_HEAP_PROPERTIES heapProps = {};
     heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
-    
+    heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    heapProps.CreationNodeMask = 1;
+    heapProps.VisibleNodeMask = 1;
+
     for (int i = 0; i < 2; i++) {
+        // KEY: Old working state - COMMON (not COPY_DEST)
+        // KEY: Old working heap flag - just D3D12_HEAP_FLAG_SHARED (not cross-adapter)
         HRESULT hr = m_pDevice->CreateCommittedResource(
             &heapProps,
             D3D12_HEAP_FLAG_SHARED,
-            &desc,
-            D3D12_RESOURCE_STATE_COPY_DEST,
+            &texDesc,
+            D3D12_RESOURCE_STATE_COMMON,  // Start in COMMON state
             nullptr,
             IID_PPV_ARGS(&m_SharedResources[i])
         );
-        
+
         if (FAILED(hr)) {
-            EarlyLog("DX12: SharedCapture - Failed to Create Shared Resource %d (hr=0x%08X)", i, hr);
+            EarlyLog("DX12: CreateSharedResources - Failed to create D3D12 texture %d (hr=0x%08X)", i, hr);
             return false;
         }
         
-        // Create shared handle
+        // Create shared NT handle
         hr = m_pDevice->CreateSharedHandle(
             m_SharedResources[i].Get(),
             nullptr,
@@ -375,9 +388,11 @@ bool SharedCaptureD3D12::CreateSharedResources(UINT width, UINT height, DXGI_FOR
         );
         
         if (FAILED(hr)) {
-            EarlyLog("DX12: SharedCapture - Failed to Create Shared Handle for Resource %d (hr=0x%08X)", i, hr);
+            EarlyLog("DX12: CreateSharedResources - Failed to create shared handle for texture %d (hr=0x%08X)", i, hr);
             return false;
         }
+        
+        EarlyLog("DX12: CreateSharedResources - Created D3D12 shared texture %d, handle=%p", i, m_SharedHandles[i]);
     }
     
     return true;
@@ -400,7 +415,7 @@ bool SharedCaptureD3D12::CaptureFrame(UINT backBufferIndex) {
     m_CommandAllocator->Reset();
     m_CommandList->Reset(m_CommandAllocator.Get(), nullptr);
     
-    // Transition back buffer to copy source
+    // Transition back buffer from PRESENT to COPY_SOURCE
     D3D12_RESOURCE_BARRIER barrier = {};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Transition.pResource = backBuffer.Get();
@@ -409,12 +424,25 @@ bool SharedCaptureD3D12::CaptureFrame(UINT backBufferIndex) {
     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     m_CommandList->ResourceBarrier(1, &barrier);
     
+    // Transition shared resource from COMMON to COPY_DEST
+    barrier.Transition.pResource = m_SharedResources[writeIdx].Get();
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    m_CommandList->ResourceBarrier(1, &barrier);
+    
     // Copy to shared resource
     m_CommandList->CopyResource(m_SharedResources[writeIdx].Get(), backBuffer.Get());
     
-    // Transition back
+    // Transition back buffer back to PRESENT
+    barrier.Transition.pResource = backBuffer.Get();
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+    m_CommandList->ResourceBarrier(1, &barrier);
+    
+    // Transition shared resource back to COMMON
+    barrier.Transition.pResource = m_SharedResources[writeIdx].Get();
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
     m_CommandList->ResourceBarrier(1, &barrier);
     
     m_CommandList->Close();

@@ -9,6 +9,7 @@
 #include "d3d9_device_wrap.h"
 #include "iat_hook.h"
 #include "hook_common.h"
+#include "../apis/dx12_hook.h" // Access to g_DX12Hook implementation
 // MinHook shim removed
 
 
@@ -123,6 +124,9 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory(REFIID riid, void** ppFactory) {
 HRESULT WINAPI Wrapped_CreateDXGIFactory1(REFIID riid, void** ppFactory) {
     WrapperLog("Wrapper: CreateDXGIFactory1 called");
     
+    // Ensure DX12 hooks are initialized (fixes race condition)
+    g_dx12HookInstance.Init();
+
     if (!oCreateDXGIFactory1) return E_FAIL;
     
     IDXGIFactory1* pRealFactory = nullptr;
@@ -184,6 +188,9 @@ __declspec(dllexport) HRESULT WINAPI Wrapped_D3D12CreateDevice(
     
     WrapperLog("Wrapper: D3D12CreateDevice called (feature level=0x%X)", MinimumFeatureLevel);
     
+    // Ensure DX12 hooks are initialized (fixes race condition)
+    g_dx12HookInstance.Init();
+
     if (!oD3D12CreateDevice) {
         WrapperLog("Wrapper: FATAL - oD3D12CreateDevice is NULL");
         return E_FAIL;

@@ -200,6 +200,7 @@ void PopulateDeviceDispatch(DeviceDispatch* dispatch, VkDevice device,
     dispatch->fp_vkCmdDraw = (PFN_vkCmdDraw)gdpa(device, "vkCmdDraw");
     dispatch->fp_vkCmdDrawIndexed = (PFN_vkCmdDrawIndexed)gdpa(device, "vkCmdDrawIndexed");
     dispatch->fp_vkCmdCopyImage = (PFN_vkCmdCopyImage)gdpa(device, "vkCmdCopyImage");
+    dispatch->fp_vkCmdCopyImageToBuffer = (PFN_vkCmdCopyImageToBuffer)gdpa(device, "vkCmdCopyImageToBuffer");
     dispatch->fp_vkCmdBlitImage = (PFN_vkCmdBlitImage)gdpa(device, "vkCmdBlitImage");
     dispatch->fp_vkCmdPipelineBarrier = (PFN_vkCmdPipelineBarrier)gdpa(device, "vkCmdPipelineBarrier");
     dispatch->fp_vkCreateFence = (PFN_vkCreateFence)gdpa(device, "vkCreateFence");
