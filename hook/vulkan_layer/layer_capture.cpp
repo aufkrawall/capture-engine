@@ -15,6 +15,38 @@
 #include <d3d11_4.h>
 #include <dxgi.h>
 #include <dxgi1_4.h>
+#include <d3d11_1.h>
+#include <wrl/client.h>
+using Microsoft::WRL::ComPtr;
+
+// Static D3D11 Pointers
+typedef HRESULT(WINAPI* PFN_D3D11_CREATE_DEVICE)(IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT, const D3D_FEATURE_LEVEL*, UINT, UINT, ID3D11Device**, D3D_FEATURE_LEVEL*, ID3D11DeviceContext**);
+
+static bool CreateD3D11Device(IDXGIAdapter* adapter, ID3D11Device** ppDevice, ID3D11DeviceContext** ppContext) {
+    HMODULE hD3D11 = LoadLibraryA("d3d11.dll");
+    if (!hD3D11) return false;
+
+    PFN_D3D11_CREATE_DEVICE createFn = (PFN_D3D11_CREATE_DEVICE)GetProcAddress(hD3D11, "D3D11CreateDevice");
+    if (!createFn) return false;
+
+    UINT flags = 0; // D3D11_CREATE_DEVICE_BGRA_SUPPORT needed? Usually yes for D2D/DWrite but for capture maybe not strict. 
+                    // However, DX11/12 interop often likes BGRA support.
+    flags |= D3D11_CREATE_DEVICE_BGRA_SUPPORT; 
+
+#ifdef _DEBUG
+    // flags |= D3D11_CREATE_DEVICE_DEBUG; 
+#endif
+
+    D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_0 };
+    D3D_FEATURE_LEVEL featureLevel;
+
+    // Must use D3D_DRIVER_TYPE_UNKNOWN when adapter is non-NULL
+    HRESULT hr = createFn(adapter, adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE, 
+                          nullptr, flags, levels, 1, D3D11_SDK_VERSION, ppDevice, &featureLevel, ppContext);
+    
+    return SUCCEEDED(hr);
+}
+
 
 struct VulkanCaptureState {
     bool initialized = false;
@@ -44,6 +76,40 @@ struct VulkanCaptureState {
 
 static std::mutex g_CaptureMutex;
 static std::unordered_map<VkDevice, VulkanCaptureState> g_CaptureStates;
+
+// Helper to getting LUID from Vulkan Physical Device
+static bool GetLUIDFromPhysicalDevice(VkPhysicalDevice physDev, LUID* outLuid) {
+    InstanceDispatch* instDisp = VulkanLayerState::Get().GetInstanceDispatch(VulkanLayerState::Get().GetInstanceFromPhysicalDevice(physDev));
+    if (!instDisp || !instDisp->fp_vkGetPhysicalDeviceProperties2) return false;
+
+    VkPhysicalDeviceIDProperties idProps = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES };
+    VkPhysicalDeviceProperties2 props2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 };
+    props2.pNext = &idProps;
+
+    instDisp->fp_vkGetPhysicalDeviceProperties2(physDev, &props2);
+    
+    if (idProps.deviceLUIDValid) {
+        memcpy(outLuid, idProps.deviceLUID, sizeof(LUID));
+        return true;
+    }
+    return false;
+}
+
+static ComPtr<IDXGIAdapter> GetAdapterByLUID(const LUID& luid) {
+    ComPtr<IDXGIFactory1> factory;
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) return nullptr;
+
+    ComPtr<IDXGIAdapter> adapter;
+    for (UINT i = 0; factory->EnumAdapters(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+        DXGI_ADAPTER_DESC desc;
+        adapter->GetDesc(&desc);
+        if (desc.AdapterLuid.LowPart == luid.LowPart && desc.AdapterLuid.HighPart == luid.HighPart) {
+            return adapter;
+        }
+        adapter.Reset(); // CComPtr Release -> ComPtr Reset
+    }
+    return nullptr;
+}
 
 // Helper to find memory type
 uint32_t FindMemoryType(VkDevice device, uint32_t typeFilter, VkMemoryPropertyFlags properties) {
@@ -167,24 +233,111 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
 
     VulkanCaptureState state = {};
     state.device = device;
-    state.format = format;
+    state.vkFormat = format;
     state.extent = extent;
     state.imageCount = imageCount;
 
-    // Get shared memory pointer for CPU staging
-    state.pShmemBuffer = LayerIPC_GetShmemBuffer();
-    if (!state.pShmemBuffer) {
-        LayerLog("Vulkan Layer: [Error] No shared memory buffer available for CPU staging");
+    // 1. Create D3D11 Device on matching adapter
+    LUID luid = {};
+    if (GetLUIDFromPhysicalDevice(disp->physicalDevice, &luid)) {
+        ComPtr<IDXGIAdapter> adapter = GetAdapterByLUID(luid);
+        if (adapter) {
+            ID3D11Device* pD3D11Device = nullptr;
+            ID3D11DeviceContext* pD3D11Context = nullptr;
+            if (CreateD3D11Device(adapter.Get(), &pD3D11Device, &pD3D11Context)) {
+                state.d3d11Device = pD3D11Device;
+                state.d3d11Context = pD3D11Context;
+                LayerLog("Vulkan Layer: Created D3D11 device on matching adapter (LUID %08X:%08X)", luid.HighPart, luid.LowPart);
+            }
+        }
+    }
+
+    if (!state.d3d11Device) {
+        LayerLog("Vulkan Layer: [Error] Failed to create D3D11 device for interop. Fallback not implemented.");
         return;
     }
 
+    // 2. Create D3D11 Shared Textures (KMT) and Import to Vulkan
+    state.dxgiFormat = VkFormatToDXGI(format);
+    D3D11_TEXTURE2D_DESC texDesc = {};
+    texDesc.Width = extent.width;
+    texDesc.Height = extent.height;
+    texDesc.MipLevels = 1;
+    texDesc.ArraySize = 1;
+    texDesc.Format = (DXGI_FORMAT)state.dxgiFormat;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.Usage = D3D11_USAGE_DEFAULT;
+    texDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED; // KMT Shared Handle
+
+    // Create 4 textures for double/triple buffering
+    const uint32_t kTextureCount = 4;
+    std::vector<HANDLE> sharedHandles;
+
+    for (uint32_t i = 0; i < kTextureCount; i++) {
+        HRESULT hr = state.d3d11Device->CreateTexture2D(&texDesc, nullptr, &state.d3d11Textures[i]);
+        if (FAILED(hr)) {
+            LayerLog("Vulkan Layer: [Error] Failed to create D3D11 shared texture %d (hr=0x%08X)", i, hr);
+            return;
+        }
+
+        ComPtr<IDXGIResource> dxgiRes;
+        state.d3d11Textures[i]->QueryInterface(IID_PPV_ARGS(&dxgiRes));
+        dxgiRes->GetSharedHandle(&state.d3d11TextureHandles[i]);
+        sharedHandles.push_back(state.d3d11TextureHandles[i]);
+
+        // Import to Vulkan
+        VkExternalMemoryImageCreateInfo extInfo = { VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO };
+        extInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT;
+
+        VkImageCreateInfo imageInfo = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+        imageInfo.pNext = &extInfo;
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.format = format;
+        imageInfo.extent = { extent.width, extent.height, 1 };
+        imageInfo.mipLevels = 1;
+        imageInfo.arrayLayers = 1;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        VkImage img = VK_NULL_HANDLE;
+        if (disp->fp_vkCreateImage(device, &imageInfo, nullptr, &img) != VK_SUCCESS) {
+             LayerLog("Vulkan Layer: [Error] Failed to create imported VkImage");
+             return;
+        }
+        state.importedImages.push_back(img);
+
+        VkMemoryRequirements memReqs;
+        disp->fp_vkGetImageMemoryRequirements(device, img, &memReqs);
+
+        VkImportMemoryWin32HandleInfoKHR importInfo = { VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR };
+        importInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT;
+        importInfo.handle = state.d3d11TextureHandles[i];
+
+        VkMemoryAllocateInfo allocInfo = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+        allocInfo.pNext = &importInfo;
+        allocInfo.allocationSize = memReqs.size;
+        allocInfo.memoryTypeIndex = FindMemoryType(device, memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        VkDeviceMemory mem = VK_NULL_HANDLE;
+        if (disp->fp_vkAllocateMemory(device, &allocInfo, nullptr, &mem) != VK_SUCCESS) {
+            LayerLog("Vulkan Layer: [Error] Failed to import D3D11 memory");
+            return;
+        }
+        state.importedMemories.push_back(mem);
+        disp->fp_vkBindImageMemory(device, img, mem, 0);
+    }
+
+    // Publish handles to Encoder via IPC
+    LayerIPC_SetTextures(sharedHandles.data(), (uint32_t)sharedHandles.size(), extent.width, extent.height, state.dxgiFormat);
+
+    // Setup Command Pool and Fences
     VkCommandPoolCreateInfo cpInfo = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, nullptr, VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, 0 };
-    if (disp->fp_vkCreateCommandPool(device, &cpInfo, nullptr, &state.commandPool) != VK_SUCCESS) {
-        LayerLog("Vulkan Layer: [Error] Failed to create command pool");
-        return;
-    }
+    disp->fp_vkCreateCommandPool(device, &cpInfo, nullptr, &state.commandPool);
 
-    state.commandBuffers.resize(imageCount);
+    state.commandBuffers.resize(imageCount); // One CB per swapchain image
     VkCommandBufferAllocateInfo cbInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr, state.commandPool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, imageCount };
     disp->fp_vkAllocateCommandBuffers(device, &cbInfo, state.commandBuffers.data());
 
@@ -192,77 +345,7 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     VkFenceCreateInfo fenceInfo = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr, VK_FENCE_CREATE_SIGNALED_BIT };
     for (uint32_t i = 0; i < imageCount; i++) disp->fp_vkCreateFence(device, &fenceInfo, nullptr, &state.copyFences[i]);
 
-    // Try to use timeline semaphores for better synchronization
-    state.useTimelineSemaphores = IsTimelineSemaphoreSupported(device, disp);
-    if (state.useTimelineSemaphores) {
-        state.timelineValues.resize(imageCount, 0);
-        if (!CreateTimelineSemaphore(device, disp, &state.timelineSemaphore)) {
-            state.useTimelineSemaphores = false;
-            state.timelineSemaphore = VK_NULL_HANDLE;
-        }
-    }
-
-    // Create CPU staging buffers (host-visible, mappable)
-    // GPU external memory doesn't work cross-process, so we copy to CPU then to shared memory
-    uint32_t bytesPerPixel = GetBytesPerPixel(format);
-    state.bufferSize = (VkDeviceSize)extent.width * extent.height * bytesPerPixel;
-    
-    state.stagingBuffers.resize(imageCount);
-    state.stagingMemories.resize(imageCount);
-    state.stagingMapped.resize(imageCount);
-
-    // Create CPU staging buffers for each swapchain image
-    // We only need 2 buffers for double-buffering regardless of swapchain image count
-    const uint32_t numStagingBuffers = 2;
-    state.stagingBuffers.resize(numStagingBuffers);
-    state.stagingMemories.resize(numStagingBuffers);
-    state.stagingMapped.resize(numStagingBuffers);
-    
-    LayerLog("Vulkan Layer: Creating %u CPU staging buffers (%llu bytes each)", numStagingBuffers, state.bufferSize);
-    
-    for (uint32_t i = 0; i < numStagingBuffers; i++) {
-        VkBufferCreateInfo bufferInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-        bufferInfo.size = state.bufferSize;
-        bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        
-        VkResult bufResult = disp->fp_vkCreateBuffer(device, &bufferInfo, nullptr, &state.stagingBuffers[i]);
-        if (bufResult != VK_SUCCESS) {
-            LayerLog("Vulkan Layer: [Error] Failed to create staging buffer %u (vk result: %d)", i, bufResult);
-            return;
-        }
-        
-        VkMemoryRequirements memReqs;
-        disp->fp_vkGetBufferMemoryRequirements(device, state.stagingBuffers[i], &memReqs);
-        
-        // Find host-visible, host-coherent memory for CPU access
-        uint32_t memTypeIndex = FindMemoryType(device, memReqs.memoryTypeBits, 
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        
-        VkMemoryAllocateInfo allocInfo = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-        allocInfo.allocationSize = memReqs.size;
-        allocInfo.memoryTypeIndex = memTypeIndex;
-        
-        VkResult memResult = disp->fp_vkAllocateMemory(device, &allocInfo, nullptr, &state.stagingMemories[i]);
-        if (memResult != VK_SUCCESS) {
-            LayerLog("Vulkan Layer: [Error] Failed to allocate staging memory %u (vk result: %d)", i, memResult);
-            return;
-        }
-        
-        disp->fp_vkBindBufferMemory(device, state.stagingBuffers[i], state.stagingMemories[i], 0);
-        
-        // Persistently map the buffer
-        VkResult mapResult = disp->fp_vkMapMemory(device, state.stagingMemories[i], 0, state.bufferSize, 0, &state.stagingMapped[i]);
-        if (mapResult != VK_SUCCESS) {
-            LayerLog("Vulkan Layer: [Error] Failed to map staging memory %u (vk result: %d)", i, mapResult);
-            return;
-        }
-    }
-    
-    LayerLog("Vulkan Layer: CPU staging buffers created successfully");
-    
-    // Publish dimensions to shared memory (textureIndex >= 100 indicates SHMEM mode)
-    LayerIPC_SetShmemDimensions(extent.width, extent.height, VkFormatToDXGI(format));
+    LayerLog("Vulkan Layer: Zero-Copy Capture Initialized (%dx%d, %d textures)", extent.width, extent.height, kTextureCount);
     
     state.initialized = true;
     g_CaptureStates[device] = state;
@@ -277,20 +360,34 @@ void CleanupCapture(VkDevice device) {
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (disp) {
         disp->fp_vkDeviceWaitIdle(device);
-        // Clean up CPU staging buffers
-        for (uint32_t i = 0; i < state.stagingBuffers.size(); i++) {
-            if (state.stagingMapped[i] && state.stagingMemories[i]) {
-                disp->fp_vkUnmapMemory(device, state.stagingMemories[i]);
-            }
-            if (state.stagingBuffers[i]) disp->fp_vkDestroyBuffer(device, state.stagingBuffers[i], nullptr);
-            if (state.stagingMemories[i]) disp->fp_vkFreeMemory(device, state.stagingMemories[i], nullptr);
+        // Clean up Vulkan imported resources
+        for (uint32_t i = 0; i < state.importedImages.size(); i++) {
+            if (state.importedImages[i]) disp->fp_vkDestroyImage(device, state.importedImages[i], nullptr);
+            if (state.importedMemories[i]) disp->fp_vkFreeMemory(device, state.importedMemories[i], nullptr);
         }
         for (auto fence : state.copyFences) disp->fp_vkDestroyFence(device, fence, nullptr);
-        if (state.timelineSemaphore) {
-            disp->fp_vkDestroySemaphore(device, state.timelineSemaphore, nullptr);
+
+        if (state.commandPool) {
+            disp->fp_vkDestroyCommandPool(device, state.commandPool, nullptr);
         }
-        disp->fp_vkDestroyCommandPool(device, state.commandPool, nullptr);
     }
+    
+    // Cleanup D3D11 resources
+    for (int i = 0; i < 4; i++) { // kTextureCount is 4
+        if (state.d3d11Textures[i]) {
+            state.d3d11Textures[i]->Release();
+            state.d3d11Textures[i] = nullptr;
+        }
+    }
+    if (state.d3d11Context) {
+        state.d3d11Context->Release();
+        state.d3d11Context = nullptr;
+    }
+    if (state.d3d11Device) {
+        state.d3d11Device->Release();
+        state.d3d11Device = nullptr;
+    }
+
     g_CaptureStates.erase(it);
 }
 
@@ -306,11 +403,12 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
         return;
     }
 
-    // Use double-buffering for staging buffers (0 or 1)
-    uint32_t bufferIndex = state.currentShmemSlot % 2;
+    // Use frame counter or similar for slot index
+    static std::atomic<uint32_t> s_FrameCounter{0};
+    uint32_t slotIndex = s_FrameCounter.fetch_add(1) % 4; // Using 4 textures now
     
-    // Validate staging buffer exists
-    if (bufferIndex >= state.stagingBuffers.size() || !state.stagingBuffers[bufferIndex]) {
+    // Validate resources
+    if (slotIndex >= state.importedImages.size() || !state.importedImages[slotIndex]) {
         return;
     }
 
@@ -366,20 +464,32 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
     srcBarrier.image = srcImage;
     srcBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 
-    disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 
-                                   0, 0, nullptr, 0, nullptr, 1, &srcBarrier);
+    // Transition dest image (imported D3D11) to transfer dest (assuming undefined initially or previous layout)
+    // For simplicity, we can use UNDEFINED -> DST_OPTIMAL every frame if we don't care about content preserveration
+    // KMT shared images should be careful about layout transitions if D3D11 is also accessing, but here we are producer.
+    VkImageMemoryBarrier dstBarrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+    dstBarrier.srcAccessMask = 0;
+    dstBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    dstBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; 
+    dstBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    dstBarrier.image = state.importedImages[slotIndex];
+    dstBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 
-    // Copy image to buffer (GPU -> CPU staging buffer)
-    VkBufferImageCopy region = {};
-    region.bufferOffset = 0;
-    region.bufferRowLength = 0;  // Tightly packed
-    region.bufferImageHeight = 0;
-    region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-    region.imageOffset = { 0, 0, 0 };
-    region.imageExtent = { state.extent.width, state.extent.height, 1 };
+    VkImageMemoryBarrier barriers[] = { srcBarrier, dstBarrier };
+    disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 
+                                   0, 0, nullptr, 0, nullptr, 2, barriers);
+
+    // Copy image to imported image (GPU -> GPU)
+    VkImageCopy region = {};
+    region.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    region.srcOffset = { 0, 0, 0 };
+    region.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    region.dstOffset = { 0, 0, 0 };
+    region.extent = { state.extent.width, state.extent.height, 1 };
     
-    disp->fp_vkCmdCopyImageToBuffer(cmd, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 
-                                     state.stagingBuffers[bufferIndex], 1, &region);
+    disp->fp_vkCmdCopyImage(cmd, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 
+                             state.importedImages[slotIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 
+                             1, &region);
 
     // Transition source image back to present
     srcBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
@@ -387,21 +497,23 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
     srcBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     srcBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
+    // Transition dest image to General/ShaderReadOnly for D3D11 to consume?
+    // D3D11 doesn't understand Vulkan layouts directly, but transitioning to "General" or similar is good practice.
+    // However, the import is implementation dependent. GENERAL is safest for external access.
+    dstBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    dstBarrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT; // For D3D11 read
+    dstBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    dstBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+    VkImageMemoryBarrier postBarriers[] = { srcBarrier, dstBarrier };
     disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 
-                                   0, 0, nullptr, 0, nullptr, 1, &srcBarrier);
+                                   0, 0, nullptr, 0, nullptr, 2, postBarriers);
 
     VkResult endResult = disp->fp_vkEndCommandBuffer(cmd);
     if (endResult != VK_SUCCESS) {
         if (endResult == VK_ERROR_DEVICE_LOST) {
             s_deviceLostReported.store(true);
             CleanupCapture(device);
-        }
-        return;
-    }
-    if (endResult != VK_SUCCESS) {
-        static int endErrorLogCount = 0;
-        if (endErrorLogCount++ % 60 == 0) {
-            LayerLog("Vulkan Layer: [Error] vkEndCommandBuffer failed: %d", endResult);
         }
         return;
     }
@@ -418,37 +530,19 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
         return;
     }
 
-    // Wait for GPU copy to complete (synchronous - required for CPU access)
+    // Wait for fence to ensure GPU copy is done before signaling encoder
+    // This is simple synchronization; for max perf we could export fences, but this is safe.
     waitResult = disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, FENCE_TIMEOUT_NS);
     if (waitResult != VK_SUCCESS) {
         return;
     }
 
-    // Copy from staging buffer to shared memory
-    if (state.pShmemBuffer && state.stagingMapped[bufferIndex]) {
-        ShmemBuffer* shmem = static_cast<ShmemBuffer*>(state.pShmemBuffer);
-        uint32_t shmemSlot = state.currentShmemSlot % ShmemBuffer::SLOT_COUNT;
-        
-        // Calculate copy size (clamp to max supported resolution)
-        uint32_t copyWidth = (state.extent.width <= ShmemBuffer::MAX_WIDTH) ? state.extent.width : ShmemBuffer::MAX_WIDTH;
-        uint32_t copyHeight = (state.extent.height <= ShmemBuffer::MAX_HEIGHT) ? state.extent.height : ShmemBuffer::MAX_HEIGHT;
-        size_t copySize = (size_t)copyWidth * copyHeight * 4;  // RGBA
-        
-        // Copy to shared memory slot
-        memcpy(shmem->data[shmemSlot], state.stagingMapped[bufferIndex], copySize);
-        
-        // Update shmem metadata
-        shmem->validWidth = copyWidth;
-        shmem->validHeight = copyHeight;
-        shmem->pitch = copyWidth * 4;
-        shmem->slotReady[shmemSlot].store(true, std::memory_order_release);
-        shmem->writeSlot.store(shmemSlot, std::memory_order_release);
-        
-        // Signal frame ready with textureIndex = 100 + slot (indicates SHMEM mode)
-        LayerIPC_SignalFrameReady(100 + shmemSlot);
-        
-        state.currentShmemSlot++;
-    }
+    // D3D11 side "Flush" might be needed if we were writing from D3D11, but we wrote from Vulkan.
+    // Vulkan fence wait implies GPU work is done. D3D11 should see it.
 
+    // Signal frame ready with texture index (0-3)
+    LayerIPC_SignalFrameReady(slotIndex);
+    
     s_deviceLostReported.store(false);
+
 }

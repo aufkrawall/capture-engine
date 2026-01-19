@@ -589,7 +589,13 @@ VkResult VKAPI_CALL vkQueuePresentKHR(
     }
 
     // Apply FPS Limiter
-    g_SharedFpsLimiter.Apply();
+    bool isFirstHook = !g_InPresentHook;
+    g_InPresentHook = true;
+    
+    if (isFirstHook) {
+        g_SharedFpsLimiter.SetIPCClient(&g_IPCClient);
+        g_SharedFpsLimiter.Apply();
+    }
     
     // Render overlay and capture before present
     if (g_LayerState.overlayEnabled && pPresentInfo->swapchainCount > 0) {
@@ -609,7 +615,10 @@ VkResult VKAPI_CALL vkQueuePresentKHR(
     }
     
     // Call the real present
-    return disp->QueuePresentKHR(queue, pPresentInfo);
+    VkResult result = disp->QueuePresentKHR(queue, pPresentInfo);
+    
+    if (isFirstHook) g_InPresentHook = false;
+    return result;
 }
 
 // vkCreateSampler - override anisotropic filtering

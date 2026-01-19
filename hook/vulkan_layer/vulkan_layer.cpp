@@ -7,8 +7,12 @@
 #define VK_USE_PLATFORM_WIN32_KHR
 #include "vulkan_layer.h"
 #include "layer_main.h" // For LayerLog and g_LayerState
+#include "../common/fps_limiter.h"
 #include <cstring>
 #include <vector>
+
+// Reentrancy guard shared with other hooks (defined here for the layer)
+thread_local bool g_InPresentHook = false;
 
 // VulkanLayerState Implementation
 // ============================================================================
@@ -445,6 +449,14 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkGetSwapchainImagesKHR(
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo) {
+    bool isFirstHook = !g_InPresentHook;
+    g_InPresentHook = true;
+
+    if (isFirstHook) {
+        g_SharedFpsLimiter.SetIPCClient(&g_IPCClient);
+        g_SharedFpsLimiter.Apply();
+    }
+
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceFromQueue(queue);
     
     if (g_LayerState.whitelisted && pPresentInfo->swapchainCount > 0) {
@@ -457,8 +469,13 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         }
     }
     
-    if (disp && disp->fp_vkQueuePresentKHR) return disp->fp_vkQueuePresentKHR(queue, pPresentInfo);
-    return VK_SUCCESS;
+    VkResult res = VK_SUCCESS;
+    if (disp && disp->fp_vkQueuePresentKHR) {
+        res = disp->fp_vkQueuePresentKHR(queue, pPresentInfo);
+    }
+    
+    if (isFirstHook) g_InPresentHook = false;
+    return res;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkAcquireNextImageKHR(

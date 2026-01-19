@@ -88,7 +88,12 @@ void InputManager::Shutdown() {
 
 LRESULT CALLBACK InputManager::HookWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     // 1. Pass to ImGui (only if context exists)
-    if (ImGui::GetCurrentContext() && ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam))
+    // Filter out mouse messages so overlay never reacts to hardware cursor
+    bool isMouseMsg = (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) || 
+                      (msg >= WM_NCMOUSEMOVE && msg <= WM_NCMBUTTONDBLCLK) ||
+                      (msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL);
+
+    if (!isMouseMsg && ImGui::GetCurrentContext() && ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam))
         return true; 
     
     // 2. Call Original

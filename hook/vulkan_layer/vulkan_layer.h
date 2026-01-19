@@ -14,6 +14,9 @@
 #include <vector>
 #include <string>
 
+// Reentrancy guard shared with other hooks
+extern thread_local bool g_InPresentHook;
+
 // Dispatch table for instance-level functions
 struct InstanceDispatch {
     VkInstance instance = VK_NULL_HANDLE;

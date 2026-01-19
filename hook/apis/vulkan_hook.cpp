@@ -3840,10 +3840,13 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
       HookLog("Vulkan: Detour_vkQueuePresentKHR (Frame %d, queue=%p)", presentCount, queue);
   }
 
-  if (g_InVulkanHook) {
+  if (g_InPresentHook || g_InVulkanHook) {
       if (o_vkQueuePresentKHR) return o_vkQueuePresentKHR(queue, pPresentInfo);
       return VK_SUCCESS;
   }
+  
+  bool isFirstHook = !g_InPresentHook;
+  g_InPresentHook = true;
   VulkanHookGuard guard;
 
   if (!o_vkQueuePresentKHR && o_vkGetDeviceProcAddr && g_Device != VK_NULL_HANDLE) {
@@ -3960,20 +3963,22 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
   QueryPerformanceCounter(&qpc);
   int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
 
-  // Enable CSV logging for frame times (one-time init, only if debug logging enabled)
-  static bool csvLoggingInitialized = false;
-  SharedMemoryLayout* csvShm = (g_IPC) ? g_IPC->GetSharedMem() : nullptr;
-  TryEnableFrameTimeCSVLogging(csvShm, (const void*)&Detour_vkQueuePresentKHR, g_PerfMetrics, "Vulkan", csvLoggingInitialized);
+  if (isFirstHook) {
+      // Enable CSV logging for frame times (one-time init, only if debug logging enabled)
+      static bool csvLoggingInitialized = false;
+      SharedMemoryLayout* csvShm = (g_IPC) ? g_IPC->GetSharedMem() : nullptr;
+      TryEnableFrameTimeCSVLogging(csvShm, (const void*)&Detour_vkQueuePresentKHR, g_PerfMetrics, "Vulkan", csvLoggingInitialized);
 
-  // Track recording state for performance metrics
-  static bool lastRecordingState = false;
-  bool isRecording = g_IPC && g_IPC->IsRecording();
-  if (isRecording != lastRecordingState) {
-    g_PerfMetrics.SetRecording(isRecording);
-    lastRecordingState = isRecording;
+      // Track recording state for performance metrics
+      static bool lastRecordingState = false;
+      bool isRecording = g_IPC && g_IPC->IsRecording();
+      if (isRecording != lastRecordingState) {
+          g_PerfMetrics.SetRecording(isRecording);
+          lastRecordingState = isRecording;
+      }
+
+      g_PerfMetrics.Update(us);
   }
-
-  g_PerfMetrics.Update(us);
 
   // --- Timing Diagnostics (log slow operations) ---
   static int diagLogCount = 0;
@@ -3988,7 +3993,7 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
   int64_t diagT1 = diagT0; // Will be set after prerender limit
 
   // --- Prerender Limit Simulation ---
-  if (g_Device != VK_NULL_HANDLE) {
+  if (isFirstHook && g_Device != VK_NULL_HANDLE) {
       float limit = GetActivePrerenderLimit();
 
       if (limit >= 0.0f) {
@@ -4088,8 +4093,10 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
 
   // Apply FPS limiter AFTER prerender limit to avoid compounding waits
   // (prerender wait + limiter wait would double the frame time)
-  g_SharedFpsLimiter.SetIPCClient(g_IPC);
-  g_SharedFpsLimiter.Apply();
+  if (isFirstHook) {
+      g_SharedFpsLimiter.SetIPCClient(g_IPC);
+      g_SharedFpsLimiter.Apply();
+  }
   diagT1 = diagTime();
 
   // Late injection recovery: try to recover device/queue if missing
@@ -4359,10 +4366,9 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
           }
           
           // Present waits on overlay semaphore
-          VkPresentInfoKHR modifiedPresent = *pPresentInfo;
-          modifiedPresent.waitSemaphoreCount = 1;
-          modifiedPresent.pWaitSemaphores = &overlayDoneSem;
-          return o_vkQueuePresentKHR(queue, &modifiedPresent);
+          VkResult res = o_vkQueuePresentKHR(queue, &modifiedPresent);
+          if (isFirstHook) g_InPresentHook = false;
+          return res;
         }
       }
     }
@@ -4457,11 +4463,9 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
                                             (uint64_t)completionSem);
                 
                 // Present waits on completionSem
-                VkPresentInfoKHR newPresent = *pPresentInfo;
-                newPresent.waitSemaphoreCount = 1;
-                newPresent.pWaitSemaphores = &completionSem;
-                
-                return o_vkQueuePresentKHR(queue, &newPresent);
+                VkResult res = o_vkQueuePresentKHR(queue, &newPresent);
+                if (isFirstHook) g_InPresentHook = false;
+                return res;
             }
         }
         
@@ -4494,12 +4498,9 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
           
           // CRITICAL FIX: Make Present wait on Capture completion
           // This serializes Render -> Capture -> Present
-          VkPresentInfoKHR newPresent = *pPresentInfo;
-          newPresent.waitSemaphoreCount = 1;
-          newPresent.pWaitSemaphores = &completionSem; // Wait for copy
-          // Note: pPresentInfo->pWaitSemaphores were already waited by CopyFrame
-          
-          return o_vkQueuePresentKHR(queue, &newPresent);
+          VkResult res = o_vkQueuePresentKHR(queue, &newPresent);
+          if (isFirstHook) g_InPresentHook = false;
+          return res;
         }
         break;
       }
@@ -4509,6 +4510,7 @@ Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
   // Call Present after capture is done
   VkResult presentResult = o_vkQueuePresentKHR(queue, pPresentInfo);
 
+  if (isFirstHook) g_InPresentHook = false;
   return presentResult;
 }
 

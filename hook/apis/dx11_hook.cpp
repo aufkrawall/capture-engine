@@ -1,4 +1,5 @@
 #include "dx11_hook.h"
+#include "graphics_hook.h"
 #include "../wrappers/wrapper_base.h"
 #include "lod_helper.h"
 #include "../common/capture_base.h"
@@ -1459,8 +1460,14 @@ static void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
     dev->Release();
 }
 
+// Reentrancy guard definition (declared in graphics_hook.h)
+thread_local bool g_InPresentHook = false;
+
 HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
                                             UINT SyncInterval, UINT Flags) {
+  bool isFirstHook = !g_InPresentHook;
+  g_InPresentHook = true;
+
   static int64_t qpcFreq = 0;
   if (qpcFreq == 0) {
     LARGE_INTEGER f;
@@ -1478,7 +1485,10 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
       }
   }
 
-  if (g_ShuttingDown) return oPresent(pSwapChain, SyncInterval, Flags);
+  if (g_ShuttingDown) {
+    if (isFirstHook) g_InPresentHook = false;
+    return oPresent(pSwapChain, SyncInterval, Flags);
+  }
 
   LARGE_INTEGER qpc;
   QueryPerformanceCounter(&qpc);
@@ -1486,34 +1496,38 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
 
   // Apply overrides early so they also affect the DX11->DX12 fallback path.
   // (D2R uses a DX12 swapchain that can land in this DX11 Present hook.)
-  // Apply VSync Override
-  VSyncOverride vsyncEarly = GetVSyncOverride();
-  if (vsyncEarly.shouldOverride) {
-      SyncInterval = (UINT)vsyncEarly.presentInterval;
-      if (SyncInterval > 0) {
-          Flags &= ~DXGI_PRESENT_ALLOW_TEARING;
-      }
+  if (isFirstHook) {
+    // Apply VSync Override
+    VSyncOverride vsyncEarly = GetVSyncOverride();
+    if (vsyncEarly.shouldOverride) {
+        SyncInterval = (UINT)vsyncEarly.presentInterval;
+        if (SyncInterval > 0) {
+            Flags &= ~DXGI_PRESENT_ALLOW_TEARING;
+        }
+    }
   }
 
-  // Apply Prerender Limit
-  float limitEarly = GetActivePrerenderLimit();
-  if (limitEarly >= 0.0f) {
-      static float lastLimitEarly = -2.0f;
-      if (fabs(limitEarly - lastLimitEarly) > 0.001f) {
-          ID3D11Device* dev = nullptr;
-          if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&dev)))) {
-              IDXGIDevice1* dxgiDev = nullptr;
-              if (SUCCEEDED(dev->QueryInterface(IID_PPV_ARGS(&dxgiDev)))) {
-                   UINT effectiveLatency = (limitEarly < 1.0f) ? 1 : (UINT)limitEarly;
-                   dxgiDev->SetMaximumFrameLatency(effectiveLatency);
-                   dxgiDev->Release();
-                   HookLog("DX11: Set maximum DXGI latency to %d (Active Limit: %.2f)", effectiveLatency, limitEarly);
-              }
-              dev->Release();
-          }
-          lastLimitEarly = limitEarly;
-      }
-      ApplyPrerenderLimit(pSwapChain, limitEarly);
+  if (isFirstHook) {
+    // Apply Prerender Limit
+    float limitEarly = GetActivePrerenderLimit();
+    if (limitEarly >= 0.0f) {
+        static float lastLimitEarly = -2.0f;
+        if (fabs(limitEarly - lastLimitEarly) > 0.001f) {
+            ID3D11Device* dev = nullptr;
+            if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&dev)))) {
+                IDXGIDevice1* dxgiDev = nullptr;
+                if (SUCCEEDED(dev->QueryInterface(IID_PPV_ARGS(&dxgiDev)))) {
+                     UINT effectiveLatency = (limitEarly < 1.0f) ? 1 : (UINT)limitEarly;
+                     dxgiDev->SetMaximumFrameLatency(effectiveLatency);
+                     dxgiDev->Release();
+                     HookLog("DX11: Set maximum DXGI latency to %d (Active Limit: %.2f)", effectiveLatency, limitEarly);
+                }
+                dev->Release();
+            }
+            lastLimitEarly = limitEarly;
+        }
+        ApplyPrerenderLimit(pSwapChain, limitEarly);
+    }
   }
 
   // DX12 swapchains can land in this hook (DXGI interop). In that case, route to DX12 overlay/capture.
@@ -1523,12 +1537,16 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
     if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&d12Dev))) && d12Dev) {
       d12Dev->Release();
       DX12_ProcessFrameExternal(pSwapChain);
+      
+      if (isFirstHook) {
+        // Apply shared FPS limiter
+        g_SharedFpsLimiter.SetIPCClient(g_IPC);
+        g_SharedFpsLimiter.Apply();
+      }
 
-      // Apply shared FPS limiter
-      g_SharedFpsLimiter.SetIPCClient(g_IPC);
-      g_SharedFpsLimiter.Apply();
-
-      return oPresent(pSwapChain, SyncInterval, Flags);
+      HRESULT hr = oPresent(pSwapChain, SyncInterval, Flags);
+      if (isFirstHook) g_InPresentHook = false;
+      return hr;
     }
   }
   
@@ -1578,41 +1596,47 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
   IPCClient* ipc = g_IPC;
   SharedMemoryLayout* csvShm = (ipc) ? ipc->GetSharedMem() : nullptr;
 
-  // Apply VSync Override
-  VSyncOverride vsync = GetVSyncOverride();
-  if (vsync.shouldOverride) {
-      SyncInterval = (UINT)vsync.presentInterval;
-      if (SyncInterval > 0) {
-          Flags &= ~DXGI_PRESENT_ALLOW_TEARING;
-      }
+  if (isFirstHook) {
+    // Apply VSync Override
+    VSyncOverride vsync = GetVSyncOverride();
+    if (vsync.shouldOverride) {
+        SyncInterval = (UINT)vsync.presentInterval;
+        if (SyncInterval > 0) {
+            Flags &= ~DXGI_PRESENT_ALLOW_TEARING;
+        }
+    }
   }
 
   // Apply Prerender Limit
-  float limit = GetActivePrerenderLimit();
-  if (limit >= 0.0f) {
-      static float lastLimit = -2.0f;
-      if (fabs(limit - lastLimit) > 0.001f) {
-          ID3D11Device* dev = nullptr;
-          if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&dev)))) {
-              IDXGIDevice1* dxgiDev = nullptr;
-              if (SUCCEEDED(dev->QueryInterface(IID_PPV_ARGS(&dxgiDev)))) {
-                   UINT effectiveLatency = (limit < 1.0f) ? 1 : (UINT)limit;
-                   dxgiDev->SetMaximumFrameLatency(effectiveLatency);
-                   dxgiDev->Release();
-                   HookLog("DX11: Set maximum DXGI latency to %d (Active Limit: %.2f)", effectiveLatency, limit);
+  if (isFirstHook) {
+      float limit = GetActivePrerenderLimit();
+      if (limit >= 0.0f) {
+          static float lastLimit = -2.0f;
+          if (fabs(limit - lastLimit) > 0.001f) {
+              ID3D11Device* dev = nullptr;
+              if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&dev)))) {
+                  IDXGIDevice1* dxgiDev = nullptr;
+                  if (SUCCEEDED(dev->QueryInterface(IID_PPV_ARGS(&dxgiDev)))) {
+                       UINT effectiveLatency = (limit < 1.0f) ? 1 : (UINT)limit;
+                       dxgiDev->SetMaximumFrameLatency(effectiveLatency);
+                       dxgiDev->Release();
+                       HookLog("DX11: Set maximum DXGI latency to %d (Active Limit: %.2f)", effectiveLatency, limit);
+                  }
+                  dev->Release();
               }
-              dev->Release();
+              lastLimit = limit;
           }
-          lastLimit = limit;
+          ApplyPrerenderLimit(pSwapChain, limit);
       }
-      ApplyPrerenderLimit(pSwapChain, limit);
   }
 
-  TryEnableFrameTimeCSVLogging(csvShm, (const void*)&DetourDX11Present, g_PerfMetrics, "DX11", csvLoggingInitialized);
+  if (isFirstHook) {
+    TryEnableFrameTimeCSVLogging(csvShm, (const void*)&DetourDX11Present, g_PerfMetrics, "DX11", csvLoggingInitialized);
 
-  // Use wrapper status to prevent double-counting FPS (Wrapper + Hook)
-  if (!WrapperStateManager::Get().FindWrapper(pSwapChain)) {
-      g_PerfMetrics.Update(us);
+    // Use wrapper status to prevent double-counting FPS (Wrapper + Hook)
+    if (!WrapperStateManager::Get().FindWrapper(pSwapChain)) {
+        g_PerfMetrics.Update(us);
+    }
   }
   
   // Update recording state for CSV logging
@@ -1732,52 +1756,66 @@ skip_capture:
     }
   }
   
-  // Apply shared FPS limiter
-  g_SharedFpsLimiter.SetIPCClient(g_IPC);
-  g_SharedFpsLimiter.Apply();
+  if (isFirstHook) {
+    // Apply shared FPS limiter
+    g_SharedFpsLimiter.SetIPCClient(g_IPC);
+    g_SharedFpsLimiter.Apply();
+  }
 
 
-  return oPresent(pSwapChain, SyncInterval, Flags);
+  HRESULT hr = oPresent(pSwapChain, SyncInterval, Flags);
+  if (isFirstHook) g_InPresentHook = false;
+  return hr;
 }
 
 HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain *pSwapChain,
                                              UINT SyncInterval, UINT PresentFlags,
                                              const DXGI_PRESENT_PARAMETERS *pPresentParameters) {
+  bool isFirstHook = !g_InPresentHook;
+  g_InPresentHook = true;
+
   static int presentCount1 = 0;
   if (++presentCount1 % 60 == 0) {
       CWrapDXGISwapChain* wrapper = WrapperStateManager::Get().FindWrapper(pSwapChain);
       EarlyLog("DX11 Hook: DetourDX11Present1 called (count=%d, SC=%p) -> Wrapper=%p", presentCount1, pSwapChain, wrapper);
   }
 
-  if (g_ShuttingDown) return oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
-  // Apply VSync Override
-  VSyncOverride vsync = GetVSyncOverride();
-  if (vsync.shouldOverride) {
-      SyncInterval = (UINT)vsync.presentInterval;
-      if (SyncInterval > 0) {
-          PresentFlags &= ~DXGI_PRESENT_ALLOW_TEARING;
-      }
+  if (g_ShuttingDown) {
+    if (isFirstHook) g_InPresentHook = false;
+    return oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
+  }
+  if (isFirstHook) {
+    // Apply VSync Override
+    VSyncOverride vsync1 = GetVSyncOverride();
+    if (vsync1.shouldOverride) {
+        SyncInterval = (UINT)vsync1.presentInterval;
+        if (SyncInterval > 0) {
+            PresentFlags &= ~DXGI_PRESENT_ALLOW_TEARING;
+        }
+    }
   }
 
-  // Apply Prerender Limit
-  float limit = GetActivePrerenderLimit();
-  if (limit >= 0.0f) {
-      static float lastLimit = -2.0f;
-      if (fabs(limit - lastLimit) > 0.001f) {
-          ID3D11Device* dev = nullptr;
-          if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&dev)))) {
-              IDXGIDevice1* dxgiDev = nullptr;
-              if (SUCCEEDED(dev->QueryInterface(IID_PPV_ARGS(&dxgiDev)))) {
-                   UINT effectiveLatency = (limit < 1.0f) ? 1 : (UINT)limit;
-                   dxgiDev->SetMaximumFrameLatency(effectiveLatency);
-                   dxgiDev->Release();
-                   HookLog("DX11: Set maximum DXGI latency to %d (Active Limit: %.2f)", effectiveLatency, limit);
+  if (isFirstHook) {
+      // Apply Prerender Limit
+      float limit1 = GetActivePrerenderLimit();
+      if (limit1 >= 0.0f) {
+          static float lastLimit1 = -2.0f;
+          if (fabs(limit1 - lastLimit1) > 0.001f) {
+              ID3D11Device* dev1 = nullptr;
+              if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&dev1)))) {
+                  IDXGIDevice1* dxgiDev1 = nullptr;
+                  if (SUCCEEDED(dev1->QueryInterface(IID_PPV_ARGS(&dxgiDev1)))) {
+                       UINT effectiveLatency = (limit1 < 1.0f) ? 1 : (UINT)limit1;
+                       dxgiDev1->SetMaximumFrameLatency(effectiveLatency);
+                       dxgiDev1->Release();
+                       HookLog("DX11: Set maximum DXGI latency to %d (Active Limit: %.2f)", effectiveLatency, limit1);
+                  }
+                  dev1->Release();
               }
-              dev->Release();
+              lastLimit1 = limit1;
           }
-          lastLimit = limit;
+          ApplyPrerenderLimit(pSwapChain, limit1);
       }
-      ApplyPrerenderLimit(pSwapChain, limit);
   }
   
   // Reuse the same logic as Present, just call Present1 at the end
@@ -1802,30 +1840,33 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain *pSwapChain,
   LARGE_INTEGER qpc;
   QueryPerformanceCounter(&qpc);
   int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
-  // Use wrapper status to prevent double-counting FPS (Wrapper + Hook)
-  if (!WrapperStateManager::Get().FindWrapper(pSwapChain)) {
-      g_PerfMetrics.Update(us);
+  if (isFirstHook) {
+    // Use wrapper status to prevent double-counting FPS (Wrapper + Hook)
+    if (!WrapperStateManager::Get().FindWrapper(pSwapChain)) {
+        g_PerfMetrics.Update(us);
+    }
+    
+    // Update recording state for CSV logging
+    IPCClient* ipc1 = g_IPC;
+    bool isRecording1 = ipc1 && ipc1->IsRecording();
+    g_PerfMetrics.SetRecording(isRecording1);
   }
-  
-  // Note: CSV logging is handled in DetourDX11Present, which covers initial setup.
-  // We just need to ensure the recording state is updated here too if Present1 is the primary path.
-  IPCClient* ipc = g_IPC;
-  bool isRecording = ipc && ipc->IsRecording();
-  g_PerfMetrics.SetRecording(isRecording);
 
   // DX12 swapchains can land in this hook (DXGI interop). Route to DX12 overlay/capture.
   // This also serves as a fallback when DX12 Present hooks are unavailable due to MinHook conflicts.
-  {
-    ID3D12Device* d12Dev = nullptr;
-    if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&d12Dev))) && d12Dev) {
-      d12Dev->Release();
+  if (isFirstHook) {
+    ID3D12Device* d12Dev1 = nullptr;
+    if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&d12Dev1))) && d12Dev1) {
+      d12Dev1->Release();
       DX12_ProcessFrameExternal(pSwapChain);
 
       // Apply shared FPS limiter
       g_SharedFpsLimiter.SetIPCClient(g_IPC);
       g_SharedFpsLimiter.Apply();
 
-      return oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
+      HRESULT hr = oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
+      if (isFirstHook) g_InPresentHook = false;
+      return hr;
     }
   }
 
@@ -1904,17 +1945,21 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain *pSwapChain,
   }
 
 skip_capture:
-  // Draw Overlay
-  SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
-  if (shm && shm->overlayConfig.showOverlay) {
-    DrawDX11Overlay(pSwapChain);
+  if (isFirstHook) {
+    // Draw Overlay
+    SharedMemoryLayout* shm1 = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+    if (shm1 && shm1->overlayConfig.showOverlay) {
+      DrawDX11Overlay(pSwapChain);
+    }
+
+    // Apply shared FPS limiter
+    g_SharedFpsLimiter.SetIPCClient(g_IPC);
+    g_SharedFpsLimiter.Apply();
   }
 
-  // Apply shared FPS limiter
-  g_SharedFpsLimiter.SetIPCClient(g_IPC);
-  g_SharedFpsLimiter.Apply();
-
-  return oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
+  HRESULT hr = oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
+  if (isFirstHook) g_InPresentHook = false;
+  return hr;
 }
 
 // Hook: CreateSamplerState

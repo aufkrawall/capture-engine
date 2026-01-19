@@ -73,6 +73,7 @@ void Overlay::InitImGui(void* hwnd) {
     context = ImGui::CreateContext();
     ImGui::SetCurrentContext(context);
     ImGui::GetIO().IniFilename = nullptr; 
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
     ImGui_ImplWin32_Init(hwnd);
     
     // Get DPI scale for proper font sizing
@@ -112,6 +113,7 @@ void Overlay::InitImGuiHeadless() {
     context = ImGui::CreateContext();
     ImGui::SetCurrentContext(context);
     ImGui::GetIO().IniFilename = nullptr;
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
 
     // No ImGui_ImplWin32_Init
 
@@ -225,7 +227,7 @@ void Overlay::RenderUI() {
                 float scaledPadding = 20.0f * dpiScale;
                 ImGui::SetNextWindowPos(ImVec2(scaledPadding, scaledPadding), ImGuiCond_Always);
                 ImGui::SetNextWindowBgAlpha(0.5f);
-                if (ImGui::Begin("OverlayFallback", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav)) {
+                if (ImGui::Begin("OverlayFallback", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs)) {
                     ImGui::TextColored(ImVec4(1, 0, 0, 1), "CaptureEngine: Waiting for connection...");
                     ImGui::End();
                     lastDrawResult = DrawResult::Drawn;
@@ -340,7 +342,7 @@ void Overlay::RenderUI() {
 
     if (mainFont) ImGui::PushFont(mainFont);
 
-    if (ImGui::Begin("Overlay", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav)) {
+    if (ImGui::Begin("Overlay", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs)) {
         
         // Use a table for layout: Label | Value
         float hdrScale = 1.0f;
@@ -656,7 +658,9 @@ void Overlay::RenderUI() {
                  }
 
                  ImVec2 txtSize = ImGui::CalcTextSize(latBuf);
-                 drawList->AddText(ImVec2(graphPos.x + graphSize.x - txtSize.x - 2, graphPos.y), latColor, latBuf);
+                 drawList->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 0.75f,
+                                   ImVec2(graphPos.x + graphSize.x - (txtSize.x * 0.75f) - 2, graphPos.y), 
+                                   latColor, latBuf);
 
                  ImGui::PopStyleColor(2); // PlotLines + FrameBg
             }

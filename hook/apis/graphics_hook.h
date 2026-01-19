@@ -17,3 +17,5 @@ public:
   // Called on unload
   virtual void Shutdown() = 0;
 };
+// Reentrancy guard to prevent double-waiting/double-capturing when multiple hooks are active (e.g. DX11 + DX12)
+extern thread_local bool g_InPresentHook;

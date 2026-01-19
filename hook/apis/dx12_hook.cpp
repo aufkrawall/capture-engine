@@ -1,5 +1,6 @@
 #include "dx12_hook.h"
 #include "dx11_hook.h"
+#include "graphics_hook.h"
 #include "hook_common.h"
 #include "../../common/frame_timing.h"
 #include "lod_helper.h"
@@ -1680,6 +1681,8 @@ HRESULT STDMETHODCALLTYPE DetourGetBuffer(IDXGISwapChain *pSwapChain, UINT Buffe
 
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
                                         UINT SyncInterval, UINT Flags) {
+  bool isFirstHook = !g_InPresentHook;
+  g_InPresentHook = true;
   // Debug: Log that hook is being called (once)
   static bool loggedOnce = false;
   static int callCount = 0;
@@ -1701,6 +1704,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
       if (logOnce++ % 60 == 0) {
           HookLog("DX12: Device in bad state - skipping ALL Present processing");
       }
+      if (isFirstHook) g_InPresentHook = false;
       return oPresent(pSwapChain, SyncInterval, Flags);
   }
 
@@ -1712,6 +1716,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
           deviceStatus == DXGI_ERROR_DRIVER_INTERNAL_ERROR) {
           g_DeviceRemovedFatal.store(true);
           HookLog("DX12: Device Removed at Present start! hr=0x%08X - skipping all processing", deviceStatus);
+          if (isFirstHook) g_InPresentHook = false;
           return oPresent(pSwapChain, SyncInterval, Flags);
       }
   }
@@ -1724,6 +1729,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
       // Swapchain is being replaced - abort overlay, just passthrough
       EarlyLog("DX12: Swapchain INVALID - skipping ALL overlay, passthrough only");
       g_FGDebugOverlaySkips++;
+      if (isFirstHook) g_InPresentHook = false;
       return oPresent(pSwapChain, SyncInterval, Flags);
   }
   
@@ -1785,6 +1791,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
   bool fsrFGActive = (fgType == FGCompatibility::FGType::FSR_FG) || g_UsingFSR3Swapchain;
   if (fsrFGActive) {
       g_FGDebugOverlaySkips++;
+      if (isFirstHook) g_InPresentHook = false;
       return oPresent(pSwapChain, SyncInterval, Flags);
   }
   
@@ -1821,6 +1828,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
               EarlyLog("DX12 FG: Frame %llu - DLSS stabilizing... %lld/%d ms", frameNum, elapsed, DLSS_STABILIZATION_MS);
           }
           g_FGDebugOverlaySkips++;
+          if (isFirstHook) g_InPresentHook = false;
           return oPresent(pSwapChain, SyncInterval, Flags);
       }
   }
@@ -1842,7 +1850,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
   int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
 
   // Use wrapper status to prevent double-counting FPS (Wrapper + Hook)
-  if (!WrapperStateManager::Get().FindWrapper(pSwapChain)) {
+  if (isFirstHook && !WrapperStateManager::Get().FindWrapper(pSwapChain)) {
       g_PerfMetrics.Update(us);
   }
 
@@ -1872,20 +1880,22 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
   }
 
   // Apply Prerender Limit
-  float limit = GetActivePrerenderLimit();
-  if (limit >= 0.0f) {
-      static float lastLimit = -2.0f;
-      if (fabs(limit - lastLimit) > 0.001f) {
-           UINT effectiveLatency = (limit < 1.0f) ? 1 : (UINT)limit;
-           IDXGISwapChain3* scTemp = nullptr;
-           if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&scTemp)))) {
-               scTemp->SetMaximumFrameLatency(effectiveLatency);
-               scTemp->Release();
-           }
-           HookLog("DX12: Set maximum DXGI latency to %d (Active Limit: %.2f)", effectiveLatency, limit);
-           lastLimit = limit;
+  if (isFirstHook) {
+      float limit = GetActivePrerenderLimit();
+      if (limit >= 0.0f) {
+          static float lastLimit = -2.0f;
+          if (fabs(limit - lastLimit) > 0.001f) {
+               UINT effectiveLatency = (limit < 1.0f) ? 1 : (UINT)limit;
+               IDXGISwapChain3* scTemp = nullptr;
+               if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&scTemp)))) {
+                   scTemp->SetMaximumFrameLatency(effectiveLatency);
+                   scTemp->Release();
+               }
+               HookLog("DX12: Set maximum DXGI latency to %d (Active Limit: %.2f)", effectiveLatency, limit);
+               lastLimit = limit;
+          }
+          ApplyPrerenderLimit(limit);
       }
-      ApplyPrerenderLimit(limit);
   }
 
   // Sanitize Flags for VSync
@@ -1914,7 +1924,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
   // Apply shared FPS limiter BEFORE Present (when not FG active)
   // DISABLED when FG active - FPS limiter interferes with FG timing and causes FG to disable itself
   // DISABLED when Vulkan is primary - NVIDIA promotes Vulkan to DXGI, causing double-limiting
-  if (!fgActive && !IsVulkanPrimary()) {
+  if (isFirstHook && !fgActive && !IsVulkanPrimary()) {
       g_SharedFpsLimiter.SetIPCClient(g_IPC);
       g_SharedFpsLimiter.Apply();
   }
@@ -1925,26 +1935,30 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
       EarlyLog("DX12: Swapchain INVALID detected before oPresent - aborting frame");
       g_FSR4SwapchainRecreatedPending.store(false, std::memory_order_release);
       g_SwapchainInvalid.store(false, std::memory_order_release);
+      if (isFirstHook) g_InPresentHook = false;
       return S_OK;  // Return success to avoid game thinking Present failed
   }
 
   // Now call the original Present
   HRESULT hr = oPresent(pSwapChain, SyncInterval, Flags);
+  if (isFirstHook) g_InPresentHook = false;
   
   // Post-Present sleep for fractional limits
   // Sleep AFTER Present returns - GPU has just finished its frame and is idle
-  float postLimit = GetActivePrerenderLimit();
-  bool isPostFractional = (postLimit > 0.01f && postLimit < 1.0f);
-  if (isPostFractional) {
-      float fps = g_PerfMetrics.GetCurrentFPS();
-      double targetFrameTimeUs = (fps > 1.0f) ? (1000000.0 / fps) : 16666.0;
-      
-      // Fixed Idle Gap = TargetFrameTime * (1.0 - limit) * 0.10
-      // For limit=0.5 at 60fps: 16666 * 0.5 * 0.10 = ~833us
-      int64_t idleGapUs = (int64_t)(targetFrameTimeUs * (1.0 - postLimit) * 0.10);
-      if (idleGapUs > 0) {
-          if (idleGapUs > 10000) idleGapUs = 10000; // Cap at 10ms
-          PrecisionSleep(idleGapUs);
+  if (isFirstHook) {
+      float postLimit = GetActivePrerenderLimit();
+      bool isPostFractional = (postLimit > 0.01f && postLimit < 1.0f);
+      if (isPostFractional) {
+          float fps = g_PerfMetrics.GetCurrentFPS();
+          double targetFrameTimeUs = (fps > 1.0f) ? (1000000.0 / fps) : 16666.0;
+          
+          // Fixed Idle Gap = TargetFrameTime * (1.0 - limit) * 0.10
+          // For limit=0.5 at 60fps: 16666 * 0.5 * 0.10 = ~833us
+          int64_t idleGapUs = (int64_t)(targetFrameTimeUs * (1.0 - postLimit) * 0.10);
+          if (idleGapUs > 0) {
+              if (idleGapUs > 10000) idleGapUs = 10000; // Cap at 10ms
+              PrecisionSleep(idleGapUs);
+          }
       }
   }
   
@@ -1954,6 +1968,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
 HRESULT STDMETHODCALLTYPE
 DetourPresent1(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT Flags,
                const DXGI_PRESENT_PARAMETERS *pPresentParameters) {
+  bool isFirstHook = !g_InPresentHook;
+  g_InPresentHook = true;
   // FG-SAFE: No more passthrough mode - overlay draws on all frames
   // Device change detection is handled in DetourPresent
   
@@ -1968,7 +1984,7 @@ DetourPresent1(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT Flags,
   // DISABLED when FG active - FPS limiter interferes with FG timing
   // DISABLED when Vulkan is primary - NVIDIA promotes Vulkan to DXGI, causing double-limiting
   bool fgActive = g_FGCompat.IsFGActive();
-  if (!fgActive && !IsVulkanPrimary()) {
+  if (isFirstHook && !fgActive && !IsVulkanPrimary()) {
       g_SharedFpsLimiter.SetIPCClient(g_IPC);
       g_SharedFpsLimiter.Apply();
   }
@@ -1983,20 +1999,22 @@ DetourPresent1(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT Flags,
   }
 
   // Apply Prerender Limit
-  float limit = GetActivePrerenderLimit();
-  if (limit >= 0.0f) {
-      static float lastLimit = -2.0f;
-      if (std::abs(limit - lastLimit) > 0.001f) {
-           UINT effectiveLatency = (limit < 1.0f) ? 1 : (UINT)limit;
-           IDXGISwapChain3* scTemp = nullptr;
-           if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&scTemp)))) {
-               scTemp->SetMaximumFrameLatency(effectiveLatency);
-               scTemp->Release();
-           }
-           HookLog("DX12: Set maximum DXGI latency to %d (Active Limit: %.2f)", effectiveLatency, limit);
-           lastLimit = limit;
+  if (isFirstHook) {
+      float limit = GetActivePrerenderLimit();
+      if (limit >= 0.0f) {
+          static float lastLimit = -2.0f;
+          if (std::abs(limit - lastLimit) > 0.001f) {
+               UINT effectiveLatency = (limit < 1.0f) ? 1 : (UINT)limit;
+               IDXGISwapChain3* scTemp = nullptr;
+               if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&scTemp)))) {
+                   scTemp->SetMaximumFrameLatency(effectiveLatency);
+                   scTemp->Release();
+               }
+               HookLog("DX12: Set maximum DXGI latency to %d (Active Limit: %.2f)", effectiveLatency, limit);
+               lastLimit = limit;
+          }
+          ApplyPrerenderLimit(limit);
       }
-      ApplyPrerenderLimit(limit);
   }
 
   // Sanitize Flags for VSync
@@ -2014,6 +2032,7 @@ DetourPresent1(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT Flags,
   }
 
   HRESULT hr = oPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+  if (isFirstHook) g_InPresentHook = false;
   return hr;
 }
 
