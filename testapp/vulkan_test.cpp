@@ -635,12 +635,7 @@ int main(int argc, char *argv[]) {
                             rc.right - rc.left, rc.bottom - rc.top, nullptr,
                             nullptr, wc.hInstance, nullptr);
 
-  // Wait for hook injection to complete before loading Vulkan
-  // This ensures MinHook can intercept the Vulkan loader functions
-  printf("Waiting 5 seconds for hook injection...\n");
-  Sleep(5000);
-
-  // Load Vulkan dynamically
+  // Load Vulkan dynamically - layer should already be loaded via VK_LAYER_PATH
   if (!LoadVulkanLibrary()) {
     printf("Failed to load Vulkan\n");
     return 1;

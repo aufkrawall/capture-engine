@@ -1047,6 +1047,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         os.path.join(layer_dir, "layer_overlay.cpp"),
         os.path.join(layer_dir, "layer_capture.cpp"),
         os.path.join(layer_dir, "layer_bridge.cpp"),
+        os.path.join(layer_dir, "layer_hooks.cpp"),
         # Common sources needed for standard overlay
         os.path.join(PROJECT_ROOT, "hook", "common", "overlay.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "common", "fg_detection.cpp"),

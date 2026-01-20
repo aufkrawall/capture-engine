@@ -207,7 +207,14 @@ CELayer_vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
 
     // Device-level functions obtained through instance GIPA
     if (strcmp(pName, "vkGetDeviceProcAddr") == 0) return (PFN_vkVoidFunction)CELayer_vkGetDeviceProcAddr;
-    if (strcmp(pName, "vkGetDeviceQueue") == 0) return (PFN_vkVoidFunction)Capture_vkGetDeviceQueue;
+    if (strcmp(pName, "vkGetDeviceQueue") == 0) {
+        LayerLog("CELayer_vkGetInstanceProcAddr: %s", pName);
+        return (PFN_vkVoidFunction)Capture_vkGetDeviceQueue;
+    }
+    if (strcmp(pName, "vkQueueSubmit") == 0) {
+        LayerLog("CELayer_vkGetInstanceProcAddr: %s", pName);
+        return (PFN_vkVoidFunction)Capture_vkQueueSubmit;
+    }
     if (strcmp(pName, "vkCreateSwapchainKHR") == 0) return (PFN_vkVoidFunction)Capture_vkCreateSwapchainKHR;
     if (strcmp(pName, "vkDestroySwapchainKHR") == 0) return (PFN_vkVoidFunction)Capture_vkDestroySwapchainKHR;
     if (strcmp(pName, "vkGetSwapchainImagesKHR") == 0) return (PFN_vkVoidFunction)Capture_vkGetSwapchainImagesKHR;
