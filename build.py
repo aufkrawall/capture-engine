@@ -61,6 +61,7 @@ PACKAGES = [
     "mingw-w64-clang-x86_64-lld",    # For delay-load support (x64)
     "mingw-w64-i686-lld",            # For delay-load support (x86)
     "make",
+    "ccache",
 ]
 
 def log(msg):
@@ -665,17 +666,26 @@ def compile_custom_ffmpeg(skip_updates=False):
 
 def get_env():
     clang_bin = os.path.join(MSYS2_DIR, "clang64", "bin")
+    usr_bin = os.path.join(MSYS2_DIR, "usr", "bin")
     env = os.environ.copy()
-    env["PATH"] = clang_bin + os.pathsep + env["PATH"]
+    env["PATH"] = clang_bin + os.pathsep + usr_bin + os.pathsep + env["PATH"]
     env["PKG_CONFIG_PATH"] = os.path.join(MSYS2_DIR, "clang64", "lib", "pkgconfig")
+    # Enable ccache
+    env["CCACHE_DIR"] = os.path.join(MSYS2_DIR, ".ccache")
+    # env["CCACHE_BASEDIR"] = PROJECT_ROOT
     return env, clang_bin
 
 def get_env_x86():
     # MSYS2 Mingw32 environment
     clang_bin = os.path.join(MSYS2_DIR, "mingw32", "bin")
+    usr_bin = os.path.join(MSYS2_DIR, "usr", "bin")
     env = os.environ.copy()
-    env["PATH"] = clang_bin + os.pathsep + env["PATH"]
+    env["PATH"] = clang_bin + os.pathsep + usr_bin + os.pathsep + env["PATH"]
     env["PKG_CONFIG_PATH"] = os.path.join(MSYS2_DIR, "mingw32", "lib", "pkgconfig")
+    # Enable ccache
+    env["CCACHE_DIR"] = os.path.join(MSYS2_DIR, ".ccache")
+    # env["CCACHE_BASEDIR"] = PROJECT_ROOT
+    # env["DISABLE_CCACHE"] = "1" # Enable ccache for x86 too now that we fixed flags
     return env, clang_bin
 
 def ensure_dirs():
@@ -693,7 +703,18 @@ def compile_object(env, clang_exe, cflags, src, obj):
     """Compile a single object file. Returns True if compiled, False if skipped."""
     if os.path.exists(obj) and os.path.getmtime(obj) > os.path.getmtime(src):
         return False  # Skip - up to date
-    cmd = [clang_exe] + cflags + ["-c", src, "-o", obj]
+    
+    # Use ccache if available
+    ccache_exe = shutil.which("ccache", path=env["PATH"])
+    if env.get("DISABLE_CCACHE"):
+        ccache_exe = None
+    
+    if ccache_exe:
+        # ccache on Windows often dislikes absolute paths for the compiler
+        cmd = [ccache_exe, os.path.basename(clang_exe)] + cflags + ["-c", src, "-o", obj]
+    else:
+        cmd = [clang_exe] + cflags + ["-c", src, "-o", obj]
+        
     run_command(cmd, env=env)
     return True
 
@@ -868,7 +889,8 @@ def run_integration_tests(env):
     
     log("=== Integration Tests Passed ===")
 
-def compile_testapps(env, clang_exe, cflags):
+def compile_testapps(env, x86_env, clang_exe, cflags):
+    """Compile test applications using Clang (and x86 if available)"""
     """Compile DX12 and Vulkan test applications to testapp/bin"""
     log("Compiling Test Applications...")
     
@@ -888,91 +910,95 @@ def compile_testapps(env, clang_exe, cflags):
     # Collect all build tasks
     tasks = []
     
-    def add_task(desc, cmd, cwd=None):
-        tasks.append((desc, cmd, cwd))
+    # helper to resolve ccache
+    ccache_exe = shutil.which("ccache", path=env["PATH"])
+    if env.get("DISABLE_CCACHE"): ccache_exe = None
+
+    
+    def add_task(desc, cmd, cwd=None, task_env=env):
+        tasks.append((desc, cmd, cwd, task_env))
+
+    # Helper to build command with ccache
+    def make_cmd(compiler, flags, source, linker_flags, output):
+        cmd_base = [compiler] + flags + [source] + linker_flags + ["-o", output]
+        if ccache_exe:
+            # ccache prefers basename if compiler is in PATH
+            return [ccache_exe, os.path.basename(compiler)] + flags + [source] + linker_flags + ["-o", output]
+        return cmd_base
 
     # DX12 Test App
     dx12_src = os.path.join(testapp_src_dir, "dx12_test.cpp")
     dx12_exe = os.path.join(testapp_bin_dir, "dx12_test.exe")
     if os.path.exists(dx12_src):
-        dx12_ldflags = ["-static", "-static-libgcc", "-static-libstdc++", 
+        dx12_ldflags = ["-static", 
                         "-ld3d12", "-ldxgi", "-ld3dcompiler", "-lgdi32", "-luser32", "-lshcore"]
-        cmd = [clang_exe] + cflags + [dx12_src] + dx12_ldflags + ["-o", dx12_exe]
-        add_task("dx12_test.exe", cmd)
+        add_task("dx12_test.exe", make_cmd(clang_exe, cflags, dx12_src, dx12_ldflags, dx12_exe))
 
         if have_x86:
             dx12_exe_x86 = os.path.join(x86_bin_dir, "dx12_test.exe")
-            cmd = [clang_exe_x86] + cflags_x86 + [dx12_src] + dx12_ldflags + ["-o", dx12_exe_x86]
-            add_task("dx12_test.exe (x86)", cmd)
+            add_task("dx12_test.exe (x86)", make_cmd(clang_exe_x86, cflags_x86, dx12_src, dx12_ldflags, dx12_exe_x86))
     
     # DX11 Test App
     dx11_src = os.path.join(testapp_src_dir, "dx11_test.cpp")
     dx11_exe = os.path.join(testapp_bin_dir, "dx11_test.exe")
     if os.path.exists(dx11_src):
-        dx11_ldflags = ["-static", "-static-libgcc", "-static-libstdc++", 
+        dx11_ldflags = ["-static", 
                         "-ld3d11", "-ldxgi", "-lgdi32", "-luser32", "-lshcore"]
-        cmd = [clang_exe] + cflags + [dx11_src] + dx11_ldflags + ["-o", dx11_exe]
-        add_task("dx11_test.exe", cmd)
+        add_task("dx11_test.exe", make_cmd(clang_exe, cflags, dx11_src, dx11_ldflags, dx11_exe))
 
         if have_x86:
             dx11_exe_x86 = os.path.join(x86_bin_dir, "dx11_test.exe")
-            cmd = [clang_exe_x86] + cflags_x86 + [dx11_src] + dx11_ldflags + ["-o", dx11_exe_x86]
-            add_task("dx11_test.exe (x86)", cmd)
+            add_task("dx11_test.exe (x86)", make_cmd(clang_exe_x86, cflags_x86, dx11_src, dx11_ldflags, dx11_exe_x86))
 
     # DX9 Test App
     dx9_src = os.path.join(testapp_src_dir, "dx9_test.cpp")
     dx9_exe = os.path.join(testapp_bin_dir, "dx9_test.exe")
     if os.path.exists(dx9_src):
-        dx9_ldflags = ["-static", "-static-libgcc", "-static-libstdc++", 
+        dx9_ldflags = ["-static", 
                        "-ld3d9", "-lgdi32", "-luser32"]
-        cmd = [clang_exe] + cflags + [dx9_src] + dx9_ldflags + ["-o", dx9_exe]
-        add_task("dx9_test.exe", cmd)
+        add_task("dx9_test.exe", make_cmd(clang_exe, cflags, dx9_src, dx9_ldflags, dx9_exe))
 
         if have_x86:
             dx9_exe_x86 = os.path.join(x86_bin_dir, "dx9_test.exe")
-            cmd = [clang_exe_x86] + cflags_x86 + [dx9_src] + dx9_ldflags + ["-o", dx9_exe_x86]
-            add_task("dx9_test.exe (x86)", cmd)
+            add_task("dx9_test.exe (x86)", make_cmd(clang_exe_x86, cflags_x86, dx9_src, dx9_ldflags, dx9_exe_x86))
 
     # DX10 Test App
     dx10_src = os.path.join(testapp_src_dir, "dx10_test.cpp")
     dx10_exe = os.path.join(testapp_bin_dir, "dx10_test.exe")
     if os.path.exists(dx10_src):
-        dx10_ldflags = ["-static", "-static-libgcc", "-static-libstdc++",
+        dx10_ldflags = ["-static",
                         "-ld3d10", "-ldxgi", "-ld3dcompiler", "-lgdi32", "-luser32", "-lshcore"]
-        cmd = [clang_exe] + cflags + [dx10_src] + dx10_ldflags + ["-o", dx10_exe]
-        add_task("dx10_test.exe", cmd)
+        add_task("dx10_test.exe", make_cmd(clang_exe, cflags, dx10_src, dx10_ldflags, dx10_exe))
 
         if have_x86:
             dx10_exe_x86 = os.path.join(x86_bin_dir, "dx10_test.exe")
-            cmd = [clang_exe_x86] + cflags_x86 + [dx10_src] + dx10_ldflags + ["-o", dx10_exe_x86]
-            add_task("dx10_test.exe (x86)", cmd)
+            add_task("dx10_test.exe (x86)", make_cmd(clang_exe_x86, cflags_x86, dx10_src, dx10_ldflags, dx10_exe_x86))
 
     # Vulkan Test App
     vulkan_src = os.path.join(testapp_src_dir, "vulkan_test.cpp")
     vulkan_exe = os.path.join(testapp_bin_dir, "vulkan_test.exe")
     if os.path.exists(vulkan_src):
         vulkan_lib = os.path.join(MSYS2_DIR, 'clang64', 'lib', 'libvulkan-1.dll.a')
-        vulkan_ldflags = ["-static", "-static-libgcc", "-static-libstdc++",
+        vulkan_ldflags = ["-static",
                           vulkan_lib, "-lgdi32", "-luser32", "-lshcore"]
-        cmd = [clang_exe] + cflags + [vulkan_src] + vulkan_ldflags + ["-o", vulkan_exe]
-        add_task("vulkan_test.exe", cmd)
+        add_task("vulkan_test.exe", make_cmd(clang_exe, cflags, vulkan_src, vulkan_ldflags, vulkan_exe))
 
         if have_x86:
             vulkan_exe_x86 = os.path.join(x86_bin_dir, "vulkan_test.exe")
             vulkan_lib_x86 = os.path.join(MSYS2_DIR, 'mingw32', 'lib', 'libvulkan-1.dll.a')
-            vulkan_ldflags_x86 = ["-static", "-static-libgcc", "-static-libstdc++",
+            vulkan_ldflags_x86 = ["-static",
                                   vulkan_lib_x86, "-lgdi32", "-luser32", "-lshcore"]
-            cmd = [clang_exe_x86] + cflags_x86 + [vulkan_src] + vulkan_ldflags_x86 + ["-o", vulkan_exe_x86]
-            add_task("vulkan_test.exe (x86)", cmd)
+            add_task("vulkan_test.exe (x86)", make_cmd(clang_exe_x86, cflags_x86, vulkan_src, vulkan_ldflags_x86, vulkan_exe_x86))
 
     # OpenGL Test App
     opengl_src = os.path.join(testapp_src_dir, "opengl_test.cpp")
     opengl_exe = os.path.join(testapp_bin_dir, "opengl_test.exe")
     if os.path.exists(opengl_src):
-        opengl_ldflags = ["-static", "-static-libgcc", "-static-libstdc++", 
+        # opengl_ldflags = ["-static", "-static-libgcc", "-static-libstdc++", 
+        opengl_ldflags = ["-static",
                         "-lopengl32", "-lglu32", "-lgdi32", "-luser32", "-lshcore"]
-        cmd = [clang_exe] + cflags + [opengl_src] + opengl_ldflags + ["-o", opengl_exe]
-        add_task("opengl_test.exe", cmd)
+        
+        add_task("opengl_test.exe", make_cmd(clang_exe, cflags, opengl_src, opengl_ldflags, opengl_exe))
 
         if have_x86:
             opengl_exe_x86 = os.path.join(x86_bin_dir, "opengl_test.exe")
@@ -984,10 +1010,10 @@ def compile_testapps(env, clang_exe, cflags):
         return
 
     def compile_app(t):
-        desc, cmd, cwd = t
+        desc, cmd, cwd, tenv = t
         log(f"Compiling {desc}...")
         try:
-            subprocess.run(cmd, env=env, cwd=cwd, check=True, capture_output=True, text=True)
+            subprocess.run(cmd, env=tenv, cwd=cwd, check=True, capture_output=True, text=True)
             log(f"Built: {desc}")
         except subprocess.CalledProcessError as e:
             log(f"ERROR compiling {desc}:")
@@ -1092,8 +1118,8 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
 
     ldflags = [
         "-shared",
-        "-static-libgcc",
-        "-static-libstdc++",
+        # "-static-libgcc", # Let Clang choose default runtime
+        # "-static-libstdc++",
         layer_def,
         vulkan_lib,
         "-lgdi32",
@@ -1113,7 +1139,15 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         ldflags.append("-Wl,--kill-at")
         ldflags.append("-static")
         
-    cmd = [clang_exe] + layer_objs + ldflags
+    
+    # Use ccache for linking too if available
+    ccache_exe = shutil.which("ccache", path=env["PATH"])
+    if env.get("DISABLE_CCACHE"): ccache_exe = None
+    
+    if ccache_exe:
+        cmd = [ccache_exe, os.path.basename(clang_exe)] + layer_objs + ldflags
+    else:
+        cmd = [clang_exe] + layer_objs + ldflags
     
     # Robust handling for locked DLLs (DataExchangeHost etc.)
     if os.path.exists(layer_dll):
@@ -1533,8 +1567,8 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         ldflags_hook = [
             "-shared",
             "-static",
-            "-static-libgcc",
-            "-static-libstdc++",
+            # "-static-libgcc", 
+            # "-static-libstdc++", # Let Clang choose default (libc++ for x86 clang usually)
             "-L" + std_lib_path if arch == "x86" else "-L" + mingw_lib,
             "-ld3d9",
             "-ld3d10",
@@ -1736,15 +1770,21 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         run_command(cmd, env=env)
 
     # 6. Compile Test Applications (DX12 and Vulkan test apps)
-    compile_testapps(env, os.path.join(clang_bin, "clang++.exe"), cflags)
+    x86_env_for_tests = None
+    if get_env_x86:
+        x86_env_for_tests, _ = get_env_x86()
+    compile_testapps(env, x86_env_for_tests, os.path.join(clang_bin, "clang++.exe"), cflags)
 
     # 7. Compile Vulkan Layer (VK_LAYER_CE_overlay) - both architectures
     compile_vulkan_layer(env, os.path.join(clang_bin, "clang++.exe"), cflags, "x64")
     # x86 layer using mingw32 toolchain
-    x86_clang = os.path.join(MSYS2_DIR, "mingw32", "bin", "clang++.exe")
-    if os.path.exists(x86_clang):
-        x86_cflags = ["-std=c++20", "-O3", "-m32", "-Wall", "-D_WIN32_WINNT=0x0A00"]
-        compile_vulkan_layer(env, x86_clang, x86_cflags, "x86")
+    # x86 layer using mingw32 toolchain
+    if get_env_x86:
+        x86_env, x86_clang_bin = get_env_x86()
+        x86_clang = os.path.join(x86_clang_bin, "clang++.exe")
+        if os.path.exists(x86_clang):
+            x86_cflags = ["-std=c++20", "-O3", "-m32", "-Wall", "-D_WIN32_WINNT=0x0A00"]
+            compile_vulkan_layer(x86_env, x86_clang, x86_cflags, "x86")
 
     # Cleanup import libraries
     me_lib = os.path.join(BIN_DIR, "libmediaengine.dll.a")

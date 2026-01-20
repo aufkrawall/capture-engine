@@ -8,13 +8,22 @@
 #include "hook_common.h"
 #include "d3d12_wrapper_interface.h"
 #include <windows.h>
+#include "../apis/graphics_hook.h"
 
 // External overlay function (from dx12_hook.cpp or dx11_hook.cpp)
 // These will be linked at runtime
 // External overlay functions (implemented in dx11_hook.cpp / dx12_hook.cpp)
 extern void DrawDX11Overlay(IDXGISwapChain* pSwapChain);
 extern void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain);
+extern void DX12_OnSwapchainResizeBegin();
+extern void DX12_AdjustWrapperResizeDepth(int delta);
 extern "C" __declspec(dllimport) void DX12_SetCommandQueue(IUnknown* pQueue);
+
+// RAII Guard for Resize Scope
+struct ScopedResizeGuard {
+    ScopedResizeGuard() { DX12_AdjustWrapperResizeDepth(1); }
+    ~ScopedResizeGuard() { DX12_AdjustWrapperResizeDepth(-1); }
+};
 #include <cstdint>
 extern void DX11_UpdatePerformanceMetrics(int64_t qpcUs);
 
@@ -337,6 +346,9 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers(UINT BufferCount, UI
                                                               DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
     WrapperLog("DXGI Wrapper: ResizeBuffers called (%ux%u)", Width, Height);
     
+    // CRITICAL: Ensure GPU is idle before cleanup
+    DX12_OnSwapchainResizeBegin();
+
     // CRITICAL: Clean up overlay resources BEFORE resize
     CleanupOverlayResources();
 
@@ -354,16 +366,27 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers(UINT BufferCount, UI
     }
     
     // Call real ResizeBuffers
-    HRESULT hr = m_pReal->ResizeBuffers(BufferCount, Width, Height, NewFormat, SwapChainFlags);
-    
-    if (SUCCEEDED(hr)) {
-        WrapperLog("DXGI Wrapper: ResizeBuffers succeeded - overlay will recreate on next Present");
-        m_OverlayResourcesValid = true;
-    } else {
-        WrapperLog("DXGI Wrapper: ResizeBuffers failed (hr=0x%08X)", hr);
+    {
+        ScopedResizeGuard guard;
+        
+        // Override BufferCount if needed (Consistency with Hook)
+        int count = GetActiveGraphicsConfig().backbufferCount;
+        if (count >= 2 && count <= 6) {
+            BufferCount = (UINT)count;
+            WrapperLog("DXGI Wrapper: ResizeBuffers: Overriding BufferCount to %d", count);
+        }
+
+        HRESULT hr = m_pReal->ResizeBuffers(BufferCount, Width, Height, NewFormat, SwapChainFlags);
+        
+        if (SUCCEEDED(hr)) {
+            WrapperLog("DXGI Wrapper: ResizeBuffers succeeded - overlay will recreate on next Present");
+            m_OverlayResourcesValid = true;
+        } else {
+            WrapperLog("DXGI Wrapper: ResizeBuffers failed (hr=0x%08X)", hr);
+        }
+        
+        return hr;
     }
-    
-    return hr;
 }
 
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeTarget(const DXGI_MODE_DESC* pNewTargetParameters) {
@@ -534,6 +557,9 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers1(UINT BufferCount, U
                                                                IUnknown* const* ppPresentQueue) {
     WrapperLog("DXGI Wrapper: ResizeBuffers1 called (%ux%u)", Width, Height);
     
+    // CRITICAL: Ensure GPU is idle before cleanup
+    DX12_OnSwapchainResizeBegin();
+
     // CRITICAL: Clean up overlay resources BEFORE resize
     CleanupOverlayResources();
     
@@ -549,14 +575,25 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers1(UINT BufferCount, U
 
     if (!m_pReal3) return DXGI_ERROR_UNSUPPORTED;
     
-    HRESULT hr = m_pReal3->ResizeBuffers1(BufferCount, Width, Height, Format, SwapChainFlags,
-                                           pCreationNodeMask, ppPresentQueue);
-    
-    if (SUCCEEDED(hr)) {
-        m_OverlayResourcesValid = true;
+    {
+        ScopedResizeGuard guard;
+
+        // Override BufferCount if needed (Consistency with Hook)
+        int count = GetActiveGraphicsConfig().backbufferCount;
+        if (count >= 2 && count <= 6) {
+            BufferCount = (UINT)count;
+            WrapperLog("DXGI Wrapper: ResizeBuffers1: Overriding BufferCount to %d", count);
+        }
+
+        HRESULT hr = m_pReal3->ResizeBuffers1(BufferCount, Width, Height, Format, SwapChainFlags,
+                                               pCreationNodeMask, ppPresentQueue);
+        
+        if (SUCCEEDED(hr)) {
+            m_OverlayResourcesValid = true;
+        }
+        
+        return hr;
     }
-    
-    return hr;
 }
 
 // ============================================================================
