@@ -296,10 +296,11 @@ void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex,
         disp->fp_vkCmdEndRenderPass(cmd);
         disp->fp_vkEndCommandBuffer(cmd);
         
-        VkSubmitInfo submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    VkSubmitInfo submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &cmd;
         disp->fp_vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
-        disp->fp_vkQueueWaitIdle(queue); 
+        // Removed vkQueueWaitIdle - it was causing CPU-GPU serialization and GPU underutilization.
+        // The overlay render is asynchronous and doesn't need to complete before present returns.
     }
 }

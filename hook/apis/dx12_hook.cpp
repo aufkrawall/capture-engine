@@ -146,6 +146,11 @@ static std::atomic<int> g_CommandListsExecutedThisFrame{0};
 static std::chrono::steady_clock::time_point g_LastResourceCleanup;
 static constexpr int INIT_COOLDOWN_MS = 200; // Wait 200ms after cleanup before re-init
 
+// STABILITY FIX: Grace period counter - defer overlay init until graphics pipeline is stable
+// This prevents crashes in games like Strange Brigade that have complex startup sequences
+static std::atomic<uint64_t> g_PresentCallCount{0};
+static constexpr uint64_t OVERLAY_INIT_GRACE_FRAMES = 100; // ~1.6 seconds at 60fps
+
 // FG Passthrough Mode - when FG is detected at runtime via LoadLibrary, Present hooks bypass
 bool g_FGPassthroughMode = false;
 
@@ -1420,11 +1425,28 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
   auto doOverlay = [&]() {
       static uint64_t overlayCounter = 0;
       overlayCounter++;
-      if (overlayCounter < 2000) HookLog("DX12: doOverlay Enter (Count=%llu)", overlayCounter);
+      
+      // DIAGNOSTIC: Log every 500 frames regardless of threshold to catch late crashes
+      bool shouldLogCheckpoint = (overlayCounter < 2000) || (overlayCounter % 500 == 0);
+      if (shouldLogCheckpoint) HookLog("DX12: doOverlay Enter (Count=%llu)", overlayCounter);
 
       if (!shouldDrawOverlay || !g_Device || !g_State.cmdList || !g_State.imGuiInit || !g_State.syncInit) {
-          if (overlayCounter < 2000) HookLog("DX12: doOverlay SKIPPED (Condition Check Failed)");
+          if (shouldLogCheckpoint) HookLog("DX12: doOverlay SKIPPED (Condition Check Failed)");
           return;
+      }
+      
+      // STABILITY FIX: Early device health check before any GPU operations
+      // This prevents crashes from using a device that was removed mid-frame
+      {
+          HRESULT deviceReason = g_Device->GetDeviceRemovedReason();
+          if (FAILED(deviceReason)) {
+              static int logOnce = 0;
+              if (logOnce++ < 3) {
+                  HookLog("DX12: doOverlay - Device removed (0x%08X), aborting overlay", deviceReason);
+              }
+              g_DeviceRemovedFatal.store(true, std::memory_order_release);
+              return;
+          }
       }
 
       if (!g_State.rtvDescHeap) {
@@ -1550,17 +1572,33 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
                    }
                    qDev->Release();
                }
+               
+               // STABILITY FIX: Check swapchain validity right before execute
+               // This catches cases where swapchain was invalidated during draw
+               if (g_SwapchainInvalid.load(std::memory_order_acquire)) {
+                   HookLog("DX12: doOverlay - Swapchain invalidated mid-operation! Aborting.");
+                   backBuffer->Release();
+                   return;
+               }
 
                if (overlayCounter < 2000) HookLog("DX12: doOverlay - Executing Command List on Queue %p...", g_CommandQueue);
                g_CommandQueue->ExecuteCommandLists(1, lists);
                if (overlayCounter < 2000) HookLog("DX12: doOverlay - Executed.");
 
-               // Standard Fence Signal (No Wait)
+               // STABILITY FIX: Signal fence AND wait for completion before releasing backbuffer
+               // This matches SpecialK's drain_queue pattern and prevents GPU race conditions
                if (g_State.fence) {
                     g_State.currentFenceValue++;
                     g_State.fenceValues[allocIdx] = g_State.currentFenceValue;
                     if (overlayCounter < 2000) HookLog("DX12: doOverlay - Signaling Fence %llu...", g_State.currentFenceValue);
                     g_CommandQueue->Signal(g_State.fence, g_State.currentFenceValue);
+                    
+                    // Wait for GPU to complete before releasing backbuffer
+                    // Use short timeout (~1 frame) to avoid stalls
+                    if (g_State.fence->GetCompletedValue() < g_State.currentFenceValue) {
+                        g_State.fence->SetEventOnCompletion(g_State.currentFenceValue, g_State.fenceEvent);
+                        WaitForSingleObject(g_State.fenceEvent, 16); // ~1 frame max wait
+                    }
                }
            } else {
                HookLog("DX12: doOverlay - FATAL: CommandQueue is NULL before Execute!");
@@ -1788,6 +1826,9 @@ HRESULT STDMETHODCALLTYPE DetourGetBuffer(IDXGISwapChain *pSwapChain, UINT Buffe
 
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
                                         UINT SyncInterval, UINT Flags) {
+  // STABILITY FIX: Increment present call count for grace period tracking
+  uint64_t presentCount = g_PresentCallCount.fetch_add(1, std::memory_order_relaxed);
+  
   bool isFirstHook = !g_InPresentHook;
   g_InPresentHook = true;
   // Debug: Log that hook is being called (once)
@@ -1800,6 +1841,16 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
   }
   if (callCount % 600 == 0) { // Log every ~10 seconds at 60fps
       HookLog("DX12: DetourPresent still active (call #%d)", callCount);
+  }
+  
+  // STABILITY FIX: Grace period - skip overlay processing during startup
+  // This allows the graphics pipeline to stabilize before we start rendering overlay
+  if (presentCount < OVERLAY_INIT_GRACE_FRAMES) {
+      if (presentCount == 0) {
+          EarlyLog("DX12: Beginning grace period (%llu frames) before overlay init", OVERLAY_INIT_GRACE_FRAMES);
+      }
+      if (isFirstHook) g_InPresentHook = false;
+      return oPresent(pSwapChain, SyncInterval, Flags);
   }
   
   // ============================================================================
@@ -1904,9 +1955,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
   
   // Record frame for FG metrics
   int cmdListCount = g_CommandListsExecutedThisFrame.exchange(0);
-  if (g_FGDebugFrameCount < 12000) { // Log first ~3 minutes
-      EarlyLog("DX12: Present - RecordFrame cmdListCount=%d", cmdListCount);
-  }
+  // DIAGNOSTIC: Per-frame logging disabled to test if I/O overhead causes crash
+  // if (g_FGDebugFrameCount < 12000) { // Log first ~3 minutes
+  //     EarlyLog("DX12: Present - RecordFrame cmdListCount=%d", cmdListCount);
+  // }
   g_FGCompat.RecordFrame(cmdListCount);
   
   // FG Swapchain Stabilization Check (DLSS FG only now - reduced delay for constant overlay)
@@ -2650,7 +2702,15 @@ DetourExecuteCommandLists(ID3D12CommandQueue *pThis, UINT NumCommandLists,
   // Prevent thrashing between multiple Direct Queues (e.g. Async Compute vs Render)
   // by verifying the queue actually presents frames for all backbuffers.
   
-  if (isDirectQueue && !g_IsQueueFromSwapchain) {
+  // FIX: Skip discovery if overlay is already initialized and working
+  // The bitmap-based verification never completes for some games (like Strange Brigade)
+  // that only use buffer 0. Once overlay is rendering successfully, we've proven the queue works.
+  static bool s_DiscoveryComplete = false;
+  if (g_State.imGuiInit && g_CommandQueue) {
+      s_DiscoveryComplete = true;  // Overlay working = queue verified
+  }
+  
+  if (isDirectQueue && !g_IsQueueFromSwapchain && !s_DiscoveryComplete) {
       bool queueVerified = false;
       
       // Use g_LastSwapChain to get current backbuffer index

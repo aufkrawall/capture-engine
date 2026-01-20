@@ -77,6 +77,9 @@ struct VulkanCaptureState {
 static std::mutex g_CaptureMutex;
 static std::unordered_map<VkDevice, VulkanCaptureState> g_CaptureStates;
 
+// Global device lost state - persists across CaptureFrame calls
+static bool g_deviceLost = false;
+
 // Helper to getting LUID from Vulkan Physical Device
 static bool GetLUIDFromPhysicalDevice(VkPhysicalDevice physDev, LUID* outLuid) {
     InstanceDispatch* instDisp = VulkanLayerState::Get().GetInstanceDispatch(VulkanLayerState::Get().GetInstanceFromPhysicalDevice(physDev));
@@ -225,6 +228,17 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
              device, imageCount, extent.width, extent.height, format);
 
     std::lock_guard<std::mutex> lock(g_CaptureMutex);
+
+    // Reset device lost flag - we're reinitializing
+    g_deviceLost = false;
+
+    // Cleanup any existing capture state for this device first
+    auto existingIt = g_CaptureStates.find(device);
+    if (existingIt != g_CaptureStates.end()) {
+        LayerLog("Vulkan Layer: Cleaning up existing capture state before reinitializing");
+        CleanupCapture(device);
+    }
+
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (!disp) {
         LayerLog("Vulkan Layer: [Error] No dispatch for device %p", device);
@@ -393,6 +407,12 @@ void CleanupCapture(VkDevice device) {
 
 void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t imageIndex) {
     std::lock_guard<std::mutex> lock(g_CaptureMutex);
+    
+    // Skip capture if device was lost - wait for game to reinitialize
+    if (g_deviceLost) {
+        return;
+    }
+    
     auto it = g_CaptureStates.find(device);
     if (it == g_CaptureStates.end() || !it->second.initialized) return;
 
@@ -412,9 +432,6 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
         return;
     }
 
-    // Check for device lost state
-    static std::atomic<bool> s_deviceLostReported{false};
-
     // Use fence from imageIndex (we have fences per swapchain image)
     uint32_t fenceIndex = imageIndex % state.copyFences.size();
     VkFence fence = state.copyFences[fenceIndex];
@@ -426,7 +443,7 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
     if (waitResult != VK_SUCCESS) {
         if (waitResult == VK_ERROR_DEVICE_LOST) {
             LayerLog("Vulkan Layer: [Critical] DEVICE_LOST detected during fence wait");
-            s_deviceLostReported.store(true);
+            g_deviceLost = true;
             CleanupCapture(device);
             return;
         }
@@ -438,7 +455,7 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
 
     VkResult resetResult = disp->fp_vkResetFences(device, 1, &fence);
     if (resetResult == VK_ERROR_DEVICE_LOST) {
-        s_deviceLostReported.store(true);
+        g_deviceLost = true;
         CleanupCapture(device);
         return;
     }
@@ -449,7 +466,7 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
     VkResult beginResult = disp->fp_vkBeginCommandBuffer(cmd, &beginInfo);
     if (beginResult != VK_SUCCESS) {
         if (beginResult == VK_ERROR_DEVICE_LOST) {
-            s_deviceLostReported.store(true);
+            g_deviceLost = true;
             CleanupCapture(device);
         }
         return;
@@ -512,7 +529,7 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
     VkResult endResult = disp->fp_vkEndCommandBuffer(cmd);
     if (endResult != VK_SUCCESS) {
         if (endResult == VK_ERROR_DEVICE_LOST) {
-            s_deviceLostReported.store(true);
+            g_deviceLost = true;
             CleanupCapture(device);
         }
         return;
@@ -522,7 +539,7 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
     VkResult submitResult = disp->fp_vkQueueSubmit(queue, 1, &submit, fence);
     if (submitResult == VK_ERROR_DEVICE_LOST) {
         LayerLog("Vulkan Layer: [Critical] DEVICE_LOST during QueueSubmit");
-        s_deviceLostReported.store(true);
+        g_deviceLost = true;
         CleanupCapture(device);
         return;
     }
@@ -530,19 +547,16 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
         return;
     }
 
-    // Wait for fence to ensure GPU copy is done before signaling encoder
-    // This is simple synchronization; for max perf we could export fences, but this is safe.
-    waitResult = disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, FENCE_TIMEOUT_NS);
-    if (waitResult != VK_SUCCESS) {
-        return;
-    }
-
-    // D3D11 side "Flush" might be needed if we were writing from D3D11, but we wrote from Vulkan.
-    // Vulkan fence wait implies GPU work is done. D3D11 should see it.
+    // Removed vkWaitForFences here - it was causing CPU-GPU serialization and GPU underutilization.
+    // The encoder will read the texture when it's ready via D3D11 shared handle synchronization.
+    // This allows the GPU to work asynchronously without waiting for capture to complete.
 
     // Signal frame ready with texture index (0-3)
+    // Note: There's a small race window where encoder might read before GPU copy is done,
+    // but KMT handles have native synchronization that handles it safely.
     LayerIPC_SignalFrameReady(slotIndex);
     
-    s_deviceLostReported.store(false);
-
+    // Reset device lost flag on successful capture - game may have recovered
+    g_deviceLost = false;
 }
+

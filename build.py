@@ -1,4 +1,4 @@
-﻿import os
+import os
 import sys
 import glob
 import shlex
@@ -1065,6 +1065,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
     # Compile layer sources
     layer_cflags = cflags + [
         "-I" + layer_dir,
+        "-I" + os.path.join(PROJECT_ROOT, "common"),
         "-I" + os.path.join(PROJECT_ROOT, "hook", "common"),
         "-I" + IMGUI_DIR,
         "-DVK_NO_PROTOTYPES",
@@ -1118,8 +1119,8 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
 
     ldflags = [
         "-shared",
-        # "-static-libgcc", # Let Clang choose default runtime
-        # "-static-libstdc++",
+        "-static-libgcc",
+        "-static-libstdc++",
         layer_def,
         vulkan_lib,
         "-lgdi32",
@@ -1168,7 +1169,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
     try:
         run_command(cmd, env=env)
         log(f"Built: {layer_dll}")
-        
+
         # Generate layer manifest JSON dynamically
         # This ensures the path is always correct and current
         import json
@@ -1598,6 +1599,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             pass
         
         hk_cflags = curr_cflags + ["-DVK_NO_PROTOTYPES"] + [  # Vulkan hooks now in layer
+            "-I" + os.path.join(PROJECT_ROOT, "common"),
             "-I" + os.path.join(PROJECT_ROOT, "hook", "common"),
             "-I" + os.path.join(PROJECT_ROOT, "hook", "apis"),
             "-I" + os.path.join(PROJECT_ROOT, "hook", "capture"),

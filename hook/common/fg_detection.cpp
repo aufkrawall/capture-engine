@@ -114,14 +114,13 @@ void FGCompatibility::RecordFrame(int commandListsExecuted) {
         consecutiveRealFrames.store(0);
     }
     
-    // Debug logging (first 300 frames to analyze pattern)
+    // Debug logging (periodic to avoid spam)
     int logCount = debugLogCounter.fetch_add(1);
-    // Always log first few frames, then periodic checks
-    // Force logs for now to debug 2x vs 4x issue
-    if (true) {
+    // Log every 300 frames to reduce spam but still provide diagnostic info
+    if (logCount < 20 || (logCount % 300 == 0)) {
         FGType type = detectedRuntime.load();
-        EarlyLog("FG: Frame #%d: cmdLists=%d, isReal=%d, type=%d, consReal=%d, consInterp=%d",
-                total, commandListsExecuted, isRealFrame ? 1 : 0, (int)type,
+        EarlyLog("Frame #%d: cmdLists=%d, isReal=%d, fgRuntime=%s, consReal=%d, consInterp=%d",
+                total, commandListsExecuted, isRealFrame ? 1 : 0, GetFGTypeName(type),
                 consecutiveRealFrames.load(), consecutiveInterpolatedFrames.load());
     }
     
@@ -323,15 +322,23 @@ void FGCompatibility::OnSwapchainRecreation() {
     int64_t lastTime = lastSwapchainRecreationTime.exchange(now);
     int64_t deltaMs = (now - lastTime) / 1000;
     
-    HookLog("FG: Swapchain recreation #%d (delta=%lldms) - FG may have toggled", count, deltaMs);
-    
-    // Suspend during swapchain recreation to allow buffers to stabilize
-    // ResizeBuffers invalidates all references - need time for cleanup
-    SuspendFor(500);  // 500ms to allow transition
-    
-    // Re-detect runtime DLLs (they might have loaded/unloaded)
+    // Re-detect runtime DLLs first (they might have loaded/unloaded)
     lastRuntimeDetectUs.store(0);
-    DetectLoadedFGRuntime();
+    FGType runtime = DetectLoadedFGRuntime();
+    
+    HookLog("FG: Swapchain recreation #%d (delta=%lldms, runtime=%s)", count, deltaMs, GetFGTypeName(runtime));
+    
+    // CRITICAL FIX: Only suspend overlay if FG runtime is actually detected
+    // For non-FG games (like Strange Brigade), suspension caused crashes when overlay resumed
+    // because the graphics state was unstable during the suspension period
+    if (runtime != FGType::None) {
+        // FG games need suspension to allow buffers to stabilize during FG toggle
+        SuspendFor(500);  // 500ms to allow transition
+    } else {
+        // Non-FG games: Do NOT suspend. The overlay will naturally skip frames
+        // during swapchain invalidation via g_SwapchainInvalid flag instead.
+        HookLog("FG: No FG runtime detected - skipping overlay suspension for swapchain recreation");
+    }
     
     // Reset consecutive counters to allow re-detection
     consecutiveRealFrames.store(0);

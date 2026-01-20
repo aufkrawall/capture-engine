@@ -342,8 +342,19 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetDesc(DXGI_SWAP_CHAIN_DESC* pDes
     return m_pReal->GetDesc(pDesc);
 }
 
+// STABILITY FIX: Reentry guard for ResizeBuffers
+// Prevents recursive calls from corrupting overlay state
+static std::atomic<bool> s_ResizeInProgress{false};
+
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers(UINT BufferCount, UINT Width, UINT Height,
                                                               DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
+    // STABILITY FIX: Block reentrant calls during resize
+    bool expected = false;
+    if (!s_ResizeInProgress.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        WrapperLog("DXGI Wrapper: ResizeBuffers reentry BLOCKED (already in progress)");
+        return S_OK; // Return success to prevent game crash on recursive call
+    }
+    
     WrapperLog("DXGI Wrapper: ResizeBuffers called (%ux%u)", Width, Height);
     
     // CRITICAL: Ensure GPU is idle before cleanup
@@ -385,6 +396,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers(UINT BufferCount, UI
             WrapperLog("DXGI Wrapper: ResizeBuffers failed (hr=0x%08X)", hr);
         }
         
+        // STABILITY FIX: Reset reentry guard
+        s_ResizeInProgress.store(false, std::memory_order_release);
         return hr;
     }
 }

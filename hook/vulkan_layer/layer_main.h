@@ -18,6 +18,7 @@
 
 #include "vulkan_layer.h"
 #include "../common/ipc_client.h"
+#include "../common/shared_defs.h"
 
 // Forward declarations of IPC functions
 bool LayerIPC_Init();

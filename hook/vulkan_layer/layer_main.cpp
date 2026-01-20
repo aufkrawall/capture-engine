@@ -1,6 +1,6 @@
 /**
  * VK_LAYER_CE_overlay - Entry Points
- * 
+ *
  * Implements vkGetInstanceProcAddr and vkGetDeviceProcAddr.
  * Handles layer negotiation and delegation to Capture_ hooks.
  */
@@ -8,12 +8,47 @@
 #include "layer_main.h"
 #include <cstring>
 
+// Simple early logging to stderr before file logging is initialized
+static void EarlyLog(const char* msg) {
+    fprintf(stderr, "[VulkanLayer-Init] %s\n", msg);
+    fflush(stderr);
+}
+
+BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID reserved) {
+    if (reason == DLL_PROCESS_ATTACH) {
+        EarlyLog("DLL_PROCESS_ATTACH - Layer DLL loaded");
+    } else if (reason == DLL_PROCESS_DETACH) {
+        EarlyLog("DLL_PROCESS_DETACH - Layer DLL unloaded");
+    }
+    return TRUE;
+}
+
 // Global states
 CELayerState g_LayerState;
 
 // Forward declarations
+static bool PerformEarlyWhitelistCheck();
+
+// Forward declarations
 extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL CELayer_vkGetInstanceProcAddr(VkInstance instance, const char* pName);
 extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL CELayer_vkGetDeviceProcAddr(VkDevice device, const char* pName);
+
+// File logging for when IPC is not available
+static FILE* g_LogFile = nullptr;
+static bool g_LogFileInitialized = false;
+
+static void InitLayerLogFile() {
+    if (g_LogFileInitialized) return;
+    g_LogFileInitialized = true;
+
+    g_LogFile = fopen("logs/vulkan_layer.log", "a");
+    if (g_LogFile) {
+        fprintf(g_LogFile, "\n=== Layer DLL Loaded ===\n");
+        fflush(g_LogFile);
+    }
+    fprintf(stderr, "[VulkanLayer] InitLayerLogFile called\n");
+    fflush(stderr);
+}
 
 // Logging implementation
 void LayerLog(const char* fmt, ...) {
@@ -23,6 +58,9 @@ void LayerLog(const char* fmt, ...) {
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
 
+    // Initialize log file on first call
+    InitLayerLogFile();
+
     // Output to debug console
     OutputDebugStringA(buf);
     OutputDebugStringA("\n");
@@ -30,6 +68,12 @@ void LayerLog(const char* fmt, ...) {
     // Also to stderr
     fprintf(stderr, "[VulkanLayer] %s\n", buf);
     fflush(stderr);
+
+    // Also to log file
+    if (g_LogFile) {
+        fprintf(g_LogFile, "[VulkanLayer] %s\n", buf);
+        fflush(g_LogFile);
+    }
 
     // Also to IPC if connected
     if (LayerIPC_IsConnected()) {
@@ -43,36 +87,84 @@ void LayerLog(const char* fmt, ...) {
 
 extern "C" VKAPI_ATTR VkResult VKAPI_CALL 
 CELayer_vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct) {
+    EarlyLog("NegotiateLoaderLayerInterfaceVersion called");
+
     if (pVersionStruct->loaderLayerInterfaceVersion < 2) {
-        return VK_ERROR_INITIALIZATION_FAILED;
-    }
-    
-    // Whitelist check: If not whitelisted, return initialization failure 
-    // to let the loader skip our layer entirely for this process.
-    if (!LayerIPC_Init()) {
-        // LayerIPC_Init returns true if connected (and sets g_LayerState.whitelisted)
-        // If it fails to connect, we might want to check the standalone config.
-        // But for transparency and preventing crashes in browsers, returning failure here is safest.
+        EarlyLog("Interface version too low");
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
-    if (!g_LayerState.whitelisted) {
+    EarlyLog("Checking whitelist...");
+    if (!PerformEarlyWhitelistCheck()) {
+        EarlyLog("Process not whitelisted - layer rejected during negotiation");
         return VK_ERROR_INITIALIZATION_FAILED;
     }
+
+    EarlyLog("Initializing IPC...");
+    if (!LayerIPC_Init()) {
+        EarlyLog("IPC connection failed - layer dormant");
+        g_LayerState.whitelisted = false;
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+
+    EarlyLog("IPC connected, initializing layer functions...");
 
     pVersionStruct->loaderLayerInterfaceVersion = 2;
     pVersionStruct->pfnGetInstanceProcAddr = CELayer_vkGetInstanceProcAddr;
     pVersionStruct->pfnGetDeviceProcAddr = CELayer_vkGetDeviceProcAddr;
     pVersionStruct->pfnGetPhysicalDeviceProcAddr = nullptr;
 
-    // One-time initialization logic
-    if (!g_LayerState.initialized) {
-        g_LayerState.initialized = true;
-        LayerLog("Vulkan Layer Negotiated for whitelisted process. Interface Version: %d", pVersionStruct->loaderLayerInterfaceVersion);
+    g_LayerState.initialized = true;
+    LayerLog("Vulkan Layer: Negotiate Version Success - IPC connected");
+    return VK_SUCCESS;
+}
+
+static bool g_WhitelistCheckDone = false;
+
+static bool PerformEarlyWhitelistCheck() {
+    if (g_WhitelistCheckDone) return g_LayerState.whitelisted;
+    g_WhitelistCheckDone = true;
+
+    char fullPath[MAX_PATH];
+    GetModuleFileNameA(NULL, fullPath, sizeof(fullPath));
+    char* p = strrchr(fullPath, '\\');
+    const char* processName = p ? p + 1 : fullPath;
+
+    HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+    if (!hDisc) {
+        g_LayerState.whitelisted = false;
+        return false;
     }
 
-    LayerLog("Vulkan Layer: Negotiate Version Success");
-    return VK_SUCCESS;
+    DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
+    if (!pDisc) {
+        CloseHandle(hDisc);
+        g_LayerState.whitelisted = false;
+        return false;
+    }
+
+    g_LayerState.whitelisted = false;
+    if (pDisc->magic == DISCOVERY_MAGIC) {
+        const char* pw = pDisc->processWhitelist;
+        const char* end = pDisc->processWhitelist + sizeof(pDisc->processWhitelist);
+
+        while (pw < end && *pw != '\0') {
+            if (_stricmp(processName, pw) == 0) {
+                g_LayerState.whitelisted = true;
+                break;
+            }
+            pw += strlen(pw) + 1;
+        }
+    }
+
+    UnmapViewOfFile(pDisc);
+    CloseHandle(hDisc);
+
+    if (!g_LayerState.whitelisted) {
+        EarlyLog("Process not whitelisted - layer dormant");
+    }
+
+    return g_LayerState.whitelisted;
 }
 
 // ============================================================================
@@ -82,7 +174,6 @@ CELayer_vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersi
 extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL 
 CELayer_vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
     if (!pName) return nullptr;
-    // LayerLog("CELayer_vkGetInstanceProcAddr(inst=%p, name=%s)", instance, pName);
 
     // Layer-level functions (no instance needed)
     if (strcmp(pName, "vkNegotiateLoaderLayerInterfaceVersion") == 0) {
