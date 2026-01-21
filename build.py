@@ -980,6 +980,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
     if os.path.exists(vulkan_src):
         vulkan_lib = os.path.join(MSYS2_DIR, 'clang64', 'lib', 'libvulkan-1.dll.a')
         vulkan_ldflags = ["-static",
+                          "-Wl,--subsystem,windows",
                           vulkan_lib, "-lgdi32", "-luser32", "-lshcore"]
         add_task("vulkan_test.exe", make_cmd(clang_exe, cflags, vulkan_src, vulkan_ldflags, vulkan_exe))
 
@@ -987,6 +988,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             vulkan_exe_x86 = os.path.join(x86_bin_dir, "vulkan_test.exe")
             vulkan_lib_x86 = os.path.join(MSYS2_DIR, 'mingw32', 'lib', 'libvulkan-1.dll.a')
             vulkan_ldflags_x86 = ["-static",
+                                  "-Wl,--subsystem,windows",
                                   vulkan_lib_x86, "-lgdi32", "-luser32", "-lshcore"]
             add_task("vulkan_test.exe (x86)", make_cmd(clang_exe_x86, cflags_x86, vulkan_src, vulkan_ldflags_x86, vulkan_exe_x86))
 

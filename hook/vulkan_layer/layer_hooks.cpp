@@ -39,25 +39,53 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit(
 {
     LayerLog("Layer: vkQueueSubmit (queue=%p, submits=%d)", queue, submitCount);
     
-    VkDevice device = VK_NULL_HANDLE;
-    {
-        std::lock_guard<std::mutex> lock(g_QueueMapMutex);
-        auto it = g_QueueToDevice.find(queue);
-        if (it != g_QueueToDevice.end()) {
-            device = it->second;
-        }
-    }
+    DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceFromQueue(queue);
     
-    if (device == VK_NULL_HANDLE) {
-        return VK_ERROR_INITIALIZATION_FAILED;
-    }
-    
-    DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (!disp || !disp->fp_vkQueueSubmit) {
+        LayerLog("Layer: vkQueueSubmit FAILED - No dispatch for queue %p", queue);
         return VK_ERROR_INITIALIZATION_FAILED;
     }
     
-    return disp->fp_vkQueueSubmit(queue, submitCount, pSubmits, fence);
+    VkResult res = disp->fp_vkQueueSubmit(queue, submitCount, pSubmits, fence);
+    return res;
+}
+
+// vkQueueSubmit2 - Vulkan 1.3 version
+VkResult VKAPI_CALL Capture_vkQueueSubmit2(
+    VkQueue queue,
+    uint32_t submitCount,
+    const VkSubmitInfo2* pSubmits,
+    VkFence fence)
+{
+    LayerLog("Layer: vkQueueSubmit2 (queue=%p, submits=%d)", queue, submitCount);
+    
+    DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceFromQueue(queue);
+    
+    if (!disp || !disp->fp_vkQueueSubmit2) {
+        LayerLog("Layer: vkQueueSubmit2 FAILED - No dispatch for queue %p", queue);
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    
+    return disp->fp_vkQueueSubmit2(queue, submitCount, pSubmits, fence);
+}
+
+// vkQueueSubmit2KHR - extension version
+VkResult VKAPI_CALL Capture_vkQueueSubmit2KHR(
+    VkQueue queue,
+    uint32_t submitCount,
+    const VkSubmitInfo2* pSubmits,
+    VkFence fence)
+{
+    LayerLog("Layer: vkQueueSubmit2KHR (queue=%p, submits=%d)", queue, submitCount);
+    
+    DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceFromQueue(queue);
+    
+    if (!disp || !disp->fp_vkQueueSubmit2KHR) {
+        LayerLog("Layer: vkQueueSubmit2KHR FAILED - No dispatch for queue %p", queue);
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    
+    return disp->fp_vkQueueSubmit2KHR(queue, submitCount, pSubmits, fence);
 }
 
 // vkQueuePresentKHR - main hook for overlay and capture
@@ -116,7 +144,9 @@ VkResult VKAPI_CALL vkQueuePresentKHR(
         auto it = g_SwapchainMap.find(pPresentInfo->pSwapchains[0]);
         if (it != g_SwapchainMap.end() && it->second.currentImageIndex < it->second.images.size()) {
             VkImage srcImage = it->second.images[it->second.currentImageIndex];
-            CaptureFrame(device, queue, srcImage, it->second.currentImageIndex);
+            VkSemaphore waitSemaphore = pPresentInfo->pWaitSemaphores && pPresentInfo->waitSemaphoreCount > 0 
+                ? pPresentInfo->pWaitSemaphores[0] : VK_NULL_HANDLE;
+            CaptureFrame(device, queue, srcImage, it->second.currentImageIndex, waitSemaphore);
         }
     }
     

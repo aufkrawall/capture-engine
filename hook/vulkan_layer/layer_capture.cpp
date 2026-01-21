@@ -366,7 +366,7 @@ void CleanupCapture(VkDevice device) {
     g_CaptureStates.erase(device);
 }
 
-void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t imageIndex) {
+void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t imageIndex, VkSemaphore waitSemaphore) {
     std::lock_guard<std::mutex> lock(g_CaptureMutex);
     
     auto it = g_CaptureStates.find(device);
@@ -392,7 +392,7 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
     uint32_t fenceIndex = imageIndex % state.copyFences.size();
     VkFence fence = state.copyFences[fenceIndex];
 
-    // Wait for previous frame with timeout
+    // Wait for previous frame's copy to complete (with timeout to avoid hanging)
     constexpr uint64_t FENCE_TIMEOUT_NS = 50000000; // 50ms timeout
     VkResult waitResult = disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, FENCE_TIMEOUT_NS);
     if (waitResult != VK_SUCCESS) {
@@ -409,9 +409,9 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
 
     // Transition and copy
     VkImageMemoryBarrier srcBarrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-    srcBarrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+    srcBarrier.srcAccessMask = 0;
     srcBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    srcBarrier.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    srcBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     srcBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     srcBarrier.image = srcImage;
     srcBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
@@ -425,7 +425,7 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
     dstBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 
     VkImageMemoryBarrier barriers[] = { srcBarrier, dstBarrier };
-    disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 2, barriers);
+    disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 2, barriers);
 
     VkImageCopy region = {};
     region.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
@@ -438,7 +438,7 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
 
     VkImageMemoryBarrier srcBarrier2 = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
     srcBarrier2.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    srcBarrier2.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+    srcBarrier2.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     srcBarrier2.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     srcBarrier2.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     srcBarrier2.image = srcImage;
@@ -446,14 +446,14 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
 
     VkImageMemoryBarrier dstBarrier2 = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
     dstBarrier2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    dstBarrier2.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+    dstBarrier2.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     dstBarrier2.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    dstBarrier2.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    dstBarrier2.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     dstBarrier2.image = sharedTextures->vkImages[slotIndex];
     dstBarrier2.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 
     VkImageMemoryBarrier postBarriers[] = { srcBarrier2, dstBarrier2 };
-    disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 2, postBarriers);
+    disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 2, postBarriers);
 
     if (disp->fp_vkEndCommandBuffer(cmd) != VK_SUCCESS) return;
 

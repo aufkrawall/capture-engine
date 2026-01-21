@@ -7,6 +7,10 @@
 #include "hook_common.h"
 #include <objbase.h>
 
+// DIAGNOSTIC: Set to true to disable swapchain wrapping (test vtable hooks only)
+// This makes the game receive real swapchain objects instead of our wrappers
+static bool g_DisableSwapchainWrapper = false; // DIAGNOSTIC MODE - Re-enabled to test
+
 // ============================================================================
 // Constructor / Destructor
 // ============================================================================
@@ -218,11 +222,16 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChain(IUnknown* pDevice,
     HRESULT hr = m_pReal->CreateSwapChain(DeWrap(pDevice), pDesc, &pRealSwapChain);
 
     if (SUCCEEDED(hr) && pRealSwapChain) {
-        // Wrap the swapchain
-        auto* pWrapper = new CWrapDXGISwapChain(pRealSwapChain, pDevice);
-        *ppSwapChain = pWrapper;
-        WrapperLog("DXGI Factory: Created wrapped swapchain (wrapper=%p, real=%p)", pWrapper, pRealSwapChain);
-        pRealSwapChain->Release(); // Wrapper took ownership
+        // DIAGNOSTIC: Bypass swapchain wrapping
+        if (g_DisableSwapchainWrapper) {
+            *ppSwapChain = pRealSwapChain;
+            WrapperLog("DXGI Factory: DIAGNOSTIC - Returning REAL swapchain (no wrapper)");
+        } else {
+            auto* pWrapper = new CWrapDXGISwapChain(pRealSwapChain, pDevice);
+            *ppSwapChain = pWrapper;
+            WrapperLog("DXGI Factory: Created wrapped swapchain (wrapper=%p, real=%p)", pWrapper, pRealSwapChain);
+            pRealSwapChain->Release();
+        }
     } else {
         *ppSwapChain = nullptr;
     }
@@ -280,11 +289,16 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForHwnd(
                                                    pRestrictToOutput, &pRealSwapChain);
 
     if (SUCCEEDED(hr) && pRealSwapChain) {
-        // Wrap the swapchain
-        auto* pWrapper = new CWrapDXGISwapChain(pRealSwapChain, pDevice);
-        *ppSwapChain = pWrapper;
-        WrapperLog("DXGI Factory: Created wrapped swapchain1 (wrapper=%p, real=%p)", pWrapper, pRealSwapChain);
-        pRealSwapChain->Release();
+        // DIAGNOSTIC: Bypass swapchain wrapping
+        if (g_DisableSwapchainWrapper) {
+            *ppSwapChain = pRealSwapChain;
+            WrapperLog("DXGI Factory: DIAGNOSTIC - Returning REAL swapchain1 (no wrapper)");
+        } else {
+            auto* pWrapper = new CWrapDXGISwapChain(pRealSwapChain, pDevice);
+            *ppSwapChain = pWrapper;
+            WrapperLog("DXGI Factory: Created wrapped swapchain1 (wrapper=%p, real=%p)", pWrapper, pRealSwapChain);
+            pRealSwapChain->Release();
+        }
     } else {
         *ppSwapChain = nullptr;
     }
@@ -305,9 +319,15 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForCoreWindow(
                                                         pRestrictToOutput, &pRealSwapChain);
 
     if (SUCCEEDED(hr) && pRealSwapChain) {
-        auto* pWrapper = new CWrapDXGISwapChain(pRealSwapChain, pDevice);
-        *ppSwapChain = pWrapper;
-        pRealSwapChain->Release();
+        // DIAGNOSTIC: Bypass swapchain wrapping
+        if (g_DisableSwapchainWrapper) {
+            *ppSwapChain = pRealSwapChain;
+            WrapperLog("DXGI Factory: DIAGNOSTIC - Returning REAL swapchain (CoreWindow)");
+        } else {
+            auto* pWrapper = new CWrapDXGISwapChain(pRealSwapChain, pDevice);
+            *ppSwapChain = pWrapper;
+            pRealSwapChain->Release();
+        }
     } else {
         *ppSwapChain = nullptr;
     }
@@ -355,9 +375,15 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForComposition(
     HRESULT hr = m_pReal->CreateSwapChainForComposition(DeWrap(pDevice), pDesc, pRestrictToOutput, &pRealSwapChain);
     
     if (SUCCEEDED(hr) && pRealSwapChain) {
-        auto* pWrapper = new CWrapDXGISwapChain(pRealSwapChain, pDevice);
-        *ppSwapChain = pWrapper;
-        pRealSwapChain->Release();
+        // DIAGNOSTIC: Bypass swapchain wrapping
+        if (g_DisableSwapchainWrapper) {
+            *ppSwapChain = pRealSwapChain;
+            WrapperLog("DXGI Factory: DIAGNOSTIC - Returning REAL swapchain (Composition)");
+        } else {
+            auto* pWrapper = new CWrapDXGISwapChain(pRealSwapChain, pDevice);
+            *ppSwapChain = pWrapper;
+            pRealSwapChain->Release();
+        }
     } else {
         *ppSwapChain = nullptr;
     }

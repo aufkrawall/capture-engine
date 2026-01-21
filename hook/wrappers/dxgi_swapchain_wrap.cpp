@@ -161,6 +161,14 @@ void CWrapDXGISwapChain::CleanupOverlayResources() {
 }
 
 void CWrapDXGISwapChain::DrawOverlay() {
+    // DIAGNOSTIC BYPASS: Skip ALL wrapper overlay operations to isolate crash
+    static int skipCount = 0;
+    skipCount++;
+    if (skipCount == 1) {
+        WrapperLog("DXGI Wrapper: DIAGNOSTIC - DrawOverlay BYPASSED (testing wrapper-only)");
+    }
+    return; // DIAGNOSTIC: Skip everything
+    
     if (!g_OverlayEnabled) return;
     if (WrapperStateManager::Get().swapchainInvalid.load()) return;
     
@@ -300,6 +308,20 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetDevice(REFIID riid, void** ppDe
 // ============================================================================
 
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Flags) {
+    // DIAGNOSTIC: Log EVERY call to Present wrapper
+    static int wrapPresentCount = 0;
+    wrapPresentCount++;
+    WrapperLog("DXGI Wrapper: >>>>> Present ENTRY (count=%d, real=%p) <<<<<", wrapPresentCount, m_pReal);
+    
+    // DIAGNOSTIC ABSOLUTE PASSTHROUGH: Skip ALL wrapper logic
+    static int presentCount = 0;
+    presentCount++;
+    if (presentCount == 1) {
+        WrapperLog("DXGI Wrapper: DIAGNOSTIC - Present ABSOLUTE PASSTHROUGH (no wrapper logic)");
+    }
+    return m_pReal->Present(SyncInterval, Flags);
+    
+    // --- ORIGINAL CODE BELOW (DISABLED FOR DIAGNOSTIC) ---
     std::lock_guard<std::mutex> lock(m_ResourceLock);
     
     // Update Performance Metrics
@@ -348,6 +370,15 @@ static std::atomic<bool> s_ResizeInProgress{false};
 
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers(UINT BufferCount, UINT Width, UINT Height,
                                                               DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
+    // DIAGNOSTIC: Absolute minimal passthrough - bypass ALL wrapper ResizeBuffers logic
+    static int wrapResizeCount = 0;
+    wrapResizeCount++;
+    if (wrapResizeCount == 1) {
+        WrapperLog("DXGI Wrapper: DIAGNOSTIC - ResizeBuffers MINIMAL PASSTHROUGH (no cleanup/drain)");
+    }
+    return m_pReal->ResizeBuffers(BufferCount, Width, Height, NewFormat, SwapChainFlags);
+    
+    // --- ORIGINAL CODE BELOW (DISABLED FOR DIAGNOSTIC) ---
     // STABILITY FIX: Block reentrant calls during resize
     bool expected = false;
     if (!s_ResizeInProgress.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
@@ -444,6 +475,16 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetCoreWindow(REFIID refiid, void*
 
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT PresentFlags,
                                                         const DXGI_PRESENT_PARAMETERS* pPresentParameters) {
+    // DIAGNOSTIC ABSOLUTE PASSTHROUGH: Skip ALL wrapper logic
+    if (!m_pReal1) return DXGI_ERROR_UNSUPPORTED;
+    static int present1Count = 0;
+    present1Count++;
+    if (present1Count == 1) {
+        WrapperLog("DXGI Wrapper: DIAGNOSTIC - Present1 ABSOLUTE PASSTHROUGH");
+    }
+    return m_pReal1->Present1(SyncInterval, PresentFlags, pPresentParameters);
+    
+    // --- ORIGINAL CODE BELOW (DISABLED FOR DIAGNOSTIC) ---
     std::lock_guard<std::mutex> lock(m_ResourceLock);
     
     // Update Performance Metrics

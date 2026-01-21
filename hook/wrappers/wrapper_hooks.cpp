@@ -94,6 +94,10 @@ void WrapperLog(const char* fmt, ...) {
 HRESULT WINAPI Wrapped_CreateDXGIFactory(REFIID riid, void** ppFactory) {
     WrapperLog("Wrapper: CreateDXGIFactory called");
     
+    // --- ORIGINAL CODE BELOW (RESTORED) ---
+    if (!oCreateDXGIFactory) return E_FAIL;
+    
+    // --- ORIGINAL CODE BELOW (DISABLED FOR DIAGNOSTIC) ---
     if (!oCreateDXGIFactory) return E_FAIL;
     
     // Create real factory
@@ -124,6 +128,7 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory(REFIID riid, void** ppFactory) {
 HRESULT WINAPI Wrapped_CreateDXGIFactory1(REFIID riid, void** ppFactory) {
     WrapperLog("Wrapper: CreateDXGIFactory1 called");
     
+    // --- ORIGINAL CODE BELOW (RESTORED) ---
     // Ensure DX12 hooks are initialized (fixes race condition)
     g_dx12HookInstance.Init();
 
@@ -156,6 +161,10 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory1(REFIID riid, void** ppFactory) {
 HRESULT WINAPI Wrapped_CreateDXGIFactory2(UINT Flags, REFIID riid, void** ppFactory) {
     WrapperLog("Wrapper: CreateDXGIFactory2 called (flags=0x%X)", Flags);
     
+    // --- ORIGINAL CODE BELOW (RESTORED) ---
+    if (!oCreateDXGIFactory2) return E_FAIL;
+    
+    // --- ORIGINAL CODE BELOW (DISABLED FOR DIAGNOSTIC) ---
     if (!oCreateDXGIFactory2) return E_FAIL;
     
     IDXGIFactory2* pRealFactory = nullptr;
@@ -186,6 +195,7 @@ __declspec(dllexport) HRESULT WINAPI Wrapped_D3D12CreateDevice(
     REFIID riid,
     void** ppDevice) {
     
+    // --- ORIGINAL CODE BELOW (RESTORED) ---
     WrapperLog("Wrapper: D3D12CreateDevice called (feature level=0x%X)", MinimumFeatureLevel);
     
     // Ensure DX12 hooks are initialized (fixes race condition)

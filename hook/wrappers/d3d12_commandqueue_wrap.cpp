@@ -159,8 +159,12 @@ void STDMETHODCALLTYPE CWrapD3D12CommandQueue::ExecuteCommandLists(
         }
 
         if (pFn) {
-            pFn(m_pReal);
-            m_bRegistered = true;
+            if (m_pReal) {
+                pFn(m_pReal);
+                m_bRegistered = true;
+            } else {
+                WrapperLog("D3D12 CommandQueue Wrapper: WARNING - m_pReal is NULL, skipping SetCommandQueue!");
+            }
         }
     }
     

@@ -169,6 +169,8 @@ void PopulateDeviceDispatch(DeviceDispatch* dispatch, VkDevice device,
     dispatch->fp_vkDestroyDevice = (PFN_vkDestroyDevice)gdpa(device, "vkDestroyDevice");
     dispatch->fp_vkGetDeviceQueue = (PFN_vkGetDeviceQueue)gdpa(device, "vkGetDeviceQueue");
     dispatch->fp_vkQueueSubmit = (PFN_vkQueueSubmit)gdpa(device, "vkQueueSubmit");
+    dispatch->fp_vkQueueSubmit2 = (PFN_vkQueueSubmit2)gdpa(device, "vkQueueSubmit2");
+    dispatch->fp_vkQueueSubmit2KHR = (PFN_vkQueueSubmit2KHR)gdpa(device, "vkQueueSubmit2KHR");
     dispatch->fp_vkQueueWaitIdle = (PFN_vkQueueWaitIdle)gdpa(device, "vkQueueWaitIdle");
     dispatch->fp_vkDeviceWaitIdle = (PFN_vkDeviceWaitIdle)gdpa(device, "vkDeviceWaitIdle");
     dispatch->fp_vkAllocateMemory = (PFN_vkAllocateMemory)gdpa(device, "vkAllocateMemory");
@@ -449,32 +451,48 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkGetSwapchainImagesKHR(
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo) {
+    LayerLog("Capture_vkQueuePresentKHR: ENTER (queue=%p)", queue);
+    
     bool isFirstHook = !g_InPresentHook;
     g_InPresentHook = true;
 
     if (isFirstHook) {
         g_SharedFpsLimiter.SetIPCClient(&g_IPCClient);
+        LayerLog("Capture_vkQueuePresentKHR: Calling Apply()");
         g_SharedFpsLimiter.Apply();
+        LayerLog("Capture_vkQueuePresentKHR: Apply() returned");
     }
 
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceFromQueue(queue);
+    LayerLog("Capture_vkQueuePresentKHR: Got dispatch=%p", disp);
     
     if (g_LayerState.whitelisted && pPresentInfo->swapchainCount > 0) {
         VkSwapchainKHR sw = pPresentInfo->pSwapchains[0];
         uint32_t idx = pPresentInfo->pImageIndices[0];
         SwapchainData* sd = VulkanLayerState::Get().GetSwapchainData(sw);
+        LayerLog("Capture_vkQueuePresentKHR: sw=%p, idx=%u, sd=%p", sw, idx, sd);
         if (sd) {
-            RenderOverlay(sd->device, queue, idx, VK_NULL_HANDLE, VK_NULL_HANDLE);
-            CaptureFrame(sd->device, queue, sd->images[idx], idx);
+            VkSemaphore waitSemaphore = pPresentInfo->pWaitSemaphores && pPresentInfo->waitSemaphoreCount > 0 
+                ? pPresentInfo->pWaitSemaphores[0] : VK_NULL_HANDLE;
+            
+            // TEMPORARILY DISABLED FOR DEBUGGING - Black window issue
+            // LayerLog("Capture_vkQueuePresentKHR: Calling RenderOverlay (waitSem=%p)", waitSemaphore);
+            // RenderOverlay(sd->device, queue, idx, waitSemaphore, VK_NULL_HANDLE);
+            // LayerLog("Capture_vkQueuePresentKHR: RenderOverlay returned, calling CaptureFrame");
+            // CaptureFrame(sd->device, queue, sd->images[idx], idx, waitSemaphore);
+            // LayerLog("Capture_vkQueuePresentKHR: CaptureFrame returned");
         }
     }
     
     VkResult res = VK_SUCCESS;
     if (disp && disp->fp_vkQueuePresentKHR) {
+        LayerLog("Capture_vkQueuePresentKHR: Calling fp_vkQueuePresentKHR");
         res = disp->fp_vkQueuePresentKHR(queue, pPresentInfo);
+        LayerLog("Capture_vkQueuePresentKHR: fp_vkQueuePresentKHR returned %d", res);
     }
     
     if (isFirstHook) g_InPresentHook = false;
+    LayerLog("Capture_vkQueuePresentKHR: EXIT");
     return res;
 }
 

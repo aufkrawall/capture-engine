@@ -722,6 +722,7 @@ void CheckAndInstallHooks() {
     if (!g_DX12Hook && GetModuleHandleA("d3d12.dll")) {
         EarlyLog("Detected d3d12.dll. Installing DX12 hooks...");
         g_DX12Hook = &g_dx12HookInstance; // Use global static instance
+        // DIAGNOSTIC: Testing if DX12Hook::Init (MinHook init) causes crash
         g_DX12Hook->Init(); // Idempotent (safe to call multiple times)
         EarlyLog("DX12 hooks installed");
     }
@@ -737,28 +738,31 @@ void CheckAndInstallHooks() {
         HookLog("D3D10/11 hooks installed");
     }
 
-    if (!g_DX9Hook && GetModuleHandleA("d3d9.dll")) {
+    // For other APIs, also check if d3d12.dll is present to avoid conflicts in DX12 games that load other DLLs.
+    bool cx12Loaded = (GetModuleHandleA("d3d12.dll") != NULL);
+
+    if (!g_DX9Hook && !cx12Loaded && GetModuleHandleA("d3d9.dll")) {
         HookLog("Detected d3d9.dll. Installing DX9 hooks...");
         g_DX9Hook = new DX9Hook();
         g_DX9Hook->Init();
         HookLog("DX9 hooks installed");
     }
 
-    if (!g_DDrawHook && GetModuleHandleA("ddraw.dll")) {
+    if (!g_DDrawHook && !cx12Loaded && GetModuleHandleA("ddraw.dll")) {
         HookLog("Detected ddraw.dll. Installing DirectDraw hooks...");
         g_DDrawHook = new DDrawHook();
         g_DDrawHook->Init();
         HookLog("DDraw hooks installed");
     }
 
-    if (!g_DX8Hook && GetModuleHandleA("d3d8.dll")) {
+    if (!g_DX8Hook && !cx12Loaded && GetModuleHandleA("d3d8.dll")) {
         HookLog("Detected d3d8.dll. Installing DX8 hooks...");
         g_DX8Hook = new DX8Hook();
         g_DX8Hook->Init();
         HookLog("DX8 hooks installed");
     }
 
-    if (!g_OpenGLHook && GetModuleHandleA("opengl32.dll")) {
+    if (!g_OpenGLHook && !cx12Loaded && GetModuleHandleA("opengl32.dll")) {
         HookLog("Detected opengl32.dll. Installing OpenGL hooks...");
         g_OpenGLHook = new OpenGLHook();
         g_OpenGLHook->Init();
@@ -767,7 +771,9 @@ void CheckAndInstallHooks() {
 
 
 #ifdef ENABLE_VULKAN_HOOK
-    if (!g_VulkanHook && GetModuleHandleA("vulkan-1.dll")) {
+    // Vulkan can co-exist with DX12 (e.g. Doom Eternal), but usually they are mutually exclusive for rendering
+    // For now we assume if DX12 is loaded, it's the primary API.
+    if (!g_VulkanHook && !cx12Loaded && GetModuleHandleA("vulkan-1.dll")) {
         HookLog("Detected vulkan-1.dll. Installing Vulkan hooks...");
         g_VulkanHook = new VulkanHook();
         g_VulkanHook->Init();
@@ -807,6 +813,8 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
 
   // FAST PATH: Install IAT wrappers immediately before anything else
   // This helps catch early startup API calls in fast-loading processes.
+  // DIAGNOSTIC: Testing if IAT patching alone causes crash (MinHook still disabled)
+  HookLog("DIAGNOSTIC: Re-enabling InitializeWrapperHooks (IAT patching)");
   InitializeWrapperHooks();
   CheckAndInstallHooks();
   
@@ -922,6 +930,9 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   // Use IAT patching instead of MinHook for kernel32/advapi32 hooks
   EarlyLog("HookThread: Initializing IAT-based kernel32 hooks...");
 
+  // DIAGNOSTIC: Disable kernel32/advapi32 hooks to test if they cause crash
+  HookLog("DIAGNOSTIC: Skipping LoadLibrary/CreateProcess/RegQuery hooks (disabled for testing)");
+  /*
   // Install LoadLibrary and CreateProcess hooks via IAT patching
   HookLog("Installing LoadLibrary/CreateProcess hooks via IAT patching (MinHook-free)...");
   
@@ -941,9 +952,10 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   } else {
       HookLog("advapi32.dll not loaded yet - skipping RegQueryValueExW hook");
   }
+  */
   
-  EarlyLog("HookThread: IAT hooks initialized OK");
-  HookLog("All kernel32/advapi32 hooks enabled (IAT mode)");
+  EarlyLog("HookThread: IAT hooks SKIPPED for diagnostic");
+  HookLog("All kernel32/advapi32 hooks SKIPPED (diagnostic mode)");
 
   // Initial Check
   // CheckAndInstallHooks moved to start of HookThread for faster response

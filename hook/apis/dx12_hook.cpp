@@ -208,10 +208,10 @@ bool IsFSR3SwapChain(IDXGISwapChain* pSwapChain) {
 // EXPORT: Manually Set Command Queue (For MSVC Wrappers)
 // ============================================================================
 extern "C" __declspec(dllexport) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) {
-    if (pQueue && g_CommandQueue != pQueue) {
+    HookLog("============ DX12_SetCommandQueue: Called with %p ============", pQueue);
+    if (pQueue) { // Allow update even if same queue, to force VTable check
         g_CommandQueue = pQueue;
         pQueue->AddRef(); // For our global pointer
-        HookLog("DX12: Manually registered Command Queue: %p", pQueue);
         
         // Ensure ExecuteCommandLists is hooked on this queue
         HookQueueVTable(pQueue);
@@ -1426,8 +1426,10 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
       static uint64_t overlayCounter = 0;
       overlayCounter++;
       
-      // DIAGNOSTIC: Log every 500 frames regardless of threshold to catch late crashes
-      bool shouldLogCheckpoint = (overlayCounter < 2000) || (overlayCounter % 500 == 0);
+      // DIAGNOSTIC LOGGING: Log first few frames and periodically
+      // Reduced for performance - only log VERY sparse checkpoints if needed
+      bool shouldLogCheckpoint = (overlayCounter < 5); 
+
       if (shouldLogCheckpoint) HookLog("DX12: doOverlay Enter (Count=%llu)", overlayCounter);
 
       if (!shouldDrawOverlay || !g_Device || !g_State.cmdList || !g_State.imGuiInit || !g_State.syncInit) {
@@ -1503,7 +1505,6 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
       }
       
       // Get backbuffer
-      if (overlayCounter < 2000) HookLog("DX12: doOverlay - Creating RTV...");
       
       UINT bufferIdx = 0;
       if (sc3) {
@@ -1512,7 +1513,6 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
       
       ID3D12Resource* backBuffer = nullptr;
       if (SUCCEEDED(pSwapChain->GetBuffer(bufferIdx, IID_PPV_ARGS(&backBuffer))) && backBuffer) {
-           if (overlayCounter < 2000) HookLog("DX12: doOverlay - Got Buffer %u, Transitioning...", bufferIdx);
            
            // Transition to RenderTarget
            D3D12_RESOURCE_BARRIER barrier = {};
@@ -1527,6 +1527,7 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
            if (!g_State.rtvDescHeap) {
                // Should have been caught by early return, but double check
                if (static int logCount = 0; logCount++ < 10) HookLog("DX12: doOverlay - RTV Heap is NULL! Skipping overlay.");
+               backBuffer->Release();
                return;
            }
            D3D12_CPU_DESCRIPTOR_HANDLE rtv = g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
@@ -1540,17 +1541,13 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
            D3D12_RECT scissor = {0, 0, (LONG)g_State.cachedWidth, (LONG)g_State.cachedHeight};
            list->RSSetScissorRects(1, &scissor);
 
-           if (overlayCounter < 2000) HookLog("DX12: doOverlay - Calling DrawOverlay()");
            DrawOverlay(list);
-           if (overlayCounter < 2000) HookLog("DX12: doOverlay - DrawOverlay returned");
 
            // Transition back
-           if (overlayCounter < 2000) HookLog("DX12: doOverlay - Transitioning back...");
            barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
            barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
            list->ResourceBarrier(1, &barrier);
            
-           if (overlayCounter < 2000) HookLog("DX12: doOverlay - Closing List...");
            hr = list->Close();
            if (FAILED(hr)) {
                HookLog("DX12: doOverlay - FATAL: Command List Close failed (0x%08X). Aborting Execute.", hr);
@@ -1581,32 +1578,23 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
                    return;
                }
 
-               if (overlayCounter < 2000) HookLog("DX12: doOverlay - Executing Command List on Queue %p...", g_CommandQueue);
                g_CommandQueue->ExecuteCommandLists(1, lists);
-               if (overlayCounter < 2000) HookLog("DX12: doOverlay - Executed.");
 
                // STABILITY FIX: Signal fence AND wait for completion before releasing backbuffer
                // This matches SpecialK's drain_queue pattern and prevents GPU race conditions
                if (g_State.fence) {
                     g_State.currentFenceValue++;
                     g_State.fenceValues[allocIdx] = g_State.currentFenceValue;
-                    if (overlayCounter < 2000) HookLog("DX12: doOverlay - Signaling Fence %llu...", g_State.currentFenceValue);
                     g_CommandQueue->Signal(g_State.fence, g_State.currentFenceValue);
                     
-                    // Wait for GPU to complete before releasing backbuffer
-                    // Use short timeout (~1 frame) to avoid stalls
-                    if (g_State.fence->GetCompletedValue() < g_State.currentFenceValue) {
-                        g_State.fence->SetEventOnCompletion(g_State.currentFenceValue, g_State.fenceEvent);
-                        WaitForSingleObject(g_State.fenceEvent, 16); // ~1 frame max wait
-                    }
+                    // NOTE: No post-execute wait needed - backbuffer is swapchain-owned.
+                    // GPU sync for allocator reuse is handled by pre-use wait at doOverlay entry.
                }
            } else {
                HookLog("DX12: doOverlay - FATAL: CommandQueue is NULL before Execute!");
            }
            
-           if (overlayCounter < 2000) HookLog("DX12: doOverlay - Releasing BackBuffer...");
            backBuffer->Release();
-           if (overlayCounter < 2000) HookLog("DX12: doOverlay - Done.");
       }
   };
 
@@ -1826,6 +1814,9 @@ HRESULT STDMETHODCALLTYPE DetourGetBuffer(IDXGISwapChain *pSwapChain, UINT Buffe
 
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
                                         UINT SyncInterval, UINT Flags) {
+
+  
+  // --- ORIGINAL CODE BELOW (DISABLED FOR DIAGNOSTIC) ---
   // STABILITY FIX: Increment present call count for grace period tracking
   uint64_t presentCount = g_PresentCallCount.fetch_add(1, std::memory_order_relaxed);
   
@@ -2008,8 +1999,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
   // Convert to microseconds
   int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
 
-  // Use wrapper status to prevent double-counting FPS (Wrapper + Hook)
-  if (isFirstHook && !WrapperStateManager::Get().FindWrapper(pSwapChain)) {
+  // FIX: Allow FPS update even if wrapped. isFirstHook handles deduplication (Present vs Present1).
+  if (isFirstHook) {
       g_PerfMetrics.Update(us);
   }
 
@@ -2446,6 +2437,10 @@ HRESULT WINAPI DetourSerializeRootSignature(
     ID3DBlob** ppBlob,
     ID3DBlob** ppErrorBlob)
 {
+    // DIAGNOSTIC: Minimal passthrough - call original directly without modification
+    return oSerializeRootSignature(pRootSignature, Version, ppBlob, ppErrorBlob);
+    
+    // --- ORIGINAL CODE BELOW (DISABLED FOR DIAGNOSTIC) ---
     if (!pRootSignature || pRootSignature->NumStaticSamplers == 0) {
         return oSerializeRootSignature(pRootSignature, Version, ppBlob, ppErrorBlob);
     }
@@ -2478,6 +2473,10 @@ HRESULT WINAPI DetourSerializeVersionedRootSignature(
     ID3DBlob** ppBlob,
     ID3DBlob** ppErrorBlob)
 {
+    // DIAGNOSTIC: Minimal passthrough - call original directly without modification
+    return oSerializeVersionedRootSignature(pRootSignature, ppBlob, ppErrorBlob);
+    
+    // --- ORIGINAL CODE BELOW (DISABLED FOR DIAGNOSTIC) ---
     if (!pRootSignature) {
         return oSerializeVersionedRootSignature(pRootSignature, ppBlob, ppErrorBlob);
     }
@@ -2583,24 +2582,43 @@ HRESULT STDMETHODCALLTYPE DetourCreateCommittedResource(
 
 // Helper to hook ExecuteCommandLists on a queue
 void HookQueueVTable(ID3D12CommandQueue* queue) {
+    // --- ORIGINAL CODE BELOW (RESTORED) ---
     if (!queue) return;
     
+    HookLog("============ HookQueueVTable: Called for %p ============", queue);
+
+    // CRITICAL FIX: Check if this is OUR wrapper queue (CWrapD3D12CommandQueue)
+    // If it is, skip hooking because calling oExecuteCommandLists would loop back to wrapper
+    {
+        // Try to detect wrapper by checking our custom GUID
+        void* unwrapped = nullptr;
+        // IID_CWrapD3D12CommandQueue is defined in wrapper_base.h: {0xd4e5f678, 0x90ab, 0xcdef, ...}
+        static const GUID IID_CWrapD3D12CommandQueue = 
+        { 0xd4e5f678, 0x90ab, 0xcdef, { 0x12, 0x34, 0x56, 0x78, 0x90, 0x12, 0x34, 0x56 } };
+        HRESULT hr = queue->QueryInterface(IID_CWrapD3D12CommandQueue, &unwrapped);
+        if (SUCCEEDED(hr) && unwrapped) {
+            // This IS a wrapper - the unwrapped pointer is the real queue
+            HookLog("============ HookQueueVTable: SKIPPING (is wrapper, real=%p) ============", unwrapped);
+            ((IUnknown*)unwrapped)->Release();
+            return;
+        }
+    }
+
     static std::mutex s_HookMutex;
     std::lock_guard<std::mutex> lock(s_HookMutex);
     
-    static bool hookedQueueMethods = false;
-    // We only need to hook the VTable ONCE for the ID3D12CommandQueue class
-    // (all instances share the same VTable).
-    if (!hookedQueueMethods) {
-        void** qVtbl = *reinterpret_cast<void***>(queue);
-        // Index 10 is ExecuteCommandLists
-        // Index 10 is ExecuteCommandLists
-        if (VTableHook::Create(&qVtbl[10], (LPVOID)DetourExecuteCommandLists, (LPVOID*)&oExecuteCommandLists) == VTableHook::Success) {
-            EarlyLog("DX12: Hooked ExecuteCommandLists on Queue VTable");
-            hookedQueueMethods = true;
-        } else {
-            HookLog("DX12: Failed to hook ExecuteCommandLists");
-        }
+    // Check if THIS SPECIFIC V-Table is already hooked (checking function pointer)
+    void** qVtbl = *reinterpret_cast<void***>(queue);
+    
+    if (qVtbl[10] != DetourExecuteCommandLists) {
+         HookLog("DX12: ExecuteCommandLists (VTable[10]) is %p, expected original %p. Hooking...", qVtbl[10], oExecuteCommandLists);
+         if (VTableHook::Create(&qVtbl[10], (LPVOID)DetourExecuteCommandLists, (LPVOID*)&oExecuteCommandLists) == VTableHook::Success) {
+            HookLog("============ HookQueueVTable: SUCCESS ============");
+         } else {
+            HookLog("============ HookQueueVTable: FAILED ============");
+         }
+    } else {
+        HookLog("============ HookQueueVTable: ALREADY HOOKED ============");
     }
 }
 
@@ -2609,9 +2627,10 @@ DetourExecuteCommandLists(ID3D12CommandQueue *pThis, UINT NumCommandLists,
                           ID3D12CommandList *const *ppCommandLists) {
   // Trace logging for deadlock analysis
   // Trace logging for deadlock analysis (Disabled to prevent log spam/contention)
-  // static uint64_t execCount = 0;
-  // execCount++;
-  // if (execCount < 5000) HookLog("DX12: ExecuteCommandLists (Num=%u, Queue=%p) entering...", NumCommandLists, pThis);
+  static uint64_t execCount = 0;
+  execCount++;
+  if (execCount < 20) HookLog("============ DetourExecuteCommandLists (Num=%u, Queue=%p) entering... MATCH=%d ============", 
+                             NumCommandLists, pThis, (pThis == g_CommandQueue));
 
   // FG: Track command list execution for real frame detection
   // 
@@ -2726,6 +2745,7 @@ DetourExecuteCommandLists(ID3D12CommandQueue *pThis, UINT NumCommandLists,
               static std::mutex s_DiscoveryMutex;
               
               std::lock_guard<std::mutex> discoveryLock(s_DiscoveryMutex);
+              EarlyLog("DX12: Queue Discovery: Locked mutex for %p", pThis);
               
               // Initialize tracking for new queue
               if (s_QueueBitmaps.find(pThis) == s_QueueBitmaps.end()) {
@@ -2735,12 +2755,19 @@ DetourExecuteCommandLists(ID3D12CommandQueue *pThis, UINT NumCommandLists,
                            pThis, currentBuffer, s_QueueFirstFrame[pThis]);
               }
               
+              EarlyLog("DX12: Queue Discovery: About to update bitmap for %p", pThis);
               // Update bitmap
               uint32_t& bitmap = s_QueueBitmaps[pThis];
+              EarlyLog("DX12: Queue Discovery: bitmap ref obtained, current=0x%X, bufferIdx=%u", bitmap, currentBuffer);
               bitmap |= (1 << currentBuffer);
+              EarlyLog("DX12: Queue Discovery: bitmap updated to 0x%X", bitmap);
               
               // Check if ALL buffers have been touched (0 to BufferCount-1)
-              uint32_t targetMask = (1 << desc.BufferCount) - 1;
+              uint32_t bufCount = desc.BufferCount;
+              EarlyLog("DX12: Queue Discovery: BufferCount=%u", bufCount);
+              if (bufCount > 16) bufCount = 16; // Safety cap
+              uint32_t targetMask = (1 << bufCount) - 1;
+              EarlyLog("DX12: Queue Discovery: targetMask=0x%X", targetMask);
               
               if ((bitmap & targetMask) == targetMask) {
                   queueVerified = true;
@@ -2762,6 +2789,7 @@ DetourExecuteCommandLists(ID3D12CommandQueue *pThis, UINT NumCommandLists,
                                pThis, bitmap, targetMask);
                   }
               }
+              EarlyLog("DX12: Queue Discovery: Section complete for %p", pThis);
               
               // Failsafe: If verification takes too long (>300 frames), assume first candidate is "good enough"
               if (!queueVerified && !g_CommandQueue && (g_FGDebugFrameCount - s_QueueFirstFrame[pThis] > 300)) {
@@ -2777,7 +2805,16 @@ DetourExecuteCommandLists(ID3D12CommandQueue *pThis, UINT NumCommandLists,
       }
   }
   
+  static uint64_t oclCount = 0;
+  oclCount++;
+  if (oclCount < 10) {
+      EarlyLog("DX12: DetourExecuteCommandLists: About to call oExecuteCommandLists (%p) for Queue %p, Num=%u", 
+               oExecuteCommandLists, pThis, NumCommandLists);
+  }
   oExecuteCommandLists(pThis, NumCommandLists, ppCommandLists);
+  if (oclCount < 10) {
+      EarlyLog("DX12: DetourExecuteCommandLists: oExecuteCommandLists returned OK");
+  }
 }
 
 typedef HRESULT (STDMETHODCALLTYPE *PFN_CreateSwapChain)(IDXGIFactory *, IUnknown *,
@@ -2806,6 +2843,7 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory *pThis,
                                                 IUnknown *pDevice,
                                                 DXGI_SWAP_CHAIN_DESC *pDesc,
                                                 IDXGISwapChain **ppSwapChain) {
+  // --- ORIGINAL CODE RESTORED ---
   // Check if pDevice is a D3D12 device or queue, and if it is wrapped.
   // If it is NOT wrapped, it implies it's a driver-internal device (e.g. Vulkan Promotion),
   // and we should NOT wrap the swapchain to avoid interference.
@@ -2972,6 +3010,7 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory *pThis,
       }
   }
 
+
   return hr;
 }
 
@@ -2989,6 +3028,8 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(
            swapCount, pDevice, hWnd, pDesc ? pDesc->Width : 0, pDesc ? pDesc->Height : 0);
   
   if (!pDesc) return DXGI_ERROR_INVALID_CALL;
+
+  // --- ORIGINAL CODE RESTORED ---
 
   // Check if pDevice is a D3D12 device or queue, and if it is wrapped.
 #ifdef ENABLE_D3D12_WRAPPER
@@ -3298,6 +3339,7 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain3 *pSwapChain,
                                               UINT Height,
                                               DXGI_FORMAT NewFormat,
                                               UINT SwapChainFlags) {
+  // --- ORIGINAL CODE RESTORED ---
   HookLog("DX12: DetourResizeBuffers called (Width=%u, Height=%u)", Width, Height);
   if (!pSwapChain) return DXGI_ERROR_INVALID_CALL;
 
@@ -3365,6 +3407,15 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers1(IDXGISwapChain3 *pSwapChain,
                                                UINT SwapChainFlags,
                                                const UINT *pCreationNodeMask,
                                                IUnknown *const *ppPresentQueue) {
+  // DIAGNOSTIC: Absolute minimal passthrough - bypass ALL ResizeBuffers1 logic  
+  static int resize1Count = 0;
+  resize1Count++;
+  if (resize1Count == 1) {
+      HookLog("DX12: DIAGNOSTIC - DetourResizeBuffers1 MINIMAL PASSTHROUGH (all logic disabled)");
+  }
+  return oResizeBuffers1(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags, pCreationNodeMask, ppPresentQueue);
+  
+  // --- ORIGINAL CODE BELOW (DISABLED FOR DIAGNOSTIC) ---
   HookLog("DX12: DetourResizeBuffers1 called (Width=%u, Height=%u)", Width, Height);
   if (!pSwapChain) return DXGI_ERROR_INVALID_CALL;
 
@@ -3529,6 +3580,9 @@ void DX12Hook::Init() {
       VTableHook::Create(&facVTable[24], (LPVOID)DetourCreateSwapChainForComposition, (LPVOID *)&oCreateSwapChainForComposition);
       
       HookLog("DX12: Attempting proactive swapchain VTable hooking...");
+      // DIAGNOSTIC: Disable proactive swapchain creation (heavy operation)
+      HookLog("DX12: DIAGNOSTIC - Proactive Swapchain Creation BYPASSED");
+      /*
       // Proactive logic for Present/Present1 is here in original... 
       // Simplified for restoration:
       typedef HRESULT (WINAPI *PFN_D3D12_CREATE_DEVICE)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
@@ -3564,12 +3618,22 @@ void DX12Hook::Init() {
           }
           dummyDevice->Release();
       }
+      */
       factory->Release();
   }
   HookLog("DX12Hook: VTableHook initialized (Lazy Init Complete).");
 }
 
 bool InstallDX12HooksOnSwapchain(IDXGISwapChain3* pSwapChain) {
+    // DIAGNOSTIC: Re-enabling hook installation
+    // static bool logOnce = false;
+    // if (!logOnce) {
+    //     HookLog("DX12: DIAGNOSTIC - InstallDX12HooksOnSwapchain BYPASSED (no vtable hooks installed)");
+    //     logOnce = true;
+    // }
+    // return false;
+    
+    // --- ORIGINAL CODE BELOW (DISABLED FOR DIAGNOSTIC) ---
     if (!pSwapChain) return false;
     
     // Check if this is our own Wrapper

@@ -49,6 +49,8 @@ struct DeviceDispatch {
     PFN_vkDestroyDevice fp_vkDestroyDevice = nullptr;
     PFN_vkGetDeviceQueue fp_vkGetDeviceQueue = nullptr;
     PFN_vkQueueSubmit fp_vkQueueSubmit = nullptr;
+    PFN_vkQueueSubmit2 fp_vkQueueSubmit2 = nullptr;
+    PFN_vkQueueSubmit2KHR fp_vkQueueSubmit2KHR = nullptr;
     PFN_vkQueueWaitIdle fp_vkQueueWaitIdle = nullptr;
     PFN_vkDeviceWaitIdle fp_vkDeviceWaitIdle = nullptr;
     PFN_vkAllocateMemory fp_vkAllocateMemory = nullptr;
@@ -189,6 +191,8 @@ extern "C" {
     VKAPI_ATTR void VKAPI_CALL Capture_vkDestroyDevice(VkDevice device, const VkAllocationCallbacks* pAllocator);
     VKAPI_ATTR void VKAPI_CALL Capture_vkGetDeviceQueue(VkDevice device, uint32_t queueFamilyIndex, uint32_t queueIndex, VkQueue* pQueue);
     VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueueSubmit(VkQueue queue, uint32_t submitCount, const VkSubmitInfo* pSubmits, VkFence fence);
+    VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueueSubmit2(VkQueue queue, uint32_t submitCount, const VkSubmitInfo2* pSubmits, VkFence fence);
+    VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueueSubmit2KHR(VkQueue queue, uint32_t submitCount, const VkSubmitInfo2* pSubmits, VkFence fence);
     VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreateInfoKHR* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSwapchainKHR* pSwapchain);
     VKAPI_ATTR void VKAPI_CALL Capture_vkDestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain, const VkAllocationCallbacks* pAllocator);
     VKAPI_ATTR VkResult VKAPI_CALL Capture_vkGetSwapchainImagesKHR(VkDevice device, VkSwapchainKHR swapchain, uint32_t* pSwapchainImageCount, VkImage* pSwapchainImages);
@@ -206,4 +210,4 @@ void CleanupOverlay(VkDevice device);
 void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, VkSemaphore waitSemaphore, VkSemaphore signalSemaphore);
 void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkExtent2D extent, uint32_t imageCount);
 void CleanupCapture(VkDevice device);
-void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t imageIndex);
+void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t imageIndex, VkSemaphore waitSemaphore);

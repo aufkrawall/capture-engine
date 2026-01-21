@@ -215,6 +215,14 @@ CELayer_vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
         LayerLog("CELayer_vkGetInstanceProcAddr: %s", pName);
         return (PFN_vkVoidFunction)Capture_vkQueueSubmit;
     }
+    if (strcmp(pName, "vkQueueSubmit2") == 0) {
+        LayerLog("CELayer_vkGetInstanceProcAddr: %s", pName);
+        return (PFN_vkVoidFunction)Capture_vkQueueSubmit2;
+    }
+    if (strcmp(pName, "vkQueueSubmit2KHR") == 0) {
+        LayerLog("CELayer_vkGetInstanceProcAddr: %s", pName);
+        return (PFN_vkVoidFunction)Capture_vkQueueSubmit2KHR;
+    }
     if (strcmp(pName, "vkCreateSwapchainKHR") == 0) return (PFN_vkVoidFunction)Capture_vkCreateSwapchainKHR;
     if (strcmp(pName, "vkDestroySwapchainKHR") == 0) return (PFN_vkVoidFunction)Capture_vkDestroySwapchainKHR;
     if (strcmp(pName, "vkGetSwapchainImagesKHR") == 0) return (PFN_vkVoidFunction)Capture_vkGetSwapchainImagesKHR;
@@ -234,7 +242,7 @@ CELayer_vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
 extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL 
 CELayer_vkGetDeviceProcAddr(VkDevice device, const char* pName) {
     if (!pName || !device) return nullptr;
-    // LayerLog("CELayer_vkGetDeviceProcAddr(dev=%p, name=%s)", device, pName);
+    LayerLog("CELayer_vkGetDeviceProcAddr(dev=%p, name=%s)", device, pName);
 
     if (strcmp(pName, "vkGetDeviceProcAddr") == 0) return (PFN_vkVoidFunction)CELayer_vkGetDeviceProcAddr;
     if (strcmp(pName, "vkGetDeviceQueue") == 0) return (PFN_vkVoidFunction)Capture_vkGetDeviceQueue;
@@ -244,6 +252,9 @@ CELayer_vkGetDeviceProcAddr(VkDevice device, const char* pName) {
     if (strcmp(pName, "vkGetSwapchainImagesKHR") == 0) return (PFN_vkVoidFunction)Capture_vkGetSwapchainImagesKHR;
     if (strcmp(pName, "vkAcquireNextImageKHR") == 0) return (PFN_vkVoidFunction)Capture_vkAcquireNextImageKHR;
     if (strcmp(pName, "vkQueuePresentKHR") == 0) return (PFN_vkVoidFunction)Capture_vkQueuePresentKHR;
+    if (strcmp(pName, "vkQueueSubmit") == 0) return (PFN_vkVoidFunction)Capture_vkQueueSubmit;
+    if (strcmp(pName, "vkQueueSubmit2") == 0) return (PFN_vkVoidFunction)Capture_vkQueueSubmit2;
+    if (strcmp(pName, "vkQueueSubmit2KHR") == 0) return (PFN_vkVoidFunction)Capture_vkQueueSubmit2KHR;
     if (strcmp(pName, "vkCreateSampler") == 0) return (PFN_vkVoidFunction)Capture_vkCreateSampler;
 
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
