@@ -760,22 +760,27 @@ void CreateRTVs(ID3D12Device *device, IDXGISwapChain3 *swapChain,
 }
 
 void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
-  if (!pSwapChain) return;
+   if (!pSwapChain) return;
 
-  static int64_t qpcFreq = 0;
-  if (qpcFreq == 0) {
-    LARGE_INTEGER f;
-    QueryPerformanceFrequency(&f);
-    qpcFreq = f.QuadPart;
-  }
+   // CRASH CONTEXT: Log entry with thread ID
+   static DWORD entryThreadId = 0;
+   entryThreadId = GetCurrentThreadId();
+   HookLog("DX12: [T:%04X] ========== DX12_ProcessFrameExternal ENTRY ==========", entryThreadId);
 
-  LARGE_INTEGER qpc;
-  QueryPerformanceCounter(&qpc);
-  int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
-  g_PerfMetrics.Update(us);
-  if (g_IPC) {
-    g_PerfMetrics.SetRecording(g_IPC->IsRecording());
-  }
+   static int64_t qpcFreq = 0;
+   if (qpcFreq == 0) {
+     LARGE_INTEGER f;
+     QueryPerformanceFrequency(&f);
+     qpcFreq = f.QuadPart;
+   }
+
+   LARGE_INTEGER qpc;
+   QueryPerformanceCounter(&qpc);
+   int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
+   g_PerfMetrics.Update(us);
+   if (g_IPC) {
+     g_PerfMetrics.SetRecording(g_IPC->IsRecording());
+   }
 
   IDXGISwapChain3* sc3 = nullptr;
   if (FAILED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3))) || !sc3) {
@@ -1262,6 +1267,11 @@ void CleanupNativeInterfaces() {
 void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
   if (!pSwapChain) return;
   
+  // CRASH CONTEXT: Log entry with thread ID
+  static DWORD entryThreadId = 0;
+  entryThreadId = GetCurrentThreadId();
+  HookLog("DX12: [T:%04X] ========== ProcessFrame ENTRY ==========", entryThreadId);
+
   // Vulkan coordination: Skip DX12 overlay if Vulkan Layer is active AND presenting.
   // This handles "Vulkan on DXGI" cases where Vulkan presents via DXGI on a different thread.
   if (g_pSharedMem) {
@@ -1326,13 +1336,6 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
    if (!sc3) {
        if (shouldLog) HookLog("DX12: ProcessFrame - Swapchain is not IDXGISwapChain3 - some features may be degraded");
    } else {
-       // DEBUG: Log swapchain config
-       DXGI_SWAP_CHAIN_DESC scDesc = {};
-       if (SUCCEEDED(pSwapChain->GetDesc(&scDesc))) {
-           HookLog("DX12: DEBUG - SwapChain Config: %ux%u, Buffers=%u, Format=%u, SwapEffect=%u, Windowed=%u",
-                   scDesc.BufferDesc.Width, scDesc.BufferDesc.Height, scDesc.BufferCount,
-                   scDesc.BufferDesc.Format, scDesc.SwapEffect, scDesc.Windowed);
-       }
        if (shouldLog && !g_State.imGuiInit) HookLog("DX12: ProcessFrame - Valid IDXGISwapChain3 detected: %p", sc3);
    }
   
@@ -1396,12 +1399,8 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
    ID3D12CommandQueue* targetQueue = nullptr;
    {
        std::lock_guard<std::mutex> devLock(g_DeviceQueuesMutex);
-       HookLog("DX12: DEBUG - g_DeviceQueues has %zu entries", g_DeviceQueues.size());
        if (g_DeviceQueues.count(g_Device)) {
            targetQueue = g_DeviceQueues[g_Device];
-           D3D12_COMMAND_QUEUE_DESC qDesc = targetQueue->GetDesc();
-           HookLog("DX12: DEBUG - Found queue in g_DeviceQueues: Queue=%p, NodeMask=0x%X, Type=%u",
-                   targetQueue, qDesc.NodeMask, qDesc.Type);
        }
    }
    // Fallback: read g_CommandQueue under lock
@@ -1409,9 +1408,6 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
        std::lock_guard<std::mutex> qLock(g_CommandQueueMutex);
        if (g_CommandQueue) {
            targetQueue = g_CommandQueue;
-           D3D12_COMMAND_QUEUE_DESC qDesc = targetQueue->GetDesc();
-           HookLog("DX12: DEBUG - Using fallback g_CommandQueue: Queue=%p, NodeMask=0x%X, Type=%u",
-                   targetQueue, qDesc.NodeMask, qDesc.Type);
        }
    }
 
@@ -1454,29 +1450,32 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
                newLuid = ((UINT64)newluid.HighPart << 32) | newluid.LowPart;
                newDev->Release();
            }
-           HookLog("DX12: Queue changing: Old=%p (LUID=0x%016llX, NodeMask=0x%X) -> New=%p (LUID=0x%016llX, NodeMask=0x%X)",
-                   g_CommandQueue, oldLuid, oldDesc.NodeMask,
-                   targetQueue, newLuid, newDesc.NodeMask);
-           
-           if (g_CommandQueue) g_CommandQueue->Release();
-           g_CommandQueue = targetQueue;
-           g_CommandQueue->AddRef();
-           queueChanged = true;
-           if (++s_QueueChangeLog < 5 || s_QueueChangeLog % 60 == 0) {
-               HookLog("DX12: ProcessFrame - Queue changed to %p (Log=%d)", g_CommandQueue, s_QueueChangeLog);
-           }
-       }
+            HookLog("DX12: [T:%04X] Queue changing: Old=%p (LUID=0x%016llX, NodeMask=0x%X) -> New=%p (LUID=0x%016llX, NodeMask=0x%X)",
+                    GetCurrentThreadId(), g_CommandQueue, oldLuid, oldDesc.NodeMask,
+                    targetQueue, newLuid, newDesc.NodeMask);
+            
+            if (g_CommandQueue) g_CommandQueue->Release();
+            g_CommandQueue = targetQueue;
+            g_CommandQueue->AddRef();
+            queueChanged = true;
+            if (++s_QueueChangeLog < 5 || s_QueueChangeLog % 60 == 0) {
+                HookLog("DX12: [T:%04X] ProcessFrame - Queue changed to %p (Log=%d)", GetCurrentThreadId(), g_CommandQueue, s_QueueChangeLog);
+            }
+        }
    }
 
-   // Create a local AddRef'd snapshot for this frame's operations
-   ID3D12CommandQueue* frameQueue = nullptr;
-   {
-       std::lock_guard<std::mutex> qLock(g_CommandQueueMutex);
-       if (g_CommandQueue) {
-           frameQueue = g_CommandQueue;
-           frameQueue->AddRef();
-       }
-   }
+    // Create a local AddRef'd snapshot for this frame's operations
+    ID3D12CommandQueue* frameQueue = nullptr;
+    {
+        DWORD lockThreadId = GetCurrentThreadId();
+        std::lock_guard<std::mutex> qLock(g_CommandQueueMutex);
+        HookLog("DX12: [T:%04X] Queue snapshot lock acquired (Thread=%04X)", 
+                GetCurrentThreadId(), lockThreadId);
+        if (g_CommandQueue) {
+            frameQueue = g_CommandQueue;
+            frameQueue->AddRef();
+        }
+    }
 
    if (!frameQueue) {
        if (shouldLog) HookLog("DX12: ProcessFrame - Queue disappeared during frame setup!");
