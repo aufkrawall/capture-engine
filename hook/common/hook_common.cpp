@@ -1,4 +1,5 @@
 #include "hook_common.h"
+#include "hook_context.h"
 #include "performance_metrics.h"
 #include "system_metrics.h"
 #include <stdarg.h>
@@ -7,6 +8,37 @@
 #include <windows.h>
 
 char g_ProcessName[260] = "unknown";
+
+// Sync HookContext with legacy global variables
+// This provides a bridge during the gradual migration from scattered globals to HookContext
+void ce::SyncWithLegacyGlobals() {
+    auto* ctx = GetHookContext();
+    if (!ctx) return;
+    
+    // Link IPC - HookContext wraps the global, not replaces it yet
+    if (g_IPC && !ctx->ipc) {
+        // For now, HookContext doesn't own g_IPC, just references it
+        // In future migration, HookContext will own the IPCClient
+        ctx->sharedMem = g_IPC->GetSharedMem();
+    }
+    
+    // Sync config pointer
+    if (g_pLocalConfig && !ctx->localConfig) {
+        // Don't take ownership - just sync reference
+        // Future: ctx->localConfig = std::unique_ptr<AppConfig>(g_pLocalConfig);
+    }
+    
+    // Sync debug logging flag
+    if (ctx->sharedMem && ctx->sharedMem->debugLogging) {
+        ctx->debugLoggingEnabled = true;
+    }
+    
+    // Copy process name
+    strncpy_s(ctx->processName, g_ProcessName, _TRUNCATE);
+    ctx->processId = GetCurrentProcessId();
+    
+    CE_LOG_DEBUG("HookCtx", "synced with legacy globals");
+}
 
 bool BuildLogFilePathForModuleAddress(const void* address, const char* fileName, char* outPath, size_t outPathLen) {
   if (!outPath || outPathLen == 0) return false;
@@ -57,6 +89,7 @@ void TryEnableFrameTimeCSVLogging(SharedMemoryLayout* shm, const void* address, 
 }
 
 IPCClient *g_IPC = nullptr;
+SharedMemoryLayout* g_pSharedMem = nullptr;
 std::atomic<bool> g_ShuttingDown{false};
 std::atomic<bool> g_GraphicsOverridesActive{false};
 

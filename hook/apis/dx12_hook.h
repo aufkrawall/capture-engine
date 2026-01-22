@@ -3,14 +3,18 @@
 #include <d3d12.h>
 #include <dxgi1_4.h>
 #include <mutex>
+#include <vector>
 
 class DX12Hook : public GraphicsHook {
+  std::vector<IUnknown*> trackedResources;
+  std::mutex resourceMutex;
 public:
   void Init() override;
   void Shutdown() override;
   void OnHostDisconnect() override;
 
-  // Provide access to detected addresses if needed, or keep internal.
+  void TrackResource(IUnknown* res);
+  void CleanupResources();
 };
 
 extern DX12Hook g_dx12HookInstance;

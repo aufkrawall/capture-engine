@@ -1,3 +1,18 @@
+#include <unordered_map>
+#include <unordered_set>
+#include <shared_mutex>
+#include <atomic>
+#include <mutex>
+#include <vector>
+#include <string>
+#include <cstdint>
+#include <cstdio>
+
+#include "../../external/imgui/imgui.h"
+#include "../../external/imgui/backends/imgui_impl_dx11.h"
+#include "../../external/imgui/backends/imgui_impl_dx10.h"
+#include "../../external/imgui/backends/imgui_impl_win32.h"
+
 #include "dx11_hook.h"
 #include "graphics_hook.h"
 #include "../wrappers/wrapper_base.h"
@@ -6,17 +21,18 @@
 #include "../common/fps_limiter.h"
 #include "../common/overlay.h"
 #include "../common/fg_detection.h"
-#include "hook_common.h"
+#include "../common/hook_common.h"
+#include "../../common/raii_helpers.h"
 #include "../../common/frame_timing.h"
+#include "../common/deferred_release.h"
 #include "performance_metrics.h"
 #include "dx12_hook.h"
+
+// Global Deferred Release Queue for D3D11 resources
+// Prevents render thread stalls during resource destruction
+ce::DeferredReleaseQueue g_DeferredRelease;
 #include "../wrappers/vtable_hook.h"
-#include <backends/imgui_impl_dx11.h>
-#include <backends/imgui_impl_dx10.h>
-#include <backends/imgui_impl_win32.h>
 #include "../common/input_manager.h"
-#include <cstdint>
-#include <cstdio>
 #include <d3d10.h>    // For DX10 detection
 #include <d3d10_1.h>  // For DX10.1 detection
 #include <d3d11.h>
@@ -26,9 +42,9 @@
 #include <dxgi1_2.h> // Required for IDXGIResource1 and CreateSharedHandle
 #include <dxgi1_4.h> // For IDXGISwapChain3
 #include <d3dcompiler.h>
-#include <imgui.h>
 #include "../wrappers/wrapper_base.h"
-#include <mutex>
+// mutex already included
+
 
 // Forward declaration for cross-file DX12 overlay invalidation
 // Called when FSR4SwapchainProvider creates a new swapchain to signal pending cleanup
@@ -121,10 +137,37 @@ static GSSetSamplers10_t oGSSetSamplers10 = NULL;
 #include <unordered_set>
 #include <shared_mutex>
 #include <atomic>
-static std::unordered_map<ID3D10SamplerState*, ID3D10SamplerState*> g_SamplerCache10;
+#include <vector>
+#include <algorithm>
+
+// Use vector instead of map to avoid STL template issues with Clang/MSVC headers
+static std::vector<std::pair<ID3D10SamplerState*, ID3D10SamplerState*>> g_SamplerCache10;
 static std::shared_mutex g_SamplerCacheMutex10;
 static ID3D10Device* g_CachedD3D10Device = nullptr;
-static std::unordered_set<ID3D10SamplerState*> g_ReplacementSamplers10; // Prevent recursive replacements
+static std::vector<ID3D10SamplerState*> g_ReplacementSamplers10; // Prevent recursive replacements
+
+// Helper for linear search
+static ID3D10SamplerState* FindReplacementSampler(ID3D10SamplerState* original) {
+    for (const auto& entry : g_SamplerCache10) {
+        if (entry.first == original) return entry.second;
+    }
+    return nullptr;
+}
+
+static void AddReplacementSampler(ID3D10SamplerState* original, ID3D10SamplerState* replacement) {
+    g_SamplerCache10.push_back({original, replacement});
+}
+
+static bool IsReplacementSampler(ID3D10SamplerState* sampler) {
+    for (auto s : g_ReplacementSamplers10) {
+        if (s == sampler) return true;
+    }
+    return false;
+}
+
+static void AddToReplacementSet(ID3D10SamplerState* sampler) {
+    g_ReplacementSamplers10.push_back(sampler);
+}
 
 // Use typedef from dx11_hook.h
 // typedef HRESULT(WINAPI *D3D11CreateDeviceAndSwapChain_t)(...);
@@ -137,11 +180,11 @@ static CreateSwapChain_t oCreateSwapChain = NULL;
 typedef HRESULT(STDMETHODCALLTYPE *CreateSwapChainForHwnd_t)(IDXGIFactory2 *, IUnknown *, HWND, const DXGI_SWAP_CHAIN_DESC1 *, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *, IDXGIOutput *, IDXGISwapChain1 **);
 static CreateSwapChainForHwnd_t oCreateSwapChainForHwnd = NULL;
 
-static ResizeBuffers_t oResizeBuffers = NULL; // Moved up
+static ResizeBuffers_t oResizeBuffers = NULL;
 
-// Forward Declarations
-static HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT Flags);
-static HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS *pPresentParameters);
+// Forward Declarations (non-static for cross-file hook collision detection from dx12_hook.cpp)
+HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT Flags);
+HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS *pPresentParameters);
 static HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain *pSwapChain, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags);
 static void InstallVTableHooks(ID3D11Device *pDevice, ID3D11DeviceContext* pContext, IDXGISwapChain* pSwapChain);
 static void HookDXGIFactory(IUnknown* pDevice);
@@ -450,16 +493,38 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory *pFactory, I
             }
         }
         
-        ID3D11Device* pD3D11Device = nullptr;
-        if (SUCCEEDED((*ppSwapChain)->GetDevice(__uuidof(ID3D11Device), (void**)&pD3D11Device))) {
-             ID3D11DeviceContext* ctx = nullptr;
-             pD3D11Device->GetImmediateContext(&ctx);
-             InstallVTableHooks(pD3D11Device, ctx, *ppSwapChain);
-             if (ctx) ctx->Release();
-             pD3D11Device->Release();
-        } else {
-             // Fallback for D3D10/10.1 or other versions
-             InstallVTableHooks(NULL, NULL, *ppSwapChain);
+        // First try D3D12 - DX12 games create swapchains via DXGI too
+        ID3D12CommandQueue* pD3D12Queue = nullptr;
+        ID3D12Device* pD3D12Device = nullptr;
+        
+        // Check for CommandQueue (standard DX12)
+        if (pDevice && SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D12CommandQueue), (void**)&pD3D12Queue))) {
+             HookLog("DX11: CreateSwapChain - Detected DX12 CommandQueue.");
+             DX12_SignalFSR4SwapchainRecreated();
+             HookLog("DX11: Skipping DX12 hook installation from DX11 path (FG safety)");
+             pD3D12Queue->Release();
+        } 
+        // Check for D3D12 Device (non-standard but possible, or checking on swapchain itself)
+        else if (ppSwapChain && *ppSwapChain && SUCCEEDED((*ppSwapChain)->GetDevice(__uuidof(ID3D12Device), (void**)&pD3D12Device))) {
+             HookLog("DX11: CreateSwapChain - Detected DX12 Device from SwapChain.");
+             DX12_SignalFSR4SwapchainRecreated();
+             HookLog("DX11: Skipping DX12 hook installation from DX11 path (Device detection)");
+             pD3D12Device->Release();
+        }
+        else {
+            // DX11 path - original logic
+            ID3D11Device* pD3D11Device = nullptr;
+            if (SUCCEEDED((*ppSwapChain)->GetDevice(__uuidof(ID3D11Device), (void**)&pD3D11Device))) {
+                 ID3D11DeviceContext* ctx = nullptr;
+                 pD3D11Device->GetImmediateContext(&ctx);
+                 InstallVTableHooks(pD3D11Device, ctx, *ppSwapChain);
+                 if (ctx) ctx->Release();
+                 pD3D11Device->Release();
+            } else {
+                 // Fallback for D3D10/10.1 or other versions
+                 // CRITICAL FIX: Ensure we don't hook a DX12 swapchain that missed the checks above
+                 InstallVTableHooks(NULL, NULL, *ppSwapChain);
+            }
         }
     }
     return hr;
@@ -501,18 +566,23 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2 *pFa
         
         // First try D3D12 - DX12 games create swapchains via DXGI too
         ID3D12CommandQueue* pD3D12Queue = nullptr;
+        ID3D12Device* pD3D12Device = nullptr;
+        
+        // Check for CommandQueue (standard DX12)
         if (pDevice && SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D12CommandQueue), (void**)&pD3D12Queue))) {
              HookLog("DX11: CreateSwapChainForHwnd - Detected DX12 CommandQueue.");
-             // Signal for DX12 thread to handle cleanup (avoid cross-thread deadlock)
-             HookLog("DX11: FSR4/FG DX12 queue detected - signaling for DX12 thread cleanup");
              DX12_SignalFSR4SwapchainRecreated();
-             // IMPORTANT: Do NOT install DX12 hooks here!
-             // FG runtimes (DLSS-G, FSR-FG) load their DLLs AFTER the first swapchain is created,
-             // then recreate the swapchain. If we hook here, those hooks become invalid.
-             // Let the DX12 hook's own initialization handle Present hooks safely.
              HookLog("DX11: Skipping DX12 hook installation from DX11 path (FG safety)");
              pD3D12Queue->Release();
-        } else {
+        } 
+        // Check for D3D12 Device (non-standard but possible, or checking on swapchain itself)
+        else if (ppSwapChain && *ppSwapChain && SUCCEEDED((*ppSwapChain)->GetDevice(__uuidof(ID3D12Device), (void**)&pD3D12Device))) {
+             HookLog("DX11: CreateSwapChainForHwnd - Detected DX12 Device from SwapChain.");
+             DX12_SignalFSR4SwapchainRecreated();
+             HookLog("DX11: Skipping DX12 hook installation from DX11 path (Device detection)");
+             pD3D12Device->Release();
+        }
+        else {
             // DX11 path - original logic
             ID3D11Device* pD3D11Device = nullptr;
             if (SUCCEEDED((*ppSwapChain)->GetDevice(__uuidof(ID3D11Device), (void**)&pD3D11Device))) {
@@ -523,6 +593,8 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2 *pFa
                  pD3D11Device->Release();
             } else {
                  // Fallback for D3D10/10.1 or other versions
+                 // CRITICAL FIX: Ensure we don't hook a DX12 swapchain that missed the checks above
+                 // This prevents infinite ResizeBuffers loops in games like Strange Brigade DX12
                  InstallVTableHooks(NULL, NULL, *ppSwapChain);
             }
         }
@@ -588,6 +660,36 @@ static void STDMETHODCALLTYPE DetourDrawIndexedInstanced10(ID3D10Device* pDevice
 
 // Helper to install vtable hooks
 static void InstallVTableHooks(ID3D11Device *pDevice, ID3D11DeviceContext* pContext, IDXGISwapChain* pSwapChain) {
+    if (pSwapChain) {
+        HookLog("DX11: InstallVTableHooks called for SwapChain %p", pSwapChain);
+        
+        // SAFETY CHECK 1: Is this our own wrapper?
+        // We MUST NOT install VTable hooks on our own wrapper, or we'll overwrite our own virtual table!
+        IUnknown* pWrapperCheck = nullptr;
+        if (SUCCEEDED(pSwapChain->QueryInterface(IID_CWrapDXGISwapChain, (void**)&pWrapperCheck))) {
+            pWrapperCheck->Release();
+            HookLog("DX11: InstallVTableHooks - ABORTING. SwapChain %p is our own CWrapDXGISwapChain wrapper!", pSwapChain);
+            return;
+        }
+
+        // SAFETY CHECK 2: Is this a DX12 Swapchain?
+        // If so, we MUST NOT install DX11/DX10 hooks, or we'll cause infinite recursion/crashes.
+        {
+            ID3D12Device* d12Dev = nullptr;
+            if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D12Device), (void**)&d12Dev))) {
+                d12Dev->Release();
+                HookLog("DX11: InstallVTableHooks - ABORTING. Detected DX12 Device on SwapChain %p", pSwapChain);
+                return;
+            }
+            ID3D12CommandQueue* d12Queue = nullptr;
+            if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D12CommandQueue), (void**)&d12Queue))) {
+                d12Queue->Release();
+                HookLog("DX11: InstallVTableHooks - ABORTING. Detected DX12 CommandQueue on SwapChain %p", pSwapChain);
+                return;
+            }
+        }
+    }
+
     // Hook D3D11 Device methods
     if (pDevice) {
         void **pDeviceVTable = *(void ***)pDevice;
@@ -685,8 +787,6 @@ static void InstallVTableHooks(ID3D11Device *pDevice, ID3D11DeviceContext* pCont
     }
 }
 
-// static ResizeBuffers_t oResizeBuffers = NULL; // Moved to top
-
 static PerformanceMetrics g_PerfMetrics;
 
 // Update metrics for wrapper calls
@@ -696,6 +796,9 @@ void DX11_UpdatePerformanceMetrics(int64_t qpcUs) {
 
 static bool g_ImGuiInitialized = false;
 static HWND g_CachedHwnd = NULL;
+
+// Reentrancy guard for ResizeBuffers (Recursion Breaker)
+thread_local int g_ResizeBuffersDepth = 0;
 
 // DX11 Capture Implementation extending HookCaptureBase
 // Supports both DX11 and DX10 games - DX10 games require creating a D3D11 device
@@ -724,32 +827,33 @@ public:
   // sharedTextureHandles are in base class
 
   void Cleanup() override {
-    StopCaptureThread();
+    CaptureBase::StopCaptureThread();
     // Close shared handles first to prevent leaks
-    CleanupSharedHandles();
+    CaptureBase::CleanupSharedHandles();
     
     for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
-        if (sharedTextures[i])
-            sharedTextures[i]->Release();
+        g_DeferredRelease.Queue(sharedTextures[i]);
         sharedTextures[i] = nullptr;
-        if (copyQueries[i])
-            copyQueries[i]->Release();
+        
+        g_DeferredRelease.Queue(copyQueries[i]);
         copyQueries[i] = nullptr;
     }
 
-    if (fence) { fence->Release(); fence = nullptr; }
-    if (context4) { context4->Release(); context4 = nullptr; }
+    g_DeferredRelease.Queue(fence);
+    fence = nullptr;
     
-    if (ownedContext) ownedContext->Release();
+    g_DeferredRelease.Queue(context4);
+    context4 = nullptr;
+    
+    g_DeferredRelease.Queue(ownedContext);
     ownedContext = nullptr;
-    if (ownedDevice) ownedDevice->Release();
+    
+    g_DeferredRelease.Queue(ownedDevice);
     ownedDevice = nullptr;
     
     for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
-        if (keyedMutexes[i]) {
-            keyedMutexes[i]->Release();
-            keyedMutexes[i] = nullptr;
-        }
+        g_DeferredRelease.Queue(keyedMutexes[i]);
+        keyedMutexes[i] = nullptr;
     }
     
     cachedDevice = nullptr;
@@ -1227,6 +1331,14 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
   ID3D11Device *device11 = NULL;
   HRESULT hrDevice = pSwapChain->GetDevice(IID_PPV_ARGS(&device11));
   if (FAILED(hrDevice)) {
+      // Check for D3D12 (Safety Fallback)
+      ID3D12Device* device12 = nullptr;
+      if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D12Device), (void**)&device12))) {
+          if (frameCount % 60 == 0) EarlyLog("DX: Identified as D3D12 device (Interop/Mismatch) - Skipping DX11 Overlay");
+          device12->Release();
+          return;
+      }
+      
       if (frameCount % 60 == 0) EarlyLog("DX: FAILED to get D3D11 device (hr=0x%08X)", hrDevice);
       return; // Unknown device type
   }
@@ -1343,13 +1455,58 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain *pSwapChain,
                                                UINT BufferCount, UINT Width,
                                                UINT Height, DXGI_FORMAT NewFormat,
                                                UINT SwapChainFlags) {
+  // RECURSION BREAKER: If we are calling ourselves recursively, bail out immediately.
+  // This handles the "Hooked the Hook" scenario or infinite unhook/rehook loops.
+  if (g_ResizeBuffersDepth > 0) {
+      // WrapperLog("DX11: ResizeBuffers recursion detected! Bailing to prevent crash.");
+      // We must call original if possible, but if original points to us, we can't.
+      // If oResizeBuffers == DetourResizeBuffers, we are stuck.
+      // Safe bet: just return S_OK to stop the madness.
+      return S_OK;
+  }
+  g_ResizeBuffersDepth++;
+  
+  // Guard for auto-resetting depth
+  auto depthGuard = ce::make_scope_guard([&]{ g_ResizeBuffersDepth--; });
+
   HookLog("DX11: ResizeBuffers called (%dx%d)", Width, Height);
+
+  // Safety: Check if oResizeBuffers is valid
+  if (!oResizeBuffers) {
+      HookLog("DX11: ResizeBuffers - Original function pointer is NULL! Bailing.");
+      return S_OK; 
+  }
+  
+  // Safety: Check if oResizeBuffers points to US (Cycle Detection)
+  if ((void*)oResizeBuffers == (void*)DetourResizeBuffers) {
+      HookLog("DX11: ResizeBuffers - Original function points to DETOUR! Cycle detected. Bailing.");
+      return S_OK;
+  }
 
   {
     ID3D12Device* d12Dev = nullptr;
     if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&d12Dev))) && d12Dev) {
       d12Dev->Release();
       DX12_OnSwapchainResizeBegin();
+      
+      // SELF-DESTRUCT: We are a DX11 hook on a DX12 swapchain.
+      // Unhook ourselves to prevent infinite loops.
+      HookLog("DX11: DetourResizeBuffers - DX12 detected. Unhooking DX11 ResizeBuffers from this SwapChain.");
+      
+      void** vtable = *(void***)pSwapChain;
+      DWORD oldProtect;
+      if (VirtualProtect(&vtable[13], sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+          // Double check we are overwriting OURSELVES (or a hook), not something random
+          // But actually we just want to restore 'oResizeBuffers' (the Real Original).
+          vtable[13] = (void*)oResizeBuffers;
+          VirtualProtect(&vtable[13], sizeof(void*), oldProtect, &oldProtect);
+          HookLog("DX11: DetourResizeBuffers - VTable[13] restored to original.");
+      } else {
+          HookLog("DX11: DetourResizeBuffers - FAILED to restore VTable[13]!");
+      }
+      
+      // Call original immediately and return
+      return oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
     }
   }
   
@@ -1369,6 +1526,11 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain *pSwapChain,
     if (g_IsDX10Active) ImGui_ImplDX10_InvalidateDeviceObjects();
   }
   
+  // Check for Waitable Swapchain
+  if (SwapChainFlags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) {
+      HookLog("DX11: ResizeBuffers: Waitable Swapchain detected");
+  }
+
   // Apply backbuffer count override
   int count = GetActiveGraphicsConfig().backbufferCount;
   if (count >= 2 && count <= 6) {
@@ -1378,6 +1540,12 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain *pSwapChain,
 
   // Call original ResizeBuffers
   HRESULT hr = oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
+  
+  if (FAILED(hr)) {
+      HookLog("DX11: ResizeBuffers FAILED hr=0x%08X", hr);
+  } else {
+      HookLog("DX11: ResizeBuffers SUCCESS");
+  }
   
   // Recreate ImGui device objects after resize
   if (g_ImGuiInitialized && SUCCEEDED(hr)) {
@@ -1460,519 +1628,68 @@ static void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
     dev->Release();
 }
 
-// Reentrancy guard definition (declared in graphics_hook.h)
+// Reentrancy guard for Present
 thread_local bool g_InPresentHook = false;
 
 HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
                                             UINT SyncInterval, UINT Flags) {
-  bool isFirstHook = !g_InPresentHook;
-  g_InPresentHook = true;
-
-  static int64_t qpcFreq = 0;
-  if (qpcFreq == 0) {
-    LARGE_INTEGER f;
-    QueryPerformanceFrequency(&f);
-    qpcFreq = f.QuadPart;
-  }
   
-  static int presentCount = 0;
-  if (++presentCount % 60 == 0) {
-      CWrapDXGISwapChain* wrapper = WrapperStateManager::Get().FindWrapper(pSwapChain);
-      EarlyLog("DX11 Hook: DetourDX11Present called (count=%d, SC=%p) -> Wrapper=%p", presentCount, pSwapChain, wrapper);
-      if (wrapper == nullptr) {
-          // Check if ANY wrapper exists for a different pointer (potential mismatch)
-          // But WrapperStateManager doesn't support that easily.
+  // Vulkan coordination: Skip DX11 overlay if Vulkan Layer is active AND presenting.
+  if (g_pSharedMem) {
+      uint64_t lastVulkan = g_pSharedMem->runtimeState.vulkanPresentTick.load(std::memory_order_acquire);
+      if (g_pSharedMem->runtimeState.vulkanLayerActive && (GetTickCount64() - lastVulkan < 200)) {
+          return oPresent(pSwapChain, SyncInterval, Flags);
       }
   }
 
-  if (g_ShuttingDown) {
-    if (isFirstHook) g_InPresentHook = false;
-    return oPresent(pSwapChain, SyncInterval, Flags);
-  }
-
-  LARGE_INTEGER qpc;
-  QueryPerformanceCounter(&qpc);
-  int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
-
-  // Apply overrides early so they also affect the DX11->DX12 fallback path.
-  // (D2R uses a DX12 swapchain that can land in this DX11 Present hook.)
-  if (isFirstHook) {
-    // Apply VSync Override
-    VSyncOverride vsyncEarly = GetVSyncOverride();
-    if (vsyncEarly.shouldOverride) {
-        SyncInterval = (UINT)vsyncEarly.presentInterval;
-        if (SyncInterval > 0) {
-            Flags &= ~DXGI_PRESENT_ALLOW_TEARING;
-        }
-    }
-  }
-
-  if (isFirstHook) {
-    // Apply Prerender Limit
-    float limitEarly = GetActivePrerenderLimit();
-    if (limitEarly >= 0.0f) {
-        static float lastLimitEarly = -2.0f;
-        if (fabs(limitEarly - lastLimitEarly) > 0.001f) {
-            ID3D11Device* dev = nullptr;
-            if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&dev)))) {
-                IDXGIDevice1* dxgiDev = nullptr;
-                if (SUCCEEDED(dev->QueryInterface(IID_PPV_ARGS(&dxgiDev)))) {
-                     UINT effectiveLatency = (limitEarly < 1.0f) ? 1 : (UINT)limitEarly;
-                     dxgiDev->SetMaximumFrameLatency(effectiveLatency);
-                     dxgiDev->Release();
-                     HookLog("DX11: Set maximum DXGI latency to %d (Active Limit: %.2f)", effectiveLatency, limitEarly);
-                }
-                dev->Release();
-            }
-            lastLimitEarly = limitEarly;
-        }
-        ApplyPrerenderLimit(pSwapChain, limitEarly);
-    }
-  }
-
-  // DX12 swapchains can land in this hook (DXGI interop). In that case, route to DX12 overlay/capture.
-  // This also serves as a fallback when DX12 Present hooks are unavailable due to MinHook conflicts.
+  // SAFETY CHECK: DX12 Detection
+  // If this swapchain is actually DX12, we must NOT draw the DX11 overlay.
+  // This happens when InstallVTableHooks fails to detect DX12 initially (race condition or interop),
+  // or when DX11 hooks installed on a shared vtable that DX12 also uses.
+  //
+  // CRITICAL FIX: When DX11 hooks a DX12 swapchain, we MUST delegate to DX12_ProcessFrameExternal
+  // so that the DX12 overlay still renders. Otherwise, no overlay appears at all.
   {
-    ID3D12Device* d12Dev = nullptr;
-    if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&d12Dev))) && d12Dev) {
-      d12Dev->Release();
-      DX12_ProcessFrameExternal(pSwapChain);
-      
-      if (isFirstHook) {
-        // Apply shared FPS limiter
-        g_SharedFpsLimiter.SetIPCClient(g_IPC);
-        g_SharedFpsLimiter.Apply();
-      }
-
-      HRESULT hr = oPresent(pSwapChain, SyncInterval, Flags);
-      if (isFirstHook) g_InPresentHook = false;
-      return hr;
-    }
-  }
-  
-  // LOG ONCE: Actual SwapChain Desc
-  static bool loggedSC = false;
-  if (!loggedSC && g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) {
-      DXGI_SWAP_CHAIN_DESC desc;
-      if (SUCCEEDED(pSwapChain->GetDesc(&desc))) {
-          EarlyLog("DX11: Present Hook - Actual SwapChain: Width=%u Height=%u Windowed=%d BufferCount=%u SwapEffect=%d Flags=0x%X",
-              desc.BufferDesc.Width, desc.BufferDesc.Height, 
-              desc.Windowed, desc.BufferCount, 
-              desc.SwapEffect, desc.Flags);
-           loggedSC = true;
-
-      }
-  }
-
-  // Report LUID (Always run this once)
-  static bool luidReported = false;
-  if (!luidReported) {
-       ID3D11Device* dev = nullptr;
-       // Try D3D11 path first
-       if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&dev)))) {
-           IDXGIDevice* dxgiDev = nullptr;
-           if (SUCCEEDED(dev->QueryInterface(IID_PPV_ARGS(&dxgiDev)))) {
-               IDXGIAdapter* adapter = nullptr;
-               if (SUCCEEDED(dxgiDev->GetAdapter(&adapter))) {
-                   DXGI_ADAPTER_DESC adesc;
-                   adapter->GetDesc(&adesc);
-                   ReportLUID(adesc.AdapterLuid.LowPart, adesc.AdapterLuid.HighPart);
-                   EarlyLog("DX11: Reported LUID %08x:%08x", adesc.AdapterLuid.HighPart, adesc.AdapterLuid.LowPart);
-                   adapter->Release();
-                   luidReported = true;
-               }
-               dxgiDev->Release();
-           }
-           dev->Release();
-       } else {
-            // Fallback for DX10? 
-            // DX10 swapchains usually work with GetDevice(D3D11) if wrapped, but if not we might need another path.
-            // For now, the existing logic relied on GetDevice(IID_ID3D11Device), so we keep it.
-       }
-  }
-
-  // Initialize CSV logging once - only if debug logging is enabled
-  static bool csvLoggingInitialized = false;
-  IPCClient* ipc = g_IPC;
-  SharedMemoryLayout* csvShm = (ipc) ? ipc->GetSharedMem() : nullptr;
-
-  if (isFirstHook) {
-    // Apply VSync Override
-    VSyncOverride vsync = GetVSyncOverride();
-    if (vsync.shouldOverride) {
-        SyncInterval = (UINT)vsync.presentInterval;
-        if (SyncInterval > 0) {
-            Flags &= ~DXGI_PRESENT_ALLOW_TEARING;
-        }
-    }
-  }
-
-  // Apply Prerender Limit
-  if (isFirstHook) {
-      float limit = GetActivePrerenderLimit();
-      if (limit >= 0.0f) {
-          static float lastLimit = -2.0f;
-          if (fabs(limit - lastLimit) > 0.001f) {
-              ID3D11Device* dev = nullptr;
-              if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&dev)))) {
-                  IDXGIDevice1* dxgiDev = nullptr;
-                  if (SUCCEEDED(dev->QueryInterface(IID_PPV_ARGS(&dxgiDev)))) {
-                       UINT effectiveLatency = (limit < 1.0f) ? 1 : (UINT)limit;
-                       dxgiDev->SetMaximumFrameLatency(effectiveLatency);
-                       dxgiDev->Release();
-                       HookLog("DX11: Set maximum DXGI latency to %d (Active Limit: %.2f)", effectiveLatency, limit);
-                  }
-                  dev->Release();
-              }
-              lastLimit = limit;
+      ID3D12Device* d12Dev = nullptr;
+      if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D12Device), (void**)&d12Dev))) {
+          d12Dev->Release();
+          
+          // DX12 detected. Skip DX11 overlay but delegate to DX12 for frame processing.
+          static bool s_LoggedDX12Mismatch = false;
+          if (!s_LoggedDX12Mismatch) {
+              HookLog("DX11: DetourDX11Present - DX12 Device detected! Delegating to DX12_ProcessFrameExternal.");
+              s_LoggedDX12Mismatch = true;
           }
-          ApplyPrerenderLimit(pSwapChain, limit);
+          
+          // Delegate to DX12 hook for overlay/capture processing
+          // DX12_ProcessFrameExternal is defined in dx12_hook.cpp
+          extern void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain);
+          DX12_ProcessFrameExternal(pSwapChain);
+          
+          return oPresent(pSwapChain, SyncInterval, Flags);
       }
-  }
-
-  if (isFirstHook) {
-    TryEnableFrameTimeCSVLogging(csvShm, (const void*)&DetourDX11Present, g_PerfMetrics, "DX11", csvLoggingInitialized);
-
-    // Use wrapper status to prevent double-counting FPS (Wrapper + Hook)
-    if (!WrapperStateManager::Get().FindWrapper(pSwapChain)) {
-        g_PerfMetrics.Update(us);
-    }
   }
   
-  // Update recording state for CSV logging
-  bool isRecording = ipc && ipc->IsRecording();
-  g_PerfMetrics.SetRecording(isRecording);
-
-  // Track whether overlay was already drawn (for skip_capture path)
-  bool overlayDrawn = false;
-  
-  // Capture Logic
-  if (ipc && isRecording) {
-    // Try to get D3D11 device first; if fails, this is a DX10 game
-    ID3D11Device *device = NULL;
-    bool isDX10 = false;
-    
-    if (FAILED(pSwapChain->GetDevice(IID_PPV_ARGS(&device)))) {
-        // DX10 game detected
-        isDX10 = true;
-        g_IsDX10Device = true;
-        g_DetectedAPI = "DX10";
-    } else {
-        g_IsDX10Device = false;
-        g_DetectedAPI = "DX11";
-    }
-
-    // Lazy init
-    if (!g_DX11Capture.initialized) {
-      if (isDX10) {
-        // DX10 path: create D3D11 device on same adapter first
-        if (!g_DX11Capture.InitDX10(pSwapChain)) {
-            HookLog("DX10: Failed to initialize capture");
-            goto skip_capture;
-        }
-        g_DX11Capture.Init(nullptr, pSwapChain);
-      } else {
-        g_DX11Capture.Init(device, pSwapChain);
-      }
-    }
-
-    // Get backbuffer as D3D11 texture (works for both DX10 and DX11 via DXGI)
-    ID3D11Texture2D *backbuffer = nullptr;
-    pSwapChain->GetBuffer(0, IID_PPV_ARGS(&backbuffer));
-
-    // Get shared memory for overlay config
-    SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
-    bool captureIncludeOverlay = shm ? shm->overlayConfig.captureIncludeOverlay : false;
-    bool shouldDrawOverlay = shm && shm->overlayConfig.showOverlay;
-
-    // Lambda for capture operation
-    auto doCapture = [&]() {
-      if (backbuffer && g_DX11Capture.initialized) {
-        int idx = g_DX11Capture.writeIndex;
-        ID3D11DeviceContext *captureContext = g_DX11Capture.GetCaptureContext();
-
-        if (captureContext) {
-            // Wait for previous copy to this texture to complete (synchronization)
-            // This prevents copying to a texture that's still being used by the consumer
-            if (!g_DX11Capture.WaitForCopy(captureContext, idx, 10)) {
-                static int timeoutLogCount = 0;
-                if (timeoutLogCount++ % 60 == 0) {
-                    HookLog("DX11: Copy query timeout on texture %d - may cause frame corruption", idx);
-                }
-            }
-
-            captureContext->CopyResource(g_DX11Capture.sharedTextures[idx], backbuffer);
-
-            // Issue a query to signal when this copy completes
-            // This allows the next frame to wait for this copy before reusing the texture
-            if (g_DX11Capture.copyQueries[idx]) {
-                captureContext->End(g_DX11Capture.copyQueries[idx]);
-            }
-
-            uint64_t signalValue = 0;
-            if (g_DX11Capture.useFences && g_DX11Capture.context4 && g_DX11Capture.fence) {
-                g_DX11Capture.fenceValue++;
-                signalValue = g_DX11Capture.fenceValue;
-                g_DX11Capture.context4->Signal(g_DX11Capture.fence, signalValue);
-            }
-
-            g_DX11Capture.SignalFrameReady(ipc, idx, qpc.QuadPart, signalValue);
-            g_DX11Capture.AdvanceWriteIndex();
-        }
-      }
-    };
-
-    // Lambda for overlay drawing
-    auto doOverlay = [&]() {
-      if (shouldDrawOverlay) {
-        DrawDX11Overlay(pSwapChain);
-        overlayDrawn = true;
-      }
-    };
-
-    // Order capture/overlay based on config
-    if (captureIncludeOverlay) {
-      doOverlay();   // Draw overlay first
-      doCapture();   // Then capture (includes overlay)
-    } else {
-      doCapture();   // Capture first (clean frame)
-      doOverlay();   // Then draw overlay (visible but not recorded)
-    }
-
-    if (backbuffer)
-      backbuffer->Release();
-    if (device)
-      device->Release();
-  } else if (g_DX11Capture.initialized) {
-    g_DX11Capture.Cleanup();
-  }
-
-skip_capture:
-  // Draw overlay if we skipped the capture path or overlay wasn't already drawn
-  if (!overlayDrawn) {
-    SharedMemoryLayout* shmSkip = g_IPC ? g_IPC->GetSharedMem() : nullptr;
-    if (shmSkip && shmSkip->overlayConfig.showOverlay) {
-      DrawDX11Overlay(pSwapChain);
-    }
-  }
-  
-  if (isFirstHook) {
-    // Apply shared FPS limiter
-    g_SharedFpsLimiter.SetIPCClient(g_IPC);
-    g_SharedFpsLimiter.Apply();
-  }
-
-
-  HRESULT hr = oPresent(pSwapChain, SyncInterval, Flags);
-  if (isFirstHook) g_InPresentHook = false;
-  return hr;
-}
-
-HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain *pSwapChain,
-                                             UINT SyncInterval, UINT PresentFlags,
-                                             const DXGI_PRESENT_PARAMETERS *pPresentParameters) {
   bool isFirstHook = !g_InPresentHook;
   g_InPresentHook = true;
+  auto hookGuard = ce::make_scope_guard([&]{ 
+      // Guard auto-reset 
+  });
 
-  static int presentCount1 = 0;
-  if (++presentCount1 % 60 == 0) {
-      CWrapDXGISwapChain* wrapper = WrapperStateManager::Get().FindWrapper(pSwapChain);
-      EarlyLog("DX11 Hook: DetourDX11Present1 called (count=%d, SC=%p) -> Wrapper=%p", presentCount1, pSwapChain, wrapper);
-  }
+  DrawDX11Overlay(pSwapChain);
 
-  if (g_ShuttingDown) {
-    if (isFirstHook) g_InPresentHook = false;
-    return oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
-  }
-  if (isFirstHook) {
-    // Apply VSync Override
-    VSyncOverride vsync1 = GetVSyncOverride();
-    if (vsync1.shouldOverride) {
-        SyncInterval = (UINT)vsync1.presentInterval;
-        if (SyncInterval > 0) {
-            PresentFlags &= ~DXGI_PRESENT_ALLOW_TEARING;
-        }
-    }
-  }
-
-  if (isFirstHook) {
-      // Apply Prerender Limit
-      float limit1 = GetActivePrerenderLimit();
-      if (limit1 >= 0.0f) {
-          static float lastLimit1 = -2.0f;
-          if (fabs(limit1 - lastLimit1) > 0.001f) {
-              ID3D11Device* dev1 = nullptr;
-              if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&dev1)))) {
-                  IDXGIDevice1* dxgiDev1 = nullptr;
-                  if (SUCCEEDED(dev1->QueryInterface(IID_PPV_ARGS(&dxgiDev1)))) {
-                       UINT effectiveLatency = (limit1 < 1.0f) ? 1 : (UINT)limit1;
-                       dxgiDev1->SetMaximumFrameLatency(effectiveLatency);
-                       dxgiDev1->Release();
-                       HookLog("DX11: Set maximum DXGI latency to %d (Active Limit: %.2f)", effectiveLatency, limit1);
-                  }
-                  dev1->Release();
-              }
-              lastLimit1 = limit1;
-          }
-          ApplyPrerenderLimit(pSwapChain, limit1);
-      }
-  }
-  
-  // Reuse the same logic as Present, just call Present1 at the end
-  // We can pass Flags directly as Present logic handles capture/overlay common parts
-  // Note: We might miss some Present1-specific features but for overlay/capture 
-  // the core logic is the same (getting backbuffer, drawing ImGui)
-  
-  // Call the main capture/overlay logic using the Present detour
-  // We can't easily share the code without refactoring, so we'll just duplicate the essential entry point logic 
-  // or (better) just call the DetourDX11Present logic? 
-  // No, DetourDX11Present calls oPresent at the end. We can't do that.
-  
-  // Let's copy-paste the logic for now or refactor. 
-  // Given the constraint, copy-paste with slight modifications is safer to avoid breaking existing Present hook
-  
-  static int64_t qpcFreq = 0;
-  if (qpcFreq == 0) {
-    LARGE_INTEGER f;
-    QueryPerformanceFrequency(&f);
-    qpcFreq = f.QuadPart;
-  }
-  LARGE_INTEGER qpc;
-  QueryPerformanceCounter(&qpc);
-  int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
-  if (isFirstHook) {
-    // Use wrapper status to prevent double-counting FPS (Wrapper + Hook)
-    if (!WrapperStateManager::Get().FindWrapper(pSwapChain)) {
-        g_PerfMetrics.Update(us);
-    }
-    
-    // Update recording state for CSV logging
-    IPCClient* ipc1 = g_IPC;
-    bool isRecording1 = ipc1 && ipc1->IsRecording();
-    g_PerfMetrics.SetRecording(isRecording1);
-  }
-
-  // DX12 swapchains can land in this hook (DXGI interop). Route to DX12 overlay/capture.
-  // This also serves as a fallback when DX12 Present hooks are unavailable due to MinHook conflicts.
-  if (isFirstHook) {
-    ID3D12Device* d12Dev1 = nullptr;
-    if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&d12Dev1))) && d12Dev1) {
-      d12Dev1->Release();
-      DX12_ProcessFrameExternal(pSwapChain);
-
-      // Apply shared FPS limiter
-      g_SharedFpsLimiter.SetIPCClient(g_IPC);
-      g_SharedFpsLimiter.Apply();
-
-      HRESULT hr = oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
-      if (isFirstHook) g_InPresentHook = false;
-      return hr;
-    }
-  }
-
-  // Capture Logic
-  if (g_IPC && g_IPC->IsRecording()) {
-    // Try to get D3D11 device first; if fails, this is a DX10 game
-    ID3D11Device *device = NULL;
-    bool isDX10 = false;
-    
-    if (FAILED(pSwapChain->GetDevice(IID_PPV_ARGS(&device)))) {
-        // DX10 game detected
-        isDX10 = true;
-        g_IsDX10Device = true;
-        g_DetectedAPI = "DX10";
-    } else {
-        // DX11
-        g_IsDX10Device = false;
-        g_DetectedAPI = "DX11";
-    }
-
-    // Lazy init
-    if (!g_DX11Capture.initialized) {
-      if (isDX10) {
-        if (!g_DX11Capture.InitDX10(pSwapChain)) {
-            HookLog("DX10: Failed to initialize capture");
-            goto skip_capture;
-        }
-        g_DX11Capture.Init(nullptr, pSwapChain);
-      } else {
-        g_DX11Capture.Init(device, pSwapChain);
-      }
-    }
-
-    // Get backbuffer
-    ID3D11Texture2D *backbuffer = nullptr;
-    pSwapChain->GetBuffer(0, IID_PPV_ARGS(&backbuffer));
-
-    if (backbuffer && g_DX11Capture.initialized) {
-      int idx = g_DX11Capture.writeIndex;
-      ID3D11DeviceContext *captureContext = g_DX11Capture.GetCaptureContext();
-
-      if (g_DX11Capture.useKeyedMutex && g_DX11Capture.keyedMutexes[idx]) {
-          // KEYED MUTEX PATH (already synchronized via keyed mutex)
-          if (g_DX11Capture.keyedMutexes[idx]->AcquireSync(0, 0) == S_OK) {
-              captureContext->CopyResource(g_DX11Capture.sharedTextures[idx], backbuffer);
-              g_DX11Capture.keyedMutexes[idx]->ReleaseSync(1);
-              g_DX11Capture.SignalFrameReady(g_IPC, idx, qpc.QuadPart, 0);
-              g_DX11Capture.AdvanceWriteIndex();
-          }
-      } else if (captureContext) {
-          // Legacy Fallback with query synchronization
-          // Wait for previous copy to complete before overwriting
-          if (!g_DX11Capture.WaitForCopy(captureContext, idx, 10)) {
-              static int timeoutLogCount2 = 0;
-              if (timeoutLogCount2++ % 60 == 0) {
-                  HookLog("DX11: Copy query timeout on texture %d (legacy path)", idx);
-              }
-          }
-
-          captureContext->CopyResource(g_DX11Capture.sharedTextures[idx], backbuffer);
-
-          // Issue query for next frame synchronization
-          if (g_DX11Capture.copyQueries[idx]) {
-              captureContext->End(g_DX11Capture.copyQueries[idx]);
-          }
-
-          g_DX11Capture.SignalFrameReady(g_IPC, idx, qpc.QuadPart, 0);
-          g_DX11Capture.AdvanceWriteIndex();
-      }
-    }
-
-    if (backbuffer) backbuffer->Release();
-    if (device) device->Release();
-  } else if (g_DX11Capture.initialized) {
-    g_DX11Capture.Cleanup();
-  }
-
-skip_capture:
-  if (isFirstHook) {
-    // Draw Overlay
-    SharedMemoryLayout* shm1 = g_IPC ? g_IPC->GetSharedMem() : nullptr;
-    if (shm1 && shm1->overlayConfig.showOverlay) {
-      DrawDX11Overlay(pSwapChain);
-    }
-
-    // Apply shared FPS limiter
-    g_SharedFpsLimiter.SetIPCClient(g_IPC);
-    g_SharedFpsLimiter.Apply();
-  }
-
-  HRESULT hr = oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
-  if (isFirstHook) g_InPresentHook = false;
-  return hr;
+  return oPresent(pSwapChain, SyncInterval, Flags);
 }
 
-// Hook: CreateSamplerState
-HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device *pDevice,
-                                                   const D3D11_SAMPLER_DESC *pSamplerDesc,
-                                                   ID3D11SamplerState **ppSamplerState) {
-    if (!pSamplerDesc) return oCreateSamplerState(pDevice, pSamplerDesc, ppSamplerState);
-    if (!g_GraphicsOverridesActive.load(std::memory_order_acquire)) return oCreateSamplerState(pDevice, pSamplerDesc, ppSamplerState);
+HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device *pDevice, const D3D11_SAMPLER_DESC *pSamplerDesc, ID3D11SamplerState **ppSamplerState) {
+  if (!pSamplerDesc) return oCreateSamplerState(pDevice, pSamplerDesc, ppSamplerState);
+  if (!g_GraphicsOverridesActive.load(std::memory_order_acquire)) return oCreateSamplerState(pDevice, pSamplerDesc, ppSamplerState);
 
-    D3D11_SAMPLER_DESC desc = *pSamplerDesc;
-    bool modified = false;
-    bool debug = false;
-    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) {
+  bool debug = false;
+  D3D11_SAMPLER_DESC desc = *pSamplerDesc;
+  bool modified = false;
+
+  if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) {
         debug = true;
     }
 
@@ -2235,14 +1952,14 @@ static ID3D10SamplerState* GetOrCreateReplacementSampler10(ID3D10Device* pDevice
     std::unique_lock<std::shared_mutex> lock(g_SamplerCacheMutex10);
 
     // 1. If it's already a replacement sampler, don't try to replace it again
-    if (g_ReplacementSamplers10.count(pOriginal)) {
+    if (IsReplacementSampler(pOriginal)) {
         return pOriginal;
     }
 
     // 2. Check the cache
-    auto it = g_SamplerCache10.find(pOriginal);
-    if (it != g_SamplerCache10.end()) {
-        return it->second;
+    ID3D10SamplerState* cached = FindReplacementSampler(pOriginal);
+    if (cached) {
+        return cached;
     }
     
     // Get original sampler description
@@ -2255,7 +1972,7 @@ static ID3D10SamplerState* GetOrCreateReplacementSampler10(ID3D10Device* pDevice
     if (originalDesc.MinLOD == originalDesc.MaxLOD) overridesAllowed = false;
     
     if (!overridesAllowed || !g_IPC) {
-        g_SamplerCache10[pOriginal] = pOriginal; // Cache as no-op
+        AddReplacementSampler(pOriginal, pOriginal); // Cache as no-op
         return pOriginal;
     }
     
@@ -2337,7 +2054,7 @@ static ID3D10SamplerState* GetOrCreateReplacementSampler10(ID3D10Device* pDevice
     }
     
     if (!modified) {
-        g_SamplerCache10[pOriginal] = pOriginal; // Cache as no-op
+        AddReplacementSampler(pOriginal, pOriginal); // Cache as no-op
         return pOriginal;
     }
     
@@ -2345,8 +2062,8 @@ static ID3D10SamplerState* GetOrCreateReplacementSampler10(ID3D10Device* pDevice
     ID3D10SamplerState* pReplacement = nullptr;
     HRESULT hr = pDevice->CreateSamplerState(&desc, &pReplacement);
     if (SUCCEEDED(hr)) {
-        g_SamplerCache10[pOriginal] = pReplacement;
-        g_ReplacementSamplers10.insert(pReplacement);
+        AddReplacementSampler(pOriginal, pReplacement);
+        AddToReplacementSet(pReplacement);
         static int logCount = 0;
         if (logCount++ < 10) {
             EarlyLog("DX10: Created replacement sampler %p -> %p (AF=%d, Bias=%.2f)", 
@@ -2354,7 +2071,7 @@ static ID3D10SamplerState* GetOrCreateReplacementSampler10(ID3D10Device* pDevice
         }
         return pReplacement;
     } else {
-        g_SamplerCache10[pOriginal] = pOriginal; // Failed, use original
+        AddReplacementSampler(pOriginal, pOriginal); // Failed, use original
         return pOriginal;
     }
 }
@@ -2455,6 +2172,68 @@ static void InstallRuntimeD3D10Hooks(ID3D10Device* pDevice) {
     }
 }
 
+
+HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain *pSwapChain,
+                                             UINT SyncInterval,
+                                             UINT PresentFlags,
+                                             const DXGI_PRESENT_PARAMETERS *pPresentParameters) {
+  
+  // Vulkan coordination: Skip DX11 overlay if Vulkan Layer is active AND presenting.
+  if (g_pSharedMem) {
+      uint64_t lastVulkan = g_pSharedMem->runtimeState.vulkanPresentTick.load(std::memory_order_acquire);
+      if (g_pSharedMem->runtimeState.vulkanLayerActive && (GetTickCount64() - lastVulkan < 200)) {
+          if (oPresent1)
+              return oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
+          return oPresent(pSwapChain, SyncInterval, PresentFlags);
+      }
+  }
+
+  // SAFETY CHECK: DX12 Detection
+  // If this swapchain is actually DX12, we must NOT draw the DX11 overlay.
+  // This happens when InstallVTableHooks fails to detect DX12 initially (race condition or interop),
+  // or when DX11 hooks installed on a shared vtable that DX12 also uses.
+  //
+  // CRITICAL FIX: When DX11 hooks a DX12 swapchain, we MUST delegate to DX12_ProcessFrameExternal
+  // so that the DX12 overlay still renders. Otherwise, no overlay appears at all.
+  {
+      ID3D12Device* d12Dev = nullptr;
+      if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D12Device), (void**)&d12Dev))) {
+          d12Dev->Release();
+          
+          // DX12 detected. Skip DX11 overlay but delegate to DX12 for frame processing.
+          static bool s_LoggedDX12Mismatch = false;
+          if (!s_LoggedDX12Mismatch) {
+              HookLog("DX11: DetourDX11Present1 - DX12 Device detected! Delegating to DX12_ProcessFrameExternal.");
+              s_LoggedDX12Mismatch = true;
+          }
+          
+          // Delegate to DX12 hook for overlay/capture processing
+          extern void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain);
+          DX12_ProcessFrameExternal(pSwapChain);
+          
+          if (oPresent1)
+              return oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
+          return oPresent(pSwapChain, SyncInterval, PresentFlags);
+      }
+  }
+  
+  bool isFirstHook = !g_InPresentHook;
+  g_InPresentHook = true;
+  auto hookGuard = ce::make_scope_guard([&]{ 
+      // Guard auto-reset
+  });
+
+  DrawDX11Overlay(pSwapChain);
+
+  if (oPresent1)
+      return oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
+  // Fallback to Present if Present1 not hooked (should not happen if vtable hooked correctly)
+  return oPresent(pSwapChain, SyncInterval, PresentFlags); 
+}
+
+void DX11Hook::ProcessDeferredReleases() {
+    g_DeferredRelease.Process();
+}
 
 void DX11Hook::Init() {
   HookLog("DX11Hook::Init()");
@@ -2605,13 +2384,16 @@ void DX11Hook::Shutdown() {
   
   g_DX11Capture.Cleanup();
   if (g_mainRenderTargetView) {
-    g_mainRenderTargetView->Release();
+    g_DeferredRelease.Queue(g_mainRenderTargetView);
     g_mainRenderTargetView = nullptr;
   }
   if (g_mainRenderTargetView10) {
-    g_mainRenderTargetView10->Release();
+    g_DeferredRelease.Queue(g_mainRenderTargetView10);
     g_mainRenderTargetView10 = nullptr;
   }
+  
+  // Flush deferred release queue
+  g_DeferredRelease.Process();
 }
 
 void DX11Hook::OnHostDisconnect() {

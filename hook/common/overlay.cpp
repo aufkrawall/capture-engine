@@ -19,6 +19,11 @@ typedef enum {
 #endif
 
 static float GetSystemDPIScale() {
+    static float cachedDpi = 0.0f;
+    static DWORD lastCheck = 0;
+    DWORD now = GetTickCount();
+    if (cachedDpi > 0.0f && (now - lastCheck < 5000)) return cachedDpi;
+
     UINT xdpi = 96, ydpi = 96;
 
     // Try Windows 8.1+ API first
@@ -44,7 +49,9 @@ static float GetSystemDPIScale() {
 #endif
     }
 
-    return xdpi / 96.0f;
+    cachedDpi = xdpi / 96.0f;
+    lastCheck = now;
+    return cachedDpi;
 }
 
 // Helper to format bytes to GiB string

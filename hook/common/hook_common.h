@@ -10,12 +10,16 @@
 #include <vector>
 #include <windows.h>
 
-// Global IPC defined in centralized location (main.cpp or here)
+// Legacy globals - still used during gradual migration to HookContext
+// New code should prefer HOOK_CTX->member access patterns
 extern IPCClient *g_IPC;
 extern std::atomic<bool> g_ShuttingDown;
 extern std::atomic<bool> g_GraphicsOverridesActive;
 struct SharedMemoryLayout;
 extern SharedMemoryLayout* g_pSharedMem;
+
+// Forward declare HookContext for accessor
+namespace ce { struct HookContext; }
 
 class PerformanceMetrics;
 

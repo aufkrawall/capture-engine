@@ -2,12 +2,14 @@
 #include "graphics_hook.h"
 #include <d3d11.h>
 #include <dxgi.h>
+#include <dxgi1_2.h>  // For DXGI_PRESENT_PARAMETERS
 
 class DX11Hook : public GraphicsHook {
 public:
   void Init() override;
   void Shutdown() override;
   void OnHostDisconnect() override;  // Called when captureengine disconnects
+  void ProcessDeferredReleases();    // Cleanup resources on background thread
 };
 
 // D3D11 function typedefs for IAT patching
@@ -33,3 +35,8 @@ void DX11_UpdatePerformanceMetrics(int64_t qpcUs);
 
 // Original function pointer (set by IAT patching)
 extern PFN_D3D11CreateDeviceAndSwapChain oD3D11CreateDeviceAndSwapChain;
+
+// Present hook detours (exported for cross-hook collision detection from dx12_hook.cpp)
+// Used to detect if DX11 has ALREADY hooked a swapchain's vtable
+HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT Flags);
+HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS *pPresentParameters);
