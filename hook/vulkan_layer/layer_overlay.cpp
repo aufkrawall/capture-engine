@@ -23,6 +23,8 @@ struct OverlayState {
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     VkCommandPool commandPool = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> commandBuffers;
+    std::vector<VkFence> fences;
+    std::vector<VkSemaphore> semaphores;
     std::vector<VkFramebuffer> framebuffers;
     std::vector<VkImageView> imageViews;
     std::vector<VkImage> swapchainImages;
@@ -199,6 +201,16 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     cbInfo.commandBufferCount = imageCount;
     disp->fp_vkAllocateCommandBuffers(device, &cbInfo, state.commandBuffers.data());
 
+    // Initialize per-frame fences and semaphores for synchronization
+    state.fences.resize(imageCount);
+    state.semaphores.resize(imageCount);
+    VkFenceCreateInfo fenceInfo = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr, VK_FENCE_CREATE_SIGNALED_BIT };
+    VkSemaphoreCreateInfo semInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+    for (uint32_t i = 0; i < imageCount; i++) {
+        disp->fp_vkCreateFence(device, &fenceInfo, nullptr, &state.fences[i]);
+        disp->fp_vkCreateSemaphore(device, &semInfo, nullptr, &state.semaphores[i]);
+    }
+
     // Set overlay properties regardless of initialization state
     // (InitImGui may have been called with a window above, so IsInitialized() could be true)
     g_SharedOverlay.SetGraphicsAPI("Vulkan");
@@ -214,6 +226,17 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     g_OverlayStates[device] = state;
 }
 
+VkSemaphore GetOverlaySemaphore(VkDevice device, uint32_t imageIndex) {
+    std::lock_guard<std::mutex> lock(g_OverlayMutex);
+    auto it = g_OverlayStates.find(device);
+    if (it != g_OverlayStates.end() && it->second.initialized) {
+        if (imageIndex < it->second.semaphores.size()) {
+            return it->second.semaphores[imageIndex];
+        }
+    }
+    return VK_NULL_HANDLE;
+}
+
 void CleanupOverlay(VkDevice device) {
     std::lock_guard<std::mutex> lock(g_OverlayMutex);
     auto it = g_OverlayStates.find(device);
@@ -225,6 +248,8 @@ void CleanupOverlay(VkDevice device) {
         disp->fp_vkDeviceWaitIdle(device);
         for (auto fb : state.framebuffers) disp->fp_vkDestroyFramebuffer(device, fb, nullptr);
         for (auto iv : state.imageViews) disp->fp_vkDestroyImageView(device, iv, nullptr);
+        for (auto f : state.fences) disp->fp_vkDestroyFence(device, f, nullptr);
+        for (auto s : state.semaphores) disp->fp_vkDestroySemaphore(device, s, nullptr);
         disp->fp_vkDestroyCommandPool(device, state.commandPool, nullptr);
         disp->fp_vkDestroyRenderPass(device, state.renderPass, nullptr);
         disp->fp_vkDestroyDescriptorPool(device, state.descriptorPool, nullptr);
@@ -236,6 +261,11 @@ void CleanupOverlay(VkDevice device) {
 void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, 
                    VkSemaphore waitSemaphore, VkSemaphore signalSemaphore)
 {
+    // OPTIMIZATION: Early out if overlay is disabled via IPC
+    if (g_IPCClient.GetSharedMem() && !g_IPCClient.GetSharedMem()->overlayConfig.showOverlay) {
+        return;
+    }
+
     std::lock_guard<std::mutex> lock(g_OverlayMutex);
     auto it = g_OverlayStates.find(device);
     if (it == g_OverlayStates.end() || !it->second.initialized) return;
@@ -273,7 +303,16 @@ void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex,
     g_SharedOverlay.BeginFrame();
     g_SharedOverlay.RenderUI();
     g_SharedOverlay.EndFrame();
+
+    ImDrawData* drawData = ImGui::GetDrawData();
+    if (!drawData || drawData->TotalVtxCount == 0) {
+        return;
+    }
     
+    VkFence fence = state.fences[imageIndex];
+    disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, 1000000000); // 1s timeout
+    disp->fp_vkResetFences(device, 1, &fence);
+
     VkCommandBuffer cmd = state.commandBuffers[imageIndex];
     VkCommandBufferBeginInfo beginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
     
@@ -307,11 +346,23 @@ void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex,
 
         disp->fp_vkEndCommandBuffer(cmd);
         
-    VkSubmitInfo submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+        VkSubmitInfo submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &cmd;
-        disp->fp_vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
-        // Removed vkQueueWaitIdle - it was causing CPU-GPU serialization and GPU underutilization.
-        // The overlay render is asynchronous and doesn't need to complete before present returns.
+        
+        // Use semaphores if provided for GPU-side synchronization
+        VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        if (waitSemaphore != VK_NULL_HANDLE) {
+            submitInfo.waitSemaphoreCount = 1;
+            submitInfo.pWaitSemaphores = &waitSemaphore;
+            submitInfo.pWaitDstStageMask = &waitStage;
+        }
+        
+        if (signalSemaphore != VK_NULL_HANDLE) {
+            submitInfo.signalSemaphoreCount = 1;
+            submitInfo.pSignalSemaphores = &signalSemaphore;
+        }
+
+        disp->fp_vkQueueSubmit(queue, 1, &submitInfo, fence);
     }
 }

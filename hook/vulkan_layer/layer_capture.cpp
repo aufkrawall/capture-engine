@@ -366,7 +366,7 @@ void CleanupCapture(VkDevice device) {
     g_CaptureStates.erase(device);
 }
 
-void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t imageIndex, VkSemaphore waitSemaphore) {
+void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t imageIndex, VkSemaphore waitSemaphore, VkSemaphore signalSemaphore) {
     std::lock_guard<std::mutex> lock(g_CaptureMutex);
     
     auto it = g_CaptureStates.find(device);
@@ -457,7 +457,24 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
 
     if (disp->fp_vkEndCommandBuffer(cmd) != VK_SUCCESS) return;
 
-    VkSubmitInfo submit = { VK_STRUCTURE_TYPE_SUBMIT_INFO, nullptr, 0, nullptr, nullptr, 1, &cmd };
+    VkSubmitInfo submit = { VK_STRUCTURE_TYPE_SUBMIT_INFO, nullptr };
+    
+    // Sync
+    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    if (waitSemaphore != VK_NULL_HANDLE) {
+        submit.waitSemaphoreCount = 1;
+        submit.pWaitSemaphores = &waitSemaphore;
+        submit.pWaitDstStageMask = &waitStage;
+    }
+    
+    if (signalSemaphore != VK_NULL_HANDLE) {
+        submit.signalSemaphoreCount = 1;
+        submit.pSignalSemaphores = &signalSemaphore;
+    }
+
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &cmd;
+
     if (disp->fp_vkQueueSubmit(queue, 1, &submit, fence) == VK_ERROR_DEVICE_LOST) {
         return;
     }

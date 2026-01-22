@@ -14,6 +14,7 @@
 #include "wrappers/iat_hook.h"
 #include "wrappers/iat_hook.h"
 #include "common/hook_common.h"
+#include "common/hook_context.h"
 #include "common/ipc_client.h"
 #include "capture/shared_capture.h"
 #include "common/fg_detection.h"
@@ -219,23 +220,23 @@ HANDLE g_hCheckHooksEvent = NULL;
 // Forward declaration
 void CheckAndInstallHooks();
 // DLL Redirection Helper
-// DLL Redirection Helper
 std::string GetRedirectedPath(const std::string& requestedPath) {
     if (requestedPath.empty()) return "";
 
     try {
-        std::filesystem::path path(requestedPath);
-        std::string filename = path.filename().string();
+        // Basic path parsing without std::filesystem
+        std::string filename;
+        size_t lastSlash = requestedPath.find_last_of("\\/");
+        if (lastSlash != std::string::npos) {
+            filename = requestedPath.substr(lastSlash + 1);
+        } else {
+            filename = requestedPath;
+        }
+        
         std::string filenameLower = filename;
         std::transform(filenameLower.begin(), filenameLower.end(), filenameLower.begin(), ::tolower);
 
         std::string overridePath;
-
-        // 0. Custom Detours (Removed)
-        // auto it = g_LocalConfig.graphics.customFileDetours.find(filenameLower);
-        // if (it != g_LocalConfig.graphics.customFileDetours.end()) {
-        //      overridePath = it->second;
-        // }
 
         // 1. DLSS/Streamline Logic - Only if no custom detour set
         if (overridePath.empty() && g_pLocalConfig) {
@@ -259,39 +260,47 @@ std::string GetRedirectedPath(const std::string& requestedPath) {
         }
 
         if (!overridePath.empty()) {
-            std::filesystem::path cfgPath(overridePath);
-            std::filesystem::path finalPath;
-
-            // Simple Heuristic: 
-            // If the configured path has an extension (like .dll), assume it's a full file path.
-            // But if it's for Streamline, we really want the folder if matching other files.
-            // 
-            // Universal Logic:
-            // 1. If we are replacing "nvngx_dlss.dll", and config is "folder/nvngx_dlss.dll", use it.
-            // 2. If config is "folder", append "nvngx_dlss.dll".
-            // 3. For Streamline, if config is "file.dll", take parent folder, then append requested filename.
-
-            if (cfgPath.has_extension()) {
+            std::string finalPath;
+            
+            // Check if overridePath has an extension (heuristic for file vs dir)
+            bool hasExtension = (overridePath.find_last_of('.') > overridePath.find_last_of("\\/"));
+            
+            if (hasExtension) {
                 // It looks like a file.
                 // If it ends with the SAME filename as requested, just use it.
-                std::string cfgFilename = cfgPath.filename().string();
+                std::string cfgFilename;
+                size_t cfgLastSlash = overridePath.find_last_of("\\/");
+                if (cfgLastSlash != std::string::npos) {
+                    cfgFilename = overridePath.substr(cfgLastSlash + 1);
+                } else {
+                    cfgFilename = overridePath;
+                }
+                
                 std::string cfgFilenameLower = cfgFilename;
                 std::transform(cfgFilenameLower.begin(), cfgFilenameLower.end(), cfgFilenameLower.begin(), ::tolower);
 
                 if (cfgFilenameLower == filenameLower) {
-                     finalPath = cfgPath;
+                     finalPath = overridePath;
                 } else {
-                     // Config points to a file, but we want a potentially different file (common in Streamline case)
-                     // Or user pointed to "dlss.dll" but we are loading "dlssg.dll" (shouldn't happen with separate configs but safe to handle)
-                     finalPath = cfgPath.parent_path() / filename;
+                     // Config points to a file, but we want a potentially different file
+                     // Take parent folder, then append requested filename.
+                     if (cfgLastSlash != std::string::npos) {
+                         finalPath = overridePath.substr(0, cfgLastSlash) + "\\" + filename;
+                     } else {
+                         finalPath = filename; // Should not happen if full path
+                     }
                 }
             } else {
                 // It looks like a directory. Append the requested filename.
-                finalPath = cfgPath / filename;
+                if (overridePath.back() == '\\' || overridePath.back() == '/') {
+                    finalPath = overridePath + filename;
+                } else {
+                    finalPath = overridePath + "\\" + filename;
+                }
             }
             
-            HookLog("Redirecting %s to: %s", filename.c_str(), finalPath.string().c_str());
-            return finalPath.string();
+            HookLog("Redirecting %s to: %s", filename.c_str(), finalPath.c_str());
+            return finalPath;
         }
 
     } catch (...) {
@@ -727,42 +736,56 @@ void CheckAndInstallHooks() {
         EarlyLog("DX12 hooks installed");
     }
 
-    // IMPORTANT: Don't install DX11 hooks in DX12 processes.
-    // Our hook DLL links against D3D11, so d3d11.dll may be loaded even for DX12 apps.
-    // Installing DX11 Present hooks can interfere with DX12 swapchains and crash.
-    if (!g_DX11Hook && !GetModuleHandleA("d3d12.dll") &&
-        (GetModuleHandleA("d3d11.dll") || GetModuleHandleA("d3d10.dll") || GetModuleHandleA("d3d10_1.dll"))) {
-        HookLog("Detected D3D10/11. Installing hooks...");
+    // IMPORTANT: Install DX11 hooks based on ACTUAL API usage, not just DLL presence.
+    // On modern Windows, d3d12.dll is often loaded by the D3D11 runtime (D3D11On12),
+    // even for pure DX11 applications. The old check (!GetModuleHandleA("d3d12.dll"))
+    // was incorrectly preventing DX11 hooks from being installed in DX11 apps.
+    // 
+    // New logic: Install DX11 hooks if:
+    //   1. D3D11/D3D10 DLLs are present, AND
+    //   2. Either D3D11/D3D10 device creation was actually called, OR 
+    //      D3D12CreateDevice was NOT actually called (so it's not a real DX12 app)
+    bool d3d11Or10DllPresent = (GetModuleHandleA("d3d11.dll") || 
+                                GetModuleHandleA("d3d10.dll") || 
+                                GetModuleHandleA("d3d10_1.dll"));
+    bool d3d11Or10DeviceCreated = WasD3D11Or10DeviceCreated();
+    bool d3d12DeviceCreated = WasD3D12DeviceCreated();
+    
+    if (!g_DX11Hook && d3d11Or10DllPresent && (d3d11Or10DeviceCreated || !d3d12DeviceCreated)) {
+        HookLog("Detected D3D10/11. Installing hooks... (D3D11/10 API called: %d, D3D12 API called: %d)",
+                d3d11Or10DeviceCreated ? 1 : 0, d3d12DeviceCreated ? 1 : 0);
         g_DX11Hook = new DX11Hook();
         g_DX11Hook->Init();
         HookLog("D3D10/11 hooks installed");
     }
 
-    // For other APIs, also check if d3d12.dll is present to avoid conflicts in DX12 games that load other DLLs.
-    bool cx12Loaded = (GetModuleHandleA("d3d12.dll") != NULL);
+    // For other APIs, skip if D3D12 was actually used (not just loaded).
+    // d3d12.dll can be loaded by D3D11On12 even in non-DX12 apps.
+    // We use the actual device creation flag instead of just DLL presence.
+    bool dx12ActuallyUsed = WasD3D12DeviceCreated();
 
-    if (!g_DX9Hook && !cx12Loaded && GetModuleHandleA("d3d9.dll")) {
+    if (!g_DX9Hook && !dx12ActuallyUsed && GetModuleHandleA("d3d9.dll")) {
         HookLog("Detected d3d9.dll. Installing DX9 hooks...");
         g_DX9Hook = new DX9Hook();
         g_DX9Hook->Init();
         HookLog("DX9 hooks installed");
     }
 
-    if (!g_DDrawHook && !cx12Loaded && GetModuleHandleA("ddraw.dll")) {
+    if (!g_DDrawHook && !dx12ActuallyUsed && GetModuleHandleA("ddraw.dll")) {
         HookLog("Detected ddraw.dll. Installing DirectDraw hooks...");
         g_DDrawHook = new DDrawHook();
         g_DDrawHook->Init();
         HookLog("DDraw hooks installed");
     }
 
-    if (!g_DX8Hook && !cx12Loaded && GetModuleHandleA("d3d8.dll")) {
+    if (!g_DX8Hook && !dx12ActuallyUsed && GetModuleHandleA("d3d8.dll")) {
         HookLog("Detected d3d8.dll. Installing DX8 hooks...");
         g_DX8Hook = new DX8Hook();
         g_DX8Hook->Init();
         HookLog("DX8 hooks installed");
     }
 
-    if (!g_OpenGLHook && !cx12Loaded && GetModuleHandleA("opengl32.dll")) {
+    if (!g_OpenGLHook && !dx12ActuallyUsed && GetModuleHandleA("opengl32.dll")) {
         HookLog("Detected opengl32.dll. Installing OpenGL hooks...");
         g_OpenGLHook = new OpenGLHook();
         g_OpenGLHook->Init();
@@ -772,8 +795,8 @@ void CheckAndInstallHooks() {
 
 #ifdef ENABLE_VULKAN_HOOK
     // Vulkan can co-exist with DX12 (e.g. Doom Eternal), but usually they are mutually exclusive for rendering
-    // For now we assume if DX12 is loaded, it's the primary API.
-    if (!g_VulkanHook && !cx12Loaded && GetModuleHandleA("vulkan-1.dll")) {
+    // For now we assume if DX12 was actually used, it's the primary API.
+    if (!g_VulkanHook && !dx12ActuallyUsed && GetModuleHandleA("vulkan-1.dll")) {
         HookLog("Detected vulkan-1.dll. Installing Vulkan hooks...");
         g_VulkanHook = new VulkanHook();
         g_VulkanHook->Init();
@@ -809,6 +832,34 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
       LoadConfig(configPath, *g_pLocalConfig);
       // Prime the graphics override state immediately
       GetActiveGraphicsConfig();
+      
+      // DEFERRED LOADING: Load wrapper DLLs here instead of DllMain
+      // Loading DLLs in DllMain can cause loader lock deadlocks.
+      // HookThread runs after DllMain returns, so it's safe to call LoadLibrary here.
+      bool hasGraphicsAPI = (
+          GetModuleHandleA("d3d12.dll") != NULL ||
+          GetModuleHandleA("d3d11.dll") != NULL ||
+          GetModuleHandleA("d3d10.dll") != NULL ||
+          GetModuleHandleA("d3d9.dll") != NULL
+      );
+      
+      if (hasGraphicsAPI) {
+#ifdef _WIN64
+          std::string wrapperDll = dir + "\\d3d12_wrappers.dll";
+#else
+          std::string wrapperDll = dir + "\\d3d12_wrappers_x86.dll";
+#endif
+          UINT oldMode = SetErrorMode(SEM_FAILCRITICALERRORS);
+          HMODULE hWrapper = LoadLibraryA(wrapperDll.c_str());
+          SetErrorMode(oldMode);
+          
+          if (!hWrapper) {
+              EarlyLog("HookThread: Failed to load wrapper DLL from %s, Err=%d", 
+                       wrapperDll.c_str(), GetLastError());
+          } else {
+              EarlyLog("HookThread: Loaded wrapper DLL at %p", hWrapper);
+          }
+      }
   }
 
   // FAST PATH: Install IAT wrappers immediately before anything else
@@ -920,7 +971,20 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     HookLog("IPC Connected successfully!");
     
     if (g_IPC->GetSharedMem()) {
-        g_IPC->GetSharedMem()->sourcePid = GetCurrentProcessId();
+        g_pSharedMem = g_IPC->GetSharedMem();
+        g_pSharedMem->sourcePid = GetCurrentProcessId();
+    }
+    
+    // Initialize HookContext and sync with legacy globals
+    // This bridges the old global-based approach with the new centralized context
+    ce::CreateHookContext();
+    if (auto* ctx = ce::GetHookContext()) {
+        ctx->hookModule = g_hModule;
+        ce::SyncWithLegacyGlobals();
+        
+        // Transition lifecycle to Connected state
+        ctx->hookLifecycle.TransitionTo(ce::HookState::Connected);
+        EarlyLog("HookThread: HookContext initialized and synced");
     }
   } else {
     EarlyLog("HookThread: IPC Connection FAILED!");
@@ -980,6 +1044,10 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     // Periodically update active graphics config state 
     // This ensures g_GraphicsOverridesActive is updated even if no hooks are calling it yet
     GetActiveGraphicsConfig();
+    
+    // Process deferred releases (D3D11) on background thread
+    // This prevents render thread stalls when destroying capture resources
+    if (g_DX11Hook) g_DX11Hook->ProcessDeferredReleases();
     
     // --- UE5 Enforce RR ---
     static DWORD s_LastRRCheck = 0;
@@ -1224,8 +1292,10 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
         g_ProcessCategory = ProcessCategory::Blacklisted;
         g_isDormant = true;
         
-        // NO Self-Unload thread anymore. It causes crashes during CBT callbacks.
-        // NO Adaptive Strategy. Just stay dormant.
+        // DORMANT MODE: We return TRUE to stay loaded but remain completely inert.
+        // Returning FALSE (unloading) triggers a "Loader Loop" where Windows continuously 
+        // re-injects the CBT hook for every window event, causing massive system slowdowns.
+        // By staying loaded but doing nothing (no threads, no hooks), we eliminate this overhead.
         return TRUE;
     }
 
@@ -1260,39 +1330,16 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
         );
 
         if (hasGraphicsAPI) {
-            // Pre-load dependencies (d3d12_wrappers) from our own directory
-            // This is CRITICAL for 32-bit where we need the absolute path.
-            char modulePath[MAX_PATH];
-            if (GetModuleFileNameA(hinstDLL, modulePath, MAX_PATH)) {
-                 std::string path(modulePath);
-                 size_t lastSlash = path.find_last_of("\\/");
-                 if (lastSlash != std::string::npos) {
-                     std::string dir = path.substr(0, lastSlash);
-
-#ifdef _WIN64
-                     std::string wrapperDll = dir + "\\d3d12_wrappers.dll";
-#else
-                     std::string wrapperDll = dir + "\\d3d12_wrappers_x86.dll";
-#endif
-
-                     EarlyLog("DllMain: Pre-loading wrapper DLL from %s", wrapperDll.c_str());
-
-                     UINT oldMode = SetErrorMode(SEM_FAILCRITICALERRORS);
-                     HMODULE hWrapper = LoadLibraryA(wrapperDll.c_str());
-                     if (!hWrapper) {
-                         EarlyLog("DllMain: Failed to load wrapper DLL! Err=%d", GetLastError());
-                     } else {
-                         EarlyLog("DllMain: Successfully loaded wrapper DLL at %p", hWrapper);
-                     }
-                     SetErrorMode(oldMode);
-                 }
-            }
-
-            // RACE CONDITION FIX: Initialize wrappers (IAT patching) immediately in DllMain.
-            // Waiting for HookThread is too late for fast-starting 32-bit apps like dx12_test.
-            // InitializeWrapperHooks is safe to call multiple times (has internal guard)
-            // and IAT patching is generally safe in DllMain (no GetModuleHandle loop for *other* modules yet, just specific ones).
-            // SAFETY: Only do this for processes with graphics APIs to avoid hooking non-target processes.
+            // LOADER LOCK SAFETY: Do NOT call LoadLibraryA inside DllMain!
+            // LoadLibrary during DLL_PROCESS_ATTACH can cause loader lock deadlocks.
+            // The wrapper DLL loading has been moved to HookThread (deferred initialization).
+            // 
+            // Note: GetModuleHandle is safe because it doesn't acquire the loader lock.
+            
+            // IAT patching is still safe in DllMain because:
+            // 1. It only modifies memory in already-loaded modules
+            // 2. It doesn't call LoadLibrary or acquire additional locks
+            // 3. It's idempotent (safe to call multiple times)
             EarlyLog("DllMain: Initializing IAT hooks immediately to prevent race conditions...");
             InitializeWrapperHooks();
         } else {

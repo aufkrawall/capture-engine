@@ -52,6 +52,11 @@ static void InitLayerLogFile() {
 
 // Logging implementation
 void LayerLog(const char* fmt, ...) {
+    // OPTIMIZATION: Only process logs if debug logging is enabled in shared memory
+    // or if the layer hasn't initialized IPC yet (for early errors).
+    auto* shm = g_IPCClient.GetSharedMem();
+    if (shm && !shm->debugLogging) return;
+
     va_list args;
     va_start(args, fmt);
     char buf[2048];
@@ -183,11 +188,9 @@ CELayer_vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
         return (PFN_vkVoidFunction)CELayer_vkGetInstanceProcAddr;
     }
     if (strcmp(pName, "vkCreateInstance") == 0) {
-        LayerLog("CELayer_vkGetInstanceProcAddr: %s", pName);
         return (PFN_vkVoidFunction)Capture_vkCreateInstance;
     }
     if (strcmp(pName, "vkCreateDevice") == 0) {
-        LayerLog("CELayer_vkGetInstanceProcAddr: %s", pName);
         return (PFN_vkVoidFunction)Capture_vkCreateDevice;
     }
     if (strcmp(pName, "vkEnumeratePhysicalDevices") == 0) {
@@ -208,19 +211,15 @@ CELayer_vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
     // Device-level functions obtained through instance GIPA
     if (strcmp(pName, "vkGetDeviceProcAddr") == 0) return (PFN_vkVoidFunction)CELayer_vkGetDeviceProcAddr;
     if (strcmp(pName, "vkGetDeviceQueue") == 0) {
-        LayerLog("CELayer_vkGetInstanceProcAddr: %s", pName);
         return (PFN_vkVoidFunction)Capture_vkGetDeviceQueue;
     }
     if (strcmp(pName, "vkQueueSubmit") == 0) {
-        LayerLog("CELayer_vkGetInstanceProcAddr: %s", pName);
         return (PFN_vkVoidFunction)Capture_vkQueueSubmit;
     }
     if (strcmp(pName, "vkQueueSubmit2") == 0) {
-        LayerLog("CELayer_vkGetInstanceProcAddr: %s", pName);
         return (PFN_vkVoidFunction)Capture_vkQueueSubmit2;
     }
     if (strcmp(pName, "vkQueueSubmit2KHR") == 0) {
-        LayerLog("CELayer_vkGetInstanceProcAddr: %s", pName);
         return (PFN_vkVoidFunction)Capture_vkQueueSubmit2KHR;
     }
     if (strcmp(pName, "vkCreateSwapchainKHR") == 0) return (PFN_vkVoidFunction)Capture_vkCreateSwapchainKHR;
@@ -242,7 +241,6 @@ CELayer_vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
 extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL 
 CELayer_vkGetDeviceProcAddr(VkDevice device, const char* pName) {
     if (!pName || !device) return nullptr;
-    LayerLog("CELayer_vkGetDeviceProcAddr(dev=%p, name=%s)", device, pName);
 
     if (strcmp(pName, "vkGetDeviceProcAddr") == 0) return (PFN_vkVoidFunction)CELayer_vkGetDeviceProcAddr;
     if (strcmp(pName, "vkGetDeviceQueue") == 0) return (PFN_vkVoidFunction)Capture_vkGetDeviceQueue;

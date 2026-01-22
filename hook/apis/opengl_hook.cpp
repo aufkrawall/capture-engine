@@ -19,6 +19,14 @@
 #include <imgui.h>
 #include <windows.h>
 
+// Check if Vulkan is primary API (to avoid double FPS limiting/Overlay)
+extern void* g_VulkanHook;
+static bool IsVulkanPrimary() { 
+    if (g_VulkanHook) return true;
+    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->runtimeState.vulkanLayerActive) return true;
+    return false;
+}
+
 // OpenGL typedefs
 typedef void GLvoid;
 typedef unsigned int GLenum;
@@ -827,6 +835,11 @@ static void DetectGPU(HDC hdc) {
 // Draw overlay using ImGui OpenGL backend  
 // Draw overlay using ImGui OpenGL backend  
 static void DrawOpenGLOverlay(HDC hdc) {
+    // ACTIVE API ARBITRATION:
+    // If Vulkan is active (e.g. Doom Eternal, RDR2 running Vulkan), it often initializes OpenGL 
+    // for legacy reasons or interop. We must suppress OpenGL overlay to avoid conflicts/crashes.
+    if (IsVulkanPrimary()) return;
+
     static int frameCount = 0;
     bool diag = (frameCount++ < 10);
     if (diag) HookLog("OpenGL: DrawOpenGLOverlay starting for frame %d (HDC=0x%p)", frameCount, hdc);

@@ -30,6 +30,10 @@ static std::unordered_map<VkSwapchainKHR, SwapchainState> g_SwapchainMap;
 static std::mutex g_QueueMapMutex;
 static std::unordered_map<VkQueue, VkDevice> g_QueueToDevice;
 
+// OPTIMIZATION: Thread-local cache for queue lookups to avoid mutex contention on hot path
+static thread_local VkQueue tls_LastQueue = VK_NULL_HANDLE;
+static thread_local DeviceDispatch* tls_LastDispatch = nullptr;
+
 // vkQueueSubmit - wrapper to track submissions
 VkResult VKAPI_CALL Capture_vkQueueSubmit(
     VkQueue queue,
@@ -37,17 +41,20 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit(
     const VkSubmitInfo* pSubmits,
     VkFence fence)
 {
-    LayerLog("Layer: vkQueueSubmit (queue=%p, submits=%d)", queue, submitCount);
-    
+    if (queue == tls_LastQueue && tls_LastDispatch) {
+        return tls_LastDispatch->fp_vkQueueSubmit(queue, submitCount, pSubmits, fence);
+    }
+
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceFromQueue(queue);
     
     if (!disp || !disp->fp_vkQueueSubmit) {
-        LayerLog("Layer: vkQueueSubmit FAILED - No dispatch for queue %p", queue);
         return VK_ERROR_INITIALIZATION_FAILED;
     }
     
-    VkResult res = disp->fp_vkQueueSubmit(queue, submitCount, pSubmits, fence);
-    return res;
+    tls_LastQueue = queue;
+    tls_LastDispatch = disp;
+
+    return disp->fp_vkQueueSubmit(queue, submitCount, pSubmits, fence);
 }
 
 // vkQueueSubmit2 - Vulkan 1.3 version
@@ -57,15 +64,19 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit2(
     const VkSubmitInfo2* pSubmits,
     VkFence fence)
 {
-    LayerLog("Layer: vkQueueSubmit2 (queue=%p, submits=%d)", queue, submitCount);
-    
+    if (queue == tls_LastQueue && tls_LastDispatch) {
+        return tls_LastDispatch->fp_vkQueueSubmit2(queue, submitCount, pSubmits, fence);
+    }
+
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceFromQueue(queue);
     
     if (!disp || !disp->fp_vkQueueSubmit2) {
-        LayerLog("Layer: vkQueueSubmit2 FAILED - No dispatch for queue %p", queue);
         return VK_ERROR_INITIALIZATION_FAILED;
     }
     
+    tls_LastQueue = queue;
+    tls_LastDispatch = disp;
+
     return disp->fp_vkQueueSubmit2(queue, submitCount, pSubmits, fence);
 }
 
@@ -76,15 +87,19 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit2KHR(
     const VkSubmitInfo2* pSubmits,
     VkFence fence)
 {
-    LayerLog("Layer: vkQueueSubmit2KHR (queue=%p, submits=%d)", queue, submitCount);
-    
+    if (queue == tls_LastQueue && tls_LastDispatch) {
+        return tls_LastDispatch->fp_vkQueueSubmit2KHR(queue, submitCount, pSubmits, fence);
+    }
+
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceFromQueue(queue);
     
     if (!disp || !disp->fp_vkQueueSubmit2KHR) {
-        LayerLog("Layer: vkQueueSubmit2KHR FAILED - No dispatch for queue %p", queue);
         return VK_ERROR_INITIALIZATION_FAILED;
     }
     
+    tls_LastQueue = queue;
+    tls_LastDispatch = disp;
+
     return disp->fp_vkQueueSubmit2KHR(queue, submitCount, pSubmits, fence);
 }
 
@@ -146,7 +161,7 @@ VkResult VKAPI_CALL vkQueuePresentKHR(
             VkImage srcImage = it->second.images[it->second.currentImageIndex];
             VkSemaphore waitSemaphore = pPresentInfo->pWaitSemaphores && pPresentInfo->waitSemaphoreCount > 0 
                 ? pPresentInfo->pWaitSemaphores[0] : VK_NULL_HANDLE;
-            CaptureFrame(device, queue, srcImage, it->second.currentImageIndex, waitSemaphore);
+            CaptureFrame(device, queue, srcImage, it->second.currentImageIndex, waitSemaphore, VK_NULL_HANDLE);
         }
     }
     

@@ -80,14 +80,15 @@ public:
       // - If 0.5ms - 2ms, use SwitchToThread() or Sleep(0)
       // - If < 0.5ms, spin-wait for precision
       while (diffUs > 0) {
-        if (diffUs > 2000) {
-          // More than 2ms - sleep for 1ms
+        if (diffUs > 10000) { // > 10ms
           Sleep(1);
+        } else if (diffUs > 2000) { // 2ms - 10ms
+          Sleep(0); // Yield but remain schedulable soon
         } else if (diffUs > 500) {
-          // 0.5-2ms - yield to other threads
-          SwitchToThread();
+            // Very short yield
+            SwitchToThread();
         } else {
-          // Final <0.5ms - spin for precision
+          // Final <0.5ms - tight spin for sub-ms precision
           _mm_pause();
         }
         

@@ -217,25 +217,12 @@ void SystemMetricsCollector::BackgroundUpdateLoop() {
         if (!usedIPC) {
             static bool loggedFallback = false;
             if (!loggedFallback) {
-                EarlyLog("SystemMetricsCollector: IPC stats not available yet, falling back to local");
+                EarlyLog("SystemMetricsCollector: IPC stats not available yet. Waiting for Host...");
                 loggedFallback = true;
             }
-
-            // Lazy PDH init if we are falling back to local
-            if (!pdhInitialized) {
-                InitPDH();
-            }
-
-            // Granular logging for fallback loop
-            static int loopCount = 0;
-            if (loopCount % 50 == 0) EarlyLog("SystemMetricsCollector: Local update starting (CPU)...");
-            UpdateCPU();
-            if (loopCount % 50 == 0) EarlyLog("SystemMetricsCollector: Local update (RAM)...");
-            UpdateRAM();
-            if (loopCount % 50 == 0) EarlyLog("SystemMetricsCollector: Local update (GPU)...");
-            UpdateGPU();
-            if (loopCount % 50 == 0) EarlyLog("SystemMetricsCollector: Local update done.");
-            loopCount++;
+            // Strict Optimization: DO NOT fallback to local PDH/NtQuery.
+            // This ensures zero overhead in the game process if the host is dead/disconnected.
+            // We simply report 0 until IPC is restored.
         } else {
              // IPC Active: We still need VRAM Total if missing (Host doesn't send it)
              if (current.vramTotal == 0) {

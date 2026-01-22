@@ -2,7 +2,7 @@
 #include <cmath>
 #include <cstring>
 #include <cstdio>
-#include "shared_defs.h"
+#include "../../common/shared_defs.h"
 
 // Helper to check if SGSSAA is requested and what the sample count is
 // Returns true if SGSSAA should be applied, false otherwise.

@@ -675,9 +675,14 @@ public:
   VkCommandPool captureCommandPool = VK_NULL_HANDLE;
   VkCommandBuffer captureCommandBuffers[CAPTURE_TEXTURE_COUNT] = {};
   
+  // Fences to track command buffer completion - CRITICAL for safe reuse
+  // Without these, we may reset a command buffer while GPU is still executing it
+  VkFence captureCommandFences[CAPTURE_TEXTURE_COUNT] = {};
+  
   // Async Capture resources (if using separate queue)
   VkCommandPool asyncCommandPool = VK_NULL_HANDLE;
   VkCommandBuffer asyncCommandBuffers[CAPTURE_TEXTURE_COUNT] = {};
+  VkFence asyncCommandFences[CAPTURE_TEXTURE_COUNT] = {};
   uint32_t asyncQueueFamily = UINT32_MAX;
 
   // Timeline semaphore for GPU synchronization (Host -> IPC)
@@ -765,6 +770,15 @@ public:
         vkDestroySemaphore(device, presentTriggerSems[i], nullptr);
       if (copyTriggerSems[i])
         vkDestroySemaphore(device, copyTriggerSems[i], nullptr);
+      // Clean up command buffer fences
+      if (captureCommandFences[i]) {
+        vkDestroyFence(device, captureCommandFences[i], nullptr);
+        captureCommandFences[i] = VK_NULL_HANDLE;
+      }
+      if (asyncCommandFences[i]) {
+        vkDestroyFence(device, asyncCommandFences[i], nullptr);
+        asyncCommandFences[i] = VK_NULL_HANDLE;
+      }
 
       // CRITICAL: If these aliased g_CrossDeviceImages, NULL out the globals too!
       for (int j = 0; j < CAPTURE_TEXTURE_COUNT; j++) {
@@ -1538,6 +1552,19 @@ public:
       HookLog("Vulkan: Error - vkAllocateCommandBuffers failed (%d)", cmdRes);
       return;
     }
+    
+    // Create fences for command buffer synchronization - CRITICAL for safe reuse
+    // Each fence tracks whether the corresponding command buffer has finished execution
+    VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT; // Start signaled so first use doesn't wait
+    for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
+      VkResult fenceRes = vkCreateFence(g_Device, &fenceInfo, nullptr, &captureCommandFences[i]);
+      if (fenceRes != VK_SUCCESS) {
+        HookLog("Vulkan: Error - vkCreateFence[%d] failed (%d)", i, fenceRes);
+      }
+    }
+    HookLog("Vulkan: Created command buffer fences for safe reuse");
+    
     // Removed pre-recording loop to rely on dynamic recording in CopyFrame
     // This prevents baking in stale SwapchainImage handles.
     
@@ -1650,6 +1677,20 @@ public:
     if (!dstImage || !cmd || !signalSem)
       return VK_NULL_HANDLE;
 
+    // CRITICAL: Wait for previous command buffer execution to complete before reset
+    // Without this, we may reset a command buffer while the GPU is still executing it,
+    // causing undefined behavior or crashes.
+    VkFence fence = captureCommandFences[idx];
+    if (fence) {
+      VkResult waitRes = vkWaitForFences(g_Device, 1, &fence, VK_TRUE, 100000000); // 100ms timeout
+      if (waitRes == VK_TIMEOUT) {
+        HookLog("Vulkan: WARNING - Fence wait timeout, GPU may be overloaded");
+      } else if (waitRes != VK_SUCCESS) {
+        HookLog("Vulkan: ERROR - Fence wait failed: %d", waitRes);
+      }
+      vkResetFences(g_Device, 1, &fence);
+    }
+
     // Reset command buffer for new frame
     vkResetCommandBuffer(cmd, 0);
 
@@ -1739,7 +1780,8 @@ public:
         {
              std::lock_guard<std::recursive_mutex> lock(g_VulkanMutex);
              HookLog("Vulkan: Submitting Stage 1 (Index %d)...", idx);
-             VkResult gameSubmitRes = vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
+             // Pass fence to track command buffer completion for safe reuse
+             VkResult gameSubmitRes = vkQueueSubmit(queue, 1, &submitInfo, fence);
              if (gameSubmitRes != VK_SUCCESS) {
                  HookLog("Vulkan: ERROR - Game queue submit failed: %d (Queue=%p, Families=[%d,%d])", 
                          gameSubmitRes, queue, g_QueueFamily, g_AsyncQueueFamily);
@@ -1764,7 +1806,8 @@ public:
         timelineSubmitInfo.signalSemaphoreValueCount = 2;
         timelineSubmitInfo.pSignalSemaphoreValues = signalValues;
 
-        vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
+        // Pass fence to track command buffer completion for safe reuse
+        vkQueueSubmit(queue, 1, &submitInfo, fence);
     }
 
     // Update write index
@@ -3666,27 +3709,31 @@ static void InitImGuiVulkan(VkQueue queue) {
   // being populated by volk.
   volkLoadDevice(g_Device);
 
-  // Descriptor Pool
+  // Descriptor Pool - Increased to 5000 per type for robustness
   VkDescriptorPoolSize pool_sizes[] = {
-      {VK_DESCRIPTOR_TYPE_SAMPLER, 1000},
-      {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000},
-      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000},
-      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1000},
-      {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1000},
-      {VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1000},
-      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000},
-      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1000},
-      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1000},
-      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1000},
-      {VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1000}};
+      {VK_DESCRIPTOR_TYPE_SAMPLER, 5000},
+      {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5000},
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 5000},
+      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 5000},
+      {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 5000},
+      {VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 5000},
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 5000},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5000},
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 5000},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 5000},
+      {VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 5000}};
 
   VkDescriptorPoolCreateInfo pool_info = {};
   pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
   pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-  pool_info.maxSets = 1000 * IM_ARRAYSIZE(pool_sizes);
+  pool_info.maxSets = 5000 * IM_ARRAYSIZE(pool_sizes);
   pool_info.poolSizeCount = (uint32_t)IM_ARRAYSIZE(pool_sizes);
   pool_info.pPoolSizes = pool_sizes;
-  vkCreateDescriptorPool(g_Device, &pool_info, nullptr, &g_DescriptorPool);
+  
+  if (vkCreateDescriptorPool(g_Device, &pool_info, nullptr, &g_DescriptorPool) != VK_SUCCESS) {
+      HookLog("Vulkan: Error - Failed to create descriptor pool");
+      return;
+  }
 
   g_SharedOverlay.InitImGui(g_hWnd);
 
@@ -3716,8 +3763,14 @@ static void InitImGuiVulkan(VkQueue queue) {
       },
       nullptr);
 
-  ImGui_ImplVulkan_Init(&init_info);
-  ImGui_ImplVulkan_CreateFontsTexture();
+  if (!ImGui_ImplVulkan_Init(&init_info)) {
+      HookLog("Vulkan: Error - ImGui_ImplVulkan_Init failed");
+      return;
+  }
+  
+  if (!ImGui_ImplVulkan_CreateFontsTexture()) {
+      HookLog("Vulkan: Error - ImGui_ImplVulkan_CreateFontsTexture failed");
+  }
 
   g_ImGuiInit = true;
   HookLog("Vulkan: ImGui Initialized Successfully");

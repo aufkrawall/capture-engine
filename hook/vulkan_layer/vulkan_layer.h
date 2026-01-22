@@ -208,6 +208,7 @@ extern "C" {
 void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkExtent2D extent, uint32_t imageCount, VkImage* images, HWND window);
 void CleanupOverlay(VkDevice device);
 void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, VkSemaphore waitSemaphore, VkSemaphore signalSemaphore);
+VkSemaphore GetOverlaySemaphore(VkDevice device, uint32_t imageIndex);
 void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkExtent2D extent, uint32_t imageCount);
 void CleanupCapture(VkDevice device);
-void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t imageIndex, VkSemaphore waitSemaphore);
+void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t imageIndex, VkSemaphore waitSemaphore, VkSemaphore signalSemaphore);

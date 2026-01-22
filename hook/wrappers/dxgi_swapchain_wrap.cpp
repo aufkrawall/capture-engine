@@ -207,6 +207,9 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::QueryInterface(REFIID riid, void**
     // Ensure we have probed for all available interfaces (Lazy Promotion)
     EnsurePromoted();
     
+    // Log uncommon queries or potential issues
+    // (Common queries like IDXGISwapChain are noisy, so we skip them unless deep debug is needed)
+    
     // Block known FG runtime unwrap attempts
     if (IsUnwrapAttemptGUID(riid)) {
         WrapperLog("DXGI Wrapper: BLOCKED unwrap attempt!");
@@ -216,6 +219,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::QueryInterface(REFIID riid, void**
     
     // Return real for our own GUID to support safe unwrapping
     if (riid == IID_CWrapDXGISwapChain) {
+        WrapperLog("DXGI Wrapper: Internal IID_CWrapDXGISwapChain query - returning REAL %p", m_pReal);
         *ppvObj = m_pReal;
         return S_OK;
     }
@@ -255,6 +259,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::QueryInterface(REFIID riid, void**
     }
     
     // Unknown interface - forward to real
+    // WrapperLog("DXGI Wrapper: Forwarding unknown QI to real swapchain");
     return m_pReal->QueryInterface(riid, ppvObj);
 }
 

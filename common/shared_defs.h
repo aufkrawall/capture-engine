@@ -3,8 +3,21 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <type_traits>
 
 #pragma pack(push, 8)
+
+// ============================================================================
+// Shared Memory Version & Magic Number
+// ============================================================================
+// Magic number for shared memory validation
+static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
+
+// Shared memory layout version - increment when struct changes
+static constexpr uint32_t SHARED_MEMORY_VERSION = 3;
+
+// Minimum supported version for backward compatibility
+static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
 
 // IPC Constants - base names, actual names are generated with process ID for uniqueness
 #define SHARED_MEM_BASE_NAME L"Local\\CE_SM_"
@@ -176,8 +189,10 @@ struct alignas(8) CaptureState {
   std::atomic<bool> ackRecordingStopped{false};
   
   std::atomic<bool> isRecording{false};  // Atomic to prevent race with cmdStartRecording
-  uint8_t padding[3];        // Pad to 4 bytes
-  uint32_t padding2;         // Pad to 8 bytes total for the tail
+  std::atomic<bool> vulkanLayerActive{false}; // Set by Vulkan layer when initialized
+  uint8_t _statePadding[2];        // Pad to 4 bytes
+  std::atomic<uint32_t> vulkanPresentThreadId{0}; // Thread ID currently presenting via Vulkan
+  std::atomic<uint64_t> vulkanPresentTick{0};     // GetTickCount64 of last Vulkan present
 };
 
 // Frame slot for ring buffer
@@ -206,6 +221,15 @@ struct FrameRingBuffer {
   
   // Dropped frame counter - can share with readIndex (both consumer-side)
   std::atomic<uint32_t> droppedFrames{0}; // Frames dropped due to buffer full
+
+  // Helper methods for safe atomic access
+  uint32_t load_write_index_acquire() const { return writeIndex.load(std::memory_order_acquire); }
+  uint32_t load_read_index_acquire() const { return readIndex.load(std::memory_order_acquire); }
+  uint32_t load_write_index_relaxed() const { return writeIndex.load(std::memory_order_relaxed); }
+  uint32_t load_read_index_relaxed() const { return readIndex.load(std::memory_order_relaxed); }
+  
+  void store_write_index_release(uint32_t idx) { writeIndex.store(idx, std::memory_order_release); }
+  void store_read_index_release(uint32_t idx) { readIndex.store(idx, std::memory_order_release); }
 };
 
 // D3D9 Shmem Fallback Buffer
@@ -221,14 +245,49 @@ struct ShmemBuffer {
     uint8_t data[SLOT_COUNT][MAX_WIDTH * MAX_HEIGHT * 4];
     
     std::atomic<int> writeSlot{0};
-    std::atomic<bool> slotReady[SLOT_COUNT]{false, false};
+    std::atomic<bool> slotReady[SLOT_COUNT];
     uint32_t validWidth{0};
     uint32_t validHeight{0};
     uint32_t pitch{0};
+
+    ShmemBuffer() {
+        writeSlot.store(0);
+        for (int i = 0; i < SLOT_COUNT; ++i) {
+            slotReady[i].store(false);
+        }
+    }
+
+    // Helper methods
+    void mark_ready(int slot) {
+        if (slot >= 0 && slot < SLOT_COUNT) {
+            slotReady[slot].store(true, std::memory_order_release);
+        }
+    }
+
+    bool check_ready(int slot) const {
+        if (slot >= 0 && slot < SLOT_COUNT) {
+            return slotReady[slot].load(std::memory_order_acquire);
+        }
+        return false;
+    }
+    
+    void reset_ready(int slot) {
+        if (slot >= 0 && slot < SLOT_COUNT) {
+            slotReady[slot].store(false, std::memory_order_relaxed);
+        }
+    }
 };
 
 // Main Shared Memory Structure
 struct SharedMemoryLayout {
+  // ============================================================================
+  // Header - MUST be first for version validation before accessing other fields
+  // ============================================================================
+  uint32_t magic = SHARED_MEMORY_MAGIC;    // Magic number for validation
+  uint32_t version = SHARED_MEMORY_VERSION; // Layout version
+  uint32_t structSize = 0;                  // sizeof(SharedMemoryLayout) for ABI check
+  uint32_t _headerPadding = 0;              // Alignment padding
+
   // Host -> Hook
   OverlayConfig overlayConfig;
   SharedGraphicsConfig graphicsConfig; // Added graphics overrides
@@ -366,6 +425,53 @@ struct SharedMemoryLayout {
 // Generate unique Shmem mapping name
 inline void GenerateShmemName(wchar_t* outName, size_t maxLen, uint32_t pid) {
   swprintf(outName, maxLen, L"Local\\CE_SHM_%08X", pid);
+}
+
+// ============================================================================
+// Static Assertions for ABI Safety
+// ============================================================================
+
+// NOTE: FrameSlot contains std::atomic<uint32_t> valid, which makes it non-trivially
+// copyable. However, this is safe for IPC because:
+// 1. We use memory-mapped files, not memcpy
+// 2. Atomics work across process boundaries with shared memory
+// 3. The atomic provides the necessary synchronization
+// static_assert(std::is_trivially_copyable_v<FrameSlot>, 
+//     "FrameSlot must be trivially copyable for IPC");
+static_assert(std::is_trivially_copyable_v<OverlayConfig>,
+    "OverlayConfig must be trivially copyable for IPC");
+static_assert(std::is_trivially_copyable_v<SharedGraphicsConfig>,
+    "SharedGraphicsConfig must be trivially copyable for IPC");
+static_assert(std::is_trivially_copyable_v<DiscoveryInfo>,
+    "DiscoveryInfo must be trivially copyable for IPC");
+
+// Ensure proper alignment for atomics
+static_assert(alignof(FrameRingBuffer) >= 8,
+    "FrameRingBuffer must be 8-byte aligned for atomic operations");
+static_assert(alignof(CaptureState) >= 8,
+    "CaptureState must be 8-byte aligned for atomic operations");
+
+// Ensure ring buffer size is power of 2 for efficient modulo
+static_assert((FRAME_RING_SIZE & (FRAME_RING_SIZE - 1)) == 0,
+    "FRAME_RING_SIZE must be power of 2");
+
+// Ensure FrameSlot is properly sized for cache efficiency
+static_assert(sizeof(FrameSlot) == 40,
+    "FrameSlot should be 40 bytes - update if struct changes");
+
+// Validate shared memory header is at offset 0
+static_assert(offsetof(SharedMemoryLayout, magic) == 0,
+    "magic must be at offset 0 for version validation");
+static_assert(offsetof(SharedMemoryLayout, version) == 4,
+    "version must be at offset 4");
+
+// Helper function to validate shared memory on connect
+inline bool ValidateSharedMemory(const SharedMemoryLayout* shm) {
+    if (!shm) return false;
+    if (shm->magic != SHARED_MEMORY_MAGIC) return false;
+    if (shm->version < SHARED_MEMORY_MIN_VERSION) return false;
+    if (shm->version > SHARED_MEMORY_VERSION) return false;
+    return true;
 }
 
 #pragma pack(pop)

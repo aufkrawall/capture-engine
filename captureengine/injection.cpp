@@ -1,5 +1,6 @@
 #include "injection.h"
 #include "../common/logging.h"
+#include "../common/raii_helpers.h"
 #include <algorithm>
 #include <array>
 #include <filesystem>
@@ -465,19 +466,19 @@ bool InjectionManager::Inject(DWORD pid, const std::string &processName) {
       onInjectCallback(processName);
   }
 
-  // Determine architecture
-  HANDLE hProcess =
+  // Determine architecture - use RAII HandleGuard to prevent leaks
+  ce::HandleGuard hProcess(
       OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ |
                       PROCESS_VM_WRITE | PROCESS_VM_OPERATION |
                       PROCESS_CREATE_THREAD,
-                  FALSE, pid);
+                  FALSE, pid));
   if (!hProcess) {
     LogError("Failed to open process %d for injection", pid);
     return false;
   }
 
   BOOL isWow64 = FALSE;
-  IsWow64Process(hProcess, &isWow64);
+  IsWow64Process(hProcess.get(), &isWow64);
 
   std::string dllPath = isWow64 ? hookDllPathX86 : hookDllPathX64;
   
@@ -490,7 +491,6 @@ bool InjectionManager::Inject(DWORD pid, const std::string &processName) {
   if (!VerifyDLLSignature(dllPath)) {
     LogError("DLL signature verification failed for %s - refusing to inject", dllPath.c_str());
     LogError("In production builds, only signed DLLs can be injected");
-    CloseHandle(hProcess);
     return false;
   }
   LogInfo("DLL signature verified: %s", dllPath.c_str());
@@ -505,15 +505,14 @@ bool InjectionManager::Inject(DWORD pid, const std::string &processName) {
   if (!fs::exists(dllPath)) {
     LogError("Required DLL for %s injection missing: %s",
              isWow64 ? "x86" : "x64", dllPath.c_str());
-    CloseHandle(hProcess);
     return false;
   }
 
   // Helper to find remote function address
-  auto GetRemoteProcAddress = [&](HANDLE hProcess, HMODULE hModule, const char* funcName) -> LPVOID {
+  auto GetRemoteProcAddress = [&](HANDLE hProc, HMODULE hModule, const char* funcName) -> LPVOID {
       // Read DOS Header
       IMAGE_DOS_HEADER dosHeader;
-      if (!ReadProcessMemory(hProcess, hModule, &dosHeader, sizeof(dosHeader), NULL))
+      if (!ReadProcessMemory(hProc, hModule, &dosHeader, sizeof(dosHeader), NULL))
           return nullptr;
       if (dosHeader.e_magic != IMAGE_DOS_SIGNATURE)
           return nullptr;
@@ -527,7 +526,7 @@ bool InjectionManager::Inject(DWORD pid, const std::string &processName) {
       // Calculate NT Headers address
       BYTE* pNtHeaders = (BYTE*)hModule + dosHeader.e_lfanew;
       IMAGE_NT_HEADERS32 ntHeaders;
-      if (!ReadProcessMemory(hProcess, pNtHeaders, &ntHeaders, sizeof(ntHeaders), NULL))
+      if (!ReadProcessMemory(hProc, pNtHeaders, &ntHeaders, sizeof(ntHeaders), NULL))
           return nullptr;
       if (ntHeaders.Signature != IMAGE_NT_SIGNATURE)
           return nullptr;
@@ -538,28 +537,28 @@ bool InjectionManager::Inject(DWORD pid, const std::string &processName) {
           return nullptr;
 
       IMAGE_EXPORT_DIRECTORY exportDir;
-      if (!ReadProcessMemory(hProcess, (BYTE*)hModule + exportDirRVA, &exportDir, sizeof(exportDir), NULL))
+      if (!ReadProcessMemory(hProc, (BYTE*)hModule + exportDirRVA, &exportDir, sizeof(exportDir), NULL))
           return nullptr;
 
       // Read Name Table
       std::vector<DWORD> nameRVAs(exportDir.NumberOfNames);
-      if (!ReadProcessMemory(hProcess, (BYTE*)hModule + exportDir.AddressOfNames, nameRVAs.data(), nameRVAs.size() * sizeof(DWORD), NULL))
+      if (!ReadProcessMemory(hProc, (BYTE*)hModule + exportDir.AddressOfNames, nameRVAs.data(), nameRVAs.size() * sizeof(DWORD), NULL))
           return nullptr;
 
       // Search for function name
       for (DWORD i = 0; i < exportDir.NumberOfNames; i++) {
           char buffer[256];
-          if (ReadProcessMemory(hProcess, (BYTE*)hModule + nameRVAs[i], buffer, sizeof(buffer), NULL)) {
+          if (ReadProcessMemory(hProc, (BYTE*)hModule + nameRVAs[i], buffer, sizeof(buffer), NULL)) {
               buffer[255] = '\0'; // Ensure null term
               if (strcmp(buffer, funcName) == 0) {
                   // Found name, get ordinal
                   WORD ordinal;
-                  if (!ReadProcessMemory(hProcess, (BYTE*)hModule + exportDir.AddressOfNameOrdinals + (i * sizeof(WORD)), &ordinal, sizeof(WORD), NULL))
+                  if (!ReadProcessMemory(hProc, (BYTE*)hModule + exportDir.AddressOfNameOrdinals + (i * sizeof(WORD)), &ordinal, sizeof(WORD), NULL))
                       return nullptr;
                   
                   // Get Function RVA
                   DWORD funcRVA;
-                  if (!ReadProcessMemory(hProcess, (BYTE*)hModule + exportDir.AddressOfFunctions + (ordinal * sizeof(DWORD)), &funcRVA, sizeof(DWORD), NULL))
+                  if (!ReadProcessMemory(hProc, (BYTE*)hModule + exportDir.AddressOfFunctions + (ordinal * sizeof(DWORD)), &funcRVA, sizeof(DWORD), NULL))
                       return nullptr;
 
                   return (BYTE*)hModule + funcRVA;
@@ -582,17 +581,17 @@ bool InjectionManager::Inject(DWORD pid, const std::string &processName) {
     for (int retry = 0; retry < maxRetries; retry++) {
         HMODULE hMods[1024];
         DWORD cbNeeded;
-        if (EnumProcessModulesEx(hProcess, hMods, sizeof(hMods), &cbNeeded, LIST_MODULES_32BIT)) {
+        if (EnumProcessModulesEx(hProcess.get(), hMods, sizeof(hMods), &cbNeeded, LIST_MODULES_32BIT)) {
           for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
             char szModName[MAX_PATH];
-            if (GetModuleFileNameExA(hProcess, hMods[i], szModName, sizeof(szModName))) {
+            if (GetModuleFileNameExA(hProcess.get(), hMods[i], szModName, sizeof(szModName))) {
               std::string modName = szModName;
               // Case insensitive check
               std::transform(modName.begin(), modName.end(), modName.begin(), ::tolower);
               
               if (modName.find("kernel32.dll") != std::string::npos) {
                 // Found kernel32!
-                pLoadLibrary = GetRemoteProcAddress(hProcess, hMods[i], "LoadLibraryA");
+                pLoadLibrary = GetRemoteProcAddress(hProcess.get(), hMods[i], "LoadLibraryA");
                 
                 if (pLoadLibrary)
                     LogInfo("Resolved LoadLibraryA in x86 process at 0x%p (Base: 0x%p)", pLoadLibrary, hMods[i]);
@@ -612,43 +611,39 @@ bool InjectionManager::Inject(DWORD pid, const std::string &processName) {
 
   if (!pLoadLibrary) {
     LogError("Failed to resolve LoadLibrary for PID %d", pid);
-    CloseHandle(hProcess);
     return false;
   }
 
-  // Allocate and Write
-  void *pRemotePath = VirtualAllocEx(hProcess, NULL, dllPath.size() + 1,
-                                     MEM_COMMIT, PAGE_READWRITE);
+  // Allocate memory in remote process - use RAII VirtualAllocGuard
+  ce::VirtualAllocGuard pRemotePath(
+      hProcess.get(),
+      VirtualAllocEx(hProcess.get(), NULL, dllPath.size() + 1, MEM_COMMIT, PAGE_READWRITE));
   if (!pRemotePath) {
-    CloseHandle(hProcess);
+    LogError("VirtualAllocEx failed for PID %d", pid);
     return false;
   }
 
-  if (!WriteProcessMemory(hProcess, pRemotePath, dllPath.c_str(),
+  if (!WriteProcessMemory(hProcess.get(), pRemotePath.get(), dllPath.c_str(),
                           dllPath.size() + 1, NULL)) {
-    VirtualFreeEx(hProcess, pRemotePath, 0, MEM_RELEASE);
-    CloseHandle(hProcess);
+    LogError("WriteProcessMemory failed for PID %d", pid);
     return false;
   }
 
-  HANDLE hThread = CreateRemoteThread(hProcess, NULL, 0,
+  ce::HandleGuard hThread(CreateRemoteThread(hProcess.get(), NULL, 0,
                                       (LPTHREAD_START_ROUTINE)pLoadLibrary,
-                                      pRemotePath, 0, NULL);
+                                      pRemotePath.get(), 0, NULL));
   if (!hThread) {
-    VirtualFreeEx(hProcess, pRemotePath, 0, MEM_RELEASE);
-    CloseHandle(hProcess);
+    LogError("CreateRemoteThread failed for PID %d", pid);
     return false;
   }
 
-  WaitForSingleObject(hThread, 5000); // Wait up to 5s
+  WaitForSingleObject(hThread.get(), 5000); // Wait up to 5s
 
   DWORD exitCode = 0;
-  if (GetExitCodeThread(hThread, &exitCode)) {
+  if (GetExitCodeThread(hThread.get(), &exitCode)) {
       if (exitCode == 0) {
           // LoadLibraryA returned NULL
           LogError("LoadLibraryA failed in remote process (Exit Code: 0). DLL failed to load.");
-          CloseHandle(hThread);
-          VirtualFreeEx(hProcess, pRemotePath, 0, MEM_RELEASE);
           return false;
       } else {
           LogInfo("LoadLibraryA succeeded (Remote Handle: 0x%X)", exitCode);
@@ -657,13 +652,12 @@ bool InjectionManager::Inject(DWORD pid, const std::string &processName) {
       LogError("Failed to get thread exit code.");
   }
 
-  CloseHandle(hThread);
-  VirtualFreeEx(hProcess, pRemotePath, 0, MEM_RELEASE);
-
+  // Success - track the injected process
+  // Note: We need to keep a handle to monitor the process, so release from RAII
   InjectedProcess ip;
   ip.pid = pid;
   ip.name = processName;
-  ip.hProcess = hProcess;
+  ip.hProcess = hProcess.release(); // Transfer ownership
   injectedProcesses.push_back(ip);
 
   LogInfo("Injected %s into %s (PID: %d)", isWow64 ? "x86" : "x64",

@@ -8,7 +8,7 @@
 #include "d3d9_wrap.h"
 #include "d3d9_device_wrap.h"
 #include "iat_hook.h"
-#include "hook_common.h"
+#include "../common/hook_common.h"
 #include "../apis/dx12_hook.h" // Access to g_DX12Hook implementation
 // MinHook shim removed
 
@@ -72,6 +72,21 @@ PFN_Direct3DCreate9 oDirect3DCreate9 = nullptr;
 PFN_Direct3DCreate9Ex oDirect3DCreate9Ex = nullptr;
 
 static bool g_WrappersActive = false;
+
+// API Detection Flags - set when actual device creation is called
+// These allow distinguishing between DLL being loaded (e.g. d3d12.dll via D3D11On12)
+// vs the app actually using that API.
+#include <atomic>
+static std::atomic<bool> g_D3D11Or10DeviceCreated{false};
+static std::atomic<bool> g_D3D12DeviceCreated{false};
+
+bool WasD3D11Or10DeviceCreated() {
+    return g_D3D11Or10DeviceCreated.load(std::memory_order_acquire);
+}
+
+bool WasD3D12DeviceCreated() {
+    return g_D3D12DeviceCreated.load(std::memory_order_acquire);
+}
 
 void WrapperLog(const char* fmt, ...) {
     va_list args;
@@ -198,6 +213,9 @@ __declspec(dllexport) HRESULT WINAPI Wrapped_D3D12CreateDevice(
     // --- ORIGINAL CODE BELOW (RESTORED) ---
     WrapperLog("Wrapper: D3D12CreateDevice called (feature level=0x%X)", MinimumFeatureLevel);
     
+    // Mark that D3D12 device creation was actually called
+    g_D3D12DeviceCreated.store(true, std::memory_order_release);
+    
     // Ensure DX12 hooks are initialized (fixes race condition)
     g_dx12HookInstance.Init();
 
@@ -280,6 +298,9 @@ HRESULT WINAPI Wrapped_D3D11CreateDevice(
     
     WrapperLog("Wrapper: D3D11CreateDevice called");
     
+    // Mark that D3D11 device creation was actually called
+    g_D3D11Or10DeviceCreated.store(true, std::memory_order_release);
+    
     if (!oD3D11CreateDevice) return E_FAIL;
     
     ID3D11Device* pRealDevice = nullptr;
@@ -320,6 +341,9 @@ HRESULT WINAPI Wrapped_D3D11CreateDeviceAndSwapChain(
     ID3D11DeviceContext** ppImmediateContext) {
     
     WrapperLog("Wrapper: D3D11CreateDeviceAndSwapChain called");
+    
+    // Mark that D3D11 device creation was actually called
+    g_D3D11Or10DeviceCreated.store(true, std::memory_order_release);
     
     if (!oD3D11CreateDeviceAndSwapChain) return E_FAIL;
     
@@ -374,6 +398,9 @@ HRESULT WINAPI Wrapped_D3D10CreateDevice(
     
     WrapperLog("Wrapper: D3D10CreateDevice called");
     
+    // Mark that D3D10 device creation was actually called
+    g_D3D11Or10DeviceCreated.store(true, std::memory_order_release);
+    
     if (!oD3D10CreateDevice) return E_FAIL;
     
     ID3D10Device* pRealDevice = nullptr;
@@ -399,6 +426,9 @@ HRESULT WINAPI Wrapped_D3D10CreateDevice1(
     ID3D10Device1** ppDevice) {
     
     WrapperLog("Wrapper: D3D10CreateDevice1 called");
+    
+    // Mark that D3D10 device creation was actually called
+    g_D3D11Or10DeviceCreated.store(true, std::memory_order_release);
     
     if (!oD3D10CreateDevice1) return E_FAIL;
     
@@ -427,6 +457,9 @@ HRESULT WINAPI Wrapped_D3D10CreateDeviceAndSwapChain(
     ID3D10Device** ppDevice) {
     
     WrapperLog("Wrapper: D3D10CreateDeviceAndSwapChain called");
+    
+    // Mark that D3D10 device creation was actually called
+    g_D3D11Or10DeviceCreated.store(true, std::memory_order_release);
     
     if (!oD3D10CreateDeviceAndSwapChain) return E_FAIL;
     

@@ -61,9 +61,18 @@ void VulkanLayerState::UnregisterDevice(VkDevice device) {
 }
 
 DeviceDispatch* VulkanLayerState::GetDeviceDispatch(VkDevice device) {
+    static thread_local VkDevice tls_LastDevice = VK_NULL_HANDLE;
+    static thread_local DeviceDispatch* tls_LastDispatch = nullptr;
+    if (device == tls_LastDevice && tls_LastDispatch) return tls_LastDispatch;
+
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     auto it = m_Devices.find(device);
-    return (it != m_Devices.end()) ? it->second : nullptr;
+    if (it != m_Devices.end()) {
+        tls_LastDevice = device;
+        tls_LastDispatch = it->second;
+        return tls_LastDispatch;
+    }
+    return nullptr;
 }
 
 void VulkanLayerState::RegisterQueue(VkQueue queue, VkDevice device, uint32_t familyIndex) {
@@ -73,10 +82,19 @@ void VulkanLayerState::RegisterQueue(VkQueue queue, VkDevice device, uint32_t fa
 }
 
 DeviceDispatch* VulkanLayerState::GetDeviceFromQueue(VkQueue queue) {
+    static thread_local VkQueue tls_LastQueue = VK_NULL_HANDLE;
+    static thread_local DeviceDispatch* tls_LastDispatch = nullptr;
+    if (queue == tls_LastQueue && tls_LastDispatch) return tls_LastDispatch;
+
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     auto it = m_Queues.find(queue);
     if (it != m_Queues.end()) {
-        return GetDeviceDispatch(it->second);
+        auto itDev = m_Devices.find(it->second);
+        if (itDev != m_Devices.end()) {
+            tls_LastQueue = queue;
+            tls_LastDispatch = itDev->second;
+            return tls_LastDispatch;
+        }
     }
     return nullptr;
 }
@@ -102,9 +120,18 @@ void VulkanLayerState::UnregisterSwapchain(VkSwapchainKHR swapchain) {
 }
 
 SwapchainData* VulkanLayerState::GetSwapchainData(VkSwapchainKHR swapchain) {
+    static thread_local VkSwapchainKHR tls_LastSwapchain = VK_NULL_HANDLE;
+    static thread_local SwapchainData* tls_LastData = nullptr;
+    if (swapchain == tls_LastSwapchain && tls_LastData) return tls_LastData;
+
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     auto it = m_Swapchains.find(swapchain);
-    return (it != m_Swapchains.end()) ? it->second : nullptr;
+    if (it != m_Swapchains.end()) {
+        tls_LastSwapchain = swapchain;
+        tls_LastData = it->second;
+        return tls_LastData;
+    }
+    return nullptr;
 }
 
 void VulkanLayerState::RegisterSurface(VkSurfaceKHR surface, HWND window) {
@@ -249,6 +276,10 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateInstance(
     
     LayerLog("Vulkan Layer: Capture_vkCreateInstance called");
     
+    // Mark Vulkan layer as active in shared memory
+    auto* shm = g_IPCClient.GetSharedMem();
+    if (shm) shm->runtimeState.vulkanLayerActive = true;
+    
     PFN_vkGetInstanceProcAddr gipa = (PFN_vkGetInstanceProcAddr)NULL;
     VkLayerInstanceCreateInfo* chain_info = (VkLayerInstanceCreateInfo*)pCreateInfo->pNext;
     while (chain_info && !(chain_info->sType == VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO && chain_info->function == VK_LAYER_LINK_INFO)) {
@@ -259,6 +290,11 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateInstance(
     chain_info->u.pLayerInfo = chain_info->u.pLayerInfo->pNext;
 
     PFN_vkCreateInstance create_fn = (PFN_vkCreateInstance)gipa(VK_NULL_HANDLE, "vkCreateInstance");
+    
+    // FAST BAILOUT: If not whitelisted, pass through immediately without modifying pCreateInfo
+    if (!g_LayerState.whitelisted) {
+        return create_fn(pCreateInfo, pAllocator, pInstance);
+    }
     
     // Inject required extensions
     std::vector<const char*> extensions;
@@ -451,48 +487,56 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkGetSwapchainImagesKHR(
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo) {
-    LayerLog("Capture_vkQueuePresentKHR: ENTER (queue=%p)", queue);
+    // Set flag to inform DXGI hooks that Vulkan is presenting on this thread.
+    // This prevents double-drawing and incorrect API labeling when Vulkan presents via DXGI.
+    auto* shm = g_IPCClient.GetSharedMem();
+    if (shm) {
+        shm->runtimeState.vulkanPresentThreadId.store(GetCurrentThreadId(), std::memory_order_release);
+        shm->runtimeState.vulkanPresentTick.store(GetTickCount64(), std::memory_order_release);
+    }
     
     bool isFirstHook = !g_InPresentHook;
     g_InPresentHook = true;
 
     if (isFirstHook) {
         g_SharedFpsLimiter.SetIPCClient(&g_IPCClient);
-        LayerLog("Capture_vkQueuePresentKHR: Calling Apply()");
         g_SharedFpsLimiter.Apply();
-        LayerLog("Capture_vkQueuePresentKHR: Apply() returned");
     }
 
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceFromQueue(queue);
-    LayerLog("Capture_vkQueuePresentKHR: Got dispatch=%p", disp);
     
-    if (g_LayerState.whitelisted && pPresentInfo->swapchainCount > 0) {
-        VkSwapchainKHR sw = pPresentInfo->pSwapchains[0];
-        uint32_t idx = pPresentInfo->pImageIndices[0];
-        SwapchainData* sd = VulkanLayerState::Get().GetSwapchainData(sw);
-        LayerLog("Capture_vkQueuePresentKHR: sw=%p, idx=%u, sd=%p", sw, idx, sd);
+    if (g_LayerState.whitelisted && pPresentInfo && pPresentInfo->swapchainCount > 0) {
+        SwapchainData* sd = VulkanLayerState::Get().GetSwapchainData(pPresentInfo->pSwapchains[0]);
         if (sd) {
-            VkSemaphore waitSemaphore = pPresentInfo->pWaitSemaphores && pPresentInfo->waitSemaphoreCount > 0 
+            uint32_t idx = pPresentInfo->pImageIndices[0];
+            VkSemaphore currentWait = (pPresentInfo->pWaitSemaphores && pPresentInfo->waitSemaphoreCount > 0) 
                 ? pPresentInfo->pWaitSemaphores[0] : VK_NULL_HANDLE;
+
+            // OPTIMIZATION: Chained semaphores for perfect GPU-side async execution.
+            // Game -> Overlay -> Capture -> Present
+            VkSemaphore overlayDone = GetOverlaySemaphore(sd->device, idx);
             
-            // TEMPORARILY DISABLED FOR DEBUGGING - Black window issue
-            // LayerLog("Capture_vkQueuePresentKHR: Calling RenderOverlay (waitSem=%p)", waitSemaphore);
-            // RenderOverlay(sd->device, queue, idx, waitSemaphore, VK_NULL_HANDLE);
-            // LayerLog("Capture_vkQueuePresentKHR: RenderOverlay returned, calling CaptureFrame");
-            // CaptureFrame(sd->device, queue, sd->images[idx], idx, waitSemaphore);
-            // LayerLog("Capture_vkQueuePresentKHR: CaptureFrame returned");
+            if (shm && shm->overlayConfig.showOverlay) {
+                RenderOverlay(sd->device, queue, idx, currentWait, overlayDone);
+                currentWait = overlayDone; // Next step waits for overlay
+            }
+            
+            if (shm && shm->runtimeState.isRecording) {
+                CaptureFrame(sd->device, queue, sd->images[idx], idx, currentWait, VK_NULL_HANDLE);
+                // currentWait remains the same for present, or we could add another semaphore
+            }
         }
     }
     
     VkResult res = VK_SUCCESS;
     if (disp && disp->fp_vkQueuePresentKHR) {
-        LayerLog("Capture_vkQueuePresentKHR: Calling fp_vkQueuePresentKHR");
         res = disp->fp_vkQueuePresentKHR(queue, pPresentInfo);
-        LayerLog("Capture_vkQueuePresentKHR: fp_vkQueuePresentKHR returned %d", res);
     }
     
     if (isFirstHook) g_InPresentHook = false;
-    LayerLog("Capture_vkQueuePresentKHR: EXIT");
+
+    if (shm) shm->runtimeState.vulkanPresentThreadId.store(0, std::memory_order_release);
+
     return res;
 }
 

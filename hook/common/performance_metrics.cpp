@@ -188,53 +188,56 @@ float PerformanceMetrics::GetCurrentFPS() const {
 }
 
 float PerformanceMetrics::GetAverageFPS() const {
-  // Average FPS over last 15 seconds
-  std::lock_guard<std::mutex> lock(m_mutex);
-  float totalMs = 0.0f;
-  int count = 0;
-
-  for (int i = 0; i < HISTORY_SIZE; i++) {
-    int idx = (m_historyIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
-    float ms = m_history[idx];
-    if (ms <= 0.0001f) break; // End of history
-    
-    totalMs += ms;
-    count++;
-    if (totalMs >= 5000.0f) break; // 5s window reached
+  // Average FPS over last 5 seconds
+  float avgMs = 0.0f;
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    float totalMs = 0.0f;
+    int count = 0;
+    for (int i = 0; i < HISTORY_SIZE; i++) {
+      int idx = (m_historyIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
+      float ms = m_history[idx];
+      if (ms <= 0.0001f) break; 
+      
+      totalMs += ms;
+      count++;
+      if (totalMs >= 5000.0f) break;
+    }
+    if (count > 0) avgMs = totalMs / count;
   }
 
-  if (count > 0 && totalMs > 0.0001f) {
-    return 1000.0f / (totalMs / count);
+  if (avgMs > 0.0001f) {
+    return 1000.0f / avgMs;
   }
   return 0.0f;
 }
 
 float PerformanceMetrics::Get1PercentLowFPS() const {
-  // 1% low = 99th percentile worst frame times over 15s
-  std::lock_guard<std::mutex> lock(m_mutex);
+  // 1% low = 99th percentile worst frame times over 5s
   std::vector<float> frameTimes;
-  frameTimes.reserve(HISTORY_SIZE);
+  frameTimes.reserve(HISTORY_SIZE / 2);
 
-  float totalMs = 0.0f;
-  for (int i = 0; i < HISTORY_SIZE; i++) {
-    int idx = (m_historyIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
-    float ms = m_history[idx];
-    if (ms <= 0.0001f) break;
-    
-    frameTimes.push_back(ms);
-    totalMs += ms;
-    if (totalMs >= 5000.0f) break;
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    float totalMs = 0.0f;
+    for (int i = 0; i < HISTORY_SIZE; i++) {
+      int idx = (m_historyIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
+      float ms = m_history[idx];
+      if (ms <= 0.0001f) break;
+      
+      frameTimes.push_back(ms);
+      totalMs += ms;
+      if (totalMs >= 5000.0f) break; // 5s window
+    }
   }
 
   if (frameTimes.size() < 10) return 0.0f;
 
   std::sort(frameTimes.begin(), frameTimes.end(), std::greater<float>());
   
-  // Percentile index: e.g. for 1000 samples, it's index 10
   int percentileIdx = (int)(frameTimes.size() * 0.01f);
   if (percentileIdx >= (int)frameTimes.size()) percentileIdx = (int)frameTimes.size() - 1;
 
-  // Average the worst 1% for stability
   float sum = 0.0f;
   int count = std::max(1, percentileIdx + 1);
   for (int i = 0; i < count; i++) {
@@ -244,31 +247,31 @@ float PerformanceMetrics::Get1PercentLowFPS() const {
 }
 
 float PerformanceMetrics::Get01PercentLowFPS() const {
-  // 0.1% low = 99.9th percentile worst frame times over 15s
-  std::lock_guard<std::mutex> lock(m_mutex);
+  // 0.1% low = 99.9th percentile worst frame times over 5s
   std::vector<float> frameTimes;
-  frameTimes.reserve(HISTORY_SIZE);
+  frameTimes.reserve(HISTORY_SIZE / 2);
 
-  float totalMs = 0.0f;
-  for (int i = 0; i < HISTORY_SIZE; i++) {
-    int idx = (m_historyIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
-    float ms = m_history[idx];
-    if (ms <= 0.0001f) break;
-    
-    frameTimes.push_back(ms);
-    totalMs += ms;
-    if (totalMs >= 5000.0f) break;
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    float totalMs = 0.0f;
+    for (int i = 0; i < HISTORY_SIZE; i++) {
+      int idx = (m_historyIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
+      float ms = m_history[idx];
+      if (ms <= 0.0001f) break;
+      
+      frameTimes.push_back(ms);
+      totalMs += ms;
+      if (totalMs >= 5000.0f) break; // 5s window
+    }
   }
 
   if (frameTimes.size() < 100) return 0.0f;
 
   std::sort(frameTimes.begin(), frameTimes.end(), std::greater<float>());
   
-  // Percentile index: e.g. for 1000 samples, it's index 1
   int percentileIdx = (int)(frameTimes.size() * 0.001f);
   if (percentileIdx >= (int)frameTimes.size()) percentileIdx = (int)frameTimes.size() - 1;
 
-  // Average the worst 0.1% for stability
   float sum = 0.0f;
   int count = std::max(1, percentileIdx + 1);
   for (int i = 0; i < count; i++) {
@@ -289,29 +292,25 @@ void PerformanceMetrics::GetLastHistory(float *outBuffer, int count) const {
 
 void PerformanceMetrics::GetSmartScale(float &outMin, float &outMax,
                                        float minRangeMs) const {
-  std::lock_guard<std::mutex> lock(m_mutex);
   outMin = 0.0f;
   float maxVal = 0.0f;
-  
-  // Calculate average frame time for heuristic
-  float totalMs = 0.0f;
-  int count = 0;
+  float avgMs = 16.6f;
 
-  // Only scale based on what's visible in the graph
-  for (int i = 0; i < GRAPH_HISTORY_SIZE; i++) {
-    int idx = (m_historyIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
-    float ms = m_history[idx];
-    if (ms > maxVal) maxVal = ms;
-    if (ms <= 0.0001f) break; 
-    
-    totalMs += ms;
-    count++;
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    float totalMs = 0.0f;
+    int count = 0;
+    for (int i = 0; i < GRAPH_HISTORY_SIZE; i++) {
+        int idx = (m_historyIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
+        float ms = m_history[idx];
+        if (ms > maxVal) maxVal = ms;
+        if (ms <= 0.0001f) break; 
+        totalMs += ms;
+        count++;
+    }
+    if (count > 0) avgMs = totalMs / count;
   }
   
-  float avgMs = (count > 0) ? (totalMs / count) : 16.6f;
-
-  // Ensure we show at least the minimum range (e.g. 33ms)
-  // AND ensure we show at least 3x the average frame time to prevent zoom-in on jitter
   float dynamicMin = avgMs * 3.0f;
   float lowerBound = std::max(minRangeMs, dynamicMin);
 
@@ -323,26 +322,18 @@ void PerformanceMetrics::GetSmartScale(float &outMin, float &outMax,
 }
 
 float PerformanceMetrics::GetMaxFrameTime(float windowSeconds) const {
-  std::lock_guard<std::mutex> lock(m_mutex);
   float maxMs = 0.0f;
-  float accumTime = 0.0f;
-  
-  // Iterate backwards through history
-  for (int i = 0; i < HISTORY_SIZE; i++) {
-    int idx = (m_historyIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
-    float ms = m_history[idx];
-    
-    if (ms <= 0.0001f) break;
-    
-    if (ms > maxMs) maxMs = ms;
-    
-    accumTime += ms;
-    // Safety break if we simply have too many samples, but 
-    // ms is in milliseconds, windowSeconds is in seconds.
-    if (accumTime >= windowSeconds * 1000.0f) {
-        break;
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    float accumTime = 0.0f;
+    for (int i = 0; i < HISTORY_SIZE; i++) {
+        int idx = (m_historyIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
+        float ms = m_history[idx];
+        if (ms <= 0.0001f) break;
+        if (ms > maxMs) maxMs = ms;
+        accumTime += ms;
+        if (accumTime >= windowSeconds * 1000.0f) break;
     }
   }
-  
   return maxMs;
 }
