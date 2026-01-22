@@ -1,6 +1,7 @@
 #include "video_encoder.h"
 #include "../common/shared_defs.h"
 #include "mediaengine.h"
+#include "../common/raii_helpers.h"
 
 extern "C" {
 #include <libavutil/pixfmt.h>
@@ -171,11 +172,14 @@ VideoEncoder::VideoEncoder()
     : fmtCtx(nullptr), codecCtx(nullptr), stream(nullptr), hwDeviceCtx(nullptr),
       hwFramesCtx(nullptr), cudaDeviceCtx(nullptr), cudaFramesCtx(nullptr),
       d3d11DeviceCtx(nullptr), d3d11FramesCtx(nullptr), d3d11Device(nullptr),
-      d3d11Context(nullptr), initDone(false), cachedSourcePid(0),
-      lastEncodeTimeUs(0), width(0), height(0),
+      d3d11Context(nullptr), luidLow(0), luidHigh(0), initDone(false),
+      currentIsHDR(false), fileOpened(false), recordingRequested(false),
+      isStopping(false), flushRequested(false), codecOpenFailed(false),
+      startPts(-1), width(0), height(0),
+      cachedSourcePid(0), lastEncodeTimeUs(0), fenceEvent(nullptr),
       videoDevice(nullptr), videoContext(nullptr), videoProcessor(nullptr),
       videoProcessorEnum(nullptr), currentNV12Buffer(0), inputView(nullptr),
-      videoProcessorInit(false), fenceEvent(nullptr) {}
+      videoProcessorInit(false) {}
 
 VideoEncoder::~VideoEncoder() {
   Stop(); // Triiger async stop
@@ -659,18 +663,17 @@ bool VideoEncoder::EnsureDevice() {
     }
     DLL_Log("[VideoEncoder] D3D11 Device Created (Feature Level: 0x%x)",
             featureLevel);
-    ;
+    
+    // Use RAII to prevent leaks on error paths
+    ComPtr<ID3D11Device> baseDeviceGuard(baseDevice);
+    ComPtr<ID3D11DeviceContext> baseContextGuard(baseContext);
 
     // QI for Interfaces
     if (FAILED(baseDevice->QueryInterface(IID_PPV_ARGS(&d3d11Device)))) {
-      baseDevice->Release();
-      baseContext->Release();
       return false;
     }
 
     if (FAILED(baseContext->QueryInterface(IID_PPV_ARGS(&d3d11Context)))) {
-      baseDevice->Release();
-      baseContext->Release();
       return false;
     }
 
@@ -688,8 +691,7 @@ bool VideoEncoder::EnsureDevice() {
     if (av_hwdevice_ctx_init(d3d11DeviceCtx) < 0)
       return false;
 
-    baseDevice->Release();
-    baseContext->Release();
+    // baseDeviceGuard and baseContextGuard will auto-release on scope exit
   } // End of else block (inject mode device creation)
 
   // Apply GPU priority from config to ensure encoder/game balance
@@ -731,16 +733,23 @@ bool VideoEncoder::EnsureDevice() {
         (AVD3D11VADeviceContext *)deviceCtx->hwctx;
 
     // Get base device from our QI'd interface
-    ID3D11Device *baseDevice = nullptr;
-    d3d11Device->QueryInterface(__uuidof(ID3D11Device), (void **)&baseDevice);
-    d3d11Ctx->device = baseDevice;
+    ComPtr<ID3D11Device> baseDevice;
+    if (FAILED(d3d11Device->QueryInterface(__uuidof(ID3D11Device), (void **)baseDevice.address()))) {
+      return false;
+    }
+    
+    d3d11Ctx->device = baseDevice.get();
+    // FFmpeg expects to own a reference, so we AddRef. 
+    // The ComPtr will release our local reference when it goes out of scope.
     baseDevice->AddRef();
 
     if (av_hwdevice_ctx_init(d3d11DeviceCtx) < 0) {
-      baseDevice->Release();
+      // If init fails, we rely on ComPtr to release baseDevice.
+      // We also need to clean up the partially created context.
+      av_buffer_unref(&d3d11DeviceCtx);
       return false;
     }
-    baseDevice->Release();
+    // baseDevice releases its ref here, but FFmpeg holds one via AddRef above.
   }
 
   codecCtx->hw_device_ctx = av_buffer_ref(d3d11DeviceCtx);
@@ -1291,7 +1300,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
 
   ID3D11Texture2D *bgraTex = nullptr;
   ID3D11Fence *d3d11Fence = nullptr;
-  int cacheSlot = -1; // Moved out of else block for KeyedMutex lookup
+  int cacheSlot = -1;
 
   if (isShmem) {
     if (pShmem && pSharedMem && pSharedMem->shmemMappingCreated) {
@@ -1375,7 +1384,9 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
     }
   } else {
     // Cache Miss (Partial or Full)
-    HANDLE hProcess = OpenProcess(PROCESS_DUP_HANDLE, FALSE, sourcePid);
+    // Use RAII to ensure handle is closed if we return early
+    ce::HandleGuard hProcess(OpenProcess(PROCESS_DUP_HANDLE, FALSE, sourcePid));
+    
     if (!hProcess) {
       DLL_Log("[VideoEncoder] Frame %d: Failed to Open Process %u",
               encodeFrameCounter, sourcePid);
@@ -1389,18 +1400,17 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
       d3d11Fence = cachedD3D11Fence;
       d3d11Fence->AddRef();
     } else {
-      HANDLE dupFence = nullptr;
+      ce::HandleGuard dupFence;
       HRESULT hr = E_FAIL;
 
       // Try NT handle path
-      if (DuplicateHandle(hProcess, fenceHandle, GetCurrentProcess(), &dupFence,
+      if (DuplicateHandle(hProcess.get(), fenceHandle, GetCurrentProcess(), dupFence.addressof(),
                           0, FALSE, DUPLICATE_SAME_ACCESS)) {
-        hr = d3d11Device->OpenSharedFence(dupFence, IID_PPV_ARGS(&d3d11Fence));
-        CloseHandle(dupFence);
+        hr = d3d11Device->OpenSharedFence(dupFence.get(), IID_PPV_ARGS(&d3d11Fence));
+        // dupFence is closed by HandleGuard when it goes out of scope (or reset)
       }
 
-      // Fallback/KMT path (OpenSharedResource can also open shared
-      // fences/semaphores)
+      // Fallback/KMT path
       if (FAILED(hr)) {
         hr = d3d11Device->OpenSharedResource(fenceHandle,
                                              IID_PPV_ARGS(&d3d11Fence));
@@ -1410,11 +1420,11 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
         DLL_Log("[VideoEncoder] Frame %d: Failed to open shared fence handle "
                 "%p, HR=%x",
                 encodeFrameCounter, fenceHandle, hr);
-        CloseHandle(hProcess);
         return false;
       }
 
       // Update Fence Cache
+      if (cachedD3D11Fence) cachedD3D11Fence->Release();
       cachedD3D11Fence = d3d11Fence;
       cachedD3D11Fence->AddRef();
       cachedFenceHandle = fenceHandle;
@@ -1422,7 +1432,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
     }
 
     // 2. Open Texture (We know it's missing if we are here)
-    HANDLE dupTex = nullptr;
+    ce::HandleGuard dupTex;
     HRESULT hr = E_FAIL;
 
     if (sharedHandle == NULL) {
@@ -1435,20 +1445,15 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
             DLL_Log("[VideoEncoder] CRITICAL WARNING: DXGI_FORMAT_B8G8R8A8_UNORM (87) does NOT support SHAREABLE! Flags=%x", formatSupport);
         }
 
-        // Try NT handle path first - usually preferred for modern interop
-        if (DuplicateHandle(hProcess, sharedHandle, GetCurrentProcess(), &dupTex, 0,
+        // Try NT handle path first
+        if (DuplicateHandle(hProcess.get(), sharedHandle, GetCurrentProcess(), dupTex.addressof(), 0,
                              FALSE, DUPLICATE_SAME_ACCESS)) {
           // Use OpenSharedResource1 for NT handles
-          hr = d3d11Device->OpenSharedResource1(dupTex, IID_PPV_ARGS(&bgraTex));
+          hr = d3d11Device->OpenSharedResource1(dupTex.get(), IID_PPV_ARGS(&bgraTex));
           if (FAILED(hr)) {
                DLL_Log("[VideoEncoder] Frame %d: OpenSharedResource1(dup=%p) failed HR=%x. Falling back to KMT...", 
-                       encodeFrameCounter, dupTex, hr);
-          } else {
-               // Success - dupTex is now managed by D3D11 runtime (?), but we should close our handle if Open succeeded?
-               // MSDN: "The OpenSharedResource1 ... validates the handle ... and adds a reference"
-               // We still own dupTex and must close it.
+                       encodeFrameCounter, dupTex.get(), hr);
           }
-          CloseHandle(dupTex);
         }
 
         if (FAILED(hr)) {
@@ -1463,11 +1468,10 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
       DLL_Log("[VideoEncoder] Frame %d: Failed to OpenSharedResource (NT/KMT) "
               "HR=%x, handle=%p, sourcePid=%u, format=%d",
               encodeFrameCounter, hr, sharedHandle, sourcePid, format);
-      // Only release fence if it was successfully opened
+      // Clean up fence if we opened it but failed texture
       if (d3d11Fence) {
         d3d11Fence->Release();
       }
-      CloseHandle(hProcess);
       return false;
     }
 
@@ -1486,20 +1490,17 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
     if (cachedSharedTextures[targetSlot]) {
       cachedSharedTextures[targetSlot]->Release();
     }
-    // Note: KeyedMutex cache removed - using fence sync
 
     cachedSharedTextures[targetSlot] = bgraTex;
     cachedSharedTextures[targetSlot]->AddRef();
     cachedTextureHandles[targetSlot] = sharedHandle;
     
-    // Note: KeyedMutex removed - using D3D11 Fence for sync
-
-    CloseHandle(hProcess);
+    // hProcess, dupTex, dupFence are auto-closed by RAII here
     cacheSlot = targetSlot;
   }
   } // End of isShmem else block
 
-  // 2. Wait on Synchronization using D3D11 Fence (KeyedMutex removed)
+  // 2. Wait on Synchronization using D3D11 Fence
   // PROTECTED: Immediate Context access
   D3D11ScopedLock lock;
 
@@ -1593,7 +1594,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
     bgraTex->Release();
     return false;
   }
-  // Note: KeyedMutex ReleaseSync removed - using fence sync
+  
   auto afterConvert = PerfTimer::now();
   stats.colorConvertMs = PerfTimer::elapsed_ms(beforeConvert, afterConvert);
   bgraTex->Release(); // No longer needed after conversion
@@ -1619,7 +1620,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
   // Calculate relative PTS (start from 0)
   if (startPts < 0) {
     startPts = timestamp;
-    DLL_Log("[VideoEncoder] Recording started at PTS %lld", startPts);
+    DLL_Log("[VideoEncoder] Recording started at PTS %lld", startPts.load());
   }
 
   // Calculate PTS
@@ -1967,7 +1968,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D *bgraTexture, int64_t pts,
   // pts is in milliseconds (from DxgiCapture/WGC)
   if (startPts < 0) {
     startPts = pts;
-    DLL_Log("[VideoEncoder] Framegrab recording started at PTS %lld", startPts);
+    DLL_Log("[VideoEncoder] Framegrab recording started at PTS %lld", startPts.load());
   }
 
   // Convert real elapsed time to codec frame timing

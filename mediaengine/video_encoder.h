@@ -131,16 +131,16 @@ private:
   int32_t luidLow = 0;
   int32_t luidHigh = 0;
 
-  bool initDone = false;
-  bool currentIsHDR = false; // Track HDR state
-  bool fileOpened = false;
-  bool recordingRequested = false;
+  std::atomic<bool> initDone{false};
+  bool currentIsHDR = false; // Track HDR state (thread-local to EncodeFrame mostly)
+  std::atomic<bool> fileOpened{false};
+  std::atomic<bool> recordingRequested{false};
   std::atomic<bool> isStopping = false; // signaled by Stop()
   std::atomic<bool> flushRequested = false; // signaled by Stop()
-  bool codecOpenFailed =
-      false; // Prevent infinite retry loop if codec fails to open
+  std::atomic<bool> codecOpenFailed{false}; // Prevent infinite retry loop if codec fails to open
+  
   std::string colorConversion = "d3d11"; // "d3d11", "cuda", or "auto"
-  int64_t startPts = -1;   // First frame PTS for relative timestamps
+  std::atomic<int64_t> startPts{-1};   // First frame PTS for relative timestamps
   VideoConfig savedConfig; // Stored config for encoder options
   int width, height;       // Currently configured encoder dimensions (may be scaled)
   int inputWidth = 0;      // Captured frame dimensions (before scaling)
@@ -182,7 +182,6 @@ private:
   // Octo-buffered support (8 textures to prevent overwrite race)
   ID3D11Texture2D *cachedSharedTextures[8] = {};
   HANDLE cachedTextureHandles[8] = {};
-  IDXGIKeyedMutex *cachedKeyedMutexes[8] = {}; // Added for KeyedMutex sync
   HANDLE cachedFenceHandle = nullptr;
   ID3D11Fence *cachedD3D11Fence = nullptr;
   uint32_t cachedSourcePid = 0;

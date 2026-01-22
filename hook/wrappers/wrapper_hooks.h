@@ -169,6 +169,19 @@ void ShutdownWrapperHooks();
 bool AreWrappersActive();
 
 // ============================================================================
+// API Detection Flags
+// ============================================================================
+// These flags are set when the app ACTUALLY calls device creation APIs,
+// not just when the DLLs are loaded (d3d12.dll can be loaded by D3D11 runtime).
+// This allows proper API detection even when d3d12.dll is present in DX11 apps.
+
+// Returns true if a D3D11 or D3D10 device creation function was called
+bool WasD3D11Or10DeviceCreated();
+
+// Returns true if D3D12CreateDevice was actually called
+bool WasD3D12DeviceCreated();
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 
