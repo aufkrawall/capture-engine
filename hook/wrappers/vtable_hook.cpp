@@ -3,6 +3,7 @@
  */
 
 #include "vtable_hook.h"
+#include "../common/hook_common.h"
 
 namespace VTableHook {
 
@@ -24,21 +25,74 @@ namespace VTableHook {
         
         // VTable hook - pTarget is &vtable[index]
         void** ppEntry = reinterpret_cast<void**>(pVTableEntry);
+        void* currentValue = *ppEntry;
+        
+        // IDEMPOTENCY CHECK: Is the VTable entry already set to our detour?
+        if (currentValue == pDetour) {
+            HookLog("VTableHook: Create - Target %p ALREADY contains Detour %p. Skipping write.", ppEntry, pDetour);
+            // If the caller requested the original, we can't give the TRUE original because it's lost from the VTable.
+            // However, the caller likely already has it stored if they are calling Create again.
+            // If they don't (e.g. static reset), they are in trouble (Original lost).
+            // But we should NOT overwrite ppOriginal with *ppEntry (which is pDetour) because that creates a cycle.
+            return Success; 
+        }
+        
+        // SAFETY CHECK: Warn if the current value looks like one of our hooks
+        // This helps diagnose cross-hook collisions (e.g., DX11 hooked before DX12)
+        // Hook addresses are in our DLL's address range (typically starting with 00007FFA5FCF...)
+        HMODULE hSelf = NULL;
+        GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                          (LPCSTR)pDetour, &hSelf);
+        HMODULE hCurrentTarget = NULL;
+        GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                          (LPCSTR)currentValue, &hCurrentTarget);
+        
+        bool isSelfHook = (hCurrentTarget == hSelf);
+        
+        if (isSelfHook && currentValue != pDetour) {
+            // The vtable entry points to our DLL but NOT to this specific detour
+            // This means ANOTHER one of our hooks is already installed!
+            HookLog("VTableHook: WARNING - Target %p contains %p which is ANOTHER hook from our DLL!", ppEntry, currentValue);
+            HookLog("VTableHook: WARNING - This may cause hook collision! Detour=%p, CurrentValue=%p", pDetour, currentValue);
+            // Still proceed with hooking - caller should have checked for this
+        }
+        
+        // DEBUG: Log memory region details
+        MEMORY_BASIC_INFORMATION mbi = {0};
+        if (VirtualQuery(ppEntry, &mbi, sizeof(mbi))) {
+            HookLog("VTableHook: DEBUG - Target %p in region: Base=%p, Size=%zu, Protect=0x%X",
+                    ppEntry, mbi.BaseAddress, mbi.RegionSize, mbi.Protect);
+        }
         
         // Save original function pointer if requested
         if (ppOriginal) {
-            *ppOriginal = *ppEntry;
+            *ppOriginal = currentValue;
+            HookLog("VTableHook: Saving original %p to caller's storage", currentValue);
         }
+        
+        HookLog("VTableHook: Create - Patching %p (Original=%p, Detour=%p, SelfHook=%d)",
+                ppEntry, currentValue, pDetour, isSelfHook ? 1 : 0);
         
         // Patch the vtable entry directly
         DWORD oldProtect;
         if (!VirtualProtect(ppEntry, sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+            HookLog("VTableHook: Create - VirtualProtect FAILED for %p (Error=%lu)", ppEntry, GetLastError());
             return ErrorMemoryProtect;
         }
         
         *ppEntry = pDetour;
         
-        VirtualProtect(ppEntry, sizeof(void*), oldProtect, &oldProtect);
+        DWORD newProtect;
+        if (!VirtualProtect(ppEntry, sizeof(void*), oldProtect, &newProtect)) {
+            HookLog("VTableHook: Create - VirtualProtect RESTORE FAILED for %p (Error=%lu)", ppEntry, GetLastError());
+        }
+        
+        // Verify the patch
+        void* verifyValue = *ppEntry;
+        if (verifyValue != pDetour) {
+            HookLog("VTableHook: Create - VERIFY FAILED! Expected=%p, Got=%p", pDetour, verifyValue);
+            return ErrorPatchFailed;
+        }
         
         return Success;
     }

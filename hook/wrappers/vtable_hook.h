@@ -26,6 +26,7 @@ namespace VTableHook {
         ErrorUnsupportedFunction,
         ErrorMemoryAlloc,
         ErrorMemoryProtect,
+        ErrorPatchFailed,
         ErrorModuleNotFound,
         ErrorFunctionNotFound,
         ErrorUnknown
