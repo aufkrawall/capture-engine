@@ -1324,7 +1324,7 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
    }
    
    // DEBUG: Log device and adapter info
-   {
+   if (shouldLog) {
        LUID luid = activeDevice->GetAdapterLuid();
        HookLog("DX12: DEBUG - Device=%p, LUID=%08x-%08x, NodeCount=%u",
                activeDevice, luid.HighPart, luid.LowPart, activeDevice->GetNodeCount());
