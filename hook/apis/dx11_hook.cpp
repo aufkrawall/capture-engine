@@ -14,6 +14,7 @@
 #include "../../external/imgui/backends/imgui_impl_win32.h"
 
 #include "dx11_hook.h"
+#include "dxgi_shared.h"
 #include "graphics_hook.h"
 #include "../wrappers/wrapper_base.h"
 #include "lod_helper.h"
@@ -25,6 +26,7 @@
 #include "../../common/raii_helpers.h"
 #include "../../common/frame_timing.h"
 #include "../common/deferred_release.h"
+#include "../common/system_metrics.h"
 #include "performance_metrics.h"
 #include "dx12_hook.h"
 
@@ -660,35 +662,7 @@ static void STDMETHODCALLTYPE DetourDrawIndexedInstanced10(ID3D10Device* pDevice
 
 // Helper to install vtable hooks
 static void InstallVTableHooks(ID3D11Device *pDevice, ID3D11DeviceContext* pContext, IDXGISwapChain* pSwapChain) {
-    if (pSwapChain) {
-        HookLog("DX11: InstallVTableHooks called for SwapChain %p", pSwapChain);
-        
-        // SAFETY CHECK 1: Is this our own wrapper?
-        // We MUST NOT install VTable hooks on our own wrapper, or we'll overwrite our own virtual table!
-        IUnknown* pWrapperCheck = nullptr;
-        if (SUCCEEDED(pSwapChain->QueryInterface(IID_CWrapDXGISwapChain, (void**)&pWrapperCheck))) {
-            pWrapperCheck->Release();
-            HookLog("DX11: InstallVTableHooks - ABORTING. SwapChain %p is our own CWrapDXGISwapChain wrapper!", pSwapChain);
-            return;
-        }
-
-        // SAFETY CHECK 2: Is this a DX12 Swapchain?
-        // If so, we MUST NOT install DX11/DX10 hooks, or we'll cause infinite recursion/crashes.
-        {
-            ID3D12Device* d12Dev = nullptr;
-            if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D12Device), (void**)&d12Dev))) {
-                d12Dev->Release();
-                HookLog("DX11: InstallVTableHooks - ABORTING. Detected DX12 Device on SwapChain %p", pSwapChain);
-                return;
-            }
-            ID3D12CommandQueue* d12Queue = nullptr;
-            if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D12CommandQueue), (void**)&d12Queue))) {
-                d12Queue->Release();
-                HookLog("DX11: InstallVTableHooks - ABORTING. Detected DX12 CommandQueue on SwapChain %p", pSwapChain);
-                return;
-            }
-        }
-    }
+    DXGIShared::InstallHooks(pSwapChain);
 
     // Hook D3D11 Device methods
     if (pDevice) {
@@ -710,91 +684,53 @@ static void InstallVTableHooks(ID3D11Device *pDevice, ID3D11DeviceContext* pCont
         if (SUCCEEDED(hr) && pDevice10) {
             void **pDeviceVTable = *(void ***)pDevice10;
             
-            // CreateSamplerState (Index 87)
+            // CreateSamplerState (Index 9)
             if (oCreateSamplerState10 == NULL) {
-                HookLog("DX10: Got D3D10 device from swapchain, hooking CreateSamplerState...");
-                VTableHook::Status status = VTableHook::Create(&pDeviceVTable[87], (LPVOID)&DetourCreateSamplerState10,
-                                  (LPVOID *)&oCreateSamplerState10);
-                if (status == VTableHook::Success) {
+                if (VTableHook::Create(&pDeviceVTable[9], (LPVOID)&DetourCreateSamplerState10,
+                                  (LPVOID *)&oCreateSamplerState10) == VTableHook::Success) {
                     HookLog("DX10: CreateSamplerState hook installed");
-                } else {
-                    HookLog("DX10: VTableHook::Create failed for CreateSamplerState, status=%d", status);
-                }
-            }
-            
-            // PSSetSamplers (Index 6)
-            if (oPSSetSamplers10 == NULL) {
-                VTableHook::Status status = VTableHook::Create(&pDeviceVTable[6], (LPVOID)&DetourPSSetSamplers10,
-                                  (LPVOID *)&oPSSetSamplers10);
-                if (status == VTableHook::Success) {
-                    HookLog("DX10: PSSetSamplers hook installed");
-                }
-            }
-            
-            // VSSetSamplers (Index 20)
-            if (oVSSetSamplers10 == NULL) {
-                VTableHook::Status status = VTableHook::Create(&pDeviceVTable[20], (LPVOID)&DetourVSSetSamplers10,
-                                  (LPVOID *)&oVSSetSamplers10);
-                if (status == VTableHook::Success) {
-                    HookLog("DX10: VSSetSamplers hook installed");
-                }
-            }
-            
-            // GSSetSamplers (Index 23)
-            if (oGSSetSamplers10 == NULL) {
-                VTableHook::Status status = VTableHook::Create(&pDeviceVTable[23], (LPVOID)&DetourGSSetSamplers10,
-                                  (LPVOID *)&oGSSetSamplers10);
-                if (status == VTableHook::Success) {
-                    HookLog("DX10: GSSetSamplers hook installed");
                 }
             }
             pDevice10->Release();
         }
     }
-
-    // Hook SwapChain methods
-    if (pSwapChain) {
-        void **pSwapChainVTable = *(void ***)pSwapChain;
-        
-        // Present (Index 8)
-        if (oPresent == NULL) {
-            if (VTableHook::Create(&pSwapChainVTable[8], (LPVOID)&DetourDX11Present,
-                              (LPVOID *)&oPresent) == VTableHook::Success) {
-                HookLog("DX11: Present hook installed");
-            }
-        }
-
-        // ResizeBuffers (Index 13)
-        if (oResizeBuffers == NULL) {
-            if (VTableHook::Create(&pSwapChainVTable[13], (LPVOID)&DetourResizeBuffers,
-                              (LPVOID *)&oResizeBuffers) == VTableHook::Success) {
-                HookLog("DX11: ResizeBuffers hook installed");
-            }
-        }
-
-        // Present1 (Index 22) - For DXGI 1.2+
-        if (oPresent1 == NULL) {
-             IDXGISwapChain1* sc1 = nullptr;
-             if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc1)))) {
-                 void **pSC1VTable = *(void ***)sc1;
-                 if (VTableHook::Create(&pSC1VTable[22], (LPVOID)&DetourDX11Present1,
-                                   (LPVOID *)&oPresent1) == VTableHook::Success) {
-                    HookLog("DX11: Present1 hook installed");
-                 }
-                 sc1->Release();
-             }
-        }
-    }
 }
-
-static PerformanceMetrics g_PerfMetrics;
 
 // Update metrics for wrapper calls
 void DX11_UpdatePerformanceMetrics(int64_t qpcUs) {
-    g_PerfMetrics.Update(qpcUs);
+    if (auto* m = DXGIShared::GetPerformanceMetrics()) {
+        m->Update(qpcUs);
+    }
 }
 
 static bool g_ImGuiInitialized = false;
+
+void CleanupDX11Resources() {
+  if (g_mainRenderTargetView) {
+    g_mainRenderTargetView->Release();
+    g_mainRenderTargetView = nullptr;
+  }
+  if (g_mainRenderTargetView10) {
+    g_mainRenderTargetView10->Release();
+    g_mainRenderTargetView10 = nullptr;
+  }
+  
+  if (g_ImGuiInitialized) {
+    if (g_IsDX11Active) ImGui_ImplDX11_InvalidateDeviceObjects();
+    if (g_IsDX10Active) ImGui_ImplDX10_InvalidateDeviceObjects();
+  }
+}
+
+extern void DrawDX11Overlay(IDXGISwapChain* pSwapChain);
+
+void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame) {
+    if (!pSwapChain) return;
+    DrawDX11Overlay(pSwapChain);
+}
+
+void HandleDX11ResizeBegin() {
+    CleanupDX11Resources();
+}
 static HWND g_CachedHwnd = NULL;
 
 // Reentrancy guard for ResizeBuffers (Recursion Breaker)
@@ -1214,6 +1150,21 @@ static void DrawDX10Overlay(IDXGISwapChain *pSwapChain, HWND currentHwnd, int fr
     if (s_HookedDevice != device) {
         // Install runtime hooks on this device vtable if needed
         InstallRuntimeD3D10Hooks(device);
+        
+        // Initialize System Metrics
+        IDXGIDevice* dxgiDevice = nullptr;
+        if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&dxgiDevice)))) {
+            IDXGIAdapter* adapter = nullptr;
+            if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter))) {
+                DXGI_ADAPTER_DESC adapterDesc;
+                if (SUCCEEDED(adapter->GetDesc(&adapterDesc))) {
+                    SystemMetricsCollector::Get().Initialize(adapterDesc.AdapterLuid.LowPart, adapterDesc.AdapterLuid.HighPart);
+                }
+                adapter->Release();
+            }
+            dxgiDevice->Release();
+        }
+
         s_HookedDevice = device;
         s_DidRebind = false;
     }
@@ -1267,11 +1218,11 @@ static void DrawDX10Overlay(IDXGISwapChain *pSwapChain, HWND currentHwnd, int fr
     pSwapChain->GetDesc(&dsc);
     bool isHDR = (dsc.BufferDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT || 
                  dsc.BufferDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM);
-    g_SharedOverlay.SetHDR(isHDR);
+  g_SharedOverlay.SetHDR(isHDR);
 
-    g_SharedOverlay.SetMetrics(&g_PerfMetrics);
-    g_SharedOverlay.SetIPCClient(g_IPC);
-    g_SharedOverlay.SetDroppedFrames(g_DX11Capture.droppedFrames.load(std::memory_order_relaxed));
+  g_SharedOverlay.SetMetrics(DXGIShared::GetPerformanceMetrics());
+  g_SharedOverlay.SetIPCClient(g_IPC);
+  g_SharedOverlay.SetDroppedFrames(g_DX11Capture.droppedFrames.load(std::memory_order_relaxed));
     const char* api = "DX10";
     if (GetModuleHandleA("vulkan-1.dll") || GetModuleHandleA("winevulkan.dll")) {
         api = "DX10 (DXVK)";
@@ -1343,6 +1294,21 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
       return; // Unknown device type
   }
   if (frameCount % 60 == 0) EarlyLog("DX: Identified as D3D11 device %p", device11);
+  
+  // Initialize System Metrics
+  IDXGIDevice* dxgiDevice = nullptr;
+  if (SUCCEEDED(device11->QueryInterface(IID_PPV_ARGS(&dxgiDevice)))) {
+      IDXGIAdapter* adapter = nullptr;
+      if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter))) {
+          DXGI_ADAPTER_DESC adapterDesc;
+          if (SUCCEEDED(adapter->GetDesc(&adapterDesc))) {
+              SystemMetricsCollector::Get().Initialize(adapterDesc.AdapterLuid.LowPart, adapterDesc.AdapterLuid.HighPart);
+          }
+          adapter->Release();
+      }
+      dxgiDevice->Release();
+  }
+
   ID3D11Device *device = device11;
   ID3D11DeviceContext *context = NULL;
   device->GetImmediateContext(&context);
@@ -1387,7 +1353,7 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
                desc.BufferDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM);
   g_SharedOverlay.SetHDR(isHDR);
 
-  g_SharedOverlay.SetMetrics(&g_PerfMetrics);
+  g_SharedOverlay.SetMetrics(DXGIShared::GetPerformanceMetrics());
   g_SharedOverlay.SetIPCClient(g_IPC);
   g_SharedOverlay.SetDroppedFrames(g_DX11Capture.droppedFrames.load(std::memory_order_relaxed));
   const char* finalApi = g_DetectedAPI;
@@ -1612,7 +1578,8 @@ static void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
             // effectiveLimit already set to 0 for Strict Serial above
             
             // After the wait completes, calculate and apply a fixed idle gap
-            float fps = g_PerfMetrics.GetCurrentFPS();
+            float fps = 60.0f;
+            if (auto* m = DXGIShared::GetPerformanceMetrics()) fps = m->GetCurrentFPS();
             double targetFrameTimeUs = (fps > 1.0f) ? (1000000.0 / fps) : 16666.0;
             
             // Fixed Idle Gap = TargetFrameTime * (1.0 - limit) * 0.10
@@ -1631,54 +1598,20 @@ static void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
 // Reentrancy guard for Present
 thread_local bool g_InPresentHook = false;
 
-HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
-                                            UINT SyncInterval, UINT Flags) {
-  
-  // Vulkan coordination: Skip DX11 overlay if Vulkan Layer is active AND presenting.
-  if (g_pSharedMem) {
-      uint64_t lastVulkan = g_pSharedMem->runtimeState.vulkanPresentTick.load(std::memory_order_acquire);
-      if (g_pSharedMem->runtimeState.vulkanLayerActive && (GetTickCount64() - lastVulkan < 200)) {
-          return oPresent(pSwapChain, SyncInterval, Flags);
-      }
-  }
+// --- Deleted old detours ---
 
-  // SAFETY CHECK: DX12 Detection
-  // If this swapchain is actually DX12, we must NOT draw the DX11 overlay.
-  // This happens when InstallVTableHooks fails to detect DX12 initially (race condition or interop),
-  // or when DX11 hooks installed on a shared vtable that DX12 also uses.
-  //
-  // CRITICAL FIX: When DX11 hooks a DX12 swapchain, we MUST delegate to DX12_ProcessFrameExternal
-  // so that the DX12 overlay still renders. Otherwise, no overlay appears at all.
-  {
-      ID3D12Device* d12Dev = nullptr;
-      if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D12Device), (void**)&d12Dev))) {
-          d12Dev->Release();
-          
-          // DX12 detected. Skip DX11 overlay but delegate to DX12 for frame processing.
-          static bool s_LoggedDX12Mismatch = false;
-          if (!s_LoggedDX12Mismatch) {
-              HookLog("DX11: DetourDX11Present - DX12 Device detected! Delegating to DX12_ProcessFrameExternal.");
-              s_LoggedDX12Mismatch = true;
-          }
-          
-          // Delegate to DX12 hook for overlay/capture processing
-          // DX12_ProcessFrameExternal is defined in dx12_hook.cpp
-          extern void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain);
-          DX12_ProcessFrameExternal(pSwapChain);
-          
-          return oPresent(pSwapChain, SyncInterval, Flags);
-      }
-  }
-  
-  bool isFirstHook = !g_InPresentHook;
-  g_InPresentHook = true;
-  auto hookGuard = ce::make_scope_guard([&]{ 
-      // Guard auto-reset 
-  });
 
-  DrawDX11Overlay(pSwapChain);
+// ... (cleanup removed from here)
 
-  return oPresent(pSwapChain, SyncInterval, Flags);
+namespace DXGIShared {
+    void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame) {
+        if (!pSwapChain) return;
+        DrawDX11Overlay(pSwapChain);
+    }
+
+    void HandleDX11ResizeBegin() {
+        CleanupDX11Resources();
+    }
 }
 
 HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device *pDevice, const D3D11_SAMPLER_DESC *pSamplerDesc, ID3D11SamplerState **ppSamplerState) {

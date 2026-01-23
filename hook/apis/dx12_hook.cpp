@@ -21,55 +21,70 @@
 #include "../wrappers/wrapper_hooks.h"
 #include "../capture/shared_capture.h" // Added for shared capture
 
+#include "dxgi_shared.h"
+#include "../wrappers/vtable_hook.h"
+
+// --- DX12 Overlay State Management ---
+struct DX12OverlayState {
+    static const int ALLOC_POOL_SIZE = 3;
+    
+    // Command List & Allocation
+    std::vector<ID3D12CommandAllocator*> allocators;
+    ID3D12GraphicsCommandList* cmdList = nullptr;
+    int allocIndex = 0;
+    
+    // Synchronization
+    ID3D12Fence* fence = nullptr;
+    HANDLE fenceEvent = nullptr;
+    UINT64 currentFenceValue = 0;
+    std::vector<UINT64> fenceValues;
+    
+    // Resources
+    ID3D12DescriptorHeap* rtvDescHeap = nullptr;
+    ID3D12DescriptorHeap* srvDescHeap = nullptr;
+    UINT rtvDescriptorSize = 0;
+    std::vector<ID3D12Resource*> backBuffers;
+    
+    // Status
+    bool imGuiInit = false;
+    bool syncInit = false;
+    int cachedWidth = 0;
+    int cachedHeight = 0;
+    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+    
+    // Added missing members for compatibility
+    UINT bufferCount = 0;
+    IDXGISwapChain* cachedSwapChain = nullptr;
+    
+    void Cleanup() {
+        for (auto& bb : backBuffers) if (bb) bb->Release();
+        backBuffers.clear();
+        
+        if (rtvDescHeap) { rtvDescHeap->Release(); rtvDescHeap = nullptr; }
+        if (srvDescHeap) { srvDescHeap->Release(); srvDescHeap = nullptr; }
+        
+        for (auto* alloc : allocators) {
+            if (alloc) alloc->Release();
+        }
+        allocators.clear();
+        
+        if (cmdList) { cmdList->Release(); cmdList = nullptr; }
+        if (fence) { fence->Release(); fence = nullptr; }
+        if (fenceEvent) { CloseHandle(fenceEvent); fenceEvent = nullptr; }
+        
+        imGuiInit = false;
+        syncInit = false;
+    }
+};
+
+static DX12OverlayState g_State;
+static std::mutex g_ImGuiFrameMutex;
+
 // Global SharedCapture instance for DX12
 static SharedCaptureD3D12 g_SharedCaptureD3D12;
 
-// Global DX12Hook instance
-DX12Hook g_dx12HookInstance;
 
-#ifdef ENABLE_D3D12_WRAPPER
-#include "../wrappers/d3d12_wrapper_interface.h"
-#include "../wrappers/dxgi_swapchain_wrap.h" // For wrapper detection if needed
-#endif
-
-extern "C" __declspec(dllexport) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue);
-
-#include "../wrappers/vtable_hook.h"
-#include <atomic>
-#include <avrt.h>
-#include <cmath>
-#include <condition_variable>
-#include <d3d12.h>
-#include <d3d11.h>
-#include <dxgi1_4.h>
-#include <fstream>
-#include <intrin.h>
-#include <iostream>
-#include <mutex>
-#include <processthreadsapi.h>
-#include <string>
-#include <thread>
-#include <vector>
-#include <map>
-
-#pragma comment(lib, "avrt.lib")
-
-// Check if Vulkan is primary API (to avoid double FPS limiting)
-extern void* g_VulkanHook;
-static bool IsVulkanPrimary() { 
-    if (g_VulkanHook) return true;
-    if (g_pSharedMem && g_pSharedMem->runtimeState.vulkanLayerActive) return true;
-    return false;
-}
-
-// TLS Flag to prevent double-cleanup when Wrapper calls ResizeBuffers
-thread_local int g_WrapperResizeDepth = 0;
-
-void DX12_AdjustWrapperResizeDepth(int delta) {
-    g_WrapperResizeDepth += delta;
-    if (g_WrapperResizeDepth < 0) g_WrapperResizeDepth = 0;
-}
-
+// --- Restored Forward Declarations and Globals ---
  static bool IsUnityProcess() {
      static LONG s_init = 0;
      static bool s_isUnity = false;
@@ -83,17 +98,6 @@ void DX12_AdjustWrapperResizeDepth(int delta) {
      return s_isUnity;
  }
 
-// --- Forward Declarations ---
-typedef HRESULT(STDMETHODCALLTYPE *PresentPtr)(IDXGISwapChain *, UINT, UINT);
-typedef HRESULT(STDMETHODCALLTYPE *Present1Ptr)(
-    IDXGISwapChain *, UINT, UINT, const DXGI_PRESENT_PARAMETERS *);
-typedef HRESULT(STDMETHODCALLTYPE *ResizeBuffersPtr)(IDXGISwapChain3 *, UINT,
-                                                     UINT, UINT, DXGI_FORMAT,
-                                                     UINT);
-typedef HRESULT(STDMETHODCALLTYPE *ResizeBuffers1Ptr)(IDXGISwapChain3 *, UINT, UINT, UINT,
-                                                      DXGI_FORMAT, UINT,
-                                                      const UINT *,
-                                                      IUnknown *const *);
 typedef void(STDMETHODCALLTYPE *ExecuteCommandListsPtr)(
     ID3D12CommandQueue *, UINT, ID3D12CommandList *const *);
 typedef void(STDMETHODCALLTYPE *CreateSamplerPtr)(ID3D12Device *, const D3D12_SAMPLER_DESC *, D3D12_CPU_DESCRIPTOR_HANDLE);
@@ -108,15 +112,7 @@ typedef HRESULT(WINAPI *PFN_D3D12_SERIALIZE_ROOT_SIGNATURE)(
 typedef HRESULT(WINAPI *PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE)(
     const D3D12_VERSIONED_ROOT_SIGNATURE_DESC*, ID3DBlob**, ID3DBlob**);
 
-static PresentPtr oPresent = nullptr;
-static Present1Ptr oPresent1 = nullptr;
-static ResizeBuffersPtr oResizeBuffers = nullptr;
-static ResizeBuffers1Ptr oResizeBuffers1 = nullptr;
 static ExecuteCommandListsPtr oExecuteCommandLists = nullptr;
-
-// Forward declarations
-void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue *pThis, UINT NumCommandLists, ID3D12CommandList *const *ppCommandLists);
-void HookQueueVTable(ID3D12CommandQueue* queue);
 static CreateSamplerPtr oCreateSampler = nullptr;
 static CreateCommittedResourcePtr oCreateCommittedResource = nullptr;
 PFN_D3D12_SERIALIZE_ROOT_SIGNATURE oSerializeRootSignature = nullptr;
@@ -125,273 +121,85 @@ PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE oSerializeVersionedRootSignature = 
 typedef HRESULT(STDMETHODCALLTYPE *GetBufferPtr)(IDXGISwapChain *, UINT, REFIID, void **);
 static GetBufferPtr oGetBuffer = nullptr;
 
-extern DX12Hook g_DX12Hook;
+static std::mutex g_DeviceQueuesMutex;
+static std::map<ID3D12Device*, ID3D12CommandQueue*> g_DeviceQueues;
 
+static std::atomic<int> g_SwapchainCreationCount{0};
+
+static constexpr uint64_t OVERLAY_INIT_GRACE_FRAMES = 100;
+
+// Global DX12Hook instance
+DX12Hook g_dx12HookInstance;
+
+// --- Missing Globals Restored ---
 ID3D12Device *g_Device = nullptr;
 ID3D12CommandQueue *g_CommandQueue = nullptr;
-std::mutex g_CommandQueueMutex; // Protects access to g_CommandQueue
+std::mutex g_CommandQueueMutex;
 bool g_IPCReady = false;
 static IDXGISwapChain *g_LastSwapChain = nullptr;
 static ID3D12Resource *g_DummyBackBuffer = nullptr;
 static std::mutex g_OverlayMutex;
+static std::mutex g_InitImGuiMutex;
+static std::mutex g_DX12CaptureMutex;
 static std::atomic<bool> g_InSwapchainResizeCleanup{false};
 
-// Re-entry guard for Present hooks uses g_InPresentHook (extern thread_local from graphics_hook.h)
-// thread_local bool g_InDX12Present = false; // Removed - using shared guard
-
 static std::atomic<bool> g_FGQueueLocked{false};
-static std::mutex        g_FGQueueLockMutex;
+static std::mutex g_FGQueueLockMutex;
 static ID3D12CommandQueue* g_FGLockedQueue = nullptr;
 
 static std::atomic<bool> g_IsQueueFromSwapchain{false};
 static std::atomic<bool> g_FGNeedsDrain{false};
 static std::atomic<uint64_t> g_FGNextDrainAttemptUs{0};
 
-// static bool g_ImGuiInit = false;  // Moved to DX12OverlayState
-// static int g_ImGuiInitFrameCounter = 0; // Moved to DX12OverlayState
-
-// FG Real Frame Detection
 static std::atomic<int> g_CommandListsExecutedThisFrame{0};
 static std::chrono::steady_clock::time_point g_LastResourceCleanup;
-static constexpr int INIT_COOLDOWN_MS = 200; // Wait 200ms after cleanup before re-init
+static std::atomic<bool> g_DeviceRemovedFatal{false};
+static uint64_t g_FGDebugOverlayDraws = 0;
 
-// STABILITY FIX: Grace period counter - defer overlay init until graphics pipeline is stable
-// This prevents crashes in games like Strange Brigade that have complex startup sequences
-static std::atomic<uint64_t> g_PresentCallCount{0};
-static constexpr uint64_t OVERLAY_INIT_GRACE_FRAMES = 100; // ~1.6 seconds at 60fps
+// Prerender Limit
+static ID3D12Fence* g_PrerenderFence = nullptr;
+static HANDLE g_PrerenderEvent = nullptr;
+static UINT64 g_PrerenderValue = 0;
+static UINT64 g_PrerenderFrameIndex = 0;
+static std::vector<UINT64> g_PrerenderHistory;
 
-// FG Passthrough Mode - when FG is detected at runtime via LoadLibrary, Present hooks bypass
-bool g_FGPassthroughMode = false;
+// Helper to adjust wrapper resize depth
+void DX12_AdjustWrapperResizeDepth(int delta) {
+    if (delta > 0) DXGIShared::g_SharedState.wrapperResizeDepth.fetch_add(delta);
+    else DXGIShared::g_SharedState.wrapperResizeDepth.fetch_sub(-delta);
+}
 
-// FSR4 swapchain recreation signaling (set by DX11 hook, checked by DX12 Present)
-// This avoids cross-thread cleanup calls which cause deadlocks
-static std::atomic<bool> g_FSR4SwapchainRecreatedPending{false};
+// Forward Declarations
+void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue *pThis, UINT NumCommandLists, ID3D12CommandList *const *ppCommandLists);
+void HookQueueVTable(ID3D12CommandQueue* queue);
 
-// Swapchain invalidation flag - set BEFORE new swapchain created to prevent overlay crash
-// This flag is checked at multiple points in DetourPresent to abort safely
-static std::atomic<bool> g_SwapchainInvalid{false};
+static std::atomic<uint64_t> g_FGDebugFrameCount{0};
 
 // Called by DX11 hook BEFORE FSR4SwapchainProvider creates new swapchain
 void DX12_InvalidateSwapchain() {
-    g_SwapchainInvalid.store(true, std::memory_order_release);
-    EarlyLog("DX12: Swapchain marked INVALID - overlay will abort on next Present check");
+    DXGIShared::g_SharedState.swapchainInvalid.store(true, std::memory_order_release);
+    HookLog("DX12: Swapchain marked INVALID - overlay will abort on next Present check");
 }
 
 // Called by DX11 hook when FSR4SwapchainProvider creates new swapchain
 void DX12_SignalFSR4SwapchainRecreated() {
-    g_FSR4SwapchainRecreatedPending.store(true, std::memory_order_release);
-    EarlyLog("DX12: FSR4 swapchain recreation signaled (pending cleanup on DX12 thread)");
+    DXGIShared::g_SharedState.fsr4RecreationPending.store(true, std::memory_order_release);
+    HookLog("DX12: FSR4 swapchain recreation signaled (pending cleanup on DX12 thread)");
 }
-
-// ============================================================================
-// FSR3 FRAME INTERPOLATION SWAPCHAIN DETECTION
-// From AMD FidelityFX SDK: FrameInterpolationSwapchainDX12.h line 176
-// ============================================================================
-// {BEED74B2-282E-4AA3-BBF7-534560507A45}
-// static const GUID IID_IFfxFrameInterpolationSwapChain = 
-//    {0xbeed74b2, 0x282e, 0x4aa3, {0xbb, 0xf7, 0x53, 0x45, 0x60, 0x50, 0x7a, 0x45}};
-
-// {5f5fa2f5-3bc5-48d8-a63b-e60318e38000}
-// static const GUID IID_IFrameInterpolationSwapChainDX12 = 
-//    {0x5f5fa2f5, 0x3bc5, 0x48d8, {0xa6, 0x3b, 0xe6, 0x03, 0x18, 0xe3, 0x80, 0x00}};
 
 // Track if we're using an FSR3 swapchain
 static bool g_UsingFSR3Swapchain = false;
 
-// Check if swapchain is FSR3's FrameInterpolationSwapChainDX12
-bool IsFSR3SwapChain(IDXGISwapChain* pSwapChain) {
-    if (!pSwapChain) return false;
-    IUnknown* pTest = nullptr;
-    if (SUCCEEDED(pSwapChain->QueryInterface(IID_IFfxFrameInterpolationSwapChain, (void**)&pTest))) {
-        pTest->Release();
-        return true;
-    }
-    if (SUCCEEDED(pSwapChain->QueryInterface(IID_IFrameInterpolationSwapChainDX12, (void**)&pTest))) {
-        pTest->Release();
-        return true;
-    }
-    return false;
-}
-
-// ============================================================================
-// EXPORT: Manually Set Command Queue (For MSVC Wrappers)
-// ============================================================================
 extern "C" __declspec(dllexport) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) {
-    HookLog("============ DX12_SetCommandQueue: Called with %p ============", pQueue);
-    if (pQueue) { // Allow update even if same queue, to force VTable check
-        {
-            std::lock_guard<std::mutex> lock(g_CommandQueueMutex);
-            if (g_CommandQueue) g_CommandQueue->Release();
-            g_CommandQueue = pQueue;
-            g_CommandQueue->AddRef(); // For our global pointer
-        }
-        
-        // Ensure ExecuteCommandLists is hooked on this queue
-        // HookQueueVTable handles its own locking internally
-        HookQueueVTable(pQueue);
-        
-        // Also try to deduce device if missing
-        if (!g_Device) {
-            if (SUCCEEDED(pQueue->GetDevice(IID_PPV_ARGS(&g_Device)))) {
-                HookLog("DX12: Deduced Device from Command Queue: %p", g_Device);
-            }
-        }
+    if (!pQueue) return;
+    std::lock_guard<std::mutex> lock(g_CommandQueueMutex);
+    if (g_CommandQueue != pQueue) {
+        if (g_CommandQueue) g_CommandQueue->Release();
+        g_CommandQueue = pQueue;
+        g_CommandQueue->AddRef();
+        HookLog("DX12: CommandQueue manually set to %p", g_CommandQueue);
     }
 }
-
-// ============================================================================
-// COMMAND QUEUE DRAIN - Like SpecialK's _d3d12_rbk->drain_queue()
-// Wait for all pending GPU work to complete before releasing resources
-// ============================================================================
-static ID3D12Fence* g_DrainFence = nullptr;
-static HANDLE g_DrainEvent = NULL;
-static UINT64 g_DrainFenceValue = 0;
-
-void DrainCommandQueue(ID3D12CommandQueue* queue, ID3D12Device* device) {
-    if (!queue || !device) return;
-    
-    // Create drain fence if needed
-    if (!g_DrainFence) {
-        HRESULT hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_DrainFence));
-        if (FAILED(hr)) {
-            EarlyLog("DX12: Failed to create drain fence: 0x%08X", hr);
-            return;
-        }
-    }
-    if (!g_DrainEvent) {
-        g_DrainEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-        if (!g_DrainEvent) {
-            EarlyLog("DX12: Failed to create drain event");
-            return;
-        }
-    }
-    
-    // Signal and wait
-    UINT64 fenceValue = ++g_DrainFenceValue;
-    HRESULT hr = queue->Signal(g_DrainFence, fenceValue);
-    if (FAILED(hr)) {
-        EarlyLog("DX12: DrainCommandQueue Signal failed: 0x%08X", hr);
-        return;
-    }
-    
-    if (g_DrainFence->GetCompletedValue() < fenceValue) {
-        hr = g_DrainFence->SetEventOnCompletion(fenceValue, g_DrainEvent);
-        if (SUCCEEDED(hr)) {
-            DWORD result = WaitForSingleObject(g_DrainEvent, 5000); // 5s timeout
-            if (result == WAIT_TIMEOUT) {
-                EarlyLog("DX12: DrainCommandQueue timeout waiting for GPU");
-            }
-        }
-    }
-    
-    EarlyLog("DX12: Command queue drained successfully (fence=%llu)", fenceValue);
-}
-
-// ============================================================================
-// NATIVE INTERFACE STORAGE (for FG overlay compatibility)
-// Per SpecialK: When Streamline FG is active, we MUST use native (non-proxy) 
-// interfaces for overlay rendering. Streamline wraps device/queue/swapchain
-// and using proxies for overlay operations causes crashes.
-// ============================================================================
-static ID3D12Device* g_NativeDevice = nullptr;
-static ID3D12CommandQueue* g_NativeCommandQueue = nullptr;
-static IDXGISwapChain3* g_NativeSwapChain = nullptr;
-static bool g_UsingNativeInterfaces = false;
-static bool g_NativeInterfacesQueried = false;
-
-
-// Swapchain wrapper for FG overlay support
-OverlayDrawCallback g_OverlayDrawCallback = nullptr;
-static OverlaySwapChainWrapper* g_SwapChainWrapper = nullptr;
-static bool g_UsingSwapChainWrapper = false;
-
-static std::map<ID3D12Device*, ID3D12CommandQueue*> g_DeviceQueues;
-static std::mutex g_DeviceQueuesMutex;
-static std::mutex g_InitImGuiMutex;
-static std::atomic<bool> g_DeviceRemovedFatal(false);
-
-// Prerender Limit Fencing
-static ID3D12Fence* g_PrerenderFence = nullptr;
-static HANDLE g_PrerenderEvent = NULL;
-static UINT64 g_PrerenderValue = 0;
-static std::vector<UINT64> g_PrerenderHistory;
-static uint64_t g_PrerenderFrameIndex = 0;
-static int64_t g_LastSleepUs = 0;
-
-// ============================================================================
-// FG OVERLAY INFRASTRUCTURE
-// Per Streamline SDK: overlays must intercept CreateSwapChainXXX and not make 
-// assumptions about swapchain/queue when FG is active. We use dedicated queue.
-// ============================================================================
-
-// Swapchain creation tracking for FG stabilization
-static std::atomic<int> g_SwapchainCreationCount{0};
-static std::chrono::steady_clock::time_point g_LastSwapchainCreation;
-static std::atomic<bool> g_FGSwapchainStabilized{false};
-static constexpr int FG_STABILIZATION_MS = 500; // Short delay for swapchain to stabilize after FG init
-
-// Dedicated overlay queue (isolated from game/FG queue conflicts)
-static ID3D12CommandQueue* g_OverlayQueue = nullptr;
-static ID3D12CommandAllocator* g_OverlayAllocators[3] = {nullptr};
-static ID3D12GraphicsCommandList* g_OverlayCmdList = nullptr;
-static ID3D12Fence* g_OverlayFence = nullptr;
-static HANDLE g_OverlayFenceEvent = nullptr;
-static UINT64 g_OverlayFenceValue = 0;
-static UINT64 g_OverlayFenceValues[3] = {0};
-static int g_OverlayAllocIndex = 0;
-static bool g_OverlayQueueInitialized = false;
-
-// FG overlay debug counters
-static std::atomic<uint64_t> g_FGDebugFrameCount{0};
-static std::atomic<uint64_t> g_FGDebugOverlayDraws{0};
-static std::atomic<uint64_t> g_FGDebugOverlaySkips{0};
-static std::atomic<uint64_t> g_FGDebugResourceFails{0};
-
-// Forward declaration for FG overlay callback - implemented after DX12OverlayState is defined
-void FGOverlayDrawCallback(IDXGISwapChain3* pSwapChain, ID3D12CommandQueue* pQueue);
-
-// --- Capture Resources ---
-// Legacy DX12Capture class removed. Using SharedCaptureD3D12.
-static std::mutex g_DX12CaptureMutex;
-
-
-// --- ImGui & Overlay State ---
-struct DX12OverlayState {
-  // ImGui Resources
-  ID3D12DescriptorHeap *srvDescHeap = nullptr;
-  ID3D12DescriptorHeap *rtvDescHeap = nullptr;
-  std::vector<ID3D12Resource *> backBuffers;
-  UINT rtvDescriptorSize = 0;
-  UINT bufferCount = 0; // Number of swapchain buffers (for RTV access bounds check)
-  IDXGISwapChain3* cachedSwapChain = nullptr; // Track swapchain for reinit on change (FSR4 swaps it)
-  UINT cachedWidth = 0;
-  UINT cachedHeight = 0;
-  bool imGuiInit = false;
-  int imGuiInitFrameCounter = 0;
-  DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
-
-  // Simple Overlay (green square for debugging)
-  bool simpleOverlayEnabled = false;
-  ID3D12PipelineState *simplePipeline = nullptr;
-  ID3D12RootSignature *simpleRootSig = nullptr;
-
-  // Overlay Command/Sync Resources
-  ID3D12CommandQueue *overlayQueue = nullptr;
-  std::vector<ID3D12CommandAllocator *> allocators;
-  ID3D12GraphicsCommandList *cmdList = nullptr;
-  ID3D12Fence *fence = nullptr;
-  ID3D12Fence *overlaySyncFence = nullptr;
-  UINT64 overlaySyncValue = 0;
-  std::vector<UINT64> fenceValues;
-  UINT64 currentFenceValue = 0;
-  HANDLE fenceEvent = NULL;
-  int allocIndex = 0;  // Rotating index
-  static const int ALLOC_POOL_SIZE = 8;
-  bool syncInit = false;
-};
-
-static DX12OverlayState g_State;
-static PerformanceMetrics g_PerfMetrics;
 
 // Forward declaration for DrawOverlay
 void DrawOverlay(ID3D12GraphicsCommandList* list);
@@ -653,7 +461,7 @@ void DrawOverlay(ID3D12GraphicsCommandList *cmdList) {
   g_SharedOverlay.BeginFrame();
 
   // Use shared overlay
-  g_SharedOverlay.SetMetrics(&g_PerfMetrics);
+  g_SharedOverlay.SetMetrics(DXGIShared::GetPerformanceMetrics());
   g_SharedOverlay.SetIPCClient(g_IPC);
   g_SharedOverlay.SetDroppedFrames(0); // Legacy dropped frames removed
   const char* finalApi = "DX12";
@@ -783,9 +591,9 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
    LARGE_INTEGER qpc;
    QueryPerformanceCounter(&qpc);
    int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
-   g_PerfMetrics.Update(us);
-   if (g_IPC) {
-     g_PerfMetrics.SetRecording(g_IPC->IsRecording());
+   if (auto* m = DXGIShared::GetPerformanceMetrics()) {
+       m->Update(us);
+       if (g_IPC) m->SetRecording(g_IPC->IsRecording());
    }
 
   IDXGISwapChain3* sc3 = nullptr;
@@ -922,129 +730,27 @@ void InitOverlaySync(ID3D12Device *device, int bufferCount) {
 }
 
 // ============================================================================
-// FG-SAFE DEDICATED OVERLAY QUEUE
-// Per Streamline SDK guidance, we use a completely separate command queue
-// for overlay rendering to avoid conflicts with FG runtime's queue management.
+// FG-SAFE DEDICATED OVERLAY QUEUE - REMOVED
 // ============================================================================
 
-bool InitDedicatedOverlayQueue(ID3D12Device* device) {
-    if (g_OverlayQueueInitialized) return true;
-    if (!device) {
-        EarlyLog("DX12 FG: InitDedicatedOverlayQueue - device is NULL!");
-        return false;
-    }
+// Helper to drain the command queue
+void DrainCommandQueue(ID3D12CommandQueue* queue, ID3D12Device* device) {
+    if (!queue || !device) return;
     
-    EarlyLog("DX12 FG: Initializing dedicated overlay queue (device=%p)...", device);
+    ID3D12Fence* fence = nullptr;
+    if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)))) return;
     
-    // Per Streamline SDK: Third party libraries SHOULD NOT use SL proxies.
-    // Try to get native device using Streamline's special GUID.
-    // GUID: {ADEC44E2-61F0-45C3-AD9F-1B37379284FF}
-    ID3D12Device* nativeDevice = nullptr;
-    IID slNativeGuid;
-    if (SUCCEEDED(IIDFromString(L"{ADEC44E2-61F0-45C3-AD9F-1B37379284FF}", &slNativeGuid))) {
-        HRESULT hrQuery = device->QueryInterface(slNativeGuid, (void**)&nativeDevice);
-        if (SUCCEEDED(hrQuery) && nativeDevice) {
-            EarlyLog("DX12 FG: Got native device from SL proxy: %p -> %p", device, nativeDevice);
-            device = nativeDevice; // Use native device instead
-        } else {
-            // {A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
-            static const GUID IID_CWrapDXGISwapChain = 
-            { 0xa1b2c3d4, 0xe5f6, 0x7890, { 0xab, 0xcd, 0xef, 0x12, 0x34, 0x56, 0x78, 0x90 } };
-
-            using namespace Microsoft::WRL;
-            EarlyLog("DX12 FG: No SL proxy detected (hr=0x%08X), using device as-is", hrQuery);
-            // Not a SL proxy, use original device
+    HANDLE fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+    if (fenceEvent) {
+        if (SUCCEEDED(queue->Signal(fence, 1))) {
+            if (fence->SetEventOnCompletion(1, fenceEvent) == S_OK) {
+                WaitForSingleObject(fenceEvent, 2000);
+            }
         }
+        CloseHandle(fenceEvent);
     }
-    
-    // Validate device is usable - simple check without SEH (clang doesn't support __try)
-    LUID luid = device->GetAdapterLuid();
-    EarlyLog("DX12 FG: Device LUID check passed: %08X-%08X", luid.HighPart, luid.LowPart);
-    
-    // Create dedicated command queue for overlay
-    D3D12_COMMAND_QUEUE_DESC queueDesc = {};
-    queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-    queueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
-    queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
-    queueDesc.NodeMask = 0;
-    
-    EarlyLog("DX12 FG: Calling CreateCommandQueue...");
-    HRESULT hr = device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&g_OverlayQueue));
-    if (FAILED(hr)) {
-        EarlyLog("DX12 FG: Failed to create overlay queue: 0x%08X", hr);
-        return false;
-    }
-    EarlyLog("DX12 FG: Created dedicated overlay queue: %p", g_OverlayQueue);
-    
-    // Create command allocators (one per buffer in flight)
-    for (int i = 0; i < 3; i++) {
-        hr = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, 
-                                            IID_PPV_ARGS(&g_OverlayAllocators[i]));
-        if (FAILED(hr)) {
-            EarlyLog("DX12 FG: Failed to create overlay allocator %d: 0x%08X", i, hr);
-            return false;
-        }
-    }
-    
-    // Create command list
-    hr = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, 
-                                   g_OverlayAllocators[0], nullptr, 
-                                   IID_PPV_ARGS(&g_OverlayCmdList));
-    if (FAILED(hr)) {
-        EarlyLog("DX12 FG: Failed to create overlay command list: 0x%08X", hr);
-        return false;
-    }
-    g_OverlayCmdList->Close(); // Start in closed state
-    
-    // Create fence for synchronization
-    hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_OverlayFence));
-    if (FAILED(hr)) {
-        EarlyLog("DX12 FG: Failed to create overlay fence: 0x%08X", hr);
-        return false;
-    }
-    
-    g_OverlayFenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-    if (!g_OverlayFenceEvent) {
-        EarlyLog("DX12 FG: Failed to create overlay fence event");
-        return false;
-    }
-    
-    g_OverlayQueueInitialized = true;
-    EarlyLog("DX12 FG: Dedicated overlay queue initialized successfully");
-    return true;
+    fence->Release();
 }
-
-void CleanupDedicatedOverlayQueue() {
-    if (!g_OverlayQueueInitialized) return;
-    
-    EarlyLog("DX12 FG: Cleaning up dedicated overlay queue...");
-    
-    // Wait for GPU to complete
-    if (g_OverlayQueue && g_OverlayFence) {
-        UINT64 waitValue = g_OverlayFenceValue + 1;
-        g_OverlayQueue->Signal(g_OverlayFence, waitValue);
-        if (g_OverlayFence->GetCompletedValue() < waitValue) {
-            g_OverlayFence->SetEventOnCompletion(waitValue, g_OverlayFenceEvent);
-            WaitForSingleObject(g_OverlayFenceEvent, 100);
-        }
-    }
-    
-    if (g_OverlayFenceEvent) { CloseHandle(g_OverlayFenceEvent); g_OverlayFenceEvent = nullptr; }
-    if (g_OverlayFence) { g_OverlayFence->Release(); g_OverlayFence = nullptr; }
-    if (g_OverlayCmdList) { g_OverlayCmdList->Release(); g_OverlayCmdList = nullptr; }
-    for (int i = 0; i < 3; i++) {
-        if (g_OverlayAllocators[i]) { g_OverlayAllocators[i]->Release(); g_OverlayAllocators[i] = nullptr; }
-    }
-    if (g_OverlayQueue) { g_OverlayQueue->Release(); g_OverlayQueue = nullptr; }
-    
-    g_OverlayQueueInitialized = false;
-    g_OverlayFenceValue = 0;
-    g_OverlayAllocIndex = 0;
-    EarlyLog("DX12 FG: Dedicated overlay queue cleaned up");
-}
-
-// Forward declaration (defined after CleanupRTVs)
-void CleanupNativeInterfaces();
 
 void CleanupOverlay() {
   if (!g_State.syncInit) return;
@@ -1089,30 +795,14 @@ void CleanupOverlay() {
     g_State.fence->Release();
     g_State.fence = nullptr;
   }
-  if (g_State.overlaySyncFence) {
-    g_State.overlaySyncFence->Release();
-    g_State.overlaySyncFence = nullptr;
-  }
-  
-  // Release command queue
-  if (g_State.overlayQueue) {
-    g_State.overlayQueue->Release();
-    g_State.overlayQueue = nullptr;
-  }
   
   g_State.currentFenceValue = 0;
   g_State.allocIndex = 0;
   g_State.syncInit = false;
   
-  // CRITICAL: Properly shutdown ImGui before clearing flag
-  // This calls ImGui_ImplDX12_Shutdown() to reset ImGui's internal backend state
-  // Without this, reinit fails with "Already initialized" assertion
   ShutdownImGui();
   
-  // FG: Cleanup native interfaces when overlay is cleaned up
-  CleanupNativeInterfaces();
-  
-  g_State.imGuiInitFrameCounter = 0;
+  // g_State.imGuiInitFrameCounter = 0; // Removed
   HookLog("DX12: CleanupOverlay complete");
 }
 
@@ -1140,8 +830,8 @@ void DX12_OnSwapchainResizeBegin() {
     return; // already cleaning up
   }
 
-  g_LastSwapchainCreation = std::chrono::steady_clock::now();
-  g_FGSwapchainStabilized = false;
+  DXGIShared::g_SharedState.lastSwapchainCreation = std::chrono::steady_clock::now();
+  DXGIShared::g_SharedState.fgSwapchainStabilized.store(false);
 
   std::lock_guard<std::mutex> lock(g_OverlayMutex);
   // Lock held until function exit
@@ -1199,73 +889,6 @@ void DX12_OnSwapchainResizeBegin() {
   }
 
   g_InSwapchainResizeCleanup.store(false);
-}
-
-// ============================================================================
-// NATIVE INTERFACE QUERY (for FG overlay compatibility)
-// Per SpecialK: When Streamline FG is active, we must use native (non-proxy)
-// interfaces for overlay rendering. Query using the Streamline GUID.
-// ============================================================================
-bool QueryNativeInterfaces(ID3D12Device* device, ID3D12CommandQueue* queue, IDXGISwapChain3* swapchain) {
-    if (g_NativeInterfacesQueried) return g_UsingNativeInterfaces;
-    g_NativeInterfacesQueried = true;
-    
-    EarlyLog("DX12 FG: Querying native interfaces from Streamline proxies...");
-    
-    bool isProxy = false;
-    
-    // Query native device
-    if (device) {
-        ID3D12Device* nativeDevice = GetNativeDevice(device);
-        if (nativeDevice && nativeDevice != device) {
-            EarlyLog("DX12 FG: Got native device: proxy=%p -> native=%p", device, nativeDevice);
-            g_NativeDevice = nativeDevice;
-            isProxy = true;
-        } else {
-            EarlyLog("DX12 FG: Device is not a Streamline proxy");
-            if (nativeDevice) nativeDevice->Release();
-        }
-    }
-    
-    // Query native command queue
-    if (queue) {
-        ID3D12CommandQueue* nativeQueue = GetNativeCommandQueue(queue);
-        if (nativeQueue && nativeQueue != queue) {
-            EarlyLog("DX12 FG: Got native queue: proxy=%p -> native=%p", queue, nativeQueue);
-            g_NativeCommandQueue = nativeQueue;
-            isProxy = true;
-        } else {
-            EarlyLog("DX12 FG: Queue is not a Streamline proxy");
-            if (nativeQueue) nativeQueue->Release();
-        }
-    }
-    
-    // Query native swapchain
-    if (swapchain) {
-        IDXGISwapChain3* nativeSwapchain = GetNativeSwapChain3(swapchain);
-        if (nativeSwapchain && nativeSwapchain != swapchain) {
-            EarlyLog("DX12 FG: Got native swapchain: proxy=%p -> native=%p", swapchain, nativeSwapchain);
-            g_NativeSwapChain = nativeSwapchain;
-            isProxy = true;
-        } else {
-            EarlyLog("DX12 FG: Swapchain is not a Streamline proxy");
-            if (nativeSwapchain) nativeSwapchain->Release();
-        }
-    }
-    
-    g_UsingNativeInterfaces = isProxy;
-    EarlyLog("DX12 FG: Native interface query complete. Using native interfaces: %s", 
-             isProxy ? "YES" : "NO");
-    return isProxy;
-}
-
-void CleanupNativeInterfaces() {
-    if (g_NativeDevice) { g_NativeDevice->Release(); g_NativeDevice = nullptr; }
-    if (g_NativeCommandQueue) { g_NativeCommandQueue->Release(); g_NativeCommandQueue = nullptr; }
-    if (g_NativeSwapChain) { g_NativeSwapChain->Release(); g_NativeSwapChain = nullptr; }
-    g_UsingNativeInterfaces = false;
-    g_NativeInterfacesQueried = false;
-    EarlyLog("DX12 FG: Native interfaces cleaned up");
 }
 
 // AsyncCaptureThreadProc removed.
@@ -1333,11 +956,14 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
    }
    
    // DEBUG: Log device and adapter info
+   LUID luid = activeDevice->GetAdapterLuid();
    if (shouldLog) {
-       LUID luid = activeDevice->GetAdapterLuid();
        HookLog("DX12: DEBUG - Device=%p, LUID=%08x-%08x, NodeCount=%u",
                activeDevice, luid.HighPart, luid.LowPart, activeDevice->GetNodeCount());
    }
+   
+   // Initialize System Metrics with correct GPU LUID
+   SystemMetricsCollector::Get().Initialize(luid.LowPart, luid.HighPart);
    
    // Try to upgrade to SC3 internally
    IDXGISwapChain3* sc3 = nullptr;
@@ -1551,40 +1177,215 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
 
    // Define Lambdas - pass frameQueue to use stable snapshot
    auto doOverlay = [&](ID3D12CommandQueue* overlayQueue) {
-       static uint64_t lastLogTime = 0;
-       static uint64_t overlayCounter = 0;
-       overlayCounter++;
-       
-       // ... (rest of doOverlay) ...
-   }; // This is just context, not the edit location
+      static uint64_t overlayCounter = 0;
+      overlayCounter++;
+      
+      // DIAGNOSTIC LOGGING: Log first few frames and periodically
+      // Throttled to avoid IO saturation
+      static uint64_t lastLog = 0;
+      uint64_t now = GetTickCount64();
+      bool shouldLogCheckpoint = (now - lastLog > 500); 
 
-   auto doCapture = [&](ID3D12CommandQueue* captureQueue) {
-       static uint64_t lastCapLog = 0;
-       uint64_t now = GetTickCount64();
-       bool capShouldLog = (now - lastCapLog > 5000); // Video log every 5s
-       
-       static uint64_t fgCaptureCounter = 0;
-       bool shouldCapture = true;
-       if (fgActive) {
-           fgCaptureCounter++;
-           shouldCapture = (fgCaptureCounter % 4 == 0);
-       }
-       
-       bool isRecording = g_IPC && g_IPC->IsRecording();
-       if (capShouldLog && isRecording) {
-           HookLog("DX12: doCapture - isRecording=1, shouldCapture=%d, processCapture=%d, active=%d", 
-                   shouldCapture, processCapture, g_SharedCaptureD3D12.IsActive());
-           lastCapLog = now;
-       }
+      if (shouldLogCheckpoint) {
+          HookLog("DX12: doOverlay Enter (Count=%llu)", overlayCounter);
+          lastLog = now;
+      }
 
-       if (shouldCapture && processCapture && isRecording) {
-           SharedMemoryLayout* shm = g_IPC->GetSharedMem();
-           if (shm && g_SharedCaptureD3D12.IsActive()) {
-               std::lock_guard<std::mutex> capLock(g_DX12CaptureMutex);
-               UINT bbIdx = sc3 ? sc3->GetCurrentBackBufferIndex() : 0;
-               if (g_SharedCaptureD3D12.CaptureFrame(captureQueue, bbIdx)) {
-                   SharedFrameDescriptor desc;
-                   if (g_SharedCaptureD3D12.GetCurrentFrame(&desc)) {
+      if (!shouldDrawOverlay || !g_Device || !g_State.cmdList || !g_State.imGuiInit || !g_State.syncInit) {
+          if (shouldLogCheckpoint) HookLog("DX12: doOverlay SKIPPED (Condition Check Failed)");
+          return;
+      }
+      
+      // STABILITY FIX: Early device health check before any GPU operations
+      // This prevents crashes from using a device that was removed mid-frame
+      {
+          HRESULT deviceReason = g_Device->GetDeviceRemovedReason();
+          if (FAILED(deviceReason)) {
+              static int logOnce = 0;
+              if (logOnce++ < 3) {
+                  HookLog("DX12: doOverlay - Device removed (0x%08X), aborting overlay", deviceReason);
+              }
+              g_DeviceRemovedFatal.store(true, std::memory_order_release);
+              return;
+          }
+      }
+
+      if (!g_State.rtvDescHeap) {
+           static int logCount = 0;
+           if (logCount++ < 5) HookLog("DX12: doOverlay - RTV Heap NULL despite InitImGui=true. Aborting overlay.");
+           return;
+      }
+      
+      // CRITICAL: We DO NOT lock g_OverlayMutex here because ProcessFrame ALREADY holds it.
+      // Locking it again causes an immediate self-deadlock.
+      // std::lock_guard<std::mutex> overlayLock(g_OverlayMutex);
+      
+      // Need a valid allocator
+      
+      // Need a valid allocator
+      int allocIdx = g_State.allocIndex;
+      g_State.allocIndex = (g_State.allocIndex + 1) % DX12OverlayState::ALLOC_POOL_SIZE;
+      
+      // Sync
+      if (g_State.fence) {
+          UINT64 completed = g_State.fence->GetCompletedValue();
+          UINT64 target = g_State.fenceValues[allocIdx];
+          if (completed < target) {
+              g_State.fence->SetEventOnCompletion(target, g_State.fenceEvent);
+              DWORD waitResult = WaitForSingleObject(g_State.fenceEvent, 50);
+              if (waitResult != WAIT_OBJECT_0) {
+                  HookLog("DX12: doOverlay - Fence Wait TIMEOUT (Target=%llu). Skipping overlay to avoid allocator corruption.", target);
+                  return;
+              }
+          }
+      }
+      
+      auto* list = g_State.cmdList;
+      if (!list) return;
+
+      // SAFETY: Check allocator bounds
+      if (allocIdx >= g_State.allocators.size()) {
+          HookLog("DX12: doOverlay - Allocator index %d out of bounds (Size=%zu)", allocIdx, g_State.allocators.size());
+          return;
+      }
+      auto* alloc = g_State.allocators[allocIdx];
+      if (!alloc) return;
+      
+      HRESULT hr = alloc->Reset();
+      if (FAILED(hr)) {
+          HookLog("DX12: doOverlay - FATAL: Allocator Reset failed (0x%08X). Aborting.", hr);
+          return;
+      }
+
+      hr = list->Reset(alloc, nullptr);
+      if (FAILED(hr)) {
+          HookLog("DX12: doOverlay - FATAL: Command List Reset failed (0x%08X). Aborting.", hr);
+          return;
+      }
+      
+      // Get backbuffer
+      
+      UINT bufferIdx = 0;
+      if (sc3) {
+           bufferIdx = sc3->GetCurrentBackBufferIndex();
+      }
+      
+      ID3D12Resource* backBuffer = nullptr;
+      if (SUCCEEDED(pSwapChain->GetBuffer(bufferIdx, IID_PPV_ARGS(&backBuffer))) && backBuffer) {
+           
+           // Transition to RenderTarget
+           D3D12_RESOURCE_BARRIER barrier = {};
+           barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+           barrier.Transition.pResource = backBuffer;
+           barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+           barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+           barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+           list->ResourceBarrier(1, &barrier);
+
+           // RTV
+           if (!g_State.rtvDescHeap) {
+               // Should have been caught by early return, but double check
+               if (static int logCount = 0; logCount++ < 10) HookLog("DX12: doOverlay - RTV Heap is NULL! Skipping overlay.");
+               backBuffer->Release();
+               return;
+           }
+           D3D12_CPU_DESCRIPTOR_HANDLE rtv = g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
+           rtv.ptr += (SIZE_T)bufferIdx * g_State.rtvDescriptorSize;
+           g_Device->CreateRenderTargetView(backBuffer, nullptr, rtv);
+           list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+           
+           // Viewport
+           D3D12_VIEWPORT vp = {0, 0, (float)g_State.cachedWidth, (float)g_State.cachedHeight, 0, 1};
+           list->RSSetViewports(1, &vp);
+           D3D12_RECT scissor = {0, 0, (LONG)g_State.cachedWidth, (LONG)g_State.cachedHeight};
+           list->RSSetScissorRects(1, &scissor);
+
+           DrawOverlay(list);
+
+           // Transition back
+           barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+           barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+           list->ResourceBarrier(1, &barrier);
+           
+           hr = list->Close();
+           if (FAILED(hr)) {
+               HookLog("DX12: doOverlay - FATAL: Command List Close failed (0x%08X). Aborting Execute.", hr);
+               backBuffer->Release();
+               return;
+           }
+           
+            ID3D12CommandList* lists[] = {list};
+
+            // Use the passed overlayQueue (already AddRef'd)
+            ID3D12CommandQueue* queueToUse = overlayQueue;
+            if (queueToUse) {
+                // SAFETY: Check Device Match
+                ID3D12Device* qDev = nullptr;
+                if (SUCCEEDED(queueToUse->GetDevice(IID_PPV_ARGS(&qDev)))) {
+                    if (qDev != g_Device) {
+                        HookLog("DX12: doOverlay - FATAL: Queue Device (%p) != Global Device (%p). Mismatch! Aborting Execute.", qDev, g_Device);
+                        qDev->Release();
+                        // Don't release queueToUse - caller owns the ref
+                        backBuffer->Release();
+                        return;
+                    }
+                    qDev->Release();
+                }
+
+                // STABILITY FIX: Check swapchain validity right before execute
+                // This catches cases where swapchain was invalidated during draw
+    if (DXGIShared::g_SharedState.swapchainInvalid.load(std::memory_order_acquire)) {
+        HookLog("DX12: doOverlay - Swapchain invalidated mid-operation! Aborting.");
+        backBuffer->Release();
+        return;
+    }
+
+                queueToUse->ExecuteCommandLists(1, lists);
+
+                // STABILITY FIX: Signal fence AND wait for completion before releasing backbuffer
+                // This matches SpecialK's drain_queue pattern and prevents GPU race conditions
+                if (g_State.fence) {
+                     g_State.currentFenceValue++;
+                     g_State.fenceValues[allocIdx] = g_State.currentFenceValue;
+                     queueToUse->Signal(g_State.fence, g_State.currentFenceValue);
+
+                     // NOTE: No post-execute wait needed - backbuffer is swapchain-owned.
+                     // GPU sync for allocator reuse is handled by pre-use wait at doOverlay entry.
+                }
+            } else {
+                HookLog("DX12: doOverlay - FATAL: CommandQueue is NULL before Execute!");
+            }
+
+            backBuffer->Release();
+       }
+   };
+
+  auto doCapture = [&]() {
+      static uint64_t lastCapLog = 0;
+      bool capShouldLog = (now - lastCapLog > 5000); // Video log every 5s
+      
+      static uint64_t fgCaptureCounter = 0;
+      bool shouldCapture = true;
+      if (fgActive) {
+          fgCaptureCounter++;
+          shouldCapture = (fgCaptureCounter % 4 == 0);
+      }
+      
+      bool isRecording = g_IPC && g_IPC->IsRecording();
+      if (capShouldLog && isRecording) {
+          HookLog("DX12: doCapture - isRecording=1, shouldCapture=%d, processCapture=%d, active=%d", 
+                  shouldCapture, processCapture, g_SharedCaptureD3D12.IsActive());
+          lastCapLog = now;
+      }
+
+      if (shouldCapture && processCapture && isRecording) {
+          SharedMemoryLayout* shm = g_IPC->GetSharedMem();
+          if (shm && g_SharedCaptureD3D12.IsActive()) {
+              std::lock_guard<std::mutex> capLock(g_DX12CaptureMutex);
+              UINT bbIdx = sc3 ? sc3->GetCurrentBackBufferIndex() : 0;
+                if (g_SharedCaptureD3D12.CaptureFrame(frameQueue, bbIdx)) {
+                  SharedFrameDescriptor desc;
+                  if (g_SharedCaptureD3D12.GetCurrentFrame(&desc)) {
                       // 1. Sync handles to shm (Zero-copy handles)
                       shm->sharedHandles[0] = (uint64_t)g_SharedCaptureD3D12.GetSharedHandle(0);
                       shm->sharedHandles[1] = (uint64_t)g_SharedCaptureD3D12.GetSharedHandle(1);
@@ -1646,10 +1447,10 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
        if (shouldLog) HookLog("DX12: ProcessFrame - doOverlay");
        doOverlay(frameQueue);
        if (shouldLog) HookLog("DX12: ProcessFrame - doCapture");
-       doCapture(frameQueue);
+       doCapture();
    } else {
        if (shouldLog) HookLog("DX12: ProcessFrame - doCapture");
-       doCapture(frameQueue);
+       doCapture();
        if (shouldLog) HookLog("DX12: ProcessFrame - doOverlay");
        doOverlay(frameQueue);
    }
@@ -1776,388 +1577,32 @@ HRESULT STDMETHODCALLTYPE DetourGetBuffer(IDXGISwapChain *pSwapChain, UINT Buffe
     return hr;
 }
 
-HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
-                                        UINT SyncInterval, UINT Flags) {
+// --- Unified DXGI Handlers ---
+namespace DXGIShared {
 
-  // --- ORIGINAL CODE BELOW (RESTORED) ---
-  // STABILITY FIX: Increment present call count for grace period tracking
-  uint64_t presentCount = g_PresentCallCount.fetch_add(1, std::memory_order_relaxed);
-  
-  bool isFirstHook = !g_InPresentHook;
-  g_InPresentHook = true;
-  // RAII Guard: Automatically reset g_InPresentHook when this function exits (any path)
-  auto hookGuard = ce::make_scope_guard([&]{ 
-      // Guard auto-reset 
-  });
+void HandleDX12ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame) {
+    if (!pSwapChain) return;
 
-  // Debug: Log that hook is being called (once)
-  static bool loggedOnce = false;
-  static int callCount = 0;
-  callCount++;
-  if (!loggedOnce) {
-      HookLog("DX12: >>> DetourPresent CALLED! (first call, oPresent=%p)", oPresent);
-      loggedOnce = true;
-  }
-  if (callCount % 600 == 0) { // Log every ~10 seconds at 60fps
-      HookLog("DX12: DetourPresent still active (call #%d)", callCount);
-  }
-  
-  // STABILITY FIX: Grace period - skip overlay processing during startup
-  // This allows the graphics pipeline to stabilize before we start rendering overlay
-  if (presentCount < OVERLAY_INIT_GRACE_FRAMES) {
-      if (presentCount == 0) {
-          EarlyLog("DX12: Beginning grace period (%llu frames) before overlay init", OVERLAY_INIT_GRACE_FRAMES);
-      }
-      // Guard auto-reset
-      return oPresent(pSwapChain, SyncInterval, Flags);
-  }
-  
-  // ============================================================================
-  // CRITICAL: Check device health BEFORE doing ANY work
-  // If device was removed in previous frame, skip ALL operations to prevent crash
-  // ============================================================================
-  if (g_DeviceRemovedFatal.load()) {
-      static int logOnce = 0;
-      if (logOnce++ % 60 == 0) {
-          HookLog("DX12: Device in bad state - skipping ALL Present processing");
-      }
-      // Guard auto-reset
-      return oPresent(pSwapChain, SyncInterval, Flags);
-  }
+    uint64_t presentCount = DXGIShared::g_SharedState.presentCallCount.load();
 
-  // Additional check: Verify device is still valid at start of frame
-  if (g_Device) {
-      HRESULT deviceStatus = g_Device->GetDeviceRemovedReason();
-      if (deviceStatus == DXGI_ERROR_DEVICE_REMOVED ||
-          deviceStatus == DXGI_ERROR_DEVICE_RESET ||
-          deviceStatus == DXGI_ERROR_DRIVER_INTERNAL_ERROR) {
-          g_DeviceRemovedFatal.store(true);
-          HookLog("DX12: Device Removed at Present start! hr=0x%08X - skipping all processing", deviceStatus);
-          // Guard auto-reset
-          return oPresent(pSwapChain, SyncInterval, Flags);
-      }
-  }
+    // Grace period
+    if (presentCount < OVERLAY_INIT_GRACE_FRAMES) {
+        return;
+    }
 
-  // ============================================================================
-  
-  // CRITICAL: Check if swapchain is being invalidated by FSR4 swapchain recreation
-  // If so, skip ALL overlay operations and just passthrough Present
-  if (g_SwapchainInvalid.load(std::memory_order_acquire)) {
-      // Swapchain is being replaced - abort overlay, just passthrough
-      EarlyLog("DX12: Swapchain INVALID - skipping ALL overlay, passthrough only");
-      g_FGDebugOverlaySkips++;
-      // Guard auto-reset
-      return oPresent(pSwapChain, SyncInterval, Flags);
-  }
-  
-  // FSR4 Cleanup Check: If DX11 hook signaled pending cleanup, do it now on DX12 thread
-  // This avoids deadlocks that occur when calling directly from DX11 hook thread
-  if (g_FSR4SwapchainRecreatedPending.load(std::memory_order_acquire)) {
-      EarlyLog("DX12: Processing pending FSR4 swapchain recreation cleanup on DX12 thread");
-      DX12_OnSwapchainResizeBegin();
-      g_FSR4SwapchainRecreatedPending.store(false, std::memory_order_release);
-      // Clear invalidation flag after cleanup is done
-      g_SwapchainInvalid.store(false, std::memory_order_release);
-      EarlyLog("DX12: Swapchain invalidation cleared - overlay may resume");
-  }
-  
-  static FGCompatibility::FGType fgType = FGCompatibility::FGType::None;
-  static FGCompatibility::FGType lastFgType = FGCompatibility::FGType::None;
-  uint64_t frameNum = ++g_FGDebugFrameCount;
-  
-  // FG Runtime Detection - CONTINUOUS to handle runtime switching
-  // Check every 100 frames to detect FG enable/disable/switch
-  static uint64_t lastTypeCheck = 0;
-  if (frameNum - lastTypeCheck >= 100 || fgType == FGCompatibility::FGType::None) {
-      lastTypeCheck = frameNum;
-      FGCompatibility::FGType newFgType = g_FGCompat.DetectLoadedFGRuntime();
-      
-      if (newFgType != lastFgType) {
-          const char* fgName = "None";
-          switch (newFgType) {
-              case FGCompatibility::FGType::DLSS_FG: fgName = "DLSS FG"; break;
-              case FGCompatibility::FGType::FSR_FG: fgName = "FSR FG"; break;
-              case FGCompatibility::FGType::DLSS_MSFG: fgName = "DLSS Multi-FG"; break;
-              default: break;
-          }
-          EarlyLog("DX12 FG: Frame %llu - FG runtime changed to: %s", frameNum, fgName);
-          lastFgType = newFgType;
-          
-          // If switching TO FSR FG, log warning
-          if (newFgType == FGCompatibility::FGType::FSR_FG) {
-              EarlyLog("DX12 FG: FSR FG detected - overlay DISABLED (temporary workaround)");
-          }
-      }
-      fgType = newFgType;
-  }
-  
-  // FSR3 Swapchain Detection - check continuously for FSR3 wrapper
-  if (pSwapChain) {
-      bool isFSR3 = IsFSR3SwapChain(pSwapChain);
-      if (isFSR3 != g_UsingFSR3Swapchain) {
-          g_UsingFSR3Swapchain = isFSR3;
-          if (isFSR3) {
-              EarlyLog("DX12: Detected FSR3 FrameInterpolationSwapChain - disabling overlay");
-          } else {
-              EarlyLog("DX12: FSR3 swapchain wrapper no longer active");
-          }
-      }
-  }
-  
-  // FSR FG SKIP: Disable overlay entirely when FSR FG is detected (temporary workaround)
-  bool fsrFGActive = (fgType == FGCompatibility::FGType::FSR_FG) || g_UsingFSR3Swapchain;
-  if (fsrFGActive) {
-      g_FGDebugOverlaySkips++;
-      // Guard auto-reset
-      return oPresent(pSwapChain, SyncInterval, Flags);
-  }
-  
-  // Record frame for FG metrics
-  int cmdListCount = g_CommandListsExecutedThisFrame.exchange(0);
-  // DIAGNOSTIC: Per-frame logging disabled to test if I/O overhead causes crash
-  // if (g_FGDebugFrameCount < 12000) { // Log first ~3 minutes
-  //     EarlyLog("DX12: Present - RecordFrame cmdListCount=%d", cmdListCount);
-  // }
-  g_FGCompat.RecordFrame(cmdListCount);
-  
-  // FG Swapchain Stabilization Check (DLSS FG only now - reduced delay for constant overlay)
-  // DLSS FG uses much shorter stabilization (100ms instead of 500ms) for minimal overlay gap
-  bool dlssFGActive = (fgType == FGCompatibility::FGType::DLSS_FG || 
-                       fgType == FGCompatibility::FGType::DLSS_MSFG);
-  bool fgActive = dlssFGActive;
-  
-  // Very short stabilization for DLSS FG - just 100ms to minimize overlay gap
-  constexpr int DLSS_STABILIZATION_MS = 100;
-  
-  if (fgActive) {
-      auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::steady_clock::now() - g_LastSwapchainCreation).count();
-      
-      if (elapsed >= DLSS_STABILIZATION_MS) {
-          if (!g_FGSwapchainStabilized) {
-              g_FGSwapchainStabilized = true;
-              EarlyLog("DX12 FG: Frame %llu - DLSS swapchain stabilized after %lld ms. Overlay enabled.",
-                       frameNum, elapsed);
-          }
+    // Record frame for FG metrics
+    int cmdListCount = g_CommandListsExecutedThisFrame.exchange(0);
+    g_FGCompat.RecordFrame(cmdListCount);
 
-      } else {
-          // Still stabilizing - brief passthrough
-          if (frameNum % 50 == 0) {
-              EarlyLog("DX12 FG: Frame %llu - DLSS stabilizing... %lld/%d ms", frameNum, elapsed, DLSS_STABILIZATION_MS);
-          }
-          g_FGDebugOverlaySkips++;
-          // Guard auto-reset
-          return oPresent(pSwapChain, SyncInterval, Flags);
-      }
-  }
-  
-  // Normal path continues below (both FG stabilized and non-FG)
-  static int64_t qpcFreq = 0;
-  if (qpcFreq == 0) {
-    LARGE_INTEGER f;
-    QueryPerformanceFrequency(&f);
-    qpcFreq = f.QuadPart;
-  }
-  LARGE_INTEGER qpc;
-  QueryPerformanceCounter(&qpc);
-
-  // Note: cmdListCount already defined and RecordFrame called at start of DetourPresent
-  bool isRealFrame = (cmdListCount > 0);
-
-  // Convert to microseconds
-  int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
-
-  // FIX: Allow FPS update even if wrapped. isFirstHook handles deduplication (Present vs Present1).
-  if (isFirstHook) {
-      g_PerfMetrics.Update(us);
-  }
-
-  // Update recording state for CSV logging
-  bool isRecording = g_IPC && g_IPC->IsRecording();
-  g_PerfMetrics.SetRecording(isRecording);
-
-  UINT oldInterval = SyncInterval;
-  UINT oldFlags = Flags;
-
-  // NOTE: VSync override re-enabled if configured
-  // Debug: Trace IPC state
-  static bool ipcStateLogged = false;
-  if (!ipcStateLogged) {
-      HookLog("DX12: VSync Debug: g_IPC=%p", (void*)g_IPC);
-      if (g_IPC) {
-          auto* shm = g_IPC->GetSharedMem();
-          HookLog("DX12: VSync Debug: shm=%p", (void*)shm);
-      }
-      ipcStateLogged = true;
-  }
-  
-  // Apply VSync Override
-  VSyncOverride vsync = GetVSyncOverride();
-  if (vsync.shouldOverride) {
-      SyncInterval = (UINT)vsync.presentInterval;
-  }
-
-  // Apply Prerender Limit
-  if (isFirstHook) {
-      float limit = GetActivePrerenderLimit();
-      if (limit >= 0.0f) {
-          static float lastLimit = -2.0f;
-          if (fabs(limit - lastLimit) > 0.001f) {
-               UINT effectiveLatency = (limit < 1.0f) ? 1 : (UINT)limit;
-               IDXGISwapChain3* scTemp = nullptr;
-               if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&scTemp)))) {
-                   scTemp->SetMaximumFrameLatency(effectiveLatency);
-                   scTemp->Release();
-               }
-               HookLog("DX12: Set maximum DXGI latency to %d (Active Limit: %.2f)", effectiveLatency, limit);
-               lastLimit = limit;
-          }
-          ApplyPrerenderLimit(limit);
-      }
-  }
-
-  // Sanitize Flags for VSync
-  if (SyncInterval > 0) {
-      // DXGI_PRESENT_ALLOW_TEARING = 512
-      Flags &= ~512; // DXGI_PRESENT_ALLOW_TEARING
-  }
-
-  if (oldInterval != SyncInterval || oldFlags != Flags) {
-      // Rate limit logging to avoid overhead every frame
-      static int logCount = 0;
-      if (logCount < 5) {
-          HookLog("DX12: Present: Override VSync (Interval: %u -> %u, Flags: 0x%X -> 0x%X)", 
-                  oldInterval, SyncInterval, oldFlags, Flags);
-          logCount++;
-      }
-  }
-
-  // SpecialK approach: Draw overlay BEFORE calling original Present
-  // This allows the overlay to be composited with the frame before FG processes it
-  // CRITICAL: Second invalidation check - catches mid-Present invalidation
-  if (!g_SwapchainInvalid.load(std::memory_order_acquire)) {
-      ProcessFrame(pSwapChain, isRealFrame);
-  }
-  
-  // Apply shared FPS limiter BEFORE Present (when not FG active)
-  // DISABLED when FG active - FPS limiter interferes with FG timing and causes FG to disable itself
-  // DISABLED when Vulkan is primary - NVIDIA promotes Vulkan to DXGI, causing double-limiting
-  if (isFirstHook && !fgActive && !IsVulkanPrimary()) {
-      g_SharedFpsLimiter.SetIPCClient(g_IPC);
-      g_SharedFpsLimiter.Apply();
-  }
-
-  // CRITICAL: Third invalidation check before calling oPresent
-  // If swapchain became invalid, the pSwapChain pointer may be stale
-  if (g_SwapchainInvalid.load(std::memory_order_acquire)) {
-      EarlyLog("DX12: Swapchain INVALID detected before oPresent - aborting frame");
-      g_FSR4SwapchainRecreatedPending.store(false, std::memory_order_release);
-      g_SwapchainInvalid.store(false, std::memory_order_release);
-      // Guard auto-reset
-      return S_OK;  // Return success to avoid game thinking Present failed
-  }
-
-  // Now call the original Present
-  HRESULT hr = oPresent(pSwapChain, SyncInterval, Flags);
-  // Guard auto-reset
-  
-  // Post-Present sleep for fractional limits
-  // Sleep AFTER Present returns - GPU has just finished its frame and is idle
-  if (isFirstHook) {
-      float postLimit = GetActivePrerenderLimit();
-      bool isPostFractional = (postLimit > 0.01f && postLimit < 1.0f);
-      if (isPostFractional) {
-          float fps = g_PerfMetrics.GetCurrentFPS();
-          double targetFrameTimeUs = (fps > 1.0f) ? (1000000.0 / fps) : 16666.0;
-          
-          // Fixed Idle Gap = TargetFrameTime * (1.0 - limit) * 0.10
-          // For limit=0.5 at 60fps: 16666 * 0.5 * 0.10 = ~833us
-          int64_t idleGapUs = (int64_t)(targetFrameTimeUs * (1.0 - postLimit) * 0.10);
-          if (idleGapUs > 0) {
-              if (idleGapUs > 10000) idleGapUs = 10000; // Cap at 10ms
-              PrecisionSleep(idleGapUs);
-          }
-      }
-  }
-  
-  return hr;
+    // Process frame (Overlay/Capture)
+    ProcessFrame(pSwapChain, isRealFrame);
 }
 
-HRESULT STDMETHODCALLTYPE
-DetourPresent1(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT Flags,
-               const DXGI_PRESENT_PARAMETERS *pPresentParameters) {
-
-  bool isFirstHook = !g_InPresentHook;
-  g_InPresentHook = true;
-  // RAII Guard
-  auto hookGuard = ce::make_scope_guard([&]{ 
-      // Guard auto-reset 
-  });
-
-  // Device change detection is handled in DetourPresent
-  
-  // FG: Record frame for behavioral detection
-  int cmdListCount = g_CommandListsExecutedThisFrame.exchange(0);
-  bool isRealFrame = (cmdListCount > 0);
-  g_FGCompat.RecordFrame(cmdListCount);
-
-  ProcessFrame(pSwapChain, isRealFrame);
-
-  // Apply shared FPS limiter
-  // DISABLED when FG active - FPS limiter interferes with FG timing
-  // DISABLED when Vulkan is primary - NVIDIA promotes Vulkan to DXGI, causing double-limiting
-  bool fgActive = g_FGCompat.IsFGActive();
-  if (isFirstHook && !fgActive && !IsVulkanPrimary()) {
-      g_SharedFpsLimiter.SetIPCClient(g_IPC);
-      g_SharedFpsLimiter.Apply();
-  }
-
-  UINT oldInterval = SyncInterval;
-  UINT oldFlags = Flags;
-
-  // Apply VSync Override
-  VSyncOverride vsync = GetVSyncOverride();
-  if (vsync.shouldOverride) {
-      SyncInterval = (UINT)vsync.presentInterval;
-  }
-
-  // Apply Prerender Limit
-  if (isFirstHook) {
-      float limit = GetActivePrerenderLimit();
-      if (limit >= 0.0f) {
-          static float lastLimit = -2.0f;
-          if (std::abs(limit - lastLimit) > 0.001f) {
-               UINT effectiveLatency = (limit < 1.0f) ? 1 : (UINT)limit;
-               IDXGISwapChain3* scTemp = nullptr;
-               if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&scTemp)))) {
-                   scTemp->SetMaximumFrameLatency(effectiveLatency);
-                   scTemp->Release();
-               }
-               HookLog("DX12: Set maximum DXGI latency to %d (Active Limit: %.2f)", effectiveLatency, limit);
-               lastLimit = limit;
-          }
-          ApplyPrerenderLimit(limit);
-      }
-  }
-
-  // Sanitize Flags for VSync
-  if (SyncInterval > 0) {
-      Flags &= ~512; // DXGI_PRESENT_ALLOW_TEARING
-  }
-
-  if (oldInterval != SyncInterval || oldFlags != Flags) {
-      static int logCount = 0;
-      if (logCount < 5) {
-          HookLog("DX12: Present1: Override VSync (Interval: %u -> %u, Flags: 0x%X -> 0x%X)", 
-                  oldInterval, SyncInterval, oldFlags, Flags);
-          logCount++;
-      }
-  }
-
-  HRESULT hr = oPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
-  // Guard auto-reset
-  return hr;
+void HandleDX12ResizeBegin() {
+    DX12_OnSwapchainResizeBegin();
 }
+
+} // namespace DXGIShared
 
 static void STDMETHODCALLTYPE DetourCreateSampler(
     ID3D12Device *pDevice, const D3D12_SAMPLER_DESC *pDesc,
@@ -2410,10 +1855,6 @@ HRESULT WINAPI DetourSerializeRootSignature(
     ID3DBlob** ppBlob,
     ID3DBlob** ppErrorBlob)
 {
-    // DIAGNOSTIC: Minimal passthrough - call original directly without modification
-    return oSerializeRootSignature(pRootSignature, Version, ppBlob, ppErrorBlob);
-    
-    // --- ORIGINAL CODE BELOW (DISABLED FOR DIAGNOSTIC) ---
     if (!pRootSignature || pRootSignature->NumStaticSamplers == 0) {
         return oSerializeRootSignature(pRootSignature, Version, ppBlob, ppErrorBlob);
     }
@@ -2446,10 +1887,6 @@ HRESULT WINAPI DetourSerializeVersionedRootSignature(
     ID3DBlob** ppBlob,
     ID3DBlob** ppErrorBlob)
 {
-    // DIAGNOSTIC: Minimal passthrough - call original directly without modification
-    return oSerializeVersionedRootSignature(pRootSignature, ppBlob, ppErrorBlob);
-    
-    // --- ORIGINAL CODE BELOW (DISABLED FOR DIAGNOSTIC) ---
     if (!pRootSignature) {
         return oSerializeVersionedRootSignature(pRootSignature, ppBlob, ppErrorBlob);
     }
@@ -2506,9 +1943,8 @@ HRESULT WINAPI DetourSerializeVersionedRootSignature(
         modifiedDesc.Desc_1_1.pStaticSamplers = (const D3D12_STATIC_SAMPLER_DESC*)modifiedSamplers1_1;
         
         HRESULT hr = oSerializeVersionedRootSignature(&modifiedDesc, ppBlob, ppErrorBlob);
-        
+        delete[] modifiedSamplers1_1;
         delete[] modifiedSamplers;
-        delete[] (D3D12_STATIC_SAMPLER_DESC*)modifiedSamplers1_1;
         return hr;
     }
     
@@ -3013,9 +2449,10 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(
     IDXGIOutput *pRestrictToOutput, IDXGISwapChain1 **ppSwapChain) {
   
   // FG SWAPCHAIN TRACKING: Record creation for stabilization timing
-  int swapCount = ++g_SwapchainCreationCount;
-  g_LastSwapchainCreation = std::chrono::steady_clock::now();
-  g_FGSwapchainStabilized = false; // Reset stabilization on any swapchain creation
+  g_SwapchainCreationCount++;
+  int swapCount = g_SwapchainCreationCount.load();
+  DXGIShared::g_SharedState.lastSwapchainCreation = std::chrono::steady_clock::now();
+  DXGIShared::g_SharedState.fgSwapchainStabilized.store(false);
   EarlyLog("DX12 FG: CreateSwapChainForHwnd #%d called (pDevice=%p, hWnd=%p, Size=%ux%u)", 
            swapCount, pDevice, hWnd, pDesc ? pDesc->Width : 0, pDesc ? pDesc->Height : 0);
   
@@ -3108,12 +2545,6 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(
                 
                 if (g_Device) g_Device->Release();
                 g_Device = dev; // Keep the reference from GetDevice
-                
-                // FG: Cleanup dedicated overlay queue if device changed
-                if (g_OverlayQueueInitialized) {
-                    EarlyLog("DX12 FG: Device changed during swapchain creation, cleaning up overlay queue");
-                    CleanupDedicatedOverlayQueue();
-                }
             }
             HookLog("CreateSwapChainForHwnd #%d: Captured Queue %p", swapCount, g_CommandQueue);
         }
@@ -3326,152 +2757,8 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForComposition(
     return oCreateSwapChainForComposition(pThis, pDevice, pDesc, pRestrictToOutput, ppSwapChain);
 }
 
-HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain3 *pSwapChain,
-                                              UINT BufferCount, UINT Width,
-                                              UINT Height,
-                                              DXGI_FORMAT NewFormat,
-                                              UINT SwapChainFlags) {
-  // --- ORIGINAL CODE RESTORED ---
-  HookLog("DX12: DetourResizeBuffers called (Width=%u, Height=%u)", Width, Height);
-  if (!pSwapChain) return DXGI_ERROR_INVALID_CALL;
+// --- Redundant Detours Removed (Handled by DXGIShared) ---
 
-  // TLS Check: If called from Wrapper, skip logic and pass through
-  if (g_WrapperResizeDepth > 0) {
-      if (g_WrapperResizeDepth > 5) {
-          HookLog("DX12: DetourResizeBuffers - Recursion Limit Hit (Depth=%d). Forcing Success.", g_WrapperResizeDepth);
-          return S_OK; // Break infinite loop
-      }
-
-      HookLog("DX12: DetourResizeBuffers - Passthrough (Depth=%d)", g_WrapperResizeDepth);
-      
-      // Manually increment depth for the passthrough call to catch internal loops
-      DX12_AdjustWrapperResizeDepth(1);
-      HRESULT hr = oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
-      DX12_AdjustWrapperResizeDepth(-1);
-
-      HookLog("DX12: DetourResizeBuffers - Passthrough returned 0x%08X", hr);
-      return hr;
-  }
-
-  HookLog("DX12: DetourResizeBuffers entering...");
-  HookLog("DX12: DetourResizeBuffers entering...");
-  
-  // Use centralized cleanup with queue draining
-  DX12_OnSwapchainResizeBegin();
-  HookLog("DX12: DetourResizeBuffers cleanup complete (Safe Drain)");
-
-  int count = GetActiveGraphicsConfig().backbufferCount;
-  if (count >= 2 && count <= 6) {
-      BufferCount = (UINT)count;
-      HookLog("DX12: ResizeBuffers: Overriding BufferCount to %d", count);
-  }
-
-  HookLog("DX12: Calling original ResizeBuffers...");
-  HRESULT hr = oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat,
-                               SwapChainFlags);
-  HookLog("DX12: original ResizeBuffers returned 0x%08X", hr);
-
-  // POST-RESIZE: Capture Command Queue if needed (Self-Healing)
-  // This is critical for cases where the initial swapchain was a 1x1 dummy (ignored)
-  // and is now being resized to a real resolution.
-  if (SUCCEEDED(hr) && !g_CommandQueue) {
-      if (Width > 1 && Height > 1) { // Only capture if resolution is valid
-          IUnknown* pDevice = nullptr;
-          if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&pDevice)))) {
-               ID3D12CommandQueue* queue = nullptr;
-               if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&queue)))) {
-                   HookLog("DX12: ResizeBuffers: Self-healing captured Command Queue %p (Ignored for Discovery)", queue);
-                   // DX12_SetCommandQueue(queue); 
-                   queue->Release();
-               }
-               pDevice->Release();
-          }
-      }
-  }
-
-  return hr;
-}
-
-HRESULT STDMETHODCALLTYPE DetourResizeBuffers1(IDXGISwapChain3 *pSwapChain,
-                                               UINT BufferCount, UINT Width,
-                                               UINT Height,
-                                               DXGI_FORMAT NewFormat,
-                                               UINT SwapChainFlags,
-                                               const UINT *pCreationNodeMask,
-                                               IUnknown *const *ppPresentQueue) {
-  // DIAGNOSTIC: Absolute minimal passthrough - bypass ALL ResizeBuffers1 logic  
-  static int resize1Count = 0;
-  resize1Count++;
-  if (resize1Count == 1) {
-      HookLog("DX12: DIAGNOSTIC - DetourResizeBuffers1 MINIMAL PASSTHROUGH (all logic disabled)");
-  }
-  return oResizeBuffers1(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags, pCreationNodeMask, ppPresentQueue);
-  
-  // --- ORIGINAL CODE BELOW (DISABLED FOR DIAGNOSTIC) ---
-  HookLog("DX12: DetourResizeBuffers1 called (Width=%u, Height=%u)", Width, Height);
-  if (!pSwapChain) return DXGI_ERROR_INVALID_CALL;
-
-  HookLog("DX12: DetourResizeBuffers1 called (Width=%u, Height=%u)", Width, Height);
-  if (!pSwapChain) return DXGI_ERROR_INVALID_CALL;
-
-  // TLS Check: If called from Wrapper, skip logic and pass through
-  if (g_WrapperResizeDepth > 0) {
-      if (g_WrapperResizeDepth > 5) {
-          HookLog("DX12: DetourResizeBuffers1 - Recursion Limit Hit (Depth=%d). Forcing Success.", g_WrapperResizeDepth);
-          return S_OK; // Break infinite loop
-      }
-
-      HookLog("DX12: DetourResizeBuffers1 - Passthrough (Depth=%d)", g_WrapperResizeDepth);
-
-      // Manually increment depth for the passthrough call to catch internal loops
-      DX12_AdjustWrapperResizeDepth(1);
-      HRESULT hr = oResizeBuffers1(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags, pCreationNodeMask, ppPresentQueue);
-      DX12_AdjustWrapperResizeDepth(-1);
-
-      HookLog("DX12: DetourResizeBuffers1 - Passthrough returned 0x%08X", hr);
-      return hr;
-  }
-
-  HookLog("DX12: DetourResizeBuffers1 entering...");
-  HookLog("DX12: DetourResizeBuffers1 entering...");
-  
-  // Use centralized cleanup with queue draining
-  DX12_OnSwapchainResizeBegin();
-  HookLog("DX12: DetourResizeBuffers1 cleanup complete (Safe Drain)");
-
-  int count = GetActiveGraphicsConfig().backbufferCount;
-  if (count >= 2 && count <= 6) {
-      BufferCount = (UINT)count;
-      HookLog("DX12: ResizeBuffers1: Overriding BufferCount to %d", count);
-  }
-
-  HookLog("DX12: Calling original ResizeBuffers1...");
-  HRESULT hr = oResizeBuffers1(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags, pCreationNodeMask, ppPresentQueue);
-  HookLog("DX12: original ResizeBuffers1 returned 0x%08X", hr);
-
-  if (SUCCEEDED(hr) && !g_CommandQueue) {
-       if (Width > 1 && Height > 1) {
-           IUnknown* pDevice = nullptr;
-           if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&pDevice)))) {
-                ID3D12CommandQueue* queue = nullptr;
-                if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&queue)))) {
-                    HookLog("DX12: ResizeBuffers1: Self-healing captured Command Queue %p", queue);
-                    // DX12_SetCommandQueue(queue);
-                    queue->Release();
-                }
-                pDevice->Release();
-           }
-       }
-  }
-
-  return hr;
-}
-
-DWORD WINAPI UnloadThread(LPVOID lpParam) {
-  Sleep(200);
-  g_DX12Hook.Shutdown(); 
-  return 0;
-}
 
 #ifdef ENABLE_D3D12_WRAPPER
 HRESULT WINAPI DetourD3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL MinimumFeatureLevel, REFIID riid, void** ppDevice) {
@@ -3572,45 +2859,41 @@ void DX12Hook::Init() {
       VTableHook::Create(&facVTable[24], (LPVOID)DetourCreateSwapChainForComposition, (LPVOID *)&oCreateSwapChainForComposition);
       
       HookLog("DX12: Attempting proactive swapchain VTable hooking...");
-      // DIAGNOSTIC: Disable proactive swapchain creation (heavy operation)
-      HookLog("DX12: DIAGNOSTIC - Proactive Swapchain Creation BYPASSED");
-      /*
-      // Proactive logic for Present/Present1 is here in original... 
-      // Simplified for restoration:
-      typedef HRESULT (WINAPI *PFN_D3D12_CREATE_DEVICE)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
-      PFN_D3D12_CREATE_DEVICE pD3D12CreateDevice = (PFN_D3D12_CREATE_DEVICE)GetProcAddress(hD3D12, "D3D12CreateDevice");
+      
+      // RESTORED: Proactive swapchain creation for VTable discovery
+      if (hD3D12) {
+          typedef HRESULT (WINAPI *PFN_D3D12_CREATE_DEVICE)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
+          PFN_D3D12_CREATE_DEVICE pD3D12CreateDevice = (PFN_D3D12_CREATE_DEVICE)GetProcAddress(hD3D12, "D3D12CreateDevice");
 
-      ID3D12Device* dummyDevice = nullptr;
-      if (pD3D12CreateDevice && SUCCEEDED(pD3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&dummyDevice)))) {
-          D3D12_COMMAND_QUEUE_DESC queueDesc = {};
-          queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-          ID3D12CommandQueue* dummyQueue = nullptr;
-          if (SUCCEEDED(dummyDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&dummyQueue)))) {
-              DXGI_SWAP_CHAIN_DESC1 scDesc = {};
-              scDesc.Width = 1; scDesc.Height = 1; scDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-              scDesc.SampleDesc.Count = 1; scDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-              scDesc.BufferCount = 2; scDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+          ID3D12Device* dummyDevice = nullptr;
+          if (pD3D12CreateDevice && SUCCEEDED(pD3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&dummyDevice)))) {
+              D3D12_COMMAND_QUEUE_DESC queueDesc = {};
+              queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+              ID3D12CommandQueue* dummyQueue = nullptr;
+              if (SUCCEEDED(dummyDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&dummyQueue)))) {
+                  DXGI_SWAP_CHAIN_DESC1 scDesc = {};
+                  scDesc.Width = 1; scDesc.Height = 1; scDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+                  scDesc.SampleDesc.Count = 1; scDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+                  scDesc.BufferCount = 2; scDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
 
-              HWND hwnd = CreateWindowA("STATIC", "Dummy", WS_OVERLAPPEDWINDOW, 0, 0, 1, 1, NULL, NULL, NULL, NULL);
-              if (hwnd) {
-                  IDXGISwapChain1* sc1 = nullptr;
-                  if (SUCCEEDED(factory->CreateSwapChainForHwnd(dummyQueue, hwnd, &scDesc, nullptr, nullptr, &sc1))) {
-                      IDXGISwapChain3* sc3 = nullptr;
-                      if (SUCCEEDED(sc1->QueryInterface(IID_PPV_ARGS(&sc3)))) {
-                          void** scVTable = *(void***)sc3;
-                          if (oPresent == nullptr) VTableHook::Create(&scVTable[8], (LPVOID)DetourPresent, (LPVOID*)&oPresent);
-                          if (oPresent1 == nullptr) VTableHook::Create(&scVTable[22], (LPVOID)DetourPresent1, (LPVOID*)&oPresent1);
-                          sc3->Release();
+                  HWND hwnd = CreateWindowA("STATIC", "Dummy", WS_OVERLAPPEDWINDOW, 0, 0, 1, 1, NULL, NULL, NULL, NULL);
+                  if (hwnd) {
+                      IDXGISwapChain1* sc1 = nullptr;
+                      if (SUCCEEDED(factory->CreateSwapChainForHwnd(dummyQueue, hwnd, &scDesc, nullptr, nullptr, &sc1))) {
+                          IDXGISwapChain3* sc3 = nullptr;
+                          if (SUCCEEDED(sc1->QueryInterface(IID_PPV_ARGS(&sc3)))) {
+                              DXGIShared::InstallHooks(sc3);
+                              sc3->Release();
+                          }
+                          sc1->Release();
                       }
-                      sc1->Release();
+                      DestroyWindow(hwnd);
                   }
-                  DestroyWindow(hwnd);
+                  dummyQueue->Release();
               }
-              dummyQueue->Release();
+              dummyDevice->Release();
           }
-          dummyDevice->Release();
       }
-      */
       factory->Release();
   }
   HookLog("DX12Hook: VTableHook initialized (Lazy Init Complete).");
@@ -3620,96 +2903,7 @@ void DX12Hook::Init() {
 // They are used here to detect if DX11 has ALREADY hooked a swapchain's vtable
 
 bool InstallDX12HooksOnSwapchain(IDXGISwapChain3* pSwapChain) {
-    if (!pSwapChain) return false;
-    
-    // Check if this is our own Wrapper
-    IUnknown* pWrapper = nullptr;
-    if (SUCCEEDED(pSwapChain->QueryInterface(IID_CWrapDXGISwapChain, (void**)&pWrapper))) {
-        HookLog("DX12: InstallDX12HooksOnSwapchain - Detected DXGI Wrapper (Overlay already handled). SKIPPING hooks.");
-        pWrapper->Release();
-        return true; 
-    }
-
-    void** scVTable = *(void***)pSwapChain;
-    bool anyInstalled = false;
-    
-    // ============================================================================
-    // CRITICAL FIX: Cross-Hook Collision Detection
-    // DX11 hooks Present BEFORE DX12 in many games. If we hook the same vtable slot,
-    // we capture DX11's detour as our "original", creating an infinite loop or crash.
-    // 
-    // We MUST check if the vtable is ALREADY hooked by DX11 (or any of our hooks)
-    // and skip installing DX12 hooks in that case. DX11 hooks will delegate to
-    // DX12_ProcessFrameExternal when appropriate.
-    // ============================================================================
-    
-    void* currentPresent = scVTable[8];
-    void* currentPresent1 = scVTable[22];
-    
-    // Check if Present is ALREADY hooked by DX11
-    bool presentHookedByDX11 = (currentPresent == (void*)DetourDX11Present);
-    // Check if Present is ALREADY hooked by DX12 (us)
-    bool presentHookedByDX12 = (currentPresent == (void*)DetourPresent);
-    // Check if Present1 is hooked
-    bool present1HookedByDX11 = (currentPresent1 == (void*)DetourDX11Present1);
-    bool present1HookedByDX12 = (currentPresent1 == (void*)DetourPresent1);
-    
-    if (presentHookedByDX11 || present1HookedByDX11) {
-        HookLog("DX12: InstallDX12HooksOnSwapchain - Present vtable ALREADY HOOKED by DX11!");
-        HookLog("DX12:   vtable[8]=%p (DX11Present=%p, match=%d)", currentPresent, (void*)DetourDX11Present, presentHookedByDX11);
-        HookLog("DX12:   vtable[22]=%p (DX11Present1=%p, match=%d)", currentPresent1, (void*)DetourDX11Present1, present1HookedByDX11);
-        HookLog("DX12:   SKIPPING DX12 Present hook installation to avoid hook collision!");
-        HookLog("DX12:   DX11 hook will delegate to DX12_ProcessFrameExternal for overlay rendering.");
-        // DX11 hook path will call DX12_ProcessFrameExternal when it detects a DX12 swapchain
-        return false;
-    }
-    
-    if (presentHookedByDX12 && present1HookedByDX12) {
-        HookLog("DX12: InstallDX12HooksOnSwapchain - Present vtables ALREADY HOOKED by DX12. Skipping.");
-        return true;
-    }
-    
-    // Safe to install DX12 hooks - vtable is not hooked by us or DX11
-    HookLog("DX12: InstallDX12HooksOnSwapchain - vtable not hooked, installing DX12 Present hooks...");
-    HookLog("DX12:   vtable[8]=%p, vtable[22]=%p", currentPresent, currentPresent1);
-    
-    if (oPresent == nullptr && !presentHookedByDX12) {
-        if (VTableHook::Create(&scVTable[8], (LPVOID)DetourPresent, (LPVOID*)&oPresent) == VTableHook::Success) anyInstalled = true;
-    }
-    if (oPresent1 == nullptr && !present1HookedByDX12) {
-        if (VTableHook::Create(&scVTable[22], (LPVOID)DetourPresent1, (LPVOID*)&oPresent1) == VTableHook::Success) anyInstalled = true;
-    }
-    HookLog("DX12: InstallDX12HooksOnSwapchain - Present hooks installed: oPresent=%p, oPresent1=%p", oPresent, oPresent1);
-    
-    // Check and hook ResizeBuffers (13)
-    if (scVTable[13] != DetourResizeBuffers) {
-        HookLog("DX12: ResizeBuffers (vtable[13]) not hooked on this swapchain. Installing...");
-        VTableHook::Status s = VTableHook::Create(&scVTable[13], (LPVOID)DetourResizeBuffers, (LPVOID*)&oResizeBuffers);
-        if (s == VTableHook::Success) {
-             HookLog("DX12: ResizeBuffers hook installed on game swapchain (vtable[13])");
-             anyInstalled = true;
-        } else {
-             HookLog("DX12: ResizeBuffers hook failed: %s", VTableHook::StatusToString(s));
-        }
-    } else {
-        HookLog("DX12: ResizeBuffers ALREADY hooked on this swapchain (vtable[13]).");
-    }
-
-    // Check and hook ResizeBuffers1 (39)
-    if (scVTable[39] != DetourResizeBuffers1) {
-        HookLog("DX12: ResizeBuffers1 (vtable[39]) not hooked on this swapchain. Installing...");
-        VTableHook::Status s = VTableHook::Create(&scVTable[39], (LPVOID)DetourResizeBuffers1, (LPVOID*)&oResizeBuffers1);
-        if (s == VTableHook::Success) {
-            HookLog("DX12: ResizeBuffers1 hook installed on game swapchain (vtable[39])");
-            anyInstalled = true;
-        } else {
-             // HookLog("DX12: ResizeBuffers1 hook failed/skipped: %s", VTableHook::StatusToString(s));
-        }
-    } else {
-        HookLog("DX12: ResizeBuffers1 ALREADY hooked on this swapchain (vtable[39]).");
-    }
-    
-    return anyInstalled;
+    return DXGIShared::InstallHooks(pSwapChain);
 }
 
 
@@ -3782,4 +2976,10 @@ void DX12Hook::CleanupResources() {
         if (res) res->Release();
     }
     trackedResources.clear();
+}
+
+DWORD WINAPI UnloadThread(LPVOID lpParam) {
+  Sleep(200);
+  g_dx12HookInstance.Shutdown(); 
+  return 0;
 }

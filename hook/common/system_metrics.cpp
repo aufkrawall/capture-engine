@@ -1,5 +1,6 @@
 #include "system_metrics.h"
 #include "hook_common.h"
+#include "ipc_client.h"
 #include <Pdh.h>
 #include <PdhMsg.h>
 #include <dxgi1_4.h>
@@ -156,6 +157,13 @@ void SystemMetricsCollector::Initialize(int32_t luidLow, int32_t luidHigh) {
             ((IUnknown*)cachedAdapter)->Release();
             cachedAdapter = nullptr;
         }
+        
+        // Publish LUID to shared memory for Host (sensors.exe)
+        if (g_IPC && g_IPC->GetSharedMem()) {
+            g_IPC->GetSharedMem()->luidLowPart = luidLow;
+            g_IPC->GetSharedMem()->luidHighPart = luidHigh;
+            // EarlyLog("SystemMetricsCollector: Published LUID to Shared Memory: %08X-%08X", luidHigh, luidLow);
+        }
     }
     
     EarlyLog("SystemMetricsCollector: Initialized with LUID %s. ThreadRunning=%d", cachedLuidPart, threadRunning.load());
@@ -187,6 +195,15 @@ void SystemMetricsCollector::BackgroundUpdateLoop() {
         
         // Prioritize IPC (Host-provided) metrics
         if (g_IPC && g_IPC->GetSharedMem()) {
+            // Ensure LUID is published (handles late IPC connection)
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                if (g_IPC->GetSharedMem()->luidLowPart != (int32_t)adapterLuid.LowPart) {
+                    g_IPC->GetSharedMem()->luidLowPart = adapterLuid.LowPart;
+                    g_IPC->GetSharedMem()->luidHighPart = adapterLuid.HighPart;
+                }
+            }
+
             auto& shm = g_IPC->GetSharedMem()->systemMetrics;
             float cpu = shm.cpuUsage.load(std::memory_order_relaxed);
             float gpu = shm.gpuUsage.load(std::memory_order_relaxed);

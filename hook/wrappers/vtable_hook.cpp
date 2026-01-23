@@ -52,9 +52,12 @@ namespace VTableHook {
         if (isSelfHook && currentValue != pDetour) {
             // The vtable entry points to our DLL but NOT to this specific detour
             // This means ANOTHER one of our hooks is already installed!
-            HookLog("VTableHook: WARNING - Target %p contains %p which is ANOTHER hook from our DLL!", ppEntry, currentValue);
-            HookLog("VTableHook: WARNING - This may cause hook collision! Detour=%p, CurrentValue=%p", pDetour, currentValue);
-            // Still proceed with hooking - caller should have checked for this
+            HookLog("VTableHook: WARNING - Target %p contains %p which is ANOTHER hook from our DLL! SKIPPING.", ppEntry, currentValue);
+            // CRITICAL FIX: Do NOT hook again. This prevents infinite recursion if we accidentally
+            // hook the same vtable twice with slightly different function pointers (e.g. template instantiation issues)
+            // or if we encounter a double-hook scenario.
+            // Preserving the EXISTING hook is safer than creating a cycle.
+            return Success;
         }
         
         // DEBUG: Log memory region details
