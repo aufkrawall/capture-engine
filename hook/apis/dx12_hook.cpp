@@ -762,10 +762,16 @@ void CreateRTVs(ID3D12Device *device, IDXGISwapChain3 *swapChain,
 void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
    if (!pSwapChain) return;
 
-   // CRASH CONTEXT: Log entry with thread ID
-   static DWORD entryThreadId = 0;
-   entryThreadId = GetCurrentThreadId();
-   HookLog("DX12: [T:%04X] ========== DX12_ProcessFrameExternal ENTRY ==========", entryThreadId);
+   static uint64_t lastLogTime = 0;
+   uint64_t now = GetTickCount64();
+   bool shouldLog = (now - lastLogTime > 2000); // Log every 2 seconds
+   
+   if (shouldLog) {
+       static DWORD entryThreadId = 0;
+       entryThreadId = GetCurrentThreadId();
+       HookLog("DX12: [T:%04X] ========== DX12_ProcessFrameExternal ENTRY ==========", entryThreadId);
+       lastLogTime = now;
+   }
 
    static int64_t qpcFreq = 0;
    if (qpcFreq == 0) {
@@ -1267,10 +1273,16 @@ void CleanupNativeInterfaces() {
 void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
   if (!pSwapChain) return;
   
+  static uint64_t lastLogTime = 0;
+  uint64_t now = GetTickCount64();
+  bool shouldLog = (now - lastLogTime > 2000); // Log every 2 seconds
+
   // CRASH CONTEXT: Log entry with thread ID
-  static DWORD entryThreadId = 0;
-  entryThreadId = GetCurrentThreadId();
-  HookLog("DX12: [T:%04X] ========== ProcessFrame ENTRY ==========", entryThreadId);
+  if (shouldLog) {
+      static DWORD entryThreadId = 0;
+      entryThreadId = GetCurrentThreadId();
+      HookLog("DX12: [T:%04X] ========== ProcessFrame ENTRY ==========", entryThreadId);
+  }
 
   // Vulkan coordination: Skip DX12 overlay if Vulkan Layer is active AND presenting.
   // This handles "Vulkan on DXGI" cases where Vulkan presents via DXGI on a different thread.
@@ -1284,9 +1296,6 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
   // LOCK HIERARCHY: g_OverlayMutex -> g_DX12CaptureMutex
   std::lock_guard<std::mutex> lock(g_OverlayMutex);
 
-  static uint64_t lastLogTime = 0;
-  uint64_t now = GetTickCount64();
-  bool shouldLog = (now - lastLogTime > 2000); // Log every 2 seconds
   if (shouldLog) {
       HookLog("DX12: ProcessFrame Entry (pSwapChain=%p, processCapture=%d)", pSwapChain, processCapture);
       lastLogTime = now;
@@ -1467,10 +1476,11 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
     // Create a local AddRef'd snapshot for this frame's operations
     ID3D12CommandQueue* frameQueue = nullptr;
     {
-        DWORD lockThreadId = GetCurrentThreadId();
         std::lock_guard<std::mutex> qLock(g_CommandQueueMutex);
-        HookLog("DX12: [T:%04X] Queue snapshot lock acquired (Thread=%04X)", 
-                GetCurrentThreadId(), lockThreadId);
+        if (shouldLog) {
+            HookLog("DX12: [T:%04X] Queue snapshot lock acquired (Thread=%04X)", 
+                    GetCurrentThreadId(), GetCurrentThreadId());
+        }
         if (g_CommandQueue) {
             frameQueue = g_CommandQueue;
             frameQueue->AddRef();
