@@ -714,7 +714,7 @@ void CheckCaptureInit(IDXGISwapChain3 *pSwapChain) {
   // Initialize Shared Capture
   // Use g_CommandQueue (which should be set by now via ProcessFrame)
       if (g_CommandQueue) {
-          g_SharedCaptureD3D12.Initialize(g_Device, pSwapChain, g_CommandQueue);
+          g_SharedCaptureD3D12.Initialize(g_Device, pSwapChain);
           HookLog("SharedCaptureD3D12 Initialized.");
       }
 }
@@ -1503,7 +1503,7 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
        // SharedCaptureD3D12::Initialize now has verbose logging to pinpoint failures.
        // Only initialize if queue changed recently (first few frames) or already stable
        if (queueChanged || s_QueueChangeLog > 60) {
-           bool ok = g_SharedCaptureD3D12.Initialize(g_Device, pSwapChain, frameQueue);
+           bool ok = g_SharedCaptureD3D12.Initialize(g_Device, pSwapChain);
            static int failCount = 0;
            if (!ok) {
                if (failCount++ % 60 == 0) {
@@ -1551,210 +1551,40 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
 
    // Define Lambdas - pass frameQueue to use stable snapshot
    auto doOverlay = [&](ID3D12CommandQueue* overlayQueue) {
-      static uint64_t overlayCounter = 0;
-      overlayCounter++;
-      
-      // DIAGNOSTIC LOGGING: Log first few frames and periodically
-      // Reduced for performance - only log VERY sparse checkpoints if needed
-      bool shouldLogCheckpoint = (overlayCounter < 5); 
+       static uint64_t lastLogTime = 0;
+       static uint64_t overlayCounter = 0;
+       overlayCounter++;
+       
+       // ... (rest of doOverlay) ...
+   }; // This is just context, not the edit location
 
-      if (shouldLogCheckpoint) HookLog("DX12: doOverlay Enter (Count=%llu)", overlayCounter);
-
-      if (!shouldDrawOverlay || !g_Device || !g_State.cmdList || !g_State.imGuiInit || !g_State.syncInit) {
-          if (shouldLogCheckpoint) HookLog("DX12: doOverlay SKIPPED (Condition Check Failed)");
-          return;
-      }
-      
-      // STABILITY FIX: Early device health check before any GPU operations
-      // This prevents crashes from using a device that was removed mid-frame
-      {
-          HRESULT deviceReason = g_Device->GetDeviceRemovedReason();
-          if (FAILED(deviceReason)) {
-              static int logOnce = 0;
-              if (logOnce++ < 3) {
-                  HookLog("DX12: doOverlay - Device removed (0x%08X), aborting overlay", deviceReason);
-              }
-              g_DeviceRemovedFatal.store(true, std::memory_order_release);
-              return;
-          }
-      }
-
-      if (!g_State.rtvDescHeap) {
-           static int logCount = 0;
-           if (logCount++ < 5) HookLog("DX12: doOverlay - RTV Heap NULL despite InitImGui=true. Aborting overlay.");
-           return;
-      }
-      
-      // CRITICAL: We DO NOT lock g_OverlayMutex here because ProcessFrame ALREADY holds it.
-      // Locking it again causes an immediate self-deadlock.
-      // std::lock_guard<std::mutex> overlayLock(g_OverlayMutex);
-      
-      // Need a valid allocator
-      
-      // Need a valid allocator
-      int allocIdx = g_State.allocIndex;
-      g_State.allocIndex = (g_State.allocIndex + 1) % DX12OverlayState::ALLOC_POOL_SIZE;
-      
-      // Sync
-      if (g_State.fence) {
-          UINT64 completed = g_State.fence->GetCompletedValue();
-          UINT64 target = g_State.fenceValues[allocIdx];
-          if (completed < target) {
-              g_State.fence->SetEventOnCompletion(target, g_State.fenceEvent);
-              DWORD waitResult = WaitForSingleObject(g_State.fenceEvent, 50);
-              if (waitResult != WAIT_OBJECT_0) {
-                  HookLog("DX12: doOverlay - Fence Wait TIMEOUT (Target=%llu). Skipping overlay to avoid allocator corruption.", target);
-                  return;
-              }
-          }
-      }
-      
-      auto* list = g_State.cmdList;
-      if (!list) return;
-
-      // SAFETY: Check allocator bounds
-      if (allocIdx >= g_State.allocators.size()) {
-          HookLog("DX12: doOverlay - Allocator index %d out of bounds (Size=%zu)", allocIdx, g_State.allocators.size());
-          return;
-      }
-      auto* alloc = g_State.allocators[allocIdx];
-      if (!alloc) return;
-      
-      HRESULT hr = alloc->Reset();
-      if (FAILED(hr)) {
-          HookLog("DX12: doOverlay - FATAL: Allocator Reset failed (0x%08X). Aborting.", hr);
-          return;
-      }
-
-      hr = list->Reset(alloc, nullptr);
-      if (FAILED(hr)) {
-          HookLog("DX12: doOverlay - FATAL: Command List Reset failed (0x%08X). Aborting.", hr);
-          return;
-      }
-      
-      // Get backbuffer
-      
-      UINT bufferIdx = 0;
-      if (sc3) {
-           bufferIdx = sc3->GetCurrentBackBufferIndex();
-      }
-      
-      ID3D12Resource* backBuffer = nullptr;
-      if (SUCCEEDED(pSwapChain->GetBuffer(bufferIdx, IID_PPV_ARGS(&backBuffer))) && backBuffer) {
-           
-           // Transition to RenderTarget
-           D3D12_RESOURCE_BARRIER barrier = {};
-           barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-           barrier.Transition.pResource = backBuffer;
-           barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-           barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-           barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-           list->ResourceBarrier(1, &barrier);
-
-           // RTV
-           if (!g_State.rtvDescHeap) {
-               // Should have been caught by early return, but double check
-               if (static int logCount = 0; logCount++ < 10) HookLog("DX12: doOverlay - RTV Heap is NULL! Skipping overlay.");
-               backBuffer->Release();
-               return;
-           }
-           D3D12_CPU_DESCRIPTOR_HANDLE rtv = g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
-           rtv.ptr += (SIZE_T)bufferIdx * g_State.rtvDescriptorSize;
-           g_Device->CreateRenderTargetView(backBuffer, nullptr, rtv);
-           list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-           
-           // Viewport
-           D3D12_VIEWPORT vp = {0, 0, (float)g_State.cachedWidth, (float)g_State.cachedHeight, 0, 1};
-           list->RSSetViewports(1, &vp);
-           D3D12_RECT scissor = {0, 0, (LONG)g_State.cachedWidth, (LONG)g_State.cachedHeight};
-           list->RSSetScissorRects(1, &scissor);
-
-           DrawOverlay(list);
-
-           // Transition back
-           barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-           barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-           list->ResourceBarrier(1, &barrier);
-           
-           hr = list->Close();
-           if (FAILED(hr)) {
-               HookLog("DX12: doOverlay - FATAL: Command List Close failed (0x%08X). Aborting Execute.", hr);
-               backBuffer->Release();
-               return;
-           }
-           
-            ID3D12CommandList* lists[] = {list};
-
-            // Use the passed overlayQueue (already AddRef'd)
-            ID3D12CommandQueue* queueToUse = overlayQueue;
-            if (queueToUse) {
-                // SAFETY: Check Device Match
-                ID3D12Device* qDev = nullptr;
-                if (SUCCEEDED(queueToUse->GetDevice(IID_PPV_ARGS(&qDev)))) {
-                    if (qDev != g_Device) {
-                        HookLog("DX12: doOverlay - FATAL: Queue Device (%p) != Global Device (%p). Mismatch! Aborting Execute.", qDev, g_Device);
-                        qDev->Release();
-                        // Don't release queueToUse - caller owns the ref
-                        backBuffer->Release();
-                        return;
-                    }
-                    qDev->Release();
-                }
-
-                // STABILITY FIX: Check swapchain validity right before execute
-                // This catches cases where swapchain was invalidated during draw
-                if (g_SwapchainInvalid.load(std::memory_order_acquire)) {
-                    HookLog("DX12: doOverlay - Swapchain invalidated mid-operation! Aborting.");
-                    backBuffer->Release();
-                    return;
-                }
-
-                queueToUse->ExecuteCommandLists(1, lists);
-
-                // STABILITY FIX: Signal fence AND wait for completion before releasing backbuffer
-                // This matches SpecialK's drain_queue pattern and prevents GPU race conditions
-                if (g_State.fence) {
-                     g_State.currentFenceValue++;
-                     g_State.fenceValues[allocIdx] = g_State.currentFenceValue;
-                     queueToUse->Signal(g_State.fence, g_State.currentFenceValue);
-
-                     // NOTE: No post-execute wait needed - backbuffer is swapchain-owned.
-                     // GPU sync for allocator reuse is handled by pre-use wait at doOverlay entry.
-                }
-            } else {
-                HookLog("DX12: doOverlay - FATAL: CommandQueue is NULL before Execute!");
-            }
-
-            backBuffer->Release();
+   auto doCapture = [&](ID3D12CommandQueue* captureQueue) {
+       static uint64_t lastCapLog = 0;
+       uint64_t now = GetTickCount64();
+       bool capShouldLog = (now - lastCapLog > 5000); // Video log every 5s
+       
+       static uint64_t fgCaptureCounter = 0;
+       bool shouldCapture = true;
+       if (fgActive) {
+           fgCaptureCounter++;
+           shouldCapture = (fgCaptureCounter % 4 == 0);
        }
-   };
+       
+       bool isRecording = g_IPC && g_IPC->IsRecording();
+       if (capShouldLog && isRecording) {
+           HookLog("DX12: doCapture - isRecording=1, shouldCapture=%d, processCapture=%d, active=%d", 
+                   shouldCapture, processCapture, g_SharedCaptureD3D12.IsActive());
+           lastCapLog = now;
+       }
 
-  auto doCapture = [&]() {
-      static uint64_t lastCapLog = 0;
-      bool capShouldLog = (now - lastCapLog > 5000); // Video log every 5s
-      
-      static uint64_t fgCaptureCounter = 0;
-      bool shouldCapture = true;
-      if (fgActive) {
-          fgCaptureCounter++;
-          shouldCapture = (fgCaptureCounter % 4 == 0);
-      }
-      
-      bool isRecording = g_IPC && g_IPC->IsRecording();
-      if (capShouldLog && isRecording) {
-          HookLog("DX12: doCapture - isRecording=1, shouldCapture=%d, processCapture=%d, active=%d", 
-                  shouldCapture, processCapture, g_SharedCaptureD3D12.IsActive());
-          lastCapLog = now;
-      }
-
-      if (shouldCapture && processCapture && isRecording) {
-          SharedMemoryLayout* shm = g_IPC->GetSharedMem();
-          if (shm && g_SharedCaptureD3D12.IsActive()) {
-              std::lock_guard<std::mutex> capLock(g_DX12CaptureMutex);
-              UINT bbIdx = sc3 ? sc3->GetCurrentBackBufferIndex() : 0;
-              if (g_SharedCaptureD3D12.CaptureFrame(bbIdx)) {
-                  SharedFrameDescriptor desc;
-                  if (g_SharedCaptureD3D12.GetCurrentFrame(&desc)) {
+       if (shouldCapture && processCapture && isRecording) {
+           SharedMemoryLayout* shm = g_IPC->GetSharedMem();
+           if (shm && g_SharedCaptureD3D12.IsActive()) {
+               std::lock_guard<std::mutex> capLock(g_DX12CaptureMutex);
+               UINT bbIdx = sc3 ? sc3->GetCurrentBackBufferIndex() : 0;
+               if (g_SharedCaptureD3D12.CaptureFrame(captureQueue, bbIdx)) {
+                   SharedFrameDescriptor desc;
+                   if (g_SharedCaptureD3D12.GetCurrentFrame(&desc)) {
                       // 1. Sync handles to shm (Zero-copy handles)
                       shm->sharedHandles[0] = (uint64_t)g_SharedCaptureD3D12.GetSharedHandle(0);
                       shm->sharedHandles[1] = (uint64_t)g_SharedCaptureD3D12.GetSharedHandle(1);
@@ -1816,10 +1646,10 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
        if (shouldLog) HookLog("DX12: ProcessFrame - doOverlay");
        doOverlay(frameQueue);
        if (shouldLog) HookLog("DX12: ProcessFrame - doCapture");
-       doCapture();
+       doCapture(frameQueue);
    } else {
        if (shouldLog) HookLog("DX12: ProcessFrame - doCapture");
-       doCapture();
+       doCapture(frameQueue);
        if (shouldLog) HookLog("DX12: ProcessFrame - doOverlay");
        doOverlay(frameQueue);
    }

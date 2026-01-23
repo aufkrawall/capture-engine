@@ -109,11 +109,10 @@ public:
     ~SharedCaptureD3D12() override;
     
     // Initialize with the device and swapchain
-    bool Initialize(ID3D12Device* pDevice, IDXGISwapChain* pSwapChain, 
-                    ID3D12CommandQueue* pCommandQueue);
+    bool Initialize(ID3D12Device* pDevice, IDXGISwapChain* pSwapChain);
     
-    // Call before Present to capture the frame
-    bool CaptureFrame(UINT backBufferIndex);
+    // Call before Present to capture the frame using the specified command queue
+    bool CaptureFrame(ID3D12CommandQueue* pCommandQueue, UINT backBufferIndex);
     
     // ISharedCaptureTarget
     bool GetCurrentFrame(SharedFrameDescriptor* pDesc) override;
@@ -130,8 +129,8 @@ public:
 private:
     bool CreateSharedResources(UINT width, UINT height, DXGI_FORMAT format);
     
+    
     ComPtr<ID3D12Device> m_pDevice;
-    ComPtr<ID3D12CommandQueue> m_pCommandQueue;
     ComPtr<IDXGISwapChain3> m_pSwapChain;
     
     // D3D12 shared resources (can be opened by D3D11 encoder cross-process)

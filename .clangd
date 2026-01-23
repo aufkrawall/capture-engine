@@ -1,0 +1,7 @@
+# Allow clangd to query drivers in the build directory
+CompileFlags:
+  Compiler: [clang++, clang, clang-cl, cl]
+
+# Ensure we use standard library from the toolchain
+# Sometimes explicit --query-driver in config is needed if arguments aren't enough
+# But compile_commands.json usually handles it if the driver path is absolute.

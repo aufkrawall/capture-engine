@@ -247,7 +247,6 @@ void SharedCaptureD3D12::Reset() {
     
     // Release D3D12 ComPtrs
     m_pDevice.Reset();
-    m_pCommandQueue.Reset();
     m_pSwapChain.Reset();
     m_Fence.Reset();
     m_CommandAllocator.Reset();
@@ -272,15 +271,14 @@ void SharedCaptureD3D12::Reset() {
     }
 }
 
-bool SharedCaptureD3D12::Initialize(ID3D12Device* pDevice, IDXGISwapChain* pSwapChain,
-                                     ID3D12CommandQueue* pCommandQueue) {
-    if (!pDevice || !pSwapChain || !pCommandQueue) return false;
+bool SharedCaptureD3D12::Initialize(ID3D12Device* pDevice, IDXGISwapChain* pSwapChain) {
+    if (!pDevice || !pSwapChain) return false;
     
     m_pDevice = pDevice;
-    m_pCommandQueue = pCommandQueue;
+    // m_pCommandQueue removed - passed per frame
     
+    // Get swapchain 3 interface
     if (FAILED(pSwapChain->QueryInterface(IID_PPV_ARGS(&m_pSwapChain)))) {
-        EarlyLog("DX12: SharedCapture - Failed to Get IDXGISwapChain3");
         return false;
     }
     
@@ -398,8 +396,8 @@ bool SharedCaptureD3D12::CreateSharedResources(UINT width, UINT height, DXGI_FOR
     return true;
 }
 
-bool SharedCaptureD3D12::CaptureFrame(UINT backBufferIndex) {
-    if (!m_Active || !CaptureManager::Get().IsCaptureEnabled()) {
+bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, UINT backBufferIndex) {
+    if (!m_Active || !CaptureManager::Get().IsCaptureEnabled() || !pCommandQueue) {
         return false;
     }
     
@@ -449,11 +447,11 @@ bool SharedCaptureD3D12::CaptureFrame(UINT backBufferIndex) {
     
     // Execute
     ID3D12CommandList* cmdLists[] = { m_CommandList.Get() };
-    m_pCommandQueue->ExecuteCommandLists(1, cmdLists);
+    pCommandQueue->ExecuteCommandLists(1, cmdLists);
     
     // Signal fence
     m_FenceValue++;
-    m_pCommandQueue->Signal(m_Fence.Get(), m_FenceValue);
+    pCommandQueue->Signal(m_Fence.Get(), m_FenceValue);
     
     // Update frame descriptor
     {

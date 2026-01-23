@@ -41,3 +41,4 @@ __pycache__/
 # Generated version file
 common/build_version.h
 nul
+compile_commands.json

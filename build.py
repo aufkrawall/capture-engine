@@ -13,10 +13,16 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from multiprocessing import cpu_count
 import re
+import json
+
+from typing import List, Dict, Optional, Union, Any
 
 # --- Configuration ---
 BUILD_DIR_NAME = "build"
+COMPILE_COMMANDS: List[Dict[str, Any]] = []
+
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+
 BUILD_DIR = os.path.join(PROJECT_ROOT, BUILD_DIR_NAME)
 MSYS2_URL = "https://repo.msys2.org/distrib/x86_64/msys2-base-x86_64-20240113.tar.xz"
 MSYS2_DIR = os.path.join(BUILD_DIR, "msys64")
@@ -64,7 +70,7 @@ PACKAGES = [
     "ccache",
 ]
 
-def log(msg):
+def log(msg: str) -> None:
     timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
     formatted = f"[{timestamp}] {msg}"
     print(formatted)
@@ -74,8 +80,13 @@ def log(msg):
     except:
         pass
 
-def run_command(cmd, env=None, cwd=None, input_str=None, fail_exit=True):
+def run_command(cmd: Union[List[str], str], 
+                env: Optional[Dict[str, str]] = None, 
+                cwd: Optional[str] = None, 
+                input_str: Optional[str] = None, 
+                fail_exit: bool = True) -> str:
     cmd_str = ' '.join(cmd) if isinstance(cmd, list) else cmd
+
     log(f"Running: {cmd_str}")
     try:
         result = subprocess.run(
@@ -699,9 +710,64 @@ def ensure_dirs():
     os.makedirs(os.path.join(OBJ_DIR, "tests"), exist_ok=True)
     os.makedirs(os.path.join(OBJ_DIR, "external"), exist_ok=True)
 
-def compile_object(env, clang_exe, cflags, src, obj):
+def parse_dep_file(dep_path: str) -> List[str]:
+    """Parse a GCC/Clang .d file."""
+    deps = []
+    try:
+        with open(dep_path, 'r') as f:
+            content = f.read().replace('\\\n', '') # Join lines
+            # Content is like "obj: src dep1 dep2..."
+            parts = content.split(':')
+            if len(parts) > 1:
+                # Split by space and filter empty
+                files = parts[1].split()
+                deps = [f.strip() for f in files if f.strip()]
+    except Exception:
+        pass
+    return deps
+
+def should_recompile(src: str, obj: str, dep_file: str) -> bool:
+    if not os.path.exists(obj):
+        return True
+    
+    # Check source timestamp
+    if os.path.getmtime(src) > os.path.getmtime(obj):
+        return True
+        
+    # Check dependencies
+    if os.path.exists(dep_file):
+        deps = parse_dep_file(dep_file)
+        obj_mtime = os.path.getmtime(obj)
+        for dep in deps:
+            if os.path.exists(dep) and os.path.getmtime(dep) > obj_mtime:
+                return True
+    else:
+        # If object exists but dep file is missing, recompile to generate dep file
+        return True
+        
+    return False
+
+def compile_object(env: Dict[str, str], clang_exe: str, cflags: List[str], src: str, obj: str) -> bool:
     """Compile a single object file. Returns True if compiled, False if skipped."""
-    if os.path.exists(obj) and os.path.getmtime(obj) > os.path.getmtime(src):
+    dep_file = obj + ".d"
+    
+    # Add dependency tracking flags
+    # -MMD: Generate dependency file, ignore system headers
+    # -MF: Specify output dependency file
+    compile_flags = cflags + ["-MMD", "-MF", dep_file]
+
+    # Construct the full command list for compile_commands.json
+    full_cmd_list = [clang_exe] + compile_flags + ["-c", src, "-o", obj]
+    
+    # Add to global compile commands list
+    # Use 'arguments' list instead of 'command' string for better cross-platform/shell reliability
+    COMPILE_COMMANDS.append({
+        "directory": PROJECT_ROOT,
+        "arguments": full_cmd_list,
+        "file": src
+    })
+
+    if not should_recompile(src, obj, dep_file):
         return False  # Skip - up to date
     
     # Use ccache if available
@@ -711,9 +777,9 @@ def compile_object(env, clang_exe, cflags, src, obj):
     
     if ccache_exe:
         # ccache on Windows often dislikes absolute paths for the compiler
-        cmd = [ccache_exe, os.path.basename(clang_exe)] + cflags + ["-c", src, "-o", obj]
+        cmd = [ccache_exe, os.path.basename(clang_exe)] + compile_flags + ["-c", src, "-o", obj]
     else:
-        cmd = [clang_exe] + cflags + ["-c", src, "-o", obj]
+        cmd = [clang_exe] + compile_flags + ["-c", src, "-o", obj]
         
     run_command(cmd, env=env)
     return True
@@ -1011,7 +1077,24 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
     if not tasks:
         return
 
+    # Record tasks for compile_commands.json
+    for desc, cmd, cwd, tenv in tasks:
+        # Find the source file in the command arguments
+        src_file = None
+        for arg in cmd:
+            if arg.endswith(".cpp"):
+                src_file = arg
+                break
+        
+        if src_file:
+            COMPILE_COMMANDS.append({
+                "directory": PROJECT_ROOT,
+                "arguments": cmd,
+                "file": src_file
+            })
+
     def compile_app(t):
+
         desc, cmd, cwd, tenv = t
         log(f"Compiling {desc}...")
         try:
@@ -1360,7 +1443,15 @@ def compile_d3d12_wrappers_msvc(env, arch):
             log(f"[MSVC] Compiling {basename}...")
             cmd = [cl_exe] + cflags + [f"/Fo{obj}", src]
             
+            # Record for compile_commands.json
+            COMPILE_COMMANDS.append({
+                "directory": PROJECT_ROOT,
+                "arguments": cmd,
+                "file": src
+            })
+            
             try:
+
                 res = subprocess.run(cmd, env=msvc_env, capture_output=True, text=True)
                 if res.returncode != 0:
                     return None, f"Error compiling {basename}:\n{res.stdout}\n{res.stderr}"
@@ -1479,6 +1570,9 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
     for arch in ["x64", "x86"]:
         curr_env = env
         curr_clang_bin = clang_bin
+        mingw_lib = ""
+        std_lib_path = ""
+
         curr_obj_dir = os.path.join(OBJ_DIR, arch)
         os.makedirs(curr_obj_dir, exist_ok=True)
         
@@ -1882,12 +1976,13 @@ def main():
     bump_and_write_build_version()
     
     # Always clean object files to avoid struct layout mismatches
-    if os.path.exists(OBJ_DIR):
-        log("Cleaning object files for fresh build...")
-        try:
-            shutil.rmtree(OBJ_DIR)
-        except Exception as e:
-            log(f"Warning: Could not clean {OBJ_DIR}: {e}")
+    # if os.path.exists(OBJ_DIR):
+    #     log("Cleaning object files for fresh build...")
+    #     try:
+    #         shutil.rmtree(OBJ_DIR)
+    #     except Exception as e:
+    #         log(f"Warning: Could not clean {OBJ_DIR}: {e}")
+
     
     # Clean log files in logs/ subfolder
     logs_dir = os.path.join(BIN_DIR, "logs")
@@ -1928,7 +2023,16 @@ def main():
     
     compile_project(env, clang_bin, skip_updates=skip_updates, should_run_tests=run_tests_flag)
 
+    # Write compile_commands.json
+    try:
+        with open(os.path.join(PROJECT_ROOT, "compile_commands.json"), "w") as f:
+            json.dump(COMPILE_COMMANDS, f, indent=4)
+        log(f"Generated compile_commands.json ({len(COMPILE_COMMANDS)} entries)")
+    except Exception as e:
+        log(f"Error writing compile_commands.json: {e}")
+
     if run_tests_flag:
+
         ensure_debug_logging()
         run_integration_tests(env)
 
