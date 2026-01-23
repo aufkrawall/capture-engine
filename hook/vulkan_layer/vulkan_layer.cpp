@@ -291,33 +291,36 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateInstance(
 
     PFN_vkCreateInstance create_fn = (PFN_vkCreateInstance)gipa(VK_NULL_HANDLE, "vkCreateInstance");
     
-    // FAST BAILOUT: If not whitelisted, pass through immediately without modifying pCreateInfo
+    VkResult res = VK_SUCCESS;
+
     if (!g_LayerState.whitelisted) {
-        return create_fn(pCreateInfo, pAllocator, pInstance);
+        // Passthrough: call next layer directly without modification
+        res = create_fn(pCreateInfo, pAllocator, pInstance);
+    } else {
+        // Inject required extensions
+        std::vector<const char*> extensions;
+        for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; i++) {
+            extensions.push_back(pCreateInfo->ppEnabledExtensionNames[i]);
+        }
+
+        bool hasProps2 = false;
+        bool hasExtMemCaps = false;
+        for (const char* ext : extensions) {
+            if (strcmp(ext, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME) == 0) hasProps2 = true;
+            if (strcmp(ext, VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME) == 0) hasExtMemCaps = true;
+        }
+
+        if (!hasProps2) extensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+        if (!hasExtMemCaps) extensions.push_back(VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME);
+
+        VkInstanceCreateInfo modifiedCreateInfo = *pCreateInfo;
+        modifiedCreateInfo.enabledExtensionCount = (uint32_t)extensions.size();
+        modifiedCreateInfo.ppEnabledExtensionNames = extensions.data();
+
+        LayerLog("Vulkan Layer: Calling next vkCreateInstance...");
+        res = create_fn(&modifiedCreateInfo, pAllocator, pInstance);
     }
-    
-    // Inject required extensions
-    std::vector<const char*> extensions;
-    for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; i++) {
-        extensions.push_back(pCreateInfo->ppEnabledExtensionNames[i]);
-    }
 
-    bool hasProps2 = false;
-    bool hasExtMemCaps = false;
-    for (const char* ext : extensions) {
-        if (strcmp(ext, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME) == 0) hasProps2 = true;
-        if (strcmp(ext, VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME) == 0) hasExtMemCaps = true;
-    }
-
-    if (!hasProps2) extensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
-    if (!hasExtMemCaps) extensions.push_back(VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME);
-
-    VkInstanceCreateInfo modifiedCreateInfo = *pCreateInfo;
-    modifiedCreateInfo.enabledExtensionCount = (uint32_t)extensions.size();
-    modifiedCreateInfo.ppEnabledExtensionNames = extensions.data();
-
-    LayerLog("Vulkan Layer: Calling next vkCreateInstance...");
-    VkResult res = create_fn(&modifiedCreateInfo, pAllocator, pInstance);
     LayerLog("Vulkan Layer: next vkCreateInstance returned %d", res);
     if (res != VK_SUCCESS) return res;
 
@@ -384,28 +387,36 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
-    // Inject required extensions
-    std::vector<const char*> extensions;
-    for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; i++) {
-        extensions.push_back(pCreateInfo->ppEnabledExtensionNames[i]);
+    VkResult result = VK_SUCCESS;
+
+    if (!g_LayerState.whitelisted) {
+        // Passthrough: call next layer directly without modification
+        result = create_fn(physicalDevice, pCreateInfo, pAllocator, pDevice);
+    } else {
+        // Inject required extensions
+        std::vector<const char*> extensions;
+        for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; i++) {
+            extensions.push_back(pCreateInfo->ppEnabledExtensionNames[i]);
+        }
+
+        bool hasExtMem = false;
+        bool hasExtMemWin32 = false;
+        for (const char* ext : extensions) {
+            if (strcmp(ext, VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME) == 0) hasExtMem = true;
+            if (strcmp(ext, VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME) == 0) hasExtMemWin32 = true;
+        }
+
+        if (!hasExtMem) extensions.push_back(VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME);
+        if (!hasExtMemWin32) extensions.push_back(VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME);
+
+        VkDeviceCreateInfo modifiedCreateInfo = *pCreateInfo;
+        modifiedCreateInfo.enabledExtensionCount = (uint32_t)extensions.size();
+        modifiedCreateInfo.ppEnabledExtensionNames = extensions.data();
+
+        LayerLog("Vulkan Layer: Calling next vkCreateDevice...");
+        result = create_fn(physicalDevice, &modifiedCreateInfo, pAllocator, pDevice);
     }
 
-    bool hasExtMem = false;
-    bool hasExtMemWin32 = false;
-    for (const char* ext : extensions) {
-        if (strcmp(ext, VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME) == 0) hasExtMem = true;
-        if (strcmp(ext, VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME) == 0) hasExtMemWin32 = true;
-    }
-
-    if (!hasExtMem) extensions.push_back(VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME);
-    if (!hasExtMemWin32) extensions.push_back(VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME);
-
-    VkDeviceCreateInfo modifiedCreateInfo = *pCreateInfo;
-    modifiedCreateInfo.enabledExtensionCount = (uint32_t)extensions.size();
-    modifiedCreateInfo.ppEnabledExtensionNames = extensions.data();
-
-    LayerLog("Vulkan Layer: Calling next vkCreateDevice...");
-    VkResult result = create_fn(physicalDevice, &modifiedCreateInfo, pAllocator, pDevice);
     LayerLog("Vulkan Layer: next vkCreateDevice returned %d", result);
     if (result != VK_SUCCESS) return result;
 
