@@ -26,6 +26,7 @@ installed/*
 # IDE and temporary files
 .vs/
 .vscode/
+.cache/
 *.swp
 *.swo
 *.user
