@@ -262,6 +262,7 @@ void PopulateDeviceDispatch(DeviceDispatch* dispatch, VkDevice device,
     dispatch->fp_vkDestroyShaderModule = (PFN_vkDestroyShaderModule)gdpa(device, "vkDestroyShaderModule");
 #ifdef VK_USE_PLATFORM_WIN32_KHR
     dispatch->fp_vkGetMemoryWin32HandleKHR = (PFN_vkGetMemoryWin32HandleKHR)gdpa(device, "vkGetMemoryWin32HandleKHR");
+    dispatch->fp_vkGetSemaphoreWin32HandleKHR = (PFN_vkGetSemaphoreWin32HandleKHR)gdpa(device, "vkGetSemaphoreWin32HandleKHR");
 #endif
 }
 
@@ -401,17 +402,34 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(
 
         bool hasExtMem = false;
         bool hasExtMemWin32 = false;
+        bool hasExtSem = false;
+        bool hasExtSemWin32 = false;
+        bool hasTimeline = false;
         for (const char* ext : extensions) {
             if (strcmp(ext, VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME) == 0) hasExtMem = true;
             if (strcmp(ext, VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME) == 0) hasExtMemWin32 = true;
+            if (strcmp(ext, VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME) == 0) hasExtSem = true;
+            if (strcmp(ext, VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME) == 0) hasExtSemWin32 = true;
+            if (strcmp(ext, VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME) == 0) hasTimeline = true;
         }
 
         if (!hasExtMem) extensions.push_back(VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME);
         if (!hasExtMemWin32) extensions.push_back(VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME);
+        if (!hasExtSem) extensions.push_back(VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME);
+        if (!hasExtSemWin32) extensions.push_back(VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME);
+        if (!hasTimeline) extensions.push_back(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
 
         VkDeviceCreateInfo modifiedCreateInfo = *pCreateInfo;
         modifiedCreateInfo.enabledExtensionCount = (uint32_t)extensions.size();
         modifiedCreateInfo.ppEnabledExtensionNames = extensions.data();
+
+        // Enable timeline semaphore feature (required for VK_KHR_timeline_semaphore)
+        VkPhysicalDeviceTimelineSemaphoreFeatures timelineFeatures = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES };
+        timelineFeatures.timelineSemaphore = VK_TRUE;
+        
+        // Chain the feature structure
+        timelineFeatures.pNext = (void*)modifiedCreateInfo.pNext;
+        modifiedCreateInfo.pNext = &timelineFeatures;
 
         LayerLog("Vulkan Layer: Calling next vkCreateDevice...");
         result = create_fn(physicalDevice, &modifiedCreateInfo, pAllocator, pDevice);
@@ -516,12 +534,15 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
 
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceFromQueue(queue);
     
+    // Track the semaphore we should wait on (starts with the game's semaphore)
+    VkSemaphore currentWait = (pPresentInfo && pPresentInfo->waitSemaphoreCount > 0) 
+            ? pPresentInfo->pWaitSemaphores[0] : VK_NULL_HANDLE;
+    bool modified = false;
+
     if (g_LayerState.whitelisted && pPresentInfo && pPresentInfo->swapchainCount > 0) {
         SwapchainData* sd = VulkanLayerState::Get().GetSwapchainData(pPresentInfo->pSwapchains[0]);
         if (sd) {
             uint32_t idx = pPresentInfo->pImageIndices[0];
-            VkSemaphore currentWait = (pPresentInfo->pWaitSemaphores && pPresentInfo->waitSemaphoreCount > 0) 
-                ? pPresentInfo->pWaitSemaphores[0] : VK_NULL_HANDLE;
 
             // OPTIMIZATION: Chained semaphores for perfect GPU-side async execution.
             // Game -> Overlay -> Capture -> Present
@@ -530,18 +551,38 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
             if (shm && shm->overlayConfig.showOverlay) {
                 RenderOverlay(sd->device, queue, idx, currentWait, overlayDone);
                 currentWait = overlayDone; // Next step waits for overlay
+                modified = true;
             }
             
             if (shm && shm->runtimeState.isRecording) {
-                CaptureFrame(sd->device, queue, sd->images[idx], idx, currentWait, VK_NULL_HANDLE);
-                // currentWait remains the same for present, or we could add another semaphore
+                VkSemaphore captureDone = GetCaptureSemaphore(sd->device, idx);
+                CaptureFrame(sd->device, queue, sd->images[idx], idx, currentWait, captureDone);
+                if (captureDone != VK_NULL_HANDLE) {
+                    currentWait = captureDone;
+                    modified = true;
+                }
             }
+        }
+    }
+    
+    // Create modified PresentInfo with chained semaphore
+    VkPresentInfoKHR presentInfoCopy;
+    if (pPresentInfo && modified) {
+        presentInfoCopy = *pPresentInfo;
+        if (currentWait != VK_NULL_HANDLE) {
+            presentInfoCopy.waitSemaphoreCount = 1;
+            presentInfoCopy.pWaitSemaphores = &currentWait;
+        } else {
+            // If we have no wait semaphore (e.g. game didn't provide one and we didn't add one),
+            // we must ensure we don't pass garbage.
+            presentInfoCopy.waitSemaphoreCount = 0;
+            presentInfoCopy.pWaitSemaphores = nullptr;
         }
     }
     
     VkResult res = VK_SUCCESS;
     if (disp && disp->fp_vkQueuePresentKHR) {
-        res = disp->fp_vkQueuePresentKHR(queue, pPresentInfo);
+        res = disp->fp_vkQueuePresentKHR(queue, (pPresentInfo && modified) ? &presentInfoCopy : pPresentInfo);
     }
     
     if (isFirstHook) g_InPresentHook = false;

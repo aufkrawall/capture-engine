@@ -268,6 +268,13 @@ struct VulkanCaptureState {
     VkCommandPool commandPool = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> commandBuffers;
     std::vector<VkFence> copyFences;
+    std::vector<VkSemaphore> signalSemaphores;
+    
+    // Cross-API Synchronization
+    VkSemaphore timelineSemaphore = VK_NULL_HANDLE;
+    uint64_t currentFenceValue = 0;
+    uint64_t captureFrameCounter = 0; // Monotonic counter for slot rotation
+    HANDLE sharedFenceHandle = NULL;
 };
 
 static std::mutex g_CaptureMutex;
@@ -355,15 +362,70 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         disp->fp_vkCreateFence(device, &fenceInfo, nullptr, &state.copyFences[i]);
     }
 
+    state.signalSemaphores.resize(imageCount);
+    VkSemaphoreCreateInfo semInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, nullptr, 0 };
+    for (uint32_t i = 0; i < imageCount; i++) {
+        disp->fp_vkCreateSemaphore(device, &semInfo, nullptr, &state.signalSemaphores[i]);
+    }
+
+    // Create Exportable Timeline Semaphore
+    VkSemaphoreTypeCreateInfo timelineInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO };
+    timelineInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+    timelineInfo.initialValue = 0;
+
+    VkExportSemaphoreCreateInfo exportInfo = { VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO };
+    exportInfo.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE_BIT; // Use D3D12_FENCE for cross-API fence
+    exportInfo.pNext = &timelineInfo;
+
+    VkSemaphoreCreateInfo timelineSemInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+    timelineSemInfo.pNext = &exportInfo;
+
+    if (disp->fp_vkCreateSemaphore(device, &timelineSemInfo, nullptr, &state.timelineSemaphore) == VK_SUCCESS) {
+        if (disp->fp_vkGetSemaphoreWin32HandleKHR) {
+            VkSemaphoreGetWin32HandleInfoKHR getHandleInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_GET_WIN32_HANDLE_INFO_KHR };
+            getHandleInfo.semaphore = state.timelineSemaphore;
+            getHandleInfo.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE_BIT;
+            
+            if (disp->fp_vkGetSemaphoreWin32HandleKHR(device, &getHandleInfo, &state.sharedFenceHandle) == VK_SUCCESS) {
+                LayerIPC_SetFence(state.sharedFenceHandle);
+                LayerLog("Vulkan Layer: Created Shared Fence %p", state.sharedFenceHandle);
+            } else {
+                LayerLog("Vulkan Layer: [Error] Failed to get fence handle");
+            }
+        }
+    } else {
+        LayerLog("Vulkan Layer: [Error] Failed to create timeline semaphore");
+    }
+
     LayerLog("Vulkan Layer: Zero-Copy Capture Initialized (%dx%d)", extent.width, extent.height);
     g_CaptureStates[device] = state;
 }
 
 void CleanupCapture(VkDevice device) {
     std::lock_guard<std::mutex> lock(g_CaptureMutex);
-    // Don't cleanup - textures are in global cache and reused
-    // Command pool/fences can be cleaned up if needed
-    g_CaptureStates.erase(device);
+    auto it = g_CaptureStates.find(device);
+    if (it != g_CaptureStates.end()) {
+        DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
+        if (disp) {
+            for (VkFence fence : it->second.copyFences) disp->fp_vkDestroyFence(device, fence, nullptr);
+            for (VkSemaphore sem : it->second.signalSemaphores) disp->fp_vkDestroySemaphore(device, sem, nullptr);
+            if (it->second.timelineSemaphore) disp->fp_vkDestroySemaphore(device, it->second.timelineSemaphore, nullptr);
+            if (it->second.sharedFenceHandle) CloseHandle(it->second.sharedFenceHandle);
+            disp->fp_vkDestroyCommandPool(device, it->second.commandPool, nullptr);
+        }
+        g_CaptureStates.erase(it);
+    }
+}
+
+VkSemaphore GetCaptureSemaphore(VkDevice device, uint32_t imageIndex) {
+    std::lock_guard<std::mutex> lock(g_CaptureMutex);
+    auto it = g_CaptureStates.find(device);
+    if (it != g_CaptureStates.end() && it->second.initialized) {
+        if (imageIndex < it->second.signalSemaphores.size()) {
+            return it->second.signalSemaphores[imageIndex];
+        }
+    }
+    return VK_NULL_HANDLE;
 }
 
 void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t imageIndex, VkSemaphore waitSemaphore, VkSemaphore signalSemaphore) {
@@ -386,9 +448,14 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
     }
     if (!sharedTextures || !sharedTextures->valid) return;
 
-    uint32_t slotIndex = imageIndex % 4;
-    if (slotIndex >= sharedTextures->vkImages.size()) return;
+    // Use monotonic counter for slot rotation to ensure we cycle through all 4 buffers
+    // independent of swapchain index patterns (which might be 0,1,0,1...)
+    uint32_t slotIndex = (state.captureFrameCounter++) % 4;
+    
+    // Ensure we don't exceed available images if for some reason we have fewer than 4 (unlikely given creation logic)
+    if (slotIndex >= sharedTextures->vkImages.size()) slotIndex = 0;
 
+    // Use imageIndex for fences/command buffers as those are tied to the swapchain images
     uint32_t fenceIndex = imageIndex % state.copyFences.size();
     VkFence fence = state.copyFences[fenceIndex];
 
@@ -409,9 +476,9 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
 
     // Transition and copy
     VkImageMemoryBarrier srcBarrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-    srcBarrier.srcAccessMask = 0;
+    srcBarrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT; // Paranoid: Wait for everything
     srcBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    srcBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    srcBarrier.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR; // Assume presentable layout from game
     srcBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     srcBarrier.image = srcImage;
     srcBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
@@ -419,13 +486,14 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
     VkImageMemoryBarrier dstBarrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
     dstBarrier.srcAccessMask = 0;
     dstBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    dstBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    dstBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; // Discard previous content
     dstBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     dstBarrier.image = sharedTextures->vkImages[slotIndex];
     dstBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 
     VkImageMemoryBarrier barriers[] = { srcBarrier, dstBarrier };
-    disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 2, barriers);
+    // Use ALL_COMMANDS to ensure we catch any previous usage (compute, graphics, etc.)
+    disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 2, barriers);
 
     VkImageCopy region = {};
     region.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
@@ -438,7 +506,7 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
 
     VkImageMemoryBarrier srcBarrier2 = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
     srcBarrier2.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    srcBarrier2.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    srcBarrier2.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
     srcBarrier2.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     srcBarrier2.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     srcBarrier2.image = srcImage;
@@ -453,24 +521,54 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
     dstBarrier2.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 
     VkImageMemoryBarrier postBarriers[] = { srcBarrier2, dstBarrier2 };
-    disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 2, postBarriers);
+    // Transition back for Present, enabling all subsequent stages
+    disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 2, postBarriers);
 
     if (disp->fp_vkEndCommandBuffer(cmd) != VK_SUCCESS) return;
 
     VkSubmitInfo submit = { VK_STRUCTURE_TYPE_SUBMIT_INFO, nullptr };
     
-    // Sync
+    // We signal TWO semaphores: 
+    // 1. The binary semaphore for Present to wait on (passed as arg)
+    // 2. The timeline semaphore for the Encoder to wait on (in state struct)
+    std::vector<VkSemaphore> signalSems;
+    std::vector<uint64_t> signalValues;
+    
+    if (signalSemaphore != VK_NULL_HANDLE) {
+        signalSems.push_back(signalSemaphore);
+        signalValues.push_back(0); // Binary semaphore ignores value
+    }
+    
+    uint64_t signalValue = ++state.currentFenceValue;
+    if (state.timelineSemaphore != VK_NULL_HANDLE) {
+        signalSems.push_back(state.timelineSemaphore);
+        signalValues.push_back(signalValue);
+    }
+    
+    if (!signalSems.empty()) {
+        submit.signalSemaphoreCount = (uint32_t)signalSems.size();
+        submit.pSignalSemaphores = signalSems.data();
+    }
+
+    // Wait Semaphores
+    std::vector<uint64_t> waitValues;
     VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    
     if (waitSemaphore != VK_NULL_HANDLE) {
         submit.waitSemaphoreCount = 1;
         submit.pWaitSemaphores = &waitSemaphore;
         submit.pWaitDstStageMask = &waitStage;
+        waitValues.push_back(0); // Binary wait
     }
+
+    // Prepare Timeline Info
+    VkTimelineSemaphoreSubmitInfo timelineSubmit = { VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO };
+    timelineSubmit.waitSemaphoreValueCount = (uint32_t)waitValues.size();
+    timelineSubmit.pWaitSemaphoreValues = waitValues.data();
+    timelineSubmit.signalSemaphoreValueCount = (uint32_t)signalValues.size();
+    timelineSubmit.pSignalSemaphoreValues = signalValues.data();
     
-    if (signalSemaphore != VK_NULL_HANDLE) {
-        submit.signalSemaphoreCount = 1;
-        submit.pSignalSemaphores = &signalSemaphore;
-    }
+    submit.pNext = &timelineSubmit;
 
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &cmd;
@@ -479,5 +577,5 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
         return;
     }
 
-    LayerIPC_SignalFrameReady(slotIndex);
+    LayerIPC_SignalFrameReady(slotIndex, signalValue);
 }

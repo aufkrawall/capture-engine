@@ -134,8 +134,13 @@ private:
   
   // PI Controller State
   double integralError = 0.0;
-  const double Kp = 0.1;   // Proportional Gain: Respond to immediate error
-  const double Ki = 0.005; // Integral Gain: Accumulate error to correct constant skew
+  // Scaled for 10-second compensation window (0.1 sample/sec precision)
+  const double Kp = 0.05;   // Proportional: 0.005 / sec
+  const double Ki = 0.005; // Integral: 0.0005 / sec (Very slow adaptation)
+  static const int COMPENSATION_PERIOD_SEC = 10;
+  
+  // Rate limiting updates
+  int64_t lastCompensationTimeMs = 0;
 
   // Detect and handle 24-bit in 32-bit container
   AVSampleFormat DetermineInputFormat() const;

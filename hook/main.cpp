@@ -45,6 +45,7 @@ static ProcessCategory g_ProcessCategory = ProcessCategory::PotentialGame;
 
 static bool g_isDormant = false;
 static bool g_isSkippedProcess = false; 
+std::atomic<bool> g_HookThreadRunning{false}; // Track if HookThread is active
 
 // Global Hook Pointers
 DX12Hook *g_DX12Hook = nullptr;
@@ -826,6 +827,7 @@ void CheckAndInstallHooks() {
 }
 
 DWORD WINAPI HookThread(LPVOID lpParam) {
+  g_HookThreadRunning = true;
   // Load Local Config (to support per-app overrides) EARLY
   {
       char dllPath[MAX_PATH];
@@ -1113,6 +1115,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
 
   // Self-unload to release file lock when host requests exit or dies
   // This is crucial for the CBT global hook to not pin the DLL forever
+  g_HookThreadRunning = false;
   FreeLibraryAndExitThread(g_hModule, 0);
   return 0;
 }
@@ -1129,15 +1132,6 @@ static DWORD WINAPI UnloadSelfThread(LPVOID) {
     FreeLibraryAndExitThread(g_hModule, 0);
     return 0;
 }
-
-extern "C" __declspec(dllexport) LRESULT CALLBACK CBTHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
-    return CallNextHookEx(NULL, nCode, wParam, lParam);
-}
-
-// Thread to safely eject the DLL
-
-
-
 
 static bool isProcessWhitelistedFast(const char* name) {
     if (!name) return false;
@@ -1195,8 +1189,48 @@ static bool IsServiceProcess(const char* name) {
             _stricmp(name, "PerfWatson.exe") == 0 ||
             _stricmp(name, "DataExchangeHost.exe") == 0 ||
             _stricmp(name, "GamebarFTServer.exe") == 0 ||
+            _stricmp(name, "WerFault.exe") == 0 || // Windows Error Reporting
             _stricmp(name, "ApplicationFrameHost.exe") == 0); // SpecialK lists this
 }
+
+extern "C" __declspec(dllexport) LRESULT CALLBACK CBTHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    // 1. If dormant, do nothing but pass through (minimal overhead)
+    if (g_isDormant) {
+        return CallNextHookEx(NULL, nCode, wParam, lParam);
+    }
+    
+    // 2. Respawn Logic: If we are active (whitelisted) but HookThread died (CaptureEngine closed)
+    // and now we are receiving events again (CaptureEngine restarted), try to respawn.
+    if (!g_HookThreadRunning) {
+        static uint64_t lastRespawnAttempt = 0;
+        uint64_t now = GetTickCount64();
+        
+        // Throttle checks to 1s
+        if (now - lastRespawnAttempt > 1000) {
+            lastRespawnAttempt = now;
+            
+            // Re-verify we are still a valid target
+            if (isProcessWhitelistedFast(g_ProcessName)) {
+                 // Check if graphics APIs are loaded (don't respawn in launchers)
+                 bool hasGraphics = (GetModuleHandleA("d3d12.dll") || GetModuleHandleA("d3d11.dll") || 
+                                     GetModuleHandleA("d3d9.dll") || GetModuleHandleA("vulkan-1.dll") ||
+                                     GetModuleHandleA("opengl32.dll"));
+                                     
+                 if (hasGraphics) {
+                     HANDLE hThread = CreateThread(NULL, 0, HookThreadWrapper, NULL, 0, NULL);
+                     if (hThread) {
+                         SetThreadPriority(hThread, THREAD_PRIORITY_HIGHEST);
+                         CloseHandle(hThread);
+                     }
+                 }
+            }
+        }
+    }
+    return CallNextHookEx(NULL, nCode, wParam, lParam);
+}
+
+// Thread to safely eject the DLL
+// (Removed UnloadSelfThread as it is not used in the new pinning model)
 
 extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
                        LPVOID lpReserved) {
@@ -1218,6 +1252,28 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     if (GetModuleFileNameA(hinstDLL, myDllPath, MAX_PATH)) {
         EarlyLog("DllMain: Loaded hook DLL from: %s", myDllPath);
     }
+
+    // PINNING STRATEGY:
+    // We MUST pin the DLL in *every* process that loads it (except our own tools).
+    // Why? 
+    // 1. If we allow the DLL to unload (refcount=0) while the CBT hook is still active 
+    //    globally, Windows might unload us right before or during a hook callback, 
+    //    causing a crash (access violation executing freed memory).
+    // 2. For service/system processes, if we unload, the global hook will just 
+    //    re-inject us immediately, causing a high-CPU "Load-Unload-Load" loop.
+    //
+    // By pinning, we ensure the DLL stays dormant in memory until the process exits.
+    // This is the only robust way to support global CBT hooks without crashes.
+    
+    bool isOurTool = (_stricmp(fileName, "captureengine.exe") == 0 || 
+                      _stricmp(fileName, "captureengine_x86.exe") == 0);
+                      
+    if (!isOurTool) {
+        HMODULE hPin = NULL;
+        GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN, 
+                           (LPCSTR)hinstDLL, &hPin);
+        // EarlyLog("DllMain: Pinned DLL in %s", fileName);
+    }
     
     // Install Crash Handler immediately to catch startup crashes
     // Use the directory of the DLL for dumps
@@ -1229,13 +1285,15 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
         dllDir = ".";
     }
     SetCrashDumpDirectory(dllDir);
-    InstallCrashHandler();
+    // REMOVED: InstallCrashHandler(); - Wait until we confirm it's an active process!
+    // Installing VEH in dormant processes (e.g. system services) is dangerous and slow.
 
     // 1. SAFE UNLOAD: Services and non-interactive helpers
     // These processes should unload the DLL immediately and cleanly.
     if (IsServiceProcess(fileName)) {
-        // OutputDebugStringA("[DllMain] Safe Unload for Service Process\n");
-        return FALSE; // Detach immediately
+        g_isDormant = true;
+        // EarlyLog("DllMain: Dormant mode for service process: %s", fileName);
+        return TRUE; // Stay loaded but inert to prevent load/unload loop
     }
 
     // 2. DORMANT MODE: Shell, Critical UI, and Internal processes
@@ -1265,6 +1323,10 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
         if (!g_pLocalConfig) {
             g_pLocalConfig = new AppConfig();
         }
+        
+        // Active Game: Now it's safe to install the crash handler
+        InstallCrashHandler();
+        
         _putenv("FERMI_UNOPT_LOD_SPREAD=1");
         _putenv("NIAGARA_UNOPT_LOD_SPREAD=1");
         EarlyLog("DllMain: Process '%s' is a Whitelisted Game", fileName);

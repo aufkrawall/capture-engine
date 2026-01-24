@@ -25,6 +25,8 @@ bool LayerIPC_Init();
 void LayerIPC_Shutdown();
 bool LayerIPC_IsConnected();
 void LayerIPC_SetTextures(HANDLE* handles, uint32_t count, uint32_t width, uint32_t height, uint32_t format);
+void LayerIPC_SetFence(HANDLE fenceHandle);
+void LayerIPC_SignalFrameReady(int32_t textureIndex, uint64_t fenceValue);
 uint32_t VkFormatToDXGI(uint32_t vkFormat);
 bool IsVkFormatCompatibleWithDXGI(VkFormat vkFormat);
 void LayerIPC_UpdateFrameTiming(uint64_t frameCount, float fps, float avgFps);
@@ -40,7 +42,7 @@ void LayerIPC_SetLUID(int32_t low, int32_t high);
 // SHMEM mode functions (for Vulkan CPU staging)
 void* LayerIPC_GetShmemBuffer();
 void LayerIPC_SetShmemDimensions(uint32_t width, uint32_t height, uint32_t format);
-void LayerIPC_SignalFrameReady(int32_t textureIndex);
+// void LayerIPC_SignalFrameReady(int32_t textureIndex); // Replaced by overload above
 
 // Logging
 void LayerLog(const char* fmt, ...);

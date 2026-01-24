@@ -2,8 +2,9 @@
 CompileFlags:
   # Allow clangd to query the actual compilers used in compile_commands.json to find system headers
   Compiler: [clang++, clang, clang-cl, cl]
+  
   # Explicitly allow querying the MSYS2 clang drivers. 
-  # This is CRITICAL for finding standard library headers on Windows.
+  # This is CRITICAL for finding standard library headers on Windows for MinGW builds.
   QueryDriver: [
     "%REPO_ROOT%/build/msys64/clang64/bin/clang++",
     "%REPO_ROOT%/build/msys64/clang64/bin/clang",
@@ -14,26 +15,11 @@ CompileFlags:
     "%REPO_ROOT%/build/msys64/mingw32/bin/clang++.exe",
     "%REPO_ROOT%/build/msys64/mingw32/bin/clang.exe"
   ]
-  # Add flags to help clangd understand the Windows/MinGW environment
-  Add: [
-    "-std=c++20",
-    "-D_WIN32_WINNT=0x0A00",
-    "-DVK_NO_PROTOTYPES",
-    "-DBUILDING_CAPTURE_HOOK",
-    "-DENABLE_D3D12_WRAPPER",
-    "-Icommon",
-    "-Ihook/common",
-    "-Ihook/apis",
-    "-Ihook/capture",
-    "-Ihook/wrappers",
-    "-Iexternal/imgui",
-    "-Iexternal/imgui/backends",
-    "-fms-extensions",
-    "-fms-compatibility",
-    "-fms-compatibility-version=19.40",
-    "-fdelayed-template-parsing",
-    "--target=x86_64-w64-windows-gnu"
-  ]
+  
+  # Flags in 'Add' are appended to every command in compile_commands.json.
+  # We avoid adding target-specific flags here (like --target or -std) because
+  # this project mixes MinGW (Clang) and MSVC (cl.exe) commands.
+  # compile_commands.json should contain all necessary flags.
   CompilationDatabase: "."
 
 Index:
@@ -50,7 +36,7 @@ Diagnostics:
   ]
   ClangTidy:
     Add: [bugprone-*, performance-*, readability-*]
-    Remove: [readability-braces-around-statements]
+    Remove: [readability-braces-around-statements, readability-identifier-length]
 
 Hover:
   ShowAKA: true

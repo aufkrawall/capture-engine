@@ -287,8 +287,15 @@ void LayerIPC_SetShmemDimensions(uint32_t width, uint32_t height, uint32_t forma
     LayerLog("Layer IPC: Set SHMEM dimensions %ux%u format=%u", width, height, format);
 }
 
+void LayerIPC_SetFence(HANDLE fenceHandle) {
+    auto* mem = g_IPCClient.GetSharedMem();
+    if (!mem) return;
+    mem->fenceShareHandle = (uint64_t)fenceHandle;
+    LayerLog("Layer IPC: Set Fence Handle %p", fenceHandle);
+}
+
 // Signal frame ready for SHMEM mode (textureIndex >= 100)
-void LayerIPC_SignalFrameReady(int32_t textureIndex) {
+void LayerIPC_SignalFrameReady(int32_t textureIndex, uint64_t fenceValue) {
     auto* mem = g_IPCClient.GetSharedMem();
     if (!mem) return;
     
@@ -311,7 +318,7 @@ void LayerIPC_SignalFrameReady(int32_t textureIndex) {
     ring.slots[slot].frameIndex = wIdx;
     ring.slots[slot].textureIndex = textureIndex;  // >= 100 indicates SHMEM mode
     ring.slots[slot].sourcePid = GetCurrentProcessId();
-    ring.slots[slot].fenceValue = 0;
+    ring.slots[slot].fenceValue = fenceValue;
     ring.slots[slot].valid.store(1, std::memory_order_release);
     
     ring.writeIndex.store(wIdx + 1, std::memory_order_release);

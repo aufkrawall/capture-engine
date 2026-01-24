@@ -1427,6 +1427,14 @@ def compile_d3d12_wrappers_msvc(env, arch):
         basename = os.path.splitext(os.path.basename(src))[0]
         obj = os.path.join(obj_dir, basename + ".obj")
         
+        # Register for LSP (compile_commands.json) regardless of build state
+        cmd = [cl_exe] + cflags + [f"/Fo{obj}", src]
+        COMPILE_COMMANDS.append({
+            "directory": PROJECT_ROOT,
+            "arguments": cmd,
+            "file": src
+        })
+
         # Check timestamp
         if os.path.exists(obj) and os.path.getmtime(obj) > os.path.getmtime(src):
             obj_files.append(obj)
@@ -1443,12 +1451,7 @@ def compile_d3d12_wrappers_msvc(env, arch):
             log(f"[MSVC] Compiling {basename}...")
             cmd = [cl_exe] + cflags + [f"/Fo{obj}", src]
             
-            # Record for compile_commands.json
-            COMPILE_COMMANDS.append({
-                "directory": PROJECT_ROOT,
-                "arguments": cmd,
-                "file": src
-            })
+            # COMPILE_COMMANDS handled in main loop
             
             try:
 

@@ -1396,6 +1396,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
     // 1. Handle Fence (Reuse if valid, Open if not)
     if (skipFence) {
       d3d11Fence = nullptr;
+      if (encodeFrameCounter % 60 == 0) DLL_Log("[VideoEncoder] Frame %d: SkipFence is true (Val=%llu Hnd=%p)", encodeFrameCounter, fenceValue, fenceHandle);
     } else if (fenceValid) {
       d3d11Fence = cachedD3D11Fence;
       d3d11Fence->AddRef();
@@ -1407,28 +1408,32 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
       if (DuplicateHandle(hProcess.get(), fenceHandle, GetCurrentProcess(), dupFence.addressof(),
                           0, FALSE, DUPLICATE_SAME_ACCESS)) {
         hr = d3d11Device->OpenSharedFence(dupFence.get(), IID_PPV_ARGS(&d3d11Fence));
-        // dupFence is closed by HandleGuard when it goes out of scope (or reset)
+        if (FAILED(hr)) {
+             DLL_Log("[VideoEncoder] OpenSharedFence failed: HR=%x (Hnd=%p)", hr, dupFence.get());
+        }
+      } else {
+          DWORD err = GetLastError();
+          DLL_Log("[VideoEncoder] DuplicateHandle failed: Err=%d (SrcPid=%u Hnd=%p)", err, sourcePid, fenceHandle);
       }
 
       // Fallback/KMT path
       if (FAILED(hr)) {
         hr = d3d11Device->OpenSharedResource(fenceHandle,
                                              IID_PPV_ARGS(&d3d11Fence));
+        if (FAILED(hr) && encodeFrameCounter < 10) {
+             DLL_Log("[VideoEncoder] OpenSharedResource(Fence) failed: HR=%x", hr);
+        }
       }
-
-      if (FAILED(hr)) {
-        DLL_Log("[VideoEncoder] Frame %d: Failed to open shared fence handle "
-                "%p, HR=%x",
-                encodeFrameCounter, fenceHandle, hr);
-        return false;
+      
+      if (d3d11Fence) {
+          DLL_Log("[VideoEncoder] Successfully opened shared fence for PID %u", sourcePid);
+          // Update Fence Cache
+          if (cachedD3D11Fence) cachedD3D11Fence->Release();
+          cachedD3D11Fence = d3d11Fence;
+          cachedD3D11Fence->AddRef();
+          cachedFenceHandle = fenceHandle;
+          cachedSourcePid = sourcePid;
       }
-
-      // Update Fence Cache
-      if (cachedD3D11Fence) cachedD3D11Fence->Release();
-      cachedD3D11Fence = d3d11Fence;
-      cachedD3D11Fence->AddRef();
-      cachedFenceHandle = fenceHandle;
-      cachedSourcePid = sourcePid;
     }
 
     // 2. Open Texture (We know it's missing if we are here)
@@ -1507,6 +1512,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
   HRESULT hr = S_OK;
   
   // D3D11 FENCE PATH (Async GPU sync)
+  auto beforeFence = PerfTimer::now();
   if (d3d11Fence) {
     // CPU-side timeout to prevent GPU hangs (Resilience improvement)
     if (!fenceEvent) {
@@ -1530,8 +1536,8 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
     // Async GPU Wait (plus CPU timeout check above)
     d3d11Context->Wait(d3d11Fence, fenceValue);
   }
-
   auto afterFence = PerfTimer::now();
+  stats.fenceWaitMs = PerfTimer::elapsed_ms(beforeFence, afterFence);
   stats.fenceWaitMs = PerfTimer::elapsed_ms(frameStart, afterFence);
 
   if (d3d11Fence) {
@@ -1730,7 +1736,8 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
     g_slowFrameCount++;
 
   // Log individual slow frames for debugging
-  if (stats.totalMs > expectedFrameMs * 2 || encodeFrameCounter <= 5) {
+  // Log more frequently for performance tuning (every 30 frames)
+    if (stats.totalMs > expectedFrameMs * 2 || encodeFrameCounter <= 5 || encodeFrameCounter % 30 == 0) {
     std::string features = "";
     if (savedConfig.lookahead)
       features += "Lookahead ";

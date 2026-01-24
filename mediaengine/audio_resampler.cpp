@@ -287,12 +287,23 @@ void AudioResampler::ResetClockTracking() {
   compensationActive = false;
   smoothedDrift = 0.0;
   currentDelta = 0;
+  integralError = 0.0;
+  lastCompensationTimeMs = 0;
 }
 
 void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSamplesOutput) {
   if (!swrCtx || videoElapsedMs <= 0 || outFmt.sampleRate <= 0) {
     return;
   }
+  
+  // THROTTLE UPDATES:
+  // Updating resampling compensation too frequently (e.g. every 8ms frame) 
+  // causes audible "zipper noise" or crackling because the polyphase filter 
+  // doesn't have time to settle. Limit updates to 10Hz (every 100ms).
+  if (lastCompensationTimeMs > 0 && (videoElapsedMs - lastCompensationTimeMs) < 100) {
+      return;
+  }
+  lastCompensationTimeMs = videoElapsedMs;
   
   // Calculate expected audio samples for current video time
   // Expected = videoElapsedMs * sampleRate / 1000
@@ -302,74 +313,66 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
   int64_t driftSamples = audioSamplesOutput - expectedSamples;
   
   // STEADY-STATE GUARD: Only apply pitch correction for small, steady-state drift.
-  // Large drift (>200 samples = ~4ms @ 48kHz) indicates buffering/scheduling issues,
-  // not true clock drift. Real clock drift is ppm-level and accumulates slowly.
-  // For large drift, let silence/zero-fill handle continuity without pitch shifting.
-  const int64_t STEADY_STATE_THRESHOLD = 200;
+  // We allow up to 100ms (4800 samples) drift to be handled by pitch correction.
+  // Larger drift might indicate startup discontinuity or massive lag.
+  const int64_t STEADY_STATE_THRESHOLD = 4800; // 100ms @ 48kHz
   if (std::abs(driftSamples) > STEADY_STATE_THRESHOLD) {
     static int largeSkipCounter = 0;
     if (largeSkipCounter++ % 100 == 0) {
-      DLL_Log("[AudioResampler] Large drift (%lld samples) - skipping pitch correction (buffering/scheduling)", driftSamples);
+      DLL_Log("[AudioResampler] Huge drift (%lld samples) - skipping pitch correction (buffering/scheduling)", driftSamples);
     }
+    // Optional: Could implement hard-sync here (drop/insert) if drift persists
     return;
   }
   
   // 1. SMOOTHING STAGE (Low Pass Filter)
-  // Drift readings can jitter due to frame pacing noise.
-  // We use an exponential moving average to find the trend.
-  // Alpha 0.05 means we trust history 95%, new reading 5% - more stable than 0.1
-  smoothedDrift = (smoothedDrift * 0.95) + ((double)driftSamples * 0.05);
+  // Use aggressive smoothing to filter out frame jitter.
+  // Alpha 0.01 means ~100 frame time constant (~0.8s)
+  smoothedDrift = (smoothedDrift * 0.99) + ((double)driftSamples * 0.01);
   
   // CONTINUOUS PI CONTROLLER:
-  // Instead of thresholds ("Panic Mode"), we use a continuous control loop.
-  // This allows the system to "learn" the constant clock drift (Integral term)
-  // and apply a constant, smooth correction without pitch wobbling.
+  // We calculate correction targeting a 10-second window for sub-sample precision.
   
   // Variables declaration
   int32_t targetDelta = 0;
   int32_t maxDelta = 0;
   
-  // 1. Integral Term (Accumulate Error)
-  // We accumulate the smoothed drift.
-  // Ki factor determines how fast we learn the constant offset.
+  // 1. Integral Term
   integralError += smoothedDrift;
   
-  // Anti-Windup: Clamp Integral term to reasonable limits (+/- 0.2% max pitch)
-  // Reduced from 2% to 0.2% - still 100x larger than real clock drift (ppm-level)
-  // but inaudible to human ear (~3.5 cents pitch shift vs 35 cents at 2%)
-  const double MAX_INTEGRAL_CORRECTION = outFmt.sampleRate * 0.002;
+  // Anti-Windup: Clamp Integral term
+  // Max correction +/- 5% speed.
+  // In 10 seconds, 5% is 0.05 * 48000 * 10 = 24000 samples
+  const double MAX_INTEGRAL_CORRECTION = (outFmt.sampleRate * COMPENSATION_PERIOD_SEC) * 0.05;
   if (integralError * Ki > MAX_INTEGRAL_CORRECTION) integralError = MAX_INTEGRAL_CORRECTION / Ki;
   if (integralError * Ki < -MAX_INTEGRAL_CORRECTION) integralError = -MAX_INTEGRAL_CORRECTION / Ki;
   
   // 2. Calculate Correction (PI Control)
-  // TargetDelta = (Kp * Error) + (Ki * Integral)
+  // Result is "samples to insert/drop over COMPENSATION_PERIOD_SEC"
   double correction = (Kp * smoothedDrift) + (Ki * integralError);
   
   targetDelta = (int32_t)correction;
   
   // 3. Absolute Safety Limits
-  // Hard clamp to +/- 0.2% to prevent audible pitch artifacts
-  // 0.2% of 48000 is 96 samples/sec (inaudible, ~3.5 cents)
-  maxDelta = outFmt.sampleRate / 500; 
+  // +/- 5% of total period samples
+  maxDelta = (outFmt.sampleRate * COMPENSATION_PERIOD_SEC) / 20; 
   
   // Log extreme correction (Logic Debug)
   if (std::abs(targetDelta) > maxDelta) {
       static int limitLogCounter = 0;
       if (limitLogCounter++ % 100 == 0) {
-          DLL_Log("[AudioResampler] PI Control Saturated! Req=%d, Max=%d (Drift=%.1f, Int=%.1f)", 
-                  targetDelta, maxDelta, smoothedDrift, integralError);
+          DLL_Log("[AudioResampler] PI Saturated! Req=%d, Max=%d", targetDelta, maxDelta);
       }
   }
   
-  // Clamp to max delta
+  // Clamp
   if (targetDelta > maxDelta) targetDelta = maxDelta;
   if (targetDelta < -maxDelta) targetDelta = -maxDelta;
   
   // 2. RATE LIMITING STAGE (Inertia)
-  // Don't jump from 0 to targetDelta instantly. Move slowly.
-  // Max change per update: 4 samples (faster than before to reach target quicker)
-  // At 60fps update rate, this allows changing correction by 240 samples/sec.
-  const int32_t maxChange = 4;
+  // Max change: 2 samples per update (over 10s window).
+  // Effectively 0.2 samples/sec/update acceleration. Extremely smooth.
+  const int32_t maxChange = 2;
   
   if (currentDelta < targetDelta) {
       currentDelta += maxChange;
@@ -381,20 +384,20 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
   
   // Apply compensation if needed
   if (currentDelta != 0 || compensationActive) {
-      // Always compensate over 1 second (SampleRate)
-      int ret = swr_set_compensation(swrCtx, -currentDelta, outFmt.sampleRate);
+      // Compensate over COMPENSATION_PERIOD_SEC
+      int ret = swr_set_compensation(swrCtx, -currentDelta, outFmt.sampleRate * COMPENSATION_PERIOD_SEC);
       
       if (ret >= 0) {
-          // Log only on significant changes (every 20 samples delta change)
-          if (!compensationActive || std::abs(currentDelta - (int32_t)lastDriftSamples) > 20) {
-             DLL_Log("[AudioResampler] Drift Comp: smoothed=%.1f, target=%d, current=%d (%.3f%%)",
-                     smoothedDrift, targetDelta, currentDelta, 
-                     (double)currentDelta * 100.0 / outFmt.sampleRate);
+          // Log (scale back to samples/sec for readability)
+          if (!compensationActive || std::abs(currentDelta - (int32_t)lastDriftSamples) > 200) { // Log every ~20 samples/sec change
+             DLL_Log("[AudioResampler] Drift Comp: smoothed=%.1f, current=%d/10s (%.3f%%)",
+                     smoothedDrift, currentDelta, 
+                     (double)currentDelta * 100.0 / (outFmt.sampleRate * COMPENSATION_PERIOD_SEC));
+             lastDriftSamples = currentDelta;
           }
           
           if (currentDelta != 0) {
              compensationActive = true;
-             lastDriftSamples = currentDelta; // Track for log delta
           } else {
              compensationActive = false;
              DLL_Log("[AudioResampler] Drift stabilized.");

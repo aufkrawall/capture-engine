@@ -34,7 +34,6 @@ static QueuedFrame g_LastFrame;
 static bool g_HasLastFrame = false;
 
 // Screengrab mode components
-// Screengrab mode components
 static std::unique_ptr<WGCCapture> g_WgcCap;
 static std::unique_ptr<DxgiCapture> g_DxgiCap;
 static bool g_UseScreenGrab = false;
@@ -45,6 +44,17 @@ static SharedMemoryLayout *g_pSharedMem = nullptr;
 
 static HANDLE g_hMapShmem = NULL;
 static ShmemBuffer *g_pShmem = nullptr;
+
+// Inject thread specific
+static std::atomic<bool> g_InjectCaptureRunning{false};
+static std::atomic<bool> g_InjectCaptureShutdown{false};
+static std::thread g_InjectCaptureThread;
+
+// WGC thread specific
+static std::atomic<bool> g_WgcCaptureRunning{false};
+static std::atomic<bool> g_WgcCaptureShutdown{false};
+static std::thread g_WgcCaptureThread;
+static std::atomic<uint32_t> g_WgcDroppedFrames{0};
 
 // Forward declaration
 void StopRecording();
@@ -65,10 +75,7 @@ static BOOL CALLBACK EnumWindowsCallback(HWND hwnd, LPARAM lParam) {
     if (pid == search->pid) {
         // Look for the main visible window
         // Checks: Visible, not child
-        // Note: Removed title check as some games have empty titles during init
         if (IsWindowVisible(hwnd) && GetWindow(hwnd, GW_OWNER) == 0) {
-            // Priority: Logic to prefer "cleaner" windows if multiple exist?
-            // For now, take first visible top-level window.
             // Check styles to avoid tool windows
             LONG_PTR styles = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
             if (!(styles & WS_EX_TOOLWINDOW)) {
@@ -102,112 +109,150 @@ static std::string GetProcessNameFromPID(DWORD pid) {
         name = name.substr(lastSlash + 1);
     }
     return name;
-} // End helper
+}
 
-
-// ============================================================================
-// Async WGC Capture Thread (like DX12's AsyncCaptureThreadProc)
-// Runs independently to pull frames from WGC without blocking encoder
-// ============================================================================
-static std::thread g_WgcCaptureThread;
-static std::atomic<bool> g_WgcCaptureRunning{false};
-static std::atomic<bool> g_WgcCaptureShutdown{false};
-static HANDLE g_WgcCaptureEvent = NULL;
-static std::atomic<uint32_t> g_WgcDroppedFrames{0};
-
-// ============================================================================
-// Inject Capture Thread (Bridging Ring Buffer -> FrameQueue)
-// ============================================================================
-static std::thread g_InjectCaptureThread;
-static std::atomic<bool> g_InjectCaptureRunning{false};
-static std::atomic<bool> g_InjectCaptureShutdown{false};
+// =================================================================================================
+// THREAD FUNCTIONS
+// =================================================================================================
 
 void InjectCaptureThreadFunc(const AppConfig &config) {
-  LogInfo("[Inject Thread] Started - polling shared memory ring buffer");
+  LogInfo("[Inject Thread] Started (High Priority Polling with Source-Side Pacing)");
   g_InjectCaptureRunning = true;
-
+  
   if (!g_pSharedMem) {
-    LogError("[Inject Thread] Failed - Shared memory is NULL");
+    LogError("[Inject Thread] Shared memory not available! Aborting.");
     g_InjectCaptureRunning = false;
     return;
   }
 
   // Local read index tracks what WE have pushed to the FrameQueue
-  // This is distinct from the shared readIndex, which is updated by EncoderThread
-  // only AFTER it releases the slot.
   uint32_t localReadIndex = g_pSharedMem->frameRing.readIndex.load(std::memory_order_acquire);
+  
+  // PACING INITIALIZATION
+  LARGE_INTEGER qpcFreq;
+  QueryPerformanceFrequency(&qpcFreq);
+  // Target interval in ticks (e.g. 1/120s)
+  int64_t targetIntervalTicks = (config.video.fps > 0) ? (qpcFreq.QuadPart / config.video.fps) : (qpcFreq.QuadPart / 60);
+  int64_t nextPushTime = 0;
   
   DWORD lastLog = GetTickCount();
   uint32_t pushedCount = 0;
+  uint32_t droppedCount = 0;
+  uint32_t pacingDroppedCount = 0;
   uint32_t emptySpinCount = 0;
 
   while (!g_InjectCaptureShutdown && g_Recording) {
       // 1. Check for new frames
       uint32_t writeIndex = g_pSharedMem->frameRing.writeIndex.load(std::memory_order_acquire);
       
+      // Overflow Protection
+      if (writeIndex > localReadIndex + FRAME_RING_SIZE) {
+          uint32_t dropped = writeIndex - localReadIndex - 1; 
+          // Only log huge jumps to avoid spam
+          if (dropped > 10) {
+              LogInfo("[Inject Thread] Lag detected! Dropping %u frames to catch up", dropped);
+          }
+          localReadIndex = writeIndex - 1; 
+          droppedCount += dropped;
+          // Reset pacing on overflow/lag
+          nextPushTime = 0; 
+      }
+      
       if (writeIndex != localReadIndex) {
-          // New data available!
           emptySpinCount = 0;
           
           uint32_t index = localReadIndex % FRAME_RING_SIZE;
           FrameSlot& slot = g_pSharedMem->frameRing.slots[index];
           
           if (slot.valid.load(std::memory_order_acquire)) {
-              QueuedFrame qf;
-              qf.isInjectMode = true;
-              qf.ringIndex = localReadIndex;  // Raw counter, not slot index
-              qf.timestamp = slot.timestamp;
+              // PACING CHECK:
+              // If this frame is too early relative to our target 120Hz grid, drop it.
+              // This acts as a smart decimator for 144Hz/200Hz inputs.
+              bool shouldProcess = false;
               
-              // CRITICAL: Populate ALL required fields from shared memory
-              // These are needed by MediaEngine_ProcessFrame to open shared textures
-              int32_t texIdx = slot.textureIndex;
-              
-              // Check for SHMEM mode (textureIndex >= 100 indicates CPU staging path)
-              if (texIdx >= 100) {
-                  qf.isShmem = true;
-                  qf.shmemSlot = texIdx - 100;
-                  qf.sharedHandle = nullptr;
-                  qf.fenceHandle = nullptr;
-                  qf.fenceValue = 0;
+              if (nextPushTime == 0) {
+                  // First frame or resync
+                  nextPushTime = slot.timestamp;
+                  shouldProcess = true;
               } else {
-                  qf.isShmem = false;
-                  qf.shmemSlot = 0;
-                  // Get shared texture handle for this texture index (0-7)
-                  if (texIdx >= 0 && texIdx < 8) {
-                      qf.sharedHandle = (HANDLE)g_pSharedMem->sharedHandles[texIdx];
+                  // Check if frame is close enough to target time (allow half-interval jitter)
+                  if (slot.timestamp >= nextPushTime - (targetIntervalTicks / 2)) {
+                      shouldProcess = true;
+                      
+                      // Advance target time
+                      nextPushTime += targetIntervalTicks;
+                      
+                      // Resync if game time jumped way ahead (e.g. pause/lag spike > 3 frames)
+                      if (slot.timestamp > nextPushTime + (targetIntervalTicks * 3)) {
+                          nextPushTime = slot.timestamp + targetIntervalTicks;
+                      }
                   } else {
-                      qf.sharedHandle = (HANDLE)g_pSharedMem->sharedHandles[0];
+                      // Frame is too early (e.g. 144Hz frame falling between 120Hz slots)
+                      // DROP IT
+                      shouldProcess = false;
+                      pacingDroppedCount++;
                   }
-                  qf.fenceHandle = (HANDLE)g_pSharedMem->fenceShareHandle;
-                  qf.fenceValue = slot.fenceValue;
               }
               
-              qf.sourcePid = slot.sourcePid;
-              qf.width = g_pSharedMem->width;
-              qf.height = g_pSharedMem->height;
-              qf.format = g_pSharedMem->format;
-              qf.luidLow = g_pSharedMem->luidLowPart;
-              qf.luidHigh = g_pSharedMem->luidHighPart;
-              qf.isHDR = (g_pSharedMem->format == 10); // DXGI_FORMAT_R16G16B16A16_FLOAT
-              
-              if (g_FrameQueue.Push(qf, g_IsEncoderBottlenecked)) {
-                  pushedCount++;
-                  localReadIndex++;  // Raw counter, wraps naturally on overflow
-                  // We do NOT update shared readIndex here. That happens in EncoderThread.
-              } else {
-                  // Queue full - wait a bit and retry? Or drop?
-                  // If we drop, we must advance localReadIndex AND update shared readIndex immediately
-                  // to free the slot for the producer.
-                  // For now, let's just yield and retry next loop (backpressure).
-                  std::this_thread::yield();
+              if (shouldProcess) {
+                  QueuedFrame qf;
+                  qf.isInjectMode = true;
+                  qf.ringIndex = localReadIndex;
+                  qf.timestamp = slot.timestamp;
+                  
+                  int32_t texIdx = slot.textureIndex;
+                  
+                  if (texIdx >= 100) {
+                      qf.isShmem = true;
+                      qf.shmemSlot = texIdx - 100;
+                      qf.sharedHandle = nullptr;
+                      qf.fenceHandle = nullptr;
+                      qf.fenceValue = 0;
+                  } else {
+                      qf.isShmem = false;
+                      qf.shmemSlot = 0;
+                      if (texIdx >= 0 && texIdx < 8) {
+                          qf.sharedHandle = (HANDLE)g_pSharedMem->sharedHandles[texIdx];
+                      } else {
+                          qf.sharedHandle = (HANDLE)g_pSharedMem->sharedHandles[0];
+                      }
+                      qf.fenceHandle = (HANDLE)g_pSharedMem->fenceShareHandle;
+                      qf.fenceValue = slot.fenceValue;
+                  }
+                  
+                  qf.sourcePid = slot.sourcePid;
+                  qf.width = g_pSharedMem->width;
+                  qf.height = g_pSharedMem->height;
+                  qf.format = g_pSharedMem->format;
+                  qf.luidLow = g_pSharedMem->luidLowPart;
+                  qf.luidHigh = g_pSharedMem->luidHighPart;
+                  qf.isHDR = (g_pSharedMem->format == 10); 
+                  
+                  static bool sharedTexturesCreated = false;
+                  if (!sharedTexturesCreated && g_pSharedMem->width > 0 && g_pSharedMem->height > 0) {
+                      if (!g_pSharedMem->encoderTextures.ready.load(std::memory_order_acquire)) {
+                          if (MediaEngine_CreateSharedCaptureTextures(
+                                  g_pSharedMem->width, g_pSharedMem->height,
+                                  g_pSharedMem->format, g_pSharedMem)) {
+                              sharedTexturesCreated = true;
+                          }
+                      } else {
+                          sharedTexturesCreated = true;
+                      }
+                  }
+
+                  if (g_FrameQueue.Push(qf, g_IsEncoderBottlenecked)) {
+                      pushedCount++;
+                  } else {
+                      droppedCount++;
+                  }
               }
+              
+              localReadIndex++;
           } else {
-              // Slot invalid? weird race. Skip.
-              localReadIndex++;  // Raw counter
+              localReadIndex++;  
           }
       } else {
-          // No new frames - sleep briefly to avoid burning CPU
-          // High performance: yield or sub-ms sleep
           emptySpinCount++;
           if (emptySpinCount > 1000) {
               Sleep(1);
@@ -218,10 +263,12 @@ void InjectCaptureThreadFunc(const AppConfig &config) {
 
       DWORD now = GetTickCount();
       if (now - lastLog >= 2000) {
-          if (pushedCount > 0) {
-              LogInfo("[Inject Thread] Pushed %u frames to encoder (wIdx=%u, lRadIdx=%u)", 
-                      pushedCount, writeIndex, localReadIndex);
+          if (pushedCount > 0 || droppedCount > 0 || pacingDroppedCount > 0) {
+              LogInfo("[Inject Thread] Pushed: %u, Dropped(Full): %u, Dropped(Pacing): %u", 
+                      pushedCount, droppedCount, pacingDroppedCount);
               pushedCount = 0;
+              droppedCount = 0;
+              pacingDroppedCount = 0;
           }
           lastLog = now;
       }
@@ -232,12 +279,9 @@ void InjectCaptureThreadFunc(const AppConfig &config) {
 }
 
 void WgcCaptureThreadFunc(const AppConfig &config) {
-  // OBS-STYLE: Frames are pushed directly from WinRT callback
-  // This thread only monitors and logs diagnostics
   LogInfo("[WGC CaptureThread] Started (OBS-style direct callback mode)");
   g_WgcCaptureRunning = true;
   
-  // Diagnostics: track frame delivery rate from callback
   DWORD lastDiagTime = GetTickCount();
   uint32_t lastCallbackCount = 0;
   
@@ -250,7 +294,6 @@ void WgcCaptureThreadFunc(const AppConfig &config) {
       continue;
     }
     
-    // Diagnostic logging every second
     DWORD now = GetTickCount();
     if (now - lastDiagTime >= 1000) {
       uint32_t currentCount = g_WgcCap->GetCallbackFrameCount();
@@ -272,7 +315,6 @@ void WgcCaptureThreadFunc(const AppConfig &config) {
 void EncoderThreadFunc(const AppConfig &config) {
   LogInfo("[EncoderThread] Started");
   
-  // Start grace period for frame drop counting (first 2 seconds won't count as drops)
   g_FrameQueue.StartRecording();
 
   LARGE_INTEGER qpcFreq;
@@ -281,13 +323,11 @@ void EncoderThreadFunc(const AppConfig &config) {
   LARGE_INTEGER nextSampleTime;
   QueryPerformanceCounter(&nextSampleTime);
   
-  // Create high-resolution waitable timer for precision pacing (Windows 10 1803+)
   HANDLE hTimer = CreateWaitableTimerExW(
       NULL, NULL,
       CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
       TIMER_ALL_ACCESS);
   if (!hTimer) {
-    // Fallback to standard timer if high-resolution not available
     hTimer = CreateWaitableTimer(NULL, TRUE, NULL);
     LogInfo("[EncoderThread] Using standard waitable timer");
   } else {
@@ -298,7 +338,6 @@ void EncoderThreadFunc(const AppConfig &config) {
   double frameIntervalMs = 1000.0 / config.video.fps;
 
   while (g_EncoderRunning || g_FrameQueue.Size() > 0) {
-    // Debug log once per second
     static DWORD lastThreadLog = 0;
     if (GetTickCount() - lastThreadLog > 1000) {
       LogInfo("[EncoderThread] Alive. QueueSize=%u Bottleneck=%d",
@@ -306,25 +345,15 @@ void EncoderThreadFunc(const AppConfig &config) {
       lastThreadLog = GetTickCount();
     }
 
-    // Update throttle state and drop counters in shared memory
     if (g_pSharedMem) {
       uint32_t queueDepth = (uint32_t)g_FrameQueue.Size();
-      
-      // Throttle if queue is deep OR fence wait is long (GPU overloaded)
-      // Get fence wait in ms (conversion from us)
       double fenceWaitMs = (double)MediaEngine_GetLastFrameFenceWaitUs() / 1000.0;
       bool shouldThrottle = queueDepth > 3 || fenceWaitMs > 16.0;
       
-      g_pSharedMem->encoderQueueDepth.store(queueDepth,
-                                            std::memory_order_relaxed);
-      g_pSharedMem->throttleCapture.store(shouldThrottle,
-                                          std::memory_order_release);
-      
-      // Sync dropped frame counter to shared memory for overlay display
-      g_pSharedMem->runtimeState.hostDroppedFrames.store(
-          static_cast<uint32_t>(g_FrameQueue.GetDroppedCount()));
+      g_pSharedMem->encoderQueueDepth.store(queueDepth, std::memory_order_relaxed);
+      g_pSharedMem->throttleCapture.store(shouldThrottle, std::memory_order_release);
+      g_pSharedMem->runtimeState.hostDroppedFrames.store(static_cast<uint32_t>(g_FrameQueue.GetDroppedCount()));
           
-      // DEBUG LEAK: Log Process Memory Usage every 1s
       static DWORD lastMemLog = 0;
       if (GetTickCount() - lastMemLog > 1000) {
           PROCESS_MEMORY_COUNTERS_EX pmc;
@@ -338,24 +367,19 @@ void EncoderThreadFunc(const AppConfig &config) {
       }
     }
 
-    // Wait for next frame interval (CFR pacing) only while actively recording.
-    // During stop/drain, do NOT pace; drain queued frames ASAP to avoid shared
-    // texture slots being overwritten before encode.
     if (g_EncoderRunning) {
       LARGE_INTEGER now;
       QueryPerformanceCounter(&now);
       int64_t waitTicks = nextSampleTime.QuadPart - now.QuadPart;
 
       if (waitTicks > 0 && hTimer) {
-        // Convert ticks to 100ns units for waitable timer (negative = relative)
         int64_t wait100ns = (waitTicks * 10000000) / qpcFreq.QuadPart;
         LARGE_INTEGER dueTime;
-        dueTime.QuadPart = -wait100ns;  // Negative = relative time
+        dueTime.QuadPart = -wait100ns;
         if (SetWaitableTimer(hTimer, &dueTime, 0, NULL, NULL, FALSE)) {
           WaitForSingleObject(hTimer, INFINITE);
         }
       } else if (waitTicks > qpcFreq.QuadPart / 1000) {
-        // Fallback: use Sleep for waits > 1ms if no timer
         int64_t waitMs = (waitTicks * 1000) / qpcFreq.QuadPart;
         if (waitMs > 1) {
           Sleep((DWORD)waitMs - 1);
@@ -364,14 +388,12 @@ void EncoderThreadFunc(const AppConfig &config) {
 
       nextSampleTime.QuadPart += targetIntervalTicks;
 
-      // Handle lag
       QueryPerformanceCounter(&now);
       if (now.QuadPart > nextSampleTime.QuadPart + targetIntervalTicks * 2) {
         nextSampleTime = now;
       }
     }
 
-    // Try to get a frame
     QueuedFrame frame;
     bool popped = g_FrameQueue.Pop(frame, 0);
 
@@ -380,7 +402,6 @@ void EncoderThreadFunc(const AppConfig &config) {
 
     if (popped) {
       frameToProcess = &frame;
-      // Update cached last frame
       if (frame.isInjectMode) {
         g_LastFrame = frame;
         g_HasLastFrame = true;
@@ -396,17 +417,12 @@ void EncoderThreadFunc(const AppConfig &config) {
         g_HasLastFrame = true;
       }
     } else if (g_HasLastFrame && g_EncoderRunning) {
-      // Re-encode last frame only for non-inject mode.
-      // In inject mode the shared texture slot may be overwritten after the fence
-      // has advanced, causing "back-and-forth" jitter (content no longer matches
-      // the timestamp).
       if (!g_LastFrame.isInjectMode) {
         frameToProcess = &g_LastFrame;
         isDuplicate = true;
       }
     }
 
-    // During stop/drain: if queue is empty, we're done.
     if (!g_EncoderRunning && !popped) {
       break;
     }
@@ -425,7 +441,6 @@ void EncoderThreadFunc(const AppConfig &config) {
             frameToProcess->format, frameToProcess->isHDR,
             frameToProcess->isShmem, frameToProcess->shmemSlot);
       } else {
-        // D3D11 lock is handled internally by MediaEngine_ProcessFrameD3D11
         MediaEngine_ProcessFrameD3D11(
             frameToProcess->texture, frameToProcess->timestamp,
             frameToProcess->width, frameToProcess->height);
@@ -435,48 +450,37 @@ void EncoderThreadFunc(const AppConfig &config) {
       double currentEncodeMs = (double)(endEnc.QuadPart - startEnc.QuadPart) *
                                1000.0 / qpcFreq.QuadPart;
       
-      // Use pure encode time (excluding fence waits) for bottleneck detection
-      // Now robustly calculated as (End - AfterFence), so safe to trust even if small.
       double pureEncodeMs = (double)MediaEngine_GetLastFrameEncodeTimeUs() / 1000.0;
 
       if (smoothedEncodeMs == 0.0) {
         smoothedEncodeMs = pureEncodeMs;
       } else {
-        // Use slower smoothing (0.05) for stability in health tracking
         smoothedEncodeMs = smoothedEncodeMs * 0.95 + pureEncodeMs * 0.05;
       }
 
       g_IsEncoderBottlenecked = (smoothedEncodeMs > frameIntervalMs * 0.95);
       
-      // Health Monitoring: Log warning if approaching capacity (>85%)
       static DWORD lastWarningTime = 0;
       if (smoothedEncodeMs > frameIntervalMs * 0.85) {
           DWORD now = GetTickCount();
-          if (now - lastWarningTime > 5000) { // Throttle warnings to 5s
+          if (now - lastWarningTime > 5000) {
               LogInfo("[WARN] Encoder approaching capacity: %.2fms avg vs %.2fms budget", 
                       smoothedEncodeMs, frameIntervalMs);
               lastWarningTime = now;
           }
       }
       
-      // NOTE: Late frame counter disabled. The async GPU wait makes it impossible
-      // to reliably distinguish "waiting for game" from "encoder bottleneck".
-      // Use droppedFrames and duplicateFrames as smoothness indicators instead.
-
-      // Update read index for inject mode
       if (popped && frameToProcess->isInjectMode && g_pSharedMem) {
         g_pSharedMem->frameRing.readIndex.store(frameToProcess->ringIndex + 1,
                                                 std::memory_order_release);
       }
     }
 
-    // Release texture for non-inject mode
     if (popped && !frame.isInjectMode && frame.texture) {
       frame.texture->Release();
     }
   }
 
-  // Cleanup waitable timer
   if (hTimer) {
     CloseHandle(hTimer);
   }
@@ -490,7 +494,6 @@ void StartRecording(const AppConfig &config) {
 
   LogInfo("[Media] Starting recording...");
 
-  // Reset queue
   g_FrameQueue.Clear();
   if (g_HasLastFrame && !g_LastFrame.isInjectMode && g_LastFrame.texture) {
     g_LastFrame.texture->Release();
@@ -498,7 +501,6 @@ void StartRecording(const AppConfig &config) {
   }
   g_HasLastFrame = false;
   
-  // Reset smoothness counters for new recording
   if (g_pSharedMem) {
     g_pSharedMem->runtimeState.duplicateFrames = 0;
     g_pSharedMem->runtimeState.lateFrames = 0;
@@ -514,7 +516,6 @@ void StartRecording(const AppConfig &config) {
   g_Recording = true;
   g_EncoderRunning = true;
   
-  // Update Shared Memory State for Overlay
   if (g_pSharedMem) {
       g_pSharedMem->runtimeState.isRecording.store(true, std::memory_order_release);
       g_pSharedMem->runtimeState.recordingStartTime.store(GetTickCount64(), std::memory_order_release);
@@ -526,20 +527,16 @@ void StartRecording(const AppConfig &config) {
   if (g_UseScreenGrab && g_WgcCap) {
     g_WgcCap->SetCaptureCursor(config.video.captureCursor);
     
-    // OBS-STYLE: Set callback BEFORE StartCapture so frames are pushed directly
-    // from WinRT callback to frame queue (zero latency)
     g_WgcCap->SetDirectFrameCallback(
         [](ID3D11Texture2D* texture, uint32_t width, uint32_t height, int64_t timestamp) {
-          // This runs on WinRT thread pool - push to queue immediately
           QueuedFrame qf;
           qf.isInjectMode = false;
-          qf.texture = texture;  // Already AddRef'd by callback
+          qf.texture = texture;  
           qf.width = width;
           qf.height = height;
           qf.timestamp = timestamp;
           
           if (!g_FrameQueue.Push(qf, g_IsEncoderBottlenecked)) {
-            // Queue full - frame dropped
             g_WgcDroppedFrames.fetch_add(1, std::memory_order_relaxed);
             texture->Release();
           }
@@ -549,22 +546,15 @@ void StartRecording(const AppConfig &config) {
     g_WgcCap->ResetStats();
     g_WgcDroppedFrames.store(0, std::memory_order_relaxed);
     
-    // Start async WGC capture thread (now just for monitoring/diagnostics)
     g_WgcCaptureShutdown = false;
     g_WgcCaptureThread = std::thread(WgcCaptureThreadFunc, std::ref(config));
     SetThreadPriority(g_WgcCaptureThread.native_handle(), THREAD_PRIORITY_NORMAL);
-    LogInfo("[Media] WGC capture with direct callback started");
     LogInfo("[Media] WGC capture with direct callback started");
   } else if (g_UseScreenGrab && g_DxgiCap) {
       if (g_DxgiCap->StartCapture()) {
           LogInfo("[Media] DXGI Desktop Duplication capture started");
           
-          // Start thread to poll frames from DDAPI
           g_WgcCaptureShutdown = false;
-          // Reuse WgcCaptureThreadFunc logic but for polling DXGI?
-          // Actually, we can reuse the same thread or spawn a new one. 
-          // Let's spawn a specific thread for DXGI since WGC thread expects callbacks.
-          
           g_WgcCaptureThread = std::thread([](const AppConfig& cfg) {
                LogInfo("[DXGI Thread] Started");
                g_WgcCaptureRunning = true;
@@ -577,22 +567,19 @@ void StartRecording(const AppConfig &config) {
                    bool gotFrame = g_DxgiCap->GetNextFrame(frame, g_IsEncoderBottlenecked);
                    
                    if (gotFrame) {
-                       // Push to queue
                        QueuedFrame qf;
                        qf.isInjectMode = false;
-                       qf.texture = frame.texture; // Already AddRef'd
+                       qf.texture = frame.texture; 
                        qf.width = frame.width;
                        qf.height = frame.height;
                        qf.timestamp = frame.timestamp;
                        
                        if (!g_FrameQueue.Push(qf, g_IsEncoderBottlenecked)) {
                            frame.texture->Release();
-                           // dropped
                        } else {
                            framesLogged++;
                        }
                    } else {
-                       // No frame - yield
                        std::this_thread::yield();
                    }
                    
@@ -614,11 +601,9 @@ void StartRecording(const AppConfig &config) {
           return;
       }
   } else if (!g_UseScreenGrab) {
-      // INJECT MODE: Start the polling thread
       LogInfo("[Media] Starting InjectCaptureThread for Shared Memory Capture");
       g_InjectCaptureShutdown = false;
       g_InjectCaptureThread = std::thread(InjectCaptureThreadFunc, std::ref(config));
-      // High priority to ensure we pick up frames quickly
       SetThreadPriority(g_InjectCaptureThread.native_handle(), THREAD_PRIORITY_ABOVE_NORMAL);
   }
 
@@ -631,11 +616,8 @@ void StopRecording() {
 
   LogInfo("[Media] Stopping recording...");
 
-  // Stop accepting new frames ASAP (prevents new shared-texture frames being
-  // enqueued while the encoder thread is trying to drain).
   g_Recording = false;
 
-  // Stop capture sources first so no new frames are enqueued while draining.
   if (g_UseScreenGrab && g_WgcCap) {
     if (g_WgcCaptureRunning) {
       g_WgcCaptureShutdown = true;
@@ -644,29 +626,22 @@ void StopRecording() {
       }
       g_DxgiCap->StopCapture();
     }
-  } else { // Inject mode
-      // Shutdown Inject Thread
+  } else { 
       g_InjectCaptureShutdown = true;
       if (g_InjectCaptureThread.joinable()) {
           g_InjectCaptureThread.join();
       }
   }
 
-  // Signal encoder thread to stop, but let it drain remaining frames first
-  // The encoder thread will process all remaining queue items before exiting
   g_EncoderRunning = false;
 
   if (g_EncoderThread.joinable()) {
     g_EncoderThread.join();
   }
 
-  // Drop any frames that arrived during shutdown without encoding them.
   g_FrameQueue.Clear();
-
-  // Finalize the file only after we are done encoding/draining.
   MediaEngine_StopRecording();
 
-  // Update Shared Memory State for Overlay
   if (g_pSharedMem) {
       g_pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
       g_pSharedMem->runtimeState.recordingStartTime.store(0, std::memory_order_release);
@@ -678,10 +653,8 @@ void StopRecording() {
 }
 
 int MediaProcessMain(const AppConfig &config) {
-  // Enable 1ms timer resolution
   timeBeginPeriod(1);
 
-  // Apply process priority
   DWORD priorityClass = NORMAL_PRIORITY_CLASS;
   if (config.processPriority == "idle")
     priorityClass = IDLE_PRIORITY_CLASS;
@@ -693,7 +666,6 @@ int MediaProcessMain(const AppConfig &config) {
     priorityClass = HIGH_PRIORITY_CLASS;
   SetPriorityClass(GetCurrentProcess(), priorityClass);
 
-  // Setup IPC
   ProcessIPCServer ipc(ProcessMode::Media);
   if (!ipc.Init()) {
     LogError("[Media] Failed to initialize IPC");
@@ -701,7 +673,6 @@ int MediaProcessMain(const AppConfig &config) {
     return 1;
   }
 
-  // Initialize MediaEngine
   MediaEngine_SetLogCallback(config.debugLogging ? MediaLogCallback : nullptr);
   if (!MediaEngine_Init(&config)) {
     LogError("[Media] Failed to initialize MediaEngine");
@@ -716,11 +687,6 @@ int MediaProcessMain(const AppConfig &config) {
   LogInfo("[Media] offsetof(frameRing) = %zu", offsetof(SharedMemoryLayout, frameRing));
   LogInfo("[Media] offsetof(runtimeState) = %zu", offsetof(SharedMemoryLayout, runtimeState));
 
-  // Determine capture mode based on config and shared memory availability
-  // Priority:
-  // - "screengrab" = always use WGC
-  // - "inject" = always use shared memory (fail if not available)
-  // - "auto" = prefer inject if shared memory exists, else screengrab
   ID3D11Device *d3dDevice = nullptr;
   ID3D11DeviceContext *d3dContext = nullptr;
   
@@ -730,12 +696,8 @@ int MediaProcessMain(const AppConfig &config) {
     LogInfo("[Media] Using screengrab mode (explicit)");
   }
 
-  // Always connect to shared memory for command polling
-  // This is needed even in screengrab mode to receive recording start/stop commands
   LogInfo("[Media] Attempting to connect to shared memory...");
 
-  // Retry a few times since inject process might still be starting
-  // Use discovery shared memory for O(1) lookup instead of scanning
   for (int retry = 0; retry < 10 && !g_pSharedMem; retry++) {
     HANDLE hDiscovery = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
     if (hDiscovery) {
@@ -771,14 +733,11 @@ int MediaProcessMain(const AppConfig &config) {
     }
     
     if (!g_pSharedMem) {
-      Sleep(200); // Wait for inject process
+      Sleep(200); 
     }
   }
 
   if (g_pSharedMem) {
-    // Shared memory connected - determine capture mode based on config
-    
-    // Connect to separate Shmem mapping if available
     if (g_pSharedMem->shmemMappingCreated) {
         wchar_t shmemName[64];
         GenerateShmemName(shmemName, 64, g_pSharedMem->hostPID);
@@ -791,15 +750,12 @@ int MediaProcessMain(const AppConfig &config) {
         }
     }
     
-    // Set pointers in MediaEngine
     MediaEngine_SetSharedMem(g_pSharedMem, g_pShmem);
 
-    // Initial mode setup
     if (explicitScreengrab) {
       g_UseScreenGrab = true;
       LogInfo("[Media] Connected to shared memory - using screengrab for capture");
     } else {
-      // Default to inject mode (will switch if dynamic whitelist matches later)
       g_UseScreenGrab = false;
       LogInfo("[Media] Connected to shared memory - using inject mode");
     }
@@ -809,13 +765,10 @@ int MediaProcessMain(const AppConfig &config) {
     timeEndPeriod(1);
     return 1;
   } else {
-    // Auto mode or screengrab mode fallback
     g_UseScreenGrab = true;
     LogInfo("[Media] Shared memory not available - using screengrab mode");
   }
 
-  // Initialize screengrab components if needed
-  // Also pre-initialize in auto mode so WGC is ready for immediate fallback
   if (g_UseScreenGrab || config.captureMethod == "auto") {
     d3dDevice = MediaEngine_GetD3D11Device();
     if (!d3dDevice) {
@@ -825,14 +778,13 @@ int MediaProcessMain(const AppConfig &config) {
         timeEndPeriod(1);
         return 1;
       }
-      // In auto mode, continue without WGC - inject mode may still work
     } else {
       d3dDevice->GetImmediateContext(&d3dContext);
 
       if (config.captureMethod == "desktop_dup") {
            LogInfo("[Media] Initializing Desktop Duplication...");
            g_DxgiCap = std::make_unique<DxgiCapture>();
-           if (g_DxgiCap->Init(d3dDevice, 0)) { // Monitor 0, mutex handled internally
+           if (g_DxgiCap->Init(d3dDevice, 0)) { 
                LogInfo("[Media] Desktop Duplication initialized");
            } else {
                LogError("[Media] Desktop Duplication init failed");
@@ -863,13 +815,11 @@ int MediaProcessMain(const AppConfig &config) {
   LogInfo("[Media] Process started (PID: %d) Mode: %s", GetCurrentProcessId(),
           g_UseScreenGrab ? "screengrab" : "inject");
 
-  // Main loop
   LARGE_INTEGER qpcFreq;
   QueryPerformanceFrequency(&qpcFreq);
   int64_t recordingStartTime = 0;
 
   while (g_Running) {
-    // Check for IPC commands (backup method)
     ProcessCommand cmd;
     if (ipc.PollCommand(cmd)) {
       switch (cmd) {
@@ -899,10 +849,7 @@ int MediaProcessMain(const AppConfig &config) {
       }
     }
 
-    // Poll shared memory flags for recording control (primary method)
-    // This is more reliable than pipe IPC when under load
     if (g_pSharedMem) {
-      // Check for start recording command (atomic read-then-clear pattern)
       if (g_pSharedMem->runtimeState.cmdStartRecording.load(std::memory_order_acquire)) {
         g_pSharedMem->runtimeState.cmdStartRecording.store(false, std::memory_order_release);
         if (!g_Recording) {
@@ -910,7 +857,6 @@ int MediaProcessMain(const AppConfig &config) {
           g_pSharedMem->runtimeState.ackRecordingStarted.store(true, std::memory_order_release);
         }
       }
-    // Check for stop recording command
       if (g_pSharedMem->runtimeState.cmdStopRecording.load(std::memory_order_acquire)) {
         g_pSharedMem->runtimeState.cmdStopRecording.store(false, std::memory_order_release);
         if (g_Recording) {
@@ -919,10 +865,6 @@ int MediaProcessMain(const AppConfig &config) {
         }
       }
       
-      // =================================================================================
-      // WGC Window Detection (Periodic Scan - Injection Independent)
-      // Allows manual target definition in config (anti-cheat compatible)
-      // =================================================================================
       static DWORD lastWindowScanTime = 0;
       static HWND currentCapturedWindow = NULL;
       
@@ -939,28 +881,23 @@ int MediaProcessMain(const AppConfig &config) {
           
           EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
               WgcSearchContext* context = (WgcSearchContext*)lParam;
-              if (!IsWindowVisible(hwnd)) return TRUE; // Skip invisible
-              if (GetWindow(hwnd, GW_OWNER) != 0) return TRUE; // Skip owned/child windows
+              if (!IsWindowVisible(hwnd)) return TRUE;
+              if (GetWindow(hwnd, GW_OWNER) != 0) return TRUE;
               
               char title[256];
               GetWindowTextA(hwnd, title, sizeof(title));
-              // Don't skip empty titles yet - might match by executable name
-              
               std::string titleStr = title;
-              // Case-insensitive check
               std::transform(titleStr.begin(), titleStr.end(), titleStr.begin(), ::tolower);
               
               for (const auto& target : *context->targets) {
                   std::string targetLower = target;
                   std::transform(targetLower.begin(), targetLower.end(), targetLower.begin(), ::tolower);
                   
-                  // 1. Try Title Match
                   if (!titleStr.empty() && titleStr.find(targetLower) != std::string::npos) {
                       context->result = hwnd;
-                      return FALSE; // Found
+                      return FALSE;
                   }
                   
-                  // 2. Try Executable Name Match (if target ends in .exe)
                   if (targetLower.length() > 4 && targetLower.substr(targetLower.length() - 4) == ".exe") {
                       DWORD pid = 0;
                       GetWindowThreadProcessId(hwnd, &pid);
@@ -969,7 +906,7 @@ int MediaProcessMain(const AppConfig &config) {
                       
                       if (procName == targetLower) {
                            context->result = hwnd;
-                           return FALSE; // Found
+                           return FALSE;
                       }
                   }
               }
@@ -993,17 +930,13 @@ int MediaProcessMain(const AppConfig &config) {
                   LogError("[Media] Failed to init WGC for found window.");
                   g_WgcCap.reset();
                   g_WgcCap = std::make_unique<WGCCapture>();
-                  g_WgcCap->Init(d3dDevice); // Fallback to monitor
-                  currentCapturedWindow = NULL; // Retry next scan
+                  g_WgcCap->Init(d3dDevice); 
+                  currentCapturedWindow = NULL;
               }
           } else if (!foundWindow && currentCapturedWindow != NULL) {
-               // Window lost? (Closed?)
                if (!IsWindow(currentCapturedWindow)) {
                    LogInfo("[Media] Captured window 0x%p no longer valid. Reverting to monitor/inject.", currentCapturedWindow);
                    currentCapturedWindow = NULL;
-                   // Revert to Monitor or standard behavior
-                   // If we rely on whitelist injection, we might just wait.
-                   // For now, keep WGC active but init fallback
                    g_WgcCap.reset();
                    g_WgcCap = std::make_unique<WGCCapture>();
                    g_WgcCap->Init(d3dDevice);
@@ -1011,7 +944,6 @@ int MediaProcessMain(const AppConfig &config) {
           }
       }
 
-      // Monitor sourcePid to detect when a game connects, and force WGC if it's on the overlay whitelist
       static uint32_t lastSourcePid = 0;
       uint32_t currentSourcePid = g_pSharedMem->sourcePid;
       
@@ -1039,13 +971,10 @@ int MediaProcessMain(const AppConfig &config) {
           if (forceWGC) {
               g_UseScreenGrab = true;
               
-              // PERFORMANCE OPTIMIZATION: Try to target specific game window instead of Monitor
-              // This is critical for DX9/Legacy games where Monitor Capture causes high DWM overhead
               HWND hGameWindow = GetMainWindowForProcess(currentSourcePid);
               if (hGameWindow) {
                   LogInfo("[Media] Whitelist Optimization: Found main window 0x%p. Switching WGC to Window Mode.", hGameWindow);
                   
-                  // Re-initialize WGC for Window
                   g_WgcCap.reset();
                   g_WgcCap = std::make_unique<WGCCapture>();
                   if (g_WgcCap->InitForWindow(d3dDevice, hGameWindow)) {
@@ -1053,17 +982,15 @@ int MediaProcessMain(const AppConfig &config) {
                       LogInfo("[Media] WGC re-initialized for Window Capture");
                   } else {
                       LogError("[Media] Failed to init WGC for window - falling back to Monitor");
-                      g_WgcCap.reset(); // Reset failed state
+                      g_WgcCap.reset(); 
                       g_WgcCap = std::make_unique<WGCCapture>();
-                      g_WgcCap->Init(d3dDevice); // Fallback
+                      g_WgcCap->Init(d3dDevice); 
                   }
               } else {
                  LogInfo("[Media] Whitelist: No main window found for PID %u. Using Monitor Capture.", currentSourcePid);
               }
 
           } else if (config.captureMethod != "screengrab" && config.captureMethod != "framegrab") {
-              // Reset to inject mode if not explicit screengrab and not whitelisted
-              // (Only reset if we are in auto/inject mode)
               g_UseScreenGrab = false; 
               LogInfo("[Media] Using Inject Mode (Default)");
           }
@@ -1072,9 +999,6 @@ int MediaProcessMain(const AppConfig &config) {
     
     bool hasPendingInputs = false;
 
-    // Screengrab mode: WGC capture is handled by async WgcCaptureThreadFunc
-    // The thread runs at 120Hz and pushes frames to g_FrameQueue
-    // We just need to sync dropped frames to shared memory for overlay display
     if (g_UseScreenGrab && g_Recording) {
       if (recordingStartTime == 0) {
         LARGE_INTEGER now;
@@ -1082,14 +1006,12 @@ int MediaProcessMain(const AppConfig &config) {
         recordingStartTime = now.QuadPart;
       }
       
-      // Update shared memory with WGC dropped frame count
       if (g_pSharedMem) {
         uint32_t totalDropped = g_WgcDroppedFrames.load(std::memory_order_relaxed) +
                                (uint32_t)g_FrameQueue.GetDroppedCount();
         g_pSharedMem->runtimeState.hostDroppedFrames.store(totalDropped);
       }
     }
-    // Inject mode: poll frames from shared memory
     else if (!g_UseScreenGrab && g_Recording && g_pSharedMem) {
       FrameRingBuffer &ring = g_pSharedMem->frameRing;
       uint32_t wIdx = ring.writeIndex.load(std::memory_order_acquire);
@@ -1098,51 +1020,42 @@ int MediaProcessMain(const AppConfig &config) {
       static DWORD injectModeStartTime = 0;
       static bool sessionInitialized = false;
 
-      // Reset state when starting a new recording session
       if (!sessionInitialized) {
-        localReadIdx = wIdx;  // Start from current write position
+        localReadIdx = wIdx;
         receivedFirstFrame = false;
         injectModeStartTime = 0;
         sessionInitialized = true;
         LogInfo("[Media] Inject mode session initialized, localReadIdx=%u, wIdx=%u", localReadIdx, wIdx);
       }
       
-      // Debug polling
       static DWORD lastPollLog = 0;
       if (GetTickCount() - lastPollLog > 1000) {
           LogInfo("[Media] Polling: localReadIdx=%u, wIdx=%u", localReadIdx, wIdx);
           lastPollLog = GetTickCount();
       }
 
-      // Track when inject mode recording started
       if (injectModeStartTime == 0) {
         injectModeStartTime = GetTickCount();
         receivedFirstFrame = false;
       }
 
-      // Auto-mode fallback: if no frames received within 200ms, switch to WGC
-      // WGC is pre-initialized so this switch is fast with minimal A/V desync
       if (!receivedFirstFrame && config.captureMethod == "auto" && g_WgcCap) {
         DWORD elapsed = GetTickCount() - injectModeStartTime;
         if (elapsed > 200) {
           LogInfo("[Media] No frames from inject mode after %dms - falling back to WGC", elapsed);
           
-          // WGC is already initialized, set up frame callback and start capture
           g_WgcCap->SetCaptureCursor(config.video.captureCursor);
           
-          // CRITICAL: Set callback BEFORE StartCapture (same as StartRecording does)
           g_WgcCap->SetDirectFrameCallback(
               [](ID3D11Texture2D* texture, uint32_t width, uint32_t height, int64_t timestamp) {
-                // Push frame to queue immediately
                 QueuedFrame qf;
                 qf.isInjectMode = false;
-                qf.texture = texture;  // Already AddRef'd by callback
+                qf.texture = texture;
                 qf.width = width;
                 qf.height = height;
                 qf.timestamp = timestamp;
                 
                 if (!g_FrameQueue.Push(qf, g_IsEncoderBottlenecked)) {
-                  // Queue full - frame dropped
                   g_WgcDroppedFrames.fetch_add(1, std::memory_order_relaxed);
                   texture->Release();
                 }
@@ -1152,7 +1065,6 @@ int MediaProcessMain(const AppConfig &config) {
           g_WgcCap->ResetStats();
           g_WgcDroppedFrames.store(0, std::memory_order_relaxed);
           
-          // Start async WGC diagnostic thread
           g_WgcCaptureShutdown = false;
           g_WgcCaptureThread = std::thread(WgcCaptureThreadFunc, std::ref(config));
           SetThreadPriority(g_WgcCaptureThread.native_handle(), THREAD_PRIORITY_NORMAL);
@@ -1160,132 +1072,43 @@ int MediaProcessMain(const AppConfig &config) {
           g_UseScreenGrab = true;
           LogInfo("[Media] Switched to WGC capture mode with direct callback");
           
-          // Reset tracking
           injectModeStartTime = 0;
         }
       }
 
-      // Create shared textures for Vulkan games to import (once, when
-      // dimensions known)
       static bool sharedTexturesCreated = false;
       if (!sharedTexturesCreated && g_pSharedMem->width > 0 &&
           g_pSharedMem->height > 0) {
-        // Check if encoder textures are NOT already ready (hook hasn't imported
-        // yet)
-        if (!g_pSharedMem->encoderTextures.ready.load(
-                std::memory_order_acquire)) {
-          LogInfo("[Media] Creating shared capture textures for Vulkan interop "
-                  "(%dx%d format=%d)",
-                  g_pSharedMem->width, g_pSharedMem->height,
-                  g_pSharedMem->format);
-          if (MediaEngine_CreateSharedCaptureTextures(
-                  g_pSharedMem->width, g_pSharedMem->height,
-                  g_pSharedMem->format, g_pSharedMem)) {
-            LogInfo("[Media] Shared capture textures created successfully");
-            sharedTexturesCreated = true;
-          } else {
-            LogError("[Media] Failed to create shared capture textures");
-          }
-        } else {
-          // Textures already created (from previous recording or by hook), skip
+        if (g_pSharedMem->encoderTextures.ready.load(std::memory_order_acquire)) {
           sharedTexturesCreated = true;
         }
       }
 
-      // Ring Buffer Overflow Protection
       if (wIdx > localReadIdx + FRAME_RING_SIZE) {
           uint32_t newReadIdx = wIdx - FRAME_RING_SIZE;
-          LogInfo("[Media] Ring buffer overflow! Jumped from %u to %u (lost %u frames)",
-                  localReadIdx, newReadIdx, newReadIdx - localReadIdx);
           localReadIdx = newReadIdx;
-          // Sync read index back to shared memory immediately to let hook know we caught up?
-          // Actually hook only cares about not overwriting unread data if it blocks. 
-          // But our hook is non-blocking (overwriting), so this is just for our side.
-      }
-
-      int processedCount = 0;
-      while (localReadIdx < wIdx) {
-        if (processedCount >= 16) {
-            // Process max one full buffer per tick to stay responsive to other events
-            break;
-        }
-        processedCount++;
-        uint32_t slotIdx = localReadIdx % FRAME_RING_SIZE;
-        const FrameSlot &slot = ring.slots[slotIdx];
-
-        // Use atomic load for valid flag with bounds checking
-        if (slot.valid.load(std::memory_order_acquire) == 0) {
-          localReadIdx++;
-          continue;
-        }
-
-        // Mark that we received frames (disable fallback)
-        if (!receivedFirstFrame) {
-          receivedFirstFrame = true;
-          LogInfo("[Media] First frame received from inject mode");
-        }
-
-        QueuedFrame qf;
-        qf.isInjectMode = true;
-        int texIdx = slot.textureIndex;
-        
-        // Check for SHMEM frame (100+)
-        if (texIdx >= 100) {
-            qf.isShmem = true;
-            qf.shmemSlot = texIdx - 100;
-            // Shmem data source has its own width/height
-            qf.width = (g_pShmem && g_pShmem->validWidth > 0) ? g_pShmem->validWidth : g_pSharedMem->width;
-            qf.height = (g_pShmem && g_pShmem->validHeight > 0) ? g_pShmem->validHeight : g_pSharedMem->height;
-            // No shared handle for shmem frames
-            qf.sharedHandle = NULL; 
-        } else {
-            // Normal Shared Texture Frame
-            if (!IsValidTextureIndex(texIdx))
-              texIdx = 0;
-            qf.sharedHandle = (HANDLE)g_pSharedMem->sharedHandles[texIdx];
-            qf.width = g_pSharedMem->width;
-            qf.height = g_pSharedMem->height;
-        }
-        
-        qf.fenceHandle = (HANDLE)g_pSharedMem->fenceShareHandle;
-        qf.fenceValue = slot.fenceValue;
-        qf.luidLow = g_pSharedMem->luidLowPart;
-        qf.luidHigh = g_pSharedMem->luidHighPart;
-        qf.sourcePid = g_pSharedMem->sourcePid;
-        qf.timestamp = slot.timestamp;
-        qf.isHDR = g_pSharedMem->isHDR;
-        qf.format = g_pSharedMem->format;
-        qf.ringIndex = localReadIdx;
-
-        bool pushed = g_FrameQueue.Push(qf, g_IsEncoderBottlenecked);
-        if (pushed) {
-          localReadIdx++;
-          static int pushCount = 0;
-          if (pushCount++ % 60 == 0) {
-              LogInfo("[Media] Pushed frame to queue: PID=%u Handle=%p Slot=%d QueueSize=%d",
-                      qf.sourcePid, qf.sharedHandle, slotIdx, (int)g_FrameQueue.Size());
-          }
-        } else {
-          LogInfo("[Media] FrameQueue.Push FAILED (queue full?)");
-          break;
-        }
-
       }
       
-      hasPendingInputs = (localReadIdx < wIdx);
+      if (localReadIdx < wIdx) {
+          if (!receivedFirstFrame) {
+              receivedFirstFrame = true;
+              LogInfo("[Media] First frame detected (monitoring)");
+          }
+          localReadIdx = wIdx; 
+      }
+      
+      hasPendingInputs = false; 
     } else {
       recordingStartTime = 0;
     }
 
-    // Adaptive Polling: Sleep less when active to reduce latency
     if (g_Recording && (g_FrameQueue.Size() > 0 || hasPendingInputs)) {
       Sleep(1);
     } else {
-      Sleep(5); // Idle or waiting for frames
+      Sleep(5); 
     }
   }
 
-  // Cleanup
   StopRecording();
 
   if (g_UseScreenGrab) {

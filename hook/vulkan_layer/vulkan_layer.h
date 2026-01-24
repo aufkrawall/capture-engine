@@ -115,6 +115,7 @@ struct DeviceDispatch {
     PFN_vkDestroyShaderModule fp_vkDestroyShaderModule = nullptr;
 #ifdef VK_USE_PLATFORM_WIN32_KHR
     PFN_vkGetMemoryWin32HandleKHR fp_vkGetMemoryWin32HandleKHR = nullptr;
+    PFN_vkGetSemaphoreWin32HandleKHR fp_vkGetSemaphoreWin32HandleKHR = nullptr;
 #endif
 };
 
@@ -212,3 +213,4 @@ VkSemaphore GetOverlaySemaphore(VkDevice device, uint32_t imageIndex);
 void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkExtent2D extent, uint32_t imageCount);
 void CleanupCapture(VkDevice device);
 void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t imageIndex, VkSemaphore waitSemaphore, VkSemaphore signalSemaphore);
+VkSemaphore GetCaptureSemaphore(VkDevice device, uint32_t imageIndex);
