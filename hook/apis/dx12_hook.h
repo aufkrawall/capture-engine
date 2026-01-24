@@ -7,7 +7,7 @@
 
 class DX12Hook : public GraphicsHook {
   std::vector<IUnknown*> trackedResources;
-  std::mutex resourceMutex;
+  std::recursive_mutex resourceMutex;
 public:
   void Init() override;
   void Shutdown() override;
@@ -17,8 +17,17 @@ public:
   void CleanupResources();
 };
 
-extern DX12Hook g_dx12HookInstance;
+extern DX12Hook* g_dx12HookInstance;
 
+void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain);
+void DX12_OnSwapchainResizeBegin();
+void DX12_OnSwapchainResizeEnd();
+void DX12_InvalidateSwapchain();
+void DX12_SignalFSR4SwapchainRecreated();
+void DX12_AdjustWrapperResizeDepth(int delta);
 
- void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain);
- void DX12_OnSwapchainResizeBegin();
+extern "C" {
+    __declspec(dllexport) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue);
+    __declspec(dllexport) void DX12_AdjustWrapperResizeDepth_C(int delta);
+}
+

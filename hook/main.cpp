@@ -12,13 +12,13 @@
 #include "apis/nvngx_hook.h"
 #include "wrappers/wrapper_hooks.h"
 #include "wrappers/iat_hook.h"
-#include "wrappers/iat_hook.h"
 #include "common/hook_common.h"
 #include "common/hook_context.h"
 #include "common/ipc_client.h"
 #include "capture/shared_capture.h"
 #include "common/fg_detection.h"
 #include "common/system_metrics.h"
+#include "../common/crash_handler.h"
 // MinHook removed - using IAT patching via iat_hook.h
 #include <cstddef>
 #include <string>
@@ -31,6 +31,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <filesystem>
 
 HMODULE g_hModule = NULL;
 
@@ -730,9 +731,14 @@ void CheckAndInstallHooks() {
 
     if (!g_DX12Hook && GetModuleHandleA("d3d12.dll")) {
         EarlyLog("Detected d3d12.dll. Installing DX12 hooks...");
-        g_DX12Hook = &g_dx12HookInstance; // Use global static instance
-        // DIAGNOSTIC: Testing if DX12Hook::Init (MinHook init) causes crash
-        g_DX12Hook->Init(); // Idempotent (safe to call multiple times)
+        
+        // STATIC DESTRUCTOR FIX: Dynamically allocate the hook instance
+        if (!g_dx12HookInstance) {
+            g_dx12HookInstance = new DX12Hook();
+        }
+        g_DX12Hook = g_dx12HookInstance; 
+        
+        g_DX12Hook->Init();
         EarlyLog("DX12 hooks installed");
     }
 
@@ -865,9 +871,9 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   // FAST PATH: Install IAT wrappers immediately before anything else
   // This helps catch early startup API calls in fast-loading processes.
   // DIAGNOSTIC: Testing if IAT patching alone causes crash (MinHook still disabled)
-  HookLog("DIAGNOSTIC: Re-enabling InitializeWrapperHooks (IAT patching)");
-  InitializeWrapperHooks();
-  CheckAndInstallHooks();
+  // HookLog("DIAGNOSTIC: Re-enabling InitializeWrapperHooks (IAT patching)");
+  // InitializeWrapperHooks();
+  // CheckAndInstallHooks();
   
   EarlyLog("HookThread: Started (PID=%d)", GetCurrentProcessId());
 
@@ -911,28 +917,11 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
       return 0; 
   }
 
-  // --- POTENTIAL GAMES ---
+  //POTENTIAL GAMES
   EarlyLog("HookThread: Potential game detected. Watchdog started.");
 
-  // Config was already loaded early in HookThread
-  
-  // Track last write time for Hot Reloading
-  FILETIME g_ConfigLastWriteTime = {};
-  {
-      char dllPath[MAX_PATH];
-      GetModuleFileNameA(g_hModule, dllPath, MAX_PATH);
-      std::string pathString = dllPath;
-      std::string dir = pathString.substr(0, pathString.find_last_of("\\/"));
-      std::string configPath = dir + "\\config.ini";
-      
-      WIN32_FILE_ATTRIBUTE_DATA fileInfo;
-      if (GetFileAttributesExA(configPath.c_str(), GetFileExInfoStandard, &fileInfo)) {
-          g_ConfigLastWriteTime = fileInfo.ftLastWriteTime;
-      }
-  }
-
   // Init IPC loop
-  g_IPC = new IPCClient();
+  g_IPC = new IPCClient(); 
   
   if (g_isSkippedProcess) {
       // EarlyLog removed from here to prevent file locks in system processes
@@ -962,6 +951,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
               FreeLibraryAndExitThread(g_hModule, 0);
               return 0;
           }
+          Sleep(1000);
       }
   }
 
@@ -994,9 +984,6 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   // Use IAT patching instead of MinHook for kernel32/advapi32 hooks
   EarlyLog("HookThread: Initializing IAT-based kernel32 hooks...");
 
-  // DIAGNOSTIC: Disable kernel32/advapi32 hooks to test if they cause crash
-  HookLog("DIAGNOSTIC: Skipping LoadLibrary/CreateProcess/RegQuery hooks (disabled for testing)");
-  /*
   // Install LoadLibrary and CreateProcess hooks via IAT patching
   HookLog("Installing LoadLibrary/CreateProcess hooks via IAT patching (MinHook-free)...");
   
@@ -1016,16 +1003,11 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   } else {
       HookLog("advapi32.dll not loaded yet - skipping RegQueryValueExW hook");
   }
-  */
   
-  EarlyLog("HookThread: IAT hooks SKIPPED for diagnostic");
-  HookLog("All kernel32/advapi32 hooks SKIPPED (diagnostic mode)");
+  EarlyLog("HookThread: IAT hooks installed");
 
   // Initial Check
-  // CheckAndInstallHooks moved to start of HookThread for faster response
-  // EarlyLog("HookThread: About to call CheckAndInstallHooks (d3d12=%p)", GetModuleHandleA("d3d12.dll"));
-  // CheckAndInstallHooks();
-  // EarlyLog("HookThread: CheckAndInstallHooks returned");
+  CheckAndInstallHooks();
 
   EarlyLog("HookThread: All hooks installed, entering exit monitor loop");
 
@@ -1055,34 +1037,6 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
         s_LastRRCheck = now;
         UE5::EnforceRR(); 
     }
-    
-    // --- Hot Reloading ---
-    static int hotReloadTick = 0;
-    if (++hotReloadTick > 10) { // Check every 1s (10 * 100ms)
-        hotReloadTick = 0;
-        char dllPath[MAX_PATH];
-        GetModuleFileNameA(g_hModule, dllPath, MAX_PATH);
-        std::string pathString = dllPath;
-        std::string dir = pathString.substr(0, pathString.find_last_of("\\/"));
-        std::string configPath = dir + "\\config.ini";
-        
-        WIN32_FILE_ATTRIBUTE_DATA fileInfo;
-        if (GetFileAttributesExA(configPath.c_str(), GetFileExInfoStandard, &fileInfo)) {
-            if (CompareFileTime(&fileInfo.ftLastWriteTime, &g_ConfigLastWriteTime) != 0) {
-                 // Update timestamp first to avoid loop if load fails
-                 g_ConfigLastWriteTime = fileInfo.ftLastWriteTime;
-                 
-                 if (g_pLocalConfig) LoadConfig(configPath, *g_pLocalConfig);
-                 // Force override update
-                 GetActiveGraphicsConfig();
-                 
-                 HookLog("Hot Reload: Config updated from file!");
-            }
-        }
-    }
-    
-    // If signaled OR timeout, we check logic
-    // (Timeout is needed for Exit/IPC checks)
     
     if (waitResult == WAIT_OBJECT_0) {
         // Event signaled - run detection
@@ -1259,9 +1213,28 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
         g_ProcessName[sizeof(g_ProcessName) - 1] = '\0';
     }
 
+    // Log the actual DLL path running (Critical for diagnosing outdated file injection)
+    char myDllPath[MAX_PATH] = {0};
+    if (GetModuleFileNameA(hinstDLL, myDllPath, MAX_PATH)) {
+        EarlyLog("DllMain: Loaded hook DLL from: %s", myDllPath);
+    }
+    
+    // Install Crash Handler immediately to catch startup crashes
+    // Use the directory of the DLL for dumps
+    std::string dllDir = myDllPath;
+    size_t lastSlash = dllDir.find_last_of("\\/");
+    if (lastSlash != std::string::npos) {
+        dllDir = dllDir.substr(0, lastSlash) + "\\logs"; // Put dumps in logs folder
+    } else {
+        dllDir = ".";
+    }
+    SetCrashDumpDirectory(dllDir);
+    InstallCrashHandler();
+
     // 1. SAFE UNLOAD: Services and non-interactive helpers
     // These processes should unload the DLL immediately and cleanly.
     if (IsServiceProcess(fileName)) {
+        // OutputDebugStringA("[DllMain] Safe Unload for Service Process\n");
         return FALSE; // Detach immediately
     }
 
@@ -1272,13 +1245,21 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
         _stricmp(fileName, "dwm.exe") == 0 ||
         _stricmp(fileName, "winlogon.exe") == 0 ||
         _stricmp(fileName, "captureengine.exe") == 0 ||
-        _stricmp(fileName, "captureengine_x86.exe") == 0) {
+        _stricmp(fileName, "captureengine_x86.exe") == 0 ||
+        _stricmp(fileName, "sihost.exe") == 0 ||
+        _stricmp(fileName, "SearchUI.exe") == 0 ||
+        _stricmp(fileName, "ShellExperienceHost.exe") == 0 ||
+        _stricmp(fileName, "DllHost.exe") == 0 ||       // COM Surrogate
+        _stricmp(fileName, "RuntimeBroker.exe") == 0 || // UWP Broker
+        _stricmp(fileName, "taskhostw.exe") == 0) {     // Task Host
         
         g_isDormant = true;
+        // EarlyLog("DllMain: Dormant mode for shell process: %s", fileName);
         return TRUE; // Stay loaded but totally inert
     }
 
-    // 2. WHITELIST CHECK: Fast & Inert
+    // 3. WHITELIST CHECK: Fast & Inert
+    // Only proceed if process is whitelisted (Internal or via Shared Memory)
     if (isProcessWhitelistedFast(fileName)) {
         // Whitelisted Game (Shared Mem OR Config - but we only use ShMem now in WhitelistFast)
         if (!g_pLocalConfig) {
@@ -1296,6 +1277,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
         // Returning FALSE (unloading) triggers a "Loader Loop" where Windows continuously 
         // re-injects the CBT hook for every window event, causing massive system slowdowns.
         // By staying loaded but doing nothing (no threads, no hooks), we eliminate this overhead.
+        // EarlyLog("DllMain: Process '%s' Blacklisted (Dormant Mode)", fileName);
         return TRUE;
     }
 
@@ -1358,24 +1340,41 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
   } else if (ul_reason_for_call == DLL_PROCESS_DETACH) {
     // CRITICAL FIX: If we never initialized (blacklisted/dormant), 
     // we MUST NOT execute cleanup logic (Sleep, Locks, etc.)
-    // Attempting to sleep or wait on locks in a blacklisted process during shutdown
-    // can cause deadlocks or crashes (e.g. Brave/Chrome watchdog).
     if (g_isDormant) {
         return TRUE;
+    }
+    
+    // PROCESS TERMINATION Check: lpReserved != NULL means the process is terminating.
+    // In this case, we should strictly avoid cleanup that involves waiting on threads,
+    // critical sections, or other sync objects, as the system is aggressively killing threads.
+    // Doing so often causes deadlocks (Loader Lock).
+    if (lpReserved != NULL) {
+        return TRUE; 
     }
 
     g_ShuttingDown = true;
     
-    // Signal HookThread to exit and give it time to finish
-    // Now that launcher loop uses 100ms Sleep, 200ms grace is enough
+    // Signal HookThread to exit (if it's still running)
     if (g_hCheckHooksEvent) {
       SetEvent(g_hCheckHooksEvent);
     }
-    Sleep(200); // Increased grace period for threads using 100ms sleep loops
     
-    // Shutdown API hooks first to stop new frames
-    if (g_DX12Hook) { g_DX12Hook->Shutdown(); g_DX12Hook = nullptr; } // No delete for static instance
-    // SafeShutdownHook(g_DX12Hook); // DO NOT USE - double free risk
+    // REMOVED: Sleep(200); - Sleeping in DllMain holds the Loader Lock and deadlocks the system.
+    // If we are dynamically unloading (FreeLibrary), we trust the thread will exit or has exited.
+
+    // Shutdown API hooks
+    // Note: We MUST delete the hook instance as it is now dynamically allocated
+    if (g_DX12Hook) { 
+        g_DX12Hook->Shutdown(); 
+        if (g_DX12Hook == g_dx12HookInstance) {
+            delete g_DX12Hook;
+            g_dx12HookInstance = nullptr;
+        } else {
+            delete g_DX12Hook;
+        }
+        g_DX12Hook = nullptr;
+    }
+    
     SafeShutdownHook(g_DX11Hook);
     SafeShutdownHook(g_DX9Hook);
     SafeShutdownHook(g_DDrawHook);
@@ -1387,11 +1386,8 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
 
     IATHook::ShutdownIATHooks();
     
-    // Shutdown SystemMetricsCollector BEFORE deleting g_IPC
-    // The metrics thread accesses g_IPC, so we must stop it first
     SystemMetricsCollector::Get().Shutdown();
     
-    // Now safe to delete g_IPC after thread has exited
     if (g_IPC) {
       delete g_IPC;
       g_IPC = nullptr;

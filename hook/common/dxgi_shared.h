@@ -3,6 +3,8 @@
 #include <dxgi1_4.h>
 #include <atomic>
 #include <mutex>
+#include <chrono>
+#include <cstdint>
 
 // Forward declaration
 class PerformanceMetrics;

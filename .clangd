@@ -1,7 +1,59 @@
-# Allow clangd to query drivers in the build directory
+# Capture Project Clangd Configuration
 CompileFlags:
+  # Allow clangd to query the actual compilers used in compile_commands.json to find system headers
   Compiler: [clang++, clang, clang-cl, cl]
+  # Explicitly allow querying the MSYS2 clang drivers. 
+  # This is CRITICAL for finding standard library headers on Windows.
+  QueryDriver: [
+    "%REPO_ROOT%/build/msys64/clang64/bin/clang++",
+    "%REPO_ROOT%/build/msys64/clang64/bin/clang",
+    "%REPO_ROOT%/build/msys64/mingw32/bin/clang++",
+    "%REPO_ROOT%/build/msys64/mingw32/bin/clang",
+    "%REPO_ROOT%/build/msys64/clang64/bin/clang++.exe",
+    "%REPO_ROOT%/build/msys64/clang64/bin/clang.exe",
+    "%REPO_ROOT%/build/msys64/mingw32/bin/clang++.exe",
+    "%REPO_ROOT%/build/msys64/mingw32/bin/clang.exe"
+  ]
+  # Add flags to help clangd understand the Windows/MinGW environment
+  Add: [
+    "-std=c++20",
+    "-D_WIN32_WINNT=0x0A00",
+    "-DVK_NO_PROTOTYPES",
+    "-DBUILDING_CAPTURE_HOOK",
+    "-DENABLE_D3D12_WRAPPER",
+    "-Icommon",
+    "-Ihook/common",
+    "-Ihook/apis",
+    "-Ihook/capture",
+    "-Ihook/wrappers",
+    "-Iexternal/imgui",
+    "-Iexternal/imgui/backends",
+    "-fms-extensions",
+    "-fms-compatibility",
+    "-fms-compatibility-version=19.40",
+    "-fdelayed-template-parsing",
+    "--target=x86_64-w64-windows-gnu"
+  ]
+  CompilationDatabase: "."
 
-# Ensure we use standard library from the toolchain
-# Sometimes explicit --query-driver in config is needed if arguments aren't enough
-# But compile_commands.json usually handles it if the driver path is absolute.
+Index:
+  Background: true
+  External: 
+    File: .clangd_index
+
+Diagnostics:
+  UnusedIncludes: Strict
+  MissingIncludes: Strict
+  Suppress: [
+    "function_style_cast_to_builtin", # Suppress mmintrin.h error if it persists
+    "drv_unknown_argument"
+  ]
+  ClangTidy:
+    Add: [bugprone-*, performance-*, readability-*]
+    Remove: [readability-braces-around-statements]
+
+Hover:
+  ShowAKA: true
+
+Completion:
+  AllScopes: true

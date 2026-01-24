@@ -61,6 +61,17 @@ InjectionManager::InjectionManager(const AppConfig &config) : config(config) {
   hookDllPathX64 = (exePath.parent_path() / "capture_hook_x64.dll").string();
   hookDllPathX86 = (exePath.parent_path() / "capture_hook_x86.dll").string();
 
+  // FIX: Force absolute path resolution to ensure the correct DLL is injected.
+  // Relative paths can be ambiguous if the target process has a different CWD.
+  try {
+      if (fs::exists(hookDllPathX64))
+          hookDllPathX64 = fs::absolute(hookDllPathX64).string();
+      if (fs::exists(hookDllPathX86))
+          hookDllPathX86 = fs::absolute(hookDllPathX86).string();
+  } catch (const fs::filesystem_error& e) {
+      LogError("Filesystem error resolving absolute paths: %s", e.what());
+  }
+
   // Check if DLLs exist
   if (!fs::exists(hookDllPathX64))
     LogError("Capture Hook X64 DLL not found: %s", hookDllPathX64.c_str());

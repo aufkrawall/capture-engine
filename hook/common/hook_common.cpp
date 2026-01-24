@@ -124,6 +124,30 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
   }
   if (s_hMutex) WaitForSingleObject(s_hMutex, INFINITE);
 
+  // Write Process Start Banner once per process
+  static bool s_HeaderWritten = false;
+  if (!s_HeaderWritten && s_logDir[0] != '\0') {
+      s_HeaderWritten = true;
+      char fullLogPath[MAX_PATH];
+      snprintf(fullLogPath, sizeof(fullLogPath), "%s\\%s", s_logDir, baseFilename);
+      HANDLE hFile = CreateFileA(fullLogPath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, NULL);
+      if (hFile != INVALID_HANDLE_VALUE) {
+          char header[1024];
+          int hlen = snprintf(header, sizeof(header), 
+              "\r\n--------------------------------------------------------------------------------\r\n"
+              "[PROCESS START] PID=%lu Name='%s' | [BUILD] Version=%s Built=%s\r\n"
+              "--------------------------------------------------------------------------------\r\n", 
+              GetCurrentProcessId(), g_ProcessName, CAPTURE_VERSION, BUILD_TIMESTAMP);
+          
+          if (hlen > 0) {
+              DWORD hwritten;
+              WriteFile(hFile, header, (DWORD)hlen, &hwritten, NULL);
+          }
+          CloseHandle(hFile);
+      }
+  }
+
   static char s_formatBuffer[4096];
   static char s_lineBuffer[8192];
 

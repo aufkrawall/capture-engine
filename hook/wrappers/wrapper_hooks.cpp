@@ -2,6 +2,16 @@
  * Wrapper Hook Entry Points Implementation
  */
 
+#include <cstdio>
+#include <cstdarg>
+#include <atomic>
+
+// Include Windows header for MinGW compatibility
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
 #include "wrapper_hooks.h"
 #include "d3d11_device_wrap.h"
 #include "d3d10_device_wrap.h"
@@ -11,7 +21,6 @@
 #include "../common/hook_common.h"
 #include "../apis/dx12_hook.h" // Access to g_DX12Hook implementation
 // MinHook shim removed
-
 
 // ============================================================================
 // Original Function Pointers
@@ -62,8 +71,6 @@ PFN_D3D10CreateDevice oD3D10CreateDevice = nullptr;
 PFN_D3D10CreateDevice1 oD3D10CreateDevice1 = nullptr;
 PFN_D3D10CreateDeviceAndSwapChain oD3D10CreateDeviceAndSwapChain = nullptr;
 
-// ... (existing code)
-
 // D3D9 function pointers
 typedef IDirect3D9* (WINAPI* PFN_Direct3DCreate9)(UINT SDKVersion);
 typedef HRESULT (WINAPI* PFN_Direct3DCreate9Ex)(UINT SDKVersion, IDirect3D9Ex** ppD3D);
@@ -76,7 +83,6 @@ static bool g_WrappersActive = false;
 // API Detection Flags - set when actual device creation is called
 // These allow distinguishing between DLL being loaded (e.g. d3d12.dll via D3D11On12)
 // vs the app actually using that API.
-#include <atomic>
 static std::atomic<bool> g_D3D11Or10DeviceCreated{false};
 static std::atomic<bool> g_D3D12DeviceCreated{false};
 
@@ -97,8 +103,6 @@ void WrapperLog(const char* fmt, ...) {
     
     // Log to EarlyLog (which goes to hook_debug.log)
     EarlyLog("%s", buf);
-    // Also use OutputDebugString for external debuggers
-    OutputDebugStringA(buf);
 }
 
 
@@ -109,10 +113,6 @@ void WrapperLog(const char* fmt, ...) {
 HRESULT WINAPI Wrapped_CreateDXGIFactory(REFIID riid, void** ppFactory) {
     WrapperLog("Wrapper: CreateDXGIFactory called");
     
-    // --- ORIGINAL CODE BELOW (RESTORED) ---
-    if (!oCreateDXGIFactory) return E_FAIL;
-    
-    // --- ORIGINAL CODE BELOW (DISABLED FOR DIAGNOSTIC) ---
     if (!oCreateDXGIFactory) return E_FAIL;
     
     // Create real factory
@@ -143,7 +143,6 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory(REFIID riid, void** ppFactory) {
 HRESULT WINAPI Wrapped_CreateDXGIFactory1(REFIID riid, void** ppFactory) {
     WrapperLog("Wrapper: CreateDXGIFactory1 called");
     
-    // --- ORIGINAL CODE BELOW (RESTORED) ---
     // Ensure DX12 hooks are initialized (fixes race condition)
     g_dx12HookInstance.Init();
 
@@ -176,10 +175,6 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory1(REFIID riid, void** ppFactory) {
 HRESULT WINAPI Wrapped_CreateDXGIFactory2(UINT Flags, REFIID riid, void** ppFactory) {
     WrapperLog("Wrapper: CreateDXGIFactory2 called (flags=0x%X)", Flags);
     
-    // --- ORIGINAL CODE BELOW (RESTORED) ---
-    if (!oCreateDXGIFactory2) return E_FAIL;
-    
-    // --- ORIGINAL CODE BELOW (DISABLED FOR DIAGNOSTIC) ---
     if (!oCreateDXGIFactory2) return E_FAIL;
     
     IDXGIFactory2* pRealFactory = nullptr;
@@ -203,14 +198,13 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory2(UINT Flags, REFIID riid, void** ppFact
 // ============================================================================
 
 #ifdef ENABLE_D3D12_WRAPPER
-// Mark as dllexport to ensure function is accessible for IAT patching
-__declspec(dllexport) HRESULT WINAPI Wrapped_D3D12CreateDevice(
+// Removed dllexport attribute to match header declaration and avoid warning
+HRESULT WINAPI Wrapped_D3D12CreateDevice(
     IUnknown* pAdapter,
     D3D_FEATURE_LEVEL MinimumFeatureLevel,
     REFIID riid,
     void** ppDevice) {
     
-    // --- ORIGINAL CODE BELOW (RESTORED) ---
     WrapperLog("Wrapper: D3D12CreateDevice called (feature level=0x%X)", MinimumFeatureLevel);
     
     // Mark that D3D12 device creation was actually called
@@ -226,13 +220,6 @@ __declspec(dllexport) HRESULT WINAPI Wrapped_D3D12CreateDevice(
     
     WrapperLog("Wrapper: Call oD3D12CreateDevice at %p", oD3D12CreateDevice);
     
-    // Unwrap adapter if needed (crucial if we are chained)
-    if (pAdapter) {
-         // Check for IID_CWrapDXGIAdapter (we don't have header included here easily?)
-         // We can use the simple Unwrappable interface check or just trust our IAT didn't hook internal calls?
-         // For now, let's assume nullptr like the test app uses.
-    }
-
     // Create the real device first
     ID3D12Device* pRealDevice = nullptr;
     HRESULT hr = oD3D12CreateDevice(pAdapter, MinimumFeatureLevel, IID_PPV_ARGS(&pRealDevice));
@@ -538,23 +525,22 @@ HRESULT WINAPI Wrapped_Direct3DCreate9Ex(UINT SDKVersion, IDirect3D9Ex** ppD3D) 
 bool InitializeWrapperHooks() {
     if (g_WrappersActive) return true;
     
-    WrapperLog("Wrapper: Initializing wrapper hooks (IAT mode)...");
+    EarlyLog("Wrapper: Initializing wrapper hooks (IAT mode)...");
     
     bool success = true;
-    WrapperLog("Wrapper: Initializing DXGI hooks...");
+    EarlyLog("Wrapper: Initializing DXGI hooks...");
     success &= IATHook::InitializeDXGIHooks();
-    WrapperLog("Wrapper: Initializing D3D10 hooks...");
+    EarlyLog("Wrapper: Initializing D3D10 hooks...");
     success &= IATHook::InitializeD3D10Hooks();
-    WrapperLog("Wrapper: Initializing D3D11 hooks...");
+    EarlyLog("Wrapper: Initializing D3D11 hooks...");
     success &= IATHook::InitializeD3D11Hooks();
-    WrapperLog("Wrapper: Initializing D3D12 hooks...");
+    EarlyLog("Wrapper: Initializing D3D12 hooks...");
     success &= IATHook::InitializeD3D12Hooks();
-    WrapperLog("Wrapper: Initializing D3D9 hooks...");
+    EarlyLog("Wrapper: Initializing D3D9 hooks...");
     success &= IATHook::InitializeD3D9Hooks();
-    // Note: Vulkan hooks are now in VK_LAYER_CE_overlay (Vulkan layer approach)
     
     g_WrappersActive = true;
-    WrapperLog("Wrapper: IAT initialization complete");
+    EarlyLog("Wrapper: IAT initialization complete");
     return success;
 }
 

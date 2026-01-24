@@ -5,10 +5,15 @@
 #include "performance_metrics.h"
 #include "config.h"
 #include "logging.h"
+#include <windows.h>
 #include <d3d11.h>
 #include <d3d12.h>
+#include <dxgi1_4.h>
 #include <chrono>
 #include <cmath>
+#include <atomic>
+#include <mutex>
+#include <cstdint>
 
 // Helper to check for Vulkan
 extern void* g_VulkanHook;
@@ -44,7 +49,7 @@ APIType DetectAPIType(IDXGISwapChain* pSwapChain) {
     if (!pSwapChain) return APIType::Unknown;
 
     ID3D12Device* d12Device = nullptr;
-    if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&d12Device)))) {
+    if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D12Device), (void**)&d12Device))) {
         d12Device->Release();
         return APIType::D3D12;
     }
@@ -65,7 +70,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         if (isFirstHook) g_SharedState.inPresentHook.store(false);
     });
 
-    uint64_t presentCount = g_SharedState.presentCallCount.fetch_add(1, std::memory_order_relaxed);
+    g_SharedState.presentCallCount.fetch_add(1, std::memory_order_relaxed);
 
     if (g_SharedState.deviceRemovedFatal.load()) {
         return oPresent(pSwapChain, SyncInterval, Flags);
@@ -102,14 +107,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     }
 
     // VSync Override
-    UINT oldInterval = SyncInterval;
     VSyncOverride vsync = GetVSyncOverride();
     if (vsync.shouldOverride) SyncInterval = (UINT)vsync.presentInterval;
     if (SyncInterval > 0) Flags &= ~512; // DXGI_PRESENT_ALLOW_TEARING
 
-    HRESULT hr = oPresent(pSwapChain, SyncInterval, Flags);
-
-    return hr;
+    return oPresent(pSwapChain, SyncInterval, Flags);
 }
 
 HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags, const DXGI_PRESENT_PARAMETERS* pPresentParameters) {
@@ -153,6 +155,12 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
     
     HRESULT hr = oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
     
+    if (FAILED(hr)) {
+        HookLog("DXGI: ResizeBuffers FAILED with 0x%08X", hr);
+    } else {
+        HookLog("DXGI: ResizeBuffers SUCCESS");
+    }
+    
     g_SharedState.swapchainInvalid.store(false);
     g_SharedState.wrapperResizeDepth.fetch_sub(1);
     return hr;
@@ -173,6 +181,12 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers1(IDXGISwapChain* pSwapChain, UINT 
 
     HRESULT hr = oResizeBuffers1(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags, pCreationNodeMask, ppPresentQueue);
     
+    if (FAILED(hr)) {
+        HookLog("DXGI: ResizeBuffers1 FAILED with 0x%08X", hr);
+    } else {
+        HookLog("DXGI: ResizeBuffers1 SUCCESS");
+    }
+
     g_SharedState.swapchainInvalid.store(false);
     g_SharedState.wrapperResizeDepth.fetch_sub(1);
     return hr;
@@ -186,32 +200,33 @@ bool InstallHooks(IDXGISwapChain* pSwapChain) {
 
     // Check if this is our own Wrapper
     IUnknown* pWrapper = nullptr;
-    static const GUID IID_CWrapDXGISwapChain = { 0x12345678, 0x1234, 0x1234, { 0x12, 0x34, 0x56, 0x78, 0x90, 0x12, 0x34, 0x56 } };
-    if (SUCCEEDED(pSwapChain->QueryInterface(IID_CWrapDXGISwapChain, (void**)&pWrapper))) {
+    // GUID matching wrapper_base.h: {A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
+    static const GUID IID_CWrapDXGISwapChainLocal = { 0xa1b2c3d4, 0xe5f6, 0x7890, { 0xab, 0xcd, 0xef, 0x12, 0x34, 0x56, 0x78, 0x90 } };
+    if (SUCCEEDED(pSwapChain->QueryInterface(IID_CWrapDXGISwapChainLocal, (void**)&pWrapper))) {
         pWrapper->Release();
         return true; 
     }
 
     // Present (8)
-    if (vtable[8] != DetourPresent) {
+    if (vtable[8] != (void*)DetourPresent) {
         VTableHook::Create(&vtable[8], (LPVOID)DetourPresent, (LPVOID*)&oPresent);
         anyInstalled = true;
     }
 
     // ResizeBuffers (13)
-    if (vtable[13] != DetourResizeBuffers) {
+    if (vtable[13] != (void*)DetourResizeBuffers) {
         VTableHook::Create(&vtable[13], (LPVOID)DetourResizeBuffers, (LPVOID*)&oResizeBuffers);
         anyInstalled = true;
     }
 
     // Present1 (22)
-    if (vtable[22] != DetourPresent1) {
+    if (vtable[22] != (void*)DetourPresent1) {
         VTableHook::Create(&vtable[22], (LPVOID)DetourPresent1, (LPVOID*)&oPresent1);
         anyInstalled = true;
     }
 
     // ResizeBuffers1 (39)
-    if (vtable[39] != DetourResizeBuffers1) {
+    if (vtable[39] != (void*)DetourResizeBuffers1) {
         VTableHook::Create(&vtable[39], (LPVOID)DetourResizeBuffers1, (LPVOID*)&oResizeBuffers1);
         anyInstalled = true;
     }

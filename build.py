@@ -1695,7 +1695,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             # ldflags_hook.append("-flto")
             pass
         
-        hk_cflags = curr_cflags + ["-DVK_NO_PROTOTYPES"] + [  # Vulkan hooks now in layer
+        hk_cflags = curr_cflags + ["-DVK_NO_PROTOTYPES", "-DBUILDING_CAPTURE_HOOK"] + [  # Vulkan hooks now in layer
             "-I" + os.path.join(PROJECT_ROOT, "common"),
             "-I" + os.path.join(PROJECT_ROOT, "hook", "common"),
             "-I" + os.path.join(PROJECT_ROOT, "hook", "apis"),
@@ -2025,9 +2025,31 @@ def main():
 
     # Write compile_commands.json
     try:
+        # Deduplicate and sort compile commands for better LSP performance/determinism
+        seen_files = set()
+        unique_commands = []
+        
+        # Sort by file path to keep output stable
+        sorted_commands = sorted(COMPILE_COMMANDS, key=lambda x: x['file'])
+        
+        for cmd in sorted_commands:
+            # Prefer x64 commands over x86 for LSP if both exist for the same file
+            # (assuming x64 is usually the primary dev target)
+            is_x86 = "mingw32" in cmd['arguments'][0] or "-m32" in cmd['arguments']
+            
+            if cmd['file'] not in seen_files:
+                unique_commands.append(cmd)
+                seen_files.add(cmd['file'])
+            elif not is_x86:
+                # Replace x86 entry with x64 entry if we encounter it
+                for i, existing in enumerate(unique_commands):
+                    if existing['file'] == cmd['file']:
+                        unique_commands[i] = cmd
+                        break
+
         with open(os.path.join(PROJECT_ROOT, "compile_commands.json"), "w") as f:
-            json.dump(COMPILE_COMMANDS, f, indent=4)
-        log(f"Generated compile_commands.json ({len(COMPILE_COMMANDS)} entries)")
+            json.dump(unique_commands, f, indent=4)
+        log(f"Generated compile_commands.json ({len(unique_commands)} entries)")
     except Exception as e:
         log(f"Error writing compile_commands.json: {e}")
 
