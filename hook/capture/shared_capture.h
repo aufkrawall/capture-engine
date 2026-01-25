@@ -144,7 +144,10 @@ private:
     UINT64 m_FenceValue;
     
     // Command allocator/list for copy operations
-    ComPtr<ID3D12CommandAllocator> m_CommandAllocator;
+    // Double-buffered allocators to allow CPU to record next frame while GPU processes previous
+    ComPtr<ID3D12CommandAllocator> m_CommandAllocators[2];
+    UINT64 m_FenceValues[2]; // Fence value to wait for before resetting allocator [i]
+    
     ComPtr<ID3D12GraphicsCommandList> m_CommandList;
     
     std::mutex m_Lock;

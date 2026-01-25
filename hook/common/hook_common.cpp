@@ -95,152 +95,122 @@ std::atomic<bool> g_GraphicsOverridesActive{false};
 
 // Early debug log - writes directly to file without IPC dependency
 // Used for debugging crashes before IPC connects
+// OPTIMIZED: Uses stack buffers and avoids global locks for the hot path (SHM)
 static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list args) {
-  static CRITICAL_SECTION s_cs;
-  static volatile LONG s_csInitialized = 0;
+  // Use stack buffers to allow concurrency without locking
+  char formatBuffer[4096];
+  char lineBuffer[8192];
+  
+  // Initialize Process Name once, thread-safe
+  static std::mutex s_NameInitMutex;
+  static bool s_NameInitDone = false;
+  
+  if (!s_NameInitDone) {
+      std::lock_guard<std::mutex> lock(s_NameInitMutex);
+      if (!s_NameInitDone) {
+          if (g_ProcessName[0] == '\0') {
+              char fullPath[MAX_PATH];
+              if (GetModuleFileNameA(NULL, fullPath, MAX_PATH)) {
+                  char* lastSlash = strrchr(fullPath, '\\');
+                  if (lastSlash) {
+                      strncpy(g_ProcessName, lastSlash + 1, sizeof(g_ProcessName) - 1);
+                  } else {
+                      strncpy(g_ProcessName, fullPath, sizeof(g_ProcessName) - 1);
+                  }
+                  g_ProcessName[sizeof(g_ProcessName) - 1] = '\0';
+              }
+          }
+          s_NameInitDone = true;
+      }
+  }
+
+  // Format the message
+  int len_buf = vsnprintf(formatBuffer, sizeof(formatBuffer), fmt, args);
+  if (len_buf < 0) len_buf = 0;
+  
+  SYSTEMTIME st;
+  GetLocalTime(&st);
+  DWORD tid = GetCurrentThreadId();
+  
+  int len = snprintf(lineBuffer, sizeof(lineBuffer),
+                     "[%02d:%02d:%02d.%03d] [T:%04X] [%s] %s",
+                     st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+                     tid, g_ProcessName, formatBuffer);
+                     
+  if (len <= 0) return;
+  if (len >= (int)sizeof(lineBuffer)) len = (int)sizeof(lineBuffer) - 1;
+
+  // --- PRIMARY: Push to Shared Memory Ring Buffer (Lock-Free) ---
+  if (g_IPC) {
+      // Load pointer atomically in case it's being torn down (unlikely but safe)
+      SharedMemoryLayout* shm = g_IPC->GetSharedMem();
+      if (shm) {
+          auto& logs = shm->logs;
+          // Atomic fetch_add reserves our slot
+          uint32_t wIdx = logs.writeIndex.fetch_add(1, std::memory_order_acq_rel);
+          uint32_t rIdx = logs.readIndex.load(std::memory_order_acquire);
+          
+          // Check if buffer is full
+          if ((uint32_t)(wIdx - rIdx) < SharedMemoryLayout::LogBuffer::SLOT_COUNT) {
+              char* slot = logs.buffer[wIdx % SharedMemoryLayout::LogBuffer::SLOT_COUNT];
+              // Write to our reserved slot
+              snprintf(slot, SharedMemoryLayout::LogBuffer::SLOT_SIZE, "[%s] %s", baseFilename, lineBuffer);
+              return; // Done! No file I/O, no mutex.
+          } else {
+              logs.overflowCount.fetch_add(1, std::memory_order_relaxed);
+              // Fall through to file logging if SHM is full? 
+              // Or just drop? Dropping is safer for performance, but we might miss info.
+              // Let's drop to avoid stalling the render thread on file I/O when the consumer is slow.
+              return; 
+          }
+      }
+  }
+
+  // --- FALLBACK: Direct File Logging (Early Init or No IPC) ---
+  // Only lock for file I/O
+  static std::mutex s_FileLogMutex;
   static char s_logDir[MAX_PATH] = {0};
-  static HANDLE s_hMutex = NULL;
   
-  static thread_local bool s_isLogging = false;
-  if (s_isLogging) return;
-  s_isLogging = true;
+  // Use unique_lock with try_lock to prevent deadlocks in weird re-entrancy cases
+  std::unique_lock<std::mutex> lock(s_FileLogMutex, std::defer_lock);
+  if (!lock.try_lock()) return; // Drop log if locked (avoid stalling)
 
-  if (InterlockedCompareExchange(&s_csInitialized, 1, 0) == 0) {
-      InitializeCriticalSection(&s_cs);
-      InterlockedExchange(&s_csInitialized, 2);
+  if (s_logDir[0] == '\0') {
+      char tmpPath[MAX_PATH];
+      if (BuildLogFilePathForModuleAddress((const void*)&EarlyLog, baseFilename, tmpPath, sizeof(tmpPath))) {
+          char* lastSlash = strrchr(tmpPath, '\\');
+          if (lastSlash) {
+              *lastSlash = '\0';
+              strncpy(s_logDir, tmpPath, sizeof(s_logDir) - 1);
+              s_logDir[sizeof(s_logDir) - 1] = '\0';
+          }
+      }
   }
-  while (s_csInitialized < 2) { Sleep(0); }
-  
-  if (!TryEnterCriticalSection(&s_cs)) {
-      // If we can't get the lock immediately, it might be held by a suspended thread
-      // (classic DllMain deadlock scenario). Just drop the log.
-      if (s_hMutex) ReleaseMutex(s_hMutex);
-      return;
-  }
-  
-  if (!s_hMutex) {
-      s_hMutex = CreateMutexA(NULL, FALSE, "Global\\Antigravity_Log_Mutex_v5");
-      if (!s_hMutex) s_hMutex = CreateMutexA(NULL, FALSE, "Local\\Antigravity_Log_Mutex_v5");
-  }
-  if (s_hMutex) WaitForSingleObject(s_hMutex, INFINITE);
 
-  // Write Process Start Banner once per process
-  static bool s_HeaderWritten = false;
-  if (!s_HeaderWritten && s_logDir[0] != '\0') {
-      s_HeaderWritten = true;
+  if (s_logDir[0] != '\0') {
       char fullLogPath[MAX_PATH];
       snprintf(fullLogPath, sizeof(fullLogPath), "%s\\%s", s_logDir, baseFilename);
       HANDLE hFile = CreateFileA(fullLogPath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
                                 NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, NULL);
       if (hFile != INVALID_HANDLE_VALUE) {
-          char header[1024];
-          int hlen = snprintf(header, sizeof(header), 
-              "\r\n--------------------------------------------------------------------------------\r\n"
-              "[PROCESS START] PID=%lu Name='%s' | [BUILD] Version=%s Built=%s\r\n"
-              "--------------------------------------------------------------------------------\r\n", 
-              GetCurrentProcessId(), g_ProcessName, CAPTURE_VERSION, BUILD_TIMESTAMP);
-          
-          if (hlen > 0) {
-              DWORD hwritten;
-              WriteFile(hFile, header, (DWORD)hlen, &hwritten, NULL);
+          // Check if new file to write header
+          LARGE_INTEGER sz;
+          sz.QuadPart = 0;
+          if (GetFileSizeEx(hFile, &sz) && sz.QuadPart == 0) {
+               char header[512];
+               int hlen = snprintf(header, sizeof(header), "[BUILD] Version=%s Built=%s\r\n", CAPTURE_VERSION, BUILD_TIMESTAMP);
+               if (hlen > 0) {
+                   DWORD hwritten;
+                   WriteFile(hFile, header, (DWORD)hlen, &hwritten, NULL);
+               }
           }
+          
+          DWORD written;
+          WriteFile(hFile, lineBuffer, len, &written, NULL);
+          WriteFile(hFile, "\r\n", 2, &written, NULL);
           CloseHandle(hFile);
       }
   }
-
-  static char s_formatBuffer[4096];
-  static char s_lineBuffer[8192];
-
-  if (g_ProcessName[0] == '\0') {
-      char fullPath[MAX_PATH];
-      if (GetModuleFileNameA(NULL, fullPath, MAX_PATH)) {
-          char* lastSlash = strrchr(fullPath, '\\');
-          if (lastSlash) {
-              strncpy(g_ProcessName, lastSlash + 1, sizeof(g_ProcessName) - 1);
-              g_ProcessName[sizeof(g_ProcessName) - 1] = '\0';
-          } else {
-              strncpy(g_ProcessName, fullPath, sizeof(g_ProcessName) - 1);
-              g_ProcessName[sizeof(g_ProcessName) - 1] = '\0';
-          }
-      }
-  }
-
-  int len_buf = vsnprintf(s_formatBuffer, sizeof(s_formatBuffer), fmt, args);
-  if (len_buf < 0) len_buf = 0;
-  if (len_buf >= (int)sizeof(s_formatBuffer)) len_buf = (int)sizeof(s_formatBuffer) - 1;
-
-  SYSTEMTIME st;
-  GetLocalTime(&st);
-  DWORD tid = GetCurrentThreadId();
-  
-  int len = snprintf(s_lineBuffer, sizeof(s_lineBuffer),
-                     "[%02d:%02d:%02d.%03d] [T:%04X] [%s] %s",
-                     st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
-                     tid, g_ProcessName, s_formatBuffer);
-  
-  if (len > 0) {
-      if (len >= (int)sizeof(s_lineBuffer)) len = (int)sizeof(s_lineBuffer) - 1;
-
-      // --- PRIMARY: Push to Shared Memory Ring Buffer ---
-      if (g_IPC && g_IPC->GetSharedMem()) {
-          auto& logs = g_IPC->GetSharedMem()->logs;
-          uint32_t wIdx = logs.writeIndex.load(std::memory_order_relaxed);
-          uint32_t rIdx = logs.readIndex.load(std::memory_order_acquire);
-          
-          if ((uint32_t)(wIdx - rIdx) < SharedMemoryLayout::LogBuffer::SLOT_COUNT) {
-              char* slot = logs.buffer[wIdx % SharedMemoryLayout::LogBuffer::SLOT_COUNT];
-              snprintf(slot, SharedMemoryLayout::LogBuffer::SLOT_SIZE, "[%s] %s", baseFilename, s_lineBuffer);
-              logs.writeIndex.store(wIdx + 1, std::memory_order_release);
-              
-              if (s_hMutex) ReleaseMutex(s_hMutex);
-              LeaveCriticalSection(&s_cs);
-              s_isLogging = false;
-              return;
-          } else {
-              logs.overflowCount.fetch_add(1, std::memory_order_relaxed);
-          }
-      }
-
-      // --- FALLBACK: Direct File Logging (Early Init or Buffer Full) ---
-      if (s_logDir[0] == '\0') {
-          char tmpPath[MAX_PATH];
-          if (BuildLogFilePathForModuleAddress((const void*)&EarlyLog, baseFilename, tmpPath, sizeof(tmpPath))) {
-              char* lastSlash = strrchr(tmpPath, '\\');
-              if (lastSlash) {
-                  *lastSlash = '\0';
-                  strncpy(s_logDir, tmpPath, sizeof(s_logDir) - 1);
-                  s_logDir[sizeof(s_logDir) - 1] = '\0';
-              }
-          }
-      }
-
-      if (s_logDir[0] != '\0') {
-          char fullLogPath[MAX_PATH];
-          snprintf(fullLogPath, sizeof(fullLogPath), "%s\\%s", s_logDir, baseFilename);
-          HANDLE hFile = CreateFileA(fullLogPath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                    NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, NULL);
-          if (hFile != INVALID_HANDLE_VALUE) {
-              LARGE_INTEGER sz;
-              sz.QuadPart = 0;
-              if (GetFileSizeEx(hFile, &sz) && sz.QuadPart == 0) {
-                  char header[512];
-                  int hlen = snprintf(header, sizeof(header), "[BUILD] Version=%s Built=%s\r\n", CAPTURE_VERSION, BUILD_TIMESTAMP);
-                  if (hlen > 0) {
-                      DWORD hwritten;
-                      WriteFile(hFile, header, (DWORD)hlen, &hwritten, NULL);
-                  }
-              }
-              DWORD written;
-              WriteFile(hFile, s_lineBuffer, len, &written, NULL);
-              WriteFile(hFile, "\r\n", 2, &written, NULL);
-              CloseHandle(hFile);
-          }
-      }
-  }
-
-  if (s_hMutex) ReleaseMutex(s_hMutex);
-  LeaveCriticalSection(&s_cs);
-  s_isLogging = false;
 }
 
 void EarlyLog(const char *fmt, ...) {

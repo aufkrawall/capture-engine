@@ -127,6 +127,32 @@ inline bool IsUnwrapAttemptGUID(REFIID riid) {
 }
 
 // ============================================================================
+// SRWLock Wrapper (High Performance Reader-Writer Lock)
+// ============================================================================
+class SRWLock {
+    SRWLOCK m_Lock = SRWLOCK_INIT;
+public:
+    void LockExclusive() { AcquireSRWLockExclusive(&m_Lock); }
+    void UnlockExclusive() { ReleaseSRWLockExclusive(&m_Lock); }
+    void LockShared() { AcquireSRWLockShared(&m_Lock); }
+    void UnlockShared() { ReleaseSRWLockShared(&m_Lock); }
+};
+
+class ScopedExclusiveLock {
+    SRWLock& m_Lock;
+public:
+    ScopedExclusiveLock(SRWLock& l) : m_Lock(l) { m_Lock.LockExclusive(); }
+    ~ScopedExclusiveLock() { m_Lock.UnlockExclusive(); }
+};
+
+class ScopedSharedLock {
+    SRWLock& m_Lock;
+public:
+    ScopedSharedLock(SRWLock& l) : m_Lock(l) { m_Lock.LockShared(); }
+    ~ScopedSharedLock() { m_Lock.UnlockShared(); }
+};
+
+// ============================================================================
 // Wrapper State Manager - Global tracking of wrapped objects
 // ============================================================================
 class WrapperStateManager {
@@ -147,7 +173,7 @@ public:
     
 private:
     WrapperStateManager() = default;
-    std::mutex m_Lock;
+    SRWLock m_Lock; // Use SRWLock for performance
     // Using simple arrays to avoid STL in hot paths
     static constexpr int MAX_SWAPCHAINS = 16;
     CWrapDXGISwapChain* m_Wrappers[MAX_SWAPCHAINS] = {};

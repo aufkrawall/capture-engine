@@ -176,6 +176,27 @@ static void AddToReplacementSet(ID3D10SamplerState* sampler) {
 // Global original function pointer - set by IAT patching
 PFN_D3D11CreateDeviceAndSwapChain oD3D11CreateDeviceAndSwapChain = NULL;
 
+typedef HRESULT(WINAPI *PFN_D3D10CreateDeviceAndSwapChain)(IDXGIAdapter*, D3D10_DRIVER_TYPE, HMODULE, UINT, UINT, DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**, ID3D10Device**);
+static PFN_D3D10CreateDeviceAndSwapChain oD3D10CreateDeviceAndSwapChain = NULL;
+
+typedef HRESULT(WINAPI *PFN_D3D10CreateDeviceAndSwapChain1)(IDXGIAdapter*, D3D10_DRIVER_TYPE, HMODULE, UINT, D3D10_FEATURE_LEVEL1, UINT, DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**, ID3D10Device1**);
+static PFN_D3D10CreateDeviceAndSwapChain1 oD3D10CreateDeviceAndSwapChain1 = NULL;
+
+typedef HRESULT(WINAPI *PFN_D3D10CreateDevice)(IDXGIAdapter*, D3D10_DRIVER_TYPE, HMODULE, UINT, UINT, ID3D10Device**);
+static PFN_D3D10CreateDevice oD3D10CreateDevice = NULL;
+
+typedef HRESULT(WINAPI *PFN_D3D10CreateDevice1)(IDXGIAdapter*, D3D10_DRIVER_TYPE, HMODULE, UINT, D3D10_FEATURE_LEVEL1, UINT, ID3D10Device1**);
+static PFN_D3D10CreateDevice1 oD3D10CreateDevice1 = NULL;
+
+typedef HRESULT(WINAPI *PFN_CreateDXGIFactory)(REFIID, void**);
+static PFN_CreateDXGIFactory oCreateDXGIFactory = NULL;
+
+typedef HRESULT(WINAPI *PFN_CreateDXGIFactory1)(REFIID, void**);
+static PFN_CreateDXGIFactory1 oCreateDXGIFactory1 = NULL;
+
+typedef HRESULT(WINAPI *PFN_CreateDXGIFactory2)(UINT, REFIID, void**);
+static PFN_CreateDXGIFactory2 oCreateDXGIFactory2 = NULL;
+
 typedef HRESULT(STDMETHODCALLTYPE *CreateSwapChain_t)(IDXGIFactory *, IUnknown *, DXGI_SWAP_CHAIN_DESC *, IDXGISwapChain **);
 static CreateSwapChain_t oCreateSwapChain = NULL;
 
@@ -185,54 +206,133 @@ static CreateSwapChainForHwnd_t oCreateSwapChainForHwnd = NULL;
 static ResizeBuffers_t oResizeBuffers = NULL;
 
 // Forward Declarations (non-static for cross-file hook collision detection from dx12_hook.cpp)
-HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT Flags);
-HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS *pPresentParameters);
-static HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain *pSwapChain, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags);
+// Helper to get VSync override settings (reduces duplication)
+static VSyncOverride GetDX11VSyncOverride() {
+    return GetVSyncOverride(); // Use the shared helper from hook_common.h
+}
+
+// Forward Declarations
+void CleanupDX11Resources();
+void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame);
+void DrawDX11Overlay(IDXGISwapChain* pSwapChain);
 static void InstallVTableHooks(ID3D11Device *pDevice, ID3D11DeviceContext* pContext, IDXGISwapChain* pSwapChain);
 static void HookDXGIFactory(IUnknown* pDevice);
-
-// Original function pointer is now global (above) for IAT patching access
-
-typedef HRESULT(WINAPI *D3D10CreateDeviceAndSwapChain_t)(
-    IDXGIAdapter*, D3D10_DRIVER_TYPE, HMODULE, UINT, UINT, DXGI_SWAP_CHAIN_DESC*,
-    IDXGISwapChain**, ID3D10Device**);
-static D3D10CreateDeviceAndSwapChain_t oD3D10CreateDeviceAndSwapChain = NULL;
-
-typedef HRESULT(WINAPI *D3D10CreateDeviceAndSwapChain1_t)(
-    IDXGIAdapter*, D3D10_DRIVER_TYPE, HMODULE, UINT, D3D10_FEATURE_LEVEL1, UINT,
-    DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**, ID3D10Device1**);
-static D3D10CreateDeviceAndSwapChain1_t oD3D10CreateDeviceAndSwapChain1 = NULL;
-
-typedef HRESULT(WINAPI *D3D10CreateDevice_t)(IDXGIAdapter *, D3D10_DRIVER_TYPE, HMODULE, UINT, UINT, ID3D10Device **);
-static D3D10CreateDevice_t oD3D10CreateDevice = NULL;
-
-typedef HRESULT(WINAPI *D3D10CreateDevice1_t)(IDXGIAdapter *, D3D10_DRIVER_TYPE, HMODULE, UINT, D3D10_FEATURE_LEVEL1, UINT, ID3D10Device1 **);
-static D3D10CreateDevice1_t oD3D10CreateDevice1 = NULL;
-
-typedef HRESULT(WINAPI *CreateDXGIFactory_t)(REFIID, void **);
-static CreateDXGIFactory_t oCreateDXGIFactory = NULL;
-
-typedef HRESULT(WINAPI *CreateDXGIFactory1_t)(REFIID, void **);
-static CreateDXGIFactory1_t oCreateDXGIFactory1 = NULL;
-
-typedef HRESULT(WINAPI *CreateDXGIFactory2_t)(UINT, REFIID, void **);
-static CreateDXGIFactory2_t oCreateDXGIFactory2 = NULL;
-
 static void HookDXGIFactoryInstance(IUnknown* factory);
 
-static HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(
-    IDXGIAdapter *pAdapter, D3D_DRIVER_TYPE DriverType, HMODULE Software,
-    UINT Flags, const D3D_FEATURE_LEVEL *pFeatureLevels, UINT FeatureLevels,
-    UINT SDKVersion, const DXGI_SWAP_CHAIN_DESC *pSwapChainDesc,
-    IDXGISwapChain **ppSwapChain, ID3D11Device **ppDevice,
-    D3D_FEATURE_LEVEL *pFeatureLevel, ID3D11DeviceContext **ppImmediateContext) {
+HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT Flags) {
+    // frameCount removed from SharedMemoryLayout
+    // if (g_IPC && g_IPC->GetSharedMem()) {
+    //    g_IPC->GetSharedMem()->frameCount.fetch_add(1, std::memory_order_relaxed);
+    // }
     
+    // Process VSync Override
+    VSyncOverride override = GetDX11VSyncOverride();
+    if (override.shouldOverride) {
+        SyncInterval = override.presentInterval;
+        if (override.useMailbox) {
+            Flags |= DXGI_PRESENT_ALLOW_TEARING;
+        }
+    }
+    
+    // Invalidate swapchain if requested (e.g. by DX12 hook detecting FSR4/FG)
+    if (DXGIShared::g_SharedState.swapchainInvalid.load(std::memory_order_acquire)) {
+        DXGIShared::g_SharedState.swapchainInvalid.store(false, std::memory_order_release);
+        CleanupDX11Resources();
+    }
+
+    HandleDX11ProcessFrame(pSwapChain, true);
+    
+    // FPS Limiter
+    g_SharedFpsLimiter.Apply();
+    
+    return oPresent(pSwapChain, SyncInterval, Flags);
+}
+
+HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain *pSwapChain,
+                                             UINT SyncInterval,
+                                             UINT PresentFlags,
+                                             const DXGI_PRESENT_PARAMETERS *pPresentParameters) {
+  
+  // Vulkan coordination: Skip DX11 overlay if Vulkan Layer is active AND presenting.
+  if (g_pSharedMem) {
+      uint64_t lastVulkan = g_pSharedMem->runtimeState.vulkanPresentTick.load(std::memory_order_acquire);
+      if (g_pSharedMem->runtimeState.vulkanLayerActive && (GetTickCount64() - lastVulkan < 200)) {
+          if (oPresent1)
+              return oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
+          return oPresent(pSwapChain, SyncInterval, PresentFlags);
+      }
+  }
+
+  // SAFETY CHECK: DX12 Detection
+  // If this swapchain is actually DX12, we must NOT draw the DX11 overlay.
+  // This happens when InstallVTableHooks fails to detect DX12 initially (race condition or interop),
+  // or when DX11 hooks installed on a shared vtable that DX12 also uses.
+  //
+  // CRITICAL FIX: When DX11 hooks a DX12 swapchain, we MUST delegate to DX12_ProcessFrameExternal
+  // so that the DX12 overlay still renders. Otherwise, no overlay appears at all.
+  {
+      ID3D12Device* d12Dev = nullptr;
+      if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D12Device), (void**)&d12Dev))) {
+          d12Dev->Release();
+          
+          // DX12 detected. Skip DX11 overlay but delegate to DX12 for frame processing.
+          static bool s_LoggedDX12Mismatch = false;
+          if (!s_LoggedDX12Mismatch) {
+              HookLog("DX11: DetourDX11Present1 - DX12 Device detected! Delegating to DX12_ProcessFrameExternal.");
+              s_LoggedDX12Mismatch = true;
+          }
+          
+          // Delegate to DX12 hook for overlay/capture processing
+          extern void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain);
+          DX12_ProcessFrameExternal(pSwapChain);
+          
+          if (oPresent1)
+              return oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
+          return oPresent(pSwapChain, SyncInterval, PresentFlags);
+      }
+  }
+  
+  bool isFirstHook = !g_InPresentHook;
+  g_InPresentHook = true;
+  auto hookGuard = ce::make_scope_guard([&]{ 
+      // Guard auto-reset
+  });
+
+  // Process VSync Override
+  VSyncOverride override = GetDX11VSyncOverride();
+  if (override.shouldOverride) {
+      SyncInterval = override.presentInterval;
+      if (override.useMailbox) {
+          PresentFlags |= DXGI_PRESENT_ALLOW_TEARING;
+      }
+  }
+
+  DrawDX11Overlay(pSwapChain);
+
+  if (oPresent1)
+      return oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
+  // Fallback to Present if Present1 not hooked (should not happen if vtable hooked correctly)
+  return oPresent(pSwapChain, SyncInterval, PresentFlags); 
+}
+
+static HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(
+    IDXGIAdapter* pAdapter,
+    D3D_DRIVER_TYPE DriverType,
+    HMODULE Software,
+    UINT Flags,
+    const D3D_FEATURE_LEVEL* pFeatureLevels,
+    UINT FeatureLevels,
+    UINT SDKVersion,
+    const DXGI_SWAP_CHAIN_DESC* pSwapChainDesc,
+    IDXGISwapChain** ppSwapChain,
+    ID3D11Device** ppDevice,
+    D3D_FEATURE_LEVEL* pFeatureLevel,
+    ID3D11DeviceContext** ppImmediateContext)
+{
     if (pSwapChainDesc) {
         if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) {
-             EarlyLog("DX11: D3D11CreateDeviceAndSwapChain called. Width=%u Height=%u Windowed=%d BufferCount=%u SwapEffect=%d Flags=0x%X",
-                pSwapChainDesc->BufferDesc.Width, pSwapChainDesc->BufferDesc.Height, 
-                pSwapChainDesc->Windowed, pSwapChainDesc->BufferCount, 
-                pSwapChainDesc->SwapEffect, pSwapChainDesc->Flags);
+             EarlyLog("DX11: D3D11CreateDeviceAndSwapChain called. Width=%u Height=%u", 
+                pSwapChainDesc->BufferDesc.Width, pSwapChainDesc->BufferDesc.Height);
         }
     } else {
         EarlyLog("DX11: D3D11CreateDeviceAndSwapChain called (pSwapChainDesc=NULL)");
@@ -2103,65 +2203,6 @@ static void InstallRuntimeD3D10Hooks(ID3D10Device* pDevice) {
     if (status == VTableHook::Success) {
         HookLog("DX10: Runtime GSSetSamplers hook installed");
     }
-}
-
-
-HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain *pSwapChain,
-                                             UINT SyncInterval,
-                                             UINT PresentFlags,
-                                             const DXGI_PRESENT_PARAMETERS *pPresentParameters) {
-  
-  // Vulkan coordination: Skip DX11 overlay if Vulkan Layer is active AND presenting.
-  if (g_pSharedMem) {
-      uint64_t lastVulkan = g_pSharedMem->runtimeState.vulkanPresentTick.load(std::memory_order_acquire);
-      if (g_pSharedMem->runtimeState.vulkanLayerActive && (GetTickCount64() - lastVulkan < 200)) {
-          if (oPresent1)
-              return oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
-          return oPresent(pSwapChain, SyncInterval, PresentFlags);
-      }
-  }
-
-  // SAFETY CHECK: DX12 Detection
-  // If this swapchain is actually DX12, we must NOT draw the DX11 overlay.
-  // This happens when InstallVTableHooks fails to detect DX12 initially (race condition or interop),
-  // or when DX11 hooks installed on a shared vtable that DX12 also uses.
-  //
-  // CRITICAL FIX: When DX11 hooks a DX12 swapchain, we MUST delegate to DX12_ProcessFrameExternal
-  // so that the DX12 overlay still renders. Otherwise, no overlay appears at all.
-  {
-      ID3D12Device* d12Dev = nullptr;
-      if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D12Device), (void**)&d12Dev))) {
-          d12Dev->Release();
-          
-          // DX12 detected. Skip DX11 overlay but delegate to DX12 for frame processing.
-          static bool s_LoggedDX12Mismatch = false;
-          if (!s_LoggedDX12Mismatch) {
-              HookLog("DX11: DetourDX11Present1 - DX12 Device detected! Delegating to DX12_ProcessFrameExternal.");
-              s_LoggedDX12Mismatch = true;
-          }
-          
-          // Delegate to DX12 hook for overlay/capture processing
-          extern void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain);
-          DX12_ProcessFrameExternal(pSwapChain);
-          
-          if (oPresent1)
-              return oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
-          return oPresent(pSwapChain, SyncInterval, PresentFlags);
-      }
-  }
-  
-  bool isFirstHook = !g_InPresentHook;
-  g_InPresentHook = true;
-  auto hookGuard = ce::make_scope_guard([&]{ 
-      // Guard auto-reset
-  });
-
-  DrawDX11Overlay(pSwapChain);
-
-  if (oPresent1)
-      return oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
-  // Fallback to Present if Present1 not hooked (should not happen if vtable hooked correctly)
-  return oPresent(pSwapChain, SyncInterval, PresentFlags); 
 }
 
 void DX11Hook::ProcessDeferredReleases() {

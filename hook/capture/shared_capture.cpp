@@ -214,6 +214,7 @@ SharedCaptureD3D12::SharedCaptureD3D12()
     , m_FenceShareHandle(nullptr)
     , m_FenceEvent(nullptr)
     , m_FenceValue(0)
+    , m_FenceValues{0, 0}
     , m_WriteIndex(0)
     , m_FrameCounter(0)
     , m_Active(false)
@@ -249,11 +250,13 @@ void SharedCaptureD3D12::Reset() {
     m_pDevice.Reset();
     m_pSwapChain.Reset();
     m_Fence.Reset();
-    m_CommandAllocator.Reset();
+    m_CommandAllocators[0].Reset();
+    m_CommandAllocators[1].Reset();
     m_CommandList.Reset();
     
     for (int i = 0; i < 2; i++) {
         m_SharedResources[i].Reset();
+        m_FenceValues[i] = 0;
         if (m_SharedHandles[i]) {
             CloseHandle(m_SharedHandles[i]);
             m_SharedHandles[i] = nullptr;
@@ -269,6 +272,9 @@ void SharedCaptureD3D12::Reset() {
         CloseHandle(m_FenceShareHandle);
         m_FenceShareHandle = nullptr;
     }
+    
+    m_FenceValue = 0;
+    m_WriteIndex = 0;
 }
 
 bool SharedCaptureD3D12::Initialize(ID3D12Device* pDevice, IDXGISwapChain* pSwapChain) {
@@ -307,15 +313,17 @@ bool SharedCaptureD3D12::Initialize(ID3D12Device* pDevice, IDXGISwapChain* pSwap
         return false;
     }
     
-    // Create command allocator and list
-    if (FAILED(pDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, 
-                                                IID_PPV_ARGS(&m_CommandAllocator)))) {
-        EarlyLog("DX12: SharedCapture - Failed to Create Command Allocator");
-        return false;
+    // Create command allocators (double buffered)
+    for (int i = 0; i < 2; i++) {
+        if (FAILED(pDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, 
+                                                    IID_PPV_ARGS(&m_CommandAllocators[i])))) {
+            EarlyLog("DX12: SharedCapture - Failed to Create Command Allocator %d", i);
+            return false;
+        }
     }
     
     if (FAILED(pDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                           m_CommandAllocator.Get(), nullptr,
+                                           m_CommandAllocators[0].Get(), nullptr,
                                            IID_PPV_ARGS(&m_CommandList)))) {
         EarlyLog("DX12: SharedCapture - Failed to Create Command List");
         return false;
@@ -409,9 +417,19 @@ bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, UINT ba
     
     UINT writeIdx = m_WriteIndex;
     
+    // SAFETY: Wait for this allocator to be finished by GPU before reusing
+    if (m_FenceValues[writeIdx] > 0) {
+        if (m_Fence->GetCompletedValue() < m_FenceValues[writeIdx]) {
+            // Non-blocking check: If the GPU is still using this slot, drop the frame.
+            // This prevents the game rendering thread from stalling due to slow capture consumption.
+            // We do NOT wait here.
+            return false; 
+        }
+    }
+    
     // Reset and record copy command
-    m_CommandAllocator->Reset();
-    m_CommandList->Reset(m_CommandAllocator.Get(), nullptr);
+    m_CommandAllocators[writeIdx]->Reset();
+    m_CommandList->Reset(m_CommandAllocators[writeIdx].Get(), nullptr);
     
     // Transition back buffer from PRESENT to COPY_SOURCE
     D3D12_RESOURCE_BARRIER barrier = {};
@@ -452,6 +470,9 @@ bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, UINT ba
     // Signal fence
     m_FenceValue++;
     pCommandQueue->Signal(m_Fence.Get(), m_FenceValue);
+    
+    // Store completion value for this allocator
+    m_FenceValues[writeIdx] = m_FenceValue;
     
     // Update frame descriptor
     {

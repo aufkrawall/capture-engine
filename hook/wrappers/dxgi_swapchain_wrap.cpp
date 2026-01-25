@@ -310,7 +310,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::SetHDRMetaData(DXGI_HDR_METADATA_T
 // ============================================================================
 
 void WrapperStateManager::RegisterSwapchain(CWrapDXGISwapChain* pWrapper, IDXGISwapChain* pReal) {
-    std::lock_guard<std::mutex> lock(m_Lock);
+    ScopedExclusiveLock lock(m_Lock); // Exclusive lock for writing
     for (int i = 0; i < MAX_SWAPCHAINS; ++i) {
         if (m_Wrappers[i] == nullptr) {
             m_Wrappers[i] = pWrapper;
@@ -321,7 +321,7 @@ void WrapperStateManager::RegisterSwapchain(CWrapDXGISwapChain* pWrapper, IDXGIS
 }
 
 void WrapperStateManager::UnregisterSwapchain(CWrapDXGISwapChain* pWrapper) {
-    std::lock_guard<std::mutex> lock(m_Lock);
+    ScopedExclusiveLock lock(m_Lock); // Exclusive lock for writing
     for (int i = 0; i < MAX_SWAPCHAINS; ++i) {
         if (m_Wrappers[i] == pWrapper) {
             m_Wrappers[i] = nullptr;
@@ -332,7 +332,7 @@ void WrapperStateManager::UnregisterSwapchain(CWrapDXGISwapChain* pWrapper) {
 }
 
 CWrapDXGISwapChain* WrapperStateManager::FindWrapper(IDXGISwapChain* pReal) {
-    std::lock_guard<std::mutex> lock(m_Lock);
+    ScopedSharedLock lock(m_Lock); // Shared lock for reading (Concurrent Access)
     for (int i = 0; i < MAX_SWAPCHAINS; ++i) {
         if (m_RealSwapchains[i] == pReal || m_Wrappers[i] == (CWrapDXGISwapChain*)pReal) {
             return m_Wrappers[i];

@@ -109,6 +109,8 @@ private:
 
   ImFont* mainFont = nullptr;
 
+  float initialDpiScale = 1.0f; // Scale at initialization time
+
   DrawResult lastDrawResult = DrawResult::Unknown;
 };
 

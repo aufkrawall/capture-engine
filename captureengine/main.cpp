@@ -155,8 +155,25 @@ void LaunchGameSuspended(const std::string& path) {
                  LogInfo("[Launcher] Injection Successful. Resuming Thread.");
                  ResumeThread(pi.hThread);
             } else {
-                 LogError("[Launcher] Injection FAILED. Terminating process.");
-                 TerminateProcess(pi.hProcess, 1);
+                 LogInfo("[Launcher] Early Injection failed (likely WoW64 loader). Resuming and retrying...");
+                 ResumeThread(pi.hThread);
+                 
+                 // Fallback: Aggressive polling for 2 seconds to catch it as soon as kernel32 loads
+                 bool injected = false;
+                 DWORD start = GetTickCount();
+                 while (GetTickCount() - start < 2000) {
+                     if (injector.Inject(pi.dwProcessId, cleanPath)) {
+                         injected = true;
+                         break;
+                     }
+                     Sleep(10);
+                 }
+                 
+                 if (injected) {
+                     LogInfo("[Launcher] Late Injection Successful.");
+                 } else {
+                     LogError("[Launcher] Late Injection FAILED. Game running without hooks.");
+                 }
             }
             
             CloseHandle(pi.hProcess);

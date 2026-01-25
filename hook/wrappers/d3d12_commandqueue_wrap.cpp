@@ -5,6 +5,7 @@
 #include "d3d12_commandqueue_wrap.h"
 #include "d3d12_device_wrap.h"
 #include "hook_common.h"
+#include <mutex>
 
 // ============================================================================
 // Constructor / Destructor
@@ -137,25 +138,29 @@ void STDMETHODCALLTYPE CWrapD3D12CommandQueue::ExecuteCommandLists(
     if (!m_bRegistered) {
         typedef void (*DX12_SetCommandQueueFn)(ID3D12CommandQueue*);
         static DX12_SetCommandQueueFn pFn = nullptr;
-        static bool s_LookupAttempted = false;
+        static std::mutex s_LookupMutex;
+        static bool s_LookupDone = false;
 
-        if (!s_LookupAttempted) {
-            HMODULE hMod = GetModuleHandleA("VK_LAYER_CE_overlay_x86.dll");
-            if (!hMod) hMod = GetModuleHandleA("capture_hook_x86.dll");
-            if (!hMod) hMod = GetModuleHandleA("VK_LAYER_CE_overlay.dll"); // 64-bit fallback naming
-            if (!hMod) hMod = GetModuleHandleA("capture_hook_x64.dll");
+        if (!s_LookupDone) {
+            std::lock_guard<std::mutex> lock(s_LookupMutex);
+            if (!s_LookupDone) {
+                HMODULE hMod = GetModuleHandleA("VK_LAYER_CE_overlay_x86.dll");
+                if (!hMod) hMod = GetModuleHandleA("capture_hook_x86.dll");
+                if (!hMod) hMod = GetModuleHandleA("VK_LAYER_CE_overlay.dll"); // 64-bit fallback naming
+                if (!hMod) hMod = GetModuleHandleA("capture_hook_x64.dll");
 
-            if (hMod) {
-                pFn = (DX12_SetCommandQueueFn)GetProcAddress(hMod, "DX12_SetCommandQueue");
-                if (pFn) {
-                     WrapperLog("D3D12 CommandQueue Wrapper: Found DX12_SetCommandQueue at %p", pFn);
+                if (hMod) {
+                    pFn = (DX12_SetCommandQueueFn)GetProcAddress(hMod, "DX12_SetCommandQueue");
+                    if (pFn) {
+                         WrapperLog("D3D12 CommandQueue Wrapper: Found DX12_SetCommandQueue at %p", pFn);
+                    } else {
+                         WrapperLog("D3D12 CommandQueue Wrapper: DX12_SetCommandQueue exported function NOT FOUND in %p", hMod);
+                    }
                 } else {
-                     WrapperLog("D3D12 CommandQueue Wrapper: DX12_SetCommandQueue exported function NOT FOUND in %p", hMod);
+                     WrapperLog("D3D12 CommandQueue Wrapper: Hook DLL not found in process!");
                 }
-            } else {
-                 WrapperLog("D3D12 CommandQueue Wrapper: Hook DLL not found in process!");
+                s_LookupDone = true;
             }
-            s_LookupAttempted = true;
         }
 
         if (pFn) {

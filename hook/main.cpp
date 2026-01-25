@@ -34,6 +34,7 @@
 #include <filesystem>
 
 HMODULE g_hModule = NULL;
+DWORD g_RecursionTlsIndex = TLS_OUT_OF_INDEXES;
 
 enum class ProcessCategory {
     PotentialGame,
@@ -1193,10 +1194,64 @@ static bool IsServiceProcess(const char* name) {
             _stricmp(name, "ApplicationFrameHost.exe") == 0); // SpecialK lists this
 }
 
+// Shared recursion guard pointer
+static std::atomic<int>* g_pRecursionDepth = nullptr;
+static HANDLE g_hRecursionMap = NULL;
+
+void InitRecursionGuard() {
+    if (g_pRecursionDepth) return;
+
+    char mapName[64];
+    snprintf(mapName, sizeof(mapName), "Local\\CE_HookGuard_%u", GetCurrentProcessId());
+
+    // Try to open existing first
+    g_hRecursionMap = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, mapName);
+    
+    if (g_hRecursionMap) {
+        EarlyLog("InitRecursionGuard: Opened existing SHM %s", mapName);
+    } else {
+        g_hRecursionMap = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 4096, mapName);
+        if (g_hRecursionMap) EarlyLog("InitRecursionGuard: Created new SHM %s", mapName);
+        else EarlyLog("InitRecursionGuard: Failed to create SHM %s. Err=%d", mapName, GetLastError());
+    }
+
+    if (g_hRecursionMap) {
+        void* pView = MapViewOfFile(g_hRecursionMap, FILE_MAP_ALL_ACCESS, 0, 0, 4096);
+        if (pView) {
+            g_pRecursionDepth = (std::atomic<int>*)pView;
+        } else {
+            EarlyLog("InitRecursionGuard: MapViewOfFile failed. Err=%d", GetLastError());
+        }
+    }
+    
+    // Fallback logic
+    if (!g_pRecursionDepth) {
+        EarlyLog("InitRecursionGuard: CRITICAL FAILURE - Shared Memory failed. Disabling hook to prevent crash.");
+        // We cannot safely run in a multi-instance scenario without shared memory.
+        // Disabling the hook (dormant mode) is the only safe option to prevent Stack Overflow.
+        g_isDormant = true; 
+        return;
+    }
+}
+
 extern "C" __declspec(dllexport) LRESULT CALLBACK CBTHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
-    // 1. If dormant, do nothing but pass through (minimal overhead)
+    // Optimization: Check dormant flag first (cheapest check)
     if (g_isDormant) {
         return CallNextHookEx(NULL, nCode, wParam, lParam);
+    }
+
+    // Ensure guard is initialized
+    if (!g_pRecursionDepth) {
+        return CallNextHookEx(NULL, nCode, wParam, lParam);
+    }
+
+    // RECURSION GUARD: Shared Atomic Depth Counter
+    int depth = g_pRecursionDepth->fetch_add(1, std::memory_order_relaxed);
+    
+    // Check limit
+    if (depth >= 5) { 
+        g_pRecursionDepth->fetch_sub(1, std::memory_order_relaxed);
+        return 0; // Swallow event
     }
     
     // 2. Respawn Logic: If we are active (whitelisted) but HookThread died (CaptureEngine closed)
@@ -1226,7 +1281,10 @@ extern "C" __declspec(dllexport) LRESULT CALLBACK CBTHookProc(int nCode, WPARAM 
             }
         }
     }
-    return CallNextHookEx(NULL, nCode, wParam, lParam);
+    
+    LRESULT ret = CallNextHookEx(NULL, nCode, wParam, lParam);
+    g_pRecursionDepth->fetch_sub(1, std::memory_order_relaxed);
+    return ret;
 }
 
 // Thread to safely eject the DLL
@@ -1237,6 +1295,9 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
   if (ul_reason_for_call == DLL_PROCESS_ATTACH) {
     g_hModule = hinstDLL;
     DisableThreadLibraryCalls(hinstDLL);
+    
+    // Initialize shared recursion guard immediately
+    InitRecursionGuard();
 
     char fullPath[MAX_PATH] = {0};
     char* fileName = (char*)"unknown";
@@ -1247,11 +1308,9 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
         g_ProcessName[sizeof(g_ProcessName) - 1] = '\0';
     }
 
-    // Log the actual DLL path running (Critical for diagnosing outdated file injection)
+    // Get my DLL path but DO NOT log yet
     char myDllPath[MAX_PATH] = {0};
-    if (GetModuleFileNameA(hinstDLL, myDllPath, MAX_PATH)) {
-        EarlyLog("DllMain: Loaded hook DLL from: %s", myDllPath);
-    }
+    GetModuleFileNameA(hinstDLL, myDllPath, MAX_PATH);
 
     // PINNING STRATEGY:
     // We MUST pin the DLL in *every* process that loads it (except our own tools).
@@ -1263,7 +1322,6 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     //    re-inject us immediately, causing a high-CPU "Load-Unload-Load" loop.
     //
     // By pinning, we ensure the DLL stays dormant in memory until the process exits.
-    // This is the only robust way to support global CBT hooks without crashes.
     
     bool isOurTool = (_stricmp(fileName, "captureengine.exe") == 0 || 
                       _stricmp(fileName, "captureengine_x86.exe") == 0);
@@ -1272,7 +1330,6 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
         HMODULE hPin = NULL;
         GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN, 
                            (LPCSTR)hinstDLL, &hPin);
-        // EarlyLog("DllMain: Pinned DLL in %s", fileName);
     }
     
     // Install Crash Handler immediately to catch startup crashes
@@ -1292,7 +1349,6 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     // These processes should unload the DLL immediately and cleanly.
     if (IsServiceProcess(fileName)) {
         g_isDormant = true;
-        // EarlyLog("DllMain: Dormant mode for service process: %s", fileName);
         return TRUE; // Stay loaded but inert to prevent load/unload loop
     }
 
@@ -1312,8 +1368,12 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
         _stricmp(fileName, "taskhostw.exe") == 0) {     // Task Host
         
         g_isDormant = true;
-        // EarlyLog("DllMain: Dormant mode for shell process: %s", fileName);
         return TRUE; // Stay loaded but totally inert
+    }
+
+    // Now it is safe to log!
+    if (myDllPath[0] != '\0') {
+        EarlyLog("DllMain: Loaded hook DLL from: %s", myDllPath);
     }
 
     // 3. WHITELIST CHECK: Fast & Inert

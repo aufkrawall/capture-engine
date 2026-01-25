@@ -14,7 +14,7 @@
 static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 
 // Shared memory layout version - increment when struct changes
-static constexpr uint32_t SHARED_MEMORY_VERSION = 3;
+static constexpr uint32_t SHARED_MEMORY_VERSION = 4;
 
 // Minimum supported version for backward compatibility
 static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
@@ -26,7 +26,7 @@ static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
 #define IPC_BUFFER_SIZE 4096
 
 // Frame ring buffer size (must be power of 2 for efficient modulo)
-static const int FRAME_RING_SIZE = 16;
+static const int FRAME_RING_SIZE = 32;
 
 // Discovery structure - small shared memory to help hook find inject process
 struct DiscoveryInfo {

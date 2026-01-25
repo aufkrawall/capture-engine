@@ -143,6 +143,16 @@ __declspec(dllexport) void DX12_SignalFSR4SwapchainRecreated() {
 extern "C" {
     __declspec(dllexport) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) {
         if (!pQueue) return;
+        
+        // CRITICAL FIX: Only allow DIRECT queues for overlay rendering.
+        // Strange Brigade and other DX12 games use Async Compute queues.
+        // Submitting overlay (Direct) commands to a Compute queue causes a device lost/crash.
+        D3D12_COMMAND_QUEUE_DESC desc = pQueue->GetDesc();
+        if (desc.Type != D3D12_COMMAND_LIST_TYPE_DIRECT) {
+            // HookLog("DX12: Ignoring non-direct queue (Type=%d)", desc.Type);
+            return;
+        }
+
         std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
         if (g_CommandQueue != pQueue) {
             if (g_CommandQueue) g_CommandQueue->Release();
@@ -247,13 +257,36 @@ void CreateRTVs(ID3D12Device *device, IDXGISwapChain3 *swapChain, int bufferCoun
 void InitOverlaySync(ID3D12Device *device, int bufferCount) {
   if (g_State.syncInit) return;
   if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_State.fence)))) return;
+  
   g_State.allocators.resize(DX12OverlayState::ALLOC_POOL_SIZE);
   g_State.fenceValues.resize(DX12OverlayState::ALLOC_POOL_SIZE, 0);
+  
+  bool success = true;
   for (int i = 0; i < DX12OverlayState::ALLOC_POOL_SIZE; i++) {
-    if (FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&g_State.allocators[i])))) return;
+    if (FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&g_State.allocators[i])))) {
+        success = false;
+        break;
+    }
   }
-  if (FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_State.allocators[0], nullptr, IID_PPV_ARGS(&g_State.cmdList)))) return;
-  g_State.cmdList->Close(); g_State.fenceEvent = CreateEvent(NULL, FALSE, FALSE, NULL); g_State.syncInit = true;
+  
+  if (success) {
+      if (FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_State.allocators[0], nullptr, IID_PPV_ARGS(&g_State.cmdList)))) {
+          success = false;
+      }
+  }
+
+  if (success) {
+      g_State.cmdList->Close(); 
+      g_State.fenceEvent = CreateEvent(NULL, FALSE, FALSE, NULL); 
+      g_State.syncInit = true;
+  } else {
+      // Cleanup partial initialization
+      for (auto* alloc : g_State.allocators) if (alloc) alloc->Release();
+      g_State.allocators.clear();
+      g_State.fenceValues.clear();
+      if (g_State.cmdList) { g_State.cmdList->Release(); g_State.cmdList = nullptr; }
+      if (g_State.fence) { g_State.fence->Release(); g_State.fence = nullptr; }
+  }
 }
 
 static bool DrainCommandQueue(ID3D12CommandQueue* queue, ID3D12Device* device) {
@@ -295,11 +328,33 @@ void CleanupRTVs() {
 void DX12_OnSwapchainResizeBegin() {
   if (g_InSwapchainResizeCleanup.exchange(true)) return;
   DXGIShared::g_SharedState.lastSwapchainCreation = std::chrono::steady_clock::now();
-  std::lock_guard<std::recursive_mutex> lock(g_OverlayMutex);
+  
+  // 1. Capture Queue Reference (Thread-safe)
   ID3D12CommandQueue* q = nullptr;
-  { std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex); if (g_CommandQueue) { q = g_CommandQueue; q->AddRef(); } }
-  if (q) { ID3D12Device* d = nullptr; if (SUCCEEDED(q->GetDevice(IID_PPV_ARGS(&d)))) { DrainCommandQueue(q, d); d->Release(); } q->Release(); }
-  CleanupOverlay(); CleanupRTVs();
+  { 
+      std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex); 
+      if (g_CommandQueue) { 
+          q = g_CommandQueue; 
+          q->AddRef(); 
+      } 
+  }
+  
+  // 2. Drain Queue (NO LOCK HELD)
+  // Prevents stalling other threads if the GPU is slow to drain
+  if (q) { 
+      ID3D12Device* d = nullptr; 
+      if (SUCCEEDED(q->GetDevice(IID_PPV_ARGS(&d)))) { 
+          DrainCommandQueue(q, d); 
+          d->Release(); 
+      } 
+      q->Release(); 
+  }
+  
+  // 3. Cleanup Resources (Hold Overlay Lock)
+  std::lock_guard<std::recursive_mutex> lock(g_OverlayMutex);
+  
+  CleanupOverlay(); 
+  CleanupRTVs();
   { std::lock_guard<std::recursive_mutex> cl(g_DX12CaptureMutex); g_SharedCaptureD3D12.Reset(); }
   if (g_State.imGuiInit) ImGui_ImplDX12_InvalidateDeviceObjects();
   if (g_LastSwapChain) { g_LastSwapChain->Release(); g_LastSwapChain = nullptr; }
@@ -310,19 +365,32 @@ void DX12_OnSwapchainResizeEnd() { g_InSwapchainResizeCleanup.store(false, std::
 void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
   if (!pSwapChain || g_InSwapchainResizeCleanup.load(std::memory_order_acquire)) return;
   std::lock_guard<std::recursive_mutex> lock(g_OverlayMutex);
-  IUnknown* pUnk = nullptr; if (FAILED(pSwapChain->GetDevice(IID_PPV_ARGS(&pUnk)))) return;
-  ID3D12Device* activeDevice = nullptr; ID3D12CommandQueue* activeQueue = nullptr;
-  if (SUCCEEDED(pUnk->QueryInterface(IID_PPV_ARGS(&activeQueue)))) { activeQueue->GetDevice(IID_PPV_ARGS(&activeDevice)); HookQueueVTable(activeQueue); activeQueue->Release(); }
-  else pUnk->QueryInterface(IID_PPV_ARGS(&activeDevice));
-  pUnk->Release(); if (!activeDevice) return;
-  if (g_Device == nullptr || activeDevice != g_Device || pSwapChain != g_LastSwapChain) {
-      if (g_Device) { CleanupOverlay(); CleanupRTVs(); ShutdownImGui(); g_SharedCaptureD3D12.Reset(); g_Device->Release(); }
-      g_Device = activeDevice; g_Device->AddRef();
-      if (g_LastSwapChain) g_LastSwapChain->Release();
-      g_LastSwapChain = pSwapChain; g_LastSwapChain->AddRef();
-      g_State.imGuiInit = false;
+
+  // OPTIMIZATION: Only resolve device if swapchain changed or device not yet known
+  if (!g_Device || pSwapChain != g_LastSwapChain) {
+      IUnknown* pUnk = nullptr; if (FAILED(pSwapChain->GetDevice(IID_PPV_ARGS(&pUnk)))) return;
+      ID3D12Device* activeDevice = nullptr; ID3D12CommandQueue* activeQueue = nullptr;
+      if (SUCCEEDED(pUnk->QueryInterface(IID_PPV_ARGS(&activeQueue)))) { 
+          activeQueue->GetDevice(IID_PPV_ARGS(&activeDevice)); 
+          HookQueueVTable(activeQueue); 
+          activeQueue->Release(); 
+      }
+      else {
+          pUnk->QueryInterface(IID_PPV_ARGS(&activeDevice));
+      }
+      pUnk->Release(); 
+      
+      if (!activeDevice) return;
+      
+      if (g_Device == nullptr || activeDevice != g_Device || pSwapChain != g_LastSwapChain) {
+          if (g_Device) { CleanupOverlay(); CleanupRTVs(); ShutdownImGui(); g_SharedCaptureD3D12.Reset(); g_Device->Release(); }
+          g_Device = activeDevice; g_Device->AddRef();
+          if (g_LastSwapChain) g_LastSwapChain->Release();
+          g_LastSwapChain = pSwapChain; g_LastSwapChain->AddRef();
+          g_State.imGuiInit = false;
+      }
+      activeDevice->Release();
   }
-  activeDevice->Release();
   ID3D12CommandQueue* q = nullptr;
   { std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex); if (g_CommandQueue) { q = g_CommandQueue; q->AddRef(); } }
   if (!q) return;
@@ -338,34 +406,65 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
       }
   }
   if (g_State.imGuiInit && g_State.syncInit) {
-      int idx = g_State.allocIndex; g_State.allocIndex = (idx + 1) % DX12OverlayState::ALLOC_POOL_SIZE;
+      int idx = g_State.allocIndex; 
+      g_State.allocIndex = (idx + 1) % DX12OverlayState::ALLOC_POOL_SIZE;
+      
+      bool safeToProceed = true;
       if (g_State.fence) {
-          UINT64 comp = g_State.fence->GetCompletedValue(); UINT64 target = g_State.fenceValues[idx];
-          if (comp < target) { g_State.fence->SetEventOnCompletion(target, g_State.fenceEvent); WaitForSingleObject(g_State.fenceEvent, 50); }
-      }
-      auto* list = g_State.cmdList; auto* alloc = g_State.allocators[idx];
-      if (list && alloc) {
-          alloc->Reset(); list->Reset(alloc, nullptr);
-          IDXGISwapChain3* sc3 = nullptr;
-          if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3)))) {
-              UINT bufferIdx = sc3->GetCurrentBackBufferIndex(); ID3D12Resource* bb = nullptr;
-              if (SUCCEEDED(pSwapChain->GetBuffer(bufferIdx, IID_PPV_ARGS(&bb)))) {
-                  D3D12_RESOURCE_BARRIER b = { D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_BARRIER_FLAG_NONE, { bb, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET } };
-                  list->ResourceBarrier(1, &b);
-                  D3D12_CPU_DESCRIPTOR_HANDLE rtv = g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
-                  rtv.ptr += (SIZE_T)bufferIdx * g_State.rtvDescriptorSize;
-                  g_Device->CreateRenderTargetView(bb, nullptr, rtv);
-                  list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-                  D3D12_VIEWPORT vp = {0, 0, (float)g_State.cachedWidth, (float)g_State.cachedHeight, 0, 1}; list->RSSetViewports(1, &vp);
-                  D3D12_RECT scissor = {0, 0, (LONG)g_State.cachedWidth, (LONG)g_State.cachedHeight}; list->RSSetScissorRects(1, &scissor);
-                  DrawOverlay(list);
-                  b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET; b.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-                  list->ResourceBarrier(1, &b); list->Close();
-                  ID3D12CommandList* lists[] = {list}; q->ExecuteCommandLists(1, lists);
-                  g_State.currentFenceValue++; g_State.fenceValues[idx] = g_State.currentFenceValue;
-                  q->Signal(g_State.fence, g_State.currentFenceValue); bb->Release();
+          UINT64 comp = g_State.fence->GetCompletedValue(); 
+          UINT64 target = g_State.fenceValues[idx];
+          if (comp < target) { 
+              HRESULT hr = g_State.fence->SetEventOnCompletion(target, g_State.fenceEvent);
+              if (SUCCEEDED(hr)) {
+                  // Wait strictly. If wait fails, we assume state is bad.
+                  if (WaitForSingleObject(g_State.fenceEvent, INFINITE) != WAIT_OBJECT_0) {
+                      safeToProceed = false;
+                  }
+              } else {
+                  // Device removed or other error
+                  safeToProceed = false; 
               }
-              sc3->Release();
+          }
+      } else {
+          safeToProceed = false;
+      }
+
+      if (safeToProceed) {
+          auto* list = g_State.cmdList; auto* alloc = g_State.allocators[idx];
+          if (list && alloc) {
+              if (SUCCEEDED(alloc->Reset())) {
+                  if (SUCCEEDED(list->Reset(alloc, nullptr))) {
+                      IDXGISwapChain3* sc3 = nullptr;
+                      if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3)))) {
+                          UINT bufferIdx = sc3->GetCurrentBackBufferIndex(); 
+                          ID3D12Resource* bb = nullptr;
+                          if (SUCCEEDED(pSwapChain->GetBuffer(bufferIdx, IID_PPV_ARGS(&bb)))) {
+                              D3D12_RESOURCE_BARRIER b = { D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_BARRIER_FLAG_NONE, { bb, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET } };
+                              list->ResourceBarrier(1, &b);
+                              D3D12_CPU_DESCRIPTOR_HANDLE rtv = g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
+                              rtv.ptr += (SIZE_T)bufferIdx * g_State.rtvDescriptorSize;
+                              g_Device->CreateRenderTargetView(bb, nullptr, rtv);
+                              list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+                              D3D12_VIEWPORT vp = {0, 0, (float)g_State.cachedWidth, (float)g_State.cachedHeight, 0, 1}; list->RSSetViewports(1, &vp);
+                              D3D12_RECT scissor = {0, 0, (LONG)g_State.cachedWidth, (LONG)g_State.cachedHeight}; list->RSSetScissorRects(1, &scissor);
+                              DrawOverlay(list);
+                              b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET; b.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+                              list->ResourceBarrier(1, &b); 
+                              list->Close();
+                              
+                              ID3D12CommandList* lists[] = {list}; 
+                              q->ExecuteCommandLists(1, lists);
+                              
+                              g_State.currentFenceValue++; 
+                              g_State.fenceValues[idx] = g_State.currentFenceValue;
+                              q->Signal(g_State.fence, g_State.currentFenceValue); 
+                              
+                              bb->Release();
+                          }
+                          sc3->Release();
+                      }
+                  }
+              }
           }
       }
   }
@@ -418,19 +517,40 @@ void HandleDX12ResizeBegin() { DX12_OnSwapchainResizeBegin(); }
 static const GUID SKID_D3D12SwapChainBufferBitmap = { 0xbc53df3b, 0x956f, 0x47db, { 0xa6, 0x53, 0x5, 0xd7, 0xb8, 0x71, 0x53, 0x38 } };
 void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue *pThis, UINT NumCommandLists, ID3D12CommandList *const *ppCommandLists) {
   g_CommandListsExecutedThisFrame.fetch_add(NumCommandLists, std::memory_order_relaxed);
-  if (pThis && !g_InSwapchainResizeCleanup.load(std::memory_order_acquire)) {
+  
+  // OPTIMIZATION: Only run detection if we haven't found the main queue yet
+  // We use a relaxed atomic load of the pointer (safe enough for a heuristic)
+  // If g_CommandQueue is NULL, we assume we need to search.
+  // If g_CommandQueue is SET, we only check if pThis matches if we suspect a switch, 
+  // but for performance we assume the game uses one main queue for the swapchain.
+  bool runDetection = (g_CommandQueue == nullptr);
+
+  if (runDetection && pThis && !g_InSwapchainResizeCleanup.load(std::memory_order_acquire)) {
       IDXGISwapChain3* sc = nullptr;
-      { std::lock_guard<std::recursive_mutex> lock(g_OverlayMutex); if (g_LastSwapChain) { g_LastSwapChain->QueryInterface(IID_PPV_ARGS(&sc)); } }
+      { 
+          // Check g_LastSwapChain with lock
+          std::lock_guard<std::recursive_mutex> lock(g_OverlayMutex); 
+          if (g_LastSwapChain) { 
+              g_LastSwapChain->QueryInterface(IID_PPV_ARGS(&sc)); 
+          } 
+      }
+      
       if (sc) {
-          UINT idx = sc->GetCurrentBackBufferIndex(); DXGI_SWAP_CHAIN_DESC d;
+          UINT idx = sc->GetCurrentBackBufferIndex(); 
+          DXGI_SWAP_CHAIN_DESC d;
           if (SUCCEEDED(sc->GetDesc(&d))) {
               UINT size = sizeof(uint16_t); uint16_t bitmap = 0;
               pThis->GetPrivateData(SKID_D3D12SwapChainBufferBitmap, &size, &bitmap);
               bitmap |= (1 << idx);
               pThis->SetPrivateData(SKID_D3D12SwapChainBufferBitmap, sizeof(uint16_t), &bitmap);
+              
               auto CountBits = [](uint16_t n) { int c = 0; while (n > 0) { n &= (n - 1); c++; } return c; };
               if (CountBits(bitmap) == (int)d.BufferCount) {
-                  bool diff = false; { std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex); diff = (g_CommandQueue != pThis); }
+                  bool diff = false; 
+                  { 
+                      std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex); 
+                      diff = (g_CommandQueue != pThis); 
+                  }
                   if (diff) DX12_SetCommandQueue(pThis);
               }
           }

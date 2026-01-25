@@ -66,6 +66,7 @@ PACKAGES = [
     "mingw-w64-clang-x86_64-onevpl", # For QSV
     "mingw-w64-clang-x86_64-lld",    # For delay-load support (x64)
     "mingw-w64-i686-lld",            # For delay-load support (x86)
+    "mingw-w64-clang-x86_64-clang-tools-extra", # For clang-format
     "make",
     "ccache",
 ]
@@ -954,6 +955,126 @@ def run_integration_tests(env):
         sys.exit(1)
     
     log("=== Integration Tests Passed ===")
+
+def run_lint(env):
+    log("=== Running Linting ===")
+    
+    # 1. C++ Linting (clang-format)
+    # Check if clang-format is installed in MSYS2
+    clang_format = os.path.join(MSYS2_DIR, "clang64", "bin", "clang-format.exe")
+    if os.path.exists(clang_format):
+        log("Running clang-format...")
+        
+        # Collect all C++ source/header files
+        # Only lint our code, not external
+        files = []
+        dirs_to_lint = ["common", "hook", "captureengine", "mediaengine", "testapp", "tests"]
+        
+        for d in dirs_to_lint:
+            root_path = os.path.join(PROJECT_ROOT, d)
+            for root, _, filenames in os.walk(root_path):
+                for f in filenames:
+                    if f.endswith((".cpp", ".h", ".hpp", ".c")):
+                        # Skip d3d12 wrappers generated code or similar if needed
+                        # Also skip vulkan_layer/imgui/*
+                        path = os.path.join(root, f)
+                        if "external" in path or "imgui" in path:
+                            continue
+                        files.append(path)
+        
+        if files:
+            # Check for formatting issues (dry run)
+            # --dry-run: outputs replacement XML (if issues found) or nothing (if clean). 
+            # -Werror: If warnings (formatting changes needed), return non-zero.
+            # Using -n (dry run) + -Werror to detect issues
+            
+            # NOTE: -Werror might not work as expected in all versions for style violations.
+            # Usually users run with -i (in-place edit) to fix.
+            # For "check", we can use --dry-run --Werror or just check output.
+            
+            # Let's run with -i to FIX by default if user asked to lint? 
+            # Usually CI checks, dev fixes.
+            # "Linting" implies checking. "Formatting" implies fixing.
+            # Let's check first.
+            
+            # Using simple batch execution
+            # Create a response file or pass one by one? Windows cmd limit.
+            # Pass in chunks.
+            
+            chunk_size = 50
+            issues_found = 0
+            
+            for i in range(0, len(files), chunk_size):
+                chunk = files[i:i+chunk_size]
+                # --dry-run --Werror returns 1 if changes needed
+                cmd = [clang_format, "--dry-run", "-Werror"] + chunk
+                res = subprocess.run(cmd, capture_output=True, text=True, env=env)
+                if res.returncode != 0:
+                    issues_found += 1
+                    # log(res.stderr) # Valid output is often empty on success
+            
+            if issues_found > 0:
+                log(f"WARNING: C++ Style issues found in {issues_found} batches.")
+                log("Run 'python build.py --format' to fix them automatically.")
+            else:
+                log("C++ Style: OK")
+    else:
+        log("Warning: clang-format not found in MSYS2. Skipping C++ linting.")
+
+    # 2. Python Linting (flake8)
+    # Check if flake8 is installed in host python
+    try:
+        subprocess.run([sys.executable, "-m", "flake8", "--version"], capture_output=True, check=True)
+        has_flake8 = True
+    except:
+        has_flake8 = False
+        
+    if has_flake8:
+        log("Running flake8...")
+        # Lint build scripts and test scripts
+        # We need to specify paths explicitly to avoid traversing build/ directories if exclude fails
+        py_targets = ["build.py", "testapp"]
+        
+        cmd = [sys.executable, "-m", "flake8"] + py_targets
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if res.returncode != 0:
+            log("Python Style Issues:")
+            log(res.stdout)
+            log("Python Style: FAILED")
+        else:
+            log("Python Style: OK")
+    else:
+        log("Warning: flake8 not installed. Skipping Python linting. (Run 'pip install flake8')")
+
+def run_format(env):
+    log("=== Running Auto-Format ===")
+    
+    # 1. C++ Format (clang-format -i)
+    clang_format = os.path.join(MSYS2_DIR, "clang64", "bin", "clang-format.exe")
+    if os.path.exists(clang_format):
+        log("Formatting C++ files...")
+        files = []
+        dirs_to_lint = ["common", "hook", "captureengine", "mediaengine", "testapp", "tests"]
+        for d in dirs_to_lint:
+            root_path = os.path.join(PROJECT_ROOT, d)
+            for root, _, filenames in os.walk(root_path):
+                for f in filenames:
+                    if f.endswith((".cpp", ".h", ".hpp", ".c")):
+                        path = os.path.join(root, f)
+                        if "external" in path or "imgui" in path:
+                            continue
+                        files.append(path)
+        
+        if files:
+            chunk_size = 50
+            for i in range(0, len(files), chunk_size):
+                chunk = files[i:i+chunk_size]
+                cmd = [clang_format, "-i"] + chunk
+                subprocess.run(cmd, env=env, check=True)
+            log("C++ files formatted.")
+    else:
+        log("Error: clang-format not found.")
 
 def compile_testapps(env, x86_env, clang_exe, cflags):
     """Compile test applications using Clang (and x86 if available)"""
@@ -2020,10 +2141,22 @@ def main():
     # Parse flags
     skip_updates = "--skip-updates" in sys.argv
     run_tests_flag = "--run-tests" in sys.argv
+    lint_flag = "--lint" in sys.argv
+    format_flag = "--format" in sys.argv
     
     if skip_updates:
         log("FFmpeg updates disabled (--skip-updates)")
     
+    if lint_flag:
+        run_lint(env)
+        if not run_tests_flag and len(sys.argv) <= 2: # Exit if only linting
+            return
+
+    if format_flag:
+        run_format(env)
+        if not run_tests_flag and len(sys.argv) <= 2:
+            return
+
     compile_project(env, clang_bin, skip_updates=skip_updates, should_run_tests=run_tests_flag)
 
     # Write compile_commands.json

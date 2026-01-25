@@ -58,7 +58,6 @@ static float GetSystemDPIScale() {
 static void FormatBytes(char* buf, size_t size, uint64_t bytes) {
     float gib = (float)bytes / (1024.0f * 1024.0f * 1024.0f);
     snprintf(buf, size, "%.1f GiB", gib);
-    snprintf(buf, size, "%.1f GiB", gib);
 }
 
 static const char* GetQualityString(int mode) {
@@ -109,6 +108,7 @@ void Overlay::InitImGui(void* hwnd) {
     // Build font atlas with proper DPI awareness
     io.Fonts->Build();
     
+    initialDpiScale = dpiScale;
     initialized = true;
     headless = false;
 }
@@ -148,6 +148,7 @@ void Overlay::InitImGuiHeadless() {
 
     io.Fonts->Build();
     
+    initialDpiScale = dpiScale;
     initialized = true;
     headless = true;
 }
@@ -191,15 +192,16 @@ void Overlay::RenderTextWithOutline(const char* text, ImU32 color, bool outline,
     ImVec2 pos = ImGui::GetCursorScreenPos();
     
     if (outline) {
-        // Draw outline by drawing text at offsets
-        // Simple 4-way offset
-        ImU32 outlineCol = outlineColor; 
-        if ((outlineCol & 0xFF000000) == 0) outlineCol |= 0xFF000000; // Force alpha if missing
-
-        drawList->AddText(ImVec2(pos.x - thickness, pos.y), outlineCol, text);
-        drawList->AddText(ImVec2(pos.x + thickness, pos.y), outlineCol, text);
-        drawList->AddText(ImVec2(pos.x, pos.y - thickness), outlineCol, text);
-        drawList->AddText(ImVec2(pos.x, pos.y + thickness), outlineCol, text);
+        // FAST SHADOW OPTIMIZATION:
+        // Instead of 4-way outline (Top, Bottom, Left, Right), use a simple 1-pass drop shadow.
+        // This reduces draw calls by 3x per text element.
+        // Offset by +1.5px (+1.5px for shadow) based on DPI or thickness
+        
+        ImU32 shadowCol = outlineColor; 
+        if ((shadowCol & 0xFF000000) == 0) shadowCol |= 0xFF000000; // Force alpha if missing
+        
+        float shadowOffset = (thickness > 0.0f) ? thickness : 1.0f;
+        drawList->AddText(ImVec2(pos.x + shadowOffset, pos.y + shadowOffset), shadowCol, text);
     }
     
     drawList->AddText(pos, color, text);
@@ -288,8 +290,11 @@ void Overlay::RenderUI() {
     }
     // Setup Styling
     float dpiScale = GetDpiScale();
-    // Don't use FontGlobalScale - fonts are already DPI-scaled at load time
-    
+    // Use FontGlobalScale to handle dynamic DPI changes since fonts are fixed size
+    if (initialDpiScale > 0.0f) {
+        ImGui::GetIO().FontGlobalScale = dpiScale / initialDpiScale;
+    }
+
     float bgAlpha = 1.0f; // Fully opaque by default
     ImU32 textColor = IM_COL32(255, 255, 255, 255);
     
