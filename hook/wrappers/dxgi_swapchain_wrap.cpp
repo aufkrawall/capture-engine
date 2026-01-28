@@ -9,6 +9,8 @@
 #include "../apis/graphics_hook.h"
 #include "d3d12_wrapper_interface.h"
 #include "hook_common.h"
+#include "../common/dxgi_shared.h"
+#include "../common/performance_metrics.h"
 
 // External overlay functions (implemented in dx11_hook.cpp / dx12_hook.cpp)
 extern void DrawDX11Overlay(IDXGISwapChain* pSwapChain);
@@ -258,6 +260,18 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     s_presentThreadId.store(currentId);
     s_presentDepth.fetch_add(1);
     
+    // Update performance metrics for FPS calculation
+    static int64_t qpcFreq = 0;
+    if (qpcFreq == 0) {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        qpcFreq = f.QuadPart;
+    }
+    LARGE_INTEGER qpc;
+    QueryPerformanceCounter(&qpc);
+    int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
+    DXGIShared::GetPerformanceMetrics()->Update(us);
+    
     // Apply VSync override from config
     ProcessVSyncOverride(SyncInterval, Flags);
     
@@ -421,6 +435,18 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     }
     s_present1ThreadId.store(currentId);
     s_present1Depth.fetch_add(1);
+    
+    // Update performance metrics for FPS calculation
+    static int64_t qpcFreq = 0;
+    if (qpcFreq == 0) {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        qpcFreq = f.QuadPart;
+    }
+    LARGE_INTEGER qpc;
+    QueryPerformanceCounter(&qpc);
+    int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
+    DXGIShared::GetPerformanceMetrics()->Update(us);
     
     // Apply VSync override from config
     ProcessVSyncOverride(SyncInterval, PresentFlags);
