@@ -152,7 +152,7 @@ DX12Hook* g_dx12HookInstance = nullptr;
 
 // Cached overlay renderer for zero-overhead interpolated frame rendering
 overlay::CachedOverlayRenderer* g_CachedOverlayRenderer = nullptr;
-bool g_UseCachedRenderer = true;
+bool g_UseCachedRenderer = false;  // DISABLED: Cached renderer needs proper D3D12 secondary command list implementation
 
 std::recursive_mutex g_DeviceQueuesMutex;
 std::map<ID3D12Device*, ID3D12CommandQueue*> g_DeviceQueues;
@@ -226,6 +226,12 @@ __declspec(dllexport) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue)
     }
 }
 __declspec(dllexport) void DX12_AdjustWrapperResizeDepth_C(int delta) { DX12_AdjustWrapperResizeDepth(delta); }
+
+// Export for D3D12 wrapper to notify command list execution (frame classification)
+__declspec(dllexport) void DX12_NotifyCommandLists(UINT numCommandLists)
+{
+    g_CommandListsExecutedThisFrame.fetch_add(numCommandLists, std::memory_order_relaxed);
+}
 }
 
 void DX12_OnSwapchainResizeEnd();
@@ -322,8 +328,11 @@ void DrawOverlay(ID3D12GraphicsCommandList* cmdList, bool isRealFrame, UINT buff
     
     // Use cached renderer for Frame Generation support when available
     if (g_UseCachedRenderer && g_CachedOverlayRenderer) {
-        // Update content only on real frames
-        if (isRealFrame) {
+        // Update content on real frames OR if content has never been updated (first frame)
+        // This ensures we have content to render even if all frames appear as "interpolated"
+        bool needsContentUpdate = isRealFrame || g_CachedOverlayRenderer->ShouldUpdateContent();
+        
+        if (needsContentUpdate) {
             // Build overlay content using shared overlay system
             ImGui_ImplDX12_NewFrame();
             g_SharedOverlay.BeginFrame();
@@ -747,7 +756,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture)
         }
     }
     if (g_State.imGuiInit && g_State.syncInit) {
-        HookLog("DX12: ProcessFrame - drawing overlay");
+        HookLog("DX12: ProcessFrame - drawing overlay (cachedRenderer=%p, useCached=%d)", 
+                g_CachedOverlayRenderer, g_UseCachedRenderer);
         int idx = g_State.allocIndex;
         g_State.allocIndex = (idx + 1) % DX12OverlayState::ALLOC_POOL_SIZE;
 

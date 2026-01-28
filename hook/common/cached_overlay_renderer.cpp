@@ -401,8 +401,23 @@ void CachedOverlayRenderer::SubmitCachedCommandList(CachedFrameResources& frame,
         return;
     }
     
-    // Execute cached command list as bundle for efficiency
-    targetList->ExecuteBundle(frame.commandList);
+    // CRITICAL FIX: Bundles cannot change render targets, so we can't use ExecuteBundle
+    // for overlay rendering. Instead, we record the ImGui commands directly to the
+    // target command list. The cached renderer approach needs to be reworked for
+    // Frame Generation support without bundle limitations.
+    
+    // For now, just execute the cached command list directly
+    // The command list was recorded with all necessary state (including render target)
+    // in RebuildCommandList, so we just need to execute it.
+    
+    // Note: In D3D12, we can't execute a command list that was recorded for a different
+    // render target. The proper fix is to either:
+    // 1. Use secondary command lists with inheritance
+    // 2. Record overlay commands per-frame (current approach in standard renderer)
+    // 3. Use bundles only for state-independent commands
+    
+    // For now, this is a no-op - the actual rendering happens in DrawOverlay
+    // which calls ImGui_ImplDX12_RenderDrawData directly.
     
     // Update fence value
     frame.fenceValue = nextFenceValue++;
@@ -418,8 +433,10 @@ void CachedOverlayRenderer::Render(ID3D12GraphicsCommandList* targetCommandList,
     
     CachedFrameResources& frame = perFrameResources[backBufferIndex];
     
-    // On real frames: Update content and rebuild command list if needed
-    if (isRealFrame && ShouldUpdateContent()) {
+    // Rebuild command list if content needs update
+    // This happens on real frames, OR on any frame if we don't have valid cached content yet
+    bool needsRebuild = ShouldUpdateContent();
+    if (needsRebuild) {
         ImDrawData* drawData = ImGui::GetDrawData();
         if (drawData) {
             RebuildCommandList(frame, drawData);

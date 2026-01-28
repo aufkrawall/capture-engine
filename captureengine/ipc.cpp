@@ -70,6 +70,12 @@ bool IPCManager::Init()
 
     // Initialize main memory
     ZeroMemory(pSharedMem, sizeof(SharedMemoryLayout));
+    
+    // CRITICAL: Initialize with proper ordering (version first, magic last as signal)
+    pSharedMem->structSize = sizeof(SharedMemoryLayout);
+    pSharedMem->SetVersion(SHARED_MEMORY_VERSION);
+    pSharedMem->SetMagic(SHARED_MEMORY_MAGIC);  // Write last as signal - release semantics
+    
     pSharedMem->hostPID = GetCurrentProcessId();
 
     // Create separate Shmem mapping for large buffer

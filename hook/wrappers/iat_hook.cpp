@@ -114,11 +114,69 @@ static std::vector<PatchedEntry> g_PatchedEntries;
 static bool g_Initialized = false;
 
 // ============================================================================
+// Module Validation
+// ============================================================================
+
+// Validates that a module handle is still valid and loaded
+// This prevents crashes when a module is unloaded between EnumProcessModules
+// and the actual memory access (race condition).
+static bool IsModuleValid(HMODULE hModule)
+{
+    if (!hModule) return false;
+    
+    // Use GetModuleInformation to verify the module is still loaded
+    // This is safer than directly accessing the DOS header
+    MODULEINFO modInfo;
+    if (!GetModuleInformation(GetCurrentProcess(), hModule, &modInfo, sizeof(modInfo))) {
+        return false;
+    }
+    
+    // Additional check: verify the module base matches
+    return (modInfo.lpBaseOfDll == hModule);
+}
+
+// Check if memory is readable using VirtualQuery
+static bool IsMemoryReadable(void* ptr, size_t size)
+{
+    if (!ptr) return false;
+    
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQuery(ptr, &mbi, sizeof(mbi)) == 0) {
+        return false;
+    }
+    
+    // Check if memory is committed and readable
+    if (mbi.State != MEM_COMMIT) {
+        return false;
+    }
+    
+    // Check protection flags - allow read, read-write, execute-read, etc.
+    DWORD protect = mbi.Protect;
+    if (protect == PAGE_NOACCESS || protect == PAGE_EXECUTE) {
+        return false;
+    }
+    
+    // Check if the entire range is within this region
+    SIZE_T regionSize = (char*)ptr + size - (char*)mbi.BaseAddress;
+    if (regionSize > mbi.RegionSize) {
+        return false;
+    }
+    
+    return true;
+}
+
+// ============================================================================
 // PE Parsing Helpers
 // ============================================================================
 
 static IMAGE_IMPORT_DESCRIPTOR* GetImportDescriptor(HMODULE module)
 {
+    // Validate module is still loaded before accessing memory
+    if (!IsModuleValid(module)) return nullptr;
+    
+    // Check if DOS header memory is readable
+    if (!IsMemoryReadable(module, sizeof(IMAGE_DOS_HEADER))) return nullptr;
+    
     auto dosHeader = reinterpret_cast<IMAGE_DOS_HEADER*>(module);
     if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE) return nullptr;
 
@@ -133,6 +191,12 @@ static IMAGE_IMPORT_DESCRIPTOR* GetImportDescriptor(HMODULE module)
 
 static IMAGE_EXPORT_DIRECTORY* GetExportDirectory(HMODULE module, DWORD* exportSize = nullptr)
 {
+    // Validate module is still loaded before accessing memory
+    if (!IsModuleValid(module)) return nullptr;
+    
+    // Check if DOS header memory is readable
+    if (!IsMemoryReadable(module, sizeof(IMAGE_DOS_HEADER))) return nullptr;
+    
     auto dosHeader = reinterpret_cast<IMAGE_DOS_HEADER*>(module);
     if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE) return nullptr;
 

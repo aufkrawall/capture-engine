@@ -47,7 +47,14 @@ HRESULT STDMETHODCALLTYPE CWrapD3D12CommandQueue::QueryInterface(REFIID riid, vo
         return S_OK;
     }
 
-    if (riid == IID_IUnknown || riid == IID_ID3D12Object || riid == IID_ID3D12DeviceChild ||
+    // CRITICAL FIX: IUnknown must return consistent pointer for COM identity
+    if (riid == IID_IUnknown) {
+        AddRef();
+        *ppvObj = static_cast<IUnknown*>(static_cast<ID3D12CommandQueue*>(this));
+        return S_OK;
+    }
+
+    if (riid == IID_ID3D12Object || riid == IID_ID3D12DeviceChild ||
         riid == IID_ID3D12Pageable || riid == IID_ID3D12CommandQueue) {
         AddRef();
         *ppvObj = static_cast<ID3D12CommandQueue*>(this);
@@ -126,45 +133,48 @@ void STDMETHODCALLTYPE CWrapD3D12CommandQueue::CopyTileMappings(
 void STDMETHODCALLTYPE CWrapD3D12CommandQueue::ExecuteCommandLists(UINT NumCommandLists,
                                                                    ID3D12CommandList* const* ppCommandLists)
 {
+    // Notify hook of command list execution for frame classification (real vs interpolated frames)
+    // This must happen before the actual ExecuteCommandLists call to ensure proper counting
+    static std::once_flag s_lookupFlag;
+    static void (*s_notifyFn)(UINT) = nullptr;
+    static void (*s_setQueueFn)(ID3D12CommandQueue*) = nullptr;
+    static bool s_lookupDone = false;
+    
+    std::call_once(s_lookupFlag, []() {
+        WrapperLog("D3D12 CQW: Looking for hook DLL...");
+        HMODULE hMod = GetModuleHandleA("VK_LAYER_CE_overlay_x86.dll");
+        if (!hMod) hMod = GetModuleHandleA("capture_hook_x86.dll");
+        if (!hMod) hMod = GetModuleHandleA("VK_LAYER_CE_overlay.dll");
+        if (!hMod) hMod = GetModuleHandleA("capture_hook_x64.dll");
+        
+        if (hMod) {
+            WrapperLog("D3D12 CQW: Found hook DLL at %p", hMod);
+            s_notifyFn = (void (*)(UINT))GetProcAddress(hMod, "DX12_NotifyCommandLists");
+            s_setQueueFn = (void (*)(ID3D12CommandQueue*))GetProcAddress(hMod, "DX12_SetCommandQueue");
+            WrapperLog("D3D12 CQW: DX12_NotifyCommandLists=%p, DX12_SetCommandQueue=%p", s_notifyFn, s_setQueueFn);
+        } else {
+            WrapperLog("D3D12 CQW: Hook DLL NOT FOUND!");
+        }
+        s_lookupDone = true;
+    });
+    
+    if (s_notifyFn) {
+        s_notifyFn(NumCommandLists);
+    } else if (s_lookupDone) {
+        // Only log once after lookup is done to avoid spam
+        static bool s_loggedMissing = false;
+        if (!s_loggedMissing) {
+            WrapperLog("D3D12 CQW: WARNING - Notify function not available");
+            s_loggedMissing = true;
+        }
+    }
 
     // Register this queue with the main hook if not already done
-    // Use a static flag relative to THIS queue instance to avoid repeated lookups
-    if (!m_bRegistered) {
-        typedef void (*DX12_SetCommandQueueFn)(ID3D12CommandQueue*);
-        static DX12_SetCommandQueueFn pFn = nullptr;
-        static std::mutex s_LookupMutex;
-        static bool s_LookupDone = false;
-
-        if (!s_LookupDone) {
-            std::lock_guard<std::mutex> lock(s_LookupMutex);
-            if (!s_LookupDone) {
-                HMODULE hMod = GetModuleHandleA("VK_LAYER_CE_overlay_x86.dll");
-                if (!hMod) hMod = GetModuleHandleA("capture_hook_x86.dll");
-                if (!hMod) hMod = GetModuleHandleA("VK_LAYER_CE_overlay.dll");  // 64-bit fallback naming
-                if (!hMod) hMod = GetModuleHandleA("capture_hook_x64.dll");
-
-                if (hMod) {
-                    pFn = (DX12_SetCommandQueueFn)GetProcAddress(hMod, "DX12_SetCommandQueue");
-                    if (pFn) {
-                        WrapperLog("D3D12 CommandQueue Wrapper: Found DX12_SetCommandQueue at %p", pFn);
-                    } else {
-                        WrapperLog("D3D12 CommandQueue Wrapper: DX12_SetCommandQueue exported function NOT FOUND in %p",
-                                   hMod);
-                    }
-                } else {
-                    WrapperLog("D3D12 CommandQueue Wrapper: Hook DLL not found in process!");
-                }
-                s_LookupDone = true;
-            }
-        }
-
-        if (pFn) {
-            if (m_pReal) {
-                pFn(m_pReal);
-                m_bRegistered = true;
-            } else {
-                WrapperLog("D3D12 CommandQueue Wrapper: WARNING - m_pReal is NULL, skipping SetCommandQueue!");
-            }
+    if (!m_bRegistered && s_setQueueFn) {
+        if (m_pReal) {
+            WrapperLog("D3D12 CQW: Registering command queue %p (type=%d)", m_pReal, m_Type);
+            s_setQueueFn(m_pReal);
+            m_bRegistered = true;
         }
     }
 

@@ -75,7 +75,15 @@ HRESULT STDMETHODCALLTYPE CWrapD3D12Device::QueryInterface(REFIID riid, void** p
         return S_OK;
     }
 
-    if (riid == IID_IUnknown || riid == IID_ID3D12Object || riid == IID_ID3D12Device) {
+    // CRITICAL FIX: IUnknown must return consistent pointer for COM identity
+    // All IUnknown queries must return the same pointer value
+    if (riid == IID_IUnknown) {
+        AddRef();
+        *ppvObj = static_cast<IUnknown*>(static_cast<ID3D12Device*>(this));
+        return S_OK;
+    }
+
+    if (riid == IID_ID3D12Object || riid == IID_ID3D12Device) {
         AddRef();
         *ppvObj = static_cast<ID3D12Device*>(this);
         return S_OK;
@@ -142,6 +150,8 @@ UINT STDMETHODCALLTYPE CWrapD3D12Device::GetNodeCount() { return m_pReal->GetNod
 HRESULT STDMETHODCALLTYPE CWrapD3D12Device::CreateCommandQueue(const D3D12_COMMAND_QUEUE_DESC* pDesc, REFIID riid,
                                                                void** ppCommandQueue)
 {
+    if (!ppCommandQueue) return E_POINTER;
+    
     WrapperLog("D3D12 Device: CreateCommandQueue (Type=%d)", pDesc ? pDesc->Type : -1);
 
     ID3D12CommandQueue* pRealQueue = nullptr;
@@ -150,10 +160,21 @@ HRESULT STDMETHODCALLTYPE CWrapD3D12Device::CreateCommandQueue(const D3D12_COMMA
     if (SUCCEEDED(hr) && pRealQueue) {
         // Wrap the command queue
         auto* pWrapper = new CWrapD3D12CommandQueue(pRealQueue, this);
+        
+        // Query for the requested interface
         hr = pWrapper->QueryInterface(riid, ppCommandQueue);
-        pWrapper->Release();    // QI added ref
-        pRealQueue->Release();  // Wrapper owns it now
-        WrapperLog("D3D12 Device: Created wrapped CommandQueue (wrapper=%p)", *ppCommandQueue);
+        
+        // Release our initial reference (QI added a ref if successful)
+        pWrapper->Release();
+        
+        // Release the real queue reference (wrapper owns it now)
+        pRealQueue->Release();
+        
+        if (SUCCEEDED(hr)) {
+            WrapperLog("D3D12 Device: Created wrapped CommandQueue (wrapper=%p)", *ppCommandQueue);
+        } else {
+            WrapperLog("D3D12 Device: Failed to query interface for CommandQueue, hr=0x%08X", hr);
+        }
     }
 
     return hr;

@@ -513,27 +513,62 @@ HRESULT WINAPI Wrapped_Direct3DCreate9Ex(UINT SDKVersion, IDirect3D9Ex** ppD3D)
 // Wrapper System Initialization
 // ============================================================================
 
+static bool s_DXGIInitialized = false;
+static bool s_D3D10Initialized = false;
+static bool s_D3D11Initialized = false;
+static bool s_D3D12Initialized = false;
+static bool s_D3D9Initialized = false;
+
 bool InitializeWrapperHooks()
 {
     if (g_WrappersActive) return true;
 
     EarlyLog("Wrapper: Initializing wrapper hooks (IAT mode)...");
 
-    bool success = true;
-    EarlyLog("Wrapper: Initializing DXGI hooks...");
-    success &= IATHook::InitializeDXGIHooks();
-    EarlyLog("Wrapper: Initializing D3D10 hooks...");
-    success &= IATHook::InitializeD3D10Hooks();
-    EarlyLog("Wrapper: Initializing D3D11 hooks...");
-    success &= IATHook::InitializeD3D11Hooks();
-    EarlyLog("Wrapper: Initializing D3D12 hooks...");
-    success &= IATHook::InitializeD3D12Hooks();
-    EarlyLog("Wrapper: Initializing D3D9 hooks...");
-    success &= IATHook::InitializeD3D9Hooks();
+    bool anySuccess = false;
+    
+    // CRITICAL FIX: Each hook category can be retried independently if the DLL wasn't loaded yet
+    // We must NOT set g_WrappersActive = true until ALL categories that will ever load are done
+    
+    if (!s_DXGIInitialized) {
+        EarlyLog("Wrapper: Initializing DXGI hooks...");
+        s_DXGIInitialized = IATHook::InitializeDXGIHooks();
+        if (s_DXGIInitialized) anySuccess = true;
+    }
+    
+    if (!s_D3D10Initialized) {
+        EarlyLog("Wrapper: Initializing D3D10 hooks...");
+        s_D3D10Initialized = IATHook::InitializeD3D10Hooks();
+        if (s_D3D10Initialized) anySuccess = true;
+    }
+    
+    if (!s_D3D11Initialized) {
+        EarlyLog("Wrapper: Initializing D3D11 hooks...");
+        s_D3D11Initialized = IATHook::InitializeD3D11Hooks();
+        if (s_D3D11Initialized) anySuccess = true;
+    }
+    
+    if (!s_D3D12Initialized) {
+        EarlyLog("Wrapper: Initializing D3D12 hooks...");
+        s_D3D12Initialized = IATHook::InitializeD3D12Hooks();
+        if (s_D3D12Initialized) anySuccess = true;
+    }
+    
+    if (!s_D3D9Initialized) {
+        EarlyLog("Wrapper: Initializing D3D9 hooks...");
+        s_D3D9Initialized = IATHook::InitializeD3D9Hooks();
+        if (s_D3D9Initialized) anySuccess = true;
+    }
 
-    g_WrappersActive = true;
-    EarlyLog("Wrapper: IAT initialization complete");
-    return success;
+    // Mark as active if ANY hooks were installed (allows partial initialization)
+    // This enables retry for categories whose DLLs weren't loaded yet
+    if (anySuccess) {
+        g_WrappersActive = true;
+    }
+    
+    EarlyLog("Wrapper: IAT initialization complete (DXGI=%d, D3D10=%d, D3D11=%d, D3D12=%d, D3D9=%d)",
+             s_DXGIInitialized, s_D3D10Initialized, s_D3D11Initialized, s_D3D12Initialized, s_D3D9Initialized);
+    return anySuccess;
 }
 
 void ShutdownWrapperHooks()
