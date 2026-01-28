@@ -1,14 +1,15 @@
-#include "vulkan_layer.h"
-#include "layer_main.h"
-#include "../common/hook_common.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <atomic>
+#include "../common/hook_common.h"
+#include "layer_main.h"
+#include "vulkan_layer.h"
 
 // This file provides shims and globals for common code linked into the Vulkan layer.
 // Common code (overlay.cpp, fg_detection.cpp) expects C++ linkage for these.
 
-void HookLog(const char* fmt, ...) {
+void HookLog(const char* fmt, ...)
+{
     va_list args;
     va_start(args, fmt);
     char buf[1024];
@@ -17,7 +18,8 @@ void HookLog(const char* fmt, ...) {
     LayerLog("[Hook] %s", buf);
 }
 
-void HookLog(LogLevel level, const char* fmt, ...) {
+void HookLog(LogLevel level, const char* fmt, ...)
+{
     va_list args;
     va_start(args, fmt);
     char buf[1024];
@@ -26,7 +28,8 @@ void HookLog(LogLevel level, const char* fmt, ...) {
     LayerLog("[Hook] %s", buf);
 }
 
-void EarlyLog(const char* fmt, ...) {
+void EarlyLog(const char* fmt, ...)
+{
     va_list args;
     va_start(args, fmt);
     char buf[1024];
@@ -35,7 +38,8 @@ void EarlyLog(const char* fmt, ...) {
     LayerLog("[Early] %s", buf);
 }
 
-void NVNGXLog(const char* fmt, ...) {
+void NVNGXLog(const char* fmt, ...)
+{
     va_list args;
     va_start(args, fmt);
     char buf[1024];
@@ -44,9 +48,7 @@ void NVNGXLog(const char* fmt, ...) {
     LayerLog("[NVNGX] %s", buf);
 }
 
-void ReportLUID(uint32_t low, uint32_t high) {
-    LayerLog("ReportLUID: %08x-%08x", high, low);
-}
+void ReportLUID(uint32_t low, uint32_t high) { LayerLog("ReportLUID: %08x-%08x", high, low); }
 
 // Graphics API helper stubs
 GraphicsConfig GetActiveGraphicsConfig() { return {}; }
@@ -55,9 +57,12 @@ VSyncOverride GetVSyncOverride() { return {}; }
 void ProcessVSyncOverride(UINT& SyncInterval, UINT& Flags) {}
 
 // Missing utils or other common symbols
-bool BuildLogFilePathForModuleAddress(const void* address, const char* fileName, char* outPath, size_t outPathLen) {
+bool BuildLogFilePathForModuleAddress(const void* address, const char* fileName, char* outPath, size_t outPathLen)
+{
     return false;
 }
 
-void TryEnableFrameTimeCSVLogging(SharedMemoryLayout* shm, const void* address, PerformanceMetrics& metrics, const char* apiName, bool& inOutInitialized) {
+void TryEnableFrameTimeCSVLogging(SharedMemoryLayout* shm, const void* address, PerformanceMetrics& metrics,
+                                  const char* apiName, bool& inOutInitialized)
+{
 }

@@ -1,12 +1,12 @@
 // OpenGL Test App for Capture + FPS Limiter Testing
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
 #include <GL/gl.h>
 #include <GL/glu.h>
+#include <windows.h>
+#include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <cmath>
-#include <chrono>
 #include <string>
 
 #pragma comment(lib, "opengl32.lib")
@@ -22,23 +22,32 @@ bool g_Running = true;
 float g_BarPosition = 0.0f;
 auto g_StartTime = std::chrono::high_resolution_clock::now();
 
-void LoadConfig() {
+void LoadConfig()
+{
     char path[MAX_PATH];
     GetModuleFileNameA(NULL, path, MAX_PATH);
     std::string configPath = path;
     size_t pos = configPath.find_last_of("\\/");
-    if (pos != std::string::npos)
-        configPath = configPath.substr(0, pos + 1) + "testappconfig.ini";
-    
+    if (pos != std::string::npos) configPath = configPath.substr(0, pos + 1) + "testappconfig.ini";
+
     g_WindowWidth = GetPrivateProfileIntA("Display", "width", g_WindowWidth, configPath.c_str());
     g_WindowHeight = GetPrivateProfileIntA("Display", "height", g_WindowHeight, configPath.c_str());
     g_GpuLoadPasses = GetPrivateProfileIntA("Performance", "gpu_load", g_GpuLoadPasses, configPath.c_str());
     g_VSync = GetPrivateProfileIntA("Rendering", "vsync", g_VSync, configPath.c_str());
 }
 
-LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    if (msg == WM_DESTROY) { g_Running = false; PostQuitMessage(0); return 0; }
-    if (msg == WM_KEYDOWN && wParam == VK_ESCAPE) { g_Running = false; DestroyWindow(hWnd); return 0; }
+LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_DESTROY) {
+        g_Running = false;
+        PostQuitMessage(0);
+        return 0;
+    }
+    if (msg == WM_KEYDOWN && wParam == VK_ESCAPE) {
+        g_Running = false;
+        DestroyWindow(hWnd);
+        return 0;
+    }
     if (msg == WM_SIZE) {
         g_WindowWidth = LOWORD(lParam);
         g_WindowHeight = HIWORD(lParam);
@@ -48,29 +57,41 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     return DefWindowProc(hWnd, msg, wParam, lParam);
 }
 
-void SetupPixelFormat(HDC hDC) {
+void SetupPixelFormat(HDC hDC)
+{
     PIXELFORMATDESCRIPTOR pfd = {
-        sizeof(PIXELFORMATDESCRIPTOR),  // size
-        1,                              // version
-        PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER, // flags
-        PFD_TYPE_RGBA,                  // pixel type
-        32,                             // color bits
-        0, 0, 0, 0, 0, 0,               // color bits ignored
-        0,                              // alpha buffer
-        0,                              // shift bit ignored
-        0,                              // no accumulation buffer
-        0, 0, 0, 0,                     // accum bits ignored
-        24,                             // z-buffer
-        8,                              // stencil buffer
-        0,                              // no auxiliary buffer
-        PFD_MAIN_PLANE,                 // main layer
-        0,                              // reserved
-        0, 0, 0                         // layer masks ignored
+        sizeof(PIXELFORMATDESCRIPTOR),                               // size
+        1,                                                           // version
+        PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER,  // flags
+        PFD_TYPE_RGBA,                                               // pixel type
+        32,                                                          // color bits
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,  // color bits ignored
+        0,  // alpha buffer
+        0,  // shift bit ignored
+        0,  // no accumulation buffer
+        0,
+        0,
+        0,
+        0,               // accum bits ignored
+        24,              // z-buffer
+        8,               // stencil buffer
+        0,               // no auxiliary buffer
+        PFD_MAIN_PLANE,  // main layer
+        0,               // reserved
+        0,
+        0,
+        0  // layer masks ignored
     };
     int pixelFormat = ChoosePixelFormat(hDC, &pfd);
     SetPixelFormat(hDC, pixelFormat, &pfd);
 }
-void Render() {
+void Render()
+{
     auto now = std::chrono::high_resolution_clock::now();
     float elapsed = std::chrono::duration<float>(now - g_StartTime).count();
     g_BarPosition = (float)std::fmod((double)(elapsed * 0.5f), 1.0);
@@ -90,7 +111,7 @@ void Render() {
     // Draw Bar
     float barX = g_BarPosition * (g_WindowWidth - 100);
     float barY = g_WindowHeight / 2.0f;
-    
+
     // Draw sliding bar
     glColor3f(1.0f, 1.0f, 1.0f);
     glBegin(GL_QUADS);
@@ -134,23 +155,29 @@ void Render() {
     }
 }
 
-int main(int argc, char* argv[]) {
+int main(int argc, char* argv[])
+{
     LoadConfig();
     bool forceLegacy = false;
-    if (argc >= 3) { g_WindowWidth = atoi(argv[1]); g_WindowHeight = atoi(argv[2]); }
-    if (argc >= 4) { g_GpuLoadPasses = atoi(argv[3]); }
-    for (int i=1; i<argc; i++) {
+    if (argc >= 3) {
+        g_WindowWidth = atoi(argv[1]);
+        g_WindowHeight = atoi(argv[2]);
+    }
+    if (argc >= 4) {
+        g_GpuLoadPasses = atoi(argv[3]);
+    }
+    for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--legacy") == 0) forceLegacy = true;
     }
 
-    WNDCLASS wc = { 0 };
+    WNDCLASS wc = {0};
     wc.style = CS_OWNDC;
     wc.lpfnWndProc = WndProc;
     wc.hInstance = GetModuleHandle(nullptr);
     wc.lpszClassName = "OpenGLTestApp";
     RegisterClass(&wc);
 
-    RECT wr = { 0, 0, g_WindowWidth, g_WindowHeight };
+    RECT wr = {0, 0, g_WindowWidth, g_WindowHeight};
     AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, FALSE);
 
     // Use Work Area to avoid taskbar and ensure centering doesn't cut off title bar
@@ -166,10 +193,9 @@ int main(int argc, char* argv[]) {
     if (posX < 0) posX = 0;
     if (posY < 0) posY = 0;
 
-    HWND hWnd = CreateWindow("OpenGLTestApp", "OpenGL Test", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-        posX, posY, wr.right - wr.left, wr.bottom - wr.top,
-        nullptr, nullptr, wc.hInstance, nullptr);
-    
+    HWND hWnd = CreateWindow("OpenGLTestApp", "OpenGL Test", WS_OVERLAPPEDWINDOW | WS_VISIBLE, posX, posY,
+                             wr.right - wr.left, wr.bottom - wr.top, nullptr, nullptr, wc.hInstance, nullptr);
+
     // Ensure window is actually shown and not just a title bar
     ShowWindow(hWnd, SW_SHOW);
     UpdateWindow(hWnd);
@@ -180,17 +206,19 @@ int main(int argc, char* argv[]) {
     wglMakeCurrent(hDC, hRC);
 
     // Upgrade to Modern Context (GL 3.3+) if possible
-    typedef HGLRC (WINAPI * PFNWGLCREATECONTEXTATTRIBSARBPROC) (HDC hDC, HGLRC hShareContext, const int *attribList);
-    PFNWGLCREATECONTEXTATTRIBSARBPROC wglCreateContextAttribsARB = (PFNWGLCREATECONTEXTATTRIBSARBPROC)wglGetProcAddress("wglCreateContextAttribsARB");
-    
+    typedef HGLRC(WINAPI * PFNWGLCREATECONTEXTATTRIBSARBPROC)(HDC hDC, HGLRC hShareContext, const int* attribList);
+    PFNWGLCREATECONTEXTATTRIBSARBPROC wglCreateContextAttribsARB =
+        (PFNWGLCREATECONTEXTATTRIBSARBPROC)wglGetProcAddress("wglCreateContextAttribsARB");
+
     if (wglCreateContextAttribsARB && !forceLegacy) {
-        int attribs[] = {
-            0x2091 /*WGL_CONTEXT_MAJOR_VERSION_ARB*/, 3,
-            0x2092 /*WGL_CONTEXT_MINOR_VERSION_ARB*/, 3,
-            0x2094 /*WGL_CONTEXT_PROFILE_MASK_ARB*/, 0x00000002 /*WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB*/,
-            0
-        };
-        
+        int attribs[] = {0x2091 /*WGL_CONTEXT_MAJOR_VERSION_ARB*/,
+                         3,
+                         0x2092 /*WGL_CONTEXT_MINOR_VERSION_ARB*/,
+                         3,
+                         0x2094 /*WGL_CONTEXT_PROFILE_MASK_ARB*/,
+                         0x00000002 /*WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB*/,
+                         0};
+
         HGLRC hRC3 = wglCreateContextAttribsARB(hDC, 0, attribs);
         if (hRC3) {
             wglMakeCurrent(nullptr, nullptr);
@@ -199,19 +227,20 @@ int main(int argc, char* argv[]) {
             wglMakeCurrent(hDC, hRC);
             printf("Created OpenGL 3.3 Compatibility Context\n");
         } else {
-             printf("Failed to create GL 3.3 context, falling back to Legacy\n");
+            printf("Failed to create GL 3.3 context, falling back to Legacy\n");
         }
     } else {
-        printf(forceLegacy ? "Legacy Context Forced\n" : "wglCreateContextAttribsARB not found, using Legacy Context\n");
+        printf(forceLegacy ? "Legacy Context Forced\n"
+                           : "wglCreateContextAttribsARB not found, using Legacy Context\n");
     }
 
-    typedef BOOL (WINAPI * PFNWGLSWAPINTERVALEXTPROC) (int interval);
+    typedef BOOL(WINAPI * PFNWGLSWAPINTERVALEXTPROC)(int interval);
     PFNWGLSWAPINTERVALEXTPROC wglSwapIntervalEXT = (PFNWGLSWAPINTERVALEXTPROC)wglGetProcAddress("wglSwapIntervalEXT");
     if (wglSwapIntervalEXT) {
         wglSwapIntervalEXT(g_VSync);
     }
 
-    MSG msg = { 0 };
+    MSG msg = {0};
     while (g_Running) {
         while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
             TranslateMessage(&msg);

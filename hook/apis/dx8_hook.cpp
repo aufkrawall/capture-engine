@@ -1,31 +1,31 @@
 #include "dx8_hook.h"
-#include "lod_helper.h"
-#include "../common/capture_base.h"
-#include "../common/fps_limiter.h"
-#include "../common/overlay.h"
-#include "hook_common.h"
-#include "performance_metrics.h"
-#include "../common/frame_timing.h"
-#include "../wrappers/vtable_hook.h"
-#include <cstdint>
-#include <d3d9.h>
-#include <d3d11.h>
-#include <d3d11_4.h>
-#include <dxgi.h>
-#include <imgui.h>
 #include <backends/imgui_impl_dx9.h>
 #include <backends/imgui_impl_win32.h>
+#include <d3d11.h>
+#include <d3d11_4.h>
+#include <d3d9.h>
+#include <dxgi.h>
+#include <imgui.h>
 #include <windows.h>
-#include <vector>
-#include <thread>
+#include <cstdint>
 #include <string>
+#include <thread>
+#include <vector>
+#include "../common/capture_base.h"
+#include "../common/fps_limiter.h"
+#include "../common/frame_timing.h"
+#include "../common/overlay.h"
+#include "../wrappers/vtable_hook.h"
+#include "hook_common.h"
+#include "lod_helper.h"
+#include "performance_metrics.h"
 
 // D3D8 interface definitions (minimal subset needed for hooking)
 // D3D8 doesn't have official headers in modern SDKs
 
 // D3D8 device vtable indices
-#define D3D8_VTABLE_PRESENT 15
-#define D3D8_VTABLE_RESET 14
+#define D3D8_VTABLE_PRESENT       15
+#define D3D8_VTABLE_RESET         14
 #define D3D8_VTABLE_GETBACKBUFFER 17
 
 // D3D8 types
@@ -34,32 +34,17 @@ typedef interface IDirect3DDevice8 IDirect3DDevice8;
 typedef interface IDirect3DSurface8 IDirect3DSurface8;
 
 // D3D8 function typedefs
-typedef HRESULT (STDMETHODCALLTYPE *D3D8Present_t)(
-    IDirect3DDevice8 *device,
-    const RECT *pSourceRect,
-    const RECT *pDestRect,
-    HWND hDestWindowOverride,
-    const RGNDATA *pDirtyRegion
-);
+typedef HRESULT(STDMETHODCALLTYPE* D3D8Present_t)(IDirect3DDevice8* device, const RECT* pSourceRect,
+                                                  const RECT* pDestRect, HWND hDestWindowOverride,
+                                                  const RGNDATA* pDirtyRegion);
 
-typedef HRESULT (STDMETHODCALLTYPE *D3D8Reset_t)(
-    IDirect3DDevice8 *device,
-    void *pPresentationParameters
-);
+typedef HRESULT(STDMETHODCALLTYPE* D3D8Reset_t)(IDirect3DDevice8* device, void* pPresentationParameters);
 
-typedef HRESULT (STDMETHODCALLTYPE *D3D8GetBackBuffer_t)(
-    IDirect3DDevice8 *device,
-    UINT BackBuffer,
-    UINT Type,
-    IDirect3DSurface8 **ppBackBuffer
-);
+typedef HRESULT(STDMETHODCALLTYPE* D3D8GetBackBuffer_t)(IDirect3DDevice8* device, UINT BackBuffer, UINT Type,
+                                                        IDirect3DSurface8** ppBackBuffer);
 
-typedef HRESULT (STDMETHODCALLTYPE *D3D8SetTextureStageState_t)(
-    IDirect3DDevice8 *device,
-    DWORD Stage,
-    DWORD Type,
-    DWORD Value
-);
+typedef HRESULT(STDMETHODCALLTYPE* D3D8SetTextureStageState_t)(IDirect3DDevice8* device, DWORD Stage, DWORD Type,
+                                                               DWORD Value);
 
 // D3D8 present parameters structure
 struct D3D8_PRESENT_PARAMETERS {
@@ -80,17 +65,13 @@ struct D3D8_PRESENT_PARAMETERS {
 
 // CreateDevice typedef
 #define D3DTSS_MIPMAPLODBIAS 19
-typedef HRESULT (STDMETHODCALLTYPE *D3D8CreateDevice_t)(
-    IDirect3D8 *d3d,
-    UINT Adapter,
-    UINT DeviceType,
-    HWND hFocusWindow,
-    DWORD BehaviorFlags,
-    D3D8_PRESENT_PARAMETERS *pPresentationParameters,
-    IDirect3DDevice8 **ppDevice
-);
+typedef HRESULT(STDMETHODCALLTYPE* D3D8CreateDevice_t)(IDirect3D8* d3d, UINT Adapter, UINT DeviceType,
+                                                       HWND hFocusWindow, DWORD BehaviorFlags,
+                                                       D3D8_PRESENT_PARAMETERS* pPresentationParameters,
+                                                       IDirect3DDevice8** ppDevice);
 
-static HRESULT STDMETHODCALLTYPE DetourD3D8SetTextureStageState(IDirect3DDevice8 *device, DWORD Stage, DWORD Type, DWORD Value);
+static HRESULT STDMETHODCALLTYPE DetourD3D8SetTextureStageState(IDirect3DDevice8* device, DWORD Stage, DWORD Type,
+                                                                DWORD Value);
 
 // Original function pointers
 static D3D8Present_t oD3D8Present = nullptr;
@@ -100,30 +81,32 @@ static D3D8CreateDevice_t oD3D8CreateDevice = nullptr;
 
 static bool g_DX8HooksInitialized = false;
 
-static DWORD ParseD3D8MSAA(const char* msaa) {
-    if (strcmp(msaa, "2x") == 0) return 2; // D3DMULTISAMPLE_2_SAMPLES
-    if (strcmp(msaa, "4x") == 0) return 4; // D3DMULTISAMPLE_4_SAMPLES
-    if (strcmp(msaa, "8x") == 0) return 8; // D3DMULTISAMPLE_8_SAMPLES
-    return 0; // D3DMULTISAMPLE_NONE
+static DWORD ParseD3D8MSAA(const char* msaa)
+{
+    if (strcmp(msaa, "2x") == 0) return 2;  // D3DMULTISAMPLE_2_SAMPLES
+    if (strcmp(msaa, "4x") == 0) return 4;  // D3DMULTISAMPLE_4_SAMPLES
+    if (strcmp(msaa, "8x") == 0) return 8;  // D3DMULTISAMPLE_8_SAMPLES
+    return 0;                               // D3DMULTISAMPLE_NONE
 }
 
-static void ApplyDX8MSAAOverride(IDirect3D8* d3d, UINT adapter, UINT deviceType, D3D8_PRESENT_PARAMETERS* pp) {
+static void ApplyDX8MSAAOverride(IDirect3D8* d3d, UINT adapter, UINT deviceType, D3D8_PRESENT_PARAMETERS* pp)
+{
     if (!pp || !g_IPC || !g_IPC->GetSharedMem()) return;
-    
+
     const char* msaa = g_IPC->GetSharedMem()->graphicsConfig.msaaSamples;
-    if (msaa[0] == 'd') return; // default
-    
+    if (msaa[0] == 'd') return;  // default
+
     DWORD msType = ParseD3D8MSAA(msaa);
     if (msType != 0) {
         // D3D8 CheckDeviceMultiSampleType: adapter, deviceType, format, windowed, msType
         // Using d3d8 vtable directly for CheckDeviceMultiSampleType (index 5)
-        typedef HRESULT (STDMETHODCALLTYPE *CheckMS_t)(IDirect3D8*, UINT, UINT, UINT, BOOL, DWORD);
-        void **vtable = *(void***)d3d;
+        typedef HRESULT(STDMETHODCALLTYPE * CheckMS_t)(IDirect3D8*, UINT, UINT, UINT, BOOL, DWORD);
+        void** vtable = *(void***)d3d;
         CheckMS_t pCheckMS = (CheckMS_t)vtable[5];
-        
+
         if (SUCCEEDED(pCheckMS(d3d, adapter, deviceType, pp->BackBufferFormat, pp->Windowed, msType))) {
             pp->MultiSampleType = msType;
-            pp->SwapEffect = 1; // D3DSWAPEFFECT_DISCARD
+            pp->SwapEffect = 1;  // D3DSWAPEFFECT_DISCARD
             HookLog("DX8: Forcing MSAA %d samples", (int)msType);
         } else {
             HookLog("DX8: MSAA %d samples NOT SUPPORTED", (int)msType);
@@ -151,29 +134,28 @@ static void ApplyPrerenderLimitDX8(IDirect3DDevice8* device, float limit);
 class DX8Capture : public HookCaptureBase {
 public:
     // D3D9Ex wrapper for GPU sharing
-    IDirect3D9Ex *d3d9Ex = nullptr;
-    IDirect3DDevice9Ex *d3d9DeviceEx = nullptr;
-    IDirect3DSurface9 *d3d9SharedSurface = nullptr;
-    
+    IDirect3D9Ex* d3d9Ex = nullptr;
+    IDirect3DDevice9Ex* d3d9DeviceEx = nullptr;
+    IDirect3DSurface9* d3d9SharedSurface = nullptr;
+
     // D3D11 for shared texture
-    ID3D11Device *d3d11Device = nullptr;
-    ID3D11DeviceContext *d3d11Context = nullptr;
-    ID3D11Texture2D *sharedTextures[CAPTURE_TEXTURE_COUNT]{};
-    
+    ID3D11Device* d3d11Device = nullptr;
+    ID3D11DeviceContext* d3d11Context = nullptr;
+    ID3D11Texture2D* sharedTextures[CAPTURE_TEXTURE_COUNT]{};
+
     // D3D11.3 Fence support
-    ID3D11Fence *fence = nullptr;
-    ID3D11DeviceContext4 *context4 = nullptr;
+    ID3D11Fence* fence = nullptr;
+    ID3D11DeviceContext4* context4 = nullptr;
     bool useFences = false;
     UINT64 fenceValue = 0;
-    
+
     // Cached D3D8 device
-    IDirect3DDevice8 *d3d8Device = nullptr;
-    
-    void Cleanup() override {
-        CleanupDX8();
-    }
-    
-    void CleanupDX8() {
+    IDirect3DDevice8* d3d8Device = nullptr;
+
+    void Cleanup() override { CleanupDX8(); }
+
+    void CleanupDX8()
+    {
         // Release D3D11 resources
         for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
             if (sharedTextureHandles[i]) {
@@ -185,54 +167,77 @@ public:
                 sharedTextures[i] = nullptr;
             }
         }
-        
-        if (fence) { fence->Release(); fence = nullptr; }
-        if (context4) { context4->Release(); context4 = nullptr; }
+
+        if (fence) {
+            fence->Release();
+            fence = nullptr;
+        }
+        if (context4) {
+            context4->Release();
+            context4 = nullptr;
+        }
         if (sharedFenceHandle) {
             CloseHandle(sharedFenceHandle);
             sharedFenceHandle = NULL;
         }
-        
-        if (d3d11Context) { d3d11Context->Release(); d3d11Context = nullptr; }
-        if (d3d11Device) { d3d11Device->Release(); d3d11Device = nullptr; }
-        
+
+        if (d3d11Context) {
+            d3d11Context->Release();
+            d3d11Context = nullptr;
+        }
+        if (d3d11Device) {
+            d3d11Device->Release();
+            d3d11Device = nullptr;
+        }
+
         // Release D3D9Ex wrapper
-        if (d3d9SharedSurface) { d3d9SharedSurface->Release(); d3d9SharedSurface = nullptr; }
-        if (d3d9DeviceEx) { d3d9DeviceEx->Release(); d3d9DeviceEx = nullptr; }
-        if (d3d9Ex) { d3d9Ex->Release(); d3d9Ex = nullptr; }
-        
+        if (d3d9SharedSurface) {
+            d3d9SharedSurface->Release();
+            d3d9SharedSurface = nullptr;
+        }
+        if (d3d9DeviceEx) {
+            d3d9DeviceEx->Release();
+            d3d9DeviceEx = nullptr;
+        }
+        if (d3d9Ex) {
+            d3d9Ex->Release();
+            d3d9Ex = nullptr;
+        }
+
         for (auto& q : g_PrerenderQueries) {
             if (q) q->Release();
         }
         g_PrerenderQueries.clear();
         g_PrerenderFrameIndex = 0;
-        
+
         d3d8Device = nullptr;
         initialized = false;
         useFences = false;
         fenceValue = 0;
     }
-    
-    void CreateSharedResources(uint32_t w, uint32_t h, uint32_t fmt) override {
+
+    void CreateSharedResources(uint32_t w, uint32_t h, uint32_t fmt) override
+    {
         // Implemented in Init
     }
-    
-    bool CreateD3D9ExWrapper(HWND hwnd) {
+
+    bool CreateD3D9ExWrapper(HWND hwnd)
+    {
         if (d3d9DeviceEx) return true;
         // Create D3D9Ex calls dynamic
         HMODULE d3d9 = GetModuleHandleA("d3d9.dll");
         if (!d3d9) d3d9 = LoadLibraryA("d3d9.dll");
         if (!d3d9) {
-             HookLog("DX8: D3D9 DLL not found");
-             return false;
+            HookLog("DX8: D3D9 DLL not found");
+            return false;
         }
 
-        typedef HRESULT (WINAPI *PFN_Direct3DCreate9Ex)(UINT, IDirect3D9Ex**);
+        typedef HRESULT(WINAPI * PFN_Direct3DCreate9Ex)(UINT, IDirect3D9Ex**);
         PFN_Direct3DCreate9Ex pDirect3DCreate9Ex = (PFN_Direct3DCreate9Ex)GetProcAddress(d3d9, "Direct3DCreate9Ex");
-        
+
         if (!pDirect3DCreate9Ex) {
-             HookLog("DX8: Direct3DCreate9Ex not found");
-             return false;
+            HookLog("DX8: Direct3DCreate9Ex not found");
+            return false;
         }
 
         HRESULT hr = pDirect3DCreate9Ex(D3D_SDK_VERSION, &d3d9Ex);
@@ -240,7 +245,7 @@ public:
             HookLog("DX8: Failed to create D3D9Ex (hr=0x%08x)", hr);
             return false;
         }
-        
+
         // Create D3D9Ex device
         D3DPRESENT_PARAMETERS d3dpp = {};
         d3dpp.Windowed = TRUE;
@@ -251,81 +256,69 @@ public:
         d3dpp.BackBufferHeight = height;
         d3dpp.BackBufferCount = 1;
         d3dpp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
-        
-        hr = d3d9Ex->CreateDeviceEx(
-            D3DADAPTER_DEFAULT,
-            D3DDEVTYPE_HAL,
-            hwnd,
-            D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_MULTITHREADED,
-            &d3dpp,
-            NULL,
-            &d3d9DeviceEx
-        );
-        
+
+        hr = d3d9Ex->CreateDeviceEx(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd,
+                                    D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_MULTITHREADED, &d3dpp, NULL,
+                                    &d3d9DeviceEx);
+
         if (FAILED(hr)) {
             HookLog("DX8: Failed to create D3D9Ex device (hr=0x%08x)", hr);
             return false;
         }
-        
+
         HookLog("DX8: D3D9Ex wrapper created");
         return true;
     }
-    
-    bool CreateD3D11Device() {
-        D3D_FEATURE_LEVEL featureLevels[] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1 };
+
+    bool CreateD3D11Device()
+    {
+        D3D_FEATURE_LEVEL featureLevels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1};
         D3D_FEATURE_LEVEL featureLevel;
-        
+
         HMODULE hD3D11 = LoadLibraryA("d3d11.dll");
         if (!hD3D11) {
             HookLog("DX8: D3D11 DLL not found");
             return false;
         }
 
-        typedef HRESULT (WINAPI *PFN_D3D11_CREATE_DEVICE)(IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT, const D3D_FEATURE_LEVEL*, UINT, UINT, ID3D11Device**, D3D_FEATURE_LEVEL*, ID3D11DeviceContext**);
-        PFN_D3D11_CREATE_DEVICE pD3D11CreateDevice = (PFN_D3D11_CREATE_DEVICE)GetProcAddress(hD3D11, "D3D11CreateDevice");
+        typedef HRESULT(WINAPI * PFN_D3D11_CREATE_DEVICE)(IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT,
+                                                          const D3D_FEATURE_LEVEL*, UINT, UINT, ID3D11Device**,
+                                                          D3D_FEATURE_LEVEL*, ID3D11DeviceContext**);
+        PFN_D3D11_CREATE_DEVICE pD3D11CreateDevice =
+            (PFN_D3D11_CREATE_DEVICE)GetProcAddress(hD3D11, "D3D11CreateDevice");
         if (!pD3D11CreateDevice) {
-             HookLog("DX8: D3D11CreateDevice not found");
-             return false;
+            HookLog("DX8: D3D11CreateDevice not found");
+            return false;
         }
 
-        HRESULT hr = pD3D11CreateDevice(
-            nullptr,
-            D3D_DRIVER_TYPE_HARDWARE,
-            NULL,
-            0,
-            featureLevels,
-            2,
-            D3D11_SDK_VERSION,
-            &d3d11Device,
-            &featureLevel,
-            &d3d11Context
-        );
-        
+        HRESULT hr = pD3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, featureLevels, 2, D3D11_SDK_VERSION,
+                                        &d3d11Device, &featureLevel, &d3d11Context);
+
         if (FAILED(hr)) {
             HookLog("DX8: Failed to create D3D11 device (hr=0x%08x)", hr);
             return false;
         }
-        
+
         // Get adapter LUID
-        IDXGIDevice *dxgiDevice = nullptr;
+        IDXGIDevice* dxgiDevice = nullptr;
         if (SUCCEEDED(d3d11Device->QueryInterface(IID_PPV_ARGS(&dxgiDevice)))) {
-            IDXGIAdapter *adapter = nullptr;
+            IDXGIAdapter* adapter = nullptr;
             if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter))) {
                 DXGI_ADAPTER_DESC desc;
                 adapter->GetDesc(&desc);
                 luidLow = desc.AdapterLuid.LowPart;
                 luidHigh = desc.AdapterLuid.HighPart;
-                
+
                 // Report LUID to shared memory for out-of-process polling
                 ReportLUID(luidLow, luidHigh);
                 adapter->Release();
             }
             dxgiDevice->Release();
         }
-        
+
         // Try to get context4 for fences
         if (SUCCEEDED(d3d11Context->QueryInterface(IID_PPV_ARGS(&context4)))) {
-            ID3D11Device5 *device5 = nullptr;
+            ID3D11Device5* device5 = nullptr;
             if (SUCCEEDED(d3d11Device->QueryInterface(IID_PPV_ARGS(&device5)))) {
                 if (SUCCEEDED(device5->CreateFence(0, D3D11_FENCE_FLAG_SHARED, IID_PPV_ARGS(&fence)))) {
                     fence->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr, &sharedFenceHandle);
@@ -335,12 +328,13 @@ public:
                 device5->Release();
             }
         }
-        
+
         HookLog("DX8: D3D11 device created (LUID: %08x)", luidLow);
         return true;
     }
-    
-    bool CreateSharedTextures() {
+
+    bool CreateSharedTextures()
+    {
         D3D11_TEXTURE2D_DESC texDesc = {};
         texDesc.Width = width;
         texDesc.Height = height;
@@ -351,103 +345,98 @@ public:
         texDesc.Usage = D3D11_USAGE_DEFAULT;
         texDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
         texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
-        
+
         for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
             HRESULT hr = d3d11Device->CreateTexture2D(&texDesc, NULL, &sharedTextures[i]);
             if (FAILED(hr)) {
                 HookLog("DX8: Failed to create shared texture %d (hr=0x%08x)", i, hr);
                 return false;
             }
-            
+
             // Get shared handle
-            IDXGIResource *resource = nullptr;
+            IDXGIResource* resource = nullptr;
             sharedTextures[i]->QueryInterface(IID_PPV_ARGS(&resource));
             resource->GetSharedHandle(&sharedTextureHandles[i]);
             resource->Release();
         }
-        
+
         HookLog("DX8: Shared textures created");
         return true;
     }
-    
-    bool CreateD3D9ExSharedSurface() {
+
+    bool CreateD3D9ExSharedSurface()
+    {
         // Create D3D9Ex offscreen surface that can share with D3D11
         HANDLE sharedHandle = nullptr;
-        HRESULT hr = d3d9DeviceEx->CreateOffscreenPlainSurfaceEx(
-            width, height,
-            D3DFMT_A8R8G8B8,
-            D3DPOOL_DEFAULT,
-            &d3d9SharedSurface,
-            &sharedHandle,
-            0
-        );
-        
+        HRESULT hr = d3d9DeviceEx->CreateOffscreenPlainSurfaceEx(width, height, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT,
+                                                                 &d3d9SharedSurface, &sharedHandle, 0);
+
         if (FAILED(hr)) {
             HookLog("DX8: Failed to create D3D9Ex shared surface (hr=0x%08x)", hr);
             return false;
         }
-        
+
         HookLog("DX8: D3D9Ex shared surface created");
         return true;
     }
-    
-    void Init(IDirect3DDevice8 *device, HWND hwnd) {
-        if (initialized)
-            return;
-            
+
+    void Init(IDirect3DDevice8* device, HWND hwnd)
+    {
+        if (initialized) return;
+
         d3d8Device = device;
-        
+
         // Get backbuffer size from HWND
         RECT rect;
         GetClientRect(hwnd, &rect);
         width = rect.right - rect.left;
         height = rect.bottom - rect.top;
         format = DXGI_FORMAT_B8G8R8A8_UNORM;
-        
+
         if (width == 0 || height == 0) {
             HookLog("DX8: Invalid window size");
             return;
         }
-        
+
         // Create D3D9Ex wrapper for sharing
         if (!CreateD3D9ExWrapper(hwnd)) {
             CleanupDX8();
             return;
         }
-        
+
         // Create D3D11 device
         if (!CreateD3D11Device()) {
             CleanupDX8();
             return;
         }
-        
+
         // Create shared textures
         if (!CreateSharedTextures()) {
             CleanupDX8();
             return;
         }
-        
+
         // Create D3D9Ex shared surface
         if (!CreateD3D9ExSharedSurface()) {
             CleanupDX8();
             return;
         }
-        
+
         // Publish to shared memory
         if (g_IPC) {
             PublishToSharedMemory(g_IPC);
         }
-        
+
         initialized = true;
         HookLog("DX8 Capture Initialized: %dx%d", width, height);
     }
-    
-    void CaptureFrame(IDirect3DDevice8 *device) {
-        if (!initialized || !d3d9DeviceEx)
-            return;
-            
+
+    void CaptureFrame(IDirect3DDevice8* device)
+    {
+        if (!initialized || !d3d9DeviceEx) return;
+
         int idx = writeIndex;
-        
+
         // Get timestamp
         static int64_t qpcFreq = 0;
         if (qpcFreq == 0) {
@@ -458,29 +447,28 @@ public:
         LARGE_INTEGER qpc;
         QueryPerformanceCounter(&qpc);
         int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
-        
+
         // For DX8, we need to copy the backbuffer to the D3D9Ex surface
         // then share that to D3D11. Since D3D8 is translated to D3D9 internally,
         // we can do a GPU copy via StretchRect to our D3D9Ex surface.
-        
+
         // Get D3D8 backbuffer as a D3D9 surface (Windows translates internally)
         // This requires getting the front buffer or using staging
         // For simplicity, use staging approach with D3D9Ex
-        
+
         // Lock D3D9Ex surface and copy via UpdateSubresource
         D3DLOCKED_RECT lockedRect;
         if (SUCCEEDED(d3d9SharedSurface->LockRect(&lockedRect, NULL, D3DLOCK_READONLY))) {
-            d3d11Context->UpdateSubresource(sharedTextures[idx], 0, NULL, 
-                                           lockedRect.pBits, lockedRect.Pitch, 0);
+            d3d11Context->UpdateSubresource(sharedTextures[idx], 0, NULL, lockedRect.pBits, lockedRect.Pitch, 0);
             d3d9SharedSurface->UnlockRect();
         }
-        
+
         // Signal fence if available
         if (useFences && context4 && fence) {
             fenceValue++;
             context4->Signal(fence, fenceValue);
         }
-        
+
         // PASS RAW QPC
         SignalFrameReady(g_IPC, idx, qpc.QuadPart, fenceValue);
         AdvanceWriteIndex();
@@ -489,7 +477,8 @@ public:
 
 static DX8Capture g_DX8Capture;
 
-static void ApplyPrerenderLimitDX8(IDirect3DDevice8* device, float limit) {
+static void ApplyPrerenderLimitDX8(IDirect3DDevice8* device, float limit)
+{
     if (limit < 0.0f) return;
 
     // We need D3D9Ex device for queries
@@ -499,7 +488,8 @@ static void ApplyPrerenderLimitDX8(IDirect3DDevice8* device, float limit) {
         if (!hwnd) hwnd = GetForegroundWindow();
         if (hwnd) {
             if (!g_DX8Capture.CreateD3D9ExWrapper(hwnd)) return;
-        } else return;
+        } else
+            return;
     }
 
     IDirect3DDevice9Ex* dev = g_DX8Capture.d3d9DeviceEx;
@@ -550,68 +540,64 @@ static void ApplyPrerenderLimitDX8(IDirect3DDevice8* device, float limit) {
     // Strict Serial + Fixed Idle Gap for fractional limits
     if (isFractional) {
         // effectiveLimit already set to 0 for Strict Serial above
-        
+
         // After the wait completes, calculate and apply a fixed idle gap
         float fps = g_PerfMetrics.GetCurrentFPS();
         double targetFrameTimeUs = (fps > 1.0f) ? (1000000.0 / fps) : 16666.0;
-        
+
         // Fixed Idle Gap = TargetFrameTime * (1.0 - limit) * 0.10
         int64_t idleGapUs = (int64_t)(targetFrameTimeUs * (1.0 - limit) * 0.10);
         if (idleGapUs > 0) {
-            if (idleGapUs > 10000) idleGapUs = 10000; // Cap at 10ms
+            if (idleGapUs > 10000) idleGapUs = 10000;  // Cap at 10ms
             PrecisionSleep(idleGapUs);
         }
     }
 }
 
 // Draw overlay using ImGui DX9 backend (on our D3D9Ex wrapper device)
-static void DrawDX8Overlay(HWND hwnd) {
-    if (!g_DX8Capture.d3d9DeviceEx)
-        return;
-        
+static void DrawDX8Overlay(HWND hwnd)
+{
+    if (!g_DX8Capture.d3d9DeviceEx) return;
+
     if (!g_ImGuiInitialized) {
         g_CachedHwnd = hwnd;
-        
+
         g_SharedOverlay.InitImGui(hwnd);
         ImGui_ImplDX9_Init(g_DX8Capture.d3d9DeviceEx);
-        
+
         // SetTextureStageState is index 61
         if (g_DX8Capture.d3d8Device) {
-            void **vTable = *(void***)g_DX8Capture.d3d8Device;
-            VTableHook::Create(&vTable[61], (LPVOID)&DetourD3D8SetTextureStageState, (LPVOID *)&oD3D8SetTextureStageState);
+            void** vTable = *(void***)g_DX8Capture.d3d8Device;
+            VTableHook::Create(&vTable[61], (LPVOID)&DetourD3D8SetTextureStageState,
+                               (LPVOID*)&oD3D8SetTextureStageState);
         }
-        
+
         g_DX8HooksInitialized = true;
         HookLog("DX8: Hooks initialized");
     }
-    
+
     ImGui_ImplDX9_NewFrame();
     g_SharedOverlay.BeginFrame();
-    
+
     // Use shared overlay
     g_SharedOverlay.SetMetrics(&g_PerfMetrics);
     g_SharedOverlay.SetIPCClient(g_IPC);
     g_SharedOverlay.SetDroppedFrames(g_DX8Capture.droppedFrames.load(std::memory_order_relaxed));
     g_SharedOverlay.SetGraphicsAPI("DX8");
     g_SharedOverlay.RenderUI();
-    
+
     g_SharedOverlay.EndFrame();
-    
+
     // Begin scene on our D3D9Ex device
     g_DX8Capture.d3d9DeviceEx->BeginScene();
     ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
     g_DX8Capture.d3d9DeviceEx->EndScene();
 }
 
-
-
-static HRESULT STDMETHODCALLTYPE DetourD3D8Present(
-    IDirect3DDevice8 *device,
-    const RECT *pSourceRect,
-    const RECT *pDestRect,
-    HWND hDestWindowOverride,
-    const RGNDATA *pDirtyRegion
-) {
+static HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device, const RECT* pSourceRect,
+                                                   const RECT* pDestRect, HWND hDestWindowOverride,
+                                                   const RGNDATA* pDirtyRegion)
+{
     if (g_ShuttingDown) return D3D_OK;
     // Update performance metrics
     static int64_t qpcFreq = 0;
@@ -624,70 +610,68 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8Present(
     QueryPerformanceCounter(&qpc);
     int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
     g_PerfMetrics.Update(us);
-    
-    SharedMemoryLayout *shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+
+    SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
     bool captureIncludeOverlay = shm ? shm->overlayConfig.captureIncludeOverlay : true;
     bool shouldDrawOverlay = shm && shm->overlayConfig.showOverlay;
     bool isRecording = g_IPC && g_IPC->IsRecording();
-    
+
     // Lambda for capture operation
     auto doCapture = [&]() {
-      if (isRecording) {
-          if (!g_DX8Capture.initialized) {
-              HWND hwnd = hDestWindowOverride;
-              if (!hwnd) {
-                  hwnd = GetForegroundWindow();
-              }
-              g_DX8Capture.Init(device, hwnd);
-          }
-          
-          if (g_DX8Capture.initialized) {
-              g_DX8Capture.CaptureFrame(device);
-          }
-      } else if (g_DX8Capture.initialized) {
-          g_DX8Capture.Cleanup();
-      }
+        if (isRecording) {
+            if (!g_DX8Capture.initialized) {
+                HWND hwnd = hDestWindowOverride;
+                if (!hwnd) {
+                    hwnd = GetForegroundWindow();
+                }
+                g_DX8Capture.Init(device, hwnd);
+            }
+
+            if (g_DX8Capture.initialized) {
+                g_DX8Capture.CaptureFrame(device);
+            }
+        } else if (g_DX8Capture.initialized) {
+            g_DX8Capture.Cleanup();
+        }
     };
-    
+
     // Lambda for overlay drawing
     auto doOverlay = [&]() {
-      if (shouldDrawOverlay) {
-          HWND hwnd = hDestWindowOverride ? hDestWindowOverride : GetForegroundWindow();
-          DrawDX8Overlay(hwnd);
-      }
+        if (shouldDrawOverlay) {
+            HWND hwnd = hDestWindowOverride ? hDestWindowOverride : GetForegroundWindow();
+            DrawDX8Overlay(hwnd);
+        }
     };
-    
+
     // CPU Prerender Limit
     if (g_IPC && g_IPC->GetSharedMem()->graphicsConfig.prerenderLimit >= 0) {
         ApplyPrerenderLimitDX8(device, g_IPC->GetSharedMem()->graphicsConfig.prerenderLimit);
     }
-    
+
     // Order capture/overlay based on config
     if (captureIncludeOverlay) {
-        doOverlay();   // Draw overlay first
-        doCapture();   // Then capture (includes overlay)
+        doOverlay();  // Draw overlay first
+        doCapture();  // Then capture (includes overlay)
     } else {
-        doCapture();   // Capture first (clean frame)
-        doOverlay();   // Then draw overlay (visible but not recorded)
+        doCapture();  // Capture first (clean frame)
+        doOverlay();  // Then draw overlay (visible but not recorded)
     }
-    
+
     // Call original
     HRESULT hr = oD3D8Present(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
-    
+
     // Apply FPS limiter
     g_SharedFpsLimiter.SetIPCClient(g_IPC);
     g_SharedFpsLimiter.Apply();
-    
+
     return hr;
 }
 
 // Hook: D3D8 Reset
-static HRESULT STDMETHODCALLTYPE DetourD3D8Reset(
-    IDirect3DDevice8 *device,
-    void *pPresentationParameters
-) {
+static HRESULT STDMETHODCALLTYPE DetourD3D8Reset(IDirect3DDevice8* device, void* pPresentationParameters)
+{
     HookLog("DX8: Reset called");
-    
+
     // Cleanup ImGui
     if (g_ImGuiInitialized) {
         ImGui_ImplDX9_Shutdown();
@@ -695,19 +679,23 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8Reset(
         ImGui::DestroyContext();
         g_ImGuiInitialized = false;
     }
-    
+
     // Cleanup capture
     g_DX8Capture.Cleanup();
-    
+
     // VSync Override
     if (g_IPC) {
         std::string mode = g_IPC->GetSharedMem()->graphicsConfig.vsyncMode;
         if (mode != "default" && pPresentationParameters) {
             D3D8_PRESENT_PARAMETERS* pp = (D3D8_PRESENT_PARAMETERS*)pPresentationParameters;
-            if (mode == "off") pp->FullScreen_PresentationInterval = 0x80000000; // D3DPRESENT_INTERVAL_IMMEDIATE
-            else if (mode == "fifo") pp->FullScreen_PresentationInterval = 0x00000001; // D3DPRESENT_INTERVAL_ONE
-            else if (mode == "adaptive") pp->FullScreen_PresentationInterval = 0x00000001;
-            else if (mode == "mailbox") pp->FullScreen_PresentationInterval = 0x80000000;
+            if (mode == "off")
+                pp->FullScreen_PresentationInterval = 0x80000000;  // D3DPRESENT_INTERVAL_IMMEDIATE
+            else if (mode == "fifo")
+                pp->FullScreen_PresentationInterval = 0x00000001;  // D3DPRESENT_INTERVAL_ONE
+            else if (mode == "adaptive")
+                pp->FullScreen_PresentationInterval = 0x00000001;
+            else if (mode == "mailbox")
+                pp->FullScreen_PresentationInterval = 0x80000000;
         }
 
         // Backbuffer Count override
@@ -717,7 +705,7 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8Reset(
             pp->BackBufferCount = (UINT)count - 1;
             HookLog("DX8: Reset: Overriding BackBufferCount to %d", count);
         }
-        
+
         // MSAA override
         if (pPresentationParameters) {
             // We need the IDirect3D8 object to check support, but Reset doesn't provide it
@@ -728,7 +716,7 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8Reset(
                 DWORD msType = ParseD3D8MSAA(msaa);
                 if (msType != 0) {
                     pp->MultiSampleType = msType;
-                    pp->SwapEffect = 1; // DISCARD
+                    pp->SwapEffect = 1;  // DISCARD
                 } else if (strcmp(msaa, "off") == 0) {
                     pp->MultiSampleType = 0;
                 }
@@ -740,53 +728,57 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8Reset(
 }
 
 // Hook: D3D8 SetTextureStageState
-static HRESULT STDMETHODCALLTYPE DetourD3D8SetTextureStageState(
-    IDirect3DDevice8 *device,
-    DWORD Stage,
-    DWORD Type,
-    DWORD Value
-) {
+static HRESULT STDMETHODCALLTYPE DetourD3D8SetTextureStageState(IDirect3DDevice8* device, DWORD Stage, DWORD Type,
+                                                                DWORD Value)
+{
     if (g_IPC) {
-         const auto& gfx = GetActiveGraphicsConfig();
-         // Anisotropy
+        const auto& gfx = GetActiveGraphicsConfig();
+        // Anisotropy
         std::string af = gfx.anisotropicFiltering;
         if (af != "default") {
             // D3DTSS_MAGFILTER = 16, MINFILTER = 17
             if (Type == 16 || Type == 17) {
-                 if (af == "off") {
-                      if (Value == 3) Value = 2; // ANISOTROPIC -> LINEAR
-                 } else {
-                      Value = 3; // ANISOTROPIC
-                 }
+                if (af == "off") {
+                    if (Value == 3) Value = 2;  // ANISOTROPIC -> LINEAR
+                } else {
+                    Value = 3;  // ANISOTROPIC
+                }
             }
             // D3DTSS_MAXANISOTROPY = 21
             if (Type == 21) {
-                 if (af == "off") Value = 1;
-                 else if (af == "2x") Value = 2;
-                 else if (af == "4x") Value = 4;
-                 else if (af == "8x") Value = 8;
-                 else Value = 16;
+                if (af == "off")
+                    Value = 1;
+                else if (af == "2x")
+                    Value = 2;
+                else if (af == "4x")
+                    Value = 4;
+                else if (af == "8x")
+                    Value = 8;
+                else
+                    Value = 16;
             }
         }
-        
+
         // Mip Mapping
         std::string mip = gfx.mipMapping;
         if (mip != "default") {
-             // D3DTSS_MIPFILTER = 18
-             if (Type == 18) {
-                  if (mip == "trilinear") Value = 2; // LINEAR (Linear Mip Linear)
-                  else if (mip == "bilinear") Value = 1; // POINT (Linear Mip Nearest if Mag/Min are Linear)
-             }
+            // D3DTSS_MIPFILTER = 18
+            if (Type == 18) {
+                if (mip == "trilinear")
+                    Value = 2;  // LINEAR (Linear Mip Linear)
+                else if (mip == "bilinear")
+                    Value = 1;  // POINT (Linear Mip Nearest if Mag/Min are Linear)
+            }
         }
-        
+
         // Mip Bias
         std::string bias = gfx.mipBias;
         if (bias != "default" && Type == 19 /*D3DTSS_MIPMAPLODBIAS*/) {
-             try {
+            try {
                 float fBias = std::stof(bias);
                 float originalBias = *((float*)&Value);
                 std::string mode = gfx.mipBiasMode;
-                
+
                 if (mode == "offset") {
                     float finalBias = originalBias + fBias;
                     Value = *((DWORD*)&finalBias);
@@ -799,31 +791,32 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8SetTextureStageState(
                     // Strict
                     Value = *((DWORD*)&fBias);
                 }
-             } catch (...) {}
+            } catch (...) {
+            }
         }
-        
     }
     return oD3D8SetTextureStageState(device, Stage, Type, Value);
 }
 
 // Hook: D3D8 CreateDevice
-static HRESULT STDMETHODCALLTYPE DetourD3D8CreateDevice(
-    IDirect3D8 *d3d,
-    UINT Adapter,
-    UINT DeviceType,
-    HWND hFocusWindow,
-    DWORD BehaviorFlags,
-    D3D8_PRESENT_PARAMETERS *pPresentationParameters,
-    IDirect3DDevice8 **ppDevice
-) {
+static HRESULT STDMETHODCALLTYPE DetourD3D8CreateDevice(IDirect3D8* d3d, UINT Adapter, UINT DeviceType,
+                                                        HWND hFocusWindow, DWORD BehaviorFlags,
+                                                        D3D8_PRESENT_PARAMETERS* pPresentationParameters,
+                                                        IDirect3DDevice8** ppDevice)
+{
     if (g_IPC && pPresentationParameters) {
         std::string mode = g_IPC->GetSharedMem()->graphicsConfig.vsyncMode;
         if (mode != "default") {
-            if (mode == "off") pPresentationParameters->FullScreen_PresentationInterval = 0x80000000;
-            else if (mode == "fifo") pPresentationParameters->FullScreen_PresentationInterval = 0x00000001;
-            else if (mode == "adaptive") pPresentationParameters->FullScreen_PresentationInterval = 0x00000001;
-            else if (mode == "mailbox") pPresentationParameters->FullScreen_PresentationInterval = 0x80000000;
-            HookLog("DX8: CreateDevice VSync overridden to %08x", pPresentationParameters->FullScreen_PresentationInterval);
+            if (mode == "off")
+                pPresentationParameters->FullScreen_PresentationInterval = 0x80000000;
+            else if (mode == "fifo")
+                pPresentationParameters->FullScreen_PresentationInterval = 0x00000001;
+            else if (mode == "adaptive")
+                pPresentationParameters->FullScreen_PresentationInterval = 0x00000001;
+            else if (mode == "mailbox")
+                pPresentationParameters->FullScreen_PresentationInterval = 0x80000000;
+            HookLog("DX8: CreateDevice VSync overridden to %08x",
+                    pPresentationParameters->FullScreen_PresentationInterval);
         }
 
         // Backbuffer Count override
@@ -832,13 +825,14 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8CreateDevice(
             pPresentationParameters->BackBufferCount = (UINT)count - 1;
             HookLog("DX8: CreateDevice: Overriding BackBufferCount to %d", count);
         }
-        
+
         // MSAA override
         ApplyDX8MSAAOverride(d3d, Adapter, DeviceType, pPresentationParameters);
     }
-    
-    HRESULT hr = oD3D8CreateDevice(d3d, Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters, ppDevice);
-    
+
+    HRESULT hr =
+        oD3D8CreateDevice(d3d, Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters, ppDevice);
+
     // Install hooks on the new device if needed (mostly SetTextureStageState, as Present/Reset are shared vtable hooks)
     // Actually MinHook hooks the function, so we don't need to re-hook per device instance for global functions.
     // BUT we need to make sure we hooked SetTextureStageState at least once.
@@ -846,33 +840,34 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8CreateDevice(
         // We might want to ensure hooks are installed if not already?
         // But Init installs them on the globally shared vtable code.
     }
-    
+
     return hr;
 }
 
-void DX8Hook::Init() {
+void DX8Hook::Init()
+{
     HookLog("DX8Hook::Init()");
-    
+
     // Check if d3d8.dll is loaded
     HMODULE d3d8Module = GetModuleHandleA("d3d8.dll");
     if (!d3d8Module) {
         return;
     }
-    
+
     // Create dummy D3D8 device to get vtable
-    typedef IDirect3D8* (WINAPI *Direct3DCreate8_t)(UINT);
+    typedef IDirect3D8*(WINAPI * Direct3DCreate8_t)(UINT);
     Direct3DCreate8_t pDirect3DCreate8 = (Direct3DCreate8_t)GetProcAddress(d3d8Module, "Direct3DCreate8");
     if (!pDirect3DCreate8) {
         HookLog("DX8: Failed to get Direct3DCreate8");
         return;
     }
-    
-    IDirect3D8 *d3d8 = pDirect3DCreate8(220); // D3D_SDK_VERSION for DX8
+
+    IDirect3D8* d3d8 = pDirect3DCreate8(220);  // D3D_SDK_VERSION for DX8
     if (!d3d8) {
         HookLog("DX8: Failed to create D3D8");
         return;
     }
-    
+
     // Create dummy window
     WNDCLASSEXA wc = {};
     wc.cbSize = sizeof(wc);
@@ -880,96 +875,96 @@ void DX8Hook::Init() {
     wc.hInstance = GetModuleHandle(NULL);
     wc.lpszClassName = "DX8DummyClass";
     RegisterClassExA(&wc);
-    
-    HWND dummyHwnd = CreateWindowExA(0, wc.lpszClassName, "DX8Dummy",
-                                     WS_OVERLAPPEDWINDOW, 0, 0, 100, 100,
-                                     NULL, NULL, wc.hInstance, NULL);
-    
-    
+
+    HWND dummyHwnd = CreateWindowExA(0, wc.lpszClassName, "DX8Dummy", WS_OVERLAPPEDWINDOW, 0, 0, 100, 100, NULL, NULL,
+                                     wc.hInstance, NULL);
+
     D3D8_PRESENT_PARAMETERS d3d8pp = {};
     d3d8pp.Windowed = TRUE;
-    d3d8pp.SwapEffect = 1; // D3DSWAPEFFECT_DISCARD
+    d3d8pp.SwapEffect = 1;  // D3DSWAPEFFECT_DISCARD
     d3d8pp.hDeviceWindow = dummyHwnd;
-    d3d8pp.BackBufferFormat = 22; // D3DFMT_X8R8G8B8
+    d3d8pp.BackBufferFormat = 22;  // D3DFMT_X8R8G8B8
     d3d8pp.BackBufferWidth = 4;
     d3d8pp.BackBufferHeight = 4;
-    
+
     d3d8pp.BackBufferHeight = 4;
-    
+
     // CreateDevice is at vtable index 15 for IDirect3D8
     // Structure defined globally now
     // typedef HRESULT (STDMETHODCALLTYPE *D3D8CreateDevice_t)(... defined above ...)
-    
-    void **d3d8VTable = *(void***)d3d8;
+
+    void** d3d8VTable = *(void***)d3d8;
     // D3D8CreateDevice_t pCreateDevice = (D3D8CreateDevice_t)d3d8VTable[15]; // Now using global typedef
     D3D8CreateDevice_t pCreateDevice = (D3D8CreateDevice_t)d3d8VTable[15];
-    
-    IDirect3DDevice8 *dummyDevice = nullptr;
+
+    IDirect3DDevice8* dummyDevice = nullptr;
     HRESULT hr = pCreateDevice(d3d8, 0, 1, dummyHwnd, 0x20, &d3d8pp, &dummyDevice);
-    
+
     if (SUCCEEDED(hr) && dummyDevice) {
         // Get device vtable
-        void **deviceVTable = *(void***)dummyDevice;
-        
+        void** deviceVTable = *(void***)dummyDevice;
+
         // Hook Present (index 15)
-        if (VTableHook::Create(&deviceVTable[D3D8_VTABLE_PRESENT], (LPVOID)&DetourD3D8Present, 
-                         (LPVOID*)&oD3D8Present) == VTableHook::Success) {
+        if (VTableHook::Create(&deviceVTable[D3D8_VTABLE_PRESENT], (LPVOID)&DetourD3D8Present,
+                               (LPVOID*)&oD3D8Present) == VTableHook::Success) {
             HookLog("DX8: Present hook installed");
         }
-        
+
         // Hook Reset (index 14)
-        if (VTableHook::Create(&deviceVTable[D3D8_VTABLE_RESET], (LPVOID)&DetourD3D8Reset,
-                         (LPVOID*)&oD3D8Reset) == VTableHook::Success) {
+        if (VTableHook::Create(&deviceVTable[D3D8_VTABLE_RESET], (LPVOID)&DetourD3D8Reset, (LPVOID*)&oD3D8Reset) ==
+            VTableHook::Success) {
             HookLog("DX8: Reset hook installed");
         }
-        
+
         // Hook SetTextureStageState (index 63 in IDirect3DDevice8)
         // Verify index: 0(QI)..14(Reset)..15(Present)..23(CreateTex)..61(SetTex)..63(SetTSS)
         // Ref: https://github.com/crosire/d3d8to9/blob/master/source/d3d8to9.hpp
         // SetTextureStageState is indeed 63.
         if (VTableHook::Create(&deviceVTable[63], (LPVOID)&DetourD3D8SetTextureStageState,
-                         (LPVOID*)&oD3D8SetTextureStageState) == VTableHook::Success) {
+                               (LPVOID*)&oD3D8SetTextureStageState) == VTableHook::Success) {
             HookLog("DX8: SetTextureStageState hook installed");
         }
-        
+
         // Hook CreateDevice (index 15 in IDirect3D8)
         // We need to hook the vtable of the d3d8 object we created
-        if (VTableHook::Create(&d3d8VTable[15], (LPVOID)&DetourD3D8CreateDevice,
-                         (LPVOID*)&oD3D8CreateDevice) == VTableHook::Success) {
+        if (VTableHook::Create(&d3d8VTable[15], (LPVOID)&DetourD3D8CreateDevice, (LPVOID*)&oD3D8CreateDevice) ==
+            VTableHook::Success) {
             HookLog("DX8: CreateDevice hook installed");
         }
-        
+
         // Release dummy device
-        ((void (STDMETHODCALLTYPE*)(void*))deviceVTable[2])(dummyDevice); // Release
+        ((void(STDMETHODCALLTYPE*)(void*))deviceVTable[2])(dummyDevice);  // Release
     } else {
         HookLog("DX8: Failed to create dummy device (hr=0x%08x)", hr);
     }
-    
+
     // Release D3D8
-    ((void (STDMETHODCALLTYPE*)(void*))d3d8VTable[2])(d3d8); // Release
-    
+    ((void(STDMETHODCALLTYPE*)(void*))d3d8VTable[2])(d3d8);  // Release
+
     // Cleanup dummy window
     DestroyWindow(dummyHwnd);
     UnregisterClassA(wc.lpszClassName, wc.hInstance);
-    
+
     g_HooksInitialized = true;
     HookLog("DX8Hook: Hooks installed");
 }
 
-void DX8Hook::Shutdown() {
+void DX8Hook::Shutdown()
+{
     HookLog("DX8Hook::Shutdown()");
-    
+
     if (g_ImGuiInitialized) {
         ImGui_ImplDX9_Shutdown();
         ImGui_ImplWin32_Shutdown();
         ImGui::DestroyContext();
         g_ImGuiInitialized = false;
     }
-    
+
     g_DX8Capture.Cleanup();
 }
 
-void DX8Hook::OnHostDisconnect() {
+void DX8Hook::OnHostDisconnect()
+{
     HookLog("DX8Hook::OnHostDisconnect()");
     g_DX8Capture.Cleanup();
 }

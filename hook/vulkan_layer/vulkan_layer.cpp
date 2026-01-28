@@ -1,15 +1,15 @@
 /**
  * Vulkan Layer - Core Implementation
- * 
+ *
  * Consolidates all Vulkan hooks and state management.
  */
 
 #define VK_USE_PLATFORM_WIN32_KHR
 #include "vulkan_layer.h"
-#include "layer_main.h" // For LayerLog and g_LayerState
-#include "../common/fps_limiter.h"
 #include <cstring>
 #include <vector>
+#include "../common/fps_limiter.h"
+#include "layer_main.h"  // For LayerLog and g_LayerState
 
 // Reentrancy guard shared with other hooks (defined here for the layer)
 thread_local bool g_InPresentHook = false;
@@ -17,21 +17,25 @@ thread_local bool g_InPresentHook = false;
 // VulkanLayerState Implementation
 // ============================================================================
 
-VulkanLayerState& VulkanLayerState::Get() {
+VulkanLayerState& VulkanLayerState::Get()
+{
     static VulkanLayerState instance;
     return instance;
 }
 
-VulkanLayerState::VulkanLayerState() 
-    : m_OverlayEnabled(true), m_CaptureEnabled(true), m_MaxAnisotropy(16), m_MipLodBias(0.0f) {
+VulkanLayerState::VulkanLayerState()
+    : m_OverlayEnabled(true), m_CaptureEnabled(true), m_MaxAnisotropy(16), m_MipLodBias(0.0f)
+{
 }
 
-void VulkanLayerState::RegisterInstance(VkInstance instance, InstanceDispatch* dispatch) {
+void VulkanLayerState::RegisterInstance(VkInstance instance, InstanceDispatch* dispatch)
+{
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     m_Instances[instance] = dispatch;
 }
 
-void VulkanLayerState::UnregisterInstance(VkInstance instance) {
+void VulkanLayerState::UnregisterInstance(VkInstance instance)
+{
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     auto it = m_Instances.find(instance);
     if (it != m_Instances.end()) {
@@ -40,18 +44,21 @@ void VulkanLayerState::UnregisterInstance(VkInstance instance) {
     }
 }
 
-InstanceDispatch* VulkanLayerState::GetInstanceDispatch(VkInstance instance) {
+InstanceDispatch* VulkanLayerState::GetInstanceDispatch(VkInstance instance)
+{
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     auto it = m_Instances.find(instance);
     return (it != m_Instances.end()) ? it->second : nullptr;
 }
 
-void VulkanLayerState::RegisterDevice(VkDevice device, DeviceDispatch* dispatch) {
+void VulkanLayerState::RegisterDevice(VkDevice device, DeviceDispatch* dispatch)
+{
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     m_Devices[device] = dispatch;
 }
 
-void VulkanLayerState::UnregisterDevice(VkDevice device) {
+void VulkanLayerState::UnregisterDevice(VkDevice device)
+{
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     auto it = m_Devices.find(device);
     if (it != m_Devices.end()) {
@@ -60,7 +67,8 @@ void VulkanLayerState::UnregisterDevice(VkDevice device) {
     }
 }
 
-DeviceDispatch* VulkanLayerState::GetDeviceDispatch(VkDevice device) {
+DeviceDispatch* VulkanLayerState::GetDeviceDispatch(VkDevice device)
+{
     static thread_local VkDevice tls_LastDevice = VK_NULL_HANDLE;
     static thread_local DeviceDispatch* tls_LastDispatch = nullptr;
     if (device == tls_LastDevice && tls_LastDispatch) return tls_LastDispatch;
@@ -75,13 +83,15 @@ DeviceDispatch* VulkanLayerState::GetDeviceDispatch(VkDevice device) {
     return nullptr;
 }
 
-void VulkanLayerState::RegisterQueue(VkQueue queue, VkDevice device, uint32_t familyIndex) {
+void VulkanLayerState::RegisterQueue(VkQueue queue, VkDevice device, uint32_t familyIndex)
+{
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     m_Queues[queue] = device;
     m_QueueFamilies[queue] = familyIndex;
 }
 
-DeviceDispatch* VulkanLayerState::GetDeviceFromQueue(VkQueue queue) {
+DeviceDispatch* VulkanLayerState::GetDeviceFromQueue(VkQueue queue)
+{
     static thread_local VkQueue tls_LastQueue = VK_NULL_HANDLE;
     static thread_local DeviceDispatch* tls_LastDispatch = nullptr;
     if (queue == tls_LastQueue && tls_LastDispatch) return tls_LastDispatch;
@@ -99,18 +109,21 @@ DeviceDispatch* VulkanLayerState::GetDeviceFromQueue(VkQueue queue) {
     return nullptr;
 }
 
-uint32_t VulkanLayerState::GetQueueFamilyIndex(VkQueue queue) {
+uint32_t VulkanLayerState::GetQueueFamilyIndex(VkQueue queue)
+{
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     auto it = m_QueueFamilies.find(queue);
     return (it != m_QueueFamilies.end()) ? it->second : VK_QUEUE_FAMILY_IGNORED;
 }
 
-void VulkanLayerState::RegisterSwapchain(VkSwapchainKHR swapchain, SwapchainData* data) {
+void VulkanLayerState::RegisterSwapchain(VkSwapchainKHR swapchain, SwapchainData* data)
+{
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     m_Swapchains[swapchain] = data;
 }
 
-void VulkanLayerState::UnregisterSwapchain(VkSwapchainKHR swapchain) {
+void VulkanLayerState::UnregisterSwapchain(VkSwapchainKHR swapchain)
+{
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     auto it = m_Swapchains.find(swapchain);
     if (it != m_Swapchains.end()) {
@@ -119,7 +132,8 @@ void VulkanLayerState::UnregisterSwapchain(VkSwapchainKHR swapchain) {
     }
 }
 
-SwapchainData* VulkanLayerState::GetSwapchainData(VkSwapchainKHR swapchain) {
+SwapchainData* VulkanLayerState::GetSwapchainData(VkSwapchainKHR swapchain)
+{
     static thread_local VkSwapchainKHR tls_LastSwapchain = VK_NULL_HANDLE;
     static thread_local SwapchainData* tls_LastData = nullptr;
     if (swapchain == tls_LastSwapchain && tls_LastData) return tls_LastData;
@@ -134,28 +148,33 @@ SwapchainData* VulkanLayerState::GetSwapchainData(VkSwapchainKHR swapchain) {
     return nullptr;
 }
 
-void VulkanLayerState::RegisterSurface(VkSurfaceKHR surface, HWND window) {
+void VulkanLayerState::RegisterSurface(VkSurfaceKHR surface, HWND window)
+{
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     m_Surfaces[surface] = window;
 }
 
-void VulkanLayerState::UnregisterSurface(VkSurfaceKHR surface) {
+void VulkanLayerState::UnregisterSurface(VkSurfaceKHR surface)
+{
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     m_Surfaces.erase(surface);
 }
 
-HWND VulkanLayerState::GetSurfaceWindow(VkSurfaceKHR surface) {
+HWND VulkanLayerState::GetSurfaceWindow(VkSurfaceKHR surface)
+{
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     auto it = m_Surfaces.find(surface);
     return (it != m_Surfaces.end()) ? it->second : NULL;
 }
 
-void VulkanLayerState::TrackPhysicalDevice(VkPhysicalDevice pd, VkInstance inst) {
+void VulkanLayerState::TrackPhysicalDevice(VkPhysicalDevice pd, VkInstance inst)
+{
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     m_PhysDevToInstance[pd] = inst;
 }
 
-VkInstance VulkanLayerState::GetInstanceFromPhysicalDevice(VkPhysicalDevice pd) {
+VkInstance VulkanLayerState::GetInstanceFromPhysicalDevice(VkPhysicalDevice pd)
+{
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     auto it = m_PhysDevToInstance.find(pd);
     return (it != m_PhysDevToInstance.end()) ? it->second : VK_NULL_HANDLE;
@@ -165,32 +184,44 @@ VkInstance VulkanLayerState::GetInstanceFromPhysicalDevice(VkPhysicalDevice pd) 
 // Helper to populate dispatch tables
 // ============================================================================
 
-void PopulateInstanceDispatch(InstanceDispatch* dispatch, VkInstance instance,
-                                      PFN_vkGetInstanceProcAddr gipa) {
+void PopulateInstanceDispatch(InstanceDispatch* dispatch, VkInstance instance, PFN_vkGetInstanceProcAddr gipa)
+{
     dispatch->instance = instance;
     dispatch->fp_vkGetInstanceProcAddr = gipa;
     dispatch->fp_vkDestroyInstance = (PFN_vkDestroyInstance)gipa(instance, "vkDestroyInstance");
-    dispatch->fp_vkEnumeratePhysicalDevices = (PFN_vkEnumeratePhysicalDevices)gipa(instance, "vkEnumeratePhysicalDevices");
-    dispatch->fp_vkGetPhysicalDeviceProperties = (PFN_vkGetPhysicalDeviceProperties)gipa(instance, "vkGetPhysicalDeviceProperties");
-    dispatch->fp_vkGetPhysicalDeviceProperties2 = (PFN_vkGetPhysicalDeviceProperties2)gipa(instance, "vkGetPhysicalDeviceProperties2");
-    dispatch->fp_vkGetPhysicalDeviceFeatures = (PFN_vkGetPhysicalDeviceFeatures)gipa(instance, "vkGetPhysicalDeviceFeatures");
-    dispatch->fp_vkGetPhysicalDeviceFeatures2 = (PFN_vkGetPhysicalDeviceFeatures2)gipa(instance, "vkGetPhysicalDeviceFeatures2");
-    dispatch->fp_vkGetPhysicalDeviceQueueFamilyProperties = (PFN_vkGetPhysicalDeviceQueueFamilyProperties)gipa(instance, "vkGetPhysicalDeviceQueueFamilyProperties");
-    dispatch->fp_vkGetPhysicalDeviceMemoryProperties = (PFN_vkGetPhysicalDeviceMemoryProperties)gipa(instance, "vkGetPhysicalDeviceMemoryProperties");
+    dispatch->fp_vkEnumeratePhysicalDevices =
+        (PFN_vkEnumeratePhysicalDevices)gipa(instance, "vkEnumeratePhysicalDevices");
+    dispatch->fp_vkGetPhysicalDeviceProperties =
+        (PFN_vkGetPhysicalDeviceProperties)gipa(instance, "vkGetPhysicalDeviceProperties");
+    dispatch->fp_vkGetPhysicalDeviceProperties2 =
+        (PFN_vkGetPhysicalDeviceProperties2)gipa(instance, "vkGetPhysicalDeviceProperties2");
+    dispatch->fp_vkGetPhysicalDeviceFeatures =
+        (PFN_vkGetPhysicalDeviceFeatures)gipa(instance, "vkGetPhysicalDeviceFeatures");
+    dispatch->fp_vkGetPhysicalDeviceFeatures2 =
+        (PFN_vkGetPhysicalDeviceFeatures2)gipa(instance, "vkGetPhysicalDeviceFeatures2");
+    dispatch->fp_vkGetPhysicalDeviceQueueFamilyProperties =
+        (PFN_vkGetPhysicalDeviceQueueFamilyProperties)gipa(instance, "vkGetPhysicalDeviceQueueFamilyProperties");
+    dispatch->fp_vkGetPhysicalDeviceMemoryProperties =
+        (PFN_vkGetPhysicalDeviceMemoryProperties)gipa(instance, "vkGetPhysicalDeviceMemoryProperties");
     dispatch->fp_vkCreateDevice = (PFN_vkCreateDevice)gipa(instance, "vkCreateDevice");
-    dispatch->fp_vkEnumerateDeviceExtensionProperties = (PFN_vkEnumerateDeviceExtensionProperties)gipa(instance, "vkEnumerateDeviceExtensionProperties");
+    dispatch->fp_vkEnumerateDeviceExtensionProperties =
+        (PFN_vkEnumerateDeviceExtensionProperties)gipa(instance, "vkEnumerateDeviceExtensionProperties");
     dispatch->fp_vkDestroySurfaceKHR = (PFN_vkDestroySurfaceKHR)gipa(instance, "vkDestroySurfaceKHR");
-    dispatch->fp_vkGetPhysicalDeviceSurfaceSupportKHR = (PFN_vkGetPhysicalDeviceSurfaceSupportKHR)gipa(instance, "vkGetPhysicalDeviceSurfaceSupportKHR");
-    dispatch->fp_vkGetPhysicalDeviceSurfaceCapabilitiesKHR = (PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR)gipa(instance, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
-    dispatch->fp_vkGetPhysicalDeviceSurfaceFormatsKHR = (PFN_vkGetPhysicalDeviceSurfaceFormatsKHR)gipa(instance, "vkGetPhysicalDeviceSurfaceFormatsKHR");
-    dispatch->fp_vkGetPhysicalDeviceSurfacePresentModesKHR = (PFN_vkGetPhysicalDeviceSurfacePresentModesKHR)gipa(instance, "vkGetPhysicalDeviceSurfacePresentModesKHR");
+    dispatch->fp_vkGetPhysicalDeviceSurfaceSupportKHR =
+        (PFN_vkGetPhysicalDeviceSurfaceSupportKHR)gipa(instance, "vkGetPhysicalDeviceSurfaceSupportKHR");
+    dispatch->fp_vkGetPhysicalDeviceSurfaceCapabilitiesKHR =
+        (PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR)gipa(instance, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
+    dispatch->fp_vkGetPhysicalDeviceSurfaceFormatsKHR =
+        (PFN_vkGetPhysicalDeviceSurfaceFormatsKHR)gipa(instance, "vkGetPhysicalDeviceSurfaceFormatsKHR");
+    dispatch->fp_vkGetPhysicalDeviceSurfacePresentModesKHR =
+        (PFN_vkGetPhysicalDeviceSurfacePresentModesKHR)gipa(instance, "vkGetPhysicalDeviceSurfacePresentModesKHR");
 #ifdef VK_USE_PLATFORM_WIN32_KHR
     dispatch->fp_vkCreateWin32SurfaceKHR = (PFN_vkCreateWin32SurfaceKHR)gipa(instance, "vkCreateWin32SurfaceKHR");
 #endif
 }
 
-void PopulateDeviceDispatch(DeviceDispatch* dispatch, VkDevice device,
-                                    PFN_vkGetDeviceProcAddr gdpa) {
+void PopulateDeviceDispatch(DeviceDispatch* dispatch, VkDevice device, PFN_vkGetDeviceProcAddr gdpa)
+{
     dispatch->device = device;
     dispatch->fp_vkGetDeviceProcAddr = gdpa;
     dispatch->fp_vkDestroyDevice = (PFN_vkDestroyDevice)gdpa(device, "vkDestroyDevice");
@@ -210,8 +241,10 @@ void PopulateDeviceDispatch(DeviceDispatch* dispatch, VkDevice device,
     dispatch->fp_vkDestroyBuffer = (PFN_vkDestroyBuffer)gdpa(device, "vkDestroyBuffer");
     dispatch->fp_vkCreateImage = (PFN_vkCreateImage)gdpa(device, "vkCreateImage");
     dispatch->fp_vkDestroyImage = (PFN_vkDestroyImage)gdpa(device, "vkDestroyImage");
-    dispatch->fp_vkGetImageMemoryRequirements = (PFN_vkGetImageMemoryRequirements)gdpa(device, "vkGetImageMemoryRequirements");
-    dispatch->fp_vkGetBufferMemoryRequirements = (PFN_vkGetBufferMemoryRequirements)gdpa(device, "vkGetBufferMemoryRequirements");
+    dispatch->fp_vkGetImageMemoryRequirements =
+        (PFN_vkGetImageMemoryRequirements)gdpa(device, "vkGetImageMemoryRequirements");
+    dispatch->fp_vkGetBufferMemoryRequirements =
+        (PFN_vkGetBufferMemoryRequirements)gdpa(device, "vkGetBufferMemoryRequirements");
     dispatch->fp_vkCreateImageView = (PFN_vkCreateImageView)gdpa(device, "vkCreateImageView");
     dispatch->fp_vkDestroyImageView = (PFN_vkDestroyImageView)gdpa(device, "vkDestroyImageView");
     dispatch->fp_vkCreateSampler = (PFN_vkCreateSampler)gdpa(device, "vkCreateSampler");
@@ -247,8 +280,10 @@ void PopulateDeviceDispatch(DeviceDispatch* dispatch, VkDevice device,
     dispatch->fp_vkGetSwapchainImagesKHR = (PFN_vkGetSwapchainImagesKHR)gdpa(device, "vkGetSwapchainImagesKHR");
     dispatch->fp_vkAcquireNextImageKHR = (PFN_vkAcquireNextImageKHR)gdpa(device, "vkAcquireNextImageKHR");
     dispatch->fp_vkQueuePresentKHR = (PFN_vkQueuePresentKHR)gdpa(device, "vkQueuePresentKHR");
-    dispatch->fp_vkCreateDescriptorSetLayout = (PFN_vkCreateDescriptorSetLayout)gdpa(device, "vkCreateDescriptorSetLayout");
-    dispatch->fp_vkDestroyDescriptorSetLayout = (PFN_vkDestroyDescriptorSetLayout)gdpa(device, "vkDestroyDescriptorSetLayout");
+    dispatch->fp_vkCreateDescriptorSetLayout =
+        (PFN_vkCreateDescriptorSetLayout)gdpa(device, "vkCreateDescriptorSetLayout");
+    dispatch->fp_vkDestroyDescriptorSetLayout =
+        (PFN_vkDestroyDescriptorSetLayout)gdpa(device, "vkDestroyDescriptorSetLayout");
     dispatch->fp_vkCreateDescriptorPool = (PFN_vkCreateDescriptorPool)gdpa(device, "vkCreateDescriptorPool");
     dispatch->fp_vkDestroyDescriptorPool = (PFN_vkDestroyDescriptorPool)gdpa(device, "vkDestroyDescriptorPool");
     dispatch->fp_vkAllocateDescriptorSets = (PFN_vkAllocateDescriptorSets)gdpa(device, "vkAllocateDescriptorSets");
@@ -262,7 +297,8 @@ void PopulateDeviceDispatch(DeviceDispatch* dispatch, VkDevice device,
     dispatch->fp_vkDestroyShaderModule = (PFN_vkDestroyShaderModule)gdpa(device, "vkDestroyShaderModule");
 #ifdef VK_USE_PLATFORM_WIN32_KHR
     dispatch->fp_vkGetMemoryWin32HandleKHR = (PFN_vkGetMemoryWin32HandleKHR)gdpa(device, "vkGetMemoryWin32HandleKHR");
-    dispatch->fp_vkGetSemaphoreWin32HandleKHR = (PFN_vkGetSemaphoreWin32HandleKHR)gdpa(device, "vkGetSemaphoreWin32HandleKHR");
+    dispatch->fp_vkGetSemaphoreWin32HandleKHR =
+        (PFN_vkGetSemaphoreWin32HandleKHR)gdpa(device, "vkGetSemaphoreWin32HandleKHR");
 #endif
 }
 
@@ -270,20 +306,20 @@ void PopulateDeviceDispatch(DeviceDispatch* dispatch, VkDevice device,
 // Hook Implementations
 // ============================================================================
 
-VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateInstance(
-    const VkInstanceCreateInfo* pCreateInfo,
-    const VkAllocationCallbacks* pAllocator,
-    VkInstance* pInstance) {
-    
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateInstance(const VkInstanceCreateInfo* pCreateInfo,
+                                                        const VkAllocationCallbacks* pAllocator, VkInstance* pInstance)
+{
+
     LayerLog("Vulkan Layer: Capture_vkCreateInstance called");
-    
+
     // Mark Vulkan layer as active in shared memory
     auto* shm = g_IPCClient.GetSharedMem();
     if (shm) shm->runtimeState.vulkanLayerActive = true;
-    
+
     PFN_vkGetInstanceProcAddr gipa = (PFN_vkGetInstanceProcAddr)NULL;
     VkLayerInstanceCreateInfo* chain_info = (VkLayerInstanceCreateInfo*)pCreateInfo->pNext;
-    while (chain_info && !(chain_info->sType == VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO && chain_info->function == VK_LAYER_LINK_INFO)) {
+    while (chain_info && !(chain_info->sType == VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO &&
+                           chain_info->function == VK_LAYER_LINK_INFO)) {
         chain_info = (VkLayerInstanceCreateInfo*)chain_info->pNext;
     }
     if (!chain_info) return VK_ERROR_INITIALIZATION_FAILED;
@@ -291,7 +327,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateInstance(
     chain_info->u.pLayerInfo = chain_info->u.pLayerInfo->pNext;
 
     PFN_vkCreateInstance create_fn = (PFN_vkCreateInstance)gipa(VK_NULL_HANDLE, "vkCreateInstance");
-    
+
     VkResult res = VK_SUCCESS;
 
     if (!g_LayerState.whitelisted) {
@@ -328,44 +364,43 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateInstance(
     auto* dispatch = new InstanceDispatch();
     PopulateInstanceDispatch(dispatch, *pInstance, gipa);
     VulkanLayerState::Get().RegisterInstance(*pInstance, dispatch);
-    
+
     return VK_SUCCESS;
 }
 
-VKAPI_ATTR void VKAPI_CALL Capture_vkDestroyInstance(
-    VkInstance instance,
-    const VkAllocationCallbacks* pAllocator) {
-    
+VKAPI_ATTR void VKAPI_CALL Capture_vkDestroyInstance(VkInstance instance, const VkAllocationCallbacks* pAllocator)
+{
+
     InstanceDispatch* disp = VulkanLayerState::Get().GetInstanceDispatch(instance);
     if (disp && disp->fp_vkDestroyInstance) disp->fp_vkDestroyInstance(instance, pAllocator);
     VulkanLayerState::Get().UnregisterInstance(instance);
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL Capture_vkEnumeratePhysicalDevices(
-    VkInstance instance, uint32_t* pPhysicalDeviceCount, VkPhysicalDevice* pPhysicalDevices) {
-    
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkEnumeratePhysicalDevices(VkInstance instance, uint32_t* pPhysicalDeviceCount,
+                                                                  VkPhysicalDevice* pPhysicalDevices)
+{
+
     InstanceDispatch* disp = VulkanLayerState::Get().GetInstanceDispatch(instance);
     if (!disp || !disp->fp_vkEnumeratePhysicalDevices) return VK_ERROR_INITIALIZATION_FAILED;
 
     VkResult res = disp->fp_vkEnumeratePhysicalDevices(instance, pPhysicalDeviceCount, pPhysicalDevices);
-    
+
     if (res >= VK_SUCCESS && pPhysicalDevices && pPhysicalDeviceCount && *pPhysicalDeviceCount > 0) {
         for (uint32_t i = 0; i < *pPhysicalDeviceCount; i++) {
             VulkanLayerState::Get().TrackPhysicalDevice(pPhysicalDevices[i], instance);
         }
     }
-    
+
     return res;
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(
-    VkPhysicalDevice physicalDevice,
-    const VkDeviceCreateInfo* pCreateInfo,
-    const VkAllocationCallbacks* pAllocator,
-    VkDevice* pDevice) {
-    
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalDevice,
+                                                      const VkDeviceCreateInfo* pCreateInfo,
+                                                      const VkAllocationCallbacks* pAllocator, VkDevice* pDevice)
+{
+
     LayerLog("Vulkan Layer: Capture_vkCreateDevice called");
-    
+
     VkInstance instance = VulkanLayerState::Get().GetInstanceFromPhysicalDevice(physicalDevice);
     if (instance == VK_NULL_HANDLE) {
         LayerLog("Vulkan Layer: [Error] Could not find instance for physical device %p", physicalDevice);
@@ -373,11 +408,12 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(
     }
 
     VkLayerDeviceCreateInfo* chain_info = (VkLayerDeviceCreateInfo*)pCreateInfo->pNext;
-    while (chain_info && !(chain_info->sType == VK_STRUCTURE_TYPE_LOADER_DEVICE_CREATE_INFO && chain_info->function == VK_LAYER_LINK_INFO)) {
+    while (chain_info && !(chain_info->sType == VK_STRUCTURE_TYPE_LOADER_DEVICE_CREATE_INFO &&
+                           chain_info->function == VK_LAYER_LINK_INFO)) {
         chain_info = (VkLayerDeviceCreateInfo*)chain_info->pNext;
     }
     if (!chain_info) return VK_ERROR_INITIALIZATION_FAILED;
-    
+
     PFN_vkGetDeviceProcAddr gdpa = chain_info->u.pLayerInfo->pfnNextGetDeviceProcAddr;
     PFN_vkGetInstanceProcAddr gipa = chain_info->u.pLayerInfo->pfnNextGetInstanceProcAddr;
     chain_info->u.pLayerInfo = chain_info->u.pLayerInfo->pNext;
@@ -424,9 +460,10 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(
         modifiedCreateInfo.ppEnabledExtensionNames = extensions.data();
 
         // Enable timeline semaphore feature (required for VK_KHR_timeline_semaphore)
-        VkPhysicalDeviceTimelineSemaphoreFeatures timelineFeatures = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES };
+        VkPhysicalDeviceTimelineSemaphoreFeatures timelineFeatures = {
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES};
         timelineFeatures.timelineSemaphore = VK_TRUE;
-        
+
         // Chain the feature structure
         timelineFeatures.pNext = (void*)modifiedCreateInfo.pNext;
         modifiedCreateInfo.pNext = &timelineFeatures;
@@ -442,14 +479,13 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(
     dispatch->physicalDevice = physicalDevice;
     PopulateDeviceDispatch(dispatch, *pDevice, gdpa);
     VulkanLayerState::Get().RegisterDevice(*pDevice, dispatch);
-    
+
     return VK_SUCCESS;
 }
 
-VKAPI_ATTR void VKAPI_CALL Capture_vkDestroyDevice(
-    VkDevice device,
-    const VkAllocationCallbacks* pAllocator) {
-    
+VKAPI_ATTR void VKAPI_CALL Capture_vkDestroyDevice(VkDevice device, const VkAllocationCallbacks* pAllocator)
+{
+
     CleanupOverlay(device);
     CleanupCapture(device);
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
@@ -457,9 +493,10 @@ VKAPI_ATTR void VKAPI_CALL Capture_vkDestroyDevice(
     VulkanLayerState::Get().UnregisterDevice(device);
 }
 
-VKAPI_ATTR void VKAPI_CALL Capture_vkGetDeviceQueue(
-    VkDevice device, uint32_t queueFamilyIndex, uint32_t queueIndex, VkQueue* pQueue) {
-    
+VKAPI_ATTR void VKAPI_CALL Capture_vkGetDeviceQueue(VkDevice device, uint32_t queueFamilyIndex, uint32_t queueIndex,
+                                                    VkQueue* pQueue)
+{
+
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (disp && disp->fp_vkGetDeviceQueue) {
         disp->fp_vkGetDeviceQueue(device, queueFamilyIndex, queueIndex, pQueue);
@@ -469,13 +506,15 @@ VKAPI_ATTR void VKAPI_CALL Capture_vkGetDeviceQueue(
     }
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(
-    VkDevice device, const VkSwapchainCreateInfoKHR* pCreateInfo,
-    const VkAllocationCallbacks* pAllocator, VkSwapchainKHR* pSwapchain) {
-    
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
+                                                            const VkSwapchainCreateInfoKHR* pCreateInfo,
+                                                            const VkAllocationCallbacks* pAllocator,
+                                                            VkSwapchainKHR* pSwapchain)
+{
+
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (!disp || !disp->fp_vkCreateSwapchainKHR) return VK_ERROR_INITIALIZATION_FAILED;
-    
+
     VkResult res = disp->fp_vkCreateSwapchainKHR(device, pCreateInfo, pAllocator, pSwapchain);
     if (res == VK_SUCCESS && g_LayerState.whitelisted) {
         auto* sd = new SwapchainData();
@@ -483,39 +522,43 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(
         sd->device = device;
         sd->format = pCreateInfo->imageFormat;
         sd->extent = pCreateInfo->imageExtent;
-        
+
         uint32_t count = 0;
         disp->fp_vkGetSwapchainImagesKHR(device, *pSwapchain, &count, nullptr);
         sd->images.resize(count);
         disp->fp_vkGetSwapchainImagesKHR(device, *pSwapchain, &count, sd->images.data());
         sd->imageCount = count;
-        
+
         HWND window = VulkanLayerState::Get().GetSurfaceWindow(pCreateInfo->surface);
         InitializeOverlay(device, *pSwapchain, sd->format, sd->extent, count, sd->images.data(), window);
         InitializeCapture(device, *pSwapchain, sd->format, sd->extent, count);
-        
+
         VulkanLayerState::Get().RegisterSwapchain(*pSwapchain, sd);
     }
     return res;
 }
 
-VKAPI_ATTR void VKAPI_CALL Capture_vkDestroySwapchainKHR(
-    VkDevice device, VkSwapchainKHR swapchain, const VkAllocationCallbacks* pAllocator) {
-    
+VKAPI_ATTR void VKAPI_CALL Capture_vkDestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain,
+                                                         const VkAllocationCallbacks* pAllocator)
+{
+
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (disp && disp->fp_vkDestroySwapchainKHR) disp->fp_vkDestroySwapchainKHR(device, swapchain, pAllocator);
     VulkanLayerState::Get().UnregisterSwapchain(swapchain);
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL Capture_vkGetSwapchainImagesKHR(
-    VkDevice device, VkSwapchainKHR swapchain, uint32_t* pSwapchainImageCount, VkImage* pSwapchainImages) {
-    
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkGetSwapchainImagesKHR(VkDevice device, VkSwapchainKHR swapchain,
+                                                               uint32_t* pSwapchainImageCount,
+                                                               VkImage* pSwapchainImages)
+{
+
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (!disp || !disp->fp_vkGetSwapchainImagesKHR) return VK_ERROR_INITIALIZATION_FAILED;
     return disp->fp_vkGetSwapchainImagesKHR(device, swapchain, pSwapchainImageCount, pSwapchainImages);
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo) {
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo)
+{
     // Set flag to inform DXGI hooks that Vulkan is presenting on this thread.
     // This prevents double-drawing and incorrect API labeling when Vulkan presents via DXGI.
     auto* shm = g_IPCClient.GetSharedMem();
@@ -523,7 +566,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         shm->runtimeState.vulkanPresentThreadId.store(GetCurrentThreadId(), std::memory_order_release);
         shm->runtimeState.vulkanPresentTick.store(GetTickCount64(), std::memory_order_release);
     }
-    
+
     bool isFirstHook = !g_InPresentHook;
     g_InPresentHook = true;
 
@@ -533,10 +576,10 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     }
 
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceFromQueue(queue);
-    
+
     // Track the semaphore we should wait on (starts with the game's semaphore)
-    VkSemaphore currentWait = (pPresentInfo && pPresentInfo->waitSemaphoreCount > 0) 
-            ? pPresentInfo->pWaitSemaphores[0] : VK_NULL_HANDLE;
+    VkSemaphore currentWait =
+        (pPresentInfo && pPresentInfo->waitSemaphoreCount > 0) ? pPresentInfo->pWaitSemaphores[0] : VK_NULL_HANDLE;
     bool modified = false;
 
     if (g_LayerState.whitelisted && pPresentInfo && pPresentInfo->swapchainCount > 0) {
@@ -547,13 +590,13 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
             // OPTIMIZATION: Chained semaphores for perfect GPU-side async execution.
             // Game -> Overlay -> Capture -> Present
             VkSemaphore overlayDone = GetOverlaySemaphore(sd->device, idx);
-            
+
             if (shm && shm->overlayConfig.showOverlay) {
                 RenderOverlay(sd->device, queue, idx, currentWait, overlayDone);
-                currentWait = overlayDone; // Next step waits for overlay
+                currentWait = overlayDone;  // Next step waits for overlay
                 modified = true;
             }
-            
+
             if (shm && shm->runtimeState.isRecording) {
                 VkSemaphore captureDone = GetCaptureSemaphore(sd->device, idx);
                 CaptureFrame(sd->device, queue, sd->images[idx], idx, currentWait, captureDone);
@@ -564,7 +607,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
             }
         }
     }
-    
+
     // Create modified PresentInfo with chained semaphore
     VkPresentInfoKHR presentInfoCopy;
     if (pPresentInfo && modified) {
@@ -579,12 +622,12 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
             presentInfoCopy.pWaitSemaphores = nullptr;
         }
     }
-    
+
     VkResult res = VK_SUCCESS;
     if (disp && disp->fp_vkQueuePresentKHR) {
         res = disp->fp_vkQueuePresentKHR(queue, (pPresentInfo && modified) ? &presentInfoCopy : pPresentInfo);
     }
-    
+
     if (isFirstHook) g_InPresentHook = false;
 
     if (shm) shm->runtimeState.vulkanPresentThreadId.store(0, std::memory_order_release);
@@ -592,17 +635,20 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     return res;
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL Capture_vkAcquireNextImageKHR(
-    VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout, VkSemaphore semaphore, VkFence fence, uint32_t* pImageIndex) {
-    
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkAcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain,
+                                                             uint64_t timeout, VkSemaphore semaphore, VkFence fence,
+                                                             uint32_t* pImageIndex)
+{
+
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (!disp || !disp->fp_vkAcquireNextImageKHR) return VK_ERROR_INITIALIZATION_FAILED;
     return disp->fp_vkAcquireNextImageKHR(device, swapchain, timeout, semaphore, fence, pImageIndex);
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(
-    VkDevice device, const VkSamplerCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSampler* pSampler) {
-    
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(VkDevice device, const VkSamplerCreateInfo* pCreateInfo,
+                                                       const VkAllocationCallbacks* pAllocator, VkSampler* pSampler)
+{
+
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     VkSamplerCreateInfo modified = *pCreateInfo;
     if (g_LayerState.whitelisted) {
@@ -614,12 +660,15 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(
 }
 
 #ifdef VK_USE_PLATFORM_WIN32_KHR
-VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateWin32SurfaceKHR(
-    VkInstance instance, const VkWin32SurfaceCreateInfoKHR* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSurfaceKHR* pSurface) {
-    
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateWin32SurfaceKHR(VkInstance instance,
+                                                               const VkWin32SurfaceCreateInfoKHR* pCreateInfo,
+                                                               const VkAllocationCallbacks* pAllocator,
+                                                               VkSurfaceKHR* pSurface)
+{
+
     InstanceDispatch* disp = VulkanLayerState::Get().GetInstanceDispatch(instance);
     if (!disp || !disp->fp_vkCreateWin32SurfaceKHR) return VK_ERROR_INITIALIZATION_FAILED;
-    
+
     VkResult res = disp->fp_vkCreateWin32SurfaceKHR(instance, pCreateInfo, pAllocator, pSurface);
     if (res == VK_SUCCESS) {
         VulkanLayerState::Get().RegisterSurface(*pSurface, pCreateInfo->hwnd);

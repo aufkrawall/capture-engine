@@ -1,6 +1,6 @@
 /**
  * VK_LAYER_CE_overlay - CaptureEngine Vulkan Layer
- * 
+ *
  * Main header for the layer.
  * Delegates to VulkanLayerState for state management.
  */
@@ -10,15 +10,15 @@
 #ifndef VK_USE_PLATFORM_WIN32_KHR
 #define VK_USE_PLATFORM_WIN32_KHR
 #endif
-#include <vulkan/vulkan.h>
 #include <vulkan/vk_layer.h>
+#include <vulkan/vulkan.h>
 #include <windows.h>
-#include <string>
 #include <mutex>
+#include <string>
 
-#include "vulkan_layer.h"
 #include "../common/ipc_client.h"
 #include "../common/shared_defs.h"
+#include "vulkan_layer.h"
 
 // Forward declarations of IPC functions
 bool LayerIPC_Init();

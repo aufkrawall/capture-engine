@@ -2,16 +2,16 @@
 #include "graphics_hook.h"
 #define VK_USE_PLATFORM_WIN32_KHR
 #define USE_VKDISPATCH  // Use our custom dispatch instead of Volk
-#include "../wrappers/vk_dispatch.h"
-#include "../common/capture_base.h"
 #include <mutex>
 #include <vector>
+#include "../common/capture_base.h"
+#include "../wrappers/vk_dispatch.h"
 
 class VulkanHook : public GraphicsHook {
 public:
-  void Init() override;
-  void Shutdown() override;
-  void OnHostDisconnect() override;  // Called when captureengine disconnects
+    void Init() override;
+    void Shutdown() override;
+    void OnHostDisconnect() override;  // Called when captureengine disconnects
 };
 
 // Detour functions - called when game calls vkGet*ProcAddr

@@ -1,17 +1,17 @@
-#include "vulkan_layer.h"
-#include "layer_main.h"
-#include "../common/overlay.h"
-#include "../common/ipc_client.h"
-#include "../common/performance_metrics.h"
-#include "../common/system_metrics.h"
-#include <vector>
 #include <chrono>
 #include <string>
+#include <vector>
+#include "../common/ipc_client.h"
+#include "../common/overlay.h"
+#include "../common/performance_metrics.h"
+#include "../common/system_metrics.h"
+#include "layer_main.h"
+#include "vulkan_layer.h"
 
-#include "imgui.h"
-#include "backends/imgui_impl_vulkan.h"
 #include <backends/imgui_impl_win32.h>
 #include "../common/input_manager.h"
+#include "backends/imgui_impl_vulkan.h"
+#include "imgui.h"
 
 // Overlay state per device
 struct OverlayState {
@@ -38,14 +38,15 @@ static std::unordered_map<VkDevice, OverlayState> g_OverlayStates;
 static bool g_ImGuiInitialized = false;
 
 // Custom Vulkan function loader for ImGui
-static PFN_vkVoidFunction ImGuiLoader(const char* function_name, void* user_data) {
+static PFN_vkVoidFunction ImGuiLoader(const char* function_name, void* user_data)
+{
     DeviceDispatch* disp = (DeviceDispatch*)user_data;
     if (!disp) return nullptr;
-    
+
     // 1. Try Device Level
     PFN_vkVoidFunction fn = disp->fp_vkGetDeviceProcAddr(disp->device, function_name);
     if (fn) return fn;
-    
+
     // 2. Try Instance Level
     VkInstance instance = VulkanLayerState::Get().GetInstanceFromPhysicalDevice(disp->physicalDevice);
     if (instance != VK_NULL_HANDLE) {
@@ -55,18 +56,20 @@ static PFN_vkVoidFunction ImGuiLoader(const char* function_name, void* user_data
             if (fn) return fn;
         }
     }
-    
+
     // 3. Fallback to global GetInstanceProcAddr
-    static PFN_vkGetInstanceProcAddr g_gipa = (PFN_vkGetInstanceProcAddr)GetProcAddress(GetModuleHandleA("vulkan-1.dll"), "vkGetInstanceProcAddr");
+    static PFN_vkGetInstanceProcAddr g_gipa =
+        (PFN_vkGetInstanceProcAddr)GetProcAddress(GetModuleHandleA("vulkan-1.dll"), "vkGetInstanceProcAddr");
     if (g_gipa) return g_gipa(VK_NULL_HANDLE, function_name);
-    
+
     return nullptr;
 }
 
-void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, 
-                       VkExtent2D extent, uint32_t imageCount, VkImage* images, HWND window)
+void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkExtent2D extent,
+                       uint32_t imageCount, VkImage* images, HWND window)
 {
-    LayerLog("Vulkan Layer: InitializeOverlay(device=%p, images=%d, window=%p, size=%dx%d)", device, imageCount, window, extent.width, extent.height);
+    LayerLog("Vulkan Layer: InitializeOverlay(device=%p, images=%d, window=%p, size=%dx%d)", device, imageCount, window,
+             extent.width, extent.height);
     std::lock_guard<std::mutex> lock(g_OverlayMutex);
     if (window) {
         InputManager::Get().HookWindow(window);
@@ -74,13 +77,13 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     } else {
         LayerLog("Vulkan Layer: [Warning] No window provided for overlay. Hooking might be incomplete.");
     }
-    
+
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (!disp) {
         LayerLog("Vulkan Layer: [Error] No dispatch for device %p", device);
         return;
     }
-    
+
     OverlayState state = {};
     state.device = device;
     state.physicalDevice = disp->physicalDevice;
@@ -125,67 +128,70 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     state.extent = extent;
     state.format = format;
     state.swapchainImages.assign(images, images + imageCount);
-    
+
     // Create descriptor pool
-    VkDescriptorPoolSize pool_sizes[] = {
-        { VK_DESCRIPTOR_TYPE_SAMPLER, 100 }, { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 100 },
-        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 100 }, { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 100 },
-        { VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 100 }, { VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 100 },
-        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 100 }, { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 100 },
-        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 100 }, { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 100 },
-        { VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 100 }
-    };
-    VkDescriptorPoolCreateInfo pool_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+    VkDescriptorPoolSize pool_sizes[] = {{VK_DESCRIPTOR_TYPE_SAMPLER, 100},
+                                         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 100},
+                                         {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 100},
+                                         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 100},
+                                         {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 100},
+                                         {VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 100},
+                                         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 100},
+                                         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 100},
+                                         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 100},
+                                         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 100},
+                                         {VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 100}};
+    VkDescriptorPoolCreateInfo pool_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     pool_info.maxSets = 1100;
     pool_info.poolSizeCount = (uint32_t)IM_ARRAYSIZE(pool_sizes);
     pool_info.pPoolSizes = pool_sizes;
-    
+
     if (disp->fp_vkCreateDescriptorPool(device, &pool_info, nullptr, &state.descriptorPool) != VK_SUCCESS) return;
 
     // Create render pass
     VkAttachmentDescription attachment = {};
     attachment.format = format;
     attachment.samples = VK_SAMPLE_COUNT_1_BIT;
-    attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; 
+    attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
     attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     attachment.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    
-    VkAttachmentReference colorRef = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+
+    VkAttachmentReference colorRef = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     VkSubpassDescription subpass = {};
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = &colorRef;
-    
-    VkRenderPassCreateInfo rpInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
+
+    VkRenderPassCreateInfo rpInfo = {VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
     rpInfo.attachmentCount = 1;
     rpInfo.pAttachments = &attachment;
     rpInfo.subpassCount = 1;
     rpInfo.pSubpasses = &subpass;
-    
+
     if (disp->fp_vkCreateRenderPass(device, &rpInfo, nullptr, &state.renderPass) != VK_SUCCESS) return;
-    
+
     // Create command pool
-    VkCommandPoolCreateInfo cpInfo = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+    VkCommandPoolCreateInfo cpInfo = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     cpInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    cpInfo.queueFamilyIndex = 0; 
-    
+    cpInfo.queueFamilyIndex = 0;
+
     if (disp->fp_vkCreateCommandPool(device, &cpInfo, nullptr, &state.commandPool) != VK_SUCCESS) return;
-    
+
     state.imageViews.resize(imageCount);
     state.framebuffers.resize(imageCount);
     state.commandBuffers.resize(imageCount);
-    
+
     for (uint32_t i = 0; i < imageCount; i++) {
-        VkImageViewCreateInfo ivInfo = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+        VkImageViewCreateInfo ivInfo = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
         ivInfo.image = images[i];
         ivInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
         ivInfo.format = format;
-        ivInfo.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        ivInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         disp->fp_vkCreateImageView(device, &ivInfo, nullptr, &state.imageViews[i]);
-        
-        VkFramebufferCreateInfo fbInfo = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+
+        VkFramebufferCreateInfo fbInfo = {VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
         fbInfo.renderPass = state.renderPass;
         fbInfo.attachmentCount = 1;
         fbInfo.pAttachments = &state.imageViews[i];
@@ -194,8 +200,8 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         fbInfo.layers = 1;
         disp->fp_vkCreateFramebuffer(device, &fbInfo, nullptr, &state.framebuffers[i]);
     }
-    
-    VkCommandBufferAllocateInfo cbInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+
+    VkCommandBufferAllocateInfo cbInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     cbInfo.commandPool = state.commandPool;
     cbInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cbInfo.commandBufferCount = imageCount;
@@ -204,8 +210,8 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     // Initialize per-frame fences and semaphores for synchronization
     state.fences.resize(imageCount);
     state.semaphores.resize(imageCount);
-    VkFenceCreateInfo fenceInfo = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr, VK_FENCE_CREATE_SIGNALED_BIT };
-    VkSemaphoreCreateInfo semInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+    VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr, VK_FENCE_CREATE_SIGNALED_BIT};
+    VkSemaphoreCreateInfo semInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     for (uint32_t i = 0; i < imageCount; i++) {
         disp->fp_vkCreateFence(device, &fenceInfo, nullptr, &state.fences[i]);
         disp->fp_vkCreateSemaphore(device, &semInfo, nullptr, &state.semaphores[i]);
@@ -226,7 +232,8 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     g_OverlayStates[device] = state;
 }
 
-VkSemaphore GetOverlaySemaphore(VkDevice device, uint32_t imageIndex) {
+VkSemaphore GetOverlaySemaphore(VkDevice device, uint32_t imageIndex)
+{
     std::lock_guard<std::mutex> lock(g_OverlayMutex);
     auto it = g_OverlayStates.find(device);
     if (it != g_OverlayStates.end() && it->second.initialized) {
@@ -237,11 +244,12 @@ VkSemaphore GetOverlaySemaphore(VkDevice device, uint32_t imageIndex) {
     return VK_NULL_HANDLE;
 }
 
-void CleanupOverlay(VkDevice device) {
+void CleanupOverlay(VkDevice device)
+{
     std::lock_guard<std::mutex> lock(g_OverlayMutex);
     auto it = g_OverlayStates.find(device);
     if (it == g_OverlayStates.end()) return;
-    
+
     OverlayState& state = it->second;
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (disp) {
@@ -258,8 +266,8 @@ void CleanupOverlay(VkDevice device) {
     g_OverlayStates.erase(it);
 }
 
-void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, 
-                   VkSemaphore waitSemaphore, VkSemaphore signalSemaphore)
+void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, VkSemaphore waitSemaphore,
+                   VkSemaphore signalSemaphore)
 {
     // OPTIMIZATION: Early out if overlay is disabled via IPC
     if (g_IPCClient.GetSharedMem() && !g_IPCClient.GetSharedMem()->overlayConfig.showOverlay) {
@@ -269,11 +277,11 @@ void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex,
     std::lock_guard<std::mutex> lock(g_OverlayMutex);
     auto it = g_OverlayStates.find(device);
     if (it == g_OverlayStates.end() || !it->second.initialized) return;
-    
+
     OverlayState& state = it->second;
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (!disp) return;
-    
+
     if (!g_ImGuiInitialized) {
         ImGui_ImplVulkan_LoadFunctions(ImGuiLoader, disp);
         ImGui_ImplVulkan_InitInfo init_info = {};
@@ -292,14 +300,17 @@ void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex,
             g_ImGuiInitialized = true;
         }
     }
-    
-    if (state.metrics) state.metrics->Update(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+
+    if (state.metrics)
+        state.metrics->Update(
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch())
+                .count());
     g_SharedOverlay.SetMetrics(state.metrics);
-    
+
     ImGui_ImplVulkan_NewFrame();
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize = ImVec2((float)state.extent.width, (float)state.extent.height);
-    
+
     g_SharedOverlay.BeginFrame();
     g_SharedOverlay.RenderUI();
     g_SharedOverlay.EndFrame();
@@ -308,25 +319,28 @@ void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex,
     if (!drawData || drawData->TotalVtxCount == 0) {
         return;
     }
-    
+
     VkFence fence = state.fences[imageIndex];
-    disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, 1000000000); // 1s timeout
+    disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, 1000000000);  // 1s timeout
     disp->fp_vkResetFences(device, 1, &fence);
 
     VkCommandBuffer cmd = state.commandBuffers[imageIndex];
-    VkCommandBufferBeginInfo beginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
-    
+    VkCommandBufferBeginInfo beginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr,
+                                          VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+
     if (disp->fp_vkBeginCommandBuffer(cmd, &beginInfo) == VK_SUCCESS) {
-        VkImageMemoryBarrier barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+        VkImageMemoryBarrier barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
         barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         barrier.image = state.swapchainImages[imageIndex];
-        barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        
-        disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-            
-        VkRenderPassBeginInfo rpBeginInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+        disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                                      &barrier);
+
+        VkRenderPassBeginInfo rpBeginInfo = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         rpBeginInfo.renderPass = state.renderPass;
         rpBeginInfo.framebuffer = state.framebuffers[imageIndex];
         rpBeginInfo.renderArea.extent = state.extent;
@@ -334,22 +348,24 @@ void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex,
         ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
         disp->fp_vkCmdEndRenderPass(cmd);
 
-        VkImageMemoryBarrier presentBarrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+        VkImageMemoryBarrier presentBarrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         presentBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
         presentBarrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
         presentBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         presentBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
         presentBarrier.image = state.swapchainImages[imageIndex];
-        presentBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        presentBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
-        disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &presentBarrier);
+        disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                      VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                                      &presentBarrier);
 
         disp->fp_vkEndCommandBuffer(cmd);
-        
-        VkSubmitInfo submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+
+        VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &cmd;
-        
+
         // Use semaphores if provided for GPU-side synchronization
         VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         if (waitSemaphore != VK_NULL_HANDLE) {
@@ -357,7 +373,7 @@ void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex,
             submitInfo.pWaitSemaphores = &waitSemaphore;
             submitInfo.pWaitDstStageMask = &waitStage;
         }
-        
+
         if (signalSemaphore != VK_NULL_HANDLE) {
             submitInfo.signalSemaphoreCount = 1;
             submitInfo.pSignalSemaphores = &signalSemaphore;

@@ -1,34 +1,33 @@
 /**
  * D3D12 CommandQueue Wrapper
- * 
+ *
  * Intercepts ExecuteCommandLists for capture functionality.
  */
 
 #pragma once
 
-#include "wrapper_base.h"
 #include <d3d12.h>
+#include "wrapper_base.h"
 
 class CWrapD3D12Device;
 
 /**
  * CWrapD3D12CommandQueue - Wraps ID3D12CommandQueue
  */
-class CWrapD3D12CommandQueue : public ID3D12CommandQueue
-{
+class CWrapD3D12CommandQueue : public ID3D12CommandQueue {
 public:
     CWrapD3D12CommandQueue(ID3D12CommandQueue* pReal, CWrapD3D12Device* pDevice);
     virtual ~CWrapD3D12CommandQueue();
-    
+
     ID3D12CommandQueue* GetReal() const { return m_pReal; }
-    
+
     // ========================================================================
     // IUnknown
     // ========================================================================
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObj) override;
     ULONG STDMETHODCALLTYPE AddRef() override;
     ULONG STDMETHODCALLTYPE Release() override;
-    
+
     // ========================================================================
     // ID3D12Object
     // ========================================================================
@@ -36,17 +35,27 @@ public:
     HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID guid, UINT DataSize, const void* pData) override;
     HRESULT STDMETHODCALLTYPE SetPrivateDataInterface(REFGUID guid, const IUnknown* pData) override;
     HRESULT STDMETHODCALLTYPE SetName(LPCWSTR Name) override;
-    
+
     // ========================================================================
     // ID3D12DeviceChild
     // ========================================================================
     HRESULT STDMETHODCALLTYPE GetDevice(REFIID riid, void** ppvDevice) override;
-    
+
     // ========================================================================
     // ID3D12CommandQueue
     // ========================================================================
-    void STDMETHODCALLTYPE UpdateTileMappings(ID3D12Resource* pResource, UINT NumResourceRegions, const D3D12_TILED_RESOURCE_COORDINATE* pResourceRegionStartCoordinates, const D3D12_TILE_REGION_SIZE* pResourceRegionSizes, ID3D12Heap* pHeap, UINT NumRanges, const D3D12_TILE_RANGE_FLAGS* pRangeFlags, const UINT* pHeapRangeStartOffsets, const UINT* pRangeTileCounts, D3D12_TILE_MAPPING_FLAGS Flags) override;
-    void STDMETHODCALLTYPE CopyTileMappings(ID3D12Resource* pDstResource, const D3D12_TILED_RESOURCE_COORDINATE* pDstRegionStartCoordinate, ID3D12Resource* pSrcResource, const D3D12_TILED_RESOURCE_COORDINATE* pSrcRegionStartCoordinate, const D3D12_TILE_REGION_SIZE* pRegionSize, D3D12_TILE_MAPPING_FLAGS Flags) override;
+    void STDMETHODCALLTYPE UpdateTileMappings(ID3D12Resource* pResource, UINT NumResourceRegions,
+                                              const D3D12_TILED_RESOURCE_COORDINATE* pResourceRegionStartCoordinates,
+                                              const D3D12_TILE_REGION_SIZE* pResourceRegionSizes, ID3D12Heap* pHeap,
+                                              UINT NumRanges, const D3D12_TILE_RANGE_FLAGS* pRangeFlags,
+                                              const UINT* pHeapRangeStartOffsets, const UINT* pRangeTileCounts,
+                                              D3D12_TILE_MAPPING_FLAGS Flags) override;
+    void STDMETHODCALLTYPE CopyTileMappings(ID3D12Resource* pDstResource,
+                                            const D3D12_TILED_RESOURCE_COORDINATE* pDstRegionStartCoordinate,
+                                            ID3D12Resource* pSrcResource,
+                                            const D3D12_TILED_RESOURCE_COORDINATE* pSrcRegionStartCoordinate,
+                                            const D3D12_TILE_REGION_SIZE* pRegionSize,
+                                            D3D12_TILE_MAPPING_FLAGS Flags) override;
     void STDMETHODCALLTYPE ExecuteCommandLists(UINT NumCommandLists, ID3D12CommandList* const* ppCommandLists) override;
     void STDMETHODCALLTYPE SetMarker(UINT Metadata, const void* pData, UINT Size) override;
     void STDMETHODCALLTYPE BeginEvent(UINT Metadata, const void* pData, UINT Size) override;
@@ -56,7 +65,7 @@ public:
     HRESULT STDMETHODCALLTYPE GetTimestampFrequency(UINT64* pFrequency) override;
     HRESULT STDMETHODCALLTYPE GetClockCalibration(UINT64* pGpuTimestamp, UINT64* pCpuTimestamp) override;
     D3D12_COMMAND_QUEUE_DESC STDMETHODCALLTYPE GetDesc() override;
-    
+
 private:
     ID3D12CommandQueue* m_pReal;
     CWrapD3D12Device* m_pDevice;

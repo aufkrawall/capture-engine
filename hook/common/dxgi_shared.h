@@ -1,10 +1,10 @@
 #pragma once
-#include <windows.h>
 #include <dxgi1_4.h>
+#include <windows.h>
 #include <atomic>
-#include <mutex>
 #include <chrono>
 #include <cstdint>
+#include <mutex>
 
 // Forward declaration
 class PerformanceMetrics;
@@ -16,7 +16,7 @@ enum class APIType {
     D3D10,
     D3D11,
     D3D12,
-    Vulkan // For WSI-DXGI interop
+    Vulkan  // For WSI-DXGI interop
 };
 
 struct SharedState {
@@ -48,6 +48,7 @@ PerformanceMetrics* GetPerformanceMetrics();
 void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame);
 void HandleDX12ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame);
 void HandleDX12ResizeBegin();
+void HandleDX12ResizeEnd();
 void HandleDX11ResizeBegin();
 
-} // namespace DXGIShared
+}  // namespace DXGIShared

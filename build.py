@@ -20,6 +20,7 @@ from typing import List, Dict, Optional, Union, Any
 # --- Configuration ---
 BUILD_DIR_NAME = "build"
 COMPILE_COMMANDS: List[Dict[str, Any]] = []
+CURRENT_BUILD_NUMBER = 0  # Set by bump_and_write_build_version()
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -81,6 +82,180 @@ def log(msg: str) -> None:
     except:
         pass
 
+# =============================================================================
+# Locked File Handling Utilities
+# =============================================================================
+
+def is_file_locked(filepath: str) -> bool:
+    """Check if a file is locked by another process on Windows."""
+    if not os.path.exists(filepath):
+        return False
+    
+    try:
+        # Try to open with exclusive access (deny all sharing)
+        # If this fails, the file is locked
+        import ctypes
+        from ctypes import wintypes
+        
+        GENERIC_READ = 0x80000000
+        GENERIC_WRITE = 0x40000000
+        OPEN_EXISTING = 3
+        FILE_ATTRIBUTE_NORMAL = 0x80
+        
+        kernel32 = ctypes.windll.kernel32
+        
+        # Convert to wide string for CreateFileW
+        filepath_w = ctypes.c_wchar_p(filepath)
+        
+        # Try to open with no sharing (0 = share none)
+        handle = kernel32.CreateFileW(
+            filepath_w,
+            GENERIC_READ | GENERIC_WRITE,
+            0,  # dwShareMode - 0 means exclusive access
+            None,  # lpSecurityAttributes
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            None  # hTemplateFile
+        )
+        
+        if handle == -1:  # INVALID_HANDLE_VALUE
+            return True  # File is locked
+        
+        # Success - file is not locked, close it
+        kernel32.CloseHandle(handle)
+        return False
+        
+    except Exception:
+        # If we can't determine, assume it's locked to be safe
+        return True
+
+
+def find_process_locking_file(filepath: str) -> List[str]:
+    """Try to find which process(es) have a file locked using handle.exe or Resource Monitor."""
+    processes = []
+    
+    # Try using Resource Monitor (resmon) query via WMI
+    try:
+        import subprocess
+        # Use handle.exe from Sysinternals if available
+        result = subprocess.run(
+            ['handle.exe', filepath],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0:
+            # Parse handle.exe output
+            for line in result.stdout.split('\n'):
+                if 'pid:' in line.lower():
+                    processes.append(line.strip())
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    
+    return processes
+
+
+def safe_delete_file(filepath: str, max_retries: int = 3, retry_delay: float = 0.5) -> bool:
+    """
+    Safely delete a file, handling locked files gracefully.
+    
+    Strategy:
+    1. Try direct delete first
+    2. If locked, try rename-to-trash approach
+    3. Use MoveFileEx with MOVEFILE_DELAY_UNTIL_REBOOT as last resort
+    """
+    if not os.path.exists(filepath):
+        return True
+    
+    filename = os.path.basename(filepath)
+    
+    # Strategy 1: Try direct delete with retries
+    for attempt in range(max_retries):
+        try:
+            os.remove(filepath)
+            return True
+        except PermissionError:
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
+            continue
+        except Exception as e:
+            log(f"[SafeDelete] Error deleting {filename}: {e}")
+            break
+    
+    # Strategy 2: Check if actually locked and try rename
+    if is_file_locked(filepath):
+        log(f"[SafeDelete] {filename} is locked by another process")
+        
+        # Try to identify the locking process
+        locking = find_process_locking_file(filepath)
+        if locking:
+            log(f"[SafeDelete] Locking process info: {locking}")
+        
+        # Try rename-to-trash approach (this usually works even when locked)
+        try:
+            import random
+            trash_name = f"{filepath}.old.{int(time.time())}.{random.randint(1000,9999)}"
+            os.rename(filepath, trash_name)
+            log(f"[SafeDelete] Renamed locked {filename} to {os.path.basename(trash_name)}")
+            
+            # Now try to delete the renamed file (non-blocking)
+            try:
+                os.remove(trash_name)
+                log(f"[SafeDelete] Deleted renamed file immediately")
+            except:
+                # Schedule for deletion on reboot
+                try:
+                    import ctypes
+                    kernel32 = ctypes.windll.kernel32
+                    MOVEFILE_DELAY_UNTIL_REBOOT = 0x4
+                    kernel32.MoveFileExW(trash_name, None, MOVEFILE_DELAY_UNTIL_REBOOT)
+                    log(f"[SafeDelete] Scheduled {filename} for deletion on next reboot")
+                except:
+                    pass
+            
+            return True
+            
+        except OSError as e:
+            log(f"[SafeDelete] Failed to rename locked {filename}: {e}")
+    
+    # Strategy 3: Schedule original file for deletion on reboot
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        MOVEFILE_DELAY_UNTIL_REBOOT = 0x4
+        
+        # MoveFileEx with NULL destination schedules deletion
+        result = kernel32.MoveFileExW(filepath, None, MOVEFILE_DELAY_UNTIL_REBOOT)
+        if result:
+            log(f"[SafeDelete] Scheduled {filename} for deletion on next reboot")
+            return True
+    except Exception as e:
+        log(f"[SafeDelete] MoveFileEx failed: {e}")
+    
+    log(f"[SafeDelete] WARNING: Could not delete or rename {filename}")
+    return False
+
+
+def safe_remove_tree(path: str, max_retries: int = 3) -> bool:
+    """Safely remove a directory tree, handling locked files."""
+    if not os.path.exists(path):
+        return True
+    
+    # First pass: try to delete individual files with safe_delete_file
+    for root, dirs, files in os.walk(path):
+        for file in files:
+            filepath = os.path.join(root, file)
+            safe_delete_file(filepath, max_retries=max_retries)
+    
+    # Second pass: try shutil.rmtree for remaining directories
+    try:
+        shutil.rmtree(path, ignore_errors=True)
+    except Exception as e:
+        log(f"[SafeDelete] rmtree failed for {path}: {e}")
+        return False
+    
+    return not os.path.exists(path)
+
 def run_command(cmd: Union[List[str], str], 
                 env: Optional[Dict[str, str]] = None, 
                 cwd: Optional[str] = None, 
@@ -133,7 +308,7 @@ def bump_and_write_build_version():
     # (Optional: user wanted to get rid of "weird git contraption", but seeding once is safe)
     if build_number == 0 and os.path.exists(version_header_path):
          try:
-            with open(version_header_path, "r", encoding="utf-8") as f:
+            with open(version_header_path, "r", encoding="utf--8") as f:
                 txt = f.read()
             m = re.search(r"#define\s+BUILD_NUMBER\s+(\d+)", txt)
             if m:
@@ -166,6 +341,8 @@ def bump_and_write_build_version():
     except Exception as e:
         log(f"ERROR: Failed to write {version_header_path}: {e}")
         sys.exit(1)
+    
+    return build_number  # Return for use by caller
 
 def setup_msys2():
     if not os.path.exists(MSYS2_DIR):
@@ -682,9 +859,10 @@ def get_env():
     env = os.environ.copy()
     env["PATH"] = clang_bin + os.pathsep + usr_bin + os.pathsep + env["PATH"]
     env["PKG_CONFIG_PATH"] = os.path.join(MSYS2_DIR, "clang64", "lib", "pkgconfig")
-    # Enable ccache
+    # ccache is DISABLED by default for reliability
+    # Use --ccache flag to enable faster builds (may cause stale object issues)
     env["CCACHE_DIR"] = os.path.join(MSYS2_DIR, ".ccache")
-    # env["CCACHE_BASEDIR"] = PROJECT_ROOT
+    env["DISABLE_CCACHE"] = "1"  # Default to disabled for reliability
     return env, clang_bin
 
 def get_env_x86():
@@ -694,10 +872,10 @@ def get_env_x86():
     env = os.environ.copy()
     env["PATH"] = clang_bin + os.pathsep + usr_bin + os.pathsep + env["PATH"]
     env["PKG_CONFIG_PATH"] = os.path.join(MSYS2_DIR, "mingw32", "lib", "pkgconfig")
-    # Enable ccache
+    # ccache is DISABLED by default for reliability
+    # Use --ccache flag to enable faster builds (may cause stale object issues)
     env["CCACHE_DIR"] = os.path.join(MSYS2_DIR, ".ccache")
-    # env["CCACHE_BASEDIR"] = PROJECT_ROOT
-    # env["DISABLE_CCACHE"] = "1" # Enable ccache for x86 too now that we fixed flags
+    env["DISABLE_CCACHE"] = "1"  # Default to disabled for reliability
     return env, clang_bin
 
 def ensure_dirs():
@@ -727,21 +905,30 @@ def parse_dep_file(dep_path: str) -> List[str]:
         pass
     return deps
 
-def should_recompile(src: str, obj: str, dep_file: str) -> bool:
+def should_recompile(src: str, obj: str, dep_file: str, env: Dict[str, str]) -> bool:
+    # Check for force rebuild flag
+    if env.get("FORCE_REBUILD") == "1":
+        return True
     if not os.path.exists(obj):
         return True
     
     # Check source timestamp
-    if os.path.getmtime(src) > os.path.getmtime(obj):
-        return True
+    try:
+        if os.path.getmtime(src) > os.path.getmtime(obj):
+            return True
+    except OSError:
+        return True  # Error accessing files, safer to recompile
         
     # Check dependencies
     if os.path.exists(dep_file):
         deps = parse_dep_file(dep_file)
         obj_mtime = os.path.getmtime(obj)
         for dep in deps:
-            if os.path.exists(dep) and os.path.getmtime(dep) > obj_mtime:
-                return True
+            try:
+                if os.path.exists(dep) and os.path.getmtime(dep) > obj_mtime:
+                    return True
+            except OSError:
+                return True  # Error accessing dependency, safer to recompile
     else:
         # If object exists but dep file is missing, recompile to generate dep file
         return True
@@ -768,7 +955,7 @@ def compile_object(env: Dict[str, str], clang_exe: str, cflags: List[str], src: 
         "file": src
     })
 
-    if not should_recompile(src, obj, dep_file):
+    if not should_recompile(src, obj, dep_file, env):
         return False  # Skip - up to date
     
     # Use ccache if available
@@ -1357,21 +1544,19 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
     else:
         cmd = [clang_exe] + layer_objs + ldflags
     
-    # Robust handling for locked DLLs (DataExchangeHost etc.)
+    # Robust handling for locked DLLs (DataExchangeHost, explorer, etc.)
     if os.path.exists(layer_dll):
-        try:
-            os.remove(layer_dll)
-        except OSError:
-            log(f"[Warning] {os.path.basename(layer_dll)} is locked. Attempting to rename...")
-            try:
-                    import time
-                    import random
-                    trash_name = f"{layer_dll}.trash.{int(time.time())}.{random.randint(1000,9999)}"
-                    os.rename(layer_dll, trash_name)
-                    log(f"[Info] Renamed locked Layer DLL to {os.path.basename(trash_name)}")
-            except OSError as e:
-                    log(f"[Error] Failed to rename locked Layer DLL: {e}")
-                    # sys.exit(1) # Don't exit, try linking anyway? No, it will fail.
+        if not safe_delete_file(layer_dll):
+            # Even if we can't delete, we can still build if we renamed it
+            # Check if the file still exists with original name
+            if os.path.exists(layer_dll):
+                log(f"[Warning] {os.path.basename(layer_dll)} is still locked, build may fail")
+                # Check if locked and log helpful info
+                if is_file_locked(layer_dll):
+                    log(f"[Info] File is actively locked by another process")
+                    locking = find_process_locking_file(layer_dll)
+                    if locking:
+                        log(f"[Info] Locking process: {locking}")
                     
     try:
         run_command(cmd, env=env)
@@ -1604,19 +1789,14 @@ def compile_d3d12_wrappers_msvc(env, arch):
     
     # Robust handling for locked DLLs
     if os.path.exists(dll_out):
-        try:
-            os.remove(dll_out)
-        except OSError:
-            log(f"[Warning] {os.path.basename(dll_out)} is locked. Attempting to rename...")
-            try:
-                import time
-                import random
-                trash_name = f"{dll_out}.trash.{int(time.time())}.{random.randint(1000,9999)}"
-                os.rename(dll_out, trash_name)
-                log(f"[Info] Renamed locked DLL to {os.path.basename(trash_name)}")
-            except OSError as e:
-                log(f"[Error] Failed to rename locked DLL: {e}")
-                return False, None
+        if not safe_delete_file(dll_out):
+            if os.path.exists(dll_out):
+                log(f"[Warning] {os.path.basename(dll_out)} is still locked, attempting build anyway")
+                if is_file_locked(dll_out):
+                    locking = find_process_locking_file(dll_out)
+                    if locking:
+                        log(f"[Info] Locking process: {locking}")
+            # Note: MSVC linker can sometimes overwrite even "locked" files, so we continue
     
     sdk_lib_um = os.path.join(win_sdk_root, "Lib", win_sdk_ver, "um", sdk_arch)
     sdk_lib_ucrt = os.path.join(win_sdk_root, "Lib", win_sdk_ver, "ucrt", sdk_arch)
@@ -1762,7 +1942,8 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                  glob.glob(os.path.join(PROJECT_ROOT, "hook", "common", "*.cpp")) + \
                  glob.glob(os.path.join(PROJECT_ROOT, "hook", "apis", "*.cpp")) + \
                  glob.glob(os.path.join(PROJECT_ROOT, "hook", "capture", "*.cpp")) + \
-                 glob.glob(os.path.join(PROJECT_ROOT, "hook", "wrappers", "*.cpp"))
+                 glob.glob(os.path.join(PROJECT_ROOT, "hook", "wrappers", "*.cpp")) + \
+                 [os.path.join(PROJECT_ROOT, "hook", "wrappers", "safe_hook.cpp")]
         
         # Exclude D3D12 device/commandqueue wrappers due to MinGW ABI incompatibility
         # (MSYS2's D3D12 headers use WIDL_EXPLICIT_AGGREGATE_RETURNS which has different vtable layout)
@@ -1776,7 +1957,16 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         ]
         hk_src = [f for f in hk_src if f not in excluded_files]
         
-        # mh_src removed
+        # MinHook for robust API hooking
+        mh_src = [
+            os.path.join(PROJECT_ROOT, "external", "minhook", "src", "buffer.c"),
+            os.path.join(PROJECT_ROOT, "external", "minhook", "src", "hook.c"),
+            os.path.join(PROJECT_ROOT, "external", "minhook", "src", "trampoline.c"),
+            os.path.join(PROJECT_ROOT, "external", "minhook", "src", "hde", "hde32.c"),
+            os.path.join(PROJECT_ROOT, "external", "minhook", "src", "hde", "hde64.c"),
+        ]
+        hk_src.extend(mh_src)
+        
         # volk removed - using vulkan layer instead
         # hk_src.append(os.path.join(PROJECT_ROOT, "external", "volk", "volk.c"))
 
@@ -1819,12 +2009,13 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             # ldflags_hook.append("-flto")
             pass
         
-        hk_cflags = curr_cflags + ["-DVK_NO_PROTOTYPES", "-DBUILDING_CAPTURE_HOOK"] + [  # Vulkan hooks now in layer
+        hk_cflags = curr_cflags + ["-DVK_NO_PROTOTYPES", "-DBUILDING_CAPTURE_HOOK", "-DUSE_MINHOOK"] + [  # Vulkan hooks now in layer
             "-I" + os.path.join(PROJECT_ROOT, "common"),
             "-I" + os.path.join(PROJECT_ROOT, "hook", "common"),
             "-I" + os.path.join(PROJECT_ROOT, "hook", "apis"),
             "-I" + os.path.join(PROJECT_ROOT, "hook", "capture"),
-            "-I" + os.path.join(PROJECT_ROOT, "hook", "wrappers")
+            "-I" + os.path.join(PROJECT_ROOT, "hook", "wrappers"),
+            "-I" + os.path.join(PROJECT_ROOT, "external", "minhook", "include")
         ]
         
         # Check for MSVC-compiled D3D12 wrappers
@@ -1859,26 +2050,43 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         
         log(f"Linking Hook DLL {arch}...")
         
-        # Robust handling for locked DLLs (e.g. by DataExchangeHost with CBT hooks)
+        # Robust handling for locked DLLs (e.g. by DataExchangeHost, explorer, etc.)
         if os.path.exists(hk_dll):
-            try:
-                os.remove(hk_dll)
-            except OSError:
-                log(f"[Warning] {os.path.basename(hk_dll)} is locked. Attempting to rename...")
-                try:
-                     # Rename to .trash in timestamped format
-                     import time
-                     import random
-                     trash_name = f"{hk_dll}.trash.{int(time.time())}.{random.randint(1000,9999)}"
-                     os.rename(hk_dll, trash_name)
-                     log(f"[Info] Renamed locked DLL to {os.path.basename(trash_name)}")
-                except OSError as e:
-                     log(f"[Error] Failed to rename locked DLL: {e}")
-                     sys.exit(1)
+            if not safe_delete_file(hk_dll):
+                # Even if we can't delete, we can still build if we renamed it
+                if os.path.exists(hk_dll):
+                    log(f"[Warning] {os.path.basename(hk_dll)} is still locked, build may fail")
+                    if is_file_locked(hk_dll):
+                        log(f"[Info] File is actively locked by another process")
+                        locking = find_process_locking_file(hk_dll)
+                        if locking:
+                            log(f"[Info] Locking process: {locking}")
 
         cmd = [curr_clang_exe] + hk_objs + imgui_objs + common_objs + ldflags_hook + ["-o", hk_dll]
         # cmd = [curr_clang_exe] + hk_objs + ldflags_hook + ["-o", hk_dll]
         run_command(cmd, env=curr_env)
+        
+        # Verify the built binary contains the correct version
+        if os.path.exists(hk_dll):
+            try:
+                # Use strings to extract version from binary
+                import subprocess as sp
+                strings_exe = os.path.join(MSYS2_DIR, "clang64", "bin", "strings.exe")
+                if not os.path.exists(strings_exe):
+                    strings_exe = "strings"  # fallback
+                result = sp.run([strings_exe, hk_dll], capture_output=True, text=True, timeout=10)
+                version_match = re.search(r'1\.1\.0-dev\+build\.(\d+)', result.stdout)
+                if version_match:
+                    embedded_build = int(version_match.group(1))
+                    if embedded_build != CURRENT_BUILD_NUMBER:
+                        log(f"[WARNING] Version mismatch! Header: build.{CURRENT_BUILD_NUMBER}, DLL: build.{embedded_build}")
+                    else:
+                        log(f"[OK] Hook DLL verified: build.{embedded_build}")
+                else:
+                    log(f"[WARNING] Could not find version string in {os.path.basename(hk_dll)}")
+            except Exception as e:
+                log(f"[Warning] Could not verify DLL version: {e}")
+        
         # generate_hash(hk_dll) # Removed in favor of embedded hash header
 
         # 4. MediaEngine (x64 only for now as requested)
@@ -2009,14 +2217,12 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             x86_cflags = ["-std=c++20", "-O3", "-m32", "-Wall", "-D_WIN32_WINNT=0x0A00"]
             compile_vulkan_layer(x86_env, x86_clang, x86_cflags, "x86")
 
-    # Cleanup import libraries
+    # Cleanup import libraries (use safe delete for consistency)
     me_lib = os.path.join(BIN_DIR, "libmediaengine.dll.a")
     if os.path.exists(me_lib): 
-        try:
-            os.remove(me_lib)
+        if safe_delete_file(me_lib):
             log(f"Removed {me_lib}")
-        except Exception as e:
-            log(f"Failed to remove {me_lib}: {e}")
+        # If it fails, it's not critical - just a .a file, not a loaded DLL
     
     # Copy License files
     log("Copying License files...")
@@ -2097,7 +2303,21 @@ def main():
     
     log("=== Starting Build ===")
 
-    bump_and_write_build_version()
+    # Parse flags early for force rebuild
+    force_rebuild = "--force-rebuild" in sys.argv
+    if force_rebuild:
+        log("FORCE REBUILD: Cleaning all object files...")
+        if os.path.exists(OBJ_DIR):
+            try:
+                shutil.rmtree(OBJ_DIR)
+                log("Object directory cleaned.")
+            except Exception as e:
+                log(f"Warning: Could not clean {OBJ_DIR}: {e}")
+
+    current_build_number = bump_and_write_build_version()
+    # Store for use by compile_project
+    global CURRENT_BUILD_NUMBER
+    CURRENT_BUILD_NUMBER = current_build_number
     
     # Always clean object files to avoid struct layout mismatches
     # if os.path.exists(OBJ_DIR):
@@ -2122,6 +2342,18 @@ def main():
                 os.remove(csv_file)
             except Exception as e:
                 log(f"Warning: Could not delete {csv_file}: {e}")
+        # Clean crash dumps and crash handler traces
+        for dmp_file in glob.glob(os.path.join(logs_dir, "*.dmp")):
+            try:
+                os.remove(dmp_file)
+            except Exception as e:
+                log(f"Warning: Could not delete {dmp_file}: {e}")
+        crash_trace_file = os.path.join(logs_dir, "crash_handler_trace.txt")
+        if os.path.exists(crash_trace_file):
+            try:
+                os.remove(crash_trace_file)
+            except Exception as e:
+                log(f"Warning: Could not delete {crash_trace_file}: {e}")
 
     # Clean legacy log files from root/bin
     legacy_logs = [
@@ -2143,6 +2375,25 @@ def main():
     run_tests_flag = "--run-tests" in sys.argv
     lint_flag = "--lint" in sys.argv
     format_flag = "--format" in sys.argv
+    ccache_flag = "--ccache" in sys.argv
+    # --force is now DEFAULT behavior for reliability (disable with --incremental)
+    incremental_flag = "--incremental" in sys.argv
+    force_flag = not incremental_flag  # Force rebuild by default
+    
+    # Store flags in env for access in compile functions
+    env["FORCE_REBUILD"] = "1" if force_flag else "0"
+    
+    if incremental_flag:
+        log("Incremental build (--incremental) - may use cached objects")
+    else:
+        log("Force rebuild (default) - ensuring clean build for reliability")
+    
+    if ccache_flag:
+        log("Enabling ccache for faster builds (--ccache)")
+        log("WARNING: ccache may occasionally serve stale objects. Use --ccache only for development, not release builds.")
+        # Clear any existing disable flag
+        if "DISABLE_CCACHE" in env:
+            del env["DISABLE_CCACHE"]
     
     if skip_updates:
         log("FFmpeg updates disabled (--skip-updates)")

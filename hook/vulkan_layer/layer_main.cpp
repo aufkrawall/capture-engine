@@ -9,12 +9,14 @@
 #include <cstring>
 
 // Simple early logging to stderr before file logging is initialized
-static void EarlyLog(const char* msg) {
+static void EarlyLog(const char* msg)
+{
     fprintf(stderr, "[VulkanLayer-Init] %s\n", msg);
     fflush(stderr);
 }
 
-BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID reserved) {
+BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID reserved)
+{
     if (reason == DLL_PROCESS_ATTACH) {
         EarlyLog("DLL_PROCESS_ATTACH - Layer DLL loaded");
     } else if (reason == DLL_PROCESS_DETACH) {
@@ -30,14 +32,16 @@ CELayerState g_LayerState;
 static bool PerformEarlyWhitelistCheck();
 
 // Forward declarations
-extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL CELayer_vkGetInstanceProcAddr(VkInstance instance, const char* pName);
+extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL CELayer_vkGetInstanceProcAddr(VkInstance instance,
+                                                                                  const char* pName);
 extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL CELayer_vkGetDeviceProcAddr(VkDevice device, const char* pName);
 
 // File logging for when IPC is not available
 static FILE* g_LogFile = nullptr;
 static bool g_LogFileInitialized = false;
 
-static void InitLayerLogFile() {
+static void InitLayerLogFile()
+{
     if (g_LogFileInitialized) return;
     g_LogFileInitialized = true;
 
@@ -51,7 +55,8 @@ static void InitLayerLogFile() {
 }
 
 // Logging implementation
-void LayerLog(const char* fmt, ...) {
+void LayerLog(const char* fmt, ...)
+{
     // OPTIMIZATION: Only process logs if debug logging is enabled in shared memory
     // or if the layer hasn't initialized IPC yet (for early errors).
     auto* shm = g_IPCClient.GetSharedMem();
@@ -90,8 +95,9 @@ void LayerLog(const char* fmt, ...) {
 // Layer Negotiation
 // ============================================================================
 
-extern "C" VKAPI_ATTR VkResult VKAPI_CALL 
-CELayer_vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct) {
+extern "C" VKAPI_ATTR VkResult VKAPI_CALL
+CELayer_vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct)
+{
     EarlyLog("NegotiateLoaderLayerInterfaceVersion called");
 
     if (pVersionStruct->loaderLayerInterfaceVersion < 2) {
@@ -126,7 +132,8 @@ CELayer_vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersi
 
 static bool g_WhitelistCheckDone = false;
 
-static bool PerformEarlyWhitelistCheck() {
+static bool PerformEarlyWhitelistCheck()
+{
     if (g_WhitelistCheckDone) return g_LayerState.whitelisted;
     g_WhitelistCheckDone = true;
 
@@ -176,8 +183,9 @@ static bool PerformEarlyWhitelistCheck() {
 // ProcAddr Implementations
 // ============================================================================
 
-extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL 
-CELayer_vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
+extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL CELayer_vkGetInstanceProcAddr(VkInstance instance,
+                                                                                  const char* pName)
+{
     if (!pName) return nullptr;
 
     bool whitelisted = g_LayerState.whitelisted;
@@ -200,7 +208,7 @@ CELayer_vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
     if (strcmp(pName, "vkEnumeratePhysicalDevices") == 0) {
         return (PFN_vkVoidFunction)Capture_vkEnumeratePhysicalDevices;
     }
-    
+
     if (strcmp(pName, "vkEnumerateInstanceLayerProperties") == 0 ||
         strcmp(pName, "vkEnumerateInstanceExtensionProperties") == 0) {
         return nullptr;
@@ -210,7 +218,7 @@ CELayer_vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
 
     // Always intercept cleanup
     if (strcmp(pName, "vkDestroyInstance") == 0) return (PFN_vkVoidFunction)Capture_vkDestroyInstance;
-    
+
     // Always intercept DeviceProcAddr to handle chain
     if (strcmp(pName, "vkGetDeviceProcAddr") == 0) return (PFN_vkVoidFunction)CELayer_vkGetDeviceProcAddr;
 
@@ -238,8 +246,8 @@ CELayer_vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
     return nullptr;
 }
 
-extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL 
-CELayer_vkGetDeviceProcAddr(VkDevice device, const char* pName) {
+extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL CELayer_vkGetDeviceProcAddr(VkDevice device, const char* pName)
+{
     if (!pName || !device) return nullptr;
 
     bool whitelisted = g_LayerState.whitelisted;

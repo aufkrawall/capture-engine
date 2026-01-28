@@ -1,30 +1,31 @@
 #pragma once
-#include "graphics_hook.h"
 #include <d3d11.h>
 #include <dxgi.h>
 #include <dxgi1_2.h>  // For DXGI_PRESENT_PARAMETERS
+#include "graphics_hook.h"
 
 class DX11Hook : public GraphicsHook {
 public:
-  void Init() override;
-  void Shutdown() override;
-  void OnHostDisconnect() override;  // Called when captureengine disconnects
-  void ProcessDeferredReleases();    // Cleanup resources on background thread
+    void Init() override;
+    void Shutdown() override;
+    void OnHostDisconnect() override;  // Called when captureengine disconnects
+    void ProcessDeferredReleases();    // Cleanup resources on background thread
 };
 
 // D3D11 function typedefs for IAT patching
-typedef HRESULT(WINAPI* PFN_D3D11CreateDeviceAndSwapChain)(
-    IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT, const D3D_FEATURE_LEVEL*,
-    UINT, UINT, const DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**,
-    ID3D11Device**, D3D_FEATURE_LEVEL*, ID3D11DeviceContext**);
+typedef HRESULT(WINAPI* PFN_D3D11CreateDeviceAndSwapChain)(IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT,
+                                                           const D3D_FEATURE_LEVEL*, UINT, UINT,
+                                                           const DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**,
+                                                           ID3D11Device**, D3D_FEATURE_LEVEL*, ID3D11DeviceContext**);
 
 // Detour function - called when game calls D3D11CreateDeviceAndSwapChain
-HRESULT WINAPI DX11_DetourCreateDeviceAndSwapChain(
-    IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE DriverType, HMODULE Software,
-    UINT Flags, const D3D_FEATURE_LEVEL* pFeatureLevels, UINT FeatureLevels,
-    UINT SDKVersion, const DXGI_SWAP_CHAIN_DESC* pSwapChainDesc,
-    IDXGISwapChain** ppSwapChain, ID3D11Device** ppDevice,
-    D3D_FEATURE_LEVEL* pFeatureLevel, ID3D11DeviceContext** ppImmediateContext);
+HRESULT WINAPI DX11_DetourCreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE DriverType, HMODULE Software,
+                                                   UINT Flags, const D3D_FEATURE_LEVEL* pFeatureLevels,
+                                                   UINT FeatureLevels, UINT SDKVersion,
+                                                   const DXGI_SWAP_CHAIN_DESC* pSwapChainDesc,
+                                                   IDXGISwapChain** ppSwapChain, ID3D11Device** ppDevice,
+                                                   D3D_FEATURE_LEVEL* pFeatureLevel,
+                                                   ID3D11DeviceContext** ppImmediateContext);
 
 // Manual Hook Activation (for DXGI/DX12 interop fallbacks)
 void DX11Hook_OnSwapChainCreated(IDXGISwapChain* pSwapChain);
@@ -38,5 +39,6 @@ extern PFN_D3D11CreateDeviceAndSwapChain oD3D11CreateDeviceAndSwapChain;
 
 // Present hook detours (exported for cross-hook collision detection from dx12_hook.cpp)
 // Used to detect if DX11 has ALREADY hooked a swapchain's vtable
-HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT Flags);
-HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS *pPresentParameters);
+HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags);
+HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT PresentFlags,
+                                             const DXGI_PRESENT_PARAMETERS* pPresentParameters);

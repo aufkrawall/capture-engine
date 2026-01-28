@@ -4,7 +4,7 @@
 #include <dxgi1_2.h>
 #include <memory>
 #include <mutex>
-#include "wgc_capture.h" // Reuse WGCCapturedFrame struct
+#include "wgc_capture.h"  // Reuse WGCCapturedFrame struct
 
 class DxgiCapture {
 public:
@@ -23,7 +23,7 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
-    
+
     ID3D11Device* device_ = nullptr;
     ID3D11DeviceContext* context_ = nullptr;
     std::mutex* d3dMutex_ = nullptr;
@@ -31,7 +31,7 @@ private:
     bool capturing_ = false;
     uint32_t width_ = 0;
     uint32_t height_ = 0;
-    
+
     // Config
     bool captureCursor_ = true;
     uint32_t droppedFrames_ = 0;

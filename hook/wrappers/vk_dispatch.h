@@ -1,6 +1,6 @@
 /**
  * Custom Vulkan Dispatch Table
- * 
+ *
  * Replaces Volk with direct GetProcAddress + vkGetInstanceProcAddr loading.
  * This eliminates the Volk dependency while providing the same functionality.
  */
@@ -178,7 +178,7 @@ void Shutdown();
  */
 bool IsInitialized();
 
-} // namespace VkDispatch
+}  // namespace VkDispatch
 
 // ============================================================================
 // Compatibility Macros (makes existing volk code work with minimal changes)
@@ -188,109 +188,109 @@ bool IsInitialized();
 #ifdef USE_VKDISPATCH
 
 // Replace volkInitialize/volkLoadInstance/volkLoadDevice
-#define volkInitialize VkDispatch::Initialize
+#define volkInitialize   VkDispatch::Initialize
 #define volkLoadInstance VkDispatch::LoadInstance
-#define volkLoadDevice VkDispatch::LoadDevice
+#define volkLoadDevice   VkDispatch::LoadDevice
 
 // Map Vulkan functions to our dispatch table via "using" (C++ way)
 // This allows existing code using bare vkXxx names to find our dispatch versions
 
-using VkDispatch::vkGetInstanceProcAddr;
-using VkDispatch::vkCreateInstance;
-using VkDispatch::vkDestroyInstance;
-using VkDispatch::vkEnumeratePhysicalDevices;
-using VkDispatch::vkGetPhysicalDeviceProperties;
-using VkDispatch::vkGetPhysicalDeviceProperties2;
-using VkDispatch::vkGetPhysicalDeviceFeatures;
-using VkDispatch::vkGetPhysicalDeviceFeatures2;
-using VkDispatch::vkGetPhysicalDeviceQueueFamilyProperties;
-using VkDispatch::vkGetPhysicalDeviceMemoryProperties;
-using VkDispatch::vkCreateDevice;
-using VkDispatch::vkDestroyDevice;
-using VkDispatch::vkGetDeviceProcAddr;
-using VkDispatch::vkEnumerateDeviceExtensionProperties;
-using VkDispatch::vkGetDeviceQueue;
-using VkDispatch::vkQueueSubmit;
-using VkDispatch::vkQueueWaitIdle;
-using VkDispatch::vkDeviceWaitIdle;
+using VkDispatch::vkAcquireNextImageKHR;
+using VkDispatch::vkAllocateCommandBuffers;
+using VkDispatch::vkAllocateDescriptorSets;
 using VkDispatch::vkAllocateMemory;
-using VkDispatch::vkFreeMemory;
-using VkDispatch::vkMapMemory;
-using VkDispatch::vkUnmapMemory;
+using VkDispatch::vkBeginCommandBuffer;
 using VkDispatch::vkBindBufferMemory;
 using VkDispatch::vkBindImageMemory;
-using VkDispatch::vkGetBufferMemoryRequirements;
-using VkDispatch::vkGetImageMemoryRequirements;
-using VkDispatch::vkCreateCommandPool;
-using VkDispatch::vkDestroyCommandPool;
-using VkDispatch::vkAllocateCommandBuffers;
-using VkDispatch::vkFreeCommandBuffers;
-using VkDispatch::vkBeginCommandBuffer;
-using VkDispatch::vkEndCommandBuffer;
-using VkDispatch::vkResetCommandBuffer;
-using VkDispatch::vkCmdPipelineBarrier;
-using VkDispatch::vkCmdCopyImage;
+using VkDispatch::vkCmdBeginRenderPass;
+using VkDispatch::vkCmdBindDescriptorSets;
+using VkDispatch::vkCmdBindIndexBuffer;
+using VkDispatch::vkCmdBindPipeline;
+using VkDispatch::vkCmdBindVertexBuffers;
 using VkDispatch::vkCmdBlitImage;
 using VkDispatch::vkCmdCopyBufferToImage;
-using VkDispatch::vkCreateImage;
-using VkDispatch::vkDestroyImage;
-using VkDispatch::vkCreateImageView;
-using VkDispatch::vkDestroyImageView;
-using VkDispatch::vkCreateBuffer;
-using VkDispatch::vkDestroyBuffer;
-using VkDispatch::vkCreateSemaphore;
-using VkDispatch::vkDestroySemaphore;
-using VkDispatch::vkCreateFence;
-using VkDispatch::vkDestroyFence;
-using VkDispatch::vkWaitForFences;
-using VkDispatch::vkResetFences;
-using VkDispatch::vkCreateSwapchainKHR;
-using VkDispatch::vkDestroySwapchainKHR;
-using VkDispatch::vkGetSwapchainImagesKHR;
-using VkDispatch::vkAcquireNextImageKHR;
-using VkDispatch::vkQueuePresentKHR;
-using VkDispatch::vkCreateSampler;
-using VkDispatch::vkDestroySampler;
-using VkDispatch::vkCreateDescriptorPool;
-using VkDispatch::vkDestroyDescriptorPool;
-using VkDispatch::vkAllocateDescriptorSets;
-using VkDispatch::vkFreeDescriptorSets;
-using VkDispatch::vkUpdateDescriptorSets;
-using VkDispatch::vkCreateDescriptorSetLayout;
-using VkDispatch::vkDestroyDescriptorSetLayout;
-using VkDispatch::vkCreateRenderPass;
-using VkDispatch::vkDestroyRenderPass;
-using VkDispatch::vkCreateFramebuffer;
-using VkDispatch::vkDestroyFramebuffer;
-using VkDispatch::vkCreatePipelineLayout;
-using VkDispatch::vkDestroyPipelineLayout;
-using VkDispatch::vkCreateGraphicsPipelines;
-using VkDispatch::vkCreateComputePipelines;
-using VkDispatch::vkDestroyPipeline;
-using VkDispatch::vkCreateShaderModule;
-using VkDispatch::vkDestroyShaderModule;
-using VkDispatch::vkCmdBeginRenderPass;
-using VkDispatch::vkCmdEndRenderPass;
-using VkDispatch::vkCmdBindPipeline;
-using VkDispatch::vkCmdBindDescriptorSets;
-using VkDispatch::vkCmdBindVertexBuffers;
-using VkDispatch::vkCmdBindIndexBuffer;
+using VkDispatch::vkCmdCopyImage;
 using VkDispatch::vkCmdDraw;
 using VkDispatch::vkCmdDrawIndexed;
-using VkDispatch::vkCmdSetViewport;
-using VkDispatch::vkCmdSetScissor;
+using VkDispatch::vkCmdEndRenderPass;
+using VkDispatch::vkCmdPipelineBarrier;
 using VkDispatch::vkCmdPushConstants;
-using VkDispatch::vkGetPhysicalDeviceSurfaceSupportKHR;
+using VkDispatch::vkCmdSetScissor;
+using VkDispatch::vkCmdSetViewport;
+using VkDispatch::vkCreateBuffer;
+using VkDispatch::vkCreateCommandPool;
+using VkDispatch::vkCreateComputePipelines;
+using VkDispatch::vkCreateDescriptorPool;
+using VkDispatch::vkCreateDescriptorSetLayout;
+using VkDispatch::vkCreateDevice;
+using VkDispatch::vkCreateFence;
+using VkDispatch::vkCreateFramebuffer;
+using VkDispatch::vkCreateGraphicsPipelines;
+using VkDispatch::vkCreateImage;
+using VkDispatch::vkCreateImageView;
+using VkDispatch::vkCreateInstance;
+using VkDispatch::vkCreatePipelineLayout;
+using VkDispatch::vkCreateRenderPass;
+using VkDispatch::vkCreateSampler;
+using VkDispatch::vkCreateSemaphore;
+using VkDispatch::vkCreateShaderModule;
+using VkDispatch::vkCreateSwapchainKHR;
+using VkDispatch::vkCreateWin32SurfaceKHR;
+using VkDispatch::vkDestroyBuffer;
+using VkDispatch::vkDestroyCommandPool;
+using VkDispatch::vkDestroyDescriptorPool;
+using VkDispatch::vkDestroyDescriptorSetLayout;
+using VkDispatch::vkDestroyDevice;
+using VkDispatch::vkDestroyFence;
+using VkDispatch::vkDestroyFramebuffer;
+using VkDispatch::vkDestroyImage;
+using VkDispatch::vkDestroyImageView;
+using VkDispatch::vkDestroyInstance;
+using VkDispatch::vkDestroyPipeline;
+using VkDispatch::vkDestroyPipelineLayout;
+using VkDispatch::vkDestroyRenderPass;
+using VkDispatch::vkDestroySampler;
+using VkDispatch::vkDestroySemaphore;
+using VkDispatch::vkDestroyShaderModule;
+using VkDispatch::vkDestroySurfaceKHR;
+using VkDispatch::vkDestroySwapchainKHR;
+using VkDispatch::vkDeviceWaitIdle;
+using VkDispatch::vkEndCommandBuffer;
+using VkDispatch::vkEnumerateDeviceExtensionProperties;
+using VkDispatch::vkEnumeratePhysicalDevices;
+using VkDispatch::vkFreeCommandBuffers;
+using VkDispatch::vkFreeDescriptorSets;
+using VkDispatch::vkFreeMemory;
+using VkDispatch::vkGetBufferMemoryRequirements;
+using VkDispatch::vkGetDeviceProcAddr;
+using VkDispatch::vkGetDeviceQueue;
+using VkDispatch::vkGetImageMemoryRequirements;
+using VkDispatch::vkGetInstanceProcAddr;
+using VkDispatch::vkGetMemoryWin32HandleKHR;
+using VkDispatch::vkGetPhysicalDeviceFeatures;
+using VkDispatch::vkGetPhysicalDeviceFeatures2;
+using VkDispatch::vkGetPhysicalDeviceMemoryProperties;
+using VkDispatch::vkGetPhysicalDeviceProperties;
+using VkDispatch::vkGetPhysicalDeviceProperties2;
+using VkDispatch::vkGetPhysicalDeviceQueueFamilyProperties;
 using VkDispatch::vkGetPhysicalDeviceSurfaceCapabilitiesKHR;
 using VkDispatch::vkGetPhysicalDeviceSurfaceFormatsKHR;
 using VkDispatch::vkGetPhysicalDeviceSurfacePresentModesKHR;
-using VkDispatch::vkDestroySurfaceKHR;
-using VkDispatch::vkCreateWin32SurfaceKHR;
-using VkDispatch::vkGetMemoryWin32HandleKHR;
-using VkDispatch::vkGetSemaphoreWin32HandleKHR;
-using VkDispatch::vkImportSemaphoreWin32HandleKHR;
-using VkDispatch::vkWaitSemaphoresKHR;
-using VkDispatch::vkSignalSemaphoreKHR;
+using VkDispatch::vkGetPhysicalDeviceSurfaceSupportKHR;
 using VkDispatch::vkGetSemaphoreCounterValueKHR;
+using VkDispatch::vkGetSemaphoreWin32HandleKHR;
+using VkDispatch::vkGetSwapchainImagesKHR;
+using VkDispatch::vkImportSemaphoreWin32HandleKHR;
+using VkDispatch::vkMapMemory;
+using VkDispatch::vkQueuePresentKHR;
+using VkDispatch::vkQueueSubmit;
+using VkDispatch::vkQueueWaitIdle;
+using VkDispatch::vkResetCommandBuffer;
+using VkDispatch::vkResetFences;
+using VkDispatch::vkSignalSemaphoreKHR;
+using VkDispatch::vkUnmapMemory;
+using VkDispatch::vkUpdateDescriptorSets;
+using VkDispatch::vkWaitForFences;
+using VkDispatch::vkWaitSemaphoresKHR;
 
-#endif // USE_VKDISPATCH
+#endif  // USE_VKDISPATCH

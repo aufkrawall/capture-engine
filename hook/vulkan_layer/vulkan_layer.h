@@ -7,12 +7,12 @@
 #ifndef VK_USE_PLATFORM_WIN32_KHR
 #define VK_USE_PLATFORM_WIN32_KHR
 #endif
-#include <vulkan/vulkan.h>
 #include <vulkan/vk_layer.h>
+#include <vulkan/vulkan.h>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <vector>
-#include <string>
 
 // Reentrancy guard shared with other hooks
 extern thread_local bool g_InPresentHook;
@@ -136,24 +136,29 @@ struct SwapchainData {
 class VulkanLayerState {
 public:
     static VulkanLayerState& Get();
-    
+
     void RegisterInstance(VkInstance instance, InstanceDispatch* dispatch);
     void UnregisterInstance(VkInstance instance);
     InstanceDispatch* GetInstanceDispatch(VkInstance instance);
-    
+
     void RegisterDevice(VkDevice device, DeviceDispatch* dispatch);
     void UnregisterDevice(VkDevice device);
     DeviceDispatch* GetDeviceDispatch(VkDevice device);
-    
+
     void RegisterQueue(VkQueue queue, VkDevice device, uint32_t familyIndex);
-    void UnregisterQueue(VkQueue queue) { std::lock_guard<std::recursive_mutex> lock(m_Lock); m_Queues.erase(queue); m_QueueFamilies.erase(queue); }
+    void UnregisterQueue(VkQueue queue)
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_Lock);
+        m_Queues.erase(queue);
+        m_QueueFamilies.erase(queue);
+    }
     DeviceDispatch* GetDeviceFromQueue(VkQueue queue);
     uint32_t GetQueueFamilyIndex(VkQueue queue);
-    
+
     void RegisterSwapchain(VkSwapchainKHR swapchain, SwapchainData* data);
     void UnregisterSwapchain(VkSwapchainKHR swapchain);
     SwapchainData* GetSwapchainData(VkSwapchainKHR swapchain);
-    
+
     void RegisterSurface(VkSurfaceKHR surface, HWND window);
     void UnregisterSurface(VkSurfaceKHR surface);
     HWND GetSurfaceWindow(VkSurfaceKHR surface);
@@ -176,7 +181,7 @@ private:
     std::unordered_map<VkSwapchainKHR, SwapchainData*> m_Swapchains;
     std::unordered_map<VkSurfaceKHR, HWND> m_Surfaces;
     std::unordered_map<VkPhysicalDevice, VkInstance> m_PhysDevToInstance;
-    
+
     bool m_OverlayEnabled;
     bool m_CaptureEnabled;
     uint32_t m_MaxAnisotropy;
@@ -185,32 +190,56 @@ private:
 
 // Exported wrapper functions (Capture_ prefixed)
 extern "C" {
-    VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateInstance(const VkInstanceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkInstance* pInstance);
-    VKAPI_ATTR void VKAPI_CALL Capture_vkDestroyInstance(VkInstance instance, const VkAllocationCallbacks* pAllocator);
-    VKAPI_ATTR VkResult VKAPI_CALL Capture_vkEnumeratePhysicalDevices(VkInstance instance, uint32_t* pPhysicalDeviceCount, VkPhysicalDevice* pPhysicalDevices);
-    VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDevice* pDevice);
-    VKAPI_ATTR void VKAPI_CALL Capture_vkDestroyDevice(VkDevice device, const VkAllocationCallbacks* pAllocator);
-    VKAPI_ATTR void VKAPI_CALL Capture_vkGetDeviceQueue(VkDevice device, uint32_t queueFamilyIndex, uint32_t queueIndex, VkQueue* pQueue);
-    VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueueSubmit(VkQueue queue, uint32_t submitCount, const VkSubmitInfo* pSubmits, VkFence fence);
-    VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueueSubmit2(VkQueue queue, uint32_t submitCount, const VkSubmitInfo2* pSubmits, VkFence fence);
-    VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueueSubmit2KHR(VkQueue queue, uint32_t submitCount, const VkSubmitInfo2* pSubmits, VkFence fence);
-    VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreateInfoKHR* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSwapchainKHR* pSwapchain);
-    VKAPI_ATTR void VKAPI_CALL Capture_vkDestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain, const VkAllocationCallbacks* pAllocator);
-    VKAPI_ATTR VkResult VKAPI_CALL Capture_vkGetSwapchainImagesKHR(VkDevice device, VkSwapchainKHR swapchain, uint32_t* pSwapchainImageCount, VkImage* pSwapchainImages);
-    VKAPI_ATTR VkResult VKAPI_CALL Capture_vkAcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout, VkSemaphore semaphore, VkFence fence, uint32_t* pImageIndex);
-    VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo);
-    VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(VkDevice device, const VkSamplerCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSampler* pSampler);
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateInstance(const VkInstanceCreateInfo* pCreateInfo,
+                                                        const VkAllocationCallbacks* pAllocator, VkInstance* pInstance);
+VKAPI_ATTR void VKAPI_CALL Capture_vkDestroyInstance(VkInstance instance, const VkAllocationCallbacks* pAllocator);
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkEnumeratePhysicalDevices(VkInstance instance, uint32_t* pPhysicalDeviceCount,
+                                                                  VkPhysicalDevice* pPhysicalDevices);
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalDevice,
+                                                      const VkDeviceCreateInfo* pCreateInfo,
+                                                      const VkAllocationCallbacks* pAllocator, VkDevice* pDevice);
+VKAPI_ATTR void VKAPI_CALL Capture_vkDestroyDevice(VkDevice device, const VkAllocationCallbacks* pAllocator);
+VKAPI_ATTR void VKAPI_CALL Capture_vkGetDeviceQueue(VkDevice device, uint32_t queueFamilyIndex, uint32_t queueIndex,
+                                                    VkQueue* pQueue);
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueueSubmit(VkQueue queue, uint32_t submitCount, const VkSubmitInfo* pSubmits,
+                                                     VkFence fence);
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueueSubmit2(VkQueue queue, uint32_t submitCount,
+                                                      const VkSubmitInfo2* pSubmits, VkFence fence);
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueueSubmit2KHR(VkQueue queue, uint32_t submitCount,
+                                                         const VkSubmitInfo2* pSubmits, VkFence fence);
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
+                                                            const VkSwapchainCreateInfoKHR* pCreateInfo,
+                                                            const VkAllocationCallbacks* pAllocator,
+                                                            VkSwapchainKHR* pSwapchain);
+VKAPI_ATTR void VKAPI_CALL Capture_vkDestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain,
+                                                         const VkAllocationCallbacks* pAllocator);
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkGetSwapchainImagesKHR(VkDevice device, VkSwapchainKHR swapchain,
+                                                               uint32_t* pSwapchainImageCount,
+                                                               VkImage* pSwapchainImages);
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkAcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain,
+                                                             uint64_t timeout, VkSemaphore semaphore, VkFence fence,
+                                                             uint32_t* pImageIndex);
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo);
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(VkDevice device, const VkSamplerCreateInfo* pCreateInfo,
+                                                       const VkAllocationCallbacks* pAllocator, VkSampler* pSampler);
 #ifdef VK_USE_PLATFORM_WIN32_KHR
-    VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateWin32SurfaceKHR(VkInstance instance, const VkWin32SurfaceCreateInfoKHR* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSurfaceKHR* pSurface);
+VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateWin32SurfaceKHR(VkInstance instance,
+                                                               const VkWin32SurfaceCreateInfoKHR* pCreateInfo,
+                                                               const VkAllocationCallbacks* pAllocator,
+                                                               VkSurfaceKHR* pSurface);
 #endif
 }
 
 // Functional entry points defined in other files but needed by hooks
-void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkExtent2D extent, uint32_t imageCount, VkImage* images, HWND window);
+void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkExtent2D extent,
+                       uint32_t imageCount, VkImage* images, HWND window);
 void CleanupOverlay(VkDevice device);
-void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, VkSemaphore waitSemaphore, VkSemaphore signalSemaphore);
+void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, VkSemaphore waitSemaphore,
+                   VkSemaphore signalSemaphore);
 VkSemaphore GetOverlaySemaphore(VkDevice device, uint32_t imageIndex);
-void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkExtent2D extent, uint32_t imageCount);
+void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkExtent2D extent,
+                       uint32_t imageCount);
 void CleanupCapture(VkDevice device);
-void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t imageIndex, VkSemaphore waitSemaphore, VkSemaphore signalSemaphore);
+void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t imageIndex, VkSemaphore waitSemaphore,
+                  VkSemaphore signalSemaphore);
 VkSemaphore GetCaptureSemaphore(VkDevice device, uint32_t imageIndex);

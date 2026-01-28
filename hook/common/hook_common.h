@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ipc_client.h"
+#include <windows.h>
 #include <atomic>
 #include <cstddef>
 #include <format>
@@ -8,29 +8,31 @@
 #include <mutex>
 #include <string>
 #include <vector>
-#include <windows.h>
+#include "ipc_client.h"
 
 // Legacy globals - still used during gradual migration to HookContext
 // New code should prefer HOOK_CTX->member access patterns
-extern IPCClient *g_IPC;
+extern IPCClient* g_IPC;
 extern std::atomic<bool> g_ShuttingDown;
 extern std::atomic<bool> g_GraphicsOverridesActive;
 struct SharedMemoryLayout;
 extern SharedMemoryLayout* g_pSharedMem;
 
 // Forward declare HookContext for accessor
-namespace ce { struct HookContext; }
+namespace ce {
+struct HookContext;
+}
 
 class PerformanceMetrics;
 
 // Logging Helper
-void HookLog(const char *fmt, ...);
-void HookLog(LogLevel level, const char *fmt, ...);
-void EarlyLog(const char *fmt, ...);
-void NVNGXLog(const char *fmt, ...);
+void HookLog(const char* fmt, ...);
+void HookLog(LogLevel level, const char* fmt, ...);
+void EarlyLog(const char* fmt, ...);
+void NVNGXLog(const char* fmt, ...);
 void ReportLUID(uint32_t low, uint32_t high);
 extern char g_ProcessName[260];
-  // Debug log independent of IPC
+// Debug log independent of IPC
 
 // Constants
 #define HOOK_LOG_FILE "hook.log"
@@ -57,4 +59,5 @@ void ProcessVSyncOverride(UINT& SyncInterval, UINT& Flags);
 
 bool BuildLogFilePathForModuleAddress(const void* address, const char* fileName, char* outPath, size_t outPathLen);
 
-void TryEnableFrameTimeCSVLogging(SharedMemoryLayout* shm, const void* address, PerformanceMetrics& metrics, const char* apiName, bool& inOutInitialized);
+void TryEnableFrameTimeCSVLogging(SharedMemoryLayout* shm, const void* address, PerformanceMetrics& metrics,
+                                  const char* apiName, bool& inOutInitialized);

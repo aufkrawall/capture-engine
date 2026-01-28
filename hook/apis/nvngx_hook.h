@@ -5,7 +5,8 @@
 
 class NVNGXHook {
 public:
-    static NVNGXHook& Get() {
+    static NVNGXHook& Get()
+    {
         static NVNGXHook instance;
         return instance;
     }

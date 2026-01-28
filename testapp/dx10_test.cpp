@@ -1,18 +1,18 @@
 #define WIN32_LEAN_AND_MEAN
-#define WINVER 0x0A00
+#define WINVER       0x0A00
 #define _WIN32_WINNT 0x0A00
 
-#include <chrono>
-#include <cmath>
-#include <cstring>
-#include <cstdio>
-#include <cstdlib>
 #include <d3d10.h>
 #include <d3dcompiler.h>
 #include <dxgi.h>
 #include <shellscalingapi.h>
 #include <windows.h>
 #include <wrl/client.h>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 using Microsoft::WRL::ComPtr;
 
@@ -40,13 +40,13 @@ struct Vertex {
     float color[4];
 };
 
-static void LoadConfig() {
+static void LoadConfig()
+{
     char path[MAX_PATH];
     GetModuleFileNameA(NULL, path, MAX_PATH);
     std::string configPath = path;
     size_t pos = configPath.find_last_of("\\/");
-    if (pos != std::string::npos)
-        configPath = configPath.substr(0, pos + 1) + "testappconfig.ini";
+    if (pos != std::string::npos) configPath = configPath.substr(0, pos + 1) + "testappconfig.ini";
 
     g_WindowWidth = GetPrivateProfileIntA("Display", "width", g_WindowWidth, configPath.c_str());
     g_WindowHeight = GetPrivateProfileIntA("Display", "height", g_WindowHeight, configPath.c_str());
@@ -54,13 +54,23 @@ static void LoadConfig() {
     g_VSync = GetPrivateProfileIntA("Rendering", "vsync", g_VSync, configPath.c_str());
 }
 
-static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    if (msg == WM_DESTROY) { g_Running = false; PostQuitMessage(0); return 0; }
-    if (msg == WM_KEYDOWN && wParam == VK_ESCAPE) { g_Running = false; DestroyWindow(hWnd); return 0; }
+static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_DESTROY) {
+        g_Running = false;
+        PostQuitMessage(0);
+        return 0;
+    }
+    if (msg == WM_KEYDOWN && wParam == VK_ESCAPE) {
+        g_Running = false;
+        DestroyWindow(hWnd);
+        return 0;
+    }
     return DefWindowProc(hWnd, msg, wParam, lParam);
 }
 
-static bool InitDX10(HWND hwnd) {
+static bool InitDX10(HWND hwnd)
+{
     DXGI_SWAP_CHAIN_DESC sd = {};
     sd.BufferCount = 2;
     sd.BufferDesc.Width = g_WindowWidth;
@@ -76,15 +86,8 @@ static bool InitDX10(HWND hwnd) {
 
     UINT flags = D3D10_CREATE_DEVICE_BGRA_SUPPORT;
 
-    HRESULT hr = D3D10CreateDeviceAndSwapChain(
-        nullptr,
-        D3D10_DRIVER_TYPE_HARDWARE,
-        nullptr,
-        flags,
-        D3D10_SDK_VERSION,
-        &sd,
-        &g_SwapChain,
-        &g_Device);
+    HRESULT hr = D3D10CreateDeviceAndSwapChain(nullptr, D3D10_DRIVER_TYPE_HARDWARE, nullptr, flags, D3D10_SDK_VERSION,
+                                               &sd, &g_SwapChain, &g_Device);
 
     if (FAILED(hr)) return false;
 
@@ -95,14 +98,12 @@ static bool InitDX10(HWND hwnd) {
     hr = g_Device->CreateRenderTargetView(backBuffer.Get(), nullptr, &g_Rtv);
     if (FAILED(hr)) return false;
 
-    const char* vsSrc =
-        "struct VSIn { float2 pos : POSITION; float4 col : COLOR; };"
-        "struct VSOut { float4 pos : SV_POSITION; float4 col : COLOR; };"
-        "VSOut main(VSIn i){ VSOut o; o.pos=float4(i.pos,0,1); o.col=i.col; return o; }";
+    const char* vsSrc = "struct VSIn { float2 pos : POSITION; float4 col : COLOR; };"
+                        "struct VSOut { float4 pos : SV_POSITION; float4 col : COLOR; };"
+                        "VSOut main(VSIn i){ VSOut o; o.pos=float4(i.pos,0,1); o.col=i.col; return o; }";
 
-    const char* psSrc =
-        "struct PSIn { float4 pos : SV_POSITION; float4 col : COLOR; };"
-        "float4 main(PSIn i) : SV_Target { return i.col; }";
+    const char* psSrc = "struct PSIn { float4 pos : SV_POSITION; float4 col : COLOR; };"
+                        "float4 main(PSIn i) : SV_Target { return i.col; }";
 
     ComPtr<ID3DBlob> vsBlob;
     ComPtr<ID3DBlob> psBlob;
@@ -140,7 +141,8 @@ static bool InitDX10(HWND hwnd) {
     return true;
 }
 
-static void UpdateGeometry() {
+static void UpdateGeometry()
+{
     auto now = std::chrono::high_resolution_clock::now();
     float elapsed = std::chrono::duration<float>(now - g_StartTime).count();
     g_BarPosition = (float)std::fmod((double)(elapsed * 0.5f), 1.0);
@@ -154,13 +156,9 @@ static void UpdateGeometry() {
     float bottom = -0.2f;
 
     Vertex v[6] = {
-        {{left,  top}, {1,1,1,1}},
-        {{right, top}, {1,1,1,1}},
-        {{right, bottom}, {1,1,1,1}},
+        {{left, top}, {1, 1, 1, 1}}, {{right, top}, {1, 1, 1, 1}},    {{right, bottom}, {1, 1, 1, 1}},
 
-        {{left,  top}, {1,1,1,1}},
-        {{right, bottom}, {1,1,1,1}},
-        {{left,  bottom}, {1,1,1,1}},
+        {{left, top}, {1, 1, 1, 1}}, {{right, bottom}, {1, 1, 1, 1}}, {{left, bottom}, {1, 1, 1, 1}},
     };
 
     void* mappedData = nullptr;
@@ -170,7 +168,8 @@ static void UpdateGeometry() {
     }
 }
 
-static void Render() {
+static void Render()
+{
     UpdateGeometry();
 
     float clearColor[4] = {0.1f, 0.1f, 0.1f, 1.0f};
@@ -184,7 +183,7 @@ static void Render() {
 
     UINT stride = sizeof(Vertex);
     UINT offset = 0;
-    ID3D10Buffer* vbs[] = { g_VB.Get() };
+    ID3D10Buffer* vbs[] = {g_VB.Get()};
 
     g_Device->OMSetRenderTargets(1, g_Rtv.GetAddressOf(), nullptr);
 
@@ -209,23 +208,44 @@ static void Render() {
     g_SwapChain->Present(g_VSync, 0);
 }
 
-int main(int argc, char* argv[]) {
+int main(int argc, char* argv[])
+{
     SetProcessDPIAware();
     LoadConfig();
-    if (argc >= 3) { g_WindowWidth = atoi(argv[1]); g_WindowHeight = atoi(argv[2]); }
-    if (argc >= 4) { g_GpuLoadPasses = atoi(argv[3]); }
+    if (argc >= 3) {
+        g_WindowWidth = atoi(argv[1]);
+        g_WindowHeight = atoi(argv[2]);
+    }
+    if (argc >= 4) {
+        g_GpuLoadPasses = atoi(argv[3]);
+    }
 
-    WNDCLASSEXW wc = { sizeof(WNDCLASSEXW), CS_HREDRAW | CS_VREDRAW, WndProc, 0, 0, GetModuleHandle(nullptr), nullptr, LoadCursor(nullptr, IDC_ARROW), nullptr, nullptr, WINDOW_CLASS, nullptr };
+    WNDCLASSEXW wc = {sizeof(WNDCLASSEXW),
+                      CS_HREDRAW | CS_VREDRAW,
+                      WndProc,
+                      0,
+                      0,
+                      GetModuleHandle(nullptr),
+                      nullptr,
+                      LoadCursor(nullptr, IDC_ARROW),
+                      nullptr,
+                      nullptr,
+                      WINDOW_CLASS,
+                      nullptr};
     RegisterClassExW(&wc);
 
-    HWND hwnd = CreateWindowW(WINDOW_CLASS, L"DX10 Test", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, g_WindowWidth, g_WindowHeight, nullptr, nullptr, wc.hInstance, nullptr);
+    HWND hwnd = CreateWindowW(WINDOW_CLASS, L"DX10 Test", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
+                              g_WindowWidth, g_WindowHeight, nullptr, nullptr, wc.hInstance, nullptr);
     if (!InitDX10(hwnd)) return 1;
 
     ShowWindow(hwnd, SW_SHOW);
 
     MSG msg = {};
     while (g_Running) {
-        while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessage(&msg); }
+        while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
         Render();
     }
 

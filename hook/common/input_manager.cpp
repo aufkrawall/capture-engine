@@ -1,20 +1,20 @@
 #include "input_manager.h"
-#include <imgui.h>
 #include <backends/imgui_impl_win32.h>
-#include "hook_common.h" // For Logging
+#include <imgui.h>
+#include "hook_common.h"  // For Logging
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
-InputManager& InputManager::Get() {
+InputManager& InputManager::Get()
+{
     static InputManager instance;
     return instance;
 }
 
-InputManager::~InputManager() {
-    Shutdown();
-}
+InputManager::~InputManager() { Shutdown(); }
 
-void InputManager::HookWindow(HWND hwnd) {
+void InputManager::HookWindow(HWND hwnd)
+{
     if (!hwnd || !IsWindow(hwnd)) return;
 
     std::lock_guard<std::mutex> lock(m_Mutex);
@@ -34,7 +34,7 @@ void InputManager::HookWindow(HWND hwnd) {
         // Try ANSI
         original = (WNDPROC)GetWindowLongPtrA(hwnd, GWLP_WNDPROC);
     }
-    
+
     if (!original) {
         HookLog("InputManager: Failed to get original WndProc for hwnd %p", hwnd);
         return;
@@ -47,15 +47,16 @@ void InputManager::HookWindow(HWND hwnd) {
 
     // Install hook
     SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)HookWndProc);
-    
+
     // Store
-    m_Hooks[hwnd] = { original, true };
+    m_Hooks[hwnd] = {original, true};
     HookLog("InputManager: Hooked WndProc for hwnd %p (Original: %p)", hwnd, original);
 }
 
-void InputManager::UnhookWindow(HWND hwnd) {
+void InputManager::UnhookWindow(HWND hwnd)
+{
     std::lock_guard<std::mutex> lock(m_Mutex);
-    
+
     auto it = m_Hooks.find(hwnd);
     if (it != m_Hooks.end()) {
         if (it->second.hooked && IsWindow(hwnd)) {
@@ -65,37 +66,40 @@ void InputManager::UnhookWindow(HWND hwnd) {
                 SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)it->second.originalProc);
                 HookLog("InputManager: Unhooked WndProc for hwnd %p", hwnd);
             } else {
-                HookLog("InputManager: Skip unhook, WndProc changed externally (Current: %p, Us: %p)", current, HookWndProc);
+                HookLog("InputManager: Skip unhook, WndProc changed externally (Current: %p, Us: %p)", current,
+                        HookWndProc);
             }
         }
         m_Hooks.erase(it);
     }
 }
 
-void InputManager::Shutdown() {
+void InputManager::Shutdown()
+{
     std::lock_guard<std::mutex> lock(m_Mutex);
     for (auto& pair : m_Hooks) {
         HWND hwnd = pair.first;
         if (IsWindow(hwnd) && pair.second.hooked) {
-             WNDPROC current = (WNDPROC)GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
-             if (current == HookWndProc) {
-                 SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)pair.second.originalProc);
-             }
+            WNDPROC current = (WNDPROC)GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
+            if (current == HookWndProc) {
+                SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)pair.second.originalProc);
+            }
         }
     }
     m_Hooks.clear();
 }
 
-LRESULT CALLBACK InputManager::HookWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+LRESULT CALLBACK InputManager::HookWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
     // 1. Pass to ImGui (only if context exists)
     // Filter out mouse messages so overlay never reacts to hardware cursor
-    bool isMouseMsg = (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) || 
+    bool isMouseMsg = (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) ||
                       (msg >= WM_NCMOUSEMOVE && msg <= WM_NCMBUTTONDBLCLK) ||
                       (msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL);
 
     if (!isMouseMsg && ImGui::GetCurrentContext() && ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam))
-        return true; 
-    
+        return true;
+
     // 2. Call Original
     WNDPROC original = nullptr;
     {
@@ -109,16 +113,16 @@ LRESULT CALLBACK InputManager::HookWndProc(HWND hwnd, UINT msg, WPARAM wParam, L
         // Let's rely on atomic/stable map or just lock.
         // But WndProc is high freq.
         // TODO: Optimize if necessary.
-        
+
         // Unsafe access for speed? No, std::unordered_map is not thread safe.
         // Copying the map is too slow.
         // We'll use the lock.
         // Re-entrant lock logic:
-         std::unique_lock<std::mutex> lock(mgr.m_Mutex);
-         auto it = mgr.m_Hooks.find(hwnd);
-         if (it != mgr.m_Hooks.end()) {
-             original = it->second.originalProc;
-         }
+        std::unique_lock<std::mutex> lock(mgr.m_Mutex);
+        auto it = mgr.m_Hooks.find(hwnd);
+        if (it != mgr.m_Hooks.end()) {
+            original = it->second.originalProc;
+        }
     }
 
     if (original) {
