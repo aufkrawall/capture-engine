@@ -51,6 +51,16 @@ extern void DX11_UpdatePerformanceMetrics(int64_t qpcUs);
 
 static bool g_OverlayEnabled = true;
 
+// Thread-local flag to track when we're inside the wrapper's Present
+// This prevents vtable hooks from also processing the frame
+thread_local bool g_InWrapperPresent = false;
+
+// Function to check if we're in wrapper Present (same DLL, no export needed)
+bool IsInWrapperPresent()
+{
+    return g_InWrapperPresent;
+}
+
 // ============================================================================
 // Constructor / Destructor
 // ============================================================================
@@ -260,6 +270,14 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     s_presentThreadId.store(currentId);
     s_presentDepth.fetch_add(1);
     
+    // Set flag to indicate we're inside wrapper's Present
+    // This prevents vtable hooks from double-processing
+    g_InWrapperPresent = true;
+    static int s_LogCount = 0;
+    if (++s_LogCount <= 10) {
+        WrapperLog("Present: Set g_InWrapperPresent=true");
+    }
+    
     // Update performance metrics for FPS calculation
     static int64_t qpcFreq = 0;
     if (qpcFreq == 0) {
@@ -283,23 +301,28 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
             WrapperLog("Present #%d: Calling DX12_ProcessFrameExternal", s_CaptureCallCount);
         }
         DX12_ProcessFrameExternal(m_pReal);
+        
+        // DX12: Draw overlay separately (ProcessFrameExternal doesn't draw overlay for DX12)
+        static int s_PresentCount = 0;
+        if (++s_PresentCount <= 5) {
+            WrapperLog("Present #%d: m_IsD3D12=%d", s_PresentCount, m_IsD3D12);
+        }
+        DrawOverlay();
     } else {
-        // DX11/DX10: Call DX11_ProcessFrameExternal for capture and overlay
+        // DX11/DX10: Call DX11_ProcessFrameExternal for capture AND overlay
+        // NOTE: DX11_ProcessFrameExternal already calls DrawDX11Overlay internally,
+        // so we do NOT call DrawOverlay() here to avoid double-counting frames
         if (++s_CaptureCallCount <= 5) {
             WrapperLog("Present #%d: Calling DX11_ProcessFrameExternal", s_CaptureCallCount);
         }
         DX11_ProcessFrameExternal(m_pReal);
     }
     
-    // PERFORMANCE: Avoid mutex on hot path - use atomic flag instead
-    // The overlay system handles its own synchronization
-    // FIX: Always try to draw overlay - DX12/DX11 systems handle initialization internally
-    static int s_PresentCount = 0;
-    if (++s_PresentCount <= 5) {
-        WrapperLog("Present #%d: m_IsD3D12=%d", s_PresentCount, m_IsD3D12);
-    }
-    DrawOverlay();
     HRESULT hr = m_pReal->Present(SyncInterval, Flags);
+    
+    // Clear wrapper Present flag
+    g_InWrapperPresent = false;
+    
     if (s_presentDepth.fetch_sub(1) == 1) {
         s_presentThreadId.store(0);
     }
@@ -436,6 +459,9 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     s_present1ThreadId.store(currentId);
     s_present1Depth.fetch_add(1);
     
+    // Set flag to indicate we're inside wrapper's Present
+    g_InWrapperPresent = true;
+    
     // Update performance metrics for FPS calculation
     static int64_t qpcFreq = 0;
     if (qpcFreq == 0) {
@@ -455,14 +481,20 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     // This must happen regardless of overlay state - capture works independently
     if (m_IsD3D12) {
         DX12_ProcessFrameExternal(m_pReal);
+        // DX12: Draw overlay separately (ProcessFrameExternal doesn't draw overlay for DX12)
+        DrawOverlay();
     } else {
+        // DX11/DX10: Call DX11_ProcessFrameExternal for capture AND overlay
+        // NOTE: DX11_ProcessFrameExternal already calls DrawDX11Overlay internally,
+        // so we do NOT call DrawOverlay() here to avoid double-counting frames
         DX11_ProcessFrameExternal(m_pReal);
     }
     
-    // PERFORMANCE: Avoid mutex on hot path - use atomic flag instead
-    // FIX: Always try to draw overlay - DX12/DX11 systems handle initialization internally
-    DrawOverlay();
     HRESULT hr = m_pReal1->Present1(SyncInterval, PresentFlags, pPresentParameters);
+    
+    // Clear wrapper Present flag
+    g_InWrapperPresent = false;
+    
     if (s_present1Depth.fetch_sub(1) == 1) {
         s_present1ThreadId.store(0);
     }

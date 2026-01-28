@@ -85,9 +85,10 @@ void PerformanceMetrics::Update(int64_t currentQpcUs)
         frameToFrameUs = currentQpcUs - m_lastFrameTimeUs;
     }
 
-    // Debounce: ignore calls that are too close together (< 200us)
+    // Debounce: ignore calls that are too close together (< 2000us = 2ms)
     // This happens when both a Wrapper and a Hook call Update for the same frame.
-    if (m_lastFrameTimeUs > 0 && frameToFrameUs < 200) {
+    // Increased from 200us to 2000us because overlay rendering can take >1ms
+    if (m_lastFrameTimeUs > 0 && frameToFrameUs < 2000) {
         return;
     }
 

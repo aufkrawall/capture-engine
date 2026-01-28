@@ -231,10 +231,18 @@ static void InstallVTableHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pCont
 
 HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags)
 {
-    // frameCount removed from SharedMemoryLayout
-    // if (g_IPC && g_IPC->GetSharedMem()) {
-    //    g_IPC->GetSharedMem()->frameCount.fetch_add(1, std::memory_order_relaxed);
-    // }
+    // WRAPPER ARCHITECTURE: Skip if called from within wrapper's Present
+    // The wrapper sets a thread-local flag before calling the real Present
+    extern bool IsInWrapperPresent();
+    bool inWrapper = IsInWrapperPresent();
+    static int s_LogCount = 0;
+    if (++s_LogCount <= 10) {
+        HookLog("DetourDX11Present: IsInWrapperPresent=%d", inWrapper);
+    }
+    if (inWrapper) {
+        // Wrapper is handling everything, just call original
+        return oPresent(pSwapChain, SyncInterval, Flags);
+    }
 
     // Process VSync Override
     VSyncOverride override = GetDX11VSyncOverride();
@@ -251,6 +259,7 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT Syn
         CleanupDX11Resources();
     }
 
+    // Non-wrapper path: Draw overlay via vtable hook
     HandleDX11ProcessFrame(pSwapChain, true);
 
     // FPS Limiter
@@ -262,6 +271,13 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT Syn
 HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT PresentFlags,
                                              const DXGI_PRESENT_PARAMETERS* pPresentParameters)
 {
+    // WRAPPER ARCHITECTURE: Skip if called from within wrapper's Present
+    extern bool IsInWrapperPresent();
+    if (IsInWrapperPresent()) {
+        // Wrapper is handling everything, just call original
+        if (oPresent1) return oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
+        return oPresent(pSwapChain, SyncInterval, PresentFlags);
+    }
 
     // Vulkan coordination: Skip DX11 overlay if Vulkan Layer is active AND presenting.
     if (g_pSharedMem) {
@@ -274,11 +290,6 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain* pSwapChain, UINT Sy
 
     // SAFETY CHECK: DX12 Detection
     // If this swapchain is actually DX12, we must NOT draw the DX11 overlay.
-    // This happens when InstallVTableHooks fails to detect DX12 initially (race condition or interop),
-    // or when DX11 hooks installed on a shared vtable that DX12 also uses.
-    //
-    // CRITICAL FIX: When DX11 hooks a DX12 swapchain, we MUST delegate to DX12_ProcessFrameExternal
-    // so that the DX12 overlay still renders. Otherwise, no overlay appears at all.
     {
         ID3D12Device* d12Dev = nullptr;
         if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D12Device), (void**)&d12Dev))) {
@@ -315,6 +326,7 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain* pSwapChain, UINT Sy
         }
     }
 
+    // Non-wrapper path: Draw overlay via vtable hook
     DrawDX11Overlay(pSwapChain);
 
     if (oPresent1) return oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);

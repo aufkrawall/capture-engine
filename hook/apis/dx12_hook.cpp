@@ -701,6 +701,89 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture)
             return;
         }
 
+        // Initialize SystemMetricsCollector with adapter LUID when device is first obtained
+        // This MUST happen before any device/swapchain change detection
+        // NOTE: The D3D12 device and swap chain are wrapped, so we can't use QueryInterface
+        // or GetParent directly. Instead, we get the output from the swap chain desc,
+        // then get the adapter from the output.
+        static bool s_metricsInitialized = false;
+        if (!s_metricsInitialized && pSwapChain) {
+            DXGI_SWAP_CHAIN_DESC swapDesc;
+            if (SUCCEEDED(pSwapChain->GetDesc(&swapDesc))) {
+                // Get the output from the swap chain, then get adapter from output
+                IDXGIOutput* output = swapDesc.OutputWindow ? nullptr : nullptr;
+                // Actually, swapDesc.OutputWindow is HWND, not IDXGIOutput
+                // Let's enumerate outputs from the swap chain
+                
+                // Alternative: Use EnumAdapters to find the adapter that matches the device's node
+                // Or: Create a temporary DXGI factory and find the adapter
+                
+                // Best approach: Use the fact that we can get IDXGIDevice from the swap chain's device
+                // even if the D3D12 device is wrapped
+                IUnknown* pDeviceUnk = nullptr;
+                if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&pDeviceUnk)))) {
+                    // Try to query IDXGIDevice directly from the device
+                    IDXGIDevice* dxgiDevice = nullptr;
+                    if (SUCCEEDED(pDeviceUnk->QueryInterface(IID_PPV_ARGS(&dxgiDevice)))) {
+                        IDXGIAdapter* adapter = nullptr;
+                        if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter))) {
+                            DXGI_ADAPTER_DESC desc;
+                            if (SUCCEEDED(adapter->GetDesc(&desc))) {
+                                SystemMetricsCollector::Get().Initialize(
+                                    (int32_t)desc.AdapterLuid.LowPart,
+                                    (int32_t)desc.AdapterLuid.HighPart);
+                                SystemMetricsCollector::Get().SetVRAMTotal(desc.DedicatedVideoMemory);
+                                HookLog("DX12: SystemMetricsCollector initialized with LUID %08X:%08X, VRAM: %llu MB",
+                                        desc.AdapterLuid.HighPart, desc.AdapterLuid.LowPart,
+                                        desc.DedicatedVideoMemory / (1024 * 1024));
+                                s_metricsInitialized = true;
+                            }
+                            adapter->Release();
+                        }
+                        dxgiDevice->Release();
+                    } else {
+                        HookLog("DX12: Failed to query IDXGIDevice from swap chain's device");
+                        
+                        // Fallback: Create DXGI factory and use first adapter
+                        // This is better than nothing - most systems have one GPU
+                        IDXGIFactory1* factory = nullptr;
+                        if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
+                            IDXGIAdapter* adapter = nullptr;
+                            if (SUCCEEDED(factory->EnumAdapters(0, &adapter))) {
+                                DXGI_ADAPTER_DESC desc;
+                                if (SUCCEEDED(adapter->GetDesc(&desc))) {
+                                    SystemMetricsCollector::Get().Initialize(
+                                        (int32_t)desc.AdapterLuid.LowPart,
+                                        (int32_t)desc.AdapterLuid.HighPart);
+                                    SystemMetricsCollector::Get().SetVRAMTotal(desc.DedicatedVideoMemory);
+                                    HookLog("DX12: SystemMetricsCollector FALLBACK init with LUID %08X:%08X, VRAM: %llu MB",
+                                            desc.AdapterLuid.HighPart, desc.AdapterLuid.LowPart,
+                                            desc.DedicatedVideoMemory / (1024 * 1024));
+                                    s_metricsInitialized = true;
+                                }
+                                adapter->Release();
+                            }
+                            factory->Release();
+                        }
+                    }
+                    pDeviceUnk->Release();
+                } else {
+                    HookLog("DX12: Failed to get device from swap chain");
+                }
+            } else {
+                HookLog("DX12: Failed to get swap chain desc");
+            }
+        }
+
+        // DIAGNOSTIC: Check if SystemMetricsCollector has been initialized
+        static bool s_metricsInitLogged = false;
+        if (!s_metricsInitLogged) {
+            auto metrics = SystemMetricsCollector::Get().GetMetrics();
+            HookLog("DX12: DIAGNOSTIC - SystemMetricsCollector GPU usage: %.1f%%, VRAM: %.1f MB",
+                    metrics.gpuUsage, metrics.vramUsed / (1024.0f * 1024.0f));
+            s_metricsInitLogged = true;
+        }
+
         if (g_Device == nullptr || activeDevice != g_Device || pSwapChain != g_LastSwapChain) {
             if (g_Device) {
                 CleanupOverlay();
