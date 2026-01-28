@@ -13,6 +13,7 @@
 // External overlay functions (implemented in dx11_hook.cpp / dx12_hook.cpp)
 extern void DrawDX11Overlay(IDXGISwapChain* pSwapChain);
 extern void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain);
+extern void DX11_ProcessFrameExternal(IDXGISwapChain* pSwapChain);
 extern void DX12_OnSwapchainResizeBegin();
 extern void DX12_OnSwapchainResizeEnd();
 extern "C" __declspec(dllimport) void DX12_SetCommandQueue(IUnknown* pQueue);
@@ -269,9 +270,11 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         }
         DX12_ProcessFrameExternal(m_pReal);
     } else {
+        // DX11/DX10: Call DX11_ProcessFrameExternal for capture and overlay
         if (++s_CaptureCallCount <= 5) {
-            WrapperLog("Present #%d: SKIPPING capture (m_IsD3D12=%d)", s_CaptureCallCount, m_IsD3D12);
+            WrapperLog("Present #%d: Calling DX11_ProcessFrameExternal", s_CaptureCallCount);
         }
+        DX11_ProcessFrameExternal(m_pReal);
     }
     
     // PERFORMANCE: Avoid mutex on hot path - use atomic flag instead
@@ -426,6 +429,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     // This must happen regardless of overlay state - capture works independently
     if (m_IsD3D12) {
         DX12_ProcessFrameExternal(m_pReal);
+    } else {
+        DX11_ProcessFrameExternal(m_pReal);
     }
     
     // PERFORMANCE: Avoid mutex on hot path - use atomic flag instead

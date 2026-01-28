@@ -23,6 +23,9 @@
 #include "../common/overlay.h"
 #include "../common/system_metrics.h"
 #include "../wrappers/wrapper_base.h"
+#include "../wrappers/dxgi_swapchain_wrap.h"
+#include "../wrappers/iat_hook.h"
+#include "../wrappers/safe_hook.h"
 #include "dx11_hook.h"
 #include "dx12_hook.h"
 #include "dxgi_shared.h"
@@ -327,6 +330,9 @@ static HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter
                                                           D3D_FEATURE_LEVEL* pFeatureLevel,
                                                           ID3D11DeviceContext** ppImmediateContext)
 {
+    // Unconditional log to verify hook is being called
+    HookLog("DetourD3D11CreateDeviceAndSwapChain: ENTER");
+    
     if (pSwapChainDesc) {
         if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) {
             EarlyLog("DX11: D3D11CreateDeviceAndSwapChain called. Width=%u Height=%u", pSwapChainDesc->BufferDesc.Width,
@@ -387,6 +393,15 @@ static HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter
                                        pFinalDesc, ppSwapChain, ppDevice, pFeatureLevel, ppImmediateContext);
 
     if (SUCCEEDED(hr) && ppDevice && *ppDevice) {
+        // Wrap the swapchain returned by D3D11CreateDeviceAndSwapChain so our wrapper captures Present
+        if (ppSwapChain && *ppSwapChain) {
+            IUnknown* pDev = (ppDevice && *ppDevice) ? *ppDevice : nullptr;
+            IDXGISwapChain* pReal = *ppSwapChain;
+            *ppSwapChain = (IDXGISwapChain*)new CWrapDXGISwapChain(pReal, pDev);
+            pReal->Release();
+            HookLog("DX11: Wrapped swapchain from D3D11CreateDeviceAndSwapChain");
+        }
+        
         IDXGISwapChain* sc = (ppSwapChain && *ppSwapChain) ? *ppSwapChain : nullptr;
         ID3D11DeviceContext* ctx = (ppImmediateContext && *ppImmediateContext) ? *ppImmediateContext : nullptr;
         // If immediate context not provided, get it from device
@@ -1118,9 +1133,129 @@ public:
 
     // Get the context to use for capture operations
     ID3D11DeviceContext* GetCaptureContext() { return isDX10Mode ? ownedContext : cachedContext; }
+
+    // Capture a frame from the swapchain to shared texture
+    // Returns true if frame was captured, false if skipped/dropped
+    bool CaptureFrame(IDXGISwapChain* swapChain)
+    {
+        if (!swapChain) return false;
+
+        // Get device from swapchain
+        ID3D11Device* device = nullptr;
+        HRESULT hr = swapChain->GetDevice(IID_PPV_ARGS(&device));
+        if (FAILED(hr) || !device) {
+            return false;
+        }
+
+        // Initialize capture if needed
+        if (!initialized) {
+            // Check if this is a DX10 device
+            ID3D10Device* device10 = nullptr;
+            if (SUCCEEDED(swapChain->GetDevice(__uuidof(ID3D10Device), (void**)&device10))) {
+                device10->Release();
+                // Initialize for DX10 mode
+                if (!InitDX10(swapChain)) {
+                    device->Release();
+                    return false;
+                }
+            }
+            // Now initialize with the device
+            Init(device, swapChain);
+        }
+
+        if (!initialized) {
+            device->Release();
+            return false;
+        }
+
+        // Get immediate context for copy
+        ID3D11DeviceContext* context = GetCaptureContext();
+        if (!context) {
+            device->Release();
+            return false;
+        }
+
+        // Get current backbuffer
+        ID3D11Texture2D* backbuffer = nullptr;
+        hr = swapChain->GetBuffer(0, IID_PPV_ARGS(&backbuffer));
+        if (FAILED(hr) || !backbuffer) {
+            device->Release();
+            return false;
+        }
+
+        // Determine which texture slot to write to
+        int writeIdx = writeIndex % CAPTURE_TEXTURE_COUNT;
+
+        // Check if this slot is still in use by encoder (non-blocking check)
+        if (copyQueries[writeIdx]) {
+            // Quick check without stall - if not ready, we'll issue the copy anyway
+            // and let the query catch it next frame. The ring buffer depth (8) provides
+            // enough padding that this is usually fine.
+            BOOL data = FALSE;
+            hr = context->GetData(copyQueries[writeIdx], &data, sizeof(data), 0);
+            if (hr == S_FALSE) {
+                // Query still pending - frame may be dropped if encoder is slow
+                // But we proceed anyway and let EnqueueFrame handle ring buffer full
+            }
+        }
+
+        // Perform GPU copy: backbuffer -> shared texture
+        context->CopyResource(sharedTextures[writeIdx], backbuffer);
+        backbuffer->Release();
+
+        // Issue query for GPU completion tracking
+        if (copyQueries[writeIdx]) {
+            context->End(copyQueries[writeIdx]);
+        }
+
+        // Signal fence if using D3D11.3 fences
+        uint64_t currentFenceValue = 0;
+        if (useFences && fence && context4) {
+            currentFenceValue = ++fenceValue;
+            context4->Signal(fence, currentFenceValue);
+        }
+
+        // Get timestamp using QPC for precision
+        LARGE_INTEGER qpc;
+        QueryPerformanceCounter(&qpc);
+        int64_t timestamp = qpc.QuadPart;
+
+        // Enqueue frame for async processing (internal ring buffer)
+        bool enqueued = EnqueueFrame(timestamp, currentFenceValue, writeIdx, swapChain);
+        if (!enqueued) {
+            // Ring buffer full - frame dropped
+            droppedFrames.fetch_add(1, std::memory_order_relaxed);
+            device->Release();
+            return false;
+        }
+
+        // Signal frame ready to media process via IPC
+        if (g_IPC) {
+            SignalFrameReady(g_IPC, writeIdx, timestamp, currentFenceValue);
+        }
+
+        // Advance write index
+        AdvanceWriteIndex();
+
+        device->Release();
+        return true;
+    }
 };
 
 static DX11Capture g_DX11Capture;
+
+// Called from DXGI SwapChain wrapper for frame capture (wrapper-only architecture)
+void DX11_ProcessFrameExternal(IDXGISwapChain* pSwapChain)
+{
+    if (!pSwapChain) return;
+    
+    // CAPTURE: Copy frame to shared texture (zero-copy GPU-to-GPU)
+    // This happens regardless of recording state - media process decides what to encode
+    g_DX11Capture.CaptureFrame(pSwapChain);
+    
+    // OVERLAY: Draw ImGui overlay on top
+    HandleDX11ProcessFrame(pSwapChain, true);
+}
 
 // Helper to force rebind of all samplers (triggering our DetourSetSamplers)
 // Returns true if any samplers were actually found and rebound
@@ -2198,8 +2333,24 @@ void DX11Hook::Init()
     // The InitializeD3D11Hooks() function sets up the IAT hook
     HMODULE hD3D11 = GetModuleHandleA("d3d11.dll");
     if (hD3D11) {
-        // NOTE: oD3D11CreateDeviceAndSwapChain and the IAT hook are set up in
-        // IATHook::InitializeD3D11Hooks() called from InitializeWrapperHooks()
+        // Initialize IAT hooks now that d3d11.dll is loaded
+        // This may have been called before d3d11.dll was loaded at startup
+        IATHook::InitializeD3D11Hooks();
+        
+        // Also hook the export directly using MinHook to catch calls that bypass IAT
+        // (e.g., statically bound imports, GetProcAddress)
+        SafeHook::Initialize();
+        void* pTarget = (void*)GetProcAddress(hD3D11, "D3D11CreateDeviceAndSwapChain");
+        if (pTarget) {
+            HookLog("DX11: Hook target at %p", pTarget);
+            bool created = SafeHook::CreateHook(pTarget, (void*)DetourD3D11CreateDeviceAndSwapChain, (void**)&oD3D11CreateDeviceAndSwapChain);
+            HookLog("DX11: CreateHook result: %s", created ? "success" : "failed");
+            bool enabled = SafeHook::EnableHook(pTarget);
+            HookLog("DX11: EnableHook result: %s", enabled ? "success" : "failed");
+            HookLog("DX11: D3D11CreateDeviceAndSwapChain export hook installed.");
+        } else {
+            HookLog("DX11: Failed to get D3D11CreateDeviceAndSwapChain address!");
+        }
         HookLog("DX11: D3D11CreateDeviceAndSwapChain hook installed.");
     }
 
