@@ -29,6 +29,17 @@ public:
 
     // Get last recorded command list count (for real vs interpolated frame detection)
     int GetLastCmdListCount() const { return lastCmdListCount.load(); }
+    
+    // Query if the current frame is a real frame (has command list work) or interpolated
+    // Call this after RecordFrame() to get the classification for the just-recorded frame
+    bool IsCurrentFrameReal() const { 
+        // Real frames have command list work; interpolated frames don't
+        return lastCmdListCount.load(std::memory_order_acquire) > 0; 
+    }
+    
+    // Get consecutive real/interpolated frame counts for pattern detection
+    int GetConsecutiveRealFrames() const { return consecutiveRealFrames.load(std::memory_order_acquire); }
+    int GetConsecutiveInterpolatedFrames() const { return consecutiveInterpolatedFrames.load(std::memory_order_acquire); }
 
     // Events
     void OnSwapchainRecreation();

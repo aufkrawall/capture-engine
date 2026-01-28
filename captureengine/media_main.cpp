@@ -847,15 +847,15 @@ int MediaProcessMain(const AppConfig& config)
         }
 
         if (g_pSharedMem) {
-            if (g_pSharedMem->runtimeState.cmdStartRecording.load(std::memory_order_acquire)) {
-                g_pSharedMem->runtimeState.cmdStartRecording.store(false, std::memory_order_release);
+            if (LoadAcquire(g_pSharedMem->runtimeState.cmdStartRecording)) {
+                StoreRelease(g_pSharedMem->runtimeState.cmdStartRecording, false);
                 if (!g_Recording) {
                     StartRecording(config);
                     g_pSharedMem->runtimeState.ackRecordingStarted.store(true, std::memory_order_release);
                 }
             }
-            if (g_pSharedMem->runtimeState.cmdStopRecording.load(std::memory_order_acquire)) {
-                g_pSharedMem->runtimeState.cmdStopRecording.store(false, std::memory_order_release);
+            if (LoadAcquire(g_pSharedMem->runtimeState.cmdStopRecording)) {
+                StoreRelease(g_pSharedMem->runtimeState.cmdStopRecording, false);
                 if (g_Recording) {
                     StopRecording();
                     g_pSharedMem->runtimeState.ackRecordingStopped.store(true, std::memory_order_release);

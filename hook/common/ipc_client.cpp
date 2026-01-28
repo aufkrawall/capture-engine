@@ -18,7 +18,12 @@ bool IPCClient::Connect()
             (DiscoveryInfo*)MapViewOfFile(hDiscovery, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
 
         if (pDiscovery) {
-            if (pDiscovery->magic == DISCOVERY_MAGIC && pDiscovery->injectPid != 0) {
+            // CRITICAL FIX: Use atomic accessors for thread-safe reads
+            uint32_t magic = pDiscovery->GetMagic();
+            uint32_t pid = pDiscovery->GetInjectPid();
+            
+            if (magic == DISCOVERY_MAGIC && pid != 0) {
+                // Acquire semantics ensure we read whitelist after validating magic/pid
                 // Found discovery info - use inject PID to open main shared memory
                 wchar_t sharedMemName[64];
                 GenerateSharedMemName(sharedMemName, 64, pDiscovery->injectPid);

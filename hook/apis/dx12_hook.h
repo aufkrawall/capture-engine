@@ -3,11 +3,17 @@
 #include <dxgi1_4.h>
 #include <mutex>
 #include <vector>
+#include <memory>
 #include "graphics_hook.h"
+#include "../common/cached_overlay_renderer.h"
 
 class DX12Hook : public GraphicsHook {
     std::vector<IUnknown*> trackedResources;
     std::recursive_mutex resourceMutex;
+    
+    // Cached overlay renderer for zero-overhead interpolated frame rendering
+    std::unique_ptr<overlay::CachedOverlayRenderer> cachedRenderer;
+    bool useCachedRenderer = true;
 
 public:
     void Init() override;
@@ -16,6 +22,10 @@ public:
 
     void TrackResource(IUnknown* res);
     void CleanupResources();
+    
+    // Frame classification for FG support
+    bool IsRealFrame() const;
+    void ClassifyFrame(int commandListCount);
 };
 
 extern DX12Hook* g_dx12HookInstance;

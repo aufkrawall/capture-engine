@@ -133,6 +133,13 @@ std::recursive_mutex g_CommandQueueMutex;
 bool g_IPCReady = false;
 static IDXGISwapChain* g_LastSwapChain = nullptr;
 static ID3D12Resource* g_DummyBackBuffer = nullptr;
+// LOCK HIERARCHY (MUST be acquired in this order to prevent deadlocks):
+// 1. g_OverlayMutex (outermost - protects overlay state)
+// 2. g_CommandQueueMutex (protects command queue pointer)
+// 3. g_DX12CaptureMutex (innermost - protects capture state)
+//
+// Rule: When acquiring multiple locks, always acquire in order above.
+//       Use std::lock_guard with std::adopt_lock when using try_lock().
 static std::recursive_mutex g_OverlayMutex;
 static std::recursive_mutex g_InitImGuiMutex;
 static std::recursive_mutex g_DX12CaptureMutex;
@@ -142,6 +149,10 @@ static std::atomic<uint64_t> g_FGDebugFrameCount{0};
 
 // Use pointer to prevent static destructor execution in non-game processes (Explorer fix)
 DX12Hook* g_dx12HookInstance = nullptr;
+
+// Cached overlay renderer for zero-overhead interpolated frame rendering
+overlay::CachedOverlayRenderer* g_CachedOverlayRenderer = nullptr;
+bool g_UseCachedRenderer = true;
 
 std::recursive_mutex g_DeviceQueuesMutex;
 std::map<ID3D12Device*, ID3D12CommandQueue*> g_DeviceQueues;
@@ -247,6 +258,14 @@ void DX12Hook::Init()
 void ShutdownImGui()
 {
     if (!g_State.imGuiInit) return;
+    
+    // Shutdown cached overlay renderer
+    if (g_CachedOverlayRenderer) {
+        g_CachedOverlayRenderer->Shutdown();
+        delete g_CachedOverlayRenderer;
+        g_CachedOverlayRenderer = nullptr;
+    }
+    
     ImGui_ImplDX12_Shutdown();
     g_SharedOverlay.ShutdownImGui();
     if (g_State.srvDescHeap) {
@@ -280,12 +299,63 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
     }
     if (g_CommandQueue) ImGui_ImplDX12_SetCommandQueue(g_CommandQueue);
     g_State.imGuiInit = true;
+    
+    // Initialize cached overlay renderer for Frame Generation support
+    if (g_UseCachedRenderer && !g_CachedOverlayRenderer) {
+        g_CachedOverlayRenderer = new overlay::CachedOverlayRenderer();
+        if (!g_CachedOverlayRenderer->Initialize(device, g_CommandQueue, buffers)) {
+            HookLog("DX12: Failed to initialize cached overlay renderer, falling back to standard");
+            delete g_CachedOverlayRenderer;
+            g_CachedOverlayRenderer = nullptr;
+            g_UseCachedRenderer = false;
+        } else {
+            HookLog("DX12: Cached overlay renderer initialized for %d buffers", buffers);
+        }
+    }
+    
     return true;
 }
 
-void DrawOverlay(ID3D12GraphicsCommandList* cmdList)
+void DrawOverlay(ID3D12GraphicsCommandList* cmdList, bool isRealFrame, UINT bufferIdx)
 {
     if (!g_State.imGuiInit || !cmdList) return;
+    
+    // Use cached renderer for Frame Generation support when available
+    if (g_UseCachedRenderer && g_CachedOverlayRenderer) {
+        // Update content only on real frames
+        if (isRealFrame) {
+            // Build overlay content using shared overlay system
+            ImGui_ImplDX12_NewFrame();
+            g_SharedOverlay.BeginFrame();
+            g_SharedOverlay.SetMetrics(DXGIShared::GetPerformanceMetrics());
+            g_SharedOverlay.SetIPCClient(g_IPC);
+            const char* api = "DX12";
+            if (GetModuleHandleA("d3d12core.dll") && 
+                (GetModuleHandleA("libvkd3d-1.dll") || GetModuleHandleA("vkd3d.dll"))) {
+                api = "DX12 (VKD3D)";
+            }
+            g_SharedOverlay.SetGraphicsAPI(api);
+            bool isHDR = (g_State.format == DXGI_FORMAT_R16G16B16A16_FLOAT || 
+                         g_State.format == DXGI_FORMAT_R10G10B10A2_UNORM);
+            g_SharedOverlay.SetHDR(isHDR);
+            g_SharedOverlay.RenderUI();
+            g_SharedOverlay.EndFrame();
+            
+            // Update cached renderer content
+            auto* metrics = DXGIShared::GetPerformanceMetrics();
+            g_CachedOverlayRenderer->UpdateContent(metrics, 
+                                                   (float)g_State.cachedWidth, 
+                                                   (float)g_State.cachedHeight,
+                                                   0.0f); // Delta time not critical for overlay
+        }
+        
+        // Render using cached renderer (fast path for both real and interpolated frames)
+        ImVec2 displaySize((float)g_State.cachedWidth, (float)g_State.cachedHeight);
+        g_CachedOverlayRenderer->Render(cmdList, bufferIdx, isRealFrame, displaySize);
+        return;
+    }
+    
+    // Standard overlay rendering (fallback path when cached renderer not available)
     ImGui_ImplDX12_NewFrame();
     g_SharedOverlay.BeginFrame();
     g_SharedOverlay.SetMetrics(DXGIShared::GetPerformanceMetrics());
@@ -728,7 +798,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture)
                                 list->RSSetViewports(1, &vp);
                                 D3D12_RECT scissor = {0, 0, (LONG)g_State.cachedWidth, (LONG)g_State.cachedHeight};
                                 list->RSSetScissorRects(1, &scissor);
-                                DrawOverlay(list);
+                                DrawOverlay(list, processCapture, bufferIdx);
                                 b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
                                 b.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
                                 list->ResourceBarrier(1, &b);

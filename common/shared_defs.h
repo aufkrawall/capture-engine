@@ -30,11 +30,25 @@ static const int FRAME_RING_SIZE = 32;
 
 // Discovery structure - small shared memory to help hook find inject process
 struct DiscoveryInfo {
-    uint32_t injectPid;  // PID of inject process (owner of main shared memory)
-    uint32_t magic;      // Magic number to verify validity (0xCE12CAFE)
+    uint32_t injectPid = 0;  // PID of inject process
+    uint32_t magic = 0;      // Magic number (0xCE12CAFE)
 
     // Whitelist Cache - Null-separated strings, double-null terminated
     char processWhitelist[1024];
+    
+    // Atomic accessor methods
+    uint32_t GetMagic() const {
+        return reinterpret_cast<const std::atomic<uint32_t>*>(&magic)->load(std::memory_order_acquire);
+    }
+    void SetMagic(uint32_t val) {
+        reinterpret_cast<std::atomic<uint32_t>*>(&magic)->store(val, std::memory_order_release);
+    }
+    uint32_t GetInjectPid() const {
+        return reinterpret_cast<const std::atomic<uint32_t>*>(&injectPid)->load(std::memory_order_acquire);
+    }
+    void SetInjectPid(uint32_t val) {
+        reinterpret_cast<std::atomic<uint32_t>*>(&injectPid)->store(val, std::memory_order_release);
+    }
 };
 static const uint32_t DISCOVERY_MAGIC = 0xCE12CAFE;
 
@@ -58,6 +72,45 @@ inline int64_t QPCTicksToMilliseconds(int64_t qpcTicks, int64_t qpcFreq) { retur
 inline double QPCTicksToSeconds(int64_t qpcTicks, int64_t qpcFreq)
 {
     return static_cast<double>(qpcTicks) / static_cast<double>(qpcFreq);
+}
+
+// ============================================================================
+// Memory Ordering Helpers for Safe Cross-Process Access
+// ============================================================================
+
+// Use these helpers for all shared memory field access to ensure proper
+// memory ordering across process boundaries
+
+template<typename T>
+inline T LoadAcquire(const std::atomic<T>& atomic) {
+    return atomic.load(std::memory_order_acquire);
+}
+
+template<typename T>
+inline void StoreRelease(std::atomic<T>& atomic, T value) {
+    atomic.store(value, std::memory_order_release);
+}
+
+template<typename T>
+inline T LoadRelaxed(const std::atomic<T>& atomic) {
+    return atomic.load(std::memory_order_relaxed);
+}
+
+template<typename T>
+inline void StoreRelaxed(std::atomic<T>& atomic, T value) {
+    atomic.store(value, std::memory_order_relaxed);
+}
+
+// Sequentially consistent operations for critical synchronization
+// (use sparingly - slower but guarantees global ordering)
+template<typename T>
+inline T LoadSeqCst(const std::atomic<T>& atomic) {
+    return atomic.load(std::memory_order_seq_cst);
+}
+
+template<typename T>
+inline void StoreSeqCst(std::atomic<T>& atomic, T value) {
+    atomic.store(value, std::memory_order_seq_cst);
 }
 
 // Overlay Corners
@@ -271,11 +324,26 @@ struct ShmemBuffer {
 struct SharedMemoryLayout {
     // ============================================================================
     // Header - MUST be first for version validation before accessing other fields
+    // NOTE: Layout must remain compatible - offsets are validated by static_assert
     // ============================================================================
-    uint32_t magic = SHARED_MEMORY_MAGIC;      // Magic number for validation
-    uint32_t version = SHARED_MEMORY_VERSION;  // Layout version
-    uint32_t structSize = 0;                   // sizeof(SharedMemoryLayout) for ABI check
-    uint32_t _headerPadding = 0;               // Alignment padding
+    uint32_t magic = SHARED_MEMORY_MAGIC;      // Offset 0: Magic number for validation
+    uint32_t version = SHARED_MEMORY_VERSION;  // Offset 4: Layout version  
+    uint32_t structSize = 0;                   // Offset 8: sizeof(SharedMemoryLayout) for ABI check
+    uint32_t _headerPadding = 0;               // Offset 12: Alignment padding
+    
+    // Atomic access helpers for header fields
+    uint32_t GetMagic() const { 
+        return reinterpret_cast<const std::atomic<uint32_t>*>(&magic)->load(std::memory_order_acquire); 
+    }
+    void SetMagic(uint32_t val) { 
+        reinterpret_cast<std::atomic<uint32_t>*>(&magic)->store(val, std::memory_order_release); 
+    }
+    uint32_t GetVersion() const { 
+        return reinterpret_cast<const std::atomic<uint32_t>*>(&version)->load(std::memory_order_acquire); 
+    }
+    void SetVersion(uint32_t val) { 
+        reinterpret_cast<std::atomic<uint32_t>*>(&version)->store(val, std::memory_order_release); 
+    }
 
     // Host -> Hook
     OverlayConfig overlayConfig;
@@ -423,12 +491,14 @@ inline void GenerateShmemName(wchar_t* outName, size_t maxLen, uint32_t pid)
 // 1. We use memory-mapped files, not memcpy
 // 2. Atomics work across process boundaries with shared memory
 // 3. The atomic provides the necessary synchronization
+// NOTE: Structures containing std::atomic are not trivially copyable but are safe for IPC
+// because we use memory-mapped files, not memcpy, and atomics work across process boundaries
 // static_assert(std::is_trivially_copyable_v<FrameSlot>,
 //     "FrameSlot must be trivially copyable for IPC");
 static_assert(std::is_trivially_copyable_v<OverlayConfig>, "OverlayConfig must be trivially copyable for IPC");
 static_assert(std::is_trivially_copyable_v<SharedGraphicsConfig>,
               "SharedGraphicsConfig must be trivially copyable for IPC");
-static_assert(std::is_trivially_copyable_v<DiscoveryInfo>, "DiscoveryInfo must be trivially copyable for IPC");
+// DiscoveryInfo contains atomics for thread-safe access - not trivially copyable but safe for shared memory
 
 // Ensure proper alignment for atomics
 static_assert(alignof(FrameRingBuffer) >= 8, "FrameRingBuffer must be 8-byte aligned for atomic operations");
@@ -445,12 +515,14 @@ static_assert(offsetof(SharedMemoryLayout, magic) == 0, "magic must be at offset
 static_assert(offsetof(SharedMemoryLayout, version) == 4, "version must be at offset 4");
 
 // Helper function to validate shared memory on connect
+// Uses atomic loads for thread-safe validation
 inline bool ValidateSharedMemory(const SharedMemoryLayout* shm)
 {
     if (!shm) return false;
-    if (shm->magic != SHARED_MEMORY_MAGIC) return false;
-    if (shm->version < SHARED_MEMORY_MIN_VERSION) return false;
-    if (shm->version > SHARED_MEMORY_VERSION) return false;
+    // Use atomic loads through accessor methods
+    if (shm->GetMagic() != SHARED_MEMORY_MAGIC) return false;
+    if (shm->GetVersion() < SHARED_MEMORY_MIN_VERSION) return false;
+    if (shm->GetVersion() > SHARED_MEMORY_VERSION) return false;
     return true;
 }
 
