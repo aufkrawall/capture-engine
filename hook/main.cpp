@@ -1346,18 +1346,13 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call, LPV
         }
 
         if (g_ProcessCategory != ProcessCategory::InternalTool) {
-            // CRITICAL: Defer ALL hook initialization to HookThread.
-            // IAT patching during DllMain (while holding the loader lock) causes crashes on x86.
-            // The NVIDIA driver and other graphics components may have cached import pointers
-            // that become inconsistent when we modify IAT entries during the load phase.
+            // CRITICAL: IAT patching in DllMain is SAFE because:
+            // 1. It only modifies memory in already-loaded modules (no LoadLibrary)
+            // 2. It doesn't acquire additional locks beyond the loader lock
+            // 3. It's idempotent (safe to call multiple times)
             //
-            // Previously we called InitializeWrapperHooks() here, but this is unsafe because:
-            // 1. The loader lock is held during DLL_PROCESS_ATTACH
-            // 2. Other DLLs (like graphics drivers) may be in inconsistent states
-            // 3. On x86, the smaller address space makes pointer caching issues more likely
-            //
-            // HookThread runs AFTER DllMain returns, when the loader lock is released
-            // and all DLLs are in a consistent state.
+            // The actual DLL loading (d3d12_wrappers.dll) is DEFERRED to HookThread
+            // to avoid loader lock deadlocks - see HookThread's "DEFERRED LOADING" section.
             bool hasGraphicsAPI =
                 (GetModuleHandleA("d3d12.dll") != NULL || GetModuleHandleA("d3d11.dll") != NULL ||
                  GetModuleHandleA("d3d10.dll") != NULL || GetModuleHandleA("d3d9.dll") != NULL ||
@@ -1365,7 +1360,8 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call, LPV
                  GetModuleHandleA("d3d8.dll") != NULL || GetModuleHandleA("ddraw.dll") != NULL);
 
             if (hasGraphicsAPI) {
-                EarlyLog("DllMain: Graphics API detected - hook initialization deferred to HookThread");
+                EarlyLog("DllMain: Graphics API detected - initializing IAT hooks immediately...");
+                InitializeWrapperHooks();
             } else {
                 EarlyLog("DllMain: No graphics API detected - hooks will be installed when API loads");
             }
