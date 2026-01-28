@@ -1346,9 +1346,18 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call, LPV
         }
 
         if (g_ProcessCategory != ProcessCategory::InternalTool) {
-            // CRITICAL: Only initialize hooks and dependencies if we have a graphics API.
-            // For processes without graphics APIs (launchers, tools, etc.), we skip hook
-            // installation entirely to prevent crashes in non-whitelisted processes.
+            // CRITICAL: Defer ALL hook initialization to HookThread.
+            // IAT patching during DllMain (while holding the loader lock) causes crashes on x86.
+            // The NVIDIA driver and other graphics components may have cached import pointers
+            // that become inconsistent when we modify IAT entries during the load phase.
+            //
+            // Previously we called InitializeWrapperHooks() here, but this is unsafe because:
+            // 1. The loader lock is held during DLL_PROCESS_ATTACH
+            // 2. Other DLLs (like graphics drivers) may be in inconsistent states
+            // 3. On x86, the smaller address space makes pointer caching issues more likely
+            //
+            // HookThread runs AFTER DllMain returns, when the loader lock is released
+            // and all DLLs are in a consistent state.
             bool hasGraphicsAPI =
                 (GetModuleHandleA("d3d12.dll") != NULL || GetModuleHandleA("d3d11.dll") != NULL ||
                  GetModuleHandleA("d3d10.dll") != NULL || GetModuleHandleA("d3d9.dll") != NULL ||
@@ -1356,20 +1365,9 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call, LPV
                  GetModuleHandleA("d3d8.dll") != NULL || GetModuleHandleA("ddraw.dll") != NULL);
 
             if (hasGraphicsAPI) {
-                // LOADER LOCK SAFETY: Do NOT call LoadLibraryA inside DllMain!
-                // LoadLibrary during DLL_PROCESS_ATTACH can cause loader lock deadlocks.
-                // The wrapper DLL loading has been moved to HookThread (deferred initialization).
-                //
-                // Note: GetModuleHandle is safe because it doesn't acquire the loader lock.
-
-                // IAT patching is still safe in DllMain because:
-                // 1. It only modifies memory in already-loaded modules
-                // 2. It doesn't call LoadLibrary or acquire additional locks
-                // 3. It's idempotent (safe to call multiple times)
-                EarlyLog("DllMain: Initializing IAT hooks immediately to prevent race conditions...");
-                InitializeWrapperHooks();
+                EarlyLog("DllMain: Graphics API detected - hook initialization deferred to HookThread");
             } else {
-                EarlyLog("DllMain: Skipping hook initialization (no graphics API detected)");
+                EarlyLog("DllMain: No graphics API detected - hooks will be installed when API loads");
             }
 
             EarlyLog("DllMain: Spawning HookThread for '%s'", fileName);
