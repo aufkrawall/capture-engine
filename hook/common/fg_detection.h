@@ -9,7 +9,7 @@ void HookLog(const char* fmt, ...);
 
 class FGCompatibility {
 public:
-    enum class FGType { None, DLSS_FG, FSR_FG, DLSS_MSFG, Unknown };
+    enum class FGType { None, DLSS_FG, FSR_FG, DLSS_MSFG, NVIDIA_SM, Unknown };
 
     // DLL-based detection (call once at init or periodically)
     FGType DetectLoadedFGRuntime();
@@ -48,6 +48,10 @@ public:
     // Safety suspend - delays overlay initialization after FG detection
     void SuspendFor(int milliseconds);
     bool IsSuspended() const;
+
+    // NVIDIA Smooth Motion specific
+    bool IsNvidiaSmoothMotionActive() const { return detectedRuntime.load() == FGType::NVIDIA_SM; }
+    void DetectNvidiaSmoothMotion();  // Call to check for SM specifically
 
     // Debug
     const char* GetFGTypeName(FGType type) const;

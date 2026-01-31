@@ -476,6 +476,15 @@ bool InitializeDXGIHooks()
             WrapperLog("IAT: CreateDXGIFactory2 not found in IAT");
         }
 
+        // CRITICAL FIX: Register dynamic hooks for GetProcAddress interception
+        // Games like Strange Brigade may load dxgi.dll dynamically at runtime
+        // and use GetProcAddress to get factory creation functions. Without
+        // dynamic hooks, we won't intercept these calls.
+        RegisterDynamicHook("CreateDXGIFactory", (void*)Wrapped_CreateDXGIFactory, (void**)&oCreateDXGIFactory);
+        RegisterDynamicHook("CreateDXGIFactory1", (void*)Wrapped_CreateDXGIFactory1, (void**)&oCreateDXGIFactory1);
+        RegisterDynamicHook("CreateDXGIFactory2", (void*)Wrapped_CreateDXGIFactory2, (void**)&oCreateDXGIFactory2);
+        WrapperLog("IAT: Registered DXGI factory functions for dynamic hooking");
+
         WrapperLog("IAT: DXGI hooks initialized");
     } else {
         WrapperLog("IAT: dxgi.dll not loaded");

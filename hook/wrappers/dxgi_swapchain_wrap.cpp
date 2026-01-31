@@ -259,12 +259,20 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetDevice(REFIID riid, void** ppDe
 
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Flags)
 {
+    // DEBUG: Log every Present call to verify wrapper is being invoked
+    static std::atomic<int> s_presentCallCount{0};
+    int callCount = s_presentCallCount.fetch_add(1);
+    if (callCount < 20 || callCount % 300 == 0) {
+        WrapperLog("Present: CALLED call#%d (m_IsD3D12=%d)", callCount, m_IsD3D12);
+    }
+    
     // RECURSION GUARD: Prevent infinite recursion with Steam/other overlays
     // Using atomic+threadId instead of thread_local to avoid static destructor issues
     static std::atomic<DWORD> s_presentThreadId{0};
     static std::atomic<int> s_presentDepth{0};
     DWORD currentId = GetCurrentThreadId();
     if (s_presentDepth.load() > 0 && s_presentThreadId.load() == currentId) {
+        WrapperLog("Present: Recursion detected, passing through to real swapchain");
         return m_pReal->Present(SyncInterval, Flags);
     }
     s_presentThreadId.store(currentId);
@@ -273,9 +281,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     // Set flag to indicate we're inside wrapper's Present
     // This prevents vtable hooks from double-processing
     g_InWrapperPresent = true;
-    static int s_LogCount = 0;
-    if (++s_LogCount <= 10) {
-        WrapperLog("Present: Set g_InWrapperPresent=true");
+    if (callCount < 20) {
+        WrapperLog("Present: Processing call#%d", callCount);
     }
     
     // Update performance metrics for FPS calculation

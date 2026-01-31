@@ -72,6 +72,15 @@ backbuffer_count=0
 ; Enable Sparse Grid Supersampling (SGSSAA)
 sgssaa=false
 
+; NVIDIA Smooth Motion compatibility mode
+; Values:
+;   auto - Automatically detect and adapt to NVIDIA Smooth Motion (default)
+;   on   - Force compatibility mode on (use if auto-detection fails)
+;   off  - Disable Smooth Motion compatibility adjustments
+; NVIDIA Smooth Motion is a driver-level frame generation feature that can
+; interfere with overlay rendering. This option ensures proper compatibility.
+nvidia_smooth_motion_compat=auto
+
 
 [Overlay]
 ; Show overlay in hooked applications

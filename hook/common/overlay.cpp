@@ -475,9 +475,22 @@ void Overlay::RenderUI()
 
             // FPS
             if (cfg.showFPS) {
-                snprintf(buf, 64, "%.0f FPS", cachedFPS);
-                ImU32 fpsCol = cfg.fpsColor;
-                RenderRow(graphicsAPI[0] ? graphicsAPI : "FPS", buf, cfg.textColor, fpsCol);
+                // Check if FG is active to show base/output FPS split (like RTSS)
+                extern FGCompatibility g_FGCompat;
+                bool fgActive = g_FGCompat.IsFGActive();
+                float fgBaseFPS = g_FGCompat.GetBaseFPS();
+                float fgOutputFPS = g_FGCompat.GetOutputFPS();
+                
+                if (fgActive && fgOutputFPS > 0.0f) {
+                    // Show base / output FPS split for frame generation
+                    snprintf(buf, 64, "%.0f / %.0f FPS", fgBaseFPS, fgOutputFPS);
+                    RenderRow("Base/Display", buf, cfg.textColor, cfg.fpsColor);
+                } else {
+                    // Normal FPS display
+                    snprintf(buf, 64, "%.0f FPS", cachedFPS);
+                    ImU32 fpsCol = cfg.fpsColor;
+                    RenderRow(graphicsAPI[0] ? graphicsAPI : "FPS", buf, cfg.textColor, fpsCol);
+                }
 
                 // FPS Statistics in one line: Avg / 1% Low / 0.1% Low (using cached values)
                 if (cachedAvgFPS > 0.0f && cached1PercentLow > 0.0f && cached01PercentLow > 0.0f) {
@@ -534,20 +547,23 @@ void Overlay::RenderUI()
                 }
 
                 // 3. FG Status (Integrated)
-                // Reuse existing FG logic but ensure string is separated
-                extern FGCompatibility g_FGCompat;
-                auto fgType = g_FGCompat.DetectLoadedFGRuntime();
-                bool fgActive = g_FGCompat.IsFGActive();
+                // Use GetDetectedType() to include behaviorally-detected FG (e.g., NVIDIA Smooth Motion)
+                auto fgType = g_FGCompat.GetDetectedType();  // Includes behavioral detection
+                auto dllType = g_FGCompat.DetectLoadedFGRuntime();  // DLL-based only
+                bool fgTypeActive = g_FGCompat.IsFGActive();
 
                 // Also check our captured state from NVNGX
-                if (dlss.fgActive.load()) fgActive = true;
+                if (dlss.fgActive.load()) fgTypeActive = true;
 
-                if (cfg.showFG && (fgType != FGCompatibility::FGType::None || fgActive)) {
+                // Determine which type to display - prefer DLL type if available, otherwise use detected type
+                auto displayType = (dllType != FGCompatibility::FGType::None) ? dllType : fgType;
+
+                if (cfg.showFG && (displayType != FGCompatibility::FGType::None || fgTypeActive)) {
                     int mult = g_FGCompat.GetFGMultiplier();
                     if (mult < 2) mult = 2;  // FG implies at least 2x
 
                     char fgBuf[32];
-                    switch (fgType) {
+                    switch (displayType) {
                         case FGCompatibility::FGType::DLSS_FG:
                             snprintf(fgBuf, 32, "FG %dx", mult);
                             break;
@@ -556,6 +572,9 @@ void Overlay::RenderUI()
                             break;
                         case FGCompatibility::FGType::DLSS_MSFG:
                             snprintf(fgBuf, 32, "MSFG %dx", mult);
+                            break;
+                        case FGCompatibility::FGType::NVIDIA_SM:
+                            snprintf(fgBuf, 32, "SM %dx", mult);
                             break;
                         default:
                             snprintf(fgBuf, 32, "FG %dx", mult);
@@ -584,7 +603,7 @@ void Overlay::RenderUI()
                     // If SR not active but FG is: Label="FG", Value="DLSS 2xFG ..."
 
                     const char* label = "DLSS";
-                    if (!dlss.srActive && fgActive) label = "FG";
+                    if (!dlss.srActive && fgTypeActive) label = "FG";
 
                     static int reportLog = 0;
                     if (reportLog++ % 120 == 0) {

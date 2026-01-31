@@ -204,6 +204,10 @@ struct SharedGraphicsConfig {
     uint32_t dlssRRPreset;  // Global RR preset
 
     float dlssSharpening;  // -2.0 = default, -1.0 = off, else value
+
+    // NVIDIA Smooth Motion compatibility
+    // 0 = auto (detect and adapt), 1 = force on, 2 = force off
+    int32_t nvidiaSmoothMotionCompat;
 };
 
 struct alignas(8) CaptureState {

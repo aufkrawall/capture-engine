@@ -200,7 +200,23 @@ HRESULT WINAPI Wrapped_D3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL M
                                          void** ppDevice)
 {
 
-    WrapperLog("Wrapper: D3D12CreateDevice called (feature level=0x%X)", MinimumFeatureLevel);
+    WrapperLog("Wrapper: D3D12CreateDevice called (feature level=0x%X, pAdapter=%p)", MinimumFeatureLevel, pAdapter);
+    
+    // If adapter is provided, try to get its LUID for debugging
+    if (pAdapter) {
+        IDXGIAdapter* pDXGIAdapter = nullptr;
+        if (SUCCEEDED(pAdapter->QueryInterface(IID_PPV_ARGS(&pDXGIAdapter)))) {
+            DXGI_ADAPTER_DESC desc;
+            if (SUCCEEDED(pDXGIAdapter->GetDesc(&desc))) {
+                WrapperLog("Wrapper: D3D12CreateDevice - Adapter LUID: %08X:%08X, VRAM: %llu MB",
+                           desc.AdapterLuid.HighPart, desc.AdapterLuid.LowPart,
+                           desc.DedicatedVideoMemory / (1024 * 1024));
+            }
+            pDXGIAdapter->Release();
+        }
+    } else {
+        WrapperLog("Wrapper: D3D12CreateDevice - pAdapter is NULL (will use default adapter)");
+    }
 
     // Mark that D3D12 device creation was actually called
     g_D3D12DeviceCreated.store(true, std::memory_order_release);

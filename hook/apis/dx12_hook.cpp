@@ -654,6 +654,34 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture)
         return;
     }
     
+    // CRITICAL FIX: Check if overlay is suspended due to FG detection
+    // When DLSS FG is first detected, we suspend the overlay for 500ms to allow
+    // the frame generation buffers to stabilize before we start rendering
+    static bool s_wasSuspended = false;
+    bool isSuspended = g_FGCompat.IsSuspended();
+    if (isSuspended) {
+        s_wasSuspended = true;
+        // Still process capture even when overlay is suspended
+        // but skip overlay initialization and rendering
+        static int s_skipCount = 0;
+        if (++s_skipCount <= 5) {
+            HookLog("DX12: ProcessFrame - overlay suspended due to FG detection, skipping overlay render");
+        }
+        // Capture is still processed below, just not the overlay
+    } else if (s_wasSuspended) {
+        // FG was suspended but now is not - reset ImGui to force re-initialization
+        // This handles the case where DLSS FG creates its own swapchain wrapper
+        s_wasSuspended = false;
+        if (g_State.imGuiInit) {
+            HookLog("DX12: FG suspension lifted - resetting overlay for clean re-initialization");
+            CleanupOverlay();
+            CleanupRTVs();
+            ShutdownImGui();
+            g_State.imGuiInit = false;
+            g_State.syncInit = false;
+        }
+    }
+    
     // CPU Prerender Limit - Apply before any rendering
     float prerenderLimit = GetActivePrerenderLimit();
     if (prerenderLimit >= 0.0f) {
@@ -814,9 +842,12 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture)
         HookLog("DX12: ProcessFrame - no command queue, skipping overlay");
         return;
     }
-    HookLog("DX12: ProcessFrame - got queue, imGuiInit=%d", g_State.imGuiInit);
+    HookLog("DX12: ProcessFrame - got queue=%p, imGuiInit=%d, isSuspended=%d", q, g_State.imGuiInit, isSuspended);
     if (g_State.imGuiInit) ImGui_ImplDX12_SetCommandQueue(q);
-    if (!g_State.imGuiInit) {
+    
+    // CRITICAL FIX: Don't initialize ImGui during FG suspension
+    // This prevents initialization with potentially unstable frame generation state
+    if (!g_State.imGuiInit && !isSuspended) {
         DXGI_SWAP_CHAIN_DESC desc;
         if (SUCCEEDED(pSwapChain->GetDesc(&desc))) {
             g_State.cachedWidth = desc.BufferDesc.Width;
@@ -838,8 +869,9 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture)
             HookLog("DX12: ProcessFrame - failed to get swapchain desc");
         }
     }
-    if (g_State.imGuiInit && g_State.syncInit) {
-        HookLog("DX12: ProcessFrame - drawing overlay (cachedRenderer=%p, useCached=%d)", 
+    // Only render overlay if not suspended (but keep capture processing below)
+    if (g_State.imGuiInit && g_State.syncInit && !isSuspended) {
+        HookLog("DX12: ProcessFrame - drawing overlay (cachedRenderer=%p, useCached=%d)",
                 g_CachedOverlayRenderer, g_UseCachedRenderer);
         int idx = g_State.allocIndex;
         g_State.allocIndex = (idx + 1) % DX12OverlayState::ALLOC_POOL_SIZE;

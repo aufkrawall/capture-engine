@@ -209,7 +209,76 @@ HRESULT STDMETHODCALLTYPE CWrapD3D12Device::CreateCommandList(UINT nodeMask, D3D
 
 HRESULT STDMETHODCALLTYPE CWrapD3D12Device::CheckFeatureSupport(D3D12_FEATURE Feature, void* pData, UINT DataSize)
 {
-    return m_pReal->CheckFeatureSupport(Feature, pData, DataSize);
+    // Log feature support queries for debugging
+    const char* featureName = "Unknown";
+    switch (Feature) {
+        case D3D12_FEATURE_D3D12_OPTIONS: featureName = "D3D12_OPTIONS"; break;
+        case D3D12_FEATURE_ARCHITECTURE: featureName = "ARCHITECTURE"; break;
+        case D3D12_FEATURE_FEATURE_LEVELS: featureName = "FEATURE_LEVELS"; break;
+        case D3D12_FEATURE_FORMAT_SUPPORT: featureName = "FORMAT_SUPPORT"; break;
+        case D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS: featureName = "MULTISAMPLE_QUALITY_LEVELS"; break;
+        case D3D12_FEATURE_FORMAT_INFO: featureName = "FORMAT_INFO"; break;
+        case D3D12_FEATURE_GPU_VIRTUAL_ADDRESS_SUPPORT: featureName = "GPU_VIRTUAL_ADDRESS_SUPPORT"; break;
+        case D3D12_FEATURE_SHADER_MODEL: featureName = "SHADER_MODEL"; break;
+        case D3D12_FEATURE_D3D12_OPTIONS1: featureName = "D3D12_OPTIONS1"; break;
+        case D3D12_FEATURE_PROTECTED_RESOURCE_SESSION_SUPPORT: featureName = "PROTECTED_RESOURCE_SESSION_SUPPORT"; break;
+        case D3D12_FEATURE_ROOT_SIGNATURE: featureName = "ROOT_SIGNATURE"; break;
+        case D3D12_FEATURE_ARCHITECTURE1: featureName = "ARCHITECTURE1"; break;
+        case D3D12_FEATURE_D3D12_OPTIONS2: featureName = "D3D12_OPTIONS2"; break;
+        case D3D12_FEATURE_SHADER_CACHE: featureName = "SHADER_CACHE"; break;
+        case D3D12_FEATURE_COMMAND_QUEUE_PRIORITY: featureName = "COMMAND_QUEUE_PRIORITY"; break;
+        case D3D12_FEATURE_D3D12_OPTIONS3: featureName = "D3D12_OPTIONS3"; break;
+        case D3D12_FEATURE_EXISTING_HEAPS: featureName = "EXISTING_HEAPS"; break;
+        case D3D12_FEATURE_D3D12_OPTIONS4: featureName = "D3D12_OPTIONS4"; break;
+        case D3D12_FEATURE_SERIALIZATION: featureName = "SERIALIZATION"; break;
+        case D3D12_FEATURE_CROSS_NODE: featureName = "CROSS_NODE"; break;
+        case D3D12_FEATURE_D3D12_OPTIONS5: featureName = "D3D12_OPTIONS5"; break;
+        case D3D12_FEATURE_DISPLAYABLE: featureName = "DISPLAYABLE"; break;
+        case D3D12_FEATURE_D3D12_OPTIONS6: featureName = "D3D12_OPTIONS6"; break;
+        case D3D12_FEATURE_QUERY_META_COMMAND: featureName = "QUERY_META_COMMAND"; break;
+        case D3D12_FEATURE_D3D12_OPTIONS7: featureName = "D3D12_OPTIONS7"; break;
+        case D3D12_FEATURE_PROTECTED_RESOURCE_SESSION_TYPE_COUNT: featureName = "PROTECTED_RESOURCE_SESSION_TYPE_COUNT"; break;
+        case D3D12_FEATURE_PROTECTED_RESOURCE_SESSION_TYPES: featureName = "PROTECTED_RESOURCE_SESSION_TYPES"; break;
+        case D3D12_FEATURE_D3D12_OPTIONS8: featureName = "D3D12_OPTIONS8"; break;
+        case D3D12_FEATURE_D3D12_OPTIONS9: featureName = "D3D12_OPTIONS9"; break;
+        case D3D12_FEATURE_D3D12_OPTIONS10: featureName = "D3D12_OPTIONS10"; break;
+        case D3D12_FEATURE_D3D12_OPTIONS11: featureName = "D3D12_OPTIONS11"; break;
+        case D3D12_FEATURE_D3D12_OPTIONS12: featureName = "D3D12_OPTIONS12"; break;
+        case D3D12_FEATURE_D3D12_OPTIONS13: featureName = "D3D12_OPTIONS13"; break;
+        case D3D12_FEATURE_D3D12_OPTIONS14: featureName = "D3D12_OPTIONS14"; break;
+        case D3D12_FEATURE_D3D12_OPTIONS15: featureName = "D3D12_OPTIONS15"; break;
+        case D3D12_FEATURE_D3D12_OPTIONS16: featureName = "D3D12_OPTIONS16"; break;
+        case D3D12_FEATURE_D3D12_OPTIONS17: featureName = "D3D12_OPTIONS17"; break;
+        case D3D12_FEATURE_D3D12_OPTIONS18: featureName = "D3D12_OPTIONS18"; break;
+        case D3D12_FEATURE_D3D12_OPTIONS19: featureName = "D3D12_OPTIONS19"; break;
+        case D3D12_FEATURE_D3D12_OPTIONS20: featureName = "D3D12_OPTIONS20"; break;
+        case D3D12_FEATURE_PREDICATION: featureName = "PREDICATION"; break;
+        case D3D12_FEATURE_PLACED_RESOURCE_SUPPORT_INFO: featureName = "PLACED_RESOURCE_SUPPORT_INFO"; break;
+        case D3D12_FEATURE_HARDWARE_COPY: featureName = "HARDWARE_COPY"; break;
+        case D3D12_FEATURE_D3D12_OPTIONS21: featureName = "D3D12_OPTIONS21"; break;
+    }
+    
+    WrapperLog("D3D12 Device: CheckFeatureSupport CALLED - Feature=%s (%d), DataSize=%u",
+               featureName, (int)Feature, DataSize);
+    
+    HRESULT hr = m_pReal->CheckFeatureSupport(Feature, pData, DataSize);
+    
+    // Log architecture info which might contain GPU memory info
+    if (Feature == D3D12_FEATURE_ARCHITECTURE1 && SUCCEEDED(hr) && pData && DataSize >= sizeof(D3D12_FEATURE_DATA_ARCHITECTURE1)) {
+        D3D12_FEATURE_DATA_ARCHITECTURE1* pArch = (D3D12_FEATURE_DATA_ARCHITECTURE1*)pData;
+        WrapperLog("D3D12 Device: ARCHITECTURE1 - UMA=%d, CacheCoherentUMA=%d, IsolatedMMU=%d",
+                   pArch->UMA, pArch->CacheCoherentUMA, pArch->IsolatedMMU);
+    }
+    
+    // Log GPU virtual address support which contains memory info
+    if (Feature == D3D12_FEATURE_GPU_VIRTUAL_ADDRESS_SUPPORT && SUCCEEDED(hr) && pData &&
+        DataSize >= sizeof(D3D12_FEATURE_DATA_GPU_VIRTUAL_ADDRESS_SUPPORT)) {
+        D3D12_FEATURE_DATA_GPU_VIRTUAL_ADDRESS_SUPPORT* pGpuVA = (D3D12_FEATURE_DATA_GPU_VIRTUAL_ADDRESS_SUPPORT*)pData;
+        WrapperLog("D3D12 Device: GPU_VIRTUAL_ADDRESS_SUPPORT - MaxGPUVirtualAddressBitsPerResource=%u, MaxGPUVirtualAddressBitsPerProcess=%u",
+                   pGpuVA->MaxGPUVirtualAddressBitsPerResource, pGpuVA->MaxGPUVirtualAddressBitsPerProcess);
+    }
+    
+    return hr;
 }
 
 HRESULT STDMETHODCALLTYPE CWrapD3D12Device::CreateDescriptorHeap(const D3D12_DESCRIPTOR_HEAP_DESC* pDesc, REFIID riid,
@@ -430,7 +499,11 @@ void STDMETHODCALLTYPE CWrapD3D12Device::GetResourceTiling(ID3D12Resource* pRes,
     m_pReal->GetResourceTiling(pRes, pTiles, pPacked, pShape, pNum, first, pTilings);
 }
 
-LUID STDMETHODCALLTYPE CWrapD3D12Device::GetAdapterLuid() { return m_pReal->GetAdapterLuid(); }
+LUID STDMETHODCALLTYPE CWrapD3D12Device::GetAdapterLuid() {
+    LUID luid = m_pReal->GetAdapterLuid();
+    WrapperLog("D3D12 Device: GetAdapterLuid called - LUID: %08X:%08X", luid.HighPart, luid.LowPart);
+    return luid;
+}
 
 // ============================================================================
 // ID3D12Device1

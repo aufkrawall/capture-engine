@@ -12,6 +12,7 @@
 #include "../wrappers/vtable_hook.h"
 #include "../wrappers/wrapper_base.h"
 #include "config.h"
+#include "fg_detection.h"
 #include "hook_common.h"
 #include "logging.h"
 #include "performance_metrics.h"
@@ -155,7 +156,19 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     LARGE_INTEGER qpc;
     QueryPerformanceCounter(&qpc);
     int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
-    if (isFirstHook) g_DXGIPerfMetrics.Update(us);
+    if (isFirstHook) {
+        g_DXGIPerfMetrics.Update(us);
+        // Also update FG metrics if available
+        if (g_FGCompat.IsFGActive()) {
+            g_DXGIPerfMetrics.SetFGMetrics(
+                g_FGCompat.GetOutputFPS(),
+                g_FGCompat.GetBaseFPS(),
+                g_FGCompat.GetFGMultiplier()
+            );
+        } else {
+            g_DXGIPerfMetrics.SetFGMetrics(0.0f, 0.0f, 1);
+        }
+    }
 
     // Process Frame (Overlay/Capture)
     if (api == APIType::D3D12) {

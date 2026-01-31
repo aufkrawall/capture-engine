@@ -77,6 +77,14 @@ void PerformanceMetrics::SetRecording(bool isRecording)
     }
 }
 
+void PerformanceMetrics::SetFGMetrics(float outputFPS, float baseFPS, int multiplier)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_fgOutputFPS = outputFPS;
+    m_fgBaseFPS = baseFPS;
+    m_fgMultiplier = multiplier;
+}
+
 void PerformanceMetrics::Update(int64_t currentQpcUs)
 {
     std::lock_guard<std::mutex> lock(m_mutex);

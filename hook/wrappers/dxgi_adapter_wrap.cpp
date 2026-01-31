@@ -74,11 +74,14 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIAdapter::QueryInterface(REFIID riid, void** p
 {
     if (!ppvObj) return E_POINTER;
 
-    // Return real for our own GUID to support safe unwrapping
-    if (riid == IID_CWrapDXGIAdapter) {
-        *ppvObj = m_pReal;
-        return S_OK;
-    }
+    // CRITICAL FIX: Do NOT return the real adapter pointer for IID_CWrapDXGIAdapter
+    // Games like Strange Brigade query for the real adapter and then use it directly
+    // for VRAM queries, bypassing our wrapper entirely. Returning the wrapper ensures
+    // all VRAM queries go through our wrapped methods.
+    // if (riid == IID_CWrapDXGIAdapter) {
+    //     *ppvObj = m_pReal;
+    //     return S_OK;
+    // }
 
     // Return ourselves for DXGI Adapter interfaces
     if (riid == IID_IUnknown || riid == IID_IDXGIObject || riid == IID_IDXGIAdapter) {
@@ -173,7 +176,29 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIAdapter::EnumOutputs(UINT Output, IDXGIOutput
     return hr;
 }
 
-HRESULT STDMETHODCALLTYPE CWrapDXGIAdapter::GetDesc(DXGI_ADAPTER_DESC* pDesc) { return m_pReal->GetDesc(pDesc); }
+HRESULT STDMETHODCALLTYPE CWrapDXGIAdapter::GetDesc(DXGI_ADAPTER_DESC* pDesc)
+{
+    WrapperLog("DXGI Adapter: GetDesc CALLED on wrapper %p", this);
+    HRESULT hr = m_pReal->GetDesc(pDesc);
+    if (SUCCEEDED(hr) && pDesc) {
+        // VRAM FIX: Report high VRAM to prevent game from thinking there's insufficient memory
+        // Some games (Strange Brigade) have issues with VRAM detection when DXGI is wrapped
+        const UINT64 MIN_VRAM_MB = 8192; // 8GB minimum
+        UINT64 currentVramMB = pDesc->DedicatedVideoMemory / (1024 * 1024);
+        if (currentVramMB < MIN_VRAM_MB) {
+            WrapperLog("DXGI Adapter: VRAM OVERRIDE - Original: %llu MB, Reporting: %llu MB",
+                       currentVramMB, MIN_VRAM_MB);
+            pDesc->DedicatedVideoMemory = MIN_VRAM_MB * 1024 * 1024;
+        }
+        WrapperLog("DXGI Adapter: GetDesc - VRAM: %llu MB, Shared: %llu MB, Name: %S",
+                   pDesc->DedicatedVideoMemory / (1024 * 1024),
+                   pDesc->SharedSystemMemory / (1024 * 1024),
+                   pDesc->Description);
+    } else {
+        WrapperLog("DXGI Adapter: GetDesc FAILED hr=0x%08X", hr);
+    }
+    return hr;
+}
 
 HRESULT STDMETHODCALLTYPE CWrapDXGIAdapter::CheckInterfaceSupport(REFGUID InterfaceName, LARGE_INTEGER* pUMDVersion)
 {
@@ -187,7 +212,23 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIAdapter::CheckInterfaceSupport(REFGUID Interf
 HRESULT STDMETHODCALLTYPE CWrapDXGIAdapter::GetDesc1(DXGI_ADAPTER_DESC1* pDesc)
 {
     if (!m_pReal1) return DXGI_ERROR_UNSUPPORTED;
-    return m_pReal1->GetDesc1(pDesc);
+    WrapperLog("DXGI Adapter: GetDesc1 CALLED on wrapper %p", this);
+    HRESULT hr = m_pReal1->GetDesc1(pDesc);
+    if (SUCCEEDED(hr) && pDesc) {
+        // VRAM FIX: Report high VRAM to prevent game from thinking there's insufficient memory
+        const UINT64 MIN_VRAM_MB = 8192; // 8GB minimum
+        UINT64 currentVramMB = pDesc->DedicatedVideoMemory / (1024 * 1024);
+        if (currentVramMB < MIN_VRAM_MB) {
+            WrapperLog("DXGI Adapter: GetDesc1 VRAM OVERRIDE - Original: %llu MB, Reporting: %llu MB",
+                       currentVramMB, MIN_VRAM_MB);
+            pDesc->DedicatedVideoMemory = MIN_VRAM_MB * 1024 * 1024;
+        }
+        WrapperLog("DXGI Adapter: GetDesc1 - VRAM: %llu MB, Flags: 0x%08X",
+                   pDesc->DedicatedVideoMemory / (1024 * 1024), pDesc->Flags);
+    } else {
+        WrapperLog("DXGI Adapter: GetDesc1 FAILED hr=0x%08X", hr);
+    }
+    return hr;
 }
 
 // ============================================================================
@@ -197,7 +238,23 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIAdapter::GetDesc1(DXGI_ADAPTER_DESC1* pDesc)
 HRESULT STDMETHODCALLTYPE CWrapDXGIAdapter::GetDesc2(DXGI_ADAPTER_DESC2* pDesc)
 {
     if (!m_pReal2) return DXGI_ERROR_UNSUPPORTED;
-    return m_pReal2->GetDesc2(pDesc);
+    WrapperLog("DXGI Adapter: GetDesc2 CALLED on wrapper %p", this);
+    HRESULT hr = m_pReal2->GetDesc2(pDesc);
+    if (SUCCEEDED(hr) && pDesc) {
+        // VRAM FIX: Report high VRAM to prevent game from thinking there's insufficient memory
+        const UINT64 MIN_VRAM_MB = 8192; // 8GB minimum
+        UINT64 currentVramMB = pDesc->DedicatedVideoMemory / (1024 * 1024);
+        if (currentVramMB < MIN_VRAM_MB) {
+            WrapperLog("DXGI Adapter: GetDesc2 VRAM OVERRIDE - Original: %llu MB, Reporting: %llu MB",
+                       currentVramMB, MIN_VRAM_MB);
+            pDesc->DedicatedVideoMemory = MIN_VRAM_MB * 1024 * 1024;
+        }
+        WrapperLog("DXGI Adapter: GetDesc2 - VRAM: %llu MB, Flags: 0x%08X",
+                   pDesc->DedicatedVideoMemory / (1024 * 1024), pDesc->Flags);
+    } else {
+        WrapperLog("DXGI Adapter: GetDesc2 FAILED hr=0x%08X", hr);
+    }
+    return hr;
 }
 
 // ============================================================================
@@ -221,7 +278,30 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIAdapter::QueryVideoMemoryInfo(UINT NodeIndex,
                                                                  DXGI_QUERY_VIDEO_MEMORY_INFO* pVideoMemoryInfo)
 {
     if (!m_pReal3) return DXGI_ERROR_UNSUPPORTED;
-    return m_pReal3->QueryVideoMemoryInfo(NodeIndex, MemorySegmentGroup, pVideoMemoryInfo);
+    WrapperLog("DXGI Adapter: QueryVideoMemoryInfo CALLED on wrapper %p (Node=%u, Segment=%d)",
+               this, NodeIndex, (int)MemorySegmentGroup);
+    HRESULT hr = m_pReal3->QueryVideoMemoryInfo(NodeIndex, MemorySegmentGroup, pVideoMemoryInfo);
+    if (SUCCEEDED(hr) && pVideoMemoryInfo) {
+        // VRAM FIX: Report high VRAM budget to prevent game from thinking there's insufficient memory
+        const UINT64 MIN_VRAM_BUDGET_MB = 8192; // 8GB minimum budget
+        UINT64 currentBudgetMB = pVideoMemoryInfo->Budget / (1024 * 1024);
+        if (MemorySegmentGroup == DXGI_MEMORY_SEGMENT_GROUP_LOCAL && currentBudgetMB < MIN_VRAM_BUDGET_MB) {
+            WrapperLog("DXGI Adapter: QueryVideoMemoryInfo VRAM OVERRIDE - Original Budget: %llu MB, Reporting: %llu MB",
+                       currentBudgetMB, MIN_VRAM_BUDGET_MB);
+            pVideoMemoryInfo->Budget = MIN_VRAM_BUDGET_MB * 1024 * 1024;
+            // Also adjust available reservation to match
+            pVideoMemoryInfo->AvailableForReservation = (MIN_VRAM_BUDGET_MB / 2) * 1024 * 1024; // 50% for reservation
+        }
+        WrapperLog("DXGI Adapter: QueryVideoMemoryInfo(Node=%u, Segment=%d) - "
+                   "Budget: %llu MB, CurrentUsage: %llu MB, Available: %llu MB",
+                   NodeIndex, (int)MemorySegmentGroup,
+                   pVideoMemoryInfo->Budget / (1024 * 1024),
+                   pVideoMemoryInfo->CurrentUsage / (1024 * 1024),
+                   pVideoMemoryInfo->AvailableForReservation / (1024 * 1024));
+    } else {
+        WrapperLog("DXGI Adapter: QueryVideoMemoryInfo FAILED hr=0x%08X", hr);
+    }
+    return hr;
 }
 
 HRESULT STDMETHODCALLTYPE CWrapDXGIAdapter::SetVideoMemoryReservation(UINT NodeIndex,

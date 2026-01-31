@@ -44,6 +44,13 @@ public:
     // State management
     void SetRecording(bool isRecording);
 
+    // Frame Generation metrics (for displaying base vs output FPS like RTSS)
+    void SetFGMetrics(float outputFPS, float baseFPS, int multiplier);
+    float GetFGOutputFPS() const { return m_fgOutputFPS; }
+    float GetFGBaseFPS() const { return m_fgBaseFPS; }
+    int GetFGMultiplier() const { return m_fgMultiplier; }
+    bool IsFGActive() const { return m_fgMultiplier >= 2; }
+
     // CSV Logging for frame times (debug mode)
     void EnableCSVLogging(const char* logPath);
     void DisableCSVLogging();
@@ -80,4 +87,9 @@ private:
     // CSV logging
     FILE* m_csvFile;
     mutable std::mutex m_mutex;
+
+    // Frame Generation metrics
+    float m_fgOutputFPS = 0.0f;
+    float m_fgBaseFPS = 0.0f;
+    int m_fgMultiplier = 1;
 };

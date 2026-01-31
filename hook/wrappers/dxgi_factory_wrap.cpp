@@ -152,8 +152,13 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::EnumAdapters(UINT Adapter, IDXGIAda
     if (SUCCEEDED(hr) && pRealAdapter) {
         *ppAdapter = new CWrapDXGIAdapter(pRealAdapter, this);
         pRealAdapter->Release();
-    } else
+        WrapperLog("DXGI Factory: EnumAdapters(%u) -> Wrapped adapter returned", Adapter);
+    } else {
         *ppAdapter = nullptr;
+        if (FAILED(hr)) {
+            WrapperLog("DXGI Factory: EnumAdapters(%u) -> FAILED hr=0x%08X", Adapter, hr);
+        }
+    }
     return hr;
 }
 
@@ -169,6 +174,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::GetWindowAssociation(HWND* pWindowH
 HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChain(IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc,
                                                              IDXGISwapChain** ppSwapChain)
 {
+    WrapperLog("CreateSwapChain: CALLED (device=%p, hwnd=%p)", pDevice, pDesc ? pDesc->OutputWindow : nullptr);
+    
     // DX12: The "device" passed to CreateSwapChain is actually the command queue
     // Hook it for frame detection
     if (pDevice) {
@@ -176,6 +183,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChain(IUnknown* pDevice, 
         if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&pQueue)))) {
             DX12_HookQueueVTable(pQueue);
             pQueue->Release();
+            WrapperLog("CreateSwapChain: Detected D3D12 command queue");
         }
     }
     
@@ -221,8 +229,13 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::EnumAdapters1(UINT Adapter, IDXGIAd
     if (SUCCEEDED(hr) && pRealAdapter) {
         *ppAdapter = (IDXGIAdapter1*)new CWrapDXGIAdapter(pRealAdapter, this);
         pRealAdapter->Release();
-    } else
+        WrapperLog("DXGI Factory: EnumAdapters1(%u) -> Wrapped adapter returned", Adapter);
+    } else {
         *ppAdapter = nullptr;
+        if (FAILED(hr)) {
+            WrapperLog("DXGI Factory: EnumAdapters1(%u) -> FAILED hr=0x%08X", Adapter, hr);
+        }
+    }
     return hr;
 }
 
@@ -400,6 +413,7 @@ UINT STDMETHODCALLTYPE CWrapDXGIFactory2::GetCreationFlags()
 HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::EnumAdapterByLuid(LUID AdapterLuid, REFIID riid, void** ppvAdapter)
 {
     if (!m_pReal4) return DXGI_ERROR_UNSUPPORTED;
+    WrapperLog("DXGI Factory: EnumAdapterByLuid(Luid=%08X:%08X)", AdapterLuid.HighPart, AdapterLuid.LowPart);
     IUnknown* pRealUnk = nullptr;
     HRESULT hr = m_pReal4->EnumAdapterByLuid(AdapterLuid, IID_IDXGIAdapter, (void**)&pRealUnk);
     if (SUCCEEDED(hr) && pRealUnk) {
@@ -408,6 +422,9 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::EnumAdapterByLuid(LUID AdapterLuid,
         hr = pWrapper->QueryInterface(riid, ppvAdapter);
         pWrapper->Release();
         pRealAdapter->Release();
+        WrapperLog("DXGI Factory: EnumAdapterByLuid -> Wrapped adapter returned");
+    } else {
+        WrapperLog("DXGI Factory: EnumAdapterByLuid -> FAILED hr=0x%08X", hr);
     }
     return hr;
 }
@@ -435,6 +452,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::EnumAdapterByGpuPreference(UINT Ada
                                                                         REFIID riid, void** ppvAdapter)
 {
     if (!m_pReal6) return DXGI_ERROR_UNSUPPORTED;
+    WrapperLog("DXGI Factory: EnumAdapterByGpuPreference(Adapter=%u, Preference=%d)", Adapter, (int)GpuPreference);
     IUnknown* pRealUnk = nullptr;
     HRESULT hr = m_pReal6->EnumAdapterByGpuPreference(Adapter, GpuPreference, IID_IDXGIAdapter, (void**)&pRealUnk);
     if (SUCCEEDED(hr) && pRealUnk) {
@@ -443,6 +461,9 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::EnumAdapterByGpuPreference(UINT Ada
         hr = pWrapper->QueryInterface(riid, ppvAdapter);
         pWrapper->Release();
         pRealAdapter->Release();
+        WrapperLog("DXGI Factory: EnumAdapterByGpuPreference -> Wrapped adapter returned");
+    } else {
+        WrapperLog("DXGI Factory: EnumAdapterByGpuPreference -> FAILED hr=0x%08X", hr);
     }
     return hr;
 }

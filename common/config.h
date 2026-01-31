@@ -117,11 +117,15 @@ struct GraphicsConfig {
     std::string dlssRRPresetQuality;
     std::string dlssRRPresetBalanced;
     std::string dlssRRPresetPerformance;
+
     std::string dlssRRPresetUltraPerformance;
     std::string dlssRRPresetUltraQuality;
 
     // DLSS Sharpening: "default", "off", or float value (0.0 to 1.0)
     std::string dlssSharpening;
+
+    // NVIDIA Smooth Motion compatibility: "auto", "on", "off"
+    std::string nvidiaSmoothMotionCompat = "auto";
 
     // Internal parsed versions for efficiency
     struct {
@@ -143,6 +147,10 @@ struct GraphicsConfig {
         uint32_t rrPresetUltraQuality = 0;
 
         float dlssSharpening = -2.0f;  // -2.0 = default, -1.0 = off, else value
+
+        // NVIDIA Smooth Motion compatibility
+        // 0 = auto (detect and adapt), 1 = force on, 2 = force off
+        int nvidiaSmoothMotionCompat = 0;
     } parsed;
 
     // DLL Overrides

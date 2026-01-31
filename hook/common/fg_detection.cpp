@@ -35,11 +35,27 @@ const char* FGCompatibility::GetFGTypeName(FGType type) const
             return "FSR_FG";
         case FGType::DLSS_MSFG:
             return "DLSS_MSFG";
+        case FGType::NVIDIA_SM:
+            return "NVIDIA_SM";
         case FGType::Unknown:
             return "Unknown";
         default:
             return "Invalid";
     }
+}
+
+void FGCompatibility::DetectNvidiaSmoothMotion()
+{
+    // NVIDIA Smooth Motion is a driver-level feature that hooks DXGI Present calls
+    // It doesn't load special DLLs like DLSS FG, so we detect it via:
+    // 1. Check for NVIDIA driver properties (NVAPI or registry)
+    // 2. Behavioral detection (2x FPS pattern without command list increases)
+    
+    // Check if we can access NVIDIA driver settings to see if SM is enabled
+    // This is a lightweight check that can be called periodically
+    
+    // For now, we rely on behavioral detection in UpdateMetrics()
+    // If we see 2x frame rate but no DLLs loaded, we flag potential SM
 }
 
 FGCompatibility::FGType FGCompatibility::DetectLoadedFGRuntime()
@@ -290,6 +306,15 @@ void FGCompatibility::DetectPattern()
             }
         } else if (runtime == FGType::FSR_FG) {
             newBehavior = FGType::FSR_FG;
+        } else if (runtime == FGType::None && mult == 2) {
+            // No FG DLLs loaded but we see 2x multiplier - likely NVIDIA Smooth Motion
+            // Smooth Motion is driver-level and hooks Present calls without loading game DLLs
+            newBehavior = FGType::NVIDIA_SM;
+            static bool s_loggedSM = false;
+            if (!s_loggedSM) {
+                HookLog("FG: Detected NVIDIA Smooth Motion (2x multiplier, no FG DLLs)");
+                s_loggedSM = true;
+            }
         } else {
             // No runtime detected but behavioral pattern suggests FG
             newBehavior = FGType::Unknown;
@@ -311,8 +336,14 @@ bool FGCompatibility::IsFGActive() const
     // FG is active if:
     // 1. FG DLLs are loaded (runtime detected)
     // 2. Output FPS is high enough to suggest frame generation (> 100 FPS typically)
-    // This handles the case where command list detection doesn't work
-    // because FG also executes command lists for interpolated frames
+    // 3. Behavioral detection indicates NVIDIA Smooth Motion (driver-level FG)
+
+    auto behavior = activeBehavior.load();
+    
+    // Check if NVIDIA Smooth Motion is active (detected behaviorally)
+    if (behavior == FGType::NVIDIA_SM) {
+        return cachedMultiplier.load() >= 2;
+    }
 
     auto runtime = detectedRuntime.load();
     if (runtime == FGType::None) {

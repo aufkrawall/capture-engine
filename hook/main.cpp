@@ -19,6 +19,7 @@
 #include "common/system_metrics.h"
 #include "wrappers/iat_hook.h"
 #include "wrappers/wrapper_hooks.h"
+#include "wrappers/d3dkmt_hook.h"
 // MinHook removed - using IAT patching via iat_hook.h
 #include <algorithm>
 #include <atomic>
@@ -328,11 +329,50 @@ std::string GetRedirectedPath(const std::string& requestedPath)
     return "";
 }
 
-// Hooked RegQueryValueExW - For DLSS Debug Overlay
+// Hooked RegQueryValueExW - For DLSS Debug Overlay and VRAM detection
 LSTATUS WINAPI HookedRegQueryValueExW(HKEY hKey, LPCWSTR lpValueName, LPDWORD lpReserved, LPDWORD lpType, LPBYTE lpData,
                                       LPDWORD lpcbData)
 {
     LSTATUS status = OriginalRegQueryValueExW(hKey, lpValueName, lpReserved, lpType, lpData, lpcbData);
+
+    // Log VRAM-related registry queries for debugging
+    if (lpValueName) {
+        // Check for VRAM-related value names
+        const wchar_t* vramKeywords[] = {
+            L"HardwareInformation.qwMemorySize",
+            L"HardwareInformation.MemorySize",
+            L"DedicatedVideoMemory",
+            L"AdapterRAM",
+            L"VRAM",
+            L"VideoMemory",
+            L"TotalMemory",
+            nullptr
+        };
+        
+        for (int i = 0; vramKeywords[i] != nullptr; i++) {
+            if (_wcsicmp(lpValueName, vramKeywords[i]) == 0) {
+                // Convert value to string for logging
+                char valueNameA[256];
+                WideCharToMultiByte(CP_UTF8, 0, lpValueName, -1, valueNameA, sizeof(valueNameA), NULL, NULL);
+                
+                if (status == ERROR_SUCCESS && lpData && lpcbData) {
+                    if (lpType && *lpType == REG_QWORD && *lpcbData >= sizeof(ULONGLONG)) {
+                        ULONGLONG value = *(ULONGLONG*)lpData;
+                        HookLog("RegQueryValueExW: VRAM Query - %s = %llu MB", valueNameA, value / (1024 * 1024));
+                    } else if (lpType && *lpType == REG_DWORD && *lpcbData >= sizeof(DWORD)) {
+                        DWORD value = *(DWORD*)lpData;
+                        HookLog("RegQueryValueExW: VRAM Query - %s = %lu MB", valueNameA, value / (1024 * 1024));
+                    } else {
+                        HookLog("RegQueryValueExW: VRAM Query - %s (type=%lu, size=%lu)", valueNameA, 
+                                lpType ? *lpType : 0, lpcbData ? *lpcbData : 0);
+                    }
+                } else {
+                    HookLog("RegQueryValueExW: VRAM Query - %s (status=0x%08X)", valueNameA, status);
+                }
+                break;
+            }
+        }
+    }
 
     // Check if probing for DLSS Indicator
     if (lpValueName && _wcsicmp(lpValueName, L"ShowDlssIndicator") == 0) {
@@ -857,15 +897,39 @@ void CheckAndInstallHooks()
     // If FG is loaded, we MUST suspend overlay immediately to avoid startup crashes
     static bool fgDetected = false;
     if (!fgDetected) {
-        if (g_FGCompat.DetectLoadedFGRuntime() != FGCompatibility::FGType::None) {
-            HookLog("Main: FG Runtime detected via LoadLibrary");
+        FGCompatibility::FGType fgType = g_FGCompat.DetectLoadedFGRuntime();
+        if (fgType != FGCompatibility::FGType::None) {
+            HookLog("Main: FG Runtime detected via LoadLibrary (type=%d)", (int)fgType);
             g_FGCompat.SuspendFor(500);  // Allow FG to initialize before overlay
             fgDetected = true;
+            
+            // CRITICAL FIX: Re-hook DXGI after DLSS FG detection
+            // Streamline loads after game start and may intercept DXGI calls.
+            // We re-patch IAT for all modules to ensure our hooks are in place.
+            if (fgType == FGCompatibility::FGType::DLSS_FG) {
+                HookLog("Main: Re-hooking DXGI IAT after DLSS FG detection...");
+                
+                // Re-initialize DXGI IAT hooks for all modules
+                IATHook::InitializeDXGIHooks();
+                
+                HookLog("Main: DXGI re-hooking complete");
+            }
         }
     }
 
     // Install NGX hooks if DLL is present
     NVNGXHook::Get().Install();
+
+    // Install D3DKMT hooks for VRAM override (universal solution)
+    // This hooks kernel-mode driver calls that games use to query VRAM
+    // independently of DXGI (used by SpecialK and RTSS)
+    static bool s_D3DKMTHooksInstalled = false;
+    if (!s_D3DKMTHooksInstalled) {
+        if (D3DKMTHooks::Install()) {
+            s_D3DKMTHooksInstalled = true;
+            EarlyLog("D3DKMT hooks installed for VRAM override");
+        }
+    }
 }
 
 DWORD WINAPI HookThread(LPVOID lpParam)
