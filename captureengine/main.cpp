@@ -278,6 +278,7 @@ void ShutdownChildProcesses()
 
     // Wait for processes to exit
     HANDLE handles[5];  // Increased size for Logger and Sensor
+    const char* handleNames[5] = {"Limiter", "Media", "Inject", "Logger", "Sensor"};
     int handleCount = 0;
 
     if (g_hLimiterProcess) handles[handleCount++] = g_hLimiterProcess;
@@ -289,7 +290,9 @@ void ShutdownChildProcesses()
     if (handleCount > 0) {
         // Use MsgWaitForMultipleObjects to keep processing messages (for tray animation)
         DWORD startTime = GetTickCount();
-        DWORD timeout = 5000;
+        // INCREASED TIMEOUT: Media process needs more time to flush video/audio data
+        // especially for high-resolution recordings (4K 120fps)
+        DWORD timeout = 10000;  // 10 seconds (was 5)
         bool allExited = false;
 
         while (!allExited && (GetTickCount() - startTime) < timeout) {
@@ -323,12 +326,21 @@ void ShutdownChildProcesses()
         }
 
         if (!allExited) {
-            LogInfo("[Controller] Some processes didn't exit cleanly, terminating...");
+            // Log which specific processes didn't exit cleanly for debugging
+            LogInfo("[Controller] Some processes didn't exit cleanly within timeout, terminating...");
+            for (int i = 0; i < handleCount; i++) {
+                DWORD exitCode;
+                if (GetExitCodeProcess(handles[i], &exitCode) && exitCode == STILL_ACTIVE) {
+                    LogInfo("[Controller] %s process did not exit cleanly, forcing termination", handleNames[i]);
+                }
+            }
             if (g_hLimiterProcess) TerminateProcess(g_hLimiterProcess, 1);
             if (g_hMediaProcess) TerminateProcess(g_hMediaProcess, 1);
             if (g_hInjectProcess) TerminateProcess(g_hInjectProcess, 1);
             if (g_hLoggerProcess) TerminateProcess(g_hLoggerProcess, 1);
             if (g_hSensorProcess) TerminateProcess(g_hSensorProcess, 1);
+        } else {
+            LogInfo("[Controller] All child processes exited cleanly");
         }
     }
 

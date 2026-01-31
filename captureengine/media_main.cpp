@@ -179,22 +179,37 @@ void InjectCaptureThreadFunc(const AppConfig& config)
                     nextPushTime = slot.timestamp;
                     shouldProcess = true;
                 } else {
-                    // Check if frame is close enough to target time (allow half-interval jitter)
-                    if (slot.timestamp >= nextPushTime - (targetIntervalTicks / 2)) {
+                    // IMPROVED PACING: Use a more lenient jitter window to reduce drops
+                    // Old: half-interval was too aggressive for high FPS games (144Hz+, 240Hz+)
+                    // New: allow up to 80% of interval before dropping, with adaptive resync
+                    int64_t jitterWindow = (targetIntervalTicks * 8) / 10;  // 80% tolerance
+                    
+                    if (slot.timestamp >= nextPushTime - jitterWindow) {
                         shouldProcess = true;
 
-                        // Advance target time
+                        // Advance target time by actual interval, not to current timestamp
+                        // This maintains steady output cadence even with jittery input
                         nextPushTime += targetIntervalTicks;
 
-                        // Resync if game time jumped way ahead (e.g. pause/lag spike > 3 frames)
-                        if (slot.timestamp > nextPushTime + (targetIntervalTicks * 3)) {
+                        // Resync if game time jumped way ahead (e.g. pause/lag spike > 5 frames)
+                        // Increased from 3 to 5 frames to avoid unnecessary resyncs
+                        if (slot.timestamp > nextPushTime + (targetIntervalTicks * 5)) {
                             nextPushTime = slot.timestamp + targetIntervalTicks;
                         }
                     } else {
-                        // Frame is too early (e.g. 144Hz frame falling between 120Hz slots)
-                        // DROP IT
-                        shouldProcess = false;
-                        pacingDroppedCount++;
+                        // Frame is too early - only drop if we're not behind on processing
+                        // Check if we have a backlog of frames waiting
+                        uint32_t pendingFrames = (writeIndex > localReadIndex) ? (writeIndex - localReadIndex) : 0;
+                        
+                        if (pendingFrames > 2) {
+                            // We have a backlog, process this frame anyway to catch up
+                            shouldProcess = true;
+                            nextPushTime = slot.timestamp + targetIntervalTicks;
+                        } else {
+                            // Frame is genuinely too early and no backlog - safe to drop
+                            shouldProcess = false;
+                            pacingDroppedCount++;
+                        }
                     }
                 }
 

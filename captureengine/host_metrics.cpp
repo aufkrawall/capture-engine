@@ -199,7 +199,8 @@ void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t lu
                             }
                         }
                     }
-                    if (debugLogging && !foundAny) {
+                    if (debugLogging && !foundAny && luid != 0) {
+                        // Only warn if LUID is valid (non-zero). Zero LUID means no game is running yet.
                         LogInfo("[Metrics] Warning: No GPU engine found matching LUID %s", luidStrUpper);
                     }
                     if (totalLoad > 100.0) totalLoad = 100.0;
@@ -271,7 +272,8 @@ void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t lu
                         totalVRAM += items[i].FmtValue.largeValue;
                     }
                 }
-                if (debugLogging && !foundAny) {
+                if (debugLogging && !foundAny && luid != 0) {
+                    // Only warn if LUID is valid (non-zero). Zero LUID means no game is running yet.
                     LogInfo("[Metrics] Warning: No VRAM adapter found matching LUID %s", luidStrUpper);
                 }
                 double vramMB = (double)totalVRAM / (1024.0 * 1024.0);
