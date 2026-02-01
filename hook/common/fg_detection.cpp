@@ -9,6 +9,16 @@
 extern void HookLog(const char* fmt, ...);
 #endif
 
+// Forward declaration for swapchain invalidation when FG type changes
+// Only available in DX12 builds, not Vulkan layer
+#ifndef VK_LAYER_CE_OVERLAY
+extern void DX12_InvalidateSwapchain();
+#define HAS_DX12_INVALIDATE 1
+#else
+#define HAS_DX12_INVALIDATE 0
+static void DX12_InvalidateSwapchain() {}  // Stub for Vulkan layer
+#endif
+
 FGCompatibility g_FGCompat;
 
 int64_t FGCompatibility::GetCurrentTimeUs() const
@@ -83,15 +93,6 @@ FGCompatibility::FGType FGCompatibility::DetectLoadedFGRuntime()
         HookLog("FG: FSR3 upscaler detected (%p) - Treating as FSR FG for safety", ffxFsr3);
     }
 
-    // If FSR FG is detected, return immediately to ensure wrapper is disabled.
-    if (result == FGType::FSR_FG) {
-        FGType prev = detectedRuntime.exchange(result);
-        if (prev != result) {
-            HookLog("FG: Runtime changed: %s -> %s (FSR Priority)", GetFGTypeName(prev), GetFGTypeName(result));
-        }
-        return result;
-    }
-
     // Check for DLSS FG / MSFG DLLs
     HMODULE dlssg = GetModuleHandleW(L"nvngx_dlssg.dll");
     HMODULE slDlssG = GetModuleHandleW(L"sl.dlss_g.dll");
@@ -112,6 +113,14 @@ FGCompatibility::FGType FGCompatibility::DetectLoadedFGRuntime()
     FGType prev = detectedRuntime.exchange(result);
     if (prev != result) {
         HookLog("FG: Runtime changed: %s -> %s", GetFGTypeName(prev), GetFGTypeName(result));
+        // CRITICAL: Invalidate swapchain when switching between FG types
+        // This ensures clean state transition between different FG implementations
+        if ((result == FGType::DLSS_FG && prev == FGType::FSR_FG) ||
+            (result == FGType::FSR_FG && prev == FGType::DLSS_FG)) {
+            DX12_InvalidateSwapchain();
+            HookLog("FG: Invalidated swapchain for FG transition (%s -> %s)", 
+                    GetFGTypeName(prev), GetFGTypeName(result));
+        }
     }
 
     return result;

@@ -252,6 +252,8 @@ CWrapDXGIFactory2::CreateSwapChainForHwnd(IUnknown* pDevice, HWND hWnd, const DX
                                           const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc,
                                           IDXGIOutput* pRestrictToOutput, IDXGISwapChain1** ppSwapChain)
 {
+    WrapperLog("CreateSwapChainForHwnd: CALLED (device=%p, hwnd=%p)", pDevice, hWnd);
+    
     // DX12: The "device" passed to CreateSwapChain is actually the command queue
     if (pDevice) {
         ID3D12CommandQueue* pQueue = nullptr;

@@ -51,6 +51,12 @@ public:
 
     // Common ImGui shutdown
     void ShutdownImGui();
+    
+    // Force reinitialization (for swapchain recreation scenarios like DLSS FG)
+    void ForceReinit() { 
+        initialized = false; 
+        context = nullptr;  // Context was destroyed by ShutdownImGui
+    }
 
     // Common ImGui frame lifecycle
     void BeginFrame();

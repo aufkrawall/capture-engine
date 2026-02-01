@@ -84,10 +84,14 @@ static const char* GetQualityString(int mode)
 
 void Overlay::InitImGui(void* hwnd)
 {
-    if (initialized) return;
+    if (initialized) {
+        OutputDebugStringA("[CaptureHook] Overlay::InitImGui - already initialized, returning early\n");
+        return;
+    }
     this->hwnd = hwnd;
     IMGUI_CHECKVERSION();
     context = ImGui::CreateContext();
+    OutputDebugStringA("[CaptureHook] Overlay::InitImGui - created new context\n");
     ImGui::SetCurrentContext(context);
     ImGui::GetIO().IniFilename = nullptr;
     ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
@@ -168,9 +172,11 @@ void Overlay::InitImGuiHeadless()
 void Overlay::ShutdownImGui()
 {
     if (!initialized) return;
-    if (context) ImGui::SetCurrentContext(context);
-    if (!headless) ImGui_ImplWin32_Shutdown();
+    // DEBUG: Log shutdown
+    OutputDebugStringA("[CaptureHook] Overlay::ShutdownImGui - destroying context\n");
     if (context) {
+        ImGui::SetCurrentContext(context);
+        if (!headless) ImGui_ImplWin32_Shutdown();
         ImGui::DestroyContext(context);
         context = nullptr;
     }
