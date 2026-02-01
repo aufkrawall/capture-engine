@@ -87,26 +87,29 @@ FGCompatibility::FGType FGCompatibility::DetectLoadedFGRuntime()
     if (fsrFg || ffxFrameInterp) {
         result = FGType::FSR_FG;
         HookLog("FG: Detected FSR FG DLL (amd_fidelityfx_fg=%p, ffx_frameinterpolation=%p)", fsrFg, ffxFrameInterp);
+        // CRITICAL: FSR FG takes priority - don't check for DLSS to avoid conflicts
+        // When both are loaded, trust FSR detection (game likely uses FSR FG)
     } else if (ffxFsr3) {
         // FSR3 upscaler often implies FG capability in FSR3 games
         result = FGType::FSR_FG;
         HookLog("FG: FSR3 upscaler detected (%p) - Treating as FSR FG for safety", ffxFsr3);
-    }
+        // FSR takes priority - skip DLSS detection
+    } else {
+        // Only check for DLSS FG if FSR not detected
+        HMODULE dlssg = GetModuleHandleW(L"nvngx_dlssg.dll");
+        HMODULE slDlssG = GetModuleHandleW(L"sl.dlss_g.dll");
+        HMODULE streamline = GetModuleHandleW(L"sl.interposer.dll");
 
-    // Check for DLSS FG / MSFG DLLs
-    HMODULE dlssg = GetModuleHandleW(L"nvngx_dlssg.dll");
-    HMODULE slDlssG = GetModuleHandleW(L"sl.dlss_g.dll");
-    HMODULE streamline = GetModuleHandleW(L"sl.interposer.dll");
-
-    if (dlssg || slDlssG) {
-        result = FGType::DLSS_FG;
-        HookLog("FG: Detected DLSS FG DLL (nvngx_dlssg=%p, sl.dlss_g=%p)", dlssg, slDlssG);
-    }
-
-    if (streamline) {
-        HookLog("FG: Streamline interposer detected (%p) - DLSS FG likely", streamline);
-        if (result == FGType::None) {
+        if (dlssg || slDlssG) {
             result = FGType::DLSS_FG;
+            HookLog("FG: Detected DLSS FG DLL (nvngx_dlssg=%p, sl.dlss_g=%p)", dlssg, slDlssG);
+        }
+
+        if (streamline) {
+            HookLog("FG: Streamline interposer detected (%p) - DLSS FG likely", streamline);
+            if (result == FGType::None) {
+                result = FGType::DLSS_FG;
+            }
         }
     }
 
@@ -154,7 +157,7 @@ void FGCompatibility::RecordFrame(int commandListsExecuted)
     // Log every 300 frames to reduce spam but still provide diagnostic info
     if (logCount < 20 || (logCount % 300 == 0)) {
         FGType type = detectedRuntime.load();
-        EarlyLog("Frame #%d: cmdLists=%d, isReal=%d, fgRuntime=%s, consReal=%d, consInterp=%d", total,
+        HookLog("Frame #%d: cmdLists=%d, isReal=%d, fgRuntime=%s, consReal=%d, consInterp=%d", total,
                  commandListsExecuted, isRealFrame ? 1 : 0, GetFGTypeName(type), consecutiveRealFrames.load(),
                  consecutiveInterpolatedFrames.load());
     }
@@ -275,15 +278,18 @@ void FGCompatibility::UpdateMetrics()
 
         if (mult > 4) mult = 4;
     } else {
-        // Fallback for low sample count (start up)
+        // Fallback for low sample count (start up) - only for higher multipliers
+        // CRITICAL: Don't use ratio-based detection for 2x to avoid false NVIDIA SM detection
+        // A ratio of 1.5f can easily occur with normal frame timing variations
+        // Only detect 3x and 4x through ratio (those are clearer indicators of actual FG)
         if (realFrames > 0) {
             float ratio = (float)totalFrames / (float)realFrames;
             if (ratio >= 3.5f)
                 mult = 4;
             else if (ratio >= 2.5f)
                 mult = 3;
-            else if (ratio >= 1.5f)
-                mult = 2;
+            // Note: 2x multiplier requires proper histogram-based detection
+            // This prevents false NVIDIA Smooth Motion detection in simple test apps
         }
     }
 
@@ -304,6 +310,7 @@ void FGCompatibility::DetectPattern()
     FGType runtime = detectedRuntime.load();
     FGType prevBehavior = activeBehavior.load();
     FGType newBehavior = FGType::None;
+    float currentFPS = cachedOutputFPS.load();
 
     if (mult >= 2) {
         // FG is active
@@ -315,16 +322,30 @@ void FGCompatibility::DetectPattern()
             }
         } else if (runtime == FGType::FSR_FG) {
             newBehavior = FGType::FSR_FG;
-        } else if (runtime == FGType::None && mult == 2) {
-            // No FG DLLs loaded but we see 2x multiplier - likely NVIDIA Smooth Motion
+        } else if (runtime == FGType::None && mult == 2 && currentFPS > 144.0f) {
+            // No FG DLLs loaded but we see 2x multiplier AND high FPS - likely NVIDIA Smooth Motion
             // Smooth Motion is driver-level and hooks Present calls without loading game DLLs
-            newBehavior = FGType::NVIDIA_SM;
-            static bool s_loggedSM = false;
-            if (!s_loggedSM) {
-                HookLog("FG: Detected NVIDIA Smooth Motion (2x multiplier, no FG DLLs)");
-                s_loggedSM = true;
+            // CRITICAL: Require high FPS (>144) and multiple confirmations to avoid false detection
+            int confirms = nvidiaSMConfirmCount.fetch_add(1) + 1;
+            if (confirms >= NVIDIA_SM_CONFIRM_THRESHOLD) {
+                newBehavior = FGType::NVIDIA_SM;
+                static bool s_loggedSM = false;
+                if (!s_loggedSM) {
+                    HookLog("FG: Detected NVIDIA Smooth Motion (2x multiplier, outputFPS=%.1f, confirms=%d, no FG DLLs)", 
+                            currentFPS, confirms);
+                    s_loggedSM = true;
+                }
             }
+            // If not enough confirmations, keep previous behavior (don't set Unknown)
+        } else if (runtime == FGType::None) {
+            // No FG DLLs loaded and conditions not met for NVIDIA SM
+            // This is likely a false positive from normal frame timing variations
+            // CRITICAL FIX: Set to None, not Unknown, to prevent false FG display
+            nvidiaSMConfirmCount.store(0);  // Reset SM confirmation counter
+            newBehavior = FGType::None;
         } else {
+            // Reset NVIDIA SM confirmation counter if conditions not met
+            nvidiaSMConfirmCount.store(0);
             // No runtime detected but behavioral pattern suggests FG
             newBehavior = FGType::Unknown;
             HookLog("FG: WARNING - FG pattern detected (mult=%dx) but no FG runtime DLL found!", mult);

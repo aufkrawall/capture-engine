@@ -35,7 +35,9 @@ private:
     
     std::atomic<bool> running_{false};
     std::atomic<uint64_t> lastHeartbeat_{0};  // Microseconds timestamp
+    std::atomic<uint64_t> startupTime_{0};    // When watchdog started (microseconds)
     std::atomic<double> timeoutSeconds_{5.0};
+    static constexpr double STARTUP_GRACE_PERIOD = 10.0;  // 10 seconds grace period
     std::thread watchdogThread_;
     FreezeCallback freezeCallback_;
     std::string processName_;

@@ -487,7 +487,14 @@ void Overlay::RenderUI()
                 float fgBaseFPS = g_FGCompat.GetBaseFPS();
                 float fgOutputFPS = g_FGCompat.GetOutputFPS();
                 
-                if (fgActive && fgOutputFPS > 0.0f) {
+                // CRITICAL FIX: Only show Base/Display split for KNOWN FG types
+                // Don't show for Unknown behavior (false positive detection)
+                auto fgBehaviorType = g_FGCompat.GetDetectedType();
+                bool isKnownFGBehavior = (fgBehaviorType == FGCompatibility::FGType::DLSS_FG || 
+                                          fgBehaviorType == FGCompatibility::FGType::FSR_FG ||
+                                          fgBehaviorType == FGCompatibility::FGType::DLSS_MSFG);
+                
+                if (fgActive && fgOutputFPS > 0.0f && isKnownFGBehavior) {
                     // Show base / output FPS split for frame generation
                     snprintf(buf, 64, "%.0f / %.0f FPS", fgBaseFPS, fgOutputFPS);
                     RenderRow("Base/Display", buf, cfg.textColor, cfg.fpsColor);
@@ -553,23 +560,31 @@ void Overlay::RenderUI()
                 }
 
                 // 3. FG Status (Integrated)
-                // Use GetDetectedType() to include behaviorally-detected FG (e.g., NVIDIA Smooth Motion)
-                auto fgType = g_FGCompat.GetDetectedType();  // Includes behavioral detection
+                // CRITICAL FIX: Only show FG info when it's actually ACTIVE (multiplier >= 2)
+                // Don't show DLL type when FG is just loaded but not enabled
+                auto fgType = g_FGCompat.GetDetectedType();  // Behavioral detection (only active when mult >= 2)
                 auto dllType = g_FGCompat.DetectLoadedFGRuntime();  // DLL-based only
                 bool fgTypeActive = g_FGCompat.IsFGActive();
+                int mult = g_FGCompat.GetFGMultiplier();
 
                 // Also check our captured state from NVNGX
-                if (dlss.fgActive.load()) fgTypeActive = true;
+                if (dlss.fgActive.load()) {
+                    fgTypeActive = true;
+                    if (mult < 2) mult = 2;
+                }
 
-                // Determine which type to display - prefer DLL type if available, otherwise use detected type
-                auto displayType = (dllType != FGCompatibility::FGType::None) ? dllType : fgType;
-
-                if (cfg.showFG && (displayType != FGCompatibility::FGType::None || fgTypeActive)) {
-                    int mult = g_FGCompat.GetFGMultiplier();
-                    if (mult < 2) mult = 2;  // FG implies at least 2x
-
+                // CRITICAL FIX: Only show FG when we have a KNOWN type (DLSS, FSR, or MS)
+                // Don't show for Unknown or None - these are not real frame generation
+                bool isKnownFGType = (fgType == FGCompatibility::FGType::DLSS_FG || 
+                                      fgType == FGCompatibility::FGType::FSR_FG ||
+                                      fgType == FGCompatibility::FGType::DLSS_MSFG);
+                
+                // Only show FG info when:
+                // 1. It's marked as active AND multiplier >= 2
+                // 2. We have a KNOWN FG type (not Unknown/None)
+                if (cfg.showFG && fgTypeActive && mult >= 2 && isKnownFGType) {
                     char fgBuf[32];
-                    switch (displayType) {
+                    switch (fgType) {
                         case FGCompatibility::FGType::DLSS_FG:
                             snprintf(fgBuf, 32, "FG %dx", mult);
                             break;
@@ -578,9 +593,6 @@ void Overlay::RenderUI()
                             break;
                         case FGCompatibility::FGType::DLSS_MSFG:
                             snprintf(fgBuf, 32, "MSFG %dx", mult);
-                            break;
-                        case FGCompatibility::FGType::NVIDIA_SM:
-                            snprintf(fgBuf, 32, "SM %dx", mult);
                             break;
                         default:
                             snprintf(fgBuf, 32, "FG %dx", mult);

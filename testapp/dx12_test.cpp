@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <mutex>
 #include <string>
 
 #pragma comment(lib, "d3d12.lib")
@@ -68,6 +69,10 @@ UINT64 g_FenceValues[FRAME_COUNT] = {};
 UINT g_FrameIndex = 0;
 UINT g_RtvDescriptorSize = 0;
 
+// CRITICAL FIX: Mutex to protect frame index and fence values from race conditions
+// This prevents crashes when capture hook threads access these concurrently
+std::mutex g_FrameSyncMutex;
+
 // Animation
 float g_BarPosition = 0.0f;
 auto g_StartTime = std::chrono::high_resolution_clock::now();
@@ -93,6 +98,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
 void WaitForGpu()
 {
+    std::lock_guard<std::mutex> lock(g_FrameSyncMutex);
     const UINT64 fenceValue = g_FenceValues[g_FrameIndex];
     g_CommandQueue->Signal(g_Fence.Get(), fenceValue);
     if (g_Fence->GetCompletedValue() < fenceValue) {
@@ -104,16 +110,26 @@ void WaitForGpu()
 
 void MoveToNextFrame()
 {
+    std::lock_guard<std::mutex> lock(g_FrameSyncMutex);
+    
+    // CRITICAL FIX: Signal fence for current frame BEFORE getting new back buffer index
     const UINT64 currentFenceValue = g_FenceValues[g_FrameIndex];
     g_CommandQueue->Signal(g_Fence.Get(), currentFenceValue);
 
-    g_FrameIndex = g_SwapChain->GetCurrentBackBufferIndex();
-
-    if (g_Fence->GetCompletedValue() < g_FenceValues[g_FrameIndex]) {
-        g_Fence->SetEventOnCompletion(g_FenceValues[g_FrameIndex], g_FenceEvent);
+    // Get the new back buffer index that Present just advanced to
+    UINT nextFrameIndex = g_SwapChain->GetCurrentBackBufferIndex();
+    
+    // CRITICAL FIX: Verify fence value for next frame has been signaled
+    // If not, wait for it (this handles race conditions where GPU runs ahead)
+    if (g_Fence->GetCompletedValue() < g_FenceValues[nextFrameIndex]) {
+        g_Fence->SetEventOnCompletion(g_FenceValues[nextFrameIndex], g_FenceEvent);
         WaitForSingleObject(g_FenceEvent, INFINITE);
     }
+    
+    // Update frame index AFTER synchronization
+    g_FrameIndex = nextFrameIndex;
 
+    // Increment fence value for next use of this frame
     g_FenceValues[g_FrameIndex] = currentFenceValue + 1;
 }
 
@@ -185,18 +201,25 @@ void Render()
     float elapsed = std::chrono::duration<float>(now - g_StartTime).count();
     g_BarPosition = (float)std::fmod((double)(elapsed * 0.5f), 1.0);
 
-    g_CommandAllocators[g_FrameIndex]->Reset();
-    g_CommandList->Reset(g_CommandAllocators[g_FrameIndex].Get(), nullptr);
+    // CRITICAL FIX: Lock mutex while accessing frame index and resources
+    UINT frameIndex;
+    {
+        std::lock_guard<std::mutex> lock(g_FrameSyncMutex);
+        frameIndex = g_FrameIndex;
+    }
+
+    g_CommandAllocators[frameIndex]->Reset();
+    g_CommandList->Reset(g_CommandAllocators[frameIndex].Get(), nullptr);
 
     D3D12_RESOURCE_BARRIER barrier = {};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.pResource = g_RenderTargets[g_FrameIndex].Get();
+    barrier.Transition.pResource = g_RenderTargets[frameIndex].Get();
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
     g_CommandList->ResourceBarrier(1, &barrier);
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = g_RtvHeap->GetCPUDescriptorHandleForHeapStart();
-    rtvHandle.ptr += g_FrameIndex * g_RtvDescriptorSize;
+    rtvHandle.ptr += frameIndex * g_RtvDescriptorSize;
     const float clearColor[] = {0.1f, 0.1f, 0.1f, 1.0f};
     g_CommandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
 

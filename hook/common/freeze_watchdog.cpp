@@ -62,11 +62,14 @@ bool FreezeWatchdog::Start(double timeoutSeconds) {
     }
     
     timeoutSeconds_.store(timeoutSeconds);
-    lastHeartbeat_.store(GetCurrentMicros());
+    uint64_t now = GetCurrentMicros();
+    lastHeartbeat_.store(now);
+    startupTime_.store(now);
     
     char logMsg[256];
     snprintf(logMsg, sizeof(logMsg), 
-        "[FreezeWatchdog] Starting with timeout=%.1f seconds\n", timeoutSeconds);
+        "[FreezeWatchdog] Starting with timeout=%.1f seconds (grace period=%.1f seconds)\n", 
+        timeoutSeconds, STARTUP_GRACE_PERIOD);
     OutputDebugStringA(logMsg);
     
     watchdogThread_ = std::thread(&FreezeWatchdog::WatchdogThread, this);
@@ -97,6 +100,15 @@ bool FreezeWatchdog::IsFrozen() const {
     uint64_t last = lastHeartbeat_.load();
     uint64_t now = GetCurrentMicros();
     double elapsed = (now - last) / 1'000'000.0;  // Convert to seconds
+    
+    // Check if we're still in the startup grace period
+    double sinceStartup = (now - startupTime_.load()) / 1'000'000.0;
+    if (sinceStartup < STARTUP_GRACE_PERIOD) {
+        // Still in grace period, don't report as frozen
+        // Just update the heartbeat to give more time after grace period ends
+        return false;
+    }
+    
     return elapsed > timeoutSeconds_.load();
 }
 

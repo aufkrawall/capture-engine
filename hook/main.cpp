@@ -1329,15 +1329,22 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call, LPV
         }
 
         // Install Crash Handler immediately to catch startup crashes
-        // Use the directory of the DLL for dumps
-        std::string dllDir = myDllPath;
-        size_t lastSlash = dllDir.find_last_of("\\/");
-        if (lastSlash != std::string::npos) {
-            dllDir = dllDir.substr(0, lastSlash) + "\\logs";  // Put dumps in logs folder
+        // CRITICAL FIX: Always use captureengine/logs directory, not the DLL's directory
+        // This ensures dumps go to the correct location even when DLL is loaded from testapp
+        std::string crashDir;
+        char dllPath[MAX_PATH] = {0};
+        if (GetModuleFileNameA(hinstDLL, dllPath, MAX_PATH)) {
+            std::filesystem::path hookPath(dllPath);
+            std::filesystem::path captureEngineDir = hookPath.parent_path();
+            // If we're in testapp directory, navigate to captureengine instead
+            if (captureEngineDir.filename() == "testapp") {
+                captureEngineDir = captureEngineDir.parent_path() / "captureengine";
+            }
+            crashDir = (captureEngineDir / "logs").string();
         } else {
-            dllDir = ".";
+            crashDir = ".\\logs";
         }
-        SetCrashDumpDirectory(dllDir);
+        SetCrashDumpDirectory(crashDir);
         // REMOVED: InstallCrashHandler(); - Wait until we confirm it's an active process!
         // Installing VEH in dormant processes (e.g. system services) is dangerous and slow.
 

@@ -93,6 +93,10 @@ private:
 
     // Safety suspend
     std::atomic<int64_t> suspendUntilUs{0};
+    
+    // NVIDIA SM detection persistence - require multiple confirmations
+    std::atomic<int> nvidiaSMConfirmCount{0};
+    static constexpr int NVIDIA_SM_CONFIRM_THRESHOLD = 3;  // Need 3 consecutive detections
 
     // Internal methods
     void UpdateMetrics();
