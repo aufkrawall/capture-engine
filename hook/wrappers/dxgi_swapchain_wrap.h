@@ -14,6 +14,11 @@
 #include "../common/hook_common.h"
 #include "wrapper_base.h"
 
+// Streamline base interface GUID - blocks NV DLSS/FSR FG from unwrapping
+// {ADEC44E2-61F0-45C3-AD9F-1B37379284FF}
+static const GUID IID_IStreamlineBaseInterface = 
+{ 0xadec44e2, 0x61f0, 0x45c3, { 0xad, 0x9f, 0x1b, 0x37, 0x37, 0x92, 0x84, 0xff } };
+
 // Forward declare overlay drawing function (implemented in dx12_hook.cpp)
 extern void DrawOverlayOnSwapchain(IDXGISwapChain* pSwapChain, ID3D12CommandQueue* pQueue);
 extern bool IsOverlayEnabled();
@@ -145,6 +150,27 @@ private:
     // Overlay state
     bool m_IsD3D12;
     bool m_Promoted;  // Lazy promotion flag
+    
+    // Flip model detection for FSR FG compatibility
+    struct {
+        bool active = false;
+        bool native = false;
+    } m_FlipModel;
+    
+    // Destruction notification (DXGI 1.4+)
+    UINT m_DestructionCookie = 0;
+    static void WINAPI DestructionCallback(void* pData);
+    HRESULT RegisterDestructionCallback();
+    
+    // Swapchain state tracking
+    struct SwapChainState {
+        bool isFullscreen = false;
+        UINT frameLatency = 2;
+        DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+        UINT width = 0;
+        UINT height = 0;
+    } m_State;
+    void DetectSwapChainState();
 
     // Helper methods
     void EnsurePromoted();  // Lazy promotion - only when needed

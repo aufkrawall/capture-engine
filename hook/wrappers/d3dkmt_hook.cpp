@@ -138,20 +138,32 @@ void InitializeConfig()
     // Check if VRAM override is configured
     const auto& gfx = GetActiveGraphicsConfig();
     
-    // Check for explicit VRAM override in config
-    // Format: vram_override_mb = 8192 for 8GB
-    // Or: vram_scale_factor = 2.0 to double reported VRAM
+    // IMPORTANT: Following SpecialK's approach - do NOT override VRAM values.
+    // Games need real VRAM values for proper memory management and feature detection.
+    // Overriding VRAM can cause:
+    // - Games thinking there's insufficient VRAM
+    // - DLSS/FSR framegen refusing to activate
+    // - Texture streaming issues
+    // - Memory allocation failures
     
-    // For now, enable with a safe default (12GB for most modern GPUs)
-    // This can be made configurable later
-    g_VramConfig.enabled = true;
-    g_VramConfig.dedicatedVramBytes = 12ULL * 1024 * 1024 * 1024;  // 12GB default
-    g_VramConfig.sharedVramBytes = 8ULL * 1024 * 1024 * 1024;       // 8GB shared
+    // VRAM override is disabled by default. Only enable via explicit config.
+    g_VramConfig.enabled = false;
+    g_VramConfig.dedicatedVramBytes = 0;
+    g_VramConfig.sharedVramBytes = 0;
     g_VramConfig.scaleFactor = 1.0f;
     
-    HookLog("D3DKMT: VRAM override configured - Dedicated: %llu MB, Shared: %llu MB",
-               g_VramConfig.dedicatedVramBytes / (1024 * 1024),
-               g_VramConfig.sharedVramBytes / (1024 * 1024));
+    // Check if user explicitly wants VRAM override (not recommended)
+    // Config key: d3dkmt_vram_override_mb = 8192
+    // Only override if explicitly requested
+    int explicitOverrideMB = 0;
+    // TODO: Read from config if needed
+    if (explicitOverrideMB > 0) {
+        g_VramConfig.enabled = true;
+        g_VramConfig.dedicatedVramBytes = static_cast<UINT64>(explicitOverrideMB) * 1024 * 1024;
+        HookLog("D3DKMT: VRAM override ENABLED (user requested) - Dedicated: %d MB", explicitOverrideMB);
+    } else {
+        HookLog("D3DKMT: VRAM override disabled - passing through real values (SpecialK-style)");
+    }
 }
 
 // Hook for D3DKMTQueryVideoMemoryInfo
@@ -173,24 +185,33 @@ static NTSTATUS WINAPI Hook_D3DKMTQueryVideoMemoryInfo(const D3DKMT_QUERYVIDEOME
                pInfo->hProcess ? (ULONG)(pInfo->hProcess) : GetCurrentProcessId(),
                pInfo->MemorySegmentGroup == KMT_MEMORY_SEGMENT_GROUP_LOCAL ? "LOCAL" : "NON_LOCAL");
     
-    // If VRAM override is enabled, modify the results
-    if (g_VramConfig.enabled) {
-        // Cast away const to modify the output struct
-        D3DKMT_QUERYVIDEOMEMORYINFO* pMutableInfo = const_cast<D3DKMT_QUERYVIDEOMEMORYINFO*>(pInfo);
-        
-        if (pInfo->MemorySegmentGroup == KMT_MEMORY_SEGMENT_GROUP_LOCAL) {
-            // Local/Dedicated VRAM
+    // Cast away const to modify the output struct (if needed)
+    D3DKMT_QUERYVIDEOMEMORYINFO* pMutableInfo = const_cast<D3DKMT_QUERYVIDEOMEMORYINFO*>(pInfo);
+    
+    if (pInfo->MemorySegmentGroup == KMT_MEMORY_SEGMENT_GROUP_LOCAL) {
+        // Local/Dedicated VRAM
+        if (g_VramConfig.enabled) {
             UINT64 originalBudget = pInfo->Budget;
             pMutableInfo->Budget = g_VramConfig.dedicatedVramBytes;
-            pMutableInfo->CurrentUsage = std::min(pInfo->CurrentUsage, g_VramConfig.dedicatedVramBytes - (512 * 1024 * 1024)); // Leave 512MB headroom
-            pMutableInfo->AvailableForReservation = g_VramConfig.dedicatedVramBytes / 2; // 50% for reservation
+            pMutableInfo->CurrentUsage = std::min(pInfo->CurrentUsage, g_VramConfig.dedicatedVramBytes - (512 * 1024 * 1024));
+            pMutableInfo->AvailableForReservation = g_VramConfig.dedicatedVramBytes / 2;
             pMutableInfo->CurrentReservation = std::min(pInfo->CurrentReservation, pMutableInfo->AvailableForReservation);
             
             HookLog("D3DKMT: OVERRIDE Local VRAM - Budget: %llu->%llu MB",
                        originalBudget / (1024 * 1024),
                        g_VramConfig.dedicatedVramBytes / (1024 * 1024));
         } else {
-            // Non-local/Shared VRAM (system memory)
+            // Pass-through mode: log real values for debugging
+            static UINT queryCount = 0;
+            if (++queryCount <= 5) {  // Only log first 5 queries to avoid spam
+                HookLog("D3DKMT: Local VRAM PASSTHROUGH - Budget: %llu MB, Usage: %llu MB",
+                           pInfo->Budget / (1024 * 1024),
+                           pInfo->CurrentUsage / (1024 * 1024));
+            }
+        }
+    } else {
+        // Non-local/Shared VRAM (system memory)
+        if (g_VramConfig.enabled) {
             UINT64 originalBudget = pInfo->Budget;
             pMutableInfo->Budget = g_VramConfig.sharedVramBytes;
             pMutableInfo->CurrentUsage = std::min(pInfo->CurrentUsage, g_VramConfig.sharedVramBytes - (256 * 1024 * 1024));
@@ -200,6 +221,14 @@ static NTSTATUS WINAPI Hook_D3DKMTQueryVideoMemoryInfo(const D3DKMT_QUERYVIDEOME
             HookLog("D3DKMT: OVERRIDE Shared VRAM - Budget: %llu->%llu MB",
                        originalBudget / (1024 * 1024),
                        g_VramConfig.sharedVramBytes / (1024 * 1024));
+        } else {
+            // Pass-through mode: log real values for debugging
+            static UINT sharedQueryCount = 0;
+            if (++sharedQueryCount <= 3) {  // Only log first 3 queries to avoid spam
+                HookLog("D3DKMT: Shared VRAM PASSTHROUGH - Budget: %llu MB, Usage: %llu MB",
+                           pInfo->Budget / (1024 * 1024),
+                           pInfo->CurrentUsage / (1024 * 1024));
+            }
         }
     }
     
