@@ -48,6 +48,9 @@ public:
     // Safety suspend - delays overlay initialization after FG detection
     void SuspendFor(int milliseconds);
     bool IsSuspended() const;
+    
+    // FSR FG detection
+    bool IsFSRActive() const;
 
     // NVIDIA Smooth Motion specific
     bool IsNvidiaSmoothMotionActive() const { return detectedRuntime.load() == FGType::NVIDIA_SM; }

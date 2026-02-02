@@ -140,9 +140,21 @@ void WINAPI CWrapDXGISwapChain::DestructionCallback(void* pData)
     auto* pSwapChain = static_cast<CWrapDXGISwapChain*>(pData);
     if (pSwapChain) {
         WrapperLog("SwapChain: DestructionCallback for wrapper %p", pSwapChain);
+        // CRITICAL FIX: Lock mutex before modifying swapchain pointers
+        // This prevents race conditions with Present() running on another thread
+        std::lock_guard<std::mutex> lock(pSwapChain->m_ResourceLock);
+        
         // Mark that the real swapchain is being destroyed
-        // Actual cleanup happens in Release() when ref count reaches 0
+        // This happens when FSR FG creates a new swapchain
         pSwapChain->m_DestructionCookie = 0;  // Mark as destroyed
+        // CRITICAL: Null out the real swapchain pointer to prevent use-after-free
+        // The wrapper will be cleaned up when its ref count reaches 0
+        pSwapChain->m_pReal = nullptr;
+        pSwapChain->m_pReal1 = nullptr;
+        pSwapChain->m_pReal2 = nullptr;
+        pSwapChain->m_pReal3 = nullptr;
+        pSwapChain->m_pReal4 = nullptr;
+        WrapperLog("SwapChain: Real swapchain pointers nulled out for wrapper %p (mutex protected)", pSwapChain);
     }
 }
 
@@ -404,11 +416,37 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetDevice(REFIID riid, void** ppDe
 
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Flags)
 {
-    // DEBUG: Log every Present call to verify wrapper is being invoked
+    // EXTREME DEBUG: Log entry with full state
+    DWORD threadId = GetCurrentThreadId();
     static std::atomic<int> s_presentCallCount{0};
     int callCount = s_presentCallCount.fetch_add(1);
-    if (callCount < 20 || callCount % 300 == 0) {
-        WrapperLog("Present: CALLED call#%d (m_IsD3D12=%d, flipModel=%d, FG=%d)", 
+    
+    // CRITICAL FIX: Lock mutex to protect swapchain pointer access
+    // This prevents race conditions with DestructionCallback running on another thread
+    std::lock_guard<std::mutex> lock(m_ResourceLock);
+    
+    WrapperLog("[FSR-DEBUG] Present ENTRY #%d - Thread=%lu, m_pReal=%p, m_DestructionCookie=%u, m_IsD3D12=%d", 
+               callCount, threadId, m_pReal, m_DestructionCookie, m_IsD3D12);
+    WrapperLog("[FSR-DEBUG] Present state - fgActive=%d, flipModel=%d, Wrapper=%p", 
+               g_FGCompat.IsFGActive(), m_FlipModel.active, this);
+    
+    // CRITICAL FIX: Check if real swapchain has been destroyed (e.g., by FSR FG recreation)
+    // If so, just pass through to avoid crashes with stale pointer
+    if (!m_pReal || m_DestructionCookie == 0) {
+        // Real swapchain was destroyed, wrapper is now invalid
+        // This happens when FSR FG creates a new swapchain
+        WrapperLog("[FSR-DEBUG] Present: Real swapchain destroyed, passing through (FSR FG swapchain recreation)");
+        if (m_pReal) {
+            WrapperLog("[FSR-DEBUG] Present: Calling m_pReal->Present");
+            return m_pReal->Present(SyncInterval, Flags);
+        }
+        WrapperLog("[FSR-DEBUG] Present: m_pReal is null, returning error");
+        return DXGI_ERROR_INVALID_CALL;
+    }
+
+    // DEBUG: Log every Present call to verify wrapper is being invoked
+    if (callCount < 50) {
+        WrapperLog("[FSR-DEBUG] Present: CALLED call#%d (m_IsD3D12=%d, flipModel=%d, FG=%d)", 
                    callCount, m_IsD3D12, m_FlipModel.active, g_FGCompat.IsFGActive());
     }
     
@@ -466,25 +504,40 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     // This must happen regardless of overlay state - capture works independently
     static int s_CaptureCallCount = 0;
     if (m_IsD3D12) {
-        if (++s_CaptureCallCount <= 5) {
-            WrapperLog("Present #%d: Calling DX12_ProcessFrameExternal", s_CaptureCallCount);
+        int captureNum = ++s_CaptureCallCount;
+        if (captureNum <= 10) {
+            WrapperLog("[FSR-DEBUG] Present: About to call DX12_ProcessFrameExternal #%d, m_pReal=%p", captureNum, m_pReal);
         }
+        
+        // CRITICAL: Call ProcessFrame - this is where crashes often occur with FSR FG
         DX12_ProcessFrameExternal(m_pReal);
+        
+        if (captureNum <= 10) {
+            WrapperLog("[FSR-DEBUG] Present: DX12_ProcessFrameExternal #%d completed successfully", captureNum);
+        }
         
         // DX12: Draw overlay separately (ProcessFrameExternal doesn't draw overlay for DX12)
         static int s_PresentCount = 0;
-        if (++s_PresentCount <= 5) {
-            WrapperLog("Present #%d: m_IsD3D12=%d", s_PresentCount, m_IsD3D12);
+        int presentNum = ++s_PresentCount;
+        if (presentNum <= 10) {
+            WrapperLog("[FSR-DEBUG] Present: About to call DrawOverlay #%d", presentNum);
         }
         DrawOverlay();
+        if (presentNum <= 10) {
+            WrapperLog("[FSR-DEBUG] Present: DrawOverlay #%d completed successfully", presentNum);
+        }
     } else {
         // DX11/DX10: Call DX11_ProcessFrameExternal for capture AND overlay
         // NOTE: DX11_ProcessFrameExternal already calls DrawDX11Overlay internally,
         // so we do NOT call DrawOverlay() here to avoid double-counting frames
-        if (++s_CaptureCallCount <= 5) {
-            WrapperLog("Present #%d: Calling DX11_ProcessFrameExternal", s_CaptureCallCount);
+        int captureNum = ++s_CaptureCallCount;
+        if (captureNum <= 10) {
+            WrapperLog("[FSR-DEBUG] Present: About to call DX11_ProcessFrameExternal #%d, m_pReal=%p", captureNum, m_pReal);
         }
         DX11_ProcessFrameExternal(m_pReal);
+        if (captureNum <= 10) {
+            WrapperLog("[FSR-DEBUG] Present: DX11_ProcessFrameExternal #%d completed successfully", captureNum);
+        }
     }
     
     HRESULT hr = m_pReal->Present(SyncInterval, Flags);

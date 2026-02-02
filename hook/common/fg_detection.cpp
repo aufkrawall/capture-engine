@@ -86,7 +86,11 @@ FGCompatibility::FGType FGCompatibility::DetectLoadedFGRuntime()
 
     if (fsrFg || ffxFrameInterp) {
         result = FGType::FSR_FG;
-        HookLog("FG: Detected FSR FG DLL (amd_fidelityfx_fg=%p, ffx_frameinterpolation=%p)", fsrFg, ffxFrameInterp);
+        static bool s_loggedFSR = false;
+        if (!s_loggedFSR) {
+            HookLog("FG: Detected FSR FG DLL (amd_fidelityfx_fg=%p, ffx_frameinterpolation=%p) - FSR ACTIVE", fsrFg, ffxFrameInterp);
+            s_loggedFSR = true;
+        }
         // CRITICAL: FSR FG takes priority - don't check for DLSS to avoid conflicts
         // When both are loaded, trust FSR detection (game likely uses FSR FG)
     } else if (ffxFsr3) {
@@ -392,6 +396,13 @@ bool FGCompatibility::IsFGActive() const
     }
 
     return false;
+}
+
+bool FGCompatibility::IsFSRActive() const
+{
+    // Check if FSR FG DLLs are loaded
+    auto runtime = detectedRuntime.load();
+    return (runtime == FGType::FSR_FG);
 }
 
 void FGCompatibility::OnSwapchainRecreation()

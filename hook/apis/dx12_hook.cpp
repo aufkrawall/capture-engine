@@ -282,10 +282,26 @@ __declspec(dllexport) void DX12_AdjustWrapperResizeDepth(int delta)
         DXGIShared::g_SharedState.wrapperResizeDepth.fetch_sub(-delta);
 }
 
+// Forward declaration for immediate ImGui shutdown during swapchain invalidation
+void ShutdownImGui();
+
 __declspec(dllexport) void DX12_InvalidateSwapchain()
 {
     DXGIShared::g_SharedState.swapchainInvalid.store(true, std::memory_order_release);
-    HookLog("DX12: Swapchain marked INVALID");
+    HookLog("DX12: Swapchain marked INVALID (FSR/FG transition detected)");
+    // Log current state for debugging
+    HookLog("DX12: Invalidating - imGuiInit=%d, syncInit=%d, device=%p, queue=%p", 
+            g_State.imGuiInit, g_State.syncInit, g_Device, g_CommandQueue);
+    
+    // CRITICAL FIX: Defer ImGui cleanup to next frame to avoid interfering with FSR swapchain creation
+    // FSR FG is sensitive to D3D12 operations during its swapchain setup
+    // Don't call ShutdownImGui() here - let ProcessFrame handle it on the next present
+    if (g_State.imGuiInit) {
+        HookLog("DX12: Deferring ImGui shutdown to next frame (avoiding FSR swapchain conflict)");
+        // Just mark as needing reinit - don't actually clean up resources yet
+        g_State.imGuiInit = false;
+        g_State.syncInit = false;
+    }
 }
 
 __declspec(dllexport) void DX12_SignalFSR4SwapchainRecreated()
@@ -334,9 +350,10 @@ __declspec(dllexport) void DX12_NotifyCommandLists(UINT numCommandLists)
 }
 
 void DX12_OnSwapchainResizeEnd();
-void DX12_OnSwapchainResizeBegin();
 void CleanupOverlay();
 void CleanupRTVs();
+void ShutdownImGui();
+void DX12_InvalidateSwapchain();
 
 // Helper to ensure global hook instance exists
 void EnsureDX12Hook()
@@ -419,33 +436,10 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
                                                                       const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFDesc,
                                                                       IDXGIOutput* pOut, IDXGISwapChain1** ppSC)
 {
-    HookLog("DX12: Global CreateSwapChainForHwnd hook called");
-    
-    // CRITICAL: Hook the command queue vtable to track command list execution
-    // The pDevice passed to CreateSwapChainForHwnd is actually the command queue for D3D12
-    if (pDevice) {
-        ID3D12CommandQueue* q = nullptr;
-        if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&q)))) {
-            DX12_HookQueueVTable(q);
-            HookLog("DX12: Global hook (ForHwnd) - Command queue vtable hooked");
-            q->Release();
-        }
-    }
-    
-    // Call original
-    HRESULT hr = oCreateSwapChainForHwndGlobal(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
-    
-    if (SUCCEEDED(hr) && ppSC && *ppSC) {
-        // Hook the swapchain's vtable
-        IDXGISwapChain3* sc3 = nullptr;
-        if (SUCCEEDED((*ppSC)->QueryInterface(IID_PPV_ARGS(&sc3)))) {
-            DXGIShared::InstallHooks(sc3);
-            sc3->Release();
-            HookLog("DX12: Global hook installed on swapchain (ForHwnd)");
-        }
-    }
-    
-    return hr;
+    // CRITICAL FIX: Just pass through to original - don't do ANYTHING that could interfere with FSR FG
+    // FSR FG is extremely sensitive to any hook activity during swapchain creation
+    // We'll detect the new swapchain on the first Present call instead
+    return oCreateSwapChainForHwndGlobal(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
 }
 
 // Install global hooks on the DXGI factory to catch ALL swapchain creation
@@ -1193,6 +1187,21 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture)
     // CRITICAL FIX: Don't initialize ImGui during FG suspension
     // This prevents initialization with potentially unstable frame generation state
     if (!g_State.imGuiInit && !isSuspended) {
+        // CRITICAL FIX: Clean up any existing ImGui context from previous swapchain
+        // This happens when FSR FG recreates the swapchain and we deferred cleanup
+        // MUST hold mutex to prevent race with DrawOverlay
+        if (ImGui::GetCurrentContext()) {
+            std::lock_guard<std::recursive_mutex> cleanupLock(g_InitImGuiMutex);
+            HookLog("DX12: ProcessFrame - cleaning up stale ImGui context before reinit (mutex held)");
+            ImGui_ImplDX12_Shutdown();
+            ImGui_ImplWin32_Shutdown();
+            ImGui::DestroyContext(ImGui::GetCurrentContext());
+            g_SharedOverlay.ForceReinit();
+            CleanupOverlay();
+            CleanupRTVs();
+            HookLog("DX12: ProcessFrame - cleanup complete, proceeding with init");
+        }
+        
         DXGI_SWAP_CHAIN_DESC desc;
         if (SUCCEEDED(pSwapChain->GetDesc(&desc))) {
             g_State.cachedWidth = desc.BufferDesc.Width;
