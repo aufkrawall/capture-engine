@@ -64,6 +64,35 @@ bool IsInWrapperPresent()
     return g_InWrapperPresent;
 }
 
+// FSR Frame Generation detection helpers
+static bool IsFSRFrameGenerationActive()
+{
+    static HMODULE fsrFgDll = nullptr;
+    static bool checked = false;
+    if (!checked) {
+        fsrFgDll = GetModuleHandleW(L"amd_fidelityfx_fg.dll");
+        if (!fsrFgDll) fsrFgDll = GetModuleHandleW(L"ffx_fsr3upscaler_x64.dll");
+        if (!fsrFgDll) fsrFgDll = GetModuleHandleW(L"ffx_frameinterpolation_x64.dll");
+        checked = true;
+    }
+    return fsrFgDll != nullptr;
+}
+
+// Check if this swapchain is likely an FSR internal swapchain
+bool CWrapDXGISwapChain::IsFSRInternalSwapchain()
+{
+    // If FSR FG is not active, this can't be an FSR internal swapchain
+    if (!IsFSRFrameGenerationActive()) return false;
+    
+    // FSR internal swapchains typically don't have a window handle
+    if (!m_hWnd || m_hWnd == nullptr) {
+        WrapperLog("[FSR-DEBUG] Swapchain %p has no window handle, possible FSR internal", this);
+        return true;
+    }
+    
+    return false;
+}
+
 // ============================================================================
 // Constructor / Destructor
 // ============================================================================
@@ -140,13 +169,23 @@ void WINAPI CWrapDXGISwapChain::DestructionCallback(void* pData)
     auto* pSwapChain = static_cast<CWrapDXGISwapChain*>(pData);
     if (pSwapChain) {
         WrapperLog("SwapChain: DestructionCallback for wrapper %p", pSwapChain);
+        
+        // CRITICAL FIX: Check if Present() is still using the swapchain
+        // Wait for refs to drop to 1 (only the callback itself)
+        int attempts = 0;
+        while (pSwapChain->m_RealSwapchainRefs.load() > 1 && attempts < 100) {
+            Sleep(1);  // Wait 1ms
+            attempts++;
+        }
+        
         // CRITICAL FIX: Lock mutex before modifying swapchain pointers
         // This prevents race conditions with Present() running on another thread
         std::lock_guard<std::mutex> lock(pSwapChain->m_ResourceLock);
         
         // Mark that the real swapchain is being destroyed
         // This happens when FSR FG creates a new swapchain
-        pSwapChain->m_DestructionCookie = 0;  // Mark as destroyed
+        pSwapChain->m_SwapchainDestroyed.store(true);  // Mark as destroyed
+        
         // CRITICAL: Null out the real swapchain pointer to prevent use-after-free
         // The wrapper will be cleaned up when its ref count reaches 0
         pSwapChain->m_pReal = nullptr;
@@ -154,7 +193,9 @@ void WINAPI CWrapDXGISwapChain::DestructionCallback(void* pData)
         pSwapChain->m_pReal2 = nullptr;
         pSwapChain->m_pReal3 = nullptr;
         pSwapChain->m_pReal4 = nullptr;
-        WrapperLog("SwapChain: Real swapchain pointers nulled out for wrapper %p (mutex protected)", pSwapChain);
+        pSwapChain->m_pRealCached = nullptr;
+        WrapperLog("SwapChain: Real swapchain pointers nulled out for wrapper %p (mutex protected, waited %d ms)", 
+                   pSwapChain, attempts);
     }
 }
 
@@ -350,6 +391,7 @@ ULONG STDMETHODCALLTYPE CWrapDXGISwapChain::AddRef()
     // Also AddRef the real swapchain to track total references
     if (m_pReal) {
         m_pReal->AddRef();
+        m_RealSwapchainRefs.fetch_add(1);
     }
     return refs;
 }
@@ -368,6 +410,7 @@ ULONG STDMETHODCALLTYPE CWrapDXGISwapChain::Release()
     ULONG refs = 0;
     if (m_pReal) {
         refs = m_pReal->Release();
+        m_RealSwapchainRefs.fetch_sub(1);
     }
     
     // Only delete when both external refs AND real swapchain refs are 0
@@ -425,23 +468,37 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     // This prevents race conditions with DestructionCallback running on another thread
     std::lock_guard<std::mutex> lock(m_ResourceLock);
     
+    // CRITICAL FIX: Cache the pointer while holding the mutex
+    // This ensures we have a valid pointer even if DestructionCallback nulls m_pReal
+    IDXGISwapChain* pRealCached = m_pReal;
+    m_pRealCached = pRealCached;  // Store for potential future use
+    
     WrapperLog("[FSR-DEBUG] Present ENTRY #%d - Thread=%lu, m_pReal=%p, m_DestructionCookie=%u, m_IsD3D12=%d", 
-               callCount, threadId, m_pReal, m_DestructionCookie, m_IsD3D12);
+               callCount, threadId, pRealCached, m_DestructionCookie, m_IsD3D12);
     WrapperLog("[FSR-DEBUG] Present state - fgActive=%d, flipModel=%d, Wrapper=%p", 
                g_FGCompat.IsFGActive(), m_FlipModel.active, this);
     
     // CRITICAL FIX: Check if real swapchain has been destroyed (e.g., by FSR FG recreation)
     // If so, just pass through to avoid crashes with stale pointer
-    if (!m_pReal || m_DestructionCookie == 0) {
+    if (!pRealCached || m_SwapchainDestroyed.load()) {
         // Real swapchain was destroyed, wrapper is now invalid
         // This happens when FSR FG creates a new swapchain
         WrapperLog("[FSR-DEBUG] Present: Real swapchain destroyed, passing through (FSR FG swapchain recreation)");
-        if (m_pReal) {
-            WrapperLog("[FSR-DEBUG] Present: Calling m_pReal->Present");
-            return m_pReal->Present(SyncInterval, Flags);
+        if (pRealCached) {
+            WrapperLog("[FSR-DEBUG] Present: Calling pRealCached->Present (destruction pending)");
+            return pRealCached->Present(SyncInterval, Flags);
         }
-        WrapperLog("[FSR-DEBUG] Present: m_pReal is null, returning error");
+        WrapperLog("[FSR-DEBUG] Present: pRealCached is null, returning error");
         return DXGI_ERROR_INVALID_CALL;
+    }
+
+    // FSR FG FIX: Skip overlay processing on FSR internal swapchains
+    // FSR creates internal swapchains for frame generation that we should not interfere with
+    if (IsFSRInternalSwapchain()) {
+        WrapperLog("[FSR-DEBUG] Present: Skipping FSR internal swapchain processing");
+        HRESULT hr = pRealCached->Present(SyncInterval, Flags);
+        g_InWrapperPresent = false;
+        return hr;
     }
 
     // DEBUG: Log every Present call to verify wrapper is being invoked
@@ -469,7 +526,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     DWORD currentId = GetCurrentThreadId();
     if (s_presentDepth.load() > 0 && s_presentThreadId.load() == currentId) {
         WrapperLog("Present: Recursion detected, passing through to real swapchain");
-        return m_pReal->Present(SyncInterval, Flags);
+        return pRealCached->Present(SyncInterval, Flags);
     }
     s_presentThreadId.store(currentId);
     s_presentDepth.fetch_add(1);
@@ -506,11 +563,11 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     if (m_IsD3D12) {
         int captureNum = ++s_CaptureCallCount;
         if (captureNum <= 10) {
-            WrapperLog("[FSR-DEBUG] Present: About to call DX12_ProcessFrameExternal #%d, m_pReal=%p", captureNum, m_pReal);
+            WrapperLog("[FSR-DEBUG] Present: About to call DX12_ProcessFrameExternal #%d, pRealCached=%p", captureNum, pRealCached);
         }
         
         // CRITICAL: Call ProcessFrame - this is where crashes often occur with FSR FG
-        DX12_ProcessFrameExternal(m_pReal);
+        DX12_ProcessFrameExternal(pRealCached);
         
         if (captureNum <= 10) {
             WrapperLog("[FSR-DEBUG] Present: DX12_ProcessFrameExternal #%d completed successfully", captureNum);
@@ -532,15 +589,15 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         // so we do NOT call DrawOverlay() here to avoid double-counting frames
         int captureNum = ++s_CaptureCallCount;
         if (captureNum <= 10) {
-            WrapperLog("[FSR-DEBUG] Present: About to call DX11_ProcessFrameExternal #%d, m_pReal=%p", captureNum, m_pReal);
+            WrapperLog("[FSR-DEBUG] Present: About to call DX11_ProcessFrameExternal #%d, pRealCached=%p", captureNum, pRealCached);
         }
-        DX11_ProcessFrameExternal(m_pReal);
+        DX11_ProcessFrameExternal(pRealCached);
         if (captureNum <= 10) {
             WrapperLog("[FSR-DEBUG] Present: DX11_ProcessFrameExternal #%d completed successfully", captureNum);
         }
     }
     
-    HRESULT hr = m_pReal->Present(SyncInterval, Flags);
+    HRESULT hr = pRealCached->Present(SyncInterval, Flags);
     
     // Clear wrapper Present flag
     g_InWrapperPresent = false;
@@ -671,12 +728,21 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetCoreWindow(REFIID refiid, void*
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT PresentFlags,
                                                        const DXGI_PRESENT_PARAMETERS* pPresentParameters)
 {
+    // CRITICAL FIX: Lock mutex to protect swapchain pointer access
+    std::lock_guard<std::mutex> lock(m_ResourceLock);
+    
+    // CRITICAL FIX: Cache the pointer while holding the mutex
+    IDXGISwapChain1* pReal1Cached = m_pReal1;
+    if (!pReal1Cached) {
+        return DXGI_ERROR_INVALID_CALL;
+    }
+    
     // RECURSION GUARD: Prevent infinite recursion with Steam/other overlays
     static std::atomic<DWORD> s_present1ThreadId{0};
     static std::atomic<int> s_present1Depth{0};
     DWORD currentId = GetCurrentThreadId();
     if (s_present1Depth.load() > 0 && s_present1ThreadId.load() == currentId) {
-        return m_pReal1->Present1(SyncInterval, PresentFlags, pPresentParameters);
+        return pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters);
     }
     s_present1ThreadId.store(currentId);
     s_present1Depth.fetch_add(1);
@@ -702,17 +768,18 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     // CRITICAL: Process frame for capture BEFORE calling real Present
     // This must happen regardless of overlay state - capture works independently
     if (m_IsD3D12) {
-        DX12_ProcessFrameExternal(m_pReal);
+        // Use base interface for ProcessFrameExternal (it takes IDXGISwapChain*)
+        DX12_ProcessFrameExternal(pReal1Cached);
         // DX12: Draw overlay separately (ProcessFrameExternal doesn't draw overlay for DX12)
         DrawOverlay();
     } else {
         // DX11/DX10: Call DX11_ProcessFrameExternal for capture AND overlay
         // NOTE: DX11_ProcessFrameExternal already calls DrawDX11Overlay internally,
         // so we do NOT call DrawOverlay() here to avoid double-counting frames
-        DX11_ProcessFrameExternal(m_pReal);
+        DX11_ProcessFrameExternal(pReal1Cached);
     }
     
-    HRESULT hr = m_pReal1->Present1(SyncInterval, PresentFlags, pPresentParameters);
+    HRESULT hr = pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters);
     
     // Clear wrapper Present flag
     g_InWrapperPresent = false;

@@ -11,6 +11,7 @@
 // Vulkan hook removed - using VK_LAYER_CE_overlay (ICD layer approach) instead
 #include "../common/crash_handler.h"
 #include "apis/nvngx_hook.h"
+#include "apis/ffx_hook.h"  // FSR Frame Generation hook
 #include "capture/shared_capture.h"
 #include "common/fg_detection.h"
 #include "common/hook_common.h"
@@ -894,14 +895,23 @@ void CheckAndInstallHooks()
     // No hooking needed - the layer is loaded automatically by the Vulkan loader
 
     // Check for Frame Generation Runtimes (Startup Safety)
-    // If FG is loaded, we MUST suspend overlay immediately to avoid startup crashes
+    // With usage-based detection, we no longer need to suspend overlay at startup
+    // The FFX/NGX hooks will signal when FG is actually activated
     static bool fgDetected = false;
     if (!fgDetected) {
         FGCompatibility::FGType fgType = g_FGCompat.DetectLoadedFGRuntime();
         if (fgType != FGCompatibility::FGType::None) {
             HookLog("Main: FG Runtime detected via LoadLibrary (type=%d)", (int)fgType);
-            g_FGCompat.SuspendFor(500);  // Allow FG to initialize before overlay
+            // REMOVED: g_FGCompat.SuspendFor(500) - no longer needed with usage-based detection
+            // Usage-based detection (FFX/NGX hooks) will signal actual FG activation
             fgDetected = true;
+            
+            // CRITICAL: Always initialize FFX hooks when ANY FG DLLs are detected
+            // dlssg-to-fsr3 mod loads DLSS DLLs (nvngx_dlssg.dll, sl.dlss_g.dll) 
+            // but actually runs FSR FG via ffxCreateContext under the hood
+            // So we must hook FFX API regardless of whether detection says DLSS_FG or FSR_FG
+            HookLog("Main: Initializing FFX hooks (dlssg-to-fsr3 compatibility)...");
+            FFXHook::Init();
             
             // CRITICAL FIX: Re-hook DXGI after DLSS FG detection
             // Streamline loads after game start and may intercept DXGI calls.

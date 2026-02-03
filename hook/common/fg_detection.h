@@ -59,6 +59,19 @@ public:
     // Debug
     const char* GetFGTypeName(FGType type) const;
     void LogStatus() const;
+    
+    // =========================================================================
+    // Usage-based FG activation (set by API hooks, not DLL detection)
+    // These are called by nvngx_hook and ffx_hook when FG is actually
+    // created/destroyed, not just when DLLs are loaded.
+    // =========================================================================
+    void SetDLSSFGActive(bool active);
+    void SetFSRFGActive(bool active);
+    bool IsDLSSFGApiActive() const { return dlssFGApiActive.load(std::memory_order_acquire); }
+    bool IsFSRFGApiActive() const { return fsrFGApiActive.load(std::memory_order_acquire); }
+    
+    // Get the actual FG type based on API activation (not DLL detection)
+    FGType GetActiveFGType() const;
 
 private:
     // DLL-based detection result
@@ -101,6 +114,10 @@ private:
     std::atomic<int> nvidiaSMConfirmCount{0};
     static constexpr int NVIDIA_SM_CONFIRM_THRESHOLD = 3;  // Need 3 consecutive detections
 
+    // Usage-based FG activation flags (set by API hooks)
+    std::atomic<bool> dlssFGApiActive{false};
+    std::atomic<bool> fsrFGApiActive{false};
+
     // Internal methods
     void UpdateMetrics();
     void DetectPattern();
@@ -109,3 +126,9 @@ private:
 
 // Global instance
 extern FGCompatibility g_FGCompat;
+
+// C-linkage exports for cross-module hooks
+extern "C" {
+    __declspec(dllexport) void FG_SetDLSSActive(bool active);
+    __declspec(dllexport) void FG_SetFSRActive(bool active);
+}

@@ -80,19 +80,37 @@ FGCompatibility::FGType FGCompatibility::DetectLoadedFGRuntime()
     FGType result = FGType::None;
 
     // Check for FSR FG DLLs FIRST (Prioritize detection to avoid wrapper usage if FSR is present)
+    // FSR 3.0 DLLs
     HMODULE fsrFg = GetModuleHandleW(L"amd_fidelityfx_fg.dll");
-    HMODULE ffxFsr3 = GetModuleHandleW(L"ffx_fsr3upscaler_x64.dll");
     HMODULE ffxFrameInterp = GetModuleHandleW(L"ffx_frameinterpolation_x64.dll");
+    HMODULE ffxFsr3 = GetModuleHandleW(L"ffx_fsr3upscaler_x64.dll");
+    // FSR 3.1 / FSR 4 DLLs (UE5 native integration)
+    HMODULE fsrFg4 = GetModuleHandleW(L"amd_fidelityfx_framegeneration_dx12.dll");
+    HMODULE fsrFg4_vk = GetModuleHandleW(L"amd_fidelityfx_framegeneration_vk.dll");
+    // Generic FSR FG DLLs
+    HMODULE ffxFG = GetModuleHandleW(L"amd_fidelityfx_framegeneration.dll");
+    // dlssg-to-fsr3 mod DLLs
+    HMODULE dlssgToFsr3 = GetModuleHandleW(L"dlssg_to_fsr3_amd_is_better.dll");
+    HMODULE dlssgToFsr3_2 = GetModuleHandleW(L"dlssg_to_fsr3.dll");
 
-    if (fsrFg || ffxFrameInterp) {
+    if (fsrFg || ffxFrameInterp || fsrFg4 || fsrFg4_vk || ffxFG) {
         result = FGType::FSR_FG;
         static bool s_loggedFSR = false;
         if (!s_loggedFSR) {
-            HookLog("FG: Detected FSR FG DLL (amd_fidelityfx_fg=%p, ffx_frameinterpolation=%p) - FSR ACTIVE", fsrFg, ffxFrameInterp);
+            HookLog("FG: Detected FSR FG DLL (amd_fidelityfx_fg=%p, ffx_frameinterp=%p, fg_dx12=%p, fg_vk=%p, fg_generic=%p) - FSR CAPABLE", 
+                    fsrFg, ffxFrameInterp, fsrFg4, fsrFg4_vk, ffxFG);
             s_loggedFSR = true;
         }
         // CRITICAL: FSR FG takes priority - don't check for DLSS to avoid conflicts
         // When both are loaded, trust FSR detection (game likely uses FSR FG)
+    } else if (dlssgToFsr3 || dlssgToFsr3_2) {
+        // dlssg-to-fsr3 mod detected - FSR FG is actually doing the work
+        result = FGType::FSR_FG;
+        static bool s_loggedDlssgFsr3 = false;
+        if (!s_loggedDlssgFsr3) {
+            HookLog("FG: Detected dlssg-to-fsr3 mod (%p, %p) - Treating as FSR FG", dlssgToFsr3, dlssgToFsr3_2);
+            s_loggedDlssgFsr3 = true;
+        }
     } else if (ffxFsr3) {
         // FSR3 upscaler often implies FG capability in FSR3 games
         result = FGType::FSR_FG;
@@ -105,14 +123,69 @@ FGCompatibility::FGType FGCompatibility::DetectLoadedFGRuntime()
         HMODULE streamline = GetModuleHandleW(L"sl.interposer.dll");
 
         if (dlssg || slDlssG) {
+            // CRITICAL: Only report DLSS FG if we actually see frame generation activity
+            // Streamline/DLSS DLLs may be loaded for other features (upscaling, Reflex)
+            // We'll do initial detection here but verify with behavioral check below
             result = FGType::DLSS_FG;
-            HookLog("FG: Detected DLSS FG DLL (nvngx_dlssg=%p, sl.dlss_g=%p)", dlssg, slDlssG);
+            static bool s_loggedDLSSG = false;
+            if (!s_loggedDLSSG) {
+                HookLog("FG: Detected DLSS FG DLL (nvngx_dlssg=%p, sl.dlss_g=%p) - DLSS FG CAPABLE", dlssg, slDlssG);
+                HookLog("FG: Note: Streamline/DLSS loaded, but FG may not be active yet");
+                s_loggedDLSSG = true;
+            }
         }
 
         if (streamline) {
-            HookLog("FG: Streamline interposer detected (%p) - DLSS FG likely", streamline);
+            // Streamline is a framework with many features (FG, upscaling, Reflex, etc.)
+            // Don't assume FG is active just because Streamline is loaded
+            static bool s_loggedStreamline = false;
+            if (!s_loggedStreamline) {
+                HookLog("FG: Streamline interposer detected (%p) - Framework loaded", streamline);
+                s_loggedStreamline = true;
+            }
+            // Only set DLSS_FG if we haven't detected anything else AND we see actual FG activity
             if (result == FGType::None) {
-                result = FGType::DLSS_FG;
+                // Don't auto-set to DLSS_FG just because Streamline is present
+                // Wait for behavioral detection to confirm FG is actually active
+                HookLog("FG: Streamline present but no specific FG runtime detected yet");
+            }
+        }
+
+        // BEHAVIORAL VERIFICATION: Don't trust DLL detection alone
+        // Check if we actually see frame generation patterns (2x frame rate with interpolated frames)
+        static int s_behavioralCheckCounter = 0;
+        s_behavioralCheckCounter++;
+        
+        // Every 60 frames, verify if FG is actually active based on frame patterns
+        if (s_behavioralCheckCounter >= 60) {
+            s_behavioralCheckCounter = 0;
+            
+            int multiplier = cachedMultiplier.load();
+            float outputFPS = cachedOutputFPS.load();
+            float baseFPS = cachedBaseFPS.load();
+            
+            // FG is actually active if:
+            // 1. Multiplier >= 2 (we see 2x or more frames)
+            // 2. Output FPS is significantly higher than base FPS
+            bool fgActuallyActive = (multiplier >= 2) && (outputFPS > baseFPS * 1.5f);
+            
+            if (result == FGType::DLSS_FG && !fgActuallyActive) {
+                // DLSS FG DLLs loaded but no actual FG activity detected
+                static bool s_loggedInactive = false;
+                if (!s_loggedInactive) {
+                    HookLog("FG: DLSS FG DLLs loaded but no FG activity detected (multiplier=%d, output=%.1f, base=%.1f)",
+                            multiplier, outputFPS, baseFPS);
+                    HookLog("FG: Treating as DLSS_FG INACTIVE - may be using upscaling only");
+                    s_loggedInactive = true;
+                }
+                // Keep result as DLSS_FG but the overlay system should check behavioral metrics
+            } else if (result == FGType::DLSS_FG && fgActuallyActive) {
+                static bool s_loggedActive = false;
+                if (!s_loggedActive) {
+                    HookLog("FG: DLSS FG CONFIRMED ACTIVE (multiplier=%d, output=%.1f, base=%.1f)",
+                            multiplier, outputFPS, baseFPS);
+                    s_loggedActive = true;
+                }
             }
         }
     }
@@ -160,10 +233,14 @@ void FGCompatibility::RecordFrame(int commandListsExecuted)
     int logCount = debugLogCounter.fetch_add(1);
     // Log every 300 frames to reduce spam but still provide diagnostic info
     if (logCount < 20 || (logCount % 300 == 0)) {
-        FGType type = detectedRuntime.load();
-        HookLog("Frame #%d: cmdLists=%d, isReal=%d, fgRuntime=%s, consReal=%d, consInterp=%d", total,
-                 commandListsExecuted, isRealFrame ? 1 : 0, GetFGTypeName(type), consecutiveRealFrames.load(),
-                 consecutiveInterpolatedFrames.load());
+        FGType dllType = detectedRuntime.load();
+        FGType activeType = GetActiveFGType();
+        // Log both: DLL-detected type and actual active type (API-confirmed)
+        HookLog("Frame #%d: cmdLists=%d, isReal=%d, dllFG=%s, activeType=%s, apiDLSS=%d, apiFSR=%d, consReal=%d, consInterp=%d", 
+                total, commandListsExecuted, isRealFrame ? 1 : 0, 
+                GetFGTypeName(dllType), GetFGTypeName(activeType),
+                dlssFGApiActive.load() ? 1 : 0, fsrFGApiActive.load() ? 1 : 0,
+                consecutiveRealFrames.load(), consecutiveInterpolatedFrames.load());
     }
 
     // Update metrics every 30 frames
@@ -368,41 +445,50 @@ void FGCompatibility::DetectPattern()
 bool FGCompatibility::IsFGActive() const
 {
     // FG is active if:
-    // 1. FG DLLs are loaded (runtime detected)
-    // 2. Output FPS is high enough to suggest frame generation (> 100 FPS typically)
-    // 3. Behavioral detection indicates NVIDIA Smooth Motion (driver-level FG)
+    // 1. API hooks confirm FG is active (most reliable)
+    // 2. Behavioral detection shows multiplier >= 2 (interpolated frames seen)
+    // 3. NVIDIA Smooth Motion detected behaviorally
+    //
+    // IMPORTANT: DLL presence alone does NOT mean FG is active!
+    // Games can load DLSS/FSR DLLs without enabling Frame Generation.
+    // High FPS alone also doesn't mean FG is active (could just be fast GPU).
 
+    // Check API-based detection first (most reliable)
+    if (dlssFGApiActive.load(std::memory_order_acquire)) {
+        return true;  // DLSS FG confirmed via NGX CreateFeature hook
+    }
+    if (fsrFGApiActive.load(std::memory_order_acquire)) {
+        return true;  // FSR FG confirmed via FFX CreateContext hook
+    }
+
+    // Check behavioral detection (NVIDIA Smooth Motion)
     auto behavior = activeBehavior.load();
-    
-    // Check if NVIDIA Smooth Motion is active (detected behaviorally)
     if (behavior == FGType::NVIDIA_SM) {
         return cachedMultiplier.load() >= 2;
     }
 
-    auto runtime = detectedRuntime.load();
-    if (runtime == FGType::None) {
-        return false;  // No FG DLLs loaded
-    }
-
-    // Check if multiplier detected (traditional detection)
+    // Check if frame multiplier detected (interpolated frames seen)
+    // This is the most reliable behavioral indicator
     if (cachedMultiplier.load() >= 2) {
         return true;
     }
 
-    // FPS-based heuristic: if output FPS > 100 with FG DLLs loaded, likely active
-    float outputFPS = cachedOutputFPS.load();
-    if (outputFPS > 100.0f) {
-        return true;
-    }
+    // REMOVED: FPS-based heuristic that assumed FG active if FPS > 100
+    // This caused false positives when DLSS DLLs were loaded but FSR FG was active
+    // High FPS alone doesn't mean FG is active!
 
     return false;
 }
 
 bool FGCompatibility::IsFSRActive() const
 {
-    // Check if FSR FG DLLs are loaded
-    auto runtime = detectedRuntime.load();
-    return (runtime == FGType::FSR_FG);
+    // Prefer usage-based detection (API hooks) over DLL detection
+    if (fsrFGApiActive.load(std::memory_order_acquire)) {
+        return true;
+    }
+    // Fallback to DLL-based detection
+    FGType detected = detectedRuntime.load(std::memory_order_acquire);
+    return (detected == FGType::FSR_FG);
 }
 
 void FGCompatibility::OnSwapchainRecreation()
@@ -474,4 +560,94 @@ bool FGCompatibility::IsSuspended() const
     int64_t now = (qpc.QuadPart * 1000000) / qpcFreq;
 
     return now < suspendUntil;
+}
+
+// =========================================================================
+// Usage-based FG activation implementation
+// These are called by API hooks (nvngx_hook, ffx_hook) when FG features
+// are actually created/destroyed, providing accurate detection vs DLL presence
+// =========================================================================
+
+void FGCompatibility::SetDLSSFGActive(bool active)
+{
+    bool prev = dlssFGApiActive.exchange(active, std::memory_order_acq_rel);
+    if (prev != active) {
+        HookLog("FG: DLSS FG API activation changed: %s -> %s", 
+                prev ? "ACTIVE" : "INACTIVE", 
+                active ? "ACTIVE" : "INACTIVE");
+        
+        if (active) {
+            // DLSS FG activated - update runtime type
+            detectedRuntime.store(FGType::DLSS_FG, std::memory_order_release);
+            HookLog("FG: DLSS Frame Generation ACTIVATED via NGX CreateFeature");
+        } else {
+            // DLSS FG deactivated - check if FSR FG is still active
+            if (!fsrFGApiActive.load(std::memory_order_acquire)) {
+                detectedRuntime.store(FGType::None, std::memory_order_release);
+                HookLog("FG: DLSS Frame Generation DEACTIVATED via NGX ReleaseFeature");
+            }
+        }
+    }
+}
+
+void FGCompatibility::SetFSRFGActive(bool active)
+{
+    bool prev = fsrFGApiActive.exchange(active, std::memory_order_acq_rel);
+    if (prev != active) {
+        HookLog("FG: FSR FG API activation changed: %s -> %s", 
+                prev ? "ACTIVE" : "INACTIVE", 
+                active ? "ACTIVE" : "INACTIVE");
+        
+        if (active) {
+            // FSR FG activated - update runtime type
+            // FSR takes priority over DLSS if both somehow active
+            detectedRuntime.store(FGType::FSR_FG, std::memory_order_release);
+            HookLog("FG: FSR Frame Generation ACTIVATED via FFX CreateContext");
+        } else {
+            // FSR FG deactivated - check if DLSS FG is still active
+            if (!dlssFGApiActive.load(std::memory_order_acquire)) {
+                detectedRuntime.store(FGType::None, std::memory_order_release);
+                HookLog("FG: FSR Frame Generation DEACTIVATED via FFX DestroyContext");
+            } else {
+                // DLSS FG still active, switch back to it
+                detectedRuntime.store(FGType::DLSS_FG, std::memory_order_release);
+                HookLog("FG: FSR FG deactivated, but DLSS FG still active");
+            }
+        }
+    }
+}
+
+FGCompatibility::FGType FGCompatibility::GetActiveFGType() const
+{
+    // Priority: Usage-based detection > DLL-based detection
+    // This gives accurate results when DLLs are loaded but FG isn't active
+    
+    if (fsrFGApiActive.load(std::memory_order_acquire)) {
+        return FGType::FSR_FG;
+    }
+    if (dlssFGApiActive.load(std::memory_order_acquire)) {
+        return FGType::DLSS_FG;
+    }
+    
+    // Fallback to behavioral/DLL-based detection
+    return activeBehavior.load(std::memory_order_acquire);
+}
+
+// =========================================================================
+// C-linkage exports for cross-module hooks
+// These allow nvngx_hook and ffx_hook to call FG activation setters
+// =========================================================================
+
+extern "C" {
+
+__declspec(dllexport) void FG_SetDLSSActive(bool active)
+{
+    g_FGCompat.SetDLSSFGActive(active);
+}
+
+__declspec(dllexport) void FG_SetFSRActive(bool active)
+{
+    g_FGCompat.SetFSRFGActive(active);
+}
+
 }

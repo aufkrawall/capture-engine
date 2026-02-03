@@ -137,6 +137,9 @@ private:
     // Reference count
     LONG m_RefCount;
 
+    // Atomic reference count for real swapchain lifetime tracking
+    std::atomic<int> m_RealSwapchainRefs{0};
+
     // Window handle
     HWND m_hWnd;
 
@@ -146,6 +149,10 @@ private:
     // Resource protection
     std::mutex m_ResourceLock;
     std::atomic<bool> m_OverlayResourcesValid;
+
+    // Cached safe pointer for Present() operation
+    // Set under m_ResourceLock before releasing mutex
+    IDXGISwapChain* m_pRealCached = nullptr;
 
     // Overlay state
     bool m_IsD3D12;
@@ -159,6 +166,7 @@ private:
     
     // Destruction notification (DXGI 1.4+)
     UINT m_DestructionCookie = 0;
+    std::atomic<bool> m_SwapchainDestroyed{false};
     static void WINAPI DestructionCallback(void* pData);
     HRESULT RegisterDestructionCallback();
     
@@ -177,4 +185,5 @@ private:
     void PromoteInterfaces();
     void CleanupOverlayResources();
     void DrawOverlay();
+    bool IsFSRInternalSwapchain();  // FSR FG internal swapchain detection
 };
