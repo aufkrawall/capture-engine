@@ -13,10 +13,12 @@ extern void HookLog(const char* fmt, ...);
 // Only available in DX12 builds, not Vulkan layer
 #ifndef VK_LAYER_CE_OVERLAY
 extern void DX12_InvalidateSwapchain();
+extern void SetSwapchainWrapperDisabled(bool disabled);
 #define HAS_DX12_INVALIDATE 1
 #else
 #define HAS_DX12_INVALIDATE 0
 static void DX12_InvalidateSwapchain() {}  // Stub for Vulkan layer
+static void SetSwapchainWrapperDisabled(bool disabled) {}
 #endif
 
 FGCompatibility g_FGCompat;
@@ -201,6 +203,19 @@ FGCompatibility::FGType FGCompatibility::DetectLoadedFGRuntime()
             HookLog("FG: Invalidated swapchain for FG transition (%s -> %s)", 
                     GetFGTypeName(prev), GetFGTypeName(result));
         }
+        
+        // CRITICAL FIX: Disable swapchain wrapper when native FSR FG is detected via DLL
+        if (result == FGType::FSR_FG && prev != FGType::FSR_FG) {
+            if (!IsDlssgToFsr3ModActive()) {
+                SetSwapchainWrapperDisabled(true);
+                HookLog("FG: Swapchain wrapper DISABLED for native FSR FG (DLL detection)");
+            }
+        }
+        // Re-enable swapchain wrapper when FSR FG is no longer detected
+        if (prev == FGType::FSR_FG && result != FGType::FSR_FG) {
+            SetSwapchainWrapperDisabled(false);
+            HookLog("FG: Swapchain wrapper re-enabled (FSR FG no longer detected)");
+        }
     }
 
     return result;
@@ -219,6 +234,11 @@ void FGCompatibility::RecordFrame(int commandListsExecuted)
     frameHistory[idx] = {now, commandListsExecuted};
 
     int total = totalFramesRecorded.fetch_add(1) + 1;
+    
+    // Increment FSR activation frame counter if FSR is active
+    if (detectedRuntime.load() == FGType::FSR_FG) {
+        framesSinceFSRActivation.fetch_add(1);
+    }
 
     // Track consecutive patterns for quick detection
     if (isRealFrame) {
@@ -491,6 +511,35 @@ bool FGCompatibility::IsFSRActive() const
     return (detected == FGType::FSR_FG);
 }
 
+bool FGCompatibility::IsNativeFSRFGActive() const
+{
+    // Check if FSR FG DLL is detected
+    // NOTE: We no longer check for Streamline absence because modern UE5 games
+    // can have BOTH Streamline and FSR FG DLLs loaded simultaneously (multiple
+    // FG options available to the user). When FSR FG is active, the DLL will
+    // be detected regardless of Streamline presence.
+    FGType detected = detectedRuntime.load(std::memory_order_acquire);
+    return (detected == FGType::FSR_FG);
+}
+
+bool FGCompatibility::ShouldSkipOverlayForFG() const
+{
+    // Skip overlay rendering when FSR FG DLL is detected
+    // FSR FG (both UE5 native and dlssg-to-fsr3) uses the FFX API which
+    // doesn't tolerate external GPU commands during Present - it wraps/owns
+    // the swapchain.
+    //
+    // IMPORTANT: Modern UE5 games can have BOTH Streamline and FSR FG DLLs
+    // loaded simultaneously (multiple FG options). The user selects which
+    // one to use in game settings. When FSR FG is selected and active,
+    // we must skip overlay regardless of Streamline DLL presence.
+    //
+    // Non-FG games won't hit this because detectedRuntime != FSR_FG.
+    // DLSS FG-only games won't hit this because detectedRuntime would be
+    // DLSS_FG, not FSR_FG.
+    return IsNativeFSRFGActive();
+}
+
 void FGCompatibility::OnSwapchainRecreation()
 {
     int count = swapchainRecreationCount.fetch_add(1) + 1;
@@ -504,10 +553,15 @@ void FGCompatibility::OnSwapchainRecreation()
 
     HookLog("FG: Swapchain recreation #%d (delta=%lldms, runtime=%s)", count, deltaMs, GetFGTypeName(runtime));
 
-    // CRITICAL FIX: Only suspend overlay if FG runtime is actually detected
-    // For non-FG games (like Strange Brigade), suspension caused crashes when overlay resumed
-    // because the graphics state was unstable during the suspension period
-    if (runtime != FGType::None) {
+    // CRITICAL FIX: For native FSR FG, we need COMPLETE pass-through during swapchain recreation
+    // FSR FG's swapchain wrapper is extremely sensitive to external operations during this time
+    if (runtime == FGType::FSR_FG && !IsDlssgToFsr3ModActive()) {
+        HookLog("FG: Native FSR FG detected during swapchain recreation - using extended stabilization");
+        // Extended suspension for FSR FG (2 seconds)
+        SuspendFor(2000);
+        // Reset the FSR activation timer to trigger a new stabilization period
+        OnFSRFGActivated();
+    } else if (runtime != FGType::None) {
         // FG games need suspension to allow buffers to stabilize during FG toggle
         SuspendFor(500);  // 500ms to allow transition
     } else {
@@ -519,6 +573,45 @@ void FGCompatibility::OnSwapchainRecreation()
     // Reset consecutive counters to allow re-detection
     consecutiveRealFrames.store(0);
     consecutiveInterpolatedFrames.store(0);
+}
+
+bool FGCompatibility::IsDlssgToFsr3ModActive() const
+{
+    // Check for the dlssg-to-fsr3 mod DLLs
+    HMODULE dlssgToFsr3 = GetModuleHandleW(L"dlssg_to_fsr3_amd_is_better.dll");
+    HMODULE dlssgToFsr3_2 = GetModuleHandleW(L"dlssg_to_fsr3.dll");
+    return (dlssgToFsr3 != nullptr || dlssgToFsr3_2 != nullptr);
+}
+
+bool FGCompatibility::NeedsCompletePassthrough() const
+{
+    // Native FSR FG (not the dlssg-to-fsr3 mod) requires complete pass-through
+    // to avoid interfering with its internal swapchain and queue management
+    FGType detected = detectedRuntime.load(std::memory_order_acquire);
+    if (detected != FGType::FSR_FG) {
+        return false;  // Not FSR FG
+    }
+    
+    // If it's the mod, we can safely hook (it uses DLSS API)
+    if (IsDlssgToFsr3ModActive()) {
+        return false;
+    }
+    
+    // It's native FSR FG - we need complete pass-through
+    return true;
+}
+
+void FGCompatibility::OnFSRFGActivated()
+{
+    int64_t now = GetCurrentTimeUs();
+    fsrActivationTimeUs.store(now);
+    framesSinceFSRActivation.store(0);
+    HookLog("FG: FSR FG activation recorded at %lld us", (long long)now);
+}
+
+int FGCompatibility::GetFramesSinceFSRActivation() const
+{
+    return framesSinceFSRActivation.load(std::memory_order_acquire);
 }
 
 void FGCompatibility::OnDeviceChange()
@@ -603,6 +696,13 @@ void FGCompatibility::SetFSRFGActive(bool active)
             // FSR takes priority over DLSS if both somehow active
             detectedRuntime.store(FGType::FSR_FG, std::memory_order_release);
             HookLog("FG: FSR Frame Generation ACTIVATED via FFX CreateContext");
+            
+            // CRITICAL FIX: Disable swapchain wrapper for native FSR FG
+            // FSR FG creates its own swapchain wrapper that conflicts with ours
+            if (!IsDlssgToFsr3ModActive()) {
+                SetSwapchainWrapperDisabled(true);
+                HookLog("FG: Swapchain wrapper DISABLED for native FSR FG compatibility");
+            }
         } else {
             // FSR FG deactivated - check if DLSS FG is still active
             if (!dlssFGApiActive.load(std::memory_order_acquire)) {
@@ -613,6 +713,8 @@ void FGCompatibility::SetFSRFGActive(bool active)
                 detectedRuntime.store(FGType::DLSS_FG, std::memory_order_release);
                 HookLog("FG: FSR FG deactivated, but DLSS FG still active");
             }
+            // Re-enable swapchain wrapper when FSR FG is deactivated
+            SetSwapchainWrapperDisabled(false);
         }
     }
 }

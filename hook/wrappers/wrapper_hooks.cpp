@@ -22,6 +22,7 @@ extern void EnsureDX12Hook();
 #include "d3d9_wrap.h"
 #include "iat_hook.h"
 #include "wrapper_hooks.h"
+#include "../common/fg_detection.h"
 // MinHook shim removed
 
 // ============================================================================
@@ -100,6 +101,11 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory(REFIID riid, void** ppFactory)
     WrapperLog("Wrapper: CreateDXGIFactory called");
 
     if (!oCreateDXGIFactory) return E_FAIL;
+    
+    // CRITICAL FIX: For native FSR FG, don't wrap at all - pass through directly
+    if (g_FGCompat.NeedsCompletePassthrough()) {
+        return oCreateDXGIFactory(riid, ppFactory);
+    }
 
     // Create real factory
     IDXGIFactory* pRealFactory = nullptr;
@@ -173,6 +179,11 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory2(UINT Flags, REFIID riid, void** ppFact
     WrapperLog("Wrapper: CreateDXGIFactory2 called (flags=0x%X)", Flags);
 
     if (!oCreateDXGIFactory2) return E_FAIL;
+    
+    // CRITICAL FIX: For native FSR FG, don't wrap at all - pass through directly
+    if (g_FGCompat.NeedsCompletePassthrough()) {
+        return oCreateDXGIFactory2(Flags, riid, ppFactory);
+    }
 
     IDXGIFactory2* pRealFactory = nullptr;
     HRESULT hr = oCreateDXGIFactory2(Flags, IID_PPV_ARGS(&pRealFactory));

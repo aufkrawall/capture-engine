@@ -52,6 +52,26 @@ public:
     // FSR FG detection
     bool IsFSRActive() const;
 
+    // Returns true if native FSR FG is detected (not via Streamline/dlssg-to-fsr3)
+    // When true, overlay rendering should be skipped to avoid GPU crashes
+    bool IsNativeFSRFGActive() const;
+
+    // Returns true if overlay rendering should be skipped for FG compatibility
+    // This consolidates all FG-related skip conditions
+    bool ShouldSkipOverlayForFG() const;
+
+    // Returns true if this is the dlssg-to-fsr3 mod (not native FSR FG)
+    // The mod works differently and we CAN hook it safely
+    bool IsDlssgToFsr3ModActive() const;
+
+    // Returns true for native FSR FG that needs COMPLETE pass-through
+    // (no COM operations, no overlay, nothing during Present)
+    bool NeedsCompletePassthrough() const;
+
+    // Frame counter for FSR FG stabilization period
+    int GetFramesSinceFSRActivation() const;
+    void OnFSRFGActivated();
+
     // NVIDIA Smooth Motion specific
     bool IsNvidiaSmoothMotionActive() const { return detectedRuntime.load() == FGType::NVIDIA_SM; }
     void DetectNvidiaSmoothMotion();  // Call to check for SM specifically
@@ -117,6 +137,10 @@ private:
     // Usage-based FG activation flags (set by API hooks)
     std::atomic<bool> dlssFGApiActive{false};
     std::atomic<bool> fsrFGApiActive{false};
+
+    // FSR FG activation tracking for stabilization period
+    std::atomic<int64_t> fsrActivationTimeUs{0};
+    std::atomic<int> framesSinceFSRActivation{0};
 
     // Internal methods
     void UpdateMetrics();

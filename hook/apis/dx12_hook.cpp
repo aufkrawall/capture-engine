@@ -306,6 +306,8 @@ std::mutex g_PreFSRQueueMutex;
 
 // FSR FG state tracking
 static std::atomic<bool> g_FSRWasActive{false};
+static std::atomic<int> g_FSRStabilizationFrames{0};  // Frames to wait after FSR FG activation
+static constexpr int FSR_STABILIZATION_FRAME_COUNT = 10;  // Wait this many frames for FSR FG to stabilize
 
 static std::atomic<uint64_t> g_FrameIndex{0};
 static std::atomic<int> g_CommandListsExecutedThisFrame{0};
@@ -492,6 +494,17 @@ static PFN_CreateSwapChainForHwnd oCreateSwapChainForHwndGlobal = nullptr;
 static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc,
                                                               IDXGISwapChain** ppSwapChain)
 {
+    // CRITICAL FIX: For native FSR FG, pass through completely - don't hook anything
+    // FSR FG creates its own swapchain wrapper that conflicts with our hooks
+    if (g_FGCompat.NeedsCompletePassthrough()) {
+        static bool s_loggedPassThrough = false;
+        if (!s_loggedPassThrough) {
+            HookLog("DX12: Global CreateSwapChain - Native FSR FG, COMPLETE PASS-THROUGH");
+            s_loggedPassThrough = true;
+        }
+        return oCreateSwapChainGlobal(pThis, pDevice, pDesc, ppSwapChain);
+    }
+    
     HookLog("DX12: Global CreateSwapChain hook called");
     
     // CRITICAL: Hook the command queue vtable to track command list execution
@@ -527,10 +540,40 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
                                                                       const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFDesc,
                                                                       IDXGIOutput* pOut, IDXGISwapChain1** ppSC)
 {
-    // CRITICAL FIX: Just pass through to original - don't do ANYTHING that could interfere with FSR FG
-    // FSR FG is extremely sensitive to any hook activity during swapchain creation
-    // We'll detect the new swapchain on the first Present call instead
-    return oCreateSwapChainForHwndGlobal(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
+    // CRITICAL FIX: For native FSR FG, pass through completely
+    if (g_FGCompat.NeedsCompletePassthrough()) {
+        static bool s_loggedPassThrough = false;
+        if (!s_loggedPassThrough) {
+            HookLog("DX12: Global CreateSwapChainForHwnd - Native FSR FG, COMPLETE PASS-THROUGH");
+            s_loggedPassThrough = true;
+        }
+        return oCreateSwapChainForHwndGlobal(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
+    }
+    
+    HookLog("DX12: Global CreateSwapChainForHwnd hook called");
+    
+    // Hook the command queue vtable
+    if (pDevice) {
+        ID3D12CommandQueue* q = nullptr;
+        if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&q)))) {
+            DX12_HookQueueVTable(q);
+            HookLog("DX12: Global CreateSwapChainForHwnd - Command queue vtable hooked");
+            q->Release();
+        }
+    }
+    
+    HRESULT hr = oCreateSwapChainForHwndGlobal(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
+    
+    if (SUCCEEDED(hr) && ppSC && *ppSC) {
+        IDXGISwapChain3* sc3 = nullptr;
+        if (SUCCEEDED((*ppSC)->QueryInterface(IID_PPV_ARGS(&sc3)))) {
+            DXGIShared::InstallHooks(sc3);
+            sc3->Release();
+            HookLog("DX12: Global CreateSwapChainForHwnd - Hooks installed on swapchain");
+        }
+    }
+    
+    return hr;
 }
 
 // Install global hooks on the DXGI factory to catch ALL swapchain creation
@@ -538,6 +581,15 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
 static void InstallGlobalVTableHooks()
 {
     HookLog("DX12: InstallGlobalVTableHooks called");
+    
+    // CRITICAL FIX: Check if FSR FG DLLs are present before installing ANY hooks
+    // If FSR FG is going to be used, we should not hook at all to avoid conflicts
+    HMODULE hFSRBackend = GetModuleHandleW(L"ffx_backend_dx12_x64.dll");
+    HMODULE hFSRFG = GetModuleHandleW(L"ffx_frameinterpolation_x64.dll");
+    if (hFSRBackend || hFSRFG) {
+        HookLog("DX12: FSR FG DLLs detected at hook install time, SKIPPING ALL factory hooks");
+        return;
+    }
     
     // Get the DXGI module
     HMODULE hDXGI = GetModuleHandleA("dxgi.dll");
@@ -985,6 +1037,17 @@ void CleanupRTVs()
 
 void DX12_OnSwapchainResizeBegin()
 {
+    // CRITICAL FIX: For native FSR FG, skip ALL resize handling
+    // FSR FG is extremely sensitive to external operations during its swapchain creation
+    if (g_FGCompat.NeedsCompletePassthrough()) {
+        static bool s_loggedFSRResize = false;
+        if (!s_loggedFSRResize) {
+            HookLog("DX12: DX12_OnSwapchainResizeBegin - Native FSR FG, SKIPPING ALL RESIZE HANDLING");
+            s_loggedFSRResize = true;
+        }
+        return;
+    }
+    
     bool wasAlreadySet = g_InSwapchainResizeCleanup.exchange(true);
     HookLog("DX12: DX12_OnSwapchainResizeBegin called, wasAlreadySet=%d", wasAlreadySet);
     
@@ -1025,6 +1088,11 @@ void DX12_OnSwapchainResizeBegin()
 }
 
 void DX12_OnSwapchainResizeEnd() { 
+    // CRITICAL FIX: For native FSR FG, skip ALL resize handling
+    if (g_FGCompat.NeedsCompletePassthrough()) {
+        return;
+    }
+    
     HookLog("DX12: DX12_OnSwapchainResizeEnd called");
     // Only clear if it was set - prevents unbalanced calls from clearing prematurely
     if (g_InSwapchainResizeCleanup.load(std::memory_order_acquire)) {
@@ -1098,6 +1166,11 @@ static void ApplyPrerenderLimitDX12(float limit)
 
 void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture)
 {
+    // CRITICAL FIX: Native FSR FG requires complete pass-through
+    if (g_FGCompat.NeedsCompletePassthrough()) {
+        return;
+    }
+    
     bool inResize = g_InSwapchainResizeCleanup.load(std::memory_order_acquire);
     if (!pSwapChain || inResize) {
         HookLog("DX12: ProcessFrame - early return (null=%d, inResize=%d)", !pSwapChain, inResize);
@@ -1148,8 +1221,11 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture)
     // CRITICAL FIX: Check if FSR FG state changed and reset if needed
     bool fsrActive = g_FGCompat.IsFSRActive();
     if (fsrActive && !g_FSRWasActive.load()) {
-        // FSR just activated - reset overlay to use cached pre-FSR queue
-        HookLog("DX12: FSR FG activated - resetting overlay for pre-FSR queue usage");
+        // FSR just activated - start stabilization counter
+        // FSR FG needs a few frames to set up its internal synchronization
+        HookLog("DX12: FSR FG activated - starting %d frame stabilization period", FSR_STABILIZATION_FRAME_COUNT);
+        g_FSRStabilizationFrames.store(FSR_STABILIZATION_FRAME_COUNT);
+        // Reset overlay to ensure clean state
         if (g_State.imGuiInit) {
             CleanupOverlay();
             CleanupRTVs();
@@ -1176,7 +1252,36 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture)
             g_GameQueuePreFSR = nullptr;
         }
     }
-    
+
+    // FSR FG stabilization - skip overlay during initial frames after FSR FG activation
+    // This gives FSR FG time to set up its internal synchronization before we render
+    int stabFrames = g_FSRStabilizationFrames.load();
+    bool inFSRStabilization = (stabFrames > 0);
+    if (inFSRStabilization) {
+        g_FSRStabilizationFrames.store(stabFrames - 1);
+        if (stabFrames == FSR_STABILIZATION_FRAME_COUNT) {
+            HookLog("DX12: FSR FG stabilization starting - skipping overlay for %d frames", stabFrames);
+        } else if (stabFrames == 1) {
+            HookLog("DX12: FSR FG stabilization complete - resuming overlay rendering");
+        }
+    }
+
+    // CRITICAL FIX: Check if native FSR FG is active (not dlssg-to-fsr3)
+    // Native FSR FG (UE5 integration) doesn't work with external GPU commands during Present
+    // We must exit EARLY to avoid ANY interference with FSR FG - no device queries, no vtable hooks,
+    // no prerender limits, nothing. Just return immediately.
+    bool skipForNativeFSR = g_FGCompat.ShouldSkipOverlayForFG();
+    if (skipForNativeFSR) {
+        static bool s_loggedNativeFSRSkip = false;
+        if (!s_loggedNativeFSRSkip) {
+            HookLog("DX12: Native FSR FG detected - completely disabling overlay to avoid GPU crashes");
+            s_loggedNativeFSRSkip = true;
+        }
+        // CRITICAL: Return immediately - don't do ANY GPU operations
+        // FSR FG owns the swapchain and doesn't tolerate external interference
+        return;
+    }
+
     // CPU Prerender Limit - Apply before any rendering
     float prerenderLimit = GetActivePrerenderLimit();
     if (prerenderLimit >= 0.0f) {
@@ -1340,9 +1445,10 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture)
     // Change 3: Removed verbose per-frame logging
     if (g_State.imGuiInit) ImGui_ImplDX12_SetCommandQueue(q);
     
-    // CRITICAL FIX: Don't initialize ImGui during FG suspension
+    // CRITICAL FIX: Don't initialize ImGui during FG suspension, FSR stabilization, or native FSR FG
     // This prevents initialization with potentially unstable frame generation state
-    if (!g_State.imGuiInit && !isSuspended) {
+    // and avoids initializing overlay resources we'll never use (native FSR FG skips rendering)
+    if (!g_State.imGuiInit && !isSuspended && !inFSRStabilization && !skipForNativeFSR) {
         // CRITICAL FIX: Clean up any existing ImGui context from previous swapchain
         // This happens when FSR FG recreates the swapchain and we deferred cleanup
         // MUST hold mutex to prevent race with DrawOverlay
@@ -1416,15 +1522,15 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture)
             HookLog("DX12: ProcessFrame - failed to get swapchain desc");
         }
     }
-    // Only render overlay if not suspended (but keep capture processing below)
-    if (g_State.imGuiInit && g_State.syncInit && !isSuspended) {
+    // Only render overlay if not suspended, not in FSR stabilization, and not native FSR FG
+    if (g_State.imGuiInit && g_State.syncInit && !isSuspended && !inFSRStabilization && !skipForNativeFSR) {
         // CRITICAL: Verify all required resources are valid before proceeding
         if (!g_Device || !g_State.rtvDescHeap || !pSwapChain) {
             HookLog("DX12: ProcessFrame - skipping overlay, missing resources (device=%p, rtvHeap=%p, swapchain=%p)",
                     g_Device, g_State.rtvDescHeap, pSwapChain);
             return;
         }
-        
+
         // Change 6: Remove verbose per-frame logging
         int idx = g_State.allocIndex;
         g_State.allocIndex = (idx + 1) % DX12OverlayState::ALLOC_POOL_SIZE;
@@ -1471,19 +1577,17 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture)
                             }
                             ID3D12Resource* bb = nullptr;
                             if (SUCCEEDED(pSwapChain->GetBuffer(swapchainBufferIdx, IID_PPV_ARGS(&bb)))) {
-                                // CRITICAL FIX: When FSR FG is active, use cached pre-FSR queue
-                                // FSR manages queues internally, so we need the original game queue
+                                // FIX: Use current queue directly for FSR FG compatibility
+                                // The pre-FSR queue approach causes GPU crashes because FSR FG
+                                // has its own internal synchronization that doesn't account for
+                                // command lists submitted on the original game queue.
+                                // Instead, we use the queue associated with the current Present call
+                                // which FSR FG is managing.
                                 ID3D12CommandQueue* renderQueue = q;
-                                if (g_FGCompat.IsFSRActive() && g_GameQueuePreFSR) {
-                                    std::lock_guard<std::mutex> lock(g_PreFSRQueueMutex);
-                                    if (g_GameQueuePreFSR) {
-                                        renderQueue = g_GameQueuePreFSR;
-                                        static bool s_loggedFSRQueue = false;
-                                        if (!s_loggedFSRQueue) {
-                                            HookLog("DX12: Using pre-FSR queue %p for rendering (FSR active)", renderQueue);
-                                            s_loggedFSRQueue = true;
-                                        }
-                                    }
+                                static bool s_loggedFSRQueue = false;
+                                if (g_FGCompat.IsFSRActive() && !s_loggedFSRQueue) {
+                                    HookLog("DX12: FSR FG active - using current queue %p for overlay (not pre-FSR queue)", q);
+                                    s_loggedFSRQueue = true;
                                 }
                                 
                                 // Use native interfaces when Streamline is present
@@ -1543,6 +1647,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture)
             }
         }
     }
+
     // Change 6: Remove verbose debug logging - keep only error logging
     if (processCapture && g_IPC && g_IPC->IsRecording()) {
         SharedMemoryLayout* shm = g_IPC->GetSharedMem();
@@ -1586,6 +1691,40 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture)
 
 void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain)
 {
+    // CRITICAL FIX: Check for native FSR FG FIRST, before ANY operations (even watchdog)
+    // Native FSR FG doesn't tolerate ANY interference during Present - no COM calls,
+    // no mutex operations, nothing. Just return immediately.
+    if (g_FGCompat.NeedsCompletePassthrough()) {
+        static bool s_loggedSkip = false;
+        if (!s_loggedSkip) {
+            HookLog("DX12: ProcessFrameExternal - Native FSR FG detected, COMPLETE BYPASS (no COM ops)");
+            s_loggedSkip = true;
+        }
+        return;
+    }
+    
+    // CRITICAL FIX: Skip DX12 overlay if Vulkan layer is active
+    // When NVIDIA's Vulkan WSI-to-DXGI mapping is enabled, Vulkan swapchains are presented
+    // through DXGI. The Vulkan layer already handles the overlay - we must not render twice.
+    static bool s_checkedForVulkan = false;
+    static bool s_vulkanActive = false;
+    if (!s_checkedForVulkan) {
+        // Check if our Vulkan layer DLL is loaded in this process
+        HMODULE hVulkanLayer = GetModuleHandleW(L"VK_LAYER_CE_overlay.dll");
+        if (!hVulkanLayer) {
+            // Try x86 version as well
+            hVulkanLayer = GetModuleHandleW(L"VK_LAYER_CE_overlay_x86.dll");
+        }
+        s_vulkanActive = (hVulkanLayer != nullptr);
+        if (s_vulkanActive) {
+            HookLog("DX12: Vulkan layer detected, DX12 overlay will be skipped to prevent double-rendering");
+        }
+        s_checkedForVulkan = true;
+    }
+    if (s_vulkanActive) {
+        return;
+    }
+    
     // Heartbeat to freeze watchdog - we're processing frames
     g_RenderWatchdog.Heartbeat();
 
@@ -1594,7 +1733,7 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain)
     if (++s_callCount <= 10) {
         HookLog("DX12: ProcessFrameExternal ENTERED call #%d", s_callCount);
     }
-    
+
     if (!pSwapChain) {
         HookLog("DX12: ProcessFrameExternal - null swapchain");
         return;
@@ -1620,6 +1759,7 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain)
     if (!isRealFrame && g_State.imGuiInit) {
         // Skip overlay rendering on interpolated frames
         // But still need to release the swapchain reference
+        sc3->Release();
         return;
     }
     ProcessFrame(sc3, isRealFrame);
@@ -1734,6 +1874,20 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
 void DX12_HookQueueVTable(ID3D12CommandQueue* queue)
 {
     if (!queue) return;
+    
+    // CRITICAL FIX: Skip hooking when native FSR FG is active
+    // FSR FG manages its own command queues and our hooks interfere with its synchronization
+    if (g_FGCompat.NeedsCompletePassthrough()) {
+        return;
+    }
+    
+    // Also check if FSR DLLs are present before hooking
+    HMODULE hFSRBackend = GetModuleHandleW(L"ffx_backend_dx12_x64.dll");
+    HMODULE hFSRFG = GetModuleHandleW(L"ffx_frameinterpolation_x64.dll");
+    if (hFSRBackend || hFSRFG) {
+        return;
+    }
+    
     void* unwrapped = nullptr;
     static const GUID IID_CWrapD3D12CommandQueue = {
         0xd4e5f678, 0x90ab, 0xcdef, {0x12, 0x34, 0x56, 0x78, 0x90, 0x12, 0x34, 0x56}};
@@ -1751,6 +1905,11 @@ void DX12_HookQueueVTable(ID3D12CommandQueue* queue)
 HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory* pThis, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc,
                                                 IDXGISwapChain** ppSwapChain)
 {
+    // CRITICAL FIX: For native FSR FG, pass through completely
+    if (g_FGCompat.NeedsCompletePassthrough()) {
+        return oCreateSwapChain(pThis, pDevice, pDesc, ppSwapChain);
+    }
+    
     if (pDevice) {
         ID3D12CommandQueue* q = nullptr;
         if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&q)))) {
@@ -1774,6 +1933,11 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2* pThis, IUn
                                                        const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFDesc, IDXGIOutput* pOut,
                                                        IDXGISwapChain1** ppSC)
 {
+    // CRITICAL FIX: For native FSR FG, pass through completely
+    if (g_FGCompat.NeedsCompletePassthrough()) {
+        return oCreateSwapChainForHwnd(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
+    }
+    
     if (pDevice) {
         ID3D12CommandQueue* q = nullptr;
         if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&q)))) {

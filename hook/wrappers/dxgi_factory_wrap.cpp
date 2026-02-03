@@ -12,6 +12,15 @@
 
 static bool g_DisableSwapchainWrapper = false;
 
+// Function to disable swapchain wrapper (for FSR FG compatibility)
+void SetSwapchainWrapperDisabled(bool disabled)
+{
+    g_DisableSwapchainWrapper = disabled;
+    if (disabled) {
+        WrapperLog("DXGI Factory: Swapchain wrapper DISABLED for FSR FG compatibility");
+    }
+}
+
 // ============================================================================
 // Constructor / Destructor
 // ============================================================================

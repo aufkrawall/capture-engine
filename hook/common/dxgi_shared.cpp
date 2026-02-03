@@ -110,6 +110,12 @@ APIType DetectAPIType(IDXGISwapChain* pSwapChain)
 // Unified Detours
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags)
 {
+    // CRITICAL FIX: For native FSR FG, do ABSOLUTELY NOTHING except call original
+    // FSR FG is extremely sensitive - even QueryPerformanceCounter can cause issues
+    if (g_FGCompat.NeedsCompletePassthrough()) {
+        return oPresent(pSwapChain, SyncInterval, Flags);
+    }
+    
     // AGGRESSIVE RECURSION GUARD: Steam overlay causes infinite recursion
     if (IsRecursivePresent()) {
         // Recursion detected - call original directly through vtable to bypass Steam's hook
@@ -188,6 +194,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
 HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
                                          const DXGI_PRESENT_PARAMETERS* pPresentParameters)
 {
+    // CRITICAL FIX: For native FSR FG, do ABSOLUTELY NOTHING except call original
+    if (g_FGCompat.NeedsCompletePassthrough()) {
+        return oPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+    }
+    
     // AGGRESSIVE RECURSION GUARD: Steam overlay causes infinite recursion
     if (IsRecursivePresent()) {
         // Recursion detected - call original directly through vtable to bypass Steam's hook
@@ -226,6 +237,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
 HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height,
                                               DXGI_FORMAT NewFormat, UINT SwapChainFlags)
 {
+    // CRITICAL FIX: For native FSR FG, do ABSOLUTELY NOTHING except call original
+    if (g_FGCompat.NeedsCompletePassthrough()) {
+        return oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
+    }
+    
     // AGGRESSIVE RECURSION GUARD: Steam overlay causes infinite recursion through hook chain
     if (IsRecursiveResize()) {
         // Recursion detected - call original directly through vtable to bypass Steam's hook
@@ -282,6 +298,12 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers1(IDXGISwapChain* pSwapChain, UINT 
                                                DXGI_FORMAT NewFormat, UINT SwapChainFlags,
                                                const UINT* pCreationNodeMask, IUnknown* const* ppPresentQueue)
 {
+    // CRITICAL FIX: For native FSR FG, do ABSOLUTELY NOTHING except call original
+    if (g_FGCompat.NeedsCompletePassthrough()) {
+        return oResizeBuffers1(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags, 
+                               pCreationNodeMask, ppPresentQueue);
+    }
+    
     // AGGRESSIVE RECURSION GUARD: Steam overlay causes infinite recursion through hook chain
     if (IsRecursiveResize()) {
         // Recursion detected - call original directly through vtable to bypass Steam's hook
@@ -340,6 +362,18 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers1(IDXGISwapChain* pSwapChain, UINT 
 bool InstallHooks(IDXGISwapChain* pSwapChain)
 {
     if (!pSwapChain) return false;
+
+    // CRITICAL FIX: Skip installing hooks when native FSR FG is active
+    // FSR FG creates its own swapchain wrapper that is extremely sensitive
+    // to external hooks. Installing hooks on FSR's swapchain causes deadlocks.
+    if (g_FGCompat.NeedsCompletePassthrough()) {
+        static bool s_loggedSkip = false;
+        if (!s_loggedSkip) {
+            HookLog("DXGIShared::InstallHooks - Native FSR FG active, SKIPPING hook installation");
+            s_loggedSkip = true;
+        }
+        return true;  // Return success but don't actually hook
+    }
 
     void** vtable = *(void***)pSwapChain;
     bool anyInstalled = false;

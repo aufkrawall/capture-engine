@@ -906,12 +906,33 @@ void CheckAndInstallHooks()
             // Usage-based detection (FFX/NGX hooks) will signal actual FG activation
             fgDetected = true;
             
-            // CRITICAL: Always initialize FFX hooks when ANY FG DLLs are detected
-            // dlssg-to-fsr3 mod loads DLSS DLLs (nvngx_dlssg.dll, sl.dlss_g.dll) 
-            // but actually runs FSR FG via ffxCreateContext under the hood
-            // So we must hook FFX API regardless of whether detection says DLSS_FG or FSR_FG
-            HookLog("Main: Initializing FFX hooks (dlssg-to-fsr3 compatibility)...");
-            FFXHook::Init();
+            // FFX hooks are for dlssg-to-fsr3 compatibility - it converts DLSS FG API to FSR FG API
+            // For NATIVE FSR FG (UE5 integration), we should NOT hook FFX as it interferes
+            // with the engine's direct FFX API usage and causes crashes.
+            //
+            // Install FFX hooks ONLY when:
+            // 1. DLSS FG detected (dlssg-to-fsr3 might be converting to FSR FG)
+            // 2. dlssg-to-fsr3 mod DLL is explicitly present
+            bool shouldInstallFFXHooks = false;
+            if (fgType == FGCompatibility::FGType::DLSS_FG) {
+                // DLSS FG detected - might be dlssg-to-fsr3 converting to FSR FG
+                shouldInstallFFXHooks = true;
+                HookLog("Main: DLSS FG detected - installing FFX hooks for dlssg-to-fsr3 compatibility");
+            } else {
+                // Check if dlssg-to-fsr3 mod is explicitly present
+                HMODULE dlssgToFsr3 = GetModuleHandleW(L"dlssg_to_fsr3_amd_is_better.dll");
+                HMODULE dlssgToFsr3_2 = GetModuleHandleW(L"dlssg_to_fsr3.dll");
+                if (dlssgToFsr3 || dlssgToFsr3_2) {
+                    shouldInstallFFXHooks = true;
+                    HookLog("Main: dlssg-to-fsr3 mod detected - installing FFX hooks");
+                } else {
+                    HookLog("Main: Native FSR FG detected (no dlssg-to-fsr3) - skipping FFX hooks to avoid crashes");
+                }
+            }
+
+            if (shouldInstallFFXHooks) {
+                FFXHook::Init();
+            }
             
             // CRITICAL FIX: Re-hook DXGI after DLSS FG detection
             // Streamline loads after game start and may intercept DXGI calls.

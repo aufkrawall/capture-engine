@@ -119,3 +119,6 @@ private:
 
     void PromoteInterfaces();
 };
+
+// Function to disable swapchain wrapper (for FSR FG compatibility)
+void SetSwapchainWrapperDisabled(bool disabled);
