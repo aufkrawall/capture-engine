@@ -1,14 +1,13 @@
 /**
- * Safe Hooking Wrapper using MinHook
- * 
- * This provides a robust, thread-safe alternative to raw VTable hooking
- * for critical API interception points.
+ * Safe Hooking Wrapper - Stub Implementation
+ *
+ * MinHook has been removed. This provides stub functions that return false.
+ * IAT patching is used instead for API interception.
  */
 
 #pragma once
 
 #include <windows.h>
-#include <MinHook.h>
 #include <atomic>
 #include <mutex>
 
@@ -19,58 +18,48 @@ extern std::atomic<bool> g_Initialized;
 extern std::mutex g_HookMutex;
 
 /**
- * Initialize MinHook subsystem
- * Call once at DLL load
+ * Initialize subsystem (no-op, always returns true)
  */
 bool Initialize();
 
 /**
- * Shutdown MinHook and restore all hooks
+ * Shutdown (no-op)
  */
 void Shutdown();
 
 /**
- * Create a hook for a target function
- * 
- * @param pTarget     Target function address
- * @param pDetour     Detour function address  
- * @param ppOriginal  Pointer to store original function
- * @return true on success
+ * Create a hook for a target function (stub - returns false)
  */
 bool CreateHook(void* pTarget, void* pDetour, void** ppOriginal);
 
 /**
- * Enable a previously created hook
+ * Enable a previously created hook (stub - returns false)
  */
 bool EnableHook(void* pTarget);
 
 /**
- * Disable a hook (temporary)
+ * Disable a hook (stub - returns false)
  */
 bool DisableHook(void* pTarget);
 
 /**
- * Remove a hook permanently
+ * Remove a hook permanently (stub - returns false)
  */
 bool RemoveHook(void* pTarget);
 
 /**
- * Hook a COM interface method using VTable patching with MinHook backup
- * This is safer than raw VTable patching as it validates the target
+ * Hook a COM interface method (stub - returns false)
  */
 bool HookCOMInterface(void** ppVTableEntry, void* pDetour, void** ppOriginal);
 
 /**
- * Thread-safe scoped hook guard
- * Automatically disables hook on construction, re-enables on destruction
- * Useful for calling original functions without recursion
+ * Thread-safe scoped hook guard (no-op)
  */
 class ScopedHookDisable {
     void* m_pTarget;
-    bool m_WasEnabled;
 public:
-    ScopedHookDisable(void* pTarget);
-    ~ScopedHookDisable();
+    ScopedHookDisable(void* pTarget) : m_pTarget(pTarget) {}
+    ~ScopedHookDisable() {}
 };
 
 } // namespace SafeHook

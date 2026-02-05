@@ -2339,15 +2339,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         ]
         hk_src = [f for f in hk_src if f not in excluded_files]
 
-        # MinHook for robust API hooking
-        mh_src = [
-            os.path.join(PROJECT_ROOT, "external", "minhook", "src", "buffer.c"),
-            os.path.join(PROJECT_ROOT, "external", "minhook", "src", "hook.c"),
-            os.path.join(PROJECT_ROOT, "external", "minhook", "src", "trampoline.c"),
-            os.path.join(PROJECT_ROOT, "external", "minhook", "src", "hde", "hde32.c"),
-            os.path.join(PROJECT_ROOT, "external", "minhook", "src", "hde", "hde64.c"),
-        ]
-        hk_src.extend(mh_src)
+        # MinHook removed - using IAT patching instead
 
         # volk removed - using vulkan layer instead
         # hk_src.append(os.path.join(PROJECT_ROOT, "external", "volk", "volk.c"))
@@ -2400,14 +2392,13 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
 
         hk_cflags = (
             curr_cflags
-            + ["-DVK_NO_PROTOTYPES", "-DBUILDING_CAPTURE_HOOK", "-DUSE_MINHOOK"]
+            + ["-DVK_NO_PROTOTYPES", "-DBUILDING_CAPTURE_HOOK"]
             + [  # Vulkan hooks now in layer
                 "-I" + os.path.join(PROJECT_ROOT, "common"),
                 "-I" + os.path.join(PROJECT_ROOT, "hook", "common"),
                 "-I" + os.path.join(PROJECT_ROOT, "hook", "apis"),
                 "-I" + os.path.join(PROJECT_ROOT, "hook", "capture"),
                 "-I" + os.path.join(PROJECT_ROOT, "hook", "wrappers"),
-                "-I" + os.path.join(PROJECT_ROOT, "external", "minhook", "include"),
             ]
         )
 

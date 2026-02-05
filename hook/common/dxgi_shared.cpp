@@ -210,9 +210,6 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     // This ensures the freeze watchdog gets heartbeats even with FSR/DLSS FG active
     g_RenderWatchdog.Heartbeat();
     
-    // Check if FG is active - overlay WILL render on all frames including interpolated
-    bool fgActive = g_FGCompat.NeedsCompletePassthrough();
-    
     // CRITICAL FIX: When Vulkan is active, pass through DXGI Present calls
     if (IsVulkanActive()) {
         return oPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
@@ -256,11 +253,6 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
 HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height,
                                               DXGI_FORMAT NewFormat, UINT SwapChainFlags)
 {
-    // CRITICAL FIX: For native FSR FG, do ABSOLUTELY NOTHING except call original
-    if (g_FGCompat.NeedsCompletePassthrough()) {
-        return oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
-    }
-    
     // CRITICAL FIX: When Vulkan is active, pass through DXGI ResizeBuffers calls
     if (IsVulkanActive()) {
         return oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
@@ -322,12 +314,6 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers1(IDXGISwapChain* pSwapChain, UINT 
                                                DXGI_FORMAT NewFormat, UINT SwapChainFlags,
                                                const UINT* pCreationNodeMask, IUnknown* const* ppPresentQueue)
 {
-    // UNIFIED PATH: Simple passthrough
-    if (g_FGCompat.NeedsCompletePassthrough()) {
-        return oResizeBuffers1(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags, 
-                               pCreationNodeMask, ppPresentQueue);
-    }
-    
     // Vulkan passthrough
     if (IsVulkanActive()) {
         return oResizeBuffers1(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags, 
@@ -438,20 +424,7 @@ bool InstallHooks(IDXGISwapChain* pSwapChain)
         anyInstalled = true;
     }
 
-    // CRITICAL FIX: Skip ResizeBuffers hooks when native FSR FG is active
-    // FSR FG creates its own swapchain wrapper that is extremely sensitive
-    // to external hooks. Installing resize hooks on FSR's swapchain causes deadlocks.
-    bool fgActive = g_FGCompat.NeedsCompletePassthrough();
-    if (fgActive) {
-        static bool s_loggedSkip = false;
-        if (!s_loggedSkip) {
-            HookLog("DXGIShared::InstallHooks - Native FSR FG active, skipping ResizeBuffers hooks (Present hooks installed for watchdog)");
-            s_loggedSkip = true;
-        }
-        return anyInstalled;  // Present hooks installed, but not ResizeBuffers
-    }
-
-    // ResizeBuffers (13) - NOT installed when FSR FG active
+    // ResizeBuffers (13)
     if (vtable[13] != (void*)DetourResizeBuffers) {
         VTableHook::Create(&vtable[13], (LPVOID)DetourResizeBuffers, (LPVOID*)&oResizeBuffers);
         anyInstalled = true;

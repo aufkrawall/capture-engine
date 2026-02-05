@@ -497,17 +497,6 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     // This ensures the freeze watchdog gets heartbeats even with FSR/DLSS FG active
     g_RenderWatchdog.Heartbeat();
     
-    // CRITICAL FIX: Native FSR FG requires COMPLETE pass-through
-    // No COM operations, no metrics, no overlay - just direct Present
-    if (g_FGCompat.NeedsCompletePassthrough()) {
-        static bool s_loggedPassThrough = false;
-        if (!s_loggedPassThrough) {
-            WrapperLog("[FSR-DEBUG] Present: NATIVE FSR FG - COMPLETE PASS-THROUGH MODE");
-            s_loggedPassThrough = true;
-        }
-        return pRealCached->Present(SyncInterval, Flags);
-    }
-
     // FSR FG FIX: Skip overlay processing on FSR internal swapchains
     // FSR creates internal swapchains for frame generation that we should not interfere with
     if (IsFSRInternalSwapchain()) {
@@ -643,18 +632,6 @@ static std::atomic<bool> s_ResizeInProgress{false};
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers(UINT BufferCount, UINT Width, UINT Height,
                                                             DXGI_FORMAT NewFormat, UINT SwapChainFlags)
 {
-    // CRITICAL FIX: Native FSR FG requires COMPLETE pass-through during resize
-    // FSR creates a new swapchain when FG is activated, and any external operations
-    // during this time can cause deadlocks or crashes
-    if (g_FGCompat.NeedsCompletePassthrough()) {
-        static bool s_loggedFSRResize = false;
-        if (!s_loggedFSRResize) {
-            WrapperLog("[FSR-DEBUG] ResizeBuffers: NATIVE FSR FG - COMPLETE PASS-THROUGH");
-            s_loggedFSRResize = true;
-        }
-        return m_pReal->ResizeBuffers(BufferCount, Width, Height, NewFormat, SwapChainFlags);
-    }
-    
     WrapperLog("CWrapDXGISwapChain::ResizeBuffers called - Width=%u, Height=%u", Width, Height);
     
     // RECURSION GUARD: Prevent infinite recursion with Steam/other overlays
@@ -759,13 +736,6 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     // CRITICAL: Heartbeat FIRST - before ANY checks that might early-return
     // This ensures the freeze watchdog gets heartbeats even with FSR/DLSS FG active
     g_RenderWatchdog.Heartbeat();
-    
-    // CRITICAL FIX: Native FSR FG requires COMPLETE pass-through
-    // Check BEFORE acquiring any locks to avoid deadlock with FSR's internal synchronization
-    if (g_FGCompat.NeedsCompletePassthrough()) {
-        if (!m_pReal1) return DXGI_ERROR_INVALID_CALL;
-        return m_pReal1->Present1(SyncInterval, PresentFlags, pPresentParameters);
-    }
     
     // CRITICAL FIX: Lock mutex to protect swapchain pointer access
     std::lock_guard<std::mutex> lock(m_ResourceLock);

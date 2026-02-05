@@ -462,9 +462,11 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
                             }
                             CloseHandle(hProcess);
                             
-                            // Wait at least 3 seconds after D3D12 is loaded for UE5 to finish init
-                            // Or wait 5 seconds minimum for any game
-                            if (i >= 50 || (d3d12Loaded && i >= 30)) {
+                            // FIX: Reduced delays for faster overlay appearance
+                            // Wait at least 1 second after D3D12 is loaded for init to complete
+                            // Or wait 1 second minimum for any game (was 5s, now 1s)
+                            // Complex games (UE5+DLSS FG) may need config override
+                            if (i >= 10 || (d3d12Loaded && i >= 10)) {
                                 ready = true;
                             }
                         }

@@ -84,20 +84,15 @@ void FGCompatibility::SetDLSSFGActive(bool active)
     bool wasActive = dlssFGApiActive.exchange(active, std::memory_order_acq_rel);
     if (wasActive != active) {
         HookLog("FG: DLSS FG API %s", active ? "ACTIVATED" : "DEACTIVATED");
-        
-        if (active) {
-            // DLSS FG activated - suspend overlay briefly to let buffers stabilize
-            SuspendFor(500);
-        }
-        
+
         // Update the combined active behavior
         FGType newType = GetActiveFGType();
         FGType oldType = activeBehavior.exchange(newType);
         if (oldType != newType) {
-            HookLog("FG: Active type changed: %s -> %s", 
+            HookLog("FG: Active type changed: %s -> %s",
                     GetFGTypeName(oldType), GetFGTypeName(newType));
-            
-            if (HAS_DX12_INVALIDATE && 
+
+            if (HAS_DX12_INVALIDATE &&
                 ((newType == FGType::DLSS_FG && oldType == FGType::FSR_FG) ||
                  (newType == FGType::FSR_FG && oldType == FGType::DLSS_FG))) {
                 DX12_InvalidateSwapchain();
@@ -112,34 +107,15 @@ void FGCompatibility::SetFSRFGActive(bool active)
     bool wasActive = fsrFGApiActive.exchange(active, std::memory_order_acq_rel);
     if (wasActive != active) {
         HookLog("FG: FSR FG API %s", active ? "ACTIVATED" : "DEACTIVATED");
-        
-        if (active) {
-            // FSR FG activated - needs longer suspension for overlay
-            // CRITICAL: Do NOT disable swapchain wrapper here - it causes race conditions
-            // when the FFX hook is called during frame processing. The overlay will be
-            // skipped via ShouldSkipOverlayForFG() check in ProcessFrame.
-            SuspendFor(2000);
-            OnFSRFGActivated();
-            
-            // REMOVED: SetSwapchainWrapperDisabled(true) - causes crashes
-            // The swapchain wrapper is safe to use, we just skip overlay rendering
-        } else {
-            // FSR FG deactivated - re-enable swapchain wrapper if it was disabled
-            // (kept for compatibility, though we no longer disable it)
-            if (HAS_DX12_INVALIDATE) {
-                SetSwapchainWrapperDisabled(false);
-                HookLog("FG: Swapchain wrapper re-enabled");
-            }
-        }
-        
+
         // Update the combined active behavior
         FGType newType = GetActiveFGType();
         FGType oldType = activeBehavior.exchange(newType);
         if (oldType != newType) {
             HookLog("FG: Active type changed: %s -> %s",
                     GetFGTypeName(oldType), GetFGTypeName(newType));
-            
-            if (HAS_DX12_INVALIDATE && 
+
+            if (HAS_DX12_INVALIDATE &&
                 ((newType == FGType::DLSS_FG && oldType == FGType::FSR_FG) ||
                  (newType == FGType::FSR_FG && oldType == FGType::DLSS_FG))) {
                 DX12_InvalidateSwapchain();
@@ -162,11 +138,6 @@ void FGCompatibility::RecordFrame(int commandListsExecuted)
     frameHistory[idx] = {now, commandListsExecuted};
 
     int total = totalFramesRecorded.fetch_add(1) + 1;
-    
-    // Increment FSR activation frame counter if FSR is active
-    if (fsrFGApiActive.load()) {
-        framesSinceFSRActivation.fetch_add(1);
-    }
 
     // Track consecutive patterns for quick detection
     if (isRealFrame) {
@@ -365,16 +336,6 @@ void FGCompatibility::OnSwapchainRecreation()
 
     HookLog("FG: Swapchain recreation #%d (delta=%lldms, runtime=%s)", count, deltaMs, GetFGTypeName(runtime));
 
-    // For FSR FG, we need passthrough during swapchain recreation
-    if (runtime == FGType::FSR_FG) {
-        HookLog("FG: FSR FG active during swapchain recreation - using extended stabilization");
-        SuspendFor(2000);
-        OnFSRFGActivated();
-    } else if (runtime != FGType::None) {
-        // Other FG types need shorter suspension
-        SuspendFor(500);
-    }
-
     // Reset consecutive counters to allow re-detection
     consecutiveRealFrames.store(0);
     consecutiveInterpolatedFrames.store(0);
@@ -389,27 +350,6 @@ void FGCompatibility::OnDeviceChange()
     nvidiaSMConfirmCount.store(0);
 }
 
-void FGCompatibility::SuspendFor(int milliseconds)
-{
-    int64_t until = GetCurrentTimeUs() + (milliseconds * 1000);
-    suspendUntilUs.store(until);
-    HookLog("FG: Overlay suspended for %d ms", milliseconds);
-}
-
-bool FGCompatibility::IsSuspended() const
-{
-    int64_t now = GetCurrentTimeUs();
-    return now < suspendUntilUs.load();
-}
-
-void FGCompatibility::OnFSRFGActivated()
-{
-    int64_t now = GetCurrentTimeUs();
-    fsrActivationTimeUs.store(now);
-    framesSinceFSRActivation.store(0);
-    HookLog("FG: FSR FG activation timestamp recorded");
-}
-
 void FGCompatibility::LogStatus() const
 {
     FGType active = GetActiveFGType();
@@ -420,12 +360,6 @@ void FGCompatibility::LogStatus() const
             cachedMultiplier.load(),
             cachedOutputFPS.load(),
             cachedBaseFPS.load());
-}
-
-// DEPRECATED: Kept for binary compatibility but does nothing
-FGCompatibility::FGType FGCompatibility::DetectLoadedFGRuntime()
-{
-    return GetActiveFGType();
 }
 
 // C-linkage exports

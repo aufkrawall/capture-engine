@@ -914,16 +914,10 @@ void CheckAndInstallHooks()
     // Vulkan is handled by VK_LAYER_CE_overlay (ICD layer)
     // No hooking needed - the layer is loaded automatically by the Vulkan loader
 
-    // DISABLED: FFX hooks are causing crashes with UE5 FSR FG
-    // The FFX hook was intercepting ffxCreateContext/ffxDestroyContext and calling
-    // SetFSRFGActive() which triggered overlay state changes during frame processing.
-    // This caused race conditions and crashes.
-    // 
-    // For now, we rely on behavioral detection (frame pattern analysis) to detect FSR FG.
-    // The overlay will skip rendering when we detect the 2x frame pattern typical of FG.
-    //
-    // NOTE: DLSS FG detection still works via NVNGXHook.
-    // FFXHook::Init();  // DISABLED - causes crashes
+    // FFX hooks for FSR FG detection
+    // These hooks intercept ffxCreateContext/ffxDestroyContext to detect FSR FG activation.
+    // Now safe with dedicated overlay queue - no race conditions with game queue.
+    FFXHook::Init();
 
     // Install NVNGX and D3DKMT hooks for all games (injection delay prevents D3D12 init crashes)
     {
