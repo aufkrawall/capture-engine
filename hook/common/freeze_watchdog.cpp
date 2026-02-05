@@ -5,6 +5,7 @@
 #include <sstream>
 #include <iomanip>
 #include <filesystem>
+#include <thread>
 
 // Global watchdog instance
 FreezeWatchdog g_RenderWatchdog;
@@ -61,7 +62,15 @@ bool FreezeWatchdog::Start(double timeoutSeconds) {
         return false;  // Already running
     }
     
-    timeoutSeconds_.store(timeoutSeconds);
+    // Check for DLSS FG and adjust timeout
+    // DLSS FG changes render timing - need much longer timeout to avoid false positives
+    double finalTimeout = timeoutSeconds;
+    if (IsDLSSFGActive()) {
+        finalTimeout = 60.0;  // 60 seconds for DLSS FG (frame gen can pause briefly)
+        OutputDebugStringA("[FreezeWatchdog] DLSS FG detected, using 60 second timeout\n");
+    }
+    
+    timeoutSeconds_.store(finalTimeout);
     uint64_t now = GetCurrentMicros();
     lastHeartbeat_.store(now);
     startupTime_.store(now);
@@ -69,18 +78,33 @@ bool FreezeWatchdog::Start(double timeoutSeconds) {
     char logMsg[256];
     snprintf(logMsg, sizeof(logMsg), 
         "[FreezeWatchdog] Starting with timeout=%.1f seconds (grace period=%.1f seconds)\n", 
-        timeoutSeconds, STARTUP_GRACE_PERIOD);
+        finalTimeout, STARTUP_GRACE_PERIOD);
     OutputDebugStringA(logMsg);
     
     watchdogThread_ = std::thread(&FreezeWatchdog::WatchdogThread, this);
     
     // Detach the thread so it can run independently
-    // This is critical - the watchdog must survive process termination attempts
     watchdogThread_.detach();
     
     OutputDebugStringA("[FreezeWatchdog] Watchdog thread detached and running\n");
     
     return true;
+}
+
+bool FreezeWatchdog::IsDLSSFGActive() const {
+    // Check for DLSS Frame Generation by looking for nvngx_dlssg.dll
+    HMODULE hDLSSG = GetModuleHandleW(L"nvngx_dlssg.dll");
+    if (hDLSSG) return true;
+    
+    // Also check for nvngx_dlss.dll (base DLSS)
+    HMODULE hDLSS = GetModuleHandleW(L"nvngx_dlss.dll");
+    if (hDLSS) {
+        // Check if FG feature is available (this is a simplified check)
+        // In practice, we'd need to check the actual feature flags
+        return true;  // Assume DLSS games might use FG
+    }
+    
+    return false;
 }
 
 void FreezeWatchdog::Stop() {
@@ -127,12 +151,17 @@ void FreezeWatchdog::WatchdogThread() {
             break;
         }
         
-        // Log first few checks to confirm watchdog is running
-        if (++checkCount <= 5) {
+        // Log periodically to debug freeze detection
+        static uint64_t lastLogTime = 0;
+        uint64_t now = GetCurrentMicros();
+        if (now - lastLogTime > 10'000'000) {  // Log every 10 seconds
+            lastLogTime = now;
+            uint64_t lastBeat = lastHeartbeat_.load();
+            double elapsed = (now - lastBeat) / 1'000'000.0;
             char logMsg[128];
             snprintf(logMsg, sizeof(logMsg), 
-                "[FreezeWatchdog] Check #%d, lastHeartbeat=%llu\n", 
-                checkCount, lastHeartbeat_.load());
+                "[FreezeWatchdog] Status: elapsed=%.1fs, timeout=%.1fs\n", 
+                elapsed, timeoutSeconds_.load());
             OutputDebugStringA(logMsg);
         }
         
@@ -151,14 +180,13 @@ void FreezeWatchdog::WatchdogThread() {
                 freezeCallback_(reason);
             }
             
-            // Create crash dump
+            // Create crash dump (blocking - we're terminating anyway)
             CreateMinidump(reason);
             
-            OutputDebugStringA("[FreezeWatchdog] Dump created, terminating process...\n");
-            
             // Terminate process
+            OutputDebugStringA("[FreezeWatchdog] Dump created, terminating process...\n");
             TerminateProcess();
-            return;  // Exit watchdog thread (should never reach here)
+            return;  // Exit watchdog thread
         }
     }
     
@@ -232,7 +260,7 @@ void FreezeWatchdog::CreateMinidump(const std::string& reason) {
         return;  // Can't create dump
     }
     
-    // Write minidump with full memory
+    // Write minidump with minimal data (fast, non-blocking)
     HANDLE hProcess = GetCurrentProcess();
     DWORD processId = GetCurrentProcessId();
     
@@ -241,12 +269,20 @@ void FreezeWatchdog::CreateMinidump(const std::string& reason) {
     mei.ExceptionPointers = nullptr;  // No exception - it's a freeze
     mei.ClientPointers = FALSE;
     
+    // Use minimal dump for speed - just thread stacks and module list
+    // This is much faster than MiniDumpWithFullMemory (which creates multi-GB dumps)
+    MINIDUMP_TYPE dumpType = static_cast<MINIDUMP_TYPE>(
+        MiniDumpWithThreadInfo | 
+        MiniDumpWithUnloadedModules |
+        MiniDumpNormal
+    );
+    
     // Write the dump
     BOOL success = MiniDumpWriteDump(
         hProcess,
         processId,
         hFile,
-        MiniDumpWithFullMemory,  // Full memory dump for debugging
+        dumpType,  // Small, fast dump
         &mei,
         nullptr,
         nullptr

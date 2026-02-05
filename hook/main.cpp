@@ -814,14 +814,32 @@ void CheckAndInstallHooks()
 {
     std::lock_guard<std::mutex> lock(g_HookMutex);
 
+    // CRITICAL FIX: Skip all D3D/DXGI hooks when Vulkan is the primary API
+    // Vulkan games using WSI-to-DXGI mapping can freeze if we hook DXGI/D3D
+    // The Vulkan layer (VK_LAYER_CE_overlay) handles overlay for Vulkan apps
+    static bool s_checkedForVulkan = false;
+    static bool s_vulkanActive = false;
+    if (!s_checkedForVulkan) {
+        HMODULE hVulkan = GetModuleHandleW(L"vulkan-1.dll");
+        s_vulkanActive = (hVulkan != nullptr);
+        if (s_vulkanActive) {
+            EarlyLog("CheckAndInstallHooks: Vulkan detected (vulkan-1.dll), skipping D3D/DXGI hooks");
+        }
+        s_checkedForVulkan = true;
+    }
+
     // WRAPPER-ONLY ARCHITECTURE: We use IAT-patched wrapper hooks for ALL games.
     // This is more robust than vtable hooks and avoids Steam overlay recursion issues.
     // The wrappers (CWrapDXGISwapChain, CWrapDXGIFactory2) handle all interception.
-    InitializeWrapperHooks();
+    // NOTE: InitializeWrapperHooks is skipped for Vulkan to prevent DXGI interference
+    if (!s_vulkanActive) {
+        InitializeWrapperHooks();
+    }
 
     // DX12: Only initialize the hook instance for state tracking and ExecuteCommandLists hooking.
     // We do NOT install DXGI vtable hooks anymore - wrappers handle Present/ResizeBuffers.
-    if (!g_DX12Hook && GetModuleHandleA("d3d12.dll")) {
+    // NOTE: Skip for Vulkan games to prevent DXGI interference
+    if (!s_vulkanActive && !g_DX12Hook && GetModuleHandleA("d3d12.dll")) {
         EarlyLog("Detected d3d12.dll. Initializing DX12 hook instance...");
         
         // STATIC DESTRUCTOR FIX: Dynamically allocate the hook instance
@@ -850,7 +868,8 @@ void CheckAndInstallHooks()
     bool d3d11Or10DeviceCreated = WasD3D11Or10DeviceCreated();
     bool d3d12DeviceCreated = WasD3D12DeviceCreated();
 
-    if (!g_DX11Hook && d3d11Or10DllPresent && (d3d11Or10DeviceCreated || !d3d12DeviceCreated)) {
+    // NOTE: Skip D3D11 hooks for Vulkan games to prevent DXGI interference
+    if (!s_vulkanActive && !g_DX11Hook && d3d11Or10DllPresent && (d3d11Or10DeviceCreated || !d3d12DeviceCreated)) {
         HookLog("Detected D3D10/11. Installing hooks... (D3D11/10 API called: %d, D3D12 API called: %d)",
                 d3d11Or10DeviceCreated ? 1 : 0, d3d12DeviceCreated ? 1 : 0);
         g_DX11Hook = new DX11Hook();
@@ -863,7 +882,8 @@ void CheckAndInstallHooks()
     // We use the actual device creation flag instead of just DLL presence.
     bool dx12ActuallyUsed = WasD3D12DeviceCreated();
 
-    if (!g_DX9Hook && !dx12ActuallyUsed && GetModuleHandleA("d3d9.dll")) {
+    // NOTE: Skip D3D9 hooks for Vulkan games
+    if (!s_vulkanActive && !g_DX9Hook && !dx12ActuallyUsed && GetModuleHandleA("d3d9.dll")) {
         HookLog("Detected d3d9.dll. Installing DX9 hooks...");
         g_DX9Hook = new DX9Hook();
         g_DX9Hook->Init();
@@ -894,71 +914,31 @@ void CheckAndInstallHooks()
     // Vulkan is handled by VK_LAYER_CE_overlay (ICD layer)
     // No hooking needed - the layer is loaded automatically by the Vulkan loader
 
-    // Check for Frame Generation Runtimes (Startup Safety)
-    // With usage-based detection, we no longer need to suspend overlay at startup
-    // The FFX/NGX hooks will signal when FG is actually activated
-    static bool fgDetected = false;
-    if (!fgDetected) {
-        FGCompatibility::FGType fgType = g_FGCompat.DetectLoadedFGRuntime();
-        if (fgType != FGCompatibility::FGType::None) {
-            HookLog("Main: FG Runtime detected via LoadLibrary (type=%d)", (int)fgType);
-            // REMOVED: g_FGCompat.SuspendFor(500) - no longer needed with usage-based detection
-            // Usage-based detection (FFX/NGX hooks) will signal actual FG activation
-            fgDetected = true;
-            
-            // FFX hooks are for dlssg-to-fsr3 compatibility - it converts DLSS FG API to FSR FG API
-            // For NATIVE FSR FG (UE5 integration), we should NOT hook FFX as it interferes
-            // with the engine's direct FFX API usage and causes crashes.
-            //
-            // Install FFX hooks ONLY when:
-            // 1. DLSS FG detected (dlssg-to-fsr3 might be converting to FSR FG)
-            // 2. dlssg-to-fsr3 mod DLL is explicitly present
-            bool shouldInstallFFXHooks = false;
-            if (fgType == FGCompatibility::FGType::DLSS_FG) {
-                // DLSS FG detected - might be dlssg-to-fsr3 converting to FSR FG
-                shouldInstallFFXHooks = true;
-                HookLog("Main: DLSS FG detected - installing FFX hooks for dlssg-to-fsr3 compatibility");
-            } else {
-                // Check if dlssg-to-fsr3 mod is explicitly present
-                HMODULE dlssgToFsr3 = GetModuleHandleW(L"dlssg_to_fsr3_amd_is_better.dll");
-                HMODULE dlssgToFsr3_2 = GetModuleHandleW(L"dlssg_to_fsr3.dll");
-                if (dlssgToFsr3 || dlssgToFsr3_2) {
-                    shouldInstallFFXHooks = true;
-                    HookLog("Main: dlssg-to-fsr3 mod detected - installing FFX hooks");
-                } else {
-                    HookLog("Main: Native FSR FG detected (no dlssg-to-fsr3) - skipping FFX hooks to avoid crashes");
-                }
-            }
+    // DISABLED: FFX hooks are causing crashes with UE5 FSR FG
+    // The FFX hook was intercepting ffxCreateContext/ffxDestroyContext and calling
+    // SetFSRFGActive() which triggered overlay state changes during frame processing.
+    // This caused race conditions and crashes.
+    // 
+    // For now, we rely on behavioral detection (frame pattern analysis) to detect FSR FG.
+    // The overlay will skip rendering when we detect the 2x frame pattern typical of FG.
+    //
+    // NOTE: DLSS FG detection still works via NVNGXHook.
+    // FFXHook::Init();  // DISABLED - causes crashes
 
-            if (shouldInstallFFXHooks) {
-                FFXHook::Init();
-            }
-            
-            // CRITICAL FIX: Re-hook DXGI after DLSS FG detection
-            // Streamline loads after game start and may intercept DXGI calls.
-            // We re-patch IAT for all modules to ensure our hooks are in place.
-            if (fgType == FGCompatibility::FGType::DLSS_FG) {
-                HookLog("Main: Re-hooking DXGI IAT after DLSS FG detection...");
-                
-                // Re-initialize DXGI IAT hooks for all modules
-                IATHook::InitializeDXGIHooks();
-                
-                HookLog("Main: DXGI re-hooking complete");
-            }
-        }
-    }
+    // Install NVNGX and D3DKMT hooks for all games (injection delay prevents D3D12 init crashes)
+    {
+        // Install NGX hooks if DLL is present
+        NVNGXHook::Get().Install();
 
-    // Install NGX hooks if DLL is present
-    NVNGXHook::Get().Install();
-
-    // Install D3DKMT hooks for VRAM override (universal solution)
-    // This hooks kernel-mode driver calls that games use to query VRAM
-    // independently of DXGI (used by SpecialK and RTSS)
-    static bool s_D3DKMTHooksInstalled = false;
-    if (!s_D3DKMTHooksInstalled) {
-        if (D3DKMTHooks::Install()) {
-            s_D3DKMTHooksInstalled = true;
-            EarlyLog("D3DKMT hooks installed for VRAM override");
+        // Install D3DKMT hooks for VRAM override (universal solution)
+        // This hooks kernel-mode driver calls that games use to query VRAM
+        // independently of DXGI (used by SpecialK and RTSS)
+        static bool s_D3DKMTHooksInstalled = false;
+        if (!s_D3DKMTHooksInstalled) {
+            if (D3DKMTHooks::Install()) {
+                s_D3DKMTHooksInstalled = true;
+                EarlyLog("D3DKMT hooks installed for VRAM override");
+            }
         }
     }
 }
@@ -966,6 +946,9 @@ void CheckAndInstallHooks()
 DWORD WINAPI HookThread(LPVOID lpParam)
 {
     g_HookThreadRunning = true;
+    
+    // HookThread continues normally for all games (injection delay prevents D3D12 init crashes)
+    
     // Load Local Config (to support per-app overrides) EARLY
     {
         char dllPath[MAX_PATH];
@@ -979,26 +962,29 @@ DWORD WINAPI HookThread(LPVOID lpParam)
         // Prime the graphics override state immediately
         GetActiveGraphicsConfig();
 
-        // DEFERRED LOADING: Load wrapper DLLs here instead of DllMain
-        // Loading DLLs in DllMain can cause loader lock deadlocks.
-        // HookThread runs after DllMain returns, so it's safe to call LoadLibrary here.
-        bool hasGraphicsAPI = (GetModuleHandleA("d3d12.dll") != NULL || GetModuleHandleA("d3d11.dll") != NULL ||
-                               GetModuleHandleA("d3d10.dll") != NULL || GetModuleHandleA("d3d9.dll") != NULL);
+        // Load wrapper DLLs for all graphics APIs
+        {
+            // DEFERRED LOADING: Load wrapper DLLs here instead of DllMain
+            // Loading DLLs in DllMain can cause loader lock deadlocks.
+            // HookThread runs after DllMain returns, so it's safe to call LoadLibrary here.
+            bool hasGraphicsAPI = (GetModuleHandleA("d3d12.dll") != NULL || GetModuleHandleA("d3d11.dll") != NULL ||
+                                   GetModuleHandleA("d3d10.dll") != NULL || GetModuleHandleA("d3d9.dll") != NULL);
 
-        if (hasGraphicsAPI) {
+            if (hasGraphicsAPI) {
 #ifdef _WIN64
-            std::string wrapperDll = dir + "\\d3d12_wrappers.dll";
+                std::string wrapperDll = dir + "\\d3d12_wrappers.dll";
 #else
-            std::string wrapperDll = dir + "\\d3d12_wrappers_x86.dll";
+                std::string wrapperDll = dir + "\\d3d12_wrappers_x86.dll";
 #endif
-            UINT oldMode = SetErrorMode(SEM_FAILCRITICALERRORS);
-            HMODULE hWrapper = LoadLibraryA(wrapperDll.c_str());
-            SetErrorMode(oldMode);
+                UINT oldMode = SetErrorMode(SEM_FAILCRITICALERRORS);
+                HMODULE hWrapper = LoadLibraryA(wrapperDll.c_str());
+                SetErrorMode(oldMode);
 
-            if (!hWrapper) {
-                EarlyLog("HookThread: Failed to load wrapper DLL from %s, Err=%d", wrapperDll.c_str(), GetLastError());
-            } else {
-                EarlyLog("HookThread: Loaded wrapper DLL at %p", hWrapper);
+                if (!hWrapper) {
+                    EarlyLog("HookThread: Failed to load wrapper DLL from %s, Err=%d", wrapperDll.c_str(), GetLastError());
+                } else {
+                    EarlyLog("HookThread: Loaded wrapper DLL at %p", hWrapper);
+                }
             }
         }
     }
@@ -1323,6 +1309,8 @@ static bool IsServiceProcess(const char* name)
 extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call, LPVOID lpReserved)
 {
     if (ul_reason_for_call == DLL_PROCESS_ATTACH) {
+        // D3D12 FIX: Delayed injection in captureengine now prevents early-init crashes
+        // We can proceed normally since injection happens after D3D12 initialization
         g_hModule = hinstDLL;
         DisableThreadLibraryCalls(hinstDLL);
 
@@ -1371,13 +1359,23 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call, LPV
             if (captureEngineDir.filename() == "testapp") {
                 captureEngineDir = captureEngineDir.parent_path() / "captureengine";
             }
+            // Set process name for crash logging
+            SetCrashProcessName(fileName);
             crashDir = (captureEngineDir / "logs").string();
         } else {
             crashDir = ".\\logs";
         }
         SetCrashDumpDirectory(crashDir);
-        // REMOVED: InstallCrashHandler(); - Wait until we confirm it's an active process!
-        // Installing VEH in dormant processes (e.g. system services) is dangerous and slow.
+        
+        // CRITICAL FIX: Install crash handler IMMEDIATELY for all non-service processes
+        // Don't wait for whitelist check or graphics DLL detection - crashes happen during
+        // early initialization before those are available
+        // Install crash handler for all non-service processes
+        // (Injection delay in captureengine prevents D3D12 init crashes)
+        if (!IsServiceProcess(fileName)) {
+            InstallCrashHandler();
+            OutputDebugStringA("[CaptureHook] Crash handler installed\n");
+        }
 
         // 1. SAFE UNLOAD: Services and non-interactive helpers
         // These processes should unload the DLL immediately and cleanly.
@@ -1461,6 +1459,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call, LPV
                  GetModuleHandleA("vulkan-1.dll") != NULL || GetModuleHandleA("opengl32.dll") != NULL ||
                  GetModuleHandleA("d3d8.dll") != NULL || GetModuleHandleA("ddraw.dll") != NULL);
 
+            // Initialize hooks for all graphics APIs (injection delay prevents D3D12 init crashes)
             if (hasGraphicsAPI) {
                 EarlyLog("DllMain: Graphics API detected - initializing IAT hooks immediately...");
                 InitializeWrapperHooks();
@@ -1468,6 +1467,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call, LPV
                 EarlyLog("DllMain: No graphics API detected - hooks will be installed when API loads");
             }
 
+            // Spawn HookThread for all games (injection delay prevents D3D12 init crashes)
             EarlyLog("DllMain: Spawning HookThread for '%s'", fileName);
             HANDLE hThread = CreateThread(NULL, 0, HookThreadWrapper, NULL, 0, NULL);
             if (hThread) {
@@ -1478,55 +1478,35 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call, LPV
 
         return TRUE;
     } else if (ul_reason_for_call == DLL_PROCESS_DETACH) {
-        // CRITICAL FIX: If we never initialized (blacklisted/dormant),
-        // we MUST NOT execute cleanup logic (Sleep, Locks, etc.)
-        if (g_isDormant) {
+        // CRITICAL: During process termination (lpReserved != NULL), do ABSOLUTELY NOTHING.
+        // The loader lock is held, threads are being killed, and any cleanup can crash.
+        if (lpReserved != NULL) {
             return TRUE;
         }
-
-        // PROCESS TERMINATION Check: lpReserved != NULL means the process is terminating.
-        // In this case, we should strictly avoid cleanup that involves waiting on threads,
-        // critical sections, or other sync objects, as the system is aggressively killing threads.
-        // Doing so often causes deadlocks (Loader Lock).
-        if (lpReserved != NULL) {
+        
+        // Only do cleanup for dynamic unload (FreeLibrary), not process exit
+        if (g_isDormant) {
             return TRUE;
         }
 
         g_ShuttingDown = true;
 
-        // Signal HookThread to exit (if it's still running)
+        // Signal HookThread to exit
         if (g_hCheckHooksEvent) {
             SetEvent(g_hCheckHooksEvent);
         }
 
-        // REMOVED: Sleep(200); - Sleeping in DllMain holds the Loader Lock and deadlocks the system.
-        // If we are dynamically unloading (FreeLibrary), we trust the thread will exit or has exited.
+        // Shutdown hooks - but don't delete during detach (can cause crashes)
+        // Just set pointers to nullptr to prevent further use
+        g_DX12Hook = nullptr;
+        g_DX11Hook = nullptr;
+        g_DX9Hook = nullptr;
+        g_DDrawHook = nullptr;
+        g_DX8Hook = nullptr;
+        g_OpenGLHook = nullptr;
 
-        // Shutdown API hooks
-        // Note: We MUST delete the hook instance as it is now dynamically allocated
-        if (g_DX12Hook) {
-            g_DX12Hook->Shutdown();
-            if (g_DX12Hook == g_dx12HookInstance) {
-                delete g_DX12Hook;
-                g_dx12HookInstance = nullptr;
-            } else {
-                delete g_DX12Hook;
-            }
-            g_DX12Hook = nullptr;
-        }
-
-        SafeShutdownHook(g_DX11Hook);
-        SafeShutdownHook(g_DX9Hook);
-        SafeShutdownHook(g_DDrawHook);
-        SafeShutdownHook(g_DX8Hook);
-        SafeShutdownHook(g_OpenGLHook);
-#ifdef ENABLE_VULKAN_HOOK
-        SafeShutdownHook(g_VulkanHook);
-#endif
-
-        IATHook::ShutdownIATHooks();
-
-        SystemMetricsCollector::Get().Shutdown();
+        // Don't call destructors from DllMain - just leak the memory
+        // The process is exiting anyway, OS will clean up
 
         if (g_IPC) {
             delete g_IPC;

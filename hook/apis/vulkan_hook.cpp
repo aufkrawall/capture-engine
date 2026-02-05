@@ -3855,8 +3855,9 @@ VkResult VKAPI_CALL Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoK
     bool isRealFrame = (submitCount > 0);
     g_FGCompat.RecordFrame(submitCount);
 
-    bool fgRuntimeDetected = (g_FGCompat.DetectLoadedFGRuntime() != FGCompatibility::FGType::None);
-    bool fgSuspended = fgRuntimeDetected && g_FGCompat.IsSuspended();
+    // Use API-based detection (not DLL-based)
+    bool fgRuntimeDetected = g_FGCompat.IsFGActive();
+    bool fgSuspended = g_FGCompat.IsSuspended();
     bool allowOverlayFrame = (!fgRuntimeDetected || isRealFrame) && !fgSuspended;
 
     // Reset frame flags for next frame

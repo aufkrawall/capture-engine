@@ -2341,6 +2341,14 @@ void DX11Hook::Init()
 {
     HookLog("DX11Hook::Init()");
 
+    // CRITICAL FIX: Check if Vulkan is active before installing D3D11 hooks
+    // Vulkan games using WSI-to-DXGI mapping can freeze if we hook D3D11/DXGI
+    HMODULE hVulkan = GetModuleHandleW(L"vulkan-1.dll");
+    if (hVulkan) {
+        HookLog("DX11: Vulkan detected (vulkan-1.dll), SKIPPING D3D11 hook installation");
+        return;
+    }
+
     // D3D11CreateDeviceAndSwapChain hook is now handled by IAT patching in iat_hook.cpp
     // The InitializeD3D11Hooks() function sets up the IAT hook
     HMODULE hD3D11 = GetModuleHandleA("d3d11.dll");

@@ -11,16 +11,12 @@ class FGCompatibility {
 public:
     enum class FGType { None, DLSS_FG, FSR_FG, DLSS_MSFG, NVIDIA_SM, Unknown };
 
-    // DLL-based detection (call once at init or periodically)
-    FGType DetectLoadedFGRuntime();
-
     // Per-frame tracking - call from DetourPresent with command list count
     void RecordFrame(int commandListsExecuted);
 
     // State queries
     bool IsFGActive() const;
-    FGType GetDetectedType() const { return activeBehavior.load(); }
-    FGType GetDllDetectedType() const { return detectedRuntime.load(); }  // DLL-based, not behavioral
+    FGType GetActiveFGType() const;
     int GetFGMultiplier() const { return cachedMultiplier.load(); }
 
     // FPS metrics
@@ -31,9 +27,7 @@ public:
     int GetLastCmdListCount() const { return lastCmdListCount.load(); }
     
     // Query if the current frame is a real frame (has command list work) or interpolated
-    // Call this after RecordFrame() to get the classification for the just-recorded frame
     bool IsCurrentFrameReal() const { 
-        // Real frames have command list work; interpolated frames don't
         return lastCmdListCount.load(std::memory_order_acquire) > 0; 
     }
     
@@ -49,57 +43,41 @@ public:
     void SuspendFor(int milliseconds);
     bool IsSuspended() const;
     
-    // FSR FG detection
-    bool IsFSRActive() const;
+    // Returns true if FSR FG is active (based on API detection)
+    bool IsFSRActive() const { return fsrFGApiActive.load(std::memory_order_acquire); }
 
-    // Returns true if native FSR FG is detected (not via Streamline/dlssg-to-fsr3)
-    // When true, overlay rendering should be skipped to avoid GPU crashes
-    bool IsNativeFSRFGActive() const;
+    // Returns true if overlay rendering should be skipped for FSR FG only
+    // FSR FG is more sensitive to external GPU commands than DLSS FG
+    // DLSS FG can handle overlay rendering on all frames
+    bool ShouldSkipOverlayForFG() const { return IsFSRActive(); }
 
-    // Returns true if overlay rendering should be skipped for FG compatibility
-    // This consolidates all FG-related skip conditions
-    bool ShouldSkipOverlayForFG() const;
-
-    // Returns true if this is the dlssg-to-fsr3 mod (not native FSR FG)
-    // The mod works differently and we CAN hook it safely
-    bool IsDlssgToFsr3ModActive() const;
-
-    // Returns true for native FSR FG that needs COMPLETE pass-through
+    // Returns true if FG needs COMPLETE pass-through
     // (no COM operations, no overlay, nothing during Present)
-    bool NeedsCompletePassthrough() const;
+    bool NeedsCompletePassthrough() const { return IsFSRActive() || IsDLSSFGApiActive(); }
 
     // Frame counter for FSR FG stabilization period
-    int GetFramesSinceFSRActivation() const;
+    int GetFramesSinceFSRActivation() const { return framesSinceFSRActivation.load(); }
     void OnFSRFGActivated();
 
     // NVIDIA Smooth Motion specific
-    bool IsNvidiaSmoothMotionActive() const { return detectedRuntime.load() == FGType::NVIDIA_SM; }
-    void DetectNvidiaSmoothMotion();  // Call to check for SM specifically
+    bool IsNvidiaSmoothMotionActive() const { return activeBehavior.load() == FGType::NVIDIA_SM; }
+    void DetectNvidiaSmoothMotion();
 
     // Debug
     const char* GetFGTypeName(FGType type) const;
     void LogStatus() const;
     
     // =========================================================================
-    // Usage-based FG activation (set by API hooks, not DLL detection)
-    // These are called by nvngx_hook and ffx_hook when FG is actually
-    // created/destroyed, not just when DLLs are loaded.
+    // API-based FG activation (called by nvngx_hook and ffx_hook)
+    // These are called when FG is actually created/destroyed via the APIs
     // =========================================================================
     void SetDLSSFGActive(bool active);
     void SetFSRFGActive(bool active);
     bool IsDLSSFGApiActive() const { return dlssFGApiActive.load(std::memory_order_acquire); }
     bool IsFSRFGApiActive() const { return fsrFGApiActive.load(std::memory_order_acquire); }
-    
-    // Get the actual FG type based on API activation (not DLL detection)
-    FGType GetActiveFGType() const;
 
 private:
-    // DLL-based detection result
-    std::atomic<FGType> detectedRuntime{FGType::None};
-
-    std::atomic<int64_t> lastRuntimeDetectUs{0};
-
-    // Behavioral detection result
+    // Active FG type based on API activation (not DLL detection)
     std::atomic<FGType> activeBehavior{FGType::None};
 
     // Frame history for pattern detection
@@ -130,9 +108,9 @@ private:
     // Safety suspend
     std::atomic<int64_t> suspendUntilUs{0};
     
-    // NVIDIA SM detection persistence - require multiple confirmations
+    // NVIDIA SM detection persistence
     std::atomic<int> nvidiaSMConfirmCount{0};
-    static constexpr int NVIDIA_SM_CONFIRM_THRESHOLD = 3;  // Need 3 consecutive detections
+    static constexpr int NVIDIA_SM_CONFIRM_THRESHOLD = 3;
 
     // Usage-based FG activation flags (set by API hooks)
     std::atomic<bool> dlssFGApiActive{false};
@@ -146,6 +124,9 @@ private:
     void UpdateMetrics();
     void DetectPattern();
     int64_t GetCurrentTimeUs() const;
+    
+    // DEPRECATED: Kept for compatibility but does nothing
+    FGType DetectLoadedFGRuntime();
 };
 
 // Global instance
@@ -153,6 +134,6 @@ extern FGCompatibility g_FGCompat;
 
 // C-linkage exports for cross-module hooks
 extern "C" {
-    __declspec(dllexport) void FG_SetDLSSActive(bool active);
-    __declspec(dllexport) void FG_SetFSRActive(bool active);
+    void FG_SetDLSSActive(bool active);
+    void FG_SetFSRActive(bool active);
 }

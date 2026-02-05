@@ -22,6 +22,7 @@ extern "C" __declspec(dllimport) void DX12_SetCommandQueue(IUnknown* pQueue);
 
 // FG detection for FSR FG/DLSS FG compatibility
 #include "../common/fg_detection.h"
+#include "../common/freeze_watchdog.h"
 
 #ifndef BUILDING_CAPTURE_HOOK
 // Dynamically import from capture_hook to update shared state across DLL boundaries (for d3d12_wrappers.dll)
@@ -492,6 +493,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         return DXGI_ERROR_INVALID_CALL;
     }
 
+    // CRITICAL: Heartbeat FIRST - before ANY checks that might early-return
+    // This ensures the freeze watchdog gets heartbeats even with FSR/DLSS FG active
+    g_RenderWatchdog.Heartbeat();
+    
     // CRITICAL FIX: Native FSR FG requires COMPLETE pass-through
     // No COM operations, no metrics, no overlay - just direct Present
     if (g_FGCompat.NeedsCompletePassthrough()) {
@@ -751,6 +756,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetCoreWindow(REFIID refiid, void*
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT PresentFlags,
                                                        const DXGI_PRESENT_PARAMETERS* pPresentParameters)
 {
+    // CRITICAL: Heartbeat FIRST - before ANY checks that might early-return
+    // This ensures the freeze watchdog gets heartbeats even with FSR/DLSS FG active
+    g_RenderWatchdog.Heartbeat();
+    
     // CRITICAL FIX: Native FSR FG requires COMPLETE pass-through
     // Check BEFORE acquiring any locks to avoid deadlock with FSR's internal synchronization
     if (g_FGCompat.NeedsCompletePassthrough()) {

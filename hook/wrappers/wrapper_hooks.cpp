@@ -96,109 +96,25 @@ void WrapperLog(const char* fmt, ...)
 // Wrapped DXGI Factory Creation
 // ============================================================================
 
+// DLSS FG FIX: Pass-through DXGI factory creation to avoid swapchain wrapping issues
+// We rely on ExecuteCommandLists hooking for frame detection instead
+
 HRESULT WINAPI Wrapped_CreateDXGIFactory(REFIID riid, void** ppFactory)
 {
-    WrapperLog("Wrapper: CreateDXGIFactory called");
-
     if (!oCreateDXGIFactory) return E_FAIL;
-    
-    // CRITICAL FIX: For native FSR FG, don't wrap at all - pass through directly
-    if (g_FGCompat.NeedsCompletePassthrough()) {
-        return oCreateDXGIFactory(riid, ppFactory);
-    }
-
-    // Create real factory
-    IDXGIFactory* pRealFactory = nullptr;
-    HRESULT hr = oCreateDXGIFactory(IID_PPV_ARGS(&pRealFactory));
-
-    if (SUCCEEDED(hr) && pRealFactory) {
-        // Try to promote to Factory2 for wrapping
-        IDXGIFactory2* pFactory2 = nullptr;
-        if (SUCCEEDED(pRealFactory->QueryInterface(IID_PPV_ARGS(&pFactory2)))) {
-            auto* pWrapper = new CWrapDXGIFactory2(pFactory2);
-            hr = pWrapper->QueryInterface(riid, ppFactory);
-            pWrapper->Release();
-            pFactory2->Release();
-            pRealFactory->Release();
-            WrapperLog("Wrapper: Created wrapped factory (promoted to Factory2)");
-        } else {
-            // Return real factory if can't wrap (very old systems)
-            hr = pRealFactory->QueryInterface(riid, ppFactory);
-            pRealFactory->Release();
-            WrapperLog("Wrapper: Returning unwrapped factory (no Factory2 support)");
-        }
-    }
-
-    return hr;
+    return oCreateDXGIFactory(riid, ppFactory);
 }
 
 HRESULT WINAPI Wrapped_CreateDXGIFactory1(REFIID riid, void** ppFactory)
 {
-    WrapperLog("Wrapper: CreateDXGIFactory1 called");
-
-    // Ensure DX12 hooks are initialized (fixes race condition)
-    // SAFETY: Check for null before calling Init()
-    if (g_dx12HookInstance) {
-        g_dx12HookInstance->Init();
-    } else {
-        WrapperLog("Wrapper: WARNING - g_dx12HookInstance is null, creating new instance");
-        EnsureDX12Hook();
-        if (g_dx12HookInstance) {
-            g_dx12HookInstance->Init();
-        }
-    }
-
     if (!oCreateDXGIFactory1) return E_FAIL;
-
-    IDXGIFactory1* pRealFactory = nullptr;
-    HRESULT hr = oCreateDXGIFactory1(IID_PPV_ARGS(&pRealFactory));
-
-    if (SUCCEEDED(hr) && pRealFactory) {
-        IDXGIFactory2* pFactory2 = nullptr;
-        if (SUCCEEDED(pRealFactory->QueryInterface(IID_PPV_ARGS(&pFactory2)))) {
-            auto* pWrapper = new CWrapDXGIFactory2(pFactory2);
-            hr = pWrapper->QueryInterface(riid, ppFactory);
-            pWrapper->Release();
-            pFactory2->Release();
-            pRealFactory->Release();
-            WrapperLog("Wrapper: Created wrapped factory1");
-        } else {
-            WrapperLog("Wrapper: CreateDXGIFactory1 - FAILED to QueryInterface Factory2. Returning real factory.");
-            hr = pRealFactory->QueryInterface(riid, ppFactory);
-            pRealFactory->Release();
-        }
-    } else {
-        WrapperLog("Wrapper: CreateDXGIFactory1 - oCreateDXGIFactory1 FAILED or returned NULL. hr=0x%08X", hr);
-    }
-
-    return hr;
+    return oCreateDXGIFactory1(riid, ppFactory);
 }
 
 HRESULT WINAPI Wrapped_CreateDXGIFactory2(UINT Flags, REFIID riid, void** ppFactory)
 {
-    WrapperLog("Wrapper: CreateDXGIFactory2 called (flags=0x%X)", Flags);
-
     if (!oCreateDXGIFactory2) return E_FAIL;
-    
-    // CRITICAL FIX: For native FSR FG, don't wrap at all - pass through directly
-    if (g_FGCompat.NeedsCompletePassthrough()) {
-        return oCreateDXGIFactory2(Flags, riid, ppFactory);
-    }
-
-    IDXGIFactory2* pRealFactory = nullptr;
-    HRESULT hr = oCreateDXGIFactory2(Flags, IID_PPV_ARGS(&pRealFactory));
-
-    if (SUCCEEDED(hr) && pRealFactory) {
-        auto* pWrapper = new CWrapDXGIFactory2(pRealFactory);
-        hr = pWrapper->QueryInterface(riid, ppFactory);
-        pWrapper->Release();
-        pRealFactory->Release();
-        WrapperLog("Wrapper: Created wrapped factory2");
-    } else {
-        WrapperLog("Wrapper: CreateDXGIFactory2 - oCreateDXGIFactory2 FAILED or returned NULL. hr=0x%08X", hr);
-    }
-
-    return hr;
+    return oCreateDXGIFactory2(Flags, riid, ppFactory);
 }
 
 // ============================================================================
@@ -232,8 +148,7 @@ HRESULT WINAPI Wrapped_D3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL M
     // Mark that D3D12 device creation was actually called
     g_D3D12DeviceCreated.store(true, std::memory_order_release);
 
-    // Ensure DX12 hooks are initialized (fixes race condition)
-    // SAFETY: Check for null before calling Init()
+    // Initialize DX12 hooks (global vtable hooks + swapchain recreation trigger)
     if (g_dx12HookInstance) {
         g_dx12HookInstance->Init();
     } else {
@@ -256,55 +171,11 @@ HRESULT WINAPI Wrapped_D3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL M
     HRESULT hr = oD3D12CreateDevice(pAdapter, MinimumFeatureLevel, IID_PPV_ARGS(&pRealDevice));
     WrapperLog("Wrapper: oD3D12CreateDevice returned hr=0x%08X, pRealDevice=%p", hr, pRealDevice);
 
+    // DIAGNOSTIC: Pass through real device without wrapping
     if (SUCCEEDED(hr) && pRealDevice) {
-        // Use the C interface to wrap it (calls into MSVC-compiled code)
-        // CRITICAL: Use explicit LoadLibrary/GetProcAddress instead of delay-load
-        // to avoid race conditions during first initialization.
-        
-        static HMODULE s_hWrappers = nullptr;
-        static decltype(&D3D12Wrapper_WrapDevice) s_pWrapDevice = nullptr;
-        
-        if (!s_hWrappers) {
-            s_hWrappers = LoadLibraryA("d3d12_wrappers.dll");
-            if (!s_hWrappers) {
-                s_hWrappers = LoadLibraryA("d3d12_wrappers_x86.dll");
-            }
-            
-            if (s_hWrappers) {
-                WrapperLog("Wrapper: Loaded d3d12_wrappers.dll at %p", s_hWrappers);
-                s_pWrapDevice = (decltype(&D3D12Wrapper_WrapDevice))GetProcAddress(s_hWrappers, "D3D12Wrapper_WrapDevice");
-                if (!s_pWrapDevice) {
-                    // Try stdcall decoration
-                    s_pWrapDevice = (decltype(&D3D12Wrapper_WrapDevice))GetProcAddress(s_hWrappers, "_D3D12Wrapper_WrapDevice@4");
-                }
-                if (s_pWrapDevice) {
-                    WrapperLog("Wrapper: Found D3D12Wrapper_WrapDevice at %p", s_pWrapDevice);
-                } else {
-                    WrapperLog("Wrapper: FATAL - Could not find D3D12Wrapper_WrapDevice export! Err=%d", GetLastError());
-                }
-            } else {
-                WrapperLog("Wrapper: FATAL - Could not load d3d12_wrappers.dll! Err=%d", GetLastError());
-            }
-        }
-        
-        if (s_pWrapDevice) {
-            ID3D12Device* pWrapped = s_pWrapDevice(pRealDevice);
-            pRealDevice->Release();  // Wrapper took ownership
-
-            if (pWrapped) {
-                hr = pWrapped->QueryInterface(riid, ppDevice);
-                pWrapped->Release();
-                WrapperLog("Wrapper: Created wrapped D3D12 device");
-            } else {
-                WrapperLog("Wrapper: D3D12Wrapper_WrapDevice returned nullptr");
-                hr = E_FAIL;
-            }
-        } else {
-            // Fallback: return the real device without wrapping (better than crashing)
-            WrapperLog("Wrapper: WARNING - Returning unwrapped device due to wrapper load failure");
-            hr = pRealDevice->QueryInterface(riid, ppDevice);
-            pRealDevice->Release();
-        }
+        WrapperLog("Wrapper: DIAGNOSTIC - Returning unwrapped D3D12 device");
+        hr = pRealDevice->QueryInterface(riid, ppDevice);
+        pRealDevice->Release();
     }
 
     return hr;
@@ -383,12 +254,10 @@ HRESULT WINAPI Wrapped_D3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D
             WrapperLog("Wrapper: Created wrapped D3D11 device");
         }
 
-        // Wrap the swapchain
+        // DIAGNOSTIC: Pass through swapchain without wrapping
         if (pRealSwapChain && ppSwapChain) {
-            auto* pSwapWrapper = new CWrapDXGISwapChain(pRealSwapChain, pRealDevice);
-            *ppSwapChain = pSwapWrapper;
-            pRealSwapChain->Release();
-            WrapperLog("Wrapper: Created wrapped swapchain");
+            *ppSwapChain = pRealSwapChain;
+            WrapperLog("Wrapper: DIAGNOSTIC - Returning unwrapped swapchain (D3D11)");
         }
 
         if (ppImmediateContext) {
@@ -482,11 +351,10 @@ HRESULT WINAPI Wrapped_D3D10CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D
             WrapperLog("Wrapper: Created wrapped D3D10 device");
         }
 
+        // DIAGNOSTIC: Pass through swapchain without wrapping
         if (pRealSwapChain && ppSwapChain) {
-            auto* pSwapWrapper = new CWrapDXGISwapChain(pRealSwapChain, nullptr);
-            *ppSwapChain = pSwapWrapper;
-            pRealSwapChain->Release();
-            WrapperLog("Wrapper: Created wrapped swapchain");
+            *ppSwapChain = pRealSwapChain;
+            WrapperLog("Wrapper: DIAGNOSTIC - Returning unwrapped swapchain (D3D10)");
         }
     }
 

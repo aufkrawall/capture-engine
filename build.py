@@ -2335,6 +2335,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             os.path.join(
                 PROJECT_ROOT, "hook", "apis", "vulkan_hook.cpp"
             ),  # Using Vulkan layer instead
+            os.path.join(PROJECT_ROOT, "hook", "minimal_main.cpp"),  # Excluded - built separately as minimal test
         ]
         hk_src = [f for f in hk_src if f not in excluded_files]
 
@@ -2391,6 +2392,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             # "-Wl,--delayload,dwmapi.dll",
             # "-ldelayimp",
             "-fuse-ld=lld",
+            "-Wl,--exclude-all-symbols",  # DIAGNOSTIC: Remove all exports to test if exports cause UE5 crash
         ]
         if arch == "x64":
             # ldflags_hook.append("-flto")
@@ -2496,6 +2498,8 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 log(f"[Warning] Could not verify DLL version: {e}")
 
         # generate_hash(hk_dll) # Removed in favor of embedded hash header
+        
+
 
         # 4. MediaEngine (x64 only for now as requested)
         if arch == "x64":

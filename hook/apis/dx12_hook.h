@@ -39,6 +39,6 @@ void DX12_SignalFSR4SwapchainRecreated();
 void DX12_AdjustWrapperResizeDepth(int delta);
 
 extern "C" {
-__declspec(dllexport) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue);
-__declspec(dllexport) void DX12_AdjustWrapperResizeDepth_C(int delta);
+void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue);
+void DX12_AdjustWrapperResizeDepth_C(int delta);
 }

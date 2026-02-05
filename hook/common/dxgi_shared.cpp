@@ -13,6 +13,7 @@
 #include "../wrappers/wrapper_base.h"
 #include "config.h"
 #include "fg_detection.h"
+#include "freeze_watchdog.h"
 #include "hook_common.h"
 #include "logging.h"
 #include "performance_metrics.h"
@@ -33,6 +34,8 @@ static std::atomic<DWORD> g_presentThreadId{0};
 static std::atomic<int> g_presentDepth{0};
 static std::atomic<DWORD> g_resizeThreadId{0};
 static std::atomic<int> g_resizeDepth{0};
+
+
 
 // Helper to check if we're recursively entering from the same thread
 static bool IsRecursivePresent() {
@@ -107,21 +110,39 @@ APIType DetectAPIType(IDXGISwapChain* pSwapChain)
     return APIType::Unknown;
 }
 
+// Global flag to disable DXGI hooks when Vulkan is active
+// This is set once at startup and prevents DXGI hooks from interfering with Vulkan WSI
+static bool s_vulkanPresent = false;
+static bool s_checkedVulkan = false;
+
+static bool IsVulkanActive() {
+    if (!s_checkedVulkan) {
+        HMODULE hVulkan = GetModuleHandleW(L"vulkan-1.dll");
+        s_vulkanPresent = (hVulkan != nullptr);
+        if (s_vulkanPresent) {
+            HookLog("DXGIShared: Vulkan detected (vulkan-1.dll), DXGI hooks will pass through");
+        }
+        s_checkedVulkan = true;
+    }
+    return s_vulkanPresent;
+}
+
 // Unified Detours
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags)
 {
-    // CRITICAL FIX: For native FSR FG, do ABSOLUTELY NOTHING except call original
-    // FSR FG is extremely sensitive - even QueryPerformanceCounter can cause issues
-    if (g_FGCompat.NeedsCompletePassthrough()) {
+    // Heartbeat for freeze watchdog
+    g_RenderWatchdog.Heartbeat();
+    
+    // Vulkan passthrough
+    if (IsVulkanActive()) {
         return oPresent(pSwapChain, SyncInterval, Flags);
     }
     
-    // AGGRESSIVE RECURSION GUARD: Steam overlay causes infinite recursion
+    // Recursion guard
     if (IsRecursivePresent()) {
-        // Recursion detected - call original directly through vtable to bypass Steam's hook
         void** vtable = *(void***)pSwapChain;
         typedef HRESULT(STDMETHODCALLTYPE * PFN_Present)(IDXGISwapChain*, UINT, UINT);
-        PFN_Present originalPresent = (PFN_Present)vtable[8];  // Present is at index 8
+        PFN_Present originalPresent = (PFN_Present)vtable[8];
         return originalPresent(pSwapChain, SyncInterval, Flags);
     }
     
@@ -141,14 +162,6 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         return oPresent(pSwapChain, SyncInterval, Flags);
     }
 
-    // FSR4 Cleanup Check
-    if (g_SharedState.fsr4RecreationPending.load(std::memory_order_acquire)) {
-        // FSR4 cleanup resets swapchain state but is NOT a resize operation
-        // Don't call ResizeBegin here as it would block frame processing indefinitely
-        g_SharedState.fsr4RecreationPending.store(false);
-        g_SharedState.swapchainInvalid.store(false);
-    }
-
     APIType api = DetectAPIType(pSwapChain);
     g_SharedState.frameCount.fetch_add(1, std::memory_order_relaxed);
 
@@ -164,7 +177,6 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
     if (isFirstHook) {
         g_DXGIPerfMetrics.Update(us);
-        // Also update FG metrics if available
         if (g_FGCompat.IsFGActive()) {
             g_DXGIPerfMetrics.SetFGMetrics(
                 g_FGCompat.GetOutputFPS(),
@@ -176,7 +188,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         }
     }
 
-    // Process Frame (Overlay/Capture)
+    // Process Frame (Overlay/Capture) - UNIFIED PATH
     if (api == APIType::D3D12) {
         HandleDX12ProcessFrame(pSwapChain, true);
     } else if (api == APIType::D3D11) {
@@ -186,7 +198,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     // VSync Override
     VSyncOverride vsync = GetVSyncOverride();
     if (vsync.shouldOverride) SyncInterval = (UINT)vsync.presentInterval;
-    if (SyncInterval > 0) Flags &= ~512;  // DXGI_PRESENT_ALLOW_TEARING
+    if (SyncInterval > 0) Flags &= ~512;
 
     return oPresent(pSwapChain, SyncInterval, Flags);
 }
@@ -194,8 +206,15 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
 HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
                                          const DXGI_PRESENT_PARAMETERS* pPresentParameters)
 {
-    // CRITICAL FIX: For native FSR FG, do ABSOLUTELY NOTHING except call original
-    if (g_FGCompat.NeedsCompletePassthrough()) {
+    // CRITICAL: Heartbeat FIRST - before ANY checks that might early-return
+    // This ensures the freeze watchdog gets heartbeats even with FSR/DLSS FG active
+    g_RenderWatchdog.Heartbeat();
+    
+    // Check if FG is active - overlay WILL render on all frames including interpolated
+    bool fgActive = g_FGCompat.NeedsCompletePassthrough();
+    
+    // CRITICAL FIX: When Vulkan is active, pass through DXGI Present calls
+    if (IsVulkanActive()) {
         return oPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
     }
     
@@ -239,6 +258,11 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
 {
     // CRITICAL FIX: For native FSR FG, do ABSOLUTELY NOTHING except call original
     if (g_FGCompat.NeedsCompletePassthrough()) {
+        return oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
+    }
+    
+    // CRITICAL FIX: When Vulkan is active, pass through DXGI ResizeBuffers calls
+    if (IsVulkanActive()) {
         return oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
     }
     
@@ -298,8 +322,14 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers1(IDXGISwapChain* pSwapChain, UINT 
                                                DXGI_FORMAT NewFormat, UINT SwapChainFlags,
                                                const UINT* pCreationNodeMask, IUnknown* const* ppPresentQueue)
 {
-    // CRITICAL FIX: For native FSR FG, do ABSOLUTELY NOTHING except call original
+    // UNIFIED PATH: Simple passthrough
     if (g_FGCompat.NeedsCompletePassthrough()) {
+        return oResizeBuffers1(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags, 
+                               pCreationNodeMask, ppPresentQueue);
+    }
+    
+    // Vulkan passthrough
+    if (IsVulkanActive()) {
         return oResizeBuffers1(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags, 
                                pCreationNodeMask, ppPresentQueue);
     }
@@ -363,19 +393,25 @@ bool InstallHooks(IDXGISwapChain* pSwapChain)
 {
     if (!pSwapChain) return false;
 
-    // CRITICAL FIX: Skip installing hooks when native FSR FG is active
-    // FSR FG creates its own swapchain wrapper that is extremely sensitive
-    // to external hooks. Installing hooks on FSR's swapchain causes deadlocks.
-    if (g_FGCompat.NeedsCompletePassthrough()) {
-        static bool s_loggedSkip = false;
-        if (!s_loggedSkip) {
-            HookLog("DXGIShared::InstallHooks - Native FSR FG active, SKIPPING hook installation");
-            s_loggedSkip = true;
+    // EXTREME DEBUG: Log InstallHooks calls
+    static std::atomic<int> s_installCount{0};
+    int count = s_installCount.fetch_add(1);
+    HookLog("DXGIShared::InstallHooks CALLED #%d (swapchain=%p)", count, pSwapChain);
+
+    // CRITICAL FIX: Skip installing hooks when Vulkan is active
+    // Vulkan games using WSI-to-DXGI mapping can freeze if we hook their swapchains
+    if (IsVulkanActive()) {
+        static bool s_loggedVulkanSkip = false;
+        if (!s_loggedVulkanSkip) {
+            HookLog("DXGIShared::InstallHooks - Vulkan active, SKIPPING hook installation");
+            s_loggedVulkanSkip = true;
         }
-        return true;  // Return success but don't actually hook
+        return true;  // Return success to prevent fallback attempts
     }
 
     void** vtable = *(void***)pSwapChain;
+    HookLog("DXGIShared::InstallHooks - vtable=%p, Present=%p, DetourPresent=%p", 
+            vtable, vtable[8], (void*)DetourPresent);
     bool anyInstalled = false;
 
     // Check if this is our own Wrapper
@@ -388,15 +424,11 @@ bool InstallHooks(IDXGISwapChain* pSwapChain)
         return true;
     }
 
+    // CRITICAL: Always install Present hooks - they send heartbeats for freeze watchdog
+    // even when FSR FG is active (they early-return after heartbeat)
     // Present (8)
     if (vtable[8] != (void*)DetourPresent) {
         VTableHook::Create(&vtable[8], (LPVOID)DetourPresent, (LPVOID*)&oPresent);
-        anyInstalled = true;
-    }
-
-    // ResizeBuffers (13)
-    if (vtable[13] != (void*)DetourResizeBuffers) {
-        VTableHook::Create(&vtable[13], (LPVOID)DetourResizeBuffers, (LPVOID*)&oResizeBuffers);
         anyInstalled = true;
     }
 
@@ -406,7 +438,26 @@ bool InstallHooks(IDXGISwapChain* pSwapChain)
         anyInstalled = true;
     }
 
-    // ResizeBuffers1 (39)
+    // CRITICAL FIX: Skip ResizeBuffers hooks when native FSR FG is active
+    // FSR FG creates its own swapchain wrapper that is extremely sensitive
+    // to external hooks. Installing resize hooks on FSR's swapchain causes deadlocks.
+    bool fgActive = g_FGCompat.NeedsCompletePassthrough();
+    if (fgActive) {
+        static bool s_loggedSkip = false;
+        if (!s_loggedSkip) {
+            HookLog("DXGIShared::InstallHooks - Native FSR FG active, skipping ResizeBuffers hooks (Present hooks installed for watchdog)");
+            s_loggedSkip = true;
+        }
+        return anyInstalled;  // Present hooks installed, but not ResizeBuffers
+    }
+
+    // ResizeBuffers (13) - NOT installed when FSR FG active
+    if (vtable[13] != (void*)DetourResizeBuffers) {
+        VTableHook::Create(&vtable[13], (LPVOID)DetourResizeBuffers, (LPVOID*)&oResizeBuffers);
+        anyInstalled = true;
+    }
+
+    // ResizeBuffers1 (39) - NOT installed when FSR FG active
     if (vtable[39] != (void*)DetourResizeBuffers1) {
         VTableHook::Create(&vtable[39], (LPVOID)DetourResizeBuffers1, (LPVOID*)&oResizeBuffers1);
         anyInstalled = true;

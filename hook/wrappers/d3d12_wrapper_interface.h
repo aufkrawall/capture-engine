@@ -16,7 +16,7 @@ extern "C" {
 
 #ifndef D3D12_EXPORT
 #ifdef _MSC_VER
-#define D3D12_EXPORT __declspec(dllexport)
+#define D3D12_EXPORT  // No longer exporting
 #else
 #define D3D12_EXPORT
 #endif

@@ -28,6 +28,12 @@ public:
     // Manual freeze check - returns true if frozen
     bool IsFrozen() const;
     
+    // Check if this is a DLSS FG game (needs longer timeout)
+    bool IsDLSSFGActive() const;
+    
+    // Adjust timeout based on game type
+    void AdjustTimeoutForGameType();
+    
 private:
     void WatchdogThread();
     void CreateMinidump(const std::string& reason);

@@ -5,6 +5,7 @@
 #include <array>
 #include <filesystem>
 #include <iostream>
+#include <thread>
 #include "../common/logging.h"
 #include "../common/raii_helpers.h"
 
@@ -414,18 +415,72 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
 
                 // Check whitelist (thread-safe? IsWhitelisted reads config which is const, so yes)
                 if (pManager->IsWhitelisted(name)) {
-                    // IMMEDIATE INJECTION (No Delay)
-                    std::lock_guard<std::mutex> lock(pManager->injectMutex);
-                    if (!pManager->IsAlreadyInjected(pid) && !pManager->IsRecentlyFailed(pid)) {
-                        LogInfo("[WMI] Detected process creation: %s (PID: %d) - Injecting IMMEDIATELY", name.c_str(),
-                                pid);
-                        if (pManager->Inject(pid, name)) {
-                            LogInfo("[WMI] Immediate injection successful.");
-                        } else {
-                            LogError("[WMI] Immediate injection failed.");
-                            pManager->failedInjections.push_back({pid, GetTickCount64()});
+                    // DELAYED INJECTION FOR D3D12 GAMES: Wait for window/D3D12 initialization
+                    // This prevents crashes during early D3D12 setup in UE5 games with DLSS FG
+                    // Capture by value to avoid lifetime issues
+                    InjectionManager* manager = pManager;
+                    std::thread([manager, pid, name]() {
+                        LogInfo("[WMI] %s (PID: %d) - Delaying injection for D3D12 initialization...", name.c_str(), pid);
+                        
+                        // Wait up to 30 seconds for D3D12 initialization
+                        bool ready = false;
+                        bool d3d12Loaded = false;
+                        for (int i = 0; i < 300 && !ready; i++) {
+                            Sleep(100);  // 100ms * 300 = 30 seconds max
+                            
+                            // Check if process is still running
+                            HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, FALSE, pid);
+                            if (!hProcess) {
+                                LogInfo("[WMI] %s (PID: %d) - Process exited before injection", name.c_str(), pid);
+                                return;
+                            }
+                            
+                            // Check if process has exited
+                            DWORD exitCode = 0;
+                            if (GetExitCodeProcess(hProcess, &exitCode) && exitCode != STILL_ACTIVE) {
+                                CloseHandle(hProcess);
+                                LogInfo("[WMI] %s (PID: %d) - Process exited before injection", name.c_str(), pid);
+                                return;
+                            }
+                            
+                            // Check if D3D12.dll is loaded (wait for graphics init to complete)
+                            if (!d3d12Loaded) {
+                                HMODULE hMods[1024];
+                                DWORD cbNeeded;
+                                if (EnumProcessModules(hProcess, hMods, sizeof(hMods), &cbNeeded)) {
+                                    for (unsigned int j = 0; j < (cbNeeded / sizeof(HMODULE)); j++) {
+                                        char szModName[MAX_PATH];
+                                        if (GetModuleFileNameExA(hProcess, hMods[j], szModName, sizeof(szModName))) {
+                                            if (strstr(szModName, "d3d12.dll")) {
+                                                d3d12Loaded = true;
+                                                LogInfo("[WMI] %s (PID: %d) - D3D12.dll detected, waiting for init...", name.c_str(), pid);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            CloseHandle(hProcess);
+                            
+                            // Wait at least 3 seconds after D3D12 is loaded for UE5 to finish init
+                            // Or wait 5 seconds minimum for any game
+                            if (i >= 50 || (d3d12Loaded && i >= 30)) {
+                                ready = true;
+                            }
                         }
-                    }
+                        
+                        // Perform injection
+                        std::lock_guard<std::mutex> lock(manager->injectMutex);
+                        if (!manager->IsAlreadyInjected(pid) && !manager->IsRecentlyFailed(pid)) {
+                            LogInfo("[WMI] %s (PID: %d) - Injecting after delay", name.c_str(), pid);
+                            if (manager->Inject(pid, name)) {
+                                LogInfo("[WMI] Delayed injection successful.");
+                            } else {
+                                LogError("[WMI] Delayed injection failed.");
+                                manager->failedInjections.push_back({pid, GetTickCount64()});
+                            }
+                        }
+                    }).detach();
                 }
             }
 

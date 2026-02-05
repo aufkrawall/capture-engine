@@ -488,8 +488,8 @@ void Overlay::RenderUI()
                 float fgOutputFPS = g_FGCompat.GetOutputFPS();
                 
                 // CRITICAL FIX: Only show Base/Display split for KNOWN FG types
-                // Don't show for Unknown behavior (false positive detection)
-                auto fgBehaviorType = g_FGCompat.GetDetectedType();
+                // Use API-based detection (not behavioral)
+                auto fgBehaviorType = g_FGCompat.GetActiveFGType();
                 bool isKnownFGBehavior = (fgBehaviorType == FGCompatibility::FGType::DLSS_FG || 
                                           fgBehaviorType == FGCompatibility::FGType::FSR_FG ||
                                           fgBehaviorType == FGCompatibility::FGType::DLSS_MSFG);
@@ -561,10 +561,9 @@ void Overlay::RenderUI()
 
                 // 3. FG Status (Integrated)
                 // CRITICAL FIX: Only show FG info when it's actually ACTIVE (multiplier >= 2)
-                // Don't show DLL type when FG is just loaded but not enabled
-                auto fgType = g_FGCompat.GetDetectedType();  // Behavioral detection (only active when mult >= 2)
-                auto dllType = g_FGCompat.DetectLoadedFGRuntime();  // DLL-based only
-                bool fgTypeActive = g_FGCompat.IsFGActive();
+                // Use API-based detection (not DLL-based) - only active when hooks confirm usage
+                auto fgType = g_FGCompat.GetActiveFGType();  // API-based detection
+                bool fgTypeActive = (fgType != FGCompatibility::FGType::None);
                 int mult = g_FGCompat.GetFGMultiplier();
 
                 // Also check our captured state from NVNGX
