@@ -135,6 +135,13 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers)
 {
     DWORD code = pExceptionPointers->ExceptionRecord->ExceptionCode;
     
+    // CRITICAL: Early-exit for C++ exceptions (0xE06D7363) to prevent log spam
+    // These are normal throw/catch operations handled by the C++ runtime
+    // Logging them fills crash_handler_trace.txt with 12MB+ of useless data
+    if (code == 0xE06D7363) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    
     // Log ALL exceptions for debugging (including non-crash)
     char codeStr[128];
     snprintf(codeStr, sizeof(codeStr), "VEH Exception: 0x%08lX at %p (PID:%lu TID:%lu)", 

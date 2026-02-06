@@ -19,6 +19,7 @@ extern void DX11_ProcessFrameExternal(IDXGISwapChain* pSwapChain);
 extern void DX12_OnSwapchainResizeBegin();
 extern void DX12_OnSwapchainResizeEnd();
 extern "C" __declspec(dllimport) void DX12_SetCommandQueue(IUnknown* pQueue);
+extern "C" __declspec(dllimport) void DX12_WaitForOverlayCompletion(ID3D12CommandQueue* pQueue);
 
 // FG detection for FSR FG/DLSS FG compatibility
 #include "../common/fg_detection.h"

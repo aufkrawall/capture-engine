@@ -842,7 +842,20 @@ void DrawOverlay(ID3D12GraphicsCommandList* cmdList, bool isRealFrame, UINT buff
     
     // Always render the overlay (uses cached draw data on interpolated frames)
     cmdList->SetDescriptorHeaps(1, &g_State.srvDescHeap);
-    ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), cmdList);
+    ImDrawData* drawData = ImGui::GetDrawData();
+    if (drawData) {
+        static int s_drawCount = 0;
+        if (++s_drawCount <= 10) {
+            HookLog("DX12: RenderOverlay - drawData valid, cmdLists=%d, vtx=%d, idx=%d", 
+                    drawData->CmdListsCount, drawData->TotalVtxCount, drawData->TotalIdxCount);
+        }
+        ImGui_ImplDX12_RenderDrawData(drawData, cmdList);
+    } else {
+        static int s_nullCount = 0;
+        if (++s_nullCount <= 10) {
+            HookLog("DX12: RenderOverlay - drawData is NULL!");
+        }
+    }
 }
 
 void CreateRTVs(ID3D12Device* device, IDXGISwapChain3* swapChain, int bufferCount)
@@ -1477,14 +1490,6 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture)
             HookLog("DX12: ProcessFrame - entered overlay block #%d (fence=%p, cmdList=%p, allocCount=%zu)",
                     s_overlayBlockEntryCount, g_State.fence, g_State.cmdList, g_State.allocators.size());
         }
-
-        // CRITICAL: Verify all required resources are valid before proceeding
-        if (!g_Device || !g_State.rtvDescHeap || !pSwapChain) {
-            HookLog("DX12: ProcessFrame - skipping overlay, missing resources (device=%p, rtvHeap=%p, swapchain=%p)",
-                    g_Device, g_State.rtvDescHeap, pSwapChain);
-            return;
-        }
-
         // Change 6: Remove verbose per-frame logging
         int idx = g_State.allocIndex;
         g_State.allocIndex = (idx + 1) % DX12OverlayState::ALLOC_POOL_SIZE;
@@ -1535,46 +1540,88 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture)
                             }
                             ID3D12Resource* bb = nullptr;
                             if (SUCCEEDED(pSwapChain->GetBuffer(swapchainBufferIdx, IID_PPV_ARGS(&bb)))) {
-                                // Render overlay using our DEDICATED overlay queue
-                                // This is independent of game/FG runtime queues - no conflicts
-                                D3D12_RESOURCE_BARRIER b = {D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
-                                                            D3D12_RESOURCE_BARRIER_FLAG_NONE,
-                                                            {bb, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-                                                             D3D12_RESOURCE_STATE_PRESENT,
-                                                             D3D12_RESOURCE_STATE_RENDER_TARGET}};
-                                list->ResourceBarrier(1, &b);
+                                static int s_bufferLogCount = 0;
+                                if (++s_bufferLogCount <= 10) {
+                                    HookLog("DX12: Render to buffer %u/%u (swapchain says %u), bb=%p", 
+                                            bufferIdx, g_State.bufferCount, swapchainBufferIdx, bb);
+                                }
+                                // Transition buffer to RENDER_TARGET for overlay rendering
+                                {
+                                    D3D12_RESOURCE_BARRIER b = {D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+                                                                D3D12_RESOURCE_BARRIER_FLAG_NONE,
+                                                                {bb, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                                                                 D3D12_RESOURCE_STATE_PRESENT,
+                                                                 D3D12_RESOURCE_STATE_RENDER_TARGET}};
+                                    list->ResourceBarrier(1, &b);
+                                }
                                 D3D12_CPU_DESCRIPTOR_HANDLE rtv =
                                     g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
                                 rtv.ptr += (SIZE_T)bufferIdx * g_State.rtvDescriptorSize;
                                 g_Device->CreateRenderTargetView(bb, nullptr, rtv);
                                 list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+                                // DEBUG: Clear to red to verify we're rendering to the right buffer
+                                static int s_clearCount = 0;
+                                if (++s_clearCount <= 5) {
+                                    float red[] = {1.0f, 0.0f, 0.0f, 1.0f};  // Full opacity red
+                                    list->ClearRenderTargetView(rtv, red, 0, nullptr);
+                                    HookLog("DX12: DEBUG - Cleared buffer %u to RED (rtv.ptr=%p)", bufferIdx, rtv.ptr);
+                                }
                                 D3D12_VIEWPORT vp = {0, 0, (float)g_State.cachedWidth, (float)g_State.cachedHeight,
                                                      0, 1};
                                 list->RSSetViewports(1, &vp);
                                 D3D12_RECT scissor = {0, 0, (LONG)g_State.cachedWidth, (LONG)g_State.cachedHeight};
                                 list->RSSetScissorRects(1, &scissor);
                                 DrawOverlay(list, processCapture, bufferIdx);
-                                b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-                                b.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-                                list->ResourceBarrier(1, &b);
+                                // Re-enabled transitions after debugging confirmed barriers are NOT the issue
+                                {
+                                    D3D12_RESOURCE_BARRIER b = {D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+                                                                D3D12_RESOURCE_BARRIER_FLAG_NONE,
+                                                                {bb, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                                                                 D3D12_RESOURCE_STATE_RENDER_TARGET,
+                                                                 D3D12_RESOURCE_STATE_PRESENT}};
+                                    list->ResourceBarrier(1, &b);
+                                }
                                 HRESULT closeHr = list->Close();
+                                static int s_closeCount = 0;
+                                if (++s_closeCount <= 10) {
+                                    HookLog("DX12: cmdList->Close hr=0x%08X, overlayQueue=%p, fence=%p", 
+                                            closeHr, g_OverlayQueue, g_State.fence);
+                                }
+                                // Use overlay queue for rendering - game queue causes device removal
                                 if (SUCCEEDED(closeHr) && g_OverlayQueue && g_State.fence) {
                                     ID3D12CommandList* lists[] = {list};
                                     g_OverlayQueue->ExecuteCommandLists(1, lists);
-
+                                    
+                                    // Signal fence from overlay queue
                                     g_State.currentFenceValue++;
                                     g_State.fenceValues[idx] = g_State.currentFenceValue;
                                     g_OverlayQueue->Signal(g_State.fence, g_State.currentFenceValue);
-
-                                    // CPU-wait: ensure overlay GPU work completes before Present
-                                    // This is safe (no deadlock) because it's CPU-side, not GPU Queue->Wait()
-                                    if (g_State.fence->GetCompletedValue() < g_State.currentFenceValue) {
-                                        g_State.fence->SetEventOnCompletion(g_State.currentFenceValue, g_State.fenceEvent);
-                                        WaitForSingleObject(g_State.fenceEvent, 100);
+                                    
+                                    static int s_execCount = 0;
+                                    if (++s_execCount <= 10) {
+                                        HookLog("DX12: Overlay submitted to queue %p", g_OverlayQueue);
                                     }
-                                } else {
-                                    HookLog("DrawOverlay: Failed to close or missing queue/fence, hr=0x%08X, overlayQueue=%p, fence=%p",
-                                            closeHr, g_OverlayQueue, g_State.fence);
+                                    
+                                    // CRITICAL: Make the game's queue wait for overlay completion
+                                    // This ensures overlay is visible before Present
+                                    ID3D12CommandQueue* gameQueue = nullptr;
+                                    {
+                                        std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
+                                        gameQueue = g_CommandQueue;
+                                    }
+                                    if (gameQueue) {
+                                        HRESULT waitHr = gameQueue->Wait(g_State.fence, g_State.currentFenceValue);
+                                        if (SUCCEEDED(waitHr)) {
+                                            if (s_execCount <= 10) {
+                                                HookLog("DX12: Game queue waiting for overlay fence %llu", g_State.currentFenceValue);
+                                            }
+                                        }
+                                    }
+                                } else if (!g_OverlayQueue) {
+                                    static int s_noQueueCount = 0;
+                                    if (++s_noQueueCount <= 5) {
+                                        HookLog("DX12: Overlay skipped - no overlay queue");
+                                    }
                                 }
 
                                 if (bb) bb->Release();
@@ -1782,6 +1829,32 @@ void HandleDX12ResizeBegin() { DX12_OnSwapchainResizeBegin(); }
 void HandleDX12ResizeEnd() { DX12_OnSwapchainResizeEnd(); }
 }  // namespace DXGIShared
 
+// External function for swapchain wrapper to wait for overlay completion before Present
+extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12CommandQueue* pGameQueue)
+{
+    if (!pGameQueue || !g_State.fence) return;
+    
+    // Get the most recent fence value that was signaled by the overlay queue
+    // This is accessed from Present thread, written from render thread - use atomic load
+    UINT64 fenceValueToWait = g_State.currentFenceValue;
+    if (fenceValueToWait == 0) return;  // No overlay work submitted yet
+    
+    // Make the game's queue wait for the overlay fence
+    // This ensures overlay rendering completes before Present
+    HRESULT hr = pGameQueue->Wait(g_State.fence, fenceValueToWait);
+    if (FAILED(hr)) {
+        static int s_failCount = 0;
+        if (++s_failCount <= 5) {
+            HookLog("DX12: WaitForOverlay - Wait failed hr=0x%08X", hr);
+        }
+    } else {
+        static int s_successCount = 0;
+        if (++s_successCount <= 5) {
+            HookLog("DX12: WaitForOverlay - Queue %p waiting for fence value %llu", pGameQueue, fenceValueToWait);
+        }
+    }
+}
+
 static const GUID SKID_D3D12SwapChainBufferBitmap = {
     0xbc53df3b, 0x956f, 0x47db, {0xa6, 0x53, 0x5, 0xd7, 0xb8, 0x71, 0x53, 0x38}};
 static std::atomic<int> g_ECLCallCount{0};
@@ -1799,66 +1872,20 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     }
     
     // FIX: Count command lists from ALL queues EXCEPT our overlay queue
-    // This ensures isReal frames are detected even before game queue is formally identified
-    // The overlay queue is the only queue we own and should exclude from frame detection
-    // Streamline/DLSS FG uses separate internal queues but they don't produce Present calls
+    // This ensures isReal frames are detected correctly
+    // The game command queue identification is NOT needed - we just exclude our own overlay queue
     if (pThis != g_OverlayQueue) {
         g_CommandListsExecutedThisFrame.fetch_add(NumCommandLists, std::memory_order_relaxed);
+        
+        // FIX: Register game's queue for overlay execution
+        // Now that we use game's queue instead of separate overlay queue, we need to capture it
+        DX12_SetCommandQueue(pThis);
     }
 
-    // OPTIMIZATION: Only run detection if we haven't found the main queue yet
-    // We use a relaxed atomic load of the pointer (safe enough for a heuristic)
-    // If g_CommandQueue is NULL, we assume we need to search.
-    // If g_CommandQueue is SET, we only check if pThis matches if we suspect a switch,
-    // but for performance we assume the game uses one main queue for the swapchain.
-    bool runDetection = (g_CommandQueue == nullptr);
-
-    if (runDetection && pThis && !g_InSwapchainResizeCleanup.load(std::memory_order_acquire)) {
-        IDXGISwapChain3* sc = nullptr;
-        {
-            // Check g_LastSwapChain with lock
-            std::lock_guard<std::recursive_mutex> lock(g_OverlayMutex);
-            if (g_LastSwapChain) {
-                g_LastSwapChain->QueryInterface(IID_PPV_ARGS(&sc));
-            }
-        }
-
-        if (sc) {
-            UINT idx = sc->GetCurrentBackBufferIndex();
-            DXGI_SWAP_CHAIN_DESC d;
-            if (SUCCEEDED(sc->GetDesc(&d))) {
-                UINT size = sizeof(uint16_t);
-                uint16_t bitmap = 0;
-                pThis->GetPrivateData(SKID_D3D12SwapChainBufferBitmap, &size, &bitmap);
-                bitmap |= (1 << idx);
-                pThis->SetPrivateData(SKID_D3D12SwapChainBufferBitmap, sizeof(uint16_t), &bitmap);
-
-                auto CountBits = [](uint16_t n) {
-                    int c = 0;
-                    while (n > 0) {
-                        n &= (n - 1);
-                        c++;
-                    }
-                    return c;
-                };
-                if (CountBits(bitmap) == (int)d.BufferCount) {
-                    // Found the queue that presents to all swapchain buffers
-                    // This is used for frame detection (command list counting)
-                    // Overlay rendering uses its own dedicated queue (g_OverlayQueue)
-                    bool diff = false;
-                    {
-                        std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
-                        diff = (g_CommandQueue != pThis);
-                    }
-                    if (diff) {
-                        HookLog("DX12: Found game command queue %p", pThis);
-                        DX12_SetCommandQueue(pThis);
-                    }
-                }
-            }
-            sc->Release();
-        }
-    }
+    // NOTE: Removed complex swapchain-based queue detection to prevent crashes
+    // The isReal detection works without needing to identify the game's command queue
+    // We simply count command lists from all queues except our overlay queue
+    
     if (oExecuteCommandLists) oExecuteCommandLists(pThis, NumCommandLists, ppCommandLists);
 }
 

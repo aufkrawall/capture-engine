@@ -238,15 +238,18 @@ void Overlay::RenderUI()
 {
     lastDrawResult = DrawResult::Unknown;
     if (!initialized) {
+        OutputDebugStringA("[CaptureHook] Overlay::RenderUI - skipped: not initialized\n");
         lastDrawResult = DrawResult::SkippedNotInitialized;
         return;
     }
     if (!context) {
+        OutputDebugStringA("[CaptureHook] Overlay::RenderUI - skipped: no context\n");
         lastDrawResult = DrawResult::SkippedNoContext;
         return;
     }
     ImGui::SetCurrentContext(context);
     if (hwnd && IsWindow((HWND)hwnd) && !IsWindowVisible((HWND)hwnd)) {
+        OutputDebugStringA("[CaptureHook] Overlay::RenderUI - skipped: window hidden\n");
         lastDrawResult = DrawResult::SkippedWindowHidden;
         return;
     }
@@ -279,9 +282,11 @@ void Overlay::RenderUI()
     const auto& cfg = mem.overlayConfig;
 
     if (!cfg.showOverlay) {
+        OutputDebugStringA("[CaptureHook] Overlay::RenderUI - skipped: showOverlay=false\n");
         lastDrawResult = DrawResult::SkippedShowDisabled;
         return;
     }
+    OutputDebugStringA("[CaptureHook] Overlay::RenderUI - rendering...\n");
 
     // Update Throttling
     DWORD now = GetTickCount();
