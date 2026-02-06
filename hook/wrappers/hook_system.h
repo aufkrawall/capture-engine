@@ -5,8 +5,8 @@
 #include <functional>
 #include <mutex>
 
-// MinHook header
-#include <MinHook.h>
+// Custom hook system (replaces MinHook)
+#include "custom_hook.h"
 
 namespace HookSystem {
 
@@ -37,7 +37,7 @@ bool CreateExportHook(
     void** original
 );
 
-// Create hook using wide char module name (for MinHook MH_CreateHookApi)
+// Create hook using wide char module name
 bool CreateExportHookW(
     const wchar_t* moduleName,
     const char* functionName,
@@ -71,10 +71,10 @@ void RemoveHook(void* target);
 bool EnableAllHooks();
 bool DisableAllHooks();
 
-// Get hook status string
-const char* GetStatusString(MH_STATUS status);
+// Get hook status string (for compatibility)
+const char* GetStatusString(CustomHook::Status status);
 
-// RAII guard for MinHook initialization
+// RAII guard for hook initialization
 class ScopedInitializer {
 public:
     ScopedInitializer();

@@ -145,6 +145,8 @@ const char* StatusToString(Status status)
             return "Module not found";
         case ErrorFunctionNotFound:
             return "Function not found";
+        case ErrorPatchFailed:
+            return "Patch verification failed";
         default:
             return "Unknown error";
     }

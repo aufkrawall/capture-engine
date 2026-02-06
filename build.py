@@ -2338,21 +2338,12 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             os.path.join(PROJECT_ROOT, "hook", "minimal_main.cpp"),  # Excluded - built separately as minimal test
             os.path.join(PROJECT_ROOT, "hook", "apis", "dx12_hook_stable.cpp"),  # WIP - not ready
             os.path.join(PROJECT_ROOT, "hook", "apis", "dx12_hook_minhook.cpp"),  # WIP - not ready
-            os.path.join(PROJECT_ROOT, "hook", "wrappers", "vtable_hook.cpp"),  # Using vtable_hook_minhook.cpp instead
+            os.path.join(PROJECT_ROOT, "hook", "wrappers", "vtable_hook_minhook.cpp"),  # Replaced by custom_hook.cpp
         ]
         hk_src = [f for f in hk_src if f not in excluded_files]
 
-        # MinHook - Added for stable DX12 hooking
-        minhook_src = [
-            os.path.join(PROJECT_ROOT, "external", "minhook", "src", "buffer.c"),
-            os.path.join(PROJECT_ROOT, "external", "minhook", "src", "hook.c"),
-            os.path.join(PROJECT_ROOT, "external", "minhook", "src", "trampoline.c"),
-            os.path.join(PROJECT_ROOT, "external", "minhook", "src", "hde", "hde32.c"),
-            os.path.join(PROJECT_ROOT, "external", "minhook", "src", "hde", "hde64.c"),
-            # MinHook-based vtable hook (replaces vtable_hook.cpp)
-            os.path.join(PROJECT_ROOT, "hook", "wrappers", "vtable_hook_minhook.cpp"),
-        ]
-        hk_src.extend(minhook_src)
+        # Custom hook system (VTable + IAT patching, replaces MinHook)
+        # vtable_hook.cpp and custom_hook.cpp are already included via glob
 
         # volk removed - using vulkan layer instead
         # hk_src.append(os.path.join(PROJECT_ROOT, "external", "volk", "volk.c"))
@@ -2412,9 +2403,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 "-I" + os.path.join(PROJECT_ROOT, "hook", "apis"),
                 "-I" + os.path.join(PROJECT_ROOT, "hook", "capture"),
                 "-I" + os.path.join(PROJECT_ROOT, "hook", "wrappers"),
-                # MinHook includes
-                "-I" + os.path.join(PROJECT_ROOT, "external", "minhook", "include"),
-                "-I" + os.path.join(PROJECT_ROOT, "external", "minhook", "src"),
             ]
         )
 
