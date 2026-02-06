@@ -23,21 +23,22 @@
 #include "../common/streamline_compat.h"
 #include "../common/hook_common.h"
 #include "../common/input_manager.h"
-#include "../common/overlay.h"
+//#include "../common/overlay.h"
+#include "../common/overlay_adapter.h"
 #include "../common/performance_metrics.h"
 
 #include "../common/swapchain_wrapper.h"
 #include "../common/system_metrics.h"
 #include "../wrappers/d3d12_wrapper_interface.h"
 #include "../wrappers/wrapper_hooks.h"
-#include "backends/imgui_impl_dx12.h"
-#include "backends/imgui_impl_win32.h"
+//#include "backends/imgui_impl_dx12.h"
+//#include "backends/imgui_impl_win32.h"
 #include "dx11_hook.h"
 #include "dx12_hook.h"
 #include "../common/overlay_adapter.h"
 #include "graphics_hook.h"
 #include "../common/freeze_watchdog.h"
-#include "imgui.h"
+//#include "imgui.h"
 #include "lod_helper.h"
 
 #include "../wrappers/vtable_hook.h"
@@ -306,8 +307,7 @@ void DX12_AdjustWrapperResizeDepth(int delta)
         DXGIShared::g_SharedState.wrapperResizeDepth.fetch_sub(-delta);
 }
 
-// Forward declaration for immediate ImGui shutdown during swapchain invalidation
-void ShutdownImGui();
+// Forward declaration removed - OverlayAdapter handles cleanup
 
 void DX12_InvalidateSwapchain()
 {
@@ -377,7 +377,7 @@ void DX12_NotifyCommandLists(UINT numCommandLists)
 void DX12_OnSwapchainResizeEnd();
 void CleanupOverlay();
 void CleanupRTVs();
-void ShutdownImGui();
+void // ShutdownImGui(); // MIGRATED: OverlayAdapter handles cleanup
 void DX12_InvalidateSwapchain();
 
 // Helper to ensure global hook instance exists
@@ -689,11 +689,8 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
         return false;
     }
     
-    g_SharedOverlay.InitImGui(hwnd); // Keep minimal ImGui init for shared state if needed, or remove
-    // Actually, g_SharedOverlay.InitImGui just creates context, which OverlayAdapter doesn't use.
-    // We can skip g_SharedOverlay.InitImGui if entirely replacing.
-    // But let's call it just into case other parts depend on it, or comment it out.
-    // g_SharedOverlay.InitImGui(hwnd); 
+    // g_SharedOverlay.InitImGui(hwnd); // MIGRATED: Using OverlayAdapter instead
+    // OverlayAdapter handles its own initialization 
 
     InputManager::Get().HookWindow(hwnd);
     
@@ -946,7 +943,7 @@ void CleanupOverlay()
         g_OverlayQueue = nullptr;
     }
 
-    ShutdownImGui();
+    // ShutdownImGui(); // MIGRATED: OverlayAdapter handles cleanup
 }
 
 void CleanupRTVs()
@@ -1096,7 +1093,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture)
         HookLog("DX12: Swapchain changed (%p -> %p), forcing re-initialization", s_lastSwapChain, pSwapChain);
         CleanupOverlay();
         CleanupRTVs();
-        ShutdownImGui();
+        // ShutdownImGui(); // MIGRATED: OverlayAdapter handles cleanup
         g_State.imGuiInit = false;
         g_State.syncInit = false;
         DX12_ResetImGuiFrameCounter();
@@ -1254,7 +1251,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture)
             if (g_Device) {
                 CleanupOverlay();
                 CleanupRTVs();
-                ShutdownImGui();
+                // ShutdownImGui(); // MIGRATED: OverlayAdapter handles cleanup
                 g_SharedCaptureD3D12.Reset();
                 // Also cleanup overlay queue when device changes
                 if (g_OverlayQueue) {
@@ -1908,7 +1905,7 @@ HRESULT STDMETHODCALLTYPE DetourCreateCommittedResource(ID3D12Device* device,
 void DX12Hook::Shutdown()
 {
     CleanupResources();
-    ShutdownImGui();
+    // ShutdownImGui(); // MIGRATED: OverlayAdapter handles cleanup
     CleanupOverlay();
     CleanupRTVs();
     {
