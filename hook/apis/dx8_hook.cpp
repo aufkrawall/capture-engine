@@ -1,11 +1,9 @@
 #include "dx8_hook.h"
-#include <backends/imgui_impl_dx9.h>
-#include <backends/imgui_impl_win32.h>
-#include <d3d11.h>
+
 #include <d3d11_4.h>
 #include <d3d9.h>
 #include <dxgi.h>
-#include <imgui.h>
+
 #include <windows.h>
 #include <cstdint>
 #include <string>
@@ -14,7 +12,7 @@
 #include "../common/capture_base.h"
 #include "../common/fps_limiter.h"
 #include "../common/frame_timing.h"
-#include "../common/overlay.h"
+#include "../common/overlay_adapter.h"
 #include "../wrappers/vtable_hook.h"
 #include "hook_common.h"
 #include "lod_helper.h"
@@ -555,43 +553,58 @@ static void ApplyPrerenderLimitDX8(IDirect3DDevice8* device, float limit)
 }
 
 // Draw overlay using ImGui DX9 backend (on our D3D9Ex wrapper device)
+// Draw overlay using CustomOverlay (via D3D9Ex wrapper)
 static void DrawDX8Overlay(HWND hwnd)
 {
     if (!g_DX8Capture.d3d9DeviceEx) return;
 
-    if (!g_ImGuiInitialized) {
+    if (!g_OverlayAdapter.IsInitialized()) {
         g_CachedHwnd = hwnd;
+        InputManager::Get().HookWindow(hwnd); // Hook input for menu
 
-        g_SharedOverlay.InitImGui(hwnd);
-        ImGui_ImplDX9_Init(g_DX8Capture.d3d9DeviceEx);
-
-        // SetTextureStageState is index 61
-        if (g_DX8Capture.d3d8Device) {
-            void** vTable = *(void***)g_DX8Capture.d3d8Device;
-            VTableHook::Create(&vTable[61], (LPVOID)&DetourD3D8SetTextureStageState,
-                               (LPVOID*)&oD3D8SetTextureStageState);
+        if (g_OverlayAdapter.InitDX9(g_DX8Capture.d3d9DeviceEx)) {
+            g_OverlayAdapter.SetHwnd(hwnd);
+            EarlyLog("DX8: OverlayAdapter initialized (via DX9)");
         }
-
-        g_DX8HooksInitialized = true;
-        HookLog("DX8: Hooks initialized");
+        
+        // Re-apply hook if needed? D3D8SetTextureStageState hook logic was in ImGui init block
+        // We should probably keep that hook if it's important for state preservation?
+        // The original logic hooked SetTextureStageState inside initial ImGui init only.
+        if (!g_DX8HooksInitialized && g_DX8Capture.d3d8Device) {
+             void** vTable = *(void***)g_DX8Capture.d3d8Device;
+             VTableHook::Create(&vTable[61], (LPVOID)&DetourD3D8SetTextureStageState,
+                                (LPVOID*)&oD3D8SetTextureStageState);
+             g_DX8HooksInitialized = true;
+             HookLog("DX8: State hooks initialized");
+        }
     }
 
-    ImGui_ImplDX9_NewFrame();
-    g_SharedOverlay.BeginFrame();
+    g_OverlayAdapter.SetMetrics(&g_PerfMetrics);
+    g_OverlayAdapter.SetIPCClient(g_IPC);
+    g_OverlayAdapter.SetDroppedFrames(g_DX8Capture.droppedFrames.load(std::memory_order_relaxed));
+    g_OverlayAdapter.SetGraphicsAPI("DX8");
 
-    // Use shared overlay
-    g_SharedOverlay.SetMetrics(&g_PerfMetrics);
-    g_SharedOverlay.SetIPCClient(g_IPC);
-    g_SharedOverlay.SetDroppedFrames(g_DX8Capture.droppedFrames.load(std::memory_order_relaxed));
-    g_SharedOverlay.SetGraphicsAPI("DX8");
-    g_SharedOverlay.RenderUI();
-
-    g_SharedOverlay.EndFrame();
-
-    // Begin scene on our D3D9Ex device
-    g_DX8Capture.d3d9DeviceEx->BeginScene();
-    ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
-    g_DX8Capture.d3d9DeviceEx->EndScene();
+    // DX9Ex wrapper handles BeginScene/EndScene? 
+    // Original code called BeginScene/EndScene around ImGui_ImplDX9_RenderDrawData.
+    // OverlayAdapter.RenderOverlay handles its own render passes but assumes state is ready?
+    // DX9 backend of CustomOverlay calls BeginScene/EndScene internally?
+    // Let's check OverlayAdapter.RenderOverlay -> Backend->Render().
+    // DX9Backend::Render calls BeginScene/EndScene if not already?
+    // Usually OverlayAdapter expects to be called inside a frame.
+    // BUT here we are wrapping.
+    // Original: 
+    //   g_DX8Capture.d3d9DeviceEx->BeginScene();
+    //   ImGui...
+    //   g_DX8Capture.d3d9DeviceEx->EndScene();
+    
+    // DX9Backend usually does BeginStateBlock... Draw... EndStateBlock.
+    // It does NOT call BeginScene.
+    // So we should wrap it.
+    
+    if (SUCCEEDED(g_DX8Capture.d3d9DeviceEx->BeginScene())) {
+         g_OverlayAdapter.RenderOverlay(g_DX8Capture.width, g_DX8Capture.height);
+         g_DX8Capture.d3d9DeviceEx->EndScene();
+    }
 }
 
 static HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device, const RECT* pSourceRect,
@@ -673,11 +686,9 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8Reset(IDirect3DDevice8* device, void*
     HookLog("DX8: Reset called");
 
     // Cleanup ImGui
-    if (g_ImGuiInitialized) {
-        ImGui_ImplDX9_Shutdown();
-        ImGui_ImplWin32_Shutdown();
-        ImGui::DestroyContext();
-        g_ImGuiInitialized = false;
+    // Cleanup OverlayAdapter
+    if (g_OverlayAdapter.IsInitialized()) {
+        g_OverlayAdapter.Shutdown();
     }
 
     // Cleanup capture
@@ -953,11 +964,8 @@ void DX8Hook::Shutdown()
 {
     HookLog("DX8Hook::Shutdown()");
 
-    if (g_ImGuiInitialized) {
-        ImGui_ImplDX9_Shutdown();
-        ImGui_ImplWin32_Shutdown();
-        ImGui::DestroyContext();
-        g_ImGuiInitialized = false;
+    if (g_OverlayAdapter.IsInitialized()) {
+        g_OverlayAdapter.Shutdown();
     }
 
     g_DX8Capture.Cleanup();

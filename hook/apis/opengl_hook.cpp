@@ -1,11 +1,8 @@
 #include "opengl_hook.h"
-#include <backends/imgui_impl_opengl2.h>
-#include <backends/imgui_impl_opengl3.h>
-#include <backends/imgui_impl_win32.h>
 #include <d3d11.h>
+#include "../common/overlay_adapter.h"
 #include <d3d11_4.h>
 #include <dxgi.h>
-#include <imgui.h>
 #include <windows.h>
 #include <cstdint>
 #include <cstdio>
@@ -344,6 +341,10 @@ public:
         if (d3d11Device) {
             d3d11Device->Release();
             d3d11Device = nullptr;
+        }
+
+        if (g_OverlayAdapter.IsInitialized()) {
+             g_OverlayAdapter.Shutdown();
         }
 
         initialized = false;
@@ -860,67 +861,40 @@ static void DetectGPU(HDC hdc)
 
 // Draw overlay using ImGui OpenGL backend
 // Draw overlay using ImGui OpenGL backend
+// Draw overlay using CustomOverlay
 static void DrawOpenGLOverlay(HDC hdc)
 {
     // ACTIVE API ARBITRATION:
-    // If Vulkan is active (e.g. Doom Eternal, RDR2 running Vulkan), it often initializes OpenGL
-    // for legacy reasons or interop. We must suppress OpenGL overlay to avoid conflicts/crashes.
     if (IsVulkanPrimary()) return;
 
-    static int frameCount = 0;
-    bool diag = (frameCount++ < 10);
-    if (diag) HookLog("OpenGL: DrawOpenGLOverlay starting for frame %d (HDC=0x%p)", frameCount, hdc);
-
-    if (!g_ImGuiInitialized) {
-        HookLog("OpenGL: Initializing ImGui...");
+    if (!g_OverlayAdapter.IsInitialized()) {
+        HookLog("OpenGL: Initializing OverlayAdapter...");
         DetectGPU(hdc);
         HWND hwnd = WindowFromDC(hdc);
         g_CachedHwnd = hwnd;
-        HookLog("OpenGL: WindowFromDC(0x%p) returned HWND=0x%p", hdc, hwnd);
-
+        
         // Hook Input
         InputManager::Get().HookWindow(hwnd);
 
-        g_SharedOverlay.InitImGui(hwnd);
-
-        if (g_LegacyContext) {
-            HookLog("OpenGL: Init GL2 Backend...");
-            ImGui_ImplOpenGL2_Init();
-            HookLog("OpenGL: Legacy ImGui (OpenGL2) initialized");
-        } else {
-            HookLog("OpenGL: Init GL3 Backend...");
-            ImGui_ImplOpenGL3_Init();
-            HookLog("OpenGL: Modern ImGui (OpenGL3) initialized");
+        if (g_OverlayAdapter.InitOpenGL()) {
+             g_OverlayAdapter.SetHwnd(hwnd);
+             EarlyLog("OpenGL: OverlayAdapter initialized");
         }
-        g_ImGuiInitialized = true;
     }
 
-    // HookLog("OpenGL: NewFrame");
-    if (g_LegacyContext) {
-        ImGui_ImplOpenGL2_NewFrame();
-    } else {
-        ImGui_ImplOpenGL3_NewFrame();
-    }
-    g_SharedOverlay.BeginFrame();
+    g_OverlayAdapter.SetMetrics(&g_PerfMetrics);
+    g_OverlayAdapter.SetIPCClient(g_IPC);
+    g_OverlayAdapter.SetDroppedFrames(g_OpenGLCapture.droppedFrames.load(std::memory_order_relaxed));
+    g_OverlayAdapter.SetGraphicsAPI("OpenGL");
 
-    // Use shared overlay
-    g_SharedOverlay.SetMetrics(&g_PerfMetrics);
-    g_SharedOverlay.SetIPCClient(g_IPC);
-    g_SharedOverlay.SetDroppedFrames(g_OpenGLCapture.droppedFrames.load(std::memory_order_relaxed));
-    g_SharedOverlay.SetGraphicsAPI("OpenGL");
-    g_SharedOverlay.RenderUI();
-
-    g_SharedOverlay.EndFrame();
-
-    // HookLog("OpenGL: RenderDrawData");
-    if (g_LegacyContext) {
-        ImGui_ImplOpenGL2_RenderDrawData(ImGui::GetDrawData());
-    } else {
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-    }
-
-    if (diag) {
-        HookLog("OpenGL: DrawOpenGLOverlay finished. LastResult=%d", (int)g_SharedOverlay.GetLastDrawResult());
+    // Get viewport size
+    RECT rect;
+    if (GetClientRect(g_CachedHwnd, &rect)) {
+        int width = rect.right - rect.left;
+        int height = rect.bottom - rect.top;
+        if (width > 0 && height > 0) {
+             g_OverlayAdapter.RenderOverlay(width, height);
+        }
     }
 }
 
@@ -1085,10 +1059,9 @@ static BOOL WINAPI DetourWglDeleteContext(HGLRC hglrc)
     HookLog("OpenGL: wglDeleteContext called");
 
     // Cleanup if this was the capture context
-    if (g_ImGuiInitialized) {
-        ImGui_ImplOpenGL3_Shutdown();
-        g_SharedOverlay.ShutdownImGui();
-        g_ImGuiInitialized = false;
+    // Cleanup if this was the capture context
+    if (g_OverlayAdapter.IsInitialized()) {
+        g_OverlayAdapter.Shutdown();
     }
 
     g_OpenGLCapture.Cleanup();
@@ -1331,14 +1304,8 @@ void OpenGLHook::Shutdown()
 {
     HookLog("OpenGLHook::Shutdown()");
 
-    if (g_ImGuiInitialized) {
-        if (g_LegacyContext) {
-            ImGui_ImplOpenGL2_Shutdown();
-        } else {
-            ImGui_ImplOpenGL3_Shutdown();
-        }
-        g_SharedOverlay.ShutdownImGui();
-        g_ImGuiInitialized = false;
+    if (g_OverlayAdapter.IsInitialized()) {
+        g_OverlayAdapter.Shutdown();
     }
 
     g_OpenGLCapture.Cleanup();

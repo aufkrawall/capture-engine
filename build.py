@@ -2339,11 +2339,16 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             os.path.join(PROJECT_ROOT, "hook", "apis", "dx12_hook_stable.cpp"),  # WIP - not ready
             os.path.join(PROJECT_ROOT, "hook", "apis", "dx12_hook_minhook.cpp"),  # WIP - not ready
             os.path.join(PROJECT_ROOT, "hook", "wrappers", "vtable_hook_minhook.cpp"),  # Replaced by custom_hook.cpp
+            # Vulkan backend for custom overlay is a stub, keep it but it compiles
         ]
         hk_src = [f for f in hk_src if f not in excluded_files]
 
         # Custom hook system (VTable + IAT patching, replaces MinHook)
         # vtable_hook.cpp and custom_hook.cpp are already included via glob
+        
+        # Custom overlay system (replaces ImGui for overlay rendering)
+        # custom_font.cpp, custom_overlay.cpp, overlay_adapter.cpp are included via glob
+        # custom_overlay_dx*.cpp, custom_overlay_gl.cpp, custom_overlay_vk.cpp are included via glob
 
         # volk removed - using vulkan layer instead
         # hk_src.append(os.path.join(PROJECT_ROOT, "external", "volk", "volk.c"))
@@ -2379,6 +2384,8 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             ),  # Vulkan overlay
             "-lversion",  # For GetFileVersionInfo
             "-ldxgi",  # Needed for VRAM query
+            "-ld3d12",  # Custom overlay DX12 backend
+            "-ld3dcompiler",  # Custom overlay shader compilation
             "-lpdh",  # Needed for CPU usage
             "-lpsapi",  # Needed for IAT patching (EnumProcessModules)
             "-lavrt",

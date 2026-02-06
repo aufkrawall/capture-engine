@@ -8,10 +8,7 @@
 #include <unordered_set>
 #include <vector>
 
-#include "../../external/imgui/backends/imgui_impl_dx10.h"
-#include "../../external/imgui/backends/imgui_impl_dx11.h"
-#include "../../external/imgui/backends/imgui_impl_win32.h"
-#include "../../external/imgui/imgui.h"
+
 
 #include "../../common/frame_timing.h"
 #include "../../common/raii_helpers.h"
@@ -21,6 +18,7 @@
 #include "../common/fps_limiter.h"
 #include "../common/hook_common.h"
 #include "../common/overlay.h"
+#include "../common/overlay_adapter.h"
 #include "../common/system_metrics.h"
 #include "../wrappers/wrapper_base.h"
 #include "../wrappers/dxgi_swapchain_wrap.h"
@@ -798,9 +796,8 @@ void CleanupDX11Resources()
         g_mainRenderTargetView10 = nullptr;
     }
 
-    if (g_ImGuiInitialized) {
-        if (g_IsDX11Active) ImGui_ImplDX11_InvalidateDeviceObjects();
-        if (g_IsDX10Active) ImGui_ImplDX10_InvalidateDeviceObjects();
+    if (g_OverlayAdapter.IsInitialized()) {
+        g_OverlayAdapter.Shutdown();
     }
 }
 
@@ -1378,71 +1375,9 @@ static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int fr
         }
     }
 
-    if (g_ImGuiInitialized && currentHwnd != g_CachedHwnd) {
-        EarlyLog("DX10: HWND changed from %p to %p. Re-initializing ImGui.", g_CachedHwnd, currentHwnd);
-        ImGui_ImplDX10_Shutdown();
-        ImGui_ImplWin32_Shutdown();
-        ImGui::DestroyContext();
-        g_ImGuiInitialized = false;
-        g_IsDX10Active = false;
-    }
-
-    if (!g_ImGuiInitialized) {
-        g_CachedHwnd = currentHwnd;
-        g_SharedOverlay.InitImGui(currentHwnd);
-        // Hook Input
-        InputManager::Get().HookWindow(currentHwnd);
-
-        ImGui_ImplDX10_Init(device);
-        g_ImGuiInitialized = true;
-        g_IsDX10Active = true;
-        g_pd3d10Device = device;
-        EarlyLog("DX10: ImGui initialized for HWND %p", currentHwnd);
-    }
-
-    static IDXGISwapChain* lastSC = nullptr;
-    if (!g_mainRenderTargetView10 || pSwapChain != lastSC) {
-        if (g_mainRenderTargetView10) {
-            g_mainRenderTargetView10->Release();
-            g_mainRenderTargetView10 = nullptr;
-        }
-
-        ID3D10Texture2D* backbuffer = nullptr;
-        if (SUCCEEDED(pSwapChain->GetBuffer(0, IID_PPV_ARGS(&backbuffer)))) {
-            device->CreateRenderTargetView(backbuffer, NULL, &g_mainRenderTargetView10);
-            backbuffer->Release();
-        }
-        lastSC = pSwapChain;
-    }
-
-    // Determine if HDR is active (rare in DX10, but possible via DXGI)
-    DXGI_SWAP_CHAIN_DESC dsc;
-    pSwapChain->GetDesc(&dsc);
-    bool isHDR = (dsc.BufferDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT ||
-                  dsc.BufferDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM);
-    g_SharedOverlay.SetHDR(isHDR);
-
-    g_SharedOverlay.SetMetrics(DXGIShared::GetPerformanceMetrics());
-    g_SharedOverlay.SetIPCClient(g_IPC);
-    g_SharedOverlay.SetDroppedFrames(g_DX11Capture.droppedFrames.load(std::memory_order_relaxed));
-    const char* api = "DX10";
-    if (GetModuleHandleA("vulkan-1.dll") || GetModuleHandleA("winevulkan.dll")) {
-        api = "DX10 (DXVK)";
-    }
-    g_SharedOverlay.SetGraphicsAPI(api);
-
-    {
-        std::lock_guard<std::mutex> lock(g_ImGuiFrameMutex);
-        ImGui_ImplDX10_NewFrame();
-        g_SharedOverlay.BeginFrame();
-        g_SharedOverlay.RenderUI();
-        g_SharedOverlay.EndFrame();
-
-        device->OMSetRenderTargets(1, &g_mainRenderTargetView10, NULL);
-        ImGui_ImplDX10_RenderDrawData(ImGui::GetDrawData());
-    }
-
-    device->Release();
+    // DrawDX10Overlay: Disabled in CustomOverlay migration
+    // To support DX10, OverlayAdapter::InitDX10 would be needed or DX11 interop.
+    return;
 }
 
 void DrawDX11Overlay(IDXGISwapChain* pSwapChain)
@@ -1518,30 +1453,27 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain)
     ID3D11DeviceContext* context = NULL;
     device->GetImmediateContext(&context);
 
-    if (g_ImGuiInitialized && currentHwnd != g_CachedHwnd) {
-        EarlyLog("DX11: HWND changed from %p to %p. Re-initializing ImGui.", g_CachedHwnd, currentHwnd);
-        ImGui_ImplDX11_Shutdown();
-        ImGui_ImplWin32_Shutdown();
-        ImGui::DestroyContext();
-        g_ImGuiInitialized = false;
-        g_IsDX11Active = false;
+    if (g_OverlayAdapter.IsInitialized() && currentHwnd != g_CachedHwnd) {
+         HookLog("DX11: HWND changed, shutting down OverlayAdapter");
+         g_OverlayAdapter.Shutdown();
     }
 
-    if (!g_ImGuiInitialized) {
+    if (!g_OverlayAdapter.IsInitialized() || currentHwnd != g_CachedHwnd) {
+        if (g_OverlayAdapter.IsInitialized()) {
+             g_OverlayAdapter.Shutdown();
+        }
         g_CachedHwnd = currentHwnd;
         lastHwnd = currentHwnd;
 
-        g_SharedOverlay.InitImGui(currentHwnd);
-        // Hook Input
+        // Hook Input (still needed for menu interaction if any, or just safe to keep)
         InputManager::Get().HookWindow(currentHwnd);
 
-        ImGui_ImplDX11_Init(device, context);
-        g_ImGuiInitialized = true;
-        g_IsDX11Active = true;
-        EarlyLog("DX11: ImGui initialized for HWND %p", currentHwnd);
-
-        g_pd3dDevice = device;
-        g_pd3dDeviceContext = context;
+        if (g_OverlayAdapter.InitDX11(device, context)) {
+            g_OverlayAdapter.SetHwnd(currentHwnd);
+            EarlyLog("DX11: OverlayAdapter initialized for HWND %p", currentHwnd);
+            g_pd3dDevice = device;
+            g_pd3dDeviceContext = context;
+        }
     }
 
     // Detect HWND change (multi-window apps)
@@ -1559,27 +1491,19 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain)
                   desc.BufferDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM);
     g_SharedOverlay.SetHDR(isHDR);
 
-    g_SharedOverlay.SetMetrics(DXGIShared::GetPerformanceMetrics());
-    g_SharedOverlay.SetIPCClient(g_IPC);
-    g_SharedOverlay.SetDroppedFrames(g_DX11Capture.droppedFrames.load(std::memory_order_relaxed));
+    g_OverlayAdapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
+    g_OverlayAdapter.SetIPCClient(g_IPC);
+    g_OverlayAdapter.SetDroppedFrames(g_DX11Capture.droppedFrames.load(std::memory_order_relaxed));
     const char* finalApi = g_DetectedAPI;
     if (GetModuleHandleA("vulkan-1.dll") || GetModuleHandleA("winevulkan.dll")) {
         if (strcmp(g_DetectedAPI, "DX11") == 0) finalApi = "DX11 (DXVK)";
     }
-    g_SharedOverlay.SetGraphicsAPI(finalApi);
+    g_OverlayAdapter.SetGraphicsAPI(finalApi);
 
-    std::lock_guard<std::mutex> lock(g_ImGuiFrameMutex);
-    ImGui_ImplDX11_NewFrame();
-    g_SharedOverlay.BeginFrame();
-    g_SharedOverlay.RenderUI();
-    g_SharedOverlay.EndFrame();
+
 
     {
-        static int overlayStateLogCounter = 0;
-        const auto drawRes = g_SharedOverlay.GetLastDrawResult();
-        if (drawRes != Overlay::DrawResult::Drawn || (overlayStateLogCounter++ % 300 == 0)) {
-            EarlyLog("DX11: Overlay state: %s (HWND=%p)", g_SharedOverlay.GetLastDrawReason(), currentHwnd);
-        }
+
     }
 
     // Use cached device/context - some games have broken GetImmediateContext on re-acquire
@@ -1620,7 +1544,8 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain)
     vp.TopLeftY = 0;
     g_pd3dDeviceContext->RSSetViewports(1, &vp);
 
-    ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+    // Render Custom Overlay
+    g_OverlayAdapter.RenderOverlay(desc.BufferDesc.Width, desc.BufferDesc.Height);
 }
 
 // Handle SwapChain resize - must release RTV and reinitialize ImGui
@@ -1695,10 +1620,14 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
         g_mainRenderTargetView10 = nullptr;
     }
 
-    // Invalidate ImGui device objects (they reference old backbuffer)
-    if (g_ImGuiInitialized) {
-        if (g_IsDX11Active) ImGui_ImplDX11_InvalidateDeviceObjects();
-        if (g_IsDX10Active) ImGui_ImplDX10_InvalidateDeviceObjects();
+    // Invalidate D3D11 resources for OverlayAdapter if needed
+    // Typically OverlayAdapter Release/resize handling is done in Render logic or internally
+    // But we can force a shutdown if we want fresh resources on resize
+    if (g_OverlayAdapter.IsInitialized()) {
+        // g_OverlayAdapter.Shutdown(); // Optional: Shutdown on resize?
+        // Usually not needed for DX11 as backend handles it or uses swapchain backbuffer which changes?
+        // Capture project uses OMSetRenderTargets.
+        // For safety, let's just let it be.
     }
 
     // Check for Waitable Swapchain
@@ -1722,11 +1651,7 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
         HookLog("DX11: ResizeBuffers SUCCESS");
     }
 
-    // Recreate ImGui device objects after resize
-    if (g_ImGuiInitialized && SUCCEEDED(hr)) {
-        if (g_IsDX11Active) ImGui_ImplDX11_CreateDeviceObjects();
-        if (g_IsDX10Active) ImGui_ImplDX10_CreateDeviceObjects();
-    }
+
 
     return hr;
 }
@@ -2490,12 +2415,9 @@ void DX11Hook::Shutdown()
 {
     HookLog("DX11Hook::Shutdown()");
 
-    // Shutdown ImGui if initialized
-    if (g_ImGuiInitialized) {
-        ImGui_ImplDX11_Shutdown();
-        ImGui_ImplWin32_Shutdown();
-        ImGui::DestroyContext();
-        g_ImGuiInitialized = false;
+    // Cleanup OverlayAdapter
+    if (g_OverlayAdapter.IsInitialized()) {
+        g_OverlayAdapter.Shutdown();
     }
 
     g_DX11Capture.Cleanup();

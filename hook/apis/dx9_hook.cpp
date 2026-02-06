@@ -1,11 +1,9 @@
 #include "dx9_hook.h"
-#include <backends/imgui_impl_dx9.h>
-#include <backends/imgui_impl_win32.h>
-#include <d3d11.h>
+
 #include <d3d11_4.h>
 #include <d3d9.h>
 #include <dxgi.h>
-#include <imgui.h>
+
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -15,11 +13,13 @@
 #include "../../common/frame_timing.h"
 #include "../common/capture_base.h"
 #include "../common/fps_limiter.h"
-#include "../common/overlay.h"
+#include "../common/capture_base.h"
+#include "../common/fps_limiter.h"
 #include "../wrappers/vtable_hook.h"
 #include "hook_common.h"
 #include "lod_helper.h"
 #include "performance_metrics.h"
+#include "../common/overlay_adapter.h"
 
 #ifndef D3DPRESENT_FORCEIMMEDIATE
 #define D3DPRESENT_FORCEIMMEDIATE 0x00000100L
@@ -662,6 +662,10 @@ public:
             d3d9Device = nullptr;
         }
 
+        if (g_OverlayAdapter.IsInitialized()) {
+             g_OverlayAdapter.Shutdown();
+        }
+        
         d3d9Format = D3DFMT_UNKNOWN;
         initialized = false;
         useFences = false;
@@ -1206,47 +1210,39 @@ public:
 
 static DX9Capture g_DX9Capture;
 
-// Draw overlay using ImGui DX9 backend
+// Draw overlay using CustomOverlay
 static void DrawDX9Overlay(IDirect3DDevice9* device)
 {
-    if (!g_ImGuiInitialized) {
+    if (!g_OverlayAdapter.IsInitialized()) {
         // Get the window handle
         D3DDEVICE_CREATION_PARAMETERS params;
         device->GetCreationParameters(&params);
         g_CachedHwnd = params.hFocusWindow;
 
-        g_SharedOverlay.InitImGui(g_CachedHwnd);
-        ImGui_ImplDX9_Init(device);
-        g_ImGuiInitialized = true;
-        EarlyLog("DX9: ImGui initialized");
-    }
+        // Hook Input
+        InputManager::Get().HookWindow(g_CachedHwnd);
 
-    ImGui_ImplDX9_NewFrame();
-    g_SharedOverlay.BeginFrame();
-
-    // Use shared overlay
-    g_SharedOverlay.SetMetrics(&g_PerfMetrics);
-    g_SharedOverlay.SetIPCClient(g_IPC);
-    g_SharedOverlay.SetDroppedFrames(g_DX9Capture.droppedFrames.load(std::memory_order_relaxed));
-    const char* finalApi = "DX9";
-    if (GetModuleHandleA("vulkan-1.dll") || GetModuleHandleA("winevulkan.dll")) finalApi = "DX9 (DXVK)";
-    g_SharedOverlay.SetGraphicsAPI(finalApi);
-    g_SharedOverlay.RenderUI();
-
-    g_SharedOverlay.EndFrame();
-
-    {
-        static int overlayStateLogCounter = 0;
-        const auto drawRes = g_SharedOverlay.GetLastDrawResult();
-        if (drawRes != Overlay::DrawResult::Drawn || (overlayStateLogCounter++ % 300 == 0)) {
-            EarlyLog("DX9: Overlay state: %s (HWND=%p)", g_SharedOverlay.GetLastDrawReason(), g_CachedHwnd);
+        if (g_OverlayAdapter.InitDX9(device)) {
+             g_OverlayAdapter.SetHwnd(g_CachedHwnd);
+             EarlyLog("DX9: OverlayAdapter initialized");
         }
     }
+    
+    // Get viewport size
+    D3DVIEWPORT9 vp;
+    device->GetViewport(&vp);
 
-    if (SUCCEEDED(device->BeginScene())) {
-        ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
-        device->EndScene();
-    }
+    g_OverlayAdapter.SetMetrics(&g_PerfMetrics);
+    g_OverlayAdapter.SetIPCClient(g_IPC);
+    g_OverlayAdapter.SetDroppedFrames(g_DX9Capture.droppedFrames.load(std::memory_order_relaxed));
+    const char* finalApi = "DX9";
+    if (GetModuleHandleA("vulkan-1.dll") || GetModuleHandleA("winevulkan.dll")) finalApi = "DX9 (DXVK)";
+    g_OverlayAdapter.SetGraphicsAPI(finalApi);
+    
+    // Render Custom Overlay
+    // Note: RenderOverlay calls BeginFrame/RenderContent/EndFrame.
+    // DX9 backend handles state saving/restoring internally.
+    g_OverlayAdapter.RenderOverlay(vp.Width, vp.Height);
 }
 
 // Performance measurement
@@ -1681,9 +1677,9 @@ static HRESULT STDMETHODCALLTYPE DetourReset(IDirect3DDevice9* device, D3DPRESEN
 {
     HookLog("DX9: Reset called");
 
-    // Cleanup ImGui before reset
-    if (g_ImGuiInitialized) {
-        ImGui_ImplDX9_InvalidateDeviceObjects();
+    // Cleanup OverlayAdapter before reset
+    if (g_OverlayAdapter.IsInitialized()) {
+        g_OverlayAdapter.Shutdown();
     }
 
     // Cleanup capture resources
@@ -1740,10 +1736,7 @@ static HRESULT STDMETHODCALLTYPE DetourReset(IDirect3DDevice9* device, D3DPRESEN
                  pPresentationParameters->MultiSampleQuality);
     }
 
-    // Recreate ImGui resources after reset
-    if (g_ImGuiInitialized && SUCCEEDED(hr)) {
-        ImGui_ImplDX9_CreateDeviceObjects();
-    }
+
 
     return hr;
 }
@@ -1755,9 +1748,9 @@ static HRESULT STDMETHODCALLTYPE DetourResetEx(IDirect3DDevice9Ex* device,
 {
     HookLog("DX9: ResetEx called");
 
-    // Cleanup ImGui before reset
-    if (g_ImGuiInitialized) {
-        ImGui_ImplDX9_InvalidateDeviceObjects();
+    // Cleanup OverlayAdapter before reset
+    if (g_OverlayAdapter.IsInitialized()) {
+        g_OverlayAdapter.Shutdown();
     }
 
     // Cleanup capture resources
@@ -1799,10 +1792,7 @@ static HRESULT STDMETHODCALLTYPE DetourResetEx(IDirect3DDevice9Ex* device,
                  pPresentationParameters->MultiSampleQuality);
     }
 
-    // Recreate ImGui resources after reset
-    if (g_ImGuiInitialized && SUCCEEDED(hr)) {
-        ImGui_ImplDX9_CreateDeviceObjects();
-    }
+
 
     return hr;
 }
@@ -2213,11 +2203,8 @@ void DX9Hook::Shutdown()
 {
     EarlyLog("DX9Hook::Shutdown()");
 
-    if (g_ImGuiInitialized) {
-        ImGui_ImplDX9_Shutdown();
-        ImGui_ImplWin32_Shutdown();
-        ImGui::DestroyContext();
-        g_ImGuiInitialized = false;
+    if (g_OverlayAdapter.IsInitialized()) {
+        g_OverlayAdapter.Shutdown();
     }
 
     g_DX9Capture.Cleanup();

@@ -34,6 +34,7 @@
 #include "backends/imgui_impl_win32.h"
 #include "dx11_hook.h"
 #include "dx12_hook.h"
+#include "../common/overlay_adapter.h"
 #include "graphics_hook.h"
 #include "../common/freeze_watchdog.h"
 #include "imgui.h"
@@ -643,6 +644,10 @@ static void HookSwapchainVTableViaTempSwapchain()
 void ShutdownImGui()
 {
     if (!g_State.imGuiInit) return;
+
+    if (g_OverlayAdapter.IsInitialized()) {
+        g_OverlayAdapter.Shutdown();
+    }
     
     // Shutdown cached overlay renderer
     if (g_CachedOverlayRenderer) {
@@ -651,8 +656,6 @@ void ShutdownImGui()
         g_CachedOverlayRenderer = nullptr;
     }
     
-    ImGui_ImplDX12_Shutdown();
-    g_SharedOverlay.ShutdownImGui();
     if (g_State.srvDescHeap) {
         g_State.srvDescHeap->Release();
         g_State.srvDescHeap = nullptr;
@@ -664,45 +667,10 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
 {
     std::lock_guard<std::recursive_mutex> lock(g_InitImGuiMutex);
     
-    // DEBUG: Log entry state - DO NOT call GetIO() before checking context!
-    void* ctx = (void*)ImGui::GetCurrentContext();
-    HookLog("InitImGui: ENTRY - g_State.imGuiInit=%d, GImGui=%p", g_State.imGuiInit, ctx);
-    
-    // CRITICAL FIX: Check context FIRST before calling ANY ImGui functions
-    // When DLSS FG recreates the swapchain, context might be null
-    if (ctx == nullptr) {
-        HookLog("InitImGui: CRITICAL - No ImGui context! Forcing overlay reinitialization");
-        g_SharedOverlay.ForceReinit();  // Allow reinitialization
-    } else {
-        // Only check backend state if we have a valid context
-        ImGuiIO& io = ImGui::GetIO();
-        if (io.BackendRendererUserData != nullptr) {
-            HookLog("InitImGui: Backend already initialized (data=%p), shutting down", 
-                    io.BackendRendererUserData);
-            ImGui_ImplDX12_Shutdown();
-            g_State.imGuiInit = false;
-            HookLog("InitImGui: Backend shutdown complete");
-            
-            // CRITICAL: Shutdown Win32 backend BEFORE destroying context
-            // Order matters: Win32 depends on D3D12 backend being valid during its shutdown
-            HookLog("InitImGui: Shutting down Win32 backend");
-            ImGui_ImplWin32_Shutdown();
-            
-            // CRITICAL: Also destroy the ImGui context to prevent stale backend data
-            // The overlay's InitImGui will create a fresh context
-            HookLog("InitImGui: Destroying ImGui context for fresh reinitialization");
-            if (ImGui::GetCurrentContext()) {
-                ImGui::DestroyContext(ImGui::GetCurrentContext());
-                HookLog("InitImGui: Context destroyed successfully");
-            }
-            g_SharedOverlay.ForceReinit();  // Reset overlay state
-            
-            // CRITICAL: Clean up D3D12 overlay sync resources
-            // These must be released before reinitializing to avoid stale GPU resource handles
-            HookLog("InitImGui: Cleaning up D3D12 overlay resources");
-            CleanupOverlay();
-            CleanupRTVs();
-        }
+    // OverlayAdapter re-init check
+    if (g_OverlayAdapter.IsInitialized()) {
+        HookLog("InitImGui: OverlayAdapter already initialized, shutting down for re-init");
+        g_OverlayAdapter.Shutdown();
     }
     
     if (g_State.imGuiInit) {
@@ -710,40 +678,29 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
         return true;
     }
     
-    // Verify we now have a valid context (ForceReinit should have allowed creation)
-    if (ImGui::GetCurrentContext() == nullptr) {
-        HookLog("InitImGui: Context still null after ForceReinit, proceeding with InitImGui...");
-    }
-    
     HookLog("InitImGui: Proceeding with initialization - buffers=%d, format=%d, hwnd=%p", 
             buffers, format, hwnd);
     
     g_State.format = format;
-    g_SharedOverlay.InitImGui(hwnd);
-    
-    // CRITICAL: Verify context was created
-    if (ImGui::GetCurrentContext() == nullptr) {
-        HookLog("InitImGui: CRITICAL - Overlay InitImGui failed to create context!");
+
+    // Use OverlayAdapter instead of ImGui
+    if (!g_OverlayAdapter.InitDX12(device, g_OverlayQueue, format)) {
+        HookLog("InitImGui: OverlayAdapter.InitDX12 failed!");
         return false;
     }
-    HookLog("InitImGui: Overlay InitImGui complete, context=%p", (void*)ImGui::GetCurrentContext());
     
+    g_SharedOverlay.InitImGui(hwnd); // Keep minimal ImGui init for shared state if needed, or remove
+    // Actually, g_SharedOverlay.InitImGui just creates context, which OverlayAdapter doesn't use.
+    // We can skip g_SharedOverlay.InitImGui if entirely replacing.
+    // But let's call it just into case other parts depend on it, or comment it out.
+    // g_SharedOverlay.InitImGui(hwnd); 
+
     InputManager::Get().HookWindow(hwnd);
-    D3D12_DESCRIPTOR_HEAP_DESC desc = {D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 64,
-                                       D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0};
-    UINT nodeCount = device->GetNodeCount();
-    if (nodeCount > 1) desc.NodeMask = 1;
-    if (FAILED(device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&g_State.srvDescHeap)))) {
-        desc.NodeMask = 0;
-        if (FAILED(device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&g_State.srvDescHeap)))) return false;
-    }
-    if (!ImGui_ImplDX12_Init(device, buffers, format, g_State.srvDescHeap,
-                             g_State.srvDescHeap->GetCPUDescriptorHandleForHeapStart(),
-                             g_State.srvDescHeap->GetGPUDescriptorHandleForHeapStart())) {
-        g_State.srvDescHeap->Release();
-        g_State.srvDescHeap = nullptr;
-        return false;
-    }
+    
+    // We don't need SRV heap for ImGui anymore, OverlayAdapter manages its own resources.
+    // But we might need it if we keep ImGui for menus? 
+    // For now assuming full replacement for overlay.
+    
     g_State.imGuiInit = true;
 
     // Reset frame delay counter on reinitialization
@@ -784,78 +741,35 @@ void DrawOverlay(ID3D12GraphicsCommandList* cmdList, bool isRealFrame, UINT buff
     // Change 6: Remove verbose per-frame logging to improve performance at high FPS
     // Keep this section empty - logging removed
     
-    // Use cached renderer for Frame Generation support when available
-    if (g_UseCachedRenderer && g_CachedOverlayRenderer) {
-        HookLog("DrawOverlay: Using cached renderer");
-        // Update content on real frames OR if content has never been updated (first frame)
-        // This ensures we have content to render even if all frames appear as "interpolated"
-        bool needsContentUpdate = isRealFrame || g_CachedOverlayRenderer->ShouldUpdateContent();
-        
-        if (needsContentUpdate) {
-            // Build overlay content using shared overlay system
-            ImGui_ImplDX12_NewFrame();
-            g_SharedOverlay.BeginFrame();
-            g_SharedOverlay.SetMetrics(DXGIShared::GetPerformanceMetrics());
-            g_SharedOverlay.SetIPCClient(g_IPC);
-            const char* api = "DX12";
-            if (GetModuleHandleA("d3d12core.dll") && 
-                (GetModuleHandleA("libvkd3d-1.dll") || GetModuleHandleA("vkd3d.dll"))) {
-                api = "DX12 (VKD3D)";
-            }
-            g_SharedOverlay.SetGraphicsAPI(api);
-            bool isHDR = (g_State.format == DXGI_FORMAT_R16G16B16A16_FLOAT || 
-                         g_State.format == DXGI_FORMAT_R10G10B10A2_UNORM);
-            g_SharedOverlay.SetHDR(isHDR);
-            g_SharedOverlay.RenderUI();
-            g_SharedOverlay.EndFrame();
-            
-            // Update cached renderer content
-            auto* metrics = DXGIShared::GetPerformanceMetrics();
-            g_CachedOverlayRenderer->UpdateContent(metrics, 
-                                                   (float)g_State.cachedWidth, 
-                                                   (float)g_State.cachedHeight,
-                                                   0.0f); // Delta time not critical for overlay
-        }
-        
-        // Render using cached renderer (fast path for both real and interpolated frames)
-        ImVec2 displaySize((float)g_State.cachedWidth, (float)g_State.cachedHeight);
-        g_CachedOverlayRenderer->Render(cmdList, bufferIdx, isRealFrame, displaySize);
-        return;
-    }
+    // Cached Overlay Renderer removed - superseded by CustomOverlay
+    // if (g_UseCachedRenderer && g_CachedOverlayRenderer) { ... }
     
     // Standard overlay rendering (fallback path when cached renderer not available)
     // Change 4: Only update ImGui content on real frames, reuse cached draw data on interpolated frames
+    // Standard overlay rendering (fallback path when cached renderer not available)
     if (isRealFrame) {
-        ImGui_ImplDX12_NewFrame();
-        g_SharedOverlay.BeginFrame();
-        g_SharedOverlay.SetMetrics(DXGIShared::GetPerformanceMetrics());
-        g_SharedOverlay.SetIPCClient(g_IPC);
+        g_OverlayAdapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
+        g_OverlayAdapter.SetIPCClient(g_IPC);
         const char* api = "DX12";
         if (GetModuleHandleA("d3d12core.dll") && (GetModuleHandleA("libvkd3d-1.dll") || GetModuleHandleA("vkd3d.dll")))
             api = "DX12 (VKD3D)";
-        g_SharedOverlay.SetGraphicsAPI(api);
+        g_OverlayAdapter.SetGraphicsAPI(api);
         bool isHDR = (g_State.format == DXGI_FORMAT_R16G16B16A16_FLOAT || g_State.format == DXGI_FORMAT_R10G10B10A2_UNORM);
-        g_SharedOverlay.SetHDR(isHDR);
-        g_SharedOverlay.RenderUI();
-        g_SharedOverlay.EndFrame();
+        g_OverlayAdapter.SetHDR(isHDR);
     }
     
-    // Always render the overlay (uses cached draw data on interpolated frames)
-    cmdList->SetDescriptorHeaps(1, &g_State.srvDescHeap);
-    ImDrawData* drawData = ImGui::GetDrawData();
-    if (drawData) {
-        static int s_drawCount = 0;
-        if (++s_drawCount <= 10) {
-            HookLog("DX12: RenderOverlay - drawData valid, cmdLists=%d, vtx=%d, idx=%d", 
-                    drawData->CmdListsCount, drawData->TotalVtxCount, drawData->TotalIdxCount);
-        }
-        ImGui_ImplDX12_RenderDrawData(drawData, cmdList);
-    } else {
-        static int s_nullCount = 0;
-        if (++s_nullCount <= 10) {
-            HookLog("DX12: RenderOverlay - drawData is NULL!");
-        }
-    }
+    // Set Render Target for Custom Overlay
+    // We already calculated the CPU descriptor handle, but we need the CPU handle corresponding to the current backbuffer
+    // g_State.rtvDescHeap contains descriptors for all backbuffers
+    // bufferIdx tells us which one is current
+    
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
+    rtvHandle.ptr += bufferIdx * g_State.rtvDescriptorSize;
+    
+    g_OverlayAdapter.SetDX12RenderTarget(cmdList, (void*)rtvHandle.ptr);
+    
+    // Render
+
 }
 
 void CreateRTVs(ID3D12Device* device, IDXGISwapChain3* swapChain, int bufferCount)
@@ -1401,13 +1315,10 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture)
         // CRITICAL FIX: Clean up any existing ImGui context from previous swapchain
         // This happens when FSR FG recreates the swapchain and we deferred cleanup
         // MUST hold mutex to prevent race with DrawOverlay
-        if (ImGui::GetCurrentContext()) {
+        if (g_OverlayAdapter.IsInitialized()) {
             std::lock_guard<std::recursive_mutex> cleanupLock(g_InitImGuiMutex);
-            HookLog("DX12: ProcessFrame - cleaning up stale ImGui context before reinit (mutex held)");
-            ImGui_ImplDX12_Shutdown();
-            ImGui_ImplWin32_Shutdown();
-            ImGui::DestroyContext(ImGui::GetCurrentContext());
-            g_SharedOverlay.ForceReinit();
+            HookLog("DX12: ProcessFrame - cleaning up stale OverlayAdapter (mutex held)");
+            g_OverlayAdapter.Shutdown();
             CleanupOverlay();
             CleanupRTVs();
             HookLog("DX12: ProcessFrame - cleanup complete, proceeding with init");
