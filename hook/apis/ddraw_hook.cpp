@@ -1,11 +1,11 @@
 #include "ddraw_hook.h"
-#include <backends/imgui_impl_dx9.h>
-#include <backends/imgui_impl_win32.h>
+//#include <backends/imgui_impl_dx9.h>  // REMOVED: Using custom overlay
+//#include <backends/imgui_impl_win32.h>  // REMOVED: Using custom overlay
 #include <d3d11.h>
 #include <d3d11_4.h>
 #include <d3d9.h>
 #include <dxgi.h>
-#include <imgui.h>
+//#include <imgui.h>  // REMOVED: Using custom overlay
 #include <windows.h>
 #include <cstdint>
 #include <string>
@@ -561,30 +561,24 @@ static void DrawDDrawOverlay()
 {
     if (!g_DDrawCapture.d3d9DeviceEx) return;
 
+    // REMOVED: ImGui DX9 overlay - Using custom overlay instead
     if (!g_ImGuiInitialized) {
         g_CachedHwnd = g_DDrawCapture.targetHwnd;
-
         g_SharedOverlay.InitImGui(g_CachedHwnd);
-        ImGui_ImplDX9_Init(g_DDrawCapture.d3d9DeviceEx);
+        // ImGui_ImplDX9_Init(g_DDrawCapture.d3d9DeviceEx);  // REMOVED
         g_ImGuiInitialized = true;
-        HookLog("DDraw: ImGui initialized");
+        HookLog("DDraw: Custom overlay initialized");
     }
 
-    ImGui_ImplDX9_NewFrame();
-    g_SharedOverlay.BeginFrame();
-
-    // Use shared overlay
+    // g_SharedOverlay.BeginFrame();  // REMOVED: Using custom overlay
     g_SharedOverlay.SetMetrics(&g_PerfMetrics);
     g_SharedOverlay.SetIPCClient(g_IPC);
     g_SharedOverlay.SetDroppedFrames(g_DDrawCapture.droppedFrames.load(std::memory_order_relaxed));
     g_SharedOverlay.SetGraphicsAPI("DDraw");
-    g_SharedOverlay.RenderUI();
+    // g_SharedOverlay.RenderUI();  // REMOVED: Using custom overlay
+    // g_SharedOverlay.EndFrame();  // REMOVED: Using custom overlay
 
-    g_SharedOverlay.EndFrame();
-
-    g_DDrawCapture.d3d9DeviceEx->BeginScene();
-    ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
-    g_DDrawCapture.d3d9DeviceEx->EndScene();
+    // Custom overlay renders through OverlayAdapter, not ImGui
 }
 
 // Get surface dimensions from DDSURFACEDESC2
@@ -1016,9 +1010,10 @@ void DDrawHook::Shutdown()
     HookLog("DDrawHook::Shutdown()");
 
     if (g_ImGuiInitialized) {
-        ImGui_ImplDX9_Shutdown();
-        ImGui_ImplWin32_Shutdown();
-        ImGui::DestroyContext();
+        // ImGui_ImplDX9_Shutdown();  // REMOVED: Using custom overlay
+        // ImGui_ImplWin32_Shutdown();  // REMOVED: Using custom overlay
+        // ImGui::DestroyContext();  // REMOVED: Using custom overlay
+        g_SharedOverlay.ShutdownImGui();
         g_ImGuiInitialized = false;
     }
 

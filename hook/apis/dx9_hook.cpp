@@ -20,6 +20,7 @@
 #include "lod_helper.h"
 #include "performance_metrics.h"
 #include "../common/overlay_adapter.h"
+#include "../common/input_manager.h"
 
 #ifndef D3DPRESENT_FORCEIMMEDIATE
 #define D3DPRESENT_FORCEIMMEDIATE 0x00000100L

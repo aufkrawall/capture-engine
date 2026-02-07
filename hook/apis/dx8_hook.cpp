@@ -13,6 +13,7 @@
 #include "../common/fps_limiter.h"
 #include "../common/frame_timing.h"
 #include "../common/overlay_adapter.h"
+#include "../common/input_manager.h"
 #include "../wrappers/vtable_hook.h"
 #include "hook_common.h"
 #include "lod_helper.h"

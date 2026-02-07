@@ -37,6 +37,19 @@ enum class Status {
 const char* StatusToString(Status status);
 
 // ============================================================================
+// Hook Info Structure (for internal tracking)
+// ============================================================================
+
+struct HookInfo {
+    enum class Type { IAT, VTable, Function };
+    void* target = nullptr;
+    void* detour = nullptr;
+    void* original = nullptr;
+    std::atomic<bool> enabled{false};
+    Type type = Type::Function;
+};
+
+// ============================================================================
 // Initialization
 // ============================================================================
 
@@ -143,38 +156,34 @@ Status UnhookFunction(void* target, void* original);
 // Enable/Disable (no-op for VTable hooks, tracked for reference)
 // ============================================================================
 
-// Note: VTable hooks are always enabled - these are for API compatibility
-Status EnableHook(void* target);
-Status DisableHook(void* target);
-Status EnableAllHooks();
-Status DisableAllHooks();
-
 // ============================================================================
-// Hook Registry
+// Convenience wrappers (API compatibility)
 // ============================================================================
 
-struct HookInfo {
-    void* target;
-    void* detour;
-    void* original;
-    enum class Type { VTable, IAT, Function } type;
-    std::atomic<bool> enabled{true};
-};
+// CreateHook - wrapper around HookFunction for API compatibility
+inline Status CreateHook(void* target, void* detour, void** original) {
+    return HookFunction(target, detour, original);
+}
 
-// Get info about a specific hook
-const HookInfo* GetHookInfo(void* target);
+// EnableHook - VTable hooks are always enabled, this is for API compatibility
+inline Status EnableHook(void* target) {
+    (void)target;
+    return Status::Success;
+}
 
-// Get count of active hooks
-size_t GetActiveHookCount();
+// DisableHook - VTable hooks are always enabled, this is for API compatibility  
+inline Status DisableHook(void* target) {
+    (void)target;
+    return Status::Success;
+}
 
 // ============================================================================
-// RAII Helper
+// TypedHook Template
 // ============================================================================
 
 class ScopedInitializer {
 public:
     ScopedInitializer() { m_initialized = Initialize(); }
-    ~ScopedInitializer() { if (m_initialized) Shutdown(); }
     bool IsInitialized() const { return m_initialized; }
 private:
     bool m_initialized = false;
@@ -194,7 +203,7 @@ public:
     TypedHook() = default;
     ~TypedHook() {
         if (m_created.load() && m_target) {
-            UnhookFunction(m_target, reinterpret_cast<void*>(m_original));
+            CustomHook::UnhookFunction(m_target, reinterpret_cast<void*>(m_original));
         }
     }
 
@@ -205,7 +214,7 @@ public:
     bool CreateVTable(void** vtableEntry, void* detour) {
         if (m_created.load()) return false;
         void* orig = nullptr;
-        if (HookVTableEntry(vtableEntry, detour, &orig) != Status::Success) {
+        if (CustomHook::HookVTableEntry(vtableEntry, detour, &orig) != CustomHook::Status::Success) {
             return false;
         }
         m_target = vtableEntry;
@@ -217,7 +226,7 @@ public:
     bool CreateExport(const char* moduleName, const char* functionName, void* detour) {
         if (m_created.load()) return false;
         void* orig = nullptr;
-        if (HookExport(moduleName, functionName, detour, &orig) != Status::Success) {
+        if (CustomHook::HookExport(moduleName, functionName, detour, &orig) != CustomHook::Status::Success) {
             return false;
         }
         HMODULE hMod = GetModuleHandleA(moduleName);

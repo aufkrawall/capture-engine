@@ -1,8 +1,8 @@
 #define VK_USE_PLATFORM_WIN32_KHR
 #include "vulkan_hook.h"
-#include <backends/imgui_impl_vulkan.h>
-#include <backends/imgui_impl_win32.h>
-#include <imgui.h>
+//#include <backends/imgui_impl_vulkan.h>
+//#include <backends/imgui_impl_win32.h>
+//#include <imgui.h>
 #include <vulkan/vulkan.h>
 #include <algorithm>
 #include <mutex>
@@ -13,7 +13,8 @@
 #include "../common/config.h"
 #include "../common/fg_detection.h"
 #include "../common/fps_limiter.h"
-#include "../common/overlay.h"
+//#include "../common/overlay.h"
+#include "../common/overlay_adapter.h"
 #include "../common/system_metrics.h"
 #include "../wrappers/iat_hook.h"
 #include "hook_common.h"

@@ -377,7 +377,7 @@ void DX12_NotifyCommandLists(UINT numCommandLists)
 void DX12_OnSwapchainResizeEnd();
 void CleanupOverlay();
 void CleanupRTVs();
-void // ShutdownImGui(); // MIGRATED: OverlayAdapter handles cleanup
+// void ShutdownImGui(); // MIGRATED: OverlayAdapter handles cleanup
 void DX12_InvalidateSwapchain();
 
 // Helper to ensure global hook instance exists
@@ -728,12 +728,13 @@ void DrawOverlay(ID3D12GraphicsCommandList* cmdList, bool isRealFrame, UINT buff
     
     if (!g_State.imGuiInit || !cmdList) return;
     
-    // CRITICAL FIX: Verify ImGui context is valid after acquiring mutex
+    // CRITICAL FIX: Verify overlay is ready - REMOVED: ImGui context check
     // Context could have been destroyed between the check above and mutex acquisition
-    if (ImGui::GetCurrentContext() == nullptr) {
-        HookLog("DrawOverlay: Context is null after mutex acquisition, aborting");
-        return;
-    }
+    // if (ImGui::GetCurrentContext() == nullptr) {  // REMOVED: Using custom overlay
+    //     HookLog("DrawOverlay: Context is null after mutex acquisition, aborting");
+    //     return;
+    // }
+    // OverlayAdapter handles its own context management
     
     // Change 6: Remove verbose per-frame logging to improve performance at high FPS
     // Keep this section empty - logging removed
@@ -1293,9 +1294,10 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture)
         HookLog("DX12: ProcessFrame - no overlay queue, skipping overlay");
         return;
     }
-    if (g_State.imGuiInit) ImGui_ImplDX12_SetCommandQueue(g_OverlayQueue);
+    // ImGui_ImplDX12_SetCommandQueue REMOVED: Using OverlayAdapter instead
+    // if (g_State.imGuiInit) ImGui_ImplDX12_SetCommandQueue(g_OverlayQueue);
     
-    // Minimal delay before ImGui init (1 frame to allow swapchain to stabilize)
+    // Minimal delay before overlay init (1 frame to allow swapchain to stabilize)
     static std::atomic<int> s_framesBeforeInit{0};
     if (!g_State.imGuiInit) {
         int frames = ++s_framesBeforeInit;

@@ -4,7 +4,40 @@
 // Supports rendering on all frames (real + interpolated) without stutter
 
 #include <d3d12.h>
-#include <imgui.h>
+//#include <imgui.h>  // REMOVED: Using custom overlay instead
+// Minimal type definitions to allow compilation during migration
+struct ImVec2 { float x, y; };
+struct ImDrawVert { float pos[2], uv[2]; unsigned int col; };
+typedef unsigned short ImDrawIdx;
+struct ImDrawCmd { unsigned int ElemCount; };
+
+// Named struct for CmdBuffer to allow range-based for loops
+struct ImDrawCmdBuffer {
+    int Size;
+    ImDrawCmd* Data;
+    ImDrawCmd* begin() const { return Data; }
+    ImDrawCmd* end() const { return Data + Size; }
+};
+
+struct ImDrawList { 
+    struct { int Size; ImDrawVert* Data; } VtxBuffer;
+    struct { int Size; ImDrawIdx* Data; } IdxBuffer;
+    ImDrawCmdBuffer CmdBuffer;
+};
+struct ImDrawData { 
+    ImVec2 DisplayPos, DisplaySize; 
+    int CmdListsCount;
+    ImDrawList** CmdLists;
+};
+struct ImGuiContext {};
+namespace ImGui { static ImDrawData* GetDrawData() { return nullptr; } }
+
+// Stub for ImGui DX12 backend function - REMOVED: Using custom overlay
+inline void ImGui_ImplDX12_RenderDrawData(ImDrawData* drawData, ID3D12GraphicsCommandList* commandList) {
+    (void)drawData;
+    (void)commandList;
+    // No-op: legacy ImGui rendering disabled
+}
 #include <atomic>
 #include <vector>
 #include <memory>

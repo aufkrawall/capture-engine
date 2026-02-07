@@ -1,9 +1,40 @@
 #pragma once
 
-#include <imgui.h>
+//#include <imgui.h>  // REMOVED: Using custom overlay
+// Minimal ImGui type stubs for migration
+struct ImVec2 { float x, y; };
+struct ImVec4 { float x, y, z, w; };
+typedef unsigned int ImU32;
+typedef void* ImFont;
+typedef void* ImGuiContext;
+
+// Stub constants
+#define ImGuiCond_Always 0
+#define ImGuiWindowFlags_NoDecoration 0
+#define ImGuiWindowFlags_AlwaysAutoResize 0
+#define ImGuiWindowFlags_NoFocusOnAppearing 0
+#define ImGuiWindowFlags_NoNav 0
+#define ImGuiWindowFlags_NoInputs 0
+#define ImGuiStyleVar_WindowRounding 0
+#define ImGuiStyleVar_CellPadding 0
+#define ImGuiStyleVar_ItemSpacing 0
+#define ImGuiCol_WindowBg 0
+#define ImGuiCol_Border 0
+#define IM_COL32(r,g,b,a) ((ImU32)((a)<<24) | ((b)<<16) | ((g)<<8) | (r))
+
+// Stub functions
+namespace ImGui {
+    inline ImU32 ColorConvertFloat4ToU32(const ImVec4& c) { (void)c; return 0; }
+    inline ImVec4 ColorConvertU32ToFloat4(ImU32 c) { (void)c; return {0,0,0,0}; }
+    inline void* GetMainViewport() { return nullptr; }
+}
+
+// Stub for Win32 DPI function
+inline float ImGui_ImplWin32_GetDpiScaleForHwnd(void*) { return 1.0f; }
+
 #include <windows.h>
 #include <cstring>
-#include "backends/imgui_impl_win32.h"
+//#include "backends/imgui_impl_win32.h"  // REMOVED: Using custom overlay
 #include "ipc_client.h"
 #include "performance_metrics.h"
 #include "system_metrics.h"

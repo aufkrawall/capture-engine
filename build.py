@@ -35,9 +35,7 @@ TESTAPP_BIN_DIR = os.path.join(INSTALLED_DIR, "testapp")
 BIN_DIR = CAPTURE_BIN_DIR  # output captureengine binaries to installed\captureengine
 LOG_FILE = os.path.join(PROJECT_ROOT, "build_log.txt")
 
-IMGUI_URL = "https://github.com/ocornut/imgui/archive/refs/tags/v1.91.5.zip"
-IMGUI_DIR = os.path.join(PROJECT_ROOT, "external", "imgui")
-IMGUI_DIR = os.path.join(PROJECT_ROOT, "external", "imgui")
+# IMGUI_URL and IMGUI_DIR removed - Custom overlay renderer replaces ImGui
 
 FFMPEG_DIR = os.path.join(PROJECT_ROOT, "external", "ffmpeg")
 
@@ -381,114 +379,10 @@ def setup_msys2():
     run_command([msys_bash, "-lc", pkg_cmd], input_str="\n")
 
 
-def setup_imgui():
-    if not os.path.exists(IMGUI_DIR):
-        log("Downloading ImGui...")
-        zip_path = os.path.join(BUILD_DIR, "imgui.zip")
-        urllib.request.urlretrieve(IMGUI_URL, zip_path)
-
-        log("Extracting ImGui...")
-        external_dir = os.path.join(PROJECT_ROOT, "external")
-        os.makedirs(external_dir, exist_ok=True)
-        with zipfile.ZipFile(zip_path, "r") as zip_ref:
-            zip_ref.extractall(external_dir)
-
-        # Rename imgui-1.91.5 to imgui
-        src = os.path.join(external_dir, "imgui-1.91.5")
-        if os.path.exists(src):
-            os.rename(src, IMGUI_DIR)
-
-        log("ImGui Setup Complete.")
-        patch_imgui()
-
-
-def patch_imgui():
-    """Apply unified command queue patches to ImGui DX12 backend."""
-    dx12_h = os.path.join(IMGUI_DIR, "backends", "imgui_impl_dx12.h")
-    dx12_cpp = os.path.join(IMGUI_DIR, "backends", "imgui_impl_dx12.cpp")
-
-    if not os.path.exists(dx12_h) or not os.path.exists(dx12_cpp):
-        log("Warning: ImGui DX12 backend files not found for patching.")
-        return
-
-    # 1. Patch Header
-    with open(dx12_h, "r") as f:
-        h_content = f.read()
-
-    if "ImGui_ImplDX12_SetCommandQueue" not in h_content:
-        log("Patching imgui_impl_dx12.h...")
-        # Add forward declaration
-        h_content = h_content.replace(
-            "struct ID3D12GraphicsCommandList;",
-            "struct ID3D12GraphicsCommandList;\nstruct ID3D12CommandQueue;",
-        )
-        # Add function declaration
-        h_content = h_content.replace(
-            "IMGUI_IMPL_API void     ImGui_ImplDX12_InvalidateDeviceObjects();",
-            "IMGUI_IMPL_API void     ImGui_ImplDX12_InvalidateDeviceObjects();\nIMGUI_IMPL_API void     ImGui_ImplDX12_SetCommandQueue(ID3D12CommandQueue* command_queue);",
-        )
-        with open(dx12_h, "w") as f:
-            f.write(h_content)
-
-    # 2. Patch CPP
-    with open(dx12_cpp, "r") as f:
-        cpp_content = f.read()
-
-    if "pCommandQueue" not in cpp_content:
-        log("Patching imgui_impl_dx12.cpp...")
-        # Add member to struct
-        cpp_content = cpp_content.replace(
-            "ID3D12DescriptorHeap*       pd3dSrvDescHeap;",
-            "ID3D12DescriptorHeap*       pd3dSrvDescHeap;\n    ID3D12CommandQueue*         pCommandQueue;",
-        )
-        # Update CreateFontsTexture to use pCommandQueue
-        old_queue_logic = """        D3D12_COMMAND_QUEUE_DESC queueDesc = {};
-        queueDesc.Type     = D3D12_COMMAND_LIST_TYPE_DIRECT;
-        queueDesc.Flags    = D3D12_COMMAND_QUEUE_FLAG_NONE;
-        queueDesc.NodeMask = 1;
-
-        ID3D12CommandQueue* cmdQueue = nullptr;
-        hr = bd->pd3dDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&cmdQueue));
-        IM_ASSERT(SUCCEEDED(hr));"""
-
-        new_queue_logic = """        ID3D12CommandQueue* cmdQueue = bd->pCommandQueue;
-        bool ownQueue = false;
-        if (cmdQueue == nullptr)
-        {
-            D3D12_COMMAND_QUEUE_DESC queueDesc = {};
-            queueDesc.Type     = D3D12_COMMAND_LIST_TYPE_DIRECT;
-            queueDesc.Flags    = D3D12_COMMAND_QUEUE_FLAG_NONE;
-            queueDesc.NodeMask = 1;
-            hr = bd->pd3dDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&cmdQueue));
-            IM_ASSERT(SUCCEEDED(hr));
-            ownQueue = true;
-        }"""
-        cpp_content = cpp_content.replace(old_queue_logic, new_queue_logic)
-
-        # Update queue cleanup
-        cpp_content = cpp_content.replace(
-            "cmdQueue->Release();", "if (ownQueue) cmdQueue->Release();"
-        )
-
-        # Add implementation of SetCommandQueue
-        set_queue_impl = """void ImGui_ImplDX12_SetCommandQueue(ID3D12CommandQueue* command_queue)
-{
-    ImGui_ImplDX12_Data* bd = ImGui_ImplDX12_GetBackendData();
-    IM_ASSERT(bd != nullptr && "Context or backend not initialized!");
-    bd->pCommandQueue = command_queue;
-}
-
-//-----------------------------------------------------------------------------"""
-        cpp_content = cpp_content.replace(
-            "//-----------------------------------------------------------------------------",
-            set_queue_impl,
-        )
-
-        with open(dx12_cpp, "w") as f:
-            f.write(cpp_content)
-
-    log("ImGui patches applied successfully.")
-
+# ============================================================================
+# ImGui Setup - REMOVED: No longer using ImGui
+# Custom overlay renderer (custom_overlay) replaces ImGui
+# ============================================================================
 
 # --- FFmpeg Configuration ---
 FFMPEG_URL = "https://git.ffmpeg.org/ffmpeg.git"
@@ -1067,34 +961,6 @@ def parallel_compile(env, clang_exe, cflags, src_obj_pairs):
                 skipped += 1
 
     return compiled, skipped
-
-
-def compile_imgui(env, clang_exe, cflags):
-    log(f"Compiling ImGui (parallel, {cpu_count()} threads)...")
-    src_files = glob.glob(os.path.join(IMGUI_DIR, "*.cpp"))
-    src_files.append(os.path.join(IMGUI_DIR, "backends", "imgui_impl_dx12.cpp"))
-    src_files.append(os.path.join(IMGUI_DIR, "backends", "imgui_impl_dx11.cpp"))
-    src_files.append(os.path.join(IMGUI_DIR, "backends", "imgui_impl_dx9.cpp"))
-    src_files.append(os.path.join(IMGUI_DIR, "backends", "imgui_impl_opengl3.cpp"))
-    src_files.append(os.path.join(IMGUI_DIR, "backends", "imgui_impl_vulkan.cpp"))
-    src_files.append(os.path.join(IMGUI_DIR, "backends", "imgui_impl_win32.cpp"))
-
-    imgui_cflags = cflags + ["-I" + IMGUI_DIR]
-    imgui_objs = []
-    src_obj_pairs = []
-
-    for src in src_files:
-        rel_path = os.path.relpath(src, PROJECT_ROOT)
-        obj = os.path.join(OBJ_DIR, os.path.splitext(rel_path)[0] + ".o").replace(
-            "\\", "/"
-        )
-        src_obj_pairs.append((src, obj))
-        imgui_objs.append(obj)
-
-    compiled, skipped = parallel_compile(env, clang_exe, imgui_cflags, src_obj_pairs)
-    if compiled > 0:
-        log(f"ImGui: compiled {compiled}, skipped {skipped}")
-    return imgui_objs
 
 
 def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
@@ -1745,18 +1611,18 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         os.path.join(PROJECT_ROOT, "hook", "common", "input_manager.cpp"),
     ]
 
-    # ImGui sources for the layer
-    imgui_sources = glob.glob(os.path.join(IMGUI_DIR, "*.cpp")) + [
-        os.path.join(IMGUI_DIR, "backends", "imgui_impl_vulkan.cpp"),
-        os.path.join(IMGUI_DIR, "backends", "imgui_impl_win32.cpp"),
-    ]
+    # ImGui sources for the layer - REMOVED: No longer using ImGui
+    # imgui_sources = glob.glob(os.path.join(IMGUI_DIR, "*.cpp")) + [
+    #     os.path.join(IMGUI_DIR, "backends", "imgui_impl_vulkan.cpp"),
+    #     os.path.join(IMGUI_DIR, "backends", "imgui_impl_win32.cpp"),
+    # ]
 
     # Compile layer sources
     layer_cflags = cflags + [
         "-I" + layer_dir,
         "-I" + os.path.join(PROJECT_ROOT, "common"),
         "-I" + os.path.join(PROJECT_ROOT, "hook", "common"),
-        "-I" + IMGUI_DIR,
+        # "-I" + IMGUI_DIR,  # REMOVED: No longer using ImGui
         "-DVK_NO_PROTOTYPES",
         "-DIMGUI_IMPL_VULKAN_NO_PROTOTYPES",
         "-DVK_USE_PLATFORM_WIN32_KHR",
@@ -1781,9 +1647,10 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
 
     add_sources(layer_sources, obj_dir)
 
-    imgui_obj_dir = os.path.join(obj_dir, "imgui")
-    os.makedirs(imgui_obj_dir, exist_ok=True)
-    add_sources(imgui_sources, imgui_obj_dir)
+    # REMOVED: imgui_obj_dir and imgui_sources - No longer using ImGui
+    # imgui_obj_dir = os.path.join(obj_dir, "imgui")
+    # os.makedirs(imgui_obj_dir, exist_ok=True)
+    # add_sources(imgui_sources, imgui_obj_dir)
 
     if not src_obj_pairs:
         log("Error: No layer sources found.")
@@ -2170,7 +2037,7 @@ def compile_d3d12_wrappers_msvc(env, arch):
 
 def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
     ensure_dirs()
-    setup_imgui()
+    # setup_imgui()  # REMOVED: No longer using ImGui
 
     compile_custom_ffmpeg(skip_updates=skip_updates)  # Ensure FFmpeg is ready
     clang_exe = os.path.join(clang_bin, "clang++.exe")
@@ -2186,7 +2053,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         "-Wall",
         "-D_WIN32_WINNT=0x0A00",
         "-I" + os.path.join(PROJECT_ROOT, "common"),
-        "-I" + IMGUI_DIR,
     ]
 
     # Compile D3D12 wrappers (MSVC)
@@ -2240,7 +2106,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             "-Wno-microsoft-exception-spec",
             "-D_WIN32_WINNT=0x0A00",
             "-I" + os.path.join(PROJECT_ROOT, "common"),
-            "-I" + IMGUI_DIR,
+            # "-I" + IMGUI_DIR,  # REMOVED: No longer using ImGui
         ]
         # if arch == "x64":
         #    curr_cflags.append("-flto")
@@ -2264,36 +2130,8 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 log(f"Warning: Failed to find 32-bit lib path: {e}")
                 std_lib_path = ""
 
-        # 1. Compile ImGui
-        log(f"Compiling ImGui {arch}...")
-        imgui_src_files = glob.glob(os.path.join(IMGUI_DIR, "*.cpp")) + [
-            os.path.join(IMGUI_DIR, "backends", f)
-            for f in [
-                "imgui_impl_dx12.cpp",
-                "imgui_impl_dx11.cpp",
-                "imgui_impl_dx10.cpp",
-                "imgui_impl_dx9.cpp",
-                "imgui_impl_opengl3.cpp",
-                "imgui_impl_opengl2.cpp",
-                "imgui_impl_win32.cpp",
-            ]
-        ]
-        # NOTE: imgui_impl_vulkan.cpp is in Vulkan layer, not main hook
-
-        imgui_objs = []
-        src_obj_pairs = []
-        for src in imgui_src_files:
-            rel_path = os.path.relpath(src, PROJECT_ROOT)
-            obj = os.path.join(
-                curr_obj_dir, os.path.splitext(rel_path)[0] + ".o"
-            ).replace("\\", "/")
-            src_obj_pairs.append((src, obj))
-            imgui_objs.append(obj)
-        parallel_compile(
-            curr_env, curr_clang_exe, curr_cflags + ["-I" + IMGUI_DIR], src_obj_pairs
-        )
-
-        # 2. Compile Common
+        # 1. Compile Common (ImGui removed - using custom overlay)
+        log(f"Compiling Common {arch}...")
         log(f"Compiling Common {arch}...")
         common_src = glob.glob(
             os.path.join(PROJECT_ROOT, "common", "*.cpp")
@@ -2317,7 +2155,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             + glob.glob(os.path.join(PROJECT_ROOT, "hook", "apis", "*.cpp"))
             + glob.glob(os.path.join(PROJECT_ROOT, "hook", "capture", "*.cpp"))
             + glob.glob(os.path.join(PROJECT_ROOT, "hook", "wrappers", "*.cpp"))
-            + [os.path.join(PROJECT_ROOT, "hook", "wrappers", "safe_hook.cpp")]
+            # safe_hook.cpp REMOVED: Using custom_hook instead
         )
 
         # Exclude D3D12 device/commandqueue wrappers due to MinGW ABI incompatibility
@@ -2463,7 +2301,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         cmd = (
             [curr_clang_exe]
             + hk_objs
-            + imgui_objs
             + common_objs
             + ldflags_hook
             + ["-o", hk_dll]

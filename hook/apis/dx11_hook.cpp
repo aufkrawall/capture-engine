@@ -17,13 +17,13 @@
 #include "../common/fg_detection.h"
 #include "../common/fps_limiter.h"
 #include "../common/hook_common.h"
-#include "../common/overlay.h"
+//#include "../common/overlay.h"
 #include "../common/overlay_adapter.h"
 #include "../common/system_metrics.h"
 #include "../wrappers/wrapper_base.h"
 #include "../wrappers/dxgi_swapchain_wrap.h"
 #include "../wrappers/iat_hook.h"
-#include "../wrappers/safe_hook.h"
+//#include "../wrappers/safe_hook.h"
 #include "dx11_hook.h"
 #include "dx12_hook.h"
 #include "dxgi_shared.h"
@@ -44,8 +44,10 @@ ce::DeferredReleaseQueue g_DeferredRelease;
 #include <dxgi1_2.h>  // Required for IDXGIResource1 and CreateSharedHandle
 #include <dxgi1_4.h>  // For IDXGISwapChain3
 #include "../common/input_manager.h"
+#include "../wrappers/iat_hook.h"
+//#include "../wrappers/safe_hook.h"
+#include "../wrappers/custom_hook.h"
 #include "../wrappers/vtable_hook.h"
-#include "../wrappers/safe_hook.h"
 #include "../wrappers/wrapper_base.h"
 // mutex already included
 
@@ -1489,7 +1491,8 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain)
     // Re-use desc from above if needed
     bool isHDR = (desc.BufferDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT ||
                   desc.BufferDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM);
-    g_SharedOverlay.SetHDR(isHDR);
+    // g_SharedOverlay.SetHDR(isHDR);  // REMOVED: Using OverlayAdapter
+    // Note: HDR handling now done through OverlayAdapter if needed
 
     g_OverlayAdapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
     g_OverlayAdapter.SetIPCClient(g_IPC);
@@ -2282,15 +2285,18 @@ void DX11Hook::Init()
         // This may have been called before d3d11.dll was loaded at startup
         IATHook::InitializeD3D11Hooks();
         
-        // Also hook the export directly using MinHook to catch calls that bypass IAT
+        // Also hook the export directly using CustomHook to catch calls that bypass IAT
         // (e.g., statically bound imports, GetProcAddress)
-        SafeHook::Initialize();
+        // SafeHook::Initialize();  // REMOVED: Using CustomHook instead
+        CustomHook::Initialize();
         void* pTarget = (void*)GetProcAddress(hD3D11, "D3D11CreateDeviceAndSwapChain");
         if (pTarget) {
             HookLog("DX11: Hook target at %p", pTarget);
-            bool created = SafeHook::CreateHook(pTarget, (void*)DetourD3D11CreateDeviceAndSwapChain, (void**)&oD3D11CreateDeviceAndSwapChain);
+            // bool created = SafeHook::CreateHook(pTarget, (void*)DetourD3D11CreateDeviceAndSwapChain, (void**)&oD3D11CreateDeviceAndSwapChain);
+            bool created = CustomHook::CreateHook(pTarget, (void*)DetourD3D11CreateDeviceAndSwapChain, (void**)&oD3D11CreateDeviceAndSwapChain) == CustomHook::Status::Success;
             HookLog("DX11: CreateHook result: %s", created ? "success" : "failed");
-            bool enabled = SafeHook::EnableHook(pTarget);
+            // bool enabled = SafeHook::EnableHook(pTarget);
+            bool enabled = CustomHook::EnableHook(pTarget) == CustomHook::Status::Success;
             HookLog("DX11: EnableHook result: %s", enabled ? "success" : "failed");
             HookLog("DX11: D3D11CreateDeviceAndSwapChain export hook installed.");
         } else {

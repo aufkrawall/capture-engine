@@ -161,28 +161,23 @@ bool CreateCOMHook(void** vtableEntry, void* detour, void** original) {
 }
 
 bool EnableHook(void* target) {
-    if (!target) return false;
-    
-    CustomHook::Status status = CustomHook::EnableHook(target);
-    if (status == CustomHook::Status::Success) {
-        std::unique_lock<std::shared_mutex> lock(g_HookMutex);
-        if (auto it = g_Hooks.find(target); it != g_Hooks.end()) {
-            it->second->enabled.store(true);
-        }
+    // VTable hooks are always enabled after creation
+    // This function is for API compatibility
+    std::unique_lock<std::shared_mutex> lock(g_HookMutex);
+    auto it = g_Hooks.find(target);
+    if (it != g_Hooks.end()) {
+        it->second->enabled.store(true);
         return true;
     }
     return false;
 }
 
 bool DisableHook(void* target) {
-    if (!target) return false;
-    
-    CustomHook::Status status = CustomHook::DisableHook(target);
-    if (status == CustomHook::Status::Success) {
-        std::unique_lock<std::shared_mutex> lock(g_HookMutex);
-        if (auto it = g_Hooks.find(target); it != g_Hooks.end()) {
-            it->second->enabled.store(false);
-        }
+    // VTable hooks cannot be truly disabled, but we can mark them as disabled
+    std::unique_lock<std::shared_mutex> lock(g_HookMutex);
+    auto it = g_Hooks.find(target);
+    if (it != g_Hooks.end()) {
+        it->second->enabled.store(false);
         return true;
     }
     return false;
@@ -207,27 +202,19 @@ void RemoveHook(void* target) {
 }
 
 bool EnableAllHooks() {
-    CustomHook::Status status = CustomHook::EnableAllHooks();
-    if (status == CustomHook::Status::Success) {
-        std::unique_lock<std::shared_mutex> lock(g_HookMutex);
-        for (auto& pair : g_Hooks) {
-            pair.second->enabled.store(true);
-        }
-        return true;
+    std::unique_lock<std::shared_mutex> lock(g_HookMutex);
+    for (auto& pair : g_Hooks) {
+        pair.second->enabled.store(true);
     }
-    return false;
+    return true;
 }
 
 bool DisableAllHooks() {
-    CustomHook::Status status = CustomHook::DisableAllHooks();
-    if (status == CustomHook::Status::Success) {
-        std::unique_lock<std::shared_mutex> lock(g_HookMutex);
-        for (auto& pair : g_Hooks) {
-            pair.second->enabled.store(false);
-        }
-        return true;
+    std::unique_lock<std::shared_mutex> lock(g_HookMutex);
+    for (auto& pair : g_Hooks) {
+        pair.second->enabled.store(false);
     }
-    return false;
+    return true;
 }
 
 // ScopedInitializer implementation

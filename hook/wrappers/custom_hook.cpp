@@ -299,51 +299,6 @@ Status UnhookFunction(void* target, void* original) {
 }
 
 // ============================================================================
-// Enable/Disable (compatibility stubs)
-// ============================================================================
-
-Status EnableHook(void* target) {
-    // VTable hooks are always enabled - no trampoline to toggle
-    std::shared_lock<std::shared_mutex> lock(g_HookMutex);
-    auto it = g_Hooks.find(target);
-    if (it != g_Hooks.end()) {
-        it->second->enabled.store(true);
-        return Status::Success;
-    }
-    return Status::ErrorNotHooked;
-}
-
-Status DisableHook(void* target) {
-    // For VTable hooks, we'd need to restore original and re-hook
-    // This is a no-op for now as we don't support temporary disable
-    std::shared_lock<std::shared_mutex> lock(g_HookMutex);
-    auto it = g_Hooks.find(target);
-    if (it != g_Hooks.end()) {
-        it->second->enabled.store(false);
-        HookLog("CustomHook: DisableHook - VTable hooks cannot be temporarily disabled");
-        return Status::Success;
-    }
-    return Status::ErrorNotHooked;
-}
-
-Status EnableAllHooks() {
-    std::shared_lock<std::shared_mutex> lock(g_HookMutex);
-    for (auto& [target, info] : g_Hooks) {
-        info->enabled.store(true);
-    }
-    return Status::Success;
-}
-
-Status DisableAllHooks() {
-    std::shared_lock<std::shared_mutex> lock(g_HookMutex);
-    for (auto& [target, info] : g_Hooks) {
-        info->enabled.store(false);
-    }
-    HookLog("CustomHook: DisableAllHooks - VTable hooks cannot be temporarily disabled");
-    return Status::Success;
-}
-
-// ============================================================================
 // Hook Registry
 // ============================================================================
 

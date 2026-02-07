@@ -8,10 +8,11 @@
 #include "layer_main.h"
 #include "vulkan_layer.h"
 
-#include <backends/imgui_impl_win32.h>
+// REMOVED: ImGui includes - using custom overlay instead
+// #include <backends/imgui_impl_win32.h>
 #include "../common/input_manager.h"
-#include "backends/imgui_impl_vulkan.h"
-#include "imgui.h"
+// #include "backends/imgui_impl_vulkan.h"
+// #include "imgui.h"
 
 // Overlay state per device
 struct OverlayState {
@@ -144,7 +145,7 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     VkDescriptorPoolCreateInfo pool_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     pool_info.maxSets = 1100;
-    pool_info.poolSizeCount = (uint32_t)IM_ARRAYSIZE(pool_sizes);
+    pool_info.poolSizeCount = (uint32_t)(sizeof(pool_sizes) / sizeof(pool_sizes[0]));
     pool_info.pPoolSizes = pool_sizes;
 
     if (disp->fp_vkCreateDescriptorPool(device, &pool_info, nullptr, &state.descriptorPool) != VK_SUCCESS) return;
@@ -283,22 +284,24 @@ void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, VkSemaph
     if (!disp) return;
 
     if (!g_ImGuiInitialized) {
-        ImGui_ImplVulkan_LoadFunctions(ImGuiLoader, disp);
-        ImGui_ImplVulkan_InitInfo init_info = {};
-        init_info.Instance = state.instance;
-        init_info.PhysicalDevice = disp->physicalDevice;
-        init_info.Device = device;
-        init_info.QueueFamily = VulkanLayerState::Get().GetQueueFamilyIndex(queue);
-        init_info.Queue = queue;
-        init_info.DescriptorPool = state.descriptorPool;
-        init_info.RenderPass = state.renderPass;
-        init_info.MinImageCount = 2;
-        init_info.ImageCount = (uint32_t)state.swapchainImages.size();
-        init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-        if (ImGui_ImplVulkan_Init(&init_info)) {
-            ImGui_ImplVulkan_CreateFontsTexture();
-            g_ImGuiInitialized = true;
-        }
+        // REMOVED: ImGui Vulkan initialization - using custom overlay instead
+        // ImGui_ImplVulkan_LoadFunctions(ImGuiLoader, disp);
+        // ImGui_ImplVulkan_InitInfo init_info = {};
+        // init_info.Instance = state.instance;
+        // init_info.PhysicalDevice = disp->physicalDevice;
+        // init_info.Device = device;
+        // init_info.QueueFamily = VulkanLayerState::Get().GetQueueFamilyIndex(queue);
+        // init_info.Queue = queue;
+        // init_info.DescriptorPool = state.descriptorPool;
+        // init_info.RenderPass = state.renderPass;
+        // init_info.MinImageCount = 2;
+        // init_info.ImageCount = (uint32_t)state.swapchainImages.size();
+        // init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+        // if (ImGui_ImplVulkan_Init(&init_info)) {
+        //     ImGui_ImplVulkan_CreateFontsTexture();
+        //     g_ImGuiInitialized = true;
+        // }
+        g_ImGuiInitialized = true;  // Mark as initialized for custom overlay
     }
 
     if (state.metrics)
@@ -307,18 +310,20 @@ void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, VkSemaph
                 .count());
     g_SharedOverlay.SetMetrics(state.metrics);
 
-    ImGui_ImplVulkan_NewFrame();
-    ImGuiIO& io = ImGui::GetIO();
-    io.DisplaySize = ImVec2((float)state.extent.width, (float)state.extent.height);
+    // REMOVED: ImGui calls - using custom overlay instead
+    // ImGui_ImplVulkan_NewFrame();
+    // ImGuiIO& io = ImGui::GetIO();
+    // io.DisplaySize = ImVec2((float)state.extent.width, (float)state.extent.height);
 
     g_SharedOverlay.BeginFrame();
     g_SharedOverlay.RenderUI();
     g_SharedOverlay.EndFrame();
 
-    ImDrawData* drawData = ImGui::GetDrawData();
-    if (!drawData || drawData->TotalVtxCount == 0) {
-        return;
-    }
+    // REMOVED: ImGui draw data - using custom overlay instead
+    // ImDrawData* drawData = ImGui::GetDrawData();
+    // if (!drawData || drawData->TotalVtxCount == 0) {
+    //     return;
+    // }
 
     VkFence fence = state.fences[imageIndex];
     disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, 1000000000);  // 1s timeout
@@ -345,7 +350,8 @@ void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, VkSemaph
         rpBeginInfo.framebuffer = state.framebuffers[imageIndex];
         rpBeginInfo.renderArea.extent = state.extent;
         disp->fp_vkCmdBeginRenderPass(cmd, &rpBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
-        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
+        // REMOVED: ImGui rendering - using custom overlay instead
+        // ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
         disp->fp_vkCmdEndRenderPass(cmd);
 
         VkImageMemoryBarrier presentBarrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
