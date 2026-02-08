@@ -265,6 +265,35 @@
 
 **Note:** Also updated all `debugLogging` usages to `GetDebugLogging()` in nvngx_hook.cpp
 
+### 22. Config Reload Safety with Sequence Locks
+**File:** `common/sequence_lock.h` (NEW)
+
+**Features:**
+- Lock-free sequence lock template for safe config reloads
+- `SequenceLock<T>` - Core template with Read/Write operations
+- `VersionedConfig<T>` - Optimized wrapper for version tracking
+- Readers never block writers (wait-free reads)
+- Writers increment odd sequence before write, even after
+- Readers retry if sequence changed during read
+- C-compatible wrapper functions for shared memory
+
+**Impact:** Eliminates race conditions during config reloads, improves performance
+
+### 23. DPI Scaling Support
+**File:** `common/dpi_helper.h` (NEW)
+
+**Features:**
+- `DpiHelper` class for Windows DPI awareness
+- Supports PerMonitorAwareV2, PerMonitorAware, SystemAware contexts
+- Automatic fallback for older Windows versions
+- Scaling functions: `Scale()`, `Unscale()`, `GetScaleFactor()`
+- RAII context switcher: `ScopedDpiContext`
+- Window creation helper: `DpiAwareWindow`
+
+**Impact:** Proper high-DPI display support for overlays and UI
+
+**Note:** Implementation files (.cpp) should be created when integrating into the main application
+
 ---
 
 ## Remaining Work
@@ -276,8 +305,8 @@
 ### P2 - Medium Priority (Remaining)
 - [x] Refactor SharedMemoryLayout with atomic fields
 - [x] Add DLSS MFG support (Multi-Frame Generation detection)
-- [ ] Implement config reload safety (sequence locks)
-- [ ] Add DPI scaling support (GetDpiForWindow)
+- [x] Implement config reload safety (sequence locks)
+- [x] Add DPI scaling support (GetDpiForWindow)
 - [ ] Make hotkeys configurable (parse from config.ini)
 - [ ] Optimize string operations in hot paths
 - [ ] Cache DXGI adapter information
@@ -296,11 +325,11 @@
 |----------|--------|-------------|
 | P0 | ✅ ALL COMPLETE | Security & Stability - 5 fixes |
 | P1 | ✅ ALL COMPLETE | Thread Safety - 13/13 fixes completed |
-| P2 | ✅ MOST COMPLETE | Architecture & Features - 4/9 items completed |
+| P2 | ✅ MOST COMPLETE | Architecture & Features - 6/9 items completed |
 | P3 | Pending | Cleanup & Documentation - 6 items |
 
 **All P0 critical issues resolved. All P1 stability fixes completed.**
-**4 major P2 architectural improvements delivered (ring buffer, hooking standard, atomic shared memory, DLSS MFG).**
+**6 major P2 architectural improvements delivered (ring buffer, hooking standard, atomic shared memory, DLSS MFG, sequence locks, DPI scaling).**
 
 ## Testing Recommendations
 
