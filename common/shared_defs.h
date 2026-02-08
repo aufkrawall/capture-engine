@@ -643,6 +643,7 @@ public:
         std::atomic<int32_t> versionPatch{0};
         std::atomic<int32_t> qualityMode{-1};  // -1=Unknown, 0=Perf, 1=Bal, 2=Qual, 3=UltraPerf, 4=UltraQual, 5=DLAA
         std::atomic<bool> fgActive{false};     // Redundant with g_FGCompat but useful for IPC/Host visibility
+        std::atomic<int32_t> mfgMultiplier{0}; // 0=No MFG, 2=2x frames, 3=3x frames (DLSS Multi-Frame Generation)
     } dlssState;
 
     // Encoder queue monitoring (Host -> Hook)

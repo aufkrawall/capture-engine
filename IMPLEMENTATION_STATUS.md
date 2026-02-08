@@ -249,6 +249,22 @@
 
 **Note:** Remaining usages in other files need to be updated as part of ongoing maintenance.
 
+### 21. DLSS Multi-Frame Generation (MFG) Support Added
+**Files:** `hook/apis/nvngx_hook.cpp`, `common/shared_defs.h`
+
+**Changes:**
+- Added `mfgMultiplier` field to DLSSState in shared memory (0=No MFG, 2=2x, 3=3x)
+- Added feature ID constants for DLSS components:
+  - `NVSDK_NGX_Feature_MultiFrameGeneration = 18`
+  - `NVSDK_NGX_Parameter_FrameGenerationMultiplier`
+- Updated `Hooked_CreateFeature` to detect MFG feature creation
+- Reads multiplier value from NGX parameters (2x or 3x)
+- Logs MFG activation with multiplier for debugging
+
+**Impact:** Enables detection and tracking of DLSS Multi-Frame Generation (RTX 50 series feature)
+
+**Note:** Also updated all `debugLogging` usages to `GetDebugLogging()` in nvngx_hook.cpp
+
 ---
 
 ## Remaining Work
@@ -258,10 +274,10 @@
 - [ ] Add anti-cheat compatibility warnings
 
 ### P2 - Medium Priority (Remaining)
-- [ ] Refactor SharedMemoryLayout with atomic fields
+- [x] Refactor SharedMemoryLayout with atomic fields
+- [x] Add DLSS MFG support (Multi-Frame Generation detection)
 - [ ] Implement config reload safety (sequence locks)
 - [ ] Add DPI scaling support (GetDpiForWindow)
-- [ ] Add DLSS MFG support (Multi-Frame Generation detection)
 - [ ] Make hotkeys configurable (parse from config.ini)
 - [ ] Optimize string operations in hot paths
 - [ ] Cache DXGI adapter information
@@ -280,11 +296,11 @@
 |----------|--------|-------------|
 | P0 | ✅ ALL COMPLETE | Security & Stability - 5 fixes |
 | P1 | ✅ ALL COMPLETE | Thread Safety - 13/13 fixes completed |
-| P2 | ✅ MOST COMPLETE | Architecture & Features - 3/9 items completed |
+| P2 | ✅ MOST COMPLETE | Architecture & Features - 4/9 items completed |
 | P3 | Pending | Cleanup & Documentation - 6 items |
 
 **All P0 critical issues resolved. All P1 stability fixes completed.**
-**3 major P2 architectural improvements delivered (ring buffer, hooking standard, atomic shared memory).**
+**4 major P2 architectural improvements delivered (ring buffer, hooking standard, atomic shared memory, DLSS MFG).**
 
 ## Testing Recommendations
 

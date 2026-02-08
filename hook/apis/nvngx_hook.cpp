@@ -70,6 +70,16 @@ static std::map<void*, DLSSDims> g_ParameterDimsMap;
 #define NVSDK_NGX_Parameter_RayReconstruction_Available         "RayReconstruction.Available"
 #define NVSDK_NGX_Parameter_RayReconstruction_FeatureInitResult "RayReconstruction.FeatureInitResult"
 
+// DLSS Multi-Frame Generation (MFG) parameter
+#define NVSDK_NGX_Parameter_FrameGenerationMultiplier "FrameGenerationMultiplier"  // 2=2x, 3=3x
+
+// Feature IDs for DLSS components
+const int NVSDK_NGX_Feature_DLSS_SR = 1;              // Super Resolution
+const int NVSDK_NGX_Feature_FrameGeneration = 9;      // Frame Generation (FG)
+const int NVSDK_NGX_Feature_FrameGeneration_11 = 0xB; // Frame Generation (alternate ID)
+const int NVSDK_NGX_Feature_RayReconstruction = 13;   // Ray Reconstruction
+const int NVSDK_NGX_Feature_MultiFrameGeneration = 18; // Multi-Frame Generation (MFG) - generates 2x or 3x frames
+
 // Bit 6 in CreateFlags is AutoExposure
 const int NVSDK_NGX_DLSS_Feature_Flags_AutoExposure = 1 << 6;
 
@@ -119,12 +129,12 @@ static void UpdatePresetHint(const char* paramName, uint32_t presetVal, const ch
     if (idx >= 0) {
         char c = PresetIDToChar(presetVal);
         g_UserPresetHints[idx].store(c);
-        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) {
+        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
             NVNGXLog("NVNGX: UpdatePresetHint [%s]: %s -> %u ('%c')", source, paramName, presetVal, c);
         }
     } else if (strstr(paramName, "RayReconstruction")) {
         // Log RR presets too for visibility
-        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) {
+        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
             NVNGXLog("NVNGX: UpdatePresetHint RR [%s]: %s -> %u", source, paramName, presetVal);
         }
     }
@@ -186,13 +196,13 @@ void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InNam
             std::string mode = GetActiveGraphicsConfig().dlssAutoExposure;
             if (mode == "on") {
                 if (!(InValue & NVSDK_NGX_DLSS_Feature_Flags_AutoExposure)) {
-                    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging)
+                    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
                         LogOncePerParam(InName, "NVNGX: Forcing AutoExposure flag ON (was 0x%X)", InValue);
                     InValue |= NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
                 }
             } else if (mode == "off") {
                 if (InValue & NVSDK_NGX_DLSS_Feature_Flags_AutoExposure) {
-                    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging)
+                    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
                         LogOncePerParam(InName, "NVNGX: Forcing AutoExposure flag OFF (was 0x%X)", InValue);
                     InValue &= ~NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
                 }
@@ -206,13 +216,13 @@ void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InNam
                 const bool forceDisableSharpening = (cfg.parsed.dlssSharpening < 0.0001f);
                 if (forceDisableSharpening) {
                     if (InValue & NVSDK_NGX_DLSS_Feature_Flags_DoSharpening) {
-                        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging)
+                        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
                             LogOncePerParam(InName, "NVNGX: Forcing DoSharpening flag OFF (was 0x%X)", InValue);
                         InValue &= ~NVSDK_NGX_DLSS_Feature_Flags_DoSharpening;
                     }
                 } else {
                     if (!(InValue & NVSDK_NGX_DLSS_Feature_Flags_DoSharpening)) {
-                        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging)
+                        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
                             LogOncePerParam(InName, "NVNGX: Forcing DoSharpening flag ON (was 0x%X)", InValue);
                         InValue |= NVSDK_NGX_DLSS_Feature_Flags_DoSharpening;
                     }
@@ -224,7 +234,7 @@ void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InNam
                 InValue = 1;
             else if (mode == "off")
                 InValue = 0;
-            if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging)
+            if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
                 LogOncePerParam(InName, "NVNGX: Forcing AutoExposure to %d", InValue);
         } else {
             const auto& cfg = GetActiveGraphicsConfig();
@@ -256,7 +266,7 @@ void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InNam
             if (isDlssPreset) {
                 uint32_t val = (specificOverride > 0) ? specificOverride : cfg.parsed.srPreset;
                 if (val > 0) {
-                    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging)
+                    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
                         NVNGXLog("NVNGX: SetI: Overriding %s: %d -> %u", InName, InValue, val);
                     InValue = (int)val;
                     UpdatePresetHint(InName, val, "SetI_Override");
@@ -292,7 +302,7 @@ void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InNam
                 if (isRRPreset) {
                     uint32_t finalRRPreset = specificRROverride > 0 ? specificRROverride : cfg.parsed.rrPreset;
                     if (finalRRPreset > 0) {
-                        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging)
+                        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
                             LogOncePerParam(InName, "NVNGX: Overriding RR preset (SetI) %s = %u (was %d)", InName,
                                             finalRRPreset, InValue);
                         InValue = (int)finalRRPreset;
@@ -352,14 +362,14 @@ void STDMETHODCALLTYPE Hooked_SetUI(NVSDK_NGX_Parameter* pThis, const char* InNa
 
                 // Debug: Log the override decision
                 static int setUILogCount = 0;
-                if (setUILogCount < 10 && g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) {
+                if (setUILogCount < 10 && g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
                     NVNGXLog("NVNGX: SetUI(%s): game=%u, specific=%u, global=%u, final=%u", InName, InValue,
                              specificOverride, cfg.parsed.srPreset, val);
                     setUILogCount++;
                 }
 
                 if (val > 0) {
-                    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging)
+                    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
                         LogOncePerParam(InName, "NVNGX: Overriding %s via SetUI -> %u", InName, val);
                     InValue = val;
                     UpdatePresetHint(InName, val, "SetUI_Override");
@@ -395,7 +405,7 @@ void STDMETHODCALLTYPE Hooked_SetUI(NVSDK_NGX_Parameter* pThis, const char* InNa
                 if (isRRPreset) {
                     uint32_t finalRRPreset = specificRROverride > 0 ? specificRROverride : cfg.parsed.rrPreset;
                     if (finalRRPreset > 0) {
-                        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging)
+                        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
                             LogOncePerParam(InName, "NVNGX: Overriding RR preset %s = %u (was %u)", InName,
                                             finalRRPreset, InValue);
                         InValue = finalRRPreset;
@@ -433,7 +443,7 @@ void STDMETHODCALLTYPE Hooked_SetF(NVSDK_NGX_Parameter* pThis, const char* InNam
         if (cfg.dlssExposureNormalization == "on") {
             if (strcmp(InName, NVSDK_NGX_Parameter_ExposureScale) == 0 ||
                 strcmp(InName, NVSDK_NGX_Parameter_PreExposure) == 0) {
-                if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging)
+                if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
                     LogOncePerParam(InName, "NVNGX: Normalizing exposure %s = 1.0", InName);
                 InValue = 1.0f;
             }
@@ -447,7 +457,7 @@ void STDMETHODCALLTYPE Hooked_SetF(NVSDK_NGX_Parameter* pThis, const char* InNam
                 float overrideVal = cfg.parsed.dlssSharpening;
                 if (overrideVal < -0.5f) overrideVal = 0.0f;  // "off" = 0.0
 
-                if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging)
+                if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
                     LogOncePerParam(InName, "NVNGX: Overriding sharpness = %.2f (was %.2f)", overrideVal, InValue);
                 InValue = overrideVal;
             }
@@ -491,7 +501,7 @@ static std::vector<void*> g_HookedVTables;
 void EnsureVTableHooks(NVSDK_NGX_Parameter* pParams)
 {
     if (!IsSafePtr(pParams)) {
-        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging)
+        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
             NVNGXLog("EnsureVTableHooks: Skipped (Unsafe Ptr %p)", pParams);
         return;
     }
@@ -501,7 +511,7 @@ void EnsureVTableHooks(NVSDK_NGX_Parameter* pParams)
     if (!vtable) return;
 
     // Log vtable address to ensure it's sane
-    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging)
+    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
         NVNGXLog("EnsureVTableHooks: pParams=%p, vtable=%p", pParams, vtable);
 
     // Check if VTable is already hooked
@@ -514,7 +524,7 @@ void EnsureVTableHooks(NVSDK_NGX_Parameter* pParams)
     }
 
     if (!alreadyHooked) {
-        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging)
+        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
             NVNGXLog("NVNGX: Installing typed hooks on VTable at %p", vtable);
 
         auto Install = [&](int idx, LPVOID pHook, LPVOID* ppOrig) {
@@ -537,7 +547,7 @@ void EnsureVTableHooks(NVSDK_NGX_Parameter* pParams)
     std::string mode = cfg.dlssAutoExposure;
     if (mode == "on" || mode == "off") {
         int val = (mode == "on") ? 1 : 0;
-        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging)
+        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
             LogOncePerParam(NVSDK_NGX_Parameter_AutoExposure, "NVNGX: Injecting initial %s = %d",
                             NVSDK_NGX_Parameter_AutoExposure, val);
         if (vtable[3]) ((PFN_SetI)vtable[3])(pParams, NVSDK_NGX_Parameter_AutoExposure, val);
@@ -547,7 +557,7 @@ void EnsureVTableHooks(NVSDK_NGX_Parameter* pParams)
     // Initial Injection for Presets (via SetUI VT[4] and SetI VT[3])
     auto InjectPreset = [&](const char* name, uint32_t val) {
         if (val > 0) {
-            if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging)
+            if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
                 LogOncePerParam(name, "NVNGX: Injecting initial %s = %u", name, val);
 
             // Update our local state so the overlay knows about this forced preset!
@@ -591,7 +601,7 @@ void EnsureVTableHooks(NVSDK_NGX_Parameter* pParams)
     if (cfg.parsed.dlssSharpening > -1.5f && vtable[6]) {
         float overrideVal = cfg.parsed.dlssSharpening;
         if (overrideVal < -0.5f) overrideVal = 0.0f;  // "off" = 0.0
-        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) {
+        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
             LogOncePerParam(NVSDK_NGX_Parameter_Sharpness, "NVNGX: Injecting initial sharpness = %.2f", overrideVal);
         }
 
@@ -602,7 +612,7 @@ void EnsureVTableHooks(NVSDK_NGX_Parameter* pParams)
 
     // Force Ray Reconstruction Availability
     if (cfg.forceRayReconstruction) {
-        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) {
+        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
             LogOncePerParam("NVNGX_ForceRR_Caps",
                             "NVNGX: Injecting RayReconstruction.Available=1 and FeatureInitResult=1");
         }
@@ -638,11 +648,11 @@ NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_ProcessParameters(PFN_NVSDK_NGX_GetPar
     if (!original) return NVSDK_NGX_Result_Success;
     NVSDK_NGX_Result res = original(OutParameters);
     if (res == NVSDK_NGX_Result_Success && OutParameters && *OutParameters) {
-        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging)
+        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
             NVNGXLog("Hooked_ProcessParameters: Success, Params=%p, *Params=%p", OutParameters, *OutParameters);
         EnsureVTableHooks(*OutParameters);
     } else {
-        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging)
+        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
             NVNGXLog("Hooked_ProcessParameters: Result=%X, Params=%p", res, OutParameters);
     }
     return res;
@@ -733,7 +743,7 @@ NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_ProcessFeatureRequirements(
         if (InDiscoveryInfo->FeatureID == 13) {
             const auto& cfg = GetActiveGraphicsConfig();
             if (cfg.forceRayReconstruction) {
-                if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) {
+                if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
                     LogOncePerParam("GetFeatureRequirements_13",
                                     "NVNGX: Spoofing Ray Reconstruction (Feature 13) as SUPPORTED");
                 }
@@ -834,7 +844,7 @@ static void UpdateDLSSVersion()
                     state.versionMinor = minor;
                     state.versionPatch = patch;
 
-                    if (g_IPC->GetSharedMem()->debugLogging) {
+                    if (g_IPC->GetSharedMem()->GetDebugLogging()) {
                         NVNGXLog("NVNGX: Detected Version from %S: v%d.%d.%d", fileName, major, minor, patch);
                     }
                 }
@@ -884,7 +894,7 @@ static char GetPresetChar(int qualityValue)
     // Fallback to global srPreset if specific is 0
     if (presetVal == 0) presetVal = cfg.parsed.srPreset;
 
-    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) {
+    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
         static int logCount = 0;
         if (logCount < 5) {
             NVNGXLog("NVNGX: GetPresetChar quality=%d -> presetVal=%u (GlobalSR=%u)", qualityValue, presetVal,
@@ -925,14 +935,14 @@ static void UpdateDLSSStatus(const NVSDK_NGX_FeatureDiscoveryInfo* info)
             state.renderScale = CalculateScale(params);
             state.srPreset = GetPresetChar(params->InPerfQualityValue);
 
-            if (g_IPC->GetSharedMem()->debugLogging) {
+            if (g_IPC->GetSharedMem()->GetDebugLogging()) {
                 LogOncePerParam("DLSS_SR_Create", "NVNGX: Created DLSS SR. Scale=%.2f, Quality=%d, Preset=%c",
                                 state.renderScale.load(), params->InPerfQualityValue, state.srPreset.load());
             }
         }
     } else if (info->FeatureID == 13) {  // Ray Reconstruction
         state.rrActive = true;
-        if (g_IPC->GetSharedMem()->debugLogging) {
+        if (g_IPC->GetSharedMem()->GetDebugLogging()) {
             LogOncePerParam("DLSS_RR_Create", "NVNGX: Created DLSS RR.");
         }
     }
@@ -941,13 +951,13 @@ static void UpdateDLSSStatus(const NVSDK_NGX_FeatureDiscoveryInfo* info)
 NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeature original, void* ctx, int featureID,
                                                       NVSDK_NGX_Parameter* params, void** handle)
 {
-    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging)
+    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
         NVNGXLog("Hooked_CreateFeature_Process: Entry ctx=%p, ID=%d, params=%p", ctx, featureID, params);
 
     NVSDK_NGX_Result res = NVSDK_NGX_Result_Success;
     if (original) res = original(ctx, featureID, params, handle);
 
-    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging)
+    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
         NVNGXLog("Hooked_CreateFeature_Process: Original Result=%X", res);
 
     // On success, update status
@@ -964,7 +974,7 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
 
             if (featureID == 1) {
                 state.srActive = true;
-                if (g_IPC->GetSharedMem()->debugLogging) NVNGXLog("Hooked_CreateFeature: DLSS SR Activated (ID 1)");
+                if (g_IPC->GetSharedMem()->GetDebugLogging()) NVNGXLog("Hooked_CreateFeature: DLSS SR Activated (ID 1)");
 
                 // Proactive Sync: Query effective presets from the parameter object
                 auto SyncPreset = [&](const char* name) {
@@ -975,7 +985,7 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
                         if (getRes == NVSDK_NGX_Result_Success) {
                             UpdatePresetHint(name, val, "SyncUI");
                             return;
-                        } else if (g_IPC->GetSharedMem()->debugLogging) {
+                        } else if (g_IPC->GetSharedMem()->GetDebugLogging()) {
                             NVNGXLog("NVNGX: oGetUI(%s) returned %X", name, getRes);
                         }
                     }
@@ -983,7 +993,7 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
                         getRes = oGetI(params, name, (int*)&val);
                         if (getRes == NVSDK_NGX_Result_Success) {
                             UpdatePresetHint(name, val, "SyncI");
-                        } else if (g_IPC->GetSharedMem()->debugLogging) {
+                        } else if (g_IPC->GetSharedMem()->GetDebugLogging()) {
                             NVNGXLog("NVNGX: oGetI(%s) returned %X", name, getRes);
                         }
                     }
@@ -997,7 +1007,7 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
 
                 // Probe for undocumented internal parameters that might expose driver-forced preset
                 static bool probeOnce = false;
-                if (!probeOnce && oGetUI && g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) {
+                if (!probeOnce && oGetUI && g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
                     probeOnce = true;
                     const char* probeParams[] = {"DLSS.Preset.Active",
                                                  "DLSS.Preset.Effective",
@@ -1027,7 +1037,7 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
                         int q = g_ParameterQualityMap[params];
                         state.qualityMode = q;
                         state.srPreset = GetPresetChar(q);
-                        if (g_IPC->GetSharedMem()->debugLogging)
+                        if (g_IPC->GetSharedMem()->GetDebugLogging())
                             NVNGXLog("Hooked_CreateFeature: Quality=%d -> srPreset='%c'", q, state.srPreset.load());
                         g_ParameterQualityMap.erase(params);
                     }
@@ -1044,15 +1054,40 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
                         g_ParameterDimsMap.erase(params);
                     }
                 }
-            } else if (featureID == 13 || featureID == 0xB || featureID == 9) {
-                if (featureID == 13) {
+            } else if (featureID == NVSDK_NGX_Feature_RayReconstruction ||
+                       featureID == NVSDK_NGX_Feature_FrameGeneration_11 ||
+                       featureID == NVSDK_NGX_Feature_FrameGeneration ||
+                       featureID == NVSDK_NGX_Feature_MultiFrameGeneration) {
+                if (featureID == NVSDK_NGX_Feature_RayReconstruction) {
                     state.rrActive = true;
-                    if (g_IPC->GetSharedMem()->debugLogging)
+                    if (g_IPC->GetSharedMem()->GetDebugLogging())
                         NVNGXLog("Hooked_CreateFeature: DLSS RR Activated (ID 13)");
-                } else if (featureID == 0xB || featureID == 9) {
-                    // DLSS Frame Generation - Feature IDs 9 (NVSDK_NGX_Feature_FrameGeneration) and 0xB (11)
+                } else if (featureID == NVSDK_NGX_Feature_MultiFrameGeneration) {
+                    // DLSS Multi-Frame Generation (MFG) - Feature ID 18
+                    // MFG generates 2x or 3x frames per rendered frame
                     state.fgActive = true;
-                    if (g_IPC->GetSharedMem()->debugLogging)
+                    
+                    // Try to read the multiplier from parameters
+                    int mfgMultiplier = 2;  // Default to 2x
+                    if (params && oGetI) {
+                        int multValue = 0;
+                        NVSDK_NGX_Result multRes = oGetI(params, NVSDK_NGX_Parameter_FrameGenerationMultiplier, &multValue);
+                        if (multRes == NVSDK_NGX_Result_Success && multValue >= 2 && multValue <= 3) {
+                            mfgMultiplier = multValue;
+                        }
+                    }
+                    state.mfgMultiplier = mfgMultiplier;
+                    
+                    if (g_IPC->GetSharedMem()->GetDebugLogging())
+                        NVNGXLog("Hooked_CreateFeature: DLSS Multi-Frame Generation ACTIVATED (ID 18, %dx multiplier)", mfgMultiplier);
+
+                    // Signal FG activation (MFG is a form of frame generation)
+                    g_FGCompat.SetDLSSFGActive(true);
+                } else {
+                    // DLSS Frame Generation - Feature IDs 9 and 0xB (11)
+                    state.fgActive = true;
+                    state.mfgMultiplier = 1;  // Standard FG is 1x (doubles frame rate)
+                    if (g_IPC->GetSharedMem()->GetDebugLogging())
                         NVNGXLog("Hooked_CreateFeature: DLSS FG ACTIVATED (ID 0x%X)", featureID);
 
                     // CRITICAL: Signal FG activation to the detection system
@@ -1060,7 +1095,7 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
                     g_FGCompat.SetDLSSFGActive(true);
                 }
             } else {
-                if (g_IPC->GetSharedMem()->debugLogging)
+                if (g_IPC->GetSharedMem()->GetDebugLogging())
                     NVNGXLog("Hooked_CreateFeature: Other ID 0x%X Activated", featureID);
             }
 
@@ -1069,14 +1104,14 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
             if (cfg.parsed.srPreset > 0) {
                 char oldP = state.srPreset.load();
                 state.srPreset = PresetIDToChar(cfg.parsed.srPreset);
-                if (g_IPC->GetSharedMem()->debugLogging) {
+                if (g_IPC->GetSharedMem()->GetDebugLogging()) {
                     NVNGXLog("NV_NGX: Final Force SR Preset: '%c' -> '%c' (Config ID %u, From String: %s)", oldP,
                              state.srPreset.load(), cfg.parsed.srPreset, cfg.dlssSRPreset.c_str());
                 }
             }
             if (cfg.parsed.rrPreset > 0 && featureID == 13) {
                 state.rrPreset = PresetIDToChar(cfg.parsed.rrPreset);
-                if (g_IPC->GetSharedMem()->debugLogging)
+                if (g_IPC->GetSharedMem()->GetDebugLogging())
                     NVNGXLog("NV_NGX: Final Force RR Preset to '%c'", state.rrPreset.load());
             }
         }
