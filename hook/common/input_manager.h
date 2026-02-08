@@ -29,6 +29,7 @@ private:
         bool hooked = false;
     };
 
+    // Mutex for thread-safe access to hooks map
     std::mutex m_Mutex;
     std::unordered_map<HWND, WindowHookInfo> m_Hooks;
 };

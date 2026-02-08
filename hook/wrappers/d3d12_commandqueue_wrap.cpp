@@ -54,8 +54,8 @@ HRESULT STDMETHODCALLTYPE CWrapD3D12CommandQueue::QueryInterface(REFIID riid, vo
         return S_OK;
     }
 
-    if (riid == IID_ID3D12Object || riid == IID_ID3D12DeviceChild ||
-        riid == IID_ID3D12Pageable || riid == IID_ID3D12CommandQueue) {
+    if (riid == IID_ID3D12Object || riid == IID_ID3D12DeviceChild || riid == IID_ID3D12Pageable ||
+        riid == IID_ID3D12CommandQueue) {
         AddRef();
         *ppvObj = static_cast<ID3D12CommandQueue*>(this);
         return S_OK;
@@ -139,14 +139,14 @@ void STDMETHODCALLTYPE CWrapD3D12CommandQueue::ExecuteCommandLists(UINT NumComma
     static void (*s_notifyFn)(UINT) = nullptr;
     static void (*s_setQueueFn)(ID3D12CommandQueue*) = nullptr;
     static bool s_lookupDone = false;
-    
+
     std::call_once(s_lookupFlag, []() {
         WrapperLog("D3D12 CQW: Looking for hook DLL...");
         HMODULE hMod = GetModuleHandleA("VK_LAYER_CE_overlay_x86.dll");
         if (!hMod) hMod = GetModuleHandleA("capture_hook_x86.dll");
         if (!hMod) hMod = GetModuleHandleA("VK_LAYER_CE_overlay.dll");
         if (!hMod) hMod = GetModuleHandleA("capture_hook_x64.dll");
-        
+
         if (hMod) {
             WrapperLog("D3D12 CQW: Found hook DLL at %p", hMod);
             s_notifyFn = (void (*)(UINT))GetProcAddress(hMod, "DX12_NotifyCommandLists");
@@ -157,7 +157,7 @@ void STDMETHODCALLTYPE CWrapD3D12CommandQueue::ExecuteCommandLists(UINT NumComma
         }
         s_lookupDone = true;
     });
-    
+
     if (s_notifyFn) {
         s_notifyFn(NumCommandLists);
     } else if (s_lookupDone) {

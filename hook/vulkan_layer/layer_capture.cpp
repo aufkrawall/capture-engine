@@ -422,6 +422,7 @@ void CleanupCapture(VkDevice device)
     std::lock_guard<std::mutex> lock(g_CaptureMutex);
     auto it = g_CaptureStates.find(device);
     if (it != g_CaptureStates.end()) {
+        uint64_t luidKey = it->second.luidKey;
         DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
         if (disp) {
             for (VkFence fence : it->second.copyFences) disp->fp_vkDestroyFence(device, fence, nullptr);
@@ -432,6 +433,43 @@ void CleanupCapture(VkDevice device)
             disp->fp_vkDestroyCommandPool(device, it->second.commandPool, nullptr);
         }
         g_CaptureStates.erase(it);
+
+        // CRITICAL FIX: Clean up texture cache entries for this device
+        // This prevents memory leaks of D3D11 textures and Vulkan images
+        std::lock_guard<std::mutex> interopLock(g_InteropMutex);
+        for (auto& entry : g_TextureCache) {
+            if (entry.luidKey == luidKey) {
+                // Release D3D11 textures
+                for (auto* tex : entry.textures) {
+                    if (tex) tex->Release();
+                }
+                entry.textures.clear();
+
+                // Close shared handles
+                for (auto& handle : entry.textureHandles) {
+                    if (handle) CloseHandle(handle);
+                }
+                entry.textureHandles.clear();
+
+                // Destroy Vulkan images and memories
+                for (auto& img : entry.vkImages) {
+                    if (img != VK_NULL_HANDLE) {
+                        disp->fp_vkDestroyImage(device, img, nullptr);
+                    }
+                }
+                entry.vkImages.clear();
+
+                for (auto& mem : entry.vkMemories) {
+                    if (mem != VK_NULL_HANDLE) {
+                        disp->fp_vkFreeMemory(device, mem, nullptr);
+                    }
+                }
+                entry.vkMemories.clear();
+
+                entry.valid = false;
+                LayerLog("Vulkan Layer: Cleaned up texture cache entry for LUID %llx", luidKey);
+            }
+        }
     }
 }
 

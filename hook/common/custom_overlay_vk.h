@@ -1,6 +1,6 @@
 /**
  * Custom Overlay - Vulkan Backend
- * 
+ *
  * Renders overlay using Vulkan.
  * Note: The project uses a Vulkan layer for hooking, so this backend
  * may be used differently than DirectX backends.
@@ -18,22 +18,18 @@ namespace CustomOverlay {
 
 class VulkanBackend : public RendererBackend {
 public:
-    VulkanBackend(VkDevice device, VkPhysicalDevice physDevice, 
-                  VkQueue queue, uint32_t queueFamily);
+    VulkanBackend(VkDevice device, VkPhysicalDevice physDevice, VkQueue queue, uint32_t queueFamily);
     virtual ~VulkanBackend();
 
-    bool Initialize(int fontTextureWidth, int fontTextureHeight,
-                   const uint8_t* fontTextureData) override;
+    bool Initialize(int fontTextureWidth, int fontTextureHeight, const uint8_t* fontTextureData) override;
     void Shutdown() override;
 
-    void Render(const std::vector<DrawVertex>& vertices,
-               const std::vector<uint16_t>& indices,
-               const std::vector<DrawCommand>& commands,
-               int viewportWidth, int viewportHeight) override;
+    void Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
+                const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) override;
 
     // Vulkan-specific: Set command buffer and render pass info before rendering
-    void SetRenderContext(VkCommandBuffer cmdBuffer, VkRenderPass renderPass,
-                         VkFramebuffer framebuffer, VkExtent2D extent);
+    void SetRenderContext(VkCommandBuffer cmdBuffer, VkRenderPass renderPass, VkFramebuffer framebuffer,
+                          VkExtent2D extent);
 
 private:
     bool CreateDescriptorSetLayout();
@@ -55,7 +51,7 @@ private:
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     VkSampler sampler = VK_NULL_HANDLE;
-    
+
     VkImage fontImage = VK_NULL_HANDLE;
     VkDeviceMemory fontMemory = VK_NULL_HANDLE;
     VkImageView fontImageView = VK_NULL_HANDLE;
@@ -64,7 +60,7 @@ private:
     VkDeviceMemory vertexMemory = VK_NULL_HANDLE;
     VkBuffer indexBuffer = VK_NULL_HANDLE;
     VkDeviceMemory indexMemory = VK_NULL_HANDLE;
-    
+
     void* vertexBufferPtr = nullptr;
     void* indexBufferPtr = nullptr;
     size_t vertexBufferSize = 0;
@@ -79,4 +75,4 @@ private:
     bool initialized = false;
 };
 
-} // namespace CustomOverlay
+}  // namespace CustomOverlay

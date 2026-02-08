@@ -1,18 +1,18 @@
 /**
  * Custom Hook System - MinHook-free implementation
- * 
+ *
  * Uses existing VTableHook and IATHook implementations for maximum compatibility.
  */
 
 #include "custom_hook.h"
-#include "vtable_hook.h"
-#include "iat_hook.h"
 #include "../common/hook_common.h"
+#include "iat_hook.h"
+#include "vtable_hook.h"
 
-#include <unordered_map>
-#include <shared_mutex>
 #include <memory>
+#include <shared_mutex>
 #include <string>
+#include <unordered_map>
 
 namespace CustomHook {
 
@@ -28,19 +28,31 @@ static std::unordered_map<void*, std::unique_ptr<HookInfo>> g_Hooks;
 // Status String Conversion
 // ============================================================================
 
-const char* StatusToString(Status status) {
+const char* StatusToString(Status status)
+{
     switch (status) {
-        case Status::Success: return "Success";
-        case Status::ErrorNotInitialized: return "Not initialized";
-        case Status::ErrorAlreadyInitialized: return "Already initialized";
-        case Status::ErrorInvalidParameter: return "Invalid parameter";
-        case Status::ErrorModuleNotFound: return "Module not found";
-        case Status::ErrorFunctionNotFound: return "Function not found";
-        case Status::ErrorMemoryProtect: return "Memory protection failed";
-        case Status::ErrorAlreadyHooked: return "Already hooked";
-        case Status::ErrorNotHooked: return "Not hooked";
-        case Status::ErrorUnknown: return "Unknown error";
-        default: return "Unknown status";
+        case Status::Success:
+            return "Success";
+        case Status::ErrorNotInitialized:
+            return "Not initialized";
+        case Status::ErrorAlreadyInitialized:
+            return "Already initialized";
+        case Status::ErrorInvalidParameter:
+            return "Invalid parameter";
+        case Status::ErrorModuleNotFound:
+            return "Module not found";
+        case Status::ErrorFunctionNotFound:
+            return "Function not found";
+        case Status::ErrorMemoryProtect:
+            return "Memory protection failed";
+        case Status::ErrorAlreadyHooked:
+            return "Already hooked";
+        case Status::ErrorNotHooked:
+            return "Not hooked";
+        case Status::ErrorUnknown:
+            return "Unknown error";
+        default:
+            return "Unknown status";
     }
 }
 
@@ -48,7 +60,8 @@ const char* StatusToString(Status status) {
 // Initialization
 // ============================================================================
 
-bool Initialize() {
+bool Initialize()
+{
     if (g_Initialized.load()) {
         HookLog("CustomHook: Already initialized");
         return true;
@@ -63,7 +76,8 @@ bool Initialize() {
     return true;
 }
 
-void Shutdown() {
+void Shutdown()
+{
     if (!g_Initialized.load()) {
         return;
     }
@@ -97,15 +111,14 @@ void Shutdown() {
     HookLog("CustomHook: Shutdown complete");
 }
 
-bool IsInitialized() {
-    return g_Initialized.load();
-}
+bool IsInitialized() { return g_Initialized.load(); }
 
 // ============================================================================
 // VTable Hooking
 // ============================================================================
 
-Status HookVTableMethod(void** vtable, UINT index, void* detour, void** original) {
+Status HookVTableMethod(void** vtable, UINT index, void* detour, void** original)
+{
     if (!g_Initialized.load()) {
         return Status::ErrorNotInitialized;
     }
@@ -117,7 +130,8 @@ Status HookVTableMethod(void** vtable, UINT index, void* detour, void** original
     return HookVTableEntry(vtableEntry, detour, original);
 }
 
-Status HookVTableEntry(void** vtableEntry, void* detour, void** original) {
+Status HookVTableEntry(void** vtableEntry, void* detour, void** original)
+{
     if (!g_Initialized.load()) {
         return Status::ErrorNotInitialized;
     }
@@ -127,7 +141,7 @@ Status HookVTableEntry(void** vtableEntry, void* detour, void** original) {
 
     // Use existing VTableHook implementation
     VTableHook::Status vStatus = VTableHook::Create(vtableEntry, detour, original);
-    
+
     if (vStatus == VTableHook::Success) {
         // Register in our tracking
         std::unique_lock<std::shared_mutex> lock(g_HookMutex);
@@ -151,12 +165,14 @@ Status HookVTableEntry(void** vtableEntry, void* detour, void** original) {
     }
 }
 
-Status UnhookVTableMethod(void** vtable, UINT index, void* original) {
+Status UnhookVTableMethod(void** vtable, UINT index, void* original)
+{
     if (!vtable) return Status::ErrorInvalidParameter;
     return UnhookVTableEntry(&vtable[index], original);
 }
 
-Status UnhookVTableEntry(void** vtableEntry, void* original) {
+Status UnhookVTableEntry(void** vtableEntry, void* original)
+{
     if (!vtableEntry) return Status::ErrorInvalidParameter;
 
     // Remove from tracking
@@ -190,8 +206,8 @@ Status UnhookVTableEntry(void** vtableEntry, void* original) {
 // Export Hooking (via IAT)
 // ============================================================================
 
-Status HookExport(const char* moduleName, const char* functionName,
-                  void* detour, void** original) {
+Status HookExport(const char* moduleName, const char* functionName, void* detour, void** original)
+{
     if (!g_Initialized.load()) {
         return Status::ErrorNotInitialized;
     }
@@ -242,8 +258,8 @@ Status HookExport(const char* moduleName, const char* functionName,
     return Status::Success;
 }
 
-Status HookExportW(const wchar_t* moduleName, const char* functionName,
-                   void* detour, void** original) {
+Status HookExportW(const wchar_t* moduleName, const char* functionName, void* detour, void** original)
+{
     if (!moduleName) return Status::ErrorInvalidParameter;
 
     // Convert wide to narrow
@@ -253,7 +269,8 @@ Status HookExportW(const wchar_t* moduleName, const char* functionName,
     return HookExport(narrowName, functionName, detour, original);
 }
 
-Status UnhookExport(const char* moduleName, const char* functionName, void* original) {
+Status UnhookExport(const char* moduleName, const char* functionName, void* original)
+{
     if (!moduleName || !functionName) return Status::ErrorInvalidParameter;
 
     // Restore via IAT
@@ -276,7 +293,8 @@ Status UnhookExport(const char* moduleName, const char* functionName, void* orig
 // Function Hooking
 // ============================================================================
 
-Status HookFunction(void* target, void* detour, void** original) {
+Status HookFunction(void* target, void* detour, void** original)
+{
     if (!g_Initialized.load()) {
         return Status::ErrorNotInitialized;
     }
@@ -286,15 +304,16 @@ Status HookFunction(void* target, void* detour, void** original) {
 
     // For function hooks, we store the original and treat target as a VTable-like entry
     // This is a simplified approach - real inline hooking would need trampolines
-    
+
     HookLog("CustomHook: HookFunction called for %p - delegating to VTable patching", target);
-    
+
     // Store the target address as if it's a vtable entry
     // This works for pointers stored in data sections
     return HookVTableEntry(reinterpret_cast<void**>(&target), detour, original);
 }
 
-Status UnhookFunction(void* target, void* original) {
+Status UnhookFunction(void* target, void* original)
+{
     return UnhookVTableEntry(reinterpret_cast<void**>(&target), original);
 }
 
@@ -302,15 +321,17 @@ Status UnhookFunction(void* target, void* original) {
 // Hook Registry
 // ============================================================================
 
-const HookInfo* GetHookInfo(void* target) {
+const HookInfo* GetHookInfo(void* target)
+{
     std::shared_lock<std::shared_mutex> lock(g_HookMutex);
     auto it = g_Hooks.find(target);
     return (it != g_Hooks.end()) ? it->second.get() : nullptr;
 }
 
-size_t GetActiveHookCount() {
+size_t GetActiveHookCount()
+{
     std::shared_lock<std::shared_mutex> lock(g_HookMutex);
     return g_Hooks.size();
 }
 
-} // namespace CustomHook
+}  // namespace CustomHook

@@ -1,6 +1,6 @@
 /**
  * D3DKMT (Display Driver Kernel Mode) Hook Implementation
- * 
+ *
  * This hooks the kernel-mode driver interface that games use to query VRAM
  * independently of DXGI. This is the universal solution used by SpecialK and RTSS.
  */
@@ -111,10 +111,10 @@ typedef struct _D3DKMT_ENUMADAPTERS2 {
 } D3DKMT_ENUMADAPTERS2;
 
 // Function prototypes
-typedef NTSTATUS (WINAPI* PFN_D3DKMTQueryVideoMemoryInfo)(const D3DKMT_QUERYVIDEOMEMORYINFO*);
-typedef NTSTATUS (WINAPI* PFN_D3DKMTQueryAdapterInfo)(const D3DKMT_QUERYADAPTERINFO*);
-typedef NTSTATUS (WINAPI* PFN_D3DKMTEnumAdapters)(const D3DKMT_ENUMADAPTERS*);
-typedef NTSTATUS (WINAPI* PFN_D3DKMTEnumAdapters2)(const D3DKMT_ENUMADAPTERS2*);
+typedef NTSTATUS(WINAPI* PFN_D3DKMTQueryVideoMemoryInfo)(const D3DKMT_QUERYVIDEOMEMORYINFO*);
+typedef NTSTATUS(WINAPI* PFN_D3DKMTQueryAdapterInfo)(const D3DKMT_QUERYADAPTERINFO*);
+typedef NTSTATUS(WINAPI* PFN_D3DKMTEnumAdapters)(const D3DKMT_ENUMADAPTERS*);
+typedef NTSTATUS(WINAPI* PFN_D3DKMTEnumAdapters2)(const D3DKMT_ENUMADAPTERS2*);
 
 // Original function pointers
 static PFN_D3DKMTQueryVideoMemoryInfo o_D3DKMTQueryVideoMemoryInfo = nullptr;
@@ -137,7 +137,7 @@ void InitializeConfig()
 {
     // Check if VRAM override is configured
     const auto& gfx = GetActiveGraphicsConfig();
-    
+
     // IMPORTANT: Following SpecialK's approach - do NOT override VRAM values.
     // Games need real VRAM values for proper memory management and feature detection.
     // Overriding VRAM can cause:
@@ -145,13 +145,13 @@ void InitializeConfig()
     // - DLSS/FSR framegen refusing to activate
     // - Texture streaming issues
     // - Memory allocation failures
-    
+
     // VRAM override is disabled by default. Only enable via explicit config.
     g_VramConfig.enabled = false;
     g_VramConfig.dedicatedVramBytes = 0;
     g_VramConfig.sharedVramBytes = 0;
     g_VramConfig.scaleFactor = 1.0f;
-    
+
     // Check if user explicitly wants VRAM override (not recommended)
     // Config key: d3dkmt_vram_override_mb = 8192
     // Only override if explicitly requested
@@ -172,41 +172,41 @@ static NTSTATUS WINAPI Hook_D3DKMTQueryVideoMemoryInfo(const D3DKMT_QUERYVIDEOME
     if (!o_D3DKMTQueryVideoMemoryInfo) {
         return STATUS_PROCEDURE_NOT_FOUND;
     }
-    
+
     // Call original first
     NTSTATUS status = o_D3DKMTQueryVideoMemoryInfo(pInfo);
-    
+
     if (!NT_SUCCESS(status) || !pInfo) {
         return status;
     }
-    
+
     // Log the query for debugging
     HookLog("D3DKMT: QueryVideoMemoryInfo - Process=%u, Segment=%s",
-               pInfo->hProcess ? (ULONG)(pInfo->hProcess) : GetCurrentProcessId(),
-               pInfo->MemorySegmentGroup == KMT_MEMORY_SEGMENT_GROUP_LOCAL ? "LOCAL" : "NON_LOCAL");
-    
+            pInfo->hProcess ? (ULONG)(pInfo->hProcess) : GetCurrentProcessId(),
+            pInfo->MemorySegmentGroup == KMT_MEMORY_SEGMENT_GROUP_LOCAL ? "LOCAL" : "NON_LOCAL");
+
     // Cast away const to modify the output struct (if needed)
     D3DKMT_QUERYVIDEOMEMORYINFO* pMutableInfo = const_cast<D3DKMT_QUERYVIDEOMEMORYINFO*>(pInfo);
-    
+
     if (pInfo->MemorySegmentGroup == KMT_MEMORY_SEGMENT_GROUP_LOCAL) {
         // Local/Dedicated VRAM
         if (g_VramConfig.enabled) {
             UINT64 originalBudget = pInfo->Budget;
             pMutableInfo->Budget = g_VramConfig.dedicatedVramBytes;
-            pMutableInfo->CurrentUsage = std::min(pInfo->CurrentUsage, g_VramConfig.dedicatedVramBytes - (512 * 1024 * 1024));
+            pMutableInfo->CurrentUsage =
+                std::min(pInfo->CurrentUsage, g_VramConfig.dedicatedVramBytes - (512 * 1024 * 1024));
             pMutableInfo->AvailableForReservation = g_VramConfig.dedicatedVramBytes / 2;
-            pMutableInfo->CurrentReservation = std::min(pInfo->CurrentReservation, pMutableInfo->AvailableForReservation);
-            
-            HookLog("D3DKMT: OVERRIDE Local VRAM - Budget: %llu->%llu MB",
-                       originalBudget / (1024 * 1024),
-                       g_VramConfig.dedicatedVramBytes / (1024 * 1024));
+            pMutableInfo->CurrentReservation =
+                std::min(pInfo->CurrentReservation, pMutableInfo->AvailableForReservation);
+
+            HookLog("D3DKMT: OVERRIDE Local VRAM - Budget: %llu->%llu MB", originalBudget / (1024 * 1024),
+                    g_VramConfig.dedicatedVramBytes / (1024 * 1024));
         } else {
             // Pass-through mode: log real values for debugging
             static UINT queryCount = 0;
             if (++queryCount <= 5) {  // Only log first 5 queries to avoid spam
                 HookLog("D3DKMT: Local VRAM PASSTHROUGH - Budget: %llu MB, Usage: %llu MB",
-                           pInfo->Budget / (1024 * 1024),
-                           pInfo->CurrentUsage / (1024 * 1024));
+                        pInfo->Budget / (1024 * 1024), pInfo->CurrentUsage / (1024 * 1024));
             }
         }
     } else {
@@ -214,24 +214,24 @@ static NTSTATUS WINAPI Hook_D3DKMTQueryVideoMemoryInfo(const D3DKMT_QUERYVIDEOME
         if (g_VramConfig.enabled) {
             UINT64 originalBudget = pInfo->Budget;
             pMutableInfo->Budget = g_VramConfig.sharedVramBytes;
-            pMutableInfo->CurrentUsage = std::min(pInfo->CurrentUsage, g_VramConfig.sharedVramBytes - (256 * 1024 * 1024));
+            pMutableInfo->CurrentUsage =
+                std::min(pInfo->CurrentUsage, g_VramConfig.sharedVramBytes - (256 * 1024 * 1024));
             pMutableInfo->AvailableForReservation = g_VramConfig.sharedVramBytes / 2;
-            pMutableInfo->CurrentReservation = std::min(pInfo->CurrentReservation, pMutableInfo->AvailableForReservation);
-            
-            HookLog("D3DKMT: OVERRIDE Shared VRAM - Budget: %llu->%llu MB",
-                       originalBudget / (1024 * 1024),
-                       g_VramConfig.sharedVramBytes / (1024 * 1024));
+            pMutableInfo->CurrentReservation =
+                std::min(pInfo->CurrentReservation, pMutableInfo->AvailableForReservation);
+
+            HookLog("D3DKMT: OVERRIDE Shared VRAM - Budget: %llu->%llu MB", originalBudget / (1024 * 1024),
+                    g_VramConfig.sharedVramBytes / (1024 * 1024));
         } else {
             // Pass-through mode: log real values for debugging
             static UINT sharedQueryCount = 0;
             if (++sharedQueryCount <= 3) {  // Only log first 3 queries to avoid spam
                 HookLog("D3DKMT: Shared VRAM PASSTHROUGH - Budget: %llu MB, Usage: %llu MB",
-                           pInfo->Budget / (1024 * 1024),
-                           pInfo->CurrentUsage / (1024 * 1024));
+                        pInfo->Budget / (1024 * 1024), pInfo->CurrentUsage / (1024 * 1024));
             }
         }
     }
-    
+
     return status;
 }
 
@@ -241,18 +241,17 @@ static NTSTATUS WINAPI Hook_D3DKMTQueryAdapterInfo(const D3DKMT_QUERYADAPTERINFO
     if (!o_D3DKMTQueryAdapterInfo) {
         return STATUS_PROCEDURE_NOT_FOUND;
     }
-    
+
     // Call original first
     NTSTATUS status = o_D3DKMTQueryAdapterInfo(pInfo);
-    
+
     if (!NT_SUCCESS(status) || !pInfo || !pInfo->pPrivateDriverData) {
         return status;
     }
-    
+
     // Log adapter queries for debugging
-    HookLog("D3DKMT: QueryAdapterInfo - Type=%u, Size=%u", 
-               pInfo->Type, pInfo->PrivateDriverDataSize);
-    
+    HookLog("D3DKMT: QueryAdapterInfo - Type=%u, Size=%u", pInfo->Type, pInfo->PrivateDriverDataSize);
+
     // Handle specific query types that report VRAM
     switch (pInfo->Type) {
         case KMTQAITYPE_ADAPTERREGISTRYINFO: {
@@ -272,7 +271,7 @@ static NTSTATUS WINAPI Hook_D3DKMTQueryAdapterInfo(const D3DKMT_QUERYADAPTERINFO
         default:
             break;
     }
-    
+
     return status;
 }
 
@@ -282,20 +281,18 @@ static NTSTATUS WINAPI Hook_D3DKMTEnumAdapters(const D3DKMT_ENUMADAPTERS* pEnumA
     if (!o_D3DKMTEnumAdapters) {
         return STATUS_PROCEDURE_NOT_FOUND;
     }
-    
+
     NTSTATUS status = o_D3DKMTEnumAdapters(pEnumAdapters);
-    
+
     if (NT_SUCCESS(status) && pEnumAdapters) {
         HookLog("D3DKMT: EnumAdapters - Count=%u", pEnumAdapters->NumAdapters);
-        
+
         for (UINT i = 0; i < pEnumAdapters->NumAdapters; i++) {
-            HookLog("D3DKMT:   Adapter[%u] - VidPnSourceId=%u, NodeCount=%u",
-                       i,
-                       pEnumAdapters->Adapters[i].VidPnSourceId,
-                       pEnumAdapters->Adapters[i].NodeCount);
+            HookLog("D3DKMT:   Adapter[%u] - VidPnSourceId=%u, NodeCount=%u", i,
+                    pEnumAdapters->Adapters[i].VidPnSourceId, pEnumAdapters->Adapters[i].NodeCount);
         }
     }
-    
+
     return status;
 }
 
@@ -305,13 +302,13 @@ static NTSTATUS WINAPI Hook_D3DKMTEnumAdapters2(const D3DKMT_ENUMADAPTERS2* pEnu
     if (!o_D3DKMTEnumAdapters2) {
         return STATUS_PROCEDURE_NOT_FOUND;
     }
-    
+
     NTSTATUS status = o_D3DKMTEnumAdapters2(pEnumAdapters);
-    
+
     if (NT_SUCCESS(status) && pEnumAdapters) {
         HookLog("D3DKMT: EnumAdapters2 - Count=%u", pEnumAdapters->NumAdapters);
     }
-    
+
     return status;
 }
 
@@ -319,102 +316,89 @@ static NTSTATUS WINAPI Hook_D3DKMTEnumAdapters2(const D3DKMT_ENUMADAPTERS2* pEnu
 bool Install()
 {
     HookLog("D3DKMT: Installing hooks...");
-    
+
     InitializeConfig();
-    
+
     // Try win32u.dll first (Windows 10/11)
     HMODULE hWin32U = GetModuleHandleA("win32u.dll");
     HMODULE hGdi32 = GetModuleHandleA("gdi32.dll");
-    
+
     if (!hWin32U && !hGdi32) {
         HookLog("D3DKMT: Neither win32u.dll nor gdi32.dll loaded");
         return false;
     }
-    
+
     // Get original function addresses from win32u.dll (preferred)
     if (hWin32U) {
-        o_D3DKMTQueryVideoMemoryInfo = 
+        o_D3DKMTQueryVideoMemoryInfo =
             (decltype(o_D3DKMTQueryVideoMemoryInfo))GetProcAddress(hWin32U, "D3DKMTQueryVideoMemoryInfo");
-        o_D3DKMTQueryAdapterInfo = 
+        o_D3DKMTQueryAdapterInfo =
             (decltype(o_D3DKMTQueryAdapterInfo))GetProcAddress(hWin32U, "D3DKMTQueryAdapterInfo");
-        o_D3DKMTEnumAdapters = 
-            (decltype(o_D3DKMTEnumAdapters))GetProcAddress(hWin32U, "D3DKMTEnumAdapters");
-        o_D3DKMTEnumAdapters2 = 
-            (decltype(o_D3DKMTEnumAdapters2))GetProcAddress(hWin32U, "D3DKMTEnumAdapters2");
-        
+        o_D3DKMTEnumAdapters = (decltype(o_D3DKMTEnumAdapters))GetProcAddress(hWin32U, "D3DKMTEnumAdapters");
+        o_D3DKMTEnumAdapters2 = (decltype(o_D3DKMTEnumAdapters2))GetProcAddress(hWin32U, "D3DKMTEnumAdapters2");
+
         HookLog("D3DKMT: Found functions in win32u.dll");
     }
-    
+
     // Fall back to gdi32.dll if not found in win32u.dll
     if (!o_D3DKMTQueryVideoMemoryInfo && hGdi32) {
-        o_D3DKMTQueryVideoMemoryInfo = 
+        o_D3DKMTQueryVideoMemoryInfo =
             (decltype(o_D3DKMTQueryVideoMemoryInfo))GetProcAddress(hGdi32, "D3DKMTQueryVideoMemoryInfo");
-        o_D3DKMTQueryAdapterInfo = 
-            (decltype(o_D3DKMTQueryAdapterInfo))GetProcAddress(hGdi32, "D3DKMTQueryAdapterInfo");
-        o_D3DKMTEnumAdapters = 
-            (decltype(o_D3DKMTEnumAdapters))GetProcAddress(hGdi32, "D3DKMTEnumAdapters");
-        o_D3DKMTEnumAdapters2 = 
-            (decltype(o_D3DKMTEnumAdapters2))GetProcAddress(hGdi32, "D3DKMTEnumAdapters2");
-        
+        o_D3DKMTQueryAdapterInfo = (decltype(o_D3DKMTQueryAdapterInfo))GetProcAddress(hGdi32, "D3DKMTQueryAdapterInfo");
+        o_D3DKMTEnumAdapters = (decltype(o_D3DKMTEnumAdapters))GetProcAddress(hGdi32, "D3DKMTEnumAdapters");
+        o_D3DKMTEnumAdapters2 = (decltype(o_D3DKMTEnumAdapters2))GetProcAddress(hGdi32, "D3DKMTEnumAdapters2");
+
         HookLog("D3DKMT: Found functions in gdi32.dll");
     }
-    
+
     if (!o_D3DKMTQueryVideoMemoryInfo) {
         HookLog("D3DKMT: ERROR - Could not find D3DKMTQueryVideoMemoryInfo");
         return false;
     }
-    
+
     // Install IAT hooks
     bool anyHooked = false;
     void* dummy = nullptr;
-    
+
     // Hook in all loaded modules
-    if (IATHook::PatchIATAllModules("win32u.dll", "D3DKMTQueryVideoMemoryInfo", 
-                                    (void*)Hook_D3DKMTQueryVideoMemoryInfo, &dummy)) {
+    if (IATHook::PatchIATAllModules("win32u.dll", "D3DKMTQueryVideoMemoryInfo", (void*)Hook_D3DKMTQueryVideoMemoryInfo,
+                                    &dummy)) {
         HookLog("D3DKMT: Hooked D3DKMTQueryVideoMemoryInfo in win32u.dll");
         anyHooked = true;
     }
-    if (IATHook::PatchIATAllModules("gdi32.dll", "D3DKMTQueryVideoMemoryInfo",
-                                    (void*)Hook_D3DKMTQueryVideoMemoryInfo, &dummy)) {
+    if (IATHook::PatchIATAllModules("gdi32.dll", "D3DKMTQueryVideoMemoryInfo", (void*)Hook_D3DKMTQueryVideoMemoryInfo,
+                                    &dummy)) {
         HookLog("D3DKMT: Hooked D3DKMTQueryVideoMemoryInfo in gdi32.dll");
         anyHooked = true;
     }
-    
+
     // Register for dynamic loading
     if (o_D3DKMTQueryVideoMemoryInfo) {
-        IATHook::RegisterDynamicHook("D3DKMTQueryVideoMemoryInfo", 
-                                      (void*)Hook_D3DKMTQueryVideoMemoryInfo,
-                                      (void**)&o_D3DKMTQueryVideoMemoryInfo);
+        IATHook::RegisterDynamicHook("D3DKMTQueryVideoMemoryInfo", (void*)Hook_D3DKMTQueryVideoMemoryInfo,
+                                     (void**)&o_D3DKMTQueryVideoMemoryInfo);
     }
-    
+
     // Hook other functions (optional but good for completeness)
     if (o_D3DKMTQueryAdapterInfo) {
-        IATHook::PatchIATAllModules("win32u.dll", "D3DKMTQueryAdapterInfo",
-                                    (void*)Hook_D3DKMTQueryAdapterInfo, &dummy);
-        IATHook::PatchIATAllModules("gdi32.dll", "D3DKMTQueryAdapterInfo",
-                                    (void*)Hook_D3DKMTQueryAdapterInfo, &dummy);
-        IATHook::RegisterDynamicHook("D3DKMTQueryAdapterInfo",
-                                      (void*)Hook_D3DKMTQueryAdapterInfo,
-                                      (void**)&o_D3DKMTQueryAdapterInfo);
+        IATHook::PatchIATAllModules("win32u.dll", "D3DKMTQueryAdapterInfo", (void*)Hook_D3DKMTQueryAdapterInfo, &dummy);
+        IATHook::PatchIATAllModules("gdi32.dll", "D3DKMTQueryAdapterInfo", (void*)Hook_D3DKMTQueryAdapterInfo, &dummy);
+        IATHook::RegisterDynamicHook("D3DKMTQueryAdapterInfo", (void*)Hook_D3DKMTQueryAdapterInfo,
+                                     (void**)&o_D3DKMTQueryAdapterInfo);
     }
-    
+
     if (o_D3DKMTEnumAdapters) {
-        IATHook::PatchIATAllModules("win32u.dll", "D3DKMTEnumAdapters",
-                                    (void*)Hook_D3DKMTEnumAdapters, &dummy);
-        IATHook::PatchIATAllModules("gdi32.dll", "D3DKMTEnumAdapters",
-                                    (void*)Hook_D3DKMTEnumAdapters, &dummy);
+        IATHook::PatchIATAllModules("win32u.dll", "D3DKMTEnumAdapters", (void*)Hook_D3DKMTEnumAdapters, &dummy);
+        IATHook::PatchIATAllModules("gdi32.dll", "D3DKMTEnumAdapters", (void*)Hook_D3DKMTEnumAdapters, &dummy);
     }
-    
+
     if (o_D3DKMTEnumAdapters2) {
-        IATHook::PatchIATAllModules("win32u.dll", "D3DKMTEnumAdapters2",
-                                    (void*)Hook_D3DKMTEnumAdapters2, &dummy);
-        IATHook::PatchIATAllModules("gdi32.dll", "D3DKMTEnumAdapters2",
-                                    (void*)Hook_D3DKMTEnumAdapters2, &dummy);
+        IATHook::PatchIATAllModules("win32u.dll", "D3DKMTEnumAdapters2", (void*)Hook_D3DKMTEnumAdapters2, &dummy);
+        IATHook::PatchIATAllModules("gdi32.dll", "D3DKMTEnumAdapters2", (void*)Hook_D3DKMTEnumAdapters2, &dummy);
     }
-    
-    HookLog("D3DKMT: Hooks installed - D3DKMTQueryVideoMemoryInfo=%p, enabled=%d",
-               o_D3DKMTQueryVideoMemoryInfo, g_VramConfig.enabled);
-    
+
+    HookLog("D3DKMT: Hooks installed - D3DKMTQueryVideoMemoryInfo=%p, enabled=%d", o_D3DKMTQueryVideoMemoryInfo,
+            g_VramConfig.enabled);
+
     return anyHooked || o_D3DKMTQueryVideoMemoryInfo != nullptr;
 }
 
@@ -424,10 +408,9 @@ void SetVramOverride(UINT64 dedicatedBytes, UINT64 sharedBytes)
     g_VramConfig.enabled = true;
     g_VramConfig.dedicatedVramBytes = dedicatedBytes;
     g_VramConfig.sharedVramBytes = sharedBytes;
-    
-    HookLog("D3DKMT: VRAM override updated - Dedicated: %llu MB, Shared: %llu MB",
-               dedicatedBytes / (1024 * 1024),
-               sharedBytes / (1024 * 1024));
+
+    HookLog("D3DKMT: VRAM override updated - Dedicated: %llu MB, Shared: %llu MB", dedicatedBytes / (1024 * 1024),
+            sharedBytes / (1024 * 1024));
 }
 
 // Disable VRAM override
@@ -437,4 +420,4 @@ void DisableVramOverride()
     HookLog("D3DKMT: VRAM override disabled");
 }
 
-} // namespace D3DKMTHooks
+}  // namespace D3DKMTHooks

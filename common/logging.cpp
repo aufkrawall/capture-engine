@@ -97,3 +97,14 @@ void LogDebug(const char* format, ...)
     va_end(args);
     Log(LogLevel::Debug, "%s", buffer);
 }
+
+void LogWarn(const char* format, ...)
+{
+    if (!g_LogFile) return;  // Skip all work when logging disabled
+    va_list args;
+    va_start(args, format);
+    char buffer[2048];
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+    Log(LogLevel::Warn, "%s", buffer);
+}

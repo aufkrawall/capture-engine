@@ -39,10 +39,10 @@ Status Shutdown();
 
 /**
  * Create a hook for a virtual function table entry.
- * 
+ *
  * Uses direct VTable pointer patching - the vtable entry is replaced
  * with the detour function pointer. The original is saved to ppOriginal.
- * 
+ *
  * @param pVTableEntry Address of the VTable entry (e.g. &vtable[10])
  * @param pDetour      Pointer to the detour function
  * @param ppOriginal   [Out] Receives the original function pointer
@@ -58,4 +58,4 @@ Status Disable(void* pTarget);
 // Convert status to string
 const char* StatusToString(Status status);
 
-} // namespace VTableHook
+}  // namespace VTableHook

@@ -3,13 +3,16 @@
 #include <Wbemidl.h>
 #include <comdef.h>
 #include <windows.h>
+#include <atomic>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
 #include "../common/config.h"
 
-class InjectionManager {
+// CRITICAL FIX: Inherit from enable_shared_from_this for safe delayed injection
+class InjectionManager : public std::enable_shared_from_this<InjectionManager> {
 public:
     InjectionManager(const AppConfig& config);
     ~InjectionManager();
@@ -38,7 +41,9 @@ public:
 
     // Security Validation
     bool ValidateDllSecurity(const std::string& dllPath);
-    bool VerifyDLLSignature(const std::string& dllPath);  // Verify Authenticode signature
+    bool VerifyDLLSignature(const std::string& dllPath);       // Verify Authenticode signature
+    bool VerifyDLLHash(const std::string& dllPath);            // Verify SHA-256 hash (debug builds)
+    std::string ComputeFileHash(const std::string& filePath);  // Compute SHA-256 hash of file
 
     // WMI Event Sink
     class ProcessEventSink : public IWbemObjectSink {
@@ -85,7 +90,6 @@ private:
 
     std::vector<FailedInjection> failedInjections;
     std::vector<PendingInjection> pendingInjections;
-    mutable std::mutex injectMutex;  // Protects lists shared with WMI thread
 
     // WMI Members
     IWbemServices* pSvc = nullptr;
@@ -98,6 +102,16 @@ private:
     bool IsWhitelisted(const std::string& processName);
     bool IsAlreadyInjected(DWORD pid);
     bool IsRecentlyFailed(DWORD pid);
+
+    // CRITICAL FIX: Shutdown flag for thread safety
+    std::atomic<bool> shuttingDown{false};
+
     // Inject moved to public
     std::function<void(const std::string&)> onInjectCallback;
+
+public:
+    // CRITICAL FIX: Make mutex and shutdown methods accessible to delayed injection threads
+    mutable std::mutex injectMutex;  // Protects lists shared with WMI thread
+    void RequestShutdown() { shuttingDown = true; }
+    bool IsShuttingDown() const { return shuttingDown; }
 };

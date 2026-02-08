@@ -26,46 +26,48 @@
 extern "C" BOOL WINAPI ApplyDX12SamplerOverridesCallback(D3D12_SAMPLER_DESC* pDesc)
 {
     if (!pDesc) return FALSE;
-    
+
     // Check if overrides are allowed
     if (pDesc->MaxLOD == 0.0f) return FALSE;
     if (pDesc->MinLOD == pDesc->MaxLOD) return FALSE;
-    
+
     const auto& gfx = GetActiveGraphicsConfig();
-    
+
     // Anisotropic Filtering override
     std::string af = gfx.anisotropicFiltering;
     if (af != "default") {
         if (af == "off") {
-            if (pDesc->Filter == D3D12_FILTER_ANISOTROPIC || 
-                pDesc->Filter == D3D12_FILTER_COMPARISON_ANISOTROPIC) {
+            if (pDesc->Filter == D3D12_FILTER_ANISOTROPIC || pDesc->Filter == D3D12_FILTER_COMPARISON_ANISOTROPIC) {
                 pDesc->Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
                 pDesc->MaxAnisotropy = 1;
             }
         } else {
             int maxAniso = 16;
-            if (af == "2x") maxAniso = 2;
-            else if (af == "4x") maxAniso = 4;
-            else if (af == "8x") maxAniso = 8;
-            
+            if (af == "2x")
+                maxAniso = 2;
+            else if (af == "4x")
+                maxAniso = 4;
+            else if (af == "8x")
+                maxAniso = 8;
+
             if (pDesc->AddressU != D3D12_TEXTURE_ADDRESS_MODE_BORDER &&
                 pDesc->AddressV != D3D12_TEXTURE_ADDRESS_MODE_BORDER &&
                 pDesc->AddressW != D3D12_TEXTURE_ADDRESS_MODE_BORDER) {
-                
+
                 bool comparison = (pDesc->Filter >= D3D12_FILTER_COMPARISON_MIN_MAG_MIP_POINT);
                 pDesc->Filter = comparison ? D3D12_FILTER_COMPARISON_ANISOTROPIC : D3D12_FILTER_ANISOTROPIC;
                 pDesc->MaxAnisotropy = maxAniso;
             }
         }
     }
-    
+
     // Mip Bias override
     std::string biasStr = gfx.mipBias;
     if (biasStr != "default") {
         try {
             float userBias = std::stof(biasStr);
             std::string mode = gfx.mipBiasMode;
-            
+
             if (mode == "offset") {
                 pDesc->MipLODBias += userBias;
             } else if (mode == "base") {
@@ -78,11 +80,11 @@ extern "C" BOOL WINAPI ApplyDX12SamplerOverridesCallback(D3D12_SAMPLER_DESC* pDe
         } catch (...) {
         }
     }
-    
+
     // Clamp mip bias
     if (pDesc->MipLODBias < -16.0f) pDesc->MipLODBias = -16.0f;
     if (pDesc->MipLODBias > 15.99f) pDesc->MipLODBias = 15.99f;
-    
+
     return TRUE;
 }
 
@@ -123,14 +125,14 @@ static bool g_Initialized = false;
 static bool IsModuleValid(HMODULE hModule)
 {
     if (!hModule) return false;
-    
+
     // Use GetModuleInformation to verify the module is still loaded
     // This is safer than directly accessing the DOS header
     MODULEINFO modInfo;
     if (!GetModuleInformation(GetCurrentProcess(), hModule, &modInfo, sizeof(modInfo))) {
         return false;
     }
-    
+
     // Additional check: verify the module base matches
     return (modInfo.lpBaseOfDll == hModule);
 }
@@ -139,29 +141,29 @@ static bool IsModuleValid(HMODULE hModule)
 static bool IsMemoryReadable(void* ptr, size_t size)
 {
     if (!ptr) return false;
-    
+
     MEMORY_BASIC_INFORMATION mbi;
     if (VirtualQuery(ptr, &mbi, sizeof(mbi)) == 0) {
         return false;
     }
-    
+
     // Check if memory is committed and readable
     if (mbi.State != MEM_COMMIT) {
         return false;
     }
-    
+
     // Check protection flags - allow read, read-write, execute-read, etc.
     DWORD protect = mbi.Protect;
     if (protect == PAGE_NOACCESS || protect == PAGE_EXECUTE) {
         return false;
     }
-    
+
     // Check if the entire range is within this region
     SIZE_T regionSize = (char*)ptr + size - (char*)mbi.BaseAddress;
     if (regionSize > mbi.RegionSize) {
         return false;
     }
-    
+
     return true;
 }
 
@@ -173,10 +175,10 @@ static IMAGE_IMPORT_DESCRIPTOR* GetImportDescriptor(HMODULE module)
 {
     // Validate module is still loaded before accessing memory
     if (!IsModuleValid(module)) return nullptr;
-    
+
     // Check if DOS header memory is readable
     if (!IsMemoryReadable(module, sizeof(IMAGE_DOS_HEADER))) return nullptr;
-    
+
     auto dosHeader = reinterpret_cast<IMAGE_DOS_HEADER*>(module);
     if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE) return nullptr;
 
@@ -193,10 +195,10 @@ static IMAGE_EXPORT_DIRECTORY* GetExportDirectory(HMODULE module, DWORD* exportS
 {
     // Validate module is still loaded before accessing memory
     if (!IsModuleValid(module)) return nullptr;
-    
+
     // Check if DOS header memory is readable
     if (!IsMemoryReadable(module, sizeof(IMAGE_DOS_HEADER))) return nullptr;
-    
+
     auto dosHeader = reinterpret_cast<IMAGE_DOS_HEADER*>(module);
     if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE) return nullptr;
 
@@ -515,9 +517,9 @@ bool InitializeD3D12Hooks()
             }
             if (hWrappers) {
                 WrapperLog("IAT: Pre-loaded d3d12_wrappers.dll at %p", hWrappers);
-                
+
                 // Register sampler override callback for AF/mip bias support
-                typedef void(WINAPI* PFN_SetSamplerOverrideCallback)(void* callback);
+                typedef void(WINAPI * PFN_SetSamplerOverrideCallback)(void* callback);
                 auto* setCallback = (PFN_SetSamplerOverrideCallback)GetProcAddress(
                     hWrappers, "D3D12Wrapper_SetSamplerOverrideCallback");
                 if (setCallback) {
@@ -525,7 +527,8 @@ bool InitializeD3D12Hooks()
                     WrapperLog("IAT: Registered D3D12 sampler override callback");
                 }
             } else {
-                WrapperLog("IAT: WARNING - Could not pre-load d3d12_wrappers.dll, delay-load will be used. Err=%d", GetLastError());
+                WrapperLog("IAT: WARNING - Could not pre-load d3d12_wrappers.dll, delay-load will be used. Err=%d",
+                           GetLastError());
             }
         }
 

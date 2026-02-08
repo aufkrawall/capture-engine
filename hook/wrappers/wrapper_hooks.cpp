@@ -15,6 +15,7 @@
 // Forward declaration from dx12_hook.cpp
 extern void EnsureDX12Hook();
 #include "../apis/dx12_hook.h"  // Access to g_DX12Hook implementation
+#include "../common/fg_detection.h"
 #include "../common/hook_common.h"
 #include "d3d10_device_wrap.h"
 #include "d3d11_device_wrap.h"
@@ -22,7 +23,6 @@ extern void EnsureDX12Hook();
 #include "d3d9_wrap.h"
 #include "iat_hook.h"
 #include "wrapper_hooks.h"
-#include "../common/fg_detection.h"
 // MinHook shim removed
 
 // ============================================================================
@@ -128,7 +128,7 @@ HRESULT WINAPI Wrapped_D3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL M
 {
 
     WrapperLog("Wrapper: D3D12CreateDevice called (feature level=0x%X, pAdapter=%p)", MinimumFeatureLevel, pAdapter);
-    
+
     // If adapter is provided, try to get its LUID for debugging
     if (pAdapter) {
         IDXGIAdapter* pDXGIAdapter = nullptr;
@@ -421,34 +421,34 @@ bool InitializeWrapperHooks()
     EarlyLog("Wrapper: Initializing wrapper hooks (IAT mode)...");
 
     bool anySuccess = false;
-    
+
     // CRITICAL FIX: Each hook category can be retried independently if the DLL wasn't loaded yet
     // We must NOT set g_WrappersActive = true until ALL categories that will ever load are done
-    
+
     if (!s_DXGIInitialized) {
         EarlyLog("Wrapper: Initializing DXGI hooks...");
         s_DXGIInitialized = IATHook::InitializeDXGIHooks();
         if (s_DXGIInitialized) anySuccess = true;
     }
-    
+
     if (!s_D3D10Initialized) {
         EarlyLog("Wrapper: Initializing D3D10 hooks...");
         s_D3D10Initialized = IATHook::InitializeD3D10Hooks();
         if (s_D3D10Initialized) anySuccess = true;
     }
-    
+
     if (!s_D3D11Initialized) {
         EarlyLog("Wrapper: Initializing D3D11 hooks...");
         s_D3D11Initialized = IATHook::InitializeD3D11Hooks();
         if (s_D3D11Initialized) anySuccess = true;
     }
-    
+
     if (!s_D3D12Initialized) {
         EarlyLog("Wrapper: Initializing D3D12 hooks...");
         s_D3D12Initialized = IATHook::InitializeD3D12Hooks();
         if (s_D3D12Initialized) anySuccess = true;
     }
-    
+
     if (!s_D3D9Initialized) {
         EarlyLog("Wrapper: Initializing D3D9 hooks...");
         s_D3D9Initialized = IATHook::InitializeD3D9Hooks();
@@ -460,9 +460,9 @@ bool InitializeWrapperHooks()
     if (anySuccess) {
         g_WrappersActive = true;
     }
-    
-    EarlyLog("Wrapper: IAT initialization complete (DXGI=%d, D3D10=%d, D3D11=%d, D3D12=%d, D3D9=%d)",
-             s_DXGIInitialized, s_D3D10Initialized, s_D3D11Initialized, s_D3D12Initialized, s_D3D9Initialized);
+
+    EarlyLog("Wrapper: IAT initialization complete (DXGI=%d, D3D10=%d, D3D11=%d, D3D12=%d, D3D9=%d)", s_DXGIInitialized,
+             s_D3D10Initialized, s_D3D11Initialized, s_D3D12Initialized, s_D3D9Initialized);
     return anySuccess;
 }
 

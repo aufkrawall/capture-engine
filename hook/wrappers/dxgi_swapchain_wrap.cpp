@@ -7,10 +7,10 @@
 #include "dxgi_swapchain_wrap.h"
 #include <windows.h>
 #include "../apis/graphics_hook.h"
-#include "d3d12_wrapper_interface.h"
-#include "hook_common.h"
 #include "../common/dxgi_shared.h"
 #include "../common/performance_metrics.h"
+#include "d3d12_wrapper_interface.h"
+#include "hook_common.h"
 
 // External overlay functions (implemented in dx11_hook.cpp / dx12_hook.cpp)
 extern void DrawDX11Overlay(IDXGISwapChain* pSwapChain);
@@ -61,10 +61,7 @@ static bool g_OverlayEnabled = true;
 thread_local bool g_InWrapperPresent = false;
 
 // Function to check if we're in wrapper Present (same DLL, no export needed)
-bool IsInWrapperPresent()
-{
-    return g_InWrapperPresent;
-}
+bool IsInWrapperPresent() { return g_InWrapperPresent; }
 
 // FSR Frame Generation detection helpers
 static bool IsFSRFrameGenerationActive()
@@ -85,13 +82,47 @@ bool CWrapDXGISwapChain::IsFSRInternalSwapchain()
 {
     // If FSR FG is not active, this can't be an FSR internal swapchain
     if (!IsFSRFrameGenerationActive()) return false;
-    
-    // FSR internal swapchains typically don't have a window handle
+
+    // CRITICAL FIX: Enhanced FSR internal swapchain detection
+    // FSR creates internal swapchains for frame generation that we should not intercept
+
+    // 1. Check for null window handle (primary indicator)
     if (!m_hWnd || m_hWnd == nullptr) {
         WrapperLog("[FSR-DEBUG] Swapchain %p has no window handle, possible FSR internal", this);
         return true;
     }
-    
+
+    // 2. Check for very small dimensions (FSR internal swapchains often have small intermediate buffers)
+    // FSR 3 uses 1/3 resolution buffers for upscaling
+    if (m_State.width > 0 && m_State.height > 0) {
+        // Check if dimensions suggest an internal buffer (not a main display resolution)
+        // Common FSR internal resolutions are typically not standard display sizes
+        bool isStandardResolution =
+            (m_State.width == 1920 && m_State.height == 1080) || (m_State.width == 2560 && m_State.height == 1440) ||
+            (m_State.width == 3840 && m_State.height == 2160) || (m_State.width == 2560 && m_State.height == 1080) ||
+            (m_State.width == 3440 && m_State.height == 1440) || (m_State.width == 1280 && m_State.height == 720);
+
+        // Also check for common upscaling ratios from common base resolutions
+        // FSR typically scales from 360p, 540p, 720p to 1080p/4K
+        bool isCommonBaseResolution = (m_State.width == 640 && m_State.height == 360) ||
+                                      (m_State.width == 960 && m_State.height == 540) ||
+                                      (m_State.width == 1280 && m_State.height == 720);
+
+        // If it's not a standard display resolution and not a common base, it might be internal
+        if (!isStandardResolution && !isCommonBaseResolution && (m_State.width < 800 || m_State.height < 600)) {
+            WrapperLog("[FSR-DEBUG] Swapchain %p has unusual dimensions %ux%u, possible FSR internal", this,
+                       m_State.width, m_State.height);
+            return true;
+        }
+    }
+
+    // 3. FSR internal swapchains often have flip model but no actual presentation
+    // (they're used for intermediate buffering)
+    if (m_FlipModel.active && m_State.width == 0 && m_State.height == 0) {
+        WrapperLog("[FSR-DEBUG] Swapchain %p has flip model with zero dimensions, possible FSR internal", this);
+        return true;
+    }
+
     return false;
 }
 
@@ -125,24 +156,23 @@ CWrapDXGISwapChain::CWrapDXGISwapChain(IDXGISwapChain* pReal, IUnknown* pDevice)
                 m_OverlayResourcesValid.store(true, std::memory_order_release);
             }
         }
-        
+
         // Register for destruction notification (DXGI 1.4+)
         RegisterDestructionCallback();
-        
+
         // Store wrapper pointer on real swapchain for retrieval
         void* pThis = this;
         pReal->SetPrivateData(IID_CWrapDXGISwapChain, sizeof(void*), &pThis);
     }
 
     WrapperStateManager::Get().RegisterSwapchain(this, pReal);
-    WrapperLog("SwapChain: Created wrapper (real=%p, isD3D12=%d, flipModel=%d)", 
-               pReal, m_IsD3D12, m_FlipModel.active);
+    WrapperLog("SwapChain: Created wrapper (real=%p, isD3D12=%d, flipModel=%d)", pReal, m_IsD3D12, m_FlipModel.active);
 }
 
 void CWrapDXGISwapChain::DetectSwapChainState()
 {
     if (!m_pReal) return;
-    
+
     DXGI_SWAP_CHAIN_DESC desc = {};
     if (SUCCEEDED(m_pReal->GetDesc(&desc))) {
         m_hWnd = desc.OutputWindow;
@@ -150,16 +180,16 @@ void CWrapDXGISwapChain::DetectSwapChainState()
         m_State.format = desc.BufferDesc.Format;
         m_State.width = desc.BufferDesc.Width;
         m_State.height = desc.BufferDesc.Height;
-        
+
         // Detect flip model for FSR FG compatibility
-        m_FlipModel.active = (desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD ||
-                              desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL);
+        m_FlipModel.active =
+            (desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD || desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL);
         m_FlipModel.native = m_FlipModel.active;
-        
-        WrapperLog("SwapChain: Detected state - %dx%d, FlipModel=%d, Fullscreen=%d, Format=%d",
-                   m_State.width, m_State.height, m_FlipModel.active, m_State.isFullscreen, m_State.format);
+
+        WrapperLog("SwapChain: Detected state - %dx%d, FlipModel=%d, Fullscreen=%d, Format=%d", m_State.width,
+                   m_State.height, m_FlipModel.active, m_State.isFullscreen, m_State.format);
     }
-    
+
     // Get frame latency if available (SwapChain2+)
     if (m_pReal2) {
         m_pReal2->GetMaximumFrameLatency(&m_State.frameLatency);
@@ -171,7 +201,7 @@ void WINAPI CWrapDXGISwapChain::DestructionCallback(void* pData)
     auto* pSwapChain = static_cast<CWrapDXGISwapChain*>(pData);
     if (pSwapChain) {
         WrapperLog("SwapChain: DestructionCallback for wrapper %p", pSwapChain);
-        
+
         // CRITICAL FIX: Check if Present() is still using the swapchain
         // Wait for refs to drop to 1 (only the callback itself)
         int attempts = 0;
@@ -179,15 +209,15 @@ void WINAPI CWrapDXGISwapChain::DestructionCallback(void* pData)
             Sleep(1);  // Wait 1ms
             attempts++;
         }
-        
+
         // CRITICAL FIX: Lock mutex before modifying swapchain pointers
         // This prevents race conditions with Present() running on another thread
         std::lock_guard<std::mutex> lock(pSwapChain->m_ResourceLock);
-        
+
         // Mark that the real swapchain is being destroyed
         // This happens when FSR FG creates a new swapchain
         pSwapChain->m_SwapchainDestroyed.store(true);  // Mark as destroyed
-        
+
         // CRITICAL: Null out the real swapchain pointer to prevent use-after-free
         // The wrapper will be cleaned up when its ref count reaches 0
         pSwapChain->m_pReal = nullptr;
@@ -196,7 +226,7 @@ void WINAPI CWrapDXGISwapChain::DestructionCallback(void* pData)
         pSwapChain->m_pReal3 = nullptr;
         pSwapChain->m_pReal4 = nullptr;
         pSwapChain->m_pRealCached = nullptr;
-        WrapperLog("SwapChain: Real swapchain pointers nulled out for wrapper %p (mutex protected, waited %d ms)", 
+        WrapperLog("SwapChain: Real swapchain pointers nulled out for wrapper %p (mutex protected, waited %d ms)",
                    pSwapChain, attempts);
     }
 }
@@ -204,21 +234,20 @@ void WINAPI CWrapDXGISwapChain::DestructionCallback(void* pData)
 HRESULT CWrapDXGISwapChain::RegisterDestructionCallback()
 {
     if (!m_pReal) return E_FAIL;
-    
+
     // Try to register for destruction notification (requires DXGI 1.4+ / Windows 10)
     // ID3DDestructionNotifier interface GUID: {A05C8C18-92DB-4B35-944B-E3083333C2A0}
-    static const GUID IID_ID3DDestructionNotifier = 
-    { 0xa05c8c18, 0x92db, 0x4b35, { 0x94, 0x4b, 0xe3, 0x08, 0x33, 0x33, 0xc2, 0xa0 } };
-    
+    static const GUID IID_ID3DDestructionNotifier = {
+        0xa05c8c18, 0x92db, 0x4b35, {0x94, 0x4b, 0xe3, 0x08, 0x33, 0x33, 0xc2, 0xa0}};
+
     struct ID3DDestructionNotifier : public IUnknown {
         virtual HRESULT RegisterDestructionCallback(void* pCallbackFn, void* pData, UINT* pCookie) = 0;
         virtual HRESULT UnregisterDestructionCallback(UINT Cookie) = 0;
     };
-    
+
     ID3DDestructionNotifier* pNotifier = nullptr;
     if (SUCCEEDED(m_pReal->QueryInterface(IID_ID3DDestructionNotifier, (void**)&pNotifier))) {
-        HRESULT hr = pNotifier->RegisterDestructionCallback(
-            (void*)DestructionCallback, this, &m_DestructionCookie);
+        HRESULT hr = pNotifier->RegisterDestructionCallback((void*)DestructionCallback, this, &m_DestructionCookie);
         pNotifier->Release();
         if (SUCCEEDED(hr)) {
             WrapperLog("SwapChain: Registered destruction callback (cookie=%u)", m_DestructionCookie);
@@ -248,11 +277,11 @@ CWrapDXGISwapChain::CWrapDXGISwapChain(IDXGISwapChain1* pReal, IUnknown* pDevice
 CWrapDXGISwapChain::~CWrapDXGISwapChain()
 {
     WrapperLog("SwapChain: Destroying wrapper %p (real=%p)", this, m_pReal);
-    
+
     // Unregister destruction callback if registered
     if (m_DestructionCookie != 0 && m_pReal) {
-        static const GUID IID_ID3DDestructionNotifier = 
-        { 0xa05c8c18, 0x92db, 0x4b35, { 0x94, 0x4b, 0xe3, 0x08, 0x33, 0x33, 0xc2, 0xa0 } };
+        static const GUID IID_ID3DDestructionNotifier = {
+            0xa05c8c18, 0x92db, 0x4b35, {0x94, 0x4b, 0xe3, 0x08, 0x33, 0x33, 0xc2, 0xa0}};
         struct ID3DDestructionNotifier : public IUnknown {
             virtual HRESULT RegisterDestructionCallback(void* pCallbackFn, void* pData, UINT* pCookie) = 0;
             virtual HRESULT UnregisterDestructionCallback(UINT Cookie) = 0;
@@ -263,7 +292,7 @@ CWrapDXGISwapChain::~CWrapDXGISwapChain()
             pNotifier->Release();
         }
     }
-    
+
     WrapperStateManager::Get().UnregisterSwapchain(this);
     CleanupOverlayResources();
     if (m_pD3D12Queue) m_pD3D12Queue->Release();
@@ -271,11 +300,15 @@ CWrapDXGISwapChain::~CWrapDXGISwapChain()
     if (m_pReal3) m_pReal3->Release();
     if (m_pReal2) m_pReal2->Release();
     if (m_pReal1) m_pReal1->Release();
-    if (m_pReal) {
+    // CRITICAL FIX: Check m_pRealCached if m_pReal was nulled by DestructionCallback
+    // This prevents device reference leaks when swapchain is destroyed externally
+    IDXGISwapChain* pRealToRelease = m_pReal ? m_pReal : m_pRealCached;
+    if (pRealToRelease) {
         // Remove private data before releasing
-        m_pReal->SetPrivateData(IID_CWrapDXGISwapChain, 0, nullptr);
-        m_pReal->Release();
+        pRealToRelease->SetPrivateData(IID_CWrapDXGISwapChain, 0, nullptr);
+        pRealToRelease->Release();
     }
+    // CRITICAL FIX: Always release device reference, even if swapchain was destroyed
     if (m_pDevice) m_pDevice->Release();
 }
 
@@ -301,7 +334,7 @@ void CWrapDXGISwapChain::DrawOverlay()
 {
     static int s_DrawCount = 0;
     bool shouldLog = (++s_DrawCount <= 10);
-    
+
     if (!g_OverlayEnabled) {
         if (shouldLog) WrapperLog("DrawOverlay: skipped (overlay disabled)");
         return;
@@ -336,7 +369,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::QueryInterface(REFIID riid, void**
     //     *ppvObj = m_pReal;
     //     return S_OK;
     // }
-    
+
     // Allow retrieval of wrapper from real swapchain (internal use only)
     if (IsEqualGUID(riid, IID_CWrapDXGISwapChain)) {
         AddRef();
@@ -387,8 +420,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::QueryInterface(REFIID riid, void**
     return m_pReal->QueryInterface(riid, ppvObj);
 }
 
-ULONG STDMETHODCALLTYPE CWrapDXGISwapChain::AddRef() 
-{ 
+ULONG STDMETHODCALLTYPE CWrapDXGISwapChain::AddRef()
+{
     ULONG refs = InterlockedIncrement(&m_RefCount);
     // Also AddRef the real swapchain to track total references
     if (m_pReal) {
@@ -401,28 +434,46 @@ ULONG STDMETHODCALLTYPE CWrapDXGISwapChain::AddRef()
 ULONG STDMETHODCALLTYPE CWrapDXGISwapChain::Release()
 {
     ULONG xrefs = InterlockedDecrement(&m_RefCount);  // External references
-    
+
     // When external refs reach 0, game expects SwapChain destruction
     if (xrefs == 0) {
         WrapperLog("SwapChain: External refs reached 0, preparing for destruction (wrapper=%p)", this);
         CleanupOverlayResources();
     }
-    
-    // Release the real swapchain
+
+    // Release the real swapchain (if not already nulled by DestructionCallback)
     ULONG refs = 0;
     if (m_pReal) {
         refs = m_pReal->Release();
         m_RealSwapchainRefs.fetch_sub(1);
     }
-    
-    // Only delete when both external refs AND real swapchain refs are 0
-    if (xrefs == 0 && refs == 0) {
-        WrapperLog("SwapChain: Deleting wrapper %p", this);
+
+    // CRITICAL FIX: Only delete when external refs are 0
+    // The real swapchain's refcount is independent - it will be released when its
+    // own refcount reaches 0. We must NOT wait for refs == 0 because:
+    // 1. DestructionCallback may have nulled m_pReal before we could Release()
+    // 2. Waiting for refs == 0 would cause the wrapper to leak if real swapchain
+    //    has external refs (e.g., from GPU, other COM clients, etc.)
+    // 3. The wrapper's lifetime is controlled by external AddRef/Release on the wrapper
+    if (xrefs == 0) {
+        WrapperLog("SwapChain: Deleting wrapper %p (real refs=%u, wrapper refs=%u)", this, refs, xrefs);
         delete this;
     }
-    
+
     return xrefs;  // Return external ref count
 }
+
+IDXGISwapChain* CWrapDXGISwapChain::GetRealSafe()
+{
+    if (m_SwapchainDestroyed.load(std::memory_order_acquire)) {
+        return nullptr;
+    }
+    return m_pReal;
+}
+
+// ============================================================================
+// IDXGIObject Implementation
+// ============================================================================
 
 // ============================================================================
 // IDXGIObject Implementation
@@ -465,21 +516,21 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     DWORD threadId = GetCurrentThreadId();
     static std::atomic<int> s_presentCallCount{0};
     int callCount = s_presentCallCount.fetch_add(1);
-    
+
     // CRITICAL FIX: Lock mutex to protect swapchain pointer access
     // This prevents race conditions with DestructionCallback running on another thread
     std::lock_guard<std::mutex> lock(m_ResourceLock);
-    
+
     // CRITICAL FIX: Cache the pointer while holding the mutex
     // This ensures we have a valid pointer even if DestructionCallback nulls m_pReal
     IDXGISwapChain* pRealCached = m_pReal;
     m_pRealCached = pRealCached;  // Store for potential future use
-    
-    WrapperLog("[FSR-DEBUG] Present ENTRY #%d - Thread=%lu, m_pReal=%p, m_DestructionCookie=%u, m_IsD3D12=%d", 
+
+    WrapperLog("[FSR-DEBUG] Present ENTRY #%d - Thread=%lu, m_pReal=%p, m_DestructionCookie=%u, m_IsD3D12=%d",
                callCount, threadId, pRealCached, m_DestructionCookie, m_IsD3D12);
-    WrapperLog("[FSR-DEBUG] Present state - fgActive=%d, flipModel=%d, Wrapper=%p", 
-               g_FGCompat.IsFGActive(), m_FlipModel.active, this);
-    
+    WrapperLog("[FSR-DEBUG] Present state - fgActive=%d, flipModel=%d, Wrapper=%p", g_FGCompat.IsFGActive(),
+               m_FlipModel.active, this);
+
     // CRITICAL FIX: Check if real swapchain has been destroyed (e.g., by FSR FG recreation)
     // If so, just pass through to avoid crashes with stale pointer
     if (!pRealCached || m_SwapchainDestroyed.load()) {
@@ -497,7 +548,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     // CRITICAL: Heartbeat FIRST - before ANY checks that might early-return
     // This ensures the freeze watchdog gets heartbeats even with FSR/DLSS FG active
     g_RenderWatchdog.Heartbeat();
-    
+
     // FSR FG FIX: Skip overlay processing on FSR internal swapchains
     // FSR creates internal swapchains for frame generation that we should not interfere with
     if (IsFSRInternalSwapchain()) {
@@ -509,10 +560,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
 
     // DEBUG: Log every Present call to verify wrapper is being invoked
     if (callCount < 50) {
-        WrapperLog("[FSR-DEBUG] Present: CALLED call#%d (m_IsD3D12=%d, flipModel=%d, FG=%d)", 
-                   callCount, m_IsD3D12, m_FlipModel.active, g_FGCompat.IsFGActive());
+        WrapperLog("[FSR-DEBUG] Present: CALLED call#%d (m_IsD3D12=%d, flipModel=%d, FG=%d)", callCount, m_IsD3D12,
+                   m_FlipModel.active, g_FGCompat.IsFGActive());
     }
-    
+
     // FSR FG/DLSS FG compatibility: If FG is active and using flip model,
     // be more careful about modifying Present parameters
     bool fgActive = g_FGCompat.IsFGActive();
@@ -524,7 +575,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         // Don't override sync interval when FG is active - it can break frame pacing
         // Still process capture though
     }
-    
+
     // RECURSION GUARD: Prevent infinite recursion with Steam/other overlays
     // Using atomic+threadId instead of thread_local to avoid static destructor issues
     static std::atomic<DWORD> s_presentThreadId{0};
@@ -536,14 +587,14 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     }
     s_presentThreadId.store(currentId);
     s_presentDepth.fetch_add(1);
-    
+
     // Set flag to indicate we're inside wrapper's Present
     // This prevents vtable hooks from double-processing
     g_InWrapperPresent = true;
     if (callCount < 20) {
         WrapperLog("Present: Processing call#%d", callCount);
     }
-    
+
     // Update performance metrics for FPS calculation
     static int64_t qpcFreq = 0;
     if (qpcFreq == 0) {
@@ -555,30 +606,31 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     QueryPerformanceCounter(&qpc);
     int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
     DXGIShared::GetPerformanceMetrics()->Update(us);
-    
+
     // Apply VSync override from config (skip if FG is active - can break frame pacing)
     if (!fgActive) {
         ProcessVSyncOverride(SyncInterval, Flags);
     } else if (callCount < 20) {
         WrapperLog("Present: Skipping VSync override because FG is active");
     }
-    
+
     // CRITICAL: Process frame for capture BEFORE calling real Present
     // This must happen regardless of overlay state - capture works independently
     static int s_CaptureCallCount = 0;
     if (m_IsD3D12) {
         int captureNum = ++s_CaptureCallCount;
         if (captureNum <= 10) {
-            WrapperLog("[FSR-DEBUG] Present: About to call DX12_ProcessFrameExternal #%d, pRealCached=%p", captureNum, pRealCached);
+            WrapperLog("[FSR-DEBUG] Present: About to call DX12_ProcessFrameExternal #%d, pRealCached=%p", captureNum,
+                       pRealCached);
         }
-        
+
         // CRITICAL: Call ProcessFrame - this is where crashes often occur with FSR FG
         DX12_ProcessFrameExternal(pRealCached);
-        
+
         if (captureNum <= 10) {
             WrapperLog("[FSR-DEBUG] Present: DX12_ProcessFrameExternal #%d completed successfully", captureNum);
         }
-        
+
         // DX12: Draw overlay separately (ProcessFrameExternal doesn't draw overlay for DX12)
         static int s_PresentCount = 0;
         int presentNum = ++s_PresentCount;
@@ -595,19 +647,20 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         // so we do NOT call DrawOverlay() here to avoid double-counting frames
         int captureNum = ++s_CaptureCallCount;
         if (captureNum <= 10) {
-            WrapperLog("[FSR-DEBUG] Present: About to call DX11_ProcessFrameExternal #%d, pRealCached=%p", captureNum, pRealCached);
+            WrapperLog("[FSR-DEBUG] Present: About to call DX11_ProcessFrameExternal #%d, pRealCached=%p", captureNum,
+                       pRealCached);
         }
         DX11_ProcessFrameExternal(pRealCached);
         if (captureNum <= 10) {
             WrapperLog("[FSR-DEBUG] Present: DX11_ProcessFrameExternal #%d completed successfully", captureNum);
         }
     }
-    
+
     HRESULT hr = pRealCached->Present(SyncInterval, Flags);
-    
+
     // Clear wrapper Present flag
     g_InWrapperPresent = false;
-    
+
     if (s_presentDepth.fetch_sub(1) == 1) {
         s_presentThreadId.store(0);
     }
@@ -616,17 +669,29 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
 
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetBuffer(UINT Buffer, REFIID riid, void** ppSurface)
 {
-    return m_pReal->GetBuffer(Buffer, riid, ppSurface);
+    // CRITICAL FIX: Use safe accessor to prevent races with DestructionCallback
+    IDXGISwapChain* pReal = GetRealSafe();
+    if (!pReal) return DXGI_ERROR_INVALID_CALL;
+    return pReal->GetBuffer(Buffer, riid, ppSurface);
 }
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::SetFullscreenState(BOOL Fullscreen, IDXGIOutput* pTarget)
 {
-    return m_pReal->SetFullscreenState(Fullscreen, pTarget);
+    IDXGISwapChain* pReal = GetRealSafe();
+    if (!pReal) return DXGI_ERROR_INVALID_CALL;
+    return pReal->SetFullscreenState(Fullscreen, pTarget);
 }
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetFullscreenState(BOOL* pFullscreen, IDXGIOutput** ppTarget)
 {
-    return m_pReal->GetFullscreenState(pFullscreen, ppTarget);
+    IDXGISwapChain* pReal = GetRealSafe();
+    if (!pReal) return DXGI_ERROR_INVALID_CALL;
+    return pReal->GetFullscreenState(pFullscreen, ppTarget);
 }
-HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetDesc(DXGI_SWAP_CHAIN_DESC* pDesc) { return m_pReal->GetDesc(pDesc); }
+HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetDesc(DXGI_SWAP_CHAIN_DESC* pDesc)
+{
+    IDXGISwapChain* pReal = GetRealSafe();
+    if (!pReal) return DXGI_ERROR_INVALID_CALL;
+    return pReal->GetDesc(pDesc);
+}
 
 static std::atomic<bool> s_ResizeInProgress{false};
 
@@ -634,7 +699,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers(UINT BufferCount, UI
                                                             DXGI_FORMAT NewFormat, UINT SwapChainFlags)
 {
     WrapperLog("CWrapDXGISwapChain::ResizeBuffers called - Width=%u, Height=%u", Width, Height);
-    
+
     // RECURSION GUARD: Prevent infinite recursion with Steam/other overlays
     static std::atomic<DWORD> s_resizeThreadId{0};
     static std::atomic<int> s_resizeDepth{0};
@@ -644,7 +709,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers(UINT BufferCount, UI
     }
     s_resizeThreadId.store(currentId);
     s_resizeDepth.fetch_add(1);
-    
+
     bool expected = false;
     if (!s_ResizeInProgress.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
         WrapperLog("ResizeBuffers: already in progress, skipping");
@@ -666,7 +731,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers(UINT BufferCount, UI
     WrapperLog("ResizeBuffers: calling DX12_OnSwapchainResizeBegin");
     DX12_OnSwapchainResizeBegin();
     WrapperLog("ResizeBuffers: DX12_OnSwapchainResizeBegin returned");
-    
+
     WrapperLog("ResizeBuffers: calling CleanupOverlayResources");
     CleanupOverlayResources();
     WrapperLog("ResizeBuffers: CleanupOverlayResources returned");
@@ -737,16 +802,16 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     // CRITICAL: Heartbeat FIRST - before ANY checks that might early-return
     // This ensures the freeze watchdog gets heartbeats even with FSR/DLSS FG active
     g_RenderWatchdog.Heartbeat();
-    
+
     // CRITICAL FIX: Lock mutex to protect swapchain pointer access
     std::lock_guard<std::mutex> lock(m_ResourceLock);
-    
+
     // CRITICAL FIX: Cache the pointer while holding the mutex
     IDXGISwapChain1* pReal1Cached = m_pReal1;
     if (!pReal1Cached) {
         return DXGI_ERROR_INVALID_CALL;
     }
-    
+
     // RECURSION GUARD: Prevent infinite recursion with Steam/other overlays
     static std::atomic<DWORD> s_present1ThreadId{0};
     static std::atomic<int> s_present1Depth{0};
@@ -756,10 +821,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     }
     s_present1ThreadId.store(currentId);
     s_present1Depth.fetch_add(1);
-    
+
     // Set flag to indicate we're inside wrapper's Present
     g_InWrapperPresent = true;
-    
+
     // Update performance metrics for FPS calculation
     static int64_t qpcFreq = 0;
     if (qpcFreq == 0) {
@@ -771,10 +836,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     QueryPerformanceCounter(&qpc);
     int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
     DXGIShared::GetPerformanceMetrics()->Update(us);
-    
+
     // Apply VSync override from config
     ProcessVSyncOverride(SyncInterval, PresentFlags);
-    
+
     // CRITICAL: Process frame for capture BEFORE calling real Present
     // This must happen regardless of overlay state - capture works independently
     if (m_IsD3D12) {
@@ -788,12 +853,12 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
         // so we do NOT call DrawOverlay() here to avoid double-counting frames
         DX11_ProcessFrameExternal(pReal1Cached);
     }
-    
+
     HRESULT hr = pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters);
-    
+
     // Clear wrapper Present flag
     g_InWrapperPresent = false;
-    
+
     if (s_present1Depth.fetch_sub(1) == 1) {
         s_present1ThreadId.store(0);
     }
@@ -848,7 +913,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetSourceSize(UINT* pWidth, UINT* 
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::SetMaximumFrameLatency(UINT MaxLatency)
 {
     if (!m_pReal2) return DXGI_ERROR_UNSUPPORTED;
-    
+
     // Apply frame latency override from config
     if (g_IPC) {
         const auto& gfx = GetActiveGraphicsConfig();
@@ -857,7 +922,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::SetMaximumFrameLatency(UINT MaxLat
             WrapperLog("SetMaximumFrameLatency: Overriding to %u", MaxLatency);
         }
     }
-    
+
     return m_pReal2->SetMaximumFrameLatency(MaxLatency);
 }
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetMaximumFrameLatency(UINT* pMaxLatency)
@@ -917,7 +982,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers1(UINT BufferCount, U
     }
     s_resize1ThreadId.store(currentId);
     s_resize1Depth.fetch_add(1);
-    
+
     bool expected = false;
     if (!s_ResizeInProgress.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
         if (s_resize1Depth.fetch_sub(1) == 1) {

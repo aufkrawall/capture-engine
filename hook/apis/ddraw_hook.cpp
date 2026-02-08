@@ -1,11 +1,11 @@
 #include "ddraw_hook.h"
-//#include <backends/imgui_impl_dx9.h>  // REMOVED: Using custom overlay
-//#include <backends/imgui_impl_win32.h>  // REMOVED: Using custom overlay
+// #include <backends/imgui_impl_dx9.h>  // REMOVED: Using custom overlay
+// #include <backends/imgui_impl_win32.h>  // REMOVED: Using custom overlay
 #include <d3d11.h>
 #include <d3d11_4.h>
 #include <d3d9.h>
 #include <dxgi.h>
-//#include <imgui.h>  // REMOVED: Using custom overlay
+// #include <imgui.h>  // REMOVED: Using custom overlay
 #include <windows.h>
 #include <cstdint>
 #include <string>

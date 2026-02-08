@@ -74,10 +74,7 @@ FGCompatibility::FGType FGCompatibility::GetActiveFGType() const
     return FGType::None;
 }
 
-bool FGCompatibility::IsFGActive() const
-{
-    return GetActiveFGType() != FGType::None;
-}
+bool FGCompatibility::IsFGActive() const { return GetActiveFGType() != FGType::None; }
 
 void FGCompatibility::SetDLSSFGActive(bool active)
 {
@@ -89,12 +86,10 @@ void FGCompatibility::SetDLSSFGActive(bool active)
         FGType newType = GetActiveFGType();
         FGType oldType = activeBehavior.exchange(newType);
         if (oldType != newType) {
-            HookLog("FG: Active type changed: %s -> %s",
-                    GetFGTypeName(oldType), GetFGTypeName(newType));
+            HookLog("FG: Active type changed: %s -> %s", GetFGTypeName(oldType), GetFGTypeName(newType));
 
-            if (HAS_DX12_INVALIDATE &&
-                ((newType == FGType::DLSS_FG && oldType == FGType::FSR_FG) ||
-                 (newType == FGType::FSR_FG && oldType == FGType::DLSS_FG))) {
+            if (HAS_DX12_INVALIDATE && ((newType == FGType::DLSS_FG && oldType == FGType::FSR_FG) ||
+                                        (newType == FGType::FSR_FG && oldType == FGType::DLSS_FG))) {
                 DX12_InvalidateSwapchain();
                 HookLog("FG: Invalidated swapchain for FG transition");
             }
@@ -112,12 +107,10 @@ void FGCompatibility::SetFSRFGActive(bool active)
         FGType newType = GetActiveFGType();
         FGType oldType = activeBehavior.exchange(newType);
         if (oldType != newType) {
-            HookLog("FG: Active type changed: %s -> %s",
-                    GetFGTypeName(oldType), GetFGTypeName(newType));
+            HookLog("FG: Active type changed: %s -> %s", GetFGTypeName(oldType), GetFGTypeName(newType));
 
-            if (HAS_DX12_INVALIDATE &&
-                ((newType == FGType::DLSS_FG && oldType == FGType::FSR_FG) ||
-                 (newType == FGType::FSR_FG && oldType == FGType::DLSS_FG))) {
+            if (HAS_DX12_INVALIDATE && ((newType == FGType::DLSS_FG && oldType == FGType::FSR_FG) ||
+                                        (newType == FGType::FSR_FG && oldType == FGType::DLSS_FG))) {
                 DX12_InvalidateSwapchain();
                 HookLog("FG: Invalidated swapchain for FG transition");
             }
@@ -133,9 +126,10 @@ void FGCompatibility::RecordFrame(int commandListsExecuted)
     // Store last command list count for frame classification
     lastCmdListCount.store(commandListsExecuted);
 
-    // Store in circular buffer
-    int idx = historyIndex.fetch_add(1) % WINDOW_SIZE;
-    frameHistory[idx] = {now, commandListsExecuted};
+    // CRITICAL FIX: Use atomic index for thread-safe circular buffer
+    int idx = historyIndex.fetch_add(1, std::memory_order_acquire) % WINDOW_SIZE;
+    frameHistory[idx].timestampUs = now;
+    frameHistory[idx].commandLists = commandListsExecuted;
 
     int total = totalFramesRecorded.fetch_add(1) + 1;
 
@@ -152,11 +146,10 @@ void FGCompatibility::RecordFrame(int commandListsExecuted)
     int logCount = debugLogCounter.fetch_add(1);
     if (logCount < 20 || (logCount % 300 == 0)) {
         FGType activeType = GetActiveFGType();
-        HookLog("Frame #%d: cmdLists=%d, isReal=%d, activeType=%s, apiDLSS=%d, apiFSR=%d, consReal=%d, consInterp=%d", 
-                total, commandListsExecuted, isRealFrame ? 1 : 0, 
-                GetFGTypeName(activeType),
-                dlssFGApiActive.load() ? 1 : 0, fsrFGApiActive.load() ? 1 : 0,
-                consecutiveRealFrames.load(), consecutiveInterpolatedFrames.load());
+        HookLog("Frame #%d: cmdLists=%d, isReal=%d, activeType=%s, apiDLSS=%d, apiFSR=%d, consReal=%d, consInterp=%d",
+                total, commandListsExecuted, isRealFrame ? 1 : 0, GetFGTypeName(activeType),
+                dlssFGApiActive.load() ? 1 : 0, fsrFGApiActive.load() ? 1 : 0, consecutiveRealFrames.load(),
+                consecutiveInterpolatedFrames.load());
     }
 
     // Update metrics every 30 frames
@@ -182,16 +175,18 @@ void FGCompatibility::UpdateMetrics()
     int64_t minTs = INT64_MAX;
     int64_t maxTs = 0;
 
-    // Calculate metrics using Chronological Analysis (Histogram of Intervals)
-    int currentHead = historyIndex.load();
+    // CRITICAL FIX: Load historyIndex with acquire semantics
+    int currentHead = historyIndex.load(std::memory_order_acquire);
     int startIdx = currentHead % WINDOW_SIZE;
 
     // Dynamic Thresholding: Find max work per frame to filter out "partial" presents
     int maxCmdLists = 0;
     for (int i = 0; i < WINDOW_SIZE; i++) {
-        if (frameHistory[i].timestampUs > windowStartUs) {
-            if (frameHistory[i].commandLists > maxCmdLists) {
-                maxCmdLists = frameHistory[i].commandLists;
+        int64_t ts = frameHistory[i].timestampUs;
+        int cmd = frameHistory[i].commandLists;
+        if (ts > windowStartUs) {
+            if (cmd > maxCmdLists) {
+                maxCmdLists = cmd;
             }
         }
     }
@@ -205,17 +200,19 @@ void FGCompatibility::UpdateMetrics()
 
     for (int i = 0; i < WINDOW_SIZE; i++) {
         int idx = (startIdx + i) % WINDOW_SIZE;
-        const auto& f = frameHistory[idx];
+
+        int64_t ts = frameHistory[idx].timestampUs;
+        int cmd = frameHistory[idx].commandLists;
 
         // Skip invalid or out-of-window frames
-        if (f.timestampUs <= windowStartUs || f.timestampUs > now) continue;
+        if (ts <= windowStartUs || ts > now) continue;
 
         totalFrames++;
-        if (f.timestampUs < minTs) minTs = f.timestampUs;
-        if (f.timestampUs > maxTs) maxTs = f.timestampUs;
+        if (ts < minTs) minTs = ts;
+        if (ts > maxTs) maxTs = ts;
 
         // Use dynamic threshold instead of just > 0
-        if (f.commandLists > workThreshold) {
+        if (cmd > workThreshold) {
             realFrames++;
 
             // Interval Analysis
@@ -286,8 +283,8 @@ void FGCompatibility::UpdateMetrics()
 
     // Log on multiplier change
     if (prevMult != mult && (prevMult == 1 || mult == 1 || prevMult != mult)) {
-        HookLog("FG: Multiplier changed %d -> %d (output=%.1f, base=%.1f, real=%d, total=%d)",
-                prevMult, mult, outputFPS, baseFPS, realFrames, totalFrames);
+        HookLog("FG: Multiplier changed %d -> %d (output=%.1f, base=%.1f, real=%d, total=%d)", prevMult, mult,
+                outputFPS, baseFPS, realFrames, totalFrames);
     }
 }
 
@@ -298,21 +295,36 @@ void FGCompatibility::DetectPattern()
         // NVIDIA Smooth Motion produces 2x frames with specific patterns
         // Detect it via consistent 2x multiplier without API hooks
         int mult = cachedMultiplier.load();
-        
-        // Require consistent 2x detection with confirmation
+
+        // CRITICAL FIX: Use compare-and-swap to prevent race conditions
+        // Only confirm SM when we consistently see 2x multiplier
         if (mult == 2) {
-            int count = nvidiaSMConfirmCount.fetch_add(1) + 1;
-            if (count == NVIDIA_SM_CONFIRM_THRESHOLD) {
+            // Atomically increment and check
+            int expected = nvidiaSMConfirmCount.load(std::memory_order_acquire);
+            while (expected < NVIDIA_SM_CONFIRM_THRESHOLD) {
+                if (nvidiaSMConfirmCount.compare_exchange_weak(expected, expected + 1, std::memory_order_acq_rel,
+                                                               std::memory_order_acquire)) {
+                    expected++;
+                } else {
+                    // CAS failed, reload
+                    expected = nvidiaSMConfirmCount.load(std::memory_order_acquire);
+                }
+            }
+
+            // Now check if we reached threshold
+            if (expected == NVIDIA_SM_CONFIRM_THRESHOLD) {
                 FGType prev = activeBehavior.exchange(FGType::NVIDIA_SM);
                 if (prev != FGType::NVIDIA_SM) {
-                    HookLog("FG: NVIDIA Smooth Motion detected (2x multiplier confirmed %d times)", count);
+                    HookLog("FG: NVIDIA Smooth Motion detected (2x multiplier confirmed)");
                 }
             }
         } else {
-            nvidiaSMConfirmCount.store(0);
-            // If we were in SM mode but pattern broke, reset
-            if (activeBehavior.load() == FGType::NVIDIA_SM) {
-                activeBehavior.store(FGType::None);
+            // Only reset if we're actually in SM mode and pattern broke
+            FGType current = activeBehavior.load(std::memory_order_acquire);
+            if (current == FGType::NVIDIA_SM) {
+                // Atomically reset to prevent races
+                nvidiaSMConfirmCount.store(0, std::memory_order_release);
+                activeBehavior.store(FGType::None, std::memory_order_release);
                 HookLog("FG: NVIDIA Smooth Motion pattern broken, resetting to None");
             }
         }
@@ -353,22 +365,14 @@ void FGCompatibility::OnDeviceChange()
 void FGCompatibility::LogStatus() const
 {
     FGType active = GetActiveFGType();
-    HookLog("FG Status: active=%s, apiDLSS=%d, apiFSR=%d, mult=%d, outputFPS=%.1f, baseFPS=%.1f",
-            GetFGTypeName(active),
-            dlssFGApiActive.load() ? 1 : 0,
-            fsrFGApiActive.load() ? 1 : 0,
-            cachedMultiplier.load(),
-            cachedOutputFPS.load(),
-            cachedBaseFPS.load());
+    HookLog("FG Status: active=%s, apiDLSS=%d, apiFSR=%d, mult=%d, outputFPS=%.1f, baseFPS=%.1f", GetFGTypeName(active),
+            dlssFGApiActive.load() ? 1 : 0, fsrFGApiActive.load() ? 1 : 0, cachedMultiplier.load(),
+            cachedOutputFPS.load(), cachedBaseFPS.load());
 }
 
 // C-linkage exports
 extern "C" {
-    void FG_SetDLSSActive(bool active) {
-        g_FGCompat.SetDLSSFGActive(active);
-    }
-    
-    void FG_SetFSRActive(bool active) {
-        g_FGCompat.SetFSRFGActive(active);
-    }
+void FG_SetDLSSActive(bool active) { g_FGCompat.SetDLSSFGActive(active); }
+
+void FG_SetFSRActive(bool active) { g_FGCompat.SetFSRFGActive(active); }
 }

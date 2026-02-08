@@ -1,6 +1,6 @@
-#include <windows.h>
-#include <psapi.h>
 #include <intrin.h>  // For __builtin_return_address
+#include <psapi.h>
+#include <windows.h>
 #include "../common/utils/scanner.h"
 #include "apis/ddraw_hook.h"
 #include "apis/dx11_hook.h"
@@ -10,17 +10,17 @@
 #include "apis/opengl_hook.h"
 // Vulkan hook removed - using VK_LAYER_CE_overlay (ICD layer approach) instead
 #include "../common/crash_handler.h"
-#include "apis/nvngx_hook.h"
 #include "apis/ffx_hook.h"  // FSR Frame Generation hook
+#include "apis/nvngx_hook.h"
 #include "capture/shared_capture.h"
 #include "common/fg_detection.h"
 #include "common/hook_common.h"
 #include "common/hook_context.h"
 #include "common/ipc_client.h"
 #include "common/system_metrics.h"
+#include "wrappers/d3dkmt_hook.h"
 #include "wrappers/iat_hook.h"
 #include "wrappers/wrapper_hooks.h"
-#include "wrappers/d3dkmt_hook.h"
 // MinHook removed - using IAT patching via iat_hook.h
 #include <algorithm>
 #include <atomic>
@@ -339,23 +339,21 @@ LSTATUS WINAPI HookedRegQueryValueExW(HKEY hKey, LPCWSTR lpValueName, LPDWORD lp
     // Log VRAM-related registry queries for debugging
     if (lpValueName) {
         // Check for VRAM-related value names
-        const wchar_t* vramKeywords[] = {
-            L"HardwareInformation.qwMemorySize",
-            L"HardwareInformation.MemorySize",
-            L"DedicatedVideoMemory",
-            L"AdapterRAM",
-            L"VRAM",
-            L"VideoMemory",
-            L"TotalMemory",
-            nullptr
-        };
-        
+        const wchar_t* vramKeywords[] = {L"HardwareInformation.qwMemorySize",
+                                         L"HardwareInformation.MemorySize",
+                                         L"DedicatedVideoMemory",
+                                         L"AdapterRAM",
+                                         L"VRAM",
+                                         L"VideoMemory",
+                                         L"TotalMemory",
+                                         nullptr};
+
         for (int i = 0; vramKeywords[i] != nullptr; i++) {
             if (_wcsicmp(lpValueName, vramKeywords[i]) == 0) {
                 // Convert value to string for logging
                 char valueNameA[256];
                 WideCharToMultiByte(CP_UTF8, 0, lpValueName, -1, valueNameA, sizeof(valueNameA), NULL, NULL);
-                
+
                 if (status == ERROR_SUCCESS && lpData && lpcbData) {
                     if (lpType && *lpType == REG_QWORD && *lpcbData >= sizeof(ULONGLONG)) {
                         ULONGLONG value = *(ULONGLONG*)lpData;
@@ -364,7 +362,7 @@ LSTATUS WINAPI HookedRegQueryValueExW(HKEY hKey, LPCWSTR lpValueName, LPDWORD lp
                         DWORD value = *(DWORD*)lpData;
                         HookLog("RegQueryValueExW: VRAM Query - %s = %lu MB", valueNameA, value / (1024 * 1024));
                     } else {
-                        HookLog("RegQueryValueExW: VRAM Query - %s (type=%lu, size=%lu)", valueNameA, 
+                        HookLog("RegQueryValueExW: VRAM Query - %s (type=%lu, size=%lu)", valueNameA,
                                 lpType ? *lpType : 0, lpcbData ? *lpcbData : 0);
                     }
                 } else {
@@ -798,7 +796,7 @@ static bool IsSteamOverlayPresent()
 {
     static bool s_checked = false;
     static bool s_present = false;
-    
+
     if (!s_checked) {
         s_checked = true;
         if (GetModuleHandleA("gameoverlayrenderer64.dll") || GetModuleHandleA("gameoverlayrenderer.dll")) {
@@ -841,13 +839,13 @@ void CheckAndInstallHooks()
     // NOTE: Skip for Vulkan games to prevent DXGI interference
     if (!s_vulkanActive && !g_DX12Hook && GetModuleHandleA("d3d12.dll")) {
         EarlyLog("Detected d3d12.dll. Initializing DX12 hook instance...");
-        
+
         // STATIC DESTRUCTOR FIX: Dynamically allocate the hook instance
         if (!g_dx12HookInstance) {
             g_dx12HookInstance = new DX12Hook();
         }
         g_DX12Hook = g_dx12HookInstance;
-        
+
         // Note: DX12Hook::Init() now only hooks ExecuteCommandLists for frame detection.
         // DXGI Present/Resize is handled by CWrapDXGISwapChain.
         g_DX12Hook->Init();
@@ -940,9 +938,9 @@ void CheckAndInstallHooks()
 DWORD WINAPI HookThread(LPVOID lpParam)
 {
     g_HookThreadRunning = true;
-    
+
     // HookThread continues normally for all games (injection delay prevents D3D12 init crashes)
-    
+
     // Load Local Config (to support per-app overrides) EARLY
     {
         char dllPath[MAX_PATH];
@@ -975,7 +973,8 @@ DWORD WINAPI HookThread(LPVOID lpParam)
                 SetErrorMode(oldMode);
 
                 if (!hWrapper) {
-                    EarlyLog("HookThread: Failed to load wrapper DLL from %s, Err=%d", wrapperDll.c_str(), GetLastError());
+                    EarlyLog("HookThread: Failed to load wrapper DLL from %s, Err=%d", wrapperDll.c_str(),
+                             GetLastError());
                 } else {
                     EarlyLog("HookThread: Loaded wrapper DLL at %p", hWrapper);
                 }
@@ -1068,7 +1067,7 @@ DWORD WINAPI HookThread(LPVOID lpParam)
 
         if (g_IPC->GetSharedMem()) {
             g_pSharedMem = g_IPC->GetSharedMem();
-            g_pSharedMem->sourcePid = GetCurrentProcessId();
+            g_pSharedMem->SetSourcePid(GetCurrentProcessId());
         }
 
         // Initialize HookContext and sync with legacy globals
@@ -1360,7 +1359,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call, LPV
             crashDir = ".\\logs";
         }
         SetCrashDumpDirectory(crashDir);
-        
+
         // CRITICAL FIX: Install crash handler IMMEDIATELY for all non-service processes
         // Don't wait for whitelist check or graphics DLL detection - crashes happen during
         // early initialization before those are available
@@ -1475,9 +1474,12 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call, LPV
         // CRITICAL: During process termination (lpReserved != NULL), do ABSOLUTELY NOTHING.
         // The loader lock is held, threads are being killed, and any cleanup can crash.
         if (lpReserved != NULL) {
+            // CRITICAL FIX: Skip all cleanup during process termination
+            // The OS will reclaim all resources. Any cleanup here risks crashes
+            // due to threads being terminated while holding locks.
             return TRUE;
         }
-        
+
         // Only do cleanup for dynamic unload (FreeLibrary), not process exit
         if (g_isDormant) {
             return TRUE;
@@ -1490,25 +1492,34 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call, LPV
             SetEvent(g_hCheckHooksEvent);
         }
 
-        // Shutdown hooks - but don't delete during detach (can cause crashes)
-        // Just set pointers to nullptr to prevent further use
-        g_DX12Hook = nullptr;
-        g_DX11Hook = nullptr;
-        g_DX9Hook = nullptr;
-        g_DDrawHook = nullptr;
-        g_DX8Hook = nullptr;
-        g_OpenGLHook = nullptr;
+        // CRITICAL FIX: Properly shutdown hooks using SafeShutdownHook template
+        // This calls Shutdown() which releases resources in the correct order
+        // Only do this for dynamic unload (lpReserved == NULL), not process exit
+        SafeShutdownHook(g_DX12Hook);
+        SafeShutdownHook(g_DX11Hook);
+        SafeShutdownHook(g_DX9Hook);
+        SafeShutdownHook(g_DDrawHook);
+        SafeShutdownHook(g_DX8Hook);
+        SafeShutdownHook(g_OpenGLHook);
 
-        // Don't call destructors from DllMain - just leak the memory
-        // The process is exiting anyway, OS will clean up
+        // CRITICAL FIX: Don't delete g_IPC during detach
+        // The IPC client may be used by other threads that are being terminated
+        // Just set to nullptr and let the process cleanup handle it
+        // Note: We're intentionally leaking g_IPC here to avoid crashes
+        // The shared memory will be cleaned up when the process exits
+        g_IPC = nullptr;
 
-        if (g_IPC) {
-            delete g_IPC;
-            g_IPC = nullptr;
-        }
         timeEndPeriod(1);
 
         if (g_hCheckHooksEvent) CloseHandle(g_hCheckHooksEvent);
+
+        // CRITICAL FIX: Clean up TLS index if it was allocated
+        // Note: g_RecursionTlsIndex appears to be unused (never allocated with TlsAlloc)
+        // If TLS is used in the future, uncomment the following:
+        // if (g_RecursionTlsIndex != TLS_OUT_OF_INDEXES) {
+        //     TlsFree(g_RecursionTlsIndex);
+        //     g_RecursionTlsIndex = TLS_OUT_OF_INDEXES;
+        // }
     }
     return TRUE;
 }

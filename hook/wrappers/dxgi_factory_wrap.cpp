@@ -3,12 +3,12 @@
  */
 
 #include "dxgi_factory_wrap.h"
-#include <objbase.h>
 #include <d3d12.h>
+#include <objbase.h>
+#include "../apis/dx12_hook.h"
 #include "dxgi_adapter_wrap.h"
 #include "dxgi_swapchain_wrap.h"
 #include "hook_common.h"
-#include "../apis/dx12_hook.h"
 
 static bool g_DisableSwapchainWrapper = false;
 
@@ -184,7 +184,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChain(IUnknown* pDevice, 
                                                              IDXGISwapChain** ppSwapChain)
 {
     WrapperLog("CreateSwapChain: CALLED (device=%p, hwnd=%p)", pDevice, pDesc ? pDesc->OutputWindow : nullptr);
-    
+
     // DX12: The "device" passed to CreateSwapChain is actually the command queue
     // Hook it for frame detection
     if (pDevice) {
@@ -195,7 +195,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChain(IUnknown* pDevice, 
             WrapperLog("CreateSwapChain: Detected D3D12 command queue");
         }
     }
-    
+
     // Apply backbuffer count override from config
     DXGI_SWAP_CHAIN_DESC modifiedDesc;
     if (pDesc) {
@@ -207,7 +207,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChain(IUnknown* pDevice, 
         }
         pDesc = &modifiedDesc;
     }
-    
+
     IDXGISwapChain* pReal = nullptr;
     HRESULT hr = m_pReal->CreateSwapChain(DeWrap(pDevice), pDesc, &pReal);
     if (SUCCEEDED(hr) && pReal) {
@@ -262,7 +262,7 @@ CWrapDXGIFactory2::CreateSwapChainForHwnd(IUnknown* pDevice, HWND hWnd, const DX
                                           IDXGIOutput* pRestrictToOutput, IDXGISwapChain1** ppSwapChain)
 {
     WrapperLog("CreateSwapChainForHwnd: CALLED (device=%p, hwnd=%p)", pDevice, hWnd);
-    
+
     // DX12: The "device" passed to CreateSwapChain is actually the command queue
     if (pDevice) {
         ID3D12CommandQueue* pQueue = nullptr;
@@ -271,7 +271,7 @@ CWrapDXGIFactory2::CreateSwapChainForHwnd(IUnknown* pDevice, HWND hWnd, const DX
             pQueue->Release();
         }
     }
-    
+
     // Apply backbuffer count override from config
     DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
     if (pDesc) {
@@ -283,7 +283,7 @@ CWrapDXGIFactory2::CreateSwapChainForHwnd(IUnknown* pDevice, HWND hWnd, const DX
         }
         pDesc = &modifiedDesc;
     }
-    
+
     IDXGISwapChain1* pReal = nullptr;
     HRESULT hr =
         m_pReal->CreateSwapChainForHwnd(DeWrap(pDevice), hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, &pReal);
@@ -312,7 +312,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForCoreWindow(IUnkno
             pQueue->Release();
         }
     }
-    
+
     // Apply backbuffer count override from config
     DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
     if (pDesc) {
@@ -324,7 +324,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForCoreWindow(IUnkno
         }
         pDesc = &modifiedDesc;
     }
-    
+
     IDXGISwapChain1* pReal = nullptr;
     HRESULT hr = m_pReal->CreateSwapChainForCoreWindow(DeWrap(pDevice), pWindow, pDesc, pRestrictToOutput, &pReal);
     if (SUCCEEDED(hr) && pReal) {
@@ -382,7 +382,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForComposition(IUnkn
             pQueue->Release();
         }
     }
-    
+
     // Apply backbuffer count override from config
     DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
     if (pDesc) {
@@ -394,7 +394,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForComposition(IUnkn
         }
         pDesc = &modifiedDesc;
     }
-    
+
     IDXGISwapChain1* pReal = nullptr;
     HRESULT hr = m_pReal->CreateSwapChainForComposition(DeWrap(pDevice), pDesc, pRestrictToOutput, &pReal);
     if (SUCCEEDED(hr) && pReal) {

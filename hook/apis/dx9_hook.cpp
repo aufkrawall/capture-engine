@@ -13,14 +13,12 @@
 #include "../../common/frame_timing.h"
 #include "../common/capture_base.h"
 #include "../common/fps_limiter.h"
-#include "../common/capture_base.h"
-#include "../common/fps_limiter.h"
+#include "../common/input_manager.h"
+#include "../common/overlay_adapter.h"
 #include "../wrappers/vtable_hook.h"
 #include "hook_common.h"
 #include "lod_helper.h"
 #include "performance_metrics.h"
-#include "../common/overlay_adapter.h"
-#include "../common/input_manager.h"
 
 #ifndef D3DPRESENT_FORCEIMMEDIATE
 #define D3DPRESENT_FORCEIMMEDIATE 0x00000100L
@@ -664,9 +662,9 @@ public:
         }
 
         if (g_OverlayAdapter.IsInitialized()) {
-             g_OverlayAdapter.Shutdown();
+            g_OverlayAdapter.Shutdown();
         }
-        
+
         d3d9Format = D3DFMT_UNKNOWN;
         initialized = false;
         useFences = false;
@@ -1224,11 +1222,11 @@ static void DrawDX9Overlay(IDirect3DDevice9* device)
         InputManager::Get().HookWindow(g_CachedHwnd);
 
         if (g_OverlayAdapter.InitDX9(device)) {
-             g_OverlayAdapter.SetHwnd(g_CachedHwnd);
-             EarlyLog("DX9: OverlayAdapter initialized");
+            g_OverlayAdapter.SetHwnd(g_CachedHwnd);
+            EarlyLog("DX9: OverlayAdapter initialized");
         }
     }
-    
+
     // Get viewport size
     D3DVIEWPORT9 vp;
     device->GetViewport(&vp);
@@ -1239,7 +1237,7 @@ static void DrawDX9Overlay(IDirect3DDevice9* device)
     const char* finalApi = "DX9";
     if (GetModuleHandleA("vulkan-1.dll") || GetModuleHandleA("winevulkan.dll")) finalApi = "DX9 (DXVK)";
     g_OverlayAdapter.SetGraphicsAPI(finalApi);
-    
+
     // Render Custom Overlay
     // Note: RenderOverlay calls BeginFrame/RenderContent/EndFrame.
     // DX9 backend handles state saving/restoring internally.
@@ -1737,8 +1735,6 @@ static HRESULT STDMETHODCALLTYPE DetourReset(IDirect3DDevice9* device, D3DPRESEN
                  pPresentationParameters->MultiSampleQuality);
     }
 
-
-
     return hr;
 }
 
@@ -1792,8 +1788,6 @@ static HRESULT STDMETHODCALLTYPE DetourResetEx(IDirect3DDevice9Ex* device,
         EarlyLog("DX9: ResetEx SUCCESS: Final MSAA Type=%d, Quality=%d", pPresentationParameters->MultiSampleType,
                  pPresentationParameters->MultiSampleQuality);
     }
-
-
 
     return hr;
 }

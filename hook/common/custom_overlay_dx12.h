@@ -1,17 +1,17 @@
 /**
  * Custom Overlay - DX12 Backend
- * 
+ *
  * Renders overlay using Direct3D 12.
  * More complex than DX11 due to explicit resource management.
  */
 
 #pragma once
 
-#include "custom_overlay.h"
 #include <d3d12.h>
 #include <dxgi1_4.h>
 #include <wrl/client.h>
 #include <vector>
+#include "custom_overlay.h"
 
 namespace CustomOverlay {
 
@@ -22,18 +22,14 @@ public:
     DX12Backend(ID3D12Device* device, ID3D12CommandQueue* queue, DXGI_FORMAT rtvFormat);
     virtual ~DX12Backend();
 
-    bool Initialize(int fontTextureWidth, int fontTextureHeight,
-                   const uint8_t* fontTextureData) override;
+    bool Initialize(int fontTextureWidth, int fontTextureHeight, const uint8_t* fontTextureData) override;
     void Shutdown() override;
 
-    void Render(const std::vector<DrawVertex>& vertices,
-               const std::vector<uint16_t>& indices,
-               const std::vector<DrawCommand>& commands,
-               int viewportWidth, int viewportHeight) override;
+    void Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
+                const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) override;
 
     // DX12-specific: Set render target before rendering
-    void SetRenderTarget(ID3D12GraphicsCommandList* cmdList, 
-                        D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle);
+    void SetRenderTarget(ID3D12GraphicsCommandList* cmdList, D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle);
 
 private:
     bool CreateRootSignature();
@@ -65,4 +61,4 @@ private:
     bool initialized = false;
 };
 
-} // namespace CustomOverlay
+}  // namespace CustomOverlay

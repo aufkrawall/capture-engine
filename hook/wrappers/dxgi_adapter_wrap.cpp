@@ -62,16 +62,16 @@ void CWrapDXGIAdapter::PromoteInterfaces()
         m_Version = 4;
         WrapperLog("DXGI Adapter: Promoted to version 4");
     }
-    
+
     // Always try to get lower versions too (needed for methods on each interface)
     if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal3)))) {
         if (m_Version < 3) m_Version = 3;
     }
-    
+
     if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal2)))) {
         if (m_Version < 2) m_Version = 2;
     }
-    
+
     if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal1)))) {
         if (m_Version < 1) m_Version = 1;
     }
@@ -195,8 +195,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIAdapter::GetDesc(DXGI_ADAPTER_DESC* pDesc)
     HRESULT hr = m_pReal->GetDesc(pDesc);
     if (SUCCEEDED(hr) && pDesc) {
         WrapperLog("DXGI Adapter: GetDesc - VRAM: %llu MB, Shared: %llu MB, Name: %S",
-                   pDesc->DedicatedVideoMemory / (1024 * 1024),
-                   pDesc->SharedSystemMemory / (1024 * 1024),
+                   pDesc->DedicatedVideoMemory / (1024 * 1024), pDesc->SharedSystemMemory / (1024 * 1024),
                    pDesc->Description);
     } else {
         WrapperLog("DXGI Adapter: GetDesc FAILED hr=0x%08X", hr);
@@ -219,8 +218,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIAdapter::GetDesc1(DXGI_ADAPTER_DESC1* pDesc)
     // FIX: Pass through to real adapter without VRAM override
     HRESULT hr = m_pReal1->GetDesc1(pDesc);
     if (SUCCEEDED(hr) && pDesc) {
-        WrapperLog("DXGI Adapter: GetDesc1 - VRAM: %llu MB, Flags: 0x%08X",
-                   pDesc->DedicatedVideoMemory / (1024 * 1024), pDesc->Flags);
+        WrapperLog("DXGI Adapter: GetDesc1 - VRAM: %llu MB, Flags: 0x%08X", pDesc->DedicatedVideoMemory / (1024 * 1024),
+                   pDesc->Flags);
     } else {
         WrapperLog("DXGI Adapter: GetDesc1 FAILED hr=0x%08X", hr);
     }
@@ -237,8 +236,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIAdapter::GetDesc2(DXGI_ADAPTER_DESC2* pDesc)
     // FIX: Pass through to real adapter without VRAM override
     HRESULT hr = m_pReal2->GetDesc2(pDesc);
     if (SUCCEEDED(hr) && pDesc) {
-        WrapperLog("DXGI Adapter: GetDesc2 - VRAM: %llu MB, Flags: 0x%08X",
-                   pDesc->DedicatedVideoMemory / (1024 * 1024), pDesc->Flags);
+        WrapperLog("DXGI Adapter: GetDesc2 - VRAM: %llu MB, Flags: 0x%08X", pDesc->DedicatedVideoMemory / (1024 * 1024),
+                   pDesc->Flags);
     } else {
         WrapperLog("DXGI Adapter: GetDesc2 FAILED hr=0x%08X", hr);
     }
@@ -271,8 +270,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIAdapter::QueryVideoMemoryInfo(UINT NodeIndex,
     if (SUCCEEDED(hr) && pVideoMemoryInfo) {
         WrapperLog("DXGI Adapter: QueryVideoMemoryInfo(Node=%u, Segment=%d) - "
                    "Budget: %llu MB, CurrentUsage: %llu MB, Available: %llu MB",
-                   NodeIndex, (int)MemorySegmentGroup,
-                   pVideoMemoryInfo->Budget / (1024 * 1024),
+                   NodeIndex, (int)MemorySegmentGroup, pVideoMemoryInfo->Budget / (1024 * 1024),
                    pVideoMemoryInfo->CurrentUsage / (1024 * 1024),
                    pVideoMemoryInfo->AvailableForReservation / (1024 * 1024));
     } else {

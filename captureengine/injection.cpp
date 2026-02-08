@@ -11,6 +11,7 @@
 
 #include <aclapi.h>
 #include <bcrypt.h>
+#include <ntstatus.h>
 #include <softpub.h>
 #include <wintrust.h>
 #include <algorithm>
@@ -82,6 +83,9 @@ InjectionManager::InjectionManager(const AppConfig& config) : config(config)
 
 InjectionManager::~InjectionManager()
 {
+    // CRITICAL FIX: Signal all delayed injection threads to stop
+    RequestShutdown();
+
     ShutdownWMI();
     EjectAll();
 }
@@ -417,24 +421,32 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
                 if (pManager->IsWhitelisted(name)) {
                     // DELAYED INJECTION FOR D3D12 GAMES: Wait for window/D3D12 initialization
                     // This prevents crashes during early D3D12 setup in UE5 games with DLSS FG
-                    // Capture by value to avoid lifetime issues
-                    InjectionManager* manager = pManager;
-                    std::thread([manager, pid, name]() {
-                        LogInfo("[WMI] %s (PID: %d) - Delaying injection for D3D12 initialization...", name.c_str(), pid);
-                        
+                    // CRITICAL FIX: Use shared_ptr to prevent use-after-free if InjectionManager is destroyed
+                    std::shared_ptr<InjectionManager> managerShared = pManager->shared_from_this();
+                    std::thread([managerShared, pid, name]() {
+                        LogInfo("[WMI] %s (PID: %d) - Delaying injection for D3D12 initialization...", name.c_str(),
+                                pid);
+
                         // Wait up to 30 seconds for D3D12 initialization
                         bool ready = false;
                         bool d3d12Loaded = false;
                         for (int i = 0; i < 300 && !ready; i++) {
                             Sleep(100);  // 100ms * 300 = 30 seconds max
-                            
+
+                            // CRITICAL FIX: Check if shutdown requested
+                            if (managerShared->IsShuttingDown()) {
+                                LogInfo("[WMI] %s (PID: %d) - Shutdown requested, aborting delayed injection",
+                                        name.c_str(), pid);
+                                return;
+                            }
+
                             // Check if process is still running
                             HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, FALSE, pid);
                             if (!hProcess) {
                                 LogInfo("[WMI] %s (PID: %d) - Process exited before injection", name.c_str(), pid);
                                 return;
                             }
-                            
+
                             // Check if process has exited
                             DWORD exitCode = 0;
                             if (GetExitCodeProcess(hProcess, &exitCode) && exitCode != STILL_ACTIVE) {
@@ -442,7 +454,7 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
                                 LogInfo("[WMI] %s (PID: %d) - Process exited before injection", name.c_str(), pid);
                                 return;
                             }
-                            
+
                             // Check if D3D12.dll is loaded (wait for graphics init to complete)
                             if (!d3d12Loaded) {
                                 HMODULE hMods[1024];
@@ -453,7 +465,8 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
                                         if (GetModuleFileNameExA(hProcess, hMods[j], szModName, sizeof(szModName))) {
                                             if (strstr(szModName, "d3d12.dll")) {
                                                 d3d12Loaded = true;
-                                                LogInfo("[WMI] %s (PID: %d) - D3D12.dll detected, waiting for init...", name.c_str(), pid);
+                                                LogInfo("[WMI] %s (PID: %d) - D3D12.dll detected, waiting for init...",
+                                                        name.c_str(), pid);
                                                 break;
                                             }
                                         }
@@ -461,7 +474,7 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
                                 }
                             }
                             CloseHandle(hProcess);
-                            
+
                             // FIX: Reduced delays for faster overlay appearance
                             // Wait at least 1 second after D3D12 is loaded for init to complete
                             // Or wait 1 second minimum for any game (was 5s, now 1s)
@@ -470,16 +483,16 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
                                 ready = true;
                             }
                         }
-                        
+
                         // Perform injection
-                        std::lock_guard<std::mutex> lock(manager->injectMutex);
-                        if (!manager->IsAlreadyInjected(pid) && !manager->IsRecentlyFailed(pid)) {
+                        std::lock_guard<std::mutex> lock(managerShared->injectMutex);
+                        if (!managerShared->IsAlreadyInjected(pid) && !managerShared->IsRecentlyFailed(pid)) {
                             LogInfo("[WMI] %s (PID: %d) - Injecting after delay", name.c_str(), pid);
-                            if (manager->Inject(pid, name)) {
+                            if (managerShared->Inject(pid, name)) {
                                 LogInfo("[WMI] Delayed injection successful.");
                             } else {
                                 LogError("[WMI] Delayed injection failed.");
-                                manager->failedInjections.push_back({pid, GetTickCount64()});
+                                managerShared->failedInjections.push_back({pid, GetTickCount64()});
                             }
                         }
                     }).detach();
@@ -539,24 +552,34 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName)
     BOOL isWow64 = FALSE;
     IsWow64Process(hProcess.get(), &isWow64);
 
+    // CRITICAL FIX: Use RAII scope guard to ensure handle is closed on all code paths
+    // This prevents process handle leaks on early returns (signature verification, missing DLL, etc.)
+    HANDLE hProcessRaw = hProcess.get();
+    auto handleGuard = ce::make_scope_guard([hProcessRaw]() { CloseHandle(hProcessRaw); });
+
     std::string dllPath = isWow64 ? hookDllPathX86 : hookDllPathX64;
 
-    // TODO: Re-enable signature verification once wintrust library is available in MSYS2
-    // The WinVerifyTrust API requires wintrust.lib which may not be available in all build environments
-#if 0  // Disabled temporarily - wintrust.lib not found in MSYS2
+    // SECURITY: Verify DLL integrity before injection
+    // This prevents injection of tampered DLLs and protects against DLL hijacking
 #ifndef _DEBUG
-  // PRODUCTION BUILD: Verify DLL signature before injection
-  // This prevents injection of tampered/unsigned DLLs
-  if (!VerifyDLLSignature(dllPath)) {
-    LogError("DLL signature verification failed for %s - refusing to inject", dllPath.c_str());
-    LogError("In production builds, only signed DLLs can be injected");
-    return false;
-  }
-  LogInfo("DLL signature verified: %s", dllPath.c_str());
+    // PRODUCTION BUILD: Verify Authenticode signature
+    if (!VerifyDLLSignature(dllPath)) {
+        LogError("[SECURITY] DLL signature verification failed for %s - refusing to inject", dllPath.c_str());
+        LogError("[SECURITY] In production builds, only properly signed DLLs can be injected");
+        return false;
+    }
+    LogInfo("[SECURITY] DLL signature verified: %s", dllPath.c_str());
 #else
-  // DEBUG BUILD: Skip DLL signature verification for development
-  LogInfo("DEBUG BUILD: Skipping DLL signature verification");
-#endif
+    // DEBUG BUILD: Use hash-based verification as fallback
+    // This still provides protection against accidental tampering during development
+    if (!VerifyDLLHash(dllPath)) {
+        LogWarn("[SECURITY] DLL hash verification failed for %s", dllPath.c_str());
+        LogWarn("[SECURITY] Debug build - continuing anyway, but this indicates potential tampering");
+        // In debug builds, we log the warning but don't block injection
+        // This allows developers to work with unsigned debug builds
+    } else {
+        LogInfo("[SECURITY] DLL hash verified: %s", dllPath.c_str());
+    }
 #endif
 
     LogInfo("Using DLL: %s (WoW64: %d)", dllPath.c_str(), isWow64);
@@ -712,6 +735,7 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName)
     ip.pid = pid;
     ip.name = processName;
     ip.hProcess = hProcess.release();  // Transfer ownership
+    handleGuard.dismiss();             // Don't close - we're transferring ownership
     injectedProcesses.push_back(ip);
 
     LogInfo("Injected %s into %s (PID: %d)", isWow64 ? "x86" : "x64", processName.c_str(), pid);
@@ -909,6 +933,138 @@ bool InjectionManager::VerifyDLLSignature(const std::string& dllPath)
         }
         return false;
     }
+}
+
+// Verify DLL integrity using SHA-256 hash comparison
+// This is a fallback for debug builds when Authenticode signing is not available
+// Expected hashes are stored in a .hashes file next to the DLL
+bool InjectionManager::VerifyDLLHash(const std::string& dllPath)
+{
+    // Check if hash file exists (debug builds only)
+    std::string hashFilePath = dllPath + ".hash";
+    if (!fs::exists(hashFilePath)) {
+        // No hash file - skip verification in debug builds
+        LogDebug("[Security] No hash file found for %s, skipping hash verification", dllPath.c_str());
+        return true;
+    }
+
+    // Read expected hash from file
+    std::ifstream hashFile(hashFilePath);
+    if (!hashFile.is_open()) {
+        LogWarn("[Security] Failed to open hash file: %s", hashFilePath.c_str());
+        return true;  // Allow in debug mode
+    }
+
+    std::string expectedHash;
+    std::getline(hashFile, expectedHash);
+    hashFile.close();
+
+    // Trim whitespace
+    expectedHash.erase(0, expectedHash.find_first_not_of(" \t\r\n"));
+    expectedHash.erase(expectedHash.find_last_not_of(" \t\r\n") + 1);
+
+    if (expectedHash.empty()) {
+        LogWarn("[Security] Empty hash file: %s", hashFilePath.c_str());
+        return true;  // Allow in debug mode
+    }
+
+    // Compute actual hash of DLL
+    std::string actualHash = ComputeFileHash(dllPath);
+    if (actualHash.empty()) {
+        LogError("[Security] Failed to compute hash for: %s", dllPath.c_str());
+        return false;
+    }
+
+    // Compare hashes (case-insensitive)
+    bool match = (actualHash.length() == expectedHash.length());
+    if (match) {
+        for (size_t i = 0; i < actualHash.length(); ++i) {
+            if (std::tolower(actualHash[i]) != std::tolower(expectedHash[i])) {
+                match = false;
+                break;
+            }
+        }
+    }
+
+    if (match) {
+        LogInfo("[Security] DLL hash verified: %s", dllPath.c_str());
+        return true;
+    } else {
+        LogError("[SECURITY] DLL hash mismatch for %s", dllPath.c_str());
+        LogError("[SECURITY] Expected: %s", expectedHash.c_str());
+        LogError("[SECURITY] Actual:   %s", actualHash.c_str());
+        return false;
+    }
+}
+
+// Compute SHA-256 hash of a file
+std::string InjectionManager::ComputeFileHash(const std::string& filePath)
+{
+    // Open file
+    HANDLE hFile = CreateFileA(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                               FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        LogError("[Security] Failed to open file for hashing: %s", filePath.c_str());
+        return "";
+    }
+
+    // Get file size
+    LARGE_INTEGER fileSize;
+    if (!GetFileSizeEx(hFile, &fileSize)) {
+        CloseHandle(hFile);
+        return "";
+    }
+
+    // Map file into memory for efficient hashing
+    HANDLE hMapping = CreateFileMapping(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
+    if (!hMapping) {
+        CloseHandle(hFile);
+        return "";
+    }
+
+    LPVOID pData = MapViewOfFile(hMapping, FILE_MAP_READ, 0, 0, 0);
+    if (!pData) {
+        CloseHandle(hMapping);
+        CloseHandle(hFile);
+        return "";
+    }
+
+    // Compute SHA-256 hash using BCrypt
+    BCRYPT_ALG_HANDLE hAlg = NULL;
+    BCRYPT_HASH_HANDLE hHash = NULL;
+    std::string result;
+
+    if (BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, NULL, 0) == STATUS_SUCCESS) {
+        DWORD hashLen = 0;
+        DWORD dataLen = 0;
+
+        if (BCryptGetProperty(hAlg, BCRYPT_HASH_LENGTH, (PUCHAR)&hashLen, sizeof(hashLen), &dataLen, 0) ==
+            STATUS_SUCCESS) {
+            std::vector<BYTE> hashBytes(hashLen);
+
+            if (BCryptCreateHash(hAlg, &hHash, NULL, 0, NULL, 0, 0) == STATUS_SUCCESS) {
+                if (BCryptHashData(hHash, (PUCHAR)pData, (ULONG)fileSize.QuadPart, 0) == STATUS_SUCCESS) {
+                    if (BCryptFinishHash(hHash, hashBytes.data(), hashLen, 0) == STATUS_SUCCESS) {
+                        // Convert to hex string
+                        std::stringstream ss;
+                        for (BYTE b : hashBytes) {
+                            ss << std::hex << std::setw(2) << std::setfill('0') << (int)b;
+                        }
+                        result = ss.str();
+                    }
+                }
+                BCryptDestroyHash(hHash);
+            }
+        }
+        BCryptCloseAlgorithmProvider(hAlg, 0);
+    }
+
+    // Cleanup
+    UnmapViewOfFile(pData);
+    CloseHandle(hMapping);
+    CloseHandle(hFile);
+
+    return result;
 }
 
 void InjectionManager::ScanExistingProcesses()

@@ -183,7 +183,7 @@ void InjectCaptureThreadFunc(const AppConfig& config)
                     // Old: half-interval was too aggressive for high FPS games (144Hz+, 240Hz+)
                     // New: allow up to 80% of interval before dropping, with adaptive resync
                     int64_t jitterWindow = (targetIntervalTicks * 8) / 10;  // 80% tolerance
-                    
+
                     if (slot.timestamp >= nextPushTime - jitterWindow) {
                         shouldProcess = true;
 
@@ -200,7 +200,7 @@ void InjectCaptureThreadFunc(const AppConfig& config)
                         // Frame is too early - only drop if we're not behind on processing
                         // Check if we have a backlog of frames waiting
                         uint32_t pendingFrames = (writeIndex > localReadIndex) ? (writeIndex - localReadIndex) : 0;
-                        
+
                         if (pendingFrames > 2) {
                             // We have a backlog, process this frame anyway to catch up
                             shouldProcess = true;
@@ -219,6 +219,9 @@ void InjectCaptureThreadFunc(const AppConfig& config)
                     qf.ringIndex = localReadIndex;
                     qf.timestamp = slot.timestamp;
 
+                    // CRITICAL FIX: Reset valid flag after reading to prevent stale data on slot reuse
+                    slot.valid.store(0, std::memory_order_release);
+
                     int32_t texIdx = slot.textureIndex;
 
                     if (texIdx >= 100) {
@@ -231,27 +234,27 @@ void InjectCaptureThreadFunc(const AppConfig& config)
                         qf.isShmem = false;
                         qf.shmemSlot = 0;
                         if (texIdx >= 0 && texIdx < 8) {
-                            qf.sharedHandle = (HANDLE)g_pSharedMem->sharedHandles[texIdx];
+                            qf.sharedHandle = (HANDLE)g_pSharedMem->GetSharedHandle(texIdx);
                         } else {
-                            qf.sharedHandle = (HANDLE)g_pSharedMem->sharedHandles[0];
+                            qf.sharedHandle = (HANDLE)g_pSharedMem->GetSharedHandle(0);
                         }
-                        qf.fenceHandle = (HANDLE)g_pSharedMem->fenceShareHandle;
+                        qf.fenceHandle = (HANDLE)g_pSharedMem->GetFenceShareHandle();
                         qf.fenceValue = slot.fenceValue;
                     }
 
                     qf.sourcePid = slot.sourcePid;
-                    qf.width = g_pSharedMem->width;
-                    qf.height = g_pSharedMem->height;
-                    qf.format = g_pSharedMem->format;
-                    qf.luidLow = g_pSharedMem->luidLowPart;
-                    qf.luidHigh = g_pSharedMem->luidHighPart;
-                    qf.isHDR = (g_pSharedMem->format == 10);
+                    qf.width = g_pSharedMem->GetWidth();
+                    qf.height = g_pSharedMem->GetHeight();
+                    qf.format = g_pSharedMem->GetFormat();
+                    qf.luidLow = g_pSharedMem->GetLuidLowPart();
+                    qf.luidHigh = g_pSharedMem->GetLuidHighPart();
+                    qf.isHDR = g_pSharedMem->GetIsHDR();
 
                     static bool sharedTexturesCreated = false;
-                    if (!sharedTexturesCreated && g_pSharedMem->width > 0 && g_pSharedMem->height > 0) {
+                    if (!sharedTexturesCreated && g_pSharedMem->GetWidth() > 0 && g_pSharedMem->GetHeight() > 0) {
                         if (!g_pSharedMem->encoderTextures.ready.load(std::memory_order_acquire)) {
-                            if (MediaEngine_CreateSharedCaptureTextures(g_pSharedMem->width, g_pSharedMem->height,
-                                                                        g_pSharedMem->format, g_pSharedMem)) {
+                            if (MediaEngine_CreateSharedCaptureTextures(g_pSharedMem->GetWidth(), g_pSharedMem->GetHeight(),
+                                                                        g_pSharedMem->GetFormat(), g_pSharedMem)) {
                                 sharedTexturesCreated = true;
                             }
                         } else {
@@ -726,7 +729,7 @@ int MediaProcessMain(const AppConfig& config)
                     g_pSharedMem = (SharedMemoryLayout*)MapViewOfFile(g_hMapFile, FILE_MAP_ALL_ACCESS, 0, 0,
                                                                       sizeof(SharedMemoryLayout));
 
-                    if (g_pSharedMem && g_pSharedMem->hostPID != 0) {
+                    if (g_pSharedMem && g_pSharedMem->GetHostPID() != 0) {
                         LogInfo("[Media] Connected via discovery (inject PID: %u)", pDiscovery->injectPid);
                         UnmapViewOfFile(pDiscovery);
                         CloseHandle(hDiscovery);
@@ -751,9 +754,9 @@ int MediaProcessMain(const AppConfig& config)
     }
 
     if (g_pSharedMem) {
-        if (g_pSharedMem->shmemMappingCreated) {
+        if (g_pSharedMem->GetShmemMappingCreated()) {
             wchar_t shmemName[64];
-            GenerateShmemName(shmemName, 64, g_pSharedMem->hostPID);
+            GenerateShmemName(shmemName, 64, g_pSharedMem->GetHostPID());
             g_hMapShmem = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, shmemName);
             if (g_hMapShmem) {
                 g_pShmem = (ShmemBuffer*)MapViewOfFile(g_hMapShmem, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(ShmemBuffer));
@@ -961,7 +964,7 @@ int MediaProcessMain(const AppConfig& config)
             }
 
             static uint32_t lastSourcePid = 0;
-            uint32_t currentSourcePid = g_pSharedMem->sourcePid;
+            uint32_t currentSourcePid = g_pSharedMem->GetSourcePid();
 
             if (currentSourcePid != 0 && currentSourcePid != lastSourcePid) {
                 lastSourcePid = currentSourcePid;
@@ -1094,7 +1097,7 @@ int MediaProcessMain(const AppConfig& config)
             }
 
             static bool sharedTexturesCreated = false;
-            if (!sharedTexturesCreated && g_pSharedMem->width > 0 && g_pSharedMem->height > 0) {
+            if (!sharedTexturesCreated && g_pSharedMem->GetWidth() > 0 && g_pSharedMem->GetHeight() > 0) {
                 if (g_pSharedMem->encoderTextures.ready.load(std::memory_order_acquire)) {
                     sharedTexturesCreated = true;
                 }

@@ -125,15 +125,15 @@ public:
         if (!sharedMem) return;
 
         for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
-            sharedMem->sharedHandles[i] = (uint64_t)sharedTextureHandles[i];
+            sharedMem->SetSharedHandle(i, (uint64_t)sharedTextureHandles[i]);
         }
-        sharedMem->fenceShareHandle = (uint64_t)sharedFenceHandle;
-        sharedMem->width = width;
-        sharedMem->height = height;
-        sharedMem->format = format;
-        sharedMem->luidLowPart = luidLow;
-        sharedMem->luidHighPart = luidHigh;
-        sharedMem->sourcePid = GetCurrentProcessId();
+        sharedMem->SetFenceShareHandle((uint64_t)sharedFenceHandle);
+        sharedMem->SetWidth(width);
+        sharedMem->SetHeight(height);
+        sharedMem->SetFormat(format);
+        sharedMem->SetLuidLowPart(luidLow);
+        sharedMem->SetLuidHighPart(luidHigh);
+        sharedMem->SetSourcePid(GetCurrentProcessId());
     }
 
     // Advance write index (called after copy completes)
@@ -150,7 +150,8 @@ public:
         if (!sharedMem) return;
 
         auto& ring = sharedMem->frameRing;
-        uint32_t wIdx = ring.writeIndex.load(std::memory_order_relaxed);
+        // CRITICAL FIX: Use acquire ordering to see consumer's readIndex updates
+        uint32_t wIdx = ring.writeIndex.load(std::memory_order_acquire);
         uint32_t rIdx = ring.readIndex.load(std::memory_order_acquire);
         if ((uint32_t)(wIdx - rIdx) >= (uint32_t)FRAME_RING_SIZE) {
             ring.droppedFrames.fetch_add(1, std::memory_order_relaxed);

@@ -269,7 +269,7 @@ inline bool HookContext::Initialize(HMODULE hModule)
     // Config loading happens elsewhere based on process name
 
     // Enable debug logging from config if set
-    if (sharedMem && sharedMem->debugLogging) {
+    if (sharedMem && sharedMem->GetDebugLogging()) {
         debugLoggingEnabled = true;
         g_DebugLoggingEnabled = true;
     }

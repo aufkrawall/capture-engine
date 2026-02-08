@@ -16,20 +16,17 @@ struct DX9Vertex {
 
 #define D3DFVF_CUSTOMVERTEX (D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1)
 
-DX9Backend::DX9Backend(IDirect3DDevice9* dev) : device(dev) {
-}
+DX9Backend::DX9Backend(IDirect3DDevice9* dev) : device(dev) {}
 
-DX9Backend::~DX9Backend() {
-    Shutdown();
-}
+DX9Backend::~DX9Backend() { Shutdown(); }
 
-bool DX9Backend::Initialize(int fontTextureWidth, int fontTextureHeight,
-                            const uint8_t* fontTextureData) {
+bool DX9Backend::Initialize(int fontTextureWidth, int fontTextureHeight, const uint8_t* fontTextureData)
+{
     if (initialized || !device) return false;
 
     // Create font texture
-    HRESULT hr = device->CreateTexture(fontTextureWidth, fontTextureHeight, 1,
-        D3DUSAGE_DYNAMIC, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &fontTexture, nullptr);
+    HRESULT hr = device->CreateTexture(fontTextureWidth, fontTextureHeight, 1, D3DUSAGE_DYNAMIC, D3DFMT_A8R8G8B8,
+                                       D3DPOOL_DEFAULT, &fontTexture, nullptr);
     if (FAILED(hr)) return false;
 
     // Lock and copy texture data (convert RGBA to ARGB)
@@ -54,23 +51,22 @@ bool DX9Backend::Initialize(int fontTextureWidth, int fontTextureHeight,
 
     // Create vertex buffer
     vertexBufferSize = 4096;
-    hr = device->CreateVertexBuffer((UINT)(vertexBufferSize * sizeof(DX9Vertex)),
-        D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, D3DFVF_CUSTOMVERTEX,
-        D3DPOOL_DEFAULT, &vertexBuffer, nullptr);
+    hr = device->CreateVertexBuffer((UINT)(vertexBufferSize * sizeof(DX9Vertex)), D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY,
+                                    D3DFVF_CUSTOMVERTEX, D3DPOOL_DEFAULT, &vertexBuffer, nullptr);
     if (FAILED(hr)) return false;
 
     // Create index buffer
     indexBufferSize = 8192;
-    hr = device->CreateIndexBuffer((UINT)(indexBufferSize * sizeof(uint16_t)),
-        D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, D3DFMT_INDEX16,
-        D3DPOOL_DEFAULT, &indexBuffer, nullptr);
+    hr = device->CreateIndexBuffer((UINT)(indexBufferSize * sizeof(uint16_t)), D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY,
+                                   D3DFMT_INDEX16, D3DPOOL_DEFAULT, &indexBuffer, nullptr);
     if (FAILED(hr)) return false;
 
     initialized = true;
     return true;
 }
 
-void DX9Backend::Shutdown() {
+void DX9Backend::Shutdown()
+{
     if (stateBlock) {
         stateBlock->Release();
         stateBlock = nullptr;
@@ -90,10 +86,9 @@ void DX9Backend::Shutdown() {
     initialized = false;
 }
 
-void DX9Backend::Render(const std::vector<DrawVertex>& vertices,
-                        const std::vector<uint16_t>& indices,
-                        const std::vector<DrawCommand>& commands,
-                        int viewportWidth, int viewportHeight) {
+void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
+                        const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight)
+{
     if (!initialized || !device || vertices.empty()) return;
 
     // Create state block to save state
@@ -104,17 +99,15 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices,
     if (vertices.size() > vertexBufferSize) {
         if (vertexBuffer) vertexBuffer->Release();
         vertexBufferSize = vertices.size() * 2;
-        device->CreateVertexBuffer((UINT)(vertexBufferSize * sizeof(DX9Vertex)),
-            D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, D3DFVF_CUSTOMVERTEX,
-            D3DPOOL_DEFAULT, &vertexBuffer, nullptr);
+        device->CreateVertexBuffer((UINT)(vertexBufferSize * sizeof(DX9Vertex)), D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY,
+                                   D3DFVF_CUSTOMVERTEX, D3DPOOL_DEFAULT, &vertexBuffer, nullptr);
     }
 
     if (indices.size() > indexBufferSize) {
         if (indexBuffer) indexBuffer->Release();
         indexBufferSize = indices.size() * 2;
-        device->CreateIndexBuffer((UINT)(indexBufferSize * sizeof(uint16_t)),
-            D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, D3DFMT_INDEX16,
-            D3DPOOL_DEFAULT, &indexBuffer, nullptr);
+        device->CreateIndexBuffer((UINT)(indexBufferSize * sizeof(uint16_t)), D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY,
+                                  D3DFMT_INDEX16, D3DPOOL_DEFAULT, &indexBuffer, nullptr);
     }
 
     // Convert and upload vertices
@@ -153,14 +146,14 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices,
     device->SetRenderState(D3DRS_ZENABLE, FALSE);
     device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
     device->SetRenderState(D3DRS_LIGHTING, FALSE);
-    
+
     device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
     device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
     device->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
     device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
     device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
     device->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
-    
+
     device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
     device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
 
@@ -175,9 +168,9 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices,
         } else {
             device->SetTexture(0, nullptr);
         }
-        
-        device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, cmd.vertexOffset,
-            0, (UINT)vertices.size(), cmd.indexOffset, cmd.indexCount / 3);
+
+        device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, cmd.vertexOffset, 0, (UINT)vertices.size(), cmd.indexOffset,
+                                     cmd.indexCount / 3);
     }
 
     // Restore state
@@ -186,4 +179,4 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices,
     stateBlock = nullptr;
 }
 
-} // namespace CustomOverlay
+}  // namespace CustomOverlay

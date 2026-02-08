@@ -21,7 +21,7 @@ bool IPCClient::Connect()
             // CRITICAL FIX: Use atomic accessors for thread-safe reads
             uint32_t magic = pDiscovery->GetMagic();
             uint32_t pid = pDiscovery->GetInjectPid();
-            
+
             if (magic == DISCOVERY_MAGIC && pid != 0) {
                 // Acquire semantics ensure we read whitelist after validating magic/pid
                 // Found discovery info - use inject PID to open main shared memory

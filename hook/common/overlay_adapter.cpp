@@ -1,18 +1,18 @@
 /**
  * Overlay Adapter Implementation
- * 
+ *
  * Creates the appropriate backend and renders overlay using CustomOverlay.
  */
 
 #include "overlay_adapter.h"
-#include "custom_overlay.h"
 #include "custom_font.h"
+#include "custom_overlay.h"
 #include "fg_detection.h"
 
 // Include all backends
-#include "custom_overlay_dx9.h"
 #include "custom_overlay_dx11.h"
 #include "custom_overlay_dx12.h"
+#include "custom_overlay_dx9.h"
 #include "custom_overlay_gl.h"
 #include "custom_overlay_vk.h"
 
@@ -22,20 +22,18 @@
 // Global adapter instance
 OverlayAdapter g_OverlayAdapter;
 
-OverlayAdapter::OverlayAdapter() {
-    memset(graphicsAPI, 0, sizeof(graphicsAPI));
-}
+OverlayAdapter::OverlayAdapter() { memset(graphicsAPI, 0, sizeof(graphicsAPI)); }
 
-OverlayAdapter::~OverlayAdapter() {
-    Shutdown();
-}
+OverlayAdapter::~OverlayAdapter() { Shutdown(); }
 
-void OverlayAdapter::SetGraphicsAPI(const char* api) {
+void OverlayAdapter::SetGraphicsAPI(const char* api)
+{
     strncpy(graphicsAPI, api, sizeof(graphicsAPI) - 1);
     graphicsAPI[sizeof(graphicsAPI) - 1] = '\0';
 }
 
-bool OverlayAdapter::InitDX9(void* device) {
+bool OverlayAdapter::InitDX9(void* device)
+{
     if (initialized) return true;
     if (!device) return false;
 
@@ -58,14 +56,12 @@ bool OverlayAdapter::InitDX9(void* device) {
     return true;
 }
 
-bool OverlayAdapter::InitDX11(void* device, void* context) {
+bool OverlayAdapter::InitDX11(void* device, void* context)
+{
     if (initialized) return true;
     if (!device || !context) return false;
 
-    auto dx11Backend = new CustomOverlay::DX11Backend(
-        (ID3D11Device*)device, 
-        (ID3D11DeviceContext*)context
-    );
+    auto dx11Backend = new CustomOverlay::DX11Backend((ID3D11Device*)device, (ID3D11DeviceContext*)context);
     backend = dx11Backend;
     backendType = OverlayBackendType::DX11;
 
@@ -83,15 +79,13 @@ bool OverlayAdapter::InitDX11(void* device, void* context) {
     return true;
 }
 
-bool OverlayAdapter::InitDX12(void* device, void* queue, int rtvFormat) {
+bool OverlayAdapter::InitDX12(void* device, void* queue, int rtvFormat)
+{
     if (initialized) return true;
     if (!device || !queue) return false;
 
-    auto dx12Backend = new CustomOverlay::DX12Backend(
-        (ID3D12Device*)device,
-        (ID3D12CommandQueue*)queue,
-        (DXGI_FORMAT)rtvFormat
-    );
+    auto dx12Backend =
+        new CustomOverlay::DX12Backend((ID3D12Device*)device, (ID3D12CommandQueue*)queue, (DXGI_FORMAT)rtvFormat);
     backend = dx12Backend;
     backendType = OverlayBackendType::DX12;
 
@@ -109,7 +103,8 @@ bool OverlayAdapter::InitDX12(void* device, void* queue, int rtvFormat) {
     return true;
 }
 
-bool OverlayAdapter::InitOpenGL() {
+bool OverlayAdapter::InitOpenGL()
+{
     if (initialized) return true;
 
     auto glBackend = new CustomOverlay::OpenGLBackend();
@@ -130,16 +125,13 @@ bool OverlayAdapter::InitOpenGL() {
     return true;
 }
 
-bool OverlayAdapter::InitVulkan(void* device, void* physDevice, void* queue, uint32_t queueFamily) {
+bool OverlayAdapter::InitVulkan(void* device, void* physDevice, void* queue, uint32_t queueFamily)
+{
     if (initialized) return true;
     if (!device) return false;
 
-    auto vkBackend = new CustomOverlay::VulkanBackend(
-        (VkDevice)device,
-        (VkPhysicalDevice)physDevice,
-        (VkQueue)queue,
-        queueFamily
-    );
+    auto vkBackend =
+        new CustomOverlay::VulkanBackend((VkDevice)device, (VkPhysicalDevice)physDevice, (VkQueue)queue, queueFamily);
     backend = vkBackend;
     backendType = OverlayBackendType::Vulkan;
 
@@ -157,7 +149,8 @@ bool OverlayAdapter::InitVulkan(void* device, void* physDevice, void* queue, uin
     return true;
 }
 
-void OverlayAdapter::Shutdown() {
+void OverlayAdapter::Shutdown()
+{
     if (renderer) {
         renderer->Shutdown();
         delete renderer;
@@ -171,7 +164,8 @@ void OverlayAdapter::Shutdown() {
     initialized = false;
 }
 
-void OverlayAdapter::SetDX12RenderTarget(void* cmdList, void* rtvHandle) {
+void OverlayAdapter::SetDX12RenderTarget(void* cmdList, void* rtvHandle)
+{
     if (backendType == OverlayBackendType::DX12 && backend) {
         auto dx12Backend = static_cast<CustomOverlay::DX12Backend*>(backend);
         D3D12_CPU_DESCRIPTOR_HANDLE rtv;
@@ -180,14 +174,16 @@ void OverlayAdapter::SetDX12RenderTarget(void* cmdList, void* rtvHandle) {
     }
 }
 
-uint32_t OverlayAdapter::GetLoadColor(float load) {
+uint32_t OverlayAdapter::GetLoadColor(float load)
+{
     using namespace CustomOverlay::Colors;
     if (load < 50.0f) return LoadLow;
     if (load < 85.0f) return LoadMed;
     return LoadHigh;
 }
 
-void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
+void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight)
+{
     if (!initialized || !renderer) return;
 
     // Check if overlay should be shown
@@ -217,7 +213,8 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     renderer->EndFrame();
 }
 
-void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
+void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight)
+{
     using namespace CustomOverlay;
 
     if (!ipc || !ipc->GetSharedMem()) return;
@@ -227,10 +224,11 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     // Calculate position
     float padding = (float)cfg.padding;
     float x = padding, y = padding;
-    
+
     switch (cfg.position) {
         case OverlayPosition::TopLeft:
-            x = padding; y = padding;
+            x = padding;
+            y = padding;
             break;
         case OverlayPosition::TopRight:
             x = viewportWidth - padding - 200;  // Approximate width
@@ -262,20 +260,16 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     // GPU
     if (cfg.showGPU) {
         snprintf(buf, 64, "%.0f%%", cachedSystemMetrics.gpuUsage);
-        renderer->DrawTextWithShadow(x, cursorY, SystemMetricsCollector::Get().GetGPUName(), 
-                                     cfg.gpuColor, shadowColor);
-        renderer->DrawTextWithShadow(x + 100, cursorY, buf, 
-                                     GetLoadColor(cachedSystemMetrics.gpuUsage), shadowColor);
+        renderer->DrawTextWithShadow(x, cursorY, SystemMetricsCollector::Get().GetGPUName(), cfg.gpuColor, shadowColor);
+        renderer->DrawTextWithShadow(x + 100, cursorY, buf, GetLoadColor(cachedSystemMetrics.gpuUsage), shadowColor);
         cursorY += lineHeight;
     }
 
     // CPU
     if (cfg.showCPU) {
         snprintf(buf, 64, "%.0f%%", cachedSystemMetrics.cpuUsage);
-        renderer->DrawTextWithShadow(x, cursorY, SystemMetricsCollector::Get().GetCPUName(), 
-                                     cfg.cpuColor, shadowColor);
-        renderer->DrawTextWithShadow(x + 100, cursorY, buf, 
-                                     GetLoadColor(cachedSystemMetrics.cpuUsage), shadowColor);
+        renderer->DrawTextWithShadow(x, cursorY, SystemMetricsCollector::Get().GetCPUName(), cfg.cpuColor, shadowColor);
+        renderer->DrawTextWithShadow(x + 100, cursorY, buf, GetLoadColor(cachedSystemMetrics.cpuUsage), shadowColor);
         cursorY += lineHeight;
     }
 

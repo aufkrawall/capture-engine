@@ -1,9 +1,9 @@
 /**
  * Custom Overlay Font Atlas
- * 
+ *
  * Lightweight bitmap font atlas for overlay text rendering.
  * Replaces ImGui's font system with a minimal implementation.
- * 
+ *
  * Uses embedded ASCII bitmap font data (no external files needed).
  */
 
@@ -11,17 +11,17 @@
 
 #include <windows.h>
 #include <cstdint>
-#include <vector>
 #include <string>
+#include <vector>
 
 namespace CustomOverlay {
 
 // Glyph information for a single character
 struct Glyph {
-    uint16_t x, y;           // Position in atlas texture
-    uint16_t width, height;  // Size of glyph
-    int16_t xOffset, yOffset; // Offset from cursor position
-    uint16_t xAdvance;       // Horizontal advance after drawing
+    uint16_t x, y;             // Position in atlas texture
+    uint16_t width, height;    // Size of glyph
+    int16_t xOffset, yOffset;  // Offset from cursor position
+    uint16_t xAdvance;         // Horizontal advance after drawing
 };
 
 // Font atlas containing bitmap font data
@@ -62,11 +62,13 @@ private:
 };
 
 // Color utilities (replaces ImGui color functions)
-inline uint32_t ColorRGBA(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255) {
+inline uint32_t ColorRGBA(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255)
+{
     return (a << 24) | (b << 16) | (g << 8) | r;  // ABGR format (matches ImGui)
 }
 
-inline uint32_t ColorScale(uint32_t col, float scale) {
+inline uint32_t ColorScale(uint32_t col, float scale)
+{
     if (scale <= 1.0f) return col;
     uint8_t r = (col >> 0) & 0xFF;
     uint8_t g = (col >> 8) & 0xFF;
@@ -79,11 +81,12 @@ inline uint32_t ColorScale(uint32_t col, float scale) {
 }
 
 // Extract color components
-inline void ColorToRGBA(uint32_t col, uint8_t& r, uint8_t& g, uint8_t& b, uint8_t& a) {
+inline void ColorToRGBA(uint32_t col, uint8_t& r, uint8_t& g, uint8_t& b, uint8_t& a)
+{
     r = (col >> 0) & 0xFF;
     g = (col >> 8) & 0xFF;
     b = (col >> 16) & 0xFF;
     a = (col >> 24) & 0xFF;
 }
 
-} // namespace CustomOverlay
+}  // namespace CustomOverlay

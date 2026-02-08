@@ -30,7 +30,7 @@ void ce::SyncWithLegacyGlobals()
     }
 
     // Sync debug logging flag
-    if (ctx->sharedMem && ctx->sharedMem->debugLogging) {
+    if (ctx->sharedMem && ctx->sharedMem->GetDebugLogging()) {
         ctx->debugLoggingEnabled = true;
     }
 
@@ -81,7 +81,7 @@ void TryEnableFrameTimeCSVLogging(SharedMemoryLayout* shm, const void* address, 
                                   const char* apiName, bool& inOutInitialized)
 {
     if (inOutInitialized) return;
-    if (!shm || !shm->debugLogging) return;
+    if (!shm || !shm->GetDebugLogging()) return;
 
     char csvPath[MAX_PATH];
     if (BuildLogFilePathForModuleAddress(address, "frame_times.csv", csvPath, sizeof(csvPath))) {
@@ -244,10 +244,10 @@ void ReportLUID(uint32_t low, uint32_t high)
     SystemMetricsCollector::Get().Initialize(low, high);
 
     if (g_IPC && g_IPC->GetSharedMem()) {
-        if (g_IPC->GetSharedMem()->luidLowPart != (int32_t)low ||
-            g_IPC->GetSharedMem()->luidHighPart != (int32_t)high) {
-            g_IPC->GetSharedMem()->luidLowPart = (int32_t)low;
-            g_IPC->GetSharedMem()->luidHighPart = (int32_t)high;
+        if (g_IPC->GetSharedMem()->GetLuidLowPart() != (int32_t)low ||
+            g_IPC->GetSharedMem()->GetLuidHighPart() != (int32_t)high) {
+            g_IPC->GetSharedMem()->SetLuidLowPart((int32_t)low);
+            g_IPC->GetSharedMem()->SetLuidHighPart((int32_t)high);
             HookLog("Common: Reported LUID to SHM: 0x%08X_%08X", high, low);
         }
     }
@@ -257,8 +257,8 @@ void ReportLUID(uint32_t low, uint32_t high)
 static void HookLogInternal(LogLevel level, const char* fmt, va_list args)
 {
     if (g_IPC && g_IPC->GetSharedMem()) {
-        if ((int)level > (int)g_IPC->GetSharedMem()->logLevel) return;
-        if (!g_IPC->GetSharedMem()->debugLogging) return;
+        if ((int)level > (int)g_IPC->GetSharedMem()->GetLogLevel()) return;
+        if (!g_IPC->GetSharedMem()->GetDebugLogging()) return;
     }
 
     static char buffer[4096];

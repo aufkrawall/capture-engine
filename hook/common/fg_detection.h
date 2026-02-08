@@ -27,13 +27,14 @@ public:
     int GetLastCmdListCount() const { return lastCmdListCount.load(); }
 
     // Query if the current frame is a real frame (has command list work) or interpolated
-    bool IsCurrentFrameReal() const {
-        return lastCmdListCount.load(std::memory_order_acquire) > 0;
-    }
+    bool IsCurrentFrameReal() const { return lastCmdListCount.load(std::memory_order_acquire) > 0; }
 
     // Get consecutive real/interpolated frame counts for pattern detection
     int GetConsecutiveRealFrames() const { return consecutiveRealFrames.load(std::memory_order_acquire); }
-    int GetConsecutiveInterpolatedFrames() const { return consecutiveInterpolatedFrames.load(std::memory_order_acquire); }
+    int GetConsecutiveInterpolatedFrames() const
+    {
+        return consecutiveInterpolatedFrames.load(std::memory_order_acquire);
+    }
 
     // Events
     void OnSwapchainRecreation();
@@ -69,6 +70,7 @@ private:
         int64_t timestampUs = 0;
         int commandLists = 0;
     };
+    // CRITICAL FIX: Use atomic arrays for thread-safe access
     std::array<FrameRecord, WINDOW_SIZE> frameHistory{};
     std::atomic<int> historyIndex{0};
     std::atomic<int> totalFramesRecorded{0};
@@ -107,6 +109,6 @@ extern FGCompatibility g_FGCompat;
 
 // C-linkage exports for cross-module hooks
 extern "C" {
-    void FG_SetDLSSActive(bool active);
-    void FG_SetFSRActive(bool active);
+void FG_SetDLSSActive(bool active);
+void FG_SetFSRActive(bool active);
 }

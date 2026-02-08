@@ -16,8 +16,8 @@ void Shutdown();
 
 // Hook types
 enum class HookType {
-    Export,        // Function exported from DLL
-    COMVTable,     // COM interface method
+    Export,     // Function exported from DLL
+    COMVTable,  // COM interface method
 };
 
 // Opaque hook handle
@@ -30,35 +30,17 @@ struct HookHandle {
 
 // Create a hook
 // Returns true on success, false on failure
-bool CreateExportHook(
-    const char* moduleName,
-    const char* functionName,
-    void* detour,
-    void** original
-);
+bool CreateExportHook(const char* moduleName, const char* functionName, void* detour, void** original);
 
 // Create hook using wide char module name
-bool CreateExportHookW(
-    const wchar_t* moduleName,
-    const char* functionName,
-    void* detour,
-    void** original
-);
+bool CreateExportHookW(const wchar_t* moduleName, const char* functionName, void* detour, void** original);
 
 // Hook a COM vtable method directly
 // target: address of the vtable entry (&vtable[index])
-bool CreateCOMHook(
-    void** vtableEntry,
-    void* detour,
-    void** original
-);
+bool CreateCOMHook(void** vtableEntry, void* detour, void** original);
 
 // Create hook on a specific function address
-bool CreateFunctionHook(
-    void* target,
-    void* detour,
-    void** original
-);
+bool CreateFunctionHook(void* target, void* detour, void** original);
 
 // Enable/disable hook
 bool EnableHook(void* target);
@@ -80,12 +62,13 @@ public:
     ScopedInitializer();
     ~ScopedInitializer();
     bool IsInitialized() const { return m_initialized; }
+
 private:
     bool m_initialized = false;
 };
 
 // Helper template for type-safe hook management
-template<typename FuncType>
+template <typename FuncType>
 class TypedHook {
     void* m_Target = nullptr;
     FuncType m_Original = nullptr;
@@ -94,7 +77,8 @@ class TypedHook {
 
 public:
     TypedHook() = default;
-    ~TypedHook() {
+    ~TypedHook()
+    {
         if (m_Created.load()) {
             RemoveHook(m_Target);
         }
@@ -106,14 +90,15 @@ public:
     TypedHook(TypedHook&&) = delete;
     TypedHook& operator=(TypedHook&&) = delete;
 
-    bool Create(void* target, void* detour) {
+    bool Create(void* target, void* detour)
+    {
         if (m_Created.load()) return false;
-        
+
         void* orig = nullptr;
         if (!CreateFunctionHook(target, detour, &orig)) {
             return false;
         }
-        
+
         m_Target = target;
         m_Original = reinterpret_cast<FuncType>(orig);
         m_Created.store(true);
@@ -121,14 +106,15 @@ public:
         return true;
     }
 
-    bool CreateExport(const char* moduleName, const char* functionName, void* detour) {
+    bool CreateExport(const char* moduleName, const char* functionName, void* detour)
+    {
         if (m_Created.load()) return false;
-        
+
         void* orig = nullptr;
         if (!CreateExportHook(moduleName, functionName, detour, &orig)) {
             return false;
         }
-        
+
         HMODULE hMod = GetModuleHandleA(moduleName);
         m_Target = hMod ? reinterpret_cast<void*>(GetProcAddress(hMod, functionName)) : nullptr;
         m_Original = reinterpret_cast<FuncType>(orig);
@@ -137,7 +123,8 @@ public:
         return true;
     }
 
-    bool Enable() {
+    bool Enable()
+    {
         if (!m_Created.load() || m_Enabled.load()) return false;
         if (EnableHook(m_Target)) {
             m_Enabled.store(true);
@@ -146,7 +133,8 @@ public:
         return false;
     }
 
-    bool Disable() {
+    bool Disable()
+    {
         if (!m_Created.load() || !m_Enabled.load()) return false;
         if (DisableHook(m_Target)) {
             m_Enabled.store(false);
@@ -160,10 +148,11 @@ public:
     bool IsEnabled() const { return m_Enabled.load(); }
 
     // Call original function
-    template<typename... Args>
-    auto operator()(Args&&... args) -> decltype(auto) {
+    template <typename... Args>
+    auto operator()(Args&&... args) -> decltype(auto)
+    {
         return m_Original(std::forward<Args>(args)...);
     }
 };
 
-} // namespace HookSystem
+}  // namespace HookSystem

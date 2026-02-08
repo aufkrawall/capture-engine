@@ -268,7 +268,8 @@ void LayerIPC_IncrementWriteIndex(uint64_t timestamp)
 
     // Update timestamp for the current slot
     auto& ring = mem->frameRing;
-    uint32_t wIdx = ring.writeIndex.load(std::memory_order_relaxed);
+    // CRITICAL FIX: Use acquire ordering to see consumer's readIndex updates
+    uint32_t wIdx = ring.writeIndex.load(std::memory_order_acquire);
 
     uint32_t slot = wIdx % FRAME_RING_SIZE;
     if (slot < FRAME_RING_SIZE) {
@@ -313,7 +314,8 @@ void LayerIPC_SignalFrameReady(int32_t textureIndex, uint64_t fenceValue)
     if (!mem) return;
 
     auto& ring = mem->frameRing;
-    uint32_t wIdx = ring.writeIndex.load(std::memory_order_relaxed);
+    // CRITICAL FIX: Use acquire ordering to see consumer's readIndex updates
+    uint32_t wIdx = ring.writeIndex.load(std::memory_order_acquire);
     uint32_t rIdx = ring.readIndex.load(std::memory_order_acquire);
 
     // Check if ring buffer has space

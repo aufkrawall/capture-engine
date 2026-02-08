@@ -1,14 +1,14 @@
 /**
  * Overlay Adapter
- * 
+ *
  * Bridges the existing Overlay class with CustomOverlay backends.
  * This allows gradual migration from ImGui to CustomOverlay.
- * 
+ *
  * Usage:
  * 1. Create appropriate backend based on graphics API
  * 2. Call InitCustomOverlay() instead of/after InitImGui()
  * 3. Call RenderCustomOverlay() instead of/after RenderUI()
- * 
+ *
  * The adapter reads the same IPC config and metrics to render identical content.
  */
 
@@ -20,19 +20,12 @@
 
 // Forward declarations for backends
 namespace CustomOverlay {
-    class Renderer;
-    class RendererBackend;
-}
+class Renderer;
+class RendererBackend;
+}  // namespace CustomOverlay
 
 // Backend type enum
-enum class OverlayBackendType {
-    None,
-    DX9,
-    DX11,
-    DX12,
-    OpenGL,
-    Vulkan
-};
+enum class OverlayBackendType { None, DX9, DX11, DX12, OpenGL, Vulkan };
 
 class OverlayAdapter {
 public:
@@ -40,11 +33,12 @@ public:
     ~OverlayAdapter();
 
     // Initialize with graphics API-specific parameters
-    bool InitDX9(void* device);  // IDirect3DDevice9*
-    bool InitDX11(void* device, void* context);  // ID3D11Device*, ID3D11DeviceContext*
+    bool InitDX9(void* device);                               // IDirect3DDevice9*
+    bool InitDX11(void* device, void* context);               // ID3D11Device*, ID3D11DeviceContext*
     bool InitDX12(void* device, void* queue, int rtvFormat);  // ID3D12Device*, ID3D12CommandQueue*, DXGI_FORMAT
     bool InitOpenGL();
-    bool InitVulkan(void* device, void* physDevice, void* queue, uint32_t queueFamily);  // VkDevice, VkPhysicalDevice, VkQueue
+    bool InitVulkan(void* device, void* physDevice, void* queue,
+                    uint32_t queueFamily);  // VkDevice, VkPhysicalDevice, VkQueue
 
     void Shutdown();
     bool IsInitialized() const { return initialized; }

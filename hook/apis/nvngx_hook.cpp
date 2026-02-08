@@ -1,10 +1,10 @@
 #include "nvngx_hook.h"
 #include <mutex>
 #include <vector>
+#include "../common/fg_detection.h"  // For FG_SetDLSSActive
+#include "../common/hook_common.h"
 #include "../wrappers/iat_hook.h"
 #include "../wrappers/vtable_hook.h"
-#include "../common/hook_common.h"
-#include "../common/fg_detection.h"  // For FG_SetDLSSActive
 
 // --- NGX SDK Mini-Definitions ---
 enum NVSDK_NGX_Result {
@@ -1054,7 +1054,7 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
                     state.fgActive = true;
                     if (g_IPC->GetSharedMem()->debugLogging)
                         NVNGXLog("Hooked_CreateFeature: DLSS FG ACTIVATED (ID 0x%X)", featureID);
-                    
+
                     // CRITICAL: Signal FG activation to the detection system
                     // This enables usage-based detection instead of DLL-based detection
                     g_FGCompat.SetDLSSFGActive(true);

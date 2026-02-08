@@ -1,9 +1,10 @@
 #include "ffx_hook.h"
-#include "../common/hook_common.h"
-#include "../common/fg_detection.h"
-#include "../wrappers/iat_hook.h"
-#include <mutex>
 #include <atomic>
+#include <mutex>
+#include <unordered_map>
+#include "../common/fg_detection.h"
+#include "../common/hook_common.h"
+#include "../wrappers/iat_hook.h"
 
 // ============================================================================
 // FFX API Type Definitions (from FFX SDK)
@@ -14,9 +15,8 @@ typedef void* ffxContext;
 typedef uint32_t ffxReturnCode_t;
 typedef uint64_t ffxStructType_t;
 
-typedef struct ffxApiHeader
-{
-    ffxStructType_t      type;
+typedef struct ffxApiHeader {
+    ffxStructType_t type;
     struct ffxApiHeader* pNext;
 } ffxApiHeader;
 
@@ -25,8 +25,7 @@ typedef ffxApiHeader ffxCreateContextDescHeader;
 typedef void* (*ffxAlloc)(void* pUserData, uint64_t size);
 typedef void (*ffxDealloc)(void* pUserData, void* pMem);
 
-typedef struct ffxAllocationCallbacks
-{
+typedef struct ffxAllocationCallbacks {
     void* pUserData;
     ffxAlloc alloc;
     ffxDealloc dealloc;
@@ -41,7 +40,8 @@ constexpr uint32_t FFX_API_EFFECT_ID_FRAMEGENERATIONSWAPCHAIN = 0x00030000u;
 constexpr ffxReturnCode_t FFX_API_RETURN_OK = 0;
 
 // Function signatures
-typedef ffxReturnCode_t (*PfnFfxCreateContext)(ffxContext* context, ffxCreateContextDescHeader* desc, const ffxAllocationCallbacks* memCb);
+typedef ffxReturnCode_t (*PfnFfxCreateContext)(ffxContext* context, ffxCreateContextDescHeader* desc,
+                                               const ffxAllocationCallbacks* memCb);
 typedef ffxReturnCode_t (*PfnFfxDestroyContext)(ffxContext* context, const ffxAllocationCallbacks* memCb);
 
 // ============================================================================
@@ -54,6 +54,10 @@ std::mutex g_InitMutex;
 std::atomic<bool> g_Initialized{false};
 std::atomic<int> g_ActiveFGContextCount{0};
 
+// CRITICAL FIX: Track context types to know if destroyed context is FG
+std::mutex g_ContextMapMutex;
+std::unordered_map<ffxContext, uint32_t> g_ContextTypeMap;
+
 // Original function pointers
 PfnFfxCreateContext g_Original_ffxCreateContext = nullptr;
 PfnFfxDestroyContext g_Original_ffxDestroyContext = nullptr;
@@ -62,23 +66,18 @@ PfnFfxDestroyContext g_Original_ffxDestroyContext = nullptr;
 HMODULE g_HookedModule = nullptr;
 
 // Extract effect ID from structure type
-inline uint32_t GetEffectId(ffxStructType_t type)
-{
-    return static_cast<uint32_t>(type) & FFX_API_EFFECT_MASK;
-}
+inline uint32_t GetEffectId(ffxStructType_t type) { return static_cast<uint32_t>(type) & FFX_API_EFFECT_MASK; }
 
 // ============================================================================
 // Hooked Functions
 // ============================================================================
 
-ffxReturnCode_t Hooked_ffxCreateContext(
-    ffxContext* context,
-    ffxCreateContextDescHeader* desc,
-    const ffxAllocationCallbacks* memCb)
+ffxReturnCode_t Hooked_ffxCreateContext(ffxContext* context, ffxCreateContextDescHeader* desc,
+                                        const ffxAllocationCallbacks* memCb)
 {
     if (!g_Original_ffxCreateContext) {
         HookLog("FFX Hook: ffxCreateContext called but original not set!");
-        return 1; // Error
+        return 1;  // Error
     }
 
     // Call original first
@@ -87,10 +86,15 @@ ffxReturnCode_t Hooked_ffxCreateContext(
     if (result == FFX_API_RETURN_OK && desc) {
         uint32_t effectId = GetEffectId(desc->type);
 
+        // CRITICAL FIX: Track context type for proper cleanup
+        {
+            std::lock_guard<std::mutex> lock(g_ContextMapMutex);
+            g_ContextTypeMap[context] = effectId;
+        }
+
         // Check if this is a Frame Generation context
-        if (effectId == FFX_API_EFFECT_ID_FRAMEGENERATION ||
-            effectId == FFX_API_EFFECT_ID_FRAMEGENERATIONSWAPCHAIN) {
-            
+        if (effectId == FFX_API_EFFECT_ID_FRAMEGENERATION || effectId == FFX_API_EFFECT_ID_FRAMEGENERATIONSWAPCHAIN) {
+
             int prevCount = g_ActiveFGContextCount.fetch_add(1, std::memory_order_acq_rel);
             HookLog("FFX Hook: Frame Generation context CREATED (type=0x%llx, effectId=0x%x, activeContexts=%d)",
                     (unsigned long long)desc->type, effectId, prevCount + 1);
@@ -107,38 +111,47 @@ ffxReturnCode_t Hooked_ffxCreateContext(
     return result;
 }
 
-ffxReturnCode_t Hooked_ffxDestroyContext(
-    ffxContext* context,
-    const ffxAllocationCallbacks* memCb)
+ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* context, const ffxAllocationCallbacks* memCb)
 {
     if (!g_Original_ffxDestroyContext) {
         HookLog("FFX Hook: ffxDestroyContext called but original not set!");
-        return 1; // Error
+        return 1;  // Error
     }
 
-    // Track if this might be an FG context (conservative - we decrement and check)
-    // Note: We don't have easy access to the context type here, so we're conservative
-    // If the count goes to 0, we signal deactivation
-    int prevCount = g_ActiveFGContextCount.load(std::memory_order_acquire);
-    
+    // CRITICAL FIX: Check if this is an FG context before decrementing
+    bool isFGContext = false;
+    {
+        std::lock_guard<std::mutex> lock(g_ContextMapMutex);
+        auto it = g_ContextTypeMap.find(context);
+        if (it != g_ContextTypeMap.end()) {
+            uint32_t effectId = it->second;
+            isFGContext = (effectId == FFX_API_EFFECT_ID_FRAMEGENERATION ||
+                           effectId == FFX_API_EFFECT_ID_FRAMEGENERATIONSWAPCHAIN);
+            g_ContextTypeMap.erase(it);
+        }
+    }
+
     // Call original
     ffxReturnCode_t result = g_Original_ffxDestroyContext(context, memCb);
 
-    if (result == FFX_API_RETURN_OK && prevCount > 0) {
+    // Only decrement if this was actually an FG context
+    if (result == FFX_API_RETURN_OK && isFGContext) {
+        int prevCount = g_ActiveFGContextCount.load(std::memory_order_acquire);
         int newCount = g_ActiveFGContextCount.fetch_sub(1, std::memory_order_acq_rel) - 1;
         if (newCount < 0) {
-            // Shouldn't happen, but clamp to 0
             g_ActiveFGContextCount.store(0, std::memory_order_release);
             newCount = 0;
         }
 
-        HookLog("FFX Hook: Context destroyed (activeContexts=%d)", newCount);
+        HookLog("FFX Hook: FG Context destroyed (activeContexts=%d)", newCount);
 
         // Signal FG deactivation when all contexts are destroyed
         if (newCount == 0) {
             HookLog("FFX Hook: FSR Frame Generation DEACTIVATED (all contexts destroyed)");
             g_FGCompat.SetFSRFGActive(false);
         }
+    } else if (result == FFX_API_RETURN_OK && !isFGContext) {
+        HookLog("FFX Hook: Non-FG Context destroyed");
     }
 
     return result;
@@ -170,23 +183,21 @@ void InstallHooksForModule(HMODULE hModule, const char* moduleName)
 
     // Install IAT hooks in all loaded modules to intercept calls to FFX functions
     // This patches the import tables of the game exe and all loaded DLLs
-    
+
     void* dummy = nullptr;
     if (createCtx) {
         HookLog("FFX Hook: ffxCreateContext found at %p, hooking via IAT", createCtx);
         // Patch IAT for all modules that import from the FFX DLL
-        IATHook::PatchIATAllModules(moduleName, "ffxCreateContext", 
-                                    (void*)Hooked_ffxCreateContext, &dummy);
+        IATHook::PatchIATAllModules(moduleName, "ffxCreateContext", (void*)Hooked_ffxCreateContext, &dummy);
         // Also register for dynamic hook (GetProcAddress interception)
-        IATHook::RegisterDynamicHook("ffxCreateContext", (void*)Hooked_ffxCreateContext, 
+        IATHook::RegisterDynamicHook("ffxCreateContext", (void*)Hooked_ffxCreateContext,
                                      (void**)&g_Original_ffxCreateContext);
     }
 
     if (destroyCtx) {
         HookLog("FFX Hook: ffxDestroyContext found at %p, hooking via IAT", destroyCtx);
-        IATHook::PatchIATAllModules(moduleName, "ffxDestroyContext", 
-                                    (void*)Hooked_ffxDestroyContext, &dummy);
-        IATHook::RegisterDynamicHook("ffxDestroyContext", (void*)Hooked_ffxDestroyContext, 
+        IATHook::PatchIATAllModules(moduleName, "ffxDestroyContext", (void*)Hooked_ffxDestroyContext, &dummy);
+        IATHook::RegisterDynamicHook("ffxDestroyContext", (void*)Hooked_ffxDestroyContext,
                                      (void**)&g_Original_ffxDestroyContext);
     }
 
@@ -214,33 +225,25 @@ void Init()
     // Try to find FFX modules
     // These are the common DLL names for FSR Frame Generation
     // Also includes dlssg-to-fsr3 mod DLLs that redirect DLSS FG to FSR FG
-    const wchar_t* ffxModules[] = {
-        // FSR 4 / FSR 3.1 DLLs (UE5 native integration) - CHECK FIRST
-        L"amd_fidelityfx_framegeneration_dx12.dll",
-        L"amd_fidelityfx_framegeneration_vk.dll",
-        // Standard AMD FSR FG DLLs
-        L"amd_fidelityfx_fg.dll",
-        L"ffx_frameinterpolation_x64.dll",
-        L"amd_fidelityfx_framegeneration.dll",
-        L"ffx_framegeneration.dll",
-        // dlssg-to-fsr3 mod - uses nvngx_dlssg.dll as a proxy that calls FFX API
-        L"nvngx_dlssg.dll",
-        // FSR3 FG Mod common names
-        L"fsr3fg.dll",
-        L"fsr3mod.dll"
-    };
+    const wchar_t* ffxModules[] = {// FSR 4 / FSR 3.1 DLLs (UE5 native integration) - CHECK FIRST
+                                   L"amd_fidelityfx_framegeneration_dx12.dll", L"amd_fidelityfx_framegeneration_vk.dll",
+                                   // Standard AMD FSR FG DLLs
+                                   L"amd_fidelityfx_fg.dll", L"ffx_frameinterpolation_x64.dll",
+                                   L"amd_fidelityfx_framegeneration.dll", L"ffx_framegeneration.dll",
+                                   // dlssg-to-fsr3 mod - uses nvngx_dlssg.dll as a proxy that calls FFX API
+                                   L"nvngx_dlssg.dll",
+                                   // FSR3 FG Mod common names
+                                   L"fsr3fg.dll", L"fsr3mod.dll"};
 
-    const char* ffxModuleNames[] = {
-        "amd_fidelityfx_framegeneration_dx12.dll",
-        "amd_fidelityfx_framegeneration_vk.dll",
-        "amd_fidelityfx_fg.dll",
-        "ffx_frameinterpolation_x64.dll",
-        "amd_fidelityfx_framegeneration.dll",
-        "ffx_framegeneration.dll",
-        "nvngx_dlssg.dll",
-        "fsr3fg.dll",
-        "fsr3mod.dll"
-    };
+    const char* ffxModuleNames[] = {"amd_fidelityfx_framegeneration_dx12.dll",
+                                    "amd_fidelityfx_framegeneration_vk.dll",
+                                    "amd_fidelityfx_fg.dll",
+                                    "ffx_frameinterpolation_x64.dll",
+                                    "amd_fidelityfx_framegeneration.dll",
+                                    "ffx_framegeneration.dll",
+                                    "nvngx_dlssg.dll",
+                                    "fsr3fg.dll",
+                                    "fsr3mod.dll"};
 
     for (size_t i = 0; i < _countof(ffxModules); ++i) {
         HMODULE hMod = GetModuleHandleW(ffxModules[i]);
@@ -255,10 +258,7 @@ void Init()
     HookLog("FFX Hook: No FFX modules found, hooks not installed");
 }
 
-bool IsInitialized()
-{
-    return g_Initialized.load(std::memory_order_acquire);
-}
+bool IsInitialized() { return g_Initialized.load(std::memory_order_acquire); }
 
 void Shutdown()
 {

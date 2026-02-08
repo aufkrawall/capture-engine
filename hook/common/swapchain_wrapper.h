@@ -300,8 +300,8 @@ public:
         EarlyLog("OverlaySwapChainWrapper::ResizeBuffers1 %ux%u", Width, Height);
         DX12_OnSwapchainResizeBegin();
         HRESULT hr = m_pReal3 ? m_pReal3->ResizeBuffers1(BufferCount, Width, Height, Format, SwapChainFlags,
-                                                   pCreationNodeMask, ppPresentQueue)
-                        : E_NOTIMPL;
+                                                         pCreationNodeMask, ppPresentQueue)
+                              : E_NOTIMPL;
         EarlyLog("OverlaySwapChainWrapper: calling End");
         DX12_OnSwapchainResizeEnd();
         return hr;

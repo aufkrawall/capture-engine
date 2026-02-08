@@ -12,8 +12,8 @@
 #include "../common/capture_base.h"
 #include "../common/fps_limiter.h"
 #include "../common/frame_timing.h"
-#include "../common/overlay_adapter.h"
 #include "../common/input_manager.h"
+#include "../common/overlay_adapter.h"
 #include "../wrappers/vtable_hook.h"
 #include "hook_common.h"
 #include "lod_helper.h"
@@ -561,22 +561,22 @@ static void DrawDX8Overlay(HWND hwnd)
 
     if (!g_OverlayAdapter.IsInitialized()) {
         g_CachedHwnd = hwnd;
-        InputManager::Get().HookWindow(hwnd); // Hook input for menu
+        InputManager::Get().HookWindow(hwnd);  // Hook input for menu
 
         if (g_OverlayAdapter.InitDX9(g_DX8Capture.d3d9DeviceEx)) {
             g_OverlayAdapter.SetHwnd(hwnd);
             EarlyLog("DX8: OverlayAdapter initialized (via DX9)");
         }
-        
+
         // Re-apply hook if needed? D3D8SetTextureStageState hook logic was in ImGui init block
         // We should probably keep that hook if it's important for state preservation?
         // The original logic hooked SetTextureStageState inside initial ImGui init only.
         if (!g_DX8HooksInitialized && g_DX8Capture.d3d8Device) {
-             void** vTable = *(void***)g_DX8Capture.d3d8Device;
-             VTableHook::Create(&vTable[61], (LPVOID)&DetourD3D8SetTextureStageState,
-                                (LPVOID*)&oD3D8SetTextureStageState);
-             g_DX8HooksInitialized = true;
-             HookLog("DX8: State hooks initialized");
+            void** vTable = *(void***)g_DX8Capture.d3d8Device;
+            VTableHook::Create(&vTable[61], (LPVOID)&DetourD3D8SetTextureStageState,
+                               (LPVOID*)&oD3D8SetTextureStageState);
+            g_DX8HooksInitialized = true;
+            HookLog("DX8: State hooks initialized");
         }
     }
 
@@ -585,7 +585,7 @@ static void DrawDX8Overlay(HWND hwnd)
     g_OverlayAdapter.SetDroppedFrames(g_DX8Capture.droppedFrames.load(std::memory_order_relaxed));
     g_OverlayAdapter.SetGraphicsAPI("DX8");
 
-    // DX9Ex wrapper handles BeginScene/EndScene? 
+    // DX9Ex wrapper handles BeginScene/EndScene?
     // Original code called BeginScene/EndScene around ImGui_ImplDX9_RenderDrawData.
     // OverlayAdapter.RenderOverlay handles its own render passes but assumes state is ready?
     // DX9 backend of CustomOverlay calls BeginScene/EndScene internally?
@@ -593,18 +593,18 @@ static void DrawDX8Overlay(HWND hwnd)
     // DX9Backend::Render calls BeginScene/EndScene if not already?
     // Usually OverlayAdapter expects to be called inside a frame.
     // BUT here we are wrapping.
-    // Original: 
+    // Original:
     //   g_DX8Capture.d3d9DeviceEx->BeginScene();
     //   ImGui...
     //   g_DX8Capture.d3d9DeviceEx->EndScene();
-    
+
     // DX9Backend usually does BeginStateBlock... Draw... EndStateBlock.
     // It does NOT call BeginScene.
     // So we should wrap it.
-    
+
     if (SUCCEEDED(g_DX8Capture.d3d9DeviceEx->BeginScene())) {
-         g_OverlayAdapter.RenderOverlay(g_DX8Capture.width, g_DX8Capture.height);
-         g_DX8Capture.d3d9DeviceEx->EndScene();
+        g_OverlayAdapter.RenderOverlay(g_DX8Capture.width, g_DX8Capture.height);
+        g_DX8Capture.d3d9DeviceEx->EndScene();
     }
 }
 

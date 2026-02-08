@@ -19,7 +19,8 @@ static MINIDUMPWRITEDUMP g_pMiniDumpWriteDump = NULL;
 
 void SetCrashDumpDirectory(const std::string& dir) { g_DumpDir = dir; }
 
-void SetCrashProcessName(const char* name) {
+void SetCrashProcessName(const char* name)
+{
     if (name) {
         strncpy(g_ProcessName, name, sizeof(g_ProcessName) - 1);
         g_ProcessName[sizeof(g_ProcessName) - 1] = '\0';
@@ -35,8 +36,7 @@ void TraceCrash(const char* msg)
     if (f) {
         SYSTEMTIME st;
         GetSystemTime(&st);
-        fprintf(f, "[%02d:%02d:%02d.%03d][%s][%u] %s\n", 
-                st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+        fprintf(f, "[%02d:%02d:%02d.%03d][%s][%u] %s\n", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
                 g_ProcessName, GetCurrentThreadId(), msg);
         fclose(f);
     }
@@ -65,7 +65,7 @@ DWORD WINAPI DumpWorker(LPVOID lpParam)
 
     TraceCrash("Creating dump file...");
     TraceCrash(dumpPath);
-    
+
     // Ensure directory exists with proper error checking
     int mkdirResult = _mkdir(g_DumpDir.c_str());
     if (mkdirResult == 0) {
@@ -134,53 +134,47 @@ DWORD WINAPI DumpWorker(LPVOID lpParam)
 LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers)
 {
     DWORD code = pExceptionPointers->ExceptionRecord->ExceptionCode;
-    
+
     // CRITICAL: Early-exit for C++ exceptions (0xE06D7363) to prevent log spam
     // These are normal throw/catch operations handled by the C++ runtime
     // Logging them fills crash_handler_trace.txt with 12MB+ of useless data
     if (code == 0xE06D7363) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
-    
+
     // Log ALL exceptions for debugging (including non-crash)
     char codeStr[128];
-    snprintf(codeStr, sizeof(codeStr), "VEH Exception: 0x%08lX at %p (PID:%lu TID:%lu)", 
-             code, 
-             pExceptionPointers->ExceptionRecord->ExceptionAddress,
-             GetCurrentProcessId(),
-             GetCurrentThreadId());
+    snprintf(codeStr, sizeof(codeStr), "VEH Exception: 0x%08lX at %p (PID:%lu TID:%lu)", code,
+             pExceptionPointers->ExceptionRecord->ExceptionAddress, GetCurrentProcessId(), GetCurrentThreadId());
     TraceCrash(codeStr);
-    
+
     // Catch ALL exception types except debug/informational
     // Many games use custom exception codes or we might miss unknown crash codes
     bool isKnownDebugException = (code == 0x406D1388 ||  // Thread naming
-                                   code == 0x40010006 ||  // OutputDebugString
-                                   code == 0x4001000A ||  // WOW64 debug
-                                   code == 0x4000001F ||  // Wow64 breakpoint
-                                   code == 0x80000003);   // Breakpoint (debug)
-    
+                                  code == 0x40010006 ||  // OutputDebugString
+                                  code == 0x4001000A ||  // WOW64 debug
+                                  code == 0x4000001F ||  // Wow64 breakpoint
+                                  code == 0x80000003);   // Breakpoint (debug)
+
     // Also catch common crash types explicitly
-    bool isKnownCrash = (code == EXCEPTION_ACCESS_VIOLATION || 
-                         code == EXCEPTION_ILLEGAL_INSTRUCTION ||
-                         code == EXCEPTION_INT_DIVIDE_BY_ZERO || 
-                         code == EXCEPTION_STACK_OVERFLOW ||
-                         code == EXCEPTION_BREAKPOINT ||
-                         code == EXCEPTION_PRIV_INSTRUCTION ||
-                         code == 0x40000015 ||  // Abort
-                         code == 0xC0000409 ||  // Stack buffer overrun
-                         code == 0xC0000006 ||  // In-page I/O error
-                         code == 0xC000001D ||  // Illegal instruction
-                         code == 0xC0000025 ||  // Non-continuable exception
-                         code == 0xC0000374 ||  // Heap corruption
-                         code == 0xC00000FD ||  // Stack overflow (alt)
-                         code == 0x00008000);   // UE5 GPU crash (D3D device removed)
-    
+    bool isKnownCrash =
+        (code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_ILLEGAL_INSTRUCTION ||
+         code == EXCEPTION_INT_DIVIDE_BY_ZERO || code == EXCEPTION_STACK_OVERFLOW || code == EXCEPTION_BREAKPOINT ||
+         code == EXCEPTION_PRIV_INSTRUCTION || code == 0x40000015 ||  // Abort
+         code == 0xC0000409 ||                                        // Stack buffer overrun
+         code == 0xC0000006 ||                                        // In-page I/O error
+         code == 0xC000001D ||                                        // Illegal instruction
+         code == 0xC0000025 ||                                        // Non-continuable exception
+         code == 0xC0000374 ||                                        // Heap corruption
+         code == 0xC00000FD ||                                        // Stack overflow (alt)
+         code == 0x00008000);                                         // UE5 GPU crash (D3D device removed)
+
     // If it's a known debug exception, skip it
     if (isKnownDebugException) {
         TraceCrash("Debug exception, continuing search");
         return EXCEPTION_CONTINUE_SEARCH;
     }
-    
+
     // For unknown exceptions, log them but only handle if it looks like a crash
     // (first chance exceptions are often caught and handled by the app)
     if (!isKnownCrash) {
@@ -191,16 +185,16 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers)
         // Unfortunately VEH doesn't easily distinguish first/second chance
         return EXCEPTION_CONTINUE_SEARCH;
     }
-    
+
     TraceCrash("CRASH DETECTED - Handling exception");
-    
+
     // Write simple crash info file immediately (in case MiniDumpWriteDump fails)
     time_t now = time(0);
     struct tm tstruct;
     char timeBuf[80];
     localtime_s(&tstruct, &now);
     strftime(timeBuf, sizeof(timeBuf), "%Y%m%d_%H%M%S", &tstruct);
-    
+
     char infoPath[MAX_PATH];
     snprintf(infoPath, sizeof(infoPath), "%s\\crash_%s_info.txt", g_DumpDir.c_str(), timeBuf);
     FILE* infoFile = fopen(infoPath, "w");
@@ -210,15 +204,15 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers)
         fprintf(infoFile, "Exception Address: %p\n", pExceptionPointers->ExceptionRecord->ExceptionAddress);
         fprintf(infoFile, "Thread ID: %lu\n", GetCurrentThreadId());
         fprintf(infoFile, "Process ID: %lu\n", GetCurrentProcessId());
-        
+
         // Log exception-specific info
         if (code == EXCEPTION_ACCESS_VIOLATION && pExceptionPointers->ExceptionRecord->NumberParameters >= 2) {
-            fprintf(infoFile, "Access Violation Type: %s\n", 
+            fprintf(infoFile, "Access Violation Type: %s\n",
                     pExceptionPointers->ExceptionRecord->ExceptionInformation[0] == 0 ? "READ" : "WRITE");
-            fprintf(infoFile, "Access Violation Address: %p\n", 
+            fprintf(infoFile, "Access Violation Address: %p\n",
                     (void*)pExceptionPointers->ExceptionRecord->ExceptionInformation[1]);
         }
-        
+
         // Log GPU crash info for UE5 GPU crashes
         if (code == 0x00008000) {
             fprintf(infoFile, "GPU Crash: UE5 D3D Device Removed / GPU Crash\n");
@@ -228,7 +222,7 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers)
             fprintf(infoFile, "  - GPU hardware fault\n");
             fprintf(infoFile, "  - DXGI_ERROR_DEVICE_REMOVED\n");
         }
-        
+
         fclose(infoFile);
         TraceCrash("Crash info file written");
     }
@@ -275,34 +269,30 @@ static LPTOP_LEVEL_EXCEPTION_FILTER g_OldUnhandledFilter = NULL;
 LONG WINAPI UnhandledExceptionFilterCallback(EXCEPTION_POINTERS* pExceptionPointers)
 {
     DWORD code = pExceptionPointers->ExceptionRecord->ExceptionCode;
-    
+
     char codeStr[128];
-    snprintf(codeStr, sizeof(codeStr), "UnhandledExceptionFilter: 0x%08lX at %p", 
-             code, 
+    snprintf(codeStr, sizeof(codeStr), "UnhandledExceptionFilter: 0x%08lX at %p", code,
              pExceptionPointers->ExceptionRecord->ExceptionAddress);
     TraceCrash(codeStr);
-    
+
     // Always handle crashes here
-    bool isKnownCrash = (code == EXCEPTION_ACCESS_VIOLATION || 
-                         code == EXCEPTION_ILLEGAL_INSTRUCTION ||
-                         code == EXCEPTION_INT_DIVIDE_BY_ZERO || 
-                         code == EXCEPTION_STACK_OVERFLOW ||
-                         code == EXCEPTION_BREAKPOINT ||
-                         code == EXCEPTION_PRIV_INSTRUCTION ||
-                         code == 0x40000015 ||  // Abort
-                         code == 0xC0000409 ||  // Stack buffer overrun
-                         code == 0xC0000006 ||  // In-page I/O error
-                         code == 0xC000001D ||  // Illegal instruction
-                         code == 0xC0000025 ||  // Non-continuable exception
-                         code == 0xC0000374 ||  // Heap corruption
-                         code == 0xC00000FD);   // Stack overflow (alt)
-    
+    bool isKnownCrash =
+        (code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_ILLEGAL_INSTRUCTION ||
+         code == EXCEPTION_INT_DIVIDE_BY_ZERO || code == EXCEPTION_STACK_OVERFLOW || code == EXCEPTION_BREAKPOINT ||
+         code == EXCEPTION_PRIV_INSTRUCTION || code == 0x40000015 ||  // Abort
+         code == 0xC0000409 ||                                        // Stack buffer overrun
+         code == 0xC0000006 ||                                        // In-page I/O error
+         code == 0xC000001D ||                                        // Illegal instruction
+         code == 0xC0000025 ||                                        // Non-continuable exception
+         code == 0xC0000374 ||                                        // Heap corruption
+         code == 0xC00000FD);                                         // Stack overflow (alt)
+
     if (isKnownCrash) {
         TraceCrash("Unhandled exception is a crash - handling it");
         // Call the VEH handler to do the actual dump
         return CrashHandlerExceptionFilter(pExceptionPointers);
     }
-    
+
     // Call previous filter if any
     if (g_OldUnhandledFilter) {
         return g_OldUnhandledFilter(pExceptionPointers);
@@ -318,9 +308,9 @@ void InstallCrashHandler()
         return;
     }
     g_CrashHandlerInstalled = true;
-    
+
     TraceCrash("Installing crash handler...");
-    
+
     // Pre-load DbgHelp.dll to ensure it's available during a crash (avoid loader lock issues)
     if (!g_hDbgHelp) {
         g_hDbgHelp = LoadLibraryA("DbgHelp.dll");
@@ -339,11 +329,11 @@ void InstallCrashHandler()
     } else {
         TraceCrash("Failed to install VEH handler");
     }
-    
+
     // Also install Unhandled Exception Filter as backup
     // (some games might install their own handlers that preempt VEH)
     g_OldUnhandledFilter = SetUnhandledExceptionFilter(UnhandledExceptionFilterCallback);
     TraceCrash("Unhandled exception filter installed");
-    
+
     OutputDebugStringA("[CrashHandler] Crash handler installed (VEH + UnhandledFilter).\n");
 }

@@ -111,21 +111,21 @@ void WaitForGpu()
 void MoveToNextFrame()
 {
     std::lock_guard<std::mutex> lock(g_FrameSyncMutex);
-    
+
     // CRITICAL FIX: Signal fence for current frame BEFORE getting new back buffer index
     const UINT64 currentFenceValue = g_FenceValues[g_FrameIndex];
     g_CommandQueue->Signal(g_Fence.Get(), currentFenceValue);
 
     // Get the new back buffer index that Present just advanced to
     UINT nextFrameIndex = g_SwapChain->GetCurrentBackBufferIndex();
-    
+
     // CRITICAL FIX: Verify fence value for next frame has been signaled
     // If not, wait for it (this handles race conditions where GPU runs ahead)
     if (g_Fence->GetCompletedValue() < g_FenceValues[nextFrameIndex]) {
         g_Fence->SetEventOnCompletion(g_FenceValues[nextFrameIndex], g_FenceEvent);
         WaitForSingleObject(g_FenceEvent, INFINITE);
     }
-    
+
     // Update frame index AFTER synchronization
     g_FrameIndex = nextFrameIndex;
 

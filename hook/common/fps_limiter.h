@@ -1,8 +1,8 @@
 #pragma once
 
 #include <intrin.h>
-#include <windows.h>
 #include <timeapi.h>  // For timeBeginPeriod/timeEndPeriod
+#include <windows.h>
 #include <atomic>
 #include "hook_common.h"
 #include "ipc_client.h"
@@ -128,20 +128,20 @@ public:
         bool limiterActive = false;
         int targetFps = 0;
 
-        if (isRecording && shm->fpsLimiter.captureSyncEnabled) {
-            int multiplier = shm->fpsLimiter.captureSyncMultiplier;
-            int captureFps = shm->fpsLimiter.captureFps;
+        if (isRecording && shm->fpsLimiter.GetCaptureSyncEnabled()) {
+            int multiplier = shm->fpsLimiter.GetCaptureSyncMultiplier();
+            int captureFps = shm->fpsLimiter.GetCaptureFps();
             if (captureFps > 0 && multiplier >= 1 && multiplier <= 8) {
                 limiterActive = true;
                 targetFps = captureFps * multiplier;
             }
-        } else if (shm->fpsLimiter.generalEnabled && shm->fpsLimiter.generalFps > 0) {
+        } else if (shm->fpsLimiter.GetGeneralEnabled() && shm->fpsLimiter.GetGeneralFps() > 0) {
             limiterActive = true;
-            targetFps = shm->fpsLimiter.generalFps;
+            targetFps = shm->fpsLimiter.GetGeneralFps();
         }
 
         // VFR Mode Passthrough: Disable limiter if VFR is active
-        if (shm->fpsLimiter.useVFR) {
+        if (shm->fpsLimiter.GetUseVFR()) {
             limiterActive = false;
         }
 
@@ -168,7 +168,7 @@ public:
             }
 
             HookLog("FPS Limiter: Events Initialized (target: %d FPS, captureFps=%d, mult=%d)", targetFps,
-                    shm->fpsLimiter.captureFps, shm->fpsLimiter.captureSyncMultiplier);
+                    shm->fpsLimiter.GetCaptureFps(), shm->fpsLimiter.GetCaptureSyncMultiplier());
         }
 
         // In test mode (dbgShm), we might assume events are initialized or not needed for SmartWait test

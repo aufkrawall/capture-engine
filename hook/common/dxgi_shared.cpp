@@ -35,10 +35,9 @@ static std::atomic<int> g_presentDepth{0};
 static std::atomic<DWORD> g_resizeThreadId{0};
 static std::atomic<int> g_resizeDepth{0};
 
-
-
 // Helper to check if we're recursively entering from the same thread
-static bool IsRecursivePresent() {
+static bool IsRecursivePresent()
+{
     DWORD currentId = GetCurrentThreadId();
     if (g_presentDepth.load() > 0 && g_presentThreadId.load() == currentId) {
         return true;
@@ -49,13 +48,15 @@ static bool IsRecursivePresent() {
     return false;
 }
 
-static void ReleasePresent() {
+static void ReleasePresent()
+{
     if (g_presentDepth.fetch_sub(1) == 1) {
         g_presentThreadId.store(0);
     }
 }
 
-static bool IsRecursiveResize() {
+static bool IsRecursiveResize()
+{
     DWORD currentId = GetCurrentThreadId();
     if (g_resizeDepth.load() > 0 && g_resizeThreadId.load() == currentId) {
         return true;
@@ -65,7 +66,8 @@ static bool IsRecursiveResize() {
     return false;
 }
 
-static void ReleaseResize() {
+static void ReleaseResize()
+{
     if (g_resizeDepth.fetch_sub(1) == 1) {
         g_resizeThreadId.store(0);
     }
@@ -84,9 +86,10 @@ static PFN_ResizeBuffers oResizeBuffers = nullptr;
 static PFN_ResizeBuffers1 oResizeBuffers1 = nullptr;
 
 // Vulkan detection via ICD layer - returns false since we use layer approach
-bool IsVulkanPrimary() { 
+bool IsVulkanPrimary()
+{
     // VK_LAYER_CE_overlay handles Vulkan separately
-    return false; 
+    return false;
 }
 
 PerformanceMetrics* GetPerformanceMetrics() { return &g_DXGIPerfMetrics; }
@@ -115,7 +118,8 @@ APIType DetectAPIType(IDXGISwapChain* pSwapChain)
 static bool s_vulkanPresent = false;
 static bool s_checkedVulkan = false;
 
-static bool IsVulkanActive() {
+static bool IsVulkanActive()
+{
     if (!s_checkedVulkan) {
         HMODULE hVulkan = GetModuleHandleW(L"vulkan-1.dll");
         s_vulkanPresent = (hVulkan != nullptr);
@@ -132,12 +136,12 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
 {
     // Heartbeat for freeze watchdog
     g_RenderWatchdog.Heartbeat();
-    
+
     // Vulkan passthrough
     if (IsVulkanActive()) {
         return oPresent(pSwapChain, SyncInterval, Flags);
     }
-    
+
     // Recursion guard
     if (IsRecursivePresent()) {
         void** vtable = *(void***)pSwapChain;
@@ -145,7 +149,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         PFN_Present originalPresent = (PFN_Present)vtable[8];
         return originalPresent(pSwapChain, SyncInterval, Flags);
     }
-    
+
     bool isFirstHook = !g_SharedState.inPresentHook.exchange(true);
     auto hookGuard = ::ce::make_scope_guard([&] {
         if (isFirstHook) g_SharedState.inPresentHook.store(false);
@@ -178,11 +182,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     if (isFirstHook) {
         g_DXGIPerfMetrics.Update(us);
         if (g_FGCompat.IsFGActive()) {
-            g_DXGIPerfMetrics.SetFGMetrics(
-                g_FGCompat.GetOutputFPS(),
-                g_FGCompat.GetBaseFPS(),
-                g_FGCompat.GetFGMultiplier()
-            );
+            g_DXGIPerfMetrics.SetFGMetrics(g_FGCompat.GetOutputFPS(), g_FGCompat.GetBaseFPS(),
+                                           g_FGCompat.GetFGMultiplier());
         } else {
             g_DXGIPerfMetrics.SetFGMetrics(0.0f, 0.0f, 1);
         }
@@ -209,12 +210,12 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     // CRITICAL: Heartbeat FIRST - before ANY checks that might early-return
     // This ensures the freeze watchdog gets heartbeats even with FSR/DLSS FG active
     g_RenderWatchdog.Heartbeat();
-    
+
     // CRITICAL FIX: When Vulkan is active, pass through DXGI Present calls
     if (IsVulkanActive()) {
         return oPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
     }
-    
+
     // AGGRESSIVE RECURSION GUARD: Steam overlay causes infinite recursion
     if (IsRecursivePresent()) {
         // Recursion detected - call original directly through vtable to bypass Steam's hook
@@ -223,7 +224,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         PFN_Present1 originalPresent1 = (PFN_Present1)vtable[14];  // Present1 is at index 14
         return originalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
     }
-    
+
     bool isFirstHook = !g_SharedState.inPresentHook.exchange(true);
     auto hookGuard = ::ce::make_scope_guard([&] {
         if (isFirstHook) g_SharedState.inPresentHook.store(false);
@@ -257,7 +258,7 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
     if (IsVulkanActive()) {
         return oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
     }
-    
+
     // AGGRESSIVE RECURSION GUARD: Steam overlay causes infinite recursion through hook chain
     if (IsRecursiveResize()) {
         // Recursion detected - call original directly through vtable to bypass Steam's hook
@@ -266,7 +267,7 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
         PFN_ResizeBuffers originalResize = (PFN_ResizeBuffers)vtable[13];  // ResizeBuffers is at index 13
         return originalResize(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
     }
-    
+
     if (g_SharedState.wrapperResizeDepth.fetch_add(1) > 0) {
         HRESULT hr = oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
         g_SharedState.wrapperResizeDepth.fetch_sub(1);
@@ -301,8 +302,7 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
     }
 
     // Reset resize flags after resize completes
-    if (api == APIType::D3D12)
-        HandleDX12ResizeEnd();
+    if (api == APIType::D3D12) HandleDX12ResizeEnd();
 
     g_SharedState.swapchainInvalid.store(false);
     g_SharedState.wrapperResizeDepth.fetch_sub(1);
@@ -316,19 +316,21 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers1(IDXGISwapChain* pSwapChain, UINT 
 {
     // Vulkan passthrough
     if (IsVulkanActive()) {
-        return oResizeBuffers1(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags, 
-                               pCreationNodeMask, ppPresentQueue);
+        return oResizeBuffers1(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags, pCreationNodeMask,
+                               ppPresentQueue);
     }
-    
+
     // AGGRESSIVE RECURSION GUARD: Steam overlay causes infinite recursion through hook chain
     if (IsRecursiveResize()) {
         // Recursion detected - call original directly through vtable to bypass Steam's hook
         void** vtable = *(void***)pSwapChain;
-        typedef HRESULT(STDMETHODCALLTYPE * PFN_ResizeBuffers1)(IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT, const UINT*, IUnknown* const*);
+        typedef HRESULT(STDMETHODCALLTYPE * PFN_ResizeBuffers1)(IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT,
+                                                                const UINT*, IUnknown* const*);
         PFN_ResizeBuffers1 originalResize1 = (PFN_ResizeBuffers1)vtable[39];  // ResizeBuffers1 is at index 39
-        return originalResize1(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags, pCreationNodeMask, ppPresentQueue);
+        return originalResize1(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags, pCreationNodeMask,
+                               ppPresentQueue);
     }
-    
+
     if (g_SharedState.wrapperResizeDepth.fetch_add(1) > 0) {
         HRESULT hr = oResizeBuffers1(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags,
                                      pCreationNodeMask, ppPresentQueue);
@@ -366,8 +368,7 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers1(IDXGISwapChain* pSwapChain, UINT 
     }
 
     // Reset resize flags after resize completes
-    if (api == APIType::D3D12)
-        HandleDX12ResizeEnd();
+    if (api == APIType::D3D12) HandleDX12ResizeEnd();
 
     g_SharedState.swapchainInvalid.store(false);
     g_SharedState.wrapperResizeDepth.fetch_sub(1);
@@ -396,8 +397,8 @@ bool InstallHooks(IDXGISwapChain* pSwapChain)
     }
 
     void** vtable = *(void***)pSwapChain;
-    HookLog("DXGIShared::InstallHooks - vtable=%p, Present=%p, DetourPresent=%p", 
-            vtable, vtable[8], (void*)DetourPresent);
+    HookLog("DXGIShared::InstallHooks - vtable=%p, Present=%p, DetourPresent=%p", vtable, vtable[8],
+            (void*)DetourPresent);
     bool anyInstalled = false;
 
     // Check if this is our own Wrapper

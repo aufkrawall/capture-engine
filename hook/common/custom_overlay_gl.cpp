@@ -1,6 +1,6 @@
 /**
  * Custom Overlay - OpenGL Backend Implementation
- * 
+ *
  * Uses OpenGL 1.1/2.1 fixed-function pipeline for maximum compatibility.
  */
 
@@ -10,12 +10,10 @@ namespace CustomOverlay {
 
 OpenGLBackend::OpenGLBackend() {}
 
-OpenGLBackend::~OpenGLBackend() {
-    Shutdown();
-}
+OpenGLBackend::~OpenGLBackend() { Shutdown(); }
 
-bool OpenGLBackend::Initialize(int fontTextureWidth, int fontTextureHeight,
-                               const uint8_t* fontTextureData) {
+bool OpenGLBackend::Initialize(int fontTextureWidth, int fontTextureHeight, const uint8_t* fontTextureData)
+{
     if (initialized) return true;
 
     texWidth = fontTextureWidth;
@@ -28,15 +26,16 @@ bool OpenGLBackend::Initialize(int fontTextureWidth, int fontTextureHeight,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fontTextureWidth, fontTextureHeight,
-                 0, GL_RGBA, GL_UNSIGNED_BYTE, fontTextureData);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fontTextureWidth, fontTextureHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                 fontTextureData);
     glBindTexture(GL_TEXTURE_2D, 0);
 
     initialized = true;
     return true;
 }
 
-void OpenGLBackend::Shutdown() {
+void OpenGLBackend::Shutdown()
+{
     if (fontTextureId) {
         glDeleteTextures(1, &fontTextureId);
         fontTextureId = 0;
@@ -44,10 +43,9 @@ void OpenGLBackend::Shutdown() {
     initialized = false;
 }
 
-void OpenGLBackend::Render(const std::vector<DrawVertex>& vertices,
-                           const std::vector<uint16_t>& indices,
-                           const std::vector<DrawCommand>& commands,
-                           int viewportWidth, int viewportHeight) {
+void OpenGLBackend::Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
+                           const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight)
+{
     if (!initialized || vertices.empty() || commands.empty()) return;
 
     // Save OpenGL state
@@ -69,12 +67,12 @@ void OpenGLBackend::Render(const std::vector<DrawVertex>& vertices,
 
     // Setup viewport and orthographic projection
     glViewport(0, 0, viewportWidth, viewportHeight);
-    
+
     glMatrixMode(GL_PROJECTION);
     glPushMatrix();
     glLoadIdentity();
     glOrtho(0, viewportWidth, viewportHeight, 0, -1, 1);
-    
+
     glMatrixMode(GL_MODELVIEW);
     glPushMatrix();
     glLoadIdentity();
@@ -98,8 +96,7 @@ void OpenGLBackend::Render(const std::vector<DrawVertex>& vertices,
             glBindTexture(GL_TEXTURE_2D, 0);
         }
 
-        glDrawElements(GL_TRIANGLES, cmd.indexCount, GL_UNSIGNED_SHORT,
-                      indices.data() + cmd.indexOffset);
+        glDrawElements(GL_TRIANGLES, cmd.indexCount, GL_UNSIGNED_SHORT, indices.data() + cmd.indexOffset);
     }
 
     // Disable vertex arrays
@@ -116,10 +113,22 @@ void OpenGLBackend::Render(const std::vector<DrawVertex>& vertices,
     // Restore state
     glBindTexture(GL_TEXTURE_2D, lastTexture);
     glViewport(lastViewport[0], lastViewport[1], lastViewport[2], lastViewport[3]);
-    if (lastBlend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
-    if (lastDepthTest) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
-    if (lastCullFace) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
-    if (lastTexture2D) glEnable(GL_TEXTURE_2D); else glDisable(GL_TEXTURE_2D);
+    if (lastBlend)
+        glEnable(GL_BLEND);
+    else
+        glDisable(GL_BLEND);
+    if (lastDepthTest)
+        glEnable(GL_DEPTH_TEST);
+    else
+        glDisable(GL_DEPTH_TEST);
+    if (lastCullFace)
+        glEnable(GL_CULL_FACE);
+    else
+        glDisable(GL_CULL_FACE);
+    if (lastTexture2D)
+        glEnable(GL_TEXTURE_2D);
+    else
+        glDisable(GL_TEXTURE_2D);
 }
 
-} // namespace CustomOverlay
+}  // namespace CustomOverlay

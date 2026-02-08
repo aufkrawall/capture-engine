@@ -67,16 +67,12 @@ float4 main(PS_INPUT input) : SV_Target {
 }
 )";
 
-DX11Backend::DX11Backend(ID3D11Device* dev, ID3D11DeviceContext* ctx)
-    : device(dev), context(ctx) {
-}
+DX11Backend::DX11Backend(ID3D11Device* dev, ID3D11DeviceContext* ctx) : device(dev), context(ctx) {}
 
-DX11Backend::~DX11Backend() {
-    Shutdown();
-}
+DX11Backend::~DX11Backend() { Shutdown(); }
 
-bool DX11Backend::Initialize(int fontTextureWidth, int fontTextureHeight,
-                             const uint8_t* fontTextureData) {
+bool DX11Backend::Initialize(int fontTextureWidth, int fontTextureHeight, const uint8_t* fontTextureData)
+{
     if (initialized || !device || !context) return false;
 
     // Create font texture
@@ -109,7 +105,8 @@ bool DX11Backend::Initialize(int fontTextureWidth, int fontTextureHeight,
     return true;
 }
 
-void DX11Backend::Shutdown() {
+void DX11Backend::Shutdown()
+{
     vertexShader.Reset();
     pixelShader.Reset();
     pixelShaderSolid.Reset();
@@ -126,14 +123,14 @@ void DX11Backend::Shutdown() {
     initialized = false;
 }
 
-bool DX11Backend::CreateShaders() {
+bool DX11Backend::CreateShaders()
+{
     UINT compileFlags = D3DCOMPILE_OPTIMIZATION_LEVEL3;
     ComPtr<ID3DBlob> vsBlob, psBlob, psSolidBlob, errorBlob;
 
     // Compile vertex shader
-    HRESULT hr = D3DCompile(g_VertexShaderSrc, strlen(g_VertexShaderSrc), nullptr,
-                            nullptr, nullptr, "main", "vs_4_0", compileFlags, 0,
-                            &vsBlob, &errorBlob);
+    HRESULT hr = D3DCompile(g_VertexShaderSrc, strlen(g_VertexShaderSrc), nullptr, nullptr, nullptr, "main", "vs_4_0",
+                            compileFlags, 0, &vsBlob, &errorBlob);
     if (FAILED(hr)) {
         OutputDebugStringA("[CustomOverlay] VS compile failed\n");
         if (errorBlob) OutputDebugStringA((char*)errorBlob->GetBufferPointer());
@@ -141,9 +138,8 @@ bool DX11Backend::CreateShaders() {
     }
 
     // Compile pixel shader (textured)
-    hr = D3DCompile(g_PixelShaderSrc, strlen(g_PixelShaderSrc), nullptr,
-                    nullptr, nullptr, "main", "ps_4_0", compileFlags, 0,
-                    &psBlob, &errorBlob);
+    hr = D3DCompile(g_PixelShaderSrc, strlen(g_PixelShaderSrc), nullptr, nullptr, nullptr, "main", "ps_4_0",
+                    compileFlags, 0, &psBlob, &errorBlob);
     if (FAILED(hr)) {
         OutputDebugStringA("[CustomOverlay] PS compile failed\n");
         if (errorBlob) OutputDebugStringA((char*)errorBlob->GetBufferPointer());
@@ -151,42 +147,39 @@ bool DX11Backend::CreateShaders() {
     }
 
     // Compile pixel shader (solid)
-    hr = D3DCompile(g_PixelShaderSolidSrc, strlen(g_PixelShaderSolidSrc), nullptr,
-                    nullptr, nullptr, "main", "ps_4_0", compileFlags, 0,
-                    &psSolidBlob, &errorBlob);
+    hr = D3DCompile(g_PixelShaderSolidSrc, strlen(g_PixelShaderSolidSrc), nullptr, nullptr, nullptr, "main", "ps_4_0",
+                    compileFlags, 0, &psSolidBlob, &errorBlob);
     if (FAILED(hr)) {
         OutputDebugStringA("[CustomOverlay] PS solid compile failed\n");
         return false;
     }
 
     // Create shaders
-    hr = device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(),
-                                    nullptr, &vertexShader);
+    hr = device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &vertexShader);
     if (FAILED(hr)) return false;
 
-    hr = device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(),
-                                   nullptr, &pixelShader);
+    hr = device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &pixelShader);
     if (FAILED(hr)) return false;
 
-    hr = device->CreatePixelShader(psSolidBlob->GetBufferPointer(), psSolidBlob->GetBufferSize(),
-                                   nullptr, &pixelShaderSolid);
+    hr = device->CreatePixelShader(psSolidBlob->GetBufferPointer(), psSolidBlob->GetBufferSize(), nullptr,
+                                   &pixelShaderSolid);
     if (FAILED(hr)) return false;
 
     // Create input layout
     D3D11_INPUT_ELEMENT_DESC layout[] = {
-        { "POSITION", 0, DXGI_FORMAT_R32G32_FLOAT,   0, 0,  D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,   0, 8,  D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "COLOR",    0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        {"POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
+        {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 8, D3D11_INPUT_PER_VERTEX_DATA, 0},
+        {"COLOR", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0},
     };
 
-    hr = device->CreateInputLayout(layout, 3, vsBlob->GetBufferPointer(),
-                                   vsBlob->GetBufferSize(), &inputLayout);
+    hr = device->CreateInputLayout(layout, 3, vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &inputLayout);
     if (FAILED(hr)) return false;
 
     return true;
 }
 
-bool DX11Backend::CreateBuffers() {
+bool DX11Backend::CreateBuffers()
+{
     // Constant buffer for viewport size
     D3D11_BUFFER_DESC cbDesc = {};
     cbDesc.ByteWidth = 16;  // float2 viewportSize + float2 padding
@@ -222,7 +215,8 @@ bool DX11Backend::CreateBuffers() {
     return true;
 }
 
-bool DX11Backend::CreateStates() {
+bool DX11Backend::CreateStates()
+{
     // Sampler
     D3D11_SAMPLER_DESC sampDesc = {};
     sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
@@ -269,10 +263,9 @@ bool DX11Backend::CreateStates() {
     return true;
 }
 
-void DX11Backend::Render(const std::vector<DrawVertex>& vertices,
-                         const std::vector<uint16_t>& indices,
-                         const std::vector<DrawCommand>& commands,
-                         int viewportWidth, int viewportHeight) {
+void DX11Backend::Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
+                         const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight)
+{
     if (!initialized || vertices.empty() || commands.empty()) return;
 
     // Resize buffers if needed
@@ -336,7 +329,7 @@ void DX11Backend::Render(const std::vector<DrawVertex>& vertices,
 
     // Set state
     context->RSSetState(rasterState.Get());
-    float blendFactor[4] = { 0, 0, 0, 0 };
+    float blendFactor[4] = {0, 0, 0, 0};
     context->OMSetBlendState(blendState.Get(), blendFactor, 0xFFFFFFFF);
     context->OMSetDepthStencilState(depthState.Get(), 0);
 
@@ -376,4 +369,4 @@ void DX11Backend::Render(const std::vector<DrawVertex>& vertices,
     context->OMSetDepthStencilState(oldDepthState.Get(), oldStencilRef);
 }
 
-} // namespace CustomOverlay
+}  // namespace CustomOverlay

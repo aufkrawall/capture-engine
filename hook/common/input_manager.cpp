@@ -1,9 +1,10 @@
 #include "input_manager.h"
-//#include <backends/imgui_impl_win32.h>  // REMOVED: Using custom overlay
-//#include <imgui.h>
+// #include <backends/imgui_impl_win32.h>  // REMOVED: Using custom overlay
+// #include <imgui.h>
 #include "hook_common.h"  // For Logging
 
-// extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);  // REMOVED
+// extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);  //
+// REMOVED
 
 InputManager& InputManager::Get()
 {
@@ -55,6 +56,7 @@ void InputManager::HookWindow(HWND hwnd)
 
 void InputManager::UnhookWindow(HWND hwnd)
 {
+    // Write operation - need exclusive lock
     std::lock_guard<std::mutex> lock(m_Mutex);
 
     auto it = m_Hooks.find(hwnd);
@@ -76,6 +78,7 @@ void InputManager::UnhookWindow(HWND hwnd)
 
 void InputManager::Shutdown()
 {
+    // Write operation - need exclusive lock
     std::lock_guard<std::mutex> lock(m_Mutex);
     for (auto& pair : m_Hooks) {
         HWND hwnd = pair.first;
@@ -105,21 +108,9 @@ LRESULT CALLBACK InputManager::HookWndProc(HWND hwnd, UINT msg, WPARAM wParam, L
     // 2. Call Original
     WNDPROC original = nullptr;
     {
-        // Don't lock mutex for too long in WndProc
-        // We need a thread-safe way to get original without stalling input
-        // For now, simple lock is fast enough for map lookup
-        // Ideally we'd optimize this.
+        // Note: Using unique_lock for read access
+        // In C++17+ with shared_mutex, this would be shared_lock for concurrent reads
         auto& mgr = InputManager::Get();
-        // std::lock_guard<std::mutex> lock(mgr.m_Mutex); // Deadlock risk if recursion?
-        // Actually, SetWindowLongPtr is safe. Accessing map might need lock.
-        // Let's rely on atomic/stable map or just lock.
-        // But WndProc is high freq.
-        // TODO: Optimize if necessary.
-
-        // Unsafe access for speed? No, std::unordered_map is not thread safe.
-        // Copying the map is too slow.
-        // We'll use the lock.
-        // Re-entrant lock logic:
         std::unique_lock<std::mutex> lock(mgr.m_Mutex);
         auto it = mgr.m_Hooks.find(hwnd);
         if (it != mgr.m_Hooks.end()) {

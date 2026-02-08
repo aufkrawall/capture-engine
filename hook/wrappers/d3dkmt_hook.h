@@ -1,6 +1,6 @@
 /**
  * D3DKMT (Display Driver Kernel Mode) Hook Header
- * 
+ *
  * Hooks the kernel-mode driver interface for universal VRAM reporting control.
  * This is the solution used by SpecialK and RTSS.
  */
@@ -21,6 +21,6 @@ void SetVramOverride(UINT64 dedicatedBytes, UINT64 sharedBytes);
 // Disable VRAM override
 void DisableVramOverride();
 
-} // namespace D3DKMTHooks
+}  // namespace D3DKMTHooks
 
-#endif // D3DKMT_HOOK_H
+#endif  // D3DKMT_HOOK_H

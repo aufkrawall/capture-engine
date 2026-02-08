@@ -68,15 +68,14 @@ float4 main(PS_INPUT input) : SV_Target {
 )";
 
 DX12Backend::DX12Backend(ID3D12Device* dev, ID3D12CommandQueue* queue, DXGI_FORMAT format)
-    : device(dev), commandQueue(queue), rtvFormat(format) {
+    : device(dev), commandQueue(queue), rtvFormat(format)
+{
 }
 
-DX12Backend::~DX12Backend() {
-    Shutdown();
-}
+DX12Backend::~DX12Backend() { Shutdown(); }
 
-bool DX12Backend::Initialize(int fontTextureWidth, int fontTextureHeight,
-                             const uint8_t* fontTextureData) {
+bool DX12Backend::Initialize(int fontTextureWidth, int fontTextureHeight, const uint8_t* fontTextureData)
+{
     if (initialized || !device) return false;
 
     if (!CreateRootSignature()) return false;
@@ -88,7 +87,8 @@ bool DX12Backend::Initialize(int fontTextureWidth, int fontTextureHeight,
     return true;
 }
 
-void DX12Backend::Shutdown() {
+void DX12Backend::Shutdown()
+{
     // Unmap buffers
     if (vertexBuffer && vertexBufferPtr) {
         vertexBuffer->Unmap(0, nullptr);
@@ -110,7 +110,8 @@ void DX12Backend::Shutdown() {
     initialized = false;
 }
 
-bool DX12Backend::CreateRootSignature() {
+bool DX12Backend::CreateRootSignature()
+{
     // Root signature: 1 CBV (viewport), 1 SRV (font texture), 1 sampler
     D3D12_DESCRIPTOR_RANGE srvRange = {};
     srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
@@ -120,7 +121,7 @@ bool DX12Backend::CreateRootSignature() {
     srvRange.OffsetInDescriptorsFromTableStart = 0;
 
     D3D12_ROOT_PARAMETER params[2] = {};
-    
+
     // Param 0: Constants (inline)
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[0].Constants.ShaderRegister = 0;
@@ -159,44 +160,41 @@ bool DX12Backend::CreateRootSignature() {
         return false;
     }
 
-    hr = device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(),
-                                     IID_PPV_ARGS(&rootSignature));
+    hr = device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&rootSignature));
     return SUCCEEDED(hr);
 }
 
-bool DX12Backend::CreatePipelineState() {
+bool DX12Backend::CreatePipelineState()
+{
     UINT compileFlags = D3DCOMPILE_OPTIMIZATION_LEVEL3;
     ComPtr<ID3DBlob> vsBlob, psBlob, psSolidBlob, errorBlob;
 
     // Compile shaders
-    HRESULT hr = D3DCompile(g_VertexShaderSrc, strlen(g_VertexShaderSrc), nullptr,
-                            nullptr, nullptr, "main", "vs_5_0", compileFlags, 0,
-                            &vsBlob, &errorBlob);
+    HRESULT hr = D3DCompile(g_VertexShaderSrc, strlen(g_VertexShaderSrc), nullptr, nullptr, nullptr, "main", "vs_5_0",
+                            compileFlags, 0, &vsBlob, &errorBlob);
     if (FAILED(hr)) return false;
 
-    hr = D3DCompile(g_PixelShaderSrc, strlen(g_PixelShaderSrc), nullptr,
-                    nullptr, nullptr, "main", "ps_5_0", compileFlags, 0,
-                    &psBlob, &errorBlob);
+    hr = D3DCompile(g_PixelShaderSrc, strlen(g_PixelShaderSrc), nullptr, nullptr, nullptr, "main", "ps_5_0",
+                    compileFlags, 0, &psBlob, &errorBlob);
     if (FAILED(hr)) return false;
 
-    hr = D3DCompile(g_PixelShaderSolidSrc, strlen(g_PixelShaderSolidSrc), nullptr,
-                    nullptr, nullptr, "main", "ps_5_0", compileFlags, 0,
-                    &psSolidBlob, &errorBlob);
+    hr = D3DCompile(g_PixelShaderSolidSrc, strlen(g_PixelShaderSolidSrc), nullptr, nullptr, nullptr, "main", "ps_5_0",
+                    compileFlags, 0, &psSolidBlob, &errorBlob);
     if (FAILED(hr)) return false;
 
     // Input layout
     D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
-        { "POSITION", 0, DXGI_FORMAT_R32G32_FLOAT,   0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,   0, 8,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "COLOR",    0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        {"POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 8, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"COLOR", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
     };
 
     // Pipeline state desc
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
     psoDesc.pRootSignature = rootSignature.Get();
-    psoDesc.VS = { vsBlob->GetBufferPointer(), vsBlob->GetBufferSize() };
-    psoDesc.PS = { psBlob->GetBufferPointer(), psBlob->GetBufferSize() };
-    psoDesc.InputLayout = { inputLayout, 3 };
+    psoDesc.VS = {vsBlob->GetBufferPointer(), vsBlob->GetBufferSize()};
+    psoDesc.PS = {psBlob->GetBufferPointer(), psBlob->GetBufferSize()};
+    psoDesc.InputLayout = {inputLayout, 3};
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     psoDesc.NumRenderTargets = 1;
     psoDesc.RTVFormats[0] = rtvFormat;
@@ -206,7 +204,7 @@ bool DX12Backend::CreatePipelineState() {
     psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     psoDesc.RasterizerState.DepthClipEnable = TRUE;
     psoDesc.DepthStencilState.DepthEnable = FALSE;
-    
+
     // Alpha blending
     psoDesc.BlendState.RenderTarget[0].BlendEnable = TRUE;
     psoDesc.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
@@ -221,12 +219,13 @@ bool DX12Backend::CreatePipelineState() {
     if (FAILED(hr)) return false;
 
     // Solid pixel shader pipeline
-    psoDesc.PS = { psSolidBlob->GetBufferPointer(), psSolidBlob->GetBufferSize() };
+    psoDesc.PS = {psSolidBlob->GetBufferPointer(), psSolidBlob->GetBufferSize()};
     hr = device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&pipelineStateSolid));
     return SUCCEEDED(hr);
 }
 
-bool DX12Backend::CreateBuffers() {
+bool DX12Backend::CreateBuffers()
+{
     // Create upload heap buffers (CPU-accessible)
     vertexBufferSize = 4096 * sizeof(DrawVertex);
     indexBufferSize = 8192 * sizeof(uint16_t);
@@ -243,24 +242,26 @@ bool DX12Backend::CreateBuffers() {
     bufferDesc.SampleDesc.Count = 1;
     bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-    HRESULT hr = device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE,
-        &bufferDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&vertexBuffer));
+    HRESULT hr =
+        device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
+                                        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&vertexBuffer));
     if (FAILED(hr)) return false;
 
     bufferDesc.Width = indexBufferSize;
-    hr = device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE,
-        &bufferDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&indexBuffer));
+    hr = device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
+                                         D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&indexBuffer));
     if (FAILED(hr)) return false;
 
     // Map buffers persistently
-    D3D12_RANGE readRange = { 0, 0 };
+    D3D12_RANGE readRange = {0, 0};
     vertexBuffer->Map(0, &readRange, &vertexBufferPtr);
     indexBuffer->Map(0, &readRange, &indexBufferPtr);
 
     return true;
 }
 
-bool DX12Backend::CreateFontTexture(int width, int height, const uint8_t* data) {
+bool DX12Backend::CreateFontTexture(int width, int height, const uint8_t* data)
+{
     // Create SRV heap
     D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
     heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
@@ -285,8 +286,8 @@ bool DX12Backend::CreateFontTexture(int width, int height, const uint8_t* data) 
     texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     texDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
-    hr = device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE,
-        &texDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&fontTexture));
+    hr = device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &texDesc, D3D12_RESOURCE_STATE_COPY_DEST,
+                                         nullptr, IID_PPV_ARGS(&fontTexture));
     if (FAILED(hr)) return false;
 
     // Create upload buffer
@@ -305,8 +306,8 @@ bool DX12Backend::CreateFontTexture(int width, int height, const uint8_t* data) 
     uploadDesc.SampleDesc.Count = 1;
     uploadDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-    hr = device->CreateCommittedResource(&uploadHeapProps, D3D12_HEAP_FLAG_NONE,
-        &uploadDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&uploadBuffer));
+    hr = device->CreateCommittedResource(&uploadHeapProps, D3D12_HEAP_FLAG_NONE, &uploadDesc,
+                                         D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&uploadBuffer));
     if (FAILED(hr)) return false;
 
     // Copy data to upload buffer
@@ -315,12 +316,10 @@ bool DX12Backend::CreateFontTexture(int width, int height, const uint8_t* data) 
 
     void* uploadPtr;
     uploadBuffer->Map(0, nullptr, &uploadPtr);
-    
+
     uint8_t* dst = (uint8_t*)uploadPtr;
     for (int y = 0; y < height; y++) {
-        memcpy(dst + y * footprint.Footprint.RowPitch, 
-               data + y * width * 4, 
-               width * 4);
+        memcpy(dst + y * footprint.Footprint.RowPitch, data + y * width * 4, width * 4);
     }
     uploadBuffer->Unmap(0, nullptr);
 
@@ -331,8 +330,7 @@ bool DX12Backend::CreateFontTexture(int width, int height, const uint8_t* data) 
     srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srvDesc.Texture2D.MipLevels = 1;
 
-    device->CreateShaderResourceView(fontTexture.Get(), &srvDesc, 
-                                     srvHeap->GetCPUDescriptorHandleForHeapStart());
+    device->CreateShaderResourceView(fontTexture.Get(), &srvDesc, srvHeap->GetCPUDescriptorHandleForHeapStart());
 
     // Note: Texture upload and transition must be done via command list
     // This will be handled on first render
@@ -340,16 +338,15 @@ bool DX12Backend::CreateFontTexture(int width, int height, const uint8_t* data) 
     return true;
 }
 
-void DX12Backend::SetRenderTarget(ID3D12GraphicsCommandList* cmdList,
-                                   D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle) {
+void DX12Backend::SetRenderTarget(ID3D12GraphicsCommandList* cmdList, D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle)
+{
     currentCmdList = cmdList;
     currentRTV = rtvHandle;
 }
 
-void DX12Backend::Render(const std::vector<DrawVertex>& vertices,
-                         const std::vector<uint16_t>& indices,
-                         const std::vector<DrawCommand>& commands,
-                         int viewportWidth, int viewportHeight) {
+void DX12Backend::Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
+                         const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight)
+{
     if (!initialized || !currentCmdList || vertices.empty()) return;
 
     // Update vertex buffer
@@ -366,14 +363,14 @@ void DX12Backend::Render(const std::vector<DrawVertex>& vertices,
 
     // Set state
     currentCmdList->SetGraphicsRootSignature(rootSignature.Get());
-    
-    ID3D12DescriptorHeap* heaps[] = { srvHeap.Get() };
+
+    ID3D12DescriptorHeap* heaps[] = {srvHeap.Get()};
     currentCmdList->SetDescriptorHeaps(1, heaps);
-    
+
     // Set constants (viewport size)
-    float constants[4] = { (float)viewportWidth, (float)viewportHeight, 0, 0 };
+    float constants[4] = {(float)viewportWidth, (float)viewportHeight, 0, 0};
     currentCmdList->SetGraphicsRoot32BitConstants(0, 4, constants, 0);
-    
+
     // Set SRV
     currentCmdList->SetGraphicsRootDescriptorTable(1, srvHeap->GetGPUDescriptorHandleForHeapStart());
 
@@ -381,8 +378,8 @@ void DX12Backend::Render(const std::vector<DrawVertex>& vertices,
     currentCmdList->OMSetRenderTargets(1, &currentRTV, FALSE, nullptr);
 
     // Set viewport and scissor
-    D3D12_VIEWPORT vp = { 0, 0, (float)viewportWidth, (float)viewportHeight, 0, 1 };
-    D3D12_RECT scissor = { 0, 0, (LONG)viewportWidth, (LONG)viewportHeight };
+    D3D12_VIEWPORT vp = {0, 0, (float)viewportWidth, (float)viewportHeight, 0, 1};
+    D3D12_RECT scissor = {0, 0, (LONG)viewportWidth, (LONG)viewportHeight};
     currentCmdList->RSSetViewports(1, &vp);
     currentCmdList->RSSetScissorRects(1, &scissor);
 
@@ -412,4 +409,4 @@ void DX12Backend::Render(const std::vector<DrawVertex>& vertices,
     }
 }
 
-} // namespace CustomOverlay
+}  // namespace CustomOverlay

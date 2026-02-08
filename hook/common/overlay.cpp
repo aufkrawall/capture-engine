@@ -82,7 +82,8 @@ static const char* GetQualityString(int mode)
     }
 }
 
-void Overlay::InitImGui(void* hwnd) {
+void Overlay::InitImGui(void* hwnd)
+{
     // REMOVED: ImGui initialization - Using custom overlay instead
     (void)hwnd;
     if (!initialized) {
@@ -92,23 +93,27 @@ void Overlay::InitImGui(void* hwnd) {
     }
 }
 
-void Overlay::InitImGuiHeadless() {
+void Overlay::InitImGuiHeadless()
+{
     // REMOVED: Using custom overlay instead
     initialized = true;
     headless = true;
 }
 
-void Overlay::ShutdownImGui() {
+void Overlay::ShutdownImGui()
+{
     // REMOVED: Using custom overlay instead
     initialized = false;
     context = nullptr;
 }
 
-void Overlay::BeginFrame() {
+void Overlay::BeginFrame()
+{
     // REMOVED: Using custom overlay instead
 }
 
-void Overlay::EndFrame() {
+void Overlay::EndFrame()
+{
     // REMOVED: Using custom overlay instead
 }
 
@@ -123,12 +128,18 @@ ImU32 Overlay::GetLoadColor(float load, const OverlayConfig& cfg)
     return cfg.loadColorHigh;
 }
 
-void Overlay::RenderTextWithOutline(const char* text, ImU32 color, bool outline, ImU32 outlineColor, float thickness) {
+void Overlay::RenderTextWithOutline(const char* text, ImU32 color, bool outline, ImU32 outlineColor, float thickness)
+{
     // REMOVED: Using custom overlay instead
-    (void)text; (void)color; (void)outline; (void)outlineColor; (void)thickness;
+    (void)text;
+    (void)color;
+    (void)outline;
+    (void)outlineColor;
+    (void)thickness;
 }
 
-void Overlay::RenderUI() {
+void Overlay::RenderUI()
+{
     // REMOVED: Using custom overlay instead
     lastDrawResult = DrawResult::Unknown;
     if (!initialized) {

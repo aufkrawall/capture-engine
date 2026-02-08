@@ -1,6 +1,5 @@
 #include "opengl_hook.h"
 #include <d3d11.h>
-#include "../common/overlay_adapter.h"
 #include <d3d11_4.h>
 #include <dxgi.h>
 #include <windows.h>
@@ -10,7 +9,8 @@
 #include "../common/fps_limiter.h"
 #include "../common/frame_timing.h"
 #include "../common/input_manager.h"
-//#include "../common/overlay.h"
+#include "../common/overlay_adapter.h"
+// #include "../common/overlay.h"
 #include "../wrappers/iat_hook.h"
 #include "hook_common.h"
 #include "lod_helper.h"
@@ -344,7 +344,7 @@ public:
         }
 
         if (g_OverlayAdapter.IsInitialized()) {
-             g_OverlayAdapter.Shutdown();
+            g_OverlayAdapter.Shutdown();
         }
 
         initialized = false;
@@ -872,13 +872,13 @@ static void DrawOpenGLOverlay(HDC hdc)
         DetectGPU(hdc);
         HWND hwnd = WindowFromDC(hdc);
         g_CachedHwnd = hwnd;
-        
+
         // Hook Input
         InputManager::Get().HookWindow(hwnd);
 
         if (g_OverlayAdapter.InitOpenGL()) {
-             g_OverlayAdapter.SetHwnd(hwnd);
-             EarlyLog("OpenGL: OverlayAdapter initialized");
+            g_OverlayAdapter.SetHwnd(hwnd);
+            EarlyLog("OpenGL: OverlayAdapter initialized");
         }
     }
 
@@ -893,7 +893,7 @@ static void DrawOpenGLOverlay(HDC hdc)
         int width = rect.right - rect.left;
         int height = rect.bottom - rect.top;
         if (width > 0 && height > 0) {
-             g_OverlayAdapter.RenderOverlay(width, height);
+            g_OverlayAdapter.RenderOverlay(width, height);
         }
     }
 }

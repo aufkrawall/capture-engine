@@ -8,8 +8,6 @@
 #include <unordered_set>
 #include <vector>
 
-
-
 #include "../../common/frame_timing.h"
 #include "../../common/raii_helpers.h"
 #include "../common/capture_base.h"
@@ -17,13 +15,13 @@
 #include "../common/fg_detection.h"
 #include "../common/fps_limiter.h"
 #include "../common/hook_common.h"
-//#include "../common/overlay.h"
+// #include "../common/overlay.h"
 #include "../common/overlay_adapter.h"
 #include "../common/system_metrics.h"
-#include "../wrappers/wrapper_base.h"
 #include "../wrappers/dxgi_swapchain_wrap.h"
 #include "../wrappers/iat_hook.h"
-//#include "../wrappers/safe_hook.h"
+#include "../wrappers/wrapper_base.h"
+// #include "../wrappers/safe_hook.h"
 #include "dx11_hook.h"
 #include "dx12_hook.h"
 #include "dxgi_shared.h"
@@ -45,7 +43,7 @@ ce::DeferredReleaseQueue g_DeferredRelease;
 #include <dxgi1_4.h>  // For IDXGISwapChain3
 #include "../common/input_manager.h"
 #include "../wrappers/iat_hook.h"
-//#include "../wrappers/safe_hook.h"
+// #include "../wrappers/safe_hook.h"
 #include "../wrappers/custom_hook.h"
 #include "../wrappers/vtable_hook.h"
 #include "../wrappers/wrapper_base.h"
@@ -228,7 +226,6 @@ void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame);
 void DrawDX11Overlay(IDXGISwapChain* pSwapChain);
 static void InstallVTableHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pContext, IDXGISwapChain* pSwapChain);
 
-
 HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags)
 {
     // WRAPPER ARCHITECTURE: Skip if called from within wrapper's Present
@@ -344,9 +341,9 @@ static HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter
 {
     // Unconditional log to verify hook is being called
     HookLog("DetourD3D11CreateDeviceAndSwapChain: ENTER");
-    
+
     if (pSwapChainDesc) {
-        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) {
+        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
             EarlyLog("DX11: D3D11CreateDeviceAndSwapChain called. Width=%u Height=%u", pSwapChainDesc->BufferDesc.Width,
                      pSwapChainDesc->BufferDesc.Height);
         }
@@ -413,7 +410,7 @@ static HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter
             pReal->Release();
             HookLog("DX11: Wrapped swapchain from D3D11CreateDeviceAndSwapChain");
         }
-        
+
         IDXGISwapChain* sc = (ppSwapChain && *ppSwapChain) ? *ppSwapChain : nullptr;
         ID3D11DeviceContext* ctx = (ppImmediateContext && *ppImmediateContext) ? *ppImmediateContext : nullptr;
         // If immediate context not provided, get it from device
@@ -566,12 +563,10 @@ static HRESULT WINAPI DetourD3D10CreateDevice1(IDXGIAdapter* pAdapter, D3D10_DRI
     return oD3D10CreateDevice1(pAdapter, DriverType, Software, Flags, HardwareLevel, SDKVersion, ppDevice);
 }
 
-
-
 static HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory* pFactory, IUnknown* pDevice,
                                                        DXGI_SWAP_CHAIN_DESC* pDesc, IDXGISwapChain** ppSwapChain)
 {
-    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) {
+    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
         if (pDesc) {
             EarlyLog("DX11: CreateSwapChain called. Width=%u Height=%u Windowed=%d BufferCount=%u SwapEffect=%d",
                      pDesc->BufferDesc.Width, pDesc->BufferDesc.Height, pDesc->Windowed, pDesc->BufferCount,
@@ -642,7 +637,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2* pFa
                                                               IDXGIOutput* pRestrictToOutput,
                                                               IDXGISwapChain1** ppSwapChain)
 {
-    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) {
+    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
         if (pDesc) {
             EarlyLog("DX11: CreateSwapChainForHwnd called. Width=%u Height=%u BufferCount=%u SwapEffect=%d",
                      pDesc->Width, pDesc->Height, pDesc->BufferCount, pDesc->SwapEffect);
@@ -716,8 +711,6 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2* pFa
     }
     return hr;
 }
-
-
 
 static HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device* pDevice, const D3D11_SAMPLER_DESC* pSamplerDesc,
                                                           ID3D11SamplerState** ppSamplerState);
@@ -1259,11 +1252,11 @@ static DX11Capture g_DX11Capture;
 void DX11_ProcessFrameExternal(IDXGISwapChain* pSwapChain)
 {
     if (!pSwapChain) return;
-    
+
     // CAPTURE: Copy frame to shared texture (zero-copy GPU-to-GPU)
     // This happens regardless of recording state - media process decides what to encode
     g_DX11Capture.CaptureFrame(pSwapChain);
-    
+
     // OVERLAY: Draw ImGui overlay on top
     HandleDX11ProcessFrame(pSwapChain, true);
 }
@@ -1456,13 +1449,13 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain)
     device->GetImmediateContext(&context);
 
     if (g_OverlayAdapter.IsInitialized() && currentHwnd != g_CachedHwnd) {
-         HookLog("DX11: HWND changed, shutting down OverlayAdapter");
-         g_OverlayAdapter.Shutdown();
+        HookLog("DX11: HWND changed, shutting down OverlayAdapter");
+        g_OverlayAdapter.Shutdown();
     }
 
     if (!g_OverlayAdapter.IsInitialized() || currentHwnd != g_CachedHwnd) {
         if (g_OverlayAdapter.IsInitialized()) {
-             g_OverlayAdapter.Shutdown();
+            g_OverlayAdapter.Shutdown();
         }
         g_CachedHwnd = currentHwnd;
         lastHwnd = currentHwnd;
@@ -1503,10 +1496,7 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain)
     }
     g_OverlayAdapter.SetGraphicsAPI(finalApi);
 
-
-
     {
-
     }
 
     // Use cached device/context - some games have broken GetImmediateContext on re-acquire
@@ -1654,8 +1644,6 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
         HookLog("DX11: ResizeBuffers SUCCESS");
     }
 
-
-
     return hr;
 }
 
@@ -1761,7 +1749,7 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device* pDevice, const 
     D3D11_SAMPLER_DESC desc = *pSamplerDesc;
     bool modified = false;
 
-    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) {
+    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
         debug = true;
     }
 
@@ -1903,7 +1891,7 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState10(ID3D10Device* pDevice, cons
     D3D10_SAMPLER_DESC desc = *pSamplerDesc;
     bool modified = false;
     bool debug = false;
-    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->debugLogging) {
+    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
         debug = true;
     }
 
@@ -2284,7 +2272,7 @@ void DX11Hook::Init()
         // Initialize IAT hooks now that d3d11.dll is loaded
         // This may have been called before d3d11.dll was loaded at startup
         IATHook::InitializeD3D11Hooks();
-        
+
         // Also hook the export directly using CustomHook to catch calls that bypass IAT
         // (e.g., statically bound imports, GetProcAddress)
         // SafeHook::Initialize();  // REMOVED: Using CustomHook instead
@@ -2292,8 +2280,11 @@ void DX11Hook::Init()
         void* pTarget = (void*)GetProcAddress(hD3D11, "D3D11CreateDeviceAndSwapChain");
         if (pTarget) {
             HookLog("DX11: Hook target at %p", pTarget);
-            // bool created = SafeHook::CreateHook(pTarget, (void*)DetourD3D11CreateDeviceAndSwapChain, (void**)&oD3D11CreateDeviceAndSwapChain);
-            bool created = CustomHook::CreateHook(pTarget, (void*)DetourD3D11CreateDeviceAndSwapChain, (void**)&oD3D11CreateDeviceAndSwapChain) == CustomHook::Status::Success;
+            // bool created = SafeHook::CreateHook(pTarget, (void*)DetourD3D11CreateDeviceAndSwapChain,
+            // (void**)&oD3D11CreateDeviceAndSwapChain);
+            bool created =
+                CustomHook::CreateHook(pTarget, (void*)DetourD3D11CreateDeviceAndSwapChain,
+                                       (void**)&oD3D11CreateDeviceAndSwapChain) == CustomHook::Status::Success;
             HookLog("DX11: CreateHook result: %s", created ? "success" : "failed");
             // bool enabled = SafeHook::EnableHook(pTarget);
             bool enabled = CustomHook::EnableHook(pTarget) == CustomHook::Status::Success;
