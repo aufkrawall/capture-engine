@@ -385,7 +385,7 @@ ce::HotPathLogger::LogRateLimited("Present: %p", swapChain);
 
 ### P3 - Low Priority (Cleanup & Documentation)
 - [x] Remove dead MinHook code references
-- [ ] Clean up commented ImGui code (already migrated to OverlayAdapter)
+- [x] Clean up commented ImGui code (mostly migrated to OverlayAdapter)
 - [ ] Simplify UE5 pattern scanning
 - [ ] Add API hook interaction matrix docs
 - [ ] Add thread safety guidelines docs

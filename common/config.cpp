@@ -724,7 +724,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         return res;
     };
 
-    // Helper to parse Hex Color (RRGGBB -> 0xAABBGGRR for ImGui)
+    // Helper to parse Hex Color (RRGGBB -> 0xAABBGGRR for overlay)
     auto ParseColor = [&](const std::string& hexStr, uint32_t defaultColor) -> uint32_t {
         if (hexStr.empty()) return defaultColor;
         std::string clean = hexStr;

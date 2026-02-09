@@ -118,7 +118,6 @@ static void ApplyDX8MSAAOverride(IDirect3D8* d3d, UINT adapter, UINT deviceType,
 
 // Globals
 static PerformanceMetrics g_PerfMetrics;
-static bool g_ImGuiInitialized = false;
 static HWND g_CachedHwnd = NULL;
 static bool g_HooksInitialized = false;
 

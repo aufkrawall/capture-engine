@@ -31,22 +31,18 @@
 #include "../common/system_metrics.h"
 #include "../wrappers/d3d12_wrapper_interface.h"
 #include "../wrappers/wrapper_hooks.h"
-// #include "backends/imgui_impl_dx12.h"
-// #include "backends/imgui_impl_win32.h"
 #include "../common/freeze_watchdog.h"
 #include "../common/overlay_adapter.h"
 #include "dx11_hook.h"
 #include "dx12_hook.h"
 #include "graphics_hook.h"
-// #include "imgui.h"
 #include "lod_helper.h"
 
 #include "../wrappers/vtable_hook.h"
 #include "../wrappers/wrapper_base.h"
 #include "dxgi_shared.h"
 
-// Forward declaration for ImGui frame counter reset
-void DX12_ResetImGuiFrameCounter();
+
 
 // ============================================================================
 // Crash Dump Support
@@ -223,7 +219,6 @@ struct DX12OverlayState {
 };
 
 static DX12OverlayState g_State;
-static std::recursive_mutex g_ImGuiFrameMutex;
 static SharedCaptureD3D12 g_SharedCaptureD3D12;
 
 ID3D12Device* g_Device = nullptr;
@@ -315,7 +310,6 @@ static ID3D12CommandQueue* g_OverlayQueue = nullptr;
 // Rule: When acquiring multiple locks, always acquire in order above.
 //       Use std::lock_guard with std::adopt_lock when using try_lock().
 static std::recursive_mutex g_OverlayMutex;
-static std::recursive_mutex g_InitImGuiMutex;
 static std::recursive_mutex g_DX12CaptureMutex;
 static std::atomic<bool> g_InSwapchainResizeCleanup{false};
 
@@ -368,15 +362,13 @@ void DX12_InvalidateSwapchain()
     HookLog("DX12: Invalidating - imGuiInit=%d, syncInit=%d, device=%p, queue=%p", g_State.imGuiInit, g_State.syncInit,
             g_Device, g_CommandQueue);
 
-    // CRITICAL FIX: Defer ImGui cleanup to next frame to avoid interfering with FSR swapchain creation
+    // CRITICAL FIX: Defer overlay cleanup to next frame to avoid interfering with FSR swapchain creation
     // FSR FG is sensitive to D3D12 operations during its swapchain setup
-    // Don't call ShutdownImGui() here - let ProcessFrame handle it on the next present
     if (g_State.imGuiInit) {
-        HookLog("DX12: Deferring ImGui shutdown to next frame (avoiding FSR swapchain conflict)");
+        HookLog("DX12: Deferring overlay shutdown to next frame (avoiding FSR swapchain conflict)");
         // Just mark as needing reinit - don't actually clean up resources yet
         g_State.imGuiInit = false;
         g_State.syncInit = false;
-        DX12_ResetImGuiFrameCounter();
     }
 }
 
@@ -428,7 +420,6 @@ void DX12_NotifyCommandLists(UINT numCommandLists)
 void DX12_OnSwapchainResizeEnd();
 void CleanupOverlay();
 void CleanupRTVs();
-// void ShutdownImGui(); // MIGRATED: OverlayAdapter handles cleanup
 void DX12_InvalidateSwapchain();
 
 // Helper to ensure global hook instance exists
@@ -719,7 +710,7 @@ void ShutdownImGui()
 
 bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
 {
-    std::lock_guard<std::recursive_mutex> lock(g_InitImGuiMutex);
+    std::lock_guard<std::recursive_mutex> lock(g_OverlayMutex);
 
     // OverlayAdapter re-init check
     if (g_OverlayAdapter.IsInitialized()) {
@@ -742,7 +733,6 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
         return false;
     }
 
-    // g_SharedOverlay.InitImGui(hwnd); // MIGRATED: Using OverlayAdapter instead
     // OverlayAdapter handles its own initialization
 
     InputManager::Get().HookWindow(hwnd);
@@ -776,8 +766,8 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
 
 void DrawOverlay(ID3D12GraphicsCommandList* cmdList, bool isRealFrame, UINT bufferIdx)
 {
-    // CRITICAL FIX: Lock mutex to prevent concurrent access during InitImGui shutdown/reinit
-    std::lock_guard<std::recursive_mutex> lock(g_InitImGuiMutex);
+    // CRITICAL FIX: Lock mutex to prevent concurrent access during overlay shutdown/reinit
+    std::lock_guard<std::recursive_mutex> lock(g_OverlayMutex);
 
     if (!g_State.imGuiInit || !cmdList) return;
 
@@ -996,7 +986,6 @@ void CleanupOverlay()
         g_OverlayQueue = nullptr;
     }
 
-    // ShutdownImGui(); // MIGRATED: OverlayAdapter handles cleanup
 }
 
 void CleanupRTVs()
@@ -1149,10 +1138,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture)
         HookLog("DX12: Swapchain changed (%p -> %p), forcing re-initialization", s_lastSwapChain, pSwapChain);
         CleanupOverlay();
         CleanupRTVs();
-        // ShutdownImGui(); // MIGRATED: OverlayAdapter handles cleanup
         g_State.imGuiInit = false;
         g_State.syncInit = false;
-        DX12_ResetImGuiFrameCounter();
     }
     s_lastSwapChain = pSwapChain;
 
@@ -1306,7 +1293,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture)
             if (g_Device) {
                 CleanupOverlay();
                 CleanupRTVs();
-                // ShutdownImGui(); // MIGRATED: OverlayAdapter handles cleanup
+
                 g_SharedCaptureD3D12.Reset();
                 // Also cleanup overlay queue when device changes
                 if (g_OverlayQueue) {
@@ -1321,8 +1308,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture)
             g_LastSwapChain = pSwapChain;
             g_LastSwapChain->AddRef();
             g_State.imGuiInit = false;
-            DX12_ResetImGuiFrameCounter();
-            HookLog("DX12: ProcessFrame - new device/swapchain, ImGui reset");
+            HookLog("DX12: ProcessFrame - new device/swapchain, overlay reset");
 
             // CRITICAL FIX: Create overlay queue IMMEDIATELY after device is set
             // This ensures the queue exists before any overlay initialization
@@ -1366,11 +1352,11 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture)
         // CRITICAL FIX: Don't initialize ImGui during FG suspension, FSR stabilization, or native FSR FG
         // This prevents initialization with potentially unstable frame generation state
         // and avoids initializing overlay resources we'll never use (native FSR FG skips rendering)
-        // CRITICAL FIX: Clean up any existing ImGui context from previous swapchain
+        // CRITICAL FIX: Clean up any existing overlay context from previous swapchain
         // This happens when FSR FG recreates the swapchain and we deferred cleanup
         // MUST hold mutex to prevent race with DrawOverlay
         if (g_OverlayAdapter.IsInitialized()) {
-            std::lock_guard<std::recursive_mutex> cleanupLock(g_InitImGuiMutex);
+            std::lock_guard<std::recursive_mutex> cleanupLock(g_OverlayMutex);
             HookLog("DX12: ProcessFrame - cleaning up stale OverlayAdapter (mutex held)");
             g_OverlayAdapter.Shutdown();
             CleanupOverlay();
@@ -1965,7 +1951,6 @@ HRESULT STDMETHODCALLTYPE DetourCreateCommittedResource(ID3D12Device* device,
 void DX12Hook::Shutdown()
 {
     CleanupResources();
-    // ShutdownImGui(); // MIGRATED: OverlayAdapter handles cleanup
     CleanupOverlay();
     CleanupRTVs();
     {

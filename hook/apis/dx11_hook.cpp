@@ -72,8 +72,6 @@ static const char* g_DetectedAPI = "DX11";
 static bool g_IsDX11Active = false;
 static bool g_IsDX10Active = false;
 
-static std::mutex g_ImGuiFrameMutex;
-
 // Prerender Limit Fencing
 static std::vector<ID3D11Query*> g_PrerenderQueries;
 static uint64_t g_PrerenderFrameIndex = 0;
@@ -778,7 +776,7 @@ void DX11_UpdatePerformanceMetrics(int64_t qpcUs)
     }
 }
 
-static bool g_ImGuiInitialized = false;
+
 
 void CleanupDX11Resources()
 {

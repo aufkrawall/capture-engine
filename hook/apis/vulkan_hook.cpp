@@ -1,8 +1,5 @@
 #define VK_USE_PLATFORM_WIN32_KHR
 #include "vulkan_hook.h"
-// #include <backends/imgui_impl_vulkan.h>
-// #include <backends/imgui_impl_win32.h>
-// #include <imgui.h>
 #include <vulkan/vulkan.h>
 #include <algorithm>
 #include <mutex>
