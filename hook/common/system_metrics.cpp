@@ -161,8 +161,8 @@ void SystemMetricsCollector::Initialize(int32_t luidLow, int32_t luidHigh)
 
         // Publish LUID to shared memory for Host (sensors.exe)
         if (g_IPC && g_IPC->GetSharedMem()) {
-            g_IPC->GetSharedMem()->luidLowPart = luidLow;
-            g_IPC->GetSharedMem()->luidHighPart = luidHigh;
+            g_IPC->GetSharedMem()->SetLuidLowPart(luidLow);
+            g_IPC->GetSharedMem()->SetLuidHighPart(luidHigh);
             // EarlyLog("SystemMetricsCollector: Published LUID to Shared Memory: %08X-%08X", luidHigh, luidLow);
         }
     }
@@ -201,9 +201,9 @@ void SystemMetricsCollector::BackgroundUpdateLoop()
             // Ensure LUID is published (handles late IPC connection)
             {
                 std::lock_guard<std::mutex> lock(mutex);
-                if (g_IPC->GetSharedMem()->luidLowPart != (int32_t)adapterLuid.LowPart) {
-                    g_IPC->GetSharedMem()->luidLowPart = adapterLuid.LowPart;
-                    g_IPC->GetSharedMem()->luidHighPart = adapterLuid.HighPart;
+                if (g_IPC->GetSharedMem()->GetLuidLowPart() != (int32_t)adapterLuid.LowPart) {
+                    g_IPC->GetSharedMem()->SetLuidLowPart(adapterLuid.LowPart);
+                    g_IPC->GetSharedMem()->SetLuidHighPart(adapterLuid.HighPart);
                 }
             }
 

@@ -76,7 +76,7 @@ bool IPCManager::Init()
     pSharedMem->SetVersion(SHARED_MEMORY_VERSION);
     pSharedMem->SetMagic(SHARED_MEMORY_MAGIC);  // Write last as signal - release semantics
 
-    pSharedMem->hostPID = GetCurrentProcessId();
+    pSharedMem->SetHostPID(GetCurrentProcessId());
 
     // Create separate Shmem mapping for large buffer
     wchar_t shmemName[64];
@@ -88,8 +88,8 @@ bool IPCManager::Init()
         pShmem = (ShmemBuffer*)MapViewOfFile(hMapShmem, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(ShmemBuffer));
         if (pShmem) {
             ZeroMemory(pShmem, sizeof(ShmemBuffer));
-            pSharedMem->shmemMappingCreated = true;
-            pSharedMem->shmemMappingSize = sizeof(ShmemBuffer);
+            pSharedMem->SetShmemMappingCreated(true);
+            pSharedMem->SetShmemMappingSize(sizeof(ShmemBuffer));
         }
     }
 
@@ -103,34 +103,34 @@ void IPCManager::UpdateConfig(const AppConfig& config)
 {
     if (!pSharedMem) return;
     pSharedMem->overlayConfig = config.overlay;
-    pSharedMem->debugLogging = config.debugLogging;
-    pSharedMem->logLevel = LogLevel::Info;
+    pSharedMem->SetDebugLogging(config.debugLogging);
+    pSharedMem->SetLogLevel(LogLevel::Info);
 
     // Copy log file path for hook logging
     strncpy(pSharedMem->logFilePath, config.logFilePath.c_str(), sizeof(pSharedMem->logFilePath) - 1);
     pSharedMem->logFilePath[sizeof(pSharedMem->logFilePath) - 1] = '\0';
 
     // Copy priority settings for hook/encoder
-    pSharedMem->gpuPriority = config.video.gpuPriority;
+    pSharedMem->SetGpuPriority(config.video.gpuPriority);
     // Convert string to int: low=0, normal=1, high=2
     if (config.copyQueuePriority == "low")
-        pSharedMem->copyQueuePriority = 0;
+        pSharedMem->SetCopyQueuePriority(0);
     else if (config.copyQueuePriority == "high")
-        pSharedMem->copyQueuePriority = 2;
+        pSharedMem->SetCopyQueuePriority(2);
     else
-        pSharedMem->copyQueuePriority = 1;  // normal default
+        pSharedMem->SetCopyQueuePriority(1);  // normal default
 
     // Copy fence wait mode for debugging
-    pSharedMem->fenceWaitMode = config.fenceWaitMode;
-    pSharedMem->useGameQueue = config.useGameQueue;
+    pSharedMem->SetFenceWaitMode(config.fenceWaitMode);
+    pSharedMem->SetUseGameQueue(config.useGameQueue);
 
     // Copy FPS limiter settings
-    pSharedMem->fpsLimiter.captureSyncEnabled = config.fpsLimiter.captureSyncEnabled;
-    pSharedMem->fpsLimiter.captureSyncMultiplier = config.fpsLimiter.captureSyncMultiplier;
-    pSharedMem->fpsLimiter.generalEnabled = config.fpsLimiter.generalEnabled;
-    pSharedMem->fpsLimiter.generalFps = config.fpsLimiter.generalFps;
-    pSharedMem->fpsLimiter.captureFps = config.video.fps;
-    pSharedMem->fpsLimiter.useVFR = config.video.useVFR;
+    pSharedMem->fpsLimiter.SetCaptureSyncEnabled(config.fpsLimiter.captureSyncEnabled);
+    pSharedMem->fpsLimiter.SetCaptureSyncMultiplier(config.fpsLimiter.captureSyncMultiplier);
+    pSharedMem->fpsLimiter.SetGeneralEnabled(config.fpsLimiter.generalEnabled);
+    pSharedMem->fpsLimiter.SetGeneralFps(config.fpsLimiter.generalFps);
+    pSharedMem->fpsLimiter.SetCaptureFps(config.video.fps);
+    pSharedMem->fpsLimiter.SetUseVFR(config.video.useVFR);
 
     // Copy Graphics Config (SharedGraphicsConfig)
     {
@@ -205,25 +205,25 @@ bool IPCManager::GetLatestFrame(SharedMemoryLayout& outState)
     // Copy non-atomic fields manually to avoid copying atomics
     // The caller should use GetSharedMem() for direct atomic access
     outState.overlayConfig = pSharedMem->overlayConfig;
-    outState.hostPID = pSharedMem->hostPID;
-    outState.requestExit = pSharedMem->requestExit;
-    outState.debugLogging = pSharedMem->debugLogging;
+    outState.SetHostPID(pSharedMem->GetHostPID());
+    outState.SetRequestExit(pSharedMem->GetRequestExit());
+    outState.SetDebugLogging(pSharedMem->GetDebugLogging());
     memcpy(outState.logFilePath, pSharedMem->logFilePath, sizeof(outState.logFilePath));
-    outState.sharedHandles[0] = pSharedMem->sharedHandles[0];
-    outState.sharedHandles[1] = pSharedMem->sharedHandles[1];
-    outState.sharedHandles[2] = pSharedMem->sharedHandles[2];
-    outState.sharedHandles[3] = pSharedMem->sharedHandles[3];
-    outState.currentReadIndex = pSharedMem->currentReadIndex;
-    outState.fenceShareHandle = pSharedMem->fenceShareHandle;
-    outState.fenceValue = pSharedMem->fenceValue;
-    outState.timestamp = pSharedMem->timestamp;
-    outState.width = pSharedMem->width;
-    outState.height = pSharedMem->height;
-    outState.format = pSharedMem->format;
-    outState.isHDR = pSharedMem->isHDR;
-    outState.luidLowPart = pSharedMem->luidLowPart;
-    outState.luidHighPart = pSharedMem->luidHighPart;
-    outState.sourcePid = pSharedMem->sourcePid;
+    outState.SetSharedHandle(0, pSharedMem->GetSharedHandle(0));
+    outState.SetSharedHandle(1, pSharedMem->GetSharedHandle(1));
+    outState.SetSharedHandle(2, pSharedMem->GetSharedHandle(2));
+    outState.SetSharedHandle(3, pSharedMem->GetSharedHandle(3));
+    outState.SetCurrentReadIndex(pSharedMem->GetCurrentReadIndex());
+    outState.SetFenceShareHandle(pSharedMem->GetFenceShareHandle());
+    outState.SetFenceValue(pSharedMem->GetFenceValue());
+    outState.SetTimestamp(pSharedMem->GetTimestamp());
+    outState.SetWidth(pSharedMem->GetWidth());
+    outState.SetHeight(pSharedMem->GetHeight());
+    outState.SetFormat(pSharedMem->GetFormat());
+    outState.SetIsHDR(pSharedMem->GetIsHDR());
+    outState.SetLuidLowPart(pSharedMem->GetLuidLowPart());
+    outState.SetLuidHighPart(pSharedMem->GetLuidHighPart());
+    outState.SetSourcePid(pSharedMem->GetSourcePid());
     // Copy CaptureState fields individually (can't copy struct with atomics)
     outState.runtimeState.isRecording = pSharedMem->runtimeState.isRecording.load();
     outState.runtimeState.recordingStartTime = pSharedMem->runtimeState.recordingStartTime.load();
@@ -302,5 +302,5 @@ void IPCManager::UpdateThrottleState(uint32_t queueDepth, bool throttle)
 void IPCManager::SignalExit()
 {
     if (!pSharedMem) return;
-    pSharedMem->requestExit = true;
+    pSharedMem->SetRequestExit(true);
 }

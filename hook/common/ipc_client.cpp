@@ -35,10 +35,10 @@ bool IPCClient::Connect()
                     pSharedMem = (SharedMemoryLayout*)MapViewOfFile(hMapFile, FILE_MAP_ALL_ACCESS, 0, 0,
                                                                     sizeof(SharedMemoryLayout));
 
-                    if (pSharedMem && pSharedMem->hostPID != 0) {
+                    if (pSharedMem && pSharedMem->GetHostPID() != 0) {
                         UnmapViewOfFile(pDiscovery);
                         CloseHandle(hDiscovery);
-                        EarlyLog("IPC: Connected! HostPID=%d", pSharedMem->hostPID);
+                        EarlyLog("IPC: Connected! HostPID=%d", pSharedMem->GetHostPID());
                         return true;
                     }
 
@@ -74,11 +74,11 @@ bool IPCClient::Connect()
 ShmemBuffer* IPCClient::GetShmem()
 {
     if (pShmem) return pShmem;
-    if (!pSharedMem || !pSharedMem->shmemMappingCreated) return nullptr;
+    if (!pSharedMem || !pSharedMem->GetShmemMappingCreated()) return nullptr;
 
     // Connect to separate shmem mapping
     wchar_t shmemName[64];
-    GenerateShmemName(shmemName, 64, pSharedMem->hostPID);
+    GenerateShmemName(shmemName, 64, pSharedMem->GetHostPID());
 
     hMapShmem = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, shmemName);
     if (hMapShmem) {

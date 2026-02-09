@@ -92,31 +92,31 @@ static void UpdateSharedMemoryFromConfig(SharedMemoryLayout* pSharedMem, const A
     pSharedMem->overlayConfig = config.overlay;
 
     // Performance / Priority
-    pSharedMem->gpuPriority = config.video.gpuPriority;
+    pSharedMem->SetGpuPriority(config.video.gpuPriority);
     if (config.copyQueuePriority == "low")
-        pSharedMem->copyQueuePriority = 0;
+        pSharedMem->SetCopyQueuePriority(0);
     else if (config.copyQueuePriority == "high")
-        pSharedMem->copyQueuePriority = 2;
+        pSharedMem->SetCopyQueuePriority(2);
     else
-        pSharedMem->copyQueuePriority = 1;
+        pSharedMem->SetCopyQueuePriority(1);
 
     // Synchronization
-    pSharedMem->fenceWaitMode = config.fenceWaitMode;
-    pSharedMem->useGameQueue = config.useGameQueue;
+    pSharedMem->SetFenceWaitMode(config.fenceWaitMode);
+    pSharedMem->SetUseGameQueue(config.useGameQueue);
 
     // FPS Limiter
-    pSharedMem->fpsLimiter.captureSyncEnabled = config.fpsLimiter.captureSyncEnabled;
-    pSharedMem->fpsLimiter.captureSyncMultiplier = config.fpsLimiter.captureSyncMultiplier;
-    pSharedMem->fpsLimiter.generalEnabled = config.fpsLimiter.generalEnabled;
-    pSharedMem->fpsLimiter.generalFps = config.fpsLimiter.generalFps;
+    pSharedMem->fpsLimiter.SetCaptureSyncEnabled(config.fpsLimiter.captureSyncEnabled);
+    pSharedMem->fpsLimiter.SetCaptureSyncMultiplier(config.fpsLimiter.captureSyncMultiplier);
+    pSharedMem->fpsLimiter.SetGeneralEnabled(config.fpsLimiter.generalEnabled);
+    pSharedMem->fpsLimiter.SetGeneralFps(config.fpsLimiter.generalFps);
     // Note: captureFps is usually set dynamically during recording start,
     // but we can update it here if it's based on config.video.fps
-    pSharedMem->fpsLimiter.captureFps = config.video.fps;
-    pSharedMem->fpsLimiter.useVFR = config.video.useVFR;
+    pSharedMem->fpsLimiter.SetCaptureFps(config.video.fps);
+    pSharedMem->fpsLimiter.SetUseVFR(config.video.useVFR);
 
     LogInfo("[Inject] Updated SharedMem Config: VSync=%s, AF=%s, FPS Limit=%d (%s), CaptureOverlay=%d",
             pSharedMem->graphicsConfig.vsyncMode, pSharedMem->graphicsConfig.anisotropicFiltering,
-            pSharedMem->fpsLimiter.generalFps, pSharedMem->fpsLimiter.generalEnabled ? "ON" : "OFF",
+            pSharedMem->fpsLimiter.GetGeneralFps(), pSharedMem->fpsLimiter.GetGeneralEnabled() ? "ON" : "OFF",
             pSharedMem->overlayConfig.captureIncludeOverlay);
 }
 
@@ -248,25 +248,25 @@ int InjectProcessMain(const AppConfig& config)
 
     // Initialize shared memory
     ZeroMemory(pSharedMem, sizeof(SharedMemoryLayout));
-    pSharedMem->hostPID = GetCurrentProcessId();
-    pSharedMem->debugLogging = config.debugLogging;
-    pSharedMem->logLevel = LogLevel::Info;
+    pSharedMem->SetHostPID(GetCurrentProcessId());
+    pSharedMem->SetDebugLogging(config.debugLogging);
+    pSharedMem->SetLogLevel(LogLevel::Info);
 
     // Copy log path
     std::string logPath = config.logFilePath;
     strncpy(pSharedMem->logFilePath, logPath.c_str(), sizeof(pSharedMem->logFilePath) - 1);
 
     // Copy priority settings
-    pSharedMem->gpuPriority = config.video.gpuPriority;
+    pSharedMem->SetGpuPriority(config.video.gpuPriority);
     if (config.copyQueuePriority == "low")
-        pSharedMem->copyQueuePriority = 0;
+        pSharedMem->SetCopyQueuePriority(0);
     else if (config.copyQueuePriority == "high")
-        pSharedMem->copyQueuePriority = 2;
+        pSharedMem->SetCopyQueuePriority(2);
     else
-        pSharedMem->copyQueuePriority = 1;
+        pSharedMem->SetCopyQueuePriority(1);
 
-    pSharedMem->fenceWaitMode = config.fenceWaitMode;
-    pSharedMem->useGameQueue = config.useGameQueue;
+    pSharedMem->SetFenceWaitMode(config.fenceWaitMode);
+    pSharedMem->SetUseGameQueue(config.useGameQueue);
 
     // Create separate Shmem mapping for large buffer
     wchar_t shmemName[64];
@@ -280,18 +280,18 @@ int InjectProcessMain(const AppConfig& config)
         pShmem = (ShmemBuffer*)MapViewOfFile(hMapShmem, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(ShmemBuffer));
         if (pShmem) {
             ZeroMemory(pShmem, sizeof(ShmemBuffer));
-            pSharedMem->shmemMappingCreated = true;
-            pSharedMem->shmemMappingSize = sizeof(ShmemBuffer);
+            pSharedMem->SetShmemMappingCreated(true);
+            pSharedMem->SetShmemMappingSize(sizeof(ShmemBuffer));
             LogInfo("[Inject] Created separate Shmem mapping: %ls", shmemName);
         }
     }
 
     // Copy FPS limiter settings
-    pSharedMem->fpsLimiter.captureSyncEnabled = config.fpsLimiter.captureSyncEnabled;
-    pSharedMem->fpsLimiter.captureSyncMultiplier = config.fpsLimiter.captureSyncMultiplier;
-    pSharedMem->fpsLimiter.generalEnabled = config.fpsLimiter.generalEnabled;
-    pSharedMem->fpsLimiter.generalFps = config.fpsLimiter.generalFps;
-    pSharedMem->fpsLimiter.captureFps = config.video.fps;
+    pSharedMem->fpsLimiter.SetCaptureSyncEnabled(config.fpsLimiter.captureSyncEnabled);
+    pSharedMem->fpsLimiter.SetCaptureSyncMultiplier(config.fpsLimiter.captureSyncMultiplier);
+    pSharedMem->fpsLimiter.SetGeneralEnabled(config.fpsLimiter.generalEnabled);
+    pSharedMem->fpsLimiter.SetGeneralFps(config.fpsLimiter.generalFps);
+    pSharedMem->fpsLimiter.SetCaptureFps(config.video.fps);
 
     // Copy overlay config
     pSharedMem->overlayConfig = config.overlay;
@@ -393,7 +393,7 @@ int InjectProcessMain(const AppConfig& config)
 
         // Monitor sourcePid for config reloads (CBT hook support)
         static uint32_t lastSourcePid = 0;
-        uint32_t currentSourcePid = pSharedMem->sourcePid;
+        uint32_t currentSourcePid = pSharedMem->GetSourcePid();
         if (currentSourcePid != 0 && currentSourcePid != lastSourcePid) {
             lastSourcePid = currentSourcePid;
             std::string procName = GetProcessNameFromPID(currentSourcePid);
@@ -423,7 +423,7 @@ int InjectProcessMain(const AppConfig& config)
 
     // Signal hook to exit
     LogInfo("[Inject] Signaling hook to exit...");
-    pSharedMem->requestExit = true;
+    pSharedMem->SetRequestExit(true);
     Sleep(200);  // Give hook time to unload
 
     // Cleanup injector (ejects all hooks)

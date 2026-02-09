@@ -60,7 +60,7 @@ void LayerLog(const char* fmt, ...)
     // OPTIMIZATION: Only process logs if debug logging is enabled in shared memory
     // or if the layer hasn't initialized IPC yet (for early errors).
     auto* shm = g_IPCClient.GetSharedMem();
-    if (shm && !shm->debugLogging) return;
+    if (shm && !shm->GetDebugLogging()) return;
 
     va_list args;
     va_start(args, fmt);

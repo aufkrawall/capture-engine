@@ -1,8 +1,8 @@
 #pragma once
 
 #include <intrin.h>
-#include <timeapi.h>  // For timeBeginPeriod/timeEndPeriod
 #include <windows.h>
+#include <timeapi.h>  // For timeBeginPeriod/timeEndPeriod
 #include <atomic>
 #include "hook_common.h"
 #include "ipc_client.h"

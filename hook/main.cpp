@@ -1,6 +1,6 @@
 #include <intrin.h>  // For __builtin_return_address
-#include <psapi.h>
 #include <windows.h>
+#include <psapi.h>
 #include "../common/utils/scanner.h"
 #include "apis/ddraw_hook.h"
 #include "apis/dx11_hook.h"
@@ -1161,8 +1161,8 @@ DWORD WINAPI HookThread(LPVOID lpParam)
         uint32_t hostPID = 0;
 
         if (g_IPC && g_IPC->GetSharedMem()) {
-            shouldExit = g_IPC->GetSharedMem()->requestExit;
-            hostPID = g_IPC->GetSharedMem()->hostPID;
+            shouldExit = g_IPC->GetSharedMem()->GetRequestExit();
+            hostPID = g_IPC->GetSharedMem()->GetHostPID();
         }
 
         if (shouldExit) {

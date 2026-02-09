@@ -1003,11 +1003,11 @@ public:
         // IMPORTANT: Set encoder dimensions and LUID from the parameters before EnsureDevice
         // Otherwise EnsureDevice fails because width/height are still 0 or uses wrong GPU
         videoEnc->SetDimensions(width, height);
-        videoEnc->SetAdapterLUID(sharedMem->luidLowPart, sharedMem->luidHighPart);
+        videoEnc->SetAdapterLUID(sharedMem->GetLuidLowPart(), sharedMem->GetLuidHighPart());
 
         if (!videoEnc->EnsureDevice()) {
             DLL_Log("MediaEngine: CreateSharedCaptureTextures - device init failed for LUID %08x:%08x",
-                    sharedMem->luidLowPart, sharedMem->luidHighPart);
+                    sharedMem->GetLuidLowPart(), sharedMem->GetLuidHighPart());
             return false;
         }
         return videoEnc->CreateSharedCaptureTextures(width, height, format, sharedMem);

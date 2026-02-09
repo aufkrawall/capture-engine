@@ -44,7 +44,7 @@ int SensorProcessMain(const AppConfig& config)
                                                                                          sizeof(SharedMemoryLayout));
                             if (shm) {
                                 LogInfo("[Sensors] Discovered new session: Inject PID %u, Game PID %u", pid,
-                                        shm->sourcePid);
+                                        shm->GetSourcePid());
                                 sessions[pid] = {hSM, shm};
                             } else {
                                 LogError("[Sensors] Failed to map shared memory for PID %u", pid);
@@ -68,7 +68,7 @@ int SensorProcessMain(const AppConfig& config)
             Session& s = it->second;
 
             // Read LUID from shared memory
-            int64_t luid = ((int64_t)s.shm->luidHighPart << 32) | (uint32_t)s.shm->luidLowPart;
+            int64_t luid = ((int64_t)s.shm->GetLuidHighPart() << 32) | (uint32_t)s.shm->GetLuidLowPart();
 
             // Cache valid LUID once discovered (it may reset during game restart)
             if (luid != 0) {
@@ -78,8 +78,8 @@ int SensorProcessMain(const AppConfig& config)
             // Use cached LUID if current is 0
             int64_t effectiveLuid = (luid != 0) ? luid : s.cachedLuid;
 
-            if (s.shm->debugLogging && effectiveLuid != 0) {
-                LogInfo("[Sensors] Updating PID %u (Game: %u), LUID: 0x%llX", it->first, s.shm->sourcePid,
+            if (s.shm->GetDebugLogging() && effectiveLuid != 0) {
+                LogInfo("[Sensors] Updating PID %u (Game: %u), LUID: 0x%llX", it->first, s.shm->GetSourcePid(),
                         effectiveLuid);
             }
 

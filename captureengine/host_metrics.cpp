@@ -133,7 +133,7 @@ void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t lu
     std::lock_guard<std::mutex> lock(g_MetricsMutex);
     g_HostMetrics.Initialize();  // Init if needed
 
-    bool debugLogging = shm->debugLogging;
+    bool debugLogging = shm->GetDebugLogging();
 
     // --- CPU Load ---
     if (g_HostMetrics.pdhInitialized) {

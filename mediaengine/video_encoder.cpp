@@ -359,12 +359,12 @@ bool VideoEncoder::CreateSharedCaptureTextures(uint32_t w, uint32_t h, uint32_t 
     if (sharedMem) {
         this->pSharedMem = sharedMem;
         for (int i = 0; i < 4; i++) {
-            sharedMem->encoderTextures.textureHandles[i] = (uint64_t)sharedCaptureHandles[i];
+            sharedMem->encoderTextures.SetTextureHandle(i, (uint64_t)sharedCaptureHandles[i]);
         }
-        sharedMem->encoderTextures.fenceHandle = (uint64_t)sharedCaptureFenceHandle;
-        sharedMem->encoderTextures.width = w;
-        sharedMem->encoderTextures.height = h;
-        sharedMem->encoderTextures.format = fmt;
+        sharedMem->encoderTextures.SetFenceHandle((uint64_t)sharedCaptureFenceHandle);
+        sharedMem->encoderTextures.SetWidth(w);
+        sharedMem->encoderTextures.SetHeight(h);
+        sharedMem->encoderTextures.SetFormat(fmt);
         sharedMem->encoderTextures.ready.store(true, std::memory_order_release);
         DLL_Log("[VideoEncoder] Published encoder textures to shared memory");
     }
@@ -1281,7 +1281,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     int cacheSlot = -1;
 
     if (isShmem) {
-        if (pShmem && pSharedMem && pSharedMem->shmemMappingCreated) {
+        if (pShmem && pSharedMem && pSharedMem->GetShmemMappingCreated()) {
             // Shmem Path: Upload pixels to our owned texture
             int texIdx = 0;  // Reuse first shared capture texture (we own it)
             bgraTex = sharedCaptureTextures[texIdx];
@@ -1294,9 +1294,9 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                 if (pSrc) {
                     D3D11_BOX box;
                     box.left = 0;
-                    box.right = pSharedMem->width;  // Use current frame resolution
+                    box.right = pSharedMem->GetWidth();  // Use current frame resolution
                     box.top = 0;
-                    box.bottom = pSharedMem->height;
+                    box.bottom = pSharedMem->GetHeight();
                     box.front = 0;
                     box.back = 1;
 

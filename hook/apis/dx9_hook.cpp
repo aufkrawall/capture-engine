@@ -950,9 +950,9 @@ public:
                 // For shmem, we don't use shared textures, but we still need to signal frames
                 // We'll directly copy to IPC shared memory in CaptureFrame
                 if (g_IPC->GetSharedMem()) {
-                    g_IPC->GetSharedMem()->width = width;
-                    g_IPC->GetSharedMem()->height = height;
-                    g_IPC->GetSharedMem()->format = 87;  // DXGI_FORMAT_B8G8R8A8_UNORM
+                    g_IPC->GetSharedMem()->SetWidth(width);
+                    g_IPC->GetSharedMem()->SetHeight(height);
+                    g_IPC->GetSharedMem()->SetFormat(87);  // DXGI_FORMAT_B8G8R8A8_UNORM
                 }
                 format = D3D9ToDXGIFormat(d3d9Format);
             }

@@ -91,9 +91,9 @@ void ApplyFramePacing(SharedMemoryLayout* shm)
     bool limiterActive = false;
     int64_t intervalTicks = 0;
 
-    if (isRecording && shm->fpsLimiter.captureSyncEnabled) {
-        int captureFps = shm->fpsLimiter.captureFps;
-        int multiplier = shm->fpsLimiter.captureSyncMultiplier;
+    if (isRecording && shm->fpsLimiter.GetCaptureSyncEnabled()) {
+        int captureFps = shm->fpsLimiter.GetCaptureFps();
+        int multiplier = shm->fpsLimiter.GetCaptureSyncMultiplier();
         if (captureFps > 0 && multiplier >= 1 && multiplier <= 8) {
             intervalTicks = g_QpcFreq.QuadPart / (captureFps * multiplier);
             limiterActive = true;
@@ -104,8 +104,8 @@ void ApplyFramePacing(SharedMemoryLayout* shm)
                 loggedOnce = true;
             }
         }
-    } else if (shm->fpsLimiter.generalEnabled) {
-        int targetFps = shm->fpsLimiter.generalFps;
+    } else if (shm->fpsLimiter.GetGeneralEnabled()) {
+        int targetFps = shm->fpsLimiter.GetGeneralFps();
         if (targetFps > 0) {
             intervalTicks = g_QpcFreq.QuadPart / targetFps;
             limiterActive = true;
@@ -245,7 +245,7 @@ int LimiterProcessMain(const AppConfig& config)
                 shm =
                     (SharedMemoryLayout*)MapViewOfFile(hMapFile, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SharedMemoryLayout));
 
-                if (shm && shm->hostPID != 0) {
+                if (shm && shm->GetHostPID() != 0) {
                     LogInfo("[Limiter] Connected via discovery (inject PID: %u)", pDiscovery->injectPid);
                 } else {
                     if (shm) {
@@ -291,7 +291,7 @@ int LimiterProcessMain(const AppConfig& config)
                 if (hMapFile) {
                     shm = (SharedMemoryLayout*)MapViewOfFile(hMapFile, FILE_MAP_ALL_ACCESS, 0, 0,
                                                              sizeof(SharedMemoryLayout));
-                    if (shm && shm->hostPID == 0) {
+                    if (shm && shm->GetHostPID() == 0) {
                         UnmapViewOfFile(shm);
                         shm = nullptr;
                         CloseHandle(hMapFile);

@@ -124,7 +124,7 @@ bool LayerIPC_Init()
 
     // Connect to host
     if (g_IPCClient.Connect()) {
-        LayerLog("Layer IPC: Connected to Host PID %d", g_IPCClient.GetSharedMem()->hostPID);
+        LayerLog("Layer IPC: Connected to Host PID %d", g_IPCClient.GetSharedMem()->GetHostPID());
 
         // Check Whitelist Cache in Discovery Shared Memory
         // Replicating isProcessWhitelistedFast logic
@@ -188,14 +188,14 @@ void LayerIPC_SetTextures(HANDLE* handles, uint32_t count, uint32_t width, uint3
     g_PublishedTextureCount = (count > 0 && count <= 8) ? count : 2;
 
     // Write metadata
-    mem->width = width;
-    mem->height = height;
-    mem->format = format;
+    mem->SetWidth(width);
+    mem->SetHeight(height);
+    mem->SetFormat(format);
 
     // Write handles (up to 8 supported by layout)
     uint32_t maxHandles = 8;
     for (uint32_t i = 0; i < count && i < maxHandles; i++) {
-        mem->sharedHandles[i] = (uint64_t)handles[i];
+        mem->SetSharedHandle(i, (uint64_t)handles[i]);
     }
 
     LayerLog("Layer IPC: Published %d textures (%dx%d)", count, width, height);
@@ -249,8 +249,8 @@ void LayerIPC_SetLUID(int32_t low, int32_t high)
     auto* mem = g_IPCClient.GetSharedMem();
     if (!mem) return;
 
-    mem->luidLowPart = low;
-    mem->luidHighPart = high;
+    mem->SetLuidLowPart(low);
+    mem->SetLuidHighPart(high);
     // LayerLog("Layer IPC: Set LUID %08x:%08x", high, low);
 }
 
@@ -293,9 +293,9 @@ void LayerIPC_SetShmemDimensions(uint32_t width, uint32_t height, uint32_t forma
     auto* mem = g_IPCClient.GetSharedMem();
     if (!mem) return;
 
-    mem->width = width;
-    mem->height = height;
-    mem->format = format;
+    mem->SetWidth(width);
+    mem->SetHeight(height);
+    mem->SetFormat(format);
     LayerLog("Layer IPC: Set SHMEM dimensions %ux%u format=%u", width, height, format);
 }
 
@@ -303,7 +303,7 @@ void LayerIPC_SetFence(HANDLE fenceHandle)
 {
     auto* mem = g_IPCClient.GetSharedMem();
     if (!mem) return;
-    mem->fenceShareHandle = (uint64_t)fenceHandle;
+    mem->SetFenceShareHandle((uint64_t)fenceHandle);
     LayerLog("Layer IPC: Set Fence Handle %p", fenceHandle);
 }
 
@@ -346,7 +346,7 @@ void LayerIPC_Log(const char* fmt, ...)
     if (!g_IPCClient.GetSharedMem()) return;
 
     auto* mem = g_IPCClient.GetSharedMem();
-    if (!mem->debugLogging) return;  // Hook respects debug flag
+    if (!mem->GetDebugLogging()) return;  // Hook respects debug flag
 
     static char s_formatBuffer[4096];
     static char s_lineBuffer[8192];
