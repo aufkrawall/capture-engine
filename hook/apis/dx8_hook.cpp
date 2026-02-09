@@ -846,7 +846,7 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8CreateDevice(IDirect3D8* d3d, UINT Ad
         oD3D8CreateDevice(d3d, Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters, ppDevice);
 
     // Install hooks on the new device if needed (mostly SetTextureStageState, as Present/Reset are shared vtable hooks)
-    // Actually MinHook hooks the function, so we don't need to re-hook per device instance for global functions.
+    // We don't need to re-hook per device instance for global functions.
     // BUT we need to make sure we hooked SetTextureStageState at least once.
     if (SUCCEEDED(hr) && ppDevice && *ppDevice) {
         // We might want to ensure hooks are installed if not already?

@@ -21,7 +21,6 @@
 #include "wrappers/d3dkmt_hook.h"
 #include "wrappers/iat_hook.h"
 #include "wrappers/wrapper_hooks.h"
-// MinHook removed - using IAT patching via iat_hook.h
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -984,7 +983,6 @@ DWORD WINAPI HookThread(LPVOID lpParam)
 
     // FAST PATH: Install IAT wrappers immediately before anything else
     // This helps catch early startup API calls in fast-loading processes.
-    // DIAGNOSTIC: Testing if IAT patching alone causes crash (MinHook still disabled)
     // HookLog("DIAGNOSTIC: Re-enabling InitializeWrapperHooks (IAT patching)");
     // InitializeWrapperHooks();
     // CheckAndInstallHooks();
@@ -1007,7 +1005,7 @@ DWORD WINAPI HookThread(LPVOID lpParam)
     // --- LAUNCHERS ---
     if (g_ProcessCategory == ProcessCategory::Launcher) {
         // launchers only need CreateProcess hooks. No IPC, no graphics.
-        // Use IAT patching (MinHook-free)
+        // Use IAT patching
         OriginalCreateProcessA = (CreateProcessA_t)GetProcAddress(GetModuleHandleA("kernel32.dll"), "CreateProcessA");
         OriginalCreateProcessW = (CreateProcessW_t)GetProcAddress(GetModuleHandleA("kernel32.dll"), "CreateProcessW");
 
@@ -1086,11 +1084,11 @@ DWORD WINAPI HookThread(LPVOID lpParam)
         HookLog("IPC Connection FAILED!");
     }
 
-    // Use IAT patching instead of MinHook for kernel32/advapi32 hooks
+    // Use IAT patching for kernel32/advapi32 hooks
     EarlyLog("HookThread: Initializing IAT-based kernel32 hooks...");
 
     // Install LoadLibrary and CreateProcess hooks via IAT patching
-    HookLog("Installing LoadLibrary/CreateProcess hooks via IAT patching (MinHook-free)...");
+    HookLog("Installing LoadLibrary/CreateProcess hooks via IAT patching...");
 
     IATHook::InitializeKernel32Hooks(
         (void*)&HookedLoadLibraryA, (void**)&OriginalLoadLibraryA, (void*)&HookedLoadLibraryW,

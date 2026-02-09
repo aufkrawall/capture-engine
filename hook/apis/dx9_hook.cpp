@@ -2083,8 +2083,7 @@ void DX9Hook::Init()
     }
 
     // Hook Export Functions
-    // NOTE: Removed MinHook export hooks. We rely on IAT hooking (in iat_hook.cpp)
-    // or active VTable hooking (below) for DX9.
+    // Using IAT hooking (in iat_hook.cpp) or active VTable hooking for DX9.
 
     // Check if Direct3DCreate9(Ex) are available for active hooking fallback
     void* pD3DCreate9 = (void*)GetProcAddress(d3d9Module, "Direct3DCreate9");

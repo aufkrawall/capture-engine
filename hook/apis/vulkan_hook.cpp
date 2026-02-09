@@ -4757,7 +4757,7 @@ void VulkanHook::Init()
     };
 
     // IMPORTANT: Hook as little as possible via vulkan-1.dll exports.
-    // Some exports are forwarded/stubs and MinHook patching can crash (observed for vkAcquireNextImageKHR).
+    // Some exports are forwarded/stubs and patching them can crash (observed for vkAcquireNextImageKHR).
     // We rely on vkGetInstanceProcAddr/vkGetDeviceProcAddr to detour most functions.
     CreateHook("vkGetInstanceProcAddr", (void*)&Detour_vkGetInstanceProcAddr, (void**)&o_vkGetInstanceProcAddr);
     CreateHook("vkGetDeviceProcAddr", (void*)&Detour_vkGetDeviceProcAddr, (void**)&o_vkGetDeviceProcAddr);

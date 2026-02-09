@@ -23,7 +23,6 @@ extern void EnsureDX12Hook();
 #include "d3d9_wrap.h"
 #include "iat_hook.h"
 #include "wrapper_hooks.h"
-// MinHook shim removed
 
 // ============================================================================
 // Original Function Pointers

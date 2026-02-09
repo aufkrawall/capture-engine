@@ -2297,14 +2297,14 @@ void DX11Hook::Init()
     }
 
     // 2. Hook D3D10 entry points
-    // REMOVED: Legacy MinHook calls removed. D3D10 hooking is handled by IAT in iat_hook.cpp / wrapper_hooks.cpp
+    // D3D10 hooking is handled by IAT in iat_hook.cpp / wrapper_hooks.cpp
     HMODULE hD3D10 = GetModuleHandleA("d3d10.dll");
     if (hD3D10) {
         HookLog("DX11: D3D10 hooks should be active via IAT.");
     }
 
     // 3. Hook DXGI Factory entry points
-    // REMOVED: Legacy MinHook calls removed. DXGI Factory hooking is handled by IAT.
+    // DXGI Factory hooking is handled by IAT.
     HMODULE hDXGI = GetModuleHandleA("dxgi.dll");
     if (hDXGI) {
         HookLog("DX11: DXGI hooks should be active via IAT.");

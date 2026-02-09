@@ -294,6 +294,24 @@
 
 **Note:** Implementation files (.cpp) should be created when integrating into the main application
 
+### P3 Cleanup Tasks Started
+
+### 27. Remove Dead MinHook Code References
+**Files:** `hook/wrappers/vtable_hook_minhook.h`, `hook/wrappers/vtable_hook_minhook.cpp` (DELETED)
+
+**Changes:**
+- Deleted dead MinHook wrapper files (no longer included anywhere)
+- Updated comments in:
+  - `captureengine/injection.cpp` - Updated detection vectors comment
+  - `hook/main.cpp` - Removed MinHook references from comments
+  - `hook/apis/dx9_hook.cpp` - Simplified hooking comments
+  - `hook/apis/dx11_hook.cpp` - Removed "Legacy MinHook" references
+  - `hook/apis/vulkan_hook.cpp` - Updated patching warning
+  - `hook/apis/dx8_hook.cpp` - Removed MinHook-specific comment
+  - `hook/wrappers/wrapper_hooks.cpp` - Removed "MinHook shim removed" comment
+
+**Impact:** Cleaner codebase, no misleading references to deprecated MinHook system
+
 ### 24. Cache DXGI Adapter Information
 **File:** `common/cached_adapter.h` (NEW)
 
@@ -366,7 +384,7 @@ ce::HotPathLogger::LogRateLimited("Present: %p", swapChain);
 - [x] Cache DXGI adapter information
 
 ### P3 - Low Priority (Cleanup & Documentation)
-- [ ] Remove dead MinHook code references
+- [x] Remove dead MinHook code references
 - [ ] Clean up commented ImGui code (already migrated to OverlayAdapter)
 - [ ] Simplify UE5 pattern scanning
 - [ ] Add API hook interaction matrix docs

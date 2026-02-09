@@ -40,7 +40,7 @@
  *    - CreateRemoteThread API calls
  *    - Unsigned DLL loading (mitigated by signature verification)
  *    - Shared memory with predictable names (mitigated by randomization)
- *    - Hook installation via MinHook (IAT/inline hooks)
+ *    - Hook installation via IAT patching and VTable hooking
  *    - Process memory scanning for known hook patterns
  *
  * 4. SAFER ALTERNATIVES (not implemented):
