@@ -188,8 +188,26 @@ struct AppConfig {
     OverlayConfig overlay;
 
     // Hotkeys
-    int hotkeyStartStop;  // Virtual Key Code
-    int hotkeyToggleFPS;
+    struct HotkeyConfig {
+        int vkey = 0;              // Virtual key code (e.g., VK_F9)
+        bool ctrl = false;         // Ctrl modifier
+        bool shift = false;        // Shift modifier
+        bool alt = false;          // Alt modifier
+        bool win = false;          // Windows key modifier
+        
+        // Get combined modifier flags for RegisterHotKey
+        UINT GetModifiers() const {
+            UINT mods = MOD_NOREPEAT;
+            if (ctrl) mods |= MOD_CONTROL;
+            if (shift) mods |= MOD_SHIFT;
+            if (alt) mods |= MOD_ALT;
+            if (win) mods |= MOD_WIN;
+            return mods;
+        }
+    };
+    
+    HotkeyConfig hotkeyStartStop;
+    HotkeyConfig hotkeyToggleFPS;
 
     // FPS Limiter
     FpsLimiterConfig fpsLimiter;
@@ -209,3 +227,4 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 uint32_t ParseDlssPreset(const std::string& val);
 uint32_t ParseDlssRRPreset(const std::string& val);
 float ParseDlssSharpening(const std::string& val);
+AppConfig::HotkeyConfig ParseHotkey(const std::string& val);  // e.g., "Ctrl+Shift+F9"

@@ -960,7 +960,163 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     }
 
     // Hotkeys
-    // Simplification: Direct VK codes or Parse string "F9"
-    // For now hardcode or basic int parse
-    config.hotkeyStartStop = VK_F9;  // Default per requirement
+    // Parse hotkey strings like "F9", "Ctrl+Shift+F10", "Alt+Ctrl+R"
+    std::string startStopKey = GetStr("Hotkeys", "start_stop", "F9");
+    config.hotkeyStartStop = ParseHotkey(startStopKey);
+    
+    // Ensure we have at least one hotkey - fallback to F9 if parsing failed
+    if (config.hotkeyStartStop.vkey == 0) {
+        config.hotkeyStartStop.vkey = VK_F9;
+    }
+    
+    std::string toggleFpsKey = GetStr("Hotkeys", "toggle_fps", "");
+    if (!toggleFpsKey.empty()) {
+        config.hotkeyToggleFPS = ParseHotkey(toggleFpsKey);
+    }
+}
+
+// Parse hotkey string (e.g., "Ctrl+Shift+F9", "Alt+R", "F10")
+AppConfig::HotkeyConfig ParseHotkey(const std::string& val)
+{
+    AppConfig::HotkeyConfig hk;
+    if (val.empty()) return hk;
+    
+    std::string upper = val;
+    std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+    
+    // Check for modifiers
+    if (upper.find("CTRL+") != std::string::npos || upper.find("CONTROL+") != std::string::npos) {
+        hk.ctrl = true;
+    }
+    if (upper.find("SHIFT+") != std::string::npos) {
+        hk.shift = true;
+    }
+    if (upper.find("ALT+") != std::string::npos) {
+        hk.alt = true;
+    }
+    if (upper.find("WIN+") != std::string::npos || upper.find("WINDOWS+") != std::string::npos) {
+        hk.win = true;
+    }
+    
+    // Extract the key part (after last +)
+    size_t lastPlus = upper.rfind('+');
+    std::string key = (lastPlus != std::string::npos) ? upper.substr(lastPlus + 1) : upper;
+    
+    // Parse function keys F1-F24
+    if (key.length() >= 2 && key[0] == 'F') {
+        int fnum = std::atoi(key.substr(1).c_str());
+        if (fnum >= 1 && fnum <= 24) {
+            hk.vkey = VK_F1 + (fnum - 1);
+        }
+    }
+    // Parse number keys 0-9
+    else if (key.length() == 1 && key[0] >= '0' && key[0] <= '9') {
+        hk.vkey = key[0];  // '0'-'9' match their VK codes
+    }
+    // Parse letter keys A-Z
+    else if (key.length() == 1 && key[0] >= 'A' && key[0] <= 'Z') {
+        hk.vkey = key[0];  // 'A'-'Z' match their VK codes
+    }
+    // Named keys
+    else if (key == "SPACE" || key == "SPACEBAR") {
+        hk.vkey = VK_SPACE;
+    }
+    else if (key == "ENTER" || key == "RETURN") {
+        hk.vkey = VK_RETURN;
+    }
+    else if (key == "ESC" || key == "ESCAPE") {
+        hk.vkey = VK_ESCAPE;
+    }
+    else if (key == "TAB") {
+        hk.vkey = VK_TAB;
+    }
+    else if (key == "BACKSPACE" || key == "BACK") {
+        hk.vkey = VK_BACK;
+    }
+    else if (key == "DELETE" || key == "DEL") {
+        hk.vkey = VK_DELETE;
+    }
+    else if (key == "INSERT" || key == "INS") {
+        hk.vkey = VK_INSERT;
+    }
+    else if (key == "HOME") {
+        hk.vkey = VK_HOME;
+    }
+    else if (key == "END") {
+        hk.vkey = VK_END;
+    }
+    else if (key == "PAGEUP" || key == "PGUP") {
+        hk.vkey = VK_PRIOR;
+    }
+    else if (key == "PAGEDOWN" || key == "PGDN") {
+        hk.vkey = VK_NEXT;
+    }
+    else if (key == "UP") {
+        hk.vkey = VK_UP;
+    }
+    else if (key == "DOWN") {
+        hk.vkey = VK_DOWN;
+    }
+    else if (key == "LEFT") {
+        hk.vkey = VK_LEFT;
+    }
+    else if (key == "RIGHT") {
+        hk.vkey = VK_RIGHT;
+    }
+    else if (key == "PRINTSCREEN" || key == "PRTSC") {
+        hk.vkey = VK_SNAPSHOT;
+    }
+    else if (key == "SCROLLLOCK" || key == "SCRLOCK") {
+        hk.vkey = VK_SCROLL;
+    }
+    else if (key == "PAUSE" || key == "BREAK") {
+        hk.vkey = VK_PAUSE;
+    }
+    else if (key == "NUMPAD0" || key == "NUM0") {
+        hk.vkey = VK_NUMPAD0;
+    }
+    else if (key == "NUMPAD1" || key == "NUM1") {
+        hk.vkey = VK_NUMPAD1;
+    }
+    else if (key == "NUMPAD2" || key == "NUM2") {
+        hk.vkey = VK_NUMPAD2;
+    }
+    else if (key == "NUMPAD3" || key == "NUM3") {
+        hk.vkey = VK_NUMPAD3;
+    }
+    else if (key == "NUMPAD4" || key == "NUM4") {
+        hk.vkey = VK_NUMPAD4;
+    }
+    else if (key == "NUMPAD5" || key == "NUM5") {
+        hk.vkey = VK_NUMPAD5;
+    }
+    else if (key == "NUMPAD6" || key == "NUM6") {
+        hk.vkey = VK_NUMPAD6;
+    }
+    else if (key == "NUMPAD7" || key == "NUM7") {
+        hk.vkey = VK_NUMPAD7;
+    }
+    else if (key == "NUMPAD8" || key == "NUM8") {
+        hk.vkey = VK_NUMPAD8;
+    }
+    else if (key == "NUMPAD9" || key == "NUM9") {
+        hk.vkey = VK_NUMPAD9;
+    }
+    else if (key == "MULTIPLY" || key == "NUMMULT") {
+        hk.vkey = VK_MULTIPLY;
+    }
+    else if (key == "ADD" || key == "NUMPLUS") {
+        hk.vkey = VK_ADD;
+    }
+    else if (key == "SUBTRACT" || key == "NUMMINUS") {
+        hk.vkey = VK_SUBTRACT;
+    }
+    else if (key == "DECIMAL" || key == "NUMDOT") {
+        hk.vkey = VK_DECIMAL;
+    }
+    else if (key == "DIVIDE" || key == "NUMDIV") {
+        hk.vkey = VK_DIVIDE;
+    }
+    
+    return hk;
 }

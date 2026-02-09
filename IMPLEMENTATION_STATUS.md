@@ -294,6 +294,60 @@
 
 **Note:** Implementation files (.cpp) should be created when integrating into the main application
 
+### 24. Cache DXGI Adapter Information
+**File:** `common/cached_adapter.h` (NEW)
+
+**Features:**
+- `CachedAdapterManager` singleton for thread-safe adapter caching
+- `AdapterInfo` struct with LUID, description, VRAM, vendor detection
+- Caches NVIDIA/AMD/Intel vendor flags for quick checks
+- Methods: `CacheAdapterFromDevice()`, `GetVRAM_MB()`, `IsNvidia()`, etc.
+- Clear cache on device changes to prevent stale data
+
+**Impact:** Eliminates redundant DXGI adapter queries across hooks
+
+### 25. Configurable Hotkeys
+**Files:** `common/config.h`, `common/config.cpp`
+
+**Changes:**
+- Added `HotkeyConfig` struct with modifier support (Ctrl, Shift, Alt, Win)
+- `ParseHotkey()` function supports formats: "F9", "Ctrl+Shift+F10", "Alt+R"
+- Supports all standard keys: F1-F24, A-Z, 0-9, arrows, numpad, etc.
+- Config file section `[Hotkeys]` with `start_stop` and `toggle_fps` options
+- Falls back to F9 if parsing fails
+
+**Usage:**
+```ini
+[Hotkeys]
+start_stop = Ctrl+Shift+F9
+toggle_fps = F10
+```
+
+### 26. Hot Path String Optimization
+**File:** `common/hot_path_string.h` (NEW)
+
+**Features:**
+- `HotPathBuffer` - Thread-local fixed buffer (256 bytes) for formatting
+- `FastString` - String view with cached FNV-1a hash for O(1) comparisons
+- `HotPathLogger` - Rate-limited and cooldown-based logging
+- Fast integer/float to string (no heap allocation)
+- `CE_STR_HASH()` macro for compile-time string hashing
+
+**Impact:** Reduces heap allocations and improves performance in Present hooks
+
+**Example:**
+```cpp
+// Instead of std::string allocation:
+HookLog("Frame %d", frameNum);
+
+// Use stack buffer:
+const char* msg = ce::HotPathBuffer::Format("Frame %d", frameNum);
+HookLog("%s", msg);
+
+// Rate-limited logging (logs every 100th call):
+ce::HotPathLogger::LogRateLimited("Present: %p", swapChain);
+```
+
 ---
 
 ## Remaining Work
@@ -307,9 +361,9 @@
 - [x] Add DLSS MFG support (Multi-Frame Generation detection)
 - [x] Implement config reload safety (sequence locks)
 - [x] Add DPI scaling support (GetDpiForWindow)
-- [ ] Make hotkeys configurable (parse from config.ini)
-- [ ] Optimize string operations in hot paths
-- [ ] Cache DXGI adapter information
+- [x] Make hotkeys configurable (parse from config.ini)
+- [x] Optimize string operations in hot paths
+- [x] Cache DXGI adapter information
 
 ### P3 - Low Priority (Cleanup & Documentation)
 - [ ] Remove dead MinHook code references
@@ -325,11 +379,11 @@
 |----------|--------|-------------|
 | P0 | ✅ ALL COMPLETE | Security & Stability - 5 fixes |
 | P1 | ✅ ALL COMPLETE | Thread Safety - 13/13 fixes completed |
-| P2 | ✅ MOST COMPLETE | Architecture & Features - 6/9 items completed |
+| P2 | ✅ ALL COMPLETE | Architecture & Features - 9/9 items completed |
 | P3 | Pending | Cleanup & Documentation - 6 items |
 
 **All P0 critical issues resolved. All P1 stability fixes completed.**
-**6 major P2 architectural improvements delivered (ring buffer, hooking standard, atomic shared memory, DLSS MFG, sequence locks, DPI scaling).**
+**All P2 architectural improvements delivered (ring buffer, hooking standard, atomic shared memory, DLSS MFG, sequence locks, DPI scaling, adapter cache, hotkeys, string optimization).**
 
 ## Testing Recommendations
 

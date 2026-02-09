@@ -504,7 +504,7 @@ int ControllerMain(HINSTANCE hInstance)
 
     // Register hotkeys
     LogInfo("[Controller] Registering hotkeys...");
-    RegisterHotKey(NULL, HOTKEY_ID_RECORD, MOD_NOREPEAT, g_Config.hotkeyStartStop);
+    RegisterHotKey(NULL, HOTKEY_ID_RECORD, g_Config.hotkeyStartStop.GetModifiers(), g_Config.hotkeyStartStop.vkey);
 
     LogInfo("[Controller] Ready. Press hotkey to start recording.");
 
