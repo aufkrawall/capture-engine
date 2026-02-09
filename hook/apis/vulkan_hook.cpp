@@ -131,9 +131,8 @@ static VkSemaphore g_GraphicsReadySems[CAPTURE_TEXTURE_COUNT] = {VK_NULL_HANDLE}
 
 static CrossDeviceImage g_CrossDeviceImages[CAPTURE_TEXTURE_COUNT];
 
-static VkDescriptorPool g_DescriptorPool = VK_NULL_HANDLE;
 static VkRenderPass g_RenderPass = VK_NULL_HANDLE;
-static bool g_ImGuiInit = false;
+static bool g_OverlayInitialized = false;
 static HWND g_hWnd = NULL;
 static PerformanceMetrics g_PerfMetrics;
 static std::recursive_mutex g_VulkanMutex;
@@ -3632,9 +3631,9 @@ VkResult VKAPI_CALL Detour_vkCreateSwapchainKHR(VkDevice device, const VkSwapcha
     return res;
 }
 
-static void InitImGuiVulkan(VkQueue queue)
+static void InitOverlayVulkan(VkQueue queue)
 {
-    if (g_ImGuiInit || g_Device == VK_NULL_HANDLE || g_RenderPass == VK_NULL_HANDLE) return;
+    if (g_OverlayInitialized || g_Device == VK_NULL_HANDLE || g_RenderPass == VK_NULL_HANDLE) return;
 
     if (!g_hWnd) {
         EnumWindows(FindGameWindowProc, (LPARAM)&g_hWnd);
@@ -3645,77 +3644,19 @@ static void InitImGuiVulkan(VkQueue queue)
         }
     }
 
-    HookLog("Vulkan: Initializing ImGui...");
+    HookLog("Vulkan: Initializing OverlayAdapter...");
 
-    // Ensure volk has device-level function pointers.
-    // With VK_NO_PROTOTYPES builds, ImGui Vulkan backend relies on vk* symbols
-    // being populated by volk.
+    // Ensure volk has device-level function pointers
     volkLoadDevice(g_Device);
 
-    // Descriptor Pool - Increased to 5000 per type for robustness
-    VkDescriptorPoolSize pool_sizes[] = {{VK_DESCRIPTOR_TYPE_SAMPLER, 5000},
-                                         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5000},
-                                         {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 5000},
-                                         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 5000},
-                                         {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 5000},
-                                         {VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 5000},
-                                         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 5000},
-                                         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5000},
-                                         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 5000},
-                                         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 5000},
-                                         {VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 5000}};
-
-    VkDescriptorPoolCreateInfo pool_info = {};
-    pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    pool_info.maxSets = 5000 * IM_ARRAYSIZE(pool_sizes);
-    pool_info.poolSizeCount = (uint32_t)IM_ARRAYSIZE(pool_sizes);
-    pool_info.pPoolSizes = pool_sizes;
-
-    if (vkCreateDescriptorPool(g_Device, &pool_info, nullptr, &g_DescriptorPool) != VK_SUCCESS) {
-        HookLog("Vulkan: Error - Failed to create descriptor pool");
+    // Initialize OverlayAdapter with Vulkan backend
+    if (!g_OverlayAdapter.InitVulkan(g_Device, g_PhysDevice, queue, g_QueueFamily)) {
+        HookLog("Vulkan: Error - OverlayAdapter.InitVulkan failed");
         return;
     }
 
-    g_SharedOverlay.InitImGui(g_hWnd);
-
-    ImGui_ImplVulkan_InitInfo init_info = {};
-    init_info.Instance = g_Instance;
-    init_info.PhysicalDevice = g_PhysDevice;
-    init_info.Device = g_Device;
-    init_info.QueueFamily = g_QueueFamily;
-    init_info.Queue = queue;
-    init_info.PipelineCache = VK_NULL_HANDLE;
-    init_info.DescriptorPool = g_DescriptorPool;
-    init_info.Subpass = 0;
-    init_info.MinImageCount = 2;
-    init_info.ImageCount = 3;
-    init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-    init_info.Allocator = nullptr;
-    init_info.CheckVkResultFn = nullptr;
-    init_info.RenderPass = g_RenderPass;
-
-    // Load functions for VK_NO_PROTOTYPES builds to avoid assertion/crash.
-    // imgui_impl_vulkan.cpp expects g_FunctionsLoaded=true.
-    ImGui_ImplVulkan_LoadFunctions(
-        [](const char* name, void*) -> PFN_vkVoidFunction {
-            if (g_Device == VK_NULL_HANDLE) return nullptr;
-            if (o_vkGetDeviceProcAddr) return o_vkGetDeviceProcAddr(g_Device, name);
-            return vkGetDeviceProcAddr(g_Device, name);
-        },
-        nullptr);
-
-    if (!ImGui_ImplVulkan_Init(&init_info)) {
-        HookLog("Vulkan: Error - ImGui_ImplVulkan_Init failed");
-        return;
-    }
-
-    if (!ImGui_ImplVulkan_CreateFontsTexture()) {
-        HookLog("Vulkan: Error - ImGui_ImplVulkan_CreateFontsTexture failed");
-    }
-
-    g_ImGuiInit = true;
-    HookLog("Vulkan: ImGui Initialized Successfully");
+    g_OverlayInitialized = true;
+    HookLog("Vulkan: OverlayAdapter Initialized Successfully");
 }
 
 // NOTE: DrawOverlayToSwapchain helper function removed - overlay is drawn inline in vkQueuePresentKHR
@@ -4113,12 +4054,12 @@ VkResult VKAPI_CALL Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoK
         HookLog("Vulkan: After recovery - g_Device=%p, g_Queue=%p, g_PhysDevice=%p", g_Device, g_Queue, g_PhysDevice);
     }
 
-    if (g_Device != VK_NULL_HANDLE && !g_ImGuiInit && g_Queue != VK_NULL_HANDLE) {
-        InitImGuiVulkan(g_Queue);
+    if (g_Device != VK_NULL_HANDLE && !g_OverlayInitialized && g_Queue != VK_NULL_HANDLE) {
+        InitOverlayVulkan(g_Queue);
     }
 
     // Vulkan: Always draw overlay normally (capture_include_overlay=false not supported due to perf impact)
-    if (g_ImGuiInit && g_Device != VK_NULL_HANDLE) {
+    if (g_OverlayInitialized && g_Device != VK_NULL_HANDLE) {
         bool showOverlay = true;
         bool showFPS = true;
         if (g_IPC && g_IPC->GetSharedMem()) {
@@ -4206,20 +4147,15 @@ VkResult VKAPI_CALL Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoK
                     }
 
                     // Now draw the overlay (GPU is idle, safe to draw)
-                    ImGui_ImplVulkan_NewFrame();
-                    g_SharedOverlay.BeginFrame();
-
-                    g_SharedOverlay.SetMetrics(&g_PerfMetrics);
-                    g_SharedOverlay.SetIPCClient(g_IPC);
-                    g_SharedOverlay.SetDroppedFrames(g_VulkanCapture.droppedFrames.load(std::memory_order_relaxed));
-                    g_SharedOverlay.SetGraphicsAPI("Vulkan");
+                    // Set overlay data
+                    g_OverlayAdapter.SetMetrics(&g_PerfMetrics);
+                    g_OverlayAdapter.SetIPCClient(g_IPC);
+                    g_OverlayAdapter.SetDroppedFrames(g_VulkanCapture.droppedFrames.load(std::memory_order_relaxed));
+                    g_OverlayAdapter.SetGraphicsAPI("Vulkan");
 
                     bool isHDR =
                         (sc.format == VK_FORMAT_R16G16B16A16_SFLOAT || sc.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32);
-                    g_SharedOverlay.SetHDR(isHDR);
-
-                    g_SharedOverlay.RenderUI();
-                    g_SharedOverlay.EndFrame();
+                    g_OverlayAdapter.SetHDR(isHDR);
 
                     // Record overlay command buffer
                     // Use only 2 frames in flight to match typical swapchain depth
@@ -4305,7 +4241,8 @@ VkResult VKAPI_CALL Detour_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoK
                     VkRect2D scissor = {{0, 0}, {sc.width, sc.height}};
                     vkCmdSetScissor(cb, 0, 1, &scissor);
 
-                    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cb);
+                    // Render overlay using OverlayAdapter
+                    g_OverlayAdapter.RenderOverlay(sc.width, sc.height);
                     vkCmdEndRenderPass(cb);
 
                     // Transition back to present
@@ -4797,7 +4734,6 @@ void VulkanHook::Shutdown()
             sc.Cleanup();
         }
         if (g_CommandPool) vkDestroyCommandPool(g_Device, g_CommandPool, nullptr);
-        if (g_DescriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(g_Device, g_DescriptorPool, nullptr);
         if (g_RenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(g_Device, g_RenderPass, nullptr);
         for (auto fence : g_PrerenderFences) {
             vkDestroyFence(g_Device, fence, nullptr);
