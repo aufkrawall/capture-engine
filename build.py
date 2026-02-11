@@ -1120,8 +1120,6 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
 
     # 4. Compile hook/common for tests
     hook_common_src = glob.glob(os.path.join(PROJECT_ROOT, "hook", "common", "*.cpp"))
-    # Exclude overlay.cpp as it requires ImGui linking which tests don't have
-    hook_common_src = [f for f in hook_common_src if "overlay.cpp" not in f]
     hook_common_objs = []
     src_obj_pairs = []
     for src in hook_common_src:
@@ -1602,8 +1600,6 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         os.path.join(layer_dir, "layer_capture.cpp"),
         os.path.join(layer_dir, "layer_bridge.cpp"),
         os.path.join(layer_dir, "layer_hooks.cpp"),
-        # Common sources needed for standard overlay
-        os.path.join(PROJECT_ROOT, "hook", "common", "overlay.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "common", "fg_detection.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "common", "ipc_client.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "common", "system_metrics.cpp"),
@@ -1611,18 +1607,11 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         os.path.join(PROJECT_ROOT, "hook", "common", "input_manager.cpp"),
     ]
 
-    # ImGui sources for the layer - REMOVED: No longer using ImGui
-    # imgui_sources = glob.glob(os.path.join(IMGUI_DIR, "*.cpp")) + [
-    #     os.path.join(IMGUI_DIR, "backends", "imgui_impl_vulkan.cpp"),
-    #     os.path.join(IMGUI_DIR, "backends", "imgui_impl_win32.cpp"),
-    # ]
-
     # Compile layer sources
     layer_cflags = cflags + [
         "-I" + layer_dir,
         "-I" + os.path.join(PROJECT_ROOT, "common"),
         "-I" + os.path.join(PROJECT_ROOT, "hook", "common"),
-        # "-I" + IMGUI_DIR,  # REMOVED: No longer using ImGui
         "-DVK_NO_PROTOTYPES",
         "-DIMGUI_IMPL_VULKAN_NO_PROTOTYPES",
         "-DVK_USE_PLATFORM_WIN32_KHR",

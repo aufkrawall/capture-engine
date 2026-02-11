@@ -1,11 +1,8 @@
 #include "ddraw_hook.h"
-// #include <backends/imgui_impl_dx9.h>  // REMOVED: Using custom overlay
-// #include <backends/imgui_impl_win32.h>  // REMOVED: Using custom overlay
 #include <d3d11.h>
 #include <d3d11_4.h>
 #include <d3d9.h>
 #include <dxgi.h>
-// #include <imgui.h>  // REMOVED: Using custom overlay
 #include <windows.h>
 #include <cstdint>
 #include <string>
@@ -14,7 +11,7 @@
 #include "../common/capture_base.h"
 #include "../common/fps_limiter.h"
 #include "../common/frame_timing.h"
-#include "../common/overlay.h"
+#include "../common/overlay_adapter.h"
 #include "../wrappers/vtable_hook.h"
 #include "hook_common.h"
 #include "lod_helper.h"
@@ -88,7 +85,6 @@ static SetRenderState7_t oSetRenderState7 = nullptr;
 
 // Globals
 static PerformanceMetrics g_PerfMetrics;
-static bool g_ImGuiInitialized = false;
 static HWND g_CachedHwnd = NULL;
 static bool g_HooksInitialized = false;
 static IDirectDrawSurface7* g_PrimarySurface = nullptr;
@@ -561,24 +557,22 @@ static void DrawDDrawOverlay()
 {
     if (!g_DDrawCapture.d3d9DeviceEx) return;
 
-    // REMOVED: ImGui DX9 overlay - Using custom overlay instead
-    if (!g_ImGuiInitialized) {
+    if (!g_OverlayAdapter.IsInitialized()) {
         g_CachedHwnd = g_DDrawCapture.targetHwnd;
-        g_SharedOverlay.InitImGui(g_CachedHwnd);
-        // ImGui_ImplDX9_Init(g_DDrawCapture.d3d9DeviceEx);  // REMOVED
-        g_ImGuiInitialized = true;
-        HookLog("DDraw: Custom overlay initialized");
+        if (g_OverlayAdapter.InitDX9(g_DDrawCapture.d3d9DeviceEx)) {
+            g_OverlayAdapter.SetHwnd(g_CachedHwnd);
+            HookLog("DDraw: OverlayAdapter initialized");
+        }
     }
 
-    // g_SharedOverlay.BeginFrame();  // REMOVED: Using custom overlay
-    g_SharedOverlay.SetMetrics(&g_PerfMetrics);
-    g_SharedOverlay.SetIPCClient(g_IPC);
-    g_SharedOverlay.SetDroppedFrames(g_DDrawCapture.droppedFrames.load(std::memory_order_relaxed));
-    g_SharedOverlay.SetGraphicsAPI("DDraw");
-    // g_SharedOverlay.RenderUI();  // REMOVED: Using custom overlay
-    // g_SharedOverlay.EndFrame();  // REMOVED: Using custom overlay
+    g_OverlayAdapter.SetMetrics(&g_PerfMetrics);
+    g_OverlayAdapter.SetIPCClient(g_IPC);
+    g_OverlayAdapter.SetDroppedFrames(g_DDrawCapture.droppedFrames.load(std::memory_order_relaxed));
+    g_OverlayAdapter.SetGraphicsAPI("DDraw");
 
-    // Custom overlay renders through OverlayAdapter, not ImGui
+    if (g_OverlayAdapter.IsInitialized() && g_DDrawCapture.width > 0 && g_DDrawCapture.height > 0) {
+        g_OverlayAdapter.RenderOverlay(g_DDrawCapture.width, g_DDrawCapture.height);
+    }
 }
 
 // Get surface dimensions from DDSURFACEDESC2
@@ -1009,12 +1003,8 @@ void DDrawHook::Shutdown()
 {
     HookLog("DDrawHook::Shutdown()");
 
-    if (g_ImGuiInitialized) {
-        // ImGui_ImplDX9_Shutdown();  // REMOVED: Using custom overlay
-        // ImGui_ImplWin32_Shutdown();  // REMOVED: Using custom overlay
-        // ImGui::DestroyContext();  // REMOVED: Using custom overlay
-        g_SharedOverlay.ShutdownImGui();
-        g_ImGuiInitialized = false;
+    if (g_OverlayAdapter.IsInitialized()) {
+        g_OverlayAdapter.Shutdown();
     }
 
     g_DDrawCapture.Cleanup();

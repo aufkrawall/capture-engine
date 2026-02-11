@@ -340,9 +340,6 @@ bool SharedCaptureD3D12::Initialize(ID3D12Device* pDevice, IDXGISwapChain* pSwap
 
 bool SharedCaptureD3D12::CreateSharedResources(UINT width, UINT height, DXGI_FORMAT format)
 {
-    // OLD CODE APPROACH: Create D3D12 shared resources with correct flags
-    // D3D11 encoder CAN open D3D12 shared resources cross-process with DuplicateHandle + OpenSharedResource1
-
     EarlyLog("DX12: CreateSharedResources - w=%u h=%u fmt=%d", width, height, format);
 
     D3D12_RESOURCE_DESC texDesc = {};

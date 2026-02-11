@@ -4,8 +4,7 @@
 // Supports rendering on all frames (real + interpolated) without stutter
 
 #include <d3d12.h>
-// #include <imgui.h>  // REMOVED: Using custom overlay instead
-//  Minimal type definitions to allow compilation during migration
+// Minimal type definitions for overlay rendering
 struct ImVec2 {
     float x, y;
 };
@@ -47,12 +46,10 @@ namespace ImGui {
 static ImDrawData* GetDrawData() { return nullptr; }
 }  // namespace ImGui
 
-// Stub for ImGui DX12 backend function - REMOVED: Using custom overlay
 inline void ImGui_ImplDX12_RenderDrawData(ImDrawData* drawData, ID3D12GraphicsCommandList* commandList)
 {
     (void)drawData;
     (void)commandList;
-    // No-op: legacy ImGui rendering disabled
 }
 #include <atomic>
 #include <memory>

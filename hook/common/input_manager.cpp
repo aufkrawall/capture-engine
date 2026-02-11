@@ -1,10 +1,5 @@
 #include "input_manager.h"
-// #include <backends/imgui_impl_win32.h>  // REMOVED: Using custom overlay
-// #include <imgui.h>
 #include "hook_common.h"  // For Logging
-
-// extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);  //
-// REMOVED
 
 InputManager& InputManager::Get()
 {
@@ -100,9 +95,6 @@ LRESULT CALLBACK InputManager::HookWndProc(HWND hwnd, UINT msg, WPARAM wParam, L
                       (msg >= WM_NCMOUSEMOVE && msg <= WM_NCMBUTTONDBLCLK) ||
                       (msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL);
 
-    // REMOVED: ImGui input handling - Using custom overlay instead
-    // if (!isMouseMsg && ImGui::GetCurrentContext() && ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam))
-    //     return true;
     (void)isMouseMsg;  // Suppress unused warning
 
     // 2. Call Original

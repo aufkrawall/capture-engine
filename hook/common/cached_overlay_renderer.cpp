@@ -1,5 +1,4 @@
 #include "cached_overlay_renderer.h"
-// #include "backends/imgui_impl_dx12.h"  // REMOVED: Using custom overlay
 #include <cstring>
 
 namespace overlay {

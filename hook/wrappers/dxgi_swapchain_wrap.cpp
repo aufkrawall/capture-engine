@@ -364,12 +364,6 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::QueryInterface(REFIID riid, void**
         return E_NOINTERFACE;
     }
 
-    // REMOVED: Don't allow unwrapping via IID_CWrapDXGISwapChain - this let FG runtimes bypass us
-    // if (riid == IID_CWrapDXGISwapChain) {
-    //     *ppvObj = m_pReal;
-    //     return S_OK;
-    // }
-
     // Allow retrieval of wrapper from real swapchain (internal use only)
     if (IsEqualGUID(riid, IID_CWrapDXGISwapChain)) {
         AddRef();

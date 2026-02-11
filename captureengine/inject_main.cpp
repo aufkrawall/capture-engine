@@ -218,34 +218,6 @@ int InjectProcessMain(const AppConfig& config)
         }
     }
 
-    // Install global CBT hook for early injection
-    // DISABLED: Global hook causes recursion crashes with Steam Overlay and file locking issues.
-    // We rely on WMI-based injection (InjectionManager) for targeted injection.
-    /*
-    hHookDll = LoadLibraryA(fs::path(baseDir).append("capture_hook_x64.dll").string().c_str());
-    if (hHookDll)
-     * {
-        HOOKPROC proc = (HOOKPROC)GetProcAddress(hHookDll, "CBTHookProc");
-        if (proc) {
- hCBTHook =
-     * SetWindowsHookExA(WH_CBT, proc, hHookDll, 0);
-            if (hCBTHook) {
-                LogInfo("[Inject]
-     * Installed global CBT hook for x64 processes");
-            } else {
-                LogError("[Inject] Failed to
-     * install global CBT hook: %d", GetLastError());
-            }
-        } else {
-            LogError("[Inject]
-     * Failed to find CBTHookProc in hook DLL");
-        }
-    } else {
-        LogError("[Inject] Failed to load hook
-     * DLL for global hook installation");
-    }
-    */
-
     // Initialize shared memory
     ZeroMemory(pSharedMem, sizeof(SharedMemoryLayout));
     pSharedMem->SetHostPID(GetCurrentProcessId());

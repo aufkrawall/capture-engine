@@ -83,5 +83,5 @@ private:
     SystemMetrics cachedSystemMetrics;
 };
 
-// Global adapter instance (parallel to g_SharedOverlay)
+// Global adapter instance
 extern OverlayAdapter g_OverlayAdapter;

@@ -469,19 +469,6 @@ int WINAPI Hooked_wgetmainargs(int* argc, wchar_t*** argv, wchar_t*** env, int d
     int result = Original_wgetmainargs(argc, argv, env, doWildCard, startInfo);
     if (g_pLocalConfig && g_pLocalConfig->graphics.forceRayReconstruction && result == 0 && *argc > 0) {
         HookLog("Hooked_wgetmainargs called. Argc=%d", *argc);
-        // Proactive modification: Allocate new argv and append
-        // This is risky but standard for this kind of override
-        /*
-        static std::vector<wchar_t*> newArgv;
-        if (newArgv.empty()) {
-            for (int i = 0; i < *argc; i++) newArgv.push_back((*argv)[i]);
-            static wchar_t* arg1 = _wcsdup(L"-r.NGX.DLSS.denoisermode=1");
-            newArgv.push_back(arg1);
-            *argv = newArgv.data();
-            *argc += 1;
-            HookLog("Hooked_wgetmainargs: Injected argument.");
-        }
-        */
     }
     return result;
 }

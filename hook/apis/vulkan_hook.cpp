@@ -10,7 +10,6 @@
 #include "../common/config.h"
 #include "../common/fg_detection.h"
 #include "../common/fps_limiter.h"
-// #include "../common/overlay.h"
 #include "../common/overlay_adapter.h"
 #include "../common/system_metrics.h"
 #include "../wrappers/iat_hook.h"
@@ -3693,11 +3692,6 @@ VkResult VKAPI_CALL Detour_vkQueueSubmit(VkQueue queue, uint32_t submitCount, co
     if (countThisSubmit) {
         g_QueueSubmitsThisFrame.fetch_add((int)submitCount, std::memory_order_relaxed);
     }
-
-    // Draw overlay in vkQueueSubmit when game provides no semaphores
-    // DISABLED: This approach doesn't work because vkQueueSubmit is called BEFORE
-    // vkQueuePresentKHR, so we don't know which image index to draw to yet.
-    // The overlay is now drawn only in vkQueuePresentKHR.
 
     if (!o_vkQueueSubmit) return VK_ERROR_INITIALIZATION_FAILED;
     return o_vkQueueSubmit(queue, submitCount, pSubmits, fence);

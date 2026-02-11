@@ -23,7 +23,6 @@
 #include "../common/hook_common.h"
 #include "../common/input_manager.h"
 #include "../common/streamline_compat.h"
-// #include "../common/overlay.h"
 #include "../common/overlay_adapter.h"
 #include "../common/performance_metrics.h"
 
@@ -321,7 +320,7 @@ DX12Hook* g_dx12HookInstance = nullptr;
 
 // Cached overlay renderer for zero-overhead interpolated frame rendering
 overlay::CachedOverlayRenderer* g_CachedOverlayRenderer = nullptr;
-bool g_UseCachedRenderer = false;  // DISABLED: Cached renderer needs proper D3D12 secondary command list implementation
+bool g_UseCachedRenderer = false;
 
 std::recursive_mutex g_DeviceQueuesMutex;
 std::map<ID3D12Device*, ID3D12CommandQueue*> g_DeviceQueues;
@@ -771,23 +770,6 @@ void DrawOverlay(ID3D12GraphicsCommandList* cmdList, bool isRealFrame, UINT buff
 
     if (!g_State.imGuiInit || !cmdList) return;
 
-    // CRITICAL FIX: Verify overlay is ready - REMOVED: ImGui context check
-    // Context could have been destroyed between the check above and mutex acquisition
-    // if (ImGui::GetCurrentContext() == nullptr) {  // REMOVED: Using custom overlay
-    //     HookLog("DrawOverlay: Context is null after mutex acquisition, aborting");
-    //     return;
-    // }
-    // OverlayAdapter handles its own context management
-
-    // Change 6: Remove verbose per-frame logging to improve performance at high FPS
-    // Keep this section empty - logging removed
-
-    // Cached Overlay Renderer removed - superseded by CustomOverlay
-    // if (g_UseCachedRenderer && g_CachedOverlayRenderer) { ... }
-
-    // Standard overlay rendering (fallback path when cached renderer not available)
-    // Change 4: Only update ImGui content on real frames, reuse cached draw data on interpolated frames
-    // Standard overlay rendering (fallback path when cached renderer not available)
     if (isRealFrame) {
         g_OverlayAdapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
         g_OverlayAdapter.SetIPCClient(g_IPC);
