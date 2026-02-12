@@ -1175,9 +1175,9 @@ void VulkanBackend::Render(const std::vector<DrawVertex> &vertices,
     return;
   }
 
-  // Bind descriptor set (font texture)
+  // Bind descriptor set (font texture) - set index 0 in pipeline layout
   disp->fp_vkCmdBindDescriptorSets(
-      currentCmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 1, 1,
+      currentCmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1,
       &descriptorSet, 0, nullptr);
 
   // Draw commands
