@@ -131,10 +131,8 @@ void Renderer::AddTextQuads(float x, float y, const char *text,
     float gw = (float)g->width;
     float gh = (float)g->height;
 
-    // Texture coordinates - flip X for Vulkan (mirror horizontally)
-    // Atlas uses top-left origin, flip X so glyphs render correctly
-    float u1 = g->x / atlasW;
-    float u0 = (g->x + g->width) / atlasW;
+    float u0 = g->x / atlasW;
+    float u1 = (g->x + g->width) / atlasW;
     float v0 = g->y / atlasH;
     float v1 = (g->y + g->height) / atlasH;
 

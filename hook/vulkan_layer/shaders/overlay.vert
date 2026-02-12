@@ -12,8 +12,12 @@ layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec2 outTexCoord;
 
 void main() {
-    // Simple passthrough - viewport handles Y orientation
-    gl_Position = vec4(inPosition.x, inPosition.y, 0.0, 1.0);
+    // Convert screen coordinates to NDC (-1 to 1)
+    // Vulkan NDC: Y=-1 is TOP, Y=+1 is BOTTOM (opposite of DirectX)
+    vec2 ndc;
+    ndc.x = (inPosition.x / pc.viewportSize.x) * 2.0 - 1.0;
+    ndc.y = (inPosition.y / pc.viewportSize.y) * 2.0 - 1.0;
+    gl_Position = vec4(ndc, 0.0, 1.0);
     outColor = inColor;
     outTexCoord = inTexCoord;
 }

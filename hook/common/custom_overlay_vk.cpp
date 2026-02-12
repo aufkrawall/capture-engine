@@ -16,751 +16,170 @@
 namespace CustomOverlay {
 
 // SPIR-V shaders (compiled from hook/vulkan_layer/shaders/)
-// Vertex shader: transforms 2D position to NDC using push constants
+// Vertex shader: transforms screen coords to NDC using push constants
 static const uint32_t g_VertexShaderSpv[] = {
-    0x07230203,
-    0x00010000,
-    0x000d000b,
-    0x00000042,
-    0x00000000,
-    0x00020011,
-    0x00000001,
-    0x0006000b,
-    0x00000001,
-    0x4c534c47,
-    0x6474732e,
-    0x3035342e,
-    0x00000000,
-    0x0003000e,
-    0x00000000,
-    0x00000001,
-    0x000b000f,
-    0x00000000,
-    0x00000004,
-    0x6e69616d,
-    0x00000000,
-    0x0000000b,
-    0x0000002b,
-    0x00000035,
-    0x00000037,
-    0x0000003a,
-    0x0000003b,
-    0x00030003,
-    0x00000002,
-    0x000001c2,
-    0x000a0004,
-    0x475f4c47,
-    0x4c474f4f,
-    0x70635f45,
-    0x74735f70,
-    0x5f656c79,
-    0x656e696c,
-    0x7269645f,
-    0x69746365,
-    0x00006576,
-    0x00080004,
-    0x475f4c47,
-    0x4c474f4f,
-    0x6e695f45,
-    0x64756c63,
-    0x69645f65,
-    0x74636572,
-    0x00657669,
-    0x00040005,
-    0x00000004,
-    0x6e69616d,
-    0x00000000,
-    0x00030005,
-    0x00000009,
-    0x0063646e,
-    0x00050005,
-    0x0000000b,
-    0x6f506e69,
-    0x69746973,
-    0x00006e6f,
-    0x00060005,
-    0x00000011,
-    0x68737550,
-    0x736e6f43,
-    0x746e6174,
-    0x00000073,
-    0x00070006,
-    0x00000011,
-    0x00000000,
-    0x77656976,
-    0x74726f70,
-    0x657a6953,
-    0x00000000,
-    0x00030005,
-    0x00000013,
-    0x00006370,
-    0x00060005,
-    0x00000029,
-    0x505f6c67,
-    0x65567265,
-    0x78657472,
-    0x00000000,
-    0x00060006,
-    0x00000029,
-    0x00000000,
-    0x505f6c67,
-    0x7469736f,
-    0x006e6f69,
-    0x00070006,
-    0x00000029,
-    0x00000001,
-    0x505f6c67,
-    0x746e696f,
-    0x657a6953,
-    0x00000000,
-    0x00070006,
-    0x00000029,
-    0x00000002,
-    0x435f6c67,
-    0x4470696c,
-    0x61747369,
-    0x0065636e,
-    0x00070006,
-    0x00000029,
-    0x00000003,
-    0x435f6c67,
-    0x446c6c75,
-    0x61747369,
-    0x0065636e,
-    0x00030005,
-    0x0000002b,
-    0x00000000,
-    0x00050005,
-    0x00000035,
-    0x4374756f,
-    0x726f6c6f,
-    0x00000000,
-    0x00040005,
-    0x00000037,
-    0x6f436e69,
-    0x00726f6c,
-    0x00050005,
-    0x0000003a,
-    0x5474756f,
-    0x6f437865,
-    0x0064726f,
-    0x00050005,
-    0x0000003b,
-    0x65546e69,
-    0x6f6f4378,
-    0x00006472,
-    0x00040047,
-    0x0000000b,
-    0x0000001e,
-    0x00000000,
-    0x00030047,
-    0x00000011,
-    0x00000002,
-    0x00050048,
-    0x00000011,
-    0x00000000,
-    0x00000023,
-    0x00000000,
-    0x00030047,
-    0x00000029,
-    0x00000002,
-    0x00050048,
-    0x00000029,
-    0x00000000,
-    0x0000000b,
-    0x00000000,
-    0x00050048,
-    0x00000029,
-    0x00000001,
-    0x0000000b,
-    0x00000001,
-    0x00050048,
-    0x00000029,
-    0x00000002,
-    0x0000000b,
-    0x00000003,
-    0x00050048,
-    0x00000029,
-    0x00000003,
-    0x0000000b,
-    0x00000004,
-    0x00040047,
-    0x00000035,
-    0x0000001e,
-    0x00000000,
-    0x00040047,
-    0x00000037,
-    0x0000001e,
-    0x00000002,
-    0x00040047,
-    0x0000003a,
-    0x0000001e,
-    0x00000001,
-    0x00040047,
-    0x0000003b,
-    0x0000001e,
-    0x00000001,
-    0x00020013,
-    0x00000002,
-    0x00030021,
-    0x00000003,
-    0x00000002,
-    0x00030016,
-    0x00000006,
-    0x00000020,
-    0x00040017,
-    0x00000007,
-    0x00000006,
-    0x00000002,
-    0x00040020,
-    0x00000008,
-    0x00000007,
-    0x00000007,
-    0x00040020,
-    0x0000000a,
-    0x00000001,
-    0x00000007,
-    0x0004003b,
-    0x0000000a,
-    0x0000000b,
-    0x00000001,
-    0x00040015,
-    0x0000000c,
-    0x00000020,
-    0x00000000,
-    0x0004002b,
-    0x0000000c,
-    0x0000000d,
-    0x00000000,
-    0x00040020,
-    0x0000000e,
-    0x00000001,
-    0x00000006,
-    0x0003001e,
-    0x00000011,
-    0x00000007,
-    0x00040020,
-    0x00000012,
-    0x00000009,
-    0x00000011,
-    0x0004003b,
-    0x00000012,
-    0x00000013,
-    0x00000009,
-    0x00040015,
-    0x00000014,
-    0x00000020,
-    0x00000001,
-    0x0004002b,
-    0x00000014,
-    0x00000015,
-    0x00000000,
-    0x00040020,
-    0x00000016,
-    0x00000009,
-    0x00000006,
-    0x0004002b,
-    0x00000006,
-    0x0000001a,
-    0x40000000,
-    0x0004002b,
-    0x00000006,
-    0x0000001c,
-    0x3f800000,
-    0x0004002b,
-    0x0000000c,
-    0x0000001e,
-    0x00000001,
-    0x00040017,
-    0x00000027,
-    0x00000006,
-    0x00000004,
-    0x0004001c,
-    0x00000028,
-    0x00000006,
-    0x0000001e,
-    0x0006001e,
-    0x00000029,
-    0x00000027,
-    0x00000006,
-    0x00000028,
-    0x00000028,
-    0x00040020,
-    0x0000002a,
-    0x00000003,
-    0x00000029,
-    0x0004003b,
-    0x0000002a,
-    0x0000002b,
-    0x00000003,
-    0x00040020,
-    0x0000002c,
-    0x00000007,
-    0x00000006,
-    0x0004002b,
-    0x00000006,
-    0x00000031,
-    0x00000000,
-    0x00040020,
-    0x00000033,
-    0x00000003,
-    0x00000027,
-    0x0004003b,
-    0x00000033,
-    0x00000035,
-    0x00000003,
-    0x00040020,
-    0x00000036,
-    0x00000001,
-    0x00000027,
-    0x0004003b,
-    0x00000036,
-    0x00000037,
-    0x00000001,
-    0x00040020,
-    0x00000039,
-    0x00000003,
-    0x00000007,
-    0x0004003b,
-    0x00000039,
-    0x0000003a,
-    0x00000003,
-    0x0004003b,
-    0x0000000a,
-    0x0000003b,
-    0x00000001,
-    0x00050036,
-    0x00000002,
-    0x00000004,
-    0x00000000,
-    0x00000003,
-    0x000200f8,
-    0x00000005,
-    0x0004003b,
-    0x00000008,
-    0x00000009,
-    0x00000007,
-    0x00050041,
-    0x0000000e,
-    0x0000000f,
-    0x0000000b,
-    0x0000000d,
-    0x0004003d,
-    0x00000006,
-    0x00000010,
-    0x0000000f,
-    0x00060041,
-    0x00000016,
-    0x00000017,
-    0x00000013,
-    0x00000015,
-    0x0000000d,
-    0x0004003d,
-    0x00000006,
-    0x00000018,
-    0x00000017,
-    0x00050088,
-    0x00000006,
-    0x00000019,
-    0x00000010,
-    0x00000018,
-    0x00050085,
-    0x00000006,
-    0x0000001b,
-    0x00000019,
-    0x0000001a,
-    0x00050083,
-    0x00000006,
-    0x0000001d,
-    0x0000001b,
-    0x0000001c,
-    0x00050041,
-    0x0000000e,
-    0x0000001f,
-    0x0000000b,
-    0x0000001e,
-    0x0004003d,
-    0x00000006,
-    0x00000020,
-    0x0000001f,
-    0x00060041,
-    0x00000016,
-    0x00000021,
-    0x00000013,
-    0x00000015,
-    0x0000001e,
-    0x0004003d,
-    0x00000006,
-    0x00000022,
-    0x00000021,
-    0x00050088,
-    0x00000006,
-    0x00000023,
-    0x00000020,
-    0x00000022,
-    0x00050085,
-    0x00000006,
-    0x00000024,
-    0x00000023,
-    0x0000001a,
-    0x00050083,
-    0x00000006,
-    0x00000025,
-    0x0000001c,
-    0x00000024,
-    0x00050050,
-    0x00000007,
-    0x00000026,
-    0x0000001d,
-    0x00000025,
-    0x0003003e,
-    0x00000009,
-    0x00000026,
-    0x00050041,
-    0x0000002c,
-    0x0000002d,
-    0x00000009,
-    0x0000000d,
-    0x0004003d,
-    0x00000006,
-    0x0000002e,
-    0x0000002d,
-    0x00050041,
-    0x0000002c,
-    0x0000002f,
-    0x00000009,
-    0x0000001e,
-    0x0004003d,
-    0x00000006,
-    0x00000030,
-    0x0000002f,
-    0x00070050,
-    0x00000027,
-    0x00000032,
-    0x0000002e,
-    0x00000030,
-    0x00000031,
-    0x0000001c,
-    0x00050041,
-    0x00000033,
-    0x00000034,
-    0x0000002b,
-    0x00000015,
-    0x0003003e,
-    0x00000034,
-    0x00000032,
-    0x0004003d,
-    0x00000027,
-    0x00000038,
-    0x00000037,
-    0x0003003e,
-    0x00000035,
-    0x00000038,
-    0x00050041,
-    0x0000000e,
-    0x0000003c,
-    0x0000003b,
-    0x0000000d,
-    0x0004003d,
-    0x00000006,
-    0x0000003d,
-    0x0000003c,
-    0x00050083,
-    0x00000006,
-    0x0000003e,
-    0x0000001c,
-    0x0000003d,
-    0x00050041,
-    0x0000000e,
-    0x0000003f,
-    0x0000003b,
-    0x0000001e,
-    0x0004003d,
-    0x00000006,
-    0x00000040,
-    0x0000003f,
-    0x00050050,
-    0x00000007,
-    0x00000041,
-    0x0000003e,
-    0x00000040,
-    0x0003003e,
-    0x0000003a,
-    0x00000041,
-    0x000100fd,
-    0x00010038,
+    0x07230203, 0x00010000, 0x000d000b, 0x0000003d,
+    0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+    0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e,
+    0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+    0x000b000f, 0x00000000, 0x00000004, 0x6e69616d,
+    0x00000000, 0x0000000b, 0x0000002d, 0x00000035,
+    0x00000037, 0x0000003a, 0x0000003b, 0x00030003,
+    0x00000002, 0x000001c2, 0x000a0004, 0x475f4c47,
+    0x4c474f4f, 0x70635f45, 0x74735f70, 0x5f656c79,
+    0x656e696c, 0x7269645f, 0x69746365, 0x00006576,
+    0x00080004, 0x475f4c47, 0x4c474f4f, 0x6e695f45,
+    0x64756c63, 0x69645f65, 0x74636572, 0x00657669,
+    0x00040005, 0x00000004, 0x6e69616d, 0x00000000,
+    0x00030005, 0x00000009, 0x0063646e, 0x00050005,
+    0x0000000b, 0x6f506e69, 0x69746973, 0x00006e6f,
+    0x00060005, 0x00000011, 0x68737550, 0x736e6f43,
+    0x746e6174, 0x00000073, 0x00070006, 0x00000011,
+    0x00000000, 0x77656976, 0x74726f70, 0x657a6953,
+    0x00000000, 0x00030005, 0x00000013, 0x00006370,
+    0x00060005, 0x0000002b, 0x505f6c67, 0x65567265,
+    0x78657472, 0x00000000, 0x00060006, 0x0000002b,
+    0x00000000, 0x505f6c67, 0x7469736f, 0x006e6f69,
+    0x00070006, 0x0000002b, 0x00000001, 0x505f6c67,
+    0x746e696f, 0x657a6953, 0x00000000, 0x00070006,
+    0x0000002b, 0x00000002, 0x435f6c67, 0x4470696c,
+    0x61747369, 0x0065636e, 0x00070006, 0x0000002b,
+    0x00000003, 0x435f6c67, 0x446c6c75, 0x61747369,
+    0x0065636e, 0x00030005, 0x0000002d, 0x00000000,
+    0x00050005, 0x00000035, 0x4374756f, 0x726f6c6f,
+    0x00000000, 0x00040005, 0x00000037, 0x6f436e69,
+    0x00726f6c, 0x00050005, 0x0000003a, 0x5474756f,
+    0x6f437865, 0x0064726f, 0x00050005, 0x0000003b,
+    0x65546e69, 0x6f6f4378, 0x00006472, 0x00040047,
+    0x0000000b, 0x0000001e, 0x00000000, 0x00030047,
+    0x00000011, 0x00000002, 0x00050048, 0x00000011,
+    0x00000000, 0x00000023, 0x00000000, 0x00030047,
+    0x0000002b, 0x00000002, 0x00050048, 0x0000002b,
+    0x00000000, 0x0000000b, 0x00000000, 0x00050048,
+    0x0000002b, 0x00000001, 0x0000000b, 0x00000001,
+    0x00050048, 0x0000002b, 0x00000002, 0x0000000b,
+    0x00000003, 0x00050048, 0x0000002b, 0x00000003,
+    0x0000000b, 0x00000004, 0x00040047, 0x00000035,
+    0x0000001e, 0x00000000, 0x00040047, 0x00000037,
+    0x0000001e, 0x00000002, 0x00040047, 0x0000003a,
+    0x0000001e, 0x00000001, 0x00040047, 0x0000003b,
+    0x0000001e, 0x00000001, 0x00020013, 0x00000002,
+    0x00030021, 0x00000003, 0x00000002, 0x00030016,
+    0x00000006, 0x00000020, 0x00040017, 0x00000007,
+    0x00000006, 0x00000002, 0x00040020, 0x00000008,
+    0x00000007, 0x00000007, 0x00040020, 0x0000000a,
+    0x00000001, 0x00000007, 0x0004003b, 0x0000000a,
+    0x0000000b, 0x00000001, 0x00040015, 0x0000000c,
+    0x00000020, 0x00000000, 0x0004002b, 0x0000000c,
+    0x0000000d, 0x00000000, 0x00040020, 0x0000000e,
+    0x00000001, 0x00000006, 0x0003001e, 0x00000011,
+    0x00000007, 0x00040020, 0x00000012, 0x00000009,
+    0x00000011, 0x0004003b, 0x00000012, 0x00000013,
+    0x00000009, 0x00040015, 0x00000014, 0x00000020,
+    0x00000001, 0x0004002b, 0x00000014, 0x00000015,
+    0x00000000, 0x00040020, 0x00000016, 0x00000009,
+    0x00000006, 0x0004002b, 0x00000006, 0x0000001a,
+    0x40000000, 0x0004002b, 0x00000006, 0x0000001c,
+    0x3f800000, 0x00040020, 0x0000001e, 0x00000007,
+    0x00000006, 0x0004002b, 0x0000000c, 0x00000020,
+    0x00000001, 0x00040017, 0x00000029, 0x00000006,
+    0x00000004, 0x0004001c, 0x0000002a, 0x00000006,
+    0x00000020, 0x0006001e, 0x0000002b, 0x00000029,
+    0x00000006, 0x0000002a, 0x0000002a, 0x00040020,
+    0x0000002c, 0x00000003, 0x0000002b, 0x0004003b,
+    0x0000002c, 0x0000002d, 0x00000003, 0x0004002b,
+    0x00000006, 0x0000002f, 0x00000000, 0x00040020,
+    0x00000033, 0x00000003, 0x00000029, 0x0004003b,
+    0x00000033, 0x00000035, 0x00000003, 0x00040020,
+    0x00000036, 0x00000001, 0x00000029, 0x0004003b,
+    0x00000036, 0x00000037, 0x00000001, 0x00040020,
+    0x00000039, 0x00000003, 0x00000007, 0x0004003b,
+    0x00000039, 0x0000003a, 0x00000003, 0x0004003b,
+    0x0000000a, 0x0000003b, 0x00000001, 0x00050036,
+    0x00000002, 0x00000004, 0x00000000, 0x00000003,
+    0x000200f8, 0x00000005, 0x0004003b, 0x00000008,
+    0x00000009, 0x00000007, 0x00050041, 0x0000000e,
+    0x0000000f, 0x0000000b, 0x0000000d, 0x0004003d,
+    0x00000006, 0x00000010, 0x0000000f, 0x00060041,
+    0x00000016, 0x00000017, 0x00000013, 0x00000015,
+    0x0000000d, 0x0004003d, 0x00000006, 0x00000018,
+    0x00000017, 0x00050088, 0x00000006, 0x00000019,
+    0x00000010, 0x00000018, 0x00050085, 0x00000006,
+    0x0000001b, 0x00000019, 0x0000001a, 0x00050083,
+    0x00000006, 0x0000001d, 0x0000001b, 0x0000001c,
+    0x00050041, 0x0000001e, 0x0000001f, 0x00000009,
+    0x0000000d, 0x0003003e, 0x0000001f, 0x0000001d,
+    0x00050041, 0x0000000e, 0x00000021, 0x0000000b,
+    0x00000020, 0x0004003d, 0x00000006, 0x00000022,
+    0x00000021, 0x00060041, 0x00000016, 0x00000023,
+    0x00000013, 0x00000015, 0x00000020, 0x0004003d,
+    0x00000006, 0x00000024, 0x00000023, 0x00050088,
+    0x00000006, 0x00000025, 0x00000022, 0x00000024,
+    0x00050085, 0x00000006, 0x00000026, 0x00000025,
+    0x0000001a, 0x00050083, 0x00000006, 0x00000027,
+    0x00000026, 0x0000001c, 0x00050041, 0x0000001e,
+    0x00000028, 0x00000009, 0x00000020, 0x0003003e,
+    0x00000028, 0x00000027, 0x0004003d, 0x00000007,
+    0x0000002e, 0x00000009, 0x00050051, 0x00000006,
+    0x00000030, 0x0000002e, 0x00000000, 0x00050051,
+    0x00000006, 0x00000031, 0x0000002e, 0x00000001,
+    0x00070050, 0x00000029, 0x00000032, 0x00000030,
+    0x00000031, 0x0000002f, 0x0000001c, 0x00050041,
+    0x00000033, 0x00000034, 0x0000002d, 0x00000015,
+    0x0003003e, 0x00000034, 0x00000032, 0x0004003d,
+    0x00000029, 0x00000038, 0x00000037, 0x0003003e,
+    0x00000035, 0x00000038, 0x0004003d, 0x00000007,
+    0x0000003c, 0x0000003b, 0x0003003e, 0x0000003a,
+    0x0000003c, 0x000100fd, 0x00010038
 };
 
 // Fragment shader (textured): samples font texture and applies color
 static const uint32_t g_FragmentShaderSpv[] = {
-    0x07230203,
-    0x00010000,
-    0x000d000b,
-    0x00000028,
-    0x00000000,
-    0x00020011,
-    0x00000001,
-    0x0006000b,
-    0x00000001,
-    0x4c534c47,
-    0x6474732e,
-    0x3035342e,
-    0x00000000,
-    0x0003000e,
-    0x00000000,
-    0x00000001,
-    0x0008000f,
-    0x00000004,
-    0x00000004,
-    0x6e69616d,
-    0x00000000,
-    0x00000010,
-    0x00000018,
-    0x0000001a,
-    0x00030010,
-    0x00000004,
-    0x00000007,
-    0x00030003,
-    0x00000002,
-    0x000001c2,
-    0x000a0004,
-    0x475f4c47,
-    0x4c474f4f,
-    0x70635f45,
-    0x74735f70,
-    0x5f656c79,
-    0x656e696c,
-    0x7269645f,
-    0x69746365,
-    0x00006576,
-    0x00080004,
-    0x475f4c47,
-    0x4c474f4f,
-    0x6e695f45,
-    0x64756c63,
-    0x69645f65,
-    0x74636572,
-    0x00657669,
-    0x00040005,
-    0x00000004,
-    0x6e69616d,
-    0x00000000,
-    0x00040005,
-    0x00000008,
-    0x68706c61,
-    0x00000061,
-    0x00050005,
-    0x0000000c,
-    0x746e6f66,
-    0x74786554,
-    0x00657275,
-    0x00050005,
-    0x00000010,
-    0x65546e69,
-    0x6f6f4378,
-    0x00006472,
-    0x00050005,
-    0x00000018,
-    0x4374756f,
-    0x726f6c6f,
-    0x00000000,
-    0x00040005,
-    0x0000001a,
-    0x6f436e69,
-    0x00726f6c,
-    0x00040047,
-    0x0000000c,
-    0x00000021,
-    0x00000001,
-    0x00040047,
-    0x0000000c,
-    0x00000022,
-    0x00000000,
-    0x00040047,
-    0x00000010,
-    0x0000001e,
-    0x00000001,
-    0x00040047,
-    0x00000018,
-    0x0000001e,
-    0x00000000,
-    0x00040047,
-    0x0000001a,
-    0x0000001e,
-    0x00000000,
-    0x00020013,
-    0x00000002,
-    0x00030021,
-    0x00000003,
-    0x00000002,
-    0x00030016,
-    0x00000006,
-    0x00000020,
-    0x00040020,
-    0x00000007,
-    0x00000007,
-    0x00000006,
-    0x00090019,
-    0x00000009,
-    0x00000006,
-    0x00000001,
-    0x00000000,
-    0x00000000,
-    0x00000000,
-    0x00000001,
-    0x00000000,
-    0x0003001b,
-    0x0000000a,
-    0x00000009,
-    0x00040020,
-    0x0000000b,
-    0x00000000,
-    0x0000000a,
-    0x0004003b,
-    0x0000000b,
-    0x0000000c,
-    0x00000000,
-    0x00040017,
-    0x0000000e,
-    0x00000006,
-    0x00000002,
-    0x00040020,
-    0x0000000f,
-    0x00000001,
-    0x0000000e,
-    0x0004003b,
-    0x0000000f,
-    0x00000010,
-    0x00000001,
-    0x00040017,
-    0x00000012,
-    0x00000006,
-    0x00000004,
-    0x00040015,
-    0x00000014,
-    0x00000020,
-    0x00000000,
-    0x0004002b,
-    0x00000014,
-    0x00000015,
-    0x00000000,
-    0x00040020,
-    0x00000017,
-    0x00000003,
-    0x00000012,
-    0x0004003b,
-    0x00000017,
-    0x00000018,
-    0x00000003,
-    0x00040020,
-    0x00000019,
-    0x00000001,
-    0x00000012,
-    0x0004003b,
-    0x00000019,
-    0x0000001a,
-    0x00000001,
-    0x00040017,
-    0x0000001b,
-    0x00000006,
-    0x00000003,
-    0x0004002b,
-    0x00000014,
-    0x0000001e,
-    0x00000003,
-    0x00040020,
-    0x0000001f,
-    0x00000001,
-    0x00000006,
-    0x00050036,
-    0x00000002,
-    0x00000004,
-    0x00000000,
-    0x00000003,
-    0x000200f8,
-    0x00000005,
-    0x0004003b,
-    0x00000007,
-    0x00000008,
-    0x00000007,
-    0x0004003d,
-    0x0000000a,
-    0x0000000d,
-    0x0000000c,
-    0x0004003d,
-    0x0000000e,
-    0x00000011,
-    0x00000010,
-    0x00050057,
-    0x00000012,
-    0x00000013,
-    0x0000000d,
-    0x00000011,
-    0x00050051,
-    0x00000006,
-    0x00000016,
-    0x00000013,
-    0x00000000,
-    0x0003003e,
-    0x00000008,
-    0x00000016,
-    0x0004003d,
-    0x00000012,
-    0x0000001c,
-    0x0000001a,
-    0x0008004f,
-    0x0000001b,
-    0x0000001d,
-    0x0000001c,
-    0x0000001c,
-    0x00000000,
-    0x00000001,
-    0x00000002,
-    0x00050041,
-    0x0000001f,
-    0x00000020,
-    0x0000001a,
-    0x0000001e,
-    0x0004003d,
-    0x00000006,
-    0x00000021,
-    0x00000020,
-    0x0004003d,
-    0x00000006,
-    0x00000022,
-    0x00000008,
-    0x00050085,
-    0x00000006,
-    0x00000023,
-    0x00000021,
-    0x00000022,
-    0x00050051,
-    0x00000006,
-    0x00000024,
-    0x0000001d,
-    0x00000000,
-    0x00050051,
-    0x00000006,
-    0x00000025,
-    0x0000001d,
-    0x00000001,
-    0x00050051,
-    0x00000006,
-    0x00000026,
-    0x0000001d,
-    0x00000002,
-    0x00070050,
-    0x00000012,
-    0x00000027,
-    0x00000024,
-    0x00000025,
-    0x00000026,
-    0x00000023,
-    0x0003003e,
-    0x00000018,
-    0x00000027,
-    0x000100fd,
-    0x00010038,
+    0x07230203, 0x00010000, 0x000d000b, 0x00000028, 0x00000000, 0x00020011,
+    0x00000001, 0x0006000b, 0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e,
+    0x00000000, 0x0003000e, 0x00000000, 0x00000001, 0x0008000f, 0x00000004,
+    0x00000004, 0x6e69616d, 0x00000000, 0x00000010, 0x00000018, 0x0000001a,
+    0x00030010, 0x00000004, 0x00000007, 0x00030003, 0x00000002, 0x000001c2,
+    0x000a0004, 0x475f4c47, 0x4c474f4f, 0x70635f45, 0x74735f70, 0x5f656c79,
+    0x656e696c, 0x7269645f, 0x69746365, 0x00006576, 0x00080004, 0x475f4c47,
+    0x4c474f4f, 0x6e695f45, 0x64756c63, 0x69645f65, 0x74636572, 0x00657669,
+    0x00040005, 0x00000004, 0x6e69616d, 0x00000000, 0x00040005, 0x00000008,
+    0x68706c61, 0x00000061, 0x00050005, 0x0000000c, 0x746e6f66, 0x74786554,
+    0x00657275, 0x00050005, 0x00000010, 0x65546e69, 0x6f6f4378, 0x00006472,
+    0x00050005, 0x00000018, 0x4374756f, 0x726f6c6f, 0x00000000, 0x00040005,
+    0x0000001a, 0x6f436e69, 0x00726f6c, 0x00040047, 0x0000000c, 0x00000021,
+    0x00000001, 0x00040047, 0x0000000c, 0x00000022, 0x00000000, 0x00040047,
+    0x00000010, 0x0000001e, 0x00000001, 0x00040047, 0x00000018, 0x0000001e,
+    0x00000000, 0x00040047, 0x0000001a, 0x0000001e, 0x00000000, 0x00020013,
+    0x00000002, 0x00030021, 0x00000003, 0x00000002, 0x00030016, 0x00000006,
+    0x00000020, 0x00040020, 0x00000007, 0x00000007, 0x00000006, 0x00090019,
+    0x00000009, 0x00000006, 0x00000001, 0x00000000, 0x00000000, 0x00000000,
+    0x00000001, 0x00000000, 0x0003001b, 0x0000000a, 0x00000009, 0x00040020,
+    0x0000000b, 0x00000000, 0x0000000a, 0x0004003b, 0x0000000b, 0x0000000c,
+    0x00000000, 0x00040017, 0x0000000e, 0x00000006, 0x00000002, 0x00040020,
+    0x0000000f, 0x00000001, 0x0000000e, 0x0004003b, 0x0000000f, 0x00000010,
+    0x00000001, 0x00040017, 0x00000012, 0x00000006, 0x00000004, 0x00040015,
+    0x00000014, 0x00000020, 0x00000000, 0x0004002b, 0x00000014, 0x00000015,
+    0x00000000, 0x00040020, 0x00000017, 0x00000003, 0x00000012, 0x0004003b,
+    0x00000017, 0x00000018, 0x00000003, 0x00040020, 0x00000019, 0x00000001,
+    0x00000012, 0x0004003b, 0x00000019, 0x0000001a, 0x00000001, 0x00040017,
+    0x0000001b, 0x00000006, 0x00000003, 0x0004002b, 0x00000014, 0x0000001e,
+    0x00000003, 0x00040020, 0x0000001f, 0x00000001, 0x00000006, 0x00050036,
+    0x00000002, 0x00000004, 0x00000000, 0x00000003, 0x000200f8, 0x00000005,
+    0x0004003b, 0x00000007, 0x00000008, 0x00000007, 0x0004003d, 0x0000000a,
+    0x0000000d, 0x0000000c, 0x0004003d, 0x0000000e, 0x00000011, 0x00000010,
+    0x00050057, 0x00000012, 0x00000013, 0x0000000d, 0x00000011, 0x00050051,
+    0x00000006, 0x00000016, 0x00000013, 0x00000000, 0x0003003e, 0x00000008,
+    0x00000016, 0x0004003d, 0x00000012, 0x0000001c, 0x0000001a, 0x0008004f,
+    0x0000001b, 0x0000001d, 0x0000001c, 0x0000001c, 0x00000000, 0x00000001,
+    0x00000002, 0x00050041, 0x0000001f, 0x00000020, 0x0000001a, 0x0000001e,
+    0x0004003d, 0x00000006, 0x00000021, 0x00000020, 0x0004003d, 0x00000006,
+    0x00000022, 0x00000008, 0x00050085, 0x00000006, 0x00000023, 0x00000021,
+    0x00000022, 0x00050051, 0x00000006, 0x00000024, 0x0000001d, 0x00000000,
+    0x00050051, 0x00000006, 0x00000025, 0x0000001d, 0x00000001, 0x00050051,
+    0x00000006, 0x00000026, 0x0000001d, 0x00000002, 0x00070050, 0x00000012,
+    0x00000027, 0x00000024, 0x00000025, 0x00000026, 0x00000023, 0x0003003e,
+    0x00000018, 0x00000027, 0x000100fd, 0x00010038,
 };
 
 // Fragment shader (solid): just outputs color (no texture)
@@ -784,8 +203,7 @@ static const uint32_t g_FragmentShaderSolidSpv[] = {
     0x0004003b, 0x0000000e, 0x0000000f, 0x00000001, 0x00050036, 0x00000002,
     0x00000004, 0x00000000, 0x00000003, 0x000200f8, 0x00000005, 0x0004003d,
     0x00000007, 0x0000000c, 0x0000000b, 0x0003003e, 0x00000009, 0x0000000c,
-    0x000100fd, 0x00010038
-};
+    0x000100fd, 0x00010038};
 
 VulkanBackend::VulkanBackend(VkDevice dev, VkPhysicalDevice physDev, VkQueue q,
                              uint32_t queueFamily)
@@ -802,9 +220,10 @@ void VulkanBackend::SetDispatchTable(void *devDispatch, void *instDispatch) {
 bool VulkanBackend::Initialize(int fontTextureWidth, int fontTextureHeight,
                                const uint8_t *fontTextureData) {
   HookLog("VulkanBackend::Initialize - ENTRY");
-  
+
   if (initialized || !device || !deviceDispatch) {
-    HookLog("VulkanBackend::Initialize - Early exit: initialized=%d, device=%p, deviceDispatch=%p",
+    HookLog("VulkanBackend::Initialize - Early exit: initialized=%d, "
+            "device=%p, deviceDispatch=%p",
             initialized, device, deviceDispatch);
     return false;
   }
@@ -1002,20 +421,22 @@ bool VulkanBackend::CreatePipelineLayout() {
 
 bool VulkanBackend::CreatePipeline(VkRenderPass renderPass) {
   HookLog("VulkanBackend::CreatePipeline - ENTRY, renderPass=%p", renderPass);
-  
+
   DeviceDispatch *disp = static_cast<DeviceDispatch *>(deviceDispatch);
   if (!disp) {
     HookLog("VulkanBackend::CreatePipeline - ERROR: deviceDispatch is null");
     return false;
   }
-  
+
   if (!disp->fp_vkCreateGraphicsPipelines) {
-    HookLog("VulkanBackend::CreatePipeline - ERROR: fp_vkCreateGraphicsPipelines is null");
+    HookLog("VulkanBackend::CreatePipeline - ERROR: "
+            "fp_vkCreateGraphicsPipelines is null");
     return false;
   }
-  
+
   if (!disp->fp_vkCreateShaderModule) {
-    HookLog("VulkanBackend::CreatePipeline - ERROR: fp_vkCreateShaderModule is null");
+    HookLog("VulkanBackend::CreatePipeline - ERROR: fp_vkCreateShaderModule is "
+            "null");
     return false;
   }
 
@@ -1023,13 +444,14 @@ bool VulkanBackend::CreatePipeline(VkRenderPass renderPass) {
     HookLog("VulkanBackend::CreatePipeline - ERROR: pipelineLayout is null");
     return false;
   }
-  
+
   if (renderPass == VK_NULL_HANDLE) {
     HookLog("VulkanBackend::CreatePipeline - ERROR: renderPass is null");
     return false;
   }
-  
-  HookLog("VulkanBackend::CreatePipeline - All prerequisites valid, creating shader modules...");
+
+  HookLog("VulkanBackend::CreatePipeline - All prerequisites valid, creating "
+          "shader modules...");
 
   // Create shader modules
   HookLog("VulkanBackend::CreatePipeline - Creating vertex shader module...");
@@ -1064,7 +486,8 @@ bool VulkanBackend::CreatePipeline(VkRenderPass renderPass) {
   }
   HookLog("VulkanBackend::CreatePipeline - Fragment shader module created");
 
-  HookLog("VulkanBackend::CreatePipeline - Creating solid fragment shader module...");
+  HookLog("VulkanBackend::CreatePipeline - Creating solid fragment shader "
+          "module...");
   VkShaderModule fragShaderSolidModule = VK_NULL_HANDLE;
   VkShaderModuleCreateInfo fragSolidInfo = {
       VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -1080,7 +503,8 @@ bool VulkanBackend::CreatePipeline(VkRenderPass renderPass) {
     disp->fp_vkDestroyShaderModule(device, fragShaderModule, nullptr);
     return false;
   }
-  HookLog("VulkanBackend::CreatePipeline - Solid fragment shader module created");
+  HookLog(
+      "VulkanBackend::CreatePipeline - Solid fragment shader module created");
 
   HookLog("VulkanBackend::CreatePipeline - Setting up pipeline stages...");
   // Pipeline stages - MUST zero-initialize all structures
@@ -1126,7 +550,8 @@ bool VulkanBackend::CreatePipeline(VkRenderPass renderPass) {
   attributeDescs[2].offset = offsetof(DrawVertex, color);
 
   VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
-  vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+  vertexInputInfo.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
   vertexInputInfo.vertexBindingDescriptionCount = 1;
   vertexInputInfo.pVertexBindingDescriptions = &bindingDesc;
   vertexInputInfo.vertexAttributeDescriptionCount = 3;
@@ -1134,7 +559,8 @@ bool VulkanBackend::CreatePipeline(VkRenderPass renderPass) {
 
   // Input assembly
   VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
-  inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+  inputAssembly.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
   inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
   inputAssembly.primitiveRestartEnable = VK_FALSE;
 
@@ -1156,13 +582,15 @@ bool VulkanBackend::CreatePipeline(VkRenderPass renderPass) {
 
   // Multisampling
   VkPipelineMultisampleStateCreateInfo multisampling = {};
-  multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+  multisampling.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
   multisampling.sampleShadingEnable = VK_FALSE;
   multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
   // Depth stencil state (disabled for overlay)
   VkPipelineDepthStencilStateCreateInfo depthStencil = {};
-  depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+  depthStencil.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
   depthStencil.depthTestEnable = VK_FALSE;
   depthStencil.depthWriteEnable = VK_FALSE;
   depthStencil.depthBoundsTestEnable = VK_FALSE;
@@ -1184,7 +612,8 @@ bool VulkanBackend::CreatePipeline(VkRenderPass renderPass) {
   colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
 
   VkPipelineColorBlendStateCreateInfo colorBlending = {};
-  colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+  colorBlending.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
   colorBlending.logicOpEnable = VK_FALSE;
   colorBlending.attachmentCount = 1;
   colorBlending.pAttachments = &colorBlendAttachment;
@@ -1219,13 +648,16 @@ bool VulkanBackend::CreatePipeline(VkRenderPass renderPass) {
   VkPipelineShaderStageCreateInfo texturedStages[] = {vertStage, fragStage};
   pipelineInfo.pStages = texturedStages;
 
-  HookLog("VulkanBackend::CreatePipeline - About to create textured pipeline...");
-  HookLog("VulkanBackend::CreatePipeline - device=%p, pipelineLayout=%p, renderPass=%p",
+  HookLog(
+      "VulkanBackend::CreatePipeline - About to create textured pipeline...");
+  HookLog("VulkanBackend::CreatePipeline - device=%p, pipelineLayout=%p, "
+          "renderPass=%p",
           device, pipelineLayout, renderPass);
-  
+
   // Validate all pipeline info pointers
   HookLog("VulkanBackend::CreatePipeline - Validating pipeline info...");
-  HookLog("  pStages=%p (stageCount=%d)", pipelineInfo.pStages, pipelineInfo.stageCount);
+  HookLog("  pStages=%p (stageCount=%d)", pipelineInfo.pStages,
+          pipelineInfo.stageCount);
   HookLog("  pVertexInputState=%p", pipelineInfo.pVertexInputState);
   HookLog("  pInputAssemblyState=%p", pipelineInfo.pInputAssemblyState);
   HookLog("  pViewportState=%p", pipelineInfo.pViewportState);
@@ -1235,17 +667,22 @@ bool VulkanBackend::CreatePipeline(VkRenderPass renderPass) {
   HookLog("  pDynamicState=%p", pipelineInfo.pDynamicState);
   HookLog("  layout=%p", pipelineInfo.layout);
   HookLog("  renderPass=%p", pipelineInfo.renderPass);
-  
+
   // Check if shader modules are valid
   VkShaderModule vertMod = pipelineInfo.pStages[0].module;
   VkShaderModule fragMod = pipelineInfo.pStages[1].module;
-  HookLog("  Vertex shader module=%p, name=%s", vertMod, pipelineInfo.pStages[0].pName);
-  HookLog("  Fragment shader module=%p, name=%s", fragMod, pipelineInfo.pStages[1].pName);
-  
-  HookLog("VulkanBackend::CreatePipeline - Calling vkCreateGraphicsPipelines...");
+  HookLog("  Vertex shader module=%p, name=%s", vertMod,
+          pipelineInfo.pStages[0].pName);
+  HookLog("  Fragment shader module=%p, name=%s", fragMod,
+          pipelineInfo.pStages[1].pName);
+
+  HookLog(
+      "VulkanBackend::CreatePipeline - Calling vkCreateGraphicsPipelines...");
   result = disp->fp_vkCreateGraphicsPipelines(
       device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline);
-  HookLog("VulkanBackend::CreatePipeline - vkCreateGraphicsPipelines returned %d", result);
+  HookLog(
+      "VulkanBackend::CreatePipeline - vkCreateGraphicsPipelines returned %d",
+      result);
   if (result != VK_SUCCESS) {
     HookLog("VulkanBackend: Failed to create textured pipeline: %d", result);
     disp->fp_vkDestroyShaderModule(device, vertShaderModule, nullptr);
@@ -1253,7 +690,8 @@ bool VulkanBackend::CreatePipeline(VkRenderPass renderPass) {
     disp->fp_vkDestroyShaderModule(device, fragShaderSolidModule, nullptr);
     return false;
   }
-  HookLog("VulkanBackend::CreatePipeline - Textured pipeline created successfully");
+  HookLog(
+      "VulkanBackend::CreatePipeline - Textured pipeline created successfully");
 
   // Create solid pipeline
   VkPipelineShaderStageCreateInfo solidStages[] = {vertStage, fragSolidStage};
@@ -1277,19 +715,23 @@ bool VulkanBackend::CreatePipeline(VkRenderPass renderPass) {
 }
 
 bool VulkanBackend::CreatePipelineForRenderPass(VkRenderPass renderPass) {
-  HookLog("VulkanBackend::CreatePipelineForRenderPass - ENTRY, renderPass=%p", renderPass);
-  
+  HookLog("VulkanBackend::CreatePipelineForRenderPass - ENTRY, renderPass=%p",
+          renderPass);
+
   if (!initialized) {
-    HookLog("VulkanBackend::CreatePipelineForRenderPass - ERROR: not initialized");
+    HookLog(
+        "VulkanBackend::CreatePipelineForRenderPass - ERROR: not initialized");
     return false;
   }
   if (pipelineCreated && currentRenderPass == renderPass) {
-    HookLog("VulkanBackend::CreatePipelineForRenderPass - Pipeline already created for this render pass");
+    HookLog("VulkanBackend::CreatePipelineForRenderPass - Pipeline already "
+            "created for this render pass");
     return true; // Already created for this render pass
   }
 
   // Destroy existing pipelines if any
-  HookLog("VulkanBackend::CreatePipelineForRenderPass - Destroying existing pipelines...");
+  HookLog("VulkanBackend::CreatePipelineForRenderPass - Destroying existing "
+          "pipelines...");
   DeviceDispatch *disp = static_cast<DeviceDispatch *>(deviceDispatch);
   if (pipeline != VK_NULL_HANDLE && disp && disp->fp_vkDestroyPipeline) {
     disp->fp_vkDestroyPipeline(device, pipeline, nullptr);
@@ -1301,9 +743,12 @@ bool VulkanBackend::CreatePipelineForRenderPass(VkRenderPass renderPass) {
   }
 
   currentRenderPass = renderPass;
-  HookLog("VulkanBackend::CreatePipelineForRenderPass - Calling CreatePipeline...");
+  HookLog(
+      "VulkanBackend::CreatePipelineForRenderPass - Calling CreatePipeline...");
   bool result = CreatePipeline(renderPass);
-  HookLog("VulkanBackend::CreatePipelineForRenderPass - CreatePipeline returned %d", result);
+  HookLog(
+      "VulkanBackend::CreatePipelineForRenderPass - CreatePipeline returned %d",
+      result);
   return result;
 }
 
@@ -1499,7 +944,7 @@ bool VulkanBackend::CreateFontTexture(int width, int height,
     uint8_t *dst = (uint8_t *)stagingPtr;
     for (uint32_t y = 0; y < (uint32_t)height; y++) {
       for (uint32_t x = 0; x < (uint32_t)width; x++) {
-        dst[y * width + x] = src[(y * width + x) * 4 + 3];  // Alpha channel
+        dst[y * width + x] = src[(y * width + x) * 4 + 3]; // Alpha channel
       }
     }
   }
@@ -1678,7 +1123,7 @@ bool VulkanBackend::CreateFontTexture(int width, int height,
   VkWriteDescriptorSet descriptorWrite = {
       VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
   descriptorWrite.dstSet = descriptorSet;
-  descriptorWrite.dstBinding = 1;  // Matches layout binding=1
+  descriptorWrite.dstBinding = 1; // Matches layout binding=1
   descriptorWrite.dstArrayElement = 0;
   descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
   descriptorWrite.descriptorCount = 1;
@@ -1772,14 +1217,12 @@ void VulkanBackend::Render(const std::vector<DrawVertex> &vertices,
     memcpy(indexBufferPtr, indices.data(), indexDataSize);
   }
 
-  // Set viewport
+  // Set viewport (standard setup - shader handles NDC conversion)
   VkViewport viewport = {};
   viewport.x = 0.0f;
-  // Vulkan viewport Y=0 is at BOTTOM, so to have top at screen Y=0,
-  // we need to position viewport at the top with height extending down
-  viewport.y = (float)viewportHeight;
+  viewport.y = 0.0f;
   viewport.width = (float)viewportWidth;
-  viewport.height = -(float)viewportHeight;  // Negative height for top-down
+  viewport.height = (float)viewportHeight;
   viewport.minDepth = 0.0f;
   viewport.maxDepth = 1.0f;
   disp->fp_vkCmdSetViewport(currentCmdBuffer, 0, 1, &viewport);

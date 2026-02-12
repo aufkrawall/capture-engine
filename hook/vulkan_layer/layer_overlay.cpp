@@ -219,9 +219,10 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain,
   attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
   attachment.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
   attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-  
-  LayerLog("Vulkan Layer: InitializeOverlay - Render pass format=%d (VK_FORMAT_B8G8R8A8_UNORM=%d)", 
-           format, 44);  // 44 is VK_FORMAT_B8G8R8A8_UNORM
+
+  LayerLog("Vulkan Layer: InitializeOverlay - Render pass format=%d "
+           "(VK_FORMAT_B8G8R8A8_UNORM=%d)",
+           format, 44); // 44 is VK_FORMAT_B8G8R8A8_UNORM
 
   VkAttachmentReference colorRef = {0,
                                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
@@ -325,9 +326,10 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain,
 
   // Initialize with dispatch tables
   LayerLog("Vulkan Layer: InitializeOverlay - Calling InitVulkan...");
-  bool initResult = state.overlayAdapter->InitVulkan(device, disp->physicalDevice, queue,
-                                                     graphicsQueueFamily, disp, instDisp);
-  LayerLog("Vulkan Layer: InitializeOverlay - InitVulkan returned %d", initResult);
+  bool initResult = state.overlayAdapter->InitVulkan(
+      device, disp->physicalDevice, queue, graphicsQueueFamily, disp, instDisp);
+  LayerLog("Vulkan Layer: InitializeOverlay - InitVulkan returned %d",
+           initResult);
   if (!initResult) {
     LayerLog("Vulkan Layer: [Error] Failed to initialize OverlayAdapter");
     CleanupOverlayState(state, device, disp);
@@ -338,28 +340,33 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain,
   // Set up the adapter with metrics and IPC
   LayerLog("Vulkan Layer: InitializeOverlay - Creating PerformanceMetrics...");
   state.metrics = new PerformanceMetrics();
-  LayerLog("Vulkan Layer: InitializeOverlay - PerformanceMetrics created, setting metrics...");
+  LayerLog("Vulkan Layer: InitializeOverlay - PerformanceMetrics created, "
+           "setting metrics...");
   state.overlayAdapter->SetMetrics(state.metrics);
-  LayerLog("Vulkan Layer: InitializeOverlay - Metrics set, setting IPC client...");
+  LayerLog(
+      "Vulkan Layer: InitializeOverlay - Metrics set, setting IPC client...");
   state.overlayAdapter->SetIPCClient(&g_IPCClient);
-  LayerLog("Vulkan Layer: InitializeOverlay - IPC client set, setting graphics API...");
+  LayerLog("Vulkan Layer: InitializeOverlay - IPC client set, setting graphics "
+           "API...");
   state.overlayAdapter->SetGraphicsAPI("Vulkan");
   LayerLog("Vulkan Layer: InitializeOverlay - Graphics API set");
 
   // Create pipeline for the render pass - MUST succeed before marking
   // initialized
   LayerLog("Vulkan Layer: InitializeOverlay - Checking backend type...");
-  LayerLog("Vulkan Layer: InitializeOverlay - overlayAdapter=%p", state.overlayAdapter);
+  LayerLog("Vulkan Layer: InitializeOverlay - overlayAdapter=%p",
+           state.overlayAdapter);
   if (!state.overlayAdapter) {
     LayerLog("Vulkan Layer: [Error] overlayAdapter is null!");
     CleanupOverlayState(state, device, disp);
     return;
   }
-  
+
   OverlayBackendType backendType = state.overlayAdapter->GetBackendType();
-  LayerLog("Vulkan Layer: InitializeOverlay - Backend type=%d (expected Vulkan=%d)", 
-           (int)backendType, (int)OverlayBackendType::Vulkan);
-  
+  LayerLog(
+      "Vulkan Layer: InitializeOverlay - Backend type=%d (expected Vulkan=%d)",
+      (int)backendType, (int)OverlayBackendType::Vulkan);
+
   if (backendType != OverlayBackendType::Vulkan) {
     LayerLog("Vulkan Layer: [Error] Backend type mismatch - expected Vulkan");
     CleanupOverlayState(state, device, disp);
@@ -376,7 +383,8 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain,
     return;
   }
 
-  LayerLog("Vulkan Layer: InitializeOverlay - Creating pipeline for render pass...");
+  LayerLog(
+      "Vulkan Layer: InitializeOverlay - Creating pipeline for render pass...");
   if (!vkBackend->CreatePipelineForRenderPass(state.renderPass)) {
     LayerLog("Vulkan Layer: [Error] Failed to create pipeline for render pass");
     CleanupOverlayState(state, device, disp);
