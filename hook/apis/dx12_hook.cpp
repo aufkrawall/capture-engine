@@ -1967,20 +1967,19 @@ DX12_WaitForOverlayCompletion(ID3D12CommandQueue *pGameQueue) {
   if (fenceValueToWait == 0)
     return; // No overlay work submitted yet
 
-  // Make the game's queue wait for the overlay fence
-  // This ensures overlay rendering completes before Present
-  HRESULT hr = pGameQueue->Wait(g_State.fence, fenceValueToWait);
-  if (FAILED(hr)) {
-    static int s_failCount = 0;
-    if (++s_failCount <= 5) {
-      HookLog("DX12: WaitForOverlay - Wait failed hr=0x%08X", hr);
-    }
-  } else {
-    static int s_successCount = 0;
-    if (++s_successCount <= 5) {
-      HookLog("DX12: WaitForOverlay - Queue %p waiting for fence value %llu",
-              pGameQueue, fenceValueToWait);
-    }
+  // CRITICAL FIX: Use CPU-side wait instead of GPU-side wait to prevent
+  // DXGI_ERROR_DEVICE_REMOVED on some GPUs (RTX 5070, etc.)
+  // The GPU-side queue wait can cause device removal when waiting on a fence
+  // from a different queue. CPU-side wait is safer.
+  if (g_State.fence->GetCompletedValue() < fenceValueToWait) {
+    g_State.fence->SetEventOnCompletion(fenceValueToWait, g_State.fenceEvent);
+    WaitForSingleObject(g_State.fenceEvent, 5);
+  }
+
+  static int s_successCount = 0;
+  if (++s_successCount <= 5) {
+    HookLog("DX12: WaitForOverlay - CPU wait complete for fence value %llu",
+            fenceValueToWait);
   }
 }
 
