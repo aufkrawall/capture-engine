@@ -131,11 +131,12 @@ void Renderer::AddTextQuads(float x, float y, const char *text,
     float gw = (float)g->width;
     float gh = (float)g->height;
 
-    // Texture coordinates
+    // Texture coordinates - flip V for Vulkan (bottom-left origin)
+    // Atlas uses top-left origin (like Windows GDI), Vulkan expects bottom-left
     float u0 = g->x / atlasW;
-    float v0 = g->y / atlasH;
+    float v1 = g->y / atlasH;
     float u1 = (g->x + g->width) / atlasW;
-    float v1 = (g->y + g->height) / atlasH;
+    float v0 = (g->y + g->height) / atlasH;
 
     AddQuad(gx, gy, gw, gh, u0, v0, u1, v1, color);
 
