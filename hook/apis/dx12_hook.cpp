@@ -1598,6 +1598,30 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
     }
 
     if (safeToProceed) {
+      // CRITICAL FIX: Wait for game queue to finish before accessing backbuffer
+      // This prevents device removal when overlay and game queues access the
+      // same resource simultaneously. Use a short timeout to avoid stuttering.
+      ID3D12CommandQueue *gameQueue = nullptr;
+      {
+        std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
+        gameQueue = g_CommandQueue;
+      }
+      if (gameQueue && g_Device) {
+        ID3D12Fence *tempFence = nullptr;
+        if (SUCCEEDED(g_Device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
+                                            IID_PPV_ARGS(&tempFence)))) {
+          HANDLE tempEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+          if (tempEvent) {
+            gameQueue->Signal(tempFence, 1);
+            tempFence->SetEventOnCompletion(1, tempEvent);
+            // Short wait - just enough for GPU to finish current work
+            WaitForSingleObject(tempEvent, 5);
+            CloseHandle(tempEvent);
+          }
+          tempFence->Release();
+        }
+      }
+
       auto *list = g_State.cmdList;
       auto *alloc = (idx < (int)g_State.allocators.size())
                         ? g_State.allocators[idx]

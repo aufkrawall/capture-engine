@@ -554,6 +554,12 @@ void DX12Backend::Render(const std::vector<DrawVertex> &vertices,
   if (!initialized || !currentCmdList || vertices.empty())
     return;
 
+  static int s_renderCount = 0;
+  if (++s_renderCount <= 5) {
+    HookLog("DX12Backend::Render - START (vertices=%zu, commands=%zu)", 
+            vertices.size(), commands.size());
+  }
+
   // Deferred font texture upload: copy from upload heap to default heap on
   // first render
   if (!fontUploaded && uploadBuffer && fontTexture) {
@@ -649,7 +655,10 @@ void DX12Backend::Render(const std::vector<DrawVertex> &vertices,
 
   currentCmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-  // Draw commands
+  if (s_renderCount <= 5) {
+    HookLog("DX12Backend::Render - State set, drawing %zu commands", commands.size());
+  }
+
   for (const auto &cmd : commands) {
     if (cmd.useTexture) {
       currentCmdList->SetPipelineState(pipelineState.Get());
@@ -658,6 +667,10 @@ void DX12Backend::Render(const std::vector<DrawVertex> &vertices,
     }
     currentCmdList->DrawIndexedInstanced(cmd.indexCount, 1, cmd.indexOffset,
                                          cmd.vertexOffset, 0);
+  }
+  
+  if (s_renderCount <= 5) {
+    HookLog("DX12Backend::Render - COMPLETE");
   }
 }
 
