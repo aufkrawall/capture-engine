@@ -556,7 +556,7 @@ void DX12Backend::Render(const std::vector<DrawVertex> &vertices,
 
   static int s_renderCount = 0;
   if (++s_renderCount <= 5) {
-    HookLog("DX12Backend::Render - START (vertices=%zu, commands=%zu)", 
+    HookLog("DX12Backend::Render - START (vertices=%zu, commands=%zu)",
             vertices.size(), commands.size());
   }
 
@@ -656,7 +656,8 @@ void DX12Backend::Render(const std::vector<DrawVertex> &vertices,
   currentCmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
   if (s_renderCount <= 5) {
-    HookLog("DX12Backend::Render - State set, drawing %zu commands", commands.size());
+    HookLog("DX12Backend::Render - State set, drawing %zu commands",
+            commands.size());
   }
 
   for (const auto &cmd : commands) {
@@ -668,7 +669,7 @@ void DX12Backend::Render(const std::vector<DrawVertex> &vertices,
     currentCmdList->DrawIndexedInstanced(cmd.indexCount, 1, cmd.indexOffset,
                                          cmd.vertexOffset, 0);
   }
-  
+
   if (s_renderCount <= 5) {
     HookLog("DX12Backend::Render - COMPLETE");
   }

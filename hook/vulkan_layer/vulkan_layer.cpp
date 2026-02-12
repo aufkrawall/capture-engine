@@ -448,6 +448,46 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateInstance(
     modifiedCreateInfo.enabledExtensionCount = (uint32_t)extensions.size();
     modifiedCreateInfo.ppEnabledExtensionNames = extensions.data();
 
+    // Enable validation layers in debug builds
+#ifdef _DEBUG
+    const char *validationLayerName = "VK_LAYER_KHRONOS_validation";
+    bool hasValidationLayer = false;
+
+    // Check if already requested
+    for (uint32_t i = 0; i < modifiedCreateInfo.enabledLayerCount; i++) {
+      if (strcmp(modifiedCreateInfo.ppEnabledLayerNames[i],
+                 validationLayerName) == 0) {
+        hasValidationLayer = true;
+        break;
+      }
+    }
+
+    if (!hasValidationLayer) {
+      // Query available layers
+      uint32_t layerCount = 0;
+      PFN_vkEnumerateInstanceLayerProperties enumerateLayers =
+          (PFN_vkEnumerateInstanceLayerProperties)gipa(
+              VK_NULL_HANDLE, "vkEnumerateInstanceLayerProperties");
+      if (enumerateLayers) {
+        enumerateLayers(&layerCount, nullptr);
+        std::vector<VkLayerProperties> availableLayers(layerCount);
+        enumerateLayers(&layerCount, availableLayers.data());
+
+        // Check if validation layer is available
+        for (const auto &layer : availableLayers) {
+          if (strcmp(layer.layerName, validationLayerName) == 0) {
+            static const char *validationLayers[] = {validationLayerName};
+            modifiedCreateInfo.enabledLayerCount = 1;
+            modifiedCreateInfo.ppEnabledLayerNames = validationLayers;
+            LayerLog("Vulkan Layer: Enabling validation layer: %s",
+                     validationLayerName);
+            break;
+          }
+        }
+      }
+    }
+#endif
+
     LayerLog("Vulkan Layer: Calling next vkCreateInstance...");
     res = create_fn(&modifiedCreateInfo, pAllocator, pInstance);
   }
@@ -660,7 +700,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(
 
     HWND window =
         VulkanLayerState::Get().GetSurfaceWindow(pCreateInfo->surface);
-    LayerLog("Vulkan Layer: Initializing overlay for swapchain %p, images=%d", *pSwapchain, count);
+    LayerLog("Vulkan Layer: Initializing overlay for swapchain %p, images=%d",
+             *pSwapchain, count);
     InitializeOverlay(device, *pSwapchain, sd->format, sd->extent, count,
                       sd->images.data(), window);
     LayerLog("Vulkan Layer: InitializeOverlay returned, registering swapchain");

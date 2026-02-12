@@ -41,16 +41,18 @@ public:
   InitDX12(void *device, void *queue,
            int rtvFormat); // ID3D12Device*, ID3D12CommandQueue*, DXGI_FORMAT
   bool InitOpenGL();
-  bool InitVulkan(void *device, void *physDevice, void *queue,
-                  uint32_t queueFamily, void* deviceDispatch = nullptr,
-                  void* instanceDispatch = nullptr); // VkDevice, VkPhysicalDevice, VkQueue, DeviceDispatch*, InstanceDispatch*
+  bool InitVulkan(
+      void *device, void *physDevice, void *queue, uint32_t queueFamily,
+      void *deviceDispatch = nullptr,
+      void *instanceDispatch = nullptr); // VkDevice, VkPhysicalDevice, VkQueue,
+                                         // DeviceDispatch*, InstanceDispatch*
 
   void Shutdown();
   bool IsInitialized() const { return initialized; }
   OverlayBackendType GetBackendType() const { return backendType; }
 
   // Get the backend for Vulkan-specific operations (SetRenderContext, etc.)
-  CustomOverlay::RendererBackend* GetBackend() { return backend; }
+  CustomOverlay::RendererBackend *GetBackend() { return backend; }
 
   // Set external data sources
   void SetMetrics(PerformanceMetrics *m) { metrics = m; }

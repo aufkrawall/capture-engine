@@ -64,7 +64,7 @@ OpenGLHook *g_OpenGLHook = nullptr;
 AppConfig *g_pLocalConfig = nullptr;
 
 // Helper to safely delete hooks
-template <typename T> void SafeShutdownHook(T *&hook, const char* name) {
+template <typename T> void SafeShutdownHook(T *&hook, const char *name) {
   if (hook) {
     HookLog("DLL_DETACH: Shutting down %s...", name);
     hook->Shutdown();

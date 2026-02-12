@@ -48,8 +48,9 @@ static bool g_CrashDumpInitialized = false;
 static std::wstring g_DumpFolderPath;
 
 static void InitDumpFolderPath() {
-  if (!g_DumpFolderPath.empty()) return;
-  
+  if (!g_DumpFolderPath.empty())
+    return;
+
   // Use centralized logs folder in captureengine installation
   wchar_t modulePath[MAX_PATH] = {};
   HMODULE hModule = GetModuleHandleW(L"capture_hook_x64.dll");
@@ -58,12 +59,14 @@ static void InitDumpFolderPath() {
   }
   if (hModule) {
     GetModuleFileNameW(hModule, modulePath, MAX_PATH);
-    std::filesystem::path hookDir = std::filesystem::path(modulePath).parent_path();
+    std::filesystem::path hookDir =
+        std::filesystem::path(modulePath).parent_path();
     g_DumpFolderPath = (hookDir / L"logs").wstring();
   } else {
     // Fallback to executable directory
     GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
-    std::filesystem::path exeDir = std::filesystem::path(modulePath).parent_path();
+    std::filesystem::path exeDir =
+        std::filesystem::path(modulePath).parent_path();
     g_DumpFolderPath = (exeDir / L"logs").wstring();
   }
 }
@@ -134,7 +137,8 @@ static void InstallCrashDumpHandler() {
   // Initialize dump folder path early so it's available during crashes
   InitDumpFolderPath();
   EnsureDumpFolderExists();
-  HookLog("CrashDump: Dump folder initialized to %ws", g_DumpFolderPath.c_str());
+  HookLog("CrashDump: Dump folder initialized to %ws",
+          g_DumpFolderPath.c_str());
 
   // Load dbghelp.dll dynamically
   HMODULE hDbgHelp = LoadLibraryA("dbghelp.dll");
@@ -1676,9 +1680,9 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
                           "fence=%p",
                           closeHr, g_OverlayQueue, g_State.fence);
                 }
-                // CRITICAL FIX: Use game queue directly instead of overlay queue
-                // when FG is not active. This eliminates cross-queue sync issues
-                // that cause device removal on some hardware (RTX 5070).
+                // CRITICAL FIX: Use game queue directly instead of overlay
+                // queue when FG is not active. This eliminates cross-queue sync
+                // issues that cause device removal on some hardware (RTX 5070).
                 ID3D12CommandQueue *targetQueue = g_OverlayQueue;
                 bool useGameQueue = !g_FGCompat.IsFGActive();
                 if (useGameQueue) {
@@ -1687,7 +1691,7 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
                     targetQueue = g_CommandQueue;
                   }
                 }
-                
+
                 if (SUCCEEDED(closeHr) && targetQueue) {
                   ID3D12CommandList *lists[] = {list};
                   targetQueue->ExecuteCommandLists(1, lists);
@@ -1706,7 +1710,7 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
                     g_State.fenceValues[idx] = g_State.currentFenceValue;
                     g_OverlayQueue->Signal(g_State.fence,
                                            g_State.currentFenceValue);
-                    
+
                     UINT64 waitValue = g_State.currentFenceValue;
                     if (g_State.fence->GetCompletedValue() < waitValue) {
                       g_State.fence->SetEventOnCompletion(waitValue,

@@ -144,8 +144,8 @@ bool OverlayAdapter::InitOpenGL() {
 }
 
 bool OverlayAdapter::InitVulkan(void *device, void *physDevice, void *queue,
-                                uint32_t queueFamily, void* deviceDispatch,
-                                void* instanceDispatch) {
+                                uint32_t queueFamily, void *deviceDispatch,
+                                void *instanceDispatch) {
   if (initialized)
     return true;
   if (!device)
@@ -154,17 +154,19 @@ bool OverlayAdapter::InitVulkan(void *device, void *physDevice, void *queue,
   auto vkBackend = new CustomOverlay::VulkanBackend(
       (VkDevice)device, (VkPhysicalDevice)physDevice, (VkQueue)queue,
       queueFamily);
-  
+
   // Set dispatch tables before initialization
   if (deviceDispatch && instanceDispatch) {
     vkBackend->SetDispatchTable(deviceDispatch, instanceDispatch);
   }
-  
+
   backend = vkBackend;
   backendType = OverlayBackendType::Vulkan;
 
   renderer = new CustomOverlay::Renderer();
+  HookLog("OverlayAdapter::InitVulkan - Created renderer, initializing...");
   if (!renderer->Initialize(backend, 1.0f)) {
+    HookLog("OverlayAdapter::InitVulkan - Renderer initialization failed");
     delete renderer;
     delete backend;
     renderer = nullptr;
@@ -172,8 +174,11 @@ bool OverlayAdapter::InitVulkan(void *device, void *physDevice, void *queue,
     return false;
   }
 
+  HookLog("OverlayAdapter::InitVulkan - Renderer initialized successfully");
   initialized = true;
+  HookLog("OverlayAdapter::InitVulkan - Set initialized=true");
   OutputDebugStringA("[OverlayAdapter] Initialized Vulkan backend\n");
+  HookLog("OverlayAdapter::InitVulkan - About to return true");
   return true;
 }
 

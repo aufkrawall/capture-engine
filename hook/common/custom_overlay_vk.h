@@ -27,7 +27,7 @@ public:
 
   // Set dispatch tables for Vulkan function calls (required before Initialize)
   // Uses void* to avoid circular dependency with vulkan_layer.h
-  void SetDispatchTable(void* deviceDispatch, void* instanceDispatch);
+  void SetDispatchTable(void *deviceDispatch, void *instanceDispatch);
 
   bool Initialize(int fontTextureWidth, int fontTextureHeight,
                   const uint8_t *fontTextureData) override;
@@ -88,8 +88,8 @@ private:
   VkExtent2D currentExtent = {};
 
   // Dispatch tables (casted from void* in .cpp to avoid circular dependency)
-  void* deviceDispatch = nullptr;      // DeviceDispatch*
-  void* instanceDispatch = nullptr;    // InstanceDispatch*
+  void *deviceDispatch = nullptr;   // DeviceDispatch*
+  void *instanceDispatch = nullptr; // InstanceDispatch*
 
   bool initialized = false;
   bool pipelineCreated = false;
