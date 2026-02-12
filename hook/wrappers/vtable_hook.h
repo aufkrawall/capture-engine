@@ -7,28 +7,28 @@
 
 #pragma once
 
-#include <windows.h>
 #include <atomic>
+#include <windows.h>
 
 namespace VTableHook {
 
 // Status codes
 enum Status {
-    Success = 0,
-    ErrorAlreadyInitialized,
-    ErrorNotInitialized,
-    ErrorAlreadyCreated,
-    ErrorNotCreated,
-    ErrorEnabled,
-    ErrorDisabled,
-    ErrorNotExecutable,
-    ErrorUnsupportedFunction,
-    ErrorMemoryAlloc,
-    ErrorMemoryProtect,
-    ErrorModuleNotFound,
-    ErrorFunctionNotFound,
-    ErrorPatchFailed,
-    ErrorUnknown
+  Success = 0,
+  ErrorAlreadyInitialized,
+  ErrorNotInitialized,
+  ErrorAlreadyCreated,
+  ErrorNotCreated,
+  ErrorEnabled,
+  ErrorDisabled,
+  ErrorNotExecutable,
+  ErrorUnsupportedFunction,
+  ErrorMemoryAlloc,
+  ErrorMemoryProtect,
+  ErrorModuleNotFound,
+  ErrorFunctionNotFound,
+  ErrorPatchFailed,
+  ErrorUnknown
 };
 
 // Initialize the hooking system
@@ -47,15 +47,15 @@ Status Shutdown();
  * @param pDetour      Pointer to the detour function
  * @param ppOriginal   [Out] Receives the original function pointer
  */
-Status Create(void* pVTableEntry, void* pDetour, void** ppOriginal);
+Status Create(void *pVTableEntry, void *pDetour, void **ppOriginal);
 
 // Enable a hook (no-op - VTable hooks are always enabled)
-Status Enable(void* pTarget);
+Status Enable(void *pTarget);
 
 // Disable a hook (no-op - VTable hooks cannot be temporarily disabled)
-Status Disable(void* pTarget);
+Status Disable(void *pTarget);
 
 // Convert status to string
-const char* StatusToString(Status status);
+const char *StatusToString(Status status);
 
-}  // namespace VTableHook
+} // namespace VTableHook

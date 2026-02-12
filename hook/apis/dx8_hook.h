@@ -5,7 +5,7 @@
 // Uses D3D9Ex shared surface wrapper for GPU-efficient capture
 class DX8Hook : public GraphicsHook {
 public:
-    void Init() override;
-    void Shutdown() override;
-    void OnHostDisconnect() override;
+  void Init() override;
+  void Shutdown() override;
+  void OnHostDisconnect() override;
 };

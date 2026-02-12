@@ -2,7 +2,8 @@
 #include <windows.h>
 
 // FFX Hook - Hooks AMD FidelityFX API to detect FSR Frame Generation activation
-// This provides usage-based detection (vs DLL-based) by detecting when FG context is created
+// This provides usage-based detection (vs DLL-based) by detecting when FG
+// context is created
 
 namespace FFXHook {
 
@@ -18,4 +19,4 @@ bool IsInitialized();
 // Cleanup hooks (called during shutdown)
 void Shutdown();
 
-}  // namespace FFXHook
+} // namespace FFXHook

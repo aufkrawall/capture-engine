@@ -16,7 +16,7 @@ extern "C" {
 
 #ifndef D3D12_EXPORT
 #ifdef _MSC_VER
-#define D3D12_EXPORT  // No longer exporting
+#define D3D12_EXPORT // No longer exporting
 #else
 #define D3D12_EXPORT
 #endif
@@ -24,25 +24,29 @@ extern "C" {
 
 // Wrapper creation - returns wrapped device
 // Returns S_OK on success, the wrapped device in *ppWrappedDevice
-D3D12_EXPORT HRESULT WINAPI D3D12Wrapper_CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL MinimumFeatureLevel,
-                                                      REFIID riid, void** ppDevice);
+D3D12_EXPORT HRESULT WINAPI D3D12Wrapper_CreateDevice(
+    IUnknown *pAdapter, D3D_FEATURE_LEVEL MinimumFeatureLevel, REFIID riid,
+    void **ppDevice);
 
 // Wrap an existing device (used when device is created via other means)
 // Returns the wrapped device, or the original if wrapping fails
-D3D12_EXPORT ID3D12Device* WINAPI D3D12Wrapper_WrapDevice(ID3D12Device* pRealDevice);
+D3D12_EXPORT ID3D12Device *WINAPI
+D3D12Wrapper_WrapDevice(ID3D12Device *pRealDevice);
 
 // Unwrap a potentially wrapped device back to real device
-D3D12_EXPORT ID3D12Device* WINAPI D3D12Wrapper_UnwrapDevice(ID3D12Device* pDevice);
+D3D12_EXPORT ID3D12Device *WINAPI
+D3D12Wrapper_UnwrapDevice(ID3D12Device *pDevice);
 
 // Check if a device is wrapped
-D3D12_EXPORT BOOL WINAPI D3D12Wrapper_IsDeviceWrapped(ID3D12Device* pDevice);
+D3D12_EXPORT BOOL WINAPI D3D12Wrapper_IsDeviceWrapped(ID3D12Device *pDevice);
 
 // Wrap a command queue (called internally when device creates queue)
-D3D12_EXPORT ID3D12CommandQueue* WINAPI D3D12Wrapper_WrapCommandQueue(ID3D12CommandQueue* pRealQueue,
-                                                                      ID3D12Device* pDevice);
+D3D12_EXPORT ID3D12CommandQueue *WINAPI D3D12Wrapper_WrapCommandQueue(
+    ID3D12CommandQueue *pRealQueue, ID3D12Device *pDevice);
 
 // Unwrap command queue
-D3D12_EXPORT ID3D12CommandQueue* WINAPI D3D12Wrapper_UnwrapCommandQueue(ID3D12CommandQueue* pQueue);
+D3D12_EXPORT ID3D12CommandQueue *WINAPI
+D3D12Wrapper_UnwrapCommandQueue(ID3D12CommandQueue *pQueue);
 
 // ============================================================================
 // Sampler Override Callback Interface
@@ -53,13 +57,14 @@ D3D12_EXPORT ID3D12CommandQueue* WINAPI D3D12Wrapper_UnwrapCommandQueue(ID3D12Co
 
 // Callback function type for sampler overrides
 // Returns true if overrides were applied, false otherwise
-typedef BOOL(WINAPI* PFN_ApplySamplerOverrides)(D3D12_SAMPLER_DESC* pDesc);
+typedef BOOL(WINAPI *PFN_ApplySamplerOverrides)(D3D12_SAMPLER_DESC *pDesc);
 
 // Register the sampler override callback (called by hook during initialization)
-D3D12_EXPORT void WINAPI D3D12Wrapper_SetSamplerOverrideCallback(PFN_ApplySamplerOverrides callback);
+D3D12_EXPORT void WINAPI
+D3D12Wrapper_SetSamplerOverrideCallback(PFN_ApplySamplerOverrides callback);
 
 // Internal function to apply sampler overrides (uses registered callback)
-void ApplySamplerOverridesInternal(D3D12_SAMPLER_DESC* pDesc);
+void ApplySamplerOverridesInternal(D3D12_SAMPLER_DESC *pDesc);
 
 #ifdef __cplusplus
 }

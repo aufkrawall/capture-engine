@@ -6,232 +6,240 @@
  */
 
 #include "hook_system.h"
-#include <memory>
-#include <shared_mutex>
-#include <unordered_map>
 #include "../common/hook_common.h"
 #include "custom_hook.h"
 #include "vtable_hook.h"
+#include <memory>
+#include <shared_mutex>
+#include <unordered_map>
 
 namespace HookSystem {
 
 static std::atomic<int> g_InitCount{0};
 static std::shared_mutex g_HookMutex;
-static std::unordered_map<void*, std::unique_ptr<HookHandle>> g_Hooks;
+static std::unordered_map<void *, std::unique_ptr<HookHandle>> g_Hooks;
 
-bool Initialize()
-{
-    int count = g_InitCount.fetch_add(1);
-    if (count == 0) {
-        if (!CustomHook::Initialize()) {
-            HookLog("HookSystem: Initialize failed");
-            g_InitCount.fetch_sub(1);
-            return false;
-        }
-        HookLog("HookSystem: Initialized (CustomHook backend)");
+bool Initialize() {
+  int count = g_InitCount.fetch_add(1);
+  if (count == 0) {
+    if (!CustomHook::Initialize()) {
+      HookLog("HookSystem: Initialize failed");
+      g_InitCount.fetch_sub(1);
+      return false;
     }
-    return true;
+    HookLog("HookSystem: Initialized (CustomHook backend)");
+  }
+  return true;
 }
 
-void Shutdown()
-{
-    int count = g_InitCount.fetch_sub(1);
-    if (count == 1) {
-        // Clear our tracking
-        {
-            std::unique_lock<std::shared_mutex> lock(g_HookMutex);
-            g_Hooks.clear();
-        }
-
-        CustomHook::Shutdown();
-        HookLog("HookSystem: Shutdown complete");
-    }
-}
-
-const char* GetStatusString(CustomHook::Status status) { return CustomHook::StatusToString(status); }
-
-bool CreateFunctionHook(void* target, void* detour, void** original)
-{
-    if (!target || !detour) return false;
-
-    // For function hooks, delegate to CustomHook
-    CustomHook::Status status = CustomHook::HookFunction(target, detour, original);
-    if (status != CustomHook::Status::Success) {
-        HookLog("HookSystem: CreateFunctionHook failed - %s", CustomHook::StatusToString(status));
-        return false;
-    }
-
-    // Store hook info
+void Shutdown() {
+  int count = g_InitCount.fetch_sub(1);
+  if (count == 1) {
+    // Clear our tracking
     {
-        std::unique_lock<std::shared_mutex> lock(g_HookMutex);
-        auto handle = std::make_unique<HookHandle>();
-        handle->target = target;
-        handle->detour = detour;
-        handle->original = original ? *original : nullptr;
-        handle->enabled.store(true);
-        g_Hooks[target] = std::move(handle);
+      std::unique_lock<std::shared_mutex> lock(g_HookMutex);
+      g_Hooks.clear();
     }
 
-    HookLog("HookSystem: Created function hook at %p", target);
-    return true;
+    CustomHook::Shutdown();
+    HookLog("HookSystem: Shutdown complete");
+  }
 }
 
-bool CreateExportHook(const char* moduleName, const char* functionName, void* detour, void** original)
-{
-    if (!moduleName || !functionName || !detour) return false;
-
-    // Use CustomHook's export hooking (IAT-based)
-    CustomHook::Status status = CustomHook::HookExport(moduleName, functionName, detour, original);
-    if (status != CustomHook::Status::Success) {
-        HookLog("HookSystem: CreateExportHook failed for %s!%s - %s", moduleName, functionName,
-                CustomHook::StatusToString(status));
-        return false;
-    }
-
-    // Track the hook
-    HMODULE hModule = GetModuleHandleA(moduleName);
-    void* target = hModule ? reinterpret_cast<void*>(GetProcAddress(hModule, functionName)) : nullptr;
-
-    if (target) {
-        std::unique_lock<std::shared_mutex> lock(g_HookMutex);
-        auto handle = std::make_unique<HookHandle>();
-        handle->target = target;
-        handle->detour = detour;
-        handle->original = original ? *original : nullptr;
-        handle->enabled.store(true);
-        g_Hooks[target] = std::move(handle);
-    }
-
-    HookLog("HookSystem: Created export hook for %s!%s", moduleName, functionName);
-    return true;
+const char *GetStatusString(CustomHook::Status status) {
+  return CustomHook::StatusToString(status);
 }
 
-bool CreateExportHookW(const wchar_t* moduleName, const char* functionName, void* detour, void** original)
-{
-    if (!moduleName || !functionName || !detour) return false;
+bool CreateFunctionHook(void *target, void *detour, void **original) {
+  if (!target || !detour)
+    return false;
 
-    CustomHook::Status status = CustomHook::HookExportW(moduleName, functionName, detour, original);
-    if (status != CustomHook::Status::Success) {
-        HookLog("HookSystem: CreateExportHookW failed - %s", CustomHook::StatusToString(status));
-        return false;
-    }
+  // For function hooks, delegate to CustomHook
+  CustomHook::Status status =
+      CustomHook::HookFunction(target, detour, original);
+  if (status != CustomHook::Status::Success) {
+    HookLog("HookSystem: CreateFunctionHook failed - %s",
+            CustomHook::StatusToString(status));
+    return false;
+  }
 
-    // Get the target address for tracking
-    HMODULE hModule = GetModuleHandleW(moduleName);
-    void* target = hModule ? reinterpret_cast<void*>(GetProcAddress(hModule, functionName)) : nullptr;
+  // Store hook info
+  {
+    std::unique_lock<std::shared_mutex> lock(g_HookMutex);
+    auto handle = std::make_unique<HookHandle>();
+    handle->target = target;
+    handle->detour = detour;
+    handle->original = original ? *original : nullptr;
+    handle->enabled.store(true);
+    g_Hooks[target] = std::move(handle);
+  }
 
-    if (target) {
-        std::unique_lock<std::shared_mutex> lock(g_HookMutex);
-        auto handle = std::make_unique<HookHandle>();
-        handle->target = target;
-        handle->detour = detour;
-        handle->original = original ? *original : nullptr;
-        handle->enabled.store(true);
-        g_Hooks[target] = std::move(handle);
-    }
-
-    return true;
+  HookLog("HookSystem: Created function hook at %p", target);
+  return true;
 }
 
-bool CreateCOMHook(void** vtableEntry, void* detour, void** original)
-{
-    if (!vtableEntry) {
-        HookLog("HookSystem: Invalid vtable entry");
-        return false;
-    }
+bool CreateExportHook(const char *moduleName, const char *functionName,
+                      void *detour, void **original) {
+  if (!moduleName || !functionName || !detour)
+    return false;
 
-    // Use VTable hooking directly - this is the preferred method for COM
-    CustomHook::Status status = CustomHook::HookVTableEntry(vtableEntry, detour, original);
-    if (status != CustomHook::Status::Success) {
-        HookLog("HookSystem: CreateCOMHook failed - %s", CustomHook::StatusToString(status));
-        return false;
-    }
+  // Use CustomHook's export hooking (IAT-based)
+  CustomHook::Status status =
+      CustomHook::HookExport(moduleName, functionName, detour, original);
+  if (status != CustomHook::Status::Success) {
+    HookLog("HookSystem: CreateExportHook failed for %s!%s - %s", moduleName,
+            functionName, CustomHook::StatusToString(status));
+    return false;
+  }
 
-    // Track using the vtable entry address as key
-    {
-        std::unique_lock<std::shared_mutex> lock(g_HookMutex);
-        auto handle = std::make_unique<HookHandle>();
-        handle->target = vtableEntry;
-        handle->detour = detour;
-        handle->original = original ? *original : nullptr;
-        handle->enabled.store(true);
-        g_Hooks[vtableEntry] = std::move(handle);
-    }
+  // Track the hook
+  HMODULE hModule = GetModuleHandleA(moduleName);
+  void *target =
+      hModule ? reinterpret_cast<void *>(GetProcAddress(hModule, functionName))
+              : nullptr;
 
-    HookLog("HookSystem: Created COM hook at vtable entry %p", vtableEntry);
-    return true;
+  if (target) {
+    std::unique_lock<std::shared_mutex> lock(g_HookMutex);
+    auto handle = std::make_unique<HookHandle>();
+    handle->target = target;
+    handle->detour = detour;
+    handle->original = original ? *original : nullptr;
+    handle->enabled.store(true);
+    g_Hooks[target] = std::move(handle);
+  }
+
+  HookLog("HookSystem: Created export hook for %s!%s", moduleName,
+          functionName);
+  return true;
 }
 
-bool EnableHook(void* target)
-{
-    // VTable hooks are always enabled after creation
-    // This function is for API compatibility
+bool CreateExportHookW(const wchar_t *moduleName, const char *functionName,
+                       void *detour, void **original) {
+  if (!moduleName || !functionName || !detour)
+    return false;
+
+  CustomHook::Status status =
+      CustomHook::HookExportW(moduleName, functionName, detour, original);
+  if (status != CustomHook::Status::Success) {
+    HookLog("HookSystem: CreateExportHookW failed - %s",
+            CustomHook::StatusToString(status));
+    return false;
+  }
+
+  // Get the target address for tracking
+  HMODULE hModule = GetModuleHandleW(moduleName);
+  void *target =
+      hModule ? reinterpret_cast<void *>(GetProcAddress(hModule, functionName))
+              : nullptr;
+
+  if (target) {
+    std::unique_lock<std::shared_mutex> lock(g_HookMutex);
+    auto handle = std::make_unique<HookHandle>();
+    handle->target = target;
+    handle->detour = detour;
+    handle->original = original ? *original : nullptr;
+    handle->enabled.store(true);
+    g_Hooks[target] = std::move(handle);
+  }
+
+  return true;
+}
+
+bool CreateCOMHook(void **vtableEntry, void *detour, void **original) {
+  if (!vtableEntry) {
+    HookLog("HookSystem: Invalid vtable entry");
+    return false;
+  }
+
+  // Use VTable hooking directly - this is the preferred method for COM
+  CustomHook::Status status =
+      CustomHook::HookVTableEntry(vtableEntry, detour, original);
+  if (status != CustomHook::Status::Success) {
+    HookLog("HookSystem: CreateCOMHook failed - %s",
+            CustomHook::StatusToString(status));
+    return false;
+  }
+
+  // Track using the vtable entry address as key
+  {
+    std::unique_lock<std::shared_mutex> lock(g_HookMutex);
+    auto handle = std::make_unique<HookHandle>();
+    handle->target = vtableEntry;
+    handle->detour = detour;
+    handle->original = original ? *original : nullptr;
+    handle->enabled.store(true);
+    g_Hooks[vtableEntry] = std::move(handle);
+  }
+
+  HookLog("HookSystem: Created COM hook at vtable entry %p", vtableEntry);
+  return true;
+}
+
+bool EnableHook(void *target) {
+  // VTable hooks are always enabled after creation
+  // This function is for API compatibility
+  std::unique_lock<std::shared_mutex> lock(g_HookMutex);
+  auto it = g_Hooks.find(target);
+  if (it != g_Hooks.end()) {
+    it->second->enabled.store(true);
+    return true;
+  }
+  return false;
+}
+
+bool DisableHook(void *target) {
+  // VTable hooks cannot be truly disabled, but we can mark them as disabled
+  std::unique_lock<std::shared_mutex> lock(g_HookMutex);
+  auto it = g_Hooks.find(target);
+  if (it != g_Hooks.end()) {
+    it->second->enabled.store(false);
+    return true;
+  }
+  return false;
+}
+
+void RemoveHook(void *target) {
+  if (!target)
+    return;
+
+  // Get original from our tracking
+  void *original = nullptr;
+  {
     std::unique_lock<std::shared_mutex> lock(g_HookMutex);
     auto it = g_Hooks.find(target);
     if (it != g_Hooks.end()) {
-        it->second->enabled.store(true);
-        return true;
+      original = it->second->original;
+      g_Hooks.erase(it);
     }
-    return false;
+  }
+
+  // Unhook based on type - try VTable first
+  CustomHook::UnhookVTableEntry(reinterpret_cast<void **>(target), original);
 }
 
-bool DisableHook(void* target)
-{
-    // VTable hooks cannot be truly disabled, but we can mark them as disabled
-    std::unique_lock<std::shared_mutex> lock(g_HookMutex);
-    auto it = g_Hooks.find(target);
-    if (it != g_Hooks.end()) {
-        it->second->enabled.store(false);
-        return true;
-    }
-    return false;
+bool EnableAllHooks() {
+  std::unique_lock<std::shared_mutex> lock(g_HookMutex);
+  for (auto &pair : g_Hooks) {
+    pair.second->enabled.store(true);
+  }
+  return true;
 }
 
-void RemoveHook(void* target)
-{
-    if (!target) return;
-
-    // Get original from our tracking
-    void* original = nullptr;
-    {
-        std::unique_lock<std::shared_mutex> lock(g_HookMutex);
-        auto it = g_Hooks.find(target);
-        if (it != g_Hooks.end()) {
-            original = it->second->original;
-            g_Hooks.erase(it);
-        }
-    }
-
-    // Unhook based on type - try VTable first
-    CustomHook::UnhookVTableEntry(reinterpret_cast<void**>(target), original);
-}
-
-bool EnableAllHooks()
-{
-    std::unique_lock<std::shared_mutex> lock(g_HookMutex);
-    for (auto& pair : g_Hooks) {
-        pair.second->enabled.store(true);
-    }
-    return true;
-}
-
-bool DisableAllHooks()
-{
-    std::unique_lock<std::shared_mutex> lock(g_HookMutex);
-    for (auto& pair : g_Hooks) {
-        pair.second->enabled.store(false);
-    }
-    return true;
+bool DisableAllHooks() {
+  std::unique_lock<std::shared_mutex> lock(g_HookMutex);
+  for (auto &pair : g_Hooks) {
+    pair.second->enabled.store(false);
+  }
+  return true;
 }
 
 // ScopedInitializer implementation
 ScopedInitializer::ScopedInitializer() { m_initialized = Initialize(); }
 
-ScopedInitializer::~ScopedInitializer()
-{
-    if (m_initialized) {
-        Shutdown();
-    }
+ScopedInitializer::~ScopedInitializer() {
+  if (m_initialized) {
+    Shutdown();
+  }
 }
 
-}  // namespace HookSystem
+} // namespace HookSystem

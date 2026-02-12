@@ -21,8 +21,10 @@ namespace VkDispatch {
 // Core instance/loader functions
 extern PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
 extern PFN_vkCreateInstance vkCreateInstance;
-extern PFN_vkEnumerateInstanceExtensionProperties vkEnumerateInstanceExtensionProperties;
-extern PFN_vkEnumerateInstanceLayerProperties vkEnumerateInstanceLayerProperties;
+extern PFN_vkEnumerateInstanceExtensionProperties
+    vkEnumerateInstanceExtensionProperties;
+extern PFN_vkEnumerateInstanceLayerProperties
+    vkEnumerateInstanceLayerProperties;
 extern PFN_vkEnumerateInstanceVersion vkEnumerateInstanceVersion;
 
 // Instance-level functions
@@ -32,17 +34,24 @@ extern PFN_vkGetPhysicalDeviceProperties vkGetPhysicalDeviceProperties;
 extern PFN_vkGetPhysicalDeviceProperties2 vkGetPhysicalDeviceProperties2;
 extern PFN_vkGetPhysicalDeviceFeatures vkGetPhysicalDeviceFeatures;
 extern PFN_vkGetPhysicalDeviceFeatures2 vkGetPhysicalDeviceFeatures2;
-extern PFN_vkGetPhysicalDeviceQueueFamilyProperties vkGetPhysicalDeviceQueueFamilyProperties;
-extern PFN_vkGetPhysicalDeviceMemoryProperties vkGetPhysicalDeviceMemoryProperties;
+extern PFN_vkGetPhysicalDeviceQueueFamilyProperties
+    vkGetPhysicalDeviceQueueFamilyProperties;
+extern PFN_vkGetPhysicalDeviceMemoryProperties
+    vkGetPhysicalDeviceMemoryProperties;
 extern PFN_vkCreateDevice vkCreateDevice;
 extern PFN_vkGetDeviceProcAddr vkGetDeviceProcAddr;
-extern PFN_vkEnumerateDeviceExtensionProperties vkEnumerateDeviceExtensionProperties;
+extern PFN_vkEnumerateDeviceExtensionProperties
+    vkEnumerateDeviceExtensionProperties;
 
 // Surface/swapchain (KHR extensions)
-extern PFN_vkGetPhysicalDeviceSurfaceSupportKHR vkGetPhysicalDeviceSurfaceSupportKHR;
-extern PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR vkGetPhysicalDeviceSurfaceCapabilitiesKHR;
-extern PFN_vkGetPhysicalDeviceSurfaceFormatsKHR vkGetPhysicalDeviceSurfaceFormatsKHR;
-extern PFN_vkGetPhysicalDeviceSurfacePresentModesKHR vkGetPhysicalDeviceSurfacePresentModesKHR;
+extern PFN_vkGetPhysicalDeviceSurfaceSupportKHR
+    vkGetPhysicalDeviceSurfaceSupportKHR;
+extern PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR;
+extern PFN_vkGetPhysicalDeviceSurfaceFormatsKHR
+    vkGetPhysicalDeviceSurfaceFormatsKHR;
+extern PFN_vkGetPhysicalDeviceSurfacePresentModesKHR
+    vkGetPhysicalDeviceSurfacePresentModesKHR;
 extern PFN_vkDestroySurfaceKHR vkDestroySurfaceKHR;
 extern PFN_vkCreateWin32SurfaceKHR vkCreateWin32SurfaceKHR;
 
@@ -178,22 +187,24 @@ void Shutdown();
  */
 bool IsInitialized();
 
-}  // namespace VkDispatch
+} // namespace VkDispatch
 
 // ============================================================================
 // Compatibility Macros (makes existing volk code work with minimal changes)
-// When USE_VKDISPATCH is defined, replace volk symbols with our dispatch symbols
+// When USE_VKDISPATCH is defined, replace volk symbols with our dispatch
+// symbols
 // ============================================================================
 
 #ifdef USE_VKDISPATCH
 
 // Replace volkInitialize/volkLoadInstance/volkLoadDevice
-#define volkInitialize   VkDispatch::Initialize
+#define volkInitialize VkDispatch::Initialize
 #define volkLoadInstance VkDispatch::LoadInstance
-#define volkLoadDevice   VkDispatch::LoadDevice
+#define volkLoadDevice VkDispatch::LoadDevice
 
 // Map Vulkan functions to our dispatch table via "using" (C++ way)
-// This allows existing code using bare vkXxx names to find our dispatch versions
+// This allows existing code using bare vkXxx names to find our dispatch
+// versions
 
 using VkDispatch::vkAcquireNextImageKHR;
 using VkDispatch::vkAllocateCommandBuffers;
@@ -293,4 +304,4 @@ using VkDispatch::vkUpdateDescriptorSets;
 using VkDispatch::vkWaitForFences;
 using VkDispatch::vkWaitSemaphoresKHR;
 
-#endif  // USE_VKDISPATCH
+#endif // USE_VKDISPATCH

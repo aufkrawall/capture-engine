@@ -9,7 +9,8 @@
  * 2. Call InitCustomOverlay() instead of/after InitImGui()
  * 3. Call RenderCustomOverlay() instead of/after RenderUI()
  *
- * The adapter reads the same IPC config and metrics to render identical content.
+ * The adapter reads the same IPC config and metrics to render identical
+ * content.
  */
 
 #pragma once
@@ -22,65 +23,68 @@
 namespace CustomOverlay {
 class Renderer;
 class RendererBackend;
-}  // namespace CustomOverlay
+} // namespace CustomOverlay
 
 // Backend type enum
 enum class OverlayBackendType { None, DX9, DX11, DX12, OpenGL, Vulkan };
 
 class OverlayAdapter {
 public:
-    OverlayAdapter();
-    ~OverlayAdapter();
+  OverlayAdapter();
+  ~OverlayAdapter();
 
-    // Initialize with graphics API-specific parameters
-    bool InitDX9(void* device);                               // IDirect3DDevice9*
-    bool InitDX11(void* device, void* context);               // ID3D11Device*, ID3D11DeviceContext*
-    bool InitDX12(void* device, void* queue, int rtvFormat);  // ID3D12Device*, ID3D12CommandQueue*, DXGI_FORMAT
-    bool InitOpenGL();
-    bool InitVulkan(void* device, void* physDevice, void* queue,
-                    uint32_t queueFamily);  // VkDevice, VkPhysicalDevice, VkQueue
+  // Initialize with graphics API-specific parameters
+  bool InitDX9(void *device); // IDirect3DDevice9*
+  bool InitDX11(void *device,
+                void *context); // ID3D11Device*, ID3D11DeviceContext*
+  bool
+  InitDX12(void *device, void *queue,
+           int rtvFormat); // ID3D12Device*, ID3D12CommandQueue*, DXGI_FORMAT
+  bool InitOpenGL();
+  bool InitVulkan(void *device, void *physDevice, void *queue,
+                  uint32_t queueFamily); // VkDevice, VkPhysicalDevice, VkQueue
 
-    void Shutdown();
-    bool IsInitialized() const { return initialized; }
-    OverlayBackendType GetBackendType() const { return backendType; }
+  void Shutdown();
+  bool IsInitialized() const { return initialized; }
+  OverlayBackendType GetBackendType() const { return backendType; }
 
-    // Set external data sources
-    void SetMetrics(PerformanceMetrics* m) { metrics = m; }
-    void SetIPCClient(IPCClient* ipc) { this->ipc = ipc; }
-    void SetHwnd(void* hwnd) { this->hwnd = hwnd; }
-    void SetGraphicsAPI(const char* api);
-    void SetDroppedFrames(uint32_t count) { droppedFrames = count; }
-    void SetHDR(bool enabled) { isHDR = enabled; }
+  // Set external data sources
+  void SetMetrics(PerformanceMetrics *m) { metrics = m; }
+  void SetIPCClient(IPCClient *ipc) { this->ipc = ipc; }
+  void SetHwnd(void *hwnd) { this->hwnd = hwnd; }
+  void SetGraphicsAPI(const char *api);
+  void SetDroppedFrames(uint32_t count) { droppedFrames = count; }
+  void SetHDR(bool enabled) { isHDR = enabled; }
 
-    // DX12-specific: Set render target before RenderOverlay
-    void SetDX12RenderTarget(void* cmdList, void* rtvHandle);
+  // DX12-specific: Set render target before RenderOverlay
+  void SetDX12RenderTarget(void *cmdList, void *rtvHandle);
 
-    // Render the overlay (called after BeginFrame in hook's render path)
-    void RenderOverlay(int viewportWidth, int viewportHeight);
+  // Render the overlay (called after BeginFrame in hook's render path)
+  void RenderOverlay(int viewportWidth, int viewportHeight);
 
 private:
-    void RenderContent(int viewportWidth, int viewportHeight);
-    uint32_t GetLoadColor(float load);
+  void RenderContent(int viewportWidth, int viewportHeight);
+  uint32_t GetLoadColor(float load);
 
-    CustomOverlay::Renderer* renderer = nullptr;
-    CustomOverlay::RendererBackend* backend = nullptr;
-    OverlayBackendType backendType = OverlayBackendType::None;
+  CustomOverlay::Renderer *renderer = nullptr;
+  CustomOverlay::RendererBackend *backend = nullptr;
+  OverlayBackendType backendType = OverlayBackendType::None;
 
-    PerformanceMetrics* metrics = nullptr;
-    IPCClient* ipc = nullptr;
-    void* hwnd = nullptr;
-    char graphicsAPI[16] = "";
-    uint32_t droppedFrames = 0;
-    bool isHDR = false;
-    bool initialized = false;
+  PerformanceMetrics *metrics = nullptr;
+  IPCClient *ipc = nullptr;
+  void *hwnd = nullptr;
+  char graphicsAPI[16] = "";
+  uint32_t droppedFrames = 0;
+  bool isHDR = false;
+  bool initialized = false;
 
-    // Cached values for throttled updates
-    DWORD lastUpdateTime = 0;
-    float cachedFPS = 0.0f;
-    float cachedAvgFPS = 0.0f;
-    float cached1PercentLow = 0.0f;
-    float cached01PercentLow = 0.0f;
-    SystemMetrics cachedSystemMetrics;
+  // Cached values for throttled updates
+  DWORD lastUpdateTime = 0;
+  float cachedFPS = 0.0f;
+  float cachedAvgFPS = 0.0f;
+  float cached1PercentLow = 0.0f;
+  float cached01PercentLow = 0.0f;
+  SystemMetrics cachedSystemMetrics;
 };
 
 // Global adapter instance

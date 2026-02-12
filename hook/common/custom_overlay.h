@@ -10,10 +10,10 @@
 
 #pragma once
 
-#include <windows.h>
+#include "custom_font.h"
 #include <cstdint>
 #include <vector>
-#include "custom_font.h"
+#include <windows.h>
 
 namespace CustomOverlay {
 
@@ -28,106 +28,111 @@ enum class Position { TopLeft, TopRight, BottomLeft, BottomRight };
 
 // Draw vertex for rendering
 struct DrawVertex {
-    float x, y;      // Position
-    float u, v;      // Texture coords
-    uint32_t color;  // ABGR color
+  float x, y;     // Position
+  float u, v;     // Texture coords
+  uint32_t color; // ABGR color
 };
 
 // Draw command - batch of vertices to render
 struct DrawCommand {
-    uint32_t vertexOffset;
-    uint32_t vertexCount;
-    uint32_t indexOffset;
-    uint32_t indexCount;
-    bool useTexture;  // True for text, false for solid shapes
+  uint32_t vertexOffset;
+  uint32_t vertexCount;
+  uint32_t indexOffset;
+  uint32_t indexCount;
+  bool useTexture; // True for text, false for solid shapes
 };
 
 // Overlay renderer - main API
 class Renderer {
 public:
-    Renderer();
-    ~Renderer();
+  Renderer();
+  ~Renderer();
 
-    // Initialize with a graphics backend
-    bool Initialize(RendererBackend* backend, float dpiScale = 1.0f);
-    void Shutdown();
-    bool IsInitialized() const { return initialized; }
+  // Initialize with a graphics backend
+  bool Initialize(RendererBackend *backend, float dpiScale = 1.0f);
+  void Shutdown();
+  bool IsInitialized() const { return initialized; }
 
-    // Frame lifecycle
-    void BeginFrame(int viewportWidth, int viewportHeight);
-    void EndFrame();
+  // Frame lifecycle
+  void BeginFrame(int viewportWidth, int viewportHeight);
+  void EndFrame();
 
-    // Text rendering
-    void DrawText(float x, float y, const char* text, uint32_t color);
-    void DrawTextWithShadow(float x, float y, const char* text, uint32_t color, uint32_t shadowColor,
-                            float shadowOffset = 1.0f);
+  // Text rendering
+  void DrawText(float x, float y, const char *text, uint32_t color);
+  void DrawTextWithShadow(float x, float y, const char *text, uint32_t color,
+                          uint32_t shadowColor, float shadowOffset = 1.0f);
 
-    // Calculate text size
-    void CalcTextSize(const char* text, float* outWidth, float* outHeight) const;
+  // Calculate text size
+  void CalcTextSize(const char *text, float *outWidth, float *outHeight) const;
 
-    // Basic shapes
-    void DrawRect(float x, float y, float w, float h, uint32_t color);
-    void DrawRectFilled(float x, float y, float w, float h, uint32_t color);
+  // Basic shapes
+  void DrawRect(float x, float y, float w, float h, uint32_t color);
+  void DrawRectFilled(float x, float y, float w, float h, uint32_t color);
 
-    // Window-like containers (simplified)
-    void BeginWindow(float x, float y, uint32_t bgColor, float alpha = 0.8f);
-    void EndWindow();
+  // Window-like containers (simplified)
+  void BeginWindow(float x, float y, uint32_t bgColor, float alpha = 0.8f);
+  void EndWindow();
 
-    // Table layout (simplified 2-column layout)
-    void BeginTable();
-    void TableRow(const char* label, const char* value, uint32_t labelColor, uint32_t valueColor);
-    void EndTable();
+  // Table layout (simplified 2-column layout)
+  void BeginTable();
+  void TableRow(const char *label, const char *value, uint32_t labelColor,
+                uint32_t valueColor);
+  void EndTable();
 
-    // Font access
-    FontAtlas* GetFont() { return &fontAtlas; }
-    float GetDpiScale() const { return dpiScale; }
-    int GetLineHeight() const { return fontAtlas.GetLineHeight(); }
+  // Font access
+  FontAtlas *GetFont() { return &fontAtlas; }
+  float GetDpiScale() const { return dpiScale; }
+  int GetLineHeight() const { return fontAtlas.GetLineHeight(); }
 
-    // Get draw data for backend to render
-    const std::vector<DrawVertex>& GetVertices() const { return vertices; }
-    const std::vector<uint16_t>& GetIndices() const { return indices; }
-    const std::vector<DrawCommand>& GetCommands() const { return commands; }
+  // Get draw data for backend to render
+  const std::vector<DrawVertex> &GetVertices() const { return vertices; }
+  const std::vector<uint16_t> &GetIndices() const { return indices; }
+  const std::vector<DrawCommand> &GetCommands() const { return commands; }
 
 private:
-    void AddTextQuads(float x, float y, const char* text, uint32_t color);
-    void AddQuad(float x, float y, float w, float h, float u0, float v0, float u1, float v1, uint32_t color);
-    void FlushBatch(bool useTexture);
+  void AddTextQuads(float x, float y, const char *text, uint32_t color);
+  void AddQuad(float x, float y, float w, float h, float u0, float v0, float u1,
+               float v1, uint32_t color);
+  void FlushBatch(bool useTexture);
 
-    FontAtlas fontAtlas;
-    RendererBackend* backend = nullptr;
+  FontAtlas fontAtlas;
+  RendererBackend *backend = nullptr;
 
-    std::vector<DrawVertex> vertices;
-    std::vector<uint16_t> indices;
-    std::vector<DrawCommand> commands;
+  std::vector<DrawVertex> vertices;
+  std::vector<uint16_t> indices;
+  std::vector<DrawCommand> commands;
 
-    int viewportWidth = 0;
-    int viewportHeight = 0;
-    float dpiScale = 1.0f;
+  int viewportWidth = 0;
+  int viewportHeight = 0;
+  float dpiScale = 1.0f;
 
-    // Current drawing state
-    float cursorX = 0;
-    float cursorY = 0;
-    bool inWindow = false;
-    bool inTable = false;
-    float windowX = 0, windowY = 0;
-    float tableStartY = 0;
+  // Current drawing state
+  float cursorX = 0;
+  float cursorY = 0;
+  bool inWindow = false;
+  bool inTable = false;
+  float windowX = 0, windowY = 0;
+  float tableStartY = 0;
 
-    bool initialized = false;
-    bool frameStarted = false;
+  bool initialized = false;
+  bool frameStarted = false;
 };
 
 // Abstract backend interface - implement for each graphics API
 class RendererBackend {
 public:
-    virtual ~RendererBackend() = default;
+  virtual ~RendererBackend() = default;
 
-    // Initialize backend resources (create shaders, buffers, etc.)
-    virtual bool Initialize(int fontTextureWidth, int fontTextureHeight, const uint8_t* fontTextureData) = 0;
-    virtual void Shutdown() = 0;
+  // Initialize backend resources (create shaders, buffers, etc.)
+  virtual bool Initialize(int fontTextureWidth, int fontTextureHeight,
+                          const uint8_t *fontTextureData) = 0;
+  virtual void Shutdown() = 0;
 
-    // Render the accumulated draw commands
-    virtual void Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
-                        const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) = 0;
+  // Render the accumulated draw commands
+  virtual void Render(const std::vector<DrawVertex> &vertices,
+                      const std::vector<uint16_t> &indices,
+                      const std::vector<DrawCommand> &commands,
+                      int viewportWidth, int viewportHeight) = 0;
 };
 
 // Predefined colors (matches common overlay colors)
@@ -146,15 +151,15 @@ constexpr uint32_t DarkGray = 0xFF404040;
 constexpr uint32_t Transparent = 0x00000000;
 
 // Semantic colors for overlay
-constexpr uint32_t Background = 0xE0282828;  // Dark semi-transparent
-constexpr uint32_t FPS = 0xFF00FF00;         // Bright green
-constexpr uint32_t CPU = 0xFF00BFFF;         // DeepSkyBlue
-constexpr uint32_t GPU = 0xFF32CD32;         // LimeGreen
-constexpr uint32_t RAM = 0xFFB8860B;         // DarkGoldenrod
-constexpr uint32_t VRAM = 0xFFFF8C00;        // DarkOrange
-constexpr uint32_t LoadLow = 0xFF00FF00;     // Green
-constexpr uint32_t LoadMed = 0xFF00FFFF;     // Yellow
-constexpr uint32_t LoadHigh = 0xFF0000FF;    // Red
-}  // namespace Colors
+constexpr uint32_t Background = 0xE0282828; // Dark semi-transparent
+constexpr uint32_t FPS = 0xFF00FF00;        // Bright green
+constexpr uint32_t CPU = 0xFF00BFFF;        // DeepSkyBlue
+constexpr uint32_t GPU = 0xFF32CD32;        // LimeGreen
+constexpr uint32_t RAM = 0xFFB8860B;        // DarkGoldenrod
+constexpr uint32_t VRAM = 0xFFFF8C00;       // DarkOrange
+constexpr uint32_t LoadLow = 0xFF00FF00;    // Green
+constexpr uint32_t LoadMed = 0xFF00FFFF;    // Yellow
+constexpr uint32_t LoadHigh = 0xFF0000FF;   // Red
+} // namespace Colors
 
-}  // namespace CustomOverlay
+} // namespace CustomOverlay

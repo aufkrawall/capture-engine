@@ -1,11 +1,11 @@
 #pragma once
 
-#include <intrin.h>
-#include <windows.h>
-#include <timeapi.h>  // For timeBeginPeriod/timeEndPeriod
-#include <atomic>
 #include "hook_common.h"
 #include "ipc_client.h"
+#include <atomic>
+#include <intrin.h>
+#include <timeapi.h> // For timeBeginPeriod/timeEndPeriod
+#include <windows.h>
 
 // Shared FPS limiter - event-based synchronization with limiter process
 // Call Apply() each frame before present
@@ -18,259 +18,277 @@
 // - 1ms timer resolution via timeBeginPeriod
 class FpsLimiter {
 public:
-    void SetIPCClient(IPCClient* ipc) { this->ipc = ipc; }
+  void SetIPCClient(IPCClient *ipc) { this->ipc = ipc; }
 
-    // For testing: inject mock shared memory
-    void SetSharedMemory(SharedMemoryLayout* shm) { this->dbgShm = shm; }
+  // For testing: inject mock shared memory
+  void SetSharedMemory(SharedMemoryLayout *shm) { this->dbgShm = shm; }
 
-    // Get count of frames where limiter couldn't keep up
-    uint32_t GetMissedFrames() const { return missedFrames; }
-    void ResetMissedFrames() { missedFrames = 0; }
+  // Get count of frames where limiter couldn't keep up
+  uint32_t GetMissedFrames() const { return missedFrames; }
+  void ResetMissedFrames() { missedFrames = 0; }
 
-    // Ensure 1ms timer resolution is enabled
-    void EnsureTimerResolution()
-    {
-        if (!timerResolutionSet) {
-            timeBeginPeriod(1);
-            timerResolutionSet = true;
-        }
+  // Ensure 1ms timer resolution is enabled
+  void EnsureTimerResolution() {
+    if (!timerResolutionSet) {
+      timeBeginPeriod(1);
+      timerResolutionSet = true;
+    }
+  }
+
+  // Smart wait until target QPC time
+  // Returns true if we waited, false if we were already past target
+  bool SmartWait(int64_t targetTick) {
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+
+    if (qpcFrequency == 0) {
+      LARGE_INTEGER freq;
+      QueryPerformanceFrequency(&freq);
+      qpcFrequency = freq.QuadPart;
     }
 
-    // Smart wait until target QPC time
-    // Returns true if we waited, false if we were already past target
-    bool SmartWait(int64_t targetTick)
-    {
-        LARGE_INTEGER now;
-        QueryPerformanceCounter(&now);
+    int64_t diff = targetTick - now.QuadPart;
+    if (diff <= 0)
+      return false;
 
-        if (qpcFrequency == 0) {
-            LARGE_INTEGER freq;
-            QueryPerformanceFrequency(&freq);
-            qpcFrequency = freq.QuadPart;
+    // Convert to microseconds for better precision
+    int64_t diffUs = (diff * 1000000) / qpcFrequency;
+
+    // Try high-resolution waitable timer for waits > 1ms (available on Win10
+    // 1803+)
+    if (diffUs > 1000 && !highResTimerFailed) {
+      if (!highResTimer) {
+        // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION = 0x2
+        highResTimer =
+            CreateWaitableTimerExW(NULL, NULL, 0x2, TIMER_ALL_ACCESS);
+        if (!highResTimer) {
+          highResTimerFailed = true; // Fall back to polling
         }
+      }
 
-        int64_t diff = targetTick - now.QuadPart;
-        if (diff <= 0) return false;
+      if (highResTimer) {
+        // Convert to 100ns intervals (negative = relative)
+        LARGE_INTEGER dueTime;
+        dueTime.QuadPart = -(diff * 10000000 / qpcFrequency);
 
-        // Convert to microseconds for better precision
-        int64_t diffUs = (diff * 1000000) / qpcFrequency;
-
-        // Try high-resolution waitable timer for waits > 1ms (available on Win10 1803+)
-        if (diffUs > 1000 && !highResTimerFailed) {
-            if (!highResTimer) {
-                // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION = 0x2
-                highResTimer = CreateWaitableTimerExW(NULL, NULL, 0x2, TIMER_ALL_ACCESS);
-                if (!highResTimer) {
-                    highResTimerFailed = true;  // Fall back to polling
-                }
-            }
-
-            if (highResTimer) {
-                // Convert to 100ns intervals (negative = relative)
-                LARGE_INTEGER dueTime;
-                dueTime.QuadPart = -(diff * 10000000 / qpcFrequency);
-
-                if (SetWaitableTimer(highResTimer, &dueTime, 0, NULL, NULL, FALSE)) {
-                    WaitForSingleObject(highResTimer, (DWORD)(diffUs / 1000 + 5));
-                    return true;
-                }
-            }
+        if (SetWaitableTimer(highResTimer, &dueTime, 0, NULL, NULL, FALSE)) {
+          WaitForSingleObject(highResTimer, (DWORD)(diffUs / 1000 + 5));
+          return true;
         }
-
-        // Fallback: Hybrid sleep strategy
-        // - If > 2ms remaining, use Sleep(1) for power efficiency
-        // - If 0.5ms - 2ms, use SwitchToThread() or Sleep(0)
-        // - If < 0.5ms, spin-wait for precision
-        while (diffUs > 0) {
-            if (diffUs > 10000) {  // > 10ms
-                Sleep(1);
-            } else if (diffUs > 2000) {  // 2ms - 10ms
-                Sleep(0);                // Yield but remain schedulable soon
-            } else if (diffUs > 500) {
-                // Very short yield
-                SwitchToThread();
-            } else {
-                // Final <0.5ms - tight spin for sub-ms precision
-                _mm_pause();
-            }
-
-            // Recalculate remaining time
-            QueryPerformanceCounter(&now);
-            diff = targetTick - now.QuadPart;
-            diffUs = (diff * 1000000) / qpcFrequency;
-        }
-        return true;
+      }
     }
 
-    // Called each frame before present
-    void Apply()
-    {
-        SharedMemoryLayout* shm = nullptr;
-        if (dbgShm) {
-            shm = dbgShm;
-        } else if (ipc) {
-            shm = ipc->GetSharedMem();
-        }
+    // Fallback: Hybrid sleep strategy
+    // - If > 2ms remaining, use Sleep(1) for power efficiency
+    // - If 0.5ms - 2ms, use SwitchToThread() or Sleep(0)
+    // - If < 0.5ms, spin-wait for precision
+    while (diffUs > 0) {
+      if (diffUs > 10000) { // > 10ms
+        Sleep(1);
+      } else if (diffUs > 2000) { // 2ms - 10ms
+        Sleep(0);                 // Yield but remain schedulable soon
+      } else if (diffUs > 500) {
+        // Very short yield
+        SwitchToThread();
+      } else {
+        // Final <0.5ms - tight spin for sub-ms precision
+        _mm_pause();
+      }
 
-        if (!shm) return;
+      // Recalculate remaining time
+      QueryPerformanceCounter(&now);
+      diff = targetTick - now.QuadPart;
+      diffUs = (diff * 1000000) / qpcFrequency;
+    }
+    return true;
+  }
 
-        bool isRecording = shm->runtimeState.isRecording;
-
-        // Publish session ID once
-        if (!sessionIdPublished) {
-            uint32_t sid = GetCurrentProcessId() ^ GetTickCount();
-            shm->fpsLimiter.hookSessionId.store(sid, std::memory_order_release);
-            sessionIdPublished = true;
-            HookLog("FPS Limiter: Published Session ID: %u", sid);
-        }
-
-        // Check if limiter should be active
-        bool limiterActive = false;
-        int targetFps = 0;
-
-        if (isRecording && shm->fpsLimiter.GetCaptureSyncEnabled()) {
-            int multiplier = shm->fpsLimiter.GetCaptureSyncMultiplier();
-            int captureFps = shm->fpsLimiter.GetCaptureFps();
-            if (captureFps > 0 && multiplier >= 1 && multiplier <= 8) {
-                limiterActive = true;
-                targetFps = captureFps * multiplier;
-            }
-        } else if (shm->fpsLimiter.GetGeneralEnabled() && shm->fpsLimiter.GetGeneralFps() > 0) {
-            limiterActive = true;
-            targetFps = shm->fpsLimiter.GetGeneralFps();
-        }
-
-        // VFR Mode Passthrough: Disable limiter if VFR is active
-        if (shm->fpsLimiter.GetUseVFR()) {
-            limiterActive = false;
-        }
-
-        if (!limiterActive) return;
-
-        // Ensure 1ms timer resolution when limiter is active
-        EnsureTimerResolution();
-
-        if (targetFps <= 0) targetFps = 60;
-
-        // Initialize events if not done
-        // Only try to open events if we are not in test mode (implied by dbgShm presence usually, but let's just check
-        // name)
-        if (!eventsInitialized && shm->fpsLimiter.releaseEventName[0] != L'\0') {
-            releaseEvent = OpenEventW(SYNCHRONIZE, FALSE, shm->fpsLimiter.releaseEventName);
-            requestEvent = OpenEventW(EVENT_MODIFY_STATE, FALSE, shm->fpsLimiter.requestEventName);
-            eventsInitialized = true;
-
-            // Query QPC frequency for timing calculations
-            if (qpcFrequency == 0) {
-                LARGE_INTEGER freq;
-                QueryPerformanceFrequency(&freq);
-                qpcFrequency = freq.QuadPart;
-            }
-
-            HookLog("FPS Limiter: Events Initialized (target: %d FPS, captureFps=%d, mult=%d)", targetFps,
-                    shm->fpsLimiter.GetCaptureFps(), shm->fpsLimiter.GetCaptureSyncMultiplier());
-        }
-
-        // In test mode (dbgShm), we might assume events are initialized or not needed for SmartWait test
-        // But for full Apply() test, we need them if we want to hit the event path.
-        // If not, we fall through.
-
-        // Request next frame timing
-        uint32_t myRequest = shm->fpsLimiter.requestCount.fetch_add(1, std::memory_order_acq_rel) + 1;
-        if (requestEvent) SetEvent(requestEvent);
-
-        // Wait for release from limiter process
-        if (releaseEvent || dbgShm) {  // Allow test mode to use SmartWait if manual targetTime is set
-            // For real usage: check releaseEvent. For test: if dbgShm is set, we might skip the WaitForSingleObject or
-            // mocking it. But typically tests won't have the external limiter process running. So let's make the test
-            // set targetTimeTicks manually, and we skp WaitForSingleObject if it's a test? Better: In a test, we can
-            // CreateEvent ourselves.
-
-            if (releaseEvent) {
-                // Calculate appropriate timeout based on target frame interval
-                // Use 3x frame interval for safety margin
-                DWORD frameTimeMs = 1000 / targetFps;
-                DWORD timeoutMs = frameTimeMs * 3;
-                if (timeoutMs < 10) timeoutMs = 10;
-                if (timeoutMs > 100) timeoutMs = 100;
-
-                DWORD waitResult = WaitForSingleObject(releaseEvent, timeoutMs);
-
-                if (waitResult == WAIT_TIMEOUT) {
-                    // Limiter didn't respond in time - track but don't block
-                    missedFrames++;
-                    static int logCount = 0;
-                    if (logCount++ < 10) {
-                        HookLog("FPS Limiter: TIMEOUT waiting for release (missed=%u)", missedFrames);
-                    }
-                    return;
-                }
-            } else {
-                static bool loggedNoEvent = false;
-                if (!loggedNoEvent) {
-                    HookLog("FPS Limiter: No releaseEvent available!");
-                    loggedNoEvent = true;
-                }
-            }
-
-            int64_t target = shm->fpsLimiter.targetTimeTicks.load(std::memory_order_acquire);
-            if (target > 0) {
-                SmartWait(target);
-            } else {
-                static int logCount = 0;
-                if (logCount++ < 10) {
-                    HookLog("FPS Limiter: targetTimeTicks is %lld (not waiting)", target);
-                }
-            }
-        } else {
-            // Fallback: spin wait on release count (no event available)
-            DWORD start = GetTickCount();
-            while (shm->fpsLimiter.releaseCount.load(std::memory_order_acquire) < myRequest) {
-                if (GetTickCount() - start > 100) {
-                    missedFrames++;
-                    break;
-                }
-                SwitchToThread();  // Yield instead of Sleep(0) for better responsiveness
-            }
-        }
+  // Called each frame before present
+  void Apply() {
+    SharedMemoryLayout *shm = nullptr;
+    if (dbgShm) {
+      shm = dbgShm;
+    } else if (ipc) {
+      shm = ipc->GetSharedMem();
     }
 
-    void Shutdown()
-    {
-        if (releaseEvent) {
-            CloseHandle(releaseEvent);
-            releaseEvent = NULL;
-        }
-        if (requestEvent) {
-            CloseHandle(requestEvent);
-            requestEvent = NULL;
-        }
-        if (highResTimer) {
-            CloseHandle(highResTimer);
-            highResTimer = NULL;
-        }
-        if (timerResolutionSet) {
-            timeEndPeriod(1);
-            timerResolutionSet = false;
-        }
-        eventsInitialized = false;
-        sessionIdPublished = false;
-        highResTimerFailed = false;
-        missedFrames = 0;
+    if (!shm)
+      return;
+
+    bool isRecording = shm->runtimeState.isRecording;
+
+    // Publish session ID once
+    if (!sessionIdPublished) {
+      uint32_t sid = GetCurrentProcessId() ^ GetTickCount();
+      shm->fpsLimiter.hookSessionId.store(sid, std::memory_order_release);
+      sessionIdPublished = true;
+      HookLog("FPS Limiter: Published Session ID: %u", sid);
     }
+
+    // Check if limiter should be active
+    bool limiterActive = false;
+    int targetFps = 0;
+
+    if (isRecording && shm->fpsLimiter.GetCaptureSyncEnabled()) {
+      int multiplier = shm->fpsLimiter.GetCaptureSyncMultiplier();
+      int captureFps = shm->fpsLimiter.GetCaptureFps();
+      if (captureFps > 0 && multiplier >= 1 && multiplier <= 8) {
+        limiterActive = true;
+        targetFps = captureFps * multiplier;
+      }
+    } else if (shm->fpsLimiter.GetGeneralEnabled() &&
+               shm->fpsLimiter.GetGeneralFps() > 0) {
+      limiterActive = true;
+      targetFps = shm->fpsLimiter.GetGeneralFps();
+    }
+
+    // VFR Mode Passthrough: Disable limiter if VFR is active
+    if (shm->fpsLimiter.GetUseVFR()) {
+      limiterActive = false;
+    }
+
+    if (!limiterActive)
+      return;
+
+    // Ensure 1ms timer resolution when limiter is active
+    EnsureTimerResolution();
+
+    if (targetFps <= 0)
+      targetFps = 60;
+
+    // Initialize events if not done
+    // Only try to open events if we are not in test mode (implied by dbgShm
+    // presence usually, but let's just check name)
+    if (!eventsInitialized && shm->fpsLimiter.releaseEventName[0] != L'\0') {
+      releaseEvent =
+          OpenEventW(SYNCHRONIZE, FALSE, shm->fpsLimiter.releaseEventName);
+      requestEvent = OpenEventW(EVENT_MODIFY_STATE, FALSE,
+                                shm->fpsLimiter.requestEventName);
+      eventsInitialized = true;
+
+      // Query QPC frequency for timing calculations
+      if (qpcFrequency == 0) {
+        LARGE_INTEGER freq;
+        QueryPerformanceFrequency(&freq);
+        qpcFrequency = freq.QuadPart;
+      }
+
+      HookLog("FPS Limiter: Events Initialized (target: %d FPS, captureFps=%d, "
+              "mult=%d)",
+              targetFps, shm->fpsLimiter.GetCaptureFps(),
+              shm->fpsLimiter.GetCaptureSyncMultiplier());
+    }
+
+    // In test mode (dbgShm), we might assume events are initialized or not
+    // needed for SmartWait test But for full Apply() test, we need them if we
+    // want to hit the event path. If not, we fall through.
+
+    // Request next frame timing
+    uint32_t myRequest =
+        shm->fpsLimiter.requestCount.fetch_add(1, std::memory_order_acq_rel) +
+        1;
+    if (requestEvent)
+      SetEvent(requestEvent);
+
+    // Wait for release from limiter process
+    if (releaseEvent || dbgShm) { // Allow test mode to use SmartWait if manual
+                                  // targetTime is set
+      // For real usage: check releaseEvent. For test: if dbgShm is set, we
+      // might skip the WaitForSingleObject or mocking it. But typically tests
+      // won't have the external limiter process running. So let's make the test
+      // set targetTimeTicks manually, and we skp WaitForSingleObject if it's a
+      // test? Better: In a test, we can CreateEvent ourselves.
+
+      if (releaseEvent) {
+        // Calculate appropriate timeout based on target frame interval
+        // Use 3x frame interval for safety margin
+        DWORD frameTimeMs = 1000 / targetFps;
+        DWORD timeoutMs = frameTimeMs * 3;
+        if (timeoutMs < 10)
+          timeoutMs = 10;
+        if (timeoutMs > 100)
+          timeoutMs = 100;
+
+        DWORD waitResult = WaitForSingleObject(releaseEvent, timeoutMs);
+
+        if (waitResult == WAIT_TIMEOUT) {
+          // Limiter didn't respond in time - track but don't block
+          missedFrames++;
+          static int logCount = 0;
+          if (logCount++ < 10) {
+            HookLog("FPS Limiter: TIMEOUT waiting for release (missed=%u)",
+                    missedFrames);
+          }
+          return;
+        }
+      } else {
+        static bool loggedNoEvent = false;
+        if (!loggedNoEvent) {
+          HookLog("FPS Limiter: No releaseEvent available!");
+          loggedNoEvent = true;
+        }
+      }
+
+      int64_t target =
+          shm->fpsLimiter.targetTimeTicks.load(std::memory_order_acquire);
+      if (target > 0) {
+        SmartWait(target);
+      } else {
+        static int logCount = 0;
+        if (logCount++ < 10) {
+          HookLog("FPS Limiter: targetTimeTicks is %lld (not waiting)", target);
+        }
+      }
+    } else {
+      // Fallback: spin wait on release count (no event available)
+      DWORD start = GetTickCount();
+      while (shm->fpsLimiter.releaseCount.load(std::memory_order_acquire) <
+             myRequest) {
+        if (GetTickCount() - start > 100) {
+          missedFrames++;
+          break;
+        }
+        SwitchToThread(); // Yield instead of Sleep(0) for better responsiveness
+      }
+    }
+  }
+
+  void Shutdown() {
+    if (releaseEvent) {
+      CloseHandle(releaseEvent);
+      releaseEvent = NULL;
+    }
+    if (requestEvent) {
+      CloseHandle(requestEvent);
+      requestEvent = NULL;
+    }
+    if (highResTimer) {
+      CloseHandle(highResTimer);
+      highResTimer = NULL;
+    }
+    if (timerResolutionSet) {
+      timeEndPeriod(1);
+      timerResolutionSet = false;
+    }
+    eventsInitialized = false;
+    sessionIdPublished = false;
+    highResTimerFailed = false;
+    missedFrames = 0;
+  }
 
 private:
-    IPCClient* ipc = nullptr;
-    SharedMemoryLayout* dbgShm = nullptr;  // Direct injection for testing
-    HANDLE releaseEvent = NULL;
-    HANDLE requestEvent = NULL;
-    HANDLE highResTimer = NULL;  // High-resolution waitable timer (Win10 1803+)
-    bool eventsInitialized = false;
-    bool sessionIdPublished = false;
-    bool timerResolutionSet = false;  // Whether timeBeginPeriod(1) was called
-    bool highResTimerFailed = false;  // Fall back to polling if timer creation fails
-    int64_t qpcFrequency = 0;
-    uint32_t missedFrames = 0;  // Track frames where limiter couldn't keep up
+  IPCClient *ipc = nullptr;
+  SharedMemoryLayout *dbgShm = nullptr; // Direct injection for testing
+  HANDLE releaseEvent = NULL;
+  HANDLE requestEvent = NULL;
+  HANDLE highResTimer = NULL; // High-resolution waitable timer (Win10 1803+)
+  bool eventsInitialized = false;
+  bool sessionIdPublished = false;
+  bool timerResolutionSet = false; // Whether timeBeginPeriod(1) was called
+  bool highResTimerFailed =
+      false; // Fall back to polling if timer creation fails
+  int64_t qpcFrequency = 0;
+  uint32_t missedFrames = 0; // Track frames where limiter couldn't keep up
 };
 
 // Global FPS limiter instance

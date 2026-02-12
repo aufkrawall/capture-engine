@@ -9,10 +9,10 @@
 
 #pragma once
 
-#include <windows.h>
 #include <atomic>
 #include <functional>
 #include <mutex>
+#include <windows.h>
 
 namespace CustomHook {
 
@@ -21,32 +21,32 @@ namespace CustomHook {
 // ============================================================================
 
 enum class Status {
-    Success = 0,
-    ErrorNotInitialized,
-    ErrorAlreadyInitialized,
-    ErrorInvalidParameter,
-    ErrorModuleNotFound,
-    ErrorFunctionNotFound,
-    ErrorMemoryProtect,
-    ErrorAlreadyHooked,
-    ErrorNotHooked,
-    ErrorUnknown
+  Success = 0,
+  ErrorNotInitialized,
+  ErrorAlreadyInitialized,
+  ErrorInvalidParameter,
+  ErrorModuleNotFound,
+  ErrorFunctionNotFound,
+  ErrorMemoryProtect,
+  ErrorAlreadyHooked,
+  ErrorNotHooked,
+  ErrorUnknown
 };
 
 // Convert status to string
-const char* StatusToString(Status status);
+const char *StatusToString(Status status);
 
 // ============================================================================
 // Hook Info Structure (for internal tracking)
 // ============================================================================
 
 struct HookInfo {
-    enum class Type { IAT, VTable, Function };
-    void* target = nullptr;
-    void* detour = nullptr;
-    void* original = nullptr;
-    std::atomic<bool> enabled{false};
-    Type type = Type::Function;
+  enum class Type { IAT, VTable, Function };
+  void *target = nullptr;
+  void *detour = nullptr;
+  void *original = nullptr;
+  std::atomic<bool> enabled{false};
+  Type type = Type::Function;
 };
 
 // ============================================================================
@@ -75,7 +75,8 @@ bool IsInitialized();
  * @param original  [out] Receives the original function pointer
  * @return Status code
  */
-Status HookVTableMethod(void** vtable, UINT index, void* detour, void** original);
+Status HookVTableMethod(void **vtable, UINT index, void *detour,
+                        void **original);
 
 /**
  * Hook a VTable entry directly (address of vtable[index])
@@ -86,7 +87,7 @@ Status HookVTableMethod(void** vtable, UINT index, void* detour, void** original
  * @param original     [out] Receives the original function pointer
  * @return Status code
  */
-Status HookVTableEntry(void** vtableEntry, void* detour, void** original);
+Status HookVTableEntry(void **vtableEntry, void *detour, void **original);
 
 /**
  * Unhook a VTable method
@@ -96,12 +97,12 @@ Status HookVTableEntry(void** vtableEntry, void* detour, void** original);
  * @param original  Original function to restore
  * @return Status code
  */
-Status UnhookVTableMethod(void** vtable, UINT index, void* original);
+Status UnhookVTableMethod(void **vtable, UINT index, void *original);
 
 /**
  * Unhook a VTable entry directly
  */
-Status UnhookVTableEntry(void** vtableEntry, void* original);
+Status UnhookVTableEntry(void **vtableEntry, void *original);
 
 // ============================================================================
 // Export Hooking (via IAT patching)
@@ -117,17 +118,20 @@ Status UnhookVTableEntry(void** vtableEntry, void* original);
  * @param original      [out] Receives the original function pointer
  * @return Status code
  */
-Status HookExport(const char* moduleName, const char* functionName, void* detour, void** original);
+Status HookExport(const char *moduleName, const char *functionName,
+                  void *detour, void **original);
 
 /**
  * Hook an exported function (wide string module name)
  */
-Status HookExportW(const wchar_t* moduleName, const char* functionName, void* detour, void** original);
+Status HookExportW(const wchar_t *moduleName, const char *functionName,
+                   void *detour, void **original);
 
 /**
  * Unhook an exported function
  */
-Status UnhookExport(const char* moduleName, const char* functionName, void* original);
+Status UnhookExport(const char *moduleName, const char *functionName,
+                    void *original);
 
 // ============================================================================
 // Function Hooking (for inline patching - minimal use)
@@ -143,12 +147,12 @@ Status UnhookExport(const char* moduleName, const char* functionName, void* orig
  * @param original  [out] Receives the original function pointer
  * @return Status code
  */
-Status HookFunction(void* target, void* detour, void** original);
+Status HookFunction(void *target, void *detour, void **original);
 
 /**
  * Unhook a function
  */
-Status UnhookFunction(void* target, void* original);
+Status UnhookFunction(void *target, void *original);
 
 // ============================================================================
 // Enable/Disable (no-op for VTable hooks, tracked for reference)
@@ -159,20 +163,20 @@ Status UnhookFunction(void* target, void* original);
 // ============================================================================
 
 // CreateHook - wrapper around HookFunction for API compatibility
-inline Status CreateHook(void* target, void* detour, void** original) { return HookFunction(target, detour, original); }
+inline Status CreateHook(void *target, void *detour, void **original) {
+  return HookFunction(target, detour, original);
+}
 
 // EnableHook - VTable hooks are always enabled, this is for API compatibility
-inline Status EnableHook(void* target)
-{
-    (void)target;
-    return Status::Success;
+inline Status EnableHook(void *target) {
+  (void)target;
+  return Status::Success;
 }
 
 // DisableHook - VTable hooks are always enabled, this is for API compatibility
-inline Status DisableHook(void* target)
-{
-    (void)target;
-    return Status::Success;
+inline Status DisableHook(void *target) {
+  (void)target;
+  return Status::Success;
 }
 
 // ============================================================================
@@ -181,71 +185,74 @@ inline Status DisableHook(void* target)
 
 class ScopedInitializer {
 public:
-    ScopedInitializer() { m_initialized = Initialize(); }
-    bool IsInitialized() const { return m_initialized; }
+  ScopedInitializer() { m_initialized = Initialize(); }
+  bool IsInitialized() const { return m_initialized; }
 
 private:
-    bool m_initialized = false;
+  bool m_initialized = false;
 };
 
 // ============================================================================
 // Type-safe Hook Template
 // ============================================================================
 
-template <typename FuncType>
-class TypedHook {
-    void* m_target = nullptr;
-    FuncType m_original = nullptr;
-    std::atomic<bool> m_created{false};
+template <typename FuncType> class TypedHook {
+  void *m_target = nullptr;
+  FuncType m_original = nullptr;
+  std::atomic<bool> m_created{false};
 
 public:
-    TypedHook() = default;
-    ~TypedHook()
-    {
-        if (m_created.load() && m_target) {
-            CustomHook::UnhookFunction(m_target, reinterpret_cast<void*>(m_original));
-        }
+  TypedHook() = default;
+  ~TypedHook() {
+    if (m_created.load() && m_target) {
+      CustomHook::UnhookFunction(m_target,
+                                 reinterpret_cast<void *>(m_original));
     }
+  }
 
-    // Disable copy/move
-    TypedHook(const TypedHook&) = delete;
-    TypedHook& operator=(const TypedHook&) = delete;
+  // Disable copy/move
+  TypedHook(const TypedHook &) = delete;
+  TypedHook &operator=(const TypedHook &) = delete;
 
-    bool CreateVTable(void** vtableEntry, void* detour)
-    {
-        if (m_created.load()) return false;
-        void* orig = nullptr;
-        if (CustomHook::HookVTableEntry(vtableEntry, detour, &orig) != CustomHook::Status::Success) {
-            return false;
-        }
-        m_target = vtableEntry;
-        m_original = reinterpret_cast<FuncType>(orig);
-        m_created.store(true);
-        return true;
+  bool CreateVTable(void **vtableEntry, void *detour) {
+    if (m_created.load())
+      return false;
+    void *orig = nullptr;
+    if (CustomHook::HookVTableEntry(vtableEntry, detour, &orig) !=
+        CustomHook::Status::Success) {
+      return false;
     }
+    m_target = vtableEntry;
+    m_original = reinterpret_cast<FuncType>(orig);
+    m_created.store(true);
+    return true;
+  }
 
-    bool CreateExport(const char* moduleName, const char* functionName, void* detour)
-    {
-        if (m_created.load()) return false;
-        void* orig = nullptr;
-        if (CustomHook::HookExport(moduleName, functionName, detour, &orig) != CustomHook::Status::Success) {
-            return false;
-        }
-        HMODULE hMod = GetModuleHandleA(moduleName);
-        m_target = hMod ? reinterpret_cast<void*>(GetProcAddress(hMod, functionName)) : nullptr;
-        m_original = reinterpret_cast<FuncType>(orig);
-        m_created.store(true);
-        return true;
+  bool CreateExport(const char *moduleName, const char *functionName,
+                    void *detour) {
+    if (m_created.load())
+      return false;
+    void *orig = nullptr;
+    if (CustomHook::HookExport(moduleName, functionName, detour, &orig) !=
+        CustomHook::Status::Success) {
+      return false;
     }
+    HMODULE hMod = GetModuleHandleA(moduleName);
+    m_target =
+        hMod ? reinterpret_cast<void *>(GetProcAddress(hMod, functionName))
+             : nullptr;
+    m_original = reinterpret_cast<FuncType>(orig);
+    m_created.store(true);
+    return true;
+  }
 
-    FuncType Original() const { return m_original; }
-    bool IsCreated() const { return m_created.load(); }
+  FuncType Original() const { return m_original; }
+  bool IsCreated() const { return m_created.load(); }
 
-    template <typename... Args>
-    auto operator()(Args&&... args) -> decltype(auto)
-    {
-        return m_original(std::forward<Args>(args)...);
-    }
+  template <typename... Args>
+  auto operator()(Args &&...args) -> decltype(auto) {
+    return m_original(std::forward<Args>(args)...);
+  }
 };
 
-}  // namespace CustomHook
+} // namespace CustomHook

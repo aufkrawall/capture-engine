@@ -2095,7 +2095,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             "-Wno-microsoft-exception-spec",
             "-D_WIN32_WINNT=0x0A00",
             "-I" + os.path.join(PROJECT_ROOT, "common"),
-            # "-I" + IMGUI_DIR,  # REMOVED: No longer using ImGui
+            # "-I" + IMGui_DIR,  # REMOVED: No longer using ImGui
         ]
         # if arch == "x64":
         #    curr_cflags.append("-flto")
