@@ -3,14 +3,17 @@
  *
  * Renders overlay using Vulkan.
  * Note: The project uses a Vulkan layer for hooking, so this backend
- * may be used differently than DirectX backends.
+ * requires dispatch table access because VK_NO_PROTOTYPES is defined.
  */
 
 #pragma once
 
 #include "custom_overlay.h"
 
-// Vulkan headers - use dynamic loading
+// Vulkan headers - use dynamic loading with Win32 platform support
+#ifndef VK_USE_PLATFORM_WIN32_KHR
+#define VK_USE_PLATFORM_WIN32_KHR
+#endif
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 
@@ -22,9 +25,16 @@ public:
                 uint32_t queueFamily);
   virtual ~VulkanBackend();
 
+  // Set dispatch tables for Vulkan function calls (required before Initialize)
+  // Uses void* to avoid circular dependency with vulkan_layer.h
+  void SetDispatchTable(void* deviceDispatch, void* instanceDispatch);
+
   bool Initialize(int fontTextureWidth, int fontTextureHeight,
                   const uint8_t *fontTextureData) override;
   void Shutdown() override;
+
+  // Called with render pass when it becomes available (swapchain created)
+  bool CreatePipelineForRenderPass(VkRenderPass renderPass);
 
   void Render(const std::vector<DrawVertex> &vertices,
               const std::vector<uint16_t> &indices,
@@ -77,7 +87,12 @@ private:
   VkFramebuffer currentFramebuffer = VK_NULL_HANDLE;
   VkExtent2D currentExtent = {};
 
+  // Dispatch tables (casted from void* in .cpp to avoid circular dependency)
+  void* deviceDispatch = nullptr;      // DeviceDispatch*
+  void* instanceDispatch = nullptr;    // InstanceDispatch*
+
   bool initialized = false;
+  bool pipelineCreated = false;
 };
 
 } // namespace CustomOverlay

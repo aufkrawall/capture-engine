@@ -100,7 +100,9 @@ struct DeviceDispatch {
   PFN_vkCmdBindIndexBuffer fp_vkCmdBindIndexBuffer = nullptr;
   PFN_vkCmdCopyImage fp_vkCmdCopyImage = nullptr;
   PFN_vkCmdCopyImageToBuffer fp_vkCmdCopyImageToBuffer = nullptr;
+  PFN_vkCmdCopyBufferToImage fp_vkCmdCopyBufferToImage = nullptr;
   PFN_vkCmdBlitImage fp_vkCmdBlitImage = nullptr;
+  PFN_vkCmdBindDescriptorSets fp_vkCmdBindDescriptorSets = nullptr;
   PFN_vkCmdPipelineBarrier fp_vkCmdPipelineBarrier = nullptr;
   PFN_vkCmdClearAttachments fp_vkCmdClearAttachments = nullptr;
   PFN_vkCreateFence fp_vkCreateFence = nullptr;

@@ -9,11 +9,15 @@
 #include "custom_overlay.h"
 #include "fg_detection.h"
 
-// Include all backends
+// Include backends based on build context
+// VK_LAYER_CE_OVERLAY is defined when building the Vulkan layer
+#ifndef VK_LAYER_CE_OVERLAY
+// Full backends for hook DLL
 #include "custom_overlay_dx11.h"
 #include "custom_overlay_dx12.h"
 #include "custom_overlay_dx9.h"
 #include "custom_overlay_gl.h"
+#endif
 #include "custom_overlay_vk.h"
 
 #include <cstdio>
@@ -34,6 +38,7 @@ void OverlayAdapter::SetGraphicsAPI(const char *api) {
 }
 
 bool OverlayAdapter::InitDX9(void *device) {
+#ifndef VK_LAYER_CE_OVERLAY
   if (initialized)
     return true;
   if (!device)
@@ -55,10 +60,12 @@ bool OverlayAdapter::InitDX9(void *device) {
 
   initialized = true;
   OutputDebugStringA("[OverlayAdapter] Initialized DX9 backend\n");
+#endif
   return true;
 }
 
 bool OverlayAdapter::InitDX11(void *device, void *context) {
+#ifndef VK_LAYER_CE_OVERLAY
   if (initialized)
     return true;
   if (!device || !context)
@@ -80,10 +87,12 @@ bool OverlayAdapter::InitDX11(void *device, void *context) {
 
   initialized = true;
   OutputDebugStringA("[OverlayAdapter] Initialized DX11 backend\n");
+#endif
   return true;
 }
 
 bool OverlayAdapter::InitDX12(void *device, void *queue, int rtvFormat) {
+#ifndef VK_LAYER_CE_OVERLAY
   if (initialized)
     return true;
   if (!device || !queue)
@@ -106,10 +115,12 @@ bool OverlayAdapter::InitDX12(void *device, void *queue, int rtvFormat) {
 
   initialized = true;
   OutputDebugStringA("[OverlayAdapter] Initialized DX12 backend\n");
+#endif
   return true;
 }
 
 bool OverlayAdapter::InitOpenGL() {
+#ifndef VK_LAYER_CE_OVERLAY
   if (initialized)
     return true;
 
@@ -128,11 +139,13 @@ bool OverlayAdapter::InitOpenGL() {
 
   initialized = true;
   OutputDebugStringA("[OverlayAdapter] Initialized OpenGL backend\n");
+#endif
   return true;
 }
 
 bool OverlayAdapter::InitVulkan(void *device, void *physDevice, void *queue,
-                                uint32_t queueFamily) {
+                                uint32_t queueFamily, void* deviceDispatch,
+                                void* instanceDispatch) {
   if (initialized)
     return true;
   if (!device)
@@ -141,6 +154,12 @@ bool OverlayAdapter::InitVulkan(void *device, void *physDevice, void *queue,
   auto vkBackend = new CustomOverlay::VulkanBackend(
       (VkDevice)device, (VkPhysicalDevice)physDevice, (VkQueue)queue,
       queueFamily);
+  
+  // Set dispatch tables before initialization
+  if (deviceDispatch && instanceDispatch) {
+    vkBackend->SetDispatchTable(deviceDispatch, instanceDispatch);
+  }
+  
   backend = vkBackend;
   backendType = OverlayBackendType::Vulkan;
 
@@ -154,7 +173,7 @@ bool OverlayAdapter::InitVulkan(void *device, void *physDevice, void *queue,
   }
 
   initialized = true;
-  OutputDebugStringA("[OverlayAdapter] Initialized Vulkan backend (stub)\n");
+  OutputDebugStringA("[OverlayAdapter] Initialized Vulkan backend\n");
   return true;
 }
 
@@ -173,12 +192,14 @@ void OverlayAdapter::Shutdown() {
 }
 
 void OverlayAdapter::SetDX12RenderTarget(void *cmdList, void *rtvHandle) {
+#ifndef VK_LAYER_CE_OVERLAY
   if (backendType == OverlayBackendType::DX12 && backend) {
     auto dx12Backend = static_cast<CustomOverlay::DX12Backend *>(backend);
     D3D12_CPU_DESCRIPTOR_HANDLE rtv;
     rtv.ptr = (SIZE_T)rtvHandle;
     dx12Backend->SetRenderTarget((ID3D12GraphicsCommandList *)cmdList, rtv);
   }
+#endif
 }
 
 uint32_t OverlayAdapter::GetLoadColor(float load) {

@@ -318,8 +318,12 @@ void PopulateDeviceDispatch(DeviceDispatch *dispatch, VkDevice device,
       (PFN_vkCmdCopyImage)gdpa(device, "vkCmdCopyImage");
   dispatch->fp_vkCmdCopyImageToBuffer =
       (PFN_vkCmdCopyImageToBuffer)gdpa(device, "vkCmdCopyImageToBuffer");
+  dispatch->fp_vkCmdCopyBufferToImage =
+      (PFN_vkCmdCopyBufferToImage)gdpa(device, "vkCmdCopyBufferToImage");
   dispatch->fp_vkCmdBlitImage =
       (PFN_vkCmdBlitImage)gdpa(device, "vkCmdBlitImage");
+  dispatch->fp_vkCmdBindDescriptorSets =
+      (PFN_vkCmdBindDescriptorSets)gdpa(device, "vkCmdBindDescriptorSets");
   dispatch->fp_vkCmdPipelineBarrier =
       (PFN_vkCmdPipelineBarrier)gdpa(device, "vkCmdPipelineBarrier");
   dispatch->fp_vkCmdClearAttachments =
