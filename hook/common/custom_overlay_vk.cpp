@@ -315,9 +315,9 @@ bool VulkanBackend::CreateDescriptorSetLayout() {
   if (!disp || !disp->fp_vkCreateDescriptorSetLayout)
     return false;
 
-  // Binding 0: Combined image sampler (font texture)
+  // Binding 1: Combined image sampler (font texture)
   VkDescriptorSetLayoutBinding samplerBinding = {};
-  samplerBinding.binding = 0;
+  samplerBinding.binding = 1;
   samplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
   samplerBinding.descriptorCount = 1;
   samplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -1177,7 +1177,7 @@ void VulkanBackend::Render(const std::vector<DrawVertex> &vertices,
 
   // Bind descriptor set (font texture)
   disp->fp_vkCmdBindDescriptorSets(
-      currentCmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1,
+      currentCmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 1, 1,
       &descriptorSet, 0, nullptr);
 
   // Draw commands
