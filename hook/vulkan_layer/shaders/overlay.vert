@@ -12,9 +12,13 @@ layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec2 outTexCoord;
 
 void main() {
-    // Convert screen coordinates to NDC: [0, width] -> [-1, 1]
-    vec2 ndc = (inPosition / pc.viewportSize) * 2.0 - 1.0;
-    gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);
+    // Convert screen coordinates to NDC: [0, width/height] -> [-1, 1]
+    // Flip Y because screen Y=0 is top, NDC Y=+1 is top
+    vec2 ndc = vec2(
+        (inPosition.x / pc.viewportSize.x) * 2.0 - 1.0,
+        1.0 - (inPosition.y / pc.viewportSize.y) * 2.0
+    );
+    gl_Position = vec4(ndc.x, ndc.y, 0.0, 1.0);
     outColor = inColor;
-    outTexCoord = inTexCoord;
+    outTexCoord = vec2(1.0 - inTexCoord.x, inTexCoord.y);  // Flip X for font
 }
