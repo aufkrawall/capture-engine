@@ -162,6 +162,22 @@ static VkShaderModule CreateShaderModule(VkDevice device, DeviceDispatch* disp,
     return module;
 }
 
+// Find graphics queue family index
+static uint32_t FindGraphicsQueueFamily(VkPhysicalDevice physDevice, InstanceDispatch* instDisp) {
+    uint32_t queueFamilyCount = 0;
+    instDisp->fp_vkGetPhysicalDeviceQueueFamilyProperties(physDevice, &queueFamilyCount, nullptr);
+    
+    std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
+    instDisp->fp_vkGetPhysicalDeviceQueueFamilyProperties(physDevice, &queueFamilyCount, queueFamilies.data());
+    
+    for (uint32_t i = 0; i < queueFamilyCount; i++) {
+        if (queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+            return i;
+        }
+    }
+    return 0; // Fallback to 0 if not found
+}
+
 // Find memory type index
 static uint32_t FindMemoryType(VkPhysicalDevice physDevice, InstanceDispatch* instDisp,
                                 uint32_t typeFilter, VkMemoryPropertyFlags properties) {
@@ -209,27 +225,34 @@ static bool CreateBuffer(VkDevice device, DeviceDispatch* disp, VkPhysicalDevice
 void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain,
                        VkFormat format, VkExtent2D extent, uint32_t imageCount,
                        VkImage* images, HWND window) {
-    LayerLog("Vulkan Layer: InitializeOverlay(device=%p, images=%d, window=%p, "
+    LayerLog("Vulkan Layer: InitializeOverlay ENTRY(device=%p, images=%d, window=%p, "
              "size=%dx%d)", device, imageCount, window, extent.width, extent.height);
     
     std::lock_guard<std::mutex> lock(g_OverlayMutex);
+    LayerLog("Vulkan Layer: InitializeOverlay - Got mutex lock");
     
     if (window) {
+        LayerLog("Vulkan Layer: InitializeOverlay - Hooking window...");
         InputManager::Get().HookWindow(window);
+        LayerLog("Vulkan Layer: InitializeOverlay - Window hooked");
     } else {
         LayerLog("Vulkan Layer: [Warning] No window provided for overlay. Will "
                  "attempt deferred hook.");
     }
     
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
+    LayerLog("Vulkan Layer: InitializeOverlay - Got device dispatch: %p", disp);
     if (!disp) {
         LayerLog("Vulkan Layer: [Error] No dispatch for device %p", device);
         return;
     }
     
+    LayerLog("Vulkan Layer: InitializeOverlay - Getting instance dispatch...");
     InstanceDispatch* instDisp = VulkanLayerState::Get().GetInstanceDispatch(
         VulkanLayerState::Get().GetInstanceFromPhysicalDevice(disp->physicalDevice));
+    LayerLog("Vulkan Layer: InitializeOverlay - Got instance dispatch: %p", instDisp);
     
+    LayerLog("Vulkan Layer: InitializeOverlay - Creating OverlayState...");
     OverlayState state = {};
     state.device = device;
     state.physicalDevice = disp->physicalDevice;
@@ -239,7 +262,7 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain,
     state.swapchainImages.assign(images, images + imageCount);
     state.needsWindowHook = (window == nullptr);
     
-    // Initialize SystemMetricsCollector
+    LayerLog("Vulkan Layer: InitializeOverlay - Initializing SystemMetricsCollector...");
     if (instDisp && instDisp->fp_vkGetPhysicalDeviceProperties2) {
         VkPhysicalDeviceIDProperties idProps = {
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
@@ -267,6 +290,14 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain,
             }
         }
     }
+    LayerLog("Vulkan Layer: InitializeOverlay - SystemMetricsCollector init done");
+    
+    // Find graphics queue family
+    uint32_t graphicsQueueFamily = FindGraphicsQueueFamily(state.physicalDevice, instDisp);
+    state.queueFamilyIndex = graphicsQueueFamily;
+    LayerLog("Vulkan Layer: InitializeOverlay - Using graphics queue family %d", graphicsQueueFamily);
+    LayerLog("Vulkan Layer: InitializeOverlay - About to create descriptor pool, disp=%p, fp=%p", 
+             disp, disp ? disp->fp_vkCreateDescriptorPool : nullptr);
     
     // Create descriptor pool
     VkDescriptorPoolSize poolSizes[] = {
@@ -279,8 +310,11 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain,
     poolInfo.poolSizeCount = 2;
     poolInfo.pPoolSizes = poolSizes;
     
-    if (disp->fp_vkCreateDescriptorPool(device, &poolInfo, nullptr, 
-                                         &state.descriptorPool) != VK_SUCCESS) {
+    LayerLog("Vulkan Layer: InitializeOverlay - Calling vkCreateDescriptorPool(device=%p, poolInfo.sType=%x)...", 
+             device, poolInfo.sType);
+    VkResult poolRes = disp->fp_vkCreateDescriptorPool(device, &poolInfo, nullptr, &state.descriptorPool);
+    LayerLog("Vulkan Layer: InitializeOverlay - vkCreateDescriptorPool returned: %d", poolRes);
+    if (poolRes != VK_SUCCESS) {
         LayerLog("Vulkan Layer: Failed to create descriptor pool");
         return;
     }
@@ -301,11 +335,13 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain,
     layoutInfo.bindingCount = 2;
     layoutInfo.pBindings = bindings;
     
+    LayerLog("Vulkan Layer: InitializeOverlay - Creating descriptor set layout...");
     if (disp->fp_vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr,
                                               &state.descriptorSetLayout) != VK_SUCCESS) {
         LayerLog("Vulkan Layer: Failed to create descriptor set layout");
         return;
     }
+    LayerLog("Vulkan Layer: InitializeOverlay - Descriptor set layout created");
     
     // Create descriptor set
     VkDescriptorSetAllocateInfo allocInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
@@ -313,10 +349,12 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain,
     allocInfo.descriptorSetCount = 1;
     allocInfo.pSetLayouts = &state.descriptorSetLayout;
     
+    LayerLog("Vulkan Layer: InitializeOverlay - Allocating descriptor set...");
     if (disp->fp_vkAllocateDescriptorSets(device, &allocInfo, &state.descriptorSet) != VK_SUCCESS) {
         LayerLog("Vulkan Layer: Failed to allocate descriptor set");
         return;
     }
+    LayerLog("Vulkan Layer: InitializeOverlay - Descriptor set allocated");
     
     // Create pipeline layout with push constants
     VkPushConstantRange pushConstantRange = {};
@@ -330,11 +368,13 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain,
     pipelineLayoutInfo.pushConstantRangeCount = 1;
     pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
     
+    LayerLog("Vulkan Layer: InitializeOverlay - Creating pipeline layout...");
     if (disp->fp_vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr,
                                          &state.pipelineLayout) != VK_SUCCESS) {
         LayerLog("Vulkan Layer: Failed to create pipeline layout");
         return;
     }
+    LayerLog("Vulkan Layer: InitializeOverlay - Pipeline layout created");
     
     // Create render pass (load existing content, don't clear)
     VkAttachmentDescription attachment = {};
@@ -357,18 +397,26 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain,
     rpInfo.subpassCount = 1;
     rpInfo.pSubpasses = &subpass;
     
+    LayerLog("Vulkan Layer: InitializeOverlay - Creating render pass...");
     if (disp->fp_vkCreateRenderPass(device, &rpInfo, nullptr, &state.renderPass) != VK_SUCCESS) {
         LayerLog("Vulkan Layer: Failed to create render pass");
         return;
     }
+    LayerLog("Vulkan Layer: InitializeOverlay - Render pass created");
     
     // Create shader modules
+    LayerLog("Vulkan Layer: InitializeOverlay - Creating shader modules...");
     VkShaderModule vertShader = CreateShaderModule(device, disp, g_VertexShaderSpv, 
                                                     sizeof(g_VertexShaderSpv));
     VkShaderModule fragShader = CreateShaderModule(device, disp, g_FragmentShaderSpv,
                                                     sizeof(g_FragmentShaderSpv));
     VkShaderModule fragShaderSolid = CreateShaderModule(device, disp, g_FragmentShaderSolidSpv,
                                                          sizeof(g_FragmentShaderSolidSpv));
+    if (!vertShader || !fragShader || !fragShaderSolid) {
+        LayerLog("Vulkan Layer: Failed to create shader modules");
+        return;
+    }
+    LayerLog("Vulkan Layer: InitializeOverlay - Shader modules created");
     
     // Create graphics pipeline
     VkPipelineShaderStageCreateInfo stages[2] = {};
@@ -467,11 +515,13 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain,
     pipelineInfo.renderPass = state.renderPass;
     pipelineInfo.subpass = 0;
     
+    LayerLog("Vulkan Layer: InitializeOverlay - Creating graphics pipeline...");
     if (disp->fp_vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
                                             &state.pipeline) != VK_SUCCESS) {
         LayerLog("Vulkan Layer: Failed to create graphics pipeline");
         return;
     }
+    LayerLog("Vulkan Layer: InitializeOverlay - Graphics pipeline created");
     
     // Create solid color pipeline
     stages[1].module = fragShaderSolid;
@@ -480,6 +530,7 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain,
         LayerLog("Vulkan Layer: Failed to create solid pipeline");
         return;
     }
+    LayerLog("Vulkan Layer: InitializeOverlay - Solid pipeline created");
     
     // Destroy shader modules
     disp->fp_vkDestroyShaderModule(device, vertShader, nullptr);
@@ -487,16 +538,19 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain,
     disp->fp_vkDestroyShaderModule(device, fragShaderSolid, nullptr);
     
     // Create command pool
+    LayerLog("Vulkan Layer: InitializeOverlay - Creating command pool (queueFamily=%d)...", graphicsQueueFamily);
     VkCommandPoolCreateInfo cpInfo = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     cpInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    cpInfo.queueFamilyIndex = 0; // Assume graphics queue family 0
+    cpInfo.queueFamilyIndex = graphicsQueueFamily;
     
     if (disp->fp_vkCreateCommandPool(device, &cpInfo, nullptr, &state.commandPool) != VK_SUCCESS) {
         LayerLog("Vulkan Layer: Failed to create command pool");
         return;
     }
+    LayerLog("Vulkan Layer: InitializeOverlay - Command pool created");
     
     // Create vertex and index buffers
+    LayerLog("Vulkan Layer: InitializeOverlay - Creating buffers...");
     if (!CreateBuffer(device, disp, state.physicalDevice, instDisp, 1024 * 1024,
                        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -525,6 +579,7 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain,
     disp->fp_vkMapMemory(device, state.uniformMemory, 0, 256, 0, &state.uniformBufferPtr);
     
     // Create framebuffers
+    LayerLog("Vulkan Layer: InitializeOverlay - Creating %d framebuffers...", imageCount);
     state.imageViews.resize(imageCount);
     state.framebuffers.resize(imageCount);
     state.commandBuffers.resize(imageCount);
@@ -556,12 +611,14 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain,
         disp->fp_vkCreateSemaphore(device, &semInfo, nullptr, &state.semaphores[i]);
     }
     
+    LayerLog("Vulkan Layer: InitializeOverlay - Allocating command buffers...");
     VkCommandBufferAllocateInfo cbInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     cbInfo.commandPool = state.commandPool;
     cbInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cbInfo.commandBufferCount = imageCount;
     disp->fp_vkAllocateCommandBuffers(device, &cbInfo, state.commandBuffers.data());
     
+    LayerLog("Vulkan Layer: InitializeOverlay - Creating PerformanceMetrics...");
     state.metrics = new PerformanceMetrics();
     state.initialized = true;
     g_OverlayStates[device] = state;

@@ -639,6 +639,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(
 
   VkResult res = disp->fp_vkCreateSwapchainKHR(device, pCreateInfo, pAllocator,
                                                pSwapchain);
+  LayerLog("Vulkan Layer: vkCreateSwapchainKHR driver returned: %d", res);
   if (res == VK_SUCCESS && g_LayerState.whitelisted) {
     auto *sd = new SwapchainData();
     sd->swapchain = *pSwapchain;
@@ -655,12 +656,16 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(
 
     HWND window =
         VulkanLayerState::Get().GetSurfaceWindow(pCreateInfo->surface);
+    LayerLog("Vulkan Layer: Initializing overlay for swapchain %p, images=%d", *pSwapchain, count);
     InitializeOverlay(device, *pSwapchain, sd->format, sd->extent, count,
                       sd->images.data(), window);
+    LayerLog("Vulkan Layer: InitializeOverlay returned, registering swapchain");
     InitializeCapture(device, *pSwapchain, sd->format, sd->extent, count);
 
     VulkanLayerState::Get().RegisterSwapchain(*pSwapchain, sd);
+    LayerLog("Vulkan Layer: Swapchain registration complete");
   }
+  LayerLog("Vulkan Layer: vkCreateSwapchainKHR returning: %d", res);
   return res;
 }
 
