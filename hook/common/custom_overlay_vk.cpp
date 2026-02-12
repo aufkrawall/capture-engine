@@ -1136,16 +1136,19 @@ bool VulkanBackend::CreateFontTexture(int width, int height,
 
   disp->fp_vkBindBufferMemory(device, stagingBuffer, stagingMemory, 0);
 
-  // Copy data to staging buffer (extract alpha channel from RGBA)
+  // Copy data to staging buffer (extract alpha channel from RGBA and flip Y)
   void *stagingPtr = nullptr;
   disp->fp_vkMapMemory(device, stagingMemory, 0, imageSize, 0, &stagingPtr);
   if (stagingPtr && data) {
     // data is RGBA (4 bytes per pixel), extract only alpha (4th byte)
+    // Font atlas is top-down (y=0 at top), Vulkan expects bottom-up, so flip Y
     const uint8_t *src = data;
     uint8_t *dst = (uint8_t *)stagingPtr;
-    for (uint32_t y = 0; y < (uint32_t)height; y++) {
+    for (int32_t y = 0; y < height; y++) {
+      int32_t srcRow = y;
+      int32_t dstRow = height - 1 - y;  // Flip Y for bottom-up Vulkan image
       for (uint32_t x = 0; x < (uint32_t)width; x++) {
-        dst[y * width + x] = src[(y * width + x) * 4 + 3];  // Alpha channel
+        dst[dstRow * width + x] = src[(srcRow * width + x) * 4 + 3];  // Alpha channel
       }
     }
   }
