@@ -1598,29 +1598,6 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
     }
 
     if (safeToProceed) {
-      // CRITICAL FIX: Wait for game queue to finish before accessing backbuffer
-      // This prevents device removal when overlay and game queues access the
-      // same resource simultaneously. Use a short timeout to avoid stuttering.
-      ID3D12CommandQueue *gameQueue = nullptr;
-      {
-        std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
-        gameQueue = g_CommandQueue;
-      }
-      if (gameQueue && g_Device) {
-        ID3D12Fence *tempFence = nullptr;
-        if (SUCCEEDED(g_Device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
-                                            IID_PPV_ARGS(&tempFence)))) {
-          HANDLE tempEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-          if (tempEvent) {
-            gameQueue->Signal(tempFence, 1);
-            tempFence->SetEventOnCompletion(1, tempEvent);
-            // Short wait - just enough for GPU to finish current work
-            WaitForSingleObject(tempEvent, 5);
-            CloseHandle(tempEvent);
-          }
-          tempFence->Release();
-        }
-      }
 
       auto *list = g_State.cmdList;
       auto *alloc = (idx < (int)g_State.allocators.size())
@@ -1699,33 +1676,41 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
                           "fence=%p",
                           closeHr, g_OverlayQueue, g_State.fence);
                 }
-                // Use overlay queue for rendering - game queue causes device
-                // removal
-                if (SUCCEEDED(closeHr) && g_OverlayQueue && g_State.fence) {
+                // CRITICAL FIX: Use game queue directly instead of overlay queue
+                // when FG is not active. This eliminates cross-queue sync issues
+                // that cause device removal on some hardware (RTX 5070).
+                ID3D12CommandQueue *targetQueue = g_OverlayQueue;
+                bool useGameQueue = !g_FGCompat.IsFGActive();
+                if (useGameQueue) {
+                  std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
+                  if (g_CommandQueue) {
+                    targetQueue = g_CommandQueue;
+                  }
+                }
+                
+                if (SUCCEEDED(closeHr) && targetQueue) {
                   ID3D12CommandList *lists[] = {list};
-                  g_OverlayQueue->ExecuteCommandLists(1, lists);
-
-                  // Signal fence from overlay queue
-                  g_State.currentFenceValue++;
-                  g_State.fenceValues[idx] = g_State.currentFenceValue;
-                  g_OverlayQueue->Signal(g_State.fence,
-                                         g_State.currentFenceValue);
+                  targetQueue->ExecuteCommandLists(1, lists);
 
                   static int s_execCount = 0;
                   if (++s_execCount <= 10) {
-                    HookLog("DX12: Overlay submitted to queue %p",
-                            g_OverlayQueue);
+                    HookLog("DX12: Overlay submitted to %s queue %p",
+                            useGameQueue ? "GAME" : "overlay", targetQueue);
                   }
 
-                  // CRITICAL FIX: Use CPU-side wait instead of GPU wait
-                  // GPU-side cross-queue wait causes device removal on some hardware
-                  if (g_State.fence && g_State.fenceEvent) {
+                  // Only use fence wait when using overlay queue
+                  // When using game queue, the work is already serialized
+                  if (!useGameQueue && g_State.fence && g_State.fenceEvent) {
+                    // Signal fence from overlay queue
+                    g_State.currentFenceValue++;
+                    g_State.fenceValues[idx] = g_State.currentFenceValue;
+                    g_OverlayQueue->Signal(g_State.fence,
+                                           g_State.currentFenceValue);
+                    
                     UINT64 waitValue = g_State.currentFenceValue;
-                    // Short non-blocking check if fence is already signaled
                     if (g_State.fence->GetCompletedValue() < waitValue) {
                       g_State.fence->SetEventOnCompletion(waitValue,
                                                           g_State.fenceEvent);
-                      // Very short wait - just enough for GPU to catch up
                       WaitForSingleObject(g_State.fenceEvent, 5);
                     }
                     if (s_execCount <= 10) {
@@ -1733,10 +1718,10 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
                               waitValue);
                     }
                   }
-                } else if (!g_OverlayQueue) {
+                } else if (!targetQueue) {
                   static int s_noQueueCount = 0;
                   if (++s_noQueueCount <= 5) {
-                    HookLog("DX12: Overlay skipped - no overlay queue");
+                    HookLog("DX12: Overlay skipped - no queue available");
                   }
                 }
 
