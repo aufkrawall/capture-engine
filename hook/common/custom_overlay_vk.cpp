@@ -1775,9 +1775,11 @@ void VulkanBackend::Render(const std::vector<DrawVertex> &vertices,
   // Set viewport
   VkViewport viewport = {};
   viewport.x = 0.0f;
-  viewport.y = 0.0f;
+  // Vulkan viewport Y=0 is at BOTTOM, so to have top at screen Y=0,
+  // we need to position viewport at the top with height extending down
+  viewport.y = (float)viewportHeight;
   viewport.width = (float)viewportWidth;
-  viewport.height = (float)viewportHeight;
+  viewport.height = -(float)viewportHeight;  // Negative height for top-down
   viewport.minDepth = 0.0f;
   viewport.maxDepth = 1.0f;
   disp->fp_vkCmdSetViewport(currentCmdBuffer, 0, 1, &viewport);
