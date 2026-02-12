@@ -320,8 +320,28 @@ void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex,
     rpBeginInfo.renderPass = state.renderPass;
     rpBeginInfo.framebuffer = state.framebuffers[imageIndex];
     rpBeginInfo.renderArea.extent = state.extent;
+    
     disp->fp_vkCmdBeginRenderPass(cmd, &rpBeginInfo,
                                   VK_SUBPASS_CONTENTS_INLINE);
+    
+    // Draw a colored rectangle in the top-left corner to indicate overlay is active
+    // This is a placeholder - actual overlay rendering would draw text/UI here
+    VkClearAttachment clearAttachment = {};
+    clearAttachment.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    clearAttachment.colorAttachment = 0;
+    clearAttachment.clearValue.color.float32[0] = 0.0f;  // R
+    clearAttachment.clearValue.color.float32[1] = 1.0f;  // G - bright green
+    clearAttachment.clearValue.color.float32[2] = 0.0f;  // B
+    clearAttachment.clearValue.color.float32[3] = 0.5f;  // A - 50% opacity
+    
+    VkClearRect clearRect = {};
+    clearRect.rect.offset = {0, 0};
+    clearRect.rect.extent = {200, 100};  // 200x100 rectangle in top-left
+    clearRect.baseArrayLayer = 0;
+    clearRect.layerCount = 1;
+    
+    disp->fp_vkCmdClearAttachments(cmd, 1, &clearAttachment, 1, &clearRect);
+    
     disp->fp_vkCmdEndRenderPass(cmd);
 
     VkImageMemoryBarrier presentBarrier = {

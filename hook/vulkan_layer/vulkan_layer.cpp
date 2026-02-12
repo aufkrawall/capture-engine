@@ -312,6 +312,8 @@ void PopulateDeviceDispatch(DeviceDispatch *dispatch, VkDevice device,
       (PFN_vkCmdBlitImage)gdpa(device, "vkCmdBlitImage");
   dispatch->fp_vkCmdPipelineBarrier =
       (PFN_vkCmdPipelineBarrier)gdpa(device, "vkCmdPipelineBarrier");
+  dispatch->fp_vkCmdClearAttachments =
+      (PFN_vkCmdClearAttachments)gdpa(device, "vkCmdClearAttachments");
   dispatch->fp_vkCreateFence = (PFN_vkCreateFence)gdpa(device, "vkCreateFence");
   dispatch->fp_vkDestroyFence =
       (PFN_vkDestroyFence)gdpa(device, "vkDestroyFence");
