@@ -1039,7 +1039,7 @@ bool VulkanBackend::CreateFontTexture(int width, int height,
   VkWriteDescriptorSet descriptorWrite = {
       VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
   descriptorWrite.dstSet = descriptorSet;
-  descriptorWrite.dstBinding = 0;
+  descriptorWrite.dstBinding = 1;  // Matches layout binding=1
   descriptorWrite.dstArrayElement = 0;
   descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
   descriptorWrite.descriptorCount = 1;
