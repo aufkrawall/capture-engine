@@ -68,6 +68,15 @@ public:
   // Basic shapes
   void DrawRect(float x, float y, float w, float h, uint32_t color);
   void DrawRectFilled(float x, float y, float w, float h, uint32_t color);
+  void DrawLine(float x0, float y0, float x1, float y1, uint32_t color, float thickness = 1.0f);
+
+  // Frame time graph
+  void DrawFrameTimeGraph(float x, float y, float width, float height,
+                          const float *frameTimes, int count,
+                          float minVal, float maxVal, uint32_t color);
+
+  // Debug
+  void ValidateCommands();
 
   // Window-like containers (simplified)
   void BeginWindow(float x, float y, uint32_t bgColor, float alpha = 0.8f);
@@ -116,6 +125,10 @@ private:
 
   bool initialized = false;
   bool frameStarted = false;
+
+  // Track current batch starting offsets for correct command creation
+  uint32_t currentBatchVertexOffset = 0;
+  uint32_t currentBatchIndexOffset = 0;
 };
 
 // Abstract backend interface - implement for each graphics API

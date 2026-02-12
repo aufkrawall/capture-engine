@@ -69,6 +69,9 @@ void Renderer::BeginFrame(int width, int height) {
   inWindow = false;
   inTable = false;
   frameStarted = true;
+
+  currentBatchVertexOffset = 0;
+  currentBatchIndexOffset = 0;
 }
 
 void Renderer::EndFrame() {
@@ -146,33 +149,34 @@ void Renderer::FlushBatch(bool useTexture) {
   if (vertices.empty())
     return;
 
+  // Save current batch starting offsets before clearing
+  uint32_t batchVertexStart = currentBatchVertexOffset;
+  uint32_t batchIndexStart = currentBatchIndexOffset;
+  uint32_t batchVertexCount = (uint32_t)vertices.size() - batchVertexStart;
+  uint32_t batchIndexCount = (uint32_t)indices.size() - batchIndexStart;
+
   // Check if we can merge with previous command
   if (!commands.empty() && commands.back().useTexture == useTexture) {
-    // Extend previous command
-    commands.back().vertexCount =
-        (uint32_t)vertices.size() - commands.back().vertexOffset;
-    commands.back().indexCount =
-        (uint32_t)indices.size() - commands.back().indexOffset;
+    // Extend previous command - keep its original offsets but add our counts
+    commands.back().vertexCount += batchVertexCount;
+    commands.back().indexCount += batchIndexCount;
   } else {
     // New command
     DrawCommand cmd = {};
-    cmd.vertexOffset = 0;
-    cmd.vertexCount = (uint32_t)vertices.size();
-    cmd.indexOffset = 0;
-    cmd.indexCount = (uint32_t)indices.size();
+    cmd.vertexOffset = batchVertexStart;
+    cmd.vertexCount = batchVertexCount;
+    cmd.indexOffset = batchIndexStart;
+    cmd.indexCount = batchIndexCount;
     cmd.useTexture = useTexture;
-
-    if (!commands.empty()) {
-      auto &prev = commands.back();
-      cmd.vertexOffset = prev.vertexOffset + prev.vertexCount;
-      cmd.indexOffset = prev.indexOffset + prev.indexCount;
-      cmd.vertexCount = (uint32_t)vertices.size() - cmd.vertexOffset;
-      cmd.indexCount = (uint32_t)indices.size() - cmd.indexOffset;
-    }
-
     commands.push_back(cmd);
   }
+
+  // Update batch offsets for next AddX call
+  currentBatchVertexOffset = (uint32_t)vertices.size();
+  currentBatchIndexOffset = (uint32_t)indices.size();
 }
+
+
 
 void Renderer::DrawText(float x, float y, const char *text, uint32_t color) {
   if (!initialized || !text)
@@ -222,6 +226,167 @@ void Renderer::DrawRectFilled(float x, float y, float w, float h,
   // Or just use (0,0) which should be white in our font texture
   AddQuad(x, y, w, h, 0, 0, 0, 0, color);
   FlushBatch(false); // Solid color, no texture sampling needed for color
+}
+
+void Renderer::DrawLine(float x0, float y0, float x1, float y1, uint32_t color,
+                        float thickness) {
+  if (!initialized)
+    return;
+
+  // Calculate perpendicular direction for line thickness
+  float dx = x1 - x0;
+  float dy = y1 - y0;
+  float len = std::sqrt(dx * dx + dy * dy);
+  if (len < 0.001f)
+    return;
+
+  // Normalize and get perpendicular
+  float nx = -dy / len * (thickness * 0.5f);
+  float ny = dx / len * (thickness * 0.5f);
+
+  // Create quad vertices for the line
+  uint16_t baseIdx = (uint16_t)vertices.size();
+  vertices.push_back({x0 + nx, y0 + ny, 0, 0, color});
+  vertices.push_back({x0 - nx, y0 - ny, 0, 0, color});
+  vertices.push_back({x1 - nx, y1 - ny, 0, 0, color});
+  vertices.push_back({x1 + nx, y1 + ny, 0, 0, color});
+
+  // Two triangles for the quad
+  indices.push_back(baseIdx + 0);
+  indices.push_back(baseIdx + 1);
+  indices.push_back(baseIdx + 2);
+  indices.push_back(baseIdx + 0);
+  indices.push_back(baseIdx + 2);
+  indices.push_back(baseIdx + 3);
+
+  FlushBatch(false);
+}
+
+void Renderer::DrawFrameTimeGraph(float x, float y, float width, float height,
+                                   const float *frameTimes, int count,
+                                   float minVal, float maxVal, uint32_t color) {
+  if (!initialized || !frameTimes || count < 2)
+    return;
+
+  // Draw graph background using solid color (no texture)
+  uint32_t bgColor = 0x40000000; // Semi-transparent black
+  DrawRectFilled(x, y, width, height, bgColor);
+
+  // Ensure valid range
+  float range = maxVal - minVal;
+  if (range < 0.001f)
+    range = 33.33f;
+
+  // Draw frame time line as connected line segments
+  // Add all vertices first, then flush once to avoid batching issues
+  float thickness = 1.5f * dpiScale;
+  float stepX = width / (float)(count - 1);
+
+  for (int i = 0; i < count - 1; i++) {
+    float v0 = frameTimes[i];
+    float v1 = frameTimes[i + 1];
+
+    // Clamp values
+    v0 = (std::max)(minVal, (std::min)(maxVal, v0));
+    v1 = (std::max)(minVal, (std::min)(maxVal, v1));
+
+    // Convert to screen coordinates (inverted Y: 0 at top, max at bottom)
+    float x0 = x + i * stepX;
+    float y0 = y + height - ((v0 - minVal) / range) * height;
+    float x1 = x + (i + 1) * stepX;
+    float y1 = y + height - ((v1 - minVal) / range) * height;
+
+    // Add line segment vertices directly (don't flush yet)
+    float dx = x1 - x0;
+    float dy = y1 - y0;
+    float len = std::sqrt(dx * dx + dy * dy);
+    if (len < 0.001f)
+      continue;
+
+    // Normalize and get perpendicular
+    float nx = -dy / len * (thickness * 0.5f);
+    float ny = dx / len * (thickness * 0.5f);
+
+    // Create quad vertices for the line
+    uint16_t baseIdx = (uint16_t)vertices.size();
+    vertices.push_back({x0 + nx, y0 + ny, 0, 0, color});
+    vertices.push_back({x0 - nx, y0 - ny, 0, 0, color});
+    vertices.push_back({x1 - nx, y1 - ny, 0, 0, color});
+    vertices.push_back({x1 + nx, y1 + ny, 0, 0, color});
+
+    // Two triangles for the quad
+    indices.push_back(baseIdx + 0);
+    indices.push_back(baseIdx + 1);
+    indices.push_back(baseIdx + 2);
+    indices.push_back(baseIdx + 0);
+    indices.push_back(baseIdx + 2);
+    indices.push_back(baseIdx + 3);
+  }
+
+  // Draw 16.67ms baseline (60 FPS target) if in range
+  float baseline60 = 16.67f;
+  if (baseline60 >= minVal && baseline60 <= maxVal) {
+    float baselineY = y + height - ((baseline60 - minVal) / range) * height;
+    uint32_t baselineColor = 0x60FFFFFF; // Semi-transparent white
+    float x0 = x;
+    float y0 = baselineY;
+    float x1 = x + width;
+    float y1 = baselineY;
+    float t = 1.0f;
+
+    float dx = x1 - x0;
+    float dy = y1 - y0;
+    float len = std::sqrt(dx * dx + dy * dy);
+    if (len >= 0.001f) {
+      float nx = -dy / len * (t * 0.5f);
+      float ny = dx / len * (t * 0.5f);
+      uint16_t baseIdx = (uint16_t)vertices.size();
+      vertices.push_back({x0 + nx, y0 + ny, 0, 0, baselineColor});
+      vertices.push_back({x0 - nx, y0 - ny, 0, 0, baselineColor});
+      vertices.push_back({x1 - nx, y1 - ny, 0, 0, baselineColor});
+      vertices.push_back({x1 + nx, y1 + ny, 0, 0, baselineColor});
+      indices.push_back(baseIdx + 0);
+      indices.push_back(baseIdx + 1);
+      indices.push_back(baseIdx + 2);
+      indices.push_back(baseIdx + 0);
+      indices.push_back(baseIdx + 2);
+      indices.push_back(baseIdx + 3);
+    }
+  }
+
+  // Draw 33.33ms baseline (30 FPS target) if in range
+  float baseline30 = 33.33f;
+  if (baseline30 >= minVal && baseline30 <= maxVal) {
+    float baselineY = y + height - ((baseline30 - minVal) / range) * height;
+    uint32_t baselineColor = 0x40FFFFFF; // Dimmer semi-transparent white
+    float x0 = x;
+    float y0 = baselineY;
+    float x1 = x + width;
+    float y1 = baselineY;
+    float t = 1.0f;
+
+    float dx = x1 - x0;
+    float dy = y1 - y0;
+    float len = std::sqrt(dx * dx + dy * dy);
+    if (len >= 0.001f) {
+      float nx = -dy / len * (t * 0.5f);
+      float ny = dx / len * (t * 0.5f);
+      uint16_t baseIdx = (uint16_t)vertices.size();
+      vertices.push_back({x0 + nx, y0 + ny, 0, 0, baselineColor});
+      vertices.push_back({x0 - nx, y0 - ny, 0, 0, baselineColor});
+      vertices.push_back({x1 - nx, y1 - ny, 0, 0, baselineColor});
+      vertices.push_back({x1 + nx, y1 + ny, 0, 0, baselineColor});
+      indices.push_back(baseIdx + 0);
+      indices.push_back(baseIdx + 1);
+      indices.push_back(baseIdx + 2);
+      indices.push_back(baseIdx + 0);
+      indices.push_back(baseIdx + 2);
+      indices.push_back(baseIdx + 3);
+    }
+  }
+
+  // Flush all line segments as a single batch
+  FlushBatch(false);
 }
 
 void Renderer::BeginWindow(float x, float y, uint32_t bgColor, float alpha) {

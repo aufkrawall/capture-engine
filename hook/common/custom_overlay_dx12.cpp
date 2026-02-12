@@ -666,8 +666,8 @@ void DX12Backend::Render(const std::vector<DrawVertex> &vertices,
     } else {
       currentCmdList->SetPipelineState(pipelineStateSolid.Get());
     }
-    currentCmdList->DrawIndexedInstanced(cmd.indexCount, 1, cmd.indexOffset,
-                                         cmd.vertexOffset, 0);
+    // vertexOffset should be 0 since indices are already absolute
+    currentCmdList->DrawIndexedInstanced(cmd.indexCount, 1, cmd.indexOffset, 0, 0);
   }
 
   if (s_renderCount <= 5) {

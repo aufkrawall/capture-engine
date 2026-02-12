@@ -185,7 +185,8 @@ void DX9Backend::Render(const std::vector<DrawVertex> &vertices,
       device->SetTexture(0, nullptr);
     }
 
-    device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, cmd.vertexOffset, 0,
+    // BaseVertexIndex should be 0 since indices are already absolute
+    device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
                                  (UINT)vertices.size(), cmd.indexOffset,
                                  cmd.indexCount / 3);
   }

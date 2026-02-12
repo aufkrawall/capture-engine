@@ -292,21 +292,38 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     break;
   case OverlayPosition::BottomLeft:
     x = padding;
-    y = viewportHeight - padding - 150; // Approximate height
+    y = viewportHeight - padding - 200; // Approximate height (increased for graph)
     break;
   case OverlayPosition::BottomRight:
     x = viewportWidth - padding - 200;
-    y = viewportHeight - padding - 150;
+    y = viewportHeight - padding - 200;
     break;
   }
 
-  // Draw background
+  // Calculate required height for background
   float bgWidth = 200, bgHeight = 150;
+  float lineHeight = (float)renderer->GetLineHeight();
+  float requiredHeight = lineHeight * 2; // Base padding
+
+  if (cfg.showGPU) requiredHeight += lineHeight;
+  if (cfg.showCPU) requiredHeight += lineHeight;
+  if (cfg.showVRAM) requiredHeight += lineHeight;
+  if (cfg.showRAM) requiredHeight += lineHeight;
+  if (cfg.showFPS) {
+    requiredHeight += lineHeight;
+    if (cachedAvgFPS > 0) requiredHeight += lineHeight;
+  }
+  if (cfg.showFrameTime) {
+    requiredHeight += 40.0f * renderer->GetDpiScale() + lineHeight + 8;
+  }
+
+  bgHeight = (std::max)(bgHeight, requiredHeight + 8);
+
+  // Draw background
   uint8_t bgAlpha = (uint8_t)(cfg.bgAlpha * 255);
   uint32_t bgColor = (bgAlpha << 24) | (cfg.bgColor & 0x00FFFFFF);
   renderer->DrawRectFilled(x - 8, y - 4, bgWidth, bgHeight, bgColor);
 
-  float lineHeight = (float)renderer->GetLineHeight();
   float cursorY = y;
   char buf[64];
 
@@ -378,6 +395,47 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
                                    shadowColor);
       cursorY += lineHeight;
     }
+  }
+
+  // Frame Time Graph (updates every frame for smooth animation)
+  if (cfg.showFrameTime && metrics) {
+    constexpr int GRAPH_SAMPLES = 180;
+    float graphData[GRAPH_SAMPLES];
+    metrics->GetLastHistory(graphData, GRAPH_SAMPLES);
+
+    // Calculate smart scale with minimum range to prevent over-dramatization
+    float minVal = 0.0f;
+    float maxVal = 0.0f;
+    float peakVal = 0.0f;
+
+    for (int i = 0; i < GRAPH_SAMPLES; i++) {
+      if (graphData[i] > peakVal)
+        peakVal = graphData[i];
+    }
+
+    // Minimum range of 20ms to prevent jittery appearance
+    float minRange = 20.0f;
+    // Scale to 110% of peak, but at least minRange
+    maxVal = (std::max)(peakVal * 1.1f, minRange);
+    // Cap at 66ms (~15 FPS) to handle outliers gracefully
+    maxVal = (std::min)(maxVal, 66.0f);
+
+    // Graph dimensions - full width of overlay
+    float graphWidth = bgWidth;
+    float graphHeight = 50.0f * renderer->GetDpiScale();
+    float graphX = x - 8;
+    float graphY = cursorY + 4;
+
+    // Draw the graph
+    uint32_t graphColor = cfg.frametimeColor ? cfg.frametimeColor : Colors::Yellow;
+    renderer->DrawFrameTimeGraph(graphX, graphY, graphWidth, graphHeight,
+                                  graphData, GRAPH_SAMPLES, minVal, maxVal, graphColor);
+
+    // Show current frame time value below graph
+    float currentFrameTime = graphData[GRAPH_SAMPLES - 1];
+    snprintf(buf, 64, "%.2f ms", currentFrameTime);
+    renderer->DrawTextWithShadow(x, graphY + graphHeight + 2, "Frametime", textColor, shadowColor);
+    renderer->DrawTextWithShadow(x + 100, graphY + graphHeight + 2, buf, graphColor, shadowColor);
   }
 
   (void)viewportWidth;

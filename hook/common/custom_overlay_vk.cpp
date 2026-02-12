@@ -1280,9 +1280,9 @@ void VulkanBackend::Render(const std::vector<DrawVertex> &vertices,
     disp->fp_vkCmdBindPipeline(currentCmdBuffer,
                                VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineToUse);
 
-    // Draw indexed
+    // Draw indexed - vertexOffset should be 0 since indices are already absolute
     disp->fp_vkCmdDrawIndexed(currentCmdBuffer, cmd.indexCount, 1,
-                              cmd.indexOffset, cmd.vertexOffset, 0);
+                              cmd.indexOffset, 0, 0);
   }
 }
 

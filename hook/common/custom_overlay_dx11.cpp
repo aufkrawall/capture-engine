@@ -425,7 +425,8 @@ void DX11Backend::Render(const std::vector<DrawVertex> &vertices,
     } else {
       context->PSSetShader(pixelShaderSolid.Get(), nullptr, 0);
     }
-    context->DrawIndexed(cmd.indexCount, cmd.indexOffset, cmd.vertexOffset);
+    // vertexOffset should be 0 since indices are already absolute
+    context->DrawIndexed(cmd.indexCount, cmd.indexOffset, 0);
   }
 
   // Restore full pipeline state
