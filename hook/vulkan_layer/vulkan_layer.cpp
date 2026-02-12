@@ -304,6 +304,16 @@ void PopulateDeviceDispatch(DeviceDispatch *dispatch, VkDevice device,
   dispatch->fp_vkCmdDraw = (PFN_vkCmdDraw)gdpa(device, "vkCmdDraw");
   dispatch->fp_vkCmdDrawIndexed =
       (PFN_vkCmdDrawIndexed)gdpa(device, "vkCmdDrawIndexed");
+  dispatch->fp_vkCmdPushConstants =
+      (PFN_vkCmdPushConstants)gdpa(device, "vkCmdPushConstants");
+  dispatch->fp_vkCmdSetViewport =
+      (PFN_vkCmdSetViewport)gdpa(device, "vkCmdSetViewport");
+  dispatch->fp_vkCmdSetScissor =
+      (PFN_vkCmdSetScissor)gdpa(device, "vkCmdSetScissor");
+  dispatch->fp_vkCmdBindVertexBuffers =
+      (PFN_vkCmdBindVertexBuffers)gdpa(device, "vkCmdBindVertexBuffers");
+  dispatch->fp_vkCmdBindIndexBuffer =
+      (PFN_vkCmdBindIndexBuffer)gdpa(device, "vkCmdBindIndexBuffer");
   dispatch->fp_vkCmdCopyImage =
       (PFN_vkCmdCopyImage)gdpa(device, "vkCmdCopyImage");
   dispatch->fp_vkCmdCopyImageToBuffer =

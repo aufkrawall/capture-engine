@@ -93,6 +93,11 @@ struct DeviceDispatch {
   PFN_vkCmdBindPipeline fp_vkCmdBindPipeline = nullptr;
   PFN_vkCmdDraw fp_vkCmdDraw = nullptr;
   PFN_vkCmdDrawIndexed fp_vkCmdDrawIndexed = nullptr;
+  PFN_vkCmdPushConstants fp_vkCmdPushConstants = nullptr;
+  PFN_vkCmdSetViewport fp_vkCmdSetViewport = nullptr;
+  PFN_vkCmdSetScissor fp_vkCmdSetScissor = nullptr;
+  PFN_vkCmdBindVertexBuffers fp_vkCmdBindVertexBuffers = nullptr;
+  PFN_vkCmdBindIndexBuffer fp_vkCmdBindIndexBuffer = nullptr;
   PFN_vkCmdCopyImage fp_vkCmdCopyImage = nullptr;
   PFN_vkCmdCopyImageToBuffer fp_vkCmdCopyImageToBuffer = nullptr;
   PFN_vkCmdBlitImage fp_vkCmdBlitImage = nullptr;
