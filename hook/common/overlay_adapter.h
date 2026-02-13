@@ -48,6 +48,7 @@ public:
                                          // DeviceDispatch*, InstanceDispatch*
 
   void Shutdown();
+  void SetShutdownMode(bool skipDeviceRelease);  // Call before Shutdown when device is being destroyed
   bool IsInitialized() const { return initialized; }
   OverlayBackendType GetBackendType() const { return backendType; }
 
@@ -83,6 +84,7 @@ private:
   uint32_t droppedFrames = 0;
   bool isHDR = false;
   bool initialized = false;
+  bool skipDeviceRelease = false;  // When true, Shutdown won't release device refs (app is closing)
 
   // Cached values for throttled updates
   DWORD lastUpdateTime = 0;

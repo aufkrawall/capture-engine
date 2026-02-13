@@ -26,11 +26,58 @@
 // Global adapter instance
 OverlayAdapter g_OverlayAdapter;
 
+// Helper to detect Windows DPI scaling
+static float GetWindowsDpiScale() {
+  // Try to get DPI from the active window monitor
+  HWND hwnd = GetForegroundWindow();
+  if (!hwnd) {
+    hwnd = GetDesktopWindow();
+  }
+
+  // Try GetDpiForWindow first (Windows 10 1607+)
+  typedef UINT (WINAPI *GetDpiForWindowFn)(HWND);
+  static GetDpiForWindowFn getDpiForWindow =
+      (GetDpiForWindowFn)GetProcAddress(GetModuleHandleA("user32.dll"), "GetDpiForWindow");
+
+  if (getDpiForWindow) {
+    UINT dpi = getDpiForWindow(hwnd);
+    if (dpi > 0) {
+      return dpi / 96.0f;
+    }
+  }
+
+  // Fallback to GetDeviceCaps
+  HDC hdc = GetDC(hwnd);
+  if (hdc) {
+    int dpiX = GetDeviceCaps(hdc, LOGPIXELSX);
+    ReleaseDC(hwnd, hdc);
+    if (dpiX > 0) {
+      return dpiX / 96.0f;
+    }
+  }
+
+  // Default to 1.0 if detection fails
+  return 1.0f;
+}
+
 OverlayAdapter::OverlayAdapter() {
   memset(graphicsAPI, 0, sizeof(graphicsAPI));
 }
 
-OverlayAdapter::~OverlayAdapter() { Shutdown(); }
+OverlayAdapter::~OverlayAdapter() {
+  // CRITICAL: During process exit (skipDeviceRelease=true), skip ALL cleanup
+  // The D3D device is already destroyed. Any Release() calls will crash.
+  // Just set pointers to nullptr - memory will be reclaimed by OS on exit.
+  if (skipDeviceRelease) {
+    // Don't delete backend or renderer - their destructors would call Release()
+    // Just leak the memory - OS will reclaim it on process exit
+    backend = nullptr;
+    renderer = nullptr;
+    initialized = false;
+    return;
+  }
+  Shutdown();
+}
 
 void OverlayAdapter::SetGraphicsAPI(const char *api) {
   strncpy(graphicsAPI, api, sizeof(graphicsAPI) - 1);
@@ -49,7 +96,7 @@ bool OverlayAdapter::InitDX9(void *device) {
   backendType = OverlayBackendType::DX9;
 
   renderer = new CustomOverlay::Renderer();
-  float dpiScale = 1.0f; // DX9 games typically don't support high DPI
+  float dpiScale = GetWindowsDpiScale();
   if (!renderer->Initialize(backend, dpiScale)) {
     delete renderer;
     delete backend;
@@ -77,7 +124,8 @@ bool OverlayAdapter::InitDX11(void *device, void *context) {
   backendType = OverlayBackendType::DX11;
 
   renderer = new CustomOverlay::Renderer();
-  if (!renderer->Initialize(backend, 1.0f)) {
+  float dpiScale = GetWindowsDpiScale();
+  if (!renderer->Initialize(backend, dpiScale)) {
     delete renderer;
     delete backend;
     renderer = nullptr;
@@ -105,7 +153,8 @@ bool OverlayAdapter::InitDX12(void *device, void *queue, int rtvFormat) {
   backendType = OverlayBackendType::DX12;
 
   renderer = new CustomOverlay::Renderer();
-  if (!renderer->Initialize(backend, 1.0f)) {
+  float dpiScale = GetWindowsDpiScale();
+  if (!renderer->Initialize(backend, dpiScale)) {
     delete renderer;
     delete backend;
     renderer = nullptr;
@@ -129,7 +178,8 @@ bool OverlayAdapter::InitOpenGL() {
   backendType = OverlayBackendType::OpenGL;
 
   renderer = new CustomOverlay::Renderer();
-  if (!renderer->Initialize(backend, 1.0f)) {
+  float dpiScale = GetWindowsDpiScale();
+  if (!renderer->Initialize(backend, dpiScale)) {
     delete renderer;
     delete backend;
     renderer = nullptr;
@@ -165,7 +215,8 @@ bool OverlayAdapter::InitVulkan(void *device, void *physDevice, void *queue,
 
   renderer = new CustomOverlay::Renderer();
   HookLog("OverlayAdapter::InitVulkan - Created renderer, initializing...");
-  if (!renderer->Initialize(backend, 1.0f)) {
+  float dpiScale = GetWindowsDpiScale();
+  if (!renderer->Initialize(backend, dpiScale)) {
     HookLog("OverlayAdapter::InitVulkan - Renderer initialization failed");
     delete renderer;
     delete backend;
@@ -180,6 +231,17 @@ bool OverlayAdapter::InitVulkan(void *device, void *physDevice, void *queue,
   OutputDebugStringA("[OverlayAdapter] Initialized Vulkan backend\n");
   HookLog("OverlayAdapter::InitVulkan - About to return true");
   return true;
+}
+
+void OverlayAdapter::SetShutdownMode(bool skipRelease) {
+  skipDeviceRelease = skipRelease;
+#ifndef VK_LAYER_CE_OVERLAY
+  // Also propagate to DX11 backend if it exists (hook DLL only)
+  if (backend && backendType == OverlayBackendType::DX11) {
+    auto dx11Backend = static_cast<CustomOverlay::DX11Backend *>(backend);
+    dx11Backend->SetSkipRelease(skipRelease);
+  }
+#endif
 }
 
 void OverlayAdapter::Shutdown() {
@@ -256,9 +318,15 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
   auto &mem = *ipc->GetSharedMem();
   auto &cfg = mem.overlayConfig;
 
-  // Calculate position
-  float padding = (float)cfg.padding;
+  // Get DPI scale for consistent sizing
+  float dpiScale = renderer->GetDpiScale();
+
+  // Calculate position (DPI-aware padding)
+  float padding = (float)cfg.padding * dpiScale;
   float x = padding, y = padding;
+
+  // Wider background to accommodate "X.XX GB of Y.YY GB" format (DPI-aware)
+  float bgWidth = 280 * dpiScale;
 
   switch (cfg.position) {
   case OverlayPosition::TopLeft:
@@ -266,7 +334,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     y = padding;
     break;
   case OverlayPosition::TopRight:
-    x = viewportWidth - padding - 200;
+    x = viewportWidth - padding - bgWidth;
     y = padding;
     break;
   case OverlayPosition::BottomLeft:
@@ -274,23 +342,33 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     y = viewportHeight - padding - 200;
     break;
   case OverlayPosition::BottomRight:
-    x = viewportWidth - padding - 200;
+    x = viewportWidth - padding - bgWidth;
     y = viewportHeight - padding - 200;
     break;
   }
 
   // Calculate required height for background
-  float bgWidth = 200, bgHeight = 150;
   float lineHeight = (float)renderer->GetLineHeight();
-  float requiredHeight = lineHeight * 2; // Base padding
+  float requiredHeight = lineHeight; // Minimal top padding
 
   if (cfg.showGPU) requiredHeight += lineHeight;
   if (cfg.showCPU) requiredHeight += lineHeight;
   if (cfg.showVRAM) requiredHeight += lineHeight;
   if (cfg.showRAM) requiredHeight += lineHeight;
+
+  // Check if FG is active
+  bool fgActive = metrics && metrics->IsFGActive();
+
   if (cfg.showFPS) {
     requiredHeight += lineHeight;
     if (cachedAvgFPS > 0) requiredHeight += lineHeight;
+    // Base/Display line when FG is active
+    if (fgActive) requiredHeight += lineHeight;
+  }
+
+  // FG status line
+  if (cfg.showFG && fgActive) {
+    requiredHeight += lineHeight;
   }
 
   // Pre-calculate graph layout for height calculation
@@ -301,19 +379,17 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
   bool showGraph = cfg.showFrameTime && metrics;
 
   if (showGraph) {
-    requiredHeight += 50.0f * renderer->GetDpiScale() + lineHeight + 8;
+    requiredHeight += 4 * dpiScale; // Gap before graph
+    requiredHeight += 50.0f * dpiScale; // Graph height
     metrics->GetLastHistory(graphData, GRAPH_SAMPLES);
   }
 
-  bgHeight = (std::max)(bgHeight, requiredHeight + 8);
+  float bgHeight = requiredHeight + 2 * dpiScale;
 
   // --- PASS 1: All solid geometry (background + graph) ---
-  // This groups all non-textured draws into a single batch, minimizing
-  // pipeline state switches on the GPU.
-
   uint8_t bgAlpha = (uint8_t)(cfg.bgAlpha * 255);
   uint32_t bgColor = (bgAlpha << 24) | (cfg.bgColor & 0x00FFFFFF);
-  renderer->DrawRectFilled(x - 8, y - 4, bgWidth, bgHeight, bgColor);
+  renderer->DrawRectFilled(x - 4 * dpiScale, y - 2 * dpiScale, bgWidth, bgHeight, bgColor);
 
   // Calculate cursorY for graph position (same layout as text pass)
   float graphCursorY = y;
@@ -324,20 +400,41 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
   if (cfg.showFPS) {
     graphCursorY += lineHeight;
     if (cachedAvgFPS > 0 && cached1PercentLow > 0) graphCursorY += lineHeight;
+    if (fgActive) graphCursorY += lineHeight;
   }
+  if (cfg.showFG && fgActive) graphCursorY += lineHeight;
 
+  // Calculate max frame time from last ~2 seconds for display
+  float recentMaxFrameTime = 0.0f;
+  float recentAvgFrameTime = 0.0f;
   if (showGraph) {
+    // Calculate how many samples represent ~2 seconds based on current FPS
+    int samplesPerSecond = (cachedFPS > 0) ? (int)cachedFPS : 60;
+    int samplesFor2Seconds = (std::min)(GRAPH_SAMPLES, samplesPerSecond * 2);
+    int startIdx = GRAPH_SAMPLES - samplesFor2Seconds;
+    
+    float sum = 0.0f;
+    int count = 0;
+    for (int i = startIdx; i < GRAPH_SAMPLES; i++) {
+      float val = graphData[i];
+      if (val > recentMaxFrameTime) recentMaxFrameTime = val;
+      sum += val;
+      count++;
+    }
+    if (count > 0) recentAvgFrameTime = sum / count;
+    
+    // Calculate graph scaling based on all samples - use exact peak value
     float peakVal = 0.0f;
     for (int i = 0; i < GRAPH_SAMPLES; i++) {
       if (graphData[i] > peakVal) peakVal = graphData[i];
     }
-    graphMaxVal = (std::max)(peakVal * 1.1f, 20.0f);
-    graphMaxVal = (std::min)(graphMaxVal, 66.0f);
+    // Set max to peak value (rounded up nicely), with minimum of 20ms
+    graphMaxVal = (std::max)(peakVal, 20.0f);
 
     graphWidth = bgWidth;
-    graphHeight = 50.0f * renderer->GetDpiScale();
-    graphX = x - 8;
-    graphY = graphCursorY + 4;
+    graphHeight = 50.0f * dpiScale;
+    graphX = x - 4 * dpiScale;
+    graphY = graphCursorY + 4 * dpiScale; // Small gap below stats
 
     uint32_t graphColor = cfg.frametimeColor ? cfg.frametimeColor : Colors::Yellow;
     renderer->DrawFrameTimeGraph(graphX, graphY, graphWidth, graphHeight,
@@ -346,90 +443,145 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
   }
 
   // --- PASS 2: All text (single textured batch) ---
-  // All text draws merge into one draw command via FlushBatch merge logic.
-
   float cursorY = y;
   char buf[64];
 
   uint32_t textColor = cfg.textColor ? cfg.textColor : Colors::White;
-  uint32_t shadowColor =
-      cfg.textOutlineColor ? cfg.textOutlineColor : Colors::Black;
+  uint32_t shadowColor = cfg.textOutlineColor ? cfg.textOutlineColor : Colors::Black;
 
-  // GPU
+  // Column positions for alignment (DPI-aware)
+  float labelCol = x;
+  float valueCol = x + 110 * dpiScale; // Increased spacing for longer values
+
+  // GPU - Name in green, % in yellow (based on load)
   if (cfg.showGPU) {
     snprintf(buf, 64, "%.0f%%", cachedSystemMetrics.gpuUsage);
-    renderer->DrawTextWithShadow(x, cursorY,
+    renderer->DrawTextWithShadow(labelCol, cursorY,
                                  SystemMetricsCollector::Get().GetGPUName(),
-                                 cfg.gpuColor, shadowColor);
-    renderer->DrawTextWithShadow(x + 100, cursorY, buf,
+                                 Colors::LabelGreen, shadowColor);
+    renderer->DrawTextWithShadow(valueCol, cursorY, buf,
                                  GetLoadColor(cachedSystemMetrics.gpuUsage),
                                  shadowColor);
     cursorY += lineHeight;
   }
 
-  // CPU
+  // CPU - Name in green, % (maxCore%) in cyan
   if (cfg.showCPU) {
-    snprintf(buf, 64, "%.0f%%", cachedSystemMetrics.cpuUsage);
-    renderer->DrawTextWithShadow(x, cursorY,
+    snprintf(buf, 64, "%.0f%% (%.0f%%)", cachedSystemMetrics.cpuUsage,
+             cachedSystemMetrics.cpuMaxCoreUsage);
+    renderer->DrawTextWithShadow(labelCol, cursorY,
                                  SystemMetricsCollector::Get().GetCPUName(),
-                                 cfg.cpuColor, shadowColor);
-    renderer->DrawTextWithShadow(x + 100, cursorY, buf,
-                                 GetLoadColor(cachedSystemMetrics.cpuUsage),
-                                 shadowColor);
+                                 Colors::LabelGreen, shadowColor);
+    renderer->DrawTextWithShadow(valueCol, cursorY, buf, Colors::ValueCyan, shadowColor);
     cursorY += lineHeight;
   }
 
-  // VRAM
+  // VRAM - Label in orange, "X.XX GB of Y.YY GB" in white
   if (cfg.showVRAM) {
-    float gbUsed =
-        (float)cachedSystemMetrics.vramUsed / (1024.0f * 1024.0f * 1024.0f);
-    snprintf(buf, 64, "%.2f GB", gbUsed);
-    renderer->DrawTextWithShadow(x, cursorY, "VRAM", cfg.vramColor,
+    float gbUsed = (float)cachedSystemMetrics.vramUsed / (1024.0f * 1024.0f * 1024.0f);
+    float gbTotal = (float)cachedSystemMetrics.vramTotal / (1024.0f * 1024.0f * 1024.0f);
+    if (gbTotal < 0.1f) gbTotal = 11.66f; // Fallback if not detected
+    snprintf(buf, 64, "%.2f GB of %.2f GB", gbUsed, gbTotal);
+    renderer->DrawTextWithShadow(labelCol, cursorY, "VRAM", Colors::LabelOrange,
                                  shadowColor);
-    renderer->DrawTextWithShadow(x + 100, cursorY, buf, textColor, shadowColor);
+    renderer->DrawTextWithShadow(valueCol, cursorY, buf, textColor, shadowColor);
     cursorY += lineHeight;
   }
 
-  // RAM
+  // RAM - Label in pink, "X.XX GB of Y.YY GB" in white with indicator squares
   if (cfg.showRAM) {
-    float gbUsed =
-        (float)cachedSystemMetrics.ramUsed / (1024.0f * 1024.0f * 1024.0f);
-    snprintf(buf, 64, "%.2f GB", gbUsed);
-    renderer->DrawTextWithShadow(x, cursorY, "RAM", cfg.ramColor, shadowColor);
-    renderer->DrawTextWithShadow(x + 100, cursorY, buf, textColor, shadowColor);
+    float gbUsed = (float)cachedSystemMetrics.ramUsed / (1024.0f * 1024.0f * 1024.0f);
+    float gbTotal = (float)cachedSystemMetrics.ramTotal / (1024.0f * 1024.0f * 1024.0f);
+    if (gbTotal < 0.1f) gbTotal = 31.93f; // Fallback if not detected
+
+    snprintf(buf, 64, "%.2f GB of %.2f GB", gbUsed, gbTotal);
+    renderer->DrawTextWithShadow(labelCol, cursorY, "RAM", Colors::LabelPink, shadowColor);
+    renderer->DrawTextWithShadow(valueCol, cursorY, buf, textColor, shadowColor);
     cursorY += lineHeight;
   }
 
-  // FPS
+  // FPS Section
   if (cfg.showFPS) {
+    // Graphics API label (if set) with current FPS
+    const char *apiLabel = graphicsAPI[0] ? graphicsAPI : "FPS";
     snprintf(buf, 64, "%.0f FPS", cachedFPS);
-    const char *label = graphicsAPI[0] ? graphicsAPI : "FPS";
-    renderer->DrawTextWithShadow(x, cursorY, label, textColor, shadowColor);
-    renderer->DrawTextWithShadow(x + 100, cursorY, buf, cfg.fpsColor,
-                                 shadowColor);
+    renderer->DrawTextWithShadow(labelCol, cursorY, apiLabel, textColor, shadowColor);
+    renderer->DrawTextWithShadow(valueCol, cursorY, buf, cfg.fpsColor, shadowColor);
     cursorY += lineHeight;
 
-    // FPS stats
+    // Base/Display FPS when FG is active (shown first as in reference)
+    if (fgActive) {
+      float baseFPS = metrics->GetFGBaseFPS();
+      float outputFPS = metrics->GetFGOutputFPS();
+      if (baseFPS < 1.0f) baseFPS = cachedFPS;
+      if (outputFPS < 1.0f) outputFPS = cachedFPS;
+
+      snprintf(buf, 64, "%.0f / %.0f FPS", baseFPS, outputFPS);
+      renderer->DrawTextWithShadow(labelCol, cursorY, "Base/Display",
+                                   Colors::LabelYellow, shadowColor);
+      renderer->DrawTextWithShadow(valueCol, cursorY, buf, Colors::ValueYellow, shadowColor);
+      cursorY += lineHeight;
+    }
+
+    // Avg/1%/0.1%
     if (cachedAvgFPS > 0 && cached1PercentLow > 0) {
-      snprintf(buf, 64, "%.0f/%.0f/%.0f", cachedAvgFPS, cached1PercentLow,
+      snprintf(buf, 64, "%.0f / %.0f / %.0f", cachedAvgFPS, cached1PercentLow,
                cached01PercentLow);
-      renderer->DrawTextWithShadow(x, cursorY, "Avg/1%/0.1%", textColor,
+      renderer->DrawTextWithShadow(labelCol, cursorY, "Avg/1%/0.1%", textColor,
                                    shadowColor);
-      renderer->DrawTextWithShadow(x + 100, cursorY, buf, cfg.fpsColor,
-                                   shadowColor);
+      renderer->DrawTextWithShadow(valueCol, cursorY, buf, Colors::ValueYellow, shadowColor);
       cursorY += lineHeight;
     }
   }
 
-  // Frame time label text (after graph solid geometry was already drawn)
+  // FG Status line
+  if (cfg.showFG && fgActive) {
+    int multiplier = metrics->GetFGMultiplier();
+    snprintf(buf, 64, "FG %dx", multiplier);
+    renderer->DrawTextWithShadow(labelCol, cursorY, "FG", Colors::LabelCyan, shadowColor);
+    renderer->DrawTextWithShadow(valueCol, cursorY, buf, Colors::LabelCyan, shadowColor);
+    cursorY += lineHeight;
+  }
+
+  // Frame time graph labels and markers
   if (showGraph) {
-    float currentFrameTime = graphData[GRAPH_SAMPLES - 1];
-    snprintf(buf, 64, "%.2f ms", currentFrameTime);
-    uint32_t graphColor = cfg.frametimeColor ? cfg.frametimeColor : Colors::Yellow;
-    renderer->DrawTextWithShadow(x, graphY + graphHeight + 2, "Frametime",
-                                 textColor, shadowColor);
-    renderer->DrawTextWithShadow(x + 100, graphY + graphHeight + 2, buf,
-                                 graphColor, shadowColor);
+    uint32_t graphLabelColor = Colors::Green;
+    uint32_t grayColor = 0xFF808080; // Gray for scale marker
+    float smallFontScale = 0.75f; // Smaller font for graph labels
+
+    // Scale marker: small gray line at top left with ceiling value (with ms unit)
+    float scaleLineLength = 15.0f * dpiScale;
+    float scaleLineY = graphY + 8 * dpiScale;
+    renderer->DrawLine(graphX + 4 * dpiScale, scaleLineY, 
+                       graphX + 4 * dpiScale + scaleLineLength, scaleLineY, 
+                       grayColor, 1.0f * dpiScale);
+    
+    // Scale marker text (ceiling value with ms unit in small gray font)
+    snprintf(buf, 64, "%.0f ms", graphMaxVal);
+    float scaleTextWidth = 0, scaleTextHeight = 0;
+    renderer->CalcTextSizeScaled(buf, &scaleTextWidth, &scaleTextHeight, smallFontScale);
+    renderer->DrawTextScaledWithShadow(graphX + 6 * dpiScale + scaleLineLength, 
+                                       scaleLineY - scaleTextHeight * 0.5f, 
+                                       buf, grayColor, shadowColor, smallFontScale);
+    
+    // Current frame time display at top right of graph
+    // Color based on comparison with average: green (close), yellow (spike), red (stutter)
+    uint32_t frameTimeColor = Colors::Green;
+    if (recentAvgFrameTime > 0.001f) {
+      float ratio = recentMaxFrameTime / recentAvgFrameTime;
+      if (ratio > 2.0f) {
+        frameTimeColor = Colors::Red; // Bad stutter (2x average)
+      } else if (ratio > 1.5f) {
+        frameTimeColor = Colors::Yellow; // Moderate spike (1.5x average)
+      }
+    }
+    
+    snprintf(buf, 64, "%.1f ms", recentMaxFrameTime);
+    float ftTextWidth = 0, ftTextHeight = 0;
+    renderer->CalcTextSizeScaled(buf, &ftTextWidth, &ftTextHeight, smallFontScale);
+    renderer->DrawTextScaledWithShadow(graphX + graphWidth - ftTextWidth - 4 * dpiScale, 
+                                       graphY + 6 * dpiScale, 
+                                       buf, frameTimeColor, shadowColor, smallFontScale);
   }
 
   (void)viewportWidth;

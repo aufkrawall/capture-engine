@@ -241,7 +241,7 @@ static VSyncOverride GetDX11VSyncOverride() {
 }
 
 // Forward Declarations
-void CleanupDX11Resources();
+void CleanupDX11Resources(bool releaseDeviceContext = true);
 void HandleDX11ProcessFrame(IDXGISwapChain *pSwapChain, bool isRealFrame);
 void DrawDX11Overlay(IDXGISwapChain *pSwapChain);
 static void InstallVTableHooks(ID3D11Device *pDevice,
@@ -250,6 +250,13 @@ static void InstallVTableHooks(ID3D11Device *pDevice,
 
 HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
                                             UINT SyncInterval, UINT Flags) {
+  // CRITICAL ULTIMATE FIX: If shutdown flag is set, return immediately WITHOUT
+  // touching ANYTHING - no wrapper checks, no GetDesc, nothing. Just return.
+  // The device may already be destroyed and any D3D call can crash.
+  if (g_ShuttingDown.load()) {
+    return S_OK;
+  }
+
   // WRAPPER ARCHITECTURE: Skip if called from within wrapper's Present
   // The wrapper sets a thread-local flag before calling the real Present
   extern bool IsInWrapperPresent();
@@ -263,6 +270,19 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
     return oPresent(pSwapChain, SyncInterval, Flags);
   }
 
+  // SAFETY CHECK: Verify window is still valid before doing ANY D3D work
+  // This prevents crashes when the app is shutting down and destroying its window
+  DXGI_SWAP_CHAIN_DESC desc;
+  if (SUCCEEDED(pSwapChain->GetDesc(&desc))) {
+    if (!desc.OutputWindow || !IsWindow(desc.OutputWindow)) {
+      // Window is being destroyed - app is shutting down
+      // Set shutdown flag and bail immediately without touching any D3D objects
+      g_ShuttingDown.store(true);
+      EarlyLog("DX11: Window destroyed (hwnd=%p), entering shutdown mode", desc.OutputWindow);
+      return S_OK;
+    }
+  }
+
   // Process VSync Override
   VSyncOverride override = GetDX11VSyncOverride();
   if (override.shouldOverride) {
@@ -272,16 +292,14 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
     }
   }
 
-  // Invalidate swapchain if requested (e.g. by DX12 hook detecting FSR4/FG)
-  if (DXGIShared::g_SharedState.swapchainInvalid.load(
-          std::memory_order_acquire)) {
-    DXGIShared::g_SharedState.swapchainInvalid.store(false,
-                                                     std::memory_order_release);
-    CleanupDX11Resources();
-  }
-
   // Non-wrapper path: Draw overlay via vtable hook
   HandleDX11ProcessFrame(pSwapChain, true);
+
+  // If window was invalid during overlay rendering, skip Present to avoid crash
+  // The app is already tearing down its D3D resources
+  if (g_ShuttingDown.load()) {
+    return S_OK;  // Return success to avoid cascading errors
+  }
 
   // FPS Limiter
   g_SharedFpsLimiter.Apply();
@@ -292,6 +310,11 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
 HRESULT STDMETHODCALLTYPE DetourDX11Present1(
     IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT PresentFlags,
     const DXGI_PRESENT_PARAMETERS *pPresentParameters) {
+  // CRITICAL: Check for shutdown first - if app is closing, don't touch anything
+  if (g_ShuttingDown.load()) {
+    return S_OK;
+  }
+
   // WRAPPER ARCHITECTURE: Skip if called from within wrapper's Present
   extern bool IsInWrapperPresent();
   if (IsInWrapperPresent()) {
@@ -300,6 +323,16 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(
       return oPresent1(pSwapChain, SyncInterval, PresentFlags,
                        pPresentParameters);
     return oPresent(pSwapChain, SyncInterval, PresentFlags);
+  }
+
+  // SAFETY CHECK: Verify window is still valid before doing ANY D3D work
+  DXGI_SWAP_CHAIN_DESC desc;
+  if (SUCCEEDED(pSwapChain->GetDesc(&desc))) {
+    if (!desc.OutputWindow || !IsWindow(desc.OutputWindow)) {
+      g_ShuttingDown.store(true);
+      EarlyLog("DX11: Window destroyed (hwnd=%p), entering shutdown mode", desc.OutputWindow);
+      return S_OK;
+    }
   }
 
   // Vulkan coordination: Skip DX11 overlay if Vulkan Layer is active AND
@@ -361,6 +394,11 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(
 
   // Non-wrapper path: Draw overlay via vtable hook
   DrawDX11Overlay(pSwapChain);
+
+  // If window was invalid during overlay rendering, skip Present to avoid crash
+  if (g_ShuttingDown.load()) {
+    return S_OK;
+  }
 
   if (oPresent1)
     return oPresent1(pSwapChain, SyncInterval, PresentFlags,
@@ -886,27 +924,43 @@ void DX11_UpdatePerformanceMetrics(int64_t qpcUs) {
   }
 }
 
-void CleanupDX11Resources() {
-  if (g_mainRenderTargetView) {
-    g_mainRenderTargetView->Release();
+void CleanupDX11Resources(bool releaseDeviceContext) {
+  // When the window is being destroyed (releaseDeviceContext=false), skip ALL
+  // releases because the underlying D3D device is already being torn down.
+  // Calling Release() on any resource (even RTVs) can crash at this point.
+  if (releaseDeviceContext) {
+    if (g_mainRenderTargetView) {
+      g_mainRenderTargetView->Release();
+      g_mainRenderTargetView = nullptr;
+    }
+    if (g_mainRenderTargetView10) {
+      g_mainRenderTargetView10->Release();
+      g_mainRenderTargetView10 = nullptr;
+    }
+  } else {
     g_mainRenderTargetView = nullptr;
-  }
-  if (g_mainRenderTargetView10) {
-    g_mainRenderTargetView10->Release();
     g_mainRenderTargetView10 = nullptr;
   }
 
-  if (g_OverlayAdapter.IsInitialized()) {
+  // CRITICAL: Only call Shutdown() when doing normal cleanup (resize, etc.)
+  // During app shutdown (releaseDeviceContext=false), skip Shutdown() - the
+  // OverlayAdapter destructor will handle cleanup by leaking memory since
+  // we've set skipDeviceRelease=true.
+  if (releaseDeviceContext && g_OverlayAdapter.IsInitialized()) {
     g_OverlayAdapter.Shutdown();
   }
 
-  // Release cached device/context refs
-  if (g_pd3dDeviceContext) {
-    g_pd3dDeviceContext->Release();
+  if (releaseDeviceContext) {
+    if (g_pd3dDeviceContext) {
+      g_pd3dDeviceContext->Release();
+      g_pd3dDeviceContext = nullptr;
+    }
+    if (g_pd3dDevice) {
+      g_pd3dDevice->Release();
+      g_pd3dDevice = nullptr;
+    }
+  } else {
     g_pd3dDeviceContext = nullptr;
-  }
-  if (g_pd3dDevice) {
-    g_pd3dDevice->Release();
     g_pd3dDevice = nullptr;
   }
 }
@@ -1559,9 +1613,12 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
   // Skip overlay if the window is being destroyed — the D3D device may already
   // be partially torn down, making GetDevice/GetBuffer unsafe.
   if (!currentHwnd || !IsWindow(currentHwnd)) {
-    EarlyLog("DX11: Window invalid at frame %d (hwnd=%p, IsWindow=%d) — cleaning up",
+    EarlyLog("DX11: Window invalid at frame %d (hwnd=%p, IsWindow=%d) — shutting down",
              frameCount, currentHwnd, currentHwnd ? IsWindow(currentHwnd) : 0);
-    CleanupDX11Resources();
+    // CRITICAL: Set shutdown flag and tell overlay adapter to skip cleanup
+    // The app is tearing down and any Release() call can crash. Let OS clean up.
+    g_ShuttingDown.store(true);
+    g_OverlayAdapter.SetShutdownMode(true);  // Tell adapter to skip destructor cleanup
     return;
   }
 
@@ -1734,6 +1791,14 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain *pSwapChain,
                                               UINT Height,
                                               DXGI_FORMAT NewFormat,
                                               UINT SwapChainFlags) {
+  // CRITICAL: Check for shutdown first - if app is closing, don't touch anything
+  if (g_ShuttingDown.load()) {
+    if (oResizeBuffers) {
+      return oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
+    }
+    return S_OK;
+  }
+
   // RECURSION BREAKER: If we are calling ourselves recursively, bail out
   // immediately. This handles the "Hooked the Hook" scenario or infinite
   // unhook/rehook loops.

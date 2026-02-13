@@ -61,9 +61,16 @@ public:
   void DrawText(float x, float y, const char *text, uint32_t color);
   void DrawTextWithShadow(float x, float y, const char *text, uint32_t color,
                           uint32_t shadowColor, float shadowOffset = 1.0f);
+  void DrawTextScaled(float x, float y, const char *text, uint32_t color,
+                      float scale);
+  void DrawTextScaledWithShadow(float x, float y, const char *text, uint32_t color,
+                                uint32_t shadowColor, float scale,
+                                float shadowOffset = 1.0f);
 
   // Calculate text size
   void CalcTextSize(const char *text, float *outWidth, float *outHeight) const;
+  void CalcTextSizeScaled(const char *text, float *outWidth, float *outHeight,
+                          float scale) const;
 
   // Basic shapes
   void DrawRect(float x, float y, float w, float h, uint32_t color);
@@ -100,6 +107,8 @@ public:
 
 private:
   void AddTextQuads(float x, float y, const char *text, uint32_t color);
+  void AddTextQuadsScaled(float x, float y, const char *text, uint32_t color,
+                          float scale);
   void AddQuad(float x, float y, float w, float h, float u0, float v0, float u1,
                float v1, uint32_t color);
   void FlushBatch(bool useTexture);
@@ -173,6 +182,15 @@ constexpr uint32_t VRAM = 0xFFFF8C00;       // DarkOrange
 constexpr uint32_t LoadLow = 0xFF00FF00;    // Green
 constexpr uint32_t LoadMed = 0xFF00FFFF;    // Yellow
 constexpr uint32_t LoadHigh = 0xFF0000FF;   // Red
+
+// Label colors (matching reference overlay style)
+constexpr uint32_t LabelGreen = 0xFF00C850;   // Green for GPU/CPU names
+constexpr uint32_t LabelOrange = 0xFF0080FF;  // Orange for VRAM
+constexpr uint32_t LabelPink = 0xFF8080FF;    // Pink/Red for RAM
+constexpr uint32_t LabelCyan = 0xFFFFFF00;    // Cyan for FG
+constexpr uint32_t LabelYellow = 0xFF00FFFF;  // Yellow for FPS labels
+constexpr uint32_t ValueYellow = 0xFF00FFFF;  // Yellow for FPS values
+constexpr uint32_t ValueCyan = 0xFFFFFF00;    // Cyan for CPU %
 } // namespace Colors
 
 } // namespace CustomOverlay

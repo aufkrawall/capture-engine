@@ -585,6 +585,15 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval,
       "[FSR-DEBUG] Present state - fgActive=%d, flipModel=%d, Wrapper=%p",
       g_FGCompat.IsFGActive(), m_FlipModel.active, this);
 
+  // CRITICAL: Check for global shutdown - if app is closing, don't touch anything
+  extern std::atomic<bool> g_ShuttingDown;
+  if (g_ShuttingDown.load()) {
+    if (pRealCached) {
+      return pRealCached->Present(SyncInterval, Flags);
+    }
+    return DXGI_ERROR_INVALID_CALL;
+  }
+
   // CRITICAL FIX: Check if real swapchain has been destroyed (e.g., by FSR FG
   // recreation) If so, just pass through to avoid crashes with stale pointer
   if (!pRealCached || m_SwapchainDestroyed.load()) {
@@ -887,6 +896,15 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetCoreWindow(REFIID refiid,
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(
     UINT SyncInterval, UINT PresentFlags,
     const DXGI_PRESENT_PARAMETERS *pPresentParameters) {
+  // CRITICAL: Check for global shutdown - if app is closing, don't touch anything
+  extern std::atomic<bool> g_ShuttingDown;
+  if (g_ShuttingDown.load()) {
+    if (m_pReal1) {
+      return m_pReal1->Present1(SyncInterval, PresentFlags, pPresentParameters);
+    }
+    return DXGI_ERROR_INVALID_CALL;
+  }
+
   // CRITICAL: Heartbeat FIRST - before ANY checks that might early-return
   // This ensures the freeze watchdog gets heartbeats even with FSR/DLSS FG
   // active

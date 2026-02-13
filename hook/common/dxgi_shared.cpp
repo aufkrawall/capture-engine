@@ -5,9 +5,10 @@
 #include "config.h"
 #include "fg_detection.h"
 #include "freeze_watchdog.h"
-#include "hook_common.h"
+#include "hook_common.h"  // For g_ShuttingDown declaration
 #include "logging.h"
 #include "performance_metrics.h"
+
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -20,6 +21,12 @@
 
 // Vulkan is handled by VK_LAYER_CE_overlay (ICD layer approach)
 // No global hook pointer needed - extern void* g_VulkanHook;
+
+// Put shutdown check outside the DXGIShared namespace
+static bool IsShuttingDown() {
+  extern std::atomic<bool> g_ShuttingDown;
+  return g_ShuttingDown.load();
+}
 
 namespace DXGIShared {
 
@@ -325,6 +332,14 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain *pSwapChain,
                                               UINT Height,
                                               DXGI_FORMAT NewFormat,
                                               UINT SwapChainFlags) {
+  // CRITICAL: Check for global shutdown - if app is closing, don't touch anything
+  if (IsShuttingDown()) {
+    if (oResizeBuffers) {
+      return oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
+    }
+    return S_OK;
+  }
+
   // CRITICAL FIX: When Vulkan is active, pass through DXGI ResizeBuffers calls
   if (IsVulkanActive()) {
     return oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat,

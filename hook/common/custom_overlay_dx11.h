@@ -24,6 +24,8 @@ public:
                   const uint8_t *fontTextureData) override;
   void Shutdown() override;
 
+  void SetSkipRelease(bool skip) { skipDeviceRelease = skip; }
+
   void Render(const std::vector<DrawVertex> &vertices,
               const std::vector<uint16_t> &indices,
               const std::vector<DrawCommand> &commands, int viewportWidth,
@@ -54,6 +56,7 @@ private:
   size_t vertexBufferSize = 0;
   size_t indexBufferSize = 0;
   bool initialized = false;
+  bool skipDeviceRelease = false;  // When true, Shutdown won't release device refs
 };
 
 } // namespace CustomOverlay

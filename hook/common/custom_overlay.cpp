@@ -49,6 +49,8 @@ bool Renderer::Initialize(RendererBackend *backendPtr, float scale) {
 }
 
 void Renderer::Shutdown() {
+  if (!initialized)
+    return;  // Guard against double-shutdown
   if (backend) {
     backend->Shutdown();
   }
@@ -113,6 +115,11 @@ void Renderer::AddQuad(float x, float y, float w, float h, float u0, float v0,
 
 void Renderer::AddTextQuads(float x, float y, const char *text,
                             uint32_t color) {
+  AddTextQuadsScaled(x, y, text, color, 1.0f);
+}
+
+void Renderer::AddTextQuadsScaled(float x, float y, const char *text,
+                                  uint32_t color, float scale) {
   if (!text)
     return;
 
@@ -127,7 +134,7 @@ void Renderer::AddTextQuads(float x, float y, const char *text,
 
     if (c == '\n') {
       px = x;
-      py += fontAtlas.GetLineHeight();
+      py += fontAtlas.GetLineHeight() * scale;
       continue;
     }
 
@@ -135,10 +142,10 @@ void Renderer::AddTextQuads(float x, float y, const char *text,
     if (!g || g->width == 0)
       continue;
 
-    float gx = px + g->xOffset;
-    float gy = py + g->yOffset;
-    float gw = (float)g->width;
-    float gh = (float)g->height;
+    float gx = px + g->xOffset * scale;
+    float gy = py + g->yOffset * scale;
+    float gw = (float)g->width * scale;
+    float gh = (float)g->height * scale;
 
     float u0 = g->x / atlasW;
     float u1 = (g->x + g->width) / atlasW;
@@ -147,7 +154,7 @@ void Renderer::AddTextQuads(float x, float y, const char *text,
 
     AddQuad(gx, gy, gw, gh, u0, v0, u1, v1, color);
 
-    px += g->xAdvance;
+    px += g->xAdvance * scale;
   }
 }
 
@@ -209,9 +216,42 @@ void Renderer::DrawTextWithShadow(float x, float y, const char *text,
   FlushBatch(true);
 }
 
+void Renderer::DrawTextScaled(float x, float y, const char *text, uint32_t color,
+                              float scale) {
+  if (!initialized || !text)
+    return;
+
+  size_t prevVertCount = vertices.size();
+  AddTextQuadsScaled(x, y, text, color, scale);
+
+  if (vertices.size() > prevVertCount) {
+    FlushBatch(true); // Text uses texture
+  }
+}
+
+void Renderer::DrawTextScaledWithShadow(float x, float y, const char *text,
+                                        uint32_t color, uint32_t shadowColor,
+                                        float scale, float shadowOffset) {
+  if (!initialized || !text)
+    return;
+
+  // Draw shadow first
+  AddTextQuadsScaled(x + shadowOffset, y + shadowOffset, text, shadowColor, scale);
+  // Draw main text on top
+  AddTextQuadsScaled(x, y, text, color, scale);
+  FlushBatch(true);
+}
+
 void Renderer::CalcTextSize(const char *text, float *outWidth,
                             float *outHeight) const {
   fontAtlas.CalcTextSize(text, outWidth, outHeight);
+}
+
+void Renderer::CalcTextSizeScaled(const char *text, float *outWidth,
+                                  float *outHeight, float scale) const {
+  fontAtlas.CalcTextSize(text, outWidth, outHeight);
+  if (outWidth) *outWidth *= scale;
+  if (outHeight) *outHeight *= scale;
 }
 
 void Renderer::DrawRect(float x, float y, float w, float h, uint32_t color) {
@@ -283,57 +323,42 @@ void Renderer::DrawFrameTimeGraph(float x, float y, float width, float height,
   if (range < 0.001f)
     range = 33.33f;
 
-  // Use triangle strip approach: 2 vertices per sample point (top/bottom of
-  // thickness). This eliminates sqrt() per segment and reduces vertex count.
-  float halfThick = 0.75f * dpiScale; // Half of 1.5 * dpiScale
   float stepX = width / (float)(count - 1);
   float invRange = 1.0f / range;
+  
+  // Extract RGB from color for gradient
+  uint8_t r = (color >> 0) & 0xFF;
+  uint8_t g = (color >> 8) & 0xFF;
+  uint8_t b = (color >> 16) & 0xFF;
+  uint8_t a = (color >> 24) & 0xFF;
+  
+  // Create gradient colors: full color at top, fading to transparent at bottom
+  uint32_t topColor = color; // Full color at the data line
+  uint32_t bottomColor = (a / 4) << 24 | (b << 16) | (g << 8) | r; // 25% alpha at bottom
 
-  // Generate strip vertices: for each sample, emit top and bottom vertex
+  // Generate filled area vertices: top edge follows data, bottom edge is at graph bottom
   uint16_t stripBase = (uint16_t)vertices.size();
   for (int i = 0; i < count; i++) {
     float val = frameTimes[i];
     val = (std::max)(minVal, (std::min)(maxVal, val));
     float px = x + i * stepX;
     float py = y + height - ((val - minVal) * invRange) * height;
-    vertices.push_back({px, py - halfThick, 0, 0, color});
-    vertices.push_back({px, py + halfThick, 0, 0, color});
+    // Top vertex (at data point) - full color
+    vertices.push_back({px, py, 0, 0, topColor});
+    // Bottom vertex (at graph bottom) - faded
+    vertices.push_back({px, y + height, 0, 0, bottomColor});
   }
 
   // Generate indices for triangle strip as triangle list
   for (int i = 0; i < count - 1; i++) {
     uint16_t base = stripBase + (uint16_t)(i * 2);
-    // Triangle 1: top-left, bottom-left, top-right
     indices.push_back(base + 0);
     indices.push_back(base + 1);
     indices.push_back(base + 2);
-    // Triangle 2: bottom-left, bottom-right, top-right
     indices.push_back(base + 1);
     indices.push_back(base + 3);
     indices.push_back(base + 2);
   }
-
-  // Draw baseline reference lines as simple horizontal quads (no sqrt needed)
-  auto addBaseline = [&](float baselineMs, uint32_t baselineColor) {
-    if (baselineMs < minVal || baselineMs > maxVal)
-      return;
-    float baselineY = y + height - ((baselineMs - minVal) * invRange) * height;
-    float ht = 0.5f; // Half-pixel thickness for baseline
-    uint16_t baseIdx = (uint16_t)vertices.size();
-    vertices.push_back({x, baselineY - ht, 0, 0, baselineColor});
-    vertices.push_back({x, baselineY + ht, 0, 0, baselineColor});
-    vertices.push_back({x + width, baselineY + ht, 0, 0, baselineColor});
-    vertices.push_back({x + width, baselineY - ht, 0, 0, baselineColor});
-    indices.push_back(baseIdx + 0);
-    indices.push_back(baseIdx + 1);
-    indices.push_back(baseIdx + 2);
-    indices.push_back(baseIdx + 0);
-    indices.push_back(baseIdx + 2);
-    indices.push_back(baseIdx + 3);
-  };
-
-  addBaseline(16.67f, 0x60FFFFFF); // 60 FPS target
-  addBaseline(33.33f, 0x40FFFFFF); // 30 FPS target
 
   // Flush all geometry as a single batch
   FlushBatch(false);

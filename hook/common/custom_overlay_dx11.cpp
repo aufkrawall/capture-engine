@@ -12,12 +12,40 @@ namespace CustomOverlay {
 
 DX11Backend::DX11Backend(ID3D11Device *dev, ID3D11DeviceContext *ctx)
     : device(dev), context(ctx) {
-  // AddRef to prevent use-after-free if the game releases its references
-  if (device) device->AddRef();
-  if (context) context->AddRef();
+  // CRITICAL FIX: Do NOT AddRef device/context
+  // During app shutdown, the game destroys its D3D device before our DLL unloads
+  // If we AddRef, our destructor tries to Release on already-destroyed objects
+  // causing crashes. Just store raw pointers and never Release them.
+  // The OS reclaims all memory when the process exits anyway.
 }
 
-DX11Backend::~DX11Backend() { Shutdown(); }
+DX11Backend::~DX11Backend() {
+  // CRITICAL: During process exit (skipDeviceRelease=true), the D3D device is
+  // already destroyed. We must Detach ALL ComPtrs to prevent their destructors
+  // from calling Release() on destroyed objects.
+  if (skipDeviceRelease) {
+    // Detach all ComPtrs - this prevents their destructors from calling Release()
+    vertexShader.Detach();
+    pixelShader.Detach();
+    pixelShaderSolid.Detach();
+    inputLayout.Detach();
+    vertexBuffer.Detach();
+    indexBuffer.Detach();
+    constantBuffer.Detach();
+    fontTexture.Detach();
+    fontTextureSRV.Detach();
+    sampler.Detach();
+    blendState.Detach();
+    rasterState.Detach();
+    depthState.Detach();
+    // Don't touch device/context - they're already destroyed
+    device = nullptr;
+    context = nullptr;
+    initialized = false;
+    return;
+  }
+  Shutdown();
+}
 
 bool DX11Backend::Initialize(int fontTextureWidth, int fontTextureHeight,
                              const uint8_t *fontTextureData) {
@@ -61,6 +89,14 @@ bool DX11Backend::Initialize(int fontTextureWidth, int fontTextureHeight,
 }
 
 void DX11Backend::Shutdown() {
+  if (!initialized)
+    return;  // Guard against double-shutdown (renderer calls Shutdown, then destructor)
+
+  // CRITICAL FIX: Do NOT Release device/context - we don't AddRef them anymore
+  // During app shutdown, the game destroys its D3D device before our DLL unloads
+  // Releasing would crash on already-destroyed objects.
+  // Just release our own created resources (shaders, buffers, etc.)
+  // The OS reclaims all memory when the process exits anyway.
   vertexShader.Reset();
   pixelShader.Reset();
   pixelShaderSolid.Reset();
@@ -74,10 +110,12 @@ void DX11Backend::Shutdown() {
   blendState.Reset();
   rasterState.Reset();
   depthState.Reset();
+
+  // Just clear pointers - don't Release (we never AddRef'd)
+  context = nullptr;
+  device = nullptr;
+
   initialized = false;
-  // Release our AddRef'd references
-  if (context) { context->Release(); context = nullptr; }
-  if (device) { device->Release(); device = nullptr; }
 }
 
 bool DX11Backend::CreateShaders() {

@@ -1,4 +1,5 @@
 #include "freeze_watchdog.h"
+#include "hook_common.h"  // For g_ShuttingDown
 #include <chrono>
 #include <ctime>
 #include <dbghelp.h>
@@ -144,7 +145,7 @@ void FreezeWatchdog::WatchdogThread() {
 
   OutputDebugStringA("[FreezeWatchdog] Watchdog thread started\n");
 
-  while (running_.load()) {
+  while (running_.load() && !g_ShuttingDown.load()) {
     std::this_thread::sleep_for(checkInterval);
 
     if (!running_.load()) {
