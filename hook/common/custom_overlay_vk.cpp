@@ -1149,63 +1149,29 @@ void VulkanBackend::Render(const std::vector<DrawVertex> &vertices,
                            const std::vector<uint16_t> &indices,
                            const std::vector<DrawCommand> &commands,
                            int viewportWidth, int viewportHeight) {
-  // Validate all prerequisites
-  if (!initialized) {
-    HookLog("VulkanBackend::Render - SKIP: not initialized");
+  // Fast-path validation (no logging in hot path)
+  if (!initialized || !deviceDispatch || currentCmdBuffer == VK_NULL_HANDLE ||
+      currentRenderPass == VK_NULL_HANDLE)
     return;
-  }
-
-  if (!deviceDispatch) {
-    HookLog("VulkanBackend::Render - SKIP: no device dispatch");
-    return;
-  }
-
-  if (currentCmdBuffer == VK_NULL_HANDLE) {
-    HookLog("VulkanBackend::Render - SKIP: no command buffer");
-    return;
-  }
-
-  if (currentRenderPass == VK_NULL_HANDLE) {
-    HookLog("VulkanBackend::Render - SKIP: no render pass");
-    return;
-  }
 
   DeviceDispatch *disp = static_cast<DeviceDispatch *>(deviceDispatch);
-  if (!disp) {
-    HookLog("VulkanBackend::Render - SKIP: dispatch cast failed");
+  if (!disp || vertices.empty() || indices.empty() || commands.empty())
     return;
-  }
-
-  if (vertices.empty() || indices.empty() || commands.empty()) {
-    // Not an error - just nothing to render
-    return;
-  }
 
   // Ensure pipeline is created for current render pass
   if (!pipelineCreated) {
-    HookLog("VulkanBackend::Render - Creating pipeline for render pass");
-    if (!CreatePipelineForRenderPass(currentRenderPass)) {
-      HookLog("VulkanBackend::Render - ERROR: Failed to create pipeline");
+    if (!CreatePipelineForRenderPass(currentRenderPass))
       return;
-    }
   }
 
-  // Verify pipeline was actually created
-  if (pipeline == VK_NULL_HANDLE) {
-    HookLog("VulkanBackend::Render - ERROR: Pipeline is null after creation "
-            "attempt");
+  if (pipeline == VK_NULL_HANDLE)
     return;
-  }
 
   // Check buffer sizes
   size_t vertexDataSize = vertices.size() * sizeof(DrawVertex);
   size_t indexDataSize = indices.size() * sizeof(uint16_t);
-  if (vertexDataSize > vertexBufferSize || indexDataSize > indexBufferSize) {
-    HookLog(
-        "VulkanBackend: Buffer overflow - vertices: %zu/%zu, indices: %zu/%zu",
-        vertexDataSize, vertexBufferSize, indexDataSize, indexBufferSize);
+  if (vertexDataSize > vertexBufferSize || indexDataSize > indexBufferSize)
     return;
-  }
 
   // Update vertex buffer
   if (vertexBufferPtr) {
@@ -1248,39 +1214,29 @@ void VulkanBackend::Render(const std::vector<DrawVertex> &vertices,
                               VK_SHADER_STAGE_VERTEX_BIT, 0,
                               sizeof(pushConstants), pushConstants);
 
-  // Validate required objects before binding
-  if (pipelineLayout == VK_NULL_HANDLE) {
-    HookLog("VulkanBackend::Render - ERROR: Pipeline layout is null");
+  if (pipelineLayout == VK_NULL_HANDLE || descriptorSet == VK_NULL_HANDLE)
     return;
-  }
 
-  if (descriptorSet == VK_NULL_HANDLE) {
-    HookLog("VulkanBackend::Render - ERROR: Descriptor set is null");
-    return;
-  }
-
-  // Bind descriptor set (font texture) - set index 0 in pipeline layout
+  // Bind descriptor set (font texture)
   disp->fp_vkCmdBindDescriptorSets(
       currentCmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1,
       &descriptorSet, 0, nullptr);
 
-  // Draw commands
+  // Draw commands with pipeline binding cache
+  VkPipeline lastBoundPipeline = VK_NULL_HANDLE;
   for (const auto &cmd : commands) {
-    // Choose pipeline based on texture usage
     VkPipeline pipelineToUse = cmd.useTexture ? pipeline : pipelineSolid;
-    if (pipelineToUse == VK_NULL_HANDLE) {
-      pipelineToUse = pipeline; // Fallback to textured pipeline
-    }
-
-    if (pipelineToUse == VK_NULL_HANDLE) {
-      HookLog("VulkanBackend::Render - ERROR: No valid pipeline available");
+    if (pipelineToUse == VK_NULL_HANDLE)
+      pipelineToUse = pipeline;
+    if (pipelineToUse == VK_NULL_HANDLE)
       continue;
+
+    if (pipelineToUse != lastBoundPipeline) {
+      disp->fp_vkCmdBindPipeline(currentCmdBuffer,
+                                 VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineToUse);
+      lastBoundPipeline = pipelineToUse;
     }
 
-    disp->fp_vkCmdBindPipeline(currentCmdBuffer,
-                               VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineToUse);
-
-    // Draw indexed - vertexOffset should be 0 since indices are already absolute
     disp->fp_vkCmdDrawIndexed(currentCmdBuffer, cmd.indexCount, 1,
                               cmd.indexOffset, 0, 0);
   }

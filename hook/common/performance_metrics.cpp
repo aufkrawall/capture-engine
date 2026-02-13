@@ -3,34 +3,13 @@
 
 PerformanceMetrics::PerformanceMetrics() {
   memset(m_history, 0, sizeof(m_history));
-  m_historyIdx = 0;
-  m_lastFrameTimeUs = 0;
-  m_frameCounter = 0;
-
   memset(m_frameTimeWindow, 0, sizeof(m_frameTimeWindow));
-  m_windowIndex = 0;
-  m_windowFilled = false;
-
-  m_windowVariance = 0.0;
-  m_windowStdDev = 0.0;
-
-  m_isRecording = false;
-  m_baselineMean = 0;
-  m_baselineM2 = 0;
-  m_baselineCount = 0;
-  m_recordingMean = 0;
-  m_recordingM2 = 0;
-  m_recordingCount = 0;
-  m_lastBaselineVariance = 0;
-  m_stutterDetected = false;
-
-  m_csvFile = nullptr;
 }
 
 PerformanceMetrics::~PerformanceMetrics() { DisableCSVLogging(); }
 
 void PerformanceMetrics::EnableCSVLogging(const char *logPath) {
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_csvMutex);
   if (m_csvFile) {
     fclose(m_csvFile);
   }
@@ -45,7 +24,7 @@ void PerformanceMetrics::EnableCSVLogging(const char *logPath) {
 }
 
 void PerformanceMetrics::DisableCSVLogging() {
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_csvMutex);
   if (m_csvFile) {
     fclose(m_csvFile);
     m_csvFile = nullptr;
@@ -53,7 +32,7 @@ void PerformanceMetrics::DisableCSVLogging() {
 }
 
 void PerformanceMetrics::SetRecording(bool isRecording) {
-  std::lock_guard<std::mutex> lock(m_mutex);
+  // Single-writer: only called from hook thread
   if (m_isRecording != isRecording) {
     if (isRecording) {
       // STARTING: Snapshot baseline variance
@@ -65,38 +44,34 @@ void PerformanceMetrics::SetRecording(bool isRecording) {
       m_recordingMean = 0;
       m_recordingM2 = 0;
       m_recordingCount = 0;
-      m_stutterDetected = false;
+      m_stutterDetected.store(false, std::memory_order_relaxed);
     }
-    // STOPPING: No specific action needed for stats retention
-    // (could reset baseline if we wanted, but keeping it is fine)
-
     m_isRecording = isRecording;
   }
 }
 
 void PerformanceMetrics::SetFGMetrics(float outputFPS, float baseFPS,
                                       int multiplier) {
-  std::lock_guard<std::mutex> lock(m_mutex);
-  m_fgOutputFPS = outputFPS;
-  m_fgBaseFPS = baseFPS;
-  m_fgMultiplier = multiplier;
+  m_fgOutputFPS.store(outputFPS, std::memory_order_relaxed);
+  m_fgBaseFPS.store(baseFPS, std::memory_order_relaxed);
+  m_fgMultiplier.store(multiplier, std::memory_order_relaxed);
 }
 
 void PerformanceMetrics::Update(int64_t currentQpcUs) {
-  std::lock_guard<std::mutex> lock(m_mutex);
+  // Lock-free hot path — single writer (present thread), readers use atomics.
+  int64_t lastUs = m_lastFrameTimeUs.load(std::memory_order_relaxed);
   int64_t frameToFrameUs = 0;
-  if (m_lastFrameTimeUs > 0) {
-    frameToFrameUs = currentQpcUs - m_lastFrameTimeUs;
+  if (lastUs > 0) {
+    frameToFrameUs = currentQpcUs - lastUs;
   }
 
   // Debounce: ignore calls that are too close together (< 2000us = 2ms)
   // This happens when both a Wrapper and a Hook call Update for the same frame.
-  // Increased from 200us to 2000us because overlay rendering can take >1ms
-  if (m_lastFrameTimeUs > 0 && frameToFrameUs < 2000) {
+  if (lastUs > 0 && frameToFrameUs < 2000) {
     return;
   }
 
-  m_lastFrameTimeUs = currentQpcUs;
+  m_lastFrameTimeUs.store(currentQpcUs, std::memory_order_relaxed);
 
   // Ignore first frame or jumps
   if (frameToFrameUs <= 0)
@@ -104,30 +79,36 @@ void PerformanceMetrics::Update(int64_t currentQpcUs) {
 
   m_frameCounter++;
 
-  // 1. Update Plot History
+  // 1. Update Plot History — atomic index publish ensures readers see
+  //    consistent boundary. Individual float writes are naturally atomic on
+  //    x86/x64 for aligned 4-byte values.
   float frameTimeMs = (float)frameToFrameUs / 1000.0f;
-  m_history[m_historyIdx] = frameTimeMs;
-  m_historyIdx = (m_historyIdx + 1) % HISTORY_SIZE;
+  int idx = m_historyIdx.load(std::memory_order_relaxed);
+  m_history[idx] = frameTimeMs;
+  m_historyIdx.store((idx + 1) % HISTORY_SIZE, std::memory_order_release);
 
-  // 2. Write to CSV if enabled (debug mode)
+  // 2. Write to CSV if enabled (debug mode) — only path that locks
   if (m_csvFile) {
-    float fps = (frameToFrameUs > 0) ? (1000000.0f / frameToFrameUs) : 0.0f;
-    fprintf(m_csvFile, "%lld,%lld,%lld,%.3f,%.1f,%d\n",
-            (long long)m_frameCounter, (long long)currentQpcUs,
-            (long long)frameToFrameUs, frameTimeMs, fps, m_isRecording ? 1 : 0);
-    // Flush periodically (every 100 frames) to avoid data loss
-    if (m_frameCounter % 100 == 0) {
-      fflush(m_csvFile);
+    std::lock_guard<std::mutex> lock(m_csvMutex);
+    if (m_csvFile) { // Double-check after lock
+      float fps = (frameToFrameUs > 0) ? (1000000.0f / frameToFrameUs) : 0.0f;
+      fprintf(m_csvFile, "%lld,%lld,%lld,%.3f,%.1f,%d\n",
+              (long long)m_frameCounter, (long long)currentQpcUs,
+              (long long)frameToFrameUs, frameTimeMs, fps,
+              m_isRecording ? 1 : 0);
+      if (m_frameCounter % 100 == 0) {
+        fflush(m_csvFile);
+      }
     }
   }
 
-  // 2. Update Rolling Window
+  // 3. Update Rolling Window (writer-only)
   m_frameTimeWindow[m_windowIndex] = frameToFrameUs;
   m_windowIndex = (m_windowIndex + 1) % VARIANCE_WINDOW;
   if (m_windowIndex == 0)
     m_windowFilled = true;
 
-  // 3. Welford's Online Variance (Stable)
+  // 4. Welford's Online Variance (writer-only)
   if (m_isRecording) {
     m_recordingCount++;
     double delta = frameToFrameUs - m_recordingMean;
@@ -142,8 +123,7 @@ void PerformanceMetrics::Update(int64_t currentQpcUs) {
     m_baselineM2 += delta * delta2;
   }
 
-  // 4. Calculate Window Variance/StdDev (Snapshot)
-  // Re-calculate from window for immediate feedback (simplest for display)
+  // 5. Calculate Window Variance/StdDev — publish atomically for readers
   if (m_windowFilled || m_windowIndex > 10) {
     int count = m_windowFilled ? VARIANCE_WINDOW : m_windowIndex;
     double sum = 0;
@@ -154,34 +134,36 @@ void PerformanceMetrics::Update(int64_t currentQpcUs) {
     }
     double mean = sum / count;
     double var = (sumSq / count) - (mean * mean);
-    m_windowVariance = (var > 0) ? var : 0;
-    m_windowStdDev = sqrt(m_windowVariance);
+    if (var < 0)
+      var = 0;
+    m_windowVariance.store(var, std::memory_order_relaxed);
+    m_windowStdDev.store(sqrt(var), std::memory_order_relaxed);
   }
 
-  // 5. Stutter Detection Logic
+  // 6. Stutter Detection Logic (writer-only, publish atomically)
   if (m_isRecording && m_recordingCount > 240 && m_lastBaselineVariance > 1.0) {
     double currentRecVar =
         (m_recordingCount > 1) ? (m_recordingM2 / m_recordingCount) : 0.0;
     double ratio = currentRecVar / m_lastBaselineVariance;
     if (ratio > 2.0) {
-      m_stutterDetected = true;
+      m_stutterDetected.store(true, std::memory_order_relaxed);
     } else if (ratio < 1.5) {
-      m_stutterDetected = false;
+      m_stutterDetected.store(false, std::memory_order_relaxed);
     }
   }
 }
 
 float PerformanceMetrics::GetCurrentFPS() const {
-  // Average over last 60 frames for stable FPS display
-  // This avoids jumpy values from double-present patterns or occasional spikes
+  // Lock-free: reads from atomic history index + float array
   const int AVERAGE_FRAMES = 60;
   float totalMs = 0.0f;
   int validFrames = 0;
+  int histIdx = m_historyIdx.load(std::memory_order_acquire);
 
   for (int i = 0; i < AVERAGE_FRAMES; i++) {
-    int idx = (m_historyIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
+    int idx = (histIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
     float ms = m_history[idx];
-    if (ms > 0.0001f && ms < 100.0f) { // Valid frame time (0.01ms to 100ms)
+    if (ms > 0.0001f && ms < 100.0f) {
       totalMs += ms;
       validFrames++;
     }
@@ -195,52 +177,43 @@ float PerformanceMetrics::GetCurrentFPS() const {
 }
 
 float PerformanceMetrics::GetAverageFPS() const {
-  // Average FPS over last 5 seconds
-  float avgMs = 0.0f;
-  {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    float totalMs = 0.0f;
-    int count = 0;
-    for (int i = 0; i < HISTORY_SIZE; i++) {
-      int idx = (m_historyIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
-      float ms = m_history[idx];
-      if (ms <= 0.0001f)
-        break;
-
-      totalMs += ms;
-      count++;
-      if (totalMs >= 5000.0f)
-        break;
-    }
-    if (count > 0)
-      avgMs = totalMs / count;
+  // Lock-free read
+  int histIdx = m_historyIdx.load(std::memory_order_acquire);
+  float totalMs = 0.0f;
+  int count = 0;
+  for (int i = 0; i < HISTORY_SIZE; i++) {
+    int idx = (histIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
+    float ms = m_history[idx];
+    if (ms <= 0.0001f)
+      break;
+    totalMs += ms;
+    count++;
+    if (totalMs >= 5000.0f)
+      break;
   }
 
-  if (avgMs > 0.0001f) {
-    return 1000.0f / avgMs;
+  if (count > 0 && totalMs > 0.0001f) {
+    return 1000.0f / (totalMs / count);
   }
   return 0.0f;
 }
 
 float PerformanceMetrics::Get1PercentLowFPS() const {
-  // 1% low = 99th percentile worst frame times over 5s
+  // Lock-free read — snapshot history
+  int histIdx = m_historyIdx.load(std::memory_order_acquire);
   std::vector<float> frameTimes;
   frameTimes.reserve(HISTORY_SIZE / 2);
 
-  {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    float totalMs = 0.0f;
-    for (int i = 0; i < HISTORY_SIZE; i++) {
-      int idx = (m_historyIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
-      float ms = m_history[idx];
-      if (ms <= 0.0001f)
-        break;
-
-      frameTimes.push_back(ms);
-      totalMs += ms;
-      if (totalMs >= 5000.0f)
-        break; // 5s window
-    }
+  float totalMs = 0.0f;
+  for (int i = 0; i < HISTORY_SIZE; i++) {
+    int idx = (histIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
+    float ms = m_history[idx];
+    if (ms <= 0.0001f)
+      break;
+    frameTimes.push_back(ms);
+    totalMs += ms;
+    if (totalMs >= 5000.0f)
+      break;
   }
 
   if (frameTimes.size() < 10)
@@ -261,24 +234,21 @@ float PerformanceMetrics::Get1PercentLowFPS() const {
 }
 
 float PerformanceMetrics::Get01PercentLowFPS() const {
-  // 0.1% low = 99.9th percentile worst frame times over 5s
+  // Lock-free read — snapshot history
+  int histIdx = m_historyIdx.load(std::memory_order_acquire);
   std::vector<float> frameTimes;
   frameTimes.reserve(HISTORY_SIZE / 2);
 
-  {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    float totalMs = 0.0f;
-    for (int i = 0; i < HISTORY_SIZE; i++) {
-      int idx = (m_historyIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
-      float ms = m_history[idx];
-      if (ms <= 0.0001f)
-        break;
-
-      frameTimes.push_back(ms);
-      totalMs += ms;
-      if (totalMs >= 5000.0f)
-        break; // 5s window
-    }
+  float totalMs = 0.0f;
+  for (int i = 0; i < HISTORY_SIZE; i++) {
+    int idx = (histIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
+    float ms = m_history[idx];
+    if (ms <= 0.0001f)
+      break;
+    frameTimes.push_back(ms);
+    totalMs += ms;
+    if (totalMs >= 5000.0f)
+      break;
   }
 
   if (frameTimes.size() < 100)
@@ -299,39 +269,39 @@ float PerformanceMetrics::Get01PercentLowFPS() const {
 }
 
 void PerformanceMetrics::GetLastHistory(float *outBuffer, int count) const {
-  std::lock_guard<std::mutex> lock(m_mutex);
+  // Lock-free: snapshot the atomic index, then read floats
   if (count > HISTORY_SIZE)
     count = HISTORY_SIZE;
 
+  int histIdx = m_historyIdx.load(std::memory_order_acquire);
   for (int i = 0; i < count; i++) {
-    int idx = (m_historyIdx - count + i + HISTORY_SIZE) % HISTORY_SIZE;
+    int idx = (histIdx - count + i + HISTORY_SIZE) % HISTORY_SIZE;
     outBuffer[i] = m_history[idx];
   }
 }
 
 void PerformanceMetrics::GetSmartScale(float &outMin, float &outMax,
                                        float minRangeMs) const {
+  // Lock-free read
   outMin = 0.0f;
   float maxVal = 0.0f;
   float avgMs = 16.6f;
+  int histIdx = m_historyIdx.load(std::memory_order_acquire);
 
-  {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    float totalMs = 0.0f;
-    int count = 0;
-    for (int i = 0; i < GRAPH_HISTORY_SIZE; i++) {
-      int idx = (m_historyIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
-      float ms = m_history[idx];
-      if (ms > maxVal)
-        maxVal = ms;
-      if (ms <= 0.0001f)
-        break;
-      totalMs += ms;
-      count++;
-    }
-    if (count > 0)
-      avgMs = totalMs / count;
+  float totalMs = 0.0f;
+  int count = 0;
+  for (int i = 0; i < GRAPH_HISTORY_SIZE; i++) {
+    int idx = (histIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
+    float ms = m_history[idx];
+    if (ms > maxVal)
+      maxVal = ms;
+    if (ms <= 0.0001f)
+      break;
+    totalMs += ms;
+    count++;
   }
+  if (count > 0)
+    avgMs = totalMs / count;
 
   float dynamicMin = avgMs * 3.0f;
   float lowerBound = std::max(minRangeMs, dynamicMin);
@@ -344,21 +314,20 @@ void PerformanceMetrics::GetSmartScale(float &outMin, float &outMax,
 }
 
 float PerformanceMetrics::GetMaxFrameTime(float windowSeconds) const {
+  // Lock-free read
   float maxMs = 0.0f;
-  {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    float accumTime = 0.0f;
-    for (int i = 0; i < HISTORY_SIZE; i++) {
-      int idx = (m_historyIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
-      float ms = m_history[idx];
-      if (ms <= 0.0001f)
-        break;
-      if (ms > maxMs)
-        maxMs = ms;
-      accumTime += ms;
-      if (accumTime >= windowSeconds * 1000.0f)
-        break;
-    }
+  int histIdx = m_historyIdx.load(std::memory_order_acquire);
+  float accumTime = 0.0f;
+  for (int i = 0; i < HISTORY_SIZE; i++) {
+    int idx = (histIdx - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
+    float ms = m_history[idx];
+    if (ms <= 0.0001f)
+      break;
+    if (ms > maxMs)
+      maxMs = ms;
+    accumTime += ms;
+    if (accumTime >= windowSeconds * 1000.0f)
+      break;
   }
   return maxMs;
 }

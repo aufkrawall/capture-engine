@@ -217,35 +217,14 @@ uint32_t OverlayAdapter::GetLoadColor(float load) {
 }
 
 void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
-  // DIAGNOSTIC: Log guard condition outcomes for first 20 calls
-  static int s_renderCallCount = 0;
-  bool shouldLog = (++s_renderCallCount <= 20);
-
-  if (!initialized || !renderer) {
-    if (shouldLog)
-      HookLog(
-          "OverlayAdapter::RenderOverlay - SKIP: initialized=%d, renderer=%p",
-          initialized, renderer);
+  if (!initialized || !renderer)
     return;
-  }
 
-  // Check if overlay should be shown
-  if (!ipc || !ipc->GetSharedMem()) {
-    if (shouldLog)
-      HookLog("OverlayAdapter::RenderOverlay - SKIP: ipc=%p, sharedMem=%p", ipc,
-              ipc ? ipc->GetSharedMem() : nullptr);
+  if (!ipc || !ipc->GetSharedMem())
     return;
-  }
   auto &cfg = ipc->GetSharedMem()->overlayConfig;
-  if (!cfg.showOverlay) {
-    if (shouldLog)
-      HookLog("OverlayAdapter::RenderOverlay - SKIP: showOverlay=false");
+  if (!cfg.showOverlay)
     return;
-  }
-
-  if (shouldLog)
-    HookLog("OverlayAdapter::RenderOverlay - RENDERING (%dx%d)", viewportWidth,
-            viewportHeight);
 
   // Update throttling
   DWORD now = GetTickCount();
@@ -287,12 +266,12 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     y = padding;
     break;
   case OverlayPosition::TopRight:
-    x = viewportWidth - padding - 200; // Approximate width
+    x = viewportWidth - padding - 200;
     y = padding;
     break;
   case OverlayPosition::BottomLeft:
     x = padding;
-    y = viewportHeight - padding - 200; // Approximate height (increased for graph)
+    y = viewportHeight - padding - 200;
     break;
   case OverlayPosition::BottomRight:
     x = viewportWidth - padding - 200;
@@ -313,16 +292,61 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     requiredHeight += lineHeight;
     if (cachedAvgFPS > 0) requiredHeight += lineHeight;
   }
-  if (cfg.showFrameTime) {
-    requiredHeight += 40.0f * renderer->GetDpiScale() + lineHeight + 8;
+
+  // Pre-calculate graph layout for height calculation
+  constexpr int GRAPH_SAMPLES = 180;
+  float graphData[GRAPH_SAMPLES] = {};
+  float graphY = 0, graphHeight = 0, graphWidth = 0, graphX = 0;
+  float graphMinVal = 0, graphMaxVal = 0;
+  bool showGraph = cfg.showFrameTime && metrics;
+
+  if (showGraph) {
+    requiredHeight += 50.0f * renderer->GetDpiScale() + lineHeight + 8;
+    metrics->GetLastHistory(graphData, GRAPH_SAMPLES);
   }
 
   bgHeight = (std::max)(bgHeight, requiredHeight + 8);
 
-  // Draw background
+  // --- PASS 1: All solid geometry (background + graph) ---
+  // This groups all non-textured draws into a single batch, minimizing
+  // pipeline state switches on the GPU.
+
   uint8_t bgAlpha = (uint8_t)(cfg.bgAlpha * 255);
   uint32_t bgColor = (bgAlpha << 24) | (cfg.bgColor & 0x00FFFFFF);
   renderer->DrawRectFilled(x - 8, y - 4, bgWidth, bgHeight, bgColor);
+
+  // Calculate cursorY for graph position (same layout as text pass)
+  float graphCursorY = y;
+  if (cfg.showGPU) graphCursorY += lineHeight;
+  if (cfg.showCPU) graphCursorY += lineHeight;
+  if (cfg.showVRAM) graphCursorY += lineHeight;
+  if (cfg.showRAM) graphCursorY += lineHeight;
+  if (cfg.showFPS) {
+    graphCursorY += lineHeight;
+    if (cachedAvgFPS > 0 && cached1PercentLow > 0) graphCursorY += lineHeight;
+  }
+
+  if (showGraph) {
+    float peakVal = 0.0f;
+    for (int i = 0; i < GRAPH_SAMPLES; i++) {
+      if (graphData[i] > peakVal) peakVal = graphData[i];
+    }
+    graphMaxVal = (std::max)(peakVal * 1.1f, 20.0f);
+    graphMaxVal = (std::min)(graphMaxVal, 66.0f);
+
+    graphWidth = bgWidth;
+    graphHeight = 50.0f * renderer->GetDpiScale();
+    graphX = x - 8;
+    graphY = graphCursorY + 4;
+
+    uint32_t graphColor = cfg.frametimeColor ? cfg.frametimeColor : Colors::Yellow;
+    renderer->DrawFrameTimeGraph(graphX, graphY, graphWidth, graphHeight,
+                                  graphData, GRAPH_SAMPLES, graphMinVal,
+                                  graphMaxVal, graphColor);
+  }
+
+  // --- PASS 2: All text (single textured batch) ---
+  // All text draws merge into one draw command via FlushBatch merge logic.
 
   float cursorY = y;
   char buf[64];
@@ -397,45 +421,15 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     }
   }
 
-  // Frame Time Graph (updates every frame for smooth animation)
-  if (cfg.showFrameTime && metrics) {
-    constexpr int GRAPH_SAMPLES = 180;
-    float graphData[GRAPH_SAMPLES];
-    metrics->GetLastHistory(graphData, GRAPH_SAMPLES);
-
-    // Calculate smart scale with minimum range to prevent over-dramatization
-    float minVal = 0.0f;
-    float maxVal = 0.0f;
-    float peakVal = 0.0f;
-
-    for (int i = 0; i < GRAPH_SAMPLES; i++) {
-      if (graphData[i] > peakVal)
-        peakVal = graphData[i];
-    }
-
-    // Minimum range of 20ms to prevent jittery appearance
-    float minRange = 20.0f;
-    // Scale to 110% of peak, but at least minRange
-    maxVal = (std::max)(peakVal * 1.1f, minRange);
-    // Cap at 66ms (~15 FPS) to handle outliers gracefully
-    maxVal = (std::min)(maxVal, 66.0f);
-
-    // Graph dimensions - full width of overlay
-    float graphWidth = bgWidth;
-    float graphHeight = 50.0f * renderer->GetDpiScale();
-    float graphX = x - 8;
-    float graphY = cursorY + 4;
-
-    // Draw the graph
-    uint32_t graphColor = cfg.frametimeColor ? cfg.frametimeColor : Colors::Yellow;
-    renderer->DrawFrameTimeGraph(graphX, graphY, graphWidth, graphHeight,
-                                  graphData, GRAPH_SAMPLES, minVal, maxVal, graphColor);
-
-    // Show current frame time value below graph
+  // Frame time label text (after graph solid geometry was already drawn)
+  if (showGraph) {
     float currentFrameTime = graphData[GRAPH_SAMPLES - 1];
     snprintf(buf, 64, "%.2f ms", currentFrameTime);
-    renderer->DrawTextWithShadow(x, graphY + graphHeight + 2, "Frametime", textColor, shadowColor);
-    renderer->DrawTextWithShadow(x + 100, graphY + graphHeight + 2, buf, graphColor, shadowColor);
+    uint32_t graphColor = cfg.frametimeColor ? cfg.frametimeColor : Colors::Yellow;
+    renderer->DrawTextWithShadow(x, graphY + graphHeight + 2, "Frametime",
+                                 textColor, shadowColor);
+    renderer->DrawTextWithShadow(x + 100, graphY + graphHeight + 2, buf,
+                                 graphColor, shadowColor);
   }
 
   (void)viewportWidth;

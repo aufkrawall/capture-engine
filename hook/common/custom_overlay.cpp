@@ -38,6 +38,12 @@ bool Renderer::Initialize(RendererBackend *backendPtr, float scale) {
     return false;
   }
 
+  // Pre-reserve buffers to avoid per-frame heap allocations.
+  // Typical overlay: ~200 text glyphs (4 verts each) + graph (360 verts) + rects = ~1200 verts
+  vertices.reserve(4096);
+  indices.reserve(8192);
+  commands.reserve(32);
+
   initialized = true;
   return true;
 }
@@ -277,115 +283,59 @@ void Renderer::DrawFrameTimeGraph(float x, float y, float width, float height,
   if (range < 0.001f)
     range = 33.33f;
 
-  // Draw frame time line as connected line segments
-  // Add all vertices first, then flush once to avoid batching issues
-  float thickness = 1.5f * dpiScale;
+  // Use triangle strip approach: 2 vertices per sample point (top/bottom of
+  // thickness). This eliminates sqrt() per segment and reduces vertex count.
+  float halfThick = 0.75f * dpiScale; // Half of 1.5 * dpiScale
   float stepX = width / (float)(count - 1);
+  float invRange = 1.0f / range;
 
+  // Generate strip vertices: for each sample, emit top and bottom vertex
+  uint16_t stripBase = (uint16_t)vertices.size();
+  for (int i = 0; i < count; i++) {
+    float val = frameTimes[i];
+    val = (std::max)(minVal, (std::min)(maxVal, val));
+    float px = x + i * stepX;
+    float py = y + height - ((val - minVal) * invRange) * height;
+    vertices.push_back({px, py - halfThick, 0, 0, color});
+    vertices.push_back({px, py + halfThick, 0, 0, color});
+  }
+
+  // Generate indices for triangle strip as triangle list
   for (int i = 0; i < count - 1; i++) {
-    float v0 = frameTimes[i];
-    float v1 = frameTimes[i + 1];
+    uint16_t base = stripBase + (uint16_t)(i * 2);
+    // Triangle 1: top-left, bottom-left, top-right
+    indices.push_back(base + 0);
+    indices.push_back(base + 1);
+    indices.push_back(base + 2);
+    // Triangle 2: bottom-left, bottom-right, top-right
+    indices.push_back(base + 1);
+    indices.push_back(base + 3);
+    indices.push_back(base + 2);
+  }
 
-    // Clamp values
-    v0 = (std::max)(minVal, (std::min)(maxVal, v0));
-    v1 = (std::max)(minVal, (std::min)(maxVal, v1));
-
-    // Convert to screen coordinates (inverted Y: 0 at top, max at bottom)
-    float x0 = x + i * stepX;
-    float y0 = y + height - ((v0 - minVal) / range) * height;
-    float x1 = x + (i + 1) * stepX;
-    float y1 = y + height - ((v1 - minVal) / range) * height;
-
-    // Add line segment vertices directly (don't flush yet)
-    float dx = x1 - x0;
-    float dy = y1 - y0;
-    float len = std::sqrt(dx * dx + dy * dy);
-    if (len < 0.001f)
-      continue;
-
-    // Normalize and get perpendicular
-    float nx = -dy / len * (thickness * 0.5f);
-    float ny = dx / len * (thickness * 0.5f);
-
-    // Create quad vertices for the line
+  // Draw baseline reference lines as simple horizontal quads (no sqrt needed)
+  auto addBaseline = [&](float baselineMs, uint32_t baselineColor) {
+    if (baselineMs < minVal || baselineMs > maxVal)
+      return;
+    float baselineY = y + height - ((baselineMs - minVal) * invRange) * height;
+    float ht = 0.5f; // Half-pixel thickness for baseline
     uint16_t baseIdx = (uint16_t)vertices.size();
-    vertices.push_back({x0 + nx, y0 + ny, 0, 0, color});
-    vertices.push_back({x0 - nx, y0 - ny, 0, 0, color});
-    vertices.push_back({x1 - nx, y1 - ny, 0, 0, color});
-    vertices.push_back({x1 + nx, y1 + ny, 0, 0, color});
-
-    // Two triangles for the quad
+    vertices.push_back({x, baselineY - ht, 0, 0, baselineColor});
+    vertices.push_back({x, baselineY + ht, 0, 0, baselineColor});
+    vertices.push_back({x + width, baselineY + ht, 0, 0, baselineColor});
+    vertices.push_back({x + width, baselineY - ht, 0, 0, baselineColor});
     indices.push_back(baseIdx + 0);
     indices.push_back(baseIdx + 1);
     indices.push_back(baseIdx + 2);
     indices.push_back(baseIdx + 0);
     indices.push_back(baseIdx + 2);
     indices.push_back(baseIdx + 3);
-  }
+  };
 
-  // Draw 16.67ms baseline (60 FPS target) if in range
-  float baseline60 = 16.67f;
-  if (baseline60 >= minVal && baseline60 <= maxVal) {
-    float baselineY = y + height - ((baseline60 - minVal) / range) * height;
-    uint32_t baselineColor = 0x60FFFFFF; // Semi-transparent white
-    float x0 = x;
-    float y0 = baselineY;
-    float x1 = x + width;
-    float y1 = baselineY;
-    float t = 1.0f;
+  addBaseline(16.67f, 0x60FFFFFF); // 60 FPS target
+  addBaseline(33.33f, 0x40FFFFFF); // 30 FPS target
 
-    float dx = x1 - x0;
-    float dy = y1 - y0;
-    float len = std::sqrt(dx * dx + dy * dy);
-    if (len >= 0.001f) {
-      float nx = -dy / len * (t * 0.5f);
-      float ny = dx / len * (t * 0.5f);
-      uint16_t baseIdx = (uint16_t)vertices.size();
-      vertices.push_back({x0 + nx, y0 + ny, 0, 0, baselineColor});
-      vertices.push_back({x0 - nx, y0 - ny, 0, 0, baselineColor});
-      vertices.push_back({x1 - nx, y1 - ny, 0, 0, baselineColor});
-      vertices.push_back({x1 + nx, y1 + ny, 0, 0, baselineColor});
-      indices.push_back(baseIdx + 0);
-      indices.push_back(baseIdx + 1);
-      indices.push_back(baseIdx + 2);
-      indices.push_back(baseIdx + 0);
-      indices.push_back(baseIdx + 2);
-      indices.push_back(baseIdx + 3);
-    }
-  }
-
-  // Draw 33.33ms baseline (30 FPS target) if in range
-  float baseline30 = 33.33f;
-  if (baseline30 >= minVal && baseline30 <= maxVal) {
-    float baselineY = y + height - ((baseline30 - minVal) / range) * height;
-    uint32_t baselineColor = 0x40FFFFFF; // Dimmer semi-transparent white
-    float x0 = x;
-    float y0 = baselineY;
-    float x1 = x + width;
-    float y1 = baselineY;
-    float t = 1.0f;
-
-    float dx = x1 - x0;
-    float dy = y1 - y0;
-    float len = std::sqrt(dx * dx + dy * dy);
-    if (len >= 0.001f) {
-      float nx = -dy / len * (t * 0.5f);
-      float ny = dx / len * (t * 0.5f);
-      uint16_t baseIdx = (uint16_t)vertices.size();
-      vertices.push_back({x0 + nx, y0 + ny, 0, 0, baselineColor});
-      vertices.push_back({x0 - nx, y0 - ny, 0, 0, baselineColor});
-      vertices.push_back({x1 - nx, y1 - ny, 0, 0, baselineColor});
-      vertices.push_back({x1 + nx, y1 + ny, 0, 0, baselineColor});
-      indices.push_back(baseIdx + 0);
-      indices.push_back(baseIdx + 1);
-      indices.push_back(baseIdx + 2);
-      indices.push_back(baseIdx + 0);
-      indices.push_back(baseIdx + 2);
-      indices.push_back(baseIdx + 3);
-    }
-  }
-
-  // Flush all line segments as a single batch
+  // Flush all geometry as a single batch
   FlushBatch(false);
 }
 

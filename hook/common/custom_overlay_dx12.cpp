@@ -4,69 +4,12 @@
 
 #include "custom_overlay_dx12.h"
 #include "hook_common.h"
+#include "overlay_shader_bytecode.h"
 #include <cstring>
-#include <d3dcompiler.h>
 
 namespace CustomOverlay {
 
-// Same shader source as DX11 (compatible with SM 5.0)
-static const char *g_VertexShaderSrc = R"(
-cbuffer Constants : register(b0) {
-    float2 viewportSize;
-    float2 padding;
-};
-
-struct VS_INPUT {
-    float2 pos : POSITION;
-    float2 uv : TEXCOORD0;
-    float4 col : COLOR0;
-};
-
-struct PS_INPUT {
-    float4 pos : SV_POSITION;
-    float2 uv : TEXCOORD0;
-    float4 col : COLOR0;
-};
-
-PS_INPUT main(VS_INPUT input) {
-    PS_INPUT output;
-    output.pos.x = (input.pos.x / viewportSize.x) * 2.0 - 1.0;
-    output.pos.y = 1.0 - (input.pos.y / viewportSize.y) * 2.0;
-    output.pos.z = 0.0;
-    output.pos.w = 1.0;
-    output.uv = input.uv;
-    output.col = input.col;
-    return output;
-}
-)";
-
-static const char *g_PixelShaderSrc = R"(
-Texture2D fontTexture : register(t0);
-SamplerState fontSampler : register(s0);
-
-struct PS_INPUT {
-    float4 pos : SV_POSITION;
-    float2 uv : TEXCOORD0;
-    float4 col : COLOR0;
-};
-
-float4 main(PS_INPUT input) : SV_Target {
-    float4 texColor = fontTexture.Sample(fontSampler, input.uv);
-    return float4(input.col.rgb, input.col.a * texColor.a);
-}
-)";
-
-static const char *g_PixelShaderSolidSrc = R"(
-struct PS_INPUT {
-    float4 pos : SV_POSITION;
-    float2 uv : TEXCOORD0;
-    float4 col : COLOR0;
-};
-
-float4 main(PS_INPUT input) : SV_Target {
-    return input.col;
-}
-)";
+// Shader bytecode is in overlay_shader_bytecode.h (pre-compiled via tools/compile_shaders.py)
 
 DX12Backend::DX12Backend(ID3D12Device *dev, ID3D12CommandQueue *queue,
                          DXGI_FORMAT format)
@@ -196,44 +139,7 @@ bool DX12Backend::CreateRootSignature() {
 }
 
 bool DX12Backend::CreatePipelineState() {
-  UINT compileFlags = D3DCOMPILE_OPTIMIZATION_LEVEL3;
-  ComPtr<ID3DBlob> vsBlob, psBlob, psSolidBlob, errorBlob;
-
-  // Compile shaders
-  HRESULT hr = D3DCompile(g_VertexShaderSrc, strlen(g_VertexShaderSrc), nullptr,
-                          nullptr, nullptr, "main", "vs_5_0", compileFlags, 0,
-                          &vsBlob, &errorBlob);
-  if (FAILED(hr)) {
-    HookLog("DX12 Overlay: CreatePipelineState - Vertex shader compile failed, "
-            "hr=0x%08X%s%s",
-            hr, errorBlob ? ", error=" : "",
-            errorBlob ? (char *)errorBlob->GetBufferPointer() : "");
-    return false;
-  }
-
-  hr = D3DCompile(g_PixelShaderSrc, strlen(g_PixelShaderSrc), nullptr, nullptr,
-                  nullptr, "main", "ps_5_0", compileFlags, 0, &psBlob,
-                  &errorBlob);
-  if (FAILED(hr)) {
-    HookLog("DX12 Overlay: CreatePipelineState - Pixel shader compile failed, "
-            "hr=0x%08X%s%s",
-            hr, errorBlob ? ", error=" : "",
-            errorBlob ? (char *)errorBlob->GetBufferPointer() : "");
-    return false;
-  }
-
-  hr = D3DCompile(g_PixelShaderSolidSrc, strlen(g_PixelShaderSolidSrc), nullptr,
-                  nullptr, nullptr, "main", "ps_5_0", compileFlags, 0,
-                  &psSolidBlob, &errorBlob);
-  if (FAILED(hr)) {
-    HookLog("DX12 Overlay: CreatePipelineState - Solid pixel shader compile "
-            "failed, hr=0x%08X%s%s",
-            hr, errorBlob ? ", error=" : "",
-            errorBlob ? (char *)errorBlob->GetBufferPointer() : "");
-    return false;
-  }
-
-  // Input layout
+  // Use pre-compiled shader bytecode (no runtime D3DCompile needed)
   D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
       {"POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 0,
        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
@@ -243,11 +149,10 @@ bool DX12Backend::CreatePipelineState() {
        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
   };
 
-  // Pipeline state desc
   D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
   psoDesc.pRootSignature = rootSignature.Get();
-  psoDesc.VS = {vsBlob->GetBufferPointer(), vsBlob->GetBufferSize()};
-  psoDesc.PS = {psBlob->GetBufferPointer(), psBlob->GetBufferSize()};
+  psoDesc.VS = {g_VS_5_0, sizeof(g_VS_5_0)};
+  psoDesc.PS = {g_PS_Textured_5_0, sizeof(g_PS_Textured_5_0)};
   psoDesc.InputLayout = {inputLayout, 3};
   psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
   psoDesc.NumRenderTargets = 1;
@@ -270,23 +175,19 @@ bool DX12Backend::CreatePipelineState() {
   psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask =
       D3D12_COLOR_WRITE_ENABLE_ALL;
 
-  hr = device->CreateGraphicsPipelineState(&psoDesc,
-                                           IID_PPV_ARGS(&pipelineState));
+  HRESULT hr = device->CreateGraphicsPipelineState(
+      &psoDesc, IID_PPV_ARGS(&pipelineState));
   if (FAILED(hr)) {
-    HookLog("DX12 Overlay: CreatePipelineState - CreateGraphicsPipelineState "
-            "failed, hr=0x%08X",
-            hr);
+    HookLog("DX12 Overlay: CreatePipelineState failed, hr=0x%08X", hr);
     return false;
   }
 
   // Solid pixel shader pipeline
-  psoDesc.PS = {psSolidBlob->GetBufferPointer(), psSolidBlob->GetBufferSize()};
+  psoDesc.PS = {g_PS_Solid_5_0, sizeof(g_PS_Solid_5_0)};
   hr = device->CreateGraphicsPipelineState(&psoDesc,
                                            IID_PPV_ARGS(&pipelineStateSolid));
   if (FAILED(hr)) {
-    HookLog("DX12 Overlay: CreatePipelineState - CreateGraphicsPipelineState "
-            "(solid) failed, hr=0x%08X",
-            hr);
+    HookLog("DX12 Overlay: CreatePipelineState (solid) failed, hr=0x%08X", hr);
     return false;
   }
   return true;
@@ -554,12 +455,6 @@ void DX12Backend::Render(const std::vector<DrawVertex> &vertices,
   if (!initialized || !currentCmdList || vertices.empty())
     return;
 
-  static int s_renderCount = 0;
-  if (++s_renderCount <= 5) {
-    HookLog("DX12Backend::Render - START (vertices=%zu, commands=%zu)",
-            vertices.size(), commands.size());
-  }
-
   // Deferred font texture upload: copy from upload heap to default heap on
   // first render
   if (!fontUploaded && uploadBuffer && fontTexture) {
@@ -585,8 +480,8 @@ void DX12Backend::Render(const std::vector<DrawVertex> &vertices,
     currentCmdList->ResourceBarrier(1, &barrier);
 
     fontUploaded = true;
-    // Upload buffer can be released after the command list executes,
-    // but keeping it alive until then is fine since it's a ComPtr
+    // Note: uploadBuffer must stay alive until GPU finishes the copy.
+    // It will be released when the backend is shut down or destroyed.
   }
 
   // Update vertex buffer with resize support
@@ -655,23 +550,16 @@ void DX12Backend::Render(const std::vector<DrawVertex> &vertices,
 
   currentCmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-  if (s_renderCount <= 5) {
-    HookLog("DX12Backend::Render - State set, drawing %zu commands",
-            commands.size());
-  }
-
+  // Draw commands with pipeline state binding cache
+  ID3D12PipelineState *lastPSO = nullptr;
   for (const auto &cmd : commands) {
-    if (cmd.useTexture) {
-      currentCmdList->SetPipelineState(pipelineState.Get());
-    } else {
-      currentCmdList->SetPipelineState(pipelineStateSolid.Get());
+    ID3D12PipelineState *pso =
+        cmd.useTexture ? pipelineState.Get() : pipelineStateSolid.Get();
+    if (pso != lastPSO) {
+      currentCmdList->SetPipelineState(pso);
+      lastPSO = pso;
     }
-    // vertexOffset should be 0 since indices are already absolute
     currentCmdList->DrawIndexedInstanced(cmd.indexCount, 1, cmd.indexOffset, 0, 0);
-  }
-
-  if (s_renderCount <= 5) {
-    HookLog("DX12Backend::Render - COMPLETE");
   }
 }
 

@@ -3,72 +3,19 @@
  */
 
 #include "custom_overlay_dx11.h"
+#include "overlay_shader_bytecode.h"
 #include <cstring>
 
 namespace CustomOverlay {
 
-// Embedded shader source
-static const char *g_VertexShaderSrc = R"(
-cbuffer Constants : register(b0) {
-    float2 viewportSize;
-    float2 padding;
-};
-
-struct VS_INPUT {
-    float2 pos : POSITION;
-    float2 uv : TEXCOORD0;
-    float4 col : COLOR0;
-};
-
-struct PS_INPUT {
-    float4 pos : SV_POSITION;
-    float2 uv : TEXCOORD0;
-    float4 col : COLOR0;
-};
-
-PS_INPUT main(VS_INPUT input) {
-    PS_INPUT output;
-    // Convert from screen coords to NDC (-1 to 1)
-    output.pos.x = (input.pos.x / viewportSize.x) * 2.0 - 1.0;
-    output.pos.y = 1.0 - (input.pos.y / viewportSize.y) * 2.0;
-    output.pos.z = 0.0;
-    output.pos.w = 1.0;
-    output.uv = input.uv;
-    output.col = input.col;
-    return output;
-}
-)";
-
-static const char *g_PixelShaderSrc = R"(
-Texture2D fontTexture : register(t0);
-SamplerState fontSampler : register(s0);
-
-struct PS_INPUT {
-    float4 pos : SV_POSITION;
-    float2 uv : TEXCOORD0;
-    float4 col : COLOR0;
-};
-
-float4 main(PS_INPUT input) : SV_Target {
-    float4 texColor = fontTexture.Sample(fontSampler, input.uv);
-    return float4(input.col.rgb, input.col.a * texColor.a);
-}
-)";
-
-static const char *g_PixelShaderSolidSrc = R"(
-struct PS_INPUT {
-    float4 pos : SV_POSITION;
-    float2 uv : TEXCOORD0;
-    float4 col : COLOR0;
-};
-
-float4 main(PS_INPUT input) : SV_Target {
-    return input.col;
-}
-)";
+// Shader bytecode is in overlay_shader_bytecode.h (pre-compiled via tools/compile_shaders.py)
 
 DX11Backend::DX11Backend(ID3D11Device *dev, ID3D11DeviceContext *ctx)
-    : device(dev), context(ctx) {}
+    : device(dev), context(ctx) {
+  // AddRef to prevent use-after-free if the game releases its references
+  if (device) device->AddRef();
+  if (context) context->AddRef();
+}
 
 DX11Backend::~DX11Backend() { Shutdown(); }
 
@@ -128,63 +75,29 @@ void DX11Backend::Shutdown() {
   rasterState.Reset();
   depthState.Reset();
   initialized = false;
+  // Release our AddRef'd references
+  if (context) { context->Release(); context = nullptr; }
+  if (device) { device->Release(); device = nullptr; }
 }
 
 bool DX11Backend::CreateShaders() {
-  UINT compileFlags = D3DCOMPILE_OPTIMIZATION_LEVEL3;
-  ComPtr<ID3DBlob> vsBlob, psBlob, psSolidBlob, errorBlob;
-
-  // Compile vertex shader
-  HRESULT hr = D3DCompile(g_VertexShaderSrc, strlen(g_VertexShaderSrc), nullptr,
-                          nullptr, nullptr, "main", "vs_4_0", compileFlags, 0,
-                          &vsBlob, &errorBlob);
-  if (FAILED(hr)) {
-    OutputDebugStringA("[CustomOverlay] VS compile failed\n");
-    if (errorBlob)
-      OutputDebugStringA((char *)errorBlob->GetBufferPointer());
-    return false;
-  }
-
-  // Compile pixel shader (textured)
-  hr = D3DCompile(g_PixelShaderSrc, strlen(g_PixelShaderSrc), nullptr, nullptr,
-                  nullptr, "main", "ps_4_0", compileFlags, 0, &psBlob,
-                  &errorBlob);
-  if (FAILED(hr)) {
-    OutputDebugStringA("[CustomOverlay] PS compile failed\n");
-    if (errorBlob)
-      OutputDebugStringA((char *)errorBlob->GetBufferPointer());
-    return false;
-  }
-
-  // Compile pixel shader (solid)
-  hr = D3DCompile(g_PixelShaderSolidSrc, strlen(g_PixelShaderSolidSrc), nullptr,
-                  nullptr, nullptr, "main", "ps_4_0", compileFlags, 0,
-                  &psSolidBlob, &errorBlob);
-  if (FAILED(hr)) {
-    OutputDebugStringA("[CustomOverlay] PS solid compile failed\n");
-    return false;
-  }
-
-  // Create shaders
-  hr = device->CreateVertexShader(vsBlob->GetBufferPointer(),
-                                  vsBlob->GetBufferSize(), nullptr,
-                                  &vertexShader);
+  // Use pre-compiled shader bytecode (no runtime D3DCompile needed)
+  HRESULT hr = device->CreateVertexShader(g_VS_4_0, sizeof(g_VS_4_0), nullptr,
+                                          &vertexShader);
   if (FAILED(hr))
     return false;
 
-  hr =
-      device->CreatePixelShader(psBlob->GetBufferPointer(),
-                                psBlob->GetBufferSize(), nullptr, &pixelShader);
+  hr = device->CreatePixelShader(g_PS_Textured_4_0, sizeof(g_PS_Textured_4_0),
+                                 nullptr, &pixelShader);
   if (FAILED(hr))
     return false;
 
-  hr = device->CreatePixelShader(psSolidBlob->GetBufferPointer(),
-                                 psSolidBlob->GetBufferSize(), nullptr,
-                                 &pixelShaderSolid);
+  hr = device->CreatePixelShader(g_PS_Solid_4_0, sizeof(g_PS_Solid_4_0),
+                                 nullptr, &pixelShaderSolid);
   if (FAILED(hr))
     return false;
 
-  // Create input layout
+  // Create input layout using pre-compiled VS bytecode
   D3D11_INPUT_ELEMENT_DESC layout[] = {
       {"POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 0,
        D3D11_INPUT_PER_VERTEX_DATA, 0},
@@ -194,8 +107,8 @@ bool DX11Backend::CreateShaders() {
        D3D11_INPUT_PER_VERTEX_DATA, 0},
   };
 
-  hr = device->CreateInputLayout(layout, 3, vsBlob->GetBufferPointer(),
-                                 vsBlob->GetBufferSize(), &inputLayout);
+  hr = device->CreateInputLayout(layout, 3, g_VS_4_0, sizeof(g_VS_4_0),
+                                 &inputLayout);
   if (FAILED(hr))
     return false;
 
@@ -297,7 +210,7 @@ void DX11Backend::Render(const std::vector<DrawVertex> &vertices,
                          const std::vector<uint16_t> &indices,
                          const std::vector<DrawCommand> &commands,
                          int viewportWidth, int viewportHeight) {
-  if (!initialized || vertices.empty() || commands.empty())
+  if (!initialized || !device || !context || vertices.empty() || commands.empty())
     return;
 
   // Resize buffers if needed
@@ -351,40 +264,44 @@ void DX11Backend::Render(const std::vector<DrawVertex> &vertices,
     context->Unmap(constantBuffer.Get(), 0);
   }
 
-  // Save current state
-  ComPtr<ID3D11RasterizerState> oldRasterState;
-  ComPtr<ID3D11BlendState> oldBlendState;
-  ComPtr<ID3D11DepthStencilState> oldDepthState;
+  // Save full pipeline state using raw pointers to avoid ComPtr
+  // AddRef/Release overhead. Each Get* call increments refcount once;
+  // we release manually after restore.
+  ID3D11RasterizerState *oldRasterState = nullptr;
+  ID3D11BlendState *oldBlendState = nullptr;
+  ID3D11DepthStencilState *oldDepthState = nullptr;
   FLOAT oldBlendFactor[4];
   UINT oldSampleMask, oldStencilRef;
   context->RSGetState(&oldRasterState);
   context->OMGetBlendState(&oldBlendState, oldBlendFactor, &oldSampleMask);
   context->OMGetDepthStencilState(&oldDepthState, &oldStencilRef);
 
-  // Save shader state
-  ComPtr<ID3D11VertexShader> oldVS;
-  ComPtr<ID3D11PixelShader> oldPS;
-  ComPtr<ID3D11Buffer> oldVSCB;
-  ComPtr<ID3D11ShaderResourceView> oldPSSRV;
-  ComPtr<ID3D11SamplerState> oldPSSampler;
-  ComPtr<ID3D11InputLayout> oldInputLayout;
-  D3D11_PRIMITIVE_TOPOLOGY oldTopology;
+  // Save shaders
+  ID3D11VertexShader *oldVS = nullptr;
+  ID3D11PixelShader *oldPS = nullptr;
   context->VSGetShader(&oldVS, nullptr, nullptr);
   context->PSGetShader(&oldPS, nullptr, nullptr);
+
+  // Save IA state
+  ID3D11InputLayout *oldInputLayout = nullptr;
+  D3D11_PRIMITIVE_TOPOLOGY oldTopology;
+  ID3D11Buffer *oldVB = nullptr;
+  UINT oldVBStride = 0, oldVBOffset = 0;
+  ID3D11Buffer *oldIB = nullptr;
+  DXGI_FORMAT oldIBFormat = DXGI_FORMAT_UNKNOWN;
+  UINT oldIBOffset = 0;
+  context->IAGetInputLayout(&oldInputLayout);
+  context->IAGetPrimitiveTopology(&oldTopology);
+  context->IAGetVertexBuffers(0, 1, &oldVB, &oldVBStride, &oldVBOffset);
+  context->IAGetIndexBuffer(&oldIB, &oldIBFormat, &oldIBOffset);
+
+  // Save VS constant buffer and PS resources
+  ID3D11Buffer *oldVSCB = nullptr;
+  ID3D11ShaderResourceView *oldPSSRV = nullptr;
+  ID3D11SamplerState *oldPSSampler = nullptr;
   context->VSGetConstantBuffers(0, 1, &oldVSCB);
   context->PSGetShaderResources(0, 1, &oldPSSRV);
   context->PSGetSamplers(0, 1, &oldPSSampler);
-  context->IAGetInputLayout(&oldInputLayout);
-  context->IAGetPrimitiveTopology(&oldTopology);
-
-  // Save buffer state
-  ComPtr<ID3D11Buffer> oldVB;
-  UINT oldVBStride = 0, oldVBOffset = 0;
-  ComPtr<ID3D11Buffer> oldIB;
-  DXGI_FORMAT oldIBFormat = DXGI_FORMAT_UNKNOWN;
-  UINT oldIBOffset = 0;
-  context->IAGetVertexBuffers(0, 1, &oldVB, &oldVBStride, &oldVBOffset);
-  context->IAGetIndexBuffer(&oldIB, &oldIBFormat, &oldIBOffset);
 
   // Save viewport
   UINT oldNumViewports = 1;
@@ -429,23 +346,35 @@ void DX11Backend::Render(const std::vector<DrawVertex> &vertices,
     context->DrawIndexed(cmd.indexCount, cmd.indexOffset, 0);
   }
 
-  // Restore full pipeline state
-  context->RSSetState(oldRasterState.Get());
-  context->OMSetBlendState(oldBlendState.Get(), oldBlendFactor, oldSampleMask);
-  context->OMSetDepthStencilState(oldDepthState.Get(), oldStencilRef);
-  context->VSSetShader(oldVS.Get(), nullptr, 0);
-  context->PSSetShader(oldPS.Get(), nullptr, 0);
-  context->VSSetConstantBuffers(0, 1, oldVSCB.GetAddressOf());
-  context->PSSetShaderResources(0, 1, oldPSSRV.GetAddressOf());
-  context->PSSetSamplers(0, 1, oldPSSampler.GetAddressOf());
-  context->IASetInputLayout(oldInputLayout.Get());
+  // Restore full pipeline state and release raw pointers
+  context->RSSetState(oldRasterState);
+  context->OMSetBlendState(oldBlendState, oldBlendFactor, oldSampleMask);
+  context->OMSetDepthStencilState(oldDepthState, oldStencilRef);
+  context->VSSetShader(oldVS, nullptr, 0);
+  context->PSSetShader(oldPS, nullptr, 0);
+  context->IASetInputLayout(oldInputLayout);
   context->IASetPrimitiveTopology(oldTopology);
-  context->IASetVertexBuffers(0, 1, oldVB.GetAddressOf(), &oldVBStride,
-                              &oldVBOffset);
-  context->IASetIndexBuffer(oldIB.Get(), oldIBFormat, oldIBOffset);
+  context->IASetVertexBuffers(0, 1, &oldVB, &oldVBStride, &oldVBOffset);
+  context->IASetIndexBuffer(oldIB, oldIBFormat, oldIBOffset);
+  context->VSSetConstantBuffers(0, 1, &oldVSCB);
+  context->PSSetShaderResources(0, 1, &oldPSSRV);
+  context->PSSetSamplers(0, 1, &oldPSSampler);
   if (oldNumViewports > 0) {
     context->RSSetViewports(oldNumViewports, &oldViewport);
   }
+
+  // Release saved state references
+  if (oldRasterState) oldRasterState->Release();
+  if (oldBlendState) oldBlendState->Release();
+  if (oldDepthState) oldDepthState->Release();
+  if (oldVS) oldVS->Release();
+  if (oldPS) oldPS->Release();
+  if (oldInputLayout) oldInputLayout->Release();
+  if (oldVB) oldVB->Release();
+  if (oldIB) oldIB->Release();
+  if (oldVSCB) oldVSCB->Release();
+  if (oldPSSRV) oldPSSRV->Release();
+  if (oldPSSampler) oldPSSampler->Release();
 }
 
 } // namespace CustomOverlay

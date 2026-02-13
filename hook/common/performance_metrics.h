@@ -1,5 +1,6 @@
 #pragma once
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -18,9 +19,11 @@ public:
   // Call this once per frame with the current time (e.g. QPC microseconds)
   void Update(int64_t currentQpcUs);
 
-  // Get plotting data for ImGui
+  // Get plotting data — lock-free reads from atomic history
   const float *GetHistoryArray() const { return m_history; }
-  int GetHistoryIndex() const { return m_historyIdx; }
+  int GetHistoryIndex() const {
+    return m_historyIdx.load(std::memory_order_acquire);
+  }
   void GetLastHistory(float *outBuffer, int count) const;
   float GetCurrentFPS() const;
 
@@ -31,8 +34,12 @@ public:
   float Get01PercentLowFPS() const;
 
   // Variance / Stutter detection stats
-  double GetWindowStdDev() const { return m_windowStdDev; }
-  bool IsStutterDetected() const { return m_stutterDetected; }
+  double GetWindowStdDev() const {
+    return m_windowStdDev.load(std::memory_order_relaxed);
+  }
+  bool IsStutterDetected() const {
+    return m_stutterDetected.load(std::memory_order_relaxed);
+  }
 
   // Graph Scaling
   // Returns min/max for PlotLines. Anchors min at 0, ensures max is at least
@@ -48,10 +55,18 @@ public:
 
   // Frame Generation metrics (for displaying base vs output FPS like RTSS)
   void SetFGMetrics(float outputFPS, float baseFPS, int multiplier);
-  float GetFGOutputFPS() const { return m_fgOutputFPS; }
-  float GetFGBaseFPS() const { return m_fgBaseFPS; }
-  int GetFGMultiplier() const { return m_fgMultiplier; }
-  bool IsFGActive() const { return m_fgMultiplier >= 2; }
+  float GetFGOutputFPS() const {
+    return m_fgOutputFPS.load(std::memory_order_relaxed);
+  }
+  float GetFGBaseFPS() const {
+    return m_fgBaseFPS.load(std::memory_order_relaxed);
+  }
+  int GetFGMultiplier() const {
+    return m_fgMultiplier.load(std::memory_order_relaxed);
+  }
+  bool IsFGActive() const {
+    return m_fgMultiplier.load(std::memory_order_relaxed) >= 2;
+  }
 
   // CSV Logging for frame times (debug mode)
   void EnableCSVLogging(const char *logPath);
@@ -59,39 +74,42 @@ public:
   bool IsCSVLoggingEnabled() const { return m_csvFile != nullptr; }
 
 private:
+  // History ring buffer — written by Update(), read lock-free by overlay.
+  // Individual floats are naturally atomic on x86/x64 (aligned 4-byte writes).
+  // The index is atomic to ensure readers see a consistent snapshot boundary.
   float m_history[HISTORY_SIZE];
-  int m_historyIdx;
+  std::atomic<int> m_historyIdx{0};
 
-  int64_t m_lastFrameTimeUs;
-  int64_t m_frameCounter; // Frame number for CSV
+  std::atomic<int64_t> m_lastFrameTimeUs{0};
+  int64_t m_frameCounter = 0; // Only accessed under m_csvMutex or by writer
 
-  // Variance calculation (Welford's)
+  // Variance calculation (Welford's) — writer-only, protected by single-writer
   int64_t m_frameTimeWindow[VARIANCE_WINDOW];
-  int m_windowIndex;
-  bool m_windowFilled;
+  int m_windowIndex = 0;
+  bool m_windowFilled = false;
 
-  double m_windowVariance;
-  double m_windowStdDev;
+  std::atomic<double> m_windowVariance{0.0};
+  std::atomic<double> m_windowStdDev{0.0};
 
-  // Baseline vs Recording stats
-  bool m_isRecording;
-  double m_baselineMean;
-  double m_baselineM2;
-  int64_t m_baselineCount;
+  // Baseline vs Recording stats — writer-only
+  bool m_isRecording = false;
+  double m_baselineMean = 0;
+  double m_baselineM2 = 0;
+  int64_t m_baselineCount = 0;
 
-  double m_recordingMean;
-  double m_recordingM2;
-  int64_t m_recordingCount;
+  double m_recordingMean = 0;
+  double m_recordingM2 = 0;
+  int64_t m_recordingCount = 0;
 
-  double m_lastBaselineVariance;
-  bool m_stutterDetected;
+  double m_lastBaselineVariance = 0;
+  std::atomic<bool> m_stutterDetected{false};
 
-  // CSV logging
-  FILE *m_csvFile;
-  mutable std::mutex m_mutex;
+  // CSV logging — only mutex-protected path (debug only)
+  FILE *m_csvFile = nullptr;
+  mutable std::mutex m_csvMutex;
 
-  // Frame Generation metrics
-  float m_fgOutputFPS = 0.0f;
-  float m_fgBaseFPS = 0.0f;
-  int m_fgMultiplier = 1;
+  // Frame Generation metrics — atomic for lock-free reads
+  std::atomic<float> m_fgOutputFPS{0.0f};
+  std::atomic<float> m_fgBaseFPS{0.0f};
+  std::atomic<int> m_fgMultiplier{1};
 };

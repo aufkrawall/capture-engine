@@ -56,6 +56,8 @@ extern void DX12_SignalFSR4SwapchainRecreated();
 extern void DX12_InvalidateSwapchain();
 
 // Globals
+// Cached device/context with AddRef — avoids calling GetDevice() every frame
+// (which crashes during shutdown when the swapchain's internal device ref is freed)
 static ID3D11Device *g_pd3dDevice = NULL;
 static ID3D11DeviceContext *g_pd3dDeviceContext = NULL;
 static ID3D11RenderTargetView *g_mainRenderTargetView = NULL;
@@ -897,6 +899,16 @@ void CleanupDX11Resources() {
   if (g_OverlayAdapter.IsInitialized()) {
     g_OverlayAdapter.Shutdown();
   }
+
+  // Release cached device/context refs
+  if (g_pd3dDeviceContext) {
+    g_pd3dDeviceContext->Release();
+    g_pd3dDeviceContext = nullptr;
+  }
+  if (g_pd3dDevice) {
+    g_pd3dDevice->Release();
+    g_pd3dDevice = nullptr;
+  }
 }
 
 extern void DrawDX11Overlay(IDXGISwapChain *pSwapChain);
@@ -1538,8 +1550,20 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
   frameCount++;
 
   DXGI_SWAP_CHAIN_DESC desc;
-  pSwapChain->GetDesc(&desc);
+  if (FAILED(pSwapChain->GetDesc(&desc))) {
+    EarlyLog("DX11: GetDesc failed at frame %d — bailing", frameCount);
+    return;
+  }
   HWND currentHwnd = desc.OutputWindow;
+
+  // Skip overlay if the window is being destroyed — the D3D device may already
+  // be partially torn down, making GetDevice/GetBuffer unsafe.
+  if (!currentHwnd || !IsWindow(currentHwnd)) {
+    EarlyLog("DX11: Window invalid at frame %d (hwnd=%p, IsWindow=%d) — cleaning up",
+             frameCount, currentHwnd, currentHwnd ? IsWindow(currentHwnd) : 0);
+    CleanupDX11Resources();
+    return;
+  }
 
   if (frameCount % 60 == 0) {
     EarlyLog("DX: DrawOverlay frame %d on SC %p (HWND %p, %ux%u)", frameCount,
@@ -1547,70 +1571,71 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
              desc.BufferDesc.Height);
   }
 
-  // Check for D3D10 FIRST (D3D11 interop means D3D11 QI succeeds even for D3D10
-  // devices!)
-  ID3D10Device *device10 = NULL;
-  if (SUCCEEDED(
-          pSwapChain->GetDevice(__uuidof(ID3D10Device), (void **)&device10))) {
-    if (frameCount % 60 == 0)
-      EarlyLog("DX: Identified as D3D10 device");
-    device10->Release();
-    // It's a D3D10 swapchain - use native D3D10 rendering
-    DrawDX10Overlay(pSwapChain, currentHwnd, frameCount);
-    return;
-  }
-
-  // Try D3D10.1
-  ID3D10Device1 *device10_1 = NULL;
-  if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D10Device1),
-                                      (void **)&device10_1))) {
-    if (frameCount % 60 == 0)
-      EarlyLog("DX: Identified as D3D10.1 device");
-    device10_1->Release();
-    DrawDX10Overlay(pSwapChain, currentHwnd, frameCount);
-    return;
-  }
-
-  // If we reach here, it's a true DX11 swapchain
-  ID3D11Device *device11 = NULL;
-  HRESULT hrDevice = pSwapChain->GetDevice(IID_PPV_ARGS(&device11));
-  if (FAILED(hrDevice)) {
-    // Check for D3D12 (Safety Fallback)
-    ID3D12Device *device12 = nullptr;
-    if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D12Device),
-                                        (void **)&device12))) {
+  // Acquire device/context — use cached (AddRef'd) pointers for subsequent
+  // frames. Calling pSwapChain->GetDevice() every frame is unsafe during
+  // shutdown (the swapchain's internal device ref can be freed before our
+  // Present hook stops being called).
+  if (!g_pd3dDevice) {
+    // First frame: detect device type and cache with AddRef
+    ID3D10Device *device10 = NULL;
+    if (SUCCEEDED(
+            pSwapChain->GetDevice(__uuidof(ID3D10Device), (void **)&device10))) {
       if (frameCount % 60 == 0)
-        EarlyLog("DX: Identified as D3D12 device (Interop/Mismatch) - Skipping "
-                 "DX11 Overlay");
-      device12->Release();
+        EarlyLog("DX: Identified as D3D10 device");
+      device10->Release();
+      DrawDX10Overlay(pSwapChain, currentHwnd, frameCount);
       return;
     }
 
-    if (frameCount % 60 == 0)
+    ID3D10Device1 *device10_1 = NULL;
+    if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D10Device1),
+                                        (void **)&device10_1))) {
+      if (frameCount % 60 == 0)
+        EarlyLog("DX: Identified as D3D10.1 device");
+      device10_1->Release();
+      DrawDX10Overlay(pSwapChain, currentHwnd, frameCount);
+      return;
+    }
+
+    ID3D11Device *device11 = NULL;
+    HRESULT hrDevice = pSwapChain->GetDevice(IID_PPV_ARGS(&device11));
+    if (FAILED(hrDevice)) {
+      ID3D12Device *device12 = nullptr;
+      if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D12Device),
+                                          (void **)&device12))) {
+        EarlyLog("DX: Identified as D3D12 device (Interop/Mismatch) - Skipping "
+                 "DX11 Overlay");
+        device12->Release();
+        return;
+      }
       EarlyLog("DX: FAILED to get D3D11 device (hr=0x%08X)", hrDevice);
-    return; // Unknown device type
-  }
-  if (frameCount % 60 == 0)
+      return;
+    }
     EarlyLog("DX: Identified as D3D11 device %p", device11);
 
-  // Initialize System Metrics
-  IDXGIDevice *dxgiDevice = nullptr;
-  if (SUCCEEDED(device11->QueryInterface(IID_PPV_ARGS(&dxgiDevice)))) {
-    IDXGIAdapter *adapter = nullptr;
-    if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter))) {
-      DXGI_ADAPTER_DESC adapterDesc;
-      if (SUCCEEDED(adapter->GetDesc(&adapterDesc))) {
-        SystemMetricsCollector::Get().Initialize(
-            adapterDesc.AdapterLuid.LowPart, adapterDesc.AdapterLuid.HighPart);
+    // Initialize System Metrics (one-time)
+    IDXGIDevice *dxgiDevice = nullptr;
+    if (SUCCEEDED(device11->QueryInterface(IID_PPV_ARGS(&dxgiDevice)))) {
+      IDXGIAdapter *adapter = nullptr;
+      if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter))) {
+        DXGI_ADAPTER_DESC adapterDesc;
+        if (SUCCEEDED(adapter->GetDesc(&adapterDesc))) {
+          SystemMetricsCollector::Get().Initialize(
+              adapterDesc.AdapterLuid.LowPart, adapterDesc.AdapterLuid.HighPart);
+        }
+        adapter->Release();
       }
-      adapter->Release();
+      dxgiDevice->Release();
     }
-    dxgiDevice->Release();
+
+    // Cache device — GetDevice already AddRef'd, so we keep that ref
+    g_pd3dDevice = device11;
+    // Cache context with AddRef
+    g_pd3dDevice->GetImmediateContext(&g_pd3dDeviceContext);
   }
 
-  ID3D11Device *device = device11;
-  ID3D11DeviceContext *context = NULL;
-  device->GetImmediateContext(&context);
+  ID3D11Device *device = g_pd3dDevice;
+  ID3D11DeviceContext *context = g_pd3dDeviceContext;
 
   if (g_OverlayAdapter.IsInitialized() && currentHwnd != g_CachedHwnd) {
     HookLog("DX11: HWND changed, shutting down OverlayAdapter");
@@ -1624,15 +1649,11 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
     g_CachedHwnd = currentHwnd;
     lastHwnd = currentHwnd;
 
-    // Hook Input (still needed for menu interaction if any, or just safe to
-    // keep)
     InputManager::Get().HookWindow(currentHwnd);
 
     if (g_OverlayAdapter.InitDX11(device, context)) {
       g_OverlayAdapter.SetHwnd(currentHwnd);
       EarlyLog("DX11: OverlayAdapter initialized for HWND %p", currentHwnd);
-      g_pd3dDevice = device;
-      g_pd3dDeviceContext = context;
     }
   }
 
@@ -1641,13 +1662,10 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
     EarlyLog("DX11: HWND changed from %p to %p. Overlay might not be visible "
              "on new window without re-init.",
              lastHwnd, currentHwnd);
-    // We don't re-init ImGui fully here yet as it's dangerous, but we log it.
-    // However, we should at least update some internal state if needed.
     lastHwnd = currentHwnd;
   }
 
   // Determine if HDR is active
-  // Re-use desc from above if needed
   bool isHDR = (desc.BufferDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT ||
                 desc.BufferDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM);
   g_OverlayAdapter.SetHDR(isHDR);
@@ -1662,11 +1680,7 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
   }
   g_OverlayAdapter.SetGraphicsAPI(finalApi);
 
-  {
-  }
-
-  // Use cached device/context - some games have broken GetImmediateContext on
-  // re-acquire
+  // Create/recreate RTV if needed
   if (!g_mainRenderTargetView || pSwapChain != lastSwapChain) {
     if (g_mainRenderTargetView) {
       g_mainRenderTargetView->Release();
@@ -1682,8 +1696,8 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
       EarlyLog("%s: GetBuffer FAILED hr=0x%08X", g_DetectedAPI, hr);
       return;
     }
-    hr = g_pd3dDevice->CreateRenderTargetView(backbuffer, NULL,
-                                              &g_mainRenderTargetView);
+    hr = device->CreateRenderTargetView(backbuffer, NULL,
+                                        &g_mainRenderTargetView);
     backbuffer->Release();
     if (FAILED(hr)) {
       EarlyLog("%s: CreateRTV FAILED hr=0x%08X", g_DetectedAPI, hr);
@@ -1693,7 +1707,10 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
     EarlyLog("%s: RTV created OK", g_DetectedAPI);
   }
 
-  g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, NULL);
+  EarlyLog("DX11: [frame %d] pre-render device=%p context=%p rtv=%p",
+           frameCount, device, context, g_mainRenderTargetView);
+
+  context->OMSetRenderTargets(1, &g_mainRenderTargetView, NULL);
 
   // Explicitly set viewport
   D3D11_VIEWPORT vp;
@@ -1703,7 +1720,9 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
   vp.MaxDepth = 1.0f;
   vp.TopLeftX = 0;
   vp.TopLeftY = 0;
-  g_pd3dDeviceContext->RSSetViewports(1, &vp);
+  context->RSSetViewports(1, &vp);
+
+  EarlyLog("DX11: [frame %d] calling RenderOverlay", frameCount);
 
   // Render Custom Overlay
   g_OverlayAdapter.RenderOverlay(desc.BufferDesc.Width, desc.BufferDesc.Height);

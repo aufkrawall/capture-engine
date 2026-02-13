@@ -1787,17 +1787,17 @@ public:
     if (!dstImage || !cmd || !signalSem)
       return VK_NULL_HANDLE;
 
-    // CRITICAL: Wait for previous command buffer execution to complete before
-    // reset Without this, we may reset a command buffer while the GPU is still
-    // executing it, causing undefined behavior or crashes.
+    // Non-blocking fence check: skip frame if previous capture is still
+    // in-flight rather than stalling the game thread. The ring buffer handles
+    // dropped frames gracefully — encoder will duplicate the previous frame.
     VkFence fence = captureCommandFences[idx];
     if (fence) {
-      VkResult waitRes = vkWaitForFences(g_Device, 1, &fence, VK_TRUE,
-                                         100000000); // 100ms timeout
-      if (waitRes == VK_TIMEOUT) {
-        HookLog("Vulkan: WARNING - Fence wait timeout, GPU may be overloaded");
-      } else if (waitRes != VK_SUCCESS) {
-        HookLog("Vulkan: ERROR - Fence wait failed: %d", waitRes);
+      VkResult fenceStatus = vkGetFenceStatus(g_Device, fence);
+      if (fenceStatus == VK_NOT_READY) {
+        // Previous capture still in-flight — skip this frame to avoid stall
+        return VK_NULL_HANDLE;
+      } else if (fenceStatus != VK_SUCCESS) {
+        HookLog("Vulkan: ERROR - Fence status check failed: %d", fenceStatus);
       }
       vkResetFences(g_Device, 1, &fence);
     }
@@ -1862,9 +1862,14 @@ public:
 
     barriers[0] = srcBarrier;
     barriers[1] = dstBarrier;
+    // Use BOTTOM_OF_PIPE for src-back-to-present (nothing reads it until next
+    // frame), but TRANSFER for dst barrier (async queue needs transfer access).
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0,
+                         nullptr, 1, &barriers[0]);
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
                          VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
-                         nullptr, 2, barriers);
+                         nullptr, 1, &barriers[1]);
 
     vkEndCommandBuffer(cmd);
 
@@ -1873,12 +1878,15 @@ public:
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &cmd;
 
-    // Wait for App's semaphores
-    std::vector<VkPipelineStageFlags> waitStages(
-        waitSemaphores.size(), VK_PIPELINE_STAGE_TRANSFER_BIT);
-    submitInfo.waitSemaphoreCount = (uint32_t)waitSemaphores.size();
+    // Wait for App's semaphores — use fixed array to avoid heap allocation
+    VkPipelineStageFlags waitStages[8];
+    uint32_t waitCount =
+        (uint32_t)(std::min)(waitSemaphores.size(), (size_t)8);
+    for (uint32_t i = 0; i < waitCount; i++)
+      waitStages[i] = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    submitInfo.waitSemaphoreCount = waitCount;
     submitInfo.pWaitSemaphores = waitSemaphores.data();
-    submitInfo.pWaitDstStageMask = waitStages.data();
+    submitInfo.pWaitDstStageMask = waitStages;
 
     if (separateDeviceActive) {
       // --- STABLE THREE-STAGE SUBMISSION ---
