@@ -363,6 +363,10 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
   // Check if FG is active
   bool fgActive = metrics && metrics->IsFGActive();
 
+  // Check if recording is active
+  bool isRecording =
+      mem.runtimeState.isRecording.load(std::memory_order_acquire);
+
   if (cfg.showFPS) {
     requiredHeight += lineHeight;
     if (cachedAvgFPS > 0)
@@ -374,6 +378,11 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
 
   // FG status line
   if (cfg.showFG && fgActive) {
+    requiredHeight += lineHeight;
+  }
+
+  // Recording status line
+  if (cfg.showRecording && isRecording) {
     requiredHeight += lineHeight;
   }
 
@@ -416,6 +425,8 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
       graphCursorY += lineHeight;
   }
   if (cfg.showFG && fgActive)
+    graphCursorY += lineHeight;
+  if (cfg.showRecording && isRecording)
     graphCursorY += lineHeight;
 
   // Calculate max frame time from last ~2 seconds for display
@@ -576,6 +587,24 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     renderer->DrawTextWithShadow(labelCol, cursorY, "FG", Colors::LabelCyan,
                                  shadowColor);
     renderer->DrawTextWithShadow(valueCol, cursorY, buf, Colors::LabelCyan,
+                                 shadowColor);
+    cursorY += lineHeight;
+  }
+
+  // Recording status line
+  if (cfg.showRecording && isRecording) {
+    int64_t startTime =
+        mem.runtimeState.recordingStartTime.load(std::memory_order_acquire);
+    int64_t elapsed = 0;
+    if (startTime > 0) {
+      elapsed = (GetTickCount64() - startTime) / 1000;
+    }
+    int hours = (int)(elapsed / 3600);
+    int minutes = (int)((elapsed % 3600) / 60);
+    int seconds = (int)(elapsed % 60);
+
+    snprintf(buf, 64, "REC %02d:%02d:%02d", hours, minutes, seconds);
+    renderer->DrawTextWithShadow(labelCol, cursorY, buf, Colors::Red,
                                  shadowColor);
     cursorY += lineHeight;
   }

@@ -14,8 +14,8 @@
 #include <vector>
 #include <windows.h>
 
-// Forward declaration for HookLog
-extern "C" void HookLog(const char *fmt, ...);
+// Forward declaration for HookLog (defined in hook_common.cpp)
+void HookLog(const char *fmt, ...);
 
 namespace InlineHook {
 
@@ -25,12 +25,12 @@ namespace InlineHook {
 
 // Opcode property flags
 enum : uint8_t {
-    OP_NONE = 0x00,
-    OP_MODRM = 0x01,  // Has ModR/M byte
-    OP_IMM8 = 0x02,   // Has 8-bit immediate
-    OP_IMM32 = 0x04,  // Has 32-bit immediate (16-bit with 66h prefix)
-    OP_2BYTE = 0x08,   // Is 0F-prefixed (set during parsing, not in table)
-    OP_SPECIAL = 0x80, // Needs special handling
+  OP_NONE = 0x00,
+  OP_MODRM = 0x01,   // Has ModR/M byte
+  OP_IMM8 = 0x02,    // Has 8-bit immediate
+  OP_IMM32 = 0x04,   // Has 32-bit immediate (16-bit with 66h prefix)
+  OP_2BYTE = 0x08,   // Is 0F-prefixed (set during parsing, not in table)
+  OP_SPECIAL = 0x80, // Needs special handling
 };
 
 // clang-format off
@@ -190,206 +190,208 @@ static const uint8_t g_twoByteOpcodes[256] = {
 
 // Parse ModR/M byte and return additional bytes (SIB + displacement)
 static int ParseModRM(const uint8_t *code, bool hasAddrPrefix) {
-    uint8_t modrm = code[0];
-    uint8_t mod = (modrm >> 6) & 3;
-    uint8_t rm = modrm & 7;
-    int extra = 1; // The ModR/M byte itself
+  uint8_t modrm = code[0];
+  uint8_t mod = (modrm >> 6) & 3;
+  uint8_t rm = modrm & 7;
+  int extra = 1; // The ModR/M byte itself
 
-    if (mod == 3) {
-        // Register direct - no extra bytes
-        return extra;
-    }
+  if (mod == 3) {
+    // Register direct - no extra bytes
+    return extra;
+  }
 
-    bool use16bit = false;
+  bool use16bit = false;
 #ifndef _WIN64
-    use16bit = !hasAddrPrefix; // Default 32-bit, 67h switches to 16-bit
-    // Actually on 32-bit, default is 32-bit addressing, 67h switches to 16
-    use16bit = hasAddrPrefix;
+  use16bit = !hasAddrPrefix; // Default 32-bit, 67h switches to 16-bit
+  // Actually on 32-bit, default is 32-bit addressing, 67h switches to 16
+  use16bit = hasAddrPrefix;
 #else
-    use16bit = hasAddrPrefix; // 64-bit: 67h switches to 32-bit addressing
-    // (we don't support 16-bit addressing in 64-bit mode)
-    // In 64-bit mode with 67h, addressing uses 32-bit regs but same ModR/M
-    // encoding
+  use16bit = hasAddrPrefix; // 64-bit: 67h switches to 32-bit addressing
+  // (we don't support 16-bit addressing in 64-bit mode)
+  // In 64-bit mode with 67h, addressing uses 32-bit regs but same ModR/M
+  // encoding
 #endif
 
-    if (!use16bit) {
-        // 32/64-bit addressing
-        if (rm == 4) {
-            extra++; // SIB byte
-            uint8_t sib = code[1];
-            uint8_t base = sib & 7;
-            if (mod == 0 && base == 5) {
-                extra += 4; // disp32
-            }
-        }
-
-        if (mod == 0) {
-            if (rm == 5) {
-                extra += 4; // disp32 (or RIP-relative in x64)
-            }
-        } else if (mod == 1) {
-            extra += 1; // disp8
-        } else if (mod == 2) {
-            extra += 4; // disp32
-        }
-    } else {
-        // 16-bit addressing (rare, mainly for x86 with 67h prefix)
-        if (mod == 0 && rm == 6) {
-            extra += 2; // disp16
-        } else if (mod == 1) {
-            extra += 1; // disp8
-        } else if (mod == 2) {
-            extra += 2; // disp16
-        }
+  if (!use16bit) {
+    // 32/64-bit addressing
+    if (rm == 4) {
+      extra++; // SIB byte
+      uint8_t sib = code[1];
+      uint8_t base = sib & 7;
+      if (mod == 0 && base == 5) {
+        extra += 4; // disp32
+      }
     }
 
-    return extra;
+    if (mod == 0) {
+      if (rm == 5) {
+        extra += 4; // disp32 (or RIP-relative in x64)
+      }
+    } else if (mod == 1) {
+      extra += 1; // disp8
+    } else if (mod == 2) {
+      extra += 4; // disp32
+    }
+  } else {
+    // 16-bit addressing (rare, mainly for x86 with 67h prefix)
+    if (mod == 0 && rm == 6) {
+      extra += 2; // disp16
+    } else if (mod == 1) {
+      extra += 1; // disp8
+    } else if (mod == 2) {
+      extra += 2; // disp16
+    }
+  }
+
+  return extra;
 }
 
 // Get the length of an instruction at the given address.
 // Returns 0 if the instruction cannot be decoded (unsupported/unknown).
 static int GetInstructionLength(const uint8_t *code, bool is64bit) {
-    const uint8_t *p = code;
-    bool hasOpSize = false;    // 66h prefix
-    bool hasAddrSize = false;  // 67h prefix
-    bool hasREX_W = false;     // REX.W prefix (x64 only)
+  const uint8_t *p = code;
+  bool hasOpSize = false;   // 66h prefix
+  bool hasAddrSize = false; // 67h prefix
+  bool hasREX_W = false;    // REX.W prefix (x64 only)
 
-    // 1. Skip prefixes
-    for (;;) {
-        uint8_t b = *p;
-        if (b == 0x66) {
-            hasOpSize = true;
-            p++;
-        } else if (b == 0x67) {
-            hasAddrSize = true;
-            p++;
-        } else if (b == 0xF0 || b == 0xF2 || b == 0xF3) {
-            p++; // LOCK, REPNE, REP
-        } else if (b == 0x26 || b == 0x2E || b == 0x36 || b == 0x3E ||
-                   b == 0x64 || b == 0x65) {
-            p++; // Segment overrides
-        } else if (is64bit && (b >= 0x40 && b <= 0x4F)) {
-            hasREX_W = (b & 0x08) != 0;
-            p++; // REX prefix
-        } else {
-            break;
-        }
-    }
-
-    uint8_t opcode = *p++;
-    uint8_t flags;
-    bool isTwoByte = false;
-
-    // 2. Handle two-byte escape
-    if (opcode == 0x0F) {
-        opcode = *p++;
-        isTwoByte = true;
-
-        // Three-byte escape (0F 38 xx, 0F 3A xx) - treat all as ModR/M
-        if (opcode == 0x38) {
-            p++; // third opcode byte
-            int modrm = ParseModRM(p, hasAddrSize);
-            return (int)(p + modrm - code);
-        }
-        if (opcode == 0x3A) {
-            p++; // third opcode byte
-            int modrm = ParseModRM(p, hasAddrSize);
-            return (int)(p + modrm + 1 - code); // +1 for imm8
-        }
-
-        flags = g_twoByteOpcodes[opcode];
+  // 1. Skip prefixes
+  for (;;) {
+    uint8_t b = *p;
+    if (b == 0x66) {
+      hasOpSize = true;
+      p++;
+    } else if (b == 0x67) {
+      hasAddrSize = true;
+      p++;
+    } else if (b == 0xF0 || b == 0xF2 || b == 0xF3) {
+      p++; // LOCK, REPNE, REP
+    } else if (b == 0x26 || b == 0x2E || b == 0x36 || b == 0x3E || b == 0x64 ||
+               b == 0x65) {
+      p++; // Segment overrides
+    } else if (is64bit && (b >= 0x40 && b <= 0x4F)) {
+      hasREX_W = (b & 0x08) != 0;
+      p++; // REX prefix
     } else {
-        flags = g_oneByteOpcodes[opcode];
+      break;
+    }
+  }
+
+  uint8_t opcode = *p++;
+  uint8_t flags;
+  bool isTwoByte = false;
+
+  // 2. Handle two-byte escape
+  if (opcode == 0x0F) {
+    opcode = *p++;
+    isTwoByte = true;
+
+    // Three-byte escape (0F 38 xx, 0F 3A xx) - treat all as ModR/M
+    if (opcode == 0x38) {
+      p++; // third opcode byte
+      int modrm = ParseModRM(p, hasAddrSize);
+      return (int)(p + modrm - code);
+    }
+    if (opcode == 0x3A) {
+      p++; // third opcode byte
+      int modrm = ParseModRM(p, hasAddrSize);
+      return (int)(p + modrm + 1 - code); // +1 for imm8
     }
 
-    // 3. Handle special opcodes
-    if (flags & OP_SPECIAL) {
-        if (!isTwoByte) {
-            switch (opcode) {
-            case 0x9A: // CALL FAR (x86 only)
-                return (int)(p - code) + (hasOpSize ? 4 : 6);
-            case 0xA0: // MOV AL, moffs
-            case 0xA2: // MOV moffs, AL
-                return (int)(p - code) + (is64bit && !hasAddrSize ? 8 : (hasAddrSize ? 2 : 4));
-            case 0xA1: // MOV rAX, moffs
-            case 0xA3: // MOV moffs, rAX
-                return (int)(p - code) + (is64bit && !hasAddrSize ? 8 : (hasAddrSize ? 2 : 4));
-            case 0xC2: // RET imm16
-            case 0xCA: // RETF imm16
-                return (int)(p - code) + 2;
-            case 0xC4: // VEX 3-byte prefix (x64) or LES (x86)
-                if (is64bit) {
-                    p += 2; // VEX payload bytes
-                    p++;    // opcode after VEX
-                    // VEX instructions always have ModR/M
-                    int modrm = ParseModRM(p, hasAddrSize);
-                    // Some VEX opcodes have imm8 - check the VEX map
-                    // For safety, check if the original 0F 3A map was selected (pp bits)
-                    uint8_t vexByte1 = code[p - code - 3];
-                    uint8_t mmmmm = vexByte1 & 0x1F;
-                    if (mmmmm == 3) { // 0F 3A map: has imm8
-                        return (int)(p + modrm + 1 - code);
-                    }
-                    return (int)(p + modrm - code);
-                }
-                return 0; // LES - unsupported, shouldn't appear in prologues
-            case 0xC5: // VEX 2-byte prefix (x64) or LDS (x86)
-                if (is64bit) {
-                    p += 1; // VEX payload byte
-                    p++;    // opcode after VEX
-                    int modrm = ParseModRM(p, hasAddrSize);
-                    return (int)(p + modrm - code);
-                }
-                return 0; // LDS - unsupported
-            case 0xC8: // ENTER imm16, imm8
-                return (int)(p - code) + 3;
-            case 0xEA: // JMP FAR (x86 only)
-                return (int)(p - code) + (hasOpSize ? 4 : 6);
-            case 0xF6: // Group 3 byte - TEST r/m8, imm8 (reg=0) or NOT/NEG/MUL/etc
-            {
-                int modrm = ParseModRM(p, hasAddrSize);
-                uint8_t reg = (p[0] >> 3) & 7;
-                int immSize = (reg == 0 || reg == 1) ? 1 : 0; // TEST has imm8
-                return (int)(p + modrm + immSize - code);
-            }
-            case 0xF7: // Group 3 dword - TEST r/m32, imm32 (reg=0) or NOT/NEG/MUL/etc
-            {
-                int modrm = ParseModRM(p, hasAddrSize);
-                uint8_t reg = (p[0] >> 3) & 7;
-                int immSize = (reg == 0 || reg == 1) ? (hasOpSize ? 2 : 4) : 0;
-                return (int)(p + modrm + immSize - code);
-            }
-            default:
-                return 0; // Unknown special
-            }
+    flags = g_twoByteOpcodes[opcode];
+  } else {
+    flags = g_oneByteOpcodes[opcode];
+  }
+
+  // 3. Handle special opcodes
+  if (flags & OP_SPECIAL) {
+    if (!isTwoByte) {
+      switch (opcode) {
+      case 0x9A: // CALL FAR (x86 only)
+        return (int)(p - code) + (hasOpSize ? 4 : 6);
+      case 0xA0: // MOV AL, moffs
+      case 0xA2: // MOV moffs, AL
+        return (int)(p - code) +
+               (is64bit && !hasAddrSize ? 8 : (hasAddrSize ? 2 : 4));
+      case 0xA1: // MOV rAX, moffs
+      case 0xA3: // MOV moffs, rAX
+        return (int)(p - code) +
+               (is64bit && !hasAddrSize ? 8 : (hasAddrSize ? 2 : 4));
+      case 0xC2: // RET imm16
+      case 0xCA: // RETF imm16
+        return (int)(p - code) + 2;
+      case 0xC4: // VEX 3-byte prefix (x64) or LES (x86)
+        if (is64bit) {
+          p += 2; // VEX payload bytes
+          p++;    // opcode after VEX
+          // VEX instructions always have ModR/M
+          int modrm = ParseModRM(p, hasAddrSize);
+          // Some VEX opcodes have imm8 - check the VEX map
+          // For safety, check if the original 0F 3A map was selected (pp bits)
+          uint8_t vexByte1 = code[p - code - 3];
+          uint8_t mmmmm = vexByte1 & 0x1F;
+          if (mmmmm == 3) { // 0F 3A map: has imm8
+            return (int)(p + modrm + 1 - code);
+          }
+          return (int)(p + modrm - code);
         }
-        return 0; // Unknown two-byte special
-    }
-
-    // 4. ModR/M
-    if (flags & OP_MODRM) {
+        return 0; // LES - unsupported, shouldn't appear in prologues
+      case 0xC5:  // VEX 2-byte prefix (x64) or LDS (x86)
+        if (is64bit) {
+          p += 1; // VEX payload byte
+          p++;    // opcode after VEX
+          int modrm = ParseModRM(p, hasAddrSize);
+          return (int)(p + modrm - code);
+        }
+        return 0; // LDS - unsupported
+      case 0xC8:  // ENTER imm16, imm8
+        return (int)(p - code) + 3;
+      case 0xEA: // JMP FAR (x86 only)
+        return (int)(p - code) + (hasOpSize ? 4 : 6);
+      case 0xF6: // Group 3 byte - TEST r/m8, imm8 (reg=0) or NOT/NEG/MUL/etc
+      {
         int modrm = ParseModRM(p, hasAddrSize);
-        p += modrm;
+        uint8_t reg = (p[0] >> 3) & 7;
+        int immSize = (reg == 0 || reg == 1) ? 1 : 0; // TEST has imm8
+        return (int)(p + modrm + immSize - code);
+      }
+      case 0xF7: // Group 3 dword - TEST r/m32, imm32 (reg=0) or NOT/NEG/MUL/etc
+      {
+        int modrm = ParseModRM(p, hasAddrSize);
+        uint8_t reg = (p[0] >> 3) & 7;
+        int immSize = (reg == 0 || reg == 1) ? (hasOpSize ? 2 : 4) : 0;
+        return (int)(p + modrm + immSize - code);
+      }
+      default:
+        return 0; // Unknown special
+      }
     }
+    return 0; // Unknown two-byte special
+  }
 
-    // 5. Immediate
-    if (flags & OP_IMM8) {
-        p += 1;
-    }
-    if (flags & OP_IMM32) {
-        if (hasOpSize && !isTwoByte) {
-            p += 2; // 66h prefix: 16-bit immediate instead of 32-bit
-        } else {
-            p += 4;
-        }
-        // Special: MOV r64, imm64 (B8-BF with REX.W)
-        if (!isTwoByte && opcode >= 0xB8 && opcode <= 0xBF && hasREX_W) {
-            p += 4; // Additional 4 bytes for 64-bit immediate (total 8)
-        }
-    }
+  // 4. ModR/M
+  if (flags & OP_MODRM) {
+    int modrm = ParseModRM(p, hasAddrSize);
+    p += modrm;
+  }
 
-    int len = (int)(p - code);
-    return (len > 0 && len <= 15) ? len : 0; // x86 max instruction = 15 bytes
+  // 5. Immediate
+  if (flags & OP_IMM8) {
+    p += 1;
+  }
+  if (flags & OP_IMM32) {
+    if (hasOpSize && !isTwoByte) {
+      p += 2; // 66h prefix: 16-bit immediate instead of 32-bit
+    } else {
+      p += 4;
+    }
+    // Special: MOV r64, imm64 (B8-BF with REX.W)
+    if (!isTwoByte && opcode >= 0xB8 && opcode <= 0xBF && hasREX_W) {
+      p += 4; // Additional 4 bytes for 64-bit immediate (total 8)
+    }
+  }
+
+  int len = (int)(p - code);
+  return (len > 0 && len <= 15) ? len : 0; // x86 max instruction = 15 bytes
 }
 
 // ============================================================================
@@ -401,71 +403,71 @@ static int GetInstructionLength(const uint8_t *code, bool is64bit) {
 // Returns -1 if not RIP-relative.
 static int GetRipRelativeDispOffset(const uint8_t *code, int instrLen,
                                     bool is64bit) {
-    if (!is64bit)
-        return -1;
-
-    const uint8_t *p = code;
-
-    // Skip prefixes
-    while (p < code + instrLen) {
-        uint8_t b = *p;
-        if (b == 0x66 || b == 0x67 || b == 0xF0 || b == 0xF2 || b == 0xF3 ||
-            b == 0x26 || b == 0x2E || b == 0x36 || b == 0x3E || b == 0x64 ||
-            b == 0x65 || (b >= 0x40 && b <= 0x4F)) {
-            p++;
-        } else {
-            break;
-        }
-    }
-
-    const uint8_t *opcodeStart = p;
-    uint8_t opcode = *p++;
-    bool isTwoByte = false;
-
-    if (opcode == 0x0F) {
-        opcode = *p++;
-        isTwoByte = true;
-
-        // 3-byte escape: 0F 38 or 0F 3A
-        if (opcode == 0x38 || opcode == 0x3A) {
-            p++; // skip third opcode byte
-        }
-    }
-
-    // Check for CALL/JMP rel32 (these are PC-relative but not RIP-relative via
-    // ModR/M)
-    if (!isTwoByte && (opcode == 0xE8 || opcode == 0xE9)) {
-        // The 32-bit displacement starts right after the opcode
-        return (int)(p - code);
-    }
-
-    // Check for Jcc rel32 (0F 80-8F)
-    if (isTwoByte && opcode >= 0x80 && opcode <= 0x8F) {
-        return (int)(p - code);
-    }
-
-    // Check for ModR/M with RIP-relative addressing
-    uint8_t tableFlags;
-    if (isTwoByte) {
-        tableFlags = g_twoByteOpcodes[opcode];
-    } else {
-        tableFlags = g_oneByteOpcodes[opcode];
-    }
-
-    if (!(tableFlags & OP_MODRM))
-        return -1;
-
-    // p now points to the ModR/M byte
-    uint8_t modrm = *p;
-    uint8_t mod = (modrm >> 6) & 3;
-    uint8_t rm = modrm & 7;
-
-    // RIP-relative: mod=00, rm=101 (no SIB)
-    if (mod == 0 && rm == 5) {
-        return (int)(p + 1 - code); // disp32 starts after ModR/M
-    }
-
+  if (!is64bit)
     return -1;
+
+  const uint8_t *p = code;
+
+  // Skip prefixes
+  while (p < code + instrLen) {
+    uint8_t b = *p;
+    if (b == 0x66 || b == 0x67 || b == 0xF0 || b == 0xF2 || b == 0xF3 ||
+        b == 0x26 || b == 0x2E || b == 0x36 || b == 0x3E || b == 0x64 ||
+        b == 0x65 || (b >= 0x40 && b <= 0x4F)) {
+      p++;
+    } else {
+      break;
+    }
+  }
+
+  const uint8_t *opcodeStart = p;
+  uint8_t opcode = *p++;
+  bool isTwoByte = false;
+
+  if (opcode == 0x0F) {
+    opcode = *p++;
+    isTwoByte = true;
+
+    // 3-byte escape: 0F 38 or 0F 3A
+    if (opcode == 0x38 || opcode == 0x3A) {
+      p++; // skip third opcode byte
+    }
+  }
+
+  // Check for CALL/JMP rel32 (these are PC-relative but not RIP-relative via
+  // ModR/M)
+  if (!isTwoByte && (opcode == 0xE8 || opcode == 0xE9)) {
+    // The 32-bit displacement starts right after the opcode
+    return (int)(p - code);
+  }
+
+  // Check for Jcc rel32 (0F 80-8F)
+  if (isTwoByte && opcode >= 0x80 && opcode <= 0x8F) {
+    return (int)(p - code);
+  }
+
+  // Check for ModR/M with RIP-relative addressing
+  uint8_t tableFlags;
+  if (isTwoByte) {
+    tableFlags = g_twoByteOpcodes[opcode];
+  } else {
+    tableFlags = g_oneByteOpcodes[opcode];
+  }
+
+  if (!(tableFlags & OP_MODRM))
+    return -1;
+
+  // p now points to the ModR/M byte
+  uint8_t modrm = *p;
+  uint8_t mod = (modrm >> 6) & 3;
+  uint8_t rm = modrm & 7;
+
+  // RIP-relative: mod=00, rm=101 (no SIB)
+  if (mod == 0 && rm == 5) {
+    return (int)(p + 1 - code); // disp32 starts after ModR/M
+  }
+
+  return -1;
 }
 
 // ============================================================================
@@ -473,11 +475,11 @@ static int GetRipRelativeDispOffset(const uint8_t *code, int instrLen,
 // ============================================================================
 
 struct HookEntry {
-    void *target;
-    void *trampoline;
-    uint8_t origBytes[32];
-    int patchSize;
-    bool installed;
+  void *target;
+  void *trampoline;
+  uint8_t origBytes[32];
+  int patchSize;
+  bool installed;
 };
 
 static std::vector<HookEntry> g_hooks;
@@ -496,68 +498,67 @@ static constexpr int PATCH_SIZE = 5; // E9 + 4-byte relative offset
 // Allocate executable memory near the target (within ±2GB for x64)
 static uint8_t *AllocateTrampolinePool(void *nearAddr) {
 #ifdef _WIN64
-    // Try to allocate within ±2GB of target for RIP-relative fixups
-    uintptr_t target = (uintptr_t)nearAddr;
-    uintptr_t low = target > 0x7FFF0000ULL ? target - 0x7FFF0000ULL : 0x10000ULL;
-    uintptr_t high = target + 0x7FFF0000ULL;
+  // Try to allocate within ±2GB of target for RIP-relative fixups
+  uintptr_t target = (uintptr_t)nearAddr;
+  uintptr_t low = target > 0x7FFF0000ULL ? target - 0x7FFF0000ULL : 0x10000ULL;
+  uintptr_t high = target + 0x7FFF0000ULL;
 
-    MEMORY_BASIC_INFORMATION mbi;
-    for (uintptr_t addr = low; addr < high;) {
-        if (VirtualQuery((void *)addr, &mbi, sizeof(mbi)) == 0)
-            break;
+  MEMORY_BASIC_INFORMATION mbi;
+  for (uintptr_t addr = low; addr < high;) {
+    if (VirtualQuery((void *)addr, &mbi, sizeof(mbi)) == 0)
+      break;
 
-        if (mbi.State == MEM_FREE && mbi.RegionSize >= TRAMPOLINE_POOL_SIZE) {
-            // Align to allocation granularity (64KB)
-            uintptr_t aligned =
-                (addr + 0xFFFF) & ~(uintptr_t)0xFFFF;
-            if (aligned + TRAMPOLINE_POOL_SIZE <= addr + mbi.RegionSize) {
-                void *p = VirtualAlloc((void *)aligned, TRAMPOLINE_POOL_SIZE,
-                                       MEM_COMMIT | MEM_RESERVE,
-                                       PAGE_EXECUTE_READWRITE);
-                if (p)
-                    return (uint8_t *)p;
-            }
-        }
-        addr = (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+    if (mbi.State == MEM_FREE && mbi.RegionSize >= TRAMPOLINE_POOL_SIZE) {
+      // Align to allocation granularity (64KB)
+      uintptr_t aligned = (addr + 0xFFFF) & ~(uintptr_t)0xFFFF;
+      if (aligned + TRAMPOLINE_POOL_SIZE <= addr + mbi.RegionSize) {
+        void *p =
+            VirtualAlloc((void *)aligned, TRAMPOLINE_POOL_SIZE,
+                         MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        if (p)
+          return (uint8_t *)p;
+      }
     }
+    addr = (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+  }
 #endif
-    // Fallback: allocate anywhere
-    return (uint8_t *)VirtualAlloc(nullptr, TRAMPOLINE_POOL_SIZE,
-                                   MEM_COMMIT | MEM_RESERVE,
-                                   PAGE_EXECUTE_READWRITE);
+  // Fallback: allocate anywhere
+  return (uint8_t *)VirtualAlloc(nullptr, TRAMPOLINE_POOL_SIZE,
+                                 MEM_COMMIT | MEM_RESERVE,
+                                 PAGE_EXECUTE_READWRITE);
 }
 
 static uint8_t *GetTrampolineSlot(void *nearAddr) {
-    if (!g_trampolinePool) {
-        g_trampolinePool = AllocateTrampolinePool(nearAddr);
-        if (!g_trampolinePool)
-            return nullptr;
-        g_trampolineOffset = 0;
-    }
-    if (g_trampolineOffset + TRAMPOLINE_ENTRY_SIZE > TRAMPOLINE_POOL_SIZE)
-        return nullptr;
+  if (!g_trampolinePool) {
+    g_trampolinePool = AllocateTrampolinePool(nearAddr);
+    if (!g_trampolinePool)
+      return nullptr;
+    g_trampolineOffset = 0;
+  }
+  if (g_trampolineOffset + TRAMPOLINE_ENTRY_SIZE > TRAMPOLINE_POOL_SIZE)
+    return nullptr;
 
-    uint8_t *slot = g_trampolinePool + g_trampolineOffset;
-    g_trampolineOffset += TRAMPOLINE_ENTRY_SIZE;
-    return slot;
+  uint8_t *slot = g_trampolinePool + g_trampolineOffset;
+  g_trampolineOffset += TRAMPOLINE_ENTRY_SIZE;
+  return slot;
 }
 
 // Write an absolute jump at 'dest' to 'target'
 static void WriteJump(uint8_t *dest, void *target) {
 #ifdef _WIN64
-    // FF 25 00 00 00 00 [8-byte address]
-    dest[0] = 0xFF;
-    dest[1] = 0x25;
-    dest[2] = 0x00;
-    dest[3] = 0x00;
-    dest[4] = 0x00;
-    dest[5] = 0x00;
-    memcpy(dest + 6, &target, 8);
+  // FF 25 00 00 00 00 [8-byte address]
+  dest[0] = 0xFF;
+  dest[1] = 0x25;
+  dest[2] = 0x00;
+  dest[3] = 0x00;
+  dest[4] = 0x00;
+  dest[5] = 0x00;
+  memcpy(dest + 6, &target, 8);
 #else
-    // E9 [4-byte relative offset]
-    dest[0] = 0xE9;
-    int32_t rel = (int32_t)((uintptr_t)target - (uintptr_t)(dest + 5));
-    memcpy(dest + 1, &rel, 4);
+  // E9 [4-byte relative offset]
+  dest[0] = 0xE9;
+  int32_t rel = (int32_t)((uintptr_t)target - (uintptr_t)(dest + 5));
+  memcpy(dest + 1, &rel, 4);
 #endif
 }
 
@@ -566,198 +567,193 @@ static void WriteJump(uint8_t *dest, void *target) {
 // ============================================================================
 
 bool Install(void *target, void *detour, void **outTrampoline) {
-    if (!target || !detour || !outTrampoline)
-        return false;
+  if (!target || !detour || !outTrampoline)
+    return false;
 
-    std::lock_guard<std::mutex> lock(g_hookMutex);
+  std::lock_guard<std::mutex> lock(g_hookMutex);
 
-    // Check if already hooked
-    for (auto &h : g_hooks) {
-        if (h.target == target && h.installed) {
-            HookLog("InlineHook: Target %p already hooked", target);
-            return false;
-        }
+  // Check if already hooked
+  for (auto &h : g_hooks) {
+    if (h.target == target && h.installed) {
+      HookLog("InlineHook: Target %p already hooked", target);
+      return false;
     }
+  }
 
 #ifdef _WIN64
-    bool is64bit = true;
+  bool is64bit = true;
 #else
-    bool is64bit = false;
+  bool is64bit = false;
 #endif
 
-    // Determine how many bytes to copy (must be >= PATCH_SIZE on instruction
-    // boundary)
-    const uint8_t *code = (const uint8_t *)target;
-    int copySize = 0;
-    while (copySize < PATCH_SIZE) {
-        int len = GetInstructionLength(code + copySize, is64bit);
-        if (len == 0) {
-            HookLog("InlineHook: Failed to decode instruction at %p+%d "
-                     "(byte=0x%02X)",
-                     target, copySize, code[copySize]);
-            return false;
-        }
-        copySize += len;
+  // Determine how many bytes to copy (must be >= PATCH_SIZE on instruction
+  // boundary)
+  const uint8_t *code = (const uint8_t *)target;
+  int copySize = 0;
+  while (copySize < PATCH_SIZE) {
+    int len = GetInstructionLength(code + copySize, is64bit);
+    if (len == 0) {
+      HookLog("InlineHook: Failed to decode instruction at %p+%d "
+              "(byte=0x%02X)",
+              target, copySize, code[copySize]);
+      return false;
     }
+    copySize += len;
+  }
 
-    HookLog("InlineHook: Hooking %p, patch=%d bytes, detour=%p", target,
-            copySize, detour);
+  HookLog("InlineHook: Hooking %p, patch=%d bytes, detour=%p", target, copySize,
+          detour);
 
-    // Allocate trampoline
-    uint8_t *trampoline = GetTrampolineSlot(target);
-    if (!trampoline) {
-        HookLog("InlineHook: Failed to allocate trampoline");
+  // Allocate trampoline
+  uint8_t *trampoline = GetTrampolineSlot(target);
+  if (!trampoline) {
+    HookLog("InlineHook: Failed to allocate trampoline");
+    return false;
+  }
+
+  // Copy original instructions to trampoline, fixing up RIP-relative refs
+  int trampolineOffset = 0;
+  int srcOffset = 0;
+  while (srcOffset < copySize) {
+    int instrLen = GetInstructionLength(code + srcOffset, is64bit);
+    memcpy(trampoline + trampolineOffset, code + srcOffset, instrLen);
+
+    // Fix up RIP-relative addressing
+    int dispOff = GetRipRelativeDispOffset(code + srcOffset, instrLen, is64bit);
+    if (dispOff >= 0) {
+      // Read original displacement
+      int32_t origDisp;
+      memcpy(&origDisp, code + srcOffset + dispOff, 4);
+
+      // Calculate absolute target address
+      // RIP-relative: target = instruction_end + displacement
+      uintptr_t absTarget = (uintptr_t)(code + srcOffset + instrLen) + origDisp;
+
+      // Calculate new displacement from trampoline position
+      uintptr_t newInstrEnd =
+          (uintptr_t)(trampoline + trampolineOffset + instrLen);
+      int64_t newDisp = (int64_t)absTarget - (int64_t)newInstrEnd;
+
+      if (newDisp > INT32_MAX || newDisp < INT32_MIN) {
+        HookLog("InlineHook: RIP-relative fixup out of range at %p+%d", target,
+                srcOffset);
         return false;
+      }
+
+      int32_t newDisp32 = (int32_t)newDisp;
+      memcpy(trampoline + trampolineOffset + dispOff, &newDisp32, 4);
     }
 
-    // Copy original instructions to trampoline, fixing up RIP-relative refs
-    int trampolineOffset = 0;
-    int srcOffset = 0;
-    while (srcOffset < copySize) {
-        int instrLen = GetInstructionLength(code + srcOffset, is64bit);
-        memcpy(trampoline + trampolineOffset, code + srcOffset, instrLen);
+    trampolineOffset += instrLen;
+    srcOffset += instrLen;
+  }
 
-        // Fix up RIP-relative addressing
-        int dispOff = GetRipRelativeDispOffset(code + srcOffset, instrLen, is64bit);
-        if (dispOff >= 0) {
-            // Read original displacement
-            int32_t origDisp;
-            memcpy(&origDisp, code + srcOffset + dispOff, 4);
+  // Add jump back to original function after the patched area
+  WriteJump(trampoline + trampolineOffset, (void *)(code + copySize));
+  trampolineOffset += PATCH_SIZE;
 
-            // Calculate absolute target address
-            // RIP-relative: target = instruction_end + displacement
-            uintptr_t absTarget =
-                (uintptr_t)(code + srcOffset + instrLen) + origDisp;
+  // Save original bytes
+  HookEntry entry = {};
+  entry.target = target;
+  entry.trampoline = trampoline;
+  entry.patchSize = copySize;
+  entry.installed = true;
+  memcpy(entry.origBytes, code, copySize);
 
-            // Calculate new displacement from trampoline position
-            uintptr_t newInstrEnd =
-                (uintptr_t)(trampoline + trampolineOffset + instrLen);
-            int64_t newDisp = (int64_t)absTarget - (int64_t)newInstrEnd;
+  // Patch the target function
+  DWORD oldProtect;
+  if (!VirtualProtect(target, copySize, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+    HookLog("InlineHook: VirtualProtect failed (error=%lu)", GetLastError());
+    return false;
+  }
 
-            if (newDisp > INT32_MAX || newDisp < INT32_MIN) {
-                HookLog("InlineHook: RIP-relative fixup out of range at %p+%d",
-                        target, srcOffset);
-                return false;
-            }
+  // Write INT3 first for safety (atomic single-byte write)
+  volatile uint8_t *pTarget = (volatile uint8_t *)target;
+  pTarget[0] = 0xCC;
+  FlushInstructionCache(GetCurrentProcess(), target, 1);
 
-            int32_t newDisp32 = (int32_t)newDisp;
-            memcpy(trampoline + trampolineOffset + dispOff, &newDisp32, 4);
-        }
+  // Fill remaining patch area with INT3
+  for (int i = 1; i < copySize; i++) {
+    pTarget[i] = 0xCC;
+  }
 
-        trampolineOffset += instrLen;
-        srcOffset += instrLen;
-    }
+  // Write the jump (all but first byte)
+  uint8_t jmpBuf[16];
+  WriteJump(jmpBuf, detour);
+  for (int i = 1; i < PATCH_SIZE; i++) {
+    pTarget[i] = jmpBuf[i];
+  }
 
-    // Add jump back to original function after the patched area
-    WriteJump(trampoline + trampolineOffset,
-              (void *)(code + copySize));
-    trampolineOffset += PATCH_SIZE;
+  // Final: write first byte of jump (atomically replaces INT3)
+  pTarget[0] = jmpBuf[0];
 
-    // Save original bytes
-    HookEntry entry = {};
-    entry.target = target;
-    entry.trampoline = trampoline;
-    entry.patchSize = copySize;
-    entry.installed = true;
-    memcpy(entry.origBytes, code, copySize);
+  // Fill any remaining bytes after the jump with NOPs
+  for (int i = PATCH_SIZE; i < copySize; i++) {
+    pTarget[i] = 0x90;
+  }
 
-    // Patch the target function
-    DWORD oldProtect;
-    if (!VirtualProtect(target, copySize, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        HookLog("InlineHook: VirtualProtect failed (error=%lu)",
-                GetLastError());
-        return false;
-    }
+  VirtualProtect(target, copySize, oldProtect, &oldProtect);
+  FlushInstructionCache(GetCurrentProcess(), target, copySize);
 
-    // Write INT3 first for safety (atomic single-byte write)
-    volatile uint8_t *pTarget = (volatile uint8_t *)target;
-    pTarget[0] = 0xCC;
-    FlushInstructionCache(GetCurrentProcess(), target, 1);
+  g_hooks.push_back(entry);
+  *outTrampoline = trampoline;
 
-    // Fill remaining patch area with INT3
-    for (int i = 1; i < copySize; i++) {
-        pTarget[i] = 0xCC;
-    }
-
-    // Write the jump (all but first byte)
-    uint8_t jmpBuf[16];
-    WriteJump(jmpBuf, detour);
-    for (int i = 1; i < PATCH_SIZE; i++) {
-        pTarget[i] = jmpBuf[i];
-    }
-
-    // Final: write first byte of jump (atomically replaces INT3)
-    pTarget[0] = jmpBuf[0];
-
-    // Fill any remaining bytes after the jump with NOPs
-    for (int i = PATCH_SIZE; i < copySize; i++) {
-        pTarget[i] = 0x90;
-    }
-
-    VirtualProtect(target, copySize, oldProtect, &oldProtect);
-    FlushInstructionCache(GetCurrentProcess(), target, copySize);
-
-    g_hooks.push_back(entry);
-    *outTrampoline = trampoline;
-
-    HookLog("InlineHook: Installed hook at %p -> %p (trampoline=%p)", target,
-            detour, trampoline);
-    return true;
+  HookLog("InlineHook: Installed hook at %p -> %p (trampoline=%p)", target,
+          detour, trampoline);
+  return true;
 }
 
 bool Remove(void *target) {
-    if (!target)
-        return false;
-
-    std::lock_guard<std::mutex> lock(g_hookMutex);
-
-    for (auto &h : g_hooks) {
-        if (h.target == target && h.installed) {
-            DWORD oldProtect;
-            if (VirtualProtect(h.target, h.patchSize, PAGE_EXECUTE_READWRITE,
-                               &oldProtect)) {
-                memcpy(h.target, h.origBytes, h.patchSize);
-                VirtualProtect(h.target, h.patchSize, oldProtect, &oldProtect);
-                FlushInstructionCache(GetCurrentProcess(), h.target,
-                                      h.patchSize);
-                h.installed = false;
-                HookLog("InlineHook: Removed hook at %p", target);
-                return true;
-            }
-            HookLog("InlineHook: Failed to remove hook at %p (VirtualProtect "
-                     "error=%lu)",
-                     target, GetLastError());
-            return false;
-        }
-    }
-
-    HookLog("InlineHook: No hook found at %p", target);
+  if (!target)
     return false;
+
+  std::lock_guard<std::mutex> lock(g_hookMutex);
+
+  for (auto &h : g_hooks) {
+    if (h.target == target && h.installed) {
+      DWORD oldProtect;
+      if (VirtualProtect(h.target, h.patchSize, PAGE_EXECUTE_READWRITE,
+                         &oldProtect)) {
+        memcpy(h.target, h.origBytes, h.patchSize);
+        VirtualProtect(h.target, h.patchSize, oldProtect, &oldProtect);
+        FlushInstructionCache(GetCurrentProcess(), h.target, h.patchSize);
+        h.installed = false;
+        HookLog("InlineHook: Removed hook at %p", target);
+        return true;
+      }
+      HookLog("InlineHook: Failed to remove hook at %p (VirtualProtect "
+              "error=%lu)",
+              target, GetLastError());
+      return false;
+    }
+  }
+
+  HookLog("InlineHook: No hook found at %p", target);
+  return false;
 }
 
 void RemoveAll() {
-    std::lock_guard<std::mutex> lock(g_hookMutex);
+  std::lock_guard<std::mutex> lock(g_hookMutex);
 
-    for (auto &h : g_hooks) {
-        if (h.installed) {
-            DWORD oldProtect;
-            if (VirtualProtect(h.target, h.patchSize, PAGE_EXECUTE_READWRITE,
-                               &oldProtect)) {
-                memcpy(h.target, h.origBytes, h.patchSize);
-                VirtualProtect(h.target, h.patchSize, oldProtect, &oldProtect);
-                FlushInstructionCache(GetCurrentProcess(), h.target,
-                                      h.patchSize);
-            }
-            h.installed = false;
-        }
+  for (auto &h : g_hooks) {
+    if (h.installed) {
+      DWORD oldProtect;
+      if (VirtualProtect(h.target, h.patchSize, PAGE_EXECUTE_READWRITE,
+                         &oldProtect)) {
+        memcpy(h.target, h.origBytes, h.patchSize);
+        VirtualProtect(h.target, h.patchSize, oldProtect, &oldProtect);
+        FlushInstructionCache(GetCurrentProcess(), h.target, h.patchSize);
+      }
+      h.installed = false;
     }
-    g_hooks.clear();
+  }
+  g_hooks.clear();
 
-    if (g_trampolinePool) {
-        VirtualFree(g_trampolinePool, 0, MEM_RELEASE);
-        g_trampolinePool = nullptr;
-        g_trampolineOffset = 0;
-    }
+  if (g_trampolinePool) {
+    VirtualFree(g_trampolinePool, 0, MEM_RELEASE);
+    g_trampolinePool = nullptr;
+    g_trampolineOffset = 0;
+  }
 }
 
 } // namespace InlineHook
