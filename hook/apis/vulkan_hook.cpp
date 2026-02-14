@@ -1880,8 +1880,7 @@ public:
 
     // Wait for App's semaphores — use fixed array to avoid heap allocation
     VkPipelineStageFlags waitStages[8];
-    uint32_t waitCount =
-        (uint32_t)(std::min)(waitSemaphores.size(), (size_t)8);
+    uint32_t waitCount = (uint32_t)(std::min)(waitSemaphores.size(), (size_t)8);
     for (uint32_t i = 0; i < waitCount; i++)
       waitStages[i] = VK_PIPELINE_STAGE_TRANSFER_BIT;
     submitInfo.waitSemaphoreCount = waitCount;

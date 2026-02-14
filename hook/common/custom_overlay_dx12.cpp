@@ -9,7 +9,8 @@
 
 namespace CustomOverlay {
 
-// Shader bytecode is in overlay_shader_bytecode.h (pre-compiled via tools/compile_shaders.py)
+// Shader bytecode is in overlay_shader_bytecode.h (pre-compiled via
+// tools/compile_shaders.py)
 
 DX12Backend::DX12Backend(ID3D12Device *dev, ID3D12CommandQueue *queue,
                          DXGI_FORMAT format)
@@ -559,7 +560,8 @@ void DX12Backend::Render(const std::vector<DrawVertex> &vertices,
       currentCmdList->SetPipelineState(pso);
       lastPSO = pso;
     }
-    currentCmdList->DrawIndexedInstanced(cmd.indexCount, 1, cmd.indexOffset, 0, 0);
+    currentCmdList->DrawIndexedInstanced(cmd.indexCount, 1, cmd.indexOffset, 0,
+                                         0);
   }
 }
 

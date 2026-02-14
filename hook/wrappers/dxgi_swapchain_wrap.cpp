@@ -154,6 +154,9 @@ CWrapDXGISwapChain::CWrapDXGISwapChain(IDXGISwapChain *pReal, IUnknown *pDevice)
       m_RefCount(1), m_hWnd(nullptr), m_Version(0),
       m_OverlayResourcesValid(false), m_IsD3D12(false), m_Promoted(false),
       m_DestructionCookie(0) {
+  WrapperLog(
+      "SwapChain: CWrapDXGISwapChain CONSTRUCTOR called (real=%p, device=%p)",
+      pReal, pDevice);
   if (pReal) {
     pReal->AddRef();
 
@@ -585,7 +588,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval,
       "[FSR-DEBUG] Present state - fgActive=%d, flipModel=%d, Wrapper=%p",
       g_FGCompat.IsFGActive(), m_FlipModel.active, this);
 
-  // CRITICAL: Check for global shutdown - if app is closing, don't touch anything
+  // CRITICAL: Check for global shutdown - if app is closing, don't touch
+  // anything
   extern std::atomic<bool> g_ShuttingDown;
   if (g_ShuttingDown.load()) {
     if (pRealCached) {
@@ -709,18 +713,15 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval,
                  captureNum);
     }
 
-    // DX12: Draw overlay separately (ProcessFrameExternal doesn't draw overlay
-    // for DX12)
+    // DX12: VTable hook (DetourPresent in dxgi_shared.cpp) already handles
+    // overlay rendering via HandleDX12ProcessFrame -> ProcessFrame ->
+    // DrawOverlay No additional overlay drawing needed here
     static int s_PresentCount = 0;
     int presentNum = ++s_PresentCount;
     if (presentNum <= 10) {
-      WrapperLog("[FSR-DEBUG] Present: About to call DrawOverlay #%d",
-                 presentNum);
-    }
-    DrawOverlay();
-    if (presentNum <= 10) {
-      WrapperLog("[FSR-DEBUG] Present: DrawOverlay #%d completed successfully",
-                 presentNum);
+      WrapperLog(
+          "[FSR-DEBUG] Present: DX12 path - overlay handled by VTable hook #%d",
+          presentNum);
     }
   } else {
     // DX11/DX10: Call DX11_ProcessFrameExternal for capture AND overlay
@@ -896,7 +897,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetCoreWindow(REFIID refiid,
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(
     UINT SyncInterval, UINT PresentFlags,
     const DXGI_PRESENT_PARAMETERS *pPresentParameters) {
-  // CRITICAL: Check for global shutdown - if app is closing, don't touch anything
+  // CRITICAL: Check for global shutdown - if app is closing, don't touch
+  // anything
   extern std::atomic<bool> g_ShuttingDown;
   if (g_ShuttingDown.load()) {
     if (m_pReal1) {
@@ -953,9 +955,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(
   if (m_IsD3D12) {
     // Use base interface for ProcessFrameExternal (it takes IDXGISwapChain*)
     DX12_ProcessFrameExternal(pReal1Cached);
-    // DX12: Draw overlay separately (ProcessFrameExternal doesn't draw overlay
-    // for DX12)
-    DrawOverlay();
+    // DX12: VTable hook (DetourPresent in dxgi_shared.cpp) already handles
+    // overlay rendering No additional overlay drawing needed here
   } else {
     // DX11/DX10: Call DX11_ProcessFrameExternal for capture AND overlay
     // NOTE: DX11_ProcessFrameExternal already calls DrawDX11Overlay internally,

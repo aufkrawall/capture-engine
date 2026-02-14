@@ -38,7 +38,10 @@ extern std::mutex g_SharedMutex;
 void Init();
 
 // The unified hook installer
-bool InstallHooks(IDXGISwapChain *pSwapChain);
+bool InstallHooks(IDXGISwapChain *pSwapChain, bool presentOnly = false);
+
+// Set pending swapchain for lazy hook installation (called from DX12 hook)
+void SetPendingSwapChainForLazyHook(IDXGISwapChain *pSwapChain);
 
 // Common helpers
 bool IsVulkanPrimary();
@@ -51,5 +54,17 @@ void HandleDX12ProcessFrame(IDXGISwapChain *pSwapChain, bool isRealFrame);
 void HandleDX12ResizeBegin();
 void HandleDX12ResizeEnd();
 void HandleDX11ResizeBegin();
+
+// Remove Present/Present1 vtable hooks (called when COM wrapper takes over)
+void RemovePresentHooks();
+
+// Direct-call helpers: bypass vtable hooks by calling saved original function
+// pointers directly. Used by CWrapDXGISwapChain to avoid re-entry through
+// hooked vtable.
+HRESULT CallOriginalPresent(IDXGISwapChain *pSwapChain, UINT SyncInterval,
+                            UINT Flags);
+HRESULT CallOriginalPresent1(IDXGISwapChain *pSwapChain, UINT SyncInterval,
+                             UINT Flags,
+                             const DXGI_PRESENT_PARAMETERS *pParams);
 
 } // namespace DXGIShared

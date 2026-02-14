@@ -8,14 +8,15 @@
 
 namespace CustomOverlay {
 
-// Shader bytecode is in overlay_shader_bytecode.h (pre-compiled via tools/compile_shaders.py)
+// Shader bytecode is in overlay_shader_bytecode.h (pre-compiled via
+// tools/compile_shaders.py)
 
 DX11Backend::DX11Backend(ID3D11Device *dev, ID3D11DeviceContext *ctx)
     : device(dev), context(ctx) {
   // CRITICAL FIX: Do NOT AddRef device/context
-  // During app shutdown, the game destroys its D3D device before our DLL unloads
-  // If we AddRef, our destructor tries to Release on already-destroyed objects
-  // causing crashes. Just store raw pointers and never Release them.
+  // During app shutdown, the game destroys its D3D device before our DLL
+  // unloads If we AddRef, our destructor tries to Release on already-destroyed
+  // objects causing crashes. Just store raw pointers and never Release them.
   // The OS reclaims all memory when the process exits anyway.
 }
 
@@ -24,7 +25,8 @@ DX11Backend::~DX11Backend() {
   // already destroyed. We must Detach ALL ComPtrs to prevent their destructors
   // from calling Release() on destroyed objects.
   if (skipDeviceRelease) {
-    // Detach all ComPtrs - this prevents their destructors from calling Release()
+    // Detach all ComPtrs - this prevents their destructors from calling
+    // Release()
     vertexShader.Detach();
     pixelShader.Detach();
     pixelShaderSolid.Detach();
@@ -90,13 +92,14 @@ bool DX11Backend::Initialize(int fontTextureWidth, int fontTextureHeight,
 
 void DX11Backend::Shutdown() {
   if (!initialized)
-    return;  // Guard against double-shutdown (renderer calls Shutdown, then destructor)
+    return; // Guard against double-shutdown (renderer calls Shutdown, then
+            // destructor)
 
   // CRITICAL FIX: Do NOT Release device/context - we don't AddRef them anymore
-  // During app shutdown, the game destroys its D3D device before our DLL unloads
-  // Releasing would crash on already-destroyed objects.
-  // Just release our own created resources (shaders, buffers, etc.)
-  // The OS reclaims all memory when the process exits anyway.
+  // During app shutdown, the game destroys its D3D device before our DLL
+  // unloads Releasing would crash on already-destroyed objects. Just release
+  // our own created resources (shaders, buffers, etc.) The OS reclaims all
+  // memory when the process exits anyway.
   vertexShader.Reset();
   pixelShader.Reset();
   pixelShaderSolid.Reset();
@@ -248,7 +251,8 @@ void DX11Backend::Render(const std::vector<DrawVertex> &vertices,
                          const std::vector<uint16_t> &indices,
                          const std::vector<DrawCommand> &commands,
                          int viewportWidth, int viewportHeight) {
-  if (!initialized || !device || !context || vertices.empty() || commands.empty())
+  if (!initialized || !device || !context || vertices.empty() ||
+      commands.empty())
     return;
 
   // Resize buffers if needed
@@ -402,17 +406,28 @@ void DX11Backend::Render(const std::vector<DrawVertex> &vertices,
   }
 
   // Release saved state references
-  if (oldRasterState) oldRasterState->Release();
-  if (oldBlendState) oldBlendState->Release();
-  if (oldDepthState) oldDepthState->Release();
-  if (oldVS) oldVS->Release();
-  if (oldPS) oldPS->Release();
-  if (oldInputLayout) oldInputLayout->Release();
-  if (oldVB) oldVB->Release();
-  if (oldIB) oldIB->Release();
-  if (oldVSCB) oldVSCB->Release();
-  if (oldPSSRV) oldPSSRV->Release();
-  if (oldPSSampler) oldPSSampler->Release();
+  if (oldRasterState)
+    oldRasterState->Release();
+  if (oldBlendState)
+    oldBlendState->Release();
+  if (oldDepthState)
+    oldDepthState->Release();
+  if (oldVS)
+    oldVS->Release();
+  if (oldPS)
+    oldPS->Release();
+  if (oldInputLayout)
+    oldInputLayout->Release();
+  if (oldVB)
+    oldVB->Release();
+  if (oldIB)
+    oldIB->Release();
+  if (oldVSCB)
+    oldVSCB->Release();
+  if (oldPSSRV)
+    oldPSSRV->Release();
+  if (oldPSSampler)
+    oldPSSampler->Release();
 }
 
 } // namespace CustomOverlay

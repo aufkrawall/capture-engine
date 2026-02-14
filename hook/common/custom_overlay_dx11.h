@@ -56,7 +56,8 @@ private:
   size_t vertexBufferSize = 0;
   size_t indexBufferSize = 0;
   bool initialized = false;
-  bool skipDeviceRelease = false;  // When true, Shutdown won't release device refs
+  bool skipDeviceRelease =
+      false; // When true, Shutdown won't release device refs
 };
 
 } // namespace CustomOverlay

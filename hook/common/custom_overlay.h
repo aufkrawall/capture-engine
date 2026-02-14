@@ -63,9 +63,9 @@ public:
                           uint32_t shadowColor, float shadowOffset = 1.0f);
   void DrawTextScaled(float x, float y, const char *text, uint32_t color,
                       float scale);
-  void DrawTextScaledWithShadow(float x, float y, const char *text, uint32_t color,
-                                uint32_t shadowColor, float scale,
-                                float shadowOffset = 1.0f);
+  void DrawTextScaledWithShadow(float x, float y, const char *text,
+                                uint32_t color, uint32_t shadowColor,
+                                float scale, float shadowOffset = 1.0f);
 
   // Calculate text size
   void CalcTextSize(const char *text, float *outWidth, float *outHeight) const;
@@ -75,12 +75,13 @@ public:
   // Basic shapes
   void DrawRect(float x, float y, float w, float h, uint32_t color);
   void DrawRectFilled(float x, float y, float w, float h, uint32_t color);
-  void DrawLine(float x0, float y0, float x1, float y1, uint32_t color, float thickness = 1.0f);
+  void DrawLine(float x0, float y0, float x1, float y1, uint32_t color,
+                float thickness = 1.0f);
 
   // Frame time graph
   void DrawFrameTimeGraph(float x, float y, float width, float height,
-                          const float *frameTimes, int count,
-                          float minVal, float maxVal, uint32_t color);
+                          const float *frameTimes, int count, float minVal,
+                          float maxVal, uint32_t color);
 
   // Debug
   void ValidateCommands();
@@ -184,13 +185,13 @@ constexpr uint32_t LoadMed = 0xFF00FFFF;    // Yellow
 constexpr uint32_t LoadHigh = 0xFF0000FF;   // Red
 
 // Label colors (matching reference overlay style)
-constexpr uint32_t LabelGreen = 0xFF00C850;   // Green for GPU/CPU names
-constexpr uint32_t LabelOrange = 0xFF0080FF;  // Orange for VRAM
-constexpr uint32_t LabelPink = 0xFF8080FF;    // Pink/Red for RAM
-constexpr uint32_t LabelCyan = 0xFFFFFF00;    // Cyan for FG
-constexpr uint32_t LabelYellow = 0xFF00FFFF;  // Yellow for FPS labels
-constexpr uint32_t ValueYellow = 0xFF00FFFF;  // Yellow for FPS values
-constexpr uint32_t ValueCyan = 0xFFFFFF00;    // Cyan for CPU %
+constexpr uint32_t LabelGreen = 0xFF00C850;  // Green for GPU/CPU names
+constexpr uint32_t LabelOrange = 0xFF0080FF; // Orange for VRAM
+constexpr uint32_t LabelPink = 0xFF8080FF;   // Pink/Red for RAM
+constexpr uint32_t LabelCyan = 0xFFFFFF00;   // Cyan for FG
+constexpr uint32_t LabelYellow = 0xFF00FFFF; // Yellow for FPS labels
+constexpr uint32_t ValueYellow = 0xFF00FFFF; // Yellow for FPS values
+constexpr uint32_t ValueCyan = 0xFFFFFF00;   // Cyan for CPU %
 } // namespace Colors
 
 } // namespace CustomOverlay

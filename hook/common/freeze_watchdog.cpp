@@ -1,5 +1,5 @@
 #include "freeze_watchdog.h"
-#include "hook_common.h"  // For g_ShuttingDown
+#include "hook_common.h" // For g_ShuttingDown
 #include <chrono>
 #include <ctime>
 #include <dbghelp.h>

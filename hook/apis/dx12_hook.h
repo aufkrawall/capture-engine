@@ -1,5 +1,4 @@
 #pragma once
-#include "../common/cached_overlay_renderer.h"
 #include "graphics_hook.h"
 #include <d3d12.h>
 #include <dxgi1_4.h>
@@ -10,10 +9,6 @@
 class DX12Hook : public GraphicsHook {
   std::vector<IUnknown *> trackedResources;
   std::recursive_mutex resourceMutex;
-
-  // Cached overlay renderer for zero-overhead interpolated frame rendering
-  std::unique_ptr<overlay::CachedOverlayRenderer> cachedRenderer;
-  bool useCachedRenderer = true;
 
 public:
   void Init() override;

@@ -39,7 +39,8 @@ bool Renderer::Initialize(RendererBackend *backendPtr, float scale) {
   }
 
   // Pre-reserve buffers to avoid per-frame heap allocations.
-  // Typical overlay: ~200 text glyphs (4 verts each) + graph (360 verts) + rects = ~1200 verts
+  // Typical overlay: ~200 text glyphs (4 verts each) + graph (360 verts) +
+  // rects = ~1200 verts
   vertices.reserve(4096);
   indices.reserve(8192);
   commands.reserve(32);
@@ -50,7 +51,7 @@ bool Renderer::Initialize(RendererBackend *backendPtr, float scale) {
 
 void Renderer::Shutdown() {
   if (!initialized)
-    return;  // Guard against double-shutdown
+    return; // Guard against double-shutdown
   if (backend) {
     backend->Shutdown();
   }
@@ -189,8 +190,6 @@ void Renderer::FlushBatch(bool useTexture) {
   currentBatchIndexOffset = (uint32_t)indices.size();
 }
 
-
-
 void Renderer::DrawText(float x, float y, const char *text, uint32_t color) {
   if (!initialized || !text)
     return;
@@ -216,8 +215,8 @@ void Renderer::DrawTextWithShadow(float x, float y, const char *text,
   FlushBatch(true);
 }
 
-void Renderer::DrawTextScaled(float x, float y, const char *text, uint32_t color,
-                              float scale) {
+void Renderer::DrawTextScaled(float x, float y, const char *text,
+                              uint32_t color, float scale) {
   if (!initialized || !text)
     return;
 
@@ -236,7 +235,8 @@ void Renderer::DrawTextScaledWithShadow(float x, float y, const char *text,
     return;
 
   // Draw shadow first
-  AddTextQuadsScaled(x + shadowOffset, y + shadowOffset, text, shadowColor, scale);
+  AddTextQuadsScaled(x + shadowOffset, y + shadowOffset, text, shadowColor,
+                     scale);
   // Draw main text on top
   AddTextQuadsScaled(x, y, text, color, scale);
   FlushBatch(true);
@@ -250,8 +250,10 @@ void Renderer::CalcTextSize(const char *text, float *outWidth,
 void Renderer::CalcTextSizeScaled(const char *text, float *outWidth,
                                   float *outHeight, float scale) const {
   fontAtlas.CalcTextSize(text, outWidth, outHeight);
-  if (outWidth) *outWidth *= scale;
-  if (outHeight) *outHeight *= scale;
+  if (outWidth)
+    *outWidth *= scale;
+  if (outHeight)
+    *outHeight *= scale;
 }
 
 void Renderer::DrawRect(float x, float y, float w, float h, uint32_t color) {
@@ -309,8 +311,8 @@ void Renderer::DrawLine(float x0, float y0, float x1, float y1, uint32_t color,
 }
 
 void Renderer::DrawFrameTimeGraph(float x, float y, float width, float height,
-                                   const float *frameTimes, int count,
-                                   float minVal, float maxVal, uint32_t color) {
+                                  const float *frameTimes, int count,
+                                  float minVal, float maxVal, uint32_t color) {
   if (!initialized || !frameTimes || count < 2)
     return;
 
@@ -325,18 +327,20 @@ void Renderer::DrawFrameTimeGraph(float x, float y, float width, float height,
 
   float stepX = width / (float)(count - 1);
   float invRange = 1.0f / range;
-  
+
   // Extract RGB from color for gradient
   uint8_t r = (color >> 0) & 0xFF;
   uint8_t g = (color >> 8) & 0xFF;
   uint8_t b = (color >> 16) & 0xFF;
   uint8_t a = (color >> 24) & 0xFF;
-  
+
   // Create gradient colors: full color at top, fading to transparent at bottom
   uint32_t topColor = color; // Full color at the data line
-  uint32_t bottomColor = (a / 4) << 24 | (b << 16) | (g << 8) | r; // 25% alpha at bottom
+  uint32_t bottomColor =
+      (a / 4) << 24 | (b << 16) | (g << 8) | r; // 25% alpha at bottom
 
-  // Generate filled area vertices: top edge follows data, bottom edge is at graph bottom
+  // Generate filled area vertices: top edge follows data, bottom edge is at
+  // graph bottom
   uint16_t stripBase = (uint16_t)vertices.size();
   for (int i = 0; i < count; i++) {
     float val = frameTimes[i];
