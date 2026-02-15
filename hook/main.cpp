@@ -18,6 +18,7 @@
 #include "common/hook_context.h"
 #include "common/input_manager.h"
 #include "common/ipc_client.h"
+#include "common/perf_logger.h"
 #include "common/system_metrics.h"
 #include "wrappers/d3dkmt_hook.h"
 #include "wrappers/iat_hook.h"
@@ -1060,6 +1061,15 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
         }
       }
     }
+
+    // Initialize performance logger if debug logging is enabled
+    if (g_pLocalConfig && g_pLocalConfig->debugLogging) {
+      char perfLogPath[MAX_PATH];
+      snprintf(perfLogPath, sizeof(perfLogPath),
+               "%s\\logs\\perf_metrics_%d.csv", dir.c_str(),
+               GetCurrentProcessId());
+      PerfLogger::Get().Init(perfLogPath);
+    }
   }
 
   // FAST PATH: Install IAT wrappers immediately before anything else
@@ -1626,6 +1636,9 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     HookLog("DLL_DETACH: Shutting down InputManager...");
     InputManager::Get().Shutdown();
     HookLog("DLL_DETACH: InputManager shutdown complete");
+
+    // Shutdown performance logger
+    PerfLogger::Get().Shutdown();
 
     // CRITICAL FIX: Properly shutdown hooks using SafeShutdownHook template
     // This calls Shutdown() which releases resources in the correct order

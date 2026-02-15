@@ -4,6 +4,7 @@
 #include "../common/frame_timing.h"
 #include "../common/input_manager.h"
 #include "../common/overlay_adapter.h"
+#include "../common/perf_logger.h"
 #include "../wrappers/iat_hook.h"
 #include "hook_common.h"
 #include "lod_helper.h"
@@ -1074,6 +1075,21 @@ static void SwapEnd(HDC hdc) {
     if (g_IPC && g_IPC->GetSharedMem()->graphicsConfig.prerenderLimit >= 0) {
       ApplyPrerenderLimitGL(
           g_IPC->GetSharedMem()->graphicsConfig.prerenderLimit);
+    }
+
+    // Performance logging for PerfLogger
+    if (PerfLogger::Get().IsEnabled()) {
+      static uint64_t s_perfFrameNum = 0;
+      static int64_t s_lastFrameUs = 0;
+      FrameMetrics perfMetrics;
+      perfMetrics.frameNum = ++s_perfFrameNum;
+      perfMetrics.qpcUs = us;
+      if (s_lastFrameUs > 0) {
+        perfMetrics.totalUs = static_cast<int32_t>(us - s_lastFrameUs);
+      }
+      s_lastFrameUs = us;
+      strcpy(perfMetrics.api, "OpenGL");
+      PerfLogger::Get().LogFrame(perfMetrics);
     }
   }
 }

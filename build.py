@@ -1604,6 +1604,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         os.path.join(PROJECT_ROOT, "hook", "common", "ipc_client.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "common", "system_metrics.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "common", "performance_metrics.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "common", "perf_logger.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "common", "input_manager.cpp"),
         # CustomOverlay system for full overlay rendering
         os.path.join(PROJECT_ROOT, "hook", "common", "custom_overlay.cpp"),
@@ -1611,7 +1612,6 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         os.path.join(PROJECT_ROOT, "hook", "common", "custom_font.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "common", "overlay_adapter.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "common", "cached_overlay_renderer.cpp"),
-
     ]
 
     # Compile layer sources
@@ -2169,17 +2169,25 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             os.path.join(
                 PROJECT_ROOT, "hook", "apis", "vulkan_hook.cpp"
             ),  # Using Vulkan layer instead
-            os.path.join(PROJECT_ROOT, "hook", "minimal_main.cpp"),  # Excluded - built separately as minimal test
-            os.path.join(PROJECT_ROOT, "hook", "apis", "dx12_hook_stable.cpp"),  # WIP - not ready
-            os.path.join(PROJECT_ROOT, "hook", "apis", "dx12_hook_minhook.cpp"),  # WIP - not ready
-            os.path.join(PROJECT_ROOT, "hook", "wrappers", "vtable_hook_minhook.cpp"),  # Replaced by custom_hook.cpp
+            os.path.join(
+                PROJECT_ROOT, "hook", "minimal_main.cpp"
+            ),  # Excluded - built separately as minimal test
+            os.path.join(
+                PROJECT_ROOT, "hook", "apis", "dx12_hook_stable.cpp"
+            ),  # WIP - not ready
+            os.path.join(
+                PROJECT_ROOT, "hook", "apis", "dx12_hook_minhook.cpp"
+            ),  # WIP - not ready
+            os.path.join(
+                PROJECT_ROOT, "hook", "wrappers", "vtable_hook_minhook.cpp"
+            ),  # Replaced by custom_hook.cpp
             # Vulkan backend for custom overlay is a stub, keep it but it compiles
         ]
         hk_src = [f for f in hk_src if f not in excluded_files]
 
         # Custom hook system (VTable + IAT patching, replaces MinHook)
         # vtable_hook.cpp and custom_hook.cpp are already included via glob
-        
+
         # Custom overlay system (replaces ImGui for overlay rendering)
         # custom_font.cpp, custom_overlay.cpp, overlay_adapter.cpp are included via glob
         # custom_overlay_dx*.cpp, custom_overlay_gl.cpp, custom_overlay_vk.cpp are included via glob
@@ -2294,13 +2302,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                         if locking:
                             log(f"[Info] Locking process: {locking}")
 
-        cmd = (
-            [curr_clang_exe]
-            + hk_objs
-            + common_objs
-            + ldflags_hook
-            + ["-o", hk_dll]
-        )
+        cmd = [curr_clang_exe] + hk_objs + common_objs + ldflags_hook + ["-o", hk_dll]
         # cmd = [curr_clang_exe] + hk_objs + ldflags_hook + ["-o", hk_dll]
         run_command(cmd, env=curr_env)
 
@@ -2333,8 +2335,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 log(f"[Warning] Could not verify DLL version: {e}")
 
         # generate_hash(hk_dll) # Removed in favor of embedded hash header
-        
-
 
         # 4. MediaEngine (x64 only for now as requested)
         if arch == "x64":

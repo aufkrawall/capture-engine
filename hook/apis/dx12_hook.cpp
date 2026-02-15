@@ -27,6 +27,7 @@
 
 #include "../common/freeze_watchdog.h"
 #include "../common/overlay_adapter.h"
+#include "../common/perf_logger.h"
 #include "../common/swapchain_wrapper.h"
 #include "../common/system_metrics.h"
 #include "../wrappers/d3d12_wrapper_interface.h"
@@ -560,12 +561,12 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(
     }
 
     // Hook the command queue VTable AFTER swapchain creation completes.
-    // For DX12, pDevice is actually the command queue passed to CreateSwapChain.
-    // Skip during temp swapchain creation to avoid capturing a transient queue.
+    // For DX12, pDevice is actually the command queue passed to
+    // CreateSwapChain. Skip during temp swapchain creation to avoid capturing a
+    // transient queue.
     if (!g_CreatingTempSwapchain.load(std::memory_order_acquire)) {
       ID3D12CommandQueue *queue = nullptr;
-      if (pDevice &&
-          SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&queue)))) {
+      if (pDevice && SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&queue)))) {
         HookLog("DX12: DetourCreateSwapChainGlobal - hooking queue %p", queue);
         DX12_SetCommandQueue(queue);
         DX12_HookQueueVTable(queue);
@@ -599,12 +600,12 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(
     }
 
     // Hook the command queue VTable AFTER swapchain creation completes.
-    // For DX12, pDevice is actually the command queue passed to CreateSwapChain.
-    // Skip during temp swapchain creation to avoid capturing a transient queue.
+    // For DX12, pDevice is actually the command queue passed to
+    // CreateSwapChain. Skip during temp swapchain creation to avoid capturing a
+    // transient queue.
     if (!g_CreatingTempSwapchain.load(std::memory_order_acquire)) {
       ID3D12CommandQueue *queue = nullptr;
-      if (pDevice &&
-          SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&queue)))) {
+      if (pDevice && SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&queue)))) {
         HookLog("DX12: DetourCreateSwapChainForHwndGlobal - hooking queue %p",
                 queue);
         DX12_SetCommandQueue(queue);
@@ -1217,6 +1218,27 @@ static void ApplyPrerenderLimitDX12(float limit) {
 }
 
 void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
+  // Performance metrics for this frame
+  FrameMetrics perfMetrics;
+  perfMetrics.qpcUs = PerfLogger::GetQpcUs();
+  strcpy(perfMetrics.api, "DX12");
+  static uint64_t s_perfFrameNum = 0;
+  perfMetrics.frameNum = ++s_perfFrameNum;
+
+  // Scope guard to log metrics on any exit path
+  auto perfGuard = ce::make_scope_guard([&]() {
+    if (PerfLogger::Get().IsEnabled()) {
+      perfMetrics.totalUs =
+          static_cast<int32_t>((PerfLogger::GetQpcUs() - perfMetrics.qpcUs));
+      PerfLogger::Get().LogFrame(perfMetrics);
+    }
+  });
+
+  // Skip performance logging if disabled
+  if (!PerfLogger::Get().IsEnabled()) {
+    perfGuard.dismiss();
+  }
+
   // CRITICAL: Skip all rendering during shutdown to prevent crashes
   if (g_ShuttingDown.load()) {
     return;
@@ -1245,7 +1267,10 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
   // CPU Prerender Limit - Apply before any rendering
   float prerenderLimit = GetActivePrerenderLimit();
   if (prerenderLimit >= 0.0f) {
+    int64_t prerenderStartUs = PerfLogger::GetQpcUs();
     ApplyPrerenderLimitDX12(prerenderLimit);
+    perfMetrics.prerenderWaitUs =
+        static_cast<int32_t>(PerfLogger::GetQpcUs() - prerenderStartUs);
   }
 
   // PERFORMANCE FIX: Use try_lock instead of blocking lock_guard
@@ -1270,6 +1295,7 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
   // OPTIMIZATION: Only resolve device if swapchain changed or device not yet
   // known
   if (!g_Device || pSwapChain != g_LastSwapChain) {
+    int64_t deviceInitStartUs = PerfLogger::GetQpcUs();
     IUnknown *pUnk = nullptr;
     if (FAILED(pSwapChain->GetDevice(IID_PPV_ARGS(&pUnk)))) {
       HookLog("DX12: ProcessFrame - failed to get device from swapchain");
@@ -1400,6 +1426,8 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
               "(device-level resources preserved)");
     }
     activeDevice->Release();
+    perfMetrics.deviceInitUs =
+        static_cast<int32_t>(PerfLogger::GetQpcUs() - deviceInitStartUs);
   }
   // Single-queue architecture: use game's command queue for overlay
   ID3D12CommandQueue *gameQueue = nullptr;
@@ -1607,7 +1635,10 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
                 D3D12_RECT scissor = {0, 0, (LONG)g_State.cachedWidth,
                                       (LONG)g_State.cachedHeight};
                 list->RSSetScissorRects(1, &scissor);
+                int64_t overlayStartUs = PerfLogger::GetQpcUs();
                 DrawOverlay(list, processCapture, bufferIdx);
+                perfMetrics.overlayUs = static_cast<int32_t>(
+                    PerfLogger::GetQpcUs() - overlayStartUs);
                 // Transition back to PRESENT
                 {
                   D3D12_RESOURCE_BARRIER b = {
@@ -1670,6 +1701,7 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
 
   // Change 6: Remove verbose debug logging - keep only error logging
   if (processCapture && g_IPC && g_IPC->IsRecording()) {
+    int64_t captureStartUs = PerfLogger::GetQpcUs();
     SharedMemoryLayout *shm = g_IPC->GetSharedMem();
     if (shm) {
       if (!g_SharedCaptureD3D12.IsActive())
@@ -1723,6 +1755,8 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
           }
         }
       }
+      perfMetrics.captureUs =
+          static_cast<int32_t>(PerfLogger::GetQpcUs() - captureStartUs);
     }
   }
 }

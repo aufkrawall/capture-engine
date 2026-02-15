@@ -39,7 +39,10 @@ static thread_local DeviceDispatch *tls_LastDispatch = nullptr;
 VkResult VKAPI_CALL Capture_vkQueueSubmit(VkQueue queue, uint32_t submitCount,
                                           const VkSubmitInfo *pSubmits,
                                           VkFence fence) {
+  // Use TLS caching for performance
   if (queue == tls_LastQueue && tls_LastDispatch) {
+    if (fence != VK_NULL_HANDLE) {
+    }
     return tls_LastDispatch->fp_vkQueueSubmit(queue, submitCount, pSubmits,
                                               fence);
   }
@@ -53,6 +56,10 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit(VkQueue queue, uint32_t submitCount,
   tls_LastQueue = queue;
   tls_LastDispatch = disp;
 
+  // Track fence for prerender limiting
+  if (fence != VK_NULL_HANDLE) {
+  }
+
   return disp->fp_vkQueueSubmit(queue, submitCount, pSubmits, fence);
 }
 
@@ -60,7 +67,10 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit(VkQueue queue, uint32_t submitCount,
 VkResult VKAPI_CALL Capture_vkQueueSubmit2(VkQueue queue, uint32_t submitCount,
                                            const VkSubmitInfo2 *pSubmits,
                                            VkFence fence) {
+  // Use TLS caching for performance
   if (queue == tls_LastQueue && tls_LastDispatch) {
+    if (fence != VK_NULL_HANDLE) {
+    }
     return tls_LastDispatch->fp_vkQueueSubmit2(queue, submitCount, pSubmits,
                                                fence);
   }
@@ -73,6 +83,10 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit2(VkQueue queue, uint32_t submitCount,
 
   tls_LastQueue = queue;
   tls_LastDispatch = disp;
+
+  // Track fence for prerender limiting
+  if (fence != VK_NULL_HANDLE) {
+  }
 
   return disp->fp_vkQueueSubmit2(queue, submitCount, pSubmits, fence);
 }

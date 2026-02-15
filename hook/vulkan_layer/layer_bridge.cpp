@@ -51,7 +51,9 @@ void ReportLUID(uint32_t low, uint32_t high) {
 
 // Graphics API helper stubs
 GraphicsConfig GetActiveGraphicsConfig() { return {}; }
-float GetActivePrerenderLimit() { return 0.0f; }
+float GetActivePrerenderLimit() {
+  return VulkanLayerState::Get().GetPrerenderLimit();
+}
 VSyncOverride GetVSyncOverride() { return {}; }
 void ProcessVSyncOverride(UINT &SyncInterval, UINT &Flags) {}
 

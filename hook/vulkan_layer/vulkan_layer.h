@@ -135,6 +135,13 @@ struct DeviceDispatch {
 #endif
 };
 
+// Prerender limit fence data per device
+struct PrerenderFenceData {
+  std::vector<VkFence> fences;
+  VkDevice device = VK_NULL_HANDLE;
+  bool initialized = false;
+};
+
 // Swapchain tracking data
 struct SwapchainData {
   VkSwapchainKHR swapchain = VK_NULL_HANDLE;
@@ -168,6 +175,7 @@ public:
     m_QueueFamilies.erase(queue);
   }
   DeviceDispatch *GetDeviceFromQueue(VkQueue queue);
+  VkDevice GetVkDeviceFromQueue(VkQueue queue);
   uint32_t GetQueueFamilyIndex(VkQueue queue);
 
   void RegisterSwapchain(VkSwapchainKHR swapchain, SwapchainData *data);
@@ -185,6 +193,11 @@ public:
   bool IsCaptureEnabled() const { return m_CaptureEnabled; }
   uint32_t GetMaxAnisotropy() const { return m_MaxAnisotropy; }
   float GetMipLodBias() const { return m_MipLodBias; }
+  const char *GetVsyncMode() const { return m_VsyncMode.c_str(); }
+  int32_t GetBackbufferCount() const { return m_BackbufferCount; }
+  float GetPrerenderLimit() const { return m_PrerenderLimit; }
+
+  void UpdateFromSharedMemory(class IPCClient *ipc);
 
 private:
   VulkanLayerState();
@@ -201,6 +214,9 @@ private:
   bool m_CaptureEnabled;
   uint32_t m_MaxAnisotropy;
   float m_MipLodBias;
+  std::string m_VsyncMode;
+  int32_t m_BackbufferCount;
+  float m_PrerenderLimit;
 };
 
 // Exported wrapper functions (Capture_ prefixed)

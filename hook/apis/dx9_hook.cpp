@@ -9,6 +9,7 @@
 #include "../common/fps_limiter.h"
 #include "../common/input_manager.h"
 #include "../common/overlay_adapter.h"
+#include "../common/perf_logger.h"
 #include "../wrappers/vtable_hook.h"
 #include "hook_common.h"
 #include "lod_helper.h"
@@ -1581,6 +1582,23 @@ void DX9_PresentEnd(IDirect3DDevice9 *device, IDirect3DSurface9 *backBuffer) {
     if (totalUs > 5000) {
       HookLog(LogLevel::Warn, "DX9: High Present Overhead detected: %lld us",
               totalUs);
+    }
+
+    // Performance logging for PerfLogger
+    if (PerfLogger::Get().IsEnabled()) {
+      FrameMetrics perfMetrics;
+      static uint64_t s_perfFrameNum = 0;
+      perfMetrics.frameNum = ++s_perfFrameNum;
+      perfMetrics.qpcUs = (g_Timing.startTime * 1000000) / qpcFreq;
+      perfMetrics.totalUs = static_cast<int32_t>(totalUs);
+      perfMetrics.overlayUs =
+          static_cast<int32_t>((g_Timing.overlayTime * 1000000) / qpcFreq);
+      perfMetrics.captureUs =
+          static_cast<int32_t>((g_Timing.captureTime * 1000000) / qpcFreq);
+      perfMetrics.prerenderWaitUs =
+          static_cast<int32_t>((g_Timing.prerenderTime * 1000000) / qpcFreq);
+      strcpy(perfMetrics.api, "DX9");
+      PerfLogger::Get().LogFrame(perfMetrics);
     }
   }
   g_PresentRecurse--;

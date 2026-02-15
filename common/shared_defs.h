@@ -5,6 +5,10 @@
 #include <cstdio>
 #include <type_traits>
 
+#ifndef MAX_PATH
+#define MAX_PATH 260
+#endif
+
 #pragma pack(push, 8)
 
 // ============================================================================
@@ -39,6 +43,9 @@ struct DiscoveryInfo {
 
   // Whitelist Cache - Null-separated strings, double-null terminated
   char processWhitelist[1024];
+
+  // Logs directory path (set by captureengine host)
+  char logsPath[MAX_PATH];
 
   // Atomic accessor methods
   uint32_t GetMagic() const {

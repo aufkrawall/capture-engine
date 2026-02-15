@@ -507,7 +507,8 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     cursorY += lineHeight;
   }
 
-  // VRAM - Label in orange, "X.XX GB of Y.YY GB" in white
+  // VRAM - Label in orange, "X.XX GB" in white, "of Y.YY GB" in smaller raised
+  // text
   if (cfg.showVRAM) {
     float gbUsed =
         (float)cachedSystemMetrics.vramUsed / (1024.0f * 1024.0f * 1024.0f);
@@ -515,15 +516,33 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
         (float)cachedSystemMetrics.vramTotal / (1024.0f * 1024.0f * 1024.0f);
     if (gbTotal < 0.1f)
       gbTotal = 11.66f; // Fallback if not detected
-    snprintf(buf, 64, "%.2f GB of %.2f GB", gbUsed, gbTotal);
+
     renderer->DrawTextWithShadow(labelCol, cursorY, "VRAM", Colors::LabelOrange,
                                  shadowColor);
-    renderer->DrawTextWithShadow(valueCol, cursorY, buf, textColor,
+
+    // Main value in normal size
+    char usedBuf[32];
+    snprintf(usedBuf, 32, "%.2f GB", gbUsed);
+    renderer->DrawTextWithShadow(valueCol, cursorY, usedBuf, textColor,
                                  shadowColor);
+
+    // "of Y.YY GB" in smaller raised text (superscript style)
+    float usedWidth = 0, usedHeight = 0;
+    renderer->CalcTextSize(usedBuf, &usedWidth, &usedHeight);
+
+    char totalBuf[32];
+    snprintf(totalBuf, 32, "of %.2f GB", gbTotal);
+    float smallScale = 0.75f;  // Smaller scale for superscript
+    float gap = 2.0f * dpiScale;  // Minimal gap between segments
+    float raisedY = cursorY - usedHeight * 0.20f;  // Raised 20% of line height
+    renderer->DrawTextScaledWithShadow(valueCol + usedWidth + gap, raisedY, totalBuf,
+                                       textColor, shadowColor, smallScale);
+
     cursorY += lineHeight;
   }
 
-  // RAM - Label in pink, "X.XX GB of Y.YY GB" in white with indicator squares
+  // RAM - Label in pink, "X.XX GB" in white, "of Y.YY GB" in smaller raised
+  // text
   if (cfg.showRAM) {
     float gbUsed =
         (float)cachedSystemMetrics.ramUsed / (1024.0f * 1024.0f * 1024.0f);
@@ -532,11 +551,27 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     if (gbTotal < 0.1f)
       gbTotal = 31.93f; // Fallback if not detected
 
-    snprintf(buf, 64, "%.2f GB of %.2f GB", gbUsed, gbTotal);
     renderer->DrawTextWithShadow(labelCol, cursorY, "RAM", Colors::LabelPink,
                                  shadowColor);
-    renderer->DrawTextWithShadow(valueCol, cursorY, buf, textColor,
+
+    // Main value in normal size
+    char usedBuf[32];
+    snprintf(usedBuf, 32, "%.2f GB", gbUsed);
+    renderer->DrawTextWithShadow(valueCol, cursorY, usedBuf, textColor,
                                  shadowColor);
+
+    // "of Y.YY GB" in smaller raised text (superscript style)
+    float usedWidth = 0, usedHeight = 0;
+    renderer->CalcTextSize(usedBuf, &usedWidth, &usedHeight);
+
+    char totalBuf[32];
+    snprintf(totalBuf, 32, "of %.2f GB", gbTotal);
+    float smallScale = 0.75f;  // Smaller scale for superscript
+    float gap = 2.0f * dpiScale;  // Minimal gap between segments
+    float raisedY = cursorY - usedHeight * 0.20f;  // Raised 20% of line height
+    renderer->DrawTextScaledWithShadow(valueCol + usedWidth + gap, raisedY, totalBuf,
+                                       textColor, shadowColor, smallScale);
+
     cursorY += lineHeight;
   }
 

@@ -248,6 +248,11 @@ int InjectProcessMain(const AppConfig &config) {
       pDiscovery->injectPid = GetCurrentProcessId();
       pDiscovery->magic = DISCOVERY_MAGIC;
       PopulateWhitelistCache(pDiscovery, config);
+      // Set logs path for Vulkan layer to use
+      std::string logsDir = baseDir + "\\logs";
+      strncpy(pDiscovery->logsPath, logsDir.c_str(),
+              sizeof(pDiscovery->logsPath) - 1);
+      pDiscovery->logsPath[sizeof(pDiscovery->logsPath) - 1] = '\0';
       LogInfo("[Inject] Created discovery memory with whitelist cache");
     }
   }

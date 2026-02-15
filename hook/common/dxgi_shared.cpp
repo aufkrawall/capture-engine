@@ -184,7 +184,6 @@ static bool IsVulkanActive() {
   return s_vulkanPresent;
 }
 
-
 // Unified Detours
 // For DX12 wrapped swapchains: CWrapDXGISwapChain handles Present, so when
 // wrapper calls m_pReal->Present() and it re-enters here, we just passthrough.
@@ -674,7 +673,8 @@ void RemovePresentHooks() {
     VirtualProtect(&s_hookedVTable[22], sizeof(void *), PAGE_READWRITE,
                    &oldProtect);
     s_hookedVTable[22] = (void *)oPresent1;
-    VirtualProtect(&s_hookedVTable[22], sizeof(void *), oldProtect, &oldProtect);
+    VirtualProtect(&s_hookedVTable[22], sizeof(void *), oldProtect,
+                   &oldProtect);
     HookLog("DXGIShared: Removed Present1 vtable hook");
   }
 }

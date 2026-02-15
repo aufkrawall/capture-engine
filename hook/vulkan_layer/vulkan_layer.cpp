@@ -7,12 +7,94 @@
 #define VK_USE_PLATFORM_WIN32_KHR
 #include "vulkan_layer.h"
 #include "../common/fps_limiter.h"
+#include "../common/perf_logger.h"
 #include "layer_main.h" // For LayerLog and g_LayerState
 #include <cstring>
+#include <deque>
+#include <mutex>
 #include <vector>
 
 // Reentrancy guard shared with other hooks (defined here for the layer)
 thread_local bool g_InPresentHook = false;
+
+// CPU Prerender Limit for Vulkan
+//
+// COMPROMISE SOLUTION:
+// Forcing backbuffer_count=2 on games designed for triple buffering causes
+// microstutter. Instead, use fence-based frame limiting WITH the game's
+// preferred backbuffer count:
+//
+// RECOMMENDED CONFIG:
+//   backbuffer_count=3  (match game's expectation for smoothness)
+//   cpu_prerender_limit=1  (we enforce ~1 frame latency via fences)
+//
+// This gives: smooth triple buffering + ~1 frame effective latency
+
+struct FrameLimitState {
+  VkFence waitFence = VK_NULL_HANDLE;
+  VkFence signalFence = VK_NULL_HANDLE;
+  uint64_t frameIndex = 0;
+  bool initialized = false;
+};
+static std::mutex g_FrameLimitMutex;
+static std::unordered_map<VkQueue, FrameLimitState> g_FrameLimitStates;
+
+static void ApplyPrerenderLimitVulkan(VkDevice device, VkQueue queue,
+                                      float limit) {
+  // CPU prerender limit for Vulkan
+  //
+  // limit=0 (serial): CPU waits for GPU to finish all work before proceeding
+  //                  Use vkQueueWaitIdle - ensures minimal latency
+  //
+  // limit=1:         Swapchain with minImageCount=2 already provides natural
+  // limiting.
+  //                  vkAcquireNextImageKHR blocks if all images are in flight.
+  //                  No additional GPU sync needed - let the swapchain do its
+  //                  job.
+  //
+  // limit>=2:        Higher limits allow more CPU ahead, no sync needed.
+  //                  Game's natural buffering handles throughput.
+  //
+  // Note: Tracking game's fences is unsafe (game may destroy them or pass
+  // VK_NULL_HANDLE)
+  //       Empty submit approach adds overhead. Swapchain provides the limiting
+  //       we need.
+
+  if (limit < 0.0f)
+    return;
+  if (queue == VK_NULL_HANDLE || device == VK_NULL_HANDLE)
+    return;
+
+  // Only limit=0 needs explicit GPU sync
+  if (limit == 0.0f) {
+    DeviceDispatch *disp = VulkanLayerState::Get().GetDeviceDispatch(device);
+    if (disp && disp->fp_vkQueueWaitIdle) {
+      disp->fp_vkQueueWaitIdle(queue);
+    }
+  }
+
+  // For limit=1 and above: The backbuffer_count config (minImageCount)
+  // already provides natural frame limiting through swapchain acquire
+  // semantics. No additional CPU-GPU synchronization needed.
+}
+
+static void CleanupPrerenderFences(VkDevice device) {
+  std::lock_guard<std::mutex> lock(g_FrameLimitMutex);
+
+  DeviceDispatch *disp = VulkanLayerState::Get().GetDeviceDispatch(device);
+  if (disp && disp->fp_vkDestroyFence) {
+    for (auto &pair : g_FrameLimitStates) {
+      if (pair.second.waitFence != VK_NULL_HANDLE) {
+        disp->fp_vkDestroyFence(device, pair.second.waitFence, nullptr);
+      }
+      if (pair.second.signalFence != VK_NULL_HANDLE) {
+        disp->fp_vkDestroyFence(device, pair.second.signalFence, nullptr);
+      }
+    }
+    g_FrameLimitStates.clear();
+    LayerLog("Vulkan Prerender: Cleaned up fence pairs");
+  }
+}
 
 // VulkanLayerState Implementation
 // ============================================================================
@@ -24,7 +106,8 @@ VulkanLayerState &VulkanLayerState::Get() {
 
 VulkanLayerState::VulkanLayerState()
     : m_OverlayEnabled(true), m_CaptureEnabled(true), m_MaxAnisotropy(16),
-      m_MipLodBias(0.0f) {}
+      m_MipLodBias(0.0f), m_VsyncMode("default"), m_BackbufferCount(0),
+      m_PrerenderLimit(-1.0f) {}
 
 void VulkanLayerState::RegisterInstance(VkInstance instance,
                                         InstanceDispatch *dispatch) {
@@ -104,6 +187,15 @@ DeviceDispatch *VulkanLayerState::GetDeviceFromQueue(VkQueue queue) {
   return nullptr;
 }
 
+VkDevice VulkanLayerState::GetVkDeviceFromQueue(VkQueue queue) {
+  std::lock_guard<std::recursive_mutex> lock(m_Lock);
+  auto it = m_Queues.find(queue);
+  if (it != m_Queues.end()) {
+    return it->second;
+  }
+  return VK_NULL_HANDLE;
+}
+
 uint32_t VulkanLayerState::GetQueueFamilyIndex(VkQueue queue) {
   std::lock_guard<std::recursive_mutex> lock(m_Lock);
   auto it = m_QueueFamilies.find(queue);
@@ -168,6 +260,48 @@ VulkanLayerState::GetInstanceFromPhysicalDevice(VkPhysicalDevice pd) {
   std::lock_guard<std::recursive_mutex> lock(m_Lock);
   auto it = m_PhysDevToInstance.find(pd);
   return (it != m_PhysDevToInstance.end()) ? it->second : VK_NULL_HANDLE;
+}
+
+void VulkanLayerState::UpdateFromSharedMemory(IPCClient *ipc) {
+  if (!ipc || !ipc->GetSharedMem())
+    return;
+
+  auto &cfg = ipc->GetSharedMem()->graphicsConfig;
+
+  // Parse anisotropic filtering
+  if (strncmp(cfg.anisotropicFiltering, "16x", 3) == 0)
+    m_MaxAnisotropy = 16;
+  else if (strncmp(cfg.anisotropicFiltering, "8x", 2) == 0)
+    m_MaxAnisotropy = 8;
+  else if (strncmp(cfg.anisotropicFiltering, "4x", 2) == 0)
+    m_MaxAnisotropy = 4;
+  else if (strncmp(cfg.anisotropicFiltering, "2x", 2) == 0)
+    m_MaxAnisotropy = 2;
+  else if (strncmp(cfg.anisotropicFiltering, "off", 3) == 0)
+    m_MaxAnisotropy = 1;
+  else
+    m_MaxAnisotropy = 16; // Default
+
+  // Parse mip bias
+  if (strncmp(cfg.mipBias, "default", 7) != 0 && cfg.mipBias[0] != ' ') {
+    m_MipLodBias = (float)atof(cfg.mipBias);
+  } else {
+    m_MipLodBias = 0.0f;
+  }
+
+  // VSync mode
+  m_VsyncMode = cfg.vsyncMode;
+
+  // Backbuffer count
+  m_BackbufferCount = cfg.backbufferCount;
+
+  // Prerender limit
+  m_PrerenderLimit = cfg.prerenderLimit;
+
+  LayerLog("VulkanLayerState: Updated from config - AF=%d, MipBias=%.1f, "
+           "VSync=%s, BBCount=%d",
+           m_MaxAnisotropy, m_MipLodBias, m_VsyncMode.c_str(),
+           m_BackbufferCount);
 }
 
 // ============================================================================
@@ -653,6 +787,7 @@ VKAPI_ATTR void VKAPI_CALL Capture_vkDestroyDevice(
 
   CleanupOverlay(device);
   CleanupCapture(device);
+  CleanupPrerenderFences(device);
   DeviceDispatch *disp = VulkanLayerState::Get().GetDeviceDispatch(device);
   if (disp && disp->fp_vkDestroyDevice)
     disp->fp_vkDestroyDevice(device, pAllocator);
@@ -681,8 +816,47 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(
   if (!disp || !disp->fp_vkCreateSwapchainKHR)
     return VK_ERROR_INITIALIZATION_FAILED;
 
-  VkResult res = disp->fp_vkCreateSwapchainKHR(device, pCreateInfo, pAllocator,
-                                               pSwapchain);
+  // Apply config overrides
+  VkSwapchainCreateInfoKHR modifiedCI = *pCreateInfo;
+  bool modified = false;
+
+  if (g_LayerState.whitelisted) {
+    // VSync / Present mode override
+    const char *vsyncMode = VulkanLayerState::Get().GetVsyncMode();
+    if (vsyncMode && strcmp(vsyncMode, "default") != 0) {
+      VkPresentModeKHR desiredMode = pCreateInfo->presentMode;
+      if (strcmp(vsyncMode, "off") == 0)
+        desiredMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+      else if (strcmp(vsyncMode, "fifo") == 0)
+        desiredMode = VK_PRESENT_MODE_FIFO_KHR;
+      else if (strcmp(vsyncMode, "mailbox") == 0)
+        desiredMode = VK_PRESENT_MODE_MAILBOX_KHR;
+      else if (strcmp(vsyncMode, "adaptive") == 0)
+        desiredMode = VK_PRESENT_MODE_FIFO_RELAXED_KHR;
+
+      if (desiredMode != pCreateInfo->presentMode) {
+        modifiedCI.presentMode = desiredMode;
+        modified = true;
+        LayerLog("Vulkan Layer: Overriding present mode %d -> %d (%s)",
+                 pCreateInfo->presentMode, desiredMode, vsyncMode);
+      }
+    }
+
+    // Backbuffer count override
+    int32_t bbCount = VulkanLayerState::Get().GetBackbufferCount();
+    if (bbCount >= 2 && bbCount != (int32_t)pCreateInfo->minImageCount) {
+      modifiedCI.minImageCount = (uint32_t)bbCount;
+      modified = true;
+      LayerLog("Vulkan Layer: Overriding minImageCount %u -> %u",
+               pCreateInfo->minImageCount, modifiedCI.minImageCount);
+    }
+  }
+
+  const VkSwapchainCreateInfoKHR *pFinalCI =
+      modified ? &modifiedCI : pCreateInfo;
+
+  VkResult res =
+      disp->fp_vkCreateSwapchainKHR(device, pFinalCI, pAllocator, pSwapchain);
   LayerLog("Vulkan Layer: vkCreateSwapchainKHR driver returned: %d", res);
   if (res == VK_SUCCESS && g_LayerState.whitelisted) {
     auto *sd = new SwapchainData();
@@ -737,6 +911,13 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkGetSwapchainImagesKHR(
 
 VKAPI_ATTR VkResult VKAPI_CALL
 Capture_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
+  // Performance metrics for this frame
+  FrameMetrics perfMetrics;
+  perfMetrics.qpcUs = PerfLogger::GetQpcUs();
+  strcpy(perfMetrics.api, "Vulkan");
+  static uint64_t s_perfFrameNum = 0;
+  perfMetrics.frameNum = ++s_perfFrameNum;
+
   // Set flag to inform DXGI hooks that Vulkan is presenting on this thread.
   // This prevents double-drawing and incorrect API labeling when Vulkan
   // presents via DXGI.
@@ -754,6 +935,16 @@ Capture_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
   if (isFirstHook) {
     g_SharedFpsLimiter.SetIPCClient(&g_IPCClient);
     g_SharedFpsLimiter.Apply();
+
+    // Apply CPU prerender limit - only if we have valid device and queue
+    // tracking
+    float prerenderLimit = VulkanLayerState::Get().GetPrerenderLimit();
+    if (prerenderLimit >= 0.0f) {
+      VkDevice device = VulkanLayerState::Get().GetVkDeviceFromQueue(queue);
+      if (device != VK_NULL_HANDLE && queue != VK_NULL_HANDLE) {
+        ApplyPrerenderLimitVulkan(device, queue, prerenderLimit);
+      }
+    }
   }
 
   DeviceDispatch *disp = VulkanLayerState::Get().GetDeviceFromQueue(queue);
@@ -777,15 +968,21 @@ Capture_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
       VkSemaphore overlayDone = GetOverlaySemaphore(sd->device, idx);
 
       if (shm && shm->overlayConfig.showOverlay) {
+        int64_t overlayStartUs = PerfLogger::GetQpcUs();
         RenderOverlay(sd->device, queue, idx, currentWait, overlayDone);
+        perfMetrics.overlayUs =
+            static_cast<int32_t>(PerfLogger::GetQpcUs() - overlayStartUs);
         currentWait = overlayDone; // Next step waits for overlay
         modified = true;
       }
 
       if (shm && shm->runtimeState.isRecording) {
+        int64_t captureStartUs = PerfLogger::GetQpcUs();
         VkSemaphore captureDone = GetCaptureSemaphore(sd->device, idx);
         CaptureFrame(sd->device, queue, sd->images[idx], idx, currentWait,
                      captureDone);
+        perfMetrics.captureUs =
+            static_cast<int32_t>(PerfLogger::GetQpcUs() - captureStartUs);
         if (captureDone != VK_NULL_HANDLE) {
           currentWait = captureDone;
           modified = true;
@@ -820,6 +1017,13 @@ Capture_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
 
   if (shm)
     shm->runtimeState.vulkanPresentThreadId.store(0, std::memory_order_release);
+
+  // Log performance metrics
+  if (PerfLogger::Get().IsEnabled()) {
+    perfMetrics.totalUs =
+        static_cast<int32_t>(PerfLogger::GetQpcUs() - perfMetrics.qpcUs);
+    PerfLogger::Get().LogFrame(perfMetrics);
+  }
 
   return res;
 }

@@ -6,7 +6,9 @@
  */
 
 #include "../common/ipc_client.h"
+#include "../common/perf_logger.h"
 #include "layer_main.h"
+#include "vulkan_layer.h"
 #include <cstdarg>
 #include <cstdio>
 #include <dxgiformat.h>
@@ -162,6 +164,55 @@ bool LayerIPC_Init() {
 
     LayerLog("Layer IPC: Process '%s' whitelisted. Layer active.",
              g_ProcessName);
+
+    // Update graphics config from shared memory
+    VulkanLayerState::Get().UpdateFromSharedMemory(&g_IPCClient);
+
+    // Initialize performance logging if debug logging is enabled
+    if (g_IPCClient.GetSharedMem()->GetDebugLogging()) {
+      // Use logsPath from DiscoveryInfo (set by captureengine)
+      char logPath[MAX_PATH] = {0};
+      bool pathFound = false;
+
+      HANDLE hDisc =
+          OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+      if (hDisc) {
+        DiscoveryInfo *pDisc = (DiscoveryInfo *)MapViewOfFile(
+            hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
+        if (pDisc && pDisc->magic == DISCOVERY_MAGIC &&
+            pDisc->logsPath[0] != '\0') {
+          CreateDirectoryA(pDisc->logsPath, nullptr);
+          snprintf(logPath, sizeof(logPath), "%s\\perf_metrics_%d.csv",
+                   pDisc->logsPath, GetCurrentProcessId());
+          pathFound = true;
+          LayerLog("Using logsPath from discovery: %s", pDisc->logsPath);
+        }
+        if (pDisc)
+          UnmapViewOfFile(pDisc);
+        CloseHandle(hDisc);
+      }
+
+      // Fallback to game directory if discovery path not available
+      if (!pathFound) {
+        char gameDir[MAX_PATH];
+        GetModuleFileNameA(NULL, gameDir, MAX_PATH);
+        char *lastSlash = strrchr(gameDir, '\\');
+        if (lastSlash) {
+          *lastSlash = '\0';
+          char logsDir[MAX_PATH];
+          snprintf(logsDir, sizeof(logsDir), "%s\\logs", gameDir);
+          CreateDirectoryA(logsDir, nullptr);
+          snprintf(logPath, sizeof(logPath), "%s\\perf_metrics_%d.csv", logsDir,
+                   GetCurrentProcessId());
+          LayerLog("[Hook] PerfLogger: Using fallback logs path: %s", logsDir);
+        }
+      }
+
+      if (logPath[0] != '\0') {
+        PerfLogger::Get().Init(logPath);
+      }
+    }
+
     return true;
   }
 

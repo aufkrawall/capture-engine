@@ -16,6 +16,7 @@
 #include "../common/fps_limiter.h"
 #include "../common/hook_common.h"
 #include "../common/overlay_adapter.h"
+#include "../common/perf_logger.h"
 #include "../common/system_metrics.h"
 #include "../wrappers/dxgi_swapchain_wrap.h"
 #include "../wrappers/iat_hook.h"
@@ -251,6 +252,27 @@ static void InstallVTableHooks(ID3D11Device *pDevice,
 
 HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
                                             UINT SyncInterval, UINT Flags) {
+  // Performance metrics for this frame
+  FrameMetrics perfMetrics;
+  perfMetrics.qpcUs = PerfLogger::GetQpcUs();
+  strcpy(perfMetrics.api, "DX11");
+  static uint64_t s_perfFrameNum = 0;
+  perfMetrics.frameNum = ++s_perfFrameNum;
+
+  // Scope guard to log metrics on any exit path
+  auto perfGuard = ce::make_scope_guard([&]() {
+    if (PerfLogger::Get().IsEnabled()) {
+      perfMetrics.totalUs =
+          static_cast<int32_t>((PerfLogger::GetQpcUs() - perfMetrics.qpcUs));
+      PerfLogger::Get().LogFrame(perfMetrics);
+    }
+  });
+
+  // Skip performance logging if disabled
+  if (!PerfLogger::Get().IsEnabled()) {
+    perfGuard.dismiss();
+  }
+
   // CRITICAL ULTIMATE FIX: If shutdown flag is set, return immediately WITHOUT
   // touching ANYTHING - no wrapper checks, no GetDesc, nothing. Just return.
   // The device may already be destroyed and any D3D call can crash.
@@ -296,7 +318,10 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
   }
 
   // Non-wrapper path: Draw overlay via vtable hook
+  int64_t overlayStartUs = PerfLogger::GetQpcUs();
   HandleDX11ProcessFrame(pSwapChain, true);
+  perfMetrics.overlayUs =
+      static_cast<int32_t>(PerfLogger::GetQpcUs() - overlayStartUs);
 
   // If window was invalid during overlay rendering, skip Present to avoid crash
   // The app is already tearing down its D3D resources
@@ -305,7 +330,10 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
   }
 
   // FPS Limiter
+  int64_t fpsLimitStartUs = PerfLogger::GetQpcUs();
   g_SharedFpsLimiter.Apply();
+  perfMetrics.fpsLimitWaitUs =
+      static_cast<int32_t>(PerfLogger::GetQpcUs() - fpsLimitStartUs);
 
   return oPresent(pSwapChain, SyncInterval, Flags);
 }
