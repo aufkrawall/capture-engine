@@ -398,14 +398,13 @@ static int GetInstructionLength(const uint8_t *code, bool is64bit) {
 // RIP-Relative Instruction Fixup
 // ============================================================================
 
-// Check if an instruction at 'code' uses RIP-relative addressing (x64 only).
-// If so, returns the offset of the 32-bit displacement within the instruction.
-// Returns -1 if not RIP-relative.
+// Check if an instruction at 'code' uses PC-relative addressing.
+// For both 32-bit and 64-bit: CALL/JMP/Jcc rel32 need fixup.
+// For 64-bit only: RIP-relative ModR/M addressing also needs fixup.
+// Returns the offset of the 32-bit displacement within the instruction,
+// or -1 if not PC-relative.
 static int GetRipRelativeDispOffset(const uint8_t *code, int instrLen,
                                     bool is64bit) {
-  if (!is64bit)
-    return -1;
-
   const uint8_t *p = code;
 
   // Skip prefixes
@@ -413,7 +412,7 @@ static int GetRipRelativeDispOffset(const uint8_t *code, int instrLen,
     uint8_t b = *p;
     if (b == 0x66 || b == 0x67 || b == 0xF0 || b == 0xF2 || b == 0xF3 ||
         b == 0x26 || b == 0x2E || b == 0x36 || b == 0x3E || b == 0x64 ||
-        b == 0x65 || (b >= 0x40 && b <= 0x4F)) {
+        b == 0x65 || (is64bit && b >= 0x40 && b <= 0x4F)) {
       p++;
     } else {
       break;
@@ -434,16 +433,27 @@ static int GetRipRelativeDispOffset(const uint8_t *code, int instrLen,
     }
   }
 
-  // Check for CALL/JMP rel32 (these are PC-relative but not RIP-relative via
-  // ModR/M)
+  // Check for CALL/JMP rel32 (PC-relative on BOTH 32-bit and 64-bit)
   if (!isTwoByte && (opcode == 0xE8 || opcode == 0xE9)) {
     // The 32-bit displacement starts right after the opcode
-    return (int)(p - code);
+    int result = (int)(p - code);
+    HookLog("GetRipRelativeDispOffset: Found %s rel32 at offset %d",
+            opcode == 0xE8 ? "CALL" : "JMP", result);
+    return result;
   }
 
-  // Check for Jcc rel32 (0F 80-8F)
+  // Check for Jcc rel32 (0F 80-8F) - also PC-relative on both architectures
   if (isTwoByte && opcode >= 0x80 && opcode <= 0x8F) {
-    return (int)(p - code);
+    int result = (int)(p - code);
+    HookLog("GetRipRelativeDispOffset: Found Jcc rel32 at offset %d", result);
+    return result;
+  }
+
+  // RIP-relative ModR/M addressing is x64-only
+  if (!is64bit) {
+    // For 32-bit: CALL/JMP/Jcc are the only PC-relative instructions
+    // Other instructions use absolute addressing or register-based
+    return -1;
   }
 
   // Check for ModR/M with RIP-relative addressing
@@ -554,11 +564,22 @@ static void WriteJump(uint8_t *dest, void *target) {
   dest[4] = 0x00;
   dest[5] = 0x00;
   memcpy(dest + 6, &target, 8);
+  HookLog("WriteJump: x64 JMP [RIP+0] -> %p at %p", target, dest);
 #else
   // E9 [4-byte relative offset]
+  // CRITICAL: The displacement is relative to the instruction AFTER the JMP
+  // JMP rel32 means: RIP = (address of next instruction) + rel32
+  // So: target = (dest + 5) + rel32
+  // Therefore: rel32 = target - (dest + 5)
   dest[0] = 0xE9;
   int32_t rel = (int32_t)((uintptr_t)target - (uintptr_t)(dest + 5));
   memcpy(dest + 1, &rel, 4);
+  HookLog("WriteJump: x86 JMP rel32 -> %p at %p (rel=0x%08X, dest+5=%p)",
+          target, dest, (unsigned)rel, (void *)(dest + 5));
+  // Verify: dest+5 + rel should equal target
+  uintptr_t verify = (uintptr_t)(dest + 5) + rel;
+  HookLog("WriteJump: Verification: dest+5(0x%p) + rel(0x%08X) = 0x%p (expected %p)",
+          (void *)(dest + 5), (unsigned)rel, (void *)verify, target);
 #endif
 }
 
@@ -601,8 +622,14 @@ bool Install(void *target, void *detour, void **outTrampoline) {
     copySize += len;
   }
 
-  HookLog("InlineHook: Hooking %p, patch=%d bytes, detour=%p", target, copySize,
-          detour);
+HookLog("InlineHook: Hooking %p, patch=%d bytes, detour=%p, is64bit=%d", 
+          target, copySize, detour, is64bit ? 1 : 0);
+
+  // Dump original bytes for diagnosis
+  HookLog("InlineHook: Original bytes at %p:", target);
+  for (int i = 0; i < copySize && i < 16; i++) {
+    HookLog("  [%02d] 0x%02X", i, code[i]);
+  }
 
   // Allocate trampoline
   uint8_t *trampoline = GetTrampolineSlot(target);
@@ -610,12 +637,20 @@ bool Install(void *target, void *detour, void **outTrampoline) {
     HookLog("InlineHook: Failed to allocate trampoline");
     return false;
   }
+  HookLog("InlineHook: Trampoline allocated at %p", trampoline);
 
   // Copy original instructions to trampoline, fixing up RIP-relative refs
   int trampolineOffset = 0;
   int srcOffset = 0;
   while (srcOffset < copySize) {
     int instrLen = GetInstructionLength(code + srcOffset, is64bit);
+    
+    // Log instruction being copied
+    HookLog("InlineHook: Copying instruction at offset %d, len=%d:", srcOffset, instrLen);
+    for (int i = 0; i < instrLen && i < 8; i++) {
+      HookLog("  [%02d] 0x%02X", i, code[srcOffset + i]);
+    }
+    
     memcpy(trampoline + trampolineOffset, code + srcOffset, instrLen);
 
     // Fix up RIP-relative addressing
@@ -634,6 +669,11 @@ bool Install(void *target, void *detour, void **outTrampoline) {
           (uintptr_t)(trampoline + trampolineOffset + instrLen);
       int64_t newDisp = (int64_t)absTarget - (int64_t)newInstrEnd;
 
+      HookLog("InlineHook: PC-relative fixup at srcOff=%d, dispOff=%d, "
+              "origDisp=0x%08X, absTarget=%p, newInstrEnd=%p, newDisp=0x%08llX",
+              srcOffset, dispOff, (unsigned)origDisp, (void *)absTarget,
+              (void *)newInstrEnd, (long long)newDisp);
+
       if (newDisp > INT32_MAX || newDisp < INT32_MIN) {
         HookLog("InlineHook: RIP-relative fixup out of range at %p+%d", target,
                 srcOffset);
@@ -642,6 +682,8 @@ bool Install(void *target, void *detour, void **outTrampoline) {
 
       int32_t newDisp32 = (int32_t)newDisp;
       memcpy(trampoline + trampolineOffset + dispOff, &newDisp32, 4);
+    } else {
+      HookLog("InlineHook: No PC-relative fixup needed for instruction at offset %d", srcOffset);
     }
 
     trampolineOffset += instrLen;
@@ -649,8 +691,17 @@ bool Install(void *target, void *detour, void **outTrampoline) {
   }
 
   // Add jump back to original function after the patched area
-  WriteJump(trampoline + trampolineOffset, (void *)(code + copySize));
+  void *jumpTarget = (void *)(code + copySize);
+  HookLog("InlineHook: Writing jump back from trampoline+%d to %p (original+%d)",
+          trampolineOffset, jumpTarget, copySize);
+  WriteJump(trampoline + trampolineOffset, jumpTarget);
   trampolineOffset += PATCH_SIZE;
+  
+  // Dump trampoline bytes for diagnosis
+  HookLog("InlineHook: Trampoline bytes (%d bytes total):", trampolineOffset);
+  for (int i = 0; i < trampolineOffset && i < 32; i++) {
+    HookLog("  [%02d] 0x%02X", i, trampoline[i]);
+  }
 
   // Save original bytes
   HookEntry entry = {};
@@ -677,15 +728,36 @@ bool Install(void *target, void *detour, void **outTrampoline) {
     pTarget[i] = 0xCC;
   }
 
-  // Write the jump (all but first byte)
-  uint8_t jmpBuf[16];
-  WriteJump(jmpBuf, detour);
-  for (int i = 1; i < PATCH_SIZE; i++) {
+  // Write the jump to the detour function
+#ifdef _WIN64
+  // x64: Use absolute jump via [RIP+0] - 14 bytes total
+  // FF 25 00 00 00 00 [8-byte absolute address]
+  uint8_t jmpBuf[14];
+  jmpBuf[0] = 0xFF;
+  jmpBuf[1] = 0x25;
+  jmpBuf[2] = 0x00;
+  jmpBuf[3] = 0x00;
+  jmpBuf[4] = 0x00;
+  jmpBuf[5] = 0x00;
+  memcpy(jmpBuf + 6, &detour, 8);
+  
+  // Copy all bytes to target
+  for (int i = 0; i < PATCH_SIZE; i++) {
     pTarget[i] = jmpBuf[i];
   }
-
-  // Final: write first byte of jump (atomically replaces INT3)
-  pTarget[0] = jmpBuf[0];
+#else
+  // x86: Calculate displacement for the actual target location
+  // JMP rel32: target = (instruction_address + 5) + displacement
+  pTarget[0] = 0xE9;  // JMP rel32 opcode
+  int32_t rel = (int32_t)((uintptr_t)detour - (uintptr_t)((uint8_t*)target + 5));
+  memcpy((void*)(pTarget + 1), &rel, 4);
+  HookLog("InlineHook: Target JMP at %p -> %p (rel=0x%08X)",
+          target, detour, (unsigned)rel);
+  // Verify the calculation
+  uintptr_t verify = (uintptr_t)((uint8_t*)target + 5) + rel;
+  HookLog("InlineHook: Verification: %p + 5 + 0x%08X = %p (expected %p)",
+          target, (unsigned)rel, (void*)verify, detour);
+#endif
 
   // Fill any remaining bytes after the jump with NOPs
   for (int i = PATCH_SIZE; i < copySize; i++) {

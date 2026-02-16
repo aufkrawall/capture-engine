@@ -920,14 +920,8 @@ static void DrawOpenGLOverlay(HDC hdc) {
     return;
 
   HGLRC currentCtx = wglGetCurrentContext();
-  if (!currentCtx) {
-    static bool loggedNoCtx = false;
-    if (!loggedNoCtx) {
-      HookLog("OpenGL: DrawOpenGLOverlay - No GL context current!");
-      loggedNoCtx = true;
-    }
+  if (!currentCtx)
     return;
-  }
 
   static bool initLogged = false;
   if (!g_OverlayAdapter.IsInitialized()) {
