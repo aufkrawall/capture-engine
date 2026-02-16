@@ -1616,9 +1616,28 @@ static void DrawDX10Overlay(IDXGISwapChain *pSwapChain, HWND currentHwnd,
     }
   }
 
-  // DrawDX10Overlay: Disabled in CustomOverlay migration
-  // To support DX10, OverlayAdapter::InitDX10 would be needed or DX11 interop.
-  return;
+  // Render the overlay
+  if (!g_OverlayAdapter.IsInitialized()) {
+    HookLog("DX10: Initializing OverlayAdapter...");
+    g_OverlayAdapter.InitDX10(device);
+  }
+
+  if (g_OverlayAdapter.IsInitialized()) {
+    g_OverlayAdapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
+    g_OverlayAdapter.SetIPCClient(g_IPC);
+    g_OverlayAdapter.SetGraphicsAPI("D3D10");
+
+    RECT rect;
+    if (GetClientRect(currentHwnd, &rect)) {
+      int width = rect.right - rect.left;
+      int height = rect.bottom - rect.top;
+      if (width > 0 && height > 0) {
+        g_OverlayAdapter.RenderOverlay(width, height);
+      }
+    }
+  }
+
+  device->Release();
 }
 
 static bool IsReadableMemoryDX11(const void *ptr, size_t size) {

@@ -3,6 +3,7 @@
  */
 
 #include "custom_overlay_dx9.h"
+#include "hook_common.h"
 #include <cstring>
 
 namespace CustomOverlay {
@@ -98,12 +99,30 @@ void DX9Backend::Render(const std::vector<DrawVertex> &vertices,
                         const std::vector<uint16_t> &indices,
                         const std::vector<DrawCommand> &commands,
                         int viewportWidth, int viewportHeight) {
+  static int logCount = 0;
+  if (logCount < 3) {
+    HookLog("DX9Backend::Render: initialized=%d, device=%p, vertices=%zu, "
+            "indices=%zu, commands=%zu, vp=%dx%d",
+            initialized ? 1 : 0, (void *)device, vertices.size(),
+            indices.size(), commands.size(), viewportWidth, viewportHeight);
+    logCount++;
+  }
+
   if (!initialized || !device || vertices.empty())
     return;
 
   // Create state block to save state
   device->CreateStateBlock(D3DSBT_ALL, &stateBlock);
   stateBlock->Capture();
+
+  // Set viewport to full screen for pre-transformed vertices
+  D3DVIEWPORT9 vp = {0,    0,   (DWORD)viewportWidth, (DWORD)viewportHeight,
+                     0.0f, 1.0f};
+  device->SetViewport(&vp);
+
+  // DX9 requires drawing between BeginScene/EndScene
+  // The app may have already called EndScene before Present
+  device->BeginScene();
 
   // Resize buffers if needed
   if (vertices.size() > vertexBufferSize) {
@@ -146,6 +165,16 @@ void DX9Backend::Render(const std::vector<DrawVertex> &vertices,
       dst++;
     }
     vertexBuffer->Unlock();
+
+    // Debug: Log first few vertices
+    static int vertLogCount = 0;
+    if (vertLogCount < 2 && vertices.size() >= 4) {
+      HookLog("DX9Backend: First 4 vertices: (%.1f,%.1f) (%.1f,%.1f) "
+              "(%.1f,%.1f) (%.1f,%.1f)",
+              vertices[0].x, vertices[0].y, vertices[1].x, vertices[1].y,
+              vertices[2].x, vertices[2].y, vertices[3].x, vertices[3].y);
+      vertLogCount++;
+    }
   }
 
   // Upload indices
@@ -186,10 +215,20 @@ void DX9Backend::Render(const std::vector<DrawVertex> &vertices,
     }
 
     // BaseVertexIndex should be 0 since indices are already absolute
-    device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
-                                 (UINT)vertices.size(), cmd.indexOffset,
-                                 cmd.indexCount / 3);
+    HRESULT hr = device->DrawIndexedPrimitive(
+        D3DPT_TRIANGLELIST, 0, 0, (UINT)vertices.size(), cmd.indexOffset,
+        cmd.indexCount / 3);
+    static int drawLogCount = 0;
+    if (drawLogCount < 3) {
+      HookLog("DX9Backend: DrawIndexedPrimitive hr=0x%08X, verts=%u, "
+              "idxOffset=%u, primCount=%u",
+              hr, (UINT)vertices.size(), cmd.indexOffset, cmd.indexCount / 3);
+      drawLogCount++;
+    }
   }
+
+  // End our scene
+  device->EndScene();
 
   // Restore state
   stateBlock->Apply();

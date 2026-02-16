@@ -13,6 +13,7 @@
 // VK_LAYER_CE_OVERLAY is defined when building the Vulkan layer
 #ifndef VK_LAYER_CE_OVERLAY
 // Full backends for hook DLL
+#include "custom_overlay_dx10.h"
 #include "custom_overlay_dx11.h"
 #include "custom_overlay_dx12.h"
 #include "custom_overlay_dx9.h"
@@ -107,6 +108,33 @@ bool OverlayAdapter::InitDX9(void *device) {
 
   initialized = true;
   OutputDebugStringA("[OverlayAdapter] Initialized DX9 backend\n");
+#endif
+  return true;
+}
+
+bool OverlayAdapter::InitDX10(void *device) {
+#ifndef VK_LAYER_CE_OVERLAY
+  if (initialized)
+    return true;
+  if (!device)
+    return false;
+
+  auto dx10Backend = new CustomOverlay::DX10Backend((ID3D10Device *)device);
+  backend = dx10Backend;
+  backendType = OverlayBackendType::DX10;
+
+  renderer = new CustomOverlay::Renderer();
+  float dpiScale = GetWindowsDpiScale();
+  if (!renderer->Initialize(backend, dpiScale)) {
+    delete renderer;
+    delete backend;
+    renderer = nullptr;
+    backend = nullptr;
+    return false;
+  }
+
+  initialized = true;
+  OutputDebugStringA("[OverlayAdapter] Initialized DX10 backend\n");
 #endif
   return true;
 }
@@ -279,14 +307,34 @@ uint32_t OverlayAdapter::GetLoadColor(float load) {
 }
 
 void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
-  if (!initialized || !renderer)
-    return;
+  static int renderLogCount = 0;
+  if (renderLogCount < 5) {
+    HookLog("RenderOverlay: init=%d renderer=%p ipc=%p shm=%p showOverlay=%d",
+            initialized ? 1 : 0, (void *)renderer, (void *)ipc,
+            ipc ? (void *)ipc->GetSharedMem() : nullptr,
+            (ipc && ipc->GetSharedMem())
+                ? ipc->GetSharedMem()->overlayConfig.showOverlay
+                : -1);
+    renderLogCount++;
+  }
 
-  if (!ipc || !ipc->GetSharedMem())
+  if (!initialized || !renderer) {
+    if (renderLogCount <= 5)
+      HookLog("RenderOverlay: early return - not initialized or no renderer");
     return;
+  }
+
+  if (!ipc || !ipc->GetSharedMem()) {
+    if (renderLogCount <= 5)
+      HookLog("RenderOverlay: early return - no IPC or shared memory");
+    return;
+  }
   auto &cfg = ipc->GetSharedMem()->overlayConfig;
-  if (!cfg.showOverlay)
+  if (!cfg.showOverlay) {
+    if (renderLogCount <= 5)
+      HookLog("RenderOverlay: early return - showOverlay is false");
     return;
+  }
 
   // Update throttling
   DWORD now = GetTickCount();
@@ -324,6 +372,15 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
   // Calculate position (DPI-aware padding)
   float padding = (float)cfg.padding * dpiScale;
   float x = padding, y = padding;
+
+  // Debug: Log position info
+  static int posLogCount = 0;
+  if (posLogCount < 3) {
+    HookLog(
+        "RenderContent: dpiScale=%.2f, vp=%dx%d, x=%.1f, y=%.1f, padding=%.1f",
+        dpiScale, viewportWidth, viewportHeight, x, y, padding);
+    posLogCount++;
+  }
 
   // Wider background to accommodate "X.XX GB of Y.YY GB" format (DPI-aware)
   float bgWidth = 280 * dpiScale;

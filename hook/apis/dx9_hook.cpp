@@ -10,6 +10,7 @@
 #include "../common/input_manager.h"
 #include "../common/overlay_adapter.h"
 #include "../common/perf_logger.h"
+#include "../wrappers/inline_hook.h"
 #include "../wrappers/vtable_hook.h"
 #include "hook_common.h"
 #include "lod_helper.h"
@@ -47,7 +48,7 @@ typedef HRESULT(STDMETHODCALLTYPE *SetTextureStageState_t)(
     IDirect3DDevice9 *, DWORD, D3DTEXTURESTAGESTATETYPE, DWORD);
 typedef HRESULT(WINAPI *Direct3DCreate9Ex_t)(UINT, IDirect3D9Ex **);
 
-// Original function pointers
+// Original function pointers for VTable hooks
 static Present_t oPresent = nullptr;
 static PresentEx_t oPresentEx = nullptr;
 static PresentSwap_t oPresentSwap = nullptr;
@@ -55,6 +56,27 @@ static Reset_t oReset = nullptr;
 static ResetEx_t oResetEx = nullptr;
 static SetSamplerState_t oSetSamplerState = nullptr;
 static SetTextureStageState_t oSetTextureStageState = nullptr;
+
+// Inline hook trampoline function types
+typedef HRESULT(STDMETHODCALLTYPE *PFN_D3D9_Present_Inline)(IDirect3DDevice9 *,
+                                                            const RECT *,
+                                                            const RECT *, HWND,
+                                                            const RGNDATA *);
+typedef HRESULT(STDMETHODCALLTYPE *PFN_D3D9_PresentEx_Inline)(
+    IDirect3DDevice9Ex *, const RECT *, const RECT *, HWND, const RGNDATA *,
+    DWORD);
+typedef HRESULT(STDMETHODCALLTYPE *PFN_D3D9_SwapChain_Present_Inline)(
+    IDirect3DSwapChain9 *, const RECT *, const RECT *, HWND, const RGNDATA *,
+    DWORD);
+
+// Inline hook trampolines (set by inline hook installation)
+static PFN_D3D9_Present_Inline oD3D9PresentTrampoline = nullptr;
+static PFN_D3D9_PresentEx_Inline oD3D9PresentExTrampoline = nullptr;
+static PFN_D3D9_SwapChain_Present_Inline oD3D9SwapChainPresentTrampoline =
+    nullptr;
+
+// Inline hooks installed flag
+static bool g_InlineHooksInstalled = false;
 
 // Globals
 static PerformanceMetrics g_PerfMetrics;
@@ -309,6 +331,267 @@ static void MaybeWaitForVSyncAfterPresent(int64_t presentUs) {
 
   // Fallback: deterministic pacer to the desktop refresh.
   PaceToRefreshQpc();
+}
+
+static bool GetD3D9PresentAddresses(void **ppPresent, void **ppPresentEx,
+                                    void **ppSwapChainPresent) {
+  HMODULE d3d9 = GetModuleHandleA("d3d9.dll");
+  if (!d3d9)
+    return false;
+
+  WNDCLASSEXA wc = {sizeof(wc)};
+  wc.style = CS_CLASSDC;
+  wc.lpfnWndProc = DefWindowProcA;
+  wc.hInstance = GetModuleHandle(nullptr);
+  wc.lpszClassName = "D3D9Temp";
+  RegisterClassExA(&wc);
+
+  HWND hwnd = CreateWindowA("D3D9Temp", "Temp", WS_OVERLAPPED, 0, 0, 100, 100,
+                            nullptr, nullptr, wc.hInstance, nullptr);
+  if (!hwnd) {
+    UnregisterClassA("D3D9Temp", wc.hInstance);
+    return false;
+  }
+
+  typedef HRESULT(WINAPI * PFN_D3D9Create9Ex)(UINT, IDirect3D9Ex **);
+  PFN_D3D9Create9Ex pCreate9Ex =
+      (PFN_D3D9Create9Ex)GetProcAddress(d3d9, "Direct3DCreate9Ex");
+
+  IDirect3D9Ex *d3d9ex = nullptr;
+  IDirect3DDevice9Ex *deviceEx = nullptr;
+  IDirect3DSwapChain9 *swapChain = nullptr;
+
+  D3DPRESENT_PARAMETERS pp = {};
+  pp.Windowed = TRUE;
+  pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
+  pp.hDeviceWindow = hwnd;
+
+  bool success = false;
+
+  if (pCreate9Ex && SUCCEEDED(pCreate9Ex(D3D_SDK_VERSION, &d3d9ex))) {
+    if (SUCCEEDED(d3d9ex->CreateDeviceEx(
+            D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd,
+            D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, nullptr, &deviceEx))) {
+      uintptr_t *vtable = *(uintptr_t **)deviceEx;
+
+      *ppPresent = (void *)vtable[17];
+      *ppPresentEx = (void *)vtable[132];
+
+      if (SUCCEEDED(deviceEx->GetSwapChain(0, &swapChain))) {
+        uintptr_t *scVtable = *(uintptr_t **)swapChain;
+        *ppSwapChainPresent = (void *)scVtable[3];
+        swapChain->Release();
+      }
+
+      success = true;
+      deviceEx->Release();
+    }
+    d3d9ex->Release();
+  }
+
+  if (!success) {
+    typedef IDirect3D9 *(WINAPI * PFN_D3D9Create9)(UINT);
+    PFN_D3D9Create9 pCreate9 =
+        (PFN_D3D9Create9)GetProcAddress(d3d9, "Direct3DCreate9");
+
+    if (pCreate9) {
+      IDirect3D9 *d3d9Base = pCreate9(D3D_SDK_VERSION);
+      if (d3d9Base) {
+        IDirect3DDevice9 *device = nullptr;
+        if (SUCCEEDED(d3d9Base->CreateDevice(
+                D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd,
+                D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, &device))) {
+          uintptr_t *vtable = *(uintptr_t **)device;
+          *ppPresent = (void *)vtable[17];
+          *ppPresentEx = nullptr;
+
+          if (SUCCEEDED(device->GetSwapChain(0, &swapChain))) {
+            uintptr_t *scVtable = *(uintptr_t **)swapChain;
+            *ppSwapChainPresent = (void *)scVtable[3];
+            swapChain->Release();
+          }
+
+          success = true;
+          device->Release();
+        }
+        d3d9Base->Release();
+      }
+    }
+  }
+
+  DestroyWindow(hwnd);
+  UnregisterClassA("D3D9Temp", wc.hInstance);
+
+  return success;
+}
+
+static HRESULT STDMETHODCALLTYPE DetourD3D9PresentInline(
+    IDirect3DDevice9 *device, const RECT *pSourceRect, const RECT *pDestRect,
+    HWND hDestWindowOverride, const RGNDATA *pDirtyRegion) {
+  if (g_ShuttingDown.load()) {
+    if (oD3D9PresentTrampoline)
+      return oD3D9PresentTrampoline(device, pSourceRect, pDestRect,
+                                    hDestWindowOverride, pDirtyRegion);
+    return D3D_OK;
+  }
+
+  IDirect3DSurface9 *backBuffer = nullptr;
+  DX9_PresentBegin(device, backBuffer);
+
+  LARGE_INTEGER p0, p1;
+  QueryPerformanceCounter(&p0);
+  HRESULT hr = oD3D9PresentTrampoline(device, pSourceRect, pDestRect,
+                                      hDestWindowOverride, pDirtyRegion);
+  QueryPerformanceCounter(&p1);
+
+  DX9_PresentEnd(device, backBuffer);
+
+  int64_t qpcFreq = GetQpcFreqCached();
+  int64_t presentUs =
+      qpcFreq ? ((p1.QuadPart - p0.QuadPart) * 1000000) / qpcFreq : 0;
+  MaybeWaitForVSyncAfterPresent((int)presentUs);
+
+  return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE DetourD3D9PresentExInline(
+    IDirect3DDevice9Ex *device, const RECT *pSourceRect, const RECT *pDestRect,
+    HWND hDestWindowOverride, const RGNDATA *pDirtyRegion, DWORD dwFlags) {
+  if (g_ShuttingDown.load()) {
+    if (oD3D9PresentExTrampoline)
+      return oD3D9PresentExTrampoline(device, pSourceRect, pDestRect,
+                                      hDestWindowOverride, pDirtyRegion,
+                                      dwFlags);
+    return D3D_OK;
+  }
+
+  VSyncOverride vsync = GetVSyncOverride();
+  if (vsync.shouldOverride && vsync.presentInterval > 0) {
+    dwFlags &= ~D3DPRESENT_FORCEIMMEDIATE;
+    dwFlags &= ~D3DPRESENT_DONOTWAIT;
+  }
+
+  IDirect3DSurface9 *backBuffer = nullptr;
+  DX9_PresentBegin(device, backBuffer);
+
+  LARGE_INTEGER p0, p1;
+  QueryPerformanceCounter(&p0);
+  HRESULT hr =
+      oD3D9PresentExTrampoline(device, pSourceRect, pDestRect,
+                               hDestWindowOverride, pDirtyRegion, dwFlags);
+  QueryPerformanceCounter(&p1);
+
+  DX9_PresentEnd(device, backBuffer);
+
+  int64_t qpcFreq = GetQpcFreqCached();
+  int64_t presentUs =
+      qpcFreq ? ((p1.QuadPart - p0.QuadPart) * 1000000) / qpcFreq : 0;
+  MaybeWaitForVSyncAfterPresent((int)presentUs);
+
+  return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE DetourD3D9SwapChainPresentInline(
+    IDirect3DSwapChain9 *swapChain, const RECT *pSourceRect,
+    const RECT *pDestRect, HWND hDestWindowOverride,
+    const RGNDATA *pDirtyRegion, DWORD dwFlags) {
+  if (g_ShuttingDown.load()) {
+    if (oD3D9SwapChainPresentTrampoline)
+      return oD3D9SwapChainPresentTrampoline(swapChain, pSourceRect, pDestRect,
+                                             hDestWindowOverride, pDirtyRegion,
+                                             dwFlags);
+    return D3D_OK;
+  }
+
+  VSyncOverride vsync = GetVSyncOverride();
+  if (vsync.shouldOverride && vsync.presentInterval > 0) {
+    dwFlags &= ~D3DPRESENT_FORCEIMMEDIATE;
+    dwFlags &= ~D3DPRESENT_DONOTWAIT;
+  }
+
+  IDirect3DDevice9 *device = nullptr;
+  IDirect3DSurface9 *backBuffer = nullptr;
+
+  if (g_PresentRecurse == 0 && SUCCEEDED(swapChain->GetDevice(&device))) {
+    DX9_PresentBegin(device, backBuffer);
+  }
+
+  LARGE_INTEGER p0, p1;
+  QueryPerformanceCounter(&p0);
+  HRESULT hr = oD3D9SwapChainPresentTrampoline(swapChain, pSourceRect,
+                                               pDestRect, hDestWindowOverride,
+                                               pDirtyRegion, dwFlags);
+  QueryPerformanceCounter(&p1);
+
+  if (device) {
+    DX9_PresentEnd(device, backBuffer);
+    device->Release();
+  }
+
+  int64_t qpcFreq = GetQpcFreqCached();
+  int64_t presentUs =
+      qpcFreq ? ((p1.QuadPart - p0.QuadPart) * 1000000) / qpcFreq : 0;
+  MaybeWaitForVSyncAfterPresent((int)presentUs);
+
+  return hr;
+}
+
+static bool InstallD3D9InlineHooks() {
+  if (g_InlineHooksInstalled)
+    return true;
+
+  void *presentAddr = nullptr;
+  void *presentExAddr = nullptr;
+  void *swapChainPresentAddr = nullptr;
+
+  if (!GetD3D9PresentAddresses(&presentAddr, &presentExAddr,
+                               &swapChainPresentAddr)) {
+    EarlyLog("DX9: Failed to get Present addresses for inline hooks");
+    return false;
+  }
+
+  EarlyLog(
+      "DX9: Present addresses found: Present=%p, PresentEx=%p, SwapChain=%p",
+      presentAddr, presentExAddr, swapChainPresentAddr);
+
+  if (presentAddr) {
+    void *trampoline = nullptr;
+    if (InlineHook::Install(presentAddr, (void *)DetourD3D9PresentInline,
+                            &trampoline)) {
+      oD3D9PresentTrampoline = (PFN_D3D9_Present_Inline)trampoline;
+      EarlyLog("DX9: Present inline hook installed (addr=%p, trampoline=%p)",
+               presentAddr, trampoline);
+    } else {
+      EarlyLog("DX9: Failed to install Present inline hook");
+      return false;
+    }
+  }
+
+  if (presentExAddr) {
+    void *trampoline = nullptr;
+    if (InlineHook::Install(presentExAddr, (void *)DetourD3D9PresentExInline,
+                            &trampoline)) {
+      oD3D9PresentExTrampoline = (PFN_D3D9_PresentEx_Inline)trampoline;
+      EarlyLog("DX9: PresentEx inline hook installed (addr=%p, trampoline=%p)",
+               presentExAddr, trampoline);
+    }
+  }
+
+  if (swapChainPresentAddr) {
+    void *trampoline = nullptr;
+    if (InlineHook::Install(swapChainPresentAddr,
+                            (void *)DetourD3D9SwapChainPresentInline,
+                            &trampoline)) {
+      oD3D9SwapChainPresentTrampoline =
+          (PFN_D3D9_SwapChain_Present_Inline)trampoline;
+      EarlyLog("DX9: SwapChain::Present inline hook installed (addr=%p, "
+               "trampoline=%p)",
+               swapChainPresentAddr, trampoline);
+    }
+  }
+
+  g_InlineHooksInstalled = true;
+  return true;
 }
 
 static HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9 *device,
@@ -1321,6 +1604,13 @@ static DX9Capture g_DX9Capture;
 
 // Draw overlay using CustomOverlay
 static void DrawDX9Overlay(IDirect3DDevice9 *device) {
+  static int drawLogCount = 0;
+  if (drawLogCount < 3) {
+    EarlyLog("DX9: DrawDX9Overlay called, IsInitialized=%d",
+             g_OverlayAdapter.IsInitialized() ? 1 : 0);
+    drawLogCount++;
+  }
+
   if (!g_OverlayAdapter.IsInitialized()) {
     // Get the window handle
     D3DDEVICE_CREATION_PARAMETERS params;
@@ -2001,12 +2291,20 @@ static void InstallDeviceHooks(IDirect3DDevice9 *device) {
   EarlyLog("DX9: Installing vtable hooks for device %p (vtable=%p)", device,
            vtable);
 
-  // 1. Hook Present (17)
-  if (!oPresent) {
-    if (VTableHook::Create(&vtable[17], (void *)&DetourPresent,
-                           (void **)&oPresent) == VTableHook::Success) {
-      EarlyLog("DX9: Present hook installed");
+  // If inline hooks are installed, they handle all Present calls
+  // We still need VTable hooks for other functions (Reset, SetSamplerState,
+  // etc.) But Present hooks should NOT be installed as VTable hooks when inline
+  // is active
+  if (!g_InlineHooksInstalled) {
+    // 1. Hook Present (17) - only if inline hooks not available
+    if (!oPresent) {
+      if (VTableHook::Create(&vtable[17], (void *)&DetourPresent,
+                             (void **)&oPresent) == VTableHook::Success) {
+        EarlyLog("DX9: Present hook installed (VTable fallback)");
+      }
     }
+  } else {
+    EarlyLog("DX9: Skipping VTable Present hook - inline hooks active");
   }
 
   // High-frequency hooks enabled for parity
@@ -2044,11 +2342,13 @@ static void InstallDeviceHooks(IDirect3DDevice9 *device) {
       }
     }
 
-    // Hook PresentEx (132)
-    if (!oPresentEx) {
-      if (VTableHook::Create(&vtableEx[132], (void *)&DetourPresentEx,
-                             (void **)&oPresentEx) == VTableHook::Success) {
-        EarlyLog("DX9: PresentEx hook installed");
+    // Hook PresentEx (132) - only if inline hooks not installed
+    if (!g_InlineHooksInstalled) {
+      if (!oPresentEx) {
+        if (VTableHook::Create(&vtableEx[132], (void *)&DetourPresentEx,
+                               (void **)&oPresentEx) == VTableHook::Success) {
+          EarlyLog("DX9: PresentEx hook installed (VTable fallback)");
+        }
       }
     }
 
@@ -2062,18 +2362,21 @@ static void InstallDeviceHooks(IDirect3DDevice9 *device) {
   // Some games (notably D3D9Ex titles) present through the swapchain and may
   // pass flags that bypass PresentationInterval. Hooking swapchain Present
   // allows us to enforce VSync.
-  IDirect3DSwapChain9 *swapChain = nullptr;
-  if (SUCCEEDED(device->GetSwapChain(0, &swapChain)) && swapChain) {
-    uintptr_t *swapVtable = *(uintptr_t **)swapChain;
-    if (!oPresentSwap) {
-      if (VTableHook::Create(&swapVtable[3], (void *)&DetourPresentSwap,
-                             (void **)&oPresentSwap) == VTableHook::Success) {
-        EarlyLog("DX9: SwapChain Present hook installed");
-      } else {
-        EarlyLog("DX9: SwapChain Present hook create FAILED");
+  // Skip if inline hooks are installed (they handle all SwapChain Present)
+  if (!g_InlineHooksInstalled) {
+    IDirect3DSwapChain9 *swapChain = nullptr;
+    if (SUCCEEDED(device->GetSwapChain(0, &swapChain)) && swapChain) {
+      uintptr_t *swapVtable = *(uintptr_t **)swapChain;
+      if (!oPresentSwap) {
+        if (VTableHook::Create(&swapVtable[3], (void *)&DetourPresentSwap,
+                               (void **)&oPresentSwap) == VTableHook::Success) {
+          EarlyLog("DX9: SwapChain Present hook installed (VTable fallback)");
+        } else {
+          EarlyLog("DX9: SwapChain Present hook create FAILED");
+        }
       }
+      swapChain->Release();
     }
-    swapChain->Release();
   }
 }
 
@@ -2278,6 +2581,11 @@ void DX9Hook::Init() {
     EarlyLog("DX9: d3d9.dll not loaded, skipping");
     return;
   }
+
+  // CRITICAL: Install inline hooks as early as possible
+  // This must happen BEFORE the game creates its device
+  // Inline hooks work at the d3d9.dll function level, not per-device
+  InstallD3D9InlineHooks();
 
   // Hook Export Functions
   // Using IAT hooking (in iat_hook.cpp) or active VTable hooking for DX9.

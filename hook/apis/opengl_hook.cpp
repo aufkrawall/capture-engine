@@ -914,27 +914,48 @@ static void DetectGPU(HDC hdc) {
   }
 }
 
-// Draw overlay using ImGui OpenGL backend
-// Draw overlay using ImGui OpenGL backend
 // Draw overlay using CustomOverlay
 static void DrawOpenGLOverlay(HDC hdc) {
-  // ACTIVE API ARBITRATION:
   if (IsVulkanPrimary())
     return;
 
+  HGLRC currentCtx = wglGetCurrentContext();
+  if (!currentCtx) {
+    static bool loggedNoCtx = false;
+    if (!loggedNoCtx) {
+      HookLog("OpenGL: DrawOpenGLOverlay - No GL context current!");
+      loggedNoCtx = true;
+    }
+    return;
+  }
+
+  static bool initLogged = false;
   if (!g_OverlayAdapter.IsInitialized()) {
-    HookLog("OpenGL: Initializing OverlayAdapter...");
+    if (!initLogged) {
+      HookLog("OpenGL: DrawOpenGLOverlay - OverlayAdapter not initialized, "
+              "calling InitOpenGL...");
+      initLogged = true;
+    }
+
     DetectGPU(hdc);
     HWND hwnd = WindowFromDC(hdc);
     g_CachedHwnd = hwnd;
 
-    // Hook Input
     InputManager::Get().HookWindow(hwnd);
 
-    if (g_OverlayAdapter.InitOpenGL()) {
+    bool initResult = g_OverlayAdapter.InitOpenGL();
+    HookLog("OpenGL: InitOpenGL returned %d", initResult ? 1 : 0);
+
+    if (initResult) {
       g_OverlayAdapter.SetHwnd(hwnd);
-      EarlyLog("OpenGL: OverlayAdapter initialized");
+    } else {
+      HookLog("OpenGL: InitOpenGL failed - GL context = %p", currentCtx);
+      return;
     }
+  }
+
+  if (!g_OverlayAdapter.IsInitialized()) {
+    return;
   }
 
   g_OverlayAdapter.SetMetrics(&g_PerfMetrics);
@@ -943,12 +964,16 @@ static void DrawOpenGLOverlay(HDC hdc) {
       g_OpenGLCapture.droppedFrames.load(std::memory_order_relaxed));
   g_OverlayAdapter.SetGraphicsAPI("OpenGL");
 
-  // Get viewport size
   RECT rect;
   if (GetClientRect(g_CachedHwnd, &rect)) {
     int width = rect.right - rect.left;
     int height = rect.bottom - rect.top;
     if (width > 0 && height > 0) {
+      static int renderCount = 0;
+      if (renderCount++ % 60 == 0) {
+        HookLog("OpenGL: RenderOverlay called (%dx%d), count=%d", width, height,
+                renderCount);
+      }
       g_OverlayAdapter.RenderOverlay(width, height);
     }
   }
@@ -1030,6 +1055,11 @@ static void SwapBegin(HDC hdc) {
       // Lambda for overlay drawing
       auto doOverlay = [hdc, shouldDrawOverlay]() {
         if (shouldDrawOverlay) {
+          static int overlayCallCount = 0;
+          if (overlayCallCount++ % 60 == 0) {
+            HookLog("OpenGL: doOverlay lambda executing, count=%d",
+                    overlayCallCount);
+          }
           DrawOpenGLOverlay(hdc);
         }
       };

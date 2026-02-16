@@ -984,6 +984,12 @@ void CheckAndInstallHooks() {
     HookLog("DX8 hooks installed");
   }
 
+  // Debug: Log OpenGL hook conditions
+  HookLog(
+      "OpenGL hook check: g_OpenGLHook=%p, dx12ActuallyUsed=%d, opengl32=%p",
+      (void *)g_OpenGLHook, dx12ActuallyUsed ? 1 : 0,
+      GetModuleHandleA("opengl32.dll"));
+
   if (!g_OpenGLHook && !dx12ActuallyUsed && GetModuleHandleA("opengl32.dll")) {
     HookLog("Detected opengl32.dll. Installing OpenGL hooks...");
     g_OpenGLHook = new OpenGLHook();
