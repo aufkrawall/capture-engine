@@ -532,11 +532,12 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
 
     char totalBuf[32];
     snprintf(totalBuf, 32, "of %.2f GB", gbTotal);
-    float smallScale = 0.75f;  // Smaller scale for superscript
-    float gap = 2.0f * dpiScale;  // Minimal gap between segments
-    float raisedY = cursorY - usedHeight * 0.20f;  // Raised 20% of line height
-    renderer->DrawTextScaledWithShadow(valueCol + usedWidth + gap, raisedY, totalBuf,
-                                       textColor, shadowColor, smallScale);
+    float smallScale = 0.75f;    // Smaller scale for superscript
+    float gap = 2.0f * dpiScale; // Minimal gap between segments
+    float raisedY = cursorY - usedHeight * 0.20f; // Raised 20% of line height
+    renderer->DrawTextScaledWithShadow(valueCol + usedWidth + gap, raisedY,
+                                       totalBuf, textColor, shadowColor,
+                                       smallScale);
 
     cursorY += lineHeight;
   }
@@ -566,11 +567,12 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
 
     char totalBuf[32];
     snprintf(totalBuf, 32, "of %.2f GB", gbTotal);
-    float smallScale = 0.75f;  // Smaller scale for superscript
-    float gap = 2.0f * dpiScale;  // Minimal gap between segments
-    float raisedY = cursorY - usedHeight * 0.20f;  // Raised 20% of line height
-    renderer->DrawTextScaledWithShadow(valueCol + usedWidth + gap, raisedY, totalBuf,
-                                       textColor, shadowColor, smallScale);
+    float smallScale = 0.75f;    // Smaller scale for superscript
+    float gap = 2.0f * dpiScale; // Minimal gap between segments
+    float raisedY = cursorY - usedHeight * 0.20f; // Raised 20% of line height
+    renderer->DrawTextScaledWithShadow(valueCol + usedWidth + gap, raisedY,
+                                       totalBuf, textColor, shadowColor,
+                                       smallScale);
 
     cursorY += lineHeight;
   }

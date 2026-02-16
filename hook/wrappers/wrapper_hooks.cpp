@@ -21,6 +21,8 @@ extern void EnsureDX12Hook();
 #include "d3d11_device_wrap.h"
 #include "d3d9_device_wrap.h"
 #include "d3d9_wrap.h"
+#include "dxgi_factory_wrap.h"
+#include "dxgi_swapchain_wrap.h"
 #include "iat_hook.h"
 #include "wrapper_hooks.h"
 
@@ -99,26 +101,80 @@ void WrapperLog(const char *fmt, ...) {
 // Wrapped DXGI Factory Creation
 // ============================================================================
 
-// DLSS FG FIX: Pass-through DXGI factory creation to avoid swapchain wrapping
-// issues We rely on ExecuteCommandLists hooking for frame detection instead
-
 HRESULT WINAPI Wrapped_CreateDXGIFactory(REFIID riid, void **ppFactory) {
   if (!oCreateDXGIFactory)
     return E_FAIL;
-  return oCreateDXGIFactory(riid, ppFactory);
+
+  IDXGIFactory *pRealFactory = nullptr;
+  HRESULT hr = oCreateDXGIFactory(riid, (void **)&pRealFactory);
+
+  if (SUCCEEDED(hr) && pRealFactory) {
+    // Wrap with CWrapDXGIFactory2 (handles all factory versions)
+    IDXGIFactory2 *pRealFactory2 = nullptr;
+    if (SUCCEEDED(pRealFactory->QueryInterface(IID_PPV_ARGS(&pRealFactory2)))) {
+      auto *pWrapper = new CWrapDXGIFactory2(pRealFactory2);
+      pRealFactory2->Release();
+      pRealFactory->Release();
+
+      // Return the wrapper via QueryInterface to handle different riid
+      hr = pWrapper->QueryInterface(riid, ppFactory);
+      pWrapper->Release();
+      WrapperLog("Wrapper: Created wrapped DXGIFactory");
+    } else {
+      // Fallback: no IDXGIFactory2 interface (unlikely)
+      *ppFactory = pRealFactory;
+      WrapperLog("Wrapper: DXGI factory does not support IDXGIFactory2, "
+                 "returning unwrapped");
+    }
+  }
+  return hr;
 }
 
 HRESULT WINAPI Wrapped_CreateDXGIFactory1(REFIID riid, void **ppFactory) {
   if (!oCreateDXGIFactory1)
     return E_FAIL;
-  return oCreateDXGIFactory1(riid, ppFactory);
+
+  IDXGIFactory1 *pRealFactory = nullptr;
+  HRESULT hr = oCreateDXGIFactory1(riid, (void **)&pRealFactory);
+
+  if (SUCCEEDED(hr) && pRealFactory) {
+    // Wrap with CWrapDXGIFactory2
+    IDXGIFactory2 *pRealFactory2 = nullptr;
+    if (SUCCEEDED(pRealFactory->QueryInterface(IID_PPV_ARGS(&pRealFactory2)))) {
+      auto *pWrapper = new CWrapDXGIFactory2(pRealFactory2);
+      pRealFactory2->Release();
+      pRealFactory->Release();
+
+      hr = pWrapper->QueryInterface(riid, ppFactory);
+      pWrapper->Release();
+      WrapperLog("Wrapper: Created wrapped DXGIFactory1");
+    } else {
+      *ppFactory = pRealFactory;
+      WrapperLog("Wrapper: DXGI factory does not support IDXGIFactory2, "
+                 "returning unwrapped");
+    }
+  }
+  return hr;
 }
 
 HRESULT WINAPI Wrapped_CreateDXGIFactory2(UINT Flags, REFIID riid,
                                           void **ppFactory) {
   if (!oCreateDXGIFactory2)
     return E_FAIL;
-  return oCreateDXGIFactory2(Flags, riid, ppFactory);
+
+  IDXGIFactory2 *pRealFactory = nullptr;
+  HRESULT hr = oCreateDXGIFactory2(Flags, riid, (void **)&pRealFactory);
+
+  if (SUCCEEDED(hr) && pRealFactory) {
+    // Wrap with CWrapDXGIFactory2
+    auto *pWrapper = new CWrapDXGIFactory2(pRealFactory);
+    pRealFactory->Release();
+
+    hr = pWrapper->QueryInterface(riid, ppFactory);
+    pWrapper->Release();
+    WrapperLog("Wrapper: Created wrapped DXGIFactory2");
+  }
+  return hr;
 }
 
 // ============================================================================
@@ -203,13 +259,16 @@ HRESULT WINAPI Wrapped_D3D11CreateDevice(
     UINT SDKVersion, ID3D11Device **ppDevice, D3D_FEATURE_LEVEL *pFeatureLevel,
     ID3D11DeviceContext **ppImmediateContext) {
 
-  WrapperLog("Wrapper: D3D11CreateDevice called");
+  WrapperLog("Wrapped_D3D11CreateDevice: CALLED");
 
   // Mark that D3D11 device creation was actually called
   g_D3D11Or10DeviceCreated.store(true, std::memory_order_release);
 
-  if (!oD3D11CreateDevice)
+  if (!oD3D11CreateDevice) {
+    WrapperLog(
+        "Wrapped_D3D11CreateDevice: ERROR - oD3D11CreateDevice is NULL!");
     return E_FAIL;
+  }
 
   ID3D11Device *pRealDevice = nullptr;
   ID3D11DeviceContext *pRealContext = nullptr;
@@ -218,11 +277,13 @@ HRESULT WINAPI Wrapped_D3D11CreateDevice(
       FeatureLevels, SDKVersion, ppDevice ? &pRealDevice : nullptr,
       pFeatureLevel, ppImmediateContext ? &pRealContext : nullptr);
 
+  WrapperLog("Wrapped_D3D11CreateDevice: Original returned hr=0x%08X", hr);
+
   if (SUCCEEDED(hr) && pRealDevice && ppDevice) {
     auto *pWrapper = new CWrapD3D11Device(pRealDevice);
     *ppDevice = pWrapper;
     pRealDevice->Release();
-    WrapperLog("Wrapper: Created wrapped D3D11 device");
+    WrapperLog("Wrapped_D3D11CreateDevice: Created wrapped D3D11 device");
   }
 
   if (ppImmediateContext) {
@@ -241,17 +302,30 @@ HRESULT WINAPI Wrapped_D3D11CreateDeviceAndSwapChain(
     D3D_FEATURE_LEVEL *pFeatureLevel,
     ID3D11DeviceContext **ppImmediateContext) {
 
-  WrapperLog("Wrapper: D3D11CreateDeviceAndSwapChain called");
+  WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: CALLED");
+  WrapperLog("  Adapter=%p, DriverType=%d, Flags=0x%X", pAdapter, DriverType,
+             Flags);
+  if (pSwapChainDesc) {
+    WrapperLog("  SwapChain: %dx%d, BufferCount=%u",
+               pSwapChainDesc->BufferDesc.Width,
+               pSwapChainDesc->BufferDesc.Height, pSwapChainDesc->BufferCount);
+  }
 
   // Mark that D3D11 device creation was actually called
   g_D3D11Or10DeviceCreated.store(true, std::memory_order_release);
 
-  if (!oD3D11CreateDeviceAndSwapChain)
+  if (!oD3D11CreateDeviceAndSwapChain) {
+    WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: ERROR - "
+               "oD3D11CreateDeviceAndSwapChain is NULL!");
     return E_FAIL;
+  }
 
   ID3D11Device *pRealDevice = nullptr;
   IDXGISwapChain *pRealSwapChain = nullptr;
   ID3D11DeviceContext *pRealContext = nullptr;
+
+  WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: Calling original at %p",
+             oD3D11CreateDeviceAndSwapChain);
 
   HRESULT hr = oD3D11CreateDeviceAndSwapChain(
       DeWrap(pAdapter), DriverType, Software, Flags, pFeatureLevels,
@@ -260,19 +334,43 @@ HRESULT WINAPI Wrapped_D3D11CreateDeviceAndSwapChain(
       ppDevice ? &pRealDevice : nullptr, pFeatureLevel,
       ppImmediateContext ? &pRealContext : nullptr);
 
+  WrapperLog(
+      "Wrapped_D3D11CreateDeviceAndSwapChain: Original returned hr=0x%08X", hr);
+
   if (SUCCEEDED(hr)) {
     // Wrap the device
     if (pRealDevice && ppDevice) {
       auto *pDevWrapper = new CWrapD3D11Device(pRealDevice);
       *ppDevice = pDevWrapper;
       pRealDevice->Release();
-      WrapperLog("Wrapper: Created wrapped D3D11 device");
+      WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: Created wrapped D3D11 "
+                 "device");
     }
 
-    // DIAGNOSTIC: Pass through swapchain without wrapping
+    // Wrap the swapchain
     if (pRealSwapChain && ppSwapChain) {
-      *ppSwapChain = pRealSwapChain;
-      WrapperLog("Wrapper: DIAGNOSTIC - Returning unwrapped swapchain (D3D11)");
+      // CRITICAL: Check if this swapchain is already wrapped
+      // This prevents double-wrapping which causes infinite Present recursion
+      void *pExistingWrapper = nullptr;
+      if (SUCCEEDED(pRealSwapChain->QueryInterface(IID_CWrapDXGISwapChain,
+                                                   &pExistingWrapper))) {
+        ((IUnknown *)pExistingWrapper)->Release();
+        WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: Swapchain already "
+                   "wrapped, skipping double-wrap");
+        *ppSwapChain = pRealSwapChain;
+        pRealSwapChain->Release();
+      } else {
+        WrapperLog(
+            "Wrapped_D3D11CreateDeviceAndSwapChain: Wrapping swapchain %p",
+            pRealSwapChain);
+        auto *pSwapWrapper =
+            new CWrapDXGISwapChain(pRealSwapChain, pRealDevice);
+        *ppSwapChain = pSwapWrapper;
+        pRealSwapChain->Release();
+        WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: Swapchain wrapped, "
+                   "new ptr=%p",
+                   pSwapWrapper);
+      }
     }
 
     if (ppImmediateContext) {
@@ -375,10 +473,25 @@ HRESULT WINAPI Wrapped_D3D10CreateDeviceAndSwapChain(
       WrapperLog("Wrapper: Created wrapped D3D10 device");
     }
 
-    // DIAGNOSTIC: Pass through swapchain without wrapping
+    // Wrap the swapchain
     if (pRealSwapChain && ppSwapChain) {
-      *ppSwapChain = pRealSwapChain;
-      WrapperLog("Wrapper: DIAGNOSTIC - Returning unwrapped swapchain (D3D10)");
+      // CRITICAL: Check if this swapchain is already wrapped
+      // This prevents double-wrapping which causes infinite Present recursion
+      void *pExistingWrapper = nullptr;
+      if (SUCCEEDED(pRealSwapChain->QueryInterface(IID_CWrapDXGISwapChain,
+                                                   &pExistingWrapper))) {
+        ((IUnknown *)pExistingWrapper)->Release();
+        WrapperLog("Wrapper: D3D10 swapchain already wrapped, skipping "
+                   "double-wrap");
+        *ppSwapChain = pRealSwapChain;
+        pRealSwapChain->Release();
+      } else {
+        auto *pSwapWrapper =
+            new CWrapDXGISwapChain(pRealSwapChain, pRealDevice);
+        *ppSwapChain = pSwapWrapper;
+        pRealSwapChain->Release();
+        WrapperLog("Wrapper: Created wrapped DXGI swapchain (D3D10)");
+      }
     }
   }
 

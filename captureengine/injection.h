@@ -33,8 +33,12 @@ public:
   // Check if any process is currently injected
   bool HasActiveInjections() const;
 
-  // Inject into a specific process
+  // Inject into a specific process (CreateRemoteThread - runs after loader)
   bool Inject(DWORD pid, const std::string &processName);
+
+  // Early injection using APC - runs before loader/import resolution
+  // Requires process to be created with CREATE_SUSPENDED
+  bool InjectEarly(DWORD pid, const std::string &dllPath, HANDLE hMainThread);
 
   // Callback to execute before injection (e.g. to reload config)
   void SetOnInjectCallback(std::function<void(const std::string &)> callback);

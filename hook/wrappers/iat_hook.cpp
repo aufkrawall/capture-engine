@@ -686,6 +686,18 @@ bool InitializeD3D11Hooks() {
       WrapperLog("IAT: D3D11CreateDevice not found in IAT");
     }
 
+    // CRITICAL FIX: Register dynamic hooks for GetProcAddress interception
+    // Games may load d3d11.dll dynamically at runtime and use GetProcAddress
+    // to get device creation functions. Without dynamic hooks, we won't
+    // intercept these calls.
+    RegisterDynamicHook("D3D11CreateDeviceAndSwapChain",
+                        (void *)::Wrapped_D3D11CreateDeviceAndSwapChain,
+                        (void **)&::oD3D11CreateDeviceAndSwapChain);
+    RegisterDynamicHook("D3D11CreateDevice",
+                        (void *)::Wrapped_D3D11CreateDevice,
+                        (void **)&::oD3D11CreateDevice);
+    WrapperLog("IAT: Registered D3D11 functions for dynamic hooking");
+
     WrapperLog("IAT: D3D11 hooks initialized");
     return true;
   }
@@ -711,6 +723,14 @@ bool InitializeD3D10Hooks() {
     PatchIATAllModules("d3d10.dll", "D3D10CreateDeviceAndSwapChain",
                        (void *)::Wrapped_D3D10CreateDeviceAndSwapChain, &dummy);
 
+    // CRITICAL FIX: Register dynamic hooks for GetProcAddress interception
+    RegisterDynamicHook("D3D10CreateDevice",
+                        (void *)::Wrapped_D3D10CreateDevice,
+                        (void **)&::oD3D10CreateDevice);
+    RegisterDynamicHook("D3D10CreateDeviceAndSwapChain",
+                        (void *)::Wrapped_D3D10CreateDeviceAndSwapChain,
+                        (void **)&::oD3D10CreateDeviceAndSwapChain);
+
     // D3D10.1
     HMODULE hD3D10_1 = GetModuleHandleA("d3d10_1.dll");
     if (hD3D10_1) {
@@ -718,6 +738,9 @@ bool InitializeD3D10Hooks() {
           hD3D10_1, "D3D10CreateDevice1");
       PatchIATAllModules("d3d10_1.dll", "D3D10CreateDevice1",
                          (void *)::Wrapped_D3D10CreateDevice1, &dummy);
+      RegisterDynamicHook("D3D10CreateDevice1",
+                          (void *)::Wrapped_D3D10CreateDevice1,
+                          (void **)&::oD3D10CreateDevice1);
     }
 
     WrapperLog("IAT: D3D10 hooks initialized");
@@ -897,6 +920,16 @@ void ShutdownIATHooks() {
 // ============================================================================
 
 FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
+  // CRITICAL: During process termination, static data may be invalid
+  // External DLLs (e.g., opengl32.dll) may call GetProcAddress during their
+  // atexit destructors. We must not access any static data that may have
+  // been destroyed.
+  if (IsProcessTerminating()) {
+    if (oGetProcAddress)
+      return oGetProcAddress(hModule, lpProcName);
+    return nullptr;
+  }
+
   // Call original first to get the real address
   FARPROC proc = nullptr;
   if (oGetProcAddress) {
@@ -907,6 +940,20 @@ FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
   // immediately
   if (!proc || (uintptr_t)lpProcName < 0x10000) {
     return proc;
+  }
+
+  // Get module name for logging
+  char moduleName[MAX_PATH] = {0};
+  if (hModule) {
+    GetModuleFileNameA(hModule, moduleName, MAX_PATH);
+    // Extract just the filename
+    char *p = moduleName + strlen(moduleName);
+    while (p > moduleName && *(p - 1) != '\\' && *(p - 1) != '/') {
+      p--;
+    }
+    if (p > moduleName) {
+      memmove(moduleName, p, strlen(p) + 1);
+    }
   }
 
   // Check if we have a hook for this function name
@@ -920,8 +967,21 @@ FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
     }
 
     // Return our hook address
-    // WrapperLog("IAT: Dynamic hook hit for %s", lpProcName);
+    WrapperLog("GetProcAddress: Intercepting %s from %s (orig=%p, hook=%p)",
+               lpProcName, moduleName[0] ? moduleName : "unknown", proc,
+               it->second.hookFunction);
     return (FARPROC)it->second.hookFunction;
+  }
+
+  // Debug logging for DXGI/D3D functions that might be looked up
+  static int s_LogCount = 0;
+  if (s_LogCount < 50) {
+    if (strstr(lpProcName, "D3D11") || strstr(lpProcName, "DXGI") ||
+        strstr(lpProcName, "D3D12") || strstr(lpProcName, "D3D10")) {
+      WrapperLog("GetProcAddress: %s from %s (no hook registered)", lpProcName,
+                 moduleName[0] ? moduleName : "unknown");
+      s_LogCount++;
+    }
   }
 
   return proc;

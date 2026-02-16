@@ -5,6 +5,7 @@
  */
 
 #include "dxgi_swapchain_wrap.h"
+#include "../../common/raii_helpers.h"
 #include "../apis/graphics_hook.h"
 #include "../common/dxgi_shared.h"
 #include "../common/performance_metrics.h"
@@ -57,6 +58,9 @@ struct ScopedResizeGuard {
 };
 #include <cstdint>
 extern void DX11_UpdatePerformanceMetrics(int64_t qpcUs);
+
+// Shutdown safety flag to prevent accessing freed memory during process exit
+static std::atomic<bool> g_WrapperShutdown{false};
 
 static bool g_OverlayEnabled = true;
 
@@ -309,6 +313,25 @@ CWrapDXGISwapChain::CWrapDXGISwapChain(IDXGISwapChain1 *pReal,
 }
 
 CWrapDXGISwapChain::~CWrapDXGISwapChain() {
+  // SAFETY: Check if destructor has already run (prevents double-free during
+  // shutdown)
+  if (m_DestructorCalled.exchange(true, std::memory_order_acq_rel)) {
+    // Destructor already ran, don't access any members
+    WrapperLog("SwapChain: Destructor called again on already-destroyed "
+               "wrapper %p - skipping",
+               this);
+    return;
+  }
+
+  // SAFETY: Check global shutdown flag - during shutdown we skip cleanup to
+  // avoid crashes
+  if (g_WrapperShutdown.load(std::memory_order_acquire)) {
+    WrapperLog("SwapChain: Destructor called during shutdown on wrapper %p - "
+               "skipping cleanup",
+               this);
+    return;
+  }
+
   WrapperLog("SwapChain: Destroying wrapper %p (real=%p)", this, m_pReal);
 
   // Unregister destruction callback if registered
@@ -471,6 +494,16 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::QueryInterface(REFIID riid,
 }
 
 ULONG STDMETHODCALLTYPE CWrapDXGISwapChain::AddRef() {
+  // SAFETY: Check if we're in shutdown - if so, return fake reference count
+  if (g_WrapperShutdown.load(std::memory_order_acquire)) {
+    return 1;
+  }
+
+  // Also check if this wrapper has already been destroyed
+  if (m_RefCount == 0) {
+    return 1; // Already destroyed or never initialized
+  }
+
   ULONG refs = InterlockedIncrement(&m_RefCount);
   // Also AddRef the real swapchain to track total references
   if (m_pReal) {
@@ -481,6 +514,18 @@ ULONG STDMETHODCALLTYPE CWrapDXGISwapChain::AddRef() {
 }
 
 ULONG STDMETHODCALLTYPE CWrapDXGISwapChain::Release() {
+  // SAFETY: Check if we're in shutdown - if so, just return without touching
+  // anything
+  if (g_WrapperShutdown.load(std::memory_order_acquire)) {
+    return 0;
+  }
+
+  // Also check if this wrapper has already been destroyed
+  if (m_RefCount == 0) {
+    // Already destroyed or never initialized
+    return 0;
+  }
+
   ULONG xrefs = InterlockedDecrement(&m_RefCount); // External references
 
   // When external refs reach 0, game expects SwapChain destruction
@@ -520,6 +565,12 @@ IDXGISwapChain *CWrapDXGISwapChain::GetRealSafe() {
     return nullptr;
   }
   return m_pReal;
+}
+
+// Shutdown safety function - sets the global shutdown flag
+void SetSwapchainWrapperShutdown() {
+  g_WrapperShutdown.store(true, std::memory_order_release);
+  WrapperLog("SwapChain: Wrapper shutdown flag set");
 }
 
 // ============================================================================
@@ -565,6 +616,13 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetDevice(REFIID riid,
 
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval,
                                                       UINT Flags) {
+  // CRITICAL: Set this FIRST before any other code, especially before recursion
+  // guard This ensures DetourPresent knows we're in a wrapper call even if we
+  // return early
+  g_InWrapperPresent = true;
+  auto wrapperPresentGuard =
+      ::ce::make_scope_guard([&] { g_InWrapperPresent = false; });
+
   // EXTREME DEBUG: Log entry with full state
   DWORD threadId = GetCurrentThreadId();
   static std::atomic<int> s_presentCallCount{0};
@@ -626,7 +684,6 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval,
     WrapperLog(
         "[FSR-DEBUG] Present: Skipping FSR internal swapchain processing");
     HRESULT hr = pRealCached->Present(SyncInterval, Flags);
-    g_InWrapperPresent = false;
     return hr;
   }
 
@@ -664,10 +721,11 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval,
   }
   s_presentThreadId.store(currentId);
   s_presentDepth.fetch_add(1);
+  auto depthGuard = ::ce::make_scope_guard([&] {
+    if (s_presentDepth.fetch_sub(1) == 1)
+      s_presentThreadId.store(0);
+  });
 
-  // Set flag to indicate we're inside wrapper's Present
-  // This prevents vtable hooks from double-processing
-  g_InWrapperPresent = true;
   if (callCount < 20) {
     WrapperLog("Present: Processing call#%d", callCount);
   }
@@ -713,14 +771,13 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval,
                  captureNum);
     }
 
-    // DX12: VTable hook (DetourPresent in dxgi_shared.cpp) already handles
-    // overlay rendering via HandleDX12ProcessFrame -> ProcessFrame ->
-    // DrawOverlay No additional overlay drawing needed here
+    // DX12: Overlay rendering is handled by DX12_ProcessFrameExternal above
+    // No additional overlay drawing needed here
     static int s_PresentCount = 0;
     int presentNum = ++s_PresentCount;
     if (presentNum <= 10) {
       WrapperLog(
-          "[FSR-DEBUG] Present: DX12 path - overlay handled by VTable hook #%d",
+          "[FSR-DEBUG] Present: DX12 path - overlay handled by wrapper #%d",
           presentNum);
     }
   } else {
@@ -742,13 +799,6 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval,
   }
 
   HRESULT hr = pRealCached->Present(SyncInterval, Flags);
-
-  // Clear wrapper Present flag
-  g_InWrapperPresent = false;
-
-  if (s_presentDepth.fetch_sub(1) == 1) {
-    s_presentThreadId.store(0);
-  }
   return hr;
 }
 
@@ -897,6 +947,13 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetCoreWindow(REFIID refiid,
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(
     UINT SyncInterval, UINT PresentFlags,
     const DXGI_PRESENT_PARAMETERS *pPresentParameters) {
+  // CRITICAL: Set this FIRST before any other code, especially before recursion
+  // guard This ensures DetourPresent knows we're in a wrapper call even if we
+  // return early
+  g_InWrapperPresent = true;
+  auto wrapperPresentGuard =
+      ::ce::make_scope_guard([&] { g_InWrapperPresent = false; });
+
   // CRITICAL: Check for global shutdown - if app is closing, don't touch
   // anything
   extern std::atomic<bool> g_ShuttingDown;
@@ -931,9 +988,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(
   }
   s_present1ThreadId.store(currentId);
   s_present1Depth.fetch_add(1);
-
-  // Set flag to indicate we're inside wrapper's Present
-  g_InWrapperPresent = true;
+  auto depthGuard = ::ce::make_scope_guard([&] {
+    if (s_present1Depth.fetch_sub(1) == 1)
+      s_present1ThreadId.store(0);
+  });
 
   // Update performance metrics for FPS calculation
   static int64_t qpcFreq = 0;
@@ -955,8 +1013,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(
   if (m_IsD3D12) {
     // Use base interface for ProcessFrameExternal (it takes IDXGISwapChain*)
     DX12_ProcessFrameExternal(pReal1Cached);
-    // DX12: VTable hook (DetourPresent in dxgi_shared.cpp) already handles
-    // overlay rendering No additional overlay drawing needed here
+    // DX12: Overlay rendering is handled by DX12_ProcessFrameExternal above
+    // No additional overlay drawing needed here
   } else {
     // DX11/DX10: Call DX11_ProcessFrameExternal for capture AND overlay
     // NOTE: DX11_ProcessFrameExternal already calls DrawDX11Overlay internally,
@@ -966,13 +1024,6 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(
 
   HRESULT hr =
       pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters);
-
-  // Clear wrapper Present flag
-  g_InWrapperPresent = false;
-
-  if (s_present1Depth.fetch_sub(1) == 1) {
-    s_present1ThreadId.store(0);
-  }
   return hr;
 }
 

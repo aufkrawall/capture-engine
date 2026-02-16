@@ -225,11 +225,20 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChain(
   IDXGISwapChain *pReal = nullptr;
   HRESULT hr = m_pReal->CreateSwapChain(DeWrap(pDevice), pDesc, &pReal);
   if (SUCCEEDED(hr) && pReal) {
-    if (g_DisableSwapchainWrapper)
+    if (g_DisableSwapchainWrapper) {
       *ppSwapChain = pReal;
-    else {
-      *ppSwapChain = (IDXGISwapChain *)new CWrapDXGISwapChain(pReal, pDevice);
-      pReal->Release();
+    } else {
+      void *pExistingWrapper = nullptr;
+      if (SUCCEEDED(pReal->QueryInterface(IID_CWrapDXGISwapChain,
+                                          &pExistingWrapper))) {
+        ((IUnknown *)pExistingWrapper)->Release();
+        WrapperLog("CreateSwapChain: Swapchain already wrapped by vtable hook, "
+                   "skipping double-wrap");
+        *ppSwapChain = pReal;
+      } else {
+        *ppSwapChain = (IDXGISwapChain *)new CWrapDXGISwapChain(pReal, pDevice);
+        pReal->Release();
+      }
     }
   } else
     *ppSwapChain = nullptr;
@@ -309,11 +318,22 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForHwnd(
   HRESULT hr = m_pReal->CreateSwapChainForHwnd(
       DeWrap(pDevice), hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, &pReal);
   if (SUCCEEDED(hr) && pReal) {
-    if (g_DisableSwapchainWrapper)
+    if (g_DisableSwapchainWrapper) {
       *ppSwapChain = pReal;
-    else {
-      *ppSwapChain = (IDXGISwapChain1 *)new CWrapDXGISwapChain(pReal, pDevice);
-      pReal->Release();
+    } else {
+      void *pExistingWrapper = nullptr;
+      if (SUCCEEDED(pReal->QueryInterface(IID_CWrapDXGISwapChain,
+                                          &pExistingWrapper))) {
+        ((IUnknown *)pExistingWrapper)->Release();
+        WrapperLog(
+            "CreateSwapChainForHwnd: Swapchain already wrapped by vtable "
+            "hook, skipping double-wrap");
+        *ppSwapChain = pReal;
+      } else {
+        *ppSwapChain =
+            (IDXGISwapChain1 *)new CWrapDXGISwapChain(pReal, pDevice);
+        pReal->Release();
+      }
     }
   } else
     *ppSwapChain = nullptr;
@@ -349,11 +369,21 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForCoreWindow(
   HRESULT hr = m_pReal->CreateSwapChainForCoreWindow(
       DeWrap(pDevice), pWindow, pDesc, pRestrictToOutput, &pReal);
   if (SUCCEEDED(hr) && pReal) {
-    if (g_DisableSwapchainWrapper)
+    if (g_DisableSwapchainWrapper) {
       *ppSwapChain = pReal;
-    else {
-      *ppSwapChain = (IDXGISwapChain1 *)new CWrapDXGISwapChain(pReal, pDevice);
-      pReal->Release();
+    } else {
+      void *pExistingWrapper = nullptr;
+      if (SUCCEEDED(pReal->QueryInterface(IID_CWrapDXGISwapChain,
+                                          &pExistingWrapper))) {
+        ((IUnknown *)pExistingWrapper)->Release();
+        WrapperLog("CreateSwapChainForCoreWindow: Swapchain already wrapped by "
+                   "vtable hook, skipping double-wrap");
+        *ppSwapChain = pReal;
+      } else {
+        *ppSwapChain =
+            (IDXGISwapChain1 *)new CWrapDXGISwapChain(pReal, pDevice);
+        pReal->Release();
+      }
     }
   } else
     *ppSwapChain = nullptr;
@@ -418,11 +448,22 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForComposition(
   HRESULT hr = m_pReal->CreateSwapChainForComposition(
       DeWrap(pDevice), pDesc, pRestrictToOutput, &pReal);
   if (SUCCEEDED(hr) && pReal) {
-    if (g_DisableSwapchainWrapper)
+    if (g_DisableSwapchainWrapper) {
       *ppSwapChain = pReal;
-    else {
-      *ppSwapChain = (IDXGISwapChain1 *)new CWrapDXGISwapChain(pReal, pDevice);
-      pReal->Release();
+    } else {
+      void *pExistingWrapper = nullptr;
+      if (SUCCEEDED(pReal->QueryInterface(IID_CWrapDXGISwapChain,
+                                          &pExistingWrapper))) {
+        ((IUnknown *)pExistingWrapper)->Release();
+        WrapperLog(
+            "CreateSwapChainForComposition: Swapchain already wrapped by "
+            "vtable hook, skipping double-wrap");
+        *ppSwapChain = pReal;
+      } else {
+        *ppSwapChain =
+            (IDXGISwapChain1 *)new CWrapDXGISwapChain(pReal, pDevice);
+        pReal->Release();
+      }
     }
   } else
     *ppSwapChain = nullptr;

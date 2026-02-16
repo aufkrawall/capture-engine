@@ -40,14 +40,29 @@ Status Shutdown();
 /**
  * Create a hook for a virtual function table entry.
  *
- * Uses direct VTable pointer patching - the vtable entry is replaced
- * with the detour function pointer. The original is saved to ppOriginal.
+ * Uses direct
+ * VTable pointer patching - the vtable entry is replaced
+ * with the detour
+ * function pointer. The original is saved to ppOriginal.
  *
- * @param pVTableEntry Address of the VTable entry (e.g. &vtable[10])
- * @param pDetour      Pointer to the detour function
- * @param ppOriginal   [Out] Receives the original function pointer
+ * @param
+ * pVTableEntry Address of the VTable entry (e.g. &vtable[10])
+ * @param pDetour
+ * Pointer to the detour function
+ * @param ppOriginal   [Out] Receives the
+ * original function pointer
  */
 Status Create(void *pVTableEntry, void *pDetour, void **ppOriginal);
+
+/**
+ * Remove a hook and restore the original function.
+ *
+ * @param
+ * pVTableEntry Address of the VTable entry that was hooked
+ * @param pOriginal
+ * The original function pointer to restore
+ */
+Status Remove(void *pVTableEntry, void *pOriginal);
 
 // Enable a hook (no-op - VTable hooks are always enabled)
 Status Enable(void *pTarget);

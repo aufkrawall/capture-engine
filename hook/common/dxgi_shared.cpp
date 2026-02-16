@@ -1,11 +1,12 @@
 #include "dxgi_shared.h"
 #include "../../common/raii_helpers.h"
+#include "../wrappers/inline_hook.h"
 #include "../wrappers/vtable_hook.h"
 #include "../wrappers/wrapper_base.h"
 #include "config.h"
 #include "fg_detection.h"
 #include "freeze_watchdog.h"
-#include "hook_common.h" // For g_ShuttingDown declaration
+#include "hook_common.h"
 #include "logging.h"
 #include "performance_metrics.h"
 
@@ -130,6 +131,10 @@ static PFN_Present1 oPresent1 = nullptr;
 static PFN_ResizeBuffers oResizeBuffers = nullptr;
 static PFN_ResizeBuffers1 oResizeBuffers1 = nullptr;
 
+// Inline hook trampolines - calling these bypasses the hook entirely
+static PFN_Present oPresentTrampoline = nullptr;
+static PFN_Present1 oPresent1Trampoline = nullptr;
+
 // Stored vtable pointer for unhooking Present when COM wrapper takes over
 static void **s_hookedVTable = nullptr;
 
@@ -162,6 +167,22 @@ APIType DetectAPIType(IDXGISwapChain *pSwapChain) {
   return APIType::Unknown;
 }
 
+// Helper to get Present function address from a swapchain's vtable
+static void *GetPresentAddress(IDXGISwapChain *pSwapChain) {
+  if (!pSwapChain)
+    return nullptr;
+  void **vtable = *(void ***)pSwapChain;
+  return vtable[8]; // Present is at vtable slot 8
+}
+
+// Helper to get Present1 function address from a swapchain's vtable
+static void *GetPresent1Address(IDXGISwapChain *pSwapChain) {
+  if (!pSwapChain)
+    return nullptr;
+  void **vtable = *(void ***)pSwapChain;
+  return vtable[22]; // Present1 is at vtable slot 22
+}
+
 // Global flag to disable DXGI hooks when Vulkan is active
 // This is set once at startup and prevents DXGI hooks from interfering with
 // Vulkan WSI
@@ -189,25 +210,96 @@ static bool IsVulkanActive() {
 // wrapper calls m_pReal->Present() and it re-enters here, we just passthrough.
 // For DX12 pre-existing swapchains (not wrapped): full processing here.
 // For DX11: full processing here.
+static bool IsReadableMemory(const void *ptr, size_t size) {
+  if (!ptr)
+    return false;
+  MEMORY_BASIC_INFORMATION mbi;
+  if (VirtualQuery(ptr, &mbi, sizeof(mbi)) == 0)
+    return false;
+  if (mbi.State != MEM_COMMIT)
+    return false;
+  if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))
+    return false;
+  return (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ |
+                         PAGE_EXECUTE_READWRITE | PAGE_WRITECOPY)) != 0;
+}
+
+namespace {
+thread_local bool s_bypassVtableHook = false;
+}
+
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
                                         UINT SyncInterval, UINT Flags) {
-  static thread_local int s_presentDepth = 0;
-  s_presentDepth++;
-  auto depthGuard = ::ce::make_scope_guard([&] { s_presentDepth--; });
-  if (s_presentDepth > 1) {
-    return oPresent(pSwapChain, SyncInterval, Flags);
+  static int s_entryCount = 0;
+  int entryNum = ++s_entryCount;
+  if (entryNum <= 10) {
+    HookLog("DetourPresent: ENTRY #%d (pSwapChain=%p, IsInWrapper=%d, "
+            "trampoline=%p)",
+            entryNum, pSwapChain, IsInWrapperPresent() ? 1 : 0,
+            oPresentTrampoline);
   }
 
-  // If called from CWrapDXGISwapChain::Present, the wrapper already handled
-  // overlay/capture. Just passthrough to the original Present.
+  if (!pSwapChain) {
+    return DXGI_ERROR_INVALID_CALL;
+  }
+
+  if (IsShuttingDown()) {
+    if (oPresentTrampoline && IsReadableMemory(pSwapChain, sizeof(void *))) {
+      return oPresentTrampoline(pSwapChain, SyncInterval, Flags);
+    }
+    return DXGI_ERROR_INVALID_CALL;
+  }
+
+  if (!IsReadableMemory(pSwapChain, sizeof(void *))) {
+    g_ShuttingDown.store(true);
+    return DXGI_ERROR_INVALID_CALL;
+  }
+  void **vtable = *(void ***)pSwapChain;
+  if (!vtable || !IsReadableMemory(vtable, 9 * sizeof(void *)) || !vtable[8]) {
+    g_ShuttingDown.store(true);
+    return DXGI_ERROR_INVALID_CALL;
+  }
+
+  if (!oPresentTrampoline) {
+    return pSwapChain->Present(SyncInterval, Flags);
+  }
+
+  void *pWrapper = nullptr;
+  if (SUCCEEDED(
+          pSwapChain->QueryInterface(IID_CWrapDXGISwapChain, &pWrapper))) {
+    ((IUnknown *)pWrapper)->Release();
+    static int s_wrappedPassCount = 0;
+    if (s_wrappedPassCount < 5) {
+      s_wrappedPassCount++;
+      HookLog("DetourPresent: Wrapped swapchain detected, passing through via "
+              "trampoline #%d",
+              s_wrappedPassCount);
+    }
+    return oPresentTrampoline(pSwapChain, SyncInterval, Flags);
+  }
+
   if (IsInWrapperPresent()) {
-    return oPresent(pSwapChain, SyncInterval, Flags);
+    static int s_inWrapperPassCount = 0;
+    if (s_inWrapperPassCount < 5) {
+      s_inWrapperPassCount++;
+      HookLog("DetourPresent: IsInWrapperPresent=true, passing through via "
+              "trampoline #%d",
+              s_inWrapperPassCount);
+    }
+    return oPresentTrampoline(pSwapChain, SyncInterval, Flags);
+  }
+
+  static int s_processCount = 0;
+  if (s_processCount < 5) {
+    s_processCount++;
+    HookLog("DetourPresent: Processing frame #%d (not wrapped, not in wrapper)",
+            s_processCount);
   }
 
   g_RenderWatchdog.Heartbeat();
 
   if (IsVulkanActive()) {
-    return oPresent(pSwapChain, SyncInterval, Flags);
+    return oPresentTrampoline(pSwapChain, SyncInterval, Flags);
   }
 
   bool isFirstHook = !g_SharedState.inPresentHook.exchange(true);
@@ -219,17 +311,16 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
   g_SharedState.presentCallCount.fetch_add(1, std::memory_order_relaxed);
 
   if (g_SharedState.deviceRemovedFatal.load()) {
-    return oPresent(pSwapChain, SyncInterval, Flags);
+    return oPresentTrampoline(pSwapChain, SyncInterval, Flags);
   }
 
   if (g_SharedState.swapchainInvalid.load(std::memory_order_acquire)) {
-    return oPresent(pSwapChain, SyncInterval, Flags);
+    return oPresentTrampoline(pSwapChain, SyncInterval, Flags);
   }
 
   APIType api = DetectAPIType(pSwapChain);
   g_SharedState.frameCount.fetch_add(1, std::memory_order_relaxed);
 
-  // Update Metrics
   static int64_t qpcFreq = 0;
   if (qpcFreq == 0) {
     LARGE_INTEGER f;
@@ -250,11 +341,12 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
     }
   }
 
-  // Process frame for pre-existing (non-wrapped) swapchains
-  if (api == APIType::D3D12) {
-    HandleDX12ProcessFrame(pSwapChain, true);
-  } else if (api == APIType::D3D11) {
-    HandleDX11ProcessFrame(pSwapChain, true);
+  if (!IsShuttingDown() && oPresentTrampoline) {
+    if (api == APIType::D3D12) {
+      HandleDX12ProcessFrame(pSwapChain, true);
+    } else if (api == APIType::D3D11) {
+      HandleDX11ProcessFrame(pSwapChain, true);
+    }
   }
 
   VSyncOverride vsync = GetVSyncOverride();
@@ -263,7 +355,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
   if (SyncInterval > 0)
     Flags &= ~512;
 
-  HRESULT hr = oPresent(pSwapChain, SyncInterval, Flags);
+  HRESULT hr = oPresentTrampoline(pSwapChain, SyncInterval, Flags);
 
   if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
     if (!g_SharedState.deviceRemovedFatal.exchange(true)) {
@@ -277,23 +369,58 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
 HRESULT STDMETHODCALLTYPE
 DetourPresent1(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT Flags,
                const DXGI_PRESENT_PARAMETERS *pPresentParameters) {
-  static thread_local int s_present1Depth = 0;
-  s_present1Depth++;
-  auto depthGuard = ::ce::make_scope_guard([&] { s_present1Depth--; });
-  if (s_present1Depth > 1) {
-    return oPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+  if (!pSwapChain) {
+    return DXGI_ERROR_INVALID_CALL;
   }
 
-  // If called from CWrapDXGISwapChain::Present1, the wrapper already handled
-  // overlay/capture. Just passthrough to the original Present1.
+  if (IsShuttingDown()) {
+    if (oPresent1Trampoline && IsReadableMemory(pSwapChain, sizeof(void *))) {
+      return oPresent1Trampoline(pSwapChain, SyncInterval, Flags,
+                                 pPresentParameters);
+    }
+    return DXGI_ERROR_INVALID_CALL;
+  }
+
+  if (!IsReadableMemory(pSwapChain, sizeof(void *))) {
+    g_ShuttingDown.store(true);
+    return DXGI_ERROR_INVALID_CALL;
+  }
+  void **vtable = *(void ***)pSwapChain;
+  if (!vtable || !IsReadableMemory(vtable, 23 * sizeof(void *)) ||
+      !vtable[22]) {
+    g_ShuttingDown.store(true);
+    return DXGI_ERROR_INVALID_CALL;
+  }
+
+  if (!oPresent1Trampoline) {
+    IDXGISwapChain1 *sc1 = nullptr;
+    if (SUCCEEDED(pSwapChain->QueryInterface(__uuidof(IDXGISwapChain1),
+                                             (void **)&sc1))) {
+      HRESULT hr = sc1->Present1(SyncInterval, Flags, pPresentParameters);
+      sc1->Release();
+      return hr;
+    }
+    return pSwapChain->Present(SyncInterval, Flags);
+  }
+
+  void *pWrapper = nullptr;
+  if (SUCCEEDED(
+          pSwapChain->QueryInterface(IID_CWrapDXGISwapChain, &pWrapper))) {
+    ((IUnknown *)pWrapper)->Release();
+    return oPresent1Trampoline(pSwapChain, SyncInterval, Flags,
+                               pPresentParameters);
+  }
+
   if (IsInWrapperPresent()) {
-    return oPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+    return oPresent1Trampoline(pSwapChain, SyncInterval, Flags,
+                               pPresentParameters);
   }
 
   g_RenderWatchdog.Heartbeat();
 
   if (IsVulkanActive()) {
-    return oPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+    return oPresent1Trampoline(pSwapChain, SyncInterval, Flags,
+                               pPresentParameters);
   }
 
   bool isFirstHook = !g_SharedState.inPresentHook.exchange(true);
@@ -304,13 +431,13 @@ DetourPresent1(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT Flags,
 
   if (g_SharedState.deviceRemovedFatal.load() ||
       g_SharedState.swapchainInvalid.load(std::memory_order_acquire)) {
-    return oPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+    return oPresent1Trampoline(pSwapChain, SyncInterval, Flags,
+                               pPresentParameters);
   }
 
   APIType api = DetectAPIType(pSwapChain);
   g_SharedState.frameCount.fetch_add(1, std::memory_order_relaxed);
 
-  // Process frame for pre-existing (non-wrapped) swapchains
   if (api == APIType::D3D12) {
     HandleDX12ProcessFrame(pSwapChain, true);
   } else if (api == APIType::D3D11) {
@@ -323,7 +450,8 @@ DetourPresent1(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT Flags,
   if (SyncInterval > 0)
     Flags &= ~512;
 
-  HRESULT hr = oPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+  HRESULT hr =
+      oPresent1Trampoline(pSwapChain, SyncInterval, Flags, pPresentParameters);
 
   if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
     if (!g_SharedState.deviceRemovedFatal.exchange(true)) {
@@ -535,85 +663,68 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers1(
 }
 
 bool InstallHooks(IDXGISwapChain *pSwapChain, bool presentOnly) {
+  // NOTE: This function should only be called for DX11/DX10 games.
+  // DX12 games use wrapper-based Present interception (CWrapDXGISwapChain).
+  // Calling this for DX12 can cause conflicts and stack overflow crashes
+  // due to two competing Present interception mechanisms.
+  // See: dx12_hook.cpp for the wrapper-based approach.
+
   if (!pSwapChain)
     return false;
 
-  // EXTREME DEBUG: Log InstallHooks calls
   static std::atomic<int> s_installCount{0};
   int count = s_installCount.fetch_add(1);
   HookLog("DXGIShared::InstallHooks CALLED #%d (swapchain=%p, presentOnly=%d)",
-          count, pSwapChain, presentOnly);
+          count, pSwapChain, presentOnly ? 1 : 0);
 
-  // CRITICAL FIX: Skip installing hooks when Vulkan is active
-  // Vulkan games using WSI-to-DXGI mapping can freeze if we hook their
-  // swapchains
-  if (IsVulkanActive()) {
-    static bool s_loggedVulkanSkip = false;
-    if (!s_loggedVulkanSkip) {
-      HookLog("DXGIShared::InstallHooks - Vulkan active, SKIPPING hook "
-              "installation");
-      s_loggedVulkanSkip = true;
-    }
-    return true; // Return success to prevent fallback attempts
-  }
-
-  void **vtable = *(void ***)pSwapChain;
-  s_hookedVTable = vtable;
-  HookLog("DXGIShared::InstallHooks - vtable=%p, Present=%p, DetourPresent=%p",
-          vtable, vtable[8], (void *)DetourPresent);
-  bool anyInstalled = false;
-
-  // Check if this is our own Wrapper
-  IUnknown *pWrapper = nullptr;
-  // GUID matching wrapper_base.h: {A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
-  static const GUID IID_CWrapDXGISwapChainLocal = {
-      0xa1b2c3d4,
-      0xe5f6,
-      0x7890,
-      {0xab, 0xcd, 0xef, 0x12, 0x34, 0x56, 0x78, 0x90}};
-  if (SUCCEEDED(pSwapChain->QueryInterface(IID_CWrapDXGISwapChainLocal,
-                                           (void **)&pWrapper))) {
-    pWrapper->Release();
+  if (s_hookedVTable) {
+    HookLog("DXGIShared::InstallHooks: Hooks already installed on vtable %p",
+            s_hookedVTable);
     return true;
   }
 
-  // CRITICAL: Always install Present hooks - they send heartbeats for freeze
-  // watchdog even when FSR FG is active (they early-return after heartbeat)
-  // Present (8)
-  if (vtable[8] != (void *)DetourPresent) {
-    VTableHook::Create(&vtable[8], (LPVOID)DetourPresent, (LPVOID *)&oPresent);
-    anyInstalled = true;
+  void **vtable = *(void ***)pSwapChain;
+  if (!vtable) {
+    HookLog("DXGIShared::InstallHooks: Invalid vtable");
+    return false;
   }
 
-  // Present1 (22)
-  if (vtable[22] != (void *)DetourPresent1) {
-    VTableHook::Create(&vtable[22], (LPVOID)DetourPresent1,
-                       (LPVOID *)&oPresent1);
-    anyInstalled = true;
+  DWORD oldProtect;
+  if (!VirtualProtect(vtable, 40 * sizeof(void *), PAGE_READWRITE,
+                      &oldProtect)) {
+    HookLog("DXGIShared::InstallHooks: VirtualProtect failed");
+    return false;
   }
 
-  // ResizeBuffers hooks - skip if presentOnly (for Strange Brigade
-  // compatibility)
+  s_hookedVTable = vtable;
+
+  oPresent = (PFN_Present)vtable[8];
+  vtable[8] = (void *)DetourPresent;
+  HookLog("DXGIShared: Hooked Present at vtable[8] (original=%p, detour=%p)",
+          oPresent, DetourPresent);
+
+  oPresent1 = (PFN_Present1)vtable[22];
+  vtable[22] = (void *)DetourPresent1;
+  HookLog("DXGIShared: Hooked Present1 at vtable[22] (original=%p, detour=%p)",
+          oPresent1, DetourPresent1);
+
   if (!presentOnly) {
-    // ResizeBuffers (13)
-    if (vtable[13] != (void *)DetourResizeBuffers) {
-      VTableHook::Create(&vtable[13], (LPVOID)DetourResizeBuffers,
-                         (LPVOID *)&oResizeBuffers);
-      anyInstalled = true;
-    }
+    oResizeBuffers = (PFN_ResizeBuffers)vtable[13];
+    vtable[13] = (void *)DetourResizeBuffers;
+    HookLog("DXGIShared: Hooked ResizeBuffers at vtable[13] (original=%p, "
+            "detour=%p)",
+            oResizeBuffers, DetourResizeBuffers);
 
-    // ResizeBuffers1 (39) - NOT installed when FSR FG active
-    if (vtable[39] != (void *)DetourResizeBuffers1) {
-      VTableHook::Create(&vtable[39], (LPVOID)DetourResizeBuffers1,
-                         (LPVOID *)&oResizeBuffers1);
-      anyInstalled = true;
-    }
-  } else {
-    HookLog("DXGIShared::InstallHooks - presentOnly=true, skipping "
-            "ResizeBuffers hooks");
+    oResizeBuffers1 = (PFN_ResizeBuffers1)vtable[39];
+    vtable[39] = (void *)DetourResizeBuffers1;
+    HookLog("DXGIShared: Hooked ResizeBuffers1 at vtable[39] (original=%p, "
+            "detour=%p)",
+            oResizeBuffers1, DetourResizeBuffers1);
   }
 
-  return anyInstalled;
+  VirtualProtect(vtable, 40 * sizeof(void *), oldProtect, &oldProtect);
+  HookLog("DXGIShared::InstallHooks: All vtable hooks installed successfully");
+  return true;
 }
 
 // Lazy hook installation - installs hooks on first Present if they were
@@ -639,9 +750,9 @@ static void InstallHooksIfPending(IDXGISwapChain *pSwapChain) {
   // Check if this is the pending swapchain
   if (pSwapChain == s_PendingSwapChainForLazyHook) {
     HookLog("DXGIShared: Installing hooks lazily on first Present");
-    // CRITICAL FIX: Don't install ResizeBuffers hooks even lazily for Strange
-    // Brigade Installing them during runtime causes stack overflow crashes
-    // InstallHooks(pSwapChain);
+    // CRITICAL: Use presentOnly=true to only hook Present/Present1
+    // ResizeBuffers hooks can cause stack overflow crashes with some overlays
+    InstallHooks(pSwapChain, true);
     s_LazyHooksInstalled.store(true, std::memory_order_release);
     if (s_PendingSwapChainForLazyHook) {
       s_PendingSwapChainForLazyHook->Release();
@@ -654,12 +765,59 @@ void Init() {
   g_SharedState.lastSwapchainCreation = std::chrono::steady_clock::now();
 }
 
+bool InstallPresentInlineHooks(IDXGISwapChain *pSwapChain) {
+  if (!pSwapChain)
+    return false;
+
+  void *presentAddr = GetPresentAddress(pSwapChain);
+  void *present1Addr = GetPresent1Address(pSwapChain);
+
+  if (!presentAddr) {
+    HookLog("InstallPresentInlineHooks: Failed to get Present address");
+    return false;
+  }
+
+  static bool s_inlineHooksInstalled = false;
+  if (s_inlineHooksInstalled) {
+    HookLog("InstallPresentInlineHooks: Inline hooks already installed");
+    return true;
+  }
+
+  void *presentTrampoline = nullptr;
+  if (!InlineHook::Install(presentAddr, (void *)DetourPresent,
+                           &presentTrampoline)) {
+    HookLog("InstallPresentInlineHooks: Failed to install Present inline hook");
+    return false;
+  }
+  oPresentTrampoline = (PFN_Present)presentTrampoline;
+  oPresent = oPresentTrampoline;
+  HookLog("InstallPresentInlineHooks: Present inline hook installed (addr=%p, "
+          "trampoline=%p)",
+          presentAddr, presentTrampoline);
+
+  if (present1Addr) {
+    void *present1Trampoline = nullptr;
+    if (InlineHook::Install(present1Addr, (void *)DetourPresent1,
+                            &present1Trampoline)) {
+      oPresent1Trampoline = (PFN_Present1)present1Trampoline;
+      oPresent1 = oPresent1Trampoline;
+      HookLog("InstallPresentInlineHooks: Present1 inline hook installed "
+              "(addr=%p, trampoline=%p)",
+              present1Addr, present1Trampoline);
+    }
+  }
+
+  s_inlineHooksInstalled = true;
+  return true;
+}
+
 void RemovePresentHooks() {
+  InlineHook::RemoveAll();
+
   if (!s_hookedVTable || !oPresent)
     return;
 
   DWORD oldProtect;
-  // Restore Present (slot 8)
   if (s_hookedVTable[8] == (void *)DetourPresent) {
     VirtualProtect(&s_hookedVTable[8], sizeof(void *), PAGE_READWRITE,
                    &oldProtect);
@@ -668,7 +826,6 @@ void RemovePresentHooks() {
     HookLog("DXGIShared: Removed Present vtable hook");
   }
 
-  // Restore Present1 (slot 22)
   if (oPresent1 && s_hookedVTable[22] == (void *)DetourPresent1) {
     VirtualProtect(&s_hookedVTable[22], sizeof(void *), PAGE_READWRITE,
                    &oldProtect);
@@ -679,20 +836,69 @@ void RemovePresentHooks() {
   }
 }
 
+void RemoveSwapchainVTableHooks() {
+  InlineHook::RemoveAll();
+
+  if (!s_hookedVTable || !oPresent)
+    return;
+
+  DWORD oldProtect;
+
+  if (s_hookedVTable[8] == (void *)DetourPresent) {
+    VirtualProtect(&s_hookedVTable[8], sizeof(void *), PAGE_READWRITE,
+                   &oldProtect);
+    s_hookedVTable[8] = (void *)oPresent;
+    VirtualProtect(&s_hookedVTable[8], sizeof(void *), oldProtect, &oldProtect);
+    HookLog("DXGIShared: Removed Present vtable hook");
+  }
+
+  if (oPresent1 && s_hookedVTable[22] == (void *)DetourPresent1) {
+    VirtualProtect(&s_hookedVTable[22], sizeof(void *), PAGE_READWRITE,
+                   &oldProtect);
+    s_hookedVTable[22] = (void *)oPresent1;
+    VirtualProtect(&s_hookedVTable[22], sizeof(void *), oldProtect,
+                   &oldProtect);
+    HookLog("DXGIShared: Removed Present1 vtable hook");
+  }
+
+  if (oResizeBuffers && s_hookedVTable[13] == (void *)DetourResizeBuffers) {
+    VirtualProtect(&s_hookedVTable[13], sizeof(void *), PAGE_READWRITE,
+                   &oldProtect);
+    s_hookedVTable[13] = (void *)oResizeBuffers;
+    VirtualProtect(&s_hookedVTable[13], sizeof(void *), oldProtect,
+                   &oldProtect);
+    HookLog("DXGIShared: Removed ResizeBuffers vtable hook");
+  }
+
+  if (oResizeBuffers1 && s_hookedVTable[39] == (void *)DetourResizeBuffers1) {
+    VirtualProtect(&s_hookedVTable[39], sizeof(void *), PAGE_READWRITE,
+                   &oldProtect);
+    s_hookedVTable[39] = (void *)oResizeBuffers1;
+    VirtualProtect(&s_hookedVTable[39], sizeof(void *), oldProtect,
+                   &oldProtect);
+    HookLog("DXGIShared: Removed ResizeBuffers1 vtable hook");
+  }
+
+  s_hookedVTable = nullptr;
+  HookLog("DXGIShared: All swapchain vtable hooks removed");
+}
+
 HRESULT CallOriginalPresent(IDXGISwapChain *pSwapChain, UINT SyncInterval,
                             UINT Flags) {
+  if (oPresentTrampoline)
+    return oPresentTrampoline(pSwapChain, SyncInterval, Flags);
   if (oPresent)
     return oPresent(pSwapChain, SyncInterval, Flags);
-  // Fallback: call through vtable (should not happen in practice)
   return pSwapChain->Present(SyncInterval, Flags);
 }
 
 HRESULT CallOriginalPresent1(IDXGISwapChain *pSwapChain, UINT SyncInterval,
                              UINT Flags,
                              const DXGI_PRESENT_PARAMETERS *pParams) {
+  if (oPresent1Trampoline)
+    return oPresent1Trampoline(pSwapChain, SyncInterval, Flags, pParams);
   if (oPresent1)
     return oPresent1(pSwapChain, SyncInterval, Flags, pParams);
-  // Fallback: call through vtable
   IDXGISwapChain1 *sc1 = nullptr;
   if (SUCCEEDED(pSwapChain->QueryInterface(__uuidof(IDXGISwapChain1),
                                            (void **)&sc1))) {

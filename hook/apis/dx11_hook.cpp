@@ -912,8 +912,6 @@ static void STDMETHODCALLTYPE DetourDrawIndexedInstanced10(
 static void InstallVTableHooks(ID3D11Device *pDevice,
                                ID3D11DeviceContext *pContext,
                                IDXGISwapChain *pSwapChain) {
-  DXGIShared::InstallHooks(pSwapChain);
-
   // Hook D3D11 Device methods
   if (pDevice) {
     void **pDeviceVTable = *(void ***)pDevice;
@@ -1623,10 +1621,29 @@ static void DrawDX10Overlay(IDXGISwapChain *pSwapChain, HWND currentHwnd,
   return;
 }
 
+static bool IsReadableMemoryDX11(const void *ptr, size_t size) {
+  if (!ptr)
+    return false;
+  MEMORY_BASIC_INFORMATION mbi;
+  if (VirtualQuery(ptr, &mbi, sizeof(mbi)) == 0)
+    return false;
+  if (mbi.State != MEM_COMMIT)
+    return false;
+  if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))
+    return false;
+  return (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ |
+                         PAGE_EXECUTE_READWRITE | PAGE_WRITECOPY)) != 0;
+}
+
 void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
   // CRITICAL: Skip all rendering during shutdown to prevent crashes
   // when D3D device is destroyed while we're trying to use it
   if (g_ShuttingDown.load()) {
+    return;
+  }
+
+  // CRITICAL: Null pointer check
+  if (!pSwapChain) {
     return;
   }
 
@@ -1635,6 +1652,14 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
   static int frameCount = 0;
 
   frameCount++;
+
+  // SAFETY: Verify the swapchain pointer is valid before accessing it
+  if (!IsReadableMemoryDX11(pSwapChain, sizeof(void *))) {
+    EarlyLog("DX11: Swapchain memory not readable at frame %d — shutting down",
+             frameCount);
+    g_ShuttingDown.store(true);
+    return;
+  }
 
   DXGI_SWAP_CHAIN_DESC desc;
   if (FAILED(pSwapChain->GetDesc(&desc))) {
@@ -2760,6 +2785,7 @@ void DX11Hook::Init() {
           &sc, &dev, &flOut, &ctx);
       if (SUCCEEDED(hr) && sc) {
         InstallVTableHooks(dev, ctx, sc);
+        DXGIShared::InstallHooks(sc, true);
         HookLog("DX11: Temp D3D11 swapchain created to install vtable hooks");
       }
 

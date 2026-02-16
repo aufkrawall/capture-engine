@@ -484,6 +484,7 @@ void EnsureDX12Hook() {
 // Forward declarations
 static void InstallGlobalVTableHooks();
 static void HookSwapchainVTableViaTempSwapchain(bool presentOnly = false);
+static void FindAndWrapPreExistingSwapchains();
 
 void DX12Hook::Init() {
   EnsureDX12Hook(); // Self-init check
@@ -525,12 +526,33 @@ void DX12Hook::Init() {
   // causes deadlocks with Steam overlay + Streamline.
   InstallGlobalVTableHooks();
 
-  HookLog("DX12Hook: Initialized (wrapper + global vtable hooks)");
-  HookLog("DX12: NOTE - Watchdog disabled to avoid false positives with "
-          "pre-existing swapchains");
+  // Install inline hooks on Present/Present1 via temp swapchain.
+  // Inline hooks patch the function code in memory and create a trampoline.
+  // Calling the trampoline bypasses the hook entirely - no re-entry possible.
+  // This works for both pre-existing swapchains AND wrapped swapchains.
+  HookSwapchainVTableViaTempSwapchain();
+
+  HookLog("DX12Hook: Initialized (factory hooks + inline Present hooks)");
+
+  FindAndWrapPreExistingSwapchains();
 }
 
-// Original function pointers for global factory hooks
+static void FindAndWrapPreExistingSwapchains() {
+  // Pre-existing swapchains (created before injection) are now handled via
+  // inline hooks on Present/Present1. The inline hook approach:
+  // 1. Patches the function code in memory (not the vtable)
+  // 2. Creates a trampoline that executes the original instructions
+  // 3. Calling the trampoline GUARANTEED bypasses the hook - no re-entry
+  //
+  // This works for both pre-existing swapchains AND wrapped swapchains.
+  // For wrapped swapchains, DetourPresent detects the wrapper and passes
+  // through. For pre-existing swapchains, DetourPresent processes the frame
+  // normally.
+  HookLog(
+      "DX12: Pre-existing swapchain support enabled via inline Present hooks");
+}
+
+// Function pointers for global factory vtable hooks
 typedef HRESULT(STDMETHODCALLTYPE *PFN_CreateSwapChain)(IDXGIFactory *,
                                                         IUnknown *,
                                                         DXGI_SWAP_CHAIN_DESC *,
@@ -538,6 +560,7 @@ typedef HRESULT(STDMETHODCALLTYPE *PFN_CreateSwapChain)(IDXGIFactory *,
 typedef HRESULT(STDMETHODCALLTYPE *PFN_CreateSwapChainForHwnd)(
     IDXGIFactory2 *, IUnknown *, HWND, const DXGI_SWAP_CHAIN_DESC1 *,
     const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *, IDXGIOutput *, IDXGISwapChain1 **);
+
 static PFN_CreateSwapChain oCreateSwapChainGlobal = nullptr;
 static PFN_CreateSwapChainForHwnd oCreateSwapChainForHwndGlobal = nullptr;
 
@@ -545,33 +568,55 @@ static PFN_CreateSwapChainForHwnd oCreateSwapChainForHwndGlobal = nullptr;
 static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(
     IDXGIFactory *pThis, IUnknown *pDevice, DXGI_SWAP_CHAIN_DESC *pDesc,
     IDXGISwapChain **ppSwapChain) {
-  HookLog("DX12: DetourCreateSwapChainGlobal called");
 
+  // CRITICAL: Pass through during shutdown
+  if (g_ShuttingDown.load()) {
+    if (oCreateSwapChainGlobal)
+      return oCreateSwapChainGlobal(pThis, pDevice, pDesc, ppSwapChain);
+    return E_FAIL;
+  }
+
+  HookLog("DetourCreateSwapChainGlobal: CALLED (factory=%p, device=%p)", pThis,
+          pDevice);
+
+  // Call original first
   HRESULT hr = oCreateSwapChainGlobal(pThis, pDevice, pDesc, ppSwapChain);
 
   if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
-    // Wrap the swapchain with CWrapDXGISwapChain for clean Present
-    // interception. VTable hooking of Present causes infinite re-entry because
-    // DXGI's own Present dispatches through the vtable internally.
-    if (!g_CreatingTempSwapchain.load(std::memory_order_acquire)) {
-      auto *wrapper = new CWrapDXGISwapChain(*ppSwapChain, pDevice);
-      HookLog("DX12: Wrapped swapchain %p -> wrapper %p", *ppSwapChain,
-              wrapper);
-      *ppSwapChain = wrapper;
+    // Log swapchain details
+    if (pDesc) {
+      HookLog("DetourCreateSwapChainGlobal: Creating swapchain %ux%u",
+              pDesc->BufferDesc.Width, pDesc->BufferDesc.Height);
     }
 
-    // Hook the command queue VTable AFTER swapchain creation completes.
-    // For DX12, pDevice is actually the command queue passed to
-    // CreateSwapChain. Skip during temp swapchain creation to avoid capturing a
-    // transient queue.
-    if (!g_CreatingTempSwapchain.load(std::memory_order_acquire)) {
-      ID3D12CommandQueue *queue = nullptr;
-      if (pDevice && SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&queue)))) {
-        HookLog("DX12: DetourCreateSwapChainGlobal - hooking queue %p", queue);
-        DX12_SetCommandQueue(queue);
-        DX12_HookQueueVTable(queue);
-        queue->Release();
-      }
+    // NOTE: We don't install global Present vtable hooks for DX12.
+    // The wrapper (CWrapDXGISwapChain) handles all Present interception.
+    // This avoids conflicts between vtable hooks and wrapper interception
+    // that caused stack overflow crashes.
+
+    // CRITICAL: Check if this swapchain is already wrapped
+    // This prevents double-wrapping which causes infinite Present recursion
+    void *pExistingWrapper = nullptr;
+    if (SUCCEEDED(
+            (*ppSwapChain)
+                ->QueryInterface(IID_CWrapDXGISwapChain, &pExistingWrapper))) {
+      ((IUnknown *)pExistingWrapper)->Release();
+      HookLog("DetourCreateSwapChainGlobal: Swapchain already wrapped, "
+              "skipping double-wrap");
+      return hr;
+    }
+
+    // Wrap the swapchain with CWrapDXGISwapChain
+    HookLog("DetourCreateSwapChainGlobal: Wrapping swapchain %p", *ppSwapChain);
+    auto *wrapper = new CWrapDXGISwapChain(*ppSwapChain, pDevice);
+    *ppSwapChain = wrapper;
+    HookLog("DetourCreateSwapChainGlobal: Swapchain wrapped successfully");
+
+    // For DX12, also hook the command queue
+    ID3D12CommandQueue *pQueue = nullptr;
+    if (pDevice && SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&pQueue)))) {
+      DX12_HookQueueVTable(pQueue);
+      pQueue->Release();
     }
   }
 
@@ -584,34 +629,55 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(
     const DXGI_SWAP_CHAIN_DESC1 *pDesc,
     const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFDesc, IDXGIOutput *pOut,
     IDXGISwapChain1 **ppSC) {
-  HookLog("DX12: DetourCreateSwapChainForHwndGlobal called");
+
+  // CRITICAL: Pass through during shutdown
+  if (g_ShuttingDown.load()) {
+    if (oCreateSwapChainForHwndGlobal)
+      return oCreateSwapChainForHwndGlobal(pThis, pDevice, hWnd, pDesc, pFDesc,
+                                           pOut, ppSC);
+    return E_FAIL;
+  }
+
+  HookLog("DetourCreateSwapChainForHwndGlobal: CALLED (factory=%p, device=%p, "
+          "hwnd=%p)",
+          pThis, pDevice, hWnd);
 
   HRESULT hr = oCreateSwapChainForHwndGlobal(pThis, pDevice, hWnd, pDesc,
                                              pFDesc, pOut, ppSC);
 
   if (SUCCEEDED(hr) && ppSC && *ppSC) {
-    // Wrap the swapchain with CWrapDXGISwapChain for clean Present
-    // interception. VTable hooking of Present causes infinite re-entry because
-    // DXGI's own Present dispatches through the vtable internally.
-    if (!g_CreatingTempSwapchain.load(std::memory_order_acquire)) {
-      auto *wrapper = new CWrapDXGISwapChain(*ppSC, pDevice);
-      HookLog("DX12: Wrapped swapchain %p -> wrapper %p", *ppSC, wrapper);
-      *ppSC = (IDXGISwapChain1 *)wrapper;
+    // Log swapchain details
+    if (pDesc) {
+      HookLog("DetourCreateSwapChainForHwndGlobal: Creating swapchain %ux%u",
+              pDesc->Width, pDesc->Height);
     }
 
-    // Hook the command queue VTable AFTER swapchain creation completes.
-    // For DX12, pDevice is actually the command queue passed to
-    // CreateSwapChain. Skip during temp swapchain creation to avoid capturing a
-    // transient queue.
-    if (!g_CreatingTempSwapchain.load(std::memory_order_acquire)) {
-      ID3D12CommandQueue *queue = nullptr;
-      if (pDevice && SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&queue)))) {
-        HookLog("DX12: DetourCreateSwapChainForHwndGlobal - hooking queue %p",
-                queue);
-        DX12_SetCommandQueue(queue);
-        DX12_HookQueueVTable(queue);
-        queue->Release();
-      }
+    // NOTE: We don't install global Present vtable hooks for DX12.
+    // The wrapper (CWrapDXGISwapChain) handles all Present interception.
+    // This avoids conflicts between vtable hooks and wrapper interception
+    // that caused stack overflow crashes.
+
+    // CRITICAL: Check if this swapchain is already wrapped
+    // This prevents double-wrapping which causes infinite Present recursion
+    void *pExistingWrapper = nullptr;
+    if (SUCCEEDED((*ppSC)->QueryInterface(IID_CWrapDXGISwapChain,
+                                          &pExistingWrapper))) {
+      ((IUnknown *)pExistingWrapper)->Release();
+      HookLog("DetourCreateSwapChainForHwndGlobal: Swapchain already wrapped, "
+              "skipping double-wrap");
+      return hr;
+    }
+
+    HookLog("DetourCreateSwapChainForHwndGlobal: Wrapping swapchain %p", *ppSC);
+    auto *wrapper = new CWrapDXGISwapChain(*ppSC, pDevice);
+    *ppSC = (IDXGISwapChain1 *)wrapper;
+    HookLog(
+        "DetourCreateSwapChainForHwndGlobal: Swapchain wrapped successfully");
+
+    ID3D12CommandQueue *pQueue = nullptr;
+    if (pDevice && SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&pQueue)))) {
+      DX12_HookQueueVTable(pQueue);
+      pQueue->Release();
     }
   }
 
@@ -623,25 +689,17 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(
 static void InstallGlobalVTableHooks() {
   HookLog("DX12: InstallGlobalVTableHooks called");
 
-  // CRITICAL: Always install factory hooks - even with FSR FG active
-  // The Present hooks will send heartbeats for the watchdog and passthrough for
-  // FSR FG Only skip ResizeBuffers hooks when FSR FG is detected (see
-  // DXGIShared::InstallHooks)
-  HMODULE hFSRBackend = GetModuleHandleW(L"ffx_backend_dx12_x64.dll");
-  HMODULE hFSRFG = GetModuleHandleW(L"ffx_frameinterpolation_x64.dll");
-  if (hFSRBackend || hFSRFG) {
-    HookLog("DX12: FSR FG DLLs detected, installing factory hooks for watchdog "
-            "heartbeats");
-  }
+  // CRITICAL: Install global factory vtable hooks to catch swapchain creation
+  // even for factories created before our IAT hooks were installed.
+  // This ensures ALL swapchains get wrapped regardless of timing.
 
-  // Get the DXGI module
   HMODULE hDXGI = GetModuleHandleA("dxgi.dll");
   if (!hDXGI) {
-    HookLog("DX12: DXGI module not loaded");
+    HookLog("DX12: DXGI module not loaded, skipping factory vtable hooks");
     return;
   }
 
-  // Get CreateDXGIFactory1 export
+  // Get CreateDXGIFactory1 export to create a temp factory
   typedef HRESULT(WINAPI * PFN_CreateDXGIFactory1)(REFIID, void **);
   PFN_CreateDXGIFactory1 pCreateFactory =
       (PFN_CreateDXGIFactory1)GetProcAddress(hDXGI, "CreateDXGIFactory1");
@@ -650,16 +708,15 @@ static void InstallGlobalVTableHooks() {
     return;
   }
 
-  // Create a factory to get its vtable
+  // Create a temp factory to get its vtable
   IDXGIFactory2 *pFactory = nullptr;
   HRESULT hr = pCreateFactory(IID_PPV_ARGS(&pFactory));
   if (FAILED(hr) || !pFactory) {
-    HookLog("DX12: Failed to create factory for vtable extraction hr=0x%08X",
-            hr);
+    HookLog("DX12: Failed to create temp factory for vtable extraction");
     return;
   }
 
-  // Get the vtable
+  // Get the vtable - ALL IDXGIFactory instances share this vtable
   void **vtable = *(void ***)pFactory;
   HookLog("DX12: Factory vtable at %p", vtable);
 
@@ -676,21 +733,69 @@ static void InstallGlobalVTableHooks() {
     HookLog("DX12: Hooked global CreateSwapChainForHwnd at vtable[15]");
   }
 
-  // Release the factory - the vtable hooks persist
   pFactory->Release();
 
-  HookLog("DX12: Global vtable hooks installed");
-
-  // Install Present/ResizeBuffers hooks via temp swapchain VTable hooking.
-  // All DX12 swapchains share the same VTable in DXGI, so hooking one hooks all
-  // (including pre-existing swapchains created before injection).
-  HookSwapchainVTableViaTempSwapchain(true);
+  HookLog("DX12: Global factory vtable hooks installed");
 }
 
-// Hook swapchain vtable by creating a temp swapchain and hooking its vtable
-// This is the Special K approach - all swapchains share the same vtable
-// presentOnly: if true, only install Present hooks (defer ResizeBuffers for
-// Strange Brigade)
+void RemoveGlobalVTableHooks() {
+  if (!oCreateSwapChainGlobal && !oCreateSwapChainForHwndGlobal) {
+    return;
+  }
+
+  HMODULE hDXGI = GetModuleHandleA("dxgi.dll");
+  if (!hDXGI) {
+    HookLog("DX12: DXGI module not loaded, skipping vtable hook removal");
+    return;
+  }
+
+  typedef HRESULT(WINAPI * PFN_CreateDXGIFactory1)(REFIID, void **);
+  PFN_CreateDXGIFactory1 pCreateFactory =
+      (PFN_CreateDXGIFactory1)GetProcAddress(hDXGI, "CreateDXGIFactory1");
+  if (!pCreateFactory) {
+    HookLog("DX12: CreateDXGIFactory1 not found for vtable hook removal");
+    return;
+  }
+
+  IDXGIFactory2 *pFactory = nullptr;
+  HRESULT hr = pCreateFactory(IID_PPV_ARGS(&pFactory));
+  if (FAILED(hr) || !pFactory) {
+    HookLog("DX12: Failed to create factory for vtable hook removal");
+    return;
+  }
+
+  void **vtable = *(void ***)pFactory;
+
+  if (oCreateSwapChainGlobal) {
+    VTableHook::Remove(&vtable[10], (void *)oCreateSwapChainGlobal);
+    HookLog("DX12: Removed CreateSwapChain vtable hook");
+    oCreateSwapChainGlobal = nullptr;
+  }
+
+  if (oCreateSwapChainForHwndGlobal) {
+    VTableHook::Remove(&vtable[15], (void *)oCreateSwapChainForHwndGlobal);
+    HookLog("DX12: Removed CreateSwapChainForHwnd vtable hook");
+    oCreateSwapChainForHwndGlobal = nullptr;
+  }
+
+  pFactory->Release();
+  HookLog("DX12: Global factory vtable hooks removed");
+}
+
+// Install Present vtable hooks for pre-existing swapchains (late injection)
+// DISABLED: Global Present vtable hooks cause shutdown crashes
+// Factory wrapping is now the primary mechanism for intercepting swapchains
+void DX12_InstallPresentHooksForSwapchain(IDXGISwapChain *pSwapChain) {
+  // DISABLED: Present vtable hooks are disabled to prevent crashes
+  // Pre-existing swapchains (created before injection) won't have overlay
+  (void)pSwapChain;
+}
+
+// Install inline hooks on Present/Present1 via temp swapchain creation.
+// Inline hooks patch the function code in memory, creating a trampoline that
+// bypasses the hook entirely. This solves the re-entry problem with vtable
+// hooks. presentOnly: if true, only install Present hooks (defer ResizeBuffers
+// for Strange Brigade)
 static void HookSwapchainVTableViaTempSwapchain(bool presentOnly) {
   HMODULE hDXGI = GetModuleHandleA("dxgi.dll");
   HMODULE hD3D12 = GetModuleHandleA("d3d12.dll");
@@ -751,21 +856,34 @@ static void HookSwapchainVTableViaTempSwapchain(bool presentOnly) {
   scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
 
   IDXGISwapChain1 *pSwapChain = nullptr;
-  g_CreatingTempSwapchain.store(true, std::memory_order_release);
-  HRESULT hr = pFactory->CreateSwapChainForHwnd(pQueue, hwnd, &scd, nullptr,
-                                                nullptr, &pSwapChain);
-  g_CreatingTempSwapchain.store(false, std::memory_order_release);
+  HRESULT hr = E_FAIL;
+
+  // CRITICAL: Call the ORIGINAL CreateSwapChainForHwnd to get an unwrapped
+  // swapchain We must use oCreateSwapChainForHwndGlobal directly to bypass our
+  // wrapper If the original is not available, skip vtable hook installation
+  if (oCreateSwapChainForHwndGlobal) {
+    // Call original directly - bypasses our wrapper
+    hr = oCreateSwapChainForHwndGlobal(pFactory, pQueue, hwnd, &scd, nullptr,
+                                       nullptr, &pSwapChain);
+    if (SUCCEEDED(hr) && pSwapChain) {
+      HookLog("DX12: Created temp swapchain via original "
+              "CreateSwapChainForHwnd (unwrapped)");
+    }
+  } else {
+    HookLog("DX12: oCreateSwapChainForHwndGlobal not available, skipping "
+            "Present vtable hooks");
+  }
 
   if (SUCCEEDED(hr) && pSwapChain) {
-    // NOTE: We do NOT install vtable Present hooks for DX12.
-    // VTable hooking of DXGI Present causes unavoidable re-entry/crash issues
-    // with Steam and other overlays. New swapchains get wrapped via
-    // CWrapDXGISwapChain in factory hooks. For pre-existing swapchains, we
-    // hook GetCurrentBackBufferIndex to detect them and process overlay in
-    // DetourPresent only for non-wrapped, non-Steam scenarios.
-    HookLog("DX12: Temp swapchain created for ECL hook (no vtable Present "
-            "hooks)");
+    HookLog("DX12: Installing Present inline hooks via temp swapchain");
+    if (DXGIShared::InstallPresentInlineHooks(pSwapChain)) {
+      HookLog("DX12: Present inline hooks installed successfully");
+    } else {
+      HookLog("DX12: Failed to install Present inline hooks");
+    }
     pSwapChain->Release();
+  } else {
+    HookLog("DX12: Failed to create temp swapchain (hr=0x%08X)", hr);
   }
 
   // Hook ExecuteCommandLists on the temp queue's vtable.
@@ -2011,7 +2129,6 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory *pThis,
   if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
     IDXGISwapChain3 *sc3 = nullptr;
     if (SUCCEEDED((*ppSwapChain)->QueryInterface(IID_PPV_ARGS(&sc3)))) {
-      DXGIShared::InstallHooks(sc3);
       sc3->Release();
     }
   }
@@ -2035,12 +2152,9 @@ DetourCreateSwapChainForHwnd(IDXGIFactory2 *pThis, IUnknown *pDevice, HWND hWnd,
   HRESULT hr =
       oCreateSwapChainForHwnd(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
 
-  // ALWAYS install Present hooks - overlay renders on ALL frames (real +
-  // interpolated)
   if (SUCCEEDED(hr) && ppSC && *ppSC) {
     IDXGISwapChain3 *sc3 = nullptr;
     if (SUCCEEDED((*ppSC)->QueryInterface(IID_PPV_ARGS(&sc3)))) {
-      DXGIShared::InstallHooks(sc3);
       sc3->Release();
     }
   }

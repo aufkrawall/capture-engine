@@ -128,11 +128,16 @@ void LaunchGameSuspended(const std::string &path) {
 
   // Check if this is likely a launcher (not the game itself)
   // Heuristic: if filename doesn't contain _dx11, _dx12, _vulkan, etc., it
-  // might be a launcher
-  bool looksLikeLauncher = (lowerName.find("_dx") == std::string::npos &&
-                            lowerName.find("_vulkan") == std::string::npos &&
-                            lowerName.find("_vk") == std::string::npos &&
-                            lowerName.find("game") == std::string::npos);
+  // Check if this looks like the actual game vs a launcher
+  // Games typically have: _dx, _vulkan, _vk, game, test, or are known
+  // executables
+  bool looksLikeGame = (lowerName.find("_dx") != std::string::npos ||
+                        lowerName.find("_vulkan") != std::string::npos ||
+                        lowerName.find("_vk") != std::string::npos ||
+                        lowerName.find("game") != std::string::npos ||
+                        lowerName.find("_test") != std::string::npos ||
+                        lowerName.find("test.exe") != std::string::npos);
+  bool looksLikeLauncher = !looksLikeGame;
 
   // Extract directory
   std::string dir = cleanPath.substr(0, cleanPath.find_last_of("\\/"));
@@ -159,37 +164,48 @@ void LaunchGameSuspended(const std::string &path) {
 
     if (CreateProcessA(cleanPath.c_str(), NULL, NULL, NULL, FALSE,
                        CREATE_SUSPENDED, NULL, dir.c_str(), &si, &pi)) {
-      LogInfo("[Launcher] Process Created (PID: %d). Injecting...",
+      LogInfo("[Launcher] Process Created (PID: %d). Attempting early APC "
+              "injection...",
               pi.dwProcessId);
 
-      // Use InjectionManager to inject
-      // Must use make_shared: InjectionManager inherits enable_shared_from_this
       auto injector = std::make_shared<InjectionManager>(g_Config);
-      if (injector->Inject(pi.dwProcessId, cleanPath)) {
-        LogInfo("[Launcher] Injection Successful. Resuming Thread.");
+
+      // Determine DLL path based on target architecture
+      BOOL isWow64 = FALSE;
+      HANDLE hCheckProcess =
+          OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pi.dwProcessId);
+      if (hCheckProcess) {
+        IsWow64Process(hCheckProcess, &isWow64);
+        CloseHandle(hCheckProcess);
+      }
+
+      std::string hookDllPath;
+      char buffer[MAX_PATH];
+      GetModuleFileNameA(NULL, buffer, MAX_PATH);
+      std::string baseDir = std::string(buffer).substr(
+          0, std::string(buffer).find_last_of("\\/"));
+      hookDllPath = isWow64 ? (baseDir + "\\capture_hook_x86.dll")
+                            : (baseDir + "\\capture_hook_x64.dll");
+
+      // Try early APC injection first (runs before import resolution)
+      bool injected =
+          injector->InjectEarly(pi.dwProcessId, hookDllPath, pi.hThread);
+
+      if (injected) {
+        LogInfo("[Launcher] Early APC injection successful. Resuming thread.");
         ResumeThread(pi.hThread);
       } else {
-        LogInfo("[Launcher] Early Injection failed (likely WoW64 loader). "
-                "Resuming and retrying...");
+        LogInfo("[Launcher] APC injection failed, falling back to "
+                "CreateRemoteThread...");
         ResumeThread(pi.hThread);
 
-        // Fallback: Aggressive polling for 2 seconds to catch it as soon as
-        // kernel32 loads
-        bool injected = false;
-        DWORD start = GetTickCount();
-        while (GetTickCount() - start < 2000) {
-          if (injector->Inject(pi.dwProcessId, cleanPath)) {
-            injected = true;
-            break;
-          }
-          Sleep(10);
-        }
-
-        if (injected) {
-          LogInfo("[Launcher] Late Injection Successful.");
+        // Fallback to traditional injection
+        Sleep(100); // Give process a moment to initialize
+        if (injector->Inject(pi.dwProcessId, cleanPath)) {
+          LogInfo("[Launcher] Fallback injection successful.");
         } else {
-          LogError(
-              "[Launcher] Late Injection FAILED. Game running without hooks.");
+          LogError("[Launcher] Fallback injection FAILED. Game running without "
+                   "hooks.");
         }
       }
 

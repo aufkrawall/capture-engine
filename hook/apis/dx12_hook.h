@@ -32,6 +32,7 @@ void DX12_OnSwapchainResizeEnd();
 void DX12_InvalidateSwapchain();
 void DX12_SignalFSR4SwapchainRecreated();
 void DX12_AdjustWrapperResizeDepth(int delta);
+void RemoveGlobalVTableHooks();
 
 extern "C" {
 void DX12_SetCommandQueue(ID3D12CommandQueue *pQueue);

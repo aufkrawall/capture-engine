@@ -827,6 +827,66 @@ bool InjectionManager::Inject(DWORD pid, const std::string &processName) {
   return true;
 }
 
+bool InjectionManager::InjectEarly(DWORD pid, const std::string &dllPath,
+                                   HANDLE hMainThread) {
+  LogInfo("[APC] Attempting early APC injection for PID %d", pid);
+
+  HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ |
+                                    PROCESS_VM_WRITE | PROCESS_VM_OPERATION |
+                                    PROCESS_CREATE_THREAD,
+                                FALSE, pid);
+  if (!hProcess) {
+    LogError("[APC] OpenProcess failed for PID %d: %d", pid, GetLastError());
+    return false;
+  }
+
+  HMODULE hKernel32 = GetModuleHandleA("kernel32.dll");
+  FARPROC pLoadLibraryA = GetProcAddress(hKernel32, "LoadLibraryA");
+  if (!pLoadLibraryA) {
+    LogError("[APC] Failed to get LoadLibraryA address");
+    CloseHandle(hProcess);
+    return false;
+  }
+
+  SIZE_T pathSize = dllPath.size() + 1;
+  LPVOID pRemotePath = VirtualAllocEx(hProcess, NULL, pathSize,
+                                      MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+  if (!pRemotePath) {
+    LogError("[APC] VirtualAllocEx failed: %d", GetLastError());
+    CloseHandle(hProcess);
+    return false;
+  }
+
+  if (!WriteProcessMemory(hProcess, pRemotePath, dllPath.c_str(), pathSize,
+                          NULL)) {
+    LogError("[APC] WriteProcessMemory failed: %d", GetLastError());
+    VirtualFreeEx(hProcess, pRemotePath, 0, MEM_RELEASE);
+    CloseHandle(hProcess);
+    return false;
+  }
+
+  DWORD result = QueueUserAPC((PAPCFUNC)pLoadLibraryA, hMainThread,
+                              (ULONG_PTR)pRemotePath);
+  if (!result) {
+    LogError("[APC] QueueUserAPC failed: %d", GetLastError());
+    VirtualFreeEx(hProcess, pRemotePath, 0, MEM_RELEASE);
+    CloseHandle(hProcess);
+    return false;
+  }
+
+  LogInfo("[APC] APC queued successfully for PID %d - DLL will load before "
+          "import resolution",
+          pid);
+
+  InjectedProcess ip;
+  ip.pid = pid;
+  ip.name = dllPath;
+  ip.hProcess = hProcess;
+  injectedProcesses.push_back(ip);
+
+  return true;
+}
+
 void InjectionManager::EjectAll() {
   for (const auto &proc : injectedProcesses) {
     Eject(proc.pid);

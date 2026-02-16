@@ -58,6 +58,15 @@ void HandleDX11ResizeBegin();
 // Remove Present/Present1 vtable hooks (called when COM wrapper takes over)
 void RemovePresentHooks();
 
+// Remove all swapchain vtable hooks (Present, Present1, ResizeBuffers,
+// ResizeBuffers1)
+void RemoveSwapchainVTableHooks();
+
+// Install inline hooks on Present/Present1 (instead of vtable hooks)
+// Inline hooks patch the function code in memory, creating a trampoline that
+// bypasses the hook - preventing re-entry issues with wrapped swapchains
+bool InstallPresentInlineHooks(IDXGISwapChain *pSwapChain);
+
 // Direct-call helpers: bypass vtable hooks by calling saved original function
 // pointers directly. Used by CWrapDXGISwapChain to avoid re-entry through
 // hooked vtable.

@@ -194,6 +194,10 @@ private:
   static void WINAPI DestructionCallback(void *pData);
   HRESULT RegisterDestructionCallback();
 
+  // SAFETY: Track if destructor has already run (prevents double-free during
+  // shutdown)
+  std::atomic<bool> m_DestructorCalled{false};
+
   // Swapchain state tracking
   struct SwapChainState {
     bool isFullscreen = false;
@@ -212,3 +216,6 @@ private:
   bool IsFSRInternalSwapchain(); // FSR FG internal swapchain detection
   IDXGISwapChain *GetRealSafe(); // Thread-safe real swapchain access
 };
+
+// Shutdown safety function - sets the global shutdown flag
+void SetSwapchainWrapperShutdown();

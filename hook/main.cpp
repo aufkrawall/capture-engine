@@ -13,6 +13,7 @@
 #include "apis/ffx_hook.h" // FSR Frame Generation hook
 #include "apis/nvngx_hook.h"
 #include "capture/shared_capture.h"
+#include "common/dxgi_shared.h"
 #include "common/fg_detection.h"
 #include "common/hook_common.h"
 #include "common/hook_context.h"
@@ -21,7 +22,9 @@
 #include "common/perf_logger.h"
 #include "common/system_metrics.h"
 #include "wrappers/d3dkmt_hook.h"
+#include "wrappers/dxgi_swapchain_wrap.h"
 #include "wrappers/iat_hook.h"
+#include "wrappers/inline_hook.h"
 #include "wrappers/wrapper_hooks.h"
 #include <algorithm>
 #include <atomic>
@@ -38,6 +41,10 @@
 HMODULE g_hModule = NULL;
 DWORD g_RecursionTlsIndex = TLS_OUT_OF_INDEXES;
 // Note: g_ShuttingDown is declared in hook/common/hook_common.h
+
+static volatile bool g_ProcessTerminating = false;
+
+bool IsProcessTerminating() { return g_ProcessTerminating; }
 
 enum class ProcessCategory {
   PotentialGame,
@@ -1612,9 +1619,11 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     // NOTHING. The loader lock is held, threads are being killed, and any
     // cleanup can crash.
     if (lpReserved != NULL) {
-      // CRITICAL FIX: Skip all cleanup during process termination
-      // The OS will reclaim all resources. Any cleanup here risks crashes
-      // due to threads being terminated while holding locks.
+      // CRITICAL FIX: Set termination flag BEFORE returning
+      // This allows hook entry points to detect termination and return early
+      // preventing crashes when external DLLs (like opengl32.dll) call into
+      // our code during their atexit destructors
+      g_ProcessTerminating = true;
       return TRUE;
     }
 
@@ -1622,6 +1631,19 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     if (g_isDormant) {
       return TRUE;
     }
+
+    // CRITICAL: Remove DXGI factory vtable hooks FIRST before any other cleanup
+    // This prevents game code from calling through our hooks during shutdown
+    RemoveGlobalVTableHooks();
+
+    // CRITICAL: Remove all inline hooks BEFORE removing vtable hooks
+    // Inline hooks patch actual function code and must be restored early
+    InlineHook::RemoveAll();
+
+    // CRITICAL: Remove swapchain vtable hooks BEFORE setting g_ShuttingDown
+    // This ensures DetourPresent/DetourPresent1 won't be called after we start
+    // cleanup
+    DXGIShared::RemoveSwapchainVTableHooks();
 
     g_ShuttingDown = true;
 
@@ -1639,6 +1661,14 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
 
     // Shutdown performance logger
     PerfLogger::Get().Shutdown();
+
+    // CRITICAL FIX: Set swapchain wrapper shutdown flag BEFORE removing hooks
+    // This prevents COM calls on the wrapper from accessing freed memory
+    SetSwapchainWrapperShutdown();
+
+    // CRITICAL FIX: Remove Present vtable hooks BEFORE destroying wrappers
+    // This prevents DetourPresent from accessing freed wrapper memory
+    DXGIShared::RemovePresentHooks();
 
     // CRITICAL FIX: Properly shutdown hooks using SafeShutdownHook template
     // This calls Shutdown() which releases resources in the correct order

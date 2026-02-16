@@ -127,6 +127,27 @@ Status Disable(void *pTarget) {
   return Success;
 }
 
+Status Remove(void *pVTableEntry, void *pOriginal) {
+  if (!pVTableEntry || !pOriginal)
+    return ErrorNotExecutable;
+
+  void **ppEntry = reinterpret_cast<void **>(pVTableEntry);
+
+  DWORD oldProtect;
+  if (!VirtualProtect(ppEntry, sizeof(void *), PAGE_READWRITE, &oldProtect)) {
+    HookLog("VTableHook: Remove - VirtualProtect FAILED for %p (Error=%lu)",
+            ppEntry, GetLastError());
+    return ErrorMemoryProtect;
+  }
+
+  *ppEntry = pOriginal;
+
+  VirtualProtect(ppEntry, sizeof(void *), oldProtect, &oldProtect);
+
+  HookLog("VTableHook: Remove - Restored %p to %p", ppEntry, pOriginal);
+  return Success;
+}
+
 const char *StatusToString(Status status) {
   switch (status) {
   case Success:
