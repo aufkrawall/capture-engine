@@ -23,6 +23,37 @@ IS_WINDOWS = sys.platform == "win32"
 IS_LINUX = sys.platform.startswith("linux")
 IS_WSL = IS_LINUX and "microsoft" in platform.uname().release.lower()
 
+# --- Optimization Flags ---
+# x86-64-v3 requires AVX2 (Haswell 2013+), provides ~10-20% performance boost
+OPT_FLAGS_X64 = [
+    "-O3",
+    "-flto",
+    "-ffast-math",
+    "-march=x86-64-v3",
+    "-mtune=generic",
+    "-fvisibility=hidden",
+    "-ffunction-sections",
+    "-fdata-sections",
+]
+
+# x86 builds use generic optimization (no AVX on 32-bit)
+OPT_FLAGS_X86 = [
+    "-O3",
+    "-flto",
+    "-ffast-math",
+    "-march=i686",
+    "-mtune=generic",
+    "-fvisibility=hidden",
+    "-ffunction-sections",
+    "-fdata-sections",
+]
+
+# Linker optimization flags
+LD_OPT_FLAGS = [
+    "-Wl,--gc-sections",
+    "-s",  # Strip all symbols
+]
+
 # --- Configuration ---
 BUILD_DIR_NAME = "build"
 COMPILE_COMMANDS: List[Dict[str, Any]] = []
@@ -1910,7 +1941,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         "-lwinmm",
         "-o",
         layer_dll,
-    ]
+    ] + LD_OPT_FLAGS
 
     if arch == "x86":
         ldflags.append("-Wl,--kill-at")
@@ -2025,11 +2056,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
 
     cflags = [
         "-std=c++20",
-        "-O3",
-        "-flto",
-        "-ffast-math",
-        "-ffunction-sections",
-        "-fdata-sections",
+    ] + OPT_FLAGS_X64 + [
         "-Wall",
         "-D_WIN32_WINNT=0x0A00",
         "-I" + os.path.join(PROJECT_ROOT, "common"),
@@ -2060,18 +2087,26 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         curr_clang_exe = get_compiler_exe(arch)
         curr_pkg_config = shutil.which("pkg-config") if IS_LINUX else os.path.join(curr_clang_bin, "pkg-config.exe")
 
-        curr_cflags = [
-            "-std=c++20",
-            "-O2",
-            "-flto",
-            "-fno-stack-protector",
-            "-ffunction-sections",
-            "-fdata-sections",
-            "-Wall",
-            "-Wno-microsoft-exception-spec",
-        "-D_WIN32_WINNT=0x0A00",
-        "-I" + os.path.join(PROJECT_ROOT, "common"),
-    ]
+        if arch == "x64":
+            curr_cflags = [
+                "-std=c++20",
+            ] + OPT_FLAGS_X64 + [
+                "-Wall",
+                "-Wno-microsoft-exception-spec",
+                "-D_WIN32_WINNT=0x0A00",
+                "-I" + os.path.join(PROJECT_ROOT, "common"),
+            ]
+        else:  # x86
+            curr_cflags = [
+                "-std=c++20",
+            ] + OPT_FLAGS_X86 + [
+                "-m32",
+                "-mstackrealign",
+                "-Wall",
+                "-Wno-microsoft-exception-spec",
+                "-D_WIN32_WINNT=0x0A00",
+                "-I" + os.path.join(PROJECT_ROOT, "common"),
+            ]
         # Add MSYS2 include path on Linux for Windows headers
         if IS_LINUX:
             msys2_dir = get_linux_msys2_dir()
@@ -2209,6 +2244,8 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             "-lavrt",
             "-ldbghelp",
         ])
+
+        ldflags_hook.extend(LD_OPT_FLAGS)
 
         # LLD linker - use on Windows MSYS2, fallback to default on Linux
         if not IS_LINUX:

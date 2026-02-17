@@ -1,9 +1,9 @@
 #pragma once
 
-#include <windows.h>
 #include <atomic>
 #include <cstdint>
 #include <string>
+#include <windows.h>
 
 // Process modes - determined by command-line flag
 enum class ProcessMode {

@@ -8,11 +8,11 @@
 #include "../common/process_ipc.h"
 #include "injection.h"
 #include "tray.h"
-#include <windows.h>
 #include <atomic>
 #include <shellapi.h>
 #include <string>
 #include <timeapi.h>
+#include <windows.h>
 #include <winreg.h>
 
 #ifdef _MSC_VER
@@ -24,19 +24,41 @@
 namespace {
 struct FFmpegDllPathInitializer {
   FFmpegDllPathInitializer() {
-    // Get exe directory
     char buffer[MAX_PATH];
     GetModuleFileNameA(NULL, buffer, MAX_PATH);
     std::string exePath = buffer;
     std::string baseDir = exePath.substr(0, exePath.find_last_of("\\/"));
     std::string ffmpegDir = baseDir + "\\ffmpeg";
 
-    // Convert to wide string for AddDllDirectory
-    std::wstring ffmpegDirW(ffmpegDir.begin(), ffmpegDir.end());
+    if (GetFileAttributesA(ffmpegDir.c_str()) == INVALID_FILE_ATTRIBUTES) {
+      return;
+    }
 
-    // Enable extended DLL search and add our ffmpeg folder
-    SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
-    AddDllDirectory(ffmpegDirW.c_str());
+    int len = MultiByteToWideChar(CP_ACP, 0, ffmpegDir.c_str(), -1, nullptr, 0);
+    if (len > 0) {
+      std::wstring ffmpegDirW(len, 0);
+      MultiByteToWideChar(CP_ACP, 0, ffmpegDir.c_str(), -1, &ffmpegDirW[0],
+                          len);
+
+      typedef BOOL(WINAPI * SetDefaultDllDirectoriesFn)(DWORD);
+      typedef void *(WINAPI * AddDllDirectoryFn)(PCWSTR);
+
+      HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
+      if (hKernel32) {
+        auto pSetDefaultDllDirectories =
+            (SetDefaultDllDirectoriesFn)GetProcAddress(
+                hKernel32, "SetDefaultDllDirectories");
+        auto pAddDllDirectory =
+            (AddDllDirectoryFn)GetProcAddress(hKernel32, "AddDllDirectory");
+
+        if (pSetDefaultDllDirectories && pAddDllDirectory) {
+          pSetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+          pAddDllDirectory(ffmpegDirW.c_str());
+        } else {
+          SetDllDirectoryA(ffmpegDir.c_str());
+        }
+      }
+    }
   }
 };
 static FFmpegDllPathInitializer g_ffmpegDllInitializer;

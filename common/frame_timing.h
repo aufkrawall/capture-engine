@@ -2,9 +2,9 @@
 // frame_timing.h - Unified frame timing and PTS calculation
 // Provides consistent frame pacing across WGC and Inject capture paths
 
-#include <windows.h>
 #include <atomic>
 #include <cstdint>
+#include <windows.h>
 
 // FramePacer: Manages presentation timestamp generation and frame timing
 // for video encoding. This class ensures consistent PTS values regardless

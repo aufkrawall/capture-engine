@@ -1,6 +1,5 @@
 #pragma once
 
-#include <windows.h>
 #include <atomic>
 #include <audioclient.h>
 #include <deque>
@@ -9,6 +8,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <windows.h>
 
 struct AudioPacket {
   std::vector<uint8_t> data;

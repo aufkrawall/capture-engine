@@ -1,9 +1,9 @@
 #include "config.h"
 #include "logging.h"
-#include <windows.h>
 #include <algorithm>
 #include <fstream>
 #include <sstream>
+#include <windows.h>
 
 // Helper to trim specific characters from both ends
 std::string Trim(const std::string &s, const char *chars = " \t\r\n\"()") {

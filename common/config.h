@@ -1,10 +1,10 @@
 #pragma once
 
 #include "shared_defs.h"
-#include <windows.h>
 #include <map>
 #include <string>
 #include <vector>
+#include <windows.h>
 
 #include "build_version.h"
 

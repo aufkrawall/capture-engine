@@ -5,11 +5,11 @@
 #include "../wrappers/wrapper_base.h"
 #include "config.h"
 #include "fg_detection.h"
+#include "fps_limiter.h"
 #include "freeze_watchdog.h"
 #include "hook_common.h"
 #include "logging.h"
 #include "performance_metrics.h"
-#include "fps_limiter.h"
 
 #include <atomic>
 #include <chrono>

@@ -1,12 +1,12 @@
 #include "system_metrics.h"
 #include "hook_common.h"
 #include "ipc_client.h"
-#include <pdh.h>
 #include <PdhMsg.h>
 #include <algorithm>
 #include <cstdio>
 #include <dxgi1_4.h>
 #include <map>
+#include <pdh.h>
 #include <string>
 #include <vector>
 

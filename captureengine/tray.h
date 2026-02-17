@@ -1,9 +1,9 @@
 #pragma once
 
 #include "resource.h"
-#include <windows.h>
 #include <functional>
 #include <string>
+#include <windows.h>
 
 #define WM_TRAYICON (WM_USER + 1)
 #define WM_SHUTDOWN_TIMER (WM_USER + 2)

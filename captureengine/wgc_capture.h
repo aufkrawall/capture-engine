@@ -1,6 +1,5 @@
 #pragma once
 
-#include <windows.h>
 #include <atomic>
 #include <d3d11.h>
 #include <functional>
@@ -8,6 +7,7 @@
 #include <mutex>
 #include <stdint.h>
 #include <string>
+#include <windows.h>
 
 // Forward declarations to avoid including WinRT headers in public interface
 struct ID3D11Texture2D;

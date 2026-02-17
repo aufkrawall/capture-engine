@@ -2,10 +2,10 @@
 // log_facade.h - Unified logging interface for capture project
 // Provides consistent logging across hook DLL and capture engine
 
-#include <windows.h>
 #include <cstdarg>
 #include <cstdio>
 #include <mutex>
+#include <windows.h>
 
 // Log levels
 enum class LogLevel { Debug = 0, Info = 1, Warning = 2, Error = 3 };

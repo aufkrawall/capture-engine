@@ -36,9 +36,11 @@ ApplyDX12SamplerOverridesCallback(D3D12_SAMPLER_DESC *pDesc) {
 
   const auto &gfx = GetActiveGraphicsConfig();
 
-  HookLog("ApplyDX12SamplerOverridesCallback: AF=%s, MipBias=%s, Mode=%s, OrigFilter=0x%X, OrigAniso=%d, OrigBias=%.2f",
-          gfx.anisotropicFiltering.c_str(), gfx.mipBias.c_str(), gfx.mipBiasMode.c_str(),
-          pDesc->Filter, pDesc->MaxAnisotropy, pDesc->MipLODBias);
+  HookLog("ApplyDX12SamplerOverridesCallback: AF=%s, MipBias=%s, Mode=%s, "
+          "OrigFilter=0x%X, OrigAniso=%d, OrigBias=%.2f",
+          gfx.anisotropicFiltering.c_str(), gfx.mipBias.c_str(),
+          gfx.mipBiasMode.c_str(), pDesc->Filter, pDesc->MaxAnisotropy,
+          pDesc->MipLODBias);
 
   D3D12_FILTER origFilter = pDesc->Filter;
   UINT origAniso = pDesc->MaxAnisotropy;
@@ -101,9 +103,12 @@ ApplyDX12SamplerOverridesCallback(D3D12_SAMPLER_DESC *pDesc) {
   if (pDesc->MipLODBias > 15.99f)
     pDesc->MipLODBias = 15.99f;
 
-  if (origFilter != pDesc->Filter || origAniso != pDesc->MaxAnisotropy || origBias != pDesc->MipLODBias) {
-    HookLog("ApplyDX12SamplerOverridesCallback: MODIFIED, Filter=0x%X->0x%X, Aniso=%d->%d, Bias=%.2f->%.2f",
-            origFilter, pDesc->Filter, origAniso, pDesc->MaxAnisotropy, origBias, pDesc->MipLODBias);
+  if (origFilter != pDesc->Filter || origAniso != pDesc->MaxAnisotropy ||
+      origBias != pDesc->MipLODBias) {
+    HookLog("ApplyDX12SamplerOverridesCallback: MODIFIED, Filter=0x%X->0x%X, "
+            "Aniso=%d->%d, Bias=%.2f->%.2f",
+            origFilter, pDesc->Filter, origAniso, pDesc->MaxAnisotropy,
+            origBias, pDesc->MipLODBias);
   }
 
   return TRUE;

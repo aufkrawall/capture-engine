@@ -1,10 +1,10 @@
 #pragma once
-#include <windows.h>
 #include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <windows.h>
 
 struct SystemMetrics {
   float cpuUsage;        // 0-100% (Total)

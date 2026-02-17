@@ -30,8 +30,7 @@ void SetCrashProcessName(const char *name) {
 // Trace function for debugging the crash handler itself
 void TraceCrash(const char *msg) {
   char path[MAX_PATH];
-  snprintf(path, sizeof(path), "%s\\crash.log",
-           g_DumpDir.c_str());
+  snprintf(path, sizeof(path), "%s\\crash.log", g_DumpDir.c_str());
   FILE *f = fopen(path, "a");
   if (f) {
     SYSTEMTIME st;
@@ -201,7 +200,6 @@ CrashHandlerExceptionFilter(EXCEPTION_POINTERS *pExceptionPointers) {
   }
 
   TraceCrash("CRASH DETECTED - Handling exception");
-
 
   // Ensure trace log goes to the correct dir
   TraceCrash("CrashHandlerExceptionFilter entered");

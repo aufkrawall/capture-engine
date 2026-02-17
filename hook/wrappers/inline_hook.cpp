@@ -578,7 +578,8 @@ static void WriteJump(uint8_t *dest, void *target) {
           target, dest, (unsigned)rel, (void *)(dest + 5));
   // Verify: dest+5 + rel should equal target
   uintptr_t verify = (uintptr_t)(dest + 5) + rel;
-  HookLog("WriteJump: Verification: dest+5(0x%p) + rel(0x%08X) = 0x%p (expected %p)",
+  HookLog("WriteJump: Verification: dest+5(0x%p) + rel(0x%08X) = 0x%p "
+          "(expected %p)",
           (void *)(dest + 5), (unsigned)rel, (void *)verify, target);
 #endif
 }
@@ -622,7 +623,7 @@ bool Install(void *target, void *detour, void **outTrampoline) {
     copySize += len;
   }
 
-HookLog("InlineHook: Hooking %p, patch=%d bytes, detour=%p, is64bit=%d", 
+  HookLog("InlineHook: Hooking %p, patch=%d bytes, detour=%p, is64bit=%d",
           target, copySize, detour, is64bit ? 1 : 0);
 
   // Dump original bytes for diagnosis
@@ -644,13 +645,14 @@ HookLog("InlineHook: Hooking %p, patch=%d bytes, detour=%p, is64bit=%d",
   int srcOffset = 0;
   while (srcOffset < copySize) {
     int instrLen = GetInstructionLength(code + srcOffset, is64bit);
-    
+
     // Log instruction being copied
-    HookLog("InlineHook: Copying instruction at offset %d, len=%d:", srcOffset, instrLen);
+    HookLog("InlineHook: Copying instruction at offset %d, len=%d:", srcOffset,
+            instrLen);
     for (int i = 0; i < instrLen && i < 8; i++) {
       HookLog("  [%02d] 0x%02X", i, code[srcOffset + i]);
     }
-    
+
     memcpy(trampoline + trampolineOffset, code + srcOffset, instrLen);
 
     // Fix up RIP-relative addressing
@@ -683,7 +685,9 @@ HookLog("InlineHook: Hooking %p, patch=%d bytes, detour=%p, is64bit=%d",
       int32_t newDisp32 = (int32_t)newDisp;
       memcpy(trampoline + trampolineOffset + dispOff, &newDisp32, 4);
     } else {
-      HookLog("InlineHook: No PC-relative fixup needed for instruction at offset %d", srcOffset);
+      HookLog("InlineHook: No PC-relative fixup needed for instruction at "
+              "offset %d",
+              srcOffset);
     }
 
     trampolineOffset += instrLen;
@@ -692,11 +696,12 @@ HookLog("InlineHook: Hooking %p, patch=%d bytes, detour=%p, is64bit=%d",
 
   // Add jump back to original function after the patched area
   void *jumpTarget = (void *)(code + copySize);
-  HookLog("InlineHook: Writing jump back from trampoline+%d to %p (original+%d)",
-          trampolineOffset, jumpTarget, copySize);
+  HookLog(
+      "InlineHook: Writing jump back from trampoline+%d to %p (original+%d)",
+      trampolineOffset, jumpTarget, copySize);
   WriteJump(trampoline + trampolineOffset, jumpTarget);
   trampolineOffset += PATCH_SIZE;
-  
+
   // Dump trampoline bytes for diagnosis
   HookLog("InlineHook: Trampoline bytes (%d bytes total):", trampolineOffset);
   for (int i = 0; i < trampolineOffset && i < 32; i++) {
@@ -740,7 +745,7 @@ HookLog("InlineHook: Hooking %p, patch=%d bytes, detour=%p, is64bit=%d",
   jmpBuf[4] = 0x00;
   jmpBuf[5] = 0x00;
   memcpy(jmpBuf + 6, &detour, 8);
-  
+
   // Copy all bytes to target
   for (int i = 0; i < PATCH_SIZE; i++) {
     pTarget[i] = jmpBuf[i];
@@ -748,15 +753,16 @@ HookLog("InlineHook: Hooking %p, patch=%d bytes, detour=%p, is64bit=%d",
 #else
   // x86: Calculate displacement for the actual target location
   // JMP rel32: target = (instruction_address + 5) + displacement
-  pTarget[0] = 0xE9;  // JMP rel32 opcode
-  int32_t rel = (int32_t)((uintptr_t)detour - (uintptr_t)((uint8_t*)target + 5));
-  memcpy((void*)(pTarget + 1), &rel, 4);
-  HookLog("InlineHook: Target JMP at %p -> %p (rel=0x%08X)",
-          target, detour, (unsigned)rel);
+  pTarget[0] = 0xE9; // JMP rel32 opcode
+  int32_t rel =
+      (int32_t)((uintptr_t)detour - (uintptr_t)((uint8_t *)target + 5));
+  memcpy((void *)(pTarget + 1), &rel, 4);
+  HookLog("InlineHook: Target JMP at %p -> %p (rel=0x%08X)", target, detour,
+          (unsigned)rel);
   // Verify the calculation
-  uintptr_t verify = (uintptr_t)((uint8_t*)target + 5) + rel;
+  uintptr_t verify = (uintptr_t)((uint8_t *)target + 5) + rel;
   HookLog("InlineHook: Verification: %p + 5 + 0x%08X = %p (expected %p)",
-          target, (unsigned)rel, (void*)verify, detour);
+          target, (unsigned)rel, (void *)verify, detour);
 #endif
 
   // Fill any remaining bytes after the jump with NOPs

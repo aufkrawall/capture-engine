@@ -7,12 +7,12 @@
 
 #pragma once
 
-#include <windows.h>
 #include <atomic>
 #include <d3d11_4.h>
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <mutex>
+#include <windows.h>
 
 // Forward declarations
 class CWrapDXGIFactory;

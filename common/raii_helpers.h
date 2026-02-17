@@ -4,9 +4,9 @@
 // Provides automatic cleanup for Windows handles, COM objects, Vulkan
 // resources, etc. All wrappers are move-only to prevent double-free issues.
 
-#include <windows.h>
 #include <functional>
 #include <utility>
+#include <windows.h>
 
 // Forward declarations for Vulkan types (avoid including vulkan.h here)
 #ifndef VK_NULL_HANDLE

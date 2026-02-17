@@ -1,7 +1,6 @@
 #pragma once
 
 #include "../common/config.h"
-#include <windows.h>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -14,6 +13,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <windows.h>
 
 extern "C" {
 #include <libavcodec/avcodec.h>

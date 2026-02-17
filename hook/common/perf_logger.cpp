@@ -1,7 +1,7 @@
 #include "perf_logger.h"
 #include "hook_common.h"
-#include <windows.h>
 #include <filesystem>
+#include <windows.h>
 
 PerfLogger &PerfLogger::Get() {
   static PerfLogger instance;

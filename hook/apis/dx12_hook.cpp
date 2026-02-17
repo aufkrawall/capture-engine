@@ -32,12 +32,12 @@
 #include "../common/system_metrics.h"
 #include "../wrappers/d3d12_wrapper_interface.h"
 #include "../wrappers/dxgi_swapchain_wrap.h"
+#include "../wrappers/root_signature_parser.h"
 #include "../wrappers/wrapper_hooks.h"
 #include "dx11_hook.h"
 #include "dx12_hook.h"
 #include "graphics_hook.h"
 #include "lod_helper.h"
-#include "../wrappers/root_signature_parser.h"
 
 #include "../wrappers/vtable_hook.h"
 #include "../wrappers/wrapper_base.h"
@@ -390,8 +390,8 @@ void STDMETHODCALLTYPE
 DetourCreateSampler(ID3D12Device *pDevice, const D3D12_SAMPLER_DESC *pDesc,
                     D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor);
 
-extern "C" BOOL WINAPI ApplyDX12SamplerOverridesCallback(D3D12_SAMPLER_DESC *pDesc);
-
+extern "C" BOOL WINAPI
+ApplyDX12SamplerOverridesCallback(D3D12_SAMPLER_DESC *pDesc);
 
 // REQUIRED EXPORTS
 void DX12_AdjustWrapperResizeDepth(int delta) {
@@ -2133,10 +2133,13 @@ void DX12_HookDeviceVTable(ID3D12Device *device) {
   // Don't hook wrapped devices
   void *unwrapped = nullptr;
   static const GUID IID_CWrapD3D12Device = {
-      0xc3d4e5f6, 0x7890, 0xabcd, {0xef, 0x12, 0x34, 0x56, 0x78, 0x90, 0x12, 0x34}};
+      0xc3d4e5f6,
+      0x7890,
+      0xabcd,
+      {0xef, 0x12, 0x34, 0x56, 0x78, 0x90, 0x12, 0x34}};
   if (SUCCEEDED(device->QueryInterface(IID_CWrapD3D12Device, &unwrapped))) {
     ((IUnknown *)unwrapped)->Release();
-    return;  // Already wrapped, skip vtable hook
+    return; // Already wrapped, skip vtable hook
   }
 
   static std::recursive_mutex s_DeviceHookMutex;
@@ -2145,14 +2148,15 @@ void DX12_HookDeviceVTable(ID3D12Device *device) {
   void **vtbl = *reinterpret_cast<void ***>(device);
 
   // CreateSampler is at vtable index 20 in ID3D12Device
-  // ID3D12Object: QueryInterface=0, AddRef=1, Release=2, GetPrivateData=3, SetPrivateData=4, SetPrivateDataInterface=5, SetName=6
-  // ID3D12Device: GetNodeCount=7, CreateCommandQueue=8, CreateCommandAllocator=9,
-  // CreateGraphicsPipelineState=10, CreateComputePipelineState=11, CreateCommandList=12,
-  // CheckFeatureSupport=13, CreateDescriptorHeap=14, GetDescriptorHandleIncrementSize=15,
-  // CreateRootSignature=16, CreateConstantBufferView=17, CreateShaderResourceView=18,
-  // CreateUnorderedAccessView=19, CreateRenderTargetView=20, CreateDepthStencilView=21,
-  // CreateSampler=22
-  // Let's use 22 for CreateSampler
+  // ID3D12Object: QueryInterface=0, AddRef=1, Release=2, GetPrivateData=3,
+  // SetPrivateData=4, SetPrivateDataInterface=5, SetName=6 ID3D12Device:
+  // GetNodeCount=7, CreateCommandQueue=8, CreateCommandAllocator=9,
+  // CreateGraphicsPipelineState=10, CreateComputePipelineState=11,
+  // CreateCommandList=12, CheckFeatureSupport=13, CreateDescriptorHeap=14,
+  // GetDescriptorHandleIncrementSize=15, CreateRootSignature=16,
+  // CreateConstantBufferView=17, CreateShaderResourceView=18,
+  // CreateUnorderedAccessView=19, CreateRenderTargetView=20,
+  // CreateDepthStencilView=21, CreateSampler=22 Let's use 22 for CreateSampler
 
   if (vtbl[22] != (void *)DetourCreateSampler) {
     HookLog("DX12: Hooking CreateSampler vtable for device %p", device);
@@ -2224,8 +2228,9 @@ DetourCreateSampler(ID3D12Device *pDevice, const D3D12_SAMPLER_DESC *pDesc,
   D3D12_SAMPLER_DESC modifiedDesc = *pDesc;
   ApplyDX12SamplerOverridesCallback(&modifiedDesc);
 
-  HookLog("DetourCreateSampler: MODIFIED, Filter=0x%X, MaxAniso=%d, MipBias=%.2f",
-          modifiedDesc.Filter, modifiedDesc.MaxAnisotropy, modifiedDesc.MipLODBias);
+  HookLog(
+      "DetourCreateSampler: MODIFIED, Filter=0x%X, MaxAniso=%d, MipBias=%.2f",
+      modifiedDesc.Filter, modifiedDesc.MaxAnisotropy, modifiedDesc.MipLODBias);
 
   oCreateSampler(pDevice, &modifiedDesc, DestDescriptor);
 }
@@ -2236,30 +2241,32 @@ DetourSerializeRootSignature(const D3D12_ROOT_SIGNATURE_DESC *pRootSignature,
                              ID3DBlob **ppBlob, ID3DBlob **ppErrorBlob) {
   if (!pRootSignature || !ppBlob) {
     if (oSerializeRootSignature)
-      return oSerializeRootSignature(pRootSignature, Version, ppBlob, ppErrorBlob);
+      return oSerializeRootSignature(pRootSignature, Version, ppBlob,
+                                     ppErrorBlob);
     return E_INVALIDARG;
   }
 
   HookLog("DetourSerializeRootSignature: CALLED, NumStaticSamplers=%u",
           pRootSignature->NumStaticSamplers);
 
-  if (pRootSignature->NumStaticSamplers > 0 && pRootSignature->pStaticSamplers) {
+  if (pRootSignature->NumStaticSamplers > 0 &&
+      pRootSignature->pStaticSamplers) {
     // Clone the descriptor with modified samplers
     D3D12_ROOT_SIGNATURE_DESC modified = *pRootSignature;
     std::vector<D3D12_STATIC_SAMPLER_DESC> modifiedSamplers(
         pRootSignature->pStaticSamplers,
-        pRootSignature->pStaticSamplers + pRootSignature->NumStaticSamplers
-    );
+        pRootSignature->pStaticSamplers + pRootSignature->NumStaticSamplers);
 
     bool anyModified = false;
-    for (auto& sampler : modifiedSamplers) {
+    for (auto &sampler : modifiedSamplers) {
       if (RootSignatureParser::ApplyStaticSamplerOverrides(sampler)) {
         anyModified = true;
       }
     }
 
     if (anyModified) {
-      HookLog("DetourSerializeRootSignature: Modified %zu static samplers for AF/mip bias",
+      HookLog("DetourSerializeRootSignature: Modified %zu static samplers for "
+              "AF/mip bias",
               modifiedSamplers.size());
       modified.pStaticSamplers = modifiedSamplers.data();
       if (oSerializeRootSignature)
@@ -2268,7 +2275,8 @@ DetourSerializeRootSignature(const D3D12_ROOT_SIGNATURE_DESC *pRootSignature,
   }
 
   if (oSerializeRootSignature)
-    return oSerializeRootSignature(pRootSignature, Version, ppBlob, ppErrorBlob);
+    return oSerializeRootSignature(pRootSignature, Version, ppBlob,
+                                   ppErrorBlob);
   return E_FAIL;
 }
 
@@ -2277,18 +2285,20 @@ HRESULT WINAPI DetourSerializeVersionedRootSignature(
     ID3DBlob **ppBlob, ID3DBlob **ppErrorBlob) {
   if (!pRootSignature || !ppBlob) {
     if (oSerializeVersionedRootSignature)
-      return oSerializeVersionedRootSignature(pRootSignature, ppBlob, ppErrorBlob);
+      return oSerializeVersionedRootSignature(pRootSignature, ppBlob,
+                                              ppErrorBlob);
     return E_INVALIDARG;
   }
 
   uint32_t numStaticSamplers = 0;
   if (pRootSignature->Version == D3D_ROOT_SIGNATURE_VERSION_1)
     numStaticSamplers = pRootSignature->Desc_1_0.NumStaticSamplers;
-  HookLog("DetourSerializeVersionedRootSignature: CALLED, Version=%u, NumStaticSamplers=%u",
+  HookLog("DetourSerializeVersionedRootSignature: CALLED, Version=%u, "
+          "NumStaticSamplers=%u",
           pRootSignature->Version, numStaticSamplers);
 
   if (pRootSignature->Version == D3D_ROOT_SIGNATURE_VERSION_1) {
-    const D3D12_ROOT_SIGNATURE_DESC* pDesc = &pRootSignature->Desc_1_0;
+    const D3D12_ROOT_SIGNATURE_DESC *pDesc = &pRootSignature->Desc_1_0;
 
     if (pDesc->NumStaticSamplers > 0 && pDesc->pStaticSamplers) {
       D3D12_VERSIONED_ROOT_SIGNATURE_DESC modified = *pRootSignature;
@@ -2296,29 +2306,31 @@ HRESULT WINAPI DetourSerializeVersionedRootSignature(
 
       std::vector<D3D12_STATIC_SAMPLER_DESC> modifiedSamplers(
           pDesc->pStaticSamplers,
-          pDesc->pStaticSamplers + pDesc->NumStaticSamplers
-      );
+          pDesc->pStaticSamplers + pDesc->NumStaticSamplers);
 
       bool anyModified = false;
-      for (auto& sampler : modifiedSamplers) {
+      for (auto &sampler : modifiedSamplers) {
         if (RootSignatureParser::ApplyStaticSamplerOverrides(sampler)) {
           anyModified = true;
         }
       }
 
       if (anyModified) {
-        HookLog("DetourSerializeVersionedRootSignature: Modified %zu static samplers (v1.0)",
+        HookLog("DetourSerializeVersionedRootSignature: Modified %zu static "
+                "samplers (v1.0)",
                 modifiedSamplers.size());
         modifiedDesc.pStaticSamplers = modifiedSamplers.data();
         modified.Desc_1_0 = modifiedDesc;
         if (oSerializeVersionedRootSignature)
-          return oSerializeVersionedRootSignature(&modified, ppBlob, ppErrorBlob);
+          return oSerializeVersionedRootSignature(&modified, ppBlob,
+                                                  ppErrorBlob);
       }
     }
   }
 
   if (oSerializeVersionedRootSignature)
-    return oSerializeVersionedRootSignature(pRootSignature, ppBlob, ppErrorBlob);
+    return oSerializeVersionedRootSignature(pRootSignature, ppBlob,
+                                            ppErrorBlob);
   return E_FAIL;
 }
 

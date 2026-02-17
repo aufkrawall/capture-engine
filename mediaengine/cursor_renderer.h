@@ -1,8 +1,8 @@
 #pragma once
 
-#include <windows.h>
 #include <cstdint>
 #include <d3d11.h>
+#include <windows.h>
 
 // GPU-accelerated cursor renderer using D3D11 pixel shader compositing
 // Design: Zero overhead when cursor is hidden - only GetCursorInfo() check

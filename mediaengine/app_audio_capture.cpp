@@ -1,12 +1,12 @@
 #include "app_audio_capture.h"
 #include "audio_capture.h" // For AudioPacket
 #include "mediaengine.h"   // For DLL_Log
-#include <psapi.h>
-#include <tlhelp32.h>
 #include <chrono>
 #include <combaseapi.h>
 #include <functional>
 #include <propvarutil.h>
+#include <psapi.h>
+#include <tlhelp32.h>
 
 // Required for ActivateAudioInterfaceAsync
 #pragma comment(lib, "mmdevapi.lib")

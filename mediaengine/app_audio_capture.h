@@ -1,6 +1,5 @@
 #pragma once
 
-#include <windows.h>
 #include <atomic>
 #include <audioclient.h>
 #include <chrono>
@@ -10,6 +9,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <windows.h>
 
 // Include for AudioPacket definition
 #include "audio_capture.h"

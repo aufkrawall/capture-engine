@@ -2,13 +2,13 @@
 #include "../common/logging.h"
 #include "../common/process_ipc.h"
 #include "../common/shared_defs.h"
-#include <windows.h>
 #include <atomic>
 #include <avrt.h>
 #include <chrono>
 #include <intrin.h>
 #include <thread>
 #include <timeapi.h>
+#include <windows.h>
 
 /*
  * FPS LIMITER - HIGH-RESOLUTION TIMER BEHAVIOR
