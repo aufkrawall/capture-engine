@@ -510,6 +510,11 @@ LINUX_MSYS2_PACKAGES = [
     "mingw-w64-clang-x86_64-ffmpeg",
     "mingw-w64-clang-x86_64-cppwinrt",
     "mingw-w64-clang-x86_64-headers",
+    # FFmpeg dependencies (required by external/ffmpeg/bin DLLs)
+    "mingw-w64-clang-x86_64-libxml2",
+    "mingw-w64-clang-x86_64-bzip2",
+    "mingw-w64-clang-x86_64-libmodplug",
+    "mingw-w64-clang-x86_64-libgme",
 ]
 
 MSYS2_REPO_URL = "https://repo.msys2.org/mingw/clang64"
@@ -2496,29 +2501,44 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 # Copy FFmpeg DLLs to bin/ffmpeg/ for runtime (Linux)
                 if IS_LINUX:
                     log("Copying FFmpeg DLLs to bin/ffmpeg/...")
-                    msys2_dir = get_linux_msys2_dir()
-                    ffmpeg_bin_src = os.path.join(msys2_dir, "clang64", "bin")
+                    # Use external/ffmpeg/bin if it exists (from Windows build), otherwise MSYS2
+                    if os.path.exists(os.path.join(FFMPEG_DIR, "bin")):
+                        ffmpeg_bin_src = os.path.join(FFMPEG_DIR, "bin")
+                    else:
+                        msys2_dir = get_linux_msys2_dir()
+                        ffmpeg_bin_src = os.path.join(msys2_dir, "clang64", "bin")
+                    
                     ffmpeg_bin_dst = os.path.join(BIN_DIR, "ffmpeg")
                     os.makedirs(ffmpeg_bin_dst, exist_ok=True)
                     
-                    # Copy FFmpeg DLLs
-                    ffmpeg_dlls = [
-                        "avcodec-*.dll",
-                        "avformat-*.dll", 
-                        "avutil-*.dll",
-                        "swresample-*.dll",
-                        "swscale-*.dll"
-                    ]
-                    for pattern in ffmpeg_dlls:
-                        for dll in glob.glob(os.path.join(ffmpeg_bin_src, pattern)):
-                            shutil.copy(dll, ffmpeg_bin_dst)
-                            log(f"Copied {os.path.basename(dll)} to bin/ffmpeg/")
+                    # Copy ALL DLLs from FFmpeg bin folder (includes dependencies)
+                    for dll in glob.glob(os.path.join(ffmpeg_bin_src, "*.dll")):
+                        shutil.copy(dll, ffmpeg_bin_dst)
+                        log(f"Copied {os.path.basename(dll)} to bin/ffmpeg/")
+                    
                     # Also copy to main folder since delay-load isn't available on Linux
                     log("Copying FFmpeg DLLs to main folder (required for Linux builds)...")
-                    for pattern in ffmpeg_dlls:
-                        for dll in glob.glob(os.path.join(ffmpeg_bin_src, pattern)):
-                            shutil.copy(dll, BIN_DIR)
-                            log(f"Copied {os.path.basename(dll)} to main folder")
+                    for dll in glob.glob(os.path.join(ffmpeg_bin_src, "*.dll")):
+                        shutil.copy(dll, BIN_DIR)
+                        log(f"Copied {os.path.basename(dll)} to main folder")
+
+                    # Copy MSYS2 runtime dependencies that FFmpeg DLLs need
+                    msys2_dir = get_linux_msys2_dir()
+                    msys_bin = os.path.join(msys2_dir, "clang64", "bin")
+                    runtime_deps = [
+                        "libbz2-1.dll",
+                        "libxml2-16.dll",
+                        "libmodplug-1.dll",
+                        "libgme.dll",
+                        "libiconv-2.dll",
+                        "libc++.dll",
+                    ]
+                    for dep in runtime_deps:
+                        src = os.path.join(msys_bin, dep)
+                        if os.path.exists(src):
+                            shutil.copy(src, ffmpeg_bin_dst)
+                            shutil.copy(src, BIN_DIR)
+                            log(f"Copied runtime dep {dep}")
 
     # Compile and run tests (using x64 objects) if requested
     if should_run_tests:
