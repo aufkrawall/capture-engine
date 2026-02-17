@@ -2499,6 +2499,8 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 )
                 run_command(cmd, env=curr_env)
                 # generate_hash(me_dll) # MediaEngine doesn't need hash check for injection
+                # Note: mediaengine.dll is output directly to BIN_DIR (main folder)
+                # It acts as a bridge to FFmpeg DLLs in ffmpeg/ subfolder
 
                 # Copy FFmpeg DLLs to bin/ffmpeg/ for runtime (Linux)
                 if IS_LINUX:
@@ -2518,12 +2520,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                         shutil.copy(dll, ffmpeg_bin_dst)
                         log(f"Copied {os.path.basename(dll)} to bin/ffmpeg/")
                     
-                    # Also copy to main folder since delay-load isn't available on Linux
-                    log("Copying FFmpeg DLLs to main folder (required for Linux builds)...")
-                    for dll in glob.glob(os.path.join(ffmpeg_bin_src, "*.dll")):
-                        shutil.copy(dll, BIN_DIR)
-                        log(f"Copied {os.path.basename(dll)} to main folder")
-
                     # Copy MSYS2 runtime dependencies that FFmpeg DLLs need
                     msys2_dir = get_linux_msys2_dir()
                     msys_bin = os.path.join(msys2_dir, "clang64", "bin")
@@ -2542,7 +2538,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                         src = os.path.join(msys_bin, dep)
                         if os.path.exists(src):
                             shutil.copy(src, ffmpeg_bin_dst)
-                            shutil.copy(src, BIN_DIR)
                             log(f"Copied runtime dep {dep}")
 
     # Compile and run tests (using x64 objects) if requested
