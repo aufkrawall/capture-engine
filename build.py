@@ -608,6 +608,18 @@ def download_msys2_packages_for_linux():
     return msys_linux_dir
 
 
+def wsl_path_to_windows(path):
+    """Convert WSL path (/mnt/c/...) to Windows path (C:\...)"""
+    if IS_LINUX and path.startswith("/mnt/"):
+        # /mnt/c/path -> C:\path
+        parts = path.split("/")
+        if len(parts) >= 3:
+            drive = parts[2].upper()  # 'c' -> 'C'
+            rest = "\\".join(parts[3:])
+            return f"{drive}:\\{rest}"
+    return path
+
+
 def get_linux_msys2_dir():
     """Get the MSYS2 directory for Linux builds."""
     if not IS_LINUX:
@@ -1998,6 +2010,8 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         # Absolute path to the DLL we just built
         # Escape backslashes for JSON
         abs_dll_path = os.path.abspath(layer_dll)
+        if IS_LINUX:
+            abs_dll_path = wsl_path_to_windows(abs_dll_path)
 
         manifest = {
             "file_format_version": "1.2.0",
