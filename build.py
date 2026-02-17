@@ -515,6 +515,8 @@ LINUX_MSYS2_PACKAGES = [
     "mingw-w64-clang-x86_64-bzip2",
     "mingw-w64-clang-x86_64-libmodplug",
     "mingw-w64-clang-x86_64-libgme",
+    "mingw-w64-clang-x86_64-libva",
+    "mingw-w64-clang-x86_64-libvpl",
 ]
 
 MSYS2_REPO_URL = "https://repo.msys2.org/mingw/clang64"
@@ -2532,6 +2534,9 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                         "libgme.dll",
                         "libiconv-2.dll",
                         "libc++.dll",
+                        "libva.dll",
+                        "libva_win32.dll",
+                        "libvpl-2.dll",
                     ]
                     for dep in runtime_deps:
                         src = os.path.join(msys_bin, dep)
