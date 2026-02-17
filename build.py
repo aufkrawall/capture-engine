@@ -1643,10 +1643,6 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
 
     add_sources(layer_sources, obj_dir)
 
-    # REMOVED: imgui_obj_dir and imgui_sources - No longer using ImGui
-    # imgui_obj_dir = os.path.join(obj_dir, "imgui")
-    # os.makedirs(imgui_obj_dir, exist_ok=True)
-    # add_sources(imgui_sources, imgui_obj_dir)
 
     if not src_obj_pairs:
         log("Error: No layer sources found.")
@@ -1793,247 +1789,8 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         log(f"Error linking layer: {e}")
 
 
-def compile_d3d12_wrappers_msvc(env, arch):
-    """
-    Compile D3D12 wrappers using MSVC.
-    Required because MinGW ABI is incompatible with D3D12 headers (WIDL_EXPLICIT_AGGREGATE_RETURNS).
-    """
-    log("Checking for MSVC to compile D3D12 wrappers...")
-
-    # 1. Detect MSVC
-    vs_root = r"C:\Program Files\Microsoft Visual Studio\2022\Community"
-    if not os.path.exists(vs_root):
-        vs_root = r"C:\Program Files\Microsoft Visual Studio\18\Community"  # As seen in previous script
-
-    # helper to find latest version in a dir
-    def find_latest_version(path):
-        if not os.path.exists(path):
-            return None
-        versions = [
-            d
-            for d in os.listdir(path)
-            if os.path.isdir(os.path.join(path, d)) and d[0].isdigit()
-        ]
-        if not versions:
-            return None
-        return sorted(versions)[-1]
-
-    # Find MSVC Tools
-    msvc_tools_root = os.path.join(vs_root, "VC", "Tools", "MSVC")
-    msvc_ver = find_latest_version(msvc_tools_root)
-
-    if not msvc_ver:
-        log("Warning: MSVC Tools not found. Skipping D3D12 wrappers (MSVC).")
-        return False, None
-
-    # Detect architecture tools
-    msvc_include = os.path.join(msvc_tools_root, msvc_ver, "include")
-    if arch == "x64":
-        msvc_bin = os.path.join(msvc_tools_root, msvc_ver, "bin", "Hostx64", "x64")
-        msvc_lib = os.path.join(msvc_tools_root, msvc_ver, "lib", "x64")
-        sdk_arch = "x64"
-    else:
-        msvc_bin = os.path.join(msvc_tools_root, msvc_ver, "bin", "Hostx64", "x86")
-        msvc_lib = os.path.join(msvc_tools_root, msvc_ver, "lib", "x86")
-        sdk_arch = "x86"
-
-    cl_exe = os.path.join(msvc_bin, "cl.exe")
-    link_exe = os.path.join(msvc_bin, "link.exe")
-
-    if not os.path.exists(cl_exe):
-        log(f"Warning: cl.exe not found at {cl_exe}")
-        return False, None
-
-    # 2. Detect Windows SDK
-    win_sdk_root = r"C:\Program Files (x86)\Windows Kits\10"
-    win_sdk_include = os.path.join(win_sdk_root, "Include")
-    win_sdk_ver = find_latest_version(win_sdk_include)
-
-    if not win_sdk_ver:
-        log("Warning: Windows SDK not found.")
-        return False, None
-
-    sdk_include_um = os.path.join(win_sdk_include, win_sdk_ver, "um")
-    sdk_include_shared = os.path.join(win_sdk_include, win_sdk_ver, "shared")
-    sdk_include_ucrt = os.path.join(win_sdk_include, win_sdk_ver, "ucrt")
-    # sdk_lib_um = os.path.join(win_sdk_root, "Lib", win_sdk_ver, "um", "x64")
-    # sdk_lib_ucrt = os.path.join(win_sdk_root, "Lib", win_sdk_ver, "ucrt", "x64")
-
-    # 3. Setup paths
-    obj_dir = os.path.join(BUILD_DIR, "obj", f"msvc_{arch}")
-    os.makedirs(obj_dir, exist_ok=True)
-    suffix = "" if arch == "x64" else "_x86"
-    dll_out = os.path.join(BIN_DIR, f"d3d12_wrappers{suffix}.dll")
-    implib_out = os.path.join(BUILD_DIR, "lib", f"d3d12_wrappers{suffix}.lib")
-    os.makedirs(os.path.dirname(implib_out), exist_ok=True)
-
-    sources = [
-        os.path.join(PROJECT_ROOT, "hook", "wrappers", "d3d12_device_wrap.cpp"),
-        os.path.join(PROJECT_ROOT, "hook", "wrappers", "d3d12_commandqueue_wrap.cpp"),
-        os.path.join(PROJECT_ROOT, "hook", "wrappers", "d3d12_wrapper_interface.cpp"),
-    ]
-
-    include_paths = [
-        msvc_include,
-        sdk_include_um,
-        sdk_include_shared,
-        sdk_include_ucrt,
-        os.path.join(PROJECT_ROOT, "hook", "wrappers"),
-        os.path.join(PROJECT_ROOT, "hook", "apis"),
-        os.path.join(PROJECT_ROOT, "hook", "common"),
-        os.path.join(PROJECT_ROOT, "common"),
-    ]
-
-    # 4. Compile
-    cflags = [
-        "/nologo",
-        "/c",
-        "/O2",
-        "/MT",
-        "/EHsc",
-        "/W3",
-        "/std:c++20",
-        "/DUNICODE",
-        "/D_UNICODE",
-        "/DWIN32",
-        "/D_WINDOWS",
-    ]
-    for inc in include_paths:
-        cflags.append(f"/I{inc}")
-
-    obj_files = []
-
-    # Set MSVC environment (PATH)
-    msvc_env = env.copy()
-    msvc_env["PATH"] = msvc_bin + os.pathsep + msvc_env.get("PATH", "")
-
-    # Parallel Compilation Logic for MSVC
-    src_obj_pairs = []
-
-    for src in sources:
-        if not os.path.exists(src):
-            log(f"Warning: Source not found: {src}")
-            continue
-
-        basename = os.path.splitext(os.path.basename(src))[0]
-        obj = os.path.join(obj_dir, basename + ".obj")
-
-        # Register for LSP (compile_commands.json) regardless of build state
-        cmd = [cl_exe] + cflags + [f"/Fo{obj}", src]
-        COMPILE_COMMANDS.append(
-            {"directory": PROJECT_ROOT, "arguments": cmd, "file": src}
-        )
-
-        # Check timestamp
-        if os.path.exists(obj) and os.path.getmtime(obj) > os.path.getmtime(src):
-            obj_files.append(obj)
-            continue
-
-        src_obj_pairs.append((src, obj))
-
-    if src_obj_pairs:
-        log(f"[MSVC] Compiling {len(src_obj_pairs)} files in parallel...")
-
-        def compile_msvc_obj(args):
-            src, obj = args
-            basename = os.path.splitext(os.path.basename(src))[0]
-            log(f"[MSVC] Compiling {basename}...")
-            cmd = [cl_exe] + cflags + [f"/Fo{obj}", src]
-
-            # COMPILE_COMMANDS handled in main loop
-
-            try:
-                res = subprocess.run(cmd, env=msvc_env, capture_output=True, text=True)
-                if res.returncode != 0:
-                    return (
-                        None,
-                        f"Error compiling {basename}:\n{res.stdout}\n{res.stderr}",
-                    )
-                return obj, None
-            except Exception as e:
-                return None, f"Exception compiling {basename}: {e}"
-
-        with ThreadPoolExecutor(max_workers=cpu_count()) as executor:
-            futures = [
-                executor.submit(compile_msvc_obj, pair) for pair in src_obj_pairs
-            ]
-            for future in as_completed(futures):
-                obj, error = future.result()
-                if error:
-                    log(error)
-                    sys.exit(1)
-                obj_files.append(obj)
-
-    if not obj_files and not os.path.exists(implib_out):
-        log("No MSVC objects compiled and implib doesn't exist.")
-        return False, None
-    elif not obj_files and os.path.exists(implib_out):
-        log("[MSVC] Lib already up to date.")
-        return True, implib_out
-
-    # 5. Create DLL
-    log(f"[MSVC] Linking {os.path.basename(dll_out)}...")
-
-    # Robust handling for locked DLLs
-    if os.path.exists(dll_out):
-        if not safe_delete_file(dll_out):
-            if os.path.exists(dll_out):
-                log(
-                    f"[Warning] {os.path.basename(dll_out)} is still locked, attempting build anyway"
-                )
-                if is_file_locked(dll_out):
-                    locking = find_process_locking_file(dll_out)
-                    if locking:
-                        log(f"[Info] Locking process: {locking}")
-            # Note: MSVC linker can sometimes overwrite even "locked" files, so we continue
-
-    sdk_lib_um = os.path.join(win_sdk_root, "Lib", win_sdk_ver, "um", sdk_arch)
-    sdk_lib_ucrt = os.path.join(win_sdk_root, "Lib", win_sdk_ver, "ucrt", sdk_arch)
-
-    log(f"[MSVC] MSVC Lib Path: {msvc_lib}")
-    log(f"[MSVC] SDK Lib UM Path: {sdk_lib_um}")
-    log(f"[MSVC] SDK Lib UCRT Path: {sdk_lib_ucrt}")
-
-    link_cmd = [
-        link_exe,
-        "/nologo",
-        "/DLL",
-        f"/OUT:{dll_out}",
-        f"/IMPLIB:{implib_out}",
-        f"/LIBPATH:{msvc_lib}",
-        f"/LIBPATH:{sdk_lib_um}",
-        f"/LIBPATH:{sdk_lib_ucrt}",
-        "d3d12.lib",
-        "dxgi.lib",
-        "dxguid.lib",
-        "user32.lib",
-        "kernel32.lib",
-        "uuid.lib",
-        "libucrt.lib",
-        "libcmt.lib",
-        "libvcruntime.lib",
-    ] + obj_files
-
-    try:
-        res = subprocess.run(link_cmd, env=msvc_env, capture_output=True, text=True)
-        if res.returncode != 0:
-            log(f"Error linking DLL:")
-            log(res.stdout)
-            log(res.stderr)
-            # sys.exit(1) # Don't fail entire build, just disable D3D12 wrappers for this arch
-            return False, None
-    except Exception as e:
-        log(f"Exception linking DLL: {e}")
-        # sys.exit(1)
-        return False, None
-
-    log(f"[MSVC] Successfully built {dll_out}")
-    return True, implib_out
-
-
 def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
     ensure_dirs()
-    # setup_imgui()  # REMOVED: No longer using ImGui
 
     compile_custom_ffmpeg(skip_updates=skip_updates)  # Ensure FFmpeg is ready
     clang_exe = os.path.join(clang_bin, "clang++.exe")
@@ -2052,28 +1809,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
     ]
 
     # Compile D3D12 wrappers (MSVC)
-    has_d3d12_msvc_x64, msvc_lib_path_x64 = compile_d3d12_wrappers_msvc(env, "x64")
-    has_d3d12_msvc_x86, msvc_lib_path_x86 = compile_d3d12_wrappers_msvc(env, "x86")
-
-    # We'll use these results later when building hook DLLs
-    msvc_d3d12_status = {
-        "x64": (has_d3d12_msvc_x64, msvc_lib_path_x64),
-        "x86": (has_d3d12_msvc_x86, msvc_lib_path_x86),
-    }
-    if not has_d3d12_msvc_x64 and not has_d3d12_msvc_x86:
-        log("Error: MSVC D3D12 wrappers failed to build!")
-        sys.exit(1)
-
-    # Create dummy MSVC libs to satisfy LLD when linking against MSVC objects/import libs
-    dummy_lib_dir = os.path.join(BUILD_DIR, "dummy_libs")
-    os.makedirs(dummy_lib_dir, exist_ok=True)
-    ar_exe = os.path.join(clang_bin, "llvm-ar.exe")
-    if os.path.exists(ar_exe):
-        for lib in ["libmsvcprt.a", "libOLDNAMES.a"]:
-            path = os.path.join(dummy_lib_dir, lib)
-            if not os.path.exists(path):
-                # Create empty archive
-                subprocess.run([ar_exe, "rc", path], env=env)
 
     # --- Architecture Loop ---
     for arch in ["x64", "x86"]:
@@ -2102,7 +1837,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             "-Wno-microsoft-exception-spec",
             "-D_WIN32_WINNT=0x0A00",
             "-I" + os.path.join(PROJECT_ROOT, "common"),
-            # "-I" + IMGui_DIR,  # REMOVED: No longer using ImGui
         ]
         # if arch == "x64":
         #    curr_cflags.append("-flto")
@@ -2175,13 +1909,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             os.path.join(
                 PROJECT_ROOT, "hook", "apis", "dx12_hook_stable.cpp"
             ),  # WIP - not ready
-            os.path.join(
-                PROJECT_ROOT, "hook", "apis", "dx12_hook_minhook.cpp"
-            ),  # WIP - not ready
-            os.path.join(
-                PROJECT_ROOT, "hook", "wrappers", "vtable_hook_minhook.cpp"
-            ),  # Replaced by custom_hook.cpp
-            # Vulkan backend for custom overlay is a stub, keep it but it compiles
         ]
         hk_src = [f for f in hk_src if f not in excluded_files]
 
@@ -2254,25 +1981,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 "-I" + os.path.join(PROJECT_ROOT, "hook", "wrappers"),
             ]
         )
-
-        # Check for MSVC-compiled D3D12 wrappers
-        has_msvc_d3d12, d3d12_lib = msvc_d3d12_status.get(arch, (False, None))
-        if has_msvc_d3d12 and d3d12_lib and os.path.exists(d3d12_lib):
-            log(f"Enabling D3D12 wrapper support for {arch}...")
-            hk_cflags.append("-DENABLE_D3D12_WRAPPER")
-
-            # Use Delay Load for d3d12_wrappers.dll to avoid dependency issues
-            suffix = "" if arch == "x64" else "_x86"
-            dll_base = f"d3d12_wrappers{suffix}.dll"
-
-            ldflags_hook.append(d3d12_lib)
-            ldflags_hook.append(f"-Wl,--delayload={dll_base}")
-            ldflags_hook.append("-ldelayimp")  # MinGW delay load helper
-
-            ldflags_hook.append("-L" + dummy_lib_dir)
-            if has_msvc_d3d12:
-                # Ensure proper rebuild if MSVC lib changed?
-                pass
 
         hk_objs = []
         src_obj_pairs = []

@@ -30,7 +30,7 @@ void SetCrashProcessName(const char *name) {
 // Trace function for debugging the crash handler itself
 void TraceCrash(const char *msg) {
   char path[MAX_PATH];
-  snprintf(path, sizeof(path), "%s\\crash_handler_trace.txt",
+  snprintf(path, sizeof(path), "%s\\crash.log",
            g_DumpDir.c_str());
   FILE *f = fopen(path, "a");
   if (f) {
@@ -147,7 +147,7 @@ CrashHandlerExceptionFilter(EXCEPTION_POINTERS *pExceptionPointers) {
 
   // CRITICAL: Early-exit for C++ exceptions (0xE06D7363) to prevent log spam
   // These are normal throw/catch operations handled by the C++ runtime
-  // Logging them fills crash_handler_trace.txt with 12MB+ of useless data
+  // Logging them fills crash.log with 12MB+ of useless data
   if (code == 0xE06D7363) {
     return EXCEPTION_CONTINUE_SEARCH;
   }
@@ -202,51 +202,6 @@ CrashHandlerExceptionFilter(EXCEPTION_POINTERS *pExceptionPointers) {
 
   TraceCrash("CRASH DETECTED - Handling exception");
 
-  // Write simple crash info file immediately (in case MiniDumpWriteDump fails)
-  time_t now = time(0);
-  struct tm tstruct;
-  char timeBuf[80];
-  localtime_s(&tstruct, &now);
-  strftime(timeBuf, sizeof(timeBuf), "%Y%m%d_%H%M%S", &tstruct);
-
-  char infoPath[MAX_PATH];
-  snprintf(infoPath, sizeof(infoPath), "%s\\crash_%s_info.txt",
-           g_DumpDir.c_str(), timeBuf);
-  FILE *infoFile = fopen(infoPath, "w");
-  if (infoFile) {
-    fprintf(infoFile, "Crash Time: %s\n", timeBuf);
-    fprintf(infoFile, "Exception Code: 0x%08lX\n", code);
-    fprintf(infoFile, "Exception Address: %p\n",
-            pExceptionPointers->ExceptionRecord->ExceptionAddress);
-    fprintf(infoFile, "Thread ID: %lu\n", GetCurrentThreadId());
-    fprintf(infoFile, "Process ID: %lu\n", GetCurrentProcessId());
-
-    // Log exception-specific info
-    if (code == EXCEPTION_ACCESS_VIOLATION &&
-        pExceptionPointers->ExceptionRecord->NumberParameters >= 2) {
-      fprintf(infoFile, "Access Violation Type: %s\n",
-              pExceptionPointers->ExceptionRecord->ExceptionInformation[0] == 0
-                  ? "READ"
-                  : "WRITE");
-      fprintf(
-          infoFile, "Access Violation Address: %p\n",
-          (void *)pExceptionPointers->ExceptionRecord->ExceptionInformation[1]);
-    }
-
-    // Log GPU crash info for UE5 GPU crashes
-    if (code == 0x00008000) {
-      fprintf(infoFile, "GPU Crash: UE5 D3D Device Removed / GPU Crash\n");
-      fprintf(infoFile, "This is typically caused by:\n");
-      fprintf(infoFile,
-              "  - GPU driver crash or TDR (Timeout Detection and Recovery)\n");
-      fprintf(infoFile, "  - GPU memory exhaustion\n");
-      fprintf(infoFile, "  - GPU hardware fault\n");
-      fprintf(infoFile, "  - DXGI_ERROR_DEVICE_REMOVED\n");
-    }
-
-    fclose(infoFile);
-    TraceCrash("Crash info file written");
-  }
 
   // Ensure trace log goes to the correct dir
   TraceCrash("CrashHandlerExceptionFilter entered");
