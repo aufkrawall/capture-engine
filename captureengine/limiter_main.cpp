@@ -2,7 +2,7 @@
 #include "../common/logging.h"
 #include "../common/process_ipc.h"
 #include "../common/shared_defs.h"
-#include <Windows.h>
+#include <windows.h>
 #include <atomic>
 #include <avrt.h>
 #include <chrono>

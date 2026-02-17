@@ -1,6 +1,6 @@
 #pragma once
 #include "../../common/shared_defs.h"
-#include <Windows.h>
+#include <windows.h>
 
 class IPCClient {
 public:

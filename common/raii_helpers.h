@@ -4,7 +4,7 @@
 // Provides automatic cleanup for Windows handles, COM objects, Vulkan
 // resources, etc. All wrappers are move-only to prevent double-free issues.
 
-#include <Windows.h>
+#include <windows.h>
 #include <functional>
 #include <utility>
 

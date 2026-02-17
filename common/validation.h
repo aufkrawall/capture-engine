@@ -219,7 +219,7 @@ inline Result Err(ErrorCode c, const char *msg = nullptr) {
 // Inline implementation of CE_LogImpl for header-only usage
 // Can be overridden by defining CE_CUSTOM_LOG before including this header
 #ifndef CE_CUSTOM_LOG
-#include <Windows.h>
+#include <windows.h>
 #include <cstdarg>
 #include <cstdio>
 

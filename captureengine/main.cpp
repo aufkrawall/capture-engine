@@ -8,7 +8,7 @@
 #include "../common/process_ipc.h"
 #include "injection.h"
 #include "tray.h"
-#include <Windows.h>
+#include <windows.h>
 #include <atomic>
 #include <shellapi.h>
 #include <string>

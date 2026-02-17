@@ -2,7 +2,7 @@
 // frame_timing.h - Unified frame timing and PTS calculation
 // Provides consistent frame pacing across WGC and Inject capture paths
 
-#include <Windows.h>
+#include <windows.h>
 #include <atomic>
 #include <cstdint>
 

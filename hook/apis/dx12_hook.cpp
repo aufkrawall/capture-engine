@@ -37,6 +37,7 @@
 #include "dx12_hook.h"
 #include "graphics_hook.h"
 #include "lod_helper.h"
+#include "../wrappers/root_signature_parser.h"
 
 #include "../wrappers/vtable_hook.h"
 #include "../wrappers/wrapper_base.h"
@@ -374,6 +375,8 @@ void STDMETHODCALLTYPE
 DetourExecuteCommandLists(ID3D12CommandQueue *pThis, UINT NumCommandLists,
                           ID3D12CommandList *const *ppCommandLists);
 void DX12_HookQueueVTable(ID3D12CommandQueue *queue);
+void DX12_HookDeviceVTable(ID3D12Device *device);
+
 HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory *pThis,
                                                 IUnknown *pDevice,
                                                 DXGI_SWAP_CHAIN_DESC *pDesc,
@@ -383,6 +386,12 @@ DetourCreateSwapChainForHwnd(IDXGIFactory2 *pThis, IUnknown *pDevice, HWND hWnd,
                              const DXGI_SWAP_CHAIN_DESC1 *pDesc,
                              const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFDesc,
                              IDXGIOutput *pOut, IDXGISwapChain1 **ppSC);
+void STDMETHODCALLTYPE
+DetourCreateSampler(ID3D12Device *pDevice, const D3D12_SAMPLER_DESC *pDesc,
+                    D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor);
+
+extern "C" BOOL WINAPI ApplyDX12SamplerOverridesCallback(D3D12_SAMPLER_DESC *pDesc);
+
 
 // REQUIRED EXPORTS
 void DX12_AdjustWrapperResizeDepth(int delta) {
@@ -824,6 +833,10 @@ static void HookSwapchainVTableViaTempSwapchain(bool presentOnly) {
     pFactory->Release();
     return;
   }
+
+  // Hook CreateSampler on the device vtable
+  // All D3D12 devices share the same vtable, so this hooks ALL devices
+  DX12_HookDeviceVTable(pDevice);
 
   D3D12_COMMAND_QUEUE_DESC queueDesc = {};
   queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -2112,6 +2125,42 @@ void DX12_HookQueueVTable(ID3D12CommandQueue *queue) {
   }
 }
 
+// Hook device vtable for CreateSampler interception
+void DX12_HookDeviceVTable(ID3D12Device *device) {
+  if (!device)
+    return;
+
+  // Don't hook wrapped devices
+  void *unwrapped = nullptr;
+  static const GUID IID_CWrapD3D12Device = {
+      0xc3d4e5f6, 0x7890, 0xabcd, {0xef, 0x12, 0x34, 0x56, 0x78, 0x90, 0x12, 0x34}};
+  if (SUCCEEDED(device->QueryInterface(IID_CWrapD3D12Device, &unwrapped))) {
+    ((IUnknown *)unwrapped)->Release();
+    return;  // Already wrapped, skip vtable hook
+  }
+
+  static std::recursive_mutex s_DeviceHookMutex;
+  std::lock_guard<std::recursive_mutex> lock(s_DeviceHookMutex);
+
+  void **vtbl = *reinterpret_cast<void ***>(device);
+
+  // CreateSampler is at vtable index 20 in ID3D12Device
+  // ID3D12Object: QueryInterface=0, AddRef=1, Release=2, GetPrivateData=3, SetPrivateData=4, SetPrivateDataInterface=5, SetName=6
+  // ID3D12Device: GetNodeCount=7, CreateCommandQueue=8, CreateCommandAllocator=9,
+  // CreateGraphicsPipelineState=10, CreateComputePipelineState=11, CreateCommandList=12,
+  // CheckFeatureSupport=13, CreateDescriptorHeap=14, GetDescriptorHandleIncrementSize=15,
+  // CreateRootSignature=16, CreateConstantBufferView=17, CreateShaderResourceView=18,
+  // CreateUnorderedAccessView=19, CreateRenderTargetView=20, CreateDepthStencilView=21,
+  // CreateSampler=22
+  // Let's use 22 for CreateSampler
+
+  if (vtbl[22] != (void *)DetourCreateSampler) {
+    HookLog("DX12: Hooking CreateSampler vtable for device %p", device);
+    VTableHook::Create(&vtbl[22], (LPVOID)DetourCreateSampler,
+                       (LPVOID *)&oCreateSampler);
+  }
+}
+
 HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory *pThis,
                                                 IUnknown *pDevice,
                                                 DXGI_SWAP_CHAIN_DESC *pDesc,
@@ -2158,32 +2207,121 @@ DetourCreateSwapChainForHwnd(IDXGIFactory2 *pThis, IUnknown *pDevice, HWND hWnd,
       sc3->Release();
     }
   }
-  return hr;
 }
 
 void STDMETHODCALLTYPE
 DetourCreateSampler(ID3D12Device *pDevice, const D3D12_SAMPLER_DESC *pDesc,
                     D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) {
-  if (oCreateSampler)
-    oCreateSampler(pDevice, pDesc, DestDescriptor);
+  if (!pDesc || !oCreateSampler) {
+    if (oCreateSampler)
+      oCreateSampler(pDevice, pDesc, DestDescriptor);
+    return;
+  }
+
+  HookLog("DetourCreateSampler: CALLED, Filter=0x%X, MaxAniso=%d, MipBias=%.2f",
+          pDesc->Filter, pDesc->MaxAnisotropy, pDesc->MipLODBias);
+
+  D3D12_SAMPLER_DESC modifiedDesc = *pDesc;
+  ApplyDX12SamplerOverridesCallback(&modifiedDesc);
+
+  HookLog("DetourCreateSampler: MODIFIED, Filter=0x%X, MaxAniso=%d, MipBias=%.2f",
+          modifiedDesc.Filter, modifiedDesc.MaxAnisotropy, modifiedDesc.MipLODBias);
+
+  oCreateSampler(pDevice, &modifiedDesc, DestDescriptor);
 }
+
 HRESULT WINAPI
 DetourSerializeRootSignature(const D3D12_ROOT_SIGNATURE_DESC *pRootSignature,
                              D3D_ROOT_SIGNATURE_VERSION Version,
                              ID3DBlob **ppBlob, ID3DBlob **ppErrorBlob) {
+  if (!pRootSignature || !ppBlob) {
+    if (oSerializeRootSignature)
+      return oSerializeRootSignature(pRootSignature, Version, ppBlob, ppErrorBlob);
+    return E_INVALIDARG;
+  }
+
+  HookLog("DetourSerializeRootSignature: CALLED, NumStaticSamplers=%u",
+          pRootSignature->NumStaticSamplers);
+
+  if (pRootSignature->NumStaticSamplers > 0 && pRootSignature->pStaticSamplers) {
+    // Clone the descriptor with modified samplers
+    D3D12_ROOT_SIGNATURE_DESC modified = *pRootSignature;
+    std::vector<D3D12_STATIC_SAMPLER_DESC> modifiedSamplers(
+        pRootSignature->pStaticSamplers,
+        pRootSignature->pStaticSamplers + pRootSignature->NumStaticSamplers
+    );
+
+    bool anyModified = false;
+    for (auto& sampler : modifiedSamplers) {
+      if (RootSignatureParser::ApplyStaticSamplerOverrides(sampler)) {
+        anyModified = true;
+      }
+    }
+
+    if (anyModified) {
+      HookLog("DetourSerializeRootSignature: Modified %zu static samplers for AF/mip bias",
+              modifiedSamplers.size());
+      modified.pStaticSamplers = modifiedSamplers.data();
+      if (oSerializeRootSignature)
+        return oSerializeRootSignature(&modified, Version, ppBlob, ppErrorBlob);
+    }
+  }
+
   if (oSerializeRootSignature)
-    return oSerializeRootSignature(pRootSignature, Version, ppBlob,
-                                   ppErrorBlob);
+    return oSerializeRootSignature(pRootSignature, Version, ppBlob, ppErrorBlob);
   return E_FAIL;
 }
+
 HRESULT WINAPI DetourSerializeVersionedRootSignature(
     const D3D12_VERSIONED_ROOT_SIGNATURE_DESC *pRootSignature,
     ID3DBlob **ppBlob, ID3DBlob **ppErrorBlob) {
+  if (!pRootSignature || !ppBlob) {
+    if (oSerializeVersionedRootSignature)
+      return oSerializeVersionedRootSignature(pRootSignature, ppBlob, ppErrorBlob);
+    return E_INVALIDARG;
+  }
+
+  uint32_t numStaticSamplers = 0;
+  if (pRootSignature->Version == D3D_ROOT_SIGNATURE_VERSION_1)
+    numStaticSamplers = pRootSignature->Desc_1_0.NumStaticSamplers;
+  HookLog("DetourSerializeVersionedRootSignature: CALLED, Version=%u, NumStaticSamplers=%u",
+          pRootSignature->Version, numStaticSamplers);
+
+  if (pRootSignature->Version == D3D_ROOT_SIGNATURE_VERSION_1) {
+    const D3D12_ROOT_SIGNATURE_DESC* pDesc = &pRootSignature->Desc_1_0;
+
+    if (pDesc->NumStaticSamplers > 0 && pDesc->pStaticSamplers) {
+      D3D12_VERSIONED_ROOT_SIGNATURE_DESC modified = *pRootSignature;
+      D3D12_ROOT_SIGNATURE_DESC modifiedDesc = *pDesc;
+
+      std::vector<D3D12_STATIC_SAMPLER_DESC> modifiedSamplers(
+          pDesc->pStaticSamplers,
+          pDesc->pStaticSamplers + pDesc->NumStaticSamplers
+      );
+
+      bool anyModified = false;
+      for (auto& sampler : modifiedSamplers) {
+        if (RootSignatureParser::ApplyStaticSamplerOverrides(sampler)) {
+          anyModified = true;
+        }
+      }
+
+      if (anyModified) {
+        HookLog("DetourSerializeVersionedRootSignature: Modified %zu static samplers (v1.0)",
+                modifiedSamplers.size());
+        modifiedDesc.pStaticSamplers = modifiedSamplers.data();
+        modified.Desc_1_0 = modifiedDesc;
+        if (oSerializeVersionedRootSignature)
+          return oSerializeVersionedRootSignature(&modified, ppBlob, ppErrorBlob);
+      }
+    }
+  }
+
   if (oSerializeVersionedRootSignature)
-    return oSerializeVersionedRootSignature(pRootSignature, ppBlob,
-                                            ppErrorBlob);
+    return oSerializeVersionedRootSignature(pRootSignature, ppBlob, ppErrorBlob);
   return E_FAIL;
 }
+
 HRESULT STDMETHODCALLTYPE DetourCreateCommittedResource(
     ID3D12Device *device, const D3D12_HEAP_PROPERTIES *pHeapProperties,
     D3D12_HEAP_FLAGS HeapFlags, const D3D12_RESOURCE_DESC *pDesc,

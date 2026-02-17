@@ -1,7 +1,7 @@
 #pragma once
 
 #include "resource.h"
-#include <Windows.h>
+#include <windows.h>
 #include <functional>
 #include <string>
 

@@ -1,6 +1,6 @@
 #include "config.h"
 #include "logging.h"
-#include <Windows.h>
+#include <windows.h>
 #include <algorithm>
 #include <fstream>
 #include <sstream>

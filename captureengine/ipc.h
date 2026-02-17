@@ -2,7 +2,7 @@
 
 #include "../common/config.h"
 #include "../common/shared_defs.h"
-#include <Windows.h>
+#include <windows.h>
 
 class IPCManager {
 public:

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <Windows.h>
+#include <windows.h>
 #include <atomic>
 #include <audioclient.h>
 #include <deque>

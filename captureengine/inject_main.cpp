@@ -4,10 +4,12 @@
 #include "../common/shared_defs.h"
 #include "host_metrics.h"
 #include "injection.h"
-#include <Windows.h>
+#include <windows.h>
 #include <atomic>
 #include <filesystem>
 #include <psapi.h>
+#include <algorithm>
+#include <cctype>
 
 namespace fs = std::filesystem;
 

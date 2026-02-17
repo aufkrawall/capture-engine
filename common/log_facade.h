@@ -2,7 +2,7 @@
 // log_facade.h - Unified logging interface for capture project
 // Provides consistent logging across hook DLL and capture engine
 
-#include <Windows.h>
+#include <windows.h>
 #include <cstdarg>
 #include <cstdio>
 #include <mutex>

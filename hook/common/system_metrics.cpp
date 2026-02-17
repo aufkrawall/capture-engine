@@ -1,7 +1,7 @@
 #include "system_metrics.h"
 #include "hook_common.h"
 #include "ipc_client.h"
-#include <Pdh.h>
+#include <pdh.h>
 #include <PdhMsg.h>
 #include <algorithm>
 #include <cstdio>

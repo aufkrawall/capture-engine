@@ -1,6 +1,6 @@
 #include "perf_logger.h"
 #include "hook_common.h"
-#include <Windows.h>
+#include <windows.h>
 #include <filesystem>
 
 PerfLogger &PerfLogger::Get() {
