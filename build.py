@@ -1949,8 +1949,6 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
 
     ldflags = [
         "-shared",
-        "-static-libgcc",
-        "-static-libstdc++",
         layer_def,
         vulkan_lib,
         "-lgdi32",
@@ -1961,11 +1959,10 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         "-lwinmm",
         "-o",
         layer_dll,
-    ] + LD_OPT_FLAGS
+    ]
 
     if arch == "x86":
         ldflags.append("-Wl,--kill-at")
-        ldflags.append("-static")
 
     # Use ccache for linking too if available
     ccache_exe = shutil.which("ccache", path=env["PATH"])
@@ -2549,9 +2546,18 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                         "libva_win32.dll",
                         "libvpl-2.dll",
                         "libwinpthread-1.dll",
+                        "libgcc_s_seh-1.dll",
+                        "libstdc++-6.dll",
                     ]
                     for dep in runtime_deps:
+                        # Try MSYS2 first, then system mingw
                         src = os.path.join(msys_bin, dep)
+                        if not os.path.exists(src):
+                            # Try system mingw bin directory
+                            if arch == "x64":
+                                src = os.path.join("/usr", "x86_64-w64-mingw32", "bin", dep)
+                            else:
+                                src = os.path.join("/usr", "i686-w64-mingw32", "bin", dep)
                         if os.path.exists(src):
                             shutil.copy(src, ffmpeg_bin_dst)
                             shutil.copy(src, BIN_DIR)  # Also copy to main folder for Vulkan layer
