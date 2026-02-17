@@ -4,7 +4,7 @@
 
 #include "wgc_capture.h"
 #include "../common/logging.h"
-#include "../mediaengine/mediaengine.h"
+#include "mediaengine_loader.h"
 #include <chrono>
 #include <d3d11.h>
 #include <dxgi.h>

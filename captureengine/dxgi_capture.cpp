@@ -1,6 +1,6 @@
 #include "dxgi_capture.h"
 #include "../common/logging.h"
-#include "../mediaengine/mediaengine.h"
+#include "mediaengine_loader.h"
 #include <mutex>
 #include <vector>
 

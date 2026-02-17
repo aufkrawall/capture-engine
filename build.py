@@ -2539,17 +2539,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                         if os.path.exists(src):
                             shutil.copy(src, ffmpeg_bin_dst)
                             log(f"Copied runtime dep {dep}")
-                    
-                    # Also copy to main folder since delay-load isn't available on Linux
-                    # TODO: Implement dynamic loading via LoadLibrary to avoid this
-                    log("Copying FFmpeg DLLs to main folder (required for Linux builds)...")
-                    for dll in glob.glob(os.path.join(ffmpeg_bin_src, "*.dll")):
-                        shutil.copy(dll, BIN_DIR)
-                        log(f"Copied {os.path.basename(dll)} to main folder")
-                    for dep in runtime_deps:
-                        src = os.path.join(msys_bin, dep)
-                        if os.path.exists(src):
-                            shutil.copy(src, BIN_DIR)
 
     # Compile and run tests (using x64 objects) if requested
     if should_run_tests:
@@ -2631,8 +2620,10 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             "-lwintrust",
             "-lpdh",
             "-lntdll",
-            me_lib,
         ]
+        # Don't link mediaengine.dll on Linux - load dynamically instead
+        if not IS_LINUX:
+            ce_ldflags.append(me_lib)
         # Delay-load only works with MSYS2's lld on Windows
         # On Linux, we need to copy FFmpeg DLLs to main folder or use LoadLibrary
         if not IS_LINUX:

@@ -4,7 +4,7 @@
 #include "../common/logging.h"
 #include "../common/process_ipc.h"
 #include "../common/shared_defs.h"
-#include "../mediaengine/mediaengine.h"
+#include "mediaengine_loader.h"
 #include "dxgi_capture.h"
 #include "wgc_capture.h"
 #include <algorithm>
@@ -714,6 +714,18 @@ void StopRecording() {
 int MediaProcessMain(const AppConfig &config) {
   timeBeginPeriod(1);
 
+  // Get exe directory for DLL loading
+  char exePath[MAX_PATH];
+  GetModuleFileNameA(NULL, exePath, MAX_PATH);
+  std::string exeDir = std::string(exePath);
+  exeDir = exeDir.substr(0, exeDir.find_last_of("\\/"));
+
+  // Load mediaengine.dll dynamically (with FFmpeg DLLs in ffmpeg/ subfolder)
+  if (!MediaEngine_Load(exeDir.c_str())) {
+    LogError("[Media] Failed to load mediaengine.dll");
+    return 1;
+  }
+
   DWORD priorityClass = NORMAL_PRIORITY_CLASS;
   if (config.processPriority == "idle")
     priorityClass = IDLE_PRIORITY_CLASS;
@@ -1239,6 +1251,7 @@ int MediaProcessMain(const AppConfig &config) {
     CloseHandle(g_hMapFile);
 
   MediaEngine_Shutdown();
+  MediaEngine_Unload();
   timeEndPeriod(1);
 
   LogInfo("[Media] Process exiting");
