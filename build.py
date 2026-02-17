@@ -1944,12 +1944,8 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
 
     layer_dll = os.path.join(bin_dir, layer_dll_name)
 
-    # Use .def file for exports to avoid attributes mismatch with official headers
-    layer_def = os.path.join(layer_dir, "layer.def")
-
     ldflags = [
         "-shared",
-        layer_def,
         vulkan_lib,
         "-lgdi32",
         "-luser32",

@@ -30,10 +30,10 @@ CELayerState g_LayerState;
 static bool PerformEarlyWhitelistCheck();
 
 // Forward declarations
-extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
-CELayer_vkGetInstanceProcAddr(VkInstance instance, const char *pName);
-extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
-CELayer_vkGetDeviceProcAddr(VkDevice device, const char *pName);
+extern "C" __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+vkGetInstanceProcAddr(VkInstance instance, const char *pName);
+extern "C" __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+vkGetDeviceProcAddr(VkDevice device, const char *pName);
 
 // File logging for when IPC is not available
 static FILE *g_LogFile = nullptr;
@@ -94,8 +94,8 @@ void LayerLog(const char *fmt, ...) {
 // Layer Negotiation
 // ============================================================================
 
-extern "C" VKAPI_ATTR VkResult VKAPI_CALL
-CELayer_vkNegotiateLoaderLayerInterfaceVersion(
+extern "C" __declspec(dllexport) VKAPI_ATTR VkResult VKAPI_CALL
+vkNegotiateLoaderLayerInterfaceVersion(
     VkNegotiateLayerInterface *pVersionStruct) {
   EarlyLog("NegotiateLoaderLayerInterfaceVersion called");
 
@@ -120,8 +120,8 @@ CELayer_vkNegotiateLoaderLayerInterfaceVersion(
   EarlyLog("IPC connected, initializing layer functions...");
 
   pVersionStruct->loaderLayerInterfaceVersion = 2;
-  pVersionStruct->pfnGetInstanceProcAddr = CELayer_vkGetInstanceProcAddr;
-  pVersionStruct->pfnGetDeviceProcAddr = CELayer_vkGetDeviceProcAddr;
+  pVersionStruct->pfnGetInstanceProcAddr = vkGetInstanceProcAddr;
+  pVersionStruct->pfnGetDeviceProcAddr = vkGetDeviceProcAddr;
   pVersionStruct->pfnGetPhysicalDeviceProcAddr = nullptr;
 
   g_LayerState.initialized = true;
@@ -183,8 +183,8 @@ static bool PerformEarlyWhitelistCheck() {
 // ProcAddr Implementations
 // ============================================================================
 
-extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
-CELayer_vkGetInstanceProcAddr(VkInstance instance, const char *pName) {
+extern "C" __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+vkGetInstanceProcAddr(VkInstance instance, const char *pName) {
   if (!pName)
     return nullptr;
 
@@ -192,10 +192,10 @@ CELayer_vkGetInstanceProcAddr(VkInstance instance, const char *pName) {
 
   // Layer-level functions (no instance needed)
   if (strcmp(pName, "vkNegotiateLoaderLayerInterfaceVersion") == 0) {
-    return (PFN_vkVoidFunction)CELayer_vkNegotiateLoaderLayerInterfaceVersion;
+    return (PFN_vkVoidFunction)vkNegotiateLoaderLayerInterfaceVersion;
   }
   if (strcmp(pName, "vkGetInstanceProcAddr") == 0) {
-    return (PFN_vkVoidFunction)CELayer_vkGetInstanceProcAddr;
+    return (PFN_vkVoidFunction)vkGetInstanceProcAddr;
   }
   if (strcmp(pName, "vkCreateInstance") == 0) {
     return (PFN_vkVoidFunction)Capture_vkCreateInstance;
@@ -223,7 +223,7 @@ CELayer_vkGetInstanceProcAddr(VkInstance instance, const char *pName) {
 
   // Always intercept DeviceProcAddr to handle chain
   if (strcmp(pName, "vkGetDeviceProcAddr") == 0)
-    return (PFN_vkVoidFunction)CELayer_vkGetDeviceProcAddr;
+    return (PFN_vkVoidFunction)vkGetDeviceProcAddr;
 
   // Conditional Hooks (Only if whitelisted)
   if (whitelisted) {
@@ -261,15 +261,15 @@ CELayer_vkGetInstanceProcAddr(VkInstance instance, const char *pName) {
   return nullptr;
 }
 
-extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
-CELayer_vkGetDeviceProcAddr(VkDevice device, const char *pName) {
+extern "C" __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+vkGetDeviceProcAddr(VkDevice device, const char *pName) {
   if (!pName || !device)
     return nullptr;
 
   bool whitelisted = g_LayerState.whitelisted;
 
   if (strcmp(pName, "vkGetDeviceProcAddr") == 0)
-    return (PFN_vkVoidFunction)CELayer_vkGetDeviceProcAddr;
+    return (PFN_vkVoidFunction)vkGetDeviceProcAddr;
   if (strcmp(pName, "vkDestroyDevice") == 0)
     return (PFN_vkVoidFunction)Capture_vkDestroyDevice;
 
