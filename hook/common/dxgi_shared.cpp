@@ -9,6 +9,7 @@
 #include "hook_common.h"
 #include "logging.h"
 #include "performance_metrics.h"
+#include "fps_limiter.h"
 
 #include <atomic>
 #include <chrono>
@@ -349,6 +350,12 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
     }
   }
 
+  // FPS Limiter - apply frame pacing before present
+  if (g_IPC) {
+    g_SharedFpsLimiter.SetIPCClient(g_IPC);
+    g_SharedFpsLimiter.Apply();
+  }
+
   VSyncOverride vsync = GetVSyncOverride();
   if (vsync.shouldOverride)
     SyncInterval = (UINT)vsync.presentInterval;
@@ -442,6 +449,12 @@ DetourPresent1(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT Flags,
     HandleDX12ProcessFrame(pSwapChain, true);
   } else if (api == APIType::D3D11) {
     HandleDX11ProcessFrame(pSwapChain, true);
+  }
+
+  // FPS Limiter - apply frame pacing before present
+  if (g_IPC) {
+    g_SharedFpsLimiter.SetIPCClient(g_IPC);
+    g_SharedFpsLimiter.Apply();
   }
 
   VSyncOverride vsync = GetVSyncOverride();

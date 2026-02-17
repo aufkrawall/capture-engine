@@ -1,0 +1,28 @@
+# Clangd configuration for CaptureEngine (WSL2 cross-compilation for Windows)
+
+CompileFlags:
+  Add:
+    - "-std=c++20"
+    - "-D_WIN32_WINNT=0x0A00"
+    - "-DWIN32"
+    - "-D_WINDOWS"
+    - "-D__MINGW64__"
+    - "--target=x86_64-w64-windows-gnu"
+    - "-isystem/usr/x86_64-w64-mingw32/include"
+    - "-isystem/usr/x86_64-w64-mingw32/include/c++/15.2.0"
+    - "-isystem/usr/x86_64-w64-mingw32/include/c++/15.2.0/x86_64-w64-mingw32"
+    - "-I%REPO_ROOT%/common"
+    - "-I%REPO_ROOT%/hook"
+    - "-I%REPO_ROOT%/hook/common"
+    - "-I%REPO_ROOT%/hook/apis"
+    - "-I%REPO_ROOT%/hook/wrappers"
+    - "-I%REPO_ROOT%/hook/vulkan_layer"
+    - "-I%REPO_ROOT%/captureengine"
+    - "-I%REPO_ROOT%/mediaengine"
+    - "-I%REPO_ROOT%/external/ffmpeg/include"
+
+Diagnostics:
+  Suppress: "*"
+
+Index:
+  Background: Build

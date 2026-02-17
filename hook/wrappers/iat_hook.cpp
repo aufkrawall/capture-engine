@@ -485,8 +485,6 @@ extern HRESULT
 extern PFN_CreateDXGIFactory oCreateDXGIFactory;
 extern PFN_CreateDXGIFactory1 oCreateDXGIFactory1;
 extern PFN_CreateDXGIFactory2 oCreateDXGIFactory2;
-extern PFN_D3D12CreateDevice oD3D12CreateDevice;
-extern PFN_D3D12CreateDevice oD3D12CreateDevice;
 
 // D3D12 Root Signature hooks (from dx12_hook.cpp)
 typedef HRESULT(WINAPI *PFN_D3D12_SERIALIZE_ROOT_SIGNATURE)(
