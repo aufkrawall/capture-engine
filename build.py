@@ -2683,6 +2683,22 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             x86_cflags = ["-std=c++20", "-O3", "-m32", "-Wall", "-D_WIN32_WINNT=0x0A00"]
             compile_vulkan_layer(x86_env, x86_clang, x86_cflags, "x86")
 
+    # Copy x86 runtime dependencies for Vulkan layer (libgcc_s_dw2-1.dll, etc.)
+    if IS_LINUX:
+        x86_runtime_deps = [
+            "libgcc_s_dw2-1.dll",
+            "libstdc++-6.dll",
+            "libwinpthread-1.dll",
+        ]
+        x86_sysroot_bin = "/usr/i686-w64-mingw32/bin"
+        for dep in x86_runtime_deps:
+            src = os.path.join(x86_sysroot_bin, dep)
+            if os.path.exists(src):
+                dst = os.path.join(BIN_DIR, dep)
+                if not os.path.exists(dst):
+                    shutil.copy(src, dst)
+                    log(f"Copied x86 runtime dep {dep}")
+
     # Cleanup import libraries (use safe delete for consistency)
     me_lib = os.path.join(BIN_DIR, "libmediaengine.dll.a")
     if os.path.exists(me_lib):
