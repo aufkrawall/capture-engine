@@ -19,28 +19,6 @@
 #pragma comment(lib, "winmm.lib")
 #endif
 
-// Static initializer to add ffmpeg/ subfolder to DLL search path
-// This runs before WinMain, allowing FFmpeg DLLs to be found in ffmpeg/ folder
-namespace {
-struct FFmpegDllPathInitializer {
-  FFmpegDllPathInitializer() {
-    char buffer[MAX_PATH];
-    GetModuleFileNameA(NULL, buffer, MAX_PATH);
-    std::string exePath = buffer;
-    std::string baseDir = exePath.substr(0, exePath.find_last_of("\\/"));
-    std::string ffmpegDir = baseDir + "\\ffmpeg";
-
-    if (GetFileAttributesA(ffmpegDir.c_str()) == INVALID_FILE_ATTRIBUTES) {
-      return;  // ffmpeg folder doesn't exist
-    }
-
-    // Use SetDllDirectory to add ffmpeg folder to search path
-    SetDllDirectoryA(ffmpegDir.c_str());
-  }
-};
-static FFmpegDllPathInitializer g_ffmpegDllInitializer;
-} // namespace
-
 // Forward declarations for process entry points
 extern int InjectProcessMain(const AppConfig &config);
 extern int MediaProcessMain(const AppConfig &config);
