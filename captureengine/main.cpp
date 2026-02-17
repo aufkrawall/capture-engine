@@ -19,50 +19,6 @@
 #pragma comment(lib, "winmm.lib")
 #endif
 
-// Static initializer to set FFmpeg DLL directory BEFORE any DLLs are loaded
-// This runs at program startup before WinMain
-namespace {
-struct FFmpegDllPathInitializer {
-  FFmpegDllPathInitializer() {
-    char buffer[MAX_PATH];
-    GetModuleFileNameA(NULL, buffer, MAX_PATH);
-    std::string exePath = buffer;
-    std::string baseDir = exePath.substr(0, exePath.find_last_of("\\/"));
-    std::string ffmpegDir = baseDir + "\\ffmpeg";
-
-    if (GetFileAttributesA(ffmpegDir.c_str()) == INVALID_FILE_ATTRIBUTES) {
-      return;
-    }
-
-    int len = MultiByteToWideChar(CP_ACP, 0, ffmpegDir.c_str(), -1, nullptr, 0);
-    if (len > 0) {
-      std::wstring ffmpegDirW(len, 0);
-      MultiByteToWideChar(CP_ACP, 0, ffmpegDir.c_str(), -1, &ffmpegDirW[0],
-                          len);
-
-      typedef BOOL(WINAPI * SetDefaultDllDirectoriesFn)(DWORD);
-      typedef void *(WINAPI * AddDllDirectoryFn)(PCWSTR);
-
-      HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
-      if (hKernel32) {
-        auto pSetDefaultDllDirectories =
-            (SetDefaultDllDirectoriesFn)GetProcAddress(
-                hKernel32, "SetDefaultDllDirectories");
-        auto pAddDllDirectory =
-            (AddDllDirectoryFn)GetProcAddress(hKernel32, "AddDllDirectory");
-
-        if (pSetDefaultDllDirectories && pAddDllDirectory) {
-          pSetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
-          pAddDllDirectory(ffmpegDirW.c_str());
-        } else {
-          SetDllDirectoryA(ffmpegDir.c_str());
-        }
-      }
-    }
-  }
-};
-static FFmpegDllPathInitializer g_ffmpegDllInitializer;
-} // namespace
 
 // Forward declarations for process entry points
 extern int InjectProcessMain(const AppConfig &config);
@@ -711,10 +667,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
   g_ConfigPath = baseDir + "\\config.ini";
 
   PurgeAllLogsInDir(baseDir + "\\logs");
-
-  // NOTE: FFmpeg DLL path is set by static initializer
-  // (FFmpegDllPathInitializer) before WinMain runs, so we don't need to set it
-  // here
 
   // Load config
   LoadConfig(g_ConfigPath, g_Config);
