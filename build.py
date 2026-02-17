@@ -2513,6 +2513,12 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                         for dll in glob.glob(os.path.join(ffmpeg_bin_src, pattern)):
                             shutil.copy(dll, ffmpeg_bin_dst)
                             log(f"Copied {os.path.basename(dll)} to bin/ffmpeg/")
+                    # Also copy to main folder since delay-load isn't available on Linux
+                    log("Copying FFmpeg DLLs to main folder (required for Linux builds)...")
+                    for pattern in ffmpeg_dlls:
+                        for dll in glob.glob(os.path.join(ffmpeg_bin_src, pattern)):
+                            shutil.copy(dll, BIN_DIR)
+                            log(f"Copied {os.path.basename(dll)} to main folder")
 
     # Compile and run tests (using x64 objects) if requested
     if should_run_tests:
@@ -2596,7 +2602,8 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             "-lntdll",
             me_lib,
         ]
-        # Delay-load only works on Windows with MSYS2's lld
+        # Delay-load only works with MSYS2's lld on Windows
+        # On Linux, we need to copy FFmpeg DLLs to main folder or use LoadLibrary
         if not IS_LINUX:
             ce_ldflags.append("-Wl,--delayload,mediaengine.dll")
             ce_ldflags.append("-ldelayimp")
