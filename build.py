@@ -517,6 +517,7 @@ LINUX_MSYS2_PACKAGES = [
     "mingw-w64-clang-x86_64-libgme",
     "mingw-w64-clang-x86_64-libva",
     "mingw-w64-clang-x86_64-libvpl",
+    "mingw-w64-clang-x86_64-libwinpthread",
 ]
 
 MSYS2_REPO_URL = "https://repo.msys2.org/mingw/clang64"
@@ -2547,11 +2548,13 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                         "libva.dll",
                         "libva_win32.dll",
                         "libvpl-2.dll",
+                        "libwinpthread-1.dll",
                     ]
                     for dep in runtime_deps:
                         src = os.path.join(msys_bin, dep)
                         if os.path.exists(src):
                             shutil.copy(src, ffmpeg_bin_dst)
+                            shutil.copy(src, BIN_DIR)  # Also copy to main folder for Vulkan layer
                             log(f"Copied runtime dep {dep}")
 
     # Compile and run tests (using x64 objects) if requested
