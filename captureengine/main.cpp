@@ -422,37 +422,42 @@ void CheckChildProcessHealth() {
 
 // Registry Helpers for Ephemeral Vulkan Layer Registration
 static void Registry_ManageImplicitLayer(bool install) {
-  HKEY hKey;
-  // HKCU is safer and sufficient for local user
-  if (RegCreateKeyExA(HKEY_CURRENT_USER,
-                      "Software\\Khronos\\Vulkan\\ImplicitLayers", 0, NULL,
-                      REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey,
-                      NULL) == ERROR_SUCCESS) {
+  char buffer[MAX_PATH];
+  GetModuleFileNameA(NULL, buffer, MAX_PATH);
+  std::string exePath = buffer;
+  std::string baseDir = exePath.substr(0, exePath.find_last_of("\\/"));
 
-    char buffer[MAX_PATH];
-    GetModuleFileNameA(NULL, buffer, MAX_PATH);
-    std::string exePath = buffer;
-    std::string baseDir = exePath.substr(0, exePath.find_last_of("\\/"));
+  // Register in both 64-bit and 32-bit (WOW6432Node) registry views
+  // This allows both 64-bit and 32-bit Vulkan apps to see the layers
+  const char* registryPaths[] = {
+    "Software\\Khronos\\Vulkan\\ImplicitLayers",
+    "Software\\WOW6432Node\\Khronos\\Vulkan\\ImplicitLayers"
+  };
 
-    const char *jsons[] = {"VK_LAYER_CE_overlay.json",
-                           "VK_LAYER_CE_overlay_x86.json"};
+  const char *jsons[] = {"VK_LAYER_CE_overlay.json",
+                         "VK_LAYER_CE_overlay_x86.json"};
 
-    for (const char *json : jsons) {
-      std::string fullPath = baseDir + "\\" + json;
-      if (install) {
-        DWORD data = 0;
-        RegSetValueExA(hKey, fullPath.c_str(), 0, REG_DWORD,
-                       (const BYTE *)&data, sizeof(data));
-        LogInfo("[Controller] Registered Vulkan Layer: %s", json);
-      } else {
-        RegDeleteValueA(hKey, fullPath.c_str());
-        LogInfo("[Controller] Unregistered Vulkan Layer: %s", json);
+  for (const char* regPath : registryPaths) {
+    HKEY hKey;
+    if (RegCreateKeyExA(HKEY_CURRENT_USER,
+                        regPath, 0, NULL,
+                        REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey,
+                        NULL) == ERROR_SUCCESS) {
+
+      for (const char *json : jsons) {
+        std::string fullPath = baseDir + "\\" + json;
+        if (install) {
+          DWORD data = 0;
+          RegSetValueExA(hKey, fullPath.c_str(), 0, REG_DWORD,
+                         (const BYTE *)&data, sizeof(data));
+          LogInfo("[Controller] Registered Vulkan Layer: %s in %s", json, regPath);
+        } else {
+          RegDeleteValueA(hKey, fullPath.c_str());
+          LogInfo("[Controller] Unregistered Vulkan Layer: %s from %s", json, regPath);
+        }
       }
+      RegCloseKey(hKey);
     }
-    RegCloseKey(hKey);
-  } else {
-    LogError(
-        "[Controller] Failed to access Vulkan ImplicitLayers registry key.");
   }
 }
 
