@@ -118,6 +118,53 @@ def log(msg: str) -> None:
         pass
 
 
+def patch_amf_header():
+    """Patch AMF SDK header to fix extern C with C++ types.
+    
+    The AMF SDK's DisplayCapture.h has a function declaration that uses C++ types
+    (amf:: namespace) inside an extern C block. This causes C compilers to fail
+    because the C++ types cannot be parsed as C. This patch hides the entire
+    function from C compilers by wrapping it with ifdef __cplusplus.
+    """
+    if IS_LINUX:
+        return  # Not needed on Linux - uses prebuilt FFmpeg
+    
+    amf_header = os.path.join(MSYS2_DIR, "clang64", "include", "AMF", "components", "DisplayCapture.h")
+    
+    if not os.path.exists(amf_header):
+        log("[AMF] Header not found - skipping patch")
+        return
+    
+    with open(amf_header, 'r') as f:
+        content = f.read()
+    
+    # Check if already patched (look for the correct pattern)
+    if '#ifdef __cplusplus' in content and 'extern "C"' in content and 'AMFCreateComponentDisplayCapture' in content:
+        # Check if properly structured (extern C inside ifdef)
+        import re
+        if re.search(r'#ifdef __cplusplus\s*\nextern "C"\s*\n\s*\{', content):
+            log("[AMF] Header already patched - skipping")
+            return
+    
+    import re
+    
+    # Find the extern "C" block with AMFCreateComponentDisplayCapture
+    pattern = r'extern\s+"C"\s*\{([^}]*AMFCreateComponentDisplayCapture[^}]*)\}'
+    match = re.search(pattern, content, re.DOTALL)
+    
+    if match:
+        inner = match.group(1).strip()
+        # Wrap entire block with __cplusplus (hiding C++ types from C)
+        new_block = '#ifdef __cplusplus\nextern "C"\n{\n    ' + inner + '\n}\n#endif'
+        patched = content[:match.start()] + new_block + content[match.end():]
+        
+        with open(amf_header, 'w') as f:
+            f.write(patched)
+        log("[AMF] Patched DisplayCapture.h - hid C++ function from C compilers")
+    else:
+        log("[AMF] Warning: Could not find extern C block to patch")
+
+
 # =============================================================================
 # Locked File Handling Utilities
 # =============================================================================
@@ -524,6 +571,7 @@ def setup_msys2():
     msys_bash = os.path.join(MSYS2_DIR, "usr", "bin", "bash.exe")
     pkg_cmd = f"pacman -S --needed --noconfirm {' '.join(PACKAGES)}"
     run_command([msys_bash, "-lc", pkg_cmd], input_str="\n")
+    patch_amf_header()
 
 
 def check_mingw_packages():
@@ -2016,6 +2064,28 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
     ldflags.extend(LD_OPT_FLAGS)  # Strip debug sections, reduce binary size
     if arch == "x86":
         ldflags.append("-Wl,--kill-at")
+        # x86 mingw32: clang++ defaults to libc++ but mingw32 only has libstdc++
+        # Rebuild objects with -stdlib=libstdc++ to use available stdlib
+        log("[INFO] Rebuilding x86 Vulkan layer with -stdlib=libstdc++")
+        
+        # Re-add -static for proper linking
+        if "-static" not in ldflags:
+            ldflags.insert(0, "-static")
+        
+        # Rebuild all layer objects with -stdlib=libstdc++
+        x86_layer_cflags = layer_cflags + ["-stdlib=libstdc++"]
+        rebuilt_objs = []
+        for src in layer_sources:
+            if not os.path.exists(src):
+                continue
+            basename = os.path.splitext(os.path.basename(src))[0]
+            obj = os.path.join(obj_dir, basename + "_stdc++.o")
+            cmd = [clang_exe] + x86_layer_cflags + ["-c", src, "-o", obj]
+            run_command(cmd, env=env)
+            rebuilt_objs.append(obj)
+        
+        # Update layer_objs with rebuilt objects
+        layer_objs[:] = rebuilt_objs
 
     # Use ccache for linking too if available
     ccache_exe = shutil.which("ccache", path=env["PATH"])

@@ -563,8 +563,8 @@ void StartRecording(const AppConfig &config) {
   }
 
   g_EncoderThread = std::thread(EncoderThreadFunc, std::ref(config));
-  SetThreadPriority(reinterpret_cast<HANDLE>(static_cast<uintptr_t>(
-                        g_EncoderThread.native_handle())),
+  SetThreadPriority(reinterpret_cast<HANDLE>(
+                        g_EncoderThread.native_handle()),
                     THREAD_PRIORITY_NORMAL);
 
   if (g_UseScreenGrab && g_WgcCap) {
@@ -592,8 +592,8 @@ void StartRecording(const AppConfig &config) {
 
     g_WgcCaptureShutdown = false;
     g_WgcCaptureThread = std::thread(WgcCaptureThreadFunc, std::ref(config));
-    SetThreadPriority(reinterpret_cast<HANDLE>(static_cast<uintptr_t>(
-                          g_WgcCaptureThread.native_handle())),
+    SetThreadPriority(reinterpret_cast<HANDLE>(
+                          g_WgcCaptureThread.native_handle()),
                       THREAD_PRIORITY_NORMAL);
     LogInfo("[Media] WGC capture with direct callback started");
   } else if (g_UseScreenGrab && g_DxgiCap) {
@@ -644,8 +644,8 @@ void StartRecording(const AppConfig &config) {
           },
           std::ref(config));
 
-      SetThreadPriority(reinterpret_cast<HANDLE>(static_cast<uintptr_t>(
-                            g_WgcCaptureThread.native_handle())),
+      SetThreadPriority(reinterpret_cast<HANDLE>(
+                            g_WgcCaptureThread.native_handle()),
                         THREAD_PRIORITY_ABOVE_NORMAL);
     } else {
       LogError("[Media] Failed to start DXGI capture");
@@ -657,8 +657,8 @@ void StartRecording(const AppConfig &config) {
     g_InjectCaptureShutdown = false;
     g_InjectCaptureThread =
         std::thread(InjectCaptureThreadFunc, std::ref(config));
-    SetThreadPriority(reinterpret_cast<HANDLE>(static_cast<uintptr_t>(
-                          g_InjectCaptureThread.native_handle())),
+    SetThreadPriority(reinterpret_cast<HANDLE>(
+                          g_InjectCaptureThread.native_handle()),
                       THREAD_PRIORITY_ABOVE_NORMAL);
   }
 
@@ -1184,8 +1184,8 @@ int MediaProcessMain(const AppConfig &config) {
           g_WgcCaptureShutdown = false;
           g_WgcCaptureThread =
               std::thread(WgcCaptureThreadFunc, std::ref(config));
-          SetThreadPriority(reinterpret_cast<HANDLE>(static_cast<uintptr_t>(
-                                g_WgcCaptureThread.native_handle())),
+          SetThreadPriority(reinterpret_cast<HANDLE>(
+                                g_WgcCaptureThread.native_handle()),
                             THREAD_PRIORITY_NORMAL);
 
           g_UseScreenGrab = true;
