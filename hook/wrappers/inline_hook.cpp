@@ -539,6 +539,21 @@ static uint8_t *AllocateTrampolinePool(void *nearAddr) {
 }
 
 static uint8_t *GetTrampolineSlot(void *nearAddr) {
+  // Check if existing pool is close enough (within ±2GB)
+  if (g_trampolinePool) {
+    uintptr_t poolAddr = (uintptr_t)g_trampolinePool;
+    uintptr_t targetAddr = (uintptr_t)nearAddr;
+    int64_t distance = (int64_t)targetAddr - (int64_t)poolAddr;
+
+    // If pool is too far away, free it and allocate a new one
+    if (distance > INT32_MAX || distance < INT32_MIN) {
+      HookLog("GetTrampolineSlot: Existing pool too far from target (distance=%lld), allocating new pool", (long long)distance);
+      VirtualFree(g_trampolinePool, 0, MEM_RELEASE);
+      g_trampolinePool = nullptr;
+      g_trampolineOffset = 0;
+    }
+  }
+
   if (!g_trampolinePool) {
     g_trampolinePool = AllocateTrampolinePool(nearAddr);
     if (!g_trampolinePool)
