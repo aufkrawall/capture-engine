@@ -603,6 +603,178 @@ static void WriteJump(uint8_t *dest, void *target) {
 // Public API
 // ============================================================================
 
+// Check if the target function appears to already be hooked.
+// Returns true if we detect a common hook pattern at the start of the function.
+static bool IsAlreadyHooked(const uint8_t *code, bool is64bit) {
+  // Check for common inline hook patterns:
+  // E9 xx xx xx xx - JMP rel32 (5-byte relative jump)
+  // FF 25 xx xx xx xx - JMP [rip+disp32] (6-byte absolute jump on x64)
+  // E8 xx xx xx xx - CALL rel32 (sometimes used for hooks)
+
+  uint8_t firstByte = code[0];
+
+  // JMP rel32 (E9) - common hook pattern on both x86 and x64
+  if (firstByte == 0xE9) {
+    // Read the displacement to log where it points
+    int32_t disp;
+    memcpy(&disp, code + 1, 4);
+    uintptr_t jumpTarget = (uintptr_t)(code + 5) + disp;
+    HookLog("InlineHook: IsAlreadyHooked: Detected JMP rel32 at %p (jumps to %p, disp=0x%08X)",
+            (void *)code, (void *)jumpTarget, (unsigned)disp);
+    return true;
+  }
+
+  // On x64, check for FF 25 (JMP [rip+disp32])
+  if (is64bit && firstByte == 0xFF && code[1] == 0x25) {
+    // Read the RIP-relative displacement
+    int32_t disp;
+    memcpy(&disp, code + 2, 4);
+    uintptr_t addrPtr = (uintptr_t)(code + 6) + disp;
+    // Safely read the target address - check if pointer is in valid memory range
+    uintptr_t jumpTarget = 0;
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQuery((void *)addrPtr, &mbi, sizeof(mbi)) > 0 &&
+        mbi.State == MEM_COMMIT && (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) {
+      jumpTarget = *(uintptr_t *)addrPtr;
+    }
+    HookLog("InlineHook: IsAlreadyHooked: Detected JMP [rip+disp32] at %p (indirect addr=%p, target=%p)",
+            (void *)code, (void *)addrPtr, (void *)jumpTarget);
+    return true;
+  }
+
+  // CALL rel32 (E8) - less common but sometimes used
+  if (firstByte == 0xE8) {
+    int32_t disp;
+    memcpy(&disp, code + 1, 4);
+    uintptr_t callTarget = (uintptr_t)(code + 5) + disp;
+    HookLog("InlineHook: IsAlreadyHooked: Detected CALL rel32 at %p (calls %p, disp=0x%08X)",
+            (void *)code, (void *)callTarget, (unsigned)disp);
+    return true;
+  }
+
+  return false;
+}
+
+// Try to restore a function that has been hooked by patching a known prologue.
+// This is used when we detect a stale hook from a previous process.
+// Returns true if restoration was successful.
+static bool TryRestoreHookedFunction(void *target, bool is64bit) {
+  // Common DXGI Present prologue patterns (x64):
+  // The standard prologue typically saves rbx, rsi, rdi, rbp, and r12-r15
+  // Pattern 1 (most common):
+  //   48 89 5C 24 08 - mov [rsp+8], rbx
+  //   48 89 6C 24 10 - mov [rsp+10h], rbp
+  //   48 89 74 24 18 - mov [rsp+18h], rsi
+  // Pattern 2:
+  //   48 89 5C 24 10 - mov [rsp+10h], rbx
+  //   48 89 74 24 18 - mov [rsp+18h], rsi
+  //   55             - push rbp
+  //   57             - push rdi
+  //   41 56          - push r14
+
+  uint8_t *code = (uint8_t *)target;
+
+  // Check if bytes 5+ match expected prologue pattern
+  // This suggests bytes 0-4 were overwritten with a JMP
+  bool looksLikeDxgiPresent = false;
+
+  // Check pattern: bytes 5-9 should look like mov [rsp+xx], rxx
+  // 48 89 xx 24 yy where xx indicates register:
+  //   5C = rbx, 6C = rbp, 74 = rsi, 7C = rdi
+  if (code[5] == 0x48 && code[6] == 0x89 && code[8] == 0x24) {
+    uint8_t regByte = code[7];
+    if (regByte >= 0x5C && regByte <= 0x7C) {
+      looksLikeDxgiPresent = true;
+      HookLog("InlineHook: TryRestoreHookedFunction: Bytes 5+ look like mov [rsp+%02Xh], r%x",
+              code[9], (regByte >> 3) & 7);
+    }
+  }
+  // Also check for push instructions
+  else if (code[5] == 0x55 || code[5] == 0x57 || code[5] == 0x56) {
+    looksLikeDxgiPresent = true;
+    HookLog("InlineHook: TryRestoreHookedFunction: Bytes 5+ look like push instruction (0x%02X)", code[5]);
+  }
+
+  if (!looksLikeDxgiPresent) {
+    HookLog("InlineHook: TryRestoreHookedFunction: Cannot restore - unknown prologue pattern at bytes 5+");
+    return false;
+  }
+
+  // The correct first 5 bytes depend on the pattern we see at bytes 5+
+  // Standard convention: the first saved register is rbx (5C)
+  // Pattern detection:
+  //   If bytes 5-9 = "48 89 74 24 18" (mov [rsp+18h], rsi)
+  //   Then bytes 0-4 should be "48 89 5C 24 10" (mov [rsp+10h], rbx)
+  //   
+  //   If bytes 5-9 = "48 89 6C 24 10" (mov [rsp+10h], rbp)
+  //   Then bytes 0-4 should be "48 89 5C 24 08" (mov [rsp+8], rbx)
+
+  uint8_t restoredBytes[14];
+  memset(restoredBytes, 0, sizeof(restoredBytes));
+
+  // Determine the first instruction based on what's at bytes 5+
+  // Key insight: rbx (5C) is always saved first in the standard prologue
+  
+  if (code[9] == 0x18 && code[5] == 0x48 && code[6] == 0x89) {
+    // Bytes 5-9 are "mov [rsp+18h], rxx"
+    // First instruction should be "mov [rsp+10h], rbx"
+    restoredBytes[0] = 0x48;
+    restoredBytes[1] = 0x89;
+    restoredBytes[2] = 0x5C;  // rbx - always rbx first!
+    restoredBytes[3] = 0x24;
+    restoredBytes[4] = 0x10;
+    HookLog("InlineHook: TryRestoreHookedFunction: Inferred prologue: mov [rsp+10h], rbx");
+  } else if (code[9] == 0x10 && code[5] == 0x48 && code[6] == 0x89) {
+    // Bytes 5-9 are "mov [rsp+10h], rxx"
+    // First instruction should be "mov [rsp+8], rbx"
+    restoredBytes[0] = 0x48;
+    restoredBytes[1] = 0x89;
+    restoredBytes[2] = 0x5C;  // rbx - always rbx first!
+    restoredBytes[3] = 0x24;
+    restoredBytes[4] = 0x08;
+    HookLog("InlineHook: TryRestoreHookedFunction: Inferred prologue: mov [rsp+8], rbx");
+  } else if (code[5] == 0x55 || code[5] == 0x57 || code[5] == 0x56) {
+    // Bytes 5+ start with push
+    // First instruction is likely "mov [rsp+10h], rbx" for this pattern
+    restoredBytes[0] = 0x48;
+    restoredBytes[1] = 0x89;
+    restoredBytes[2] = 0x5C;  // rbx
+    restoredBytes[3] = 0x24;
+    restoredBytes[4] = 0x10;
+    HookLog("InlineHook: TryRestoreHookedFunction: Inferred prologue: mov [rsp+10h], rbx (push pattern)");
+  } else {
+    // Unknown pattern - can't safely restore
+    HookLog("InlineHook: TryRestoreHookedFunction: Cannot infer prologue from offset pattern (byte9=0x%02X)", code[9]);
+    return false;
+  }
+
+  // Copy remaining bytes
+  memcpy(restoredBytes + 5, code + 5, 9);
+
+  // Make the memory writable and restore
+  DWORD oldProtect;
+  if (!VirtualProtect(target, 14, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+    HookLog("InlineHook: TryRestoreHookedFunction: VirtualProtect failed (error=%lu)", GetLastError());
+    return false;
+  }
+
+  // Write restored bytes
+  memcpy(target, restoredBytes, 14);
+
+  // Restore protection
+  DWORD dummy;
+  VirtualProtect(target, 14, oldProtect, &dummy);
+  FlushInstructionCache(GetCurrentProcess(), target, 14);
+
+  HookLog("InlineHook: TryRestoreHookedFunction: Successfully restored prologue at %p", target);
+  HookLog("InlineHook: TryRestoreHookedFunction: Restored bytes:");
+  for (int i = 0; i < 14; i++) {
+    HookLog("  [%02d] 0x%02X", i, ((uint8_t *)target)[i]);
+  }
+
+  return true;
+}
+
 bool Install(void *target, void *detour, void **outTrampoline) {
   if (!target || !detour || !outTrampoline)
     return false;
@@ -623,9 +795,24 @@ bool Install(void *target, void *detour, void **outTrampoline) {
   bool is64bit = false;
 #endif
 
+  // CRITICAL: Check if the target function appears to already be hooked
+  // by another component (another DLL, another process, overlay, etc.)
+  const uint8_t *code = (const uint8_t *)target;
+  if (IsAlreadyHooked(code, is64bit)) {
+    // Try to restore the function if it looks like a stale hook
+    HookLog("InlineHook: Function at %p appears hooked, attempting restoration...", target);
+    if (TryRestoreHookedFunction(target, is64bit)) {
+      HookLog("InlineHook: Successfully restored hooked function at %p, proceeding with hook installation", target);
+      // Re-read the code after restoration
+      code = (const uint8_t *)target;
+    } else {
+      HookLog("InlineHook: REFUSING to hook %p - function appears to already be hooked by another component and restoration failed", target);
+      return false;
+    }
+  }
+
   // Determine how many bytes to copy (must be >= PATCH_SIZE on instruction
   // boundary)
-  const uint8_t *code = (const uint8_t *)target;
   int copySize = 0;
   while (copySize < PATCH_SIZE) {
     int len = GetInstructionLength(code + copySize, is64bit);

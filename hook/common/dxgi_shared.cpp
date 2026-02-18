@@ -19,6 +19,7 @@
 #include <d3d12.h>
 #include <dxgi1_4.h>
 #include <mutex>
+#include <psapi.h>
 #include <windows.h>
 
 // Vulkan is handled by VK_LAYER_CE_overlay (ICD layer approach)
@@ -794,6 +795,76 @@ bool InstallPresentInlineHooks(IDXGISwapChain *pSwapChain) {
   if (s_inlineHooksInstalled) {
     HookLog("InstallPresentInlineHooks: Inline hooks already installed");
     return true;
+  }
+
+  // CRITICAL: Check if an external overlay has already hooked Present
+  // External overlays (NVIDIA, Steam, Discord, etc.) actively re-hook Present
+  // Fighting them causes a hook war that corrupts the call chain
+  const uint8_t *code = (const uint8_t *)presentAddr;
+  bool externalOverlayActive = false;
+  
+  if (code[0] == 0xE9) {
+    // JMP rel32 detected - check where it points
+    int32_t disp;
+    memcpy(&disp, code + 1, 4);
+    uintptr_t jumpTarget = (uintptr_t)(code + 5) + disp;
+    
+    // Check if the jump target is outside dxgi.dll
+    HMODULE hDXGI = GetModuleHandleA("dxgi.dll");
+    if (hDXGI) {
+      MODULEINFO dxgiInfo;
+      if (GetModuleInformation(GetCurrentProcess(), hDXGI, &dxgiInfo, sizeof(dxgiInfo))) {
+        uintptr_t dxgiStart = (uintptr_t)hDXGI;
+        uintptr_t dxgiEnd = dxgiStart + dxgiInfo.SizeOfImage;
+        
+        if (jumpTarget < dxgiStart || jumpTarget >= dxgiEnd) {
+          // JMP points outside dxgi.dll - external overlay detected
+          HookLog("InstallPresentInlineHooks: External overlay detected!");
+          HookLog("InstallPresentInlineHooks: JMP at %p targets %p (outside dxgi.dll %p-%p)",
+                  presentAddr, (void *)jumpTarget, (void *)dxgiStart, (void *)dxgiEnd);
+          
+          // Check if the target module is a known overlay
+          HMODULE hTargetModule = nullptr;
+          GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | 
+                             GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                             (LPCSTR)jumpTarget, &hTargetModule);
+          
+          if (hTargetModule) {
+            char moduleName[MAX_PATH] = {0};
+            GetModuleFileNameA(hTargetModule, moduleName, MAX_PATH);
+            HookLog("InstallPresentInlineHooks: External overlay module: %s", moduleName);
+            
+            // Known overlay modules that we should cooperate with
+            std::string moduleLower = moduleName;
+            std::transform(moduleLower.begin(), moduleLower.end(), moduleLower.begin(), ::tolower);
+            
+            if (moduleLower.find("nvidia") != std::string::npos ||
+                moduleLower.find("nvngx") != std::string::npos ||
+                moduleLower.find("steam") != std::string::npos ||
+                moduleLower.find("gameoverlay") != std::string::npos ||
+                moduleLower.find("discord") != std::string::npos ||
+                moduleLower.find("overlay") != std::string::npos) {
+              HookLog("InstallPresentInlineHooks: Known overlay detected - cooperating instead of fighting");
+              externalOverlayActive = true;
+            }
+          } else {
+            // Unknown external JMP - could be a stale hook from a previous process
+            // This is dangerous and likely causes the black screen
+            HookLog("InstallPresentInlineHooks: Unknown external JMP - possibly stale hook");
+            // Try to restore and hook anyway, but this is risky
+          }
+        }
+      }
+    }
+  }
+
+  if (externalOverlayActive) {
+    // External overlay is actively hooking Present
+    // Skip inline hook installation and rely on swapchain wrapper
+    HookLog("InstallPresentInlineHooks: Deferring to external overlay");
+    HookLog("InstallPresentInlineHooks: Swapchain wrapper will handle frame processing");
+    s_inlineHooksInstalled = true; // Mark as "installed" to prevent repeated attempts
+    return true; // Return success to allow initialization to continue
   }
 
   void *presentTrampoline = nullptr;
