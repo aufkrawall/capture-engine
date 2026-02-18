@@ -104,13 +104,6 @@ bool InjectionManager::IsWhitelisted(const std::string &processName) {
   std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(),
                  ::tolower);
 
-  // Internal Whitelist for testing (automatic if debug_logging is enabled)
-  if (config.debugLogging) {
-    if (lowerName.find("_test.exe") != std::string::npos) {
-      return true;
-    }
-  }
-
   // Strict Whitelist Mode (WMI only injects explicit whitelist entries)
   if (config.gameWhitelist.empty() && config.overlayWhitelist.empty()) {
     return false;

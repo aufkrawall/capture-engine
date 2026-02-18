@@ -65,7 +65,15 @@ BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID reserved) {
   if (reason == DLL_PROCESS_ATTACH) {
     EarlyLog("DLL_PROCESS_ATTACH - Layer DLL loaded");
   } else if (reason == DLL_PROCESS_DETACH) {
-    EarlyLog("DLL_PROCESS_DETACH - Layer DLL unloaded");
+    EarlyLog("DLL_PROCESS_DETACH - Layer DLL unloading, clearing vulkanLayerActive flag");
+    // CRITICAL: Clear the vulkanLayerActive flag so other APIs (OpenGL, DX) know
+    // Vulkan is no longer active. Without this, the flag persists in shared memory
+    // and causes OpenGL/DX overlays to skip rendering because they think Vulkan is primary.
+    extern IPCClient g_IPCClient;
+    if (g_IPCClient.GetSharedMem()) {
+      g_IPCClient.GetSharedMem()->runtimeState.vulkanLayerActive.store(false, std::memory_order_release);
+      EarlyLog("Cleared vulkanLayerActive flag in shared memory");
+    }
   }
   return TRUE;
 }

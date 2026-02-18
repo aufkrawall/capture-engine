@@ -165,6 +165,10 @@ bool LayerIPC_Init() {
     LayerLog("Layer IPC: Process '%s' whitelisted. Layer active.",
              g_ProcessName);
 
+    // Set vulkanLayerActive flag so other APIs (OpenGL, DX) know Vulkan is primary
+    g_IPCClient.GetSharedMem()->runtimeState.vulkanLayerActive.store(true, std::memory_order_release);
+    LayerLog("Set vulkanLayerActive flag in shared memory");
+
     // Update graphics config from shared memory
     VulkanLayerState::Get().UpdateFromSharedMemory(&g_IPCClient);
 
