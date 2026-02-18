@@ -12,14 +12,18 @@
 #include <windows.h>
 
 // Registry paths for implicit layers
-const wchar_t *VULKAN_IMPLICIT_LAYERS_32 =
-    L"SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers";
-const wchar_t *VULKAN_IMPLICIT_LAYERS_64 =
+// On 64-bit Windows, 32-bit processes are redirected to WOW6432Node automatically
+// when not using KEY_WOW64_64KEY flag
+const wchar_t *VULKAN_IMPLICIT_LAYERS =
     L"SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers";
 
-// For 32-bit on 64-bit Windows
-const wchar_t *VULKAN_IMPLICIT_LAYERS_WOW64 =
-    L"SOFTWARE\\WOW6432Node\\Khronos\\Vulkan\\ImplicitLayers";
+// Access flags: 64-bit builds need KEY_WOW64_64KEY to ensure they write to 64-bit hive
+// 32-bit builds use default view (0) to allow WOW64 redirection to work naturally
+#ifdef _WIN64
+constexpr REGSAM kWow64Flags = KEY_WOW64_64KEY;
+#else
+constexpr REGSAM kWow64Flags = 0;
+#endif
 
 /**
  * Register the Vulkan layer manifest in the registry
@@ -30,9 +34,10 @@ bool RegisterVulkanLayer(const std::wstring &manifestPath,
   HKEY hKey = nullptr;
 
   // Create/open the registry key
-  LONG result = RegCreateKeyExW(
-      hRootKey, VULKAN_IMPLICIT_LAYERS_64, 0, nullptr, REG_OPTION_NON_VOLATILE,
-      KEY_SET_VALUE | KEY_WOW64_64KEY, nullptr, &hKey, nullptr);
+  LONG result = RegCreateKeyExW(hRootKey, VULKAN_IMPLICIT_LAYERS, 0, nullptr,
+                                REG_OPTION_NON_VOLATILE,
+                                KEY_SET_VALUE | kWow64Flags, nullptr, &hKey,
+                                nullptr);
 
   if (result != ERROR_SUCCESS) {
     std::wcerr << L"Failed to create registry key: " << result << std::endl;
@@ -64,8 +69,8 @@ bool UnregisterVulkanLayer(const std::wstring &manifestPath,
   HKEY hRootKey = forAllUsers ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER;
   HKEY hKey = nullptr;
 
-  LONG result = RegOpenKeyExW(hRootKey, VULKAN_IMPLICIT_LAYERS_64, 0,
-                              KEY_SET_VALUE | KEY_WOW64_64KEY, &hKey);
+  LONG result = RegOpenKeyExW(hRootKey, VULKAN_IMPLICIT_LAYERS, 0,
+                              KEY_SET_VALUE | kWow64Flags, &hKey);
 
   if (result != ERROR_SUCCESS) {
     // Key doesn't exist, nothing to unregister
@@ -92,8 +97,8 @@ bool IsLayerRegistered(const std::wstring &manifestPath,
   HKEY hRootKey = forAllUsers ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER;
   HKEY hKey = nullptr;
 
-  LONG result = RegOpenKeyExW(hRootKey, VULKAN_IMPLICIT_LAYERS_64, 0,
-                              KEY_QUERY_VALUE | KEY_WOW64_64KEY, &hKey);
+  LONG result = RegOpenKeyExW(hRootKey, VULKAN_IMPLICIT_LAYERS, 0,
+                              KEY_QUERY_VALUE | kWow64Flags, &hKey);
 
   if (result != ERROR_SUCCESS) {
     return false;
@@ -116,8 +121,12 @@ std::wstring GetLayerManifestPath() {
   GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
 
   std::filesystem::path exePath(modulePath);
-  std::filesystem::path manifestPath =
-      exePath.parent_path() / L"VK_LAYER_CAPTURE_overlay.json";
+  std::filesystem::path manifestPath = exePath.parent_path() /
+#ifdef _WIN64
+                                       L"VK_LAYER_CE_overlay.json";
+#else
+                                       L"VK_LAYER_CE_overlay_x86.json";
+#endif
 
   return manifestPath.wstring();
 }

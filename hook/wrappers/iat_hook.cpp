@@ -8,8 +8,6 @@
 #include "../apis/dx11_hook.h"
 #include "hook_common.h"
 #include "wrapper_hooks.h"
-// Note: vulkan_hook.h not included - Vulkan hooks are now in
-// VK_LAYER_CE_overlay
 #include <d3d12.h>
 #include <mutex>
 #include <psapi.h>

@@ -420,44 +420,57 @@ void CheckChildProcessHealth() {
   checkProcess(g_hLimiterProcess, "Limiter");
 }
 
-// Registry Helpers for Ephemeral Vulkan Layer Registration
 static void Registry_ManageImplicitLayer(bool install) {
-  char buffer[MAX_PATH];
-  GetModuleFileNameA(NULL, buffer, MAX_PATH);
-  std::string exePath = buffer;
-  std::string baseDir = exePath.substr(0, exePath.find_last_of("\\/"));
+  // IMPORTANT: HKEY_CURRENT_USER does NOT get WOW64 redirected!
+  // Both 32-bit and 64-bit apps read from the same HKCU\Software\Khronos\Vulkan\ImplicitLayers path.
+  // We must register BOTH manifests there so apps of either architecture can find their layer.
+  // Each manifest has a unique name (VK_LAYER_CE_overlay vs VK_LAYER_CE_overlay_x86)
+  // to avoid "wrong bit-type" conflicts.
+  
+  HKEY hKey;
+  const char* regPath = "Software\\Khronos\\Vulkan\\ImplicitLayers";
+  
+  LogInfo("[Controller] Attempting to %s registry key: %s", 
+          install ? "create/open" : "open", regPath);
+  
+  LONG result = RegCreateKeyExA(HKEY_CURRENT_USER,
+                      regPath, 0, NULL,
+                      REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey,
+                      NULL);
+  if (result == ERROR_SUCCESS) {
+    LogInfo("[Controller] Successfully opened registry key: %s", regPath);
 
-  // Register in both 64-bit and 32-bit (WOW6432Node) registry views
-  // This allows both 64-bit and 32-bit Vulkan apps to see the layers
-  const char* registryPaths[] = {
-    "Software\\Khronos\\Vulkan\\ImplicitLayers",
-    "Software\\WOW6432Node\\Khronos\\Vulkan\\ImplicitLayers"
-  };
+    char buffer[MAX_PATH];
+    GetModuleFileNameA(NULL, buffer, MAX_PATH);
+    std::string baseDir = buffer;
+    baseDir = baseDir.substr(0, baseDir.find_last_of("\\/"));
 
-  const char *jsons[] = {"VK_LAYER_CE_overlay.json",
-                         "VK_LAYER_CE_overlay_x86.json"};
-
-  for (const char* regPath : registryPaths) {
-    HKEY hKey;
-    if (RegCreateKeyExA(HKEY_CURRENT_USER,
-                        regPath, 0, NULL,
-                        REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey,
-                        NULL) == ERROR_SUCCESS) {
-
-      for (const char *json : jsons) {
-        std::string fullPath = baseDir + "\\" + json;
-        if (install) {
-          DWORD data = 0;
-          RegSetValueExA(hKey, fullPath.c_str(), 0, REG_DWORD,
-                         (const BYTE *)&data, sizeof(data));
-          LogInfo("[Controller] Registered Vulkan Layer: %s in %s", json, regPath);
+    // Register BOTH manifests - each has unique name and correct library_path
+    const char *manifests[] = {"VK_LAYER_CE_overlay.json", "VK_LAYER_CE_overlay_x86.json"};
+    
+    for (const char *manifest : manifests) {
+      std::string fullPath = baseDir + "\\" + manifest;
+      if (install) {
+        DWORD data = 0;
+        LONG setResult = RegSetValueExA(hKey, fullPath.c_str(), 0, REG_DWORD,
+                       (const BYTE *)&data, sizeof(data));
+        if (setResult == ERROR_SUCCESS) {
+          LogInfo("[Controller] Registered Vulkan Layer: %s", manifest);
         } else {
-          RegDeleteValueA(hKey, fullPath.c_str());
-          LogInfo("[Controller] Unregistered Vulkan Layer: %s from %s", json, regPath);
+          LogError("[Controller] Failed to register Vulkan Layer: %s, error=%ld", manifest, setResult);
+        }
+      } else {
+        LONG delResult = RegDeleteValueA(hKey, fullPath.c_str());
+        if (delResult == ERROR_SUCCESS || delResult == ERROR_FILE_NOT_FOUND) {
+          LogInfo("[Controller] Unregistered Vulkan Layer: %s", manifest);
+        } else {
+          LogError("[Controller] Failed to unregister Vulkan Layer: %s, error=%ld", manifest, delResult);
         }
       }
-      RegCloseKey(hKey);
     }
+    RegCloseKey(hKey);
+  } else {
+    LogError("[Controller] Failed to open registry key for Vulkan Layer, error=%ld", result);
   }
 }
 

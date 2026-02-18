@@ -527,7 +527,27 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateInstance(
     const VkInstanceCreateInfo *pCreateInfo,
     const VkAllocationCallbacks *pAllocator, VkInstance *pInstance) {
 
-  LayerLog("Vulkan Layer: Capture_vkCreateInstance called");
+  LayerLog("Vulkan Layer: Capture_vkCreateInstance BEGIN");
+
+  if (!pCreateInfo) {
+    LayerLog("Vulkan Layer: [Error] Capture_vkCreateInstance called with NULL pCreateInfo");
+    return VK_ERROR_INITIALIZATION_FAILED;
+  }
+
+  if (!pInstance) {
+    LayerLog("Vulkan Layer: [Error] Capture_vkCreateInstance called with NULL pInstance");
+    return VK_ERROR_INITIALIZATION_FAILED;
+  }
+
+  uint32_t apiVersion = pCreateInfo->pApplicationInfo ?
+                        pCreateInfo->pApplicationInfo->apiVersion : 0;
+  LayerLog("Vulkan Layer: Instance create info - apiVersion=%u.%u.%u, "
+           "enabledLayerCount=%u, enabledExtensionCount=%u",
+           VK_API_VERSION_MAJOR(apiVersion),
+           VK_API_VERSION_MINOR(apiVersion),
+           VK_API_VERSION_PATCH(apiVersion),
+           pCreateInfo->enabledLayerCount,
+           pCreateInfo->enabledExtensionCount);
 
   // Mark Vulkan layer as active in shared memory
   auto *shm = g_IPCClient.GetSharedMem();
@@ -537,14 +557,24 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateInstance(
   PFN_vkGetInstanceProcAddr gipa = (PFN_vkGetInstanceProcAddr)NULL;
   VkLayerInstanceCreateInfo *chain_info =
       (VkLayerInstanceCreateInfo *)pCreateInfo->pNext;
+  LayerLog("Vulkan Layer: Searching for VK_LAYER_LINK_INFO in pNext chain...");
+  uint32_t chainDepth = 0;
   while (chain_info &&
          !(chain_info->sType == VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO &&
            chain_info->function == VK_LAYER_LINK_INFO)) {
+    LayerLog("Vulkan Layer:   chain[%u] sType=%u, function=%u",
+             chainDepth, chain_info->sType, chain_info->function);
     chain_info = (VkLayerInstanceCreateInfo *)chain_info->pNext;
+    chainDepth++;
   }
-  if (!chain_info)
+  if (!chain_info) {
+    LayerLog("Vulkan Layer: [Error] VK_LAYER_LINK_INFO not found in pNext chain "
+             "after %u iterations", chainDepth);
     return VK_ERROR_INITIALIZATION_FAILED;
+  }
+  LayerLog("Vulkan Layer: Found VK_LAYER_LINK_INFO at depth %u", chainDepth);
   gipa = chain_info->u.pLayerInfo->pfnNextGetInstanceProcAddr;
+  LayerLog("Vulkan Layer: pfnNextGetInstanceProcAddr=%p", (void*)gipa);
   chain_info->u.pLayerInfo = chain_info->u.pLayerInfo->pNext;
 
   PFN_vkCreateInstance create_fn =
@@ -634,6 +664,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateInstance(
   PopulateInstanceDispatch(dispatch, *pInstance, gipa);
   VulkanLayerState::Get().RegisterInstance(*pInstance, dispatch);
 
+  LayerLog("Vulkan Layer: Capture_vkCreateInstance END - success, instance=%p",
+           (void*)*pInstance);
   return VK_SUCCESS;
 }
 
@@ -674,7 +706,23 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(
     VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCreateInfo,
     const VkAllocationCallbacks *pAllocator, VkDevice *pDevice) {
 
-  LayerLog("Vulkan Layer: Capture_vkCreateDevice called");
+  LayerLog("Vulkan Layer: Capture_vkCreateDevice BEGIN");
+
+  if (!pCreateInfo) {
+    LayerLog("Vulkan Layer: [Error] Capture_vkCreateDevice called with NULL pCreateInfo");
+    return VK_ERROR_INITIALIZATION_FAILED;
+  }
+
+  if (!pDevice) {
+    LayerLog("Vulkan Layer: [Error] Capture_vkCreateDevice called with NULL pDevice");
+    return VK_ERROR_INITIALIZATION_FAILED;
+  }
+
+  LayerLog("Vulkan Layer: Device create info - queueCreateInfoCount=%u, "
+           "enabledExtensionCount=%u, enabledLayerCount=%u",
+           pCreateInfo->queueCreateInfoCount,
+           pCreateInfo->enabledExtensionCount,
+           pCreateInfo->enabledLayerCount);
 
   VkInstance instance =
       VulkanLayerState::Get().GetInstanceFromPhysicalDevice(physicalDevice);
@@ -684,16 +732,27 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(
         physicalDevice);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
+  LayerLog("Vulkan Layer: Found instance %p for physical device %p",
+           (void*)instance, (void*)physicalDevice);
 
   VkLayerDeviceCreateInfo *chain_info =
       (VkLayerDeviceCreateInfo *)pCreateInfo->pNext;
+  LayerLog("Vulkan Layer: Searching for VK_LAYER_LINK_INFO in device pNext chain...");
+  uint32_t chainDepth = 0;
   while (chain_info &&
          !(chain_info->sType == VK_STRUCTURE_TYPE_LOADER_DEVICE_CREATE_INFO &&
            chain_info->function == VK_LAYER_LINK_INFO)) {
+    LayerLog("Vulkan Layer:   chain[%u] sType=%u, function=%u",
+             chainDepth, chain_info->sType, chain_info->function);
     chain_info = (VkLayerDeviceCreateInfo *)chain_info->pNext;
+    chainDepth++;
   }
-  if (!chain_info)
+  if (!chain_info) {
+    LayerLog("Vulkan Layer: [Error] VK_LAYER_LINK_INFO not found in device pNext chain "
+             "after %u iterations", chainDepth);
     return VK_ERROR_INITIALIZATION_FAILED;
+  }
+  LayerLog("Vulkan Layer: Found VK_LAYER_LINK_INFO at depth %u", chainDepth);
 
   PFN_vkGetDeviceProcAddr gdpa =
       chain_info->u.pLayerInfo->pfnNextGetDeviceProcAddr;
@@ -779,6 +838,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(
   PopulateDeviceDispatch(dispatch, *pDevice, gdpa);
   VulkanLayerState::Get().RegisterDevice(*pDevice, dispatch);
 
+  LayerLog("Vulkan Layer: Capture_vkCreateDevice END - success, device=%p",
+           (void*)*pDevice);
   return VK_SUCCESS;
 }
 

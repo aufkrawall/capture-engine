@@ -8,10 +8,57 @@
 #include "layer_main.h"
 #include <cstring>
 
-// Simple early logging to stderr before file logging is initialized
-static void EarlyLog(const char *msg) {
-  fprintf(stderr, "[VulkanLayer-Init] %s\n", msg);
+// Get the directory where this DLL is located
+static std::string GetLayerDllDirectory() {
+  char dllPath[MAX_PATH];
+  HMODULE hModule = NULL;
+  
+  // Get handle to this DLL
+  GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | 
+                     GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                     (LPCSTR)&GetLayerDllDirectory, &hModule);
+  
+  if (hModule && GetModuleFileNameA(hModule, dllPath, MAX_PATH)) {
+    std::string path(dllPath);
+    size_t lastSlash = path.find_last_of("\\/");
+    if (lastSlash != std::string::npos) {
+      return path.substr(0, lastSlash);
+    }
+  }
+  return ".";
+}
+
+// Simple early logging to file before file logging is initialized
+// Uses absolute path based on DLL location to avoid CWD issues
+static void EarlyLog(const char *fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+  
+  // Build absolute path to log file (next to the DLL)
+  static std::string logPath;
+  if (logPath.empty()) {
+    logPath = GetLayerDllDirectory() + "\\logs\\vulkan_layer_early.log";
+  }
+  
+  // Log to file immediately (don't rely on stderr for GUI apps)
+  FILE *earlyLog = fopen(logPath.c_str(), "a");
+  if (earlyLog) {
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    fprintf(earlyLog, "[%02d:%02d:%02d.%03d] [VulkanLayer-Init] ", 
+            st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+    vfprintf(earlyLog, fmt, args);
+    fprintf(earlyLog, "\n");
+    fflush(earlyLog);
+    fclose(earlyLog);
+  }
+  
+  // Also try stderr (for console apps)
+  fprintf(stderr, "[VulkanLayer-Init] ");
+  vfprintf(stderr, fmt, args);
+  fprintf(stderr, "\n");
   fflush(stderr);
+  va_end(args);
 }
 
 BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID reserved) {
@@ -99,22 +146,43 @@ vkNegotiateLoaderLayerInterfaceVersion(
     VkNegotiateLayerInterface *pVersionStruct) {
   EarlyLog("NegotiateLoaderLayerInterfaceVersion called");
 
+  if (!pVersionStruct) {
+    EarlyLog("ERROR: pVersionStruct is NULL");
+    return VK_ERROR_INITIALIZATION_FAILED;
+  }
+
+  uint32_t requestedVersion = pVersionStruct->loaderLayerInterfaceVersion;
+  EarlyLog("Loader interface version requested: %u", requestedVersion);
+  LayerLog("Vulkan Layer: vkNegotiateLoaderLayerInterfaceVersion called, "
+           "requested version=%u, sType=%u, struct size=%zu",
+           requestedVersion, pVersionStruct->sType, sizeof(*pVersionStruct));
+
   if (pVersionStruct->loaderLayerInterfaceVersion < 2) {
-    EarlyLog("Interface version too low");
+    EarlyLog("Interface version too low (need >= 2, got %u)",
+             pVersionStruct->loaderLayerInterfaceVersion);
+    LayerLog("Vulkan Layer: Negotiation FAILED - interface version %u too old, "
+             "minimum required is 2",
+             pVersionStruct->loaderLayerInterfaceVersion);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
 
   EarlyLog("Checking whitelist...");
   if (!PerformEarlyWhitelistCheck()) {
     EarlyLog("Process not whitelisted - layer entering passthrough mode");
+    LayerLog("Vulkan Layer: Process not whitelisted - entering passthrough mode");
     // Do NOT return error, just set flag (already done by check)
+  } else {
+    LayerLog("Vulkan Layer: Process whitelisted - full layer mode enabled");
   }
 
   EarlyLog("Initializing IPC...");
   if (!LayerIPC_Init()) {
     EarlyLog("IPC connection failed - layer dormant");
+    LayerLog("Vulkan Layer: IPC initialization FAILED - layer will be dormant");
     g_LayerState.whitelisted = false;
     // Do NOT return error, continue as passthrough
+  } else {
+    LayerLog("Vulkan Layer: IPC initialized successfully");
   }
 
   EarlyLog("IPC connected, initializing layer functions...");
@@ -125,7 +193,9 @@ vkNegotiateLoaderLayerInterfaceVersion(
   pVersionStruct->pfnGetPhysicalDeviceProcAddr = nullptr;
 
   g_LayerState.initialized = true;
-  LayerLog("Vulkan Layer: Negotiate Version Success - IPC connected");
+  LayerLog("Vulkan Layer: Negotiation SUCCESS - version set to 2, "
+           "pfnGetInstanceProcAddr=%p, pfnGetDeviceProcAddr=%p",
+           (void *)vkGetInstanceProcAddr, (void *)vkGetDeviceProcAddr);
   return VK_SUCCESS;
 }
 

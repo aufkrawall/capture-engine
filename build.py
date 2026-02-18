@@ -282,6 +282,58 @@ def safe_delete_file(
     return False
 
 
+def safe_copy_file(src: str, dst: str) -> bool:
+    """
+    Safely copy a file, handling locked destination files gracefully.
+
+    Strategy:
+    1. If destination exists and is locked, rename it first
+    2. Then copy the source file
+    """
+    import random
+
+    dst_name = os.path.basename(dst)
+
+    # If destination exists, check if locked and rename if necessary
+    if os.path.exists(dst):
+        if is_file_locked(dst):
+            log(f"[SafeCopy] {dst_name} is locked, attempting rename...")
+            try:
+                trash_name = f"{dst}.old.{int(time.time())}.{random.randint(1000, 9999)}"
+                os.rename(dst, trash_name)
+                log(f"[SafeCopy] Renamed locked {dst_name} to {os.path.basename(trash_name)}")
+                # Try to delete the renamed file, schedule for reboot if fails
+                try:
+                    os.remove(trash_name)
+                except:
+                    try:
+                        import ctypes
+                        kernel32 = ctypes.windll.kernel32
+                        MOVEFILE_DELAY_UNTIL_REBOOT = 0x4
+                        kernel32.MoveFileExW(trash_name, None, MOVEFILE_DELAY_UNTIL_REBOOT)
+                        log(f"[SafeCopy] Scheduled old {dst_name} for deletion on next reboot")
+                    except:
+                        pass
+            except OSError as e:
+                log(f"[SafeCopy] WARNING: Could not rename locked {dst_name}: {e}")
+                return False
+        else:
+            # Not locked, try to delete normally
+            try:
+                os.remove(dst)
+            except Exception as e:
+                log(f"[SafeCopy] WARNING: Could not remove existing {dst_name}: {e}")
+                return False
+
+    # Copy the file
+    try:
+        shutil.copy2(src, dst)
+        return True
+    except Exception as e:
+        log(f"[SafeCopy] ERROR: Failed to copy {os.path.basename(src)} to {dst_name}: {e}")
+        return False
+
+
 def safe_remove_tree(path: str, max_retries: int = 3) -> bool:
     """Safely remove a directory tree, handling locked files."""
     if not os.path.exists(path):
@@ -1949,6 +2001,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
 
     ldflags = [
         "-shared",
+        "-static",
         vulkan_lib,
         "-lgdi32",
         "-luser32",
@@ -2010,12 +2063,14 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         if IS_LINUX:
             abs_dll_path = wsl_path_to_windows(abs_dll_path)
 
+        # Use different layer names for x64 vs x86 to avoid "wrong bit-type" conflicts
+        # Both 32-bit and 64-bit apps read from HKCU (no WOW64 redirection for HKCU)
+        layer_name = "VK_LAYER_CE_overlay" if arch == "x64" else "VK_LAYER_CE_overlay_x86"
+
         manifest = {
             "file_format_version": "1.2.0",
             "layer": {
-                "name": "VK_LAYER_CE_overlay"
-                if arch == "x64"
-                else "VK_LAYER_CE_overlay_x86",
+                "name": layer_name,
                 "type": "GLOBAL",
                 "library_path": abs_dll_path,  # JSON serializer handles escaping
                 "api_version": "1.3.0",
@@ -2183,7 +2238,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         # Exclude D3D12 device/commandqueue wrappers due to MinGW ABI incompatibility
         # (MSYS2's D3D12 headers use WIDL_EXPLICIT_AGGREGATE_RETURNS which has different vtable layout)
         # d3d12_wrapper_interface.cpp is compiled by MSVC and linked as a static lib
-        # vulkan_hook.cpp is excluded - replaced by VK_LAYER_CE_overlay (Vulkan layer)
         excluded_files = [
             os.path.join(PROJECT_ROOT, "hook", "wrappers", "d3d12_device_wrap.cpp"),
             os.path.join(
@@ -2192,9 +2246,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             os.path.join(
                 PROJECT_ROOT, "hook", "wrappers", "d3d12_wrapper_interface.cpp"
             ),
-            os.path.join(
-                PROJECT_ROOT, "hook", "apis", "vulkan_hook.cpp"
-            ),  # Using Vulkan layer instead
             os.path.join(
                 PROJECT_ROOT, "hook", "minimal_main.cpp"
             ),  # Excluded - built separately as minimal test
@@ -2558,8 +2609,8 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                             else:
                                 src = os.path.join("/usr", "i686-w64-mingw32", "bin", dep)
                         if os.path.exists(src):
-                            shutil.copy(src, ffmpeg_bin_dst)
-                            shutil.copy(src, BIN_DIR)  # Also copy to main folder for Vulkan layer
+                            safe_copy_file(src, os.path.join(ffmpeg_bin_dst, dep))
+                            safe_copy_file(src, os.path.join(BIN_DIR, dep))  # Also copy to main folder for Vulkan layer
                             log(f"Copied runtime dep {dep}")
 
     # Compile and run tests (using x64 objects) if requested
@@ -2698,8 +2749,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             src = os.path.join(x86_sysroot_bin, dep)
             if os.path.exists(src):
                 dst = os.path.join(BIN_DIR, dep)
-                if not os.path.exists(dst):
-                    shutil.copy(src, dst)
+                if safe_copy_file(src, dst):
                     log(f"Copied x86 runtime dep {dep}")
 
     # Cleanup import libraries (use safe delete for consistency)
