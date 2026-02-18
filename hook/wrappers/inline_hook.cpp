@@ -692,8 +692,31 @@ bool Install(void *target, void *detour, void **outTrampoline) {
               (void *)newInstrEnd, (long long)newDisp);
 
       if (newDisp > INT32_MAX || newDisp < INT32_MIN) {
-        HookLog("InlineHook: RIP-relative fixup out of range at %p+%d", target,
-                srcOffset);
+        // Check if this is a JMP rel32 (0xE9) or CALL rel32 (0xE8) that we can convert to absolute
+        uint8_t opcode = code[srcOffset];
+        if (opcode == 0xE9 || opcode == 0xE8) {
+          // Convert to absolute jump/call using 14-byte sequence:
+          // FF 25 00 00 00 00 [8-byte absolute address]
+          // For JMP: just jump to absTarget
+          // For CALL: same but it's a call
+          HookLog("InlineHook: Converting %s rel32 to absolute at offset %d (target=%p)",
+                  opcode == 0xE9 ? "JMP" : "CALL", srcOffset, (void *)absTarget);
+          
+          // Write absolute jump/call
+          trampoline[trampolineOffset] = 0xFF;      // JMP/CALL [rip+0]
+          trampoline[trampolineOffset + 1] = opcode == 0xE9 ? 0x25 : 0x15;  // 0x25=JMP, 0x15=CALL
+          trampoline[trampolineOffset + 2] = 0x00;
+          trampoline[trampolineOffset + 3] = 0x00;
+          trampoline[trampolineOffset + 4] = 0x00;
+          trampoline[trampolineOffset + 5] = 0x00;
+          memcpy(trampoline + trampolineOffset + 6, &absTarget, 8);
+          trampolineOffset += 14;  // 14 bytes for absolute jump
+          srcOffset += instrLen;
+          continue;  // Skip the normal fixup path
+        }
+        
+        HookLog("InlineHook: RIP-relative fixup out of range at %p+%d (opcode=0x%02X)", target,
+                srcOffset, opcode);
         return false;
       }
 
