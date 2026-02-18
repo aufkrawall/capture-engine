@@ -1,4 +1,5 @@
-# Clangd configuration for CaptureEngine (WSL2 cross-compilation for Windows)
+# Clangd configuration for CaptureEngine
+# Works automatically in both Windows and WSL2 environments
 
 CompileFlags:
   Add:
@@ -7,22 +8,52 @@ CompileFlags:
     - "-DWIN32"
     - "-D_WINDOWS"
     - "-D__MINGW64__"
-    - "--target=x86_64-w64-windows-gnu"
+    - "--target=x86_64-w64-mingw32-gnu"
+    # Project include paths (relative, work in both Windows and WSL)
+    - "-Icommon"
+    - "-Ihook"
+    - "-Ihook/common"
+    - "-Ihook/apis"
+    - "-Ihook/wrappers"
+    - "-Ihook/vulkan_layer"
+    - "-Icaptureengine"
+    - "-Imediaengine"
+    - "-Iexternal/ffmpeg/include"
+    # System headers for mingw-w64 cross-compilation
     - "-isystem/usr/x86_64-w64-mingw32/include"
-    - "-isystem/usr/x86_64-w64-mingw32/include/c++/15.2.0"
-    - "-isystem/usr/x86_64-w64-mingw32/include/c++/15.2.0/x86_64-w64-mingw32"
-    - "-I%REPO_ROOT%/common"
-    - "-I%REPO_ROOT%/hook"
-    - "-I%REPO_ROOT%/hook/common"
-    - "-I%REPO_ROOT%/hook/apis"
-    - "-I%REPO_ROOT%/hook/wrappers"
-    - "-I%REPO_ROOT%/hook/vulkan_layer"
-    - "-I%REPO_ROOT%/captureengine"
-    - "-I%REPO_ROOT%/mediaengine"
-    - "-I%REPO_ROOT%/external/ffmpeg/include"
+    - "-isystem/usr/x86_64-w64-mingw32/include/c++"
+    - "-isystem/usr/x86_64-w64-mingw32/include/c++/x86_64-w64-mingw32"
+  Remove:
+    # Flags clangd doesn't understand or that cause issues
+    - "-march=*"
+    - "-mtune=*"
+    - "-flto*"
+    - "-ffast-math"
+    - "-fvisibility=*"
+    - "-ffunction-sections"
+    - "-fdata-sections"
+    - "-Wl,*"
+    - "-s"
+    - "-MMD"
+    - "-MF"
 
 Diagnostics:
-  Suppress: "*"
+  # Only suppress truly noisy warnings in cross-platform code
+  Suppress:
+    - "unused-parameter"
+    - "gnu-zero-variadic-macro-arguments"
+  ClangTidy:
+    Add:
+      - "modernize-use-nullptr"
+      - "modernize-use-override"
 
 Index:
   Background: Build
+
+InlayHints:
+  Designators: true
+  ParameterNames: true
+  DeducedTypes: true
+
+Hover:
+  ShowAKA: true

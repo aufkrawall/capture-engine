@@ -1189,8 +1189,11 @@ def compile_object(
 
     # Add to global compile commands list
     # Use 'arguments' list instead of 'command' string for better cross-platform/shell reliability
+    # Normalize paths for cross-platform LSP compatibility (always use forward slashes)
+    normalized_dir = PROJECT_ROOT.replace("\\", "/")
+    normalized_file = src.replace("\\", "/")
     COMPILE_COMMANDS.append(
-        {"directory": PROJECT_ROOT, "arguments": full_cmd_list, "file": src}
+        {"directory": normalized_dir, "arguments": full_cmd_list, "file": normalized_file}
     )
 
     if not should_recompile(src, obj, dep_file, env):
@@ -2937,6 +2940,7 @@ def main():
         with open(os.path.join(PROJECT_ROOT, "compile_commands.json"), "w") as f:
             json.dump(unique_commands, f, indent=4)
         log(f"Generated compile_commands.json ({len(unique_commands)} entries)")
+        log("LSP: clangd will auto-detect paths via PathMappings in .clangd")
     except Exception as e:
         log(f"Error writing compile_commands.json: {e}")
 

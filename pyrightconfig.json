@@ -1,0 +1,23 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/pyright/main/packages/vscode-pyright/schemas/pyrightconfig.schema.json",
+  "typeCheckingMode": "basic",
+  "pythonVersion": "3.10",
+  "pythonPlatform": "Linux",
+  "exclude": [
+    "**/node_modules",
+    "**/__pycache__",
+    "build/msys64",
+    ".venv"
+  ],
+  "ignore": [],
+  "strict": [],
+  "executionEnvironments": [
+    {
+      "root": "."
+    }
+  ],
+  "analyzeUnannotatedFunctions": true,
+  "reportMissingImports": true,
+  "reportMissingTypeStubs": false,
+  "verboseOutput": false
+}
