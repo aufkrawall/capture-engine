@@ -2013,6 +2013,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         layer_dll,
     ]
 
+    ldflags.extend(LD_OPT_FLAGS)  # Strip debug sections, reduce binary size
     if arch == "x86":
         ldflags.append("-Wl,--kill-at")
 
@@ -2610,7 +2611,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                                 src = os.path.join("/usr", "i686-w64-mingw32", "bin", dep)
                         if os.path.exists(src):
                             safe_copy_file(src, os.path.join(ffmpeg_bin_dst, dep))
-                            safe_copy_file(src, os.path.join(BIN_DIR, dep))  # Also copy to main folder for Vulkan layer
                             log(f"Copied runtime dep {dep}")
 
     # Compile and run tests (using x64 objects) if requested
@@ -2737,20 +2737,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             x86_cflags = ["-std=c++20", "-O3", "-m32", "-Wall", "-D_WIN32_WINNT=0x0A00"]
             compile_vulkan_layer(x86_env, x86_clang, x86_cflags, "x86")
 
-    # Copy x86 runtime dependencies for Vulkan layer (libgcc_s_dw2-1.dll, etc.)
-    if IS_LINUX:
-        x86_runtime_deps = [
-            "libgcc_s_dw2-1.dll",
-            "libstdc++-6.dll",
-            "libwinpthread-1.dll",
-        ]
-        x86_sysroot_bin = "/usr/i686-w64-mingw32/bin"
-        for dep in x86_runtime_deps:
-            src = os.path.join(x86_sysroot_bin, dep)
-            if os.path.exists(src):
-                dst = os.path.join(BIN_DIR, dep)
-                if safe_copy_file(src, dst):
-                    log(f"Copied x86 runtime dep {dep}")
 
     # Cleanup import libraries (use safe delete for consistency)
     me_lib = os.path.join(BIN_DIR, "libmediaengine.dll.a")
