@@ -596,6 +596,36 @@ def check_mingw_packages():
         log(f"Found mingw-w64 compiler: {x64_compiler}")
 
 
+def check_python_lsp_tools():
+    """Check and install Python LSP tools for better IDE support."""
+    # Ensure user's local bin is in PATH for installed tools
+    user_local_bin = os.path.expanduser("~/.local/bin")
+    if user_local_bin not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = user_local_bin + os.pathsep + os.environ.get("PATH", "")
+    
+    tools = ["pyright", "flake8"]
+    
+    for tool in tools:
+        try:
+            subprocess.run(
+                [sys.executable, "-m", tool, "--version"],
+                capture_output=True,
+                check=True,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            log(f"{tool} not found. Installing via pip...")
+            try:
+                # On Linux with externally-managed Python, use --break-system-packages
+                cmd = [sys.executable, "-m", "pip", "install", tool]
+                if IS_LINUX:
+                    cmd.append("--break-system-packages")
+                subprocess.run(cmd, check=True)
+                log(f"{tool} installed successfully.")
+            except subprocess.CalledProcessError as e:
+                log(f"Warning: Failed to install {tool}: {e}")
+                log(f"  Install manually: pip install {tool} --break-system-packages")
+
+
 def get_system_ffmpeg_flags():
     """Get FFmpeg compiler flags - now uses MSYS2 FFmpeg on Linux."""
     # FFmpeg is downloaded from MSYS2 repo, not system
@@ -2994,6 +3024,7 @@ def main():
                 pass
 
     setup_msys2()
+    check_python_lsp_tools()
     env, clang_bin = get_env()
 
     # Parse flags

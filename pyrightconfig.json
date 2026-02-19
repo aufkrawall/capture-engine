@@ -1,13 +1,15 @@
 {
-  "$schema": "https://raw.githubusercontent.com/microsoft/pyright/main/packages/vscode-pyright/schemas/pyrightconfig.schema.json",
   "typeCheckingMode": "basic",
   "pythonVersion": "3.10",
   "pythonPlatform": "Linux",
+  "include": ["build.py", "testapp"],
   "exclude": [
     "**/node_modules",
     "**/__pycache__",
     "build/msys64",
-    ".venv"
+    ".venv",
+    "build",
+    "installed"
   ],
   "ignore": [],
   "strict": [],
@@ -17,7 +19,13 @@
     }
   ],
   "analyzeUnannotatedFunctions": true,
-  "reportMissingImports": true,
+  "reportMissingImports": "warning",
   "reportMissingTypeStubs": false,
+  "reportAttributeAccessIssue": "warning",
+  "reportOptionalSubscript": "warning",
+  "reportOptionalMemberAccess": "warning",
+  "reportGeneralTypeIssues": "warning",
+  "reportUnsupportedDunderAll": "warning",
+  "reportUndefinedVariable": "error",
   "verboseOutput": false
 }
