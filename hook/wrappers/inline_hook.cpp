@@ -797,18 +797,16 @@ bool Install(void *target, void *detour, void **outTrampoline) {
 
   // CRITICAL: Check if the target function appears to already be hooked
   // by another component (another DLL, another process, overlay, etc.)
+  // CRITICAL FIX: Do NOT attempt to restore the prologue - the guessing is
+  // unreliable and causes black screens when the guess is wrong.
+  // Instead, skip hooking entirely and let the external overlay handle things.
   const uint8_t *code = (const uint8_t *)target;
   if (IsAlreadyHooked(code, is64bit)) {
-    // Try to restore the function if it looks like a stale hook
-    HookLog("InlineHook: Function at %p appears hooked, attempting restoration...", target);
-    if (TryRestoreHookedFunction(target, is64bit)) {
-      HookLog("InlineHook: Successfully restored hooked function at %p, proceeding with hook installation", target);
-      // Re-read the code after restoration
-      code = (const uint8_t *)target;
-    } else {
-      HookLog("InlineHook: REFUSING to hook %p - function appears to already be hooked by another component and restoration failed", target);
-      return false;
-    }
+    // External overlay detected - do NOT try to restore and rehook
+    // This prevents black screens caused by incorrect prologue restoration
+    HookLog("InlineHook: Function at %p is already hooked by external overlay", target);
+    HookLog("InlineHook: Skipping hook installation to prevent prologue corruption");
+    return false;
   }
 
   // Determine how many bytes to copy (must be >= PATCH_SIZE on instruction

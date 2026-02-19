@@ -615,7 +615,36 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetDevice(REFIID riid,
 // ============================================================================
 
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval,
-                                                      UINT Flags) {
+                                                       UINT Flags) {
+  // DIAGNOSTIC: Set to false to enable wrapper, true to bypass completely
+  static bool s_diagBypassWrapper = false;
+  if (s_diagBypassWrapper) {
+    IDXGISwapChain *pReal = m_pReal;
+    if (!pReal)
+      return DXGI_ERROR_INVALID_CALL;
+    static bool s_logged = false;
+    if (!s_logged) {
+      s_logged = true;
+      WrapperLog("DIAGNOSTIC: Bypassing wrapper, calling real Present directly");
+    }
+    return pReal->Present(SyncInterval, Flags);
+  }
+  
+  // STEP 1: Test if just calling through works
+  static bool s_diagMinimalWrapper = true;
+  if (s_diagMinimalWrapper) {
+    IDXGISwapChain *pReal = m_pReal;
+    if (!pReal)
+      return DXGI_ERROR_INVALID_CALL;
+    static bool s_logged = false;
+    if (!s_logged) {
+      s_logged = true;
+      WrapperLog("DIAGNOSTIC: Minimal wrapper - just calling real Present");
+    }
+    // Just call through without any processing
+    return pReal->Present(SyncInterval, Flags);
+  }
+  
   // CRITICAL: Set this FIRST before any other code, especially before recursion
   // guard This ensures DetourPresent knows we're in a wrapper call even if we
   // return early
@@ -764,7 +793,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval,
     // DIAGNOSTIC: Skip ALL overlay processing to test if wrapper itself causes
     // black If game shows normally with this, the issue is in ProcessFrame.
     // If game is still black, wrapper/present chain is the problem.
-    static bool s_diagSkipOverlay = true;
+    // Set to true to disable overlay, false to enable overlay.
+    static bool s_diagSkipOverlay = false;
     if (s_diagSkipOverlay) {
       HRESULT hr = pRealCached->Present(SyncInterval, Flags);
       return hr;
@@ -804,7 +834,11 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval,
     }
   }
 
+  // Call the real Present - this may go through external overlay hooks
+  WrapperLog("[FSR-DEBUG] Present: About to call real Present (pReal=%p, SyncInterval=%u, Flags=0x%X)",
+             pRealCached, SyncInterval, Flags);
   HRESULT hr = pRealCached->Present(SyncInterval, Flags);
+  WrapperLog("[FSR-DEBUG] Present: real Present returned hr=0x%08X", hr);
   return hr;
 }
 
