@@ -761,8 +761,14 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval,
                  captureNum, pRealCached);
     }
 
-    // CRITICAL: Call ProcessFrame - this is where crashes often occur with FSR
-    // FG
+    // DIAGNOSTIC: Skip ALL overlay processing to test if wrapper itself causes
+    // black If game shows normally with this, the issue is in ProcessFrame.
+    // If game is still black, wrapper/present chain is the problem.
+    static bool s_diagSkipOverlay = true;
+    if (s_diagSkipOverlay) {
+      HRESULT hr = pRealCached->Present(SyncInterval, Flags);
+      return hr;
+    }
     DX12_ProcessFrameExternal(pRealCached);
 
     if (captureNum <= 10) {

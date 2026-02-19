@@ -11,7 +11,17 @@ class FGCompatibility {
 public:
   enum class FGType { None, DLSS_FG, FSR_FG, DLSS_MSFG, NVIDIA_SM, Unknown };
 
+  // =========================================================================
+  // DORMANT MODE: FG detection is disabled by default to prevent false
+  // positives and interference. Enable via SetDormantMode(false) if needed.
+  // =========================================================================
+  static constexpr bool kDefaultDormantMode = true;
+  
+  void SetDormantMode(bool dormant) { dormantMode.store(dormant); }
+  bool IsDormant() const { return dormantMode.load(); }
+
   // Per-frame tracking - call from DetourPresent with command list count
+  // NOTE: In dormant mode, this only tracks basic stats, no pattern detection
   void RecordFrame(int commandListsExecuted);
 
   // State queries
@@ -63,6 +73,7 @@ public:
   // =========================================================================
   // API-based FG activation (called by nvngx_hook and ffx_hook)
   // These are called when FG is actually created/destroyed via the APIs
+  // NOTE: These still work in dormant mode - they just report API state
   // =========================================================================
   void SetDLSSFGActive(bool active);
   void SetFSRFGActive(bool active);
@@ -74,6 +85,9 @@ public:
   }
 
 private:
+  // Dormant mode flag - when true, skip all pattern-based detection
+  std::atomic<bool> dormantMode{kDefaultDormantMode};
+  
   // Active FG type based on API activation (not DLL detection)
   std::atomic<FGType> activeBehavior{FGType::None};
 

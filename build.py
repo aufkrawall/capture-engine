@@ -2064,28 +2064,38 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
     ldflags.extend(LD_OPT_FLAGS)  # Strip debug sections, reduce binary size
     if arch == "x86":
         ldflags.append("-Wl,--kill-at")
-        # x86 mingw32: clang++ defaults to libc++ but mingw32 only has libstdc++
-        # Rebuild objects with -stdlib=libstdc++ to use available stdlib
-        log("[INFO] Rebuilding x86 Vulkan layer with -stdlib=libstdc++")
         
         # Re-add -static for proper linking
         if "-static" not in ldflags:
             ldflags.insert(0, "-static")
         
-        # Rebuild all layer objects with -stdlib=libstdc++
-        x86_layer_cflags = layer_cflags + ["-stdlib=libstdc++"]
-        rebuilt_objs = []
-        for src in layer_sources:
-            if not os.path.exists(src):
-                continue
-            basename = os.path.splitext(os.path.basename(src))[0]
-            obj = os.path.join(obj_dir, basename + "_stdc++.o")
-            cmd = [clang_exe] + x86_layer_cflags + ["-c", src, "-o", obj]
-            run_command(cmd, env=env)
-            rebuilt_objs.append(obj)
+        # Detect if we're using Clang or GCC
+        # Clang on mingw32 defaults to libc++ which may not be available
+        # GCC uses libstdc++ by default and doesn't support -stdlib flag
+        is_clang = "clang" in os.path.basename(clang_exe).lower()
         
-        # Update layer_objs with rebuilt objects
-        layer_objs[:] = rebuilt_objs
+        if is_clang:
+            # x86 mingw32 clang++ defaults to libc++ but mingw32 only has libstdc++
+            # Rebuild objects with -stdlib=libstdc++ to use available stdlib
+            log("[INFO] Rebuilding x86 Vulkan layer with -stdlib=libstdc++ (Clang detected)")
+            
+            # Rebuild all layer objects with -stdlib=libstdc++
+            x86_layer_cflags = layer_cflags + ["-stdlib=libstdc++"]
+            rebuilt_objs = []
+            for src in layer_sources:
+                if not os.path.exists(src):
+                    continue
+                basename = os.path.splitext(os.path.basename(src))[0]
+                obj = os.path.join(obj_dir, basename + "_stdc++.o")
+                cmd = [clang_exe] + x86_layer_cflags + ["-c", src, "-o", obj]
+                run_command(cmd, env=env)
+                rebuilt_objs.append(obj)
+            
+            # Update layer_objs with rebuilt objects
+            layer_objs[:] = rebuilt_objs
+        else:
+            # GCC uses libstdc++ by default - no need for -stdlib flag
+            log("[INFO] x86 Vulkan layer using GCC with default libstdc++")
 
     # Use ccache for linking too if available
     ccache_exe = shutil.which("ccache", path=env["PATH"])
@@ -2227,6 +2237,11 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
 
         if arch == "x86":
             curr_env, curr_clang_bin = get_env_x86()
+            # Propagate build flags that are set on the main env but not copied
+            # by get_env_x86() (which starts from a fresh os.environ.copy()).
+            for _flag in ("FORCE_REBUILD",):
+                if _flag in env:
+                    curr_env[_flag] = env[_flag]
 
         curr_clang_exe = get_compiler_exe(arch)
         curr_pkg_config = shutil.which("pkg-config") if IS_LINUX else os.path.join(curr_clang_bin, "pkg-config.exe")
@@ -2267,8 +2282,10 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             curr_cflags.append("-mstackrealign")
             if not IS_LINUX:
                 try:
+                    # Use curr_clang_exe (the x86 clang++ binary) not clang_bin
+                    # (which is the x64 bin directory and cannot be executed).
                     cmd = [
-                        clang_bin,
+                        curr_clang_exe,
                         "-print-libgcc-file-name",
                         "--target=i686-w64-mingw32",
                     ]
@@ -2277,6 +2294,10 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 except Exception as e:
                     log(f"Warning: Failed to find 32-bit lib path: {e}")
                     std_lib_path = ""
+                if not std_lib_path:
+                    # Fallback to the known mingw32 lib directory so the linker
+                    # can always find the runtime libraries.
+                    std_lib_path = os.path.join(MSYS2_DIR, "mingw32", "lib")
 
         # 1. Compile Common (ImGui removed - using custom overlay)
         log(f"Compiling Common {arch}...")

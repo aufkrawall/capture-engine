@@ -55,16 +55,26 @@ const char *FGCompatibility::GetFGTypeName(FGType type) const {
 }
 
 FGCompatibility::FGType FGCompatibility::GetActiveFGType() const {
-  // Priority: FSR FG > DLSS FG > NVIDIA SM > None
-  // FSR FG is detected via API hooks (ffx_frameinterpolation_createcontext)
+  // DORMANT MODE: Only return API-detected types, skip pattern detection
+  // This prevents false positives from pattern-based detection
+  if (dormantMode.load()) {
+    // Only check API-based detection
+    if (fsrFGApiActive.load(std::memory_order_acquire)) {
+      return FGType::FSR_FG;
+    }
+    if (dlssFGApiActive.load(std::memory_order_acquire)) {
+      return FGType::DLSS_FG;
+    }
+    return FGType::None;
+  }
+  
+  // Normal mode: Priority: FSR FG > DLSS FG > NVIDIA SM > None
   if (fsrFGApiActive.load(std::memory_order_acquire)) {
     return FGType::FSR_FG;
   }
-  // DLSS FG is detected via API hooks (slCreateFeature with kFeatureDlssG)
   if (dlssFGApiActive.load(std::memory_order_acquire)) {
     return FGType::DLSS_FG;
   }
-  // NVIDIA Smooth Motion is detected via behavioral analysis
   if (IsNvidiaSmoothMotionActive()) {
     return FGType::NVIDIA_SM;
   }
@@ -78,7 +88,8 @@ bool FGCompatibility::IsFGActive() const {
 void FGCompatibility::SetDLSSFGActive(bool active) {
   bool wasActive = dlssFGApiActive.exchange(active, std::memory_order_acq_rel);
   if (wasActive != active) {
-    HookLog("FG: DLSS FG API %s", active ? "ACTIVATED" : "DEACTIVATED");
+    HookLog("FG: DLSS FG API %s (dormant=%d)", active ? "ACTIVATED" : "DEACTIVATED",
+            dormantMode.load() ? 1 : 0);
 
     // Update the combined active behavior
     FGType newType = GetActiveFGType();
@@ -87,7 +98,8 @@ void FGCompatibility::SetDLSSFGActive(bool active) {
       HookLog("FG: Active type changed: %s -> %s", GetFGTypeName(oldType),
               GetFGTypeName(newType));
 
-      if (HAS_DX12_INVALIDATE &&
+      // DORMANT MODE: Skip swapchain invalidation when dormant
+      if (!dormantMode.load() && HAS_DX12_INVALIDATE &&
           ((newType == FGType::DLSS_FG && oldType == FGType::FSR_FG) ||
            (newType == FGType::FSR_FG && oldType == FGType::DLSS_FG))) {
         DX12_InvalidateSwapchain();
@@ -100,16 +112,17 @@ void FGCompatibility::SetDLSSFGActive(bool active) {
 void FGCompatibility::SetFSRFGActive(bool active) {
   bool wasActive = fsrFGApiActive.exchange(active, std::memory_order_acq_rel);
   if (wasActive != active) {
-    HookLog("FG: FSR FG API %s", active ? "ACTIVATED" : "DEACTIVATED");
+    HookLog("FG: FSR FG API %s (dormant=%d)", active ? "ACTIVATED" : "DEACTIVATED",
+            dormantMode.load() ? 1 : 0);
 
-    // Update the combined active behavior
     FGType newType = GetActiveFGType();
     FGType oldType = activeBehavior.exchange(newType);
     if (oldType != newType) {
       HookLog("FG: Active type changed: %s -> %s", GetFGTypeName(oldType),
               GetFGTypeName(newType));
 
-      if (HAS_DX12_INVALIDATE &&
+      // DORMANT MODE: Skip swapchain invalidation when dormant
+      if (!dormantMode.load() && HAS_DX12_INVALIDATE &&
           ((newType == FGType::DLSS_FG && oldType == FGType::FSR_FG) ||
            (newType == FGType::FSR_FG && oldType == FGType::DLSS_FG))) {
         DX12_InvalidateSwapchain();
@@ -120,20 +133,17 @@ void FGCompatibility::SetFSRFGActive(bool active) {
 }
 
 void FGCompatibility::RecordFrame(int commandListsExecuted) {
+  // Always track basic stats
   int64_t now = GetCurrentTimeUs();
-  bool isRealFrame = (commandListsExecuted > 0);
-
-  // Store last command list count for frame classification
   lastCmdListCount.store(commandListsExecuted);
 
-  // CRITICAL FIX: Use atomic index for thread-safe circular buffer
   int idx = historyIndex.fetch_add(1, std::memory_order_acquire) % WINDOW_SIZE;
   frameHistory[idx].timestampUs = now;
   frameHistory[idx].commandLists = commandListsExecuted;
 
   int total = totalFramesRecorded.fetch_add(1) + 1;
 
-  // Track consecutive patterns for quick detection
+  bool isRealFrame = (commandListsExecuted > 0);
   if (isRealFrame) {
     consecutiveRealFrames.fetch_add(1);
     consecutiveInterpolatedFrames.store(0);
@@ -142,7 +152,17 @@ void FGCompatibility::RecordFrame(int commandListsExecuted) {
     consecutiveRealFrames.store(0);
   }
 
-  // Debug logging (periodic to avoid spam)
+  // DORMANT MODE: Skip pattern-based detection and metrics
+  if (dormantMode.load()) {
+    // Minimal logging in dormant mode
+    int logCount = debugLogCounter.fetch_add(1);
+    if (logCount == 0) {
+      HookLog("FG: Running in DORMANT mode - pattern detection disabled");
+    }
+    return;
+  }
+
+  // Active mode: Full pattern detection
   int logCount = debugLogCounter.fetch_add(1);
   if (logCount < 20 || (logCount % 300 == 0)) {
     FGType activeType = GetActiveFGType();
@@ -160,7 +180,6 @@ void FGCompatibility::RecordFrame(int commandListsExecuted) {
     DetectPattern();
   }
 
-  // Also update on potential FG toggle (sudden pattern change)
   if (consecutiveInterpolatedFrames.load() == 2 ||
       consecutiveRealFrames.load() == 10) {
     UpdateMetrics();
@@ -169,6 +188,11 @@ void FGCompatibility::RecordFrame(int commandListsExecuted) {
 }
 
 void FGCompatibility::UpdateMetrics() {
+  // DORMANT MODE: Skip metrics calculation
+  if (dormantMode.load()) {
+    return;
+  }
+
   int64_t now = GetCurrentTimeUs();
   int64_t windowStartUs = now - 1000000; // 1 second window
 
@@ -177,12 +201,9 @@ void FGCompatibility::UpdateMetrics() {
   int64_t minTs = INT64_MAX;
   int64_t maxTs = 0;
 
-  // CRITICAL FIX: Load historyIndex with acquire semantics
   int currentHead = historyIndex.load(std::memory_order_acquire);
   int startIdx = currentHead % WINDOW_SIZE;
 
-  // Dynamic Thresholding: Find max work per frame to filter out "partial"
-  // presents
   int maxCmdLists = 0;
   for (int i = 0; i < WINDOW_SIZE; i++) {
     int64_t ts = frameHistory[i].timestampUs;
@@ -194,11 +215,10 @@ void FGCompatibility::UpdateMetrics() {
     }
   }
 
-  // Threshold: 50% of peak work, but at least 2
   int workThreshold = (maxCmdLists > 4) ? (maxCmdLists / 2) : 2;
 
   int lastRealLogicalIdx = -1;
-  int intervalCounts[16] = {0}; // Track intervals 1..15
+  int intervalCounts[16] = {0};
   int totalIntervals = 0;
 
   for (int i = 0; i < WINDOW_SIZE; i++) {
@@ -207,7 +227,6 @@ void FGCompatibility::UpdateMetrics() {
     int64_t ts = frameHistory[idx].timestampUs;
     int cmd = frameHistory[idx].commandLists;
 
-    // Skip invalid or out-of-window frames
     if (ts <= windowStartUs || ts > now)
       continue;
 
@@ -217,11 +236,9 @@ void FGCompatibility::UpdateMetrics() {
     if (ts > maxTs)
       maxTs = ts;
 
-    // Use dynamic threshold instead of just > 0
     if (cmd > workThreshold) {
       realFrames++;
 
-      // Interval Analysis
       if (lastRealLogicalIdx != -1) {
         int interval = i - lastRealLogicalIdx;
         if (interval > 0 && interval < 16) {
@@ -234,13 +251,12 @@ void FGCompatibility::UpdateMetrics() {
   }
 
   if (totalFrames < 10) {
-    // Not enough data yet
     return;
   }
 
   float durationS = (maxTs - minTs) / 1000000.0f;
   if (durationS < 0.1f) {
-    return; // Window too short
+    return;
   }
 
   float outputFPS = totalFrames / durationS;
@@ -249,13 +265,11 @@ void FGCompatibility::UpdateMetrics() {
   cachedOutputFPS.store(outputFPS);
   cachedBaseFPS.store(baseFPS);
 
-  // Determine Multiplier from Histogram Mode
   int mult = 1;
-  if (totalIntervals > 5) { // Need meaningful sample size
+  if (totalIntervals > 5) {
     int bestInterval = 1;
     int maxCount = 0;
 
-    // Find dominant interval
     for (int k = 1; k < 16; k++) {
       if (intervalCounts[k] > maxCount) {
         maxCount = intervalCounts[k];
@@ -263,12 +277,9 @@ void FGCompatibility::UpdateMetrics() {
       }
     }
 
-    // Confidence check: Dominant interval must be significant (> 50% of
-    // intervals)
     float confidence = (float)maxCount / (float)totalIntervals;
 
-    if (confidence >
-        0.4f) { // Low threshold to allow switching, but prevents random noise
+    if (confidence > 0.4f) {
       mult = bestInterval;
     } else {
       mult = cachedMultiplier.load();
@@ -277,20 +288,17 @@ void FGCompatibility::UpdateMetrics() {
     if (mult > 4)
       mult = 4;
   } else {
-    // Fallback for low sample count (start up) - only for higher multipliers
     if (realFrames > 0) {
       float ratio = (float)totalFrames / (float)realFrames;
       if (ratio >= 3.5f)
         mult = 4;
       else if (ratio >= 2.5f)
         mult = 3;
-      // Note: 2x multiplier requires proper histogram-based detection
     }
   }
 
   int prevMult = cachedMultiplier.exchange(mult);
 
-  // Log on multiplier change
   if (prevMult != mult && (prevMult == 1 || mult == 1 || prevMult != mult)) {
     HookLog("FG: Multiplier changed %d -> %d (output=%.1f, base=%.1f, real=%d, "
             "total=%d)",
@@ -299,16 +307,15 @@ void FGCompatibility::UpdateMetrics() {
 }
 
 void FGCompatibility::DetectPattern() {
-  // Check for NVIDIA Smooth Motion if no API-based FG is active
+  // DORMANT MODE: Skip pattern detection entirely
+  if (dormantMode.load()) {
+    return;
+  }
+
   if (!IsFGActive()) {
-    // NVIDIA Smooth Motion produces 2x frames with specific patterns
-    // Detect it via consistent 2x multiplier without API hooks
     int mult = cachedMultiplier.load();
 
-    // CRITICAL FIX: Use compare-and-swap to prevent race conditions
-    // Only confirm SM when we consistently see 2x multiplier
     if (mult == 2) {
-      // Atomically increment and check
       int expected = nvidiaSMConfirmCount.load(std::memory_order_acquire);
       while (expected < NVIDIA_SM_CONFIRM_THRESHOLD) {
         if (nvidiaSMConfirmCount.compare_exchange_weak(
@@ -316,24 +323,19 @@ void FGCompatibility::DetectPattern() {
                 std::memory_order_acquire)) {
           expected++;
         } else {
-          // CAS failed, reload
           expected = nvidiaSMConfirmCount.load(std::memory_order_acquire);
         }
       }
 
-      // Now check if we reached threshold
       if (expected == NVIDIA_SM_CONFIRM_THRESHOLD) {
         FGType prev = activeBehavior.exchange(FGType::NVIDIA_SM);
         if (prev != FGType::NVIDIA_SM) {
-          HookLog(
-              "FG: NVIDIA Smooth Motion detected (2x multiplier confirmed)");
+          HookLog("FG: NVIDIA Smooth Motion detected (2x multiplier confirmed)");
         }
       }
     } else {
-      // Only reset if we're actually in SM mode and pattern broke
       FGType current = activeBehavior.load(std::memory_order_acquire);
       if (current == FGType::NVIDIA_SM) {
-        // Atomically reset to prevent races
         nvidiaSMConfirmCount.store(0, std::memory_order_release);
         activeBehavior.store(FGType::None, std::memory_order_release);
         HookLog("FG: NVIDIA Smooth Motion pattern broken, resetting to None");
@@ -355,17 +357,15 @@ void FGCompatibility::OnSwapchainRecreation() {
 
   FGType runtime = GetActiveFGType();
 
-  HookLog("FG: Swapchain recreation #%d (delta=%lldms, runtime=%s)", count,
-          deltaMs, GetFGTypeName(runtime));
+  HookLog("FG: Swapchain recreation #%d (delta=%lldms, runtime=%s, dormant=%d)", 
+          count, deltaMs, GetFGTypeName(runtime), dormantMode.load() ? 1 : 0);
 
-  // Reset consecutive counters to allow re-detection
   consecutiveRealFrames.store(0);
   consecutiveInterpolatedFrames.store(0);
 }
 
 void FGCompatibility::OnDeviceChange() {
-  HookLog("FG: Device change detected");
-  // Reset counters and state
+  HookLog("FG: Device change detected (dormant=%d)", dormantMode.load() ? 1 : 0);
   consecutiveRealFrames.store(0);
   consecutiveInterpolatedFrames.store(0);
   nvidiaSMConfirmCount.store(0);
@@ -374,10 +374,11 @@ void FGCompatibility::OnDeviceChange() {
 void FGCompatibility::LogStatus() const {
   FGType active = GetActiveFGType();
   HookLog("FG Status: active=%s, apiDLSS=%d, apiFSR=%d, mult=%d, "
-          "outputFPS=%.1f, baseFPS=%.1f",
+          "outputFPS=%.1f, baseFPS=%.1f, dormant=%d",
           GetFGTypeName(active), dlssFGApiActive.load() ? 1 : 0,
           fsrFGApiActive.load() ? 1 : 0, cachedMultiplier.load(),
-          cachedOutputFPS.load(), cachedBaseFPS.load());
+          cachedOutputFPS.load(), cachedBaseFPS.load(),
+          dormantMode.load() ? 1 : 0);
 }
 
 // C-linkage exports

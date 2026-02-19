@@ -801,7 +801,7 @@ bool InstallPresentInlineHooks(IDXGISwapChain *pSwapChain) {
   // External overlays (NVIDIA, Steam, Discord, etc.) actively re-hook Present
   // Fighting them causes a hook war that corrupts the call chain
   const uint8_t *code = (const uint8_t *)presentAddr;
-  bool externalOverlayActive = false;
+  bool externalJmpDetected = false;
   
   if (code[0] == 0xE9) {
     // JMP rel32 detected - check where it points
@@ -817,7 +817,7 @@ bool InstallPresentInlineHooks(IDXGISwapChain *pSwapChain) {
         uintptr_t dxgiStart = (uintptr_t)hDXGI;
         uintptr_t dxgiEnd = dxgiStart + dxgiInfo.SizeOfImage;
         
-        if (jumpTarget < dxgiStart || jumpTarget >= dxgiEnd) {
+        if (jumpTarget < dxgiStart || jumpTarget >= dxgiEnd) { externalJmpDetected = true;
           // JMP points outside dxgi.dll - external overlay detected
           HookLog("InstallPresentInlineHooks: External overlay detected!");
           HookLog("InstallPresentInlineHooks: JMP at %p targets %p (outside dxgi.dll %p-%p)",
@@ -844,21 +844,18 @@ bool InstallPresentInlineHooks(IDXGISwapChain *pSwapChain) {
                 moduleLower.find("gameoverlay") != std::string::npos ||
                 moduleLower.find("discord") != std::string::npos ||
                 moduleLower.find("overlay") != std::string::npos) {
-              HookLog("InstallPresentInlineHooks: Known overlay detected - cooperating instead of fighting");
-              externalOverlayActive = true;
+              HookLog("InstallPresentInlineHooks: External hook detected - cooperating (known overlay)");
             }
           } else {
-            // Unknown external JMP - could be a stale hook from a previous process
-            // This is dangerous and likely causes the black screen
+            // Skip inline hooks to prevent prologue corruption (black screen fix)
             HookLog("InstallPresentInlineHooks: Unknown external JMP - possibly stale hook");
-            // Try to restore and hook anyway, but this is risky
           }
         }
       }
     }
   }
 
-  if (externalOverlayActive) {
+  if (externalJmpDetected) {
     // External overlay is actively hooking Present
     // Skip inline hook installation and rely on swapchain wrapper
     HookLog("InstallPresentInlineHooks: Deferring to external overlay");
