@@ -9,6 +9,7 @@
 #include "../common/custom_overlay_vk.h" // For VulkanBackend access
 #include "../common/ipc_client.h"
 #include "../common/overlay_adapter.h"
+#include "../common/perf_logger.h"
 #include "../common/performance_metrics.h"
 #include "../common/system_metrics.h"
 #include "layer_main.h"
@@ -486,15 +487,27 @@ void CleanupOverlay(VkDevice device) {
 }
 
 // Render overlay using OverlayAdapter
+// fenceWaitUs returns the time spent waiting for fence (previous frame sync)
 void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex,
-                   VkSemaphore waitSemaphore, VkSemaphore signalSemaphore) {
+                   VkSemaphore waitSemaphore, VkSemaphore signalSemaphore,
+                   int32_t *fenceWaitUs) {
   // Early out if overlay is disabled
   if (g_IPCClient.GetSharedMem() &&
       !g_IPCClient.GetSharedMem()->overlayConfig.showOverlay) {
     return;
   }
 
-  std::lock_guard<std::mutex> lock(g_OverlayMutex);
+  // PERFORMANCE: Use try_lock to avoid blocking the render thread
+  if (!g_OverlayMutex.try_lock()) {
+    static std::atomic<int> s_skipCount{0};
+    int skips = ++s_skipCount;
+    if (skips <= 5) {
+      LayerLog("Vulkan Layer: Overlay mutex busy, skipping frame (imageIndex=%u)", imageIndex);
+    }
+    return;
+  }
+  // RAII unlock when we exit
+  std::lock_guard<std::mutex> lock(g_OverlayMutex, std::adopt_lock);
   auto it = g_OverlayStates.find(device);
   if (it == g_OverlayStates.end() || !it->second.initialized)
     return;
@@ -527,9 +540,40 @@ void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex,
             .count());
   }
 
-  // Wait for fence
+  // FENCE WAIT: Synchronize with previous frame's overlay GPU work
+  // This is NOT our overhead - it's waiting for GPU to finish previous work
+  // Track separately so we can see true CPU overhead
   VkFence fence = state.fences[imageIndex];
-  disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, 1000000000);
+  int64_t fenceStartUs = PerfLogger::GetQpcUs();
+
+  VkResult fenceResult = disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, 1000000); // 1ms
+  if (fenceResult == VK_TIMEOUT) {
+    // GPU behind on this buffer - wait longer with 10ms timeout
+    // This is rare and indicates heavy GPU load
+    fenceResult = disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, 10000000); // 10ms
+    if (fenceResult == VK_TIMEOUT) {
+      static std::atomic<int> s_fenceTimeoutCount{0};
+      int timeouts = ++s_fenceTimeoutCount;
+      if (timeouts <= 5) {
+        LayerLog("Vulkan Layer: Fence wait timeout (10ms), GPU behind on buffer %u", imageIndex);
+      }
+      // Don't reset fence, skip this frame
+      if (fenceWaitUs) *fenceWaitUs = -1; // Indicate timeout
+      return;
+    }
+  }
+  if (fenceResult != VK_SUCCESS) {
+    LayerLog("Vulkan Layer: Fence wait FAILED with result %d (buffer %u)", fenceResult, imageIndex);
+    if (fenceWaitUs) *fenceWaitUs = -2; // Indicate error
+    return;
+  }
+
+  int64_t fenceEndUs = PerfLogger::GetQpcUs();
+  if (fenceWaitUs) {
+    *fenceWaitUs = static_cast<int32_t>(fenceEndUs - fenceStartUs);
+  }
+
+  // Only reset fence after successful wait
   disp->fp_vkResetFences(device, 1, &fence);
 
   // Record command buffer
@@ -543,15 +587,14 @@ void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex,
   if (disp->fp_vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS)
     return;
 
-  // Transition image to COLOR_ATTACHMENT_OPTIMAL
-  // Use UNDEFINED as oldLayout since we don't know the previous state
-  // The image will be fully overwritten by the render pass
+  // CRITICAL: Transition image preserving existing content
+  // The game has already rendered to this image, so we must preserve it.
+  // Use PRESENT_SRC_KHR as oldLayout since that's what Present expects.
+  // The render pass will load existing content (VK_ATTACHMENT_LOAD_OP_LOAD).
   VkImageMemoryBarrier barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-  barrier.srcAccessMask =
-      0; // No source access needed when coming from UNDEFINED
+  barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT; // Previous read for Present
   barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-  barrier.oldLayout =
-      VK_IMAGE_LAYOUT_UNDEFINED; // Safe assumption for swapchain
+  barrier.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
   barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
   barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -562,7 +605,7 @@ void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex,
   barrier.subresourceRange.baseArrayLayer = 0;
   barrier.subresourceRange.layerCount = 1;
 
-  disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+  disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                                 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                                 0, 0, nullptr, 0, nullptr, 1, &barrier);
 
@@ -636,5 +679,16 @@ void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex,
     submitInfo.pSignalSemaphores = &signalSemaphore;
   }
 
-  disp->fp_vkQueueSubmit(queue, 1, &submitInfo, fence);
+  // DIAGNOSTIC: Log submit details
+  static std::atomic<int> s_submitCount{0};
+  int submitNum = ++s_submitCount;
+  if (submitNum <= 5) {
+    LayerLog("Vulkan Layer: QueueSubmit (buffer=%u, waitSem=%p, signalSem=%p, fence=%p)",
+             imageIndex, waitSemaphore, signalSemaphore, fence);
+  }
+
+  VkResult submitResult = disp->fp_vkQueueSubmit(queue, 1, &submitInfo, fence);
+  if (submitResult != VK_SUCCESS) {
+    LayerLog("Vulkan Layer: QueueSubmit FAILED with result %d (buffer %u)", submitResult, imageIndex);
+  }
 }

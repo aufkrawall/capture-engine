@@ -916,6 +916,18 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(
   const VkSwapchainCreateInfoKHR *pFinalCI =
       modified ? &modifiedCI : pCreateInfo;
 
+  // CRITICAL: Clean up old swapchain resources before creating new one
+  // This prevents fence/semaphore conflicts when the game recreates the swapchain
+  if (pCreateInfo->oldSwapchain != VK_NULL_HANDLE) {
+    LayerLog("Vulkan Layer: Cleaning up old swapchain %p before recreation",
+             pCreateInfo->oldSwapchain);
+    SwapchainData *oldSd = VulkanLayerState::Get().GetSwapchainData(pCreateInfo->oldSwapchain);
+    if (oldSd) {
+      CleanupOverlay(oldSd->device);
+    }
+    VulkanLayerState::Get().UnregisterSwapchain(pCreateInfo->oldSwapchain);
+  }
+
   VkResult res =
       disp->fp_vkCreateSwapchainKHR(device, pFinalCI, pAllocator, pSwapchain);
   LayerLog("Vulkan Layer: vkCreateSwapchainKHR driver returned: %d", res);
@@ -1029,10 +1041,18 @@ Capture_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
       VkSemaphore overlayDone = GetOverlaySemaphore(sd->device, idx);
 
       if (shm && shm->overlayConfig.showOverlay) {
+        // Measure ONLY the actual CPU overhead of overlay work
+        // Fence wait is tracked separately (it's GPU sync, not our overhead)
+        int32_t fenceWaitUs = 0;
         int64_t overlayStartUs = PerfLogger::GetQpcUs();
-        RenderOverlay(sd->device, queue, idx, currentWait, overlayDone);
+        RenderOverlay(sd->device, queue, idx, currentWait, overlayDone, &fenceWaitUs);
         perfMetrics.overlayUs =
             static_cast<int32_t>(PerfLogger::GetQpcUs() - overlayStartUs);
+        perfMetrics.fenceWaitUs = fenceWaitUs;
+        // Subtract fence wait from overlay time to get actual CPU work
+        if (fenceWaitUs > 0 && perfMetrics.overlayUs > fenceWaitUs) {
+          perfMetrics.overlayUs -= fenceWaitUs;
+        }
         currentWait = overlayDone; // Next step waits for overlay
         modified = true;
       }

@@ -7,12 +7,17 @@
 struct FrameMetrics {
   uint64_t frameNum = 0;
   int64_t qpcUs = 0;
-  int32_t totalUs = 0;
-  int32_t overlayUs = 0;
+  int32_t totalUs = 0;      // Total time in Present hook
+  int32_t overlayUs = 0;    // CPU time for overlay work (cmd record + submit)
   int32_t captureUs = 0;
   int32_t deviceInitUs = 0;
   int32_t prerenderWaitUs = 0;
   int32_t fpsLimitWaitUs = 0;
+  int32_t fenceWaitUs = 0;  // Time waiting for fence (previous frame sync)
+  // Detailed DX12 breakdown (optional, set to 0 if not applicable)
+  int32_t cmdListResetUs = 0;
+  int32_t renderUs = 0;
+  int32_t executeUs = 0;
   char api[8] = "";
 };
 

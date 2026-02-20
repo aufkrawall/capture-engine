@@ -1936,28 +1936,45 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
                 ID3D12CommandQueue *targetQueue = gameQueue;
 
                 if (SUCCEEDED(closeHr) && targetQueue) {
+                  // PERFORMANCE: Smart synchronization for overlay rendering
+                  // Check if GPU is ready for this buffer BEFORE submitting commands
+                  // This prevents overwriting a buffer the GPU is still using
+                  if (g_State.fence && g_State.fenceEvent) {
+                    // Get the fence value this buffer was last used with
+                    UINT64 lastValueForBuffer = g_State.fenceValues[idx];
+                    UINT64 completedValue = g_State.fence->GetCompletedValue();
+
+                    if (completedValue < lastValueForBuffer) {
+                      // GPU hasn't finished with this buffer yet
+                      // Wait briefly (1ms) to avoid corruption, but don't block long
+                      g_State.fence->SetEventOnCompletion(lastValueForBuffer,
+                                                          g_State.fenceEvent);
+                      DWORD waitResult = WaitForSingleObject(g_State.fenceEvent, 1);
+
+                      if (waitResult == WAIT_TIMEOUT) {
+                        // GPU is really behind - log but continue anyway
+                        // The triple buffering should prevent corruption in most cases
+                        static std::atomic<int> s_waitTimeoutCount{0};
+                        int timeouts = ++s_waitTimeoutCount;
+                        if (timeouts <= 5) {
+                          HookLog("DX12: GPU behind on buffer %u, waited 1ms (completed=%llu, need=%llu)",
+                                  idx, completedValue, lastValueForBuffer);
+                        }
+                      }
+                    }
+
+                    // Signal new fence value for this buffer
+                    g_State.currentFenceValue++;
+                    g_State.fenceValues[idx] = g_State.currentFenceValue;
+                  }
+
+                  // Execute overlay commands
                   ID3D12CommandList *lists[] = {list};
                   targetQueue->ExecuteCommandLists(1, lists);
 
-                  // Use fence wait for synchronization
-                  if (g_State.fence && g_State.fenceEvent) {
-                    // Signal fence on whichever queue actually executed the
-                    // commands
-                    g_State.currentFenceValue++;
-                    g_State.fenceValues[idx] = g_State.currentFenceValue;
-                    targetQueue->Signal(g_State.fence,
-                                        g_State.currentFenceValue);
-
-                    UINT64 waitValue = g_State.currentFenceValue;
-                    if (g_State.fence->GetCompletedValue() < waitValue) {
-                      g_State.fence->SetEventOnCompletion(waitValue,
-                                                          g_State.fenceEvent);
-                      if (WaitForSingleObject(g_State.fenceEvent, 50) ==
-                          WAIT_TIMEOUT) {
-                        HookLog("DX12: Fence wait timed out (50ms), GPU may "
-                                "be slow");
-                      }
-                    }
+                  // Signal fence after execution
+                  if (g_State.fence) {
+                    targetQueue->Signal(g_State.fence, g_State.currentFenceValue);
                   }
                 }
 

@@ -26,7 +26,8 @@ void PerfLogger::Init(const char *logPath) {
   if (file_) {
     setvbuf(file_, nullptr, _IOFBF, 16384);
     fprintf(file_, "frame,qpc_us,total_us,overlay_us,capture_us,device_init_us,"
-                   "prerender_wait_us,fps_limit_wait_us,api\n");
+                   "prerender_wait_us,fps_limit_wait_us,fence_wait_us,"
+                   "cmdlist_reset_us,render_us,execute_us,api\n");
     fflush(file_);
     headerWritten_ = true;
     HookLog("PerfLogger: Initialized CSV logging to %s", logPath);
@@ -51,11 +52,12 @@ void PerfLogger::LogFrame(const FrameMetrics &metrics) {
 
   uint64_t frameNum = frameCount_.fetch_add(1, std::memory_order_relaxed) + 1;
 
-  fprintf(file_, "%llu,%lld,%d,%d,%d,%d,%d,%d,%s\n",
+  fprintf(file_, "%llu,%lld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%s\n",
           (unsigned long long)frameNum, (long long)metrics.qpcUs,
           metrics.totalUs, metrics.overlayUs, metrics.captureUs,
           metrics.deviceInitUs, metrics.prerenderWaitUs, metrics.fpsLimitWaitUs,
-          metrics.api);
+          metrics.fenceWaitUs, metrics.cmdListResetUs, metrics.renderUs,
+          metrics.executeUs, metrics.api);
 
   if ((frameNum % 1000) == 0) {
     fflush(file_);
