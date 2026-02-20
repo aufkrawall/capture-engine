@@ -33,6 +33,7 @@ struct OverlayState {
   std::vector<VkCommandBuffer> commandBuffers;
   std::vector<VkFence> fences;
   std::vector<VkSemaphore> semaphores;
+  std::vector<VkSemaphore> preSignaledSemaphores;  // Always-signaled semaphores for skipped frames
   std::vector<VkFramebuffer> framebuffers;
   std::vector<VkImageView> imageViews;
   std::vector<VkImage> swapchainImages;
@@ -488,13 +489,13 @@ void CleanupOverlay(VkDevice device) {
 
 // Render overlay using OverlayAdapter
 // fenceWaitUs returns the time spent waiting for fence (previous frame sync)
-void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex,
+bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex,
                    VkSemaphore waitSemaphore, VkSemaphore signalSemaphore,
                    int32_t *fenceWaitUs) {
   // Early out if overlay is disabled
   if (g_IPCClient.GetSharedMem() &&
       !g_IPCClient.GetSharedMem()->overlayConfig.showOverlay) {
-    return;
+    return false;
   }
 
   // PERFORMANCE: Use try_lock to avoid blocking the render thread
@@ -504,18 +505,18 @@ void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex,
     if (skips <= 5) {
       LayerLog("Vulkan Layer: Overlay mutex busy, skipping frame (imageIndex=%u)", imageIndex);
     }
-    return;
+    return false;
   }
   // RAII unlock when we exit
   std::lock_guard<std::mutex> lock(g_OverlayMutex, std::adopt_lock);
   auto it = g_OverlayStates.find(device);
   if (it == g_OverlayStates.end() || !it->second.initialized)
-    return;
+    return false;
 
   OverlayState &state = it->second;
   DeviceDispatch *disp = VulkanLayerState::Get().GetDeviceDispatch(device);
   if (!disp)
-    return;
+    return false;
 
   // Deferred window hook
   if (state.needsWindowHook) {
@@ -540,41 +541,44 @@ void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex,
             .count());
   }
 
-  // FENCE WAIT: Synchronize with previous frame's overlay GPU work
-  // This is NOT our overhead - it's waiting for GPU to finish previous work
-  // Track separately so we can see true CPU overhead
+  // FENCE WAIT: Wait for GPU to be ready for this buffer
+  // Unlike DX12's value-based fences, Vulkan binary semaphores cannot be reused
+  // until consumed. We MUST wait for the previous overlay work to complete
+  // before we can safely signal the semaphore again.
+  //
+  // This is the only reliable way to prevent flickering with binary semaphores.
+  // The wait time is typically minimal since we use triple buffering.
   VkFence fence = state.fences[imageIndex];
   int64_t fenceStartUs = PerfLogger::GetQpcUs();
 
-  VkResult fenceResult = disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, 1000000); // 1ms
-  if (fenceResult == VK_TIMEOUT) {
-    // GPU behind on this buffer - wait longer with 10ms timeout
-    // This is rare and indicates heavy GPU load
-    fenceResult = disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, 10000000); // 10ms
-    if (fenceResult == VK_TIMEOUT) {
-      static std::atomic<int> s_fenceTimeoutCount{0};
-      int timeouts = ++s_fenceTimeoutCount;
-      if (timeouts <= 5) {
-        LayerLog("Vulkan Layer: Fence wait timeout (10ms), GPU behind on buffer %u", imageIndex);
-      }
-      // Don't reset fence, skip this frame
-      if (fenceWaitUs) *fenceWaitUs = -1; // Indicate timeout
-      return;
-    }
-  }
-  if (fenceResult != VK_SUCCESS) {
-    LayerLog("Vulkan Layer: Fence wait FAILED with result %d (buffer %u)", fenceResult, imageIndex);
-    if (fenceWaitUs) *fenceWaitUs = -2; // Indicate error
-    return;
-  }
+  // Wait for GPU with a reasonable timeout (16ms = ~1 frame at 60fps)
+  // This ensures overlay appears every frame (no flickering)
+  constexpr uint64_t FENCE_TIMEOUT_NS = 16000000; // 16ms
+  VkResult fenceResult = disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, FENCE_TIMEOUT_NS);
 
   int64_t fenceEndUs = PerfLogger::GetQpcUs();
   if (fenceWaitUs) {
     *fenceWaitUs = static_cast<int32_t>(fenceEndUs - fenceStartUs);
   }
 
-  // Only reset fence after successful wait
-  disp->fp_vkResetFences(device, 1, &fence);
+  if (fenceResult == VK_TIMEOUT) {
+    // GPU took too long - this is unusual with proper buffering
+    // Log warning but continue anyway to avoid hanging
+    static std::atomic<int> s_timeoutCount{0};
+    int timeouts = ++s_timeoutCount;
+    if (timeouts <= 5) {
+      LayerLog("Vulkan Layer: Fence wait timeout after %d us (buffer %u, timeout=%d)",
+               static_cast<int>(fenceEndUs - fenceStartUs), imageIndex, timeouts);
+    }
+    // Reset the fence and continue - the triple buffering should prevent corruption
+    disp->fp_vkResetFences(device, 1, &fence);
+  } else if (fenceResult != VK_SUCCESS) {
+    LayerLog("Vulkan Layer: Fence wait FAILED with result %d (buffer %u)", fenceResult, imageIndex);
+    return false;
+  } else {
+    // Success - reset fence for this frame's work
+    disp->fp_vkResetFences(device, 1, &fence);
+  }
 
   // Record command buffer
   VkCommandBuffer cmd = state.commandBuffers[imageIndex];
@@ -585,7 +589,7 @@ void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex,
   beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
   if (disp->fp_vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS)
-    return;
+    return false;
 
   // CRITICAL: Transition image preserving existing content
   // The game has already rendered to this image, so we must preserve it.
@@ -691,4 +695,5 @@ void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex,
   if (submitResult != VK_SUCCESS) {
     LayerLog("Vulkan Layer: QueueSubmit FAILED with result %d (buffer %u)", submitResult, imageIndex);
   }
+  return true;
 }

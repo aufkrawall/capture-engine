@@ -1045,7 +1045,7 @@ Capture_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
         // Fence wait is tracked separately (it's GPU sync, not our overhead)
         int32_t fenceWaitUs = 0;
         int64_t overlayStartUs = PerfLogger::GetQpcUs();
-        RenderOverlay(sd->device, queue, idx, currentWait, overlayDone, &fenceWaitUs);
+        bool overlayRendered = RenderOverlay(sd->device, queue, idx, currentWait, overlayDone, &fenceWaitUs);
         perfMetrics.overlayUs =
             static_cast<int32_t>(PerfLogger::GetQpcUs() - overlayStartUs);
         perfMetrics.fenceWaitUs = fenceWaitUs;
@@ -1053,8 +1053,7 @@ Capture_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
         if (fenceWaitUs > 0 && perfMetrics.overlayUs > fenceWaitUs) {
           perfMetrics.overlayUs -= fenceWaitUs;
         }
-        currentWait = overlayDone; // Next step waits for overlay
-        modified = true;
+        if (overlayRendered) { currentWait = overlayDone; modified = true; }
       }
 
       if (shm && shm->runtimeState.isRecording) {

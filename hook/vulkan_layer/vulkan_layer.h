@@ -276,7 +276,7 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain,
                        VkFormat format, VkExtent2D extent, uint32_t imageCount,
                        VkImage *images, HWND window);
 void CleanupOverlay(VkDevice device);
-void RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex,
+bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex,
                    VkSemaphore waitSemaphore, VkSemaphore signalSemaphore,
                    int32_t *fenceWaitUs = nullptr);
 VkSemaphore GetOverlaySemaphore(VkDevice device, uint32_t imageIndex);
