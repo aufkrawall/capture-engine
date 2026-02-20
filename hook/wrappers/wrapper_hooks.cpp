@@ -238,9 +238,10 @@ HRESULT WINAPI Wrapped_D3D12CreateDevice(IUnknown *pAdapter,
   WrapperLog("Wrapper: oD3D12CreateDevice returned hr=0x%08X, pRealDevice=%p",
              hr, pRealDevice);
 
-  // DIAGNOSTIC: Pass through real device without wrapping
+  // Hook CreateSampler on the game's actual device
   if (SUCCEEDED(hr) && pRealDevice) {
-    WrapperLog("Wrapper: DIAGNOSTIC - Returning unwrapped D3D12 device");
+    DX12_HookDeviceVTable(pRealDevice);
+    WrapperLog("Wrapper: Hooked CreateSampler on device %p", pRealDevice);
     hr = pRealDevice->QueryInterface(riid, ppDevice);
     pRealDevice->Release();
   }

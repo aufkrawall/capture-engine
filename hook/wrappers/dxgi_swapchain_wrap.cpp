@@ -615,35 +615,209 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetDevice(REFIID riid,
 // ============================================================================
 
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval,
-                                                       UINT Flags) {
-  // DIAGNOSTIC: Set to false to enable wrapper, true to bypass completely
-  static bool s_diagBypassWrapper = false;
-  if (s_diagBypassWrapper) {
+                                                        UINT Flags) {
+  // DIAGNOSTIC STAGES: Find what causes DXGI_ERROR_INVALID_CALL
+  // 0 = full wrapper
+  // 1 = just g_InWrapperPresent flag + Present
+  // 2 = flag + mutex + Present
+  // 3 = flag + mutex + cached + Present
+  // 4 = + logging
+  // 5 = + shutdown check
+  // 6 = + destroyed check
+  // 7 = + heartbeat
+  // 8 = + FSR check
+  // 9 = + recursion guard
+  // 10 = + perf metrics
+  // 11 = + VSync override
+  // 12 = + DX12_ProcessFrameExternal
+  static int s_diagStage = 12;
+  
+  // Stage 1: Just flag + Present
+  if (s_diagStage == 1) {
+    g_InWrapperPresent = true;
+    auto guard = ::ce::make_scope_guard([&] { g_InWrapperPresent = false; });
     IDXGISwapChain *pReal = m_pReal;
-    if (!pReal)
-      return DXGI_ERROR_INVALID_CALL;
-    static bool s_logged = false;
-    if (!s_logged) {
-      s_logged = true;
-      WrapperLog("DIAGNOSTIC: Bypassing wrapper, calling real Present directly");
-    }
-    return pReal->Present(SyncInterval, Flags);
+    if (!pReal) return DXGI_ERROR_INVALID_CALL;
+    static int cnt = 0;
+    cnt++;
+    if (cnt <= 3) WrapperLog("STAGE 1: flag only, calling Present");
+    HRESULT hr = pReal->Present(SyncInterval, Flags);
+    if (cnt <= 3) WrapperLog("STAGE 1: hr=0x%08X", hr);
+    return hr;
   }
   
-  // STEP 1: Test if just calling through works
-  static bool s_diagMinimalWrapper = true;
-  if (s_diagMinimalWrapper) {
-    IDXGISwapChain *pReal = m_pReal;
-    if (!pReal)
-      return DXGI_ERROR_INVALID_CALL;
-    static bool s_logged = false;
-    if (!s_logged) {
-      s_logged = true;
-      WrapperLog("DIAGNOSTIC: Minimal wrapper - just calling real Present");
+  // Stage 2+: Flag + mutex
+  if (s_diagStage >= 2) {
+    g_InWrapperPresent = true;
+    auto guard = ::ce::make_scope_guard([&] { g_InWrapperPresent = false; });
+    std::lock_guard<std::mutex> lock(m_ResourceLock);
+    
+    // Stage 2: Flag + mutex + Present
+    if (s_diagStage == 2) {
+      IDXGISwapChain *pReal = m_pReal;
+      if (!pReal) return DXGI_ERROR_INVALID_CALL;
+      static int cnt = 0;
+      cnt++;
+      if (cnt <= 3) WrapperLog("STAGE 2: flag+mutex, calling Present");
+      HRESULT hr = pReal->Present(SyncInterval, Flags);
+      if (cnt <= 3) WrapperLog("STAGE 2: hr=0x%08X", hr);
+      return hr;
     }
-    // Just call through without any processing
-    return pReal->Present(SyncInterval, Flags);
+    
+    // Stage 3+: Use cached pointer
+    if (s_diagStage >= 3) {
+      IDXGISwapChain *pRealCached = m_pReal;
+      if (!pRealCached) return DXGI_ERROR_INVALID_CALL;
+      
+      // Stage 3: Flag + mutex + cached + Present
+      if (s_diagStage == 3) {
+        static int cnt = 0;
+        cnt++;
+        if (cnt <= 3) WrapperLog("STAGE 3: flag+mutex+cached, calling Present");
+        HRESULT hr = pRealCached->Present(SyncInterval, Flags);
+        if (cnt <= 3) WrapperLog("STAGE 3: hr=0x%08X", hr);
+        return hr;
+      }
+      
+      // Stage 4+: Add logging
+      static std::atomic<int> s_callCount{0};
+      int callCount = s_callCount.fetch_add(1);
+      
+      if (s_diagStage == 4) {
+        if (callCount <= 3) WrapperLog("STAGE 4: + logging, calling Present");
+        HRESULT hr = pRealCached->Present(SyncInterval, Flags);
+        if (callCount <= 3) WrapperLog("STAGE 4: hr=0x%08X", hr);
+        return hr;
+      }
+      
+      // Stage 5+: Add shutdown check
+      if (s_diagStage >= 5) {
+        extern std::atomic<bool> g_ShuttingDown;
+        if (g_ShuttingDown.load()) {
+          return pRealCached->Present(SyncInterval, Flags);
+        }
+        
+        if (s_diagStage == 5) {
+          if (callCount <= 3) WrapperLog("STAGE 5: + shutdown check, calling Present");
+          HRESULT hr = pRealCached->Present(SyncInterval, Flags);
+          if (callCount <= 3) WrapperLog("STAGE 5: hr=0x%08X", hr);
+          return hr;
+        }
+        
+        // Stage 6+: Add destroyed check
+        if (s_diagStage >= 6) {
+          if (m_SwapchainDestroyed.load()) {
+            return pRealCached->Present(SyncInterval, Flags);
+          }
+          
+          if (s_diagStage == 6) {
+            if (callCount <= 3) WrapperLog("STAGE 6: + destroyed check, calling Present");
+            HRESULT hr = pRealCached->Present(SyncInterval, Flags);
+            if (callCount <= 3) WrapperLog("STAGE 6: hr=0x%08X", hr);
+            return hr;
+          }
+          
+          // Stage 7+: Add heartbeat
+          if (s_diagStage >= 7) {
+            g_RenderWatchdog.Heartbeat();
+            
+            if (s_diagStage == 7) {
+              if (callCount <= 3) WrapperLog("STAGE 7: + heartbeat, calling Present");
+              HRESULT hr = pRealCached->Present(SyncInterval, Flags);
+              if (callCount <= 3) WrapperLog("STAGE 7: hr=0x%08X", hr);
+              return hr;
+            }
+            
+            // Stage 8+: Add FSR check
+            if (s_diagStage >= 8) {
+              if (IsFSRInternalSwapchain()) {
+                return pRealCached->Present(SyncInterval, Flags);
+              }
+              
+              if (s_diagStage == 8) {
+                if (callCount <= 3) WrapperLog("STAGE 8: + FSR check, calling Present");
+                HRESULT hr = pRealCached->Present(SyncInterval, Flags);
+                if (callCount <= 3) WrapperLog("STAGE 8: hr=0x%08X", hr);
+                return hr;
+              }
+              
+              // Stage 9+: Add recursion guard
+              if (s_diagStage >= 9) {
+                static std::atomic<DWORD> s_threadId{0};
+                static std::atomic<int> s_depth{0};
+                DWORD curId = GetCurrentThreadId();
+                if (s_depth.load() > 0 && s_threadId.load() == curId) {
+                  return pRealCached->Present(SyncInterval, Flags);
+                }
+                s_threadId.store(curId);
+                s_depth.fetch_add(1);
+                auto dguard = ::ce::make_scope_guard([&] {
+                  if (s_depth.fetch_sub(1) == 1) s_threadId.store(0);
+                });
+                
+                if (s_diagStage == 9) {
+                  if (callCount <= 3) WrapperLog("STAGE 9: + recursion guard, calling Present");
+                  HRESULT hr = pRealCached->Present(SyncInterval, Flags);
+                  if (callCount <= 3) WrapperLog("STAGE 9: hr=0x%08X", hr);
+                  return hr;
+                }
+                
+                // Stage 10+: Add perf metrics
+                if (s_diagStage >= 10) {
+                  static int64_t qpcFreq = 0;
+                  if (qpcFreq == 0) { LARGE_INTEGER f; QueryPerformanceFrequency(&f); qpcFreq = f.QuadPart; }
+                  LARGE_INTEGER qpc;
+                  QueryPerformanceCounter(&qpc);
+                  int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
+                  DXGIShared::GetPerformanceMetrics()->Update(us);
+                  
+                  if (s_diagStage == 10) {
+                    if (callCount <= 3) WrapperLog("STAGE 10: + perf metrics, calling Present");
+                    HRESULT hr = pRealCached->Present(SyncInterval, Flags);
+                    if (callCount <= 3) WrapperLog("STAGE 10: hr=0x%08X", hr);
+                    return hr;
+                  }
+                  
+                  // Stage 11+: Add VSync override
+                  if (s_diagStage >= 11) {
+                    bool fgActive = g_FGCompat.IsFGActive();
+                    UINT origSync = SyncInterval;
+                    UINT origFlags = Flags;
+                    if (!fgActive) {
+                      ProcessVSyncOverride(SyncInterval, Flags);
+                    }
+                    
+                    if (s_diagStage == 11) {
+                      if (callCount <= 3) WrapperLog("STAGE 11: VSync override: sync %u->%u, flags 0x%X->0x%X, calling Present", origSync, SyncInterval, origFlags, Flags);
+                      HRESULT hr = pRealCached->Present(SyncInterval, Flags);
+                      if (callCount <= 3) WrapperLog("STAGE 11: hr=0x%08X", hr);
+                      return hr;
+                    }
+                    
+                    // Stage 12: Add DX12_ProcessFrameExternal
+                    if (s_diagStage >= 12) {
+                      if (m_IsD3D12) {
+                        DX12_ProcessFrameExternal(pRealCached);
+                      }
+                      
+                      if (s_diagStage == 12) {
+                        if (callCount <= 3) WrapperLog("STAGE 12: + ProcessFrameExternal, calling Present");
+                        HRESULT hr = pRealCached->Present(SyncInterval, Flags);
+                        if (callCount <= 3) WrapperLog("STAGE 12: hr=0x%08X", hr);
+                        return hr;
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
   }
+  
+  // Full wrapper continues below for Stage 0
   
   // CRITICAL: Set this FIRST before any other code, especially before recursion
   // guard This ensures DetourPresent knows we're in a wrapper call even if we

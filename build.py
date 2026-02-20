@@ -1281,10 +1281,30 @@ def should_recompile(src: str, obj: str, dep_file: str, env: Dict[str, str]) -> 
 
     # Check source timestamp
     try:
-        if os.path.getmtime(src) > os.path.getmtime(obj):
+        src_mtime = os.path.getmtime(src)
+        obj_mtime = os.path.getmtime(obj)
+        if src_mtime > obj_mtime:
             return True
     except OSError:
         return True  # Error accessing files, safer to recompile
+
+    # WSL2 FIX: Also check if source content changed (hash-based)
+    # This catches cases where WSL timestamp sync is unreliable
+    hash_file = obj + ".hash"
+    try:
+        import hashlib
+        with open(src, "rb") as f:
+            content_hash = hashlib.md5(f.read()).hexdigest()[:16]
+        if os.path.exists(hash_file):
+            with open(hash_file, "r") as f:
+                stored_hash = f.read().strip()
+            if content_hash != stored_hash:
+                return True  # Content changed, recompile
+        else:
+            # No hash file, need to create one (first compile or old build)
+            return True
+    except Exception:
+        pass  # Fall back to timestamp check only
 
     # Check dependencies
     if os.path.exists(dep_file):
@@ -1345,6 +1365,19 @@ def compile_object(
         cmd = [clang_exe] + compile_flags + ["-c", src, "-o", obj]
 
     run_command(cmd, env=env)
+    
+    # WSL2 FIX: Save content hash after successful compilation
+    # This ensures we detect source changes even when timestamp sync fails
+    hash_file = obj + ".hash"
+    try:
+        import hashlib
+        with open(src, "rb") as f:
+            content_hash = hashlib.md5(f.read()).hexdigest()[:16]
+        with open(hash_file, "w") as f:
+            f.write(content_hash)
+    except Exception:
+        pass  # Non-critical, ignore errors
+    
     return True
 
 

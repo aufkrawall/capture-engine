@@ -607,5 +607,9 @@ void ProcessVSyncOverride(UINT &SyncInterval, UINT &Flags) {
     // DXGI_PRESENT_ALLOW_TEARING requires sync interval 0
     SyncInterval = 0;
     Flags |= 0x200; // DXGI_PRESENT_ALLOW_TEARING
+  } else if (SyncInterval > 0) {
+    // VSync enabled: MUST clear ALLOW_TEARING flag
+    // DXGI spec: ALLOW_TEARING is only valid with SyncInterval=0
+    Flags &= ~0x200; // Clear DXGI_PRESENT_ALLOW_TEARING
   }
 }
