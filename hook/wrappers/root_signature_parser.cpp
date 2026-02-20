@@ -98,7 +98,8 @@ bool ApplyStaticSamplerOverrides(D3D12_STATIC_SAMPLER_DESC &sampler) {
         if (sampler.MipLODBias >= 0.0f) {
           sampler.MipLODBias = userBias;
         }
-      } else if (mode == "override") {
+      } else {
+        // "strict" or "override" - force the value
         sampler.MipLODBias = userBias;
       }
 

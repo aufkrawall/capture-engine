@@ -581,83 +581,88 @@ bool InitializeDXGIHooks() {
 }
 
 bool InitializeD3D12Hooks() {
-#ifdef ENABLE_D3D12_WRAPPER
   WrapperLog("IAT: Initializing D3D12 hooks...");
 
   HMODULE hD3D12 = GetModuleHandleA("d3d12.dll");
-
-  if (hD3D12) {
-    // CRITICAL: Pre-load d3d12_wrappers.dll to avoid delay-load race condition
-    // When the game calls D3D12CreateDevice, Wrapped_D3D12CreateDevice will
-    // call D3D12Wrapper_WrapDevice which is in d3d12_wrappers.dll. If we don't
-    // preload it here, the delay-load mechanism could crash due to thread
-    // safety issues.
-    static bool s_WrappersPreloaded = false;
-    if (!s_WrappersPreloaded) {
-      s_WrappersPreloaded = true;
-      HMODULE hWrappers = LoadLibraryA("d3d12_wrappers.dll");
-      if (!hWrappers) {
-        hWrappers = LoadLibraryA("d3d12_wrappers_x86.dll");
-      }
-      if (hWrappers) {
-        WrapperLog("IAT: Pre-loaded d3d12_wrappers.dll at %p", hWrappers);
-
-        // Register sampler override callback for AF/mip bias support
-        typedef void(WINAPI * PFN_SetSamplerOverrideCallback)(void *callback);
-        auto *setCallback = (PFN_SetSamplerOverrideCallback)GetProcAddress(
-            hWrappers, "D3D12Wrapper_SetSamplerOverrideCallback");
-        if (setCallback) {
-          setCallback((void *)ApplyDX12SamplerOverridesCallback);
-          WrapperLog("IAT: Registered D3D12 sampler override callback");
-        }
-      } else {
-        WrapperLog("IAT: WARNING - Could not pre-load d3d12_wrappers.dll, "
-                   "delay-load will be used. Err=%d",
-                   GetLastError());
-      }
-    }
-
-    oD3D12CreateDevice = reinterpret_cast<PFN_D3D12CreateDevice>(
-        GetProcAddress(hD3D12, "D3D12CreateDevice"));
-
-    void *dummy;
-    bool patchResult =
-        PatchIATAllModules("d3d12.dll", "D3D12CreateDevice",
-                           (void *)Wrapped_D3D12CreateDevice, &dummy);
-    if (!patchResult) {
-      WrapperLog("IAT: D3D12CreateDevice not found in IAT");
-    }
-
-    WrapperLog("IAT: D3D12 hooks initialized (patchResult=%d)", patchResult);
-
-    // Also hook D3D12SerializeRootSignature and
-    // D3D12SerializeVersionedRootSignature These are exported by d3d12.dll
-    oSerializeRootSignature =
-        reinterpret_cast<PFN_D3D12_SERIALIZE_ROOT_SIGNATURE>(
-            GetProcAddress(hD3D12, "D3D12SerializeRootSignature"));
-
-    oSerializeVersionedRootSignature =
-        reinterpret_cast<PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE>(
-            GetProcAddress(hD3D12, "D3D12SerializeVersionedRootSignature"));
-
-    if (oSerializeRootSignature) {
-      PatchIATAllModules("d3d12.dll", "D3D12SerializeRootSignature",
-                         (void *)DetourSerializeRootSignature, &dummy);
-      WrapperLog("IAT: Hooked D3D12SerializeRootSignature");
-    }
-
-    if (oSerializeVersionedRootSignature) {
-      PatchIATAllModules("d3d12.dll", "D3D12SerializeVersionedRootSignature",
-                         (void *)DetourSerializeVersionedRootSignature, &dummy);
-      WrapperLog("IAT: Hooked D3D12SerializeVersionedRootSignature");
-    }
-
-    return true;
+  if (!hD3D12) {
+    WrapperLog("IAT: d3d12.dll not loaded");
+    return false;
   }
 
-  WrapperLog("IAT: d3d12.dll not loaded");
+  // Hook D3D12SerializeRootSignature and D3D12SerializeVersionedRootSignature
+  // These handle static samplers for AF/mip bias overrides
+  // CRITICAL: These hooks are needed even without ENABLE_D3D12_WRAPPER
+  oSerializeRootSignature =
+      reinterpret_cast<PFN_D3D12_SERIALIZE_ROOT_SIGNATURE>(
+          GetProcAddress(hD3D12, "D3D12SerializeRootSignature"));
+
+  oSerializeVersionedRootSignature =
+      reinterpret_cast<PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE>(
+          GetProcAddress(hD3D12, "D3D12SerializeVersionedRootSignature"));
+
+  void *dummy;
+  if (oSerializeRootSignature) {
+    PatchIATAllModules("d3d12.dll", "D3D12SerializeRootSignature",
+                       (void *)DetourSerializeRootSignature, &dummy);
+    WrapperLog("IAT: Hooked D3D12SerializeRootSignature");
+  }
+
+  if (oSerializeVersionedRootSignature) {
+    PatchIATAllModules("d3d12.dll", "D3D12SerializeVersionedRootSignature",
+                       (void *)DetourSerializeVersionedRootSignature, &dummy);
+    WrapperLog("IAT: Hooked D3D12SerializeVersionedRootSignature");
+  }
+
+#ifdef ENABLE_D3D12_WRAPPER
+  // D3D12CreateDevice wrapper requires d3d12_wrappers.dll which may not exist
+  WrapperLog("IAT: Initializing D3D12CreateDevice wrapper...");
+
+  // CRITICAL: Pre-load d3d12_wrappers.dll to avoid delay-load race condition
+  // When the game calls D3D12CreateDevice, Wrapped_D3D12CreateDevice will
+  // call D3D12Wrapper_WrapDevice which is in d3d12_wrappers.dll. If we don't
+  // preload it here, the delay-load mechanism could crash due to thread
+  // safety issues.
+  static bool s_WrappersPreloaded = false;
+  if (!s_WrappersPreloaded) {
+    s_WrappersPreloaded = true;
+    HMODULE hWrappers = LoadLibraryA("d3d12_wrappers.dll");
+    if (!hWrappers) {
+      hWrappers = LoadLibraryA("d3d12_wrappers_x86.dll");
+    }
+    if (hWrappers) {
+      WrapperLog("IAT: Pre-loaded d3d12_wrappers.dll at %p", hWrappers);
+
+      // Register sampler override callback for AF/mip bias support
+      typedef void(WINAPI * PFN_SetSamplerOverrideCallback)(void *callback);
+      auto *setCallback = (PFN_SetSamplerOverrideCallback)GetProcAddress(
+          hWrappers, "D3D12Wrapper_SetSamplerOverrideCallback");
+      if (setCallback) {
+        setCallback((void *)ApplyDX12SamplerOverridesCallback);
+        WrapperLog("IAT: Registered D3D12 sampler override callback");
+      }
+    } else {
+      WrapperLog("IAT: WARNING - Could not pre-load d3d12_wrappers.dll, "
+                 "delay-load will be used. Err=%d",
+                 GetLastError());
+    }
+  }
+
+  oD3D12CreateDevice = reinterpret_cast<PFN_D3D12CreateDevice>(
+      GetProcAddress(hD3D12, "D3D12CreateDevice"));
+
+  bool patchResult =
+      PatchIATAllModules("d3d12.dll", "D3D12CreateDevice",
+                         (void *)Wrapped_D3D12CreateDevice, &dummy);
+  if (!patchResult) {
+    WrapperLog("IAT: D3D12CreateDevice not found in IAT");
+  }
+
+  WrapperLog("IAT: D3D12 hooks initialized (patchResult=%d)", patchResult);
+#else
+  WrapperLog("IAT: D3D12 hooks initialized (root signature hooks only)");
 #endif
-  return false;
+
+  return true;
 }
 
 bool InitializeD3D11Hooks() {
