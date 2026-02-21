@@ -177,11 +177,12 @@ public:
       return false; // Empty
     }
 
+    // CRITICAL FIX: Acquire fence BEFORE reading element
+    // This ensures we see all data written by producer before we read it
+    std::atomic_thread_fence(std::memory_order_acquire);
+
     // Read element
     item = buffer_[rIdx & IndexMask];
-
-    // Memory fence after reading
-    std::atomic_thread_fence(std::memory_order_acquire);
 
     // Publish read
     readIndex_.store(rIdx + 1, ordering_.readIndexStore);

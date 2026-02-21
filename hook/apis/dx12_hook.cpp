@@ -650,20 +650,9 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(
     HookLog("DetourCreateSwapChainGlobal: Swapchain wrapped successfully");
 
     // For DX12, capture the swapchain queue so overlay uses the correct queue
-    // Also hook the device's CreateSampler for AF/mip bias overrides
     ID3D12CommandQueue *pQueue = nullptr;
     if (pDevice && SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&pQueue)))) {
       DX12_SetSwapchainQueue(pQueue);
-
-      // Get device from queue and hook its CreateSampler vtable
-      ID3D12Device *pDeviceFromQueue = nullptr;
-      if (SUCCEEDED(pQueue->GetDevice(IID_PPV_ARGS(&pDeviceFromQueue)))) {
-        HookLog("DetourCreateSwapChainGlobal: Hooking device %p from queue",
-                pDeviceFromQueue);
-        DX12_HookDeviceVTable(pDeviceFromQueue);
-        pDeviceFromQueue->Release();
-      }
-
       pQueue->Release();
     }
   }
@@ -725,16 +714,6 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(
     ID3D12CommandQueue *pQueue = nullptr;
     if (pDevice && SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&pQueue)))) {
       DX12_SetSwapchainQueue(pQueue);
-
-      // Get device from queue and hook its CreateSampler vtable
-      ID3D12Device *pDeviceFromQueue = nullptr;
-      if (SUCCEEDED(pQueue->GetDevice(IID_PPV_ARGS(&pDeviceFromQueue)))) {
-        HookLog("DetourCreateSwapChainForHwndGlobal: Hooking device %p from queue",
-                pDeviceFromQueue);
-        DX12_HookDeviceVTable(pDeviceFromQueue);
-        pDeviceFromQueue->Release();
-      }
-
       pQueue->Release();
     }
   }
@@ -1418,7 +1397,6 @@ static void ApplyPrerenderLimitDX12(float limit) {
 }
 
 void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
-  HookLog("DX12: ProcessFrame START - pSwapChain=%p, processCapture=%d", pSwapChain, processCapture);
   // Performance metrics for this frame
   FrameMetrics perfMetrics;
   perfMetrics.qpcUs = PerfLogger::GetQpcUs();
@@ -1474,7 +1452,7 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
         static_cast<int32_t>(PerfLogger::GetQpcUs() - prerenderStartUs);
   }
 
-// PERFORMANCE FIX: Use try_lock instead of blocking lock_guard
+  // PERFORMANCE FIX: Use try_lock instead of blocking lock_guard
   // This prevents stalling the render thread if another thread holds the lock
   if (!g_OverlayMutex.try_lock()) {
     // Another thread is processing, skip this frame
@@ -1489,25 +1467,6 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
     HookLog("DX12: ProcessFrame - in resize cleanup, returning");
     return;
   }
-
-  // DIAGNOSTIC: Set to true to COMPLETELY SKIP all initialization and rendering
-  // This tests if ANY code in ProcessFrame is causing the DXGI_ERROR_INVALID_CALL
-  static bool s_diagSkipAll = false;
-  if (s_diagSkipAll) {
-    static bool s_logged = false;
-    if (!s_logged) {
-      s_logged = true;
-      HookLog("DX12: DIAGNOSTIC - Skipping ALL ProcessFrame code");
-    }
-    return;
-  }
-  
-  // DIAGNOSTIC STAGES for initialization:
-  // 0 = full initialization
-  // 1 = skip CreateRTVs (GetBuffer calls)
-  // 2 = skip InitOverlaySync
-  // 3 = skip InitImGui entirely
-  static int s_diagInitStage = 0;
 
   // Single-queue architecture: we use game's command queue (g_CommandQueue)
   // No dedicated overlay queue needed
@@ -1664,9 +1623,8 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
   // ImGui_ImplDX12_SetCommandQueue REMOVED: Using OverlayAdapter instead
   // if (g_State.imGuiInit) ImGui_ImplDX12_SetCommandQueue(g_OverlayQueue);
 
-// Remove delay - install overlay immediately (Strange Brigade compatibility)
+  // Remove delay - install overlay immediately (Strange Brigade compatibility)
   static std::atomic<int> s_framesBeforeInit{0};
-  
   if (!g_State.imGuiInit) {
     int frames = ++s_framesBeforeInit;
     if (frames < 1) {
@@ -1708,26 +1666,20 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
       // Validate swapchain buffers are accessible before initializing
       IDXGISwapChain3 *sc3 = nullptr;
       if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3)))) {
-        // DIAGNOSTIC: Stage 3 skips buffer validation (which also calls GetBuffer)
-        int validBuffers = imguiBufferCount;
-        if (s_diagInitStage < 3) {
-          validBuffers = 0;
-          for (int i = 0; i < imguiBufferCount; i++) {
-            ID3D12Resource *bb = nullptr;
-            if (SUCCEEDED(sc3->GetBuffer(i, IID_PPV_ARGS(&bb)))) {
-              if (bb) {
-                bb->Release();
-                validBuffers++;
-              }
-            } else {
-              HookLog("DX12: ProcessFrame - buffer %d not accessible, stopping "
-                      "validation",
-                      i);
-              break;
+        int validBuffers = 0;
+        for (int i = 0; i < imguiBufferCount; i++) {
+          ID3D12Resource *bb = nullptr;
+          if (SUCCEEDED(sc3->GetBuffer(i, IID_PPV_ARGS(&bb)))) {
+            if (bb) {
+              bb->Release();
+              validBuffers++;
             }
+          } else {
+            HookLog("DX12: ProcessFrame - buffer %d not accessible, stopping "
+                    "validation",
+                    i);
+            break;
           }
-        } else {
-          HookLog("DX12: DIAGNOSTIC - Skipping buffer validation (stage %d)", s_diagInitStage);
         }
 
         if (validBuffers < imguiBufferCount) {
@@ -1738,13 +1690,7 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
           return;
         }
 
-        // DIAGNOSTIC: Stage 4 skips InitImGui entirely
-        bool initSuccess = false;
-        if (s_diagInitStage >= 4) {
-          HookLog("DX12: DIAGNOSTIC - Skipping InitImGui entirely (stage %d)", s_diagInitStage);
-          initSuccess = true; // Pretend it succeeded
-          g_State.imGuiInit = true; // Set the flag so we don't loop
-        } else if (InitImGui(g_Device, imguiBufferCount, desc.BufferDesc.Format,
+        if (InitImGui(g_Device, imguiBufferCount, desc.BufferDesc.Format,
                       desc.OutputWindow)) {
           // CRITICAL FIX: Create RTVs for ALL swapchain buffers, not just ImGui
           // count This prevents buffer index issues when swapchain has more
@@ -1755,28 +1701,13 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
                     actualBufferCount);
             actualBufferCount = 8;
           }
-          
-          // DIAGNOSTIC: Stage 1 skips CreateRTVs, Stage 2 skips InitOverlaySync
-          if (s_diagInitStage >= 1) {
-            HookLog("DX12: DIAGNOSTIC - Skipping CreateRTVs (stage %d)", s_diagInitStage);
-          } else {
-            CreateRTVs(g_Device, sc3, actualBufferCount);
-          }
-          
-          if (s_diagInitStage >= 2) {
-            HookLog("DX12: DIAGNOSTIC - Skipping InitOverlaySync (stage %d)", s_diagInitStage);
-            g_State.syncInit = true; // Pretend it succeeded
-          } else {
-            InitOverlaySync(g_Device, imguiBufferCount);
-          }
-          
-          initSuccess = true;
+          CreateRTVs(g_Device, sc3, actualBufferCount);
+          InitOverlaySync(g_Device, imguiBufferCount);
           HookLog("DX12: ProcessFrame - ImGui initialized with %d RTVs, "
                   "syncInit=%d",
                   actualBufferCount, g_State.syncInit);
-        }
-        
-        if (!initSuccess) {
+
+        } else {
           HookLog("DX12: ProcessFrame - ImGui initialization FAILED");
         }
         // SAFETY: Check sc3 is still valid before releasing
@@ -1801,19 +1732,6 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
   }
 
   if (g_State.imGuiInit && g_State.syncInit) {
-    // DIAGNOSTIC: Set to true to COMPLETELY SKIP overlay rendering
-    // If game works with this=true, the issue is in our overlay rendering.
-    // If game still fails, the issue is elsewhere (wrapper, hooks, etc).
-    static bool s_skipOverlayRendering = false;
-    if (s_skipOverlayRendering) {
-      static bool s_logged = false;
-      if (!s_logged) {
-        s_logged = true;
-        HookLog("DX12: DIAGNOSTIC - Skipping all overlay rendering");
-      }
-      // Skip everything - just return without rendering
-      return;
-    }
     // Single log on first successful overlay render
     static int s_firstOverlayLogged = 0;
     if (s_firstOverlayLogged == 0) {
@@ -1890,17 +1808,13 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
                 // DIAGNOSTIC: Clear to bright green to verify command list
                 // reaches display. If window turns green, pipeline works.
                 // If window stays black, commands aren't being presented.
-                // Set to true to ENABLE diagnostic (show green), false to DISABLE.
-                static bool s_enableDiagClear = false;
-                static int s_diagClearCount = 0;
-                if (s_enableDiagClear && s_diagClearCount < 300) {
-                  s_diagClearCount++;
-                  const float green[] = {0.0f, 0.8f, 0.0f, 1.0f};
-                  list->ClearRenderTargetView(rtv, green, 0, nullptr);
-                  if (s_diagClearCount <= 10) {
-                    HookLog("DX12: Diag clear #%d to GREEN on buffer %u", s_diagClearCount, bufferIdx);
-                  }
-                }
+                // DISABLED - was causing green flashing
+                // static int s_diagClearCount = 0;
+                // if (s_diagClearCount < 300) {
+                //   s_diagClearCount++;
+                //   const float green[] = {0.0f, 0.8f, 0.0f, 1.0f};
+                //   list->ClearRenderTargetView(rtv, green, 0, nullptr);
+                // }
 
                 D3D12_VIEWPORT vp = {0,
                                      0,
@@ -1936,45 +1850,28 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
                 ID3D12CommandQueue *targetQueue = gameQueue;
 
                 if (SUCCEEDED(closeHr) && targetQueue) {
-                  // PERFORMANCE: Smart synchronization for overlay rendering
-                  // Check if GPU is ready for this buffer BEFORE submitting commands
-                  // This prevents overwriting a buffer the GPU is still using
-                  if (g_State.fence && g_State.fenceEvent) {
-                    // Get the fence value this buffer was last used with
-                    UINT64 lastValueForBuffer = g_State.fenceValues[idx];
-                    UINT64 completedValue = g_State.fence->GetCompletedValue();
-
-                    if (completedValue < lastValueForBuffer) {
-                      // GPU hasn't finished with this buffer yet
-                      // Wait briefly (1ms) to avoid corruption, but don't block long
-                      g_State.fence->SetEventOnCompletion(lastValueForBuffer,
-                                                          g_State.fenceEvent);
-                      DWORD waitResult = WaitForSingleObject(g_State.fenceEvent, 1);
-
-                      if (waitResult == WAIT_TIMEOUT) {
-                        // GPU is really behind - log but continue anyway
-                        // The triple buffering should prevent corruption in most cases
-                        static std::atomic<int> s_waitTimeoutCount{0};
-                        int timeouts = ++s_waitTimeoutCount;
-                        if (timeouts <= 5) {
-                          HookLog("DX12: GPU behind on buffer %u, waited 1ms (completed=%llu, need=%llu)",
-                                  idx, completedValue, lastValueForBuffer);
-                        }
-                      }
-                    }
-
-                    // Signal new fence value for this buffer
-                    g_State.currentFenceValue++;
-                    g_State.fenceValues[idx] = g_State.currentFenceValue;
-                  }
-
-                  // Execute overlay commands
                   ID3D12CommandList *lists[] = {list};
                   targetQueue->ExecuteCommandLists(1, lists);
 
-                  // Signal fence after execution
-                  if (g_State.fence) {
-                    targetQueue->Signal(g_State.fence, g_State.currentFenceValue);
+                  // Use fence wait for synchronization
+                  if (g_State.fence && g_State.fenceEvent) {
+                    // Signal fence on whichever queue actually executed the
+                    // commands
+                    g_State.currentFenceValue++;
+                    g_State.fenceValues[idx] = g_State.currentFenceValue;
+                    targetQueue->Signal(g_State.fence,
+                                        g_State.currentFenceValue);
+
+                    UINT64 waitValue = g_State.currentFenceValue;
+                    if (g_State.fence->GetCompletedValue() < waitValue) {
+                      g_State.fence->SetEventOnCompletion(waitValue,
+                                                          g_State.fenceEvent);
+                      if (WaitForSingleObject(g_State.fenceEvent, 50) ==
+                          WAIT_TIMEOUT) {
+                        HookLog("DX12: Fence wait timed out (50ms), GPU may "
+                                "be slow");
+                      }
+                    }
                   }
                 }
 
@@ -2087,23 +1984,8 @@ void DX12_ResetOverlayFrameDelay() {
 }
 
 void DX12_ProcessFrameExternal(IDXGISwapChain *pSwapChain) {
-  HookLog("DX12: ProcessFrameExternal START - pSwapChain=%p", pSwapChain);
-  
-  // DIAGNOSTIC: Set to true to skip ALL code in ProcessFrameExternal
-  // This tests if calling this function at all causes the black screen
-  static bool s_diagSkipProcessFrameExternal = false;
-  if (s_diagSkipProcessFrameExternal) {
-    static bool s_logged = false;
-    if (!s_logged) {
-      s_logged = true;
-      HookLog("DX12: DIAGNOSTIC - Skipping ALL ProcessFrameExternal code");
-    }
-    return;
-  }
-  
   // CRITICAL: Skip all rendering during shutdown to prevent crashes
   if (g_ShuttingDown.load()) {
-    HookLog("DX12: ProcessFrameExternal - returning early due to shutdown");
     return;
   }
 
@@ -2123,7 +2005,7 @@ void DX12_ProcessFrameExternal(IDXGISwapChain *pSwapChain) {
   if (g_State.imGuiInit && !s_initDelayComplete.load()) {
     int frames = ++s_framesSinceInit;
     if (frames < 1) {
-      HookLog("DX12: ProcessFrameExternal - init delay, frames=%d, skipping", frames);
+      // Skip - proceed immediately
       return;
     } else {
       s_initDelayComplete = true;
@@ -2160,24 +2042,25 @@ void DX12_ProcessFrameExternal(IDXGISwapChain *pSwapChain) {
     ID3D12Device *pDevice = nullptr;
     HRESULT hr = pSwapChain->GetDevice(IID_PPV_ARGS(&pDevice));
     if (FAILED(hr) || !pDevice) {
-      HookLog("DX12: Vulkan check - active=%d, GetDevice failed hr=0x%X, returning early", s_vulkanLayerActive, hr);
+      // This is likely a Vulkan WSI swapchain - skip DX12 overlay
+      // The Vulkan layer will handle overlay rendering
       return;
     }
+    // Check if we can actually use this device (Vulkan WSI devices may fail
+    // here)
     D3D12_FEATURE_DATA_FEATURE_LEVELS featureLevels = {};
     hr = pDevice->CheckFeatureSupport(D3D12_FEATURE_FEATURE_LEVELS,
                                       &featureLevels, sizeof(featureLevels));
     pDevice->Release();
     if (FAILED(hr)) {
-      HookLog("DX12: Vulkan check - active=%d, CheckFeatureSupport failed hr=0x%X, returning early", s_vulkanLayerActive, hr);
+      // Vulkan WSI device that doesn't support full D3D12 features
       return;
     }
-    HookLog("DX12: Vulkan check - active=%d, device OK, continuing", s_vulkanLayerActive);
   }
 
   // Update freeze watchdog heartbeat
   g_RenderWatchdog.Heartbeat();
 
-  HookLog("DX12: About to log ENTERED");
   // CRITICAL DEBUG: This log MUST appear if the function is called
   static int s_callCount = 0;
   if (++s_callCount <= 10) {
@@ -2189,14 +2072,11 @@ void DX12_ProcessFrameExternal(IDXGISwapChain *pSwapChain) {
     return;
   }
   IDXGISwapChain3 *sc3 = nullptr;
-  HRESULT sc3Hr = pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3));
-  HookLog("DX12: Got SwapChain3=%p, hr=0x%X", sc3, sc3Hr);
-  if (FAILED(sc3Hr) || !sc3) {
+  if (FAILED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3))) || !sc3) {
     HookLog("DX12: ProcessFrameExternal - failed to get SwapChain3");
     return;
   }
   int count = g_CommandListsExecutedThisFrame.exchange(0);
-  HookLog("DX12: cmdListCount=%d, about to check if returning early", count);
   uint64_t frameNum = ++g_FGDebugFrameCount;
   g_FGCompat.RecordFrame(count);
   // Change 6: Only log frame info periodically to reduce log spam
@@ -2206,12 +2086,14 @@ void DX12_ProcessFrameExternal(IDXGISwapChain *pSwapChain) {
             frameNum, count, count > 0);
     s_lastLoggedFrame = frameNum;
   }
+  // Only render overlay on real game frames. FSR3/DLSS frame-generated presents
+  // have GPU work on a separate unhooked queue. Submitting our overlay on
+  // g_SwapchainQueue without synchronization to that queue produces a race that
+  // results in black output. Pass interpolated presents through untouched.
   if (count == 0) {
-    HookLog("DX12: ProcessFrameExternal - count==0, returning early (FG frame?)");
     sc3->Release();
     return;
   }
-  HookLog("DX12: About to call ProcessFrame");
   ProcessFrame(sc3, true);
   sc3->Release();
 }
@@ -2234,7 +2116,9 @@ void HandleDX12ResizeEnd() {
 // Present
 extern "C" __declspec(dllexport) void
 DX12_WaitForOverlayCompletion(ID3D12CommandQueue *pGameQueue) {
-  if (!pGameQueue || !g_State.fence)
+  // CRITICAL: Check both fence AND fenceEvent - fenceEvent is created in
+  // InitOverlaySync which may not have been called yet
+  if (!pGameQueue || !g_State.fence || !g_State.fenceEvent)
     return;
 
   // Get the most recent fence value that was signaled by the overlay queue

@@ -614,78 +614,123 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetDevice(REFIID riid,
 // IDXGISwapChain Implementation
 // ============================================================================
 
-// Performance profiling macros - can be enabled for detailed timing analysis
-#define PERF_PROFILE_PRESENT 0
-
-#if PERF_PROFILE_PRESENT
-#define PERF_TIMER_START(name) int64_t _perf_##name = PerfLogger::GetQpcUs()
-#define PERF_TIMER_END(name)                                                                      \
-  do {                                                                                            \
-    int64_t _elapsed = PerfLogger::GetQpcUs() - _perf_##name;                                     \
-    if (_elapsed > 100) {                                                                         \
-      WrapperLog("PERF: %s took %lld us", #name, _elapsed);                                       \
-    }                                                                                             \
-  } while (0)
-#else
-#define PERF_TIMER_START(name)                                                                    \
-  do {                                                                                            \
-  } while (0)
-#define PERF_TIMER_END(name)                                                                      \
-  do {                                                                                            \
-  } while (0)
-#endif
-
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval,
-                                                        UINT Flags) {
-  // Set recursion guard FIRST
+                                                      UINT Flags) {
+  // CRITICAL: Set this FIRST before any other code, especially before recursion
+  // guard This ensures DetourPresent knows we're in a wrapper call even if we
+  // return early
   g_InWrapperPresent = true;
   auto wrapperPresentGuard =
       ::ce::make_scope_guard([&] { g_InWrapperPresent = false; });
 
-  PERF_TIMER_START(total_present);
+  // EXTREME DEBUG: Log entry with full state
+  DWORD threadId = GetCurrentThreadId();
+  static std::atomic<int> s_presentCallCount{0};
+  int callCount = s_presentCallCount.fetch_add(1);
 
-  // Fast path: Lock and cache pointer
+  // CRITICAL FIX: Lock mutex to protect swapchain pointer access
+  // This prevents race conditions with DestructionCallback running on another
+  // thread
   std::lock_guard<std::mutex> lock(m_ResourceLock);
-  IDXGISwapChain *pReal = m_pReal;
-  
-  if (!pReal) {
+
+  // CRITICAL FIX: Cache the pointer while holding the mutex
+  // This ensures we have a valid pointer even if DestructionCallback nulls
+  // m_pReal
+  IDXGISwapChain *pRealCached = m_pReal;
+  m_pRealCached = pRealCached; // Store for potential future use
+
+  WrapperLog("[FSR-DEBUG] Present ENTRY #%d - Thread=%lu, m_pReal=%p, "
+             "m_DestructionCookie=%u, m_IsD3D12=%d",
+             callCount, threadId, pRealCached, m_DestructionCookie, m_IsD3D12);
+  WrapperLog(
+      "[FSR-DEBUG] Present state - fgActive=%d, flipModel=%d, Wrapper=%p",
+      g_FGCompat.IsFGActive(), m_FlipModel.active, this);
+
+  // CRITICAL: Check for global shutdown - if app is closing, don't touch
+  // anything
+  extern std::atomic<bool> g_ShuttingDown;
+  if (g_ShuttingDown.load()) {
+    if (pRealCached) {
+      return pRealCached->Present(SyncInterval, Flags);
+    }
     return DXGI_ERROR_INVALID_CALL;
   }
 
-  // Shutdown check - early exit
-  extern std::atomic<bool> g_ShuttingDown;
-  if (g_ShuttingDown.load()) {
-    return pReal->Present(SyncInterval, Flags);
+  // CRITICAL FIX: Check if real swapchain has been destroyed (e.g., by FSR FG
+  // recreation) If so, just pass through to avoid crashes with stale pointer
+  if (!pRealCached || m_SwapchainDestroyed.load()) {
+    // Real swapchain was destroyed, wrapper is now invalid
+    // This happens when FSR FG creates a new swapchain
+    WrapperLog("[FSR-DEBUG] Present: Real swapchain destroyed, passing through "
+               "(FSR FG swapchain recreation)");
+    if (pRealCached) {
+      WrapperLog("[FSR-DEBUG] Present: Calling pRealCached->Present "
+                 "(destruction pending)");
+      return pRealCached->Present(SyncInterval, Flags);
+    }
+    WrapperLog("[FSR-DEBUG] Present: pRealCached is null, returning error");
+    return DXGI_ERROR_INVALID_CALL;
   }
 
-  // Destroyed swapchain check - early exit
-  if (m_SwapchainDestroyed.load()) {
-    return pReal->Present(SyncInterval, Flags);
-  }
-
-  // Heartbeat for freeze watchdog
+  // CRITICAL: Heartbeat FIRST - before ANY checks that might early-return
+  // This ensures the freeze watchdog gets heartbeats even with FSR/DLSS FG
+  // active
   g_RenderWatchdog.Heartbeat();
 
-  // FSR internal swapchain check - skip overlay
+  // FSR FG FIX: Skip overlay processing on FSR internal swapchains
+  // FSR creates internal swapchains for frame generation that we should not
+  // interfere with
   if (IsFSRInternalSwapchain()) {
-    return pReal->Present(SyncInterval, Flags);
+    WrapperLog(
+        "[FSR-DEBUG] Present: Skipping FSR internal swapchain processing");
+    HRESULT hr = pRealCached->Present(SyncInterval, Flags);
+    return hr;
   }
 
-  // Recursion guard
-  static std::atomic<DWORD> s_recursionThreadId{0};
-  static std::atomic<int> s_recursionDepth{0};
-  DWORD curId = GetCurrentThreadId();
-  if (s_recursionDepth.load() > 0 && s_recursionThreadId.load() == curId) {
-    return pReal->Present(SyncInterval, Flags);
+  // DEBUG: Log every Present call to verify wrapper is being invoked
+  if (callCount < 50) {
+    WrapperLog("[FSR-DEBUG] Present: CALLED call#%d (m_IsD3D12=%d, "
+               "flipModel=%d, FG=%d)",
+               callCount, m_IsD3D12, m_FlipModel.active,
+               g_FGCompat.IsFGActive());
   }
-  s_recursionThreadId.store(curId);
-  s_recursionDepth.fetch_add(1);
-  auto recursionGuard = ::ce::make_scope_guard([&] {
-    if (s_recursionDepth.fetch_sub(1) == 1)
-      s_recursionThreadId.store(0);
+
+  // FSR FG/DLSS FG compatibility: If FG is active and using flip model,
+  // be more careful about modifying Present parameters
+  bool fgActive = g_FGCompat.IsFGActive();
+  if (fgActive && m_FlipModel.active) {
+    // Log FG interaction for debugging
+    if (callCount < 50) {
+      WrapperLog(
+          "Present: FG is active with flip model, using conservative approach");
+    }
+    // Don't override sync interval when FG is active - it can break frame
+    // pacing Still process capture though
+  }
+
+  // RECURSION GUARD: Prevent infinite recursion with Steam/other overlays
+  // Using atomic+threadId instead of thread_local to avoid static destructor
+  // issues
+  static std::atomic<DWORD> s_presentThreadId{0};
+  static std::atomic<int> s_presentDepth{0};
+  DWORD currentId = GetCurrentThreadId();
+  if (s_presentDepth.load() > 0 && s_presentThreadId.load() == currentId) {
+    WrapperLog(
+        "Present: Recursion detected, passing through to real swapchain");
+    return pRealCached->Present(SyncInterval, Flags);
+  }
+  s_presentThreadId.store(currentId);
+  s_presentDepth.fetch_add(1);
+  auto depthGuard = ::ce::make_scope_guard([&] {
+    if (s_presentDepth.fetch_sub(1) == 1)
+      s_presentThreadId.store(0);
   });
 
-  // Update performance metrics
+  if (callCount < 20) {
+    WrapperLog("Present: Processing call#%d", callCount);
+  }
+
+  // Update performance metrics for FPS calculation
   static int64_t qpcFreq = 0;
   if (qpcFreq == 0) {
     LARGE_INTEGER f;
@@ -694,27 +739,73 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval,
   }
   LARGE_INTEGER qpc;
   QueryPerformanceCounter(&qpc);
-  int64_t qpcUs = (qpc.QuadPart * 1000000) / qpcFreq;
-  DXGIShared::GetPerformanceMetrics()->Update(qpcUs);
+  int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
+  DXGIShared::GetPerformanceMetrics()->Update(us);
 
-  // VSync override (skip if FG active)
-  bool fgActive = g_FGCompat.IsFGActive();
+  // Apply VSync override from config (skip if FG is active - can break frame
+  // pacing)
   if (!fgActive) {
     ProcessVSyncOverride(SyncInterval, Flags);
+  } else if (callCount < 20) {
+    WrapperLog("Present: Skipping VSync override because FG is active");
   }
 
-  PERF_TIMER_START(overlay);
-  
-  // Process overlay for DX12
+  // CRITICAL: Process frame for capture BEFORE calling real Present
+  // This must happen regardless of overlay state - capture works independently
+  static int s_CaptureCallCount = 0;
   if (m_IsD3D12) {
-    DX12_ProcessFrameExternal(pReal);
+    int captureNum = ++s_CaptureCallCount;
+    if (captureNum <= 10) {
+      WrapperLog("[FSR-DEBUG] Present: About to call DX12_ProcessFrameExternal "
+                 "#%d, pRealCached=%p",
+                 captureNum, pRealCached);
+    }
+
+    // DIAGNOSTIC: Skip ALL overlay processing to test if wrapper itself causes
+    // black If game shows normally with this, the issue is in ProcessFrame.
+    // If game is still black, wrapper/present chain is the problem.
+    // Set to true to disable overlay entirely for debugging
+    static bool s_diagSkipOverlay = false;
+    if (s_diagSkipOverlay) {
+      HRESULT hr = pRealCached->Present(SyncInterval, Flags);
+      return hr;
+    }
+    DX12_ProcessFrameExternal(pRealCached);
+
+    if (captureNum <= 10) {
+      WrapperLog("[FSR-DEBUG] Present: DX12_ProcessFrameExternal #%d completed "
+                 "successfully",
+                 captureNum);
+    }
+
+    // DX12: Overlay rendering is handled by DX12_ProcessFrameExternal above
+    // No additional overlay drawing needed here
+    static int s_PresentCount = 0;
+    int presentNum = ++s_PresentCount;
+    if (presentNum <= 10) {
+      WrapperLog(
+          "[FSR-DEBUG] Present: DX12 path - overlay handled by wrapper #%d",
+          presentNum);
+    }
+  } else {
+    // DX11/DX10: Call DX11_ProcessFrameExternal for capture AND overlay
+    // NOTE: DX11_ProcessFrameExternal already calls DrawDX11Overlay internally,
+    // so we do NOT call DrawOverlay() here to avoid double-counting frames
+    int captureNum = ++s_CaptureCallCount;
+    if (captureNum <= 10) {
+      WrapperLog("[FSR-DEBUG] Present: About to call DX11_ProcessFrameExternal "
+                 "#%d, pRealCached=%p",
+                 captureNum, pRealCached);
+    }
+    DX11_ProcessFrameExternal(pRealCached);
+    if (captureNum <= 10) {
+      WrapperLog("[FSR-DEBUG] Present: DX11_ProcessFrameExternal #%d completed "
+                 "successfully",
+                 captureNum);
+    }
   }
-  
-  PERF_TIMER_END(overlay);
 
-  PERF_TIMER_END(total_present);
-
-  HRESULT hr = pReal->Present(SyncInterval, Flags);
+  HRESULT hr = pRealCached->Present(SyncInterval, Flags);
   return hr;
 }
 
