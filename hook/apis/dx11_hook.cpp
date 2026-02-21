@@ -1379,25 +1379,33 @@ public:
   // Capture a frame from the swapchain to shared texture
   // Returns true if frame was captured, false if skipped/dropped
   bool CaptureFrame(IDXGISwapChain *swapChain) {
-    if (!swapChain)
+    static int s_captureFrameCount = 0;
+    int frameNum = ++s_captureFrameCount;
+    
+    if (!swapChain) {
+      HookLog("DX11Capture: [%d] swapChain is null", frameNum);
       return false;
+    }
 
     // Get device from swapchain
     ID3D11Device *device = nullptr;
     HRESULT hr = swapChain->GetDevice(IID_PPV_ARGS(&device));
     if (FAILED(hr) || !device) {
+      HookLog("DX11Capture: [%d] GetDevice failed hr=0x%08X", frameNum, hr);
       return false;
     }
 
     // Initialize capture if needed
     if (!initialized) {
+      HookLog("DX11Capture: [%d] Not initialized, initializing...", frameNum);
       // Check if this is a DX10 device
       ID3D10Device *device10 = nullptr;
       if (SUCCEEDED(swapChain->GetDevice(__uuidof(ID3D10Device),
-                                         (void **)&device10))) {
+                                          (void **)&device10))) {
         device10->Release();
         // Initialize for DX10 mode
         if (!InitDX10(swapChain)) {
+          HookLog("DX11Capture: [%d] InitDX10 failed", frameNum);
           device->Release();
           return false;
         }
@@ -1407,6 +1415,7 @@ public:
     }
 
     if (!initialized) {
+      HookLog("DX11Capture: [%d] Still not initialized after Init", frameNum);
       device->Release();
       return false;
     }
@@ -1414,6 +1423,7 @@ public:
     // Get immediate context for copy
     ID3D11DeviceContext *context = GetCaptureContext();
     if (!context) {
+      HookLog("DX11Capture: [%d] GetCaptureContext returned null", frameNum);
       device->Release();
       return false;
     }
@@ -1422,12 +1432,18 @@ public:
     ID3D11Texture2D *backbuffer = nullptr;
     hr = swapChain->GetBuffer(0, IID_PPV_ARGS(&backbuffer));
     if (FAILED(hr) || !backbuffer) {
+      HookLog("DX11Capture: [%d] GetBuffer failed hr=0x%08X", frameNum, hr);
       device->Release();
       return false;
     }
 
     // Determine which texture slot to write to
     int writeIdx = writeIndex % CAPTURE_TEXTURE_COUNT;
+    
+    if (frameNum <= 20 || frameNum % 60 == 0) {
+      HookLog("DX11Capture: [%d] Copying to texture %d (writeIndex=%d)", 
+              frameNum, writeIdx, writeIndex);
+    }
 
     // Check if this slot is still in use by encoder (non-blocking check)
     if (copyQueries[writeIdx]) {
@@ -1463,19 +1479,16 @@ public:
     QueryPerformanceCounter(&qpc);
     int64_t timestamp = qpc.QuadPart;
 
-    // Enqueue frame for async processing (internal ring buffer)
-    bool enqueued =
-        EnqueueFrame(timestamp, currentFenceValue, writeIdx, swapChain);
-    if (!enqueued) {
-      // Ring buffer full - frame dropped
-      droppedFrames.fetch_add(1, std::memory_order_relaxed);
-      device->Release();
-      return false;
-    }
-
     // Signal frame ready to media process via IPC
+    // Note: EnqueueFrame to internal pendingRing is skipped for inject mode
+    // since SignalFrameReady writes directly to the shared memory ring buffer
     if (g_IPC) {
       SignalFrameReady(g_IPC, writeIdx, timestamp, currentFenceValue);
+      if (frameNum <= 10) {
+        HookLog("DX11Capture: [%d] Signaled frame ready via IPC (texture=%d)", frameNum, writeIdx);
+      }
+    } else {
+      HookLog("DX11Capture: [%d] g_IPC is NULL - cannot signal frame", frameNum);
     }
 
     // Advance write index
@@ -2089,7 +2102,12 @@ namespace DXGIShared {
 void HandleDX11ProcessFrame(IDXGISwapChain *pSwapChain, bool isRealFrame) {
   if (!pSwapChain)
     return;
+
+  // Draw overlay FIRST so it's included in the captured frame
   DrawDX11Overlay(pSwapChain);
+
+  // Capture frame AFTER overlay is drawn
+  g_DX11Capture.CaptureFrame(pSwapChain);
 }
 
 void HandleDX11ResizeBegin() { CleanupDX11Resources(); }
@@ -2683,14 +2701,12 @@ void DX11Hook::Init() {
         (void *)GetProcAddress(hD3D11, "D3D11CreateDeviceAndSwapChain");
     if (pTarget) {
       HookLog("DX11: Hook target at %p", pTarget);
-      bool created = CustomHook::CreateHook(
-                         pTarget, (void *)DetourD3D11CreateDeviceAndSwapChain,
+      bool created = CustomHook::HookExport(
+                         "d3d11.dll", "D3D11CreateDeviceAndSwapChain",
+                         (void *)DetourD3D11CreateDeviceAndSwapChain,
                          (void **)&oD3D11CreateDeviceAndSwapChain) ==
                      CustomHook::Status::Success;
-      HookLog("DX11: CreateHook result: %s", created ? "success" : "failed");
-      bool enabled =
-          CustomHook::EnableHook(pTarget) == CustomHook::Status::Success;
-      HookLog("DX11: EnableHook result: %s", enabled ? "success" : "failed");
+      HookLog("DX11: HookExport result: %s", created ? "success" : "failed");
       HookLog("DX11: D3D11CreateDeviceAndSwapChain export hook installed.");
     } else {
       HookLog("DX11: Failed to get D3D11CreateDeviceAndSwapChain address!");

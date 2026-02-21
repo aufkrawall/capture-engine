@@ -1060,25 +1060,10 @@ void VideoEncoder::WriteFrame(AVPacket *pkt) {
             st->time_base.num, st->time_base.den);
   }
 
-  // For video: Use precise PTS calculation to avoid integer rounding jitter
-  // The MKV muxer uses 1/1000 time_base, but 120fps gives 8.333... ms per frame
-  // Integer rescaling causes alternating 8ms/9ms gaps, making video choppy
-  if (pkt->stream_index == stream->index) {
-    // Calculate PTS using the frame number (pkt->pts) with fractional precision
-    // Frame N should be at exactly N / fps seconds = N * 1000 / fps ms
-    int fps = codecCtx->framerate.num;
-    if (fps > 0) {
-      // Use double precision to avoid rounding: frame * 1000.0 / fps
-      // Then round to nearest integer for final PTS
-      double precise_ms = (double)pkt->pts * 1000.0 / (double)fps;
-      pkt->pts = (int64_t)(precise_ms + 0.5); // Round to nearest ms
-      pkt->dts = pkt->pts; // For CFR without B-frames, DTS == PTS
-    } else {
-      av_packet_rescale_ts(pkt, codec_tb, st->time_base);
-    }
-  } else {
-    // Audio packets: use standard rescaling
-    av_packet_rescale_ts(pkt, codec_tb, st->time_base);
+  // Rescale timestamps properly using FFmpeg's exact rational math
+  av_packet_rescale_ts(pkt, codec_tb, st->time_base);
+  if (pkt->stream_index == stream->index && pkt->dts == AV_NOPTS_VALUE) {
+    pkt->dts = pkt->pts;
   }
 
   // DEBUG: Log PTS after rescaling and detect corruption

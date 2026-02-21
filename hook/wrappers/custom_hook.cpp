@@ -306,21 +306,16 @@ Status HookFunction(void *target, void *detour, void **original) {
     return Status::ErrorInvalidParameter;
   }
 
-  // For function hooks, we store the original and treat target as a VTable-like
-  // entry This is a simplified approach - real inline hooking would need
-  // trampolines
-
   HookLog(
       "CustomHook: HookFunction called for %p - delegating to VTable patching",
       target);
 
-  // Store the target address as if it's a vtable entry
-  // This works for pointers stored in data sections
-  return HookVTableEntry(reinterpret_cast<void **>(&target), detour, original);
+  // target is expected to be a pointer to a function pointer (e.g., a vtable entry)
+  return HookVTableEntry(reinterpret_cast<void **>(target), detour, original);
 }
 
 Status UnhookFunction(void *target, void *original) {
-  return UnhookVTableEntry(reinterpret_cast<void **>(&target), original);
+  return UnhookVTableEntry(reinterpret_cast<void **>(target), original);
 }
 
 // ============================================================================

@@ -368,8 +368,8 @@ public:
       return false;
     }
 
-    item = buffer_[rIdx % capacity_];
     std::atomic_thread_fence(std::memory_order_acquire);
+    item = buffer_[rIdx % capacity_];
     readIndex_.store(rIdx + 1, ordering_.readIndexStore);
 
     return true;
@@ -383,6 +383,7 @@ public:
       return false;
     }
 
+    std::atomic_thread_fence(std::memory_order_acquire);
     item = buffer_[rIdx % capacity_];
     return true;
   }
