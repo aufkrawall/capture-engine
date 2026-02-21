@@ -147,8 +147,19 @@ public:
       limiterActive = false;
     }
 
-    if (!limiterActive)
+    if (!limiterActive) {
+      static bool loggedInactive = false;
+      if (!loggedInactive) {
+        HookLog("FPS Limiter: Inactive (general_enabled=%d, generalFps=%d, "
+                "captureSync=%d, isRecording=%d)",
+                shm->fpsLimiter.GetGeneralEnabled(),
+                shm->fpsLimiter.GetGeneralFps(),
+                shm->fpsLimiter.GetCaptureSyncEnabled(),
+                isRecording);
+        loggedInactive = true;
+      }
       return;
+    }
 
     // Ensure 1ms timer resolution when limiter is active
     EnsureTimerResolution();
@@ -164,7 +175,6 @@ public:
           OpenEventW(SYNCHRONIZE, FALSE, shm->fpsLimiter.releaseEventName);
       requestEvent = OpenEventW(EVENT_MODIFY_STATE, FALSE,
                                 shm->fpsLimiter.requestEventName);
-      eventsInitialized = true;
 
       // Query QPC frequency for timing calculations
       if (qpcFrequency == 0) {
@@ -173,10 +183,21 @@ public:
         qpcFrequency = freq.QuadPart;
       }
 
-      HookLog("FPS Limiter: Events Initialized (target: %d FPS, captureFps=%d, "
-              "mult=%d)",
-              targetFps, shm->fpsLimiter.GetCaptureFps(),
-              shm->fpsLimiter.GetCaptureSyncMultiplier());
+      // Only mark as initialized if we got valid events
+      // If OpenEvent failed, we'll retry next frame (limiter might not be ready yet)
+      if (releaseEvent && requestEvent) {
+        eventsInitialized = true;
+        HookLog("FPS Limiter: Events Initialized (target: %d FPS, release=%p, "
+                "request=%p)",
+                targetFps, releaseEvent, requestEvent);
+      } else {
+        HookLog("FPS Limiter: Failed to open events (release=%p, request=%p), "
+                "will retry. Names: %ls / %ls",
+                releaseEvent, requestEvent,
+                shm->fpsLimiter.releaseEventName,
+                shm->fpsLimiter.requestEventName);
+        // Don't mark as initialized - we'll retry next frame
+      }
     }
 
     // In test mode (dbgShm), we might assume events are initialized or not
