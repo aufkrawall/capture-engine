@@ -58,14 +58,25 @@ void ce::SyncWithLegacyGlobals() {
     }
   }
 
-  // Sync config pointer
+  // Sync config from legacy global to HookContext
+  // This prevents config drift between the two systems
   if (g_pLocalConfig) {
     if (!ctx->localConfig) {
-      // Don't take ownership - just sync reference for now
-      // Future: ctx->localConfig = std::unique_ptr<AppConfig>(g_pLocalConfig);
+      // First time sync: copy the config to HookContext
+      ctx->localConfig = std::make_unique<AppConfig>(*g_pLocalConfig);
+      CE_LOG_INFO("HookCtx", "initialized localConfig from g_pLocalConfig");
+    } else {
+      // Subsequent sync: check for changes and update if needed
+      // This prevents "config drift" where g_pLocalConfig is modified
+      // but HookContext still has old values
+      // NOTE: We only sync graphics config for now as that's the main use case
+      if (ctx->localConfig->graphics.vsyncMode != g_pLocalConfig->graphics.vsyncMode ||
+          ctx->localConfig->graphics.anisotropicFiltering != g_pLocalConfig->graphics.anisotropicFiltering ||
+          ctx->localConfig->graphics.mipMapping != g_pLocalConfig->graphics.mipMapping) {
+        CE_LOG_WARN("HookCtx", "config drift detected, re-syncing from legacy");
+        *ctx->localConfig = *g_pLocalConfig;
+      }
     }
-    // Validation: Ensure graphics overrides match
-    // This catches cases where g_pLocalConfig was modified after init
   }
 
   // Sync debug logging flag from shared memory
