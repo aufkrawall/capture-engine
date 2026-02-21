@@ -373,42 +373,6 @@ void AudioEncoder::EncodeSamples(const uint8_t *data, int sizeBytes,
   uint8_t **resampledData = nullptr;
   int convertedSamples = 0;
 
-// NOTE: Clock drift compensation is now handled upstream in
-// MediaEngine::PullAndEncodeAudio using per-source syncResamplers. This block
-// is disabled to prevent conflicts. The videoTimeGetter callback is still
-// available for monitoring if needed.
-#if 0
-  // Apply clock drift compensation BEFORE resampling so it affects this batch
-  // This adjusts the resampler ratio to produce fewer/more output samples
-  // CRITICAL: Use resampledSamplesTotal (FIFO input) not samplesCount (encoder output)
-  // because the FIFO decouples resampler from encoder and we need accurate feedback
-  
-  if (videoTimeGetter && resampler) {
-    int64_t videoElapsedMs = videoTimeGetter();
-    if (videoElapsedMs > 0) {
-      // THRESHOLD DEFINITIONS (harmonized across all drift detection):
-      // - BACKLOG_THRESHOLD: 100ms - If audio is more than 100ms behind video,
-      //   we're processing a backlog (queue lag) and should NOT pitch-shift.
-      // - CONTINUITY_TOLERANCE: 100ms - If input timestamp jumps by >100ms,
-      //   it's a true gap (data missing), not just processing delay.
-      const int64_t BACKLOG_THRESHOLD_SAMPLES = av_rescale(100, codecCtx->sample_rate, 1000);
-      
-      int64_t expectedSamples = av_rescale(videoElapsedMs, codecCtx->sample_rate, 1000);
-      int64_t gapSamples = expectedSamples - resampledSamplesTotal;
-
-      // If Gap is HUGE (>100ms), we are likely processing backlog (catching up).
-      // We should NOT pitch shift in this case, because we are naturally catching up 
-      // by processing samples faster than real-time. Pitch shifting here causes "Doppler" artifacts.
-      bool isSteadyState = (abs(gapSamples) < BACKLOG_THRESHOLD_SAMPLES);
-      
-      if (isSteadyState) {
-          // Use resampledSamplesTotal for accurate drift measurement
-          resampler->AdjustForClockDrift(videoElapsedMs, resampledSamplesTotal);
-      }
-    }
-  }
-#endif
-
   if (!resampler->Process(data, sizeBytes, &resampledData, &convertedSamples)) {
     DLL_Log("[AudioEnc] Resample failed");
     return;

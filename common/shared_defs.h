@@ -321,13 +321,24 @@ struct FrameRingBuffer {
 // D3D9 Shmem Fallback Buffer
 // Used when shared handles are not available (e.g. legacy D3D9 on Win11)
 // Moving to separate shared memory to reduce 32-bit address space consumption
+//
+// OPTIMIZATION: For 32-bit builds, MAX dimensions are reduced to 2560x1440
+// (25MB total vs 66MB) to conserve limited address space. Full 4K support
+// remains available in 64-bit builds.
 struct ShmemBuffer {
+#ifdef _WIN64
   static const int MAX_WIDTH = 3840;
   static const int MAX_HEIGHT = 2160;
+#else
+  // 32-bit: Use 1440p max to conserve address space (25MB vs 66MB)
+  static const int MAX_WIDTH = 2560;
+  static const int MAX_HEIGHT = 1440;
+#endif
   static const int SLOT_COUNT = 2;
 
   // Raw pixel data (RGBA)
-  // 33MB per slot for 4K. 2 slots = 66MB.
+  // 64-bit: 33MB per slot for 4K. 2 slots = 66MB.
+  // 32-bit: 14MB per slot for 1440p. 2 slots = 28MB.
   uint8_t data[SLOT_COUNT][MAX_WIDTH * MAX_HEIGHT * 4];
 
   std::atomic<int> writeSlot{0};
@@ -361,6 +372,12 @@ struct ShmemBuffer {
     if (slot >= 0 && slot < SLOT_COUNT) {
       slotReady[slot].store(false, std::memory_order_relaxed);
     }
+  }
+
+  // Calculate actual size needed for given resolution
+  static constexpr size_t CalculateSize(uint32_t width, uint32_t height) {
+    return sizeof(ShmemBuffer) - sizeof(data) +
+           (SLOT_COUNT * width * height * 4);
   }
 };
 
