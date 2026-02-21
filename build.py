@@ -1436,11 +1436,13 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
         "-lwinmm",
         "-lshlwapi",
         "-ld3d11",
+        "-ld3d12",
         "-ldxgi",
         "-ld3dcompiler",
         "-lgdi32",
         "-luser32",
         "-ldwmapi",
+        "-ldbghelp",
         "-lavrt",
         "-lpdh",
         "-lshcore",
@@ -1536,8 +1538,10 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
 
     # 3. Compile Tests
     test_cflags = cflags + [
-        "-I" + os.path.join(PROJECT_ROOT, "mediaengine")
-    ]  # Ensure we can include audio_encoder.h
+        "-I" + os.path.join(PROJECT_ROOT, "mediaengine"),
+        "-I" + os.path.join(PROJECT_ROOT, "hook", "wrappers"),
+        "-I" + os.path.join(PROJECT_ROOT, "hook", "common"),
+    ]  # Ensure we can include audio_encoder.h and hook headers for stubs
     test_objs = []
     src_obj_pairs = []
     for src in src_files:
@@ -2259,7 +2263,8 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
     cflags = [
         "-std=c++20",
     ] + OPT_FLAGS_X64 + [
-        "-Wall",
+        "-Wall", "-Wextra", "-Wshadow", "-Wformat=2", "-Wundef",
+        "-Wno-unused-parameter",
         "-D_WIN32_WINNT=0x0A00",
         "-I" + os.path.join(PROJECT_ROOT, "common"),
     ]
@@ -2298,7 +2303,8 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             curr_cflags = [
                 "-std=c++20",
             ] + OPT_FLAGS_X64 + [
-                "-Wall",
+                "-Wall", "-Wextra", "-Wshadow", "-Wformat=2", "-Wundef",
+                "-Wno-unused-parameter",
                 "-Wno-microsoft-exception-spec",
                 "-D_WIN32_WINNT=0x0A00",
                 "-I" + os.path.join(PROJECT_ROOT, "common"),
@@ -2309,7 +2315,8 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             ] + OPT_FLAGS_X86 + [
                 "-m32",
                 "-mstackrealign",
-                "-Wall",
+                "-Wall", "-Wextra", "-Wshadow", "-Wformat=2", "-Wundef",
+                "-Wno-unused-parameter",
                 "-Wno-microsoft-exception-spec",
                 "-D_WIN32_WINNT=0x0A00",
                 "-I" + os.path.join(PROJECT_ROOT, "common"),
@@ -2873,7 +2880,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         x86_clang = get_compiler_exe('x86')
         # Check if x86 compiler exists (on Linux it might not)
         if IS_LINUX or os.path.exists(x86_clang):
-            x86_cflags = ["-std=c++20", "-O3", "-m32", "-Wall", "-D_WIN32_WINNT=0x0A00"]
+            x86_cflags = ["-std=c++20", "-O3", "-m32", "-Wall", "-Wextra", "-Wshadow", "-Wformat=2", "-Wundef", "-Wno-unused-parameter", "-D_WIN32_WINNT=0x0A00"]
             compile_vulkan_layer(x86_env, x86_clang, x86_cflags, "x86")
 
 
@@ -3051,6 +3058,7 @@ def main():
     lint_flag = "--lint" in sys.argv
     format_flag = "--format" in sys.argv
     ccache_flag = "--ccache" in sys.argv
+    sanitize_flag = "--sanitize" in sys.argv
     # --force is now DEFAULT behavior for reliability (disable with --incremental)
     incremental_flag = "--incremental" in sys.argv
     force_flag = not incremental_flag  # Force rebuild by default
@@ -3071,6 +3079,14 @@ def main():
         # Clear any existing disable flag
         if "DISABLE_CCACHE" in env:
             del env["DISABLE_CCACHE"]
+
+    if sanitize_flag:
+        log("Sanitizer build enabled (--sanitize) - adding ASan + UBSan flags")
+        sanitize_compile = ["-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-g"]
+        sanitize_link = ["-fsanitize=address,undefined"]
+        OPT_FLAGS_X64.extend(sanitize_compile)
+        OPT_FLAGS_X86.extend(sanitize_compile)
+        LD_OPT_FLAGS.extend(sanitize_link)
 
     if skip_updates:
         log("FFmpeg updates disabled (--skip-updates)")

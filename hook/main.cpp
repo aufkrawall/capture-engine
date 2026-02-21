@@ -514,7 +514,7 @@ int WINAPI Hooked_getmainargs(int *argc, char ***argv, char ***env,
   if (g_pLocalConfig && g_pLocalConfig->graphics.forceRayReconstruction &&
       result == 0 && *argc > 0) {
     HookLog("Hooked_getmainargs called. Argc=%d", *argc);
-    // TODO: Modify argv here if GetCommandLine fails
+    // GetCommandLine approach is used instead of argv modification
   }
   return result;
 }

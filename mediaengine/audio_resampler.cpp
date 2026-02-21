@@ -290,6 +290,7 @@ void AudioResampler::ResetClockTracking() {
   currentDelta = 0;
   integralError = 0.0;
   lastCompensationTimeMs = 0;
+  fastModeActive = true;
 }
 
 void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs,
@@ -332,10 +333,20 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs,
     return;
   }
 
+  // Transition from fast to steady mode after 10 seconds
+  if (fastModeActive && videoElapsedMs > 10000) {
+    fastModeActive = false;
+    DLL_Log("[AudioResampler] Switching from fast to steady-state gains");
+  }
+
+  // Select active PI gains based on mode
+  double activeKp = fastModeActive ? kKpFast : kKpSteady;
+  double activeKi = fastModeActive ? kKiFast : kKiSteady;
+
   // 1. SMOOTHING STAGE (Low Pass Filter)
-  // Use aggressive smoothing to filter out frame jitter.
-  // Alpha 0.01 means ~100 frame time constant (~0.8s)
-  smoothedDrift = (smoothedDrift * 0.99) + ((double)driftSamples * 0.01);
+  // Alpha 0.05 = ~20 update time constant (~2s at 10Hz updates)
+  smoothedDrift =
+      (smoothedDrift * kSmoothingAlpha) + ((double)driftSamples * (1.0 - kSmoothingAlpha));
 
   // CONTINUOUS PI CONTROLLER:
   // We calculate correction targeting a 10-second window for sub-sample
@@ -353,14 +364,14 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs,
   // In 10 seconds, 5% is 0.05 * 48000 * 10 = 24000 samples
   const double MAX_INTEGRAL_CORRECTION =
       (outFmt.sampleRate * COMPENSATION_PERIOD_SEC) * 0.05;
-  if (integralError * Ki > MAX_INTEGRAL_CORRECTION)
-    integralError = MAX_INTEGRAL_CORRECTION / Ki;
-  if (integralError * Ki < -MAX_INTEGRAL_CORRECTION)
-    integralError = -MAX_INTEGRAL_CORRECTION / Ki;
+  if (integralError * activeKi > MAX_INTEGRAL_CORRECTION)
+    integralError = MAX_INTEGRAL_CORRECTION / activeKi;
+  if (integralError * activeKi < -MAX_INTEGRAL_CORRECTION)
+    integralError = -MAX_INTEGRAL_CORRECTION / activeKi;
 
   // 2. Calculate Correction (PI Control)
   // Result is "samples to insert/drop over COMPENSATION_PERIOD_SEC"
-  double correction = (Kp * smoothedDrift) + (Ki * integralError);
+  double correction = (activeKp * smoothedDrift) + (activeKi * integralError);
 
   targetDelta = (int32_t)correction;
 

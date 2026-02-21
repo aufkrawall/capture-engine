@@ -641,12 +641,14 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval,
   IDXGISwapChain *pRealCached = m_pReal;
   m_pRealCached = pRealCached; // Store for potential future use
 
-  WrapperLog("[FSR-DEBUG] Present ENTRY #%d - Thread=%lu, m_pReal=%p, "
-             "m_DestructionCookie=%u, m_IsD3D12=%d",
-             callCount, threadId, pRealCached, m_DestructionCookie, m_IsD3D12);
-  WrapperLog(
-      "[FSR-DEBUG] Present state - fgActive=%d, flipModel=%d, Wrapper=%p",
-      g_FGCompat.IsFGActive(), m_FlipModel.active, this);
+  if (callCount < 10) {
+    WrapperLog("[FSR-DEBUG] Present ENTRY #%d - Thread=%lu, m_pReal=%p, "
+               "m_DestructionCookie=%u, m_IsD3D12=%d",
+               callCount, threadId, pRealCached, m_DestructionCookie, m_IsD3D12);
+    WrapperLog(
+        "[FSR-DEBUG] Present state - fgActive=%d, flipModel=%d, Wrapper=%p",
+        g_FGCompat.IsFGActive(), m_FlipModel.active, this);
+  }
 
   // CRITICAL: Check for global shutdown - if app is closing, don't touch
   // anything
@@ -683,14 +685,16 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval,
   // FSR creates internal swapchains for frame generation that we should not
   // interfere with
   if (IsFSRInternalSwapchain()) {
-    WrapperLog(
-        "[FSR-DEBUG] Present: Skipping FSR internal swapchain processing");
+    if (callCount < 10) {
+      WrapperLog(
+          "[FSR-DEBUG] Present: Skipping FSR internal swapchain processing");
+    }
     HRESULT hr = pRealCached->Present(SyncInterval, Flags);
     return hr;
   }
 
-  // DEBUG: Log every Present call to verify wrapper is being invoked
-  if (callCount < 50) {
+  // DEBUG: Log first few Present calls to verify wrapper is being invoked
+  if (callCount < 10) {
     WrapperLog("[FSR-DEBUG] Present: CALLED call#%d (m_IsD3D12=%d, "
                "flipModel=%d, FG=%d)",
                callCount, m_IsD3D12, m_FlipModel.active,

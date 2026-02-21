@@ -40,15 +40,23 @@ public:
 
     CE_LOG_DEBUG(LogTag, "%s->%s", NameFn(current), NameFn(newState));
 
+    // Store state BEFORE executing callbacks so callbacks see the new state
+    state_.store(newState, std::memory_order_release);
+
     {
       std::lock_guard<std::mutex> lock(callbackMutex_);
       for (auto &cb : callbacks_) {
-        if (cb)
-          cb(current, newState);
+        if (cb) {
+          try {
+            cb(current, newState);
+          } catch (...) {
+            CE_LOG_ERROR(LogTag, "callback threw during %s->%s",
+                         NameFn(current), NameFn(newState));
+          }
+        }
       }
     }
 
-    state_.store(newState, std::memory_order_release);
     return true;
   }
 

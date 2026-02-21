@@ -134,10 +134,18 @@ private:
 
   // PI Controller State
   double integralError = 0.0;
-  // Scaled for 10-second compensation window (0.1 sample/sec precision)
-  const double Kp = 0.05;  // Proportional: 0.005 / sec
-  const double Ki = 0.005; // Integral: 0.0005 / sec (Very slow adaptation)
+  // Steady-state gains (relaxed after initial convergence)
+  static constexpr double kKpSteady = 0.08;   // Proportional
+  static constexpr double kKiSteady = 0.015;  // Integral
+  // Fast-convergence gains (first 10 seconds of recording)
+  static constexpr double kKpFast = 0.15;     // Proportional (fast mode)
+  static constexpr double kKiFast = 0.03;     // Integral (fast mode)
+  // Smoothing alpha: 0.95 = ~20 update time constant (~2s at 10Hz updates)
+  static constexpr double kSmoothingAlpha = 0.95;
   static const int COMPENSATION_PERIOD_SEC = 10;
+
+  // Track elapsed time for fast/steady mode transition
+  bool fastModeActive = true;
 
   // Rate limiting updates
   int64_t lastCompensationTimeMs = 0;

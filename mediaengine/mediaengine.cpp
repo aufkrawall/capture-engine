@@ -758,39 +758,35 @@ public:
       if (samplesToEncode <= 0)
         continue; // Already caught up
 
-      // SAFETY CAP: If gap is too large (> 500ms), warp the counters close to
-      // target but leave room for one chunk of audio so encoding still happens.
-      // This prevents 32GB leaks while still producing audio output.
-      const int64_t MAX_SILENCE_SAMPLES = (SAMPLE_RATE / 2); // 500ms
-      const int64_t ONE_FRAME_SAMPLES =
-          SAMPLE_RATE / 120; // ~400 samples at 120fps
+      // SAFETY CAP: If gap is too large (> 2 seconds), insert silence to
+      // maintain timeline integrity. Previously we warped counters forward
+      // without encoding, which created permanent A/V offset. Now we encode
+      // actual silence for the gap, preserving 1:1 relationship between
+      // encodedSamplesPerSource and actual encoded audio data.
+      const int64_t MAX_GAP_SAMPLES = (SAMPLE_RATE * 2); // 2 seconds
+      const int64_t MAX_SILENCE_CHUNK =
+          SAMPLE_RATE / 2; // Encode at most 500ms of silence per call
 
-      if (samplesToEncode > MAX_SILENCE_SAMPLES) {
-        // How much to warp: jump to (target - one frame) so we still encode
-        // something
-        int64_t warpAmount = samplesToEncode - ONE_FRAME_SAMPLES;
-        if (warpAmount > 0) {
-          static int warpLogCounter = 0;
-          if (warpLogCounter++ % 60 == 0) { // Log every ~0.5 sec at 120fps
-            DLL_Log("[PullAudio] Large A/V gap (%.2f sec) - warping %lld "
-                    "samples, encoding %lld",
-                    (double)samplesToEncode / SAMPLE_RATE, warpAmount,
-                    ONE_FRAME_SAMPLES);
+      if (samplesToEncode > MAX_GAP_SAMPLES) {
+        static int warpCount = 0;
+        warpCount++;
+        DLL_Log("[PullAudio] Large A/V gap (%.2f sec) on track %d - "
+                "inserting silence (warp #%d). "
+                "target=%lld, encoded=%lld",
+                (double)samplesToEncode / SAMPLE_RATE, track, warpCount,
+                targetSamples, encodedSamplesPerSource[firstSrcIdx]);
+
+        // Flush ring buffers to prevent overflow while we catch up
+        for (size_t srcIdx : srcIndices) {
+          if (audioSources[srcIdx].ringBuffer) {
+            audioSources[srcIdx].ringBuffer->Skip(
+                audioSources[srcIdx].ringBuffer->GetAvailable());
           }
-
-          // Warp all source counters
-          for (size_t srcIdx : srcIndices) {
-            encodedSamplesPerSource[srcIdx] += warpAmount;
-            // Also flush the ring buffer to match the warp (prevent overflow)
-            if (audioSources[srcIdx].ringBuffer) {
-              audioSources[srcIdx].ringBuffer->Skip((size_t)warpAmount *
-                                                    CHANNELS);
-            }
-          }
-
-          // Update samplesToEncode to only encode the remaining small chunk
-          samplesToEncode = ONE_FRAME_SAMPLES;
         }
+
+        // Cap how much silence we encode per call to avoid blocking
+        // We'll catch up over multiple calls
+        samplesToEncode = std::min(samplesToEncode, MAX_SILENCE_CHUNK);
       }
 
       size_t totalFloats = samplesToEncode * CHANNELS;
@@ -810,6 +806,11 @@ public:
           DLL_Log("[PullAudio] WARNING: Ring buffer overflow - %zu samples "
                   "dropped for src=%d",
                   droppedSamples, (int)srcIdx);
+          // Compensate: advance syncSamplesOutput so the PI controller
+          // doesn't interpret lost samples as drift requiring correction.
+          // Without this, the controller sees fewer output samples than
+          // expected and overcorrects the resampling ratio.
+          src.syncSamplesOutput += (int64_t)droppedSamples;
         }
 
         // =====================================================
@@ -1087,9 +1088,24 @@ public:
         int64_t audioMs = (audioSamples * 1000) / SAMPLE_RATE;
         int64_t avDrift = audioMs - videoMs;
 
+        // Gather ring buffer level and drift compensation data
+        size_t rbLevel = 0;
+        int64_t syncOutput = 0;
+        size_t droppedTotal = 0;
+        if (firstSrcIdx < audioSources.size()) {
+          auto &src = audioSources[firstSrcIdx];
+          if (src.ringBuffer)
+            rbLevel = src.ringBuffer->GetAvailable() / CHANNELS;
+          syncOutput = src.syncSamplesOutput;
+          if (src.ringBuffer)
+            droppedTotal = src.ringBuffer->GetDroppedSamples();
+        }
+
         DLL_Log("[A/V SYNC CHECK] Track %d: Video=%lld ms, Audio=%lld ms, "
-                "Drift=%lld ms",
-                track, videoMs, audioMs, avDrift);
+                "Drift=%lld ms, RBLevel=%zu samples, "
+                "SyncOutput=%lld, Dropped=%zu",
+                track, videoMs, audioMs, avDrift, rbLevel, syncOutput,
+                droppedTotal);
 
         if (std::abs(avDrift) > 100) {
           DLL_Log("[A/V SYNC WARNING] Track %d drift exceeds 100ms! "

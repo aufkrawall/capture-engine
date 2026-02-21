@@ -1405,7 +1405,8 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
   // Performance metrics for this frame
   FrameMetrics perfMetrics;
   perfMetrics.qpcUs = PerfLogger::GetQpcUs();
-  strcpy(perfMetrics.api, "DX12");
+  strncpy(perfMetrics.api, "DX12", sizeof(perfMetrics.api) - 1);
+  perfMetrics.api[sizeof(perfMetrics.api) - 1] = '\0';
   static uint64_t s_perfFrameNum = 0;
   perfMetrics.frameNum = ++s_perfFrameNum;
 
@@ -2036,12 +2037,6 @@ void DX12_ProcessFrameExternal(IDXGISwapChain *pSwapChain) {
 
   // Update freeze watchdog heartbeat
   g_RenderWatchdog.Heartbeat();
-
-  // CRITICAL DEBUG: This log MUST appear if the function is called
-  static int s_callCount = 0;
-  if (++s_callCount <= 10) {
-    HookLog("DX12: ProcessFrameExternal ENTERED call #%d", s_callCount);
-  }
 
   if (!pSwapChain) {
     HookLog("DX12: ProcessFrameExternal - null swapchain");

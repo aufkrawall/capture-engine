@@ -90,8 +90,6 @@ int SensorProcessMain(const AppConfig &config) {
       // Update metrics using the existing host_metrics logic
       scan_host::UpdateSystemMetrics(s.shm, it->first, effectiveLuid);
 
-      // TODO: If we had plugins, we'd call ISensorPlugin::Poll here and
-      // aggregate data
 
       ++it;
     }

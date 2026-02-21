@@ -255,7 +255,8 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
   // Performance metrics for this frame
   FrameMetrics perfMetrics;
   perfMetrics.qpcUs = PerfLogger::GetQpcUs();
-  strcpy(perfMetrics.api, "DX11");
+  strncpy(perfMetrics.api, "DX11", sizeof(perfMetrics.api) - 1);
+  perfMetrics.api[sizeof(perfMetrics.api) - 1] = '\0';
   static uint64_t s_perfFrameNum = 0;
   perfMetrics.frameNum = ++s_perfFrameNum;
 

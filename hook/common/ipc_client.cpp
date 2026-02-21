@@ -63,7 +63,7 @@ bool IPCClient::Connect() {
         UnmapViewOfFile(pDiscovery);
       } else {
         EarlyLog("IPC: Discovery found but invalid magic/pid. Magic=%X, PID=%d",
-                 pDiscovery->magic, pDiscovery->injectPid);
+                 pDiscovery->magic.load(), pDiscovery->injectPid.load());
         UnmapViewOfFile(pDiscovery);
       }
     } else {

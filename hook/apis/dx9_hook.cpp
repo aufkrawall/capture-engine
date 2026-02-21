@@ -1891,7 +1891,8 @@ void DX9_PresentEnd(IDirect3DDevice9 *device, IDirect3DSurface9 *backBuffer) {
           static_cast<int32_t>((g_Timing.captureTime * 1000000) / qpcFreq);
       perfMetrics.prerenderWaitUs =
           static_cast<int32_t>((g_Timing.prerenderTime * 1000000) / qpcFreq);
-      strcpy(perfMetrics.api, "DX9");
+      strncpy(perfMetrics.api, "DX9", sizeof(perfMetrics.api) - 1);
+      perfMetrics.api[sizeof(perfMetrics.api) - 1] = '\0';
       PerfLogger::Get().LogFrame(perfMetrics);
     }
   }

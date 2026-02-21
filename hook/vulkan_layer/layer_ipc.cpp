@@ -117,10 +117,13 @@ bool LayerIPC_Init() {
   char fullPath[MAX_PATH];
   GetModuleFileNameA(NULL, fullPath, sizeof(fullPath));
   char *p = strrchr(fullPath, '\\');
-  if (p)
-    strcpy(g_ProcessName, p + 1);
-  else
-    strcpy(g_ProcessName, fullPath);
+  if (p) {
+    strncpy(g_ProcessName, p + 1, sizeof(g_ProcessName) - 1);
+    g_ProcessName[sizeof(g_ProcessName) - 1] = '\0';
+  } else {
+    strncpy(g_ProcessName, fullPath, sizeof(g_ProcessName) - 1);
+    g_ProcessName[sizeof(g_ProcessName) - 1] = '\0';
+  }
 
   // Connect to host
   if (g_IPCClient.Connect()) {

@@ -1,5 +1,6 @@
 #include "process_ipc.h"
 #include "logging.h"
+#include "raii_helpers.h"
 #include <cstring>
 
 // Parse --mode= from command line
@@ -119,11 +120,11 @@ bool ProcessIPCServer::PollCommand(ProcessCommand &outCmd, char *outPayload,
   // If not connected, try to accept connection (non-blocking)
   if (!connected) {
     OVERLAPPED ov = {};
-    ov.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+    ce::HandleGuard ovEvent(CreateEvent(NULL, TRUE, FALSE, NULL));
+    ov.hEvent = ovEvent.get();
     ConnectNamedPipe(hPipe, &ov);
 
     DWORD result = WaitForSingleObject(ov.hEvent, 0); // Immediate check
-    CloseHandle(ov.hEvent);
 
     if (result == WAIT_OBJECT_0) {
       connected = true;
@@ -276,7 +277,8 @@ bool ProcessIPCClient::SendCommand(ProcessCommand cmd, const char *payload,
   // Send with overlapped I/O
   DWORD bytesWritten = 0;
   OVERLAPPED ovWrite = {};
-  ovWrite.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+  ce::HandleGuard writeEvent(CreateEvent(NULL, TRUE, FALSE, NULL));
+  ovWrite.hEvent = writeEvent.get();
 
   BOOL writeResult =
       WriteFile(hPipe, &msg, sizeof(msg), &bytesWritten, &ovWrite);
@@ -288,14 +290,12 @@ bool ProcessIPCClient::SendCommand(ProcessCommand cmd, const char *payload,
       writeResult = TRUE;
     } else {
       CancelIo(hPipe);
-      CloseHandle(ovWrite.hEvent);
       LogError(
           "[IPC] SendCommand WriteFile timeout - disconnecting for reconnect");
       Disconnect(); // Close and reconnect on next attempt
       return false;
     }
   }
-  CloseHandle(ovWrite.hEvent);
 
   if (!writeResult) {
     LogError("[IPC] SendCommand WriteFile failed: %d - disconnecting",
@@ -310,7 +310,8 @@ bool ProcessIPCClient::SendCommand(ProcessCommand cmd, const char *payload,
     DWORD bytesRead = 0;
 
     OVERLAPPED ovRead = {};
-    ovRead.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+    ce::HandleGuard readEvent(CreateEvent(NULL, TRUE, FALSE, NULL));
+    ovRead.hEvent = readEvent.get();
 
     BOOL readResult = ReadFile(hPipe, &resp, sizeof(resp), &bytesRead, &ovRead);
     if (!readResult && GetLastError() == ERROR_IO_PENDING) {
@@ -320,14 +321,12 @@ bool ProcessIPCClient::SendCommand(ProcessCommand cmd, const char *payload,
         readResult = TRUE;
       } else {
         CancelIo(hPipe);
-        CloseHandle(ovRead.hEvent);
         LogError(
             "[IPC] SendCommand read timeout - disconnecting for reconnect");
         Disconnect(); // Close and reconnect on next attempt
         return false;
       }
     }
-    CloseHandle(ovRead.hEvent);
 
     if (readResult && resp.magic == PROCESS_MSG_MAGIC &&
         resp.sequence == sequence) {

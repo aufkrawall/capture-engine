@@ -806,6 +806,34 @@ bool InjectionManager::Inject(DWORD pid, const std::string &processName) {
     LogError("Failed to get thread exit code.");
   }
 
+  // Verify DLL is actually loaded in remote process
+  {
+    HMODULE hMods[256];
+    DWORD cbNeeded = 0;
+    DWORD filterFlag = isWow64 ? LIST_MODULES_32BIT : LIST_MODULES_64BIT;
+    bool dllFound = false;
+    if (EnumProcessModulesEx(hProcess.get(), hMods, sizeof(hMods), &cbNeeded,
+                             filterFlag)) {
+      int moduleCount = cbNeeded / sizeof(HMODULE);
+      for (int i = 0; i < moduleCount; i++) {
+        char szModName[MAX_PATH];
+        if (GetModuleFileNameExA(hProcess.get(), hMods[i], szModName,
+                                 sizeof(szModName))) {
+          if (strstr(szModName, "capture_hook_x64.dll") ||
+              strstr(szModName, "capture_hook_x86.dll")) {
+            dllFound = true;
+            break;
+          }
+        }
+      }
+    }
+    if (!dllFound) {
+      LogError("DLL injection verification failed - hook DLL not found in "
+               "module list for PID %d",
+               pid);
+    }
+  }
+
   // Success - track the injected process
   // Note: We need to keep a handle to monitor the process, so release from RAII
   InjectedProcess ip;

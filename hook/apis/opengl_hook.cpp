@@ -1116,7 +1116,8 @@ static void SwapEnd(HDC hdc) {
         perfMetrics.totalUs = static_cast<int32_t>(us - s_lastFrameUs);
       }
       s_lastFrameUs = us;
-      strcpy(perfMetrics.api, "OpenGL");
+      strncpy(perfMetrics.api, "OpenGL", sizeof(perfMetrics.api) - 1);
+      perfMetrics.api[sizeof(perfMetrics.api) - 1] = '\0';
       PerfLogger::Get().LogFrame(perfMetrics);
     }
   }

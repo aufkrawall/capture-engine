@@ -473,12 +473,12 @@ void AudioEncoder::EncodeSamples(const uint8_t *data, int sizeBytes,
   int currentFifoSize = av_audio_fifo_size(audioFifo);
 
   if (currentFifoSize > MAX_FIFO_SAMPLES) {
-    DLL_Log("[AudioEnc] CRITICAL: FIFO Overflow (%d samples). Resetting to "
-            "prevent memory leak.",
-            currentFifoSize);
+    DLL_Log("[AudioEnc] CRITICAL: FIFO Overflow (%d samples, %.1f sec). "
+            "Resetting to prevent memory leak. samplesCount=%lld",
+            currentFifoSize,
+            (double)currentFifoSize / codecCtx->sample_rate,
+            (long long)samplesCount);
     av_audio_fifo_reset(audioFifo);
-    // We must also reset timestamps/counters? No, just drop the buffered audio.
-    // Sync logic below will handle the gaps.
   }
 
   // NOTE: Gap detection REMOVED.

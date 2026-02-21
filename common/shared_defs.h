@@ -19,8 +19,9 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 
 // Shared memory layout version - increment when struct changes
 // Version 5: Added atomic accessor methods for all cross-process fields
-//             Fields remain at same offsets but now have proper atomic access
-static constexpr uint32_t SHARED_MEMORY_VERSION = 5;
+// Version 6: Changed backing fields from plain types to std::atomic<T>
+//             Eliminates reinterpret_cast UB while preserving same layout
+static constexpr uint32_t SHARED_MEMORY_VERSION = 6;
 
 // Minimum supported version for backward compatibility
 static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
@@ -38,8 +39,8 @@ static const int FRAME_RING_SIZE = 32;
 
 // Discovery structure - small shared memory to help hook find inject process
 struct DiscoveryInfo {
-  uint32_t injectPid = 0; // PID of inject process
-  uint32_t magic = 0;     // Magic number (0xCE12CAFE)
+  std::atomic<uint32_t> injectPid{0}; // PID of inject process
+  std::atomic<uint32_t> magic{0};     // Magic number (0xCE12CAFE)
 
   // Whitelist Cache - Null-separated strings, double-null terminated
   char processWhitelist[1024];
@@ -48,21 +49,13 @@ struct DiscoveryInfo {
   char logsPath[MAX_PATH];
 
   // Atomic accessor methods
-  uint32_t GetMagic() const {
-    return reinterpret_cast<const std::atomic<uint32_t> *>(&magic)->load(
-        std::memory_order_acquire);
-  }
-  void SetMagic(uint32_t val) {
-    reinterpret_cast<std::atomic<uint32_t> *>(&magic)->store(
-        val, std::memory_order_release);
-  }
+  uint32_t GetMagic() const { return magic.load(std::memory_order_acquire); }
+  void SetMagic(uint32_t val) { magic.store(val, std::memory_order_release); }
   uint32_t GetInjectPid() const {
-    return reinterpret_cast<const std::atomic<uint32_t> *>(&injectPid)
-        ->load(std::memory_order_acquire);
+    return injectPid.load(std::memory_order_acquire);
   }
   void SetInjectPid(uint32_t val) {
-    reinterpret_cast<std::atomic<uint32_t> *>(&injectPid)
-        ->store(val, std::memory_order_release);
+    injectPid.store(val, std::memory_order_release);
   }
 };
 static const uint32_t DISCOVERY_MAGIC = 0xCE12CAFE;
@@ -388,27 +381,21 @@ struct SharedMemoryLayout {
   // NOTE: Layout must remain compatible - offsets are validated by
   // static_assert
   // ============================================================================
-  uint32_t magic = SHARED_MEMORY_MAGIC; // Offset 0: Magic number for validation
-  uint32_t version = SHARED_MEMORY_VERSION; // Offset 4: Layout version
-  uint32_t structSize = 0; // Offset 8: sizeof(SharedMemoryLayout) for ABI check
-  uint32_t _headerPadding = 0; // Offset 12: Alignment padding
+  std::atomic<uint32_t> magic{
+      SHARED_MEMORY_MAGIC}; // Offset 0: Magic number for validation
+  std::atomic<uint32_t> version{
+      SHARED_MEMORY_VERSION};                // Offset 4: Layout version
+  std::atomic<uint32_t> structSize{0}; // Offset 8: sizeof(SharedMemoryLayout) for ABI check
+  uint32_t _headerPadding = 0;         // Offset 12: Alignment padding
 
   // Atomic access helpers for header fields
-  uint32_t GetMagic() const {
-    return reinterpret_cast<const std::atomic<uint32_t> *>(&magic)->load(
-        std::memory_order_acquire);
-  }
-  void SetMagic(uint32_t val) {
-    reinterpret_cast<std::atomic<uint32_t> *>(&magic)->store(
-        val, std::memory_order_release);
-  }
+  uint32_t GetMagic() const { return magic.load(std::memory_order_acquire); }
+  void SetMagic(uint32_t val) { magic.store(val, std::memory_order_release); }
   uint32_t GetVersion() const {
-    return reinterpret_cast<const std::atomic<uint32_t> *>(&version)->load(
-        std::memory_order_acquire);
+    return version.load(std::memory_order_acquire);
   }
   void SetVersion(uint32_t val) {
-    reinterpret_cast<std::atomic<uint32_t> *>(&version)->store(
-        val, std::memory_order_release);
+    version.store(val, std::memory_order_release);
   }
 
   // Host -> Hook (Host writes, Hook reads - use atomic accessors)
@@ -416,15 +403,15 @@ struct SharedMemoryLayout {
   SharedGraphicsConfig graphicsConfig; // Added graphics overrides
 
 private:
-  // Atomic backing fields for thread-safe access
-  alignas(4) uint32_t hostPID_;
-  alignas(4) uint32_t requestExit_;  // Stored as uint32_t for atomic operations
-  alignas(4) uint32_t debugLogging_; // Stored as uint32_t for atomic operations
-  alignas(4) uint32_t logLevel_;     // Stored as uint32_t for atomic operations
-  alignas(4) int32_t gpuPriority_;
-  alignas(4) int32_t copyQueuePriority_;
-  alignas(4) int32_t fenceWaitMode_;
-  alignas(4) uint32_t useGameQueue_; // Stored as uint32_t for atomic operations
+  // Atomic backing fields for thread-safe cross-process access
+  std::atomic<uint32_t> hostPID_{0};
+  std::atomic<uint32_t> requestExit_{0};
+  std::atomic<uint32_t> debugLogging_{0};
+  std::atomic<uint32_t> logLevel_{0};
+  std::atomic<int32_t> gpuPriority_{0};
+  std::atomic<int32_t> copyQueuePriority_{0};
+  std::atomic<int32_t> fenceWaitMode_{0};
+  std::atomic<uint32_t> useGameQueue_{0};
 
 public:
   char logFilePath[260]; // Path to log file (captureengine.log) - set once at
@@ -432,145 +419,114 @@ public:
 
   // Atomic accessors for Host -> Hook fields
   uint32_t GetHostPID() const {
-    return reinterpret_cast<const std::atomic<uint32_t> *>(&hostPID_)->load(
-        std::memory_order_acquire);
+    return hostPID_.load(std::memory_order_acquire);
   }
   void SetHostPID(uint32_t val) {
-    reinterpret_cast<std::atomic<uint32_t> *>(&hostPID_)->store(
-        val, std::memory_order_release);
+    hostPID_.store(val, std::memory_order_release);
   }
 
   bool GetRequestExit() const {
-    return reinterpret_cast<const std::atomic<uint32_t> *>(&requestExit_)
-               ->load(std::memory_order_acquire) != 0;
+    return requestExit_.load(std::memory_order_acquire) != 0;
   }
   void SetRequestExit(bool val) {
-    reinterpret_cast<std::atomic<uint32_t> *>(&requestExit_)
-        ->store(val ? 1u : 0u, std::memory_order_release);
+    requestExit_.store(val ? 1u : 0u, std::memory_order_release);
   }
 
   bool GetDebugLogging() const {
-    return reinterpret_cast<const std::atomic<uint32_t> *>(&debugLogging_)
-               ->load(std::memory_order_acquire) != 0;
+    return debugLogging_.load(std::memory_order_acquire) != 0;
   }
   void SetDebugLogging(bool val) {
-    reinterpret_cast<std::atomic<uint32_t> *>(&debugLogging_)
-        ->store(val ? 1u : 0u, std::memory_order_release);
+    debugLogging_.store(val ? 1u : 0u, std::memory_order_release);
   }
 
   LogLevel GetLogLevel() const {
-    return static_cast<LogLevel>(
-        reinterpret_cast<const std::atomic<uint32_t> *>(&logLevel_)
-            ->load(std::memory_order_acquire));
+    return static_cast<LogLevel>(logLevel_.load(std::memory_order_acquire));
   }
   void SetLogLevel(LogLevel val) {
-    reinterpret_cast<std::atomic<uint32_t> *>(&logLevel_)
-        ->store(static_cast<uint32_t>(val), std::memory_order_release);
+    logLevel_.store(static_cast<uint32_t>(val), std::memory_order_release);
   }
 
   int32_t GetGpuPriority() const {
-    return reinterpret_cast<const std::atomic<int32_t> *>(&gpuPriority_)
-        ->load(std::memory_order_acquire);
+    return gpuPriority_.load(std::memory_order_acquire);
   }
   void SetGpuPriority(int32_t val) {
-    reinterpret_cast<std::atomic<int32_t> *>(&gpuPriority_)
-        ->store(val, std::memory_order_release);
+    gpuPriority_.store(val, std::memory_order_release);
   }
 
   int32_t GetCopyQueuePriority() const {
-    return reinterpret_cast<const std::atomic<int32_t> *>(&copyQueuePriority_)
-        ->load(std::memory_order_acquire);
+    return copyQueuePriority_.load(std::memory_order_acquire);
   }
   void SetCopyQueuePriority(int32_t val) {
-    reinterpret_cast<std::atomic<int32_t> *>(&copyQueuePriority_)
-        ->store(val, std::memory_order_release);
+    copyQueuePriority_.store(val, std::memory_order_release);
   }
 
   int32_t GetFenceWaitMode() const {
-    return reinterpret_cast<const std::atomic<int32_t> *>(&fenceWaitMode_)
-        ->load(std::memory_order_acquire);
+    return fenceWaitMode_.load(std::memory_order_acquire);
   }
   void SetFenceWaitMode(int32_t val) {
-    reinterpret_cast<std::atomic<int32_t> *>(&fenceWaitMode_)
-        ->store(val, std::memory_order_release);
+    fenceWaitMode_.store(val, std::memory_order_release);
   }
 
   bool GetUseGameQueue() const {
-    return reinterpret_cast<const std::atomic<uint32_t> *>(&useGameQueue_)
-               ->load(std::memory_order_acquire) != 0;
+    return useGameQueue_.load(std::memory_order_acquire) != 0;
   }
   void SetUseGameQueue(bool val) {
-    reinterpret_cast<std::atomic<uint32_t> *>(&useGameQueue_)
-        ->store(val ? 1u : 0u, std::memory_order_release);
+    useGameQueue_.store(val ? 1u : 0u, std::memory_order_release);
   }
 
   // FPS Limiter Settings (Host -> Hook)
   struct FPSLimiterSettings {
   private:
-    alignas(4) uint32_t captureSyncEnabled_;
-    alignas(4) int32_t captureSyncMultiplier_; // 1-8
-    alignas(4) uint32_t generalEnabled_;
-    alignas(4) int32_t generalFps_;
-    alignas(4) int32_t
-        captureFps_; // Video capture FPS (set when recording starts)
-    alignas(4) uint32_t useVFR_; // If true, limiter acts as passthrough
+    std::atomic<uint32_t> captureSyncEnabled_{0};
+    std::atomic<int32_t> captureSyncMultiplier_{0}; // 1-8
+    std::atomic<uint32_t> generalEnabled_{0};
+    std::atomic<int32_t> generalFps_{0};
+    std::atomic<int32_t>
+        captureFps_{0}; // Video capture FPS (set when recording starts)
+    std::atomic<uint32_t> useVFR_{0}; // If true, limiter acts as passthrough
 
   public:
     // Atomic accessors
     bool GetCaptureSyncEnabled() const {
-      return reinterpret_cast<const std::atomic<uint32_t> *>(
-                 &captureSyncEnabled_)
-                 ->load(std::memory_order_acquire) != 0;
+      return captureSyncEnabled_.load(std::memory_order_acquire) != 0;
     }
     void SetCaptureSyncEnabled(bool val) {
-      reinterpret_cast<std::atomic<uint32_t> *>(&captureSyncEnabled_)
-          ->store(val ? 1u : 0u, std::memory_order_release);
+      captureSyncEnabled_.store(val ? 1u : 0u, std::memory_order_release);
     }
 
     int32_t GetCaptureSyncMultiplier() const {
-      return reinterpret_cast<const std::atomic<int32_t> *>(
-                 &captureSyncMultiplier_)
-          ->load(std::memory_order_acquire);
+      return captureSyncMultiplier_.load(std::memory_order_acquire);
     }
     void SetCaptureSyncMultiplier(int32_t val) {
-      reinterpret_cast<std::atomic<int32_t> *>(&captureSyncMultiplier_)
-          ->store(val, std::memory_order_release);
+      captureSyncMultiplier_.store(val, std::memory_order_release);
     }
 
     bool GetGeneralEnabled() const {
-      return reinterpret_cast<const std::atomic<uint32_t> *>(&generalEnabled_)
-                 ->load(std::memory_order_acquire) != 0;
+      return generalEnabled_.load(std::memory_order_acquire) != 0;
     }
     void SetGeneralEnabled(bool val) {
-      reinterpret_cast<std::atomic<uint32_t> *>(&generalEnabled_)
-          ->store(val ? 1u : 0u, std::memory_order_release);
+      generalEnabled_.store(val ? 1u : 0u, std::memory_order_release);
     }
 
     int32_t GetGeneralFps() const {
-      return reinterpret_cast<const std::atomic<int32_t> *>(&generalFps_)
-          ->load(std::memory_order_acquire);
+      return generalFps_.load(std::memory_order_acquire);
     }
     void SetGeneralFps(int32_t val) {
-      reinterpret_cast<std::atomic<int32_t> *>(&generalFps_)
-          ->store(val, std::memory_order_release);
+      generalFps_.store(val, std::memory_order_release);
     }
 
     int32_t GetCaptureFps() const {
-      return reinterpret_cast<const std::atomic<int32_t> *>(&captureFps_)
-          ->load(std::memory_order_acquire);
+      return captureFps_.load(std::memory_order_acquire);
     }
     void SetCaptureFps(int32_t val) {
-      reinterpret_cast<std::atomic<int32_t> *>(&captureFps_)
-          ->store(val, std::memory_order_release);
+      captureFps_.store(val, std::memory_order_release);
     }
 
     bool GetUseVFR() const {
-      return reinterpret_cast<const std::atomic<uint32_t> *>(&useVFR_)->load(
-                 std::memory_order_acquire) != 0;
+      return useVFR_.load(std::memory_order_acquire) != 0;
     }
     void SetUseVFR(bool val) {
-      reinterpret_cast<std::atomic<uint32_t> *>(&useVFR_)->store(
-          val ? 1u : 0u, std::memory_order_release);
+      useVFR_.store(val ? 1u : 0u, std::memory_order_release);
     }
 
     // Remote Limiter IPC
@@ -596,133 +552,108 @@ public:
   // Textures swap roles: hook writes to one while encoder reads from another
   // Hook writes, Host reads - use atomic accessors for thread safety
 private:
-  alignas(8) uint64_t
-      sharedHandles_[8]; // HANDLE cast to uint64_t (eight textures)
-  alignas(8) uint64_t fenceShareHandle_;
-  alignas(8) uint64_t fenceValue_;
-  alignas(4) int32_t currentReadIndex_;
-  alignas(8) int64_t timestamp_;
-  alignas(4) uint32_t width_;
-  alignas(4) uint32_t height_;
-  alignas(4) uint32_t format_; // DXGI_FORMAT
-  alignas(4) uint32_t isHDR_;  // Stored as uint32_t for atomic operations
-  alignas(4) int32_t luidLowPart_;
-  alignas(4) int32_t luidHighPart_;
-  alignas(4) uint32_t sourcePid_;
+  std::atomic<uint64_t>
+      sharedHandles_[8]{}; // HANDLE cast to uint64_t (eight textures)
+  std::atomic<uint64_t> fenceShareHandle_{0};
+  std::atomic<uint64_t> fenceValue_{0};
+  std::atomic<int32_t> currentReadIndex_{0};
+  std::atomic<int64_t> timestamp_{0};
+  std::atomic<uint32_t> width_{0};
+  std::atomic<uint32_t> height_{0};
+  std::atomic<uint32_t> format_{0}; // DXGI_FORMAT
+  std::atomic<uint32_t> isHDR_{0};
+  std::atomic<int32_t> luidLowPart_{0};
+  std::atomic<int32_t> luidHighPart_{0};
+  std::atomic<uint32_t> sourcePid_{0};
 
 public:
   // Atomic accessors for shared texture handles
   uint64_t GetSharedHandle(int index) const {
     if (index < 0 || index >= 8)
       return 0;
-    return reinterpret_cast<const std::atomic<uint64_t> *>(
-               &sharedHandles_[index])
-        ->load(std::memory_order_acquire);
+    return sharedHandles_[index].load(std::memory_order_acquire);
   }
   void SetSharedHandle(int index, uint64_t val) {
     if (index < 0 || index >= 8)
       return;
-    reinterpret_cast<std::atomic<uint64_t> *>(&sharedHandles_[index])
-        ->store(val, std::memory_order_release);
+    sharedHandles_[index].store(val, std::memory_order_release);
   }
 
   uint64_t GetFenceShareHandle() const {
-    return reinterpret_cast<const std::atomic<uint64_t> *>(&fenceShareHandle_)
-        ->load(std::memory_order_acquire);
+    return fenceShareHandle_.load(std::memory_order_acquire);
   }
   void SetFenceShareHandle(uint64_t val) {
-    reinterpret_cast<std::atomic<uint64_t> *>(&fenceShareHandle_)
-        ->store(val, std::memory_order_release);
+    fenceShareHandle_.store(val, std::memory_order_release);
   }
 
   uint64_t GetFenceValue() const {
-    return reinterpret_cast<const std::atomic<uint64_t> *>(&fenceValue_)
-        ->load(std::memory_order_acquire);
+    return fenceValue_.load(std::memory_order_acquire);
   }
   void SetFenceValue(uint64_t val) {
-    reinterpret_cast<std::atomic<uint64_t> *>(&fenceValue_)
-        ->store(val, std::memory_order_release);
+    fenceValue_.store(val, std::memory_order_release);
   }
 
   int32_t GetCurrentReadIndex() const {
-    return reinterpret_cast<const std::atomic<int32_t> *>(&currentReadIndex_)
-        ->load(std::memory_order_acquire);
+    return currentReadIndex_.load(std::memory_order_acquire);
   }
   void SetCurrentReadIndex(int32_t val) {
-    reinterpret_cast<std::atomic<int32_t> *>(&currentReadIndex_)
-        ->store(val, std::memory_order_release);
+    currentReadIndex_.store(val, std::memory_order_release);
   }
 
   int64_t GetTimestamp() const {
-    return reinterpret_cast<const std::atomic<int64_t> *>(&timestamp_)
-        ->load(std::memory_order_acquire);
+    return timestamp_.load(std::memory_order_acquire);
   }
   void SetTimestamp(int64_t val) {
-    reinterpret_cast<std::atomic<int64_t> *>(&timestamp_)
-        ->store(val, std::memory_order_release);
+    timestamp_.store(val, std::memory_order_release);
   }
 
   uint32_t GetWidth() const {
-    return reinterpret_cast<const std::atomic<uint32_t> *>(&width_)->load(
-        std::memory_order_acquire);
+    return width_.load(std::memory_order_acquire);
   }
   void SetWidth(uint32_t val) {
-    reinterpret_cast<std::atomic<uint32_t> *>(&width_)->store(
-        val, std::memory_order_release);
+    width_.store(val, std::memory_order_release);
   }
 
   uint32_t GetHeight() const {
-    return reinterpret_cast<const std::atomic<uint32_t> *>(&height_)->load(
-        std::memory_order_acquire);
+    return height_.load(std::memory_order_acquire);
   }
   void SetHeight(uint32_t val) {
-    reinterpret_cast<std::atomic<uint32_t> *>(&height_)->store(
-        val, std::memory_order_release);
+    height_.store(val, std::memory_order_release);
   }
 
   uint32_t GetFormat() const {
-    return reinterpret_cast<const std::atomic<uint32_t> *>(&format_)->load(
-        std::memory_order_acquire);
+    return format_.load(std::memory_order_acquire);
   }
   void SetFormat(uint32_t val) {
-    reinterpret_cast<std::atomic<uint32_t> *>(&format_)->store(
-        val, std::memory_order_release);
+    format_.store(val, std::memory_order_release);
   }
 
   bool GetIsHDR() const {
-    return reinterpret_cast<const std::atomic<uint32_t> *>(&isHDR_)->load(
-               std::memory_order_acquire) != 0;
+    return isHDR_.load(std::memory_order_acquire) != 0;
   }
   void SetIsHDR(bool val) {
-    reinterpret_cast<std::atomic<uint32_t> *>(&isHDR_)->store(
-        val ? 1u : 0u, std::memory_order_release);
+    isHDR_.store(val ? 1u : 0u, std::memory_order_release);
   }
 
   int32_t GetLuidLowPart() const {
-    return reinterpret_cast<const std::atomic<int32_t> *>(&luidLowPart_)
-        ->load(std::memory_order_acquire);
+    return luidLowPart_.load(std::memory_order_acquire);
   }
   void SetLuidLowPart(int32_t val) {
-    reinterpret_cast<std::atomic<int32_t> *>(&luidLowPart_)
-        ->store(val, std::memory_order_release);
+    luidLowPart_.store(val, std::memory_order_release);
   }
 
   int32_t GetLuidHighPart() const {
-    return reinterpret_cast<const std::atomic<int32_t> *>(&luidHighPart_)
-        ->load(std::memory_order_acquire);
+    return luidHighPart_.load(std::memory_order_acquire);
   }
   void SetLuidHighPart(int32_t val) {
-    reinterpret_cast<std::atomic<int32_t> *>(&luidHighPart_)
-        ->store(val, std::memory_order_release);
+    luidHighPart_.store(val, std::memory_order_release);
   }
 
   uint32_t GetSourcePid() const {
-    return reinterpret_cast<const std::atomic<uint32_t> *>(&sourcePid_)
-        ->load(std::memory_order_acquire);
+    return sourcePid_.load(std::memory_order_acquire);
   }
   void SetSourcePid(uint32_t val) {
-    reinterpret_cast<std::atomic<uint32_t> *>(&sourcePid_)
-        ->store(val, std::memory_order_release);
+    sourcePid_.store(val, std::memory_order_release);
   }
 
   CaptureState runtimeState;
@@ -769,63 +700,52 @@ public:
   // VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT.
   struct EncoderTextures {
   private:
-    alignas(8) uint64_t
-        textureHandles_[4]; // NT handles from D3D11 CreateSharedHandle
-    alignas(8) uint64_t fenceHandle_;
-    alignas(4) uint32_t width_;
-    alignas(4) uint32_t height_;
-    alignas(4) uint32_t format_;
+    std::atomic<uint64_t>
+        textureHandles_[4]{}; // NT handles from D3D11 CreateSharedHandle
+    std::atomic<uint64_t> fenceHandle_{0};
+    std::atomic<uint32_t> width_{0};
+    std::atomic<uint32_t> height_{0};
+    std::atomic<uint32_t> format_{0};
 
   public:
     // Atomic accessors for texture handles
     uint64_t GetTextureHandle(int index) const {
       if (index < 0 || index >= 4)
         return 0;
-      return reinterpret_cast<const std::atomic<uint64_t> *>(
-                 &textureHandles_[index])
-          ->load(std::memory_order_acquire);
+      return textureHandles_[index].load(std::memory_order_acquire);
     }
     void SetTextureHandle(int index, uint64_t val) {
       if (index < 0 || index >= 4)
         return;
-      reinterpret_cast<std::atomic<uint64_t> *>(&textureHandles_[index])
-          ->store(val, std::memory_order_release);
+      textureHandles_[index].store(val, std::memory_order_release);
     }
 
     uint64_t GetFenceHandle() const {
-      return reinterpret_cast<const std::atomic<uint64_t> *>(&fenceHandle_)
-          ->load(std::memory_order_acquire);
+      return fenceHandle_.load(std::memory_order_acquire);
     }
     void SetFenceHandle(uint64_t val) {
-      reinterpret_cast<std::atomic<uint64_t> *>(&fenceHandle_)
-          ->store(val, std::memory_order_release);
+      fenceHandle_.store(val, std::memory_order_release);
     }
 
     uint32_t GetWidth() const {
-      return reinterpret_cast<const std::atomic<uint32_t> *>(&width_)->load(
-          std::memory_order_acquire);
+      return width_.load(std::memory_order_acquire);
     }
     void SetWidth(uint32_t val) {
-      reinterpret_cast<std::atomic<uint32_t> *>(&width_)->store(
-          val, std::memory_order_release);
+      width_.store(val, std::memory_order_release);
     }
 
     uint32_t GetHeight() const {
-      return reinterpret_cast<const std::atomic<uint32_t> *>(&height_)->load(
-          std::memory_order_acquire);
+      return height_.load(std::memory_order_acquire);
     }
     void SetHeight(uint32_t val) {
-      reinterpret_cast<std::atomic<uint32_t> *>(&height_)->store(
-          val, std::memory_order_release);
+      height_.store(val, std::memory_order_release);
     }
 
     uint32_t GetFormat() const {
-      return reinterpret_cast<const std::atomic<uint32_t> *>(&format_)->load(
-          std::memory_order_acquire);
+      return format_.load(std::memory_order_acquire);
     }
     void SetFormat(uint32_t val) {
-      reinterpret_cast<std::atomic<uint32_t> *>(&format_)->store(
-          val, std::memory_order_release);
+      format_.store(val, std::memory_order_release);
     }
 
     std::atomic<bool> ready{false}; // True when handles are valid
@@ -849,28 +769,22 @@ public:
 
   // Shmem Fallback Metadata
 private:
-  alignas(4) uint32_t
-      shmemMappingCreated_; // Stored as uint32_t for atomic operations
-  alignas(4) uint32_t shmemMappingSize_; // Size of the separate mapping
+  std::atomic<uint32_t> shmemMappingCreated_{0};
+  std::atomic<uint32_t> shmemMappingSize_{0}; // Size of the separate mapping
 
 public:
   bool GetShmemMappingCreated() const {
-    return reinterpret_cast<const std::atomic<uint32_t> *>(
-               &shmemMappingCreated_)
-               ->load(std::memory_order_acquire) != 0;
+    return shmemMappingCreated_.load(std::memory_order_acquire) != 0;
   }
   void SetShmemMappingCreated(bool val) {
-    reinterpret_cast<std::atomic<uint32_t> *>(&shmemMappingCreated_)
-        ->store(val ? 1u : 0u, std::memory_order_release);
+    shmemMappingCreated_.store(val ? 1u : 0u, std::memory_order_release);
   }
 
   uint32_t GetShmemMappingSize() const {
-    return reinterpret_cast<const std::atomic<uint32_t> *>(&shmemMappingSize_)
-        ->load(std::memory_order_acquire);
+    return shmemMappingSize_.load(std::memory_order_acquire);
   }
   void SetShmemMappingSize(uint32_t val) {
-    reinterpret_cast<std::atomic<uint32_t> *>(&shmemMappingSize_)
-        ->store(val, std::memory_order_release);
+    shmemMappingSize_.store(val, std::memory_order_release);
   }
 
   // Cache Invalidation
