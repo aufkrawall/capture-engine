@@ -1855,8 +1855,8 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
                   ID3D12CommandList *lists[] = {list};
                   targetQueue->ExecuteCommandLists(1, lists);
 
-                  // Use fence wait for synchronization
-                  if (g_State.fence && g_State.fenceEvent) {
+                  // Use fence for synchronization (non-blocking)
+                  if (g_State.fence) {
                     // Signal fence on whichever queue actually executed the
                     // commands
                     g_State.currentFenceValue++;
@@ -1864,16 +1864,9 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
                     targetQueue->Signal(g_State.fence,
                                         g_State.currentFenceValue);
 
-                    UINT64 waitValue = g_State.currentFenceValue;
-                    if (g_State.fence->GetCompletedValue() < waitValue) {
-                      g_State.fence->SetEventOnCompletion(waitValue,
-                                                          g_State.fenceEvent);
-                      if (WaitForSingleObject(g_State.fenceEvent, 50) ==
-                          WAIT_TIMEOUT) {
-                        HookLog("DX12: Fence wait timed out (50ms), GPU may "
-                                "be slow");
-                      }
-                    }
+                    // PERFORMANCE FIX: Don't block CPU waiting for overlay GPU work
+                    // The fence value is checked by DX12_WaitForOverlayCompletion
+                    // which uses GPU-side wait, not CPU-side wait
                   }
                 }
 
@@ -2121,30 +2114,36 @@ void HandleDX12ResizeEnd() {
 // Present
 extern "C" __declspec(dllexport) void
 DX12_WaitForOverlayCompletion(ID3D12CommandQueue *pGameQueue) {
-  // CRITICAL: Check both fence AND fenceEvent - fenceEvent is created in
-  // InitOverlaySync which may not have been called yet
-  if (!pGameQueue || !g_State.fence || !g_State.fenceEvent)
+  // PERFORMANCE FIX: Use GPU-side wait instead of CPU-side wait
+  // CPU-side wait stalls the game's CPU thread, causing GPU underutilization
+  // GPU-side wait allows the CPU to continue while GPU handles synchronization
+  if (!pGameQueue || !g_State.fence)
     return;
 
   // Get the most recent fence value that was signaled by the overlay queue
-  // This is accessed from Present thread, written from render thread - use
-  // atomic load
   UINT64 fenceValueToWait = g_State.currentFenceValue;
   if (fenceValueToWait == 0)
     return; // No overlay work submitted yet
 
-  // CRITICAL FIX: Use CPU-side wait instead of GPU-side wait to prevent
-  // DXGI_ERROR_DEVICE_REMOVED on some GPUs (RTX 5070, etc.)
-  // The GPU-side queue wait can cause device removal when waiting on a fence
-  // from a different queue. CPU-side wait is safer.
-  if (g_State.fence->GetCompletedValue() < fenceValueToWait) {
+  // Check if overlay work is already complete (avoid unnecessary wait)
+  if (g_State.fence->GetCompletedValue() >= fenceValueToWait)
+    return;
+
+  // GPU-side wait: Queue a wait on the game's command queue
+  // This blocks the GPU at this point in the queue until the fence is signaled,
+  // but the CPU can continue immediately. The overlay render work happens
+  // before the game's Present, ensuring correct visual ordering.
+  HRESULT hr = pGameQueue->Wait(g_State.fence, fenceValueToWait);
+  if (FAILED(hr)) {
+    // Fallback: If GPU wait fails, try CPU wait with minimal timeout
+    // This should rarely happen but ensures safety
     g_State.fence->SetEventOnCompletion(fenceValueToWait, g_State.fenceEvent);
-    WaitForSingleObject(g_State.fenceEvent, 5);
+    WaitForSingleObject(g_State.fenceEvent, 1);
   }
 
   static int s_successCount = 0;
   if (++s_successCount <= 5) {
-    HookLog("DX12: WaitForOverlay - CPU wait complete for fence value %llu",
+    HookLog("DX12: WaitForOverlay - GPU wait queued for fence value %llu",
             fenceValueToWait);
   }
 }
