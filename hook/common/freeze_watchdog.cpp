@@ -112,8 +112,25 @@ bool FreezeWatchdog::IsDLSSFGActive() const {
 }
 
 void FreezeWatchdog::Stop() {
-  running_.store(false);
-  // Thread is detached, no need to join
+  if (!running_.exchange(false)) {
+    return; // Already stopped
+  }
+  
+  // CRITICAL FIX: Wait for thread to exit with timeout
+  // This prevents use-after-free if object is destroyed while thread is running
+  if (watchdogThread_.joinable()) {
+    // Give thread 500ms to exit gracefully
+    auto start = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds(500)) {
+      Sleep(10);
+    }
+    
+    if (watchdogThread_.joinable()) {
+      // Thread didn't exit in time - detach as last resort
+      OutputDebugStringA("[FreezeWatchdog] Thread didn't exit, detaching\n");
+      watchdogThread_.detach();
+    }
+  }
 }
 
 void FreezeWatchdog::Heartbeat() { lastHeartbeat_.store(GetCurrentMicros()); }

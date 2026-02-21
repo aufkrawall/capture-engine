@@ -41,9 +41,24 @@ SystemMetricsCollector::SystemMetricsCollector()
       gpuPdhInitialized(false), vramPdhInitialized(false) {}
 
 SystemMetricsCollector::~SystemMetricsCollector() {
+  // CRITICAL FIX: Use same safe shutdown pattern as Shutdown()
+  // to prevent blocking forever if thread is stuck
   stopThread = true;
+  
   if (updateThread.joinable()) {
-    updateThread.join();
+    // Give thread max 500ms to exit gracefully
+    auto start = std::chrono::steady_clock::now();
+    while (threadRunning.load() && std::chrono::steady_clock::now() - start <
+                                       std::chrono::milliseconds(500)) {
+      Sleep(10);
+    }
+
+    if (threadRunning.load()) {
+      // Thread still running - detach to avoid blocking destructor
+      updateThread.detach();
+    } else {
+      updateThread.join();
+    }
   }
 
   if (cpuQuery) {
