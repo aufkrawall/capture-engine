@@ -198,7 +198,9 @@ static PFN_CreateSwapChainForHwnd oCreateSwapChainForHwnd = nullptr;
 
 // --- DX12 Overlay State Management ---
 struct DX12OverlayState {
-  static const int ALLOC_POOL_SIZE = 3;
+  // Increased from 3 to 6 to reduce allocator contention when GPU is maxed out
+  // This prevents overlay flickering by ensuring we have more allocators to rotate through
+  static const int ALLOC_POOL_SIZE = 6;
   std::vector<ID3D12CommandAllocator *> allocators;
   ID3D12GraphicsCommandList *cmdList = nullptr;
   int allocIndex = 0;
@@ -1746,18 +1748,24 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
     int idx = g_State.allocIndex;
     g_State.allocIndex = (idx + 1) % DX12OverlayState::ALLOC_POOL_SIZE;
 
-    // Phase 3.1: Non-blocking fence check - skip if GPU is still processing
+    // Phase 3.1: Fence synchronization - ensure allocator is ready
+    // Instead of skipping overlay when fence isn't ready (causes flickering),
+    // we queue a GPU-side wait before overlay commands. This blocks the GPU
+    // at that point in the command queue but lets CPU continue immediately.
     bool safeToProceed = true;
+    UINT64 fenceValueToWait = 0;
     if (g_State.fence) {
       UINT64 comp = g_State.fence->GetCompletedValue();
       UINT64 target = g_State.fenceValues[idx];
       if (comp < target) {
-        // GPU hasn't finished with this allocator, skip overlay this frame
-        // This is safe - we just don't render the overlay for one frame
-        HookLog(
-            "DX12: Fence not ready (comp=%llu, target=%llu), skipping overlay",
-            comp, target);
-        safeToProceed = false;
+        // Allocator still in use - we'll queue a GPU wait before overlay
+        fenceValueToWait = target;
+        // Log occasionally to avoid spam
+        static int s_fenceWaitCount = 0;
+        if (++s_fenceWaitCount <= 10) {
+          HookLog("DX12: Queueing GPU wait for fence (comp=%llu, target=%llu)",
+                  comp, target);
+        }
       }
     } else {
       HookLog("DX12: No fence, cannot proceed with overlay");
@@ -1852,21 +1860,21 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
                 ID3D12CommandQueue *targetQueue = gameQueue;
 
                 if (SUCCEEDED(closeHr) && targetQueue) {
+                  // If allocator was still in use, queue GPU wait before overlay
+                  // This ensures the allocator is ready without blocking CPU
+                  if (fenceValueToWait > 0 && g_State.fence) {
+                    targetQueue->Wait(g_State.fence, fenceValueToWait);
+                  }
+
                   ID3D12CommandList *lists[] = {list};
                   targetQueue->ExecuteCommandLists(1, lists);
 
-                  // Use fence for synchronization (non-blocking)
+                  // Signal fence after overlay commands complete
                   if (g_State.fence) {
-                    // Signal fence on whichever queue actually executed the
-                    // commands
                     g_State.currentFenceValue++;
                     g_State.fenceValues[idx] = g_State.currentFenceValue;
                     targetQueue->Signal(g_State.fence,
                                         g_State.currentFenceValue);
-
-                    // PERFORMANCE FIX: Don't block CPU waiting for overlay GPU work
-                    // The fence value is checked by DX12_WaitForOverlayCompletion
-                    // which uses GPU-side wait, not CPU-side wait
                   }
                 }
 
