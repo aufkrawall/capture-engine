@@ -87,6 +87,22 @@ union GraphicsContextData {
 };
 
 // Main hook context - owns all subsystem state
+// 
+// MIGRATION STATUS (v1.1.0):
+// This structure is gradually replacing scattered global variables.
+// During migration, some state is duplicated between here and legacy globals.
+// Always call SyncWithLegacyGlobals() after modifying either system's state.
+//
+// Legacy globals still in use:
+//   - g_IPC: IPCClient pointer (HookContext references but doesn't own yet)
+//   - g_pLocalConfig: AppConfig pointer (synced but not owned)
+//   - g_DX11Hook/g_DX12Hook/etc: API-specific state (not yet migrated)
+//   - g_SharedMem: Global shared memory pointer (use ctx->sharedMem instead)
+//
+// Future work:
+//   - Move all device pointers into GraphicsContextData
+//   - Have HookContext own all subsystems
+//   - Remove legacy globals entirely
 struct HookContext {
   // ========================================================================
   // Lifecycle state machines

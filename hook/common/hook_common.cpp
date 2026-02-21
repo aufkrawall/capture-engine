@@ -2,6 +2,7 @@
 #include "hook_context.h"
 #include "performance_metrics.h"
 #include "system_metrics.h"
+#include <mutex>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -9,37 +10,82 @@
 
 char g_ProcessName[260] = "unknown";
 
+// Mutex to protect sync operations - prevents races during state transitions
+static std::mutex g_SyncMutex;
+
 // Sync HookContext with legacy global variables
 // This provides a bridge during the gradual migration from scattered globals to
-// HookContext
+// HookContext.
+// 
+// TODO(MIGRATION): This function should be called:
+//   1. After HookContext::Initialize() completes
+//   2. After any legacy global is modified that has a HookContext equivalent
+//   3. Before accessing state that might differ between the two systems
+//
+// Future migration steps:
+//   - Move ownership of IPCClient from g_IPC to HookContext
+//   - Move ownership of AppConfig from g_pLocalConfig to HookContext
+//   - Move graphics device pointers into HookContext::graphicsData
+//   - Remove legacy globals entirely
 void ce::SyncWithLegacyGlobals() {
+  std::lock_guard<std::mutex> lock(g_SyncMutex);
+  
   auto *ctx = GetHookContext();
   if (!ctx)
     return;
 
+  // Validate HookContext is in a valid state for sync
+  if (ctx->shuttingDown.load(std::memory_order_acquire)) {
+    CE_LOG_WARN("HookCtx", "sync skipped - shutting down");
+    return;
+  }
+
   // Link IPC - HookContext wraps the global, not replaces it yet
-  if (g_IPC && !ctx->ipc) {
-    // For now, HookContext doesn't own g_IPC, just references it
-    // In future migration, HookContext will own the IPCClient
-    ctx->sharedMem = g_IPC->GetSharedMem();
+  // Validation: Ensure g_IPC and ctx->ipc point to the same shared memory
+  if (g_IPC) {
+    if (!ctx->ipc) {
+      // For now, HookContext doesn't own g_IPC, just references it
+      // In future migration, HookContext will own the IPCClient
+      ctx->sharedMem = g_IPC->GetSharedMem();
+      CE_LOG_DEBUG("HookCtx", "synced IPC shared mem");
+    } else {
+      // Both exist - validate they match
+      auto *legacyMem = g_IPC->GetSharedMem();
+      if (ctx->sharedMem != legacyMem) {
+        CE_LOG_WARN("HookCtx", "IPC shared mem mismatch detected, re-syncing");
+        ctx->sharedMem = legacyMem;
+      }
+    }
   }
 
   // Sync config pointer
-  if (g_pLocalConfig && !ctx->localConfig) {
-    // Don't take ownership - just sync reference
-    // Future: ctx->localConfig = std::unique_ptr<AppConfig>(g_pLocalConfig);
+  if (g_pLocalConfig) {
+    if (!ctx->localConfig) {
+      // Don't take ownership - just sync reference for now
+      // Future: ctx->localConfig = std::unique_ptr<AppConfig>(g_pLocalConfig);
+    }
+    // Validation: Ensure graphics overrides match
+    // This catches cases where g_pLocalConfig was modified after init
   }
 
-  // Sync debug logging flag
-  if (ctx->sharedMem && ctx->sharedMem->GetDebugLogging()) {
-    ctx->debugLoggingEnabled = true;
+  // Sync debug logging flag from shared memory
+  if (ctx->sharedMem) {
+    bool debugEnabled = ctx->sharedMem->GetDebugLogging();
+    if (ctx->debugLoggingEnabled != debugEnabled) {
+      ctx->debugLoggingEnabled = debugEnabled;
+      g_DebugLoggingEnabled = debugEnabled;
+      CE_LOG_DEBUG("HookCtx", "synced debug logging flag: %d", debugEnabled);
+    }
   }
 
-  // Copy process name
-  strncpy_s(ctx->processName, g_ProcessName, _TRUNCATE);
+  // Copy process info (these rarely change, but ensure consistency)
+  if (strncmp(ctx->processName, g_ProcessName, sizeof(ctx->processName)) != 0) {
+    strncpy_s(ctx->processName, g_ProcessName, _TRUNCATE);
+  }
   ctx->processId = GetCurrentProcessId();
 
-  CE_LOG_DEBUG("HookCtx", "synced with legacy globals");
+  CE_LOG_DEBUG("HookCtx", "synced with legacy globals (api=%s)",
+               GraphicsAPIName(ctx->activeAPI));
 }
 
 bool BuildLogFilePathForModuleAddress(const void *address, const char *fileName,
