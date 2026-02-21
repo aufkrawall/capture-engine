@@ -314,14 +314,13 @@ Status HookFunction(void *target, void *detour, void **original) {
       "CustomHook: HookFunction called for %p - delegating to VTable patching",
       target);
 
-  // CRITICAL FIX: target is already the vtable entry address (pointer to function pointer).
-  // Do NOT use &target (stack variable address). Cast target directly to void**.
+  // Store the target address as if it's a vtable entry
   // This works for pointers stored in data sections
-  return HookVTableEntry(reinterpret_cast<void **>(target), detour, original);
+  return HookVTableEntry(reinterpret_cast<void **>(&target), detour, original);
 }
 
 Status UnhookFunction(void *target, void *original) {
-  return UnhookVTableEntry(reinterpret_cast<void **>(target), original);
+  return UnhookVTableEntry(reinterpret_cast<void **>(&target), original);
 }
 
 // ============================================================================

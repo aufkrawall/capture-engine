@@ -889,6 +889,33 @@ void InjectionManager::EjectAll() {
   injectedProcesses.clear();
 }
 
+// CRITICAL FIX: Wait for all delayed injection threads with timeout
+void InjectionManager::WaitForInjectionThreads(int timeoutMs) {
+  std::list<std::thread> threadsToJoin;
+  
+  {
+    std::lock_guard<std::mutex> lock(threadListMutex);
+    threadsToJoin = std::move(delayedInjectionThreads);
+    delayedInjectionThreads.clear();
+  }
+  
+  // Join threads with timeout
+  auto startTime = std::chrono::steady_clock::now();
+  for (auto &t : threadsToJoin) {
+    if (t.joinable()) {
+      auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - startTime).count();
+      if (elapsed >= timeoutMs) {
+        LogWarning("[Injection] Timeout waiting for injection threads, detaching remaining");
+        t.detach();
+      } else {
+        t.join();
+      }
+    }
+  }
+  LogInfo("[Injection] All delayed injection threads cleaned up");
+}
+
 // Check if any process is currently injected
 bool InjectionManager::HasActiveInjections() const {
   return !injectedProcesses.empty();
