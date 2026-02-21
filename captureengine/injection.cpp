@@ -906,7 +906,7 @@ void InjectionManager::WaitForInjectionThreads(int timeoutMs) {
       auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - startTime).count();
       if (elapsed >= timeoutMs) {
-        LogWarning("[Injection] Timeout waiting for injection threads, detaching remaining");
+        LogWarn("[Injection] Timeout waiting for injection threads, detaching remaining");
         t.detach();
       } else {
         t.join();
