@@ -254,8 +254,10 @@ struct DX12OverlayState {
 static DX12OverlayState g_State;
 static SharedCaptureD3D12 g_SharedCaptureD3D12;
 
-ID3D12Device *g_Device = nullptr;
-ID3D12CommandQueue *g_CommandQueue = nullptr;
+// CRITICAL FIX: Use atomic pointers for thread-safe access
+// These are read/written from multiple threads (hook thread, present thread, etc.)
+std::atomic<ID3D12Device *> g_Device{nullptr};
+std::atomic<ID3D12CommandQueue *> g_CommandQueue{nullptr};
 std::recursive_mutex g_CommandQueueMutex;
 
 // CRITICAL FIX: Thread-safe accessors for g_Device and g_CommandQueue
@@ -318,7 +320,7 @@ struct DX12Context {
 // g_Device/g_CommandQueue access
 static DX12Context GetDX12Context() {
   std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
-  return DX12Context(g_Device, g_CommandQueue);
+  return DX12Context(g_Device.load(), g_CommandQueue.load());
 }
 
 static std::atomic<uint64_t> g_FrameIndex{0};
@@ -414,7 +416,7 @@ void DX12_InvalidateSwapchain() {
   HookLog("DX12: Swapchain marked INVALID (FSR/FG transition detected)");
   // Log current state for debugging
   HookLog("DX12: Invalidating - imGuiInit=%d, syncInit=%d, device=%p, queue=%p",
-          g_State.imGuiInit, g_State.syncInit, g_Device, g_CommandQueue);
+          g_State.imGuiInit, g_State.syncInit, g_Device.load(), g_CommandQueue.load());
 
   // Only invalidate swapchain-level state, not device-level sync resources
   // This allows swapchain changes without full reinitialization
@@ -450,17 +452,17 @@ void DX12_SetCommandQueue(ID3D12CommandQueue *pQueue) {
   }
 
   std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
-  if (g_CommandQueue != pQueue) {
-    if (g_CommandQueue)
-      g_CommandQueue->Release();
-    g_CommandQueue = pQueue;
-    g_CommandQueue->AddRef();
+  if (g_CommandQueue.load() != pQueue) {
+    if (g_CommandQueue.load())
+      g_CommandQueue.load()->Release();
+    g_CommandQueue.store(pQueue);
+    pQueue->AddRef();
     ID3D12Device *dev = nullptr;
-    if (SUCCEEDED(g_CommandQueue->GetDevice(IID_PPV_ARGS(&dev)))) {
-      if (g_Device != dev) {
-        if (g_Device)
-          g_Device->Release();
-        g_Device = dev;
+    if (SUCCEEDED(pQueue->GetDevice(IID_PPV_ARGS(&dev)))) {
+      if (g_Device.load() != dev) {
+        if (g_Device.load())
+          g_Device.load()->Release();
+        g_Device.store(dev);
       } else
         dev->Release();
     }
@@ -985,7 +987,7 @@ bool InitImGui(ID3D12Device *device, int buffers, DXGI_FORMAT format,
   ID3D12CommandQueue *gameQueue = nullptr;
   {
     std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
-    gameQueue = g_CommandQueue;
+    gameQueue = g_CommandQueue.load();
   }
   if (!g_OverlayAdapter.InitDX12(device, gameQueue, format)) {
     HookLog("InitImGui: OverlayAdapter.InitDX12 failed!");
@@ -1473,7 +1475,7 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
 
   // OPTIMIZATION: Only resolve device if swapchain changed or device not yet
   // known
-  if (!g_Device || pSwapChain != g_LastSwapChain) {
+  if (!g_Device.load() || pSwapChain != g_LastSwapChain) {
     int64_t deviceInitStartUs = PerfLogger::GetQpcUs();
     IUnknown *pUnk = nullptr;
     if (FAILED(pSwapChain->GetDevice(IID_PPV_ARGS(&pUnk)))) {
@@ -1579,9 +1581,9 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
       }
     }
 
-    if (g_Device == nullptr || activeDevice != g_Device ||
+    if (g_Device.load() == nullptr || activeDevice != g_Device.load() ||
         pSwapChain != g_LastSwapChain) {
-      if (g_Device) {
+      if (g_Device.load()) {
         // Only cleanup swapchain-bound resources (RTVs)
         // Device-level resources (fence, allocators, cmdList) survive swapchain
         // changes
@@ -1590,12 +1592,12 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
         g_SharedCaptureD3D12.Reset();
         // Only release device if it's actually a new device, not just swapchain
         // change
-        if (activeDevice != g_Device) {
-          g_Device->Release();
+        if (activeDevice != g_Device.load()) {
+          g_Device.load()->Release();
         }
       }
-      g_Device = activeDevice;
-      g_Device->AddRef();
+      g_Device.store(activeDevice);
+      activeDevice->AddRef();
       if (g_LastSwapChain)
         g_LastSwapChain->Release();
       g_LastSwapChain = pSwapChain;
@@ -1614,7 +1616,7 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
   ID3D12CommandQueue *gameQueue = nullptr;
   {
     std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
-    gameQueue = g_SwapchainQueue ? g_SwapchainQueue : g_CommandQueue;
+    gameQueue = g_SwapchainQueue ? g_SwapchainQueue : g_CommandQueue.load();
   }
   if (!gameQueue) {
     HookLog("DX12: ProcessFrame - no game queue, skipping overlay");
@@ -1690,7 +1692,7 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
           return;
         }
 
-        if (InitImGui(g_Device, imguiBufferCount, desc.BufferDesc.Format,
+        if (InitImGui(g_Device.load(), imguiBufferCount, desc.BufferDesc.Format,
                       desc.OutputWindow)) {
           // CRITICAL FIX: Create RTVs for ALL swapchain buffers, not just ImGui
           // count This prevents buffer index issues when swapchain has more
@@ -1701,8 +1703,8 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
                     actualBufferCount);
             actualBufferCount = 8;
           }
-          CreateRTVs(g_Device, sc3, actualBufferCount);
-          InitOverlaySync(g_Device, imguiBufferCount);
+          CreateRTVs(g_Device.load(), sc3, actualBufferCount);
+          InitOverlaySync(g_Device.load(), imguiBufferCount);
           HookLog("DX12: ProcessFrame - ImGui initialized with %d RTVs, "
                   "syncInit=%d",
                   actualBufferCount, g_State.syncInit);
@@ -1907,7 +1909,7 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
     SharedMemoryLayout *shm = g_IPC->GetSharedMem();
     if (shm) {
       if (!g_SharedCaptureD3D12.IsActive())
-        g_SharedCaptureD3D12.Initialize(g_Device, pSwapChain);
+        g_SharedCaptureD3D12.Initialize(g_Device.load(), pSwapChain);
       if (g_SharedCaptureD3D12.IsActive()) {
         std::lock_guard<std::recursive_mutex> capLock(g_DX12CaptureMutex);
         IDXGISwapChain3 *sc3 = nullptr;
@@ -1920,7 +1922,7 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
         ID3D12CommandQueue *captureQueue = nullptr;
         {
           std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
-          captureQueue = g_CommandQueue;
+          captureQueue = g_CommandQueue.load();
         }
         if (captureQueue &&
             g_SharedCaptureD3D12.CaptureFrame(captureQueue, bbIdx)) {
@@ -2444,13 +2446,13 @@ void DX12Hook::Shutdown() {
     g_SwapchainQueue->Release();
     g_SwapchainQueue = nullptr;
   }
-  if (g_CommandQueue) {
-    g_CommandQueue->Release();
-    g_CommandQueue = nullptr;
+  if (g_CommandQueue.load()) {
+    g_CommandQueue.load()->Release();
+    g_CommandQueue.store(nullptr);
   }
-  if (g_Device) {
-    g_Device->Release();
-    g_Device = nullptr;
+  if (g_Device.load()) {
+    g_Device.load()->Release();
+    g_Device.store(nullptr);
   }
   if (g_LastSwapChain) {
     g_LastSwapChain->Release();

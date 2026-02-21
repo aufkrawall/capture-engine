@@ -30,8 +30,9 @@ struct PendingCaptureFrame {
 class CaptureBase {
 public:
   // Shared texture handles (exported to other processes)
-  HANDLE sharedTextureHandles[CAPTURE_TEXTURE_COUNT] = {};
-  HANDLE sharedFenceHandle = NULL;
+  // CRITICAL FIX: Use atomic handles to prevent double-close race conditions
+  std::atomic<HANDLE> sharedTextureHandles[CAPTURE_TEXTURE_COUNT];
+  std::atomic<HANDLE> sharedFenceHandle{NULL};
 
   // Capture dimensions and format
   uint32_t width = 0;
@@ -108,16 +109,18 @@ public:
   }
 
   // Cleanup shared handles to prevent resource leaks
+  // CRITICAL FIX: Use exchange() to atomically get and clear handles
+  // This prevents double-close if called from multiple threads
   void CleanupSharedHandles() {
     for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
-      if (sharedTextureHandles[i]) {
-        CloseHandle(sharedTextureHandles[i]);
-        sharedTextureHandles[i] = NULL;
+      HANDLE h = sharedTextureHandles[i].exchange(NULL);
+      if (h) {
+        CloseHandle(h);
       }
     }
-    if (sharedFenceHandle) {
-      CloseHandle(sharedFenceHandle);
-      sharedFenceHandle = NULL;
+    HANDLE h = sharedFenceHandle.exchange(NULL);
+    if (h) {
+      CloseHandle(h);
     }
   }
 
@@ -129,9 +132,9 @@ public:
       return;
 
     for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
-      sharedMem->SetSharedHandle(i, (uint64_t)sharedTextureHandles[i]);
+      sharedMem->SetSharedHandle(i, (uint64_t)sharedTextureHandles[i].load());
     }
-    sharedMem->SetFenceShareHandle((uint64_t)sharedFenceHandle);
+    sharedMem->SetFenceShareHandle((uint64_t)sharedFenceHandle.load());
     sharedMem->SetWidth(width);
     sharedMem->SetHeight(height);
     sharedMem->SetFormat(format);
