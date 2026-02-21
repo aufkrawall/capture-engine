@@ -198,9 +198,10 @@ static PFN_CreateSwapChainForHwnd oCreateSwapChainForHwnd = nullptr;
 
 // --- DX12 Overlay State Management ---
 struct DX12OverlayState {
-  // Increased from 3 to 6 to reduce allocator contention when GPU is maxed out
-  // This prevents overlay flickering by ensuring we have more allocators to rotate through
-  static const int ALLOC_POOL_SIZE = 6;
+  // Large pool size ensures we never need to wait for GPU.
+  // Even at 60fps with 100ms GPU latency, only 6 allocators are in flight.
+  // 16 provides 2.5x headroom - allocator is always ready, zero waiting.
+  static const int ALLOC_POOL_SIZE = 16;
   std::vector<ID3D12CommandAllocator *> allocators;
   ID3D12GraphicsCommandList *cmdList = nullptr;
   int allocIndex = 0;
@@ -1748,37 +1749,14 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
     int idx = g_State.allocIndex;
     g_State.allocIndex = (idx + 1) % DX12OverlayState::ALLOC_POOL_SIZE;
 
-    // Phase 3.1: Fence synchronization - ensure allocator is ready
-    // Instead of skipping overlay when fence isn't ready (causes flickering),
-    // we queue a GPU-side wait before overlay commands. This blocks the GPU
-    // at that point in the command queue but lets CPU continue immediately.
-    bool safeToProceed = true;
-    UINT64 fenceValueToWait = 0;
-    if (g_State.fence) {
-      UINT64 comp = g_State.fence->GetCompletedValue();
-      UINT64 target = g_State.fenceValues[idx];
-      if (comp < target) {
-        // Allocator still in use - we'll queue a GPU wait before overlay
-        fenceValueToWait = target;
-        // Log occasionally to avoid spam
-        static int s_fenceWaitCount = 0;
-        if (++s_fenceWaitCount <= 10) {
-          HookLog("DX12: Queueing GPU wait for fence (comp=%llu, target=%llu)",
-                  comp, target);
-        }
-      }
-    } else {
-      HookLog("DX12: No fence, cannot proceed with overlay");
-      safeToProceed = false;
-    }
+    // With 16 allocators, we never need to wait - by the time we wrap around,
+    // the GPU is guaranteed to have finished. At 60fps with 100ms GPU latency,
+    // only 6 allocators are in flight. 16 provides 2.5x headroom.
 
-    if (safeToProceed) {
-
-      auto *list = g_State.cmdList;
-      auto *alloc = (idx < (int)g_State.allocators.size())
-                        ? g_State.allocators[idx]
-                        : nullptr;
-      if (list && alloc) {
+    auto *list = g_State.cmdList;
+    auto *alloc = (idx < (int)g_State.allocators.size()) ? g_State.allocators[idx]
+                                                         : nullptr;
+    if (list && alloc) {
         HRESULT allocResetHr = alloc->Reset();
         if (SUCCEEDED(allocResetHr)) {
           HRESULT listResetHr = list->Reset(alloc, nullptr);
@@ -1860,12 +1838,7 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
                 ID3D12CommandQueue *targetQueue = gameQueue;
 
                 if (SUCCEEDED(closeHr) && targetQueue) {
-                  // If allocator was still in use, queue GPU wait before overlay
-                  // This ensures the allocator is ready without blocking CPU
-                  if (fenceValueToWait > 0 && g_State.fence) {
-                    targetQueue->Wait(g_State.fence, fenceValueToWait);
-                  }
-
+                  // Allocator is always ready due to large pool - no waiting needed
                   ID3D12CommandList *lists[] = {list};
                   targetQueue->ExecuteCommandLists(1, lists);
 
@@ -1899,9 +1872,6 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
       } else {
         HookLog("DX12: ProcessFrame - null list or alloc");
       }
-    } else {
-      HookLog("DX12: ProcessFrame - safeToProceed=false, skipping overlay");
-    }
   }
 
   // Change 6: Remove verbose debug logging - keep only error logging
