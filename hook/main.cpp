@@ -5,9 +5,10 @@
 #include "apis/dx8_hook.h"
 #include "apis/dx9_hook.h"
 #include "apis/opengl_hook.h"
+// CRITICAL: windows.h MUST come before psapi.h and intrin.h
+#include <windows.h>
 #include <intrin.h> // For __builtin_return_address
 #include <psapi.h>
-#include <windows.h>
 // Vulkan hook removed - using VK_LAYER_CE_overlay (ICD layer approach) instead
 #include "../common/crash_handler.h"
 #include "apis/ffx_hook.h" // FSR Frame Generation hook

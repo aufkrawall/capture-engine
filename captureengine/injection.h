@@ -1,10 +1,15 @@
 #pragma once
 
+// CRITICAL: windows.h MUST be first for COM headers
+#include <windows.h>
+
 #include "../common/config.h"
 #include <Wbemidl.h>
 #include <atomic>
 #include <comdef.h>
 #include <functional>
+#include <list>
+#include <thread>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -117,6 +122,10 @@ private:
   // CRITICAL FIX: Shutdown flag for thread safety
   std::atomic<bool> shuttingDown{false};
 
+  // CRITICAL FIX: Track delayed injection threads for proper cleanup
+  std::list<std::thread> delayedInjectionThreads;
+  std::mutex threadListMutex;
+
   // Inject moved to public
   std::function<void(const std::string &)> onInjectCallback;
 
@@ -126,4 +135,7 @@ public:
   mutable std::mutex injectMutex; // Protects lists shared with WMI thread
   void RequestShutdown() { shuttingDown = true; }
   bool IsShuttingDown() const { return shuttingDown; }
+  
+  // CRITICAL FIX: Wait for all delayed injection threads to complete
+  void WaitForInjectionThreads(int timeoutMs = 5000);
 };
