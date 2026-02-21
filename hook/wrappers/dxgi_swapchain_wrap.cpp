@@ -27,6 +27,7 @@ DX12_WaitForOverlayCompletion(ID3D12CommandQueue *pQueue);
 // FG detection for FSR FG/DLSS FG compatibility
 #include "../common/fg_detection.h"
 #include "../common/freeze_watchdog.h"
+#include "../common/fps_limiter.h"
 
 #ifndef BUILDING_CAPTURE_HOOK
 // Dynamically import from capture_hook to update shared state across DLL
@@ -806,6 +807,13 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval,
     }
   }
 
+  // FPS Limiter - apply frame pacing before present
+  // This applies to both DX11 and DX12
+  if (g_IPC) {
+    g_SharedFpsLimiter.SetIPCClient(g_IPC);
+    g_SharedFpsLimiter.Apply();
+  }
+
   HRESULT hr = pRealCached->Present(SyncInterval, Flags);
   return hr;
 }
@@ -1028,6 +1036,13 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(
     // NOTE: DX11_ProcessFrameExternal already calls DrawDX11Overlay internally,
     // so we do NOT call DrawOverlay() here to avoid double-counting frames
     DX11_ProcessFrameExternal(pReal1Cached);
+  }
+
+  // FPS Limiter - apply frame pacing before present
+  // This applies to both DX11 and DX12
+  if (g_IPC) {
+    g_SharedFpsLimiter.SetIPCClient(g_IPC);
+    g_SharedFpsLimiter.Apply();
   }
 
   HRESULT hr =
