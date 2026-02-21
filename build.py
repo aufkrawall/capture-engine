@@ -451,7 +451,7 @@ def bump_and_write_build_version():
     # (Optional: user wanted to get rid of "weird git contraption", but seeding once is safe)
     if build_number == 0 and os.path.exists(version_header_path):
         try:
-            with open(version_header_path, "r", encoding="utf--8") as f:
+            with open(version_header_path, "r", encoding="utf-8") as f:
                 txt = f.read()
             m = re.search(r"#define\s+BUILD_NUMBER\s+(\d+)", txt)
             if m:

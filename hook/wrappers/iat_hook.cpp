@@ -9,6 +9,7 @@
 #include "hook_common.h"
 #include "wrapper_hooks.h"
 #include <d3d12.h>
+#include <atomic>
 #include <mutex>
 #include <psapi.h>
 #include <tlhelp32.h>
@@ -999,7 +1000,7 @@ FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
   }
 
   // Debug logging for DXGI/D3D functions that might be looked up
-  static int s_LogCount = 0;
+  static std::atomic<int> s_LogCount{0};
   if (s_LogCount < 50) {
     if (strstr(lpProcName, "D3D11") || strstr(lpProcName, "DXGI") ||
         strstr(lpProcName, "D3D12") || strstr(lpProcName, "D3D10")) {

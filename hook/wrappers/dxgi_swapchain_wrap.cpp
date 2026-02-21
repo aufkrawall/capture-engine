@@ -11,6 +11,7 @@
 #include "../common/performance_metrics.h"
 #include "d3d12_wrapper_interface.h"
 #include "hook_common.h"
+#include <atomic>
 #include <windows.h>
 
 // External overlay functions (implemented in dx11_hook.cpp / dx12_hook.cpp)
@@ -480,7 +481,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::QueryInterface(REFIID riid,
   }
 
   // Log unknown interface queries for debugging
-  static int s_LogCount = 0;
+  static std::atomic<int> s_LogCount{0};
   if (s_LogCount < 20) {
     s_LogCount++;
     LPOLESTR strIID = nullptr;

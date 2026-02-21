@@ -40,7 +40,6 @@
 #include <vector>
 
 HMODULE g_hModule = NULL;
-DWORD g_RecursionTlsIndex = TLS_OUT_OF_INDEXES;
 // Note: g_ShuttingDown is declared in hook/common/hook_common.h
 
 static volatile bool g_ProcessTerminating = false;
@@ -1700,12 +1699,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
       CloseHandle(g_hCheckHooksEvent);
 
     // CRITICAL FIX: Clean up TLS index if it was allocated
-    // Note: g_RecursionTlsIndex appears to be unused (never allocated with
-    // TlsAlloc) If TLS is used in the future, uncomment the following: if
-    // (g_RecursionTlsIndex != TLS_OUT_OF_INDEXES) {
-    //     TlsFree(g_RecursionTlsIndex);
-    //     g_RecursionTlsIndex = TLS_OUT_OF_INDEXES;
-    // }
+    // (None currently used)
   }
   return TRUE;
 }

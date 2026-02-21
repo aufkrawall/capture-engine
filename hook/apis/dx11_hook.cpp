@@ -284,8 +284,8 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
   // The wrapper sets a thread-local flag before calling the real Present
   extern bool IsInWrapperPresent();
   bool inWrapper = IsInWrapperPresent();
-  static int s_LogCount = 0;
-  if (++s_LogCount <= 10) {
+  static std::atomic<int> s_LogCount{0};
+  if (s_LogCount.fetch_add(1) < 10) {
     HookLog("DetourDX11Present: IsInWrapperPresent=%d", inWrapper);
   }
   if (inWrapper) {
