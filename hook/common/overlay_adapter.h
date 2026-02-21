@@ -97,6 +97,9 @@ private:
   float cached1PercentLow = 0.0f;
   float cached01PercentLow = 0.0f;
   SystemMetrics cachedSystemMetrics;
+
+  // Encoder overload warning tracking (5-second display with extension)
+  uint64_t lastEncoderOverloadTick = 0;
 };
 
 // Global adapter instance

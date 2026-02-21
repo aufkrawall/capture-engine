@@ -697,10 +697,36 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     int minutes = (int)((elapsed % 3600) / 60);
     int seconds = (int)(elapsed % 60);
 
-    snprintf(buf, 64, "REC %02d:%02d:%02d", hours, minutes, seconds);
-    renderer->DrawTextWithShadow(labelCol, cursorY, buf, Colors::Red,
-                                 shadowColor);
+    // Check for encoder overload (flags: bit 0 = encoder, bit 1 = mux)
+    uint32_t overloadFlags =
+        mem.runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
+    uint64_t nowTick = GetTickCount64();
+    if (overloadFlags & 1u) {
+      // Encoder overload detected - update last detection time
+      lastEncoderOverloadTick = nowTick;
+    }
+
+    // Show overload warning if within 5 seconds of last detection
+    bool showOverloadWarning =
+        (lastEncoderOverloadTick != 0) &&
+        ((nowTick - lastEncoderOverloadTick) <= 5000);
+
+    if (showOverloadWarning) {
+      // Show recording time with overload warning
+      snprintf(buf, 64, "REC %02d:%02d:%02d !ENCODER OVERLOAD!", hours, minutes,
+               seconds);
+      renderer->DrawTextWithShadow(labelCol, cursorY, buf, Colors::Red,
+                                   shadowColor);
+    } else {
+      // Normal recording display
+      snprintf(buf, 64, "REC %02d:%02d:%02d", hours, minutes, seconds);
+      renderer->DrawTextWithShadow(labelCol, cursorY, buf, Colors::Red,
+                                   shadowColor);
+    }
     cursorY += lineHeight;
+  } else {
+    // Reset overload tracking when not recording
+    lastEncoderOverloadTick = 0;
   }
 
   // Frame time graph labels and markers
