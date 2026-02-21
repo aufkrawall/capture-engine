@@ -24,16 +24,19 @@ namespace DXGIShared {
 bool InlineHook::Install(void*, void*, void**) { return false; }
 void InlineHook::RemoveAll() {}
 
-// Stubs for DX12
-extern "C" __declspec(dllexport) void DX12_InvalidateSwapchain() {}
-extern "C" __declspec(dllexport) void DX12_ProcessFrameExternal(IDXGISwapChain*) {}
-extern "C" __declspec(dllexport) void DX12_OnSwapchainResizeBegin() {}
-extern "C" __declspec(dllexport) void DX12_OnSwapchainResizeEnd() {}
-extern "C" __declspec(dllexport) void DX12_SetCommandQueue(IUnknown*) {}
-extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12CommandQueue*) {}
+// Stubs for DX12 - C++ linkage (matching header declarations in dx12_hook.h)
+// Note: These are regular C++ functions, not extern "C"
+void DX12_InvalidateSwapchain() {}
+void DX12_ProcessFrameExternal(IDXGISwapChain*) {}
+void DX12_OnSwapchainResizeBegin() {}
+void DX12_OnSwapchainResizeEnd() {}
+void DX12_SignalFSR4SwapchainRecreated() {}
+
+// DX12_SetCommandQueue is extern "C" in the header
+extern "C" void DX12_SetCommandQueue(IUnknown*) {}
 
 // Stubs for DX11  
-extern "C" __declspec(dllexport) void DX11_ProcessFrameExternal(IDXGISwapChain*) {}
+extern "C" void DX11_ProcessFrameExternal(IDXGISwapChain*) {}
 
 // Stubs for custom_overlay_dx12.cpp
 HRESULT D3D12SerializeRootSignature(const D3D12_ROOT_SIGNATURE_DESC*, D3D_ROOT_SIGNATURE_VERSION, ID3DBlob**, ID3DBlob**) {

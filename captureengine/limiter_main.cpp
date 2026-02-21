@@ -243,9 +243,9 @@ int LimiterProcessMain(const AppConfig &config) {
         hDiscovery, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
 
     if (pDiscovery && pDiscovery->magic == DISCOVERY_MAGIC &&
-        pDiscovery->injectPid != 0) {
+        pDiscovery->injectPid.load() != 0) {
       wchar_t sharedMemName[64];
-      GenerateSharedMemName(sharedMemName, 64, pDiscovery->injectPid);
+      GenerateSharedMemName(sharedMemName, 64, pDiscovery->injectPid.load());
 
       hMapFile = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, sharedMemName);
       if (hMapFile) {
@@ -254,7 +254,7 @@ int LimiterProcessMain(const AppConfig &config) {
 
         if (shm && shm->GetHostPID() != 0) {
           LogInfo("[Limiter] Connected via discovery (inject PID: %u)",
-                  pDiscovery->injectPid);
+                  pDiscovery->injectPid.load());
         } else {
           if (shm) {
             UnmapViewOfFile(shm);

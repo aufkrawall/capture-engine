@@ -786,9 +786,9 @@ int MediaProcessMain(const AppConfig &config) {
           hDiscovery, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
 
       if (pDiscovery && pDiscovery->magic == DISCOVERY_MAGIC &&
-          pDiscovery->injectPid != 0) {
+          pDiscovery->injectPid.load() != 0) {
         wchar_t sharedMemName[64];
-        GenerateSharedMemName(sharedMemName, 64, pDiscovery->injectPid);
+        GenerateSharedMemName(sharedMemName, 64, pDiscovery->injectPid.load());
 
         g_hMapFile =
             OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, sharedMemName);
@@ -799,7 +799,7 @@ int MediaProcessMain(const AppConfig &config) {
 
           if (g_pSharedMem && g_pSharedMem->GetHostPID() != 0) {
             LogInfo("[Media] Connected via discovery (inject PID: %u)",
-                    pDiscovery->injectPid);
+                    pDiscovery->injectPid.load());
             UnmapViewOfFile(pDiscovery);
             CloseHandle(hDiscovery);
             break;
