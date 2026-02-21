@@ -1231,8 +1231,9 @@ public:
                                         IID_PPV_ARGS(&fence));
       if (SUCCEEDED(hr)) {
         // Get shared fence handle for cross-process
-        hr = fence->CreateSharedHandle(NULL, GENERIC_ALL, NULL,
-                                       reinterpret_cast<HANDLE*>(&sharedFenceHandle));
+        HANDLE hTemp = NULL;
+        hr = fence->CreateSharedHandle(NULL, GENERIC_ALL, NULL, &hTemp);
+        sharedFenceHandle.store(hTemp, std::memory_order_release);
         if (SUCCEEDED(hr)) {
           // Get Context4 for Signal()
           ID3D11DeviceContext *immCtx = nullptr;
@@ -1267,9 +1268,11 @@ public:
         // Use IDXGIResource1 for NT Handles
         if (SUCCEEDED(
                 sharedTextures[i]->QueryInterface(IID_PPV_ARGS(&pResource1)))) {
+          HANDLE hTemp = NULL;
           hr = pResource1->CreateSharedHandle(
               NULL, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
-              NULL, reinterpret_cast<HANDLE*>(&sharedTextureHandles[i]));
+              NULL, &hTemp);
+          sharedTextureHandles[i].store(hTemp, std::memory_order_release);
           pResource1->Release();
         } else {
           // Fallback to legacy KMT if Resource1 not valid (should not happen
@@ -1280,7 +1283,9 @@ public:
           if (SUCCEEDED(sharedTextures[i]->QueryInterface(
                   IID_PPV_ARGS(&pResource))) &&
               (texDesc.MiscFlags & D3D11_RESOURCE_MISC_SHARED)) {
-            pResource->GetSharedHandle(reinterpret_cast<HANDLE*>(&sharedTextureHandles[i]));
+            HANDLE hTemp = NULL;
+          pResource->GetSharedHandle(&hTemp);
+          sharedTextureHandles[i].store(hTemp, std::memory_order_release);
             pResource->Release();
             EarlyLog("DX11: Warning - Fallback to KMT handle for KeyedMutex "
                      "(NT Handle QI failed)");

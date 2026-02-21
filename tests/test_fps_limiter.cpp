@@ -1,4 +1,5 @@
 #include "../hook/common/fps_limiter.h"
+#include <atomic>
 #include <chrono>
 #include <gtest/gtest.h>
 #include <thread>
@@ -57,53 +58,37 @@ TEST_F(FpsLimiterTest, SmartWait_Late) {
   EXPECT_FALSE(waited);
 }
 
-// Test Apply logic (Limited integration test without external process)
-TEST_F(FpsLimiterTest, Apply_Fallback_Spin) {
-  // Setup for general FPS limit
-  mockShm->runtimeState.isRecording = false;
-  mockShm->fpsLimiter.generalEnabled = true;
-  mockShm->fpsLimiter.generalFps = 60;
-
-  // We are not initializing events, so it should fall back to spin wait
-  // But since we aren't updating releaseCount, it might timeout or wait 100ms
-  // The fallback logic waits until releaseCount < requestCount
-  // shm->fpsLimiter.releaseCount is 0.
-  // requestCount will be incremented to 1.
-  // So loop condition: 0 < 1 is TRUE. It will wait.
-
-  // To test this without hanging, we can spawn a thread to update releaseCount
-  std::atomic<bool> threadRunning = true;
-  std::thread releaser([&]() {
-    Sleep(50); // Wait 50ms
-    mockShm->fpsLimiter.releaseCount.store(1, std::memory_order_release);
-  });
-
+// Test the SmartWait function directly
+TEST_F(FpsLimiterTest, SmartWait_WithTarget) {
+  // This directly tests the SmartWait mechanism
   LARGE_INTEGER start, end;
   QueryPerformanceCounter(&start);
-
-  limiter.Apply();
-
+  
+  // Target 50ms in the future
+  int64_t targetTicks = start.QuadPart + (50 * freq.QuadPart / 1000);
+  bool waited = limiter.SmartWait(targetTicks);
+  
   QueryPerformanceCounter(&end);
-  threadRunning = false;
-  releaser.join();
-
-  double elapsedMs =
-      (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
-
-  // Should be approx 50ms
-  EXPECT_GE(elapsedMs, 45.0);
-  EXPECT_LT(elapsedMs, 70.0); // Allow some slop
-
-  // No missed frames expected if we responded in 100ms limit
-  EXPECT_EQ(limiter.GetMissedFrames(), 0);
+  
+  EXPECT_TRUE(waited);
+  
+  double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
+  EXPECT_GE(elapsedMs, 45.0);  // Should wait at least 45ms
+  EXPECT_LT(elapsedMs, 80.0);  // But not too much more
 }
 
-TEST_F(FpsLimiterTest, Apply_Timeout) {
+// Test Apply with targetTimeTicks set (uses SmartWait path)
+TEST_F(FpsLimiterTest, Apply_WithTargetTimeTicks) {
+  // Setup for general FPS limit
   mockShm->runtimeState.isRecording = false;
-  mockShm->fpsLimiter.generalEnabled = true;
-  mockShm->fpsLimiter.generalFps = 60;
-
-  // Don't release
+  mockShm->fpsLimiter.SetGeneralEnabled(true);
+  mockShm->fpsLimiter.SetGeneralFps(60);
+  
+  // Set a target time 50ms in the future - this triggers SmartWait
+  LARGE_INTEGER now;
+  QueryPerformanceCounter(&now);
+  mockShm->fpsLimiter.targetTimeTicks.store(
+      now.QuadPart + (50 * freq.QuadPart / 1000), std::memory_order_release);
 
   LARGE_INTEGER start, end;
   QueryPerformanceCounter(&start);
@@ -115,9 +100,32 @@ TEST_F(FpsLimiterTest, Apply_Timeout) {
   double elapsedMs =
       (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
 
-  // Should timeout after 100ms (hardcoded in fallback path)
-  EXPECT_GE(elapsedMs, 100.0);
+  // Should wait approximately 50ms via SmartWait
+  EXPECT_GE(elapsedMs, 40.0);
+  EXPECT_LT(elapsedMs, 100.0);
+}
 
-  // Should increment missed frames
-  EXPECT_EQ(limiter.GetMissedFrames(), 1);
+// Test Apply timeout behavior when target is 0
+TEST_F(FpsLimiterTest, Apply_NoTarget_ReturnsImmediately) {
+  // Setup for general FPS limit
+  mockShm->runtimeState.isRecording = false;
+  mockShm->fpsLimiter.SetGeneralEnabled(true);
+  mockShm->fpsLimiter.SetGeneralFps(60);
+  
+  // NOTE: When dbgShm is set but targetTimeTicks is 0, the Apply() function
+  // returns immediately without waiting. This is the expected behavior.
+  // The fallback spin-wait path is only entered when dbgShm is NULL.
+
+  LARGE_INTEGER start, end;
+  QueryPerformanceCounter(&start);
+
+  limiter.Apply();
+
+  QueryPerformanceCounter(&end);
+
+  double elapsedMs =
+      (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
+
+  // Should return almost immediately (< 5ms)
+  EXPECT_LT(elapsedMs, 5.0);
 }

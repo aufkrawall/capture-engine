@@ -796,20 +796,26 @@ void LoadConfig(const std::string &path, AppConfig &config,
         } else if (inWhitelist) {
           if (trimmed.find('=') != std::string::npos) {
             inWhitelist = false;
-          } else if (trimmed != "(" && trimmed != ")") {
-            AddEntry(line, config.gameWhitelist);
+          } else if (trimmed == ")") {
+            inWhitelist = false;
+          } else if (trimmed != "(") {
+            AddEntry(trimmed, config.gameWhitelist);
           }
         } else if (inOverlayWhitelist) {
           if (trimmed.find('=') != std::string::npos) {
             inOverlayWhitelist = false;
-          } else if (trimmed != "(" && trimmed != ")") {
-            AddEntry(line, config.overlayWhitelist);
+          } else if (trimmed == ")") {
+            inOverlayWhitelist = false;
+          } else if (trimmed != "(") {
+            AddEntry(trimmed, config.overlayWhitelist);
           }
         } else if (inWgcWindowDetection) {
           if (trimmed.find('=') != std::string::npos) {
             inWgcWindowDetection = false;
-          } else if (trimmed != "(" && trimmed != ")") {
-            AddEntry(line, config.wgcWindowTitles);
+          } else if (trimmed == ")") {
+            inWgcWindowDetection = false;
+          } else if (trimmed != "(") {
+            AddEntry(trimmed, config.wgcWindowTitles);
           }
         }
       }

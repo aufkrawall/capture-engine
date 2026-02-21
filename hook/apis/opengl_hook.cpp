@@ -466,7 +466,9 @@ public:
       // Get shared handle
       IDXGIResource *resource = nullptr;
       sharedTextures[i]->QueryInterface(IID_PPV_ARGS(&resource));
-      resource->GetSharedHandle(&sharedTextureHandles[i]);
+      HANDLE hShared = NULL;
+      resource->GetSharedHandle(&hShared);
+      sharedTextureHandles[i].store(hShared, std::memory_order_release);
       resource->Release();
 
       // Create GL texture and register with NV interop
@@ -522,7 +524,9 @@ public:
 
       IDXGIResource *resource = nullptr;
       sharedTextures[i]->QueryInterface(IID_PPV_ARGS(&resource));
-      resource->GetSharedHandle(&sharedTextureHandles[i]);
+      HANDLE hShared = NULL;
+      resource->GetSharedHandle(&hShared);
+      sharedTextureHandles[i].store(hShared, std::memory_order_release);
       resource->Release();
     }
 

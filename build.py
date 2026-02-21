@@ -1522,7 +1522,7 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
     # We need to compile MediaEngine with MEDIAENGINE_EXPORTS or similar if needed,
     # but for static linking in tests, we just need the symbols.
     # Note: AudioEncoder.cpp might rely on specific defines.
-    me_cflags = cflags + ffmpeg_flags
+    me_cflags = cflags + ffmpeg_flags + ["-DMEDIAENGINE_EXPORTS"]
 
     for src in me_src:
         rel_path = os.path.relpath(src, PROJECT_ROOT)

@@ -932,8 +932,8 @@ public:
   IDirect3DTexture9 *overlayTexture9 = nullptr;
 
   ID3D11Texture2D *sharedTextures[CAPTURE_TEXTURE_COUNT]{};
-  HANDLE sharedTextureHandles[CAPTURE_TEXTURE_COUNT] = {NULL};
-  HANDLE sharedFenceHandle = NULL;
+  // NOTE: sharedTextureHandles and sharedFenceHandle are now member variables
+  // (std::atomic<HANDLE>) from CaptureBase class to prevent race conditions
 
   // D3D11.3 Fence support
   ID3D11Fence *fence = nullptr;
@@ -1378,7 +1378,9 @@ public:
         if (SUCCEEDED(d3d11Context->QueryInterface(IID_PPV_ARGS(&context4)))) {
           IDXGIResource *res = nullptr;
           if (SUCCEEDED(fence->QueryInterface(IID_PPV_ARGS(&res)))) {
-            res->GetSharedHandle(&sharedFenceHandle);
+            HANDLE hTemp = NULL;
+            res->GetSharedHandle(&hTemp);
+            sharedFenceHandle.store(hTemp, std::memory_order_release);
             res->Release();
             useFences = true;
             EarlyLog("DX9: ID3D11Fence support enabled");
@@ -1398,7 +1400,9 @@ public:
       if (SUCCEEDED(hr)) {
         IDXGIResource *pResource = nullptr;
         sharedTextures[i]->QueryInterface(IID_PPV_ARGS(&pResource));
-        pResource->GetSharedHandle(&sharedTextureHandles[i]);
+        HANDLE hTemp = NULL;
+        pResource->GetSharedHandle(&hTemp);
+        sharedTextureHandles[i].store(hTemp, std::memory_order_release);
         pResource->Release();
       } else {
         success = false;

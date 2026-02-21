@@ -7,6 +7,7 @@
 #include "hook_common.h"
 #include "lod_helper.h"
 #include "performance_metrics.h"
+#include <atomic>
 #include <cstdint>
 #include <d3d11.h>
 #include <d3d11_4.h>
@@ -312,8 +313,9 @@ public:
       if (SUCCEEDED(d3d11Device->QueryInterface(IID_PPV_ARGS(&device5)))) {
         if (SUCCEEDED(device5->CreateFence(0, D3D11_FENCE_FLAG_SHARED,
                                            IID_PPV_ARGS(&fence)))) {
-          fence->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr,
-                                    &sharedFenceHandle);
+          HANDLE hTemp = NULL;
+          fence->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr, &hTemp);
+          sharedFenceHandle.store(hTemp, std::memory_order_release);
           useFences = true;
           HookLog("DDraw: D3D11.3 fence sync enabled");
         }
@@ -369,7 +371,9 @@ public:
       // Get shared handle
       IDXGIResource *resource = nullptr;
       sharedTextures[i]->QueryInterface(IID_PPV_ARGS(&resource));
-      resource->GetSharedHandle(&sharedTextureHandles[i]);
+      HANDLE hTemp = NULL;
+      resource->GetSharedHandle(&hTemp);
+      sharedTextureHandles[i].store(hTemp, std::memory_order_release);
       resource->Release();
     }
 
