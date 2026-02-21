@@ -83,6 +83,7 @@ private:
     DWORD pid;
     std::string name;
     HANDLE hProcess;
+    LPVOID remoteMemory;  // Remote memory allocated for DLL path (APC injection)
   };
 
   std::vector<InjectedProcess> injectedProcesses;

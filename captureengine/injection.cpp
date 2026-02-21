@@ -812,6 +812,7 @@ bool InjectionManager::Inject(DWORD pid, const std::string &processName) {
   ip.pid = pid;
   ip.name = processName;
   ip.hProcess = hProcess.release(); // Transfer ownership
+  ip.remoteMemory = nullptr;  // No remote memory for CreateRemoteThread injection (freed by RAII)
   handleGuard.dismiss(); // Don't close - we're transferring ownership
   injectedProcesses.push_back(ip);
 
@@ -875,6 +876,7 @@ bool InjectionManager::InjectEarly(DWORD pid, const std::string &dllPath,
   ip.pid = pid;
   ip.name = dllPath;
   ip.hProcess = hProcess;
+  ip.remoteMemory = pRemotePath;  // Store for later cleanup
   injectedProcesses.push_back(ip);
 
   return true;
@@ -926,6 +928,12 @@ void InjectionManager::Eject(DWORD pid) {
           if (hThread) {
             WaitForSingleObject(hThread, 500);
             CloseHandle(hThread);
+          }
+          
+          // CRITICAL FIX: Free remote memory allocated during APC injection
+          if (it != injectedProcesses.end() && it->remoteMemory) {
+            VirtualFreeEx(hProcess, it->remoteMemory, 0, MEM_RELEASE);
+            LogInfo("[Eject] Freed remote memory at %p for PID %d", it->remoteMemory, pid);
           }
           break;
         }

@@ -171,6 +171,11 @@ void InjectCaptureThreadFunc(const AppConfig &config) {
       FrameSlot &slot = g_pSharedMem->frameRing.slots[index];
 
       if (slot.valid.load(std::memory_order_acquire)) {
+        // CRITICAL FIX: Ensure all slot fields are visible after valid flag
+        // The acquire on valid provides synchronization with the producer's release,
+        // but we add an explicit fence to prevent compiler reordering of reads.
+        std::atomic_thread_fence(std::memory_order_acquire);
+
         // PACING CHECK:
         // If this frame is too early relative to our target 120Hz grid, drop
         // it. This acts as a smart decimator for 144Hz/200Hz inputs.

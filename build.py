@@ -83,7 +83,6 @@ PACKAGES = [
     # ffmpeg & codecs removed (built from source)
     "mingw-w64-clang-x86_64-openssl",
     "mingw-w64-clang-x86_64-libxml2",
-    "mingw-w64-clang-x86_64-libxml2",
     "mingw-w64-clang-x86_64-shaderc",
     "mingw-w64-clang-x86_64-cmake",
     "mingw-w64-clang-x86_64-ninja",
@@ -658,63 +657,45 @@ def download_msys2_packages_for_linux():
 
     Only downloads Windows-specific libraries/headers not available in Arch repos.
     Toolchain (clang, mingw-w64) should be installed via system pacman.
+    
+    OPTIMIZATION: Uses marker file to skip extraction if already done.
     """
     if not IS_LINUX:
         return
 
-    log("Setting up MSYS2 packages for Linux cross-compilation...")
-
-    # Use existing MSYS2_DIR if it exists (from Windows build), otherwise create minimal setup
     msys_linux_dir = os.path.join(BUILD_DIR, "msys64_linux")
-    os.makedirs(msys_linux_dir, exist_ok=True)
-
-    # Create clang64 subdir structure
     clang64_dir = os.path.join(msys_linux_dir, "clang64")
+    marker_file = os.path.join(msys_linux_dir, ".packages_installed")
+    
+    # Check if packages already extracted (marker file + clang64 exists with content)
+    if os.path.exists(marker_file) and os.path.isdir(clang64_dir):
+        include_dir = os.path.join(clang64_dir, "include")
+        if os.path.isdir(include_dir) and os.listdir(include_dir):
+            log("MSYS2 packages already installed - skipping setup")
+            return msys_linux_dir
+
+    log("Setting up MSYS2 packages for Linux cross-compilation...")
+    os.makedirs(msys_linux_dir, exist_ok=True)
     os.makedirs(os.path.join(clang64_dir, "include"), exist_ok=True)
     os.makedirs(os.path.join(clang64_dir, "lib"), exist_ok=True)
 
     for pkg in LINUX_MSYS2_PACKAGES:
-        # Find latest version of package
-        pkg_url = f"{MSYS2_REPO_URL}/{pkg}-any.pkg.tar.zst"
-        pkg_path = os.path.join(msys_linux_dir, f"{pkg}.pkg.tar.zst")
-
-        if os.path.exists(pkg_path.replace(".pkg.tar.zst", "")):
-            log(f"Package {pkg} already extracted")
-            continue
-
         try:
-            # Try to find the actual package file (with version)
-            # List directory to find matching package
-            import urllib.request
-            from html.parser import HTMLParser
-
-            class PackageFinder(HTMLParser):
-                def __init__(self, pkg_name):
-                    super().__init__()
-                    self.pkg_name = pkg_name
-                    self.found_pkg = None
-
-                def handle_starttag(self, tag, attrs):
-                    if tag == "a":
-                        attrs_dict = dict(attrs)
-                        href = attrs_dict.get("href", "")
-                        if href.startswith(self.pkg_name) and href.endswith("-any.pkg.tar.zst"):
-                            self.found_pkg = href
-
-            # Fetch repo index
+            # Find package file in repo (with version)
             log(f"Checking for {pkg} in MSYS2 repo...")
             req = urllib.request.Request(MSYS2_REPO_URL, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=30) as response:
                 html = response.read().decode()
 
-            parser = PackageFinder(pkg)
-            parser.feed(html)
-
-            if not parser.found_pkg:
+            # Find the actual package filename (with version)
+            import re
+            pattern = rf'href="({pkg}[^"]*-any\.pkg\.tar\.zst)"'
+            match = re.search(pattern, html)
+            if not match:
                 log(f"Warning: Could not find package {pkg}")
                 continue
 
-            pkg_file = parser.found_pkg
+            pkg_file = match.group(1)
             pkg_url = f"{MSYS2_REPO_URL}/{pkg_file}"
             pkg_path = os.path.join(msys_linux_dir, pkg_file)
 
@@ -735,12 +716,16 @@ def download_msys2_packages_for_linux():
             log(f"Warning: Failed to download {pkg}: {e}")
             log("Build may fail - consider installing pre-built MSYS2 from Windows")
 
+    # Create marker file to skip on future builds
+    with open(marker_file, 'w') as f:
+        f.write(datetime.datetime.now().isoformat())
+    
     log("MSYS2 packages setup complete for Linux")
     return msys_linux_dir
 
 
 def wsl_path_to_windows(path):
-    """Convert WSL path (/mnt/c/...) to Windows path (C:\...)"""
+    r"""Convert WSL path (/mnt/c/...) to Windows path (C:\...)"""
     if IS_LINUX and path.startswith("/mnt/"):
         # /mnt/c/path -> C:\path
         parts = path.split("/")

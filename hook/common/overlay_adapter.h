@@ -18,6 +18,7 @@
 #include "ipc_client.h"
 #include "performance_metrics.h"
 #include "system_metrics.h"
+#include <atomic>
 
 // Forward declarations for backends
 namespace CustomOverlay {
@@ -85,7 +86,7 @@ private:
   char graphicsAPI[16] = "";
   uint32_t droppedFrames = 0;
   bool isHDR = false;
-  bool initialized = false;
+  std::atomic<bool> initialized{false};
   bool skipDeviceRelease =
       false; // When true, Shutdown won't release device refs (app is closing)
 

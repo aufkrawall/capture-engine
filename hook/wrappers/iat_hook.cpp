@@ -930,6 +930,13 @@ void ShutdownIATHooks() {
   g_PatchedEntries.clear();
   g_Initialized = false;
 
+  // CRITICAL FIX: Clear dynamic hooks map to prevent memory leak
+  // and stale pointers on DLL unload
+  {
+    std::lock_guard<std::mutex> dynLock(g_DynamicHookLock);
+    g_DynamicHooks.clear();
+  }
+
   WrapperLog("IAT: All hooks restored");
 }
 

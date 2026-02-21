@@ -2827,6 +2827,14 @@ void DX11Hook::Shutdown() {
     g_OverlayAdapter.Shutdown();
   }
 
+  // CRITICAL FIX: Clear sampler caches to prevent unbounded memory growth
+  // These caches accumulate replacement samplers over time
+  {
+    std::unique_lock<std::shared_mutex> lock(g_SamplerCacheMutex10);
+    g_SamplerCache10.clear();
+    g_ReplacementSamplers10.clear();
+  }
+
   g_DX11Capture.Cleanup();
   if (g_mainRenderTargetView) {
     g_DeferredRelease.Queue(g_mainRenderTargetView);

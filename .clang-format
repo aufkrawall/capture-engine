@@ -1,0 +1,71 @@
+# CaptureEngine Clang-Format Configuration
+# Based on Google Style with project-specific modifications
+# See AGENTS.md for coding standards
+
+BasedOnStyle: Google
+
+# Line width (documented in AGENTS.md)
+ColumnLimit: 120
+
+# Indentation (documented in AGENTS.md: 4 spaces, no tabs)
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ContinuationIndentWidth: 4
+
+# Braces (K&R style as documented)
+BreakBeforeBraces: Attach
+
+# Naming conventions are enforced by code review, not clang-format
+# (PascalCase methods, camelCase variables, kConstantNames, g_globalPtr)
+
+# Pointer/reference alignment
+PointerAlignment: Left
+ReferenceAlignment: Left
+
+# Include sorting (matches AGENTS.md order: system headers first, then project)
+IncludeBlocks: Preserve
+SortIncludes: CaseSensitive
+
+# Access modifiers
+AccessModifierOffset: -4
+
+# Constructor initializers
+ConstructorInitializerIndentWidth: 4
+PackConstructorInitializers: CurrentLine
+
+# Lambda formatting
+LambdaBodyIndentation: Signature
+
+# Align trailing comments
+AlignTrailingComments: true
+
+# Allow short functions on one line (empty bodies only)
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortBlocksOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+
+# Break before binary operators
+BreakBeforeBinaryOperators: None
+
+# Space after template keyword
+SpaceAfterTemplateKeyword: true
+
+# Space before assignment operators
+SpaceBeforeAssignmentOperators: true
+
+# Space before C++11 braced list
+SpaceBeforeCpp11BracedList: false
+
+# Space in empty parentheses
+SpaceInEmptyParentheses: false
+
+# Spaces in parentheses
+SpacesInParentheses: false
+
+# Spaces in square brackets
+SpacesInSquareBrackets: false
+
+# Standard
+Standard: c++20

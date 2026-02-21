@@ -25,13 +25,14 @@ bool IPCClient::Connect() {
       uint32_t pid = pDiscovery->GetInjectPid();
 
       if (magic == DISCOVERY_MAGIC && pid != 0) {
-        // Acquire semantics ensure we read whitelist after validating magic/pid
-        // Found discovery info - use inject PID to open main shared memory
+        // CRITICAL FIX: Use 'pid' variable (atomically loaded) instead of
+        // pDiscovery->injectPid (raw field) to avoid TOCTOU race condition.
+        // The raw field could change between validation and use.
         wchar_t sharedMemName[64];
-        GenerateSharedMemName(sharedMemName, 64, pDiscovery->injectPid);
+        GenerateSharedMemName(sharedMemName, 64, pid);
 
         EarlyLog("IPC: Found discovery. InjectPID=%d. Opening %ls...",
-                 pDiscovery->injectPid, sharedMemName);
+                 pid, sharedMemName);
 
         hMapFile = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, sharedMemName);
         if (hMapFile) {

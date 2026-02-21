@@ -4,10 +4,13 @@
 
 #include "vtable_hook.h"
 #include "../common/hook_common.h"
+#include <atomic>
+#include <mutex>
 
 namespace VTableHook {
 
-static bool g_Initialized = false;
+static std::atomic<bool> g_Initialized{false};
+static std::mutex g_VTableMutex;
 
 Status Initialize() {
   if (g_Initialized)
@@ -24,6 +27,10 @@ Status Shutdown() {
 Status Create(void *pVTableEntry, void *pDetour, void **ppOriginal) {
   if (!pVTableEntry || !pDetour)
     return ErrorNotExecutable;
+
+  // CRITICAL FIX: Lock mutex to prevent concurrent hook creation/removal
+  // This prevents race conditions when multiple threads hook the same vtable
+  std::lock_guard<std::mutex> lock(g_VTableMutex);
 
   // VTable hook - pTarget is &vtable[index]
   void **ppEntry = reinterpret_cast<void **>(pVTableEntry);
@@ -98,6 +105,11 @@ Status Create(void *pVTableEntry, void *pDetour, void **ppOriginal) {
   }
 
   *ppEntry = pDetour;
+  
+  // CRITICAL FIX: Flush instruction cache after modifying code
+  // While x86/x64 has strong cache coherency, this is required for correctness
+  // and may be needed on certain configurations or future CPUs
+  FlushInstructionCache(GetCurrentProcess(), ppEntry, sizeof(void*));
 
   DWORD newProtect;
   if (!VirtualProtect(ppEntry, sizeof(void *), oldProtect, &newProtect)) {
@@ -130,6 +142,9 @@ Status Disable(void *pTarget) {
 Status Remove(void *pVTableEntry, void *pOriginal) {
   if (!pVTableEntry || !pOriginal)
     return ErrorNotExecutable;
+
+  // CRITICAL FIX: Lock mutex to prevent concurrent hook creation/removal
+  std::lock_guard<std::mutex> lock(g_VTableMutex);
 
   void **ppEntry = reinterpret_cast<void **>(pVTableEntry);
 

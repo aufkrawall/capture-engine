@@ -1948,6 +1948,9 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
               slot.frameIndex = desc.frameNumber;
               slot.textureIndex = desc.textureIndex;
               slot.sourcePid = GetCurrentProcessId();
+              // CRITICAL FIX: Add release fence before setting valid flag
+              // Ensures all slot fields are visible to consumer before valid=1
+              std::atomic_thread_fence(std::memory_order_release);
               slot.valid.store(1, std::memory_order_release);
               shm->frameRing.writeIndex.store(wIdx + 1,
                                               std::memory_order_release);
