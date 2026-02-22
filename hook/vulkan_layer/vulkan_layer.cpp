@@ -1040,7 +1040,7 @@ Capture_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
       // Game -> Overlay -> Capture -> Present
       VkSemaphore overlayDone = GetOverlaySemaphore(sd->device, idx);
 
-      if (shm && shm->overlayConfig.showOverlay) {
+      if (shm && shm->ReadOverlayConfig().showOverlay) {
         // Measure ONLY the actual CPU overhead of overlay work
         // Fence wait is tracked separately (it's GPU sync, not our overhead)
         int32_t fenceWaitUs = 0;

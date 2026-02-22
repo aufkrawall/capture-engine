@@ -193,7 +193,9 @@ vkNegotiateLoaderLayerInterfaceVersion(
     LayerLog("Vulkan Layer: IPC initialized successfully");
   }
 
-  EarlyLog("IPC connected, initializing layer functions...");
+  if (LayerIPC_IsConnected()) {
+    EarlyLog("IPC connected, initializing layer functions...");
+  }
 
   pVersionStruct->loaderLayerInterfaceVersion = 2;
   pVersionStruct->pfnGetInstanceProcAddr = vkGetInstanceProcAddr;

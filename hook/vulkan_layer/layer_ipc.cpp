@@ -280,7 +280,7 @@ bool LayerIPC_ShouldShowOverlay() {
   auto *mem = g_IPCClient.GetSharedMem();
   if (!mem)
     return true;
-  return mem->overlayConfig.showOverlay;
+  return mem->ReadOverlayConfig().showOverlay;
 }
 
 // Check if capture is requested

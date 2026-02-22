@@ -36,8 +36,11 @@ bool IPCClient::Connect() {
 
         hMapFile = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, sharedMemName);
         if (hMapFile) {
+          // Use 0 to map the entire section — the creator (64-bit inject process)
+          // determined the size. Using sizeof(SharedMemoryLayout) would fail if the
+          // local sizeof differs (e.g., 32-bit layer reading 64-bit shared memory).
           pSharedMem = (SharedMemoryLayout *)MapViewOfFile(
-              hMapFile, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SharedMemoryLayout));
+              hMapFile, FILE_MAP_ALL_ACCESS, 0, 0, 0);
 
           if (pSharedMem && pSharedMem->GetHostPID() != 0) {
             UnmapViewOfFile(pDiscovery);

@@ -492,9 +492,9 @@ void CleanupOverlay(VkDevice device) {
 bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex,
                    VkSemaphore waitSemaphore, VkSemaphore signalSemaphore,
                    int32_t *fenceWaitUs) {
-  // Early out if overlay is disabled
+  // Early out if overlay is disabled (use seqlock for consistent read)
   if (g_IPCClient.GetSharedMem() &&
-      !g_IPCClient.GetSharedMem()->overlayConfig.showOverlay) {
+      !g_IPCClient.GetSharedMem()->ReadOverlayConfig().showOverlay) {
     return false;
   }
 

@@ -113,8 +113,10 @@ static void UpdateSharedMemoryFromConfig(SharedMemoryLayout *pSharedMem,
 
   pSharedMem->configVersion.fetch_add(1, std::memory_order_release);
 
-  // Overlay
+  // Overlay — use seqlock to prevent torn reads by the hook
+  pSharedMem->BeginWriteOverlayConfig();
   pSharedMem->overlayConfig = config.overlay;
+  pSharedMem->EndWriteOverlayConfig();
 
   // Performance / Priority
   pSharedMem->SetGpuPriority(config.video.gpuPriority);
@@ -311,8 +313,10 @@ int InjectProcessMain(const AppConfig &config) {
   pSharedMem->fpsLimiter.SetGeneralFps(config.fpsLimiter.generalFps);
   pSharedMem->fpsLimiter.SetCaptureFps(config.video.fps);
 
-  // Copy overlay config
+  // Copy overlay config (seqlock for consistency with hook readers)
+  pSharedMem->BeginWriteOverlayConfig();
   pSharedMem->overlayConfig = config.overlay;
+  pSharedMem->EndWriteOverlayConfig();
 
   // Copy graphics overrides
   UpdateSharedMemoryFromConfig(pSharedMem, config);
