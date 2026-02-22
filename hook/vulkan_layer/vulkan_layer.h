@@ -192,7 +192,10 @@ public:
   bool IsOverlayEnabled() const { return m_OverlayEnabled; }
   bool IsCaptureEnabled() const { return m_CaptureEnabled; }
   uint32_t GetMaxAnisotropy() const { return m_MaxAnisotropy; }
+  bool IsAnisotropyOverrideActive() const { return m_AnisotropyOverrideActive; }
   float GetMipLodBias() const { return m_MipLodBias; }
+  bool IsMipBiasOverrideActive() const { return m_MipBiasOverrideActive; }
+  const char *GetMipBiasMode() const { return m_MipBiasMode.c_str(); }
   const char *GetVsyncMode() const { return m_VsyncMode.c_str(); }
   int32_t GetBackbufferCount() const { return m_BackbufferCount; }
   float GetPrerenderLimit() const { return m_PrerenderLimit; }
@@ -213,7 +216,10 @@ private:
   bool m_OverlayEnabled;
   bool m_CaptureEnabled;
   uint32_t m_MaxAnisotropy;
+  bool m_AnisotropyOverrideActive;
   float m_MipLodBias;
+  bool m_MipBiasOverrideActive;
+  std::string m_MipBiasMode;
   std::string m_VsyncMode;
   int32_t m_BackbufferCount;
   float m_PrerenderLimit;

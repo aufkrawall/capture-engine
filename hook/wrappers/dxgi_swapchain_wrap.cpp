@@ -960,8 +960,11 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(
   int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
   DXGIShared::GetPerformanceMetrics()->Update(us);
 
-  // Apply VSync override from config
-  ProcessVSyncOverride(SyncInterval, PresentFlags);
+  // Apply VSync override from config (skip if FG is active - can break frame
+  // pacing)
+  if (!g_FGCompat.IsFGActive()) {
+    ProcessVSyncOverride(SyncInterval, PresentFlags);
+  }
 
   // CRITICAL: Process frame for capture BEFORE calling real Present
   // This must happen regardless of overlay state - capture works independently

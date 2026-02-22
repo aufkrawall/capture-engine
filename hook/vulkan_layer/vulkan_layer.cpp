@@ -106,7 +106,9 @@ VulkanLayerState &VulkanLayerState::Get() {
 
 VulkanLayerState::VulkanLayerState()
     : m_OverlayEnabled(true), m_CaptureEnabled(true), m_MaxAnisotropy(16),
-      m_MipLodBias(0.0f), m_VsyncMode("default"), m_BackbufferCount(0),
+      m_AnisotropyOverrideActive(false), m_MipLodBias(0.0f),
+      m_MipBiasOverrideActive(false), m_MipBiasMode("strict"),
+      m_VsyncMode("default"), m_BackbufferCount(0),
       m_PrerenderLimit(-1.0f) {}
 
 void VulkanLayerState::RegisterInstance(VkInstance instance,
@@ -269,25 +271,42 @@ void VulkanLayerState::UpdateFromSharedMemory(IPCClient *ipc) {
   auto &cfg = ipc->GetSharedMem()->graphicsConfig;
 
   // Parse anisotropic filtering
-  if (strncmp(cfg.anisotropicFiltering, "16x", 3) == 0)
+  if (strncmp(cfg.anisotropicFiltering, "default", 7) == 0 ||
+      cfg.anisotropicFiltering[0] == '\0') {
+    m_AnisotropyOverrideActive = false;
     m_MaxAnisotropy = 16;
-  else if (strncmp(cfg.anisotropicFiltering, "8x", 2) == 0)
-    m_MaxAnisotropy = 8;
-  else if (strncmp(cfg.anisotropicFiltering, "4x", 2) == 0)
-    m_MaxAnisotropy = 4;
-  else if (strncmp(cfg.anisotropicFiltering, "2x", 2) == 0)
-    m_MaxAnisotropy = 2;
-  else if (strncmp(cfg.anisotropicFiltering, "off", 3) == 0)
-    m_MaxAnisotropy = 1;
-  else
-    m_MaxAnisotropy = 16; // Default
+  } else {
+    m_AnisotropyOverrideActive = true;
+    if (strncmp(cfg.anisotropicFiltering, "16x", 3) == 0)
+      m_MaxAnisotropy = 16;
+    else if (strncmp(cfg.anisotropicFiltering, "8x", 2) == 0)
+      m_MaxAnisotropy = 8;
+    else if (strncmp(cfg.anisotropicFiltering, "4x", 2) == 0)
+      m_MaxAnisotropy = 4;
+    else if (strncmp(cfg.anisotropicFiltering, "2x", 2) == 0)
+      m_MaxAnisotropy = 2;
+    else if (strncmp(cfg.anisotropicFiltering, "off", 3) == 0)
+      m_MaxAnisotropy = 1;
+    else {
+      m_AnisotropyOverrideActive = false;
+      m_MaxAnisotropy = 16;
+    }
+  }
 
   // Parse mip bias
-  if (strncmp(cfg.mipBias, "default", 7) != 0 && cfg.mipBias[0] != ' ') {
+  if (strncmp(cfg.mipBias, "default", 7) != 0 && cfg.mipBias[0] != '\0') {
     m_MipLodBias = (float)atof(cfg.mipBias);
+    m_MipBiasOverrideActive = true;
   } else {
     m_MipLodBias = 0.0f;
+    m_MipBiasOverrideActive = false;
   }
+
+  // Parse mip bias mode
+  if (cfg.mipBiasMode[0] != '\0')
+    m_MipBiasMode = cfg.mipBiasMode;
+  else
+    m_MipBiasMode = "strict";
 
   // VSync mode
   m_VsyncMode = cfg.vsyncMode;
@@ -896,10 +915,44 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(
         desiredMode = VK_PRESENT_MODE_FIFO_RELAXED_KHR;
 
       if (desiredMode != pCreateInfo->presentMode) {
-        modifiedCI.presentMode = desiredMode;
-        modified = true;
-        LayerLog("Vulkan Layer: Overriding present mode %d -> %d (%s)",
-                 pCreateInfo->presentMode, desiredMode, vsyncMode);
+        // Validate that the desired present mode is supported
+        bool modeSupported = false;
+        VkPhysicalDevice physDev = disp->physicalDevice;
+        VkInstance inst =
+            VulkanLayerState::Get().GetInstanceFromPhysicalDevice(physDev);
+        InstanceDispatch *instDisp =
+            VulkanLayerState::Get().GetInstanceDispatch(inst);
+        if (instDisp &&
+            instDisp->fp_vkGetPhysicalDeviceSurfacePresentModesKHR) {
+          uint32_t modeCount = 0;
+          instDisp->fp_vkGetPhysicalDeviceSurfacePresentModesKHR(
+              physDev, pCreateInfo->surface, &modeCount, nullptr);
+          if (modeCount > 0) {
+            std::vector<VkPresentModeKHR> modes(modeCount);
+            instDisp->fp_vkGetPhysicalDeviceSurfacePresentModesKHR(
+                physDev, pCreateInfo->surface, &modeCount, modes.data());
+            for (uint32_t i = 0; i < modeCount; i++) {
+              if (modes[i] == desiredMode) {
+                modeSupported = true;
+                break;
+              }
+            }
+          }
+        } else {
+          // Can't validate, assume FIFO is always supported per Vulkan spec
+          modeSupported = (desiredMode == VK_PRESENT_MODE_FIFO_KHR);
+        }
+
+        if (modeSupported) {
+          modifiedCI.presentMode = desiredMode;
+          modified = true;
+          LayerLog("Vulkan Layer: Overriding present mode %d -> %d (%s)",
+                   pCreateInfo->presentMode, desiredMode, vsyncMode);
+        } else {
+          LayerLog("Vulkan Layer: Present mode %d (%s) not supported, keeping "
+                   "original %d",
+                   desiredMode, vsyncMode, pCreateInfo->presentMode);
+        }
       }
     }
 
@@ -1126,8 +1179,60 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(
   DeviceDispatch *disp = VulkanLayerState::Get().GetDeviceDispatch(device);
   VkSamplerCreateInfo modified = *pCreateInfo;
   if (g_LayerState.whitelisted) {
-    modified.maxAnisotropy = (float)VulkanLayerState::Get().GetMaxAnisotropy();
-    modified.mipLodBias += VulkanLayerState::Get().GetMipLodBias();
+    auto &state = VulkanLayerState::Get();
+
+    // Skip overrides for non-mipmapped samplers
+    bool overridesAllowed = true;
+    if (modified.maxLod == 0.0f)
+      overridesAllowed = false;
+    if (modified.minLod == modified.maxLod)
+      overridesAllowed = false;
+
+    // Skip overrides for border-addressed samplers (commonly shadow maps)
+    bool hasBorderAddress =
+        (modified.addressModeU == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER ||
+         modified.addressModeV == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER ||
+         modified.addressModeW == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER);
+
+    if (overridesAllowed) {
+      // Anisotropic filtering override
+      if (state.IsAnisotropyOverrideActive() && !hasBorderAddress) {
+        uint32_t maxAniso = state.GetMaxAnisotropy();
+        if (maxAniso <= 1) {
+          // "off" - disable anisotropic filtering
+          modified.anisotropyEnable = VK_FALSE;
+          modified.maxAnisotropy = 1.0f;
+        } else {
+          modified.anisotropyEnable = VK_TRUE;
+          modified.maxAnisotropy = (float)maxAniso;
+        }
+      }
+
+      // Mip bias override with mode support
+      if (state.IsMipBiasOverrideActive()) {
+        float userBias = state.GetMipLodBias();
+        const char *mode = state.GetMipBiasMode();
+        float originalBias = pCreateInfo->mipLodBias;
+
+        if (strcmp(mode, "offset") == 0) {
+          modified.mipLodBias = originalBias + userBias;
+        } else if (strcmp(mode, "base") == 0) {
+          if (originalBias >= 0.0f)
+            modified.mipLodBias = originalBias;
+          else
+            modified.mipLodBias = originalBias + userBias;
+        } else {
+          // "strict" - absolute override
+          modified.mipLodBias = userBias;
+        }
+
+        // Clamp to Vulkan spec limits
+        if (modified.mipLodBias < -16.0f)
+          modified.mipLodBias = -16.0f;
+        if (modified.mipLodBias > 15.99f)
+          modified.mipLodBias = 15.99f;
+      }
+    }
   }
   if (disp && disp->fp_vkCreateSampler)
     return disp->fp_vkCreateSampler(device, &modified, pAllocator, pSampler);

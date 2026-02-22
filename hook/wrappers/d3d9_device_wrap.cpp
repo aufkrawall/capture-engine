@@ -800,6 +800,11 @@ HRESULT STDMETHODCALLTYPE
 CWrapD3D9Device::SetMaximumFrameLatency(UINT MaxLatency) {
   if (!m_pRealEx)
     return E_NOTIMPL;
+  // Apply frame latency override from config
+  const auto &gfx = GetActiveGraphicsConfig();
+  if (gfx.frameLatency > 0) {
+    MaxLatency = (UINT)gfx.frameLatency;
+  }
   return m_pRealEx->SetMaximumFrameLatency(MaxLatency);
 }
 

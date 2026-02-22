@@ -1181,15 +1181,15 @@ static BOOL WINAPI DetourWglDeleteContext(HGLRC hglrc) {
 // Hook: wglSwapIntervalEXT (VSync)
 static BOOL WINAPI DetourWglSwapIntervalEXT(int interval) {
   if (g_IPC) {
-    std::string mode = g_IPC->GetSharedMem()->graphicsConfig.vsyncMode;
-    if (mode != "default") {
-      if (mode == "off")
+    const auto &gfx = GetActiveGraphicsConfig();
+    if (gfx.vsyncMode != "default" && !gfx.vsyncMode.empty()) {
+      if (gfx.vsyncMode == "off")
         interval = 0;
-      else if (mode == "fifo")
+      else if (gfx.vsyncMode == "fifo")
         interval = 1;
-      else if (mode == "adaptive")
+      else if (gfx.vsyncMode == "adaptive")
         interval = -1;
-      else if (mode == "mailbox")
+      else if (gfx.vsyncMode == "mailbox")
         interval = 0;
     }
   }
@@ -1218,10 +1218,10 @@ static BOOL WINAPI DetourWglSwapIntervalEXT(int interval) {
 static void WINAPI DetourGlTexParameteri(GLenum target, GLenum pname,
                                          GLint param) {
   if (g_IPC) {
-    const auto &gfx = g_IPC->GetSharedMem()->graphicsConfig;
+    const auto &gfx = GetActiveGraphicsConfig();
     // Anisotropy
-    std::string af = gfx.anisotropicFiltering;
-    if (af != "default") {
+    const auto &af = gfx.anisotropicFiltering;
+    if (af != "default" && !af.empty()) {
       // GL_TEXTURE_MAX_ANISOTROPY_EXT = 0x84FE
       if (pname == 0x84FE) {
         if (af == "off")
@@ -1238,20 +1238,16 @@ static void WINAPI DetourGlTexParameteri(GLenum target, GLenum pname,
     }
 
     // Mip Mapping
-    std::string mip = gfx.mipMapping;
-    if (mip != "default") {
+    const auto &mip = gfx.mipMapping;
+    if (mip != "default" && !mip.empty()) {
       if (pname == 0x2801 /*GL_TEXTURE_MIN_FILTER*/) {
-        // Force Trilinear (Linear Mip Linear) or Bilinear (Linear Mip Nearest)
-        // Or actually override based on request
         if (mip == "trilinear") {
-          // If param is using mipmaps, upgrade to Trilinear
           if (param == 0x2700 /*NEAREST_MIPMAP_NEAREST*/ ||
               param == 0x2701 /*LINEAR_MIPMAP_NEAREST*/ ||
               param == 0x2702 /*NEAREST_MIPMAP_LINEAR*/) {
             param = 0x2703 /*LINEAR_MIPMAP_LINEAR*/;
           }
         } else if (mip == "bilinear") {
-          // Downgrade to Linear Mip Nearest
           if (param == 0x2703 || param == 0x2702) {
             param = 0x2701 /*LINEAR_MIPMAP_NEAREST*/;
           }
@@ -1266,14 +1262,14 @@ static void WINAPI DetourGlTexParameteri(GLenum target, GLenum pname,
 static void WINAPI DetourGlTexParameterf(GLenum target, GLenum pname,
                                          GLfloat param) {
   if (g_IPC) {
-    const auto &gfx = g_IPC->GetSharedMem()->graphicsConfig;
+    const auto &gfx = GetActiveGraphicsConfig();
     // Mip Bias: GL_TEXTURE_LOD_BIAS = 0x8501
-    std::string bias = gfx.mipBias;
-    if (bias != "default" && pname == 0x8501) {
+    const auto &bias = gfx.mipBias;
+    if (bias != "default" && !bias.empty() && pname == 0x8501) {
       try {
         float userBias = std::stof(bias);
         float originalBias = param;
-        std::string mode = gfx.mipBiasMode;
+        const auto &mode = gfx.mipBiasMode;
 
         if (mode == "offset") {
           param = originalBias + userBias;
@@ -1290,8 +1286,8 @@ static void WINAPI DetourGlTexParameterf(GLenum target, GLenum pname,
     }
 
     // Anisotropy (floats allowed)
-    std::string af = gfx.anisotropicFiltering;
-    if (af != "default" && pname == 0x84FE) {
+    const auto &af = gfx.anisotropicFiltering;
+    if (af != "default" && !af.empty() && pname == 0x84FE) {
       if (af == "off")
         param = 1.0f;
       else if (af == "2x")

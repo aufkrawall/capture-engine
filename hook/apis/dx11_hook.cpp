@@ -1457,7 +1457,7 @@ public:
     
     if (frameNum <= 20 || frameNum % 60 == 0) {
       HookLog("DX11Capture: [%d] Copying to texture %d (writeIndex=%d)", 
-              frameNum, writeIdx, writeIndex);
+              frameNum, writeIdx, writeIndex.load());
     }
 
     // Check if this slot is still in use by encoder (non-blocking check)
@@ -2321,9 +2321,13 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState10(
     std::string af = gfx.anisotropicFiltering;
     if (af != "default") {
       if (af == "off") {
-        if ((desc.Filter & D3D10_FILTER_ANISOTROPIC) ||
-            (desc.Filter == D3D10_FILTER_ANISOTROPIC)) {
-          desc.Filter = D3D10_FILTER_MIN_MAG_MIP_LINEAR;
+        if (desc.Filter == D3D10_FILTER_ANISOTROPIC ||
+            desc.Filter == D3D10_FILTER_COMPARISON_ANISOTROPIC) {
+          bool isComparison =
+              (desc.Filter == D3D10_FILTER_COMPARISON_ANISOTROPIC);
+          desc.Filter = isComparison
+                            ? D3D10_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR
+                            : D3D10_FILTER_MIN_MAG_MIP_LINEAR;
           desc.MaxAnisotropy = 1;
           modified = true;
         }
@@ -2341,7 +2345,10 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState10(
             desc.AddressW == D3D10_TEXTURE_ADDRESS_BORDER) {
           // Skip AF override for Border address mode
         } else {
-          desc.Filter = D3D10_FILTER_ANISOTROPIC;
+          bool isComparison =
+              (desc.Filter >= D3D10_FILTER_COMPARISON_MIN_MAG_MIP_POINT);
+          desc.Filter = isComparison ? D3D10_FILTER_COMPARISON_ANISOTROPIC
+                                     : D3D10_FILTER_ANISOTROPIC;
           desc.MaxAnisotropy = maxAniso;
           modified = true;
         }
@@ -2350,7 +2357,8 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState10(
 
     // Mip Mapping
     std::string mip = gfx.mipMapping;
-    bool isAniso = (desc.Filter == D3D10_FILTER_ANISOTROPIC);
+    bool isAniso = (desc.Filter == D3D10_FILTER_ANISOTROPIC ||
+                    desc.Filter == D3D10_FILTER_COMPARISON_ANISOTROPIC);
 
     if (mip != "default" && !isAniso) {
       if (mip == "trilinear") {
@@ -2475,8 +2483,12 @@ GetOrCreateReplacementSampler10(ID3D10Device *pDevice,
   std::string af = gfx.anisotropicFiltering;
   if (af != "default") {
     if (af == "off") {
-      if (desc.Filter == D3D10_FILTER_ANISOTROPIC) {
-        desc.Filter = D3D10_FILTER_MIN_MAG_MIP_LINEAR;
+      if (desc.Filter == D3D10_FILTER_ANISOTROPIC ||
+          desc.Filter == D3D10_FILTER_COMPARISON_ANISOTROPIC) {
+        bool isComparison =
+            (desc.Filter == D3D10_FILTER_COMPARISON_ANISOTROPIC);
+        desc.Filter = isComparison ? D3D10_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR
+                                   : D3D10_FILTER_MIN_MAG_MIP_LINEAR;
         desc.MaxAnisotropy = 1;
         modified = true;
       }
@@ -2492,7 +2504,10 @@ GetOrCreateReplacementSampler10(ID3D10Device *pDevice,
       if (desc.AddressU != D3D10_TEXTURE_ADDRESS_BORDER &&
           desc.AddressV != D3D10_TEXTURE_ADDRESS_BORDER &&
           desc.AddressW != D3D10_TEXTURE_ADDRESS_BORDER) {
-        desc.Filter = D3D10_FILTER_ANISOTROPIC;
+        bool isComparison =
+            (desc.Filter >= D3D10_FILTER_COMPARISON_MIN_MAG_MIP_POINT);
+        desc.Filter = isComparison ? D3D10_FILTER_COMPARISON_ANISOTROPIC
+                                   : D3D10_FILTER_ANISOTROPIC;
         desc.MaxAnisotropy = maxAniso;
         modified = true;
       }
@@ -2501,7 +2516,8 @@ GetOrCreateReplacementSampler10(ID3D10Device *pDevice,
 
   // Mip Mapping
   std::string mip = gfx.mipMapping;
-  bool isAniso = (desc.Filter == D3D10_FILTER_ANISOTROPIC);
+  bool isAniso = (desc.Filter == D3D10_FILTER_ANISOTROPIC ||
+                  desc.Filter == D3D10_FILTER_COMPARISON_ANISOTROPIC);
 
   if (mip != "default" && !isAniso) {
     if (mip == "trilinear") {
