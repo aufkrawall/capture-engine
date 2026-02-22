@@ -152,21 +152,33 @@ APIType DetectAPIType(IDXGISwapChain *pSwapChain) {
   if (!pSwapChain)
     return APIType::Unknown;
 
+  // Fast path: avoid expensive GetDevice() calls every Present on the same
+  // swapchain/thread.
+  thread_local IDXGISwapChain *s_cachedSwapchain = nullptr;
+  thread_local APIType s_cachedApi = APIType::Unknown;
+  if (pSwapChain == s_cachedSwapchain && s_cachedApi != APIType::Unknown) {
+    return s_cachedApi;
+  }
+
+  APIType detected = APIType::Unknown;
+
   ID3D12Device *d12Device = nullptr;
   if (SUCCEEDED(
           pSwapChain->GetDevice(__uuidof(ID3D12Device), (void **)&d12Device))) {
     d12Device->Release();
-    return APIType::D3D12;
+    detected = APIType::D3D12;
+  } else {
+    ID3D11Device *d11Device = nullptr;
+    if (SUCCEEDED(
+            pSwapChain->GetDevice(__uuidof(ID3D11Device), (void **)&d11Device))) {
+      d11Device->Release();
+      detected = APIType::D3D11;
+    }
   }
 
-  ID3D11Device *d11Device = nullptr;
-  if (SUCCEEDED(
-          pSwapChain->GetDevice(__uuidof(ID3D11Device), (void **)&d11Device))) {
-    d11Device->Release();
-    return APIType::D3D11;
-  }
-
-  return APIType::Unknown;
+  s_cachedSwapchain = pSwapChain;
+  s_cachedApi = detected;
+  return detected;
 }
 
 // Helper to get Present function address from a swapchain's vtable

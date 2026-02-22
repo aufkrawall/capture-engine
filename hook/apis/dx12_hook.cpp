@@ -1633,6 +1633,9 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
             g_State.overlayInit, g_State.syncInit, gameQueue);
   }
 
+  UINT currentBackBufferIdx = 0;
+  bool hasCurrentBackBufferIdx = false;
+
   if (g_State.overlayInit && g_State.syncInit) {
     // Single log on first successful overlay render
     static int s_firstOverlayLogged = 0;
@@ -1661,6 +1664,8 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
             IDXGISwapChain3 *sc3 = nullptr;
             if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3)))) {
               UINT swapchainBufferIdx = sc3->GetCurrentBackBufferIndex();
+              currentBackBufferIdx = swapchainBufferIdx;
+              hasCurrentBackBufferIdx = true;
               // CRITICAL FIX: Use actual swapchain buffer index directly
               // CreateRTVs now creates RTVs for all swapchain buffers (up to 8)
               // so no need to wrap the index - this prevents sync issues
@@ -1673,8 +1678,15 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
                 bufferIdx = g_State.bufferCount - 1;
               }
               ID3D12Resource *bb = nullptr;
-              if (SUCCEEDED(pSwapChain->GetBuffer(swapchainBufferIdx,
-                                                  IID_PPV_ARGS(&bb)))) {
+              bool bbNeedsRelease = false;
+              if (swapchainBufferIdx < g_State.backBuffers.size()) {
+                bb = g_State.backBuffers[swapchainBufferIdx];
+              }
+              if (!bb && SUCCEEDED(pSwapChain->GetBuffer(swapchainBufferIdx,
+                                                         IID_PPV_ARGS(&bb)))) {
+                bbNeedsRelease = true;
+              }
+              if (bb) {
                 // Transition buffer to RENDER_TARGET for overlay rendering
                 {
                   D3D12_RESOURCE_BARRIER b = {
@@ -1748,7 +1760,7 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
                   }
                 }
 
-                if (bb)
+                if (bbNeedsRelease && bb)
                   bb->Release();
               }
               sc3->Release();
@@ -1780,17 +1792,18 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
         g_SharedCaptureD3D12.Initialize(g_Device.load(), pSwapChain);
       if (g_SharedCaptureD3D12.IsActive()) {
         std::lock_guard<std::recursive_mutex> capLock(g_DX12CaptureMutex);
-        IDXGISwapChain3 *sc3 = nullptr;
-        pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3));
-        UINT bbIdx = sc3 ? sc3->GetCurrentBackBufferIndex() : 0;
-        if (sc3)
-          sc3->Release();
-        // Capture uses the game's command queue (g_CommandQueue) for
-        // synchronization
-        ID3D12CommandQueue *captureQueue = nullptr;
-        {
-          std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
-          captureQueue = g_CommandQueue.load();
+        // Keep capture submission on the same queue selection as overlay/present
+        // work to avoid cross-queue sync jitter.
+        ID3D12CommandQueue *captureQueue = gameQueue;
+        UINT bbIdx = 0;
+        if (hasCurrentBackBufferIdx) {
+          bbIdx = currentBackBufferIdx;
+        } else {
+          IDXGISwapChain3 *sc3 = nullptr;
+          pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3));
+          bbIdx = sc3 ? sc3->GetCurrentBackBufferIndex() : 0;
+          if (sc3)
+            sc3->Release();
         }
         if (captureQueue &&
             g_SharedCaptureD3D12.CaptureFrame(captureQueue, bbIdx)) {
@@ -1941,15 +1954,8 @@ void DX12_ProcessFrameExternal(IDXGISwapChain *pSwapChain) {
     return;
   }
   int count = g_CommandListsExecutedThisFrame.exchange(0);
-  uint64_t frameNum = ++g_FGDebugFrameCount;
+  ++g_FGDebugFrameCount;
   g_FGCompat.RecordFrame(count);
-  // Change 6: Only log frame info periodically to reduce log spam
-  static uint64_t s_lastLoggedFrame = 0;
-  if (frameNum - s_lastLoggedFrame >= 60) {
-    HookLog("DX12: ProcessFrameExternal - Frame %llu, cmdLists=%d, isReal=%d",
-            frameNum, count, count > 0);
-    s_lastLoggedFrame = frameNum;
-  }
   // Only render overlay on real game frames. FSR3/DLSS frame-generated presents
   // have GPU work on a separate unhooked queue. Submitting our overlay on
   // g_SwapchainQueue without synchronization to that queue produces a race that

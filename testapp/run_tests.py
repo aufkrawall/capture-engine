@@ -152,29 +152,36 @@ def run_single_test(api, width, height, gpu_load, total_record_s, test_name):
     if FRAME_TIMES_CSV.exists():
         os.remove(FRAME_TIMES_CSV)
     
-    # Start test app FIRST
-    print("Starting test app...")
-    app_proc = start_test_app(api, width, height, gpu_load)
-    if not app_proc:
-        return None
-    
-    # Wait for app to fully initialize
-    time.sleep(3)
-    
-    # Start captureengine with auto-record
-    # Delay 2s for injection, then record for total_record_s
-    delay_ms = 2000
+    # Start captureengine FIRST so Vulkan layer registration is active
+    # before the test app launches.
+    captureengine_lead_s = 2
+    app_init_s = 3
+    delay_ms = int((captureengine_lead_s + app_init_s) * 1000)
     duration_ms = int(total_record_s * 1000)
     print(f"Starting capture (delay={delay_ms}ms, record={duration_ms}ms)...")
     capture_proc = start_auto_record(delay_ms, duration_ms)
     if not capture_proc:
-        app_proc.terminate()
         return None
+    capture_start_ts = time.monotonic()
+
+    print(f"Waiting {captureengine_lead_s}s before launching test app...")
+    time.sleep(captureengine_lead_s)
+
+    print("Starting test app...")
+    app_proc = start_test_app(api, width, height, gpu_load)
+    if not app_proc:
+        capture_proc.terminate()
+        return None
+
+    # Wait for app to fully initialize
+    time.sleep(app_init_s)
     
     # Wait for recording to complete
     total_wait = (delay_ms + duration_ms) / 1000 + 3
-    print(f"  Waiting {total_wait:.0f}s for recording to complete...")
-    time.sleep(total_wait)
+    elapsed = time.monotonic() - capture_start_ts
+    remaining_wait = max(0.0, total_wait - elapsed)
+    print(f"  Waiting {remaining_wait:.0f}s for recording to complete...")
+    time.sleep(remaining_wait)
     
     # Stop test app
     print("Stopping test app...")
