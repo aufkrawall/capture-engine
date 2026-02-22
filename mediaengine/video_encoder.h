@@ -206,9 +206,11 @@ private:
 
   std::atomic<uint64_t> lastEncoderOverloadTickMs{0};
   std::atomic<uint64_t> lastMuxOverloadTickMs{0};
+  std::atomic<int64_t> encodedDurationUs{0}; // Authoritative encoded video end
 
   // Frame counting and logging state (was static, now members for proper reset)
   int encodeFrameCounter = 0; // Frames encoded in current recording
+  int64_t lastAssignedVideoPts = -1; // Last input frame PTS assigned to encoder
   int64_t lastEncodeTimeUs =
       0; // Duration of last frame encoding (pure encode time)
   int64_t lastFenceWaitUs = 0; // Duration of last fence wait

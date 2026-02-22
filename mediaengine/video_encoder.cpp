@@ -1034,6 +1034,8 @@ bool VideoEncoder::Start() {
 
   // Reset flags that block recording if previous recording had issues
   codecOpenFailed = false;
+  encodedDurationUs.store(0, std::memory_order_relaxed);
+  lastAssignedVideoPts = -1;
 
   // Pre-warm device and codec to reduce first-frame latency
   // This moves heavy initialization (D3D11 device, codec open, video processor)
@@ -1164,6 +1166,28 @@ void VideoEncoder::WriteFrame(AVPacket *pkt) {
     } else {
       // Fallback to 60fps if framerate not set
       pkt->duration = st->time_base.den / 60;
+    }
+  }
+
+  // Track authoritative encoded video duration from packet timeline.
+  if (pkt->stream_index == stream->index) {
+    int64_t packetPts =
+        (pkt->pts != AV_NOPTS_VALUE) ? pkt->pts : pkt->dts;
+    if (packetPts != AV_NOPTS_VALUE) {
+      int64_t packetDuration = pkt->duration;
+      if (packetDuration <= 0) {
+        packetDuration = av_rescale_q(1, codec_tb, st->time_base);
+        if (packetDuration <= 0) {
+          packetDuration = 1;
+        }
+      }
+      int64_t packetEnd = packetPts + packetDuration;
+      int64_t packetEndUs =
+          av_rescale_q(packetEnd, st->time_base, AVRational{1, 1000000});
+      int64_t prevEndUs = encodedDurationUs.load(std::memory_order_relaxed);
+      if (packetEndUs > prevEndUs) {
+        encodedDurationUs.store(packetEndUs, std::memory_order_relaxed);
+      }
     }
   }
 
@@ -1772,9 +1796,25 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
     // time_base is 1us (1/1000000). So we need to convert MS diff to us.
     d3d11Frame->pts = (timestamp - startPts) * 1000;
   } else {
-    // CFR: Constant frame counter
-    d3d11Frame->pts = encodeFrameCounter - 1;
+    // CFR: derive PTS from real elapsed time to avoid playback speed drift
+    // when delivered frame cadence differs from target FPS.
+    int fps = (codecCtx && codecCtx->framerate.num > 0) ? codecCtx->framerate.num
+                                                        : savedConfig.fps;
+    if (fps <= 0) {
+      fps = 60;
+    }
+    int64_t elapsedMs = timestamp - startPts;
+    if (elapsedMs < 0) {
+      elapsedMs = 0;
+    }
+    d3d11Frame->pts = av_rescale(elapsedMs, fps, 1000);
   }
+
+  // Enforce strictly monotonic input PTS for encoder stability.
+  if (lastAssignedVideoPts >= 0 && d3d11Frame->pts <= lastAssignedVideoPts) {
+    d3d11Frame->pts = lastAssignedVideoPts + 1;
+  }
+  lastAssignedVideoPts = d3d11Frame->pts;
 
   // 5. Encode (Direct D3D11 Frame) - with proper packet draining
   AVPacket *pkt = av_packet_alloc();
@@ -2118,20 +2158,26 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D *bgraTexture, int64_t pts,
             startPts.load());
   }
 
-  // Convert real elapsed time to codec frame timing
-  // Formula: FramePTS = (ElapsedMS * FPS) / 1000
-  // This preserves time gaps (VFR) instead of crushing them (CFR)
-  int fps = 60; // Default
-  if (codecCtx && codecCtx->framerate.num > 0) {
-    fps = codecCtx->framerate.num;
-  }
-
   int64_t elapsedMs = pts - startPts;
   if (elapsedMs < 0)
     elapsedMs = 0;
 
-  // Use av_rescale to prevent overflow: (elapsedMs * fps) / 1000
-  d3d11Frame->pts = av_rescale(elapsedMs, fps, 1000);
+  if (savedConfig.useVFR) {
+    // VFR codec time base is 1/1000000.
+    d3d11Frame->pts = elapsedMs * 1000;
+  } else {
+    // CFR codec time base is 1/fps.
+    int fps = 60; // Default
+    if (codecCtx && codecCtx->framerate.num > 0) {
+      fps = codecCtx->framerate.num;
+    }
+    d3d11Frame->pts = av_rescale(elapsedMs, fps, 1000);
+  }
+
+  if (lastAssignedVideoPts >= 0 && d3d11Frame->pts <= lastAssignedVideoPts) {
+    d3d11Frame->pts = lastAssignedVideoPts + 1;
+  }
+  lastAssignedVideoPts = d3d11Frame->pts;
 
   // Debug: Log input frame PTS
   if (encodeFrameCounter < 20 || encodeFrameCounter % 100 == 0) {
@@ -2341,6 +2387,8 @@ void VideoEncoder::CleanupResources() {
   nextOutputTime_ms = -1;
   lastEncodeTimeUs = 0;
   lastFenceWaitUs = 0;
+  encodedDurationUs.store(0, std::memory_order_relaxed);
+  lastAssignedVideoPts = -1;
 }
 
 void VideoEncoder::Stop() {
@@ -3256,8 +3304,23 @@ bool VideoEncoder::EncodeFrameCuda(HANDLE sharedHandle, uint64_t fenceValue,
     DLL_Log("[VideoEncoder] Recording started at PTS %lld (CUDA)", startPts);
   }
   int64_t relativePts_ms = pts - startPts;
-  int64_t relativePts = relativePts_ms * codecCtx->framerate.num / 1000;
-  cudaFrame->pts = relativePts;
+  if (relativePts_ms < 0) {
+    relativePts_ms = 0;
+  }
+  if (savedConfig.useVFR) {
+    cudaFrame->pts = relativePts_ms * 1000;
+  } else {
+    int fps = (codecCtx && codecCtx->framerate.num > 0) ? codecCtx->framerate.num
+                                                        : savedConfig.fps;
+    if (fps <= 0) {
+      fps = 60;
+    }
+    cudaFrame->pts = av_rescale(relativePts_ms, fps, 1000);
+  }
+  if (lastAssignedVideoPts >= 0 && cudaFrame->pts <= lastAssignedVideoPts) {
+    cudaFrame->pts = lastAssignedVideoPts + 1;
+  }
+  lastAssignedVideoPts = cudaFrame->pts;
 
   // Encode
   AVPacket *pkt = av_packet_alloc();
@@ -3321,11 +3384,15 @@ void VideoEncoder::CleanupCuda() {
 #endif // HAS_CUDA
 
 int64_t VideoEncoder::GetEncodedDurationUs() const {
+  int64_t encodedUs = encodedDurationUs.load(std::memory_order_relaxed);
+  if (encodedUs > 0) {
+    return encodedUs;
+  }
+
   if (!codecCtx || codecCtx->framerate.num == 0)
     return 0;
 
-  // exact duration = frames * 1000000 / fps
-  // Use av_rescale for precision and overflow protection
+  // Fallback for early startup before first packet is emitted.
   return av_rescale(encodeFrameCounter,
                     1000000 * (int64_t)codecCtx->framerate.den,
                     codecCtx->framerate.num);
@@ -3394,15 +3461,24 @@ void VideoEncoder::AsyncWriteLoop() {
           // Note: We use the same write logic as WriteFrame but simplified
           pkt->stream_index = stream->index;
 
-          // Rescale PTS (using precise logic from WriteFrame)
-          int fps = codecCtx->framerate.num;
-          if (fps > 0) {
-            double precise_ms = (double)pkt->pts * 1000.0 / (double)fps;
-            pkt->pts = (int64_t)(precise_ms + 0.5);
+          av_packet_rescale_ts(pkt, codecCtx->time_base, stream->time_base);
+          if (pkt->dts == AV_NOPTS_VALUE) {
             pkt->dts = pkt->pts;
-            pkt->duration = 1000 / fps; // Approx MS duration
-          } else {
-            av_packet_rescale_ts(pkt, codecCtx->time_base, stream->time_base);
+          }
+          if (pkt->duration <= 0) {
+            int64_t duration =
+                av_rescale_q(1, codecCtx->time_base, stream->time_base);
+            pkt->duration = duration > 0 ? duration : 1;
+          }
+
+          if (pkt->pts != AV_NOPTS_VALUE) {
+            int64_t packetEnd = pkt->pts + pkt->duration;
+            int64_t packetEndUs = av_rescale_q(packetEnd, stream->time_base,
+                                               AVRational{1, 1000000});
+            int64_t prevEndUs = encodedDurationUs.load(std::memory_order_relaxed);
+            if (packetEndUs > prevEndUs) {
+              encodedDurationUs.store(packetEndUs, std::memory_order_relaxed);
+            }
           }
 
           av_interleaved_write_frame(fmtCtx, pkt);

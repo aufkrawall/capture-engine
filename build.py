@@ -95,7 +95,7 @@ INSTALLED_DIR = os.path.join(PROJECT_ROOT, "installed")
 CAPTURE_BIN_DIR = os.path.join(INSTALLED_DIR, "captureengine")
 TESTAPP_BIN_DIR = os.path.join(INSTALLED_DIR, "testapp")
 BIN_DIR = CAPTURE_BIN_DIR  # output captureengine binaries to installed\captureengine
-LOG_FILE = os.path.join(PROJECT_ROOT, "build_log.txt")
+LOG_FILE = os.path.join(PROJECT_ROOT, "build.log")
 
 # IMGUI_URL and IMGUI_DIR removed - Custom overlay renderer replaces ImGui
 

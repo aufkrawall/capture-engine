@@ -654,11 +654,19 @@ public:
     if (!recording || audioSources.empty())
       return;
 
-    // Drive audio from the same timeline as video PTS (real elapsed time since
-    // recording start). Using the *encoded* duration can lag under
-    // encoder/writer backpressure, causing the audio ring buffer to build up
-    // and forcing discontinuous sample drops (audible crackling).
-    int64_t audioTargetMs = this->videoElapsedMs.load();
+    // Drive audio from authoritative encoded video timeline once available.
+    // This prevents long-run drift when effective delivered frame cadence
+    // differs from nominal FPS (e.g. 112fps delivered at 120fps target).
+    int64_t audioTargetMs = videoTimestampMs;
+    if (videoEnc) {
+      int64_t encodedVideoUs = videoEnc->GetEncodedDurationUs();
+      if (encodedVideoUs > 0) {
+        audioTargetMs = encodedVideoUs / 1000;
+      }
+    }
+    if (audioTargetMs <= 0) {
+      audioTargetMs = this->videoElapsedMs.load();
+    }
 
     // Safety: if video elapsed time is somehow negative or 0, skip
     if (audioTargetMs <= 0)
@@ -1024,7 +1032,14 @@ public:
       static int syncCheckCounter = 0;
       if (syncCheckCounter++ % 6000 == 0 &&
           firstSrcIdx < encodedSamplesPerSource.size()) {
-        int64_t videoMs = videoElapsedMs.load();
+        int64_t wallVideoMs = videoElapsedMs.load();
+        int64_t videoMs = wallVideoMs;
+        if (videoEnc) {
+          int64_t encodedVideoUs = videoEnc->GetEncodedDurationUs();
+          if (encodedVideoUs > 0) {
+            videoMs = encodedVideoUs / 1000;
+          }
+        }
         int64_t audioSamples = encodedSamplesPerSource[firstSrcIdx];
         int64_t audioMs = (audioSamples * 1000) / SAMPLE_RATE;
         int64_t avDrift = audioMs - videoMs;
@@ -1043,9 +1058,10 @@ public:
         }
 
         DLL_Log("[A/V SYNC CHECK] Track %d: Video=%lld ms, Audio=%lld ms, "
-                "Drift=%lld ms, RBLevel=%zu samples, "
+                "Drift=%lld ms, VideoWall=%lld ms, RBLevel=%zu samples, "
                 "SyncOutput=%lld, Dropped=%zu",
-                track, videoMs, audioMs, avDrift, rbLevel, syncOutput,
+                track, videoMs, audioMs, avDrift, wallVideoMs, rbLevel,
+                syncOutput,
                 droppedTotal);
 
         if (std::abs(avDrift) > 100) {
