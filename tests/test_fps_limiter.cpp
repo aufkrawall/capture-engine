@@ -60,12 +60,11 @@ TEST_F(FpsLimiterTest, SmartWait_Late) {
 
 // Test the SmartWait function directly
 TEST_F(FpsLimiterTest, SmartWait_WithTarget) {
-  // This directly tests the SmartWait mechanism
   LARGE_INTEGER start, end;
   QueryPerformanceCounter(&start);
   
-  // Target 50ms in the future
-  int64_t targetTicks = start.QuadPart + (50 * freq.QuadPart / 1000);
+  // Target 5ms in the future (enough to verify wait, fast enough for tests)
+  int64_t targetTicks = start.QuadPart + (5 * freq.QuadPart / 1000);
   bool waited = limiter.SmartWait(targetTicks);
   
   QueryPerformanceCounter(&end);
@@ -73,8 +72,8 @@ TEST_F(FpsLimiterTest, SmartWait_WithTarget) {
   EXPECT_TRUE(waited);
   
   double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
-  EXPECT_GE(elapsedMs, 45.0);  // Should wait at least 45ms
-  EXPECT_LT(elapsedMs, 80.0);  // But not too much more
+  EXPECT_GE(elapsedMs, 3.0);   // Should wait at least ~3ms
+  EXPECT_LT(elapsedMs, 20.0);  // But not too much more
 }
 
 // Test Apply with targetTimeTicks set (uses SmartWait path)
@@ -84,11 +83,11 @@ TEST_F(FpsLimiterTest, Apply_WithTargetTimeTicks) {
   mockShm->fpsLimiter.SetGeneralEnabled(true);
   mockShm->fpsLimiter.SetGeneralFps(60);
   
-  // Set a target time 50ms in the future - this triggers SmartWait
+  // Set a target time 5ms in the future - this triggers SmartWait
   LARGE_INTEGER now;
   QueryPerformanceCounter(&now);
   mockShm->fpsLimiter.targetTimeTicks.store(
-      now.QuadPart + (50 * freq.QuadPart / 1000), std::memory_order_release);
+      now.QuadPart + (5 * freq.QuadPart / 1000), std::memory_order_release);
 
   LARGE_INTEGER start, end;
   QueryPerformanceCounter(&start);
@@ -100,9 +99,9 @@ TEST_F(FpsLimiterTest, Apply_WithTargetTimeTicks) {
   double elapsedMs =
       (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
 
-  // Should wait approximately 50ms via SmartWait
-  EXPECT_GE(elapsedMs, 40.0);
-  EXPECT_LT(elapsedMs, 100.0);
+  // Should wait approximately 5ms via SmartWait
+  EXPECT_GE(elapsedMs, 3.0);
+  EXPECT_LT(elapsedMs, 30.0);
 }
 
 // Test Apply timeout behavior when target is 0

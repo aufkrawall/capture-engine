@@ -88,10 +88,11 @@ private:
 };
 
 // Convenience macros for hook DLL
+// NOTE: Use the inline function variants (LogDebug, LogInfo, etc.) instead.
+// This macro exists only for legacy compatibility.
 #define LOG_DEBUG(prefix, fmt, ...)                                            \
   do {                                                                         \
-    va_list args;                                                              \
-    Logger::Instance().Log(LogLevel::Debug, prefix, fmt, args);                \
+    LogDebug(prefix, fmt, ##__VA_ARGS__);                                      \
   } while (0)
 
 // Function-style logging (preferred)

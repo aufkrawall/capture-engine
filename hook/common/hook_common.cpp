@@ -237,11 +237,13 @@ static void LogToFileAtomic(const char *baseFilename, const char *fmt,
 
       // Check if buffer is full
       if ((uint32_t)(wIdx - rIdx) < SharedMemoryLayout::LogBuffer::SLOT_COUNT) {
-        char *slot =
-            logs.buffer[wIdx % SharedMemoryLayout::LogBuffer::SLOT_COUNT];
+        uint32_t slotIdx = wIdx % SharedMemoryLayout::LogBuffer::SLOT_COUNT;
+        char *slot = logs.buffer[slotIdx];
         // Write to our reserved slot
         snprintf(slot, SharedMemoryLayout::LogBuffer::SLOT_SIZE, "[%s] %s",
                  baseFilename, lineBuffer);
+        // Signal that this slot is ready for consumption
+        logs.committed[slotIdx].store(1, std::memory_order_release);
         return; // Done! Logger service will write to file.
       } else {
         logs.overflowCount.fetch_add(1, std::memory_order_relaxed);
@@ -353,7 +355,7 @@ static void HookLogInternal(LogLevel level, const char *fmt, va_list args) {
       return;
   }
 
-  static char buffer[4096];
+  char buffer[4096];
   vsnprintf(buffer, sizeof(buffer), fmt, args);
 
   const char *levelStr = "INFO";

@@ -442,12 +442,13 @@ void LayerIPC_Log(const char *fmt, ...) {
     uint32_t rIdx = logs.readIndex.load(std::memory_order_acquire);
 
     if ((uint32_t)(wIdx - rIdx) < SharedMemoryLayout::LogBuffer::SLOT_COUNT) {
-      char *slot =
-          logs.buffer[wIdx % SharedMemoryLayout::LogBuffer::SLOT_COUNT];
+      uint32_t slotIdx = wIdx % SharedMemoryLayout::LogBuffer::SLOT_COUNT;
+      char *slot = logs.buffer[slotIdx];
       // Uses fixed baseFilename "vulkan-layer.log" for identification on host
       // side
       snprintf(slot, SharedMemoryLayout::LogBuffer::SLOT_SIZE,
                "[vulkan-layer.log] %s", s_lineBuffer);
+      logs.committed[slotIdx].store(1, std::memory_order_release);
       logs.writeIndex.store(wIdx + 1, std::memory_order_release);
     } else {
       logs.overflowCount.fetch_add(1, std::memory_order_relaxed);

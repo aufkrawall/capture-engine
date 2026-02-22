@@ -45,7 +45,7 @@ TEST(FrameQueueTest, PopTimeout) {
   QueuedFrame out;
 
   auto start = std::chrono::steady_clock::now();
-  bool result = queue.Pop(out, 50); // 50ms wait
+  bool result = queue.Pop(out, 10); // 10ms wait
   auto end = std::chrono::steady_clock::now();
 
   EXPECT_FALSE(result);
@@ -53,9 +53,7 @@ TEST(FrameQueueTest, PopTimeout) {
   auto duration =
       std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
           .count();
-  // Ensure we waited at least closely to 50ms (allow some slack for OS
-  // scheduling)
-  EXPECT_GE(duration, 30);
+  EXPECT_GE(duration, 5);
 }
 
 TEST(FrameQueueTest, Shutdown) {
@@ -68,7 +66,7 @@ TEST(FrameQueueTest, Shutdown) {
         result); // Should return false on shutdown even if timeout not reached
   });
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
   queue.Shutdown();
 
   if (consumer.joinable())

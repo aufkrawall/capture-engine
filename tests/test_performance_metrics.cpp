@@ -84,10 +84,10 @@ TEST_F(PerformanceMetricsTest, SmartScaling) {
   EXPECT_NEAR(min, 0.0f, 0.001f);
   EXPECT_NEAR(max, 33.0f, 0.001f);
 
-  // Case 2: High Latency Spikes (e.g., 100ms)
-  // Should scale to > 100ms
-  metrics.Update(2000000);
-  metrics.Update(2100000); // 100ms spike
+  // Case 2: High Latency Spike (100ms) should expand the scale
+  // Continue from the last timestamp so time moves forward
+  int64_t lastTs = 1007000 + 300 * 7000;
+  metrics.Update(lastTs + 100000); // 100ms spike
 
   metrics.GetSmartScale(min, max);
   EXPECT_NEAR(min, 0.0f, 0.001f);

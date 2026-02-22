@@ -19,30 +19,25 @@ TEST(VTableHookTest, DISABLED_CreateAndDestroy) {
 }
 
 // Test VTableHook idempotency (double-hook protection)
-TEST(VTableHookTest, Idempotency) {
-  // This test verifies that hooking the same vtable entry twice is safe
-  // The actual test would require a mock object
-  SUCCEED() << "Idempotency test passed (requires runtime verification)";
+TEST(VTableHookTest, DISABLED_Idempotency) {
+  // Requires a mock COM object with vtable to verify double-hook safety
+  SUCCEED();
 }
 
 // Test IATHook basic initialization
-TEST(IATHookTest, BasicInit) {
-  // IATHook doesn't require explicit initialization
-  // Just verify we can include the header and it compiles
-  SUCCEED() << "IATHook header included successfully";
+TEST(IATHookTest, DISABLED_BasicInit) {
+  // Requires loaded module with IAT to test against
+  SUCCEED();
 }
 
 // Test HookSystem integration
-TEST(HookSystemTest, CreateHookAndTrampoline) {
-  // Test that HookSystem can create hooks and trampolines
-  // This is a basic API test
-  SUCCEED() << "HookSystem API test passed (requires runtime verification)";
+TEST(HookSystemTest, DISABLED_CreateHookAndTrampoline) {
+  // Requires runtime hook target functions
+  SUCCEED();
 }
 
 // Test hook collision detection
-TEST(HookSystemTest, CollisionDetection) {
-  // Test that the hook system detects when multiple hooks target the same
-  // function This would require creating two hooks to the same target
-  SUCCEED()
-      << "Collision detection test passed (requires runtime verification)";
+TEST(HookSystemTest, DISABLED_CollisionDetection) {
+  // Requires creating two hooks to the same target
+  SUCCEED();
 }

@@ -1611,17 +1611,18 @@ def run_tests(env, test_exe):
         log("Error: Test executable not found.")
         return
 
-    # Run tests
-    # Use standard run_command but allow exit on failure manually if we want more control
-    # For now, let's just run it
-    cmd = [test_exe]
+    # Ensure required DLLs are on PATH (libgtest.dll, FFmpeg DLLs)
+    msys_bin = os.path.join(PROJECT_ROOT, "build", "msys64", "clang64", "bin")
+    ffmpeg_dir = os.path.join(PROJECT_ROOT, "installed", "captureengine", "ffmpeg")
+    test_env = dict(env)
+    test_env["PATH"] = msys_bin + os.pathsep + ffmpeg_dir + os.pathsep + test_env.get("PATH", "")
 
-    # We want to see output live usually, but build system captures it
-    # We want to see output live usually, but build system captures it
-    # Modified to stream output to debug crashes
-    subprocess.run(cmd, env=env)
-    # log(output)
-    log("=== Unit Tests Passed ===")
+    cmd = [test_exe]
+    result = subprocess.run(cmd, env=test_env)
+    if result.returncode != 0:
+        log(f"=== Unit Tests FAILED (exit code {result.returncode}) ===")
+    else:
+        log("=== Unit Tests Passed ===")
 
 
 def run_integration_tests(env):

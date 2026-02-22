@@ -49,8 +49,6 @@ extern "C" BOOL MiniDumpWriteDump(HANDLE, DWORD, HANDLE, int, void*, void*, void
 }
 
 // Stubs for hook_common.cpp
-struct LocalConfig {
-    bool debugLogging = false;
-};
-static LocalConfig g_LocalConfigInstance;
-LocalConfig* g_pLocalConfig = &g_LocalConfigInstance;
+#include "config.h"
+static AppConfig g_LocalConfigInstance{};
+AppConfig* g_pLocalConfig = &g_LocalConfigInstance;

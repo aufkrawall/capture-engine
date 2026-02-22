@@ -24,7 +24,7 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 6: Changed backing fields from plain types to std::atomic<T>
 //             Eliminates reinterpret_cast UB while preserving same layout
 // Version 7: Added overlayConfigSeq seqlock counter for OverlayConfig
-static constexpr uint32_t SHARED_MEMORY_VERSION = 7;
+static constexpr uint32_t SHARED_MEMORY_VERSION = 8;
 
 // Minimum supported version for backward compatibility
 static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
@@ -794,12 +794,13 @@ public:
   // Frame ring buffer for lossless capture
   FrameRingBuffer frameRing;
 
-  // Logging Ring Buffer (SPSC: Producer=Hook, Consumer=LoggerService)
+  // Logging Ring Buffer (MPSC: Producers=Hook threads, Consumer=LoggerService)
   struct LogBuffer {
     static constexpr uint32_t SLOT_COUNT = 128;
     static constexpr uint32_t SLOT_SIZE = 512;
 
     char buffer[SLOT_COUNT][SLOT_SIZE]{};
+    std::atomic<uint8_t> committed[SLOT_COUNT]{}; // Set to 1 after slot is fully written
     alignas(64) std::atomic<uint32_t> writeIndex{
         0}; // Shared across threads, only written by Hook
     alignas(64) std::atomic<uint32_t> readIndex{

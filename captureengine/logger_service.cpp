@@ -102,9 +102,15 @@ int LoggerProcessMain(const AppConfig &config) {
       uint32_t readIdx = s.lastReadIndex;  // Use session's tracked index, not SHM's stale value
 
       while (readIdx != writeIdx) {
-        const char *entry =
-            s.shm->logs
-                .buffer[readIdx % SharedMemoryLayout::LogBuffer::SLOT_COUNT];
+        uint32_t slotIdx =
+            readIdx % SharedMemoryLayout::LogBuffer::SLOT_COUNT;
+
+        // Wait for slot to be committed (producer may still be writing)
+        if (!s.shm->logs.committed[slotIdx].load(std::memory_order_acquire)) {
+          break; // Slot not ready yet, try again next poll
+        }
+
+        const char *entry = s.shm->logs.buffer[slotIdx];
 
         // Format: [FILENAME] Message
         const char *filename = "hook_debug.log";
@@ -113,7 +119,7 @@ int LoggerProcessMain(const AppConfig &config) {
         if (entry[0] == '[') {
           const char *endBracket = strchr(entry, ']');
           if (endBracket) {
-            static char fnBuffer[64];
+            char fnBuffer[64];
             size_t fnLen = endBracket - entry - 1;
             if (fnLen < 63) {
               strncpy(fnBuffer, entry + 1, fnLen);
@@ -146,6 +152,8 @@ int LoggerProcessMain(const AppConfig &config) {
           }
         }
 
+        // Clear committed flag so producer can reuse this slot
+        s.shm->logs.committed[slotIdx].store(0, std::memory_order_release);
         readIdx++;
       }
 

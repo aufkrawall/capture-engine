@@ -1,5 +1,6 @@
 #include "crash_handler.h"
 #include "logging.h"
+#include <atomic>
 #include <cstdio>
 #include <ctime>
 #include <dbghelp.h>
@@ -11,6 +12,7 @@
 static std::string g_DumpDir = ".";
 static char g_ProcessName[256] = "unknown";
 static HMODULE g_hDbgHelp = NULL;
+static std::atomic<bool> g_DumpAlreadyWritten{false};
 typedef BOOL(WINAPI *MINIDUMPWRITEDUMP)(
     HANDLE hProcess, DWORD ProcessId, HANDLE hFile, MINIDUMP_TYPE DumpType,
     PMINIDUMP_EXCEPTION_INFORMATION ExceptionParam,
@@ -34,8 +36,8 @@ void TraceCrash(const char *msg) {
   FILE *f = fopen(path, "a");
   if (f) {
     SYSTEMTIME st;
-    GetSystemTime(&st);
-    fprintf(f, "[%02d:%02d:%02d.%03d][%s][%u] %s\n", st.wHour, st.wMinute,
+    GetLocalTime(&st);
+    fprintf(f, "[%02d:%02d:%02d.%03d][%s][%lu] %s\n", st.wHour, st.wMinute,
             st.wSecond, st.wMilliseconds, g_ProcessName, GetCurrentThreadId(),
             msg);
     fclose(f);
@@ -204,12 +206,78 @@ CrashHandlerExceptionFilter(EXCEPTION_POINTERS *pExceptionPointers) {
 
   TraceCrash("CRASH DETECTED - Handling exception");
 
+  // Prevent duplicate dumps (VEH + UEF both fire for the same crash)
+  bool expected = false;
+  if (!g_DumpAlreadyWritten.compare_exchange_strong(expected, true)) {
+    TraceCrash("Dump already written by previous handler, skipping");
+    return EXCEPTION_CONTINUE_SEARCH;
+  }
+
   // Ensure trace log goes to the correct dir
   TraceCrash("CrashHandlerExceptionFilter entered");
 
   char bufCode[64];
-  snprintf(bufCode, sizeof(bufCode), "Exception Code: 0x%08X", code);
+  snprintf(bufCode, sizeof(bufCode), "Exception Code: 0x%08lX", code);
   TraceCrash(bufCode);
+
+  // Log detailed exception info for access violations
+  if (code == EXCEPTION_ACCESS_VIOLATION &&
+      pExceptionPointers->ExceptionRecord->NumberParameters >= 2) {
+    ULONG_PTR accessType =
+        pExceptionPointers->ExceptionRecord->ExceptionInformation[0];
+    ULONG_PTR faultAddr =
+        pExceptionPointers->ExceptionRecord->ExceptionInformation[1];
+    char avDetail[256];
+    snprintf(avDetail, sizeof(avDetail),
+             "Access Violation: %s address 0x%p",
+             accessType == 0 ? "READ from" : (accessType == 1 ? "WRITE to" : "DEP at"),
+             (void *)faultAddr);
+    TraceCrash(avDetail);
+  }
+
+  // Log crash address with module info
+  {
+    HMODULE hCrashMod = NULL;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       (LPCSTR)pExceptionPointers->ExceptionRecord->ExceptionAddress,
+                       &hCrashMod);
+    char modName[MAX_PATH] = "unknown";
+    if (hCrashMod)
+      GetModuleFileNameA(hCrashMod, modName, MAX_PATH);
+
+    char *modBaseName = strrchr(modName, '\\');
+    modBaseName = modBaseName ? modBaseName + 1 : modName;
+
+    char crashLoc[512];
+    snprintf(crashLoc, sizeof(crashLoc),
+             "Crash in module: %s at 0x%p (base=0x%p, offset=0x%llX)",
+             modBaseName,
+             pExceptionPointers->ExceptionRecord->ExceptionAddress,
+             (void *)hCrashMod,
+             hCrashMod ? (unsigned long long)((uintptr_t)pExceptionPointers->ExceptionRecord->ExceptionAddress - (uintptr_t)hCrashMod) : 0ULL);
+    TraceCrash(crashLoc);
+  }
+
+  // Log key registers for post-mortem analysis
+  {
+    CONTEXT *ctx = pExceptionPointers->ContextRecord;
+    char regBuf[512];
+#ifdef _WIN64
+    snprintf(regBuf, sizeof(regBuf),
+             "Registers: RIP=0x%016llX RSP=0x%016llX RBP=0x%016llX "
+             "RAX=0x%016llX RCX=0x%016llX RDX=0x%016llX",
+             (unsigned long long)ctx->Rip, (unsigned long long)ctx->Rsp,
+             (unsigned long long)ctx->Rbp, (unsigned long long)ctx->Rax,
+             (unsigned long long)ctx->Rcx, (unsigned long long)ctx->Rdx);
+#else
+    snprintf(regBuf, sizeof(regBuf),
+             "Registers: EIP=0x%08X ESP=0x%08X EBP=0x%08X "
+             "EAX=0x%08X ECX=0x%08X EDX=0x%08X",
+             ctx->Eip, ctx->Esp, ctx->Ebp, ctx->Eax, ctx->Ecx, ctx->Edx);
+#endif
+    TraceCrash(regBuf);
+  }
 
   OutputDebugStringA(
       "[CrashHandler] CRASH DETECTED! Spawning worker for minidump...\n");

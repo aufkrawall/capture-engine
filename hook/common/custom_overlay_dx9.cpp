@@ -192,13 +192,14 @@ void DX9Backend::Render(const std::vector<DrawVertex> &vertices,
   // Save minimal state
   DWORD oldFVF;
   IDirect3DVertexBuffer9 *oldVB = nullptr;
+  UINT oldVBOffset = 0, oldVBStride = 0;
   IDirect3DIndexBuffer9 *oldIB = nullptr;
   IDirect3DBaseTexture9 *oldTex = nullptr;
   DWORD oldAlphaBlend, oldSrcBlend, oldDestBlend;
   DWORD oldZEnable, oldCullMode, oldLighting;
 
   device->GetFVF(&oldFVF);
-  device->GetStreamSource(0, &oldVB, nullptr, nullptr);
+  device->GetStreamSource(0, &oldVB, &oldVBOffset, &oldVBStride);
   device->GetIndices(&oldIB);
   device->GetTexture(0, &oldTex);
   device->GetRenderState(D3DRS_ALPHABLENDENABLE, &oldAlphaBlend);
@@ -256,7 +257,7 @@ void DX9Backend::Render(const std::vector<DrawVertex> &vertices,
 
   // Restore state
   device->SetFVF(oldFVF);
-  device->SetStreamSource(0, oldVB, 0, 0);
+  device->SetStreamSource(0, oldVB, oldVBOffset, oldVBStride);
   device->SetIndices(oldIB);
   device->SetTexture(0, oldTex);
   device->SetRenderState(D3DRS_ALPHABLENDENABLE, oldAlphaBlend);
