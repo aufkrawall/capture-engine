@@ -73,6 +73,9 @@ CreateCommittedResourcePtr oCreateCommittedResource = nullptr;
 PFN_D3D12_SERIALIZE_ROOT_SIGNATURE oSerializeRootSignature = nullptr;
 PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE oSerializeVersionedRootSignature =
     nullptr;
+static std::recursive_mutex g_ExecuteCommandListsHookStateMutex;
+static std::map<void **, ExecuteCommandListsPtr>
+    g_ExecuteCommandListsOriginalByVTable;
 
 // SwapChain Detour Pointers
 typedef HRESULT(STDMETHODCALLTYPE *PFN_CreateSwapChain)(IDXGIFactory *,
@@ -271,6 +274,24 @@ DetourExecuteCommandLists(ID3D12CommandQueue *pThis, UINT NumCommandLists,
                           ID3D12CommandList *const *ppCommandLists);
 void DX12_HookQueueVTable(ID3D12CommandQueue *queue);
 void DX12_HookDeviceVTable(ID3D12Device *device);
+
+static ExecuteCommandListsPtr
+GetOriginalExecuteCommandLists(ID3D12CommandQueue *queue) {
+  if (!queue)
+    return oExecuteCommandLists;
+
+  void **vtbl = *reinterpret_cast<void ***>(queue);
+  if (!vtbl)
+    return oExecuteCommandLists;
+
+  std::lock_guard<std::recursive_mutex> lock(
+      g_ExecuteCommandListsHookStateMutex);
+  auto it = g_ExecuteCommandListsOriginalByVTable.find(vtbl);
+  if (it != g_ExecuteCommandListsOriginalByVTable.end())
+    return it->second;
+
+  return oExecuteCommandLists;
+}
 
 HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory *pThis,
                                                 IUnknown *pDevice,
@@ -2020,8 +2041,9 @@ DetourExecuteCommandLists(ID3D12CommandQueue *pThis, UINT NumCommandLists,
   // Register game's queue for overlay execution (single-queue architecture)
   DX12_SetCommandQueue(pThis);
 
-  if (oExecuteCommandLists)
-    oExecuteCommandLists(pThis, NumCommandLists, ppCommandLists);
+  ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
+  if (original)
+    original(pThis, NumCommandLists, ppCommandLists);
 }
 
 void DX12_HookQueueVTable(ID3D12CommandQueue *queue) {
@@ -2048,8 +2070,25 @@ void DX12_HookQueueVTable(ID3D12CommandQueue *queue) {
   void **vtbl = *reinterpret_cast<void ***>(queue);
   if (vtbl[10] != (void *)DetourExecuteCommandLists) {
     HookLog("DX12: Hooking ExecuteCommandLists vtable for queue %p", queue);
-    VTableHook::Create(&vtbl[10], (LPVOID)DetourExecuteCommandLists,
-                       (LPVOID *)&oExecuteCommandLists);
+    ExecuteCommandListsPtr original = nullptr;
+    VTableHook::Status hookStatus =
+        VTableHook::Create(&vtbl[10], (LPVOID)DetourExecuteCommandLists,
+                           (LPVOID *)&original);
+    if (hookStatus == VTableHook::Success && original) {
+      std::lock_guard<std::recursive_mutex> stateLock(
+          g_ExecuteCommandListsHookStateMutex);
+      g_ExecuteCommandListsOriginalByVTable[vtbl] = original;
+      if (!oExecuteCommandLists)
+        oExecuteCommandLists = original;
+    }
+  } else {
+    std::lock_guard<std::recursive_mutex> stateLock(
+        g_ExecuteCommandListsHookStateMutex);
+    if (g_ExecuteCommandListsOriginalByVTable.find(vtbl) ==
+            g_ExecuteCommandListsOriginalByVTable.end() &&
+        oExecuteCommandLists) {
+      g_ExecuteCommandListsOriginalByVTable[vtbl] = oExecuteCommandLists;
+    }
   }
 }
 
@@ -2293,6 +2332,12 @@ void DX12Hook::Shutdown() {
   if (g_CommandQueue.load()) {
     g_CommandQueue.load()->Release();
     g_CommandQueue.store(nullptr);
+  }
+  {
+    std::lock_guard<std::recursive_mutex> lock(
+        g_ExecuteCommandListsHookStateMutex);
+    g_ExecuteCommandListsOriginalByVTable.clear();
+    oExecuteCommandLists = nullptr;
   }
   if (g_Device.load()) {
     g_Device.load()->Release();
