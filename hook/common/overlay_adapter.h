@@ -64,7 +64,10 @@ public:
   void SetHwnd(void *hwnd) { this->hwnd = hwnd; }
   void SetGraphicsAPI(const char *api);
   void SetDroppedFrames(uint32_t count) { droppedFrames = count; }
-  void SetHDR(bool enabled) { isHDR = enabled; }
+  void SetHDR(bool enabled, int rtvFormat = 0) {
+    isHDR = enabled;
+    renderTargetFormat = rtvFormat;
+  }
 
   // DX12-specific: Set render target before RenderOverlay
   void SetDX12RenderTarget(void *cmdList, void *rtvHandle);
@@ -86,6 +89,7 @@ private:
   char graphicsAPI[16] = "";
   uint32_t droppedFrames = 0;
   bool isHDR = false;
+  int renderTargetFormat = 0;
   std::atomic<bool> initialized{false};
   bool skipDeviceRelease =
       false; // When true, Shutdown won't release device refs (app is closing)

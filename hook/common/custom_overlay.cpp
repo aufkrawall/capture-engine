@@ -242,6 +242,28 @@ void Renderer::DrawTextScaledWithShadow(float x, float y, const char *text,
   FlushBatch(true);
 }
 
+void Renderer::DrawTextRightAligned(float rightX, float y, const char *text,
+                                    uint32_t color, uint32_t shadowColor,
+                                    float shadowOffset) {
+  if (!initialized || !text)
+    return;
+  float tw = 0, th = 0;
+  CalcTextSize(text, &tw, &th);
+  DrawTextWithShadow(rightX - tw, y, text, color, shadowColor, shadowOffset);
+}
+
+void Renderer::DrawTextScaledRightAligned(float rightX, float y,
+                                          const char *text, uint32_t color,
+                                          uint32_t shadowColor, float scale,
+                                          float shadowOffset) {
+  if (!initialized || !text)
+    return;
+  float tw = 0, th = 0;
+  CalcTextSizeScaled(text, &tw, &th, scale);
+  DrawTextScaledWithShadow(rightX - tw, y, text, color, shadowColor, scale,
+                           shadowOffset);
+}
+
 void Renderer::CalcTextSize(const char *text, float *outWidth,
                             float *outHeight) const {
   fontAtlas.CalcTextSize(text, outWidth, outHeight);

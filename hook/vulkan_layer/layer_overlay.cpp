@@ -351,6 +351,17 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain,
   LayerLog("Vulkan Layer: InitializeOverlay - IPC client set, setting graphics "
            "API...");
   state.overlayAdapter->SetGraphicsAPI("Vulkan");
+
+  // Detect HDR from swapchain format
+  bool isHDR = (state.format == VK_FORMAT_R16G16B16A16_SFLOAT ||
+                state.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ||
+                state.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32);
+  int rtvFormat = 0;
+  if (state.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ||
+      state.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32)
+    rtvFormat = 24; // Maps to DXGI_FORMAT_R10G10B10A2_UNORM for HDR10/PQ
+  state.overlayAdapter->SetHDR(isHDR, rtvFormat);
+
   LayerLog("Vulkan Layer: InitializeOverlay - Graphics API set");
 
   // Create pipeline for the render pass - MUST succeed before marking

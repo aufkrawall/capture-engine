@@ -915,7 +915,7 @@ void DrawOverlay(ID3D12GraphicsCommandList *cmdList, bool isRealFrame,
     g_OverlayAdapter.SetGraphicsAPI(api);
     bool isHDR = (g_State.format == DXGI_FORMAT_R16G16B16A16_FLOAT ||
                   g_State.format == DXGI_FORMAT_R10G10B10A2_UNORM);
-    g_OverlayAdapter.SetHDR(isHDR);
+    g_OverlayAdapter.SetHDR(isHDR, (int)g_State.format);
   }
 
   // Set Render Target for Custom Overlay

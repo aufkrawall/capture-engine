@@ -32,6 +32,13 @@ public:
               const std::vector<DrawCommand> &commands, int viewportWidth,
               int viewportHeight) override;
 
+  // Override to detect HDR10/PQ vs scRGB from render target format
+  void SetHDRParams(int mode, float nits) override {
+    if (mode > 0 && rtvFormat == DXGI_FORMAT_R10G10B10A2_UNORM)
+      mode = 2; // HDR10/PQ
+    RendererBackend::SetHDRParams(mode, nits);
+  }
+
   // DX12-specific: Set render target before rendering
   void SetRenderTarget(ID3D12GraphicsCommandList *cmdList,
                        D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle);

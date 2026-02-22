@@ -197,6 +197,9 @@ void DX9Backend::Render(const std::vector<DrawVertex> &vertices,
   IDirect3DBaseTexture9 *oldTex = nullptr;
   DWORD oldAlphaBlend, oldSrcBlend, oldDestBlend;
   DWORD oldZEnable, oldCullMode, oldLighting;
+  DWORD oldColorOp, oldColorArg1, oldColorArg2, oldAlphaOp, oldAlphaArg1, oldAlphaArg2;
+  DWORD oldMinFilter, oldMagFilter;
+  D3DVIEWPORT9 oldViewport;
 
   device->GetFVF(&oldFVF);
   device->GetStreamSource(0, &oldVB, &oldVBOffset, &oldVBStride);
@@ -208,13 +211,22 @@ void DX9Backend::Render(const std::vector<DrawVertex> &vertices,
   device->GetRenderState(D3DRS_ZENABLE, &oldZEnable);
   device->GetRenderState(D3DRS_CULLMODE, &oldCullMode);
   device->GetRenderState(D3DRS_LIGHTING, &oldLighting);
+  device->GetTextureStageState(0, D3DTSS_COLOROP, &oldColorOp);
+  device->GetTextureStageState(0, D3DTSS_COLORARG1, &oldColorArg1);
+  device->GetTextureStageState(0, D3DTSS_COLORARG2, &oldColorArg2);
+  device->GetTextureStageState(0, D3DTSS_ALPHAOP, &oldAlphaOp);
+  device->GetTextureStageState(0, D3DTSS_ALPHAARG1, &oldAlphaArg1);
+  device->GetTextureStageState(0, D3DTSS_ALPHAARG2, &oldAlphaArg2);
+  device->GetSamplerState(0, D3DSAMP_MINFILTER, &oldMinFilter);
+  device->GetSamplerState(0, D3DSAMP_MAGFILTER, &oldMagFilter);
+  device->GetViewport(&oldViewport);
 
   // Set viewport
   D3DVIEWPORT9 vp = {0, 0, (DWORD)viewportWidth, (DWORD)viewportHeight, 0.0f, 1.0f};
   device->SetViewport(&vp);
 
-  // BeginScene if needed
-  device->BeginScene();
+  // BeginScene - track if we started it to avoid double-EndScene
+  bool weStartedScene = SUCCEEDED(device->BeginScene());
 
   // Set render state
   device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
@@ -253,7 +265,8 @@ void DX9Backend::Render(const std::vector<DrawVertex> &vertices,
                                   cmd.indexCount / 3);
   }
 
-  device->EndScene();
+  if (weStartedScene)
+    device->EndScene();
 
   // Restore state
   device->SetFVF(oldFVF);
@@ -266,6 +279,15 @@ void DX9Backend::Render(const std::vector<DrawVertex> &vertices,
   device->SetRenderState(D3DRS_ZENABLE, oldZEnable);
   device->SetRenderState(D3DRS_CULLMODE, oldCullMode);
   device->SetRenderState(D3DRS_LIGHTING, oldLighting);
+  device->SetTextureStageState(0, D3DTSS_COLOROP, oldColorOp);
+  device->SetTextureStageState(0, D3DTSS_COLORARG1, oldColorArg1);
+  device->SetTextureStageState(0, D3DTSS_COLORARG2, oldColorArg2);
+  device->SetTextureStageState(0, D3DTSS_ALPHAOP, oldAlphaOp);
+  device->SetTextureStageState(0, D3DTSS_ALPHAARG1, oldAlphaArg1);
+  device->SetTextureStageState(0, D3DTSS_ALPHAARG2, oldAlphaArg2);
+  device->SetSamplerState(0, D3DSAMP_MINFILTER, oldMinFilter);
+  device->SetSamplerState(0, D3DSAMP_MAGFILTER, oldMagFilter);
+  device->SetViewport(&oldViewport);
 
   // Release saved state
   if (oldVB)

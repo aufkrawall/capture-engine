@@ -640,7 +640,8 @@ void DX12Backend::Render(const std::vector<DrawVertex> &vertices,
     ID3D12DescriptorHeap *heaps[] = {srvHeap.Get()};
     currentCmdList->SetDescriptorHeaps(1, heaps);
 
-    float constants[4] = {(float)viewportWidth, (float)viewportHeight, 0, 0};
+    float constants[4] = {(float)viewportWidth, (float)viewportHeight,
+                          (float)hdrMode, paperWhiteNits};
     currentCmdList->SetGraphicsRoot32BitConstants(0, 4, constants, 0);
 
     currentCmdList->SetGraphicsRootDescriptorTable(

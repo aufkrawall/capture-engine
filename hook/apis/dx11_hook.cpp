@@ -1863,7 +1863,7 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
   // Determine if HDR is active
   bool isHDR = (desc.BufferDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT ||
                 desc.BufferDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM);
-  g_OverlayAdapter.SetHDR(isHDR);
+  g_OverlayAdapter.SetHDR(isHDR, (int)desc.BufferDesc.Format);
   g_OverlayAdapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
   g_OverlayAdapter.SetIPCClient(g_IPC);
   g_OverlayAdapter.SetDroppedFrames(

@@ -2,6 +2,8 @@
 
 layout(push_constant) uniform PushConstants {
     vec2 viewportSize;
+    float hdrMode;        // 0=SDR, 1=scRGB/FP16, 2=HDR10/PQ
+    float paperWhiteNits; // SDR reference white in nits (default 200)
 } pc;
 
 layout(location = 0) in vec2 inPosition;

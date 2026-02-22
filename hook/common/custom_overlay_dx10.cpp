@@ -291,15 +291,15 @@ void DX10Backend::Render(const std::vector<DrawVertex> &vertices,
     indexBuffer->Unmap();
   }
 
-  // Update constant buffer
+  // Update constant buffer with HDR params
   mapped = nullptr;
   hr = constantBuffer->Map(D3D10_MAP_WRITE_DISCARD, 0, &mapped);
   if (SUCCEEDED(hr)) {
     float *cb = (float *)mapped;
     cb[0] = (float)viewportWidth;
     cb[1] = (float)viewportHeight;
-    cb[2] = 0.0f;
-    cb[3] = 0.0f;
+    cb[2] = (float)hdrMode;
+    cb[3] = paperWhiteNits;
     constantBuffer->Unmap();
   }
 
@@ -334,9 +334,11 @@ void DX10Backend::Render(const std::vector<DrawVertex> &vertices,
 
   // Save VS constant buffer and PS resources
   ID3D10Buffer *oldVSCB = nullptr;
+  ID3D10Buffer *oldPSCB = nullptr;
   ID3D10ShaderResourceView *oldPSSRV = nullptr;
   ID3D10SamplerState *oldPSSampler = nullptr;
   device->VSGetConstantBuffers(0, 1, &oldVSCB);
+  device->PSGetConstantBuffers(0, 1, &oldPSCB);
   device->PSGetShaderResources(0, 1, &oldPSSRV);
   device->PSGetSamplers(0, 1, &oldPSSampler);
 
@@ -352,6 +354,7 @@ void DX10Backend::Render(const std::vector<DrawVertex> &vertices,
   device->OMSetDepthStencilState(depthStencilState.Get(), 0);
   device->VSSetShader(vertexShader.Get());
   device->VSSetConstantBuffers(0, 1, constantBuffer.GetAddressOf());
+  device->PSSetConstantBuffers(0, 1, constantBuffer.GetAddressOf());
   device->PSSetSamplers(0, 1, samplerState.GetAddressOf());
   device->PSSetShaderResources(0, 1, fontTextureView.GetAddressOf());
   device->IASetInputLayout(inputLayout.Get());
@@ -394,6 +397,7 @@ void DX10Backend::Render(const std::vector<DrawVertex> &vertices,
   device->IASetVertexBuffers(0, 1, &oldVB, &oldVBStride, &oldVBOffset);
   device->IASetIndexBuffer(oldIB, oldIBFormat, oldIBOffset);
   device->VSSetConstantBuffers(0, 1, &oldVSCB);
+  device->PSSetConstantBuffers(0, 1, &oldPSCB);
   device->PSSetShaderResources(0, 1, &oldPSSRV);
   device->PSSetSamplers(0, 1, &oldPSSampler);
   if (oldNumViewports > 0) {
@@ -419,6 +423,8 @@ void DX10Backend::Render(const std::vector<DrawVertex> &vertices,
     oldIB->Release();
   if (oldVSCB)
     oldVSCB->Release();
+  if (oldPSCB)
+    oldPSCB->Release();
   if (oldPSSRV)
     oldPSSRV->Release();
   if (oldPSSampler)

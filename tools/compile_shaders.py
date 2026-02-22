@@ -63,7 +63,8 @@ D3DCOMPILE_OPTIMIZATION_LEVEL3 = (1 << 15)
 VS_SRC = b"""
 cbuffer Constants : register(b0) {
     float2 viewportSize;
-    float2 padding;
+    float hdrMode;
+    float paperWhiteNits;
 };
 struct VS_INPUT {
     float2 pos : POSITION;
@@ -88,6 +89,11 @@ PS_INPUT main(VS_INPUT input) {
 """
 
 PS_TEXTURED_SRC = b"""
+cbuffer Constants : register(b0) {
+    float2 viewportSize;
+    float hdrMode;
+    float paperWhiteNits;
+};
 Texture2D fontTexture : register(t0);
 SamplerState fontSampler : register(s0);
 struct PS_INPUT {
@@ -95,20 +101,65 @@ struct PS_INPUT {
     float2 uv : TEXCOORD0;
     float4 col : COLOR0;
 };
+float SRGBToLinear(float s) {
+    return (s <= 0.04045) ? (s / 12.92) : pow((s + 0.055) / 1.055, 2.4);
+}
+float LinearToPQ(float L) {
+    float Lp = pow(L / 10000.0, 0.1593017578125);
+    return pow((0.8359375 + 18.8515625 * Lp) / (1.0 + 18.6875 * Lp), 78.84375);
+}
+float3 ApplyHDR(float3 srgb) {
+    float3 lin = float3(SRGBToLinear(srgb.r), SRGBToLinear(srgb.g), SRGBToLinear(srgb.b));
+    if (hdrMode < 1.5) {
+        return lin * (paperWhiteNits / 80.0);
+    } else {
+        float3 nits = lin * paperWhiteNits;
+        return float3(LinearToPQ(nits.r), LinearToPQ(nits.g), LinearToPQ(nits.b));
+    }
+}
 float4 main(PS_INPUT input) : SV_Target {
     float4 texColor = fontTexture.Sample(fontSampler, input.uv);
-    return float4(input.col.rgb, input.col.a * texColor.a);
+    float3 color = input.col.rgb;
+    if (hdrMode > 0.5) {
+        color = ApplyHDR(color);
+    }
+    return float4(color, input.col.a * texColor.a);
 }
 """
 
 PS_SOLID_SRC = b"""
+cbuffer Constants : register(b0) {
+    float2 viewportSize;
+    float hdrMode;
+    float paperWhiteNits;
+};
 struct PS_INPUT {
     float4 pos : SV_POSITION;
     float2 uv : TEXCOORD0;
     float4 col : COLOR0;
 };
+float SRGBToLinear(float s) {
+    return (s <= 0.04045) ? (s / 12.92) : pow((s + 0.055) / 1.055, 2.4);
+}
+float LinearToPQ(float L) {
+    float Lp = pow(L / 10000.0, 0.1593017578125);
+    return pow((0.8359375 + 18.8515625 * Lp) / (1.0 + 18.6875 * Lp), 78.84375);
+}
+float3 ApplyHDR(float3 srgb) {
+    float3 lin = float3(SRGBToLinear(srgb.r), SRGBToLinear(srgb.g), SRGBToLinear(srgb.b));
+    if (hdrMode < 1.5) {
+        return lin * (paperWhiteNits / 80.0);
+    } else {
+        float3 nits = lin * paperWhiteNits;
+        return float3(LinearToPQ(nits.r), LinearToPQ(nits.g), LinearToPQ(nits.b));
+    }
+}
 float4 main(PS_INPUT input) : SV_Target {
-    return input.col;
+    float3 color = input.col.rgb;
+    if (hdrMode > 0.5) {
+        color = ApplyHDR(color);
+    }
+    return float4(color, input.col.a);
 }
 """
 

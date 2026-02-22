@@ -319,15 +319,15 @@ void DX11Backend::Render(const std::vector<DrawVertex> &vertices,
     context->Unmap(indexBuffer.Get(), 0);
   }
 
-  // Update constant buffer
+  // Update constant buffer with HDR params
   hr = context->Map(constantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0,
                     &mapped);
   if (SUCCEEDED(hr)) {
     float *cb = (float *)mapped.pData;
     cb[0] = (float)viewportWidth;
     cb[1] = (float)viewportHeight;
-    cb[2] = 0.0f;
-    cb[3] = 0.0f;
+    cb[2] = (float)hdrMode;
+    cb[3] = paperWhiteNits;
     context->Unmap(constantBuffer.Get(), 0);
   }
 
@@ -362,9 +362,11 @@ void DX11Backend::Render(const std::vector<DrawVertex> &vertices,
 
   // Save VS constant buffer and PS resources
   ID3D11Buffer *oldVSCB = nullptr;
+  ID3D11Buffer *oldPSCB = nullptr;
   ID3D11ShaderResourceView *oldPSSRV = nullptr;
   ID3D11SamplerState *oldPSSampler = nullptr;
   context->VSGetConstantBuffers(0, 1, &oldVSCB);
+  context->PSGetConstantBuffers(0, 1, &oldPSCB);
   context->PSGetShaderResources(0, 1, &oldPSSRV);
   context->PSGetSamplers(0, 1, &oldPSSampler);
 
@@ -380,6 +382,7 @@ void DX11Backend::Render(const std::vector<DrawVertex> &vertices,
   context->OMSetDepthStencilState(depthState.Get(), 0);
   context->VSSetShader(vertexShader.Get(), nullptr, 0);
   context->VSSetConstantBuffers(0, 1, constantBuffer.GetAddressOf());
+  context->PSSetConstantBuffers(0, 1, constantBuffer.GetAddressOf());
   context->PSSetSamplers(0, 1, sampler.GetAddressOf());
   context->PSSetShaderResources(0, 1, fontTextureSRV.GetAddressOf());
   context->IASetInputLayout(inputLayout.Get());
@@ -424,6 +427,7 @@ void DX11Backend::Render(const std::vector<DrawVertex> &vertices,
   context->IASetVertexBuffers(0, 1, &oldVB, &oldVBStride, &oldVBOffset);
   context->IASetIndexBuffer(oldIB, oldIBFormat, oldIBOffset);
   context->VSSetConstantBuffers(0, 1, &oldVSCB);
+  context->PSSetConstantBuffers(0, 1, &oldPSCB);
   context->PSSetShaderResources(0, 1, &oldPSSRV);
   context->PSSetSamplers(0, 1, &oldPSSampler);
   if (oldNumViewports > 0) {
@@ -449,6 +453,8 @@ void DX11Backend::Render(const std::vector<DrawVertex> &vertices,
     oldIB->Release();
   if (oldVSCB)
     oldVSCB->Release();
+  if (oldPSCB)
+    oldPSCB->Release();
   if (oldPSSRV)
     oldPSSRV->Release();
   if (oldPSSampler)

@@ -1,6 +1,7 @@
 cbuffer Constants : register(b0) {
     float2 viewportSize;
-    float2 padding;
+    float hdrMode;       // 0=SDR, 1=scRGB/FP16, 2=HDR10/PQ
+    float paperWhiteNits; // SDR reference white in nits (default 200)
 };
 
 struct VS_INPUT {

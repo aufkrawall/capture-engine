@@ -67,6 +67,14 @@ public:
                                 uint32_t color, uint32_t shadowColor,
                                 float scale, float shadowOffset = 1.0f);
 
+  // Right-aligned text (prevents flicker when digit count changes)
+  void DrawTextRightAligned(float rightX, float y, const char *text,
+                            uint32_t color, uint32_t shadowColor,
+                            float shadowOffset = 1.0f);
+  void DrawTextScaledRightAligned(float rightX, float y, const char *text,
+                                  uint32_t color, uint32_t shadowColor,
+                                  float scale, float shadowOffset = 1.0f);
+
   // Calculate text size
   void CalcTextSize(const char *text, float *outWidth, float *outHeight) const;
   void CalcTextSizeScaled(const char *text, float *outWidth, float *outHeight,
@@ -151,11 +159,22 @@ public:
                           const uint8_t *fontTextureData) = 0;
   virtual void Shutdown() = 0;
 
+  // Set HDR rendering parameters (call before Render)
+  // hdrMode: 0=SDR, 1=scRGB/FP16, 2=HDR10/PQ
+  virtual void SetHDRParams(int hdrMode, float paperWhiteNits) {
+    this->hdrMode = hdrMode;
+    this->paperWhiteNits = paperWhiteNits;
+  }
+
   // Render the accumulated draw commands
   virtual void Render(const std::vector<DrawVertex> &vertices,
                       const std::vector<uint16_t> &indices,
                       const std::vector<DrawCommand> &commands,
                       int viewportWidth, int viewportHeight) = 0;
+
+protected:
+  int hdrMode = 0;
+  float paperWhiteNits = 200.0f;
 };
 
 // Predefined colors (matches common overlay colors)

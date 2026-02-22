@@ -353,6 +353,20 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     }
   }
 
+  // Pass HDR params to backend for shader constants
+  if (backend) {
+    float paperWhite = cfg.hdrPaperWhite;
+    if (paperWhite <= 0.0f)
+      paperWhite = 200.0f; // Default paper white nits
+    int mode = 0;          // SDR
+    if (isHDR) {
+      // Detect HDR10/PQ (R10G10B10A2) vs scRGB (FP16) from render target format
+      // DXGI_FORMAT_R10G10B10A2_UNORM = 24
+      mode = (renderTargetFormat == 24) ? 2 : 1;
+    }
+    backend->SetHDRParams(mode, paperWhite);
+  }
+
   renderer->BeginFrame(viewportWidth, viewportHeight);
   RenderContent(viewportWidth, viewportHeight);
   renderer->EndFrame();
@@ -385,6 +399,9 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
   // Wider background to accommodate "X.XX GB of Y.YY GB" format (DPI-aware)
   float bgWidth = 280 * dpiScale;
 
+  // Right edge for right-aligning numeric values (prevents flicker on digit count changes)
+  float valueRightEdge = 0; // Set after position calculation
+
   switch (cfg.position) {
   case OverlayPosition::TopLeft:
     x = padding;
@@ -403,6 +420,9 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     y = viewportHeight - padding - 200;
     break;
   }
+
+  // Right edge for right-aligning numeric values (prevents flicker on digit count changes)
+  valueRightEdge = x + bgWidth - 8 * dpiScale;
 
   // Calculate required height for background
   float lineHeight = (float)renderer->GetLineHeight();
@@ -546,9 +566,9 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     renderer->DrawTextWithShadow(labelCol, cursorY,
                                  SystemMetricsCollector::Get().GetGPUName(),
                                  Colors::LabelGreen, shadowColor);
-    renderer->DrawTextWithShadow(valueCol, cursorY, buf,
-                                 GetLoadColor(cachedSystemMetrics.gpuUsage),
-                                 shadowColor);
+    renderer->DrawTextRightAligned(valueRightEdge, cursorY, buf,
+                                   GetLoadColor(cachedSystemMetrics.gpuUsage),
+                                   shadowColor);
     cursorY += lineHeight;
   }
 
@@ -559,8 +579,8 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     renderer->DrawTextWithShadow(labelCol, cursorY,
                                  SystemMetricsCollector::Get().GetCPUName(),
                                  Colors::LabelGreen, shadowColor);
-    renderer->DrawTextWithShadow(valueCol, cursorY, buf, Colors::ValueCyan,
-                                 shadowColor);
+    renderer->DrawTextRightAligned(valueRightEdge, cursorY, buf,
+                                   Colors::ValueCyan, shadowColor);
     cursorY += lineHeight;
   }
 
@@ -641,8 +661,8 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     snprintf(buf, 64, "%.0f FPS", cachedFPS);
     renderer->DrawTextWithShadow(labelCol, cursorY, apiLabel, textColor,
                                  shadowColor);
-    renderer->DrawTextWithShadow(valueCol, cursorY, buf, cfg.fpsColor,
-                                 shadowColor);
+    renderer->DrawTextRightAligned(valueRightEdge, cursorY, buf, cfg.fpsColor,
+                                   shadowColor);
     cursorY += lineHeight;
 
     // Base/Display FPS when FG is active (shown first as in reference)
@@ -657,8 +677,8 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
       snprintf(buf, 64, "%.0f / %.0f FPS", baseFPS, outputFPS);
       renderer->DrawTextWithShadow(labelCol, cursorY, "Base/Display",
                                    Colors::LabelYellow, shadowColor);
-      renderer->DrawTextWithShadow(valueCol, cursorY, buf, Colors::ValueYellow,
-                                   shadowColor);
+      renderer->DrawTextRightAligned(valueRightEdge, cursorY, buf,
+                                     Colors::ValueYellow, shadowColor);
       cursorY += lineHeight;
     }
 
@@ -668,8 +688,8 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
                cached01PercentLow);
       renderer->DrawTextWithShadow(labelCol, cursorY, "Avg/1%/0.1%", textColor,
                                    shadowColor);
-      renderer->DrawTextWithShadow(valueCol, cursorY, buf, Colors::ValueYellow,
-                                   shadowColor);
+      renderer->DrawTextRightAligned(valueRightEdge, cursorY, buf,
+                                     Colors::ValueYellow, shadowColor);
       cursorY += lineHeight;
     }
   }
@@ -680,8 +700,8 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     snprintf(buf, 64, "FG %dx", multiplier);
     renderer->DrawTextWithShadow(labelCol, cursorY, "FG", Colors::LabelCyan,
                                  shadowColor);
-    renderer->DrawTextWithShadow(valueCol, cursorY, buf, Colors::LabelCyan,
-                                 shadowColor);
+    renderer->DrawTextRightAligned(valueRightEdge, cursorY, buf,
+                                   Colors::LabelCyan, shadowColor);
     cursorY += lineHeight;
   }
 
