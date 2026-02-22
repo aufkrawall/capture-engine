@@ -1,322 +1,401 @@
 #include "freeze_watchdog.h"
-#include "hook_common.h" // For g_ShuttingDown
+#include "hook_common.h"
 #include <chrono>
 #include <ctime>
-#include <dbghelp.h>
 #include <filesystem>
 #include <iomanip>
 #include <sstream>
-#include <thread>
+#include <tlhelp32.h>
 
-// Global watchdog instance
 FreezeWatchdog g_RenderWatchdog;
 
-// Helper to get the capture engine logs directory
 static std::string GetLogsDirectory() {
-  // Try to find the hook DLL path
-  char dllPath[MAX_PATH];
-  HMODULE hModule = nullptr;
+    char dllPath[MAX_PATH];
+    HMODULE hModule = nullptr;
 
-  // Get the module handle for this DLL (freeze_watchdog is in the hook DLL)
-  if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                             GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                         (LPCSTR)&GetLogsDirectory, &hModule)) {
-    if (GetModuleFileNameA(hModule, dllPath, MAX_PATH)) {
-      // Path is like: ...\installed\captureengine\capture_hook_x64.dll
-      std::filesystem::path hookPath(dllPath);
-      std::filesystem::path captureEngineDir = hookPath.parent_path();
-      std::filesystem::path logsDir = captureEngineDir / "logs";
-      return logsDir.string();
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCSTR)&GetLogsDirectory, &hModule)) {
+        if (GetModuleFileNameA(hModule, dllPath, MAX_PATH)) {
+            std::filesystem::path hookPath(dllPath);
+            std::filesystem::path captureEngineDir = hookPath.parent_path();
+            std::filesystem::path logsDir = captureEngineDir / "logs";
+            return logsDir.string();
+        }
     }
-  }
 
-  // Fallback: use temp directory
-  char tempPath[MAX_PATH];
-  if (GetTempPathA(MAX_PATH, tempPath)) {
-    return std::string(tempPath);
-  }
+    char tempPath[MAX_PATH];
+    if (GetTempPathA(MAX_PATH, tempPath)) {
+        return std::string(tempPath);
+    }
 
-  // Last resort: current directory
-  return ".";
+    return ".";
 }
 
-// Helper to get current timestamp in microseconds
 static uint64_t GetCurrentMicros() {
-  auto now = std::chrono::steady_clock::now();
-  return std::chrono::duration_cast<std::chrono::microseconds>(
-             now.time_since_epoch())
-      .count();
+    auto now = std::chrono::steady_clock::now();
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+               now.time_since_epoch())
+        .count();
 }
 
 FreezeWatchdog::FreezeWatchdog() : processId_(GetCurrentProcessId()) {
-  // Get process name
-  char name[MAX_PATH] = {0};
-  GetModuleFileNameA(nullptr, name, MAX_PATH);
-  processName_ = std::filesystem::path(name).filename().string();
+    char name[MAX_PATH] = {0};
+    GetModuleFileNameA(nullptr, name, MAX_PATH);
+    processName_ = std::filesystem::path(name).filename().string();
+    InitializeDbgHelp();
 }
 
 FreezeWatchdog::~FreezeWatchdog() { Stop(); }
 
-bool FreezeWatchdog::Start(double timeoutSeconds) {
-  if (running_.exchange(true)) {
-    return false; // Already running
-  }
+bool FreezeWatchdog::InitializeDbgHelp() {
+    if (dbgHelpInitialized_) {
+        return pMiniDumpWriteDump_ != nullptr;
+    }
 
-  // Check for DLSS FG and adjust timeout
-  // DLSS FG changes render timing - need much longer timeout to avoid false
-  // positives
-  double finalTimeout = timeoutSeconds;
-  if (IsDLSSFGActive()) {
-    finalTimeout = 60.0; // 60 seconds for DLSS FG (frame gen can pause briefly)
-    OutputDebugStringA(
-        "[FreezeWatchdog] DLSS FG detected, using 60 second timeout\n");
-  }
+    hDbgHelp_ = LoadLibraryA("dbghelp.dll");
+    if (!hDbgHelp_) {
+        OutputDebugStringA("[FreezeWatchdog] Failed to load dbghelp.dll\n");
+        dbgHelpInitialized_ = true;
+        return false;
+    }
 
-  timeoutSeconds_.store(finalTimeout);
-  uint64_t now = GetCurrentMicros();
-  lastHeartbeat_.store(now);
-  startupTime_.store(now);
+    pMiniDumpWriteDump_ = reinterpret_cast<decltype(MiniDumpWriteDump)*>(
+        GetProcAddress(hDbgHelp_, "MiniDumpWriteDump"));
 
-  char logMsg[256];
-  snprintf(logMsg, sizeof(logMsg),
-           "[FreezeWatchdog] Starting with timeout=%.1f seconds (grace "
-           "period=%.1f seconds)\n",
-           finalTimeout, STARTUP_GRACE_PERIOD);
-  OutputDebugStringA(logMsg);
+    if (!pMiniDumpWriteDump_) {
+        OutputDebugStringA("[FreezeWatchdog] Failed to get MiniDumpWriteDump\n");
+        FreeLibrary(hDbgHelp_);
+        hDbgHelp_ = nullptr;
+    } else {
+        OutputDebugStringA("[FreezeWatchdog] DbgHelp initialized successfully\n");
+    }
 
-  watchdogThread_ = std::thread(&FreezeWatchdog::WatchdogThread, this);
-
-  // Detach the thread so it can run independently
-  watchdogThread_.detach();
-
-  OutputDebugStringA("[FreezeWatchdog] Watchdog thread detached and running\n");
-
-  return true;
+    dbgHelpInitialized_ = true;
+    return pMiniDumpWriteDump_ != nullptr;
 }
 
-bool FreezeWatchdog::IsDLSSFGActive() const {
-  // Check for DLSS Frame Generation by looking for nvngx_dlssg.dll
-  HMODULE hDLSSG = GetModuleHandleW(L"nvngx_dlssg.dll");
-  if (hDLSSG)
+bool FreezeWatchdog::Start(double timeoutSeconds) {
+    if (running_.exchange(true)) {
+        return false;
+    }
+
+    if (!dbgHelpInitialized_) {
+        InitializeDbgHelp();
+    }
+
+    double finalTimeout = timeoutSeconds;
+    
+    if (IsUE5Active()) {
+        finalTimeout = UE5_TIMEOUT;
+        OutputDebugStringA("[FreezeWatchdog] UE5 detected, using extended timeout\n");
+    } else if (IsDLSSFGActive()) {
+        finalTimeout = DLSS_FG_TIMEOUT;
+        OutputDebugStringA("[FreezeWatchdog] DLSS FG detected, using extended timeout\n");
+    }
+
+    timeoutSeconds_.store(finalTimeout);
+    uint64_t now = GetCurrentMicros();
+    lastHeartbeat_.store(now);
+    startupTime_.store(now);
+
+    char logMsg[256];
+    snprintf(logMsg, sizeof(logMsg),
+             "[FreezeWatchdog] Starting: timeout=%.1fs, grace=%.1fs\n",
+             finalTimeout, STARTUP_GRACE_PERIOD);
+    OutputDebugStringA(logMsg);
+
+    watchdogThread_ = std::thread(&FreezeWatchdog::WatchdogThread, this);
+
     return true;
-
-  // Also check for nvngx_dlss.dll (base DLSS)
-  HMODULE hDLSS = GetModuleHandleW(L"nvngx_dlss.dll");
-  if (hDLSS) {
-    // Check if FG feature is available (this is a simplified check)
-    // In practice, we'd need to check the actual feature flags
-    return true; // Assume DLSS games might use FG
-  }
-
-  return false;
 }
 
 void FreezeWatchdog::Stop() {
-  if (!running_.exchange(false)) {
-    return; // Already stopped
-  }
-  
-  // CRITICAL FIX: Wait for thread to exit with timeout
-  // This prevents use-after-free if object is destroyed while thread is running
-  if (watchdogThread_.joinable()) {
-    // Give thread 500ms to exit gracefully
-    auto start = std::chrono::steady_clock::now();
-    while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds(500)) {
-      Sleep(10);
+    if (!running_.exchange(false)) {
+        return;
     }
-    
+
     if (watchdogThread_.joinable()) {
-      // Thread didn't exit in time - detach as last resort
-      OutputDebugStringA("[FreezeWatchdog] Thread didn't exit, detaching\n");
-      watchdogThread_.detach();
+        constexpr auto kJoinTimeout = std::chrono::milliseconds(2000);
+        auto deadline = std::chrono::steady_clock::now() + kJoinTimeout;
+
+        while (watchdogThread_.joinable() &&
+               std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+
+        if (watchdogThread_.joinable()) {
+            OutputDebugStringA(
+                "[FreezeWatchdog] Warning: Thread didn't exit in time\n");
+            watchdogThread_.detach();
+        }
     }
-  }
 }
 
 void FreezeWatchdog::Heartbeat() { lastHeartbeat_.store(GetCurrentMicros()); }
 
 void FreezeWatchdog::SetFreezeCallback(FreezeCallback callback) {
-  freezeCallback_ = callback;
+    freezeCallback_ = std::move(callback);
 }
 
 bool FreezeWatchdog::IsFrozen() const {
-  uint64_t last = lastHeartbeat_.load();
-  uint64_t now = GetCurrentMicros();
-  double elapsed = (now - last) / 1'000'000.0; // Convert to seconds
+    uint64_t last = lastHeartbeat_.load();
+    uint64_t now = GetCurrentMicros();
+    double elapsed = (now - last) / 1'000'000.0;
 
-  // Check if we're still in the startup grace period
-  double sinceStartup = (now - startupTime_.load()) / 1'000'000.0;
-  if (sinceStartup < STARTUP_GRACE_PERIOD) {
-    // Still in grace period, don't report as frozen
-    // Just update the heartbeat to give more time after grace period ends
+    double sinceStartup = (now - startupTime_.load()) / 1'000'000.0;
+    if (sinceStartup < STARTUP_GRACE_PERIOD) {
+        return false;
+    }
+
+    return elapsed > timeoutSeconds_.load();
+}
+
+bool FreezeWatchdog::IsDLSSFGActive() const {
+    if (GetModuleHandleW(L"nvngx_dlssg.dll")) {
+        return true;
+    }
     return false;
-  }
+}
 
-  return elapsed > timeoutSeconds_.load();
+bool FreezeWatchdog::IsUE5Active() const {
+    // Check for common UE5 DLLs
+    if (GetModuleHandleW(L"ue5.dll") || GetModuleHandleW(L"UnrealEditor.dll")) {
+        return true;
+    }
+    
+    // Check for UE5 engine patterns in loaded modules
+    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
+    if (hSnapshot != INVALID_HANDLE_VALUE) {
+        MODULEENTRY32W me;
+        me.dwSize = sizeof(me);
+        if (Module32FirstW(hSnapshot, &me)) {
+            do {
+                std::wstring moduleName = me.szModule;
+                std::transform(moduleName.begin(), moduleName.end(), moduleName.begin(), ::towlower);
+                if (moduleName.find(L"unreal") != std::wstring::npos ||
+                    moduleName.find(L"ue4") != std::wstring::npos ||
+                    moduleName.find(L"ue5") != std::wstring::npos) {
+                    CloseHandle(hSnapshot);
+                    return true;
+                }
+            } while (Module32NextW(hSnapshot, &me));
+        }
+        CloseHandle(hSnapshot);
+    }
+    
+    return false;
+}
+
+double FreezeWatchdog::GetRecommendedTimeout() const {
+    if (IsUE5Active()) return UE5_TIMEOUT;
+    if (IsDLSSFGActive()) return DLSS_FG_TIMEOUT;
+    return DEFAULT_TIMEOUT;
+}
+
+bool FreezeWatchdog::CaptureThreadContext(DWORD threadId, CONTEXT& ctx) {
+    HANDLE hThread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, threadId);
+    if (!hThread) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "[FreezeWatchdog] Failed to open thread %lu, error=%lu\n",
+                 threadId, GetLastError());
+        OutputDebugStringA(msg);
+        return false;
+    }
+
+    DWORD suspendResult = SuspendThread(hThread);
+    if (suspendResult == (DWORD)-1) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "[FreezeWatchdog] Failed to suspend thread %lu\n", threadId);
+        OutputDebugStringA(msg);
+        CloseHandle(hThread);
+        return false;
+    }
+
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.ContextFlags = CONTEXT_FULL;
+
+    BOOL gotContext = GetThreadContext(hThread, &ctx);
+    ResumeThread(hThread);
+    CloseHandle(hThread);
+
+    if (!gotContext) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "[FreezeWatchdog] Failed to get context for thread %lu\n", threadId);
+        OutputDebugStringA(msg);
+        return false;
+    }
+
+    OutputDebugStringA("[FreezeWatchdog] Successfully captured thread context\n");
+    return true;
+}
+
+void FreezeWatchdog::CreateFreezeExceptionRecord(EXCEPTION_RECORD& record, const std::string& reason) {
+    memset(&record, 0, sizeof(record));
+    record.ExceptionCode = 0xE0000001;  // Custom freeze detection code
+    record.ExceptionFlags = EXCEPTION_NONCONTINUABLE;
+    record.ExceptionAddress = nullptr;
+    
+    // Store first 14 chars of reason in exception information for debugging
+    uintptr_t reasonInfo[EXCEPTION_MAXIMUM_PARAMETERS] = {0};
+    size_t copyLen = std::min(reason.size(), sizeof(reasonInfo) - 1);
+    memcpy(reasonInfo, reason.c_str(), copyLen);
+    
+    record.NumberParameters = 1;
+    record.ExceptionInformation[0] = reasonInfo[0];
 }
 
 void FreezeWatchdog::WatchdogThread() {
-  // Check interval - how often we check for freeze
-  const auto checkInterval = std::chrono::milliseconds(500);
-  int checkCount = 0;
+    const auto checkInterval = std::chrono::milliseconds(500);
+    uint64_t lastLogTime = 0;
 
-  OutputDebugStringA("[FreezeWatchdog] Watchdog thread started\n");
+    OutputDebugStringA("[FreezeWatchdog] Watchdog thread started\n");
 
-  while (running_.load() && !g_ShuttingDown.load()) {
-    std::this_thread::sleep_for(checkInterval);
+    while (running_.load() && !g_ShuttingDown.load()) {
+        std::this_thread::sleep_for(checkInterval);
 
-    if (!running_.load()) {
-      OutputDebugStringA(
-          "[FreezeWatchdog] Watchdog stopping (running=false)\n");
-      break;
+        if (!running_.load()) {
+            OutputDebugStringA("[FreezeWatchdog] Watchdog stopping\n");
+            break;
+        }
+
+        uint64_t now = GetCurrentMicros();
+        if (now - lastLogTime > 10'000'000) {
+            lastLogTime = now;
+            uint64_t lastBeat = lastHeartbeat_.load();
+            double elapsed = (now - lastBeat) / 1'000'000.0;
+            char logMsg[128];
+            snprintf(logMsg, sizeof(logMsg),
+                     "[FreezeWatchdog] Status: elapsed=%.1fs, timeout=%.1fs\n",
+                     elapsed, timeoutSeconds_.load());
+            OutputDebugStringA(logMsg);
+        }
+
+        if (IsFrozen()) {
+            double elapsed = (GetCurrentMicros() - lastHeartbeat_.load()) / 1'000'000.0;
+            std::string reason = "Render thread frozen for " +
+                                 std::to_string(static_cast<int>(elapsed)) +
+                                 " seconds";
+
+            OutputDebugStringA("[FreezeWatchdog] FREEZE DETECTED!\n");
+            OutputDebugStringA(reason.c_str());
+            OutputDebugStringA("\n");
+
+            if (freezeCallback_) {
+                freezeCallback_(reason);
+            }
+
+            CreateMinidumpWithThreadContext(reason);
+            
+            OutputDebugStringA("[FreezeWatchdog] Dump created, terminating...\n");
+            TerminateProcessSafely();
+            return;
+        }
     }
 
-    // Log periodically to debug freeze detection
-    static uint64_t lastLogTime = 0;
-    uint64_t now = GetCurrentMicros();
-    if (now - lastLogTime > 10'000'000) { // Log every 10 seconds
-      lastLogTime = now;
-      uint64_t lastBeat = lastHeartbeat_.load();
-      double elapsed = (now - lastBeat) / 1'000'000.0;
-      char logMsg[128];
-      snprintf(logMsg, sizeof(logMsg),
-               "[FreezeWatchdog] Status: elapsed=%.1fs, timeout=%.1fs\n",
-               elapsed, timeoutSeconds_.load());
-      OutputDebugStringA(logMsg);
-    }
-
-    if (IsFrozen()) {
-      // Freeze detected!
-      double elapsed =
-          (GetCurrentMicros() - lastHeartbeat_.load()) / 1'000'000.0;
-      std::string reason = "Render thread frozen for " +
-                           std::to_string(static_cast<int>(elapsed)) +
-                           " seconds";
-
-      OutputDebugStringA("[FreezeWatchdog] FREEZE DETECTED!\n");
-      OutputDebugStringA(reason.c_str());
-      OutputDebugStringA("\n");
-
-      // Call custom callback if set
-      if (freezeCallback_) {
-        freezeCallback_(reason);
-      }
-
-      // Create crash dump (blocking - we're terminating anyway)
-      CreateMinidump(reason);
-
-      // Terminate process
-      OutputDebugStringA(
-          "[FreezeWatchdog] Dump created, terminating process...\n");
-      TerminateProcess();
-      return; // Exit watchdog thread
-    }
-  }
-
-  OutputDebugStringA("[FreezeWatchdog] Watchdog thread exiting\n");
+    OutputDebugStringA("[FreezeWatchdog] Watchdog thread exiting\n");
 }
 
-void FreezeWatchdog::CreateMinidump(const std::string &reason) {
-  OutputDebugStringA("[FreezeWatchdog] Creating minidump...\n");
+void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason) {
+    OutputDebugStringA("[FreezeWatchdog] Creating minidump with thread context...\n");
 
-  // Get logs directory (relative to hook DLL location)
-  std::string logsDir = GetLogsDirectory();
-
-  // Generate dump filename with timestamp
-  auto now = std::chrono::system_clock::now();
-  auto time_t_now = std::chrono::system_clock::to_time_t(now);
-  std::tm local_tm;
-  localtime_s(&local_tm, &time_t_now);
-
-  std::stringstream ss;
-  ss << logsDir << "\\" << processName_ << "_FREEZE_"
-     << std::put_time(&local_tm, "%Y-%m-%d_%H-%M-%S") << ".dmp";
-
-  std::string dumpPath = ss.str();
-
-  char logMsg[512];
-  snprintf(logMsg, sizeof(logMsg), "[FreezeWatchdog] Dump path: %s\n",
-           dumpPath.c_str());
-  OutputDebugStringA(logMsg);
-
-  // Create the dump
-  HANDLE hFile = CreateFileA(dumpPath.c_str(), GENERIC_WRITE, 0, nullptr,
-                             CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-
-  if (hFile == INVALID_HANDLE_VALUE) {
-    DWORD err = GetLastError();
-    snprintf(logMsg, sizeof(logMsg),
-             "[FreezeWatchdog] Failed to create dump in logs dir, error=%lu\n",
-             err);
-    OutputDebugStringA(logMsg);
-
-    // Fallback: try temp directory
-    char tempPath[MAX_PATH];
-    if (GetTempPathA(MAX_PATH, tempPath)) {
-      dumpPath = std::string(tempPath) + "\\" + processName_ + "_FREEZE.dmp";
-
-      snprintf(logMsg, sizeof(logMsg), "[FreezeWatchdog] Trying temp dir: %s\n",
-               dumpPath.c_str());
-      OutputDebugStringA(logMsg);
-
-      hFile = CreateFileA(dumpPath.c_str(), GENERIC_WRITE, 0, nullptr,
-                          CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (!pMiniDumpWriteDump_) {
+        OutputDebugStringA("[FreezeWatchdog] MiniDumpWriteDump not available\n");
+        return;
     }
-  }
 
-  if (hFile == INVALID_HANDLE_VALUE) {
-    DWORD err = GetLastError();
-    snprintf(logMsg, sizeof(logMsg),
-             "[FreezeWatchdog] Failed to create dump file, error=%lu\n", err);
-    OutputDebugStringA(logMsg);
-    return; // Can't create dump
-  }
+    std::string logsDir = GetLogsDirectory();
+    std::filesystem::path logPath(logsDir);
+    if (!std::filesystem::exists(logPath)) {
+        std::filesystem::create_directories(logPath);
+    }
 
-  // Write minidump with minimal data (fast, non-blocking)
-  HANDLE hProcess = GetCurrentProcess();
-  DWORD processId = GetCurrentProcessId();
+    auto now = std::chrono::system_clock::now();
+    auto time_t_now = std::chrono::system_clock::to_time_t(now);
+    std::tm local_tm;
+    localtime_s(&local_tm, &time_t_now);
 
-  MINIDUMP_EXCEPTION_INFORMATION mei;
-  mei.ThreadId = GetCurrentThreadId();
-  mei.ExceptionPointers = nullptr; // No exception - it's a freeze
-  mei.ClientPointers = FALSE;
+    std::stringstream ss;
+    ss << logsDir << "\\" << processName_ << "_FREEZE_"
+       << std::put_time(&local_tm, "%Y-%m-%d_%H-%M-%S") << ".dmp";
+    std::string dumpPath = ss.str();
 
-  // Use minimal dump for speed - just thread stacks and module list
-  // This is much faster than MiniDumpWithFullMemory (which creates multi-GB
-  // dumps)
-  MINIDUMP_TYPE dumpType = static_cast<MINIDUMP_TYPE>(
-      MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules | MiniDumpNormal);
-
-  // Write the dump
-  BOOL success = MiniDumpWriteDump(hProcess, processId, hFile,
-                                   dumpType, // Small, fast dump
-                                   &mei, nullptr, nullptr);
-
-  CloseHandle(hFile);
-
-  if (success) {
     char logMsg[512];
-    snprintf(logMsg, sizeof(logMsg),
-             "[FreezeWatchdog] SUCCESS: Crash dump created: %s\n",
-             dumpPath.c_str());
+    snprintf(logMsg, sizeof(logMsg), "[FreezeWatchdog] Dump path: %s\n", dumpPath.c_str());
     OutputDebugStringA(logMsg);
-  } else {
-    DWORD err = GetLastError();
-    char logMsg[256];
-    snprintf(logMsg, sizeof(logMsg),
-             "[FreezeWatchdog] FAILED to write dump, error=%lu\n", err);
-    OutputDebugStringA(logMsg);
-  }
+
+    HANDLE hFile = CreateFileA(dumpPath.c_str(), GENERIC_WRITE, 0, nullptr,
+                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+
+    if (hFile == INVALID_HANDLE_VALUE) {
+        DWORD err = GetLastError();
+        snprintf(logMsg, sizeof(logMsg),
+                 "[FreezeWatchdog] Failed to create dump file, error=%lu\n", err);
+        OutputDebugStringA(logMsg);
+
+        char tempPath[MAX_PATH];
+        if (GetTempPathA(MAX_PATH, tempPath)) {
+            dumpPath = std::string(tempPath) + "\\" + processName_ + "_FREEZE.dmp";
+            hFile = CreateFileA(dumpPath.c_str(), GENERIC_WRITE, 0, nullptr,
+                                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        }
+    }
+
+    if (hFile == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    HANDLE hProcess = GetCurrentProcess();
+    DWORD processId = GetCurrentProcessId();
+
+    // Try to capture context from monitored thread
+    CONTEXT threadCtx = {};
+    EXCEPTION_RECORD exceptionRecord = {};
+    EXCEPTION_POINTERS exceptionPointers = {&exceptionRecord, &threadCtx};
+    
+    DWORD monitoredTid = monitoredThreadId_.load();
+    bool hasContext = false;
+    
+    if (monitoredTid != 0) {
+        hasContext = CaptureThreadContext(monitoredTid, threadCtx);
+        if (hasContext) {
+            CreateFreezeExceptionRecord(exceptionRecord, reason);
+        }
+    }
+
+    MINIDUMP_EXCEPTION_INFORMATION mei = {};
+    mei.ThreadId = monitoredTid ? monitoredTid : GetCurrentThreadId();
+    mei.ExceptionPointers = hasContext ? &exceptionPointers : nullptr;
+    mei.ClientPointers = FALSE;
+
+    // Include thread info and handle data for debugging freezes
+    MINIDUMP_TYPE dumpType = static_cast<MINIDUMP_TYPE>(
+        MiniDumpWithDataSegs |
+        MiniDumpWithThreadInfo |
+        MiniDumpWithUnloadedModules |
+        MiniDumpWithIndirectlyReferencedMemory);
+
+    BOOL success = pMiniDumpWriteDump_(hProcess, processId, hFile, dumpType,
+                                        mei.ExceptionPointers ? &mei : nullptr,
+                                        nullptr, nullptr);
+
+    CloseHandle(hFile);
+
+    if (success) {
+        snprintf(logMsg, sizeof(logMsg),
+                 "[FreezeWatchdog] SUCCESS: Dump created: %s\n", dumpPath.c_str());
+        OutputDebugStringA(logMsg);
+    } else {
+        DWORD err = GetLastError();
+        snprintf(logMsg, sizeof(logMsg),
+                 "[FreezeWatchdog] FAILED to write dump, error=%lu\n", err);
+        OutputDebugStringA(logMsg);
+    }
 }
 
-void FreezeWatchdog::TerminateProcess() {
-  OutputDebugStringA("[FreezeWatchdog] Terminating process due to freeze\n");
+void FreezeWatchdog::TerminateProcessSafely() {
+    OutputDebugStringA("[FreezeWatchdog] Terminating process due to freeze\n");
 
-  // CRITICAL: Use TerminateProcess directly, NOT ExitProcess
-  // ExitProcess runs DLL cleanup which can deadlock with our mutex
-  ::TerminateProcess(GetCurrentProcess(), 0xDEAD);
-
-  // If we're still here, something is very wrong
-  // Last resort: try to crash the process
-  __fastfail(0xDEAD);
+    ::TerminateProcess(GetCurrentProcess(), 0xDEAD);
+    __fastfail(0xDEAD);
 }

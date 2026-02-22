@@ -1428,11 +1428,26 @@ public:
       return false;
     }
 
-    // Get current backbuffer
+    // Get current backbuffer - use correct index for FLIP swapchains
+    UINT bufferIndex = 0;
+    IDXGISwapChain3 *swapChain3 = nullptr;
+    DXGI_SWAP_CHAIN_DESC scDesc;
+    bool isFlipSwapchain = false;
+    
+    if (SUCCEEDED(swapChain->GetDesc(&scDesc))) {
+      isFlipSwapchain = (scDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD ||
+                         scDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL);
+    }
+    
+    if (isFlipSwapchain && SUCCEEDED(swapChain->QueryInterface(IID_PPV_ARGS(&swapChain3)))) {
+      bufferIndex = swapChain3->GetCurrentBackBufferIndex();
+      swapChain3->Release();
+    }
+    
     ID3D11Texture2D *backbuffer = nullptr;
-    hr = swapChain->GetBuffer(0, IID_PPV_ARGS(&backbuffer));
+    hr = swapChain->GetBuffer(bufferIndex, IID_PPV_ARGS(&backbuffer));
     if (FAILED(hr) || !backbuffer) {
-      HookLog("DX11Capture: [%d] GetBuffer failed hr=0x%08X", frameNum, hr);
+      HookLog("DX11Capture: [%d] GetBuffer(%u) failed hr=0x%08X", frameNum, bufferIndex, hr);
       device->Release();
       return false;
     }
@@ -1655,6 +1670,13 @@ static void DrawDX10Overlay(IDXGISwapChain *pSwapChain, HWND currentHwnd,
       }
     }
   }
+
+  // CRITICAL: Flush D3D10 command queue before capture
+  // DX10 games use a D3D10 device for rendering, but we use a separate D3D11
+  // device for capture. Without this flush, the overlay may not be visible
+  // in captured frames because the D3D10 commands haven't completed yet.
+  // This fixes the black flicker/flashing artifacts in DX10 captures.
+  device->Flush();
 
   device->Release();
 }

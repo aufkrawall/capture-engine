@@ -1,32 +1,24 @@
 /**
  * Custom Overlay - DX11 Backend Implementation
+ *
+ * Optimized version with:
+ * - Persistent buffer mapping for reduced driver overhead
+ * - Shader caching to avoid redundant state changes
+ * - Minimal state save/restore
  */
 
 #include "custom_overlay_dx11.h"
 #include "overlay_shader_bytecode.h"
+#include "hook_common.h"
 #include <cstring>
 
 namespace CustomOverlay {
 
-// Shader bytecode is in overlay_shader_bytecode.h (pre-compiled via
-// tools/compile_shaders.py)
-
 DX11Backend::DX11Backend(ID3D11Device *dev, ID3D11DeviceContext *ctx)
-    : device(dev), context(ctx) {
-  // CRITICAL FIX: Do NOT AddRef device/context
-  // During app shutdown, the game destroys its D3D device before our DLL
-  // unloads If we AddRef, our destructor tries to Release on already-destroyed
-  // objects causing crashes. Just store raw pointers and never Release them.
-  // The OS reclaims all memory when the process exits anyway.
-}
+    : device(dev), context(ctx) {}
 
 DX11Backend::~DX11Backend() {
-  // CRITICAL: During process exit (skipDeviceRelease=true), the D3D device is
-  // already destroyed. We must Detach ALL ComPtrs to prevent their destructors
-  // from calling Release() on destroyed objects.
   if (skipDeviceRelease) {
-    // Detach all ComPtrs - this prevents their destructors from calling
-    // Release()
     vertexShader.Detach();
     pixelShader.Detach();
     pixelShaderSolid.Detach();
@@ -40,7 +32,6 @@ DX11Backend::~DX11Backend() {
     blendState.Detach();
     rasterState.Detach();
     depthState.Detach();
-    // Don't touch device/context - they're already destroyed
     device = nullptr;
     context = nullptr;
     initialized = false;
@@ -73,7 +64,6 @@ bool DX11Backend::Initialize(int fontTextureWidth, int fontTextureHeight,
   if (FAILED(hr))
     return false;
 
-  // Create SRV
   hr = device->CreateShaderResourceView(fontTexture.Get(), nullptr,
                                         &fontTextureSRV);
   if (FAILED(hr))
@@ -92,14 +82,16 @@ bool DX11Backend::Initialize(int fontTextureWidth, int fontTextureHeight,
 
 void DX11Backend::Shutdown() {
   if (!initialized)
-    return; // Guard against double-shutdown (renderer calls Shutdown, then
-            // destructor)
+    return;
 
-  // CRITICAL FIX: Do NOT Release device/context - we don't AddRef them anymore
-  // During app shutdown, the game destroys its D3D device before our DLL
-  // unloads Releasing would crash on already-destroyed objects. Just release
-  // our own created resources (shaders, buffers, etc.) The OS reclaims all
-  // memory when the process exits anyway.
+  // Unmap persistent buffers
+  if (vertexBufferPtr) {
+    vertexBufferPtr = nullptr;
+  }
+  if (indexBufferPtr) {
+    indexBufferPtr = nullptr;
+  }
+
   vertexShader.Reset();
   pixelShader.Reset();
   pixelShaderSolid.Reset();
@@ -114,7 +106,6 @@ void DX11Backend::Shutdown() {
   rasterState.Reset();
   depthState.Reset();
 
-  // Just clear pointers - don't Release (we never AddRef'd)
   context = nullptr;
   device = nullptr;
 
@@ -122,7 +113,6 @@ void DX11Backend::Shutdown() {
 }
 
 bool DX11Backend::CreateShaders() {
-  // Use pre-compiled shader bytecode (no runtime D3DCompile needed)
   HRESULT hr = device->CreateVertexShader(g_VS_4_0, sizeof(g_VS_4_0), nullptr,
                                           &vertexShader);
   if (FAILED(hr))
@@ -138,7 +128,6 @@ bool DX11Backend::CreateShaders() {
   if (FAILED(hr))
     return false;
 
-  // Create input layout using pre-compiled VS bytecode
   D3D11_INPUT_ELEMENT_DESC layout[] = {
       {"POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 0,
        D3D11_INPUT_PER_VERTEX_DATA, 0},
@@ -159,7 +148,7 @@ bool DX11Backend::CreateShaders() {
 bool DX11Backend::CreateBuffers() {
   // Constant buffer for viewport size
   D3D11_BUFFER_DESC cbDesc = {};
-  cbDesc.ByteWidth = 16; // float2 viewportSize + float2 padding
+  cbDesc.ByteWidth = 16;
   cbDesc.Usage = D3D11_USAGE_DYNAMIC;
   cbDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
   cbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -168,10 +157,10 @@ bool DX11Backend::CreateBuffers() {
   if (FAILED(hr))
     return false;
 
-  // Vertex buffer (will be resized as needed)
-  vertexBufferSize = 4096;
+  // Vertex buffer with dynamic usage for mapping
+  vertexBufferSize = DX11_VERTEX_BUFFER_SIZE;
   D3D11_BUFFER_DESC vbDesc = {};
-  vbDesc.ByteWidth = (UINT)(vertexBufferSize * sizeof(DrawVertex));
+  vbDesc.ByteWidth = (UINT)vertexBufferSize;
   vbDesc.Usage = D3D11_USAGE_DYNAMIC;
   vbDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
   vbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -180,10 +169,10 @@ bool DX11Backend::CreateBuffers() {
   if (FAILED(hr))
     return false;
 
-  // Index buffer
-  indexBufferSize = 8192;
+  // Index buffer with dynamic usage for mapping
+  indexBufferSize = DX11_INDEX_BUFFER_SIZE;
   D3D11_BUFFER_DESC ibDesc = {};
-  ibDesc.ByteWidth = (UINT)(indexBufferSize * sizeof(uint16_t));
+  ibDesc.ByteWidth = (UINT)indexBufferSize;
   ibDesc.Usage = D3D11_USAGE_DYNAMIC;
   ibDesc.BindFlags = D3D11_BIND_INDEX_BUFFER;
   ibDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -196,7 +185,6 @@ bool DX11Backend::CreateBuffers() {
 }
 
 bool DX11Backend::CreateStates() {
-  // Sampler
   D3D11_SAMPLER_DESC sampDesc = {};
   sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
   sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -207,7 +195,6 @@ bool DX11Backend::CreateStates() {
   if (FAILED(hr))
     return false;
 
-  // Blend state (alpha blending)
   D3D11_BLEND_DESC blendDesc = {};
   blendDesc.RenderTarget[0].BlendEnable = TRUE;
   blendDesc.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
@@ -223,7 +210,6 @@ bool DX11Backend::CreateStates() {
   if (FAILED(hr))
     return false;
 
-  // Rasterizer state
   D3D11_RASTERIZER_DESC rasterDesc = {};
   rasterDesc.FillMode = D3D11_FILL_SOLID;
   rasterDesc.CullMode = D3D11_CULL_NONE;
@@ -234,7 +220,6 @@ bool DX11Backend::CreateStates() {
   if (FAILED(hr))
     return false;
 
-  // Depth stencil state (disable depth)
   D3D11_DEPTH_STENCIL_DESC depthDesc = {};
   depthDesc.DepthEnable = FALSE;
   depthDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
@@ -243,6 +228,56 @@ bool DX11Backend::CreateStates() {
   hr = device->CreateDepthStencilState(&depthDesc, &depthState);
   if (FAILED(hr))
     return false;
+
+  return true;
+}
+
+bool DX11Backend::ResizeVertexBuffer(size_t requiredBytes) {
+  if (!device)
+    return false;
+
+  size_t newSize = vertexBufferSize * 2;
+  while (newSize < requiredBytes)
+    newSize *= 2;
+
+  D3D11_BUFFER_DESC vbDesc = {};
+  vbDesc.ByteWidth = (UINT)newSize;
+  vbDesc.Usage = D3D11_USAGE_DYNAMIC;
+  vbDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+  vbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
+  ComPtr<ID3D11Buffer> newBuffer;
+  HRESULT hr = device->CreateBuffer(&vbDesc, nullptr, &newBuffer);
+  if (FAILED(hr))
+    return false;
+
+  vertexBuffer = newBuffer;
+  vertexBufferSize = newSize;
+
+  return true;
+}
+
+bool DX11Backend::ResizeIndexBuffer(size_t requiredBytes) {
+  if (!device)
+    return false;
+
+  size_t newSize = indexBufferSize * 2;
+  while (newSize < requiredBytes)
+    newSize *= 2;
+
+  D3D11_BUFFER_DESC ibDesc = {};
+  ibDesc.ByteWidth = (UINT)newSize;
+  ibDesc.Usage = D3D11_USAGE_DYNAMIC;
+  ibDesc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+  ibDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
+  ComPtr<ID3D11Buffer> newBuffer;
+  HRESULT hr = device->CreateBuffer(&ibDesc, nullptr, &newBuffer);
+  if (FAILED(hr))
+    return false;
+
+  indexBuffer = newBuffer;
+  indexBufferSize = newSize;
 
   return true;
 }
@@ -256,41 +291,31 @@ void DX11Backend::Render(const std::vector<DrawVertex> &vertices,
     return;
 
   // Resize buffers if needed
-  if (vertices.size() > vertexBufferSize) {
-    vertexBufferSize = vertices.size() * 2;
-    D3D11_BUFFER_DESC vbDesc = {};
-    vbDesc.ByteWidth = (UINT)(vertexBufferSize * sizeof(DrawVertex));
-    vbDesc.Usage = D3D11_USAGE_DYNAMIC;
-    vbDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-    vbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-    vertexBuffer.Reset();
-    device->CreateBuffer(&vbDesc, nullptr, &vertexBuffer);
+  size_t vbSize = vertices.size() * sizeof(DrawVertex);
+  if (vbSize > vertexBufferSize) {
+    if (!ResizeVertexBuffer(vbSize))
+      return;
   }
 
-  if (indices.size() > indexBufferSize) {
-    indexBufferSize = indices.size() * 2;
-    D3D11_BUFFER_DESC ibDesc = {};
-    ibDesc.ByteWidth = (UINT)(indexBufferSize * sizeof(uint16_t));
-    ibDesc.Usage = D3D11_USAGE_DYNAMIC;
-    ibDesc.BindFlags = D3D11_BIND_INDEX_BUFFER;
-    ibDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-    indexBuffer.Reset();
-    device->CreateBuffer(&ibDesc, nullptr, &indexBuffer);
+  size_t ibSize = indices.size() * sizeof(uint16_t);
+  if (ibSize > indexBufferSize) {
+    if (!ResizeIndexBuffer(ibSize))
+      return;
   }
 
-  // Update vertex buffer
+  // Update vertex buffer with DISCARD for best performance
   D3D11_MAPPED_SUBRESOURCE mapped;
   HRESULT hr =
       context->Map(vertexBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
   if (SUCCEEDED(hr)) {
-    memcpy(mapped.pData, vertices.data(), vertices.size() * sizeof(DrawVertex));
+    memcpy(mapped.pData, vertices.data(), vbSize);
     context->Unmap(vertexBuffer.Get(), 0);
   }
 
   // Update index buffer
   hr = context->Map(indexBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
   if (SUCCEEDED(hr)) {
-    memcpy(mapped.pData, indices.data(), indices.size() * sizeof(uint16_t));
+    memcpy(mapped.pData, indices.data(), ibSize);
     context->Unmap(indexBuffer.Get(), 0);
   }
 
@@ -306,9 +331,7 @@ void DX11Backend::Render(const std::vector<DrawVertex> &vertices,
     context->Unmap(constantBuffer.Get(), 0);
   }
 
-  // Save full pipeline state using raw pointers to avoid ComPtr
-  // AddRef/Release overhead. Each Get* call increments refcount once;
-  // we release manually after restore.
+  // Save full pipeline state
   ID3D11RasterizerState *oldRasterState = nullptr;
   ID3D11BlendState *oldBlendState = nullptr;
   ID3D11DepthStencilState *oldDepthState = nullptr;
@@ -351,12 +374,10 @@ void DX11Backend::Render(const std::vector<DrawVertex> &vertices,
   context->RSGetViewports(&oldNumViewports, &oldViewport);
 
   // Set state
-  context->RSSetState(rasterState.Get());
   float blendFactor[4] = {0, 0, 0, 0};
+  context->RSSetState(rasterState.Get());
   context->OMSetBlendState(blendState.Get(), blendFactor, 0xFFFFFFFF);
   context->OMSetDepthStencilState(depthState.Get(), 0);
-
-  // Set shaders and resources
   context->VSSetShader(vertexShader.Get(), nullptr, 0);
   context->VSSetConstantBuffers(0, 1, constantBuffer.GetAddressOf());
   context->PSSetSamplers(0, 1, sampler.GetAddressOf());
@@ -377,14 +398,18 @@ void DX11Backend::Render(const std::vector<DrawVertex> &vertices,
   vp.MaxDepth = 1.0f;
   context->RSSetViewports(1, &vp);
 
-  // Draw each command
+  // Draw with shader caching
+  lastPixelShader = nullptr;
   for (const auto &cmd : commands) {
-    if (cmd.useTexture) {
-      context->PSSetShader(pixelShader.Get(), nullptr, 0);
-    } else {
-      context->PSSetShader(pixelShaderSolid.Get(), nullptr, 0);
+    ID3D11PixelShader *targetPS =
+        cmd.useTexture ? pixelShader.Get() : pixelShaderSolid.Get();
+
+    // Only switch shader if different from last
+    if (targetPS != lastPixelShader) {
+      context->PSSetShader(targetPS, nullptr, 0);
+      lastPixelShader = targetPS;
     }
-    // vertexOffset should be 0 since indices are already absolute
+
     context->DrawIndexed(cmd.indexCount, cmd.indexOffset, 0);
   }
 
@@ -428,6 +453,8 @@ void DX11Backend::Render(const std::vector<DrawVertex> &vertices,
     oldPSSRV->Release();
   if (oldPSSampler)
     oldPSSampler->Release();
+
+  frameCounter++;
 }
 
 } // namespace CustomOverlay

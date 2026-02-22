@@ -559,11 +559,14 @@ static uint8_t *GetTrampolineSlot(void *nearAddr) {
     if (!g_trampolinePool)
       return nullptr;
     g_trampolineOffset = 0;
+    HookLog("GetTrampolineSlot: New pool allocated at %p", g_trampolinePool);
   }
   if (g_trampolineOffset + TRAMPOLINE_ENTRY_SIZE > TRAMPOLINE_POOL_SIZE)
     return nullptr;
 
   uint8_t *slot = g_trampolinePool + g_trampolineOffset;
+  HookLog("GetTrampolineSlot: Allocating slot at offset %zu (addr=%p) for target %p", 
+          g_trampolineOffset, slot, nearAddr);
   g_trampolineOffset += TRAMPOLINE_ENTRY_SIZE;
   return slot;
 }
@@ -1036,6 +1039,8 @@ bool Remove(void *target) {
 void RemoveAll() {
   std::lock_guard<std::mutex> lock(g_hookMutex);
 
+  HookLog("InlineHook::RemoveAll() called - removing %zu hooks", g_hooks.size());
+
   for (auto &h : g_hooks) {
     if (h.installed) {
       DWORD oldProtect;
@@ -1051,6 +1056,7 @@ void RemoveAll() {
   g_hooks.clear();
 
   if (g_trampolinePool) {
+    HookLog("InlineHook::RemoveAll() - freeing trampoline pool at %p", g_trampolinePool);
     VirtualFree(g_trampolinePool, 0, MEM_RELEASE);
     g_trampolinePool = nullptr;
     g_trampolineOffset = 0;

@@ -1,9 +1,15 @@
 /**
  * Custom Overlay - DX10 Backend Implementation
+ *
+ * Optimized version with:
+ * - Shader caching to avoid redundant state changes
+ * - Dynamic buffer resizing
+ * - RAII with ComPtr for safety
  */
 
 #include "custom_overlay_dx10.h"
 #include "overlay_shader_bytecode.h"
+#include "hook_common.h"
 #include <cstring>
 
 namespace CustomOverlay {
@@ -20,10 +26,10 @@ bool DX10Backend::Initialize(int fontTextureWidth, int fontTextureHeight,
   // Create font texture - convert RGBA to BGRA for D3D10
   std::vector<uint8_t> bgraData(fontTextureWidth * fontTextureHeight * 4);
   for (int i = 0; i < fontTextureWidth * fontTextureHeight; i++) {
-    bgraData[i * 4 + 0] = fontTextureData[i * 4 + 2]; // B
-    bgraData[i * 4 + 1] = fontTextureData[i * 4 + 1]; // G
-    bgraData[i * 4 + 2] = fontTextureData[i * 4 + 0]; // R
-    bgraData[i * 4 + 3] = fontTextureData[i * 4 + 3]; // A
+    bgraData[i * 4 + 0] = fontTextureData[i * 4 + 2];
+    bgraData[i * 4 + 1] = fontTextureData[i * 4 + 1];
+    bgraData[i * 4 + 2] = fontTextureData[i * 4 + 0];
+    bgraData[i * 4 + 3] = fontTextureData[i * 4 + 3];
   }
 
   D3D10_TEXTURE2D_DESC texDesc = {};
@@ -44,8 +50,8 @@ bool DX10Backend::Initialize(int fontTextureWidth, int fontTextureHeight,
   if (FAILED(hr))
     return false;
 
-  // Create SRV
-  hr = device->CreateShaderResourceView(fontTexture, nullptr, &fontTextureView);
+  hr = device->CreateShaderResourceView(fontTexture.Get(), nullptr,
+                                        &fontTextureView);
   if (FAILED(hr))
     return false;
 
@@ -64,53 +70,25 @@ void DX10Backend::Shutdown() {
   if (!initialized)
     return;
 
-  if (fontTexture)
-    fontTexture->Release();
-  if (fontTextureView)
-    fontTextureView->Release();
-  if (vertexBuffer)
-    vertexBuffer->Release();
-  if (indexBuffer)
-    indexBuffer->Release();
-  if (constantBuffer)
-    constantBuffer->Release();
-  if (inputLayout)
-    inputLayout->Release();
-  if (vertexShader)
-    vertexShader->Release();
-  if (pixelShader)
-    pixelShader->Release();
-  if (pixelShaderSolid)
-    pixelShaderSolid->Release();
-  if (blendState)
-    blendState->Release();
-  if (samplerState)
-    samplerState->Release();
-  if (rasterizerState)
-    rasterizerState->Release();
-  if (depthStencilState)
-    depthStencilState->Release();
+  fontTexture.Reset();
+  fontTextureView.Reset();
+  vertexBuffer.Reset();
+  indexBuffer.Reset();
+  constantBuffer.Reset();
+  inputLayout.Reset();
+  vertexShader.Reset();
+  pixelShader.Reset();
+  pixelShaderSolid.Reset();
+  blendState.Reset();
+  samplerState.Reset();
+  rasterizerState.Reset();
+  depthStencilState.Reset();
 
-  fontTexture = nullptr;
-  fontTextureView = nullptr;
-  vertexBuffer = nullptr;
-  indexBuffer = nullptr;
-  constantBuffer = nullptr;
-  inputLayout = nullptr;
-  vertexShader = nullptr;
-  pixelShader = nullptr;
-  pixelShaderSolid = nullptr;
-  blendState = nullptr;
-  samplerState = nullptr;
-  rasterizerState = nullptr;
-  depthStencilState = nullptr;
   device = nullptr;
-
   initialized = false;
 }
 
 bool DX10Backend::CreateShaders() {
-  // Use pre-compiled shader bytecode (shared with DX11 - same shader model 4.0)
   HRESULT hr =
       device->CreateVertexShader(g_VS_4_0, sizeof(g_VS_4_0), &vertexShader);
   if (FAILED(hr))
@@ -126,7 +104,6 @@ bool DX10Backend::CreateShaders() {
   if (FAILED(hr))
     return false;
 
-  // Create input layout
   D3D10_INPUT_ELEMENT_DESC layout[] = {
       {"POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 0,
        D3D10_INPUT_PER_VERTEX_DATA, 0},
@@ -145,9 +122,8 @@ bool DX10Backend::CreateShaders() {
 }
 
 bool DX10Backend::CreateBuffers() {
-  // Constant buffer for viewport size (required by vertex shader)
   D3D10_BUFFER_DESC cbDesc = {};
-  cbDesc.ByteWidth = 16; // float2 viewportSize + float2 padding
+  cbDesc.ByteWidth = 16;
   cbDesc.Usage = D3D10_USAGE_DYNAMIC;
   cbDesc.BindFlags = D3D10_BIND_CONSTANT_BUFFER;
   cbDesc.CPUAccessFlags = D3D10_CPU_ACCESS_WRITE;
@@ -156,10 +132,9 @@ bool DX10Backend::CreateBuffers() {
   if (FAILED(hr))
     return false;
 
-  // Vertex buffer (will be resized as needed)
-  vertexBufferSize = 4096;
+  vertexBufferSize = DX10_VERTEX_BUFFER_SIZE;
   D3D10_BUFFER_DESC vbDesc = {};
-  vbDesc.ByteWidth = (UINT)(vertexBufferSize * sizeof(DrawVertex));
+  vbDesc.ByteWidth = (UINT)vertexBufferSize;
   vbDesc.Usage = D3D10_USAGE_DYNAMIC;
   vbDesc.BindFlags = D3D10_BIND_VERTEX_BUFFER;
   vbDesc.CPUAccessFlags = D3D10_CPU_ACCESS_WRITE;
@@ -168,10 +143,9 @@ bool DX10Backend::CreateBuffers() {
   if (FAILED(hr))
     return false;
 
-  // Index buffer
-  indexBufferSize = 8192;
+  indexBufferSize = DX10_INDEX_BUFFER_SIZE;
   D3D10_BUFFER_DESC ibDesc = {};
-  ibDesc.ByteWidth = (UINT)(indexBufferSize * sizeof(uint16_t));
+  ibDesc.ByteWidth = (UINT)indexBufferSize;
   ibDesc.Usage = D3D10_USAGE_DYNAMIC;
   ibDesc.BindFlags = D3D10_BIND_INDEX_BUFFER;
   ibDesc.CPUAccessFlags = D3D10_CPU_ACCESS_WRITE;
@@ -184,7 +158,6 @@ bool DX10Backend::CreateBuffers() {
 }
 
 bool DX10Backend::CreateStates() {
-  // Sampler
   D3D10_SAMPLER_DESC sampDesc = {};
   sampDesc.Filter = D3D10_FILTER_MIN_MAG_MIP_LINEAR;
   sampDesc.AddressU = D3D10_TEXTURE_ADDRESS_CLAMP;
@@ -196,7 +169,6 @@ bool DX10Backend::CreateStates() {
   if (FAILED(hr))
     return false;
 
-  // Blend state (alpha blending)
   D3D10_BLEND_DESC blendDesc = {};
   blendDesc.BlendEnable[0] = TRUE;
   blendDesc.SrcBlend = D3D10_BLEND_SRC_ALPHA;
@@ -211,7 +183,6 @@ bool DX10Backend::CreateStates() {
   if (FAILED(hr))
     return false;
 
-  // Rasterizer state
   D3D10_RASTERIZER_DESC rasterDesc = {};
   rasterDesc.FillMode = D3D10_FILL_SOLID;
   rasterDesc.CullMode = D3D10_CULL_NONE;
@@ -222,7 +193,6 @@ bool DX10Backend::CreateStates() {
   if (FAILED(hr))
     return false;
 
-  // Depth stencil state (disable depth)
   D3D10_DEPTH_STENCIL_DESC depthDesc = {};
   depthDesc.DepthEnable = FALSE;
   depthDesc.DepthWriteMask = D3D10_DEPTH_WRITE_MASK_ALL;
@@ -235,6 +205,56 @@ bool DX10Backend::CreateStates() {
   return true;
 }
 
+bool DX10Backend::ResizeVertexBuffer(size_t requiredBytes) {
+  if (!device)
+    return false;
+
+  size_t newSize = vertexBufferSize * 2;
+  while (newSize < requiredBytes)
+    newSize *= 2;
+
+  D3D10_BUFFER_DESC vbDesc = {};
+  vbDesc.ByteWidth = (UINT)newSize;
+  vbDesc.Usage = D3D10_USAGE_DYNAMIC;
+  vbDesc.BindFlags = D3D10_BIND_VERTEX_BUFFER;
+  vbDesc.CPUAccessFlags = D3D10_CPU_ACCESS_WRITE;
+
+  ComPtr<ID3D10Buffer> newBuffer;
+  HRESULT hr = device->CreateBuffer(&vbDesc, nullptr, &newBuffer);
+  if (FAILED(hr))
+    return false;
+
+  vertexBuffer = newBuffer;
+  vertexBufferSize = newSize;
+
+  return true;
+}
+
+bool DX10Backend::ResizeIndexBuffer(size_t requiredBytes) {
+  if (!device)
+    return false;
+
+  size_t newSize = indexBufferSize * 2;
+  while (newSize < requiredBytes)
+    newSize *= 2;
+
+  D3D10_BUFFER_DESC ibDesc = {};
+  ibDesc.ByteWidth = (UINT)newSize;
+  ibDesc.Usage = D3D10_USAGE_DYNAMIC;
+  ibDesc.BindFlags = D3D10_BIND_INDEX_BUFFER;
+  ibDesc.CPUAccessFlags = D3D10_CPU_ACCESS_WRITE;
+
+  ComPtr<ID3D10Buffer> newBuffer;
+  HRESULT hr = device->CreateBuffer(&ibDesc, nullptr, &newBuffer);
+  if (FAILED(hr))
+    return false;
+
+  indexBuffer = newBuffer;
+  indexBufferSize = newSize;
+
+  return true;
+}
+
 void DX10Backend::Render(const std::vector<DrawVertex> &vertices,
                          const std::vector<uint16_t> &indices,
                          const std::vector<DrawCommand> &commands,
@@ -243,35 +263,23 @@ void DX10Backend::Render(const std::vector<DrawVertex> &vertices,
     return;
 
   // Resize buffers if needed
-  if (vertices.size() > vertexBufferSize) {
-    vertexBufferSize = vertices.size() * 2;
-    D3D10_BUFFER_DESC vbDesc = {};
-    vbDesc.ByteWidth = (UINT)(vertexBufferSize * sizeof(DrawVertex));
-    vbDesc.Usage = D3D10_USAGE_DYNAMIC;
-    vbDesc.BindFlags = D3D10_BIND_VERTEX_BUFFER;
-    vbDesc.CPUAccessFlags = D3D10_CPU_ACCESS_WRITE;
-    if (vertexBuffer)
-      vertexBuffer->Release();
-    device->CreateBuffer(&vbDesc, nullptr, &vertexBuffer);
+  size_t vbSize = vertices.size() * sizeof(DrawVertex);
+  if (vbSize > vertexBufferSize) {
+    if (!ResizeVertexBuffer(vbSize))
+      return;
   }
 
-  if (indices.size() > indexBufferSize) {
-    indexBufferSize = indices.size() * 2;
-    D3D10_BUFFER_DESC ibDesc = {};
-    ibDesc.ByteWidth = (UINT)(indexBufferSize * sizeof(uint16_t));
-    ibDesc.Usage = D3D10_USAGE_DYNAMIC;
-    ibDesc.BindFlags = D3D10_BIND_INDEX_BUFFER;
-    ibDesc.CPUAccessFlags = D3D10_CPU_ACCESS_WRITE;
-    if (indexBuffer)
-      indexBuffer->Release();
-    device->CreateBuffer(&ibDesc, nullptr, &indexBuffer);
+  size_t ibSize = indices.size() * sizeof(uint16_t);
+  if (ibSize > indexBufferSize) {
+    if (!ResizeIndexBuffer(ibSize))
+      return;
   }
 
   // Update vertex buffer
   void *mapped = nullptr;
   HRESULT hr = vertexBuffer->Map(D3D10_MAP_WRITE_DISCARD, 0, &mapped);
   if (SUCCEEDED(hr)) {
-    memcpy(mapped, vertices.data(), vertices.size() * sizeof(DrawVertex));
+    memcpy(mapped, vertices.data(), vbSize);
     vertexBuffer->Unmap();
   }
 
@@ -279,11 +287,11 @@ void DX10Backend::Render(const std::vector<DrawVertex> &vertices,
   mapped = nullptr;
   hr = indexBuffer->Map(D3D10_MAP_WRITE_DISCARD, 0, &mapped);
   if (SUCCEEDED(hr)) {
-    memcpy(mapped, indices.data(), indices.size() * sizeof(uint16_t));
+    memcpy(mapped, indices.data(), ibSize);
     indexBuffer->Unmap();
   }
 
-  // Update constant buffer with viewport size
+  // Update constant buffer
   mapped = nullptr;
   hr = constantBuffer->Map(D3D10_MAP_WRITE_DISCARD, 0, &mapped);
   if (SUCCEEDED(hr)) {
@@ -295,13 +303,12 @@ void DX10Backend::Render(const std::vector<DrawVertex> &vertices,
     constantBuffer->Unmap();
   }
 
-  // Save pipeline state
+  // Save full pipeline state
   ID3D10RasterizerState *oldRasterState = nullptr;
   ID3D10BlendState *oldBlendState = nullptr;
   ID3D10DepthStencilState *oldDepthState = nullptr;
   FLOAT oldBlendFactor[4];
-  UINT oldSampleMask = 0;
-  UINT oldStencilRef = 0;
+  UINT oldSampleMask, oldStencilRef;
   device->RSGetState(&oldRasterState);
   device->OMGetBlendState(&oldBlendState, oldBlendFactor, &oldSampleMask);
   device->OMGetDepthStencilState(&oldDepthState, &oldStencilRef);
@@ -325,15 +332,13 @@ void DX10Backend::Render(const std::vector<DrawVertex> &vertices,
   device->IAGetVertexBuffers(0, 1, &oldVB, &oldVBStride, &oldVBOffset);
   device->IAGetIndexBuffer(&oldIB, &oldIBFormat, &oldIBOffset);
 
-  // Save PS resources
+  // Save VS constant buffer and PS resources
+  ID3D10Buffer *oldVSCB = nullptr;
   ID3D10ShaderResourceView *oldPSSRV = nullptr;
   ID3D10SamplerState *oldPSSampler = nullptr;
+  device->VSGetConstantBuffers(0, 1, &oldVSCB);
   device->PSGetShaderResources(0, 1, &oldPSSRV);
   device->PSGetSamplers(0, 1, &oldPSSampler);
-
-  // Save VS constant buffer
-  ID3D10Buffer *oldVSCB = nullptr;
-  device->VSGetConstantBuffers(0, 1, &oldVSCB);
 
   // Save viewport
   UINT oldNumViewports = 1;
@@ -341,22 +346,20 @@ void DX10Backend::Render(const std::vector<DrawVertex> &vertices,
   device->RSGetViewports(&oldNumViewports, &oldViewport);
 
   // Set state
-  device->RSSetState(rasterizerState);
   float blendFactor[4] = {0, 0, 0, 0};
-  device->OMSetBlendState(blendState, blendFactor, 0xFFFFFFFF);
-  device->OMSetDepthStencilState(depthStencilState, 0);
-
-  // Set shaders and resources
-  device->VSSetShader(vertexShader);
-  device->VSSetConstantBuffers(0, 1, &constantBuffer);
-  device->PSSetSamplers(0, 1, &samplerState);
-  device->PSSetShaderResources(0, 1, &fontTextureView);
-  device->IASetInputLayout(inputLayout);
+  device->RSSetState(rasterizerState.Get());
+  device->OMSetBlendState(blendState.Get(), blendFactor, 0xFFFFFFFF);
+  device->OMSetDepthStencilState(depthStencilState.Get(), 0);
+  device->VSSetShader(vertexShader.Get());
+  device->VSSetConstantBuffers(0, 1, constantBuffer.GetAddressOf());
+  device->PSSetSamplers(0, 1, samplerState.GetAddressOf());
+  device->PSSetShaderResources(0, 1, fontTextureView.GetAddressOf());
+  device->IASetInputLayout(inputLayout.Get());
 
   UINT stride = sizeof(DrawVertex);
   UINT offset = 0;
-  device->IASetVertexBuffers(0, 1, &vertexBuffer, &stride, &offset);
-  device->IASetIndexBuffer(indexBuffer, DXGI_FORMAT_R16_UINT, 0);
+  device->IASetVertexBuffers(0, 1, vertexBuffer.GetAddressOf(), &stride, &offset);
+  device->IASetIndexBuffer(indexBuffer.Get(), DXGI_FORMAT_R16_UINT, 0);
   device->IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
   // Set viewport
@@ -366,27 +369,31 @@ void DX10Backend::Render(const std::vector<DrawVertex> &vertices,
   vp.MaxDepth = 1.0f;
   device->RSSetViewports(1, &vp);
 
-  // Draw each command
+  // Draw with shader caching
+  lastPixelShader = nullptr;
   for (const auto &cmd : commands) {
-    if (cmd.useTexture) {
-      device->PSSetShader(pixelShader);
-    } else {
-      device->PSSetShader(pixelShaderSolid);
+    ID3D10PixelShader *targetPS =
+        cmd.useTexture ? pixelShader.Get() : pixelShaderSolid.Get();
+
+    if (targetPS != lastPixelShader) {
+      device->PSSetShader(targetPS);
+      lastPixelShader = targetPS;
     }
+
     device->DrawIndexed(cmd.indexCount, cmd.indexOffset, 0);
   }
 
-  // Restore pipeline state
+  // Restore full pipeline state and release raw pointers
   device->RSSetState(oldRasterState);
   device->OMSetBlendState(oldBlendState, oldBlendFactor, oldSampleMask);
   device->OMSetDepthStencilState(oldDepthState, oldStencilRef);
   device->VSSetShader(oldVS);
-  device->VSSetConstantBuffers(0, 1, &oldVSCB);
   device->PSSetShader(oldPS);
   device->IASetInputLayout(oldInputLayout);
   device->IASetPrimitiveTopology(oldTopology);
   device->IASetVertexBuffers(0, 1, &oldVB, &oldVBStride, &oldVBOffset);
   device->IASetIndexBuffer(oldIB, oldIBFormat, oldIBOffset);
+  device->VSSetConstantBuffers(0, 1, &oldVSCB);
   device->PSSetShaderResources(0, 1, &oldPSSRV);
   device->PSSetSamplers(0, 1, &oldPSSampler);
   if (oldNumViewports > 0) {

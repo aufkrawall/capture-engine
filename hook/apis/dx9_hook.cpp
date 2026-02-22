@@ -76,7 +76,8 @@ static PFN_D3D9_SwapChain_Present_Inline oD3D9SwapChainPresentTrampoline =
     nullptr;
 
 // Inline hooks installed flag
-static bool g_InlineHooksInstalled = false;
+static std::atomic<bool> g_InlineHooksInstalled{false};
+static std::atomic<bool> g_InlineHooksInProgress{false}; // Guard against re-entry (atomic for thread safety)
 
 // Globals
 static PerformanceMetrics g_PerfMetrics;
@@ -537,16 +538,30 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9SwapChainPresentInline(
 }
 
 static bool InstallD3D9InlineHooks() {
+  // Guard against re-entry - this function may be called recursively
+  // if GetD3D9PresentAddresses triggers a hook that calls back here
+  EarlyLog("DX9: InstallD3D9InlineHooks called (installed=%d, inProgress=%d)",
+           g_InlineHooksInstalled ? 1 : 0, g_InlineHooksInProgress ? 1 : 0);
+  
   if (g_InlineHooksInstalled)
     return true;
+  if (g_InlineHooksInProgress) {
+    EarlyLog("DX9: InstallD3D9InlineHooks - re-entry blocked");
+    return true; // Already being installed, don't re-enter
+  }
+
+  g_InlineHooksInProgress = true;
+  EarlyLog("DX9: InstallD3D9InlineHooks - guard set, proceeding");
 
   void *presentAddr = nullptr;
   void *presentExAddr = nullptr;
   void *swapChainPresentAddr = nullptr;
 
+  EarlyLog("DX9: Calling GetD3D9PresentAddresses...");
   if (!GetD3D9PresentAddresses(&presentAddr, &presentExAddr,
                                &swapChainPresentAddr)) {
     EarlyLog("DX9: Failed to get Present addresses for inline hooks");
+    g_InlineHooksInProgress = false;
     return false;
   }
 
@@ -555,6 +570,7 @@ static bool InstallD3D9InlineHooks() {
       presentAddr, presentExAddr, swapChainPresentAddr);
 
   if (presentAddr) {
+    EarlyLog("DX9: Installing Present inline hook at %p...", presentAddr);
     void *trampoline = nullptr;
     if (InlineHook::Install(presentAddr, (void *)DetourD3D9PresentInline,
                             &trampoline)) {
@@ -563,21 +579,26 @@ static bool InstallD3D9InlineHooks() {
                presentAddr, trampoline);
     } else {
       EarlyLog("DX9: Failed to install Present inline hook");
+      g_InlineHooksInProgress = false;
       return false;
     }
   }
 
   if (presentExAddr) {
+    EarlyLog("DX9: Installing PresentEx inline hook at %p...", presentExAddr);
     void *trampoline = nullptr;
     if (InlineHook::Install(presentExAddr, (void *)DetourD3D9PresentExInline,
                             &trampoline)) {
       oD3D9PresentExTrampoline = (PFN_D3D9_PresentEx_Inline)trampoline;
       EarlyLog("DX9: PresentEx inline hook installed (addr=%p, trampoline=%p)",
                presentExAddr, trampoline);
+    } else {
+      EarlyLog("DX9: PresentEx inline hook installation failed (non-fatal)");
     }
   }
 
   if (swapChainPresentAddr) {
+    EarlyLog("DX9: Installing SwapChain::Present inline hook at %p...", swapChainPresentAddr);
     void *trampoline = nullptr;
     if (InlineHook::Install(swapChainPresentAddr,
                             (void *)DetourD3D9SwapChainPresentInline,
@@ -587,10 +608,14 @@ static bool InstallD3D9InlineHooks() {
       EarlyLog("DX9: SwapChain::Present inline hook installed (addr=%p, "
                "trampoline=%p)",
                swapChainPresentAddr, trampoline);
+    } else {
+      EarlyLog("DX9: SwapChain::Present inline hook installation failed (non-fatal)");
     }
   }
 
+  EarlyLog("DX9: All inline hooks installed successfully");
   g_InlineHooksInstalled = true;
+  g_InlineHooksInProgress = false;
   return true;
 }
 

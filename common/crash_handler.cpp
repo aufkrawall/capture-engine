@@ -174,13 +174,16 @@ CrashHandlerExceptionFilter(EXCEPTION_POINTERS *pExceptionPointers) {
        code == EXCEPTION_INT_DIVIDE_BY_ZERO ||
        code == EXCEPTION_STACK_OVERFLOW || code == EXCEPTION_BREAKPOINT ||
        code == EXCEPTION_PRIV_INSTRUCTION || code == 0x40000015 || // Abort
-       code == 0xC0000409 || // Stack buffer overrun
-       code == 0xC0000006 || // In-page I/O error
-       code == 0xC000001D || // Illegal instruction
-       code == 0xC0000025 || // Non-continuable exception
-       code == 0xC0000374 || // Heap corruption
-       code == 0xC00000FD || // Stack overflow (alt)
-       code == 0x00008000);  // UE5 GPU crash (D3D device removed)
+       code == 0xC0000409 ||                                       // Stack buffer overrun
+       code == 0xC0000006 ||                                       // In-page I/O error
+       code == 0xC000001D ||                                       // Illegal instruction
+       code == 0xC0000025 ||                                       // Non-continuable exception
+       code == 0xC0000374 ||                                       // Heap corruption
+       code == 0xC00000FD ||                                       // Stack overflow (alt)
+       code == 0x00008000 ||                                       // UE5 GPU crash (D3D device removed)
+       code == 0x80000002 ||                                       // Guard page violation
+       code == 0xC000013A ||                                       // Control-C/Control-Break
+       code == 0xC0000142);                                        // DLL init failed
 
   // If it's a known debug exception, skip it
   if (isKnownDebugException) {
@@ -257,12 +260,16 @@ UnhandledExceptionFilterCallback(EXCEPTION_POINTERS *pExceptionPointers) {
        code == EXCEPTION_INT_DIVIDE_BY_ZERO ||
        code == EXCEPTION_STACK_OVERFLOW || code == EXCEPTION_BREAKPOINT ||
        code == EXCEPTION_PRIV_INSTRUCTION || code == 0x40000015 || // Abort
-       code == 0xC0000409 || // Stack buffer overrun
-       code == 0xC0000006 || // In-page I/O error
-       code == 0xC000001D || // Illegal instruction
-       code == 0xC0000025 || // Non-continuable exception
-       code == 0xC0000374 || // Heap corruption
-       code == 0xC00000FD);  // Stack overflow (alt)
+       code == 0xC0000409 ||                                       // Stack buffer overrun
+       code == 0xC0000006 ||                                       // In-page I/O error
+       code == 0xC000001D ||                                       // Illegal instruction
+       code == 0xC0000025 ||                                       // Non-continuable exception
+       code == 0xC0000374 ||                                       // Heap corruption
+       code == 0xC00000FD ||                                       // Stack overflow (alt)
+       code == 0x00008000 ||                                       // UE5 GPU crash (D3D device removed)
+       code == 0x80000002 ||                                       // Guard page violation
+       code == 0xC000013A ||                                       // Control-C/Control-Break
+       code == 0xC0000142);                                        // DLL init failed
 
   if (isKnownCrash) {
     TraceCrash("Unhandled exception is a crash - handling it");

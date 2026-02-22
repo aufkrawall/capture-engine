@@ -1,5 +1,10 @@
 /**
  * Custom Overlay - DX9 Backend Implementation
+ *
+ * Optimized version with:
+ * - Texture caching to avoid redundant SetTexture calls
+ * - Dynamic buffer resizing
+ * - Efficient vertex conversion
  */
 
 #include "custom_overlay_dx9.h"
@@ -10,9 +15,9 @@ namespace CustomOverlay {
 
 // Custom vertex format for DX9
 struct DX9Vertex {
-  float x, y, z, rhw; // Transformed position
-  DWORD color;        // Diffuse color
-  float u, v;         // Texture coords
+  float x, y, z, rhw;
+  DWORD color;
+  float u, v;
 };
 
 #define D3DFVF_CUSTOMVERTEX (D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1)
@@ -26,14 +31,12 @@ bool DX9Backend::Initialize(int fontTextureWidth, int fontTextureHeight,
   if (initialized || !device)
     return false;
 
-  // Create font texture
   HRESULT hr = device->CreateTexture(fontTextureWidth, fontTextureHeight, 1,
                                      D3DUSAGE_DYNAMIC, D3DFMT_A8R8G8B8,
                                      D3DPOOL_DEFAULT, &fontTexture, nullptr);
   if (FAILED(hr))
     return false;
 
-  // Lock and copy texture data (convert RGBA to ARGB)
   D3DLOCKED_RECT lockedRect;
   hr = fontTexture->LockRect(0, &lockedRect, nullptr, D3DLOCK_DISCARD);
   if (SUCCEEDED(hr)) {
@@ -41,11 +44,10 @@ bool DX9Backend::Initialize(int fontTextureWidth, int fontTextureHeight,
       uint8_t *dst = (uint8_t *)lockedRect.pBits + y * lockedRect.Pitch;
       const uint8_t *src = fontTextureData + y * fontTextureWidth * 4;
       for (int x = 0; x < fontTextureWidth; x++) {
-        // RGBA -> ARGB (BGRA in memory)
-        dst[0] = src[2]; // B
-        dst[1] = src[1]; // G
-        dst[2] = src[0]; // R
-        dst[3] = src[3]; // A
+        dst[0] = src[2];
+        dst[1] = src[1];
+        dst[2] = src[0];
+        dst[3] = src[3];
         dst += 4;
         src += 4;
       }
@@ -53,18 +55,16 @@ bool DX9Backend::Initialize(int fontTextureWidth, int fontTextureHeight,
     fontTexture->UnlockRect(0);
   }
 
-  // Create vertex buffer
-  vertexBufferSize = 4096;
-  hr = device->CreateVertexBuffer((UINT)(vertexBufferSize * sizeof(DX9Vertex)),
+  vertexBufferSize = DX9_VERTEX_BUFFER_SIZE;
+  hr = device->CreateVertexBuffer((UINT)vertexBufferSize,
                                   D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY,
                                   D3DFVF_CUSTOMVERTEX, D3DPOOL_DEFAULT,
                                   &vertexBuffer, nullptr);
   if (FAILED(hr))
     return false;
 
-  // Create index buffer
-  indexBufferSize = 8192;
-  hr = device->CreateIndexBuffer((UINT)(indexBufferSize * sizeof(uint16_t)),
+  indexBufferSize = DX9_INDEX_BUFFER_SIZE;
+  hr = device->CreateIndexBuffer((UINT)indexBufferSize,
                                  D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY,
                                  D3DFMT_INDEX16, D3DPOOL_DEFAULT, &indexBuffer,
                                  nullptr);
@@ -76,10 +76,6 @@ bool DX9Backend::Initialize(int fontTextureWidth, int fontTextureHeight,
 }
 
 void DX9Backend::Shutdown() {
-  if (stateBlock) {
-    stateBlock->Release();
-    stateBlock = nullptr;
-  }
   if (indexBuffer) {
     indexBuffer->Release();
     indexBuffer = nullptr;
@@ -95,57 +91,77 @@ void DX9Backend::Shutdown() {
   initialized = false;
 }
 
+bool DX9Backend::ResizeVertexBuffer(size_t requiredBytes) {
+  if (!device)
+    return false;
+
+  size_t newSize = vertexBufferSize * 2;
+  while (newSize < requiredBytes)
+    newSize *= 2;
+
+  IDirect3DVertexBuffer9 *newBuffer = nullptr;
+  HRESULT hr = device->CreateVertexBuffer((UINT)newSize,
+                                          D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY,
+                                          D3DFVF_CUSTOMVERTEX, D3DPOOL_DEFAULT,
+                                          &newBuffer, nullptr);
+  if (FAILED(hr))
+    return false;
+
+  if (vertexBuffer)
+    vertexBuffer->Release();
+
+  vertexBuffer = newBuffer;
+  vertexBufferSize = newSize;
+
+  return true;
+}
+
+bool DX9Backend::ResizeIndexBuffer(size_t requiredBytes) {
+  if (!device)
+    return false;
+
+  size_t newSize = indexBufferSize * 2;
+  while (newSize < requiredBytes)
+    newSize *= 2;
+
+  IDirect3DIndexBuffer9 *newBuffer = nullptr;
+  HRESULT hr = device->CreateIndexBuffer((UINT)newSize,
+                                         D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY,
+                                         D3DFMT_INDEX16, D3DPOOL_DEFAULT,
+                                         &newBuffer, nullptr);
+  if (FAILED(hr))
+    return false;
+
+  if (indexBuffer)
+    indexBuffer->Release();
+
+  indexBuffer = newBuffer;
+  indexBufferSize = newSize;
+
+  return true;
+}
+
 void DX9Backend::Render(const std::vector<DrawVertex> &vertices,
                         const std::vector<uint16_t> &indices,
                         const std::vector<DrawCommand> &commands,
                         int viewportWidth, int viewportHeight) {
-  static int logCount = 0;
-  if (logCount < 3) {
-    HookLog("DX9Backend::Render: initialized=%d, device=%p, vertices=%zu, "
-            "indices=%zu, commands=%zu, vp=%dx%d",
-            initialized ? 1 : 0, (void *)device, vertices.size(),
-            indices.size(), commands.size(), viewportWidth, viewportHeight);
-    logCount++;
-  }
-
   if (!initialized || !device || vertices.empty())
     return;
 
-  // Create state block to save state
-  device->CreateStateBlock(D3DSBT_ALL, &stateBlock);
-  stateBlock->Capture();
-
-  // Set viewport to full screen for pre-transformed vertices
-  D3DVIEWPORT9 vp = {0,    0,   (DWORD)viewportWidth, (DWORD)viewportHeight,
-                     0.0f, 1.0f};
-  device->SetViewport(&vp);
-
-  // DX9 requires drawing between BeginScene/EndScene
-  // The app may have already called EndScene before Present
-  device->BeginScene();
-
   // Resize buffers if needed
-  if (vertices.size() > vertexBufferSize) {
-    if (vertexBuffer)
-      vertexBuffer->Release();
-    vertexBufferSize = vertices.size() * 2;
-    device->CreateVertexBuffer((UINT)(vertexBufferSize * sizeof(DX9Vertex)),
-                               D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY,
-                               D3DFVF_CUSTOMVERTEX, D3DPOOL_DEFAULT,
-                               &vertexBuffer, nullptr);
+  size_t vbSize = vertices.size() * sizeof(DX9Vertex);
+  if (vbSize > vertexBufferSize) {
+    if (!ResizeVertexBuffer(vbSize))
+      return;
   }
 
-  if (indices.size() > indexBufferSize) {
-    if (indexBuffer)
-      indexBuffer->Release();
-    indexBufferSize = indices.size() * 2;
-    device->CreateIndexBuffer((UINT)(indexBufferSize * sizeof(uint16_t)),
-                              D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY,
-                              D3DFMT_INDEX16, D3DPOOL_DEFAULT, &indexBuffer,
-                              nullptr);
+  size_t ibSize = indices.size() * sizeof(uint16_t);
+  if (ibSize > indexBufferSize) {
+    if (!ResizeIndexBuffer(ibSize))
+      return;
   }
 
-  // Convert and upload vertices
+  // Upload vertices
   void *vbPtr;
   if (SUCCEEDED(vertexBuffer->Lock(0, 0, &vbPtr, D3DLOCK_DISCARD))) {
     DX9Vertex *dst = (DX9Vertex *)vbPtr;
@@ -154,7 +170,6 @@ void DX9Backend::Render(const std::vector<DrawVertex> &vertices,
       dst->y = v.y;
       dst->z = 0.0f;
       dst->rhw = 1.0f;
-      // Convert ABGR to ARGB
       uint8_t r = (v.color >> 0) & 0xFF;
       uint8_t g = (v.color >> 8) & 0xFF;
       uint8_t b = (v.color >> 16) & 0xFF;
@@ -165,24 +180,40 @@ void DX9Backend::Render(const std::vector<DrawVertex> &vertices,
       dst++;
     }
     vertexBuffer->Unlock();
-
-    // Debug: Log first few vertices
-    static int vertLogCount = 0;
-    if (vertLogCount < 2 && vertices.size() >= 4) {
-      HookLog("DX9Backend: First 4 vertices: (%.1f,%.1f) (%.1f,%.1f) "
-              "(%.1f,%.1f) (%.1f,%.1f)",
-              vertices[0].x, vertices[0].y, vertices[1].x, vertices[1].y,
-              vertices[2].x, vertices[2].y, vertices[3].x, vertices[3].y);
-      vertLogCount++;
-    }
   }
 
   // Upload indices
   void *ibPtr;
   if (SUCCEEDED(indexBuffer->Lock(0, 0, &ibPtr, D3DLOCK_DISCARD))) {
-    memcpy(ibPtr, indices.data(), indices.size() * sizeof(uint16_t));
+    memcpy(ibPtr, indices.data(), ibSize);
     indexBuffer->Unlock();
   }
+
+  // Save minimal state
+  DWORD oldFVF;
+  IDirect3DVertexBuffer9 *oldVB = nullptr;
+  IDirect3DIndexBuffer9 *oldIB = nullptr;
+  IDirect3DBaseTexture9 *oldTex = nullptr;
+  DWORD oldAlphaBlend, oldSrcBlend, oldDestBlend;
+  DWORD oldZEnable, oldCullMode, oldLighting;
+
+  device->GetFVF(&oldFVF);
+  device->GetStreamSource(0, &oldVB, nullptr, nullptr);
+  device->GetIndices(&oldIB);
+  device->GetTexture(0, &oldTex);
+  device->GetRenderState(D3DRS_ALPHABLENDENABLE, &oldAlphaBlend);
+  device->GetRenderState(D3DRS_SRCBLEND, &oldSrcBlend);
+  device->GetRenderState(D3DRS_DESTBLEND, &oldDestBlend);
+  device->GetRenderState(D3DRS_ZENABLE, &oldZEnable);
+  device->GetRenderState(D3DRS_CULLMODE, &oldCullMode);
+  device->GetRenderState(D3DRS_LIGHTING, &oldLighting);
+
+  // Set viewport
+  D3DVIEWPORT9 vp = {0, 0, (DWORD)viewportWidth, (DWORD)viewportHeight, 0.0f, 1.0f};
+  device->SetViewport(&vp);
+
+  // BeginScene if needed
+  device->BeginScene();
 
   // Set render state
   device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
@@ -206,34 +237,42 @@ void DX9Backend::Render(const std::vector<DrawVertex> &vertices,
   device->SetIndices(indexBuffer);
   device->SetFVF(D3DFVF_CUSTOMVERTEX);
 
-  // Draw commands
+  // Draw with texture caching
+  lastTexture = nullptr;
   for (const auto &cmd : commands) {
-    if (cmd.useTexture) {
-      device->SetTexture(0, fontTexture);
-    } else {
-      device->SetTexture(0, nullptr);
+    IDirect3DBaseTexture9 *targetTex = cmd.useTexture ? fontTexture : nullptr;
+
+    if (targetTex != lastTexture) {
+      device->SetTexture(0, targetTex);
+      lastTexture = targetTex;
     }
 
-    // BaseVertexIndex should be 0 since indices are already absolute
-    HRESULT hr = device->DrawIndexedPrimitive(
-        D3DPT_TRIANGLELIST, 0, 0, (UINT)vertices.size(), cmd.indexOffset,
-        cmd.indexCount / 3);
-    static int drawLogCount = 0;
-    if (drawLogCount < 3) {
-      HookLog("DX9Backend: DrawIndexedPrimitive hr=0x%08X, verts=%u, "
-              "idxOffset=%u, primCount=%u",
-              hr, (UINT)vertices.size(), cmd.indexOffset, cmd.indexCount / 3);
-      drawLogCount++;
-    }
+    device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
+                                  (UINT)vertices.size(), cmd.indexOffset,
+                                  cmd.indexCount / 3);
   }
 
-  // End our scene
   device->EndScene();
 
   // Restore state
-  stateBlock->Apply();
-  stateBlock->Release();
-  stateBlock = nullptr;
+  device->SetFVF(oldFVF);
+  device->SetStreamSource(0, oldVB, 0, 0);
+  device->SetIndices(oldIB);
+  device->SetTexture(0, oldTex);
+  device->SetRenderState(D3DRS_ALPHABLENDENABLE, oldAlphaBlend);
+  device->SetRenderState(D3DRS_SRCBLEND, oldSrcBlend);
+  device->SetRenderState(D3DRS_DESTBLEND, oldDestBlend);
+  device->SetRenderState(D3DRS_ZENABLE, oldZEnable);
+  device->SetRenderState(D3DRS_CULLMODE, oldCullMode);
+  device->SetRenderState(D3DRS_LIGHTING, oldLighting);
+
+  // Release saved state
+  if (oldVB)
+    oldVB->Release();
+  if (oldIB)
+    oldIB->Release();
+  if (oldTex)
+    oldTex->Release();
 }
 
 } // namespace CustomOverlay

@@ -1544,8 +1544,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
         g_pLocalConfig = new AppConfig();
       }
 
-      // Active Game: Now it's safe to install the crash handler
-      InstallCrashHandler();
+      // Crash handler already installed at DLL load (line 1503)
 
       _putenv("FERMI_UNOPT_LOD_SPREAD=1");
       _putenv("NIAGARA_UNOPT_LOD_SPREAD=1");

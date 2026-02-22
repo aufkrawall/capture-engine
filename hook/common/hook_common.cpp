@@ -165,6 +165,9 @@ SharedMemoryLayout *g_pSharedMem = nullptr;
 std::atomic<bool> g_ShuttingDown{false};
 std::atomic<bool> g_GraphicsOverridesActive{false};
 
+// Global sequence counter for log ordering diagnostics
+static std::atomic<uint64_t> g_LogSequence{0};
+
 // Early debug log - writes directly to file without IPC dependency
 // Used for debugging crashes before IPC connects
 // OPTIMIZED: Uses stack buffers and avoids global locks for the hot path (SHM)
@@ -205,11 +208,14 @@ static void LogToFileAtomic(const char *baseFilename, const char *fmt,
   SYSTEMTIME st;
   GetLocalTime(&st);
   DWORD tid = GetCurrentThreadId();
+  
+  // Get sequence number for ordering diagnostics
+  uint64_t seq = g_LogSequence.fetch_add(1, std::memory_order_relaxed);
 
   int len =
       snprintf(lineBuffer, sizeof(lineBuffer),
-               "[%02d:%02d:%02d.%03d] [T:%04X] [%s] %s", st.wHour, st.wMinute,
-               st.wSecond, st.wMilliseconds, tid, g_ProcessName, formatBuffer);
+                "[%02d:%02d:%02d.%03d] [T:%04X] [S:%llu] [%s] %s", st.wHour, st.wMinute,
+                st.wSecond, st.wMilliseconds, tid, (unsigned long long)seq, g_ProcessName, formatBuffer);
 
   if (len <= 0)
     return;
@@ -217,6 +223,9 @@ static void LogToFileAtomic(const char *baseFilename, const char *fmt,
     len = (int)sizeof(lineBuffer) - 1;
 
   // --- PRIMARY: Push to Shared Memory Ring Buffer (Lock-Free) ---
+  // When IPC is connected, we ONLY write to shared memory.
+  // The logger_service.cpp consumer reads from SHM and writes to file.
+  // This prevents duplicate log entries.
   if (g_IPC) {
     // Load pointer atomically in case it's being torn down (unlikely but safe)
     SharedMemoryLayout *shm = g_IPC->GetSharedMem();
@@ -233,19 +242,20 @@ static void LogToFileAtomic(const char *baseFilename, const char *fmt,
         // Write to our reserved slot
         snprintf(slot, SharedMemoryLayout::LogBuffer::SLOT_SIZE, "[%s] %s",
                  baseFilename, lineBuffer);
-        return; // Done! No file I/O, no mutex.
+        return; // Done! Logger service will write to file.
       } else {
         logs.overflowCount.fetch_add(1, std::memory_order_relaxed);
-        // Fall through to file logging if SHM is full?
-        // Or just drop? Dropping is safer for performance, but we might miss
-        // info. Let's drop to avoid stalling the render thread on file I/O when
-        // the consumer is slow.
+        // Buffer full - drop the log rather than write directly to file
+        // This prevents duplicates if consumer catches up later
         return;
       }
     }
+    // If g_IPC is set but GetSharedMem() returns null, IPC is shutting down
+    // Don't write to file in this case either - just drop
+    return;
   }
 
-  // --- FALLBACK: Direct File Logging (Early Init or No IPC) ---
+  // --- FALLBACK: Direct File Logging (Before IPC Connects) ---
   // Only lock for file I/O
   static std::mutex s_FileLogMutex;
   static char s_logDir[MAX_PATH] = {0};

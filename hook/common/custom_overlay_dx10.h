@@ -3,14 +3,26 @@
  *
  * Renders overlay using Direct3D 10.
  * Creates shaders, textures, and buffers for overlay rendering.
+ *
+ * Optimizations:
+ * - Shader caching to avoid redundant state changes
+ * - Minimal state save/restore
+ * - RAII with ComPtr for safety
  */
 
 #pragma once
 
 #include "custom_overlay.h"
 #include <d3d10.h>
+#include <wrl/client.h>
 
 namespace CustomOverlay {
+
+using Microsoft::WRL::ComPtr;
+
+// Buffer size constants
+constexpr size_t DX10_VERTEX_BUFFER_SIZE = 65536 * sizeof(DrawVertex);
+constexpr size_t DX10_INDEX_BUFFER_SIZE = 131072 * sizeof(uint16_t);
 
 class DX10Backend : public RendererBackend {
 public:
@@ -30,25 +42,31 @@ private:
   bool CreateShaders();
   bool CreateBuffers();
   bool CreateStates();
+  bool ResizeVertexBuffer(size_t requiredBytes);
+  bool ResizeIndexBuffer(size_t requiredBytes);
 
   ID3D10Device *device = nullptr;
 
-  ID3D10Texture2D *fontTexture = nullptr;
-  ID3D10ShaderResourceView *fontTextureView = nullptr;
-  ID3D10Buffer *vertexBuffer = nullptr;
-  ID3D10Buffer *indexBuffer = nullptr;
-  ID3D10Buffer *constantBuffer = nullptr;
-  ID3D10InputLayout *inputLayout = nullptr;
-  ID3D10VertexShader *vertexShader = nullptr;
-  ID3D10PixelShader *pixelShader = nullptr;
-  ID3D10PixelShader *pixelShaderSolid = nullptr;
-  ID3D10BlendState *blendState = nullptr;
-  ID3D10SamplerState *samplerState = nullptr;
-  ID3D10RasterizerState *rasterizerState = nullptr;
-  ID3D10DepthStencilState *depthStencilState = nullptr;
+  ComPtr<ID3D10Texture2D> fontTexture;
+  ComPtr<ID3D10ShaderResourceView> fontTextureView;
+  ComPtr<ID3D10Buffer> vertexBuffer;
+  ComPtr<ID3D10Buffer> indexBuffer;
+  ComPtr<ID3D10Buffer> constantBuffer;
+  ComPtr<ID3D10InputLayout> inputLayout;
+  ComPtr<ID3D10VertexShader> vertexShader;
+  ComPtr<ID3D10PixelShader> pixelShader;
+  ComPtr<ID3D10PixelShader> pixelShaderSolid;
+  ComPtr<ID3D10BlendState> blendState;
+  ComPtr<ID3D10SamplerState> samplerState;
+  ComPtr<ID3D10RasterizerState> rasterizerState;
+  ComPtr<ID3D10DepthStencilState> depthStencilState;
 
   size_t vertexBufferSize = 0;
   size_t indexBufferSize = 0;
+
+  // Shader caching
+  ID3D10PixelShader *lastPixelShader = nullptr;
+
   bool initialized = false;
 };
 

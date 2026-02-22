@@ -43,117 +43,7 @@
 #include "../wrappers/wrapper_base.h"
 #include "dxgi_shared.h"
 
-// ============================================================================
-// Crash Dump Support
-// ============================================================================
-static bool g_CrashDumpInitialized = false;
-static std::wstring g_DumpFolderPath;
 
-static void InitDumpFolderPath() {
-  if (!g_DumpFolderPath.empty())
-    return;
-
-  // Use centralized logs folder in captureengine installation
-  wchar_t modulePath[MAX_PATH] = {};
-  HMODULE hModule = GetModuleHandleW(L"capture_hook_x64.dll");
-  if (!hModule) {
-    hModule = GetModuleHandleW(L"capture_hook_x86.dll");
-  }
-  if (hModule) {
-    GetModuleFileNameW(hModule, modulePath, MAX_PATH);
-    std::filesystem::path hookDir =
-        std::filesystem::path(modulePath).parent_path();
-    g_DumpFolderPath = (hookDir / L"logs").wstring();
-  } else {
-    // Fallback to executable directory
-    GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
-    std::filesystem::path exeDir =
-        std::filesystem::path(modulePath).parent_path();
-    g_DumpFolderPath = (exeDir / L"logs").wstring();
-  }
-}
-
-static std::wstring GetDumpFolderPath() {
-  InitDumpFolderPath();
-  return g_DumpFolderPath;
-}
-
-static void EnsureDumpFolderExists() {
-  std::wstring dumpPath = GetDumpFolderPath();
-  CreateDirectoryW(dumpPath.c_str(), nullptr);
-}
-
-static std::wstring GenerateDumpFileName() {
-  SYSTEMTIME st;
-  GetSystemTime(&st);
-  wchar_t name[256];
-  swprintf_s(name, L"crash_%04d%02d%02d_%02d%02d%02d_%lu.dmp", st.wYear,
-             st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
-             GetCurrentProcessId());
-  return GetDumpFolderPath() + L"\\" + name;
-}
-
-static LONG WINAPI DX12ExceptionFilter(EXCEPTION_POINTERS *pExceptionInfo) {
-  // Only handle access violations and similar serious errors
-  DWORD code = pExceptionInfo->ExceptionRecord->ExceptionCode;
-  if (code == EXCEPTION_ACCESS_VIOLATION ||
-      code == EXCEPTION_ILLEGAL_INSTRUCTION ||
-      code == EXCEPTION_INT_DIVIDE_BY_ZERO || code == EXCEPTION_BREAKPOINT ||
-      code == 0x40000015) // Abort
-  {
-    EnsureDumpFolderExists();
-    std::wstring dumpPath = GenerateDumpFileName();
-
-    HANDLE hFile = CreateFileW(dumpPath.c_str(), GENERIC_WRITE, 0, nullptr,
-                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (hFile != INVALID_HANDLE_VALUE) {
-      MINIDUMP_EXCEPTION_INFORMATION mdei;
-      mdei.ThreadId = GetCurrentThreadId();
-      mdei.ExceptionPointers = pExceptionInfo;
-      mdei.ClientPointers = FALSE;
-
-      BOOL result =
-          MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile,
-                            MiniDumpWithDataSegs, &mdei, nullptr, nullptr);
-
-      CloseHandle(hFile);
-
-      if (result) {
-        HookLog("CRASH: Dump written to %ws", dumpPath.c_str());
-      } else {
-        HookLog("CRASH: Failed to write dump (error=%lu)", GetLastError());
-      }
-    } else {
-      HookLog("CRASH: Failed to create dump file (error=%lu)", GetLastError());
-    }
-  }
-
-  // Pass to next handler (don't swallow the exception)
-  return EXCEPTION_CONTINUE_SEARCH;
-}
-
-static void InstallCrashDumpHandler() {
-  if (g_CrashDumpInitialized)
-    return;
-
-  // Initialize dump folder path early so it's available during crashes
-  InitDumpFolderPath();
-  EnsureDumpFolderExists();
-  HookLog("CrashDump: Dump folder initialized to %ws",
-          g_DumpFolderPath.c_str());
-
-  // Load dbghelp.dll dynamically
-  HMODULE hDbgHelp = LoadLibraryA("dbghelp.dll");
-  if (!hDbgHelp) {
-    HookLog("CrashDump: Failed to load dbghelp.dll");
-    return;
-  }
-
-  // Set unhandled exception filter
-  SetUnhandledExceptionFilter(DX12ExceptionFilter);
-  g_CrashDumpInitialized = true;
-  HookLog("CrashDump: Exception handler installed");
-}
 
 // ============================================================================
 // SpecialK-style Streamline Handling
@@ -543,25 +433,17 @@ void DX12Hook::Init() {
   if (hVulkan) {
     HookLog("DX12: Vulkan detected (vulkan-1.dll), SKIPPING ALL DXGI hook "
             "installation");
-    // Still install crash handler for debugging, but don't hook DXGI
-    InstallCrashDumpHandler();
     return;
   }
 
-  // Install crash dump handler for debugging
-  InstallCrashDumpHandler();
+  // Note: Crash handler is installed in DllMain (hook/main.cpp)
 
-  // Start freeze detection watchdog with appropriate timeout
-  // DLSS/FSR FG needs longer timeout (2 min) since frame gen can pause briefly
-  // NOTE: We use a long timeout (10 min) by default since we may not get
-  // heartbeats if the swapchain was created before our hooks were installed
-  // CRITICAL: Use a very long timeout to avoid false positives with UE5/DLSS FG
-  // DISABLE watchdog for now - we're getting false positives because Present
-  // hooks aren't receiving heartbeats (swapchain created before injection)
-  // g_RenderWatchdog.Start(timeout);
-  // HookLog("DX12: Freeze watchdog started (%.0f second timeout)", timeout);
-  HookLog(
-      "DX12: Freeze watchdog DISABLED (swapchain timing issue with UE5/DLSS)");
+  // Start freeze detection watchdog with dynamic timeout based on game engine
+  // The watchdog auto-detects UE5, DLSS FG and uses extended timeouts
+  double timeout = g_RenderWatchdog.GetRecommendedTimeout();
+  g_RenderWatchdog.SetMonitoredThread(GetCurrentThreadId());
+  g_RenderWatchdog.Start(timeout);
+  HookLog("DX12: Freeze watchdog started (%.0f second timeout)", timeout);
 
   // CRITICAL FIX: Install global swapchain vtable hooks by getting the vtable
   // directly from the DXGI module. This avoids creating a temp swapchain which
