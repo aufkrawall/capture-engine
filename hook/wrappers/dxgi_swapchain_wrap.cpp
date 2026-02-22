@@ -12,6 +12,7 @@
 #include "d3d12_wrapper_interface.h"
 #include "hook_common.h"
 #include <atomic>
+#include <mutex>
 #include <windows.h>
 
 // External overlay functions (implemented in dx11_hook.cpp / dx12_hook.cpp)
@@ -34,9 +35,10 @@ DX12_WaitForOverlayCompletion(ID3D12CommandQueue *pQueue);
 // boundaries (for d3d12_wrappers.dll)
 typedef void (*PFN_AdjustDepth)(int);
 static PFN_AdjustDepth pAdjustDepth = nullptr;
+static std::once_flag pAdjustDepthInitOnce;
 
 void DX12_AdjustWrapperResizeDepth(int delta) {
-  if (!pAdjustDepth) {
+  std::call_once(pAdjustDepthInitOnce, []() {
     HMODULE hHook = GetModuleHandleA("capture_hook_x64.dll");
     if (!hHook)
       hHook = GetModuleHandleA("capture_hook_x86.dll");
@@ -44,7 +46,7 @@ void DX12_AdjustWrapperResizeDepth(int delta) {
       pAdjustDepth = (PFN_AdjustDepth)GetProcAddress(
           hHook, "DX12_AdjustWrapperResizeDepth_C");
     }
-  }
+  });
   if (pAdjustDepth)
     pAdjustDepth(delta);
 }
@@ -76,15 +78,14 @@ bool IsInWrapperPresent() { return g_InWrapperPresent; }
 // FSR Frame Generation detection helpers
 static bool IsFSRFrameGenerationActive() {
   static HMODULE fsrFgDll = nullptr;
-  static bool checked = false;
-  if (!checked) {
+  static std::once_flag fsrFgCheckOnce;
+  std::call_once(fsrFgCheckOnce, []() {
     fsrFgDll = GetModuleHandleW(L"amd_fidelityfx_fg.dll");
     if (!fsrFgDll)
       fsrFgDll = GetModuleHandleW(L"ffx_fsr3upscaler_x64.dll");
     if (!fsrFgDll)
       fsrFgDll = GetModuleHandleW(L"ffx_frameinterpolation_x64.dll");
-    checked = true;
-  }
+  });
   return fsrFgDll != nullptr;
 }
 

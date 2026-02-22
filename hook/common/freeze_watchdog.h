@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <windows.h>
@@ -86,6 +87,7 @@ private:
     // Pre-loaded DbgHelp resources
     HMODULE hDbgHelp_{nullptr};
     decltype(MiniDumpWriteDump)* pMiniDumpWriteDump_{nullptr};
+    std::once_flag dbgHelpInitOnce_;
     bool dbgHelpInitialized_{false};
 };
 

@@ -261,14 +261,15 @@ void AudioEncoder::EncodeSamples(const uint8_t *data, int sizeBytes,
 
   // DEFERRED RESET: SetRecordingStart was called from video thread - apply
   // reset now with logging
-  if (needsReset) {
+  if (needsReset.exchange(false, std::memory_order_acq_rel)) {
+    int64_t deferredStartUs = pendingStartUs.exchange(0, std::memory_order_acq_rel);
     int fifoSize = audioFifo ? av_audio_fifo_size(audioFifo) : 0;
     DLL_Log("[AudioEnc] RECORDING START RESET: startUs=%lld, OLD "
             "samplesCount=%lld, resampledTotal=%lld, FIFO=%d",
-            (long long)pendingStartUs, (long long)samplesCount,
+            (long long)deferredStartUs, (long long)samplesCount,
             (long long)resampledSamplesTotal, fifoSize);
 
-    recordingStartUs = pendingStartUs;
+    recordingStartUs = deferredStartUs;
     recordingEndUs = 0;
     firstTimestamp = -1;
     samplesCount = 0;          // CRITICAL: Reset to 0 for fresh start
@@ -281,8 +282,6 @@ void AudioEncoder::EncodeSamples(const uint8_t *data, int sizeBytes,
     if (resampler)
       resampler->Reset(); // FULL RESET (Clears buffers + drift)
 
-    pendingStartUs = 0;
-    needsReset = false;
     DLL_Log(
         "[AudioEnc] Reset complete - audio will start from PTS=0 with fade-in");
   }
@@ -384,10 +383,6 @@ void AudioEncoder::EncodeSamples(const uint8_t *data, int sizeBytes,
   // Track cumulative resampler output for drift calculation
   resampledSamplesTotal += convertedSamples;
 
-  // Write resampled data to FIFO
-  int ret =
-      av_audio_fifo_write(audioFifo, (void **)resampledData, convertedSamples);
-
   // Apply 50ms fade-in to the new samples if at the very start of recording
   // 50ms @ 48kHz = 2400 samples
   const int FADE_SAMPLES = codecCtx->sample_rate / 20;
@@ -457,6 +452,10 @@ void AudioEncoder::EncodeSamples(const uint8_t *data, int sizeBytes,
       }
     }
   }
+
+  // Write resampled data to FIFO
+  int ret =
+      av_audio_fifo_write(audioFifo, (void **)resampledData, convertedSamples);
 
   if (ret < convertedSamples) {
     DLL_Log("[AudioEnc] Failed to write to audio FIFO");

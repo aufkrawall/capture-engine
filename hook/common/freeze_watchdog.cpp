@@ -46,32 +46,37 @@ FreezeWatchdog::FreezeWatchdog() : processId_(GetCurrentProcessId()) {
     InitializeDbgHelp();
 }
 
-FreezeWatchdog::~FreezeWatchdog() { Stop(); }
-
-bool FreezeWatchdog::InitializeDbgHelp() {
-    if (dbgHelpInitialized_) {
-        return pMiniDumpWriteDump_ != nullptr;
-    }
-
-    hDbgHelp_ = LoadLibraryA("dbghelp.dll");
-    if (!hDbgHelp_) {
-        OutputDebugStringA("[FreezeWatchdog] Failed to load dbghelp.dll\n");
-        dbgHelpInitialized_ = true;
-        return false;
-    }
-
-    pMiniDumpWriteDump_ = reinterpret_cast<decltype(MiniDumpWriteDump)*>(
-        GetProcAddress(hDbgHelp_, "MiniDumpWriteDump"));
-
-    if (!pMiniDumpWriteDump_) {
-        OutputDebugStringA("[FreezeWatchdog] Failed to get MiniDumpWriteDump\n");
+FreezeWatchdog::~FreezeWatchdog() {
+    Stop();
+    if (hDbgHelp_) {
         FreeLibrary(hDbgHelp_);
         hDbgHelp_ = nullptr;
-    } else {
-        OutputDebugStringA("[FreezeWatchdog] DbgHelp initialized successfully\n");
+        pMiniDumpWriteDump_ = nullptr;
     }
+}
 
-    dbgHelpInitialized_ = true;
+bool FreezeWatchdog::InitializeDbgHelp() {
+    std::call_once(dbgHelpInitOnce_, [this]() {
+        hDbgHelp_ = LoadLibraryA("dbghelp.dll");
+        if (!hDbgHelp_) {
+            OutputDebugStringA("[FreezeWatchdog] Failed to load dbghelp.dll\n");
+            dbgHelpInitialized_ = true;
+            return;
+        }
+
+        pMiniDumpWriteDump_ = reinterpret_cast<decltype(MiniDumpWriteDump)*>(
+            GetProcAddress(hDbgHelp_, "MiniDumpWriteDump"));
+
+        if (!pMiniDumpWriteDump_) {
+            OutputDebugStringA("[FreezeWatchdog] Failed to get MiniDumpWriteDump\n");
+            FreeLibrary(hDbgHelp_);
+            hDbgHelp_ = nullptr;
+        } else {
+            OutputDebugStringA("[FreezeWatchdog] DbgHelp initialized successfully\n");
+        }
+
+        dbgHelpInitialized_ = true;
+    });
     return pMiniDumpWriteDump_ != nullptr;
 }
 

@@ -23,8 +23,13 @@ from datetime import datetime
 # Paths
 SCRIPT_DIR = Path(__file__).parent.absolute()
 PROJECT_ROOT = SCRIPT_DIR.parent
-TESTAPP_BIN = SCRIPT_DIR / "bin"
-CAPTURE_BIN = PROJECT_ROOT / "build" / "bin"
+TESTAPP_BIN = PROJECT_ROOT / "installed" / "testapp"
+if not TESTAPP_BIN.exists():
+    TESTAPP_BIN = SCRIPT_DIR / "bin"
+
+CAPTURE_BIN = PROJECT_ROOT / "installed" / "captureengine"
+if not CAPTURE_BIN.exists():
+    CAPTURE_BIN = PROJECT_ROOT / "build" / "bin"
 FRAME_TIMES_CSV = CAPTURE_BIN / "logs" / "frame_times.csv"
 
 def kill_processes():
@@ -260,7 +265,7 @@ def main():
     
     if not all_stats:
         print("No test results collected!")
-        return
+        sys.exit(1)
     
     for api in apis_to_test:
         api_stats = [s for s in all_stats if api.upper() in s.get("name", "")]

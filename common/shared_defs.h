@@ -432,16 +432,23 @@ public:
   // Host writer: BeginWriteOverlayConfig() ... write fields ... EndWriteOverlayConfig()
   // Hook reader: use ReadOverlayConfig() which retries until consistent.
   void BeginWriteOverlayConfig() {
-    overlayConfigSeq.fetch_add(1, std::memory_order_release); // set odd = write started
-    std::atomic_thread_fence(std::memory_order_release);
+    // Enter write section by transitioning sequence to odd.
+    // Use acq_rel so subsequent field writes are ordered after lock acquisition.
+    uint32_t seq =
+        overlayConfigSeq.fetch_add(1, std::memory_order_acq_rel) + 1;
+    if ((seq & 1u) == 0u) {
+      // Handle rare wrap-around edge so writers always publish an odd sequence.
+      overlayConfigSeq.fetch_add(1, std::memory_order_acq_rel);
+    }
   }
   void EndWriteOverlayConfig() {
-    std::atomic_thread_fence(std::memory_order_release);
-    overlayConfigSeq.fetch_add(1, std::memory_order_release); // set even = write done
+    // Publish writer completion by transitioning sequence back to even.
+    overlayConfigSeq.fetch_add(1, std::memory_order_release);
   }
   OverlayConfig ReadOverlayConfig() const {
-    OverlayConfig result;
-    uint32_t seq1, seq2;
+    OverlayConfig result{};
+    uint32_t seq1 = 0;
+    uint32_t seq2 = 0;
     do {
       seq1 = overlayConfigSeq.load(std::memory_order_acquire);
       if (seq1 & 1u) {
@@ -449,11 +456,12 @@ public:
         _mm_pause();
         continue;
       }
-      std::atomic_thread_fence(std::memory_order_acquire);
       memcpy(&result, &overlayConfig, sizeof(OverlayConfig));
-      std::atomic_thread_fence(std::memory_order_acquire);
       seq2 = overlayConfigSeq.load(std::memory_order_acquire);
-    } while (seq1 != seq2);
+      if (seq1 != seq2) {
+        _mm_pause();
+      }
+    } while (seq1 != seq2 || (seq2 & 1u));
     return result;
   }
 

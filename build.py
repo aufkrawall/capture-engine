@@ -74,6 +74,8 @@ HOOK_OPT_FLAGS_X86 = [
 # Linker optimization flags
 LD_OPT_FLAGS = [
     "-Wl,--gc-sections",
+    "-Wl,--dynamicbase",  # ASLR
+    "-Wl,--nxcompat",  # DEP/NX
     "-s",  # Strip all symbols
 ]
 
@@ -1351,7 +1353,12 @@ def compile_object(
     normalized_dir = PROJECT_ROOT.replace("\\", "/")
     normalized_file = src.replace("\\", "/")
     COMPILE_COMMANDS.append(
-        {"directory": normalized_dir, "arguments": full_cmd_list, "file": normalized_file}
+        {
+            "directory": normalized_dir,
+            "arguments": full_cmd_list,
+            "file": normalized_file,
+            "language": "c++",
+        }
     )
 
     if not should_recompile(src, obj, dep_file, env):
@@ -2001,7 +2008,12 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
 
         if src_file:
             COMPILE_COMMANDS.append(
-                {"directory": PROJECT_ROOT, "arguments": cmd, "file": src_file}
+                {
+                    "directory": PROJECT_ROOT,
+                    "arguments": cmd,
+                    "file": src_file,
+                    "language": "c++",
+                }
             )
 
     def compile_app(t):

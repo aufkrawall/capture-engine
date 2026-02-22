@@ -7,6 +7,7 @@
 
 #include "layer_main.h"
 #include <cstring>
+#include <filesystem>
 
 // Get the directory where this DLL is located
 static std::string GetLayerDllDirectory() {
@@ -70,8 +71,9 @@ BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID reserved) {
     // Vulkan is no longer active. Without this, the flag persists in shared memory
     // and causes OpenGL/DX overlays to skip rendering because they think Vulkan is primary.
     extern IPCClient g_IPCClient;
-    if (g_IPCClient.GetSharedMem()) {
-      g_IPCClient.GetSharedMem()->runtimeState.vulkanLayerActive.store(false, std::memory_order_release);
+    auto *sharedMem = g_IPCClient.GetSharedMem();
+    if (sharedMem) {
+      sharedMem->runtimeState.vulkanLayerActive.store(false, std::memory_order_release);
       EarlyLog("Cleared vulkanLayerActive flag in shared memory");
     }
   }
@@ -99,7 +101,13 @@ static void InitLayerLogFile() {
     return;
   g_LogFileInitialized = true;
 
-  g_LogFile = fopen("logs/vulkan_layer.log", "a");
+  const std::filesystem::path logsDir =
+      std::filesystem::path(GetLayerDllDirectory()) / "logs";
+  std::error_code ec;
+  std::filesystem::create_directories(logsDir, ec);
+  const std::filesystem::path logPath = logsDir / "vulkan_layer.log";
+
+  g_LogFile = fopen(logPath.string().c_str(), "a");
   if (g_LogFile) {
     fprintf(g_LogFile, "\n=== Layer DLL Loaded ===\n");
     fflush(g_LogFile);
@@ -236,7 +244,7 @@ static bool PerformEarlyWhitelistCheck() {
   }
 
   g_LayerState.whitelisted = false;
-  if (pDisc->magic == DISCOVERY_MAGIC) {
+  if (pDisc->GetMagic() == DISCOVERY_MAGIC) {
     const char *pw = pDisc->processWhitelist;
     const char *end = pDisc->processWhitelist + sizeof(pDisc->processWhitelist);
 
