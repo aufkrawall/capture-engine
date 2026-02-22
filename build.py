@@ -1282,7 +1282,23 @@ def parse_dep_file(dep_path: str) -> List[str]:
     return deps
 
 
-def should_recompile(src: str, obj: str, dep_file: str, env: Dict[str, str]) -> bool:
+def compute_build_signature(src: str, clang_exe: str, compile_flags: List[str]) -> str:
+    """Create a stable signature from source contents + compiler/flags."""
+    with open(src, "rb") as f:
+        src_hash = hashlib.md5(f.read()).hexdigest()[:16]
+    tool_fingerprint = "\n".join([os.path.abspath(clang_exe)] + compile_flags)
+    tool_hash = hashlib.md5(tool_fingerprint.encode("utf-8")).hexdigest()[:16]
+    return f"{src_hash}:{tool_hash}"
+
+
+def should_recompile(
+    src: str,
+    obj: str,
+    dep_file: str,
+    env: Dict[str, str],
+    clang_exe: str,
+    compile_flags: List[str],
+) -> bool:
     # Check for force rebuild flag
     if env.get("FORCE_REBUILD") == "1":
         return True
@@ -1298,18 +1314,16 @@ def should_recompile(src: str, obj: str, dep_file: str, env: Dict[str, str]) -> 
     except OSError:
         return True  # Error accessing files, safer to recompile
 
-    # WSL2 FIX: Also check if source content changed (hash-based)
-    # This catches cases where WSL timestamp sync is unreliable
+    # Also check if source content or compile settings changed (hash-based).
+    # This catches stale objects when flags/compiler change across incremental runs.
     hash_file = obj + ".hash"
     try:
-        import hashlib
-        with open(src, "rb") as f:
-            content_hash = hashlib.md5(f.read()).hexdigest()[:16]
+        signature = compute_build_signature(src, clang_exe, compile_flags)
         if os.path.exists(hash_file):
             with open(hash_file, "r") as f:
                 stored_hash = f.read().strip()
-            if content_hash != stored_hash:
-                return True  # Content changed, recompile
+            if signature != stored_hash:
+                return True  # Content and/or flags changed, recompile
         else:
             # No hash file, need to create one (first compile or old build)
             return True
@@ -1361,7 +1375,7 @@ def compile_object(
         }
     )
 
-    if not should_recompile(src, obj, dep_file, env):
+    if not should_recompile(src, obj, dep_file, env, clang_exe, compile_flags):
         return False  # Skip - up to date
 
     # Use ccache if available
@@ -1381,15 +1395,11 @@ def compile_object(
 
     run_command(cmd, env=env)
     
-    # WSL2 FIX: Save content hash after successful compilation
-    # This ensures we detect source changes even when timestamp sync fails
+    # Save compile signature after successful compilation.
     hash_file = obj + ".hash"
     try:
-        import hashlib
-        with open(src, "rb") as f:
-            content_hash = hashlib.md5(f.read()).hexdigest()[:16]
         with open(hash_file, "w") as f:
-            f.write(content_hash)
+            f.write(compute_build_signature(src, clang_exe, compile_flags))
     except Exception:
         pass  # Non-critical, ignore errors
     
