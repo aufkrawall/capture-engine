@@ -475,10 +475,18 @@ static HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(
     // Backbuffer Count
     int count = gfx.backbufferCount;
     if (count >= 2 && count <= 6) {
-      desc.BufferCount = (UINT)count;
-      modified = true;
-      HookLog("DX11: CreateDeviceAndSwapChain: Overriding BufferCount to %d",
-              count);
+      bool isFlip = (desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
+                     desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+      if (isFlip && (UINT)count < desc.BufferCount) {
+        HookLog("DX11: CreateDeviceAndSwapChain: Skipping BufferCount override "
+                "%d < game's %u (flip model)",
+                count, desc.BufferCount);
+      } else {
+        desc.BufferCount = (UINT)count;
+        modified = true;
+        HookLog("DX11: CreateDeviceAndSwapChain: Overriding BufferCount to %d",
+                count);
+      }
     }
 
     // MSAA Override
@@ -623,8 +631,12 @@ static HRESULT WINAPI DetourD3D10CreateDeviceAndSwapChain(
 
     int count = gfx.backbufferCount;
     if (count >= 2 && count <= 6) {
-      desc.BufferCount = (UINT)count;
-      modified = true;
+      bool isFlip = (desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
+                     desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+      if (!(isFlip && (UINT)count < desc.BufferCount)) {
+        desc.BufferCount = (UINT)count;
+        modified = true;
+      }
     }
 
     if (modified)
@@ -659,8 +671,12 @@ static HRESULT WINAPI DetourD3D10CreateDeviceAndSwapChain1(
 
     int count = gfx.backbufferCount;
     if (count >= 2 && count <= 6) {
-      desc.BufferCount = (UINT)count;
-      modified = true;
+      bool isFlip = (desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
+                     desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+      if (!(isFlip && (UINT)count < desc.BufferCount)) {
+        desc.BufferCount = (UINT)count;
+        modified = true;
+      }
     }
 
     if (modified)
@@ -2017,8 +2033,22 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain *pSwapChain,
   // Apply backbuffer count override
   int count = GetActiveGraphicsConfig().backbufferCount;
   if (count >= 2 && count <= 6) {
-    BufferCount = (UINT)count;
-    HookLog("DX11: ResizeBuffers: Overriding BufferCount to %d", count);
+    // Check swap effect — don't reduce buffer count for flip model swapchains
+    DXGI_SWAP_CHAIN_DESC scDesc = {};
+    bool isFlip = false;
+    if (SUCCEEDED(pSwapChain->GetDesc(&scDesc))) {
+      isFlip = (scDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
+                scDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+    }
+    UINT gameCount = BufferCount > 0 ? BufferCount : scDesc.BufferCount;
+    if (isFlip && (UINT)count < gameCount) {
+      HookLog("DX11: ResizeBuffers: Skipping BufferCount override %d < game's %u "
+              "(flip model)",
+              count, gameCount);
+    } else {
+      BufferCount = (UINT)count;
+      HookLog("DX11: ResizeBuffers: Overriding BufferCount to %d", count);
+    }
   }
 
   // Call original ResizeBuffers

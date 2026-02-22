@@ -215,9 +215,21 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChain(
     modifiedDesc = *pDesc;
     const auto &gfx = GetActiveGraphicsConfig();
     if (gfx.backbufferCount > 0) {
-      modifiedDesc.BufferCount = (UINT)gfx.backbufferCount;
-      WrapperLog("CreateSwapChain: Overriding BufferCount to %u",
-                 modifiedDesc.BufferCount);
+      UINT requested = (UINT)gfx.backbufferCount;
+      bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
+                     modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+      // For flip model (DX12), don't reduce below game's original count —
+      // games manage per-buffer resources and crash if buffers go missing
+      if (isFlip && requested < modifiedDesc.BufferCount) {
+        WrapperLog("CreateSwapChain: Skipping BufferCount override %u < game's %u "
+                   "(flip model)",
+                   requested, modifiedDesc.BufferCount);
+      } else {
+        if (isFlip && requested < 2) requested = 2;
+        modifiedDesc.BufferCount = requested;
+        WrapperLog("CreateSwapChain: Overriding BufferCount to %u",
+                   modifiedDesc.BufferCount);
+      }
     }
     pDesc = &modifiedDesc;
   }
@@ -307,9 +319,19 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForHwnd(
     modifiedDesc = *pDesc;
     const auto &gfx = GetActiveGraphicsConfig();
     if (gfx.backbufferCount > 0) {
-      modifiedDesc.BufferCount = (UINT)gfx.backbufferCount;
-      WrapperLog("CreateSwapChainForHwnd: Overriding BufferCount to %u",
-                 modifiedDesc.BufferCount);
+      UINT requested = (UINT)gfx.backbufferCount;
+      bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
+                     modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+      if (isFlip && requested < modifiedDesc.BufferCount) {
+        WrapperLog("CreateSwapChainForHwnd: Skipping BufferCount override %u < "
+                   "game's %u (flip model)",
+                   requested, modifiedDesc.BufferCount);
+      } else {
+        if (isFlip && requested < 2) requested = 2;
+        modifiedDesc.BufferCount = requested;
+        WrapperLog("CreateSwapChainForHwnd: Overriding BufferCount to %u",
+                   modifiedDesc.BufferCount);
+      }
     }
     pDesc = &modifiedDesc;
   }
@@ -358,9 +380,19 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForCoreWindow(
     modifiedDesc = *pDesc;
     const auto &gfx = GetActiveGraphicsConfig();
     if (gfx.backbufferCount > 0) {
-      modifiedDesc.BufferCount = (UINT)gfx.backbufferCount;
-      WrapperLog("CreateSwapChainForCoreWindow: Overriding BufferCount to %u",
-                 modifiedDesc.BufferCount);
+      UINT requested = (UINT)gfx.backbufferCount;
+      bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
+                     modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+      if (isFlip && requested < modifiedDesc.BufferCount) {
+        WrapperLog("CreateSwapChainForCoreWindow: Skipping BufferCount override "
+                   "%u < game's %u (flip model)",
+                   requested, modifiedDesc.BufferCount);
+      } else {
+        if (isFlip && requested < 2) requested = 2;
+        modifiedDesc.BufferCount = requested;
+        WrapperLog("CreateSwapChainForCoreWindow: Overriding BufferCount to %u",
+                   modifiedDesc.BufferCount);
+      }
     }
     pDesc = &modifiedDesc;
   }
@@ -437,9 +469,19 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForComposition(
     modifiedDesc = *pDesc;
     const auto &gfx = GetActiveGraphicsConfig();
     if (gfx.backbufferCount > 0) {
-      modifiedDesc.BufferCount = (UINT)gfx.backbufferCount;
-      WrapperLog("CreateSwapChainForComposition: Overriding BufferCount to %u",
-                 modifiedDesc.BufferCount);
+      UINT requested = (UINT)gfx.backbufferCount;
+      bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
+                     modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+      if (isFlip && requested < modifiedDesc.BufferCount) {
+        WrapperLog("CreateSwapChainForComposition: Skipping BufferCount override "
+                   "%u < game's %u (flip model)",
+                   requested, modifiedDesc.BufferCount);
+      } else {
+        if (isFlip && requested < 2) requested = 2;
+        modifiedDesc.BufferCount = requested;
+        WrapperLog("CreateSwapChainForComposition: Overriding BufferCount to %u",
+                   modifiedDesc.BufferCount);
+      }
     }
     pDesc = &modifiedDesc;
   }

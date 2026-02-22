@@ -821,8 +821,24 @@ CWrapDXGISwapChain::ResizeBuffers(UINT BufferCount, UINT Width, UINT Height,
   if (g_IPC) {
     const auto &gfx = GetActiveGraphicsConfig();
     if (gfx.backbufferCount > 0) {
-      BufferCount = (UINT)gfx.backbufferCount;
-      WrapperLog("ResizeBuffers: Overriding BufferCount to %u", BufferCount);
+      UINT requested = (UINT)gfx.backbufferCount;
+      // Check swap effect from current swapchain desc
+      DXGI_SWAP_CHAIN_DESC scDesc = {};
+      bool isFlip = false;
+      if (SUCCEEDED(m_pReal->GetDesc(&scDesc))) {
+        isFlip = (scDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
+                  scDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+      }
+      UINT gameCount = BufferCount > 0 ? BufferCount : scDesc.BufferCount;
+      if (isFlip && requested < gameCount) {
+        WrapperLog("ResizeBuffers: Skipping BufferCount override %u < game's %u "
+                   "(flip model)",
+                   requested, gameCount);
+      } else {
+        if (isFlip && requested < 2) requested = 2;
+        BufferCount = requested;
+        WrapperLog("ResizeBuffers: Overriding BufferCount to %u", BufferCount);
+      }
     }
   }
 
