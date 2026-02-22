@@ -396,8 +396,8 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     posLogCount++;
   }
 
-  // Wider background to accommodate "X.XX GB of Y.YY GB" format (DPI-aware)
-  float bgWidth = 280 * dpiScale;
+  // Background width with small margin past value column (DPI-aware)
+  float bgWidth = 220 * dpiScale;
 
   // Right edge for right-aligning numeric values (prevents flicker on digit count changes)
   float valueRightEdge = 0; // Set after position calculation
@@ -422,7 +422,8 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
   }
 
   // Right edge for right-aligning numeric values (prevents flicker on digit count changes)
-  valueRightEdge = x + bgWidth - 8 * dpiScale;
+  // Position near where the longest value would naturally end when left-aligned at valueCol
+  valueRightEdge = x + 210 * dpiScale;
 
   // Calculate required height for background
   float lineHeight = (float)renderer->GetLineHeight();

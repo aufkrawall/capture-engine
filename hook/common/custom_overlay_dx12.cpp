@@ -117,7 +117,7 @@ bool DX12Backend::CreateRootSignature() {
     params[0].Constants.ShaderRegister = 0;
     params[0].Constants.RegisterSpace = 0;
     params[0].Constants.Num32BitValues = 4;
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     DX12_DEBUG_STEP("CreateRootSignature", "Param 0: 32bit constants, reg=%d, numValues=%d",
                     params[0].Constants.ShaderRegister, params[0].Constants.Num32BitValues);
 

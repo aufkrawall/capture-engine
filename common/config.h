@@ -67,6 +67,12 @@ struct VideoConfig {
   bool mfHwEncoding = true;  // Force hardware encoding
   int gpuPriority = 0;       // GPU priority from config
 
+  // Color & format settings (auto = select based on SDR/HDR)
+  std::string bitDepth = "auto";          // "auto", "8", "10"
+  std::string colorSpace = "auto";        // "auto", "bt709", "bt2020"
+  std::string colorRange = "auto";        // "auto", "full", "limited"
+  std::string chromaSubsampling = "auto"; // "auto", "420", "422", "444"
+
   // VFR Support
   bool useVFR = false;
   bool useVFR_AudioSync = false;

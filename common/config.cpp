@@ -976,6 +976,12 @@ void LoadConfig(const std::string &path, AppConfig &config,
   config.video.useVFR = GetBool("Video", "vfr", false);
   config.video.useVFR_AudioSync = GetBool("Video", "vfr_audio_sync", false);
 
+  // Color & format settings (from [Video] section)
+  config.video.bitDepth = GetStr("Video", "bit_depth", "auto");
+  config.video.colorSpace = GetStr("Video", "color_space", "auto");
+  config.video.colorRange = GetStr("Video", "color_range", "auto");
+  config.video.chromaSubsampling = GetStr("Video", "chroma_subsampling", "auto");
+
   // NVENC settingsfic settings (from [NVENC] section)
   config.video.preset = GetStr("NVENC", "preset", "p1");
   config.video.tuning = GetStr("NVENC", "tuning", "hq");

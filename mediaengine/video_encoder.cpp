@@ -423,6 +423,9 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
   DLL_Log("[VideoEncoder] multipass=%s", savedConfig.multipass.c_str());
   DLL_Log("[VideoEncoder] keyframe_interval=%d", savedConfig.keyframeInterval);
   DLL_Log("[VideoEncoder] qp=%d", savedConfig.qp);
+  DLL_Log("[VideoEncoder] bit_depth=%s color_space=%s color_range=%s chroma=%s",
+          savedConfig.bitDepth.c_str(), savedConfig.colorSpace.c_str(),
+          savedConfig.colorRange.c_str(), savedConfig.chromaSubsampling.c_str());
   DLL_Log("[VideoEncoder] ==============================================");
 
   // Check encoder type for option compatibility
@@ -440,20 +443,61 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     av_dict_set(&opts, "tune", savedConfig.tuning.c_str(), 0);
   }
 
-  // Set color properties before profile selection
-  if (currentIsHDR) {
-    codecCtx->color_range = AVCOL_RANGE_MPEG;
+  // Set color properties from config (with auto-detection defaults)
+  // Color space
+  std::string cs = savedConfig.colorSpace;
+  if (cs == "auto" || cs.empty()) {
+    cs = currentIsHDR ? "bt2020" : "bt709";
+  }
+  if (cs == "bt2020") {
     codecCtx->color_primaries = AVCOL_PRI_BT2020;
-    codecCtx->color_trc = AVCOL_TRC_SMPTE2084;
+    codecCtx->color_trc =
+        currentIsHDR ? AVCOL_TRC_SMPTE2084 : AVCOL_TRC_BT2020_10;
     codecCtx->colorspace = AVCOL_SPC_BT2020_NCL;
-    codecCtx->pix_fmt = AV_PIX_FMT_P010;
   } else {
-    codecCtx->color_range = AVCOL_RANGE_MPEG;
     codecCtx->color_primaries = AVCOL_PRI_BT709;
     codecCtx->color_trc = AVCOL_TRC_BT709;
     codecCtx->colorspace = AVCOL_SPC_BT709;
-    codecCtx->pix_fmt = AV_PIX_FMT_D3D11;
   }
+
+  // Color range
+  std::string cr = savedConfig.colorRange;
+  if (cr == "auto" || cr.empty()) {
+    codecCtx->color_range = AVCOL_RANGE_MPEG; // TV/limited is standard
+  } else if (cr == "full") {
+    codecCtx->color_range = AVCOL_RANGE_JPEG;
+  } else {
+    codecCtx->color_range = AVCOL_RANGE_MPEG;
+  }
+
+  // Bit depth and chroma subsampling → pixel format
+  std::string bd = savedConfig.bitDepth;
+  if (bd == "auto" || bd.empty()) {
+    bd = currentIsHDR ? "10" : "8";
+  }
+  std::string chroma = savedConfig.chromaSubsampling;
+  if (chroma == "auto" || chroma.empty()) {
+    chroma = "420";
+  }
+
+  bool use10bit = (bd == "10");
+  if (chroma == "444") {
+    codecCtx->pix_fmt = use10bit ? AV_PIX_FMT_YUV444P10LE : AV_PIX_FMT_YUV444P;
+  } else if (chroma == "422") {
+    codecCtx->pix_fmt = use10bit ? AV_PIX_FMT_YUV422P10LE : AV_PIX_FMT_YUV422P;
+  } else {
+    // 4:2:0 (default) - use HW-accelerated formats when possible
+    if (use10bit) {
+      codecCtx->pix_fmt = AV_PIX_FMT_P010;
+    } else {
+      codecCtx->pix_fmt = AV_PIX_FMT_D3D11; // NV12 via D3D11 HW path
+    }
+  }
+
+  DLL_Log("[VideoEncoder] Color config: space=%s range=%s bitDepth=%s chroma=%s "
+          "pixFmt=%d hdr=%d",
+          cs.c_str(), cr.c_str(), bd.c_str(), chroma.c_str(),
+          codecCtx->pix_fmt, currentIsHDR);
 
   // Apply rate control mode
   if (!isMF && !savedConfig.rateControl.empty()) {
@@ -531,10 +575,9 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
       bool isHEVC = savedConfig.encoder.find("hevc") != std::string::npos ||
                     savedConfig.encoder.find("265") != std::string::npos;
       if (isH264)
-        profileToUse = "high";
+        profileToUse = use10bit ? "high10" : "high";
       else if (isHEVC)
-        profileToUse =
-            (codecCtx->color_primaries == AVCOL_PRI_BT2020) ? "main10" : "main";
+        profileToUse = use10bit ? "main10" : "main";
     }
     if (!profileToUse.empty() && !isAv1)
       av_dict_set(&opts, "profile", profileToUse.c_str(), 0);
@@ -965,7 +1008,21 @@ bool VideoEncoder::Start() {
 
     codecCtx->width = width;
     codecCtx->height = height;
-    codecCtx->pix_fmt = currentIsHDR ? AV_PIX_FMT_P010 : AV_PIX_FMT_D3D11;
+
+    // Apply configured pixel format
+    std::string bd = savedConfig.bitDepth;
+    if (bd == "auto" || bd.empty())
+      bd = currentIsHDR ? "10" : "8";
+    std::string chroma = savedConfig.chromaSubsampling;
+    if (chroma == "auto" || chroma.empty())
+      chroma = "420";
+    bool use10bit = (bd == "10");
+    if (chroma == "444")
+      codecCtx->pix_fmt = use10bit ? AV_PIX_FMT_YUV444P10LE : AV_PIX_FMT_YUV444P;
+    else if (chroma == "422")
+      codecCtx->pix_fmt = use10bit ? AV_PIX_FMT_YUV422P10LE : AV_PIX_FMT_YUV422P;
+    else
+      codecCtx->pix_fmt = use10bit ? AV_PIX_FMT_P010 : AV_PIX_FMT_D3D11;
 
     DLL_Log("[VideoEncoder] Recreated codec context for new recording");
 

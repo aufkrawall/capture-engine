@@ -683,7 +683,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
   std::string baseDir = exePath.substr(0, exePath.find_last_of("\\/"));
   g_ConfigPath = baseDir + "\\config.ini";
 
-  PurgeAllLogsInDir(baseDir + "\\logs");
+  // Install crash handler early (before config loading) so any startup crash
+  // produces a minidump. The dump directory will be updated after config loads.
+  std::string earlyLogsDir = baseDir + "\\logs";
+  CreateDirectoryA(earlyLogsDir.c_str(), NULL);
+  PurgeAllLogsInDir(earlyLogsDir);
+  SetCrashDumpDirectory(earlyLogsDir);
+  InstallCrashHandler();
 
   // Load config
   LoadConfig(g_ConfigPath, g_Config);
@@ -767,13 +773,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     }
   }
 
-  // Install crash handler
-  std::string crashDir = g_Config.crashDumpDir;
-  if (crashDir.find(":") == std::string::npos) {
-    crashDir = baseDir + "\\" + crashDir;
+  // Update crash dump directory from config (crash handler already installed early)
+  if (!g_Config.crashDumpDir.empty()) {
+    std::string crashDir = g_Config.crashDumpDir;
+    if (crashDir.find(":") == std::string::npos) {
+      crashDir = baseDir + "\\" + crashDir;
+    }
+    SetCrashDumpDirectory(crashDir);
   }
-  SetCrashDumpDirectory(crashDir);
-  InstallCrashHandler();
 
   // Dispatch to appropriate process
   int result = 0;

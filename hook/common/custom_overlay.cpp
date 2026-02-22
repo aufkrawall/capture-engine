@@ -249,7 +249,8 @@ void Renderer::DrawTextRightAligned(float rightX, float y, const char *text,
     return;
   float tw = 0, th = 0;
   CalcTextSize(text, &tw, &th);
-  DrawTextWithShadow(rightX - tw, y, text, color, shadowColor, shadowOffset);
+  float x = std::floor(rightX - tw); // Snap to pixel to prevent sub-pixel artifacts
+  DrawTextWithShadow(x, y, text, color, shadowColor, shadowOffset);
 }
 
 void Renderer::DrawTextScaledRightAligned(float rightX, float y,
@@ -260,7 +261,8 @@ void Renderer::DrawTextScaledRightAligned(float rightX, float y,
     return;
   float tw = 0, th = 0;
   CalcTextSizeScaled(text, &tw, &th, scale);
-  DrawTextScaledWithShadow(rightX - tw, y, text, color, shadowColor, scale,
+  float x = std::floor(rightX - tw); // Snap to pixel to prevent sub-pixel artifacts
+  DrawTextScaledWithShadow(x, y, text, color, shadowColor, scale,
                            shadowOffset);
 }
 
