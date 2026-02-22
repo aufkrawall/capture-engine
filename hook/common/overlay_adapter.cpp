@@ -396,11 +396,169 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     posLogCount++;
   }
 
-  // Background width with small margin past value column (DPI-aware)
-  float bgWidth = 220 * dpiScale;
+  float lineHeight = (float)renderer->GetLineHeight();
 
-  // Right edge for right-aligning numeric values (prevents flicker on digit count changes)
-  float valueRightEdge = 0; // Set after position calculation
+  // Check dynamic states used by both sizing and rendering
+  bool fgActive = metrics && metrics->IsFGActive();
+  bool isRecording =
+      mem.runtimeState.isRecording.load(std::memory_order_acquire);
+
+  // Adaptive overlay width: measure visible labels/values and size to content.
+  const float kShadowPad = 1.0f;
+  const float kBgLeftPad = 4.0f * dpiScale;
+  const float kBgRightPad = 4.0f * dpiScale + kShadowPad;
+  float kBgTopPad = 2.0f * dpiScale;
+  if (cfg.showVRAM || cfg.showRAM) {
+    kBgTopPad = (std::max)(kBgTopPad, lineHeight * 0.20f + kShadowPad);
+  }
+  const float kBgBottomPad = 2.0f * dpiScale + kShadowPad;
+  const float kColumnGap = 10.0f * dpiScale;
+  const float kMinContentWidth = 210.0f * dpiScale;
+  const float kMemorySuffixScale = 0.75f;
+  const float kMemoryGap = 2.0f * dpiScale;
+
+  auto MeasureTextWidth = [&](const char *text) -> float {
+    float w = 0, h = 0;
+    renderer->CalcTextSize(text ? text : "", &w, &h);
+    return w;
+  };
+  auto MeasureTextWidthScaled = [&](const char *text, float scale) -> float {
+    float w = 0, h = 0;
+    renderer->CalcTextSizeScaled(text ? text : "", &w, &h, scale);
+    return w;
+  };
+
+  float maxLabelWidth = 0.0f;
+  float maxValueWidth = 0.0f;
+  char measureBuf[96];
+
+  if (cfg.showGPU) {
+    snprintf(measureBuf, sizeof(measureBuf), "%.0f%%",
+             cachedSystemMetrics.gpuUsage);
+    maxLabelWidth = (std::max)(maxLabelWidth,
+                               MeasureTextWidth(SystemMetricsCollector::Get()
+                                                    .GetGPUName()));
+    maxValueWidth =
+        (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
+  }
+  if (cfg.showCPU) {
+    snprintf(measureBuf, sizeof(measureBuf), "%.0f%% (%.0f%%)",
+             cachedSystemMetrics.cpuUsage, cachedSystemMetrics.cpuMaxCoreUsage);
+    maxLabelWidth = (std::max)(maxLabelWidth,
+                               MeasureTextWidth(SystemMetricsCollector::Get()
+                                                    .GetCPUName()));
+    maxValueWidth =
+        (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
+  }
+  if (cfg.showVRAM) {
+    float gbUsed =
+        (float)cachedSystemMetrics.vramUsed / (1024.0f * 1024.0f * 1024.0f);
+    float gbTotal =
+        (float)cachedSystemMetrics.vramTotal / (1024.0f * 1024.0f * 1024.0f);
+    if (gbTotal < 0.1f)
+      gbTotal = 11.66f;
+    char usedBuf[32], totalBuf[32];
+    snprintf(usedBuf, sizeof(usedBuf), "%.2f GB", gbUsed);
+    snprintf(totalBuf, sizeof(totalBuf), "of %.2f GB", gbTotal);
+    float valueWidth = MeasureTextWidth(usedBuf) + kMemoryGap +
+                       MeasureTextWidthScaled(totalBuf, kMemorySuffixScale) +
+                       kShadowPad;
+    maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth("VRAM"));
+    maxValueWidth = (std::max)(maxValueWidth, valueWidth);
+  }
+  if (cfg.showRAM) {
+    float gbUsed =
+        (float)cachedSystemMetrics.ramUsed / (1024.0f * 1024.0f * 1024.0f);
+    float gbTotal =
+        (float)cachedSystemMetrics.ramTotal / (1024.0f * 1024.0f * 1024.0f);
+    if (gbTotal < 0.1f)
+      gbTotal = 31.93f;
+    char usedBuf[32], totalBuf[32];
+    snprintf(usedBuf, sizeof(usedBuf), "%.2f GB", gbUsed);
+    snprintf(totalBuf, sizeof(totalBuf), "of %.2f GB", gbTotal);
+    float valueWidth = MeasureTextWidth(usedBuf) + kMemoryGap +
+                       MeasureTextWidthScaled(totalBuf, kMemorySuffixScale) +
+                       kShadowPad;
+    maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth("RAM"));
+    maxValueWidth = (std::max)(maxValueWidth, valueWidth);
+  }
+  if (cfg.showFPS) {
+    const char *apiLabel = graphicsAPI[0] ? graphicsAPI : "FPS";
+    snprintf(measureBuf, sizeof(measureBuf), "%.0f FPS", cachedFPS);
+    maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth(apiLabel));
+    maxValueWidth =
+        (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
+
+    if (fgActive) {
+      float baseFPS = metrics->GetFGBaseFPS();
+      float outputFPS = metrics->GetFGOutputFPS();
+      if (baseFPS < 1.0f)
+        baseFPS = cachedFPS;
+      if (outputFPS < 1.0f)
+        outputFPS = cachedFPS;
+      snprintf(measureBuf, sizeof(measureBuf), "%.0f / %.0f FPS", baseFPS,
+               outputFPS);
+      maxLabelWidth =
+          (std::max)(maxLabelWidth, MeasureTextWidth("Base/Display"));
+      maxValueWidth =
+          (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
+    }
+
+    if (cachedAvgFPS > 0 && cached1PercentLow > 0) {
+      snprintf(measureBuf, sizeof(measureBuf), "%.0f / %.0f / %.0f",
+               cachedAvgFPS, cached1PercentLow, cached01PercentLow);
+      maxLabelWidth =
+          (std::max)(maxLabelWidth, MeasureTextWidth("Avg/1%/0.1%"));
+      maxValueWidth =
+          (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
+    }
+  }
+  if (cfg.showFG && fgActive) {
+    int multiplier = metrics->GetFGMultiplier();
+    snprintf(measureBuf, sizeof(measureBuf), "FG %dx", multiplier);
+    maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth("FG"));
+    maxValueWidth =
+        (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
+  }
+
+  float contentWidth = kMinContentWidth;
+  if (maxLabelWidth > 0.0f || maxValueWidth > 0.0f) {
+    contentWidth =
+        (std::max)(contentWidth, maxLabelWidth + kColumnGap + maxValueWidth);
+  }
+
+  if (cfg.showRecording && isRecording) {
+    int64_t startTime =
+        mem.runtimeState.recordingStartTime.load(std::memory_order_acquire);
+    int64_t elapsed = 0;
+    if (startTime > 0) {
+      elapsed = (GetTickCount64() - startTime) / 1000;
+    }
+    int hours = (int)(elapsed / 3600);
+    int minutes = (int)((elapsed % 3600) / 60);
+    int seconds = (int)(elapsed % 60);
+    char recBuf[96];
+    snprintf(recBuf, sizeof(recBuf), "REC %02d:%02d:%02d", hours, minutes,
+             seconds);
+    contentWidth =
+        (std::max)(contentWidth, MeasureTextWidth(recBuf) + kShadowPad);
+    snprintf(recBuf, sizeof(recBuf), "REC %02d:%02d:%02d !ENCODER OVERLOAD!",
+             hours, minutes, seconds);
+    contentWidth =
+        (std::max)(contentWidth, MeasureTextWidth(recBuf) + kShadowPad);
+  }
+
+  float bgWidth = contentWidth + kBgLeftPad + kBgRightPad;
+  float maxBgWidth = (float)viewportWidth - 2.0f * padding;
+  maxBgWidth = (std::max)(maxBgWidth, 100.0f * dpiScale);
+  if (bgWidth > maxBgWidth) {
+    bgWidth = maxBgWidth;
+    contentWidth =
+        (std::max)(80.0f * dpiScale, bgWidth - kBgLeftPad - kBgRightPad);
+  }
+
+  // Right edge for right-aligned values (set after position calculation)
+  float valueRightEdge = 0;
 
   switch (cfg.position) {
   case OverlayPosition::TopLeft:
@@ -421,12 +579,10 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     break;
   }
 
-  // Right edge for right-aligning numeric values (prevents flicker on digit count changes)
-  // Position near where the longest value would naturally end when left-aligned at valueCol
-  valueRightEdge = x + 210 * dpiScale;
+  // Right edge for right-aligned values, derived from measured content width.
+  valueRightEdge = x + contentWidth;
 
   // Calculate required height for background
-  float lineHeight = (float)renderer->GetLineHeight();
   float requiredHeight = lineHeight; // Minimal top padding
 
   if (cfg.showGPU)
@@ -437,13 +593,6 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     requiredHeight += lineHeight;
   if (cfg.showRAM)
     requiredHeight += lineHeight;
-
-  // Check if FG is active
-  bool fgActive = metrics && metrics->IsFGActive();
-
-  // Check if recording is active
-  bool isRecording =
-      mem.runtimeState.isRecording.load(std::memory_order_acquire);
 
   if (cfg.showFPS) {
     requiredHeight += lineHeight;
@@ -477,13 +626,13 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     metrics->GetLastHistory(graphData, GRAPH_SAMPLES);
   }
 
-  float bgHeight = requiredHeight + 2 * dpiScale;
+  float bgHeight = requiredHeight + kBgTopPad + kBgBottomPad;
 
   // --- PASS 1: All solid geometry (background + graph) ---
   uint8_t bgAlpha = (uint8_t)(cfg.bgAlpha * 255);
   uint32_t bgColor = (bgAlpha << 24) | (cfg.bgColor & 0x00FFFFFF);
-  renderer->DrawRectFilled(x - 4 * dpiScale, y - 2 * dpiScale, bgWidth,
-                           bgHeight, bgColor);
+  renderer->DrawRectFilled(x - kBgLeftPad, y - kBgTopPad, bgWidth, bgHeight,
+                           bgColor);
 
   // Calculate cursorY for graph position (same layout as text pass)
   float graphCursorY = y;
@@ -559,7 +708,6 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
 
   // Column positions for alignment (DPI-aware)
   float labelCol = x;
-  float valueCol = x + 110 * dpiScale; // Increased spacing for longer values
 
   // GPU - Name in green, % in yellow (based on load)
   if (cfg.showGPU) {
@@ -598,24 +746,25 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     renderer->DrawTextWithShadow(labelCol, cursorY, "VRAM", Colors::LabelOrange,
                                  shadowColor);
 
-    // Main value in normal size
     char usedBuf[32];
     snprintf(usedBuf, 32, "%.2f GB", gbUsed);
-    renderer->DrawTextWithShadow(valueCol, cursorY, usedBuf, textColor,
-                                 shadowColor);
-
-    // "of Y.YY GB" in smaller raised text (superscript style)
-    float usedWidth = 0, usedHeight = 0;
-    renderer->CalcTextSize(usedBuf, &usedWidth, &usedHeight);
-
     char totalBuf[32];
     snprintf(totalBuf, 32, "of %.2f GB", gbTotal);
+
+    // Right-align the whole "used + of total" composite so it always fits.
+    float usedWidth = 0, usedHeight = 0;
+    float totalWidth = 0;
+    renderer->CalcTextSize(usedBuf, &usedWidth, &usedHeight);
     float smallScale = 0.75f;    // Smaller scale for superscript
     float gap = 2.0f * dpiScale; // Minimal gap between segments
+    renderer->CalcTextSizeScaled(totalBuf, &totalWidth, nullptr, smallScale);
+    float usedX = valueRightEdge - (usedWidth + gap + totalWidth);
+    renderer->DrawTextWithShadow(usedX, cursorY, usedBuf, textColor,
+                                 shadowColor);
+
     float raisedY = cursorY - usedHeight * 0.20f; // Raised 20% of line height
-    renderer->DrawTextScaledWithShadow(valueCol + usedWidth + gap, raisedY,
-                                       totalBuf, textColor, shadowColor,
-                                       smallScale);
+    renderer->DrawTextScaledWithShadow(usedX + usedWidth + gap, raisedY, totalBuf,
+                                       textColor, shadowColor, smallScale);
 
     cursorY += lineHeight;
   }
@@ -633,24 +782,25 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     renderer->DrawTextWithShadow(labelCol, cursorY, "RAM", Colors::LabelPink,
                                  shadowColor);
 
-    // Main value in normal size
     char usedBuf[32];
     snprintf(usedBuf, 32, "%.2f GB", gbUsed);
-    renderer->DrawTextWithShadow(valueCol, cursorY, usedBuf, textColor,
-                                 shadowColor);
-
-    // "of Y.YY GB" in smaller raised text (superscript style)
-    float usedWidth = 0, usedHeight = 0;
-    renderer->CalcTextSize(usedBuf, &usedWidth, &usedHeight);
-
     char totalBuf[32];
     snprintf(totalBuf, 32, "of %.2f GB", gbTotal);
+
+    // Right-align the whole "used + of total" composite so it always fits.
+    float usedWidth = 0, usedHeight = 0;
+    float totalWidth = 0;
+    renderer->CalcTextSize(usedBuf, &usedWidth, &usedHeight);
     float smallScale = 0.75f;    // Smaller scale for superscript
     float gap = 2.0f * dpiScale; // Minimal gap between segments
+    renderer->CalcTextSizeScaled(totalBuf, &totalWidth, nullptr, smallScale);
+    float usedX = valueRightEdge - (usedWidth + gap + totalWidth);
+    renderer->DrawTextWithShadow(usedX, cursorY, usedBuf, textColor,
+                                 shadowColor);
+
     float raisedY = cursorY - usedHeight * 0.20f; // Raised 20% of line height
-    renderer->DrawTextScaledWithShadow(valueCol + usedWidth + gap, raisedY,
-                                       totalBuf, textColor, shadowColor,
-                                       smallScale);
+    renderer->DrawTextScaledWithShadow(usedX + usedWidth + gap, raisedY, totalBuf,
+                                       textColor, shadowColor, smallScale);
 
     cursorY += lineHeight;
   }

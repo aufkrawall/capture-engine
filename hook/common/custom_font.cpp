@@ -173,7 +173,7 @@ const Glyph *FontAtlas::GetGlyph(char c) const {
 
 void FontAtlas::CalcTextSize(const char *text, float *outWidth,
                              float *outHeight) const {
-  if (!text || !outWidth || !outHeight)
+  if (!text)
     return;
 
   float width = 0;
@@ -195,8 +195,10 @@ void FontAtlas::CalcTextSize(const char *text, float *outWidth,
     }
   }
 
-  *outWidth = (width > lineWidth) ? width : lineWidth;
-  *outHeight = height;
+  if (outWidth)
+    *outWidth = (width > lineWidth) ? width : lineWidth;
+  if (outHeight)
+    *outHeight = height;
 }
 
 } // namespace CustomOverlay
