@@ -72,7 +72,12 @@ int LoggerProcessMain(const AppConfig &config) {
                   hSM, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SharedMemoryLayout));
               if (shm) {
                 LogInfo("[Logger] Discovered new session: PID %u", pid);
-                sessions[pid] = {hSM, shm, shm->logs.readIndex.load()};
+                // Initialize readIndex to current writeIndex to skip stale data
+                // from previous sessions. The hook writes early logs directly to
+                // file before IPC connects, so SHM may contain old data.
+                uint32_t currentWriteIdx = shm->logs.writeIndex.load(std::memory_order_acquire);
+                sessions[pid] = {hSM, shm, currentWriteIdx};
+                LogInfo("[Logger] Session PID %u initialized at writeIndex=%u", pid, currentWriteIdx);
               } else {
                 CloseHandle(hSM);
               }
@@ -94,7 +99,7 @@ int LoggerProcessMain(const AppConfig &config) {
 
       uint32_t writeIdx =
           s.shm->logs.writeIndex.load(std::memory_order_acquire);
-      uint32_t readIdx = s.shm->logs.readIndex.load(std::memory_order_relaxed);
+      uint32_t readIdx = s.lastReadIndex;  // Use session's tracked index, not SHM's stale value
 
       while (readIdx != writeIdx) {
         const char *entry =
@@ -144,6 +149,9 @@ int LoggerProcessMain(const AppConfig &config) {
         readIdx++;
       }
 
+      // Update session's tracked read index
+      s.lastReadIndex = readIdx;
+      // Also update SHM for cross-process visibility (optional, for debugging)
       s.shm->logs.readIndex.store(readIdx, std::memory_order_release);
 
       // Optional: Remove dead sessions (maybe if they haven't updated in X

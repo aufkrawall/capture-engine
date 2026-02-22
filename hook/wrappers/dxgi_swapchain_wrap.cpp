@@ -100,9 +100,8 @@ bool CWrapDXGISwapChain::IsFSRInternalSwapchain() {
 
   // 1. Check for null window handle (primary indicator)
   if (!m_hWnd || m_hWnd == nullptr) {
-    WrapperLog(
-        "[FSR-DEBUG] Swapchain %p has no window handle, possible FSR internal",
-        this);
+    WrapperLog("Swapchain %p has no window handle, possible FSR internal",
+               this);
     return true;
   }
 
@@ -131,8 +130,7 @@ bool CWrapDXGISwapChain::IsFSRInternalSwapchain() {
     // be internal
     if (!isStandardResolution && !isCommonBaseResolution &&
         (m_State.width < 800 || m_State.height < 600)) {
-      WrapperLog("[FSR-DEBUG] Swapchain %p has unusual dimensions %ux%u, "
-                 "possible FSR internal",
+      WrapperLog("Swapchain %p has unusual dimensions %ux%u, possible FSR internal",
                  this, m_State.width, m_State.height);
       return true;
     }
@@ -141,8 +139,7 @@ bool CWrapDXGISwapChain::IsFSRInternalSwapchain() {
   // 3. FSR internal swapchains often have flip model but no actual presentation
   // (they're used for intermediate buffering)
   if (m_FlipModel.active && m_State.width == 0 && m_State.height == 0) {
-    WrapperLog("[FSR-DEBUG] Swapchain %p has flip model with zero dimensions, "
-               "possible FSR internal",
+    WrapperLog("Swapchain %p has flip model with zero dimensions, possible FSR internal",
                this);
     return true;
   }
@@ -642,12 +639,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval,
   m_pRealCached = pRealCached; // Store for potential future use
 
   if (callCount < 10) {
-    WrapperLog("[FSR-DEBUG] Present ENTRY #%d - Thread=%lu, m_pReal=%p, "
-               "m_DestructionCookie=%u, m_IsD3D12=%d",
-               callCount, threadId, pRealCached, m_DestructionCookie, m_IsD3D12);
-    WrapperLog(
-        "[FSR-DEBUG] Present state - fgActive=%d, flipModel=%d, Wrapper=%p",
-        g_FGCompat.IsFGActive(), m_FlipModel.active, this);
+    WrapperLog("Present ENTRY #%d - Thread=%lu, m_pReal=%p, m_IsD3D12=%d",
+               callCount, threadId, pRealCached, m_IsD3D12);
+    WrapperLog("Present state - fgActive=%d, flipModel=%d",
+               g_FGCompat.IsFGActive(), m_FlipModel.active);
   }
 
   // CRITICAL: Check for global shutdown - if app is closing, don't touch
@@ -665,14 +660,11 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval,
   if (!pRealCached || m_SwapchainDestroyed.load()) {
     // Real swapchain was destroyed, wrapper is now invalid
     // This happens when FSR FG creates a new swapchain
-    WrapperLog("[FSR-DEBUG] Present: Real swapchain destroyed, passing through "
-               "(FSR FG swapchain recreation)");
+    WrapperLog("Present: Real swapchain destroyed (FSR FG swapchain recreation)");
     if (pRealCached) {
-      WrapperLog("[FSR-DEBUG] Present: Calling pRealCached->Present "
-                 "(destruction pending)");
       return pRealCached->Present(SyncInterval, Flags);
     }
-    WrapperLog("[FSR-DEBUG] Present: pRealCached is null, returning error");
+    WrapperLog("Present: pRealCached is null, returning error");
     return DXGI_ERROR_INVALID_CALL;
   }
 
@@ -686,8 +678,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval,
   // interfere with
   if (IsFSRInternalSwapchain()) {
     if (callCount < 10) {
-      WrapperLog(
-          "[FSR-DEBUG] Present: Skipping FSR internal swapchain processing");
+      WrapperLog("Present: Skipping FSR internal swapchain processing");
     }
     HRESULT hr = pRealCached->Present(SyncInterval, Flags);
     return hr;
@@ -695,24 +686,14 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval,
 
   // DEBUG: Log first few Present calls to verify wrapper is being invoked
   if (callCount < 10) {
-    WrapperLog("[FSR-DEBUG] Present: CALLED call#%d (m_IsD3D12=%d, "
-               "flipModel=%d, FG=%d)",
+    WrapperLog("Present: call#%d (m_IsD3D12=%d, flipModel=%d, FG=%d)",
                callCount, m_IsD3D12, m_FlipModel.active,
                g_FGCompat.IsFGActive());
   }
 
-  // FSR FG/DLSS FG compatibility: If FG is active and using flip model,
-  // be more careful about modifying Present parameters
+  // FSR FG/DLSS FG compatibility: don't override sync interval when FG is
+  // active — it can break frame pacing. Still process capture though.
   bool fgActive = g_FGCompat.IsFGActive();
-  if (fgActive && m_FlipModel.active) {
-    // Log FG interaction for debugging
-    if (callCount < 50) {
-      WrapperLog(
-          "Present: FG is active with flip model, using conservative approach");
-    }
-    // Don't override sync interval when FG is active - it can break frame
-    // pacing Still process capture though
-  }
 
   // RECURSION GUARD: Prevent infinite recursion with Steam/other overlays
   // Using atomic+threadId instead of thread_local to avoid static destructor
@@ -756,59 +737,12 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval,
     WrapperLog("Present: Skipping VSync override because FG is active");
   }
 
-  // CRITICAL: Process frame for capture BEFORE calling real Present
-  // This must happen regardless of overlay state - capture works independently
-  static int s_CaptureCallCount = 0;
+  // Process frame for capture BEFORE calling real Present
   if (m_IsD3D12) {
-    int captureNum = ++s_CaptureCallCount;
-    if (captureNum <= 10) {
-      WrapperLog("[FSR-DEBUG] Present: About to call DX12_ProcessFrameExternal "
-                 "#%d, pRealCached=%p",
-                 captureNum, pRealCached);
-    }
-
-    // DIAGNOSTIC: Skip ALL overlay processing to test if wrapper itself causes
-    // black If game shows normally with this, the issue is in ProcessFrame.
-    // If game is still black, wrapper/present chain is the problem.
-    // Set to true to disable overlay entirely for debugging
-    static bool s_diagSkipOverlay = false;
-    if (s_diagSkipOverlay) {
-      HRESULT hr = pRealCached->Present(SyncInterval, Flags);
-      return hr;
-    }
     DX12_ProcessFrameExternal(pRealCached);
-
-    if (captureNum <= 10) {
-      WrapperLog("[FSR-DEBUG] Present: DX12_ProcessFrameExternal #%d completed "
-                 "successfully",
-                 captureNum);
-    }
-
-    // DX12: Overlay rendering is handled by DX12_ProcessFrameExternal above
-    // No additional overlay drawing needed here
-    static int s_PresentCount = 0;
-    int presentNum = ++s_PresentCount;
-    if (presentNum <= 10) {
-      WrapperLog(
-          "[FSR-DEBUG] Present: DX12 path - overlay handled by wrapper #%d",
-          presentNum);
-    }
   } else {
-    // DX11/DX10: Call DX11_ProcessFrameExternal for capture AND overlay
-    // NOTE: DX11_ProcessFrameExternal already calls DrawDX11Overlay internally,
-    // so we do NOT call DrawOverlay() here to avoid double-counting frames
-    int captureNum = ++s_CaptureCallCount;
-    if (captureNum <= 10) {
-      WrapperLog("[FSR-DEBUG] Present: About to call DX11_ProcessFrameExternal "
-                 "#%d, pRealCached=%p",
-                 captureNum, pRealCached);
-    }
+    // DX11/DX10: DX11_ProcessFrameExternal handles both capture AND overlay
     DX11_ProcessFrameExternal(pRealCached);
-    if (captureNum <= 10) {
-      WrapperLog("[FSR-DEBUG] Present: DX11_ProcessFrameExternal #%d completed "
-                 "successfully",
-                 captureNum);
-    }
   }
 
   // FPS Limiter - apply frame pacing before present

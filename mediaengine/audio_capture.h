@@ -46,6 +46,7 @@ private:
 
   std::atomic<bool> isCapturing;
   std::thread captureThread;
+  bool coInitOwned = false; // true if Start() successfully called CoInitializeEx
 
   std::mutex queueMutex;
   std::deque<AudioPacket> packetQueue; // Use deque for O(1) front removal

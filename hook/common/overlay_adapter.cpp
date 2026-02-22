@@ -313,7 +313,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
             initialized ? 1 : 0, (void *)renderer, (void *)ipc,
             ipc ? (void *)ipc->GetSharedMem() : nullptr,
             (ipc && ipc->GetSharedMem())
-                ? ipc->GetSharedMem()->overlayConfig.showOverlay
+                ? ipc->GetSharedMem()->ReadOverlayConfig().showOverlay
                 : -1);
     renderLogCount++;
   }
@@ -329,7 +329,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
       HookLog("RenderOverlay: early return - no IPC or shared memory");
     return;
   }
-  auto &cfg = ipc->GetSharedMem()->overlayConfig;
+  auto cfg = ipc->GetSharedMem()->ReadOverlayConfig();
   if (!cfg.showOverlay) {
     if (renderLogCount <= 5)
       HookLog("RenderOverlay: early return - showOverlay is false");
@@ -364,7 +364,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
   if (!ipc || !ipc->GetSharedMem())
     return;
   auto &mem = *ipc->GetSharedMem();
-  auto &cfg = mem.overlayConfig;
+  auto cfg = mem.ReadOverlayConfig();
 
   // Get DPI scale for consistent sizing
   float dpiScale = renderer->GetDpiScale();

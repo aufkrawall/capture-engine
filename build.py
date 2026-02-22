@@ -25,6 +25,7 @@ IS_WSL = IS_LINUX and "microsoft" in platform.uname().release.lower()
 
 # --- Optimization Flags ---
 # x86-64-v3 requires AVX2 (Haswell 2013+), provides ~10-20% performance boost
+# Used only for the host process (captureengine.exe) where CPU is controlled.
 OPT_FLAGS_X64 = [
     "-O3",
     "-flto",
@@ -36,11 +37,33 @@ OPT_FLAGS_X64 = [
     "-fdata-sections",
 ]
 
+# Hook DLL flags: injected into arbitrary game processes — must not require AVX2
+# and must not use -ffast-math (audio encoder correctness requires IEEE 754 semantics).
+HOOK_OPT_FLAGS_X64 = [
+    "-O3",
+    "-flto",
+    "-march=x86-64-v2",  # SSE4.2 + POPCNT minimum — safe for CPUs back to ~2008
+    "-mtune=generic",
+    "-fvisibility=hidden",
+    "-ffunction-sections",
+    "-fdata-sections",
+]
+
 # x86 builds use generic optimization (no AVX on 32-bit)
 OPT_FLAGS_X86 = [
     "-O3",
     "-flto",
     "-ffast-math",
+    "-march=i686",
+    "-mtune=generic",
+    "-fvisibility=hidden",
+    "-ffunction-sections",
+    "-fdata-sections",
+]
+
+# x86 hook DLL: no -ffast-math (audio correctness); no -flto (x86 linker has no plugin)
+HOOK_OPT_FLAGS_X86 = [
+    "-O3",
     "-march=i686",
     "-mtune=generic",
     "-fvisibility=hidden",
@@ -2467,11 +2490,29 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         if not IS_LINUX:
             ldflags_hook.extend(["-fuse-ld=lld", "-Wl,--exclude-all-symbols"])
 
+        # Hook DLL must use conservative arch flags (injected into game processes
+        # with unknown CPU support). Replace curr_cflags march/ffast-math flags.
         if arch == "x64":
-            pass
+            hook_base_cflags = ["-std=c++20"] + HOOK_OPT_FLAGS_X64 + [
+                "-Wall", "-Wextra", "-Wshadow", "-Wformat=2", "-Wundef",
+                "-Wno-unused-parameter",
+                "-Wno-microsoft-exception-spec",
+                "-D_WIN32_WINNT=0x0A00",
+                "-I" + os.path.join(PROJECT_ROOT, "common"),
+            ]
+        else:
+            hook_base_cflags = ["-std=c++20"] + HOOK_OPT_FLAGS_X86 + [
+                "-m32",
+                "-mstackrealign",
+                "-Wall", "-Wextra", "-Wshadow", "-Wformat=2", "-Wundef",
+                "-Wno-unused-parameter",
+                "-Wno-microsoft-exception-spec",
+                "-D_WIN32_WINNT=0x0A00",
+                "-I" + os.path.join(PROJECT_ROOT, "common"),
+            ]
 
         hk_cflags = (
-            curr_cflags
+            hook_base_cflags
             + ["-DVK_NO_PROTOTYPES", "-DBUILDING_CAPTURE_HOOK"]
             + [  # Vulkan hooks now in layer
                 "-I" + os.path.join(PROJECT_ROOT, "common"),

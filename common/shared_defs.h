@@ -3,6 +3,8 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>   // for memcpy in seqlock helpers
+#include <intrin.h>  // for _mm_pause
 #include <type_traits>
 
 #ifndef MAX_PATH
@@ -21,7 +23,8 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 5: Added atomic accessor methods for all cross-process fields
 // Version 6: Changed backing fields from plain types to std::atomic<T>
 //             Eliminates reinterpret_cast UB while preserving same layout
-static constexpr uint32_t SHARED_MEMORY_VERSION = 6;
+// Version 7: Added overlayConfigSeq seqlock counter for OverlayConfig
+static constexpr uint32_t SHARED_MEMORY_VERSION = 7;
 
 // Minimum supported version for backward compatibility
 static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
@@ -273,8 +276,12 @@ struct alignas(8) FrameSlot {
 };
 
 // Ring buffer for frame metadata (lock-free SPSC)
-// Uses std::atomic for proper memory ordering across threads/processes
-// Cache line padding prevents false sharing between producer/consumer indices
+// This struct lives inside SharedMemoryLayout (cross-process shared memory) and
+// therefore has a fixed binary layout. It cannot use LockFreeRingBuffer<T> from
+// ring_buffer.h, which is a heap-allocated in-process template. Both serve SPSC
+// use cases but have fundamentally different ownership and layout requirements.
+// Uses std::atomic for proper memory ordering across threads/processes.
+// Cache line padding prevents false sharing between producer/consumer indices.
 struct FrameRingBuffer {
   FrameSlot slots[FRAME_RING_SIZE]{}; // Default-initialize all slots
 
@@ -400,6 +407,10 @@ struct SharedMemoryLayout {
 
   // Host -> Hook (Host writes, Hook reads - use atomic accessors)
   OverlayConfig overlayConfig;
+  // Seqlock for overlayConfig: odd = write in progress, even = stable.
+  // Writers call BeginWriteOverlayConfig/EndWriteOverlayConfig.
+  // Readers call ReadOverlayConfig() which retries until consistent.
+  std::atomic<uint32_t> overlayConfigSeq{0};
   SharedGraphicsConfig graphicsConfig; // Added graphics overrides
 
 private:
@@ -416,6 +427,35 @@ private:
 public:
   char logFilePath[260]; // Path to log file (captureengine.log) - set once at
                          // init
+
+  // Seqlock helpers for overlayConfig.
+  // Host writer: BeginWriteOverlayConfig() ... write fields ... EndWriteOverlayConfig()
+  // Hook reader: use ReadOverlayConfig() which retries until consistent.
+  void BeginWriteOverlayConfig() {
+    overlayConfigSeq.fetch_add(1, std::memory_order_release); // set odd = write started
+    std::atomic_thread_fence(std::memory_order_release);
+  }
+  void EndWriteOverlayConfig() {
+    std::atomic_thread_fence(std::memory_order_release);
+    overlayConfigSeq.fetch_add(1, std::memory_order_release); // set even = write done
+  }
+  OverlayConfig ReadOverlayConfig() const {
+    OverlayConfig result;
+    uint32_t seq1, seq2;
+    do {
+      seq1 = overlayConfigSeq.load(std::memory_order_acquire);
+      if (seq1 & 1u) {
+        // Writer active — spin briefly then retry
+        _mm_pause();
+        continue;
+      }
+      std::atomic_thread_fence(std::memory_order_acquire);
+      memcpy(&result, &overlayConfig, sizeof(OverlayConfig));
+      std::atomic_thread_fence(std::memory_order_acquire);
+      seq2 = overlayConfigSeq.load(std::memory_order_acquire);
+    } while (seq1 != seq2);
+    return result;
+  }
 
   // Atomic accessors for Host -> Hook fields
   uint32_t GetHostPID() const {

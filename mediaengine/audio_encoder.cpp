@@ -61,9 +61,7 @@ bool AudioEncoder::Init(const AudioConfig &config,
     return false;
   }
 
-  // ALAC requires specific sample format
-  // ALAC requires specific sample format
-  // For others (Opus, AAC), prefer Float > S16 > others
+  // ALAC requires specific sample format; for others (Opus, AAC), prefer Float > S16 > others
   if (codec->id == AV_CODEC_ID_ALAC) {
     codecCtx->sample_fmt = AV_SAMPLE_FMT_S32P;
   } else if (codec->sample_fmts) {

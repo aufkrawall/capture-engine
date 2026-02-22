@@ -68,7 +68,6 @@ OpenGLHook *g_OpenGLHook = nullptr;
 // Vulkan hook removed - using VK_LAYER_CE_overlay (ICD layer approach) instead
 
 // Global Local Config
-// Global Local Config
 AppConfig *g_pLocalConfig = nullptr;
 
 // Helper to safely delete hooks
@@ -90,7 +89,6 @@ template <typename T> void SafeShutdownHook(T *&hook, const char *name) {
 #include <filesystem>
 
 // LoadLibrary Hook Typedefs
-// ... (same as before)
 typedef HMODULE(WINAPI *LoadLibraryA_t)(LPCSTR lpLibFileName);
 typedef HMODULE(WINAPI *LoadLibraryW_t)(LPCWSTR lpLibFileName);
 typedef HMODULE(WINAPI *LoadLibraryExA_t)(LPCSTR lpLibFileName, HANDLE hFile,
@@ -133,31 +131,44 @@ typedef LSTATUS(WINAPI *RegQueryValueExW_t)(HKEY hKey, LPCWSTR lpValueName,
                                             LPBYTE lpData, LPDWORD lpcbData);
 RegQueryValueExW_t OriginalRegQueryValueExW = nullptr;
 
-// Helper: Inject our DLL into a suspended child process
-void InjectIntoChild(HANDLE hProcess, HANDLE hThread) {
+// Helper: Inject our DLL into a suspended child process.
+// Runs on a dedicated worker thread so the calling thread (possibly render
+// thread) is not blocked by the 5-second WaitForSingleObject.
+struct ChildInjectParams {
+  HANDLE hProcess;
+  HANDLE hThread;
   char dllPath[MAX_PATH];
-  GetModuleFileNameA(g_hModule, dllPath, MAX_PATH);
+};
 
-  SIZE_T pathLen = strlen(dllPath) + 1;
+static DWORD WINAPI ChildInjectWorker(LPVOID param) {
+  auto *p = static_cast<ChildInjectParams *>(param);
+
+  SIZE_T pathLen = strlen(p->dllPath) + 1;
   LPVOID pRemote =
-      VirtualAllocEx(hProcess, NULL, pathLen, MEM_COMMIT, PAGE_READWRITE);
+      VirtualAllocEx(p->hProcess, NULL, pathLen, MEM_COMMIT, PAGE_READWRITE);
   if (!pRemote) {
     HookLog("[ChildInject] VirtualAllocEx failed: %d", GetLastError());
-    ResumeThread(hThread);
-    return;
+    ResumeThread(p->hThread);
+    CloseHandle(p->hProcess);
+    CloseHandle(p->hThread);
+    delete p;
+    return 1;
   }
 
-  if (!WriteProcessMemory(hProcess, pRemote, dllPath, pathLen, NULL)) {
+  if (!WriteProcessMemory(p->hProcess, pRemote, p->dllPath, pathLen, NULL)) {
     HookLog("[ChildInject] WriteProcessMemory failed: %d", GetLastError());
-    VirtualFreeEx(hProcess, pRemote, 0, MEM_RELEASE);
-    ResumeThread(hThread);
-    return;
+    VirtualFreeEx(p->hProcess, pRemote, 0, MEM_RELEASE);
+    ResumeThread(p->hThread);
+    CloseHandle(p->hProcess);
+    CloseHandle(p->hThread);
+    delete p;
+    return 1;
   }
 
   LPVOID pLoadLib =
       (LPVOID)GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryA");
   HANDLE hRemote = CreateRemoteThread(
-      hProcess, NULL, 0, (LPTHREAD_START_ROUTINE)pLoadLib, pRemote, 0, NULL);
+      p->hProcess, NULL, 0, (LPTHREAD_START_ROUTINE)pLoadLib, pRemote, 0, NULL);
   if (hRemote) {
     WaitForSingleObject(hRemote, 5000);
     CloseHandle(hRemote);
@@ -166,12 +177,46 @@ void InjectIntoChild(HANDLE hProcess, HANDLE hThread) {
     HookLog("[ChildInject] CreateRemoteThread failed: %d", GetLastError());
   }
 
-  VirtualFreeEx(hProcess, pRemote, 0, MEM_RELEASE);
-  ResumeThread(hThread);
+  VirtualFreeEx(p->hProcess, pRemote, 0, MEM_RELEASE);
+  ResumeThread(p->hThread);
+  CloseHandle(p->hProcess);
+  CloseHandle(p->hThread);
+  delete p;
+  return 0;
 }
 
-// Helper: Check if executable should be injected into (Heuristic)
-// We skip common system/launcher processes
+void InjectIntoChild(HANDLE hProcess, HANDLE hThread) {
+  auto *p = new ChildInjectParams();
+  GetModuleFileNameA(g_hModule, p->dllPath, MAX_PATH);
+
+  // Duplicate handles so the worker thread owns them
+  HANDLE hCurrent = GetCurrentProcess();
+  if (!DuplicateHandle(hCurrent, hProcess, hCurrent, &p->hProcess, 0, FALSE,
+                       DUPLICATE_SAME_ACCESS) ||
+      !DuplicateHandle(hCurrent, hThread, hCurrent, &p->hThread, 0, FALSE,
+                       DUPLICATE_SAME_ACCESS)) {
+    HookLog("[ChildInject] DuplicateHandle failed: %d", GetLastError());
+    if (p->hProcess) CloseHandle(p->hProcess);
+    delete p;
+    ResumeThread(hThread);
+    return;
+  }
+
+  HANDLE hWorker = CreateThread(NULL, 0, ChildInjectWorker, p, 0, NULL);
+  if (hWorker) {
+    CloseHandle(hWorker); // Detach — worker cleans up
+  } else {
+    HookLog("[ChildInject] CreateThread failed: %d", GetLastError());
+    CloseHandle(p->hProcess);
+    CloseHandle(p->hThread);
+    delete p;
+    ResumeThread(hThread); // Fallback: resume inline so child isn't stuck
+  }
+}
+
+// Helper: Check if executable should be injected into.
+// Only injects if the process name is on the discovery-memory whitelist.
+// The skip list provides a safety backstop for common non-game processes.
 bool ShouldInjectChild(const char *exePath) {
   if (!exePath)
     return false;
@@ -187,7 +232,13 @@ bool ShouldInjectChild(const char *exePath) {
   for (char c : filename)
     lowerName += (char)tolower(c);
 
-  // Skip common system and launcher processes
+  // Only inject into .exe files
+  if (lowerName.length() < 4 ||
+      lowerName.substr(lowerName.length() - 4) != ".exe") {
+    return false;
+  }
+
+  // Skip common system and launcher processes (safety backstop)
   static const char *skipList[] = {"cmd.exe",
                                    "powershell.exe",
                                    "conhost.exe",
@@ -216,13 +267,33 @@ bool ShouldInjectChild(const char *exePath) {
     }
   }
 
-  // Only inject into .exe files
-  if (lowerName.length() < 4 ||
-      lowerName.substr(lowerName.length() - 4) != ".exe") {
+  // Primary check: only inject if the process is on the discovery whitelist.
+  // This prevents injection into arbitrary child processes not explicitly
+  // approved by CaptureEngine.
+  HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+  if (!hDisc) {
+    // No discovery memory — CaptureEngine not running or not ready. Don't inject.
     return false;
   }
-
-  return true;
+  DiscoveryInfo *pDisc = (DiscoveryInfo *)MapViewOfFile(
+      hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
+  bool whitelisted = false;
+  if (pDisc) {
+    if (pDisc->GetMagic() == DISCOVERY_MAGIC) {
+      const char *p = pDisc->processWhitelist;
+      const char *end = pDisc->processWhitelist + sizeof(pDisc->processWhitelist);
+      while (p < end && *p != '\0') {
+        if (_stricmp(filename.c_str(), p) == 0) {
+          whitelisted = true;
+          break;
+        }
+        p += strlen(p) + 1;
+      }
+    }
+    UnmapViewOfFile(pDisc);
+  }
+  CloseHandle(hDisc);
+  return whitelisted;
 }
 
 // Hooked CreateProcessA - Inject into whitelisted child processes only
@@ -372,55 +443,12 @@ std::string GetRedirectedPath(const std::string &requestedPath) {
   return "";
 }
 
-// Hooked RegQueryValueExW - For DLSS Debug Overlay and VRAM detection
+// Hooked RegQueryValueExW - For DLSS Debug Overlay
 LSTATUS WINAPI HookedRegQueryValueExW(HKEY hKey, LPCWSTR lpValueName,
                                       LPDWORD lpReserved, LPDWORD lpType,
                                       LPBYTE lpData, LPDWORD lpcbData) {
   LSTATUS status = OriginalRegQueryValueExW(hKey, lpValueName, lpReserved,
                                             lpType, lpData, lpcbData);
-
-  // Log VRAM-related registry queries for debugging
-  if (lpValueName) {
-    // Check for VRAM-related value names
-    const wchar_t *vramKeywords[] = {L"HardwareInformation.qwMemorySize",
-                                     L"HardwareInformation.MemorySize",
-                                     L"DedicatedVideoMemory",
-                                     L"AdapterRAM",
-                                     L"VRAM",
-                                     L"VideoMemory",
-                                     L"TotalMemory",
-                                     nullptr};
-
-    for (int i = 0; vramKeywords[i] != nullptr; i++) {
-      if (_wcsicmp(lpValueName, vramKeywords[i]) == 0) {
-        // Convert value to string for logging
-        char valueNameA[256];
-        WideCharToMultiByte(CP_UTF8, 0, lpValueName, -1, valueNameA,
-                            sizeof(valueNameA), NULL, NULL);
-
-        if (status == ERROR_SUCCESS && lpData && lpcbData) {
-          if (lpType && *lpType == REG_QWORD &&
-              *lpcbData >= sizeof(ULONGLONG)) {
-            ULONGLONG value = *(ULONGLONG *)lpData;
-            HookLog("RegQueryValueExW: VRAM Query - %s = %llu MB", valueNameA,
-                    value / (1024 * 1024));
-          } else if (lpType && *lpType == REG_DWORD &&
-                     *lpcbData >= sizeof(DWORD)) {
-            DWORD value = *(DWORD *)lpData;
-            HookLog("RegQueryValueExW: VRAM Query - %s = %lu MB", valueNameA,
-                    value / (1024 * 1024));
-          } else {
-            HookLog("RegQueryValueExW: VRAM Query - %s (type=%lu, size=%lu)",
-                    valueNameA, lpType ? *lpType : 0, lpcbData ? *lpcbData : 0);
-          }
-        } else {
-          HookLog("RegQueryValueExW: VRAM Query - %s (status=0x%08X)",
-                  valueNameA, status);
-        }
-        break;
-      }
-    }
-  }
 
   // Check if probing for DLSS Indicator
   if (lpValueName && _wcsicmp(lpValueName, L"ShowDlssIndicator") == 0) {
@@ -885,19 +913,32 @@ static bool IsSteamOverlayPresent() {
 void CheckAndInstallHooks() {
   std::lock_guard<std::mutex> lock(g_HookMutex);
 
-  // CRITICAL FIX: Skip all D3D/DXGI hooks when Vulkan is the primary API
-  // Vulkan games using WSI-to-DXGI mapping can freeze if we hook DXGI/D3D
-  // The Vulkan layer (VK_LAYER_CE_overlay) handles overlay for Vulkan apps
+  // CRITICAL FIX: Skip all D3D/DXGI hooks when Vulkan is the primary API.
+  // Vulkan games using WSI-to-DXGI mapping can freeze if we hook DXGI/D3D.
+  // The Vulkan layer (VK_LAYER_CE_overlay) handles overlay for Vulkan apps.
+  //
+  // NOTE: Many games load vulkan-1.dll as a transitive dependency without using
+  // Vulkan for rendering (e.g., games with Vulkan support flags but running DX12).
+  // Only treat Vulkan as the primary renderer if:
+  //   - vulkan-1.dll is loaded, AND
+  //   - No D3D device has been actually created (not just DLL present)
+  // This check is re-evaluated until we have positive device-creation evidence.
   static bool s_checkedForVulkan = false;
   static bool s_vulkanActive = false;
   if (!s_checkedForVulkan) {
     HMODULE hVulkan = GetModuleHandleW(L"vulkan-1.dll");
-    s_vulkanActive = (hVulkan != nullptr);
-    if (s_vulkanActive) {
-      EarlyLog("CheckAndInstallHooks: Vulkan detected (vulkan-1.dll), skipping "
+    bool d3dDeviceCreated = WasD3D12DeviceCreated() || WasD3D11Or10DeviceCreated();
+    if (hVulkan && !d3dDeviceCreated) {
+      s_vulkanActive = true;
+      EarlyLog("CheckAndInstallHooks: Vulkan detected (vulkan-1.dll, no D3D device), skipping "
                "D3D/DXGI hooks");
+      s_checkedForVulkan = true;
+    } else if (d3dDeviceCreated) {
+      // D3D device created — even if vulkan-1.dll is present, use D3D hooks
+      s_vulkanActive = false;
+      s_checkedForVulkan = true;
     }
-    s_checkedForVulkan = true;
+    // If neither Vulkan nor D3D device created yet, don't lock in the decision
   }
 
   // WRAPPER-ONLY ARCHITECTURE: We use IAT-patched wrapper hooks for ALL games.
@@ -1084,12 +1125,6 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
       PerfLogger::Get().Init(perfLogPath);
     }
   }
-
-  // FAST PATH: Install IAT wrappers immediately before anything else
-  // This helps catch early startup API calls in fast-loading processes.
-  // HookLog("DIAGNOSTIC: Re-enabling InitializeWrapperHooks (IAT patching)");
-  // InitializeWrapperHooks();
-  // CheckAndInstallHooks();
 
   EarlyLog("HookThread: Started (PID=%d)", GetCurrentProcessId());
 
@@ -1373,7 +1408,7 @@ static bool isProcessWhitelistedFast(const char *name) {
         hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
     bool found = false;
     if (pDisc) {
-      if (pDisc->magic == DISCOVERY_MAGIC) {
+      if (pDisc->GetMagic() == DISCOVERY_MAGIC) {
         const char *p = pDisc->processWhitelist;
         const char *end =
             pDisc->processWhitelist + sizeof(pDisc->processWhitelist);

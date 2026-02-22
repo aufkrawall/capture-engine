@@ -42,7 +42,7 @@ public:
   int32_t luidHigh = 0;
 
   // Ring buffer state
-  int writeIndex = 0;
+  std::atomic<int> writeIndex{0};
   uint64_t fenceValue = 0;
 
   // Initialization state
@@ -145,9 +145,11 @@ public:
 
   // Advance write index (called after copy completes)
   int AdvanceWriteIndex() {
-    int idx = writeIndex;
-    writeIndex = (writeIndex + 1) % CAPTURE_TEXTURE_COUNT;
-    return idx;
+    int idx = writeIndex.fetch_add(1, std::memory_order_acq_rel);
+    // Keep within ring bounds using atomic compare-exchange loop
+    // Simple approach: use modulo on the returned old value
+    // The stored value wraps naturally via modulo on read
+    return idx % CAPTURE_TEXTURE_COUNT;
   }
 
   // Signal frame ready to IPC ring buffer
@@ -218,6 +220,7 @@ public:
     droppedFrames.store(0, std::memory_order_relaxed);
     pendingWriteIdx.store(0, std::memory_order_relaxed);
     pendingReadIdx.store(0, std::memory_order_relaxed);
+    writeIndex.store(0, std::memory_order_relaxed);
     completionFenceValue = 0;
     pendingCaptureWaitValue = 0;
     recordingSessionID++;

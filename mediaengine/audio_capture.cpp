@@ -35,10 +35,14 @@ bool AudioCapture::Start(const std::string &deviceId, bool isLoopback) {
     packetQueue.clear();
   }
 
-  hr = CoInitializeEx(
-      NULL,
-      COINIT_MULTITHREADED); // Or apartment threaded depends on calling thread?
-  // Usually standard CoInit is fine.
+  hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+  if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
+    // RPC_E_CHANGED_MODE means COM already initialized with a different model;
+    // we can proceed as long as it's initialized. Any other failure is fatal.
+    DLL_Log("[AudioCapture] CoInitializeEx failed: 0x%x", hr);
+    return false;
+  }
+  coInitOwned = SUCCEEDED(hr); // S_OK = we initialized; S_FALSE = already init on this thread
 
   hr = CoCreateInstance(CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL,
                         IID_IMMDeviceEnumerator, (void **)&pEnumerator);
@@ -142,6 +146,10 @@ void AudioCapture::Stop() {
     CoTaskMemFree(pwfx);
     pwfx = NULL;
   }
+  if (coInitOwned) {
+    CoUninitialize();
+    coInitOwned = false;
+  }
 }
 
 void AudioCapture::CaptureLoop() {
@@ -157,11 +165,13 @@ void AudioCapture::CaptureLoop() {
 
   UINT64 qpcPosition;
 
-  // Debug: Drift tracking variables (non-static for per-instance tracking)
+  // Debug: Drift tracking variables (non-static for per-session tracking)
   uint64_t firstDevicePos = 0;
   uint64_t firstQpcPos = 0;
   bool firstSet = false;
   int logCounter = 0;
+  int errCount = 0;  // Count GetNextPacketSize errors (reset each session)
+  int loopCount = 0; // Count packets seen (reset each session)
 
   while (isCapturing) {
     // Sleep for half buffer duration roughly?
@@ -170,14 +180,12 @@ void AudioCapture::CaptureLoop() {
 
     hr = pCaptureClient->GetNextPacketSize(&packetLength);
     if (FAILED(hr)) {
-      static int errCount = 0;
       if (errCount++ < 5) {
         DLL_Log("[AudioCapture] GetNextPacketSize failed: 0x%x", hr);
       }
       continue;
     }
 
-    static int loopCount = 0;
     if (loopCount++ < 3 && packetLength > 0) {
       DLL_Log("[AudioCapture] Got packetLength=%u", packetLength);
     }

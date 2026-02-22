@@ -207,37 +207,8 @@ public:
             source.capture = std::make_unique<AudioCapture>();
           }
 
-          // INIT RING BUFFER (Pull Model)
-          int iSampleRate = 48000;
-          if (audioConfig.sampleRate != "default" &&
-              !audioConfig.sampleRate.empty()) {
-            try {
-              iSampleRate = std::stoi(audioConfig.sampleRate);
-            } catch (...) {
-            }
-          }
-          size_t capacity = iSampleRate * 2 * 2;
-          source.ringBuffer = std::make_unique<AudioRingBuffer>(capacity);
-          DLL_Log("MediaEngine::Init RingBuffer created. Cap=%zu samples",
-                  capacity);
-
-          // INIT SYNC RESAMPLER (Per-source drift compensation)
-          // 48kHz Stereo Float -> 48kHz Stereo Float with swr_set_compensation
-          // support
-          source.syncResampler = std::make_unique<AudioResampler>();
-          AudioResampler::InputFormat syncInFmt;
-          syncInFmt.sampleRate = 48000;
-          syncInFmt.channels = 2;
-          syncInFmt.bitsPerSample = 32;
-          syncInFmt.validBitsPerSample = 32;
-          syncInFmt.isFloat = true;
-          syncInFmt.blockAlign = 8;
-          AudioResampler::OutputFormat syncOutFmt;
-          syncOutFmt.sampleRate = 48000;
-          syncOutFmt.channels = 2;
-          syncOutFmt.sampleFmt = AV_SAMPLE_FMT_FLT;
-          source.syncResampler->Init(syncInFmt, syncOutFmt);
-          DLL_Log("MediaEngine::Init SyncResampler created for source %zu", i);
+          // INIT RING BUFFER AND SYNC RESAMPLER (Per-source drift compensation)
+          InitAudioSourceBuffers(source, audioConfig, i);
 
           DLL_Log("MediaEngine::Init Created new encoder for track %d (source "
                   "%zu, type=%d)",
@@ -262,38 +233,8 @@ public:
             source.capture = std::make_unique<AudioCapture>();
           }
 
-          // INIT RING BUFFER (Pull Model)
-          int iSampleRate = 48000;
-          if (audioConfig.sampleRate != "default" &&
-              !audioConfig.sampleRate.empty()) {
-            try {
-              iSampleRate = std::stoi(audioConfig.sampleRate);
-            } catch (...) {
-            }
-          }
-          size_t capacity = iSampleRate * 2 * 2;
-          source.ringBuffer = std::make_unique<AudioRingBuffer>(capacity);
-          DLL_Log(
-              "MediaEngine::Init RingBuffer created (shared). Cap=%zu samples",
-              capacity);
-
-          // INIT SYNC RESAMPLER (Per-source drift compensation)
-          source.syncResampler = std::make_unique<AudioResampler>();
-          AudioResampler::InputFormat syncInFmt;
-          syncInFmt.sampleRate = 48000;
-          syncInFmt.channels = 2;
-          syncInFmt.bitsPerSample = 32;
-          syncInFmt.validBitsPerSample = 32;
-          syncInFmt.isFloat = true;
-          syncInFmt.blockAlign = 8;
-          AudioResampler::OutputFormat syncOutFmt;
-          syncOutFmt.sampleRate = 48000;
-          syncOutFmt.channels = 2;
-          syncOutFmt.sampleFmt = AV_SAMPLE_FMT_FLT;
-          source.syncResampler->Init(syncInFmt, syncOutFmt);
-          DLL_Log(
-              "MediaEngine::Init SyncResampler created (shared) for source %zu",
-              i);
+          // INIT RING BUFFER AND SYNC RESAMPLER (Per-source drift compensation)
+          InitAudioSourceBuffers(source, audioConfig, i);
 
           DLL_Log("MediaEngine::Init Audio source %zu shares encoder for track "
                   "%d (type=%d)",
@@ -1285,6 +1226,37 @@ public:
   }
 
 private:
+  // Shared initialization for ring buffer and sync resampler on an AudioSource.
+  // Parses sample rate from config (defaults to 48000) and sets up both.
+  void InitAudioSourceBuffers(AudioSource &source, const AudioConfig &audioConfig, size_t sourceIdx) {
+    int iSampleRate = 48000;
+    if (audioConfig.sampleRate != "default" && !audioConfig.sampleRate.empty()) {
+      try {
+        iSampleRate = std::stoi(audioConfig.sampleRate);
+      } catch (...) {
+      }
+    }
+    size_t capacity = static_cast<size_t>(iSampleRate) * 2 * 2;
+    source.ringBuffer = std::make_unique<AudioRingBuffer>(capacity);
+    DLL_Log("MediaEngine::Init RingBuffer created for source %zu. Cap=%zu samples, rate=%d",
+            sourceIdx, capacity, iSampleRate);
+
+    source.syncResampler = std::make_unique<AudioResampler>();
+    AudioResampler::InputFormat syncInFmt;
+    syncInFmt.sampleRate = iSampleRate;
+    syncInFmt.channels = 2;
+    syncInFmt.bitsPerSample = 32;
+    syncInFmt.validBitsPerSample = 32;
+    syncInFmt.isFloat = true;
+    syncInFmt.blockAlign = 8;
+    AudioResampler::OutputFormat syncOutFmt;
+    syncOutFmt.sampleRate = iSampleRate;
+    syncOutFmt.channels = 2;
+    syncOutFmt.sampleFmt = AV_SAMPLE_FMT_FLT;
+    source.syncResampler->Init(syncInFmt, syncOutFmt);
+    DLL_Log("MediaEngine::Init SyncResampler created for source %zu (rate=%d)", sourceIdx, iSampleRate);
+  }
+
   void AudioLoop() {
     DLL_Log("MediaEngine: Audio thread started (sources=%d)",
             (int)audioSources.size());

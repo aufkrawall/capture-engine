@@ -18,17 +18,16 @@ PathMappings:
 CompilationDatabase: .
 
 # Additional flags for cross-compilation headers
-# These supplement compile_commands.json when clangd needs extra context
 CompileFlags:
   Add:
     - "--target=x86_64-w64-mingw32-gnu"
-    # GCC cross-compilation system includes (clangd auto-detects version)
-    - "-isystem/usr/x86_64-w64-mingw32/include"
-    - "-isystem/usr/x86_64-w64-mingw32/include/c++"
-    - "-isystem/usr/x86_64-w64-mingw32/include/c++/x86_64-w64-mingw32"
+    # Provide a safe march for builtins (SSE4.2+POPCNT) without requiring AVX2.
+    # Compile_commands.json carries the real -march; this ensures clangd resolves
+    # architecture-specific builtins like _mm_pause, __builtin_ia32_*.
+    - "-march=x86-64-v2"
   Remove:
-    # Flags clangd doesn't understand
-    - "-march=*"
+    # Flags clangd doesn't understand or that cause spurious errors
+    - "-march=x86-64-v3"
     - "-mtune=*"
     - "-flto*"
     - "-ffast-math"
@@ -50,6 +49,9 @@ Diagnostics:
     Add:
       - "modernize-use-nullptr"
       - "modernize-use-override"
+      - "modernize-use-default-member-init"
+      - "readability-const-return-type"
+      - "bugprone-use-after-move"
 
 Index:
   Background: Build

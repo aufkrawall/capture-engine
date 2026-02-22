@@ -103,7 +103,7 @@ struct DX12OverlayState {
   ID3D12DescriptorHeap *srvDescHeap = nullptr;
   UINT rtvDescriptorSize = 0;
   std::vector<ID3D12Resource *> backBuffers;
-  bool imGuiInit = false;
+  bool overlayInit = false;
   bool syncInit = false;
   int cachedWidth = 0;
   int cachedHeight = 0;
@@ -139,7 +139,7 @@ struct DX12OverlayState {
       CloseHandle(fenceEvent);
       fenceEvent = nullptr;
     }
-    imGuiInit = false;
+    overlayInit = false;
     syncInit = false;
   }
 };
@@ -230,10 +230,6 @@ static bool g_IPCReady = false;
 
 ID3D12Resource *g_DummyBackBuffer = nullptr;
 
-// Dedicated overlay queue - DEPRECATED, kept for compatibility
-// Single-queue architecture now uses g_CommandQueue for all overlay rendering
-static ID3D12CommandQueue *g_OverlayQueue = nullptr;
-
 // Swapchain queue - captured at swapchain creation time, preferred for overlay
 // rendering to ensure barriers execute on the queue DXGI synchronises with.
 static ID3D12CommandQueue *g_SwapchainQueue = nullptr;
@@ -308,15 +304,15 @@ void DX12_InvalidateSwapchain() {
                                                    std::memory_order_release);
   HookLog("DX12: Swapchain marked INVALID (FSR/FG transition detected)");
   // Log current state for debugging
-  HookLog("DX12: Invalidating - imGuiInit=%d, syncInit=%d, device=%p, queue=%p",
-          g_State.imGuiInit, g_State.syncInit, g_Device.load(), g_CommandQueue.load());
+  HookLog("DX12: Invalidating - overlayInit=%d, syncInit=%d, device=%p, queue=%p",
+          g_State.overlayInit, g_State.syncInit, g_Device.load(), g_CommandQueue.load());
 
   // Only invalidate swapchain-level state, not device-level sync resources
   // This allows swapchain changes without full reinitialization
-  if (g_State.imGuiInit) {
+  if (g_State.overlayInit) {
     HookLog("DX12: Invalidating swapchain resources (device-level resources "
             "preserved)");
-    g_State.imGuiInit = false;
+    g_State.overlayInit = false;
     CleanupRTVs();
   }
 }
@@ -830,7 +826,7 @@ static void HookSwapchainVTableViaTempSwapchain(bool presentOnly) {
 }
 
 void ShutdownImGui() {
-  if (!g_State.imGuiInit)
+  if (!g_State.overlayInit)
     return;
 
   if (g_OverlayAdapter.IsInitialized()) {
@@ -841,7 +837,7 @@ void ShutdownImGui() {
     g_State.srvDescHeap->Release();
     g_State.srvDescHeap = nullptr;
   }
-  g_State.imGuiInit = false;
+  g_State.overlayInit = false;
 }
 
 bool InitImGui(ID3D12Device *device, int buffers, DXGI_FORMAT format,
@@ -855,7 +851,7 @@ bool InitImGui(ID3D12Device *device, int buffers, DXGI_FORMAT format,
     g_OverlayAdapter.Shutdown();
   }
 
-  if (g_State.imGuiInit) {
+  if (g_State.overlayInit) {
     HookLog("InitImGui: Already initialized, returning early");
     return true;
   }
@@ -887,7 +883,7 @@ bool InitImGui(ID3D12Device *device, int buffers, DXGI_FORMAT format,
   // resources. But we might need it if we keep ImGui for menus? For now
   // assuming full replacement for overlay.
 
-  g_State.imGuiInit = true;
+  g_State.overlayInit = true;
 
   // Reset frame delay counter on reinitialization
   extern void DX12_ResetOverlayFrameDelay();
@@ -902,7 +898,7 @@ void DrawOverlay(ID3D12GraphicsCommandList *cmdList, bool isRealFrame,
   // shutdown/reinit
   std::lock_guard<std::recursive_mutex> lock(g_OverlayMutex);
 
-  if (!g_State.imGuiInit || !cmdList)
+  if (!g_State.overlayInit || !cmdList)
     return;
 
   // CRITICAL FIX: Always set IPC client regardless of frame type.
@@ -1181,7 +1177,7 @@ void DX12_OnSwapchainResizeBegin() {
 
   // Just mark ImGui as not initialized - resources will be cleaned up after
   // resize
-  g_State.imGuiInit = false;
+  g_State.overlayInit = false;
   g_State.syncInit = false;
   HookLog("DX12: DX12_OnSwapchainResizeBegin - step 3: marked state invalid");
 
@@ -1321,12 +1317,12 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
   // CRITICAL: Detect swapchain change (e.g., FSR FG activation creates new
   // swapchain) and force re-initialization to work with the new swapchain
   static IDXGISwapChain *s_lastSwapChain = nullptr;
-  if (pSwapChain != s_lastSwapChain && g_State.imGuiInit) {
+  if (pSwapChain != s_lastSwapChain && g_State.overlayInit) {
     HookLog("DX12: Swapchain changed (%p -> %p), forcing re-initialization",
             s_lastSwapChain, pSwapChain);
     CleanupOverlay();
     CleanupRTVs();
-    g_State.imGuiInit = false;
+    g_State.overlayInit = false;
     g_State.syncInit = false;
   }
   s_lastSwapChain = pSwapChain;
@@ -1488,7 +1484,7 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
         g_LastSwapChain->Release();
       g_LastSwapChain = pSwapChain;
       g_LastSwapChain->AddRef();
-      g_State.imGuiInit = false;
+      g_State.overlayInit = false;
       HookLog("DX12: ProcessFrame - new device/swapchain, overlay reset "
               "(device-level resources preserved)");
     }
@@ -1508,12 +1504,9 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
     HookLog("DX12: ProcessFrame - no game queue, skipping overlay");
     return;
   }
-  // ImGui_ImplDX12_SetCommandQueue REMOVED: Using OverlayAdapter instead
-  // if (g_State.imGuiInit) ImGui_ImplDX12_SetCommandQueue(g_OverlayQueue);
-
   // Remove delay - install overlay immediately (Strange Brigade compatibility)
   static std::atomic<int> s_framesBeforeInit{0};
-  if (!g_State.imGuiInit) {
+  if (!g_State.overlayInit) {
     int frames = ++s_framesBeforeInit;
     if (frames < 1) {
       return;
@@ -1614,12 +1607,12 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
   static int s_firstFrameLogged = 0;
   if (s_firstFrameLogged == 0) {
     s_firstFrameLogged = 1;
-    HookLog("DX12: ProcessFrame first call - imGuiInit=%d, syncInit=%d, "
+    HookLog("DX12: ProcessFrame first call - overlayInit=%d, syncInit=%d, "
             "gameQueue=%p",
-            g_State.imGuiInit, g_State.syncInit, gameQueue);
+            g_State.overlayInit, g_State.syncInit, gameQueue);
   }
 
-  if (g_State.imGuiInit && g_State.syncInit) {
+  if (g_State.overlayInit && g_State.syncInit) {
     // Single log on first successful overlay render
     static int s_firstOverlayLogged = 0;
     if (s_firstOverlayLogged == 0) {
@@ -1855,13 +1848,13 @@ void DX12_ProcessFrameExternal(IDXGISwapChain *pSwapChain) {
 
   // CRITICAL FIX: Reset delay flag when ImGui is not initialized
   // This ensures we wait again after each init
-  if (!g_State.imGuiInit) {
+  if (!g_State.overlayInit) {
     s_initDelayComplete = false;
     s_framesSinceInit = 0;
   }
 
   // Minimal delay after ImGui init before rendering overlay (for stability)
-  if (g_State.imGuiInit && !s_initDelayComplete.load()) {
+  if (g_State.overlayInit && !s_initDelayComplete.load()) {
     int frames = ++s_framesSinceInit;
     if (frames < 1) {
       // Skip - proceed immediately
@@ -1916,9 +1909,6 @@ void DX12_ProcessFrameExternal(IDXGISwapChain *pSwapChain) {
       return;
     }
   }
-
-  // Update freeze watchdog heartbeat
-  g_RenderWatchdog.Heartbeat();
 
   if (!pSwapChain) {
     HookLog("DX12: ProcessFrameExternal - null swapchain");

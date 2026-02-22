@@ -68,8 +68,13 @@ public:
 
       if (highResTimer) {
         // Convert to 100ns intervals (negative = relative)
+        // Use double to avoid int64 overflow when diff * 10000000 > INT64_MAX.
+        // At qpcFrequency ~10MHz and diff up to ~200ms, diff*10M can exceed 2^53 in double
+        // but stays well within int64 range for reasonable frame times (<1s).
+        // The divide-before-multiply approach prevents overflow for large diffs.
         LARGE_INTEGER dueTime;
-        dueTime.QuadPart = -(diff * 10000000 / qpcFrequency);
+        dueTime.QuadPart = -static_cast<int64_t>(
+            static_cast<double>(diff) * (10000000.0 / static_cast<double>(qpcFrequency)));
 
         if (SetWaitableTimer(highResTimer, &dueTime, 0, NULL, NULL, FALSE)) {
           WaitForSingleObject(highResTimer, (DWORD)(diffUs / 1000 + 5));
@@ -148,18 +153,23 @@ public:
     }
 
     if (!limiterActive) {
-      static bool loggedInactive = false;
-      if (!loggedInactive) {
+      // Release timer resolution if we had it set
+      if (timerResolutionSet) {
+        timeEndPeriod(1);
+        timerResolutionSet = false;
+      }
+      if (!loggedInactive_) {
         HookLog("FPS Limiter: Inactive (general_enabled=%d, generalFps=%d, "
                 "captureSync=%d, isRecording=%d)",
                 shm->fpsLimiter.GetGeneralEnabled(),
                 shm->fpsLimiter.GetGeneralFps(),
                 shm->fpsLimiter.GetCaptureSyncEnabled(),
                 isRecording);
-        loggedInactive = true;
+        loggedInactive_ = true;
       }
       return;
     }
+    loggedInactive_ = false; // Reset so transitions back to inactive are logged
 
     // Ensure 1ms timer resolution when limiter is active
     EnsureTimerResolution();
@@ -294,6 +304,7 @@ public:
     eventsInitialized = false;
     sessionIdPublished = false;
     highResTimerFailed = false;
+    loggedInactive_ = false;
     missedFrames = 0;
   }
 
@@ -306,8 +317,8 @@ private:
   bool eventsInitialized = false;
   bool sessionIdPublished = false;
   bool timerResolutionSet = false; // Whether timeBeginPeriod(1) was called
-  bool highResTimerFailed =
-      false; // Fall back to polling if timer creation fails
+  bool highResTimerFailed = false; // Fall back to polling if timer creation fails
+  bool loggedInactive_ = false;    // Tracks whether the inactive log was already emitted
   int64_t qpcFrequency = 0;
   uint32_t missedFrames = 0; // Track frames where limiter couldn't keep up
 };

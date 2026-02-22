@@ -109,7 +109,9 @@ bool IPCManager::Init() {
 void IPCManager::UpdateConfig(const AppConfig &config) {
   if (!pSharedMem)
     return;
+  pSharedMem->BeginWriteOverlayConfig();
   pSharedMem->overlayConfig = config.overlay;
+  pSharedMem->EndWriteOverlayConfig();
   pSharedMem->SetDebugLogging(config.debugLogging);
   pSharedMem->SetLogLevel(LogLevel::Info);
 
@@ -221,7 +223,9 @@ bool IPCManager::GetLatestFrame(SharedMemoryLayout &outState) {
 
   // Copy non-atomic fields manually to avoid copying atomics
   // The caller should use GetSharedMem() for direct atomic access
-  outState.overlayConfig = pSharedMem->overlayConfig;
+  outState.BeginWriteOverlayConfig();
+  outState.overlayConfig = pSharedMem->ReadOverlayConfig();
+  outState.EndWriteOverlayConfig();
   outState.SetHostPID(pSharedMem->GetHostPID());
   outState.SetRequestExit(pSharedMem->GetRequestExit());
   outState.SetDebugLogging(pSharedMem->GetDebugLogging());
