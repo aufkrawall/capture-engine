@@ -946,8 +946,9 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     renderer->CalcTextSizeScaled(buf, &ftTextWidth, &ftTextHeight,
                                  smallFontScale);
     renderer->DrawTextScaledWithShadow(
-        graphX + graphWidth - ftTextWidth - 4 * dpiScale, graphY + 6 * dpiScale,
-        buf, frameTimeColor, shadowColor, smallFontScale);
+        graphX + graphWidth - ftTextWidth - 4 * dpiScale,
+        scaleLineY - ftTextHeight * 0.5f, buf, frameTimeColor, shadowColor,
+        smallFontScale);
   }
 
   (void)viewportWidth;

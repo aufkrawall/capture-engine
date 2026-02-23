@@ -312,9 +312,8 @@ static void LogToFileAtomic(const char *baseFilename, const char *fmt,
 }
 
 void EarlyLog(const char *fmt, ...) {
-  // If config is loaded, respect the debugLogging flag.
-  // If not yet loaded (early DllMain), allow logging to catch startup issues.
-  if (g_pLocalConfig && !g_pLocalConfig->debugLogging)
+  // No hook-side logging when debug logging is disabled.
+  if (!g_pLocalConfig || !g_pLocalConfig->debugLogging)
     return;
 
   va_list args;
@@ -324,7 +323,7 @@ void EarlyLog(const char *fmt, ...) {
 }
 
 void HookLogImportant(const char *fmt, ...) {
-  if (g_pLocalConfig && !g_pLocalConfig->debugLogging)
+  if (!g_pLocalConfig || !g_pLocalConfig->debugLogging)
     return;
   va_list args;
   va_start(args, fmt);
@@ -362,6 +361,8 @@ static void HookLogInternal(LogLevel level, const char *fmt, va_list args) {
       return;
     if (!g_IPC->GetSharedMem()->GetDebugLogging())
       return;
+  } else if (!g_pLocalConfig || !g_pLocalConfig->debugLogging) {
+    return;
   }
 
   char buffer[4096];

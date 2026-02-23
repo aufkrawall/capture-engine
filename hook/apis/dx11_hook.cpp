@@ -83,6 +83,43 @@ static int64_t g_LastSleepUs = 0;
 // Cross-function tracking for FSR4/FG swapchain recreation detection
 // Shared between DetourCreateSwapChain and DetourCreateSwapChainForHwnd
 static bool g_FirstGameSwapchainCreated = false;
+// Forces overlay and capture to use the same backbuffer index within one frame.
+// This eliminates index races on FLIP swapchains.
+static thread_local int g_ForcedCaptureBackBufferIndex = -1;
+
+static UINT ResolveDX11BackBufferIndex(
+    IDXGISwapChain *swapChain,
+    const DXGI_SWAP_CHAIN_DESC *swapChainDesc = nullptr) {
+  if (!swapChain)
+    return 0;
+
+  if (g_ForcedCaptureBackBufferIndex >= 0)
+    return static_cast<UINT>(g_ForcedCaptureBackBufferIndex);
+
+  DXGI_SWAP_CHAIN_DESC localDesc = {};
+  const DXGI_SWAP_CHAIN_DESC *desc = swapChainDesc;
+  if (!desc) {
+    if (FAILED(swapChain->GetDesc(&localDesc)))
+      return 0;
+    desc = &localDesc;
+  }
+
+  bool isFlipSwapchain =
+      (desc->SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD ||
+       desc->SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL);
+  if (!isFlipSwapchain)
+    return 0;
+
+  IDXGISwapChain3 *swapChain3 = nullptr;
+  if (FAILED(swapChain->QueryInterface(IID_PPV_ARGS(&swapChain3))) ||
+      !swapChain3) {
+    return 0;
+  }
+
+  UINT bufferIndex = swapChain3->GetCurrentBackBufferIndex();
+  swapChain3->Release();
+  return bufferIndex;
+}
 
 static bool IsUnityProcess() {
   static LONG s_init = 0;
@@ -1444,22 +1481,9 @@ public:
       return false;
     }
 
-    // Get current backbuffer - use correct index for FLIP swapchains
-    UINT bufferIndex = 0;
-    IDXGISwapChain3 *swapChain3 = nullptr;
-    DXGI_SWAP_CHAIN_DESC scDesc;
-    bool isFlipSwapchain = false;
-    
-    if (SUCCEEDED(swapChain->GetDesc(&scDesc))) {
-      isFlipSwapchain = (scDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD ||
-                         scDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL);
-    }
-    
-    if (isFlipSwapchain && SUCCEEDED(swapChain->QueryInterface(IID_PPV_ARGS(&swapChain3)))) {
-      bufferIndex = swapChain3->GetCurrentBackBufferIndex();
-      swapChain3->Release();
-    }
-    
+    // Use the frame-stable backbuffer index for FLIP swapchains.
+    UINT bufferIndex = ResolveDX11BackBufferIndex(swapChain);
+
     ID3D11Texture2D *backbuffer = nullptr;
     hr = swapChain->GetBuffer(bufferIndex, IID_PPV_ARGS(&backbuffer));
     if (FAILED(hr) || !backbuffer) {
@@ -1537,6 +1561,11 @@ static DX11Capture g_DX11Capture;
 void DX11_ProcessFrameExternal(IDXGISwapChain *pSwapChain) {
   if (!pSwapChain)
     return;
+
+  UINT frameBufferIndex = ResolveDX11BackBufferIndex(pSwapChain);
+  g_ForcedCaptureBackBufferIndex = static_cast<int>(frameBufferIndex);
+  auto indexGuard = ce::make_scope_guard(
+      []() { g_ForcedCaptureBackBufferIndex = -1; });
 
   // Draw overlay FIRST so it is included in the captured frame
   HandleDX11ProcessFrame(pSwapChain, true);
@@ -1876,16 +1905,8 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
   // For FLIP swap chains, the back buffer rotates each Present.
   // Overlay must draw to the same buffer that CaptureFrame will read,
   // otherwise the captured frame will not contain the overlay (flicker).
-  UINT currentBufferIndex = 0;
+  UINT currentBufferIndex = ResolveDX11BackBufferIndex(pSwapChain, &desc);
   static UINT lastBufferIndex = 0xFFFFFFFF;
-  if (desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD ||
-      desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL) {
-    IDXGISwapChain3 *sc3 = nullptr;
-    if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3)))) {
-      currentBufferIndex = sc3->GetCurrentBackBufferIndex();
-      sc3->Release();
-    }
-  }
 
   // Create/recreate RTV if swapchain changed or FLIP buffer index rotated
   if (!g_mainRenderTargetView || pSwapChain != lastSwapChain ||
@@ -2168,6 +2189,11 @@ namespace DXGIShared {
 void HandleDX11ProcessFrame(IDXGISwapChain *pSwapChain, bool isRealFrame) {
   if (!pSwapChain)
     return;
+
+  UINT frameBufferIndex = ResolveDX11BackBufferIndex(pSwapChain);
+  g_ForcedCaptureBackBufferIndex = static_cast<int>(frameBufferIndex);
+  auto indexGuard = ce::make_scope_guard(
+      []() { g_ForcedCaptureBackBufferIndex = -1; });
 
   // Draw overlay FIRST so it's included in the captured frame
   DrawDX11Overlay(pSwapChain);
