@@ -1800,6 +1800,8 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
   static IDXGISwapChain *lastSwapChain = nullptr;
   static HWND lastHwnd = NULL;
   static int frameCount = 0;
+  static IDXGISwapChain *s_lastNvPresentOverlaySwapChain = nullptr;
+  static int64_t s_lastNvPresentOverlayUs = 0;
 
   frameCount++;
 
@@ -1821,6 +1823,19 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
   const bool nvPresentLoaded = g_FGCompat.IsNvPresentLoaded();
   if (nvPresentLoaded && ShouldSkipWindowForNvPresent(currentHwnd)) {
     return;
+  }
+
+  // NVIDIA Smooth Motion can trigger paired Present callbacks for the same
+  // frame very close together. Avoid drawing the overlay twice in this case.
+  if (nvPresentLoaded) {
+    int64_t nowUs = PerfLogger::GetQpcUs();
+    if (s_lastNvPresentOverlaySwapChain == pSwapChain &&
+        s_lastNvPresentOverlayUs > 0 && nowUs > s_lastNvPresentOverlayUs &&
+        (nowUs - s_lastNvPresentOverlayUs) < 2000) {
+      return;
+    }
+    s_lastNvPresentOverlaySwapChain = pSwapChain;
+    s_lastNvPresentOverlayUs = nowUs;
   }
 
   // Skip overlay if the window is being destroyed — the D3D device may already
@@ -1954,45 +1969,63 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
   }
   g_OverlayAdapter.SetGraphicsAPI(finalApi);
 
-  // For FLIP swap chains, the back buffer rotates each Present.
-  // Overlay must draw to the same buffer that CaptureFrame will read,
-  // otherwise the captured frame will not contain the overlay (flicker).
-  UINT currentBufferIndex = ResolveDX11BackBufferIndex(pSwapChain, &desc);
-  static UINT lastBufferIndex = 0xFFFFFFFF;
+  ID3D11RenderTargetView *overlayRTV = nullptr;
+  bool usingBoundRTV = false;
 
-  // Create/recreate RTV if swapchain changed or FLIP buffer index rotated
-  if (!g_mainRenderTargetView || pSwapChain != lastSwapChain ||
-      currentBufferIndex != lastBufferIndex) {
-    if (g_mainRenderTargetView) {
-      g_mainRenderTargetView->Release();
-      g_mainRenderTargetView = nullptr;
+  // When Smooth Motion is active, prefer the RTV currently bound by the game.
+  // This better matches the actual frame target and reduces overlay flicker.
+  if (nvPresentLoaded && context) {
+    context->OMGetRenderTargets(1, &overlayRTV, NULL);
+    if (overlayRTV) {
+      usingBoundRTV = true;
+    }
+  }
+
+  if (!usingBoundRTV) {
+    // For FLIP swap chains, the back buffer rotates each Present.
+    // Overlay must draw to the same buffer that CaptureFrame will read,
+    // otherwise the captured frame will not contain the overlay (flicker).
+    UINT currentBufferIndex = ResolveDX11BackBufferIndex(pSwapChain, &desc);
+    static UINT lastBufferIndex = 0xFFFFFFFF;
+
+    // Create/recreate RTV if swapchain changed or FLIP buffer index rotated
+    if (!g_mainRenderTargetView || pSwapChain != lastSwapChain ||
+        currentBufferIndex != lastBufferIndex) {
+      if (g_mainRenderTargetView) {
+        g_mainRenderTargetView->Release();
+        g_mainRenderTargetView = nullptr;
+      }
+
+      EarlyLog("%s: Creating RTV for SwapChain %p (%ux%u) buffer=%u...",
+               g_DetectedAPI, pSwapChain, desc.BufferDesc.Width,
+               desc.BufferDesc.Height, currentBufferIndex);
+
+      ID3D11Texture2D *backbuffer = nullptr;
+      HRESULT hr =
+          pSwapChain->GetBuffer(currentBufferIndex, IID_PPV_ARGS(&backbuffer));
+      if (FAILED(hr) || !backbuffer) {
+        EarlyLog("%s: GetBuffer(%u) FAILED hr=0x%08X", g_DetectedAPI,
+                 currentBufferIndex, hr);
+        return;
+      }
+      hr = device->CreateRenderTargetView(backbuffer, NULL, &g_mainRenderTargetView);
+      backbuffer->Release();
+      if (FAILED(hr)) {
+        EarlyLog("%s: CreateRTV FAILED hr=0x%08X", g_DetectedAPI, hr);
+        return;
+      }
+      lastSwapChain = pSwapChain;
+      lastBufferIndex = currentBufferIndex;
+      EarlyLog("%s: RTV created OK (buffer=%u)", g_DetectedAPI, currentBufferIndex);
     }
 
-    EarlyLog("%s: Creating RTV for SwapChain %p (%ux%u) buffer=%u...", g_DetectedAPI,
-             pSwapChain, desc.BufferDesc.Width, desc.BufferDesc.Height, currentBufferIndex);
-
-    ID3D11Texture2D *backbuffer = nullptr;
-    HRESULT hr = pSwapChain->GetBuffer(currentBufferIndex, IID_PPV_ARGS(&backbuffer));
-    if (FAILED(hr) || !backbuffer) {
-      EarlyLog("%s: GetBuffer(%u) FAILED hr=0x%08X", g_DetectedAPI, currentBufferIndex, hr);
-      return;
-    }
-    hr = device->CreateRenderTargetView(backbuffer, NULL,
-                                        &g_mainRenderTargetView);
-    backbuffer->Release();
-    if (FAILED(hr)) {
-      EarlyLog("%s: CreateRTV FAILED hr=0x%08X", g_DetectedAPI, hr);
-      return;
-    }
-    lastSwapChain = pSwapChain;
-    lastBufferIndex = currentBufferIndex;
-    EarlyLog("%s: RTV created OK (buffer=%u)", g_DetectedAPI, currentBufferIndex);
+    overlayRTV = g_mainRenderTargetView;
   }
 
   EarlyLog("DX11: [frame %d] pre-render device=%p context=%p rtv=%p",
-           frameCount, device, context, g_mainRenderTargetView);
+           frameCount, device, context, overlayRTV);
 
-  context->OMSetRenderTargets(1, &g_mainRenderTargetView, NULL);
+  context->OMSetRenderTargets(1, &overlayRTV, NULL);
 
   // Explicitly set viewport
   D3D11_VIEWPORT vp;
@@ -2008,6 +2041,10 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
 
   // Render Custom Overlay
   g_OverlayAdapter.RenderOverlay(desc.BufferDesc.Width, desc.BufferDesc.Height);
+
+  if (usingBoundRTV && overlayRTV) {
+    overlayRTV->Release();
+  }
 }
 
 // Handle SwapChain resize - must release RTV and reinitialize ImGui

@@ -2654,9 +2654,17 @@ void DX9Hook::Init() {
   // Note: opengl32.dll check removed. Many DX9 games load it but don't use it.
   // We want active init to ensure reliable hooking even in those cases.
 
-  if (skipReason) {
-    EarlyLog("DX9: %s detected, skipping active init", skipReason);
+  const bool inlineHooksReady =
+      g_InlineHooksInstalled.load(std::memory_order_acquire);
+  if (skipReason && inlineHooksReady) {
+    EarlyLog("DX9: %s detected, skipping active init (inline hooks ready)",
+             skipReason);
     return;
+  }
+  if (skipReason && !inlineHooksReady) {
+    EarlyLog("DX9: %s detected, but inline hooks are unavailable - running "
+             "active init fallback",
+             skipReason);
   }
 
   // Active Hooking: Create a dummy device to force vtable hooks

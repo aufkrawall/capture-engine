@@ -921,24 +921,35 @@ void CheckAndInstallHooks() {
   // Vulkan for rendering (e.g., games with Vulkan support flags but running DX12).
   // Only treat Vulkan as the primary renderer if:
   //   - vulkan-1.dll is loaded, AND
-  //   - No D3D device has been actually created (not just DLL present)
-  // This check is re-evaluated until we have positive device-creation evidence.
+  //   - No D3D usage evidence is present
+  // D3D usage evidence includes D3D11/12 device creation and legacy D3D module
+  // presence (DX9/DX8/DDraw), then we must not stay locked in Vulkan mode.
   static bool s_checkedForVulkan = false;
   static bool s_vulkanActive = false;
-  if (!s_checkedForVulkan) {
+  if (!s_checkedForVulkan || s_vulkanActive) {
     HMODULE hVulkan = GetModuleHandleW(L"vulkan-1.dll");
-    bool d3dDeviceCreated = WasD3D12DeviceCreated() || WasD3D11Or10DeviceCreated();
+    bool legacyD3DLoaded = (GetModuleHandleA("d3d9.dll") != nullptr) ||
+                           (GetModuleHandleA("d3d8.dll") != nullptr) ||
+                           (GetModuleHandleA("ddraw.dll") != nullptr);
+    bool d3dDeviceCreated = WasD3D12DeviceCreated() ||
+                            WasD3D11Or10DeviceCreated() || legacyD3DLoaded;
     if (hVulkan && !d3dDeviceCreated) {
+      if (!s_vulkanActive) {
+        EarlyLog("CheckAndInstallHooks: Vulkan detected (vulkan-1.dll, no D3D usage evidence), "
+                 "skipping D3D/DXGI hooks");
+      }
       s_vulkanActive = true;
-      EarlyLog("CheckAndInstallHooks: Vulkan detected (vulkan-1.dll, no D3D device), skipping "
-               "D3D/DXGI hooks");
       s_checkedForVulkan = true;
     } else if (d3dDeviceCreated) {
-      // D3D device created — even if vulkan-1.dll is present, use D3D hooks
+      // D3D usage evidence present — even if vulkan-1.dll is present, use D3D hooks
+      if (s_vulkanActive) {
+        EarlyLog("CheckAndInstallHooks: D3D evidence appeared after Vulkan detection; enabling "
+                 "D3D/DXGI hooks");
+      }
       s_vulkanActive = false;
       s_checkedForVulkan = true;
     }
-    // If neither Vulkan nor D3D device created yet, don't lock in the decision
+    // If neither Vulkan nor D3D evidence is present yet, don't lock in.
   }
 
   // WRAPPER-ONLY ARCHITECTURE: We use IAT-patched wrapper hooks for ALL games.
@@ -1269,6 +1280,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   EarlyLog("HookThread: All hooks installed, entering exit monitor loop");
 
   // Monitor Loop - Waits for Event OR Timeout (for Exit Checks)
+  DWORD lastPeriodicHookCheck = GetTickCount();
   while (true) {
     // Wait for event (signaled by LoadLibrary) or timeout (100ms)
     DWORD waitResult = WAIT_TIMEOUT;
@@ -1297,8 +1309,12 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
       UE5::EnforceRR();
     }
 
-    if (waitResult == WAIT_OBJECT_0) {
-      // Event signaled - run detection
+    bool periodicHookCheckDue = (now - lastPeriodicHookCheck) >= 1000;
+    if (waitResult == WAIT_OBJECT_0 || periodicHookCheckDue) {
+      if (periodicHookCheckDue) {
+        lastPeriodicHookCheck = now;
+      }
+      // Event signaled or periodic tick - run detection
       CheckAndInstallHooks();
     }
 
