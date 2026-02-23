@@ -2213,8 +2213,14 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D *bgraTexture, int64_t pts,
                 pkt->pts, pkt->dts, pkt->size, pkt->flags);
       }
 
-      // Set packet duration to 1 frame in codec time_base
-      pkt->duration = 1;
+      // Set packet duration based on VFR/CFR mode (matches inject-mode logic)
+      if (savedConfig.useVFR) {
+        // VFR: time_base is 1/1000000, so duration is 1 frame in microseconds
+        pkt->duration = 1000000 / (savedConfig.fps > 0 ? savedConfig.fps : 60);
+      } else {
+        // CFR: time_base is 1/fps, duration is 1 unit
+        pkt->duration = 1;
+      }
 
       if (onPacket)
         onPacket(pkt);
@@ -2402,21 +2408,21 @@ void VideoEncoder::Stop() {
   recordingRequested = false;
 
   if (wasRecording && writerRunning) {
-    DLL_Log("[VideoEncoder] Async Stop: Signaling finalize (queueBytes=%zu)...",
+    DLL_Log("[VideoEncoder] Stop: Signaling finalize (queueBytes=%zu)...",
             currentQueueBytes.load());
     isStopping = true;
     queueCV.notify_all();
-    return; // ASYNC RETURN - Finalize happens in background thread
+    // Fall through to join — ensures file is fully closed before returning
   }
 
-  // If we reach here, we are either performing a synchronous stop
-  // (e.g. from destructor) or finalizing a previous async stop.
+  // Always wait for writer thread to finish (writes trailer + closes file)
   if (writerThread.joinable()) {
+    DLL_Log("[VideoEncoder] Stop: Waiting for writer thread to finish...");
     writerThread.join();
+    DLL_Log("[VideoEncoder] Stop: Writer thread joined.");
   }
 
-  // Double-check if we still need to write trailer/close if thread wasn't
-  // running
+  // Fallback: if thread wasn't running and file is still open, close it now
   if (fileOpened) {
     DLL_Log("[VideoEncoder] Sync Stop: Finalizing file...");
     if (fmtCtx) {
@@ -3389,6 +3395,19 @@ void VideoEncoder::CleanupCuda() {
 
 #endif // HAS_CUDA
 
+
+int64_t VideoEncoder::GetExpectedFinalDurationUs() const {
+  if (lastAssignedVideoPts < 0) return 0;
+  
+  if (savedConfig.useVFR) {
+    return lastAssignedVideoPts + (1000000 / (savedConfig.fps > 0 ? savedConfig.fps : 60));
+  } else {
+    int fps = (codecCtx && codecCtx->framerate.num > 0) ? codecCtx->framerate.num : savedConfig.fps;
+    if (fps <= 0) fps = 60;
+    return av_rescale(lastAssignedVideoPts + 1, 1000000, fps);
+  }
+}
+
 int64_t VideoEncoder::GetEncodedDurationUs() const {
   int64_t encodedUs = encodedDurationUs.load(std::memory_order_relaxed);
   if (encodedUs > 0) {
@@ -3499,6 +3518,12 @@ void VideoEncoder::AsyncWriteLoop() {
       // 2. Write Trailer and Close File
       if (fmtCtx && fileOpened) {
         DLL_Log("[VideoEncoder] Async Finalize: Writing Trailer...");
+        // Set container duration so seekers and players see a valid duration
+        int64_t finalDurationUs = encodedDurationUs.load(std::memory_order_relaxed);
+        if (finalDurationUs > 0) {
+          fmtCtx->duration = av_rescale_q(finalDurationUs, AVRational{1, 1000000}, AV_TIME_BASE_Q);
+          DLL_Log("[VideoEncoder] Async Finalize: Container duration set to %lld us", finalDurationUs);
+        }
         av_write_trailer(fmtCtx);
         if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
           avio_closep(&fmtCtx->pb);

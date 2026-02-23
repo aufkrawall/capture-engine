@@ -89,6 +89,12 @@ public:
 
   std::map<int, bool> trackWasSilent;
 
+  // PullAndEncodeAudio counters — reset per recording to avoid stale state
+  int warpCount = 0;
+  int dropLogCounter = 0;
+  int driftLogCounter = 0;
+  int syncCheckCounter = 0;
+
   int64_t GetLastVideoEncodeTimeUs() const {
     if (videoEnc)
       return videoEnc->GetLastFrameEncodeTimeUs();
@@ -328,6 +334,12 @@ public:
 
       trackWasSilent.clear();
 
+      // Reset PullAndEncodeAudio counters for clean per-recording state
+      warpCount = 0;
+      dropLogCounter = 0;
+      driftLogCounter = 0;
+      syncCheckCounter = 0;
+
       // PULL MODEL: CRITICAL - Clear ring buffers to start fresh
       for (auto &src : audioSources) {
         if (src.ringBuffer) {
@@ -413,7 +425,8 @@ public:
     // thread This ensures audio is trimmed to match the last video frame
     // exactly NEW: Use exact encoded video duration for sample-perfect sync
     if (videoEnc) {
-      int64_t durationUs = videoEnc->GetEncodedDurationUs();
+      int64_t durationUs = videoEnc->GetExpectedFinalDurationUs();
+      if (durationUs <= 0) durationUs = videoEnc->GetEncodedDurationUs();
       int64_t endUs = durationUs;
 
       DLL_Log("MediaEngine: Setting audio end time. Start: %lld us, Dur: %lld "
@@ -518,10 +531,6 @@ public:
         // CRITICAL: Clear ring buffers now!
         // This drops any audio captured while waiting for the first video
         // frame.
-        if (src.ringBuffer) {
-          src.ringBuffer->Clear();
-        }
-        // Critical: Clear ring buffers to discard stale audio
         if (src.ringBuffer) {
           src.ringBuffer->Clear();
         }
@@ -727,7 +736,6 @@ public:
           SAMPLE_RATE / 2; // Encode at most 500ms of silence per call
 
       if (samplesToEncode > MAX_GAP_SAMPLES) {
-        static int warpCount = 0;
         warpCount++;
         DLL_Log("[PullAudio] Large A/V gap (%.2f sec) on track %d - "
                 "inserting silence (warp #%d). "
@@ -809,7 +817,6 @@ public:
               src.dropFadeSamplesRemaining = (int)DROP_FADE_SAMPLES;
 
               src.ringBuffer->Skip((size_t)dropSamples * CHANNELS);
-              static int dropLogCounter = 0;
               if (dropLogCounter++ % 100 == 0) {
                 DLL_Log("[PullAudio] Src %d ahead by %lld samples - dropping "
                         "%lld (capped from %lld) to cap latency",
@@ -862,7 +869,6 @@ public:
                                                  src.syncSamplesOutput);
 
           // Debug log occasionally
-          static int driftLogCounter = 0;
           if (driftLogCounter++ % 1000 == 0 && abs(rbError) > 100) {
             // Show calculated drift (which is output - expected = output -
             // (output - rbError) = rbError)
@@ -1073,7 +1079,6 @@ public:
 
       // A/V SYNC MONITORING: Periodic check for drift detection
       // Log every ~60 seconds (6000 frames @ 100fps, 7200 @ 120fps)
-      static int syncCheckCounter = 0;
       if (syncCheckCounter++ % 6000 == 0 &&
           firstSrcIdx < encodedSamplesPerSource.size()) {
         int64_t wallVideoMs = videoElapsedMs.load();
@@ -1251,6 +1256,9 @@ public:
             source.capture = std::make_unique<AudioCapture>();
           }
 
+          // INIT RING BUFFER AND SYNC RESAMPLER (Per-source drift compensation)
+          InitAudioSourceBuffers(source, audioConfig, i);
+
           DLL_Log("MediaEngine::ReloadConfig Created new encoder for track %d "
                   "(source %zu, type=%d)",
                   track, i, (int)audioConfig.sourceType);
@@ -1271,6 +1279,9 @@ public:
           } else {
             source.capture = std::make_unique<AudioCapture>();
           }
+
+          // INIT RING BUFFER AND SYNC RESAMPLER (Per-source drift compensation)
+          InitAudioSourceBuffers(source, audioConfig, i);
 
           DLL_Log("MediaEngine::ReloadConfig Audio source %zu shares encoder "
                   "for track %d (type=%d)",
@@ -1445,9 +1456,23 @@ private:
                       packet.timestamp; // Packet comes with Absolute QPC MS
                   int64_t diff = pTime - startQPC;
 
-                  if (diff > 5) {
-                    // Audio is Late - Insert Silence Padding
-                    // e.g. AppAudioCapture started 500ms after Video
+                  if (diff > 5 && src.ringBuffer) {
+                    // Audio arrived late relative to recording start; pad with
+                    // silence to preserve accurate timeline alignment.
+                    int64_t silenceSamples = (diff * 48000) / 1000;
+                    size_t silenceFloats = (size_t)silenceSamples * 2; // stereo
+                    // Cap to ring buffer free space to avoid overflow
+                    size_t freeSpace = src.ringBuffer->GetFree();
+                    silenceFloats = std::min(silenceFloats, freeSpace);
+                    // Align to stereo channel boundary
+                    silenceFloats -= silenceFloats % 2;
+                    if (silenceFloats > 0) {
+                      std::vector<float> silence(silenceFloats, 0.0f);
+                      src.ringBuffer->Write(silence.data(), silenceFloats);
+                      DLL_Log("[AudioLoop] Inserted %lld ms silence for "
+                              "late-start src=%d",
+                              diff, (int)srcIdx);
+                    }
                   }
                 }
 

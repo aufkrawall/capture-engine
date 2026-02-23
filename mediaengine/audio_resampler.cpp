@@ -317,6 +317,12 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs,
   // audio behind
   int64_t driftSamples = audioSamplesOutput - expectedSamples;
 
+  // DEADBAND: Ignore high-frequency jitter (up to 15ms = 720 samples)
+  // from WASAPI block delivery intervals to prevent pitch oscillation
+  if (std::abs(driftSamples) < 720) {
+      driftSamples = 0;
+  }
+
   // STEADY-STATE GUARD: Only apply pitch correction for small, steady-state
   // drift. We allow up to 100ms (4800 samples) drift to be handled by pitch
   // correction. Larger drift might indicate startup discontinuity or massive

@@ -80,6 +80,7 @@ public:
                                    uint32_t format,
                                    struct SharedMemoryLayout *sharedMem);
 
+  int64_t GetExpectedFinalDurationUs() const;
   int64_t GetEncodedDurationUs()
       const; // Get exact duration of encoded video in microseconds
   int64_t GetLastFrameEncodeTimeUs()

@@ -99,5 +99,9 @@ private:
   // Buffer for packets before streamIndex is set (gptreport.md Section 5.1)
   std::vector<AVPacket *> pendingPackets;
 
+  // Per-recording warning flags (reset in Stop() for multi-recording support)
+  bool warnedOnce = false; // "stream not yet assigned" warning gate
+  bool warnedMax = false;  // "pending buffer full" warning gate
+
   void Flush();
 };
