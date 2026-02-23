@@ -471,6 +471,11 @@ void AudioEncoder::EncodeSamples(const uint8_t *data, int sizeBytes,
   // SAFETY: Check FIFO size to prevent unbounded growth (Memory Leak
   // Protection) If FIFO grows > 5 seconds, something is broken (encoder stalled
   // or input too fast). 5 seconds @ 48kHz = 240,000 samples.
+  if (codecCtx->sample_rate <= 0) {
+    DLL_Log("[AudioEnc] ERROR: sample_rate=%d, codec context invalid, skipping encode",
+            codecCtx->sample_rate);
+    return;
+  }
   const int MAX_FIFO_SAMPLES = codecCtx->sample_rate * 5;
   int currentFifoSize = av_audio_fifo_size(audioFifo);
 
@@ -566,8 +571,6 @@ void AudioEncoder::EncodeSamples(const uint8_t *data, int sizeBytes,
               (long long)samplesCount, streamIndex);
     }
 
-    samplesCount += frame_size;
-
     // Encode frame
     ret = avcodec_send_frame(codecCtx, frame);
     if (ret < 0) {
@@ -577,6 +580,8 @@ void AudioEncoder::EncodeSamples(const uint8_t *data, int sizeBytes,
               ret);
       continue;
     }
+    // Only advance PTS counter after a successful send so tracking stays accurate
+    samplesCount += frame_size;
 
     // Receive packets
     int pktCount = 0;
@@ -757,10 +762,48 @@ void AudioEncoder::Stop() {
           avcodec_free_context(&codecCtx);
           codecCtx = nullptr;
         } else {
+          // Some codecs (e.g. ALAC) reset sample_rate inside avcodec_open2.
+          // Restore it from our saved value to ensure a valid context.
+          if (codecCtx->sample_rate <= 0 && sampleRate > 0) {
+            DLL_Log("[AudioEnc] WARNING: avcodec_open2 reset sample_rate to %d, "
+                    "restoring to %d", codecCtx->sample_rate, sampleRate);
+            codecCtx->sample_rate = sampleRate;
+          }
           if (codecCtx->sample_rate > 0) {
             codecCtx->time_base = {1, codecCtx->sample_rate};
           }
-          DLL_Log("[AudioEnc] Codec recreated successfully for next recording");
+          // Recreate the AVFrame to match the (possibly re-opened) codec context.
+          // The old frame was allocated in Init() and may have stale parameters.
+          if (frame) {
+            av_frame_free(&frame);
+            frame = nullptr;
+          }
+          frame = av_frame_alloc();
+          if (frame) {
+            int frame_size2 = codecCtx->frame_size;
+            if (frame_size2 == 0)
+              frame_size2 = 4096;
+            frame->nb_samples = frame_size2;
+            frame->format = codecCtx->sample_fmt;
+            av_channel_layout_copy(&frame->ch_layout, &codecCtx->ch_layout);
+            frame->sample_rate = codecCtx->sample_rate;
+            if (av_frame_get_buffer(frame, 0) < 0) {
+              DLL_Log("[AudioEnc] Failed to allocate frame buffer after reopen");
+              av_frame_free(&frame);
+              frame = nullptr;
+              initDone = false;
+              avcodec_free_context(&codecCtx);
+              codecCtx = nullptr;
+            } else {
+              DLL_Log("[AudioEnc] Codec recreated successfully for next recording "
+                      "(sample_rate=%d)", codecCtx->sample_rate);
+            }
+          } else {
+            DLL_Log("[AudioEnc] Failed to allocate frame after reopen");
+            initDone = false;
+            avcodec_free_context(&codecCtx);
+            codecCtx = nullptr;
+          }
         }
       }
     }

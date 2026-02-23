@@ -48,8 +48,8 @@ private:
   bool CreatePipelineState();
   bool CreateBuffers();
   bool CreateFontTexture(int width, int height, const uint8_t *data);
-  bool ResizeVertexBuffer(size_t requiredBytes);
-  bool ResizeIndexBuffer(size_t requiredBytes);
+  bool ResizeVertexBuffer(int slot, size_t requiredBytes);
+  bool ResizeIndexBuffer(int slot, size_t requiredBytes);
 
   ID3D12Device *device = nullptr;
   ID3D12CommandQueue *commandQueue = nullptr;
@@ -60,14 +60,19 @@ private:
   ComPtr<ID3D12PipelineState> pipelineStateSolid;
   ComPtr<ID3D12DescriptorHeap> srvHeap;
   ComPtr<ID3D12Resource> fontTexture;
-  ComPtr<ID3D12Resource> vertexBuffer;
-  ComPtr<ID3D12Resource> indexBuffer;
   ComPtr<ID3D12Resource> uploadBuffer; // For texture upload
 
-  void *vertexBufferPtr = nullptr;
-  void *indexBufferPtr = nullptr;
-  size_t vertexBufferSize = 0;
-  size_t indexBufferSize = 0;
+  // Per-frame buffer pool — prevents CPU/GPU data race on upload-heap buffers.
+  // Pool size matches the command allocator pool in dx12_hook.cpp so fence
+  // guarantees that slot N is GPU-idle before the CPU reuses it.
+  static constexpr int kFramePoolSize = 16;
+  ComPtr<ID3D12Resource> vertexBuffer[kFramePoolSize];
+  ComPtr<ID3D12Resource> indexBuffer[kFramePoolSize];
+  void *vertexBufferPtr[kFramePoolSize] = {};
+  void *indexBufferPtr[kFramePoolSize] = {};
+  size_t vertexBufferSize[kFramePoolSize] = {};
+  size_t indexBufferSize[kFramePoolSize] = {};
+  int frameIdx = 0;
 
   ID3D12GraphicsCommandList *currentCmdList = nullptr;
   D3D12_CPU_DESCRIPTOR_HANDLE currentRTV = {};

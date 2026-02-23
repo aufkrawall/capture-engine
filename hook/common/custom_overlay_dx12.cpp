@@ -76,15 +76,23 @@ bool DX12Backend::Initialize(int fontTextureWidth, int fontTextureHeight,
 void DX12Backend::Shutdown() {
     DX12_DEBUG_STEP("Shutdown", "START - initialized=%d", initialized);
     
-    if (vertexBuffer && vertexBufferPtr) {
-        DX12_DEBUG_STEP("Shutdown", "Unmapping vertex buffer");
-        vertexBuffer->Unmap(0, nullptr);
-        vertexBufferPtr = nullptr;
+    if (vertexBuffer[0] && vertexBufferPtr[0]) {
+        DX12_DEBUG_STEP("Shutdown", "Unmapping vertex buffers");
     }
-    if (indexBuffer && indexBufferPtr) {
-        DX12_DEBUG_STEP("Shutdown", "Unmapping index buffer");
-        indexBuffer->Unmap(0, nullptr);
-        indexBufferPtr = nullptr;
+    if (indexBuffer[0] && indexBufferPtr[0]) {
+        DX12_DEBUG_STEP("Shutdown", "Unmapping index buffers");
+    }
+    for (int i = 0; i < kFramePoolSize; i++) {
+        if (vertexBuffer[i] && vertexBufferPtr[i]) {
+            vertexBuffer[i]->Unmap(0, nullptr);
+            vertexBufferPtr[i] = nullptr;
+        }
+        if (indexBuffer[i] && indexBufferPtr[i]) {
+            indexBuffer[i]->Unmap(0, nullptr);
+            indexBufferPtr[i] = nullptr;
+        }
+        vertexBuffer[i].Reset();
+        indexBuffer[i].Reset();
     }
 
     rootSignature.Reset();
@@ -92,8 +100,6 @@ void DX12Backend::Shutdown() {
     pipelineStateSolid.Reset();
     srvHeap.Reset();
     fontTexture.Reset();
-    vertexBuffer.Reset();
-    indexBuffer.Reset();
     uploadBuffer.Reset();
     initialized = false;
     DX12_DEBUG_STEP("Shutdown", "COMPLETE");
@@ -254,61 +260,52 @@ bool DX12Backend::CreatePipelineState() {
 }
 
 bool DX12Backend::CreateBuffers() {
-    DX12_DEBUG_STEP("CreateBuffers", "START");
-    
-    vertexBufferSize = 4096 * sizeof(DrawVertex);
-    indexBufferSize = 8192 * sizeof(uint16_t);
-    DX12_DEBUG_STEP("CreateBuffers", "Target sizes: vertex=%zu bytes, index=%zu bytes",
-                    vertexBufferSize, indexBufferSize);
+    DX12_DEBUG_STEP("CreateBuffers", "START - creating %d buffer pool slots", kFramePoolSize);
+
+    const size_t initVBSize = 4096 * sizeof(DrawVertex);
+    const size_t initIBSize = 8192 * sizeof(uint16_t);
+    DX12_DEBUG_STEP("CreateBuffers", "Per-slot sizes: vertex=%zu bytes, index=%zu bytes",
+                    initVBSize, initIBSize);
 
     D3D12_HEAP_PROPERTIES heapProps = {};
     heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
-    DX12_DEBUG_STEP("CreateBuffers", "Heap type: UPLOAD");
 
     D3D12_RESOURCE_DESC bufferDesc = {};
     bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    bufferDesc.Width = vertexBufferSize;
     bufferDesc.Height = 1;
     bufferDesc.DepthOrArraySize = 1;
     bufferDesc.MipLevels = 1;
     bufferDesc.SampleDesc.Count = 1;
     bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-    DX12_DEBUG_STEP("CreateBuffers", "Creating vertex buffer (%zu bytes)", vertexBufferSize);
-    HRESULT hr = device->CreateCommittedResource(
-        &heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&vertexBuffer));
-    DX12_DEBUG_STEP("CreateBuffers", "Vertex buffer result: hr=0x%08X (%s), resource=%p",
-                    hr, SUCCEEDED(hr) ? "OK" : "FAILED", vertexBuffer.Get());
-    if (FAILED(hr)) {
-        HookLog("DX12 Overlay: CreateBuffers - Vertex buffer creation failed, "
-                "hr=0x%08X",
-              hr);
-        return false;
-    }
-
-    bufferDesc.Width = indexBufferSize;
-    DX12_DEBUG_STEP("CreateBuffers", "Creating index buffer (%zu bytes)", indexBufferSize);
-    hr = device->CreateCommittedResource(
-        &heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&indexBuffer));
-    DX12_DEBUG_STEP("CreateBuffers", "Index buffer result: hr=0x%08X (%s), resource=%p",
-                    hr, SUCCEEDED(hr) ? "OK" : "FAILED", indexBuffer.Get());
-    if (FAILED(hr)) {
-        HookLog(
-            "DX12 Overlay: CreateBuffers - Index buffer creation failed, hr=0x%08X",
-          hr);
-        return false;
-    }
-
-    DX12_DEBUG_STEP("CreateBuffers", "Mapping buffers persistently");
     D3D12_RANGE readRange = {0, 0};
-    vertexBuffer->Map(0, &readRange, &vertexBufferPtr);
-    indexBuffer->Map(0, &readRange, &indexBufferPtr);
-    DX12_DEBUG_STEP("CreateBuffers", "Mapped: vertexPtr=%p, indexPtr=%p",
-                    vertexBufferPtr, indexBufferPtr);
+    for (int i = 0; i < kFramePoolSize; i++) {
+        vertexBufferSize[i] = initVBSize;
+        bufferDesc.Width = initVBSize;
+        HRESULT hr = device->CreateCommittedResource(
+            &heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&vertexBuffer[i]));
+        if (FAILED(hr)) {
+            HookLog("DX12 Overlay: CreateBuffers - Vertex buffer[%d] creation failed, "
+                    "hr=0x%08X", i, hr);
+            return false;
+        }
+        vertexBuffer[i]->Map(0, &readRange, &vertexBufferPtr[i]);
 
-    DX12_DEBUG_STEP("CreateBuffers", "SUCCESS");
+        indexBufferSize[i] = initIBSize;
+        bufferDesc.Width = initIBSize;
+        hr = device->CreateCommittedResource(
+            &heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&indexBuffer[i]));
+        if (FAILED(hr)) {
+            HookLog("DX12 Overlay: CreateBuffers - Index buffer[%d] creation failed, "
+                    "hr=0x%08X", i, hr);
+            return false;
+        }
+        indexBuffer[i]->Map(0, &readRange, &indexBufferPtr[i]);
+    }
+
+    DX12_DEBUG_STEP("CreateBuffers", "SUCCESS - %d VB/IB pairs created and mapped", kFramePoolSize);
     return true;
 }
 
@@ -442,27 +439,27 @@ void DX12Backend::SetRenderTarget(ID3D12GraphicsCommandList *cmdList,
     currentRTV = rtvHandle;
 }
 
-bool DX12Backend::ResizeVertexBuffer(size_t requiredBytes) {
-    DX12_DEBUG_STEP("ResizeVertexBuffer", "START - required=%zu, current=%zu",
-                    requiredBytes, vertexBufferSize);
+bool DX12Backend::ResizeVertexBuffer(int slot, size_t requiredBytes) {
+    DX12_DEBUG_STEP("ResizeVertexBuffer", "START - slot=%d, required=%zu, current=%zu",
+                    slot, requiredBytes, vertexBufferSize[slot]);
     
     if (!device) {
         DX12_DEBUG_STEP("ResizeVertexBuffer", "FAILED - no device");
         return false;
     }
 
-    if (vertexBuffer && vertexBufferPtr) {
-        DX12_DEBUG_STEP("ResizeVertexBuffer", "Unmapping old vertex buffer");
-        vertexBuffer->Unmap(0, nullptr);
-        vertexBufferPtr = nullptr;
+    if (vertexBuffer[slot] && vertexBufferPtr[slot]) {
+        DX12_DEBUG_STEP("ResizeVertexBuffer", "Unmapping old vertex buffer[%d]", slot);
+        vertexBuffer[slot]->Unmap(0, nullptr);
+        vertexBufferPtr[slot] = nullptr;
     }
 
-    size_t newSize = vertexBufferSize * 2;
+    size_t newSize = vertexBufferSize[slot] * 2;
     while (newSize < requiredBytes) {
         newSize *= 2;
     }
-    DX12_DEBUG_STEP("ResizeVertexBuffer", "New size: %zu bytes (old=%zu)",
-                    newSize, vertexBufferSize);
+    DX12_DEBUG_STEP("ResizeVertexBuffer", "New size: %zu bytes (old=%zu, slot=%d)",
+                    newSize, vertexBufferSize[slot], slot);
 
     D3D12_HEAP_PROPERTIES heapProps = {};
     heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
@@ -484,43 +481,43 @@ bool DX12Backend::ResizeVertexBuffer(size_t requiredBytes) {
                     hr, SUCCEEDED(hr) ? "OK" : "FAILED");
     if (FAILED(hr)) {
         HookLog("DX12 Overlay: ResizeVertexBuffer - Failed to create new buffer "
-                "(size=%zu), hr=0x%08X",
-              newSize, hr);
+                "(slot=%d, size=%zu), hr=0x%08X",
+              slot, newSize, hr);
         return false;
     }
 
-    vertexBuffer = newBuffer;
-    vertexBufferSize = newSize;
+    vertexBuffer[slot] = newBuffer;
+    vertexBufferSize[slot] = newSize;
 
     D3D12_RANGE readRange = {0, 0};
-    vertexBuffer->Map(0, &readRange, &vertexBufferPtr);
-    DX12_DEBUG_STEP("ResizeVertexBuffer", "SUCCESS - new buffer mapped at %p", vertexBufferPtr);
+    vertexBuffer[slot]->Map(0, &readRange, &vertexBufferPtr[slot]);
+    DX12_DEBUG_STEP("ResizeVertexBuffer", "SUCCESS - new buffer[%d] mapped at %p", slot, vertexBufferPtr[slot]);
 
-    HookLog("DX12 Overlay: Vertex buffer resized to %zu bytes", newSize);
+    HookLog("DX12 Overlay: Vertex buffer[%d] resized to %zu bytes", slot, newSize);
     return true;
 }
 
-bool DX12Backend::ResizeIndexBuffer(size_t requiredBytes) {
-    DX12_DEBUG_STEP("ResizeIndexBuffer", "START - required=%zu, current=%zu",
-                    requiredBytes, indexBufferSize);
+bool DX12Backend::ResizeIndexBuffer(int slot, size_t requiredBytes) {
+    DX12_DEBUG_STEP("ResizeIndexBuffer", "START - slot=%d, required=%zu, current=%zu",
+                    slot, requiredBytes, indexBufferSize[slot]);
     
     if (!device) {
         DX12_DEBUG_STEP("ResizeIndexBuffer", "FAILED - no device");
         return false;
     }
 
-    if (indexBuffer && indexBufferPtr) {
-        DX12_DEBUG_STEP("ResizeIndexBuffer", "Unmapping old index buffer");
-        indexBuffer->Unmap(0, nullptr);
-        indexBufferPtr = nullptr;
+    if (indexBuffer[slot] && indexBufferPtr[slot]) {
+        DX12_DEBUG_STEP("ResizeIndexBuffer", "Unmapping old index buffer[%d]", slot);
+        indexBuffer[slot]->Unmap(0, nullptr);
+        indexBufferPtr[slot] = nullptr;
     }
 
-    size_t newSize = indexBufferSize * 2;
+    size_t newSize = indexBufferSize[slot] * 2;
     while (newSize < requiredBytes) {
         newSize *= 2;
     }
-    DX12_DEBUG_STEP("ResizeIndexBuffer", "New size: %zu bytes (old=%zu)",
-                    newSize, indexBufferSize);
+    DX12_DEBUG_STEP("ResizeIndexBuffer", "New size: %zu bytes (old=%zu, slot=%d)",
+                    newSize, indexBufferSize[slot], slot);
 
     D3D12_HEAP_PROPERTIES heapProps = {};
     heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
@@ -542,19 +539,19 @@ bool DX12Backend::ResizeIndexBuffer(size_t requiredBytes) {
                     hr, SUCCEEDED(hr) ? "OK" : "FAILED");
     if (FAILED(hr)) {
         HookLog("DX12 Overlay: ResizeIndexBuffer - Failed to create new buffer "
-                "(size=%zu), hr=0x%08X",
-              newSize, hr);
+                "(slot=%d, size=%zu), hr=0x%08X",
+              slot, newSize, hr);
         return false;
     }
 
-    indexBuffer = newBuffer;
-    indexBufferSize = newSize;
+    indexBuffer[slot] = newBuffer;
+    indexBufferSize[slot] = newSize;
 
     D3D12_RANGE readRange = {0, 0};
-    indexBuffer->Map(0, &readRange, &indexBufferPtr);
-    DX12_DEBUG_STEP("ResizeIndexBuffer", "SUCCESS - new buffer mapped at %p", indexBufferPtr);
+    indexBuffer[slot]->Map(0, &readRange, &indexBufferPtr[slot]);
+    DX12_DEBUG_STEP("ResizeIndexBuffer", "SUCCESS - new buffer[%d] mapped at %p", slot, indexBufferPtr[slot]);
 
-    HookLog("DX12 Overlay: Index buffer resized to %zu bytes", newSize);
+    HookLog("DX12 Overlay: Index buffer[%d] resized to %zu bytes", slot, newSize);
     return true;
 }
 
@@ -605,32 +602,38 @@ void DX12Backend::Render(const std::vector<DrawVertex> &vertices,
     }
 
     size_t vbSize = vertices.size() * sizeof(DrawVertex);
-    if (vbSize > vertexBufferSize) {
-        DX12_DEBUG_STEP("Render", "Vertex buffer resize needed: %zu > %zu", vbSize, vertexBufferSize);
-        if (!ResizeVertexBuffer(vbSize)) {
+    // Advance to the next pool slot for this frame. Pool size matches the
+    // command-allocator pool so the fence guarantees the GPU is done with this
+    // slot before the CPU writes new data into it.
+    int slot = frameIdx % kFramePoolSize;
+    frameIdx++;
+    DX12_DEBUG_FRAME(s_RenderCounter, "Using buffer slot %d", slot);
+    if (vbSize > vertexBufferSize[slot]) {
+        DX12_DEBUG_STEP("Render", "Vertex buffer resize needed: %zu > %zu (slot=%d)", vbSize, vertexBufferSize[slot], slot);
+        if (!ResizeVertexBuffer(slot, vbSize)) {
             HookLog("DX12 Overlay: Render - Failed to resize vertex buffer (needed "
                     "%zu bytes)",
                   vbSize);
             return;
         }
     }
-    if (vertexBufferPtr) {
-        memcpy(vertexBufferPtr, vertices.data(), vbSize);
+    if (vertexBufferPtr[slot]) {
+        memcpy(vertexBufferPtr[slot], vertices.data(), vbSize);
         DX12_DEBUG_FRAME(s_RenderCounter, "Vertex data copied: %zu bytes", vbSize);
     }
 
     size_t ibSize = indices.size() * sizeof(uint16_t);
-    if (ibSize > indexBufferSize) {
-        DX12_DEBUG_STEP("Render", "Index buffer resize needed: %zu > %zu", ibSize, indexBufferSize);
-        if (!ResizeIndexBuffer(ibSize)) {
+    if (ibSize > indexBufferSize[slot]) {
+        DX12_DEBUG_STEP("Render", "Index buffer resize needed: %zu > %zu (slot=%d)", ibSize, indexBufferSize[slot], slot);
+        if (!ResizeIndexBuffer(slot, ibSize)) {
             HookLog("DX12 Overlay: Render - Failed to resize index buffer (needed "
                     "%zu bytes)",
                   ibSize);
             return;
         }
     }
-    if (indexBufferPtr) {
-        memcpy(indexBufferPtr, indices.data(), ibSize);
+    if (indexBufferPtr[slot]) {
+        memcpy(indexBufferPtr[slot], indices.data(), ibSize);
         DX12_DEBUG_FRAME(s_RenderCounter, "Index data copied: %zu bytes", ibSize);
     }
 
@@ -655,13 +658,13 @@ void DX12Backend::Render(const std::vector<DrawVertex> &vertices,
     currentCmdList->RSSetScissorRects(1, &scissor);
 
     D3D12_VERTEX_BUFFER_VIEW vbv = {};
-    vbv.BufferLocation = vertexBuffer->GetGPUVirtualAddress();
+    vbv.BufferLocation = vertexBuffer[slot]->GetGPUVirtualAddress();
     vbv.SizeInBytes = (UINT)vbSize;
     vbv.StrideInBytes = sizeof(DrawVertex);
     currentCmdList->IASetVertexBuffers(0, 1, &vbv);
 
     D3D12_INDEX_BUFFER_VIEW ibv = {};
-    ibv.BufferLocation = indexBuffer->GetGPUVirtualAddress();
+    ibv.BufferLocation = indexBuffer[slot]->GetGPUVirtualAddress();
     ibv.SizeInBytes = (UINT)ibSize;
     ibv.Format = DXGI_FORMAT_R16_UINT;
     currentCmdList->IASetIndexBuffer(&ibv);

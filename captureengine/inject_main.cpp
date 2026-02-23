@@ -393,9 +393,12 @@ int InjectProcessMain(const AppConfig &config) {
         ipc.SendResponse(ProcessResponse::Ack);
         break;
       case ProcessCommand::StartRecording:
-        // Update shared memory recording state
+        // Only reset start time if not already recording to avoid resetting the
+        // overlay timer on duplicate commands (e.g. if IPC state was desynced).
+        if (!pSharedMem->runtimeState.isRecording.load()) {
+          pSharedMem->runtimeState.recordingStartTime.store(GetTickCount64());
+        }
         pSharedMem->runtimeState.isRecording.store(true);
-        pSharedMem->runtimeState.recordingStartTime.store(GetTickCount64());
         // Set command flag for media process to poll (use atomic store)
         pSharedMem->runtimeState.cmdStartRecording.store(
             true, std::memory_order_release);

@@ -304,30 +304,31 @@ bool ProcessIPCClient::SendCommand(ProcessCommand cmd, const char *payload,
     return false;
   }
 
-  // Wait for response if requested
-  if (outResponse) {
-    ProcessMessage resp = {};
-    DWORD bytesRead = 0;
+  // Always read response to drain the pipe buffer (server always sends one).
+  // If callers skip reading for fire-and-forget commands (outResponse==nullptr),
+  // unread responses accumulate and corrupt sequence matching for later calls.
+  ProcessMessage resp = {};
+  DWORD bytesRead = 0;
 
-    OVERLAPPED ovRead = {};
-    ce::HandleGuard readEvent(CreateEvent(NULL, TRUE, FALSE, NULL));
-    ovRead.hEvent = readEvent.get();
+  OVERLAPPED ovRead = {};
+  ce::HandleGuard readEvent(CreateEvent(NULL, TRUE, FALSE, NULL));
+  ovRead.hEvent = readEvent.get();
 
-    BOOL readResult = ReadFile(hPipe, &resp, sizeof(resp), &bytesRead, &ovRead);
-    if (!readResult && GetLastError() == ERROR_IO_PENDING) {
-      DWORD waitResult = WaitForSingleObject(ovRead.hEvent, timeoutMs);
-      if (waitResult == WAIT_OBJECT_0) {
-        GetOverlappedResult(hPipe, &ovRead, &bytesRead, FALSE);
-        readResult = TRUE;
-      } else {
-        CancelIo(hPipe);
-        LogError(
-            "[IPC] SendCommand read timeout - disconnecting for reconnect");
-        Disconnect(); // Close and reconnect on next attempt
-        return false;
-      }
+  BOOL readResult = ReadFile(hPipe, &resp, sizeof(resp), &bytesRead, &ovRead);
+  if (!readResult && GetLastError() == ERROR_IO_PENDING) {
+    DWORD waitResult = WaitForSingleObject(ovRead.hEvent, timeoutMs);
+    if (waitResult == WAIT_OBJECT_0) {
+      GetOverlappedResult(hPipe, &ovRead, &bytesRead, FALSE);
+      readResult = TRUE;
+    } else {
+      CancelIo(hPipe);
+      LogError("[IPC] SendCommand read timeout - disconnecting for reconnect");
+      Disconnect(); // Close and reconnect on next attempt
+      return false;
     }
+  }
 
+  if (outResponse) {
     if (readResult && resp.magic == PROCESS_MSG_MAGIC &&
         resp.sequence == sequence) {
       *outResponse = resp.response;
@@ -339,7 +340,7 @@ bool ProcessIPCClient::SendCommand(ProcessCommand cmd, const char *payload,
     return false;
   }
 
-  return true;
+  return readResult ? true : false;
 }
 
 // ============================================================================
