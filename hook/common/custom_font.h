@@ -35,6 +35,7 @@ public:
   bool Initialize(const char *fontName = "Segoe UI", int fontSize = 14,
                   float dpiScale = 1.0f);
   void Shutdown();
+  bool IsInitialized() const { return initialized; }
 
   // Get glyph info for a character (ASCII only for now)
   const Glyph *GetGlyph(char c) const;

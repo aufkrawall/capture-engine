@@ -28,6 +28,13 @@ ApplyDX12SamplerOverridesCallback(D3D12_SAMPLER_DESC *pDesc) {
   if (!pDesc)
     return FALSE;
 
+  // Skip overrides for samplers that have no mipmapping (MipLevels == 1 equivalent):
+  // MaxLOD == 0.0f means the sampler is clamped to the base mip level only.
+  // MinLOD == MaxLOD means a single fixed LOD is selected.
+  // Applying mip bias or AF to single-mip textures can cause GPU driver corruption
+  // on some hardware (e.g., Nvidia). D3D12 decouples samplers from textures, so we
+  // cannot check the texture's actual MipLevels here; this LOD-based heuristic covers
+  // the standard case where games set MaxLOD=0 for non-mipmapped samplers.
   if (pDesc->MaxLOD == 0.0f)
     return FALSE;
   if (pDesc->MinLOD == pDesc->MaxLOD)

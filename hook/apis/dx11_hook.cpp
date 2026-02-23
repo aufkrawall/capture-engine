@@ -2182,9 +2182,13 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(
     debug = true;
   }
 
-  // Check if overrides should be applied
-  // 1. MaxLOD == 0.0f implies mipmapping is disabled (clamped to base level)
-  // 2. MinLOD == MaxLOD implies a single level is selected
+  // Skip overrides for samplers that have no mipmapping (MipLevels == 1 equivalent):
+  // - MaxLOD == 0.0f: sampler is clamped to the base mip level only (no mipmaps accessible).
+  //   This is the standard D3D11 convention for non-mipmapped textures.
+  // - MinLOD == MaxLOD: sampler is locked to a single LOD level.
+  // Note: D3D11 decouples samplers from textures — we cannot check the texture's
+  // actual MipLevels at sampler creation time. Games that use MaxLOD=FLT_MAX with
+  // a single-mip texture are not caught here; that requires bind-time tracking.
   bool overridesAllowed = true;
   if (pSamplerDesc->MaxLOD == 0.0f)
     overridesAllowed = false;
@@ -2338,7 +2342,8 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState10(
     debug = true;
   }
 
-  // Check if overrides should be applied
+  // Skip overrides for samplers that have no mipmapping (MipLevels == 1 equivalent).
+  // See CreateSamplerState (D3D11) above for full explanation of the limitation.
   bool overridesAllowed = true;
   if (pSamplerDesc->MaxLOD == 0.0f)
     overridesAllowed = false;
@@ -2492,7 +2497,8 @@ GetOrCreateReplacementSampler10(ID3D10Device *pDevice,
   D3D10_SAMPLER_DESC originalDesc;
   pOriginal->GetDesc(&originalDesc);
 
-  // Check if overrides are applicable
+  // Skip overrides for samplers that have no mipmapping (MipLevels == 1 equivalent).
+  // See CreateSamplerState (D3D11) above for full explanation of the limitation.
   bool overridesAllowed = true;
   if (originalDesc.MaxLOD == 0.0f)
     overridesAllowed = false;

@@ -34,7 +34,7 @@ bool FontAtlas::Initialize(const char *fontName, int fontSize, float scale) {
                   FW_BOLD,             // Weight - Bold for better visibility
                   FALSE, FALSE, FALSE, // Italic, Underline, Strikeout
                   ANSI_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
-                  CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, fontName);
+                  ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, fontName);
 
   if (!hFont) {
     DeleteDC(hdc);

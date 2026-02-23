@@ -159,7 +159,7 @@ bool DX10Backend::CreateBuffers() {
 
 bool DX10Backend::CreateStates() {
   D3D10_SAMPLER_DESC sampDesc = {};
-  sampDesc.Filter = D3D10_FILTER_MIN_MAG_MIP_LINEAR;
+  sampDesc.Filter = D3D10_FILTER_MIN_MAG_MIP_POINT;
   sampDesc.AddressU = D3D10_TEXTURE_ADDRESS_CLAMP;
   sampDesc.AddressV = D3D10_TEXTURE_ADDRESS_CLAMP;
   sampDesc.AddressW = D3D10_TEXTURE_ADDRESS_CLAMP;
