@@ -102,7 +102,8 @@ bool AudioEncoder::Init(const AudioConfig &config,
     DLL_Log("[AudioEncoder] No sample formats listed, defaulting to S16");
   }
 
-  codecCtx->bit_rate = config.bitrate * 1000;
+  if (config.bitrate > 0)
+    codecCtx->bit_rate = config.bitrate * 1000;
 
   // Parse sample rate - "default" means use 48000, otherwise parse as int
   int sampleRate = 48000; // Default fallback
@@ -803,7 +804,10 @@ void AudioEncoder::Flush() {
   const bool canSendShortFrame =
       supportsVariableFrame || supportsSmallLastFrame;
 
-  if (fixedFrameSize > 0 && maxSamples != INT64_MAX) {
+  // Only round up to frame boundary for codecs that require full-size frames.
+  // Codecs with AV_CODEC_CAP_SMALL_LAST_FRAME (ALAC, AAC, FLAC, Opus) accept a
+  // short final frame, so we target the exact sample count instead.
+  if (!canSendShortFrame && fixedFrameSize > 0 && maxSamples != INT64_MAX) {
     int64_t rem = maxSamples % fixedFrameSize;
     if (rem != 0) {
       maxSamples += (fixedFrameSize - rem);
@@ -829,6 +833,34 @@ void AudioEncoder::Flush() {
     }
   };
 
+  // PRE-FILL FIFO WITH SILENCE so the FIFO-drain loop covers any shortfall.
+  // This replaces a separate avcodec_send_frame(silenceFrame) path that was
+  // unreliable for some codecs (ALAC returned EINVAL). The FIFO-drain path is
+  // proven to work, so feeding silence through it is safer.
+  if (maxSamples != INT64_MAX && audioFifo) {
+    int preFifoSize = av_audio_fifo_size(audioFifo);
+    int64_t totalCovered = samplesCount + preFifoSize;
+    int64_t silenceNeeded = maxSamples - totalCovered;
+    if (silenceNeeded > 0) {
+      // Cap to avoid runaway allocation (e.g. video duration >> audio)
+      silenceNeeded = std::min(silenceNeeded, (int64_t)(codecCtx->sample_rate * 3));
+      bool planarPre = av_sample_fmt_is_planar(codecCtx->sample_fmt) != 0;
+      int nchPre = codecCtx->ch_layout.nb_channels;
+      int bpsPre = av_get_bytes_per_sample(codecCtx->sample_fmt);
+      // One plane of zeroed samples; for planar all channels share this buffer
+      // (av_audio_fifo_write copies nchPre times for planar, once for interleaved)
+      std::vector<uint8_t> zeroBuf(
+          (size_t)silenceNeeded * bpsPre * (planarPre ? 1 : nchPre), 0);
+      std::vector<uint8_t *> planePtrs((size_t)nchPre, zeroBuf.data());
+      int written = av_audio_fifo_write(audioFifo,
+                                        (void **)planePtrs.data(),
+                                        (int)silenceNeeded);
+      DLL_Log("[AudioEncoder] Silence pre-fill: wrote %d / %lld samples "
+              "(samplesCount=%lld, maxSamples=%lld)",
+              written, silenceNeeded, samplesCount, maxSamples);
+    }
+  }
+
   // Encode any remaining samples in FIFO (up to maxSamples limit)
   int fifoSize = audioFifo ? av_audio_fifo_size(audioFifo) : 0;
   if (fifoSize > 0 && frame) {
@@ -851,12 +883,16 @@ void AudioEncoder::Flush() {
       int samplesToRead = (int)std::min<int64_t>(
           (int64_t)fifoSize,
           std::min<int64_t>((int64_t)frame_size, remainingAllowed));
-      // Always send full frame_size to avoid EINVAL from codecs like ALAC
-      // that reject short frames. Zero-pad the remainder.
+      // Use an exact (possibly short) final frame when the codec supports it.
+      // Codecs with AV_CODEC_CAP_SMALL_LAST_FRAME (ALAC, AAC, FLAC, Opus)
+      // accept fewer samples than frame_size for the final frame, which gives
+      // sample-accurate end alignment without any trailing_padding tricks.
+      // For codecs that require fixed-size frames, zero-pad to frame_size.
       int samplesToSend =
-          (codecCtx->frame_size > 0)
-              ? codecCtx->frame_size
-              : samplesToRead;
+          canSendShortFrame
+              ? samplesToRead
+              : ((codecCtx->frame_size > 0) ? codecCtx->frame_size
+                                            : samplesToRead);
 
       if (samplesToSend <= 0)
         break;
@@ -961,79 +997,14 @@ void AudioEncoder::Flush() {
     }
   }
 
-  // Padding: If audio is shorter than video (due to dropouts at the end), fill
-  // with silence Also calculate exact discard padding for sample-accurate end
-  // trimming
+  // Calculate discard padding for sample-accurate trimming.
+  // With canSendShortFrame the last frame is exactly the right size, so
+  // discardPaddingSamples == 0 in most cases.
+  // For fixed-frame codecs (canSendShortFrame=false) maxSamples was rounded up,
+  // so the last encoded frame may overshoot the target by up to (frame_size-1)
+  // samples; those excess samples must be signalled for decoder-side discard.
   int64_t discardPaddingSamples = 0;
-  if (recordingEndUs > 0 && maxSamples != INT64_MAX) {
-    int64_t samplesNeeded = maxSamples - samplesCount;
-    if (samplesNeeded > 0) {
-      DLL_Log("[AudioEncoder] Padding stream end: %lld samples silence needed",
-              samplesNeeded);
-
-      int frame_size = codecCtx->frame_size ? codecCtx->frame_size : 4096;
-      int sampleSize = av_get_bytes_per_sample(codecCtx->sample_fmt);
-      int channels = codecCtx->ch_layout.nb_channels;
-
-      while (samplesNeeded > 0) {
-        // Always send full frame_size silence frames for codec compatibility.
-        // Codecs like ALAC reject short frames (EINVAL) even with
-        // AV_CODEC_CAP_SMALL_LAST_FRAME, because that capability only applies
-        // to the final frame during flush (after NULL frame).
-        // Excess silence is handled by discardPaddingSamples below.
-        int samplesToSend = frame_size;
-
-        // Allocate a fresh silence frame to avoid stale state from FIFO drain
-        AVFrame *silenceFrame = av_frame_alloc();
-        if (!silenceFrame) break;
-
-        silenceFrame->nb_samples = samplesToSend;
-        silenceFrame->format = codecCtx->sample_fmt;
-        av_channel_layout_copy(&silenceFrame->ch_layout, &codecCtx->ch_layout);
-        silenceFrame->sample_rate = codecCtx->sample_rate;
-        silenceFrame->pts = samplesCount;
-
-        int bret = av_frame_get_buffer(silenceFrame, 0);
-        if (bret < 0) {
-          av_frame_free(&silenceFrame);
-          break;
-        }
-        av_frame_make_writable(silenceFrame);
-
-        // Zero out all planes (silence)
-        for (int i = 0; i < AV_NUM_DATA_POINTERS && silenceFrame->data[i]; i++) {
-          int planeSize = samplesToSend * sampleSize;
-          if (!av_sample_fmt_is_planar(codecCtx->sample_fmt)) {
-            planeSize *= channels; // Interleaved
-          }
-          memset(silenceFrame->data[i], 0, planeSize);
-        }
-
-        // avcodec_send_frame does NOT take ownership - safe to retry then free
-        int ret = avcodec_send_frame(codecCtx, silenceFrame);
-        if (ret == AVERROR(EAGAIN)) {
-          drainPackets();
-          ret = avcodec_send_frame(codecCtx, silenceFrame);
-        }
-        av_frame_free(&silenceFrame);
-
-        if (ret < 0) {
-          DLL_Log("[AudioEncoder] Error sending silence frame: %d", ret);
-          break;
-        }
-
-        // Update counters AFTER successful send to avoid over-counting
-        samplesCount += samplesToSend;
-        samplesNeeded -= samplesToSend;
-
-        // Drain packets after each frame to keep buffers moving
-        drainPackets();
-      }
-    }
-
-    // Calculate exact discard padding for sample-accurate trimming
-    // We aligned maxSamples to frame_size boundary, so we may have extra
-    // samples
+  if (!canSendShortFrame && recordingEndUs > 0 && maxSamples != INT64_MAX) {
     int64_t durationUs = recordingEndUs - recordingStartUs;
     int64_t targetSamples = av_rescale_rnd(durationUs, codecCtx->sample_rate,
                                            1000000, AV_ROUND_DOWN);
@@ -1042,12 +1013,15 @@ void AudioEncoder::Flush() {
     if (discardPaddingSamples > 0 && codecCtx->frame_size > 0 &&
         discardPaddingSamples < codecCtx->frame_size) {
       DLL_Log("[AudioEncoder] Setting trailing_padding for sample-accurate "
-              "end: %lld samples (target=%lld, "
-              "actual=%lld)",
+              "end: %lld samples (target=%lld, actual=%lld)",
               discardPaddingSamples, targetSamples, samplesCount);
       codecCtx->trailing_padding = (int)discardPaddingSamples;
     }
   }
+
+  DLL_Log("[AudioEncoder] Flush: samplesCount=%lld maxSamples=%lld "
+          "discardPadding=%lld",
+          samplesCount, maxSamples, discardPaddingSamples);
 
   // Send NULL frame to trigger final drain of codec's internal buffer.
   // This puts the encoder in EOF state, which is fine because Stop()

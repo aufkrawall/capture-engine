@@ -1134,6 +1134,10 @@ void VideoEncoder::WriteFrame(AVPacket *pkt) {
   // DEBUG: Log PTS after rescaling and detect corruption
   if (pkt->stream_index == stream->index) {
     static int vidDebugCount = 0;
+    // Reset on each new recording (PTS restarts from 0)
+    if (pkt->pts < 10) {
+      vidDebugCount = 0;
+    }
     if (vidDebugCount++ < 20 || pkt->pts < 0) {
       DLL_Log(
           "[VideoEncoder] PTS PRECISE: frameNum=%lld pts_ms=%lld st_tb=%d/%d",

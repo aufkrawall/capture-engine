@@ -18,10 +18,10 @@ struct AudioConfig {
   SourceType sourceType = SystemAudio;
   std::vector<int> tracks; // Target tracks
   std::string codec;
-  int bitrate;
+  int bitrate = 0; // kbps; 0 = use codec default
   std::string sampleRate; // "default", "44100", "48000", "96000"
   std::string bitDepth;   // "default", "16", "24", "32"
-  bool downmix;
+  bool downmix = false;
 };
 
 // GPU Scaling Configuration
