@@ -66,6 +66,15 @@ public:
   }
   void DetectNvidiaSmoothMotion();
 
+  // NvPresent64.dll module detection (driver-level Smooth Motion)
+  bool IsNvPresentLoaded() {
+    if (!nvPresentDetected.load(std::memory_order_acquire)) {
+      CheckForNvPresent();
+    }
+    return nvPresentDetected.load(std::memory_order_acquire);
+  }
+  void CheckForNvPresent();
+
   // Debug
   const char *GetFGTypeName(FGType type) const;
   void LogStatus() const;
@@ -120,6 +129,10 @@ private:
   // NVIDIA SM detection persistence
   std::atomic<int> nvidiaSMConfirmCount{0};
   static constexpr int NVIDIA_SM_CONFIRM_THRESHOLD = 3;
+
+  // NvPresent64.dll module detected in process
+  std::atomic<bool> nvPresentDetected{false};
+  std::atomic<bool> nvPresentChecked{false};
 
   // Usage-based FG activation flags (set by API hooks)
   std::atomic<bool> dlssFGApiActive{false};

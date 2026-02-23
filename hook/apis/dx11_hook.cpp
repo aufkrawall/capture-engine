@@ -279,6 +279,22 @@ static VSyncOverride GetDX11VSyncOverride() {
   return GetVSyncOverride(); // Use the shared helper from hook_common.h
 }
 
+static bool ShouldSkipWindowForNvPresent(HWND hwnd) {
+  if (!hwnd || !IsWindow(hwnd))
+    return true;
+  if (!IsWindowVisible(hwnd))
+    return true;
+
+  RECT clientRect = {};
+  if (GetClientRect(hwnd, &clientRect) &&
+      (clientRect.right <= clientRect.left ||
+       clientRect.bottom <= clientRect.top)) {
+    return true;
+  }
+
+  return false;
+}
+
 // Forward Declarations
 void CleanupDX11Resources(bool releaseDeviceContext = true);
 void HandleDX11ProcessFrame(IDXGISwapChain *pSwapChain, bool isRealFrame);
@@ -334,8 +350,15 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain *pSwapChain,
   // SAFETY CHECK: Verify window is still valid before doing ANY D3D work
   // This prevents crashes when the app is shutting down and destroying its
   // window
+  const bool nvPresentLoaded = g_FGCompat.IsNvPresentLoaded();
   DXGI_SWAP_CHAIN_DESC desc;
   if (SUCCEEDED(pSwapChain->GetDesc(&desc))) {
+    // NVIDIA Smooth Motion compatibility: NvPresent64 can present through
+    // hidden/ephemeral windows that must be passed through untouched.
+    if (nvPresentLoaded && ShouldSkipWindowForNvPresent(desc.OutputWindow)) {
+      return oPresent(pSwapChain, SyncInterval, Flags);
+    }
+
     if (!desc.OutputWindow || !IsWindow(desc.OutputWindow)) {
       // Window is being destroyed - app is shutting down
       // Set shutdown flag and bail immediately without touching any D3D objects
@@ -396,8 +419,17 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(
   }
 
   // SAFETY CHECK: Verify window is still valid before doing ANY D3D work
+  const bool nvPresentLoaded = g_FGCompat.IsNvPresentLoaded();
   DXGI_SWAP_CHAIN_DESC desc;
   if (SUCCEEDED(pSwapChain->GetDesc(&desc))) {
+    // NVIDIA Smooth Motion compatibility: pass through hidden/ephemeral windows
+    if (nvPresentLoaded && ShouldSkipWindowForNvPresent(desc.OutputWindow)) {
+      if (oPresent1)
+        return oPresent1(pSwapChain, SyncInterval, PresentFlags,
+                         pPresentParameters);
+      return oPresent(pSwapChain, SyncInterval, PresentFlags);
+    }
+
     if (!desc.OutputWindow || !IsWindow(desc.OutputWindow)) {
       g_ShuttingDown.store(true);
       EarlyLog("DX11: Window destroyed (hwnd=%p), entering shutdown mode",
@@ -1481,15 +1513,30 @@ public:
       return false;
     }
 
-    // Use the frame-stable backbuffer index for FLIP swapchains.
-    UINT bufferIndex = ResolveDX11BackBufferIndex(swapChain);
-
     ID3D11Texture2D *backbuffer = nullptr;
-    hr = swapChain->GetBuffer(bufferIndex, IID_PPV_ARGS(&backbuffer));
-    if (FAILED(hr) || !backbuffer) {
-      HookLog("DX11Capture: [%d] GetBuffer(%u) failed hr=0x%08X", frameNum, bufferIndex, hr);
-      device->Release();
-      return false;
+
+    // Prefer the exact RTV resource used for overlay rendering in this frame.
+    // This guarantees capture uses the same backbuffer that overlay drew to.
+    if (!isDX10Mode && g_mainRenderTargetView) {
+      ID3D11Resource *rtResource = nullptr;
+      g_mainRenderTargetView->GetResource(&rtResource);
+      if (rtResource) {
+        rtResource->QueryInterface(IID_PPV_ARGS(&backbuffer));
+        rtResource->Release();
+      }
+    }
+
+    // Fallback: resolve backbuffer index directly from swapchain.
+    UINT bufferIndex = 0;
+    if (!backbuffer) {
+      bufferIndex = ResolveDX11BackBufferIndex(swapChain);
+      hr = swapChain->GetBuffer(bufferIndex, IID_PPV_ARGS(&backbuffer));
+      if (FAILED(hr) || !backbuffer) {
+        HookLog("DX11Capture: [%d] GetBuffer(%u) failed hr=0x%08X", frameNum,
+                bufferIndex, hr);
+        device->Release();
+        return false;
+      }
     }
 
     // Determine which texture slot to write to
@@ -1770,6 +1817,11 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
     return;
   }
   HWND currentHwnd = desc.OutputWindow;
+
+  const bool nvPresentLoaded = g_FGCompat.IsNvPresentLoaded();
+  if (nvPresentLoaded && ShouldSkipWindowForNvPresent(currentHwnd)) {
+    return;
+  }
 
   // Skip overlay if the window is being destroyed — the D3D device may already
   // be partially torn down, making GetDevice/GetBuffer unsafe.

@@ -316,6 +316,28 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
     return oPresentTrampoline(pSwapChain, SyncInterval, Flags);
   }
 
+  // Lazy check for NvPresent64.dll (may load after our hooks)
+  g_FGCompat.CheckForNvPresent();
+
+  // NVIDIA Smooth Motion compatibility: skip overlay/processing for invisible
+  // windows. NvPresent64 creates invisible-window swapchains for DX11 frame
+  // interpolation — processing them corrupts NvPresent64's internal state.
+  if (g_FGCompat.IsNvPresentLoaded()) {
+    DXGI_SWAP_CHAIN_DESC smDesc = {};
+    if (SUCCEEDED(pSwapChain->GetDesc(&smDesc))) {
+      if (!smDesc.OutputWindow || !IsWindowVisible(smDesc.OutputWindow)) {
+        static int s_smSkipCount = 0;
+        if (s_smSkipCount < 5) {
+          s_smSkipCount++;
+          HookLog("DetourPresent: Skipping invisible window (SM compat, "
+                  "hwnd=%p) #%d",
+                  smDesc.OutputWindow, s_smSkipCount);
+        }
+        return oPresentTrampoline(pSwapChain, SyncInterval, Flags);
+      }
+    }
+  }
+
   bool isFirstHook = !g_SharedState.inPresentHook.exchange(true);
   auto hookGuard = ::ce::make_scope_guard([&] {
     if (isFirstHook)
@@ -441,6 +463,17 @@ DetourPresent1(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT Flags,
   if (IsVulkanActive()) {
     return oPresent1Trampoline(pSwapChain, SyncInterval, Flags,
                                pPresentParameters);
+  }
+
+  // NVIDIA Smooth Motion compatibility: skip for invisible windows
+  if (g_FGCompat.IsNvPresentLoaded()) {
+    DXGI_SWAP_CHAIN_DESC smDesc = {};
+    if (SUCCEEDED(pSwapChain->GetDesc(&smDesc))) {
+      if (!smDesc.OutputWindow || !IsWindowVisible(smDesc.OutputWindow)) {
+        return oPresent1Trampoline(pSwapChain, SyncInterval, Flags,
+                                   pPresentParameters);
+      }
+    }
   }
 
   bool isFirstHook = !g_SharedState.inPresentHook.exchange(true);
@@ -789,6 +822,8 @@ static void InstallHooksIfPending(IDXGISwapChain *pSwapChain) {
 
 void Init() {
   g_SharedState.lastSwapchainCreation = std::chrono::steady_clock::now();
+  // Early detection of NVIDIA Smooth Motion module
+  g_FGCompat.CheckForNvPresent();
 }
 
 bool InstallPresentInlineHooks(IDXGISwapChain *pSwapChain) {

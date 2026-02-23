@@ -347,6 +347,36 @@ void FGCompatibility::DetectPattern() {
 void FGCompatibility::DetectNvidiaSmoothMotion() {
   // Called externally to trigger SM detection
   // The actual detection happens in DetectPattern() based on frame analysis
+  // Also check for NvPresent64.dll module presence
+  CheckForNvPresent();
+}
+
+void FGCompatibility::CheckForNvPresent() {
+  // Already detected — no need to re-check
+  if (nvPresentDetected.load(std::memory_order_acquire))
+    return;
+
+  // Throttle checks to at most once per second when not yet detected.
+  // NvPresent64 may load after our hook is installed.
+  static std::atomic<ULONGLONG> s_lastCheckTick{0};
+  ULONGLONG nowTick = GetTickCount64();
+  ULONGLONG lastTick = s_lastCheckTick.load(std::memory_order_acquire);
+  if (nvPresentChecked.load(std::memory_order_acquire) && lastTick != 0 &&
+      nowTick - lastTick < 1000) {
+    return;
+  }
+  s_lastCheckTick.store(nowTick, std::memory_order_release);
+  nvPresentChecked.store(true, std::memory_order_release);
+
+  HMODULE hNvPresent = GetModuleHandleW(L"NvPresent64.dll");
+  if (!hNvPresent)
+    hNvPresent = GetModuleHandleW(L"NvPresent32.dll");
+
+  if (hNvPresent) {
+    nvPresentDetected.store(true, std::memory_order_release);
+    HookLog("FG: NvPresent64.dll detected — NVIDIA Smooth Motion compatibility "
+            "enabled");
+  }
 }
 
 void FGCompatibility::OnSwapchainRecreation() {

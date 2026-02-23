@@ -1619,7 +1619,29 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
         + ["-o", test_exe]
     )
     run_command(cmd, env=env)
+    copy_test_runtime_dlls(tests_dir)
     return test_exe
+
+
+def copy_test_runtime_dlls(tests_dir):
+    """Copy libgtest.dll and FFmpeg DLLs next to unit_tests.exe so it can be run directly."""
+    import shutil
+    msys_bin = os.path.join(PROJECT_ROOT, "build", "msys64", "clang64", "bin")
+    ffmpeg_bin = os.path.join(PROJECT_ROOT, "installed", "captureengine", "ffmpeg")
+    copied = []
+    for dll_dir in [msys_bin, ffmpeg_bin]:
+        if not os.path.isdir(dll_dir):
+            continue
+        for dll in os.listdir(dll_dir):
+            if not dll.lower().endswith(".dll"):
+                continue
+            src = os.path.join(dll_dir, dll)
+            dst = os.path.join(tests_dir, dll)
+            if not os.path.exists(dst) or os.path.getmtime(src) > os.path.getmtime(dst):
+                shutil.copy2(src, dst)
+                copied.append(dll)
+    if copied:
+        log(f"Copied {len(copied)} runtime DLLs to tests/ for direct execution")
 
 
 def run_tests(env, test_exe):
@@ -2964,6 +2986,11 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             shutil.rmtree(licenses_dst)
         shutil.copytree(licenses_src, licenses_dst)
         log("Copied licenses/ directory to installed/captureengine/")
+
+    # Keep runtime DLLs in tests/ current so unit_tests.exe can run directly
+    tests_dir = os.path.join(PROJECT_ROOT, "tests")
+    if os.path.exists(os.path.join(tests_dir, "unit_tests.exe")):
+        copy_test_runtime_dlls(tests_dir)
 
     log("Build Complete.")
 

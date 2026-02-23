@@ -685,6 +685,13 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval,
     return hr;
   }
 
+  // NVIDIA Smooth Motion compatibility: skip overlay/processing for invisible
+  // windows (NvPresent64 may create them for DX12 frame interpolation too)
+  if (g_FGCompat.IsNvPresentLoaded() && m_hWnd &&
+      !IsWindowVisible(m_hWnd)) {
+    return pRealCached->Present(SyncInterval, Flags);
+  }
+
   // DEBUG: Log first few Present calls to verify wrapper is being invoked
   if (callCount < 10) {
     WrapperLog("Present: call#%d (m_IsD3D12=%d, flipModel=%d, FG=%d)",
@@ -947,6 +954,13 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(
   IDXGISwapChain1 *pReal1Cached = m_pReal1;
   if (!pReal1Cached) {
     return DXGI_ERROR_INVALID_CALL;
+  }
+
+  // NVIDIA Smooth Motion compatibility: skip overlay for invisible windows
+  if (g_FGCompat.IsNvPresentLoaded() && m_hWnd &&
+      !IsWindowVisible(m_hWnd)) {
+    return pReal1Cached->Present1(SyncInterval, PresentFlags,
+                                  pPresentParameters);
   }
 
   // RECURSION GUARD: Prevent infinite recursion with Steam/other overlays
