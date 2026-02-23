@@ -152,6 +152,10 @@ bool AudioEncoder::Init(const AudioConfig &config,
     return false;
   }
 
+  if (codecCtx->sample_rate > 0) {
+    codecCtx->time_base = {1, codecCtx->sample_rate};
+  }
+
   // Save codec ID for recreation in Stop()
   savedCodecId = codec->id;
 
@@ -751,6 +755,9 @@ void AudioEncoder::Stop() {
           avcodec_free_context(&codecCtx);
           codecCtx = nullptr;
         } else {
+          if (codecCtx->sample_rate > 0) {
+            codecCtx->time_base = {1, codecCtx->sample_rate};
+          }
           DLL_Log("[AudioEnc] Codec recreated successfully for next recording");
         }
       }
@@ -786,7 +793,16 @@ void AudioEncoder::Flush() {
   }
 
   const int fixedFrameSize = codecCtx->frame_size;
-  if (fixedFrameSize > 0 && maxSamples != INT64_MAX) {
+  const bool supportsVariableFrame =
+      codecCtx->codec &&
+      (codecCtx->codec->capabilities & AV_CODEC_CAP_VARIABLE_FRAME_SIZE);
+  const bool supportsSmallLastFrame =
+      codecCtx->codec &&
+      (codecCtx->codec->capabilities & AV_CODEC_CAP_SMALL_LAST_FRAME);
+  const bool canSendShortFrame =
+      supportsVariableFrame || supportsSmallLastFrame;
+
+  if (fixedFrameSize > 0 && maxSamples != INT64_MAX && !canSendShortFrame) {
     int64_t rem = maxSamples % fixedFrameSize;
     if (rem != 0) {
       maxSamples += (fixedFrameSize - rem);
@@ -835,7 +851,9 @@ void AudioEncoder::Flush() {
           (int64_t)fifoSize,
           std::min<int64_t>((int64_t)frame_size, remainingAllowed));
       int samplesToSend =
-          (codecCtx->frame_size > 0) ? codecCtx->frame_size : samplesToRead;
+          (!canSendShortFrame && codecCtx->frame_size > 0)
+              ? codecCtx->frame_size
+              : samplesToRead;
 
       if (samplesToSend <= 0)
         break;
@@ -964,9 +982,10 @@ void AudioEncoder::Flush() {
           int samplesToPrepare =
               (int)std::min((int64_t)frame_size, samplesNeeded);
 
-          // If fixed frame size, always send full frame
-          int samplesToSend = (codecCtx->frame_size > 0) ? codecCtx->frame_size
-                                                         : samplesToPrepare;
+          int samplesToSend =
+              (!canSendShortFrame && codecCtx->frame_size > 0)
+                  ? codecCtx->frame_size
+                  : samplesToPrepare;
 
           frame->nb_samples = samplesToSend;
 
@@ -1021,7 +1040,7 @@ void AudioEncoder::Flush() {
                                            1000000, AV_ROUND_DOWN);
     discardPaddingSamples = samplesCount - targetSamples;
 
-    if (discardPaddingSamples > 0 &&
+    if (discardPaddingSamples > 0 && codecCtx->frame_size > 0 &&
         discardPaddingSamples < codecCtx->frame_size) {
       DLL_Log("[AudioEncoder] Setting trailing_padding for sample-accurate "
               "end: %lld samples (target=%lld, "

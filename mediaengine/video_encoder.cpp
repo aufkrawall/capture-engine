@@ -892,7 +892,13 @@ int VideoEncoder::AddAudioStream(const AudioConfig &config,
   if (audioCtx) {
     // Correct way: copy parameters including extradata
     avcodec_parameters_from_context(st->codecpar, audioCtx);
-    st->time_base = audioCtx->time_base;
+    int sampleRate =
+        audioCtx->sample_rate > 0 ? audioCtx->sample_rate
+                                  : st->codecpar->sample_rate;
+    if (sampleRate <= 0) {
+      sampleRate = 48000;
+    }
+    st->time_base = {1, sampleRate};
   } else {
     // Fallback (might fail for extradata-dependent codecs)
     int sampleRate =

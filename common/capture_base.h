@@ -145,11 +145,18 @@ public:
 
   // Advance write index (called after copy completes)
   int AdvanceWriteIndex() {
-    int idx = writeIndex.fetch_add(1, std::memory_order_acq_rel);
-    // Keep within ring bounds using atomic compare-exchange loop
-    // Simple approach: use modulo on the returned old value
-    // The stored value wraps naturally via modulo on read
-    return idx % CAPTURE_TEXTURE_COUNT;
+    int idx = writeIndex.load(std::memory_order_acquire);
+    for (;;) {
+      int wrappedIdx = idx % CAPTURE_TEXTURE_COUNT;
+      int next = wrappedIdx + 1;
+      if (next >= CAPTURE_TEXTURE_COUNT) {
+        next = 0;
+      }
+      if (writeIndex.compare_exchange_weak(idx, next, std::memory_order_acq_rel,
+                                           std::memory_order_acquire)) {
+        return wrappedIdx;
+      }
+    }
   }
 
   // Signal frame ready to IPC ring buffer

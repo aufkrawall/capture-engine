@@ -45,6 +45,10 @@ public:
         postResampleBuffer; // Buffer after sync resampling for exact framing
     int64_t syncSamplesOutput =
         0; // Total samples output by syncResampler (for drift calculation)
+    int dropFadeSamplesRemaining =
+        0;                // Remaining samples for post-drop transition smoothing
+    float dropFadeStartL = 0.0f; // Left sample anchor for drop transition
+    float dropFadeStartR = 0.0f; // Right sample anchor for drop transition
 
     AudioConfig config;
     int track = 0; // Target track number
@@ -341,6 +345,9 @@ public:
         }
         src.postResampleBuffer.clear();
         src.syncSamplesOutput = 0;
+        src.dropFadeSamplesRemaining = 0;
+        src.dropFadeStartL = 0.0f;
+        src.dropFadeStartR = 0.0f;
       }
 
       // Start all audio sources
@@ -449,6 +456,9 @@ public:
       }
       src.postResampleBuffer.clear();
       src.syncSamplesOutput = 0;
+      src.dropFadeSamplesRemaining = 0;
+      src.dropFadeStartL = 0.0f;
+      src.dropFadeStartR = 0.0f;
     }
 
     // Reset video frame tracking for next recording
@@ -778,19 +788,34 @@ public:
           // creating "silence bursts" / delayed start. Keep only a small
           // bounded lead.
           const int64_t MAX_LEAD_SAMPLES = SAMPLE_RATE / 5; // 200ms
+          const int64_t MAX_DROP_PER_CALL = SAMPLE_RATE / 100; // 10ms
+          const int64_t DROP_FADE_SAMPLES = SAMPLE_RATE / 200; // 5ms
           if ((int64_t)rbAvailable >
               TARGET_LATENCY_SAMPLES + MAX_LEAD_SAMPLES) {
-            int64_t dropSamples = (int64_t)rbAvailable -
-                                  (TARGET_LATENCY_SAMPLES + MAX_LEAD_SAMPLES);
+            int64_t dropSamplesTotal =
+                (int64_t)rbAvailable -
+                (TARGET_LATENCY_SAMPLES + MAX_LEAD_SAMPLES);
+            int64_t dropSamples =
+                std::min(dropSamplesTotal, MAX_DROP_PER_CALL);
             if (dropSamples > 0 && src.ringBuffer) {
+              if (src.postResampleBuffer.size() >= CHANNELS) {
+                size_t base = src.postResampleBuffer.size() - CHANNELS;
+                src.dropFadeStartL = src.postResampleBuffer[base];
+                src.dropFadeStartR = src.postResampleBuffer[base + 1];
+              } else {
+                src.dropFadeStartL = 0.0f;
+                src.dropFadeStartR = 0.0f;
+              }
+              src.dropFadeSamplesRemaining = (int)DROP_FADE_SAMPLES;
+
               src.ringBuffer->Skip((size_t)dropSamples * CHANNELS);
               static int dropLogCounter = 0;
               if (dropLogCounter++ % 100 == 0) {
                 DLL_Log("[PullAudio] Src %d ahead by %lld samples - dropping "
-                        "%lld to cap latency",
+                        "%lld (capped from %lld) to cap latency",
                         (int)srcIdx,
                         (int64_t)rbAvailable - TARGET_LATENCY_SAMPLES,
-                        dropSamples);
+                        dropSamples, dropSamplesTotal);
               }
               rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
             }
@@ -888,6 +913,25 @@ public:
                                            &resampledData, &outSamples)) {
               if (outSamples > 0 && resampledData && resampledData[0]) {
                 float *outFloats = (float *)resampledData[0];
+                if (src.dropFadeSamplesRemaining > 0) {
+                  const int kDropFadeSamples = SAMPLE_RATE / 200;
+                  int blendSamples =
+                      std::min(src.dropFadeSamplesRemaining, outSamples);
+                  int blendStart =
+                      kDropFadeSamples - src.dropFadeSamplesRemaining;
+                  for (int s = 0; s < blendSamples; s++) {
+                    float alpha = (float)(blendStart + s + 1) / kDropFadeSamples;
+                    float inL = outFloats[s * CHANNELS];
+                    float inR = outFloats[s * CHANNELS + 1];
+                    outFloats[s * CHANNELS] =
+                        src.dropFadeStartL + (inL - src.dropFadeStartL) * alpha;
+                    outFloats[s * CHANNELS + 1] =
+                        src.dropFadeStartR + (inR - src.dropFadeStartR) * alpha;
+                    src.dropFadeStartL = outFloats[s * CHANNELS];
+                    src.dropFadeStartR = outFloats[s * CHANNELS + 1];
+                  }
+                  src.dropFadeSamplesRemaining -= blendSamples;
+                }
                 int numFloats = outSamples * CHANNELS;
                 src.postResampleBuffer.insert(src.postResampleBuffer.end(),
                                               outFloats, outFloats + numFloats);
