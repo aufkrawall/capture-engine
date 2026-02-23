@@ -353,7 +353,6 @@ void AudioEncoder::EncodeSamples(const uint8_t *data, int sizeBytes,
 
   // Diagnostic: check if audio data is non-silent (reduced frequency to avoid
   // log spam)
-  static int diagCounter = 0;
   if (samplesCount == 0) {
     diagCounter = 0;
   }
@@ -520,8 +519,7 @@ void AudioEncoder::EncodeSamples(const uint8_t *data, int sizeBytes,
   }
 
   // Periodic FIFO status (reduced frequency to avoid log spam)
-  static int logCounter = 0;
-  if (logCounter++ % 5000 == 0) {
+  if (fifoLogCounter++ % 5000 == 0) {
     int currentSize = av_audio_fifo_size(audioFifo);
 
     // Warn if over 50% capacity (approx 1-2 seconds depending on sample rate)
@@ -560,7 +558,6 @@ void AudioEncoder::EncodeSamples(const uint8_t *data, int sizeBytes,
     frame->pts = samplesCount;
 
     // Debug: Log first 10 frames for each encoder to track PTS
-    static int frameLogCounter = 0;
     if (frameLogCounter++ < 10) {
       DLL_Log("[AudioEnc] FRAME PTS DEBUG: pts=%lld (%.3f sec) "
               "samplesCount=%lld streamIdx=%d",
@@ -639,7 +636,6 @@ void AudioEncoder::EncodeSamples(const uint8_t *data, int sizeBytes,
     }
 
     // Log if we didn't get any packets after sending a frame
-    static int noPacketCount = 0;
     if (pktCount == 0) {
       noPacketCount++;
       if (noPacketCount % 100 == 1) {
@@ -676,6 +672,10 @@ void AudioEncoder::Stop() {
   lastPacketTimestampMs = 0; // Reset PTS tracker
   warnedOnce = false;      // Reset per-recording warning flags
   warnedMax = false;
+  diagCounter = 0;         // Reset diagnostic counters
+  fifoLogCounter = 0;
+  frameLogCounter = 0;
+  noPacketCount = 0;
 
   // Clear any pending packets
   for (auto *pkt : pendingPackets) {
@@ -803,7 +803,7 @@ void AudioEncoder::Flush() {
   const bool canSendShortFrame =
       supportsVariableFrame || supportsSmallLastFrame;
 
-  if (fixedFrameSize > 0 && maxSamples != INT64_MAX && !canSendShortFrame) {
+  if (fixedFrameSize > 0 && maxSamples != INT64_MAX) {
     int64_t rem = maxSamples % fixedFrameSize;
     if (rem != 0) {
       maxSamples += (fixedFrameSize - rem);
@@ -851,8 +851,10 @@ void AudioEncoder::Flush() {
       int samplesToRead = (int)std::min<int64_t>(
           (int64_t)fifoSize,
           std::min<int64_t>((int64_t)frame_size, remainingAllowed));
+      // Always send full frame_size to avoid EINVAL from codecs like ALAC
+      // that reject short frames. Zero-pad the remainder.
       int samplesToSend =
-          (!canSendShortFrame && codecCtx->frame_size > 0)
+          (codecCtx->frame_size > 0)
               ? codecCtx->frame_size
               : samplesToRead;
 
@@ -974,15 +976,12 @@ void AudioEncoder::Flush() {
       int channels = codecCtx->ch_layout.nb_channels;
 
       while (samplesNeeded > 0) {
-        // For most encoders, we MUST send exactly frame_size samples.
-        // If we need fewer, we still send a full frame to be safe.
-        int samplesToPrepare =
-            (int)std::min((int64_t)frame_size, samplesNeeded);
-
-        int samplesToSend =
-            (!canSendShortFrame && codecCtx->frame_size > 0)
-                ? codecCtx->frame_size
-                : samplesToPrepare;
+        // Always send full frame_size silence frames for codec compatibility.
+        // Codecs like ALAC reject short frames (EINVAL) even with
+        // AV_CODEC_CAP_SMALL_LAST_FRAME, because that capability only applies
+        // to the final frame during flush (after NULL frame).
+        // Excess silence is handled by discardPaddingSamples below.
+        int samplesToSend = frame_size;
 
         // Allocate a fresh silence frame to avoid stale state from FIFO drain
         AVFrame *silenceFrame = av_frame_alloc();
@@ -1010,9 +1009,6 @@ void AudioEncoder::Flush() {
           memset(silenceFrame->data[i], 0, planeSize);
         }
 
-        samplesCount += samplesToSend;
-        samplesNeeded -= samplesToSend;
-
         // avcodec_send_frame does NOT take ownership - safe to retry then free
         int ret = avcodec_send_frame(codecCtx, silenceFrame);
         if (ret == AVERROR(EAGAIN)) {
@@ -1025,6 +1021,10 @@ void AudioEncoder::Flush() {
           DLL_Log("[AudioEncoder] Error sending silence frame: %d", ret);
           break;
         }
+
+        // Update counters AFTER successful send to avoid over-counting
+        samplesCount += samplesToSend;
+        samplesNeeded -= samplesToSend;
 
         // Drain packets after each frame to keep buffers moving
         drainPackets();
@@ -1049,11 +1049,9 @@ void AudioEncoder::Flush() {
     }
   }
 
-  // NOTE: Do NOT send NULL frame here! That puts encoder in permanent EOF
-  // state. For multi-recording support, we just drain remaining packets without
-  // sending EOF. The NULL frame should only be sent in destructor when truly
-  // closing forever.
-
+  // Send NULL frame to trigger final drain of codec's internal buffer.
+  // This puts the encoder in EOF state, which is fine because Stop()
+  // recreates the codec context for the next recording.
   avcodec_send_frame(codecCtx, nullptr);
   // Final drain
   std::vector<AVPacket*> flushedPackets;

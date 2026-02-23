@@ -95,6 +95,13 @@ public:
   int driftLogCounter = 0;
   int syncCheckCounter = 0;
 
+  // Per-recording frame log counters (avoid statics that leak across recordings)
+  int injectFrameLogCount = 0;
+  int screengrabFrameLogCount = 0;
+  int silenceLogCounter = 0;
+  int mixLogCounter = 0;
+  int ringBufferOverflowLogCounter = 0;
+
   int64_t GetLastVideoEncodeTimeUs() const {
     if (videoEnc)
       return videoEnc->GetLastFrameEncodeTimeUs();
@@ -339,6 +346,11 @@ public:
       dropLogCounter = 0;
       driftLogCounter = 0;
       syncCheckCounter = 0;
+      injectFrameLogCount = 0;
+      screengrabFrameLogCount = 0;
+      silenceLogCounter = 0;
+      mixLogCounter = 0;
+      ringBufferOverflowLogCounter = 0;
 
       // PULL MODEL: CRITICAL - Clear ring buffers to start fresh
       for (auto &src : audioSources) {
@@ -569,8 +581,7 @@ public:
       }
     }
 
-    static int logCount = 0;
-    if (logCount++ % 60 == 0) {
+    if (injectFrameLogCount++ % 60 == 0) {
       DLL_Log("MediaEngine: Sending Frame ts=%lld", debugTimestamp);
     }
 
@@ -657,8 +668,7 @@ public:
       }
     }
 
-    static int logCount = 0;
-    if (logCount++ % 60 == 0) {
+    if (screengrabFrameLogCount++ % 60 == 0) {
       DLL_Log("MediaEngine: ScreenGrab frame ts=%lld %dx%d", debugTimestamp,
               width, height);
     }
@@ -987,7 +997,6 @@ public:
            2. Encode it.
            3. Advance counters.
         */
-        static int silenceLogCounter = 0;
         if (silenceLogCounter++ % 500 == 0) {
           DLL_Log("[PullAudio] Track %d silent - generating %lld samples of "
                   "silence to maintain sync",
@@ -1065,7 +1074,6 @@ public:
                                true, // float32
                                audioChunkTimestampMs);
 
-        static int mixLogCounter = 0;
         if (srcIndices.size() > 1 && mixLogCounter++ % 500 == 0) {
           DLL_Log("[PullAudio] Mixed %d sources for track %d (%lld samples)",
                   activeSources, track, samplesToEncode);
@@ -1486,8 +1494,7 @@ private:
                     src.ringBuffer->Write((float *)resampledData[0], numFloats);
                 if (written < numFloats) {
                   // Only log overflow occasionally to avoid log spam
-                  static int logCounter = 0;
-                  if (logCounter++ % 100 == 0) {
+                  if (ringBufferOverflowLogCounter++ % 100 == 0) {
                     DLL_Log("[AudioLoop] RingBuffer overflow: src=%d, "
                             "requested=%d, written=%zu",
                             (int)srcIdx, numFloats, written);
