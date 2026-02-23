@@ -443,11 +443,11 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(
           std::shared_ptr<InjectionManager> managerShared =
               pManager->shared_from_this();
           std::thread([managerShared, pid, name]() {
-            LogInfo("[WMI] %s (PID: %d) - Delaying injection for D3D12 "
+            LogInfo("[WMI] %s (PID: %d) - Delaying injection for graphics API "
                     "initialization...",
                     name.c_str(), pid);
 
-            // Wait up to 30 seconds for D3D12 initialization
+            // Wait up to 30 seconds for graphics API initialization
             bool ready = false;
             bool d3d12Loaded = false;
             for (int i = 0; i < 300 && !ready; i++) {
@@ -518,8 +518,9 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(
             std::lock_guard<std::mutex> lock(managerShared->injectMutex);
             if (!managerShared->IsAlreadyInjected(pid) &&
                 !managerShared->IsRecentlyFailed(pid)) {
-              LogInfo("[WMI] %s (PID: %d) - Injecting after delay",
-                      name.c_str(), pid);
+              LogInfo("[WMI] %s (PID: %d) - Injecting after delay (%s detected)",
+                      name.c_str(), pid,
+                      d3d12Loaded ? "D3D12" : "non-D3D12 (DX11/DX9/Vulkan)");
               if (managerShared->Inject(pid, name)) {
                 LogInfo("[WMI] Delayed injection successful.");
               } else {

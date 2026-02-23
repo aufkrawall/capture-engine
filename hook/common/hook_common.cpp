@@ -323,6 +323,15 @@ void EarlyLog(const char *fmt, ...) {
   va_end(args);
 }
 
+void HookLogImportant(const char *fmt, ...) {
+  if (g_pLocalConfig && !g_pLocalConfig->debugLogging)
+    return;
+  va_list args;
+  va_start(args, fmt);
+  LogToFileAtomic("hook_debug.log", fmt, args);
+  va_end(args);
+}
+
 void NVNGXLog(const char *fmt, ...) {
   if (!g_pLocalConfig || !g_pLocalConfig->debugLogging)
     return;

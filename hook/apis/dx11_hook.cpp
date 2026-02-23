@@ -534,7 +534,7 @@ static HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(
       IDXGISwapChain *pReal = *ppSwapChain;
       *ppSwapChain = (IDXGISwapChain *)new CWrapDXGISwapChain(pReal, pDev);
       pReal->Release();
-      HookLog("DX11: Wrapped swapchain from D3D11CreateDeviceAndSwapChain");
+      HookLogImportant("DX11: Wrapped swapchain from D3D11CreateDeviceAndSwapChain");
     }
 
     IDXGISwapChain *sc = (ppSwapChain && *ppSwapChain) ? *ppSwapChain : nullptr;
@@ -1360,7 +1360,7 @@ public:
         PublishToSharedMemory(g_IPC);
       }
       initialized = true;
-      EarlyLog("%s Capture Initialized: %dx%d (Fence: %s, Queries: %s)",
+      HookLogImportant("%s Capture Initialized: %dx%d (Fence: %s, Queries: %s)",
                isDX10Mode ? "DX10" : "DX11", width, height,
                useFences ? "ON" : "OFF",
                (copyQueries[0] != nullptr) ? "ON" : "OFF");
@@ -1538,13 +1538,11 @@ void DX11_ProcessFrameExternal(IDXGISwapChain *pSwapChain) {
   if (!pSwapChain)
     return;
 
-  // CAPTURE: Copy frame to shared texture (zero-copy GPU-to-GPU)
-  // This happens regardless of recording state - media process decides what to
-  // encode
-  g_DX11Capture.CaptureFrame(pSwapChain);
-
-  // OVERLAY: Draw ImGui overlay on top
+  // Draw overlay FIRST so it is included in the captured frame
   HandleDX11ProcessFrame(pSwapChain, true);
+
+  // CAPTURE: Copy frame after overlay is drawn (overlay now visible in recording)
+  g_DX11Capture.CaptureFrame(pSwapChain);
 }
 
 // Helper to force rebind of all samplers (triggering our DetourSetSamplers)
@@ -1875,20 +1873,35 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
   }
   g_OverlayAdapter.SetGraphicsAPI(finalApi);
 
-  // Create/recreate RTV if needed
-  if (!g_mainRenderTargetView || pSwapChain != lastSwapChain) {
+  // For FLIP swap chains, the back buffer rotates each Present.
+  // Overlay must draw to the same buffer that CaptureFrame will read,
+  // otherwise the captured frame will not contain the overlay (flicker).
+  UINT currentBufferIndex = 0;
+  static UINT lastBufferIndex = 0xFFFFFFFF;
+  if (desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD ||
+      desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL) {
+    IDXGISwapChain3 *sc3 = nullptr;
+    if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3)))) {
+      currentBufferIndex = sc3->GetCurrentBackBufferIndex();
+      sc3->Release();
+    }
+  }
+
+  // Create/recreate RTV if swapchain changed or FLIP buffer index rotated
+  if (!g_mainRenderTargetView || pSwapChain != lastSwapChain ||
+      currentBufferIndex != lastBufferIndex) {
     if (g_mainRenderTargetView) {
       g_mainRenderTargetView->Release();
       g_mainRenderTargetView = nullptr;
     }
 
-    EarlyLog("%s: Creating RTV for SwapChain %p (%ux%u)...", g_DetectedAPI,
-             pSwapChain, desc.BufferDesc.Width, desc.BufferDesc.Height);
+    EarlyLog("%s: Creating RTV for SwapChain %p (%ux%u) buffer=%u...", g_DetectedAPI,
+             pSwapChain, desc.BufferDesc.Width, desc.BufferDesc.Height, currentBufferIndex);
 
     ID3D11Texture2D *backbuffer = nullptr;
-    HRESULT hr = pSwapChain->GetBuffer(0, IID_PPV_ARGS(&backbuffer));
+    HRESULT hr = pSwapChain->GetBuffer(currentBufferIndex, IID_PPV_ARGS(&backbuffer));
     if (FAILED(hr) || !backbuffer) {
-      EarlyLog("%s: GetBuffer FAILED hr=0x%08X", g_DetectedAPI, hr);
+      EarlyLog("%s: GetBuffer(%u) FAILED hr=0x%08X", g_DetectedAPI, currentBufferIndex, hr);
       return;
     }
     hr = device->CreateRenderTargetView(backbuffer, NULL,
@@ -1899,7 +1912,8 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
       return;
     }
     lastSwapChain = pSwapChain;
-    EarlyLog("%s: RTV created OK", g_DetectedAPI);
+    lastBufferIndex = currentBufferIndex;
+    EarlyLog("%s: RTV created OK (buffer=%u)", g_DetectedAPI, currentBufferIndex);
   }
 
   EarlyLog("DX11: [frame %d] pre-render device=%p context=%p rtv=%p",

@@ -691,11 +691,16 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     graphX = x - 4 * dpiScale;
     graphY = graphCursorY + 4 * dpiScale; // Small gap below stats
 
+    // Top padding keeps the graph line below the scale marker and frame time
+    // labels that are drawn at graphY + ~6px.
+    float graphTopPad = 14.0f * dpiScale;
+
     uint32_t graphColor =
         cfg.frametimeColor ? cfg.frametimeColor : Colors::Yellow;
-    renderer->DrawFrameTimeGraph(graphX, graphY, graphWidth, graphHeight,
-                                 graphData, GRAPH_SAMPLES, graphMinVal,
-                                 graphMaxVal, graphColor);
+    renderer->DrawFrameTimeGraph(graphX, graphY + graphTopPad, graphWidth,
+                                 graphHeight - graphTopPad, graphData,
+                                 GRAPH_SAMPLES, graphMinVal, graphMaxVal,
+                                 graphColor);
   }
 
   // --- PASS 2: All text (single textured batch) ---
@@ -759,7 +764,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     float gap = 2.0f * dpiScale; // Minimal gap between segments
     renderer->CalcTextSizeScaled(totalBuf, &totalWidth, nullptr, smallScale);
     float usedX = valueRightEdge - (usedWidth + gap + totalWidth);
-    renderer->DrawTextWithShadow(usedX, cursorY, usedBuf, textColor,
+    renderer->DrawTextWithShadow(usedX, cursorY, usedBuf, Colors::LabelOrange,
                                  shadowColor);
 
     float raisedY = cursorY - usedHeight * 0.20f; // Raised 20% of line height
@@ -795,7 +800,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     float gap = 2.0f * dpiScale; // Minimal gap between segments
     renderer->CalcTextSizeScaled(totalBuf, &totalWidth, nullptr, smallScale);
     float usedX = valueRightEdge - (usedWidth + gap + totalWidth);
-    renderer->DrawTextWithShadow(usedX, cursorY, usedBuf, textColor,
+    renderer->DrawTextWithShadow(usedX, cursorY, usedBuf, Colors::LabelPink,
                                  shadowColor);
 
     float raisedY = cursorY - usedHeight * 0.20f; // Raised 20% of line height
@@ -909,7 +914,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     // Scale marker: small gray line at top left with ceiling value (with ms
     // unit)
     float scaleLineLength = 15.0f * dpiScale;
-    float scaleLineY = graphY + 8 * dpiScale;
+    float scaleLineY = graphY + 1.0f * dpiScale;
     renderer->DrawLine(graphX + 4 * dpiScale, scaleLineY,
                        graphX + 4 * dpiScale + scaleLineLength, scaleLineY,
                        grayColor, 1.0f * dpiScale);

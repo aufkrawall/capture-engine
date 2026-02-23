@@ -340,10 +340,6 @@ void Renderer::DrawFrameTimeGraph(float x, float y, float width, float height,
   if (!initialized || !frameTimes || count < 2)
     return;
 
-  // Draw graph background using solid color (no texture)
-  uint32_t bgColor = 0x40000000; // Semi-transparent black
-  DrawRectFilled(x, y, width, height, bgColor);
-
   // Ensure valid range
   float range = maxVal - minVal;
   if (range < 0.001f)
@@ -351,45 +347,22 @@ void Renderer::DrawFrameTimeGraph(float x, float y, float width, float height,
 
   float stepX = width / (float)(count - 1);
   float invRange = 1.0f / range;
+  float lineThickness = 1.5f * dpiScale;
 
-  // Extract RGB from color for gradient
-  uint8_t r = (color >> 0) & 0xFF;
-  uint8_t g = (color >> 8) & 0xFF;
-  uint8_t b = (color >> 16) & 0xFF;
-  uint8_t a = (color >> 24) & 0xFF;
-
-  // Create gradient colors: full color at top, fading to transparent at bottom
-  uint32_t topColor = color; // Full color at the data line
-  uint32_t bottomColor =
-      (a / 4) << 24 | (b << 16) | (g << 8) | r; // 25% alpha at bottom
-
-  // Generate filled area vertices: top edge follows data, bottom edge is at
-  // graph bottom
-  uint16_t stripBase = (uint16_t)vertices.size();
-  for (int i = 0; i < count; i++) {
-    float val = frameTimes[i];
-    val = (std::max)(minVal, (std::min)(maxVal, val));
-    float px = x + i * stepX;
-    float py = y + height - ((val - minVal) * invRange) * height;
-    // Top vertex (at data point) - full color
-    vertices.push_back({px, py, 0, 0, topColor});
-    // Bottom vertex (at graph bottom) - faded
-    vertices.push_back({px, y + height, 0, 0, bottomColor});
-  }
-
-  // Generate indices for triangle strip as triangle list
+  // Draw line segments between consecutive data points
   for (int i = 0; i < count - 1; i++) {
-    uint16_t base = stripBase + (uint16_t)(i * 2);
-    indices.push_back(base + 0);
-    indices.push_back(base + 1);
-    indices.push_back(base + 2);
-    indices.push_back(base + 1);
-    indices.push_back(base + 3);
-    indices.push_back(base + 2);
-  }
+    float val0 = frameTimes[i];
+    float val1 = frameTimes[i + 1];
+    val0 = (std::max)(minVal, (std::min)(maxVal, val0));
+    val1 = (std::max)(minVal, (std::min)(maxVal, val1));
 
-  // Flush all geometry as a single batch
-  FlushBatch(false);
+    float px0 = x + i * stepX;
+    float py0 = y + height - ((val0 - minVal) * invRange) * height;
+    float px1 = x + (i + 1) * stepX;
+    float py1 = y + height - ((val1 - minVal) * invRange) * height;
+
+    DrawLine(px0, py0, px1, py1, color, lineThickness);
+  }
 }
 
 void Renderer::BeginWindow(float x, float y, uint32_t bgColor, float alpha) {

@@ -243,8 +243,8 @@ void DX9Backend::Render(const std::vector<DrawVertex> &vertices,
   device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
   device->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
 
-  device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_POINT);
-  device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+  device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+  device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
 
   device->SetStreamSource(0, vertexBuffer, 0, sizeof(DX9Vertex));
   device->SetIndices(indexBuffer);
