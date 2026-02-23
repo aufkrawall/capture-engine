@@ -17,6 +17,21 @@ struct Session {
 int LoggerProcessMain(const AppConfig &config) {
   LogInfo("[Logger] Dedicated logging service started");
 
+  // Parse controller PID from command line for shutdown signaling
+  uint32_t controllerPid = 0;
+  const char *cmdLine = GetCommandLineA();
+  const char *pidArg = strstr(cmdLine, "--parent-pid=");
+  if (pidArg)
+    controllerPid = (uint32_t)atoi(pidArg + 13);
+
+  // Create/open shutdown event keyed to controller PID
+  HANDLE hShutdownEvent = INVALID_HANDLE_VALUE;
+  if (controllerPid != 0) {
+    wchar_t eventName[64];
+    GenerateShutdownEventName(eventName, 64, controllerPid);
+    hShutdownEvent = CreateEventW(NULL, TRUE, FALSE, eventName);
+  }
+
   std::map<uint32_t, Session> sessions;
   std::map<std::string, HANDLE> openFiles;
   char logsDir[MAX_PATH];
@@ -168,7 +183,17 @@ int LoggerProcessMain(const AppConfig &config) {
     }
 
     Sleep(100); // Poll every 100ms
+
+    // Check for shutdown signal
+    if (hShutdownEvent != INVALID_HANDLE_VALUE &&
+        WaitForSingleObject(hShutdownEvent, 0) == WAIT_OBJECT_0) {
+      LogInfo("[Logger] Shutdown signal received, exiting");
+      break;
+    }
   }
+
+  if (hShutdownEvent != INVALID_HANDLE_VALUE)
+    CloseHandle(hShutdownEvent);
 
   return 0;
 }

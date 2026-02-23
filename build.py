@@ -2402,7 +2402,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
 
         # 1. Compile Common (ImGui removed - using custom overlay)
         log(f"Compiling Common {arch}...")
-        log(f"Compiling Common {arch}...")
         common_src = glob.glob(
             os.path.join(PROJECT_ROOT, "common", "*.cpp")
         ) + glob.glob(os.path.join(PROJECT_ROOT, "common", "utils", "*.cpp"))

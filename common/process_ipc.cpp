@@ -372,6 +372,13 @@ HANDLE SpawnChildProcess(ProcessMode mode, const char *configPath) {
     snprintf(cmdLine, sizeof(cmdLine), "\"%s\" --mode=%s", exePath, modeStr);
   }
 
+  // Logger and Sensors need to know the controller PID for shutdown signaling
+  if (mode == ProcessMode::Logger || mode == ProcessMode::Sensors) {
+    size_t len = strlen(cmdLine);
+    snprintf(cmdLine + len, sizeof(cmdLine) - len, " --parent-pid=%u",
+             GetCurrentProcessId());
+  }
+
   STARTUPINFOA si = {};
   si.cb = sizeof(si);
   PROCESS_INFORMATION pi = {};

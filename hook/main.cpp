@@ -1097,6 +1097,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
                              GetModuleHandleA("d3d10.dll") != NULL ||
                              GetModuleHandleA("d3d9.dll") != NULL);
 
+#ifdef ENABLE_D3D12_WRAPPER
       if (hasGraphicsAPI) {
 #ifdef _WIN64
         std::string wrapperDll = dir + "\\d3d12_wrappers.dll";
@@ -1114,6 +1115,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
           EarlyLog("HookThread: Loaded wrapper DLL at %p", hWrapper);
         }
       }
+#endif // ENABLE_D3D12_WRAPPER
     }
 
     // Initialize performance logger if debug logging is enabled

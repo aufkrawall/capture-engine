@@ -69,6 +69,12 @@ inline void GenerateSharedMemName(wchar_t *outName, size_t maxLen,
   swprintf(outName, maxLen, L"Local\\CE_SM_%08X", pid);
 }
 
+// Generate shutdown event name for Logger/Sensor processes keyed to controller PID
+inline void GenerateShutdownEventName(wchar_t *outName, size_t maxLen,
+                                      uint32_t controllerPid) {
+  swprintf(outName, maxLen, L"Local\\CE_Shutdown_%08X", controllerPid);
+}
+
 // Bounds checking helpers for safe shared memory access
 inline bool IsValidTextureIndex(int32_t idx) { return idx >= 0 && idx < 8; }
 

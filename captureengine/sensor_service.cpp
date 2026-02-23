@@ -16,6 +16,21 @@ struct Session {
 int SensorProcessMain(const AppConfig &config) {
   LogInfo("[Sensors] Dedicated sensor service started");
 
+  // Parse controller PID from command line for shutdown signaling
+  uint32_t controllerPid = 0;
+  const char *cmdLine = GetCommandLineA();
+  const char *pidArg = strstr(cmdLine, "--parent-pid=");
+  if (pidArg)
+    controllerPid = (uint32_t)atoi(pidArg + 13);
+
+  // Create/open shutdown event keyed to controller PID
+  HANDLE hShutdownEvent = INVALID_HANDLE_VALUE;
+  if (controllerPid != 0) {
+    wchar_t eventName[64];
+    GenerateShutdownEventName(eventName, 64, controllerPid);
+    hShutdownEvent = CreateEventW(NULL, TRUE, FALSE, eventName);
+  }
+
   std::map<uint32_t, Session> sessions;
   static bool loggedDiscoveryAttempt = false;
 
@@ -95,7 +110,17 @@ int SensorProcessMain(const AppConfig &config) {
     }
 
     Sleep(1000); // Poll every 1s (standard for system sensors)
+
+    // Check for shutdown signal
+    if (hShutdownEvent != INVALID_HANDLE_VALUE &&
+        WaitForSingleObject(hShutdownEvent, 0) == WAIT_OBJECT_0) {
+      LogInfo("[Sensors] Shutdown signal received, exiting");
+      break;
+    }
   }
+
+  if (hShutdownEvent != INVALID_HANDLE_VALUE)
+    CloseHandle(hShutdownEvent);
 
   return 0;
 }

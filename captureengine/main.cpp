@@ -6,6 +6,7 @@
 #include "../common/crash_handler.h"
 #include "../common/logging.h"
 #include "../common/process_ipc.h"
+#include "../common/shared_defs.h"
 #include "injection.h"
 #include "tray.h"
 #include <atomic>
@@ -288,6 +289,15 @@ void ToggleRecording() {
 // Shutdown all child processes gracefully
 void ShutdownChildProcesses() {
   LogInfo("[Controller] Shutting down child processes...");
+
+  // Signal Logger and Sensor processes to exit via named event
+  wchar_t shutdownEventName[64];
+  GenerateShutdownEventName(shutdownEventName, 64, GetCurrentProcessId());
+  HANDLE hShutdownEvent = CreateEventW(NULL, TRUE, FALSE, shutdownEventName);
+  if (hShutdownEvent) {
+    SetEvent(hShutdownEvent);
+    CloseHandle(hShutdownEvent);
+  }
 
   // Send shutdown commands
   SendCommandToAll(ProcessCommand::Shutdown);
@@ -652,7 +662,6 @@ int ControllerMain(HINSTANCE hInstance) {
     g_Tray->StartShutdownAnimation();
   }
 
-  LogInfo("[Controller] Shutting down child processes...");
   ShutdownChildProcesses();
 
   // Reset global pointer (destructor of ScopedVulkanRegistration will handle
