@@ -11,6 +11,7 @@
 #include "../common/input_manager.h"
 #include "../common/overlay_adapter.h"
 #include "../common/perf_logger.h"
+#include "../common/freeze_watchdog.h"
 #include "../wrappers/inline_hook.h"
 #include "../wrappers/vtable_hook.h"
 #include "hook_common.h"
@@ -93,6 +94,7 @@ static std::atomic<int> g_MaxMSAASamples{0}; // Tracks highest MSAA target seen
 static GraphicsConfig g_FrameConfig; // Frame-local config cache for performance
 static int64_t g_LastSleepUs = 0;
 static bool g_WindowedPresent = true;
+static std::atomic<bool> g_DX9StagingCaptureActive{false};
 
 typedef HRESULT(WINAPI *DwmFlush_t)();
 static DwmFlush_t g_DwmFlush = nullptr;
@@ -235,6 +237,13 @@ static void MaybeWaitForVSyncAfterPresent(int64_t presentUs) {
   VSyncOverride vsync = GetVSyncOverride();
   if (!vsync.shouldOverride || vsync.presentInterval <= 0)
     return;
+  // For legacy non-Ex DX9 staging capture, extra post-present pacing can
+  // amplify already expensive readback cost. Favor minimal overhead while
+  // recording.
+  if (g_DX9StagingCaptureActive.load(std::memory_order_acquire) && g_IPC &&
+      g_IPC->IsRecording()) {
+    return;
+  }
   const int hz = GetDesktopRefreshHzCached();
   const bool windowed = g_WindowedPresent;
   const bool shouldPace = windowed && (presentUs < 3000);
@@ -558,15 +567,14 @@ static bool InstallD3D9InlineHooks() {
   // Guard against re-entry - this function may be called recursively
   // if GetD3D9PresentAddresses triggers a hook that calls back here
   
-  // Use direct file logging for critical diagnostics (bypasses shared memory)
+  // Use EarlyLog for diagnostics (writes to hook_debug.log when enabled)
   auto LogDirect = [](const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);
     char buf[1024];
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
-    FILE* f = fopen("%REPO_ROOT%\\installed\\captureengine\\logs\\dx9_inline.log", "a");
-    if (f) { fprintf(f, "%s\n", buf); fclose(f); }
+    EarlyLog("%s", buf);
   };
   
   LogDirect("=== InstallD3D9InlineHooks START (installed=%d, inProgress=%d)",
@@ -777,212 +785,12 @@ static int GetMSAASampleCount(IDirect3DDevice9 *device) {
 // Proactive apply in Present
 
 // ============================================================================
-// D3D9 Runtime Patching (OBS-style) for Zero-Copy on Legacy Devices
+// D3D9 Runtime Patching - REMOVED
 // ============================================================================
-
-// Patch data - These are the bytes to write to force shared texture creation
-static const BYTE g_ForceJump[] = {0xEB};        // Unconditional short jump
-static const BYTE g_IgnoreJump[] = {0x90, 0x90}; // Two NOPs
-
-#define MAX_D3D9_PATCH_SIZE 2
-#define D3D9_CMP_SIZE 12
-
-// Number of known D3D9 versions (x86)
-#define NUM_D3D9_VERSIONS 20
-
-// Patch offsets for x86 d3d9.dll (32-bit) - expanded for Windows 10/11
-static const uintptr_t g_D3D9PatchOffset[NUM_D3D9_VERSIONS] = {
-    0x79AA6,  // win7   - 6.1.7601.16562
-    0x79C9E,  // win7   - 6.1.7600.16385
-    0x79D96,  // win7   - 6.1.7601.17514
-    0x7F9BD,  // win8.1 - 6.3.9431.00000
-    0x8A3F4,  // win8.1 - 6.3.9600.16404
-    0x8B15F,  // win10  - 10.0.10240.16384
-    0x8B19F,  // win10  - 10.0.10162.0
-    0x8B83F,  // win10  - 10.0.10240.16412
-    0x8E9F7,  // win8.1 - 6.3.9600.17095
-    0x8F00F,  // win8.1 - 6.3.9600.17085
-    0x8FBB1,  // win8.1 - 6.3.9600.16384
-    0x90264,  // win8.1 - 6.3.9600.17415
-    0x90C3A,  // win10  - 10.0.10586.494
-    0x90C57,  // win10  - 10.0.10586.0
-    0x96673,  // win10  - 10.0.14393.0
-    0x166A08, // win8   - 6.2.9200.16384
-    // Windows 10 1803+ / Windows 11 - match at known pattern, use delta to
-    // target JE
-    0x7A000, // win11  - 10.0.26200+ (Windows 11 25H2) - pattern here, JE at +6
-    0x7A004, // win11  - alternate (+4)
-    0x79FFC, // win11  - alternate (-4)
-    0x7A002, // win11  - alternate (+2)
-};
-
-// Byte patterns to match for each version
-static const uint8_t g_D3D9PatchCmp[NUM_D3D9_VERSIONS][D3D9_CMP_SIZE] = {
-    {0x8b, 0x89, 0xe8, 0x29, 0x00, 0x00, 0x39, 0xb9, 0x80, 0x4b, 0x00, 0x00},
-    {0x8b, 0x89, 0xe8, 0x29, 0x00, 0x00, 0x39, 0xb9, 0x80, 0x4b, 0x00, 0x00},
-    {0x8b, 0x89, 0xe8, 0x29, 0x00, 0x00, 0x39, 0xb9, 0x80, 0x4b, 0x00, 0x00},
-    {0x8b, 0x80, 0xe8, 0x29, 0x00, 0x00, 0x39, 0xb0, 0x40, 0x4c, 0x00, 0x00},
-    {0x80, 0xe8, 0x29, 0x00, 0x00, 0x83, 0xb8, 0x40, 0x4c, 0x00, 0x00, 0x00},
-    {0x81, 0xe8, 0x29, 0x00, 0x00, 0x83, 0xb8, 0xa0, 0x4c, 0x00, 0x00, 0x00},
-    {0x81, 0xe8, 0x29, 0x00, 0x00, 0x83, 0xb8, 0xa0, 0x4c, 0x00, 0x00, 0x00},
-    {0x81, 0xe8, 0x29, 0x00, 0x00, 0x83, 0xb8, 0xa0, 0x4c, 0x00, 0x00, 0x00},
-    {0x80, 0xe8, 0x29, 0x00, 0x00, 0x83, 0xb8, 0x40, 0x4c, 0x00, 0x00, 0x00},
-    {0x80, 0xe8, 0x29, 0x00, 0x00, 0x83, 0xb8, 0x40, 0x4c, 0x00, 0x00, 0x00},
-    {0x80, 0xe8, 0x29, 0x00, 0x00, 0x83, 0xb8, 0x40, 0x4c, 0x00, 0x00, 0x00},
-    {0x87, 0xe8, 0x29, 0x00, 0x00, 0x83, 0xb8, 0x40, 0x4c, 0x00, 0x00, 0x00},
-    {0x81, 0x18, 0x2a, 0x00, 0x00, 0x83, 0xb8, 0xa0, 0x4c, 0x00, 0x00, 0x00},
-    {0x81, 0x18, 0x2a, 0x00, 0x00, 0x83, 0xb8, 0xa0, 0x4c, 0x00, 0x00, 0x00},
-    {0x81, 0x18, 0x2a, 0x00, 0x00, 0x83, 0xb8, 0xa8, 0x4c, 0x00, 0x00, 0x00},
-    {0x8b, 0x80, 0xe8, 0x29, 0x00, 0x00, 0x39, 0x90, 0xb0, 0x4b, 0x00, 0x00},
-    // Windows 10 1803+ / Windows 11 - discovered from user's d3d9.dll (Win11
-    // 25H2) 0x79FFA: ?? ?? ?? ?? ?? ?? 70 02 00 00 84 C0 (ends at 0x7A006 where
-    // JE is) Need to match bytes from 0x79FFA-0x7A005 so patch lands on JE at
-    // 0x7A006 Using 0x7A000 - 6 bytes = can't see those bytes, but we know 70
-    // 02 00 00 84 C0 74 13 Actually patch at the CHECK OFFSET itself - the CMP,
-    // not the JE Let's try matching from 0x7A000 and apply patch with offset
-    // adjustment
-    {0x70, 0x02, 0x00, 0x00, 0x84, 0xc0, 0x74, 0x13, 0x8b, 0x87, 0x3c,
-     0x2b}, // 0x7A000 bytes
-    {0x84, 0xc0, 0x74, 0x13, 0x8b, 0x87, 0x3c, 0x2b, 0x00, 0x00, 0x83,
-     0xb8}, // 0x7A004 guess
-    {0x00, 0x00, 0x84, 0xc0, 0x74, 0x13, 0x8b, 0x87, 0x3c, 0x2b, 0x00,
-     0x00}, // 0x79FFE guess
-    {0x02, 0x00, 0x00, 0x84, 0xc0, 0x74, 0x13, 0x8b, 0x87, 0x3c, 0x2b,
-     0x00}, // 0x79FFF guess
-};
-
-// Patch sizes for each version (1 = force_jump, 2 = ignore_jump)
-static const size_t g_D3D9PatchSize[NUM_D3D9_VERSIONS] = {
-    1, 1, 1, 1, 1, 2, 2, 2, 1, 1, 1, 2, 2, 2, 2, 1, 2, 2, 2, 2};
-
-// Patch offset delta - how many bytes to adjust the patch address from
-// offset+CMP_SIZE For Win11 patterns: JE is at offset+6, not offset+12, so
-// delta = +6 - 12 = -6
-static const int g_D3D9PatchDelta[NUM_D3D9_VERSIONS] = {
-    0, 0, 0, 0, 0, 0,  0,  0,  0, 0, 0,
-    0, 0, 0, 0, 0, -6, -6, -6, -6 // Win11 patterns: JE is 6 bytes into the
-                                  // pattern
-};
-
-// Global patch state
-static HMODULE g_D3D9Module = nullptr;
-static int g_D3D9PatchIndex = -1;
-
-// Safe memcmp - check memory is readable before comparing (no SEH for MinGW)
-static int SafeMemCmp(const void *p1, const void *p2, size_t size) {
-  MEMORY_BASIC_INFORMATION mbi;
-  if (VirtualQuery(p1, &mbi, sizeof(mbi)) == 0)
-    return -1;
-  if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)))
-    return -1;
-  if ((mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ |
-                      PAGE_EXECUTE_READWRITE)) == 0)
-    return -1;
-  return memcmp(p1, p2, size);
-}
-
-// Diagnostic: Scan d3d9.dll for potential patch locations
-static void ScanD3D9ForPatchCandidates(HMODULE d3d9) {
-  uint8_t *base = (uint8_t *)d3d9;
-
-  // Get module size from PE header
-  IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)base;
-  if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
-    EarlyLog("DX9: Invalid DOS header");
-    return;
-  }
-  IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(base + dos->e_lfanew);
-  if (nt->Signature != IMAGE_NT_SIGNATURE) {
-    EarlyLog("DX9: Invalid NT header");
-    return;
-  }
-
-  DWORD moduleSize = nt->OptionalHeader.SizeOfImage;
-  EarlyLog("DX9: d3d9.dll module size: 0x%X (%d KB)", moduleSize,
-           moduleSize / 1024);
-
-  // Scan at various offsets within the module
-  // Focus on the typical range where the D3D9Ex check is located
-  EarlyLog("DX9: Scanning for patch candidates...");
-
-  // Scan from 0x50000 to min(moduleSize, 0x200000) in 0x10000 increments
-  for (uintptr_t offset = 0x50000; offset < moduleSize && offset < 0x200000;
-       offset += 0x10000) {
-    uint8_t *addr = base + offset;
-
-    MEMORY_BASIC_INFORMATION mbi;
-    if (VirtualQuery(addr, &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT)
-      continue;
-    if ((mbi.Protect & (PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
-                        PAGE_READONLY | PAGE_READWRITE)) == 0)
-      continue;
-
-    EarlyLog("DX9: 0x%05X: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X "
-             "%02X %02X %02X %02X %02X %02X",
-             (unsigned)offset, addr[0], addr[1], addr[2], addr[3], addr[4],
-             addr[5], addr[6], addr[7], addr[8], addr[9], addr[10], addr[11],
-             addr[12], addr[13], addr[14], addr[15]);
-  }
-
-  // Also scan specifically around known Windows 10/11 offsets with finer
-  // granularity
-  const uintptr_t knownRanges[] = {0x70000, 0x75000, 0x78000, 0x7A000,
-                                   0x7C000, 0x7E000, 0x80000};
-  for (size_t i = 0; i < sizeof(knownRanges) / sizeof(knownRanges[0]); i++) {
-    uintptr_t offset = knownRanges[i];
-    if (offset >= moduleSize)
-      continue;
-
-    uint8_t *addr = base + offset;
-    EarlyLog("DX9: 0x%05X: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X "
-             "%02X %02X %02X %02X %02X %02X",
-             (unsigned)offset, addr[0], addr[1], addr[2], addr[3], addr[4],
-             addr[5], addr[6], addr[7], addr[8], addr[9], addr[10], addr[11],
-             addr[12], addr[13], addr[14], addr[15]);
-  }
-}
-
-// Find the patch index for the current d3d9.dll version
-static int FindD3D9Patch(HMODULE d3d9) {
-  uint8_t *addr = (uint8_t *)d3d9;
-
-  // First try known patterns
-  for (int i = 0; i < NUM_D3D9_VERSIONS; i++) {
-    // Skip placeholder patterns
-    bool isPlaceholder = true;
-    for (int j = 0; j < D3D9_CMP_SIZE; j++) {
-      if (g_D3D9PatchCmp[i][j] != 0) {
-        isPlaceholder = false;
-        break;
-      }
-    }
-    if (isPlaceholder)
-      continue;
-
-    int ret = SafeMemCmp(addr + g_D3D9PatchOffset[i], g_D3D9PatchCmp[i],
-                         D3D9_CMP_SIZE);
-    if (ret == 0) {
-      EarlyLog("DX9: Found D3D9 patch version %d at offset 0x%X", i,
-               (unsigned)g_D3D9PatchOffset[i]);
-      return i;
-    }
-  }
-
-  // If no match, run diagnostic scan
-  ScanD3D9ForPatchCandidates(d3d9);
-
-  return -1;
-}
-
-// Get the address to patch
-static uint8_t *GetD3D9PatchAddr(HMODULE d3d9, int patchIndex) {
-  if (patchIndex < 0 || patchIndex >= NUM_D3D9_VERSIONS)
-    return nullptr;
-  uint8_t *addr = (uint8_t *)d3d9;
-  // Apply delta for Win11 patterns where JE is not at offset+CMP_SIZE
-  return addr + g_D3D9PatchOffset[patchIndex] + D3D9_CMP_SIZE +
-         g_D3D9PatchDelta[patchIndex];
-}
+// The version-specific d3d9.dll runtime patching (20 hardcoded byte patterns)
+// has been replaced by transparent D3D9→D3D9Ex upgrade in
+// Wrapped_Direct3DCreate9. D3D9Ex natively supports shared texture handles,
+// so no runtime patching is needed. See d3d9_wrap.cpp::CreateDevice.
 
 // DX9 Capture class with D3D11 interop
 class DX9Capture : public HookCaptureBase {
@@ -1024,7 +832,7 @@ public:
   bool useFences = false;
   UINT64 fenceValue = 0;
 
-  // Shmem fallback for legacy D3D9 (when patching fails)
+  // Legacy readback surfaces/queries (used by staging + old shmem path)
   bool useShmem = false;
   IDirect3DSurface9 *shmemSurfaces[CAPTURE_TEXTURE_COUNT] = {nullptr};
   IDirect3DQuery9 *shmemQueries[CAPTURE_TEXTURE_COUNT] = {nullptr};
@@ -1032,6 +840,14 @@ public:
   uint32_t shmemPitch = 0;
   int shmemCurTex = 0;
   int shmemCopyWait = 0;
+
+  // D3D11 staging path for non-Ex devices: uses GetRenderTargetData + D3D11
+  // UpdateSubresource to avoid slow shmem IPC, while still providing real
+  // shared texture handles to the encoder.
+  bool useD3D11Staging = false;
+  int stagingWriteIdx = 0;
+  int stagingReadIdx = 0;
+  int stagingPending = 0;
 
   // CPU Prerender Limit
   struct QuerySlot {
@@ -1121,6 +937,12 @@ public:
       }
       shmemTextureReady[i] = false;
     }
+
+    stagingWriteIdx = 0;
+    stagingReadIdx = 0;
+    stagingPending = 0;
+    useD3D11Staging = false;
+    g_DX9StagingCaptureActive.store(false, std::memory_order_release);
 
     for (auto &q : prerenderQueries) {
       if (q.query)
@@ -1283,161 +1105,111 @@ public:
     bool isD3D9Ex = false;
     if (SUCCEEDED(device->QueryInterface(__uuidof(IDirect3DDevice9Ex),
                                          (void **)&d3d9DeviceEx))) {
-      EarlyLog("DX9: Device supports D3D9Ex natively");
+      EarlyLog("DX9: Device supports D3D9Ex (zero-copy capture available)");
       isD3D9Ex = true;
     } else {
-      EarlyLog("DX9: Device is legacy D3D9, will attempt runtime patching");
+      EarlyLog("DX9: Device is legacy D3D9 (D3D11 staging path will be used)");
       d3d9DeviceEx = nullptr;
     }
 
     EarlyLog("DX9: Init Step 7: Create DX9 Shared Texture");
     sharedHandle9 = NULL;
 
-    // If legacy D3D9, we need to patch the runtime to force shared handle
-    // creation
-    if (!isD3D9Ex) {
-      g_D3D9Module = GetModuleHandleA("d3d9.dll");
-      // Check if we are hooked/wrapped and the real D3D9 is renamed
-      HMODULE hSysD3D9 = GetModuleHandleA("d3d9_system.dll");
-      if (hSysD3D9) {
-        EarlyLog("DX9: Detected d3d9_system.dll. Using that for patching "
-                 "instead of d3d9.dll.");
-        g_D3D9Module = hSysD3D9;
-      }
-
-      if (g_D3D9Module) {
-        g_D3D9PatchIndex = FindD3D9Patch(g_D3D9Module);
-        if (g_D3D9PatchIndex >= 0) {
-          EarlyLog("DX9: Applying runtime patch (version %d)...",
-                   g_D3D9PatchIndex);
-
-          uint8_t *patchAddr = GetD3D9PatchAddr(g_D3D9Module, g_D3D9PatchIndex);
-          size_t patchSize = g_D3D9PatchSize[g_D3D9PatchIndex];
-          uint8_t savedData[MAX_D3D9_PATCH_SIZE];
-          DWORD oldProtect;
-
-          // Apply patch
-          VirtualProtect(patchAddr, patchSize, PAGE_EXECUTE_READWRITE,
-                         &oldProtect);
-          memcpy(savedData, patchAddr, patchSize);
-          if (patchSize == 1) {
-            memcpy(patchAddr, g_ForceJump, 1);
-          } else {
-            memcpy(patchAddr, g_IgnoreJump, 2);
-          }
-
-          // Create texture with patch applied
-          hr = device->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET,
-                                     d3d9Format, D3DPOOL_DEFAULT,
-                                     &sharedTexture9, &sharedHandle9);
-
-          // Restore original bytes
-          memcpy(patchAddr, savedData, patchSize);
-          VirtualProtect(patchAddr, patchSize, oldProtect, &oldProtect);
-
-          EarlyLog("DX9: Patch restored. CreateTexture hr=0x%08x, handle=%p",
-                   hr, sharedHandle9);
-        } else {
-          EarlyLog(
-              "DX9: No matching D3D9 patch found for this Windows version");
-          // Try anyway without patching (will likely fail)
-          hr = device->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET,
-                                     d3d9Format, D3DPOOL_DEFAULT,
-                                     &sharedTexture9, &sharedHandle9);
-        }
-      } else {
-        EarlyLog("DX9: d3d9.dll not found");
-        hr = E_FAIL;
-      }
-    } else {
-      // D3D9Ex device - shared handles work natively
-      hr = device->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET,
-                                 d3d9Format, D3DPOOL_DEFAULT, &sharedTexture9,
-                                 &sharedHandle9);
-    }
+    // D3D9Ex device: shared handles work natively via the transparent upgrade
+    // in Wrapped_Direct3DCreate9. Legacy D3D9: try anyway (will likely fail
+    // and fall through to D3D11 staging).
+    hr = device->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET,
+                               d3d9Format, D3DPOOL_DEFAULT, &sharedTexture9,
+                               &sharedHandle9);
 
     if (FAILED(hr) || !sharedTexture9 || !sharedHandle9) {
       EarlyLog("DX9: Shared texture failed (hr=0x%08x, tex=%p, handle=%p), "
-               "falling back to Shmem...",
+               "using D3D11 staging path...",
                hr, sharedTexture9, sharedHandle9);
 
-      // Fallback to shmem capture
+      // Cleanup failed D3D9 shared texture
       if (sharedTexture9) {
         sharedTexture9->Release();
         sharedTexture9 = nullptr;
       }
       sharedHandle9 = NULL;
 
-      // Create offscreen surfaces in system memory
-      bool shmemOk = true;
-      for (int i = 0; i < CAPTURE_TEXTURE_COUNT && shmemOk; i++) {
+      // D3D11 Staging Path: For non-Ex devices, we use GetRenderTargetData
+      // to read the backbuffer into CPU memory, then UpdateSubresource to
+      // upload directly into D3D11 shared textures. This avoids the slow
+      // shmem IPC path entirely and gives the encoder real GPU textures.
+
+      // Create a ring of staging surfaces + event queries so readback can be
+      // pipelined and consumed without stalling the Present thread.
+      bool stagingOk = true;
+      for (int i = 0; i < CAPTURE_TEXTURE_COUNT && stagingOk; i++) {
         hr = device->CreateOffscreenPlainSurface(width, height, d3d9Format,
                                                  D3DPOOL_SYSTEMMEM,
                                                  &shmemSurfaces[i], nullptr);
         if (FAILED(hr)) {
-          EarlyLog("DX9: Failed to create shmem surface %d (hr=0x%08x)", i, hr);
-          shmemOk = false;
-        } else {
-          // Get pitch from first surface
-          if (i == 0) {
-            D3DLOCKED_RECT rect;
-            if (SUCCEEDED(shmemSurfaces[i]->LockRect(&rect, nullptr,
-                                                     D3DLOCK_READONLY))) {
-              shmemPitch = rect.Pitch;
-              shmemSurfaces[i]->UnlockRect();
-            }
+          EarlyLog("DX9: Failed to create staging surface %d (hr=0x%08x)", i,
+                   hr);
+          stagingOk = false;
+          break;
+        }
+
+        if (i == 0) {
+          D3DLOCKED_RECT rect;
+          if (SUCCEEDED(
+                  shmemSurfaces[i]->LockRect(&rect, nullptr, D3DLOCK_READONLY))) {
+            shmemPitch = rect.Pitch;
+            shmemSurfaces[i]->UnlockRect();
           }
-          // Create event query for sync
-          hr = device->CreateQuery(D3DQUERYTYPE_EVENT, &shmemQueries[i]);
-          if (FAILED(hr)) {
-            EarlyLog("DX9: Failed to create shmem query %d (hr=0x%08x)", i, hr);
-            shmemOk = false;
-          }
+        }
+
+        hr = device->CreateQuery(D3DQUERYTYPE_EVENT, &shmemQueries[i]);
+        if (FAILED(hr)) {
+          EarlyLog("DX9: Failed to create staging query %d (hr=0x%08x)", i, hr);
+          stagingOk = false;
+          break;
         }
       }
 
-      if (!shmemOk) {
+      if (!stagingOk) {
         CleanupDX9(true);
         return;
       }
 
-      useShmem = true;
-      EarlyLog("DX9: Shmem capture initialized (pitch=%d)", shmemPitch);
-
-      // Skip D3D11 interop steps for shmem path - go directly to success
-      if (g_IPC) {
-        // For shmem, we don't use shared textures, but we still need to signal
-        // frames We'll directly copy to IPC shared memory in CaptureFrame
-        if (g_IPC->GetSharedMem()) {
-          g_IPC->GetSharedMem()->SetWidth(width);
-          g_IPC->GetSharedMem()->SetHeight(height);
-          g_IPC->GetSharedMem()->SetFormat(87); // DXGI_FORMAT_B8G8R8A8_UNORM
-        }
-        format = D3D9ToDXGIFormat(d3d9Format);
+      stagingWriteIdx = 0;
+      stagingReadIdx = 0;
+      stagingPending = 0;
+      for (int i = 0; i < CAPTURE_TEXTURE_COUNT; ++i) {
+        shmemTextureReady[i] = false;
       }
-      CaptureBase::initialized = true;
-      HookLog("DX9 Capture Initialized (SHMEM): %dx%d", width, height);
-      return; // Done with shmem path
+
+      EarlyLog("DX9: Staging ring created (%d surfaces, pitch=%d), proceeding "
+               "to D3D11 ring buffer setup",
+               CAPTURE_TEXTURE_COUNT, shmemPitch);
+      useD3D11Staging = true;
+      // Fall through to create D3D11 ring buffer shared textures (steps 10+)
     }
 
-    EarlyLog("DX9: Init Step 8: GetSurfaceLevel");
-    hr = sharedTexture9->GetSurfaceLevel(0, &copySurface);
-    if (FAILED(hr)) {
-      EarlyLog("DX9: GetSurfaceLevel failed");
-      CleanupDX9(true);
-      return;
-    }
-
-    EarlyLog("DX9: Init Step 9: OpenSharedResource in D3D11");
-    if (d3d11Device) {
-      hr = d3d11Device->OpenSharedResource(sharedHandle9,
-                                           __uuidof(ID3D11Texture2D),
-                                           (void **)&d3d11SharedTexture);
+    // Steps 8-9: D3D9→D3D11 interop (only for zero-copy path with D3D9Ex)
+    if (!useD3D11Staging) {
+      EarlyLog("DX9: Init Step 8: GetSurfaceLevel");
+      hr = sharedTexture9->GetSurfaceLevel(0, &copySurface);
       if (FAILED(hr)) {
-        EarlyLog("DX9: Failed to open shared resource in D3D11 (hr=0x%08x)",
-                 hr);
+        EarlyLog("DX9: GetSurfaceLevel failed");
         CleanupDX9(true);
         return;
+      }
+
+      EarlyLog("DX9: Init Step 9: OpenSharedResource in D3D11");
+      if (d3d11Device) {
+        hr = d3d11Device->OpenSharedResource(sharedHandle9,
+                                             __uuidof(ID3D11Texture2D),
+                                             (void **)&d3d11SharedTexture);
+        if (FAILED(hr)) {
+          EarlyLog("DX9: Failed to open shared resource in D3D11 (hr=0x%08x)",
+                   hr);
+          CleanupDX9(true);
+          return;
+        }
       }
     }
 
@@ -1498,7 +1270,10 @@ public:
         PublishToSharedMemory(g_IPC);
       }
       CaptureBase::initialized = true;
-      HookLog("DX9 Capture Initialized: %dx%d (LUID: %08x)", width, height,
+      g_DX9StagingCaptureActive.store(useD3D11Staging,
+                                      std::memory_order_release);
+      HookLog("DX9 Capture Initialized (%s): %dx%d (LUID: %08x)",
+              useD3D11Staging ? "D3D11-STAGING" : "ZERO-COPY", width, height,
               luidLow);
     } else {
       CleanupDX9();
@@ -1518,29 +1293,101 @@ public:
     }
     LARGE_INTEGER qpc;
     QueryPerformanceCounter(&qpc);
-    int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
 
-    if (useShmem) {
-      // Shmem capture path - Copy to system memory surface then to shared
-      // buffer Use current surface index
+    if (useD3D11Staging) {
+      // D3D11 staging path: submit async readback into a ring, then consume
+      // only completed slots to avoid hard stalls in Present.
+      if (stagingPending < CAPTURE_TEXTURE_COUNT) {
+        const int submitIdx = stagingWriteIdx;
+        HRESULT submitHr =
+            device->GetRenderTargetData(backBuffer, shmemSurfaces[submitIdx]);
+        if (SUCCEEDED(submitHr)) {
+          if (shmemQueries[submitIdx]) {
+            shmemQueries[submitIdx]->Issue(D3DISSUE_END);
+          }
+          shmemTextureReady[submitIdx] = true;
+          stagingWriteIdx = (stagingWriteIdx + 1) % CAPTURE_TEXTURE_COUNT;
+          stagingPending++;
+        }
+      }
+
+      // Keep at least one frame in-flight to let GPU/CPU overlap.
+      if (stagingPending <= 1) {
+        return;
+      }
+
+      const int consumeIdx = stagingReadIdx;
+      if (!shmemTextureReady[consumeIdx]) {
+        stagingReadIdx = (stagingReadIdx + 1) % CAPTURE_TEXTURE_COUNT;
+        stagingPending--;
+        return;
+      }
+
+      if (shmemQueries[consumeIdx]) {
+        HRESULT queryHr = shmemQueries[consumeIdx]->GetData(nullptr, 0, 0);
+        if (queryHr == S_FALSE) {
+          return; // Not ready yet - don't block Present.
+        }
+        if (FAILED(queryHr)) {
+          shmemTextureReady[consumeIdx] = false;
+          stagingReadIdx = (stagingReadIdx + 1) % CAPTURE_TEXTURE_COUNT;
+          stagingPending--;
+          return;
+        }
+      }
+
+      D3DLOCKED_RECT rect;
+      HRESULT lockHr = shmemSurfaces[consumeIdx]->LockRect(
+          &rect, NULL, D3DLOCK_READONLY | D3DLOCK_DONOTWAIT);
+      if (lockHr == D3DERR_WASSTILLDRAWING) {
+        return; // Still busy - skip this frame without stalling.
+      }
+      if (lockHr == D3DERR_INVALIDCALL) {
+        // Some drivers reject DONOTWAIT on SYSTEMMEM surfaces.
+        lockHr = shmemSurfaces[consumeIdx]->LockRect(&rect, NULL,
+                                                     D3DLOCK_READONLY);
+      }
+      if (FAILED(lockHr)) {
+        shmemTextureReady[consumeIdx] = false;
+        stagingReadIdx = (stagingReadIdx + 1) % CAPTURE_TEXTURE_COUNT;
+        stagingPending--;
+        return;
+      }
+
+      const int idx = writeIndex.load(std::memory_order_acquire);
+      const bool canUpload = d3d11Context && sharedTextures[idx];
+      if (canUpload) {
+        d3d11Context->UpdateSubresource(sharedTextures[idx], 0, NULL, rect.pBits,
+                                        rect.Pitch, 0);
+      }
+      shmemSurfaces[consumeIdx]->UnlockRect();
+
+      shmemTextureReady[consumeIdx] = false;
+      stagingReadIdx = (stagingReadIdx + 1) % CAPTURE_TEXTURE_COUNT;
+      stagingPending--;
+
+      if (canUpload) {
+        if (useFences && fence && context4) {
+          SignalFrameReady(g_IPC, idx, qpc.QuadPart, fenceValue);
+        } else {
+          SignalFrameReady(g_IPC, idx, qpc.QuadPart, 0);
+        }
+        AdvanceWriteIndex();
+      }
+    } else if (useShmem) {
+      // Legacy shmem capture path (shouldn't normally be reached anymore)
       int idx = shmemCurTex;
 
-      // 1. Copy from GPU Backbuffer to System Memory Surface
       HRESULT hr = device->GetRenderTargetData(backBuffer, shmemSurfaces[idx]);
       if (SUCCEEDED(hr)) {
-        // 2. Lock to access pixels
         D3DLOCKED_RECT rect;
         hr = shmemSurfaces[idx]->LockRect(&rect, NULL, D3DLOCK_READONLY);
         if (SUCCEEDED(hr)) {
-          // 3. Copy to Shared Buffer
-          // Use slot 0 or 1 based on idx
-          int slot = idx % 2; // Assuming CAPTURE_TEXTURE_COUNT >= 2
+          int slot = idx % 2;
           ShmemBuffer *shmBuf = g_IPC ? g_IPC->GetShmem() : nullptr;
           if (shmBuf) {
-            // Copy parameters
             uint32_t copyW = width;
             uint32_t copyH = height;
-            // Avoid buffer overflow
             if (copyW > ShmemBuffer::MAX_WIDTH)
               copyW = ShmemBuffer::MAX_WIDTH;
             if (copyH > ShmemBuffer::MAX_HEIGHT)
@@ -1548,32 +1395,25 @@ public:
 
             uint8_t *dst = shmBuf->data[slot];
             uint8_t *src = (uint8_t *)rect.pBits;
-            uint32_t dstPitch = copyW * 4; // Tight packing
+            uint32_t dstPitch = copyW * 4;
 
-            // Copy row by row
             for (uint32_t y = 0; y < copyH; y++) {
               memcpy(dst + (y * dstPitch), src + (y * rect.Pitch), dstPitch);
             }
 
-            // Update metadata
             shmBuf->validWidth = copyW;
             shmBuf->validHeight = copyH;
             shmBuf->pitch = dstPitch;
             shmBuf->writeSlot.store(slot);
             shmBuf->slotReady[slot].store(true);
-
-            // 4. Signal Encoder (Index 100+ to indicate shmem slot)
-            // Using 100 + slot as textureIndex
             SignalFrameReady(g_IPC, 100 + slot, qpc.QuadPart, 0);
           }
           shmemSurfaces[idx]->UnlockRect();
         }
       }
-
-      // Cycle surface for next frame (double/triple buffering)
       shmemCurTex = (shmemCurTex + 1) % CAPTURE_TEXTURE_COUNT;
     } else {
-      // Zero-copy path (original)
+      // Zero-copy path (D3D9Ex): StretchRect → D3D11 CopySubresourceRegion
       int idx = writeIndex;
 
       HRESULT hr = device->StretchRect(backBuffer, NULL, copySurface, NULL,
@@ -1587,7 +1427,6 @@ public:
                                             d3d11SharedTexture, 0, NULL);
 
         if (useFences && fence && context4) {
-          // PASS RAW QPC
           SignalFrameReady(g_IPC, idx, qpc.QuadPart, fenceValue);
         } else {
           SignalFrameReady(g_IPC, idx, qpc.QuadPart, 0);
@@ -1767,6 +1606,9 @@ void DX9_PresentBegin(IDirect3DDevice9 *device,
   if (g_ShuttingDown)
     return;
 
+  // Heartbeat for freeze watchdog (d3d12.dll may be loaded in DX9 games)
+  g_RenderWatchdog.Heartbeat();
+
   static int debugLogCount = 0;
   if (debugLogCount < 10) {
     SharedMemoryLayout *dbgShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
@@ -1782,9 +1624,6 @@ void DX9_PresentBegin(IDirect3DDevice9 *device,
   g_FrameConfig = GetActiveGraphicsConfig();
 
   // Start timing
-  // Update frame config cache once per frame
-  g_FrameConfig = GetActiveGraphicsConfig();
-
   static int64_t qpcFreq = 0;
   if (qpcFreq == 0) {
     LARGE_INTEGER f;
@@ -2157,15 +1996,12 @@ static HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9 *device,
                                                CONST RECT *pDestRect,
                                                HWND hDestWindowOverride,
                                                CONST RGNDATA *pDirtyRegion) {
-  // Direct file log to bypass mutex contention
   static int entryLogCount = 0;
   if (entryLogCount < 5) {
-    FILE* f = fopen("%REPO_ROOT%\\installed\\captureengine\\logs\\dx9_present.log", "a");
-    if (f) { fprintf(f, "DetourPresent called (device=%p, count=%d)\n", device, entryLogCount); fclose(f); }
+    EarlyLog("DX9: DetourPresent called (device=%p, count=%d)", device, entryLogCount);
     entryLogCount++;
   }
   
-  EarlyLog("DX9: DetourPresent called (device=%p, count=%d)", device, entryLogCount);
   LARGE_INTEGER p0;
   LARGE_INTEGER p1;
   IDirect3DSurface9 *backBuffer = nullptr;
@@ -2186,19 +2022,12 @@ static HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9 *device,
 static HRESULT STDMETHODCALLTYPE DetourPresentEx(
     IDirect3DDevice9Ex *device, CONST RECT *pSourceRect, CONST RECT *pDestRect,
     HWND hDestWindowOverride, CONST RGNDATA *pDirtyRegion, DWORD dwFlags) {
-  // Direct file log to bypass mutex contention
   static int entryLogCount = 0;
   if (entryLogCount < 5) {
-    FILE* f = fopen("%REPO_ROOT%\\installed\\captureengine\\logs\\dx9_present.log", "a");
-    if (f) { fprintf(f, "DetourPresentEx called (device=%p, flags=0x%X, count=%d)\n", device, dwFlags, entryLogCount); fclose(f); }
+    EarlyLog("DX9: DetourPresentEx called (device=%p, flags=0x%X, count=%d)", device, dwFlags, entryLogCount);
     entryLogCount++;
   }
   
-  static int earlyLogCount = 0;
-  if (earlyLogCount < 5) {
-    EarlyLog("DX9: DetourPresentEx called (device=%p, flags=0x%X, count=%d)", device, dwFlags, earlyLogCount);
-    earlyLogCount++;
-  }
   LARGE_INTEGER p0;
   LARGE_INTEGER p1;
   VSyncOverride vsync = GetVSyncOverride();
@@ -2230,19 +2059,12 @@ static HRESULT STDMETHODCALLTYPE DetourPresentEx(
 static HRESULT STDMETHODCALLTYPE DetourPresentSwap(
     IDirect3DSwapChain9 *swap, CONST RECT *pSourceRect, CONST RECT *pDestRect,
     HWND hDestWindowOverride, CONST RGNDATA *pDirtyRegion, DWORD dwFlags) {
-  // Direct file log to bypass mutex contention
   static int entryLogCount = 0;
   if (entryLogCount < 5) {
-    FILE* f = fopen("%REPO_ROOT%\\installed\\captureengine\\logs\\dx9_present.log", "a");
-    if (f) { fprintf(f, "DetourPresentSwap called (swap=%p, flags=0x%X, count=%d)\n", swap, dwFlags, entryLogCount); fclose(f); }
+    EarlyLog("DX9: DetourPresentSwap called (swap=%p, flags=0x%X, count=%d)", swap, dwFlags, entryLogCount);
     entryLogCount++;
   }
   
-  static int earlyLogCount = 0;
-  if (earlyLogCount < 5) {
-    EarlyLog("DX9: DetourPresentSwap called (swap=%p, flags=0x%X, count=%d)", swap, dwFlags, earlyLogCount);
-    earlyLogCount++;
-  }
   LARGE_INTEGER p0;
   LARGE_INTEGER p1;
   VSyncOverride vsync = GetVSyncOverride();
@@ -2452,15 +2274,13 @@ static void InstallDeviceHooks(IDirect3DDevice9 *device) {
 
   uintptr_t *vtable = *(uintptr_t **)device;
   
-  // Direct file logging for diagnostics
   auto LogDirect = [](const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);
     char buf[1024];
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
-    FILE* f = fopen("%REPO_ROOT%\\installed\\captureengine\\logs\\dx9_vtable.log", "a");
-    if (f) { fprintf(f, "%s\n", buf); fclose(f); }
+    EarlyLog("%s", buf);
   };
   
   LogDirect("InstallDeviceHooks: device=%p, vtable=%p, oPresent=%p", device, vtable, (void*)oPresent);
@@ -2601,15 +2421,13 @@ static bool IsMemoryReadable(const void* ptr, size_t size) {
 // This is needed when we inject AFTER the game has already created its device
 // and inline hooks are blocked by external overlays
 static void ScanForExistingD3D9Devices() {
-  // Direct file logging for diagnostics
   auto LogScan = [](const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);
     char buf[1024];
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
-    FILE* f = fopen("%REPO_ROOT%\\installed\\captureengine\\logs\\dx9_scanner.log", "a");
-    if (f) { fprintf(f, "%s\n", buf); fclose(f); }
+    EarlyLog("%s", buf);
   };
   
   LogScan("=== ScanForExistingD3D9Devices START ===");
@@ -2905,15 +2723,13 @@ static HRESULT WINAPI DetourDirect3DCreate9Ex(UINT SDKVersion,
 }
 
 void DX9Hook::Init() {
-  // Direct file logging for diagnostics (bypasses mutex contention issues)
   auto LogDirect = [](const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);
     char buf[1024];
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
-    FILE* f = fopen("%REPO_ROOT%\\installed\\captureengine\\logs\\dx9_init.log", "a");
-    if (f) { fprintf(f, "%s\n", buf); fclose(f); }
+    EarlyLog("%s", buf);
   };
   
   LogDirect("=== DX9Hook::Init() START ===");

@@ -504,14 +504,25 @@ HRESULT WINAPI Wrapped_D3D10CreateDeviceAndSwapChain(
 // ============================================================================
 
 IDirect3D9 *WINAPI Wrapped_Direct3DCreate9(UINT SDKVersion) {
-  // Direct file logging
-  FILE* f = fopen("%REPO_ROOT%\\installed\\captureengine\\logs\\d3d9_wrap.log", "a");
-  if (f) { fprintf(f, "Wrapped_Direct3DCreate9 called (version %u)\n", SDKVersion); fclose(f); }
-  
   WrapperLog("Wrapper: Direct3DCreate9 called (version %u)", SDKVersion);
 
+  // Try D3D9Ex first for zero-copy capture support (shared texture handles).
+  // D3D9Ex is available on all WDDM systems (Vista+) and is a strict superset
+  // of D3D9, so games work transparently with it.
+  if (oDirect3DCreate9Ex) {
+    IDirect3D9Ex *pRealEx = nullptr;
+    HRESULT hr = oDirect3DCreate9Ex(SDKVersion, &pRealEx);
+    if (SUCCEEDED(hr) && pRealEx) {
+      CWrapDirect3D9 *pWrapper = new CWrapDirect3D9(pRealEx, true);
+      pRealEx->Release();
+      WrapperLog("Wrapper: Upgraded Direct3DCreate9 to D3D9Ex for zero-copy capture");
+      return pWrapper;
+    }
+    WrapperLog("Wrapper: D3D9Ex upgrade failed (hr=0x%08X), falling back to D3D9", hr);
+  }
+
+  // Fallback to original D3D9
   if (!oDirect3DCreate9) {
-    if (f) { fprintf(f, "oDirect3DCreate9 is NULL!\n"); fclose(f); }
     return nullptr;
   }
 
@@ -520,12 +531,10 @@ IDirect3D9 *WINAPI Wrapped_Direct3DCreate9(UINT SDKVersion) {
   if (pReal) {
     CWrapDirect3D9 *pWrapper = new CWrapDirect3D9(pReal, false);
     pReal->Release();
-    WrapperLog("Wrapper: Created wrapped IDirect3D9");
-    if (f) { fprintf(f, "Created wrapped IDirect3D9 at %p\n", pWrapper); fclose(f); }
+    WrapperLog("Wrapper: Created wrapped IDirect3D9 (non-Ex fallback)");
     return pWrapper;
   }
 
-  if (f) { fprintf(f, "Direct3DCreate9 returned NULL\n"); fclose(f); }
   return pReal;
 }
 
