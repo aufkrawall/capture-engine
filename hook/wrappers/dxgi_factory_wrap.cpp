@@ -277,7 +277,7 @@ CWrapDXGIFactory2::EnumAdapters1(UINT Adapter, IDXGIAdapter1 **ppAdapter) {
                Adapter);
   } else {
     *ppAdapter = nullptr;
-    if (FAILED(hr)) {
+    if (FAILED(hr) && hr != DXGI_ERROR_NOT_FOUND) {
       WrapperLog("DXGI Factory: EnumAdapters1(%u) -> FAILED hr=0x%08X", Adapter,
                  hr);
     }

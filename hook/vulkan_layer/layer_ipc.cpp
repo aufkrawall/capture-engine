@@ -112,6 +112,10 @@ bool IsVkFormatCompatibleWithDXGI(VkFormat vkFormat) {
 bool LayerIPC_Init() {
   if (g_IPCClient.GetSharedMem())
     return g_LayerState.whitelisted;
+  if (!g_LayerState.whitelisted) {
+    LayerLog("Layer IPC: Skipping host connection (process not whitelisted)");
+    return false;
+  }
 
   // Get process name
   char fullPath[MAX_PATH];

@@ -1448,8 +1448,7 @@ void ProcessFrame(IDXGISwapChain *pSwapChain, bool processCapture) {
             }
             dxgiDevice->Release();
           } else {
-            HookLog(
-                "DX12: Failed to query IDXGIDevice from swap chain's device");
+            HookLog("DX12: IDXGIDevice unavailable from swap chain device; using adapter-enumeration fallback");
 
             // Fallback: Create DXGI factory and use first adapter
             // This is better than nothing - most systems have one GPU

@@ -34,6 +34,8 @@ static std::string GetLayerDllDirectory() {
 static void EarlyLog(const char *fmt, ...) {
   va_list args;
   va_start(args, fmt);
+  va_list argsCopy;
+  va_copy(argsCopy, args);
   
   // Build absolute path to log file (next to the DLL)
   static std::string logPath;
@@ -48,11 +50,12 @@ static void EarlyLog(const char *fmt, ...) {
     GetLocalTime(&st);
     fprintf(earlyLog, "[%02d:%02d:%02d.%03d] [VulkanLayer-Init] ", 
             st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-    vfprintf(earlyLog, fmt, args);
+    vfprintf(earlyLog, fmt, argsCopy);
     fprintf(earlyLog, "\n");
     fflush(earlyLog);
     fclose(earlyLog);
   }
+  va_end(argsCopy);
   
   // Also try stderr (for console apps)
   fprintf(stderr, "[VulkanLayer-Init] ");
@@ -193,10 +196,15 @@ vkNegotiateLoaderLayerInterfaceVersion(
 
   EarlyLog("Initializing IPC...");
   if (!LayerIPC_Init()) {
-    EarlyLog("IPC connection failed - layer dormant");
-    LayerLog("Vulkan Layer: IPC initialization FAILED - layer will be dormant");
-    g_LayerState.whitelisted = false;
-    // Do NOT return error, continue as passthrough
+    if (g_LayerState.whitelisted) {
+      EarlyLog("IPC connection failed - layer dormant");
+      LayerLog("Vulkan Layer: IPC initialization FAILED - layer will be dormant");
+      g_LayerState.whitelisted = false;
+      // Do NOT return error, continue as passthrough
+    } else {
+      EarlyLog("Skipping IPC connection in passthrough mode (not whitelisted)");
+      LayerLog("Vulkan Layer: Passthrough mode active (process not whitelisted)");
+    }
   } else {
     LayerLog("Vulkan Layer: IPC initialized successfully");
   }

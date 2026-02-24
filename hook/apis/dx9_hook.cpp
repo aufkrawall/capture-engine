@@ -1979,10 +1979,26 @@ void DX9_PresentEnd(IDirect3DDevice9 *device, IDirect3DSurface9 *backBuffer) {
     int64_t totalTime = qpc.QuadPart - g_Timing.startTime;
     int64_t totalUs = (totalTime * 1000000) / qpcFreq;
 
-    // Log if total overhead is excessive (> 5ms)
+    // Log if total overhead is excessive (> 5ms), but throttle warning spam.
+    static thread_local int64_t s_LastOverheadWarnQpc = 0;
+    static thread_local uint32_t s_SuppressedOverheadWarns = 0;
     if (totalUs > 5000) {
-      HookLog(LogLevel::Warn, "DX9: High Present Overhead detected: %lld us",
-              totalUs);
+      if (s_LastOverheadWarnQpc == 0 ||
+          (qpc.QuadPart - s_LastOverheadWarnQpc) >= qpcFreq) {
+        if (s_SuppressedOverheadWarns > 0) {
+          HookLog(LogLevel::Warn,
+                  "DX9: High Present Overhead detected: %lld us "
+                  "(%u similar warnings suppressed)",
+                  totalUs, s_SuppressedOverheadWarns);
+          s_SuppressedOverheadWarns = 0;
+        } else {
+          HookLog(LogLevel::Warn, "DX9: High Present Overhead detected: %lld us",
+                  totalUs);
+        }
+        s_LastOverheadWarnQpc = qpc.QuadPart;
+      } else {
+        ++s_SuppressedOverheadWarns;
+      }
     }
 
     // Performance logging for PerfLogger

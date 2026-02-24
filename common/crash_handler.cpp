@@ -91,11 +91,6 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
     MINIDUMP_TYPE mdt = (MINIDUMP_TYPE)(MiniDumpNormal | MiniDumpWithDataSegs |
                                         MiniDumpWithIndirectlyReferencedMemory);
 
-    DWORD written = 0;
-    const char *header = "CRASH_DUMP_START\r\n";
-    WriteFile(hFile, header, (DWORD)strlen(header), &written, NULL);
-    FlushFileBuffers(hFile);
-
     TraceCrash("Calling MiniDumpWriteDump from worker thread...");
 
     BOOL rv = FALSE;
@@ -146,28 +141,23 @@ LONG WINAPI
 CrashHandlerExceptionFilter(EXCEPTION_POINTERS *pExceptionPointers) {
   DWORD code = pExceptionPointers->ExceptionRecord->ExceptionCode;
 
-  // CRITICAL: Early-exit for C++ exceptions (0xE06D7363) to prevent log spam
-  // These are normal throw/catch operations handled by the C++ runtime
-  // Logging them fills crash.log with 12MB+ of useless data
-  if (code == 0xE06D7363) {
+  // Skip known benign first-chance exceptions to avoid high-volume log spam.
+  bool isKnownDebugException = (code == 0x406D1388 || // Thread naming
+                                code == 0x40010006 || // OutputDebugString
+                                code == 0x4001000A || // WOW64 debug
+                                code == 0x4000001F || // Wow64 breakpoint
+                                code == 0x80000003);  // Breakpoint (debug)
+  if (code == 0xE06D7363 || isKnownDebugException) { // C++ throw/catch
     return EXCEPTION_CONTINUE_SEARCH;
   }
 
-  // Log ALL exceptions for debugging (including non-crash)
+  // Log non-benign exceptions for debugging and crash triage.
   char codeStr[128];
   snprintf(codeStr, sizeof(codeStr),
            "VEH Exception: 0x%08lX at %p (PID:%lu TID:%lu)", code,
            pExceptionPointers->ExceptionRecord->ExceptionAddress,
            GetCurrentProcessId(), GetCurrentThreadId());
   TraceCrash(codeStr);
-
-  // Catch ALL exception types except debug/informational
-  // Many games use custom exception codes or we might miss unknown crash codes
-  bool isKnownDebugException = (code == 0x406D1388 || // Thread naming
-                                code == 0x40010006 || // OutputDebugString
-                                code == 0x4001000A || // WOW64 debug
-                                code == 0x4000001F || // Wow64 breakpoint
-                                code == 0x80000003);  // Breakpoint (debug)
 
   // Also catch common crash types explicitly
   bool isKnownCrash =
@@ -186,12 +176,6 @@ CrashHandlerExceptionFilter(EXCEPTION_POINTERS *pExceptionPointers) {
        code == 0x80000002 ||                                       // Guard page violation
        code == 0xC000013A ||                                       // Control-C/Control-Break
        code == 0xC0000142);                                        // DLL init failed
-
-  // If it's a known debug exception, skip it
-  if (isKnownDebugException) {
-    TraceCrash("Debug exception, continuing search");
-    return EXCEPTION_CONTINUE_SEARCH;
-  }
 
   // For unknown exceptions, log them but only handle if it looks like a crash
   // (first chance exceptions are often caught and handled by the app)

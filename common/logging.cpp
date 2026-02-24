@@ -20,7 +20,7 @@ void Log_Init(const std::string &filename) {
     // Line-buffered: each newline flushes the buffer without a blocking
     // fflush() call on the render thread.
     setvbuf(g_LogFile, nullptr, _IOLBF, 4096);
-    fprintf(g_LogFile, "[BUILD] Version=%s Built=%s\\n", CAPTURE_VERSION,
+    fprintf(g_LogFile, "[BUILD] Version=%s Built=%s\n", CAPTURE_VERSION,
             BUILD_TIMESTAMP);
   }
 }
