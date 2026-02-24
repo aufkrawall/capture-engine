@@ -247,14 +247,11 @@ static void LogToFileAtomic(const char *baseFilename, const char *fmt,
         return; // Done! Logger service will write to file.
       } else {
         logs.overflowCount.fetch_add(1, std::memory_order_relaxed);
-        // Buffer full - drop the log rather than write directly to file
-        // This prevents duplicates if consumer catches up later
-        return;
+        // Buffer full - fall through to file logging
       }
     }
-    // If g_IPC is set but GetSharedMem() returns null, IPC is shutting down
-    // Don't write to file in this case either - just drop
-    return;
+    // IPC exists but not connected yet (shm is null) or buffer full
+    // Fall through to file logging instead of dropping the log
   }
 
   // --- FALLBACK: Direct File Logging (Before IPC Connects) ---

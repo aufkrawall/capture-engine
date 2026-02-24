@@ -504,10 +504,16 @@ HRESULT WINAPI Wrapped_D3D10CreateDeviceAndSwapChain(
 // ============================================================================
 
 IDirect3D9 *WINAPI Wrapped_Direct3DCreate9(UINT SDKVersion) {
+  // Direct file logging
+  FILE* f = fopen("%REPO_ROOT%\\installed\\captureengine\\logs\\d3d9_wrap.log", "a");
+  if (f) { fprintf(f, "Wrapped_Direct3DCreate9 called (version %u)\n", SDKVersion); fclose(f); }
+  
   WrapperLog("Wrapper: Direct3DCreate9 called (version %u)", SDKVersion);
 
-  if (!oDirect3DCreate9)
+  if (!oDirect3DCreate9) {
+    if (f) { fprintf(f, "oDirect3DCreate9 is NULL!\n"); fclose(f); }
     return nullptr;
+  }
 
   IDirect3D9 *pReal = oDirect3DCreate9(SDKVersion);
 
@@ -515,9 +521,11 @@ IDirect3D9 *WINAPI Wrapped_Direct3DCreate9(UINT SDKVersion) {
     CWrapDirect3D9 *pWrapper = new CWrapDirect3D9(pReal, false);
     pReal->Release();
     WrapperLog("Wrapper: Created wrapped IDirect3D9");
+    if (f) { fprintf(f, "Created wrapped IDirect3D9 at %p\n", pWrapper); fclose(f); }
     return pWrapper;
   }
 
+  if (f) { fprintf(f, "Direct3DCreate9 returned NULL\n"); fclose(f); }
   return pReal;
 }
 

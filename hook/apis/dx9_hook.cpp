@@ -3,6 +3,7 @@
 #include <d3d11_4.h>
 #include <d3d9.h>
 #include <dxgi.h>
+#include <psapi.h>
 
 #include "../../common/frame_timing.h"
 #include "../common/capture_base.h"
@@ -19,6 +20,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <mutex>
+#include <set>
 #include <thread>
 #include <vector>
 
@@ -429,6 +431,11 @@ static bool GetD3D9PresentAddresses(void **ppPresent, void **ppPresentEx,
 static HRESULT STDMETHODCALLTYPE DetourD3D9PresentInline(
     IDirect3DDevice9 *device, const RECT *pSourceRect, const RECT *pDestRect,
     HWND hDestWindowOverride, const RGNDATA *pDirtyRegion) {
+  static int entryLogCount = 0;
+  if (entryLogCount < 5) {
+    EarlyLog("DX9: DetourD3D9PresentInline called (device=%p, count=%d)", device, entryLogCount);
+    entryLogCount++;
+  }
   if (g_ShuttingDown.load()) {
     if (oD3D9PresentTrampoline)
       return oD3D9PresentTrampoline(device, pSourceRect, pDestRect,
@@ -458,6 +465,11 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9PresentInline(
 static HRESULT STDMETHODCALLTYPE DetourD3D9PresentExInline(
     IDirect3DDevice9Ex *device, const RECT *pSourceRect, const RECT *pDestRect,
     HWND hDestWindowOverride, const RGNDATA *pDirtyRegion, DWORD dwFlags) {
+  static int entryLogCount = 0;
+  if (entryLogCount < 5) {
+    EarlyLog("DX9: DetourD3D9PresentExInline called (device=%p, flags=0x%X, count=%d)", device, dwFlags, entryLogCount);
+    entryLogCount++;
+  }
   if (g_ShuttingDown.load()) {
     if (oD3D9PresentExTrampoline)
       return oD3D9PresentExTrampoline(device, pSourceRect, pDestRect,
@@ -496,6 +508,11 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9SwapChainPresentInline(
     IDirect3DSwapChain9 *swapChain, const RECT *pSourceRect,
     const RECT *pDestRect, HWND hDestWindowOverride,
     const RGNDATA *pDirtyRegion, DWORD dwFlags) {
+  static int entryLogCount = 0;
+  if (entryLogCount < 5) {
+    EarlyLog("DX9: DetourD3D9SwapChainPresentInline called (swap=%p, flags=0x%X, count=%d)", swapChain, dwFlags, entryLogCount);
+    entryLogCount++;
+  }
   if (g_ShuttingDown.load()) {
     if (oD3D9SwapChainPresentTrampoline)
       return oD3D9SwapChainPresentTrampoline(swapChain, pSourceRect, pDestRect,
@@ -540,6 +557,21 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9SwapChainPresentInline(
 static bool InstallD3D9InlineHooks() {
   // Guard against re-entry - this function may be called recursively
   // if GetD3D9PresentAddresses triggers a hook that calls back here
+  
+  // Use direct file logging for critical diagnostics (bypasses shared memory)
+  auto LogDirect = [](const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    char buf[1024];
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    FILE* f = fopen("%REPO_ROOT%\\installed\\captureengine\\logs\\dx9_inline.log", "a");
+    if (f) { fprintf(f, "%s\n", buf); fclose(f); }
+  };
+  
+  LogDirect("=== InstallD3D9InlineHooks START (installed=%d, inProgress=%d)",
+           g_InlineHooksInstalled ? 1 : 0, g_InlineHooksInProgress ? 1 : 0);
+  
   EarlyLog("DX9: InstallD3D9InlineHooks called (installed=%d, inProgress=%d)",
            g_InlineHooksInstalled ? 1 : 0, g_InlineHooksInProgress ? 1 : 0);
   
@@ -551,37 +583,48 @@ static bool InstallD3D9InlineHooks() {
   }
 
   g_InlineHooksInProgress = true;
+  LogDirect("Guard set, proceeding to GetD3D9PresentAddresses");
   EarlyLog("DX9: InstallD3D9InlineHooks - guard set, proceeding");
 
   void *presentAddr = nullptr;
   void *presentExAddr = nullptr;
   void *swapChainPresentAddr = nullptr;
 
+  LogDirect("Calling GetD3D9PresentAddresses...");
   EarlyLog("DX9: Calling GetD3D9PresentAddresses...");
   if (!GetD3D9PresentAddresses(&presentAddr, &presentExAddr,
                                &swapChainPresentAddr)) {
-    EarlyLog("DX9: Failed to get Present addresses for inline hooks");
+    LogDirect("GetD3D9PresentAddresses FAILED - cannot install inline hooks");
+    EarlyLog("DX9: GetD3D9PresentAddresses FAILED - cannot install inline hooks");
     g_InlineHooksInProgress = false;
     return false;
   }
 
+  LogDirect("Present addresses: Present=%p, PresentEx=%p, SwapChain=%p",
+           presentAddr, presentExAddr, swapChainPresentAddr);
   EarlyLog(
       "DX9: Present addresses found: Present=%p, PresentEx=%p, SwapChain=%p",
       presentAddr, presentExAddr, swapChainPresentAddr);
 
+  bool anySuccess = false;
+
   if (presentAddr) {
+    LogDirect("Installing Present inline hook at %p...", presentAddr);
     EarlyLog("DX9: Installing Present inline hook at %p...", presentAddr);
     void *trampoline = nullptr;
     if (InlineHook::Install(presentAddr, (void *)DetourD3D9PresentInline,
                             &trampoline)) {
       oD3D9PresentTrampoline = (PFN_D3D9_Present_Inline)trampoline;
+      LogDirect("Present inline hook SUCCESS (addr=%p, trampoline=%p)", presentAddr, trampoline);
       EarlyLog("DX9: Present inline hook installed (addr=%p, trampoline=%p)",
                presentAddr, trampoline);
+      anySuccess = true;
     } else {
-      EarlyLog("DX9: Failed to install Present inline hook");
-      g_InlineHooksInProgress = false;
-      return false;
+      LogDirect("Present inline hook FAILED at %p", presentAddr);
+      EarlyLog("DX9: Present inline hook FAILED at %p", presentAddr);
     }
+  } else {
+    EarlyLog("DX9: Present address is NULL - skipping hook");
   }
 
   if (presentExAddr) {
@@ -592,9 +635,12 @@ static bool InstallD3D9InlineHooks() {
       oD3D9PresentExTrampoline = (PFN_D3D9_PresentEx_Inline)trampoline;
       EarlyLog("DX9: PresentEx inline hook installed (addr=%p, trampoline=%p)",
                presentExAddr, trampoline);
+      anySuccess = true;
     } else {
-      EarlyLog("DX9: PresentEx inline hook installation failed (non-fatal)");
+      EarlyLog("DX9: PresentEx inline hook FAILED at %p (non-fatal)", presentExAddr);
     }
+  } else {
+    EarlyLog("DX9: PresentEx address is NULL - skipping hook (expected on non-Ex)");
   }
 
   if (swapChainPresentAddr) {
@@ -608,15 +654,27 @@ static bool InstallD3D9InlineHooks() {
       EarlyLog("DX9: SwapChain::Present inline hook installed (addr=%p, "
                "trampoline=%p)",
                swapChainPresentAddr, trampoline);
+      anySuccess = true;
     } else {
-      EarlyLog("DX9: SwapChain::Present inline hook installation failed (non-fatal)");
+      EarlyLog("DX9: SwapChain::Present inline hook FAILED at %p (non-fatal)", swapChainPresentAddr);
     }
+  } else {
+    EarlyLog("DX9: SwapChain::Present address is NULL - skipping hook");
   }
 
-  EarlyLog("DX9: All inline hooks installed successfully");
-  g_InlineHooksInstalled = true;
+  if (anySuccess) {
+    LogDirect("At least one inline hook installed successfully");
+    EarlyLog("DX9: At least one inline hook installed successfully");
+    g_InlineHooksInstalled = true;
+  } else {
+    LogDirect("ALL inline hooks failed - DX9 overlay will not work!");
+    EarlyLog("DX9: ALL inline hooks failed - DX9 overlay will not work!");
+  }
+  
   g_InlineHooksInProgress = false;
-  return true;
+  LogDirect("InstallD3D9InlineHooks complete (success=%d)", anySuccess ? 1 : 0);
+  EarlyLog("DX9: InstallD3D9InlineHooks complete (success=%d)", anySuccess ? 1 : 0);
+  return anySuccess;
 }
 
 static HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9 *device,
@@ -1634,24 +1692,44 @@ static DX9Capture g_DX9Capture;
 // Draw overlay using CustomOverlay
 static void DrawDX9Overlay(IDirect3DDevice9 *device) {
   static int drawLogCount = 0;
-  if (drawLogCount < 3) {
-    EarlyLog("DX9: DrawDX9Overlay called, IsInitialized=%d",
-             g_OverlayAdapter.IsInitialized() ? 1 : 0);
+  static int initFailCount = 0;
+  
+  if (drawLogCount < 5) {
+    SharedMemoryLayout *dbgShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+    EarlyLog("DX9: DrawDX9Overlay #%d, IsInitialized=%d, IPC=%p, SHM=%p, showOverlay=%d",
+             drawLogCount, g_OverlayAdapter.IsInitialized() ? 1 : 0,
+             (void*)g_IPC, (void*)dbgShm,
+             dbgShm ? dbgShm->ReadOverlayConfig().showOverlay : -1);
     drawLogCount++;
   }
 
   if (!g_OverlayAdapter.IsInitialized()) {
     // Get the window handle
     D3DDEVICE_CREATION_PARAMETERS params;
-    device->GetCreationParameters(&params);
+    HRESULT paramsHr = device->GetCreationParameters(&params);
+    if (FAILED(paramsHr)) {
+      if (initFailCount < 3) {
+        EarlyLog("DX9: GetCreationParameters failed (hr=0x%08X)", paramsHr);
+        initFailCount++;
+      }
+      return;
+    }
     g_CachedHwnd = params.hFocusWindow;
 
     // Hook Input
     InputManager::Get().HookWindow(g_CachedHwnd);
 
+    EarlyLog("DX9: Attempting OverlayAdapter::InitDX9 (device=%p, hwnd=%p)",
+             (void*)device, (void*)g_CachedHwnd);
     if (g_OverlayAdapter.InitDX9(device)) {
       g_OverlayAdapter.SetHwnd(g_CachedHwnd);
-      EarlyLog("DX9: OverlayAdapter initialized");
+      EarlyLog("DX9: OverlayAdapter initialized successfully");
+    } else {
+      if (initFailCount < 3) {
+        EarlyLog("DX9: OverlayAdapter::InitDX9 FAILED");
+        initFailCount++;
+      }
+      return;
     }
   }
 
@@ -1690,11 +1768,15 @@ void DX9_PresentBegin(IDirect3DDevice9 *device,
     return;
 
   static int debugLogCount = 0;
-  if (debugLogCount++ < 60) {
-    HookLog("DX9 Debug: PresentBegin frame=%d. IPC=%p. SHM=%p. ImGuiConfig=%d.",
-            debugLogCount, g_IPC, (g_IPC ? g_IPC->GetSharedMem() : nullptr),
-            (g_IPC && g_IPC->GetSharedMem() &&
-             g_IPC->GetSharedMem()->overlayConfig.showOverlay));
+  if (debugLogCount < 10) {
+    SharedMemoryLayout *dbgShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+    auto overlayCfg = dbgShm ? dbgShm->ReadOverlayConfig() : OverlayConfig{};
+    EarlyLog("DX9 Present #%d: IPC=%p, SHM=%p, showOverlay=%d, initialized=%d, inlineHooks=%d",
+             debugLogCount, (void*)g_IPC, (void*)dbgShm,
+             overlayCfg.showOverlay ? 1 : 0,
+             g_OverlayAdapter.IsInitialized() ? 1 : 0,
+             g_InlineHooksInstalled.load() ? 1 : 0);
+    debugLogCount++;
   }
   // Update frame config cache once per frame to avoid overhead in hot hooks
   g_FrameConfig = GetActiveGraphicsConfig();
@@ -2059,6 +2141,15 @@ static HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9 *device,
                                                CONST RECT *pDestRect,
                                                HWND hDestWindowOverride,
                                                CONST RGNDATA *pDirtyRegion) {
+  // Direct file log to bypass mutex contention
+  static int entryLogCount = 0;
+  if (entryLogCount < 5) {
+    FILE* f = fopen("%REPO_ROOT%\\installed\\captureengine\\logs\\dx9_present.log", "a");
+    if (f) { fprintf(f, "DetourPresent called (device=%p, count=%d)\n", device, entryLogCount); fclose(f); }
+    entryLogCount++;
+  }
+  
+  EarlyLog("DX9: DetourPresent called (device=%p, count=%d)", device, entryLogCount);
   LARGE_INTEGER p0;
   LARGE_INTEGER p1;
   IDirect3DSurface9 *backBuffer = nullptr;
@@ -2079,6 +2170,19 @@ static HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9 *device,
 static HRESULT STDMETHODCALLTYPE DetourPresentEx(
     IDirect3DDevice9Ex *device, CONST RECT *pSourceRect, CONST RECT *pDestRect,
     HWND hDestWindowOverride, CONST RGNDATA *pDirtyRegion, DWORD dwFlags) {
+  // Direct file log to bypass mutex contention
+  static int entryLogCount = 0;
+  if (entryLogCount < 5) {
+    FILE* f = fopen("%REPO_ROOT%\\installed\\captureengine\\logs\\dx9_present.log", "a");
+    if (f) { fprintf(f, "DetourPresentEx called (device=%p, flags=0x%X, count=%d)\n", device, dwFlags, entryLogCount); fclose(f); }
+    entryLogCount++;
+  }
+  
+  static int earlyLogCount = 0;
+  if (earlyLogCount < 5) {
+    EarlyLog("DX9: DetourPresentEx called (device=%p, flags=0x%X, count=%d)", device, dwFlags, earlyLogCount);
+    earlyLogCount++;
+  }
   LARGE_INTEGER p0;
   LARGE_INTEGER p1;
   VSyncOverride vsync = GetVSyncOverride();
@@ -2110,6 +2214,19 @@ static HRESULT STDMETHODCALLTYPE DetourPresentEx(
 static HRESULT STDMETHODCALLTYPE DetourPresentSwap(
     IDirect3DSwapChain9 *swap, CONST RECT *pSourceRect, CONST RECT *pDestRect,
     HWND hDestWindowOverride, CONST RGNDATA *pDirtyRegion, DWORD dwFlags) {
+  // Direct file log to bypass mutex contention
+  static int entryLogCount = 0;
+  if (entryLogCount < 5) {
+    FILE* f = fopen("%REPO_ROOT%\\installed\\captureengine\\logs\\dx9_present.log", "a");
+    if (f) { fprintf(f, "DetourPresentSwap called (swap=%p, flags=0x%X, count=%d)\n", swap, dwFlags, entryLogCount); fclose(f); }
+    entryLogCount++;
+  }
+  
+  static int earlyLogCount = 0;
+  if (earlyLogCount < 5) {
+    EarlyLog("DX9: DetourPresentSwap called (swap=%p, flags=0x%X, count=%d)", swap, dwFlags, earlyLogCount);
+    earlyLogCount++;
+  }
   LARGE_INTEGER p0;
   LARGE_INTEGER p1;
   VSyncOverride vsync = GetVSyncOverride();
@@ -2318,23 +2435,61 @@ static void InstallDeviceHooks(IDirect3DDevice9 *device) {
     return;
 
   uintptr_t *vtable = *(uintptr_t **)device;
+  
+  // Direct file logging for diagnostics
+  auto LogDirect = [](const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    char buf[1024];
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    FILE* f = fopen("%REPO_ROOT%\\installed\\captureengine\\logs\\dx9_vtable.log", "a");
+    if (f) { fprintf(f, "%s\n", buf); fclose(f); }
+  };
+  
+  LogDirect("InstallDeviceHooks: device=%p, vtable=%p, oPresent=%p", device, vtable, (void*)oPresent);
+
   EarlyLog("DX9: Installing vtable hooks for device %p (vtable=%p)", device,
            vtable);
 
+  // Track hooked vtables to avoid re-hooking the same one
+  static std::set<uintptr_t*> s_hookedVtables;
+  
   // If inline hooks are installed, they handle all Present calls
   // We still need VTable hooks for other functions (Reset, SetSamplerState,
   // etc.) But Present hooks should NOT be installed as VTable hooks when inline
   // is active
   if (!g_InlineHooksInstalled) {
-    // 1. Hook Present (17) - only if inline hooks not available
-    if (!oPresent) {
-      if (VTableHook::Create(&vtable[17], (void *)&DetourPresent,
-                             (void **)&oPresent) == VTableHook::Success) {
-        EarlyLog("DX9: Present hook installed (VTable fallback)");
+    // Hook Present (17) on this vtable if not already hooked
+    // Different devices may have different vtables (e.g., D3D9 vs D3D9Ex)
+    if (s_hookedVtables.find(vtable) == s_hookedVtables.end()) {
+      LogDirect("Hooking Present on NEW vtable %p", vtable);
+      VTableHook::Status presentStatus = VTableHook::Create(&vtable[17], (void *)&DetourPresent,
+                             (void **)&oPresent);
+      if (presentStatus == VTableHook::Success) {
+        LogDirect("Present hook SUCCESS on vtable %p, vtable[17]=%p", vtable, (void*)vtable[17]);
+        EarlyLog("DX9: Present hook installed (VTable fallback) at vtable[17]=%p", vtable[17]);
+        s_hookedVtables.insert(vtable);
+      } else {
+        LogDirect("Present hook FAILED on vtable %p, status=%d", vtable, (int)presentStatus);
+        EarlyLog("DX9: Present hook FAILED (status=%d, vtable[17]=%p)", (int)presentStatus, vtable[17]);
       }
+    } else {
+      LogDirect("Vtable %p already hooked, skipping Present", vtable);
     }
   } else {
     EarlyLog("DX9: Skipping VTable Present hook - inline hooks active");
+  }
+
+  // 1.5 Hook Reset (16) - needed for overlay to survive mode changes
+  if (!oReset) {
+    VTableHook::Status resetStatus = VTableHook::Create(&vtable[16], (void *)&DetourReset,
+                           (void **)&oReset);
+    if (resetStatus == VTableHook::Success) {
+      EarlyLog("DX9: Reset hook installed at vtable[16]=%p", vtable[16]);
+    } else {
+      EarlyLog("DX9: Reset hook FAILED (status=%d, vtable[16]=%p)", (int)resetStatus, vtable[16]);
+    }
   }
 
   // High-frequency hooks enabled for parity
@@ -2408,6 +2563,136 @@ static void InstallDeviceHooks(IDirect3DDevice9 *device) {
       swapChain->Release();
     }
   }
+}
+
+// ============================================================================
+// Existing Device Scanner for Late Injection
+// ============================================================================
+
+// Helper: Check if memory is readable
+static bool IsMemoryReadable(const void* ptr, size_t size) {
+  MEMORY_BASIC_INFORMATION memInfo;
+  if (VirtualQuery(ptr, &memInfo, sizeof(memInfo)) != sizeof(memInfo))
+    return false;
+  if (memInfo.State != MEM_COMMIT)
+    return false;
+  if (memInfo.Protect & (PAGE_NOACCESS | PAGE_GUARD))
+    return false;
+  return true;
+}
+
+// Scan process memory for existing IDirect3DDevice9 objects
+// This is needed when we inject AFTER the game has already created its device
+// and inline hooks are blocked by external overlays
+static void ScanForExistingD3D9Devices() {
+  // Direct file logging for diagnostics
+  auto LogScan = [](const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    char buf[1024];
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    FILE* f = fopen("%REPO_ROOT%\\installed\\captureengine\\logs\\dx9_scanner.log", "a");
+    if (f) { fprintf(f, "%s\n", buf); fclose(f); }
+  };
+  
+  LogScan("=== ScanForExistingD3D9Devices START ===");
+  EarlyLog("DX9: Scanning for existing D3D9 devices in process memory...");
+  
+  HMODULE d3d9Module = GetModuleHandleA("d3d9.dll");
+  if (!d3d9Module) {
+    LogScan("d3d9.dll not loaded");
+    EarlyLog("DX9: d3d9.dll not loaded, cannot scan for devices");
+    return;
+  }
+  
+  // Get d3d9.dll's address range
+  MODULEINFO d3d9Info = {};
+  if (!GetModuleInformation(GetCurrentProcess(), d3d9Module, &d3d9Info, sizeof(d3d9Info))) {
+    LogScan("Failed to get d3d9.dll module info");
+    EarlyLog("DX9: Failed to get d3d9.dll module info");
+    return;
+  }
+  
+  uintptr_t d3d9Start = (uintptr_t)d3d9Info.lpBaseOfDll;
+  uintptr_t d3d9End = d3d9Start + d3d9Info.SizeOfImage;
+  LogScan("d3d9.dll range: %p - %p", (void*)d3d9Start, (void*)d3d9End);
+  EarlyLog("DX9: d3d9.dll range: %p - %p", (void*)d3d9Start, (void*)d3d9End);
+  
+  // Scan process memory for device objects
+  // A D3D9 device object starts with a vtable pointer
+  // The vtable should be within d3d9.dll's address range
+  
+  MEMORY_BASIC_INFORMATION memInfo;
+  uintptr_t address = 0;
+  int devicesFound = 0;
+  int regionsScanned = 0;
+  
+  while (VirtualQuery((void*)address, &memInfo, sizeof(memInfo)) == sizeof(memInfo)) {
+    // Only scan committed, readable, writable memory
+    if (memInfo.State == MEM_COMMIT && 
+        (memInfo.Protect & PAGE_READWRITE) &&
+        !(memInfo.Protect & PAGE_GUARD)) {
+      
+      regionsScanned++;
+      
+      // Scan this memory region for vtable pointers
+      uintptr_t* ptr = (uintptr_t*)memInfo.BaseAddress;
+      uintptr_t* end = (uintptr_t*)((char*)memInfo.BaseAddress + memInfo.RegionSize);
+      
+      for (; ptr < end; ptr++) {
+        uintptr_t vtablePtr = *ptr;
+        
+        // Check if this looks like a D3D9 device vtable pointer
+        if (vtablePtr >= d3d9Start && vtablePtr < d3d9End) {
+          // Validate: Check if vtable entries are readable and within d3d9.dll
+          uintptr_t* vtable = (uintptr_t*)vtablePtr;
+          
+          // Check if vtable memory is readable (avoid AV)
+          if (!IsMemoryReadable(vtable, 18 * sizeof(uintptr_t)))
+            continue;
+          
+          // Check vtable[0] (QueryInterface), vtable[2] (Release), 
+          // vtable[16] (Reset), vtable[17] (Present)
+          if (vtable[0] >= d3d9Start && vtable[0] < d3d9End &&
+              vtable[2] >= d3d9Start && vtable[2] < d3d9End &&
+              vtable[16] >= d3d9Start && vtable[16] < d3d9End &&
+              vtable[17] >= d3d9Start && vtable[17] < d3d9End) {
+            
+            // This looks like a D3D9 device!
+            // The device pointer is the memory location containing the vtable ptr
+            IDirect3DDevice9* device = (IDirect3DDevice9*)ptr;
+            
+            LogScan("Found potential D3D9 device at %p (vtable=%p)", device, (void*)vtablePtr);
+            EarlyLog("DX9: Found potential D3D9 device at %p (vtable=%p)", 
+                     device, (void*)vtablePtr);
+            
+            // If we haven't hooked anything yet, try to hook this device
+            if (!oPresent) {
+              LogScan("Attempting to install hooks on found device");
+              EarlyLog("DX9: Attempting to install hooks on found device");
+              InstallDeviceHooks(device);
+              devicesFound++;
+              
+              if (oPresent) {
+                LogScan("Successfully hooked existing device!");
+                EarlyLog("DX9: Successfully hooked existing device!");
+                break; // Found and hooked a device, stop scanning
+              } else {
+                LogScan("Hook installation failed");
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    address = (uintptr_t)memInfo.BaseAddress + memInfo.RegionSize;
+    if (address < (uintptr_t)memInfo.BaseAddress) break; // Overflow
+  }
+  
+  LogScan("Scan complete: regionsScanned=%d, devicesFound=%d", regionsScanned, devicesFound);
+  EarlyLog("DX9: Device scan complete, found %d device(s)", devicesFound);
 }
 
 static HRESULT STDMETHODCALLTYPE DetourCreateDevice(
@@ -2604,19 +2889,31 @@ static HRESULT WINAPI DetourDirect3DCreate9Ex(UINT SDKVersion,
 }
 
 void DX9Hook::Init() {
-  EarlyLog("DX9Hook::Init() Passive starting");
-
+  // Direct file logging for diagnostics (bypasses mutex contention issues)
+  auto LogDirect = [](const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    char buf[1024];
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    FILE* f = fopen("%REPO_ROOT%\\installed\\captureengine\\logs\\dx9_init.log", "a");
+    if (f) { fprintf(f, "%s\n", buf); fclose(f); }
+  };
+  
+  LogDirect("=== DX9Hook::Init() START ===");
+  
   HMODULE d3d9Module = GetModuleHandleA("d3d9.dll");
+  LogDirect("d3d9.dll = %p", (void*)d3d9Module);
+  
   if (!d3d9Module) {
-    EarlyLog("DX9: d3d9.dll not loaded, skipping");
+    LogDirect("DX9: d3d9.dll not loaded, returning");
     return;
   }
-
-  // CRITICAL: Install inline hooks as early as possible
-  // This must happen BEFORE the game creates its device
-  // Inline hooks work at the d3d9.dll function level, not per-device
-  InstallD3D9InlineHooks();
-
+  
+  LogDirect("Calling InstallD3D9InlineHooks...");
+  bool inlineResult = InstallD3D9InlineHooks();
+  LogDirect("InstallD3D9InlineHooks returned %d", inlineResult ? 1 : 0);
+  
   // Hook Export Functions
   // Using IAT hooking (in iat_hook.cpp) or active VTable hooking for DX9.
 
@@ -2626,8 +2923,8 @@ void DX9Hook::Init() {
 
   // We do NOT hook these exports here anymore.
 
-  EarlyLog("DX9Hook::Init() Passive Complete");
-
+  LogDirect("DX9Hook::Init() Passive Complete");
+  
   // Check for test apps that force DX9 but might load other DLLs
   bool isTestApp = false;
   char modPath[MAX_PATH] = {};
@@ -2656,91 +2953,128 @@ void DX9Hook::Init() {
 
   const bool inlineHooksReady =
       g_InlineHooksInstalled.load(std::memory_order_acquire);
+  
+  LogDirect("skipReason=%s, inlineHooksReady=%d, oPresent=%p", 
+           skipReason ? skipReason : "null", inlineHooksReady ? 1 : 0, (void*)oPresent);
+  
   if (skipReason && inlineHooksReady) {
-    EarlyLog("DX9: %s detected, skipping active init (inline hooks ready)",
-             skipReason);
+    LogDirect("DX9: Skipping active init (inline hooks ready)");
     return;
   }
   if (skipReason && !inlineHooksReady) {
-    EarlyLog("DX9: %s detected, but inline hooks are unavailable - running "
-             "active init fallback",
-             skipReason);
+    LogDirect("DX9: Running active init fallback (skipReason but no inline hooks)");
   }
 
-  // Active Hooking: Create a dummy device to force vtable hooks
-  // This is needed for "late" injection where the game has already created its
-  // device
+  // CRITICAL: If inline hooks failed, try to find existing D3D9 devices FIRST
+  // This is needed for late injection when the game already created its device
+  // and another overlay has hooked d3d9.dll functions (blocking our inline hooks)
+  // We must do this BEFORE creating a dummy device, because dummy device VTable
+  // hooks won't affect the game's real device (each device has its own VTable copy)
+  // DISABLED - scanner finds false positives and causes crashes
+  // if (!inlineHooksReady && !oPresent) {
+  //   LogDirect("DX9: Inline hooks failed, scanning for existing D3D9 devices...");
+  //   ScanForExistingD3D9Devices();
+  //   
+  //   if (oPresent) {
+  //     LogDirect("DX9: Successfully hooked existing device via scanner!");
+  //   } else {
+  //     LogDirect("DX9: Scanner found no devices, will create dummy device");
+  //   }
+  // }
 
-  // 1. Create a specific window class for our dummy window
-  WNDCLASSEXA wc = {0};
-  wc.cbSize = sizeof(wc);
-  wc.style = CS_CLASSDC;
-  wc.lpfnWndProc = DefWindowProcA;
-  wc.hInstance = GetModuleHandle(NULL);
-  wc.lpszClassName = "DX9Hook_Dummy";
-  RegisterClassExA(&wc);
+  // If we still don't have hooks, try active hooking with a dummy device
+  // This is a fallback for cases where no device exists yet (early injection)
+  // or the scanner failed to find the game's device
+  LogDirect("Checking oPresent=%p for dummy device creation...", (void*)oPresent);
+  
+  if (!oPresent) {
+    LogDirect("DX9: Creating dummy device for VTable hooks...");
+    
+    // Active Hooking: Create a dummy device to force vtable hooks
+    // This is needed for "early" injection where the game hasn't created its device yet
 
-  HWND hWnd = CreateWindowA("DX9Hook_Dummy", "DX9 Dummy", WS_OVERLAPPEDWINDOW,
-                            0, 0, 100, 100, NULL, NULL, wc.hInstance, NULL);
+    // 1. Create a specific window class for our dummy window
+    WNDCLASSEXA wc = {0};
+    wc.cbSize = sizeof(wc);
+    wc.style = CS_CLASSDC;
+    wc.lpfnWndProc = DefWindowProcA;
+    wc.hInstance = GetModuleHandle(NULL);
+    wc.lpszClassName = "DX9Hook_Dummy";
+    RegisterClassExA(&wc);
 
-  if (hWnd && d3d9Module) {
-    // Try Direct3DCreate9Ex first
-    if (pD3DCreate9Ex) {
-      typedef HRESULT(WINAPI * Direct3DCreate9Ex_t)(UINT, IDirect3D9Ex **);
-      Direct3DCreate9Ex_t create9Ex = (Direct3DCreate9Ex_t)pD3DCreate9Ex;
-      IDirect3D9Ex *d3d9ex = nullptr;
+    HWND hWnd = CreateWindowA("DX9Hook_Dummy", "DX9 Dummy", WS_OVERLAPPEDWINDOW,
+                              0, 0, 100, 100, NULL, NULL, wc.hInstance, NULL);
+    
+    LogDirect("Dummy window created: hWnd=%p", (void*)hWnd);
 
-      if (SUCCEEDED(create9Ex(D3D_SDK_VERSION, &d3d9ex))) {
-        D3DPRESENT_PARAMETERS pp = {0};
-        pp.Windowed = TRUE;
-        pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
-        pp.hDeviceWindow = hWnd;
+    if (hWnd && d3d9Module) {
+      // Try Direct3DCreate9Ex first
+      if (pD3DCreate9Ex) {
+        LogDirect("Trying Direct3DCreate9Ex...");
+        typedef HRESULT(WINAPI * Direct3DCreate9Ex_t)(UINT, IDirect3D9Ex **);
+        Direct3DCreate9Ex_t create9Ex = (Direct3DCreate9Ex_t)pD3DCreate9Ex;
+        IDirect3D9Ex *d3d9ex = nullptr;
 
-        IDirect3DDevice9Ex *deviceEx = nullptr;
-        if (SUCCEEDED(d3d9ex->CreateDeviceEx(
-                D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hWnd,
-                D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, NULL, &deviceEx))) {
+        if (SUCCEEDED(create9Ex(D3D_SDK_VERSION, &d3d9ex))) {
+          LogDirect("Direct3DCreate9Ex succeeded, creating device...");
+          D3DPRESENT_PARAMETERS pp = {0};
+          pp.Windowed = TRUE;
+          pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
+          pp.hDeviceWindow = hWnd;
 
-          EarlyLog("DX9: Active Init - Triggering hooks for D3D9Ex");
-          InstallDeviceHooks(deviceEx);
-          deviceEx->Release();
+          IDirect3DDevice9Ex *deviceEx = nullptr;
+          if (SUCCEEDED(d3d9ex->CreateDeviceEx(
+                  D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hWnd,
+                  D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, NULL, &deviceEx))) {
+
+            LogDirect("D3D9Ex device created, calling InstallDeviceHooks...");
+            InstallDeviceHooks(deviceEx);
+            LogDirect("InstallDeviceHooks returned, oPresent=%p", (void*)oPresent);
+            deviceEx->Release();
+          }
+          d3d9ex->Release();
         }
-        d3d9ex->Release();
+      }
+
+      // Fallback to Direct3DCreate9 if Ex failed or wasn't tried, AND hooks are
+      // not fully installed (InstallDeviceHooks checks for oPresent/oReset
+      // internally)
+      if ((!oPresent || !oReset) && pD3DCreate9) {
+        LogDirect("Trying Direct3DCreate9 fallback...");
+        typedef IDirect3D9 *(WINAPI * Direct3DCreate9_t)(UINT);
+        Direct3DCreate9_t create9 = (Direct3DCreate9_t)pD3DCreate9;
+        IDirect3D9 *d3d9 = create9(D3D_SDK_VERSION);
+
+        if (d3d9) {
+          LogDirect("Direct3DCreate9 succeeded, creating device...");
+          D3DPRESENT_PARAMETERS pp = {0};
+          pp.Windowed = TRUE;
+          pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
+          pp.hDeviceWindow = hWnd;
+
+          IDirect3DDevice9 *device = nullptr;
+          if (SUCCEEDED(d3d9->CreateDevice(
+                  D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hWnd,
+                  D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, &device))) {
+
+            LogDirect("D3D9 device created, calling InstallDeviceHooks...");
+            InstallDeviceHooks(device);
+            LogDirect("InstallDeviceHooks returned, oPresent=%p", (void*)oPresent);
+            device->Release();
+          }
+          d3d9->Release();
+        }
       }
     }
 
-    // Fallback to Direct3DCreate9 if Ex failed or wasn't tried, AND hooks are
-    // not fully installed (InstallDeviceHooks checks for oPresent/oReset
-    // internally)
-    if ((!oPresent || !oReset) && pD3DCreate9) {
-      typedef IDirect3D9 *(WINAPI * Direct3DCreate9_t)(UINT);
-      Direct3DCreate9_t create9 = (Direct3DCreate9_t)pD3DCreate9;
-      IDirect3D9 *d3d9 = create9(D3D_SDK_VERSION);
-
-      if (d3d9) {
-        D3DPRESENT_PARAMETERS pp = {0};
-        pp.Windowed = TRUE;
-        pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
-        pp.hDeviceWindow = hWnd;
-
-        IDirect3DDevice9 *device = nullptr;
-        if (SUCCEEDED(d3d9->CreateDevice(
-                D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hWnd,
-                D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, &device))) {
-
-          EarlyLog("DX9: Active Init - Triggering hooks for D3D9");
-          InstallDeviceHooks(device);
-          device->Release();
-        }
-        d3d9->Release();
-      }
+    if (hWnd) {
+      DestroyWindow(hWnd);
+      UnregisterClassA("DX9Hook_Dummy", wc.hInstance);
     }
   }
-
-  if (hWnd) {
-    DestroyWindow(hWnd);
-    UnregisterClassA("DX9Hook_Dummy", wc.hInstance);
-  }
+  
+  LogDirect("DX9Hook::Init() complete (inlineHooks=%d, oPresent=%p, oReset=%p)",
+           g_InlineHooksInstalled.load() ? 1 : 0, (void*)oPresent, (void*)oReset);
 }
 
 void DX9Hook::Shutdown() {

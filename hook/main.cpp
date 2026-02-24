@@ -7,6 +7,7 @@
 #include "apis/opengl_hook.h"
 // CRITICAL: windows.h MUST come before psapi.h and intrin.h
 #include <windows.h>
+#include <cstdio>
 #include <intrin.h> // For __builtin_return_address
 #include <psapi.h>
 // Vulkan hook removed - using VK_LAYER_CE_overlay (ICD layer approach) instead
@@ -1013,13 +1014,33 @@ void CheckAndInstallHooks() {
   // We use the actual device creation flag instead of just DLL presence.
   bool dx12ActuallyUsed = WasD3D12DeviceCreated();
 
+  // Direct file logging for diagnostics (bypasses mutex contention issues)
+  auto LogDirect = [](const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    char buf[1024];
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    FILE* f = fopen("%REPO_ROOT%\\installed\\captureengine\\logs\\dx9_check.log", "a");
+    if (f) { fprintf(f, "%s\n", buf); fclose(f); }
+  };
+
+  LogDirect("DX9 Check: vulkanActive=%d, g_DX9Hook=%p, dx12ActuallyUsed=%d, d3d9=%p",
+           s_vulkanActive ? 1 : 0, (void*)g_DX9Hook, dx12ActuallyUsed ? 1 : 0,
+           GetModuleHandleA("d3d9.dll"));
+
   // NOTE: Skip D3D9 hooks for Vulkan games
   if (!s_vulkanActive && !g_DX9Hook && !dx12ActuallyUsed &&
       GetModuleHandleA("d3d9.dll")) {
+    EarlyLog("DX9 Hook Check: Installing DX9 hooks (d3d9.dll loaded, vulkanActive=%d, dx12Used=%d)",
+             s_vulkanActive ? 1 : 0, dx12ActuallyUsed ? 1 : 0);
     HookLog("Detected d3d9.dll. Installing DX9 hooks...");
     g_DX9Hook = new DX9Hook();
     g_DX9Hook->Init();
-    HookLog("DX9 hooks installed");
+    HookLog("DX9 hooks installed (hook ptr=%p)", (void*)g_DX9Hook);
+  } else if (!g_DX9Hook && GetModuleHandleA("d3d9.dll")) {
+    EarlyLog("DX9 Hook Check: Skipping DX9 hooks (vulkanActive=%d, dx12Used=%d)",
+             s_vulkanActive ? 1 : 0, dx12ActuallyUsed ? 1 : 0);
   }
 
   if (!g_DDrawHook && !dx12ActuallyUsed && GetModuleHandleA("ddraw.dll")) {
