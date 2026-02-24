@@ -1704,24 +1704,45 @@ def run_tests(env, test_exe):
         log("=== Unit Tests Passed ===")
 
 
-def run_integration_tests(env):
-    log("=== Running Integration Tests (testapp/run_tests.py) ===")
+def run_integration_tests(env, full_matrix=False):
+    mode = "Full Matrix" if full_matrix else "Smoke"
+    log(f"=== Running Integration Tests ({mode}) ===")
     script = os.path.join(PROJECT_ROOT, "testapp", "run_tests.py")
     if not os.path.exists(script):
         log(f"Error: {script} not found.")
         return
 
-    # Run the python script
-    # We assume 'python' is in path, or use sys.executable
-    cmd = [sys.executable, script, "--duration", "5", "--tests", "1"]
-    # Shorten duration for smoke test (5s record, 1 iteration)
+    logs_dir = os.path.join(PROJECT_ROOT, "installed", "captureengine", "logs")
+    os.makedirs(logs_dir, exist_ok=True)
 
-    log(f"Executing: {' '.join(cmd)}")
-    result = subprocess.run(cmd, cwd=os.path.dirname(script))
+    base_cmd = [
+        sys.executable,
+        script,
+        "--duration",
+        "5",
+        "--tests",
+        "1",
+        "--min-frames",
+        "60",
+    ]
 
-    if result.returncode != 0:
-        log("ERROR: Integration tests failed!")
-        sys.exit(1)
+    if full_matrix:
+        targets = [
+            ("full_matrix", ["--api", "all", "--arch", "both"]),
+        ]
+    else:
+        targets = [
+            ("smoke_dx9", ["--api", "dx9", "--arch", "both"]),
+        ]
+
+    for label, args in targets:
+        result_json = os.path.join(logs_dir, f"integration_{label}.json")
+        cmd = base_cmd + args + ["--results-json", result_json]
+        log(f"Executing: {' '.join(cmd)}")
+        result = subprocess.run(cmd, cwd=os.path.dirname(script), env=env)
+        if result.returncode != 0:
+            log(f"ERROR: Integration test target failed: {label}")
+            sys.exit(1)
 
     log("=== Integration Tests Passed ===")
 
@@ -3071,7 +3092,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         )
         run_command(cmd, env=env)
 
-    # 6. Compile Test Applications (DX12 and Vulkan test apps)
+    # 6. Compile Test Applications (DX9/10/11/12, Vulkan, OpenGL; x64/x86)
     x86_env_for_tests = None
     if get_env_x86:
         x86_env_for_tests, _ = get_env_x86()
@@ -3275,6 +3296,7 @@ def main():
     # Parse flags
     skip_updates = "--skip-updates" in sys.argv
     run_tests_flag = "--run-tests" in sys.argv
+    full_integration_flag = "--full-integration" in sys.argv
     lint_flag = "--lint" in sys.argv
     format_flag = "--format" in sys.argv
     ccache_flag = "--ccache" in sys.argv
@@ -3314,6 +3336,11 @@ def main():
 
     if skip_updates:
         log("FFmpeg updates disabled (--skip-updates)")
+    if run_tests_flag:
+        if full_integration_flag:
+            log("Integration mode: full matrix (--full-integration)")
+        else:
+            log("Integration mode: smoke (default)")
 
     if lint_flag:
         run_lint(env)
@@ -3362,7 +3389,7 @@ def main():
 
     if run_tests_flag:
         ensure_debug_logging()
-        run_integration_tests(env)
+        run_integration_tests(env, full_matrix=full_integration_flag)
 
 
 if __name__ == "__main__":

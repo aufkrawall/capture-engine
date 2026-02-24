@@ -1,24 +1,28 @@
 #!/usr/bin/env python3
 """
-Automated performance test script for capture system
-Runs DX12 and Vulkan test apps with recording, analyzes frame times
+Automated capture regression test runner.
+
+Runs selected API/architecture test apps with auto-record capture, analyzes
+frame_times.csv, and enforces strict per-target pass criteria.
 
 Usage:
-    python run_tests.py                    # Run all tests with defaults
-    python run_tests.py --resolution 1920 1080  # Custom resolution
-    python run_tests.py --gpu-load 20      # Custom GPU load
-    python run_tests.py --tests 3          # Number of test iterations per API
+    python run_tests.py
+    python run_tests.py --api dx9 --arch both --tests 1 --duration 5
+    python run_tests.py --api all --arch both --min-frames 60
 """
 
-import os
-import sys
-import time
-import subprocess
 import argparse
 import csv
+import json
+import os
+import re
 import statistics
-from pathlib import Path
+import subprocess
+import sys
+import time
 from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 # Paths
 SCRIPT_DIR = Path(__file__).parent.absolute()
@@ -30,272 +34,572 @@ if not TESTAPP_BIN.exists():
 CAPTURE_BIN = PROJECT_ROOT / "installed" / "captureengine"
 if not CAPTURE_BIN.exists():
     CAPTURE_BIN = PROJECT_ROOT / "build" / "bin"
-FRAME_TIMES_CSV = CAPTURE_BIN / "logs" / "frame_times.csv"
 
-def kill_processes():
-    """Kill any existing test/capture processes"""
-    for proc in ["captureengine.exe", "dx12_test.exe", "vulkan_test.exe", "dx11_test.exe", "dx9_test.exe"]:
-        subprocess.run(["taskkill", "/F", "/IM", proc], 
-                      stdout=subprocess.DEVNULL,
-                      stderr=subprocess.DEVNULL)
+FRAME_TIMES_CSV = CAPTURE_BIN / "logs" / "frame_times.csv"
+MEDIA_LOG = CAPTURE_BIN / "logs" / "media.log"
+DEFAULT_RESULTS_JSON = CAPTURE_BIN / "logs" / "integration_results.json"
+
+SUPPORTED_APIS = ["dx12", "dx11", "dx9", "vulkan", "opengl"]
+API_EXECUTABLES = {
+    "dx12": "dx12_test.exe",
+    "dx11": "dx11_test.exe",
+    "dx9": "dx9_test.exe",
+    "vulkan": "vulkan_test.exe",
+    "opengl": "opengl_test.exe",
+}
+
+
+def kill_processes() -> None:
+    """Kill any existing test/capture processes."""
+    for proc in [
+        "captureengine.exe",
+        "dx12_test.exe",
+        "dx11_test.exe",
+        "dx9_test.exe",
+        "vulkan_test.exe",
+        "opengl_test.exe",
+    ]:
+        subprocess.run(
+            ["taskkill", "/F", "/IM", proc],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
     time.sleep(1)
 
-def start_test_app(api, width, height, gpu_load):
-    """Start test app and return process"""
-    if api == "dx12":
-        exe = TESTAPP_BIN / "dx12_test.exe"
-    elif api == "dx11":
-        exe = TESTAPP_BIN / "dx11_test.exe"
-    elif api == "dx9":
-        exe = TESTAPP_BIN / "dx9_test.exe"
-    else:
-        exe = TESTAPP_BIN / "vulkan_test.exe"
-    
+
+def resolve_test_exe(api: str, arch: str) -> Path:
+    base_dir = TESTAPP_BIN if arch == "x64" else TESTAPP_BIN / "x86"
+    return base_dir / API_EXECUTABLES[api]
+
+
+def start_test_app(
+    api: str, arch: str, width: int, height: int, gpu_load: int
+) -> Optional[subprocess.Popen]:
+    """Start a test app process for the selected API and architecture."""
+    exe = resolve_test_exe(api, arch)
     if not exe.exists():
         print(f"ERROR: {exe} not found. Run 'python build.py' first.")
         return None
-    
-    proc = subprocess.Popen([str(exe), str(width), str(height), str(gpu_load)],
-                           stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL)
-    return proc
 
-def start_auto_record(delay_ms, duration_ms):
-    """Start captureengine with --auto-record"""
+    return subprocess.Popen(
+        [str(exe), str(width), str(height), str(gpu_load)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def start_auto_record(delay_ms: int, duration_ms: int) -> Optional[subprocess.Popen]:
+    """Start captureengine with --auto-record."""
     exe = CAPTURE_BIN / "captureengine.exe"
     if not exe.exists():
         print(f"ERROR: {exe} not found")
         return None
-    
-    proc = subprocess.Popen(
+
+    return subprocess.Popen(
         [str(exe), f"--auto-record={delay_ms},{duration_ms}"],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
+        stderr=subprocess.DEVNULL,
     )
-    return proc
 
-def parse_frame_times(csv_path):
-    """Parse frame_times.csv and return recording frame times in ms"""
+
+def parse_frame_times(csv_path: Path) -> List[float]:
+    """Parse frame_times.csv and return recording frame times in milliseconds."""
     if not csv_path.exists():
         return []
-    
-    frame_times = []
+
+    frame_times: List[float] = []
     try:
-        with open(csv_path, 'r') as f:
+        with open(csv_path, "r", encoding="utf-8") as f:
             reader = csv.reader(f)
-            header = next(reader, None)
-            
+            next(reader, None)
+
             for row in reader:
-                if len(row) >= 6:
-                    try:
-                        frame_time_us = float(row[2])
-                        is_recording = int(row[5])
-                        if is_recording == 1:
-                            frame_times.append(frame_time_us / 1000.0)
-                    except (ValueError, IndexError):
-                        continue
+                if len(row) < 6:
+                    continue
+                try:
+                    frame_time_us = float(row[2])
+                    is_recording = int(row[5])
+                    if is_recording == 1:
+                        frame_times.append(frame_time_us / 1000.0)
+                except (ValueError, IndexError):
+                    continue
     except Exception as e:
         print(f"Error parsing CSV: {e}")
-    
+
     return frame_times
 
-def analyze_frame_times(frame_times, name=""):
-    """Analyze frame times and return stats dict"""
+
+def parse_perf_metrics_frame_times(api: str, since_unix_ts: float) -> List[float]:
+    """Parse per-process perf_metrics CSV files and return frame times in ms."""
+    logs_dir = CAPTURE_BIN / "logs"
+    if not logs_dir.exists():
+        return []
+
+    frame_times: List[float] = []
+    pattern = "perf_metrics_*.csv"
+    perf_files = sorted(
+        logs_dir.glob(pattern),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+
+    for perf_path in perf_files:
+        try:
+            if perf_path.stat().st_mtime + 1.0 < since_unix_ts:
+                continue
+        except OSError:
+            continue
+
+        try:
+            with open(perf_path, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    api_name = str(row.get("api", "")).strip().lower()
+                    if api_name and api_name != api.lower():
+                        continue
+                    total_us_str = str(row.get("total_us", "")).strip()
+                    if not total_us_str:
+                        continue
+                    try:
+                        total_us = float(total_us_str)
+                        if total_us >= 0:
+                            frame_times.append(total_us / 1000.0)
+                    except ValueError:
+                        continue
+        except Exception:
+            continue
+
+        if frame_times:
+            return frame_times
+
+    return frame_times
+
+
+def parse_media_log_frame_times(media_log_path: Path, since_unix_ts: float) -> Tuple[List[float], int]:
+    """Parse media.log PERF lines written since since_unix_ts."""
+    if not media_log_path.exists():
+        return [], 0
+
+    frame_times: List[float] = []
+    max_frame_num = 0
+    time_pattern = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]")
+    perf_pattern = re.compile(
+        r"\[PERF\]\s+Frame\s+(\d+):\s+TOTAL=([0-9]*\.?[0-9]+)ms"
+    )
+    try:
+        with open(media_log_path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                time_match = time_pattern.search(line)
+                if time_match:
+                    try:
+                        line_ts = datetime.strptime(
+                            time_match.group(1), "%Y-%m-%d %H:%M:%S"
+                        ).timestamp()
+                        if line_ts + 1.0 < since_unix_ts:
+                            continue
+                    except ValueError:
+                        pass
+
+                match = perf_pattern.search(line)
+                if match:
+                    try:
+                        frame_num = int(match.group(1))
+                        total_ms = float(match.group(2))
+                        frame_times.append(total_ms)
+                        if frame_num > max_frame_num:
+                            max_frame_num = frame_num
+                    except ValueError:
+                        continue
+    except Exception:
+        return [], 0
+
+    return frame_times, max_frame_num
+
+
+def analyze_frame_times(frame_times: List[float], name: str = "") -> Dict[str, object]:
+    """Analyze frame times and return stats dictionary."""
     if not frame_times:
         return {"name": name, "error": "No frames"}
-    
-    stats = {
+
+    stats: Dict[str, object] = {
         "name": name,
         "count": len(frame_times),
         "min": min(frame_times),
         "max": max(frame_times),
         "avg": statistics.mean(frame_times),
         "median": statistics.median(frame_times),
-        "stdev": statistics.stdev(frame_times) if len(frame_times) > 1 else 0,
+        "stdev": statistics.stdev(frame_times) if len(frame_times) > 1 else 0.0,
         "variance": max(frame_times) - min(frame_times),
     }
-    
+
     stats["spikes_10ms"] = sum(1 for ft in frame_times if ft > 10)
     stats["spikes_12ms"] = sum(1 for ft in frame_times if ft > 12)
     stats["spikes_15ms"] = sum(1 for ft in frame_times if ft > 15)
     stats["spikes_20ms"] = sum(1 for ft in frame_times if ft > 20)
-    
-    stats["spike_pct_10ms"] = 100 * stats["spikes_10ms"] / stats["count"]
-    stats["spike_pct_12ms"] = 100 * stats["spikes_12ms"] / stats["count"]
-    
+
+    count = int(stats["count"])
+    stats["spike_pct_10ms"] = 100.0 * int(stats["spikes_10ms"]) / count
+    stats["spike_pct_12ms"] = 100.0 * int(stats["spikes_12ms"]) / count
+
     return stats
 
-def print_stats(stats):
-    """Pretty print stats"""
+
+def print_stats(stats: Dict[str, object]) -> None:
+    """Pretty-print per-test stats."""
     if "error" in stats:
         print(f"  ERROR: {stats['error']}")
         return
-    
-    print(f"  Frames: {stats['count']}")
-    print(f"  Min: {stats['min']:.2f}ms, Max: {stats['max']:.2f}ms, Avg: {stats['avg']:.2f}ms")
-    print(f"  Median: {stats['median']:.2f}ms, StdDev: {stats['stdev']:.2f}ms")
-    print(f"  Variance (max-min): {stats['variance']:.2f}ms")
-    print(f"  Spikes >10ms: {stats['spikes_10ms']} ({stats['spike_pct_10ms']:.1f}%)")
-    print(f"  Spikes >12ms: {stats['spikes_12ms']} ({stats['spike_pct_12ms']:.1f}%)")
-    if stats['spikes_20ms'] > 0:
-        print(f"  Spikes >20ms: {stats['spikes_20ms']}")
 
-def run_single_test(api, width, height, gpu_load, total_record_s, test_name):
-    """Run a single test"""
-    print(f"\n{'='*60}")
+    print(f"  Frames: {stats['count']}")
+    if "effective_count" in stats and int(stats["effective_count"]) != int(stats["count"]):
+        print(f"  Estimated total frames: {stats['effective_count']}")
+    if "source" in stats:
+        print(f"  Source: {stats['source']}")
+    print(
+        f"  Min: {float(stats['min']):.2f}ms, Max: {float(stats['max']):.2f}ms, "
+        f"Avg: {float(stats['avg']):.2f}ms"
+    )
+    print(
+        f"  Median: {float(stats['median']):.2f}ms, "
+        f"StdDev: {float(stats['stdev']):.2f}ms"
+    )
+    print(f"  Variance (max-min): {float(stats['variance']):.2f}ms")
+    print(
+        f"  Spikes >10ms: {int(stats['spikes_10ms'])} "
+        f"({float(stats['spike_pct_10ms']):.1f}%)"
+    )
+    print(
+        f"  Spikes >12ms: {int(stats['spikes_12ms'])} "
+        f"({float(stats['spike_pct_12ms']):.1f}%)"
+    )
+    if int(stats["spikes_20ms"]) > 0:
+        print(f"  Spikes >20ms: {int(stats['spikes_20ms'])}")
+
+
+def run_single_test(
+    api: str,
+    arch: str,
+    width: int,
+    height: int,
+    gpu_load: int,
+    total_record_s: float,
+    test_name: str,
+    min_frames: int,
+) -> Tuple[Optional[Dict[str, object]], Optional[str]]:
+    """Run a single integration test and return (stats, error_message)."""
+    print(f"\n{'=' * 60}")
     print(f"TEST: {test_name}")
-    print(f"  API: {api.upper()}, Resolution: {width}x{height}, GPU Load: {gpu_load}")
-    print(f"  Recording duration: {total_record_s}s")
-    print('='*60)
-    
-    # Clear old frame times
+    print(
+        f"  API: {api.upper()}, ARCH: {arch.upper()}, Resolution: {width}x{height}, "
+        f"GPU Load: {gpu_load}"
+    )
+    print(f"  Recording duration: {total_record_s}s, Min frames: {min_frames}")
+    print("=" * 60)
+
     if FRAME_TIMES_CSV.exists():
         os.remove(FRAME_TIMES_CSV)
-    
-    # Start captureengine FIRST so Vulkan layer registration is active
-    # before the test app launches.
+
+    test_start_unix_ts = time.time()
+
     captureengine_lead_s = 2
     app_init_s = 3
     delay_ms = int((captureengine_lead_s + app_init_s) * 1000)
     duration_ms = int(total_record_s * 1000)
+
     print(f"Starting capture (delay={delay_ms}ms, record={duration_ms}ms)...")
     capture_proc = start_auto_record(delay_ms, duration_ms)
     if not capture_proc:
-        return None
+        return None, "Failed to start captureengine"
     capture_start_ts = time.monotonic()
 
     print(f"Waiting {captureengine_lead_s}s before launching test app...")
     time.sleep(captureengine_lead_s)
 
     print("Starting test app...")
-    app_proc = start_test_app(api, width, height, gpu_load)
+    app_proc = start_test_app(api, arch, width, height, gpu_load)
     if not app_proc:
         capture_proc.terminate()
-        return None
+        return None, "Failed to start test app"
 
-    # Wait for app to fully initialize
     time.sleep(app_init_s)
-    
-    # Wait for recording to complete
-    total_wait = (delay_ms + duration_ms) / 1000 + 3
+
+    total_wait = (delay_ms + duration_ms) / 1000.0 + 3.0
     elapsed = time.monotonic() - capture_start_ts
     remaining_wait = max(0.0, total_wait - elapsed)
     print(f"  Waiting {remaining_wait:.0f}s for recording to complete...")
     time.sleep(remaining_wait)
-    
-    # Stop test app
+
     print("Stopping test app...")
     app_proc.terminate()
     try:
         app_proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         app_proc.kill()
-    
-    # Give capture time to finish
+
     time.sleep(2)
     kill_processes()
     time.sleep(1)
-    
-    # Parse and analyze results
+
     frame_times = parse_frame_times(FRAME_TIMES_CSV)
+    frame_source = "frame_times.csv"
+    if not frame_times:
+        frame_times = parse_perf_metrics_frame_times(api, test_start_unix_ts)
+        frame_source = "perf_metrics_*.csv"
+    estimated_frame_count = 0
+    if not frame_times:
+        frame_times, estimated_frame_count = parse_media_log_frame_times(
+            MEDIA_LOG, test_start_unix_ts
+        )
+        frame_source = "media.log [PERF]"
+
     stats = analyze_frame_times(frame_times, test_name)
-    
+    if "error" not in stats:
+        stats["source"] = frame_source
+        if estimated_frame_count > 0:
+            stats["effective_count"] = estimated_frame_count
+
     print("\nResults:")
     print_stats(stats)
-    
-    return stats
 
-def main():
+    if "error" in stats:
+        return stats, str(stats["error"])
+
+    effective_count = int(stats.get("effective_count", stats["count"]))
+    if effective_count < min_frames:
+        return stats, f"Frame count below threshold ({effective_count} < {min_frames})"
+
+    return stats, None
+
+
+def ensure_binaries_exist(apis: List[str], arches: List[str]) -> None:
+    missing = []
+    for api in apis:
+        for arch in arches:
+            exe = resolve_test_exe(api, arch)
+            if not exe.exists():
+                missing.append(str(exe))
+
+    if missing:
+        print("\nERROR: Missing test binaries:")
+        for path in missing:
+            print(f"  - {path}")
+        print("Run 'python build.py' first to build all required test apps.")
+        sys.exit(1)
+
+
+def write_results_json(
+    output_path: Path,
+    args: argparse.Namespace,
+    apis_to_test: List[str],
+    arches_to_test: List[str],
+    results: List[Dict[str, object]],
+) -> None:
+    payload: Dict[str, object] = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "config": {
+            "resolution": args.resolution,
+            "gpu_load": args.gpu_load,
+            "tests": args.tests,
+            "duration": args.duration,
+            "min_frames": args.min_frames,
+            "api": args.api,
+            "arch": args.arch,
+            "apis_resolved": apis_to_test,
+            "arches_resolved": arches_to_test,
+        },
+        "results": results,
+        "passed_count": sum(1 for r in results if r["status"] == "passed"),
+        "failed_count": sum(1 for r in results if r["status"] == "failed"),
+    }
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+    print(f"\nWrote JSON results: {output_path}")
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(description="Run capture performance tests")
-    parser.add_argument("--resolution", type=int, nargs=2, default=[3840, 2160],
-                       metavar=("WIDTH", "HEIGHT"), help="Test resolution (default: 3840 2160)")
-    parser.add_argument("--gpu-load", type=int, default=15,
-                       help="GPU load passes per frame (default: 15)")
-    parser.add_argument("--tests", type=int, default=3,
-                       help="Number of test iterations per API (default: 3)")
-    parser.add_argument("--duration", type=float, default=10.0,
-                       help="Total recording duration per test in seconds (default: 10)")
-    parser.add_argument("--api", choices=["dx12", "dx11", "dx9", "vulkan", "both", "all"], default="all",
-                       help="Which API to test (default: all)")
-    
+    parser.add_argument(
+        "--resolution",
+        type=int,
+        nargs=2,
+        default=[3840, 2160],
+        metavar=("WIDTH", "HEIGHT"),
+        help="Test resolution (default: 3840 2160)",
+    )
+    parser.add_argument(
+        "--gpu-load",
+        type=int,
+        default=15,
+        help="GPU load passes per frame (default: 15)",
+    )
+    parser.add_argument(
+        "--tests",
+        type=int,
+        default=3,
+        help="Number of test iterations per API/arch target (default: 3)",
+    )
+    parser.add_argument(
+        "--duration",
+        type=float,
+        default=10.0,
+        help="Total recording duration per test in seconds (default: 10)",
+    )
+    parser.add_argument(
+        "--api",
+        choices=["dx12", "dx11", "dx9", "vulkan", "opengl", "both", "all"],
+        default="all",
+        help="API selection (default: all)",
+    )
+    parser.add_argument(
+        "--arch",
+        choices=["x64", "x86", "both"],
+        default="x64",
+        help="Architecture selection (default: x64)",
+    )
+    parser.add_argument(
+        "--min-frames",
+        type=int,
+        default=60,
+        help="Minimum recorded frames required per test (default: 60)",
+    )
+    parser.add_argument(
+        "--results-json",
+        default=str(DEFAULT_RESULTS_JSON),
+        help=f"Path to write machine-readable JSON results (default: {DEFAULT_RESULTS_JSON})",
+    )
     args = parser.parse_args()
+
     width, height = args.resolution
-    
-    print("="*60)
+
+    print("=" * 60)
     print("CAPTURE PERFORMANCE TEST SUITE")
-    print("="*60)
+    print("=" * 60)
     print(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"Resolution: {width}x{height}")
     print(f"GPU Load: {args.gpu_load} passes/frame")
-    print(f"Tests per API: {args.tests}")
+    print(f"Tests per target: {args.tests}")
     print(f"Recording duration: {args.duration}s per test")
-    
-    # Check binaries exist
-    if not (TESTAPP_BIN / "dx12_test.exe").exists():
-        print(f"\nERROR: Test apps not found in {TESTAPP_BIN}")
-        print("Run 'python build.py' first to build the test apps.")
-        sys.exit(1)
-    
-    print("\nCleaning up existing processes...")
-    kill_processes()
-    
-    all_stats = []
-    
+    print(f"Minimum frames required: {args.min_frames}")
+
     if args.api == "all":
-        apis_to_test = ["dx12", "dx11", "dx9", "vulkan"]
+        apis_to_test = list(SUPPORTED_APIS)
     elif args.api == "both":
         apis_to_test = ["dx12", "vulkan"]
     else:
         apis_to_test = [args.api]
-    
-    for api in apis_to_test:
-        for test_num in range(1, args.tests + 1):
-            test_name = f"{api.upper()} Test {test_num}"
-            stats = run_single_test(
-                api=api,
-                width=width,
-                height=height,
-                gpu_load=args.gpu_load,
-                total_record_s=args.duration,
-                test_name=test_name
-            )
-            if stats and "error" not in stats:
-                all_stats.append(stats)
-            
-            kill_processes()
-            time.sleep(2)
-    
-    # Summary
-    print("\n" + "="*60)
+
+    arches_to_test = ["x64", "x86"] if args.arch == "both" else [args.arch]
+
+    print(f"APIs under test: {', '.join(api.upper() for api in apis_to_test)}")
+    print(f"Architectures under test: {', '.join(a.upper() for a in arches_to_test)}")
+
+    ensure_binaries_exist(apis_to_test, arches_to_test)
+
+    print("\nCleaning up existing processes...")
+    kill_processes()
+
+    all_results: List[Dict[str, object]] = []
+
+    for arch in arches_to_test:
+        for api in apis_to_test:
+            for test_num in range(1, args.tests + 1):
+                test_name = f"{api.upper()}-{arch.upper()} Test {test_num}"
+                stats, error = run_single_test(
+                    api=api,
+                    arch=arch,
+                    width=width,
+                    height=height,
+                    gpu_load=args.gpu_load,
+                    total_record_s=args.duration,
+                    test_name=test_name,
+                    min_frames=args.min_frames,
+                )
+
+                status = "passed" if error is None else "failed"
+                result_entry: Dict[str, object] = {
+                    "name": test_name,
+                    "api": api,
+                    "arch": arch,
+                    "iteration": test_num,
+                    "status": status,
+                    "error": error,
+                    "stats": stats,
+                }
+                all_results.append(result_entry)
+
+                kill_processes()
+                time.sleep(2)
+
+    print("\n" + "=" * 60)
     print("SUMMARY")
-    print("="*60)
-    
-    if not all_stats:
-        print("No test results collected!")
-        sys.exit(1)
-    
-    for api in apis_to_test:
-        api_stats = [s for s in all_stats if api.upper() in s.get("name", "")]
-        if not api_stats:
-            continue
-        
-        print(f"\n{api.upper()} ({len(api_stats)} tests):")
-        
-        avg_min = statistics.mean(s["min"] for s in api_stats)
-        avg_max = statistics.mean(s["max"] for s in api_stats)
-        avg_avg = statistics.mean(s["avg"] for s in api_stats)
-        avg_variance = statistics.mean(s["variance"] for s in api_stats)
-        total_spikes = sum(s["spikes_12ms"] for s in api_stats)
-        total_frames = sum(s["count"] for s in api_stats)
-        spike_pct = 100 * total_spikes / total_frames if total_frames > 0 else 0
-        
-        print(f"  Avg frame time: {avg_avg:.2f}ms (range: {avg_min:.2f}-{avg_max:.2f}ms)")
-        print(f"  Avg variance: {avg_variance:.2f}ms")
-        print(f"  Total spikes >12ms: {total_spikes}/{total_frames} ({spike_pct:.1f}%)")
-    
-    print("\n" + "="*60)
+    print("=" * 60)
+
+    failures = [r for r in all_results if r["status"] == "failed"]
+
+    for arch in arches_to_test:
+        for api in apis_to_test:
+            combo = [r for r in all_results if r["api"] == api and r["arch"] == arch]
+            combo_passed = [r for r in combo if r["status"] == "passed" and r["stats"]]
+
+            print(
+                f"\n{api.upper()}-{arch.upper()} "
+                f"(passed {len(combo_passed)}/{len(combo)} tests):"
+            )
+
+            stats_for_combo: List[Dict[str, object]] = [
+                r["stats"] for r in combo_passed if isinstance(r["stats"], dict)
+            ]
+            if stats_for_combo:
+                avg_min = statistics.mean(float(s["min"]) for s in stats_for_combo)
+                avg_max = statistics.mean(float(s["max"]) for s in stats_for_combo)
+                avg_avg = statistics.mean(float(s["avg"]) for s in stats_for_combo)
+                avg_variance = statistics.mean(
+                    float(s["variance"]) for s in stats_for_combo
+                )
+                total_spikes = sum(int(s["spikes_12ms"]) for s in stats_for_combo)
+                total_frames = sum(
+                    int(s.get("effective_count", s["count"])) for s in stats_for_combo
+                )
+                spike_pct = 100.0 * total_spikes / total_frames if total_frames > 0 else 0.0
+
+                print(
+                    f"  Avg frame time: {avg_avg:.2f}ms "
+                    f"(range: {avg_min:.2f}-{avg_max:.2f}ms)"
+                )
+                print(f"  Avg variance: {avg_variance:.2f}ms")
+                print(
+                    f"  Total spikes >12ms: {total_spikes}/{total_frames} "
+                    f"({spike_pct:.1f}%)"
+                )
+            else:
+                print("  No passing runs for this target.")
+
+    if failures:
+        print("\nFAILURES")
+        print("-" * 60)
+        for failure in failures:
+            print(
+                f"  {failure['name']}: {failure['error'] or 'Unknown failure'}"
+            )
+
+    write_results_json(
+        output_path=Path(args.results_json),
+        args=args,
+        apis_to_test=apis_to_test,
+        arches_to_test=arches_to_test,
+        results=all_results,
+    )
+
+    print("\n" + "=" * 60)
     print("TEST COMPLETE")
-    print("="*60)
+    print("=" * 60)
+
+    if failures:
+        sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
