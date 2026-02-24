@@ -121,6 +121,9 @@ private:
   void AddQuad(float x, float y, float w, float h, float u0, float v0, float u1,
                float v1, uint32_t color);
   void FlushBatch(bool useTexture);
+  // Renders a connected polyline with miter joins and AA fringe
+  void DrawGraphPolyline(const float *xs, const float *ys, int count,
+                         uint32_t color, float thickness);
 
   FontAtlas fontAtlas;
   RendererBackend *backend = nullptr;

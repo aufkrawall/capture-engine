@@ -9,9 +9,15 @@
 
 # clangd automatically looks for compile_commands.json in parent directories
 
+# Use the MinGW toolchain explicitly (not MSVC)
+# This prevents clangd from falling back to MSVC headers
+Clangd:
+  Tidy: true
+
 # Provide explicit configuration for system includes
 # clangd needs these because it doesn't inherit the compiler's implicit paths
 CompileFlags:
+  Compiler: %REPO_ROOT%/build/msys64/clang64/bin/clang++.exe
   Add:
     # Resource directory (clang intrinsics)
     - "-resource-dir=%REPO_ROOT%/build/msys64/clang64/lib/clang/21"

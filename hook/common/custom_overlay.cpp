@@ -334,35 +334,172 @@ void Renderer::DrawLine(float x0, float y0, float x1, float y1, uint32_t color,
   FlushBatch(false);
 }
 
+void Renderer::DrawGraphPolyline(const float *xs, const float *ys, int count,
+                                  uint32_t color, float thickness) {
+  if (count < 2)
+    return;
+
+  const float AA_SIZE = 0.5f * dpiScale;
+  const float halfThick = thickness * 0.5f;
+  const uint32_t colorAA = color & 0x00FFFFFFu;
+  constexpr int kFanSegments = 5;
+
+  auto getNormal = [&](int i, float &nx, float &ny) {
+    if (i == 0) {
+      float dx = xs[1] - xs[0], dy = ys[1] - ys[0];
+      float len = std::sqrt(dx * dx + dy * dy);
+      if (len < 0.001f) { nx = 0.0f; ny = 1.0f; }
+      else { nx = -dy / len; ny = dx / len; }
+    } else if (i == count - 1) {
+      float dx = xs[i] - xs[i - 1], dy = ys[i] - ys[i - 1];
+      float len = std::sqrt(dx * dx + dy * dy);
+      if (len < 0.001f) { nx = 0.0f; ny = 1.0f; }
+      else { nx = -dy / len; ny = dx / len; }
+    } else {
+      float dx0 = xs[i] - xs[i - 1], dy0 = ys[i] - ys[i - 1];
+      float dx1 = xs[i + 1] - xs[i], dy1 = ys[i + 1] - ys[i];
+      float len0 = std::sqrt(dx0 * dx0 + dy0 * dy0);
+      float len1 = std::sqrt(dx1 * dx1 + dy1 * dy1);
+      if (len0 < 0.001f && len1 < 0.001f) { nx = 0.0f; ny = 1.0f; }
+      else if (len0 < 0.001f) { nx = -dy1 / len1; ny = dx1 / len1; }
+      else if (len1 < 0.001f) { nx = -dy0 / len0; ny = dx0 / len0; }
+      else {
+        float n0x = -dy0 / len0, n0y = dx0 / len0;
+        float n1x = -dy1 / len1, n1y = dx1 / len1;
+        float mx = n0x + n1x, my = n0y + n1y;
+        float mLen = std::sqrt(mx * mx + my * my);
+        if (mLen < 0.001f) { nx = n0x; ny = n0y; }
+        else {
+          float dot = n0x * mx / mLen + n0y * my / mLen;
+          float miterScale = (std::abs(dot) > 0.01f) ? 1.0f / dot : 1.0f;
+          miterScale = (std::min)(miterScale, 4.0f);
+          nx = mx / mLen * miterScale;
+          ny = my / mLen * miterScale;
+        }
+      }
+    }
+  };
+
+  for (int i = 0; i < count - 1; i++) {
+    float n0x, n0y, n1x, n1y;
+    getNormal(i, n0x, n0y);
+    getNormal(i + 1, n1x, n1y);
+
+    const float ox0 = n0x * (halfThick + AA_SIZE), oy0 = n0y * (halfThick + AA_SIZE);
+    const float ix0 = n0x * halfThick, iy0 = n0y * halfThick;
+    const float ox1 = n1x * (halfThick + AA_SIZE), oy1 = n1y * (halfThick + AA_SIZE);
+    const float ix1 = n1x * halfThick, iy1 = n1y * halfThick;
+
+    const uint16_t baseIdx = (uint16_t)vertices.size();
+    vertices.push_back({xs[i] + ox0, ys[i] + oy0, 0, 0, colorAA});
+    vertices.push_back({xs[i] + ix0, ys[i] + iy0, 0, 0, color});
+    vertices.push_back({xs[i] - ix0, ys[i] - iy0, 0, 0, color});
+    vertices.push_back({xs[i] - ox0, ys[i] - oy0, 0, 0, colorAA});
+    vertices.push_back({xs[i + 1] + ox1, ys[i + 1] + oy1, 0, 0, colorAA});
+    vertices.push_back({xs[i + 1] + ix1, ys[i + 1] + iy1, 0, 0, color});
+    vertices.push_back({xs[i + 1] - ix1, ys[i + 1] - iy1, 0, 0, color});
+    vertices.push_back({xs[i + 1] - ox1, ys[i + 1] - oy1, 0, 0, colorAA});
+
+    indices.push_back(baseIdx + 0); indices.push_back(baseIdx + 1); indices.push_back(baseIdx + 5);
+    indices.push_back(baseIdx + 0); indices.push_back(baseIdx + 5); indices.push_back(baseIdx + 4);
+    indices.push_back(baseIdx + 1); indices.push_back(baseIdx + 2); indices.push_back(baseIdx + 6);
+    indices.push_back(baseIdx + 1); indices.push_back(baseIdx + 6); indices.push_back(baseIdx + 5);
+    indices.push_back(baseIdx + 2); indices.push_back(baseIdx + 3); indices.push_back(baseIdx + 7);
+    indices.push_back(baseIdx + 2); indices.push_back(baseIdx + 7); indices.push_back(baseIdx + 6);
+
+    if (i > 0 && i < count - 1) {
+      float dx0 = xs[i] - xs[i - 1], dy0 = ys[i] - ys[i - 1];
+      float dx1 = xs[i + 1] - xs[i], dy1 = ys[i + 1] - ys[i];
+      float len0 = std::sqrt(dx0 * dx0 + dy0 * dy0);
+      float len1 = std::sqrt(dx1 * dx1 + dy1 * dy1);
+      if (len0 >= 0.001f && len1 >= 0.001f) {
+        float ang0 = std::atan2(dy0, dx0);
+        float ang1 = std::atan2(dy1, dx1);
+        float dAng = ang1 - ang0;
+        while (dAng > 3.14159265f) dAng -= 2.0f * 3.14159265f;
+        while (dAng < -3.14159265f) dAng += 2.0f * 3.14159265f;
+        if (std::abs(dAng) > 0.01f) {
+          const uint16_t fanCenter = (uint16_t)vertices.size();
+          vertices.push_back({xs[i], ys[i], 0, 0, color});
+          const uint16_t fanOuter = (uint16_t)vertices.size();
+          vertices.push_back({xs[i] + n0x * halfThick, ys[i] + n0y * halfThick, 0, 0, color});
+          const float startAng = ang0 + 3.14159265f * 0.5f;
+          const float endAng = ang1 + 3.14159265f * 0.5f;
+          for (int s = 1; s <= kFanSegments; s++) {
+            float t = (float)s / (float)kFanSegments;
+            float ang = startAng + (endAng - startAng) * t;
+            float fx = std::cos(ang), fy = std::sin(ang);
+            const uint16_t fanNext = (uint16_t)vertices.size();
+            vertices.push_back({xs[i] + fx * halfThick, ys[i] + fy * halfThick, 0, 0, color});
+            indices.push_back(fanCenter);
+            indices.push_back(fanOuter + (s == 1 ? 0 : s - 2));
+            indices.push_back(fanNext);
+          }
+          const uint16_t fanOuterAA = (uint16_t)vertices.size();
+          for (int s = 0; s <= kFanSegments; s++) {
+            float t = (float)s / (float)kFanSegments;
+            float ang = startAng + (endAng - startAng) * t;
+            float fx = std::cos(ang), fy = std::sin(ang);
+            vertices.push_back({xs[i] + fx * halfThick, ys[i] + fy * halfThick, 0, 0, color});
+            vertices.push_back({xs[i] + fx * (halfThick + AA_SIZE), ys[i] + fy * (halfThick + AA_SIZE), 0, 0, colorAA});
+          }
+          for (int s = 0; s < kFanSegments; s++) {
+            uint16_t i0 = fanOuterAA + s * 2;
+            uint16_t i1 = i0 + 1;
+            uint16_t i2 = i0 + 2;
+            uint16_t i3 = i0 + 3;
+            indices.push_back(i0); indices.push_back(i1); indices.push_back(i3);
+            indices.push_back(i0); indices.push_back(i3); indices.push_back(i2);
+          }
+        }
+      }
+    }
+  }
+
+  FlushBatch(false);
+}
+
 void Renderer::DrawFrameTimeGraph(float x, float y, float width, float height,
                                   const float *frameTimes, int count,
                                   float minVal, float maxVal, uint32_t color) {
   if (!initialized || !frameTimes || count < 2)
     return;
 
-  // Ensure valid range
   float range = maxVal - minVal;
   if (range < 0.001f)
     range = 33.33f;
 
-  float stepX = width / (float)(count - 1);
-  float invRange = 1.0f / range;
-  float lineThickness = 1.5f * dpiScale;
+  // Pre-compute screen positions into stack-allocated arrays.
+  constexpr int kMaxPoints = 1024;
+  if (count > kMaxPoints)
+    count = kMaxPoints;
 
-  // Draw line segments between consecutive data points
-  for (int i = 0; i < count - 1; i++) {
-    float val0 = frameTimes[i];
-    float val1 = frameTimes[i + 1];
-    val0 = (std::max)(minVal, (std::min)(maxVal, val0));
-    val1 = (std::max)(minVal, (std::min)(maxVal, val1));
+  float xs[kMaxPoints], ys[kMaxPoints];
+  const float stepX = width / (float)(count - 1);
+  const float invRange = 1.0f / range;
 
-    float px0 = x + i * stepX;
-    float py0 = y + height - ((val0 - minVal) * invRange) * height;
-    float px1 = x + (i + 1) * stepX;
-    float py1 = y + height - ((val1 - minVal) * invRange) * height;
-
-    DrawLine(px0, py0, px1, py1, color, lineThickness);
+  for (int i = 0; i < count; i++) {
+    float val = frameTimes[i];
+    val = (std::max)(minVal, (std::min)(maxVal, val));
+    xs[i] = x + (float)i * stepX;
+    ys[i] = y + height - ((val - minVal) * invRange) * height;
   }
+
+  // Skip leading zero-value samples (unfilled ring buffer at startup).
+  int firstValid = 0;
+  while (firstValid < count - 1 && frameTimes[firstValid] <= 0.0f)
+    firstValid++;
+  const int validCount = count - firstValid;
+  if (validCount < 2)
+    return;
+
+  const float *vxs = xs + firstValid;
+  const float *vys = ys + firstValid;
+
+  // Connected polyline with round joins + 1px AA fringe.
+  // 0.75 logical pixels at every DPI (e.g. 100%→0.75px, 200%→1.5px physical = same visual size).
+  const float lineThickness = 0.75f * dpiScale;
+  DrawGraphPolyline(vxs, vys, validCount, color, lineThickness);
 }
 
 void Renderer::BeginWindow(float x, float y, uint32_t bgColor, float alpha) {
