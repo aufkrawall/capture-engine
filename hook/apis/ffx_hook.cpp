@@ -55,6 +55,7 @@ namespace {
 std::mutex g_InitMutex;
 std::atomic<bool> g_Initialized{false};
 std::atomic<int> g_ActiveFGContextCount{0};
+std::atomic<bool> g_NoModulesLogged{false};
 
 // CRITICAL FIX: Track context types to know if destroyed context is FG
 std::mutex g_ContextMapMutex;
@@ -239,7 +240,9 @@ void Init() {
     return;
   }
 
-  HookLog("FFX Hook: Initializing...");
+  if (!g_NoModulesLogged.load(std::memory_order_acquire)) {
+    HookLog("FFX Hook: Initializing...");
+  }
 
   // Try to find FFX modules
   // These are the common DLL names for FSR Frame Generation
@@ -272,11 +275,14 @@ void Init() {
       HookLog("FFX Hook: Found module %s at %p", ffxModuleNames[i], hMod);
       InstallHooksForModule(hMod, ffxModuleNames[i]);
       g_Initialized.store(true, std::memory_order_release);
+      g_NoModulesLogged.store(false, std::memory_order_release);
       return;
     }
   }
 
-  HookLog("FFX Hook: No FFX modules found, hooks not installed");
+  if (!g_NoModulesLogged.exchange(true, std::memory_order_acq_rel)) {
+    HookLog("FFX Hook: No FFX modules found, hooks not installed");
+  }
 }
 
 bool IsInitialized() { return g_Initialized.load(std::memory_order_acquire); }
@@ -301,6 +307,7 @@ void Shutdown() {
   g_Original_ffxDestroyContext = nullptr;
   g_HookedModule = nullptr;
   g_ActiveFGContextCount.store(0, std::memory_order_release);
+  g_NoModulesLogged.store(false, std::memory_order_release);
   g_Initialized.store(false, std::memory_order_release);
 
   HookLog("FFX Hook: Shutdown complete");

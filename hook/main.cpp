@@ -995,15 +995,23 @@ void CheckAndInstallHooks() {
   bool d3d11Or10DllPresent =
       (GetModuleHandleA("d3d11.dll") || GetModuleHandleA("d3d10.dll") ||
        GetModuleHandleA("d3d10_1.dll"));
+  bool legacyD3DLoaded = (GetModuleHandleA("d3d9.dll") != nullptr) ||
+                         (GetModuleHandleA("d3d8.dll") != nullptr) ||
+                         (GetModuleHandleA("ddraw.dll") != nullptr);
   bool d3d11Or10DeviceCreated = WasD3D11Or10DeviceCreated();
   bool d3d12DeviceCreated = WasD3D12DeviceCreated();
 
   // NOTE: Skip D3D11 hooks for Vulkan games to prevent DXGI interference
+  // Also avoid DX11 hook install in legacy D3D processes unless actual
+  // D3D11/D3D10 device creation was observed (prevents DX9 interop false
+  // positives when recording starts).
   if (!s_vulkanActive && !g_DX11Hook && d3d11Or10DllPresent &&
-      (d3d11Or10DeviceCreated || !d3d12DeviceCreated)) {
+      (d3d11Or10DeviceCreated ||
+       (!d3d12DeviceCreated && !legacyD3DLoaded))) {
     HookLog("Detected D3D10/11. Installing hooks... (D3D11/10 API called: %d, "
-            "D3D12 API called: %d)",
-            d3d11Or10DeviceCreated ? 1 : 0, d3d12DeviceCreated ? 1 : 0);
+            "D3D12 API called: %d, LegacyD3D loaded: %d)",
+            d3d11Or10DeviceCreated ? 1 : 0, d3d12DeviceCreated ? 1 : 0,
+            legacyD3DLoaded ? 1 : 0);
     g_DX11Hook = new DX11Hook();
     g_DX11Hook->Init();
     HookLog("D3D10/11 hooks installed");
@@ -1013,21 +1021,6 @@ void CheckAndInstallHooks() {
   // d3d12.dll can be loaded by D3D11On12 even in non-DX12 apps.
   // We use the actual device creation flag instead of just DLL presence.
   bool dx12ActuallyUsed = WasD3D12DeviceCreated();
-
-  // Direct file logging for diagnostics (bypasses mutex contention issues)
-  auto LogDirect = [](const char* fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    char buf[1024];
-    vsnprintf(buf, sizeof(buf), fmt, args);
-    va_end(args);
-    FILE* f = fopen("%REPO_ROOT%\\installed\\captureengine\\logs\\dx9_check.log", "a");
-    if (f) { fprintf(f, "%s\n", buf); fclose(f); }
-  };
-
-  LogDirect("DX9 Check: vulkanActive=%d, g_DX9Hook=%p, dx12ActuallyUsed=%d, d3d9=%p",
-           s_vulkanActive ? 1 : 0, (void*)g_DX9Hook, dx12ActuallyUsed ? 1 : 0,
-           GetModuleHandleA("d3d9.dll"));
 
   // NOTE: Skip D3D9 hooks for Vulkan games
   if (!s_vulkanActive && !g_DX9Hook && !dx12ActuallyUsed &&
@@ -1056,12 +1049,6 @@ void CheckAndInstallHooks() {
     g_DX8Hook->Init();
     HookLog("DX8 hooks installed");
   }
-
-  // Debug: Log OpenGL hook conditions
-  HookLog(
-      "OpenGL hook check: g_OpenGLHook=%p, dx12ActuallyUsed=%d, opengl32=%p",
-      (void *)g_OpenGLHook, dx12ActuallyUsed ? 1 : 0,
-      GetModuleHandleA("opengl32.dll"));
 
   if (!g_OpenGLHook && !dx12ActuallyUsed && GetModuleHandleA("opengl32.dll")) {
     HookLog("Detected opengl32.dll. Installing OpenGL hooks...");

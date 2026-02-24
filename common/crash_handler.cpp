@@ -13,6 +13,7 @@ static std::string g_DumpDir = ".";
 static char g_ProcessName[256] = "unknown";
 static HMODULE g_hDbgHelp = NULL;
 static std::atomic<bool> g_DumpAlreadyWritten{false};
+static thread_local bool g_ForceUnhandledDump = false;
 typedef BOOL(WINAPI *MINIDUMPWRITEDUMP)(
     HANDLE hProcess, DWORD ProcessId, HANDLE hFile, MINIDUMP_TYPE DumpType,
     PMINIDUMP_EXCEPTION_INFORMATION ExceptionParam,
@@ -69,18 +70,42 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
   TraceCrash(dumpPath);
 
   // Ensure directory exists with proper error checking
-  int mkdirResult = _mkdir(g_DumpDir.c_str());
-  if (mkdirResult == 0) {
+  if (CreateDirectoryA(g_DumpDir.c_str(), NULL)) {
     TraceCrash("Created dump directory");
-  } else if (errno == EEXIST) {
-    TraceCrash("Dump directory already exists");
   } else {
-    TraceCrash("Failed to create dump directory!");
+    DWORD dirErr = GetLastError();
+    if (dirErr == ERROR_ALREADY_EXISTS) {
+      TraceCrash("Dump directory already exists");
+    } else {
+      char dirErrMsg[128];
+      snprintf(dirErrMsg, sizeof(dirErrMsg),
+               "Failed to create dump directory (err=%lu)", dirErr);
+      TraceCrash(dirErrMsg);
+    }
   }
 
   HANDLE hFile = CreateFileA(
       dumpPath, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
       FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, NULL);
+
+  if (hFile == INVALID_HANDLE_VALUE) {
+    DWORD createErr = GetLastError();
+    char createErrMsg[160];
+    snprintf(createErrMsg, sizeof(createErrMsg),
+             "Failed to create dump file at configured path (err=%lu)",
+             createErr);
+    TraceCrash(createErrMsg);
+
+    char tempPath[MAX_PATH] = {0};
+    if (GetTempPathA(MAX_PATH, tempPath)) {
+      snprintf(dumpPath, sizeof(dumpPath), "%scrash_%s.dmp", tempPath, buf);
+      TraceCrash("Retrying dump creation in temp directory...");
+      TraceCrash(dumpPath);
+      hFile = CreateFileA(
+          dumpPath, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+          FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, NULL);
+    }
+  }
 
   if (hFile != INVALID_HANDLE_VALUE) {
     MINIDUMP_EXCEPTION_INFORMATION mdei;
@@ -142,12 +167,16 @@ CrashHandlerExceptionFilter(EXCEPTION_POINTERS *pExceptionPointers) {
   DWORD code = pExceptionPointers->ExceptionRecord->ExceptionCode;
 
   // Skip known benign first-chance exceptions to avoid high-volume log spam.
+  bool forceUnhandledDump = g_ForceUnhandledDump;
   bool isKnownDebugException = (code == 0x406D1388 || // Thread naming
                                 code == 0x40010006 || // OutputDebugString
                                 code == 0x4001000A || // WOW64 debug
                                 code == 0x4000001F || // Wow64 breakpoint
                                 code == 0x80000003);  // Breakpoint (debug)
-  if (code == 0xE06D7363 || isKnownDebugException) { // C++ throw/catch
+  if (isKnownDebugException) {
+    return EXCEPTION_CONTINUE_SEARCH;
+  }
+  if (code == 0xE06D7363 && !forceUnhandledDump) { // C++ throw/catch
     return EXCEPTION_CONTINUE_SEARCH;
   }
 
@@ -179,13 +208,16 @@ CrashHandlerExceptionFilter(EXCEPTION_POINTERS *pExceptionPointers) {
 
   // For unknown exceptions, log them but only handle if it looks like a crash
   // (first chance exceptions are often caught and handled by the app)
-  if (!isKnownCrash) {
+  if (!isKnownCrash && !forceUnhandledDump) {
     // Unknown exception - could be a custom crash code
     // Log it but don't handle unless it's truly fatal
     TraceCrash("Unknown exception code - continuing search (first chance)");
     // Note: If the app doesn't handle this, it will come back as a second
     // chance Unfortunately VEH doesn't easily distinguish first/second chance
     return EXCEPTION_CONTINUE_SEARCH;
+  }
+  if (!isKnownCrash && forceUnhandledDump) {
+    TraceCrash("Unhandled non-standard exception code - forcing dump generation");
   }
 
   TraceCrash("CRASH DETECTED - Handling exception");
@@ -305,35 +337,18 @@ UnhandledExceptionFilterCallback(EXCEPTION_POINTERS *pExceptionPointers) {
            code, pExceptionPointers->ExceptionRecord->ExceptionAddress);
   TraceCrash(codeStr);
 
-  // Always handle crashes here
-  bool isKnownCrash =
-      (code == EXCEPTION_ACCESS_VIOLATION ||
-       code == EXCEPTION_ILLEGAL_INSTRUCTION ||
-       code == EXCEPTION_INT_DIVIDE_BY_ZERO ||
-       code == EXCEPTION_STACK_OVERFLOW || code == EXCEPTION_BREAKPOINT ||
-       code == EXCEPTION_PRIV_INSTRUCTION || code == 0x40000015 || // Abort
-       code == 0xC0000409 ||                                       // Stack buffer overrun
-       code == 0xC0000006 ||                                       // In-page I/O error
-       code == 0xC000001D ||                                       // Illegal instruction
-       code == 0xC0000025 ||                                       // Non-continuable exception
-       code == 0xC0000374 ||                                       // Heap corruption
-       code == 0xC00000FD ||                                       // Stack overflow (alt)
-       code == 0x00008000 ||                                       // UE5 GPU crash (D3D device removed)
-       code == 0x80000002 ||                                       // Guard page violation
-       code == 0xC000013A ||                                       // Control-C/Control-Break
-       code == 0xC0000142);                                        // DLL init failed
-
-  if (isKnownCrash) {
-    TraceCrash("Unhandled exception is a crash - handling it");
-    // Call the VEH handler to do the actual dump
-    return CrashHandlerExceptionFilter(pExceptionPointers);
+  TraceCrash("Unhandled exception reached top-level filter - forcing dump");
+  g_ForceUnhandledDump = true;
+  LONG result = CrashHandlerExceptionFilter(pExceptionPointers);
+  g_ForceUnhandledDump = false;
+  if (g_OldUnhandledFilter &&
+      g_OldUnhandledFilter != UnhandledExceptionFilterCallback) {
+    LONG prevResult = g_OldUnhandledFilter(pExceptionPointers);
+    if (prevResult != EXCEPTION_CONTINUE_SEARCH) {
+      return prevResult;
+    }
   }
-
-  // Call previous filter if any
-  if (g_OldUnhandledFilter) {
-    return g_OldUnhandledFilter(pExceptionPointers);
-  }
-  return EXCEPTION_CONTINUE_SEARCH;
+  return result;
 }
 
 void InstallCrashHandler() {
