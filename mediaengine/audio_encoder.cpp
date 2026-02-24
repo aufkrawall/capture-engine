@@ -480,12 +480,20 @@ void AudioEncoder::EncodeSamples(const uint8_t *data, int sizeBytes,
   int currentFifoSize = av_audio_fifo_size(audioFifo);
 
   if (currentFifoSize > MAX_FIFO_SAMPLES) {
+    // Drain the oldest samples down to ~1 second to avoid a complete silence
+    // gap. A hard av_audio_fifo_reset would cause a PTS discontinuity and
+    // audible click. Draining preserves the newest audio data.
+    int targetSamples = codecCtx->sample_rate; // Keep 1 second of backlog
+    int toDrain = currentFifoSize - targetSamples;
+    if (toDrain > 0) {
+      av_audio_fifo_drain(audioFifo, toDrain);
+    }
     DLL_Log("[AudioEnc] CRITICAL: FIFO Overflow (%d samples, %.1f sec). "
-            "Resetting to prevent memory leak. samplesCount=%lld",
+            "Drained %d samples. samplesCount=%lld",
             currentFifoSize,
             (double)currentFifoSize / codecCtx->sample_rate,
+            toDrain,
             (long long)samplesCount);
-    av_audio_fifo_reset(audioFifo);
   }
 
   // NOTE: Gap detection REMOVED.
@@ -601,8 +609,8 @@ void AudioEncoder::EncodeSamples(const uint8_t *data, int sizeBytes,
       }
 
       pktCount++;
-      // Buffer packets until stream index is set (gptreport.md Section 5.1)
-      // Otherwise we'd write audio packets with wrong stream index
+      // Buffer packets until streamIndex is set by SetStreamIndex().
+      // Otherwise we'd write audio packets with the wrong stream index.
       if (streamIndex < 0) {
         if (!warnedOnce) {
           DLL_Log(
@@ -621,7 +629,7 @@ void AudioEncoder::EncodeSamples(const uint8_t *data, int sizeBytes,
           }
           AVPacket *oldest = pendingPackets.front();
           av_packet_free(&oldest);
-          pendingPackets.erase(pendingPackets.begin());
+          pendingPackets.pop_front();
         }
         AVPacket *cloned = av_packet_clone(pkt);
         if (cloned) {

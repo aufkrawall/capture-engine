@@ -421,7 +421,7 @@ bool DX12Backend::CreateFontTexture(int width, int height,
 
     fontTextureFootprint = footprint;
     fontTextureDesc = texDesc;
-    fontUploaded = false;
+    fontUploaded.store(false, std::memory_order_relaxed);
     DX12_DEBUG_STEP("CreateFontTexture", "SUCCESS - fontUploaded=false (deferred upload)");
 
     return true;
@@ -597,16 +597,14 @@ void DX12Backend::Render(const std::vector<DrawVertex> &vertices,
         currentCmdList->ResourceBarrier(1, &barrier);
         DX12_DEBUG_STEP("Render", "Font upload: Barrier submitted");
 
-        fontUploaded = true;
+        fontUploaded.store(true, std::memory_order_release);
         DX12_DEBUG_STEP("Render", "Font upload: COMPLETE - fontUploaded=true");
     }
 
     size_t vbSize = vertices.size() * sizeof(DrawVertex);
-    // Advance to the next pool slot for this frame. Pool size matches the
-    // command-allocator pool so the fence guarantees the GPU is done with this
-    // slot before the CPU writes new data into it.
-    int slot = frameIdx % kFramePoolSize;
-    frameIdx++;
+    // Advance to the next pool slot for this frame. Use atomic fetch_add so
+    // concurrent calls from different threads each get a unique slot.
+    int slot = frameIdx.fetch_add(1, std::memory_order_relaxed) % kFramePoolSize;
     DX12_DEBUG_FRAME(s_RenderCounter, "Using buffer slot %d", slot);
     if (vbSize > vertexBufferSize[slot]) {
         DX12_DEBUG_STEP("Render", "Vertex buffer resize needed: %zu > %zu (slot=%d)", vbSize, vertexBufferSize[slot], slot);

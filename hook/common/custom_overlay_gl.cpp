@@ -222,8 +222,15 @@ static bool LoadGLFunctions() {
   pglTexCoord2f = (PFN_glTexCoord2f)GetProcAddress(gl, "glTexCoord2f");
   pglColor4ub = (PFN_glColor4ub)GetProcAddress(gl, "glColor4ub");
 
-  if (!pglGenTextures || !pglBindTexture || !pglTexImage2D ||
-      !pwglGetProcAddress) {
+  if (!pglGenTextures || !pglDeleteTextures || !pglBindTexture ||
+      !pglTexImage2D || !pglTexParameteri || !pglGetIntegerv ||
+      !pglViewport || !pglEnable || !pglDisable || !pglIsEnabled ||
+      !pglBlendFunc || !pglMatrixMode || !pglPushMatrix || !pglPopMatrix ||
+      !pglLoadIdentity || !pglOrtho || !pglEnableClientState ||
+      !pglDisableClientState || !pglVertexPointer || !pglTexCoordPointer ||
+      !pglColorPointer || !pglDrawElements || !pglBegin || !pglEnd ||
+      !pglVertex2f || !pglTexCoord2f || !pglColor4ub ||
+      !pwglGetCurrentContext || !pwglGetProcAddress || !pglGetError) {
     return false;
   }
 

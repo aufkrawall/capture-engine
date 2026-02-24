@@ -3,6 +3,7 @@
 #include "../common/config.h"
 #include "audio_resampler.h"
 #include <atomic>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <vector>
@@ -96,8 +97,9 @@ private:
   // Continuity tracking for Backlog backlog detection
   int64_t lastInputTimestamp = -1;
 
-  // Buffer for packets before streamIndex is set (gptreport.md Section 5.1)
-  std::vector<AVPacket *> pendingPackets;
+  // Buffer for packets before streamIndex is set.
+  // Uses deque for O(1) removal from the front when the buffer overflows.
+  std::deque<AVPacket *> pendingPackets;
 
   // Per-recording warning flags (reset in Stop() for multi-recording support)
   bool warnedOnce = false; // "stream not yet assigned" warning gate

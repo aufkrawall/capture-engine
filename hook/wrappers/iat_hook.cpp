@@ -145,7 +145,6 @@ static FARPROC(WINAPI *oGetProcAddress)(HMODULE, LPCSTR) = nullptr;
 
 static std::mutex g_PatchLock;
 static std::vector<PatchedEntry> g_PatchedEntries;
-static bool g_Initialized = false;
 
 // ============================================================================
 // Module Validation
@@ -936,7 +935,6 @@ void ShutdownIATHooks() {
   }
 
   g_PatchedEntries.clear();
-  g_Initialized = false;
 
   // CRITICAL FIX: Clear dynamic hooks map to prevent memory leak
   // and stale pointers on DLL unload

@@ -341,6 +341,13 @@ void DX11Backend::Render(const std::vector<DrawVertex> &vertices,
   context->OMGetBlendState(&oldBlendState, oldBlendFactor, &oldSampleMask);
   context->OMGetDepthStencilState(&oldDepthState, &oldStencilRef);
 
+  // Save render targets and depth stencil - must be restored to avoid
+  // corrupting the game's output merger state after overlay rendering.
+  static constexpr UINT kMaxRTVs = 8;
+  ID3D11RenderTargetView *oldRTVs[kMaxRTVs] = {};
+  ID3D11DepthStencilView *oldDSV = nullptr;
+  context->OMGetRenderTargets(kMaxRTVs, oldRTVs, &oldDSV);
+
   // Save shaders
   ID3D11VertexShader *oldVS = nullptr;
   ID3D11PixelShader *oldPS = nullptr;
@@ -420,6 +427,7 @@ void DX11Backend::Render(const std::vector<DrawVertex> &vertices,
   context->RSSetState(oldRasterState);
   context->OMSetBlendState(oldBlendState, oldBlendFactor, oldSampleMask);
   context->OMSetDepthStencilState(oldDepthState, oldStencilRef);
+  context->OMSetRenderTargets(kMaxRTVs, oldRTVs, oldDSV);
   context->VSSetShader(oldVS, nullptr, 0);
   context->PSSetShader(oldPS, nullptr, 0);
   context->IASetInputLayout(oldInputLayout);
@@ -459,6 +467,14 @@ void DX11Backend::Render(const std::vector<DrawVertex> &vertices,
     oldPSSRV->Release();
   if (oldPSSampler)
     oldPSSampler->Release();
+
+  // Release saved render targets and depth stencil
+  for (auto *rtv : oldRTVs) {
+    if (rtv)
+      rtv->Release();
+  }
+  if (oldDSV)
+    oldDSV->Release();
 
   frameCounter++;
 }

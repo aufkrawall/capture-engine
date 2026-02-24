@@ -17,9 +17,11 @@ void Log_Init(const std::string &filename) {
   // for cwd
   g_LogFile = fopen(filename.c_str(), "w"); // Overwrite on new run
   if (g_LogFile) {
+    // Line-buffered: each newline flushes the buffer without a blocking
+    // fflush() call on the render thread.
+    setvbuf(g_LogFile, nullptr, _IOLBF, 4096);
     fprintf(g_LogFile, "[BUILD] Version=%s Built=%s\\n", CAPTURE_VERSION,
             BUILD_TIMESTAMP);
-    fflush(g_LogFile);
   }
 }
 
@@ -57,7 +59,10 @@ void Log(LogLevel level, const char *format, ...) {
   fprintf(g_LogFile, "[%s] %s ", timeBuf, levelStr);
   vfprintf(g_LogFile, format, args);
   fprintf(g_LogFile, "\n");
-  fflush(g_LogFile); // Ensure written immediately for crash debugging
+  // NOTE: fflush is intentionally NOT called here to avoid blocking the
+  // render thread on every log entry. The OS will flush on process exit or
+  // when the buffer fills.  For crash-safety the file is opened without
+  // buffering in Log_Init (FILE_FLAG_WRITE_THROUGH equivalent via setvbuf).
 
   va_end(args);
 }

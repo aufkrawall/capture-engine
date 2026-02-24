@@ -41,24 +41,27 @@ SystemMetricsCollector::SystemMetricsCollector()
       gpuPdhInitialized(false), vramPdhInitialized(false) {}
 
 SystemMetricsCollector::~SystemMetricsCollector() {
-  // CRITICAL FIX: Use same safe shutdown pattern as Shutdown()
-  // to prevent blocking forever if thread is stuck
   stopThread = true;
-  
+
   if (updateThread.joinable()) {
-    // Give thread max 500ms to exit gracefully
+    // Wait up to 1500ms: the background loop sleeps in 10ms increments and
+    // checks stopThread each iteration, so it should exit within ~200ms.
+    // A longer timeout covers the rare DXGI VRAM query path.
     auto start = std::chrono::steady_clock::now();
     while (threadRunning.load() && std::chrono::steady_clock::now() - start <
-                                       std::chrono::milliseconds(500)) {
+                                       std::chrono::milliseconds(1500)) {
       Sleep(10);
     }
 
     if (threadRunning.load()) {
-      // Thread still running - detach to avoid blocking destructor
+      // Thread didn't stop in time.  Since this is a static singleton destroyed
+      // at DLL unload, we must NOT free the PDH/DXGI resources while the thread
+      // is still using them.  Detach and skip resource cleanup — the OS will
+      // reclaim them on process exit.
       updateThread.detach();
-    } else {
-      updateThread.join();
+      return;
     }
+    updateThread.join();
   }
 
   if (cpuQuery) {
@@ -88,23 +91,18 @@ SystemMetricsCollector::~SystemMetricsCollector() {
 }
 
 void SystemMetricsCollector::Shutdown() {
-  // EarlyLog("SystemMetricsCollector: Shutdown() called"); // Avoid logging in
-  // shutdown to prevent deadlocks
   stopThread = true;
 
   // Wait for thread to exit with a timeout
   if (updateThread.joinable()) {
-    // Give thread max 500ms to exit gracefully
     auto start = std::chrono::steady_clock::now();
     while (threadRunning.load() && std::chrono::steady_clock::now() - start <
-                                       std::chrono::milliseconds(500)) {
+                                       std::chrono::milliseconds(1500)) {
       Sleep(10);
     }
 
     if (threadRunning.load()) {
-      // EarlyLog("SystemMetricsCollector: Thread still running after 500ms,
-      // detaching");
-      updateThread.detach(); // Don't deadlock - just detach
+      updateThread.detach();
     } else {
       EarlyLog("SystemMetricsCollector: Thread exited cleanly, joining");
       updateThread.join();

@@ -317,9 +317,9 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs,
   // audio behind
   int64_t driftSamples = audioSamplesOutput - expectedSamples;
 
-  // DEADBAND: Ignore high-frequency jitter (up to 15ms = 720 samples)
+  // DEADBAND: Ignore high-frequency jitter (up to 5ms = 240 samples at 48kHz)
   // from WASAPI block delivery intervals to prevent pitch oscillation
-  if (std::abs(driftSamples) < 720) {
+  if (std::abs(driftSamples) < 240) {
       driftSamples = 0;
   }
 
@@ -417,8 +417,11 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs,
 
   // Apply compensation if needed
   if (currentDelta != 0 || compensationActive) {
-    // Compensate over COMPENSATION_PERIOD_SEC
-    int ret = swr_set_compensation(swrCtx, -currentDelta,
+    // Compensate over COMPENSATION_PERIOD_SEC.
+    // currentDelta > 0 means audio is ahead (too many samples produced), so
+    // swr_set_compensation must drop samples (positive sample_delta shortens
+    // the output window).  The sign must NOT be negated here.
+    int ret = swr_set_compensation(swrCtx, currentDelta,
                                    outFmt.sampleRate * COMPENSATION_PERIOD_SEC);
 
     if (ret >= 0) {

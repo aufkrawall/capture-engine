@@ -137,9 +137,9 @@ void FGCompatibility::RecordFrame(int commandListsExecuted) {
   int64_t now = GetCurrentTimeUs();
   lastCmdListCount.store(commandListsExecuted);
 
-  int idx = historyIndex.fetch_add(1, std::memory_order_acquire) % WINDOW_SIZE;
-  frameHistory[idx].timestampUs = now;
-  frameHistory[idx].commandLists = commandListsExecuted;
+  int idx = historyIndex.fetch_add(1, std::memory_order_relaxed) % WINDOW_SIZE;
+  frameHistory[idx].timestampUs.store(now, std::memory_order_release);
+  frameHistory[idx].commandLists.store(commandListsExecuted, std::memory_order_release);
 
   int total = totalFramesRecorded.fetch_add(1) + 1;
 
@@ -206,8 +206,8 @@ void FGCompatibility::UpdateMetrics() {
 
   int maxCmdLists = 0;
   for (int i = 0; i < WINDOW_SIZE; i++) {
-    int64_t ts = frameHistory[i].timestampUs;
-    int cmd = frameHistory[i].commandLists;
+    int64_t ts = frameHistory[i].timestampUs.load(std::memory_order_acquire);
+    int cmd = frameHistory[i].commandLists.load(std::memory_order_acquire);
     if (ts > windowStartUs) {
       if (cmd > maxCmdLists) {
         maxCmdLists = cmd;
@@ -224,8 +224,8 @@ void FGCompatibility::UpdateMetrics() {
   for (int i = 0; i < WINDOW_SIZE; i++) {
     int idx = (startIdx + i) % WINDOW_SIZE;
 
-    int64_t ts = frameHistory[idx].timestampUs;
-    int cmd = frameHistory[idx].commandLists;
+    int64_t ts = frameHistory[idx].timestampUs.load(std::memory_order_acquire);
+    int cmd = frameHistory[idx].commandLists.load(std::memory_order_acquire);
 
     if (ts <= windowStartUs || ts > now)
       continue;

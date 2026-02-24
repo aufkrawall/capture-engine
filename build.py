@@ -61,7 +61,9 @@ OPT_FLAGS_X86 = [
     "-fdata-sections",
 ]
 
-# x86 hook DLL: no -ffast-math (audio correctness); no -flto (x86 linker has no plugin)
+# x86 hook DLL: no -ffast-math (audio correctness)
+# LTO is NOT enabled for x86: the mingw32 toolchain uses a GCC runtime that
+# lacks the libc++ call_once symbols required by -flto=thin with lld.
 HOOK_OPT_FLAGS_X86 = [
     "-O3",
     "-march=i686",
@@ -72,11 +74,15 @@ HOOK_OPT_FLAGS_X86 = [
 ]
 
 # Linker optimization flags
+# -g1 keeps minimal DWARF info (function names + file/line) for crash symbolication
+# without meaningfully increasing binary size.  The separate --strip-debug step
+# below removes it from the final shipped binary but keeps a .debug file for
+# post-mortem analysis.
 LD_OPT_FLAGS = [
     "-Wl,--gc-sections",
     "-Wl,--dynamicbase",  # ASLR
     "-Wl,--nxcompat",  # DEP/NX
-    "-s",  # Strip all symbols
+    "-g1",   # Minimal debug info for crash symbolication
 ]
 
 # --- Configuration ---

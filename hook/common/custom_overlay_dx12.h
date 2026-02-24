@@ -8,6 +8,7 @@
 #pragma once
 
 #include "custom_overlay.h"
+#include <atomic>
 #include <d3d12.h>
 #include <dxgi1_4.h>
 #include <vector>
@@ -72,12 +73,12 @@ private:
   void *indexBufferPtr[kFramePoolSize] = {};
   size_t vertexBufferSize[kFramePoolSize] = {};
   size_t indexBufferSize[kFramePoolSize] = {};
-  int frameIdx = 0;
+  std::atomic<int> frameIdx{0};
 
   ID3D12GraphicsCommandList *currentCmdList = nullptr;
   D3D12_CPU_DESCRIPTOR_HANDLE currentRTV = {};
 
-  bool fontUploaded = false;
+  std::atomic<bool> fontUploaded{false};
   D3D12_PLACED_SUBRESOURCE_FOOTPRINT fontTextureFootprint = {};
   D3D12_RESOURCE_DESC fontTextureDesc = {};
 

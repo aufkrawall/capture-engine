@@ -292,8 +292,11 @@ void FreezeWatchdog::WatchdogThread() {
 
             CreateMinidumpWithThreadContext(reason);
             
-            OutputDebugStringA("[FreezeWatchdog] Dump created, terminating...\n");
-            TerminateProcessSafely();
+            // Do NOT terminate the process: the game may recover on its own,
+            // and forcefully killing it loses unsaved data and prevents the
+            // game's own crash-handling from running.  The minidump and the
+            // callback (which can notify the host) are sufficient action.
+            OutputDebugStringA("[FreezeWatchdog] Dump created. Not terminating - watchdog stopping.\n");
             return;
         }
     }

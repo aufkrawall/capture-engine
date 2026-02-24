@@ -418,7 +418,15 @@ public:
 
 WGCCapture::WGCCapture() : impl_(std::make_unique<Impl>()) {}
 
-WGCCapture::~WGCCapture() { StopCapture(); }
+WGCCapture::~WGCCapture() {
+  StopCapture();
+#if HAS_WGC
+  if (roInitialized_) {
+    RoUninitialize();
+    roInitialized_ = false;
+  }
+#endif
+}
 
 bool WGCCapture::IsSupported() {
 #if HAS_WGC
@@ -442,6 +450,7 @@ bool WGCCapture::Init(ID3D11Device *device) {
     LogError("[WGC] RoInitialize failed: 0x%x", hr);
     return false;
   }
+  roInitialized_ = SUCCEEDED(hr); // Track so we can balance with RoUninitialize
 
   if (!impl_->CreateWinRTDevice()) {
     LogError("[WGC] Failed to create WinRT device");
@@ -476,6 +485,7 @@ bool WGCCapture::InitForWindow(ID3D11Device *device, void *hwnd) {
     LogError("[WGC] RoInitialize failed: 0x%x", hr);
     return false;
   }
+  roInitialized_ = SUCCEEDED(hr);
 
   if (!impl_->CreateWinRTDevice()) {
     LogError("[WGC] Failed to create WinRT device");
@@ -509,6 +519,7 @@ bool WGCCapture::InitForMonitor(ID3D11Device *device, void *hmonitor) {
     LogError("[WGC] RoInitialize failed: 0x%x", hr);
     return false;
   }
+  roInitialized_ = SUCCEEDED(hr);
 
   if (!impl_->CreateWinRTDevice()) {
     LogError("[WGC] Failed to create WinRT device");

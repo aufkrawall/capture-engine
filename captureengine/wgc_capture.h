@@ -94,6 +94,7 @@ private:
   bool initialized_ = false;
   bool capturing_ = false;
   bool captureCursor_ = false;
+  bool roInitialized_ = false; // true when RoInitialize succeeded and we must call RoUninitialize
 
   FrameCallback frameCallback_;
   std::mutex frameMutex_;

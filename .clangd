@@ -6,6 +6,12 @@
 # SETUP:
 # - Windows: clangd from MSYS2 clang64 environment:
 #   pacman -S mingw-w64-clang-x86_64-clang-tools-extra
+#
+# NOTE: The Compiler, resource-dir and isystem paths below point into the
+# MSYS2 clang64 toolchain that build.py installs under build/msys64.
+# They use a path relative to the project root so they work on any machine.
+# If clangd cannot resolve the relative path, set the MSYS2_ROOT environment
+# variable or replace the paths with absolute paths for your machine.
 
 # clangd automatically looks for compile_commands.json in parent directories
 
@@ -17,16 +23,16 @@ Clangd:
 # Provide explicit configuration for system includes
 # clangd needs these because it doesn't inherit the compiler's implicit paths
 CompileFlags:
-  Compiler: %REPO_ROOT%/build/msys64/clang64/bin/clang++.exe
+  Compiler: build/msys64/clang64/bin/clang++.exe
   Add:
     # Resource directory (clang intrinsics)
-    - "-resource-dir=%REPO_ROOT%/build/msys64/clang64/lib/clang/21"
+    - "-resource-dir=build/msys64/clang64/lib/clang/21"
     # C++ standard library
     - "-isystem"
-    - "%REPO_ROOT%/build/msys64/clang64/include/c++/v1"
+    - "build/msys64/clang64/include/c++/v1"
     # Windows SDK and other system headers
     - "-isystem"
-    - "%REPO_ROOT%/build/msys64/clang64/include"
+    - "build/msys64/clang64/include"
   Remove:
     # Flags clangd doesn't understand or that cause spurious errors
     - "-march=*"

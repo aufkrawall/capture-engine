@@ -103,11 +103,12 @@ private:
   // Frame history for pattern detection
   static constexpr int WINDOW_SIZE = 120; // ~2 seconds at 60fps
   struct FrameRecord {
-    int64_t timestampUs = 0;
-    int commandLists = 0;
+    std::atomic<int64_t> timestampUs{0};
+    std::atomic<int> commandLists{0};
   };
-  // CRITICAL FIX: Use atomic arrays for thread-safe access
-  std::array<FrameRecord, WINDOW_SIZE> frameHistory{};
+  // NOTE: FrameRecord uses atomics so concurrent RecordFrame calls writing to
+  // different slots and UpdateMetrics reading all slots do not race.
+  std::array<FrameRecord, WINDOW_SIZE> frameHistory;
   std::atomic<int> historyIndex{0};
   std::atomic<int> totalFramesRecorded{0};
 
