@@ -3,7 +3,7 @@
     "layer": {
         "name": "VK_LAYER_CE_overlay",
         "type": "GLOBAL",
-        "library_path": "VK_LAYER_CE_overlay.dll",
+        "library_path": ".\\VK_LAYER_CE_overlay.dll",
         "api_version": "1.3.0",
         "implementation_version": "1",
         "description": "CaptureEngine Overlay and Recording Layer",

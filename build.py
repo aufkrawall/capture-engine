@@ -2351,7 +2351,9 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
 
         # Keep manifest portable/private by using a DLL name relative to the
         # manifest location instead of an absolute machine-local path.
-        manifest_dll_name = os.path.basename(layer_dll)
+        # Prefix with .\ so Vulkan loader resolves relative to manifest path.
+        # Bare DLL names are resolved via process DLL search paths and can fail.
+        manifest_dll_name = f".\\{os.path.basename(layer_dll)}"
 
         # Use different layer names for x64 vs x86 to avoid "wrong bit-type" conflicts
         # Both 32-bit and 64-bit apps read from HKCU (no WOW64 redirection for HKCU)
