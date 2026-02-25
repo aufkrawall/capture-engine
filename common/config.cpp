@@ -79,348 +79,267 @@ void CreateDefaultConfig(const std::string &path) {
   if (!cfg.is_open())
     return;
 
-  cfg << "; "
-         "====================================================================="
-         "=======\n";
-  cfg << "; CaptureEngine Configuration File\n";
-  cfg << "; "
-         "====================================================================="
-         "=======\n";
-  cfg << "\n";
-  cfg << "[General]\n";
-  cfg << "; Enable debug logging to log files\n";
-  cfg << "debug_logging=true\n";
-  cfg << "; Capture method: inject (hook into game), screengrab (desktop "
-         "capture), auto\n";
-  cfg << "capture_method=inject\n";
-  cfg << "\n";
-  cfg << "[Performance]\n";
-  cfg << "; CPU process priority: idle, below_normal, normal, above_normal, "
-         "high, realtime\n";
-  cfg << "process_priority=normal\n";
-  cfg << "; GPU priority for encoder (-7 to 7, 0 = normal)\n";
-  cfg << "gpu_priority=0\n";
-  cfg << "; Priority for GPU copy queue (captures): low, normal, high\n";
-  cfg << "copy_queue_priority=normal\n";
-  cfg << "\n";
-  cfg << "[FpsLimiter]\n";
-  cfg << "; Enable FPS limiter synced to recording FPS (recommended for smooth "
-         "captures)\n";
-  cfg << "capture_sync_enabled=true\n";
-  cfg << "; Multiplier for capture sync (1 = match recording fps, 2 = 2x "
-         "recording fps)\n";
-  cfg << "capture_sync_multiplier=1\n";
-  cfg << "; Enable general FPS limiter (independent of recording)\n";
-  cfg << "general_enabled=false\n";
-  cfg << "; Target FPS for general limiter\n";
-  cfg << "general_fps=120\n";
-  cfg << "\n";
-  cfg << "[Graphics]\n";
-  cfg << "; Force VSync mode: default (use game setting), off, fifo (on), "
-         "adaptive, mailbox\n";
-  cfg << "vsync_mode=default\n";
-  cfg << "; Force Anisotropic Filtering: default, off, 2x, 4x, 8x, 16x\n";
-  cfg << "anisotropic_filtering=default\n";
-  cfg << "; Force MipMapping Filter: default, bilinear, trilinear\n";
-  cfg << "mip_mapping=default\n";
-  cfg << "; Force Mip LOD Bias: default, 0, or float value (e.g. -0.5 for "
-         "sharper textures)\n";
-  cfg << "mip_bias=default\n";
-  cfg << "; Mip Bias Mode: strict (force value), offset (add to game value), "
-         "base (offset only if negative)\n";
-  cfg << "mip_bias_mode=strict\n";
-  cfg << "; Force MSAA Samples: default, off, 2x, 4x, 8x\n";
-  cfg << "msaa_samples=default\n";
-  cfg << "; CPU Prerender Limit: -1 (default), 0, 0.5, 1-6\n";
-  cfg << "cpu_prerender_limit=-1\n";
-  cfg << "; VSync Backbuffer Queue Length: 0 (default), 1, 2, 3, 4, 5, 6\n";
-  cfg << "backbuffer_count=0\n";
-  cfg << "; Enable Sparse Grid Supersampling (SGSSAA)\n";
-  cfg << "sgssaa=false\n";
-  cfg << "; Disable auto-calculation of mip bias (use if textures are too "
-         "blurry/sharp)\n";
-  cfg << "disable_auto_mip_bias=false\n";
-  cfg << "; Force DLSS Auto Exposure: default (use game setting), on, off\n";
-  cfg << "dlss_auto_exposure=default\n";
-  cfg << "dlss_exposure_normalization=default\n";
-  cfg << "\n";
-  cfg << "; DLSS Render Presets (Super Resolution): default, A, B, C, D, E, F, "
-         "G, H, I, J, K, L, M\n";
-  cfg << "; Presets L and M require DLSS 3.10.5+\n";
-  cfg << "; Global override for all quality levels:\n";
-  cfg << "dlss_sr_preset=default\n";
-  cfg << "\n";
-  cfg << "; Individual quality level overrides:\n";
-  cfg << "dlss_preset_dlaa=default\n";
-  cfg << "dlss_preset_quality=default\n";
-  cfg << "dlss_preset_balanced=default\n";
-  cfg << "dlss_preset_performance=default\n";
-  cfg << "dlss_preset_ultra_performance=default\n";
-  cfg << "dlss_preset_ultra_quality=default\n";
-  cfg << "\n";
-  cfg << "; DLSS Ray Reconstruction Presets: default, A, B, C, D, E, F, G\n";
-  cfg << "; Global override for all quality levels:\n";
-  cfg << "dlss_rr_preset=default\n";
-  cfg << "\n";
-  cfg << "; Individual quality level overrides:\n";
-  cfg << "dlss_rr_preset_dlaa=default\n";
-  cfg << "dlss_rr_preset_quality=default\n";
-  cfg << "dlss_rr_preset_balanced=default\n";
-  cfg << "dlss_rr_preset_performance=default\n";
-  cfg << "dlss_rr_preset_ultra_performance=default\n";
-  cfg << "dlss_rr_preset_ultra_quality=default\n";
-  cfg << "\n";
-  cfg << "; DLSS Sharpening: default, off, or a float value from 0.0 to 1.0\n";
-  cfg << "dlss_sharpening=default\n";
-  cfg << "\n";
-  cfg << "; DLL Overrides (Absolute paths to force loading specific DLL "
-         "versions)\n";
-  cfg << "; Use these to override the game's bundled DLSS/Streamline DLLs with "
-         "your own.\n";
-  cfg << "dlss_sr_dll_path=\n";
-  cfg << "dlss_rr_dll_path=\n";
-  cfg << "dlss_fg_dll_path=\n";
-  cfg << "streamline_dll_path=\n";
-  cfg << "\n";
-  cfg << "; Custom File Detours (Force loading specific files from custom "
-         "paths)\n";
-  cfg << "; Format: custom-file-detour-N=filename\n";
-  cfg << ";         custom-file-detour-N-path=path/to/file\n";
-  cfg << "; Example:\n";
-  cfg << "; custom-file-detour-1=nvoglv32.dll\n";
-  cfg << "; custom-file-detour-1-path=C:\\PatchedDrivers\\nvoglv32.dll\n";
-  cfg << "\n";
-  cfg << "; Force DLSS Debug Overlay (requires 3.1.11+ DLLs): default, on, "
-         "off\n";
-  cfg << "dlss_debug_overlay=default\n";
-  cfg << "\n";
-  cfg << "; Fix for NVIDIA LOD Bias in Vulkan/OpenGL (forces "
-         "FERMI_UNOPT_LOD_SPREAD)\n";
-  cfg << "nvidia_lod_bias_fix=false\n";
-  cfg << "\n";
-  cfg << "; "
-         "---------------------------------------------------------------------"
-         "-------\n";
-  cfg << "; Per-Process Overrides Example\n";
-  cfg << "; "
-         "---------------------------------------------------------------------"
-         "-------\n";
-  cfg << ";[App.1]\n";
-  cfg << ";ProcessName=MyGame.exe\n";
-  cfg << ";vsync_mode=off\n";
-  cfg << ";anisotropic_filtering=16x\n";
-  cfg << ";mip_mapping=trilinear\n";
-  cfg << ";mip_bias=-0.5\n";
-  cfg << ";cpu_prerender_limit=1\n";
-  cfg << ";backbuffer_count=3\n";
-  cfg << ";enabled=true ; This would override Overlay.enabled if it's the only "
-         "one by that name\n";
-  cfg << ";Overlay.enabled=true ; Or use full path for "
-         "clarity/disambiguation\n";
-  cfg << "\n";
-  cfg << "[Injection]\n";
-  cfg << "; List of executables to inject into (one per line or "
-         "comma-separated)\n";
-  cfg << "; Use double quotes for names with spaces: \"My Game.exe\"\n";
-  cfg << "; Leave empty to inject into all compatible processes (not "
-         "recommended)\n";
-  cfg << "whitelist=(\n";
-  cfg << "dx12_test.exe\n";
-  cfg << "vulkan_test.exe\n";
-  cfg << ")\n";
-  cfg << "\n";
-  cfg << "[Overlay]\n";
-  cfg << "; Show overlay in hooked applications\n";
-  cfg << "enabled=true\n";
-  cfg << "; Position: TopLeft, TopRight, BottomLeft, BottomRight\n";
-  cfg << "position=TopLeft\n";
-  cfg << "padding=10\n";
-  cfg << "show_fps=true\n";
-  cfg << "show_frametime=true\n";
-  cfg << "show_cpu=true\n";
-  cfg << "show_gpu=true\n";
-  cfg << "show_ram=true\n";
-  cfg << "show_vram=true\n";
-  cfg << "show_recording=true\n";
-  cfg << "\n";
-  cfg << "; Appearance\n";
-  cfg << "compact_mode=false\n";
-  cfg << "horizontal_mode=false\n";
-  cfg << "font_size=0.0\n";
-  cfg << "rounded_corners=8.0\n";
-  cfg << "text_update_interval=500\n";
-  cfg << "; HDR Brightness: auto, or float value for paper white nits\n";
-  cfg << "hdr_paper_white=auto\n";
-  cfg << "\n";
-  cfg << "; Colors (Hex #RRGGBB)\n";
-  cfg << "bg_color=#000000\n";
-  cfg << "bg_alpha=0.50\n";
-  cfg << "text_color=#FFFFFF\n";
-  cfg << "text_outline=true\n";
-  cfg << "text_outline_color=#000000\n";
-  cfg << "text_outline_thickness=1.5\n";
-  cfg << "\n";
-  cfg << "fps_color=#05FAB8\n";
-  cfg << "frametime_color=#00FF00\n";
-  cfg << "cpu_color=#62972E\n";
-  cfg << "gpu_color=#62972E\n";
-  cfg << "ram_color=#9366C2\n";
-  cfg << "vram_color=#265FAD\n";
-  cfg << "\n";
-  cfg << "; Load Colors (Low -> Med -> High)\n";
-  cfg << "load_color_low=#62972E\n";
-  cfg << "load_color_med=#349ED4\n";
-  cfg << "load_color_high=#333BC2\n";
-  cfg << "\n";
-  cfg << "[Video]\n";
-  cfg << "; Encoder: av1_nvenc (NVIDIA RTX), hevc_nvenc, h264_nvenc, hevc_mf, "
-         "av1_mf, h264_mf (Windows)\n";
-  cfg << "encoder=av1_nvenc\n";
-  cfg << "fps=120\n";
-  cfg << "container=mkv\n";
-  cfg << "; Output directory (empty = same as captureengine.exe)\n";
-  cfg << "output_dir=\n";
-  cfg << "; Rate control: VBR, CBR, CQP\n";
-  cfg << "rate_control=VBR\n";
-  cfg << "bitrate=75Mbps\n";
-  cfg << "max_bitrate=150Mbps\n";
-  cfg << "; Variable Frame Rate (VFR) mode: true = use capture timestamps, "
-         "false = force CFR\n";
-  cfg << "vfr=false\n";
-  cfg << "; VFR Audio Sync: explicit A/V sync logic (experimental)\n";
-  cfg << "vfr_audio_sync=false\n";
-  cfg << "keyframe_interval=2\n";
-  cfg << "profile=high\n";
-  cfg << "capture_cursor=true\n";
-  cfg << "; Custom FFmpeg options (key=val:key=val)\n";
-  cfg << "custom_options=\n";
-  cfg << "\n";
-  cfg << "[NVENC]\n";
-  cfg << "; NVENC-specific settings (NVIDIA GPU encoders: av1_nvenc, "
-         "hevc_nvenc, h264_nvenc)\n";
-  cfg << "; Preset: p1 (fastest) to p7 (slowest/best quality)\n";
-  cfg << "preset=p1\n";
-  cfg << "; Tuning: hq (high quality), ll (low latency), ull (ultra low "
-         "latency)\n";
-  cfg << "tuning=hq\n";
-  cfg << "; Multipass encoding: disabled (fastest), qres (quarter res first "
-         "pass), full (full res first pass)\n";
-  cfg << "multipass=disabled\n";
-  cfg << "; Lookahead: enables look-ahead for better quality at cost of "
-         "latency (true/false)\n";
-  cfg << "lookahead=false\n";
-  cfg << "; Adaptive Quantization: enables spatial AQ for better quality "
-         "distribution (true/false)\n";
-  cfg << "aq=false\n";
-  cfg << "; B-frames: number of B frames (0 = disabled, 2-4 for better "
-         "compression)\n";
-  cfg << "b_frames=0\n";
-  cfg << "b_ref_mode=disabled\n";
-  cfg << "; Constant Quantization Parameter (for CQP rate control)\n";
-  cfg << "qp=23\n";
-  cfg << "\n";
-  cfg << "[MediaFoundation]\n";
-  cfg << "; Windows Media Foundation encoder settings (h264_mf, hevc_mf, "
-         "av1_mf)\n";
-  cfg << "; Rate control: cbr, pc_vbr, u_vbr, quality, ld_vbr, g_vbr\n";
-  cfg << "rate_control=quality\n";
-  cfg << "; Quality target (0-100, higher = better quality)\n";
-  cfg << "quality=80\n";
-  cfg << "; Scenario hint: live_streaming, archive, camera_record\n";
-  cfg << "scenario=live_streaming\n";
-  cfg << "; Force hardware encoding (true = require HW encoder, false = allow "
-         "software fallback)\n";
-  cfg << "hw_encoding=true\n";
-  cfg << "\n";
-  cfg << "[Scaling]\n";
-  cfg << "; GPU scaling before encoding (zero-copy, uses D3D11 Video "
-         "Processor)\n";
-  cfg << "; Enable scaling to record at a different resolution than the game\n";
-  cfg << "enabled=false\n";
-  cfg << "; Output resolution: native (use input), 720p, 1080p, 1440p, 4k, or "
-         "WxH format\n";
-  cfg << "; Examples: 1080p, 2560x1440, 1920x1080\n";
-  cfg << "output_resolution=native\n";
-  cfg << "; Scaling quality: normal (fastest), best (highest quality)\n";
-  cfg << "quality=best\n";
-  cfg << "; Scaling sharpness: 0 to 100 (adds edge enhancement/sharpening)\n";
-  cfg << "sharpness=0\n";
-  cfg << "\n";
-  cfg << "[Audio]\n";
+  cfg << R"CFG(; =============================================================================
+; CaptureEngine Configuration (generated)
+; All keys below can also be overridden per process in [App.N] sections.
+; =============================================================================
 
-  cfg << "enabled=true\n";
-  cfg << "; Audio track number in output file\n";
-  cfg << "track=1\n";
-  cfg << "; Codec: aac, alac (lossless), flac, opus\n";
-  cfg << "codec=alac\n";
-  cfg << "; Audio bitrate in Kbps (for lossy codecs like AAC/Opus)\n";
-  cfg << "; Ignored for lossless codecs (ALAC, FLAC, PCM)\n";
-  cfg << "bitrate=192\n";
-  cfg << "\n";
-  cfg << "; Sample rate in Hz\n";
-  cfg << "; Values: default (use source rate), 44100, 48000, 96000\n";
-  cfg << "sample_rate=default\n";
-  cfg << "\n";
-  cfg << "; Bit depth for audio samples\n";
-  cfg << "; Values: default (use source depth), 16, 24, 32\n";
-  cfg << "; Note: Some codecs may not support all bit depths\n";
-  cfg << "bit_depth=default\n";
-  cfg << "\n";
-  cfg << "; Downmix surround to stereo\n";
-  cfg << "; Values: true, false\n";
-  cfg << "downmix=false\n";
-  cfg << "\n";
-  cfg << "[Microphone]\n";
-  cfg << "enabled=false\n";
-  cfg << "; Device name (empty = default)\n";
-  cfg << "device=\n";
-  cfg << "track=2\n";
-  cfg << "\n";
-  cfg << "[AppAudio.1]\n";
-  cfg << "; "
-         "====================================================================="
-         "=======\n";
-  cfg << "; Per-Application Audio Capture (Windows 11)\n";
-  cfg << "; "
-         "====================================================================="
-         "=======\n";
-  cfg << "; Capture audio from a specific application instead of system-wide\n";
-  cfg << "; Requires Windows 10 build 20348+ or Windows 11\n";
-  cfg << "\n";
-  cfg << "; Enable per-app audio capture for this source\n";
-  cfg << "enabled=false\n";
-  cfg << "; Process name to capture audio from\n";
-  cfg << "; Example: chrome.exe, Discord.exe, Spotify.exe\n";
-  cfg << "process=\n";
-  cfg << "; Audio track(s) to route this app's audio to\n";
-  cfg << "track=3\n";
-  cfg << "\n";
-  cfg << "[AppAudio.2]\n";
-  cfg << "\n";
-  cfg << "[App.1]\n";
-  cfg << "; "
-         "====================================================================="
-         "=======\n";
-  cfg << "; Per-Process Configuration Overrides\n";
-  cfg << "; "
-         "====================================================================="
-         "=======\n";
-  cfg << "; Override any global setting for a specific process.\n";
-  cfg << "; Format: Section.Key=Value\n";
-  cfg << "\n";
-  cfg << "; Process name to apply overrides to (case-insensitive)\n";
-  cfg << "; Process=game.exe\n";
-  cfg << "\n";
-  cfg << "; Example: Disable overlay for this process\n";
-  cfg << "; enabled=false ; (Simplified: matches Overlay.enabled or "
-         "General.enabled etc. - first match wins)\n";
-  cfg << "; Overlay.enabled=false ; (Explicit)\n";
-  cfg << "\n";
-  cfg << "; Example: Set custom bitrate for this process\n";
-  cfg << "; bitrate=100Mbps\n";
-  cfg << "\n";
-  cfg << "; Example: Force VSync off for this process\n";
-  cfg << "; vsync_mode=off\n";
+[General]
+; debug_logging - Values: true, false
+debug_logging=true
+; capture_method - Values: inject, screengrab, desktop_dup, auto
+capture_method=inject
+
+[Injection]
+; whitelist - Values: process names (one per line in (...) or comma-separated)
+; Note: only listed executables are injected. Empty list disables process injection.
+whitelist=(
+)
+; overlay_whitelist - Values: process names for overlay-only targeting
+overlay_whitelist=(
+)
+; wgc_window_detection - Values: window titles for WGC app/window matching
+wgc_window_detection=(
+)
+
+[Performance]
+; process_priority - Values: idle, below_normal, normal, above_normal, high, realtime
+process_priority=normal
+; gpu_priority - Values: integer -7..7
+gpu_priority=0
+; copy_queue_priority - Values: low, normal, high
+copy_queue_priority=normal
+
+[FpsLimiter]
+; capture_sync_enabled - Values: true, false
+capture_sync_enabled=true
+; capture_sync_multiplier - Values: 1-8
+capture_sync_multiplier=1
+; general_enabled - Values: true, false
+general_enabled=false
+; general_fps - Values: integer > 0
+general_fps=120
+
+[Graphics]
+; vsync_mode - Values: default, off, fifo, adaptive, mailbox
+vsync_mode=default
+; anisotropic_filtering - Values: default, off, 2x, 4x, 8x, 16x
+anisotropic_filtering=default
+; mip_mapping - Values: default, bilinear, trilinear
+mip_mapping=default
+; mip_bias - Values: default or float (e.g. -0.5, 0, 0.5)
+mip_bias=default
+; mip_bias_mode - Values: strict, offset, base
+mip_bias_mode=strict
+; cpu_prerender_limit - Values: -1, 0, 0.5, 1-6
+cpu_prerender_limit=-1
+; backbuffer_count - Values: 0-6
+backbuffer_count=0
+; nvidia_smooth_motion_compat - Values: auto, on, off
+nvidia_smooth_motion_compat=auto
+; DLSS options below also support per-app overrides via Graphics.<key> in [App.N].
+; dlss_auto_exposure - Values: default, on, off
+dlss_auto_exposure=default
+; dlss_exposure_normalization - Values: default, on, off
+dlss_exposure_normalization=default
+; dlss_sr_preset - Values: default, A-M
+dlss_sr_preset=default
+; dlss_rr_preset - Values: default, A-G
+dlss_rr_preset=default
+; dlss_sharpening - Values: default, off, 0.0-1.0
+dlss_sharpening=default
+; dlss_debug_overlay - Values: default, on, off
+dlss_debug_overlay=default
+
+[Video]
+; encoder - Values: av1_nvenc, hevc_nvenc, h264_nvenc, av1_amf, hevc_amf, h264_amf, av1_qsv, hevc_qsv, h264_qsv, av1_mf, hevc_mf, h264_mf
+encoder=av1_nvenc
+; fps - Values: integer > 0
+fps=120
+; container - Values: mkv, mp4, mov
+container=mkv
+; output_dir - Values: path, empty = executable directory
+output_dir=
+; rate_control - Values: VBR, CBR, CQ
+rate_control=VBR
+; bitrate - Values: e.g. 75Mbps, 60000Kbps, 60000000
+bitrate=75Mbps
+; max_bitrate - Values: same format as bitrate
+max_bitrate=150Mbps
+; keyframe_interval - Values: integer seconds
+keyframe_interval=2
+; profile - Values: baseline, main, high, main10
+profile=high
+; b_frames - Values: 0-4
+b_frames=0
+; custom_options - Values: FFmpeg opts (key=val:key=val), empty = none
+custom_options=
+; capture_cursor - Values: true, false
+capture_cursor=true
+; vfr - Values: true, false
+vfr=false
+; vfr_audio_sync - Values: true, false
+vfr_audio_sync=false
+; bit_depth - Values: auto, 8, 10
+bit_depth=auto
+; color_space - Values: auto, bt709, bt2020
+color_space=auto
+; color_range - Values: auto, full, limited
+color_range=auto
+; chroma_subsampling - Values: auto, 420, 422, 444
+chroma_subsampling=auto
+
+[NVENC]
+; preset - Values: p1, p2, p3, p4, p5, p6, p7
+preset=p1
+; tuning - Values: hq, ll, ull, lossless
+tuning=hq
+; multipass - Values: disabled, qres, fullres
+multipass=disabled
+; qp - Values: 0-51 (used when rate_control=CQ)
+qp=23
+; lookahead - Values: true, false
+lookahead=false
+; aq - Values: true, false
+aq=false
+; b_ref_mode - Values: disabled, each, middle
+b_ref_mode=disabled
+
+[MediaFoundation]
+; rate_control - Values: cbr, pc_vbr, u_vbr, quality, ld_vbr, g_vbr
+rate_control=quality
+; quality - Values: 0-100
+quality=80
+; scenario - Values: live_streaming, archive, camera_record, video_conference
+scenario=live_streaming
+; hw_encoding - Values: true, false
+hw_encoding=true
+
+[Scaling]
+; enabled - Values: true, false
+enabled=false
+; output_resolution - Values: native, 720p, 1080p, 1440p, 4k, WxH
+output_resolution=native
+; quality - Values: normal, best
+quality=best
+; sharpness - Values: 0-100
+sharpness=0
+
+[Audio]
+; enabled - Values: true, false
+enabled=true
+; device - Values: device name/ID, empty = default system device
+device=
+; track - Values: 1-8 or comma-separated list
+track=1
+; codec - Values: aac, alac, flac, opus, pcm
+codec=alac
+; bitrate - Values: integer Kbps
+bitrate=192
+; sample_rate - Values: default, 44100, 48000, 96000
+sample_rate=default
+; bit_depth - Values: default, 16, 24, 32
+bit_depth=default
+; downmix - Values: true, false
+downmix=false
+
+[Microphone]
+; enabled - Values: true, false
+enabled=false
+; device - Values: device name/ID, empty = default microphone
+device=
+; track - Values: 1-8 or comma-separated list
+track=2
+
+[AppAudio.1]
+; enabled - Values: true, false
+enabled=false
+; process - Values: process name (e.g. game.exe)
+process=
+; process_id - Values: process ID, 0 = use process
+process_id=0
+; track - Values: 1-8 or comma-separated list
+track=3
+; codec - Values: aac, alac, flac, opus, pcm
+codec=alac
+; bitrate - Values: integer Kbps
+bitrate=192
+; sample_rate - Values: default, 44100, 48000, 96000
+sample_rate=default
+; bit_depth - Values: default, 16, 24, 32
+bit_depth=default
+; downmix - Values: true, false
+downmix=false
+
+[AppAudio.2]
+; enabled - Values: true, false
+enabled=false
+; process - Values: process name (e.g. discord.exe)
+process=
+; process_id - Values: process ID, 0 = use process
+process_id=0
+; track - Values: 1-8 or comma-separated list
+track=4
+; codec - Values: aac, alac, flac, opus, pcm
+codec=alac
+; bitrate - Values: integer Kbps
+bitrate=192
+; sample_rate - Values: default, 44100, 48000, 96000
+sample_rate=default
+; bit_depth - Values: default, 16, 24, 32
+bit_depth=default
+; downmix - Values: true, false
+downmix=false
+
+[Overlay]
+; enabled - Values: true, false
+enabled=true
+; capture_include_overlay - Values: true, false
+capture_include_overlay=true
+; position - Values: TopLeft, TopRight, BottomLeft, BottomRight
+position=TopLeft
+; padding - Values: integer >= 0
+padding=10
+; show_fps - Values: true, false
+show_fps=true
+; show_frametime - Values: true, false
+show_frametime=true
+; show_cpu - Values: true, false
+show_cpu=true
+; show_gpu - Values: true, false
+show_gpu=true
+; show_ram - Values: true, false
+show_ram=true
+; show_vram - Values: true, false
+show_vram=true
+; show_recording - Values: true, false
+show_recording=true
+; show_fg - Values: true, false
+show_fg=true
+; compact_mode - Values: true, false
+compact_mode=false
+; horizontal_mode - Values: true, false
+horizontal_mode=false
+; font_size - Values: 0 (auto) or float
+font_size=0
+; rounded_corners - Values: float >= 0
+rounded_corners=8
+; text_update_interval - Values: integer milliseconds
+text_update_interval=500
+
+[Hotkeys]
+; start_stop - Values: key string (e.g. F9, Ctrl+Shift+F10)
+start_stop=F9
+; toggle_fps - Values: key string or empty (disabled)
+toggle_fps=
+
+[App.1]
+; Process - Values: executable name (case-insensitive)
+; Process=game.exe
+; Overlay.enabled - Values: true, false
+; Graphics.dlss_sr_preset - Values: default, A-M
+; Video.bitrate - Values: e.g. 100Mbps
+)CFG";
 
   cfg.close();
 }
@@ -586,8 +505,6 @@ void LoadConfig(const std::string &path, AppConfig &config,
       GetStr("Graphics", "dlss_auto_exposure", "default");
   config.graphics.dlssExposureNormalization =
       GetStr("Graphics", "dlss_exposure_normalization", "default");
-  config.graphics.forceRayReconstruction =
-      GetBool("Graphics", "dlss_force_ray_reconstruction", false);
 
   // DLSS Presets
   config.graphics.dlssPresetDLAA =

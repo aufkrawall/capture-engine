@@ -1,353 +1,260 @@
-; ============================================================================
-; CaptureEngine Configuration File
-; ============================================================================
-; This file contains all configuration options with their possible values.
-; Lines starting with ; are comments.
-; ============================================================================
+; =============================================================================
+; CaptureEngine Configuration Template
+; All keys below can also be overridden per process in [App.N] sections.
+; =============================================================================
 
 [General]
-; Enable debug logging to captureengine.log
-; Values: true, false
+; debug_logging - Values: true, false
 debug_logging=true
-
-; Capture method to use for screen capture
-; Values: inject (DX12 hook injection), screengrab (WGC window capture), desktop_dup (DXGI monitor capture), auto (auto-detect)
+; capture_method - Values: inject, screengrab, desktop_dup, auto
 capture_method=inject
 
 [Injection]
-; Comma-separated list of executables to inject into
-; List of executables to inject into (one per line or comma-separated)
-; Use double quotes for names with spaces: "My Game.exe"
-; Leave empty to inject into all compatible processes (not recommended)
+; whitelist - Values: process names (one per line in (...) or comma-separated)
+; Note: only listed executables are injected. Empty list disables process injection.
 whitelist=(
-StrangeBrigade_DX12.exe
-StrangeBrigade_Vulkan.exe
+)
+; overlay_whitelist - Values: process names for overlay-only targeting
+overlay_whitelist=(
+)
+; wgc_window_detection - Values: window titles for WGC app/window matching
+wgc_window_detection=(
 )
 
 [Performance]
-; CPU process priority: idle, below_normal, normal, above_normal, high, realtime
-priority=normal
-
-; GPU priority for encoder (-7 to 7, 0 = normal)
+; process_priority - Values: idle, below_normal, normal, above_normal, high, realtime
+process_priority=normal
+; gpu_priority - Values: integer -7..7
 gpu_priority=0
-
-; Priority for GPU copy queue (captures): low, normal, high
+; copy_queue_priority - Values: low, normal, high
 copy_queue_priority=normal
 
 [FpsLimiter]
-; Enable FPS limiter synced to recording FPS (recommended for smooth captures)
+; capture_sync_enabled - Values: true, false
 capture_sync_enabled=true
-
-; Multiplier for capture sync (1 = match recording fps, 2 = 2x recording fps)
+; capture_sync_multiplier - Values: 1-8
 capture_sync_multiplier=1
-
-; Enable general FPS limiter (independent of recording)
+; general_enabled - Values: true, false
 general_enabled=false
-
-; Target FPS for general limiter
+; general_fps - Values: integer > 0
 general_fps=120
 
 [Graphics]
-; Force VSync mode: default (use game setting), off, fifo (on), adaptive, mailbox
+; vsync_mode - Values: default, off, fifo, adaptive, mailbox
 vsync_mode=default
-
-; Force Anisotropic Filtering: default, off, 2x, 4x, 8x, 16x
+; anisotropic_filtering - Values: default, off, 2x, 4x, 8x, 16x
 anisotropic_filtering=default
-
-; Force MipMapping Filter: default, bilinear, trilinear
+; mip_mapping - Values: default, bilinear, trilinear
 mip_mapping=default
-
-; Force Mip LOD Bias: default, 0, or float value (e.g. -0.5 for sharper textures)
+; mip_bias - Values: default or float (e.g. -0.5, 0, 0.5)
 mip_bias=default
-
-; Force MSAA Samples: default, off, 2x, 4x, 8x
-msaa_samples=default
-
-; CPU Prerender Limit: -1 (default), 0, 0.5, 1-6
+; mip_bias_mode - Values: strict, offset, base
+mip_bias_mode=strict
+; cpu_prerender_limit - Values: -1, 0, 0.5, 1-6
 cpu_prerender_limit=-1
-
-; VSync Backbuffer Queue Length: 0 (default), 1, 2, 3, 4, 5, 6
+; backbuffer_count - Values: 0-6
 backbuffer_count=0
-
-; Enable Sparse Grid Supersampling (SGSSAA)
-sgssaa=false
-
-; NVIDIA Smooth Motion compatibility mode
-; Values:
-;   auto - Automatically detect and adapt to NVIDIA Smooth Motion (default)
-;   on   - Force compatibility mode on (use if auto-detection fails)
-;   off  - Disable Smooth Motion compatibility adjustments
-; NVIDIA Smooth Motion is a driver-level frame generation feature that can
-; interfere with overlay rendering. This option ensures proper compatibility.
+; nvidia_smooth_motion_compat - Values: auto, on, off
 nvidia_smooth_motion_compat=auto
-
-
-[Overlay]
-; Show overlay in hooked applications
-enabled=true
-
-; Position: TopLeft, TopRight, BottomLeft, BottomRight
-position=TopLeft
-padding=10
-
-; === Display Elements ===
-; Toggle individual HUD elements
-show_fps=true
-show_frametime=true
-show_cpu=true
-show_gpu=true
-show_ram=true
-show_vram=true
-show_recording=true
-show_fg=true
-
-; === Appearance ===
-; Compact mode: reduced spacing/padding
-compact_mode=false
-; Horizontal layout: elements in a row
-horizontal_mode=false
-; Font size: 0 (auto-scaled), or pixel size
-font_size=0
-; Rounded corners radius (0 = sharp)
-rounded_corners=8
-
-; === Styling ===
-; Text outline improves visibility on bright backgrounds
-text_outline=true
-
-; Colors (Hex RRGGBB) - Leave empty to use default MangoHud-style theme
-; fps_color=
-; cpu_color=
-; gpu_color=
-; ram_color=
-; vram_color=
-; bg_color=
-; bg_alpha=0.4
+; DLSS options below also support per-app overrides via Graphics.<key> in [App.N].
+; dlss_auto_exposure - Values: default, on, off
+dlss_auto_exposure=default
+; dlss_exposure_normalization - Values: default, on, off
+dlss_exposure_normalization=default
+; dlss_sr_preset - Values: default, A-M
+dlss_sr_preset=default
+; dlss_rr_preset - Values: default, A-G
+dlss_rr_preset=default
+; dlss_sharpening - Values: default, off, 0.0-1.0
+dlss_sharpening=default
+; dlss_debug_overlay - Values: default, on, off
+dlss_debug_overlay=default
 
 [Video]
-; ============================================================================
-; Video Encoder Settings
-; ============================================================================
-
-; Video encoder to use
-; Values: 
-;   ---- NVIDIA (Tested & Recommended) ----
-;   av1_nvenc    - NVIDIA AV1 (RTX 40+)
-;   hevc_nvenc   - NVIDIA HEVC/H.265 (GTX 10+)
-;   h264_nvenc   - NVIDIA H.264 (GTX 6+)
-;   ---- AMD (Experimental - Not Tested) ----
-;   av1_amf      - AMD AV1 (RX 7000+)
-;   hevc_amf     - AMD HEVC (RX 400+)
-;   h264_amf     - AMD H.264
-;   ---- Intel (Experimental - Not Tested) ----
-;   av1_qsv      - Intel AV1 (Arc)
-;   hevc_qsv     - Intel HEVC
-;   h264_qsv     - Intel H.264
-;   ---- Windows Media Foundation (Fallback) ----
-;   av1_mf       - AV1 (requires AV1 codec extension)
-;   hevc_mf      - HEVC (requires HEVC codec extension)
-;   h264_mf      - H.264 (always available)
-encoder=av1_mf
-
-; Target framerate in FPS
+; encoder - Values: av1_nvenc, hevc_nvenc, h264_nvenc, av1_amf, hevc_amf, h264_amf, av1_qsv, hevc_qsv, h264_qsv, av1_mf, hevc_mf, h264_mf
+encoder=av1_nvenc
+; fps - Values: integer > 0
 fps=120
-
-; Container format
-; Values: mkv, mp4, mov
+; container - Values: mkv, mp4, mov
 container=mkv
-
-; Output directory for recordings
-; Leave empty to use the same directory as the executable
+; output_dir - Values: path, empty = executable directory
 output_dir=
-
-; Rate control mode (universal)
-; Values: VBR (variable bitrate), CBR (constant), CQ (constant quality/QP)
+; rate_control - Values: VBR, CBR, CQ
 rate_control=VBR
-
-; Target bitrate (for VBR/CBR)
-; Format: <number>Mbps, <number>Kbps, or raw number in bps
+; bitrate - Values: e.g. 75Mbps, 60000Kbps, 60000000
 bitrate=75Mbps
-
-; Maximum bitrate cap (for VBR)
+; max_bitrate - Values: same format as bitrate
 max_bitrate=150Mbps
-
-; Keyframe interval in seconds
+; keyframe_interval - Values: integer seconds
 keyframe_interval=2
-
-; Encoder profile (codec-dependent)
-; H.264: baseline, main, high
-; HEVC: main, main10
-; AV1: main (profile not used for most AV1 encoders)
+; profile - Values: baseline, main, high, main10
 profile=high
-
-; Number of B-frames (0 for lowest latency)
+; b_frames - Values: 0-4
 b_frames=0
-
-; Custom encoder options (FFmpeg format, advanced users)
-; Example: -surfaces 64
+; custom_options - Values: FFmpeg opts (key=val:key=val), empty = none
 custom_options=
-
-; Capture mouse cursor in recording
-; Values: true, false
+; capture_cursor - Values: true, false
 capture_cursor=true
+; vfr - Values: true, false
+vfr=false
+; vfr_audio_sync - Values: true, false
+vfr_audio_sync=false
+; bit_depth - Values: auto, 8, 10
+bit_depth=auto
+; color_space - Values: auto, bt709, bt2020
+color_space=auto
+; color_range - Values: auto, full, limited
+color_range=auto
+; chroma_subsampling - Values: auto, 420, 422, 444
+chroma_subsampling=auto
 
 [NVENC]
-; ============================================================================
-; NVIDIA NVENC Encoder Settings
-; ============================================================================
-; These settings apply only when using NVIDIA encoders:
-;   h264_nvenc, hevc_nvenc, av1_nvenc
-
-; Encoder preset - trading quality vs speed
-; Values: p1 (fastest) to p7 (slowest/best quality)
+; preset - Values: p1, p2, p3, p4, p5, p6, p7
 preset=p1
-
-; Tuning hint for encoder optimization
-; Values:
-;   hq       - High Quality (default, best quality)
-;   ll       - Low Latency (reduced latency, good for streaming)
-;   ull      - Ultra Low Latency (minimal latency)
-;   lossless - Lossless encoding
+; tuning - Values: hq, ll, ull, lossless
 tuning=hq
-
-; Multipass encoding for improved quality
-; Values:
-;   disabled - Single pass (fastest)
-;   qres     - Quarter resolution first pass
-;   fullres  - Full resolution first pass (best quality)
+; multipass - Values: disabled, qres, fullres
 multipass=disabled
-
-; Quality parameter for CQ (Constant Quality) mode
-; Values: 0-51 (lower = better quality, larger files)
-; Only used when rate_control=CQ in [Video] section
-; Typical values: 18-23 for high quality, 24-28 for balanced
+; qp - Values: 0-51 (used when rate_control=CQ)
 qp=23
-
-; Enable lookahead for improved quality (adds latency)
-; Values: true, false
-; Lookahead depth is automatically set to 32 frames when enabled
+; lookahead - Values: true, false
 lookahead=false
-
-; Adaptive quantization for improved quality in complex scenes
-; Values: true, false
-; Enables both spatial and temporal AQ (not available for AV1)
+; aq - Values: true, false
 aq=false
-
-; B-frame reference mode
-; Values:
-;   disabled - No B-frame references (lowest latency)
-;   each     - Each B-frame as reference
-;   middle   - Middle B-frame as reference
+; b_ref_mode - Values: disabled, each, middle
 b_ref_mode=disabled
 
 [MediaFoundation]
-; ============================================================================
-; Media Foundation Encoder Settings (h264_mf, hevc_mf)
-; ============================================================================
-; These settings apply when using Windows Media Foundation encoders.
-; These are the Windows built-in encoders that work on any GPU.
-
-; Rate control mode for MF encoder
-; Values:
-;   cbr        - Constant Bitrate (uses bitrate from [Video] section)
-;   pc_vbr     - Peak Constrained VBR (uses bitrate + max_bitrate from [Video])
-;   u_vbr      - Unconstrained VBR (uses bitrate from [Video])
-;   quality    - Quality mode (uses quality setting below, ignores bitrate)
-;   ld_vbr     - Low Delay VBR (uses bitrate from [Video])
-;   g_vbr      - Global VBR (uses bitrate from [Video])
-; NOTE: For CBR/VBR modes, bitrate and max_bitrate are taken from [Video] section
-rate_control=pc_vbr
-
-; Quality target for quality-based rate control
-; Values: 0-100 (higher = better quality, larger files)
+; rate_control - Values: cbr, pc_vbr, u_vbr, quality, ld_vbr, g_vbr
+rate_control=quality
+; quality - Values: 0-100
 quality=80
-
-; Usage scenario hint for encoder optimization
-; Values:
-;   live_streaming  - Optimized for streaming (low latency)
-;   archive         - Optimized for quality/storage
-;   camera_record   - Optimized for camera recording
-;   video_conference- Optimized for video calls
+; scenario - Values: live_streaming, archive, camera_record, video_conference
 scenario=live_streaming
-
-; Force hardware encoding (GPU acceleration)
-; Values: true (use GPU encoder), false (allow CPU fallback)
+; hw_encoding - Values: true, false
 hw_encoding=true
 
+[Scaling]
+; enabled - Values: true, false
+enabled=false
+; output_resolution - Values: native, 720p, 1080p, 1440p, 4k, WxH
+output_resolution=native
+; quality - Values: normal, best
+quality=best
+; sharpness - Values: 0-100
+sharpness=0
+
 [Audio]
-; ============================================================================
-; System Audio Settings (Desktop/Game Audio)
-; ============================================================================
-
-; Enable system audio capture
-; Values: true, false
+; enabled - Values: true, false
 enabled=true
-
-; Audio codec
-; Values: 
-;   alac  - Apple Lossless (recommended for archival)
-;   aac   - AAC (good quality, smaller files)
-;   opus  - Opus (excellent quality/size ratio)
-;   flac  - FLAC (lossless, larger files)
-;   pcm   - Uncompressed PCM (largest files)
+; device - Values: device name/ID, empty = default system device
+device=
+; track - Values: 1-8 or comma-separated list
+track=1
+; codec - Values: aac, alac, flac, opus, pcm
 codec=alac
-
-; Audio bitrate in Kbps (for lossy codecs like AAC/Opus)
-; Ignored for lossless codecs (ALAC, FLAC, PCM)
+; bitrate - Values: integer Kbps
 bitrate=192
-
-; Sample rate in Hz
-; Values: default (use source rate), 44100, 48000, 96000
+; sample_rate - Values: default, 44100, 48000, 96000
 sample_rate=default
-
-; Bit depth for audio samples
-; Values: default (use source depth), 16, 24, 32
-; Note: Some codecs may not support all bit depths
+; bit_depth - Values: default, 16, 24, 32
 bit_depth=default
-
-; Downmix surround to stereo
-; Values: true, false
+; downmix - Values: true, false
 downmix=false
 
 [Microphone]
-; ============================================================================
-; Microphone Settings
-; ============================================================================
-
-; Enable microphone capture
-; Values: true, false
+; enabled - Values: true, false
 enabled=false
-
-; Device name or ID (leave empty for default microphone)
+; device - Values: device name/ID, empty = default microphone
 device=
-
-; Audio track number for microphone (1-8)
-; Set to different track than system audio to keep them separate
-; Set to same track as system audio to mix them together
-; Audio track index (1-8). Supports multiple tracks separated by comma, e.g. "1,2"
-track=1
+; track - Values: 1-8 or comma-separated list
+track=2
 
 [AppAudio.1]
-; ============================================================================
-; Per-Application Audio Capture (Windows 11)
-; ============================================================================
-; Capture audio from a specific application instead of system-wide
-; Requires Windows 10 build 20348+ or Windows 11
-
-; Enable per-app audio capture for this source
-; Values: true, false
+; enabled - Values: true, false
 enabled=false
-
-; Process name to capture audio from
-; Example: chrome.exe, Discord.exe, Spotify.exe
+; process - Values: process name (e.g. game.exe)
 process=
-
-; Audio track(s) to route this app's audio to
-; Supports multiple tracks: 1,2 routes to both track 1 and 2
+; process_id - Values: process ID, 0 = use process
+process_id=0
+; track - Values: 1-8 or comma-separated list
 track=3
+; codec - Values: aac, alac, flac, opus, pcm
+codec=alac
+; bitrate - Values: integer Kbps
+bitrate=192
+; sample_rate - Values: default, 44100, 48000, 96000
+sample_rate=default
+; bit_depth - Values: default, 16, 24, 32
+bit_depth=default
+; downmix - Values: true, false
+downmix=false
 
 [AppAudio.2]
-; Second per-app audio source (e.g., for Discord on separate track)
+; enabled - Values: true, false
 enabled=false
+; process - Values: process name (e.g. discord.exe)
 process=
+; process_id - Values: process ID, 0 = use process
+process_id=0
+; track - Values: 1-8 or comma-separated list
 track=4
+; codec - Values: aac, alac, flac, opus, pcm
+codec=alac
+; bitrate - Values: integer Kbps
+bitrate=192
+; sample_rate - Values: default, 44100, 48000, 96000
+sample_rate=default
+; bit_depth - Values: default, 16, 24, 32
+bit_depth=default
+; downmix - Values: true, false
+downmix=false
+
+[Overlay]
+; enabled - Values: true, false
+enabled=true
+; capture_include_overlay - Values: true, false
+capture_include_overlay=true
+; position - Values: TopLeft, TopRight, BottomLeft, BottomRight
+position=TopLeft
+; padding - Values: integer >= 0
+padding=10
+; show_fps - Values: true, false
+show_fps=true
+; show_frametime - Values: true, false
+show_frametime=true
+; show_cpu - Values: true, false
+show_cpu=true
+; show_gpu - Values: true, false
+show_gpu=true
+; show_ram - Values: true, false
+show_ram=true
+; show_vram - Values: true, false
+show_vram=true
+; show_recording - Values: true, false
+show_recording=true
+; show_fg - Values: true, false
+show_fg=true
+; compact_mode - Values: true, false
+compact_mode=false
+; horizontal_mode - Values: true, false
+horizontal_mode=false
+; font_size - Values: 0 (auto) or float
+font_size=0
+; rounded_corners - Values: float >= 0
+rounded_corners=8
+; text_update_interval - Values: integer milliseconds
+text_update_interval=500
+
+[Hotkeys]
+; start_stop - Values: key string (e.g. F9, Ctrl+Shift+F10)
+start_stop=F9
+; toggle_fps - Values: key string or empty (disabled)
+toggle_fps=
+
+[App.1]
+; Process - Values: executable name (case-insensitive)
+; Process=game.exe
+; Overlay.enabled - Values: true, false
+; Graphics.dlss_sr_preset - Values: default, A-M
+; Video.bitrate - Values: e.g. 100Mbps

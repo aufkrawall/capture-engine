@@ -14,6 +14,9 @@
 
 // Forward declaration from dx12_hook.cpp
 extern void EnsureDX12Hook();
+struct IDXGISwapChain;
+// Forward declaration from dx11_hook.cpp
+extern void DX11Hook_OnSwapChainCreated(IDXGISwapChain *pSwapChain);
 #include "../apis/dx12_hook.h" // Access to g_DX12Hook implementation
 #include "../common/fg_detection.h"
 #include "../common/hook_common.h"
@@ -77,6 +80,18 @@ static bool g_WrappersActive = false;
 // D3D11On12) vs the app actually using that API.
 static std::atomic<bool> g_D3D11Or10DeviceCreated{false};
 static std::atomic<bool> g_D3D12DeviceCreated{false};
+
+namespace {
+thread_local int s_D3D10CreateDepth = 0;
+
+class D3D10CreateScope {
+public:
+  D3D10CreateScope() { ++s_D3D10CreateDepth; }
+  ~D3D10CreateScope() { --s_D3D10CreateDepth; }
+};
+
+bool IsInD3D10CreateScope() { return s_D3D10CreateDepth > 0; }
+} // namespace
 
 bool WasD3D11Or10DeviceCreated() {
   return g_D3D11Or10DeviceCreated.load(std::memory_order_acquire);
@@ -273,6 +288,18 @@ HRESULT WINAPI Wrapped_D3D11CreateDevice(
     return E_FAIL;
   }
 
+  if (IsInD3D10CreateScope()) {
+    static std::atomic<int> s_D3D10BypassLogCount{0};
+    if (s_D3D10BypassLogCount.fetch_add(1, std::memory_order_relaxed) < 8) {
+      WrapperLog("Wrapped_D3D11CreateDevice: D3D10 create path detected, "
+                 "bypassing D3D11 wrappers");
+    }
+    return oD3D11CreateDevice(
+        DeWrap(pAdapter), DriverType, Software, Flags, pFeatureLevels,
+        FeatureLevels, SDKVersion, ppDevice, pFeatureLevel,
+        ppImmediateContext);
+  }
+
   ID3D11Device *pRealDevice = nullptr;
   ID3D11DeviceContext *pRealContext = nullptr;
   HRESULT hr = oD3D11CreateDevice(
@@ -323,61 +350,38 @@ HRESULT WINAPI Wrapped_D3D11CreateDeviceAndSwapChain(
     return E_FAIL;
   }
 
-  ID3D11Device *pRealDevice = nullptr;
-  IDXGISwapChain *pRealSwapChain = nullptr;
-  ID3D11DeviceContext *pRealContext = nullptr;
+  if (IsInD3D10CreateScope()) {
+    static std::atomic<int> s_D3D10BypassLogCount{0};
+    if (s_D3D10BypassLogCount.fetch_add(1, std::memory_order_relaxed) < 8) {
+      WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: D3D10 create path "
+                 "detected, bypassing D3D11 wrappers");
+    }
+    return oD3D11CreateDeviceAndSwapChain(
+        DeWrap(pAdapter), DriverType, Software, Flags, pFeatureLevels,
+        FeatureLevels, SDKVersion, pSwapChainDesc, ppSwapChain, ppDevice,
+        pFeatureLevel, ppImmediateContext);
+  }
 
   WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: Calling original at %p",
              oD3D11CreateDeviceAndSwapChain);
 
   HRESULT hr = oD3D11CreateDeviceAndSwapChain(
       DeWrap(pAdapter), DriverType, Software, Flags, pFeatureLevels,
-      FeatureLevels, SDKVersion, pSwapChainDesc,
-      ppSwapChain ? &pRealSwapChain : nullptr,
-      ppDevice ? &pRealDevice : nullptr, pFeatureLevel,
-      ppImmediateContext ? &pRealContext : nullptr);
+      FeatureLevels, SDKVersion, pSwapChainDesc, ppSwapChain, ppDevice,
+      pFeatureLevel, ppImmediateContext);
 
   WrapperLog(
       "Wrapped_D3D11CreateDeviceAndSwapChain: Original returned hr=0x%08X", hr);
 
   if (SUCCEEDED(hr)) {
-    // Wrap the device
-    if (pRealDevice && ppDevice) {
-      auto *pDevWrapper = new CWrapD3D11Device(pRealDevice);
-      *ppDevice = pDevWrapper;
-      pRealDevice->Release();
-      WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: Created wrapped D3D11 "
-                 "device");
+    // D3D11 runtime compatibility: return raw objects and hook swapchain vtable.
+    if (ppSwapChain && *ppSwapChain) {
+      DX11Hook_OnSwapChainCreated(*ppSwapChain);
     }
-
-    // Wrap the swapchain
-    if (pRealSwapChain && ppSwapChain) {
-      // CRITICAL: Check if this swapchain is already wrapped
-      // This prevents double-wrapping which causes infinite Present recursion
-      void *pExistingWrapper = nullptr;
-      if (SUCCEEDED(pRealSwapChain->QueryInterface(IID_CWrapDXGISwapChain,
-                                                   &pExistingWrapper))) {
-        ((IUnknown *)pExistingWrapper)->Release();
-        WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: Swapchain already "
-                   "wrapped, skipping double-wrap");
-        *ppSwapChain = pRealSwapChain;
-        pRealSwapChain->Release();
-      } else {
-        WrapperLog(
-            "Wrapped_D3D11CreateDeviceAndSwapChain: Wrapping swapchain %p",
-            pRealSwapChain);
-        auto *pSwapWrapper =
-            new CWrapDXGISwapChain(pRealSwapChain, pRealDevice);
-        *ppSwapChain = pSwapWrapper;
-        pRealSwapChain->Release();
-        WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: Swapchain wrapped, "
-                   "new ptr=%p",
-                   pSwapWrapper);
-      }
-    }
-
-    if (ppImmediateContext) {
-      *ppImmediateContext = pRealContext;
+    static std::atomic<int> s_D3D11CompatLogCount{0};
+    if (s_D3D11CompatLogCount.fetch_add(1, std::memory_order_relaxed) < 8) {
+      WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: compatibility mode - "
+                 "returning unwrapped objects");
     }
   }
 
@@ -401,6 +405,8 @@ HRESULT WINAPI Wrapped_D3D10CreateDevice(IDXGIAdapter *pAdapter,
 
   if (!oD3D10CreateDevice)
     return E_FAIL;
+
+  D3D10CreateScope d3d10CreateScope;
 
   ID3D10Device *pRealDevice = nullptr;
   HRESULT hr = oD3D10CreateDevice(DeWrap(pAdapter), DriverType, Software, Flags,
@@ -431,6 +437,8 @@ HRESULT WINAPI Wrapped_D3D10CreateDevice1(IDXGIAdapter *pAdapter,
   if (!oD3D10CreateDevice1)
     return E_FAIL;
 
+  D3D10CreateScope d3d10CreateScope;
+
   ID3D10Device1 *pRealDevice = nullptr;
   HRESULT hr =
       oD3D10CreateDevice1(DeWrap(pAdapter), DriverType, Software, Flags,
@@ -460,6 +468,8 @@ HRESULT WINAPI Wrapped_D3D10CreateDeviceAndSwapChain(
   if (!oD3D10CreateDeviceAndSwapChain)
     return E_FAIL;
 
+  D3D10CreateScope d3d10CreateScope;
+
   ID3D10Device *pRealDevice = nullptr;
   IDXGISwapChain *pRealSwapChain = nullptr;
 
@@ -469,33 +479,19 @@ HRESULT WINAPI Wrapped_D3D10CreateDeviceAndSwapChain(
       ppDevice ? &pRealDevice : nullptr);
 
   if (SUCCEEDED(hr)) {
+    // D3D10 runtime compatibility: return raw objects.
+    // Wrapping D3D10 swapchains/devices has caused invalid vtable pointers in
+    // both x64 and x86 test coverage.
     if (pRealDevice && ppDevice) {
-      auto *pDevWrapper = new CWrapD3D10Device(pRealDevice);
-      *ppDevice = pDevWrapper;
-      pRealDevice->Release();
-      WrapperLog("Wrapper: Created wrapped D3D10 device");
+      *ppDevice = pRealDevice;
+      pRealDevice = nullptr;
     }
-
-    // Wrap the swapchain
     if (pRealSwapChain && ppSwapChain) {
-      // CRITICAL: Check if this swapchain is already wrapped
-      // This prevents double-wrapping which causes infinite Present recursion
-      void *pExistingWrapper = nullptr;
-      if (SUCCEEDED(pRealSwapChain->QueryInterface(IID_CWrapDXGISwapChain,
-                                                   &pExistingWrapper))) {
-        ((IUnknown *)pExistingWrapper)->Release();
-        WrapperLog("Wrapper: D3D10 swapchain already wrapped, skipping "
-                   "double-wrap");
-        *ppSwapChain = pRealSwapChain;
-        pRealSwapChain->Release();
-      } else {
-        auto *pSwapWrapper =
-            new CWrapDXGISwapChain(pRealSwapChain, pRealDevice);
-        *ppSwapChain = pSwapWrapper;
-        pRealSwapChain->Release();
-        WrapperLog("Wrapper: Created wrapped DXGI swapchain (D3D10)");
-      }
+      *ppSwapChain = pRealSwapChain;
+      pRealSwapChain = nullptr;
     }
+    WrapperLog("Wrapper: D3D10 compatibility mode - returning unwrapped objects");
+    return hr;
   }
 
   return hr;
