@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -48,7 +49,7 @@ public:
   void StartRecording() {
     std::lock_guard<std::mutex> lock(mtx);
     recordingStartTime = std::chrono::steady_clock::now();
-    droppedFrames = 0; // Reset counter when recording starts
+    droppedFrames.store(0, std::memory_order_relaxed);
   }
 
   ~FrameQueue() {
@@ -79,7 +80,7 @@ public:
       if (countAsDrop) {
         auto elapsed = std::chrono::steady_clock::now() - recordingStartTime;
         if (elapsed > GRACE_PERIOD) {
-          droppedFrames++;
+          droppedFrames.fetch_add(1, std::memory_order_relaxed);
         }
       }
     }
@@ -133,8 +134,12 @@ public:
     return buffer.empty();
   }
 
-  uint64_t GetDroppedCount() const { return droppedFrames; }
-  void ResetDroppedCount() { droppedFrames = 0; }
+  uint64_t GetDroppedCount() const {
+    return droppedFrames.load(std::memory_order_relaxed);
+  }
+  void ResetDroppedCount() {
+    droppedFrames.store(0, std::memory_order_relaxed);
+  }
 
   // Clear any pending frames
   void Clear() {
@@ -145,7 +150,7 @@ public:
       }
     }
     buffer.clear();
-    droppedFrames = 0;
+    droppedFrames.store(0, std::memory_order_relaxed);
   }
 
   // Signal shutdown to unblock waiting consumers
@@ -164,7 +169,7 @@ private:
   std::condition_variable cv;
   size_t maxCapacity;
   bool running = true;
-  uint64_t droppedFrames = 0;
+  std::atomic<uint64_t> droppedFrames{0};
   std::chrono::steady_clock::time_point
       recordingStartTime{}; // For grace period
 };

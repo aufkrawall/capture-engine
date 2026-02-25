@@ -26,7 +26,6 @@
 #include "../common/streamline_compat.h"
 
 #include "../common/freeze_watchdog.h"
-#include "../common/overlay_adapter.h"
 #include "../common/perf_logger.h"
 #include "../common/swapchain_wrapper.h"
 #include "../common/system_metrics.h"
@@ -467,15 +466,28 @@ void DX12Hook::Init() {
   // causes deadlocks with Steam overlay + Streamline.
   InstallGlobalVTableHooks();
 
-  // Install inline hooks on Present/Present1 via temp swapchain.
-  // Inline hooks patch the function code in memory and create a trampoline.
-  // Calling the trampoline bypasses the hook entirely - no re-entry possible.
-  // This works for both pre-existing swapchains AND wrapped swapchains.
-  HookSwapchainVTableViaTempSwapchain();
+  // NOTE: HookSwapchainVTableViaTempSwapchain() is NOT called here.
+  // It is deferred to EnsurePresentHooks(), which is called from
+  // Wrapped_D3D12CreateDevice only after the game has confirmed D3D12 usage.
+  // This prevents creating a temp D3D12 device in DX11-only apps (which load
+  // d3d12.dll via D3D11On12), which would corrupt shared DXGI internal state
+  // and crash the DX11 swap chain.
 
-  HookLog("DX12Hook: Initialized (factory hooks + inline Present hooks)");
+  HookLog("DX12Hook: Initialized (factory hooks installed; Present hooks deferred)");
 
   FindAndWrapPreExistingSwapchains();
+}
+
+void DX12Hook::EnsurePresentHooks() {
+  static std::atomic<bool> s_done{false};
+  bool expected = false;
+  if (!s_done.compare_exchange_strong(expected, true,
+                                      std::memory_order_acq_rel)) {
+    return; // Already installed
+  }
+  HookLog("DX12: Installing Present inline hooks (D3D12 device created by game)");
+  HookSwapchainVTableViaTempSwapchain();
+  HookLog("DX12: Present inline hooks installed");
 }
 
 static void FindAndWrapPreExistingSwapchains() {
@@ -892,11 +904,13 @@ bool InitImGui(ID3D12Device *device, int buffers, DXGI_FORMAT format,
     gameQueue = g_CommandQueue.load();
   }
   if (!g_OverlayAdapter.InitDX12(device, gameQueue, format)) {
-    HookLog("InitImGui: OverlayAdapter.InitDX12 failed!");
+    HookLog("[Overlay] DX12: OverlayAdapter::InitDX12 FAILED (device=%p, queue=%p, fmt=%d)",
+            device, gameQueue, format);
     return false;
   }
 
   // OverlayAdapter handles its own initialization
+  HookLog("[Overlay] DX12: OverlayAdapter::InitDX12 succeeded (hwnd=%p)", hwnd);
 
   InputManager::Get().HookWindow(hwnd);
 

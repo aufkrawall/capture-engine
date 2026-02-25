@@ -458,43 +458,157 @@ void AudioEncoder::EncodeSamples(const uint8_t *data, int sizeBytes,
     }
   }
 
-  // Write resampled data to FIFO
-  int ret =
-      av_audio_fifo_write(audioFifo, (void **)resampledData, convertedSamples);
-
-  if (ret < convertedSamples) {
-    DLL_Log("[AudioEnc] Failed to write to audio FIFO");
-  }
-
-  AudioResampler::FreeOutputBuffer(resampledData);
-
-  // SAFETY: Check FIFO size to prevent unbounded growth (Memory Leak
-  // Protection) If FIFO grows > 5 seconds, something is broken (encoder stalled
-  // or input too fast). 5 seconds @ 48kHz = 240,000 samples.
+  // SAFETY: Check FIFO size BEFORE writing to prevent overflow
+  // Dropping NEWEST samples maintains timeline continuity (avoids temporal jumps)
+  // whereas draining OLDEST samples causes A/V desync and clicks
   if (codecCtx->sample_rate <= 0) {
     DLL_Log("[AudioEnc] ERROR: sample_rate=%d, codec context invalid, skipping encode",
             codecCtx->sample_rate);
+    AudioResampler::FreeOutputBuffer(resampledData);
     return;
   }
   const int MAX_FIFO_SAMPLES = codecCtx->sample_rate * 5;
+  const int CROSSFADE_SAMPLES = 64;
   int currentFifoSize = av_audio_fifo_size(audioFifo);
+  int samplesToWrite = convertedSamples;
+  bool applyingFadeOut = false;
 
-  if (currentFifoSize > MAX_FIFO_SAMPLES) {
-    // Drain the oldest samples down to ~1 second to avoid a complete silence
-    // gap. A hard av_audio_fifo_reset would cause a PTS discontinuity and
-    // audible click. Draining preserves the newest audio data.
-    int targetSamples = codecCtx->sample_rate; // Keep 1 second of backlog
-    int toDrain = currentFifoSize - targetSamples;
-    if (toDrain > 0) {
-      av_audio_fifo_drain(audioFifo, toDrain);
+  if (currentFifoSize + convertedSamples > MAX_FIFO_SAMPLES) {
+    samplesToWrite = MAX_FIFO_SAMPLES - currentFifoSize;
+    if (samplesToWrite < 0)
+      samplesToWrite = 0;
+
+    if (!wasDroppingSamples && samplesToWrite > 0) {
+      applyingFadeOut = true;
     }
-    DLL_Log("[AudioEnc] CRITICAL: FIFO Overflow (%d samples, %.1f sec). "
-            "Drained %d samples. samplesCount=%lld",
-            currentFifoSize,
-            (double)currentFifoSize / codecCtx->sample_rate,
-            toDrain,
-            (long long)samplesCount);
+
+    if (!wasDroppingSamples) {
+      DLL_Log("[AudioEnc] FIFO NEAR OVERFLOW: size=%d + new=%d > max=%d. "
+              "Writing %d samples, dropping %d newest (maintains timeline)",
+              currentFifoSize, convertedSamples, MAX_FIFO_SAMPLES,
+              samplesToWrite, convertedSamples - samplesToWrite);
+    }
+
+    wasDroppingSamples = true;
+    totalDroppedSamples += convertedSamples - samplesToWrite;
+
+    if (samplesToWrite == 0) {
+      AudioResampler::FreeOutputBuffer(resampledData);
+      return;
+    }
+  } else if (wasDroppingSamples) {
+    wasDroppingSamples = false;
+    DLL_Log("[AudioEnc] FIFO recovered after dropping %lld total samples, applying fade-in",
+            (long long)totalDroppedSamples);
+    totalDroppedSamples = 0;
   }
+
+  if (applyingFadeOut && samplesToWrite > 0 && samplesToWrite < convertedSamples) {
+    int fadeStart = std::max(0, samplesToWrite - CROSSFADE_SAMPLES);
+    int channels = codecCtx->ch_layout.nb_channels;
+    int numPlanes = av_sample_fmt_is_planar(codecCtx->sample_fmt) ? channels : 1;
+
+    for (int p = 0; p < numPlanes; p++) {
+      if (codecCtx->sample_fmt == AV_SAMPLE_FMT_FLT ||
+          codecCtx->sample_fmt == AV_SAMPLE_FMT_FLTP) {
+        float *fData = (float *)resampledData[p];
+        for (int i = fadeStart; i < samplesToWrite; i++) {
+          float fadePos = (float)(samplesToWrite - 1 - i) / CROSSFADE_SAMPLES;
+          float gain = fadePos < 1.0f ? fadePos : 1.0f;
+          if (numPlanes == 1) {
+            for (int c = 0; c < channels; c++)
+              fData[i * channels + c] *= gain;
+          } else {
+            fData[i] *= gain;
+          }
+        }
+      } else if (codecCtx->sample_fmt == AV_SAMPLE_FMT_S16 ||
+                 codecCtx->sample_fmt == AV_SAMPLE_FMT_S16P) {
+        int16_t *sData = (int16_t *)resampledData[p];
+        for (int i = fadeStart; i < samplesToWrite; i++) {
+          float fadePos = (float)(samplesToWrite - 1 - i) / CROSSFADE_SAMPLES;
+          float gain = fadePos < 1.0f ? fadePos : 1.0f;
+          if (numPlanes == 1) {
+            for (int c = 0; c < channels; c++)
+              sData[i * channels + c] = (int16_t)(sData[i * channels + c] * gain);
+          } else {
+            sData[i] = (int16_t)(sData[i] * gain);
+          }
+        }
+      } else if (codecCtx->sample_fmt == AV_SAMPLE_FMT_S32 ||
+                 codecCtx->sample_fmt == AV_SAMPLE_FMT_S32P) {
+        int32_t *sData = (int32_t *)resampledData[p];
+        for (int i = fadeStart; i < samplesToWrite; i++) {
+          float fadePos = (float)(samplesToWrite - 1 - i) / CROSSFADE_SAMPLES;
+          float gain = fadePos < 1.0f ? fadePos : 1.0f;
+          if (numPlanes == 1) {
+            for (int c = 0; c < channels; c++)
+              sData[i * channels + c] = (int32_t)(sData[i * channels + c] * gain);
+          } else {
+            sData[i] = (int32_t)(sData[i] * gain);
+          }
+        }
+      }
+    }
+  }
+
+  if (wasDroppingSamples && !applyingFadeOut && samplesToWrite > 0) {
+    int fadeEnd = std::min(samplesToWrite, CROSSFADE_SAMPLES);
+    int channels = codecCtx->ch_layout.nb_channels;
+    int numPlanes = av_sample_fmt_is_planar(codecCtx->sample_fmt) ? channels : 1;
+
+    for (int p = 0; p < numPlanes; p++) {
+      if (codecCtx->sample_fmt == AV_SAMPLE_FMT_FLT ||
+          codecCtx->sample_fmt == AV_SAMPLE_FMT_FLTP) {
+        float *fData = (float *)resampledData[p];
+        for (int i = 0; i < fadeEnd; i++) {
+          float gain = (float)(i + 1) / CROSSFADE_SAMPLES;
+          if (gain > 1.0f) gain = 1.0f;
+          if (numPlanes == 1) {
+            for (int c = 0; c < channels; c++)
+              fData[i * channels + c] *= gain;
+          } else {
+            fData[i] *= gain;
+          }
+        }
+      } else if (codecCtx->sample_fmt == AV_SAMPLE_FMT_S16 ||
+                 codecCtx->sample_fmt == AV_SAMPLE_FMT_S16P) {
+        int16_t *sData = (int16_t *)resampledData[p];
+        for (int i = 0; i < fadeEnd; i++) {
+          float gain = (float)(i + 1) / CROSSFADE_SAMPLES;
+          if (gain > 1.0f) gain = 1.0f;
+          if (numPlanes == 1) {
+            for (int c = 0; c < channels; c++)
+              sData[i * channels + c] = (int16_t)(sData[i * channels + c] * gain);
+          } else {
+            sData[i] = (int16_t)(sData[i] * gain);
+          }
+        }
+      } else if (codecCtx->sample_fmt == AV_SAMPLE_FMT_S32 ||
+                 codecCtx->sample_fmt == AV_SAMPLE_FMT_S32P) {
+        int32_t *sData = (int32_t *)resampledData[p];
+        for (int i = 0; i < fadeEnd; i++) {
+          float gain = (float)(i + 1) / CROSSFADE_SAMPLES;
+          if (gain > 1.0f) gain = 1.0f;
+          if (numPlanes == 1) {
+            for (int c = 0; c < channels; c++)
+              sData[i * channels + c] = (int32_t)(sData[i * channels + c] * gain);
+          } else {
+            sData[i] = (int32_t)(sData[i] * gain);
+          }
+        }
+      }
+    }
+  }
+
+  int ret = av_audio_fifo_write(audioFifo, (void **)resampledData, samplesToWrite);
+
+  if (ret < samplesToWrite) {
+    DLL_Log("[AudioEnc] Failed to write to audio FIFO: wrote %d of %d",
+            ret, samplesToWrite);
+  }
+
+  AudioResampler::FreeOutputBuffer(resampledData);
 
   // NOTE: Gap detection REMOVED.
   // The MediaEngine pull model handles all timing by pulling exact sample
@@ -634,6 +748,9 @@ void AudioEncoder::EncodeSamples(const uint8_t *data, int sizeBytes,
         AVPacket *cloned = av_packet_clone(pkt);
         if (cloned) {
           pendingPackets.push_back(cloned);
+        } else {
+          DLL_Log("[AudioEnc] ERROR: av_packet_clone failed, dropping packet (size=%d)",
+                  pkt->size);
         }
         av_packet_free(&pkt);
         continue;
@@ -690,6 +807,8 @@ void AudioEncoder::Stop() {
   fifoLogCounter = 0;
   frameLogCounter = 0;
   noPacketCount = 0;
+  wasDroppingSamples = false; // Reset FIFO overflow tracking
+  totalDroppedSamples = 0;
 
   // Clear any pending packets
   for (auto *pkt : pendingPackets) {

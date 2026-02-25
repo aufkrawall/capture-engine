@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 extern "C" {
 #include <libavutil/channel_layout.h>
@@ -120,9 +121,8 @@ private:
   InputFormat inFmt;
   OutputFormat outFmt;
 
-  // Intermediate buffer for 24-bit unpacking
-  uint8_t *unpackBuffer;
-  int unpackBufferSize;
+  // Intermediate buffer for 24-bit unpacking (std::vector avoids raw new[]/delete[])
+  std::vector<uint8_t> unpackBuffer;
 
   // Clock drift compensation state
   int64_t lastDriftSamples = 0;
@@ -149,6 +149,10 @@ private:
 
   // Rate limiting updates
   int64_t lastCompensationTimeMs = 0;
+
+  // Per-instance log counters (avoid static race conditions)
+  int largeSkipCounter_ = 0;
+  int limitLogCounter_ = 0;
 
   // Detect and handle 24-bit in 32-bit container
   AVSampleFormat DetermineInputFormat() const;

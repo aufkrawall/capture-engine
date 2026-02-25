@@ -215,12 +215,14 @@ HRESULT WINAPI Wrapped_D3D12CreateDevice(IUnknown *pAdapter,
   // Initialize DX12 hooks (global vtable hooks + swapchain recreation trigger)
   if (g_dx12HookInstance) {
     g_dx12HookInstance->Init();
+    g_dx12HookInstance->EnsurePresentHooks(); // Deferred: only now is D3D12 confirmed
   } else {
     WrapperLog(
         "Wrapper: WARNING - g_dx12HookInstance is null, creating new instance");
     EnsureDX12Hook();
     if (g_dx12HookInstance) {
       g_dx12HookInstance->Init();
+      g_dx12HookInstance->EnsurePresentHooks();
     }
   }
 

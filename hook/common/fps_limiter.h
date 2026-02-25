@@ -122,9 +122,13 @@ public:
 
     bool isRecording = shm->runtimeState.isRecording;
 
-    // Publish session ID once
+    // Publish session ID once — use QPC ticks for better entropy
     if (!sessionIdPublished) {
-      uint32_t sid = GetCurrentProcessId() ^ GetTickCount();
+      LARGE_INTEGER qpc;
+      QueryPerformanceCounter(&qpc);
+      uint32_t sid = GetCurrentProcessId() ^ GetTickCount() ^
+                     static_cast<uint32_t>(qpc.QuadPart) ^
+                     static_cast<uint32_t>(qpc.QuadPart >> 32);
       shm->fpsLimiter.hookSessionId.store(sid, std::memory_order_release);
       sessionIdPublished = true;
       HookLog("FPS Limiter: Published Session ID: %u", sid);
@@ -253,10 +257,9 @@ public:
           return;
         }
       } else {
-        static bool loggedNoEvent = false;
-        if (!loggedNoEvent) {
+        if (!loggedNoEvent_) {
           HookLog("FPS Limiter: No releaseEvent available!");
-          loggedNoEvent = true;
+          loggedNoEvent_ = true;
         }
       }
 
@@ -305,6 +308,7 @@ public:
     sessionIdPublished = false;
     highResTimerFailed = false;
     loggedInactive_ = false;
+    loggedNoEvent_ = false;
     missedFrames = 0;
     // CRITICAL FIX: Reset per-instance log counters on shutdown
     timeoutLogCount_ = 0;
@@ -322,6 +326,7 @@ private:
   bool timerResolutionSet = false; // Whether timeBeginPeriod(1) was called
   bool highResTimerFailed = false; // Fall back to polling if timer creation fails
   bool loggedInactive_ = false;    // Tracks whether the inactive log was already emitted
+  bool loggedNoEvent_ = false;     // Tracks whether the no-event warning was already emitted
   int64_t qpcFrequency = 0;
   uint32_t missedFrames = 0; // Track frames where limiter couldn't keep up
   // CRITICAL FIX: Per-instance log counters (was static, never reset)

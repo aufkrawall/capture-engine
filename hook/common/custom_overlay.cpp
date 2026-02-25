@@ -51,8 +51,8 @@ bool Renderer::Initialize(RendererBackend *backendPtr, float scale) {
 
 void Renderer::Shutdown() {
   if (!initialized)
-    return; // Guard against double-shutdown
-  if (backend) {
+    return;
+  if (backend && !skipDeviceRelease) {
     backend->Shutdown();
   }
   fontAtlas.Shutdown();

@@ -52,6 +52,7 @@ public:
   void Init() override;
   void Shutdown() override;
   void OnHostDisconnect() override;
+  void EnsurePresentHooks(); // Called after D3D12 device creation is confirmed
 
   void TrackResource(IUnknown *res);
   void CleanupResources();

@@ -432,8 +432,6 @@ void DX12Backend::SetRenderTarget(ID3D12GraphicsCommandList *cmdList,
     s_FrameCounter++;
     DX12_DEBUG_FRAME(s_FrameCounter, "SetRenderTarget: cmdList=%p, rtvHandle.ptr=%llx",
                      cmdList, rtvHandle.ptr);
-    DX12_DEBUG_PTR("SetRenderTarget", "cmdList", cmdList);
-    DX12_DEBUG_PTR("SetRenderTarget", "rtvHandle", (void*)rtvHandle.ptr);
     
     currentCmdList = cmdList;
     currentRTV = rtvHandle;

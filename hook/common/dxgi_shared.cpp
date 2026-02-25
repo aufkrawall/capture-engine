@@ -258,8 +258,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
   }
 
   if (IsShuttingDown()) {
-    if (oPresentTrampoline && IsReadableMemory(pSwapChain, sizeof(void *))) {
-      return oPresentTrampoline(pSwapChain, SyncInterval, Flags);
+    if (IsReadableMemory(pSwapChain, sizeof(void *))) {
+      return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
     }
     return DXGI_ERROR_INVALID_CALL;
   }
@@ -274,8 +274,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
     return DXGI_ERROR_INVALID_CALL;
   }
 
-  if (!oPresentTrampoline) {
-    return pSwapChain->Present(SyncInterval, Flags);
+  if (!oPresentTrampoline && !oPresent) {
+    HookLog("DetourPresent: No original Present function available");
+    return DXGI_ERROR_INVALID_CALL;
   }
 
   void *pWrapper = nullptr;
@@ -289,7 +290,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
               "trampoline #%d",
               s_wrappedPassCount);
     }
-    return oPresentTrampoline(pSwapChain, SyncInterval, Flags);
+    return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
   }
 
   if (IsInWrapperPresent()) {
@@ -300,7 +301,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
               "trampoline #%d",
               s_inWrapperPassCount);
     }
-    return oPresentTrampoline(pSwapChain, SyncInterval, Flags);
+    return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
   }
 
   static int s_processCount = 0;
@@ -313,7 +314,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
   g_RenderWatchdog.Heartbeat();
 
   if (IsVulkanActive()) {
-    return oPresentTrampoline(pSwapChain, SyncInterval, Flags);
+    return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
   }
 
   // Lazy check for NvPresent64.dll (may load after our hooks)
@@ -333,7 +334,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
                   "hwnd=%p) #%d",
                   smDesc.OutputWindow, s_smSkipCount);
         }
-        return oPresentTrampoline(pSwapChain, SyncInterval, Flags);
+        return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
       }
     }
   }
@@ -347,11 +348,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
   g_SharedState.presentCallCount.fetch_add(1, std::memory_order_relaxed);
 
   if (g_SharedState.deviceRemovedFatal.load()) {
-    return oPresentTrampoline(pSwapChain, SyncInterval, Flags);
+    return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
   }
 
   if (g_SharedState.swapchainInvalid.load(std::memory_order_acquire)) {
-    return oPresentTrampoline(pSwapChain, SyncInterval, Flags);
+    return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
   }
 
   APIType api = DetectAPIType(pSwapChain);
@@ -377,7 +378,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
     }
   }
 
-  if (!IsShuttingDown() && oPresentTrampoline) {
+  if (!IsShuttingDown() && (oPresentTrampoline || oPresent)) {
     if (api == APIType::D3D12) {
       HandleDX12ProcessFrame(pSwapChain, true);
     } else if (api == APIType::D3D11) {
@@ -397,7 +398,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain *pSwapChain,
   if (SyncInterval > 0)
     Flags &= ~512;
 
-  HRESULT hr = oPresentTrampoline(pSwapChain, SyncInterval, Flags);
+  HRESULT hr = CallOriginalPresent(pSwapChain, SyncInterval, Flags);
 
   if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
     if (!g_SharedState.deviceRemovedFatal.exchange(true)) {
@@ -416,9 +417,9 @@ DetourPresent1(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT Flags,
   }
 
   if (IsShuttingDown()) {
-    if (oPresent1Trampoline && IsReadableMemory(pSwapChain, sizeof(void *))) {
-      return oPresent1Trampoline(pSwapChain, SyncInterval, Flags,
-                                 pPresentParameters);
+    if (IsReadableMemory(pSwapChain, sizeof(void *))) {
+      return CallOriginalPresent1(pSwapChain, SyncInterval, Flags,
+                                  pPresentParameters);
     }
     return DXGI_ERROR_INVALID_CALL;
   }
@@ -434,35 +435,28 @@ DetourPresent1(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT Flags,
     return DXGI_ERROR_INVALID_CALL;
   }
 
-  if (!oPresent1Trampoline) {
-    IDXGISwapChain1 *sc1 = nullptr;
-    if (SUCCEEDED(pSwapChain->QueryInterface(__uuidof(IDXGISwapChain1),
-                                             (void **)&sc1))) {
-      HRESULT hr = sc1->Present1(SyncInterval, Flags, pPresentParameters);
-      sc1->Release();
-      return hr;
-    }
-    return pSwapChain->Present(SyncInterval, Flags);
+  if (!oPresent1Trampoline && !oPresent1) {
+    return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
   }
 
   void *pWrapper = nullptr;
   if (SUCCEEDED(
           pSwapChain->QueryInterface(IID_CWrapDXGISwapChain, &pWrapper))) {
     ((IUnknown *)pWrapper)->Release();
-    return oPresent1Trampoline(pSwapChain, SyncInterval, Flags,
-                               pPresentParameters);
+    return CallOriginalPresent1(pSwapChain, SyncInterval, Flags,
+                                pPresentParameters);
   }
 
   if (IsInWrapperPresent()) {
-    return oPresent1Trampoline(pSwapChain, SyncInterval, Flags,
-                               pPresentParameters);
+    return CallOriginalPresent1(pSwapChain, SyncInterval, Flags,
+                                pPresentParameters);
   }
 
   g_RenderWatchdog.Heartbeat();
 
   if (IsVulkanActive()) {
-    return oPresent1Trampoline(pSwapChain, SyncInterval, Flags,
-                               pPresentParameters);
+    return CallOriginalPresent1(pSwapChain, SyncInterval, Flags,
+                                pPresentParameters);
   }
 
   // NVIDIA Smooth Motion compatibility: skip for invisible windows
@@ -470,8 +464,8 @@ DetourPresent1(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT Flags,
     DXGI_SWAP_CHAIN_DESC smDesc = {};
     if (SUCCEEDED(pSwapChain->GetDesc(&smDesc))) {
       if (!smDesc.OutputWindow || !IsWindowVisible(smDesc.OutputWindow)) {
-        return oPresent1Trampoline(pSwapChain, SyncInterval, Flags,
-                                   pPresentParameters);
+        return CallOriginalPresent1(pSwapChain, SyncInterval, Flags,
+                                    pPresentParameters);
       }
     }
   }
@@ -484,8 +478,8 @@ DetourPresent1(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT Flags,
 
   if (g_SharedState.deviceRemovedFatal.load() ||
       g_SharedState.swapchainInvalid.load(std::memory_order_acquire)) {
-    return oPresent1Trampoline(pSwapChain, SyncInterval, Flags,
-                               pPresentParameters);
+    return CallOriginalPresent1(pSwapChain, SyncInterval, Flags,
+                                pPresentParameters);
   }
 
   APIType api = DetectAPIType(pSwapChain);
@@ -510,7 +504,7 @@ DetourPresent1(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT Flags,
     Flags &= ~512;
 
   HRESULT hr =
-      oPresent1Trampoline(pSwapChain, SyncInterval, Flags, pPresentParameters);
+      CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
 
   if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
     if (!g_SharedState.deviceRemovedFatal.exchange(true)) {
@@ -1013,28 +1007,65 @@ void RemoveSwapchainVTableHooks() {
 
 HRESULT CallOriginalPresent(IDXGISwapChain *pSwapChain, UINT SyncInterval,
                             UINT Flags) {
-  if (oPresentTrampoline)
+  if (!pSwapChain) {
+    return DXGI_ERROR_INVALID_CALL;
+  }
+
+  // Inline-hook path: trampoline always bypasses the detour safely.
+  if (oPresentTrampoline) {
     return oPresentTrampoline(pSwapChain, SyncInterval, Flags);
-  if (oPresent)
+  }
+
+  // Prefer the current object's vtable entry when it is not detoured.
+  // This avoids mixing wrapper and real swapchain original function pointers.
+  if (IsReadableMemory(pSwapChain, sizeof(void *))) {
+    void **vtable = *(void ***)pSwapChain;
+    if (vtable && IsReadableMemory(vtable, 9 * sizeof(void *)) && vtable[8]) {
+      auto currentPresent = reinterpret_cast<PFN_Present>(vtable[8]);
+      if (currentPresent != DetourPresent) {
+        return currentPresent(pSwapChain, SyncInterval, Flags);
+      }
+    }
+  }
+
+  // Vtable-hook path fallback: use saved original only if it is not detoured.
+  if (oPresent && oPresent != DetourPresent) {
     return oPresent(pSwapChain, SyncInterval, Flags);
-  return pSwapChain->Present(SyncInterval, Flags);
+  }
+
+  return DXGI_ERROR_INVALID_CALL;
 }
 
 HRESULT CallOriginalPresent1(IDXGISwapChain *pSwapChain, UINT SyncInterval,
                              UINT Flags,
                              const DXGI_PRESENT_PARAMETERS *pParams) {
-  if (oPresent1Trampoline)
-    return oPresent1Trampoline(pSwapChain, SyncInterval, Flags, pParams);
-  if (oPresent1)
-    return oPresent1(pSwapChain, SyncInterval, Flags, pParams);
-  IDXGISwapChain1 *sc1 = nullptr;
-  if (SUCCEEDED(pSwapChain->QueryInterface(__uuidof(IDXGISwapChain1),
-                                           (void **)&sc1))) {
-    HRESULT hr = sc1->Present1(SyncInterval, Flags, pParams);
-    sc1->Release();
-    return hr;
+  if (!pSwapChain) {
+    return DXGI_ERROR_INVALID_CALL;
   }
-  return pSwapChain->Present(SyncInterval, Flags);
+
+  // Inline-hook path: trampoline always bypasses the detour safely.
+  if (oPresent1Trampoline) {
+    return oPresent1Trampoline(pSwapChain, SyncInterval, Flags, pParams);
+  }
+
+  // Prefer the current object's Present1 slot when it is not detoured.
+  if (IsReadableMemory(pSwapChain, sizeof(void *))) {
+    void **vtable = *(void ***)pSwapChain;
+    if (vtable && IsReadableMemory(vtable, 23 * sizeof(void *)) && vtable[22]) {
+      auto currentPresent1 = reinterpret_cast<PFN_Present1>(vtable[22]);
+      if (currentPresent1 != DetourPresent1) {
+        return currentPresent1(pSwapChain, SyncInterval, Flags, pParams);
+      }
+    }
+  }
+
+  // Vtable-hook path fallback: use saved original only if it is not detoured.
+  if (oPresent1 && oPresent1 != DetourPresent1) {
+    return oPresent1(pSwapChain, SyncInterval, Flags, pParams);
+  }
+
+  // Last resort: fall back to Present.
+  return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
 }
 
 } // namespace DXGIShared

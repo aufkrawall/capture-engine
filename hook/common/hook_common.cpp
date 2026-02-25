@@ -6,6 +6,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <unordered_map>
 #include <windows.h>
 
 char g_ProcessName[260] = "unknown";
@@ -231,23 +232,34 @@ static void LogToFileAtomic(const char *baseFilename, const char *fmt,
     SharedMemoryLayout *shm = g_IPC->GetSharedMem();
     if (shm) {
       auto &logs = shm->logs;
-      // Atomic fetch_add reserves our slot
-      uint32_t wIdx = logs.writeIndex.fetch_add(1, std::memory_order_acq_rel);
-      uint32_t rIdx = logs.readIndex.load(std::memory_order_acquire);
-
-      // Check if buffer is full
-      if ((uint32_t)(wIdx - rIdx) < SharedMemoryLayout::LogBuffer::SLOT_COUNT) {
+      // Reserve a slot atomically: check capacity BEFORE incrementing to avoid
+      // permanently advancing writeIndex when the buffer is full (which would
+      // cause the consumer to stall waiting for a committed slot that never
+      // arrives).
+      uint32_t wIdx = logs.writeIndex.load(std::memory_order_relaxed);
+      bool reservedSlot = false;
+      for (;;) {
+        uint32_t rIdx = logs.readIndex.load(std::memory_order_acquire);
+        if ((uint32_t)(wIdx - rIdx) >=
+            SharedMemoryLayout::LogBuffer::SLOT_COUNT) {
+          logs.overflowCount.fetch_add(1, std::memory_order_relaxed);
+          break; // Buffer full — fall through to file logging
+        }
+        if (logs.writeIndex.compare_exchange_weak(
+                wIdx, wIdx + 1, std::memory_order_acq_rel,
+                std::memory_order_relaxed)) {
+          reservedSlot = true;
+          break;
+        }
+        // CAS failed (another thread beat us) — retry with updated wIdx
+      }
+      if (reservedSlot) {
         uint32_t slotIdx = wIdx % SharedMemoryLayout::LogBuffer::SLOT_COUNT;
         char *slot = logs.buffer[slotIdx];
-        // Write to our reserved slot
         snprintf(slot, SharedMemoryLayout::LogBuffer::SLOT_SIZE, "[%s] %s",
                  baseFilename, lineBuffer);
-        // Signal that this slot is ready for consumption
         logs.committed[slotIdx].store(1, std::memory_order_release);
-        return; // Done! Logger service will write to file.
-      } else {
-        logs.overflowCount.fetch_add(1, std::memory_order_relaxed);
-        // Buffer full - fall through to file logging
+        return; // Done — logger service will write to file.
       }
     }
     // IPC exists but not connected yet (shm is null) or buffer full
@@ -258,6 +270,17 @@ static void LogToFileAtomic(const char *baseFilename, const char *fmt,
   // Only lock for file I/O
   static std::mutex s_FileLogMutex;
   static char s_logDir[MAX_PATH] = {0};
+  // Cache open handles to avoid open/close per message (SSD wear prevention).
+  // Map: filename -> open HANDLE. Closed when the DLL unloads.
+  struct FileHandleCache {
+    std::unordered_map<std::string, HANDLE> handles;
+    ~FileHandleCache() {
+      for (auto &kv : handles)
+        if (kv.second != INVALID_HANDLE_VALUE)
+          CloseHandle(kv.second);
+    }
+  };
+  static FileHandleCache s_FileCache;
 
   // Use unique_lock with try_lock to prevent deadlocks in weird re-entrancy
   // cases
@@ -282,28 +305,40 @@ static void LogToFileAtomic(const char *baseFilename, const char *fmt,
     char fullLogPath[MAX_PATH];
     snprintf(fullLogPath, sizeof(fullLogPath), "%s\\%s", s_logDir,
              baseFilename);
-    HANDLE hFile = CreateFileA(
-        fullLogPath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
-        OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, NULL);
-    if (hFile != INVALID_HANDLE_VALUE) {
-      // Check if new file to write header
-      LARGE_INTEGER sz;
-      sz.QuadPart = 0;
-      if (GetFileSizeEx(hFile, &sz) && sz.QuadPart == 0) {
-        char header[512];
-        int hlen =
-            snprintf(header, sizeof(header), "[BUILD] Version=%s Built=%s\r\n",
-                     CAPTURE_VERSION, BUILD_TIMESTAMP);
-        if (hlen > 0) {
-          DWORD hwritten;
-          WriteFile(hFile, header, (DWORD)hlen, &hwritten, NULL);
-        }
-      }
 
+    // Look up or open a cached handle (no FILE_FLAG_WRITE_THROUGH to avoid
+    // synchronous per-write flush; the OS page-cache flush on handle close or
+    // process exit is sufficient for debug logs).
+    auto it = s_FileCache.handles.find(fullLogPath);
+    HANDLE hFile = INVALID_HANDLE_VALUE;
+    if (it != s_FileCache.handles.end()) {
+      hFile = it->second;
+    } else {
+      hFile = CreateFileA(fullLogPath, FILE_APPEND_DATA,
+                          FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS,
+                          FILE_ATTRIBUTE_NORMAL, NULL);
+      if (hFile != INVALID_HANDLE_VALUE) {
+        // Write version header on first open (empty file)
+        LARGE_INTEGER sz;
+        sz.QuadPart = 0;
+        if (GetFileSizeEx(hFile, &sz) && sz.QuadPart == 0) {
+          char header[512];
+          int hlen =
+              snprintf(header, sizeof(header), "[BUILD] Version=%s Built=%s\r\n",
+                       CAPTURE_VERSION, BUILD_TIMESTAMP);
+          if (hlen > 0) {
+            DWORD hwritten;
+            WriteFile(hFile, header, (DWORD)hlen, &hwritten, NULL);
+          }
+        }
+        s_FileCache.handles[fullLogPath] = hFile;
+      }
+    }
+
+    if (hFile != INVALID_HANDLE_VALUE) {
       DWORD written;
       WriteFile(hFile, lineBuffer, len, &written, NULL);
       WriteFile(hFile, "\r\n", 2, &written, NULL);
-      CloseHandle(hFile);
     }
   }
 }
@@ -319,6 +354,7 @@ void EarlyLog(const char *fmt, ...) {
   va_end(args);
 }
 
+// Logs to hook_debug.log (respects the debugLogging flag just like HookLog)
 void HookLogImportant(const char *fmt, ...) {
   if (!g_pLocalConfig || !g_pLocalConfig->debugLogging)
     return;
@@ -469,7 +505,6 @@ GraphicsConfig GetActiveGraphicsConfig() {
     mergedConfig = GraphicsConfig();
   }
 
-  // Apply Overrides from g_LocalConfig
   // Apply Overrides from g_pLocalConfig
   if (g_pLocalConfig) {
     if (g_pLocalConfig->graphics.parsed.srPreset > 0) {

@@ -3,6 +3,7 @@
 #include "../common/hook_common.h"
 #include "../wrappers/iat_hook.h"
 #include "../wrappers/vtable_hook.h"
+#include <atomic>
 #include <mutex>
 #include <vector>
 
@@ -186,15 +187,16 @@ static bool IsSafeString(const char *s) { return IsSafePtr(s); }
 
 static void LogOncePerParam(const char *param, const char *msg, ...) {
   static CRITICAL_SECTION s_cs;
-  static volatile LONG s_csInit = 0;
+  static std::atomic<int32_t> s_csInit{0};
   static std::vector<std::pair<std::string, std::string>> s_LastLogs;
 
   // Thread-safe CS init
-  if (InterlockedCompareExchange(&s_csInit, 1, 0) == 0) {
+  int32_t expected = 0;
+  if (s_csInit.compare_exchange_strong(expected, 1, std::memory_order_acq_rel)) {
     InitializeCriticalSection(&s_cs);
-    InterlockedExchange(&s_csInit, 2);
+    s_csInit.store(2, std::memory_order_release);
   }
-  while (s_csInit < 2) {
+  while (s_csInit.load(std::memory_order_acquire) < 2) {
     Sleep(0);
   }
 

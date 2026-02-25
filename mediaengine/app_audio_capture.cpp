@@ -596,8 +596,7 @@ void AppAudioCapture::CaptureLoop() {
           std::lock_guard<std::mutex> lock(queueMutex);
           packetQueue.push_back(std::move(silencePacket));
           // Log every ~1s (50 calls)
-          static int logCounter = 0;
-          if (logCounter++ % 50 == 0) {
+          if (m_silenceLogCounter_++ % 50 == 0) {
             DLL_Log("[AppAudio] Synthesizing silence (source idle) QPC=%llu",
                     lastQpcPosition);
           }

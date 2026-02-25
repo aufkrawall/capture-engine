@@ -45,6 +45,15 @@ void NVNGXLog(const char *fmt, ...) {
   LayerLog("[NVNGX] %s", buf);
 }
 
+void HookLogImportant(const char *fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+  char buf[1024];
+  vsnprintf(buf, sizeof(buf), fmt, args);
+  va_end(args);
+  LayerLog("[Important] %s", buf);
+}
+
 void ReportLUID(uint32_t low, uint32_t high) {
   LayerLog("ReportLUID: %08x-%08x", high, low);
 }

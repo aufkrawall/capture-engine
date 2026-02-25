@@ -455,13 +455,19 @@ public:
     OverlayConfig result{};
     uint32_t seq1 = 0;
     uint32_t seq2 = 0;
+    // Spin limit guards against livelock if a writer stalls/crashes while
+    // holding the odd sequence. After the limit, return whatever was last read.
+    int spinCount = 0;
     do {
       seq1 = overlayConfigSeq.load(std::memory_order_acquire);
       if (seq1 & 1u) {
         // Writer active — spin briefly then retry
         _mm_pause();
+        if (++spinCount > 10000)
+          return result; // Return empty config; caller should retry later
         continue;
       }
+      spinCount = 0; // Reset on a clean even-seq read
       memcpy(&result, &overlayConfig, sizeof(OverlayConfig));
       seq2 = overlayConfigSeq.load(std::memory_order_acquire);
       if (seq1 != seq2) {

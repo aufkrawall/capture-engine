@@ -1943,6 +1943,8 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
     if (g_OverlayAdapter.InitDX11(device, context)) {
       g_OverlayAdapter.SetHwnd(currentHwnd);
       EarlyLog("DX11: OverlayAdapter initialized for HWND %p", currentHwnd);
+    } else {
+      EarlyLog("DX11: OverlayAdapter::InitDX11 FAILED for HWND %p", currentHwnd);
     }
   }
 
@@ -3029,7 +3031,17 @@ void DX11Hook::Init() {
           &sc, &dev, &flOut, &ctx);
       if (SUCCEEDED(hr) && sc) {
         InstallVTableHooks(dev, ctx, sc);
-        DXGIShared::InstallHooks(sc, true);
+        CWrapDXGISwapChain *wrappedSc = nullptr;
+        IDXGISwapChain *realSc = nullptr;
+        if (SUCCEEDED(sc->QueryInterface(IID_CWrapDXGISwapChain,
+                                         (void **)&wrappedSc)) &&
+            wrappedSc) {
+          realSc = wrappedSc->GetReal();
+          wrappedSc->Release();
+        }
+        HookLog("DX11: Temp D3D11 install target (wrapper=%p, real=%p)", sc,
+                realSc);
+        DXGIShared::InstallHooks(realSc ? realSc : sc, true);
         HookLog("DX11: Temp D3D11 swapchain created to install vtable hooks");
       }
 

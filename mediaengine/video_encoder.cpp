@@ -63,71 +63,6 @@ public:
   ~D3D11ScopedLock() { MediaEngine_UnlockD3D11(); }
 };
 
-// RAII Wrapper for D3D11 COM objects
-// Automatically calls Release() on destruction to prevent leaks
-template <typename T> class ComPtr {
-private:
-  T *ptr_;
-
-public:
-  ComPtr() : ptr_(nullptr) {}
-  explicit ComPtr(T *p) : ptr_(p) {}
-
-  ~ComPtr() {
-    if (ptr_) {
-      ptr_->Release();
-      ptr_ = nullptr;
-    }
-  }
-
-  // Disable copy to prevent double-release
-  ComPtr(const ComPtr &) = delete;
-  ComPtr &operator=(const ComPtr &) = delete;
-
-  // Enable move semantics
-  ComPtr(ComPtr &&other) noexcept : ptr_(other.ptr_) { other.ptr_ = nullptr; }
-
-  ComPtr &operator=(ComPtr &&other) noexcept {
-    if (this != &other) {
-      if (ptr_)
-        ptr_->Release();
-      ptr_ = other.ptr_;
-      other.ptr_ = nullptr;
-    }
-    return *this;
-  }
-
-  // Reset to new pointer (releases old one)
-  void reset(T *p = nullptr) {
-    if (ptr_)
-      ptr_->Release();
-    ptr_ = p;
-  }
-
-  // Release ownership without calling Release()
-  T *release() {
-    T *temp = ptr_;
-    ptr_ = nullptr;
-    return temp;
-  }
-
-  // Get raw pointer
-  T *get() const { return ptr_; }
-
-  // Get address for output parameters
-  T **address() {
-    if (ptr_)
-      ptr_->Release();
-    ptr_ = nullptr;
-    return &ptr_;
-  }
-
-  // Operators
-  T *operator->() const { return ptr_; }
-  operator bool() const { return ptr_ != nullptr; }
-  bool operator!() const { return ptr_ == nullptr; }
-};
-
 // Performance timing helper for pipeline analysis
 class PerfTimer {
 public:
@@ -750,8 +685,8 @@ bool VideoEncoder::EnsureDevice() {
             featureLevel);
 
     // Use RAII to prevent leaks on error paths
-    ComPtr<ID3D11Device> baseDeviceGuard(baseDevice);
-    ComPtr<ID3D11DeviceContext> baseContextGuard(baseContext);
+    ce::ComGuard<ID3D11Device> baseDeviceGuard(baseDevice);
+    ce::ComGuard<ID3D11DeviceContext> baseContextGuard(baseContext);
 
     // QI for Interfaces
     if (FAILED(baseDevice->QueryInterface(IID_PPV_ARGS(&d3d11Device)))) {
@@ -818,9 +753,9 @@ bool VideoEncoder::EnsureDevice() {
         (AVD3D11VADeviceContext *)deviceCtx->hwctx;
 
     // Get base device from our QI'd interface
-    ComPtr<ID3D11Device> baseDevice;
+    ce::ComGuard<ID3D11Device> baseDevice;
     if (FAILED(d3d11Device->QueryInterface(__uuidof(ID3D11Device),
-                                           (void **)baseDevice.address()))) {
+                                           (void **)baseDevice.addressof()))) {
       return false;
     }
 

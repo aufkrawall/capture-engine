@@ -233,6 +233,12 @@ void SyncWithLegacyGlobals();
 inline bool HookContext::Initialize(HMODULE hModule) {
   std::lock_guard<std::mutex> lock(initMutex);
 
+  // Reject if shutdown is already in progress
+  if (shuttingDown.load(std::memory_order_acquire)) {
+    CE_LOG_WARN("HookCtx", "Initialize called during shutdown — ignoring");
+    return false;
+  }
+
   if (initialized_) {
     CE_LOG_WARN("HookCtx", "already initialized");
     return true;
@@ -397,6 +403,7 @@ inline void HookContext::Shutdown() {
 }
 
 inline bool HookContext::SetActiveAPI(ActiveGraphicsAPI api) {
+  std::lock_guard<std::mutex> lock(initMutex);
   if (activeAPI != ActiveGraphicsAPI::None && activeAPI != api) {
     CE_LOG_ERROR("HookCtx", "API already set to %s, cannot change to %s",
                  GraphicsAPIName(activeAPI), GraphicsAPIName(api));

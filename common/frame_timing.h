@@ -30,24 +30,24 @@ public:
       targetIntervalTicks = 0; // Variable framerate
     }
 
-    frameCount = 0;
-    startTimeTicks = 0;
-    initialized = true;
+    frameCount.store(0, std::memory_order_relaxed);
+    startTimeTicks.store(0, std::memory_order_relaxed);
+    initialized.store(true, std::memory_order_release);
   }
 
   // Start timing from this point (call when recording starts)
   void Start() {
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
-    startTimeTicks = now.QuadPart;
-    frameCount = 0;
+    startTimeTicks.store(now.QuadPart, std::memory_order_release);
+    frameCount.store(0, std::memory_order_relaxed);
   }
 
   // Get the next PTS in milliseconds for a new frame
   // This uses the frame's capture timestamp if provided,
   // or generates one based on frame count for CFR encoding
   int64_t GetNextPtsMs(int64_t captureTimestampUs = -1) {
-    if (!initialized)
+    if (!initialized.load(std::memory_order_acquire))
       return 0;
 
     int64_t pts;
@@ -58,26 +58,29 @@ public:
       int64_t captureTicksRelative =
           (captureTimestampUs * qpcFrequency) / 1000000;
       pts = (captureTicksRelative * 1000) / qpcFrequency;
-    } else if (targetIntervalTicks > 0) {
-      // CFR mode: calculate PTS based on frame count and target interval
-      int64_t frameTicks = frameCount * targetIntervalTicks;
-      pts = (frameTicks * 1000) / qpcFrequency;
+    } else if (targetFps > 0) {
+      // CFR mode: compute PTS directly from frame count and target FPS using
+      // floating-point to avoid accumulated integer-division error. At 60fps,
+      // integer division (qpcFreq/60) loses 0.67 ticks/frame ≈ 0.24ms/minute.
+      uint64_t count = frameCount.load(std::memory_order_relaxed);
+      pts = static_cast<int64_t>(static_cast<double>(count) * 1000.0 / targetFps);
     } else {
       // Fallback: use elapsed time from start
       LARGE_INTEGER now;
       QueryPerformanceCounter(&now);
-      int64_t elapsed = now.QuadPart - startTimeTicks;
+      int64_t start = startTimeTicks.load(std::memory_order_acquire);
+      int64_t elapsed = now.QuadPart - start;
       pts = (elapsed * 1000) / qpcFrequency;
     }
 
-    frameCount++;
+    frameCount.fetch_add(1, std::memory_order_relaxed);
     return pts;
   }
 
   // Get PTS in encoder timebase units (e.g., 1/90000)
   int64_t GetNextPtsInTimebase(int timebaseNum, int timebaseDen,
                                int64_t captureTimestampUs = -1) {
-    if (!initialized || timebaseDen == 0)
+    if (!initialized.load(std::memory_order_acquire) || timebaseDen == 0)
       return 0;
 
     int64_t ptsMs = GetNextPtsMs(captureTimestampUs);
@@ -88,30 +91,34 @@ public:
   }
 
   // Get current frame number
-  uint64_t GetFrameCount() const { return frameCount; }
+  uint64_t GetFrameCount() const {
+    return frameCount.load(std::memory_order_relaxed);
+  }
 
   // Get elapsed time in milliseconds since Start()
   int64_t GetElapsedMs() const {
-    if (!initialized || startTimeTicks == 0)
+    int64_t start = startTimeTicks.load(std::memory_order_acquire);
+    if (!initialized.load(std::memory_order_acquire) || start == 0)
       return 0;
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
-    int64_t elapsed = now.QuadPart - startTimeTicks;
+    int64_t elapsed = now.QuadPart - start;
     return (elapsed * 1000) / qpcFrequency;
   }
 
   // Check if we should capture a new frame (for rate limiting)
   // Returns true if enough time has passed since last frame
   bool ShouldCaptureFrame() const {
-    if (!initialized || targetIntervalTicks == 0)
+    if (!initialized.load(std::memory_order_acquire) || targetIntervalTicks == 0)
       return true;
 
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
-    int64_t elapsed = now.QuadPart - startTimeTicks;
+    int64_t start = startTimeTicks.load(std::memory_order_acquire);
+    int64_t elapsed = now.QuadPart - start;
     int64_t expectedFrames = elapsed / targetIntervalTicks;
 
-    return expectedFrames >= frameCount;
+    return expectedFrames >= static_cast<int64_t>(frameCount.load(std::memory_order_relaxed));
   }
 
   // Get target FPS
@@ -119,17 +126,17 @@ public:
 
   // Reset for new recording
   void Reset() {
-    frameCount = 0;
-    startTimeTicks = 0;
+    frameCount.store(0, std::memory_order_relaxed);
+    startTimeTicks.store(0, std::memory_order_release);
   }
 
 private:
   double targetFps = 0;
   int64_t qpcFrequency = 0;
   int64_t targetIntervalTicks = 0;
-  int64_t startTimeTicks = 0;
-  uint64_t frameCount = 0;
-  bool initialized = false;
+  std::atomic<int64_t> startTimeTicks{0};
+  std::atomic<uint64_t> frameCount{0};
+  std::atomic<bool> initialized{false};
 };
 
 // High-precision sleep using waitable timer
@@ -138,16 +145,26 @@ inline bool PrecisionSleep(int64_t microseconds) {
   if (microseconds <= 0)
     return true;
 
-  // Create high-resolution waitable timer if available (Windows 10 1803+)
-  HANDLE timer = CreateWaitableTimerExW(
-      NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+  // Cache the timer handle per-thread to avoid create/destroy overhead on
+  // every call (e.g. at 144fps this would be 144 kernel object ops/sec).
+  struct ThreadTimer {
+    HANDLE handle = INVALID_HANDLE_VALUE;
+    ThreadTimer() {
+      handle = CreateWaitableTimerExW(NULL, NULL,
+                                      CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                      TIMER_ALL_ACCESS);
+      if (handle == INVALID_HANDLE_VALUE)
+        handle = CreateWaitableTimerW(NULL, TRUE, NULL);
+    }
+    ~ThreadTimer() {
+      if (handle != INVALID_HANDLE_VALUE)
+        CloseHandle(handle);
+    }
+  };
+  thread_local ThreadTimer s_timer;
+  HANDLE timer = s_timer.handle;
 
-  if (!timer) {
-    // Fallback to standard timer
-    timer = CreateWaitableTimer(NULL, TRUE, NULL);
-  }
-
-  if (!timer) {
+  if (timer == INVALID_HANDLE_VALUE) {
     // Ultimate fallback
     Sleep((DWORD)(microseconds / 1000));
     return true;
@@ -161,6 +178,5 @@ inline bool PrecisionSleep(int64_t microseconds) {
     WaitForSingleObject(timer, INFINITE);
   }
 
-  CloseHandle(timer);
   return true;
 }

@@ -200,6 +200,10 @@ public:
       return false; // Empty
     }
 
+    // Acquire fence before reading element to ensure we see all data
+    // written by producer before we read it
+    std::atomic_thread_fence(std::memory_order_acquire);
+
     item = buffer_[rIdx & IndexMask];
     return true;
   }

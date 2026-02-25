@@ -47,6 +47,9 @@ HOOK_OPT_FLAGS_X64 = [
     "-fvisibility=hidden",
     "-ffunction-sections",
     "-fdata-sections",
+    # Hook DLL performs aliased pointer access (vtable patching, SHM reinterpret_cast).
+    # Without -fno-strict-aliasing the optimizer may miscompile these pointer casts.
+    "-fno-strict-aliasing",
 ]
 
 # x86 builds use generic optimization (no AVX on 32-bit)
@@ -71,6 +74,7 @@ HOOK_OPT_FLAGS_X86 = [
     "-fvisibility=hidden",
     "-ffunction-sections",
     "-fdata-sections",
+    "-fno-strict-aliasing",  # Same aliasing concerns as x64 hook DLL
 ]
 
 # Linker optimization flags
@@ -902,7 +906,9 @@ class FFmpegBuilder:
         return tool_name  # Fallback to path lookup
 
     def run(self, cmd, cwd=None, env=None, check=True):
-        cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+        # Always pass a list to subprocess.run to avoid shell=True injection risk.
+        cmd_list = cmd if isinstance(cmd, list) else cmd.split()
+        cmd_str = " ".join(cmd_list)
         log(f"[FFmpeg] EXEC: {cmd_str}")
         try:
             if env is None:
@@ -910,7 +916,7 @@ class FFmpegBuilder:
             if env and "PATH" not in env:
                 env["PATH"] = os.environ["PATH"]
 
-            subprocess.run(cmd_str, cwd=cwd, env=env, check=check, shell=True)
+            subprocess.run(cmd_list, cwd=cwd, env=env, check=check, shell=False)
         except subprocess.CalledProcessError as e:
             log(f"[FFmpeg] FAILED: {cmd_str}")
             raise e
@@ -2414,6 +2420,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             "-D_WIN32_WINNT=0x0A00",
             "-I" + os.path.join(PROJECT_ROOT, "common"),
         ]
+        + (["-DCE_PRODUCTION_BUILD=1"] if env.get("CE_PRODUCTION_BUILD") == "1" else [])
     )
 
     # Add MSYS2 include path on Linux for Windows headers (cppwinrt, etc.)
@@ -2560,25 +2567,12 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 PROJECT_ROOT, "hook", "wrappers", "d3d12_wrapper_interface.cpp"
             ),
             os.path.join(
-                PROJECT_ROOT, "hook", "minimal_main.cpp"
-            ),  # Excluded - built separately as minimal test
-            os.path.join(
                 PROJECT_ROOT, "hook", "apis", "dx12_hook_stable.cpp"
             ),  # WIP - not ready
         ]
         hk_src = [f for f in hk_src if f not in excluded_files]
 
         # Custom hook system (VTable + IAT patching, replaces MinHook)
-        # vtable_hook.cpp and custom_hook.cpp are already included via glob
-
-        # Custom overlay system (replaces ImGui for overlay rendering)
-        # custom_font.cpp, custom_overlay.cpp, overlay_adapter.cpp are included via glob
-        # custom_overlay_dx*.cpp, custom_overlay_gl.cpp, custom_overlay_vk.cpp are included via glob
-
-        # volk removed - using vulkan layer instead
-        # hk_src.append(os.path.join(PROJECT_ROOT, "external", "volk", "volk.c"))
-
-        # hk_src = [os.path.join(PROJECT_ROOT, "hook", "minimal_main.cpp")]
 
         hk_dll = os.path.join(BIN_DIR, f"capture_hook_{arch}.dll")
 
@@ -3301,12 +3295,20 @@ def main():
     format_flag = "--format" in sys.argv
     ccache_flag = "--ccache" in sys.argv
     sanitize_flag = "--sanitize" in sys.argv
+    # --production: build signed production binaries (requires CE_PRODUCTION_BUILD=1)
+    # Dev builds do NOT pass this flag; signature verification is a warning only.
+    production_flag = "--production" in sys.argv or "CE_PRODUCTION_BUILD" in os.environ
     # --force is now DEFAULT behavior for reliability (disable with --incremental)
     incremental_flag = "--incremental" in sys.argv
     force_flag = not incremental_flag  # Force rebuild by default
 
     # Store flags in env for access in compile functions
     env["FORCE_REBUILD"] = "1" if force_flag else "0"
+    if production_flag:
+        env["CE_PRODUCTION_BUILD"] = "1"
+        log("PRODUCTION BUILD: DLL signature verification will be enforced")
+    else:
+        log("DEV BUILD: DLL signature verification is advisory only")
 
     if incremental_flag:
         log("Incremental build (--incremental) - may use cached objects")
@@ -3384,6 +3386,45 @@ def main():
             json.dump(unique_commands, f, indent=4)
         log(f"Generated compile_commands.json ({len(unique_commands)} entries)")
         log("LSP: clangd will auto-detect paths via PathMappings in .clangd")
+
+        # Auto-detect installed Clang version and update .clangd resource-dir
+        # to prevent breakage when MSYS2 updates Clang (e.g. 21 -> 22).
+        _clang_lib_dir = os.path.join(
+            PROJECT_ROOT, "build", "msys64", "clang64", "lib", "clang"
+        )
+        if os.path.isdir(_clang_lib_dir):
+            _versions = sorted(
+                [
+                    d
+                    for d in os.listdir(_clang_lib_dir)
+                    if os.path.isdir(os.path.join(_clang_lib_dir, d))
+                    and d[0].isdigit()
+                ],
+                key=lambda v: [int(x) for x in v.split(".") if x.isdigit()],
+                reverse=True,
+            )
+            if _versions:
+                _detected_version = _versions[0]
+                _clangd_path = os.path.join(PROJECT_ROOT, ".clangd")
+                if os.path.exists(_clangd_path):
+                    with open(_clangd_path, "r", encoding="utf-8") as _f:
+                        _clangd_content = _f.read()
+                    import re as _re
+                    _updated = _re.sub(
+                        r"(-resource-dir=build/msys64/clang64/lib/clang/)[^\"\n]+",
+                        rf"\g<1>{_detected_version}",
+                        _clangd_content,
+                    )
+                    if _updated != _clangd_content:
+                        with open(_clangd_path, "w", encoding="utf-8") as _f:
+                            _f.write(_updated)
+                        log(
+                            f"LSP: Updated .clangd resource-dir to clang/{_detected_version}"
+                        )
+                    else:
+                        log(
+                            f"LSP: .clangd resource-dir already correct (clang/{_detected_version})"
+                        )
     except Exception as e:
         log(f"Error writing compile_commands.json: {e}")
 

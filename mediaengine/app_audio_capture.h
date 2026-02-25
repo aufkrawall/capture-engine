@@ -144,4 +144,5 @@ private:
   std::chrono::steady_clock::time_point m_lastRealTime{};
   int64_t m_synthesizedMs = 0;
   bool m_heartbeatInit = false;
+  int m_silenceLogCounter_ = 0;
 };

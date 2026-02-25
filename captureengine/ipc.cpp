@@ -2,6 +2,7 @@
 #include "../common/logging.h"
 #include <cstdio>
 #include <cstring>
+#include <new>
 
 IPCManager::IPCManager(const AppConfig &config)
     : config(config), hMapFile(NULL), pSharedMem(NULL), hMapShmem(NULL),
@@ -71,8 +72,11 @@ bool IPCManager::Init() {
     return false;
   }
 
-  // Initialize main memory
-  ZeroMemory(pSharedMem, sizeof(SharedMemoryLayout));
+  // Initialize shared memory using placement new to properly construct all
+  // std::atomic members (ZeroMemory would bypass constructors — UB in C++).
+  // On Windows, CreateFileMapping with INVALID_HANDLE_VALUE returns
+  // OS-zero-initialized pages, so this is equivalent to ZeroMemory but correct.
+  new (pSharedMem) SharedMemoryLayout();
 
   // CRITICAL: Initialize with proper ordering (version first, magic last as
   // signal)
@@ -94,7 +98,7 @@ bool IPCManager::Init() {
     pShmem = (ShmemBuffer *)MapViewOfFile(hMapShmem, FILE_MAP_ALL_ACCESS, 0, 0,
                                           sizeof(ShmemBuffer));
     if (pShmem) {
-      ZeroMemory(pShmem, sizeof(ShmemBuffer));
+      new (pShmem) ShmemBuffer(); // Properly construct std::atomic members
       pSharedMem->SetShmemMappingCreated(true);
       pSharedMem->SetShmemMappingSize(sizeof(ShmemBuffer));
     }

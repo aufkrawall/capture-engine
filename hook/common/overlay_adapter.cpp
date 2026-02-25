@@ -8,6 +8,7 @@
 #include "custom_font.h"
 #include "custom_overlay.h"
 #include "fg_detection.h"
+#include "hook_common.h"
 
 // Include backends based on build context
 // VK_LAYER_CE_OVERLAY is defined when building the Vulkan layer
@@ -66,14 +67,16 @@ OverlayAdapter::OverlayAdapter() {
 }
 
 OverlayAdapter::~OverlayAdapter() {
-  // CRITICAL: During process exit (skipDeviceRelease=true), skip ALL cleanup
-  // The D3D device is already destroyed. Any Release() calls will crash.
-  // Just set pointers to nullptr - memory will be reclaimed by OS on exit.
   if (skipDeviceRelease) {
-    // Don't delete backend or renderer - their destructors would call Release()
-    // Just leak the memory - OS will reclaim it on process exit
-    backend = nullptr;
-    renderer = nullptr;
+    if (renderer) {
+      renderer->SetSkipDeviceRelease(true);
+      delete renderer;
+      renderer = nullptr;
+    }
+    if (backend) {
+      delete backend;
+      backend = nullptr;
+    }
     initialized = false;
     return;
   }
@@ -89,9 +92,12 @@ bool OverlayAdapter::InitDX9(void *device) {
 #ifndef VK_LAYER_CE_OVERLAY
   if (initialized)
     return true;
-  if (!device)
+  if (!device) {
+    HookLogImportant("[Overlay] InitDX9 failed: null device pointer");
     return false;
+  }
 
+  HookLogImportant("[Overlay] Initializing DX9 backend (device=%p)", device);
   auto dx9Backend = new CustomOverlay::DX9Backend((IDirect3DDevice9 *)device);
   backend = dx9Backend;
   backendType = OverlayBackendType::DX9;
@@ -99,6 +105,7 @@ bool OverlayAdapter::InitDX9(void *device) {
   renderer = new CustomOverlay::Renderer();
   float dpiScale = GetWindowsDpiScale();
   if (!renderer->Initialize(backend, dpiScale)) {
+    HookLogImportant("[Overlay] InitDX9: Renderer::Initialize FAILED (dpiScale=%.2f)", dpiScale);
     delete renderer;
     delete backend;
     renderer = nullptr;
@@ -107,7 +114,7 @@ bool OverlayAdapter::InitDX9(void *device) {
   }
 
   initialized = true;
-  OutputDebugStringA("[OverlayAdapter] Initialized DX9 backend\n");
+  HookLogImportant("[Overlay] DX9 backend initialized successfully (dpiScale=%.2f)", dpiScale);
 #endif
   return true;
 }
@@ -116,9 +123,12 @@ bool OverlayAdapter::InitDX10(void *device) {
 #ifndef VK_LAYER_CE_OVERLAY
   if (initialized)
     return true;
-  if (!device)
+  if (!device) {
+    HookLogImportant("[Overlay] InitDX10 failed: null device pointer");
     return false;
+  }
 
+  HookLogImportant("[Overlay] Initializing DX10 backend (device=%p)", device);
   auto dx10Backend = new CustomOverlay::DX10Backend((ID3D10Device *)device);
   backend = dx10Backend;
   backendType = OverlayBackendType::DX10;
@@ -126,6 +136,7 @@ bool OverlayAdapter::InitDX10(void *device) {
   renderer = new CustomOverlay::Renderer();
   float dpiScale = GetWindowsDpiScale();
   if (!renderer->Initialize(backend, dpiScale)) {
+    HookLogImportant("[Overlay] InitDX10: Renderer::Initialize FAILED (dpiScale=%.2f)", dpiScale);
     delete renderer;
     delete backend;
     renderer = nullptr;
@@ -134,7 +145,7 @@ bool OverlayAdapter::InitDX10(void *device) {
   }
 
   initialized = true;
-  OutputDebugStringA("[OverlayAdapter] Initialized DX10 backend\n");
+  HookLogImportant("[Overlay] DX10 backend initialized successfully (dpiScale=%.2f)", dpiScale);
 #endif
   return true;
 }
@@ -143,9 +154,12 @@ bool OverlayAdapter::InitDX11(void *device, void *context) {
 #ifndef VK_LAYER_CE_OVERLAY
   if (initialized)
     return true;
-  if (!device || !context)
+  if (!device || !context) {
+    HookLogImportant("[Overlay] InitDX11 failed: null device=%p context=%p", device, context);
     return false;
+  }
 
+  HookLogImportant("[Overlay] Initializing DX11 backend (device=%p, context=%p)", device, context);
   auto dx11Backend = new CustomOverlay::DX11Backend(
       (ID3D11Device *)device, (ID3D11DeviceContext *)context);
   backend = dx11Backend;
@@ -154,6 +168,7 @@ bool OverlayAdapter::InitDX11(void *device, void *context) {
   renderer = new CustomOverlay::Renderer();
   float dpiScale = GetWindowsDpiScale();
   if (!renderer->Initialize(backend, dpiScale)) {
+    HookLogImportant("[Overlay] InitDX11: Renderer::Initialize FAILED (dpiScale=%.2f)", dpiScale);
     delete renderer;
     delete backend;
     renderer = nullptr;
@@ -162,7 +177,7 @@ bool OverlayAdapter::InitDX11(void *device, void *context) {
   }
 
   initialized = true;
-  OutputDebugStringA("[OverlayAdapter] Initialized DX11 backend\n");
+  HookLogImportant("[Overlay] DX11 backend initialized successfully (dpiScale=%.2f)", dpiScale);
 #endif
   return true;
 }
@@ -171,9 +186,13 @@ bool OverlayAdapter::InitDX12(void *device, void *queue, int rtvFormat) {
 #ifndef VK_LAYER_CE_OVERLAY
   if (initialized)
     return true;
-  if (!device || !queue)
+  if (!device || !queue) {
+    HookLogImportant("[Overlay] InitDX12 failed: null device=%p queue=%p", device, queue);
     return false;
+  }
 
+  HookLogImportant("[Overlay] Initializing DX12 backend (device=%p, queue=%p, fmt=%d)",
+                   device, queue, rtvFormat);
   auto dx12Backend = new CustomOverlay::DX12Backend((ID3D12Device *)device,
                                                     (ID3D12CommandQueue *)queue,
                                                     (DXGI_FORMAT)rtvFormat);
@@ -183,6 +202,7 @@ bool OverlayAdapter::InitDX12(void *device, void *queue, int rtvFormat) {
   renderer = new CustomOverlay::Renderer();
   float dpiScale = GetWindowsDpiScale();
   if (!renderer->Initialize(backend, dpiScale)) {
+    HookLogImportant("[Overlay] InitDX12: Renderer::Initialize FAILED (dpiScale=%.2f)", dpiScale);
     delete renderer;
     delete backend;
     renderer = nullptr;
@@ -191,7 +211,8 @@ bool OverlayAdapter::InitDX12(void *device, void *queue, int rtvFormat) {
   }
 
   initialized = true;
-  OutputDebugStringA("[OverlayAdapter] Initialized DX12 backend\n");
+  HookLogImportant("[Overlay] DX12 backend initialized successfully (fmt=%d, dpiScale=%.2f)",
+                   rtvFormat, dpiScale);
 #endif
   return true;
 }
@@ -201,6 +222,7 @@ bool OverlayAdapter::InitOpenGL() {
   if (initialized)
     return true;
 
+  HookLogImportant("[Overlay] Initializing OpenGL backend");
   auto glBackend = new CustomOverlay::OpenGLBackend();
   backend = glBackend;
   backendType = OverlayBackendType::OpenGL;
@@ -208,6 +230,7 @@ bool OverlayAdapter::InitOpenGL() {
   renderer = new CustomOverlay::Renderer();
   float dpiScale = GetWindowsDpiScale();
   if (!renderer->Initialize(backend, dpiScale)) {
+    HookLogImportant("[Overlay] InitOpenGL: Renderer::Initialize FAILED (dpiScale=%.2f)", dpiScale);
     delete renderer;
     delete backend;
     renderer = nullptr;
@@ -216,7 +239,7 @@ bool OverlayAdapter::InitOpenGL() {
   }
 
   initialized = true;
-  OutputDebugStringA("[OverlayAdapter] Initialized OpenGL backend\n");
+  HookLogImportant("[Overlay] OpenGL backend initialized successfully (dpiScale=%.2f)", dpiScale);
 #endif
   return true;
 }
@@ -226,8 +249,13 @@ bool OverlayAdapter::InitVulkan(void *device, void *physDevice, void *queue,
                                 void *instanceDispatch) {
   if (initialized)
     return true;
-  if (!device)
+  if (!device) {
+    HookLogImportant("[Overlay] InitVulkan failed: null device pointer");
     return false;
+  }
+
+  HookLogImportant("[Overlay] Initializing Vulkan backend (device=%p, queue=%p, family=%u)",
+                   device, queue, queueFamily);
 
   auto vkBackend = new CustomOverlay::VulkanBackend(
       (VkDevice)device, (VkPhysicalDevice)physDevice, (VkQueue)queue,
@@ -242,10 +270,9 @@ bool OverlayAdapter::InitVulkan(void *device, void *physDevice, void *queue,
   backendType = OverlayBackendType::Vulkan;
 
   renderer = new CustomOverlay::Renderer();
-  HookLog("OverlayAdapter::InitVulkan - Created renderer, initializing...");
   float dpiScale = GetWindowsDpiScale();
   if (!renderer->Initialize(backend, dpiScale)) {
-    HookLog("OverlayAdapter::InitVulkan - Renderer initialization failed");
+    HookLogImportant("[Overlay] InitVulkan: Renderer::Initialize FAILED (dpiScale=%.2f)", dpiScale);
     delete renderer;
     delete backend;
     renderer = nullptr;
@@ -253,18 +280,17 @@ bool OverlayAdapter::InitVulkan(void *device, void *physDevice, void *queue,
     return false;
   }
 
-  HookLog("OverlayAdapter::InitVulkan - Renderer initialized successfully");
   initialized = true;
-  HookLog("OverlayAdapter::InitVulkan - Set initialized=true");
-  OutputDebugStringA("[OverlayAdapter] Initialized Vulkan backend\n");
-  HookLog("OverlayAdapter::InitVulkan - About to return true");
+  HookLogImportant("[Overlay] Vulkan backend initialized successfully (dpiScale=%.2f)", dpiScale);
   return true;
 }
 
 void OverlayAdapter::SetShutdownMode(bool skipRelease) {
   skipDeviceRelease = skipRelease;
+  if (renderer) {
+    renderer->SetSkipDeviceRelease(skipRelease);
+  }
 #ifndef VK_LAYER_CE_OVERLAY
-  // Also propagate to DX11 backend if it exists (hook DLL only)
   if (backend && backendType == OverlayBackendType::DX11) {
     auto dx11Backend = static_cast<CustomOverlay::DX11Backend *>(backend);
     dx11Backend->SetSkipRelease(skipRelease);
@@ -309,30 +335,31 @@ uint32_t OverlayAdapter::GetLoadColor(float load) {
 void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
   static int renderLogCount = 0;
   if (renderLogCount < 5) {
-    HookLog("RenderOverlay: init=%d renderer=%p ipc=%p shm=%p showOverlay=%d",
-            initialized ? 1 : 0, (void *)renderer, (void *)ipc,
+    HookLog("[Overlay] RenderOverlay#%d: init=%d renderer=%p ipc=%p shm=%p showOverlay=%d vp=%dx%d",
+            renderLogCount, initialized ? 1 : 0, (void *)renderer, (void *)ipc,
             ipc ? (void *)ipc->GetSharedMem() : nullptr,
             (ipc && ipc->GetSharedMem())
                 ? ipc->GetSharedMem()->ReadOverlayConfig().showOverlay
-                : -1);
+                : -1,
+            viewportWidth, viewportHeight);
     renderLogCount++;
   }
 
   if (!initialized || !renderer) {
-    if (renderLogCount <= 5)
-      HookLog("RenderOverlay: early return - not initialized or no renderer");
+    if (renderLogCount < 5)
+      HookLog("[Overlay] RenderOverlay: early return - not initialized or no renderer");
     return;
   }
 
   if (!ipc || !ipc->GetSharedMem()) {
-    if (renderLogCount <= 5)
-      HookLog("RenderOverlay: early return - no IPC or shared memory");
+    if (renderLogCount < 5)
+      HookLog("[Overlay] RenderOverlay: early return - no IPC or shared memory");
     return;
   }
   auto cfg = ipc->GetSharedMem()->ReadOverlayConfig();
   if (!cfg.showOverlay) {
-    if (renderLogCount <= 5)
-      HookLog("RenderOverlay: early return - showOverlay is false");
+    if (renderLogCount < 5)
+      HookLog("[Overlay] RenderOverlay: early return - showOverlay is false");
     return;
   }
 
@@ -387,12 +414,12 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
   float padding = (float)cfg.padding * dpiScale;
   float x = padding, y = padding;
 
-  // Debug: Log position info
+  // Log position info on first few renders
   static int posLogCount = 0;
   if (posLogCount < 3) {
     HookLog(
-        "RenderContent: dpiScale=%.2f, vp=%dx%d, x=%.1f, y=%.1f, padding=%.1f",
-        dpiScale, viewportWidth, viewportHeight, x, y, padding);
+        "[Overlay] RenderContent#%d: dpiScale=%.2f, vp=%dx%d, x=%.1f, y=%.1f, padding=%.1f",
+        posLogCount, dpiScale, viewportWidth, viewportHeight, x, y, padding);
     posLogCount++;
   }
 

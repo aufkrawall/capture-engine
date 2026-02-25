@@ -111,5 +111,9 @@ private:
   int frameLogCounter = 0;
   int noPacketCount = 0;
 
+  // FIFO overflow tracking - drop NEWEST samples to maintain timeline continuity
+  bool wasDroppingSamples = false;
+  int64_t totalDroppedSamples = 0;
+
   void Flush();
 };

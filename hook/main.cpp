@@ -43,9 +43,9 @@
 HMODULE g_hModule = NULL;
 // Note: g_ShuttingDown is declared in hook/common/hook_common.h
 
-static volatile bool g_ProcessTerminating = false;
+static std::atomic<bool> g_ProcessTerminating{false};
 
-bool IsProcessTerminating() { return g_ProcessTerminating; }
+bool IsProcessTerminating() { return g_ProcessTerminating.load(std::memory_order_acquire); }
 
 enum class ProcessCategory {
   PotentialGame,
@@ -87,7 +87,6 @@ template <typename T> void SafeShutdownHook(T *&hook, const char *name) {
 // Note: g_ShuttingDown can be accessed via hook_common.h
 
 #include "../common/logging.h"
-#include <filesystem>
 
 // LoadLibrary Hook Typedefs
 typedef HMODULE(WINAPI *LoadLibraryA_t)(LPCSTR lpLibFileName);
@@ -187,6 +186,23 @@ static DWORD WINAPI ChildInjectWorker(LPVOID param) {
 }
 
 void InjectIntoChild(HANDLE hProcess, HANDLE hThread) {
+  // Detect child process bitness. Cross-bitness injection (64→32 or 32→64)
+  // cannot work via CreateRemoteThread+LoadLibraryA because the LoadLibraryA
+  // address from our kernel32.dll is the wrong bitness. The captureengine host
+  // process handles injecting the correct arch DLL independently, so we skip
+  // cross-arch children here to avoid crashing them.
+  BOOL childIsWow64 = FALSE;
+  BOOL selfIsWow64 = FALSE;
+  IsWow64Process(hProcess, &childIsWow64);
+  IsWow64Process(GetCurrentProcess(), &selfIsWow64);
+  if (childIsWow64 != selfIsWow64) {
+    HookLog("[ChildInject] Skipping cross-bitness child (self wow64=%d, child "
+            "wow64=%d) — let captureengine handle it",
+            (int)selfIsWow64, (int)childIsWow64);
+    ResumeThread(hThread);
+    return;
+  }
+
   auto *p = new ChildInjectParams();
   GetModuleFileNameA(g_hModule, p->dllPath, MAX_PATH);
 
@@ -1689,7 +1705,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
       // This allows hook entry points to detect termination and return early
       // preventing crashes when external DLLs (like opengl32.dll) call into
       // our code during their atexit destructors
-      g_ProcessTerminating = true;
+      g_ProcessTerminating.store(true, std::memory_order_release);
       return TRUE;
     }
 

@@ -8,7 +8,7 @@ extern "C" {
 }
 
 AudioResampler::AudioResampler()
-    : swrCtx(nullptr), unpackBuffer(nullptr), unpackBufferSize(0) {
+    : swrCtx(nullptr) {
   inFmt = {};
   outFmt = {};
 }
@@ -18,10 +18,7 @@ AudioResampler::~AudioResampler() {
     swr_free(&swrCtx);
     swrCtx = nullptr;
   }
-  if (unpackBuffer) {
-    delete[] unpackBuffer;
-    unpackBuffer = nullptr;
-  }
+  // unpackBuffer is std::vector — no manual cleanup needed
 }
 
 AVSampleFormat AudioResampler::DetermineInputFormat() const {
@@ -64,16 +61,14 @@ bool AudioResampler::Unpack24BitTo32Bit(const uint8_t *input, int inputBytes,
   int numSamples = inputBytes / bytesPerSample;
   int needed = numSamples * 4; // 32-bit output
 
-  // Ensure buffer is large enough
-  if (unpackBufferSize < needed) {
-    delete[] unpackBuffer;
-    unpackBufferSize = needed + 1024; // Add some headroom
-    unpackBuffer = new uint8_t[unpackBufferSize];
+  // Ensure buffer is large enough (resize only when needed)
+  if (static_cast<int>(unpackBuffer.size()) < needed) {
+    unpackBuffer.resize(needed + 1024); // Add headroom
   }
 
   // Unpack 24-bit to 32-bit (sign-extend, left-justify)
   // 24-bit sample: [LSB, MID, MSB] -> 32-bit: [0, LSB, MID, MSB]
-  int32_t *out32 = reinterpret_cast<int32_t *>(unpackBuffer);
+  int32_t *out32 = reinterpret_cast<int32_t *>(unpackBuffer.data());
   for (int i = 0; i < numSamples; i++) {
     int idx = i * 3;
     // Little-endian: LSB first
@@ -84,7 +79,7 @@ bool AudioResampler::Unpack24BitTo32Bit(const uint8_t *input, int inputBytes,
     out32[i] = sample;
   }
 
-  *output = unpackBuffer;
+  *output = unpackBuffer.data();
   *outputBytes = needed;
   return true;
 }
@@ -329,8 +324,7 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs,
   // lag.
   const int64_t STEADY_STATE_THRESHOLD = 4800; // 100ms @ 48kHz
   if (std::abs(driftSamples) > STEADY_STATE_THRESHOLD) {
-    static int largeSkipCounter = 0;
-    if (largeSkipCounter++ % 100 == 0) {
+    if (largeSkipCounter_++ % 100 == 0) {
       DLL_Log("[AudioResampler] Huge drift (%lld samples) - skipping pitch "
               "correction (buffering/scheduling)",
               driftSamples);
@@ -387,8 +381,7 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs,
 
   // Log extreme correction (Logic Debug)
   if (std::abs(targetDelta) > maxDelta) {
-    static int limitLogCounter = 0;
-    if (limitLogCounter++ % 100 == 0) {
+    if (limitLogCounter_++ % 100 == 0) {
       DLL_Log("[AudioResampler] PI Saturated! Req=%d, Max=%d", targetDelta,
               maxDelta);
     }

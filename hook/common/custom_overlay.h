@@ -51,6 +51,7 @@ public:
   // Initialize with a graphics backend
   bool Initialize(RendererBackend *backend, float dpiScale = 1.0f);
   void Shutdown();
+  void SetSkipDeviceRelease(bool skip) { skipDeviceRelease = skip; }
   bool IsInitialized() const { return initialized; }
 
   // Frame lifecycle
@@ -146,6 +147,7 @@ private:
 
   bool initialized = false;
   bool frameStarted = false;
+  bool skipDeviceRelease = false;
 
   // Track current batch starting offsets for correct command creation
   uint32_t currentBatchVertexOffset = 0;
