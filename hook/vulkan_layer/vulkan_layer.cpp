@@ -1002,10 +1002,19 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(
         VulkanLayerState::Get().GetSurfaceWindow(pCreateInfo->surface);
     LayerLog("Vulkan Layer: Initializing overlay for swapchain %p, images=%d",
              *pSwapchain, count);
-    InitializeOverlay(device, *pSwapchain, sd->format, sd->extent, count,
-                      sd->images.data(), window);
-    LayerLog("Vulkan Layer: InitializeOverlay returned, registering swapchain");
-    InitializeCapture(device, *pSwapchain, sd->format, sd->extent, count);
+    const bool isTinySwapchain =
+        (sd->extent.width < 320 || sd->extent.height < 180);
+    if (isTinySwapchain) {
+      LayerLog("Vulkan Layer: [Info] Skipping overlay/capture init for tiny "
+               "swapchain %ux%u",
+               sd->extent.width, sd->extent.height);
+    } else {
+      InitializeOverlay(device, *pSwapchain, sd->format, sd->extent, count,
+                        sd->images.data(), window);
+      LayerLog("Vulkan Layer: InitializeOverlay returned, registering "
+               "swapchain");
+      InitializeCapture(device, *pSwapchain, sd->format, sd->extent, count);
+    }
 
     VulkanLayerState::Get().RegisterSwapchain(*pSwapchain, sd);
     LayerLog("Vulkan Layer: Swapchain registration complete");

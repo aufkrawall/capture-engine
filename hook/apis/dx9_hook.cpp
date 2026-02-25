@@ -113,6 +113,20 @@ static std::atomic<int> g_AnisoDiagLogCount{0};
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
 
+// Vulkan coordination: if Vulkan layer is actively presenting, skip DX9
+// present-time processing to avoid duplicate overlay/limiter effects in DXVK.
+static bool ShouldSkipDX9PresentForVulkan() {
+  SharedMemoryLayout *shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+  if (!shm || !shm->runtimeState.vulkanLayerActive.load(std::memory_order_acquire)) {
+    return false;
+  }
+
+  uint64_t lastVulkanPresentTick =
+      shm->runtimeState.vulkanPresentTick.load(std::memory_order_acquire);
+  return lastVulkanPresentTick != 0 &&
+         (GetTickCount64() - lastVulkanPresentTick < 200);
+}
+
 static float D3D9BitsToFloat(DWORD value) { return std::bit_cast<float>(value); }
 
 static DWORD D3D9FloatToBits(float value) { return std::bit_cast<DWORD>(value); }
@@ -490,6 +504,12 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9PresentInline(
                                     hDestWindowOverride, pDirtyRegion);
     return D3D_OK;
   }
+  if (ShouldSkipDX9PresentForVulkan()) {
+    if (oD3D9PresentTrampoline)
+      return oD3D9PresentTrampoline(device, pSourceRect, pDestRect,
+                                    hDestWindowOverride, pDirtyRegion);
+    return D3D_OK;
+  }
 
   IDirect3DSurface9 *backBuffer = nullptr;
   DX9_PresentBegin(device, backBuffer);
@@ -520,6 +540,13 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9PresentExInline(
     entryLogCount++;
   }
   if (g_ShuttingDown.load()) {
+    if (oD3D9PresentExTrampoline)
+      return oD3D9PresentExTrampoline(device, pSourceRect, pDestRect,
+                                      hDestWindowOverride, pDirtyRegion,
+                                      dwFlags);
+    return D3D_OK;
+  }
+  if (ShouldSkipDX9PresentForVulkan()) {
     if (oD3D9PresentExTrampoline)
       return oD3D9PresentExTrampoline(device, pSourceRect, pDestRect,
                                       hDestWindowOverride, pDirtyRegion,
@@ -564,6 +591,13 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9SwapChainPresentInline(
     entryLogCount++;
   }
   if (g_ShuttingDown.load()) {
+    if (oD3D9SwapChainPresentTrampoline)
+      return oD3D9SwapChainPresentTrampoline(swapChain, pSourceRect, pDestRect,
+                                             hDestWindowOverride, pDirtyRegion,
+                                             dwFlags);
+    return D3D_OK;
+  }
+  if (ShouldSkipDX9PresentForVulkan()) {
     if (oD3D9SwapChainPresentTrampoline)
       return oD3D9SwapChainPresentTrampoline(swapChain, pSourceRect, pDestRect,
                                              hDestWindowOverride, pDirtyRegion,
@@ -2546,6 +2580,11 @@ static HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9 *device,
                                                CONST RECT *pDestRect,
                                                HWND hDestWindowOverride,
                                                CONST RGNDATA *pDirtyRegion) {
+  if (ShouldSkipDX9PresentForVulkan()) {
+    return oPresent(device, pSourceRect, pDestRect, hDestWindowOverride,
+                    pDirtyRegion);
+  }
+
   static int entryLogCount = 0;
   if (entryLogCount < 5) {
     EarlyLog("DX9: DetourPresent called (device=%p, count=%d)", device, entryLogCount);
@@ -2573,6 +2612,11 @@ static HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9 *device,
 static HRESULT STDMETHODCALLTYPE DetourPresentEx(
     IDirect3DDevice9Ex *device, CONST RECT *pSourceRect, CONST RECT *pDestRect,
     HWND hDestWindowOverride, CONST RGNDATA *pDirtyRegion, DWORD dwFlags) {
+  if (ShouldSkipDX9PresentForVulkan()) {
+    return oPresentEx(device, pSourceRect, pDestRect, hDestWindowOverride,
+                      pDirtyRegion, dwFlags);
+  }
+
   static int entryLogCount = 0;
   if (entryLogCount < 5) {
     EarlyLog("DX9: DetourPresentEx called (device=%p, flags=0x%X, count=%d)", device, dwFlags, entryLogCount);
@@ -2611,6 +2655,11 @@ static HRESULT STDMETHODCALLTYPE DetourPresentEx(
 static HRESULT STDMETHODCALLTYPE DetourPresentSwap(
     IDirect3DSwapChain9 *swap, CONST RECT *pSourceRect, CONST RECT *pDestRect,
     HWND hDestWindowOverride, CONST RGNDATA *pDirtyRegion, DWORD dwFlags) {
+  if (ShouldSkipDX9PresentForVulkan()) {
+    return oPresentSwap(swap, pSourceRect, pDestRect, hDestWindowOverride,
+                        pDirtyRegion, dwFlags);
+  }
+
   static int entryLogCount = 0;
   if (entryLogCount < 5) {
     EarlyLog("DX9: DetourPresentSwap called (swap=%p, flags=0x%X, count=%d)", swap, dwFlags, entryLogCount);

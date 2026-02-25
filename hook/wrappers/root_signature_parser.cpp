@@ -37,12 +37,6 @@ bool ApplyStaticSamplerOverrides(D3D12_STATIC_SAMPLER_DESC &sampler) {
   UINT origAniso = sampler.MaxAnisotropy;
   float origBias = sampler.MipLODBias;
 
-  HookLog("ApplyStaticSamplerOverrides: AF=%s, MipBias=%s, Mode=%s, "
-          "Filter=0x%X, Aniso=%d, Bias=%.2f",
-          gfx.anisotropicFiltering.c_str(), gfx.mipBias.c_str(),
-          gfx.mipBiasMode.c_str(), sampler.Filter, sampler.MaxAnisotropy,
-          sampler.MipLODBias);
-
   // Skip samplers with border address mode (commonly used for shadow maps)
   bool hasBorderAddress =
       (sampler.AddressU == D3D12_TEXTURE_ADDRESS_MODE_BORDER ||

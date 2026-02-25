@@ -155,6 +155,14 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain,
     return;
   }
 
+  auto existing = g_OverlayStates.find(device);
+  if (existing != g_OverlayStates.end()) {
+    LayerLog("Vulkan Layer: InitializeOverlay - Existing state found, cleaning "
+             "it before re-init");
+    CleanupOverlayState(existing->second, device, disp);
+    g_OverlayStates.erase(existing);
+  }
+
   LayerLog("Vulkan Layer: InitializeOverlay - Getting instance dispatch...");
   InstanceDispatch *instDisp = VulkanLayerState::Get().GetInstanceDispatch(
       VulkanLayerState::Get().GetInstanceFromPhysicalDevice(
@@ -573,16 +581,15 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex,
   }
 
   if (fenceResult == VK_TIMEOUT) {
-    // GPU took too long - this is unusual with proper buffering
-    // Log warning but continue anyway to avoid hanging
+    // Skip this overlay frame instead of force-resetting/reusing an in-flight
+    // command buffer, which can cause transient glyph artifacts.
     static std::atomic<int> s_timeoutCount{0};
     int timeouts = ++s_timeoutCount;
     if (timeouts <= 5) {
       LayerLog("Vulkan Layer: Fence wait timeout after %d us (buffer %u, timeout=%d)",
                static_cast<int>(fenceEndUs - fenceStartUs), imageIndex, timeouts);
     }
-    // Reset the fence and continue - the triple buffering should prevent corruption
-    disp->fp_vkResetFences(device, 1, &fence);
+    return false;
   } else if (fenceResult != VK_SUCCESS) {
     LayerLog("Vulkan Layer: Fence wait FAILED with result %d (buffer %u)", fenceResult, imageIndex);
     return false;
@@ -705,6 +712,7 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex,
   VkResult submitResult = disp->fp_vkQueueSubmit(queue, 1, &submitInfo, fence);
   if (submitResult != VK_SUCCESS) {
     LayerLog("Vulkan Layer: QueueSubmit FAILED with result %d (buffer %u)", submitResult, imageIndex);
+    return false;
   }
   return true;
 }

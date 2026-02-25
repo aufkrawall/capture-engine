@@ -450,25 +450,26 @@ void VulkanBackend::Shutdown() {
   }
 
   // Destroy buffers
-  if (vertexBuffer != VK_NULL_HANDLE && disp->fp_vkDestroyBuffer) {
-    disp->fp_vkDestroyBuffer(device, vertexBuffer, nullptr);
-    vertexBuffer = VK_NULL_HANDLE;
+  for (int i = 0; i < kFramePoolSize; i++) {
+    if (vertexBuffer[i] != VK_NULL_HANDLE && disp->fp_vkDestroyBuffer) {
+      disp->fp_vkDestroyBuffer(device, vertexBuffer[i], nullptr);
+      vertexBuffer[i] = VK_NULL_HANDLE;
+    }
+    if (vertexMemory[i] != VK_NULL_HANDLE && disp->fp_vkFreeMemory) {
+      disp->fp_vkFreeMemory(device, vertexMemory[i], nullptr);
+      vertexMemory[i] = VK_NULL_HANDLE;
+    }
+    if (indexBuffer[i] != VK_NULL_HANDLE && disp->fp_vkDestroyBuffer) {
+      disp->fp_vkDestroyBuffer(device, indexBuffer[i], nullptr);
+      indexBuffer[i] = VK_NULL_HANDLE;
+    }
+    if (indexMemory[i] != VK_NULL_HANDLE && disp->fp_vkFreeMemory) {
+      disp->fp_vkFreeMemory(device, indexMemory[i], nullptr);
+      indexMemory[i] = VK_NULL_HANDLE;
+    }
+    vertexBufferPtr[i] = nullptr;
+    indexBufferPtr[i] = nullptr;
   }
-  if (vertexMemory != VK_NULL_HANDLE && disp->fp_vkFreeMemory) {
-    disp->fp_vkFreeMemory(device, vertexMemory, nullptr);
-    vertexMemory = VK_NULL_HANDLE;
-  }
-  if (indexBuffer != VK_NULL_HANDLE && disp->fp_vkDestroyBuffer) {
-    disp->fp_vkDestroyBuffer(device, indexBuffer, nullptr);
-    indexBuffer = VK_NULL_HANDLE;
-  }
-  if (indexMemory != VK_NULL_HANDLE && disp->fp_vkFreeMemory) {
-    disp->fp_vkFreeMemory(device, indexMemory, nullptr);
-    indexMemory = VK_NULL_HANDLE;
-  }
-
-  vertexBufferPtr = nullptr;
-  indexBufferPtr = nullptr;
   initialized = false;
   pipelineCreated = false;
 }
@@ -871,86 +872,93 @@ bool VulkanBackend::CreateBuffers() {
       !disp->fp_vkMapMemory)
     return false;
 
-  // Vertex buffer (1MB)
-  vertexBufferSize = 1024 * 1024;
-  VkBufferCreateInfo vbInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-  vbInfo.size = vertexBufferSize;
-  vbInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-  vbInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  for (int i = 0; i < kFramePoolSize; i++) {
+    // Vertex buffer (1MB)
+    vertexBufferSize[i] = 1024 * 1024;
+    VkBufferCreateInfo vbInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    vbInfo.size = vertexBufferSize[i];
+    vbInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    vbInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-  VkResult result =
-      disp->fp_vkCreateBuffer(device, &vbInfo, nullptr, &vertexBuffer);
-  if (result != VK_SUCCESS) {
-    HookLog("VulkanBackend: Failed to create vertex buffer: %d", result);
-    return false;
+    VkResult result =
+        disp->fp_vkCreateBuffer(device, &vbInfo, nullptr, &vertexBuffer[i]);
+    if (result != VK_SUCCESS) {
+      HookLog("VulkanBackend: Failed to create vertex buffer[%d]: %d", i,
+              result);
+      return false;
+    }
+
+    VkMemoryRequirements vbMemReqs;
+    disp->fp_vkGetBufferMemoryRequirements(device, vertexBuffer[i], &vbMemReqs);
+
+    uint32_t vbMemType =
+        FindMemoryType(vbMemReqs.memoryTypeBits,
+                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (vbMemType == UINT32_MAX) {
+      HookLog("VulkanBackend: Failed to find memory type for vertex buffer");
+      return false;
+    }
+
+    VkMemoryAllocateInfo vbAllocInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    vbAllocInfo.allocationSize = vbMemReqs.size;
+    vbAllocInfo.memoryTypeIndex = vbMemType;
+
+    result = disp->fp_vkAllocateMemory(device, &vbAllocInfo, nullptr,
+                                       &vertexMemory[i]);
+    if (result != VK_SUCCESS) {
+      HookLog("VulkanBackend: Failed to allocate vertex buffer memory[%d]: %d",
+              i, result);
+      return false;
+    }
+
+    disp->fp_vkBindBufferMemory(device, vertexBuffer[i], vertexMemory[i], 0);
+    disp->fp_vkMapMemory(device, vertexMemory[i], 0, vertexBufferSize[i], 0,
+                         &vertexBufferPtr[i]);
+
+    // Index buffer (256KB)
+    indexBufferSize[i] = 256 * 1024;
+    VkBufferCreateInfo ibInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    ibInfo.size = indexBufferSize[i];
+    ibInfo.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    ibInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    result =
+        disp->fp_vkCreateBuffer(device, &ibInfo, nullptr, &indexBuffer[i]);
+    if (result != VK_SUCCESS) {
+      HookLog("VulkanBackend: Failed to create index buffer[%d]: %d", i,
+              result);
+      return false;
+    }
+
+    VkMemoryRequirements ibMemReqs;
+    disp->fp_vkGetBufferMemoryRequirements(device, indexBuffer[i], &ibMemReqs);
+
+    uint32_t ibMemType =
+        FindMemoryType(ibMemReqs.memoryTypeBits,
+                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (ibMemType == UINT32_MAX) {
+      HookLog("VulkanBackend: Failed to find memory type for index buffer");
+      return false;
+    }
+
+    VkMemoryAllocateInfo ibAllocInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    ibAllocInfo.allocationSize = ibMemReqs.size;
+    ibAllocInfo.memoryTypeIndex = ibMemType;
+
+    result = disp->fp_vkAllocateMemory(device, &ibAllocInfo, nullptr,
+                                       &indexMemory[i]);
+    if (result != VK_SUCCESS) {
+      HookLog("VulkanBackend: Failed to allocate index buffer memory[%d]: %d",
+              i, result);
+      return false;
+    }
+
+    disp->fp_vkBindBufferMemory(device, indexBuffer[i], indexMemory[i], 0);
+    disp->fp_vkMapMemory(device, indexMemory[i], 0, indexBufferSize[i], 0,
+                         &indexBufferPtr[i]);
   }
-
-  VkMemoryRequirements vbMemReqs;
-  disp->fp_vkGetBufferMemoryRequirements(device, vertexBuffer, &vbMemReqs);
-
-  uint32_t vbMemType = FindMemoryType(vbMemReqs.memoryTypeBits,
-                                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-  if (vbMemType == UINT32_MAX) {
-    HookLog("VulkanBackend: Failed to find memory type for vertex buffer");
-    return false;
-  }
-
-  VkMemoryAllocateInfo vbAllocInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-  vbAllocInfo.allocationSize = vbMemReqs.size;
-  vbAllocInfo.memoryTypeIndex = vbMemType;
-
-  result =
-      disp->fp_vkAllocateMemory(device, &vbAllocInfo, nullptr, &vertexMemory);
-  if (result != VK_SUCCESS) {
-    HookLog("VulkanBackend: Failed to allocate vertex buffer memory: %d",
-            result);
-    return false;
-  }
-
-  disp->fp_vkBindBufferMemory(device, vertexBuffer, vertexMemory, 0);
-  disp->fp_vkMapMemory(device, vertexMemory, 0, vertexBufferSize, 0,
-                       &vertexBufferPtr);
-
-  // Index buffer (256KB)
-  indexBufferSize = 256 * 1024;
-  VkBufferCreateInfo ibInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-  ibInfo.size = indexBufferSize;
-  ibInfo.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
-  ibInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-  result = disp->fp_vkCreateBuffer(device, &ibInfo, nullptr, &indexBuffer);
-  if (result != VK_SUCCESS) {
-    HookLog("VulkanBackend: Failed to create index buffer: %d", result);
-    return false;
-  }
-
-  VkMemoryRequirements ibMemReqs;
-  disp->fp_vkGetBufferMemoryRequirements(device, indexBuffer, &ibMemReqs);
-
-  uint32_t ibMemType = FindMemoryType(ibMemReqs.memoryTypeBits,
-                                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-  if (ibMemType == UINT32_MAX) {
-    HookLog("VulkanBackend: Failed to find memory type for index buffer");
-    return false;
-  }
-
-  VkMemoryAllocateInfo ibAllocInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-  ibAllocInfo.allocationSize = ibMemReqs.size;
-  ibAllocInfo.memoryTypeIndex = ibMemType;
-
-  result =
-      disp->fp_vkAllocateMemory(device, &ibAllocInfo, nullptr, &indexMemory);
-  if (result != VK_SUCCESS) {
-    HookLog("VulkanBackend: Failed to allocate index buffer memory: %d",
-            result);
-    return false;
-  }
-
-  disp->fp_vkBindBufferMemory(device, indexBuffer, indexMemory, 0);
-  disp->fp_vkMapMemory(device, indexMemory, 0, indexBufferSize, 0,
-                       &indexBufferPtr);
 
   return true;
 }
@@ -1280,20 +1288,25 @@ void VulkanBackend::Render(const std::vector<DrawVertex> &vertices,
   if (pipeline == VK_NULL_HANDLE)
     return;
 
+  // Advance to the next pool slot for this frame
+  int slot =
+      frameIdx.fetch_add(1, std::memory_order_relaxed) % kFramePoolSize;
+
   // Check buffer sizes
   size_t vertexDataSize = vertices.size() * sizeof(DrawVertex);
   size_t indexDataSize = indices.size() * sizeof(uint16_t);
-  if (vertexDataSize > vertexBufferSize || indexDataSize > indexBufferSize)
+  if (vertexDataSize > vertexBufferSize[slot] ||
+      indexDataSize > indexBufferSize[slot])
     return;
 
   // Update vertex buffer
-  if (vertexBufferPtr) {
-    memcpy(vertexBufferPtr, vertices.data(), vertexDataSize);
+  if (vertexBufferPtr[slot]) {
+    memcpy(vertexBufferPtr[slot], vertices.data(), vertexDataSize);
   }
 
   // Update index buffer
-  if (indexBufferPtr) {
-    memcpy(indexBufferPtr, indices.data(), indexDataSize);
+  if (indexBufferPtr[slot]) {
+    memcpy(indexBufferPtr[slot], indices.data(), indexDataSize);
   }
 
   // Set viewport (standard setup - shader handles NDC conversion)
@@ -1314,11 +1327,11 @@ void VulkanBackend::Render(const std::vector<DrawVertex> &vertices,
 
   // Bind vertex buffer
   VkDeviceSize vertexOffset = 0;
-  disp->fp_vkCmdBindVertexBuffers(currentCmdBuffer, 0, 1, &vertexBuffer,
-                                  &vertexOffset);
+  disp->fp_vkCmdBindVertexBuffers(currentCmdBuffer, 0, 1,
+                                  &vertexBuffer[slot], &vertexOffset);
 
   // Bind index buffer
-  disp->fp_vkCmdBindIndexBuffer(currentCmdBuffer, indexBuffer, 0,
+  disp->fp_vkCmdBindIndexBuffer(currentCmdBuffer, indexBuffer[slot], 0,
                                 VK_INDEX_TYPE_UINT16);
 
   // Push constants: viewport size + HDR params

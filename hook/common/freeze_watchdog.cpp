@@ -39,6 +39,17 @@ static uint64_t GetCurrentMicros() {
         .count();
 }
 
+static bool IsProcessInForeground(DWORD processId) {
+    HWND fgWindow = GetForegroundWindow();
+    if (!fgWindow) {
+        return false;
+    }
+
+    DWORD fgPid = 0;
+    GetWindowThreadProcessId(fgWindow, &fgPid);
+    return fgPid == processId;
+}
+
 FreezeWatchdog::FreezeWatchdog() : processId_(GetCurrentProcessId()) {
     char name[MAX_PATH] = {0};
     GetModuleFileNameA(nullptr, name, MAX_PATH);
@@ -150,6 +161,18 @@ bool FreezeWatchdog::IsFrozen() const {
 
     double sinceStartup = (now - startupTime_.load()) / 1'000'000.0;
     if (sinceStartup < STARTUP_GRACE_PERIOD) {
+        return false;
+    }
+
+    // Vulkan / DXVK paths can pause or bypass the DXGI/D3D heartbeat patterns
+    // used by this watchdog. Skip freeze assertions in those cases.
+    if (GetModuleHandleW(L"vulkan-1.dll") || GetModuleHandleW(L"winevulkan.dll")) {
+        return false;
+    }
+
+    // Alt+Tab/minimized games can legitimately stop presenting for a while.
+    // Only treat missing heartbeats as a freeze while the game is foreground.
+    if (!IsProcessInForeground(processId_)) {
         return false;
     }
 

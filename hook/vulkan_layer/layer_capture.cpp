@@ -39,7 +39,8 @@ struct SharedTextureEntry {
 
   std::vector<ID3D11Texture2D *>
       textures;                       // 4 textures for double/triple buffering
-  std::vector<HANDLE> textureHandles; // KMT handles for IPC
+  std::vector<HANDLE> textureHandles; // IPC handles (NT or KMT)
+  bool textureHandlesAreNt = false;
   std::vector<VkImage> vkImages;      // Vulkan imported images
   std::vector<VkDeviceMemory> vkMemories; // Vulkan imported memories
   bool valid = false;
@@ -57,7 +58,19 @@ static std::vector<SharedTextureEntry> g_TextureCache;
 static bool CreateD3D11InteropDevice(IDXGIAdapter *adapter,
                                      ID3D11Device **ppDevice,
                                      ID3D11DeviceContext **ppContext) {
-  HMODULE hD3D11 = LoadLibraryA("d3d11.dll");
+  // Load the NATIVE d3d11.dll from System32 to bypass DXVK's replacement.
+  // When DXVK is active, the process-level d3d11.dll is DXVK's Vulkan-backed
+  // implementation whose shared handles are incompatible with Vulkan import.
+  char systemDir[MAX_PATH];
+  GetSystemDirectoryA(systemDir, MAX_PATH);
+  char d3d11Path[MAX_PATH];
+  snprintf(d3d11Path, MAX_PATH, "%s\\d3d11.dll", systemDir);
+
+  HMODULE hD3D11 = LoadLibraryA(d3d11Path);
+  if (!hD3D11) {
+    // Fallback to default search (non-DXVK scenarios)
+    hD3D11 = LoadLibraryA("d3d11.dll");
+  }
   if (!hD3D11)
     return false;
 
@@ -96,8 +109,33 @@ static D3D11InteropDevice *GetOrCreateD3D11Device(const LUID &luid) {
     ++it;
   }
 
+  // Load the NATIVE dxgi.dll from System32 to bypass DXVK's replacement.
+  // DXVK replaces both d3d11.dll and dxgi.dll; we need the real DXGI factory
+  // to enumerate physical adapters and create real D3D11 shared textures.
+  typedef HRESULT(WINAPI * PFN_CreateDXGIFactory1)(REFIID riid, void **ppFactory);
+  PFN_CreateDXGIFactory1 nativeCreateFactory = nullptr;
+
+  char systemDir[MAX_PATH];
+  GetSystemDirectoryA(systemDir, MAX_PATH);
+  char dxgiPath[MAX_PATH];
+  snprintf(dxgiPath, MAX_PATH, "%s\\dxgi.dll", systemDir);
+
+  HMODULE hDxgi = LoadLibraryA(dxgiPath);
+  if (hDxgi) {
+    nativeCreateFactory = (PFN_CreateDXGIFactory1)GetProcAddress(
+        hDxgi, "CreateDXGIFactory1");
+  }
+
   ComPtr<IDXGIFactory1> factory;
-  if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
+  HRESULT factoryHr = E_FAIL;
+  if (nativeCreateFactory) {
+    factoryHr = nativeCreateFactory(IID_PPV_ARGS(&factory));
+  }
+  if (FAILED(factoryHr)) {
+    // Fallback to default (non-DXVK scenarios)
+    factoryHr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
+  }
+  if (FAILED(factoryHr))
     return nullptr;
 
   ComPtr<IDXGIAdapter> adapter;
@@ -152,10 +190,38 @@ static bool CreateSharedTextures(D3D11InteropDevice *interopDev, VkDevice vkDev,
   entry.height = height;
   entry.vkFormat = vkFormat;
 
-  entry.textures.resize(kTextureCount);
-  entry.textureHandles.resize(kTextureCount);
-  entry.vkImages.resize(kTextureCount);
-  entry.vkMemories.resize(kTextureCount);
+  entry.textures.assign(kTextureCount, nullptr);
+  entry.textureHandles.assign(kTextureCount, nullptr);
+  entry.textureHandlesAreNt = false;
+  entry.vkImages.assign(kTextureCount, VK_NULL_HANDLE);
+  entry.vkMemories.assign(kTextureCount, VK_NULL_HANDLE);
+
+  auto resetAttemptResources = [&]() {
+    for (auto &mem : entry.vkMemories) {
+      if (mem != VK_NULL_HANDLE) {
+        disp->fp_vkFreeMemory(vkDev, mem, nullptr);
+        mem = VK_NULL_HANDLE;
+      }
+    }
+    for (auto &img : entry.vkImages) {
+      if (img != VK_NULL_HANDLE) {
+        disp->fp_vkDestroyImage(vkDev, img, nullptr);
+        img = VK_NULL_HANDLE;
+      }
+    }
+    for (auto &handle : entry.textureHandles) {
+      if (entry.textureHandlesAreNt && handle) {
+        CloseHandle(handle);
+      }
+      handle = nullptr;
+    }
+    for (auto *&tex : entry.textures) {
+      if (tex) {
+        tex->Release();
+        tex = nullptr;
+      }
+    }
+  };
 
   D3D11_TEXTURE2D_DESC texDesc = {};
   texDesc.Width = width;
@@ -166,92 +232,220 @@ static bool CreateSharedTextures(D3D11InteropDevice *interopDev, VkDevice vkDev,
   texDesc.SampleDesc.Count = 1;
   texDesc.Usage = D3D11_USAGE_DEFAULT;
   texDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-  texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    const bool useNtIpcHandles = (attempt == 0);
+    resetAttemptResources();
+    entry.textureHandlesAreNt = useNtIpcHandles;
 
-  // Create D3D11 textures
-  for (uint32_t i = 0; i < kTextureCount; i++) {
-    HRESULT hr = interopDev->device->CreateTexture2D(&texDesc, nullptr,
-                                                     &entry.textures[i]);
-    if (FAILED(hr)) {
-      LayerLog(
-          "Vulkan Layer: [Error] Failed to create D3D11 texture %d (hr=0x%08X)",
-          i, hr);
-      return false;
+    std::vector<HANDLE> vkImportHandles(kTextureCount, nullptr);
+    texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+    if (useNtIpcHandles) {
+      texDesc.MiscFlags |= D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
     }
 
-    ComPtr<IDXGIResource> dxgiRes;
-    entry.textures[i]->QueryInterface(IID_PPV_ARGS(&dxgiRes));
-    dxgiRes->GetSharedHandle(&entry.textureHandles[i]);
-  }
-
-  // Import textures to Vulkan
-  for (uint32_t i = 0; i < kTextureCount; i++) {
-    VkExternalMemoryImageCreateInfo extInfo = {
-        VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO};
-    extInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT;
-
-    VkImageCreateInfo imgInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, &extInfo};
-    imgInfo.imageType = VK_IMAGE_TYPE_2D;
-    imgInfo.format = (VkFormat)vkFormat;
-    imgInfo.extent = {width, height, 1};
-    imgInfo.mipLevels = 1;
-    imgInfo.arrayLayers = 1;
-    imgInfo.usage =
-        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-    imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-    if (disp->fp_vkCreateImage(vkDev, &imgInfo, nullptr, &entry.vkImages[i]) !=
-        VK_SUCCESS) {
-      return false;
-    }
-
-    VkMemoryRequirements memReq;
-    disp->fp_vkGetImageMemoryRequirements(vkDev, entry.vkImages[i], &memReq);
-
-    VkImportMemoryWin32HandleInfoKHR importInfo = {
-        VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR};
-    importInfo.handleType =
-        VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT;
-    importInfo.handle = entry.textureHandles[i];
-
-    VkMemoryAllocateInfo allocInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                                      &importInfo};
-    allocInfo.allocationSize = memReq.size;
-
-    VkPhysicalDeviceMemoryProperties memProps;
-    InstanceDispatch *instDisp = VulkanLayerState::Get().GetInstanceDispatch(
-        VulkanLayerState::Get().GetInstanceFromPhysicalDevice(physDev));
-    instDisp->fp_vkGetPhysicalDeviceMemoryProperties(physDev, &memProps);
-    uint32_t memType = 0xFFFFFFFF;
-    for (uint32_t j = 0; j < memProps.memoryTypeCount; j++) {
-      if ((memReq.memoryTypeBits & (1 << j)) &&
-          (memProps.memoryTypes[j].propertyFlags &
-           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
-        memType = j;
+    bool createFailed = false;
+    for (uint32_t i = 0; i < kTextureCount; i++) {
+      HRESULT hr = interopDev->device->CreateTexture2D(&texDesc, nullptr,
+                                                       &entry.textures[i]);
+      if (FAILED(hr)) {
+        LayerLog("Vulkan Layer: [Error] Failed to create D3D11 texture %d "
+                 "(hr=0x%08X, ntIpc=%d)",
+                 i, hr, useNtIpcHandles ? 1 : 0);
+        createFailed = true;
         break;
       }
+
+      HANDLE ipcHandle = nullptr;
+      if (useNtIpcHandles) {
+        ComPtr<IDXGIResource1> dxgiRes1;
+        if (FAILED(entry.textures[i]->QueryInterface(IID_PPV_ARGS(&dxgiRes1))) ||
+            !dxgiRes1) {
+          LayerLog("Vulkan Layer: [Warn] IDXGIResource1 unavailable for texture "
+                   "%d, fallback to KMT-only sharing",
+                   i);
+          createFailed = true;
+          break;
+        }
+        hr = dxgiRes1->CreateSharedHandle(
+            nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
+            nullptr, &ipcHandle);
+        if (FAILED(hr) || !ipcHandle) {
+          LayerLog("Vulkan Layer: [Warn] Failed to create NT IPC handle %d "
+                   "(hr=0x%08X), fallback to KMT-only sharing",
+                   i, hr);
+          createFailed = true;
+          break;
+        }
+        entry.textureHandles[i] = ipcHandle;
+
+        HANDLE importHandle = nullptr;
+        hr = dxgiRes1->CreateSharedHandle(
+            nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
+            nullptr, &importHandle);
+        if (FAILED(hr) || !importHandle) {
+          LayerLog("Vulkan Layer: [Warn] Failed to create NT import handle %d "
+                   "(hr=0x%08X), fallback to KMT-only sharing",
+                   i, hr);
+          createFailed = true;
+          break;
+        }
+        vkImportHandles[i] = importHandle;
+      } else {
+        ComPtr<IDXGIResource> dxgiRes;
+        HANDLE kmtHandle = nullptr;
+        if (FAILED(entry.textures[i]->QueryInterface(IID_PPV_ARGS(&dxgiRes))) ||
+            !dxgiRes || FAILED(dxgiRes->GetSharedHandle(&kmtHandle)) ||
+            !kmtHandle) {
+          LayerLog("Vulkan Layer: [Warn] Failed to get KMT handle for texture "
+                   "%d, aborting",
+                   i);
+          createFailed = true;
+          break;
+        }
+        vkImportHandles[i] = kmtHandle;
+        entry.textureHandles[i] = kmtHandle;
+      }
     }
-    if (memType == 0xFFFFFFFF) {
+
+    if (createFailed) {
+      for (auto &vkHandle : vkImportHandles) {
+        if (useNtIpcHandles && vkHandle) {
+          CloseHandle(vkHandle);
+        }
+      }
+      if (useNtIpcHandles) {
+        LayerLog("Vulkan Layer: Falling back to KMT-only texture handles");
+        continue;
+      }
+      resetAttemptResources();
+      return false;
+    }
+
+    bool importFailed = false;
+    VkResult importError = VK_SUCCESS;
+    const char *importStage = "none";
+    for (uint32_t i = 0; i < kTextureCount; i++) {
+      VkExternalMemoryImageCreateInfo extInfo = {
+          VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO};
+      extInfo.handleTypes = useNtIpcHandles
+                                ? VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT
+                                : VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT;
+
+      VkImageCreateInfo imgInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, &extInfo};
+      imgInfo.imageType = VK_IMAGE_TYPE_2D;
+      imgInfo.format = (VkFormat)vkFormat;
+      imgInfo.extent = {width, height, 1};
+      imgInfo.mipLevels = 1;
+      imgInfo.arrayLayers = 1;
+      imgInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+      imgInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+      imgInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+      imgInfo.usage =
+          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+      imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+      VkResult vkRes =
+          disp->fp_vkCreateImage(vkDev, &imgInfo, nullptr, &entry.vkImages[i]);
+      if (vkRes != VK_SUCCESS) {
+        importFailed = true;
+        importError = vkRes;
+        importStage = "vkCreateImage";
+        break;
+      }
+
+      VkMemoryRequirements memReq;
+      disp->fp_vkGetImageMemoryRequirements(vkDev, entry.vkImages[i], &memReq);
+
+      VkImportMemoryWin32HandleInfoKHR importInfo = {
+          VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR};
+      importInfo.handleType = useNtIpcHandles
+                                  ? VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT
+                                  : VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT;
+      importInfo.handle = vkImportHandles[i];
+      VkMemoryDedicatedAllocateInfo dedicatedInfo = {
+          VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO};
+      dedicatedInfo.image = entry.vkImages[i];
+      importInfo.pNext = &dedicatedInfo;
+
+      VkMemoryAllocateInfo allocInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                        &importInfo};
+      allocInfo.allocationSize = memReq.size;
+
+      VkPhysicalDeviceMemoryProperties memProps;
+      InstanceDispatch *instDisp = VulkanLayerState::Get().GetInstanceDispatch(
+          VulkanLayerState::Get().GetInstanceFromPhysicalDevice(physDev));
+      instDisp->fp_vkGetPhysicalDeviceMemoryProperties(physDev, &memProps);
+      uint32_t memType = 0xFFFFFFFF;
       for (uint32_t j = 0; j < memProps.memoryTypeCount; j++) {
-        if (memReq.memoryTypeBits & (1 << j)) {
+        if ((memReq.memoryTypeBits & (1 << j)) &&
+            (memProps.memoryTypes[j].propertyFlags &
+             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
           memType = j;
           break;
         }
       }
-    }
-    allocInfo.memoryTypeIndex = memType;
+      if (memType == 0xFFFFFFFF) {
+        for (uint32_t j = 0; j < memProps.memoryTypeCount; j++) {
+          if (memReq.memoryTypeBits & (1 << j)) {
+            memType = j;
+            break;
+          }
+        }
+      }
+      allocInfo.memoryTypeIndex = memType;
 
-    if (disp->fp_vkAllocateMemory(vkDev, &allocInfo, nullptr,
-                                  &entry.vkMemories[i]) != VK_SUCCESS) {
+      vkRes = disp->fp_vkAllocateMemory(vkDev, &allocInfo, nullptr,
+                                        &entry.vkMemories[i]);
+      if (vkRes != VK_SUCCESS) {
+        importFailed = true;
+        importError = vkRes;
+        importStage = "vkAllocateMemory";
+        break;
+      }
+
+      vkRes = disp->fp_vkBindImageMemory(vkDev, entry.vkImages[i],
+                                         entry.vkMemories[i], 0);
+      if (vkRes != VK_SUCCESS) {
+        importFailed = true;
+        importError = vkRes;
+        importStage = "vkBindImageMemory";
+        break;
+      }
+
+      if (useNtIpcHandles) {
+        // NT handles are consumed by Vulkan import on successful allocation.
+        vkImportHandles[i] = nullptr;
+      }
+    }
+
+    for (auto &vkHandle : vkImportHandles) {
+      if (useNtIpcHandles && vkHandle) {
+        CloseHandle(vkHandle);
+      }
+    }
+
+    if (!importFailed) {
+      if (useNtIpcHandles) {
+        LayerLog("Vulkan Layer: Using NT IPC handles with NT Vulkan import");
+      }
+      entry.valid = true;
+      return true;
+    }
+
+    LayerLog("Vulkan Layer: [Warn] Vulkan import failed (ntIpc=%d, stage=%s, "
+             "vkResult=%d), %s",
+             useNtIpcHandles ? 1 : 0,
+             importStage, importError,
+             useNtIpcHandles ? "retrying with KMT-only handles"
+                             : "aborting");
+    if (!useNtIpcHandles) {
+      resetAttemptResources();
       return false;
     }
-
-    disp->fp_vkBindImageMemory(vkDev, entry.vkImages[i], entry.vkMemories[i],
-                               0);
   }
 
-  entry.valid = true;
-  return true;
+  resetAttemptResources();
+  return false;
 }
 
 static SharedTextureEntry *
@@ -499,10 +693,11 @@ void CleanupCapture(VkDevice device) {
 
         // Close shared handles
         for (auto &handle : entry.textureHandles) {
-          if (handle)
+          if (entry.textureHandlesAreNt && handle)
             CloseHandle(handle);
         }
         entry.textureHandles.clear();
+        entry.textureHandlesAreNt = false;
 
         // Destroy Vulkan images and memories
         for (auto &img : entry.vkImages) {

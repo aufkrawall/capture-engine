@@ -246,6 +246,20 @@ void ToggleRecording() {
   if (g_Recording) {
     LogInfo("[Controller] Starting recording...");
 
+    // Verify the media process is alive before attempting to record
+    DWORD mediaExitCode = STILL_ACTIVE;
+    if (!g_hMediaProcess ||
+        (GetExitCodeProcess(g_hMediaProcess, &mediaExitCode) &&
+         mediaExitCode != STILL_ACTIVE)) {
+      LogError("[Controller] Media process is not running (exit code %d), "
+               "cannot start recording",
+               mediaExitCode);
+      g_Recording = false;
+      if (g_Tray)
+        g_Tray->SetRecordingState(false);
+      return;
+    }
+
     // Notify inject process - it sets shared memory flags and media polls them
     if (g_InjectClient && g_InjectClient->IsConnected()) {
       ProcessResponse resp;
@@ -416,18 +430,24 @@ void CheckChildProcessHealth() {
     return; // Check once per second
   lastCheck = GetTickCount();
 
-  auto checkProcess = [](HANDLE h, const char *name) {
+  auto checkProcess = [](HANDLE h, const char *name, bool &reportedDead) {
     if (!h)
       return;
     DWORD exitCode;
     if (GetExitCodeProcess(h, &exitCode) && exitCode != STILL_ACTIVE) {
-      LogError("[Controller] %s process exited with code %d", name, exitCode);
+      if (!reportedDead) {
+        LogError("[Controller] %s process exited with code %d", name, exitCode);
+        reportedDead = true;
+      }
+    } else {
+      reportedDead = false; // Reset in case the process was restarted
     }
   };
 
-  checkProcess(g_hInjectProcess, "Inject");
-  checkProcess(g_hMediaProcess, "Media");
-  checkProcess(g_hLimiterProcess, "Limiter");
+  static bool injectDead = false, mediaDead = false, limiterDead = false;
+  checkProcess(g_hInjectProcess, "Inject", injectDead);
+  checkProcess(g_hMediaProcess, "Media", mediaDead);
+  checkProcess(g_hLimiterProcess, "Limiter", limiterDead);
 }
 
 static void Registry_ManageImplicitLayer(bool install) {
@@ -696,7 +716,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
   // produces a minidump. The dump directory will be updated after config loads.
   std::string earlyLogsDir = baseDir + "\\logs";
   CreateDirectoryA(earlyLogsDir.c_str(), NULL);
-  PurgeAllLogsInDir(earlyLogsDir);
+  // Only the Controller process owns the log directory; child processes must
+  // not wipe logs written by siblings or the crash handler.
+  if (mode == ProcessMode::Controller)
+    PurgeAllLogsInDir(earlyLogsDir);
   SetCrashDumpDirectory(earlyLogsDir);
   InstallCrashHandler();
 

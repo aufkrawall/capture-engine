@@ -55,6 +55,20 @@ bool AudioEncoder::Init(const AudioConfig &config,
   DLL_Log("[AudioEncoder] Using codec: %s (id=%d)", codecName.c_str(),
           codec->id);
 
+  // Clean up existing resources so Init() can be safely called for reinit
+  if (codecCtx) {
+    avcodec_free_context(&codecCtx);
+  }
+  if (frame) {
+    av_frame_free(&frame);
+    frame = nullptr;
+  }
+  if (audioFifo) {
+    av_audio_fifo_free(audioFifo);
+    audioFifo = nullptr;
+  }
+  initDone = false;
+
   codecCtx = avcodec_alloc_context3(codec);
   if (!codecCtx) {
     DLL_Log("[AudioEncoder] Failed to allocate codec context");
@@ -822,123 +836,12 @@ void AudioEncoder::Stop() {
     resampler.reset();
   }
 
-  // CRITICAL: ALAC and other encoders don't reset properly with
-  // avcodec_flush_buffers() We must recreate the codec context entirely for
-  // each new recording. This is similar to how VideoEncoder recreates its codec
-  // context.
-  if (codecCtx && savedCodecId != AV_CODEC_ID_NONE) {
-    // Save settings we need to restore
-    int sampleRate = codecCtx->sample_rate;
-    AVSampleFormat sampleFmt = codecCtx->sample_fmt;
-    AVChannelLayout chLayout;
-    av_channel_layout_default(&chLayout, 2); // Init to default first
-
-    // Try to copy from existing context if valid
-    if (codecCtx->ch_layout.nb_channels > 0) {
-      av_channel_layout_uninit(&chLayout); // Clear default
-      if (av_channel_layout_copy(&chLayout, &codecCtx->ch_layout) < 0) {
-        DLL_Log(
-            "[AudioEnc] Failed to copy channel layout, using default stereo");
-        av_channel_layout_default(&chLayout, 2);
-      }
-    } else {
-      DLL_Log("[AudioEnc] Existing channel layout invalid (channels=0), using "
-              "default stereo");
-    }
-    int64_t bitRate = codecCtx->bit_rate;
-
-    // Free old context
-    avcodec_free_context(&codecCtx);
-
-    // Find codec and recreate
-    // Find codec and recreate
-    const AVCodec *codec = nullptr;
-    if (!savedCodecName.empty()) {
-      codec = avcodec_find_encoder_by_name(savedCodecName.c_str());
-    }
-    if (!codec) {
-      codec = avcodec_find_encoder(savedCodecId); // Fallback
-    }
-
-    if (codec) {
-      codecCtx = avcodec_alloc_context3(codec);
-      if (codecCtx) {
-        // Restore settings
-        codecCtx->sample_rate = sampleRate;
-        codecCtx->sample_fmt = sampleFmt;
-        // Correctly copy channel layout into new context
-        av_channel_layout_copy(&codecCtx->ch_layout, &chLayout);
-        codecCtx->bit_rate = bitRate;
-        // Don't set time_base manually - let avcodec_open2 handle it or default
-        // it, just like Init() codecCtx->time_base = {1, sampleRate};
-
-        // CRITICAL: Allow experimental codecs (Opus) when recreating context
-        codecCtx->strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL;
-
-        DLL_Log(
-            "[AudioEnc] Reopening: rate=%d, fmt=%d, channels=%d, bitrate=%lld",
-            sampleRate, sampleFmt, chLayout.nb_channels, (long long)bitRate);
-
-        int ret = avcodec_open2(codecCtx, codec, nullptr);
-        if (ret < 0) {
-          char errbuf[256];
-          av_strerror(ret, errbuf, sizeof(errbuf));
-          DLL_Log("[AudioEnc] Failed to reopen codec in Stop: %s", errbuf);
-          // Mark as not initialized so we don't try to use broken context
-          initDone = false;
-          avcodec_free_context(&codecCtx);
-          codecCtx = nullptr;
-        } else {
-          // Some codecs (e.g. ALAC) reset sample_rate inside avcodec_open2.
-          // Restore it from our saved value to ensure a valid context.
-          if (codecCtx->sample_rate <= 0 && sampleRate > 0) {
-            DLL_Log("[AudioEnc] WARNING: avcodec_open2 reset sample_rate to %d, "
-                    "restoring to %d", codecCtx->sample_rate, sampleRate);
-            codecCtx->sample_rate = sampleRate;
-          }
-          if (codecCtx->sample_rate > 0) {
-            codecCtx->time_base = {1, codecCtx->sample_rate};
-          }
-          // Recreate the AVFrame to match the (possibly re-opened) codec context.
-          // The old frame was allocated in Init() and may have stale parameters.
-          if (frame) {
-            av_frame_free(&frame);
-            frame = nullptr;
-          }
-          frame = av_frame_alloc();
-          if (frame) {
-            int frame_size2 = codecCtx->frame_size;
-            if (frame_size2 == 0)
-              frame_size2 = 4096;
-            frame->nb_samples = frame_size2;
-            frame->format = codecCtx->sample_fmt;
-            av_channel_layout_copy(&frame->ch_layout, &codecCtx->ch_layout);
-            frame->sample_rate = codecCtx->sample_rate;
-            if (av_frame_get_buffer(frame, 0) < 0) {
-              DLL_Log("[AudioEnc] Failed to allocate frame buffer after reopen");
-              av_frame_free(&frame);
-              frame = nullptr;
-              initDone = false;
-              avcodec_free_context(&codecCtx);
-              codecCtx = nullptr;
-            } else {
-              DLL_Log("[AudioEnc] Codec recreated successfully for next recording "
-                      "(sample_rate=%d)", codecCtx->sample_rate);
-            }
-          } else {
-            DLL_Log("[AudioEnc] Failed to allocate frame after reopen");
-            initDone = false;
-            avcodec_free_context(&codecCtx);
-            codecCtx = nullptr;
-          }
-        }
-      }
-    }
-    av_channel_layout_uninit(&chLayout);
-  }
-
-  // Note: codecCtx is preserved for VideoEncoder::savedAudioCodecCtx
-  // Everything is kept for reuse in subsequent recordings
+  // Do NOT free codecCtx/frame here. Freeing an ALAC codec that is in EOF state
+  // (after avcodec_send_frame(nullptr) in Flush()) can crash inside FFmpeg.
+  // Init() (called via Reinit() before the next recording) already frees and
+  // recreates these resources, so deferred cleanup is safe.
+  // The destructor also handles cleanup if no next recording occurs.
+  initDone = false;
 }
 
 void AudioEncoder::Flush() {
@@ -1007,6 +910,11 @@ void AudioEncoder::Flush() {
   // This replaces a separate avcodec_send_frame(silenceFrame) path that was
   // unreliable for some codecs (ALAC returned EINVAL). The FIFO-drain path is
   // proven to work, so feeding silence through it is safer.
+  DLL_Log("[AudioEncoder] Post-duration: fixedFrameSize=%d canSendShortFrame=%d "
+          "audioFifo=%p codecCtx=%p",
+          fixedFrameSize, (int)canSendShortFrame, (void *)audioFifo,
+          (void *)codecCtx);
+
   if (maxSamples != INT64_MAX && audioFifo) {
     int preFifoSize = av_audio_fifo_size(audioFifo);
     int64_t totalCovered = samplesCount + preFifoSize;
@@ -1017,11 +925,21 @@ void AudioEncoder::Flush() {
       bool planarPre = av_sample_fmt_is_planar(codecCtx->sample_fmt) != 0;
       int nchPre = codecCtx->ch_layout.nb_channels;
       int bpsPre = av_get_bytes_per_sample(codecCtx->sample_fmt);
-      // One plane of zeroed samples; for planar all channels share this buffer
-      // (av_audio_fifo_write copies nchPre times for planar, once for interleaved)
+      // Allocate a full zeroed buffer with separate regions per channel so
+      // av_audio_fifo_write gets independent (non-aliased) plane pointers.
+      int numPlanesPre = planarPre ? nchPre : 1;
       std::vector<uint8_t> zeroBuf(
-          (size_t)silenceNeeded * bpsPre * (planarPre ? 1 : nchPre), 0);
-      std::vector<uint8_t *> planePtrs((size_t)nchPre, zeroBuf.data());
+          (size_t)silenceNeeded * bpsPre * numPlanesPre, 0);
+      std::vector<uint8_t *> planePtrs(nchPre);
+      for (int ch = 0; ch < nchPre; ch++) {
+        // For planar: each channel gets its own region; for interleaved: all
+        // channels share the single interleaved buffer.
+        int planeIdx = planarPre ? ch : 0;
+        planePtrs[ch] = zeroBuf.data() + (size_t)planeIdx * silenceNeeded * bpsPre;
+      }
+      DLL_Log("[AudioEncoder] Silence pre-fill: silenceNeeded=%lld "
+              "preFifoSize=%d nchPre=%d bpsPre=%d planar=%d",
+              silenceNeeded, preFifoSize, nchPre, bpsPre, (int)planarPre);
       int written = av_audio_fifo_write(audioFifo,
                                         (void **)planePtrs.data(),
                                         (int)silenceNeeded);
@@ -1194,8 +1112,9 @@ void AudioEncoder::Flush() {
           samplesCount, maxSamples, discardPaddingSamples);
 
   // Send NULL frame to trigger final drain of codec's internal buffer.
-  // This puts the encoder in EOF state, which is fine because Stop()
-  // recreates the codec context for the next recording.
+  // After draining, avcodec_flush_buffers() resets the codec out of EOF state
+  // so it can be safely freed by avcodec_free_context (called from Init() on
+  // next recording start) without triggering double-free bugs in ALAC.
   avcodec_send_frame(codecCtx, nullptr);
   // Final drain
   std::vector<AVPacket*> flushedPackets;
@@ -1230,6 +1149,12 @@ void AudioEncoder::Flush() {
     }
     av_packet_free(&pkt);
   }
+
+  // Reset the codec out of EOF/draining state so avcodec_free_context (called
+  // from Init() or the destructor) operates on a clean codec rather than one
+  // that has been drained to EOF. This prevents potential double-free bugs in
+  // some codec implementations (e.g. ALAC) when the context is freed after EOF.
+  avcodec_flush_buffers(codecCtx);
 
   DLL_Log("[AudioEncoder] Flush complete");
 }

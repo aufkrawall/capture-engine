@@ -1802,6 +1802,7 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
   static int frameCount = 0;
   static IDXGISwapChain *s_lastNvPresentOverlaySwapChain = nullptr;
   static int64_t s_lastNvPresentOverlayUs = 0;
+  static UINT s_lastNvPresentOverlayBufferIndex = 0xFFFFFFFFu;
 
   frameCount++;
 
@@ -1819,6 +1820,10 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
     return;
   }
   HWND currentHwnd = desc.OutputWindow;
+  const bool isFlipSwapchain =
+      (desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD ||
+       desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL);
+  const UINT resolvedBufferIndex = ResolveDX11BackBufferIndex(pSwapChain, &desc);
 
   const bool nvPresentLoaded = g_FGCompat.IsNvPresentLoaded();
   if (nvPresentLoaded && ShouldSkipWindowForNvPresent(currentHwnd)) {
@@ -1826,16 +1831,31 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
   }
 
   // NVIDIA Smooth Motion can trigger paired Present callbacks for the same
-  // frame very close together. Avoid drawing the overlay twice in this case.
+  // frame in quick succession. Only suppress near-immediate duplicates for the
+  // exact same backbuffer to avoid dropping legitimate output frames.
   if (nvPresentLoaded) {
+    static constexpr int64_t kNvPresentExactDuplicateUs = 500;
     int64_t nowUs = PerfLogger::GetQpcUs();
-    if (s_lastNvPresentOverlaySwapChain == pSwapChain &&
-        s_lastNvPresentOverlayUs > 0 && nowUs > s_lastNvPresentOverlayUs &&
-        (nowUs - s_lastNvPresentOverlayUs) < 2000) {
+    bool hasPreviousSample =
+        (s_lastNvPresentOverlayUs > 0 && nowUs > s_lastNvPresentOverlayUs);
+    int64_t deltaUs =
+        hasPreviousSample ? (nowUs - s_lastNvPresentOverlayUs) : 0;
+    bool sameSwapChain = (s_lastNvPresentOverlaySwapChain == pSwapChain);
+    bool sameBackBuffer =
+        (!isFlipSwapchain ||
+         resolvedBufferIndex == s_lastNvPresentOverlayBufferIndex);
+
+    bool skipExactDuplicate = sameSwapChain && sameBackBuffer &&
+                              hasPreviousSample &&
+                              deltaUs < kNvPresentExactDuplicateUs;
+
+    if (skipExactDuplicate) {
       return;
     }
     s_lastNvPresentOverlaySwapChain = pSwapChain;
     s_lastNvPresentOverlayUs = nowUs;
+    s_lastNvPresentOverlayBufferIndex =
+        isFlipSwapchain ? resolvedBufferIndex : 0xFFFFFFFFu;
   }
 
   // Skip overlay if the window is being destroyed — the D3D device may already
@@ -1987,12 +2007,11 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
     // For FLIP swap chains, the back buffer rotates each Present.
     // Overlay must draw to the same buffer that CaptureFrame will read,
     // otherwise the captured frame will not contain the overlay (flicker).
-    UINT currentBufferIndex = ResolveDX11BackBufferIndex(pSwapChain, &desc);
     static UINT lastBufferIndex = 0xFFFFFFFF;
 
     // Create/recreate RTV if swapchain changed or FLIP buffer index rotated
     if (!g_mainRenderTargetView || pSwapChain != lastSwapChain ||
-        currentBufferIndex != lastBufferIndex) {
+        resolvedBufferIndex != lastBufferIndex) {
       if (g_mainRenderTargetView) {
         g_mainRenderTargetView->Release();
         g_mainRenderTargetView = nullptr;
@@ -2000,14 +2019,14 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
 
       EarlyLog("%s: Creating RTV for SwapChain %p (%ux%u) buffer=%u...",
                g_DetectedAPI, pSwapChain, desc.BufferDesc.Width,
-               desc.BufferDesc.Height, currentBufferIndex);
+               desc.BufferDesc.Height, resolvedBufferIndex);
 
       ID3D11Texture2D *backbuffer = nullptr;
       HRESULT hr =
-          pSwapChain->GetBuffer(currentBufferIndex, IID_PPV_ARGS(&backbuffer));
+          pSwapChain->GetBuffer(resolvedBufferIndex, IID_PPV_ARGS(&backbuffer));
       if (FAILED(hr) || !backbuffer) {
         EarlyLog("%s: GetBuffer(%u) FAILED hr=0x%08X", g_DetectedAPI,
-                 currentBufferIndex, hr);
+                 resolvedBufferIndex, hr);
         return;
       }
       hr = device->CreateRenderTargetView(backbuffer, NULL, &g_mainRenderTargetView);
@@ -2017,8 +2036,9 @@ void DrawDX11Overlay(IDXGISwapChain *pSwapChain) {
         return;
       }
       lastSwapChain = pSwapChain;
-      lastBufferIndex = currentBufferIndex;
-      EarlyLog("%s: RTV created OK (buffer=%u)", g_DetectedAPI, currentBufferIndex);
+      lastBufferIndex = resolvedBufferIndex;
+      EarlyLog("%s: RTV created OK (buffer=%u)", g_DetectedAPI,
+               resolvedBufferIndex);
     }
 
     overlayRTV = g_mainRenderTargetView;

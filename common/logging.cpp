@@ -59,10 +59,9 @@ void Log(LogLevel level, const char *format, ...) {
   fprintf(g_LogFile, "[%s] %s ", timeBuf, levelStr);
   vfprintf(g_LogFile, format, args);
   fprintf(g_LogFile, "\n");
-  // NOTE: fflush is intentionally NOT called here to avoid blocking the
-  // render thread on every log entry. The OS will flush on process exit or
-  // when the buffer fills.  For crash-safety the file is opened without
-  // buffering in Log_Init (FILE_FLAG_WRITE_THROUGH equivalent via setvbuf).
+  // Flush after every write so log is accurate at crash time.
+  // On Windows _IOLBF behaves as full buffering so explicit fflush is needed.
+  fflush(g_LogFile);
 
   va_end(args);
 }

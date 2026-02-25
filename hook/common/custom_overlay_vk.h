@@ -9,6 +9,7 @@
 #pragma once
 
 #include "custom_overlay.h"
+#include <atomic>
 
 // Vulkan headers - use dynamic loading with Win32 platform support
 #ifndef VK_USE_PLATFORM_WIN32_KHR
@@ -71,15 +72,20 @@ private:
   VkDeviceMemory fontMemory = VK_NULL_HANDLE;
   VkImageView fontImageView = VK_NULL_HANDLE;
 
-  VkBuffer vertexBuffer = VK_NULL_HANDLE;
-  VkDeviceMemory vertexMemory = VK_NULL_HANDLE;
-  VkBuffer indexBuffer = VK_NULL_HANDLE;
-  VkDeviceMemory indexMemory = VK_NULL_HANDLE;
+  // Per-frame buffer pool — prevents CPU/GPU data race on host-visible buffers.
+  // Pool size matches the DX12 backend so fence guarantees that slot N is
+  // GPU-idle before the CPU reuses it.
+  static constexpr int kFramePoolSize = 16;
+  VkBuffer vertexBuffer[kFramePoolSize] = {};
+  VkDeviceMemory vertexMemory[kFramePoolSize] = {};
+  VkBuffer indexBuffer[kFramePoolSize] = {};
+  VkDeviceMemory indexMemory[kFramePoolSize] = {};
 
-  void *vertexBufferPtr = nullptr;
-  void *indexBufferPtr = nullptr;
-  size_t vertexBufferSize = 0;
-  size_t indexBufferSize = 0;
+  void *vertexBufferPtr[kFramePoolSize] = {};
+  void *indexBufferPtr[kFramePoolSize] = {};
+  size_t vertexBufferSize[kFramePoolSize] = {};
+  size_t indexBufferSize[kFramePoolSize] = {};
+  std::atomic<int> frameIdx{0};
 
   // Current render context
   VkCommandBuffer currentCmdBuffer = VK_NULL_HANDLE;

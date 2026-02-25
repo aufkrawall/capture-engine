@@ -10,6 +10,7 @@ extern "C" {
 #include <d3d11_4.h>
 #include <dxgi1_5.h>
 #include <functional>
+#include <unordered_map>
 
 #include "cursor_renderer.h"
 #include <filesystem>
@@ -18,6 +19,57 @@ namespace fs = std::filesystem;
 #ifndef D3D11_FORMAT_SUPPORT_SHAREABLE
 #define D3D11_FORMAT_SUPPORT_SHAREABLE 0x2000
 #endif
+
+static HANDLE NormalizeSourceHandleForWow64(HANDLE handle, uint32_t sourcePid) {
+#if defined(_WIN64)
+  if (!handle || sourcePid == 0) {
+    return handle;
+  }
+
+  static std::mutex s_bitnessMutex;
+  static std::unordered_map<uint32_t, bool> s_isWow64ByPid;
+
+  bool isWow64Source = false;
+  {
+    std::lock_guard<std::mutex> lock(s_bitnessMutex);
+    auto it = s_isWow64ByPid.find(sourcePid);
+    if (it != s_isWow64ByPid.end()) {
+      isWow64Source = it->second;
+    } else {
+      ce::HandleGuard hProcess(
+          OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, sourcePid));
+      if (hProcess) {
+        BOOL wow64 = FALSE;
+        if (IsWow64Process(hProcess.get(), &wow64)) {
+          isWow64Source = (wow64 == TRUE);
+        }
+      }
+      s_isWow64ByPid[sourcePid] = isWow64Source;
+    }
+  }
+
+  if (!isWow64Source) {
+    return handle;
+  }
+
+  const uint64_t rawHandle =
+      static_cast<uint64_t>(reinterpret_cast<uintptr_t>(handle));
+  const int64_t signExtended = static_cast<int64_t>(
+      static_cast<int32_t>(static_cast<uint32_t>(rawHandle)));
+  if (signExtended != static_cast<int64_t>(rawHandle)) {
+    static std::atomic<int> s_normalizeLogCount{0};
+    if (s_normalizeLogCount.fetch_add(1, std::memory_order_relaxed) < 6) {
+      DLL_Log("[VideoEncoder] WOW64 handle normalized for PID %u: %p -> %p",
+              sourcePid, (HANDLE)(uintptr_t)rawHandle,
+              (HANDLE)(uint64_t)signExtended);
+    }
+  }
+  return reinterpret_cast<HANDLE>(static_cast<uint64_t>(signExtended));
+#else
+  (void)sourcePid;
+  return handle;
+#endif
+}
 
 // Helper to generate robust output filename
 static std::string GenerateOutputFilename(const VideoConfig &config) {
@@ -1406,6 +1458,11 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
       }
     }
   } else {
+    HANDLE sharedHandleAlt = NormalizeSourceHandleForWow64(sharedHandle, sourcePid);
+    HANDLE fenceHandleAlt = NormalizeSourceHandleForWow64(fenceHandle, sourcePid);
+    const bool hasSharedAlt = (sharedHandleAlt != sharedHandle);
+    const bool hasFenceAlt = (fenceHandleAlt != fenceHandle);
+
     // Check cache for valid fence and texture (Quad-Buffered Cache)
     // Texture caching works independently of fence (for D3D11 KMT path)
     cacheSlot = -1;
@@ -1506,12 +1563,42 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
                   err, sourcePid, fenceHandle);
         }
 
+        // Alternate handle representation for WOW64 sources
+        if (FAILED(hr) && hasFenceAlt) {
+          ce::HandleGuard dupFenceAlt;
+          if (DuplicateHandle(hProcess.get(), fenceHandleAlt, GetCurrentProcess(),
+                              dupFenceAlt.addressof(), 0, FALSE,
+                              DUPLICATE_SAME_ACCESS)) {
+            hr = d3d11Device->OpenSharedFence(dupFenceAlt.get(),
+                                              IID_PPV_ARGS(&d3d11Fence));
+            if (FAILED(hr)) {
+              DLL_Log("[VideoEncoder] OpenSharedFence(alt) failed: HR=%x "
+                      "(Hnd=%p)",
+                      hr, dupFenceAlt.get());
+            }
+          } else {
+            DWORD err = GetLastError();
+            DLL_Log("[VideoEncoder] DuplicateHandle(alt) failed: Err=%d "
+                    "(SrcPid=%u Hnd=%p)",
+                    err, sourcePid, fenceHandleAlt);
+          }
+        }
+
         // Fallback/KMT path
         if (FAILED(hr)) {
           hr = d3d11Device->OpenSharedResource(fenceHandle,
                                                IID_PPV_ARGS(&d3d11Fence));
           if (FAILED(hr) && encodeFrameCounter < 10) {
             DLL_Log("[VideoEncoder] OpenSharedResource(Fence) failed: HR=%x",
+                    hr);
+          }
+        }
+        if (FAILED(hr) && hasFenceAlt) {
+          hr = d3d11Device->OpenSharedResource(fenceHandleAlt,
+                                               IID_PPV_ARGS(&d3d11Fence));
+          if (FAILED(hr) && encodeFrameCounter < 10) {
+            DLL_Log("[VideoEncoder] OpenSharedResource(Fence, alt) failed: "
+                    "HR=%x",
                     hr);
           }
         }
@@ -1562,12 +1649,35 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle,
           }
         }
 
+        if (FAILED(hr) && hasSharedAlt) {
+          ce::HandleGuard dupTexAlt;
+          if (DuplicateHandle(hProcess.get(), sharedHandleAlt,
+                              GetCurrentProcess(), dupTexAlt.addressof(), 0,
+                              FALSE, DUPLICATE_SAME_ACCESS)) {
+            hr = d3d11Device->OpenSharedResource1(dupTexAlt.get(),
+                                                  IID_PPV_ARGS(&bgraTex));
+            if (FAILED(hr)) {
+              DLL_Log("[VideoEncoder] Frame %d: OpenSharedResource1(alt dup=%p) "
+                      "failed HR=%x. Falling back to KMT...",
+                      encodeFrameCounter, dupTexAlt.get(), hr);
+            }
+          }
+        }
+
         if (FAILED(hr)) {
           hr = d3d11Device->OpenSharedResource(sharedHandle,
                                                IID_PPV_ARGS(&bgraTex));
           if (SUCCEEDED(hr)) {
             DLL_Log("[VideoEncoder] Frame %d: Opened handle %p via KMT path",
                     encodeFrameCounter, sharedHandle);
+          }
+        }
+        if (FAILED(hr) && hasSharedAlt) {
+          hr = d3d11Device->OpenSharedResource(sharedHandleAlt,
+                                               IID_PPV_ARGS(&bgraTex));
+          if (SUCCEEDED(hr)) {
+            DLL_Log("[VideoEncoder] Frame %d: Opened alt handle %p via KMT path",
+                    encodeFrameCounter, sharedHandleAlt);
           }
         }
       }
