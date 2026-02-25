@@ -557,7 +557,8 @@ bool OpenGLBackend::Initialize(int fontTextureWidth, int fontTextureHeight,
       pglGetString ? (const char *)pglGetString(GL_VERSION) : nullptr;
   int major = 0, minor = 0;
   if (versionStr) {
-    sscanf(versionStr, "%d.%d", &major, &minor);
+    // SECURITY FIX: Use sscanf_s instead of sscanf for safer parsing
+    sscanf_s(versionStr, "%d.%d", &major, &minor);
     HookLog("OpenGLBackend: GL version %d.%d (%s)", major, minor, versionStr);
   }
 

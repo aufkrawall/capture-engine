@@ -45,10 +45,14 @@ public:
   void Clear();
 
   // Get available samples to read
-  size_t GetAvailable() const { return available.load(); }
+  size_t GetAvailable() const {
+    return available.load(std::memory_order_acquire);
+  }
 
   // Get free space to write
-  size_t GetFree() const { return capacity - available.load(); }
+  size_t GetFree() const {
+    return capacity - available.load(std::memory_order_acquire);
+  }
 
   // Get total capacity
   size_t GetCapacity() const { return capacity; }

@@ -825,11 +825,16 @@ bool Install(void *target, void *detour, void **outTrampoline) {
   const uint8_t *code = (const uint8_t *)target;
 
   // Dump first bytes of target
+  // SECURITY FIX: Use safe string concatenation
   char firstBytes[64] = {0};
-  for (int i = 0; i < 8; i++) {
-    char tmp[8];
-    snprintf(tmp, sizeof(tmp), "%02X ", code[i]);
-    strcat(firstBytes, tmp);
+  size_t remaining = sizeof(firstBytes) - 1;
+  char *dest = firstBytes;
+  for (int i = 0; i < 8 && remaining > 3; i++) {
+    int written = snprintf(dest, remaining, "%02X ", code[i]);
+    if (written > 0 && (size_t)written < remaining) {
+      dest += written;
+      remaining -= written;
+    }
   }
   LogDirect("First bytes of target: %s", firstBytes);
 
@@ -1005,11 +1010,16 @@ bool Install(void *target, void *detour, void **outTrampoline) {
           target, copySize, detour, is64bit ? 1 : 0);
 
   // Dump original bytes for diagnosis
+  // SECURITY FIX: Use safe string concatenation
   char bytesStr[256] = {0};
-  for (int i = 0; i < copySize && i < 16; i++) {
-    char tmp[16];
-    snprintf(tmp, sizeof(tmp), "%02X ", code[i]);
-    strcat(bytesStr, tmp);
+  size_t bytesRemaining = sizeof(bytesStr) - 1;
+  char *bytesDest = bytesStr;
+  for (int i = 0; i < copySize && i < 16 && bytesRemaining > 3; i++) {
+    int written = snprintf(bytesDest, bytesRemaining, "%02X ", code[i]);
+    if (written > 0 && (size_t)written < bytesRemaining) {
+      bytesDest += written;
+      bytesRemaining -= written;
+    }
   }
   LogDirect("Original bytes: %s", bytesStr);
   

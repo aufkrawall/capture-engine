@@ -326,8 +326,9 @@ int InjectProcessMain(const AppConfig &config) {
   wchar_t requestEventName[64];
   swprintf(releaseEventName, 64, L"Local\\CE_LR_%08X", GetCurrentProcessId());
   swprintf(requestEventName, 64, L"Local\\CE_LQ_%08X", GetCurrentProcessId());
-  wcscpy(pSharedMem->fpsLimiter.releaseEventName, releaseEventName);
-  wcscpy(pSharedMem->fpsLimiter.requestEventName, requestEventName);
+  // SECURITY FIX: Use wcscpy_s instead of wcscpy to prevent buffer overflow
+  wcscpy_s(pSharedMem->fpsLimiter.releaseEventName, 64, releaseEventName);
+  wcscpy_s(pSharedMem->fpsLimiter.requestEventName, 64, requestEventName);
 
   HANDLE hLimiterReleaseEvent =
       CreateEventW(NULL, FALSE, FALSE, releaseEventName); // Auto-reset

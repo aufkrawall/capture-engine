@@ -940,6 +940,11 @@ void DrawOverlay(ID3D12GraphicsCommandList *cmdList, bool isRealFrame,
   }
 
   // Set Render Target for Custom Overlay
+  // CRITICAL FIX: Add null check for rtvDescHeap to prevent crash
+  if (!g_State.rtvDescHeap) {
+    HookLog("DrawOverlay: rtvDescHeap is null, skipping overlay");
+    return;
+  }
   D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle =
       g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
   rtvHandle.ptr += bufferIdx * g_State.rtvDescriptorSize;

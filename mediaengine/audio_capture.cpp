@@ -246,12 +246,13 @@ void AudioCapture::CaptureLoop() {
         packet.validBitsPerSample = wfex->Samples.wValidBitsPerSample;
       }
 
-      // Convert QPC to MS
+      // Convert QPC to MS - avoid overflow by dividing first
       LARGE_INTEGER qpc;
       qpc.QuadPart = qpcPosition;
       LARGE_INTEGER freq;
       QueryPerformanceFrequency(&freq);
-      packet.timestamp = (qpc.QuadPart * 1000) / freq.QuadPart;
+      // Reordered to prevent overflow: qpc / (freq/1000) instead of (qpc*1000)/freq
+      packet.timestamp = qpc.QuadPart / (freq.QuadPart / 1000);
 
       // Copy data - or generate silence if silent flag is set (critical for A/V
       // sync!)

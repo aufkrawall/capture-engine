@@ -245,8 +245,8 @@ public:
         if (waitResult == WAIT_TIMEOUT) {
           // Limiter didn't respond in time - track but don't block
           missedFrames++;
-          static int logCount = 0;
-          if (logCount++ < 10) {
+          // CRITICAL FIX: Use per-instance counter instead of static
+          if (timeoutLogCount_++ < 10) {
             HookLog("FPS Limiter: TIMEOUT waiting for release (missed=%u)",
                     missedFrames);
           }
@@ -265,8 +265,8 @@ public:
       if (target > 0) {
         SmartWait(target);
       } else {
-        static int logCount = 0;
-        if (logCount++ < 10) {
+        // CRITICAL FIX: Use per-instance counter instead of static
+        if (targetLogCount_++ < 10) {
           HookLog("FPS Limiter: targetTimeTicks is %lld (not waiting)", target);
         }
       }
@@ -306,6 +306,9 @@ public:
     highResTimerFailed = false;
     loggedInactive_ = false;
     missedFrames = 0;
+    // CRITICAL FIX: Reset per-instance log counters on shutdown
+    timeoutLogCount_ = 0;
+    targetLogCount_ = 0;
   }
 
 private:
@@ -321,6 +324,9 @@ private:
   bool loggedInactive_ = false;    // Tracks whether the inactive log was already emitted
   int64_t qpcFrequency = 0;
   uint32_t missedFrames = 0; // Track frames where limiter couldn't keep up
+  // CRITICAL FIX: Per-instance log counters (was static, never reset)
+  int timeoutLogCount_ = 0;
+  int targetLogCount_ = 0;
 };
 
 // Global FPS limiter instance

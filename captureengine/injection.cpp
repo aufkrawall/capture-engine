@@ -603,11 +603,10 @@ bool InjectionManager::Inject(DWORD pid, const std::string &processName) {
 
   // SECURITY: Verify DLL integrity before injection
   // This prevents injection of tampered DLLs and protects against DLL hijacking
-  // DEVELOPMENT: Skip signature verification for unsigned development builds
-  LogInfo("[SECURITY] Skipping signature verification for development build");
-#if 0
+  // DEVELOPMENT MODE: Set SKIP_DLL_VERIFICATION=1 env var for unsigned dev builds
 #ifndef _DEBUG
-  // PRODUCTION BUILD: Verify Authenticode signature
+  // PRODUCTION BUILD: Always verify Authenticode signature
+  // CRITICAL FIX: Signature verification now enabled for production builds
   if (!VerifyDLLSignature(dllPath)) {
     LogError("[SECURITY] DLL signature verification failed for %s - refusing "
              "to inject",
@@ -618,19 +617,26 @@ bool InjectionManager::Inject(DWORD pid, const std::string &processName) {
   }
   LogInfo("[SECURITY] DLL signature verified: %s", dllPath.c_str());
 #else
-  // DEBUG BUILD: Use hash-based verification as fallback
-  // This still provides protection against accidental tampering during
-  // development
-  if (!VerifyDLLHash(dllPath)) {
-    LogWarn("[SECURITY] DLL hash verification failed for %s", dllPath.c_str());
-    LogWarn("[SECURITY] Debug build - continuing anyway, but this indicates "
-            "potential tampering");
-    // In debug builds, we log the warning but don't block injection
-    // This allows developers to work with unsigned debug builds
+  // DEBUG BUILD: Check for development mode override
+  const char* skipVerification = getenv("SKIP_DLL_VERIFICATION");
+  if (skipVerification && strcmp(skipVerification, "1") == 0) {
+    LogWarn("[SECURITY] Skipping DLL verification (SKIP_DLL_VERIFICATION=1)");
   } else {
-    LogInfo("[SECURITY] DLL hash verified: %s", dllPath.c_str());
+    // Use hash-based verification as fallback
+    // This still provides protection against accidental tampering during
+    // development
+    if (!VerifyDLLHash(dllPath)) {
+      LogWarn("[SECURITY] DLL hash verification failed for %s", dllPath.c_str());
+      LogWarn("[SECURITY] Debug build - continuing anyway, but this indicates "
+              "potential tampering");
+      LogWarn("[SECURITY] Set SKIP_DLL_VERIFICATION=1 to skip verification for "
+              "unsigned dev builds");
+      // In debug builds, we log the warning but don't block injection
+      // This allows developers to work with unsigned debug builds
+    } else {
+      LogInfo("[SECURITY] DLL hash verified: %s", dllPath.c_str());
+    }
   }
-#endif
 #endif
 
   LogInfo("Using DLL: %s (WoW64: %d)", dllPath.c_str(), isWow64);

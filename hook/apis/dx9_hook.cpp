@@ -3083,8 +3083,13 @@ static IDirect3D9 *WINAPI DetourDirect3DCreate9(UINT SDKVersion) {
   IDirect3D9 *d3d9 = oDirect3DCreate9(SDKVersion);
   if (d3d9) {
     uintptr_t *vtable = *(uintptr_t **)d3d9;
-    // Validation and Hook
-    if (vtable && !IsBadReadPtr(vtable, sizeof(void *) * 17)) {
+    // SECURITY FIX: Replaced deprecated IsBadReadPtr with basic validation
+    // IsBadReadPtr is racy and can cause security vulnerabilities
+    // Note: Full memory validation requires SEH which is MSVC-specific
+    bool vtableValid = (vtable != nullptr) &&
+                       (reinterpret_cast<uintptr_t>(vtable) >= 0x10000) &&
+                       (reinterpret_cast<uintptr_t>(vtable) < 0x7FFFFFFF0000);
+    if (vtable && vtableValid) {
       if (!oCreateDevice) {
         if (VTableHook::Create(&vtable[16], (void *)&DetourCreateDevice,
                                (void **)&oCreateDevice) ==
@@ -3278,7 +3283,11 @@ void DX9Hook::Init() {
     HRESULT hr = pfnCreate9Ex(D3D_SDK_VERSION, &s_d3d9ExForUpgrade);
     if (SUCCEEDED(hr) && s_d3d9ExForUpgrade) {
       uintptr_t *vtable = *(uintptr_t **)s_d3d9ExForUpgrade;
-      if (vtable && !IsBadReadPtr(vtable, sizeof(void *) * 21)) {
+      // SECURITY FIX: Replaced deprecated IsBadReadPtr with basic validation
+      bool vtableValid = (vtable != nullptr) &&
+                         (reinterpret_cast<uintptr_t>(vtable) >= 0x10000) &&
+                         (reinterpret_cast<uintptr_t>(vtable) < 0x7FFFFFFF0000);
+      if (vtable && vtableValid) {
         if (!oCreateDevice) {
           VTableHook::Create(&vtable[16], (void *)&DetourCreateDevice,
                              (void **)&oCreateDevice);

@@ -363,10 +363,13 @@ bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {
   // Initialize audio client - per Microsoft sample, use LOOPBACK +
   // AUTOCONVERTPCM AUTOCONVERTPCM tells Windows to convert the process audio to
   // our format Use 10ms buffer (100000 hns) to reduce latency and burstiness
+  // CRITICAL FIX: AUTOCONVERTPCM is a FLAG, not a buffer duration parameter
   hr = pAudioClient->Initialize(
       AUDCLNT_SHAREMODE_SHARED,
-      AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK, 100000,
-      AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, // Auto-convert to our format
+      AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK |
+          AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, // CORRECT: flags combined here
+      100000,                                 // hnsBufferDuration
+      0,                                      // hnsPeriodicity (must be 0 for SHARED)
       pwfx, nullptr);
   if (FAILED(hr)) {
     // Try without EVENTCALLBACK

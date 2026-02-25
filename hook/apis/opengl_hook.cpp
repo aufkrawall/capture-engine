@@ -1172,9 +1172,6 @@ static BOOL WINAPI DetourWglDeleteContext(HGLRC hglrc) {
   g_OpenGLCapture.Cleanup();
   g_FunctionsLoaded = false;
 
-  g_OpenGLCapture.Cleanup();
-  g_FunctionsLoaded = false;
-
   return oWglDeleteContext(hglrc);
 }
 

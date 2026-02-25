@@ -631,13 +631,29 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval,
   // CRITICAL FIX: Lock mutex to protect swapchain pointer access
   // This prevents race conditions with DestructionCallback running on another
   // thread
-  std::lock_guard<std::mutex> lock(m_ResourceLock);
+  IDXGISwapChain *pRealCached = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(m_ResourceLock);
 
-  // CRITICAL FIX: Cache the pointer while holding the mutex
-  // This ensures we have a valid pointer even if DestructionCallback nulls
-  // m_pReal
-  IDXGISwapChain *pRealCached = m_pReal;
-  m_pRealCached = pRealCached; // Store for potential future use
+    // CRITICAL FIX: Cache the pointer while holding the mutex
+    // This ensures we have a valid pointer even if DestructionCallback nulls
+    // m_pReal
+    pRealCached = m_pReal;
+    m_pRealCached = pRealCached; // Store for potential future use
+
+    // CRITICAL FIX: AddRef to keep the swapchain alive while we're using it
+    // This prevents use-after-free if DestructionCallback runs after we release
+    // the mutex
+    if (pRealCached) {
+      pRealCached->AddRef();
+    }
+  }
+  // CRITICAL FIX: RAII guard to ensure Release is always called
+  auto realSwapchainGuard = ::ce::make_scope_guard([&] {
+    if (pRealCached) {
+      pRealCached->Release();
+    }
+  });
 
   if (callCount < 10) {
     WrapperLog("Present ENTRY #%d - Thread=%lu, m_pReal=%p, m_IsD3D12=%d",
@@ -658,11 +674,14 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval,
 
   // CRITICAL FIX: Check if real swapchain has been destroyed (e.g., by FSR FG
   // recreation) If so, just pass through to avoid crashes with stale pointer
+  // NOTE: We check m_SwapchainDestroyed but we still have a valid ref on
+  // pRealCached thanks to AddRef, so it's safe to use
   if (!pRealCached || m_SwapchainDestroyed.load()) {
     // Real swapchain was destroyed, wrapper is now invalid
     // This happens when FSR FG creates a new swapchain
     WrapperLog("Present: Real swapchain destroyed (FSR FG swapchain recreation)");
     if (pRealCached) {
+      // Safe to use because we AddRef'd it
       return pRealCached->Present(SyncInterval, Flags);
     }
     WrapperLog("Present: pRealCached is null, returning error");
