@@ -2349,11 +2349,9 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         )
         manifest_path = os.path.join(bin_dir, manifest_name)
 
-        # Absolute path to the DLL we just built
-        # Escape backslashes for JSON
-        abs_dll_path = os.path.abspath(layer_dll)
-        if IS_LINUX:
-            abs_dll_path = wsl_path_to_windows(abs_dll_path)
+        # Keep manifest portable/private by using a DLL name relative to the
+        # manifest location instead of an absolute machine-local path.
+        manifest_dll_name = os.path.basename(layer_dll)
 
         # Use different layer names for x64 vs x86 to avoid "wrong bit-type" conflicts
         # Both 32-bit and 64-bit apps read from HKCU (no WOW64 redirection for HKCU)
@@ -2366,7 +2364,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
             "layer": {
                 "name": layer_name,
                 "type": "GLOBAL",
-                "library_path": abs_dll_path,  # JSON serializer handles escaping
+                "library_path": manifest_dll_name,
                 "api_version": "1.3.0",
                 "implementation_version": "1",
                 "description": "CaptureEngine Overlay and Recording Layer",
