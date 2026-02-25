@@ -1391,6 +1391,13 @@ def should_recompile(
     return False
 
 
+def normalize_compile_command_arg(arg: str) -> str:
+    """Normalize compile_commands argument paths for clangd compatibility."""
+    if IS_WINDOWS:
+        return arg.replace("\\", "/")
+    return arg
+
+
 def compile_object(
     env: Dict[str, str], clang_exe: str, cflags: List[str], src: str, obj: str
 ) -> bool:
@@ -1408,12 +1415,13 @@ def compile_object(
     # Add to global compile commands list
     # Use 'arguments' list instead of 'command' string for better cross-platform/shell reliability
     # Normalize paths for cross-platform LSP compatibility (always use forward slashes)
-    normalized_dir = PROJECT_ROOT.replace("\\", "/")
-    normalized_file = src.replace("\\", "/")
+    normalized_dir = os.path.abspath(PROJECT_ROOT).replace("\\", "/")
+    normalized_file = os.path.abspath(src).replace("\\", "/")
+    normalized_args = [normalize_compile_command_arg(arg) for arg in full_cmd_list]
     COMPILE_COMMANDS.append(
         {
             "directory": normalized_dir,
-            "arguments": full_cmd_list,
+            "arguments": normalized_args,
             "file": normalized_file,
         }
     )
@@ -1450,8 +1458,20 @@ def compile_object(
 
 
 def parallel_compile(env, clang_exe, cflags, src_obj_pairs):
-    """Compile multiple source files in parallel using all CPU cores."""
-    num_workers = cpu_count()
+    """Compile multiple source files in parallel."""
+    requested_workers = env.get("CE_BUILD_JOBS", "").strip()
+    if requested_workers:
+        try:
+            num_workers = int(requested_workers)
+        except ValueError:
+            log(
+                f"Warning: invalid CE_BUILD_JOBS={requested_workers!r}; using auto worker count"
+            )
+            num_workers = min(cpu_count(), 8)
+    else:
+        # Keep memory pressure bounded during LTO and dual-arch builds.
+        num_workers = min(cpu_count(), 8)
+    num_workers = max(1, min(num_workers, len(src_obj_pairs) or 1))
     compiled = 0
     skipped = 0
 
@@ -3385,7 +3405,7 @@ def main():
         with open(os.path.join(PROJECT_ROOT, "compile_commands.json"), "w") as f:
             json.dump(unique_commands, f, indent=4)
         log(f"Generated compile_commands.json ({len(unique_commands)} entries)")
-        log("LSP: clangd will auto-detect paths via PathMappings in .clangd")
+        log("LSP: normalized compile_commands paths for clangd")
 
         # Auto-detect installed Clang version and update .clangd resource-dir
         # to prevent breakage when MSYS2 updates Clang (e.g. 21 -> 22).
@@ -3410,20 +3430,41 @@ def main():
                     with open(_clangd_path, "r", encoding="utf-8") as _f:
                         _clangd_content = _f.read()
                     import re as _re
+                    _normalized_resource_dir = (
+                        f"build/msys64/clang64/lib/clang/{_detected_version}"
+                    )
                     _updated = _re.sub(
-                        r"(-resource-dir=build/msys64/clang64/lib/clang/)[^\"\n]+",
-                        rf"\g<1>{_detected_version}",
+                        r"(-resource-dir=)(?:[^\"\n]*/)?clang64/lib/clang/[^\"\n]+",
+                        rf"\g<1>{_normalized_resource_dir}",
                         _clangd_content,
+                    )
+                    _updated = _re.sub(
+                        r"(^\s*Compiler:\s*).*$",
+                        r"\g<1>build/msys64/clang64/bin/clang++.exe",
+                        _updated,
+                        flags=_re.MULTILINE,
+                    )
+                    _updated = _re.sub(
+                        r'(^\s*-\s*")[^"\n]*clang64/include/c\+\+/v1(".*$)',
+                        r'\1build/msys64/clang64/include/c++/v1\2',
+                        _updated,
+                        flags=_re.MULTILINE,
+                    )
+                    _updated = _re.sub(
+                        r'(^\s*-\s*")[^"\n]*clang64/include(?!/c\+\+/v1)(".*$)',
+                        r'\1build/msys64/clang64/include\2',
+                        _updated,
+                        flags=_re.MULTILINE,
                     )
                     if _updated != _clangd_content:
                         with open(_clangd_path, "w", encoding="utf-8") as _f:
                             _f.write(_updated)
                         log(
-                            f"LSP: Updated .clangd resource-dir to clang/{_detected_version}"
+                            f"LSP: Updated .clangd compiler/resource/include paths (clang/{_detected_version})"
                         )
                     else:
                         log(
-                            f"LSP: .clangd resource-dir already correct (clang/{_detected_version})"
+                            f"LSP: .clangd compiler/resource/include paths already correct (clang/{_detected_version})"
                         )
     except Exception as e:
         log(f"Error writing compile_commands.json: {e}")

@@ -9,6 +9,7 @@
 
 #include "inline_hook.h"
 
+#include <cstdarg>
 #include <cstring>
 #include <cstdio>
 #include <mutex>
@@ -496,6 +497,7 @@ struct HookEntry {
 static std::vector<HookEntry> g_hooks;
 static std::mutex g_hookMutex;
 static uint8_t *g_trampolinePool = nullptr;
+static std::vector<uint8_t *> g_trampolinePools;
 static size_t g_trampolineOffset = 0;
 static constexpr size_t TRAMPOLINE_POOL_SIZE = 4096;
 static constexpr size_t TRAMPOLINE_ENTRY_SIZE = 64; // Max per hook
@@ -539,31 +541,53 @@ static uint8_t *AllocateTrampolinePool(void *nearAddr) {
                                  PAGE_EXECUTE_READWRITE);
 }
 
+static bool IsTrampolinePoolNearTarget(const uint8_t *pool, void *nearAddr) {
+#ifdef _WIN64
+  if (!pool || !nearAddr)
+    return false;
+  uintptr_t poolAddr = reinterpret_cast<uintptr_t>(pool);
+  uintptr_t targetAddr = reinterpret_cast<uintptr_t>(nearAddr);
+  int64_t distance = static_cast<int64_t>(targetAddr) -
+                     static_cast<int64_t>(poolAddr);
+  return distance <= INT32_MAX && distance >= INT32_MIN;
+#else
+  (void)pool;
+  (void)nearAddr;
+  return true;
+#endif
+}
+
 static uint8_t *GetTrampolineSlot(void *nearAddr) {
-  // Check if existing pool is close enough (within ±2GB)
-  if (g_trampolinePool) {
-    uintptr_t poolAddr = (uintptr_t)g_trampolinePool;
-    uintptr_t targetAddr = (uintptr_t)nearAddr;
-    int64_t distance = (int64_t)targetAddr - (int64_t)poolAddr;
-
-    // If pool is too far away, free it and allocate a new one
-    if (distance > INT32_MAX || distance < INT32_MIN) {
-      HookLog("GetTrampolineSlot: Existing pool too far from target (distance=%lld), allocating new pool", (long long)distance);
-      VirtualFree(g_trampolinePool, 0, MEM_RELEASE);
-      g_trampolinePool = nullptr;
-      g_trampolineOffset = 0;
-    }
-  }
-
+  bool needNewPool = false;
   if (!g_trampolinePool) {
-    g_trampolinePool = AllocateTrampolinePool(nearAddr);
-    if (!g_trampolinePool)
-      return nullptr;
-    g_trampolineOffset = 0;
-    HookLog("GetTrampolineSlot: New pool allocated at %p", g_trampolinePool);
+    needNewPool = true;
+  } else if (!IsTrampolinePoolNearTarget(g_trampolinePool, nearAddr)) {
+#ifdef _WIN64
+    uintptr_t poolAddr = reinterpret_cast<uintptr_t>(g_trampolinePool);
+    uintptr_t targetAddr = reinterpret_cast<uintptr_t>(nearAddr);
+    int64_t distance = static_cast<int64_t>(targetAddr) -
+                       static_cast<int64_t>(poolAddr);
+    HookLog("GetTrampolineSlot: Existing pool too far from target (distance=%lld), allocating additional pool",
+            static_cast<long long>(distance));
+#else
+    HookLog("GetTrampolineSlot: Existing pool too far from target, allocating additional pool");
+#endif
+    needNewPool = true;
+  } else if (g_trampolineOffset + TRAMPOLINE_ENTRY_SIZE > TRAMPOLINE_POOL_SIZE) {
+    HookLog("GetTrampolineSlot: Existing pool exhausted, allocating additional pool");
+    needNewPool = true;
   }
-  if (g_trampolineOffset + TRAMPOLINE_ENTRY_SIZE > TRAMPOLINE_POOL_SIZE)
-    return nullptr;
+
+  if (needNewPool) {
+    uint8_t *newPool = AllocateTrampolinePool(nearAddr);
+    if (!newPool)
+      return nullptr;
+    g_trampolinePool = newPool;
+    g_trampolineOffset = 0;
+    g_trampolinePools.push_back(g_trampolinePool);
+    HookLog("GetTrampolineSlot: New pool allocated at %p (total pools=%zu)",
+            g_trampolinePool, g_trampolinePools.size());
+  }
 
   uint8_t *slot = g_trampolinePool + g_trampolineOffset;
   HookLog("GetTrampolineSlot: Allocating slot at offset %zu (addr=%p) for target %p", 
@@ -780,15 +804,14 @@ static bool TryRestoreHookedFunction(void *target, bool is64bit) {
 }
 
 bool Install(void *target, void *detour, void **outTrampoline) {
-  // Direct file logging for diagnostics (bypasses shared memory issues)
+  // Use existing optional hook logger; avoid absolute-path file writes from injected code.
   auto LogDirect = [](const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);
     char buf[1024];
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
-    FILE* f = fopen("%REPO_ROOT%\\installed\\captureengine\\logs\\inline_hook.log", "a");
-    if (f) { fprintf(f, "%s\n", buf); fclose(f); }
+    HookLog("%s", buf);
   };
   
   LogDirect("=== Install called: target=%p, detour=%p", target, detour);
@@ -1255,12 +1278,21 @@ void RemoveAll() {
   }
   g_hooks.clear();
 
-  if (g_trampolinePool) {
+  if (!g_trampolinePools.empty()) {
+    for (uint8_t *pool : g_trampolinePools) {
+      if (pool) {
+        HookLog("InlineHook::RemoveAll() - freeing trampoline pool at %p", pool);
+        VirtualFree(pool, 0, MEM_RELEASE);
+      }
+    }
+    g_trampolinePools.clear();
+  } else if (g_trampolinePool) {
+    // Backward compatibility for any pool not tracked in the vector.
     HookLog("InlineHook::RemoveAll() - freeing trampoline pool at %p", g_trampolinePool);
     VirtualFree(g_trampolinePool, 0, MEM_RELEASE);
-    g_trampolinePool = nullptr;
-    g_trampolineOffset = 0;
   }
+  g_trampolinePool = nullptr;
+  g_trampolineOffset = 0;
 }
 
 } // namespace InlineHook

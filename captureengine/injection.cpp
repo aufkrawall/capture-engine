@@ -450,8 +450,6 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(
             bool ready = false;
             bool d3d12Loaded = false;
             for (int i = 0; i < 300 && !ready; i++) {
-              Sleep(100); // 100ms * 300 = 30 seconds max
-
               // CRITICAL FIX: Check if shutdown requested
               if (managerShared->IsShuttingDown()) {
                 LogInfo("[WMI] %s (PID: %d) - Shutdown requested, aborting "
@@ -512,8 +510,14 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(
               // wait after d3d12.dll loads for the device to finish initializing.
               if (d3d12Loaded && i >= 10) {
                 ready = true; // D3D12: 1 second after detection
-              } else if (!d3d12Loaded && i >= 1) {
-                ready = true; // DX9/DX11/Vulkan: inject after 100ms minimum
+              } else if (!d3d12Loaded && i >= 0) {
+                // Inject immediately when D3D12 is not yet present so we can
+                // still hook early API initialization paths.
+                ready = true;
+              }
+
+              if (!ready) {
+                Sleep(100); // 100ms * 300 = 30 seconds max
               }
             }
 
@@ -590,13 +594,6 @@ bool InjectionManager::Inject(DWORD pid, const std::string &processName) {
 
   BOOL isWow64 = FALSE;
   IsWow64Process(hProcess.get(), &isWow64);
-
-  // CRITICAL FIX: Use RAII scope guard to ensure handle is closed on all code
-  // paths This prevents process handle leaks on early returns (signature
-  // verification, missing DLL, etc.)
-  HANDLE hProcessRaw = hProcess.get();
-  auto handleGuard =
-      ce::make_scope_guard([hProcessRaw]() { CloseHandle(hProcessRaw); });
 
   std::string dllPath = isWow64 ? hookDllPathX86 : hookDllPathX64;
 
@@ -846,7 +843,6 @@ bool InjectionManager::Inject(DWORD pid, const std::string &processName) {
   ip.name = processName;
   ip.hProcess = hProcess.release(); // Transfer ownership
   ip.remoteMemory = nullptr;  // No remote memory for CreateRemoteThread injection (freed by RAII)
-  handleGuard.dismiss(); // Don't close - we're transferring ownership
   injectedProcesses.push_back(ip);
 
   LogInfo("Injected %s into %s (PID: %d)", isWow64 ? "x86" : "x64",
