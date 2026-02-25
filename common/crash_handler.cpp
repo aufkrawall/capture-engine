@@ -56,11 +56,12 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
 
   TraceCrash("DumpWorker started");
 
-  time_t now = time(0);
-  struct tm tstruct;
-  char buf[80];
-  localtime_s(&tstruct, &now);
-  strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &tstruct);
+  SYSTEMTIME st;
+  GetLocalTime(&st);
+  char buf[128];
+  snprintf(buf, sizeof(buf), "%04u%02u%02u_%02u%02u%02u_%03u_pid%lu_tid%lu",
+           st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
+           st.wMilliseconds, GetCurrentProcessId(), params->threadId);
 
   char dumpPath[MAX_PATH];
   snprintf(dumpPath, sizeof(dumpPath), "%s\\crash_%s.dmp", g_DumpDir.c_str(),
@@ -113,17 +114,58 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
     mdei.ExceptionPointers = params->pExceptionPointers;
     mdei.ClientPointers = FALSE;
 
-    MINIDUMP_TYPE mdt = (MINIDUMP_TYPE)(MiniDumpNormal | MiniDumpWithDataSegs |
-                                        MiniDumpWithIndirectlyReferencedMemory);
+    MINIDUMP_TYPE primaryType =
+        (MINIDUMP_TYPE)(MiniDumpNormal | MiniDumpWithDataSegs |
+                        MiniDumpWithIndirectlyReferencedMemory);
+
+    struct DumpAttempt {
+      MINIDUMP_TYPE type;
+      bool withExceptionInfo;
+      const char *label;
+    };
+
+    const DumpAttempt attempts[] = {
+        {primaryType, true, "primary"},
+        {(MINIDUMP_TYPE)MiniDumpNormal, true, "fallback-normal"},
+        {(MINIDUMP_TYPE)MiniDumpNormal, false, "fallback-no-exception"},
+    };
+    const size_t attemptCount = sizeof(attempts) / sizeof(attempts[0]);
 
     TraceCrash("Calling MiniDumpWriteDump from worker thread...");
 
     BOOL rv = FALSE;
+    DWORD err = ERROR_SUCCESS;
     if (g_pMiniDumpWriteDump) {
-      rv = g_pMiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(),
-                                hFile, mdt, &mdei, 0, 0);
+      for (size_t i = 0; i < attemptCount; ++i) {
+        char attemptMsg[192];
+        snprintf(attemptMsg, sizeof(attemptMsg),
+                 "MiniDumpWriteDump attempt %llu/%llu (%s)",
+                 (unsigned long long)(i + 1),
+                 (unsigned long long)attemptCount, attempts[i].label);
+        TraceCrash(attemptMsg);
+
+        PMINIDUMP_EXCEPTION_INFORMATION pExc =
+            attempts[i].withExceptionInfo ? &mdei : nullptr;
+        rv = g_pMiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(),
+                                  hFile, attempts[i].type, pExc, 0, 0);
+        if (rv) {
+          break;
+        }
+
+        err = GetLastError();
+        snprintf(attemptMsg, sizeof(attemptMsg),
+                 "MiniDumpWriteDump attempt failed (%s): %lu (0x%08lX)",
+                 attempts[i].label, err, err);
+        TraceCrash(attemptMsg);
+
+        if (i + 1 < attemptCount) {
+          SetFilePointer(hFile, 0, NULL, FILE_BEGIN);
+          SetEndOfFile(hFile);
+        }
+      }
     } else {
       TraceCrash("g_pMiniDumpWriteDump is NULL in worker!");
+      err = ERROR_PROC_NOT_FOUND;
     }
 
     if (rv) {
@@ -136,7 +178,6 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
     } else {
       TraceCrash("MiniDumpWriteDump Failed");
       char msg[256];
-      DWORD err = GetLastError();
       snprintf(msg, sizeof(msg),
                "[CrashHandler] MiniDumpWriteDump failed: %lu (0x%08lX)\n", err,
                err);
