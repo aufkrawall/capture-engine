@@ -18,6 +18,15 @@ struct FrameMetrics {
   int32_t cmdListResetUs = 0;
   int32_t renderUs = 0;
   int32_t executeUs = 0;
+  // DX9 staging capture breakdown (optional, set to 0 if not applicable)
+  int32_t stretchRectUs = 0;      // GPU blit: backbuffer → intermediate
+  int32_t readbackSubmitUs = 0;   // GetRenderTargetData submit time
+  int32_t queryWaitUs = 0;        // Time polling/waiting for query completion
+  int32_t lockRectUs = 0;         // LockRect on system memory surface
+  int32_t d3d11UploadUs = 0;      // UpdateSubresource CPU→GPU upload
+  int32_t stagingDepth = 0;       // Current staging pipeline occupancy
+  int32_t stagingDropped = 0;     // Frames dropped due to full pipeline
+  int32_t presentCallUs = 0;      // Actual D3D9/DXGI Present call time
   char api[8] = "";
 };
 

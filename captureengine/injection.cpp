@@ -505,12 +505,16 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(
               }
               CloseHandle(hProcess);
 
-              // FIX: Reduced delays for faster overlay appearance
-              // Wait at least 1 second after D3D12 is loaded for init to
-              // complete Or wait 1 second minimum for any game (was 5s, now 1s)
-              // Complex games (UE5+DLSS FG) may need config override
-              if (i >= 10 || (d3d12Loaded && i >= 10)) {
-                ready = true;
+              // FIX: Inject as early as possible for DX9/DX11/Vulkan games.
+              // D3D9 games call Direct3DCreate9 + CreateDevice shortly after
+              // startup; early injection lets us intercept those calls and
+              // upgrade the device to D3D9Ex for zero-copy capture.
+              // D3D12 games (especially UE5+DLSS FG) still need a full 1-second
+              // wait after d3d12.dll loads for the device to finish initializing.
+              if (d3d12Loaded && i >= 10) {
+                ready = true; // D3D12: 1 second after detection
+              } else if (!d3d12Loaded && i >= 1) {
+                ready = true; // DX9/DX11/Vulkan: inject after 100ms minimum
               }
             }
 

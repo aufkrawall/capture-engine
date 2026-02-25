@@ -27,7 +27,10 @@ void PerfLogger::Init(const char *logPath) {
     setvbuf(file_, nullptr, _IOFBF, 16384);
     fprintf(file_, "frame,qpc_us,total_us,overlay_us,capture_us,device_init_us,"
                    "prerender_wait_us,fps_limit_wait_us,fence_wait_us,"
-                   "cmdlist_reset_us,render_us,execute_us,api\n");
+                   "cmdlist_reset_us,render_us,execute_us,"
+                   "stretch_rect_us,readback_submit_us,query_wait_us,"
+                   "lock_rect_us,d3d11_upload_us,staging_depth,staging_dropped,"
+                   "present_call_us,api\n");
     fflush(file_);
     headerWritten_ = true;
     HookLog("PerfLogger: Initialized CSV logging to %s", logPath);
@@ -52,12 +55,15 @@ void PerfLogger::LogFrame(const FrameMetrics &metrics) {
 
   uint64_t frameNum = frameCount_.fetch_add(1, std::memory_order_relaxed) + 1;
 
-  fprintf(file_, "%llu,%lld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%s\n",
+  fprintf(file_, "%llu,%lld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%s\n",
           (unsigned long long)frameNum, (long long)metrics.qpcUs,
           metrics.totalUs, metrics.overlayUs, metrics.captureUs,
           metrics.deviceInitUs, metrics.prerenderWaitUs, metrics.fpsLimitWaitUs,
           metrics.fenceWaitUs, metrics.cmdListResetUs, metrics.renderUs,
-          metrics.executeUs, metrics.api);
+          metrics.executeUs, metrics.stretchRectUs, metrics.readbackSubmitUs,
+          metrics.queryWaitUs, metrics.lockRectUs, metrics.d3d11UploadUs,
+          metrics.stagingDepth, metrics.stagingDropped,
+          metrics.presentCallUs, metrics.api);
 
   if ((frameNum % 1000) == 0) {
     fflush(file_);

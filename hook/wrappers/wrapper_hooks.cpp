@@ -506,35 +506,22 @@ HRESULT WINAPI Wrapped_D3D10CreateDeviceAndSwapChain(
 IDirect3D9 *WINAPI Wrapped_Direct3DCreate9(UINT SDKVersion) {
   WrapperLog("Wrapper: Direct3DCreate9 called (version %u)", SDKVersion);
 
-  // Try D3D9Ex first for zero-copy capture support (shared texture handles).
-  // D3D9Ex is available on all WDDM systems (Vista+) and is a strict superset
-  // of D3D9, so games work transparently with it.
-  if (oDirect3DCreate9Ex) {
-    IDirect3D9Ex *pRealEx = nullptr;
-    HRESULT hr = oDirect3DCreate9Ex(SDKVersion, &pRealEx);
-    if (SUCCEEDED(hr) && pRealEx) {
-      CWrapDirect3D9 *pWrapper = new CWrapDirect3D9(pRealEx, true);
-      pRealEx->Release();
-      WrapperLog("Wrapper: Upgraded Direct3DCreate9 to D3D9Ex for zero-copy capture");
-      return pWrapper;
-    }
-    WrapperLog("Wrapper: D3D9Ex upgrade failed (hr=0x%08X), falling back to D3D9", hr);
-  }
-
-  // Fallback to original D3D9
-  if (!oDirect3DCreate9) {
+  // Always return the original IDirect3D9 object from Direct3DCreate9.
+  //
+  // DO NOT return IDirect3D9Ex here even though IDirect3D9Ex is a COM superset.
+  // Games like Mirror's Edge access d3d9.dll's non-COM internal binary fields
+  // directly (e.g. factory+0x14, [ptr-4]).  IDirect3D9Ex has a different
+  // internal memory layout at those offsets, leading to null-pointer crashes.
+  //
+  // DX9Hook's vtable hook on IDirect3D9::CreateDevice (installed by
+  // DetourDirect3DCreate9 when this call reaches dx9_hook.cpp) intercepts
+  // device creation.  QueryInterface for IDirect3D9Ex on an IDirect3D9 factory
+  // correctly returns E_NOINTERFACE, so DetourCreateDevice safely falls back
+  // to the original CreateDevice path — no D3D9Ex upgrade, no crash.
+  if (!oDirect3DCreate9)
     return nullptr;
-  }
-
   IDirect3D9 *pReal = oDirect3DCreate9(SDKVersion);
-
-  if (pReal) {
-    CWrapDirect3D9 *pWrapper = new CWrapDirect3D9(pReal, false);
-    pReal->Release();
-    WrapperLog("Wrapper: Created wrapped IDirect3D9 (non-Ex fallback)");
-    return pWrapper;
-  }
-
+  WrapperLog("Wrapper: Returning original IDirect3D9 (safe for internal-layout-aware games)");
   return pReal;
 }
 
@@ -549,10 +536,9 @@ HRESULT WINAPI Wrapped_Direct3DCreate9Ex(UINT SDKVersion,
   HRESULT hr = oDirect3DCreate9Ex(SDKVersion, &pReal);
 
   if (SUCCEEDED(hr) && pReal) {
-    CWrapDirect3D9 *pWrapper = new CWrapDirect3D9(pReal, true);
-    pReal->Release();
-    *ppD3D = static_cast<IDirect3D9Ex *>(pWrapper);
-    WrapperLog("Wrapper: Created wrapped IDirect3D9Ex");
+    // Return raw IDirect3D9Ex — same rationale as Wrapped_Direct3DCreate9.
+    *ppD3D = pReal;
+    WrapperLog("Wrapper: Returning raw IDirect3D9Ex from Direct3DCreate9Ex");
     return S_OK;
   }
 
