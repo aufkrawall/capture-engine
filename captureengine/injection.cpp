@@ -442,13 +442,14 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(
           std::shared_ptr<InjectionManager> managerShared =
               pManager->shared_from_this();
           std::thread([managerShared, pid, name]() {
-            LogInfo("[WMI] %s (PID: %d) - Delaying injection for graphics API "
-                    "initialization...",
+            LogInfo("[WMI] %s (PID: %d) - Waiting for graphics API "
+                    "initialization before injection...",
                     name.c_str(), pid);
 
             // Wait up to 30 seconds for graphics API initialization
             bool ready = false;
             bool d3d12Loaded = false;
+            int waitMs = 0;
             for (int i = 0; i < 300 && !ready; i++) {
               // CRITICAL FIX: Check if shutdown requested
               if (managerShared->IsShuttingDown()) {
@@ -518,6 +519,7 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(
 
               if (!ready) {
                 Sleep(100); // 100ms * 300 = 30 seconds max
+                waitMs += 100;
               }
             }
 
@@ -525,13 +527,15 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(
             std::lock_guard<std::mutex> lock(managerShared->injectMutex);
             if (!managerShared->IsAlreadyInjected(pid) &&
                 !managerShared->IsRecentlyFailed(pid)) {
-              LogInfo("[WMI] %s (PID: %d) - Injecting after delay (%s detected)",
-                      name.c_str(), pid,
-                      d3d12Loaded ? "D3D12" : "non-D3D12 (DX11/DX9/Vulkan)");
+              LogInfo("[WMI] %s (PID: %d) - Injecting (%s detected, waited %d "
+                      "ms)",
+                      name.c_str(), pid, d3d12Loaded ? "D3D12"
+                                                     : "non-D3D12 (DX11/DX9/Vulkan)",
+                      waitMs);
               if (managerShared->Inject(pid, name)) {
-                LogInfo("[WMI] Delayed injection successful.");
+                LogInfo("[WMI] Injection successful.");
               } else {
-                LogError("[WMI] Delayed injection failed.");
+                LogError("[WMI] Injection failed.");
                 managerShared->failedInjections.push_back(
                     {pid, GetTickCount64()});
               }
@@ -605,7 +609,7 @@ bool InjectionManager::Inject(DWORD pid, const std::string &processName) {
   // To create a production build, pass --production to build.py.
 #ifdef CE_PRODUCTION_BUILD
   // PRODUCTION BUILD: Require valid Authenticode signature
-  if (!VerifyDLLSignature(dllPath)) {
+  if (!VerifyDLLSignature(dllPath, true)) {
     LogError("[SECURITY] DLL signature verification failed for %s - refusing "
              "to inject",
              dllPath.c_str());
@@ -620,7 +624,7 @@ bool InjectionManager::Inject(DWORD pid, const std::string &processName) {
   const char* skipVerification = getenv("SKIP_DLL_VERIFICATION");
   if (skipVerification && strcmp(skipVerification, "1") == 0) {
     LogWarn("[SECURITY] Skipping DLL verification (SKIP_DLL_VERIFICATION=1)");
-  } else if (!VerifyDLLSignature(dllPath)) {
+  } else if (!VerifyDLLSignature(dllPath, false)) {
     // Log warning but do NOT block injection for dev/unsigned builds
     LogWarn("[SECURITY] DLL is not Authenticode-signed: %s", dllPath.c_str());
     LogWarn("[SECURITY] This is expected for development builds. Set "
@@ -1100,7 +1104,8 @@ bool InjectionManager::ValidateDllSecurity(const std::string &dllPath) {
 
 // Verify DLL Authenticode signature (production builds only)
 // Returns true if DLL is properly signed, false otherwise
-bool InjectionManager::VerifyDLLSignature(const std::string &dllPath) {
+bool InjectionManager::VerifyDLLSignature(const std::string &dllPath,
+                                          bool logFailures) {
   // Convert to wide string for WinVerifyTrust
   std::wstring widePath(dllPath.begin(), dllPath.end());
 
@@ -1139,16 +1144,18 @@ bool InjectionManager::VerifyDLLSignature(const std::string &dllPath) {
     LogInfo("[Security] DLL signature valid: %s", dllPath.c_str());
     return true;
   } else {
-    LogError("[Security] DLL signature verification failed: %s (error 0x%X)",
-             dllPath.c_str(), status);
-    if (status == TRUST_E_NOSIGNATURE) {
-      LogError("[Security] DLL is not signed");
-    } else if (status == TRUST_E_EXPLICIT_DISTRUST) {
-      LogError("[Security] DLL signature is explicitly distrusted");
-    } else if (status == TRUST_E_SUBJECT_NOT_TRUSTED) {
-      LogError("[Security] DLL signer is not trusted");
-    } else if (status == CRYPT_E_SECURITY_SETTINGS) {
-      LogError("[Security] Security settings prevent verification");
+    if (logFailures) {
+      LogError("[Security] DLL signature verification failed: %s (error 0x%X)",
+               dllPath.c_str(), status);
+      if (status == TRUST_E_NOSIGNATURE) {
+        LogError("[Security] DLL is not signed");
+      } else if (status == TRUST_E_EXPLICIT_DISTRUST) {
+        LogError("[Security] DLL signature is explicitly distrusted");
+      } else if (status == TRUST_E_SUBJECT_NOT_TRUSTED) {
+        LogError("[Security] DLL signer is not trusted");
+      } else if (status == CRYPT_E_SECURITY_SETTINGS) {
+        LogError("[Security] Security settings prevent verification");
+      }
     }
     return false;
   }

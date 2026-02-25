@@ -18,6 +18,8 @@
 #include "lod_helper.h"
 #include "performance_metrics.h"
 #include <atomic>
+#include <bit>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <mutex>
@@ -94,6 +96,7 @@ static std::atomic<int> g_MaxMSAASamples{0}; // Tracks highest MSAA target seen
 static GraphicsConfig g_FrameConfig; // Frame-local config cache for performance
 static int64_t g_LastSleepUs = 0;
 static bool g_WindowedPresent = true;
+static std::atomic<UINT> g_LivePresentInterval{0};
 static std::atomic<bool> g_DX9StagingCaptureActive{false};
 
 typedef HRESULT(WINAPI *DwmFlush_t)();
@@ -103,10 +106,16 @@ static DWORD g_RefreshHzLastTick = 0;
 static int64_t g_QpcFreqCached = 0;
 static thread_local int64_t g_LastPacedQpc = 0;
 static thread_local HANDLE g_PaceTimer = nullptr;
+static std::atomic<int> g_MipBiasDiagLogCount{0};
+static std::atomic<int> g_AnisoDiagLogCount{0};
 
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
+
+static float D3D9BitsToFloat(DWORD value) { return std::bit_cast<float>(value); }
+
+static DWORD D3D9FloatToBits(float value) { return std::bit_cast<DWORD>(value); }
 
 static void EnsureDwmFlushLoaded() {
   if (g_DwmFlush)
@@ -246,28 +255,52 @@ static void MaybeWaitForVSyncAfterPresent(int64_t presentUs) {
   }
   const int hz = GetDesktopRefreshHzCached();
   const bool windowed = g_WindowedPresent;
-  const bool shouldPace = windowed && (presentUs < 3000);
+  const UINT liveInterval = g_LivePresentInterval.load(std::memory_order_acquire);
+  const bool needsFullscreenFallback =
+      !windowed && vsync.presentInterval > 0 &&
+      liveInterval != (UINT)vsync.presentInterval;
+  const bool shouldPace =
+      (windowed && (presentUs < 3000)) || needsFullscreenFallback;
   {
     static thread_local int lastHz = 0;
     static thread_local int lastShouldPace = -1;
+    static thread_local UINT lastLiveInterval = 0;
+    static thread_local int lastFallback = -1;
     static thread_local DWORD lastTick = 0;
     DWORD now = GetTickCount();
     if (hz != lastHz || (int)shouldPace != lastShouldPace ||
+        liveInterval != lastLiveInterval ||
+        (int)needsFullscreenFallback != lastFallback ||
         (now - lastTick) > 2000) {
-      HookLog("DX9: VSyncPace state: windowed=%d interval=%d presentUs=%lld "
-              "hz=%d pace=%d",
-              windowed ? 1 : 0, vsync.presentInterval, (long long)presentUs, hz,
-              shouldPace ? 1 : 0);
+      if (needsFullscreenFallback) {
+        HookLogImportant("DX9: VSyncPace state: windowed=%d interval=%d "
+                         "liveInterval=%u presentUs=%lld hz=%d pace=%d "
+                         "fallback=%d",
+                         windowed ? 1 : 0, vsync.presentInterval,
+                         liveInterval, (long long)presentUs,
+                         hz, shouldPace ? 1 : 0,
+                         needsFullscreenFallback ? 1 : 0);
+      } else {
+        HookLog("DX9: VSyncPace state: windowed=%d interval=%d liveInterval=%u "
+                "presentUs=%lld hz=%d pace=%d fallback=%d",
+                windowed ? 1 : 0, vsync.presentInterval, liveInterval,
+                (long long)presentUs, hz, shouldPace ? 1 : 0,
+                needsFullscreenFallback ? 1 : 0);
+      }
       lastHz = hz;
       lastShouldPace = shouldPace ? 1 : 0;
+      lastLiveInterval = liveInterval;
+      lastFallback = needsFullscreenFallback ? 1 : 0;
       lastTick = now;
     }
   }
 
-  if (!windowed)
-    return;
   if (!shouldPace)
     return;
+  if (!windowed) {
+    PaceToRefreshQpc();
+    return;
+  }
 
   const int64_t expectedUs = (hz > 0) ? (1000000LL / (int64_t)hz) : 0;
 
@@ -1786,6 +1819,12 @@ public:
     if (limit < 0.0f)
       return;
 
+    static float s_LastLoggedLimit = -9999.0f;
+    if (std::fabs(limit - s_LastLoggedLimit) > 0.01f) {
+      HookLogImportant("DX9: CPU prerender limit active: %.2f", limit);
+      s_LastLoggedLimit = limit;
+    }
+
     bool isFractional = (limit > 0.01f && limit < 1.0f);
 
     if (limit == 0.0f) {
@@ -1872,6 +1911,7 @@ public:
 };
 
 static DX9Capture g_DX9Capture;
+static void InstallDeviceHooks(IDirect3DDevice9 *device);
 
 // Draw overlay using CustomOverlay
 static void DrawDX9Overlay(IDirect3DDevice9 *device) {
@@ -1955,6 +1995,61 @@ void DX9_PresentBegin(IDirect3DDevice9 *device,
 
   // Heartbeat for freeze watchdog (d3d12.dll may be loaded in DX9 games)
   g_RenderWatchdog.Heartbeat();
+
+  static std::atomic<bool> s_LiveHookBootstrapDone{false};
+  bool expectedBootstrap = false;
+  if ((!oSetSamplerState || !oSetTextureStageState || !oReset) &&
+      s_LiveHookBootstrapDone.compare_exchange_strong(
+          expectedBootstrap, true, std::memory_order_acq_rel,
+          std::memory_order_relaxed)) {
+    HookLogImportant(
+        "DX9: Present bootstrap before install (device=%p, inline=%d, "
+        "oReset=%p, oSetSamplerState=%p, oSetTextureStageState=%p)",
+        device, g_InlineHooksInstalled.load(std::memory_order_acquire) ? 1 : 0,
+        (void *)oReset, (void *)oSetSamplerState, (void *)oSetTextureStageState);
+    InstallDeviceHooks(device);
+    HookLogImportant(
+        "DX9: Present bootstrap after install (oReset=%p, oSetSamplerState=%p, "
+        "oSetTextureStageState=%p)",
+        (void *)oReset, (void *)oSetSamplerState, (void *)oSetTextureStageState);
+
+    IDirect3DSwapChain9 *swapChain = nullptr;
+    if (SUCCEEDED(device->GetSwapChain(0, &swapChain)) && swapChain) {
+      D3DPRESENT_PARAMETERS pp = {};
+      if (SUCCEEDED(swapChain->GetPresentParameters(&pp))) {
+        g_WindowedPresent = !!pp.Windowed;
+        g_LivePresentInterval.store(pp.PresentationInterval,
+                                    std::memory_order_release);
+        HookLogImportant(
+            "DX9: Live present params windowed=%d interval=%u backBufferCount=%u",
+            pp.Windowed ? 1 : 0, pp.PresentationInterval, pp.BackBufferCount);
+        const auto &gfx = GetActiveGraphicsConfig();
+        VSyncOverride vsync = GetVSyncOverride();
+        if (vsync.shouldOverride &&
+            pp.PresentationInterval != (UINT)vsync.presentInterval) {
+          const bool fullscreenFallback =
+              !pp.Windowed && vsync.presentInterval > 0 &&
+              pp.PresentationInterval != (UINT)vsync.presentInterval;
+          HookLogImportant(
+              "DX9: Live interval mismatch cfg=%s desired=%u actual=%u "
+              "windowed=%d fallback=%s",
+              gfx.vsyncMode.c_str(), (UINT)vsync.presentInterval,
+              pp.PresentationInterval, pp.Windowed ? 1 : 0,
+              fullscreenFallback ? "qpc" : "windowed-auto");
+        }
+        if (gfx.backbufferCount >= 2 && gfx.backbufferCount <= 6) {
+          const UINT desiredBackBufferCount = (UINT)gfx.backbufferCount - 1;
+          if (pp.BackBufferCount != desiredBackBufferCount) {
+            HookLogImportant(
+                "DX9: Live backbuffer mismatch cfg=%d desired=%u actual=%u",
+                gfx.backbufferCount, desiredBackBufferCount,
+                pp.BackBufferCount);
+          }
+        }
+      }
+      swapChain->Release();
+    }
+  }
 
   static int debugLogCount = 0;
   if (debugLogCount < 10) {
@@ -2283,43 +2378,57 @@ static HRESULT STDMETHODCALLTYPE DetourSetSamplerState(IDirect3DDevice9 *device,
                                                        DWORD Sampler,
                                                        D3DSAMPLERSTATETYPE Type,
                                                        DWORD Value) {
+  const DWORD originalValue = Value;
+  bool shouldOverride = true;
+  const char *skipReason = "not-evaluated";
+
   if (g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
     if (g_IPC && g_IPC->GetSharedMem()) {
       const auto &gfx = GetActiveGraphicsConfig();
 
       // Start checking for exclusions (UI, non-mipmapped textures)
-      bool shouldOverride = true;
+      // For MIPMAPLODBIAS, skip runtime texture exclusions. Sampler state is
+      // persistent and many games set it before mipmapped textures are bound.
+      if (Type != D3DSAMP_MIPMAPLODBIAS) {
+        // Check 1: Current MipFilter state
+        // If the application has explicitly set MIPFILTER to NONE, it likely
+        // doesn't want mipmapping (e.g. UI) Note: We are hooking SetSamplerState,
+        // so we need to know the *current* state or the *intended* state? The
+        // user calls SetSamplerState to CHANGE a state. If they are changing
+        // MIN/MAG filter, we should respect if MIP filter is currently NONE. If
+        // they are changing MIP filter, we check the Value.
+        if (Type == D3DSAMP_MIPFILTER) {
+          if (Value == D3DTEXF_NONE) {
+            shouldOverride = false;
+            skipReason = "requested_mipfilter_none";
+          }
+        } else {
+          DWORD currentMipFilter = D3DTEXF_NONE;
+          device->GetSamplerState(Sampler, D3DSAMP_MIPFILTER, &currentMipFilter);
+          if (currentMipFilter == D3DTEXF_NONE) {
+            shouldOverride = false;
+            skipReason = "current_mipfilter_none";
+          }
+        }
 
-      // Check 1: Current MipFilter state
-      // If the application has explicitly set MIPFILTER to NONE, it likely
-      // doesn't want mipmapping (e.g. UI) Note: We are hooking SetSamplerState,
-      // so we need to know the *current* state or the *intended* state? The
-      // user calls SetSamplerState to CHANGE a state. If they are changing
-      // MIN/MAG filter, we should respect if MIP filter is currently NONE. If
-      // they are changing MIP filter, we check the Value.
-
-      if (Type == D3DSAMP_MIPFILTER) {
-        if (Value == D3DTEXF_NONE)
-          shouldOverride = false;
-      } else {
-        DWORD currentMipFilter = D3DTEXF_NONE;
-        device->GetSamplerState(Sampler, D3DSAMP_MIPFILTER, &currentMipFilter);
-        if (currentMipFilter == D3DTEXF_NONE)
-          shouldOverride = false;
+        // Check 2: Texture Mip Levels
+        // This is the most robust check. If the bound texture has only 1 level,
+        // it has no mipmaps.
+        if (shouldOverride) {
+          IDirect3DBaseTexture9 *pTex = nullptr;
+          HRESULT hr = device->GetTexture(Sampler, &pTex);
+          if (SUCCEEDED(hr) && pTex) {
+            if (pTex->GetLevelCount() == 1) {
+              shouldOverride = false;
+              skipReason = "single_mip_texture";
+            }
+            pTex->Release();
+          }
+        }
       }
 
-      // Check 2: Texture Mip Levels
-      // This is the most robust check. If the bound texture has only 1 level,
-      // it has no mipmaps.
       if (shouldOverride) {
-        IDirect3DBaseTexture9 *pTex = nullptr;
-        HRESULT hr = device->GetTexture(Sampler, &pTex);
-        if (SUCCEEDED(hr) && pTex) {
-          if (pTex->GetLevelCount() == 1) {
-            shouldOverride = false;
-          }
-          pTex->Release();
-        }
+        skipReason = "applied";
       }
 
       if (shouldOverride) {
@@ -2366,20 +2475,20 @@ static HRESULT STDMETHODCALLTYPE DetourSetSamplerState(IDirect3DDevice9 *device,
             char *end;
             float configBias = strtof(biasStr, &end);
             if (end != biasStr) {
-              float originalBias = *((float *)&Value);
+              float originalBias = D3D9BitsToFloat(Value);
               std::string mode = gfx.mipBiasMode;
 
               if (mode == "offset") {
                 float finalBias = originalBias + configBias;
-                Value = *((DWORD *)&finalBias);
+                Value = D3D9FloatToBits(finalBias);
               } else if (mode == "base") {
                 if (originalBias < 0.0f) {
                   float finalBias = originalBias + configBias;
-                  Value = *((DWORD *)&finalBias);
+                  Value = D3D9FloatToBits(finalBias);
                 }
               } else {
                 // Strict (default)
-                Value = *((DWORD *)&configBias);
+                Value = D3D9FloatToBits(configBias);
               }
             }
           }
@@ -2388,11 +2497,34 @@ static HRESULT STDMETHODCALLTYPE DetourSetSamplerState(IDirect3DDevice9 *device,
           if (gfx.sgssaa && !gfx.disableAutoMipBias) {
             float sgBias = 0.0f;
             if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgBias)) {
-              float currentBias = *((float *)&Value);
+              float currentBias = D3D9BitsToFloat(Value);
               currentBias += sgBias;
-              Value = *((DWORD *)&currentBias);
+              Value = D3D9FloatToBits(currentBias);
             }
           }
+        }
+      }
+
+      if (Type == D3DSAMP_MAXANISOTROPY) {
+        int anisoLogIdx =
+            g_AnisoDiagLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (anisoLogIdx < 24) {
+          HookLogImportant(
+              "DX9: SamplerAniso sampler=%u override=%d reason=%s cfg=%s in=%u "
+              "out=%u",
+              Sampler, shouldOverride ? 1 : 0, skipReason,
+              gfx.anisotropicFiltering.c_str(), originalValue, Value);
+        }
+      } else if (Type == D3DSAMP_MIPMAPLODBIAS) {
+        int mipLogIdx =
+            g_MipBiasDiagLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (mipLogIdx < 48) {
+          HookLogImportant(
+              "DX9: SamplerMipBias sampler=%u override=%d reason=%s cfg=%s "
+              "mode=%s in=%.3f out=%.3f",
+              Sampler, shouldOverride ? 1 : 0, skipReason, gfx.mipBias.c_str(),
+              gfx.mipBiasMode.c_str(), D3D9BitsToFloat(originalValue),
+              D3D9BitsToFloat(Value));
         }
       }
     }
@@ -2541,7 +2673,11 @@ static HRESULT STDMETHODCALLTYPE DetourReset(
 
   // Config Overrides
   if (pPresentationParameters) {
+    const auto &gfx = GetActiveGraphicsConfig();
     g_WindowedPresent = !!pPresentationParameters->Windowed;
+    UINT originalInterval = pPresentationParameters->PresentationInterval;
+    UINT originalBackBufferCount = pPresentationParameters->BackBufferCount;
+    UINT originalRefresh = pPresentationParameters->FullScreen_RefreshRateInHz;
     EarlyLog("DX9: Reset: Requested MSAA Type=%d, Quality=%d",
              pPresentationParameters->MultiSampleType,
              pPresentationParameters->MultiSampleQuality);
@@ -2565,7 +2701,7 @@ static HRESULT STDMETHODCALLTYPE DetourReset(
     }
 
     // Backbuffer Count Override
-    int count = GetActiveGraphicsConfig().backbufferCount;
+    int count = gfx.backbufferCount;
     if (count >= 2 && count <= 6) {
       pPresentationParameters->BackBufferCount =
           (UINT)count -
@@ -2585,6 +2721,19 @@ static HRESULT STDMETHODCALLTYPE DetourReset(
         }
         d3d->Release();
       }
+    }
+
+    static int s_ResetOverrideLogCount = 0;
+    if (s_ResetOverrideLogCount++ < 20) {
+      HookLogImportant(
+          "DX9: Reset overrides vsync=%s interval %u->%u refresh %u->%u "
+          "backbufferCfg=%d d3dBackBufferCount %u->%u prerender=%.2f",
+          gfx.vsyncMode.c_str(), originalInterval,
+          pPresentationParameters->PresentationInterval, originalRefresh,
+          pPresentationParameters->FullScreen_RefreshRateInHz,
+          gfx.backbufferCount,
+          originalBackBufferCount, pPresentationParameters->BackBufferCount,
+          gfx.cpuPrerenderLimit);
     }
   }
 
@@ -2615,7 +2764,11 @@ static HRESULT STDMETHODCALLTYPE DetourResetEx(
 
   // Config Overrides
   if (pPresentationParameters) {
+    const auto &gfx = GetActiveGraphicsConfig();
     g_WindowedPresent = !!pPresentationParameters->Windowed;
+    UINT originalInterval = pPresentationParameters->PresentationInterval;
+    UINT originalBackBufferCount = pPresentationParameters->BackBufferCount;
+    UINT originalRefresh = pPresentationParameters->FullScreen_RefreshRateInHz;
     EarlyLog("DX9: ResetEx: Requested MSAA Type=%d, Quality=%d",
              pPresentationParameters->MultiSampleType,
              pPresentationParameters->MultiSampleQuality);
@@ -2637,10 +2790,23 @@ static HRESULT STDMETHODCALLTYPE DetourResetEx(
     }
 
     // Backbuffer Count Override
-    int count = GetActiveGraphicsConfig().backbufferCount;
+    int count = gfx.backbufferCount;
     if (count >= 2 && count <= 6) {
       pPresentationParameters->BackBufferCount = (UINT)count - 1;
       HookLog("DX9: ResetEx: Overriding BackBufferCount to %d", count);
+    }
+
+    static int s_ResetExOverrideLogCount = 0;
+    if (s_ResetExOverrideLogCount++ < 20) {
+      HookLogImportant(
+          "DX9: ResetEx overrides vsync=%s interval %u->%u refresh %u->%u "
+          "backbufferCfg=%d d3dBackBufferCount %u->%u prerender=%.2f",
+          gfx.vsyncMode.c_str(), originalInterval,
+          pPresentationParameters->PresentationInterval, originalRefresh,
+          pPresentationParameters->FullScreen_RefreshRateInHz,
+          gfx.backbufferCount,
+          originalBackBufferCount, pPresentationParameters->BackBufferCount,
+          gfx.cpuPrerenderLimit);
     }
   }
 
@@ -2756,18 +2922,31 @@ static void InstallDeviceHooks(IDirect3DDevice9 *device) {
   // High-frequency hooks enabled for parity
   // 2. Hook SetSamplerState (69)
   if (!oSetSamplerState) {
-    if (VTableHook::Create(&vtable[69], (void *)&DetourSetSamplerState,
-                           (void **)&oSetSamplerState) == VTableHook::Success) {
+    VTableHook::Status samplerStatus =
+        VTableHook::Create(&vtable[69], (void *)&DetourSetSamplerState,
+                           (void **)&oSetSamplerState);
+    if (samplerStatus == VTableHook::Success) {
       EarlyLog("DX9: SetSamplerState hook installed");
+      HookLogImportant("DX9: SetSamplerState hook installed (vtable[69]=%p)",
+                       vtable[69]);
+    } else {
+      HookLogImportant(
+          "DX9: SetSamplerState hook FAILED (status=%d, vtable[69]=%p)",
+          (int)samplerStatus, vtable[69]);
     }
   }
 
   // 2.5 Hook SetTextureStageState (67)
   if (!oSetTextureStageState) {
-    if (VTableHook::Create(&vtable[67], (void *)&DetourSetTextureStageState,
-                           (void **)&oSetTextureStageState) ==
-        VTableHook::Success) {
+    VTableHook::Status texStageStatus =
+        VTableHook::Create(&vtable[67], (void *)&DetourSetTextureStageState,
+                           (void **)&oSetTextureStageState);
+    if (texStageStatus == VTableHook::Success) {
       EarlyLog("DX9: SetTextureStageState hook installed");
+    } else {
+      HookLogImportant(
+          "DX9: SetTextureStageState hook FAILED (status=%d, vtable[67]=%p)",
+          (int)texStageStatus, vtable[67]);
     }
   }
 
@@ -2963,7 +3142,11 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDevice(
 
   // VSync Override for CreateDevice
   if (pPresentationParameters) {
+    const auto &gfx = GetActiveGraphicsConfig();
     g_WindowedPresent = !!pPresentationParameters->Windowed;
+    UINT originalInterval = pPresentationParameters->PresentationInterval;
+    UINT originalBackBufferCount = pPresentationParameters->BackBufferCount;
+    UINT originalRefresh = pPresentationParameters->FullScreen_RefreshRateInHz;
     EarlyLog("DX9: CreateDevice: Requested MSAA Type=%d, Quality=%d",
              pPresentationParameters->MultiSampleType,
              pPresentationParameters->MultiSampleQuality);
@@ -2986,11 +3169,21 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDevice(
     }
 
     // Backbuffer Count Override
-    int count = GetActiveGraphicsConfig().backbufferCount;
+    int count = gfx.backbufferCount;
     if (count >= 2 && count <= 6) {
       pPresentationParameters->BackBufferCount = (UINT)count - 1;
       HookLog("DX9: CreateDevice: Overriding BackBufferCount to %d", count);
     }
+
+    HookLogImportant(
+        "DX9: CreateDevice overrides vsync=%s interval %u->%u refresh %u->%u "
+        "backbufferCfg=%d d3dBackBufferCount %u->%u prerender=%.2f",
+        gfx.vsyncMode.c_str(), originalInterval,
+        pPresentationParameters->PresentationInterval, originalRefresh,
+        pPresentationParameters->FullScreen_RefreshRateInHz,
+        gfx.backbufferCount,
+        originalBackBufferCount, pPresentationParameters->BackBufferCount,
+        gfx.cpuPrerenderLimit);
 
     // MSAA Override
     ApplyMSAAOverride(self, Adapter, DeviceType, pPresentationParameters);
@@ -3134,7 +3327,11 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDeviceEx(
   EarlyLog("DX9: CreateDeviceEx called (hFocusWindow=%p)", hFocusWindow);
 
   if (pPresentationParameters) {
+    const auto &gfx = GetActiveGraphicsConfig();
     g_WindowedPresent = !!pPresentationParameters->Windowed;
+    UINT originalInterval = pPresentationParameters->PresentationInterval;
+    UINT originalBackBufferCount = pPresentationParameters->BackBufferCount;
+    UINT originalRefresh = pPresentationParameters->FullScreen_RefreshRateInHz;
     EarlyLog("DX9: CreateDeviceEx: Requested MSAA Type=%d, Quality=%d",
              pPresentationParameters->MultiSampleType,
              pPresentationParameters->MultiSampleQuality);
@@ -3157,11 +3354,21 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDeviceEx(
     }
 
     // Backbuffer Count Override
-    int count = GetActiveGraphicsConfig().backbufferCount;
+    int count = gfx.backbufferCount;
     if (count >= 2 && count <= 6) {
       pPresentationParameters->BackBufferCount = (UINT)count - 1;
       HookLog("DX9: CreateDeviceEx: Overriding BackBufferCount to %d", count);
     }
+
+    HookLogImportant(
+        "DX9: CreateDeviceEx overrides vsync=%s interval %u->%u refresh %u->%u "
+        "backbufferCfg=%d d3dBackBufferCount %u->%u prerender=%.2f",
+        gfx.vsyncMode.c_str(), originalInterval,
+        pPresentationParameters->PresentationInterval, originalRefresh,
+        pPresentationParameters->FullScreen_RefreshRateInHz,
+        gfx.backbufferCount,
+        originalBackBufferCount, pPresentationParameters->BackBufferCount,
+        gfx.cpuPrerenderLimit);
 
     // CUDA requirement: Multithreaded device
     BehaviorFlags |= D3DCREATE_MULTITHREADED;

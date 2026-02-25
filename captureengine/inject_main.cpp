@@ -143,10 +143,15 @@ static void UpdateSharedMemoryFromConfig(SharedMemoryLayout *pSharedMem,
   pSharedMem->fpsLimiter.SetCaptureFps(config.video.fps);
   pSharedMem->fpsLimiter.SetUseVFR(config.video.useVFR);
 
-  LogInfo("[Inject] Updated SharedMem Config: VSync=%s, AF=%s, FPS Limit=%d "
-          "(%s), CaptureOverlay=%d",
+  LogInfo("[Inject] Updated SharedMem Config: VSync=%s, AF=%s, MipBias=%s "
+          "(Mode=%s), CPUPrerender=%.2f, BackBuffer=%d, FPS Limit=%d (%s), "
+          "CaptureOverlay=%d",
           pSharedMem->graphicsConfig.vsyncMode,
           pSharedMem->graphicsConfig.anisotropicFiltering,
+          pSharedMem->graphicsConfig.mipBias,
+          pSharedMem->graphicsConfig.mipBiasMode,
+          pSharedMem->graphicsConfig.prerenderLimit,
+          pSharedMem->graphicsConfig.backbufferCount,
           pSharedMem->fpsLimiter.GetGeneralFps(),
           pSharedMem->fpsLimiter.GetGeneralEnabled() ? "ON" : "OFF",
           pSharedMem->overlayConfig.captureIncludeOverlay);

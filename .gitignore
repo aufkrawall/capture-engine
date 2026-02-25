@@ -1,11 +1,14 @@
-# Build and dependency directories
-build/*
-ffmpeg_build/*
-external/*
-licenses*
-installed/*
+# Build output directories
+/build/
+/installed/
+/ffmpeg_build/
+/captures/
+/testapp/bin/
 
-# Compiled binaries and objects
+# Third-party generated dependency bundle
+/external/
+
+# Build outputs and binaries
 *.o
 *.obj
 *.dll
@@ -14,19 +17,30 @@ installed/*
 *.exp
 *.lib
 *.map
-*.mkv
-*.xz
 *.exe
-*.dll
+*.mkv
 *.old
+*.xz
+
+# Runtime/generated data
 *.log
 *.csv
-*.txt
+*.dmp
+compile.log
+build.log
+temp_log.txt
+session-ses_*.md
+UECC-Windows-*/
+build/bin/UECC-*/
 
-# IDE and temporary files
+# IDE/cache/temp files
 .vs/
 .vscode/
 .cache/
+.ruff_cache/
+.claude/
+__pycache__/
+*.pyc
 *.swp
 *.swo
 *.user
@@ -34,12 +48,9 @@ installed/*
 *.orig
 *~
 obj/
-
-# Python cache
-__pycache__/
-*.pyc
-
-# Generated version file
-common/build_version.h
 nul
+
+# Machine-local/generated project files
+telemetry-id
 compile_commands.json
+common/build_version.h

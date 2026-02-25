@@ -51,7 +51,8 @@ public:
   // Security Validation
   bool ValidateDllSecurity(const std::string &dllPath);
   bool VerifyDLLSignature(
-      const std::string &dllPath); // Verify Authenticode signature
+      const std::string &dllPath,
+      bool logFailures = true); // Verify Authenticode signature
   bool VerifyDLLHash(
       const std::string &dllPath); // Verify SHA-256 hash (debug builds)
   std::string

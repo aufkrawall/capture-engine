@@ -173,7 +173,7 @@ static std::atomic<uint64_t> g_LogSequence{0};
 // Used for debugging crashes before IPC connects
 // OPTIMIZED: Uses stack buffers and avoids global locks for the hot path (SHM)
 static void LogToFileAtomic(const char *baseFilename, const char *fmt,
-                            va_list args) {
+                            va_list args, bool forceDirectFile = false) {
   // Use stack buffers to allow concurrency without locking
   char formatBuffer[4096];
   char lineBuffer[8192];
@@ -227,7 +227,7 @@ static void LogToFileAtomic(const char *baseFilename, const char *fmt,
   // When IPC is connected, we ONLY write to shared memory.
   // The logger_service.cpp consumer reads from SHM and writes to file.
   // This prevents duplicate log entries.
-  if (g_IPC) {
+  if (!forceDirectFile && g_IPC) {
     // Load pointer atomically in case it's being torn down (unlikely but safe)
     SharedMemoryLayout *shm = g_IPC->GetSharedMem();
     if (shm) {
@@ -356,11 +356,11 @@ void EarlyLog(const char *fmt, ...) {
 
 // Logs to hook_debug.log (respects the debugLogging flag just like HookLog)
 void HookLogImportant(const char *fmt, ...) {
-  if (!g_pLocalConfig || !g_pLocalConfig->debugLogging)
+  if (g_pLocalConfig && !g_pLocalConfig->debugLogging)
     return;
   va_list args;
   va_start(args, fmt);
-  LogToFileAtomic("hook_debug.log", fmt, args);
+  LogToFileAtomic("hook_debug.log", fmt, args, true);
   va_end(args);
 }
 

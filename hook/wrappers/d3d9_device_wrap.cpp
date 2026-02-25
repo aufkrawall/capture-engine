@@ -140,26 +140,28 @@ HRESULT STDMETHODCALLTYPE CWrapD3D9Device::SetSamplerState(
     // Start checking for exclusions (UI, non-mipmapped textures)
     bool shouldOverride = true;
 
-    // Check 1: Current MipFilter state
-    if (Type == D3DSAMP_MIPFILTER) {
-      if (Value == D3DTEXF_NONE)
-        shouldOverride = false;
-    } else {
-      DWORD currentMipFilter = D3DTEXF_NONE;
-      m_pReal->GetSamplerState(Sampler, D3DSAMP_MIPFILTER, &currentMipFilter);
-      if (currentMipFilter == D3DTEXF_NONE)
-        shouldOverride = false;
-    }
-
-    // Check 2: Texture Mip Levels
-    if (shouldOverride) {
-      IDirect3DBaseTexture9 *pTex = nullptr;
-      HRESULT hr = m_pReal->GetTexture(Sampler, &pTex);
-      if (SUCCEEDED(hr) && pTex) {
-        if (pTex->GetLevelCount() == 1) {
+    if (Type != D3DSAMP_MIPMAPLODBIAS) {
+      // Check 1: Current MipFilter state
+      if (Type == D3DSAMP_MIPFILTER) {
+        if (Value == D3DTEXF_NONE)
           shouldOverride = false;
+      } else {
+        DWORD currentMipFilter = D3DTEXF_NONE;
+        m_pReal->GetSamplerState(Sampler, D3DSAMP_MIPFILTER, &currentMipFilter);
+        if (currentMipFilter == D3DTEXF_NONE)
+          shouldOverride = false;
+      }
+
+      // Check 2: Texture Mip Levels
+      if (shouldOverride) {
+        IDirect3DBaseTexture9 *pTex = nullptr;
+        HRESULT hr = m_pReal->GetTexture(Sampler, &pTex);
+        if (SUCCEEDED(hr) && pTex) {
+          if (pTex->GetLevelCount() == 1) {
+            shouldOverride = false;
+          }
+          pTex->Release();
         }
-        pTex->Release();
       }
     }
 
