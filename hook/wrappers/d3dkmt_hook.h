@@ -21,6 +21,6 @@ void SetVramOverride(UINT64 dedicatedBytes, UINT64 sharedBytes);
 // Disable VRAM override
 void DisableVramOverride();
 
-} // namespace D3DKMTHooks
+}  // namespace D3DKMTHooks
 
-#endif // D3DKMT_HOOK_H
+#endif  // D3DKMT_HOOK_H

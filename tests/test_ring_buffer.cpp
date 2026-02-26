@@ -2,10 +2,10 @@
  * Unit tests for LockFreeRingBuffer and DynamicRingBuffer (common/ring_buffer.h)
  */
 
-#include "../common/ring_buffer.h"
 #include <gtest/gtest.h>
 #include <thread>
 #include <vector>
+#include "../common/ring_buffer.h"
 
 using namespace ce;
 
@@ -15,7 +15,7 @@ using namespace ce;
 
 class LockFreeRingBufferTest : public ::testing::Test {
 protected:
-    LockFreeRingBuffer<int, 8> buf; // capacity 8 (power-of-2 required)
+    LockFreeRingBuffer<int, 8> buf;  // capacity 8 (power-of-2 required)
 };
 
 TEST_F(LockFreeRingBufferTest, InitialState) {
@@ -41,7 +41,7 @@ TEST_F(LockFreeRingBufferTest, PushPop) {
 
 TEST_F(LockFreeRingBufferTest, PopEmpty) {
     int val = 0;
-    EXPECT_FALSE(buf.Pop(val)); // Empty buffer returns false
+    EXPECT_FALSE(buf.Pop(val));  // Empty buffer returns false
 }
 
 TEST_F(LockFreeRingBufferTest, FillToCapacity) {
@@ -58,7 +58,7 @@ TEST_F(LockFreeRingBufferTest, DropNewWhenFull) {
     for (int i = 0; i < 8; i++) {
         buf.Push(i);
     }
-    EXPECT_FALSE(buf.Push(99)); // Should be dropped
+    EXPECT_FALSE(buf.Push(99));  // Should be dropped
     EXPECT_EQ(buf.DroppedCount(), 1u);
     EXPECT_EQ(buf.Size(), 8u);
 
@@ -74,12 +74,12 @@ TEST_F(LockFreeRingBufferTest, DropOldWhenFull) {
         dropOld.Push(i);
     }
     // Buffer full: 0,1,2,3
-    dropOld.Push(10); // Should drop oldest (0), droppedCount++
+    dropOld.Push(10);  // Should drop oldest (0), droppedCount++
     EXPECT_EQ(dropOld.DroppedCount(), 1u);
 
     int val = 0;
     EXPECT_TRUE(dropOld.Pop(val));
-    EXPECT_EQ(val, 1); // 0 was dropped
+    EXPECT_EQ(val, 1);  // 0 was dropped
 }
 
 TEST_F(LockFreeRingBufferTest, Peek) {
@@ -89,10 +89,10 @@ TEST_F(LockFreeRingBufferTest, Peek) {
     int val = 0;
     EXPECT_TRUE(buf.Peek(val));
     EXPECT_EQ(val, 7);
-    EXPECT_EQ(buf.Size(), 2u); // Peek doesn't consume
+    EXPECT_EQ(buf.Size(), 2u);  // Peek doesn't consume
 
     EXPECT_TRUE(buf.Pop(val));
-    EXPECT_EQ(val, 7); // Same element returned
+    EXPECT_EQ(val, 7);  // Same element returned
 }
 
 TEST_F(LockFreeRingBufferTest, PeekEmpty) {
@@ -105,12 +105,12 @@ TEST_F(LockFreeRingBufferTest, Skip) {
     buf.Push(2);
     buf.Push(3);
 
-    EXPECT_TRUE(buf.Skip()); // Skips 1
+    EXPECT_TRUE(buf.Skip());  // Skips 1
     EXPECT_EQ(buf.Size(), 2u);
 
     int val = 0;
     EXPECT_TRUE(buf.Pop(val));
-    EXPECT_EQ(val, 2); // 1 was skipped
+    EXPECT_EQ(val, 2);  // 1 was skipped
 }
 
 TEST_F(LockFreeRingBufferTest, SkipEmpty) {
@@ -147,7 +147,7 @@ TEST_F(LockFreeRingBufferTest, DroppedCountReset) {
     LockFreeRingBuffer<int, 2> small;
     small.Push(1);
     small.Push(2);
-    small.Push(3); // dropped
+    small.Push(3);  // dropped
     EXPECT_EQ(small.DroppedCount(), 1u);
 
     small.ResetDroppedCount();
@@ -157,9 +157,9 @@ TEST_F(LockFreeRingBufferTest, DroppedCountReset) {
 TEST_F(LockFreeRingBufferTest, OverwritePolicy) {
     LockFreeRingBuffer<int, 4> overwrite(RingBufferPolicy::Overwrite);
     for (int i = 0; i < 4; i++) {
-        overwrite.Push(i); // 0,1,2,3
+        overwrite.Push(i);  // 0,1,2,3
     }
-    overwrite.Push(99); // overwrite oldest slot (no read index advance for Overwrite)
+    overwrite.Push(99);  // overwrite oldest slot (no read index advance for Overwrite)
     // After overwrite, write advanced, read stays — size might be 4 still
     EXPECT_EQ(overwrite.DroppedCount(), 1u);
 }
@@ -204,7 +204,7 @@ TEST_F(DynamicRingBufferTest, FullDetection) {
         buf.Push(i);
     }
     EXPECT_TRUE(buf.Full());
-    EXPECT_FALSE(buf.Push(99)); // DropNew by default
+    EXPECT_FALSE(buf.Push(99));  // DropNew by default
     EXPECT_EQ(buf.DroppedCount(), 1u);
 }
 
@@ -213,7 +213,7 @@ TEST_F(DynamicRingBufferTest, Peek) {
     int val = 0;
     EXPECT_TRUE(buf.Peek(val));
     EXPECT_EQ(val, 5);
-    EXPECT_EQ(buf.Size(), 1u); // Still there
+    EXPECT_EQ(buf.Size(), 1u);  // Still there
 }
 
 TEST_F(DynamicRingBufferTest, Skip) {
@@ -237,7 +237,7 @@ TEST_F(DynamicRingBufferTest, Resize) {
     buf.Push(2);
     buf.Resize(16);
     EXPECT_EQ(buf.Capacity(), 16u);
-    EXPECT_TRUE(buf.Empty()); // Resize clears
+    EXPECT_TRUE(buf.Empty());  // Resize clears
 }
 
 TEST_F(DynamicRingBufferTest, MultipleValues) {
@@ -257,11 +257,11 @@ TEST_F(DynamicRingBufferTest, DropOldPolicy) {
     for (int i = 0; i < 4; i++) {
         dropOld.Push(i);
     }
-    dropOld.Push(10); // Drops oldest
+    dropOld.Push(10);  // Drops oldest
     EXPECT_EQ(dropOld.DroppedCount(), 1u);
     int val = 0;
     dropOld.Pop(val);
-    EXPECT_EQ(val, 1); // 0 was dropped
+    EXPECT_EQ(val, 1);  // 0 was dropped
 }
 
 // ============================================================================

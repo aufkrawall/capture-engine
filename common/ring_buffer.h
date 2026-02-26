@@ -36,425 +36,433 @@ namespace ce {
 
 // Policy for handling full buffer
 enum class RingBufferPolicy {
-  DropNew,   // Drop new elements when full (default for capture)
-  DropOld,   // Drop oldest elements when full
-  Overwrite, // Overwrite oldest (circular buffer style)
-  Block // Block producer until space available (not recommended for real-time)
+    DropNew,    // Drop new elements when full (default for capture)
+    DropOld,    // Drop oldest elements when full
+    Overwrite,  // Overwrite oldest (circular buffer style)
+    Block       // Block producer until space available (not recommended for real-time)
 };
 
 // Memory ordering configuration
 struct RingBufferOrdering {
-  std::memory_order writeIndexLoad;
-  std::memory_order writeIndexStore;
-  std::memory_order readIndexLoad;
-  std::memory_order readIndexStore;
-  std::memory_order elementAccess;
+    std::memory_order writeIndexLoad;
+    std::memory_order writeIndexStore;
+    std::memory_order readIndexLoad;
+    std::memory_order readIndexStore;
+    std::memory_order elementAccess;
 
-  // Default: acquire/release for safe cross-thread synchronization
-  static constexpr RingBufferOrdering AcquireRelease() {
-    return {
-        std::memory_order_acquire, // writeIndexLoad
-        std::memory_order_release, // writeIndexStore
-        std::memory_order_acquire, // readIndexLoad
-        std::memory_order_release, // readIndexStore
-        std::memory_order_relaxed  // elementAccess (protected by index fences)
-    };
-  }
+    // Default: acquire/release for safe cross-thread synchronization
+    static constexpr RingBufferOrdering AcquireRelease() {
+        return {
+            std::memory_order_acquire,  // writeIndexLoad
+            std::memory_order_release,  // writeIndexStore
+            std::memory_order_acquire,  // readIndexLoad
+            std::memory_order_release,  // readIndexStore
+            std::memory_order_relaxed   // elementAccess (protected by index fences)
+        };
+    }
 
-  // Sequential consistency for debugging/testing
-  static constexpr RingBufferOrdering Sequential() {
-    return {std::memory_order_seq_cst, std::memory_order_seq_cst,
-            std::memory_order_seq_cst, std::memory_order_seq_cst,
-            std::memory_order_seq_cst};
-  }
+    // Sequential consistency for debugging/testing
+    static constexpr RingBufferOrdering Sequential() {
+        return {std::memory_order_seq_cst, std::memory_order_seq_cst, std::memory_order_seq_cst,
+                std::memory_order_seq_cst, std::memory_order_seq_cst};
+    }
 
-  // Relaxed for single-threaded or already-synchronized scenarios
-  static constexpr RingBufferOrdering Relaxed() {
-    return {std::memory_order_relaxed, std::memory_order_relaxed,
-            std::memory_order_relaxed, std::memory_order_relaxed,
-            std::memory_order_relaxed};
-  }
+    // Relaxed for single-threaded or already-synchronized scenarios
+    static constexpr RingBufferOrdering Relaxed() {
+        return {std::memory_order_relaxed, std::memory_order_relaxed, std::memory_order_relaxed,
+                std::memory_order_relaxed, std::memory_order_relaxed};
+    }
 };
 
 // Default ordering
-inline constexpr RingBufferOrdering DefaultOrdering =
-    RingBufferOrdering::AcquireRelease();
+inline constexpr RingBufferOrdering DefaultOrdering = RingBufferOrdering::AcquireRelease();
 
 // Base class for type erasure and common functionality
-template <typename T> class RingBufferBase {
+template <typename T>
+class RingBufferBase {
 public:
-  virtual ~RingBufferBase() = default;
+    virtual ~RingBufferBase() = default;
 
-  // Core operations (to be implemented by derived)
-  virtual bool Push(const T &item) = 0;
-  virtual bool Pop(T &item) = 0;
-  virtual bool Peek(T &item) const = 0;
-  virtual bool Skip() = 0;
-  virtual void Clear() = 0;
+    // Core operations (to be implemented by derived)
+    virtual bool Push(const T& item) = 0;
+    virtual bool Pop(T& item) = 0;
+    virtual bool Peek(T& item) const = 0;
+    virtual bool Skip() = 0;
+    virtual void Clear() = 0;
 
-  // Status queries
-  virtual size_t Size() const = 0;
-  virtual size_t Capacity() const = 0;
-  virtual bool Empty() const = 0;
-  virtual bool Full() const = 0;
-  virtual size_t Available() const = 0;
+    // Status queries
+    virtual size_t Size() const = 0;
+    virtual size_t Capacity() const = 0;
+    virtual bool Empty() const = 0;
+    virtual bool Full() const = 0;
+    virtual size_t Available() const = 0;
 
-  // Statistics
-  virtual uint64_t DroppedCount() const = 0;
-  virtual void ResetDroppedCount() = 0;
+    // Statistics
+    virtual uint64_t DroppedCount() const = 0;
+    virtual void ResetDroppedCount() = 0;
 };
 
 // Lock-free ring buffer with fixed size (for shared memory)
 template <typename T, size_t N>
 class LockFreeRingBuffer : public RingBufferBase<T> {
-  static_assert(N > 0, "Ring buffer size must be greater than 0");
-  static_assert((N & (N - 1)) == 0,
-                "Ring buffer size must be power of 2 for efficient modulo");
+    static_assert(N > 0, "Ring buffer size must be greater than 0");
+    static_assert((N & (N - 1)) == 0, "Ring buffer size must be power of 2 for efficient modulo");
 
 public:
-  static constexpr size_t CapacityValue = N;
-  static constexpr size_t IndexMask = N - 1;
+    static constexpr size_t CapacityValue = N;
+    static constexpr size_t IndexMask = N - 1;
 
-  explicit LockFreeRingBuffer(
-      RingBufferPolicy policy = RingBufferPolicy::DropNew,
-      RingBufferOrdering ordering = DefaultOrdering)
-      : policy_(policy), ordering_(ordering) {}
+    explicit LockFreeRingBuffer(RingBufferPolicy policy = RingBufferPolicy::DropNew,
+                                RingBufferOrdering ordering = DefaultOrdering)
+        : policy_(policy),
+          ordering_(ordering) {}
 
-  // Non-copyable, non-movable (contains atomics)
-  LockFreeRingBuffer(const LockFreeRingBuffer &) = delete;
-  LockFreeRingBuffer &operator=(const LockFreeRingBuffer &) = delete;
-  LockFreeRingBuffer(LockFreeRingBuffer &&) = delete;
-  LockFreeRingBuffer &operator=(LockFreeRingBuffer &&) = delete;
+    // Non-copyable, non-movable (contains atomics)
+    LockFreeRingBuffer(const LockFreeRingBuffer&) = delete;
+    LockFreeRingBuffer& operator=(const LockFreeRingBuffer&) = delete;
+    LockFreeRingBuffer(LockFreeRingBuffer&&) = delete;
+    LockFreeRingBuffer& operator=(LockFreeRingBuffer&&) = delete;
 
-  // Push an item into the ring buffer
-  // Returns true if successful, false if dropped
-  bool Push(const T &item) override {
-    uint32_t wIdx = writeIndex_.load(ordering_.writeIndexLoad);
-    uint32_t rIdx = readIndex_.load(ordering_.readIndexLoad);
+    // Push an item into the ring buffer
+    // Returns true if successful, false if dropped
+    bool Push(const T& item) override {
+        uint32_t wIdx = writeIndex_.load(ordering_.writeIndexLoad);
+        uint32_t rIdx = readIndex_.load(ordering_.readIndexLoad);
 
-    if ((wIdx - rIdx) >= N) {
-      // Buffer full
-      droppedCount_.fetch_add(1, std::memory_order_relaxed);
+        if ((wIdx - rIdx) >= N) {
+            // Buffer full
+            droppedCount_.fetch_add(1, std::memory_order_relaxed);
 
-      switch (policy_) {
-      case RingBufferPolicy::DropNew:
-        return false; // Drop the new item
+            switch (policy_) {
+                case RingBufferPolicy::DropNew:
+                    return false;  // Drop the new item
 
-      case RingBufferPolicy::DropOld:
-        // Advance read index to make room
+                case RingBufferPolicy::DropOld:
+                    // Advance read index to make room
+                    readIndex_.store(rIdx + 1, ordering_.readIndexStore);
+                    break;
+
+                case RingBufferPolicy::Overwrite:
+                    // Will overwrite oldest after increment
+                    break;
+
+                case RingBufferPolicy::Block:
+                    // Blocking not supported in lock-free implementation
+                    return false;
+            }
+        }
+
+        // Write element
+        buffer_[wIdx & IndexMask] = item;
+
+        // Memory fence before publishing
+        std::atomic_thread_fence(std::memory_order_release);
+
+        // Publish write
+        writeIndex_.store(wIdx + 1, ordering_.writeIndexStore);
+
+        return true;
+    }
+
+    // Pop an item from the ring buffer
+    // Returns true if successful, false if empty
+    bool Pop(T& item) override {
+        uint32_t rIdx = readIndex_.load(ordering_.readIndexLoad);
+        uint32_t wIdx = writeIndex_.load(ordering_.writeIndexLoad);
+
+        if (rIdx == wIdx) {
+            return false;  // Empty
+        }
+
+        // CRITICAL FIX: Acquire fence BEFORE reading element
+        // This ensures we see all data written by producer before we read it
+        std::atomic_thread_fence(std::memory_order_acquire);
+
+        // Read element
+        item = buffer_[rIdx & IndexMask];
+
+        // Publish read
         readIndex_.store(rIdx + 1, ordering_.readIndexStore);
-        break;
 
-      case RingBufferPolicy::Overwrite:
-        // Will overwrite oldest after increment
-        break;
-
-      case RingBufferPolicy::Block:
-        // Blocking not supported in lock-free implementation
-        return false;
-      }
+        return true;
     }
 
-    // Write element
-    buffer_[wIdx & IndexMask] = item;
+    // Peek at next item without removing
+    // Returns true if successful, false if empty
+    bool Peek(T& item) const override {
+        uint32_t rIdx = readIndex_.load(ordering_.readIndexLoad);
+        uint32_t wIdx = writeIndex_.load(ordering_.writeIndexLoad);
 
-    // Memory fence before publishing
-    std::atomic_thread_fence(std::memory_order_release);
+        if (rIdx == wIdx) {
+            return false;  // Empty
+        }
 
-    // Publish write
-    writeIndex_.store(wIdx + 1, ordering_.writeIndexStore);
+        // Acquire fence before reading element to ensure we see all data
+        // written by producer before we read it
+        std::atomic_thread_fence(std::memory_order_acquire);
 
-    return true;
-  }
-
-  // Pop an item from the ring buffer
-  // Returns true if successful, false if empty
-  bool Pop(T &item) override {
-    uint32_t rIdx = readIndex_.load(ordering_.readIndexLoad);
-    uint32_t wIdx = writeIndex_.load(ordering_.writeIndexLoad);
-
-    if (rIdx == wIdx) {
-      return false; // Empty
+        item = buffer_[rIdx & IndexMask];
+        return true;
     }
 
-    // CRITICAL FIX: Acquire fence BEFORE reading element
-    // This ensures we see all data written by producer before we read it
-    std::atomic_thread_fence(std::memory_order_acquire);
+    // Skip next item
+    // Returns true if successful, false if empty
+    bool Skip() override {
+        uint32_t rIdx = readIndex_.load(ordering_.readIndexLoad);
+        uint32_t wIdx = writeIndex_.load(ordering_.writeIndexLoad);
 
-    // Read element
-    item = buffer_[rIdx & IndexMask];
+        if (rIdx == wIdx) {
+            return false;  // Empty
+        }
 
-    // Publish read
-    readIndex_.store(rIdx + 1, ordering_.readIndexStore);
-
-    return true;
-  }
-
-  // Peek at next item without removing
-  // Returns true if successful, false if empty
-  bool Peek(T &item) const override {
-    uint32_t rIdx = readIndex_.load(ordering_.readIndexLoad);
-    uint32_t wIdx = writeIndex_.load(ordering_.writeIndexLoad);
-
-    if (rIdx == wIdx) {
-      return false; // Empty
+        readIndex_.store(rIdx + 1, ordering_.readIndexStore);
+        return true;
     }
 
-    // Acquire fence before reading element to ensure we see all data
-    // written by producer before we read it
-    std::atomic_thread_fence(std::memory_order_acquire);
-
-    item = buffer_[rIdx & IndexMask];
-    return true;
-  }
-
-  // Skip next item
-  // Returns true if successful, false if empty
-  bool Skip() override {
-    uint32_t rIdx = readIndex_.load(ordering_.readIndexLoad);
-    uint32_t wIdx = writeIndex_.load(ordering_.writeIndexLoad);
-
-    if (rIdx == wIdx) {
-      return false; // Empty
+    // Clear all items
+    void Clear() override {
+        // Simply reset indices - atomic operation ensures visibility
+        readIndex_.store(writeIndex_.load(std::memory_order_relaxed), ordering_.readIndexStore);
     }
 
-    readIndex_.store(rIdx + 1, ordering_.readIndexStore);
-    return true;
-  }
+    // Get current size (number of elements)
+    size_t Size() const override {
+        uint32_t wIdx = writeIndex_.load(ordering_.writeIndexLoad);
+        uint32_t rIdx = readIndex_.load(ordering_.readIndexLoad);
+        return wIdx - rIdx;
+    }
 
-  // Clear all items
-  void Clear() override {
-    // Simply reset indices - atomic operation ensures visibility
-    readIndex_.store(writeIndex_.load(std::memory_order_relaxed),
-                     ordering_.readIndexStore);
-  }
+    // Get capacity
+    size_t Capacity() const override {
+        return N;
+    }
 
-  // Get current size (number of elements)
-  size_t Size() const override {
-    uint32_t wIdx = writeIndex_.load(ordering_.writeIndexLoad);
-    uint32_t rIdx = readIndex_.load(ordering_.readIndexLoad);
-    return wIdx - rIdx;
-  }
+    // Check if empty
+    bool Empty() const override {
+        return readIndex_.load(ordering_.readIndexLoad) == writeIndex_.load(ordering_.writeIndexLoad);
+    }
 
-  // Get capacity
-  size_t Capacity() const override { return N; }
+    // Check if full
+    bool Full() const override {
+        uint32_t wIdx = writeIndex_.load(ordering_.writeIndexLoad);
+        uint32_t rIdx = readIndex_.load(ordering_.readIndexLoad);
+        return (wIdx - rIdx) >= N;
+    }
 
-  // Check if empty
-  bool Empty() const override {
-    return readIndex_.load(ordering_.readIndexLoad) ==
-           writeIndex_.load(ordering_.writeIndexLoad);
-  }
+    // Get available space
+    size_t Available() const override {
+        return N - Size();
+    }
 
-  // Check if full
-  bool Full() const override {
-    uint32_t wIdx = writeIndex_.load(ordering_.writeIndexLoad);
-    uint32_t rIdx = readIndex_.load(ordering_.readIndexLoad);
-    return (wIdx - rIdx) >= N;
-  }
+    // Get dropped count
+    uint64_t DroppedCount() const override {
+        return droppedCount_.load(std::memory_order_relaxed);
+    }
 
-  // Get available space
-  size_t Available() const override { return N - Size(); }
+    // Reset dropped count
+    void ResetDroppedCount() override {
+        droppedCount_.store(0, std::memory_order_relaxed);
+    }
 
-  // Get dropped count
-  uint64_t DroppedCount() const override {
-    return droppedCount_.load(std::memory_order_relaxed);
-  }
+    // Direct access to indices (for advanced use)
+    uint32_t WriteIndex() const {
+        return writeIndex_.load(ordering_.writeIndexLoad);
+    }
+    uint32_t ReadIndex() const {
+        return readIndex_.load(ordering_.readIndexLoad);
+    }
+    void SetWriteIndex(uint32_t idx) {
+        writeIndex_.store(idx, ordering_.writeIndexStore);
+    }
+    void SetReadIndex(uint32_t idx) {
+        readIndex_.store(idx, ordering_.readIndexStore);
+    }
 
-  // Reset dropped count
-  void ResetDroppedCount() override {
-    droppedCount_.store(0, std::memory_order_relaxed);
-  }
-
-  // Direct access to indices (for advanced use)
-  uint32_t WriteIndex() const {
-    return writeIndex_.load(ordering_.writeIndexLoad);
-  }
-  uint32_t ReadIndex() const {
-    return readIndex_.load(ordering_.readIndexLoad);
-  }
-  void SetWriteIndex(uint32_t idx) {
-    writeIndex_.store(idx, ordering_.writeIndexStore);
-  }
-  void SetReadIndex(uint32_t idx) {
-    readIndex_.store(idx, ordering_.readIndexStore);
-  }
-
-  // Access buffer directly (use with caution)
-  T &operator[](size_t index) { return buffer_[index & IndexMask]; }
-  const T &operator[](size_t index) const { return buffer_[index & IndexMask]; }
+    // Access buffer directly (use with caution)
+    T& operator[](size_t index) {
+        return buffer_[index & IndexMask];
+    }
+    const T& operator[](size_t index) const {
+        return buffer_[index & IndexMask];
+    }
 
 protected:
-  // Buffer storage
-  alignas(alignof(T)) T buffer_[N];
+    // Buffer storage
+    alignas(alignof(T)) T buffer_[N];
 
-  // Producer index - isolated on its own cache line
-  alignas(64) std::atomic<uint32_t> writeIndex_{0};
+    // Producer index - isolated on its own cache line
+    alignas(64) std::atomic<uint32_t> writeIndex_{0};
 
-  // Consumer index - isolated on its own cache line
-  alignas(64) std::atomic<uint32_t> readIndex_{0};
+    // Consumer index - isolated on its own cache line
+    alignas(64) std::atomic<uint32_t> readIndex_{0};
 
-  // Statistics - can share cache line
-  std::atomic<uint64_t> droppedCount_{0};
+    // Statistics - can share cache line
+    std::atomic<uint64_t> droppedCount_{0};
 
-  // Configuration
-  RingBufferPolicy policy_;
-  RingBufferOrdering ordering_;
+    // Configuration
+    RingBufferPolicy policy_;
+    RingBufferOrdering ordering_;
 };
 
 // Dynamic ring buffer for non-shared memory scenarios
-template <typename T> class DynamicRingBuffer : public RingBufferBase<T> {
+template <typename T>
+class DynamicRingBuffer : public RingBufferBase<T> {
 public:
-  explicit DynamicRingBuffer(
-      size_t capacity = 1024,
-      RingBufferPolicy policy = RingBufferPolicy::DropNew,
-      RingBufferOrdering ordering = DefaultOrdering)
-      : capacity_(capacity), policy_(policy), ordering_(ordering) {
-    buffer_.resize(capacity);
-  }
-
-  // Non-copyable
-  DynamicRingBuffer(const DynamicRingBuffer &) = delete;
-  DynamicRingBuffer &operator=(const DynamicRingBuffer &) = delete;
-
-  // Movable
-  DynamicRingBuffer(DynamicRingBuffer &&other) noexcept
-      : buffer_(std::move(other.buffer_)), capacity_(other.capacity_),
-        writeIndex_(other.writeIndex_.load()),
-        readIndex_(other.readIndex_.load()),
-        droppedCount_(other.droppedCount_.load()), policy_(other.policy_),
-        ordering_(other.ordering_) {}
-
-  DynamicRingBuffer &operator=(DynamicRingBuffer &&other) noexcept {
-    if (this != &other) {
-      buffer_ = std::move(other.buffer_);
-      capacity_ = other.capacity_;
-      writeIndex_.store(other.writeIndex_.load());
-      readIndex_.store(other.readIndex_.load());
-      droppedCount_.store(other.droppedCount_.load());
-      policy_ = other.policy_;
-      ordering_ = other.ordering_;
+    explicit DynamicRingBuffer(size_t capacity = 1024, RingBufferPolicy policy = RingBufferPolicy::DropNew,
+                               RingBufferOrdering ordering = DefaultOrdering)
+        : capacity_(capacity),
+          policy_(policy),
+          ordering_(ordering) {
+        buffer_.resize(capacity);
     }
-    return *this;
-  }
 
-  bool Push(const T &item) override {
-    uint32_t wIdx = writeIndex_.load(ordering_.writeIndexLoad);
-    uint32_t rIdx = readIndex_.load(ordering_.readIndexLoad);
+    // Non-copyable
+    DynamicRingBuffer(const DynamicRingBuffer&) = delete;
+    DynamicRingBuffer& operator=(const DynamicRingBuffer&) = delete;
 
-    if ((wIdx - rIdx) >= capacity_) {
-      droppedCount_.fetch_add(1, std::memory_order_relaxed);
+    // Movable
+    DynamicRingBuffer(DynamicRingBuffer&& other) noexcept
+        : buffer_(std::move(other.buffer_)),
+          capacity_(other.capacity_),
+          writeIndex_(other.writeIndex_.load()),
+          readIndex_(other.readIndex_.load()),
+          droppedCount_(other.droppedCount_.load()),
+          policy_(other.policy_),
+          ordering_(other.ordering_) {}
 
-      switch (policy_) {
-      case RingBufferPolicy::DropNew:
-        return false;
-      case RingBufferPolicy::DropOld:
+    DynamicRingBuffer& operator=(DynamicRingBuffer&& other) noexcept {
+        if (this != &other) {
+            buffer_ = std::move(other.buffer_);
+            capacity_ = other.capacity_;
+            writeIndex_.store(other.writeIndex_.load());
+            readIndex_.store(other.readIndex_.load());
+            droppedCount_.store(other.droppedCount_.load());
+            policy_ = other.policy_;
+            ordering_ = other.ordering_;
+        }
+        return *this;
+    }
+
+    bool Push(const T& item) override {
+        uint32_t wIdx = writeIndex_.load(ordering_.writeIndexLoad);
+        uint32_t rIdx = readIndex_.load(ordering_.readIndexLoad);
+
+        if ((wIdx - rIdx) >= capacity_) {
+            droppedCount_.fetch_add(1, std::memory_order_relaxed);
+
+            switch (policy_) {
+                case RingBufferPolicy::DropNew:
+                    return false;
+                case RingBufferPolicy::DropOld:
+                    readIndex_.store(rIdx + 1, ordering_.readIndexStore);
+                    break;
+                case RingBufferPolicy::Overwrite:
+                    break;
+                case RingBufferPolicy::Block:
+                    return false;
+            }
+        }
+
+        buffer_[wIdx % capacity_] = item;
+        std::atomic_thread_fence(std::memory_order_release);
+        writeIndex_.store(wIdx + 1, ordering_.writeIndexStore);
+
+        return true;
+    }
+
+    bool Pop(T& item) override {
+        uint32_t rIdx = readIndex_.load(ordering_.readIndexLoad);
+        uint32_t wIdx = writeIndex_.load(ordering_.writeIndexLoad);
+
+        if (rIdx == wIdx) {
+            return false;
+        }
+
+        std::atomic_thread_fence(std::memory_order_acquire);
+        item = buffer_[rIdx % capacity_];
         readIndex_.store(rIdx + 1, ordering_.readIndexStore);
-        break;
-      case RingBufferPolicy::Overwrite:
-        break;
-      case RingBufferPolicy::Block:
-        return false;
-      }
+
+        return true;
     }
 
-    buffer_[wIdx % capacity_] = item;
-    std::atomic_thread_fence(std::memory_order_release);
-    writeIndex_.store(wIdx + 1, ordering_.writeIndexStore);
+    bool Peek(T& item) const override {
+        uint32_t rIdx = readIndex_.load(ordering_.readIndexLoad);
+        uint32_t wIdx = writeIndex_.load(ordering_.writeIndexLoad);
 
-    return true;
-  }
+        if (rIdx == wIdx) {
+            return false;
+        }
 
-  bool Pop(T &item) override {
-    uint32_t rIdx = readIndex_.load(ordering_.readIndexLoad);
-    uint32_t wIdx = writeIndex_.load(ordering_.writeIndexLoad);
-
-    if (rIdx == wIdx) {
-      return false;
+        std::atomic_thread_fence(std::memory_order_acquire);
+        item = buffer_[rIdx % capacity_];
+        return true;
     }
 
-    std::atomic_thread_fence(std::memory_order_acquire);
-    item = buffer_[rIdx % capacity_];
-    readIndex_.store(rIdx + 1, ordering_.readIndexStore);
+    bool Skip() override {
+        uint32_t rIdx = readIndex_.load(ordering_.readIndexLoad);
+        uint32_t wIdx = writeIndex_.load(ordering_.writeIndexLoad);
 
-    return true;
-  }
+        if (rIdx == wIdx) {
+            return false;
+        }
 
-  bool Peek(T &item) const override {
-    uint32_t rIdx = readIndex_.load(ordering_.readIndexLoad);
-    uint32_t wIdx = writeIndex_.load(ordering_.writeIndexLoad);
-
-    if (rIdx == wIdx) {
-      return false;
+        readIndex_.store(rIdx + 1, ordering_.readIndexStore);
+        return true;
     }
 
-    std::atomic_thread_fence(std::memory_order_acquire);
-    item = buffer_[rIdx % capacity_];
-    return true;
-  }
-
-  bool Skip() override {
-    uint32_t rIdx = readIndex_.load(ordering_.readIndexLoad);
-    uint32_t wIdx = writeIndex_.load(ordering_.writeIndexLoad);
-
-    if (rIdx == wIdx) {
-      return false;
+    void Clear() override {
+        readIndex_.store(writeIndex_.load(std::memory_order_relaxed), ordering_.readIndexStore);
     }
 
-    readIndex_.store(rIdx + 1, ordering_.readIndexStore);
-    return true;
-  }
+    size_t Size() const override {
+        uint32_t wIdx = writeIndex_.load(ordering_.writeIndexLoad);
+        uint32_t rIdx = readIndex_.load(ordering_.readIndexLoad);
+        return wIdx - rIdx;
+    }
 
-  void Clear() override {
-    readIndex_.store(writeIndex_.load(std::memory_order_relaxed),
-                     ordering_.readIndexStore);
-  }
+    size_t Capacity() const override {
+        return capacity_;
+    }
 
-  size_t Size() const override {
-    uint32_t wIdx = writeIndex_.load(ordering_.writeIndexLoad);
-    uint32_t rIdx = readIndex_.load(ordering_.readIndexLoad);
-    return wIdx - rIdx;
-  }
+    bool Empty() const override {
+        return readIndex_.load(ordering_.readIndexLoad) == writeIndex_.load(ordering_.writeIndexLoad);
+    }
 
-  size_t Capacity() const override { return capacity_; }
+    bool Full() const override {
+        uint32_t wIdx = writeIndex_.load(ordering_.writeIndexLoad);
+        uint32_t rIdx = readIndex_.load(ordering_.readIndexLoad);
+        return (wIdx - rIdx) >= capacity_;
+    }
 
-  bool Empty() const override {
-    return readIndex_.load(ordering_.readIndexLoad) ==
-           writeIndex_.load(ordering_.writeIndexLoad);
-  }
+    size_t Available() const override {
+        return capacity_ - Size();
+    }
 
-  bool Full() const override {
-    uint32_t wIdx = writeIndex_.load(ordering_.writeIndexLoad);
-    uint32_t rIdx = readIndex_.load(ordering_.readIndexLoad);
-    return (wIdx - rIdx) >= capacity_;
-  }
+    uint64_t DroppedCount() const override {
+        return droppedCount_.load(std::memory_order_relaxed);
+    }
 
-  size_t Available() const override { return capacity_ - Size(); }
+    void ResetDroppedCount() override {
+        droppedCount_.store(0, std::memory_order_relaxed);
+    }
 
-  uint64_t DroppedCount() const override {
-    return droppedCount_.load(std::memory_order_relaxed);
-  }
-
-  void ResetDroppedCount() override {
-    droppedCount_.store(0, std::memory_order_relaxed);
-  }
-
-  // Resize the buffer (clears existing data)
-  void Resize(size_t newCapacity) {
-    buffer_.resize(newCapacity);
-    capacity_ = newCapacity;
-    Clear();
-  }
+    // Resize the buffer (clears existing data)
+    void Resize(size_t newCapacity) {
+        buffer_.resize(newCapacity);
+        capacity_ = newCapacity;
+        Clear();
+    }
 
 private:
-  std::vector<T> buffer_;
-  size_t capacity_;
+    std::vector<T> buffer_;
+    size_t capacity_;
 
-  alignas(64) std::atomic<uint32_t> writeIndex_{0};
-  alignas(64) std::atomic<uint32_t> readIndex_{0};
-  std::atomic<uint64_t> droppedCount_{0};
+    alignas(64) std::atomic<uint32_t> writeIndex_{0};
+    alignas(64) std::atomic<uint32_t> readIndex_{0};
+    std::atomic<uint64_t> droppedCount_{0};
 
-  RingBufferPolicy policy_;
-  RingBufferOrdering ordering_;
+    RingBufferPolicy policy_;
+    RingBufferOrdering ordering_;
 };
 
 // Type alias for common use cases
@@ -466,13 +474,12 @@ using AudioRingBufferUnified = DynamicRingBuffer<float>;
 template <typename T, size_t N>
 using PendingFrameRingBuffer = LockFreeRingBuffer<T, N>;
 
-} // namespace ce
+}  // namespace ce
 
 // Legacy compatibility - allow use in C-style shared memory
 // This macro creates a ring buffer with proper alignment for shared memory
-#define CE_DECLARE_RING_BUFFER(type, name, size)                               \
-  alignas(64) ce::LockFreeRingBuffer<type, size> name
+#define CE_DECLARE_RING_BUFFER(type, name, size) alignas(64) ce::LockFreeRingBuffer<type, size> name
 
 // For use in shared memory layouts
-#define CE_RING_BUFFER_SIZE_CHECK(buf, expected_size)                          \
-  static_assert(sizeof(buf) == expected_size, "Ring buffer size mismatch")
+#define CE_RING_BUFFER_SIZE_CHECK(buf, expected_size) \
+    static_assert(sizeof(buf) == expected_size, "Ring buffer size mismatch")

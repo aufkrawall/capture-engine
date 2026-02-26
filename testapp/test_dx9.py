@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import subprocess
 import time
-import sys
 from pathlib import Path
 
 testapp_dir = Path(__file__).parent
@@ -64,7 +63,7 @@ else:
 ce_proc.terminate()
 try:
     ce_proc.wait(timeout=5)
-except:
+except Exception:
     ce_proc.kill()
 
 print("Done!")

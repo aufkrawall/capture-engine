@@ -1,39 +1,36 @@
 #pragma once
 
-#include "../common/config.h"
 #include <d3d11.h>
 #include <d3d12.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include "../common/config.h"
 
 // Forward declaration
 struct SharedMemoryLayout;
 
 // Logger callback type
-typedef void (*LogCallback)(const char *msg);
+typedef void (*LogCallback)(const char* msg);
 
 // Function pointer types for MediaEngine API
 typedef void (*MediaEngine_SetLogCallback_t)(LogCallback cb);
-typedef void (*DLL_Log_t)(const char *fmt, ...);
-typedef bool (*MediaEngine_Init_t)(const AppConfig *config);
-typedef void (*MediaEngine_ReloadConfig_t)(const AppConfig *config);
-typedef void (*MediaEngine_ProcessFrame_t)(uint64_t textureHandle, uint64_t fenceHandle,
-                                           uint64_t fenceValue, int64_t timestamp,
-                                           int32_t luidLow, int32_t luidHigh, uint32_t sourcePid,
-                                           uint32_t width, uint32_t height, uint32_t format,
-                                           bool isHDR, bool isShmem, int shmemSlot);
-typedef void (*MediaEngine_ProcessFrameD3D11_t)(void *texture, int64_t timestamp,
-                                                 uint32_t width, uint32_t height);
+typedef void (*DLL_Log_t)(const char* fmt, ...);
+typedef bool (*MediaEngine_Init_t)(const AppConfig* config);
+typedef void (*MediaEngine_ReloadConfig_t)(const AppConfig* config);
+typedef void (*MediaEngine_ProcessFrame_t)(uint64_t textureHandle, uint64_t fenceHandle, uint64_t fenceValue,
+                                           int64_t timestamp, int32_t luidLow, int32_t luidHigh, uint32_t sourcePid,
+                                           uint32_t width, uint32_t height, uint32_t format, bool isHDR, bool isShmem,
+                                           int shmemSlot);
+typedef void (*MediaEngine_ProcessFrameD3D11_t)(void* texture, int64_t timestamp, uint32_t width, uint32_t height);
 typedef bool (*MediaEngine_StartRecording_t)();
 typedef void (*MediaEngine_StopRecording_t)();
-typedef ID3D11Device *(*MediaEngine_GetD3D11Device_t)();
-typedef bool (*MediaEngine_CreateSharedCaptureTextures_t)(uint32_t width, uint32_t height,
-                                                          uint32_t format,
-                                                          struct SharedMemoryLayout *sharedMem);
+typedef ID3D11Device* (*MediaEngine_GetD3D11Device_t)();
+typedef bool (*MediaEngine_CreateSharedCaptureTextures_t)(uint32_t width, uint32_t height, uint32_t format,
+                                                          struct SharedMemoryLayout* sharedMem);
 typedef int64_t (*MediaEngine_GetLastFrameEncodeTimeUs_t)();
 typedef int64_t (*MediaEngine_GetLastFrameFenceWaitUs_t)();
 typedef void (*MediaEngine_Shutdown_t)();
-typedef void (*MediaEngine_SetSharedMem_t)(void *pSharedMem, void *pShmem);
+typedef void (*MediaEngine_SetSharedMem_t)(void* pSharedMem, void* pShmem);
 typedef void (*MediaEngine_LockD3D11_t)();
 typedef void (*MediaEngine_UnlockD3D11_t)();
 
@@ -57,7 +54,7 @@ extern MediaEngine_UnlockD3D11_t MediaEngine_UnlockD3D11;
 
 // Load mediaengine.dll from exe_dir/ffmpeg/ folder
 // Returns true on success, false on failure
-bool MediaEngine_Load(const char *exeDir);
+bool MediaEngine_Load(const char* exeDir);
 
 // Unload mediaengine.dll
 void MediaEngine_Unload();

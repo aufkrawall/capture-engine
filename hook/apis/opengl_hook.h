@@ -6,7 +6,7 @@
 // Falls back to PBO readback for AMD/Intel GPUs
 class OpenGLHook : public GraphicsHook {
 public:
-  void Init() override;
-  void Shutdown() override;
-  void OnHostDisconnect() override;
+    void Init() override;
+    void Shutdown() override;
+    void OnHostDisconnect() override;
 };

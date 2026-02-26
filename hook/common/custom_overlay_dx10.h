@@ -12,9 +12,9 @@
 
 #pragma once
 
-#include "custom_overlay.h"
 #include <d3d10.h>
 #include <wrl/client.h>
+#include "custom_overlay.h"
 
 namespace CustomOverlay {
 
@@ -26,48 +26,45 @@ constexpr size_t DX10_INDEX_BUFFER_SIZE = 131072 * sizeof(uint16_t);
 
 class DX10Backend : public RendererBackend {
 public:
-  DX10Backend(ID3D10Device *device);
-  virtual ~DX10Backend();
+    DX10Backend(ID3D10Device* device);
+    virtual ~DX10Backend();
 
-  bool Initialize(int fontTextureWidth, int fontTextureHeight,
-                  const uint8_t *fontTextureData) override;
-  void Shutdown() override;
+    bool Initialize(int fontTextureWidth, int fontTextureHeight, const uint8_t* fontTextureData) override;
+    void Shutdown() override;
 
-  void Render(const std::vector<DrawVertex> &vertices,
-              const std::vector<uint16_t> &indices,
-              const std::vector<DrawCommand> &commands, int viewportWidth,
-              int viewportHeight) override;
+    void Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
+                const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) override;
 
 private:
-  bool CreateShaders();
-  bool CreateBuffers();
-  bool CreateStates();
-  bool ResizeVertexBuffer(size_t requiredBytes);
-  bool ResizeIndexBuffer(size_t requiredBytes);
+    bool CreateShaders();
+    bool CreateBuffers();
+    bool CreateStates();
+    bool ResizeVertexBuffer(size_t requiredBytes);
+    bool ResizeIndexBuffer(size_t requiredBytes);
 
-  ID3D10Device *device = nullptr;
+    ID3D10Device* device = nullptr;
 
-  ComPtr<ID3D10Texture2D> fontTexture;
-  ComPtr<ID3D10ShaderResourceView> fontTextureView;
-  ComPtr<ID3D10Buffer> vertexBuffer;
-  ComPtr<ID3D10Buffer> indexBuffer;
-  ComPtr<ID3D10Buffer> constantBuffer;
-  ComPtr<ID3D10InputLayout> inputLayout;
-  ComPtr<ID3D10VertexShader> vertexShader;
-  ComPtr<ID3D10PixelShader> pixelShader;
-  ComPtr<ID3D10PixelShader> pixelShaderSolid;
-  ComPtr<ID3D10BlendState> blendState;
-  ComPtr<ID3D10SamplerState> samplerState;
-  ComPtr<ID3D10RasterizerState> rasterizerState;
-  ComPtr<ID3D10DepthStencilState> depthStencilState;
+    ComPtr<ID3D10Texture2D> fontTexture;
+    ComPtr<ID3D10ShaderResourceView> fontTextureView;
+    ComPtr<ID3D10Buffer> vertexBuffer;
+    ComPtr<ID3D10Buffer> indexBuffer;
+    ComPtr<ID3D10Buffer> constantBuffer;
+    ComPtr<ID3D10InputLayout> inputLayout;
+    ComPtr<ID3D10VertexShader> vertexShader;
+    ComPtr<ID3D10PixelShader> pixelShader;
+    ComPtr<ID3D10PixelShader> pixelShaderSolid;
+    ComPtr<ID3D10BlendState> blendState;
+    ComPtr<ID3D10SamplerState> samplerState;
+    ComPtr<ID3D10RasterizerState> rasterizerState;
+    ComPtr<ID3D10DepthStencilState> depthStencilState;
 
-  size_t vertexBufferSize = 0;
-  size_t indexBufferSize = 0;
+    size_t vertexBufferSize = 0;
+    size_t indexBufferSize = 0;
 
-  // Shader caching
-  ID3D10PixelShader *lastPixelShader = nullptr;
+    // Shader caching
+    ID3D10PixelShader* lastPixelShader = nullptr;
 
-  bool initialized = false;
+    bool initialized = false;
 };
 
-} // namespace CustomOverlay
+}  // namespace CustomOverlay

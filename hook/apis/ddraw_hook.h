@@ -7,7 +7,7 @@
 // Falls back to staging buffer for pure 2D DDraw games
 class DDrawHook : public GraphicsHook {
 public:
-  void Init() override;
-  void Shutdown() override;
-  void OnHostDisconnect() override;
+    void Init() override;
+    void Shutdown() override;
+    void OnHostDisconnect() override;
 };

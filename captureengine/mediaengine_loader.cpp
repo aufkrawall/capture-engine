@@ -1,7 +1,7 @@
 #include "mediaengine_loader.h"
-#include "../common/logging.h"
 #include <windows.h>
 #include <cstring>
+#include "../common/logging.h"
 
 MediaEngine_SetLogCallback_t MediaEngine_SetLogCallback = nullptr;
 DLL_Log_t DLL_Log = nullptr;
@@ -22,8 +22,8 @@ MediaEngine_UnlockD3D11_t MediaEngine_UnlockD3D11 = nullptr;
 
 static HMODULE g_MediaEngineModule = nullptr;
 
-template<typename T>
-static bool GetFunc(HMODULE hModule, const char *name, T *outPtr) {
+template <typename T>
+static bool GetFunc(HMODULE hModule, const char* name, T* outPtr) {
     *outPtr = (T)GetProcAddress(hModule, name);
     if (!*outPtr) {
         LogError("[MediaEngine] Failed to get function: %s", name);
@@ -32,19 +32,19 @@ static bool GetFunc(HMODULE hModule, const char *name, T *outPtr) {
     return true;
 }
 
-bool MediaEngine_Load(const char *exeDir) {
+bool MediaEngine_Load(const char* exeDir) {
     if (g_MediaEngineModule) {
         return true;
     }
 
     char ffmpegDir[MAX_PATH];
     snprintf(ffmpegDir, sizeof(ffmpegDir), "%s\\ffmpeg", exeDir);
-    
+
     if (GetFileAttributesA(ffmpegDir) == INVALID_FILE_ATTRIBUTES) {
         LogError("[MediaEngine] FFmpeg folder not found: %s", ffmpegDir);
         return false;
     }
-    
+
     if (!SetDllDirectoryA(ffmpegDir)) {
         LogError("[MediaEngine] Failed to set DLL directory: %s", ffmpegDir);
         return false;
@@ -53,7 +53,7 @@ bool MediaEngine_Load(const char *exeDir) {
 
     char dllPath[MAX_PATH];
     snprintf(dllPath, sizeof(dllPath), "%s\\mediaengine.dll", exeDir);
-    
+
     LogInfo("[MediaEngine] Loading: %s", dllPath);
     g_MediaEngineModule = LoadLibraryA(dllPath);
     if (!g_MediaEngineModule) {
@@ -74,9 +74,12 @@ bool MediaEngine_Load(const char *exeDir) {
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_StartRecording", &MediaEngine_StartRecording);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_StopRecording", &MediaEngine_StopRecording);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_GetD3D11Device", &MediaEngine_GetD3D11Device);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_CreateSharedCaptureTextures", &MediaEngine_CreateSharedCaptureTextures);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_GetLastFrameEncodeTimeUs", &MediaEngine_GetLastFrameEncodeTimeUs);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_GetLastFrameFenceWaitUs", &MediaEngine_GetLastFrameFenceWaitUs);
+    success &= GetFunc(g_MediaEngineModule, "MediaEngine_CreateSharedCaptureTextures",
+                       &MediaEngine_CreateSharedCaptureTextures);
+    success &=
+        GetFunc(g_MediaEngineModule, "MediaEngine_GetLastFrameEncodeTimeUs", &MediaEngine_GetLastFrameEncodeTimeUs);
+    success &=
+        GetFunc(g_MediaEngineModule, "MediaEngine_GetLastFrameFenceWaitUs", &MediaEngine_GetLastFrameFenceWaitUs);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_Shutdown", &MediaEngine_Shutdown);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_SetSharedMem", &MediaEngine_SetSharedMem);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_LockD3D11", &MediaEngine_LockD3D11);
@@ -99,7 +102,7 @@ void MediaEngine_Unload() {
         FreeLibrary(g_MediaEngineModule);
         g_MediaEngineModule = nullptr;
     }
-    
+
     MediaEngine_SetLogCallback = nullptr;
     DLL_Log = nullptr;
     MediaEngine_Init = nullptr;
@@ -116,6 +119,6 @@ void MediaEngine_Unload() {
     MediaEngine_SetSharedMem = nullptr;
     MediaEngine_LockD3D11 = nullptr;
     MediaEngine_UnlockD3D11 = nullptr;
-    
+
     SetDllDirectoryA(nullptr);
 }

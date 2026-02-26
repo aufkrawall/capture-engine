@@ -11,7 +11,7 @@
 //   - Overlay rendering uses the D3D9 path (not a separate D3D8 overlay).
 class DX8Hook : public GraphicsHook {
 public:
-  void Init() override;
-  void Shutdown() override;
-  void OnHostDisconnect() override;
+    void Init() override;
+    void Shutdown() override;
+    void OnHostDisconnect() override;
 };

@@ -1,7 +1,6 @@
 import os
 import sys
 import glob
-import shlex
 import shutil
 import tarfile
 import subprocess
@@ -9,7 +8,6 @@ import urllib.request
 import time
 import datetime
 import hashlib
-import zipfile
 import platform
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from multiprocessing import cpu_count
@@ -148,7 +146,7 @@ def log(msg: str) -> None:
     try:
         with open(LOG_FILE, "a") as f:
             f.write(formatted + "\n")
-    except:
+    except Exception:
         pass
 
 
@@ -220,7 +218,6 @@ def is_file_locked(filepath: str) -> bool:
         # Try to open with exclusive access (deny all sharing)
         # If this fails, the file is locked
         import ctypes
-        from ctypes import wintypes
 
         GENERIC_READ = 0x80000000
         GENERIC_WRITE = 0x40000000
@@ -331,8 +328,8 @@ def safe_delete_file(
             # Now try to delete the renamed file (non-blocking)
             try:
                 os.remove(trash_name)
-                log(f"[SafeDelete] Deleted renamed file immediately")
-            except:
+                log("[SafeDelete] Deleted renamed file immediately")
+            except Exception:
                 # Schedule for deletion on reboot
                 try:
                     import ctypes
@@ -343,7 +340,7 @@ def safe_delete_file(
                     log(
                         f"[SafeDelete] Scheduled {filename} for deletion on next reboot"
                     )
-                except:
+                except Exception:
                     pass
 
             return True
@@ -397,7 +394,7 @@ def safe_copy_file(src: str, dst: str) -> bool:
                 # Try to delete the renamed file, schedule for reboot if fails
                 try:
                     os.remove(trash_name)
-                except:
+                except Exception:
                     try:
                         import ctypes
 
@@ -409,7 +406,7 @@ def safe_copy_file(src: str, dst: str) -> bool:
                         log(
                             f"[SafeCopy] Scheduled old {dst_name} for deletion on next reboot"
                         )
-                    except:
+                    except Exception:
                         pass
             except OSError as e:
                 log(f"[SafeCopy] WARNING: Could not rename locked {dst_name}: {e}")
@@ -509,7 +506,7 @@ def bump_and_write_build_version():
             m = re.search(r"#define\s+BUILD_NUMBER\s+(\d+)", txt)
             if m:
                 build_number = int(m.group(1))
-        except:
+        except Exception:
             pass
 
     build_number += 1
@@ -1189,7 +1186,8 @@ def compile_custom_ffmpeg(skip_updates=False):
             if current_commit != last_built:
                 needs_rebuild = True
                 log(
-                    f"FFmpeg commit changed ({last_built[:8] if last_built else 'none'} -> {current_commit[:8]}) - rebuilding..."
+                    f"FFmpeg commit changed ({last_built[:8] if last_built else 'none'}"
+                    f" -> {current_commit[:8]}) - rebuilding..."
                 )
             else:
                 log(f"FFmpeg up to date ({current_commit[:8]}) - skipping build.")
@@ -1834,7 +1832,7 @@ def run_lint(env):
             check=True,
         )
         has_flake8 = True
-    except:
+    except Exception:
         has_flake8 = False
 
     if has_flake8:
@@ -2329,7 +2327,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
                 )
                 # Check if locked and log helpful info
                 if is_file_locked(layer_dll):
-                    log(f"[Info] File is actively locked by another process")
+                    log("[Info] File is actively locked by another process")
                     locking = find_process_locking_file(layer_dll)
                     if locking:
                         log(f"[Info] Locking process: {locking}")
@@ -2727,7 +2725,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                         f"[Warning] {os.path.basename(hk_dll)} is still locked, build may fail"
                     )
                     if is_file_locked(hk_dll):
-                        log(f"[Info] File is actively locked by another process")
+                        log("[Info] File is actively locked by another process")
                         locking = find_process_locking_file(hk_dll)
                         if locking:
                             log(f"[Info] Locking process: {locking}")
@@ -2753,7 +2751,8 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                     embedded_build = int(version_match.group(1))
                     if embedded_build != CURRENT_BUILD_NUMBER:
                         log(
-                            f"[WARNING] Version mismatch! Header: build.{CURRENT_BUILD_NUMBER}, DLL: build.{embedded_build}"
+                            f"[WARNING] Version mismatch! Header: build.{CURRENT_BUILD_NUMBER},"
+                            f" DLL: build.{embedded_build}"
                         )
                     else:
                         log(f"[OK] Hook DLL verified: build.{embedded_build}")
@@ -3232,7 +3231,7 @@ def main():
     if os.path.exists(LOG_FILE):
         try:
             os.remove(LOG_FILE)
-        except:
+        except Exception:
             pass
 
     log("=== Starting Build ===")
@@ -3300,7 +3299,7 @@ def main():
             try:
                 os.remove(f)
                 log(f"Removed legacy log: {f}")
-            except:
+            except Exception:
                 pass
 
     setup_msys2()
@@ -3338,7 +3337,8 @@ def main():
     if ccache_flag:
         log("Enabling ccache for faster builds (--ccache)")
         log(
-            "WARNING: ccache may occasionally serve stale objects. Use --ccache only for development, not release builds."
+            "WARNING: ccache may occasionally serve stale objects."
+            " Use --ccache only for development, not release builds."
         )
         # Clear any existing disable flag
         if "DISABLE_CCACHE" in env:

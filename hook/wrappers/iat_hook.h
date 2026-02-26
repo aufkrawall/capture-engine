@@ -7,9 +7,9 @@
 
 #pragma once
 
+#include <windows.h>
 #include <string>
 #include <vector>
-#include <windows.h>
 
 namespace IATHook {
 
@@ -23,28 +23,25 @@ namespace IATHook {
  * @param outOriginal  - Receives pointer to original function
  * @return true on success
  */
-bool PatchIAT(HMODULE targetModule, const char *sourceModule,
-              const char *functionName, void *hookFunction, void **outOriginal);
+bool PatchIAT(HMODULE targetModule, const char* sourceModule, const char* functionName, void* hookFunction,
+              void** outOriginal);
 
 /**
  * Patch a function in all loaded modules
  * Useful for hooking functions across DLLs
  */
-bool PatchIATAllModules(const char *sourceModule, const char *functionName,
-                        void *hookFunction, void **outOriginal);
+bool PatchIATAllModules(const char* sourceModule, const char* functionName, void* hookFunction, void** outOriginal);
 
 /**
  * Restore original IAT entry
  */
-bool RestoreIAT(HMODULE targetModule, const char *sourceModule,
-                const char *functionName, void *originalFunction);
+bool RestoreIAT(HMODULE targetModule, const char* sourceModule, const char* functionName, void* originalFunction);
 
 /**
  * EAT (Export Address Table) hooking for intercepting exports
  * Used when we want to intercept functions that modules export
  */
-bool PatchEAT(HMODULE exportingModule, const char *functionName,
-              void *hookFunction, void **outOriginal);
+bool PatchEAT(HMODULE exportingModule, const char* functionName, void* hookFunction, void** outOriginal);
 
 /**
  * Initialize IAT hooks for DXGI/D3D
@@ -62,19 +59,15 @@ bool InitializeD3D9Hooks();
  * Initialize kernel32 hooks (LoadLibrary*, CreateProcess*)
  * These are critical for late injection support
  */
-bool InitializeKernel32Hooks(
-    void *LoadLibraryAHook, void **pOriginalLoadLibraryA,
-    void *LoadLibraryWHook, void **pOriginalLoadLibraryW,
-    void *LoadLibraryExAHook, void **pOriginalLoadLibraryExA,
-    void *LoadLibraryExWHook, void **pOriginalLoadLibraryExW,
-    void *CreateProcessAHook, void **pOriginalCreateProcessA,
-    void *CreateProcessWHook, void **pOriginalCreateProcessW);
+bool InitializeKernel32Hooks(void* LoadLibraryAHook, void** pOriginalLoadLibraryA, void* LoadLibraryWHook,
+                             void** pOriginalLoadLibraryW, void* LoadLibraryExAHook, void** pOriginalLoadLibraryExA,
+                             void* LoadLibraryExWHook, void** pOriginalLoadLibraryExW, void* CreateProcessAHook,
+                             void** pOriginalCreateProcessA, void* CreateProcessWHook, void** pOriginalCreateProcessW);
 
 /**
  * Initialize advapi32 hooks (RegQueryValueExW)
  */
-bool InitializeAdvapi32Hooks(void *RegQueryValueExWHook,
-                             void **pOriginalRegQueryValueExW);
+bool InitializeAdvapi32Hooks(void* RegQueryValueExWHook, void** pOriginalRegQueryValueExW);
 
 /**
  * Register a hook for GetProcAddress interception.
@@ -86,8 +79,7 @@ bool InitializeAdvapi32Hooks(void *RegQueryValueExWHook,
  * @param outOriginal  Pointer to variable that will hold the original function
  * address
  */
-void RegisterDynamicHook(const char *functionName, void *hookFunction,
-                         void **outOriginal);
+void RegisterDynamicHook(const char* functionName, void* hookFunction, void** outOriginal);
 
 /**
  * Initialize GetProcAddress hook to enable dynamic hooking.
@@ -100,4 +92,4 @@ void InitializeGetProcAddressHook();
  */
 void ShutdownIATHooks();
 
-} // namespace IATHook
+}  // namespace IATHook

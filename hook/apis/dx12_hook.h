@@ -1,10 +1,10 @@
 #pragma once
-#include "graphics_hook.h"
 #include <d3d12.h>
 #include <dxgi1_4.h>
 #include <memory>
 #include <mutex>
 #include <vector>
+#include "graphics_hook.h"
 
 // =============================================================================
 // DX12 Debug Logging Infrastructure
@@ -14,59 +14,61 @@
 
 extern bool g_DebugLoggingEnabled;
 
-#define DX12_DEBUG(fmt, ...) \
-    do { if (g_DebugLoggingEnabled) { \
-        HookLog("[DX12] " fmt, ##__VA_ARGS__); \
-    }} while(0)
+#define DX12_DEBUG(fmt, ...)                       \
+    do {                                           \
+        if (g_DebugLoggingEnabled) {               \
+            HookLog("[DX12] " fmt, ##__VA_ARGS__); \
+        }                                          \
+    } while (0)
 
-#define DX12_DEBUG_STEP(step, fmt, ...) \
-    DX12_DEBUG("[%s] " fmt, step, ##__VA_ARGS__)
+#define DX12_DEBUG_STEP(step, fmt, ...) DX12_DEBUG("[%s] " fmt, step, ##__VA_ARGS__)
 
-#define DX12_DEBUG_HR(step, op, hr) \
-    DX12_DEBUG("[%s] %s hr=0x%08X (%s)", step, op, hr, SUCCEEDED(hr) ? "OK" : "FAILED")
+#define DX12_DEBUG_HR(step, op, hr) DX12_DEBUG("[%s] %s hr=0x%08X (%s)", step, op, hr, SUCCEEDED(hr) ? "OK" : "FAILED")
 
-#define DX12_DEBUG_PTR(step, name, ptr) \
-    DX12_DEBUG("[%s] %s=%p", step, name, ptr)
+#define DX12_DEBUG_PTR(step, name, ptr) DX12_DEBUG("[%s] %s=%p", step, name, ptr)
 
 // Frame logging (throttled - every N frames)
-#define DX12_DEBUG_FRAME(frameNum, fmt, ...) \
-    do { if (g_DebugLoggingEnabled && ((frameNum) % 300 == 0)) { \
-        HookLog("[DX12:FRAME:%llu] " fmt, (uint64_t)(frameNum), ##__VA_ARGS__); \
-    }} while(0)
+#define DX12_DEBUG_FRAME(frameNum, fmt, ...)                                        \
+    do {                                                                            \
+        if (g_DebugLoggingEnabled && ((frameNum) % 300 == 0)) {                     \
+            HookLog("[DX12:FRAME:%llu] " fmt, (uint64_t)(frameNum), ##__VA_ARGS__); \
+        }                                                                           \
+    } while (0)
 
 // Error logging (always on)
-#define DX12_ERROR(fmt, ...) \
-    HookLog("[DX12:ERROR] " fmt, ##__VA_ARGS__)
+#define DX12_ERROR(fmt, ...) HookLog("[DX12:ERROR] " fmt, ##__VA_ARGS__)
 
 // Warning logging
-#define DX12_WARN(fmt, ...) \
-    do { if (g_DebugLoggingEnabled) { \
-        HookLog("[DX12:WARN] " fmt, ##__VA_ARGS__); \
-    }} while(0)
+#define DX12_WARN(fmt, ...)                             \
+    do {                                                \
+        if (g_DebugLoggingEnabled) {                    \
+            HookLog("[DX12:WARN] " fmt, ##__VA_ARGS__); \
+        }                                               \
+    } while (0)
 
 class DX12Hook : public GraphicsHook {
-  std::vector<IUnknown *> trackedResources;
-  std::recursive_mutex resourceMutex;
+    std::vector<IUnknown*> trackedResources;
+    std::recursive_mutex resourceMutex;
 
 public:
-  void Init() override;
-  void Shutdown() override;
-  void OnHostDisconnect() override;
-  void EnsurePresentHooks(); // Called after D3D12 device creation is confirmed
+    void Init() override;
+    void Shutdown() override;
+    void OnHostDisconnect() override;
+    void EnsurePresentHooks();  // Called after D3D12 device creation is confirmed
 
-  void TrackResource(IUnknown *res);
-  void CleanupResources();
+    void TrackResource(IUnknown* res);
+    void CleanupResources();
 
-  // Frame classification for FG support
-  bool IsRealFrame() const;
-  void ClassifyFrame(int commandListCount);
+    // Frame classification for FG support
+    bool IsRealFrame() const;
+    void ClassifyFrame(int commandListCount);
 };
 
-extern DX12Hook *g_dx12HookInstance;
+extern DX12Hook* g_dx12HookInstance;
 
-void DX12_ProcessFrameExternal(IDXGISwapChain *pSwapChain);
-void DX12_HookQueueVTable(ID3D12CommandQueue *queue);
-void DX12_HookDeviceVTable(ID3D12Device *device);
+void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain);
+void DX12_HookQueueVTable(ID3D12CommandQueue* queue);
+void DX12_HookDeviceVTable(ID3D12Device* device);
 void DX12_OnSwapchainResizeBegin();
 void DX12_OnSwapchainResizeEnd();
 void DX12_InvalidateSwapchain();
@@ -75,6 +77,6 @@ void DX12_AdjustWrapperResizeDepth(int delta);
 void RemoveGlobalVTableHooks();
 
 extern "C" {
-void DX12_SetCommandQueue(ID3D12CommandQueue *pQueue);
+void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue);
 void DX12_AdjustWrapperResizeDepth_C(int delta);
 }

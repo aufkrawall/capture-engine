@@ -7,8 +7,8 @@
  */
 
 #include "custom_overlay_gl.h"
-#include "hook_common.h"
 #include <GL/gl.h>
+#include "hook_common.h"
 
 #pragma comment(lib, "opengl32.lib")
 
@@ -34,81 +34,67 @@ typedef char GLchar;
 
 namespace {
 
-typedef HGLRC(WINAPI *PFN_wglGetCurrentContext)(void);
-typedef PROC(WINAPI *PFN_wglGetProcAddress)(LPCSTR);
-typedef GLenum(APIENTRY *PFN_glGetError)(void);
-typedef const GLubyte *(APIENTRY *PFN_glGetString)(GLenum name);
+typedef HGLRC(WINAPI* PFN_wglGetCurrentContext)(void);
+typedef PROC(WINAPI* PFN_wglGetProcAddress)(LPCSTR);
+typedef GLenum(APIENTRY* PFN_glGetError)(void);
+typedef const GLubyte*(APIENTRY* PFN_glGetString)(GLenum name);
 
-typedef void(APIENTRY *PFN_glGenTextures)(GLsizei, GLuint *);
-typedef void(APIENTRY *PFN_glDeleteTextures)(GLsizei, const GLuint *);
-typedef void(APIENTRY *PFN_glBindTexture)(GLenum, GLuint);
-typedef void(APIENTRY *PFN_glTexParameteri)(GLenum, GLenum, GLint);
-typedef void(APIENTRY *PFN_glTexImage2D)(GLenum, GLint, GLint, GLsizei, GLsizei,
-                                         GLint, GLenum, GLenum, const void *);
-typedef void(APIENTRY *PFN_glGetIntegerv)(GLenum, GLint *);
-typedef void(APIENTRY *PFN_glViewport)(GLint, GLint, GLsizei, GLsizei);
-typedef void(APIENTRY *PFN_glEnable)(GLenum);
-typedef void(APIENTRY *PFN_glDisable)(GLenum);
-typedef GLboolean(APIENTRY *PFN_glIsEnabled)(GLenum);
-typedef void(APIENTRY *PFN_glBlendFunc)(GLenum, GLenum);
-typedef void(APIENTRY *PFN_glMatrixMode)(GLenum);
-typedef void(APIENTRY *PFN_glPushMatrix)(void);
-typedef void(APIENTRY *PFN_glPopMatrix)(void);
-typedef void(APIENTRY *PFN_glLoadIdentity)(void);
-typedef void(APIENTRY *PFN_glOrtho)(GLdouble, GLdouble, GLdouble, GLdouble,
-                                    GLdouble, GLdouble);
-typedef void(APIENTRY *PFN_glEnableClientState)(GLenum);
-typedef void(APIENTRY *PFN_glDisableClientState)(GLenum);
-typedef void(APIENTRY *PFN_glVertexPointer)(GLint, GLenum, GLsizei,
-                                            const void *);
-typedef void(APIENTRY *PFN_glTexCoordPointer)(GLint, GLenum, GLsizei,
-                                              const void *);
-typedef void(APIENTRY *PFN_glColorPointer)(GLint, GLenum, GLsizei,
-                                           const void *);
-typedef void(APIENTRY *PFN_glDrawElements)(GLenum, GLsizei, GLenum,
-                                           const void *);
-typedef void(APIENTRY *PFN_glBegin)(GLenum);
-typedef void(APIENTRY *PFN_glEnd)(void);
-typedef void(APIENTRY *PFN_glVertex2f)(GLfloat, GLfloat);
-typedef void(APIENTRY *PFN_glTexCoord2f)(GLfloat, GLfloat);
-typedef void(APIENTRY *PFN_glColor4ub)(GLubyte, GLubyte, GLubyte, GLubyte);
+typedef void(APIENTRY* PFN_glGenTextures)(GLsizei, GLuint*);
+typedef void(APIENTRY* PFN_glDeleteTextures)(GLsizei, const GLuint*);
+typedef void(APIENTRY* PFN_glBindTexture)(GLenum, GLuint);
+typedef void(APIENTRY* PFN_glTexParameteri)(GLenum, GLenum, GLint);
+typedef void(APIENTRY* PFN_glTexImage2D)(GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const void*);
+typedef void(APIENTRY* PFN_glGetIntegerv)(GLenum, GLint*);
+typedef void(APIENTRY* PFN_glViewport)(GLint, GLint, GLsizei, GLsizei);
+typedef void(APIENTRY* PFN_glEnable)(GLenum);
+typedef void(APIENTRY* PFN_glDisable)(GLenum);
+typedef GLboolean(APIENTRY* PFN_glIsEnabled)(GLenum);
+typedef void(APIENTRY* PFN_glBlendFunc)(GLenum, GLenum);
+typedef void(APIENTRY* PFN_glMatrixMode)(GLenum);
+typedef void(APIENTRY* PFN_glPushMatrix)(void);
+typedef void(APIENTRY* PFN_glPopMatrix)(void);
+typedef void(APIENTRY* PFN_glLoadIdentity)(void);
+typedef void(APIENTRY* PFN_glOrtho)(GLdouble, GLdouble, GLdouble, GLdouble, GLdouble, GLdouble);
+typedef void(APIENTRY* PFN_glEnableClientState)(GLenum);
+typedef void(APIENTRY* PFN_glDisableClientState)(GLenum);
+typedef void(APIENTRY* PFN_glVertexPointer)(GLint, GLenum, GLsizei, const void*);
+typedef void(APIENTRY* PFN_glTexCoordPointer)(GLint, GLenum, GLsizei, const void*);
+typedef void(APIENTRY* PFN_glColorPointer)(GLint, GLenum, GLsizei, const void*);
+typedef void(APIENTRY* PFN_glDrawElements)(GLenum, GLsizei, GLenum, const void*);
+typedef void(APIENTRY* PFN_glBegin)(GLenum);
+typedef void(APIENTRY* PFN_glEnd)(void);
+typedef void(APIENTRY* PFN_glVertex2f)(GLfloat, GLfloat);
+typedef void(APIENTRY* PFN_glTexCoord2f)(GLfloat, GLfloat);
+typedef void(APIENTRY* PFN_glColor4ub)(GLubyte, GLubyte, GLubyte, GLubyte);
 
-typedef void(APIENTRY *PFN_glGenVertexArrays)(GLsizei, GLuint *);
-typedef void(APIENTRY *PFN_glDeleteVertexArrays)(GLsizei, const GLuint *);
-typedef void(APIENTRY *PFN_glBindVertexArray)(GLuint);
-typedef void(APIENTRY *PFN_glGenBuffers)(GLsizei, GLuint *);
-typedef void(APIENTRY *PFN_glDeleteBuffers)(GLsizei, const GLuint *);
-typedef void(APIENTRY *PFN_glBindBuffer)(GLenum, GLuint);
-typedef void(APIENTRY *PFN_glBufferData)(GLenum, GLsizeiptr, const void *,
-                                         GLenum);
-typedef void(APIENTRY *PFN_glBufferSubData)(GLenum, GLintptr, GLsizeiptr,
-                                            const void *);
-typedef void(APIENTRY *PFN_glVertexAttribPointer)(GLuint, GLint, GLenum,
-                                                  GLboolean, GLsizei,
-                                                  const void *);
-typedef void(APIENTRY *PFN_glEnableVertexAttribArray)(GLuint);
-typedef void(APIENTRY *PFN_glDisableVertexAttribArray)(GLuint);
-typedef void(APIENTRY *PFN_glUseProgram)(GLuint);
-typedef GLuint(APIENTRY *PFN_glCreateShader)(GLenum);
-typedef void(APIENTRY *PFN_glDeleteShader)(GLuint);
-typedef void(APIENTRY *PFN_glShaderSource)(GLuint, GLsizei,
-                                           const GLchar *const *,
-                                           const GLint *);
-typedef void(APIENTRY *PFN_glCompileShader)(GLuint);
-typedef void(APIENTRY *PFN_glGetShaderiv)(GLuint, GLenum, GLint *);
-typedef void(APIENTRY *PFN_glGetShaderInfoLog)(GLuint, GLsizei, GLsizei *,
-                                               GLchar *);
-typedef GLuint(APIENTRY *PFN_glCreateProgram)(void);
-typedef void(APIENTRY *PFN_glDeleteProgram)(GLuint);
-typedef void(APIENTRY *PFN_glAttachShader)(GLuint, GLuint);
-typedef void(APIENTRY *PFN_glLinkProgram)(GLuint);
-typedef void(APIENTRY *PFN_glGetProgramiv)(GLuint, GLenum, GLint *);
-typedef void(APIENTRY *PFN_glGetProgramInfoLog)(GLuint, GLsizei, GLsizei *,
-                                                GLchar *);
-typedef GLint(APIENTRY *PFN_glGetUniformLocation)(GLuint, const GLchar *);
-typedef void(APIENTRY *PFN_glUniform2f)(GLint, GLfloat, GLfloat);
-typedef void(APIENTRY *PFN_glUniform1i)(GLint, GLint);
-typedef void(APIENTRY *PFN_glActiveTexture)(GLenum);
+typedef void(APIENTRY* PFN_glGenVertexArrays)(GLsizei, GLuint*);
+typedef void(APIENTRY* PFN_glDeleteVertexArrays)(GLsizei, const GLuint*);
+typedef void(APIENTRY* PFN_glBindVertexArray)(GLuint);
+typedef void(APIENTRY* PFN_glGenBuffers)(GLsizei, GLuint*);
+typedef void(APIENTRY* PFN_glDeleteBuffers)(GLsizei, const GLuint*);
+typedef void(APIENTRY* PFN_glBindBuffer)(GLenum, GLuint);
+typedef void(APIENTRY* PFN_glBufferData)(GLenum, GLsizeiptr, const void*, GLenum);
+typedef void(APIENTRY* PFN_glBufferSubData)(GLenum, GLintptr, GLsizeiptr, const void*);
+typedef void(APIENTRY* PFN_glVertexAttribPointer)(GLuint, GLint, GLenum, GLboolean, GLsizei, const void*);
+typedef void(APIENTRY* PFN_glEnableVertexAttribArray)(GLuint);
+typedef void(APIENTRY* PFN_glDisableVertexAttribArray)(GLuint);
+typedef void(APIENTRY* PFN_glUseProgram)(GLuint);
+typedef GLuint(APIENTRY* PFN_glCreateShader)(GLenum);
+typedef void(APIENTRY* PFN_glDeleteShader)(GLuint);
+typedef void(APIENTRY* PFN_glShaderSource)(GLuint, GLsizei, const GLchar* const*, const GLint*);
+typedef void(APIENTRY* PFN_glCompileShader)(GLuint);
+typedef void(APIENTRY* PFN_glGetShaderiv)(GLuint, GLenum, GLint*);
+typedef void(APIENTRY* PFN_glGetShaderInfoLog)(GLuint, GLsizei, GLsizei*, GLchar*);
+typedef GLuint(APIENTRY* PFN_glCreateProgram)(void);
+typedef void(APIENTRY* PFN_glDeleteProgram)(GLuint);
+typedef void(APIENTRY* PFN_glAttachShader)(GLuint, GLuint);
+typedef void(APIENTRY* PFN_glLinkProgram)(GLuint);
+typedef void(APIENTRY* PFN_glGetProgramiv)(GLuint, GLenum, GLint*);
+typedef void(APIENTRY* PFN_glGetProgramInfoLog)(GLuint, GLsizei, GLsizei*, GLchar*);
+typedef GLint(APIENTRY* PFN_glGetUniformLocation)(GLuint, const GLchar*);
+typedef void(APIENTRY* PFN_glUniform2f)(GLint, GLfloat, GLfloat);
+typedef void(APIENTRY* PFN_glUniform1i)(GLint, GLint);
+typedef void(APIENTRY* PFN_glActiveTexture)(GLenum);
 
 static PFN_wglGetCurrentContext pwglGetCurrentContext = nullptr;
 static PFN_wglGetProcAddress pwglGetProcAddress = nullptr;
@@ -176,135 +162,113 @@ static bool g_GLFunctionsLoaded = false;
 static bool g_GLModernFunctionsLoaded = false;
 
 static bool LoadGLFunctions() {
-  if (g_GLFunctionsLoaded)
+    if (g_GLFunctionsLoaded)
+        return true;
+
+    HMODULE gl = GetModuleHandleA("opengl32.dll");
+    if (!gl)
+        return false;
+
+    pwglGetCurrentContext = (PFN_wglGetCurrentContext)GetProcAddress(gl, "wglGetCurrentContext");
+    pwglGetProcAddress = (PFN_wglGetProcAddress)GetProcAddress(gl, "wglGetProcAddress");
+    pglGetError = (PFN_glGetError)GetProcAddress(gl, "glGetError");
+    pglGetString = (PFN_glGetString)GetProcAddress(gl, "glGetString");
+
+    pglGenTextures = (PFN_glGenTextures)GetProcAddress(gl, "glGenTextures");
+    pglDeleteTextures = (PFN_glDeleteTextures)GetProcAddress(gl, "glDeleteTextures");
+    pglBindTexture = (PFN_glBindTexture)GetProcAddress(gl, "glBindTexture");
+    pglTexParameteri = (PFN_glTexParameteri)GetProcAddress(gl, "glTexParameteri");
+    pglTexImage2D = (PFN_glTexImage2D)GetProcAddress(gl, "glTexImage2D");
+    pglGetIntegerv = (PFN_glGetIntegerv)GetProcAddress(gl, "glGetIntegerv");
+    pglViewport = (PFN_glViewport)GetProcAddress(gl, "glViewport");
+    pglEnable = (PFN_glEnable)GetProcAddress(gl, "glEnable");
+    pglDisable = (PFN_glDisable)GetProcAddress(gl, "glDisable");
+    pglIsEnabled = (PFN_glIsEnabled)GetProcAddress(gl, "glIsEnabled");
+    pglBlendFunc = (PFN_glBlendFunc)GetProcAddress(gl, "glBlendFunc");
+    pglMatrixMode = (PFN_glMatrixMode)GetProcAddress(gl, "glMatrixMode");
+    pglPushMatrix = (PFN_glPushMatrix)GetProcAddress(gl, "glPushMatrix");
+    pglPopMatrix = (PFN_glPopMatrix)GetProcAddress(gl, "glPopMatrix");
+    pglLoadIdentity = (PFN_glLoadIdentity)GetProcAddress(gl, "glLoadIdentity");
+    pglOrtho = (PFN_glOrtho)GetProcAddress(gl, "glOrtho");
+    pglEnableClientState = (PFN_glEnableClientState)GetProcAddress(gl, "glEnableClientState");
+    pglDisableClientState = (PFN_glDisableClientState)GetProcAddress(gl, "glDisableClientState");
+    pglVertexPointer = (PFN_glVertexPointer)GetProcAddress(gl, "glVertexPointer");
+    pglTexCoordPointer = (PFN_glTexCoordPointer)GetProcAddress(gl, "glTexCoordPointer");
+    pglColorPointer = (PFN_glColorPointer)GetProcAddress(gl, "glColorPointer");
+    pglDrawElements = (PFN_glDrawElements)GetProcAddress(gl, "glDrawElements");
+    pglBegin = (PFN_glBegin)GetProcAddress(gl, "glBegin");
+    pglEnd = (PFN_glEnd)GetProcAddress(gl, "glEnd");
+    pglVertex2f = (PFN_glVertex2f)GetProcAddress(gl, "glVertex2f");
+    pglTexCoord2f = (PFN_glTexCoord2f)GetProcAddress(gl, "glTexCoord2f");
+    pglColor4ub = (PFN_glColor4ub)GetProcAddress(gl, "glColor4ub");
+
+    if (!pglGenTextures || !pglDeleteTextures || !pglBindTexture || !pglTexImage2D || !pglTexParameteri ||
+        !pglGetIntegerv || !pglViewport || !pglEnable || !pglDisable || !pglIsEnabled || !pglBlendFunc ||
+        !pglMatrixMode || !pglPushMatrix || !pglPopMatrix || !pglLoadIdentity || !pglOrtho || !pglEnableClientState ||
+        !pglDisableClientState || !pglVertexPointer || !pglTexCoordPointer || !pglColorPointer || !pglDrawElements ||
+        !pglBegin || !pglEnd || !pglVertex2f || !pglTexCoord2f || !pglColor4ub || !pwglGetCurrentContext ||
+        !pwglGetProcAddress || !pglGetError) {
+        return false;
+    }
+
+    g_GLFunctionsLoaded = true;
     return true;
-
-  HMODULE gl = GetModuleHandleA("opengl32.dll");
-  if (!gl)
-    return false;
-
-  pwglGetCurrentContext =
-      (PFN_wglGetCurrentContext)GetProcAddress(gl, "wglGetCurrentContext");
-  pwglGetProcAddress =
-      (PFN_wglGetProcAddress)GetProcAddress(gl, "wglGetProcAddress");
-  pglGetError = (PFN_glGetError)GetProcAddress(gl, "glGetError");
-  pglGetString = (PFN_glGetString)GetProcAddress(gl, "glGetString");
-
-  pglGenTextures = (PFN_glGenTextures)GetProcAddress(gl, "glGenTextures");
-  pglDeleteTextures =
-      (PFN_glDeleteTextures)GetProcAddress(gl, "glDeleteTextures");
-  pglBindTexture = (PFN_glBindTexture)GetProcAddress(gl, "glBindTexture");
-  pglTexParameteri = (PFN_glTexParameteri)GetProcAddress(gl, "glTexParameteri");
-  pglTexImage2D = (PFN_glTexImage2D)GetProcAddress(gl, "glTexImage2D");
-  pglGetIntegerv = (PFN_glGetIntegerv)GetProcAddress(gl, "glGetIntegerv");
-  pglViewport = (PFN_glViewport)GetProcAddress(gl, "glViewport");
-  pglEnable = (PFN_glEnable)GetProcAddress(gl, "glEnable");
-  pglDisable = (PFN_glDisable)GetProcAddress(gl, "glDisable");
-  pglIsEnabled = (PFN_glIsEnabled)GetProcAddress(gl, "glIsEnabled");
-  pglBlendFunc = (PFN_glBlendFunc)GetProcAddress(gl, "glBlendFunc");
-  pglMatrixMode = (PFN_glMatrixMode)GetProcAddress(gl, "glMatrixMode");
-  pglPushMatrix = (PFN_glPushMatrix)GetProcAddress(gl, "glPushMatrix");
-  pglPopMatrix = (PFN_glPopMatrix)GetProcAddress(gl, "glPopMatrix");
-  pglLoadIdentity = (PFN_glLoadIdentity)GetProcAddress(gl, "glLoadIdentity");
-  pglOrtho = (PFN_glOrtho)GetProcAddress(gl, "glOrtho");
-  pglEnableClientState =
-      (PFN_glEnableClientState)GetProcAddress(gl, "glEnableClientState");
-  pglDisableClientState =
-      (PFN_glDisableClientState)GetProcAddress(gl, "glDisableClientState");
-  pglVertexPointer = (PFN_glVertexPointer)GetProcAddress(gl, "glVertexPointer");
-  pglTexCoordPointer =
-      (PFN_glTexCoordPointer)GetProcAddress(gl, "glTexCoordPointer");
-  pglColorPointer = (PFN_glColorPointer)GetProcAddress(gl, "glColorPointer");
-  pglDrawElements = (PFN_glDrawElements)GetProcAddress(gl, "glDrawElements");
-  pglBegin = (PFN_glBegin)GetProcAddress(gl, "glBegin");
-  pglEnd = (PFN_glEnd)GetProcAddress(gl, "glEnd");
-  pglVertex2f = (PFN_glVertex2f)GetProcAddress(gl, "glVertex2f");
-  pglTexCoord2f = (PFN_glTexCoord2f)GetProcAddress(gl, "glTexCoord2f");
-  pglColor4ub = (PFN_glColor4ub)GetProcAddress(gl, "glColor4ub");
-
-  if (!pglGenTextures || !pglDeleteTextures || !pglBindTexture ||
-      !pglTexImage2D || !pglTexParameteri || !pglGetIntegerv ||
-      !pglViewport || !pglEnable || !pglDisable || !pglIsEnabled ||
-      !pglBlendFunc || !pglMatrixMode || !pglPushMatrix || !pglPopMatrix ||
-      !pglLoadIdentity || !pglOrtho || !pglEnableClientState ||
-      !pglDisableClientState || !pglVertexPointer || !pglTexCoordPointer ||
-      !pglColorPointer || !pglDrawElements || !pglBegin || !pglEnd ||
-      !pglVertex2f || !pglTexCoord2f || !pglColor4ub ||
-      !pwglGetCurrentContext || !pwglGetProcAddress || !pglGetError) {
-    return false;
-  }
-
-  g_GLFunctionsLoaded = true;
-  return true;
 }
 
 static bool LoadGLModernFunctions() {
-  if (g_GLModernFunctionsLoaded)
+    if (g_GLModernFunctionsLoaded)
+        return true;
+
+    if (!pwglGetProcAddress)
+        return false;
+
+    pglGenVertexArrays = (PFN_glGenVertexArrays)pwglGetProcAddress("glGenVertexArrays");
+    pglDeleteVertexArrays = (PFN_glDeleteVertexArrays)pwglGetProcAddress("glDeleteVertexArrays");
+    pglBindVertexArray = (PFN_glBindVertexArray)pwglGetProcAddress("glBindVertexArray");
+    pglGenBuffers = (PFN_glGenBuffers)pwglGetProcAddress("glGenBuffers");
+    pglDeleteBuffers = (PFN_glDeleteBuffers)pwglGetProcAddress("glDeleteBuffers");
+    pglBindBuffer = (PFN_glBindBuffer)pwglGetProcAddress("glBindBuffer");
+    pglBufferData = (PFN_glBufferData)pwglGetProcAddress("glBufferData");
+    pglBufferSubData = (PFN_glBufferSubData)pwglGetProcAddress("glBufferSubData");
+    pglVertexAttribPointer = (PFN_glVertexAttribPointer)pwglGetProcAddress("glVertexAttribPointer");
+    pglEnableVertexAttribArray = (PFN_glEnableVertexAttribArray)pwglGetProcAddress("glEnableVertexAttribArray");
+    pglDisableVertexAttribArray = (PFN_glDisableVertexAttribArray)pwglGetProcAddress("glDisableVertexAttribArray");
+    pglUseProgram = (PFN_glUseProgram)pwglGetProcAddress("glUseProgram");
+    pglCreateShader = (PFN_glCreateShader)pwglGetProcAddress("glCreateShader");
+    pglDeleteShader = (PFN_glDeleteShader)pwglGetProcAddress("glDeleteShader");
+    pglShaderSource = (PFN_glShaderSource)pwglGetProcAddress("glShaderSource");
+    pglCompileShader = (PFN_glCompileShader)pwglGetProcAddress("glCompileShader");
+    pglGetShaderiv = (PFN_glGetShaderiv)pwglGetProcAddress("glGetShaderiv");
+    pglGetShaderInfoLog = (PFN_glGetShaderInfoLog)pwglGetProcAddress("glGetShaderInfoLog");
+    pglCreateProgram = (PFN_glCreateProgram)pwglGetProcAddress("glCreateProgram");
+    pglDeleteProgram = (PFN_glDeleteProgram)pwglGetProcAddress("glDeleteProgram");
+    pglAttachShader = (PFN_glAttachShader)pwglGetProcAddress("glAttachShader");
+    pglLinkProgram = (PFN_glLinkProgram)pwglGetProcAddress("glLinkProgram");
+    pglGetProgramiv = (PFN_glGetProgramiv)pwglGetProcAddress("glGetProgramiv");
+    pglGetProgramInfoLog = (PFN_glGetProgramInfoLog)pwglGetProcAddress("glGetProgramInfoLog");
+    pglGetUniformLocation = (PFN_glGetUniformLocation)pwglGetProcAddress("glGetUniformLocation");
+    pglUniform2f = (PFN_glUniform2f)pwglGetProcAddress("glUniform2f");
+    pglUniform1i = (PFN_glUniform1i)pwglGetProcAddress("glUniform1i");
+    pglActiveTexture = (PFN_glActiveTexture)pwglGetProcAddress("glActiveTexture");
+
+    if (!pglGenVertexArrays || !pglBindVertexArray || !pglGenBuffers || !pglBindBuffer || !pglBufferData ||
+        !pglUseProgram || !pglCreateShader || !pglShaderSource || !pglCompileShader || !pglCreateProgram ||
+        !pglLinkProgram || !pglGetUniformLocation) {
+        HookLog("OpenGLBackend: Missing GL 3.0+ functions");
+        return false;
+    }
+
+    g_GLModernFunctionsLoaded = true;
     return true;
-
-  if (!pwglGetProcAddress)
-    return false;
-
-  pglGenVertexArrays =
-      (PFN_glGenVertexArrays)pwglGetProcAddress("glGenVertexArrays");
-  pglDeleteVertexArrays =
-      (PFN_glDeleteVertexArrays)pwglGetProcAddress("glDeleteVertexArrays");
-  pglBindVertexArray =
-      (PFN_glBindVertexArray)pwglGetProcAddress("glBindVertexArray");
-  pglGenBuffers = (PFN_glGenBuffers)pwglGetProcAddress("glGenBuffers");
-  pglDeleteBuffers = (PFN_glDeleteBuffers)pwglGetProcAddress("glDeleteBuffers");
-  pglBindBuffer = (PFN_glBindBuffer)pwglGetProcAddress("glBindBuffer");
-  pglBufferData = (PFN_glBufferData)pwglGetProcAddress("glBufferData");
-  pglBufferSubData = (PFN_glBufferSubData)pwglGetProcAddress("glBufferSubData");
-  pglVertexAttribPointer =
-      (PFN_glVertexAttribPointer)pwglGetProcAddress("glVertexAttribPointer");
-  pglEnableVertexAttribArray =
-      (PFN_glEnableVertexAttribArray)pwglGetProcAddress(
-          "glEnableVertexAttribArray");
-  pglDisableVertexAttribArray =
-      (PFN_glDisableVertexAttribArray)pwglGetProcAddress(
-          "glDisableVertexAttribArray");
-  pglUseProgram = (PFN_glUseProgram)pwglGetProcAddress("glUseProgram");
-  pglCreateShader = (PFN_glCreateShader)pwglGetProcAddress("glCreateShader");
-  pglDeleteShader = (PFN_glDeleteShader)pwglGetProcAddress("glDeleteShader");
-  pglShaderSource = (PFN_glShaderSource)pwglGetProcAddress("glShaderSource");
-  pglCompileShader = (PFN_glCompileShader)pwglGetProcAddress("glCompileShader");
-  pglGetShaderiv = (PFN_glGetShaderiv)pwglGetProcAddress("glGetShaderiv");
-  pglGetShaderInfoLog =
-      (PFN_glGetShaderInfoLog)pwglGetProcAddress("glGetShaderInfoLog");
-  pglCreateProgram = (PFN_glCreateProgram)pwglGetProcAddress("glCreateProgram");
-  pglDeleteProgram = (PFN_glDeleteProgram)pwglGetProcAddress("glDeleteProgram");
-  pglAttachShader = (PFN_glAttachShader)pwglGetProcAddress("glAttachShader");
-  pglLinkProgram = (PFN_glLinkProgram)pwglGetProcAddress("glLinkProgram");
-  pglGetProgramiv = (PFN_glGetProgramiv)pwglGetProcAddress("glGetProgramiv");
-  pglGetProgramInfoLog =
-      (PFN_glGetProgramInfoLog)pwglGetProcAddress("glGetProgramInfoLog");
-  pglGetUniformLocation =
-      (PFN_glGetUniformLocation)pwglGetProcAddress("glGetUniformLocation");
-  pglUniform2f = (PFN_glUniform2f)pwglGetProcAddress("glUniform2f");
-  pglUniform1i = (PFN_glUniform1i)pwglGetProcAddress("glUniform1i");
-  pglActiveTexture = (PFN_glActiveTexture)pwglGetProcAddress("glActiveTexture");
-
-  if (!pglGenVertexArrays || !pglBindVertexArray || !pglGenBuffers ||
-      !pglBindBuffer || !pglBufferData || !pglUseProgram || !pglCreateShader ||
-      !pglShaderSource || !pglCompileShader || !pglCreateProgram ||
-      !pglLinkProgram || !pglGetUniformLocation) {
-    HookLog("OpenGLBackend: Missing GL 3.0+ functions");
-    return false;
-  }
-
-  g_GLModernFunctionsLoaded = true;
-  return true;
 }
 
 static void ClearGLErrors() {
-  if (pglGetError) {
-    while (pglGetError() != GL_NO_ERROR) {
+    if (pglGetError) {
+        while (pglGetError() != GL_NO_ERROR) {}
     }
-  }
 }
 
-constexpr const char *GL_VS_SOURCE = R"GLSL(
+constexpr const char* GL_VS_SOURCE = R"GLSL(
 #version 330 core
 layout(location = 0) in vec2 aPos;
 layout(location = 1) in vec2 aTexCoord;
@@ -325,7 +289,7 @@ void main() {
 }
 )GLSL";
 
-constexpr const char *GL_FS_TEXTURED = R"GLSL(
+constexpr const char* GL_FS_TEXTURED = R"GLSL(
 #version 330 core
 in vec2 vTexCoord;
 in vec4 vColor;
@@ -337,7 +301,7 @@ void main() {
 }
 )GLSL";
 
-constexpr const char *GL_FS_SOLID = R"GLSL(
+constexpr const char* GL_FS_SOLID = R"GLSL(
 #version 330 core
 in vec2 vTexCoord;
 in vec4 vColor;
@@ -348,532 +312,507 @@ void main() {
 }
 )GLSL";
 
-} // namespace
+}  // namespace
 
 namespace CustomOverlay {
 
 OpenGLBackend::OpenGLBackend() {}
 
-OpenGLBackend::~OpenGLBackend() { Shutdown(); }
+OpenGLBackend::~OpenGLBackend() {
+    Shutdown();
+}
 
-GLuint OpenGLBackend::CompileShader(GLenum type, const char *source) {
-  GLuint shader = pglCreateShader(type);
-  if (!shader) {
-    HookLog("OpenGLBackend: Failed to create shader");
-    return 0;
-  }
-
-  pglShaderSource(shader, 1, &source, nullptr);
-  pglCompileShader(shader);
-
-  GLint success = 0;
-  pglGetShaderiv(shader, GL_COMPILE_STATUS, &success);
-  if (!success) {
-    GLint logLen = 0;
-    pglGetShaderiv(shader, GL_INFO_LOG_LENGTH, &logLen);
-    if (logLen > 0) {
-      char *log = new char[logLen];
-      pglGetShaderInfoLog(shader, logLen, nullptr, log);
-      HookLog("OpenGLBackend: Shader compile error: %s", log);
-      delete[] log;
+GLuint OpenGLBackend::CompileShader(GLenum type, const char* source) {
+    GLuint shader = pglCreateShader(type);
+    if (!shader) {
+        HookLog("OpenGLBackend: Failed to create shader");
+        return 0;
     }
-    pglDeleteShader(shader);
-    return 0;
-  }
 
-  return shader;
+    pglShaderSource(shader, 1, &source, nullptr);
+    pglCompileShader(shader);
+
+    GLint success = 0;
+    pglGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        GLint logLen = 0;
+        pglGetShaderiv(shader, GL_INFO_LOG_LENGTH, &logLen);
+        if (logLen > 0) {
+            char* log = new char[logLen];
+            pglGetShaderInfoLog(shader, logLen, nullptr, log);
+            HookLog("OpenGLBackend: Shader compile error: %s", log);
+            delete[] log;
+        }
+        pglDeleteShader(shader);
+        return 0;
+    }
+
+    return shader;
 }
 
 GLuint OpenGLBackend::LinkProgram(GLuint vs, GLuint fs) {
-  GLuint program = pglCreateProgram();
-  if (!program) {
-    HookLog("OpenGLBackend: Failed to create program");
-    return 0;
-  }
-
-  pglAttachShader(program, vs);
-  pglAttachShader(program, fs);
-  pglLinkProgram(program);
-
-  GLint success = 0;
-  pglGetProgramiv(program, GL_LINK_STATUS, &success);
-  if (!success) {
-    GLint logLen = 0;
-    pglGetProgramiv(program, GL_INFO_LOG_LENGTH, &logLen);
-    if (logLen > 0) {
-      char *log = new char[logLen];
-      pglGetProgramInfoLog(program, logLen, nullptr, log);
-      HookLog("OpenGLBackend: Program link error: %s", log);
-      delete[] log;
+    GLuint program = pglCreateProgram();
+    if (!program) {
+        HookLog("OpenGLBackend: Failed to create program");
+        return 0;
     }
-    pglDeleteProgram(program);
-    return 0;
-  }
 
-  return program;
+    pglAttachShader(program, vs);
+    pglAttachShader(program, fs);
+    pglLinkProgram(program);
+
+    GLint success = 0;
+    pglGetProgramiv(program, GL_LINK_STATUS, &success);
+    if (!success) {
+        GLint logLen = 0;
+        pglGetProgramiv(program, GL_INFO_LOG_LENGTH, &logLen);
+        if (logLen > 0) {
+            char* log = new char[logLen];
+            pglGetProgramInfoLog(program, logLen, nullptr, log);
+            HookLog("OpenGLBackend: Program link error: %s", log);
+            delete[] log;
+        }
+        pglDeleteProgram(program);
+        return 0;
+    }
+
+    return program;
 }
 
 bool OpenGLBackend::InitModernPath() {
-  if (!LoadGLModernFunctions()) {
-    HookLog("OpenGLBackend: Failed to load GL 3.0+ functions");
-    return false;
-  }
+    if (!LoadGLModernFunctions()) {
+        HookLog("OpenGLBackend: Failed to load GL 3.0+ functions");
+        return false;
+    }
 
-  ClearGLErrors();
+    ClearGLErrors();
 
-  GLuint vs = CompileShader(GL_VERTEX_SHADER, GL_VS_SOURCE);
-  if (!vs) {
-    HookLog("OpenGLBackend: Failed to compile vertex shader");
-    return false;
-  }
+    GLuint vs = CompileShader(GL_VERTEX_SHADER, GL_VS_SOURCE);
+    if (!vs) {
+        HookLog("OpenGLBackend: Failed to compile vertex shader");
+        return false;
+    }
 
-  GLuint fsTextured = CompileShader(GL_FRAGMENT_SHADER, GL_FS_TEXTURED);
-  if (!fsTextured) {
-    HookLog("OpenGLBackend: Failed to compile textured fragment shader");
-    pglDeleteShader(vs);
-    return false;
-  }
+    GLuint fsTextured = CompileShader(GL_FRAGMENT_SHADER, GL_FS_TEXTURED);
+    if (!fsTextured) {
+        HookLog("OpenGLBackend: Failed to compile textured fragment shader");
+        pglDeleteShader(vs);
+        return false;
+    }
 
-  GLuint fsSolid = CompileShader(GL_FRAGMENT_SHADER, GL_FS_SOLID);
-  if (!fsSolid) {
-    HookLog("OpenGLBackend: Failed to compile solid fragment shader");
+    GLuint fsSolid = CompileShader(GL_FRAGMENT_SHADER, GL_FS_SOLID);
+    if (!fsSolid) {
+        HookLog("OpenGLBackend: Failed to compile solid fragment shader");
+        pglDeleteShader(vs);
+        pglDeleteShader(fsTextured);
+        return false;
+    }
+
+    modern.programTextured = LinkProgram(vs, fsTextured);
+    modern.programSolid = LinkProgram(vs, fsSolid);
+
     pglDeleteShader(vs);
     pglDeleteShader(fsTextured);
-    return false;
-  }
+    pglDeleteShader(fsSolid);
 
-  modern.programTextured = LinkProgram(vs, fsTextured);
-  modern.programSolid = LinkProgram(vs, fsSolid);
+    if (!modern.programTextured || !modern.programSolid) {
+        HookLog("OpenGLBackend: Failed to link shader programs");
+        if (modern.programTextured)
+            pglDeleteProgram(modern.programTextured);
+        if (modern.programSolid)
+            pglDeleteProgram(modern.programSolid);
+        return false;
+    }
 
-  pglDeleteShader(vs);
-  pglDeleteShader(fsTextured);
-  pglDeleteShader(fsSolid);
+    modern.uViewportTextured = pglGetUniformLocation(modern.programTextured, "uViewport");
+    modern.uViewportSolid = pglGetUniformLocation(modern.programSolid, "uViewport");
+    modern.uTexture = pglGetUniformLocation(modern.programTextured, "uTexture");
 
-  if (!modern.programTextured || !modern.programSolid) {
-    HookLog("OpenGLBackend: Failed to link shader programs");
-    if (modern.programTextured)
-      pglDeleteProgram(modern.programTextured);
-    if (modern.programSolid)
-      pglDeleteProgram(modern.programSolid);
-    return false;
-  }
+    pglGenVertexArrays(1, &modern.vao);
+    if (!modern.vao) {
+        HookLog("OpenGLBackend: Failed to create VAO");
+        pglDeleteProgram(modern.programTextured);
+        pglDeleteProgram(modern.programSolid);
+        return false;
+    }
 
-  modern.uViewportTextured =
-      pglGetUniformLocation(modern.programTextured, "uViewport");
-  modern.uViewportSolid =
-      pglGetUniformLocation(modern.programSolid, "uViewport");
-  modern.uTexture = pglGetUniformLocation(modern.programTextured, "uTexture");
+    pglGenBuffers(1, &modern.vbo);
+    pglGenBuffers(1, &modern.ibo);
+    if (!modern.vbo || !modern.ibo) {
+        HookLog("OpenGLBackend: Failed to create VBO/IBO");
+        ShutdownModernPath();
+        return false;
+    }
 
-  pglGenVertexArrays(1, &modern.vao);
-  if (!modern.vao) {
-    HookLog("OpenGLBackend: Failed to create VAO");
-    pglDeleteProgram(modern.programTextured);
-    pglDeleteProgram(modern.programSolid);
-    return false;
-  }
+    pglBindVertexArray(modern.vao);
+    pglBindBuffer(GL_ARRAY_BUFFER, modern.vbo);
 
-  pglGenBuffers(1, &modern.vbo);
-  pglGenBuffers(1, &modern.ibo);
-  if (!modern.vbo || !modern.ibo) {
-    HookLog("OpenGLBackend: Failed to create VBO/IBO");
-    ShutdownModernPath();
-    return false;
-  }
+    pglEnableVertexAttribArray(0);
+    pglVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(DrawVertex), (void*)offsetof(DrawVertex, x));
 
-  pglBindVertexArray(modern.vao);
-  pglBindBuffer(GL_ARRAY_BUFFER, modern.vbo);
+    pglEnableVertexAttribArray(1);
+    pglVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(DrawVertex), (void*)offsetof(DrawVertex, u));
 
-  pglEnableVertexAttribArray(0);
-  pglVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(DrawVertex),
-                         (void *)offsetof(DrawVertex, x));
+    pglEnableVertexAttribArray(2);
+    pglVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(DrawVertex), (void*)offsetof(DrawVertex, color));
 
-  pglEnableVertexAttribArray(1);
-  pglVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(DrawVertex),
-                         (void *)offsetof(DrawVertex, u));
+    pglBindBuffer(GL_ELEMENT_ARRAY_BUFFER, modern.ibo);
+    pglBindVertexArray(0);
 
-  pglEnableVertexAttribArray(2);
-  pglVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(DrawVertex),
-                         (void *)offsetof(DrawVertex, color));
-
-  pglBindBuffer(GL_ELEMENT_ARRAY_BUFFER, modern.ibo);
-  pglBindVertexArray(0);
-
-  modern.valid = true;
-  HookLog("OpenGLBackend: Modern path initialized successfully");
-  return true;
+    modern.valid = true;
+    HookLog("OpenGLBackend: Modern path initialized successfully");
+    return true;
 }
 
 void OpenGLBackend::ShutdownModernPath() {
-  if (modern.vao && pglDeleteVertexArrays) {
-    pglDeleteVertexArrays(1, &modern.vao);
-    modern.vao = 0;
-  }
-  if (modern.vbo && pglDeleteBuffers) {
-    pglDeleteBuffers(1, &modern.vbo);
-    modern.vbo = 0;
-  }
-  if (modern.ibo && pglDeleteBuffers) {
-    pglDeleteBuffers(1, &modern.ibo);
-    modern.ibo = 0;
-  }
-  if (modern.programTextured && pglDeleteProgram) {
-    pglDeleteProgram(modern.programTextured);
-    modern.programTextured = 0;
-  }
-  if (modern.programSolid && pglDeleteProgram) {
-    pglDeleteProgram(modern.programSolid);
-    modern.programSolid = 0;
-  }
-  modern.valid = false;
+    if (modern.vao && pglDeleteVertexArrays) {
+        pglDeleteVertexArrays(1, &modern.vao);
+        modern.vao = 0;
+    }
+    if (modern.vbo && pglDeleteBuffers) {
+        pglDeleteBuffers(1, &modern.vbo);
+        modern.vbo = 0;
+    }
+    if (modern.ibo && pglDeleteBuffers) {
+        pglDeleteBuffers(1, &modern.ibo);
+        modern.ibo = 0;
+    }
+    if (modern.programTextured && pglDeleteProgram) {
+        pglDeleteProgram(modern.programTextured);
+        modern.programTextured = 0;
+    }
+    if (modern.programSolid && pglDeleteProgram) {
+        pglDeleteProgram(modern.programSolid);
+        modern.programSolid = 0;
+    }
+    modern.valid = false;
 }
 
-bool OpenGLBackend::Initialize(int fontTextureWidth, int fontTextureHeight,
-                               const uint8_t *fontTextureData) {
-  if (initialized)
-    return true;
+bool OpenGLBackend::Initialize(int fontTextureWidth, int fontTextureHeight, const uint8_t* fontTextureData) {
+    if (initialized)
+        return true;
 
-  if (!LoadGLFunctions()) {
-    HookLog("OpenGLBackend: Failed to load GL functions");
-    return false;
-  }
-
-  if (!pwglGetCurrentContext) {
-    HookLog("OpenGLBackend: wglGetCurrentContext not available");
-    return false;
-  }
-
-  HGLRC ctx = pwglGetCurrentContext();
-  if (!ctx) {
-    HookLog("OpenGLBackend: No GL context current");
-    return false;
-  }
-
-  texWidth = fontTextureWidth;
-  texHeight = fontTextureHeight;
-
-  ClearGLErrors();
-
-  const char *versionStr =
-      pglGetString ? (const char *)pglGetString(GL_VERSION) : nullptr;
-  int major = 0, minor = 0;
-  if (versionStr) {
-    // SECURITY FIX: Use sscanf_s instead of sscanf for safer parsing
-    sscanf_s(versionStr, "%d.%d", &major, &minor);
-    HookLog("OpenGLBackend: GL version %d.%d (%s)", major, minor, versionStr);
-  }
-
-  pglGenTextures(1, &fontTextureId);
-  if (fontTextureId == 0) {
-    HookLog("OpenGLBackend: Failed to create font texture");
-    return false;
-  }
-
-  pglBindTexture(GL_TEXTURE_2D, fontTextureId);
-  pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-  pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-  pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-  pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-  pglTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fontTextureWidth, fontTextureHeight,
-                0, GL_RGBA, GL_UNSIGNED_BYTE, fontTextureData);
-  pglBindTexture(GL_TEXTURE_2D, 0);
-
-  GLenum err = pglGetError ? pglGetError() : 0;
-  if (err != 0) {
-    HookLog("OpenGLBackend: Font texture creation error 0x%X", err);
-  }
-
-  useModernPath = false;
-  if (major >= 3) {
-    if (InitModernPath()) {
-      useModernPath = true;
-      HookLog("OpenGLBackend: Using modern path (GL 3.0+)");
-    } else {
-      HookLog("OpenGLBackend: Modern path init failed, falling back to legacy");
+    if (!LoadGLFunctions()) {
+        HookLog("OpenGLBackend: Failed to load GL functions");
+        return false;
     }
-  } else {
-    HookLog("OpenGLBackend: Using legacy path (GL %d.%d)", major, minor);
-  }
 
-  initialized = true;
-  return true;
+    if (!pwglGetCurrentContext) {
+        HookLog("OpenGLBackend: wglGetCurrentContext not available");
+        return false;
+    }
+
+    HGLRC ctx = pwglGetCurrentContext();
+    if (!ctx) {
+        HookLog("OpenGLBackend: No GL context current");
+        return false;
+    }
+
+    texWidth = fontTextureWidth;
+    texHeight = fontTextureHeight;
+
+    ClearGLErrors();
+
+    const char* versionStr = pglGetString ? (const char*)pglGetString(GL_VERSION) : nullptr;
+    int major = 0, minor = 0;
+    if (versionStr) {
+        // SECURITY FIX: Use sscanf_s instead of sscanf for safer parsing
+        sscanf_s(versionStr, "%d.%d", &major, &minor);
+        HookLog("OpenGLBackend: GL version %d.%d (%s)", major, minor, versionStr);
+    }
+
+    pglGenTextures(1, &fontTextureId);
+    if (fontTextureId == 0) {
+        HookLog("OpenGLBackend: Failed to create font texture");
+        return false;
+    }
+
+    pglBindTexture(GL_TEXTURE_2D, fontTextureId);
+    pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    pglTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fontTextureWidth, fontTextureHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                  fontTextureData);
+    pglBindTexture(GL_TEXTURE_2D, 0);
+
+    GLenum err = pglGetError ? pglGetError() : 0;
+    if (err != 0) {
+        HookLog("OpenGLBackend: Font texture creation error 0x%X", err);
+    }
+
+    useModernPath = false;
+    if (major >= 3) {
+        if (InitModernPath()) {
+            useModernPath = true;
+            HookLog("OpenGLBackend: Using modern path (GL 3.0+)");
+        } else {
+            HookLog("OpenGLBackend: Modern path init failed, falling back to legacy");
+        }
+    } else {
+        HookLog("OpenGLBackend: Using legacy path (GL %d.%d)", major, minor);
+    }
+
+    initialized = true;
+    return true;
 }
 
 void OpenGLBackend::Shutdown() {
-  ShutdownModernPath();
+    ShutdownModernPath();
 
-  if (fontTextureId && pglDeleteTextures) {
-    pglDeleteTextures(1, &fontTextureId);
-    fontTextureId = 0;
-  }
-  initialized = false;
-  useModernPath = false;
+    if (fontTextureId && pglDeleteTextures) {
+        pglDeleteTextures(1, &fontTextureId);
+        fontTextureId = 0;
+    }
+    initialized = false;
+    useModernPath = false;
 }
 
-void OpenGLBackend::Render(const std::vector<DrawVertex> &vertices,
-                           const std::vector<uint16_t> &indices,
-                           const std::vector<DrawCommand> &commands,
-                           int viewportWidth, int viewportHeight) {
-  static int logCount = 0;
-  if (logCount < 3) {
-    HookLog(
-        "OpenGLBackend::Render: modern=%d verts=%zu idx=%zu cmds=%zu vp=%dx%d",
-        useModernPath ? 1 : 0, vertices.size(), indices.size(), commands.size(),
-        viewportWidth, viewportHeight);
-    logCount++;
-  }
+void OpenGLBackend::Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
+                           const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) {
+    static int logCount = 0;
+    if (logCount < 3) {
+        HookLog("OpenGLBackend::Render: modern=%d verts=%zu idx=%zu cmds=%zu vp=%dx%d", useModernPath ? 1 : 0,
+                vertices.size(), indices.size(), commands.size(), viewportWidth, viewportHeight);
+        logCount++;
+    }
 
-  if (!initialized || vertices.empty() || commands.empty())
-    return;
+    if (!initialized || vertices.empty() || commands.empty())
+        return;
 
-  if (!g_GLFunctionsLoaded)
-    return;
+    if (!g_GLFunctionsLoaded)
+        return;
 
-  HGLRC currentCtx = pwglGetCurrentContext ? pwglGetCurrentContext() : nullptr;
-  if (!currentCtx)
-    return;
+    HGLRC currentCtx = pwglGetCurrentContext ? pwglGetCurrentContext() : nullptr;
+    if (!currentCtx)
+        return;
 
-  ClearGLErrors();
+    ClearGLErrors();
 
-  if (useModernPath && modern.valid) {
-    RenderModern(vertices, indices, commands, viewportWidth, viewportHeight);
-  } else {
-    RenderLegacy(vertices, indices, commands, viewportWidth, viewportHeight);
-  }
-}
-
-void OpenGLBackend::RenderModern(const std::vector<DrawVertex> &vertices,
-                                 const std::vector<uint16_t> &indices,
-                                 const std::vector<DrawCommand> &commands,
-                                 int viewportWidth, int viewportHeight) {
-  GLint lastTexture = 0;
-  pglGetIntegerv(GL_TEXTURE_BINDING_2D, &lastTexture);
-  GLint lastViewport[4] = {0};
-  pglGetIntegerv(GL_VIEWPORT, lastViewport);
-  GLboolean lastBlend = pglIsEnabled(GL_BLEND);
-  GLint lastProgram = 0;
-  pglGetIntegerv(GL_CURRENT_PROGRAM, &lastProgram);
-  GLint lastVAO = 0;
-  pglGetIntegerv(0x85B5, &lastVAO);
-  GLint lastVBO = 0;
-  pglGetIntegerv(GL_ARRAY_BUFFER_BINDING, &lastVBO);
-  GLint lastIBO = 0;
-  pglGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &lastIBO);
-
-  pglEnable(GL_BLEND);
-  pglBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-  pglDisable(GL_DEPTH_TEST);
-  pglDisable(GL_CULL_FACE);
-
-  pglViewport(0, 0, viewportWidth, viewportHeight);
-
-  pglBindVertexArray(modern.vao);
-  pglBindBuffer(GL_ARRAY_BUFFER, modern.vbo);
-  pglBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(DrawVertex),
-                vertices.data(), GL_DYNAMIC_DRAW);
-
-  pglBindBuffer(GL_ELEMENT_ARRAY_BUFFER, modern.ibo);
-  pglBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(uint16_t),
-                indices.data(), GL_DYNAMIC_DRAW);
-
-  for (const auto &cmd : commands) {
-    GLuint program =
-        cmd.useTexture ? modern.programTextured : modern.programSolid;
-    pglUseProgram(program);
-
-    if (cmd.useTexture) {
-      pglUniform2f(modern.uViewportTextured, (float)viewportWidth,
-                   (float)viewportHeight);
-      if (pglActiveTexture)
-        pglActiveTexture(GL_TEXTURE0);
-      pglBindTexture(GL_TEXTURE_2D, fontTextureId);
-      pglUniform1i(modern.uTexture, 0);
+    if (useModernPath && modern.valid) {
+        RenderModern(vertices, indices, commands, viewportWidth, viewportHeight);
     } else {
-      pglUniform2f(modern.uViewportSolid, (float)viewportWidth,
-                   (float)viewportHeight);
-      pglBindTexture(GL_TEXTURE_2D, 0);
+        RenderLegacy(vertices, indices, commands, viewportWidth, viewportHeight);
     }
-
-    pglDrawElements(GL_TRIANGLES, cmd.indexCount, GL_UNSIGNED_SHORT,
-                    (const void *)(cmd.indexOffset * sizeof(uint16_t)));
-  }
-
-  pglBindVertexArray(0);
-  pglUseProgram(0);
-
-  pglBindTexture(GL_TEXTURE_2D, lastTexture);
-  pglViewport(lastViewport[0], lastViewport[1], lastViewport[2],
-              lastViewport[3]);
-
-  if (lastBlend)
-    pglEnable(GL_BLEND);
-  else
-    pglDisable(GL_BLEND);
-
-  if (lastVAO && pglBindVertexArray)
-    pglBindVertexArray(lastVAO);
-  if (lastVBO)
-    pglBindBuffer(GL_ARRAY_BUFFER, lastVBO);
-  if (lastIBO)
-    pglBindBuffer(GL_ELEMENT_ARRAY_BUFFER, lastIBO);
-  if (lastProgram)
-    pglUseProgram(lastProgram);
 }
 
-void OpenGLBackend::RenderLegacy(const std::vector<DrawVertex> &vertices,
-                                 const std::vector<uint16_t> &indices,
-                                 const std::vector<DrawCommand> &commands,
-                                 int viewportWidth, int viewportHeight) {
-  GLint lastTexture = 0;
-  pglGetIntegerv(GL_TEXTURE_BINDING_2D, &lastTexture);
-  GLint lastViewport[4] = {0};
-  pglGetIntegerv(GL_VIEWPORT, lastViewport);
-  GLboolean lastBlend = pglIsEnabled(GL_BLEND);
-  GLboolean lastDepthTest = pglIsEnabled(GL_DEPTH_TEST);
-  GLboolean lastCullFace = pglIsEnabled(GL_CULL_FACE);
-  GLboolean lastTexture2D = pglIsEnabled(GL_TEXTURE_2D);
+void OpenGLBackend::RenderModern(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
+                                 const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) {
+    GLint lastTexture = 0;
+    pglGetIntegerv(GL_TEXTURE_BINDING_2D, &lastTexture);
+    GLint lastViewport[4] = {0};
+    pglGetIntegerv(GL_VIEWPORT, lastViewport);
+    GLboolean lastBlend = pglIsEnabled(GL_BLEND);
+    GLint lastProgram = 0;
+    pglGetIntegerv(GL_CURRENT_PROGRAM, &lastProgram);
+    GLint lastVAO = 0;
+    pglGetIntegerv(0x85B5, &lastVAO);
+    GLint lastVBO = 0;
+    pglGetIntegerv(GL_ARRAY_BUFFER_BINDING, &lastVBO);
+    GLint lastIBO = 0;
+    pglGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &lastIBO);
 
-  pglEnable(GL_BLEND);
-  pglBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-  pglDisable(GL_DEPTH_TEST);
-  pglDisable(GL_CULL_FACE);
-  pglEnable(GL_TEXTURE_2D);
-
-  pglViewport(0, 0, viewportWidth, viewportHeight);
-
-  static bool useMatrixOps = true;
-  static bool checkedMatrixOps = false;
-
-  if (!checkedMatrixOps) {
-    ClearGLErrors();
-    pglMatrixMode(GL_PROJECTION);
-    GLenum err = pglGetError ? pglGetError() : 0;
-    if (err != 0) {
-      useMatrixOps = false;
-      HookLog("OpenGLBackend: Legacy using NDC transform (matrix err=0x%X)",
-              err);
-    }
-    checkedMatrixOps = true;
-  }
-
-  if (useMatrixOps && pglMatrixMode && pglPushMatrix && pglLoadIdentity &&
-      pglOrtho) {
-    pglMatrixMode(GL_PROJECTION);
-    pglPushMatrix();
-    pglLoadIdentity();
-    pglOrtho(0, viewportWidth, viewportHeight, 0, -1, 1);
-
-    pglMatrixMode(GL_MODELVIEW);
-    pglPushMatrix();
-    pglLoadIdentity();
-  }
-
-  static bool useImmediateMode = false;
-  static bool checkedImmediateMode = false;
-
-  if (!checkedImmediateMode) {
-    ClearGLErrors();
-
-    GLint boundVAO = 0;
-    pglGetIntegerv(0x85B5, &boundVAO);
-    ClearGLErrors();
-
-    if (boundVAO != 0 && pglBindVertexArray) {
-      pglBindVertexArray(0);
-      ClearGLErrors();
-    }
-
-    pglBegin(GL_QUADS);
-    GLenum beginErr = pglGetError ? pglGetError() : 0;
-    if (beginErr == 0) {
-      pglEnd();
-      useImmediateMode = true;
-      HookLog("OpenGLBackend: Legacy using immediate mode");
-    } else {
-      HookLog("OpenGLBackend: Legacy using vertex arrays (glBegin err=0x%X)",
-              beginErr);
-    }
-    checkedImmediateMode = true;
-  }
-
-  if (useImmediateMode && pglBegin && pglEnd && pglVertex2f && pglTexCoord2f &&
-      pglColor4ub) {
-    for (const auto &cmd : commands) {
-      if (cmd.useTexture) {
-        pglBindTexture(GL_TEXTURE_2D, fontTextureId);
-      } else {
-        pglBindTexture(GL_TEXTURE_2D, 0);
-      }
-
-      pglBegin(GL_TRIANGLES);
-      for (uint32_t i = 0; i < cmd.indexCount; i++) {
-        uint16_t idx = indices[cmd.indexOffset + i];
-        const DrawVertex &v = vertices[idx];
-        GLubyte r = (v.color >> 0) & 0xFF;
-        GLubyte g = (v.color >> 8) & 0xFF;
-        GLubyte b = (v.color >> 16) & 0xFF;
-        GLubyte a = (v.color >> 24) & 0xFF;
-
-        float vx = (v.x / viewportWidth) * 2.0f - 1.0f;
-        float vy = 1.0f - (v.y / viewportHeight) * 2.0f;
-
-        pglColor4ub(r, g, b, a);
-        pglTexCoord2f(v.u, v.v);
-        pglVertex2f(vx, vy);
-      }
-      pglEnd();
-    }
-  } else {
-    pglEnableClientState(GL_VERTEX_ARRAY);
-    pglEnableClientState(GL_TEXTURE_COORD_ARRAY);
-    pglEnableClientState(GL_COLOR_ARRAY);
-
-    const DrawVertex *vtx = vertices.data();
-    pglVertexPointer(2, GL_FLOAT, sizeof(DrawVertex), &vtx->x);
-    pglTexCoordPointer(2, GL_FLOAT, sizeof(DrawVertex), &vtx->u);
-    pglColorPointer(4, GL_UNSIGNED_BYTE, sizeof(DrawVertex), &vtx->color);
-
-    for (const auto &cmd : commands) {
-      if (cmd.useTexture) {
-        pglBindTexture(GL_TEXTURE_2D, fontTextureId);
-      } else {
-        pglBindTexture(GL_TEXTURE_2D, 0);
-      }
-
-      pglDrawElements(GL_TRIANGLES, cmd.indexCount, GL_UNSIGNED_SHORT,
-                      indices.data() + cmd.indexOffset);
-    }
-
-    pglDisableClientState(GL_VERTEX_ARRAY);
-    pglDisableClientState(GL_TEXTURE_COORD_ARRAY);
-    pglDisableClientState(GL_COLOR_ARRAY);
-  }
-
-  if (useMatrixOps && pglMatrixMode && pglPopMatrix) {
-    pglMatrixMode(GL_PROJECTION);
-    pglPopMatrix();
-    pglMatrixMode(GL_MODELVIEW);
-    pglPopMatrix();
-  }
-
-  pglBindTexture(GL_TEXTURE_2D, lastTexture);
-  pglViewport(lastViewport[0], lastViewport[1], lastViewport[2],
-              lastViewport[3]);
-  if (lastBlend)
     pglEnable(GL_BLEND);
-  else
-    pglDisable(GL_BLEND);
-  if (lastDepthTest)
-    pglEnable(GL_DEPTH_TEST);
-  else
+    pglBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     pglDisable(GL_DEPTH_TEST);
-  if (lastCullFace)
-    pglEnable(GL_CULL_FACE);
-  else
     pglDisable(GL_CULL_FACE);
-  if (lastTexture2D)
-    pglEnable(GL_TEXTURE_2D);
-  else
-    pglDisable(GL_TEXTURE_2D);
+
+    pglViewport(0, 0, viewportWidth, viewportHeight);
+
+    pglBindVertexArray(modern.vao);
+    pglBindBuffer(GL_ARRAY_BUFFER, modern.vbo);
+    pglBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(DrawVertex), vertices.data(), GL_DYNAMIC_DRAW);
+
+    pglBindBuffer(GL_ELEMENT_ARRAY_BUFFER, modern.ibo);
+    pglBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(uint16_t), indices.data(), GL_DYNAMIC_DRAW);
+
+    for (const auto& cmd : commands) {
+        GLuint program = cmd.useTexture ? modern.programTextured : modern.programSolid;
+        pglUseProgram(program);
+
+        if (cmd.useTexture) {
+            pglUniform2f(modern.uViewportTextured, (float)viewportWidth, (float)viewportHeight);
+            if (pglActiveTexture)
+                pglActiveTexture(GL_TEXTURE0);
+            pglBindTexture(GL_TEXTURE_2D, fontTextureId);
+            pglUniform1i(modern.uTexture, 0);
+        } else {
+            pglUniform2f(modern.uViewportSolid, (float)viewportWidth, (float)viewportHeight);
+            pglBindTexture(GL_TEXTURE_2D, 0);
+        }
+
+        pglDrawElements(GL_TRIANGLES, cmd.indexCount, GL_UNSIGNED_SHORT,
+                        (const void*)(cmd.indexOffset * sizeof(uint16_t)));
+    }
+
+    pglBindVertexArray(0);
+    pglUseProgram(0);
+
+    pglBindTexture(GL_TEXTURE_2D, lastTexture);
+    pglViewport(lastViewport[0], lastViewport[1], lastViewport[2], lastViewport[3]);
+
+    if (lastBlend)
+        pglEnable(GL_BLEND);
+    else
+        pglDisable(GL_BLEND);
+
+    if (lastVAO && pglBindVertexArray)
+        pglBindVertexArray(lastVAO);
+    if (lastVBO)
+        pglBindBuffer(GL_ARRAY_BUFFER, lastVBO);
+    if (lastIBO)
+        pglBindBuffer(GL_ELEMENT_ARRAY_BUFFER, lastIBO);
+    if (lastProgram)
+        pglUseProgram(lastProgram);
 }
 
-} // namespace CustomOverlay
+void OpenGLBackend::RenderLegacy(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
+                                 const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) {
+    GLint lastTexture = 0;
+    pglGetIntegerv(GL_TEXTURE_BINDING_2D, &lastTexture);
+    GLint lastViewport[4] = {0};
+    pglGetIntegerv(GL_VIEWPORT, lastViewport);
+    GLboolean lastBlend = pglIsEnabled(GL_BLEND);
+    GLboolean lastDepthTest = pglIsEnabled(GL_DEPTH_TEST);
+    GLboolean lastCullFace = pglIsEnabled(GL_CULL_FACE);
+    GLboolean lastTexture2D = pglIsEnabled(GL_TEXTURE_2D);
+
+    pglEnable(GL_BLEND);
+    pglBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    pglDisable(GL_DEPTH_TEST);
+    pglDisable(GL_CULL_FACE);
+    pglEnable(GL_TEXTURE_2D);
+
+    pglViewport(0, 0, viewportWidth, viewportHeight);
+
+    static bool useMatrixOps = true;
+    static bool checkedMatrixOps = false;
+
+    if (!checkedMatrixOps) {
+        ClearGLErrors();
+        pglMatrixMode(GL_PROJECTION);
+        GLenum err = pglGetError ? pglGetError() : 0;
+        if (err != 0) {
+            useMatrixOps = false;
+            HookLog("OpenGLBackend: Legacy using NDC transform (matrix err=0x%X)", err);
+        }
+        checkedMatrixOps = true;
+    }
+
+    if (useMatrixOps && pglMatrixMode && pglPushMatrix && pglLoadIdentity && pglOrtho) {
+        pglMatrixMode(GL_PROJECTION);
+        pglPushMatrix();
+        pglLoadIdentity();
+        pglOrtho(0, viewportWidth, viewportHeight, 0, -1, 1);
+
+        pglMatrixMode(GL_MODELVIEW);
+        pglPushMatrix();
+        pglLoadIdentity();
+    }
+
+    static bool useImmediateMode = false;
+    static bool checkedImmediateMode = false;
+
+    if (!checkedImmediateMode) {
+        ClearGLErrors();
+
+        GLint boundVAO = 0;
+        pglGetIntegerv(0x85B5, &boundVAO);
+        ClearGLErrors();
+
+        if (boundVAO != 0 && pglBindVertexArray) {
+            pglBindVertexArray(0);
+            ClearGLErrors();
+        }
+
+        pglBegin(GL_QUADS);
+        GLenum beginErr = pglGetError ? pglGetError() : 0;
+        if (beginErr == 0) {
+            pglEnd();
+            useImmediateMode = true;
+            HookLog("OpenGLBackend: Legacy using immediate mode");
+        } else {
+            HookLog("OpenGLBackend: Legacy using vertex arrays (glBegin err=0x%X)", beginErr);
+        }
+        checkedImmediateMode = true;
+    }
+
+    if (useImmediateMode && pglBegin && pglEnd && pglVertex2f && pglTexCoord2f && pglColor4ub) {
+        for (const auto& cmd : commands) {
+            if (cmd.useTexture) {
+                pglBindTexture(GL_TEXTURE_2D, fontTextureId);
+            } else {
+                pglBindTexture(GL_TEXTURE_2D, 0);
+            }
+
+            pglBegin(GL_TRIANGLES);
+            for (uint32_t i = 0; i < cmd.indexCount; i++) {
+                uint16_t idx = indices[cmd.indexOffset + i];
+                const DrawVertex& v = vertices[idx];
+                GLubyte r = (v.color >> 0) & 0xFF;
+                GLubyte g = (v.color >> 8) & 0xFF;
+                GLubyte b = (v.color >> 16) & 0xFF;
+                GLubyte a = (v.color >> 24) & 0xFF;
+
+                float vx = (v.x / viewportWidth) * 2.0f - 1.0f;
+                float vy = 1.0f - (v.y / viewportHeight) * 2.0f;
+
+                pglColor4ub(r, g, b, a);
+                pglTexCoord2f(v.u, v.v);
+                pglVertex2f(vx, vy);
+            }
+            pglEnd();
+        }
+    } else {
+        pglEnableClientState(GL_VERTEX_ARRAY);
+        pglEnableClientState(GL_TEXTURE_COORD_ARRAY);
+        pglEnableClientState(GL_COLOR_ARRAY);
+
+        const DrawVertex* vtx = vertices.data();
+        pglVertexPointer(2, GL_FLOAT, sizeof(DrawVertex), &vtx->x);
+        pglTexCoordPointer(2, GL_FLOAT, sizeof(DrawVertex), &vtx->u);
+        pglColorPointer(4, GL_UNSIGNED_BYTE, sizeof(DrawVertex), &vtx->color);
+
+        for (const auto& cmd : commands) {
+            if (cmd.useTexture) {
+                pglBindTexture(GL_TEXTURE_2D, fontTextureId);
+            } else {
+                pglBindTexture(GL_TEXTURE_2D, 0);
+            }
+
+            pglDrawElements(GL_TRIANGLES, cmd.indexCount, GL_UNSIGNED_SHORT, indices.data() + cmd.indexOffset);
+        }
+
+        pglDisableClientState(GL_VERTEX_ARRAY);
+        pglDisableClientState(GL_TEXTURE_COORD_ARRAY);
+        pglDisableClientState(GL_COLOR_ARRAY);
+    }
+
+    if (useMatrixOps && pglMatrixMode && pglPopMatrix) {
+        pglMatrixMode(GL_PROJECTION);
+        pglPopMatrix();
+        pglMatrixMode(GL_MODELVIEW);
+        pglPopMatrix();
+    }
+
+    pglBindTexture(GL_TEXTURE_2D, lastTexture);
+    pglViewport(lastViewport[0], lastViewport[1], lastViewport[2], lastViewport[3]);
+    if (lastBlend)
+        pglEnable(GL_BLEND);
+    else
+        pglDisable(GL_BLEND);
+    if (lastDepthTest)
+        pglEnable(GL_DEPTH_TEST);
+    else
+        pglDisable(GL_DEPTH_TEST);
+    if (lastCullFace)
+        pglEnable(GL_CULL_FACE);
+    else
+        pglDisable(GL_CULL_FACE);
+    if (lastTexture2D)
+        pglEnable(GL_TEXTURE_2D);
+    else
+        pglDisable(GL_TEXTURE_2D);
+}
+
+}  // namespace CustomOverlay

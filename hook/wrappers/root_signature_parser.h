@@ -7,8 +7,8 @@
 
 #pragma once
 
-#include <cstdint>
 #include <d3d12.h>
+#include <cstdint>
 #include <vector>
 
 namespace RootSignatureParser {
@@ -19,7 +19,7 @@ namespace RootSignatureParser {
  * @param sampler The sampler to modify
  * @return true if modifications were made
  */
-bool ApplyStaticSamplerOverrides(D3D12_STATIC_SAMPLER_DESC &sampler);
+bool ApplyStaticSamplerOverrides(D3D12_STATIC_SAMPLER_DESC& sampler);
 
 /**
  * Count static samplers in a blob (quick check)
@@ -29,6 +29,6 @@ bool ApplyStaticSamplerOverrides(D3D12_STATIC_SAMPLER_DESC &sampler);
  * @param blobSize Size of the blob
  * @return Number of static samplers in the blob
  */
-UINT CountStaticSamplers(const void *pBlob, SIZE_T blobSize);
+UINT CountStaticSamplers(const void* pBlob, SIZE_T blobSize);
 
-} // namespace RootSignatureParser
+}  // namespace RootSignatureParser

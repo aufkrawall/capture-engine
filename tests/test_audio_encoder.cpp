@@ -1,117 +1,112 @@
-#include "../mediaengine/audio_encoder.h"
 #include <gtest/gtest.h>
 #include <vector>
+#include "../mediaengine/audio_encoder.h"
 
 // Helper to create dummy PCM data
-std::vector<uint8_t> CreateDummyAudio(int milliseconds, int sampleRate,
-                                      int channels) {
-  int numSamples = (sampleRate * milliseconds) / 1000;
-  int sizeBytes = numSamples * channels * sizeof(int16_t);
-  return std::vector<uint8_t>(sizeBytes, 0);
+std::vector<uint8_t> CreateDummyAudio(int milliseconds, int sampleRate, int channels) {
+    int numSamples = (sampleRate * milliseconds) / 1000;
+    int sizeBytes = numSamples * channels * sizeof(int16_t);
+    return std::vector<uint8_t>(sizeBytes, 0);
 }
 
 class AudioEncoderTest : public ::testing::Test {
 protected:
-  AudioEncoder encoder;
-  std::vector<AVPacket *> receivedPackets;
+    AudioEncoder encoder;
+    std::vector<AVPacket*> receivedPackets;
 
-  void SetUp() override {
-    // Collect packets
-  }
-
-  void TearDown() override {
-    for (auto *pkt : receivedPackets) {
-      av_packet_free(&pkt);
+    void SetUp() override {
+        // Collect packets
     }
-    receivedPackets.clear();
-  }
 
-  void PacketCallback(AVPacket *pkt) {
-    // Clone packet because encoder flushes/frees them
-    AVPacket *clone = av_packet_clone(pkt);
-    receivedPackets.push_back(clone);
-  }
+    void TearDown() override {
+        for (auto* pkt : receivedPackets) {
+            av_packet_free(&pkt);
+        }
+        receivedPackets.clear();
+    }
+
+    void PacketCallback(AVPacket* pkt) {
+        // Clone packet because encoder flushes/frees them
+        AVPacket* clone = av_packet_clone(pkt);
+        receivedPackets.push_back(clone);
+    }
 };
 
 TEST_F(AudioEncoderTest, Initialization) {
-  AudioConfig config;
-  config.codec = "aac";
-  config.bitrate = 128;
-  config.sampleRate = "48000";
+    AudioConfig config;
+    config.codec = "aac";
+    config.bitrate = 128;
+    config.sampleRate = "48000";
 
-  bool success =
-      encoder.Init(config, [this](AVPacket *p) { PacketCallback(p); });
-  EXPECT_TRUE(success);
-  EXPECT_TRUE(encoder.IsReady());
+    bool success = encoder.Init(config, [this](AVPacket* p) { PacketCallback(p); });
+    EXPECT_TRUE(success);
+    EXPECT_TRUE(encoder.IsReady());
 }
 
 TEST_F(AudioEncoderTest, DiscardBeforeStart) {
-  AudioConfig config;
-  config.codec = "aac";
-  encoder.Init(config, [this](AVPacket *p) { PacketCallback(p); });
-  encoder.SetStreamIndex(0); // Ready to emit
+    AudioConfig config;
+    config.codec = "aac";
+    encoder.Init(config, [this](AVPacket* p) { PacketCallback(p); });
+    encoder.SetStreamIndex(0);  // Ready to emit
 
-  // Set start time to 1000us
-  encoder.SetRecordingStart(1000);
+    // Set start time to 1000us
+    encoder.SetRecordingStart(1000);
 
-  // Feed audio at timestamp 500us (before start)
-  auto data = CreateDummyAudio(10, 48000, 2); // 10ms
-  encoder.EncodeSamples(data.data(), data.size(), 2, 48000, 16, 16, 4, false,
-                        0); // ts 0ms = 0us
+    // Feed audio at timestamp 500us (before start)
+    auto data = CreateDummyAudio(10, 48000, 2);  // 10ms
+    encoder.EncodeSamples(data.data(), data.size(), 2, 48000, 16, 16, 4, false,
+                          0);  // ts 0ms = 0us
 
-  // Should produce NO packets because it's discarded
-  EXPECT_EQ(receivedPackets.size(), 0);
+    // Should produce NO packets because it's discarded
+    EXPECT_EQ(receivedPackets.size(), 0);
 }
 
 TEST_F(AudioEncoderTest, GapFilling) {
-  AudioConfig config;
-  config.codec = "aac";
-  config.bitrate = 128;
-  encoder.Init(config, [this](AVPacket *p) { PacketCallback(p); });
-  encoder.SetStreamIndex(0);
-  encoder.SetRecordingStart(0);
+    AudioConfig config;
+    config.codec = "aac";
+    config.bitrate = 128;
+    encoder.Init(config, [this](AVPacket* p) { PacketCallback(p); });
+    encoder.SetStreamIndex(0);
+    encoder.SetRecordingStart(0);
 
-  // Send enough audio to produce at least one AAC frame (1024 samples @ 48kHz ≈ 21.3ms)
-  // Send 100ms to ensure multiple complete frames
-  auto data = CreateDummyAudio(100, 48000, 2);
-  encoder.EncodeSamples(data.data(), data.size(), 2, 48000, 16, 16, 4, false,
-                        0);
+    // Send enough audio to produce at least one AAC frame (1024 samples @ 48kHz ≈ 21.3ms)
+    // Send 100ms to ensure multiple complete frames
+    auto data = CreateDummyAudio(100, 48000, 2);
+    encoder.EncodeSamples(data.data(), data.size(), 2, 48000, 16, 16, 4, false, 0);
 
-  // AAC encoder should produce packets from 100ms of audio (≈4 frames)
-  EXPECT_GE(receivedPackets.size(), 1);
+    // AAC encoder should produce packets from 100ms of audio (≈4 frames)
+    EXPECT_GE(receivedPackets.size(), 1);
 
-  size_t initialPackets = receivedPackets.size();
+    size_t initialPackets = receivedPackets.size();
 
-  // Send another 100ms of audio at a later timestamp
-  // Note: gap detection was removed from the encoder — it just encodes what it receives
-  // The timestamp parameter is only used for internal tracking, not gap filling
-  encoder.EncodeSamples(data.data(), data.size(), 2, 48000, 16, 16, 4, false,
-                        200);
+    // Send another 100ms of audio at a later timestamp
+    // Note: gap detection was removed from the encoder — it just encodes what it receives
+    // The timestamp parameter is only used for internal tracking, not gap filling
+    encoder.EncodeSamples(data.data(), data.size(), 2, 48000, 16, 16, 4, false, 200);
 
-  // Should produce more packets from the new audio data
-  EXPECT_GT(receivedPackets.size(), initialPackets);
+    // Should produce more packets from the new audio data
+    EXPECT_GT(receivedPackets.size(), initialPackets);
 }
 
 TEST_F(AudioEncoderTest, BufferUntilStreamIndex) {
-  AudioConfig config;
-  config.codec = "aac";
-  encoder.Init(config, [this](AVPacket *p) { PacketCallback(p); });
+    AudioConfig config;
+    config.codec = "aac";
+    encoder.Init(config, [this](AVPacket* p) { PacketCallback(p); });
 
-  // Set stream index first - encoder needs this to emit packets
-  encoder.SetStreamIndex(1);
-  encoder.SetRecordingStart(0);
+    // Set stream index first - encoder needs this to emit packets
+    encoder.SetStreamIndex(1);
+    encoder.SetRecordingStart(0);
 
-  // Send 100ms of audio (enough for ~4 AAC frames)
-  auto data = CreateDummyAudio(100, 48000, 2);
-  encoder.EncodeSamples(data.data(), data.size(), 2, 48000, 16, 16, 4, false,
-                        0);
+    // Send 100ms of audio (enough for ~4 AAC frames)
+    auto data = CreateDummyAudio(100, 48000, 2);
+    encoder.EncodeSamples(data.data(), data.size(), 2, 48000, 16, 16, 4, false, 0);
 
-  // Should have received some packets now that stream index is set
-  EXPECT_GE(receivedPackets.size(), 1);
-  EXPECT_LE(receivedPackets.size(), 20);
+    // Should have received some packets now that stream index is set
+    EXPECT_GE(receivedPackets.size(), 1);
+    EXPECT_LE(receivedPackets.size(), 20);
 
-  // Verify stream index is correct on all packets
-  for (auto *pkt : receivedPackets) {
-    EXPECT_EQ(pkt->stream_index, 1);
-  }
+    // Verify stream index is correct on all packets
+    for (auto* pkt : receivedPackets) {
+        EXPECT_EQ(pkt->stream_index, 1);
+    }
 }

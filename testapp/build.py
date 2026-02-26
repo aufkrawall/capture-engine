@@ -23,13 +23,14 @@ MSYS_PATH = PROJECT_ROOT / "build" / "msys64" / "clang64" / "bin"
 # Ensure output directory exists
 BIN_DIR.mkdir(parents=True, exist_ok=True)
 
+
 def find_compiler():
     """Find clang++ compiler"""
     # Try MSYS2 path first
     clang_msys = MSYS_PATH / "clang++.exe"
     if clang_msys.exists():
         return str(clang_msys)
-    
+
     # Fall back to system PATH
     try:
         result = subprocess.run(["clang++", "--version"], capture_output=True)
@@ -37,45 +38,47 @@ def find_compiler():
             return "clang++"
     except FileNotFoundError:
         pass
-    
+
     # Try cl.exe (MSVC)
     try:
         result = subprocess.run(["cl"], capture_output=True)
         return "cl"
     except FileNotFoundError:
         pass
-    
+
     print("ERROR: No C++ compiler found (clang++ or cl)")
     sys.exit(1)
+
 
 def find_vulkan_sdk():
     """Find Vulkan SDK include path"""
     vulkan_sdk = os.environ.get("VULKAN_SDK")
     if vulkan_sdk:
         return Path(vulkan_sdk) / "Include"
-    
+
     # Try common paths
     common_paths = [
         Path("C:/VulkanSDK"),
         Path(os.environ.get("LOCALAPPDATA", "")) / "VulkanSDK",
     ]
-    
+
     for base in common_paths:
         if base.exists():
             # Find latest version
             versions = sorted([d for d in base.iterdir() if d.is_dir()], reverse=True)
             if versions:
                 return versions[0] / "Include"
-    
+
     return None
+
 
 def build_dx12(compiler):
     """Build DX12 test app"""
     print("[Building DX12 test app...]")
-    
+
     src = SCRIPT_DIR / "dx12_test.cpp"
     out = BIN_DIR / "dx12_test.exe"
-    
+
     if compiler == "cl":
         cmd = [
             "cl", "/EHsc", "/O2", "/std:c++17",
@@ -92,31 +95,32 @@ def build_dx12(compiler):
             "-luser32", "-lgdi32", "-lshell32",
             "-static", "-static-libstdc++", "-static-libgcc"
         ]
-    
+
     print(f"  Command: {' '.join(cmd[:5])}...")
     result = subprocess.run(cmd, capture_output=True, text=True)
-    
+
     if result.returncode != 0:
         print(f"  ERROR: {result.stderr}")
         return False
-    
+
     print(f"  Output: {out}")
     return True
+
 
 def build_vulkan(compiler):
     """Build Vulkan test app"""
     print("[Building Vulkan test app...]")
-    
+
     vulkan_include = find_vulkan_sdk()
     if not vulkan_include:
         print("  WARNING: Vulkan SDK not found, trying anyway...")
         vulkan_include = None
     else:
         print(f"  Vulkan SDK: {vulkan_include.parent}")
-    
+
     src = SCRIPT_DIR / "vulkan_test.cpp"
     out = BIN_DIR / "vulkan_test.exe"
-    
+
     if compiler == "cl":
         cmd = [
             "cl", "/EHsc", "/O2", "/std:c++17",
@@ -138,40 +142,41 @@ def build_vulkan(compiler):
             "-luser32", "-lgdi32", "-lshcore",
             "-static", "-static-libstdc++", "-static-libgcc"
         ])
-    
+
     print(f"  Command: {' '.join(cmd[:5])}...")
     result = subprocess.run(cmd, capture_output=True, text=True)
-    
+
     if result.returncode != 0:
         print(f"  ERROR: {result.stderr}")
         return False
-    
+
     print(f"  Output: {out}")
     return True
+
 
 def main():
     print("=" * 50)
     print("Test App Build Script")
     print("=" * 50)
-    
+
     # Parse args
     build_targets = sys.argv[1:] if len(sys.argv) > 1 else ["dx12", "vulkan"]
-    
+
     # Find compiler
     compiler = find_compiler()
     print(f"Compiler: {compiler}")
     print()
-    
+
     success = True
-    
+
     if "dx12" in build_targets:
         if not build_dx12(compiler):
             success = False
-    
+
     if "vulkan" in build_targets:
         if not build_vulkan(compiler):
             success = False
-    
+
     print()
     if success:
         print("Build complete!")
@@ -186,6 +191,7 @@ def main():
     else:
         print("Build failed!")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

@@ -19,4 +19,4 @@ bool IsInitialized();
 // Cleanup hooks (called during shutdown)
 void Shutdown();
 
-} // namespace FFXHook
+}  // namespace FFXHook

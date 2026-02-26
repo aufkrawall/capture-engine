@@ -23,14 +23,14 @@ namespace InlineHook {
 // - outTrampoline: receives a pointer to the trampoline (call this to invoke
 //   the original function without re-entering the detour)
 // Returns true on success.
-bool Install(void *target, void *detour, void **outTrampoline);
+bool Install(void* target, void* detour, void** outTrampoline);
 
 // Remove a previously installed inline hook, restoring the original bytes.
 // - target: the same target address passed to Install()
 // Returns true on success.
-bool Remove(void *target);
+bool Remove(void* target);
 
 // Remove all installed hooks and free trampoline memory.
 void RemoveAll();
 
-} // namespace InlineHook
+}  // namespace InlineHook

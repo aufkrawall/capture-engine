@@ -5,11 +5,11 @@
  * Renderer tests use a mock backend to verify geometry/command building.
  */
 
-#include "../hook/common/custom_font.h"
-#include "../hook/common/custom_overlay.h"
 #include <gtest/gtest.h>
 #include <cstring>
 #include <vector>
+#include "../hook/common/custom_font.h"
+#include "../hook/common/custom_overlay.h"
 
 using namespace CustomOverlay;
 
@@ -35,14 +35,14 @@ TEST_F(FontAtlasTest, InitializeSucceeds) {
 }
 
 TEST_F(FontAtlasTest, TextureDataNonEmpty) {
-    const uint8_t *data = atlas.GetTextureData();
+    const uint8_t* data = atlas.GetTextureData();
     ASSERT_NE(data, nullptr);
 
     // At least one non-zero alpha pixel should exist (the glyphs)
     int w = atlas.GetTextureWidth();
     int h = atlas.GetTextureHeight();
     bool hasPixel = false;
-    for (int i = 3; i < w * h * 4; i += 4) { // Check alpha channel
+    for (int i = 3; i < w * h * 4; i += 4) {  // Check alpha channel
         if (data[i] > 0) {
             hasPixel = true;
             break;
@@ -54,7 +54,7 @@ TEST_F(FontAtlasTest, TextureDataNonEmpty) {
 TEST_F(FontAtlasTest, GetGlyphPrintableAscii) {
     // All printable ASCII characters (32-126) must have valid glyphs
     for (int c = 32; c <= 126; c++) {
-        const Glyph *g = atlas.GetGlyph((char)c);
+        const Glyph* g = atlas.GetGlyph((char)c);
         ASSERT_NE(g, nullptr) << "Null glyph for char " << c;
         // Glyph must be within atlas bounds
         EXPECT_LT(g->x + g->width, (uint16_t)(atlas.GetTextureWidth() + 1))
@@ -66,8 +66,8 @@ TEST_F(FontAtlasTest, GetGlyphPrintableAscii) {
 
 TEST_F(FontAtlasTest, GetGlyphNonPrintableFallsBackToQuestion) {
     // Non-printable chars should map to '?'
-    const Glyph *nonPrintable = atlas.GetGlyph('\x01');
-    const Glyph *question = atlas.GetGlyph('?');
+    const Glyph* nonPrintable = atlas.GetGlyph('\x01');
+    const Glyph* question = atlas.GetGlyph('?');
     ASSERT_NE(nonPrintable, nullptr);
     ASSERT_NE(question, nullptr);
     EXPECT_EQ(nonPrintable->x, question->x);
@@ -103,7 +103,7 @@ TEST_F(FontAtlasTest, CalcTextSizeNullOutput) {
 
 TEST_F(FontAtlasTest, DigitsHaveNonZeroWidth) {
     for (char c = '0'; c <= '9'; c++) {
-        const Glyph *g = atlas.GetGlyph(c);
+        const Glyph* g = atlas.GetGlyph(c);
         ASSERT_NE(g, nullptr);
         EXPECT_GT(g->width, 0u) << "Digit '" << c << "' has zero width";
         EXPECT_GT(g->xAdvance, 0u) << "Digit '" << c << "' has zero advance";
@@ -137,7 +137,7 @@ public:
     int lastVertexCount = 0;
     int lastCommandCount = 0;
 
-    bool Initialize(int, int, const uint8_t *) override {
+    bool Initialize(int, int, const uint8_t*) override {
         initCalled = true;
         return true;
     }
@@ -146,10 +146,8 @@ public:
         shutdownCalled = true;
     }
 
-    void Render(const std::vector<DrawVertex> &verts,
-                const std::vector<uint16_t> &,
-                const std::vector<DrawCommand> &cmds,
-                int, int) override {
+    void Render(const std::vector<DrawVertex>& verts, const std::vector<uint16_t>&,
+                const std::vector<DrawCommand>& cmds, int, int) override {
         renderCallCount++;
         lastVertexCount = (int)verts.size();
         lastCommandCount = (int)cmds.size();
@@ -183,7 +181,7 @@ TEST_F(RendererTest, BeginEndFrameCallsRender) {
 
 TEST_F(RendererTest, EmptyFrameProducesNoRender) {
     renderer.BeginFrame(1920, 1080);
-    renderer.EndFrame(); // No draw calls
+    renderer.EndFrame();  // No draw calls
 
     EXPECT_EQ(backend.renderCallCount, 0) << "Empty frame should not call Render";
 }
@@ -225,4 +223,3 @@ TEST_F(RendererTest, ShutdownCallsBackend) {
     EXPECT_TRUE(backend.shutdownCalled);
     EXPECT_FALSE(renderer.IsInitialized());
 }
-

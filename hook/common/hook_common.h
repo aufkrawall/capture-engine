@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ipc_client.h"
+#include <windows.h>
 #include <atomic>
 #include <cstddef>
 #include <format>
@@ -8,15 +8,15 @@
 #include <mutex>
 #include <string>
 #include <vector>
-#include <windows.h>
+#include "ipc_client.h"
 
 // Legacy globals - still used during gradual migration to HookContext
 // New code should prefer HOOK_CTX->member access patterns
-extern IPCClient *g_IPC;
+extern IPCClient* g_IPC;
 extern std::atomic<bool> g_ShuttingDown;
 extern std::atomic<bool> g_GraphicsOverridesActive;
 struct SharedMemoryLayout;
-extern SharedMemoryLayout *g_pSharedMem;
+extern SharedMemoryLayout* g_pSharedMem;
 
 // Forward declare HookContext for accessor
 namespace ce {
@@ -26,12 +26,12 @@ struct HookContext;
 class PerformanceMetrics;
 
 // Logging Helper
-void HookLog(const char *fmt, ...);
-void HookLog(LogLevel level, const char *fmt, ...);
-void EarlyLog(const char *fmt, ...);
+void HookLog(const char* fmt, ...);
+void HookLog(LogLevel level, const char* fmt, ...);
+void EarlyLog(const char* fmt, ...);
 // Logs to hook_debug.log (respects the debugLogging flag, same as HookLog)
-void HookLogImportant(const char *fmt, ...);
-void NVNGXLog(const char *fmt, ...);
+void HookLogImportant(const char* fmt, ...);
+void NVNGXLog(const char* fmt, ...);
 void ReportLUID(uint32_t low, uint32_t high);
 extern char g_ProcessName[260];
 // Debug log independent of IPC
@@ -41,7 +41,7 @@ extern char g_ProcessName[260];
 
 // Local Config (Loaded by Hook for Per-App Overrides)
 #include "../../common/config.h"
-extern AppConfig *g_pLocalConfig;
+extern AppConfig* g_pLocalConfig;
 
 // Helper to get active config (Local > IPC)
 GraphicsConfig GetActiveGraphicsConfig();
@@ -52,20 +52,16 @@ float GetActivePrerenderLimit();
 // For DX9: D3DPRESENT_INTERVAL_* constants
 // For DX11/12: DXGI_SWAP_EFFECT and sync interval
 struct VSyncOverride {
-  bool shouldOverride = false;
-  int presentInterval =
-      0; // DX9: D3DPRESENT_INTERVAL_*, DX11/12: sync interval (0 or 1)
-  bool useMailbox =
-      false; // DX11/12: use DXGI_SWAP_EFFECT_FLIP_DISCARD for mailbox
+    bool shouldOverride = false;
+    int presentInterval = 0;  // DX9: D3DPRESENT_INTERVAL_*, DX11/12: sync interval (0 or 1)
+    bool useMailbox = false;  // DX11/12: use DXGI_SWAP_EFFECT_FLIP_DISCARD for mailbox
 };
 VSyncOverride GetVSyncOverride();
-void ProcessVSyncOverride(UINT &SyncInterval, UINT &Flags);
+void ProcessVSyncOverride(UINT& SyncInterval, UINT& Flags);
 
-bool BuildLogFilePathForModuleAddress(const void *address, const char *fileName,
-                                      char *outPath, size_t outPathLen);
+bool BuildLogFilePathForModuleAddress(const void* address, const char* fileName, char* outPath, size_t outPathLen);
 
-void TryEnableFrameTimeCSVLogging(SharedMemoryLayout *shm, const void *address,
-                                  PerformanceMetrics &metrics,
-                                  const char *apiName, bool &inOutInitialized);
+void TryEnableFrameTimeCSVLogging(SharedMemoryLayout* shm, const void* address, PerformanceMetrics& metrics,
+                                  const char* apiName, bool& inOutInitialized);
 
 bool IsProcessTerminating();
