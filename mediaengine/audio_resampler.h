@@ -95,6 +95,13 @@ public:
     }
 
     /**
+     * Get the current input format.
+     */
+    const InputFormat& GetInputFormat() const {
+        return inFmt;
+    }
+
+    /**
      * Free output buffers allocated by Process/Flush.
      */
     static void FreeOutputBuffer(uint8_t** data);

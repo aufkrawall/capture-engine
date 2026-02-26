@@ -32,6 +32,14 @@ public:
     // If buffer full, drops new data and increments droppedSamples counter.
     size_t Write(const float* data, size_t count);
 
+    // Atomically makes room by dropping the OLDEST samples if needed, then
+    // writes all of `data`. Used by the capture thread to ensure recent audio
+    // always reaches the ring buffer without a race between GetFree()/Skip()/
+    // Write(). Does NOT increment droppedSamples — this is intentional latency
+    // management, not true data loss.
+    // Returns count (always writes all data unless count > capacity).
+    size_t WriteRetainNew(const float* data, size_t count);
+
     // Pull samples from the buffer.
     // Returns number of samples read.
     // If not enough data, returns what is available (Reader must handle
@@ -41,7 +49,9 @@ public:
     // Peek only (for analysis)
     size_t Peek(float* outData, size_t count);
 
-    // Skip samples (consume without copying)
+    // Skip (consume without copying) the oldest `count` samples.
+    // Does NOT increment droppedSamples; this is intentional latency
+    // management. True data-loss tracking is done only by Write() overflow.
     size_t Skip(size_t count);
 
     // Clear buffer (reset)

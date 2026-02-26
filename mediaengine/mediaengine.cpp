@@ -84,6 +84,10 @@ public:
 
     std::map<int, bool> trackWasSilent;
 
+    // Cached track→source index map, built once in StartRecording to avoid
+    // per-frame reconstruction (~120 rebuilds/sec at 120fps).
+    std::map<int, std::vector<size_t>> cachedTrackToSources;
+
     // PullAndEncodeAudio counters — reset per recording to avoid stale state
     int warpCount = 0;
     int dropLogCounter = 0;
@@ -95,7 +99,6 @@ public:
     int screengrabFrameLogCount = 0;
     int silenceLogCounter = 0;
     int mixLogCounter = 0;
-    int ringBufferOverflowLogCounter = 0;
 
     int64_t GetLastVideoEncodeTimeUs() const {
         if (videoEnc)
@@ -324,6 +327,15 @@ public:
 
             trackWasSilent.clear();
 
+            // Build the track→source index map once (used every PullAndEncodeAudio call)
+            cachedTrackToSources.clear();
+            for (size_t i = 0; i < audioSources.size(); i++) {
+                auto& src = audioSources[i];
+                if (src.ringBuffer && src.sharedEncoderPtr) {
+                    cachedTrackToSources[src.track].push_back(i);
+                }
+            }
+
             // Reset PullAndEncodeAudio counters for clean per-recording state
             warpCount = 0;
             dropLogCounter = 0;
@@ -333,7 +345,6 @@ public:
             screengrabFrameLogCount = 0;
             silenceLogCounter = 0;
             mixLogCounter = 0;
-            ringBufferOverflowLogCounter = 0;
 
             // PULL MODEL: CRITICAL - Clear ring buffers to start fresh
             for (auto& src : audioSources) {
@@ -349,6 +360,9 @@ public:
                 if (src.syncResampler) {
                     src.syncResampler->Reset();
                 }
+                // Reset format-conversion resampler so no SWR state from the
+                // previous recording bleeds into the new one.
+                src.resampler.reset();
                 src.postResampleBuffer.clear();
                 src.syncSamplesOutput = 0;
                 src.dropFadeSamplesRemaining = 0;
@@ -681,19 +695,13 @@ public:
             encodedSamplesPerSource.resize(audioSources.size(), 0);
         }
 
-        // Group sources by track for mixing
-        std::map<int, std::vector<size_t>> trackToSources;
-        for (size_t srcIdx = 0; srcIdx < audioSources.size(); srcIdx++) {
-            auto& src = audioSources[srcIdx];
-            if (src.ringBuffer && src.sharedEncoderPtr) {
-                trackToSources[src.track].push_back(srcIdx);
-            }
-        }
+        // Use the pre-built track→source map (built once in StartRecording)
+        const auto& trackToSources = cachedTrackToSources;
 
         // For each track, pull audio from all sources, mix, then encode
-        for (auto& kv : trackToSources) {
+        for (const auto& kv : trackToSources) {
             int track = kv.first;
-            auto& srcIndices = kv.second;
+            const auto& srcIndices = kv.second;
 
             if (srcIndices.empty())
                 continue;
@@ -773,7 +781,7 @@ public:
                     // will accumulate and eventually overflow, dropping early audio and
                     // creating "silence bursts" / delayed start. Keep only a small
                     // bounded lead.
-                    const int64_t MAX_LEAD_SAMPLES = SAMPLE_RATE / 5;     // 200ms
+                    const int64_t MAX_LEAD_SAMPLES = SAMPLE_RATE / 25;    // 40ms
                     const int64_t MAX_DROP_PER_CALL = SAMPLE_RATE / 100;  // 10ms
                     const int64_t DROP_FADE_SAMPLES = SAMPLE_RATE / 200;  // 5ms
                     if ((int64_t)rbAvailable > TARGET_LATENCY_SAMPLES + MAX_LEAD_SAMPLES) {
@@ -791,10 +799,10 @@ public:
                             src.dropFadeSamplesRemaining = (int)DROP_FADE_SAMPLES;
 
                             src.ringBuffer->Skip((size_t)dropSamples * CHANNELS);
-                            if (dropLogCounter++ % 100 == 0) {
+                            if (dropLogCounter++ % 500 == 0) {
                                 DLL_Log(
-                                    "[PullAudio] Src %d ahead by %lld samples - dropping "
-                                    "%lld (capped from %lld) to cap latency",
+                                    "[PullAudio] Audio latency cap: src %d ahead by %lld samples - "
+                                    "trimming %lld (capped from %lld)",
                                     (int)srcIdx, (int64_t)rbAvailable - TARGET_LATENCY_SAMPLES, dropSamples,
                                     dropSamplesTotal);
                             }
@@ -914,6 +922,15 @@ public:
                             AudioResampler::FreeOutputBuffer(resampledData);
                         }
                     }
+                }
+
+                // Safety cap: bound postResampleBuffer to prevent unbounded growth
+                // if syncResampler consistently expands output (e.g. during clock stretch).
+                const size_t MAX_POST_RESAMPLE_FLOATS = totalFloats * 4;
+                if (src.postResampleBuffer.size() > MAX_POST_RESAMPLE_FLOATS) {
+                    size_t excess = src.postResampleBuffer.size() - MAX_POST_RESAMPLE_FLOATS;
+                    src.postResampleBuffer.erase(src.postResampleBuffer.begin(),
+                                                 src.postResampleBuffer.begin() + (std::ptrdiff_t)excess);
                 }
 
                 // Pop exactly totalFloats from postResampleBuffer for mixing
@@ -1374,9 +1391,16 @@ private:
                     inputFmt.isFloat = packet.isFloat;
                     inputFmt.blockAlign = (packet.channels * packet.bitsPerSample) / 8;
 
-                    // Initialize/Reinitialize resampler if needed
-                    if (!src.resampler->IsReady() ||
-                        src.resampler->GetOutputFormat().sampleRate != targetFmt.sampleRate) {
+                    // Initialize/Reinitialize resampler if needed (check all input format fields)
+                    bool needReinit = !src.resampler->IsReady();
+                    if (!needReinit) {
+                        const auto& cur = src.resampler->GetInputFormat();
+                        needReinit = (cur.sampleRate != inputFmt.sampleRate ||
+                                      cur.channels != inputFmt.channels ||
+                                      cur.bitsPerSample != inputFmt.bitsPerSample ||
+                                      cur.isFloat != inputFmt.isFloat);
+                    }
+                    if (needReinit) {
                         src.resampler->Init(inputFmt, targetFmt);
                     }
 
@@ -1424,21 +1448,9 @@ private:
                                 }
 
                                 sourceTimestamps[srcIdx] = packet.timestamp;
-                                size_t freeFloats = src.ringBuffer->GetFree();
-                                if (freeFloats < (size_t)numFloats) {
-                                    size_t needDrop = (size_t)numFloats - freeFloats;
-                                    src.ringBuffer->Skip(needDrop);
-                                }
-                                size_t written = src.ringBuffer->Write((float*)resampledData[0], numFloats);
-                                if (written < numFloats) {
-                                    // Only log overflow occasionally to avoid log spam
-                                    if (ringBufferOverflowLogCounter++ % 100 == 0) {
-                                        DLL_Log(
-                                            "[AudioLoop] RingBuffer overflow: src=%d, "
-                                            "requested=%d, written=%zu",
-                                            (int)srcIdx, numFloats, written);
-                                    }
-                                }
+                                // WriteRetainNew: atomically drops oldest audio to make room,
+                                // then writes new audio. No race between GetFree/Skip/Write.
+                                src.ringBuffer->WriteRetainNew((float*)resampledData[0], numFloats);
                             } else if (src.ringBuffer && audioSyncPending.load()) {
                                 sourceTimestamps[srcIdx] = packet.timestamp;
                             } else if (!src.ringBuffer) {

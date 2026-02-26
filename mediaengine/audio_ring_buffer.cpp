@@ -36,6 +36,39 @@ size_t AudioRingBuffer::Write(const float* data, size_t count) {
     return count;
 }
 
+size_t AudioRingBuffer::WriteRetainNew(const float* data, size_t count) {
+    std::lock_guard<std::mutex> lock(mutex);
+
+    if (count > capacity) {
+        // Can't fit even in an empty buffer; write only the newest `capacity` samples.
+        data += (count - capacity);
+        count = capacity;
+    }
+
+    size_t avail = available.load(std::memory_order_acquire);
+    size_t freeSpace = capacity - avail;
+
+    if (count > freeSpace) {
+        // Drop oldest samples to make room — no droppedSamples increment.
+        size_t needDrop = count - freeSpace;
+        readPos = (readPos + needDrop) % capacity;
+        avail -= needDrop;
+    }
+
+    size_t firstChunk = std::min(count, capacity - writePos);
+    memcpy(&buffer[writePos], data, firstChunk * sizeof(float));
+
+    size_t secondChunk = count - firstChunk;
+    if (secondChunk > 0) {
+        memcpy(&buffer[0], data + firstChunk, secondChunk * sizeof(float));
+    }
+
+    writePos = (writePos + count) % capacity;
+    available.store(avail + count, std::memory_order_release);
+
+    return count;
+}
+
 size_t AudioRingBuffer::Read(float* outData, size_t count) {
     std::lock_guard<std::mutex> lock(mutex);
 
@@ -85,10 +118,6 @@ size_t AudioRingBuffer::Skip(size_t count) {
     readPos = (readPos + toSkip) % capacity;
     // CRITICAL FIX: Use release ordering to publish the updated available count
     available.store(avail - toSkip, std::memory_order_release);
-    // Track dropped samples so downstream drift compensation can account for them
-    if (toSkip > 0) {
-        droppedSamples.fetch_add(toSkip, std::memory_order_relaxed);
-    }
     return toSkip;
 }
 
