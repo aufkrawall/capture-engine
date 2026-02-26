@@ -1240,10 +1240,11 @@ static void ApplyPrerenderLimitDX12(float limit) {
             WaitForSingleObject(event, INFINITE);
         }
     } else {
-        // Buffered Limit
+        // Buffered Limit: For fractional limits (e.g., 0.5), we use Buffered 1
+        // (Lookback 1) combined with an idle gap to approximate sub-frame latency.
         bool isFractional = (limit > 0.01f && limit < 1.0f);
         int effectiveLimit = isFractional ? 1 : (int)limit;
-        int lookback = effectiveLimit + 1;
+        int lookback = effectiveLimit;
 
         // Signal current frame
         uint64_t signalValue = g_PrerenderFrameIndex + 1;
@@ -2107,14 +2108,8 @@ void STDMETHODCALLTYPE DetourCreateSampler(ID3D12Device* pDevice, const D3D12_SA
         return;
     }
 
-    HookLog("DetourCreateSampler: CALLED, Filter=0x%X, MaxAniso=%d, MipBias=%.2f", pDesc->Filter, pDesc->MaxAnisotropy,
-            pDesc->MipLODBias);
-
     D3D12_SAMPLER_DESC modifiedDesc = *pDesc;
     ApplyDX12SamplerOverridesCallback(&modifiedDesc);
-
-    HookLog("DetourCreateSampler: MODIFIED, Filter=0x%X, MaxAniso=%d, MipBias=%.2f", modifiedDesc.Filter,
-            modifiedDesc.MaxAnisotropy, modifiedDesc.MipLODBias);
 
     oCreateSampler(pDevice, &modifiedDesc, DestDescriptor);
 }

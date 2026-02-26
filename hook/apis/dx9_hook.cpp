@@ -1793,9 +1793,9 @@ public:
             }
         } else {
             // Buffered Limit: For fractional limits (e.g., 0.5), we use Buffered 1
-            // (Lookback 2)
+            // (Lookback 1) combined with an idle gap to approximate sub-frame latency.
             int effectiveLimit = isFractional ? 1 : (int)limit;
-            int lookback = effectiveLimit + 1;
+            int lookback = effectiveLimit;
             size_t needed = 16;  // Use fixed size for simplicity in DX9 ring buffer
 
             if (prerenderQueries.size() != needed) {

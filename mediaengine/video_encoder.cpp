@@ -4,6 +4,7 @@
 #include "mediaengine.h"
 
 extern "C" {
+#include <libavutil/opt.h>
 #include <libavutil/pixfmt.h>
 }
 #include <d3d11_4.h>
@@ -1025,6 +1026,15 @@ bool VideoEncoder::Start() {
     recordingRequested = true;
     DLL_Log("[VideoEncoder] Start Recording Requested (Deferred).");
 
+    // Reset per-recording perf stats so second+ recordings show correct data.
+    g_lastFramePts = -1;
+    g_framesEncoded = 0;
+    g_totalFenceWait = 0.0;
+    g_totalColorConvert = 0.0;
+    g_totalEncode = 0.0;
+    g_maxFrameTime = 0.0;
+    g_slowFrameCount = 0;
+
     // Start Async Allocator Thread
     if (!writerRunning) {
         writerRunning = true;
@@ -1287,6 +1297,13 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                 "[VideoEncoder] Stream %d: type=%d codec_id=%d w=%d h=%d "
                 "extradata=%p extradata_size=%d",
                 i, cp->codec_type, cp->codec_id, cp->width, cp->height, cp->extradata, cp->extradata_size);
+        }
+
+        // Pre-allocate space for MKV cues (seek index) at the front of the file.
+        // Without this, cues are written at the END and many players can't seek
+        // or show correct duration without reading the whole file first.
+        if (fmtCtx->priv_data) {
+            av_opt_set(fmtCtx->priv_data, "reserve_index_space", "200000", 0);  // 200KB
         }
 
         int ret = avformat_write_header(fmtCtx, nullptr);
@@ -1991,6 +2008,9 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
                 return false;
             }
         }
+        if (fmtCtx->priv_data) {
+            av_opt_set(fmtCtx->priv_data, "reserve_index_space", "200000", 0);
+        }
         if (avformat_write_header(fmtCtx, nullptr) < 0) {
             DLL_Log("Failed to write header");
             return false;
@@ -2042,10 +2062,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     // keeping cursor motion smooth
     bool cursorVisible = false;
     int cursorX = 0, cursorY = 0;
-    static int cursorUpdateCounter = 0;
-    static int cachedCursorX = 0, cachedCursorY = 0;
-    static bool cachedCursorVisible = false;
-    // static HCURSOR cachedCursorHandle = nullptr;
+    // cursorUpdateCounter, cachedCursorX/Y/Visible are member variables (reset between recordings)
 
     if (captureCursor && cursorRenderer) {
         cursorUpdateCounter++;
@@ -2349,6 +2366,11 @@ void VideoEncoder::CleanupResources() {
     lastFenceWaitUs = 0;
     encodedDurationUs.store(0, std::memory_order_relaxed);
     lastAssignedVideoPts = -1;
+    asyncWriteErrorCount = 0;
+    cursorUpdateCounter = 0;
+    cachedCursorX = 0;
+    cachedCursorY = 0;
+    cachedCursorVisible = false;
 }
 
 void VideoEncoder::Stop() {
@@ -3192,6 +3214,9 @@ bool VideoEncoder::EncodeFrameCuda(HANDLE sharedHandle, uint64_t fenceValue, int
                 return false;
             }
         }
+        if (fmtCtx->priv_data) {
+            av_opt_set(fmtCtx->priv_data, "reserve_index_space", "200000", 0);
+        }
         if (avformat_write_header(fmtCtx, nullptr) < 0) {
             DLL_Log("Failed to write header");
             return false;
@@ -3376,8 +3401,7 @@ void VideoEncoder::AsyncWriteLoop() {
             if (fileOpened && fmtCtx) {
                 int ret = av_interleaved_write_frame(fmtCtx, pkt);
                 if (ret < 0) {
-                    static int writeErrorCount = 0;
-                    if (writeErrorCount++ < 10) {
+                    if (asyncWriteErrorCount++ < 10) {
                         char errbuf[AV_ERROR_MAX_STRING_SIZE];
                         av_strerror(ret, errbuf, sizeof(errbuf));
                         DLL_Log(

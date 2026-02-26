@@ -339,9 +339,9 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
     integralError += smoothedDrift;
 
     // Anti-Windup: Clamp Integral term
-    // Max correction +/- 5% speed.
-    // In 10 seconds, 5% is 0.05 * 48000 * 10 = 24000 samples
-    const double MAX_INTEGRAL_CORRECTION = (outFmt.sampleRate * COMPENSATION_PERIOD_SEC) * 0.05;
+    // Max correction +/- 10% speed (doubled from 5% to handle larger drifts).
+    // In 10 seconds, 10% is 0.10 * 48000 * 10 = 48000 samples
+    const double MAX_INTEGRAL_CORRECTION = (outFmt.sampleRate * COMPENSATION_PERIOD_SEC) * 0.10;
     if (integralError * activeKi > MAX_INTEGRAL_CORRECTION)
         integralError = MAX_INTEGRAL_CORRECTION / activeKi;
     if (integralError * activeKi < -MAX_INTEGRAL_CORRECTION)
@@ -354,8 +354,8 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
     targetDelta = (int32_t)correction;
 
     // 3. Absolute Safety Limits
-    // +/- 5% of total period samples
-    maxDelta = (outFmt.sampleRate * COMPENSATION_PERIOD_SEC) / 20;
+    // +/- 10% of total period samples (doubled from 5% to handle larger drifts)
+    maxDelta = (outFmt.sampleRate * COMPENSATION_PERIOD_SEC) / 10;
 
     // Log extreme correction (Logic Debug)
     if (std::abs(targetDelta) > maxDelta) {
@@ -371,9 +371,11 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
         targetDelta = -maxDelta;
 
     // 2. RATE LIMITING STAGE (Inertia)
-    // Max change: 2 samples per update (over 10s window).
-    // Effectively 0.2 samples/sec/update acceleration. Extremely smooth.
-    const int32_t maxChange = 2;
+    // Max change: 200 samples per update (at 10Hz = 2000/sec). This allows
+    // reaching the 10% maximum correction (~48000) in about 24 seconds,
+    // fast enough to drain accumulated lead without audible pitch steps.
+    // At 0.042%/s acceleration even maximum ramp-up is inaudible.
+    const int32_t maxChange = 200;
 
     if (currentDelta < targetDelta) {
         currentDelta += maxChange;

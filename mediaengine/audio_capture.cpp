@@ -47,7 +47,7 @@ bool AudioCapture::Start(const std::string& deviceId, bool isLoopback) {
         DLL_Log("[AudioCapture] CoInitializeEx failed: 0x%x", hr);
         return false;
     }
-    coInitOwned = SUCCEEDED(hr);  // S_OK = we initialized; S_FALSE = already init on this thread
+    coInitOwned = (hr == S_OK);  // Only own COM if WE initialized it (S_OK); S_FALSE = already initialized by another caller
 
     hr = CoCreateInstance(CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, IID_IMMDeviceEnumerator, (void**)&pEnumerator);
     if (FAILED(hr))
@@ -122,8 +122,12 @@ void AudioCapture::Stop() {
     if (captureThread.joinable())
         captureThread.join();
 
-    if (pAudioClient)
-        pAudioClient->Stop();
+    // NOTE: Do NOT call pAudioClient->Stop() here. On Windows 11, calling Stop() on
+    // a loopback audio stream triggers a bug in AudioSes.dll where CLoopbackMixer::Cleanup()
+    // crashes with an access violation (double-free of AudioLimiterAPO COM object).
+    // The crash happens on the mixer's own thread and is unhandled, killing the process.
+    // Releasing the interfaces directly (without Stop()) is safe: Windows tears down the
+    // audio session cleanly when the ref count drops to zero via Release().
 
     if (pCaptureClient) {
         pCaptureClient->Release();

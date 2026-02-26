@@ -113,9 +113,9 @@ static void ApplyPrerenderLimitDDraw(IDirectDrawSurface7* surface, float limit) 
         }
     } else {
         // Buffered Limit: For fractional limits (e.g., 0.5), we use Buffered 1
-        // (Lookback 2) This allows GPU overlap while pacing provides the idle gap.
+        // (Lookback 1) combined with an idle gap to approximate sub-frame latency.
         int effectiveLimit = isFractional ? 1 : (int)limit;
-        int lookback = effectiveLimit + 1;
+        int lookback = effectiveLimit;
 
         if (g_PrerenderSurfaces.size() != (size_t)lookback) {
             g_PrerenderSurfaces.assign(lookback, nullptr);

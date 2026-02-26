@@ -41,12 +41,6 @@ extern "C" BOOL WINAPI ApplyDX12SamplerOverridesCallback(D3D12_SAMPLER_DESC* pDe
 
     const auto& gfx = GetActiveGraphicsConfig();
 
-    HookLog(
-        "ApplyDX12SamplerOverridesCallback: AF=%s, MipBias=%s, Mode=%s, "
-        "OrigFilter=0x%X, OrigAniso=%d, OrigBias=%.2f",
-        gfx.anisotropicFiltering.c_str(), gfx.mipBias.c_str(), gfx.mipBiasMode.c_str(), pDesc->Filter,
-        pDesc->MaxAnisotropy, pDesc->MipLODBias);
-
     D3D12_FILTER origFilter = pDesc->Filter;
     UINT origAniso = pDesc->MaxAnisotropy;
     float origBias = pDesc->MipLODBias;
@@ -56,7 +50,9 @@ extern "C" BOOL WINAPI ApplyDX12SamplerOverridesCallback(D3D12_SAMPLER_DESC* pDe
     if (af != "default") {
         if (af == "off") {
             if (pDesc->Filter == D3D12_FILTER_ANISOTROPIC || pDesc->Filter == D3D12_FILTER_COMPARISON_ANISOTROPIC) {
-                pDesc->Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+                bool wasComparison = (pDesc->Filter >= D3D12_FILTER_COMPARISON_MIN_MAG_MIP_POINT);
+                pDesc->Filter =
+                    wasComparison ? D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR : D3D12_FILTER_MIN_MAG_MIP_LINEAR;
                 pDesc->MaxAnisotropy = 1;
             }
         } else {
@@ -88,10 +84,10 @@ extern "C" BOOL WINAPI ApplyDX12SamplerOverridesCallback(D3D12_SAMPLER_DESC* pDe
             if (mode == "offset") {
                 pDesc->MipLODBias += userBias;
             } else if (mode == "base") {
-                if (pDesc->MipLODBias >= 0.0f) {
-                    pDesc->MipLODBias = userBias;
-                }
-            } else if (mode == "override") {
+                if (pDesc->MipLODBias < 0.0f)
+                    pDesc->MipLODBias += userBias;
+            } else {
+                // "strict" (default) or any other mode - absolute override
                 pDesc->MipLODBias = userBias;
             }
         } catch (...) {}

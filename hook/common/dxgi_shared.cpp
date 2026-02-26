@@ -383,11 +383,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         g_SharedFpsLimiter.Apply();
     }
 
-    VSyncOverride vsync = GetVSyncOverride();
-    if (vsync.shouldOverride)
-        SyncInterval = (UINT)vsync.presentInterval;
-    if (SyncInterval > 0)
-        Flags &= ~512;
+    ProcessVSyncOverride(SyncInterval, Flags);
 
     HRESULT hr = CallOriginalPresent(pSwapChain, SyncInterval, Flags);
 
@@ -478,11 +474,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         g_SharedFpsLimiter.Apply();
     }
 
-    VSyncOverride vsync = GetVSyncOverride();
-    if (vsync.shouldOverride)
-        SyncInterval = (UINT)vsync.presentInterval;
-    if (SyncInterval > 0)
-        Flags &= ~512;
+    ProcessVSyncOverride(SyncInterval, Flags);
 
     HRESULT hr = CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
 

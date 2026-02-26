@@ -213,6 +213,7 @@ private:
     int audioPacketCount = 0;
     int videoPacketCount = 0;
     int vidDebugCount = 0;
+    int asyncWriteErrorCount = 0;  // replaces static writeErrorCount in AsyncWriteLoop
 
     // D3D11 Video Processor for GPU-accelerated BGRA → NV12 conversion
     ID3D11VideoDevice* videoDevice = nullptr;
@@ -252,6 +253,12 @@ private:
     CursorCacheEntry cursorCache[kCursorCacheSize];
     CursorCacheEntry* activeCursor = nullptr;  // Currently active cursor entry
     uint64_t cursorFrameCounter = 0;           // Tracks frame number for LRU
+
+    // Cursor state cached per-frame (used in EncodeFrameD3D11 — member to reset between recordings)
+    int cursorUpdateCounter = 0;
+    int cachedCursorX = 0;
+    int cachedCursorY = 0;
+    bool cachedCursorVisible = false;
 
     // Find or create cursor cache entry
     CursorCacheEntry* GetCursorCacheEntry(HCURSOR handle);

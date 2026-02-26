@@ -275,6 +275,7 @@ void CleanupDX11Resources(bool releaseDeviceContext = true);
 void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame);
 void DrawDX11Overlay(IDXGISwapChain* pSwapChain);
 static void InstallVTableHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pContext, IDXGISwapChain* pSwapChain);
+static void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit);
 
 HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
     // Performance metrics for this frame
@@ -357,6 +358,14 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT Syn
     // The app is already tearing down its D3D resources
     if (g_ShuttingDown.load()) {
         return S_OK;  // Return success to avoid cascading errors
+    }
+
+    // CPU Prerender Limit
+    float prerenderLimit = GetActivePrerenderLimit();
+    if (prerenderLimit >= 0.0f) {
+        int64_t prerenderStartUs = PerfLogger::GetQpcUs();
+        ApplyPrerenderLimit(pSwapChain, prerenderLimit);
+        perfMetrics.prerenderWaitUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - prerenderStartUs);
     }
 
     // FPS Limiter
@@ -461,6 +470,12 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain* pSwapChain, UINT Sy
     // If window was invalid during overlay rendering, skip Present to avoid crash
     if (g_ShuttingDown.load()) {
         return S_OK;
+    }
+
+    // CPU Prerender Limit
+    float prerenderLimit = GetActivePrerenderLimit();
+    if (prerenderLimit >= 0.0f) {
+        ApplyPrerenderLimit(pSwapChain, prerenderLimit);
     }
 
     if (oPresent1)
@@ -2104,10 +2119,9 @@ static void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
             }
         } else {
             // Buffered Limit: For fractional limits (e.g., 0.5), we use Buffered 1
-            // (Lookback 2) This allows GPU overlap while pacing provides the idle
-            // gap.
+            // (Lookback 1) combined with an idle gap to approximate sub-frame latency.
             int effectiveLimit = isFractional ? 1 : (int)limit;
-            int lookback = effectiveLimit + 1;
+            int lookback = effectiveLimit;
 
             ID3D11Query* currentQ = g_PrerenderQueries[g_PrerenderFrameIndex % g_PrerenderQueries.size()];
             ctx->End(currentQ);
@@ -2205,8 +2219,10 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device* pDevice, const 
             if (af == "off") {
                 // Remove anisotropic filter if set
                 if ((desc.Filter & D3D11_FILTER_ANISOTROPIC) || (desc.Filter & D3D11_FILTER_COMPARISON_ANISOTROPIC)) {
-                    // Fallback to Trilinear
-                    desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+                    // Preserve comparison mode (used for shadow map PCF samplers)
+                    bool wasComparison = (desc.Filter >= D3D11_FILTER_COMPARISON_MIN_MAG_MIP_POINT);
+                    desc.Filter =
+                        wasComparison ? D3D11_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR : D3D11_FILTER_MIN_MAG_MIP_LINEAR;
                     desc.MaxAnisotropy = 1;
                     modified = true;
                 }
