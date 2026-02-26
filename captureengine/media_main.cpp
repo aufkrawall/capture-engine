@@ -443,10 +443,11 @@ void EncoderThreadFunc(const AppConfig& config) {
                 g_HasLastFrame = true;
             }
         } else if (g_HasLastFrame && g_EncoderRunning) {
-            if (!g_LastFrame.isInjectMode) {
-                frameToProcess = &g_LastFrame;
-                isDuplicate = true;
-            }
+            // CFR FIX: Re-encode last frame when no new frame is available.
+            // This applies to both screengrab and inject modes so output cadence
+            // remains stable when source FPS dips below target.
+            frameToProcess = &g_LastFrame;
+            isDuplicate = true;
         }
 
         if (!g_EncoderRunning && !popped) {
@@ -456,6 +457,10 @@ void EncoderThreadFunc(const AppConfig& config) {
         if (frameToProcess) {
             LARGE_INTEGER startEnc, endEnc;
             QueryPerformanceCounter(&startEnc);
+
+            if (isDuplicate && g_pSharedMem) {
+                g_pSharedMem->runtimeState.duplicateFrames.fetch_add(1, std::memory_order_relaxed);
+            }
 
             if (frameToProcess->isInjectMode) {
                 MediaEngine_ProcessFrame((uint64_t)frameToProcess->sharedHandle, (uint64_t)frameToProcess->fenceHandle,
@@ -477,6 +482,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                 smoothedEncodeMs = pureEncodeMs;
             } else {
                 smoothedEncodeMs = smoothedEncodeMs * 0.95 + pureEncodeMs * 0.05;
+            }
+
+            if (g_pSharedMem && currentEncodeMs > frameIntervalMs * 1.10) {
+                g_pSharedMem->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
             }
 
             g_IsEncoderBottlenecked = (smoothedEncodeMs > frameIntervalMs * 0.95);

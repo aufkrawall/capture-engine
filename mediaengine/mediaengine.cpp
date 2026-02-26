@@ -784,6 +784,7 @@ public:
                     const int64_t MAX_LEAD_SAMPLES = SAMPLE_RATE / 25;    // 40ms
                     const int64_t MAX_DROP_PER_CALL = SAMPLE_RATE / 100;  // 10ms
                     const int64_t DROP_FADE_SAMPLES = SAMPLE_RATE / 200;  // 5ms
+                    const int64_t MIN_COMPENSATION_BUFFER_SAMPLES = TARGET_LATENCY_SAMPLES / 4;  // 5ms
                     if ((int64_t)rbAvailable > TARGET_LATENCY_SAMPLES + MAX_LEAD_SAMPLES) {
                         int64_t dropSamplesTotal = (int64_t)rbAvailable - (TARGET_LATENCY_SAMPLES + MAX_LEAD_SAMPLES);
                         int64_t dropSamples = std::min(dropSamplesTotal, MAX_DROP_PER_CALL);
@@ -810,41 +811,46 @@ public:
                         }
                     }
 
-                    int64_t rbError = (int64_t)rbAvailable - TARGET_LATENCY_SAMPLES;
+                    if ((int64_t)rbAvailable >= MIN_COMPENSATION_BUFFER_SAMPLES) {
+                        int64_t rbError = (int64_t)rbAvailable - TARGET_LATENCY_SAMPLES;
 
-                    // Connect ring buffer level error to the drift compensator.
-                    // swr_set_compensation(delta): delta > 0 adds output (slower drain),
-                    //                              delta < 0 removes output (faster drain).
-                    // AdjustForClockDrift negates the PI output before passing to swr, so
-                    // a positive PI correction (driftSamples > 0) correctly produces a
-                    // negative swr delta (removes samples = faster drain).
-                    //
-                    // We map rbError directly to driftSamples:
-                    //   driftSamples = syncSamplesOutput - expectedSamples
-                    //   => expectedSamples = syncSamplesOutput - rbError
-                    //   => fakeExpectedSamples = syncSamplesOutput - rbError
+                        // Connect ring buffer level error to the drift compensator.
+                        // swr_set_compensation(delta): delta > 0 adds output (slower drain),
+                        //                              delta < 0 removes output (faster drain).
+                        // AdjustForClockDrift negates the PI output before passing to swr, so
+                        // a positive PI correction (driftSamples > 0) correctly produces a
+                        // negative swr delta (removes samples = faster drain).
+                        //
+                        // We map rbError directly to driftSamples:
+                        //   driftSamples = syncSamplesOutput - expectedSamples
+                        //   => expectedSamples = syncSamplesOutput - rbError
+                        //   => fakeExpectedSamples = syncSamplesOutput - rbError
 
-                    int64_t fakeExpectedSamples = src.syncSamplesOutput - rbError;
+                        int64_t fakeExpectedSamples = src.syncSamplesOutput - rbError;
 
-                    // Convert back to "Video Time" for the API signature
-                    // expected = (time * rate) / 1000
-                    // time = (expected * 1000) / rate
-                    int64_t correctedVideoTimeMs = (fakeExpectedSamples * 1000) / SAMPLE_RATE;
+                        // Convert back to "Video Time" for the API signature
+                        // expected = (time * rate) / 1000
+                        // time = (expected * 1000) / rate
+                        int64_t correctedVideoTimeMs = (fakeExpectedSamples * 1000) / SAMPLE_RATE;
 
-                    // Ensure we don't pass negative time if buffer is empty at start
-                    if (correctedVideoTimeMs < 0)
-                        correctedVideoTimeMs = 0;
+                        // Ensure we don't pass negative time if buffer is empty at start
+                        if (correctedVideoTimeMs < 0)
+                            correctedVideoTimeMs = 0;
 
-                    src.syncResampler->AdjustForClockDrift(correctedVideoTimeMs, src.syncSamplesOutput);
+                        src.syncResampler->AdjustForClockDrift(correctedVideoTimeMs, src.syncSamplesOutput);
 
-                    // Debug log occasionally
-                    if (driftLogCounter++ % 1000 == 0 && abs(rbError) > 100) {
-                        // Show calculated drift (which is output - expected = output -
-                        // (output - rbError) = rbError)
-                        DLL_Log(
-                            "[PullAudio] Src %d Buffer Level: %zu (Err: %lld) -> Comp "
-                            "Drift: %lld",
-                            (int)srcIdx, rbAvailable, rbError, rbError);
+                        // Debug log occasionally
+                        if (driftLogCounter++ % 1000 == 0 && abs(rbError) > 100) {
+                            // Show calculated drift (which is output - expected = output -
+                            // (output - rbError) = rbError)
+                            DLL_Log(
+                                "[PullAudio] Src %d Buffer Level: %zu (Err: %lld) -> Comp "
+                                "Drift: %lld",
+                                (int)srcIdx, rbAvailable, rbError, rbError);
+                        }
+                    } else if (driftLogCounter++ % 2000 == 0) {
+                        DLL_Log("[PullAudio] Src %d Buffer low (%zu) - holding drift compensation", (int)srcIdx,
+                                rbAvailable);
                     }
                 }
 
