@@ -132,6 +132,8 @@ void CachedOverlayRenderer::Shutdown() {
 #ifndef VK_LAYER_CE_OVERLAY
     if (IsProcessTerminating()) {
         for (auto& frame : perFrameResources) {
+            frame.commandAllocator = nullptr;
+            frame.commandList = nullptr;
             frame.indexBuffer = nullptr;
             frame.vertexBuffer = nullptr;
             frame.indexBufferCpuPtr = nullptr;
@@ -141,6 +143,10 @@ void CachedOverlayRenderer::Shutdown() {
             frameTimeGraph.gpuHistoryCpuPtr = nullptr;
             frameTimeGraph.gpuHistoryBuffer = nullptr;
         }
+        device = nullptr;
+        commandQueue = nullptr;
+        fence = nullptr;
+        srvHeap = nullptr;
         return;
     }
 #endif

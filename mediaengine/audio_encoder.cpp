@@ -157,6 +157,14 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
     DLL_Log("[AudioEncoder] Opening codec: %s sample_rate=%d sample_fmt=%d", codecName.c_str(), codecCtx->sample_rate,
             codecCtx->sample_fmt);
 
+    // ALAC: must set bits_per_raw_sample BEFORE avcodec_open2.
+    // The encoder reads this during init to write the magic cookie (extradata).
+    // Setting it after open causes a mismatch: extradata says 16-bit, stream
+    // header says 32-bit, which makes decoders produce silence or white noise.
+    if (codec->id == AV_CODEC_ID_ALAC) {
+        codecCtx->bits_per_raw_sample = 24;
+    }
+
     // Allow experimental codecs (like Opus in some builds)
     codecCtx->strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL;
 
@@ -167,12 +175,6 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
         DLL_Log("[AudioEncoder] Failed to open codec: %d (%s)", ret, errbuf);
         avcodec_free_context(&codecCtx);
         return false;
-    }
-
-    // ALAC: explicitly request 32-bit depth. The encoder defaults to 24-bit
-    // even with AV_SAMPLE_FMT_S32P input unless this field is set.
-    if (codec->id == AV_CODEC_ID_ALAC) {
-        codecCtx->bits_per_raw_sample = 32;
     }
 
     if (codecCtx->sample_rate > 0) {
@@ -365,9 +367,11 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
     }
 
     // Diagnostic: check if audio data is non-silent (reduced frequency to avoid
-    // log spam)
-    if (samplesCount == 0) {
-        diagCounter = 0;
+    // log spam). Only reset diagCounter the very first time (samplesCount == 0
+    // AND diagCounter == 0) so we don't spam the log on every call that arrives
+    // before the first FIFO flush.
+    if (samplesCount == 0 && diagCounter == 0) {
+        diagCounter = 1;  // arm the first check
     }
 
     if (diagCounter++ % 5000 == 0 && isFloat && sizeBytes > 0) {

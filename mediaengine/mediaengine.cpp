@@ -1322,10 +1322,21 @@ private:
         std::vector<AudioPacket> sourceLastPackets(audioSources.size());
         std::vector<std::chrono::steady_clock::time_point> lastPacketTime(audioSources.size(),
                                                                           std::chrono::steady_clock::now());
+        int64_t lastSeenStartQPC = 0;  // Detect recording session changes
 
         while (audioRunning) {
             bool gotAnyPacket = false;
             auto now = std::chrono::steady_clock::now();
+
+            // Detect new recording session (StartRecording called again) and
+            // reset per-source timestamps so first-packet silence padding fires.
+            {
+                int64_t currentStartQPC = recordingStartSystemQPCMs.load();
+                if (currentStartQPC != lastSeenStartQPC) {
+                    lastSeenStartQPC = currentStartQPC;
+                    std::fill(sourceTimestamps.begin(), sourceTimestamps.end(), 0);
+                }
+            }
 
             // Step 1: Poll all sources and accumulate samples into buffers
             for (size_t srcIdx = 0; srcIdx < audioSources.size(); srcIdx++) {

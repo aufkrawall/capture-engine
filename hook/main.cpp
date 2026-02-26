@@ -1514,6 +1514,13 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     g_hModule = hinstDLL;
     DisableThreadLibraryCalls(hinstDLL);
 
+    // CRASH FIX: Register an atexit handler that sets g_ProcessTerminating = true.
+    // atexit runs LIFO, so a handler registered here (after global constructors)
+    // runs BEFORE global destructors. This lets CachedOverlayRenderer::Shutdown()
+    // and similar destructors skip GPU resource Release() calls during process
+    // exit, preventing crashes in nvwgf2umx when the D3D12 device is already torn down.
+    std::atexit([]() { g_ProcessTerminating.store(true, std::memory_order_release); });
+
     char fullPath[MAX_PATH] = {0};
     char *fileName = (char *)"unknown";
     if (GetModuleFileNameA(NULL, fullPath, MAX_PATH)) {

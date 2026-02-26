@@ -1091,7 +1091,7 @@ class FFmpegBuilder:
             "--disable-protocols",
             "--enable-protocol=file",
             "--enable-muxer=mp4,matroska,mov,flv,ts",
-            "--enable-demuxer=concat",
+            "--enable-demuxer=concat,matroska,mov,mp4",
             # SW Encoders (Audio)
             "--enable-encoder=aac,opus,flac,alac",
             "--enable-decoder=aac,opus,flac,alac",
