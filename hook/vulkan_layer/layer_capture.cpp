@@ -721,14 +721,13 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
     uint32_t fenceIndex = imageIndex % state.copyFences.size();
     VkFence fence = state.copyFences[fenceIndex];
 
-    // Wait for previous frame's copy to complete (with timeout to avoid hanging)
-    constexpr uint64_t FENCE_TIMEOUT_NS = 50000000;  // 50ms timeout
-    VkResult waitResult = disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, FENCE_TIMEOUT_NS);
+    // Non-blocking check: if the previous copy for this slot is still in flight,
+    // drop this frame to avoid stalling the present queue (mirrors DX12 behavior)
+    VkResult waitResult = disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, 0);
     if (waitResult != VK_SUCCESS) {
         if (waitResult == VK_ERROR_DEVICE_LOST)
             return;
-        if (waitResult == VK_TIMEOUT)
-            return;
+        // VK_TIMEOUT: previous copy still in flight, drop this frame
         return;
     }
     disp->fp_vkResetFences(device, 1, &fence);
@@ -802,42 +801,47 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
     // We signal TWO semaphores:
     // 1. The binary semaphore for Present to wait on (passed as arg)
     // 2. The timeline semaphore for the Encoder to wait on (in state struct)
-    std::vector<VkSemaphore> signalSems;
-    std::vector<uint64_t> signalValues;
+    // Use stack arrays to avoid heap allocation in the capture hot path (max 2 each)
+    VkSemaphore signalSems[2];
+    uint64_t signalValues[2] = {0, 0};
+    uint32_t signalCount = 0;
 
     if (signalSemaphore != VK_NULL_HANDLE) {
-        signalSems.push_back(signalSemaphore);
-        signalValues.push_back(0);  // Binary semaphore ignores value
+        signalSems[signalCount] = signalSemaphore;
+        signalValues[signalCount] = 0;  // Binary semaphore ignores value
+        signalCount++;
     }
 
     uint64_t signalValue = ++state.currentFenceValue;
     if (state.timelineSemaphore != VK_NULL_HANDLE) {
-        signalSems.push_back(state.timelineSemaphore);
-        signalValues.push_back(signalValue);
+        signalSems[signalCount] = state.timelineSemaphore;
+        signalValues[signalCount] = signalValue;
+        signalCount++;
     }
 
-    if (!signalSems.empty()) {
-        submit.signalSemaphoreCount = (uint32_t)signalSems.size();
-        submit.pSignalSemaphores = signalSems.data();
+    if (signalCount > 0) {
+        submit.signalSemaphoreCount = signalCount;
+        submit.pSignalSemaphores = signalSems;
     }
 
     // Wait Semaphores
-    std::vector<uint64_t> waitValues;
+    uint64_t waitValue = 0;
+    uint32_t waitCount = 0;
     VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 
     if (waitSemaphore != VK_NULL_HANDLE) {
         submit.waitSemaphoreCount = 1;
         submit.pWaitSemaphores = &waitSemaphore;
         submit.pWaitDstStageMask = &waitStage;
-        waitValues.push_back(0);  // Binary wait
+        waitCount = 1;
     }
 
     // Prepare Timeline Info
     VkTimelineSemaphoreSubmitInfo timelineSubmit = {VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
-    timelineSubmit.waitSemaphoreValueCount = (uint32_t)waitValues.size();
-    timelineSubmit.pWaitSemaphoreValues = waitValues.data();
-    timelineSubmit.signalSemaphoreValueCount = (uint32_t)signalValues.size();
-    timelineSubmit.pSignalSemaphoreValues = signalValues.data();
+    timelineSubmit.waitSemaphoreValueCount = waitCount;
+    timelineSubmit.pWaitSemaphoreValues = waitCount > 0 ? &waitValue : nullptr;
+    timelineSubmit.signalSemaphoreValueCount = signalCount;
+    timelineSubmit.pSignalSemaphoreValues = signalValues;
 
     submit.pNext = &timelineSubmit;
 

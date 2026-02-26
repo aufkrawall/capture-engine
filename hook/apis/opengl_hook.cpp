@@ -105,6 +105,7 @@ typedef void(WINAPI* glFinish_t)(void);
 typedef GLsync(WINAPI* glFenceSync_t)(GLenum, GLbitfield);
 typedef void(WINAPI* glDeleteSync_t)(GLsync);
 typedef GLenum(WINAPI* glClientWaitSync_t)(GLsync, GLbitfield, GLuint64);
+typedef void(WINAPI* glCopyTexSubImage2D_t)(GLenum, GLint, GLint, GLint, GLint, GLint, GLsizei, GLsizei);
 
 typedef void(WINAPI* glRenderbufferStorageMultisample_t)(GLenum, GLsizei, GLenum, GLsizei, GLsizei);
 typedef void(WINAPI* glTexImage2DMultisample_t)(GLenum, GLsizei, GLenum, GLsizei, GLsizei, GLboolean);
@@ -156,6 +157,7 @@ static glFinish_t pglFinish = nullptr;
 static glFenceSync_t pglFenceSync = nullptr;
 static glDeleteSync_t pglDeleteSync = nullptr;
 static glClientWaitSync_t pglClientWaitSync = nullptr;
+static glCopyTexSubImage2D_t pglCopyTexSubImage2D = nullptr;
 static glEnable_t pglEnable = nullptr;
 static glMinSampleShading_t pglMinSampleShading = nullptr;
 static glRenderbufferStorageMultisample_t pglRenderbufferStorageMultisample = nullptr;
@@ -382,8 +384,9 @@ public:
             return false;
         }
 
-        HRESULT hr = pD3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, featureLevels, 2, D3D11_SDK_VERSION,
-                                        &d3d11Device, &featureLevel, &d3d11Context);
+        HRESULT hr = pD3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, NULL, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                                        featureLevels, 2, D3D11_SDK_VERSION, &d3d11Device, &featureLevel,
+                                        &d3d11Context);
 
         if (FAILED(hr)) {
             HookLog("OpenGL: Failed to create D3D11 device (hr=0x%08x)", hr);
@@ -526,24 +529,10 @@ public:
             return;
         }
 
-        // Initialize D3D11 for interop
-        if (!CreateD3D11Device()) {
-            HookLog("OpenGLCapture: Failed to initialize D3D11. Capture disabled.");
-            return;
-        }
-
-        // Share with GL if NVIDIA
-        if (g_NVInteropAvailable && wglDXOpenDeviceNV && wglDXRegisterObjectNV) {
-            // This block was likely intended to be part of InitNVInterop or similar,
-            // but the instruction places it here.
-            // The original code for getting window size and creating FBOs should
-            // follow.
-        }
-
         g_CaptureHDC = hDC;
 
         // Get window size
-        HWND hwnd = WindowFromDC(hDC);  // Changed hdc to hDC
+        HWND hwnd = WindowFromDC(hDC);
         RECT rect;
         if (GetClientRect(hwnd, &rect)) {
             width = rect.right - rect.left;
@@ -556,7 +545,7 @@ public:
             return;
         }
 
-        // Create D3D11 device
+        // Create D3D11 device for interop
         if (!CreateD3D11Device()) {
             return;
         }
@@ -630,15 +619,14 @@ public:
         int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
 
         if (usingNVInterop) {
-            // Lock the GL texture, copy from capture FBO, unlock
+            // Lock D3D11-backed GL texture, copy framebuffer contents into it, then unlock
             if (wglDXLockObjectsNV(nvDevice, 1, &nvTextureHandles[idx])) {
-                // Copy from captureTexture to glTextures[idx]
                 pglBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
                 pglBindTexture(GL_TEXTURE_2D, glTextures[idx]);
-                // Use glCopyTexSubImage2D to copy from FBO to texture
-                // For simplicity we'll skip this and assume BlitFramebuffer handles it
-                pglBindFramebuffer(GL_FRAMEBUFFER, 0);
-
+                if (pglCopyTexSubImage2D)
+                    pglCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, (GLsizei)width, (GLsizei)height);
+                pglBindTexture(GL_TEXTURE_2D, 0);
+                pglBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
                 wglDXUnlockObjectsNV(nvDevice, 1, &nvTextureHandles[idx]);
             }
 
@@ -775,6 +763,7 @@ static bool LoadGLFunctions() {
     LOAD_GL(glFenceSync);
     LOAD_GL(glDeleteSync);
     LOAD_GL(glClientWaitSync);
+    LOAD_GL(glCopyTexSubImage2D);
 
     // Check for WGL_NV_DX_interop
     wglDXOpenDeviceNV = (wglDXOpenDeviceNV_t)wglGetProcAddress_ptr("wglDXOpenDeviceNV");

@@ -1376,17 +1376,15 @@ public:
             return false;
         }
 
-        // Get device from swapchain
-        ID3D11Device* device = nullptr;
-        HRESULT hr = swapChain->GetDevice(IID_PPV_ARGS(&device));
-        if (FAILED(hr) || !device) {
-            HookLog("DX11Capture: [%d] GetDevice failed hr=0x%08X", frameNum, hr);
-            return false;
-        }
-
-        // Initialize capture if needed
+        // Initialize capture if needed (GetDevice only called during init to avoid per-frame COM overhead)
         if (!initialized) {
             HookLog("DX11Capture: [%d] Not initialized, initializing...", frameNum);
+            ID3D11Device* device = nullptr;
+            HRESULT initHr = swapChain->GetDevice(IID_PPV_ARGS(&device));
+            if (FAILED(initHr) || !device) {
+                HookLog("DX11Capture: [%d] GetDevice failed hr=0x%08X", frameNum, initHr);
+                return false;
+            }
             // Check if this is a DX10 device
             ID3D10Device* device10 = nullptr;
             if (SUCCEEDED(swapChain->GetDevice(__uuidof(ID3D10Device), (void**)&device10))) {
@@ -1400,11 +1398,11 @@ public:
             }
             // Now initialize with the device
             Init(device, swapChain);
+            device->Release();
         }
 
         if (!initialized) {
             HookLog("DX11Capture: [%d] Still not initialized after Init", frameNum);
-            device->Release();
             return false;
         }
 
@@ -1412,7 +1410,6 @@ public:
         ID3D11DeviceContext* context = GetCaptureContext();
         if (!context) {
             HookLog("DX11Capture: [%d] GetCaptureContext returned null", frameNum);
-            device->Release();
             return false;
         }
 
@@ -1433,10 +1430,9 @@ public:
         UINT bufferIndex = 0;
         if (!backbuffer) {
             bufferIndex = ResolveDX11BackBufferIndex(swapChain);
-            hr = swapChain->GetBuffer(bufferIndex, IID_PPV_ARGS(&backbuffer));
+            HRESULT hr = swapChain->GetBuffer(bufferIndex, IID_PPV_ARGS(&backbuffer));
             if (FAILED(hr) || !backbuffer) {
                 HookLog("DX11Capture: [%d] GetBuffer(%u) failed hr=0x%08X", frameNum, bufferIndex, hr);
-                device->Release();
                 return false;
             }
         }
@@ -1454,7 +1450,7 @@ public:
             // and let the query catch it next frame. The ring buffer depth (8)
             // provides enough padding that this is usually fine.
             BOOL data = FALSE;
-            hr = context->GetData(copyQueries[writeIdx], &data, sizeof(data), 0);
+            HRESULT hr = context->GetData(copyQueries[writeIdx], &data, sizeof(data), 0);
             if (hr == S_FALSE) {
                 // Query still pending - frame may be dropped if encoder is slow
                 // But we proceed anyway and let EnqueueFrame handle ring buffer full
@@ -1497,7 +1493,6 @@ public:
         // Advance write index
         AdvanceWriteIndex();
 
-        device->Release();
         return true;
     }
 };

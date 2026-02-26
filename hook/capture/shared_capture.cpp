@@ -426,35 +426,36 @@ bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, UINT ba
     m_CommandAllocators[writeIdx]->Reset();
     m_CommandList->Reset(m_CommandAllocators[writeIdx].Get(), nullptr);
 
-    // Transition back buffer from PRESENT to COPY_SOURCE
-    D3D12_RESOURCE_BARRIER barrier = {};
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.pResource = backBuffer.Get();
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    m_CommandList->ResourceBarrier(1, &barrier);
-
-    // Transition shared resource from COMMON to COPY_DEST
-    barrier.Transition.pResource = m_SharedResources[writeIdx].Get();
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-    m_CommandList->ResourceBarrier(1, &barrier);
+    // Batch both pre-copy transitions into one call so the driver can pipeline them
+    D3D12_RESOURCE_BARRIER preCopyBarriers[2] = {};
+    preCopyBarriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    preCopyBarriers[0].Transition.pResource = backBuffer.Get();
+    preCopyBarriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+    preCopyBarriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    preCopyBarriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    preCopyBarriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    preCopyBarriers[1].Transition.pResource = m_SharedResources[writeIdx].Get();
+    preCopyBarriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    preCopyBarriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    preCopyBarriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    m_CommandList->ResourceBarrier(2, preCopyBarriers);
 
     // Copy to shared resource
     m_CommandList->CopyResource(m_SharedResources[writeIdx].Get(), backBuffer.Get());
 
-    // Transition back buffer back to PRESENT
-    barrier.Transition.pResource = backBuffer.Get();
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-    m_CommandList->ResourceBarrier(1, &barrier);
-
-    // Transition shared resource back to COMMON
-    barrier.Transition.pResource = m_SharedResources[writeIdx].Get();
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
-    m_CommandList->ResourceBarrier(1, &barrier);
+    // Batch both post-copy transitions into one call
+    D3D12_RESOURCE_BARRIER postCopyBarriers[2] = {};
+    postCopyBarriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    postCopyBarriers[0].Transition.pResource = backBuffer.Get();
+    postCopyBarriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    postCopyBarriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+    postCopyBarriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    postCopyBarriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    postCopyBarriers[1].Transition.pResource = m_SharedResources[writeIdx].Get();
+    postCopyBarriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    postCopyBarriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
+    postCopyBarriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    m_CommandList->ResourceBarrier(2, postCopyBarriers);
 
     m_CommandList->Close();
 
