@@ -1771,12 +1771,12 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         DLL_Log("[VideoEncoder] Recording started at PTS %lld", startPts.load());
     }
 
-    // Calculate PTS
+    int64_t targetPts = 0;
     if (savedConfig.useVFR && startPts >= 0) {
         // VFR: PTS based on actual capture timestamp (microseconds)
         // timestamp is MS, startPts is MS. Diff is MS.
         // time_base is 1us (1/1000000). So we need to convert MS diff to us.
-        d3d11Frame->pts = (timestamp - startPts) * 1000;
+        targetPts = (timestamp - startPts) * 1000;
     } else {
         // CFR: derive PTS from real elapsed time to avoid playback speed drift
         // when delivered frame cadence differs from target FPS.
@@ -1788,14 +1788,8 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         if (elapsedMs < 0) {
             elapsedMs = 0;
         }
-        d3d11Frame->pts = av_rescale(elapsedMs, fps, 1000);
+        targetPts = av_rescale(elapsedMs, fps, 1000);
     }
-
-    // Enforce strictly monotonic input PTS for encoder stability.
-    if (lastAssignedVideoPts >= 0 && d3d11Frame->pts <= lastAssignedVideoPts) {
-        d3d11Frame->pts = lastAssignedVideoPts + 1;
-    }
-    lastAssignedVideoPts = d3d11Frame->pts;
 
     // 5. Encode (Direct D3D11 Frame) - with proper packet draining
     AVPacket* pkt = av_packet_alloc();
@@ -1836,34 +1830,65 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         }
     };
 
-    // First drain any pending packets
-    drainPackets();
-
-    // Try to send the frame, handling EAGAIN by draining and retrying
-    int ret = avcodec_send_frame(codecCtx, d3d11Frame);
-    int retries = 0;
-    while (ret == AVERROR(EAGAIN) && retries < 10) {
-        if (retries == 0) {
-            lastEncoderOverloadTickMs.store(GetTickCount64(), std::memory_order_relaxed);
-            PublishRuntimeState();
-        }
-        // Encoder buffer full, drain packets and retry
+    auto sendFrame = [&](AVFrame* frame) -> bool {
         drainPackets();
-        ret = avcodec_send_frame(codecCtx, d3d11Frame);
-        retries++;
+        int ret = avcodec_send_frame(codecCtx, frame);
+        int retries = 0;
+        while (ret == AVERROR(EAGAIN) && retries < 10) {
+            if (retries == 0) {
+                lastEncoderOverloadTickMs.store(GetTickCount64(), std::memory_order_relaxed);
+                PublishRuntimeState();
+            }
+            drainPackets();
+            ret = avcodec_send_frame(codecCtx, frame);
+            retries++;
+        }
+        if (ret < 0 && ret != AVERROR(EAGAIN)) {
+            char errbuf[AV_ERROR_MAX_STRING_SIZE];
+            av_strerror(ret, errbuf, AV_ERROR_MAX_STRING_SIZE);
+            DLL_Log("[VideoEncoder] avcodec_send_frame failed: %d (%s)", ret, errbuf);
+            return false;
+        }
+        drainPackets();
+        return true;
+    };
+
+    bool success = true;
+
+    if (!savedConfig.useVFR) {
+        if (lastAssignedVideoPts >= 0) {
+            if (targetPts <= lastAssignedVideoPts) {
+                // Frame arrived too early (game FPS > target FPS). Drop it.
+                skippedFrameCount++;
+                av_packet_free(&pkt);
+                av_frame_free(&d3d11Frame);
+                return true;
+            }
+            
+            // If targetPts > lastAssignedVideoPts + 1, we need to duplicate frames
+            while (targetPts > lastAssignedVideoPts + 1) {
+                AVFrame* dupFrame = av_frame_clone(d3d11Frame);
+                if (dupFrame) {
+                    dupFrame->pts = lastAssignedVideoPts + 1;
+                    lastAssignedVideoPts = dupFrame->pts;
+                    duplicatedFrameCount++;
+                    if (!sendFrame(dupFrame)) {
+                        success = false;
+                    }
+                    av_frame_free(&dupFrame);
+                } else {
+                    break;
+                }
+            }
+        }
     }
 
-    if (ret < 0 && ret != AVERROR(EAGAIN)) {
-        char errbuf[AV_ERROR_MAX_STRING_SIZE];
-        av_strerror(ret, errbuf, AV_ERROR_MAX_STRING_SIZE);
-        DLL_Log("[VideoEncoder] avcodec_send_frame failed: %d (%s)", ret, errbuf);
-        av_packet_free(&pkt);
-        av_frame_free(&d3d11Frame);
-        return false;
-    }
+    d3d11Frame->pts = targetPts;
+    lastAssignedVideoPts = d3d11Frame->pts;
 
-    // Drain packets after successful send
-    drainPackets();
+    if (success) {
+        success = sendFrame(d3d11Frame);
+    }
 
     auto afterEncode = PerfTimer::now();
     stats.ptsMs = timestamp;
@@ -2130,30 +2155,21 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         DLL_Log("[VideoEncoder] Framegrab recording started at PTS %lld", startPts.load());
     }
 
+    int64_t targetPts = 0;
     int64_t elapsedMs = pts - startPts;
     if (elapsedMs < 0)
         elapsedMs = 0;
 
     if (savedConfig.useVFR) {
         // VFR codec time base is 1/1000000.
-        d3d11Frame->pts = elapsedMs * 1000;
+        targetPts = elapsedMs * 1000;
     } else {
         // CFR codec time base is 1/fps.
         int fps = 60;  // Default
         if (codecCtx && codecCtx->framerate.num > 0) {
             fps = codecCtx->framerate.num;
         }
-        d3d11Frame->pts = av_rescale(elapsedMs, fps, 1000);
-    }
-
-    if (lastAssignedVideoPts >= 0 && d3d11Frame->pts <= lastAssignedVideoPts) {
-        d3d11Frame->pts = lastAssignedVideoPts + 1;
-    }
-    lastAssignedVideoPts = d3d11Frame->pts;
-
-    // Debug: Log input frame PTS
-    if (encodeFrameCounter < 20 || encodeFrameCounter % 100 == 0) {
-        DLL_Log("[Framegrab DEBUG] Sending frame %d with input PTS=%lld", encodeFrameCounter, d3d11Frame->pts);
+        targetPts = av_rescale(elapsedMs, fps, 1000);
     }
 
     // Encode
@@ -2194,32 +2210,76 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         }
     };
 
-    // Drain any pending packets first (like inject mode)
-    drainPackets();
-
-    int ret = avcodec_send_frame(codecCtx, d3d11Frame);
-
-    int retries = 0;
-    while (ret == AVERROR(EAGAIN) && retries < 10) {
-        if (retries == 0) {
-            lastEncoderOverloadTickMs.store(GetTickCount64(), std::memory_order_relaxed);
-            PublishRuntimeState();
+    auto sendFrame = [&](AVFrame* frame) -> bool {
+        drainPackets();
+        int ret = avcodec_send_frame(codecCtx, frame);
+        int retries = 0;
+        while (ret == AVERROR(EAGAIN) && retries < 10) {
+            if (retries == 0) {
+                lastEncoderOverloadTickMs.store(GetTickCount64(), std::memory_order_relaxed);
+                PublishRuntimeState();
+            }
+            drainPackets();
+            ret = avcodec_send_frame(codecCtx, frame);
+            retries++;
+        }
+        if (ret < 0 && ret != AVERROR(EAGAIN)) {
+            char errbuf[AV_ERROR_MAX_STRING_SIZE];
+            av_strerror(ret, errbuf, AV_ERROR_MAX_STRING_SIZE);
+            DLL_Log("[VideoEncoder] ScreenGrab send_frame failed: %d (%s)", ret, errbuf);
+            return false;
         }
         drainPackets();
-        ret = avcodec_send_frame(codecCtx, d3d11Frame);
-        retries++;
+        return true;
+    };
+
+    bool success = true;
+
+    if (!savedConfig.useVFR) {
+        if (lastAssignedVideoPts >= 0) {
+            if (targetPts <= lastAssignedVideoPts) {
+                // Frame arrived too early (game FPS > target FPS). Drop it.
+                skippedFrameCount++;
+                av_packet_free(&pkt);
+                av_frame_free(&d3d11Frame);
+                return true;
+            }
+            
+            // If targetPts > lastAssignedVideoPts + 1, we need to duplicate frames
+            while (targetPts > lastAssignedVideoPts + 1) {
+                AVFrame* dupFrame = av_frame_clone(d3d11Frame);
+                if (dupFrame) {
+                    dupFrame->pts = lastAssignedVideoPts + 1;
+                    lastAssignedVideoPts = dupFrame->pts;
+                    duplicatedFrameCount++;
+                    if (!sendFrame(dupFrame)) {
+                        success = false;
+                    }
+                    av_frame_free(&dupFrame);
+                } else {
+                    break;
+                }
+            }
+        }
     }
 
-    if (ret < 0 && ret != AVERROR(EAGAIN)) {
-        char errbuf[AV_ERROR_MAX_STRING_SIZE];
-        av_strerror(ret, errbuf, AV_ERROR_MAX_STRING_SIZE);
-        DLL_Log("[VideoEncoder] ScreenGrab send_frame failed: %d (%s)", ret, errbuf);
+    d3d11Frame->pts = targetPts;
+    lastAssignedVideoPts = d3d11Frame->pts;
+
+    // Debug: Log input frame PTS
+    if (encodeFrameCounter < 20 || encodeFrameCounter % 100 == 0) {
+        DLL_Log("[Framegrab DEBUG] Sending frame %d with input PTS=%lld", encodeFrameCounter, d3d11Frame->pts);
+    }
+
+    if (success) {
+        success = sendFrame(d3d11Frame);
+    }
+
+    if (!success) {
         av_packet_free(&pkt);
         av_frame_free(&d3d11Frame);
         return false;
     }
-
-    drainPackets();
 
     auto afterEncode = PerfTimer::now();
     double encodeMs = PerfTimer::elapsed_ms(afterConvert, afterEncode);
@@ -3275,25 +3335,24 @@ bool VideoEncoder::EncodeFrameCuda(HANDLE sharedHandle, uint64_t fenceValue, int
     // Calculate PTS
     if (startPts < 0) {
         startPts = pts;
-        DLL_Log("[VideoEncoder] Recording started at PTS %lld (CUDA)", startPts);
+        DLL_Log("[VideoEncoder] Recording started at PTS %lld (CUDA)", startPts.load());
     }
+    
+    int64_t targetPts = 0;
     int64_t relativePts_ms = pts - startPts;
     if (relativePts_ms < 0) {
         relativePts_ms = 0;
     }
+    
     if (savedConfig.useVFR) {
-        cudaFrame->pts = relativePts_ms * 1000;
+        targetPts = relativePts_ms * 1000;
     } else {
         int fps = (codecCtx && codecCtx->framerate.num > 0) ? codecCtx->framerate.num : savedConfig.fps;
         if (fps <= 0) {
             fps = 60;
         }
-        cudaFrame->pts = av_rescale(relativePts_ms, fps, 1000);
+        targetPts = av_rescale(relativePts_ms, fps, 1000);
     }
-    if (lastAssignedVideoPts >= 0 && cudaFrame->pts <= lastAssignedVideoPts) {
-        cudaFrame->pts = lastAssignedVideoPts + 1;
-    }
-    lastAssignedVideoPts = cudaFrame->pts;
 
     // Encode
     AVPacket* pkt = av_packet_alloc();
@@ -3310,7 +3369,11 @@ bool VideoEncoder::EncodeFrameCuda(HANDLE sharedHandle, uint64_t fenceValue, int
             pkt->stream_index = stream->index;
 
             // CRITICAL: Set packet duration to 1 frame in codec time_base
-            pkt->duration = 1;
+            if (savedConfig.useVFR) {
+                pkt->duration = 1000000 / (savedConfig.fps > 0 ? savedConfig.fps : 60);
+            } else {
+                pkt->duration = 1;
+            }
 
             if (onPacket)
                 onPacket(pkt);
@@ -3318,17 +3381,56 @@ bool VideoEncoder::EncodeFrameCuda(HANDLE sharedHandle, uint64_t fenceValue, int
         }
     };
 
-    drainPackets();
-
-    int ret = avcodec_send_frame(codecCtx, cudaFrame);
-    int retries = 0;
-    while (ret == AVERROR(EAGAIN) && retries < 10) {
+    auto sendFrame = [&](AVFrame* frame) -> bool {
         drainPackets();
-        ret = avcodec_send_frame(codecCtx, cudaFrame);
-        retries++;
+        int ret = avcodec_send_frame(codecCtx, frame);
+        int retries = 0;
+        while (ret == AVERROR(EAGAIN) && retries < 10) {
+            drainPackets();
+            ret = avcodec_send_frame(codecCtx, frame);
+            retries++;
+        }
+        drainPackets();
+        return ret >= 0 || ret == AVERROR(EAGAIN);
+    };
+
+    bool success = true;
+
+    if (!savedConfig.useVFR) {
+        if (lastAssignedVideoPts >= 0) {
+            if (targetPts <= lastAssignedVideoPts) {
+                // Frame arrived too early (game FPS > target FPS). Drop it.
+                skippedFrameCount++;
+                av_packet_free(&pkt);
+                av_frame_free(&cudaFrame);
+                return true;
+            }
+            
+            // If targetPts > lastAssignedVideoPts + 1, we need to duplicate frames
+            while (targetPts > lastAssignedVideoPts + 1) {
+                AVFrame* dupFrame = av_frame_clone(cudaFrame);
+                if (dupFrame) {
+                    dupFrame->pts = lastAssignedVideoPts + 1;
+                    lastAssignedVideoPts = dupFrame->pts;
+                    duplicatedFrameCount++;
+                    if (!sendFrame(dupFrame)) {
+                        success = false;
+                    }
+                    av_frame_free(&dupFrame);
+                } else {
+                    break;
+                }
+            }
+        }
     }
 
-    drainPackets();
+    cudaFrame->pts = targetPts;
+    lastAssignedVideoPts = cudaFrame->pts;
+
+    if (success) {
+        success = sendFrame(cudaFrame);
+    }
+
     av_packet_free(&pkt);
 
     static int framesSent = 0;

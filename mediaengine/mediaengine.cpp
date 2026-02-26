@@ -681,6 +681,12 @@ public:
             audioTargetMs = this->videoElapsedMs.load();
         }
 
+        // Apply a latency offset to allow audio capture to buffer.
+        // WASAPI loopback has ~20-50ms latency. If we pull exactly up to the video time,
+        // the audio hasn't arrived yet, causing silence padding and subsequent dropping.
+        const int64_t AUDIO_PULL_LATENCY_MS = 50;
+        audioTargetMs -= AUDIO_PULL_LATENCY_MS;
+
         // Safety: if video elapsed time is somehow negative or 0, skip
         if (audioTargetMs <= 0)
             return;

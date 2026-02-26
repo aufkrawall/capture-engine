@@ -24,10 +24,12 @@
 
 # Runtime/generated data
 *.log
+*.flake8
 *.csv
 *.dmp
 compile.log
 build.log
+build_test_output.txt
 temp_log.txt
 session-ses_*.md
 UECC-Windows-*/
