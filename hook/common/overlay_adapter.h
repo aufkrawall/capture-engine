@@ -76,7 +76,8 @@ public:
   void RenderOverlay(int viewportWidth, int viewportHeight);
 
 private:
-  void RenderContent(int viewportWidth, int viewportHeight);
+  void RenderContent(int viewportWidth, int viewportHeight, const OverlayConfig &cfg,
+                     bool shouldUpdate);
   uint32_t GetLoadColor(float load);
 
   CustomOverlay::Renderer *renderer = nullptr;
@@ -104,7 +105,10 @@ private:
 
   // Encoder overload warning tracking (5-second display with extension)
   uint64_t lastEncoderOverloadTick = 0;
-};
 
-// Global adapter instance
+  // Cached layout measurement (recomputed only on content updates, avoids
+  // per-frame snprintf+CalcTextSize overhead)
+  float cachedContentWidth = 0.0f;
+  bool layoutDirty = true;
+};
 extern OverlayAdapter g_OverlayAdapter;

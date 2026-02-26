@@ -23,15 +23,6 @@ bool DX10Backend::Initialize(int fontTextureWidth, int fontTextureHeight,
   if (initialized || !device)
     return false;
 
-  // Create font texture - convert RGBA to BGRA for D3D10
-  std::vector<uint8_t> bgraData(fontTextureWidth * fontTextureHeight * 4);
-  for (int i = 0; i < fontTextureWidth * fontTextureHeight; i++) {
-    bgraData[i * 4 + 0] = fontTextureData[i * 4 + 2];
-    bgraData[i * 4 + 1] = fontTextureData[i * 4 + 1];
-    bgraData[i * 4 + 2] = fontTextureData[i * 4 + 0];
-    bgraData[i * 4 + 3] = fontTextureData[i * 4 + 3];
-  }
-
   D3D10_TEXTURE2D_DESC texDesc = {};
   texDesc.Width = fontTextureWidth;
   texDesc.Height = fontTextureHeight;
@@ -43,7 +34,7 @@ bool DX10Backend::Initialize(int fontTextureWidth, int fontTextureHeight,
   texDesc.BindFlags = D3D10_BIND_SHADER_RESOURCE;
 
   D3D10_SUBRESOURCE_DATA initData = {};
-  initData.pSysMem = bgraData.data();
+  initData.pSysMem = fontTextureData;
   initData.SysMemPitch = fontTextureWidth * 4;
 
   HRESULT hr = device->CreateTexture2D(&texDesc, &initData, &fontTexture);

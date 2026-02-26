@@ -395,17 +395,17 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
   }
 
   renderer->BeginFrame(viewportWidth, viewportHeight);
-  RenderContent(viewportWidth, viewportHeight);
+  RenderContent(viewportWidth, viewportHeight, cfg, shouldUpdate);
   renderer->EndFrame();
 }
 
-void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
+void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const OverlayConfig &cfg,
+                                    bool shouldUpdate) {
   using namespace CustomOverlay;
 
   if (!ipc || !ipc->GetSharedMem())
     return;
   auto &mem = *ipc->GetSharedMem();
-  auto cfg = mem.ReadOverlayConfig();
 
   // Get DPI scale for consistent sizing
   float dpiScale = renderer->GetDpiScale();
@@ -455,126 +455,125 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     return w;
   };
 
-  float maxLabelWidth = 0.0f;
-  float maxValueWidth = 0.0f;
-  char measureBuf[96];
+  // Expensive layout measurement (snprintf + CalcTextSize) – cached between
+  // updates to avoid per-frame overhead at high refresh rates.
+  if (shouldUpdate || layoutDirty) {
+    float maxLabelWidth = 0.0f;
+    float maxValueWidth = 0.0f;
+    char measureBuf[96];
 
-  if (cfg.showGPU) {
-    snprintf(measureBuf, sizeof(measureBuf), "%.0f%%",
-             cachedSystemMetrics.gpuUsage);
-    maxLabelWidth = (std::max)(maxLabelWidth,
-                               MeasureTextWidth(SystemMetricsCollector::Get()
-                                                    .GetGPUName()));
-    maxValueWidth =
-        (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
-  }
-  if (cfg.showCPU) {
-    snprintf(measureBuf, sizeof(measureBuf), "%.0f%% (%.0f%%)",
-             cachedSystemMetrics.cpuUsage, cachedSystemMetrics.cpuMaxCoreUsage);
-    maxLabelWidth = (std::max)(maxLabelWidth,
-                               MeasureTextWidth(SystemMetricsCollector::Get()
-                                                    .GetCPUName()));
-    maxValueWidth =
-        (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
-  }
-  if (cfg.showVRAM) {
-    float gbUsed =
-        (float)cachedSystemMetrics.vramUsed / (1024.0f * 1024.0f * 1024.0f);
-    float gbTotal =
-        (float)cachedSystemMetrics.vramTotal / (1024.0f * 1024.0f * 1024.0f);
-    if (gbTotal < 0.1f)
-      gbTotal = 11.66f;
-    char usedBuf[32], totalBuf[32];
-    snprintf(usedBuf, sizeof(usedBuf), "%.2f GB", gbUsed);
-    snprintf(totalBuf, sizeof(totalBuf), "of %.2f GB", gbTotal);
-    float valueWidth = MeasureTextWidth(usedBuf) + kMemoryGap +
-                       MeasureTextWidthScaled(totalBuf, kMemorySuffixScale) +
-                       kShadowPad;
-    maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth("VRAM"));
-    maxValueWidth = (std::max)(maxValueWidth, valueWidth);
-  }
-  if (cfg.showRAM) {
-    float gbUsed =
-        (float)cachedSystemMetrics.ramUsed / (1024.0f * 1024.0f * 1024.0f);
-    float gbTotal =
-        (float)cachedSystemMetrics.ramTotal / (1024.0f * 1024.0f * 1024.0f);
-    if (gbTotal < 0.1f)
-      gbTotal = 31.93f;
-    char usedBuf[32], totalBuf[32];
-    snprintf(usedBuf, sizeof(usedBuf), "%.2f GB", gbUsed);
-    snprintf(totalBuf, sizeof(totalBuf), "of %.2f GB", gbTotal);
-    float valueWidth = MeasureTextWidth(usedBuf) + kMemoryGap +
-                       MeasureTextWidthScaled(totalBuf, kMemorySuffixScale) +
-                       kShadowPad;
-    maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth("RAM"));
-    maxValueWidth = (std::max)(maxValueWidth, valueWidth);
-  }
-  if (cfg.showFPS) {
-    const char *apiLabel = graphicsAPI[0] ? graphicsAPI : "FPS";
-    snprintf(measureBuf, sizeof(measureBuf), "%.0f FPS", cachedFPS);
-    maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth(apiLabel));
-    maxValueWidth =
-        (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
+    if (cfg.showGPU) {
+      snprintf(measureBuf, sizeof(measureBuf), "%.0f%%",
+               cachedSystemMetrics.gpuUsage);
+      maxLabelWidth = (std::max)(maxLabelWidth,
+                                 MeasureTextWidth(SystemMetricsCollector::Get()
+                                                      .GetGPUName()));
+      maxValueWidth =
+          (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
+    }
+    if (cfg.showCPU) {
+      snprintf(measureBuf, sizeof(measureBuf), "%.0f%% (%.0f%%)",
+               cachedSystemMetrics.cpuUsage, cachedSystemMetrics.cpuMaxCoreUsage);
+      maxLabelWidth = (std::max)(maxLabelWidth,
+                                 MeasureTextWidth(SystemMetricsCollector::Get()
+                                                      .GetCPUName()));
+      maxValueWidth =
+          (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
+    }
+    if (cfg.showVRAM) {
+      float gbUsed =
+          (float)cachedSystemMetrics.vramUsed / (1024.0f * 1024.0f * 1024.0f);
+      float gbTotal =
+          (float)cachedSystemMetrics.vramTotal / (1024.0f * 1024.0f * 1024.0f);
+      if (gbTotal < 0.1f)
+        gbTotal = 11.66f;
+      char usedBuf[32], totalBuf[32];
+      snprintf(usedBuf, sizeof(usedBuf), "%.2f GB", gbUsed);
+      snprintf(totalBuf, sizeof(totalBuf), "of %.2f GB", gbTotal);
+      float valueWidth = MeasureTextWidth(usedBuf) + kMemoryGap +
+                         MeasureTextWidthScaled(totalBuf, kMemorySuffixScale) +
+                         kShadowPad;
+      maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth("VRAM"));
+      maxValueWidth = (std::max)(maxValueWidth, valueWidth);
+    }
+    if (cfg.showRAM) {
+      float gbUsed =
+          (float)cachedSystemMetrics.ramUsed / (1024.0f * 1024.0f * 1024.0f);
+      float gbTotal =
+          (float)cachedSystemMetrics.ramTotal / (1024.0f * 1024.0f * 1024.0f);
+      if (gbTotal < 0.1f)
+        gbTotal = 31.93f;
+      char usedBuf[32], totalBuf[32];
+      snprintf(usedBuf, sizeof(usedBuf), "%.2f GB", gbUsed);
+      snprintf(totalBuf, sizeof(totalBuf), "of %.2f GB", gbTotal);
+      float valueWidth = MeasureTextWidth(usedBuf) + kMemoryGap +
+                         MeasureTextWidthScaled(totalBuf, kMemorySuffixScale) +
+                         kShadowPad;
+      maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth("RAM"));
+      maxValueWidth = (std::max)(maxValueWidth, valueWidth);
+    }
+    if (cfg.showFPS) {
+      const char *apiLabel = graphicsAPI[0] ? graphicsAPI : "FPS";
+      snprintf(measureBuf, sizeof(measureBuf), "%.0f FPS", cachedFPS);
+      maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth(apiLabel));
+      maxValueWidth =
+          (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
 
-    if (fgActive) {
-      float baseFPS = metrics->GetFGBaseFPS();
-      float outputFPS = metrics->GetFGOutputFPS();
-      if (baseFPS < 1.0f)
-        baseFPS = cachedFPS;
-      if (outputFPS < 1.0f)
-        outputFPS = cachedFPS;
-      snprintf(measureBuf, sizeof(measureBuf), "%.0f / %.0f FPS", baseFPS,
-               outputFPS);
-      maxLabelWidth =
-          (std::max)(maxLabelWidth, MeasureTextWidth("Base/Display"));
+      if (fgActive) {
+        float baseFPS = metrics->GetFGBaseFPS();
+        float outputFPS = metrics->GetFGOutputFPS();
+        if (baseFPS < 1.0f)
+          baseFPS = cachedFPS;
+        if (outputFPS < 1.0f)
+          outputFPS = cachedFPS;
+        snprintf(measureBuf, sizeof(measureBuf), "%.0f / %.0f FPS", baseFPS,
+                 outputFPS);
+        maxLabelWidth =
+            (std::max)(maxLabelWidth, MeasureTextWidth("Base/Display"));
+        maxValueWidth =
+            (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
+      }
+
+      if (cachedAvgFPS > 0 && cached1PercentLow > 0) {
+        snprintf(measureBuf, sizeof(measureBuf), "%.0f / %.0f / %.0f",
+                 cachedAvgFPS, cached1PercentLow, cached01PercentLow);
+        maxLabelWidth =
+            (std::max)(maxLabelWidth, MeasureTextWidth("Avg/1%/0.1%"));
+        maxValueWidth =
+            (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
+      }
+    }
+    if (cfg.showFG && fgActive) {
+      int multiplier = metrics->GetFGMultiplier();
+      snprintf(measureBuf, sizeof(measureBuf), "FG %dx", multiplier);
+      maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth("FG"));
       maxValueWidth =
           (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
     }
 
-    if (cachedAvgFPS > 0 && cached1PercentLow > 0) {
-      snprintf(measureBuf, sizeof(measureBuf), "%.0f / %.0f / %.0f",
-               cachedAvgFPS, cached1PercentLow, cached01PercentLow);
-      maxLabelWidth =
-          (std::max)(maxLabelWidth, MeasureTextWidth("Avg/1%/0.1%"));
-      maxValueWidth =
-          (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
+    float measuredWidth = kMinContentWidth;
+    if (maxLabelWidth > 0.0f || maxValueWidth > 0.0f) {
+      measuredWidth =
+          (std::max)(measuredWidth, maxLabelWidth + kColumnGap + maxValueWidth);
     }
-  }
-  if (cfg.showFG && fgActive) {
-    int multiplier = metrics->GetFGMultiplier();
-    snprintf(measureBuf, sizeof(measureBuf), "FG %dx", multiplier);
-    maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth("FG"));
-    maxValueWidth =
-        (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
-  }
 
-  float contentWidth = kMinContentWidth;
-  if (maxLabelWidth > 0.0f || maxValueWidth > 0.0f) {
-    contentWidth =
-        (std::max)(contentWidth, maxLabelWidth + kColumnGap + maxValueWidth);
-  }
-
-  if (cfg.showRecording && isRecording) {
-    int64_t startTime =
-        mem.runtimeState.recordingStartTime.load(std::memory_order_acquire);
-    int64_t elapsed = 0;
-    if (startTime > 0) {
-      elapsed = (GetTickCount64() - startTime) / 1000;
+    // Recording row uses a fixed-width digit format; measure a canonical string
+    // so the result is stable regardless of elapsed time (digits are tabular).
+    if (cfg.showRecording && isRecording) {
+      char recBuf[96];
+      snprintf(recBuf, sizeof(recBuf), "REC 00:00:00");
+      measuredWidth =
+          (std::max)(measuredWidth, MeasureTextWidth(recBuf) + kShadowPad);
+      snprintf(recBuf, sizeof(recBuf), "REC 00:00:00 !ENCODER OVERLOAD!");
+      measuredWidth =
+          (std::max)(measuredWidth, MeasureTextWidth(recBuf) + kShadowPad);
     }
-    int hours = (int)(elapsed / 3600);
-    int minutes = (int)((elapsed % 3600) / 60);
-    int seconds = (int)(elapsed % 60);
-    char recBuf[96];
-    snprintf(recBuf, sizeof(recBuf), "REC %02d:%02d:%02d", hours, minutes,
-             seconds);
-    contentWidth =
-        (std::max)(contentWidth, MeasureTextWidth(recBuf) + kShadowPad);
-    snprintf(recBuf, sizeof(recBuf), "REC %02d:%02d:%02d !ENCODER OVERLOAD!",
-             hours, minutes, seconds);
-    contentWidth =
-        (std::max)(contentWidth, MeasureTextWidth(recBuf) + kShadowPad);
+
+    cachedContentWidth = measuredWidth;
+    layoutDirty = false;
   }
 
+  float contentWidth = cachedContentWidth;
   float bgWidth = contentWidth + kBgLeftPad + kBgRightPad;
   float maxBgWidth = (float)viewportWidth - 2.0f * padding;
   maxBgWidth = (std::max)(maxBgWidth, 100.0f * dpiScale);
@@ -584,8 +583,35 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
         (std::max)(80.0f * dpiScale, bgWidth - kBgLeftPad - kBgRightPad);
   }
 
-  // Right edge for right-aligned values (set after position calculation)
-  float valueRightEdge = 0;
+  // Calculate required height upfront so BottomLeft/BottomRight use the real
+  // overlay height instead of a hardcoded estimate.
+  float requiredHeight = lineHeight;
+  if (cfg.showGPU)
+    requiredHeight += lineHeight;
+  if (cfg.showCPU)
+    requiredHeight += lineHeight;
+  if (cfg.showVRAM)
+    requiredHeight += lineHeight;
+  if (cfg.showRAM)
+    requiredHeight += lineHeight;
+  if (cfg.showFPS) {
+    requiredHeight += lineHeight;
+    if (cachedAvgFPS > 0)
+      requiredHeight += lineHeight;
+    // Base/Display line when FG is active
+    if (fgActive)
+      requiredHeight += lineHeight;
+  }
+  if (cfg.showFG && fgActive)
+    requiredHeight += lineHeight;
+  if (cfg.showRecording && isRecording)
+    requiredHeight += lineHeight;
+
+  constexpr int GRAPH_SAMPLES = 180;
+  bool showGraph = cfg.showFrameTime && metrics;
+  if (showGraph)
+    requiredHeight += 4 * dpiScale + 50.0f * dpiScale;
+  float bgHeight = requiredHeight + kBgTopPad + kBgBottomPad;
 
   switch (cfg.position) {
   case OverlayPosition::TopLeft:
@@ -598,62 +624,21 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight) {
     break;
   case OverlayPosition::BottomLeft:
     x = padding;
-    y = viewportHeight - padding - 200;
+    y = viewportHeight - padding - bgHeight;
     break;
   case OverlayPosition::BottomRight:
     x = viewportWidth - padding - bgWidth;
-    y = viewportHeight - padding - 200;
+    y = viewportHeight - padding - bgHeight;
     break;
   }
 
-  // Right edge for right-aligned values, derived from measured content width.
-  valueRightEdge = x + contentWidth;
+  float valueRightEdge = x + contentWidth;
 
-  // Calculate required height for background
-  float requiredHeight = lineHeight; // Minimal top padding
-
-  if (cfg.showGPU)
-    requiredHeight += lineHeight;
-  if (cfg.showCPU)
-    requiredHeight += lineHeight;
-  if (cfg.showVRAM)
-    requiredHeight += lineHeight;
-  if (cfg.showRAM)
-    requiredHeight += lineHeight;
-
-  if (cfg.showFPS) {
-    requiredHeight += lineHeight;
-    if (cachedAvgFPS > 0)
-      requiredHeight += lineHeight;
-    // Base/Display line when FG is active
-    if (fgActive)
-      requiredHeight += lineHeight;
-  }
-
-  // FG status line
-  if (cfg.showFG && fgActive) {
-    requiredHeight += lineHeight;
-  }
-
-  // Recording status line
-  if (cfg.showRecording && isRecording) {
-    requiredHeight += lineHeight;
-  }
-
-  // Pre-calculate graph layout for height calculation
-  constexpr int GRAPH_SAMPLES = 180;
   float graphData[GRAPH_SAMPLES] = {};
   float graphY = 0, graphHeight = 0, graphWidth = 0, graphX = 0;
   float graphMinVal = 0, graphMaxVal = 0;
-  bool showGraph = cfg.showFrameTime && metrics;
-
-  if (showGraph) {
-    requiredHeight += 4 * dpiScale;     // Gap before graph
-    requiredHeight += 50.0f * dpiScale; // Graph height
+  if (showGraph)
     metrics->GetLastHistory(graphData, GRAPH_SAMPLES);
-  }
-
-  float bgHeight = requiredHeight + kBgTopPad + kBgBottomPad;
 
   // --- PASS 1: All solid geometry (background + graph) ---
   uint8_t bgAlpha = (uint8_t)(cfg.bgAlpha * 255);

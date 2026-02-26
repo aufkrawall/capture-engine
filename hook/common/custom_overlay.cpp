@@ -342,7 +342,6 @@ void Renderer::DrawGraphPolyline(const float *xs, const float *ys, int count,
   const float AA_SIZE = 0.5f * dpiScale;
   const float halfThick = thickness * 0.5f;
   const uint32_t colorAA = color & 0x00FFFFFFu;
-  constexpr int kFanSegments = 5;
 
   auto getNormal = [&](int i, float &nx, float &ny) {
     if (i == 0) {
@@ -406,54 +405,6 @@ void Renderer::DrawGraphPolyline(const float *xs, const float *ys, int count,
     indices.push_back(baseIdx + 1); indices.push_back(baseIdx + 6); indices.push_back(baseIdx + 5);
     indices.push_back(baseIdx + 2); indices.push_back(baseIdx + 3); indices.push_back(baseIdx + 7);
     indices.push_back(baseIdx + 2); indices.push_back(baseIdx + 7); indices.push_back(baseIdx + 6);
-
-    if (i > 0 && i < count - 1) {
-      float dx0 = xs[i] - xs[i - 1], dy0 = ys[i] - ys[i - 1];
-      float dx1 = xs[i + 1] - xs[i], dy1 = ys[i + 1] - ys[i];
-      float len0 = std::sqrt(dx0 * dx0 + dy0 * dy0);
-      float len1 = std::sqrt(dx1 * dx1 + dy1 * dy1);
-      if (len0 >= 0.001f && len1 >= 0.001f) {
-        float ang0 = std::atan2(dy0, dx0);
-        float ang1 = std::atan2(dy1, dx1);
-        float dAng = ang1 - ang0;
-        while (dAng > 3.14159265f) dAng -= 2.0f * 3.14159265f;
-        while (dAng < -3.14159265f) dAng += 2.0f * 3.14159265f;
-        if (std::abs(dAng) > 0.01f) {
-          const uint16_t fanCenter = (uint16_t)vertices.size();
-          vertices.push_back({xs[i], ys[i], 0, 0, color});
-          const uint16_t fanOuter = (uint16_t)vertices.size();
-          vertices.push_back({xs[i] + n0x * halfThick, ys[i] + n0y * halfThick, 0, 0, color});
-          const float startAng = ang0 + 3.14159265f * 0.5f;
-          const float endAng = ang1 + 3.14159265f * 0.5f;
-          for (int s = 1; s <= kFanSegments; s++) {
-            float t = (float)s / (float)kFanSegments;
-            float ang = startAng + (endAng - startAng) * t;
-            float fx = std::cos(ang), fy = std::sin(ang);
-            const uint16_t fanNext = (uint16_t)vertices.size();
-            vertices.push_back({xs[i] + fx * halfThick, ys[i] + fy * halfThick, 0, 0, color});
-            indices.push_back(fanCenter);
-            indices.push_back(fanOuter + (s == 1 ? 0 : s - 2));
-            indices.push_back(fanNext);
-          }
-          const uint16_t fanOuterAA = (uint16_t)vertices.size();
-          for (int s = 0; s <= kFanSegments; s++) {
-            float t = (float)s / (float)kFanSegments;
-            float ang = startAng + (endAng - startAng) * t;
-            float fx = std::cos(ang), fy = std::sin(ang);
-            vertices.push_back({xs[i] + fx * halfThick, ys[i] + fy * halfThick, 0, 0, color});
-            vertices.push_back({xs[i] + fx * (halfThick + AA_SIZE), ys[i] + fy * (halfThick + AA_SIZE), 0, 0, colorAA});
-          }
-          for (int s = 0; s < kFanSegments; s++) {
-            uint16_t i0 = fanOuterAA + s * 2;
-            uint16_t i1 = i0 + 1;
-            uint16_t i2 = i0 + 2;
-            uint16_t i3 = i0 + 3;
-            indices.push_back(i0); indices.push_back(i1); indices.push_back(i3);
-            indices.push_back(i0); indices.push_back(i3); indices.push_back(i2);
-          }
-        }
-      }
-    }
   }
 
   FlushBatch(false);
