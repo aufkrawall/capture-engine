@@ -390,10 +390,12 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
     // Apply compensation if needed
     if (currentDelta != 0 || compensationActive) {
         // Compensate over COMPENSATION_PERIOD_SEC.
-        // currentDelta > 0 means audio is ahead (too many samples produced), so
-        // swr_set_compensation must drop samples (positive sample_delta shortens
-        // the output window).  The sign must NOT be negated here.
-        int ret = swr_set_compensation(swrCtx, currentDelta, outFmt.sampleRate * COMPENSATION_PERIOD_SEC);
+        // swr_set_compensation(delta, distance): delta > 0 ADDS output samples (produces more per
+        // input = slower drain); delta < 0 REMOVES output samples (produces fewer per input = faster
+        // drain).  When the ring buffer is too full (currentDelta > 0) we need faster drain, so
+        // negate: pass -currentDelta to drop output samples and force the resampler to consume more
+        // input from the ring buffer per video frame.
+        int ret = swr_set_compensation(swrCtx, -currentDelta, outFmt.sampleRate * COMPENSATION_PERIOD_SEC);
 
         if (ret >= 0) {
             // Log (scale back to samples/sec for readability)

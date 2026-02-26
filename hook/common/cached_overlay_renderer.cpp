@@ -1,4 +1,7 @@
 #include "cached_overlay_renderer.h"
+#ifndef VK_LAYER_CE_OVERLAY
+#include "hook_common.h"
+#endif
 #include <cstring>
 
 namespace overlay {
@@ -124,6 +127,24 @@ bool CachedOverlayRenderer::Initialize(ID3D12Device* device, ID3D12CommandQueue*
 }
 
 void CachedOverlayRenderer::Shutdown() {
+    // During process exit, skip all GPU resource cleanup to avoid driver crashes.
+    // Guard against VK_LAYER_CE_OVERLAY context which doesn't define IsProcessTerminating().
+#ifndef VK_LAYER_CE_OVERLAY
+    if (IsProcessTerminating()) {
+        for (auto& frame : perFrameResources) {
+            frame.indexBuffer = nullptr;
+            frame.vertexBuffer = nullptr;
+            frame.indexBufferCpuPtr = nullptr;
+            frame.vertexBufferCpuPtr = nullptr;
+        }
+        if (frameTimeGraph.gpuHistoryBuffer) {
+            frameTimeGraph.gpuHistoryCpuPtr = nullptr;
+            frameTimeGraph.gpuHistoryBuffer = nullptr;
+        }
+        return;
+    }
+#endif
+
     // Wait for GPU
     if (fence && fenceEvent) {
         fence->SetEventOnCompletion(nextFenceValue - 1, fenceEvent);

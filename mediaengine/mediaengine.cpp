@@ -812,28 +812,17 @@ public:
 
                     int64_t rbError = (int64_t)rbAvailable - TARGET_LATENCY_SAMPLES;
 
-                    // Connect Ring Buffer Error to Drift Compensator
-                    // Logic Corrected (Session 3):
-                    // If rbError > 0 (Too Full), Source is Fast. We need to DRAIN FASTER.
-                    // Consumption: Input 100 -> Output 90 (Compress).
-                    // swr_set_compensation needs NEGATIVE delta (Remove samples).
-                    // Our code calls swr(-delta). So delta must be POSITIVE.
-                    // AdjustForClockDrift calculates: drift = output - expected.
-                    // We need drift > 0.
-                    // So we need drift = rbError (since rbError > 0).
+                    // Connect ring buffer level error to the drift compensator.
+                    // swr_set_compensation(delta): delta > 0 adds output (slower drain),
+                    //                              delta < 0 removes output (faster drain).
+                    // AdjustForClockDrift negates the PI output before passing to swr, so
+                    // a positive PI correction (driftSamples > 0) correctly produces a
+                    // negative swr delta (removes samples = faster drain).
                     //
-                    // If rbError < 0 (Too Empty), Source is Slow. We need to DRAIN
-                    // SLOWER. Consumption: Input 90 -> Output 100 (Stretch).
-                    // swr_set_compensation needs POSITIVE delta (Add samples).
-                    // Our code calls swr(-delta). So delta must be NEGATIVE.
-                    // We need drift < 0.
-                    // So we need drift = rbError (since rbError < 0).
-                    //
-                    // Verification:
-                    // drift = output - expected
-                    // we want drift = rbError
-                    // rbError = output - expected
-                    // expected = output - rbError
+                    // We map rbError directly to driftSamples:
+                    //   driftSamples = syncSamplesOutput - expectedSamples
+                    //   => expectedSamples = syncSamplesOutput - rbError
+                    //   => fakeExpectedSamples = syncSamplesOutput - rbError
 
                     int64_t fakeExpectedSamples = src.syncSamplesOutput - rbError;
 

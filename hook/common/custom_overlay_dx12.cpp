@@ -75,6 +75,18 @@ bool DX12Backend::Initialize(int fontTextureWidth, int fontTextureHeight, const 
 void DX12Backend::Shutdown() {
     DX12_DEBUG_STEP("Shutdown", "START - initialized=%d", initialized);
 
+    // During process exit, skip all GPU resource cleanup. Other DLLs (e.g. the
+    // NVIDIA driver nvwgf2umx.dll) may already be partially torn down, causing
+    // Unmap/Release calls to crash. The OS reclaims all GPU resources on exit.
+    if (IsProcessTerminating()) {
+        for (int i = 0; i < kFramePoolSize; i++) {
+            vertexBufferPtr[i] = nullptr;
+            indexBufferPtr[i] = nullptr;
+        }
+        initialized = false;
+        return;
+    }
+
     if (vertexBuffer[0] && vertexBufferPtr[0]) {
         DX12_DEBUG_STEP("Shutdown", "Unmapping vertex buffers");
     }

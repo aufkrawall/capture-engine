@@ -36,6 +36,11 @@ void ReportLUID(uint32_t low, uint32_t high);
 extern char g_ProcessName[260];
 // Debug log independent of IPC
 
+// Returns true once DllMain(DLL_PROCESS_DETACH, lpReserved != NULL) has been called.
+// GPU resource cleanup (Unmap, Release, etc.) must be skipped when this returns true
+// because other DLLs (e.g. NVIDIA driver) may already be partially torn down.
+bool IsProcessTerminating();
+
 // Constants
 #define HOOK_LOG_FILE "hook.log"
 
