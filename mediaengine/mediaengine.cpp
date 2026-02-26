@@ -915,7 +915,9 @@ public:
 
                 // Safety cap: bound postResampleBuffer to prevent unbounded growth
                 // if syncResampler consistently expands output (e.g. during clock stretch).
-                const size_t MAX_POST_RESAMPLE_FLOATS = totalFloats * 4;
+                // Minimum 50ms to absorb short encoder stalls without truncating audio.
+                const size_t MIN_POST_RESAMPLE_FLOATS = (size_t)(SAMPLE_RATE * CHANNELS / 20);  // 50ms
+                const size_t MAX_POST_RESAMPLE_FLOATS = std::max(totalFloats * 4, MIN_POST_RESAMPLE_FLOATS);
                 if (src.postResampleBuffer.size() > MAX_POST_RESAMPLE_FLOATS) {
                     size_t excess = src.postResampleBuffer.size() - MAX_POST_RESAMPLE_FLOATS;
                     src.postResampleBuffer.erase(src.postResampleBuffer.begin(),
@@ -1010,11 +1012,21 @@ public:
             }
 
             if (activeSources > 1) {
+                // Soft-knee limiter: linear below 0.9, hyperbolic above.
+                // Avoids the discontinuous gain jump of hard clipping which
+                // causes audible clicks when mixed sources briefly exceed 1.0.
+                // Maximum output is 1.0 (asymptotic), knee is smooth (C¹).
+                constexpr float kKnee = 0.9f;
+                constexpr float kRange = 1.0f - kKnee;          // 0.1
+                constexpr float kScale = 1.0f / kRange;          // 10.0
                 for (auto& s : mixBuffer) {
-                    if (s > 1.0f)
-                        s = 1.0f;
-                    else if (s < -1.0f)
-                        s = -1.0f;
+                    if (s > kKnee) {
+                        float excess = (s - kKnee) * kScale;     // 0..∞ mapped from kKnee..∞
+                        s = kKnee + kRange * (excess / (1.0f + excess));
+                    } else if (s < -kKnee) {
+                        float excess = (-s - kKnee) * kScale;
+                        s = -(kKnee + kRange * (excess / (1.0f + excess)));
+                    }
                 }
             }
 

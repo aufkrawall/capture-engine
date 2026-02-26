@@ -82,7 +82,18 @@ void DX12Backend::Shutdown() {
         for (int i = 0; i < kFramePoolSize; i++) {
             vertexBufferPtr[i] = nullptr;
             indexBufferPtr[i] = nullptr;
+            (void)vertexBuffer[i].Detach();
+            (void)indexBuffer[i].Detach();
         }
+        (void)rootSignature.Detach();
+        (void)pipelineState.Detach();
+        (void)pipelineStateSolid.Detach();
+        (void)srvHeap.Detach();
+        (void)fontTexture.Detach();
+        (void)uploadBuffer.Detach();
+        currentCmdList = nullptr;
+        commandQueue = nullptr;
+        device = nullptr;
         initialized = false;
         return;
     }

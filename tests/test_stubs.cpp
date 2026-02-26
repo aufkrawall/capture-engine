@@ -57,3 +57,6 @@ extern "C" BOOL MiniDumpWriteDump(HANDLE, DWORD, HANDLE, int, void*, void*, void
 #include "config.h"
 static AppConfig g_LocalConfigInstance{};
 AppConfig* g_pLocalConfig = &g_LocalConfigInstance;
+bool IsProcessTerminating() {
+    return false;
+}

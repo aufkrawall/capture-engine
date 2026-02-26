@@ -235,7 +235,7 @@ bool VideoEncoder::Init(const VideoConfig& config, int width, int height, int fp
     }
 
     DLL_Log("[VideoEncoder] Step 2: Setting av_log level");
-    av_log_set_level(AV_LOG_DEBUG);
+    av_log_set_level(AV_LOG_WARNING);
 
     DLL_Log("[VideoEncoder] Step 3: Creating output filename");
     outputFilename = GenerateOutputFilename(config);
@@ -1065,8 +1065,8 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
         if (audioPacketCount++ % 100 == 0) {
             DLL_Log(
                 "[VideoEncoder] Queuing audio pkt #%d size=%d pts=%lld "
-                "stream_idx=%d",
-                audioPacketCount, pkt->size, pkt->pts, pkt->stream_index);
+                "dur=%lld stream_idx=%d",
+                audioPacketCount, pkt->size, (long long)pkt->pts, (long long)pkt->duration, pkt->stream_index);
         }
     }
 
@@ -2395,6 +2395,19 @@ void VideoEncoder::Stop() {
     if (fileOpened) {
         DLL_Log("[VideoEncoder] Sync Stop: Finalizing file...");
         if (fmtCtx) {
+            int64_t finalDurationUs = encodedDurationUs.load(std::memory_order_relaxed);
+            if (finalDurationUs > 0) {
+                fmtCtx->duration = av_rescale_q(finalDurationUs, AVRational{1, 1000000}, AV_TIME_BASE_Q);
+                for (unsigned int i = 0; i < fmtCtx->nb_streams; ++i) {
+                    AVStream* st = fmtCtx->streams[i];
+                    if (st && st->codecpar && st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+                        int64_t stDuration = av_rescale_q(finalDurationUs, AVRational{1, 1000000}, st->time_base);
+                        if (stDuration > 0) {
+                            st->duration = stDuration;
+                        }
+                    }
+                }
+            }
             av_write_trailer(fmtCtx);
             if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
                 avio_closep(&fmtCtx->pb);
@@ -3465,6 +3478,15 @@ void VideoEncoder::AsyncWriteLoop() {
                 int64_t finalDurationUs = encodedDurationUs.load(std::memory_order_relaxed);
                 if (finalDurationUs > 0) {
                     fmtCtx->duration = av_rescale_q(finalDurationUs, AVRational{1, 1000000}, AV_TIME_BASE_Q);
+                    for (unsigned int i = 0; i < fmtCtx->nb_streams; ++i) {
+                        AVStream* st = fmtCtx->streams[i];
+                        if (st && st->codecpar && st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+                            int64_t stDuration = av_rescale_q(finalDurationUs, AVRational{1, 1000000}, st->time_base);
+                            if (stDuration > 0) {
+                                st->duration = stDuration;
+                            }
+                        }
+                    }
                     DLL_Log("[VideoEncoder] Async Finalize: Container duration set to %lld us", finalDurationUs);
                 }
                 av_write_trailer(fmtCtx);

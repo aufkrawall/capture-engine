@@ -101,6 +101,7 @@ private:
     // Buffer for packets before streamIndex is set.
     // Uses deque for O(1) removal from the front when the buffer overflows.
     std::deque<AVPacket*> pendingPackets;
+    std::deque<int64_t> pendingFrameDurations;
 
     // Per-recording warning flags (reset in Stop() for multi-recording support)
     bool warnedOnce = false;  // "stream not yet assigned" warning gate
@@ -116,5 +117,6 @@ private:
     bool wasDroppingSamples = false;
     int64_t totalDroppedSamples = 0;
 
+    void ApplyPacketDuration(AVPacket* pkt);
     void Flush();
 };

@@ -53,6 +53,24 @@ SharedCaptureD3D11::SharedCaptureD3D11()
 SharedCaptureD3D11::~SharedCaptureD3D11() {
     m_Active = false;
 
+    // CRASH FIX: Skip COM Release() during process exit to avoid driver crashes.
+    if (IsProcessTerminating()) {
+        m_pDevice.Detach();
+        m_pDevice1.Detach();
+        m_pContext.Detach();
+        m_pSwapChain.Detach();
+        for (int i = 0; i < 2; i++) {
+            m_SharedTextures[i].Detach();
+            m_KeyedMutexes[i].Detach();
+            m_PresentQueries[i].Detach();
+            if (m_SharedHandles[i]) {
+                CloseHandle(m_SharedHandles[i]);
+                m_SharedHandles[i] = nullptr;
+            }
+        }
+        return;
+    }
+
     for (int i = 0; i < 2; i++) {
         if (m_SharedHandles[i]) {
             CloseHandle(m_SharedHandles[i]);
@@ -220,6 +238,37 @@ SharedCaptureD3D12::SharedCaptureD3D12()
 
 SharedCaptureD3D12::~SharedCaptureD3D12() {
     m_Active = false;
+
+    // CRASH FIX: During process exit the NVIDIA D3D12 driver (nvwgf2umx.dll) may
+    // already be partially torn down.  Calling Release() on D3D12 COM objects at
+    // that point crashes at nvwgf2umx+0x6C9C85.  Detach all ComPtrs so their
+    // destructors are no-ops; the OS will reclaim the memory anyway.
+    if (IsProcessTerminating()) {
+        m_pDevice.Detach();
+        m_pSwapChain.Detach();
+        m_Fence.Detach();
+        for (int i = 0; i < 2; i++) {
+            m_CommandAllocators[i].Detach();
+            m_SharedResources[i].Detach();
+        }
+        m_CommandList.Detach();
+        // Kernel handles are safe to close at any time.
+        if (m_FenceEvent) {
+            CloseHandle(m_FenceEvent);
+            m_FenceEvent = nullptr;
+        }
+        if (m_FenceShareHandle) {
+            CloseHandle(m_FenceShareHandle);
+            m_FenceShareHandle = nullptr;
+        }
+        for (int i = 0; i < 2; i++) {
+            if (m_SharedHandles[i]) {
+                CloseHandle(m_SharedHandles[i]);
+                m_SharedHandles[i] = nullptr;
+            }
+        }
+        return;
+    }
 
     if (m_FenceEvent) {
         CloseHandle(m_FenceEvent);

@@ -234,6 +234,7 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
     initDone = true;
     savedConfig = config;       // Save for potential reinit
     lastPacketTimestampMs = 0;  // Initialize timestamp tracker
+    pendingFrameDurations.clear();
     DLL_Log("[AudioEncoder] Initialization complete");
     return true;
 #if defined(__clang__)
@@ -269,6 +270,31 @@ void AudioEncoder::SetStreamIndex(int index) {
     }
 }
 
+void AudioEncoder::ApplyPacketDuration(AVPacket* pkt) {
+    if (!pkt) {
+        return;
+    }
+
+    int64_t expectedDuration = 0;
+    if (!pendingFrameDurations.empty()) {
+        expectedDuration = pendingFrameDurations.front();
+        pendingFrameDurations.pop_front();
+    }
+
+    if (pkt->duration > 0) {
+        return;
+    }
+
+    if (expectedDuration > 0) {
+        pkt->duration = expectedDuration;
+        return;
+    }
+
+    if (codecCtx && codecCtx->frame_size > 0) {
+        pkt->duration = codecCtx->frame_size;
+    }
+}
+
 void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channels, int sampleRate, int bitsPerSample,
                                  int validBitsPerSample, int blockAlign, bool isFloat, int64_t timestamp) {
     // If encoder was invalidated (reopen failed in Stop), try to reinit
@@ -299,6 +325,7 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
         samplesCount = 0;           // CRITICAL: Reset to 0 for fresh start
         resampledSamplesTotal = 0;  // Reset resampler output counter
         lastPacketTimestampMs = 0;
+        pendingFrameDurations.clear();
         lastInputTimestamp = -1;  // CRITICAL: Reset to prevent false discontinuity detection
         if (audioFifo)
             av_audio_fifo_reset(audioFifo);
@@ -644,6 +671,7 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
             DLL_Log("[AudioEnc] avcodec_send_frame failed: %s (code=%d)", errbuf, ret);
             continue;
         }
+        pendingFrameDurations.push_back(frame_size);
         // Only advance PTS counter after a successful send so tracking stays accurate
         samplesCount += frame_size;
 
@@ -664,6 +692,7 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
                 break;
             }
 
+            ApplyPacketDuration(pkt);
             pktCount++;
             // Buffer packets until streamIndex is set by SetStreamIndex().
             // Otherwise we'd write audio packets with the wrong stream index.
@@ -736,6 +765,7 @@ void AudioEncoder::Stop() {
     firstTimestamp = -1;
     recordingStartUs = -1;
     recordingEndUs = 0;
+    pendingFrameDurations.clear();
     resampledSamplesTotal = 0;  // Reset resampler output counter for next recording
     lastInputTimestamp = -1;    // Reset continuity tracking
     lastPacketTimestampMs = 0;  // Reset PTS tracker
@@ -819,6 +849,7 @@ void AudioEncoder::Flush() {
                 av_packet_free(&pkt);
                 break;
             }
+            ApplyPacketDuration(pkt);
             pkt->stream_index = streamIndex;
             if (onPacket)
                 onPacket(pkt);
@@ -990,6 +1021,7 @@ void AudioEncoder::Flush() {
             if (ret < 0) {
                 break;
             }
+            pendingFrameDurations.push_back(samplesToSend);
             drainPackets();
 
             fifoSize = av_audio_fifo_size(audioFifo);
@@ -1021,6 +1053,9 @@ void AudioEncoder::Flush() {
         "[AudioEncoder] Flush: samplesCount=%lld maxSamples=%lld "
         "discardPadding=%lld",
         samplesCount, maxSamples, discardPaddingSamples);
+    if (!pendingFrameDurations.empty()) {
+        DLL_Log("[AudioEncoder] Flush: pending duration slots before final drain=%zu", pendingFrameDurations.size());
+    }
 
     // Send NULL frame to trigger final drain of codec's internal buffer.
     // After draining, avcodec_flush_buffers() resets the codec out of EOF state
@@ -1040,6 +1075,7 @@ void AudioEncoder::Flush() {
             av_packet_free(&pkt);
             break;
         }
+        ApplyPacketDuration(pkt);
         pkt->stream_index = streamIndex;  // Ensure correct stream index for flushed packets
         flushedPackets.push_back(pkt);
     }
@@ -1066,6 +1102,7 @@ void AudioEncoder::Flush() {
     // that has been drained to EOF. This prevents potential double-free bugs in
     // some codec implementations (e.g. ALAC) when the context is freed after EOF.
     avcodec_flush_buffers(codecCtx);
+    pendingFrameDurations.clear();
 
     DLL_Log("[AudioEncoder] Flush complete");
 }

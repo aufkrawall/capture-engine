@@ -68,5 +68,3 @@ bool BuildLogFilePathForModuleAddress(const void* address, const char* fileName,
 
 void TryEnableFrameTimeCSVLogging(SharedMemoryLayout* shm, const void* address, PerformanceMetrics& metrics,
                                   const char* apiName, bool& inOutInitialized);
-
-bool IsProcessTerminating();
