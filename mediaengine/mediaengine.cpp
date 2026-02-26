@@ -787,9 +787,9 @@ public:
                     // will accumulate and eventually overflow, dropping early audio and
                     // creating "silence bursts" / delayed start. Keep only a small
                     // bounded lead.
-                    const int64_t MAX_LEAD_SAMPLES = SAMPLE_RATE / 25;    // 40ms
-                    const int64_t MAX_DROP_PER_CALL = SAMPLE_RATE / 100;  // 10ms
-                    const int64_t DROP_FADE_SAMPLES = SAMPLE_RATE / 200;  // 5ms
+                    const int64_t MAX_LEAD_SAMPLES = SAMPLE_RATE / 25;                           // 40ms
+                    const int64_t MAX_DROP_PER_CALL = SAMPLE_RATE / 100;                         // 10ms
+                    const int64_t DROP_FADE_SAMPLES = SAMPLE_RATE / 200;                         // 5ms
                     const int64_t MIN_COMPENSATION_BUFFER_SAMPLES = TARGET_LATENCY_SAMPLES / 4;  // 5ms
                     if ((int64_t)rbAvailable > TARGET_LATENCY_SAMPLES + MAX_LEAD_SAMPLES) {
                         int64_t dropSamplesTotal = (int64_t)rbAvailable - (TARGET_LATENCY_SAMPLES + MAX_LEAD_SAMPLES);
@@ -1029,11 +1029,11 @@ public:
                 // causes audible clicks when mixed sources briefly exceed 1.0.
                 // Maximum output is 1.0 (asymptotic), knee is smooth (C¹).
                 constexpr float kKnee = 0.9f;
-                constexpr float kRange = 1.0f - kKnee;          // 0.1
-                constexpr float kScale = 1.0f / kRange;          // 10.0
+                constexpr float kRange = 1.0f - kKnee;   // 0.1
+                constexpr float kScale = 1.0f / kRange;  // 10.0
                 for (auto& s : mixBuffer) {
                     if (s > kKnee) {
-                        float excess = (s - kKnee) * kScale;     // 0..∞ mapped from kKnee..∞
+                        float excess = (s - kKnee) * kScale;  // 0..∞ mapped from kKnee..∞
                         s = kKnee + kRange * (excess / (1.0f + excess));
                     } else if (s < -kKnee) {
                         float excess = (-s - kKnee) * kScale;
@@ -1094,8 +1094,6 @@ public:
                     if (src.ringBuffer)
                         rbLevel = src.ringBuffer->GetAvailable() / CHANNELS;
                     syncOutput = src.syncSamplesOutput;
-                    if (src.ringBuffer)
-                        droppedTotal = src.ringBuffer->GetDroppedSamples();
                 }
 
                 DLL_Log(
@@ -1419,10 +1417,8 @@ private:
                     bool needReinit = !src.resampler->IsReady();
                     if (!needReinit) {
                         const auto& cur = src.resampler->GetInputFormat();
-                        needReinit = (cur.sampleRate != inputFmt.sampleRate ||
-                                      cur.channels != inputFmt.channels ||
-                                      cur.bitsPerSample != inputFmt.bitsPerSample ||
-                                      cur.isFloat != inputFmt.isFloat);
+                        needReinit = (cur.sampleRate != inputFmt.sampleRate || cur.channels != inputFmt.channels ||
+                                      cur.bitsPerSample != inputFmt.bitsPerSample || cur.isFloat != inputFmt.isFloat);
                     }
                     if (needReinit) {
                         src.resampler->Init(inputFmt, targetFmt);

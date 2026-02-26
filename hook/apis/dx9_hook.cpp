@@ -1424,6 +1424,13 @@ public:
         if (!initialized || !backBuffer)
             return;
 
+        // Check if we should throttle capture (encoder is falling behind)
+        if (g_IPC && g_IPC->GetSharedMem()) {
+            if (g_IPC->GetSharedMem()->throttleCapture.load(std::memory_order_acquire)) {
+                return;
+            }
+        }
+
         // Get timestamp
         static int64_t qpcFreq = 0;
         if (qpcFreq == 0) {
@@ -1652,28 +1659,30 @@ public:
                 if (SUCCEEDED(hr)) {
                     int slot = idx % 2;
                     ShmemBuffer* shmBuf = g_IPC ? g_IPC->GetShmem() : nullptr;
-                    if (shmBuf) {
+                    if (shmBuf && shmBuf->slot_size > 0) {
                         uint32_t copyW = width;
                         uint32_t copyH = height;
-                        if (copyW > ShmemBuffer::MAX_WIDTH)
-                            copyW = ShmemBuffer::MAX_WIDTH;
-                        if (copyH > ShmemBuffer::MAX_HEIGHT)
-                            copyH = ShmemBuffer::MAX_HEIGHT;
+                        if (copyW > shmBuf->max_width)
+                            copyW = shmBuf->max_width;
+                        if (copyH > shmBuf->max_height)
+                            copyH = shmBuf->max_height;
 
-                        uint8_t* dst = shmBuf->data[slot];
-                        uint8_t* src = (uint8_t*)rect.pBits;
-                        uint32_t dstPitch = copyW * 4;
+                        uint8_t* dst = shmBuf->GetData(slot);
+                        if (dst) {
+                            uint8_t* src = (uint8_t*)rect.pBits;
+                            uint32_t dstPitch = copyW * 4;
 
-                        for (uint32_t y = 0; y < copyH; y++) {
-                            memcpy(dst + (y * dstPitch), src + (y * rect.Pitch), dstPitch);
+                            for (uint32_t y = 0; y < copyH; y++) {
+                                memcpy(dst + (y * dstPitch), src + (y * rect.Pitch), dstPitch);
+                            }
+
+                            shmBuf->validWidth = copyW;
+                            shmBuf->validHeight = copyH;
+                            shmBuf->pitch = dstPitch;
+                            shmBuf->writeSlot.store(slot);
+                            shmBuf->mark_ready(slot);
+                            SignalFrameReady(g_IPC, 100 + slot, qpc.QuadPart, 0);
                         }
-
-                        shmBuf->validWidth = copyW;
-                        shmBuf->validHeight = copyH;
-                        shmBuf->pitch = dstPitch;
-                        shmBuf->writeSlot.store(slot);
-                        shmBuf->slotReady[slot].store(true);
-                        SignalFrameReady(g_IPC, 100 + slot, qpc.QuadPart, 0);
                     }
                     shmemSurfaces[idx]->UnlockRect();
                 }
@@ -2141,11 +2150,6 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
         // Update performance metrics
         QueryPerformanceCounter(&qpc);
         int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
-
-        // Initialize CSV logging once - only if debug logging is enabled
-        static bool csvLoggingInitialized = false;
-        SharedMemoryLayout* csvShm = (ipc) ? ipc->GetSharedMem() : nullptr;
-        TryEnableFrameTimeCSVLogging(csvShm, (const void*)&DetourPresent, g_PerfMetrics, "DX9", csvLoggingInitialized);
 
         g_PerfMetrics.Update(us);
 

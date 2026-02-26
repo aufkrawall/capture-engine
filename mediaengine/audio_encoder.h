@@ -107,8 +107,6 @@ private:
     bool warnedOnce = false;  // "stream not yet assigned" warning gate
     bool warnedMax = false;   // "pending buffer full" warning gate
 
-    // Per-recording diagnostic counters (reset in Stop())
-    int diagCounter = 0;
     int fifoLogCounter = 0;
     int frameLogCounter = 0;
     int noPacketCount = 0;

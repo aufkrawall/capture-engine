@@ -441,6 +441,13 @@ public:
         if (!initialized || !d3d9DeviceEx)
             return;
 
+        // Check if we should throttle capture (encoder is falling behind)
+        if (g_IPC && g_IPC->GetSharedMem()) {
+            if (g_IPC->GetSharedMem()->throttleCapture.load(std::memory_order_acquire)) {
+                return;
+            }
+        }
+
         int idx = writeIndex;
 
         // Get timestamp

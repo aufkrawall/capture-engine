@@ -791,9 +791,10 @@ int MediaProcessMain(const AppConfig& config) {
             GenerateShmemName(shmemName, 64, g_pSharedMem->GetHostPID());
             g_hMapShmem = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, shmemName);
             if (g_hMapShmem) {
-                g_pShmem = (ShmemBuffer*)MapViewOfFile(g_hMapShmem, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(ShmemBuffer));
+                size_t mapSize = g_pSharedMem->GetShmemMappingSize();
+                g_pShmem = (ShmemBuffer*)MapViewOfFile(g_hMapShmem, FILE_MAP_ALL_ACCESS, 0, 0, mapSize);
                 if (g_pShmem) {
-                    LogInfo("[Media] Connected to separate Shmem mapping '%ls'", shmemName);
+                    LogInfo("[Media] Connected to separate Shmem mapping '%ls' (mapped %zu bytes)", shmemName, mapSize);
                 }
             }
         }

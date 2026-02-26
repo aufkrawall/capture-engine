@@ -384,9 +384,9 @@ public:
             return false;
         }
 
-        HRESULT hr = pD3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, NULL, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                                        featureLevels, 2, D3D11_SDK_VERSION, &d3d11Device, &featureLevel,
-                                        &d3d11Context);
+        HRESULT hr =
+            pD3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, NULL, D3D11_CREATE_DEVICE_BGRA_SUPPORT, featureLevels,
+                               2, D3D11_SDK_VERSION, &d3d11Device, &featureLevel, &d3d11Context);
 
         if (FAILED(hr)) {
             HookLog("OpenGL: Failed to create D3D11 device (hr=0x%08x)", hr);
@@ -597,6 +597,13 @@ public:
     void CaptureFrame() {
         if (!initialized)
             return;
+
+        // Check if we should throttle capture (encoder is falling behind)
+        if (g_IPC && g_IPC->GetSharedMem()) {
+            if (g_IPC->GetSharedMem()->throttleCapture.load(std::memory_order_acquire)) {
+                return;
+            }
+        }
 
         int idx = writeIndex;
 

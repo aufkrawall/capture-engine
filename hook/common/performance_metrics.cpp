@@ -6,31 +6,7 @@ PerformanceMetrics::PerformanceMetrics() {
     memset(m_frameTimeWindow, 0, sizeof(m_frameTimeWindow));
 }
 
-PerformanceMetrics::~PerformanceMetrics() {
-    DisableCSVLogging();
-}
-
-void PerformanceMetrics::EnableCSVLogging(const char* logPath) {
-    std::lock_guard<std::mutex> lock(m_csvMutex);
-    if (m_csvFile) {
-        fclose(m_csvFile);
-    }
-    m_csvFile = fopen(logPath, "w");
-    if (m_csvFile) {
-        // Write CSV header
-        fprintf(m_csvFile, "Frame,Timestamp_us,FrameTime_us,FrameTime_ms,FPS,Recording\n");
-        fflush(m_csvFile);
-        m_frameCounter = 0;
-    }
-}
-
-void PerformanceMetrics::DisableCSVLogging() {
-    std::lock_guard<std::mutex> lock(m_csvMutex);
-    if (m_csvFile) {
-        fclose(m_csvFile);
-        m_csvFile = nullptr;
-    }
-}
+PerformanceMetrics::~PerformanceMetrics() {}
 
 void PerformanceMetrics::SetRecording(bool isRecording) {
     // Single-writer: only called from hook thread
@@ -86,19 +62,6 @@ void PerformanceMetrics::Update(int64_t currentQpcUs) {
     int idx = m_historyIdx.load(std::memory_order_relaxed);
     m_history[idx] = frameTimeMs;
     m_historyIdx.store((idx + 1) % HISTORY_SIZE, std::memory_order_release);
-
-    // 2. Write to CSV if enabled (debug mode) — only path that locks
-    if (m_csvFile) {
-        std::lock_guard<std::mutex> lock(m_csvMutex);
-        if (m_csvFile) {  // Double-check after lock
-            float fps = (frameToFrameUs > 0) ? (1000000.0f / frameToFrameUs) : 0.0f;
-            fprintf(m_csvFile, "%lld,%lld,%lld,%.3f,%.1f,%d\n", (long long)m_frameCounter, (long long)currentQpcUs,
-                    (long long)frameToFrameUs, frameTimeMs, fps, m_isRecording ? 1 : 0);
-            if (m_frameCounter % 100 == 0) {
-                fflush(m_csvFile);
-            }
-        }
-    }
 
     // 3. Update Rolling Window (writer-only)
     m_frameTimeWindow[m_windowIndex] = frameToFrameUs;

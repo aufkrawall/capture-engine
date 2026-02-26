@@ -339,9 +339,9 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
     integralError += smoothedDrift;
 
     // Anti-Windup: Clamp Integral term
-    // Max correction +/- 10% speed (doubled from 5% to handle larger drifts).
-    // In 10 seconds, 10% is 0.10 * 48000 * 10 = 48000 samples
-    const double MAX_INTEGRAL_CORRECTION = (outFmt.sampleRate * COMPENSATION_PERIOD_SEC) * 0.10;
+    // Max correction +/- 1% speed to prevent audible pitch shifts.
+    // In 10 seconds, 1% is 0.01 * 48000 * 10 = 4800 samples
+    const double MAX_INTEGRAL_CORRECTION = (outFmt.sampleRate * COMPENSATION_PERIOD_SEC) * 0.01;
     if (integralError * activeKi > MAX_INTEGRAL_CORRECTION)
         integralError = MAX_INTEGRAL_CORRECTION / activeKi;
     if (integralError * activeKi < -MAX_INTEGRAL_CORRECTION)
@@ -354,8 +354,8 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
     targetDelta = (int32_t)correction;
 
     // 3. Absolute Safety Limits
-    // +/- 10% of total period samples (doubled from 5% to handle larger drifts)
-    maxDelta = (outFmt.sampleRate * COMPENSATION_PERIOD_SEC) / 10;
+    // +/- 1% of total period samples to prevent audible pitch shifts
+    maxDelta = (outFmt.sampleRate * COMPENSATION_PERIOD_SEC) / 100;
 
     // Log extreme correction (Logic Debug)
     if (std::abs(targetDelta) > maxDelta) {
@@ -371,11 +371,11 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
         targetDelta = -maxDelta;
 
     // 2. RATE LIMITING STAGE (Inertia)
-    // Max change: 200 samples per update (at 10Hz = 2000/sec). This allows
-    // reaching the 10% maximum correction (~48000) in about 24 seconds,
+    // Max change: 20 samples per update (at 10Hz = 200/sec). This allows
+    // reaching the 1% maximum correction (~4800) in about 24 seconds,
     // fast enough to drain accumulated lead without audible pitch steps.
-    // At 0.042%/s acceleration even maximum ramp-up is inaudible.
-    const int32_t maxChange = 200;
+    // At 0.004%/s acceleration even maximum ramp-up is inaudible.
+    const int32_t maxChange = 20;
 
     if (currentDelta < targetDelta) {
         currentDelta += maxChange;

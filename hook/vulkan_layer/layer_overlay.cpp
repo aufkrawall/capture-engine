@@ -661,14 +661,6 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, VkSemaph
         submitInfo.pSignalSemaphores = &signalSemaphore;
     }
 
-    // DIAGNOSTIC: Log submit details
-    static std::atomic<int> s_submitCount{0};
-    int submitNum = ++s_submitCount;
-    if (submitNum <= 5) {
-        LayerLog("Vulkan Layer: QueueSubmit (buffer=%u, waitSem=%p, signalSem=%p, fence=%p)", imageIndex, waitSemaphore,
-                 signalSemaphore, fence);
-    }
-
     VkResult submitResult = disp->fp_vkQueueSubmit(queue, 1, &submitInfo, fence);
     if (submitResult != VK_SUCCESS) {
         LayerLog("Vulkan Layer: QueueSubmit FAILED with result %d (buffer %u)", submitResult, imageIndex);

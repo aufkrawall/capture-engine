@@ -139,22 +139,6 @@ bool BuildLogFilePathForModuleAddress(const void* address, const char* fileName,
     return true;
 }
 
-void TryEnableFrameTimeCSVLogging(SharedMemoryLayout* shm, const void* address, PerformanceMetrics& metrics,
-                                  const char* apiName, bool& inOutInitialized) {
-    if (inOutInitialized)
-        return;
-    if (!shm || !shm->GetDebugLogging())
-        return;
-
-    char csvPath[MAX_PATH];
-    if (BuildLogFilePathForModuleAddress(address, "frame_times.csv", csvPath, sizeof(csvPath))) {
-        metrics.EnableCSVLogging(csvPath);
-        HookLog("%s: Frame time CSV logging enabled (%s)", apiName ? apiName : "API", csvPath);
-    }
-
-    inOutInitialized = true;
-}
-
 IPCClient* g_IPC = nullptr;
 SharedMemoryLayout* g_pSharedMem = nullptr;
 std::atomic<bool> g_ShuttingDown{false};

@@ -87,9 +87,12 @@ ShmemBuffer* IPCClient::GetShmem() {
 
     hMapShmem = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, shmemName);
     if (hMapShmem) {
-        pShmem = (ShmemBuffer*)MapViewOfFile(hMapShmem, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(ShmemBuffer));
+        // Map the full size created by the host to ensure slot offsets are valid
+        size_t mapSize = pSharedMem->GetShmemMappingSize();
+
+        pShmem = (ShmemBuffer*)MapViewOfFile(hMapShmem, FILE_MAP_ALL_ACCESS, 0, 0, mapSize);
         if (pShmem) {
-            EarlyLog("IPC: Connected to Shmem buffer '%ls'", shmemName);
+            EarlyLog("IPC: Connected to Shmem buffer '%ls' (mapped %zu bytes)", shmemName, mapSize);
             return pShmem;
         }
         CloseHandle(hMapShmem);

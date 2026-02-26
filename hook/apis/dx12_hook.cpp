@@ -1661,17 +1661,6 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                             rtv.ptr += (SIZE_T)bufferIdx * g_State.rtvDescriptorSize;
                             list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
 
-                            // DIAGNOSTIC: Clear to bright green to verify command list
-                            // reaches display. If window turns green, pipeline works.
-                            // If window stays black, commands aren't being presented.
-                            // DISABLED - was causing green flashing
-                            // static int s_diagClearCount = 0;
-                            // if (s_diagClearCount < 300) {
-                            //   s_diagClearCount++;
-                            //   const float green[] = {0.0f, 0.8f, 0.0f, 1.0f};
-                            //   list->ClearRenderTargetView(rtv, green, 0, nullptr);
-                            // }
-
                             D3D12_VIEWPORT vp = {0, 0, (float)g_State.cachedWidth, (float)g_State.cachedHeight, 0, 1};
                             list->RSSetViewports(1, &vp);
                             D3D12_RECT scissor = {0, 0, (LONG)g_State.cachedWidth, (LONG)g_State.cachedHeight};
@@ -1734,41 +1723,44 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         int64_t captureStartUs = PerfLogger::GetQpcUs();
         SharedMemoryLayout* shm = g_IPC->GetSharedMem();
         if (shm) {
-            if (!g_SharedCaptureD3D12.IsActive())
-                g_SharedCaptureD3D12.Initialize(g_Device.load(), pSwapChain);
-            if (g_SharedCaptureD3D12.IsActive()) {
-                std::lock_guard<std::recursive_mutex> capLock(g_DX12CaptureMutex);
-                // Keep capture submission on the same queue selection as overlay/present
-                // work to avoid cross-queue sync jitter.
-                ID3D12CommandQueue* captureQueue = gameQueue;
-                UINT bbIdx = 0;
-                if (hasCurrentBackBufferIdx) {
-                    bbIdx = currentBackBufferIdx;
-                } else {
-                    IDXGISwapChain3* sc3 = nullptr;
-                    pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3));
-                    bbIdx = sc3 ? sc3->GetCurrentBackBufferIndex() : 0;
-                    if (sc3)
-                        sc3->Release();
-                }
-                if (captureQueue && g_SharedCaptureD3D12.CaptureFrame(captureQueue, bbIdx)) {
-                    SharedFrameDescriptor desc;
-                    if (g_SharedCaptureD3D12.GetCurrentFrame(&desc)) {
-                        shm->SetSharedHandle(0, (uint64_t)g_SharedCaptureD3D12.GetSharedHandle(0));
-                        shm->SetSharedHandle(1, (uint64_t)g_SharedCaptureD3D12.GetSharedHandle(1));
-                        shm->SetFenceShareHandle((uint64_t)g_SharedCaptureD3D12.GetFenceShareHandle());
-                        shm->SetWidth(desc.width);
-                        shm->SetHeight(desc.height);
-                        shm->SetFormat(desc.format);
-                        // CRITICAL FIX: Use acquire ordering to see consumer's readIndex
-                        // updates
-                        uint32_t wIdx = shm->frameRing.writeIndex.load(std::memory_order_acquire);
-                        uint32_t rIdx = shm->frameRing.readIndex.load(std::memory_order_acquire);
-                        if ((uint32_t)(wIdx - rIdx) < (uint32_t)FRAME_RING_SIZE) {
-                            FrameSlot& slot = shm->frameRing.slots[wIdx % FRAME_RING_SIZE];
-                            slot.fenceValue = desc.fenceValue;
-                            slot.timestamp = desc.presentTime;
-                            slot.frameIndex = desc.frameNumber;
+            if (shm->throttleCapture.load(std::memory_order_acquire)) {
+                // Skip capture to let encoder catch up
+            } else {
+                if (!g_SharedCaptureD3D12.IsActive())
+                    g_SharedCaptureD3D12.Initialize(g_Device.load(), pSwapChain);
+                if (g_SharedCaptureD3D12.IsActive()) {
+                    std::lock_guard<std::recursive_mutex> capLock(g_DX12CaptureMutex);
+                    // Keep capture submission on the same queue selection as overlay/present
+                    // work to avoid cross-queue sync jitter.
+                    ID3D12CommandQueue* captureQueue = gameQueue;
+                    UINT bbIdx = 0;
+                    if (hasCurrentBackBufferIdx) {
+                        bbIdx = currentBackBufferIdx;
+                    } else {
+                        IDXGISwapChain3* sc3 = nullptr;
+                        pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3));
+                        bbIdx = sc3 ? sc3->GetCurrentBackBufferIndex() : 0;
+                        if (sc3)
+                            sc3->Release();
+                    }
+                    if (captureQueue && g_SharedCaptureD3D12.CaptureFrame(captureQueue, bbIdx)) {
+                        SharedFrameDescriptor desc;
+                        if (g_SharedCaptureD3D12.GetCurrentFrame(&desc)) {
+                            shm->SetSharedHandle(0, (uint64_t)g_SharedCaptureD3D12.GetSharedHandle(0));
+                            shm->SetSharedHandle(1, (uint64_t)g_SharedCaptureD3D12.GetSharedHandle(1));
+                            shm->SetFenceShareHandle((uint64_t)g_SharedCaptureD3D12.GetFenceShareHandle());
+                            shm->SetWidth(desc.width);
+                            shm->SetHeight(desc.height);
+                            shm->SetFormat(desc.format);
+                            // CRITICAL FIX: Use acquire ordering to see consumer's readIndex
+                            // updates
+                            uint32_t wIdx = shm->frameRing.writeIndex.load(std::memory_order_acquire);
+                            uint32_t rIdx = shm->frameRing.readIndex.load(std::memory_order_acquire);
+                            if ((uint32_t)(wIdx - rIdx) < (uint32_t)FRAME_RING_SIZE) {
+                                FrameSlot& slot = shm->frameRing.slots[wIdx % FRAME_RING_SIZE];
+                                slot.fenceValue = desc.fenceValue;
+                                slot.timestamp = desc.presentTime;
+                                slot.frameIndex = desc.frameNumber;
                             slot.textureIndex = desc.textureIndex;
                             slot.sourcePid = GetCurrentProcessId();
                             // CRITICAL FIX: Add release fence before setting valid flag
@@ -1780,6 +1772,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                             shm->frameRing.droppedFrames.fetch_add(1, std::memory_order_relaxed);
                     }
                 }
+            }
             }
             perfMetrics.captureUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - captureStartUs);
         }

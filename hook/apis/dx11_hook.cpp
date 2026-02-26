@@ -1376,6 +1376,13 @@ public:
             return false;
         }
 
+        // Check if we should throttle capture (encoder is falling behind)
+        if (g_IPC && g_IPC->GetSharedMem()) {
+            if (g_IPC->GetSharedMem()->throttleCapture.load(std::memory_order_acquire)) {
+                return false;
+            }
+        }
+
         // Initialize capture if needed (GetDevice only called during init to avoid per-frame COM overhead)
         if (!initialized) {
             HookLog("DX11Capture: [%d] Not initialized, initializing...", frameNum);
@@ -1513,7 +1520,9 @@ void DX11_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
     HandleDX11ProcessFrame(pSwapChain, true);
 
     // CAPTURE: Copy frame after overlay is drawn (overlay now visible in recording)
-    g_DX11Capture.CaptureFrame(pSwapChain);
+    if (g_IPC && g_IPC->IsRecording()) {
+        g_DX11Capture.CaptureFrame(pSwapChain);
+    }
 }
 
 // Helper to force rebind of all samplers (triggering our DetourSetSamplers)
@@ -2170,7 +2179,9 @@ void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame) {
     DrawDX11Overlay(pSwapChain);
 
     // Capture frame AFTER overlay is drawn
-    g_DX11Capture.CaptureFrame(pSwapChain);
+    if (g_IPC && g_IPC->IsRecording()) {
+        g_DX11Capture.CaptureFrame(pSwapChain);
+    }
 }
 
 void HandleDX11ResizeBegin() {

@@ -255,16 +255,22 @@ int InjectProcessMain(const AppConfig& config) {
     wchar_t shmemName[64];
     GenerateShmemName(shmemName, 64, GetCurrentProcessId());
 
+    // Host always creates mapping large enough for 4K
+    size_t maxMappingSize = ShmemBuffer::CalculateSize(3840, 2160);
+
     HANDLE hMapShmem =
-        CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, sizeof(ShmemBuffer), shmemName);
+        CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, maxMappingSize, shmemName);
 
     ShmemBuffer* pShmem = nullptr;
     if (hMapShmem) {
-        pShmem = (ShmemBuffer*)MapViewOfFile(hMapShmem, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(ShmemBuffer));
+        pShmem = (ShmemBuffer*)MapViewOfFile(hMapShmem, FILE_MAP_ALL_ACCESS, 0, 0, maxMappingSize);
         if (pShmem) {
-            ZeroMemory(pShmem, sizeof(ShmemBuffer));
+            new (pShmem) ShmemBuffer();  // Properly construct std::atomic members
+            pShmem->max_width = 3840;
+            pShmem->max_height = 2160;
+            pShmem->slot_size = 3840 * 2160 * 4;
             pSharedMem->SetShmemMappingCreated(true);
-            pSharedMem->SetShmemMappingSize(sizeof(ShmemBuffer));
+            pSharedMem->SetShmemMappingSize(maxMappingSize);
             LogInfo("[Inject] Created separate Shmem mapping: %ls", shmemName);
         }
     }

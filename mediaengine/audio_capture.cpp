@@ -47,7 +47,8 @@ bool AudioCapture::Start(const std::string& deviceId, bool isLoopback) {
         DLL_Log("[AudioCapture] CoInitializeEx failed: 0x%x", hr);
         return false;
     }
-    coInitOwned = (hr == S_OK);  // Only own COM if WE initialized it (S_OK); S_FALSE = already initialized by another caller
+    coInitOwned =
+        (hr == S_OK);  // Only own COM if WE initialized it (S_OK); S_FALSE = already initialized by another caller
 
     hr = CoCreateInstance(CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, IID_IMMDeviceEnumerator, (void**)&pEnumerator);
     if (FAILED(hr))

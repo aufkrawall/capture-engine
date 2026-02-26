@@ -86,11 +86,6 @@ public:
         return droppedSamples.exchange(0);
     }
 
-    // Get dropped samples without clearing (for diagnostics)
-    size_t GetDroppedSamples() const {
-        return droppedSamples.load();
-    }
-
 private:
     std::vector<float> buffer;
     size_t capacity;

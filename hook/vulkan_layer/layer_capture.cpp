@@ -691,6 +691,13 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
     if (it == g_CaptureStates.end() || !it->second.initialized)
         return;
 
+    // Check if we should throttle capture (encoder is falling behind)
+    if (g_IPCClient.GetSharedMem()) {
+        if (g_IPCClient.GetSharedMem()->throttleCapture.load(std::memory_order_acquire)) {
+            return;
+        }
+    }
+
     VulkanCaptureState& state = it->second;
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (!disp)

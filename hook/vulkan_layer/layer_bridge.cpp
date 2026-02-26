@@ -74,6 +74,3 @@ void ProcessVSyncOverride(UINT& SyncInterval, UINT& Flags) {}
 bool BuildLogFilePathForModuleAddress(const void* address, const char* fileName, char* outPath, size_t outPathLen) {
     return false;
 }
-
-void TryEnableFrameTimeCSVLogging(SharedMemoryLayout* shm, const void* address, PerformanceMetrics& metrics,
-                                  const char* apiName, bool& inOutInitialized) {}

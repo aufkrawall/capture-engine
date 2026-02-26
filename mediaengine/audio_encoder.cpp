@@ -393,26 +393,6 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
                 (int)outputFmt.sampleFmt);
     }
 
-    // Diagnostic: check if audio data is non-silent (reduced frequency to avoid
-    // log spam). Only reset diagCounter the very first time (samplesCount == 0
-    // AND diagCounter == 0) so we don't spam the log on every call that arrives
-    // before the first FIFO flush.
-    if (samplesCount == 0 && diagCounter == 0) {
-        diagCounter = 1;  // arm the first check
-    }
-
-    if (diagCounter++ % 5000 == 0 && isFloat && sizeBytes > 0) {
-        const float* samples = reinterpret_cast<const float*>(data);
-        float maxLevel = 0.0f;
-        int checkCount = std::min(sizeBytes / 4, 100);
-        for (int i = 0; i < checkCount; i++) {
-            float absVal = samples[i] > 0 ? samples[i] : -samples[i];
-            if (absVal > maxLevel)
-                maxLevel = absVal;
-        }
-        DLL_Log("[AudioEnc] Audio level check: maxLevel=%.6f (first %d samples)", maxLevel, checkCount);
-    }
-
     // Resample using AudioResampler
     uint8_t** resampledData = nullptr;
     int convertedSamples = 0;
@@ -771,7 +751,6 @@ void AudioEncoder::Stop() {
     lastPacketTimestampMs = 0;  // Reset PTS tracker
     warnedOnce = false;         // Reset per-recording warning flags
     warnedMax = false;
-    diagCounter = 0;  // Reset diagnostic counters
     fifoLogCounter = 0;
     frameLogCounter = 0;
     noPacketCount = 0;

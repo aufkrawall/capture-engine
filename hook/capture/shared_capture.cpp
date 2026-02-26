@@ -152,6 +152,13 @@ bool SharedCaptureD3D11::CaptureFrame(ID3D11DeviceContext* pContext) {
         return false;
     }
 
+    // Check if we should throttle capture (encoder is falling behind)
+    if (g_IPC && g_IPC->GetSharedMem()) {
+        if (g_IPC->GetSharedMem()->throttleCapture.load(std::memory_order_acquire)) {
+            return false;
+        }
+    }
+
     // Get the back buffer
     ComPtr<ID3D11Texture2D> backBuffer;
     if (FAILED(m_pSwapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer)))) {
@@ -451,6 +458,13 @@ bool SharedCaptureD3D12::CreateSharedResources(UINT width, UINT height, DXGI_FOR
 bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, UINT backBufferIndex) {
     if (!m_Active || !CaptureManager::Get().IsCaptureEnabled() || !pCommandQueue) {
         return false;
+    }
+
+    // Check if we should throttle capture (encoder is falling behind)
+    if (g_IPC && g_IPC->GetSharedMem()) {
+        if (g_IPC->GetSharedMem()->throttleCapture.load(std::memory_order_acquire)) {
+            return false;
+        }
     }
 
     // Get the back buffer

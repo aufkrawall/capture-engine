@@ -324,26 +324,17 @@ struct FrameRingBuffer {
 // (25MB total vs 66MB) to conserve limited address space. Full 4K support
 // remains available in 64-bit builds.
 struct ShmemBuffer {
-#ifdef _WIN64
-    static const int MAX_WIDTH = 3840;
-    static const int MAX_HEIGHT = 2160;
-#else
-    // 32-bit: Use 1440p max to conserve address space (25MB vs 66MB)
-    static const int MAX_WIDTH = 2560;
-    static const int MAX_HEIGHT = 1440;
-#endif
     static const int SLOT_COUNT = 2;
 
-    // Raw pixel data (RGBA)
-    // 64-bit: 33MB per slot for 4K. 2 slots = 66MB.
-    // 32-bit: 14MB per slot for 1440p. 2 slots = 28MB.
-    uint8_t data[SLOT_COUNT][MAX_WIDTH * MAX_HEIGHT * 4];
-
+    // Metadata at the beginning to ensure consistent ABI between 32-bit and 64-bit
     std::atomic<int> writeSlot{0};
     std::atomic<bool> slotReady[SLOT_COUNT];
     uint32_t validWidth{0};
     uint32_t validHeight{0};
     uint32_t pitch{0};
+    uint32_t max_width{0};
+    uint32_t max_height{0};
+    uint32_t slot_size{0}; // Size of one slot in bytes
 
     ShmemBuffer() {
         writeSlot.store(0);
@@ -372,9 +363,19 @@ struct ShmemBuffer {
         }
     }
 
+    // Data follows immediately after this struct
+    uint8_t* GetData(int slot) {
+        if (slot < 0 || slot >= SLOT_COUNT) return nullptr;
+        // Align to 16 bytes for SIMD operations if needed
+        size_t headerSize = (sizeof(ShmemBuffer) + 15) & ~15;
+        uint8_t* base = reinterpret_cast<uint8_t*>(this) + headerSize;
+        return base + (slot * slot_size);
+    }
+
     // Calculate actual size needed for given resolution
     static constexpr size_t CalculateSize(uint32_t width, uint32_t height) {
-        return sizeof(ShmemBuffer) - sizeof(data) + (SLOT_COUNT * width * height * 4);
+        size_t headerSize = (sizeof(ShmemBuffer) + 15) & ~15;
+        return headerSize + (SLOT_COUNT * width * height * 4);
     }
 };
 
@@ -870,8 +871,17 @@ static_assert((FRAME_RING_SIZE & (FRAME_RING_SIZE - 1)) == 0, "FRAME_RING_SIZE m
 static_assert(sizeof(FrameSlot) == 40, "FrameSlot should be 40 bytes - update if struct changes");
 
 // Validate shared memory header is at offset 0
+// Note: offsetof is technically UB for non-standard-layout types (like those with atomics),
+// but works in practice on MSVC/Clang for our specific layout. We use a macro to suppress the warning.
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Winvalid-offsetof"
+#endif
 static_assert(offsetof(SharedMemoryLayout, magic) == 0, "magic must be at offset 0 for version validation");
 static_assert(offsetof(SharedMemoryLayout, version) == 4, "version must be at offset 4");
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 
 // Helper function to validate shared memory on connect
 // Uses atomic loads for thread-safe validation

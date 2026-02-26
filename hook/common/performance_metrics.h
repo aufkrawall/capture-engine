@@ -69,13 +69,6 @@ public:
         return m_fgMultiplier.load(std::memory_order_relaxed) >= 2;
     }
 
-    // CSV Logging for frame times (debug mode)
-    void EnableCSVLogging(const char* logPath);
-    void DisableCSVLogging();
-    bool IsCSVLoggingEnabled() const {
-        return m_csvFile != nullptr;
-    }
-
 private:
     // History ring buffer — written by Update(), read lock-free by overlay.
     // Individual floats are naturally atomic on x86/x64 (aligned 4-byte writes).
@@ -106,10 +99,6 @@ private:
 
     double m_lastBaselineVariance = 0;
     std::atomic<bool> m_stutterDetected{false};
-
-    // CSV logging — only mutex-protected path (debug only)
-    FILE* m_csvFile = nullptr;
-    mutable std::mutex m_csvMutex;
 
     // Frame Generation metrics — atomic for lock-free reads
     std::atomic<float> m_fgOutputFPS{0.0f};

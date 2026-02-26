@@ -976,14 +976,18 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                 }
             }
 
-            if (shm && shm->runtimeState.isRecording) {
-                int64_t captureStartUs = PerfLogger::GetQpcUs();
-                VkSemaphore captureDone = GetCaptureSemaphore(sd->device, idx);
-                CaptureFrame(sd->device, queue, sd->images[idx], idx, currentWait, captureDone);
-                perfMetrics.captureUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - captureStartUs);
-                if (captureDone != VK_NULL_HANDLE) {
-                    currentWait = captureDone;
-                    modified = true;
+            if (shm && shm->runtimeState.isRecording.load(std::memory_order_acquire)) {
+                if (shm->throttleCapture.load(std::memory_order_acquire)) {
+                    // Skip capture to let encoder catch up
+                } else {
+                    int64_t captureStartUs = PerfLogger::GetQpcUs();
+                    VkSemaphore captureDone = GetCaptureSemaphore(sd->device, idx);
+                    CaptureFrame(sd->device, queue, sd->images[idx], idx, currentWait, captureDone);
+                    perfMetrics.captureUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - captureStartUs);
+                    if (captureDone != VK_NULL_HANDLE) {
+                        currentWait = captureDone;
+                        modified = true;
+                    }
                 }
             }
         }

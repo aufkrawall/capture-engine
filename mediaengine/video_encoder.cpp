@@ -1388,7 +1388,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
             if (bgraTex) {
                 // Validation of slot
                 int slot = (shmemSlot >= 0 && shmemSlot < 2) ? shmemSlot : 0;
-                uint8_t* pSrc = pShmem->data[slot];
+                uint8_t* pSrc = pShmem->GetData(slot);
 
                 if (pSrc) {
                     D3D11_BOX box;
@@ -1560,17 +1560,6 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
             if (sharedHandle == NULL) {
                 DLL_Log("[VideoEncoder] Frame %d: Error: sharedHandle is NULL", encodeFrameCounter);
             } else {
-                // Diagnostic: Check format shareability
-                UINT formatSupport = 0;
-                d3d11Device->CheckFormatSupport(DXGI_FORMAT_B8G8R8A8_UNORM, &formatSupport);
-                if (!(formatSupport & D3D11_FORMAT_SUPPORT_SHAREABLE)) {
-                    DLL_Log(
-                        "[VideoEncoder] CRITICAL WARNING: DXGI_FORMAT_B8G8R8A8_UNORM "
-                        "(87) does NOT support "
-                        "SHAREABLE! Flags=%x",
-                        formatSupport);
-                }
-
                 // Try NT handle path first
                 if (DuplicateHandle(hProcess.get(), sharedHandle, GetCurrentProcess(), dupTex.addressof(), 0, FALSE,
                                     DUPLICATE_SAME_ACCESS)) {
@@ -1864,7 +1853,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                 av_frame_free(&d3d11Frame);
                 return true;
             }
-            
+
             // If targetPts > lastAssignedVideoPts + 1, we need to duplicate frames
             while (targetPts > lastAssignedVideoPts + 1) {
                 AVFrame* dupFrame = av_frame_clone(d3d11Frame);
@@ -2244,7 +2233,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
                 av_frame_free(&d3d11Frame);
                 return true;
             }
-            
+
             // If targetPts > lastAssignedVideoPts + 1, we need to duplicate frames
             while (targetPts > lastAssignedVideoPts + 1) {
                 AVFrame* dupFrame = av_frame_clone(d3d11Frame);
@@ -3337,13 +3326,13 @@ bool VideoEncoder::EncodeFrameCuda(HANDLE sharedHandle, uint64_t fenceValue, int
         startPts = pts;
         DLL_Log("[VideoEncoder] Recording started at PTS %lld (CUDA)", startPts.load());
     }
-    
+
     int64_t targetPts = 0;
     int64_t relativePts_ms = pts - startPts;
     if (relativePts_ms < 0) {
         relativePts_ms = 0;
     }
-    
+
     if (savedConfig.useVFR) {
         targetPts = relativePts_ms * 1000;
     } else {
@@ -3405,7 +3394,7 @@ bool VideoEncoder::EncodeFrameCuda(HANDLE sharedHandle, uint64_t fenceValue, int
                 av_frame_free(&cudaFrame);
                 return true;
             }
-            
+
             // If targetPts > lastAssignedVideoPts + 1, we need to duplicate frames
             while (targetPts > lastAssignedVideoPts + 1) {
                 AVFrame* dupFrame = av_frame_clone(cudaFrame);
