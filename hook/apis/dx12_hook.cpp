@@ -866,6 +866,7 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
         std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
         gameQueue = g_CommandQueue.load();
     }
+    g_OverlayAdapter.SetHwnd(hwnd);
     if (!g_OverlayAdapter.InitDX12(device, gameQueue, format)) {
         HookLog("[Overlay] DX12: OverlayAdapter::InitDX12 FAILED (device=%p, queue=%p, fmt=%d)", device, gameQueue,
                 format);

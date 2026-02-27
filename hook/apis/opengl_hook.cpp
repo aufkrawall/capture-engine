@@ -891,6 +891,7 @@ static void DrawOpenGLOverlay(HDC hdc) {
         g_CachedHwnd = hwnd;
 
         InputManager::Get().HookWindow(hwnd);
+        g_OverlayAdapter.SetHwnd(hwnd);
 
         bool initResult = g_OverlayAdapter.InitOpenGL();
         HookLog("OpenGL: InitOpenGL returned %d", initResult ? 1 : 0);

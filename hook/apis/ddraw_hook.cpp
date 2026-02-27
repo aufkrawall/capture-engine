@@ -570,6 +570,7 @@ static void DrawDDrawOverlay() {
 
     if (!g_OverlayAdapter.IsInitialized()) {
         g_CachedHwnd = g_DDrawCapture.targetHwnd;
+        g_OverlayAdapter.SetHwnd(g_CachedHwnd);
         if (g_OverlayAdapter.InitDX9(g_DDrawCapture.d3d9DeviceEx)) {
             g_OverlayAdapter.SetHwnd(g_CachedHwnd);
             HookLog("DDraw: OverlayAdapter initialized");

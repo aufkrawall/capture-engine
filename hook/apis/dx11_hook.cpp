@@ -1654,6 +1654,7 @@ static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int fr
     // Render the overlay
     if (!g_OverlayAdapter.IsInitialized()) {
         HookLog("DX10: Initializing OverlayAdapter...");
+        g_OverlayAdapter.SetHwnd(currentHwnd);
         g_OverlayAdapter.InitDX10(device);
     }
 
@@ -1858,6 +1859,7 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
         lastHwnd = currentHwnd;
 
         InputManager::Get().HookWindow(currentHwnd);
+        g_OverlayAdapter.SetHwnd(currentHwnd);
 
         if (g_OverlayAdapter.InitDX11(device, context)) {
             g_OverlayAdapter.SetHwnd(currentHwnd);

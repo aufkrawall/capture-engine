@@ -29,10 +29,13 @@
 OverlayAdapter g_OverlayAdapter;
 
 // Helper to detect Windows DPI scaling
-static float GetWindowsDpiScale() {
-    // Try to get DPI from the active window monitor
-    HWND hwnd = GetForegroundWindow();
-    if (!hwnd) {
+static float GetWindowsDpiScale(HWND targetHwnd) {
+    // Prefer the target game window if available.
+    HWND hwnd = targetHwnd;
+    if (!IsWindow(hwnd)) {
+        hwnd = GetForegroundWindow();
+    }
+    if (!IsWindow(hwnd)) {
         hwnd = GetDesktopWindow();
     }
 
@@ -103,7 +106,7 @@ bool OverlayAdapter::InitDX9(void* device) {
     backendType = OverlayBackendType::DX9;
 
     renderer = new CustomOverlay::Renderer();
-    float dpiScale = GetWindowsDpiScale();
+    float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
     if (!renderer->Initialize(backend, dpiScale)) {
         HookLogImportant("[Overlay] InitDX9: Renderer::Initialize FAILED (dpiScale=%.2f)", dpiScale);
         delete renderer;
@@ -134,7 +137,7 @@ bool OverlayAdapter::InitDX10(void* device) {
     backendType = OverlayBackendType::DX10;
 
     renderer = new CustomOverlay::Renderer();
-    float dpiScale = GetWindowsDpiScale();
+    float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
     if (!renderer->Initialize(backend, dpiScale)) {
         HookLogImportant("[Overlay] InitDX10: Renderer::Initialize FAILED (dpiScale=%.2f)", dpiScale);
         delete renderer;
@@ -165,7 +168,7 @@ bool OverlayAdapter::InitDX11(void* device, void* context) {
     backendType = OverlayBackendType::DX11;
 
     renderer = new CustomOverlay::Renderer();
-    float dpiScale = GetWindowsDpiScale();
+    float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
     if (!renderer->Initialize(backend, dpiScale)) {
         HookLogImportant("[Overlay] InitDX11: Renderer::Initialize FAILED (dpiScale=%.2f)", dpiScale);
         delete renderer;
@@ -197,7 +200,7 @@ bool OverlayAdapter::InitDX12(void* device, void* queue, int rtvFormat) {
     backendType = OverlayBackendType::DX12;
 
     renderer = new CustomOverlay::Renderer();
-    float dpiScale = GetWindowsDpiScale();
+    float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
     if (!renderer->Initialize(backend, dpiScale)) {
         HookLogImportant("[Overlay] InitDX12: Renderer::Initialize FAILED (dpiScale=%.2f)", dpiScale);
         delete renderer;
@@ -224,7 +227,7 @@ bool OverlayAdapter::InitOpenGL() {
     backendType = OverlayBackendType::OpenGL;
 
     renderer = new CustomOverlay::Renderer();
-    float dpiScale = GetWindowsDpiScale();
+    float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
     if (!renderer->Initialize(backend, dpiScale)) {
         HookLogImportant("[Overlay] InitOpenGL: Renderer::Initialize FAILED (dpiScale=%.2f)", dpiScale);
         delete renderer;
@@ -264,7 +267,7 @@ bool OverlayAdapter::InitVulkan(void* device, void* physDevice, void* queue, uin
     backendType = OverlayBackendType::Vulkan;
 
     renderer = new CustomOverlay::Renderer();
-    float dpiScale = GetWindowsDpiScale();
+    float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
     if (!renderer->Initialize(backend, dpiScale)) {
         HookLogImportant("[Overlay] InitVulkan: Renderer::Initialize FAILED (dpiScale=%.2f)", dpiScale);
         delete renderer;

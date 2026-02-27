@@ -1888,6 +1888,7 @@ static void DrawDX9Overlay(IDirect3DDevice9* device) {
 
         // Hook Input
         InputManager::Get().HookWindow(g_CachedHwnd);
+        g_OverlayAdapter.SetHwnd(g_CachedHwnd);
 
         EarlyLog("DX9: Attempting OverlayAdapter::InitDX9 (device=%p, hwnd=%p)", (void*)device, (void*)g_CachedHwnd);
         if (g_OverlayAdapter.InitDX9(device)) {

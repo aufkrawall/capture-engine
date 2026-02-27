@@ -580,6 +580,7 @@ static void DrawDX8Overlay(HWND hwnd) {
     if (!g_OverlayAdapter.IsInitialized()) {
         g_CachedHwnd = hwnd;
         InputManager::Get().HookWindow(hwnd);  // Hook input for menu
+        g_OverlayAdapter.SetHwnd(hwnd);
 
         if (g_OverlayAdapter.InitDX9(g_DX8Capture.d3d9DeviceEx)) {
             g_OverlayAdapter.SetHwnd(hwnd);
