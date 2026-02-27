@@ -156,8 +156,10 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
     if (SUCCEEDED(vertexBuffer->Lock(0, 0, &vbPtr, D3DLOCK_DISCARD))) {
         DX9Vertex* dst = (DX9Vertex*)vbPtr;
         for (const auto& v : vertices) {
-            dst->x = v.x;
-            dst->y = v.y;
+            // D3D9 rasterization targets pixel centers at +0.5. Shift to avoid
+            // half-texel sampling that makes text look soft compared to newer APIs.
+            dst->x = v.x - 0.5f;
+            dst->y = v.y - 0.5f;
             dst->z = 0.0f;
             dst->rhw = 1.0f;
             uint8_t r = (v.color >> 0) & 0xFF;
@@ -188,7 +190,7 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
     DWORD oldAlphaBlend, oldSrcBlend, oldDestBlend;
     DWORD oldZEnable, oldCullMode, oldLighting;
     DWORD oldColorOp, oldColorArg1, oldColorArg2, oldAlphaOp, oldAlphaArg1, oldAlphaArg2;
-    DWORD oldMinFilter, oldMagFilter;
+    DWORD oldMinFilter, oldMagFilter, oldMipFilter;
     D3DVIEWPORT9 oldViewport;
 
     device->GetFVF(&oldFVF);
@@ -209,6 +211,7 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
     device->GetTextureStageState(0, D3DTSS_ALPHAARG2, &oldAlphaArg2);
     device->GetSamplerState(0, D3DSAMP_MINFILTER, &oldMinFilter);
     device->GetSamplerState(0, D3DSAMP_MAGFILTER, &oldMagFilter);
+    device->GetSamplerState(0, D3DSAMP_MIPFILTER, &oldMipFilter);
     device->GetViewport(&oldViewport);
 
     // Set viewport
@@ -233,15 +236,19 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
     device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
     device->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
 
+    // Bind font atlas before sampler setup so DX9 sampler override logic can
+    // correctly detect this as a single-mip UI texture.
+    device->SetTexture(0, fontTexture);
     device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
     device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+    device->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
 
     device->SetStreamSource(0, vertexBuffer, 0, sizeof(DX9Vertex));
     device->SetIndices(indexBuffer);
     device->SetFVF(D3DFVF_CUSTOMVERTEX);
 
-    // Draw with texture caching
-    lastTexture = nullptr;
+    // Draw with texture caching. Track the texture we just bound above.
+    lastTexture = fontTexture;
     for (const auto& cmd : commands) {
         IDirect3DBaseTexture9* targetTex = cmd.useTexture ? fontTexture : nullptr;
 
@@ -276,6 +283,7 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
     device->SetTextureStageState(0, D3DTSS_ALPHAARG2, oldAlphaArg2);
     device->SetSamplerState(0, D3DSAMP_MINFILTER, oldMinFilter);
     device->SetSamplerState(0, D3DSAMP_MAGFILTER, oldMagFilter);
+    device->SetSamplerState(0, D3DSAMP_MIPFILTER, oldMipFilter);
     device->SetViewport(&oldViewport);
 
     // Release saved state
