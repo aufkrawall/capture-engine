@@ -1,5 +1,6 @@
 // Tests for the shared CaptureBase class
 #include <gtest/gtest.h>
+#include <array>
 #include <chrono>
 #include <thread>
 #include "../hook/common/capture_base.h"
@@ -163,4 +164,83 @@ TEST(CaptureBaseTest, CompletionFenceTracking) {
     capture.EnqueueFrame(2000, 20, 1, nullptr);
     EXPECT_EQ(capture.completionFenceValue, 2);
     EXPECT_EQ(capture.pendingCaptureWaitValue, 2);
+}
+
+TEST(CaptureBaseTest, ResetForNewRecordingClearsPendingState) {
+    TestCapture capture;
+    capture.recordingSessionID.store(41, std::memory_order_relaxed);
+    capture.droppedFrames.store(7, std::memory_order_relaxed);
+    capture.writeIndex.store(3, std::memory_order_relaxed);
+    capture.EnqueueFrame(1000, 1, 0, nullptr);
+    capture.EnqueueFrame(2000, 2, 1, nullptr);
+    capture.pendingReadIdx.store(1, std::memory_order_relaxed);
+
+    capture.ResetForNewRecording();
+
+    EXPECT_EQ(capture.recordingSessionID.load(std::memory_order_relaxed), 42);
+    EXPECT_EQ(capture.droppedFrames.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(capture.pendingWriteIdx.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(capture.pendingReadIdx.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(capture.writeIndex.load(std::memory_order_relaxed), 0);
+    EXPECT_EQ(capture.completionFenceValue, 0u);
+    EXPECT_EQ(capture.pendingCaptureWaitValue, 0u);
+}
+
+TEST(CaptureBaseTest, PublishToSharedMemoryCopiesCaptureMetadata) {
+    TestCapture capture;
+    SharedMemoryLayout sharedMem;
+
+    capture.width = 2560;
+    capture.height = 1440;
+    capture.format = 87;
+    capture.luidLow = 123;
+    capture.luidHigh = 456;
+
+    std::array<uintptr_t, CAPTURE_TEXTURE_COUNT> expectedHandles{};
+    for (int i = 0; i < CAPTURE_TEXTURE_COUNT; ++i) {
+        expectedHandles[i] = static_cast<uintptr_t>(0x1000 + i * 0x40);
+        capture.sharedTextureHandles[i].store(reinterpret_cast<HANDLE>(expectedHandles[i]), std::memory_order_relaxed);
+    }
+    const uintptr_t expectedFence = static_cast<uintptr_t>(0xDEAD0000);
+    capture.sharedFenceHandle.store(reinterpret_cast<HANDLE>(expectedFence), std::memory_order_relaxed);
+
+    capture.PublishToSharedMemory(&sharedMem);
+
+    EXPECT_EQ(sharedMem.GetWidth(), 2560u);
+    EXPECT_EQ(sharedMem.GetHeight(), 1440u);
+    EXPECT_EQ(sharedMem.GetFormat(), 87u);
+    EXPECT_EQ(sharedMem.GetLuidLowPart(), 123);
+    EXPECT_EQ(sharedMem.GetLuidHighPart(), 456);
+    EXPECT_EQ(sharedMem.GetFenceShareHandle(), static_cast<uint64_t>(expectedFence));
+    EXPECT_EQ(sharedMem.GetSourcePid(), GetCurrentProcessId());
+    for (int i = 0; i < CAPTURE_TEXTURE_COUNT; ++i) {
+        EXPECT_EQ(sharedMem.GetSharedHandle(i), static_cast<uint64_t>(expectedHandles[i]));
+    }
+}
+
+TEST(CaptureBaseTest, SignalFrameReadyWritesRingAndDropsWhenFull) {
+    TestCapture capture;
+    SharedMemoryLayout sharedMem;
+
+    capture.SignalFrameReady(&sharedMem, 3, 123456, 99);
+
+    EXPECT_EQ(sharedMem.frameRing.writeIndex.load(std::memory_order_acquire), 1u);
+    EXPECT_EQ(sharedMem.frameRing.readIndex.load(std::memory_order_acquire), 0u);
+    EXPECT_EQ(sharedMem.frameRing.droppedFrames.load(std::memory_order_relaxed), 0u);
+
+    const auto& first = sharedMem.frameRing.slots[0];
+    EXPECT_EQ(first.textureIndex, 3);
+    EXPECT_EQ(first.timestamp, 123456);
+    EXPECT_EQ(first.fenceValue, 99u);
+    EXPECT_EQ(first.frameIndex, 0u);
+    EXPECT_EQ(first.sourcePid, GetCurrentProcessId());
+    EXPECT_EQ(first.valid.load(std::memory_order_acquire), 1u);
+
+    for (uint32_t i = 1; i < FRAME_RING_SIZE; ++i) {
+        capture.SignalFrameReady(&sharedMem, static_cast<int>(i % CAPTURE_TEXTURE_COUNT), i * 1000, i);
+    }
+    EXPECT_EQ(sharedMem.frameRing.writeIndex.load(std::memory_order_acquire), FRAME_RING_SIZE);
+    capture.SignalFrameReady(&sharedMem, 0, 999999, 777);
+    EXPECT_EQ(sharedMem.frameRing.writeIndex.load(std::memory_order_acquire), FRAME_RING_SIZE);
+    EXPECT_EQ(sharedMem.frameRing.droppedFrames.load(std::memory_order_relaxed), 1u);
 }

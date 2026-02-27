@@ -1,6 +1,5 @@
 #include <combaseapi.h>
 #include <d3d12.h>
-#include <dbghelp.h>
 #include <dxgi1_6.h>
 #include <unknwn.h>
 #include <windows.h>
@@ -1761,18 +1760,18 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                                 slot.fenceValue = desc.fenceValue;
                                 slot.timestamp = desc.presentTime;
                                 slot.frameIndex = desc.frameNumber;
-                            slot.textureIndex = desc.textureIndex;
-                            slot.sourcePid = GetCurrentProcessId();
-                            // CRITICAL FIX: Add release fence before setting valid flag
-                            // Ensures all slot fields are visible to consumer before valid=1
-                            std::atomic_thread_fence(std::memory_order_release);
-                            slot.valid.store(1, std::memory_order_release);
-                            shm->frameRing.writeIndex.store(wIdx + 1, std::memory_order_release);
-                        } else
-                            shm->frameRing.droppedFrames.fetch_add(1, std::memory_order_relaxed);
+                                slot.textureIndex = desc.textureIndex;
+                                slot.sourcePid = GetCurrentProcessId();
+                                // CRITICAL FIX: Add release fence before setting valid flag
+                                // Ensures all slot fields are visible to consumer before valid=1
+                                std::atomic_thread_fence(std::memory_order_release);
+                                slot.valid.store(1, std::memory_order_release);
+                                shm->frameRing.writeIndex.store(wIdx + 1, std::memory_order_release);
+                            } else
+                                shm->frameRing.droppedFrames.fetch_add(1, std::memory_order_relaxed);
+                        }
                     }
                 }
-            }
             }
             perfMetrics.captureUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - captureStartUs);
         }

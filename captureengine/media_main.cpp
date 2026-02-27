@@ -1,7 +1,9 @@
+// clang-format off
+#include <windows.h>
 #include <d3d11.h>
 #include <psapi.h>
 #include <timeapi.h>
-#include <windows.h>
+// clang-format on
 #include <algorithm>
 #include <atomic>
 #include <chrono>

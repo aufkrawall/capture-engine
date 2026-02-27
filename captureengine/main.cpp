@@ -2,10 +2,12 @@
 // Main entry point - acts as Controller when run without --mode flag
 // Dispatches to Inject, Media, or Limiter process based on --mode=<mode>
 
+// clang-format off
 #include <windows.h>
 #include <shellapi.h>
 #include <timeapi.h>
 #include <winreg.h>
+// clang-format on
 #include <atomic>
 #include <string>
 #include "../common/config.h"

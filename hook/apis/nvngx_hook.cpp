@@ -383,8 +383,7 @@ void STDMETHODCALLTYPE Hooked_SetUI(NVSDK_NGX_Parameter* pThis, const char* InNa
                 const int fgMultiplier = GetConfiguredFGMultiplier(cfg);
                 if (fgMultiplier > 0 && InValue != (unsigned int)fgMultiplier) {
                     if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
-                        LogOncePerParam(InName,
-                                        "NVNGX: Overriding FrameGenerationMultiplier via SetUI -> %d (was %u)",
+                        LogOncePerParam(InName, "NVNGX: Overriding FrameGenerationMultiplier via SetUI -> %d (was %u)",
                                         fgMultiplier, InValue);
                     InValue = (unsigned int)fgMultiplier;
                 }
@@ -623,8 +622,7 @@ void EnsureVTableHooks(NVSDK_NGX_Parameter* pParams) {
         if (vtable[3])
             ((PFN_SetI)vtable[3])(pParams, NVSDK_NGX_Parameter_FrameGenerationMultiplier, fgMultiplier);
         if (vtable[4])
-            ((PFN_SetUI)vtable[4])(pParams, NVSDK_NGX_Parameter_FrameGenerationMultiplier,
-                                   (unsigned int)fgMultiplier);
+            ((PFN_SetUI)vtable[4])(pParams, NVSDK_NGX_Parameter_FrameGenerationMultiplier, (unsigned int)fgMultiplier);
     }
 
     // Initial Injection for Presets (via SetUI VT[4] and SetI VT[3])
@@ -1359,8 +1357,7 @@ void NVNGXHook::Install() {
              (LPVOID*)&oGetFeatureRequirements_VULKAN);
     PatchIAT("NVSDK_NGX_D3D11_CreateFeature", (LPVOID)&Hooked_CreateFeature_D3D11, (LPVOID*)&oCreateFeature_D3D11);
     PatchIAT("NVSDK_NGX_D3D12_CreateFeature", (LPVOID)&Hooked_CreateFeature_D3D12, (LPVOID*)&oCreateFeature_D3D12);
-    PatchIAT("NVSDK_NGX_VULKAN_CreateFeature", (LPVOID)&Hooked_CreateFeature_VULKAN,
-             (LPVOID*)&oCreateFeature_VULKAN);
+    PatchIAT("NVSDK_NGX_VULKAN_CreateFeature", (LPVOID)&Hooked_CreateFeature_VULKAN, (LPVOID*)&oCreateFeature_VULKAN);
 
     HookLogImportant("NVNGX: IAT patches installed");
 }

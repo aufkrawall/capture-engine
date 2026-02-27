@@ -898,16 +898,16 @@ FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
         {
             void* callerAddr = __builtin_return_address(0);
             HMODULE callerMod = nullptr;
-            if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                   (LPCSTR)callerAddr, &callerMod) &&
+            if (GetModuleHandleExA(
+                    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                    (LPCSTR)callerAddr, &callerMod) &&
                 callerMod) {
                 char callerPath[MAX_PATH] = {};
                 if (GetModuleFileNameA(callerMod, callerPath, sizeof(callerPath))) {
-                    for (char* p = callerPath; *p; ++p) *p = (char)tolower((unsigned char)*p);
+                    for (char* p = callerPath; *p; ++p)
+                        *p = (char)tolower((unsigned char)*p);
                     if (strstr(callerPath, "\\system32\\") || strstr(callerPath, "\\syswow64\\") ||
-                        strstr(callerPath, "gameoverlayrenderer") ||
-                        strstr(callerPath, "discord_hook")) {
+                        strstr(callerPath, "gameoverlayrenderer") || strstr(callerPath, "discord_hook")) {
                         return proc;
                     }
                 }

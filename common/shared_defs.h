@@ -337,7 +337,7 @@ struct ShmemBuffer {
     uint32_t pitch{0};
     uint32_t max_width{0};
     uint32_t max_height{0};
-    uint32_t slot_size{0}; // Size of one slot in bytes
+    uint32_t slot_size{0};  // Size of one slot in bytes
 
     ShmemBuffer() {
         writeSlot.store(0);
@@ -368,7 +368,8 @@ struct ShmemBuffer {
 
     // Data follows immediately after this struct
     uint8_t* GetData(int slot) {
-        if (slot < 0 || slot >= SLOT_COUNT) return nullptr;
+        if (slot < 0 || slot >= SLOT_COUNT)
+            return nullptr;
         // Align to 16 bytes for SIMD operations if needed
         size_t headerSize = (sizeof(ShmemBuffer) + 15) & ~15;
         uint8_t* base = reinterpret_cast<uint8_t*>(this) + headerSize;

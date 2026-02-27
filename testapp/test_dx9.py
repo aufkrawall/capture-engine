@@ -11,15 +11,13 @@ capture_dir = testapp_dir.parent / "installed" / "captureengine"
 log_dir = capture_dir / "logs"
 if log_dir.exists():
     import shutil
+
     shutil.rmtree(log_dir, ignore_errors=True)
 
 # Start captureengine
 print("Starting captureengine...")
 ce_proc = subprocess.Popen(
-    [str(capture_dir / "captureengine.exe")],
-    cwd=str(capture_dir),
-    stdout=subprocess.DEVNULL,
-    stderr=subprocess.DEVNULL
+    [str(capture_dir / "captureengine.exe")], cwd=str(capture_dir), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
 )
 
 time.sleep(2)
@@ -28,12 +26,7 @@ time.sleep(2)
 print("Running DX9 test...")
 dx9_exe = bin_dir / "dx9_test.exe"
 try:
-    result = subprocess.run(
-        [str(dx9_exe)],
-        timeout=15,
-        capture_output=True,
-        text=True
-    )
+    result = subprocess.run([str(dx9_exe)], timeout=15, capture_output=True, text=True)
     print(f"DX9 test exited with code: {result.returncode}")
     if result.stdout:
         print(f"stdout: {result.stdout[:500]}")

@@ -81,19 +81,36 @@ def build_dx12(compiler):
 
     if compiler == "cl":
         cmd = [
-            "cl", "/EHsc", "/O2", "/std:c++17",
+            "cl",
+            "/EHsc",
+            "/O2",
+            "/std:c++17",
             str(src),
             "/Fe:" + str(out),
-            "/link", "d3d12.lib", "dxgi.lib", "d3dcompiler.lib", "shcore.lib"
+            "/link",
+            "d3d12.lib",
+            "dxgi.lib",
+            "d3dcompiler.lib",
+            "shcore.lib",
         ]
     else:
         cmd = [
-            compiler, "-std=c++17", "-O2",
-            "-o", str(out),
+            compiler,
+            "-std=c++17",
+            "-O2",
+            "-o",
+            str(out),
             str(src),
-            "-ld3d12", "-ldxgi", "-ld3dcompiler", "-lshcore",
-            "-luser32", "-lgdi32", "-lshell32",
-            "-static", "-static-libstdc++", "-static-libgcc"
+            "-ld3d12",
+            "-ldxgi",
+            "-ld3dcompiler",
+            "-lshcore",
+            "-luser32",
+            "-lgdi32",
+            "-lshell32",
+            "-static",
+            "-static-libstdc++",
+            "-static-libgcc",
         ]
 
     print(f"  Command: {' '.join(cmd[:5])}...")
@@ -123,25 +140,40 @@ def build_vulkan(compiler):
 
     if compiler == "cl":
         cmd = [
-            "cl", "/EHsc", "/O2", "/std:c++17",
+            "cl",
+            "/EHsc",
+            "/O2",
+            "/std:c++17",
             f"/I{vulkan_include}" if vulkan_include else "",
             str(src),
             "/Fe:" + str(out),
-            "/link", "user32.lib", "gdi32.lib", "shcore.lib"
+            "/link",
+            "user32.lib",
+            "gdi32.lib",
+            "shcore.lib",
         ]
         cmd = [c for c in cmd if c]  # Remove empty strings
     else:
         cmd = [
-            compiler, "-std=c++17", "-O2",
+            compiler,
+            "-std=c++17",
+            "-O2",
         ]
         if vulkan_include:
             cmd.extend(["-I", str(vulkan_include)])
-        cmd.extend([
-            "-o", str(out),
-            str(src),
-            "-luser32", "-lgdi32", "-lshcore",
-            "-static", "-static-libstdc++", "-static-libgcc"
-        ])
+        cmd.extend(
+            [
+                "-o",
+                str(out),
+                str(src),
+                "-luser32",
+                "-lgdi32",
+                "-lshcore",
+                "-static",
+                "-static-libstdc++",
+                "-static-libgcc",
+            ]
+        )
 
     print(f"  Command: {' '.join(cmd[:5])}...")
     result = subprocess.run(cmd, capture_output=True, text=True)

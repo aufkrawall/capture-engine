@@ -1,5 +1,7 @@
+// clang-format off
 #include <windows.h>
 #include <psapi.h>
+// clang-format on
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -260,8 +262,7 @@ int InjectProcessMain(const AppConfig& config) {
     // Host always creates mapping large enough for 4K
     size_t maxMappingSize = ShmemBuffer::CalculateSize(3840, 2160);
 
-    HANDLE hMapShmem =
-        CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, maxMappingSize, shmemName);
+    HANDLE hMapShmem = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, maxMappingSize, shmemName);
 
     ShmemBuffer* pShmem = nullptr;
     if (hMapShmem) {

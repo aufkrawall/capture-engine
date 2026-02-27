@@ -1,8 +1,10 @@
 #pragma once
 
+// clang-format off
 #include <windows.h>
-#include <intrin.h>
 #include <timeapi.h>  // For timeBeginPeriod/timeEndPeriod
+// clang-format on
+#include <intrin.h>
 #include <atomic>
 #include "hook_common.h"
 #include "ipc_client.h"

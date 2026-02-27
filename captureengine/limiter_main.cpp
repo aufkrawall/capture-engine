@@ -1,7 +1,9 @@
+// clang-format off
 #include <windows.h>
 #include <avrt.h>
-#include <intrin.h>
 #include <timeapi.h>
+// clang-format on
+#include <intrin.h>
 #include <atomic>
 #include <chrono>
 #include <thread>

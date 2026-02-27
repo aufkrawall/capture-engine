@@ -22,7 +22,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # Paths
 SCRIPT_DIR = Path(__file__).parent.absolute()
@@ -72,9 +72,7 @@ def resolve_test_exe(api: str, arch: str) -> Path:
     return base_dir / API_EXECUTABLES[api]
 
 
-def start_test_app(
-    api: str, arch: str, width: int, height: int, gpu_load: int
-) -> Optional[subprocess.Popen]:
+def start_test_app(api: str, arch: str, width: int, height: int, gpu_load: int) -> Optional[subprocess.Popen]:
     """Start a test app process for the selected API and architecture."""
     exe = resolve_test_exe(api, arch)
     if not exe.exists():
@@ -183,18 +181,14 @@ def parse_media_log_frame_times(media_log_path: Path, since_unix_ts: float) -> T
     frame_times: List[float] = []
     max_frame_num = 0
     time_pattern = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]")
-    perf_pattern = re.compile(
-        r"\[PERF\]\s+Frame\s+(\d+):\s+TOTAL=([0-9]*\.?[0-9]+)ms"
-    )
+    perf_pattern = re.compile(r"\[PERF\]\s+Frame\s+(\d+):\s+TOTAL=([0-9]*\.?[0-9]+)ms")
     try:
         with open(media_log_path, "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
                 time_match = time_pattern.search(line)
                 if time_match:
                     try:
-                        line_ts = datetime.strptime(
-                            time_match.group(1), "%Y-%m-%d %H:%M:%S"
-                        ).timestamp()
+                        line_ts = datetime.strptime(time_match.group(1), "%Y-%m-%d %H:%M:%S").timestamp()
                         if line_ts + 1.0 < since_unix_ts:
                             continue
                     except ValueError:
@@ -216,12 +210,12 @@ def parse_media_log_frame_times(media_log_path: Path, since_unix_ts: float) -> T
     return frame_times, max_frame_num
 
 
-def analyze_frame_times(frame_times: List[float], name: str = "") -> Dict[str, object]:
+def analyze_frame_times(frame_times: List[float], name: str = "") -> Dict[str, Any]:
     """Analyze frame times and return stats dictionary."""
     if not frame_times:
         return {"name": name, "error": "No frames"}
 
-    stats: Dict[str, object] = {
+    stats: Dict[str, Any] = {
         "name": name,
         "count": len(frame_times),
         "min": min(frame_times),
@@ -244,7 +238,7 @@ def analyze_frame_times(frame_times: List[float], name: str = "") -> Dict[str, o
     return stats
 
 
-def print_stats(stats: Dict[str, object]) -> None:
+def print_stats(stats: Dict[str, Any]) -> None:
     """Pretty-print per-test stats."""
     if "error" in stats:
         print(f"  ERROR: {stats['error']}")
@@ -255,23 +249,11 @@ def print_stats(stats: Dict[str, object]) -> None:
         print(f"  Estimated total frames: {stats['effective_count']}")
     if "source" in stats:
         print(f"  Source: {stats['source']}")
-    print(
-        f"  Min: {float(stats['min']):.2f}ms, Max: {float(stats['max']):.2f}ms, "
-        f"Avg: {float(stats['avg']):.2f}ms"
-    )
-    print(
-        f"  Median: {float(stats['median']):.2f}ms, "
-        f"StdDev: {float(stats['stdev']):.2f}ms"
-    )
+    print(f"  Min: {float(stats['min']):.2f}ms, Max: {float(stats['max']):.2f}ms, " f"Avg: {float(stats['avg']):.2f}ms")
+    print(f"  Median: {float(stats['median']):.2f}ms, " f"StdDev: {float(stats['stdev']):.2f}ms")
     print(f"  Variance (max-min): {float(stats['variance']):.2f}ms")
-    print(
-        f"  Spikes >10ms: {int(stats['spikes_10ms'])} "
-        f"({float(stats['spike_pct_10ms']):.1f}%)"
-    )
-    print(
-        f"  Spikes >12ms: {int(stats['spikes_12ms'])} "
-        f"({float(stats['spike_pct_12ms']):.1f}%)"
-    )
+    print(f"  Spikes >10ms: {int(stats['spikes_10ms'])} " f"({float(stats['spike_pct_10ms']):.1f}%)")
+    print(f"  Spikes >12ms: {int(stats['spikes_12ms'])} " f"({float(stats['spike_pct_12ms']):.1f}%)")
     if int(stats["spikes_20ms"]) > 0:
         print(f"  Spikes >20ms: {int(stats['spikes_20ms'])}")
 
@@ -285,14 +267,11 @@ def run_single_test(
     total_record_s: float,
     test_name: str,
     min_frames: int,
-) -> Tuple[Optional[Dict[str, object]], Optional[str]]:
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """Run a single integration test and return (stats, error_message)."""
     print(f"\n{'=' * 60}")
     print(f"TEST: {test_name}")
-    print(
-        f"  API: {api.upper()}, ARCH: {arch.upper()}, Resolution: {width}x{height}, "
-        f"GPU Load: {gpu_load}"
-    )
+    print(f"  API: {api.upper()}, ARCH: {arch.upper()}, Resolution: {width}x{height}, " f"GPU Load: {gpu_load}")
     print(f"  Recording duration: {total_record_s}s, Min frames: {min_frames}")
     print("=" * 60)
 
@@ -347,9 +326,7 @@ def run_single_test(
         frame_source = "perf_metrics_*.csv"
     estimated_frame_count = 0
     if not frame_times:
-        frame_times, estimated_frame_count = parse_media_log_frame_times(
-            MEDIA_LOG, test_start_unix_ts
-        )
+        frame_times, estimated_frame_count = parse_media_log_frame_times(MEDIA_LOG, test_start_unix_ts)
         frame_source = "media.log [PERF]"
 
     stats = analyze_frame_times(frame_times, test_name)
@@ -392,9 +369,9 @@ def write_results_json(
     args: argparse.Namespace,
     apis_to_test: List[str],
     arches_to_test: List[str],
-    results: List[Dict[str, object]],
+    results: List[Dict[str, Any]],
 ) -> None:
-    payload: Dict[str, object] = {
+    payload: Dict[str, Any] = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "config": {
             "resolution": args.resolution,
@@ -501,7 +478,7 @@ def main() -> None:
     print("\nCleaning up existing processes...")
     kill_processes()
 
-    all_results: List[Dict[str, object]] = []
+    all_results: List[Dict[str, Any]] = []
 
     for arch in arches_to_test:
         for api in apis_to_test:
@@ -519,7 +496,7 @@ def main() -> None:
                 )
 
                 status = "passed" if error is None else "failed"
-                result_entry: Dict[str, object] = {
+                result_entry: Dict[str, Any] = {
                     "name": test_name,
                     "api": api,
                     "arch": arch,
@@ -544,36 +521,21 @@ def main() -> None:
             combo = [r for r in all_results if r["api"] == api and r["arch"] == arch]
             combo_passed = [r for r in combo if r["status"] == "passed" and r["stats"]]
 
-            print(
-                f"\n{api.upper()}-{arch.upper()} "
-                f"(passed {len(combo_passed)}/{len(combo)} tests):"
-            )
+            print(f"\n{api.upper()}-{arch.upper()} " f"(passed {len(combo_passed)}/{len(combo)} tests):")
 
-            stats_for_combo: List[Dict[str, object]] = [
-                r["stats"] for r in combo_passed if isinstance(r["stats"], dict)
-            ]
+            stats_for_combo: List[Dict[str, Any]] = [r["stats"] for r in combo_passed if isinstance(r["stats"], dict)]
             if stats_for_combo:
                 avg_min = statistics.mean(float(s["min"]) for s in stats_for_combo)
                 avg_max = statistics.mean(float(s["max"]) for s in stats_for_combo)
                 avg_avg = statistics.mean(float(s["avg"]) for s in stats_for_combo)
-                avg_variance = statistics.mean(
-                    float(s["variance"]) for s in stats_for_combo
-                )
+                avg_variance = statistics.mean(float(s["variance"]) for s in stats_for_combo)
                 total_spikes = sum(int(s["spikes_12ms"]) for s in stats_for_combo)
-                total_frames = sum(
-                    int(s.get("effective_count", s["count"])) for s in stats_for_combo
-                )
+                total_frames = sum(int(s.get("effective_count", s["count"])) for s in stats_for_combo)
                 spike_pct = 100.0 * total_spikes / total_frames if total_frames > 0 else 0.0
 
-                print(
-                    f"  Avg frame time: {avg_avg:.2f}ms "
-                    f"(range: {avg_min:.2f}-{avg_max:.2f}ms)"
-                )
+                print(f"  Avg frame time: {avg_avg:.2f}ms " f"(range: {avg_min:.2f}-{avg_max:.2f}ms)")
                 print(f"  Avg variance: {avg_variance:.2f}ms")
-                print(
-                    f"  Total spikes >12ms: {total_spikes}/{total_frames} "
-                    f"({spike_pct:.1f}%)"
-                )
+                print(f"  Total spikes >12ms: {total_spikes}/{total_frames} " f"({spike_pct:.1f}%)")
             else:
                 print("  No passing runs for this target.")
 
@@ -581,9 +543,7 @@ def main() -> None:
         print("\nFAILURES")
         print("-" * 60)
         for failure in failures:
-            print(
-                f"  {failure['name']}: {failure['error'] or 'Unknown failure'}"
-            )
+            print(f"  {failure['name']}: {failure['error'] or 'Unknown failure'}")
 
     write_results_json(
         output_path=Path(args.results_json),

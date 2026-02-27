@@ -1,5 +1,4 @@
 {
-  "$schema": "https://raw.githubusercontent.com/microsoft/pyright/main/packages/vscode-pyright/schemas/pyrightconfig.schema.json",
   "typeCheckingMode": "basic",
   "pythonVersion": "3.10",
   "pythonPlatform": "Linux",
