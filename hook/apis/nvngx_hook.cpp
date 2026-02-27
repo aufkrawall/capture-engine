@@ -72,7 +72,7 @@ static std::map<void*, DLSSDims> g_ParameterDimsMap;
 #define NVSDK_NGX_Parameter_RayReconstruction_FeatureInitResult "RayReconstruction.FeatureInitResult"
 
 // DLSS Multi-Frame Generation (MFG) parameter
-#define NVSDK_NGX_Parameter_FrameGenerationMultiplier "FrameGenerationMultiplier"  // 2=2x, 3=3x
+#define NVSDK_NGX_Parameter_FrameGenerationMultiplier "FrameGenerationMultiplier"  // 2=2x, 3=3x, 4=4x
 
 // Feature IDs for DLSS components
 const int NVSDK_NGX_Feature_DLSS_SR = 1;                // Super Resolution
@@ -148,6 +148,11 @@ static bool IsSafePtr(const void* p) {
 
 static bool IsSafeString(const char* s) {
     return IsSafePtr(s);
+}
+
+static int GetConfiguredFGMultiplier(const GraphicsConfig& cfg) {
+    const int fgFactor = cfg.parsed.dlssFGFactor;
+    return (fgFactor >= 2 && fgFactor <= 4) ? fgFactor : 0;
 }
 
 static void LogOncePerParam(const char* param, const char* msg, ...) {
@@ -239,6 +244,15 @@ void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InNam
                 LogOncePerParam(InName, "NVNGX: Forcing AutoExposure to %d", InValue);
         } else {
             const auto& cfg = GetActiveGraphicsConfig();
+            if (strcmp(InName, NVSDK_NGX_Parameter_FrameGenerationMultiplier) == 0) {
+                const int fgMultiplier = GetConfiguredFGMultiplier(cfg);
+                if (fgMultiplier > 0 && InValue != fgMultiplier) {
+                    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
+                        LogOncePerParam(InName, "NVNGX: Overriding FrameGenerationMultiplier via SetI -> %d (was %d)",
+                                        fgMultiplier, InValue);
+                    InValue = fgMultiplier;
+                }
+            }
 
             // Preset Overrides (Super Resolution) via SetI
             bool isDlssPreset = false;
@@ -365,6 +379,16 @@ void STDMETHODCALLTYPE Hooked_SetUI(NVSDK_NGX_Parameter* pThis, const char* InNa
                 InValue = 0;
         } else {
             const auto& cfg = GetActiveGraphicsConfig();
+            if (strcmp(InName, NVSDK_NGX_Parameter_FrameGenerationMultiplier) == 0) {
+                const int fgMultiplier = GetConfiguredFGMultiplier(cfg);
+                if (fgMultiplier > 0 && InValue != (unsigned int)fgMultiplier) {
+                    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
+                        LogOncePerParam(InName,
+                                        "NVNGX: Overriding FrameGenerationMultiplier via SetUI -> %d (was %u)",
+                                        fgMultiplier, InValue);
+                    InValue = (unsigned int)fgMultiplier;
+                }
+            }
 
             // Preset Overrides (Super Resolution)
             bool isDlssPreset = false;
@@ -588,6 +612,19 @@ void EnsureVTableHooks(NVSDK_NGX_Parameter* pParams) {
             ((PFN_SetI)vtable[3])(pParams, NVSDK_NGX_Parameter_AutoExposure, val);
         if (vtable[4])
             ((PFN_SetUI)vtable[4])(pParams, NVSDK_NGX_Parameter_AutoExposure, (unsigned int)val);
+    }
+
+    const int fgMultiplier = GetConfiguredFGMultiplier(cfg);
+    if (fgMultiplier > 0) {
+        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
+            LogOncePerParam(NVSDK_NGX_Parameter_FrameGenerationMultiplier,
+                            "NVNGX: Injecting initial FrameGenerationMultiplier = %d", fgMultiplier);
+        }
+        if (vtable[3])
+            ((PFN_SetI)vtable[3])(pParams, NVSDK_NGX_Parameter_FrameGenerationMultiplier, fgMultiplier);
+        if (vtable[4])
+            ((PFN_SetUI)vtable[4])(pParams, NVSDK_NGX_Parameter_FrameGenerationMultiplier,
+                                   (unsigned int)fgMultiplier);
     }
 
     // Initial Injection for Presets (via SetUI VT[4] and SetI VT[3])
@@ -1115,16 +1152,21 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
                         NVNGXLog("Hooked_CreateFeature: DLSS RR Activated (ID 13)");
                 } else if (featureID == NVSDK_NGX_Feature_MultiFrameGeneration) {
                     // DLSS Multi-Frame Generation (MFG) - Feature ID 18
-                    // MFG generates 2x or 3x frames per rendered frame
+                    // MFG generates 2x, 3x, or 4x frames per rendered frame
                     state.fgActive = true;
 
                     // Try to read the multiplier from parameters
                     int mfgMultiplier = 2;  // Default to 2x
+                    const auto& cfg = GetActiveGraphicsConfig();
+                    const int configuredMultiplier = GetConfiguredFGMultiplier(cfg);
+                    if (configuredMultiplier > 0) {
+                        mfgMultiplier = configuredMultiplier;
+                    }
                     if (params && oGetI) {
                         int multValue = 0;
                         NVSDK_NGX_Result multRes =
                             oGetI(params, NVSDK_NGX_Parameter_FrameGenerationMultiplier, &multValue);
-                        if (multRes == NVSDK_NGX_Result_Success && multValue >= 2 && multValue <= 3) {
+                        if (multRes == NVSDK_NGX_Result_Success && multValue >= 2 && multValue <= 4) {
                             mfgMultiplier = multValue;
                         }
                     }

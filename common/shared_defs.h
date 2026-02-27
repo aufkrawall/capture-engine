@@ -24,7 +24,9 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 6: Changed backing fields from plain types to std::atomic<T>
 //             Eliminates reinterpret_cast UB while preserving same layout
 // Version 7: Added overlayConfigSeq seqlock counter for OverlayConfig
-static constexpr uint32_t SHARED_MEMORY_VERSION = 8;
+// Version 8: Added DLSS state telemetry
+// Version 9: Added SharedGraphicsConfig::dlssFGFactor override field
+static constexpr uint32_t SHARED_MEMORY_VERSION = 9;
 
 // Minimum supported version for backward compatibility
 static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
@@ -230,6 +232,7 @@ struct SharedGraphicsConfig {
     uint32_t dlssRRPreset;  // Global RR preset
 
     float dlssSharpening;  // -2.0 = default, -1.0 = off, else value
+    int32_t dlssFGFactor;  // 0 = default, 2/3/4 = Frame Generation multiplier override
 
     // NVIDIA Smooth Motion compatibility
     // 0 = auto (detect and adapt), 1 = force on, 2 = force off
@@ -732,7 +735,7 @@ public:
         std::atomic<int32_t> qualityMode{-1};   // -1=Unknown, 0=Perf, 1=Bal, 2=Qual,
                                                 // 3=UltraPerf, 4=UltraQual, 5=DLAA
         std::atomic<bool> fgActive{false};      // Redundant with g_FGCompat but useful for IPC/Host visibility
-        std::atomic<int32_t> mfgMultiplier{0};  // 0=No MFG, 2=2x frames, 3=3x frames (DLSS Multi-Frame Generation)
+        std::atomic<int32_t> mfgMultiplier{0};  // 0=No MFG, 2/3/4 = DLSS Multi-Frame Generation multiplier
     } dlssState;
 
     // Encoder queue monitoring (Host -> Hook)

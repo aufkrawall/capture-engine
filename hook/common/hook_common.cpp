@@ -458,6 +458,7 @@ GraphicsConfig GetActiveGraphicsConfig() {
         mergedConfig.parsed.rrPreset = shmGfx.dlssRRPreset;
 
         mergedConfig.parsed.dlssSharpening = shmGfx.dlssSharpening;
+        mergedConfig.parsed.dlssFGFactor = shmGfx.dlssFGFactor;
 
         if (shmGfx.dlssSRPreset > 0) {
             static uint32_t lastLoggedSHM = 0;
@@ -558,6 +559,9 @@ GraphicsConfig GetActiveGraphicsConfig() {
         if (g_pLocalConfig->graphics.parsed.dlssSharpening > -1.5f) {
             mergedConfig.parsed.dlssSharpening = g_pLocalConfig->graphics.parsed.dlssSharpening;
         }
+        if (g_pLocalConfig->graphics.parsed.dlssFGFactor > 0) {
+            mergedConfig.parsed.dlssFGFactor = g_pLocalConfig->graphics.parsed.dlssFGFactor;
+        }
     }
     // Add other fields as needed
 
@@ -592,6 +596,8 @@ GraphicsConfig GetActiveGraphicsConfig() {
     else if (mergedConfig.parsed.srPreset > 0 || mergedConfig.parsed.rrPreset > 0)
         anyActive = true;
     else if (mergedConfig.parsed.dlssSharpening > -1.5f)
+        anyActive = true;
+    else if (mergedConfig.parsed.dlssFGFactor > 0)
         anyActive = true;
 
     g_GraphicsOverridesActive.store(anyActive, std::memory_order_release);

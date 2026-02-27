@@ -129,6 +129,7 @@ struct GraphicsConfig {
 
     // DLSS Sharpening: "default", "off", or float value (0.0 to 1.0)
     std::string dlssSharpening;
+    std::string dlssFgFactor;  // "default", "2x", "3x", "4x"
 
     // NVIDIA Smooth Motion compatibility: "auto", "on", "off"
     std::string nvidiaSmoothMotionCompat = "auto";
@@ -153,6 +154,7 @@ struct GraphicsConfig {
         uint32_t rrPresetUltraQuality = 0;
 
         float dlssSharpening = -2.0f;  // -2.0 = default, -1.0 = off, else value
+        int dlssFGFactor = 0;          // 0 = default, 2/3/4 = Frame Generation multiplier override
 
         // NVIDIA Smooth Motion compatibility
         // 0 = auto (detect and adapt), 1 = force on, 2 = force off
@@ -238,4 +240,5 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 uint32_t ParseDlssPreset(const std::string& val);
 uint32_t ParseDlssRRPreset(const std::string& val);
 float ParseDlssSharpening(const std::string& val);
+int ParseDlssFGFactor(const std::string& val);
 AppConfig::HotkeyConfig ParseHotkey(const std::string& val);  // e.g., "Ctrl+Shift+F9"

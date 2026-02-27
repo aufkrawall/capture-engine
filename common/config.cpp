@@ -59,6 +59,18 @@ float ParseDlssSharpening(const std::string& val) {
     }
 }
 
+int ParseDlssFGFactor(const std::string& val) {
+    if (val.empty() || _stricmp(val.c_str(), "default") == 0)
+        return 0;
+    if (_stricmp(val.c_str(), "2") == 0 || _stricmp(val.c_str(), "2x") == 0)
+        return 2;
+    if (_stricmp(val.c_str(), "3") == 0 || _stricmp(val.c_str(), "3x") == 0)
+        return 3;
+    if (_stricmp(val.c_str(), "4") == 0 || _stricmp(val.c_str(), "4x") == 0)
+        return 4;
+    return 0;
+}
+
 // Helper to parse generic
 template <typename T>
 T ParseValue(const std::string& val) {
@@ -141,16 +153,22 @@ nvidia_smooth_motion_compat=auto
 ; DLSS options below also support per-app overrides via Graphics.<key> in [App.N].
 ; dlss_auto_exposure - Values: default, on, off
 dlss_auto_exposure=default
-; dlss_exposure_normalization - Values: default, on, off
-dlss_exposure_normalization=default
 ; dlss_sr_preset - Values: default, A-M
 dlss_sr_preset=default
 ; dlss_rr_preset - Values: default, A-G
 dlss_rr_preset=default
 ; dlss_sharpening - Values: default, off, 0.0-1.0
 dlss_sharpening=default
+; dlss_fg_factor - Values: default, 2x, 3x, 4x
+dlss_fg_factor=default
 ; dlss_debug_overlay - Values: default, on, off
 dlss_debug_overlay=default
+; dlss_sr_dll_path - Values: empty, absolute DLL path, or absolute directory path
+dlss_sr_dll_path=
+; dlss_rr_dll_path - Values: empty, absolute DLL path, or absolute directory path
+dlss_rr_dll_path=
+; dlss_fg_dll_path - Values: empty, absolute DLL path, or absolute directory path
+dlss_fg_dll_path=
 
 [Video]
 ; encoder - Values: av1_nvenc, hevc_nvenc, h264_nvenc, av1_amf, hevc_amf, h264_amf, av1_qsv, hevc_qsv, h264_qsv, av1_mf, hevc_mf, h264_mf
@@ -511,6 +529,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.graphics.dlssRRPresetUltraQuality = GetStr("Graphics", "dlss_rr_preset_ultra_quality", "default");
     config.graphics.dlssRRPreset = GetStr("Graphics", "dlss_rr_preset", "default");
     config.graphics.dlssSharpening = GetStr("Graphics", "dlss_sharpening", "default");
+    config.graphics.dlssFgFactor = GetStr("Graphics", "dlss_fg_factor", "default");
     config.graphics.nvidiaSmoothMotionCompat = GetStr("Graphics", "nvidia_smooth_motion_compat", "auto");
 
     // DLL Overrides
@@ -539,6 +558,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.graphics.parsed.rrPreset = ParseDlssRRPreset(config.graphics.dlssRRPreset);
 
     config.graphics.parsed.dlssSharpening = ParseDlssSharpening(config.graphics.dlssSharpening);
+    config.graphics.parsed.dlssFGFactor = ParseDlssFGFactor(config.graphics.dlssFgFactor);
 
     // Parse NVIDIA Smooth Motion compatibility
     if (config.graphics.nvidiaSmoothMotionCompat == "on" || config.graphics.nvidiaSmoothMotionCompat == "1" ||

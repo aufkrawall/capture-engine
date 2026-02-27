@@ -205,6 +205,7 @@ void IPCManager::UpdateConfig(const AppConfig& config) {
         }
 
         dst.dlssSharpening = src.parsed.dlssSharpening;
+        dst.dlssFGFactor = src.parsed.dlssFGFactor;
     }
 
     pSharedMem->configVersion.fetch_add(1, std::memory_order_acq_rel);
