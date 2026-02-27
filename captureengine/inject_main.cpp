@@ -119,12 +119,13 @@ static void UpdateSharedMemoryFromConfig(SharedMemoryLayout* pSharedMem, const A
     LogInfo(
         "[Inject] Updated SharedMem Config: VSync=%s, AF=%s, MipBias=%s "
         "(Mode=%s), CPUPrerender=%.2f, BackBuffer=%d, FPS Limit=%d (%s), "
-        "CaptureOverlay=%d",
+        "CaptureOverlay=%d, DLSS[AutoExp=%s Sharpening=%.2f SRPreset=%u]",
         pSharedMem->graphicsConfig.vsyncMode, pSharedMem->graphicsConfig.anisotropicFiltering,
         pSharedMem->graphicsConfig.mipBias, pSharedMem->graphicsConfig.mipBiasMode,
         pSharedMem->graphicsConfig.prerenderLimit, pSharedMem->graphicsConfig.backbufferCount,
         pSharedMem->fpsLimiter.GetGeneralFps(), pSharedMem->fpsLimiter.GetGeneralEnabled() ? "ON" : "OFF",
-        pSharedMem->overlayConfig.captureIncludeOverlay);
+        pSharedMem->overlayConfig.captureIncludeOverlay, pSharedMem->graphicsConfig.dlssAutoExposure,
+        pSharedMem->graphicsConfig.dlssSharpening, pSharedMem->graphicsConfig.dlssSRPreset);
 }
 
 static void PopulateWhitelistCache(DiscoveryInfo* pDisc, const AppConfig& config) {

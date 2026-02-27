@@ -323,7 +323,41 @@ void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InNam
 
 void STDMETHODCALLTYPE Hooked_SetUI(NVSDK_NGX_Parameter* pThis, const char* InName, unsigned int InValue) {
     if (IsSafeString(InName)) {
-        if (strcmp(InName, NVSDK_NGX_Parameter_AutoExposure) == 0) {
+        if (strcmp(InName, NVSDK_NGX_Parameter_CreateFlags) == 0) {
+            // AutoExposure flag override
+            std::string mode = GetActiveGraphicsConfig().dlssAutoExposure;
+            if (mode == "on") {
+                if (!(InValue & NVSDK_NGX_DLSS_Feature_Flags_AutoExposure)) {
+                    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
+                        LogOncePerParam(InName, "NVNGX: Forcing AutoExposure flag ON (SetUI, was 0x%X)", InValue);
+                    InValue |= NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
+                }
+            } else if (mode == "off") {
+                if (InValue & NVSDK_NGX_DLSS_Feature_Flags_AutoExposure) {
+                    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
+                        LogOncePerParam(InName, "NVNGX: Forcing AutoExposure flag OFF (SetUI, was 0x%X)", InValue);
+                    InValue &= ~NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
+                }
+            }
+            // DoSharpening flag override
+            const auto& cfg = GetActiveGraphicsConfig();
+            if (cfg.parsed.dlssSharpening > -1.5f) {
+                const bool forceDisableSharpening = (cfg.parsed.dlssSharpening < 0.0001f);
+                if (forceDisableSharpening) {
+                    if (InValue & NVSDK_NGX_DLSS_Feature_Flags_DoSharpening) {
+                        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
+                            LogOncePerParam(InName, "NVNGX: Forcing DoSharpening flag OFF (SetUI, was 0x%X)", InValue);
+                        InValue &= ~NVSDK_NGX_DLSS_Feature_Flags_DoSharpening;
+                    }
+                } else {
+                    if (!(InValue & NVSDK_NGX_DLSS_Feature_Flags_DoSharpening)) {
+                        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
+                            LogOncePerParam(InName, "NVNGX: Forcing DoSharpening flag ON (SetUI, was 0x%X)", InValue);
+                        InValue |= NVSDK_NGX_DLSS_Feature_Flags_DoSharpening;
+                    }
+                }
+            }
+        } else if (strcmp(InName, NVSDK_NGX_Parameter_AutoExposure) == 0) {
             std::string mode = GetActiveGraphicsConfig().dlssAutoExposure;
             if (mode == "on")
                 InValue = 1;
@@ -959,6 +993,11 @@ static void UpdateDLSSStatus(const NVSDK_NGX_FeatureDiscoveryInfo* info) {
 
 NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeature original, void* ctx, int featureID,
                                                       NVSDK_NGX_Parameter* params, void** handle) {
+    static std::atomic<bool> s_firstCall{true};
+    if (s_firstCall.exchange(false)) {
+        HookLogImportant("NVNGX: First CreateFeature call — NVNGX hooks are active (featureID=%d)", featureID);
+    }
+
     if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
         NVNGXLog("Hooked_CreateFeature_Process: Entry ctx=%p, ID=%d, params=%p", ctx, featureID, params);
 
@@ -1117,6 +1156,13 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
 
             // Force Config Overrides (Final step)
             const auto& cfg = GetActiveGraphicsConfig();
+            if (g_IPC->GetSharedMem()->GetDebugLogging()) {
+                NVNGXLog(
+                    "NVNGX: Active overrides — srPreset=%u dlssAutoExposure='%s' dlssSharpening=%.2f "
+                    "dlssExposureNormalization='%s'",
+                    cfg.parsed.srPreset, cfg.dlssAutoExposure.c_str(), cfg.parsed.dlssSharpening,
+                    cfg.dlssExposureNormalization.c_str());
+            }
             if (cfg.parsed.srPreset > 0) {
                 char oldP = state.srPreset.load();
                 state.srPreset = PresetIDToChar(cfg.parsed.srPreset);
@@ -1179,63 +1225,102 @@ void NVNGXHook::Install() {
         }
     }
 
-    HMODULE hNGX = GetModuleHandleA("nvngx.dll");
-    if (!hNGX)
-        hNGX = GetModuleHandleA("_nvngx.dll");
+    // Phase 1: Register dynamic hooks for GetProcAddress interception UNCONDITIONALLY.
+    // This must happen before the DLL-presence check so that if the game loads
+    // nvngx.dll after this point and immediately calls GetProcAddress, we intercept it.
+    // RegisterDynamicHook is idempotent — safe to call on every retry.
+    auto RegisterDynamic = [](const char* name, LPVOID pHook, LPVOID* ppOrig) {
+        IATHook::RegisterDynamicHook(name, pHook, ppOrig);
+    };
 
-    // Also try Streamline DLSS core (it exports the same NGX factories sometimes)
-    if (!hNGX)
+    RegisterDynamic("NVSDK_NGX_D3D11_GetParameters", (LPVOID)&Hooked_GetParams_D3D11, (LPVOID*)&oGetParameters_D3D11);
+    RegisterDynamic("NVSDK_NGX_D3D11_AllocateParameters", (LPVOID)&Hooked_AllocParams_D3D11,
+                    (LPVOID*)&oAllocateParameters_D3D11);
+    RegisterDynamic("NVSDK_NGX_D3D11_GetCapabilityParameters", (LPVOID)&Hooked_GetCaps_D3D11,
+                    (LPVOID*)&oGetCapabilityParameters_D3D11);
+    RegisterDynamic("NVSDK_NGX_D3D12_GetParameters", (LPVOID)&Hooked_GetParams_D3D12, (LPVOID*)&oGetParameters_D3D12);
+    RegisterDynamic("NVSDK_NGX_D3D12_AllocateParameters", (LPVOID)&Hooked_AllocParams_D3D12,
+                    (LPVOID*)&oAllocateParameters_D3D12);
+    RegisterDynamic("NVSDK_NGX_D3D12_GetCapabilityParameters", (LPVOID)&Hooked_GetCaps_D3D12,
+                    (LPVOID*)&oGetCapabilityParameters_D3D12);
+    RegisterDynamic("NVSDK_NGX_VULKAN_GetParameters", (LPVOID)&Hooked_GetParams_VULKAN,
+                    (LPVOID*)&oGetParameters_VULKAN);
+    RegisterDynamic("NVSDK_NGX_VULKAN_AllocateParameters", (LPVOID)&Hooked_AllocParams_VULKAN,
+                    (LPVOID*)&oAllocateParameters_VULKAN);
+    RegisterDynamic("NVSDK_NGX_VULKAN_GetCapabilityParameters", (LPVOID)&Hooked_GetCaps_VULKAN,
+                    (LPVOID*)&oGetCapabilityParameters_VULKAN);
+    RegisterDynamic("NVSDK_NGX_D3D11_GetFeatureRequirements", (LPVOID)&Hooked_GetFeatureRequirements_D3D11,
+                    (LPVOID*)&oGetFeatureRequirements_D3D11);
+    RegisterDynamic("NVSDK_NGX_D3D12_GetFeatureRequirements", (LPVOID)&Hooked_GetFeatureRequirements_D3D12,
+                    (LPVOID*)&oGetFeatureRequirements_D3D12);
+    RegisterDynamic("NVSDK_NGX_VULKAN_GetFeatureRequirements", (LPVOID)&Hooked_GetFeatureRequirements_VULKAN,
+                    (LPVOID*)&oGetFeatureRequirements_VULKAN);
+    RegisterDynamic("NVSDK_NGX_D3D11_CreateFeature", (LPVOID)&Hooked_CreateFeature_D3D11,
+                    (LPVOID*)&oCreateFeature_D3D11);
+    RegisterDynamic("NVSDK_NGX_D3D12_CreateFeature", (LPVOID)&Hooked_CreateFeature_D3D12,
+                    (LPVOID*)&oCreateFeature_D3D12);
+    RegisterDynamic("NVSDK_NGX_VULKAN_CreateFeature", (LPVOID)&Hooked_CreateFeature_VULKAN,
+                    (LPVOID*)&oCreateFeature_VULKAN);
+
+    HookLogImportant("NVNGX: Dynamic hooks registered for GetProcAddress interception");
+
+    // Phase 2: Patch IAT entries in already-loaded modules (requires DLL to be present).
+    const char* foundDllName = "nvngx.dll";
+    HMODULE hNGX = GetModuleHandleA("nvngx.dll");
+    if (!hNGX) {
+        hNGX = GetModuleHandleA("_nvngx.dll");
+        if (hNGX)
+            foundDllName = "_nvngx.dll";
+    }
+    if (!hNGX) {
         hNGX = GetModuleHandleA("sl.dlss.dll");
+        if (hNGX)
+            foundDllName = "sl.dlss.dll";
+    }
 
     if (!hNGX) {
+        HookLogImportant("NVNGX: DLL not yet loaded; IAT patches deferred (dynamic hooks active, will retry)");
         m_Installed = false;
         return;
     }
 
-    // Register Dynamic Hook for GetProcAddress interception
-    // and Patch IAT for static imports
-    auto InstallFactory = [&](const char* name, LPVOID pHook, LPVOID* ppOrig) {
-        // Register for dynamic loading via GetProcAddress
-        IATHook::RegisterDynamicHook(name, pHook, ppOrig);
+    HookLogImportant("NVNGX: Found '%s' at %p, installing IAT patches", foundDllName, (void*)hNGX);
 
-        // Patch explicit imports in all modules (for _nvngx.dll etc)
+    auto PatchIAT = [](const char* name, LPVOID pHook, LPVOID* ppOrig) {
         void* dummy;
         IATHook::PatchIATAllModules("_nvngx.dll", name, pHook, &dummy);
         IATHook::PatchIATAllModules("nvngx.dll", name, pHook, &dummy);
         IATHook::PatchIATAllModules("sl.dlss.dll", name, pHook, &dummy);
+        (void)ppOrig;
     };
 
-    InstallFactory("NVSDK_NGX_D3D11_GetParameters", (LPVOID)&Hooked_GetParams_D3D11, (LPVOID*)&oGetParameters_D3D11);
-    InstallFactory("NVSDK_NGX_D3D11_AllocateParameters", (LPVOID)&Hooked_AllocParams_D3D11,
-                   (LPVOID*)&oAllocateParameters_D3D11);
-    InstallFactory("NVSDK_NGX_D3D11_GetCapabilityParameters", (LPVOID)&Hooked_GetCaps_D3D11,
-                   (LPVOID*)&oGetCapabilityParameters_D3D11);
+    PatchIAT("NVSDK_NGX_D3D11_GetParameters", (LPVOID)&Hooked_GetParams_D3D11, (LPVOID*)&oGetParameters_D3D11);
+    PatchIAT("NVSDK_NGX_D3D11_AllocateParameters", (LPVOID)&Hooked_AllocParams_D3D11,
+             (LPVOID*)&oAllocateParameters_D3D11);
+    PatchIAT("NVSDK_NGX_D3D11_GetCapabilityParameters", (LPVOID)&Hooked_GetCaps_D3D11,
+             (LPVOID*)&oGetCapabilityParameters_D3D11);
+    PatchIAT("NVSDK_NGX_D3D12_GetParameters", (LPVOID)&Hooked_GetParams_D3D12, (LPVOID*)&oGetParameters_D3D12);
+    PatchIAT("NVSDK_NGX_D3D12_AllocateParameters", (LPVOID)&Hooked_AllocParams_D3D12,
+             (LPVOID*)&oAllocateParameters_D3D12);
+    PatchIAT("NVSDK_NGX_D3D12_GetCapabilityParameters", (LPVOID)&Hooked_GetCaps_D3D12,
+             (LPVOID*)&oGetCapabilityParameters_D3D12);
+    PatchIAT("NVSDK_NGX_VULKAN_GetParameters", (LPVOID)&Hooked_GetParams_VULKAN, (LPVOID*)&oGetParameters_VULKAN);
+    PatchIAT("NVSDK_NGX_VULKAN_AllocateParameters", (LPVOID)&Hooked_AllocParams_VULKAN,
+             (LPVOID*)&oAllocateParameters_VULKAN);
+    PatchIAT("NVSDK_NGX_VULKAN_GetCapabilityParameters", (LPVOID)&Hooked_GetCaps_VULKAN,
+             (LPVOID*)&oGetCapabilityParameters_VULKAN);
+    PatchIAT("NVSDK_NGX_D3D11_GetFeatureRequirements", (LPVOID)&Hooked_GetFeatureRequirements_D3D11,
+             (LPVOID*)&oGetFeatureRequirements_D3D11);
+    PatchIAT("NVSDK_NGX_D3D12_GetFeatureRequirements", (LPVOID)&Hooked_GetFeatureRequirements_D3D12,
+             (LPVOID*)&oGetFeatureRequirements_D3D12);
+    PatchIAT("NVSDK_NGX_VULKAN_GetFeatureRequirements", (LPVOID)&Hooked_GetFeatureRequirements_VULKAN,
+             (LPVOID*)&oGetFeatureRequirements_VULKAN);
+    PatchIAT("NVSDK_NGX_D3D11_CreateFeature", (LPVOID)&Hooked_CreateFeature_D3D11, (LPVOID*)&oCreateFeature_D3D11);
+    PatchIAT("NVSDK_NGX_D3D12_CreateFeature", (LPVOID)&Hooked_CreateFeature_D3D12, (LPVOID*)&oCreateFeature_D3D12);
+    PatchIAT("NVSDK_NGX_VULKAN_CreateFeature", (LPVOID)&Hooked_CreateFeature_VULKAN,
+             (LPVOID*)&oCreateFeature_VULKAN);
 
-    InstallFactory("NVSDK_NGX_D3D12_GetParameters", (LPVOID)&Hooked_GetParams_D3D12, (LPVOID*)&oGetParameters_D3D12);
-    InstallFactory("NVSDK_NGX_D3D12_AllocateParameters", (LPVOID)&Hooked_AllocParams_D3D12,
-                   (LPVOID*)&oAllocateParameters_D3D12);
-    InstallFactory("NVSDK_NGX_D3D12_GetCapabilityParameters", (LPVOID)&Hooked_GetCaps_D3D12,
-                   (LPVOID*)&oGetCapabilityParameters_D3D12);
-
-    InstallFactory("NVSDK_NGX_VULKAN_GetParameters", (LPVOID)&Hooked_GetParams_VULKAN, (LPVOID*)&oGetParameters_VULKAN);
-    InstallFactory("NVSDK_NGX_VULKAN_AllocateParameters", (LPVOID)&Hooked_AllocParams_VULKAN,
-                   (LPVOID*)&oAllocateParameters_VULKAN);
-    InstallFactory("NVSDK_NGX_VULKAN_GetCapabilityParameters", (LPVOID)&Hooked_GetCaps_VULKAN,
-                   (LPVOID*)&oGetCapabilityParameters_VULKAN);
-
-    InstallFactory("NVSDK_NGX_D3D11_GetFeatureRequirements", (LPVOID)&Hooked_GetFeatureRequirements_D3D11,
-                   (LPVOID*)&oGetFeatureRequirements_D3D11);
-    InstallFactory("NVSDK_NGX_D3D12_GetFeatureRequirements", (LPVOID)&Hooked_GetFeatureRequirements_D3D12,
-                   (LPVOID*)&oGetFeatureRequirements_D3D12);
-    InstallFactory("NVSDK_NGX_VULKAN_GetFeatureRequirements", (LPVOID)&Hooked_GetFeatureRequirements_VULKAN,
-                   (LPVOID*)&oGetFeatureRequirements_VULKAN);
-
-    InstallFactory("NVSDK_NGX_D3D11_CreateFeature", (LPVOID)&Hooked_CreateFeature_D3D11,
-                   (LPVOID*)&oCreateFeature_D3D11);
-    InstallFactory("NVSDK_NGX_D3D12_CreateFeature", (LPVOID)&Hooked_CreateFeature_D3D12,
-                   (LPVOID*)&oCreateFeature_D3D12);
-    InstallFactory("NVSDK_NGX_VULKAN_CreateFeature", (LPVOID)&Hooked_CreateFeature_VULKAN,
-                   (LPVOID*)&oCreateFeature_VULKAN);
+    HookLogImportant("NVNGX: IAT patches installed");
 }
 
 void NVNGXHook::Uninstall() {
