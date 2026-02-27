@@ -211,6 +211,11 @@ static bool IsVulkanActive() {
     return s_vulkanPresent;
 }
 
+static bool IsSteamOverlayLoaded() {
+    return GetModuleHandleA("gameoverlayrenderer64.dll") != nullptr ||
+           GetModuleHandleA("gameoverlayrenderer.dll") != nullptr;
+}
+
 // Unified Detours
 // For DX12 wrapped swapchains: CWrapDXGISwapChain handles Present, so when
 // wrapper calls m_pReal->Present() and it re-enters here, we just passthrough.
@@ -270,17 +275,6 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         return DXGI_ERROR_INVALID_CALL;
     }
 
-    // Break infinite re-entrancy loop caused by external overlays (e.g. Steam's
-    // gameoverlayrenderer64.dll), including wrapper passthrough paths.
-    if (IsRecursivePresent()) {
-        static int s_loopBreakCount = 0;
-        if (s_loopBreakCount++ < 3) {
-            HookLogImportant("DetourPresent: Re-entrancy loop broken (external overlay compat)");
-        }
-        return S_OK;
-    }
-    auto presentDepthGuard = ce::make_scope_guard([]() { ReleasePresent(); });
-
     void* pWrapper = nullptr;
     if (SUCCEEDED(pSwapChain->QueryInterface(IID_CWrapDXGISwapChain, &pWrapper))) {
         ((IUnknown*)pWrapper)->Release();
@@ -306,6 +300,18 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         }
         return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
     }
+
+    // Break infinite re-entrancy loop caused by external overlays (e.g. Steam's
+    // gameoverlayrenderer64.dll) that read vtable[8] dynamically inside their hook
+    // and call back into DetourPresent instead of using a saved trampoline.
+    if (IsRecursivePresent()) {
+        static int s_loopBreakCount = 0;
+        if (s_loopBreakCount++ < 3) {
+            HookLogImportant("DetourPresent: Re-entrancy loop broken (external overlay compat)");
+        }
+        return S_OK;
+    }
+    auto presentDepthGuard = ce::make_scope_guard([]() { ReleasePresent(); });
 
     static int s_processCount = 0;
     if (s_processCount < 5) {
@@ -434,17 +440,6 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
     }
 
-    // Break re-entrancy loop (same external overlay pattern as DetourPresent),
-    // including wrapper passthrough paths.
-    if (IsRecursivePresent()) {
-        static int s_loopBreakCount1 = 0;
-        if (s_loopBreakCount1++ < 3) {
-            HookLogImportant("DetourPresent1: Re-entrancy loop broken (external overlay compat)");
-        }
-        return S_OK;
-    }
-    auto presentDepthGuard = ce::make_scope_guard([]() { ReleasePresent(); });
-
     void* pWrapper = nullptr;
     if (SUCCEEDED(pSwapChain->QueryInterface(IID_CWrapDXGISwapChain, &pWrapper))) {
         ((IUnknown*)pWrapper)->Release();
@@ -454,6 +449,16 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     if (IsInWrapperPresent()) {
         return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
     }
+
+    // Break re-entrancy loop (same external overlay pattern as DetourPresent).
+    if (IsRecursivePresent()) {
+        static int s_loopBreakCount1 = 0;
+        if (s_loopBreakCount1++ < 3) {
+            HookLogImportant("DetourPresent1: Re-entrancy loop broken (external overlay compat)");
+        }
+        return S_OK;
+    }
+    auto presentDepthGuard = ce::make_scope_guard([]() { ReleasePresent(); });
 
     g_RenderWatchdog.Heartbeat();
 
@@ -700,6 +705,13 @@ bool InstallHooks(IDXGISwapChain* pSwapChain, bool presentOnly) {
     int count = s_installCount.fetch_add(1);
     HookLog("DXGIShared::InstallHooks CALLED #%d (swapchain=%p, presentOnly=%d)", count, pSwapChain,
             presentOnly ? 1 : 0);
+
+    // Steam overlay + DXGI vtable hooks can create recursive Present chains.
+    // In this case wrapper-based interception remains active and avoids hook wars.
+    if (IsSteamOverlayLoaded()) {
+        HookLog("DXGIShared::InstallHooks: Steam overlay detected, skipping DXGI swapchain hooks");
+        return true;
+    }
 
     if (s_hookedVTable) {
         HookLog("DXGIShared::InstallHooks: Hooks already installed on vtable %p", s_hookedVTable);
