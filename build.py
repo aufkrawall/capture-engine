@@ -150,6 +150,16 @@ def log(msg: str) -> None:
         pass
 
 
+def safe_extract_tar(archive: tarfile.TarFile, destination: str) -> None:
+    """Safely extract tar archive, preventing path traversal."""
+    dest_abs = os.path.normcase(os.path.abspath(destination))
+    for member in archive.getmembers():
+        member_abs = os.path.normcase(os.path.abspath(os.path.join(dest_abs, member.name)))
+        if member_abs != dest_abs and not member_abs.startswith(dest_abs + os.sep):
+            raise RuntimeError(f"Unsafe archive member path: {member.name}")
+    archive.extractall(dest_abs)
+
+
 def patch_amf_header():
     """Patch AMF SDK header to fix extern C with C++ types.
 
@@ -582,7 +592,7 @@ def setup_msys2():
 
         log("Extracting MSYS2...")
         with tarfile.open(tar_path) as f:
-            f.extractall(BUILD_DIR)
+            safe_extract_tar(f, BUILD_DIR)
 
         msys_bash = os.path.join(MSYS2_DIR, "usr", "bin", "bash.exe")
         run_command([msys_bash, "-lc", "pacman-key --init"])
@@ -735,7 +745,7 @@ def download_msys2_packages_for_linux():
             import tarfile
 
             with tarfile.open(pkg_path, "r") as tar:
-                tar.extractall(msys_linux_dir)
+                safe_extract_tar(tar, msys_linux_dir)
 
             log(f"Package {pkg} ready")
 
@@ -1567,6 +1577,8 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
         "-lzstd",
         "-lidn2",
     ] + ffmpeg_flags
+    if any(flag.startswith("-fsanitize=") for flag in cflags):
+        ldflags_test.append("-fsanitize=address,undefined")
 
     # 2. Compile MediaEngine objects for tests
     me_src = glob.glob(os.path.join(PROJECT_ROOT, "mediaengine", "*.cpp"))
@@ -1926,6 +1938,10 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
     else:
         clang_exe_x86 = os.path.join(MSYS2_DIR, "mingw32", "bin", "clang++.exe")
         have_x86 = os.path.exists(clang_exe_x86)
+
+    if env.get("CE_SANITIZE") == "1":
+        have_x86 = False
+        log("Sanitizer mode: skipping x86 test applications (ASan runtime unavailable)")
 
     cflags_x86 = [f for f in cflags if f != "-flto"]
 
@@ -2420,7 +2436,14 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
     # Compile D3D12 wrappers (MSVC)
 
     # --- Architecture Loop ---
-    for arch in ["x64", "x86"]:
+    arch_targets = ["x64", "x86"]
+    if env.get("CE_SANITIZE") == "1":
+        # MSYS2 currently ships ASan runtime only for x64 clang target.
+        # Building x86 sanitizer binaries fails at link time.
+        log("Sanitizer mode: skipping x86 targets (ASan runtime unavailable)")
+        arch_targets = ["x64"]
+
+    for arch in arch_targets:
         curr_env = env
         curr_clang_bin = clang_bin
         mingw_lib = ""
@@ -2822,7 +2845,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                     "-static",
                     "-static-libgcc",
                     "-static-libstdc++",
-                    "-flto",
                     "-Wl,--gc-sections",
                     "-s",
                     "-Wl,--allow-multiple-definition",
@@ -2846,6 +2868,10 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                     "-ladvapi32",
                     "-lgdi32",
                 ]
+                if curr_env.get("CE_DISABLE_LTO") != "1":
+                    me_ldflags.append("-flto")
+                if any(flag.startswith("-fsanitize=") for flag in curr_cflags):
+                    me_ldflags.append("-fsanitize=address,undefined")
                 me_ldflags.append(f"-Wl,--out-implib,{me_lib}")
 
                 me_cflags = curr_cflags + ["-DMEDIAENGINE_EXPORTS"] + ffmpeg_flags
@@ -2975,7 +3001,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             "-static",
             "-static-libgcc",
             "-static-libstdc++",
-            "-flto",
             "-Wl,--gc-sections",
             "-s",
             "-ld3d11",
@@ -2996,6 +3021,10 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             "-lpdh",
             "-lntdll",
         ]
+        if env.get("CE_DISABLE_LTO") != "1":
+            ce_ldflags.append("-flto")
+        if any(flag.startswith("-fsanitize=") for flag in cflags):
+            ce_ldflags.append("-fsanitize=address,undefined")
         # Don't link mediaengine.dll on Linux - load dynamically instead
         if not IS_LINUX:
             ce_ldflags.append(me_lib)
@@ -3018,10 +3047,10 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         x86_env_for_tests, _ = get_env_x86()
     compile_testapps(env, x86_env_for_tests, get_compiler_exe("x64"), cflags)
 
-    # 7. Compile Vulkan Layer (VK_LAYER_CE_overlay) - both architectures
+    # 7. Compile Vulkan Layer (VK_LAYER_CE_overlay)
     compile_vulkan_layer(env, get_compiler_exe("x64"), cflags, "x64")
-    # x86 layer using mingw32 toolchain
-    if get_env_x86:
+    # x86 layer using mingw32 toolchain (disabled for sanitizer builds)
+    if get_env_x86 and env.get("CE_SANITIZE") != "1":
         x86_env, x86_clang_bin = get_env_x86()
         x86_clang = get_compiler_exe("x86")
         # Check if x86 compiler exists (on Linux it might not)
@@ -3039,6 +3068,8 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 "-D_WIN32_WINNT=0x0A00",
             ]
             compile_vulkan_layer(x86_env, x86_clang, x86_cflags, "x86")
+    elif env.get("CE_SANITIZE") == "1":
+        log("Sanitizer mode: skipping x86 Vulkan layer (ASan runtime unavailable)")
 
     # Cleanup import libraries (use safe delete for consistency)
     me_lib = os.path.join(BIN_DIR, "libmediaengine.dll.a")
@@ -3273,6 +3304,20 @@ def main():
             "-g",
         ]
         sanitize_link = ["-fsanitize=address,undefined"]
+
+        def _strip_lto(flags: List[str]) -> List[str]:
+            return [flag for flag in flags if not flag.startswith("-flto")]
+
+        # ASan/UBSan + LTO is unstable with current MinGW LLVM/LLD and can crash
+        # the linker with COMDAT key errors. Disable LTO for sanitizer builds.
+        OPT_FLAGS_X64[:] = _strip_lto(OPT_FLAGS_X64)
+        HOOK_OPT_FLAGS_X64[:] = _strip_lto(HOOK_OPT_FLAGS_X64)
+        OPT_FLAGS_X86[:] = _strip_lto(OPT_FLAGS_X86)
+        HOOK_OPT_FLAGS_X86[:] = _strip_lto(HOOK_OPT_FLAGS_X86)
+        LD_OPT_FLAGS[:] = _strip_lto(LD_OPT_FLAGS)
+        env["CE_SANITIZE"] = "1"
+        env["CE_DISABLE_LTO"] = "1"
+
         OPT_FLAGS_X64.extend(sanitize_compile)
         OPT_FLAGS_X86.extend(sanitize_compile)
         LD_OPT_FLAGS.extend(sanitize_link)

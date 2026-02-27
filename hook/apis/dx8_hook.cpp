@@ -629,7 +629,7 @@ static void DrawDX8Overlay(HWND hwnd) {
 static HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device, const RECT* pSourceRect,
                                                    const RECT* pDestRect, HWND hDestWindowOverride,
                                                    const RGNDATA* pDirtyRegion) {
-    if (g_ShuttingDown)
+    if (HookIsShuttingDown())
         return D3D_OK;
     // Update performance metrics
     static int64_t qpcFreq = 0;

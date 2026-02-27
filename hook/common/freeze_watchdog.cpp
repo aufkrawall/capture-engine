@@ -275,10 +275,10 @@ void FreezeWatchdog::WatchdogThread() {
 
     OutputDebugStringA("[FreezeWatchdog] Watchdog thread started\n");
 
-    while (running_.load() && !g_ShuttingDown.load()) {
+    while (running_.load(std::memory_order_acquire) && !HookIsShuttingDown()) {
         std::this_thread::sleep_for(checkInterval);
 
-        if (!running_.load()) {
+        if (!running_.load(std::memory_order_acquire)) {
             OutputDebugStringA("[FreezeWatchdog] Watchdog stopping\n");
             break;
         }

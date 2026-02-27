@@ -1,0 +1,33 @@
+name: hardening-ci
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: standard
+            args: --skip-updates --run-tests
+          - name: sanitize
+            args: --skip-updates --sanitize --run-tests
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build and run tests (${{ matrix.name }})
+        shell: pwsh
+        run: python build.py ${{ matrix.args }}

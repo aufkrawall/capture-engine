@@ -502,7 +502,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis
                                                              DXGI_SWAP_CHAIN_DESC* pDesc,
                                                              IDXGISwapChain** ppSwapChain) {
     // CRITICAL: Pass through during shutdown
-    if (g_ShuttingDown.load()) {
+    if (HookIsShuttingDown()) {
         if (oCreateSwapChainGlobal)
             return oCreateSwapChainGlobal(pThis, pDevice, pDesc, ppSwapChain);
         return E_FAIL;
@@ -559,7 +559,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
                                                                     const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFDesc,
                                                                     IDXGIOutput* pOut, IDXGISwapChain1** ppSC) {
     // CRITICAL: Pass through during shutdown
-    if (g_ShuttingDown.load()) {
+    if (HookIsShuttingDown()) {
         if (oCreateSwapChainForHwndGlobal)
             return oCreateSwapChainForHwndGlobal(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
         return E_FAIL;
@@ -1290,7 +1290,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     }
 
     // CRITICAL: Skip all rendering during shutdown to prevent crashes
-    if (g_ShuttingDown.load()) {
+    if (HookIsShuttingDown()) {
         return;
     }
 
@@ -1799,7 +1799,7 @@ void DX12_ResetOverlayFrameDelay() {
 
 void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
     // CRITICAL: Skip all rendering during shutdown to prevent crashes
-    if (g_ShuttingDown.load()) {
+    if (HookIsShuttingDown()) {
         return;
     }
 

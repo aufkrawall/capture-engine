@@ -18,6 +18,14 @@ extern std::atomic<bool> g_GraphicsOverridesActive;
 struct SharedMemoryLayout;
 extern SharedMemoryLayout* g_pSharedMem;
 
+inline bool HookIsShuttingDown() {
+    return g_ShuttingDown.load(std::memory_order_acquire);
+}
+
+inline void RequestHookShutdown() {
+    g_ShuttingDown.store(true, std::memory_order_release);
+}
+
 // Forward declare HookContext for accessor
 namespace ce {
 struct HookContext;

@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <vector>
 
 // Frame data that can represent either inject or framegrab mode
 struct QueuedFrame {
@@ -51,40 +52,52 @@ public:
     }
 
     ~FrameQueue() {
-        // Release any remaining textures
-        std::lock_guard<std::mutex> lock(mtx);
-        for (auto& frame : buffer) {
-            if (!frame.isInjectMode && frame.texture) {
-                frame.texture->Release();
+        std::vector<ID3D11Texture2D*> texturesToRelease;
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            texturesToRelease.reserve(buffer.size());
+            for (auto& frame : buffer) {
+                if (!frame.isInjectMode && frame.texture) {
+                    texturesToRelease.push_back(frame.texture);
+                }
             }
+            buffer.clear();
         }
-        buffer.clear();
+        for (auto* texture : texturesToRelease) {
+            texture->Release();
+        }
     }
 
     // Producer: Push a frame (non-blocking)
     // Returns false if queue is full (frame will be dropped)
     bool Push(const QueuedFrame& frame, bool countAsDrop = true) {
-        std::lock_guard<std::mutex> lock(mtx);
+        ID3D11Texture2D* textureToRelease = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(mtx);
 
-        if (buffer.size() >= maxCapacity) {
-            // Queue full - drop oldest frame to make room
-            auto& oldest = buffer.front();
-            if (!oldest.isInjectMode && oldest.texture) {
-                oldest.texture->Release();
-            }
-            buffer.pop_front();
+            if (buffer.size() >= maxCapacity) {
+                // Queue full - drop oldest frame to make room
+                auto& oldest = buffer.front();
+                if (!oldest.isInjectMode && oldest.texture) {
+                    textureToRelease = oldest.texture;
+                }
+                buffer.pop_front();
 
-            // Only count as dropped if outside grace period (first 2 seconds)
-            if (countAsDrop) {
-                auto elapsed = std::chrono::steady_clock::now() - recordingStartTime;
-                if (elapsed > GRACE_PERIOD) {
-                    droppedFrames.fetch_add(1, std::memory_order_relaxed);
+                // Only count as dropped if outside grace period (first 2 seconds)
+                if (countAsDrop) {
+                    auto elapsed = std::chrono::steady_clock::now() - recordingStartTime;
+                    if (elapsed > GRACE_PERIOD) {
+                        droppedFrames.fetch_add(1, std::memory_order_relaxed);
+                    }
                 }
             }
-        }
 
-        buffer.push_back(frame);
-        cv.notify_one();
+            buffer.push_back(frame);
+            cv.notify_one();
+        }
+        if (textureToRelease) {
+            textureToRelease->Release();
+        }
         return true;
     }
 
@@ -141,14 +154,21 @@ public:
 
     // Clear any pending frames
     void Clear() {
-        std::lock_guard<std::mutex> lock(mtx);
-        for (auto& frame : buffer) {
-            if (!frame.isInjectMode && frame.texture) {
-                frame.texture->Release();
+        std::vector<ID3D11Texture2D*> texturesToRelease;
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            texturesToRelease.reserve(buffer.size());
+            for (auto& frame : buffer) {
+                if (!frame.isInjectMode && frame.texture) {
+                    texturesToRelease.push_back(frame.texture);
+                }
             }
+            buffer.clear();
+            droppedFrames.store(0, std::memory_order_relaxed);
         }
-        buffer.clear();
-        droppedFrames.store(0, std::memory_order_relaxed);
+        for (auto* texture : texturesToRelease) {
+            texture->Release();
+        }
     }
 
     // Signal shutdown to unblock waiting consumers

@@ -156,19 +156,8 @@ static int GetConfiguredFGMultiplier(const GraphicsConfig& cfg) {
 }
 
 static void LogOncePerParam(const char* param, const char* msg, ...) {
-    static CRITICAL_SECTION s_cs;
-    static std::atomic<int32_t> s_csInit{0};
+    static std::mutex s_mutex;
     static std::vector<std::pair<std::string, std::string>> s_LastLogs;
-
-    // Thread-safe CS init
-    int32_t expected = 0;
-    if (s_csInit.compare_exchange_strong(expected, 1, std::memory_order_acq_rel)) {
-        InitializeCriticalSection(&s_cs);
-        s_csInit.store(2, std::memory_order_release);
-    }
-    while (s_csInit.load(std::memory_order_acquire) < 2) {
-        Sleep(0);
-    }
 
     // Format for comparison (private stack buffer)
     char buffer[1024];
@@ -177,22 +166,27 @@ static void LogOncePerParam(const char* param, const char* msg, ...) {
     vsnprintf(buffer, sizeof(buffer), msg, args);
     va_end(args);
 
-    EnterCriticalSection(&s_cs);
-    for (auto& entry : s_LastLogs) {
-        if (entry.first == param) {
-            if (entry.second == buffer) {
-                LeaveCriticalSection(&s_cs);
-                return;  // Same message, skip
+    bool shouldLog = false;
+    {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        for (auto& entry : s_LastLogs) {
+            if (entry.first == param) {
+                if (entry.second == buffer) {
+                    return;  // Same message, skip
+                }
+                entry.second = buffer;
+                shouldLog = true;
+                break;
             }
-            entry.second = buffer;
-            LeaveCriticalSection(&s_cs);
-            NVNGXLog("%s", buffer);
-            return;
+        }
+        if (!shouldLog) {
+            s_LastLogs.push_back({param, buffer});
+            shouldLog = true;
         }
     }
-    s_LastLogs.push_back({param, buffer});
-    LeaveCriticalSection(&s_cs);
-    NVNGXLog("%s", buffer);
+    if (shouldLog) {
+        NVNGXLog("%s", buffer);
+    }
 }
 
 void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InName, int InValue) {

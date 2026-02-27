@@ -1,7 +1,90 @@
 #include <gtest/gtest.h>
+#include <atomic>
 #include <chrono>
 #include <thread>
 #include "../common/frame_queue.h"
+
+namespace {
+
+class FakeTexture2D : public ID3D11Texture2D {
+public:
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject) override {
+        if (!ppvObject) {
+            return E_POINTER;
+        }
+        *ppvObject = nullptr;
+        if (riid == __uuidof(IUnknown) || riid == __uuidof(ID3D11DeviceChild) || riid == __uuidof(ID3D11Resource) ||
+            riid == __uuidof(ID3D11Texture2D)) {
+            *ppvObject = static_cast<ID3D11Texture2D*>(this);
+            AddRef();
+            return S_OK;
+        }
+        return E_NOINTERFACE;
+    }
+
+    ULONG STDMETHODCALLTYPE AddRef() override {
+        return refCount_.fetch_add(1, std::memory_order_relaxed) + 1;
+    }
+
+    ULONG STDMETHODCALLTYPE Release() override {
+        releaseCalls_.fetch_add(1, std::memory_order_relaxed);
+        return refCount_.fetch_sub(1, std::memory_order_relaxed) - 1;
+    }
+
+    void STDMETHODCALLTYPE GetDevice(ID3D11Device** ppDevice) override {
+        if (ppDevice) {
+            *ppDevice = nullptr;
+        }
+    }
+
+    HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID, UINT*, void*) override {
+        return E_NOTIMPL;
+    }
+
+    HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID, UINT, const void*) override {
+        return E_NOTIMPL;
+    }
+
+    HRESULT STDMETHODCALLTYPE SetPrivateDataInterface(REFGUID, const IUnknown*) override {
+        return E_NOTIMPL;
+    }
+
+    void STDMETHODCALLTYPE GetType(D3D11_RESOURCE_DIMENSION* pResourceDimension) override {
+        if (pResourceDimension) {
+            *pResourceDimension = D3D11_RESOURCE_DIMENSION_TEXTURE2D;
+        }
+    }
+
+    void STDMETHODCALLTYPE SetEvictionPriority(UINT) override {}
+
+    UINT STDMETHODCALLTYPE GetEvictionPriority() override {
+        return 0;
+    }
+
+    void STDMETHODCALLTYPE GetDesc(D3D11_TEXTURE2D_DESC* pDesc) override {
+        if (pDesc) {
+            *pDesc = {};
+            pDesc->Width = 1;
+            pDesc->Height = 1;
+            pDesc->MipLevels = 1;
+            pDesc->ArraySize = 1;
+            pDesc->Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            pDesc->SampleDesc.Count = 1;
+            pDesc->Usage = D3D11_USAGE_DEFAULT;
+            pDesc->BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        }
+    }
+
+    uint32_t ReleaseCallCount() const {
+        return releaseCalls_.load(std::memory_order_relaxed);
+    }
+
+private:
+    std::atomic<ULONG> refCount_{1};
+    std::atomic<uint32_t> releaseCalls_{0};
+};
+
+}  // namespace
 
 TEST(FrameQueueTest, PushPop) {
     FrameQueue queue(5);
@@ -68,4 +151,55 @@ TEST(FrameQueueTest, Shutdown) {
 
     if (consumer.joinable())
         consumer.join();
+}
+
+TEST(FrameQueueHardeningTest, DropReleasesOldestTexture) {
+    FrameQueue queue(1);
+
+    FakeTexture2D droppedTexture;
+    QueuedFrame firstFrame;
+    firstFrame.texture = &droppedTexture;
+
+    QueuedFrame secondFrame;
+    secondFrame.isInjectMode = true;
+    secondFrame.timestamp = 2;
+
+    EXPECT_TRUE(queue.Push(firstFrame, false));
+    EXPECT_TRUE(queue.Push(secondFrame, false));
+    EXPECT_EQ(droppedTexture.ReleaseCallCount(), 1u);
+}
+
+TEST(FrameQueueHardeningTest, ClearReleasesAllQueuedTextures) {
+    FrameQueue queue(4);
+
+    FakeTexture2D textureA;
+    FakeTexture2D textureB;
+
+    QueuedFrame frameA;
+    frameA.texture = &textureA;
+    QueuedFrame frameB;
+    frameB.texture = &textureB;
+
+    EXPECT_TRUE(queue.Push(frameA, false));
+    EXPECT_TRUE(queue.Push(frameB, false));
+
+    queue.Clear();
+
+    EXPECT_EQ(textureA.ReleaseCallCount(), 1u);
+    EXPECT_EQ(textureB.ReleaseCallCount(), 1u);
+    EXPECT_TRUE(queue.IsEmpty());
+}
+
+TEST(FrameQueueHardeningTest, DestructorReleasesRemainingTextures) {
+    FakeTexture2D texture;
+    {
+        FrameQueue queue(2);
+        QueuedFrame frame;
+        frame.texture = &texture;
+
+        EXPECT_TRUE(queue.Push(frame, false));
+        EXPECT_EQ(texture.ReleaseCallCount(), 0u);
+    }
+
+    EXPECT_EQ(texture.ReleaseCallCount(), 1u);
 }

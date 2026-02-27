@@ -27,8 +27,7 @@
 
 // Put shutdown check outside the DXGIShared namespace
 static bool IsShuttingDown() {
-    extern std::atomic<bool> g_ShuttingDown;
-    return g_ShuttingDown.load();
+    return HookIsShuttingDown();
 }
 
 // Check if we're inside a CWrapDXGISwapChain Present call
@@ -261,12 +260,12 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     }
 
     if (!IsReadableMemory(pSwapChain, sizeof(void*))) {
-        g_ShuttingDown.store(true);
+        RequestHookShutdown();
         return DXGI_ERROR_INVALID_CALL;
     }
     void** vtable = *(void***)pSwapChain;
     if (!vtable || !IsReadableMemory(vtable, 9 * sizeof(void*)) || !vtable[8]) {
-        g_ShuttingDown.store(true);
+        RequestHookShutdown();
         return DXGI_ERROR_INVALID_CALL;
     }
 
@@ -427,12 +426,12 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     }
 
     if (!IsReadableMemory(pSwapChain, sizeof(void*))) {
-        g_ShuttingDown.store(true);
+        RequestHookShutdown();
         return DXGI_ERROR_INVALID_CALL;
     }
     void** vtable = *(void***)pSwapChain;
     if (!vtable || !IsReadableMemory(vtable, 23 * sizeof(void*)) || !vtable[22]) {
-        g_ShuttingDown.store(true);
+        RequestHookShutdown();
         return DXGI_ERROR_INVALID_CALL;
     }
 

@@ -36,6 +36,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -71,6 +72,17 @@ OpenGLHook *g_OpenGLHook = nullptr;
 
 // Global Local Config
 AppConfig *g_pLocalConfig = nullptr;
+
+namespace {
+std::unique_ptr<AppConfig> g_LocalConfigOwner;
+
+void EnsureLocalConfigAllocated() {
+  if (!g_LocalConfigOwner) {
+    g_LocalConfigOwner = std::make_unique<AppConfig>();
+  }
+  g_pLocalConfig = g_LocalConfigOwner.get();
+}
+} // namespace
 
 // Helper to safely delete hooks
 template <typename T> void SafeShutdownHook(T *&hook, const char *name) {
@@ -147,7 +159,8 @@ struct ChildInjectParams {
 };
 
 static DWORD WINAPI ChildInjectWorker(LPVOID param) {
-  auto *p = static_cast<ChildInjectParams *>(param);
+  auto p = std::unique_ptr<ChildInjectParams>(
+      static_cast<ChildInjectParams *>(param));
 
   SIZE_T pathLen = strlen(p->dllPath) + 1;
   LPVOID pRemote =
@@ -157,7 +170,6 @@ static DWORD WINAPI ChildInjectWorker(LPVOID param) {
     ResumeThread(p->hThread);
     CloseHandle(p->hProcess);
     CloseHandle(p->hThread);
-    delete p;
     return 1;
   }
 
@@ -167,7 +179,6 @@ static DWORD WINAPI ChildInjectWorker(LPVOID param) {
     ResumeThread(p->hThread);
     CloseHandle(p->hProcess);
     CloseHandle(p->hThread);
-    delete p;
     return 1;
   }
 
@@ -187,7 +198,6 @@ static DWORD WINAPI ChildInjectWorker(LPVOID param) {
   ResumeThread(p->hThread);
   CloseHandle(p->hProcess);
   CloseHandle(p->hThread);
-  delete p;
   return 0;
 }
 
@@ -209,7 +219,7 @@ void InjectIntoChild(HANDLE hProcess, HANDLE hThread) {
     return;
   }
 
-  auto *p = new ChildInjectParams();
+  auto p = std::make_unique<ChildInjectParams>();
   GetModuleFileNameA(g_hModule, p->dllPath, MAX_PATH);
 
   // Duplicate handles so the worker thread owns them
@@ -220,19 +230,18 @@ void InjectIntoChild(HANDLE hProcess, HANDLE hThread) {
                        DUPLICATE_SAME_ACCESS)) {
     HookLog("[ChildInject] DuplicateHandle failed: %d", GetLastError());
     if (p->hProcess) CloseHandle(p->hProcess);
-    delete p;
     ResumeThread(hThread);
     return;
   }
 
-  HANDLE hWorker = CreateThread(NULL, 0, ChildInjectWorker, p, 0, NULL);
+  HANDLE hWorker = CreateThread(NULL, 0, ChildInjectWorker, p.get(), 0, NULL);
   if (hWorker) {
     CloseHandle(hWorker); // Detach — worker cleans up
+    p.release();
   } else {
     HookLog("[ChildInject] CreateThread failed: %d", GetLastError());
     CloseHandle(p->hProcess);
     CloseHandle(p->hThread);
-    delete p;
     ResumeThread(hThread); // Fallback: resume inline so child isn't stuck
   }
 }
@@ -369,6 +378,16 @@ BOOL WINAPI HookedCreateProcessW(LPCWSTR lpApp, LPWSTR lpCmd,
 
 std::mutex g_HookMutex;
 HANDLE g_hCheckHooksEvent = NULL;
+
+namespace {
+void CloseCheckHooksEvent() {
+  HANDLE hEvent = reinterpret_cast<HANDLE>(InterlockedExchangePointer(
+      reinterpret_cast<PVOID volatile *>(&g_hCheckHooksEvent), nullptr));
+  if (hEvent) {
+    CloseHandle(hEvent);
+  }
+}
+} // namespace
 
 // Forward declaration
 void CheckAndInstallHooks();
@@ -1179,8 +1198,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     std::string dir = pathString.substr(0, pathString.find_last_of("\\/"));
     std::string configPath = dir + "\\config.ini";
 
-    if (!g_pLocalConfig)
-      g_pLocalConfig = new AppConfig();
+    EnsureLocalConfigAllocated();
     LoadConfig(configPath, *g_pLocalConfig);
     // Prime the graphics override state immediately
     GetActiveGraphicsConfig();
@@ -1237,8 +1255,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
 
   // --- BLACKLISTED PROCESSES ---
   if (g_ProcessCategory == ProcessCategory::Blacklisted) {
-    if (g_hCheckHooksEvent)
-      CloseHandle(g_hCheckHooksEvent);
+    CloseCheckHooksEvent();
     FreeLibraryAndExitThread(g_hModule, 0);
     return 0;
   }
@@ -1264,7 +1281,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     // to avoid missing a CreateProcess call during transition.
     // However, we need to check for shutdown signal to allow DLL unload.
     // Use 100ms instead of 1000ms to respond quickly to shutdown.
-    while (!g_ShuttingDown) {
+    while (!HookIsShuttingDown()) {
       Sleep(100);
     }
     return 0;
@@ -1300,8 +1317,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
         Sleep(1000); // 1s is aggressive enough without being a CPU hog/bomb
       } else {
         // Engine not found or closed - time to exit
-        if (g_hCheckHooksEvent)
-          CloseHandle(g_hCheckHooksEvent);
+        CloseCheckHooksEvent();
         FreeLibraryAndExitThread(g_hModule, 0);
         return 0;
       }
@@ -1490,8 +1506,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   }
 
   // Cleanup Event
-  if (g_hCheckHooksEvent)
-    CloseHandle(g_hCheckHooksEvent);
+  CloseCheckHooksEvent();
 
   // Self-unload to release file lock when host requests exit or dies
   // This is crucial for the CBT global hook to not pin the DLL forever
@@ -1504,13 +1519,6 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
 static DWORD WINAPI HookThreadWrapper(LPVOID lpParam) {
   timeBeginPeriod(1);
   return HookThread(lpParam);
-}
-
-// Unload thread for blacklisted processes - releases DLL file lock
-static DWORD WINAPI UnloadSelfThread(LPVOID) {
-  Sleep(100); // Small delay to let DllMain complete
-  FreeLibraryAndExitThread(g_hModule, 0);
-  return 0;
 }
 
 static bool isProcessWhitelistedFast(const char *name) {
@@ -1582,9 +1590,6 @@ static bool IsServiceProcess(const char *name) {
 // If we export CBTHookProc, Steam's hook can still find and call it even if we
 // don't install it Removing the export breaks any lingering hook registrations
 // extern "C" __declspec(dllexport) LRESULT CALLBACK CBTHookProc(...) { ... }
-
-// Thread to safely eject the DLL
-// (Removed UnloadSelfThread as it is not used in the new pinning model)
 
 extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
                                LPVOID lpReserved) {
@@ -1705,9 +1710,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     if (isProcessWhitelistedFast(fileName)) {
       // Whitelisted Game (Shared Mem OR Config - but we only use ShMem now in
       // WhitelistFast)
-      if (!g_pLocalConfig) {
-        g_pLocalConfig = new AppConfig();
-      }
+      EnsureLocalConfigAllocated();
 
       // Crash handler already installed at DLL load (line 1503)
 
@@ -1815,7 +1818,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     // cleanup
     DXGIShared::RemoveSwapchainVTableHooks();
 
-    g_ShuttingDown = true;
+    RequestHookShutdown();
 
     // Signal HookThread to exit
     if (g_hCheckHooksEvent) {
@@ -1856,11 +1859,12 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     // Note: We're intentionally leaking g_IPC here to avoid crashes
     // The shared memory will be cleaned up when the process exits
     g_IPC = nullptr;
+    g_LocalConfigOwner.reset();
+    g_pLocalConfig = nullptr;
 
     timeEndPeriod(1);
 
-    if (g_hCheckHooksEvent)
-      CloseHandle(g_hCheckHooksEvent);
+    CloseCheckHooksEvent();
 
     // CRITICAL FIX: Clean up TLS index if it was allocated
     // (None currently used)

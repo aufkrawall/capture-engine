@@ -467,7 +467,7 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9PresentInline(IDirect3DDevice9* devic
         EarlyLog("DX9: DetourD3D9PresentInline called (device=%p, count=%d)", device, entryLogCount);
         entryLogCount++;
     }
-    if (g_ShuttingDown.load()) {
+    if (HookIsShuttingDown()) {
         if (oD3D9PresentTrampoline)
             return oD3D9PresentTrampoline(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
         return D3D_OK;
@@ -505,7 +505,7 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9PresentExInline(IDirect3DDevice9Ex* d
                  entryLogCount);
         entryLogCount++;
     }
-    if (g_ShuttingDown.load()) {
+    if (HookIsShuttingDown()) {
         if (oD3D9PresentExTrampoline)
             return oD3D9PresentExTrampoline(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
         return D3D_OK;
@@ -550,7 +550,7 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9SwapChainPresentInline(IDirect3DSwapC
                  entryLogCount);
         entryLogCount++;
     }
-    if (g_ShuttingDown.load()) {
+    if (HookIsShuttingDown()) {
         if (oD3D9SwapChainPresentTrampoline)
             return oD3D9SwapChainPresentTrampoline(swapChain, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion,
                                                    dwFlags);
@@ -1933,7 +1933,7 @@ static thread_local PresentTiming g_Timing;
 
 // Present hook helpers
 void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) {
-    if (g_ShuttingDown)
+    if (HookIsShuttingDown())
         return;
 
     // Heartbeat for freeze watchdog (d3d12.dll may be loaded in DX9 games)

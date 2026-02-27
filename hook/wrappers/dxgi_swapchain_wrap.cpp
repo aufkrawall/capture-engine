@@ -647,8 +647,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
 
     // CRITICAL: Check for global shutdown - if app is closing, don't touch
     // anything
-    extern std::atomic<bool> g_ShuttingDown;
-    if (g_ShuttingDown.load()) {
+    if (HookIsShuttingDown()) {
         if (pRealCached) {
             return pRealCached->Present(SyncInterval, Flags);
         }
@@ -916,8 +915,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
 
     // CRITICAL: Check for global shutdown - if app is closing, don't touch
     // anything
-    extern std::atomic<bool> g_ShuttingDown;
-    if (g_ShuttingDown.load()) {
+    if (HookIsShuttingDown()) {
         if (m_pReal1) {
             return m_pReal1->Present1(SyncInterval, PresentFlags, pPresentParameters);
         }

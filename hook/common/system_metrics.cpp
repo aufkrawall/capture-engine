@@ -203,7 +203,7 @@ void SystemMetricsCollector::BackgroundUpdateLoop() {
     EarlyLog("SystemMetricsCollector: Background thread started");
     static bool loggedIPCMode = false;
 
-    while (!stopThread && !g_ShuttingDown.load()) {
+    while (!stopThread.load(std::memory_order_acquire) && !HookIsShuttingDown()) {
         static int loopTrace = 0;
         if (loopTrace % 100 == 0)
             EarlyLog("SystemMetricsCollector: Loop Iteration %d", loopTrace);
@@ -271,7 +271,7 @@ void SystemMetricsCollector::BackgroundUpdateLoop() {
         }
 
         // Sleep for 200ms (Faster updates for better stability)
-        for (int i = 0; i < 20 && !stopThread && !g_ShuttingDown.load(); i++) {
+        for (int i = 0; i < 20 && !stopThread.load(std::memory_order_acquire) && !HookIsShuttingDown(); i++) {
             Sleep(10);
         }
     }

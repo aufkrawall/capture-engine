@@ -304,7 +304,7 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT Syn
     // CRITICAL ULTIMATE FIX: If shutdown flag is set, return immediately WITHOUT
     // touching ANYTHING - no wrapper checks, no GetDesc, nothing. Just return.
     // The device may already be destroyed and any D3D call can crash.
-    if (g_ShuttingDown.load()) {
+    if (HookIsShuttingDown()) {
         return S_OK;
     }
 
@@ -343,7 +343,7 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT Syn
         if (!desc.OutputWindow || !IsWindow(desc.OutputWindow)) {
             // Window is being destroyed - app is shutting down
             // Set shutdown flag and bail immediately without touching any D3D objects
-            g_ShuttingDown.store(true);
+            RequestHookShutdown();
             EarlyLog("DX11: Window destroyed (hwnd=%p), entering shutdown mode", desc.OutputWindow);
             return S_OK;
         }
@@ -365,7 +365,7 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT Syn
 
     // If window was invalid during overlay rendering, skip Present to avoid crash
     // The app is already tearing down its D3D resources
-    if (g_ShuttingDown.load()) {
+    if (HookIsShuttingDown()) {
         return S_OK;  // Return success to avoid cascading errors
     }
 
@@ -389,7 +389,7 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain* pSwapChain, UINT Sy
                                              const DXGI_PRESENT_PARAMETERS* pPresentParameters) {
     // CRITICAL: Check for shutdown first - if app is closing, don't touch
     // anything
-    if (g_ShuttingDown.load()) {
+    if (HookIsShuttingDown()) {
         return S_OK;
     }
 
@@ -414,7 +414,7 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain* pSwapChain, UINT Sy
         }
 
         if (!desc.OutputWindow || !IsWindow(desc.OutputWindow)) {
-            g_ShuttingDown.store(true);
+            RequestHookShutdown();
             EarlyLog("DX11: Window destroyed (hwnd=%p), entering shutdown mode", desc.OutputWindow);
             return S_OK;
         }
@@ -480,7 +480,7 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain* pSwapChain, UINT Sy
     DrawDX11Overlay(pSwapChain);
 
     // If window was invalid during overlay rendering, skip Present to avoid crash
-    if (g_ShuttingDown.load()) {
+    if (HookIsShuttingDown()) {
         return S_OK;
     }
 
@@ -1699,7 +1699,7 @@ static bool IsReadableMemoryDX11(const void* ptr, size_t size) {
 void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
     // CRITICAL: Skip all rendering during shutdown to prevent crashes
     // when D3D device is destroyed while we're trying to use it
-    if (g_ShuttingDown.load()) {
+    if (HookIsShuttingDown()) {
         return;
     }
 
@@ -1720,7 +1720,7 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
     // SAFETY: Verify the swapchain pointer is valid before accessing it
     if (!IsReadableMemoryDX11(pSwapChain, sizeof(void*))) {
         EarlyLog("DX11: Swapchain memory not readable at frame %d — shutting down", frameCount);
-        g_ShuttingDown.store(true);
+        RequestHookShutdown();
         return;
     }
 
@@ -1771,7 +1771,7 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
         // CRITICAL: Set shutdown flag and tell overlay adapter to skip cleanup
         // The app is tearing down and any Release() call can crash. Let OS clean
         // up.
-        g_ShuttingDown.store(true);
+        RequestHookShutdown();
         g_OverlayAdapter.SetShutdownMode(true);  // Tell adapter to skip destructor cleanup
         return;
     }
@@ -1967,7 +1967,7 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
                                               DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
     // CRITICAL: Check for shutdown first - if app is closing, don't touch
     // anything
-    if (g_ShuttingDown.load()) {
+    if (HookIsShuttingDown()) {
         if (oResizeBuffers) {
             return oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
         }
