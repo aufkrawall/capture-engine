@@ -347,8 +347,14 @@ bool PatchIATAllModules(const char* sourceModule, const char* functionName, void
             if (GetModuleFileNameExW(GetCurrentProcess(), modules[i], szModName, MAX_PATH)) {
                 std::wstring wsModName(szModName);
                 if (wsModName.find(L"capture_hook") != std::wstring::npos ||
-                    wsModName.find(L"d3d12_wrappers") != std::wstring::npos) {
-                    continue;  // Skip our own modules to avoid recursion
+                    wsModName.find(L"d3d12_wrappers") != std::wstring::npos ||
+                    wsModName.find(L"gameoverlayrenderer") != std::wstring::npos ||  // Steam overlay
+                    wsModName.find(L"discord_hook") != std::wstring::npos) {         // Discord overlay
+                    // Skip our own modules and third-party overlay DLLs that also hook
+                    // graphics APIs. Patching their GetProcAddress IAT causes them to
+                    // receive our hook address as the "original" function, creating a
+                    // mutual infinite recursion: our wrapper -> overlay hook -> our wrapper...
+                    continue;
                 }
             }
 
@@ -883,6 +889,31 @@ FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
     std::lock_guard<std::mutex> lock(g_DynamicHookLock);
     auto it = g_DynamicHooks.find(lpProcName);
     if (it != g_DynamicHooks.end()) {
+        // Don't intercept GetProcAddress calls originating from Windows system DLLs or known
+        // overlay DLLs. Those DLLs call GetProcAddress internally for their own implementation
+        // purposes. Intercepting such calls causes mutual recursion with third-party overlays
+        // (e.g., Steam's gameoverlayrenderer64) that also hook DXGI/D3D factory functions:
+        //   Wrapped_CreateDXGIFactory2 -> oCreateDXGIFactory2 (Steam's hook) ->
+        //   Steam reads a stored "original" that received our wrapper -> infinite loop.
+        {
+            void* callerAddr = __builtin_return_address(0);
+            HMODULE callerMod = nullptr;
+            if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   (LPCSTR)callerAddr, &callerMod) &&
+                callerMod) {
+                char callerPath[MAX_PATH] = {};
+                if (GetModuleFileNameA(callerMod, callerPath, sizeof(callerPath))) {
+                    for (char* p = callerPath; *p; ++p) *p = (char)tolower((unsigned char)*p);
+                    if (strstr(callerPath, "\\system32\\") || strstr(callerPath, "\\syswow64\\") ||
+                        strstr(callerPath, "gameoverlayrenderer") ||
+                        strstr(callerPath, "discord_hook")) {
+                        return proc;
+                    }
+                }
+            }
+        }
+
         // We found a hook!
         // Store the original address if requested
         if (it->second.outOriginal && *it->second.outOriginal == nullptr) {

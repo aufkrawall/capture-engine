@@ -122,12 +122,70 @@ void WrapperLog(const char* fmt, ...) {
 // Wrapped DXGI Factory Creation
 // ============================================================================
 
+// Resolve the true (pre-hook) address of a dxgi.dll export by reading the
+// on-disk PE export table.  Third-party overlays (e.g., Steam) may redirect
+// dxgi.dll's in-memory EAT to their own code; loading the file as an image
+// resource gives us the original function RVA to apply against the loaded base.
+static void* GetUnhookedDXGIExport(const char* funcName) {
+    HMODULE hDXGI = GetModuleHandleA("dxgi.dll");
+    if (!hDXGI)
+        return nullptr;
+
+    char path[MAX_PATH] = {};
+    if (!GetModuleFileNameA(hDXGI, path, sizeof(path)))
+        return nullptr;
+
+    HMODULE hDisk = LoadLibraryExA(path, nullptr,
+                                   LOAD_LIBRARY_AS_IMAGE_RESOURCE | LOAD_LIBRARY_AS_DATAFILE);
+    if (!hDisk)
+        return nullptr;
+
+    // Low bits encode the load type; mask them to get the actual image base.
+    auto base = reinterpret_cast<const BYTE*>((uintptr_t)hDisk & ~(uintptr_t)3);
+    void* result = nullptr;
+
+    auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic == IMAGE_DOS_SIGNATURE) {
+        auto nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+        const auto& ed = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+        if (ed.VirtualAddress) {
+            auto exp = reinterpret_cast<const IMAGE_EXPORT_DIRECTORY*>(base + ed.VirtualAddress);
+            auto names     = reinterpret_cast<const DWORD*>(base + exp->AddressOfNames);
+            auto ordinals  = reinterpret_cast<const WORD* >(base + exp->AddressOfNameOrdinals);
+            auto functions = reinterpret_cast<const DWORD*>(base + exp->AddressOfFunctions);
+            for (DWORD i = 0; i < exp->NumberOfNames; ++i) {
+                if (strcmp(reinterpret_cast<const char*>(base + names[i]), funcName) == 0) {
+                    DWORD rva = functions[ordinals[i]];
+                    // Apply original RVA to the real in-memory dxgi.dll base.
+                    result = reinterpret_cast<BYTE*>(hDXGI) + rva;
+                    break;
+                }
+            }
+        }
+    }
+
+    FreeLibrary(hDisk);
+    return result;
+}
+
 HRESULT WINAPI Wrapped_CreateDXGIFactory(REFIID riid, void** ppFactory) {
+    // Guard against mutual recursion with third-party overlay hooks (e.g., Steam).
+    thread_local bool t_inFactory = false;
+    if (t_inFactory) {
+        static auto* realFn =
+            reinterpret_cast<PFN_CreateDXGIFactory>(GetUnhookedDXGIExport("CreateDXGIFactory"));
+        HookLogImportant("Wrapper: Reentrancy in CreateDXGIFactory – calling real export (realFn=%p)", realFn);
+        if (realFn) return realFn(riid, ppFactory);
+        return E_FAIL;
+    }
+
     if (!oCreateDXGIFactory)
         return E_FAIL;
 
+    t_inFactory = true;
     IDXGIFactory* pRealFactory = nullptr;
     HRESULT hr = oCreateDXGIFactory(riid, (void**)&pRealFactory);
+    t_inFactory = false;
 
     if (SUCCEEDED(hr) && pRealFactory) {
         // Wrap with CWrapDXGIFactory2 (handles all factory versions)
@@ -153,11 +211,23 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory(REFIID riid, void** ppFactory) {
 }
 
 HRESULT WINAPI Wrapped_CreateDXGIFactory1(REFIID riid, void** ppFactory) {
+    // Guard against mutual recursion with third-party overlay hooks (e.g., Steam).
+    thread_local bool t_inFactory1 = false;
+    if (t_inFactory1) {
+        static auto* realFn =
+            reinterpret_cast<PFN_CreateDXGIFactory1>(GetUnhookedDXGIExport("CreateDXGIFactory1"));
+        HookLogImportant("Wrapper: Reentrancy in CreateDXGIFactory1 – calling real export (realFn=%p)", realFn);
+        if (realFn) return realFn(riid, ppFactory);
+        return E_FAIL;
+    }
+
     if (!oCreateDXGIFactory1)
         return E_FAIL;
 
+    t_inFactory1 = true;
     IDXGIFactory1* pRealFactory = nullptr;
     HRESULT hr = oCreateDXGIFactory1(riid, (void**)&pRealFactory);
+    t_inFactory1 = false;
 
     if (SUCCEEDED(hr) && pRealFactory) {
         // Wrap with CWrapDXGIFactory2
@@ -181,11 +251,27 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory1(REFIID riid, void** ppFactory) {
 }
 
 HRESULT WINAPI Wrapped_CreateDXGIFactory2(UINT Flags, REFIID riid, void** ppFactory) {
+    // Guard against mutual recursion with third-party overlay hooks (e.g., Steam).
+    // When oCreateDXGIFactory2 points to a Steam EAT hook that has stored us as its
+    // "original" (via our GetProcAddress interception), each call cycles back here.
+    // On re-entry, bypass the hook chain by calling the real dxgi.dll function
+    // directly using the original on-disk export RVA.
+    thread_local bool t_inFactory2 = false;
+    if (t_inFactory2) {
+        static auto* realFn =
+            reinterpret_cast<PFN_CreateDXGIFactory2>(GetUnhookedDXGIExport("CreateDXGIFactory2"));
+        HookLogImportant("Wrapper: Reentrancy in CreateDXGIFactory2 – calling real export (realFn=%p)", realFn);
+        if (realFn) return realFn(Flags, riid, ppFactory);
+        return E_FAIL;
+    }
+
     if (!oCreateDXGIFactory2)
         return E_FAIL;
 
+    t_inFactory2 = true;
     IDXGIFactory2* pRealFactory = nullptr;
     HRESULT hr = oCreateDXGIFactory2(Flags, riid, (void**)&pRealFactory);
+    t_inFactory2 = false;
 
     if (SUCCEEDED(hr) && pRealFactory) {
         // Wrap with CWrapDXGIFactory2
