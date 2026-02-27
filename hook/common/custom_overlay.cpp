@@ -124,8 +124,10 @@ void Renderer::AddTextQuadsScaled(float x, float y, const char* text, uint32_t c
     float atlasW = (float)fontAtlas.GetTextureWidth();
     float atlasH = (float)fontAtlas.GetTextureHeight();
 
-    float px = x;
-    float py = y;
+    // Snap origin to nearest integer pixel so each glyph samples its atlas texel
+    // center exactly under linear filtering — prevents sub-pixel blur.
+    float px = roundf(x);
+    float py = roundf(y);
 
     while (*text) {
         char c = *text++;
@@ -204,8 +206,10 @@ void Renderer::DrawTextWithShadow(float x, float y, const char* text, uint32_t c
     if (!initialized || !text)
         return;
 
+    // Scale shadow offset by DPI so it is proportional at all DPI levels.
+    float off = shadowOffset * dpiScale;
     // Draw shadow first
-    AddTextQuads(x + shadowOffset, y + shadowOffset, text, shadowColor);
+    AddTextQuads(x + off, y + off, text, shadowColor);
     // Draw main text on top
     AddTextQuads(x, y, text, color);
     FlushBatch(true);
@@ -228,8 +232,9 @@ void Renderer::DrawTextScaledWithShadow(float x, float y, const char* text, uint
     if (!initialized || !text)
         return;
 
+    float off = shadowOffset * dpiScale;
     // Draw shadow first
-    AddTextQuadsScaled(x + shadowOffset, y + shadowOffset, text, shadowColor, scale);
+    AddTextQuadsScaled(x + off, y + off, text, shadowColor, scale);
     // Draw main text on top
     AddTextQuadsScaled(x, y, text, color, scale);
     FlushBatch(true);

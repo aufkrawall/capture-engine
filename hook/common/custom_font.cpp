@@ -110,6 +110,10 @@ bool FontAtlas::Initialize(const char* fontName, int fontSize, float scale) {
             maxRowHeight = 0;
         }
 
+        // Skip glyph if it would overflow the atlas vertically
+        if (cursorY + charSize.cy >= atlasHeight)
+            continue;
+
         // Draw character
         TextOutA(hdc, cursorX, cursorY, &ch, 1);
 
