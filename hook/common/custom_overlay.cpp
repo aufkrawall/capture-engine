@@ -445,8 +445,12 @@ void Renderer::DrawFrameTimeGraph(float x, float y, float width, float height, c
     for (int i = 0; i < count; i++) {
         float val = frameTimes[i];
         val = (std::max)(minVal, (std::min)(maxVal, val));
-        xs[i] = x + (float)i * stepX;
-        ys[i] = y + height - ((val - minVal) * invRange) * height;
+        // Snap both axes to nearest pixel. This keeps all segment geometry on
+        // integer boundaries so triangle coverage is identical every frame for
+        // the same data — eliminating temporal aliasing at peaks and flat sections
+        // as the graph scrolls horizontally.
+        xs[i] = std::round(x + (float)i * stepX);
+        ys[i] = std::round(y + height - ((val - minVal) * invRange) * height);
     }
 
     // Skip leading zero-value samples (unfilled ring buffer at startup).

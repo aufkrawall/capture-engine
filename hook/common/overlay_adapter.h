@@ -119,5 +119,10 @@ private:
     // per-frame snprintf+CalcTextSize overhead)
     float cachedContentWidth = 0.0f;
     bool layoutDirty = true;
+
+    // Throttled frame time display values (updated every 2 seconds)
+    DWORD lastMaxFrameTimeUpdateTime = 0;
+    float cachedMaxFrameTime = 0.0f;
+    float cachedAvgFrameTimeForColor = 0.0f;
 };
 extern OverlayAdapter g_OverlayAdapter;

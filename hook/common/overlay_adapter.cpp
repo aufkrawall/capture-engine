@@ -631,26 +631,32 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     if (cfg.showRecording && isRecording)
         graphCursorY += lineHeight;
 
-    // Calculate max frame time from last ~2 seconds for display
-    float recentMaxFrameTime = 0.0f;
-    float recentAvgFrameTime = 0.0f;
+    // Max frame time display values – recomputed at most once every 2 seconds so
+    // the label doesn't flicker on every frame.
+    float recentMaxFrameTime = cachedMaxFrameTime;
+    float recentAvgFrameTime = cachedAvgFrameTimeForColor;
     if (showGraph) {
-        // Calculate how many samples represent ~2 seconds based on current FPS
-        int samplesPerSecond = (cachedFPS > 0) ? (int)cachedFPS : 60;
-        int samplesFor2Seconds = (std::min)(GRAPH_SAMPLES, samplesPerSecond * 2);
-        int startIdx = GRAPH_SAMPLES - samplesFor2Seconds;
+        DWORD ftNow = GetTickCount();
+        if ((ftNow - lastMaxFrameTimeUpdateTime) >= 2000) {
+            lastMaxFrameTimeUpdateTime = ftNow;
+            int samplesPerSecond = (cachedFPS > 0) ? (int)cachedFPS : 60;
+            int samplesFor2Seconds = (std::min)(GRAPH_SAMPLES, samplesPerSecond * 2);
+            int startIdx = GRAPH_SAMPLES - samplesFor2Seconds;
 
-        float sum = 0.0f;
-        int count = 0;
-        for (int i = startIdx; i < GRAPH_SAMPLES; i++) {
-            float val = graphData[i];
-            if (val > recentMaxFrameTime)
-                recentMaxFrameTime = val;
-            sum += val;
-            count++;
+            float newMax = 0.0f, sum = 0.0f;
+            int count = 0;
+            for (int i = startIdx; i < GRAPH_SAMPLES; i++) {
+                float val = graphData[i];
+                if (val > newMax)
+                    newMax = val;
+                sum += val;
+                count++;
+            }
+            cachedMaxFrameTime = newMax;
+            cachedAvgFrameTimeForColor = (count > 0) ? sum / count : 0.0f;
+            recentMaxFrameTime = cachedMaxFrameTime;
+            recentAvgFrameTime = cachedAvgFrameTimeForColor;
         }
-        if (count > 0)
-            recentAvgFrameTime = sum / count;
 
         // Calculate graph scaling based on all samples - use exact peak value
         float peakVal = 0.0f;
