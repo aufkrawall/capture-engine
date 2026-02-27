@@ -86,6 +86,8 @@ static bool g_FirstGameSwapchainCreated = false;
 // Forces overlay and capture to use the same backbuffer index within one frame.
 // This eliminates index races on FLIP swapchains.
 static thread_local int g_ForcedCaptureBackBufferIndex = -1;
+// Re-entrancy guard: prevents mutual recursion with other Present hooks (e.g. Steam overlay)
+thread_local bool g_InPresentHook = false;
 
 static UINT ResolveDX11BackBufferIndex(IDXGISwapChain* swapChain, const DXGI_SWAP_CHAIN_DESC* swapChainDesc = nullptr) {
     if (!swapChain)
@@ -319,6 +321,13 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT Syn
         return oPresent(pSwapChain, SyncInterval, Flags);
     }
 
+    // Re-entrancy guard: prevents mutual recursion with other Present hooks (e.g. Steam overlay)
+    if (g_InPresentHook) {
+        return oPresent(pSwapChain, SyncInterval, Flags);
+    }
+    g_InPresentHook = true;
+    auto hookGuard = ce::make_scope_guard([&] { g_InPresentHook = false; });
+
     // SAFETY CHECK: Verify window is still valid before doing ANY D3D work
     // This prevents crashes when the app is shutting down and destroying its
     // window
@@ -449,11 +458,14 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain* pSwapChain, UINT Sy
         }
     }
 
-    bool isFirstHook = !g_InPresentHook;
+    // Re-entrancy guard: prevents mutual recursion with other Present hooks (e.g. Steam overlay)
+    if (g_InPresentHook) {
+        if (oPresent1)
+            return oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
+        return oPresent(pSwapChain, SyncInterval, PresentFlags);
+    }
     g_InPresentHook = true;
-    auto hookGuard = ce::make_scope_guard([&] {
-        // Guard auto-reset
-    });
+    auto hookGuard = ce::make_scope_guard([&] { g_InPresentHook = false; });
 
     // Process VSync Override
     VSyncOverride override = GetDX11VSyncOverride();
@@ -2162,9 +2174,6 @@ static void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
     ctx->Release();
     dev->Release();
 }
-
-// Reentrancy guard for Present
-thread_local bool g_InPresentHook = false;
 
 namespace DXGIShared {
 void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame) {

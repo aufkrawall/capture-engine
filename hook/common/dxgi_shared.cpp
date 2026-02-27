@@ -296,6 +296,18 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
     }
 
+    // Break infinite re-entrancy loop caused by external overlays (e.g. Steam's
+    // gameoverlayrenderer64.dll) that read vtable[8] dynamically inside their hook
+    // and call back into DetourPresent instead of using a saved trampoline.
+    if (IsRecursivePresent()) {
+        static int s_loopBreakCount = 0;
+        if (s_loopBreakCount++ < 3) {
+            HookLogImportant("DetourPresent: Re-entrancy loop broken (external overlay compat)");
+        }
+        return S_OK;
+    }
+    auto presentDepthGuard = ce::make_scope_guard([]() { ReleasePresent(); });
+
     static int s_processCount = 0;
     if (s_processCount < 5) {
         s_processCount++;
@@ -432,6 +444,16 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     if (IsInWrapperPresent()) {
         return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
     }
+
+    // Break re-entrancy loop (same external overlay pattern as DetourPresent).
+    if (IsRecursivePresent()) {
+        static int s_loopBreakCount1 = 0;
+        if (s_loopBreakCount1++ < 3) {
+            HookLogImportant("DetourPresent1: Re-entrancy loop broken (external overlay compat)");
+        }
+        return S_OK;
+    }
+    auto presentDepthGuard = ce::make_scope_guard([]() { ReleasePresent(); });
 
     g_RenderWatchdog.Heartbeat();
 
