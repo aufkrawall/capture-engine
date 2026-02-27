@@ -7,6 +7,7 @@
 #include "apis/opengl_hook.h"
 // CRITICAL: windows.h MUST come before psapi.h and intrin.h
 #include <windows.h>
+#include <winternl.h>
 #include <cstdio>
 #include <intrin.h> // For __builtin_return_address
 #include <psapi.h>
@@ -95,11 +96,16 @@ typedef HMODULE(WINAPI *LoadLibraryExA_t)(LPCSTR lpLibFileName, HANDLE hFile,
                                           DWORD dwFlags);
 typedef HMODULE(WINAPI *LoadLibraryExW_t)(LPCWSTR lpLibFileName, HANDLE hFile,
                                           DWORD dwFlags);
+typedef NTSTATUS(NTAPI *LdrLoadDll_t)(PWSTR SearchPath,
+                                      PULONG DllCharacteristics,
+                                      PUNICODE_STRING DllName,
+                                      PVOID *BaseAddress);
 
 LoadLibraryA_t OriginalLoadLibraryA = nullptr;
 LoadLibraryW_t OriginalLoadLibraryW = nullptr;
 LoadLibraryExA_t OriginalLoadLibraryExA = nullptr;
 LoadLibraryExW_t OriginalLoadLibraryExW = nullptr;
+LdrLoadDll_t OriginalLdrLoadDll = nullptr;
 
 typedef LPSTR(WINAPI *GetCommandLineA_t)();
 typedef LPWSTR(WINAPI *GetCommandLineW_t)();
@@ -412,8 +418,11 @@ std::string GetRedirectedPath(const std::string &requestedPath) {
       std::string finalPath;
 
       // Check if overridePath has an extension (heuristic for file vs dir)
-      bool hasExtension =
-          (overridePath.find_last_of('.') > overridePath.find_last_of("\\/"));
+      size_t overrideLastSlash = overridePath.find_last_of("\\/");
+      size_t overrideLastDot = overridePath.find_last_of('.');
+      bool hasExtension = (overrideLastDot != std::string::npos &&
+                           (overrideLastSlash == std::string::npos ||
+                            overrideLastDot > overrideLastSlash));
 
       if (hasExtension) {
         // It looks like a file.
@@ -678,6 +687,61 @@ HMODULE WINAPI HookedLoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile,
   if (hMod && g_hCheckHooksEvent)
     SetEvent(g_hCheckHooksEvent);
   return hMod;
+}
+
+NTSTATUS NTAPI HookedLdrLoadDll(PWSTR SearchPath, PULONG DllCharacteristics,
+                                PUNICODE_STRING DllName, PVOID *BaseAddress) {
+  if (DllName && DllName->Buffer && DllName->Length > 0 && OriginalLdrLoadDll) {
+    std::wstring requestedW(DllName->Buffer, DllName->Length / sizeof(wchar_t));
+
+    if (!requestedW.empty()) {
+      int utf8Len = WideCharToMultiByte(CP_UTF8, 0, requestedW.c_str(),
+                                        static_cast<int>(requestedW.size()),
+                                        nullptr, 0, nullptr, nullptr);
+      if (utf8Len > 0) {
+        std::string requestedPath;
+        requestedPath.resize(static_cast<size_t>(utf8Len));
+        WideCharToMultiByte(CP_UTF8, 0, requestedW.c_str(),
+                            static_cast<int>(requestedW.size()),
+                            requestedPath.data(), utf8Len, nullptr, nullptr);
+
+        std::string redirect = GetRedirectedPath(requestedPath);
+        if (!redirect.empty()) {
+          std::wstring redirectW;
+          int wLen = MultiByteToWideChar(CP_UTF8, 0, redirect.c_str(), -1, NULL, 0);
+          if (wLen > 0) {
+            redirectW.resize(static_cast<size_t>(wLen));
+            MultiByteToWideChar(CP_UTF8, 0, redirect.c_str(), -1, redirectW.data(), wLen);
+            if (!redirectW.empty() && redirectW.back() == L'\0') {
+              redirectW.pop_back();
+            }
+
+            UNICODE_STRING redirectName{};
+            redirectName.Buffer = const_cast<PWSTR>(redirectW.c_str());
+            redirectName.Length = static_cast<USHORT>(redirectW.size() * sizeof(wchar_t));
+            redirectName.MaximumLength = redirectName.Length + sizeof(wchar_t);
+
+            NTSTATUS status = OriginalLdrLoadDll(SearchPath, DllCharacteristics,
+                                                 &redirectName, BaseAddress);
+            if (NT_SUCCESS(status)) {
+              if (g_hCheckHooksEvent)
+                SetEvent(g_hCheckHooksEvent);
+              return status;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (!OriginalLdrLoadDll)
+    return STATUS_DLL_NOT_FOUND;
+
+  NTSTATUS status = OriginalLdrLoadDll(SearchPath, DllCharacteristics, DllName,
+                                       BaseAddress);
+  if (NT_SUCCESS(status) && g_hCheckHooksEvent)
+    SetEvent(g_hCheckHooksEvent);
+  return status;
 }
 
 // ----------------------------------------------------------------------------
@@ -1294,6 +1358,23 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
                                      (void **)&OriginalRegQueryValueExW);
   } else {
     HookLog("advapi32.dll not loaded yet - skipping RegQueryValueExW hook");
+  }
+
+  // Install low-level loader hook so redirected DLL names also work for implicit
+  // dependency loads resolved by ntdll loader internals.
+  if (!OriginalLdrLoadDll) {
+    if (HMODULE hNtdll = GetModuleHandleA("ntdll.dll")) {
+      if (void *pLdrLoadDll = (void *)GetProcAddress(hNtdll, "LdrLoadDll")) {
+        void *trampoline = nullptr;
+        if (InlineHook::Install(pLdrLoadDll, (void *)&HookedLdrLoadDll,
+                                &trampoline)) {
+          OriginalLdrLoadDll = (LdrLoadDll_t)trampoline;
+          HookLog("Installed LdrLoadDll hook");
+        } else {
+          HookLog("Failed to install LdrLoadDll hook");
+        }
+      }
+    }
   }
 
   EarlyLog("HookThread: IAT hooks installed");

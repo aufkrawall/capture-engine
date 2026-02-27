@@ -1240,6 +1240,9 @@ void NVNGXHook::Install() {
     if (m_Installed.exchange(true))
         return;
 
+    static std::atomic<bool> s_DynamicHookRegisterLogged{false};
+    static std::atomic<bool> s_DeferredLoadLogged{false};
+
     // Update version once at install time
     UpdateDLSSVersion();
 
@@ -1302,7 +1305,9 @@ void NVNGXHook::Install() {
     RegisterDynamic("NVSDK_NGX_VULKAN_CreateFeature", (LPVOID)&Hooked_CreateFeature_VULKAN,
                     (LPVOID*)&oCreateFeature_VULKAN);
 
-    HookLogImportant("NVNGX: Dynamic hooks registered for GetProcAddress interception");
+    if (!s_DynamicHookRegisterLogged.exchange(true)) {
+        HookLogImportant("NVNGX: Dynamic hooks registered for GetProcAddress interception");
+    }
 
     // Phase 2: Patch IAT entries in already-loaded modules (requires DLL to be present).
     const char* foundDllName = "nvngx.dll";
@@ -1319,11 +1324,14 @@ void NVNGXHook::Install() {
     }
 
     if (!hNGX) {
-        HookLogImportant("NVNGX: DLL not yet loaded; IAT patches deferred (dynamic hooks active, will retry)");
+        if (!s_DeferredLoadLogged.exchange(true)) {
+            HookLogImportant("NVNGX: DLL not yet loaded; IAT patches deferred (dynamic hooks active, will retry)");
+        }
         m_Installed = false;
         return;
     }
 
+    s_DeferredLoadLogged.store(false, std::memory_order_relaxed);
     HookLogImportant("NVNGX: Found '%s' at %p, installing IAT patches", foundDllName, (void*)hNGX);
 
     auto PatchIAT = [](const char* name, LPVOID pHook, LPVOID* ppOrig) {
