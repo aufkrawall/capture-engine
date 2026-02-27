@@ -1135,6 +1135,8 @@ void CleanupRTVs() {
         g_State.srvDescHeap->Release();
         g_State.srvDescHeap = nullptr;
     }
+    g_State.bufferCount = 0;
+    g_State.cachedSwapChain = nullptr;
 }
 
 void DX12_OnSwapchainResizeBegin() {
@@ -1152,24 +1154,15 @@ void DX12_OnSwapchainResizeBegin() {
     DXGIShared::g_SharedState.lastSwapchainCreation = std::chrono::steady_clock::now();
     HookLog("DX12: DX12_OnSwapchainResizeBegin - step 1: timestamp updated");
 
-    // Use try_lock to avoid blocking the render thread
-    if (!g_OverlayMutex.try_lock()) {
-        HookLog("DX12: DX12_OnSwapchainResizeBegin - mutex busy, returning early");
-        return;
-    }
+    // ResizeBuffers must see a fully invalidated overlay state; skipping cleanup
+    // here leaves stale RTV descriptors/backbuffer state that can hang drivers.
+    std::lock_guard<std::recursive_mutex> lock(g_OverlayMutex);
     HookLog("DX12: DX12_OnSwapchainResizeBegin - step 2: got mutex");
 
-    // RAII unlock when we exit
-    std::lock_guard<std::recursive_mutex> lock(g_OverlayMutex, std::adopt_lock);
-
-    // DO NOT release D3D12 resources here - just mark them invalid.
-    // The real ResizeBuffers will handle synchronization internally.
-    // Releasing resources now can cause the GPU to hang waiting for them.
-
-    // Just mark ImGui as not initialized - resources will be cleaned up after
-    // resize
+    // Invalidate and release swapchain-bound resources before ResizeBuffers.
     g_State.overlayInit = false;
     g_State.syncInit = false;
+    CleanupRTVs();
     HookLog("DX12: DX12_OnSwapchainResizeBegin - step 3: marked state invalid");
 
     // CRITICAL FIX: DO NOT release g_LastSwapChain here!
