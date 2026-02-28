@@ -854,51 +854,58 @@ bool Install(void* target, void* detour, void** outTrampoline) {
 
     if (IsAlreadyHooked(code, is64bit)) {
         // External overlay detected - try chain hooking
-        // Parse the JMP instruction to find where the overlay's hook goes
+        // Resolve the chain target from either a JMP rel32 (E9) or indirect JMP (FF 25)
         LogDirect("External hook detected, attempting chain hooking...");
 
-        if (code[0] == 0xE9 && !is64bit) {
-            // 32-bit JMP rel32
+        uintptr_t chainTarget = 0;
+
+        if (code[0] == 0xE9) {
+            // JMP rel32 - valid on both x86 and x64
             int32_t rel32 = *(const int32_t*)(code + 1);
             uintptr_t overlayTarget = (uintptr_t)target + 5 + rel32;
             LogDirect("JMP rel32 detected: rel32=0x%08X, overlay target=%p", (unsigned)rel32, (void*)overlayTarget);
             HookLog("InlineHook: Chaining to overlay hook at %p", (void*)overlayTarget);
 
-            // Check if the overlay target is valid memory
+            // Follow one more level of JMP rel32 if present (multi-level chaining)
+            const uint8_t* overlayCode = (const uint8_t*)overlayTarget;
+            if (overlayCode[0] == 0xE9) {
+                LogDirect("Overlay target also has JMP, following chain...");
+                int32_t rel32_2 = *(const int32_t*)(overlayCode + 1);
+                uintptr_t finalTarget = overlayTarget + 5 + rel32_2;
+                LogDirect("Second JMP target: %p", (void*)finalTarget);
+                overlayTarget = finalTarget;
+            }
+            chainTarget = overlayTarget;
+        } else if (is64bit && code[0] == 0xFF && code[1] == 0x25) {
+            // JMP [rip+disp32] on x64 - dereference indirect pointer to find real target
+            int32_t disp;
+            memcpy(&disp, code + 2, 4);
+            uintptr_t addrPtr = (uintptr_t)(code + 6) + disp;
+            MEMORY_BASIC_INFORMATION mbiFF;
+            if (VirtualQuery((void*)addrPtr, &mbiFF, sizeof(mbiFF)) > 0 && mbiFF.State == MEM_COMMIT &&
+                (mbiFF.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) {
+                chainTarget = *(uintptr_t*)addrPtr;
+                LogDirect("JMP [rip+disp32] chain: indirect addr=%p, real target=%p", (void*)addrPtr,
+                          (void*)chainTarget);
+            } else {
+                LogDirect("FAILED: Cannot read FF25 indirect address %p", (void*)addrPtr);
+            }
+        }
+
+        if (chainTarget != 0) {
+            // Verify the chain target is executable
             MEMORY_BASIC_INFORMATION mbi;
-            if (VirtualQuery((void*)overlayTarget, &mbi, sizeof(mbi)) == sizeof(mbi)) {
+            if (VirtualQuery((void*)chainTarget, &mbi, sizeof(mbi)) == sizeof(mbi)) {
                 LogDirect("Overlay target memory: Base=%p, Protect=0x%X", mbi.BaseAddress, mbi.Protect);
 
-                // Check if it's executable memory
                 if (mbi.State == MEM_COMMIT && (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
                                                                PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) {
                     LogDirect("Overlay target is executable, attempting hook...");
 
-                    // Try to install our hook at the overlay's target
-                    // First, check if there's another JMP there (multi-level chaining)
-                    const uint8_t* overlayCode = (const uint8_t*)overlayTarget;
-                    if (overlayCode[0] == 0xE9) {
-                        LogDirect("Overlay target also has JMP, following chain...");
-                        int32_t rel32_2 = *(const int32_t*)(overlayCode + 1);
-                        uintptr_t finalTarget = overlayTarget + 5 + rel32_2;
-                        LogDirect("Second JMP target: %p", (void*)finalTarget);
-                        overlayTarget = finalTarget;
-                    }
+                    if (!IsAlreadyHooked((const uint8_t*)chainTarget, is64bit)) {
+                        LogDirect("Attempting chain install at overlay target %p", (void*)chainTarget);
 
-                    // Try to install hook at the overlay target
-                    if (!IsAlreadyHooked((const uint8_t*)overlayTarget, is64bit)) {
-                        LogDirect("Attempting recursive Install at overlay target %p", (void*)overlayTarget);
-                        // Recursive call - but we need to save the original first
-                        // Actually, we can't do a recursive call because we'll detect it as already hooked
-                        // Instead, we need to directly install the hook here
-
-                        // For now, let's try installing at overlay target
-                        // We'll skip the "already hooked by us" check since this is a new target
-                        uintptr_t chainTarget = overlayTarget;
-                        void* chainDetour = detour;
-                        void** chainOriginal = outTrampoline;
-
-                        // Decode instructions at overlay target
+                        // Decode enough instructions to cover PATCH_SIZE bytes
                         int chainCopySize = 0;
                         const uint8_t* chainCode = (const uint8_t*)chainTarget;
                         while (chainCopySize < PATCH_SIZE) {
@@ -913,7 +920,7 @@ bool Install(void* target, void* detour, void** outTrampoline) {
                         if (chainCopySize >= PATCH_SIZE) {
                             LogDirect("Chain hook: copySize=%d, installing at %p", chainCopySize, (void*)chainTarget);
 
-                            // Allocate trampoline for chain hook
+                            // Allocate trampoline near chain target for RIP-relative safety
                             uint8_t* chainTrampoline = GetTrampolineSlot((void*)chainTarget);
                             if (!chainTrampoline) {
                                 LogDirect("FAILED: Could not allocate trampoline for chain hook");
@@ -921,19 +928,63 @@ bool Install(void* target, void* detour, void** outTrampoline) {
                             }
                             LogDirect("Chain hook trampoline allocated at %p", chainTrampoline);
 
-                            // Copy original instructions to trampoline (no RIP-relative fixups needed for chain hooks
-                            // since we're copying from overlay code, not original d3d9)
-                            memcpy(chainTrampoline, chainCode, chainCopySize);
+                            // Copy instructions to trampoline with RIP-relative fixups.
+                            // On x64 instructions may reference data via RIP+disp32; the displacement
+                            // must be recomputed when the instruction executes from a different address.
+                            int trampolineOff = 0;
+                            int srcOff = 0;
+                            bool fixupFailed = false;
+                            while (srcOff < chainCopySize) {
+                                int instrLen = GetInstructionLength(chainCode + srcOff, is64bit);
+                                memcpy(chainTrampoline + trampolineOff, chainCode + srcOff, instrLen);
 
-                            // Add JMP back to overlay code after copied bytes
-                            // JMP rel32 from trampoline+copySize to chainTarget+copySize
-                            uint8_t* jmpSite = chainTrampoline + chainCopySize;
+                                int dispOff = GetRipRelativeDispOffset(chainCode + srcOff, instrLen, is64bit);
+                                if (dispOff >= 0) {
+                                    int32_t origDisp;
+                                    memcpy(&origDisp, chainCode + srcOff + dispOff, 4);
+                                    uintptr_t absTarget = (uintptr_t)(chainCode + srcOff + instrLen) + origDisp;
+                                    uintptr_t newInstrEnd = (uintptr_t)(chainTrampoline + trampolineOff + instrLen);
+                                    int64_t newDisp = (int64_t)absTarget - (int64_t)newInstrEnd;
+
+                                    if (newDisp > INT32_MAX || newDisp < INT32_MIN) {
+                                        uint8_t op = chainCode[srcOff];
+                                        if (op == 0xE9 || op == 0xE8) {
+                                            // Convert to absolute 14-byte FF 25 jump/call
+                                            chainTrampoline[trampolineOff] = 0xFF;
+                                            chainTrampoline[trampolineOff + 1] = (op == 0xE9) ? 0x25 : 0x15;
+                                            chainTrampoline[trampolineOff + 2] = 0;
+                                            chainTrampoline[trampolineOff + 3] = 0;
+                                            chainTrampoline[trampolineOff + 4] = 0;
+                                            chainTrampoline[trampolineOff + 5] = 0;
+                                            memcpy(chainTrampoline + trampolineOff + 6, &absTarget, 8);
+                                            trampolineOff += 14;
+                                            srcOff += instrLen;
+                                            continue;
+                                        }
+                                        LogDirect("Chain hook: RIP fixup out of range at srcOff=%d, aborting", srcOff);
+                                        fixupFailed = true;
+                                        break;
+                                    }
+                                    int32_t newDisp32 = (int32_t)newDisp;
+                                    memcpy(chainTrampoline + trampolineOff + dispOff, &newDisp32, 4);
+                                }
+                                trampolineOff += instrLen;
+                                srcOff += instrLen;
+                            }
+                            if (fixupFailed || trampolineOff + 5 > TRAMPOLINE_ENTRY_SIZE) {
+                                LogDirect("Chain hook: trampoline build failed (off=%d)", trampolineOff);
+                                return false;
+                            }
+
+                            // Add JMP back to chain code after the copied bytes.
+                            // E9 rel32 is safe: trampoline is within ±2GB of chainTarget.
+                            uint8_t* jmpSite = chainTrampoline + trampolineOff;
                             jmpSite[0] = 0xE9;  // JMP rel32
                             int32_t jmpOffset =
                                 (int32_t)((uintptr_t)(chainCode + chainCopySize) - (uintptr_t)(jmpSite + 5));
                             memcpy(jmpSite + 1, &jmpOffset, 4);
-                            LogDirect("Chain trampoline: copied %d bytes, JMP at offset %d -> %p (rel=0x%08X)",
-                                      chainCopySize, chainCopySize, (void*)(chainCode + chainCopySize),
+                            LogDirect("Chain trampoline: %d src bytes -> %d trampoline bytes, JMP -> %p (rel=0x%08X)",
+                                      chainCopySize, trampolineOff, (void*)(chainCode + chainCopySize),
                                       (unsigned)jmpOffset);
 
                             // Create the hook entry
@@ -944,31 +995,24 @@ bool Install(void* target, void* detour, void** outTrampoline) {
                             newHook.installed = false;
                             memcpy(newHook.origBytes, chainCode, chainCopySize);
 
-                            // Save trampoline to caller's storage - this is what detour calls to invoke overlay code
-                            if (chainOriginal) {
-                                *chainOriginal = chainTrampoline;
+                            // Save trampoline to caller's storage
+                            if (outTrampoline) {
+                                *outTrampoline = chainTrampoline;
                             }
 
-                            // Change memory protection
+                            // Patch chain target: use WriteJump for proper x64 support
+                            // (14-byte FF25+addr on x64, 5-byte E9 rel32 on x86)
                             DWORD oldProtect;
                             if (VirtualProtect((void*)chainTarget, chainCopySize, PAGE_EXECUTE_READWRITE,
                                                &oldProtect)) {
-                                // Write JMP to detour
-                                uint8_t patch[5];
-                                patch[0] = 0xE9;  // JMP rel32
-                                int32_t offset = (int32_t)((uintptr_t)chainDetour - chainTarget - 5);
-                                memcpy(patch + 1, &offset, 4);
-                                memcpy((void*)chainTarget, patch, 5);
-
-                                // Fill remaining with NOPs if copySize > 5
-                                for (int i = 5; i < chainCopySize; i++) {
+                                WriteJump((uint8_t*)chainTarget, detour);
+                                // NOP fill remaining bytes beyond PATCH_SIZE
+                                for (int i = PATCH_SIZE; i < chainCopySize; i++) {
                                     ((uint8_t*)chainTarget)[i] = 0x90;
                                 }
 
-                                // Flush instruction cache
                                 FlushInstructionCache(GetCurrentProcess(), (void*)chainTarget, chainCopySize);
 
-                                // Restore protection
                                 DWORD dummy;
                                 VirtualProtect((void*)chainTarget, chainCopySize, oldProtect, &dummy);
 
@@ -976,7 +1020,7 @@ bool Install(void* target, void* detour, void** outTrampoline) {
                                 g_hooks.push_back(newHook);
 
                                 LogDirect("SUCCESS: Chain hook installed at %p -> %p (trampoline=%p)",
-                                          (void*)chainTarget, chainDetour, chainTrampoline);
+                                          (void*)chainTarget, detour, chainTrampoline);
                                 HookLog("InlineHook: Chain hook installed at %p (trampoline=%p)", (void*)chainTarget,
                                         chainTrampoline);
                                 return true;
@@ -993,9 +1037,6 @@ bool Install(void* target, void* detour, void** outTrampoline) {
             } else {
                 LogDirect("VirtualQuery failed for overlay target");
             }
-        } else if (code[0] == 0xFF && code[1] == 0x25) {
-            // JMP [addr] - indirect jump
-            LogDirect("JMP [addr] detected, not yet supported for chain hooking");
         }
 
         LogDirect("FAILED: Function at %p is already hooked by external overlay", target);

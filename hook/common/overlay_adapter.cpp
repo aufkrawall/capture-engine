@@ -332,28 +332,29 @@ uint32_t OverlayAdapter::GetLoadColor(float load) {
 void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     static int renderLogCount = 0;
     if (renderLogCount < 5) {
-        HookLog("[Overlay] RenderOverlay#%d: init=%d renderer=%p ipc=%p shm=%p showOverlay=%d vp=%dx%d", renderLogCount,
-                initialized ? 1 : 0, (void*)renderer, (void*)ipc, ipc ? (void*)ipc->GetSharedMem() : nullptr,
-                (ipc && ipc->GetSharedMem()) ? ipc->GetSharedMem()->ReadOverlayConfig().showOverlay : -1, viewportWidth,
-                viewportHeight);
+        HookLogImportant("[Overlay] RenderOverlay#%d: init=%d renderer=%p ipc=%p shm=%p showOverlay=%d vp=%dx%d",
+                         renderLogCount, initialized ? 1 : 0, (void*)renderer, (void*)ipc,
+                         ipc ? (void*)ipc->GetSharedMem() : nullptr,
+                         (ipc && ipc->GetSharedMem()) ? ipc->GetSharedMem()->ReadOverlayConfig().showOverlay : -1,
+                         viewportWidth, viewportHeight);
         renderLogCount++;
     }
 
     if (!initialized || !renderer) {
         if (renderLogCount < 5)
-            HookLog("[Overlay] RenderOverlay: early return - not initialized or no renderer");
+            HookLogImportant("[Overlay] RenderOverlay: early return - not initialized or no renderer");
         return;
     }
 
     if (!ipc || !ipc->GetSharedMem()) {
         if (renderLogCount < 5)
-            HookLog("[Overlay] RenderOverlay: early return - no IPC or shared memory");
+            HookLogImportant("[Overlay] RenderOverlay: early return - no IPC or shared memory");
         return;
     }
     auto cfg = ipc->GetSharedMem()->ReadOverlayConfig();
     if (!cfg.showOverlay) {
         if (renderLogCount < 5)
-            HookLog("[Overlay] RenderOverlay: early return - showOverlay is false");
+            HookLogImportant("[Overlay] RenderOverlay: early return - showOverlay is false");
         return;
     }
 

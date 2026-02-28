@@ -9,12 +9,9 @@ namespace {
 
 bool RunOneHookLifecycleCycle() {
     ce::HookLifecycle lifecycle;
-    return lifecycle.TransitionTo(ce::HookState::Connecting) &&
-           lifecycle.TransitionTo(ce::HookState::Connected) &&
-           lifecycle.TransitionTo(ce::HookState::Attaching) &&
-           lifecycle.TransitionTo(ce::HookState::Active) &&
-           lifecycle.TransitionTo(ce::HookState::Detaching) &&
-           lifecycle.TransitionTo(ce::HookState::Disconnecting) &&
+    return lifecycle.TransitionTo(ce::HookState::Connecting) && lifecycle.TransitionTo(ce::HookState::Connected) &&
+           lifecycle.TransitionTo(ce::HookState::Attaching) && lifecycle.TransitionTo(ce::HookState::Active) &&
+           lifecycle.TransitionTo(ce::HookState::Detaching) && lifecycle.TransitionTo(ce::HookState::Disconnecting) &&
            lifecycle.TransitionTo(ce::HookState::Detached) && lifecycle.IsShuttingDown();
 }
 
@@ -50,4 +47,3 @@ TEST(HookLifecycleStressTest, RapidLifecycleChurnMultiThread) {
 
     EXPECT_EQ(failedCycles.load(std::memory_order_relaxed), 0);
 }
-

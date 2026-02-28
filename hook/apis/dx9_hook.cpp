@@ -39,6 +39,7 @@ typedef HRESULT(STDMETHODCALLTYPE* PresentSwap_t)(IDirect3DSwapChain9*, CONST RE
                                                   DWORD);
 typedef HRESULT(STDMETHODCALLTYPE* Reset_t)(IDirect3DDevice9*, D3DPRESENT_PARAMETERS*);
 typedef HRESULT(STDMETHODCALLTYPE* ResetEx_t)(IDirect3DDevice9Ex*, D3DPRESENT_PARAMETERS*, D3DDISPLAYMODEEX*);
+typedef HRESULT(STDMETHODCALLTYPE* EndScene_t)(IDirect3DDevice9*);
 typedef HRESULT(STDMETHODCALLTYPE* SetSamplerState_t)(IDirect3DDevice9*, DWORD, D3DSAMPLERSTATETYPE, DWORD);
 typedef HRESULT(STDMETHODCALLTYPE* SetTextureStageState_t)(IDirect3DDevice9*, DWORD, D3DTEXTURESTAGESTATETYPE, DWORD);
 typedef HRESULT(WINAPI* Direct3DCreate9Ex_t)(UINT, IDirect3D9Ex**);
@@ -49,6 +50,7 @@ static PresentEx_t oPresentEx = nullptr;
 static PresentSwap_t oPresentSwap = nullptr;
 static Reset_t oReset = nullptr;
 static ResetEx_t oResetEx = nullptr;
+static EndScene_t oEndScene = nullptr;
 static SetSamplerState_t oSetSamplerState = nullptr;
 static SetTextureStageState_t oSetTextureStageState = nullptr;
 
@@ -76,8 +78,9 @@ static bool g_HooksInitialized = false;
 static bool g_ResetHooksInstalled = false;
 static std::mutex g_PresentMutex;
 static thread_local int g_PresentRecurse = 0;  // Prevent recursive Present calls on same thread
-static std::atomic<int> g_MaxMSAASamples{0};   // Tracks highest MSAA target seen
-static GraphicsConfig g_FrameConfig;           // Frame-local config cache for performance
+static thread_local bool g_InOverlayRender = false;
+static std::atomic<int> g_MaxMSAASamples{0};  // Tracks highest MSAA target seen
+static GraphicsConfig g_FrameConfig;          // Frame-local config cache for performance
 static int64_t g_LastSleepUs = 0;
 static bool g_WindowedPresent = true;
 static std::atomic<UINT> g_LivePresentInterval{0};
@@ -697,10 +700,13 @@ static bool InstallD3D9InlineHooks() {
     if (anySuccess) {
         LogDirect("At least one inline hook installed successfully");
         EarlyLog("DX9: At least one inline hook installed successfully");
+        HookLogImportant("DX9: Inline hooks installed (Present=%p, PresentEx=%p, SwapChain=%p)", (void*)presentAddr,
+                         (void*)presentExAddr, (void*)swapChainPresentAddr);
         g_InlineHooksInstalled = true;
     } else {
         LogDirect("ALL inline hooks failed - DX9 overlay will not work!");
         EarlyLog("DX9: ALL inline hooks failed - DX9 overlay will not work!");
+        HookLogImportant("DX9: ALL inline hooks FAILED - falling back to vtable hooks");
     }
 
     g_InlineHooksInProgress = false;
@@ -1859,6 +1865,7 @@ public:
 
 static DX9Capture g_DX9Capture;
 static void InstallDeviceHooks(IDirect3DDevice9* device);
+static HRESULT STDMETHODCALLTYPE DetourEndScene(IDirect3DDevice9* device);
 
 // Draw overlay using CustomOverlay
 static void DrawDX9Overlay(IDirect3DDevice9* device) {
@@ -1867,9 +1874,9 @@ static void DrawDX9Overlay(IDirect3DDevice9* device) {
 
     if (drawLogCount < 5) {
         SharedMemoryLayout* dbgShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
-        EarlyLog("DX9: DrawDX9Overlay #%d, IsInitialized=%d, IPC=%p, SHM=%p, showOverlay=%d", drawLogCount,
-                 g_OverlayAdapter.IsInitialized() ? 1 : 0, (void*)g_IPC, (void*)dbgShm,
-                 dbgShm ? dbgShm->ReadOverlayConfig().showOverlay : -1);
+        HookLogImportant("DX9: DrawDX9Overlay #%d, IsInitialized=%d, IPC=%p, SHM=%p, showOverlay=%d", drawLogCount,
+                         g_OverlayAdapter.IsInitialized() ? 1 : 0, (void*)g_IPC, (void*)dbgShm,
+                         dbgShm ? dbgShm->ReadOverlayConfig().showOverlay : -1);
         drawLogCount++;
     }
 
@@ -1907,6 +1914,13 @@ static void DrawDX9Overlay(IDirect3DDevice9* device) {
     D3DVIEWPORT9 vp;
     device->GetViewport(&vp);
 
+    static int vpLogCount = 0;
+    if (vpLogCount < 3) {
+        HookLogImportant("DX9: DrawDX9Overlay vp=%ux%u (device=%p, IPC=%p)", vp.Width, vp.Height, (void*)device,
+                         (void*)g_IPC);
+        vpLogCount++;
+    }
+
     g_OverlayAdapter.SetMetrics(&g_PerfMetrics);
     g_OverlayAdapter.SetIPCClient(g_IPC);
     g_OverlayAdapter.SetDroppedFrames(g_DX9Capture.droppedFrames.load(std::memory_order_relaxed));
@@ -1918,7 +1932,9 @@ static void DrawDX9Overlay(IDirect3DDevice9* device) {
     // Render Custom Overlay
     // Note: RenderOverlay calls BeginFrame/RenderContent/EndFrame.
     // DX9 backend handles state saving/restoring internally.
+    g_InOverlayRender = true;
     g_OverlayAdapter.RenderOverlay(vp.Width, vp.Height);
+    g_InOverlayRender = false;
 }
 
 // Performance measurement
@@ -1931,6 +1947,9 @@ struct PresentTiming {
     int64_t presentCallTime;
 };
 static thread_local PresentTiming g_Timing;
+// Tracks whether DrawDX9Overlay was already called from DetourEndScene this frame.
+// Reset at the top of DetourEndScene; checked in DX9_PresentBegin to avoid double-drawing.
+static thread_local bool g_overlayDrawnInEndScene = false;
 
 // Present hook helpers
 void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) {
@@ -1942,19 +1961,19 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
 
     static std::atomic<bool> s_LiveHookBootstrapDone{false};
     bool expectedBootstrap = false;
-    if ((!oSetSamplerState || !oSetTextureStageState || !oReset) &&
+    if ((!oSetSamplerState || !oSetTextureStageState || !oReset || !oEndScene) &&
         s_LiveHookBootstrapDone.compare_exchange_strong(expectedBootstrap, true, std::memory_order_acq_rel,
                                                         std::memory_order_relaxed)) {
         HookLogImportant(
             "DX9: Present bootstrap before install (device=%p, inline=%d, "
-            "oReset=%p, oSetSamplerState=%p, oSetTextureStageState=%p)",
-            device, g_InlineHooksInstalled.load(std::memory_order_acquire) ? 1 : 0, (void*)oReset,
+            "oReset=%p, oEndScene=%p, oSetSamplerState=%p, oSetTextureStageState=%p)",
+            device, g_InlineHooksInstalled.load(std::memory_order_acquire) ? 1 : 0, (void*)oReset, (void*)oEndScene,
             (void*)oSetSamplerState, (void*)oSetTextureStageState);
         InstallDeviceHooks(device);
         HookLogImportant(
             "DX9: Present bootstrap after install (oReset=%p, oSetSamplerState=%p, "
-            "oSetTextureStageState=%p)",
-            (void*)oReset, (void*)oSetSamplerState, (void*)oSetTextureStageState);
+            "oSetTextureStageState=%p, oEndScene=%p)",
+            (void*)oReset, (void*)oSetSamplerState, (void*)oSetTextureStageState, (void*)oEndScene);
 
         IDirect3DSwapChain9* swapChain = nullptr;
         if (SUCCEEDED(device->GetSwapChain(0, &swapChain)) && swapChain) {
@@ -2077,10 +2096,28 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
         SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
         bool captureIncludeOverlay = shm ? shm->overlayConfig.captureIncludeOverlay : true;
         bool shouldDrawOverlay = shm && shm->overlayConfig.showOverlay;
+        bool endSceneHookActive = false;
+        uintptr_t* vtable = *(uintptr_t**)device;
+        if (vtable) {
+            endSceneHookActive = ((void*)vtable[42] == (void*)&DetourEndScene);
+            if (!endSceneHookActive) {
+                void* driftedTarget = (void*)vtable[42];
+                VTableHook::Status esStatus =
+                    VTableHook::Create(&vtable[42], (void*)&DetourEndScene, (void**)&oEndScene);
+                endSceneHookActive = ((void*)vtable[42] == (void*)&DetourEndScene);
+                static int endSceneRehookLogCount = 0;
+                if (endSceneRehookLogCount < 12) {
+                    HookLogImportant("DX9: EndScene hook drift detected target=%p status=%d active=%d next=%p",
+                                     driftedTarget, (int)esStatus, endSceneHookActive ? 1 : 0, (void*)oEndScene);
+                    endSceneRehookLogCount++;
+                }
+            }
+        }
+        bool preferEndSceneOverlay = shouldDrawOverlay && endSceneHookActive;
 
-        // Lambda for overlay drawing
+        // Lambda for overlay drawing — skip if already drawn in DetourEndScene this frame
         auto doOverlay = [&]() {
-            if (shouldDrawOverlay) {
+            if (shouldDrawOverlay && !preferEndSceneOverlay && !g_overlayDrawnInEndScene) {
                 DrawDX9Overlay(device);
             }
         };
@@ -2283,8 +2320,33 @@ void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer) {
     g_PresentRecurse--;
 }
 
+// Hook: IDirect3DDevice9::EndScene (vtable[42])
+// Draw overlay BEFORE the original EndScene so our draws are part of the same
+// D3D12 command batch. In D3D9On12, EndScene flushes/closes the D3D12 command
+// list — drawing after EndScene (at Present time) puts our calls in a new batch
+// that is discarded when the game clears the next frame.
+static HRESULT STDMETHODCALLTYPE DetourEndScene(IDirect3DDevice9* device) {
+    g_overlayDrawnInEndScene = false;  // Reset for this frame
+    SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+    static int endSceneLogCount = 0;
+    if (endSceneLogCount < 8) {
+        HookLogImportant("DX9: DetourEndScene #%d recurse=%d showOverlay=%d", endSceneLogCount, g_PresentRecurse,
+                         (shm && shm->overlayConfig.showOverlay) ? 1 : 0);
+        endSceneLogCount++;
+    }
+    if (shm && shm->overlayConfig.showOverlay && g_PresentRecurse == 0) {
+        DrawDX9Overlay(device);
+        g_overlayDrawnInEndScene = true;
+    }
+    return oEndScene(device);
+}
+
 static HRESULT STDMETHODCALLTYPE DetourSetSamplerState(IDirect3DDevice9* device, DWORD Sampler,
                                                        D3DSAMPLERSTATETYPE Type, DWORD Value) {
+    if (g_InOverlayRender) {
+        return oSetSamplerState(device, Sampler, Type, Value);
+    }
+
     const DWORD originalValue = Value;
     bool shouldOverride = true;
     const char* skipReason = "not-evaluated";
@@ -2450,6 +2512,9 @@ static HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9* device, CONST R
     static int entryLogCount = 0;
     if (entryLogCount < 5) {
         EarlyLog("DX9: DetourPresent called (device=%p, count=%d)", device, entryLogCount);
+        if (entryLogCount == 0) {
+            HookLogImportant("DX9: DetourPresent first call (device=%p)", device);
+        }
         entryLogCount++;
     }
 
@@ -2773,10 +2838,12 @@ static void InstallDeviceHooks(IDirect3DDevice9* device) {
             if (presentStatus == VTableHook::Success) {
                 LogDirect("Present hook SUCCESS on vtable %p, vtable[17]=%p", vtable, (void*)vtable[17]);
                 EarlyLog("DX9: Present hook installed (VTable fallback) at vtable[17]=%p", vtable[17]);
+                HookLogImportant("DX9: Present hook installed (vtable=%p, vtable[17]=%p)", vtable, (void*)vtable[17]);
                 s_hookedVtables.insert(vtable);
             } else {
                 LogDirect("Present hook FAILED on vtable %p, status=%d", vtable, (int)presentStatus);
                 EarlyLog("DX9: Present hook FAILED (status=%d, vtable[17]=%p)", (int)presentStatus, vtable[17]);
+                HookLogImportant("DX9: Present hook FAILED (status=%d, vtable=%p)", (int)presentStatus, vtable);
             }
         } else {
             LogDirect("Vtable %p already hooked, skipping Present", vtable);
@@ -2792,6 +2859,17 @@ static void InstallDeviceHooks(IDirect3DDevice9* device) {
             EarlyLog("DX9: Reset hook installed at vtable[16]=%p", vtable[16]);
         } else {
             EarlyLog("DX9: Reset hook FAILED (status=%d, vtable[16]=%p)", (int)resetStatus, vtable[16]);
+        }
+    }
+
+    // 1.6 Hook EndScene (42) - draw overlay INSIDE the D3D12 command batch (D3D9On12 fix)
+    if (!oEndScene) {
+        VTableHook::Status esStatus = VTableHook::Create(&vtable[42], (void*)&DetourEndScene, (void**)&oEndScene);
+        if (esStatus == VTableHook::Success) {
+            EarlyLog("DX9: EndScene hook installed at vtable[42]=%p", vtable[42]);
+            HookLogImportant("DX9: EndScene hook installed (vtable[42]=%p)", vtable[42]);
+        } else {
+            HookLogImportant("DX9: EndScene hook FAILED (status=%d, vtable[42]=%p)", (int)esStatus, vtable[42]);
         }
     }
 
