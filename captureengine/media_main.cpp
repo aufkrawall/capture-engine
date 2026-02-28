@@ -832,7 +832,7 @@ int MediaProcessMain(const AppConfig& config) {
             if (MediaEngine_CreateSharedCaptureTextures(width, height, format, g_pSharedMem)) {
                 LogInfo("[Media] Shared capture textures created successfully");
             } else {
-                LogWarning("[Media] Failed to create shared capture textures early - will retry on first frame");
+                LogWarn("[Media] Failed to create shared capture textures early - will retry on first frame");
             }
         }
 
