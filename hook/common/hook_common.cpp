@@ -646,6 +646,13 @@ VSyncOverride GetVSyncOverride() {
 // Process VSync override on Present parameters
 void ProcessVSyncOverride(UINT& SyncInterval, UINT& Flags) {
     VSyncOverride override = GetVSyncOverride();
+
+    // DXGI spec: ALLOW_TEARING is only valid with SyncInterval == 0.
+    // Sanitize invalid combinations even when no explicit override is active.
+    if (SyncInterval > 0) {
+        Flags &= ~0x200;  // Clear DXGI_PRESENT_ALLOW_TEARING
+    }
+
     if (!override.shouldOverride)
         return;
 

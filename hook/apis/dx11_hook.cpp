@@ -1942,6 +1942,15 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
 
     EarlyLog("DX11: [frame %d] pre-render device=%p context=%p rtv=%p", frameCount, device, context, overlayRTV);
 
+    // Preserve game OM/viewport state around overlay target binding.
+    ID3D11RenderTargetView* previousRTV = nullptr;
+    ID3D11DepthStencilView* previousDSV = nullptr;
+    context->OMGetRenderTargets(1, &previousRTV, &previousDSV);
+
+    D3D11_VIEWPORT previousViewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE] = {};
+    UINT previousViewportCount = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+    context->RSGetViewports(&previousViewportCount, previousViewports);
+
     context->OMSetRenderTargets(1, &overlayRTV, NULL);
 
     // Explicitly set viewport
@@ -1958,6 +1967,18 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
 
     // Render Custom Overlay
     g_OverlayAdapter.RenderOverlay(desc.BufferDesc.Width, desc.BufferDesc.Height);
+
+    if (previousViewportCount > 0) {
+        context->RSSetViewports(previousViewportCount, previousViewports);
+    }
+    context->OMSetRenderTargets(1, &previousRTV, previousDSV);
+
+    if (previousRTV) {
+        previousRTV->Release();
+    }
+    if (previousDSV) {
+        previousDSV->Release();
+    }
 
     if (usingBoundRTV && overlayRTV) {
         overlayRTV->Release();

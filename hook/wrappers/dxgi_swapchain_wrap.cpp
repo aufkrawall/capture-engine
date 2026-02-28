@@ -806,11 +806,16 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers(UINT BufferCount, UI
 
     bool expected = false;
     if (!s_ResizeInProgress.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-        WrapperLog("ResizeBuffers: already in progress, skipping");
+        WrapperLog("ResizeBuffers: already in progress, forwarding to real swapchain");
+        HRESULT concurrentHr = S_OK;
+        {
+            ScopedResizeGuard guard;
+            concurrentHr = m_pReal->ResizeBuffers(BufferCount, Width, Height, NewFormat, SwapChainFlags);
+        }
         if (s_resizeDepth.fetch_sub(1) == 1) {
             s_resizeThreadId.store(0);
         }
-        return S_OK;
+        return concurrentHr;
     }
 
     // Apply backbuffer count override from config
@@ -848,7 +853,13 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers(UINT BufferCount, UI
     CleanupOverlayResources();
     WrapperLog("ResizeBuffers: CleanupOverlayResources returned");
 
-    WrapperLog("ResizeBuffers: calling real ResizeBuffers...");
+    // CRITICAL FIX: Release DX11 backbuffer RTV before ResizeBuffers.
+    // CleanupOverlayResources() only sets a flag; the actual RTV holding a COM
+    // reference to the backbuffer must be released or DXGI returns
+    // DXGI_ERROR_INVALID_CALL (e.g. Trine 4 vsync toggle).
+    if (!m_IsD3D12)
+        DXGIShared::HandleDX11ResizeBegin();
+
     HRESULT hr = S_OK;
     {
         ScopedResizeGuard guard;
@@ -1117,14 +1128,23 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers1(UINT BufferCount, U
 
     bool expected = false;
     if (!s_ResizeInProgress.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        HRESULT concurrentHr = S_OK;
+        {
+            ScopedResizeGuard guard;
+            concurrentHr = m_pReal3->ResizeBuffers1(BufferCount, Width, Height, Format, SwapChainFlags,
+                                                    pCreationNodeMask, ppPresentQueue);
+        }
         if (s_resize1Depth.fetch_sub(1) == 1) {
             s_resize1ThreadId.store(0);
         }
-        return S_OK;
+        return concurrentHr;
     }
 
     DX12_OnSwapchainResizeBegin();
     CleanupOverlayResources();
+    // CRITICAL FIX: Release DX11 backbuffer RTV before ResizeBuffers (same as above).
+    if (!m_IsD3D12)
+        DXGIShared::HandleDX11ResizeBegin();
 
     HRESULT hr = S_OK;
     {
