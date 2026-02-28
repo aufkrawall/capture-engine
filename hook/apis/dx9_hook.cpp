@@ -8,6 +8,7 @@
 #include <atomic>
 #include <bit>
 #include <cmath>
+#include <cstring>
 #include <cstdint>
 #include <cstdio>
 #include <mutex>
@@ -102,14 +103,43 @@ static std::atomic<int> g_AnisoDiagLogCount{0};
 
 // Vulkan coordination: if Vulkan layer is actively presenting, skip DX9
 // present-time processing to avoid duplicate overlay/limiter effects in DXVK.
+static bool IsDXVKD3D9WrapperLoaded() {
+    HMODULE d3d9 = GetModuleHandleA("d3d9.dll");
+    if (!d3d9)
+        return false;
+
+    char d3d9Path[MAX_PATH] = {};
+    DWORD d3d9Len = GetModuleFileNameA(d3d9, d3d9Path, MAX_PATH);
+    if (d3d9Len == 0 || d3d9Len >= MAX_PATH)
+        return false;
+
+    char systemDir[MAX_PATH] = {};
+    UINT systemLen = GetSystemDirectoryA(systemDir, MAX_PATH);
+    if (systemLen == 0 || systemLen >= MAX_PATH)
+        return false;
+
+    if (_strnicmp(d3d9Path, systemDir, systemLen) == 0 &&
+        (d3d9Path[systemLen] == '\\' || d3d9Path[systemLen] == '/')) {
+        return false;
+    }
+    return true;
+}
+
 static bool ShouldSkipDX9PresentForVulkan() {
     SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
-    if (!shm || !shm->runtimeState.vulkanLayerActive.load(std::memory_order_acquire)) {
+    if (!shm || !shm->runtimeState.vulkanLayerActive.load(std::memory_order_acquire))
+        return false;
+
+    if (IsDXVKD3D9WrapperLoaded()) {
+        static int dxvkPreferLogCount = 0;
+        if (dxvkPreferLogCount < 6) {
+            HookLogImportant("DX9: DXVK d3d9 wrapper detected; keeping DX9 present path active");
+            dxvkPreferLogCount++;
+        }
         return false;
     }
 
-    uint64_t lastVulkanPresentTick = shm->runtimeState.vulkanPresentTick.load(std::memory_order_acquire);
-    return lastVulkanPresentTick != 0 && (GetTickCount64() - lastVulkanPresentTick < 200);
+    return true;
 }
 
 static float D3D9BitsToFloat(DWORD value) {
@@ -2327,6 +2357,15 @@ void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer) {
 // that is discarded when the game clears the next frame.
 static HRESULT STDMETHODCALLTYPE DetourEndScene(IDirect3DDevice9* device) {
     g_overlayDrawnInEndScene = false;  // Reset for this frame
+    if (ShouldSkipDX9PresentForVulkan()) {
+        static int endSceneSkipLogCount = 0;
+        if (endSceneSkipLogCount < 6) {
+            HookLogImportant("DX9: EndScene overlay skipped (Vulkan layer active)");
+            endSceneSkipLogCount++;
+        }
+        return oEndScene(device);
+    }
+
     SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
     static int endSceneLogCount = 0;
     if (endSceneLogCount < 8) {

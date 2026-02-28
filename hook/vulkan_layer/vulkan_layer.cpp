@@ -39,6 +39,28 @@ struct FrameLimitState {
 static std::mutex g_FrameLimitMutex;
 static std::unordered_map<VkQueue, FrameLimitState> g_FrameLimitStates;
 
+static bool IsDXVKD3D9WrapperLoaded() {
+    HMODULE d3d9 = GetModuleHandleA("d3d9.dll");
+    if (!d3d9)
+        return false;
+
+    char d3d9Path[MAX_PATH] = {};
+    DWORD d3d9Len = GetModuleFileNameA(d3d9, d3d9Path, MAX_PATH);
+    if (d3d9Len == 0 || d3d9Len >= MAX_PATH)
+        return false;
+
+    char systemDir[MAX_PATH] = {};
+    UINT systemLen = GetSystemDirectoryA(systemDir, MAX_PATH);
+    if (systemLen == 0 || systemLen >= MAX_PATH)
+        return false;
+
+    if (_strnicmp(d3d9Path, systemDir, systemLen) == 0 &&
+        (d3d9Path[systemLen] == '\\' || d3d9Path[systemLen] == '/')) {
+        return false;
+    }
+    return true;
+}
+
 static void ApplyPrerenderLimitVulkan(VkDevice device, VkQueue queue, float limit) {
     // CPU prerender limit for Vulkan
     //
@@ -150,18 +172,10 @@ void VulkanLayerState::UnregisterDevice(VkDevice device) {
 }
 
 DeviceDispatch* VulkanLayerState::GetDeviceDispatch(VkDevice device) {
-    static thread_local VkDevice tls_LastDevice = VK_NULL_HANDLE;
-    static thread_local DeviceDispatch* tls_LastDispatch = nullptr;
-    if (device == tls_LastDevice && tls_LastDispatch)
-        return tls_LastDispatch;
-
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     auto it = m_Devices.find(device);
-    if (it != m_Devices.end()) {
-        tls_LastDevice = device;
-        tls_LastDispatch = it->second;
-        return tls_LastDispatch;
-    }
+    if (it != m_Devices.end())
+        return it->second;
     return nullptr;
 }
 
@@ -172,20 +186,12 @@ void VulkanLayerState::RegisterQueue(VkQueue queue, VkDevice device, uint32_t fa
 }
 
 DeviceDispatch* VulkanLayerState::GetDeviceFromQueue(VkQueue queue) {
-    static thread_local VkQueue tls_LastQueue = VK_NULL_HANDLE;
-    static thread_local DeviceDispatch* tls_LastDispatch = nullptr;
-    if (queue == tls_LastQueue && tls_LastDispatch)
-        return tls_LastDispatch;
-
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     auto it = m_Queues.find(queue);
     if (it != m_Queues.end()) {
         auto itDev = m_Devices.find(it->second);
-        if (itDev != m_Devices.end()) {
-            tls_LastQueue = queue;
-            tls_LastDispatch = itDev->second;
-            return tls_LastDispatch;
-        }
+        if (itDev != m_Devices.end())
+            return itDev->second;
     }
     return nullptr;
 }
@@ -870,11 +876,19 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
         HWND window = VulkanLayerState::Get().GetSurfaceWindow(pCreateInfo->surface);
         LayerLog("Vulkan Layer: Initializing overlay for swapchain %p, images=%d", *pSwapchain, count);
         const bool isTinySwapchain = (sd->extent.width < 320 || sd->extent.height < 180);
+        const bool preferDX9Path = IsDXVKD3D9WrapperLoaded();
         if (isTinySwapchain) {
             LayerLog(
                 "Vulkan Layer: [Info] Skipping overlay/capture init for tiny "
                 "swapchain %ux%u",
                 sd->extent.width, sd->extent.height);
+        } else if (preferDX9Path) {
+            static int dxvkInitSkipLogCount = 0;
+            if (dxvkInitSkipLogCount < 6) {
+                LayerLog("Vulkan Layer: DXVK d3d9 wrapper detected, skipping Vulkan overlay/capture init (%ux%u)",
+                         sd->extent.width, sd->extent.height);
+                dxvkInitSkipLogCount++;
+            }
         } else {
             InitializeOverlay(device, *pSwapchain, sd->format, sd->extent, count, sd->images.data(), window);
             LayerLog(
@@ -948,8 +962,16 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     VkSemaphore currentWait =
         (pPresentInfo && pPresentInfo->waitSemaphoreCount > 0) ? pPresentInfo->pWaitSemaphores[0] : VK_NULL_HANDLE;
     bool modified = false;
+    const bool preferDX9Path = IsDXVKD3D9WrapperLoaded();
+    if (preferDX9Path) {
+        static int dxvkPresentSkipLogCount = 0;
+        if (dxvkPresentSkipLogCount < 6) {
+            LayerLog("Vulkan Layer: DXVK d3d9 wrapper detected, skipping Vulkan present-time overlay/capture");
+            dxvkPresentSkipLogCount++;
+        }
+    }
 
-    if (g_LayerState.whitelisted && pPresentInfo && pPresentInfo->swapchainCount > 0) {
+    if (!preferDX9Path && g_LayerState.whitelisted && pPresentInfo && pPresentInfo->swapchainCount > 0) {
         SwapchainData* sd = VulkanLayerState::Get().GetSwapchainData(pPresentInfo->pSwapchains[0]);
         if (sd) {
             uint32_t idx = pPresentInfo->pImageIndices[0];

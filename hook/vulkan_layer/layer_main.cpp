@@ -64,6 +64,17 @@ static void EarlyLog(const char* fmt, ...) {
     va_end(args);
 }
 
+static bool IsExecutableFunctionPointer(const void* ptr) {
+    if (!ptr)
+        return false;
+    MEMORY_BASIC_INFORMATION mbi = {};
+    if (VirtualQuery(ptr, &mbi, sizeof(mbi)) == 0)
+        return false;
+    if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+        return false;
+    return (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+}
+
 BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         EarlyLog("DLL_PROCESS_ATTACH - Layer DLL loaded");
@@ -391,7 +402,13 @@ extern "C" __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetD
 
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (disp && disp->fp_vkGetDeviceProcAddr) {
-        return disp->fp_vkGetDeviceProcAddr(device, pName);
+        PFN_vkGetDeviceProcAddr nextGetDeviceProcAddr = disp->fp_vkGetDeviceProcAddr;
+        if (!IsExecutableFunctionPointer((const void*)nextGetDeviceProcAddr)) {
+            LayerLog("Vulkan Layer: [Warn] Invalid next vkGetDeviceProcAddr=%p for device=%p name=%s",
+                     (void*)nextGetDeviceProcAddr, (void*)device, pName ? pName : "(null)");
+            return nullptr;
+        }
+        return nextGetDeviceProcAddr(device, pName);
     }
 
     return nullptr;
