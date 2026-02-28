@@ -1049,6 +1049,13 @@ public:
     ID3D11DeviceContext* ownedContext = nullptr;
     bool isDX10Mode = false;
 
+    // For DXVK games: the game's D3D11 is DXVK's (Vulkan-backed). Shared handles
+    // from DXVK are Vulkan-internal IDs the real encoder D3D11 can't open.
+    // Fix: create ring buffer textures in a real system D3D11 device (ownedDevice),
+    // then import each into DXVK's device for CopyResource.
+    bool isDXVKMode = false;
+    ID3D11Texture2D* dxvkImportedTextures[CAPTURE_TEXTURE_COUNT]{};  // DXVK-side imports
+
     // DX11.3 Fence Support
     ID3D11Fence* fence = nullptr;
     ID3D11DeviceContext4* context4 = nullptr;  // Needed for Signal
@@ -1072,6 +1079,9 @@ public:
 
             g_DeferredRelease.Queue(copyQueries[i]);
             copyQueries[i] = nullptr;
+
+            g_DeferredRelease.Queue(dxvkImportedTextures[i]);
+            dxvkImportedTextures[i] = nullptr;
         }
 
         g_DeferredRelease.Queue(fence);
@@ -1097,6 +1107,7 @@ public:
         useFences = false;
         useKeyedMutex = false;
         isDX10Mode = false;
+        isDXVKMode = false;
         fenceValue = 0;  // Reset fence value for next session
     }
 
@@ -1110,11 +1121,22 @@ public:
         D3D_FEATURE_LEVEL featureLevels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0};
         D3D_FEATURE_LEVEL featureLevel;
 
-        HMODULE hD3D11 = LoadLibraryA("d3d11.dll");
-        if (!hD3D11) {
-            HookLog("DX10: D3D11 DLL not found");
+        // Load system D3D11 by full path to avoid DXVK's d3d11.dll in DXVK processes
+        char systemDir[MAX_PATH] = {};
+        if (GetSystemDirectoryA(systemDir, MAX_PATH) == 0) {
+            HookLog("DX10: GetSystemDirectory failed");
             return false;
         }
+        std::string dxgiPath = std::string(systemDir) + "\\dxgi.dll";
+        std::string d3d11Path = std::string(systemDir) + "\\d3d11.dll";
+        HMODULE hDXGI = LoadLibraryA(dxgiPath.c_str());
+        HMODULE hD3D11 = LoadLibraryA(d3d11Path.c_str());
+        if (!hD3D11) {
+            HookLog("DX10: System D3D11 DLL not found");
+            return false;
+        }
+        if (hDXGI)
+            RedirectModuleImports(hD3D11, "dxgi.dll", hDXGI);
 
         typedef HRESULT(WINAPI * PFN_D3D11_CREATE_DEVICE)(IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT,
                                                           const D3D_FEATURE_LEVEL*, UINT, UINT, ID3D11Device**,
@@ -1181,7 +1203,99 @@ public:
         return true;
     }
 
-    // Specialized Init that takes the device (DX11 path)
+    // Detect if the loaded d3d11.dll is DXVK's (not the system one).
+    // DXVK games place their d3d11.dll in the game directory, shadowing System32.
+    static bool IsCurrentD3D11DXVK() {
+        HMODULE hD3D11 = GetModuleHandleA("d3d11.dll");
+        if (!hD3D11)
+            return false;
+        char path[MAX_PATH] = {};
+        if (!GetModuleFileNameA(hD3D11, path, MAX_PATH))
+            return false;
+        char sysDir[MAX_PATH] = {};
+        if (!GetSystemDirectoryA(sysDir, MAX_PATH))
+            return false;
+        uint32_t sysLen = (uint32_t)strlen(sysDir);
+        return !(_strnicmp(path, sysDir, sysLen) == 0 && path[sysLen] == '\\');
+    }
+
+    // Create a real system D3D11 device on the GPU identified by a LUID.
+    // Used for DXVK games so ring buffer textures carry valid Windows NT handles.
+    bool CreateSystemD3D11DeviceForLUID(int32_t luidLowPart, int32_t luidHighPart) {
+        char systemDir[MAX_PATH] = {};
+        if (GetSystemDirectoryA(systemDir, MAX_PATH) == 0)
+            return false;
+        std::string dxgiPath = std::string(systemDir) + "\\dxgi.dll";
+        std::string d3d11Path = std::string(systemDir) + "\\d3d11.dll";
+
+        HMODULE hDXGI = LoadLibraryA(dxgiPath.c_str());
+        if (!hDXGI) {
+            EarlyLog("DX11-DXVK: System DXGI not found");
+            return false;
+        }
+        typedef HRESULT(WINAPI* PFN_CREATE_DXGI_FACTORY1)(REFIID, void**);
+        PFN_CREATE_DXGI_FACTORY1 pCreateDXGIFactory1 =
+            (PFN_CREATE_DXGI_FACTORY1)GetProcAddress(hDXGI, "CreateDXGIFactory1");
+        if (!pCreateDXGIFactory1)
+            return false;
+
+        IDXGIFactory1* factory = nullptr;
+        if (FAILED(pCreateDXGIFactory1(IID_PPV_ARGS(&factory))))
+            return false;
+
+        // Find the real adapter by LUID
+        IDXGIAdapter1* adapter = nullptr;
+        IDXGIAdapter1* matchedAdapter = nullptr;
+        for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; i++) {
+            DXGI_ADAPTER_DESC1 desc;
+            adapter->GetDesc1(&desc);
+            if (desc.AdapterLuid.LowPart == (DWORD)luidLowPart &&
+                desc.AdapterLuid.HighPart == luidHighPart) {
+                matchedAdapter = adapter;
+                break;
+            }
+            adapter->Release();
+        }
+        factory->Release();
+
+        if (!matchedAdapter) {
+            EarlyLog("DX11-DXVK: No system DXGI adapter found for LUID");
+            return false;
+        }
+
+        HMODULE hD3D11 = LoadLibraryA(d3d11Path.c_str());
+        if (!hD3D11) {
+            matchedAdapter->Release();
+            EarlyLog("DX11-DXVK: System D3D11 not found");
+            return false;
+        }
+        // Redirect system d3d11.dll's dxgi.dll IAT to system dxgi.dll
+        RedirectModuleImports(hD3D11, "dxgi.dll", hDXGI);
+
+        typedef HRESULT(WINAPI* PFN_D3D11_CREATE_DEVICE)(IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT,
+                                                          const D3D_FEATURE_LEVEL*, UINT, UINT, ID3D11Device**,
+                                                          D3D_FEATURE_LEVEL*, ID3D11DeviceContext**);
+        PFN_D3D11_CREATE_DEVICE pD3D11CreateDevice =
+            (PFN_D3D11_CREATE_DEVICE)GetProcAddress(hD3D11, "D3D11CreateDevice");
+        if (!pD3D11CreateDevice) {
+            matchedAdapter->Release();
+            return false;
+        }
+
+        D3D_FEATURE_LEVEL featureLevels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1};
+        D3D_FEATURE_LEVEL featureLevel;
+        HRESULT hr = pD3D11CreateDevice(matchedAdapter, D3D_DRIVER_TYPE_UNKNOWN, NULL, 0, featureLevels, 2,
+                                        D3D11_SDK_VERSION, &ownedDevice, &featureLevel, &ownedContext);
+        matchedAdapter->Release();
+        if (FAILED(hr)) {
+            EarlyLog("DX11-DXVK: Failed to create system D3D11 device (hr=0x%08x)", hr);
+            return false;
+        }
+        EarlyLog("DX11-DXVK: System D3D11 device created for cross-device capture (fl=%d)", featureLevel);
+        return true;
+    }
+
+
     void Init(ID3D11Device* device, IDXGISwapChain* swapChain) {
         if (initialized)
             return;
@@ -1221,6 +1335,21 @@ public:
             }
             cachedDevice = device;
             device->GetImmediateContext(&cachedContext);
+
+            // Detect DXVK: if d3d11.dll is not from System32, this is DXVK.
+            // DXVK's GetSharedHandle returns Vulkan-internal IDs, not valid Windows
+            // NT handles. Fix: create a real system D3D11 device on the same GPU
+            // for ring buffer textures, then import them into DXVK for CopyResource.
+            if (IsCurrentD3D11DXVK() && !isDXVKMode) {
+                EarlyLog("DX11: DXVK d3d11 detected - creating system D3D11 for ring buffer");
+                if (CreateSystemD3D11DeviceForLUID(luidLow, luidHigh)) {
+                    isDXVKMode = true;
+                    captureDevice = ownedDevice;  // Ring buffer textures come from real D3D11
+                    // cachedDevice/cachedContext remain as DXVK's for CopyResource
+                } else {
+                    EarlyLog("DX11: DXVK detected but system D3D11 creation failed, capture may produce bad handles");
+                }
+            }
         }
 
         D3D11_TEXTURE2D_DESC texDesc = {};
@@ -1240,8 +1369,10 @@ public:
         useKeyedMutex = false;  // Disabled - using Fence instead
 
         // Try to create D3D11 Fence for async GPU synchronization (DX11.3+)
+        // Skip for DXVK: fence lives in system D3D11 device but copy happens via
+        // DXVK context - fence can't be signaled cross-device from DXVK.
         ID3D11Device5* device5 = nullptr;
-        if (SUCCEEDED(captureDevice->QueryInterface(IID_PPV_ARGS(&device5)))) {
+        if (!isDXVKMode && SUCCEEDED(captureDevice->QueryInterface(IID_PPV_ARGS(&device5)))) {
             HRESULT hr = device5->CreateFence(0, D3D11_FENCE_FLAG_SHARED, IID_PPV_ARGS(&fence));
             if (SUCCEEDED(hr)) {
                 // Get shared fence handle for cross-process
@@ -1331,18 +1462,51 @@ public:
         }
 
         if (success) {
+            // For DXVK mode: open each system D3D11 texture in DXVK's device.
+            // The copy at capture time will use DXVK's context to copy the game
+            // backbuffer into the DXVK-imported texture. The encoder opens the
+            // original system D3D11 NT handles normally.
+            if (isDXVKMode) {
+                ID3D11Device1* dxvkDevice1 = nullptr;
+                if (SUCCEEDED(cachedDevice->QueryInterface(IID_PPV_ARGS(&dxvkDevice1)))) {
+                    for (int i = 0; i < CAPTURE_TEXTURE_COUNT && success; i++) {
+                        HANDLE ntHandle = sharedTextureHandles[i].load();
+                        if (!ntHandle) {
+                            EarlyLog("DX11-DXVK: NT handle %d is NULL, cannot import", i);
+                            success = false;
+                            break;
+                        }
+                        HRESULT hr = dxvkDevice1->OpenSharedResource1(ntHandle, IID_PPV_ARGS(&dxvkImportedTextures[i]));
+                        if (FAILED(hr)) {
+                            EarlyLog("DX11-DXVK: Failed to open texture %d in DXVK device (hr=0x%08x)", i, hr);
+                            success = false;
+                        }
+                    }
+                    dxvkDevice1->Release();
+                } else {
+                    EarlyLog("DX11-DXVK: DXVK device doesn't support ID3D11Device1 - disabling DXVK mode");
+                    success = false;
+                }
+            }
+        }
+
+        if (success) {
             // Create GPU synchronization queries for each texture
             // These queries are used to ensure CopyResource completes before reusing
-            // the texture
-            D3D11_QUERY_DESC queryDesc = {};
-            queryDesc.Query = D3D11_QUERY_EVENT;
-            queryDesc.MiscFlags = 0;
+            // the texture. Skip for DXVK: queries live in system D3D11 but context
+            // is DXVK's - they can't be used cross-device.
+            if (!isDXVKMode) {
+                D3D11_QUERY_DESC queryDesc = {};
+                queryDesc.Query = D3D11_QUERY_EVENT;
+                queryDesc.MiscFlags = 0;
 
-            for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
-                HRESULT queryHr = captureDevice->CreateQuery(&queryDesc, &copyQueries[i]);
-                if (FAILED(queryHr)) {
-                    HookLog("%s: Failed to create copy query %d (hr=0x%08x)", isDX10Mode ? "DX10" : "DX11", i, queryHr);
-                    copyQueries[i] = nullptr;
+                for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
+                    HRESULT queryHr = captureDevice->CreateQuery(&queryDesc, &copyQueries[i]);
+                    if (FAILED(queryHr)) {
+                        HookLog("%s: Failed to create copy query %d (hr=0x%08x)", isDX10Mode ? "DX10" : "DX11", i,
+                                queryHr);
+                        copyQueries[i] = nullptr;
+                    }
                 }
             }
 
@@ -1350,8 +1514,9 @@ public:
                 PublishToSharedMemory(g_IPC);
             }
             initialized = true;
-            HookLogImportant("%s Capture Initialized: %dx%d (Fence: %s, Queries: %s)", isDX10Mode ? "DX10" : "DX11",
-                             width, height, useFences ? "ON" : "OFF", (copyQueries[0] != nullptr) ? "ON" : "OFF");
+            HookLogImportant("%s Capture Initialized: %dx%d (Fence: %s, Queries: %s, DXVK: %s)",
+                             isDX10Mode ? "DX10" : "DX11", width, height, useFences ? "ON" : "OFF",
+                             (copyQueries[0] != nullptr) ? "ON" : "OFF", isDXVKMode ? "ON" : "OFF");
         } else {
             EarlyLog("%s Capture Init FAILED (success=false)", isDX10Mode ? "DX10" : "DX11");
         }
@@ -1477,7 +1642,12 @@ public:
         }
 
         // Perform GPU copy: backbuffer -> shared texture
-        context->CopyResource(sharedTextures[writeIdx], backbuffer);
+        // For DXVK: copy into the DXVK-imported texture (system D3D11-owned,
+        // imported into DXVK's device). The encoder opens the system D3D11 NT handle.
+        ID3D11Texture2D* copyTarget = (isDXVKMode && dxvkImportedTextures[writeIdx])
+                                          ? dxvkImportedTextures[writeIdx]
+                                          : sharedTextures[writeIdx];
+        context->CopyResource(copyTarget, backbuffer);
         backbuffer->Release();
 
         // Issue query for GPU completion tracking

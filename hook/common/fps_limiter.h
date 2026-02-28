@@ -129,6 +129,24 @@ public:
         if (!shm)
             return;
 
+        // Dedup guard: DXVK calls Present and PresentEx sequentially on the same
+        // thread for each visual frame. Each call enters DX9_PresentBegin with
+        // g_PresentRecurse == 1 (they are sequential, not nested), so both fire
+        // Apply(). The second call occurs within ~1ms of the first Apply() returning,
+        // while the next legitimate frame's Apply() arrives at least 2ms later
+        // (after Vulkan QueuePresent + game render loop). Skip if called within 2ms
+        // of the previous Apply() returning.
+        if (qpcFrequency == 0) {
+            LARGE_INTEGER freq;
+            QueryPerformanceFrequency(&freq);
+            qpcFrequency = freq.QuadPart;
+        }
+        LARGE_INTEGER nowQpc;
+        QueryPerformanceCounter(&nowQpc);
+        const int64_t kDedupTicks = qpcFrequency / 500;  // 2ms
+        if (lastApplyReturnQpc != 0 && (nowQpc.QuadPart - lastApplyReturnQpc) < kDedupTicks)
+            return;
+
         bool isRecording = shm->runtimeState.isRecording;
 
         // Publish session ID once — use QPC ticks for better entropy
@@ -273,6 +291,10 @@ public:
                     HookLog("FPS Limiter: targetTimeTicks is %lld (not waiting)", target);
                 }
             }
+            // Record time Apply() returned so sequential duplicate presents
+            // (e.g. DXVK Present+PresentEx) are deduped on the next call.
+            QueryPerformanceCounter(&nowQpc);
+            lastApplyReturnQpc = nowQpc.QuadPart;
         } else {
             // Fallback: spin wait on release count (no event available)
             DWORD start = GetTickCount();
@@ -312,6 +334,7 @@ public:
         // CRITICAL FIX: Reset per-instance log counters on shutdown
         timeoutLogCount_ = 0;
         targetLogCount_ = 0;
+        lastApplyReturnQpc = 0;
     }
 
 private:
@@ -331,6 +354,7 @@ private:
     // CRITICAL FIX: Per-instance log counters (was static, never reset)
     int timeoutLogCount_ = 0;
     int targetLogCount_ = 0;
+    int64_t lastApplyReturnQpc = 0;  // QPC tick when Apply() last returned from wait (dedup guard)
 };
 
 // Global FPS limiter instance

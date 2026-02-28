@@ -71,3 +71,48 @@ struct VSyncOverride {
 };
 VSyncOverride GetVSyncOverride();
 void ProcessVSyncOverride(UINT& SyncInterval, UINT& Flags);
+
+// Redirect all IAT entries for `fromDllBaseName` inside `hTarget` to the
+// corresponding exports of `hSystemReplacement`. Used to ensure that a
+// freshly-loaded system d3d11.dll uses the system dxgi.dll even when DXVK's
+// dxgi.dll was already loaded under the bare name "dxgi.dll" and would
+// otherwise be picked up by the Windows import-resolution mechanism.
+inline void RedirectModuleImports(HMODULE hTarget, const char* fromDllBaseName, HMODULE hSystemReplacement) {
+    auto* pDOS = (PIMAGE_DOS_HEADER)hTarget;
+    if (pDOS->e_magic != IMAGE_DOS_SIGNATURE)
+        return;
+    auto* pNT = (PIMAGE_NT_HEADERS)((uint8_t*)hTarget + pDOS->e_lfanew);
+    auto& importDir = pNT->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    if (!importDir.VirtualAddress)
+        return;
+
+    auto* desc = (PIMAGE_IMPORT_DESCRIPTOR)((uint8_t*)hTarget + importDir.VirtualAddress);
+    for (; desc->Name; ++desc) {
+        const char* name = (const char*)((uint8_t*)hTarget + desc->Name);
+        if (_stricmp(name, fromDllBaseName) != 0)
+            continue;
+
+        auto* thunk = (PIMAGE_THUNK_DATA)((uint8_t*)hTarget + desc->FirstThunk);
+        auto* orig = desc->OriginalFirstThunk
+                         ? (PIMAGE_THUNK_DATA)((uint8_t*)hTarget + desc->OriginalFirstThunk)
+                         : thunk;
+
+        for (; thunk->u1.Function; ++thunk, ++orig) {
+            FARPROC replacement = nullptr;
+            if (orig->u1.Ordinal & IMAGE_ORDINAL_FLAG) {
+                replacement = GetProcAddress(hSystemReplacement, (LPCSTR)(orig->u1.Ordinal & 0xFFFF));
+            } else {
+                auto* info = (PIMAGE_IMPORT_BY_NAME)((uint8_t*)hTarget + orig->u1.AddressOfData);
+                replacement = GetProcAddress(hSystemReplacement, (LPCSTR)info->Name);
+            }
+            if (replacement && (FARPROC)thunk->u1.Function != replacement) {
+                DWORD oldProt;
+                VirtualProtect(&thunk->u1.Function, sizeof(void*), PAGE_READWRITE, &oldProt);
+                thunk->u1.Function = (ULONG_PTR)replacement;
+                VirtualProtect(&thunk->u1.Function, sizeof(void*), oldProt, &oldProt);
+            }
+        }
+        break;
+    }
+}
+

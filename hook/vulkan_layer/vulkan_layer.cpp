@@ -882,18 +882,20 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
                 "Vulkan Layer: [Info] Skipping overlay/capture init for tiny "
                 "swapchain %ux%u",
                 sd->extent.width, sd->extent.height);
-        } else if (preferDX9Path) {
-            static int dxvkInitSkipLogCount = 0;
-            if (dxvkInitSkipLogCount < 6) {
-                LayerLog("Vulkan Layer: DXVK d3d9 wrapper detected, skipping Vulkan overlay/capture init (%ux%u)",
-                         sd->extent.width, sd->extent.height);
-                dxvkInitSkipLogCount++;
-            }
         } else {
-            InitializeOverlay(device, *pSwapchain, sd->format, sd->extent, count, sd->images.data(), window);
-            LayerLog(
-                "Vulkan Layer: InitializeOverlay returned, registering "
-                "swapchain");
+            if (preferDX9Path) {
+                static int dxvkOverlaySkipLogCount = 0;
+                if (dxvkOverlaySkipLogCount < 6) {
+                    LayerLog("Vulkan Layer: DXVK d3d9 wrapper detected, skipping Vulkan overlay init (%ux%u)",
+                             sd->extent.width, sd->extent.height);
+                    dxvkOverlaySkipLogCount++;
+                }
+            } else {
+                InitializeOverlay(device, *pSwapchain, sd->format, sd->extent, count, sd->images.data(), window);
+                LayerLog(
+                    "Vulkan Layer: InitializeOverlay returned, registering "
+                    "swapchain");
+            }
             InitializeCapture(device, *pSwapchain, sd->format, sd->extent, count);
         }
 
@@ -966,12 +968,12 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     if (preferDX9Path) {
         static int dxvkPresentSkipLogCount = 0;
         if (dxvkPresentSkipLogCount < 6) {
-            LayerLog("Vulkan Layer: DXVK d3d9 wrapper detected, skipping Vulkan present-time overlay/capture");
+            LayerLog("Vulkan Layer: DXVK d3d9 wrapper detected, skipping Vulkan present-time overlay only");
             dxvkPresentSkipLogCount++;
         }
     }
 
-    if (!preferDX9Path && g_LayerState.whitelisted && pPresentInfo && pPresentInfo->swapchainCount > 0) {
+    if (g_LayerState.whitelisted && pPresentInfo && pPresentInfo->swapchainCount > 0) {
         SwapchainData* sd = VulkanLayerState::Get().GetSwapchainData(pPresentInfo->pSwapchains[0]);
         if (sd) {
             uint32_t idx = pPresentInfo->pImageIndices[0];
@@ -980,7 +982,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
             // Game -> Overlay -> Capture -> Present
             VkSemaphore overlayDone = GetOverlaySemaphore(sd->device, idx);
 
-            if (shm && shm->ReadOverlayConfig().showOverlay) {
+            if (!preferDX9Path && shm && shm->ReadOverlayConfig().showOverlay) {
                 // Measure ONLY the actual CPU overhead of overlay work
                 // Fence wait is tracked separately (it's GPU sync, not our overhead)
                 int32_t fenceWaitUs = 0;

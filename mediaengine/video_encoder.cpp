@@ -48,11 +48,24 @@ static HANDLE NormalizeSourceHandleForWow64(HANDLE handle, uint32_t sourcePid) {
         }
     }
 
+    const uint64_t rawHandle = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(handle));
     if (!isWow64Source) {
+        // Some drivers publish KMT handles with bit31 set but without canonical
+        // sign-extension in 64-bit IPC transport.
+        if ((rawHandle >> 32) == 0 && (rawHandle & 0x80000000ull) != 0) {
+            const int64_t signExtended = static_cast<int64_t>(static_cast<int32_t>(static_cast<uint32_t>(rawHandle)));
+            if (signExtended != static_cast<int64_t>(rawHandle)) {
+                static std::atomic<int> s_canonicalizeLogCount{0};
+                if (s_canonicalizeLogCount.fetch_add(1, std::memory_order_relaxed) < 6) {
+                    DLL_Log("[VideoEncoder] Canonicalizing shared handle for PID %u: %p -> %p", sourcePid,
+                            (HANDLE)(uintptr_t)rawHandle, (HANDLE)(uint64_t)signExtended);
+                }
+                return reinterpret_cast<HANDLE>(static_cast<uint64_t>(signExtended));
+            }
+        }
         return handle;
     }
 
-    const uint64_t rawHandle = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(handle));
     const int64_t signExtended = static_cast<int64_t>(static_cast<int32_t>(static_cast<uint32_t>(rawHandle)));
     if (signExtended != static_cast<int64_t>(rawHandle)) {
         static std::atomic<int> s_normalizeLogCount{0};

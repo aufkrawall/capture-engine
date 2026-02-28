@@ -511,6 +511,7 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9PresentInline(IDirect3DDevice9* devic
         return D3D_OK;
     }
 
+    const bool topLevelPresent = (g_PresentRecurse == 0);
     IDirect3DSurface9* backBuffer = nullptr;
     DX9_PresentBegin(device, backBuffer);
 
@@ -524,7 +525,9 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9PresentInline(IDirect3DDevice9* devic
 
     int64_t qpcFreq = GetQpcFreqCached();
     int64_t presentUs = qpcFreq ? ((p1.QuadPart - p0.QuadPart) * 1000000) / qpcFreq : 0;
-    MaybeWaitForVSyncAfterPresent((int)presentUs);
+    if (topLevelPresent) {
+        MaybeWaitForVSyncAfterPresent((int)presentUs);
+    }
 
     return hr;
 }
@@ -555,6 +558,7 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9PresentExInline(IDirect3DDevice9Ex* d
         dwFlags &= ~D3DPRESENT_DONOTWAIT;
     }
 
+    const bool topLevelPresent = (g_PresentRecurse == 0);
     IDirect3DSurface9* backBuffer = nullptr;
     DX9_PresentBegin(device, backBuffer);
 
@@ -568,7 +572,9 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9PresentExInline(IDirect3DDevice9Ex* d
 
     int64_t qpcFreq = GetQpcFreqCached();
     int64_t presentUs = qpcFreq ? ((p1.QuadPart - p0.QuadPart) * 1000000) / qpcFreq : 0;
-    MaybeWaitForVSyncAfterPresent((int)presentUs);
+    if (topLevelPresent) {
+        MaybeWaitForVSyncAfterPresent((int)presentUs);
+    }
 
     return hr;
 }
@@ -603,10 +609,12 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9SwapChainPresentInline(IDirect3DSwapC
     }
 
     IDirect3DDevice9* device = nullptr;
+    bool ownsPresentScope = false;
     IDirect3DSurface9* backBuffer = nullptr;
 
     if (g_PresentRecurse == 0 && SUCCEEDED(swapChain->GetDevice(&device))) {
         DX9_PresentBegin(device, backBuffer);
+        ownsPresentScope = true;
     }
 
     LARGE_INTEGER p0, p1;
@@ -623,7 +631,9 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9SwapChainPresentInline(IDirect3DSwapC
 
     int64_t qpcFreq = GetQpcFreqCached();
     int64_t presentUs = qpcFreq ? ((p1.QuadPart - p0.QuadPart) * 1000000) / qpcFreq : 0;
-    MaybeWaitForVSyncAfterPresent((int)presentUs);
+    if (ownsPresentScope) {
+        MaybeWaitForVSyncAfterPresent((int)presentUs);
+    }
 
     return hr;
 }
@@ -1098,12 +1108,22 @@ public:
     }
 
     bool CreateD3D11Device() {
+        // Load system D3D11/DXGI by full path to avoid using DXVK's versions.
+        // In DXVK processes, d3d11.dll/dxgi.dll are DXVK's implementations whose
+        // GetSharedHandle returns Vulkan-internal IDs that the real system D3D11
+        // encoder cannot open. Using System32 paths ensures real KMT handles.
+        char systemDir[MAX_PATH] = {};
+        if (GetSystemDirectoryA(systemDir, MAX_PATH) == 0) {
+            EarlyLog("DX9: GetSystemDirectory failed");
+            return false;
+        }
+        std::string dxgiPath = std::string(systemDir) + "\\dxgi.dll";
+        std::string d3d11Path = std::string(systemDir) + "\\d3d11.dll";
+
         // Find the adapter matching the D3D9 device
-        HMODULE hDXGI = GetModuleHandleA("dxgi.dll");
-        if (!hDXGI)
-            hDXGI = LoadLibraryA("dxgi.dll");
+        HMODULE hDXGI = LoadLibraryA(dxgiPath.c_str());
         if (!hDXGI) {
-            EarlyLog("DX9: DXGI DLL not found");
+            EarlyLog("DX9: System DXGI DLL not found");
             return false;
         }
 
@@ -1152,15 +1172,18 @@ public:
             return false;
         }
 
-        // Create D3D11 device
-        HMODULE hD3D11 = GetModuleHandleA("d3d11.dll");
-        if (!hD3D11)
-            hD3D11 = LoadLibraryA("d3d11.dll");
+        // Create D3D11 device using system D3D11 (not DXVK's)
+        HMODULE hD3D11 = LoadLibraryA(d3d11Path.c_str());
         if (!hD3D11) {
-            EarlyLog("DX9: D3D11 DLL not found");
+            EarlyLog("DX9: System D3D11 DLL not found");
             adapter->Release();
             return false;
         }
+
+        // Redirect system d3d11.dll's dxgi.dll imports to system dxgi.dll so that
+        // internal DXGI calls from system d3d11.dll resolve to the real driver rather
+        // than DXVK's dxgi (which may be loaded first under the bare name "dxgi.dll").
+        RedirectModuleImports(hD3D11, "dxgi.dll", hDXGI);
 
         typedef HRESULT(WINAPI * PFN_D3D11_CREATE_DEVICE)(IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT,
                                                           const D3D_FEATURE_LEVEL*, UINT, UINT, ID3D11Device**,
@@ -1243,11 +1266,19 @@ public:
         EarlyLog("DX9: Init Step 7: Create DX9 Shared Texture");
         sharedHandle9 = NULL;
 
-        // D3D9Ex device: shared handles work natively via the transparent upgrade
-        // in Wrapped_Direct3DCreate9. Legacy D3D9: try anyway (will likely fail
-        // and fall through to D3D11 staging).
-        hr = device->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, d3d9Format, D3DPOOL_DEFAULT,
-                                   &sharedTexture9, &sharedHandle9);
+        // DXVK's D3D9Ex::CreateTexture returns Vulkan-internal IDs as shared
+        // handles (not valid Win32 handles). Zero-copy via OpenSharedResource
+        // would fail with these IDs. Skip zero-copy for DXVK and fall directly
+        // to the D3D11 staging path (CPU readback + UpdateSubresource), which
+        // uses only system D3D11 textures whose handles are always valid.
+        // For native D3D9Ex (non-DXVK), try zero-copy as before.
+        if (!IsDXVKD3D9WrapperLoaded()) {
+            hr = device->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, d3d9Format, D3DPOOL_DEFAULT,
+                                       &sharedTexture9, &sharedHandle9);
+        } else {
+            EarlyLog("DX9: DXVK d3d9 detected - forcing D3D11 staging path (zero-copy skipped)");
+            hr = E_FAIL;
+        }
 
         if (FAILED(hr) || !sharedTexture9 || !sharedHandle9) {
             EarlyLog(
@@ -1384,7 +1415,11 @@ public:
         texDesc.SampleDesc.Count = 1;
         texDesc.Usage = D3D11_USAGE_DEFAULT;
         texDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-        texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+        // Use NT handles for cross-process sharing. DXVK returns Vulkan-internal IDs
+        // from GetSharedHandle (legacy KMT path) which the encoder cannot open.
+        // IDXGIResource1::CreateSharedHandle always produces a real Win32 NT HANDLE
+        // backed by the WDDM driver, regardless of whether the device is DXVK.
+        texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
 
         // Try to enable fences
         ID3D11Device5* device5 = nullptr;
@@ -1393,14 +1428,13 @@ public:
             HRESULT fenceHr = device5->CreateFence(0, D3D11_FENCE_FLAG_SHARED, IID_PPV_ARGS(&fence));
             if (SUCCEEDED(fenceHr)) {
                 if (SUCCEEDED(d3d11Context->QueryInterface(IID_PPV_ARGS(&context4)))) {
-                    IDXGIResource* res = nullptr;
-                    if (SUCCEEDED(fence->QueryInterface(IID_PPV_ARGS(&res)))) {
-                        HANDLE hTemp = NULL;
-                        res->GetSharedHandle(&hTemp);
+                    HANDLE hTemp = NULL;
+                    if (SUCCEEDED(fence->CreateSharedHandle(NULL, GENERIC_ALL, NULL, &hTemp))) {
                         sharedFenceHandle.store(hTemp, std::memory_order_release);
-                        res->Release();
                         useFences = true;
                         EarlyLog("DX9: ID3D11Fence support enabled");
+                    } else {
+                        EarlyLog("DX9: Fence CreateSharedHandle failed");
                     }
                 } else {
                     EarlyLog("DX9: ID3D11DeviceContext4 QI failed");
@@ -1424,13 +1458,22 @@ public:
         for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
             hr = d3d11Device->CreateTexture2D(&texDesc, NULL, &sharedTextures[i]);
             if (SUCCEEDED(hr)) {
-                IDXGIResource* pResource = nullptr;
-                sharedTextures[i]->QueryInterface(IID_PPV_ARGS(&pResource));
-                HANDLE hTemp = NULL;
-                pResource->GetSharedHandle(&hTemp);
-                sharedTextureHandles[i].store(hTemp, std::memory_order_release);
-                pResource->Release();
+                IDXGIResource1* pResource1 = nullptr;
+                if (SUCCEEDED(sharedTextures[i]->QueryInterface(IID_PPV_ARGS(&pResource1)))) {
+                    HANDLE hTemp = NULL;
+                    pResource1->CreateSharedHandle(NULL, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
+                                                   NULL, &hTemp);
+                    sharedTextureHandles[i].store(hTemp, std::memory_order_release);
+                    pResource1->Release();
+                }
             } else {
+                // NT handle flag not supported on older hardware; retry with legacy KMT
+                if (hr == E_INVALIDARG && (texDesc.MiscFlags & D3D11_RESOURCE_MISC_SHARED_NTHANDLE)) {
+                    EarlyLog("DX9: NT Handle not supported, falling back to legacy shared textures");
+                    texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+                    i--;
+                    continue;
+                }
                 success = false;
                 EarlyLog("DX9: Failed to create texture %d (hr=0x%08x)", i, hr);
             }
@@ -2557,6 +2600,7 @@ static HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9* device, CONST R
         entryLogCount++;
     }
 
+    const bool topLevelPresent = (g_PresentRecurse == 0);
     LARGE_INTEGER p0;
     LARGE_INTEGER p1;
     IDirect3DSurface9* backBuffer = nullptr;
@@ -2568,7 +2612,9 @@ static HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9* device, CONST R
     DX9_PresentEnd(device, backBuffer);
     int64_t qpcFreq = GetQpcFreqCached();
     int64_t presentUs = qpcFreq ? ((p1.QuadPart - p0.QuadPart) * 1000000) / qpcFreq : 0;
-    MaybeWaitForVSyncAfterPresent(presentUs);
+    if (topLevelPresent) {
+        MaybeWaitForVSyncAfterPresent(presentUs);
+    }
     return hr;
 }
 
@@ -2586,6 +2632,7 @@ static HRESULT STDMETHODCALLTYPE DetourPresentEx(IDirect3DDevice9Ex* device, CON
         entryLogCount++;
     }
 
+    const bool topLevelPresent = (g_PresentRecurse == 0);
     LARGE_INTEGER p0;
     LARGE_INTEGER p1;
     VSyncOverride vsync = GetVSyncOverride();
@@ -2607,7 +2654,9 @@ static HRESULT STDMETHODCALLTYPE DetourPresentEx(IDirect3DDevice9Ex* device, CON
     DX9_PresentEnd(device, backBuffer);
     int64_t qpcFreq = GetQpcFreqCached();
     int64_t presentUs = qpcFreq ? ((p1.QuadPart - p0.QuadPart) * 1000000) / qpcFreq : 0;
-    MaybeWaitForVSyncAfterPresent(presentUs);
+    if (topLevelPresent) {
+        MaybeWaitForVSyncAfterPresent(presentUs);
+    }
     return hr;
 }
 
@@ -2642,10 +2691,12 @@ static HRESULT STDMETHODCALLTYPE DetourPresentSwap(IDirect3DSwapChain9* swap, CO
     }
     IDirect3DSurface9* backBuffer = nullptr;
     IDirect3DDevice9* device = nullptr;
+    bool ownsPresentScope = false;
 
     if (g_PresentRecurse == 0) {
         if (SUCCEEDED(swap->GetDevice(&device))) {
             DX9_PresentBegin(device, backBuffer);
+            ownsPresentScope = true;
         }
     }
     QueryPerformanceCounter(&p0);
@@ -2660,7 +2711,9 @@ static HRESULT STDMETHODCALLTYPE DetourPresentSwap(IDirect3DSwapChain9* swap, CO
 
     int64_t qpcFreq = GetQpcFreqCached();
     int64_t presentUs = qpcFreq ? ((p1.QuadPart - p0.QuadPart) * 1000000) / qpcFreq : 0;
-    MaybeWaitForVSyncAfterPresent(presentUs);
+    if (ownsPresentScope) {
+        MaybeWaitForVSyncAfterPresent(presentUs);
+    }
 
     return hr;
 }
