@@ -93,9 +93,8 @@ inline void RedirectModuleImports(HMODULE hTarget, const char* fromDllBaseName, 
             continue;
 
         auto* thunk = (PIMAGE_THUNK_DATA)((uint8_t*)hTarget + desc->FirstThunk);
-        auto* orig = desc->OriginalFirstThunk
-                         ? (PIMAGE_THUNK_DATA)((uint8_t*)hTarget + desc->OriginalFirstThunk)
-                         : thunk;
+        auto* orig =
+            desc->OriginalFirstThunk ? (PIMAGE_THUNK_DATA)((uint8_t*)hTarget + desc->OriginalFirstThunk) : thunk;
 
         for (; thunk->u1.Function; ++thunk, ++orig) {
             FARPROC replacement = nullptr;
@@ -115,4 +114,3 @@ inline void RedirectModuleImports(HMODULE hTarget, const char* fromDllBaseName, 
         break;
     }
 }
-

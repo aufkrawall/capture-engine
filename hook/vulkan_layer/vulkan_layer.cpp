@@ -54,8 +54,7 @@ static bool IsDXVKD3D9WrapperLoaded() {
     if (systemLen == 0 || systemLen >= MAX_PATH)
         return false;
 
-    if (_strnicmp(d3d9Path, systemDir, systemLen) == 0 &&
-        (d3d9Path[systemLen] == '\\' || d3d9Path[systemLen] == '/')) {
+    if (_strnicmp(d3d9Path, systemDir, systemLen) == 0 && (d3d9Path[systemLen] == '\\' || d3d9Path[systemLen] == '/')) {
         return false;
     }
     return true;

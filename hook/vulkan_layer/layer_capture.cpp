@@ -1009,8 +1009,7 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
         // GPU waits for Vulkan copy to complete (shared fence)
         state.d3d11Context4->Wait(state.d3d11Fence, vulkanSignalValue);
         // GPU copies from KMT-imported D3D11 texture to NT-shared IPC texture
-        state.d3d11Context4->CopyResource(sharedTextures->ipcTextures[slotIndex],
-                                          sharedTextures->textures[slotIndex]);
+        state.d3d11Context4->CopyResource(sharedTextures->ipcTextures[slotIndex], sharedTextures->textures[slotIndex]);
         // GPU signals completion for encoder to consume
         state.d3d11Context4->Signal(state.d3d11Fence, encoderFenceValue);
         // Flush to submit the D3D11 GPU work immediately

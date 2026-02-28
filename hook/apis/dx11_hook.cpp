@@ -1233,7 +1233,7 @@ public:
             EarlyLog("DX11-DXVK: System DXGI not found");
             return false;
         }
-        typedef HRESULT(WINAPI* PFN_CREATE_DXGI_FACTORY1)(REFIID, void**);
+        typedef HRESULT(WINAPI * PFN_CREATE_DXGI_FACTORY1)(REFIID, void**);
         PFN_CREATE_DXGI_FACTORY1 pCreateDXGIFactory1 =
             (PFN_CREATE_DXGI_FACTORY1)GetProcAddress(hDXGI, "CreateDXGIFactory1");
         if (!pCreateDXGIFactory1)
@@ -1249,8 +1249,7 @@ public:
         for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; i++) {
             DXGI_ADAPTER_DESC1 desc;
             adapter->GetDesc1(&desc);
-            if (desc.AdapterLuid.LowPart == (DWORD)luidLowPart &&
-                desc.AdapterLuid.HighPart == luidHighPart) {
+            if (desc.AdapterLuid.LowPart == (DWORD)luidLowPart && desc.AdapterLuid.HighPart == luidHighPart) {
                 matchedAdapter = adapter;
                 break;
             }
@@ -1272,7 +1271,7 @@ public:
         // Redirect system d3d11.dll's dxgi.dll IAT to system dxgi.dll
         RedirectModuleImports(hD3D11, "dxgi.dll", hDXGI);
 
-        typedef HRESULT(WINAPI* PFN_D3D11_CREATE_DEVICE)(IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT,
+        typedef HRESULT(WINAPI * PFN_D3D11_CREATE_DEVICE)(IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT,
                                                           const D3D_FEATURE_LEVEL*, UINT, UINT, ID3D11Device**,
                                                           D3D_FEATURE_LEVEL*, ID3D11DeviceContext**);
         PFN_D3D11_CREATE_DEVICE pD3D11CreateDevice =
@@ -1294,7 +1293,6 @@ public:
         EarlyLog("DX11-DXVK: System D3D11 device created for cross-device capture (fl=%d)", featureLevel);
         return true;
     }
-
 
     void Init(ID3D11Device* device, IDXGISwapChain* swapChain) {
         if (initialized)
@@ -1644,9 +1642,8 @@ public:
         // Perform GPU copy: backbuffer -> shared texture
         // For DXVK: copy into the DXVK-imported texture (system D3D11-owned,
         // imported into DXVK's device). The encoder opens the system D3D11 NT handle.
-        ID3D11Texture2D* copyTarget = (isDXVKMode && dxvkImportedTextures[writeIdx])
-                                          ? dxvkImportedTextures[writeIdx]
-                                          : sharedTextures[writeIdx];
+        ID3D11Texture2D* copyTarget =
+            (isDXVKMode && dxvkImportedTextures[writeIdx]) ? dxvkImportedTextures[writeIdx] : sharedTextures[writeIdx];
         context->CopyResource(copyTarget, backbuffer);
         backbuffer->Release();
 

@@ -8,9 +8,9 @@
 #include <atomic>
 #include <bit>
 #include <cmath>
-#include <cstring>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <mutex>
 #include <set>
 #include <thread>
@@ -118,8 +118,7 @@ static bool IsDXVKD3D9WrapperLoaded() {
     if (systemLen == 0 || systemLen >= MAX_PATH)
         return false;
 
-    if (_strnicmp(d3d9Path, systemDir, systemLen) == 0 &&
-        (d3d9Path[systemLen] == '\\' || d3d9Path[systemLen] == '/')) {
+    if (_strnicmp(d3d9Path, systemDir, systemLen) == 0 && (d3d9Path[systemLen] == '\\' || d3d9Path[systemLen] == '/')) {
         return false;
     }
     return true;
@@ -252,10 +251,28 @@ static void PaceToRefreshQpc() {
 
     int64_t target = g_LastPacedQpc + frameTicks;
     if (now.QuadPart < target) {
+        // Safety timeout: max 50ms or 2x expected frame time to prevent infinite loops
+        const int64_t maxWaitTicks = (qpcFreq * 50) / 1000;  // 50ms in QPC ticks
+        const int64_t timeoutQpc = now.QuadPart + maxWaitTicks;
+        int iterations = 0;
+        const int kMaxIterations = 100000;  // Prevent infinite spinning
+
         for (;;) {
             QueryPerformanceCounter(&now);
             if (now.QuadPart >= target)
                 break;
+            // Safety checks: timeout or max iterations
+            if (now.QuadPart >= timeoutQpc || iterations >= kMaxIterations) {
+                static int timeoutLogCount = 0;
+                if (timeoutLogCount < 5) {
+                    HookLog("DX9: PaceToRefreshQpc timeout (iter=%d, waited=%lld us)", iterations,
+                            (now.QuadPart - (target - frameTicks)) * 1000000 / qpcFreq);
+                    timeoutLogCount++;
+                }
+                break;
+            }
+            iterations++;
+
             int64_t remainingTicks = target - now.QuadPart;
             int64_t remainingUs = (remainingTicks * 1000000) / qpcFreq;
 
@@ -271,6 +288,13 @@ static void PaceToRefreshQpc() {
     g_LastPacedQpc = target;
 }
 
+static DWORD WINAPI DwmFlushThreadProc(LPVOID param) {
+    auto flushFunc = reinterpret_cast<DwmFlush_t>(param);
+    if (flushFunc)
+        flushFunc();
+    return 0;
+}
+
 static void MaybeWaitForVSyncAfterPresent(int64_t presentUs) {
     VSyncOverride vsync = GetVSyncOverride();
     if (!vsync.shouldOverride || vsync.presentInterval <= 0)
@@ -279,6 +303,10 @@ static void MaybeWaitForVSyncAfterPresent(int64_t presentUs) {
     // amplify already expensive readback cost. Favor minimal overhead while
     // recording.
     if (g_DX9StagingCaptureActive.load(std::memory_order_acquire) && g_IPC && g_IPC->IsRecording()) {
+        return;
+    }
+    // DXVK has its own frame pacing - skip our software pacing to avoid conflicts
+    if (IsDXVKD3D9WrapperLoaded()) {
         return;
     }
     const int hz = GetDesktopRefreshHzCached();
@@ -343,7 +371,31 @@ static void MaybeWaitForVSyncAfterPresent(int64_t presentUs) {
         const int64_t qpcFreq = GetQpcFreqCached();
         LARGE_INTEGER t0, t1;
         QueryPerformanceCounter(&t0);
-        g_DwmFlush();
+
+        // DwmFlush can hang indefinitely with DXVK - use a timeout mechanism
+        // Use a separate thread with a timeout to prevent indefinite blocking
+        HANDLE hDwmThread =
+            CreateThread(nullptr, 0, DwmFlushThreadProc, reinterpret_cast<LPVOID>(g_DwmFlush), 0, nullptr);
+
+        if (hDwmThread) {
+            // Wait max 100ms for DwmFlush to complete
+            DWORD waitResult = WaitForSingleObject(hDwmThread, 100);
+            if (waitResult == WAIT_TIMEOUT) {
+                // DwmFlush is hanging - terminate the thread and disable DwmFlush
+                TerminateThread(hDwmThread, 1);
+                static int dwmTimeoutLogCount = 0;
+                if (dwmTimeoutLogCount < 5) {
+                    HookLog("DX9: DwmFlush timed out after 100ms, disabling for 10s");
+                    dwmTimeoutLogCount++;
+                }
+                s_DwmDisabledUntilTick = nowTick + 10000;  // Disable for 10s
+            }
+            CloseHandle(hDwmThread);
+        } else {
+            // Fallback: call directly (risky but no other option)
+            g_DwmFlush();
+        }
+
         QueryPerformanceCounter(&t1);
         const int64_t dwmUs = (qpcFreq > 0) ? ((t1.QuadPart - t0.QuadPart) * 1000000) / qpcFreq : 0;
 
@@ -1461,8 +1513,8 @@ public:
                 IDXGIResource1* pResource1 = nullptr;
                 if (SUCCEEDED(sharedTextures[i]->QueryInterface(IID_PPV_ARGS(&pResource1)))) {
                     HANDLE hTemp = NULL;
-                    pResource1->CreateSharedHandle(NULL, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
-                                                   NULL, &hTemp);
+                    pResource1->CreateSharedHandle(NULL, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, NULL,
+                                                   &hTemp);
                     sharedTextureHandles[i].store(hTemp, std::memory_order_release);
                     pResource1->Release();
                 }
@@ -2168,8 +2220,8 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
 
         SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
         bool captureIncludeOverlay = shm ? shm->overlayConfig.captureIncludeOverlay : true;
-        const bool dxvkVulkanCapture = IsDXVKD3D9WrapperLoaded() && shm &&
-            shm->runtimeState.vulkanLayerActive.load(std::memory_order_acquire);
+        const bool dxvkVulkanCapture =
+            IsDXVKD3D9WrapperLoaded() && shm && shm->runtimeState.vulkanLayerActive.load(std::memory_order_acquire);
         static bool dxvkVulkanCaptureLogged = false;
         if (dxvkVulkanCapture && !dxvkVulkanCaptureLogged) {
             HookLogImportant("DX9: DXVK+VulkanLayer mode - deferring capture and FPS limiter to Vulkan layer");
