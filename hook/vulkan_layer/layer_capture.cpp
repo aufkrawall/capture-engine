@@ -591,6 +591,7 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         LayerLog("Vulkan Layer: [Error] Failed to get LUID from physical device");
         return;
     }
+    LayerIPC_SetLUID(static_cast<int32_t>(luid.LowPart), static_cast<int32_t>(luid.HighPart));
 
     uint64_t luidKey = MakeLuidKey(luid);
 

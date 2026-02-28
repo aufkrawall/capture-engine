@@ -23,12 +23,7 @@ static std::string GetLogsDirectory() {
         }
     }
 
-    char tempPath[MAX_PATH];
-    if (GetTempPathA(MAX_PATH, tempPath)) {
-        return std::string(tempPath);
-    }
-
-    return ".";
+    return ".\\logs";
 }
 
 static uint64_t GetCurrentMicros() {
@@ -354,13 +349,6 @@ void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason) 
         DWORD err = GetLastError();
         snprintf(logMsg, sizeof(logMsg), "[FreezeWatchdog] Failed to create dump file, error=%lu\n", err);
         OutputDebugStringA(logMsg);
-
-        char tempPath[MAX_PATH];
-        if (GetTempPathA(MAX_PATH, tempPath)) {
-            dumpPath = std::string(tempPath) + "\\" + processName_ + "_FREEZE.dmp";
-            hFile =
-                CreateFileA(dumpPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        }
     }
 
     if (hFile == INVALID_HANDLE_VALUE) {

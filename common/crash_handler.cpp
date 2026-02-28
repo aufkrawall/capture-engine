@@ -9,7 +9,7 @@
 #include <string>
 #include "logging.h"
 
-static std::string g_DumpDir = ".";
+static std::string g_DumpDir = ".\\logs";
 static char g_ProcessName[256] = "unknown";
 static HMODULE g_hDbgHelp = NULL;
 static std::atomic<bool> g_DumpAlreadyWritten{false};
@@ -91,15 +91,6 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
         snprintf(createErrMsg, sizeof(createErrMsg), "Failed to create dump file at configured path (err=%lu)",
                  createErr);
         TraceCrash(createErrMsg);
-
-        char tempPath[MAX_PATH] = {0};
-        if (GetTempPathA(MAX_PATH, tempPath)) {
-            snprintf(dumpPath, sizeof(dumpPath), "%scrash_%s.dmp", tempPath, buf);
-            TraceCrash("Retrying dump creation in temp directory...");
-            TraceCrash(dumpPath);
-            hFile = CreateFileA(dumpPath, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
-                                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, NULL);
-        }
     }
 
     if (hFile != INVALID_HANDLE_VALUE) {
@@ -354,7 +345,12 @@ LONG WINAPI UnhandledExceptionFilterCallback(EXCEPTION_POINTERS* pExceptionPoint
             return prevResult;
         }
     }
-    return result;
+    if (result == EXCEPTION_CONTINUE_EXECUTION) {
+        return result;
+    }
+
+    TraceCrash("Unhandled exception consumed by crash handler");
+    return EXCEPTION_EXECUTE_HANDLER;
 }
 
 void InstallCrashHandler() {

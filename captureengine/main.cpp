@@ -9,6 +9,7 @@
 #include <winreg.h>
 // clang-format on
 #include <atomic>
+#include <filesystem>
 #include <string>
 #include "../common/config.h"
 #include "../common/crash_handler.h"
@@ -771,14 +772,22 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         }
     }
 
-    // Update crash dump directory from config (crash handler already installed early)
+    // Keep crash dumps under logs/. Config can only add a relative subfolder.
+    std::string crashDir = logsDir;
     if (!g_Config.crashDumpDir.empty()) {
-        std::string crashDir = g_Config.crashDumpDir;
-        if (crashDir.find(":") == std::string::npos) {
-            crashDir = baseDir + "\\" + crashDir;
+        std::filesystem::path configured = std::filesystem::path(g_Config.crashDumpDir).lexically_normal();
+        bool hasParentTraversal = false;
+        for (const auto& part : configured) {
+            if (part == std::filesystem::path("..")) {
+                hasParentTraversal = true;
+                break;
+            }
         }
-        SetCrashDumpDirectory(crashDir);
+        if (!configured.empty() && configured != "." && !configured.is_absolute() && !hasParentTraversal) {
+            crashDir = (std::filesystem::path(logsDir) / configured).string();
+        }
     }
+    SetCrashDumpDirectory(crashDir);
 
     // Dispatch to appropriate process
     int result = 0;
