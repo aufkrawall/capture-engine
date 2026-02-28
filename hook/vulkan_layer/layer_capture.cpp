@@ -38,10 +38,18 @@ struct SharedTextureEntry {
     uint32_t vkFormat = 0;
 
     std::vector<ID3D11Texture2D*> textures;  // 4 textures for double/triple buffering
-    std::vector<HANDLE> textureHandles;      // IPC handles (NT or KMT)
+    std::vector<HANDLE> textureHandles;      // Vulkan import handles (KMT or NT)
     bool textureHandlesAreNt = false;
     std::vector<VkImage> vkImages;           // Vulkan imported images
     std::vector<VkDeviceMemory> vkMemories;  // Vulkan imported memories
+
+    // IPC relay: separate NT-shared textures for encoder (not Vulkan-imported)
+    // When KMT handles are used for Vulkan import, they become un-openable cross-process.
+    // These relay textures have NT handles that the encoder can open.
+    std::vector<ID3D11Texture2D*> ipcTextures;
+    std::vector<HANDLE> ipcHandles;
+    bool hasIpcRelay = false;
+
     bool valid = false;
 };
 
@@ -404,6 +412,62 @@ static bool CreateSharedTextures(D3D11InteropDevice* interopDev, VkDevice vkDev,
         if (!importFailed) {
             if (useNtIpcHandles) {
                 LayerLog("Vulkan Layer: Using NT IPC handles with NT Vulkan import");
+            } else {
+                // KMT path succeeded: KMT handles are consumed by Vulkan import and become
+                // un-openable by other D3D11 devices. Create separate NT-shared relay textures
+                // for cross-process IPC with the encoder.
+                entry.ipcTextures.assign(kTextureCount, nullptr);
+                entry.ipcHandles.assign(kTextureCount, nullptr);
+
+                D3D11_TEXTURE2D_DESC ipcDesc = texDesc;
+                ipcDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
+
+                bool ipcFailed = false;
+                for (uint32_t i = 0; i < kTextureCount; i++) {
+                    HRESULT hr = interopDev->device->CreateTexture2D(&ipcDesc, nullptr, &entry.ipcTextures[i]);
+                    if (FAILED(hr)) {
+                        LayerLog("Vulkan Layer: [Error] Failed to create IPC relay texture %d (hr=0x%08X)", i, hr);
+                        ipcFailed = true;
+                        break;
+                    }
+
+                    ComPtr<IDXGIResource1> dxgiRes1;
+                    hr = entry.ipcTextures[i]->QueryInterface(IID_PPV_ARGS(&dxgiRes1));
+                    if (FAILED(hr) || !dxgiRes1) {
+                        LayerLog("Vulkan Layer: [Error] IDXGIResource1 unavailable for IPC texture %d", i);
+                        ipcFailed = true;
+                        break;
+                    }
+
+                    hr = dxgiRes1->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
+                                                      nullptr, &entry.ipcHandles[i]);
+                    if (FAILED(hr) || !entry.ipcHandles[i]) {
+                        LayerLog("Vulkan Layer: [Error] Failed to create NT handle for IPC texture %d (hr=0x%08X)", i,
+                                 hr);
+                        ipcFailed = true;
+                        break;
+                    }
+                }
+
+                if (ipcFailed) {
+                    // Clean up partially created IPC textures
+                    for (auto& handle : entry.ipcHandles) {
+                        if (handle) {
+                            CloseHandle(handle);
+                            handle = nullptr;
+                        }
+                    }
+                    for (auto*& tex : entry.ipcTextures) {
+                        if (tex) {
+                            tex->Release();
+                            tex = nullptr;
+                        }
+                    }
+                    LayerLog("Vulkan Layer: [Warn] IPC relay creation failed, encoder may not receive frames");
+                } else {
+                    entry.hasIpcRelay = true;
+                    LayerLog("Vulkan Layer: Created %d IPC relay textures (NT handles for encoder)", kTextureCount);
+                }
             }
             entry.valid = true;
             return true;
@@ -477,6 +541,10 @@ struct VulkanCaptureState {
     uint64_t currentFenceValue = 0;
     uint64_t captureFrameCounter = 0;  // Monotonic counter for slot rotation
     HANDLE sharedFenceHandle = NULL;
+
+    // D3D11 relay: fence and context for IPC relay copy (KMT→NT)
+    ID3D11Fence* d3d11Fence = nullptr;
+    ID3D11DeviceContext4* d3d11Context4 = nullptr;
 };
 
 static std::mutex g_CaptureMutex;
@@ -545,8 +613,15 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     }
 
     // Publish textures to encoder via IPC
-    LayerIPC_SetTextures(sharedTextures->textureHandles.data(), (uint32_t)sharedTextures->textureHandles.size(),
-                         extent.width, extent.height, VkFormatToDXGI(format));
+    // Use IPC relay handles (NT) when available, otherwise fall back to textureHandles
+    if (sharedTextures->hasIpcRelay) {
+        LayerIPC_SetTextures(sharedTextures->ipcHandles.data(), (uint32_t)sharedTextures->ipcHandles.size(),
+                             extent.width, extent.height, VkFormatToDXGI(format));
+        LayerLog("Vulkan Layer: Publishing IPC relay NT handles to encoder");
+    } else {
+        LayerIPC_SetTextures(sharedTextures->textureHandles.data(), (uint32_t)sharedTextures->textureHandles.size(),
+                             extent.width, extent.height, VkFormatToDXGI(format));
+    }
 
     VulkanCaptureState state = {};
     state.device = device;
@@ -607,6 +682,45 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         LayerLog("Vulkan Layer: [Error] Failed to create timeline semaphore");
     }
 
+    // Set up D3D11 relay for IPC if needed (KMT path with relay textures)
+    if (sharedTextures->hasIpcRelay && state.sharedFenceHandle) {
+        std::lock_guard<std::mutex> interopLock(g_InteropMutex);
+        D3D11InteropDevice* interopDev = nullptr;
+        for (auto& dev : g_D3D11Devices) {
+            if (dev.luidKey == luidKey && dev.valid) {
+                interopDev = &dev;
+                break;
+            }
+        }
+        if (interopDev) {
+            // Get ID3D11Device5 for OpenSharedFence
+            ComPtr<ID3D11Device5> device5;
+            HRESULT hr = interopDev->device->QueryInterface(IID_PPV_ARGS(&device5));
+            if (SUCCEEDED(hr) && device5) {
+                hr = device5->OpenSharedFence(state.sharedFenceHandle, IID_PPV_ARGS(&state.d3d11Fence));
+                if (SUCCEEDED(hr) && state.d3d11Fence) {
+                    LayerLog("Vulkan Layer: Opened D3D11 fence for IPC relay");
+                } else {
+                    LayerLog("Vulkan Layer: [Error] OpenSharedFence failed (hr=0x%08X)", hr);
+                }
+            } else {
+                LayerLog("Vulkan Layer: [Error] ID3D11Device5 unavailable (hr=0x%08X)", hr);
+            }
+
+            // Get ID3D11DeviceContext4 for Wait/Signal
+            hr = interopDev->context->QueryInterface(IID_PPV_ARGS(&state.d3d11Context4));
+            if (SUCCEEDED(hr) && state.d3d11Context4) {
+                LayerLog("Vulkan Layer: IPC relay D3D11 context ready");
+            } else {
+                LayerLog("Vulkan Layer: [Error] ID3D11DeviceContext4 unavailable (hr=0x%08X)", hr);
+                if (state.d3d11Fence) {
+                    state.d3d11Fence->Release();
+                    state.d3d11Fence = nullptr;
+                }
+            }
+        }
+    }
+
     LayerLog("Vulkan Layer: Zero-Copy Capture Initialized (%dx%d)", extent.width, extent.height);
     g_CaptureStates[device] = state;
 }
@@ -626,6 +740,10 @@ void CleanupCapture(VkDevice device) {
                 disp->fp_vkDestroySemaphore(device, it->second.timelineSemaphore, nullptr);
             if (it->second.sharedFenceHandle)
                 CloseHandle(it->second.sharedFenceHandle);
+            if (it->second.d3d11Fence)
+                it->second.d3d11Fence->Release();
+            if (it->second.d3d11Context4)
+                it->second.d3d11Context4->Release();
             disp->fp_vkDestroyCommandPool(device, it->second.commandPool, nullptr);
         }
         g_CaptureStates.erase(it);
@@ -664,6 +782,19 @@ void CleanupCapture(VkDevice device) {
                     }
                 }
                 entry.vkMemories.clear();
+
+                // Clean up IPC relay textures
+                for (auto& handle : entry.ipcHandles) {
+                    if (handle)
+                        CloseHandle(handle);
+                }
+                entry.ipcHandles.clear();
+                for (auto*& tex : entry.ipcTextures) {
+                    if (tex)
+                        tex->Release();
+                }
+                entry.ipcTextures.clear();
+                entry.hasIpcRelay = false;
 
                 entry.valid = false;
                 LayerLog("Vulkan Layer: Cleaned up texture cache entry for LUID %llx", luidKey);
@@ -819,10 +950,24 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
         signalCount++;
     }
 
-    uint64_t signalValue = ++state.currentFenceValue;
+    // When IPC relay is active, we use two fence values per frame:
+    //   vulkanSignalValue: Vulkan signals after copy to KMT texture
+    //   encoderFenceValue: D3D11 signals after relay copy to NT IPC texture
+    // The encoder waits on encoderFenceValue.
+    bool doRelay = sharedTextures->hasIpcRelay && state.d3d11Fence && state.d3d11Context4;
+    uint64_t vulkanSignalValue, encoderFenceValue;
+    if (doRelay) {
+        state.currentFenceValue += 2;
+        vulkanSignalValue = state.currentFenceValue - 1;
+        encoderFenceValue = state.currentFenceValue;
+    } else {
+        vulkanSignalValue = ++state.currentFenceValue;
+        encoderFenceValue = vulkanSignalValue;
+    }
+
     if (state.timelineSemaphore != VK_NULL_HANDLE) {
         signalSems[signalCount] = state.timelineSemaphore;
-        signalValues[signalCount] = signalValue;
+        signalValues[signalCount] = vulkanSignalValue;
         signalCount++;
     }
 
@@ -859,5 +1004,18 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
         return;
     }
 
-    LayerIPC_SignalFrameReady(slotIndex, signalValue);
+    // IPC relay: D3D11 Wait/CopyResource/Signal to copy from KMT texture to NT IPC texture
+    if (doRelay) {
+        // GPU waits for Vulkan copy to complete (shared fence)
+        state.d3d11Context4->Wait(state.d3d11Fence, vulkanSignalValue);
+        // GPU copies from KMT-imported D3D11 texture to NT-shared IPC texture
+        state.d3d11Context4->CopyResource(sharedTextures->ipcTextures[slotIndex],
+                                          sharedTextures->textures[slotIndex]);
+        // GPU signals completion for encoder to consume
+        state.d3d11Context4->Signal(state.d3d11Fence, encoderFenceValue);
+        // Flush to submit the D3D11 GPU work immediately
+        state.d3d11Context4->Flush();
+    }
+
+    LayerIPC_SignalFrameReady(slotIndex, encoderFenceValue);
 }

@@ -2168,6 +2168,13 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
 
         SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
         bool captureIncludeOverlay = shm ? shm->overlayConfig.captureIncludeOverlay : true;
+        const bool dxvkVulkanCapture = IsDXVKD3D9WrapperLoaded() && shm &&
+            shm->runtimeState.vulkanLayerActive.load(std::memory_order_acquire);
+        static bool dxvkVulkanCaptureLogged = false;
+        if (dxvkVulkanCapture && !dxvkVulkanCaptureLogged) {
+            HookLogImportant("DX9: DXVK+VulkanLayer mode - deferring capture and FPS limiter to Vulkan layer");
+            dxvkVulkanCaptureLogged = true;
+        }
         bool shouldDrawOverlay = shm && shm->overlayConfig.showOverlay;
         bool endSceneHookActive = false;
         uintptr_t* vtable = *(uintptr_t**)device;
@@ -2203,9 +2210,11 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
         QueryPerformanceCounter(&qpc);
         prerenderStart = qpc.QuadPart;
 
-        float limit = GetActivePrerenderLimit();
-        if (limit > -0.5f) {  // Active if >= 0.0
-            g_DX9Capture.WaitPrerender(device, limit);
+        if (!dxvkVulkanCapture) {
+            float limit = GetActivePrerenderLimit();
+            if (limit > -0.5f) {  // Active if >= 0.0
+                g_DX9Capture.WaitPrerender(device, limit);
+            }
         }
 
         QueryPerformanceCounter(&qpc);
@@ -2218,6 +2227,13 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
 
         // Lambda for capture operation
         auto doCapture = [&]() {
+            if (dxvkVulkanCapture) {
+                if (g_DX9Capture.initialized) {
+                    HookLogImportant("DX9: DXVK+VulkanLayer active, cleaning up DX9 capture");
+                    g_DX9Capture.Cleanup();
+                }
+                return;
+            }
             if (ipc && ipc->IsRecording()) {
                 if (!g_DX9Capture.initialized) {
                     EarlyLog("DX9: Recording detected, calling Init...");
@@ -2271,8 +2287,10 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
         // Apply FPS limiter (timed separately to exclude from overhead warning)
         QueryPerformanceCounter(&qpc);
         int64_t fpsLimitStart = qpc.QuadPart;
-        g_SharedFpsLimiter.SetIPCClient(ipc);
-        g_SharedFpsLimiter.Apply();
+        if (!dxvkVulkanCapture) {
+            g_SharedFpsLimiter.SetIPCClient(ipc);
+            g_SharedFpsLimiter.Apply();
+        }
         QueryPerformanceCounter(&qpc);
         g_Timing.fpsLimitTime = qpc.QuadPart - fpsLimitStart;
 
