@@ -244,8 +244,10 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                         qf.shmemSlot = 0;
                         if (texIdx >= 0 && texIdx < 8) {
                             qf.sharedHandle = (HANDLE)g_pSharedMem->GetSharedHandle(texIdx);
+                            LogInfo("[Inject Thread] Read handle for texIdx=%d: %p", texIdx, qf.sharedHandle);
                         } else {
                             qf.sharedHandle = (HANDLE)g_pSharedMem->GetSharedHandle(0);
+                            LogInfo("[Inject Thread] Invalid texIdx=%d, using handle 0: %p", texIdx, qf.sharedHandle);
                         }
                         qf.fenceHandle = (HANDLE)g_pSharedMem->GetFenceShareHandle();
                         qf.fenceValue = slot.fenceValue;
@@ -272,8 +274,24 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                         }
                     }
 
-                    if (g_FrameQueue.Push(qf, g_IsEncoderBottlenecked)) {
-                        pushedCount++;
+                    // Validate handles look reasonable (not 0, not -1, not obviously stale)
+                    bool validHandles = true;
+                    if (!qf.isShmem) {
+                        uint64_t handleVal = (uint64_t)qf.sharedHandle;
+                        // Reject obviously invalid handles
+                        if (handleVal == 0 || handleVal == 0xFFFFFFFFFFFFFFFF || handleVal == 0xCCCCCCCCCCCCCCCC ||
+                            handleVal == 0xDDDDDDDDDDDDDDDD) {
+                            LogInfo("[Inject Thread] Invalid handle detected (0x%p), skipping frame", qf.sharedHandle);
+                            validHandles = false;
+                        }
+                    }
+
+                    if (validHandles) {
+                        if (g_FrameQueue.Push(qf, g_IsEncoderBottlenecked)) {
+                            pushedCount++;
+                        } else {
+                            droppedCount++;
+                        }
                     } else {
                         droppedCount++;
                     }

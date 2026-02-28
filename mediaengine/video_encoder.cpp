@@ -1501,62 +1501,56 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                 ce::HandleGuard dupFence;
                 HRESULT hr = E_FAIL;
 
-                // Try NT handle path
-                if (DuplicateHandle(hProcess.get(), fenceHandle, GetCurrentProcess(), dupFence.addressof(), 0, FALSE,
-                                    DUPLICATE_SAME_ACCESS)) {
-                    hr = d3d11Device->OpenSharedFence(dupFence.get(), IID_PPV_ARGS(&d3d11Fence));
-                    if (FAILED(hr)) {
-                        DLL_Log("[VideoEncoder] OpenSharedFence failed: HR=%x (Hnd=%p)", hr, dupFence.get());
+                // Try direct NT handle first (for Vulkan layer D3D12 fences - these don't support DuplicateHandle)
+                hr = d3d11Device->OpenSharedFence(fenceHandle, IID_PPV_ARGS(&d3d11Fence));
+                if (FAILED(hr) && encodeFrameCounter < 10) {
+                    DLL_Log("[VideoEncoder] OpenSharedFence(direct) failed: HR=%x (Hnd=%p), trying DuplicateHandle...",
+                            hr, fenceHandle);
+                }
+
+                // Fallback to DuplicateHandle path (for handles that support it)
+                if (FAILED(hr)) {
+                    if (DuplicateHandle(hProcess.get(), fenceHandle, GetCurrentProcess(), dupFence.addressof(), 0,
+                                        FALSE, DUPLICATE_SAME_ACCESS)) {
+                        hr = d3d11Device->OpenSharedFence(dupFence.get(), IID_PPV_ARGS(&d3d11Fence));
+                        if (FAILED(hr)) {
+                            DLL_Log("[VideoEncoder] OpenSharedFence(dup) failed: HR=%x (Hnd=%p)", hr, dupFence.get());
+                        }
+                    } else {
+                        DWORD err = GetLastError();
+                        DLL_Log(
+                            "[VideoEncoder] DuplicateHandle failed: Err=%d (SrcPid=%u "
+                            "Hnd=%p)",
+                            err, sourcePid, fenceHandle);
                     }
-                } else {
-                    DWORD err = GetLastError();
-                    DLL_Log(
-                        "[VideoEncoder] DuplicateHandle failed: Err=%d (SrcPid=%u "
-                        "Hnd=%p)",
-                        err, sourcePid, fenceHandle);
                 }
 
                 // Alternate handle representation for WOW64 sources
                 if (FAILED(hr) && hasFenceAlt) {
                     ce::HandleGuard dupFenceAlt;
-                    if (DuplicateHandle(hProcess.get(), fenceHandleAlt, GetCurrentProcess(), dupFenceAlt.addressof(), 0,
-                                        FALSE, DUPLICATE_SAME_ACCESS)) {
-                        hr = d3d11Device->OpenSharedFence(dupFenceAlt.get(), IID_PPV_ARGS(&d3d11Fence));
-                        if (FAILED(hr)) {
-                            DLL_Log(
-                                "[VideoEncoder] OpenSharedFence(alt) failed: HR=%x "
-                                "(Hnd=%p)",
-                                hr, dupFenceAlt.get());
+                    // Try direct first
+                    hr = d3d11Device->OpenSharedFence(fenceHandleAlt, IID_PPV_ARGS(&d3d11Fence));
+                    if (FAILED(hr)) {
+                        if (DuplicateHandle(hProcess.get(), fenceHandleAlt, GetCurrentProcess(),
+                                            dupFenceAlt.addressof(), 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+                            hr = d3d11Device->OpenSharedFence(dupFenceAlt.get(), IID_PPV_ARGS(&d3d11Fence));
                         }
-                    } else {
-                        DWORD err = GetLastError();
-                        DLL_Log(
-                            "[VideoEncoder] DuplicateHandle(alt) failed: Err=%d "
-                            "(SrcPid=%u Hnd=%p)",
-                            err, sourcePid, fenceHandleAlt);
                     }
                 }
 
-                // Fallback/KMT path
+                // Final fallback - try as generic shared resource
                 if (FAILED(hr)) {
                     hr = d3d11Device->OpenSharedResource(fenceHandle, IID_PPV_ARGS(&d3d11Fence));
-                    if (FAILED(hr) && encodeFrameCounter < 10) {
-                        DLL_Log("[VideoEncoder] OpenSharedResource(Fence) failed: HR=%x", hr);
-                    }
                 }
                 if (FAILED(hr) && hasFenceAlt) {
                     hr = d3d11Device->OpenSharedResource(fenceHandleAlt, IID_PPV_ARGS(&d3d11Fence));
-                    if (FAILED(hr) && encodeFrameCounter < 10) {
-                        DLL_Log(
-                            "[VideoEncoder] OpenSharedResource(Fence, alt) failed: "
-                            "HR=%x",
-                            hr);
-                    }
                 }
 
-                if (d3d11Fence) {
+                if (d3d11Fence && encodeFrameCounter < 10) {
                     DLL_Log("[VideoEncoder] Successfully opened shared fence for PID %u", sourcePid);
-                    // Update Fence Cache
+                }
+                // Cache Fence if successfully opened
+                if (d3d11Fence) {
                     if (cachedD3D11Fence)
                         cachedD3D11Fence->Release();
                     cachedD3D11Fence = d3d11Fence;
@@ -1573,46 +1567,78 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
             if (sharedHandle == NULL) {
                 DLL_Log("[VideoEncoder] Frame %d: Error: sharedHandle is NULL", encodeFrameCounter);
             } else {
-                // Try NT handle path first
-                if (DuplicateHandle(hProcess.get(), sharedHandle, GetCurrentProcess(), dupTex.addressof(), 0, FALSE,
-                                    DUPLICATE_SAME_ACCESS)) {
-                    // Use OpenSharedResource1 for NT handles
-                    hr = d3d11Device->OpenSharedResource1(dupTex.get(), IID_PPV_ARGS(&bgraTex));
-                    if (FAILED(hr)) {
-                        DLL_Log(
-                            "[VideoEncoder] Frame %d: OpenSharedResource1(dup=%p) "
-                            "failed HR=%x. Falling back to KMT...",
-                            encodeFrameCounter, dupTex.get(), hr);
+                // Try direct NT handle first (for Vulkan layer - these may not support DuplicateHandle)
+                hr = d3d11Device->OpenSharedResource1(sharedHandle, IID_PPV_ARGS(&bgraTex));
+                if (FAILED(hr) && encodeFrameCounter < 10) {
+                    DLL_Log(
+                        "[VideoEncoder] Frame %d: OpenSharedResource1(direct=%p) "
+                        "failed HR=%x. Trying DuplicateHandle...",
+                        encodeFrameCounter, sharedHandle, hr);
+                }
+
+                // Fallback to DuplicateHandle path
+                if (FAILED(hr)) {
+                    if (DuplicateHandle(hProcess.get(), sharedHandle, GetCurrentProcess(), dupTex.addressof(), 0, FALSE,
+                                        DUPLICATE_SAME_ACCESS)) {
+                        // Use OpenSharedResource1 for NT handles
+                        hr = d3d11Device->OpenSharedResource1(dupTex.get(), IID_PPV_ARGS(&bgraTex));
+                        if (FAILED(hr) && encodeFrameCounter < 10) {
+                            DLL_Log(
+                                "[VideoEncoder] Frame %d: OpenSharedResource1(dup=%p) "
+                                "failed HR=%x. Falling back to KMT...",
+                                encodeFrameCounter, dupTex.get(), hr);
+                        }
                     }
                 }
 
                 if (FAILED(hr) && hasSharedAlt) {
                     ce::HandleGuard dupTexAlt;
-                    if (DuplicateHandle(hProcess.get(), sharedHandleAlt, GetCurrentProcess(), dupTexAlt.addressof(), 0,
-                                        FALSE, DUPLICATE_SAME_ACCESS)) {
-                        hr = d3d11Device->OpenSharedResource1(dupTexAlt.get(), IID_PPV_ARGS(&bgraTex));
-                        if (FAILED(hr)) {
-                            DLL_Log(
-                                "[VideoEncoder] Frame %d: OpenSharedResource1(alt dup=%p) "
-                                "failed HR=%x. Falling back to KMT...",
-                                encodeFrameCounter, dupTexAlt.get(), hr);
+                    // Try direct first
+                    hr = d3d11Device->OpenSharedResource1(sharedHandleAlt, IID_PPV_ARGS(&bgraTex));
+                    if (FAILED(hr)) {
+                        if (DuplicateHandle(hProcess.get(), sharedHandleAlt, GetCurrentProcess(), dupTexAlt.addressof(),
+                                            0, FALSE, DUPLICATE_SAME_ACCESS)) {
+                            hr = d3d11Device->OpenSharedResource1(dupTexAlt.get(), IID_PPV_ARGS(&bgraTex));
                         }
                     }
                 }
 
                 if (FAILED(hr)) {
                     hr = d3d11Device->OpenSharedResource(sharedHandle, IID_PPV_ARGS(&bgraTex));
-                    if (SUCCEEDED(hr)) {
+                    if (SUCCEEDED(hr) && encodeFrameCounter < 10) {
                         DLL_Log("[VideoEncoder] Frame %d: Opened handle %p via KMT path", encodeFrameCounter,
                                 sharedHandle);
                     }
                 }
                 if (FAILED(hr) && hasSharedAlt) {
                     hr = d3d11Device->OpenSharedResource(sharedHandleAlt, IID_PPV_ARGS(&bgraTex));
-                    if (SUCCEEDED(hr)) {
+                    if (SUCCEEDED(hr) && encodeFrameCounter < 10) {
                         DLL_Log("[VideoEncoder] Frame %d: Opened alt handle %p via KMT path", encodeFrameCounter,
                                 sharedHandleAlt);
                     }
+                }
+            }
+
+            // Retry logic for transient failures (handle not yet published by Vulkan layer)
+            int retryCount = 0;
+            const int maxRetries = 3;
+            while (FAILED(hr) && retryCount < maxRetries) {
+                retryCount++;
+                DLL_Log("[VideoEncoder] Frame %d: OpenSharedResource failed (HR=%x), retry %d/%d...",
+                        encodeFrameCounter, hr, retryCount, maxRetries);
+                Sleep(2);  // 2ms delay to give Vulkan layer time to publish valid handles
+
+                // Retry both NT and KMT paths
+                ce::HandleGuard dupTexRetry;
+                if (DuplicateHandle(hProcess.get(), sharedHandle, GetCurrentProcess(), dupTexRetry.addressof(), 0,
+                                    FALSE, DUPLICATE_SAME_ACCESS)) {
+                    hr = d3d11Device->OpenSharedResource1(dupTexRetry.get(), IID_PPV_ARGS(&bgraTex));
+                }
+                if (FAILED(hr)) {
+                    hr = d3d11Device->OpenSharedResource(sharedHandle, IID_PPV_ARGS(&bgraTex));
+                }
+                if (FAILED(hr) && hasSharedAlt) {
+                    hr = d3d11Device->OpenSharedResource(sharedHandleAlt, IID_PPV_ARGS(&bgraTex));
                 }
             }
 

@@ -253,7 +253,11 @@ void LayerIPC_SetTextures(HANDLE* handles, uint32_t count, uint32_t width, uint3
     uint32_t maxHandles = 8;
     for (uint32_t i = 0; i < count && i < maxHandles; i++) {
         mem->SetSharedHandle(i, (uint64_t)handles[i]);
+        LayerLog("Layer IPC: Wrote handle %d = %p to shared memory", i, handles[i]);
     }
+
+    // Memory fence: ensure handles are written before encoder sees them
+    std::atomic_thread_fence(std::memory_order_seq_cst);
 
     LayerLog("Layer IPC: Published %d textures (%dx%d)", count, width, height);
 }

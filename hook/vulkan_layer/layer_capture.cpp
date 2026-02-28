@@ -615,12 +615,35 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     // Publish textures to encoder via IPC
     // Use IPC relay handles (NT) when available, otherwise fall back to textureHandles
     if (sharedTextures->hasIpcRelay) {
-        LayerIPC_SetTextures(sharedTextures->ipcHandles.data(), (uint32_t)sharedTextures->ipcHandles.size(),
-                             extent.width, extent.height, VkFormatToDXGI(format));
-        LayerLog("Vulkan Layer: Publishing IPC relay NT handles to encoder");
+        // Check if encoder textures are ready
+        auto* mem = g_IPCClient.GetSharedMem();
+        if (mem && mem->encoderTextures.ready.load(std::memory_order_acquire)) {
+            // Use encoder's textures - read handles from encoderTextures
+            HANDLE encoderHandles[4];
+            for (int i = 0; i < 4; i++) {
+                encoderHandles[i] = (HANDLE)mem->encoderTextures.GetTextureHandle(i);
+            }
+            LayerIPC_SetTextures(encoderHandles, 4, extent.width, extent.height, VkFormatToDXGI(format));
+            LayerLog("Vulkan Layer: Publishing encoder texture handles");
+            for (uint32_t i = 0; i < 4; i++) {
+                LayerLog("Vulkan Layer: Encoder texture %d handle = %p", i, (HANDLE)encoderHandles[i]);
+            }
+        } else {
+            // Fallback to our own textures if encoder not ready
+            LayerIPC_SetTextures(sharedTextures->ipcHandles.data(), (uint32_t)sharedTextures->ipcHandles.size(),
+                                 extent.width, extent.height, VkFormatToDXGI(format));
+            LayerLog("Vulkan Layer: Publishing IPC relay NT handles to encoder");
+            for (uint32_t i = 0; i < sharedTextures->ipcHandles.size(); i++) {
+                LayerLog("Vulkan Layer: IPC relay texture %d handle = %p", i, sharedTextures->ipcHandles[i]);
+            }
+        }
     } else {
         LayerIPC_SetTextures(sharedTextures->textureHandles.data(), (uint32_t)sharedTextures->textureHandles.size(),
                              extent.width, extent.height, VkFormatToDXGI(format));
+        LayerLog("Vulkan Layer: Publishing KMT handles to encoder");
+        for (uint32_t i = 0; i < sharedTextures->textureHandles.size(); i++) {
+            LayerLog("Vulkan Layer: KMT texture %d handle = %p", i, sharedTextures->textureHandles[i]);
+        }
     }
 
     VulkanCaptureState state = {};
@@ -658,8 +681,8 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     timelineInfo.initialValue = 0;
 
     VkExportSemaphoreCreateInfo exportInfo = {VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO};
-    exportInfo.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE_BIT;  // Use D3D12_FENCE for
-                                                                                 // cross-API fence
+    exportInfo.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;  // Use opaque Win32 handle for
+                                                                                  // D3D11 compatibility
     exportInfo.pNext = &timelineInfo;
 
     VkSemaphoreCreateInfo timelineSemInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
@@ -669,11 +692,25 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         if (disp->fp_vkGetSemaphoreWin32HandleKHR) {
             VkSemaphoreGetWin32HandleInfoKHR getHandleInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_GET_WIN32_HANDLE_INFO_KHR};
             getHandleInfo.semaphore = state.timelineSemaphore;
-            getHandleInfo.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE_BIT;
+            getHandleInfo.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
 
-            if (disp->fp_vkGetSemaphoreWin32HandleKHR(device, &getHandleInfo, &state.sharedFenceHandle) == VK_SUCCESS) {
-                LayerIPC_SetFence(state.sharedFenceHandle);
-                LayerLog("Vulkan Layer: Created Shared Fence %p", state.sharedFenceHandle);
+            HANDLE hFence = nullptr;
+            VkResult fenceRes = disp->fp_vkGetSemaphoreWin32HandleKHR(device, &getHandleInfo, &hFence);
+
+            if (fenceRes == VK_SUCCESS && hFence) {
+                auto* mem = g_IPCClient.GetSharedMem();
+                if (mem) {
+                    // Try to publish to encoder's fence handle if available
+                    if (mem->encoderTextures.ready.load(std::memory_order_acquire)) {
+                        mem->encoderTextures.SetFenceHandle((uint64_t)hFence);
+                        LayerLog("Layer IPC: Set Fence Handle to encoderTextures %p", hFence);
+                    } else {
+                        LayerIPC_SetFence(hFence);
+                        LayerLog("Layer IPC: Set Fence Handle %p", hFence);
+                    }
+                    state.sharedFenceHandle = hFence;
+                    LayerLog("Vulkan Layer: Created Shared Fence %p", hFence);
+                }
             } else {
                 LayerLog("Vulkan Layer: [Error] Failed to get fence handle");
             }
