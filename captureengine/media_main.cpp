@@ -821,6 +821,21 @@ int MediaProcessMain(const AppConfig& config) {
 
         MediaEngine_SetSharedMem(g_pSharedMem, g_pShmem);
 
+        // Create shared capture textures immediately so Vulkan layer doesn't timeout
+        // waiting for them. The textures will be created with current dimensions
+        // and resized if needed when SetDimensions is called later.
+        uint32_t width = g_pSharedMem->GetWidth();
+        uint32_t height = g_pSharedMem->GetHeight();
+        uint32_t format = g_pSharedMem->GetFormat();
+        if (width > 0 && height > 0 && !g_pSharedMem->encoderTextures.ready.load(std::memory_order_acquire)) {
+            LogInfo("[Media] Creating shared capture textures early: %dx%d format=%d", width, height, format);
+            if (MediaEngine_CreateSharedCaptureTextures(width, height, format, g_pSharedMem)) {
+                LogInfo("[Media] Shared capture textures created successfully");
+            } else {
+                LogWarning("[Media] Failed to create shared capture textures early - will retry on first frame");
+            }
+        }
+
         if (explicitScreengrab) {
             g_UseScreenGrab = true;
             LogInfo("[Media] Connected to shared memory - using screengrab for capture");

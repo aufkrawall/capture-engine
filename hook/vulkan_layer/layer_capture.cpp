@@ -613,36 +613,65 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     }
 
     // Publish textures to encoder via IPC
-    // Use IPC relay handles (NT) when available, otherwise fall back to textureHandles
-    if (sharedTextures->hasIpcRelay) {
-        // Check if encoder textures are ready
-        auto* mem = g_IPCClient.GetSharedMem();
-        if (mem && mem->encoderTextures.ready.load(std::memory_order_acquire)) {
-            // Use encoder's textures - read handles from encoderTextures
-            HANDLE encoderHandles[4];
-            for (int i = 0; i < 4; i++) {
-                encoderHandles[i] = (HANDLE)mem->encoderTextures.GetTextureHandle(i);
+    // Wait for encoder textures to be ready (with timeout)
+    auto* mem = g_IPCClient.GetSharedMem();
+    bool usingEncoderTextures = false;
+
+    if (mem) {
+        // Wait up to 5 seconds for encoder textures to be ready
+        const int maxWaitMs = 5000;
+        const int checkIntervalMs = 10;
+        int waitedMs = 0;
+
+        while (waitedMs < maxWaitMs) {
+            if (mem->encoderTextures.ready.load(std::memory_order_acquire)) {
+                // Use encoder's textures - read handles from encoderTextures
+                HANDLE encoderHandles[4];
+                bool allValid = true;
+                for (int i = 0; i < 4; i++) {
+                    encoderHandles[i] = (HANDLE)mem->encoderTextures.GetTextureHandle(i);
+                    if (!encoderHandles[i]) {
+                        allValid = false;
+                        break;
+                    }
+                }
+
+                if (allValid) {
+                    LayerIPC_SetTextures(encoderHandles, 4, extent.width, extent.height, VkFormatToDXGI(format));
+                    LayerLog("Vulkan Layer: Publishing encoder texture handles");
+                    for (uint32_t i = 0; i < 4; i++) {
+                        LayerLog("Vulkan Layer: Encoder texture %d handle = %p", i, (HANDLE)encoderHandles[i]);
+                    }
+                    usingEncoderTextures = true;
+                    break;
+                }
             }
-            LayerIPC_SetTextures(encoderHandles, 4, extent.width, extent.height, VkFormatToDXGI(format));
-            LayerLog("Vulkan Layer: Publishing encoder texture handles");
-            for (uint32_t i = 0; i < 4; i++) {
-                LayerLog("Vulkan Layer: Encoder texture %d handle = %p", i, (HANDLE)encoderHandles[i]);
-            }
-        } else {
-            // Fallback to our own textures if encoder not ready
+
+            Sleep(checkIntervalMs);
+            waitedMs += checkIntervalMs;
+        }
+
+        if (!usingEncoderTextures) {
+            LayerLog("Vulkan Layer: Timeout waiting for encoder textures, falling back to IPC relay");
+        }
+    }
+
+    // Fallback to our own textures if encoder textures not available
+    if (!usingEncoderTextures) {
+        if (sharedTextures->hasIpcRelay) {
             LayerIPC_SetTextures(sharedTextures->ipcHandles.data(), (uint32_t)sharedTextures->ipcHandles.size(),
                                  extent.width, extent.height, VkFormatToDXGI(format));
             LayerLog("Vulkan Layer: Publishing IPC relay NT handles to encoder");
             for (uint32_t i = 0; i < sharedTextures->ipcHandles.size(); i++) {
                 LayerLog("Vulkan Layer: IPC relay texture %d handle = %p", i, sharedTextures->ipcHandles[i]);
             }
-        }
-    } else {
-        LayerIPC_SetTextures(sharedTextures->textureHandles.data(), (uint32_t)sharedTextures->textureHandles.size(),
-                             extent.width, extent.height, VkFormatToDXGI(format));
-        LayerLog("Vulkan Layer: Publishing KMT handles to encoder");
-        for (uint32_t i = 0; i < sharedTextures->textureHandles.size(); i++) {
-            LayerLog("Vulkan Layer: KMT texture %d handle = %p", i, sharedTextures->textureHandles[i]);
+        } else {
+            LayerIPC_SetTextures(sharedTextures->textureHandles.data(), (uint32_t)sharedTextures->textureHandles.size(),
+                                 extent.width, extent.height, VkFormatToDXGI(format));
+            LayerLog("Vulkan Layer: Publishing KMT handles to encoder");
+            for (uint32_t i = 0; i < sharedTextures->textureHandles.size(); i++) {
+                LayerLog("Vulkan Layer: KMT texture %d handle = %p", i, sharedTextures->textureHandles[i]);
+            }
         }
     }
 
