@@ -256,12 +256,13 @@ static HRESULT STDMETHODCALLTYPE DetourTexGetSurfaceLevel(IDirect3DTexture9* pTe
         // Use direct COM call on staging texture (its vtable is unhooked)
         HRESULT hr = it->second->GetSurfaceLevel(Level, ppSurface);
         if (SUCCEEDED(hr) && !g_surfHooksInstalled) {
-            // Install surface UnlockRect hook on first staging surface obtained
+            // Install surface UnlockRect inline hook on first staging surface obtained
             uintptr_t* surfVtable = *(uintptr_t**)*ppSurface;
-            if (VTableHook::Create(&surfVtable[14], (void*)&DetourSurfUnlockRect, (void**)&oSurfUnlockRect) ==
-                VTableHook::Success) {
+            void* tramp = nullptr;
+            if (InlineHook::Install((void*)surfVtable[14], (void*)&DetourSurfUnlockRect, &tramp)) {
+                oSurfUnlockRect = (SurfUnlockRect_t)tramp;
                 g_surfHooksInstalled = true;
-                HookLogImportant("DX9: Managed pool fix: surface UnlockRect hook installed");
+                HookLogImportant("DX9: Managed pool fix: surface UnlockRect INLINE hook installed");
             }
         }
         return hr;
@@ -320,15 +321,34 @@ static void InstallTextureHooks(IDirect3DTexture9* pTex) {
     if (g_texHooksInstalled)
         return;
     uintptr_t* vtable = *(uintptr_t**)pTex;
-    if (VTableHook::Create(&vtable[19], (void*)&DetourTexLockRect, (void**)&oTexLockRect) == VTableHook::Success &&
-        VTableHook::Create(&vtable[20], (void*)&DetourTexUnlockRect, (void**)&oTexUnlockRect) == VTableHook::Success &&
-        VTableHook::Create(&vtable[18], (void*)&DetourTexGetSurfaceLevel, (void**)&oTexGetSurfaceLevel) ==
-            VTableHook::Success &&
-        VTableHook::Create(&vtable[17], (void*)&DetourTexGetLevelDesc, (void**)&oTexGetLevelDesc) ==
-            VTableHook::Success &&
-        VTableHook::Create(&vtable[2], (void*)&DetourTexRelease, (void**)&oTexRelease) == VTableHook::Success) {
+    void* tramp = nullptr;
+    bool ok = true;
+
+    if (InlineHook::Install((void*)vtable[19], (void*)&DetourTexLockRect, &tramp)) {
+        oTexLockRect = (TexLockRect_t)tramp;
+    } else { ok = false; }
+
+    if (ok && InlineHook::Install((void*)vtable[20], (void*)&DetourTexUnlockRect, &tramp)) {
+        oTexUnlockRect = (TexUnlockRect_t)tramp;
+    } else if (ok) { ok = false; }
+
+    if (ok && InlineHook::Install((void*)vtable[18], (void*)&DetourTexGetSurfaceLevel, &tramp)) {
+        oTexGetSurfaceLevel = (TexGetSurfaceLevel_t)tramp;
+    } else if (ok) { ok = false; }
+
+    if (ok && InlineHook::Install((void*)vtable[17], (void*)&DetourTexGetLevelDesc, &tramp)) {
+        oTexGetLevelDesc = (TexGetLevelDesc_t)tramp;
+    } else if (ok) { ok = false; }
+
+    if (ok && InlineHook::Install((void*)vtable[2], (void*)&DetourTexRelease, &tramp)) {
+        oTexRelease = (TexRelease_t)tramp;
+    } else if (ok) { ok = false; }
+
+    if (ok) {
         g_texHooksInstalled = true;
-        HookLogImportant("DX9: Managed pool fix: texture hooks installed (incl GetLevelDesc)");
+        HookLogImportant("DX9: Managed pool fix: texture INLINE hooks installed (incl GetLevelDesc)");
+    } else {
+        HookLogImportant("DX9: MPF: texture inline hooks FAILED");
     }
 }
 
@@ -346,6 +366,11 @@ static HRESULT STDMETHODCALLTYPE DetourVBLock(IDirect3DVertexBuffer9* pVB, UINT 
             HookLogImportant("DX9: MPF: VBLock pVB=%p off=%u size=%u flags=0x%x hr=0x%08X ppData=%p", pVB, Offset, Size,
                              Flags, (unsigned)hr, ppData ? *ppData : nullptr);
         return hr;
+    }
+    // VB and IB may share the same Lock function in d3d9.dll; check IB staging too
+    auto itIB = g_ibStaging.find(reinterpret_cast<IDirect3DIndexBuffer9*>(pVB));
+    if (itIB != g_ibStaging.end()) {
+        return itIB->second->Lock(Offset, Size, ppData, Flags);
     }
     return oVBLock(pVB, Offset, Size, ppData, Flags);
 }
@@ -375,6 +400,26 @@ static HRESULT STDMETHODCALLTYPE DetourVBUnlock(IDirect3DVertexBuffer9* pVB) {
         }
         return hr;
     }
+    // VB and IB may share the same Unlock function in d3d9.dll; check IB staging too
+    auto itIB = g_ibStaging.find(reinterpret_cast<IDirect3DIndexBuffer9*>(pVB));
+    if (itIB != g_ibStaging.end()) {
+        IDirect3DIndexBuffer9* pIB = reinterpret_cast<IDirect3DIndexBuffer9*>(pVB);
+        HRESULT hr = itIB->second->Unlock();
+        if (SUCCEEDED(hr)) {
+            D3DINDEXBUFFER_DESC desc;
+            pIB->GetDesc(&desc);
+            void* srcData = nullptr;
+            void* dstData = nullptr;
+            HRESULT hrSrc = itIB->second->Lock(0, desc.Size, &srcData, D3DLOCK_READONLY);
+            HRESULT hrDst = oVBLock(pVB, 0, desc.Size, &dstData, D3DLOCK_DISCARD);
+            if (SUCCEEDED(hrSrc) && SUCCEEDED(hrDst)) {
+                memcpy(dstData, srcData, desc.Size);
+            }
+            if (SUCCEEDED(hrDst)) oVBUnlock(pVB);
+            if (SUCCEEDED(hrSrc)) itIB->second->Unlock();
+        }
+        return hr;
+    }
     return oVBUnlock(pVB);
 }
 
@@ -387,6 +432,12 @@ static ULONG STDMETHODCALLTYPE DetourVBRelease(IDirect3DVertexBuffer9* pVB) {
             oVBRelease(it->second);
             g_vbStaging.erase(it);
         }
+        // VB and IB may share the same Release function in d3d9.dll
+        auto itIB = g_ibStaging.find(reinterpret_cast<IDirect3DIndexBuffer9*>(pVB));
+        if (itIB != g_ibStaging.end()) {
+            itIB->second->Release();
+            g_ibStaging.erase(itIB);
+        }
     }
     return oVBRelease(pVB);
 }
@@ -395,11 +446,26 @@ static void InstallVBHooks(IDirect3DVertexBuffer9* pVB) {
     if (g_vbHooksInstalled)
         return;
     uintptr_t* vtable = *(uintptr_t**)pVB;
-    if (VTableHook::Create(&vtable[11], (void*)&DetourVBLock, (void**)&oVBLock) == VTableHook::Success &&
-        VTableHook::Create(&vtable[12], (void*)&DetourVBUnlock, (void**)&oVBUnlock) == VTableHook::Success &&
-        VTableHook::Create(&vtable[2], (void*)&DetourVBRelease, (void**)&oVBRelease) == VTableHook::Success) {
+    void* tramp = nullptr;
+    bool ok = true;
+
+    if (InlineHook::Install((void*)vtable[11], (void*)&DetourVBLock, &tramp)) {
+        oVBLock = (VBLock_t)tramp;
+    } else { ok = false; }
+
+    if (ok && InlineHook::Install((void*)vtable[12], (void*)&DetourVBUnlock, &tramp)) {
+        oVBUnlock = (VBUnlock_t)tramp;
+    } else if (ok) { ok = false; }
+
+    if (ok && InlineHook::Install((void*)vtable[2], (void*)&DetourVBRelease, &tramp)) {
+        oVBRelease = (VBRelease_t)tramp;
+    } else if (ok) { ok = false; }
+
+    if (ok) {
         g_vbHooksInstalled = true;
-        HookLogImportant("DX9: Managed pool fix: VB hooks installed");
+        HookLogImportant("DX9: Managed pool fix: VB INLINE hooks installed");
+    } else {
+        HookLogImportant("DX9: MPF: VB inline hooks FAILED");
     }
 }
 
@@ -453,13 +519,37 @@ static ULONG STDMETHODCALLTYPE DetourIBRelease(IDirect3DIndexBuffer9* pIB) {
 static void InstallIBHooks(IDirect3DIndexBuffer9* pIB) {
     if (g_ibHooksInstalled)
         return;
+
     uintptr_t* vtable = *(uintptr_t**)pIB;
-    if (VTableHook::Create(&vtable[11], (void*)&DetourIBLock, (void**)&oIBLock) == VTableHook::Success &&
-        VTableHook::Create(&vtable[12], (void*)&DetourIBUnlock, (void**)&oIBUnlock) == VTableHook::Success &&
-        VTableHook::Create(&vtable[2], (void*)&DetourIBRelease, (void**)&oIBRelease) == VTableHook::Success) {
-        g_ibHooksInstalled = true;
-        HookLogImportant("DX9: Managed pool fix: IB hooks installed");
+    void* tramp = nullptr;
+
+    // IB Lock/Unlock may be separate functions from VB, but Release is often shared.
+    // Install each independently; if "already hooked", the VB detour covers it.
+
+    if (!oIBLock) {
+        if (InlineHook::Install((void*)vtable[11], (void*)&DetourIBLock, &tramp)) {
+            oIBLock = (IBLock_t)tramp;
+        }
+        // If failed: VB Lock already hooked this address, VB detour checks g_ibStaging
     }
+
+    if (!oIBUnlock) {
+        if (InlineHook::Install((void*)vtable[12], (void*)&DetourIBUnlock, &tramp)) {
+            oIBUnlock = (IBUnlock_t)tramp;
+        }
+        // If failed: VB Unlock already hooked, VB detour checks g_ibStaging
+    }
+
+    if (!oIBRelease) {
+        if (InlineHook::Install((void*)vtable[2], (void*)&DetourIBRelease, &tramp)) {
+            oIBRelease = (IBRelease_t)tramp;
+        }
+        // If failed: VB Release already hooked, VB detour checks g_ibStaging
+    }
+
+    g_ibHooksInstalled = true;
+    HookLogImportant("DX9: Managed pool fix: IB hooks ready (Lock=%p Unlock=%p Release=%p, shared covered by VB)",
+                     (void*)oIBLock, (void*)oIBUnlock, (void*)oIBRelease);
 }
 
 // --- Device CreateTexture/VB/IB hooks ---
@@ -631,6 +721,9 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9CreateCubeTexture(IDirect3DDevice9* d
 }
 
 // Install device-level hooks for MANAGED pool remapping
+// Uses InlineHook on the actual d3d9.dll function implementations so ALL call
+// paths are intercepted — including D3DX internal calls and cached pointers
+// that bypass COM vtable dispatch.
 static void InstallManagedPoolHooks(IDirect3DDevice9* device) {
     if (!g_active)
         return;
@@ -638,33 +731,48 @@ static void InstallManagedPoolHooks(IDirect3DDevice9* device) {
     uintptr_t* vtable = *(uintptr_t**)device;
 
     if (!oCreateTexture) {
-        if (VTableHook::Create(&vtable[23], (void*)&DetourD3D9CreateTexture, (void**)&oCreateTexture) ==
-            VTableHook::Success) {
-            HookLogImportant("DX9: Managed pool fix: CreateTexture hook installed");
+        void* trampoline = nullptr;
+        if (InlineHook::Install((void*)vtable[23], (void*)&DetourD3D9CreateTexture, &trampoline)) {
+            oCreateTexture = (CreateTexture_t)trampoline;
+            HookLogImportant("DX9: Managed pool fix: CreateTexture INLINE hook at %p", (void*)vtable[23]);
+        } else {
+            HookLogImportant("DX9: MPF: CreateTexture inline hook FAILED at %p", (void*)vtable[23]);
         }
     }
     if (!oCreateVertexBuffer) {
-        if (VTableHook::Create(&vtable[26], (void*)&DetourD3D9CreateVertexBuffer, (void**)&oCreateVertexBuffer) ==
-            VTableHook::Success) {
-            HookLogImportant("DX9: Managed pool fix: CreateVertexBuffer hook installed");
+        void* trampoline = nullptr;
+        if (InlineHook::Install((void*)vtable[26], (void*)&DetourD3D9CreateVertexBuffer, &trampoline)) {
+            oCreateVertexBuffer = (CreateVertexBuffer_t)trampoline;
+            HookLogImportant("DX9: Managed pool fix: CreateVertexBuffer INLINE hook at %p", (void*)vtable[26]);
+        } else {
+            HookLogImportant("DX9: MPF: CreateVertexBuffer inline hook FAILED at %p", (void*)vtable[26]);
         }
     }
     if (!oCreateIndexBuffer) {
-        if (VTableHook::Create(&vtable[27], (void*)&DetourD3D9CreateIndexBuffer, (void**)&oCreateIndexBuffer) ==
-            VTableHook::Success) {
-            HookLogImportant("DX9: Managed pool fix: CreateIndexBuffer hook installed");
+        void* trampoline = nullptr;
+        if (InlineHook::Install((void*)vtable[27], (void*)&DetourD3D9CreateIndexBuffer, &trampoline)) {
+            oCreateIndexBuffer = (CreateIndexBuffer_t)trampoline;
+            HookLogImportant("DX9: Managed pool fix: CreateIndexBuffer INLINE hook at %p", (void*)vtable[27]);
+        } else {
+            HookLogImportant("DX9: MPF: CreateIndexBuffer inline hook FAILED at %p", (void*)vtable[27]);
         }
     }
     if (!oCreateVolumeTexture) {
-        if (VTableHook::Create(&vtable[24], (void*)&DetourD3D9CreateVolumeTexture, (void**)&oCreateVolumeTexture) ==
-            VTableHook::Success) {
-            HookLogImportant("DX9: Managed pool fix: CreateVolumeTexture hook installed");
+        void* trampoline = nullptr;
+        if (InlineHook::Install((void*)vtable[24], (void*)&DetourD3D9CreateVolumeTexture, &trampoline)) {
+            oCreateVolumeTexture = (CreateVolumeTexture_t)trampoline;
+            HookLogImportant("DX9: Managed pool fix: CreateVolumeTexture INLINE hook at %p", (void*)vtable[24]);
+        } else {
+            HookLogImportant("DX9: MPF: CreateVolumeTexture inline hook FAILED at %p", (void*)vtable[24]);
         }
     }
     if (!oCreateCubeTexture) {
-        if (VTableHook::Create(&vtable[25], (void*)&DetourD3D9CreateCubeTexture, (void**)&oCreateCubeTexture) ==
-            VTableHook::Success) {
-            HookLogImportant("DX9: Managed pool fix: CreateCubeTexture hook installed");
+        void* trampoline = nullptr;
+        if (InlineHook::Install((void*)vtable[25], (void*)&DetourD3D9CreateCubeTexture, &trampoline)) {
+            oCreateCubeTexture = (CreateCubeTexture_t)trampoline;
+            HookLogImportant("DX9: Managed pool fix: CreateCubeTexture INLINE hook at %p", (void*)vtable[25]);
+        } else {
+            HookLogImportant("DX9: MPF: CreateCubeTexture inline hook FAILED at %p", (void*)vtable[25]);
         }
     }
 }
