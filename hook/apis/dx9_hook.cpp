@@ -473,34 +473,36 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9CreateTexture(IDirect3DDevice9* devic
         // Create DEFAULT resource for GPU rendering
         HRESULT hr = oCreateTexture(device, Width, Height, Levels, Usage, Format, D3DPOOL_DEFAULT, ppTexture,
                                     pSharedHandle);
-        if (FAILED(hr)) {
-            HookLogImportant("DX9: ManagedPoolFix: CreateTexture DEFAULT FAILED %ux%u fmt=%d usage=0x%x hr=0x%08X",
-                             Width, Height, (int)Format, Usage, (unsigned)hr);
-            return hr;
-        }
+        if (SUCCEEDED(hr)) {
+            // Create SYSTEMMEM staging for Lock support
+            IDirect3DTexture9* staging = nullptr;
+            hr = oCreateTexture(device, Width, Height, Levels, stagingUsage, Format, D3DPOOL_SYSTEMMEM, &staging,
+                                nullptr);
+            if (SUCCEEDED(hr)) {
+                g_texStaging[*ppTexture] = staging;
+                g_texDefault[staging] = *ppTexture;  // Reverse mapping for surface unlock
+                if (!g_texHooksInstalled)
+                    InstallTextureHooks(*ppTexture);
 
-        // Create SYSTEMMEM staging for Lock support
-        IDirect3DTexture9* staging = nullptr;
-        hr = oCreateTexture(device, Width, Height, Levels, stagingUsage, Format, D3DPOOL_SYSTEMMEM, &staging, nullptr);
-        if (FAILED(hr)) {
-            HookLogImportant("DX9: ManagedPoolFix: CreateTexture STAGING FAILED %ux%u fmt=%d usage=0x%x hr=0x%08X",
-                             Width, Height, (int)Format, stagingUsage, (unsigned)hr);
+                int count = g_texCreated.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (count <= 20 || count % 100 == 0) {
+                    HookLogImportant("DX9: ManagedPoolFix: Tex #%d remapped %ux%u fmt=%d usage=0x%x levels=%u", count,
+                                     Width, Height, (int)Format, Usage, Levels);
+                }
+                return S_OK;
+            }
             (*ppTexture)->Release();
             *ppTexture = nullptr;
-            return hr;
         }
-
-        g_texStaging[*ppTexture] = staging;
-        g_texDefault[staging] = *ppTexture;  // Reverse mapping for surface unlock
-        if (!g_texHooksInstalled)
-            InstallTextureHooks(*ppTexture);
-
-        int count = g_texCreated.fetch_add(1, std::memory_order_relaxed) + 1;
-        if (count <= 20 || count % 100 == 0) {
-            HookLogImportant("DX9: ManagedPoolFix: Tex #%d remapped %ux%u fmt=%d usage=0x%x levels=%u", count, Width, Height,
-                             (int)Format, Usage, Levels);
-        }
-        return S_OK;
+        // Fallback: SYSTEMMEM only (slower but compatible). Lock/Unlock work natively.
+        HookLogImportant("DX9: ManagedPoolFix: CreateTex DEFAULT FAILED %ux%u fmt=%d usage=0x%x hr=0x%08X, "
+                         "fallback SYSMEM",
+                         Width, Height, (int)Format, Usage, (unsigned)hr);
+        hr = oCreateTexture(device, Width, Height, Levels, stagingUsage, Format, D3DPOOL_SYSTEMMEM, ppTexture,
+                            pSharedHandle);
+        if (SUCCEEDED(hr))
+            g_texCreated.fetch_add(1, std::memory_order_relaxed);
+        return hr;
     }
     return oCreateTexture(device, Width, Height, Levels, Usage, Format, Pool, ppTexture, pSharedHandle);
 }
@@ -512,58 +514,71 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9CreateVertexBuffer(IDirect3DDevice9* 
         // Create DEFAULT + DYNAMIC for GPU use
         HRESULT hr = oCreateVertexBuffer(device, Length, Usage | D3DUSAGE_DYNAMIC, FVF, D3DPOOL_DEFAULT, ppVB,
                                          pSharedHandle);
-        if (FAILED(hr)) {
-            HookLogImportant("DX9: ManagedPoolFix: CreateVB DEFAULT FAILED len=%u usage=0x%x hr=0x%08X", Length, Usage,
-                             (unsigned)hr);
-            return hr;
-        }
-
-        IDirect3DVertexBuffer9* staging = nullptr;
-        hr = oCreateVertexBuffer(device, Length, 0, FVF, D3DPOOL_SYSTEMMEM, &staging, nullptr);
-        if (FAILED(hr)) {
+        if (SUCCEEDED(hr)) {
+            IDirect3DVertexBuffer9* staging = nullptr;
+            hr = oCreateVertexBuffer(device, Length, 0, FVF, D3DPOOL_SYSTEMMEM, &staging, nullptr);
+            if (SUCCEEDED(hr)) {
+                g_vbStaging[*ppVB] = staging;
+                if (!g_vbHooksInstalled)
+                    InstallVBHooks(*ppVB);
+                g_vbCreated.fetch_add(1, std::memory_order_relaxed);
+                return S_OK;
+            }
             (*ppVB)->Release();
             *ppVB = nullptr;
-            return hr;
         }
-
-        g_vbStaging[*ppVB] = staging;
-        if (!g_vbHooksInstalled)
-            InstallVBHooks(*ppVB);
-
-        g_vbCreated.fetch_add(1, std::memory_order_relaxed);
-        return S_OK;
+        // Fallback: SYSTEMMEM (slower rendering but compatible with all usage flags)
+        HookLogImportant("DX9: ManagedPoolFix: CreateVB DEFAULT+DYN FAILED len=%u usage=0x%x fvf=0x%x hr=0x%08X, "
+                         "fallback SYSMEM",
+                         Length, Usage, FVF, (unsigned)hr);
+        hr = oCreateVertexBuffer(device, Length, Usage, FVF, D3DPOOL_SYSTEMMEM, ppVB, pSharedHandle);
+        if (SUCCEEDED(hr))
+            g_vbCreated.fetch_add(1, std::memory_order_relaxed);
+        return hr;
     }
-    return oCreateVertexBuffer(device, Length, Usage, FVF, Pool, ppVB, pSharedHandle);
+    HRESULT hr = oCreateVertexBuffer(device, Length, Usage, FVF, Pool, ppVB, pSharedHandle);
+    if (FAILED(hr)) {
+        HookLogImportant("DX9: ManagedPoolFix: CreateVB passthrough FAILED len=%u usage=0x%x fvf=0x%x pool=%d "
+                         "hr=0x%08X",
+                         Length, Usage, FVF, (int)Pool, (unsigned)hr);
+    }
+    return hr;
 }
 
 static HRESULT STDMETHODCALLTYPE DetourD3D9CreateIndexBuffer(IDirect3DDevice9* device, UINT Length, DWORD Usage,
-                                                             D3DFORMAT Format, D3DPOOL Pool,
-                                                             IDirect3DIndexBuffer9** ppIB, HANDLE* pSharedHandle) {
+                                                              D3DFORMAT Format, D3DPOOL Pool,
+                                                              IDirect3DIndexBuffer9** ppIB, HANDLE* pSharedHandle) {
     if (Pool == D3DPOOL_MANAGED) {
         HRESULT hr =
             oCreateIndexBuffer(device, Length, Usage | D3DUSAGE_DYNAMIC, Format, D3DPOOL_DEFAULT, ppIB, pSharedHandle);
-        if (FAILED(hr)) {
-            HookLogImportant("DX9: ManagedPoolFix: CreateIB DEFAULT FAILED len=%u usage=0x%x hr=0x%08X", Length, Usage,
-                             (unsigned)hr);
-            return hr;
-        }
-
-        IDirect3DIndexBuffer9* staging = nullptr;
-        hr = oCreateIndexBuffer(device, Length, 0, Format, D3DPOOL_SYSTEMMEM, &staging, nullptr);
-        if (FAILED(hr)) {
+        if (SUCCEEDED(hr)) {
+            IDirect3DIndexBuffer9* staging = nullptr;
+            hr = oCreateIndexBuffer(device, Length, 0, Format, D3DPOOL_SYSTEMMEM, &staging, nullptr);
+            if (SUCCEEDED(hr)) {
+                g_ibStaging[*ppIB] = staging;
+                if (!g_ibHooksInstalled)
+                    InstallIBHooks(*ppIB);
+                g_ibCreated.fetch_add(1, std::memory_order_relaxed);
+                return S_OK;
+            }
             (*ppIB)->Release();
             *ppIB = nullptr;
-            return hr;
         }
-
-        g_ibStaging[*ppIB] = staging;
-        if (!g_ibHooksInstalled)
-            InstallIBHooks(*ppIB);
-
-        g_ibCreated.fetch_add(1, std::memory_order_relaxed);
-        return S_OK;
+        // Fallback: SYSTEMMEM (slower rendering but compatible with all usage flags)
+        HookLogImportant("DX9: ManagedPoolFix: CreateIB DEFAULT+DYN FAILED len=%u usage=0x%x hr=0x%08X, "
+                         "fallback SYSMEM",
+                         Length, Usage, (unsigned)hr);
+        hr = oCreateIndexBuffer(device, Length, Usage, Format, D3DPOOL_SYSTEMMEM, ppIB, pSharedHandle);
+        if (SUCCEEDED(hr))
+            g_ibCreated.fetch_add(1, std::memory_order_relaxed);
+        return hr;
     }
-    return oCreateIndexBuffer(device, Length, Usage, Format, Pool, ppIB, pSharedHandle);
+    HRESULT hr = oCreateIndexBuffer(device, Length, Usage, Format, Pool, ppIB, pSharedHandle);
+    if (FAILED(hr)) {
+        HookLogImportant("DX9: ManagedPoolFix: CreateIB passthrough FAILED len=%u usage=0x%x pool=%d hr=0x%08X", Length,
+                         Usage, (int)Pool, (unsigned)hr);
+    }
+    return hr;
 }
 
 // --- Volume Texture and Cube Texture hooks ---
@@ -584,8 +599,14 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9CreateVolumeTexture(IDirect3DDevice9*
                                                                 HANDLE* pSharedHandle) {
     if (Pool == D3DPOOL_MANAGED) {
         g_volTexCreated.fetch_add(1, std::memory_order_relaxed);
-        return oCreateVolumeTexture(device, Width, Height, Depth, Levels, Usage, Format, D3DPOOL_DEFAULT,
-                                    ppVolumeTexture, pSharedHandle);
+        HRESULT hr = oCreateVolumeTexture(device, Width, Height, Depth, Levels, Usage, Format, D3DPOOL_DEFAULT,
+                                          ppVolumeTexture, pSharedHandle);
+        if (SUCCEEDED(hr))
+            return hr;
+        HookLogImportant("DX9: ManagedPoolFix: CreateVolTex DEFAULT FAILED %ux%ux%u hr=0x%08X, fallback SYSMEM", Width,
+                         Height, Depth, (unsigned)hr);
+        return oCreateVolumeTexture(device, Width, Height, Depth, Levels, Usage & ~D3DUSAGE_AUTOGENMIPMAP, Format,
+                                    D3DPOOL_SYSTEMMEM, ppVolumeTexture, pSharedHandle);
     }
     return oCreateVolumeTexture(device, Width, Height, Depth, Levels, Usage, Format, Pool, ppVolumeTexture,
                                 pSharedHandle);
@@ -597,8 +618,14 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9CreateCubeTexture(IDirect3DDevice9* d
                                                               HANDLE* pSharedHandle) {
     if (Pool == D3DPOOL_MANAGED) {
         g_cubeTexCreated.fetch_add(1, std::memory_order_relaxed);
-        return oCreateCubeTexture(device, EdgeLength, Levels, Usage, Format, D3DPOOL_DEFAULT, ppCubeTexture,
-                                   pSharedHandle);
+        HRESULT hr = oCreateCubeTexture(device, EdgeLength, Levels, Usage, Format, D3DPOOL_DEFAULT, ppCubeTexture,
+                                         pSharedHandle);
+        if (SUCCEEDED(hr))
+            return hr;
+        HookLogImportant("DX9: ManagedPoolFix: CreateCubeTex DEFAULT FAILED edge=%u hr=0x%08X, fallback SYSMEM",
+                         EdgeLength, (unsigned)hr);
+        return oCreateCubeTexture(device, EdgeLength, Levels, Usage & ~D3DUSAGE_AUTOGENMIPMAP, Format,
+                                   D3DPOOL_SYSTEMMEM, ppCubeTexture, pSharedHandle);
     }
     return oCreateCubeTexture(device, EdgeLength, Levels, Usage, Format, Pool, ppCubeTexture, pSharedHandle);
 }
