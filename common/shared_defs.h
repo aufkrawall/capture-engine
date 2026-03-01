@@ -26,7 +26,8 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 7: Added overlayConfigSeq seqlock counter for OverlayConfig
 // Version 8: Added DLSS state telemetry
 // Version 9: Added SharedGraphicsConfig::dlssFGFactor override field
-static constexpr uint32_t SHARED_MEMORY_VERSION = 9;
+// Version 10: Added encoder KMT texture handles for DXVK zero-copy capture
+static constexpr uint32_t SHARED_MEMORY_VERSION = 10;
 
 // Minimum supported version for backward compatibility
 static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
@@ -751,6 +752,7 @@ public:
     struct EncoderTextures {
     private:
         std::atomic<uint64_t> textureHandles_[4]{};  // NT handles from D3D11 CreateSharedHandle
+        std::atomic<uint64_t> kmtTextureHandles_[4]{};  // KMT handles from IDXGIResource::GetSharedHandle
         std::atomic<uint64_t> fenceHandle_{0};
         std::atomic<uint32_t> width_{0};
         std::atomic<uint32_t> height_{0};
@@ -767,6 +769,18 @@ public:
             if (index < 0 || index >= 4)
                 return;
             textureHandles_[index].store(val, std::memory_order_release);
+        }
+
+        // KMT handle accessors (global WDDM handles for cross-process Vulkan import)
+        uint64_t GetKmtTextureHandle(int index) const {
+            if (index < 0 || index >= 4)
+                return 0;
+            return kmtTextureHandles_[index].load(std::memory_order_acquire);
+        }
+        void SetKmtTextureHandle(int index, uint64_t val) {
+            if (index < 0 || index >= 4)
+                return;
+            kmtTextureHandles_[index].store(val, std::memory_order_release);
         }
 
         uint64_t GetFenceHandle() const {
@@ -797,8 +811,13 @@ public:
             format_.store(val, std::memory_order_release);
         }
 
-        std::atomic<bool> ready{false};  // True when handles are valid
+        std::atomic<bool> ready{false};     // True when NT handles are valid
+        std::atomic<bool> kmtReady{false};  // True when KMT handles are valid
     } encoderTextures;
+
+    // Layer -> Encoder: when true, encoder uses its own textures directly
+    // instead of opening shared handles from ring buffer (DXVK zero-copy path)
+    std::atomic<bool> useEncoderTextures{false};
 
     // Frame ring buffer for lossless capture
     FrameRingBuffer frameRing;

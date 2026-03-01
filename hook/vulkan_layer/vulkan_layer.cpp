@@ -883,19 +883,17 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
                 sd->extent.width, sd->extent.height);
         } else {
             if (preferDX9Path) {
-                static int dxvkOverlaySkipLogCount = 0;
-                if (dxvkOverlaySkipLogCount < 6) {
-                    LayerLog("Vulkan Layer: DXVK d3d9 wrapper detected, skipping Vulkan overlay init (%ux%u)",
-                             sd->extent.width, sd->extent.height);
-                    dxvkOverlaySkipLogCount++;
-                }
+                // DXVK d3d9: skip overlay (DX9 hook handles it) but still init capture for zero-copy
+                LayerLog("Vulkan Layer: DXVK d3d9 - skipping overlay, initializing Vulkan capture (%ux%u)",
+                         sd->extent.width, sd->extent.height);
+                InitializeCapture(device, *pSwapchain, sd->format, sd->extent, count);
             } else {
                 InitializeOverlay(device, *pSwapchain, sd->format, sd->extent, count, sd->images.data(), window);
                 LayerLog(
                     "Vulkan Layer: InitializeOverlay returned, registering "
                     "swapchain");
+                InitializeCapture(device, *pSwapchain, sd->format, sd->extent, count);
             }
-            InitializeCapture(device, *pSwapchain, sd->format, sd->extent, count);
         }
 
         VulkanLayerState::Get().RegisterSwapchain(*pSwapchain, sd);
@@ -939,6 +937,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         shm->runtimeState.vulkanPresentTick.store(GetTickCount64(), std::memory_order_release);
     }
 
+    const bool preferDX9Path = IsDXVKD3D9WrapperLoaded();
     bool isFirstHook = !g_InPresentHook;
     g_InPresentHook = true;
 
@@ -963,7 +962,6 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     VkSemaphore currentWait =
         (pPresentInfo && pPresentInfo->waitSemaphoreCount > 0) ? pPresentInfo->pWaitSemaphores[0] : VK_NULL_HANDLE;
     bool modified = false;
-    const bool preferDX9Path = IsDXVKD3D9WrapperLoaded();
     if (preferDX9Path) {
         static int dxvkPresentSkipLogCount = 0;
         if (dxvkPresentSkipLogCount < 6) {

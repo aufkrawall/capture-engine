@@ -310,46 +310,45 @@ bool VideoEncoder::CreateSharedCaptureTextures(uint32_t w, uint32_t h, uint32_t 
 
     DLL_Log("[VideoEncoder] Creating shared capture textures: %dx%d format=%d", w, h, fmt);
 
-    // Create 4 shared textures with NT handles
+    // Create 4 KMT-only shared textures (global WDDM handles for DXVK Vulkan import)
+    // AND 4 NT-handle shared textures (for non-DXVK Vulkan import)
     for (int i = 0; i < 4; i++) {
-        D3D11_TEXTURE2D_DESC desc = {};
-        desc.Width = w;
-        desc.Height = h;
-        desc.MipLevels = 1;
-        desc.ArraySize = 1;
-        desc.Format = (DXGI_FORMAT)fmt;
-        desc.SampleDesc.Count = 1;
-        desc.SampleDesc.Quality = 0;
-        desc.Usage = D3D11_USAGE_DEFAULT;
-        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-        desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED;
+        // KMT-only texture (D3D11_RESOURCE_MISC_SHARED only)
+        D3D11_TEXTURE2D_DESC kmtDesc = {};
+        kmtDesc.Width = w;
+        kmtDesc.Height = h;
+        kmtDesc.MipLevels = 1;
+        kmtDesc.ArraySize = 1;
+        kmtDesc.Format = (DXGI_FORMAT)fmt;
+        kmtDesc.SampleDesc.Count = 1;
+        kmtDesc.SampleDesc.Quality = 0;
+        kmtDesc.Usage = D3D11_USAGE_DEFAULT;
+        kmtDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+        kmtDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
 
-        HRESULT hr = d3d11Device->CreateTexture2D(&desc, nullptr, &sharedCaptureTextures[i]);
+        HRESULT hr = d3d11Device->CreateTexture2D(&kmtDesc, nullptr, &sharedCaptureTextures[i]);
         if (FAILED(hr)) {
-            DLL_Log("[VideoEncoder] Failed to create shared texture %d: HR=%x", i, hr);
+            DLL_Log("[VideoEncoder] Failed to create KMT shared texture %d: HR=%x", i, hr);
             return false;
         }
 
-        // Get IDXGIResource1 and create shared handle
-        IDXGIResource1* dxgiRes = nullptr;
+        // Get KMT handle via IDXGIResource::GetSharedHandle
+        IDXGIResource* dxgiRes = nullptr;
         hr = sharedCaptureTextures[i]->QueryInterface(IID_PPV_ARGS(&dxgiRes));
-        if (FAILED(hr)) {
-            DLL_Log("[VideoEncoder] Failed to get IDXGIResource1 for texture %d: HR=%x", i, hr);
+        if (FAILED(hr) || !dxgiRes) {
+            DLL_Log("[VideoEncoder] Failed to get IDXGIResource for KMT texture %d: HR=%x", i, hr);
             return false;
         }
 
-        hr = dxgiRes->CreateSharedHandle(nullptr,  // Use default security
-                                         DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
-                                         nullptr,  // No name
-                                         &sharedCaptureHandles[i]);
+        hr = dxgiRes->GetSharedHandle(&sharedCaptureKmtHandles[i]);
         dxgiRes->Release();
 
-        if (FAILED(hr)) {
-            DLL_Log("[VideoEncoder] Failed to create shared handle for texture %d: HR=%x", i, hr);
+        if (FAILED(hr) || !sharedCaptureKmtHandles[i]) {
+            DLL_Log("[VideoEncoder] Failed to get KMT handle for texture %d: HR=%x", i, hr);
             return false;
         }
 
-        DLL_Log("[VideoEncoder] Created shared texture %d, handle=%p", i, sharedCaptureHandles[i]);
+        DLL_Log("[VideoEncoder] Created KMT shared texture %d, kmtHandle=%p", i, sharedCaptureKmtHandles[i]);
     }
 
     // Create event for CPU-side fence waiting
@@ -379,14 +378,15 @@ bool VideoEncoder::CreateSharedCaptureTextures(uint32_t w, uint32_t h, uint32_t 
     if (sharedMem) {
         this->pSharedMem = sharedMem;
         for (int i = 0; i < 4; i++) {
-            sharedMem->encoderTextures.SetTextureHandle(i, (uint64_t)sharedCaptureHandles[i]);
+            sharedMem->encoderTextures.SetKmtTextureHandle(i, (uint64_t)sharedCaptureKmtHandles[i]);
         }
         sharedMem->encoderTextures.SetFenceHandle((uint64_t)sharedCaptureFenceHandle);
         sharedMem->encoderTextures.SetWidth(w);
         sharedMem->encoderTextures.SetHeight(h);
         sharedMem->encoderTextures.SetFormat(fmt);
+        sharedMem->encoderTextures.kmtReady.store(true, std::memory_order_release);
         sharedMem->encoderTextures.ready.store(true, std::memory_order_release);
-        DLL_Log("[VideoEncoder] Published encoder textures to shared memory");
+        DLL_Log("[VideoEncoder] Published encoder KMT textures to shared memory");
     }
 
     sharedCaptureTexturesCreated = true;
@@ -699,7 +699,10 @@ bool VideoEncoder::EnsureDevice() {
     extern ID3D11Device* g_SharedD3D11Device;
     extern ID3D11DeviceContext* g_SharedD3D11Context;
 
-    if ((luidLow == 0 && luidHigh == 0) && g_SharedD3D11Device) {
+    // Skip device creation if already preserved (DXVK zero-copy across recordings)
+    if (d3d11Device && d3d11Context) {
+        DLL_Log("[VideoEncoder] Reusing existing D3D11 device (preserved for encoder textures)");
+    } else if ((luidLow == 0 && luidHigh == 0) && g_SharedD3D11Device) {
         // Framegrab mode - use the shared device that ScreenCapture also uses
         DLL_Log("[VideoEncoder] Framegrab using dimensions: %dx%d", width, height);
         g_SharedD3D11Device->QueryInterface(IID_PPV_ARGS(&d3d11Device));
@@ -1421,6 +1424,61 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
             }
         }
     } else {
+        // Check if layer told us to use our own encoder textures directly
+        // (DXVK zero-copy path: layer imported our KMT handles into Vulkan)
+        if (pSharedMem && pSharedMem->useEncoderTextures.load(std::memory_order_acquire) &&
+            sharedCaptureTexturesCreated) {
+            // Find which encoder texture matches by KMT handle
+            int matchIdx = -1;
+            for (int i = 0; i < 4; i++) {
+                if (sharedCaptureKmtHandles[i] == sharedHandle) {
+                    matchIdx = i;
+                    break;
+                }
+            }
+            if (matchIdx >= 0) {
+                bgraTex = sharedCaptureTextures[matchIdx];
+            }
+            if (bgraTex) {
+                bgraTex->AddRef();
+                // Still need the fence
+                if (fenceValue > 0 && fenceHandle != nullptr && fenceHandle != INVALID_HANDLE_VALUE) {
+                    if (cachedD3D11Fence && cachedFenceHandle == fenceHandle) {
+                        d3d11Fence = cachedD3D11Fence;
+                        d3d11Fence->AddRef();
+                    } else {
+                        ce::HandleGuard hProcess(OpenProcess(PROCESS_DUP_HANDLE, FALSE, sourcePid));
+                        HRESULT hr = E_FAIL;
+                        if (hProcess) {
+                            // Try direct first (D3D12_FENCE from Vulkan)
+                            hr = d3d11Device->OpenSharedFence(fenceHandle, IID_PPV_ARGS(&d3d11Fence));
+                            if (FAILED(hr)) {
+                                ce::HandleGuard dupFence;
+                                if (DuplicateHandle(hProcess.get(), fenceHandle, GetCurrentProcess(),
+                                                    dupFence.addressof(), 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+                                    hr = d3d11Device->OpenSharedFence(dupFence.get(), IID_PPV_ARGS(&d3d11Fence));
+                                }
+                            }
+                        }
+                        if (d3d11Fence) {
+                            if (cachedD3D11Fence)
+                                cachedD3D11Fence->Release();
+                            cachedD3D11Fence = d3d11Fence;
+                            cachedD3D11Fence->AddRef();
+                            cachedFenceHandle = fenceHandle;
+                            cachedSourcePid = sourcePid;
+                        }
+                    }
+                }
+                if (encodeFrameCounter < 10) {
+                    DLL_Log("[VideoEncoder] Frame %d: Using encoder-owned texture[%d] directly (DXVK zero-copy)",
+                            encodeFrameCounter, matchIdx);
+                }
+            }
+        }
+
+        if (!bgraTex) {
+        // Standard shared handle path
         HANDLE sharedHandleAlt = NormalizeSourceHandleForWow64(sharedHandle, sourcePid);
         HANDLE fenceHandleAlt = NormalizeSourceHandleForWow64(fenceHandle, sourcePid);
         const bool hasSharedAlt = (sharedHandleAlt != sharedHandle);
@@ -1563,6 +1621,14 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
             // 2. Open Texture (We know it's missing if we are here)
             ce::HandleGuard dupTex;
             HRESULT hr = E_FAIL;
+            HRESULT hrNtDirect = E_FAIL;
+            HRESULT hrNtDup = E_FAIL;
+            HRESULT hrKmtDup = E_FAIL;
+            HRESULT hrNtAltDirect = E_FAIL;
+            HRESULT hrNtAltDup = E_FAIL;
+            HRESULT hrKmtAltDup = E_FAIL;
+            HRESULT hrKmtDirect = E_FAIL;
+            HRESULT hrKmtAltDirect = E_FAIL;
 
             if (encodeFrameCounter < 10) {
                 DLL_Log(
@@ -1577,6 +1643,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
             } else {
                 // Try direct NT handle first (for Vulkan layer - these may not support DuplicateHandle)
                 hr = d3d11Device->OpenSharedResource1(sharedHandle, IID_PPV_ARGS(&bgraTex));
+                hrNtDirect = hr;
                 if (FAILED(hr) && encodeFrameCounter < 10) {
                     DLL_Log(
                         "[VideoEncoder] Frame %d: OpenSharedResource1(direct=%p) "
@@ -1590,11 +1657,20 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                                         DUPLICATE_SAME_ACCESS)) {
                         // Use OpenSharedResource1 for NT handles
                         hr = d3d11Device->OpenSharedResource1(dupTex.get(), IID_PPV_ARGS(&bgraTex));
+                        hrNtDup = hr;
                         if (FAILED(hr) && encodeFrameCounter < 10) {
                             DLL_Log(
                                 "[VideoEncoder] Frame %d: OpenSharedResource1(dup=%p) "
                                 "failed HR=%x. Falling back to KMT...",
                                 encodeFrameCounter, dupTex.get(), hr);
+                        }
+                        if (FAILED(hr)) {
+                            hr = d3d11Device->OpenSharedResource(dupTex.get(), IID_PPV_ARGS(&bgraTex));
+                            hrKmtDup = hr;
+                            if (SUCCEEDED(hr) && encodeFrameCounter < 10) {
+                                DLL_Log("[VideoEncoder] Frame %d: Opened duplicated handle %p via KMT path",
+                                        encodeFrameCounter, dupTex.get());
+                            }
                         }
                     }
                 }
@@ -1603,16 +1679,23 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                     ce::HandleGuard dupTexAlt;
                     // Try direct first
                     hr = d3d11Device->OpenSharedResource1(sharedHandleAlt, IID_PPV_ARGS(&bgraTex));
+                    hrNtAltDirect = hr;
                     if (FAILED(hr)) {
                         if (DuplicateHandle(hProcess.get(), sharedHandleAlt, GetCurrentProcess(), dupTexAlt.addressof(),
                                             0, FALSE, DUPLICATE_SAME_ACCESS)) {
                             hr = d3d11Device->OpenSharedResource1(dupTexAlt.get(), IID_PPV_ARGS(&bgraTex));
+                            hrNtAltDup = hr;
+                            if (FAILED(hr)) {
+                                hr = d3d11Device->OpenSharedResource(dupTexAlt.get(), IID_PPV_ARGS(&bgraTex));
+                                hrKmtAltDup = hr;
+                            }
                         }
                     }
                 }
 
                 if (FAILED(hr)) {
                     hr = d3d11Device->OpenSharedResource(sharedHandle, IID_PPV_ARGS(&bgraTex));
+                    hrKmtDirect = hr;
                     if (SUCCEEDED(hr) && encodeFrameCounter < 10) {
                         DLL_Log("[VideoEncoder] Frame %d: Opened handle %p via KMT path", encodeFrameCounter,
                                 sharedHandle);
@@ -1620,6 +1703,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                 }
                 if (FAILED(hr) && hasSharedAlt) {
                     hr = d3d11Device->OpenSharedResource(sharedHandleAlt, IID_PPV_ARGS(&bgraTex));
+                    hrKmtAltDirect = hr;
                     if (SUCCEEDED(hr) && encodeFrameCounter < 10) {
                         DLL_Log("[VideoEncoder] Frame %d: Opened alt handle %p via KMT path", encodeFrameCounter,
                                 sharedHandleAlt);
@@ -1641,6 +1725,9 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                 if (DuplicateHandle(hProcess.get(), sharedHandle, GetCurrentProcess(), dupTexRetry.addressof(), 0,
                                     FALSE, DUPLICATE_SAME_ACCESS)) {
                     hr = d3d11Device->OpenSharedResource1(dupTexRetry.get(), IID_PPV_ARGS(&bgraTex));
+                    if (FAILED(hr)) {
+                        hr = d3d11Device->OpenSharedResource(dupTexRetry.get(), IID_PPV_ARGS(&bgraTex));
+                    }
                 }
                 if (FAILED(hr)) {
                     hr = d3d11Device->OpenSharedResource(sharedHandle, IID_PPV_ARGS(&bgraTex));
@@ -1651,6 +1738,13 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
             }
 
             if (FAILED(hr)) {
+                static std::atomic<int> s_openDetailLogCount{0};
+                if (s_openDetailLogCount.fetch_add(1, std::memory_order_relaxed) < 16) {
+                    DLL_Log("[VideoEncoder] Frame %d: Open detail h=%p alt=%p ntDir=%x ntDup=%x ntAltDir=%x ntAltDup=%x "
+                            "kmtDup=%x kmtAltDup=%x kmtDir=%x kmtAltDir=%x",
+                            encodeFrameCounter, sharedHandle, sharedHandleAlt, hrNtDirect, hrNtDup, hrNtAltDirect,
+                            hrNtAltDup, hrKmtDup, hrKmtAltDup, hrKmtDirect, hrKmtAltDirect);
+                }
                 DLL_Log(
                     "[VideoEncoder] Frame %d: Failed to OpenSharedResource (NT/KMT) "
                     "HR=%x, handle=%p, sourcePid=%u, format=%d",
@@ -1685,6 +1779,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
             // hProcess, dupTex, dupFence are auto-closed by RAII here
             cacheSlot = targetSlot;
         }
+        }  // End of if (!bgraTex) - standard shared handle path
     }  // End of isShmem else block
 
     // 2. Wait on Synchronization using D3D11 Fence
@@ -2356,6 +2451,11 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
 }
 
 void VideoEncoder::CleanupResources() {
+    // Check if we should preserve encoder-owned textures (DXVK zero-copy path).
+    // The Vulkan layer imported our KMT handles — destroying them invalidates the pipeline.
+    bool preserveEncoderTextures =
+        pSharedMem && pSharedMem->useEncoderTextures.load(std::memory_order_acquire) && sharedCaptureTexturesCreated;
+
     // Free any queued packets (defensive)
     {
         std::lock_guard<std::mutex> lock(queueMutex);
@@ -2379,19 +2479,30 @@ void VideoEncoder::CleanupResources() {
         codecCtx = nullptr;
     }
 
-    if (d3d11Context) {
-        d3d11Context->Release();
-        d3d11Context = nullptr;
-    }
-    if (d3d11Device) {
-        d3d11Device->Release();
-        d3d11Device = nullptr;
-    }
+    if (preserveEncoderTextures) {
+        // Keep D3D11 device/context alive — textures are bound to it.
+        // Only free FFmpeg HW contexts; they'll be recreated in EnsureDevice().
+        if (d3d11DeviceCtx)
+            av_buffer_unref(&d3d11DeviceCtx);
+        if (d3d11FramesCtx)
+            av_buffer_unref(&d3d11FramesCtx);
+        // Reset initDone so EnsureDevice() rebuilds FFmpeg contexts but reuses the device
+        initDone = false;
+    } else {
+        if (d3d11Context) {
+            d3d11Context->Release();
+            d3d11Context = nullptr;
+        }
+        if (d3d11Device) {
+            d3d11Device->Release();
+            d3d11Device = nullptr;
+        }
 
-    if (d3d11DeviceCtx)
-        av_buffer_unref(&d3d11DeviceCtx);
-    if (d3d11FramesCtx)
-        av_buffer_unref(&d3d11FramesCtx);
+        if (d3d11DeviceCtx)
+            av_buffer_unref(&d3d11DeviceCtx);
+        if (d3d11FramesCtx)
+            av_buffer_unref(&d3d11FramesCtx);
+    }
 
     if (cudaDeviceCtx)
         av_buffer_unref(&cudaDeviceCtx);
@@ -2417,25 +2528,27 @@ void VideoEncoder::CleanupResources() {
     cachedFenceHandle = nullptr;
     cachedSourcePid = 0;
 
-    for (int i = 0; i < 8; i++) {
-        if (sharedCaptureTextures[i]) {
-            sharedCaptureTextures[i]->Release();
-            sharedCaptureTextures[i] = nullptr;
+    if (!preserveEncoderTextures) {
+        for (int i = 0; i < 8; i++) {
+            if (sharedCaptureTextures[i]) {
+                sharedCaptureTextures[i]->Release();
+                sharedCaptureTextures[i] = nullptr;
+            }
+            if (sharedCaptureHandles[i]) {
+                CloseHandle(sharedCaptureHandles[i]);
+                sharedCaptureHandles[i] = nullptr;
+            }
         }
-        if (sharedCaptureHandles[i]) {
-            CloseHandle(sharedCaptureHandles[i]);
-            sharedCaptureHandles[i] = nullptr;
+        if (sharedCaptureFence) {
+            sharedCaptureFence->Release();
+            sharedCaptureFence = nullptr;
         }
+        if (sharedCaptureFenceHandle) {
+            CloseHandle(sharedCaptureFenceHandle);
+            sharedCaptureFenceHandle = nullptr;
+        }
+        sharedCaptureTexturesCreated = false;
     }
-    if (sharedCaptureFence) {
-        sharedCaptureFence->Release();
-        sharedCaptureFence = nullptr;
-    }
-    if (sharedCaptureFenceHandle) {
-        CloseHandle(sharedCaptureFenceHandle);
-        sharedCaptureFenceHandle = nullptr;
-    }
-    sharedCaptureTexturesCreated = false;
 
     if (bgraStagingTexture) {
         bgraStagingTexture->Release();

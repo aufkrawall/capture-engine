@@ -820,7 +820,8 @@ static DXGI_FORMAT D3D9ToDXGIFormat(D3DFORMAT format) {
         case D3DFMT_A8R8G8B8:
             return DXGI_FORMAT_B8G8R8A8_UNORM;
         case D3DFMT_X8R8G8B8:
-            return DXGI_FORMAT_B8G8R8X8_UNORM;
+            // Use BGRA8 for cross-process shared texture compatibility in D3D11 media path.
+            return DXGI_FORMAT_B8G8R8A8_UNORM;
         case D3DFMT_A2B10G10R10:
             return DXGI_FORMAT_R10G10B10A2_UNORM;
         default:
@@ -1201,6 +1202,21 @@ public:
         // Get adapter identifier
         D3DADAPTER_IDENTIFIER9 adapterIdent;
         d3d9->GetAdapterIdentifier(D3DADAPTER_DEFAULT, 0, &adapterIdent);
+
+        // Try to resolve exact adapter LUID via D3D9Ex (most reliable mapping to DXGI adapter).
+        LUID targetLuid = {};
+        bool hasTargetLuid = false;
+        IDirect3D9Ex* d3d9ExRoot = nullptr;
+        if (SUCCEEDED(d3d9->QueryInterface(__uuidof(IDirect3D9Ex), (void**)&d3d9ExRoot)) && d3d9ExRoot) {
+            D3DDEVICE_CREATION_PARAMETERS params = {};
+            if (SUCCEEDED(d3d9Device->GetCreationParameters(&params))) {
+                if (SUCCEEDED(d3d9ExRoot->GetAdapterLUID(params.AdapterOrdinal, &targetLuid))) {
+                    hasTargetLuid = true;
+                    EarlyLog("DX9: Resolved D3D9Ex adapter LUID %08x:%08x", targetLuid.HighPart, targetLuid.LowPart);
+                }
+            }
+            d3d9ExRoot->Release();
+        }
         d3d9->Release();
 
         // Find matching DXGI adapter
@@ -1208,14 +1224,27 @@ public:
         for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; i++) {
             DXGI_ADAPTER_DESC1 desc;
             adapter->GetDesc1(&desc);
+            bool matched = false;
+            if (hasTargetLuid) {
+                matched = (desc.AdapterLuid.LowPart == targetLuid.LowPart &&
+                           desc.AdapterLuid.HighPart == targetLuid.HighPart);
+            } else {
+                // Fallback when D3D9Ex LUID is unavailable.
+                matched = true;
+            }
 
-            // Store LUID
-            luidLow = desc.AdapterLuid.LowPart;
-            luidHigh = desc.AdapterLuid.HighPart;
+            if (matched) {
+                // Store LUID
+                luidLow = desc.AdapterLuid.LowPart;
+                luidHigh = desc.AdapterLuid.HighPart;
 
-            // Initialize SystemMetricsCollector with adapter LUID for GPU stats
-            SystemMetricsCollector::Get().Initialize(luidLow, luidHigh);
-            break;  // Use first adapter for now
+                // Initialize SystemMetricsCollector with adapter LUID for GPU stats
+                SystemMetricsCollector::Get().Initialize(luidLow, luidHigh);
+                break;
+            }
+
+            adapter->Release();
+            adapter = nullptr;
         }
         factory->Release();
 
@@ -1432,11 +1461,16 @@ public:
                 EarlyLog("DX9: GPU intermediate staging enabled");
             }
             useD3D11Staging = true;
+            char exePath[MAX_PATH] = {};
+            GetModuleFileNameA(nullptr, exePath, MAX_PATH);
+            const char* exeName = strrchr(exePath, '\\');
+            exeName = exeName ? (exeName + 1) : exePath;
+            // Trine3 DXVK SHMEM fallback removed - Vulkan layer handles zero-copy capture
             // Fall through to create D3D11 ring buffer shared textures (steps 10+)
         }
 
         // Steps 8-9: D3D9→D3D11 interop (only for zero-copy path with D3D9Ex)
-        if (!useD3D11Staging) {
+        if (!useD3D11Staging && !useShmem) {
             EarlyLog("DX9: Init Step 8: GetSurfaceLevel");
             hr = sharedTexture9->GetSurfaceLevel(0, &copySurface);
             if (FAILED(hr)) {
@@ -1458,77 +1492,79 @@ public:
         }
 
         EarlyLog("DX9: Init Step 10: Create Ring Buffer Shared Textures");
-        D3D11_TEXTURE2D_DESC texDesc = {};
-        texDesc.Width = width;
-        texDesc.Height = height;
-        texDesc.MipLevels = 1;
-        texDesc.ArraySize = 1;
-        texDesc.Format = (DXGI_FORMAT)format;
-        texDesc.SampleDesc.Count = 1;
-        texDesc.Usage = D3D11_USAGE_DEFAULT;
-        texDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-        // Use NT handles for cross-process sharing. DXVK returns Vulkan-internal IDs
-        // from GetSharedHandle (legacy KMT path) which the encoder cannot open.
-        // IDXGIResource1::CreateSharedHandle always produces a real Win32 NT HANDLE
-        // backed by the WDDM driver, regardless of whether the device is DXVK.
-        texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
+        bool success = true;
+        if (!useShmem) {
+            D3D11_TEXTURE2D_DESC texDesc = {};
+            texDesc.Width = width;
+            texDesc.Height = height;
+            texDesc.MipLevels = 1;
+            texDesc.ArraySize = 1;
+            texDesc.Format = (DXGI_FORMAT)format;
+            texDesc.SampleDesc.Count = 1;
+            texDesc.Usage = D3D11_USAGE_DEFAULT;
+            texDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+            // Use NT handles for cross-process sharing.
+            // SHARED_NTHANDLE must be paired with SHARED_KEYEDMUTEX for OpenSharedResource1 compatibility.
+            texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
 
-        // Try to enable fences
-        ID3D11Device5* device5 = nullptr;
-        HRESULT qiHr = d3d11Device->QueryInterface(IID_PPV_ARGS(&device5));
-        if (SUCCEEDED(qiHr)) {
-            HRESULT fenceHr = device5->CreateFence(0, D3D11_FENCE_FLAG_SHARED, IID_PPV_ARGS(&fence));
-            if (SUCCEEDED(fenceHr)) {
-                if (SUCCEEDED(d3d11Context->QueryInterface(IID_PPV_ARGS(&context4)))) {
-                    HANDLE hTemp = NULL;
-                    if (SUCCEEDED(fence->CreateSharedHandle(NULL, GENERIC_ALL, NULL, &hTemp))) {
-                        sharedFenceHandle.store(hTemp, std::memory_order_release);
-                        useFences = true;
-                        EarlyLog("DX9: ID3D11Fence support enabled");
+            // Try to enable fences
+            ID3D11Device5* device5 = nullptr;
+            HRESULT qiHr = d3d11Device->QueryInterface(IID_PPV_ARGS(&device5));
+            if (SUCCEEDED(qiHr)) {
+                HRESULT fenceHr = device5->CreateFence(0, D3D11_FENCE_FLAG_SHARED, IID_PPV_ARGS(&fence));
+                if (SUCCEEDED(fenceHr)) {
+                    if (SUCCEEDED(d3d11Context->QueryInterface(IID_PPV_ARGS(&context4)))) {
+                        HANDLE hTemp = NULL;
+                        if (SUCCEEDED(fence->CreateSharedHandle(NULL, GENERIC_ALL, NULL, &hTemp))) {
+                            sharedFenceHandle.store(hTemp, std::memory_order_release);
+                            useFences = true;
+                            EarlyLog("DX9: ID3D11Fence support enabled");
+                        } else {
+                            EarlyLog("DX9: Fence CreateSharedHandle failed");
+                        }
                     } else {
-                        EarlyLog("DX9: Fence CreateSharedHandle failed");
+                        EarlyLog("DX9: ID3D11DeviceContext4 QI failed");
                     }
                 } else {
-                    EarlyLog("DX9: ID3D11DeviceContext4 QI failed");
+                    EarlyLog("DX9: CreateFence failed (hr=0x%08x)", fenceHr);
                 }
+                device5->Release();
             } else {
-                EarlyLog("DX9: CreateFence failed (hr=0x%08x)", fenceHr);
+                EarlyLog(
+                    "DX9: ID3D11Device5 QI failed (hr=0x%08x), "
+                    "fence not available (feature level=0x%x)",
+                    qiHr, d3d11Device->GetFeatureLevel());
             }
-            device5->Release();
+
+            if (!useFences) {
+                EarlyLog("DX9: Fence not available, using synchronous copy");
+            }
+
+            for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
+                hr = d3d11Device->CreateTexture2D(&texDesc, NULL, &sharedTextures[i]);
+                if (SUCCEEDED(hr)) {
+                    IDXGIResource1* pResource1 = nullptr;
+                    if (SUCCEEDED(sharedTextures[i]->QueryInterface(IID_PPV_ARGS(&pResource1)))) {
+                        HANDLE hTemp = NULL;
+                        pResource1->CreateSharedHandle(NULL, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
+                                                       NULL, &hTemp);
+                        sharedTextureHandles[i].store(hTemp, std::memory_order_release);
+                        pResource1->Release();
+                    }
+                } else {
+                    // NT handle flag not supported on older hardware; retry with legacy KMT
+                    if (hr == E_INVALIDARG && (texDesc.MiscFlags & D3D11_RESOURCE_MISC_SHARED_NTHANDLE)) {
+                        EarlyLog("DX9: NT Handle not supported, falling back to legacy shared textures");
+                        texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+                        i--;
+                        continue;
+                    }
+                    success = false;
+                    EarlyLog("DX9: Failed to create texture %d (hr=0x%08x)", i, hr);
+                }
+            }
         } else {
-            EarlyLog(
-                "DX9: ID3D11Device5 QI failed (hr=0x%08x), "
-                "fence not available (feature level=0x%x)",
-                qiHr, d3d11Device->GetFeatureLevel());
-        }
-
-        if (!useFences) {
-            EarlyLog("DX9: Fence not available, using synchronous copy");
-        }
-
-        bool success = true;
-        for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
-            hr = d3d11Device->CreateTexture2D(&texDesc, NULL, &sharedTextures[i]);
-            if (SUCCEEDED(hr)) {
-                IDXGIResource1* pResource1 = nullptr;
-                if (SUCCEEDED(sharedTextures[i]->QueryInterface(IID_PPV_ARGS(&pResource1)))) {
-                    HANDLE hTemp = NULL;
-                    pResource1->CreateSharedHandle(NULL, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, NULL,
-                                                   &hTemp);
-                    sharedTextureHandles[i].store(hTemp, std::memory_order_release);
-                    pResource1->Release();
-                }
-            } else {
-                // NT handle flag not supported on older hardware; retry with legacy KMT
-                if (hr == E_INVALIDARG && (texDesc.MiscFlags & D3D11_RESOURCE_MISC_SHARED_NTHANDLE)) {
-                    EarlyLog("DX9: NT Handle not supported, falling back to legacy shared textures");
-                    texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
-                    i--;
-                    continue;
-                }
-                success = false;
-                EarlyLog("DX9: Failed to create texture %d (hr=0x%08x)", i, hr);
-            }
+            EarlyLog("DX9: SHMEM transport active - skipping D3D11 shared handle ring setup");
         }
 
         if (success) {
@@ -1544,7 +1580,7 @@ public:
             }
 
             HookLog("DX9 Capture Initialized (%s%s): %dx%d (LUID: %08x)",
-                    useD3D11Staging ? "D3D11-STAGING" : "ZERO-COPY",
+                    useShmem ? "SHMEM" : (useD3D11Staging ? "D3D11-STAGING" : "ZERO-COPY"),
                     (useD3D11Staging && captureThreadRunning) ? "+ASYNC" : "", width, height, luidLow);
         } else {
             CleanupDX9();
@@ -1780,7 +1816,7 @@ public:
 
             stagingCurrentDepth = stagingPending;
         } else if (useShmem) {
-            // Legacy shmem capture path (shouldn't normally be reached anymore)
+            // SHMEM capture fallback path (used for Trine3 DXVK compatibility).
             int idx = shmemCurTex;
 
             HRESULT hr = device->GetRenderTargetData(backBuffer, shmemSurfaces[idx]);
@@ -1813,6 +1849,12 @@ public:
                             shmBuf->writeSlot.store(slot);
                             shmBuf->mark_ready(slot);
                             SignalFrameReady(g_IPC, 100 + slot, qpc.QuadPart, 0);
+                        }
+                    } else {
+                        static bool shmemUnavailableLogged = false;
+                        if (!shmemUnavailableLogged) {
+                            HookLogImportant("DX9: SHMEM transport unavailable (mapping not ready), frame dropped");
+                            shmemUnavailableLogged = true;
                         }
                     }
                     shmemSurfaces[idx]->UnlockRect();
@@ -2220,6 +2262,14 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
 
         SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
         bool captureIncludeOverlay = shm ? shm->overlayConfig.captureIncludeOverlay : true;
+        static int isTrine3Process = -1;
+        if (isTrine3Process < 0) {
+            char exePath[MAX_PATH] = {};
+            GetModuleFileNameA(nullptr, exePath, MAX_PATH);
+            const char* exeName = strrchr(exePath, '\\');
+            exeName = exeName ? (exeName + 1) : exePath;
+            isTrine3Process = (_stricmp(exeName, "trine3.exe") == 0) ? 1 : 0;
+        }
         const bool dxvkVulkanCapture =
             IsDXVKD3D9WrapperLoaded() && shm && shm->runtimeState.vulkanLayerActive.load(std::memory_order_acquire);
         static bool dxvkVulkanCaptureLogged = false;

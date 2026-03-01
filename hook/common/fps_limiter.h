@@ -148,6 +148,12 @@ public:
             return;
 
         bool isRecording = shm->runtimeState.isRecording;
+        bool captureSyncEnabled = shm->fpsLimiter.GetCaptureSyncEnabled();
+        int captureSyncMultiplier = shm->fpsLimiter.GetCaptureSyncMultiplier();
+        bool generalEnabled = shm->fpsLimiter.GetGeneralEnabled();
+        int generalFps = shm->fpsLimiter.GetGeneralFps();
+        int captureFps = shm->fpsLimiter.GetCaptureFps();
+        bool useVFR = shm->fpsLimiter.GetUseVFR();
 
         // Publish session ID once — use QPC ticks for better entropy
         if (!sessionIdPublished) {
@@ -163,21 +169,21 @@ public:
         // Check if limiter should be active
         bool limiterActive = false;
         int targetFps = 0;
+        bool usingCaptureSync = false;
 
-        if (isRecording && shm->fpsLimiter.GetCaptureSyncEnabled()) {
-            int multiplier = shm->fpsLimiter.GetCaptureSyncMultiplier();
-            int captureFps = shm->fpsLimiter.GetCaptureFps();
-            if (captureFps > 0 && multiplier >= 1 && multiplier <= 8) {
+        if (isRecording && captureSyncEnabled) {
+            if (captureFps > 0 && captureSyncMultiplier >= 1 && captureSyncMultiplier <= 8) {
                 limiterActive = true;
-                targetFps = captureFps * multiplier;
+                targetFps = captureFps * captureSyncMultiplier;
+                usingCaptureSync = true;
             }
-        } else if (shm->fpsLimiter.GetGeneralEnabled() && shm->fpsLimiter.GetGeneralFps() > 0) {
+        } else if (generalEnabled && generalFps > 0) {
             limiterActive = true;
-            targetFps = shm->fpsLimiter.GetGeneralFps();
+            targetFps = generalFps;
         }
 
         // VFR Mode Passthrough: Disable limiter if VFR is active
-        if (shm->fpsLimiter.GetUseVFR()) {
+        if (useVFR) {
             limiterActive = false;
         }
 
@@ -190,14 +196,24 @@ public:
             if (!loggedInactive_) {
                 HookLog(
                     "FPS Limiter: Inactive (general_enabled=%d, generalFps=%d, "
-                    "captureSync=%d, isRecording=%d)",
-                    shm->fpsLimiter.GetGeneralEnabled(), shm->fpsLimiter.GetGeneralFps(),
-                    shm->fpsLimiter.GetCaptureSyncEnabled(), isRecording);
+                    "captureSync=%d, isRecording=%d, useVFR=%d)",
+                    generalEnabled ? 1 : 0, generalFps, captureSyncEnabled ? 1 : 0, isRecording ? 1 : 0,
+                    useVFR ? 1 : 0);
                 loggedInactive_ = true;
             }
+            loggedActive_ = false;
             return;
         }
         loggedInactive_ = false;  // Reset so transitions back to inactive are logged
+        if (!loggedActive_ || lastTargetFps_ != targetFps || lastUsedCaptureSync_ != usingCaptureSync) {
+            HookLog(
+                "FPS Limiter: Active (mode=%s, target=%d, captureFps=%d, mult=%d, general=%d/%d, isRecording=%d)",
+                usingCaptureSync ? "capture_sync" : "general", targetFps, captureFps, captureSyncMultiplier,
+                generalEnabled ? 1 : 0, generalFps, isRecording ? 1 : 0);
+            loggedActive_ = true;
+            lastTargetFps_ = targetFps;
+            lastUsedCaptureSync_ = usingCaptureSync;
+        }
 
         // Ensure 1ms timer resolution when limiter is active
         EnsureTimerResolution();
@@ -330,10 +346,13 @@ public:
         highResTimerFailed = false;
         loggedInactive_ = false;
         loggedNoEvent_ = false;
+        loggedActive_ = false;
         missedFrames = 0;
         // CRITICAL FIX: Reset per-instance log counters on shutdown
         timeoutLogCount_ = 0;
         targetLogCount_ = 0;
+        lastTargetFps_ = 0;
+        lastUsedCaptureSync_ = false;
         lastApplyReturnQpc = 0;
     }
 
@@ -349,11 +368,14 @@ private:
     bool highResTimerFailed = false;  // Fall back to polling if timer creation fails
     bool loggedInactive_ = false;     // Tracks whether the inactive log was already emitted
     bool loggedNoEvent_ = false;      // Tracks whether the no-event warning was already emitted
+    bool loggedActive_ = false;       // Tracks whether the active-state log was already emitted
     int64_t qpcFrequency = 0;
     uint32_t missedFrames = 0;  // Track frames where limiter couldn't keep up
     // CRITICAL FIX: Per-instance log counters (was static, never reset)
     int timeoutLogCount_ = 0;
     int targetLogCount_ = 0;
+    int lastTargetFps_ = 0;
+    bool lastUsedCaptureSync_ = false;
     int64_t lastApplyReturnQpc = 0;  // QPC tick when Apply() last returned from wait (dedup guard)
 };
 

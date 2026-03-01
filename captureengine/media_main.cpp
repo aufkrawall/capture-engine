@@ -148,6 +148,22 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
     uint32_t emptySpinCount = 0;
 
     while (!g_InjectCaptureShutdown && g_Recording) {
+        // Create encoder textures as soon as resolution is available (before frames arrive)
+        // This is critical for DXVK where the Vulkan layer waits for encoder KMT textures
+        static bool earlyTexturesCreated = false;
+        if (!earlyTexturesCreated && g_pSharedMem->GetWidth() > 0 && g_pSharedMem->GetHeight() > 0) {
+            if (!g_pSharedMem->encoderTextures.kmtReady.load(std::memory_order_acquire)) {
+                if (MediaEngine_CreateSharedCaptureTextures(g_pSharedMem->GetWidth(), g_pSharedMem->GetHeight(),
+                                                            g_pSharedMem->GetFormat(), g_pSharedMem)) {
+                    LogInfo("[Inject Thread] Created encoder KMT textures early: %dx%d",
+                            g_pSharedMem->GetWidth(), g_pSharedMem->GetHeight());
+                    earlyTexturesCreated = true;
+                }
+            } else {
+                earlyTexturesCreated = true;
+            }
+        }
+
         // 1. Check for new frames
         uint32_t writeIndex = g_pSharedMem->frameRing.writeIndex.load(std::memory_order_acquire);
 
@@ -903,6 +919,21 @@ int MediaProcessMain(const AppConfig& config) {
     int64_t recordingStartTime = 0;
 
     while (g_Running) {
+        // Poll for resolution availability and create encoder textures early.
+        // The Vulkan layer sets resolution when it creates the swapchain, then waits
+        // for encoder KMT textures. We must create them ASAP to avoid timeout.
+        if (g_pSharedMem && !g_pSharedMem->encoderTextures.kmtReady.load(std::memory_order_acquire)) {
+            uint32_t w = g_pSharedMem->GetWidth();
+            uint32_t h = g_pSharedMem->GetHeight();
+            uint32_t f = g_pSharedMem->GetFormat();
+            if (w > 0 && h > 0) {
+                LogInfo("[Media] Resolution available (%dx%d fmt=%d), creating encoder textures", w, h, f);
+                if (MediaEngine_CreateSharedCaptureTextures(w, h, f, g_pSharedMem)) {
+                    LogInfo("[Media] Encoder KMT textures created (main loop)");
+                }
+            }
+        }
+
         ProcessCommand cmd;
         if (ipc.PollCommand(cmd)) {
             switch (cmd) {
