@@ -4307,33 +4307,53 @@ void DX9Hook::Init() {
         }
     }
 
-    // Eagerly create a D3D9Ex factory and hook CreateDevice / CreateDeviceEx on
-    // its vtable.  COM vtables are class-level, so this hooks ALL IDirect3D9(Ex)
-    // instances — including the game's factory if it was created before injection.
-    // Combined with the injection-delay reduction (100ms for non-D3D12 games),
-    // this maximises the chance that DetourCreateDevice fires before the game
-    // calls CreateDevice, enabling the zero-copy D3D9Ex upgrade path.
+    // Eagerly create a D3D9Ex factory for device upgrade and hook CreateDevice
+    // on BOTH the plain IDirect3D9 and IDirect3D9Ex vtables.  IDirect3D9 and
+    // IDirect3D9Ex have DIFFERENT vtables, so hooking one does NOT hook the other.
+    // We must hook the plain IDirect3D9 vtable to catch games that already called
+    // Direct3DCreate9 before injection (common in manual/late injection).
     if (!s_d3d9ExForUpgrade && pD3DCreate9Ex) {
         typedef HRESULT(WINAPI * PFN_Create9Ex)(UINT, IDirect3D9Ex**);
         PFN_Create9Ex pfnCreate9Ex = (PFN_Create9Ex)pD3DCreate9Ex;
         HRESULT hr = pfnCreate9Ex(D3D_SDK_VERSION, &s_d3d9ExForUpgrade);
         if (SUCCEEDED(hr) && s_d3d9ExForUpgrade) {
             uintptr_t* vtable = *(uintptr_t**)s_d3d9ExForUpgrade;
-            // SECURITY FIX: Replaced deprecated IsBadReadPtr with basic validation
             bool vtableValid = (vtable != nullptr) && (reinterpret_cast<uintptr_t>(vtable) >= 0x10000) &&
                                (reinterpret_cast<uintptr_t>(vtable) < 0x7FFFFFFF0000);
             if (vtable && vtableValid) {
-                if (!oCreateDevice) {
-                    VTableHook::Create(&vtable[16], (void*)&DetourCreateDevice, (void**)&oCreateDevice);
-                }
                 if (!oCreateDeviceEx) {
                     VTableHook::Create(&vtable[20], (void*)&DetourCreateDeviceEx, (void**)&oCreateDeviceEx);
                 }
             }
-            EarlyLog("DX9: D3D9Ex factory pre-initialized, CreateDevice[Ex] hooked");
+            EarlyLog("DX9: D3D9Ex factory pre-initialized for zero-copy upgrade");
         } else {
             s_d3d9ExForUpgrade = nullptr;
             EarlyLog("DX9: D3D9Ex factory init failed (hr=0x%08X)", hr);
+        }
+    }
+
+    // Hook CreateDevice on the plain IDirect3D9 vtable.  This is critical for
+    // late injection: the game may have already called Direct3DCreate9() and holds
+    // a plain IDirect3D9 whose vtable is DIFFERENT from IDirect3D9Ex.  By creating
+    // a temporary IDirect3D9 and hooking its vtable, we intercept CreateDevice on
+    // ALL plain IDirect3D9 instances (vtable is shared across all instances of the
+    // same COM class).
+    if (!oCreateDevice && pD3DCreate9) {
+        // Use the trampoline (bypasses our inline hook) if available, else raw address
+        typedef IDirect3D9*(WINAPI * PFN_Create9)(UINT);
+        PFN_Create9 pfnCreate9 = oDirect3DCreate9 ? (PFN_Create9)oDirect3DCreate9 : (PFN_Create9)pD3DCreate9;
+        IDirect3D9* dummyD3D9 = pfnCreate9(D3D_SDK_VERSION);
+        if (dummyD3D9) {
+            uintptr_t* vtable = *(uintptr_t**)dummyD3D9;
+            bool vtableValid = (vtable != nullptr) && (reinterpret_cast<uintptr_t>(vtable) >= 0x10000) &&
+                               (reinterpret_cast<uintptr_t>(vtable) < 0x7FFFFFFF0000);
+            if (vtable && vtableValid) {
+                VTableHook::Create(&vtable[16], (void*)&DetourCreateDevice, (void**)&oCreateDevice);
+                EarlyLog("DX9: Plain IDirect3D9::CreateDevice hooked (vtable=%p)", (void*)vtable);
+            }
+            dummyD3D9->Release();
+        } else {
+            EarlyLog("DX9: Failed to create dummy IDirect3D9 for vtable hook");
         }
     }
 
