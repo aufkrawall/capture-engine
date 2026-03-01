@@ -3,6 +3,7 @@
 #include <d3d11_4.h>
 #include <d3d9.h>
 #include <dxgi.h>
+#include <intrin.h>
 #include <psapi.h>
 
 #include <atomic>
@@ -114,6 +115,11 @@ static bool g_active = false;
 static std::atomic<int> g_texCreated{0};
 static std::atomic<int> g_vbCreated{0};
 static std::atomic<int> g_ibCreated{0};
+static std::atomic<int> g_updateTexCalls{0};
+static std::atomic<int> g_updateTexFails{0};
+static std::atomic<int> g_texDirectLockCount{0};   // LockRect on remapped textures
+static std::atomic<int> g_surfUnlockUploadCount{0}; // UpdateTexture via SurfUnlockRect
+static std::atomic<int> g_texUnlockUploadCount{0};  // UpdateTexture via TexUnlockRect
 
 // Staging resource tracking maps
 static std::unordered_map<IDirect3DTexture9*, IDirect3DTexture9*> g_texStaging;      // DEFAULT → SYSTEMMEM
@@ -152,6 +158,10 @@ typedef HRESULT(STDMETHODCALLTYPE* SurfUnlockRect_t)(IDirect3DSurface9*);
 static SurfUnlockRect_t oSurfUnlockRect = nullptr;
 static bool g_surfHooksInstalled = false;
 
+// GetLevelDesc hook: report D3DPOOL_MANAGED for remapped textures so D3DX uses Lock path
+typedef HRESULT(STDMETHODCALLTYPE* TexGetLevelDesc_t)(IDirect3DTexture9*, UINT, D3DSURFACE_DESC*);
+static TexGetLevelDesc_t oTexGetLevelDesc = nullptr;
+
 // Original VB vtable function pointers
 typedef HRESULT(STDMETHODCALLTYPE* VBLock_t)(IDirect3DVertexBuffer9*, UINT, UINT, void**, DWORD);
 typedef HRESULT(STDMETHODCALLTYPE* VBUnlock_t)(IDirect3DVertexBuffer9*);
@@ -176,7 +186,6 @@ static bool g_ibHooksInstalled = false;
 static HRESULT STDMETHODCALLTYPE DetourSurfUnlockRect(IDirect3DSurface9* pSurf);
 
 // --- Texture hooks ---
-static std::atomic<int> g_texOpsLogged{0};
 
 static HRESULT STDMETHODCALLTYPE DetourTexLockRect(IDirect3DTexture9* pTex, UINT Level, D3DLOCKED_RECT* pRect,
                                                    const RECT* pDirtyRect, DWORD Flags) {
@@ -184,10 +193,10 @@ static HRESULT STDMETHODCALLTYPE DetourTexLockRect(IDirect3DTexture9* pTex, UINT
     if (it != g_texStaging.end()) {
         // Use direct COM call on staging (SYSTEMMEM) texture - its vtable is unhooked
         HRESULT hr = it->second->LockRect(Level, pRect, pDirtyRect, Flags);
-        int n = g_texOpsLogged.fetch_add(1, std::memory_order_relaxed);
-        if (n < 20)
-            HookLogImportant("DX9: MPF: TexLockRect pTex=%p level=%u flags=0x%x hr=0x%08X pBits=%p", pTex, Level, Flags,
-                             (unsigned)hr, pRect ? pRect->pBits : nullptr);
+        int count = g_texDirectLockCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (count <= 5 || count % 500 == 0)
+            HookLogImportant("DX9: MPF: TexLockRect #%d pTex=%p level=%u flags=0x%x hr=0x%08X", count, pTex, Level,
+                             Flags, (unsigned)hr);
         return hr;
     }
     return oTexLockRect(pTex, Level, pRect, pDirtyRect, Flags);
@@ -196,8 +205,6 @@ static HRESULT STDMETHODCALLTYPE DetourTexLockRect(IDirect3DTexture9* pTex, UINT
 static HRESULT STDMETHODCALLTYPE DetourTexUnlockRect(IDirect3DTexture9* pTex, UINT Level) {
     auto it = g_texStaging.find(pTex);
     if (it != g_texStaging.end()) {
-        int n = g_texOpsLogged.fetch_add(1, std::memory_order_relaxed);
-        if (n < 20) HookLogImportant("DX9: MPF: TexUnlockRect pTex=%p level=%u", pTex, Level);
         // Use direct COM call on staging texture
         HRESULT hr = it->second->UnlockRect(Level);
         if (SUCCEEDED(hr)) {
@@ -205,8 +212,17 @@ static HRESULT STDMETHODCALLTYPE DetourTexUnlockRect(IDirect3DTexture9* pTex, UI
             pTex->GetDevice(&dev);
             if (dev) {
                 HRESULT hrUpd = dev->UpdateTexture(it->second, pTex);
-                if (n < 20)
-                    HookLogImportant("DX9: MPF: TexUnlockRect UpdateTexture hr=0x%08X", (unsigned)hrUpd);
+                int total = g_updateTexCalls.fetch_add(1, std::memory_order_relaxed) + 1;
+                g_texUnlockUploadCount.fetch_add(1, std::memory_order_relaxed);
+                if (FAILED(hrUpd)) {
+                    int fails = g_updateTexFails.fetch_add(1, std::memory_order_relaxed);
+                    if (fails < 10)
+                        HookLogImportant(
+                            "DX9: MPF: TexUnlockRect UpdateTexture FAILED hr=0x%08X pTex=%p staging=%p level=%u",
+                            (unsigned)hrUpd, pTex, it->second, Level);
+                }
+                if (total <= 5 || total % 500 == 0)
+                    HookLogImportant("DX9: MPF: UpdateTex #%d via TexUnlock hr=0x%08X", total, (unsigned)hrUpd);
                 dev->Release();
             }
         }
@@ -239,10 +255,6 @@ static HRESULT STDMETHODCALLTYPE DetourTexGetSurfaceLevel(IDirect3DTexture9* pTe
         // Return staging surface (SYSTEMMEM) - it's lockable at any level
         // Use direct COM call on staging texture (its vtable is unhooked)
         HRESULT hr = it->second->GetSurfaceLevel(Level, ppSurface);
-        int n = g_texOpsLogged.fetch_add(1, std::memory_order_relaxed);
-        if (n < 20)
-            HookLogImportant("DX9: MPF: GetSurfaceLevel pTex=%p level=%u -> staging surf=%p hr=0x%08X", pTex, Level,
-                             ppSurface ? *ppSurface : nullptr, (unsigned)hr);
         if (SUCCEEDED(hr) && !g_surfHooksInstalled) {
             // Install surface UnlockRect hook on first staging surface obtained
             uintptr_t* surfVtable = *(uintptr_t**)*ppSurface;
@@ -271,14 +283,34 @@ static HRESULT STDMETHODCALLTYPE DetourSurfUnlockRect(IDirect3DSurface9* pSurf) 
                 stagingTex->GetDevice(&dev);
                 if (dev) {
                     HRESULT hrUpd = dev->UpdateTexture(stagingTex, it->second);
-                    int n = g_texOpsLogged.fetch_add(1, std::memory_order_relaxed);
-                    if (n < 20)
-                        HookLogImportant("DX9: MPF: SurfUnlockRect surf=%p staging=%p -> UpdateTex hr=0x%08X", pSurf,
-                                         stagingTex, (unsigned)hrUpd);
+                    int total = g_updateTexCalls.fetch_add(1, std::memory_order_relaxed) + 1;
+                    g_surfUnlockUploadCount.fetch_add(1, std::memory_order_relaxed);
+                    if (FAILED(hrUpd)) {
+                        int fails = g_updateTexFails.fetch_add(1, std::memory_order_relaxed);
+                        if (fails < 10)
+                            HookLogImportant(
+                                "DX9: MPF: SurfUnlockRect UpdateTexture FAILED hr=0x%08X surf=%p staging=%p",
+                                (unsigned)hrUpd, pSurf, stagingTex);
+                    }
+                    if (total <= 5 || total % 500 == 0)
+                        HookLogImportant("DX9: MPF: UpdateTex #%d via SurfUnlock hr=0x%08X", total, (unsigned)hrUpd);
                     dev->Release();
                 }
             }
             stagingTex->Release();  // Release the GetContainer AddRef
+        }
+    }
+    return hr;
+}
+
+// GetLevelDesc hook: report D3DPOOL_MANAGED for remapped textures so D3DX and
+// game code use Lock path instead of creating temp SYSTEMMEM textures
+static HRESULT STDMETHODCALLTYPE DetourTexGetLevelDesc(IDirect3DTexture9* pTex, UINT Level, D3DSURFACE_DESC* pDesc) {
+    HRESULT hr = oTexGetLevelDesc(pTex, Level, pDesc);
+    if (SUCCEEDED(hr) && pDesc && pDesc->Pool == D3DPOOL_DEFAULT) {
+        auto it = g_texStaging.find(pTex);
+        if (it != g_texStaging.end()) {
+            pDesc->Pool = D3DPOOL_MANAGED;
         }
     }
     return hr;
@@ -292,9 +324,11 @@ static void InstallTextureHooks(IDirect3DTexture9* pTex) {
         VTableHook::Create(&vtable[20], (void*)&DetourTexUnlockRect, (void**)&oTexUnlockRect) == VTableHook::Success &&
         VTableHook::Create(&vtable[18], (void*)&DetourTexGetSurfaceLevel, (void**)&oTexGetSurfaceLevel) ==
             VTableHook::Success &&
+        VTableHook::Create(&vtable[17], (void*)&DetourTexGetLevelDesc, (void**)&oTexGetLevelDesc) ==
+            VTableHook::Success &&
         VTableHook::Create(&vtable[2], (void*)&DetourTexRelease, (void**)&oTexRelease) == VTableHook::Success) {
         g_texHooksInstalled = true;
-        HookLogImportant("DX9: Managed pool fix: texture hooks installed");
+        HookLogImportant("DX9: Managed pool fix: texture hooks installed (incl GetLevelDesc)");
     }
 }
 
@@ -462,9 +496,9 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9CreateTexture(IDirect3DDevice9* devic
             InstallTextureHooks(*ppTexture);
 
         int count = g_texCreated.fetch_add(1, std::memory_order_relaxed) + 1;
-        if (count <= 5) {
-            HookLogImportant("DX9: ManagedPoolFix: Tex #%d remapped %ux%u fmt=%d usage=0x%x", count, Width, Height,
-                             (int)Format, Usage);
+        if (count <= 20 || count % 100 == 0) {
+            HookLogImportant("DX9: ManagedPoolFix: Tex #%d remapped %ux%u fmt=%d usage=0x%x levels=%u", count, Width, Height,
+                             (int)Format, Usage, Levels);
         }
         return S_OK;
     }
@@ -1418,6 +1452,10 @@ static int GetMSAASampleCount(IDirect3DDevice9* device) {
 // Wrapped_Direct3DCreate9. D3D9Ex natively supports shared texture handles,
 // so no runtime patching is needed. See d3d9_wrap.cpp::CreateDevice.
 
+// Forward declaration: D3D9Ex factory created by DetourDirect3DCreate9 for zero-copy upgrade
+// Defined below the class with initialization to nullptr.
+static IDirect3D9Ex* s_d3d9ExForUpgrade = nullptr;
+
 // DX9 Capture class with D3D11 interop
 class DX9Capture : public HookCaptureBase {
 public:
@@ -1486,6 +1524,7 @@ public:
     // CopySubresourceRegion to encoder ring after Present (when StretchRect done).
     bool zeroCopyPendingCopy = false;
     int zeroCopyPendingIdx = -1;
+    IDirect3DQuery9* zeroCopyQuery = nullptr;  // D3D9 event query for cross-API sync
 
     // Per-frame staging metrics (set by CaptureFrame, read by PresentEnd)
     int32_t stagingStretchRectUs = 0;
@@ -1583,6 +1622,10 @@ public:
         if (copySurface) {
             copySurface->Release();
             copySurface = nullptr;
+        }
+        if (zeroCopyQuery) {
+            zeroCopyQuery->Release();
+            zeroCopyQuery = nullptr;
         }
         if (sharedTexture9) {
             sharedTexture9->Release();
@@ -1708,7 +1751,10 @@ public:
             return false;
         }
 
-        // Get the adapter for this D3D9 device
+        // Get the adapter for this D3D9 device.
+        // Use the D3D9Ex factory directly (s_d3d9ExForUpgrade) for LUID resolution
+        // since GetDirect3D is hooked to return the game's original D3D9 factory
+        // which can't be QI'd for IDirect3D9Ex.
         IDirect3D9* d3d9 = nullptr;
         d3d9Device->GetDirect3D(&d3d9);
 
@@ -1719,13 +1765,22 @@ public:
         // Try to resolve exact adapter LUID via D3D9Ex (most reliable mapping to DXGI adapter).
         LUID targetLuid = {};
         bool hasTargetLuid = false;
-        IDirect3D9Ex* d3d9ExRoot = nullptr;
-        if (SUCCEEDED(d3d9->QueryInterface(__uuidof(IDirect3D9Ex), (void**)&d3d9ExRoot)) && d3d9ExRoot) {
+        IDirect3D9Ex* d3d9ExRoot = s_d3d9ExForUpgrade;
+        if (d3d9ExRoot) {
             D3DDEVICE_CREATION_PARAMETERS params = {};
             if (SUCCEEDED(d3d9Device->GetCreationParameters(&params))) {
                 if (SUCCEEDED(d3d9ExRoot->GetAdapterLUID(params.AdapterOrdinal, &targetLuid))) {
                     hasTargetLuid = true;
                     EarlyLog("DX9: Resolved D3D9Ex adapter LUID %08x:%08x", targetLuid.HighPart, targetLuid.LowPart);
+                }
+            }
+        } else if (SUCCEEDED(d3d9->QueryInterface(__uuidof(IDirect3D9Ex), (void**)&d3d9ExRoot)) && d3d9ExRoot) {
+            D3DDEVICE_CREATION_PARAMETERS params = {};
+            if (SUCCEEDED(d3d9Device->GetCreationParameters(&params))) {
+                if (SUCCEEDED(d3d9ExRoot->GetAdapterLUID(params.AdapterOrdinal, &targetLuid))) {
+                    hasTargetLuid = true;
+                    EarlyLog("DX9: Resolved D3D9Ex adapter LUID %08x:%08x (via QI)", targetLuid.HighPart,
+                             targetLuid.LowPart);
                 }
             }
             d3d9ExRoot->Release();
@@ -2003,6 +2058,15 @@ public:
                     return;
                 }
             }
+
+            // Create D3D9 event query for cross-API synchronization.
+            // Ensures StretchRect to shared texture completes on the GPU
+            // before D3D11 reads from the same resource.
+            hr = device->CreateQuery(D3DQUERYTYPE_EVENT, &zeroCopyQuery);
+            if (FAILED(hr)) {
+                HookLogImportant("DX9: Warning: Failed to create zero-copy sync query (hr=0x%08x)", hr);
+                zeroCopyQuery = nullptr;
+            }
         }
 
         EarlyLog("DX9: Init Step 10: Create Ring Buffer Shared Textures");
@@ -2017,9 +2081,11 @@ public:
             texDesc.SampleDesc.Count = 1;
             texDesc.Usage = D3D11_USAGE_DEFAULT;
             texDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-            // Use NT handles for cross-process sharing.
-            // SHARED_NTHANDLE must be paired with SHARED_KEYEDMUTEX for OpenSharedResource1 compatibility.
-            texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+            // Use legacy KMT shared handles for cross-process sharing.
+            // KMT handles are globally unique and don't require DuplicateHandle or keyed mutex.
+            // SHARED_NTHANDLE + SHARED_KEYEDMUTEX requires AcquireSync/ReleaseSync around
+            // every GPU access, which conflicts with our fence-based synchronization.
+            texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
 
             // Try to enable fences
             ID3D11Device5* device5 = nullptr;
@@ -2057,22 +2123,15 @@ public:
             for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
                 hr = d3d11Device->CreateTexture2D(&texDesc, NULL, &sharedTextures[i]);
                 if (SUCCEEDED(hr)) {
-                    IDXGIResource1* pResource1 = nullptr;
-                    if (SUCCEEDED(sharedTextures[i]->QueryInterface(IID_PPV_ARGS(&pResource1)))) {
+                    IDXGIResource* pResource = nullptr;
+                    if (SUCCEEDED(sharedTextures[i]->QueryInterface(IID_PPV_ARGS(&pResource)))) {
                         HANDLE hTemp = NULL;
-                        pResource1->CreateSharedHandle(NULL, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
-                                                       NULL, &hTemp);
+                        pResource->GetSharedHandle(&hTemp);
                         sharedTextureHandles[i].store(hTemp, std::memory_order_release);
-                        pResource1->Release();
+                        pResource->Release();
                     }
                 } else {
-                    // NT handle flag not supported on older hardware; retry with legacy KMT
-                    if (hr == E_INVALIDARG && (texDesc.MiscFlags & D3D11_RESOURCE_MISC_SHARED_NTHANDLE)) {
-                        EarlyLog("DX9: NT Handle not supported, falling back to legacy shared textures");
-                        texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
-                        i--;
-                        continue;
-                    }
+                    // Legacy fallback no longer needed (already using D3D11_RESOURCE_MISC_SHARED)
                     success = false;
                     EarlyLog("DX9: Failed to create texture %d (hr=0x%08x)", i, hr);
                 }
@@ -2101,6 +2160,12 @@ public:
                                  ManagedPoolFix::g_texCreated.load(), ManagedPoolFix::g_vbCreated.load(),
                                  ManagedPoolFix::g_ibCreated.load(), ManagedPoolFix::g_volTexCreated.load(),
                                  ManagedPoolFix::g_cubeTexCreated.load());
+                HookLogImportant("DX9: MPF uploads: %d total (%d via TexUnlock, %d via SurfUnlock), %d direct locks, %d fails",
+                                 ManagedPoolFix::g_updateTexCalls.load(),
+                                 ManagedPoolFix::g_texUnlockUploadCount.load(),
+                                 ManagedPoolFix::g_surfUnlockUploadCount.load(),
+                                 ManagedPoolFix::g_texDirectLockCount.load(),
+                                 ManagedPoolFix::g_updateTexFails.load());
             }
         } else {
             CleanupDX9();
@@ -2392,6 +2457,11 @@ public:
                 return;
             }
 
+            // Issue D3D9 event query after StretchRect for cross-API sync.
+            // PostPresentReadback waits on this before D3D11 reads the shared texture.
+            if (zeroCopyQuery)
+                zeroCopyQuery->Issue(D3DISSUE_END);
+
             // Mark pending; PostPresentReadback will do the D3D11 copy after Present.
             zeroCopyPendingCopy = true;
             zeroCopyPendingIdx = idx;
@@ -2434,11 +2504,20 @@ public:
         }
 
         // --- Zero-copy path: deferred CopySubresourceRegion (D3D9Ex) ---
-        // Present has flushed D3D9, so the StretchRect → shared texture is done.
-        // CopySubresourceRegion now reads the completed frame.
+        // Wait for D3D9 StretchRect to complete via event query, then copy.
         if (!useD3D11Staging && zeroCopyPendingCopy) {
             zeroCopyPendingCopy = false;
             const int idx = zeroCopyPendingIdx;
+
+            // Wait for D3D9 GPU work (StretchRect) to finish before D3D11 reads.
+            // Without this, CopySubresourceRegion may read stale/empty data from
+            // the shared texture because D3D9 and D3D11 are separate command queues
+            // with no implicit synchronization on shared resources.
+            if (zeroCopyQuery) {
+                while (zeroCopyQuery->GetData(NULL, 0, D3DGETDATA_FLUSH) == S_FALSE) {
+                    _mm_pause();
+                }
+            }
 
             if (d3d11Context && d3d11SharedTexture && sharedTextures[idx]) {
                 d3d11Context->CopySubresourceRegion(sharedTextures[idx], 0, 0, 0, 0, d3d11SharedTexture, 0, NULL);
@@ -2912,6 +2991,13 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
                 "DX9: Performance (Frame %d). Overlay: %lld us, WaitPrerender: "
                 "%lld us, Capture: %lld us",
                 frameCount, overlayUs, prerenderUs, captureUs);
+
+            if (ManagedPoolFix::g_active) {
+                EarlyLog("DX9: MPF stats (frame %d): %d tex, %d uploads (%d tex/%d surf), %d locks, %d fails",
+                         frameCount, ManagedPoolFix::g_texCreated.load(), ManagedPoolFix::g_updateTexCalls.load(),
+                         ManagedPoolFix::g_texUnlockUploadCount.load(), ManagedPoolFix::g_surfUnlockUploadCount.load(),
+                         ManagedPoolFix::g_texDirectLockCount.load(), ManagedPoolFix::g_updateTexFails.load());
+            }
         }
 
         // Apply FPS limiter FIRST — must block before measuring frame time so
@@ -3540,7 +3626,7 @@ static CreateDeviceEx_t oCreateDeviceEx = nullptr;
 
 // D3D9Ex factory used to silently upgrade legacy CreateDevice to CreateDeviceEx.
 // D3D9Ex devices support shared texture handles, enabling zero-copy capture.
-static IDirect3D9Ex* s_d3d9ExForUpgrade = nullptr;
+// (Defined at line ~1422 before DX9Capture class for forward reference)
 
 // Forward declarations for detours defined below
 static HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9* device, const RECT* pSourceRect, const RECT* pDestRect,
