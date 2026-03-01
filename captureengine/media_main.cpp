@@ -1254,6 +1254,11 @@ int MediaProcessMain(const AppConfig& config) {
             d3dDevice->Release();
     }
 
+    // Shutdown media engine BEFORE unmapping shared memory to avoid use-after-free
+    // (VideoEncoder::CleanupResources accesses pSharedMem during destruction)
+    MediaEngine_Shutdown();
+    MediaEngine_Unload();
+
     if (g_pShmem)
         UnmapViewOfFile(g_pShmem);
     if (g_hMapShmem)
@@ -1263,9 +1268,6 @@ int MediaProcessMain(const AppConfig& config) {
         UnmapViewOfFile(g_pSharedMem);
     if (g_hMapFile)
         CloseHandle(g_hMapFile);
-
-    MediaEngine_Shutdown();
-    MediaEngine_Unload();
     timeEndPeriod(1);
 
     LogInfo("[Media] Process exiting");
