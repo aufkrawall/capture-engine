@@ -1535,6 +1535,10 @@ public:
     int32_t stagingCurrentDepth = 0;
     int32_t stagingTotalDropped = 0;
 
+    // Per-frame zero-copy metrics (set by PostPresentReadback, read by PresentEnd)
+    int32_t zeroCopyQueryWaitUs = 0;
+    int32_t zeroCopyReadbackUs = 0;
+
     // Background capture thread proc for D3D11 staging path.
     // Processes LockRect + UpdateSubresource + SignalFrameReady off the render
     // thread. The render thread only does D3D9 submit + query check + enqueue.
@@ -2447,9 +2451,12 @@ public:
             }
             shmemCurTex = (shmemCurTex + 1) % CAPTURE_TEXTURE_COUNT;
         } else {
-            // Zero-copy path (D3D9Ex): StretchRect before Present (queues GPU blit),
-            // CopySubresourceRegion deferred to PostPresentReadback after Present so
-            // the StretchRect is complete before we read the shared texture.
+            // Zero-copy path (D3D9Ex): pipelined one frame behind.
+            // 1. Complete PREVIOUS frame's D3D11 copy (query has had an entire frame to finish)
+            // 2. StretchRect CURRENT frame's backbuffer to shared surface
+            // 3. Issue D3D9 event query for NEXT frame's sync
+            CompletePendingZeroCopy();
+
             int idx = writeIndex.load(std::memory_order_acquire);
 
             HRESULT hr = device->StretchRect(backBuffer, NULL, copySurface, NULL, D3DTEXF_NONE);
@@ -2457,14 +2464,65 @@ public:
                 return;
             }
 
-            // Issue D3D9 event query after StretchRect for cross-API sync.
-            // PostPresentReadback waits on this before D3D11 reads the shared texture.
             if (zeroCopyQuery)
                 zeroCopyQuery->Issue(D3DISSUE_END);
 
-            // Mark pending; PostPresentReadback will do the D3D11 copy after Present.
             zeroCopyPendingCopy = true;
             zeroCopyPendingIdx = idx;
+        }
+    }
+
+    // Completes a pending zero-copy D3D11 copy. Called at the start of the
+    // NEXT frame's CaptureFrame (pipelined) so the D3D9 event query has had
+    // an entire frame of rendering time to finish — typically completes instantly.
+    void CompletePendingZeroCopy() {
+        if (!zeroCopyPendingCopy)
+            return;
+
+        static int64_t qpcFreq = 0;
+        if (qpcFreq == 0) {
+            LARGE_INTEGER f;
+            QueryPerformanceFrequency(&f);
+            qpcFreq = f.QuadPart;
+        }
+
+        zeroCopyPendingCopy = false;
+        const int idx = zeroCopyPendingIdx;
+
+        LARGE_INTEGER queryStart, queryEnd;
+        QueryPerformanceCounter(&queryStart);
+
+        if (zeroCopyQuery) {
+            while (zeroCopyQuery->GetData(NULL, 0, D3DGETDATA_FLUSH) == S_FALSE) {
+                _mm_pause();
+            }
+        }
+        QueryPerformanceCounter(&queryEnd);
+        zeroCopyQueryWaitUs =
+            static_cast<int32_t>(((queryEnd.QuadPart - queryStart.QuadPart) * 1000000) / qpcFreq);
+
+        if (d3d11Context && d3d11SharedTexture && sharedTextures[idx]) {
+            LARGE_INTEGER copyStart;
+            QueryPerformanceCounter(&copyStart);
+
+            d3d11Context->CopySubresourceRegion(sharedTextures[idx], 0, 0, 0, 0, d3d11SharedTexture, 0, NULL);
+
+            LARGE_INTEGER qpc;
+            QueryPerformanceCounter(&qpc);
+
+            if (useFences && fence && context4) {
+                fenceValue++;
+                context4->Signal(fence, fenceValue);
+                SignalFrameReady(g_IPC, idx, qpc.QuadPart, fenceValue);
+            } else {
+                d3d11Context->Flush();
+                SignalFrameReady(g_IPC, idx, qpc.QuadPart, 0);
+            }
+
+            zeroCopyReadbackUs =
+                static_cast<int32_t>(((qpc.QuadPart - copyStart.QuadPart) * 1000000) / qpcFreq);
+
+            AdvanceWriteIndex();
         }
     }
 
@@ -2503,39 +2561,11 @@ public:
             }
         }
 
-        // --- Zero-copy path: deferred CopySubresourceRegion (D3D9Ex) ---
-        // Wait for D3D9 StretchRect to complete via event query, then copy.
-        if (!useD3D11Staging && zeroCopyPendingCopy) {
-            zeroCopyPendingCopy = false;
-            const int idx = zeroCopyPendingIdx;
-
-            // Wait for D3D9 GPU work (StretchRect) to finish before D3D11 reads.
-            // Without this, CopySubresourceRegion may read stale/empty data from
-            // the shared texture because D3D9 and D3D11 are separate command queues
-            // with no implicit synchronization on shared resources.
-            if (zeroCopyQuery) {
-                while (zeroCopyQuery->GetData(NULL, 0, D3DGETDATA_FLUSH) == S_FALSE) {
-                    _mm_pause();
-                }
-            }
-
-            if (d3d11Context && d3d11SharedTexture && sharedTextures[idx]) {
-                d3d11Context->CopySubresourceRegion(sharedTextures[idx], 0, 0, 0, 0, d3d11SharedTexture, 0, NULL);
-
-                LARGE_INTEGER qpc;
-                QueryPerformanceCounter(&qpc);
-
-                if (useFences && fence && context4) {
-                    fenceValue++;
-                    context4->Signal(fence, fenceValue);
-                    SignalFrameReady(g_IPC, idx, qpc.QuadPart, fenceValue);
-                } else {
-                    d3d11Context->Flush();
-                    SignalFrameReady(g_IPC, idx, qpc.QuadPart, 0);
-                }
-
-                AdvanceWriteIndex();
-            }
+        // Zero-copy path: completion is pipelined to next CaptureFrame.
+        // Only flush here when recording is NOT active (final frame cleanup).
+        bool isRecordingNow = g_IPC && g_IPC->IsRecording();
+        if (!useD3D11Staging && zeroCopyPendingCopy && !isRecordingNow) {
+            CompletePendingZeroCopy();
         }
     }
 
@@ -3000,25 +3030,9 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
             }
         }
 
-        // Apply FPS limiter FIRST — must block before measuring frame time so
-        // the overlay's inter-frame interval includes the blocking duration.
-        QueryPerformanceCounter(&qpc);
-        int64_t fpsLimitStart = qpc.QuadPart;
-        g_SharedFpsLimiter.SetIPCClient(ipc);
-        g_SharedFpsLimiter.Apply();
-        QueryPerformanceCounter(&qpc);
-        g_Timing.fpsLimitTime = qpc.QuadPart - fpsLimitStart;
-
-        // Update performance metrics AFTER limiter — the post-blocking QPC ensures
-        // inter-frame intervals reflect the limited rate (e.g. 120fps, not 144fps).
-        {
-            int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
-            g_PerfMetrics.Update(us);
-        }
-
-        // Update recording state for CSV logging
-        bool isRecording = ipc && ipc->IsRecording();
-        g_PerfMetrics.SetRecording(isRecording);
+        // FPS limiter moved to PresentEnd (after PostPresentReadback) so that
+        // SmartWait accounts for ALL hook overhead including readback.
+        g_Timing.fpsLimitTime = 0;
 
         if (backBuffer) {
             backBuffer->Release();
@@ -3033,6 +3047,37 @@ void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer) {
     // both VTable and inline hooks fire for the same call.
     if (g_PresentRecurse == 1) {
         g_DX9Capture.PostPresentReadback(device);
+    }
+
+    // Apply FPS limiter AFTER PostPresentReadback so SmartWait accounts for
+    // all hook overhead (capture + present + readback). This eliminates the
+    // bimodal frame time distribution where frames with variable query wait
+    // had zero limiter wait.
+    if (g_PresentRecurse == 1) {
+        static int64_t limiterFreq = 0;
+        if (limiterFreq == 0) {
+            LARGE_INTEGER f;
+            QueryPerformanceFrequency(&f);
+            limiterFreq = f.QuadPart;
+        }
+        LARGE_INTEGER limiterQpc;
+        QueryPerformanceCounter(&limiterQpc);
+        int64_t fpsLimitStart = limiterQpc.QuadPart;
+        g_SharedFpsLimiter.SetIPCClient(g_IPC);
+        g_SharedFpsLimiter.Apply();
+        QueryPerformanceCounter(&limiterQpc);
+        g_Timing.fpsLimitTime = limiterQpc.QuadPart - fpsLimitStart;
+
+        // Update performance metrics AFTER limiter — the post-blocking QPC ensures
+        // inter-frame intervals reflect the limited rate (e.g. 120fps, not 144fps).
+        {
+            int64_t us = (limiterQpc.QuadPart * 1000000) / limiterFreq;
+            g_PerfMetrics.Update(us);
+        }
+
+        // Update recording state for CSV logging
+        bool isRecording = g_IPC && g_IPC->IsRecording();
+        g_PerfMetrics.SetRecording(isRecording);
     }
 
     if (g_PresentRecurse == 1) {
@@ -3095,14 +3140,19 @@ void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer) {
             strncpy(perfMetrics.api, "DX9", sizeof(perfMetrics.api) - 1);
             perfMetrics.api[sizeof(perfMetrics.api) - 1] = '\0';
 
-            // DX9-specific staging capture breakdown
-            perfMetrics.stretchRectUs = g_DX9Capture.stagingStretchRectUs;
-            perfMetrics.readbackSubmitUs = g_DX9Capture.stagingReadbackSubmitUs;
-            perfMetrics.queryWaitUs = g_DX9Capture.stagingQueryWaitUs;
-            perfMetrics.lockRectUs = g_DX9Capture.stagingLockRectUs;
-            perfMetrics.d3d11UploadUs = g_DX9Capture.stagingD3D11UploadUs;
-            perfMetrics.stagingDepth = g_DX9Capture.stagingCurrentDepth;
-            perfMetrics.stagingDropped = g_DX9Capture.stagingTotalDropped;
+            // DX9-specific capture breakdown (staging OR zero-copy)
+            if (g_DX9Capture.useD3D11Staging) {
+                perfMetrics.stretchRectUs = g_DX9Capture.stagingStretchRectUs;
+                perfMetrics.readbackSubmitUs = g_DX9Capture.stagingReadbackSubmitUs;
+                perfMetrics.queryWaitUs = g_DX9Capture.stagingQueryWaitUs;
+                perfMetrics.lockRectUs = g_DX9Capture.stagingLockRectUs;
+                perfMetrics.d3d11UploadUs = g_DX9Capture.stagingD3D11UploadUs;
+                perfMetrics.stagingDepth = g_DX9Capture.stagingCurrentDepth;
+                perfMetrics.stagingDropped = g_DX9Capture.stagingTotalDropped;
+            } else {
+                perfMetrics.queryWaitUs = g_DX9Capture.zeroCopyQueryWaitUs;
+                perfMetrics.readbackSubmitUs = g_DX9Capture.zeroCopyReadbackUs;
+            }
 
             PerfLogger::Get().LogFrame(perfMetrics);
         }

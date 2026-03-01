@@ -239,6 +239,11 @@ public:
                 timeEndPeriod(1);
                 timerResolutionSet = false;
             }
+            // Reset local limiter state when inactive
+            if (localTargetTime_ != 0) {
+                localTargetTime_ = 0;
+                localFrameCount_ = 0;
+            }
             if (!loggedInactive_) {
                 TraceLog("Apply: INACTIVE rec=%d capSync=%d genEn=%d genFps=%d capFps=%d vfr=%d",
                          isRecording ? 1 : 0, captureSyncEnabled ? 1 : 0,
@@ -273,7 +278,58 @@ public:
         if (targetFps <= 0)
             targetFps = 60;
 
-        // Initialize events if not done
+        // LOCAL FPS LIMITING for capture sync mode.
+        // Bypasses the cross-process event round-trip (hook→limiter→hook) which
+        // adds ~3-4ms latency per frame and drops FPS well below target.
+        // Instead, maintain a local cadence using SmartWait for sub-ms precision.
+        if (usingCaptureSync) {
+            int64_t intervalTicks = qpcFrequency / targetFps;
+
+            LARGE_INTEGER now;
+            QueryPerformanceCounter(&now);
+
+            if (localTargetTime_ == 0) {
+                // First frame: start cadence one interval from now
+                localTargetTime_ = now.QuadPart + intervalTicks;
+                localFrameCount_ = 0;
+            }
+
+            // Wait until the target time
+            int64_t waitTicks = localTargetTime_ - now.QuadPart;
+            int64_t waitUs = (waitTicks > 0) ? (waitTicks * 1000000 / qpcFrequency) : 0;
+            SmartWait(localTargetTime_);
+
+            // Advance target by fixed interval (preserves absolute cadence)
+            localTargetTime_ += intervalTicks;
+
+            // If we fell more than 2 frames behind, resync to avoid burst catch-up
+            QueryPerformanceCounter(&now);
+            if (localTargetTime_ < now.QuadPart - intervalTicks * 2) {
+                localTargetTime_ = now.QuadPart + intervalTicks;
+            }
+
+            // Periodic stats logging
+            localFrameCount_++;
+            if (localFrameCount_ % 120 == 0) {
+                // Measure actual inter-frame interval
+                if (lastApplyEntryQpc_ != 0) {
+                    int64_t interFrameUs = ((now.QuadPart - lastApplyEntryQpc_) * 1000000) / qpcFrequency;
+                    double measuredFps = (interFrameUs > 0) ? (1000000.0 / interFrameUs) : 0;
+                    TraceLog("Apply: LOCAL stats frames=%u waitUs=%lld measFps=%.1f target=%d",
+                             localFrameCount_, waitUs, measuredFps, targetFps);
+                    HookLog("FPS Limiter: Local capture sync (%u frames): lastWait=%lldus measFps=%.1f target=%d",
+                            localFrameCount_, waitUs, measuredFps, targetFps);
+                }
+            }
+            lastApplyEntryQpc_ = now.QuadPart;
+
+            // Record return time for dedup guard
+            QueryPerformanceCounter(&now);
+            lastApplyReturnQpc = now.QuadPart;
+            return;
+        }
+
+        // Initialize events if not done (general limiter mode only)
         // Only try to open events if we are not in test mode (implied by dbgShm
         // presence usually, but let's just check name)
         if (!eventsInitialized && shm->fpsLimiter.releaseEventName[0] != L'\0') {
@@ -440,6 +496,8 @@ public:
         lastTargetFps_ = 0;
         lastUsedCaptureSync_ = false;
         lastApplyReturnQpc = 0;
+        localTargetTime_ = 0;
+        localFrameCount_ = 0;
     }
 
 private:
@@ -463,6 +521,8 @@ private:
     int lastTargetFps_ = 0;
     bool lastUsedCaptureSync_ = false;
     int64_t lastApplyReturnQpc = 0;  // QPC tick when Apply() last returned from wait (dedup guard)
+    int64_t localTargetTime_ = 0;    // QPC target for local capture sync cadence
+    uint32_t localFrameCount_ = 0;   // Frame count for local capture sync stats
     uint32_t applyWaitCount_ = 0;
     uint32_t applySuccessCount_ = 0;
     int64_t lastApplyEntryQpc_ = 0;
