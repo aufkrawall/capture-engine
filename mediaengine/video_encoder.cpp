@@ -1564,6 +1564,14 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
             ce::HandleGuard dupTex;
             HRESULT hr = E_FAIL;
 
+            if (encodeFrameCounter < 10) {
+                DLL_Log(
+                    "[VideoEncoder] Frame %d: Opening shared texture: handle=%p, "
+                    "sourcePid=%u (cached=%u, match=%s), format=%d",
+                    encodeFrameCounter, sharedHandle, sourcePid, cachedSourcePid,
+                    (sourcePid == cachedSourcePid) ? "yes" : "no", format);
+            }
+
             if (sharedHandle == NULL) {
                 DLL_Log("[VideoEncoder] Frame %d: Error: sharedHandle is NULL", encodeFrameCounter);
             } else {

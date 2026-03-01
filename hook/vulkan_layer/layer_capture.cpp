@@ -118,6 +118,30 @@ static bool IsDXVKD3D11Active() {
     return true;
 }
 
+// Unified DXVK detection: checks dxgi.dll, d3d11.dll, and d3d9.dll.
+// Returns true if ANY of them are loaded from outside System32.
+// This catches both DXVK d3d11 and DXVK d3d9 (e.g. Trine 3 via DXVK d3d9) variants.
+static bool IsDXVKActive() {
+    char systemDir[MAX_PATH] = {};
+    GetSystemDirectoryA(systemDir, MAX_PATH);
+    size_t sysLen = strlen(systemDir);
+
+    const char* dllNames[] = {"dxgi.dll", "d3d11.dll", "d3d9.dll"};
+    for (const char* dllName : dllNames) {
+        HMODULE hMod = GetModuleHandleA(dllName);
+        if (!hMod)
+            continue;
+        char loadedPath[MAX_PATH] = {};
+        GetModuleFileNameA(hMod, loadedPath, MAX_PATH);
+        if (_strnicmp(loadedPath, systemDir, sysLen) != 0 ||
+            (loadedPath[sysLen] != '\\' && loadedPath[sysLen] != '/')) {
+            LayerLog("Vulkan Layer: DXVK detected - %s loaded from: %s (not System32)", dllName, loadedPath);
+            return true;
+        }
+    }
+    return false;
+}
+
 static D3D11InteropDevice* GetOrCreateD3D11Device(const LUID& luid) {
     uint64_t key = MakeLuidKey(luid);
 
@@ -513,9 +537,13 @@ static bool CreateSharedTextures(D3D11InteropDevice* interopDev, VkDevice vkDev,
     return false;
 }
 
-// Create Vulkan-native images with D3D11_TEXTURE_KMT export for cross-process sharing.
+// Create Vulkan-native images with D3D11_TEXTURE NT export for cross-process sharing.
 // Used when DXVK is active: bypasses D3D11 entirely since DXVK's D3D11 produces
 // internal handles that native D3D11 in the encoder can't open.
+// Uses NT handles (not KMT) because KMT handles from vkGetMemoryWin32HandleKHR are raw
+// WDDM allocation handles without D3D11 resource metadata - D3D11's OpenSharedResource
+// returns E_INVALIDARG for them. NT handles via D3D11_TEXTURE_BIT carry proper resource
+// metadata and are openable by D3D11's OpenSharedResource1 after DuplicateHandle.
 static bool CreateVulkanNativeSharedTextures(VkDevice vkDev, DeviceDispatch* disp, VkPhysicalDevice physDev,
                                              const LUID& luid, uint32_t width, uint32_t height, uint32_t vkFormat,
                                              SharedTextureEntry& entry) {
@@ -529,7 +557,7 @@ static bool CreateVulkanNativeSharedTextures(VkDevice vkDev, DeviceDispatch* dis
     entry.vkImages.assign(kTextureCount, VK_NULL_HANDLE);
     entry.vkMemories.assign(kTextureCount, VK_NULL_HANDLE);
     entry.textureHandles.assign(kTextureCount, nullptr);
-    entry.textureHandlesAreNt = false;
+    entry.textureHandlesAreNt = true;  // NT handles for cross-process via DuplicateHandle
 
     if (!disp->fp_vkGetMemoryWin32HandleKHR) {
         LayerLog("Vulkan Layer: [Error] vkGetMemoryWin32HandleKHR not available for Vulkan-native export");
@@ -545,10 +573,16 @@ static bool CreateVulkanNativeSharedTextures(VkDevice vkDev, DeviceDispatch* dis
     VkPhysicalDeviceMemoryProperties memProps;
     instDisp->fp_vkGetPhysicalDeviceMemoryProperties(physDev, &memProps);
 
+    // Security attributes for cross-process NT handle access
+    SECURITY_ATTRIBUTES secAttr = {};
+    secAttr.nLength = sizeof(SECURITY_ATTRIBUTES);
+    secAttr.bInheritHandle = FALSE;
+    secAttr.lpSecurityDescriptor = nullptr;  // Default security descriptor
+
     bool failed = false;
     for (uint32_t i = 0; i < kTextureCount; i++) {
         VkExternalMemoryImageCreateInfo extInfo = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO};
-        extInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT;
+        extInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT;
 
         VkImageCreateInfo imgInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, &extInfo};
         imgInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -572,8 +606,16 @@ static bool CreateVulkanNativeSharedTextures(VkDevice vkDev, DeviceDispatch* dis
         VkMemoryRequirements memReq;
         disp->fp_vkGetImageMemoryRequirements(vkDev, entry.vkImages[i], &memReq);
 
+        // NT handle export requires VkExportMemoryWin32HandleInfoKHR with security attributes
+        VkExportMemoryWin32HandleInfoKHR exportWin32MemInfo = {
+            VK_STRUCTURE_TYPE_EXPORT_MEMORY_WIN32_HANDLE_INFO_KHR};
+        exportWin32MemInfo.pAttributes = &secAttr;
+        exportWin32MemInfo.dwAccess = DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE;
+        exportWin32MemInfo.name = nullptr;
+
         VkExportMemoryAllocateInfo exportAllocInfo = {VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO};
-        exportAllocInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT;
+        exportAllocInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT;
+        exportAllocInfo.pNext = &exportWin32MemInfo;
 
         VkMemoryDedicatedAllocateInfo dedicatedInfo = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO};
         dedicatedInfo.pNext = &exportAllocInfo;
@@ -616,11 +658,11 @@ static bool CreateVulkanNativeSharedTextures(VkDevice vkDev, DeviceDispatch* dis
 
         VkMemoryGetWin32HandleInfoKHR getHandleInfo = {VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR};
         getHandleInfo.memory = entry.vkMemories[i];
-        getHandleInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT;
+        getHandleInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT;
 
         vkRes = disp->fp_vkGetMemoryWin32HandleKHR(vkDev, &getHandleInfo, &entry.textureHandles[i]);
         if (vkRes != VK_SUCCESS || !entry.textureHandles[i]) {
-            LayerLog("Vulkan Layer: [Error] Failed to export KMT handle %d (vkResult=%d)", i, vkRes);
+            LayerLog("Vulkan Layer: [Error] Failed to export NT handle %d (vkResult=%d)", i, vkRes);
             failed = true;
             break;
         }
@@ -639,15 +681,18 @@ static bool CreateVulkanNativeSharedTextures(VkDevice vkDev, DeviceDispatch* dis
                 img = VK_NULL_HANDLE;
             }
         }
-        for (auto& handle : entry.textureHandles)
+        for (auto& handle : entry.textureHandles) {
+            if (handle)
+                CloseHandle(handle);
             handle = nullptr;
+        }
         return false;
     }
 
     entry.valid = true;
-    LayerLog("Vulkan Layer: Created %d Vulkan-native exportable textures (DXVK bypass)", kTextureCount);
+    LayerLog("Vulkan Layer: Created %d Vulkan-native exportable textures (NT handles, DXVK bypass)", kTextureCount);
     for (uint32_t i = 0; i < kTextureCount; i++) {
-        LayerLog("Vulkan Layer: Vulkan-native texture %d KMT handle = %p", i, entry.textureHandles[i]);
+        LayerLog("Vulkan Layer: Vulkan-native texture %d NT handle = %p", i, entry.textureHandles[i]);
     }
     return true;
 }
@@ -668,6 +713,21 @@ static SharedTextureEntry* GetOrCreateSharedTextures(VkDevice vkDev, DeviceDispa
             continue;
         }
         ++it;
+    }
+
+    // When DXVK is active, try Vulkan-native path first.
+    // D3D11 interop under DXVK creates handles via DXVK's d3d11.dll which the
+    // native D3D11 in the encoder process cannot open (OpenSharedResource1 returns E_INVALIDARG).
+    bool dxvkActive = IsDXVKActive();
+    if (dxvkActive) {
+        LayerLog("Vulkan Layer: DXVK active - attempting Vulkan-native shared textures (bypass D3D11)");
+        SharedTextureEntry nativeEntry;
+        if (CreateVulkanNativeSharedTextures(vkDev, disp, physDev, luid, width, height, vkFormat, nativeEntry)) {
+            LayerLog("Vulkan Layer: Vulkan-native path succeeded (KMT handles, no IPC relay needed)");
+            g_TextureCache.push_back(std::move(nativeEntry));
+            return &g_TextureCache.back();
+        }
+        LayerLog("Vulkan Layer: [Warn] Vulkan-native path failed, falling back to D3D11 interop");
     }
 
     // Get D3D11 device
@@ -787,8 +847,15 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     // Wait for encoder textures to be ready (with timeout)
     auto* mem = g_IPCClient.GetSharedMem();
     bool usingEncoderTextures = false;
+    bool dxvkActive = IsDXVKActive();
 
-    if (mem) {
+    // Under DXVK, skip the encoder texture wait entirely.
+    // Encoder creates NT-handle textures that can't be imported into Vulkan under DXVK
+    // (NT import fails with VK_ERROR_OUT_OF_HOST_MEMORY). The Vulkan-native KMT handles
+    // are published directly below and the encoder opens them via OpenSharedResource (KMT path).
+    if (dxvkActive) {
+        LayerLog("Vulkan Layer: DXVK active - skipping encoder texture wait (NT import incompatible)");
+    } else if (mem) {
         // Wait up to 5 seconds for encoder textures to be ready
         const int maxWaitMs = 5000;
         const int checkIntervalMs = 10;
@@ -839,9 +906,10 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         } else {
             LayerIPC_SetTextures(sharedTextures->textureHandles.data(), (uint32_t)sharedTextures->textureHandles.size(),
                                  extent.width, extent.height, VkFormatToDXGI(format));
-            LayerLog("Vulkan Layer: Publishing KMT handles to encoder");
+            LayerLog("Vulkan Layer: Publishing %s handles to encoder",
+                     sharedTextures->textureHandlesAreNt ? "NT" : "KMT");
             for (uint32_t i = 0; i < sharedTextures->textureHandles.size(); i++) {
-                LayerLog("Vulkan Layer: KMT texture %d handle = %p", i, sharedTextures->textureHandles[i]);
+                LayerLog("Vulkan Layer: Texture %d handle = %p", i, sharedTextures->textureHandles[i]);
             }
         }
     }
@@ -886,9 +954,24 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     timelineInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
     timelineInfo.initialValue = 0;
 
+    // Explicit security attributes for cross-process fence access.
+    // Without this, the D3D12_FENCE handle may lack sufficient access rights
+    // and OpenSharedFence fails in the encoder process.
+    SECURITY_ATTRIBUTES secAttr = {};
+    secAttr.nLength = sizeof(SECURITY_ATTRIBUTES);
+    secAttr.bInheritHandle = FALSE;
+    secAttr.lpSecurityDescriptor = nullptr;  // Default security descriptor (full access)
+
+    VkExportSemaphoreWin32HandleInfoKHR exportWin32Info = {
+        VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_WIN32_HANDLE_INFO_KHR};
+    exportWin32Info.pAttributes = &secAttr;
+    exportWin32Info.dwAccess = GENERIC_ALL;
+    exportWin32Info.name = nullptr;
+    exportWin32Info.pNext = &timelineInfo;
+
     VkExportSemaphoreCreateInfo exportInfo = {VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO};
     exportInfo.handleTypes = semHandleType;
-    exportInfo.pNext = &timelineInfo;
+    exportInfo.pNext = &exportWin32Info;
 
     VkSemaphoreCreateInfo timelineSemInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     timelineSemInfo.pNext = &exportInfo;
