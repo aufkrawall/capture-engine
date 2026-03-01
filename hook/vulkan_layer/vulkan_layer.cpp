@@ -942,8 +942,13 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     g_InPresentHook = true;
 
     if (isFirstHook) {
-        g_SharedFpsLimiter.SetIPCClient(&g_IPCClient);
-        g_SharedFpsLimiter.Apply();
+        // For DXVK: FPS limiter runs in DX9 hook (game thread) instead.
+        // This vkQueuePresent runs on DXVK's CS thread — blocking here
+        // doesn't limit the game's actual render rate.
+        if (!preferDX9Path) {
+            g_SharedFpsLimiter.SetIPCClient(&g_IPCClient);
+            g_SharedFpsLimiter.Apply();
+        }
 
         // Apply CPU prerender limit - only if we have valid device and queue
         // tracking

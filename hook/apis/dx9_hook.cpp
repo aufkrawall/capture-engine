@@ -2376,25 +2376,25 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
                 frameCount, overlayUs, prerenderUs, captureUs);
         }
 
-        // Update performance metrics
+        // Apply FPS limiter FIRST — must block before measuring frame time so
+        // the overlay's inter-frame interval includes the blocking duration.
         QueryPerformanceCounter(&qpc);
-        int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
+        int64_t fpsLimitStart = qpc.QuadPart;
+        g_SharedFpsLimiter.SetIPCClient(ipc);
+        g_SharedFpsLimiter.Apply();
+        QueryPerformanceCounter(&qpc);
+        g_Timing.fpsLimitTime = qpc.QuadPart - fpsLimitStart;
 
-        g_PerfMetrics.Update(us);
+        // Update performance metrics AFTER limiter — the post-blocking QPC ensures
+        // inter-frame intervals reflect the limited rate (e.g. 120fps, not 144fps).
+        {
+            int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
+            g_PerfMetrics.Update(us);
+        }
 
         // Update recording state for CSV logging
         bool isRecording = ipc && ipc->IsRecording();
         g_PerfMetrics.SetRecording(isRecording);
-
-        // Apply FPS limiter (timed separately to exclude from overhead warning)
-        QueryPerformanceCounter(&qpc);
-        int64_t fpsLimitStart = qpc.QuadPart;
-        if (!dxvkVulkanCapture) {
-            g_SharedFpsLimiter.SetIPCClient(ipc);
-            g_SharedFpsLimiter.Apply();
-        }
-        QueryPerformanceCounter(&qpc);
-        g_Timing.fpsLimitTime = qpc.QuadPart - fpsLimitStart;
 
         if (backBuffer) {
             backBuffer->Release();

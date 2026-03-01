@@ -36,6 +36,9 @@ public:
     void ResetMissedFrames() {
         missedFrames = 0;
     }
+    bool IsEventsInitialized() const {
+        return eventsInitialized;
+    }
 
     // Ensure 1ms timer resolution is enabled
     void EnsureTimerResolution() {
@@ -117,6 +120,43 @@ public:
         return true;
     }
 
+    // Direct trace log for debugging — bypasses all log infrastructure
+    void TraceLog(const char* fmt, ...) {
+        if (traceLogCount_ >= 30)
+            return;
+        traceLogCount_++;
+        // Resolve absolute path from DLL location
+        if (traceLogPath_[0] == '\0') {
+            HMODULE hMod = nullptr;
+            GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               (LPCSTR)this, &hMod);
+            if (hMod) {
+                GetModuleFileNameA(hMod, traceLogPath_, MAX_PATH);
+                char* lastSlash = strrchr(traceLogPath_, '\\');
+                if (lastSlash)
+                    *lastSlash = '\0';
+                strncat(traceLogPath_, "\\logs\\fps_limiter_trace.log", MAX_PATH - strlen(traceLogPath_) - 1);
+            }
+        }
+        if (traceLogPath_[0] == '\0')
+            return;
+        char buf[512];
+        va_list args;
+        va_start(args, fmt);
+        int len = vsnprintf(buf, sizeof(buf) - 1, fmt, args);
+        va_end(args);
+        if (len <= 0)
+            return;
+        buf[len] = '\n';
+        HANDLE hFile = CreateFileA(traceLogPath_, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                   OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (hFile != INVALID_HANDLE_VALUE) {
+            DWORD written;
+            WriteFile(hFile, buf, (DWORD)(len + 1), &written, nullptr);
+            CloseHandle(hFile);
+        }
+    }
+
     // Called each frame before present
     void Apply() {
         SharedMemoryLayout* shm = nullptr;
@@ -126,8 +166,12 @@ public:
             shm = ipc->GetSharedMem();
         }
 
-        if (!shm)
+        if (!shm) {
+            applyTraceCount_++;
+            if (applyTraceCount_ <= 3)
+                TraceLog("Apply: no shm ipc=%p", (void*)ipc);
             return;
+        }
 
         // Dedup guard: DXVK calls Present and PresentEx sequentially on the same
         // thread for each visual frame. Each call enters DX9_PresentBegin with
@@ -144,8 +188,10 @@ public:
         LARGE_INTEGER nowQpc;
         QueryPerformanceCounter(&nowQpc);
         const int64_t kDedupTicks = qpcFrequency / 500;  // 2ms
-        if (lastApplyReturnQpc != 0 && (nowQpc.QuadPart - lastApplyReturnQpc) < kDedupTicks)
+        if (lastApplyReturnQpc != 0 && (nowQpc.QuadPart - lastApplyReturnQpc) < kDedupTicks) {
+            applyDedupCount_++;
             return;
+        }
 
         bool isRecording = shm->runtimeState.isRecording;
         bool captureSyncEnabled = shm->fpsLimiter.GetCaptureSyncEnabled();
@@ -194,6 +240,9 @@ public:
                 timerResolutionSet = false;
             }
             if (!loggedInactive_) {
+                TraceLog("Apply: INACTIVE rec=%d capSync=%d genEn=%d genFps=%d capFps=%d vfr=%d",
+                         isRecording ? 1 : 0, captureSyncEnabled ? 1 : 0,
+                         generalEnabled ? 1 : 0, generalFps, captureFps, useVFR ? 1 : 0);
                 HookLog(
                     "FPS Limiter: Inactive (general_enabled=%d, generalFps=%d, "
                     "captureSync=%d, isRecording=%d, useVFR=%d)",
@@ -206,6 +255,9 @@ public:
         }
         loggedInactive_ = false;  // Reset so transitions back to inactive are logged
         if (!loggedActive_ || lastTargetFps_ != targetFps || lastUsedCaptureSync_ != usingCaptureSync) {
+            TraceLog("Apply: ACTIVE mode=%s target=%d capFps=%d mult=%d rec=%d",
+                     usingCaptureSync ? "capture_sync" : "general", targetFps, captureFps,
+                     captureSyncMultiplier, isRecording ? 1 : 0);
             HookLog(
                 "FPS Limiter: Active (mode=%s, target=%d, captureFps=%d, mult=%d, general=%d/%d, isRecording=%d)",
                 usingCaptureSync ? "capture_sync" : "general", targetFps, captureFps, captureSyncMultiplier,
@@ -239,6 +291,8 @@ public:
             // If OpenEvent failed, we'll retry next frame (limiter might not be ready yet)
             if (releaseEvent && requestEvent) {
                 eventsInitialized = true;
+                TraceLog("Apply: Events OK release=%p request=%p target=%d",
+                         releaseEvent, requestEvent, targetFps);
                 HookLog(
                     "FPS Limiter: Events Initialized (target: %d FPS, release=%p, "
                     "request=%p)",
@@ -282,11 +336,43 @@ public:
 
                 DWORD waitResult = WaitForSingleObject(releaseEvent, timeoutMs);
 
+                // Log wait statistics and measured FPS periodically
+                applyWaitCount_++;
+                if (waitResult == WAIT_OBJECT_0) {
+                    applySuccessCount_++;
+                }
+                // Measure inter-frame interval (Apply-to-Apply time = true game FPS)
+                if (lastApplyEntryQpc_ != 0) {
+                    int64_t interFrameUs = ((nowQpc.QuadPart - lastApplyEntryQpc_) * 1000000) / qpcFrequency;
+                    applyInterFrameSum_ += interFrameUs;
+                    applyInterFrameCount_++;
+                }
+                lastApplyEntryQpc_ = nowQpc.QuadPart;
+
+                if (applyWaitCount_ % 120 == 0) {
+                    LARGE_INTEGER afterQpc;
+                    QueryPerformanceCounter(&afterQpc);
+                    int64_t waitUs = ((afterQpc.QuadPart - nowQpc.QuadPart) * 1000000) / qpcFrequency;
+                    double measuredFps = 0;
+                    if (applyInterFrameCount_ > 0) {
+                        double avgInterUs = (double)applyInterFrameSum_ / applyInterFrameCount_;
+                        measuredFps = 1000000.0 / avgInterUs;
+                    }
+                    TraceLog("Apply: Stats calls=%u ok=%u timeout=%u measFps=%.1f waitUs=%lld dedup=%u",
+                             applyWaitCount_, applySuccessCount_, applyWaitCount_ - applySuccessCount_, measuredFps,
+                             waitUs, applyDedupCount_);
+                    HookLog(
+                        "FPS Limiter: Stats (%u calls): success=%u timeout=%u "
+                        "measuredFps=%.1f lastWait=%lldus",
+                        applyWaitCount_, applySuccessCount_, applyWaitCount_ - applySuccessCount_, measuredFps, waitUs);
+                    applyInterFrameSum_ = 0;
+                    applyInterFrameCount_ = 0;
+                }
+
                 if (waitResult == WAIT_TIMEOUT) {
-                    // Limiter didn't respond in time - track but don't block
                     missedFrames++;
-                    // CRITICAL FIX: Use per-instance counter instead of static
                     if (timeoutLogCount_++ < 10) {
+                        TraceLog("Apply: TIMEOUT missed=%u", missedFrames);
                         HookLog("FPS Limiter: TIMEOUT waiting for release (missed=%u)", missedFrames);
                     }
                     return;
@@ -302,8 +388,8 @@ public:
             if (target > 0) {
                 SmartWait(target);
             } else {
-                // CRITICAL FIX: Use per-instance counter instead of static
                 if (targetLogCount_++ < 10) {
+                    TraceLog("Apply: targetTimeTicks=%lld (not waiting)", target);
                     HookLog("FPS Limiter: targetTimeTicks is %lld (not waiting)", target);
                 }
             }
@@ -377,6 +463,15 @@ private:
     int lastTargetFps_ = 0;
     bool lastUsedCaptureSync_ = false;
     int64_t lastApplyReturnQpc = 0;  // QPC tick when Apply() last returned from wait (dedup guard)
+    uint32_t applyWaitCount_ = 0;
+    uint32_t applySuccessCount_ = 0;
+    int64_t lastApplyEntryQpc_ = 0;
+    int64_t applyInterFrameSum_ = 0;
+    uint32_t applyInterFrameCount_ = 0;
+    int applyTraceCount_ = 0;
+    uint32_t applyDedupCount_ = 0;
+    int traceLogCount_ = 0;
+    char traceLogPath_[MAX_PATH] = {0};
 };
 
 // Global FPS limiter instance
