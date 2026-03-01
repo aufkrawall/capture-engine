@@ -3119,13 +3119,44 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
         }
     }
 
+    // Acquire keyed mutex if the source texture has SHARED_KEYEDMUTEX.
+    // NT-handle shared textures require mutex acquisition before GPU reads.
+    IDXGIKeyedMutex* keyedMutex = nullptr;
+    bgraTexture->QueryInterface(IID_PPV_ARGS(&keyedMutex));
+    if (keyedMutex) {
+        HRESULT kmHr = keyedMutex->AcquireSync(0, 0);
+        if (FAILED(kmHr)) {
+            static int kmFailCount = 0;
+            if (kmFailCount++ < 5) {
+                DLL_Log("[VideoProcessor] KeyedMutex AcquireSync failed: HR=%x", kmHr);
+            }
+            keyedMutex->Release();
+            keyedMutex = nullptr;
+        }
+    }
+
     // Perform the conversion using current buffer
     int bufIdx = currentNV12Buffer;
     hr = videoContext->VideoProcessorBlt(videoProcessor, outputViews[bufIdx], 0, streamCount, streams);
     localInputView->Release();
 
+    if (keyedMutex) {
+        keyedMutex->ReleaseSync(0);
+        keyedMutex->Release();
+    }
+
     if (FAILED(hr)) {
-        DLL_Log("[VideoProcessor] Blt failed. HR=%x", hr);
+        static int bltFailCount = 0;
+        if (bltFailCount++ < 5) {
+            D3D11_TEXTURE2D_DESC srcDesc = {};
+            bgraTexture->GetDesc(&srcDesc);
+            DLL_Log(
+                "[VideoProcessor] Blt failed. HR=%x streams=%u bufIdx=%d "
+                "srcFmt=%d srcW=%u srcH=%u srcBind=%x srcMisc=%x "
+                "inputW=%d inputH=%d outputW=%d outputH=%d",
+                hr, streamCount, bufIdx, srcDesc.Format, srcDesc.Width, srcDesc.Height, srcDesc.BindFlags,
+                srcDesc.MiscFlags, inputWidth, inputHeight, outputWidth, outputHeight);
+        }
         return false;
     }
 

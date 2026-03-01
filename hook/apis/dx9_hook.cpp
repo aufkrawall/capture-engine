@@ -2336,18 +2336,36 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
                 }
                 return;
             }
-            if (ipc && ipc->IsRecording()) {
-                if (!g_DX9Capture.initialized) {
-                    EarlyLog("DX9: Recording detected, calling Init...");
-                    g_DX9Capture.Init(device);
-                }
 
+            // Pre-initialize capture on first Present call (before recording starts).
+            // This ensures shared texture handles are published to shared memory early,
+            // so the media engine has valid data when recording begins.
+            if (!g_DX9Capture.initialized && !g_DX9Capture.initializationFailed && backBuffer) {
+                static bool earlyInitLogged = false;
+                if (!earlyInitLogged) {
+                    HookLogImportant("DX9: Pre-initializing capture on first Present (early init)");
+                    earlyInitLogged = true;
+                }
+                g_DX9Capture.Init(device);
+            }
+
+            // Periodic recording state logging
+            static int captureLogCounter = 0;
+            bool isRec = ipc && ipc->IsRecording();
+            if (captureLogCounter++ % 60 == 0 || isRec) {
+                static bool lastRec = false;
+                if (captureLogCounter % 60 == 1 || isRec != lastRec) {
+                    EarlyLog("DX9: Capture check frame=%d ipc=%p isRecording=%d initialized=%d backBuffer=%p",
+                             frameCount, ipc, isRec ? 1 : 0, g_DX9Capture.initialized, backBuffer);
+                    lastRec = isRec;
+                }
+            }
+            if (ipc && ipc->IsRecording()) {
                 if (g_DX9Capture.initialized && backBuffer) {
                     g_DX9Capture.CaptureFrame(device, backBuffer);
                 }
-            } else if (g_DX9Capture.initialized) {
-                g_DX9Capture.Cleanup();
             }
+            // Don't cleanup when recording stops - keep initialized for next recording
         };
 
         // Order capture/overlay based on config
@@ -2405,7 +2423,11 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
 void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer) {
     // Complete deferred readback AFTER Present returned (GPU->CPU DMA no longer
     // blocks the Present call, reducing present_call_us from ~3.5ms to ~0.2ms)
-    g_DX9Capture.PostPresentReadback(device);
+    // Only run at the outermost Present level to avoid double-processing when
+    // both VTable and inline hooks fire for the same call.
+    if (g_PresentRecurse == 1) {
+        g_DX9Capture.PostPresentReadback(device);
+    }
 
     if (g_PresentRecurse == 1) {
         static int64_t qpcFreq = 0;
@@ -3036,20 +3058,22 @@ static void InstallDeviceHooks(IDirect3DDevice9* device) {
     // Track hooked vtables to avoid re-hooking the same one
     static std::set<uintptr_t*> s_hookedVtables;
 
-    // If inline hooks are installed, they handle all Present calls
-    // We still need VTable hooks for other functions (Reset, SetSamplerState,
-    // etc.) But Present hooks should NOT be installed as VTable hooks when inline
-    // is active
-    if (!g_InlineHooksInstalled) {
+    // ALWAYS install VTable Present hook for each device vtable.
+    // Inline hooks patch a specific function address in d3d9.dll but the game's
+    // device may use a different vtable entry (e.g., D3D9Ex upgrade changes the
+    // underlying Present implementation). VTable hooks guarantee we catch this
+    // device's Present calls. g_PresentRecurse prevents double-processing if
+    // both the VTable and inline hooks fire for the same call.
+    {
         // Hook Present (17) on this vtable if not already hooked
         // Different devices may have different vtables (e.g., D3D9 vs D3D9Ex)
         if (s_hookedVtables.find(vtable) == s_hookedVtables.end()) {
-            LogDirect("Hooking Present on NEW vtable %p", vtable);
+            LogDirect("Hooking Present on NEW vtable %p (inline=%d)", vtable, g_InlineHooksInstalled ? 1 : 0);
             VTableHook::Status presentStatus =
                 VTableHook::Create(&vtable[17], (void*)&DetourPresent, (void**)&oPresent);
             if (presentStatus == VTableHook::Success) {
                 LogDirect("Present hook SUCCESS on vtable %p, vtable[17]=%p", vtable, (void*)vtable[17]);
-                EarlyLog("DX9: Present hook installed (VTable fallback) at vtable[17]=%p", vtable[17]);
+                EarlyLog("DX9: Present hook installed (VTable) at vtable[17]=%p", vtable[17]);
                 HookLogImportant("DX9: Present hook installed (vtable=%p, vtable[17]=%p)", vtable, (void*)vtable[17]);
                 s_hookedVtables.insert(vtable);
             } else {
@@ -3060,8 +3084,6 @@ static void InstallDeviceHooks(IDirect3DDevice9* device) {
         } else {
             LogDirect("Vtable %p already hooked, skipping Present", vtable);
         }
-    } else {
-        EarlyLog("DX9: Skipping VTable Present hook - inline hooks active");
     }
 
     // 1.5 Hook Reset (16) - needed for overlay to survive mode changes
@@ -3126,13 +3148,11 @@ static void InstallDeviceHooks(IDirect3DDevice9* device) {
             }
         }
 
-        // Hook PresentEx (132) - only if inline hooks not installed
-        if (!g_InlineHooksInstalled) {
-            if (!oPresentEx) {
-                if (VTableHook::Create(&vtableEx[132], (void*)&DetourPresentEx, (void**)&oPresentEx) ==
-                    VTableHook::Success) {
-                    EarlyLog("DX9: PresentEx hook installed (VTable fallback)");
-                }
+        // Hook PresentEx (132) - always install VTable hook for reliable coverage
+        if (!oPresentEx) {
+            if (VTableHook::Create(&vtableEx[132], (void*)&DetourPresentEx, (void**)&oPresentEx) ==
+                VTableHook::Success) {
+                EarlyLog("DX9: PresentEx hook installed (VTable)");
             }
         }
 
@@ -3142,18 +3162,15 @@ static void InstallDeviceHooks(IDirect3DDevice9* device) {
     }
 
     // 6. Hook SwapChain Present (index 3)
-    // Some games (notably D3D9Ex titles) present through the swapchain and may
-    // pass flags that bypass PresentationInterval. Hooking swapchain Present
-    // allows us to enforce VSync.
-    // Skip if inline hooks are installed (they handle all SwapChain Present)
-    if (!g_InlineHooksInstalled) {
+    // Always install for reliable coverage alongside inline hooks.
+    {
         IDirect3DSwapChain9* swapChain = nullptr;
         if (SUCCEEDED(device->GetSwapChain(0, &swapChain)) && swapChain) {
             uintptr_t* swapVtable = *(uintptr_t**)swapChain;
             if (!oPresentSwap) {
                 if (VTableHook::Create(&swapVtable[3], (void*)&DetourPresentSwap, (void**)&oPresentSwap) ==
                     VTableHook::Success) {
-                    EarlyLog("DX9: SwapChain Present hook installed (VTable fallback)");
+                    EarlyLog("DX9: SwapChain Present hook installed (VTable)");
                 } else {
                     EarlyLog("DX9: SwapChain Present hook create FAILED");
                 }
