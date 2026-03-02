@@ -63,9 +63,20 @@ public:
     winrt::IDirect3DDevice winrtDevice_{nullptr};
 
     ID3D11Texture2D* latestFrame_ = nullptr;
-    ID3D11Texture2D* cachedTexture_ = nullptr;  // Reuse texture to avoid allocation per frame
+
+    // Texture pool for zero-copy pipeline: each frame gets its own texture
+    // so the encoder can consume frame N while frame N+1 is being copied.
+    static constexpr int TEXTURE_POOL_SIZE = 6;  // Enough for 120fps + encoder latency
+    ID3D11Texture2D* texturePool_[TEXTURE_POOL_SIZE] = {};
+    int32_t poolWidth_ = 0;
+    int32_t poolHeight_ = 0;
+    std::atomic<uint32_t> poolWriteIndex_{0};
+
+    // Legacy single-texture for GetNextFrame (pull mode)
+    ID3D11Texture2D* cachedTexture_ = nullptr;
     int32_t cachedWidth_ = 0;
     int32_t cachedHeight_ = 0;
+
     std::mutex frameMutex_;
     int64_t lastFrameTime_ = 0;
     bool frameReady_ = false;
@@ -88,9 +99,46 @@ public:
     std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t)> frameCallback_;
     std::atomic<uint32_t> callbackFrameCount_{0};
 
+    // Perf tracking
+    std::atomic<int64_t> lastCopyUs_{0};
+
+    bool EnsureTexturePool(uint32_t width, uint32_t height) {
+        if (poolWidth_ == (int32_t)width && poolHeight_ == (int32_t)height && texturePool_[0])
+            return true;
+
+        // Release old pool
+        for (int i = 0; i < TEXTURE_POOL_SIZE; i++) {
+            if (texturePool_[i]) {
+                texturePool_[i]->Release();
+                texturePool_[i] = nullptr;
+            }
+        }
+
+        D3D11_TEXTURE2D_DESC copyDesc = {};
+        copyDesc.Width = width;
+        copyDesc.Height = height;
+        copyDesc.MipLevels = 1;
+        copyDesc.ArraySize = 1;
+        copyDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        copyDesc.SampleDesc.Count = 1;
+        copyDesc.Usage = D3D11_USAGE_DEFAULT;
+        copyDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+
+        for (int i = 0; i < TEXTURE_POOL_SIZE; i++) {
+            HRESULT hr = d3dDevice_->CreateTexture2D(&copyDesc, nullptr, &texturePool_[i]);
+            if (FAILED(hr)) {
+                LogError("[WGC] Failed to create texture pool[%d]: 0x%x", i, hr);
+                return false;
+            }
+        }
+
+        poolWidth_ = width;
+        poolHeight_ = height;
+        LogInfo("[WGC] Texture pool created: %dx%d x%d", width, height, TEXTURE_POOL_SIZE);
+        return true;
+    }
+
     void OnFrameArrived(winrt::Direct3D11CaptureFramePool const& sender, winrt::IInspectable const&) {
-        // OBS-STYLE: Process frame directly in callback for minimum latency
-        // Get exactly ONE frame per callback (don't drain)
         auto winrtFrame = sender.TryGetNextFrame();
         if (!winrtFrame) {
             return;
@@ -106,37 +154,40 @@ public:
                 D3D11_TEXTURE2D_DESC desc;
                 texture->GetDesc(&desc);
 
-                // Ensure cached texture exists and matches size
-                if (!cachedTexture_ || cachedWidth_ != (int32_t)desc.Width || cachedHeight_ != (int32_t)desc.Height) {
-                    if (cachedTexture_)
-                        cachedTexture_->Release();
-                    D3D11_TEXTURE2D_DESC copyDesc = desc;
-                    copyDesc.Usage = D3D11_USAGE_DEFAULT;
-                    copyDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-                    copyDesc.CPUAccessFlags = 0;
-                    copyDesc.MiscFlags = 0;
+                if (EnsureTexturePool(desc.Width, desc.Height)) {
+                    // Round-robin through texture pool so each frame gets unique storage
+                    uint32_t idx = poolWriteIndex_.fetch_add(1, std::memory_order_relaxed) % TEXTURE_POOL_SIZE;
+                    ID3D11Texture2D* target = texturePool_[idx];
 
-                    if (SUCCEEDED(d3dDevice_->CreateTexture2D(&copyDesc, nullptr, &cachedTexture_))) {
-                        cachedWidth_ = desc.Width;
-                        cachedHeight_ = desc.Height;
-                    }
-                }
+                    LARGE_INTEGER copyStart, copyEnd;
+                    QueryPerformanceCounter(&copyStart);
 
-                if (cachedTexture_) {
-                    // Copy texture (OBS does this in callback too)
-                    MediaEngine_LockD3D11();
-                    d3dContext_->CopyResource(cachedTexture_, texture);
-                    MediaEngine_UnlockD3D11();
+                    // D3D11 Multithread protection is enabled on the device, so
+                    // we skip the application-level mutex to avoid blocking the
+                    // WGC callback while the encoder holds the lock for BGRA→NV12.
+                    d3dContext_->CopyResource(target, texture);
+                    // Flush ensures the GPU copy completes before we close the
+                    // WGC frame (returning its buffer to the pool). Without this,
+                    // WGC can reuse the source buffer while the GPU is still
+                    // reading from it, causing pool exhaustion at high refresh
+                    // rates.
+                    d3dContext_->Flush();
 
-                    // Pass Raw QPC to MediaEngine
+                    QueryPerformanceCounter(&copyEnd);
+
+                    // Track copy time for profiling
+                    LARGE_INTEGER freq;
+                    QueryPerformanceFrequency(&freq);
+                    int64_t copyUs = ((copyEnd.QuadPart - copyStart.QuadPart) * 1000000) / freq.QuadPart;
+                    lastCopyUs_.store(copyUs, std::memory_order_relaxed);
+
                     LARGE_INTEGER t;
                     QueryPerformanceCounter(&t);
                     int64_t timestampQPC = t.QuadPart;
 
-                    // Call the frame callback to push to queue
                     if (frameCallback_) {
-                        cachedTexture_->AddRef();
-                        frameCallback_(cachedTexture_, cachedWidth_, cachedHeight_, timestampQPC);
+                        target->AddRef();
+                        frameCallback_(target, desc.Width, desc.Height, timestampQPC);
                     }
 
                     callbackFrameCount_.fetch_add(1, std::memory_order_relaxed);
@@ -148,7 +199,6 @@ public:
 
         winrtFrame.Close();
 
-        // Also signal event for legacy waiters (if any)
         if (frameArrivedEvent_) {
             SetEvent(frameArrivedEvent_);
         }
@@ -216,10 +266,10 @@ public:
         // CRITICAL: Must use CreateFreeThreaded (not Create) because we have no
         // message pump! Create() requires a DispatcherQueue pumping messages for
         // callbacks to fire. CreateFreeThreaded() uses an internal worker thread
-        // for callbacks. Using 4 buffers (instead of 2) to reduce frame loss when
-        // draining is slow
+        // for callbacks. Using 8 buffers to prevent pool exhaustion at high Hz
+        // monitors (143Hz+ needs headroom for GPU copy latency)
         framePool_ = winrt::Direct3D11CaptureFramePool::CreateFreeThreaded(
-            winrtDevice_, winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized, 4, size);
+            winrtDevice_, winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized, 8, size);
 
         // Create event for frame arrival signaling (OBS-style immediate wake)
         // Auto-reset event ensures we wake once per signal
@@ -262,18 +312,30 @@ public:
             LogInfo("[WGC] IsCursorCaptureEnabled not available");
         }
 
+        // Request minimum update interval (maximum capture rate)
+        try {
+            if (session_) {
+                session_.MinUpdateInterval(winrt::Windows::Foundation::TimeSpan{0});
+                LogInfo("[WGC] MinUpdateInterval set to 0 (max rate)");
+            }
+        } catch (...) {
+            LogInfo("[WGC] MinUpdateInterval not available (older Windows)");
+        }
+
         session_.StartCapture();
         LogInfo("[WGC] Capture session started: %dx%d", width, height);
         return true;
     }
 
     void StopCapture() {
+        // Clear callback first to prevent races
+        frameCallback_ = nullptr;
+
         if (session_) {
             session_.Close();
             session_ = nullptr;
         }
         if (framePool_) {
-            // Unsubscribe from frame arrived event
             framePool_.FrameArrived(frameArrivedToken_);
             framePool_.Close();
             framePool_ = nullptr;
@@ -286,6 +348,16 @@ public:
             latestFrame_->Release();
             latestFrame_ = nullptr;
         }
+        // Release texture pool
+        for (int i = 0; i < TEXTURE_POOL_SIZE; i++) {
+            if (texturePool_[i]) {
+                texturePool_[i]->Release();
+                texturePool_[i] = nullptr;
+            }
+        }
+        poolWidth_ = 0;
+        poolHeight_ = 0;
+
         if (cachedTexture_) {
             cachedTexture_->Release();
             cachedTexture_ = nullptr;
@@ -557,6 +629,14 @@ void WGCCapture::SetDirectFrameCallback(std::function<void(ID3D11Texture2D*, uin
 uint32_t WGCCapture::GetCallbackFrameCount() const {
 #if HAS_WGC
     return impl_ ? impl_->callbackFrameCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+int64_t WGCCapture::GetLastCopyTimeUs() const {
+#if HAS_WGC
+    return impl_ ? impl_->lastCopyUs_.load(std::memory_order_relaxed) : 0;
 #else
     return 0;
 #endif

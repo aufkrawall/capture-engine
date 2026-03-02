@@ -314,38 +314,35 @@ int InjectProcessMain(const AppConfig& config) {
     LogInfo("[Inject] Shared memory created and initialized");
 
     // Initialize injector (WMI based)
-    // CRITICAL: Must use make_shared because InjectionManager inherits
-    // enable_shared_from_this. Stack allocation causes shared_from_this() to
-    // throw bad_weak_ptr in WMI callback, which silently prevents ALL process
-    // injection.
-    auto injector = std::make_shared<InjectionManager>(config);
+    // Skip entirely when capture_method=screengrab to prevent hook DLL injection
+    // into game processes. WMI callbacks in the constructor would inject
+    // independently of the Update() check, so we must not create the object.
+    bool allowInjection = (config.captureMethod != "screengrab" && config.captureMethod != "framegrab");
+    std::shared_ptr<InjectionManager> injector;
 
-    // Register callback to reload config on injection
-    injector->SetOnInjectCallback([&](const std::string& processName) {
-        LogInfo("[Inject] Reloading config for target: %s", processName.c_str());
+    if (allowInjection) {
+        // CRITICAL: Must use make_shared because InjectionManager inherits
+        // enable_shared_from_this. Stack allocation causes shared_from_this() to
+        // throw bad_weak_ptr in WMI callback, which silently prevents ALL process
+        // injection.
+        injector = std::make_shared<InjectionManager>(config);
 
-        // Load fresh config with process-specific overrides
-        AppConfig targetConfig;
-        LoadConfig(configPath, targetConfig, processName);
+        // Register callback to reload config on injection
+        injector->SetOnInjectCallback([&](const std::string& processName) {
+            LogInfo("[Inject] Reloading config for target: %s", processName.c_str());
 
-        // Update Shared Memory with new values
-        UpdateSharedMemoryFromConfig(pSharedMem, targetConfig);
-    });
-    // WMI Initialization handled in constructor or explicitly here?
-    // InjectionManager constructor calls InitializeWMI() now (added in previous
-    // step via constructor mod? No, wait, checks: In injection.cpp modification,
-    // I added InitializeWMI call to Constructor. Let me double check that.
-    // Looking at previous diff for injection.cpp:
-    // @@ -23,9 +23,16 @@
-    // ...
-    //    LogError("Capture Hook X86 DLL not found: %s", hookDllPathX86.c_str());
-    //
-    //  InitializeWMI();
-    // }
-    // Yes, I added it to the constructor. So explicit call here is not needed,
-    // but good to know.
+            // Load fresh config with process-specific overrides
+            AppConfig targetConfig;
+            LoadConfig(configPath, targetConfig, processName);
 
-    LogInfo("[Inject] Injection manager initialized");
+            // Update Shared Memory with new values
+            UpdateSharedMemoryFromConfig(pSharedMem, targetConfig);
+        });
+
+        LogInfo("[Inject] Injection manager initialized");
+    } else {
+        LogInfo("[Inject] Injection manager SKIPPED (capture_method=%s)", config.captureMethod.c_str());
+    }
 
     LogInfo("[Inject] Process started (PID: %d)", GetCurrentProcessId());
 
@@ -415,12 +412,8 @@ int InjectProcessMain(const AppConfig& config) {
         }
 
         // Update injector (scan for games, inject)
-        // Skip injection when capture_method=screengrab - user explicitly wants WGC
-        // only Update injector (process pending WMI injections) Run this every tick
-        // (10ms) for responsiveness Skip injection when capture_method=screengrab
-        // (unless overlay force-enabled via whitelist)
-        bool allowInjection = (config.captureMethod != "screengrab" && config.captureMethod != "framegrab");
-        if (allowInjection || !config.overlayWhitelist.empty()) {
+        // Update injector (process pending WMI injections)
+        if (injector) {
             injector->Update();
         }
 

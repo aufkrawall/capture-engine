@@ -90,6 +90,9 @@ public:
     // Get count of frames processed via direct callback
     uint32_t GetCallbackFrameCount() const;
 
+    // Get last GPU copy time in microseconds (for profiling)
+    int64_t GetLastCopyTimeUs() const;
+
 private:
     class Impl;  // PIMPL to hide WinRT dependencies
     std::unique_ptr<Impl> impl_;
