@@ -127,6 +127,10 @@ static std::unordered_map<IDirect3DTexture9*, IDirect3DTexture9*> g_texDefault; 
 static std::unordered_map<IDirect3DVertexBuffer9*, IDirect3DVertexBuffer9*> g_vbStaging;
 static std::unordered_map<IDirect3DIndexBuffer9*, IDirect3DIndexBuffer9*> g_ibStaging;
 
+// Diagnostic: track which DEFAULT textures have had data uploaded
+static std::set<IDirect3DTexture9*> g_texUploaded;
+static bool g_uploadDiagDone = false;
+
 // Original device vtable function pointers
 typedef HRESULT(STDMETHODCALLTYPE* CreateTexture_t)(IDirect3DDevice9*, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL,
                                                     IDirect3DTexture9**, HANDLE*);
@@ -182,6 +186,33 @@ static IBUnlock_t oIBUnlock = nullptr;
 static IBRelease_t oIBRelease = nullptr;
 static bool g_ibHooksInstalled = false;
 
+// Diagnostic: SetTexture hook to detect staging textures leaking into rendering
+typedef HRESULT(STDMETHODCALLTYPE* SetTexture_t)(IDirect3DDevice9*, DWORD, IDirect3DBaseTexture9*);
+static SetTexture_t oSetTexture = nullptr;
+static bool g_setTexHookInstalled = false;
+static std::atomic<int> g_stagingLeakCount{0};
+
+static HRESULT STDMETHODCALLTYPE DetourSetTexture(IDirect3DDevice9* device, DWORD Stage,
+                                                   IDirect3DBaseTexture9* pTexture) {
+    if (pTexture) {
+        // Check if this is a STAGING texture that leaked into the rendering pipeline
+        IDirect3DTexture9* tex2d = nullptr;
+        if (SUCCEEDED(pTexture->QueryInterface(__uuidof(IDirect3DTexture9), (void**)&tex2d)) && tex2d) {
+            if (g_texDefault.find(tex2d) != g_texDefault.end()) {
+                int count = g_stagingLeakCount.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (count <= 20) {
+                    D3DSURFACE_DESC desc = {};
+                    tex2d->GetLevelDesc(0, &desc);
+                    HookLogImportant("DX9: MPF DIAG: STAGING TEXTURE LEAKED to SetTexture! stage=%u tex=%p %ux%u fmt=%d pool=%d",
+                                     Stage, tex2d, desc.Width, desc.Height, (int)desc.Format, (int)desc.Pool);
+                }
+            }
+            tex2d->Release();
+        }
+    }
+    return oSetTexture(device, Stage, pTexture);
+}
+
 // Forward declaration for surface hook (used before definition)
 static HRESULT STDMETHODCALLTYPE DetourSurfUnlockRect(IDirect3DSurface9* pSurf);
 
@@ -212,6 +243,7 @@ static HRESULT STDMETHODCALLTYPE DetourTexUnlockRect(IDirect3DTexture9* pTex, UI
             pTex->GetDevice(&dev);
             if (dev) {
                 HRESULT hrUpd = dev->UpdateTexture(it->second, pTex);
+                g_texUploaded.insert(pTex);
                 int total = g_updateTexCalls.fetch_add(1, std::memory_order_relaxed) + 1;
                 g_texUnlockUploadCount.fetch_add(1, std::memory_order_relaxed);
                 if (FAILED(hrUpd)) {
@@ -284,6 +316,7 @@ static HRESULT STDMETHODCALLTYPE DetourSurfUnlockRect(IDirect3DSurface9* pSurf) 
                 stagingTex->GetDevice(&dev);
                 if (dev) {
                     HRESULT hrUpd = dev->UpdateTexture(stagingTex, it->second);
+                    g_texUploaded.insert(it->second);
                     int total = g_updateTexCalls.fetch_add(1, std::memory_order_relaxed) + 1;
                     g_surfUnlockUploadCount.fetch_add(1, std::memory_order_relaxed);
                     if (FAILED(hrUpd)) {
@@ -775,6 +808,70 @@ static void InstallManagedPoolHooks(IDirect3DDevice9* device) {
             HookLogImportant("DX9: MPF: CreateCubeTexture inline hook FAILED at %p", (void*)vtable[25]);
         }
     }
+    // Diagnostic: Install SetTexture hook to detect staging texture leaks
+    if (!g_setTexHookInstalled) {
+        void* trampoline = nullptr;
+        if (InlineHook::Install((void*)vtable[65], (void*)&DetourSetTexture, &trampoline)) {
+            oSetTexture = (SetTexture_t)trampoline;
+            g_setTexHookInstalled = true;
+            HookLogImportant("DX9: MPF DIAG: SetTexture inline hook installed at %p", (void*)vtable[65]);
+        }
+    }
+}
+
+// Diagnostic: log textures that haven't been uploaded at first render
+static void LogUploadDiagnostics() {
+    if (g_uploadDiagDone)
+        return;
+    g_uploadDiagDone = true;
+
+    int total = (int)g_texStaging.size();
+    int uploaded = (int)g_texUploaded.size();
+    int missing = total - uploaded;
+    HookLogImportant("DX9: MPF DIAG: %d/%d textures uploaded, %d NEVER uploaded", uploaded, total, missing);
+
+    // Verify staging texture data by reading first pixels
+    int checked = 0;
+    int empty = 0;
+    for (auto& [defaultTex, stagingTex] : g_texStaging) {
+        if (checked >= 50)
+            break;
+        D3DSURFACE_DESC desc = {};
+        if (FAILED(oTexGetLevelDesc(stagingTex, 0, &desc)))
+            continue;
+        // Only check uncompressed textures (DXT can't be sampled per-pixel easily)
+        if (desc.Format != D3DFMT_A8R8G8B8 && desc.Format != D3DFMT_X8R8G8B8)
+            continue;
+        D3DLOCKED_RECT rect = {};
+        if (SUCCEEDED(oTexLockRect(stagingTex, 0, &rect, nullptr, D3DLOCK_READONLY))) {
+            uint32_t* pixels = (uint32_t*)rect.pBits;
+            bool allZero = true;
+            int stride = rect.Pitch / 4;
+            // Sample a few pixels
+            for (int i = 0; i < 16 && i < (int)(desc.Width * desc.Height); i++) {
+                int y = (i * desc.Height / 16);
+                int x = (i * desc.Width / 16);
+                if (y < (int)desc.Height && x < (int)desc.Width) {
+                    if (pixels[y * stride + x] != 0) {
+                        allZero = false;
+                        break;
+                    }
+                }
+            }
+            oTexUnlockRect(stagingTex, 0);
+            if (allZero) {
+                empty++;
+                if (empty <= 10)
+                    HookLogImportant("DX9: MPF DIAG: EMPTY staging tex=%p default=%p %ux%u fmt=%d",
+                                     stagingTex, defaultTex, desc.Width, desc.Height, (int)desc.Format);
+            }
+            checked++;
+        }
+    }
+    HookLogImportant("DX9: MPF DIAG: Checked %d ARGB staging textures, %d EMPTY", checked, empty);
+
+    int leaks = g_stagingLeakCount.load(std::memory_order_relaxed);
+    HookLogImportant("DX9: MPF DIAG: staging texture leaks to SetTexture: %d", leaks);
 }
 
 }  // namespace ManagedPoolFix
@@ -1233,6 +1330,11 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9PresentInline(IDirect3DDevice9* devic
     if (entryLogCount < 5) {
         EarlyLog("DX9: DetourD3D9PresentInline called (device=%p, count=%d)", device, entryLogCount);
         entryLogCount++;
+    }
+    // Run upload diagnostics after some frames to let loading finish
+    static int diagFrameCount = 0;
+    if (ManagedPoolFix::g_active && !ManagedPoolFix::g_uploadDiagDone && ++diagFrameCount == 120) {
+        ManagedPoolFix::LogUploadDiagnostics();
     }
     if (HookIsShuttingDown()) {
         if (oD3D9PresentTrampoline)
@@ -4168,15 +4270,21 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDevice(IDirect3D9* self, UINT Adapt
         // MSAA Override
         ApplyMSAAOverride(self, Adapter, DeviceType, pPresentationParameters);
 
-        HookLog("DX9: CreateDevice Flags In: 0x%X", BehaviorFlags);
+        HookLogImportant("DX9: CreateDevice Flags In: 0x%X (PUREDEVICE=%d)", BehaviorFlags,
+                         !!(BehaviorFlags & D3DCREATE_PUREDEVICE));
 
         // CUDA requirement: Multithreaded device, No Pure Device (for
         // GetRenderTarget etc compliance)
         BehaviorFlags |= D3DCREATE_MULTITHREADED;
         BehaviorFlags &= ~D3DCREATE_PUREDEVICE;
 
-        HookLog("DX9: CreateDevice Flags Out: 0x%X", BehaviorFlags);
-        HookLog("DX9: CreateDevice Flags Out: 0x%X", BehaviorFlags);
+        HookLogImportant("DX9: CreateDevice Flags Out: 0x%X", BehaviorFlags);
+        if (pPresentationParameters) {
+            HookLogImportant("DX9: CreateDevice PP: %ux%u SwapEffect=%u Windowed=%d BackBufferFmt=%u BackBufferCount=%u",
+                             pPresentationParameters->BackBufferWidth, pPresentationParameters->BackBufferHeight,
+                             pPresentationParameters->SwapEffect, pPresentationParameters->Windowed,
+                             pPresentationParameters->BackBufferFormat, pPresentationParameters->BackBufferCount);
+        }
     }
 
     // Try to silently upgrade to D3D9Ex for zero-copy shared texture capture.
@@ -4194,6 +4302,17 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDevice(IDirect3D9* self, UINT Adapt
         // Enable MANAGED pool remapping BEFORE CreateDeviceEx so any resources
         // created during device initialization are properly remapped
         ManagedPoolFix::g_active = true;
+
+        // D3D9Ex in windowed mode: DWM uses back buffer alpha for desktop
+        // composition. A8R8G8B8 → transparent pixels where game writes alpha<255.
+        // Fix: switch to X8R8G8B8 so alpha channel is ignored by DWM.
+        D3DFORMAT origBBFmt = D3DFMT_UNKNOWN;
+        if (pPresentationParameters && pPresentationParameters->Windowed &&
+            pPresentationParameters->BackBufferFormat == D3DFMT_A8R8G8B8) {
+            origBBFmt = pPresentationParameters->BackBufferFormat;
+            pPresentationParameters->BackBufferFormat = D3DFMT_X8R8G8B8;
+            HookLogImportant("DX9: D3D9Ex windowed: changed BackBufferFormat A8R8G8B8 → X8R8G8B8 (DWM alpha fix)");
+        }
 
         D3DDISPLAYMODEEX* pModeEx = nullptr;
         D3DDISPLAYMODEEX fullscreenMode = {};
@@ -4216,6 +4335,9 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDevice(IDirect3D9* self, UINT Adapt
             *ppReturnedDeviceInterface = static_cast<IDirect3DDevice9*>(deviceEx);
         } else {
             ManagedPoolFix::g_active = false;
+            // Restore original back buffer format for D3D9 fallback
+            if (origBBFmt != D3DFMT_UNKNOWN && pPresentationParameters)
+                pPresentationParameters->BackBufferFormat = origBBFmt;
             HookLogImportant("DX9: D3D9Ex CreateDeviceEx FAILED (hr=0x%08X), falling back to legacy", (unsigned)hr);
             hr = E_FAIL;
         }
