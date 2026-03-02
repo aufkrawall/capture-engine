@@ -123,7 +123,7 @@ static constexpr bool kSysmemDiagMode = false;
 // eliminating ALL staging infrastructure (staging maps, Lock/Unlock hooks,
 // GetSurfaceLevel/SurfUnlockRect hooks, UpdateTexture redirects). This is the
 // industry-standard approach used by dxwrapper and other D3D9Ex promotion tools.
-static constexpr bool kUseDynamicPool = true;
+static constexpr bool kUseDynamicPool = false;
 
 // Set of textures remapped from MANAGED → DEFAULT + DYNAMIC (for GetLevelDesc hook)
 static std::unordered_set<IDirect3DTexture9*> g_dynamicRemapped;
@@ -144,6 +144,11 @@ static std::unordered_map<IDirect3DTexture9*, IDirect3DTexture9*> g_texDefault; 
 static std::unordered_set<IDirect3DTexture9*> g_texAutoGenMip;  // DEFAULT textures with AUTOGENMIPMAP
 static std::unordered_map<IDirect3DVertexBuffer9*, IDirect3DVertexBuffer9*> g_vbStaging;
 static std::unordered_map<IDirect3DIndexBuffer9*, IDirect3DIndexBuffer9*> g_ibStaging;
+
+// Deferred upload: textures marked dirty on Unlock, flushed on SetTexture/Draw.
+// Reduces UpdateTexture calls from once-per-unlock to once-per-actual-use.
+static std::unordered_set<IDirect3DTexture9*> g_texDirty;
+static std::atomic<int> g_deferredFlushCount{0};
 
 // Diagnostic: track which DEFAULT textures have had data uploaded
 static std::set<IDirect3DTexture9*> g_texUploaded;
@@ -212,10 +217,37 @@ static std::atomic<int> g_stagingLeakCount{0};
 
 static HRESULT STDMETHODCALLTYPE DetourSetTexture(IDirect3DDevice9* device, DWORD Stage,
                                                    IDirect3DBaseTexture9* pTexture) {
-    if (pTexture) {
-        // Check if this is a STAGING texture that leaked into the rendering pipeline
+    if (pTexture && !kUseDynamicPool) {
         IDirect3DTexture9* tex2d = nullptr;
         if (SUCCEEDED(pTexture->QueryInterface(__uuidof(IDirect3DTexture9), (void**)&tex2d)) && tex2d) {
+            // Flush deferred upload if this texture is dirty
+            if (g_texDirty.count(tex2d)) {
+                auto it = g_texStaging.find(tex2d);
+                if (it != g_texStaging.end()) {
+                    bool isAutoGen = g_texAutoGenMip.count(tex2d) > 0;
+                    HRESULT hrUpd;
+                    if (isAutoGen) {
+                        IDirect3DSurface9* srcSurf = nullptr;
+                        IDirect3DSurface9* dstSurf = nullptr;
+                        it->second->GetSurfaceLevel(0, &srcSurf);
+                        oTexGetSurfaceLevel(tex2d, 0, &dstSurf);
+                        hrUpd = device->UpdateSurface(srcSurf, nullptr, dstSurf, nullptr);
+                        if (srcSurf) srcSurf->Release();
+                        if (dstSurf) dstSurf->Release();
+                    } else {
+                        hrUpd = device->UpdateTexture(it->second, tex2d);
+                    }
+                    int total = g_deferredFlushCount.fetch_add(1, std::memory_order_relaxed) + 1;
+                    g_updateTexCalls.fetch_add(1, std::memory_order_relaxed);
+                    if (FAILED(hrUpd)) g_updateTexFails.fetch_add(1, std::memory_order_relaxed);
+                    if (total <= 5 || total % 1000 == 0)
+                        HookLogImportant("DX9: MPF: Deferred flush #%d tex=%p hr=0x%08X autoGen=%d",
+                                         total, tex2d, (unsigned)hrUpd, isAutoGen);
+                    g_texUploaded.insert(tex2d);
+                }
+                g_texDirty.erase(tex2d);
+            }
+            // Check if this is a STAGING texture that leaked into the rendering pipeline
             if (g_texDefault.find(tex2d) != g_texDefault.end()) {
                 int count = g_stagingLeakCount.fetch_add(1, std::memory_order_relaxed) + 1;
                 if (count <= 20) {
@@ -289,40 +321,10 @@ static HRESULT STDMETHODCALLTYPE DetourTexUnlockRect(IDirect3DTexture9* pTex, UI
         // Use direct COM call on staging texture
         HRESULT hr = it->second->UnlockRect(Level);
         if (SUCCEEDED(hr)) {
-            IDirect3DDevice9* dev = nullptr;
-            pTex->GetDevice(&dev);
-            if (dev) {
-                HRESULT hrUpd;
-                bool isAutoGen = g_texAutoGenMip.count(pTex) > 0;
-                if (isAutoGen) {
-                    // AUTOGENMIPMAP: upload only level 0 via UpdateSurface so
-                    // the GPU regenerates the mip chain. UpdateTexture would
-                    // overwrite auto-generated mipmaps with uninitialized data.
-                    IDirect3DSurface9* srcSurf = nullptr;
-                    IDirect3DSurface9* dstSurf = nullptr;
-                    it->second->GetSurfaceLevel(0, &srcSurf);
-                    oTexGetSurfaceLevel(pTex, 0, &dstSurf);
-                    hrUpd = dev->UpdateSurface(srcSurf, nullptr, dstSurf, nullptr);
-                    if (srcSurf) srcSurf->Release();
-                    if (dstSurf) dstSurf->Release();
-                } else {
-                    hrUpd = dev->UpdateTexture(it->second, pTex);
-                }
-                g_texUploaded.insert(pTex);
-                int total = g_updateTexCalls.fetch_add(1, std::memory_order_relaxed) + 1;
-                g_texUnlockUploadCount.fetch_add(1, std::memory_order_relaxed);
-                if (FAILED(hrUpd)) {
-                    int fails = g_updateTexFails.fetch_add(1, std::memory_order_relaxed);
-                    if (fails < 10)
-                        HookLogImportant(
-                            "DX9: MPF: TexUnlockRect upload FAILED hr=0x%08X pTex=%p staging=%p level=%u autoGen=%d",
-                            (unsigned)hrUpd, pTex, it->second, Level, isAutoGen);
-                }
-                if (total <= 5 || total % 500 == 0)
-                    HookLogImportant("DX9: MPF: Upload #%d via TexUnlock hr=0x%08X autoGen=%d", total, (unsigned)hrUpd,
-                                     isAutoGen);
-                dev->Release();
-            }
+            // Deferred upload: mark dirty, flush happens in SetTexture before rendering.
+            // This avoids redundant uploads for textures locked/unlocked multiple times.
+            g_texDirty.insert(pTex);
+            g_texUnlockUploadCount.fetch_add(1, std::memory_order_relaxed);
         }
         return hr;
     }
@@ -344,6 +346,7 @@ static ULONG STDMETHODCALLTYPE DetourTexRelease(IDirect3DTexture9* pTex) {
                 oTexRelease(it->second);          // Release staging
                 g_texStaging.erase(it);
             }
+            g_texDirty.erase(pTex);
         }
         g_texAutoGenMip.erase(pTex);
     }
@@ -383,38 +386,9 @@ static HRESULT STDMETHODCALLTYPE DetourSurfUnlockRect(IDirect3DSurface9* pSurf) 
             auto it = g_texDefault.find(stagingTex);
             if (it != g_texDefault.end()) {
                 IDirect3DTexture9* defaultTex = it->second;
-                IDirect3DDevice9* dev = nullptr;
-                stagingTex->GetDevice(&dev);
-                if (dev) {
-                    HRESULT hrUpd;
-                    bool isAutoGen = g_texAutoGenMip.count(defaultTex) > 0;
-                    if (isAutoGen) {
-                        // AUTOGENMIPMAP: upload level 0 only via UpdateSurface
-                        IDirect3DSurface9* srcSurf = nullptr;
-                        IDirect3DSurface9* dstSurf = nullptr;
-                        stagingTex->GetSurfaceLevel(0, &srcSurf);
-                        oTexGetSurfaceLevel(defaultTex, 0, &dstSurf);
-                        hrUpd = dev->UpdateSurface(srcSurf, nullptr, dstSurf, nullptr);
-                        if (srcSurf) srcSurf->Release();
-                        if (dstSurf) dstSurf->Release();
-                    } else {
-                        hrUpd = dev->UpdateTexture(stagingTex, defaultTex);
-                    }
-                    g_texUploaded.insert(defaultTex);
-                    int total = g_updateTexCalls.fetch_add(1, std::memory_order_relaxed) + 1;
-                    g_surfUnlockUploadCount.fetch_add(1, std::memory_order_relaxed);
-                    if (FAILED(hrUpd)) {
-                        int fails = g_updateTexFails.fetch_add(1, std::memory_order_relaxed);
-                        if (fails < 10)
-                            HookLogImportant(
-                                "DX9: MPF: SurfUnlockRect upload FAILED hr=0x%08X surf=%p staging=%p autoGen=%d",
-                                (unsigned)hrUpd, pSurf, stagingTex, isAutoGen);
-                    }
-                    if (total <= 5 || total % 500 == 0)
-                        HookLogImportant("DX9: MPF: Upload #%d via SurfUnlock hr=0x%08X autoGen=%d", total,
-                                         (unsigned)hrUpd, isAutoGen);
-                    dev->Release();
-                }
+                // Deferred upload: mark dirty, flush happens in SetTexture
+                g_texDirty.insert(defaultTex);
+                g_surfUnlockUploadCount.fetch_add(1, std::memory_order_relaxed);
             }
             stagingTex->Release();  // Release the GetContainer AddRef
         }
@@ -1981,6 +1955,19 @@ public:
     int32_t zeroCopyQueryWaitUs = 0;
     int32_t zeroCopyReadbackUs = 0;
 
+    // GDI interop for zero-copy capture on native D3D9.
+    // Uses GetDC/BitBlt for GPU-accelerated D3D9->D3D11 transfer (WDDM 2.0+).
+    // The heavy GetDC+BitBlt work runs on a dedicated capture thread to avoid
+    // blocking the render thread. Render thread only does StretchRect (async GPU).
+    bool useGDIInterop = false;
+    IDirect3DSurface9* gdiCopySurfaces[2] = {};  // Double-buffered lockable D3D9 RTs
+    ID3D11Texture2D* gdiTexture = nullptr;         // D3D11 GDI-compatible intermediate
+    IDXGISurface1* gdiSurface = nullptr;            // DXGI surface for GetDC
+    int gdiWriteIdx = 0;                            // Current write buffer index (0 or 1)
+    bool gdiHasPrevFrame = false;                   // True after first StretchRect completes
+    int64_t gdiLastCaptureQpc = 0;                  // Rate-limiting timestamp
+    std::atomic<bool> gdiBufferBusy[2] = {{false}, {false}};  // Per-buffer busy flags
+
     // Background capture thread proc for D3D11 staging path.
     // Processes LockRect + UpdateSubresource + SignalFrameReady off the render
     // thread. The render thread only does D3D9 submit + query check + enqueue.
@@ -2033,6 +2020,59 @@ public:
         EarlyLog("DX9: Staging capture thread stopped");
     }
 
+    // Background capture thread for GDI interop path.
+    // Dequeues frames from the pending ring and runs the expensive
+    // GetDC+BitBlt+CopySubresource pipeline off the render thread.
+    void GDICaptureThreadProc() {
+        captureThreadRunning = true;
+        EarlyLog("DX9: GDI capture thread started");
+
+        int64_t qpcFreq = 0;
+        {
+            LARGE_INTEGER f;
+            QueryPerformanceFrequency(&f);
+            qpcFreq = f.QuadPart;
+        }
+
+        while (!captureThreadShutdown.load(std::memory_order_acquire)) {
+            uint32_t rIdx = pendingReadIdx.load(std::memory_order_acquire);
+            uint32_t wIdx = pendingWriteIdx.load(std::memory_order_acquire);
+
+            if (rIdx == wIdx) {
+                WaitForSingleObject(captureEvent, 50);
+                continue;
+            }
+
+            PendingCaptureFrame& frame = pendingRing[rIdx % CAPTURE_RING_SIZE];
+            const int surfIdx = static_cast<int>(frame.backBufferIndex);
+
+            // Mark buffer busy so render thread won't StretchRect to it
+            gdiBufferBusy[surfIdx].store(true, std::memory_order_release);
+
+            LARGE_INTEGER captureStart;
+            QueryPerformanceCounter(&captureStart);
+
+            CompleteGDIInteropCapture(gdiCopySurfaces[surfIdx]);
+
+            LARGE_INTEGER captureEnd;
+            QueryPerformanceCounter(&captureEnd);
+            int32_t captureUs = static_cast<int32_t>(
+                ((captureEnd.QuadPart - captureStart.QuadPart) * 1000000) / qpcFreq);
+
+            // Mark buffer available again
+            gdiBufferBusy[surfIdx].store(false, std::memory_order_release);
+
+            static int gdiThreadLogCount = 0;
+            if (++gdiThreadLogCount <= 5 || gdiThreadLogCount % 200 == 0)
+                HookLog("DX9: GDI thread: frame #%d surf[%d] %dus", gdiThreadLogCount, surfIdx, captureUs);
+
+            pendingReadIdx.store(rIdx + 1, std::memory_order_release);
+        }
+
+        captureThreadRunning = false;
+        EarlyLog("DX9: GDI capture thread stopped");
+    }
+
     // CPU Prerender Limit
     struct QuerySlot {
         IDirect3DQuery9* query = nullptr;
@@ -2078,6 +2118,28 @@ public:
             sharedTexture9 = nullptr;
         }
         sharedHandle9 = NULL;
+
+        if (gdiSurface) {
+            gdiSurface->Release();
+            gdiSurface = nullptr;
+        }
+        if (gdiTexture) {
+            gdiTexture->Release();
+            gdiTexture = nullptr;
+        }
+        if (gdiCopySurfaces[0]) {
+            gdiCopySurfaces[0]->Release();
+            gdiCopySurfaces[0] = nullptr;
+        }
+        if (gdiCopySurfaces[1]) {
+            gdiCopySurfaces[1]->Release();
+            gdiCopySurfaces[1] = nullptr;
+        }
+        useGDIInterop = false;
+        gdiHasPrevFrame = false;
+        gdiWriteIdx = 0;
+        gdiBufferBusy[0].store(false, std::memory_order_relaxed);
+        gdiBufferBusy[1].store(false, std::memory_order_relaxed);
 
         if (d3d11SharedTexture) {
             d3d11SharedTexture->Release();
@@ -2160,6 +2222,134 @@ public:
 
     void CreateSharedResources(uint32_t w, uint32_t h, uint32_t fmt) override {
         // Implemented in Init
+    }
+
+    // Set up GDI interop: D3D9 render target + D3D11 GDI-compatible texture.
+    // On WDDM 2.0+ (Win10+), BitBlt between GPU-backed DCs uses the GPU blitter.
+    bool SetupGDIInterop(IDirect3DDevice9* device) {
+        if (!d3d11Device || !d3d11Context) {
+            HookLogImportant("DX9: GDI interop: D3D11 device not available (dev=%p ctx=%p)",
+                             d3d11Device, d3d11Context);
+            return false;
+        }
+
+        // Create TWO lockable D3D9 render targets for double-buffered capture.
+        // Double-buffering eliminates GPU pipeline stalls: we StretchRect to one RT
+        // while GetDC reads from the other (written last frame, already complete).
+        for (int i = 0; i < 2; i++) {
+            HRESULT hr = device->CreateRenderTarget(
+                width, height, d3d9Format, D3DMULTISAMPLE_NONE, 0, TRUE,
+                &gdiCopySurfaces[i], nullptr);
+            if (FAILED(hr)) {
+                HookLogImportant("DX9: GDI interop: CreateRenderTarget[%d] failed (0x%08x)", i, (unsigned)hr);
+                for (int j = 0; j < i; j++) { gdiCopySurfaces[j]->Release(); gdiCopySurfaces[j] = nullptr; }
+                return false;
+            }
+            HDC testDC = nullptr;
+            hr = gdiCopySurfaces[i]->GetDC(&testDC);
+            if (FAILED(hr) || !testDC) {
+                HookLogImportant("DX9: GDI interop: GetDC on RT[%d] failed (0x%08x)", i, (unsigned)hr);
+                for (int j = 0; j <= i; j++) { gdiCopySurfaces[j]->Release(); gdiCopySurfaces[j] = nullptr; }
+                return false;
+            }
+            gdiCopySurfaces[i]->ReleaseDC(testDC);
+        }
+
+        // Create D3D11 GDI-compatible texture
+        D3D11_TEXTURE2D_DESC gdiDesc = {};
+        gdiDesc.Width = width;
+        gdiDesc.Height = height;
+        gdiDesc.MipLevels = 1;
+        gdiDesc.ArraySize = 1;
+        gdiDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        gdiDesc.SampleDesc.Count = 1;
+        gdiDesc.Usage = D3D11_USAGE_DEFAULT;
+        gdiDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
+        gdiDesc.MiscFlags = D3D11_RESOURCE_MISC_GDI_COMPATIBLE;
+
+        HRESULT hr = d3d11Device->CreateTexture2D(&gdiDesc, nullptr, &gdiTexture);
+        if (FAILED(hr)) {
+            HookLogImportant("DX9: GDI interop: D3D11 CreateTexture2D failed (0x%08x)", (unsigned)hr);
+            for (int i = 0; i < 2; i++) { gdiCopySurfaces[i]->Release(); gdiCopySurfaces[i] = nullptr; }
+            return false;
+        }
+
+        hr = gdiTexture->QueryInterface(__uuidof(IDXGISurface1), (void**)&gdiSurface);
+        if (FAILED(hr)) {
+            HookLogImportant("DX9: GDI interop: IDXGISurface1 QI failed (0x%08x)", (unsigned)hr);
+            gdiTexture->Release(); gdiTexture = nullptr;
+            for (int i = 0; i < 2; i++) { gdiCopySurfaces[i]->Release(); gdiCopySurfaces[i] = nullptr; }
+            return false;
+        }
+
+        gdiWriteIdx = 0;
+        gdiHasPrevFrame = false;
+        HookLogImportant("DX9: GDI interop ready: %ux%u (double-buffered, stall-free)", width, height);
+        return true;
+    }
+
+    // Complete GDI interop transfer from a specific D3D9 RT to D3D11 ring buffer.
+    // The surface should have been written to in a PREVIOUS frame so GetDC won't stall.
+    void CompleteGDIInteropCapture(IDirect3DSurface9* srcSurface) {
+        if (!srcSurface || !gdiSurface || !d3d11Context) return;
+
+        static int64_t qpcFreq = 0;
+        if (qpcFreq == 0) {
+            LARGE_INTEGER f;
+            QueryPerformanceFrequency(&f);
+            qpcFreq = f.QuadPart;
+        }
+
+        LARGE_INTEGER copyStart;
+        QueryPerformanceCounter(&copyStart);
+
+        // Get GDI DC from D3D9 render target (source - written in a previous frame)
+        HDC srcDC = nullptr;
+        HRESULT hr = srcSurface->GetDC(&srcDC);
+        if (FAILED(hr) || !srcDC) {
+            static bool logged = false;
+            if (!logged) { HookLogImportant("DX9: GDI: GetDC(D3D9) failed 0x%08x", (unsigned)hr); logged = true; }
+            return;
+        }
+
+        // Get GDI DC from D3D11 texture (destination, discard previous)
+        HDC dstDC = nullptr;
+        hr = gdiSurface->GetDC(TRUE, &dstDC);
+        if (FAILED(hr) || !dstDC) {
+            srcSurface->ReleaseDC(srcDC);  // Release on correct surface
+            static bool logged = false;
+            if (!logged) { HookLogImportant("DX9: GDI: GetDC(D3D11) failed 0x%08x", (unsigned)hr); logged = true; }
+            return;
+        }
+
+        // GPU-accelerated blit on WDDM 2.0+ (both surfaces are GPU-resident)
+        BitBlt(dstDC, 0, 0, width, height, srcDC, 0, 0, SRCCOPY);
+
+        gdiSurface->ReleaseDC(nullptr);
+        srcSurface->ReleaseDC(srcDC);
+
+        LARGE_INTEGER blitEnd;
+        QueryPerformanceCounter(&blitEnd);
+        zeroCopyQueryWaitUs = static_cast<int32_t>(((blitEnd.QuadPart - copyStart.QuadPart) * 1000000) / qpcFreq);
+
+        // Copy from GDI texture to ring buffer shared texture
+        int idx = writeIndex.load(std::memory_order_acquire) % CAPTURE_TEXTURE_COUNT;
+        d3d11Context->CopySubresourceRegion(sharedTextures[idx], 0, 0, 0, 0, gdiTexture, 0, nullptr);
+
+        LARGE_INTEGER qpc;
+        QueryPerformanceCounter(&qpc);
+
+        if (useFences && fence && context4) {
+            fenceValue++;
+            context4->Signal(fence, fenceValue);
+            SignalFrameReady(g_IPC, idx, qpc.QuadPart, fenceValue);
+        } else {
+            d3d11Context->Flush();
+            SignalFrameReady(g_IPC, idx, qpc.QuadPart, 0);
+        }
+
+        zeroCopyReadbackUs = static_cast<int32_t>(((qpc.QuadPart - copyStart.QuadPart) * 1000000) / qpcFreq);
+        AdvanceWriteIndex();
     }
 
     bool CreateD3D11Device() {
@@ -2389,6 +2579,15 @@ public:
             }
             sharedHandle9 = NULL;
 
+            // Try GDI interop for zero-copy capture on native D3D9.
+            // Uses GetDC/BitBlt for GPU-accelerated D3D9->D3D11 transfer.
+            if (SetupGDIInterop(device)) {
+                useGDIInterop = true;
+                HookLogImportant("DX9: GDI interop zero-copy path active");
+                goto create_ring_buffer;
+            }
+            HookLogImportant("DX9: GDI interop unavailable, using D3D11 staging fallback");
+
             // D3D11 Staging Path: For non-Ex devices, we use GetRenderTargetData
             // to read the backbuffer into CPU memory, then UpdateSubresource to
             // upload directly into D3D11 shared textures. This avoids the slow
@@ -2515,6 +2714,7 @@ public:
             }
         }
 
+    create_ring_buffer:
         EarlyLog("DX9: Init Step 10: Create Ring Buffer Shared Textures");
         bool success = true;
         if (!useShmem) {
@@ -2598,8 +2798,16 @@ public:
                 StartCaptureThread([this]() { StagingCaptureThreadProc(); });
             }
 
+            // Start background capture thread for GDI interop path
+            if (useGDIInterop) {
+                StartCaptureThread([this]() { GDICaptureThreadProc(); });
+            }
+
             HookLogImportant("DX9 Capture Initialized (%s%s): %dx%d (LUID: %08x)",
-                    useShmem ? "SHMEM" : (useD3D11Staging ? "D3D11-STAGING" : "ZERO-COPY"),
+                    useShmem         ? "SHMEM"
+                    : useD3D11Staging ? "D3D11-STAGING"
+                    : useGDIInterop   ? "GDI-INTEROP+ASYNC"
+                    : "ZERO-COPY",
                     (useD3D11Staging && captureThreadRunning) ? "+ASYNC" : "", width, height, luidLow);
             if (ManagedPoolFix::g_active) {
                 HookLogImportant("DX9: Managed pool fix: %d tex, %d VB, %d IB, %d vol, %d cube remapped",
@@ -2621,6 +2829,51 @@ public:
     void CaptureFrame(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer) {
         if (!initialized || !backBuffer)
             return;
+
+        // GDI interop: double-buffered with background capture thread.
+        // Render thread only does StretchRect (async GPU, ~0us overhead).
+        // Heavy GetDC+BitBlt runs on dedicated capture thread off render path.
+        if (useGDIInterop) {
+            // Rate-limit: skip frames when game runs faster than capture target
+            if (g_IPC && g_IPC->GetSharedMem()) {
+                if (g_IPC->GetSharedMem()->throttleCapture.load(std::memory_order_acquire))
+                    return;
+                static int64_t gdiQpcFreq = 0;
+                if (gdiQpcFreq == 0) {
+                    LARGE_INTEGER f; QueryPerformanceFrequency(&f); gdiQpcFreq = f.QuadPart;
+                }
+                const int captureFps = g_IPC->GetSharedMem()->fpsLimiter.GetCaptureFps();
+                if (captureFps > 0 && gdiLastCaptureQpc != 0) {
+                    LARGE_INTEGER now; QueryPerformanceCounter(&now);
+                    int64_t elapsed = ((now.QuadPart - gdiLastCaptureQpc) * 1000000) / gdiQpcFreq;
+                    if (elapsed < 1000000LL / (int64_t)captureFps)
+                        return;  // Too soon, skip
+                }
+            }
+
+            // Check that write buffer isn't still being read by capture thread
+            if (gdiBufferBusy[gdiWriteIdx].load(std::memory_order_acquire)) {
+                return;  // Capture thread still busy with this buffer, skip frame
+            }
+
+            // StretchRect backbuffer → current write buffer (async GPU, ~0us)
+            if (gdiCopySurfaces[gdiWriteIdx]) {
+                HRESULT hr = device->StretchRect(backBuffer, nullptr, gdiCopySurfaces[gdiWriteIdx],
+                                                 nullptr, D3DTEXF_NONE);
+                if (SUCCEEDED(hr)) {
+                    // Enqueue PREVIOUS frame's RT to capture thread
+                    if (gdiHasPrevFrame) {
+                        int readIdx = 1 - gdiWriteIdx;
+                        LARGE_INTEGER now; QueryPerformanceCounter(&now);
+                        EnqueueFrame(now.QuadPart, 0, readIdx, nullptr);
+                        gdiLastCaptureQpc = now.QuadPart;
+                    }
+                    gdiHasPrevFrame = true;
+                    gdiWriteIdx = 1 - gdiWriteIdx;
+                }
+            }
+            return;
+        }
 
         // Check if we should throttle capture (encoder is falling behind)
         if (g_IPC && g_IPC->GetSharedMem()) {
@@ -2972,6 +3225,10 @@ public:
     // This prevents GetRenderTargetData's GPU->CPU DMA from blocking Present.
     void PostPresentReadback(IDirect3DDevice9* device) {
         if (!initialized)
+            return;
+
+        // GDI interop: capture is fully handled in CaptureFrame (double-buffered)
+        if (useGDIInterop)
             return;
 
         static int64_t qpcFreq = 0;
@@ -4493,33 +4750,20 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDevice(IDirect3D9* self, UINT Adapt
     }
 
     // Try to silently upgrade to D3D9Ex for zero-copy shared texture capture.
-    // IDirect3DDevice9Ex is vtable-compatible with IDirect3DDevice9, so the
-    // game interacts with it identically while our capture gains shared handles.
-    //
-    // Unified factory approach: if the game received a D3D9Ex factory from our
-    // DetourDirect3DCreate9, the factory `self` IS already D3D9Ex. We use the
-    // same factory for CreateDeviceEx, avoiding internal D3D9 state mismatches.
-    // For late-injection (game holds plain D3D9), s_d3d9ExForUpgrade provides
-    // a separate factory as a fallback.
+    // Using staging ManagedPoolFix (DEFAULT + SYSTEMMEM) to correctly emulate
+    // MANAGED pool behavior and avoid visual corruption.
     HRESULT hr = E_FAIL;
     if (s_d3d9ExForUpgrade) {
-        // Check if the game's factory IS our D3D9Ex factory (unified approach).
-        // In this case, device and factory are properly associated internally.
         IDirect3D9Ex* selfEx = nullptr;
         bool isUnifiedFactory = SUCCEEDED(self->QueryInterface(__uuidof(IDirect3D9Ex), (void**)&selfEx)) && selfEx;
         if (selfEx) selfEx->Release();
 
         IDirect3D9Ex* factoryForDevice = isUnifiedFactory ? static_cast<IDirect3D9Ex*>(self) : s_d3d9ExForUpgrade;
-        HookLogImportant("DX9: Attempting D3D9Ex device creation (%s factory, managed pool fix will activate)",
+        HookLogImportant("DX9: Attempting D3D9Ex device creation (%s factory, staging MPF active)",
                          isUnifiedFactory ? "unified" : "separate");
 
-        // Enable MANAGED pool remapping BEFORE CreateDeviceEx so any resources
-        // created during device initialization are properly remapped
+        // Enable MANAGED pool remapping BEFORE CreateDeviceEx
         ManagedPoolFix::g_active = true;
-
-        // NOTE: Do NOT change BackBufferFormat to X8R8G8B8. While it prevents DWM
-        // alpha compositing artifacts, it creates a DXGI format mismatch in the
-        // zero-copy capture path (B8G8R8X8 vs B8G8R8A8) causing black video output.
 
         D3DDISPLAYMODEEX* pModeEx = nullptr;
         D3DDISPLAYMODEEX fullscreenMode = {};
@@ -4532,9 +4776,8 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDevice(IDirect3D9* self, UINT Adapt
             fullscreenMode.ScanLineOrdering = D3DSCANLINEORDERING_PROGRESSIVE;
             pModeEx = &fullscreenMode;
         }
+
         IDirect3DDevice9Ex* deviceEx = nullptr;
-        // Call oCreateDeviceEx directly to avoid going through DetourCreateDeviceEx
-        // which would double-apply vsync/MSAA/BehaviorFlags modifications.
         if (oCreateDeviceEx) {
             hr = oCreateDeviceEx(factoryForDevice, Adapter, DeviceType, hFocusWindow, BehaviorFlags,
                                  pPresentationParameters, pModeEx, &deviceEx);
@@ -4542,13 +4785,13 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDevice(IDirect3D9* self, UINT Adapt
             hr = factoryForDevice->CreateDeviceEx(Adapter, DeviceType, hFocusWindow, BehaviorFlags,
                                                    pPresentationParameters, pModeEx, &deviceEx);
         }
+
         if (SUCCEEDED(hr) && deviceEx) {
             if (!isUnifiedFactory) {
-                // Separate factory (late injection) - need GetDirect3D hook
                 s_gameOriginalFactory = self;
                 self->AddRef();
             }
-            HookLogImportant("DX9: CreateDevice upgraded to D3D9Ex (zero-copy capture ready, managed pool fix active)");
+            HookLogImportant("DX9: CreateDevice upgraded to D3D9Ex (zero-copy, staging MPF active)");
             *ppReturnedDeviceInterface = static_cast<IDirect3DDevice9*>(deviceEx);
         } else {
             ManagedPoolFix::g_active = false;
@@ -4560,6 +4803,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDevice(IDirect3D9* self, UINT Adapt
     }
 
     if (FAILED(hr)) {
+        HookLogImportant("DX9: Using native D3D9 device (GDI interop fallback)");
         hr = oCreateDevice(self, Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters,
                            ppReturnedDeviceInterface);
     }
@@ -4588,42 +4832,33 @@ static Direct3DCreate9_t oDirect3DCreate9 = nullptr;
 static IDirect3D9* WINAPI DetourDirect3DCreate9(UINT SDKVersion) {
     EarlyLog("DX9: Direct3DCreate9 called (Intercepted)");
 
-    // Unified factory approach: return a D3D9Ex factory directly to the game.
-    // IDirect3D9Ex inherits IDirect3D9, so the game can use it transparently.
-    // This avoids the dual-factory problem where the device is created by a
-    // different factory than the game holds, which causes D3D9 internal state
-    // mismatches and visual corruption.
+    // Separate factory approach: return the plain D3D9 factory to the game.
+    // We store a D3D9Ex factory internally for use in DetourCreateDevice to
+    // promote the device to D3D9Ex with ManagedPoolFix.
+    //
+    // Why not return D3D9Ex directly (unified approach)?
+    //   Steam overlay also hooks CreateDevice on the factory vtable. If its
+    //   hook replaces ours, the D3D9Ex factory creates a D3D9Ex device WITHOUT
+    //   ManagedPoolFix → MANAGED textures fail → game crash.
+    //   With the separate approach, even if our CreateDevice hook is overridden,
+    //   the worst case is a plain D3D9 device (which works fine, no crash).
     typedef HRESULT(WINAPI * PFN_Create9Ex)(UINT, IDirect3D9Ex**);
     HMODULE d3d9Mod = GetModuleHandleA("d3d9.dll");
-    if (d3d9Mod) {
+    if (d3d9Mod && !s_d3d9ExForUpgrade) {
         PFN_Create9Ex pfnCreate9Ex = (PFN_Create9Ex)GetProcAddress(d3d9Mod, "Direct3DCreate9Ex");
         if (pfnCreate9Ex) {
             IDirect3D9Ex* d3d9Ex = nullptr;
             HRESULT exHr = pfnCreate9Ex(SDKVersion, &d3d9Ex);
             if (SUCCEEDED(exHr) && d3d9Ex) {
-                uintptr_t* vtable = *(uintptr_t**)d3d9Ex;
-                bool vtableValid = (vtable != nullptr) &&
-                                   (reinterpret_cast<uintptr_t>(vtable) >= 0x10000) &&
-                                   (reinterpret_cast<uintptr_t>(vtable) < 0x7FFFFFFF0000);
-                if (vtable && vtableValid && !oCreateDevice) {
-                    if (VTableHook::Create(&vtable[16], (void*)&DetourCreateDevice, (void**)&oCreateDevice) ==
-                        VTableHook::Success) {
-                        EarlyLog("DX9: CreateDevice hook installed on D3D9Ex factory (unified)");
-                    }
-                }
-                // Store for DetourCreateDevice to call CreateDeviceEx directly
-                if (!s_d3d9ExForUpgrade) {
-                    d3d9Ex->AddRef();
-                    s_d3d9ExForUpgrade = d3d9Ex;
-                }
-                HookLogImportant("DX9: Replaced Direct3DCreate9 → D3D9Ex factory (unified, no dual-factory)");
-                return static_cast<IDirect3D9*>(d3d9Ex);
+                s_d3d9ExForUpgrade = d3d9Ex;  // kept alive for DetourCreateDevice
+                HookLogImportant("DX9: Created D3D9Ex factory for upgrade (stored, not returned to game)");
+            } else {
+                HookLogImportant("DX9: Direct3DCreate9Ex failed (hr=0x%08X), zero-copy unavailable", (unsigned)exHr);
             }
-            HookLogImportant("DX9: Direct3DCreate9Ex failed (hr=0x%08X), falling back to plain D3D9", (unsigned)exHr);
         }
     }
 
-    // Fallback: plain D3D9 (D3D9Ex not available)
+    // Call original (goes through Steam overlay hook chain if present)
     IDirect3D9* d3d9 = oDirect3DCreate9(SDKVersion);
     if (d3d9) {
         uintptr_t* vtable = *(uintptr_t**)d3d9;
@@ -4632,9 +4867,11 @@ static IDirect3D9* WINAPI DetourDirect3DCreate9(UINT SDKVersion) {
         if (vtable && vtableValid && !oCreateDevice) {
             if (VTableHook::Create(&vtable[16], (void*)&DetourCreateDevice, (void**)&oCreateDevice) ==
                 VTableHook::Success) {
-                EarlyLog("DX9: IDirect3D9::CreateDevice hook installed (plain D3D9 fallback)");
+                EarlyLog("DX9: CreateDevice hook installed on D3D9 factory (separate, staging MPF)");
             }
         }
+        HookLogImportant("DX9: Returning plain D3D9 factory to game (separate approach, D3D9Ex %s)",
+                         s_d3d9ExForUpgrade ? "ready for upgrade" : "unavailable");
     }
     return d3d9;
 }

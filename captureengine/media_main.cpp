@@ -155,8 +155,8 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
             if (!g_pSharedMem->encoderTextures.kmtReady.load(std::memory_order_acquire)) {
                 if (MediaEngine_CreateSharedCaptureTextures(g_pSharedMem->GetWidth(), g_pSharedMem->GetHeight(),
                                                             g_pSharedMem->GetFormat(), g_pSharedMem)) {
-                    LogInfo("[Inject Thread] Created encoder KMT textures early: %dx%d",
-                            g_pSharedMem->GetWidth(), g_pSharedMem->GetHeight());
+                    LogInfo("[Inject Thread] Created encoder KMT textures early: %dx%d", g_pSharedMem->GetWidth(),
+                            g_pSharedMem->GetHeight());
                     earlyTexturesCreated = true;
                 }
             } else {

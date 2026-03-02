@@ -125,7 +125,7 @@ copy_queue_priority=normal
 
 [FpsLimiter]
 ; capture_sync_enabled - Values: true, false
-capture_sync_enabled=true
+capture_sync_enabled=false
 ; capture_sync_multiplier - Values: 1-8
 capture_sync_multiplier=1
 ; general_enabled - Values: true, false

@@ -245,9 +245,8 @@ public:
                 localFrameCount_ = 0;
             }
             if (!loggedInactive_) {
-                TraceLog("Apply: INACTIVE rec=%d capSync=%d genEn=%d genFps=%d capFps=%d vfr=%d",
-                         isRecording ? 1 : 0, captureSyncEnabled ? 1 : 0,
-                         generalEnabled ? 1 : 0, generalFps, captureFps, useVFR ? 1 : 0);
+                TraceLog("Apply: INACTIVE rec=%d capSync=%d genEn=%d genFps=%d capFps=%d vfr=%d", isRecording ? 1 : 0,
+                         captureSyncEnabled ? 1 : 0, generalEnabled ? 1 : 0, generalFps, captureFps, useVFR ? 1 : 0);
                 HookLog(
                     "FPS Limiter: Inactive (general_enabled=%d, generalFps=%d, "
                     "captureSync=%d, isRecording=%d, useVFR=%d)",
@@ -261,12 +260,11 @@ public:
         loggedInactive_ = false;  // Reset so transitions back to inactive are logged
         if (!loggedActive_ || lastTargetFps_ != targetFps || lastUsedCaptureSync_ != usingCaptureSync) {
             TraceLog("Apply: ACTIVE mode=%s target=%d capFps=%d mult=%d rec=%d",
-                     usingCaptureSync ? "capture_sync" : "general", targetFps, captureFps,
-                     captureSyncMultiplier, isRecording ? 1 : 0);
-            HookLog(
-                "FPS Limiter: Active (mode=%s, target=%d, captureFps=%d, mult=%d, general=%d/%d, isRecording=%d)",
-                usingCaptureSync ? "capture_sync" : "general", targetFps, captureFps, captureSyncMultiplier,
-                generalEnabled ? 1 : 0, generalFps, isRecording ? 1 : 0);
+                     usingCaptureSync ? "capture_sync" : "general", targetFps, captureFps, captureSyncMultiplier,
+                     isRecording ? 1 : 0);
+            HookLog("FPS Limiter: Active (mode=%s, target=%d, captureFps=%d, mult=%d, general=%d/%d, isRecording=%d)",
+                    usingCaptureSync ? "capture_sync" : "general", targetFps, captureFps, captureSyncMultiplier,
+                    generalEnabled ? 1 : 0, generalFps, isRecording ? 1 : 0);
             loggedActive_ = true;
             lastTargetFps_ = targetFps;
             lastUsedCaptureSync_ = usingCaptureSync;
@@ -315,8 +313,8 @@ public:
                 if (lastApplyEntryQpc_ != 0) {
                     int64_t interFrameUs = ((now.QuadPart - lastApplyEntryQpc_) * 1000000) / qpcFrequency;
                     double measuredFps = (interFrameUs > 0) ? (1000000.0 / interFrameUs) : 0;
-                    TraceLog("Apply: LOCAL stats frames=%u waitUs=%lld measFps=%.1f target=%d",
-                             localFrameCount_, waitUs, measuredFps, targetFps);
+                    TraceLog("Apply: LOCAL stats frames=%u waitUs=%lld measFps=%.1f target=%d", localFrameCount_,
+                             waitUs, measuredFps, targetFps);
                     HookLog("FPS Limiter: Local capture sync (%u frames): lastWait=%lldus measFps=%.1f target=%d",
                             localFrameCount_, waitUs, measuredFps, targetFps);
                 }
@@ -347,8 +345,7 @@ public:
             // If OpenEvent failed, we'll retry next frame (limiter might not be ready yet)
             if (releaseEvent && requestEvent) {
                 eventsInitialized = true;
-                TraceLog("Apply: Events OK release=%p request=%p target=%d",
-                         releaseEvent, requestEvent, targetFps);
+                TraceLog("Apply: Events OK release=%p request=%p target=%d", releaseEvent, requestEvent, targetFps);
                 HookLog(
                     "FPS Limiter: Events Initialized (target: %d FPS, release=%p, "
                     "request=%p)",

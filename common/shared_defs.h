@@ -751,7 +751,7 @@ public:
     // VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT.
     struct EncoderTextures {
     private:
-        std::atomic<uint64_t> textureHandles_[4]{};  // NT handles from D3D11 CreateSharedHandle
+        std::atomic<uint64_t> textureHandles_[4]{};     // NT handles from D3D11 CreateSharedHandle
         std::atomic<uint64_t> kmtTextureHandles_[4]{};  // KMT handles from IDXGIResource::GetSharedHandle
         std::atomic<uint64_t> fenceHandle_{0};
         std::atomic<uint32_t> width_{0};

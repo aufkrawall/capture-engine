@@ -310,9 +310,13 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
     HANDLE hThread = CreateThread(NULL, 0, DumpWorker, &params, 0, NULL);
 
     if (hThread) {
-        TraceCrash("Worker thread spawned, waiting...");
-        WaitForSingleObject(hThread, INFINITE);
-        TraceCrash("Worker thread finished.");
+        TraceCrash("Worker thread spawned, waiting (15s timeout)...");
+        DWORD waitResult = WaitForSingleObject(hThread, 15000);
+        if (waitResult == WAIT_TIMEOUT) {
+            TraceCrash("Worker thread timed out after 15s - continuing without dump");
+        } else {
+            TraceCrash("Worker thread finished.");
+        }
         CloseHandle(hThread);
     } else {
         TraceCrash("Failed to create worker thread! Attempting inline dump...");

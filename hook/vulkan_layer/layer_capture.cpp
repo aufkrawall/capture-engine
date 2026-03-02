@@ -135,8 +135,7 @@ static bool IsDXVKD3D11Active() {
     char systemDir[MAX_PATH] = {};
     GetSystemDirectoryA(systemDir, MAX_PATH);
     size_t sysLen = strlen(systemDir);
-    if (_strnicmp(loadedPath, systemDir, sysLen) == 0 &&
-        (loadedPath[sysLen] == '\\' || loadedPath[sysLen] == '/')) {
+    if (_strnicmp(loadedPath, systemDir, sysLen) == 0 && (loadedPath[sysLen] == '\\' || loadedPath[sysLen] == '/')) {
         return false;  // Real d3d11 from System32
     }
     LayerLog("Vulkan Layer: DXVK d3d11.dll detected at: %s", loadedPath);
@@ -213,9 +212,8 @@ static D3D11InteropDevice* GetOrCreateD3D11Device(const LUID& luid) {
         DXGI_ADAPTER_DESC desc;
         adapter->GetDesc(&desc);
         if (desc.AdapterLuid.LowPart == luid.LowPart && desc.AdapterLuid.HighPart == luid.HighPart) {
-            LayerLog("Vulkan Layer: Interop adapter: '%ls' VendorId=%x DeviceId=%x LUID=%08x:%08x",
-                     desc.Description, desc.VendorId, desc.DeviceId,
-                     desc.AdapterLuid.HighPart, desc.AdapterLuid.LowPart);
+            LayerLog("Vulkan Layer: Interop adapter: '%ls' VendorId=%x DeviceId=%x LUID=%08x:%08x", desc.Description,
+                     desc.VendorId, desc.DeviceId, desc.AdapterLuid.HighPart, desc.AdapterLuid.LowPart);
             ID3D11Device* device = nullptr;
             ID3D11DeviceContext* context = nullptr;
             if (CreateD3D11InteropDevice(adapter.Get(), &device, &context)) {
@@ -376,17 +374,16 @@ static bool CreateSharedTextures(D3D11InteropDevice* interopDev, VkDevice vkDev,
 
                 // Validate KMT handle by opening it locally on the same device
                 ID3D11Texture2D* validateTex = nullptr;
-                HRESULT openHr =
-                    interopDev->device->OpenSharedResource(kmtHandle, IID_PPV_ARGS(&validateTex));
+                HRESULT openHr = interopDev->device->OpenSharedResource(kmtHandle, IID_PPV_ARGS(&validateTex));
                 if (SUCCEEDED(openHr) && validateTex) {
                     D3D11_TEXTURE2D_DESC openDesc;
                     validateTex->GetDesc(&openDesc);
-                    LayerLog("Vulkan Layer: KMT handle %p validated locally (%dx%d fmt=%d)",
-                             kmtHandle, openDesc.Width, openDesc.Height, openDesc.Format);
+                    LayerLog("Vulkan Layer: KMT handle %p validated locally (%dx%d fmt=%d)", kmtHandle, openDesc.Width,
+                             openDesc.Height, openDesc.Format);
                     validateTex->Release();
                 } else {
-                    LayerLog("Vulkan Layer: [Warn] KMT handle %p FAILED local validation (hr=0x%08X)",
-                             kmtHandle, openHr);
+                    LayerLog("Vulkan Layer: [Warn] KMT handle %p FAILED local validation (hr=0x%08X)", kmtHandle,
+                             openHr);
                 }
             }
         }
@@ -508,104 +505,112 @@ static bool CreateSharedTextures(D3D11InteropDevice* interopDev, VkDevice vkDev,
                 if (dxvkActive) {
                     LayerLog("Vulkan Layer: DXVK active - publishing KMT handles directly (no IPC relay, zero-copy)");
                 } else {
-                // Create separate IPC relay textures for encoder access.
-                // Prefer NT relay handles first for reliable cross-process/cross-bitness transport,
-                // then fallback to KMT relay handles if NT relay creation fails.
-                entry.ipcTextures.assign(kTextureCount, nullptr);
-                entry.ipcHandles.assign(kTextureCount, nullptr);
-                entry.hasIpcRelay = false;
+                    // Create separate IPC relay textures for encoder access.
+                    // Prefer NT relay handles first for reliable cross-process/cross-bitness transport,
+                    // then fallback to KMT relay handles if NT relay creation fails.
+                    entry.ipcTextures.assign(kTextureCount, nullptr);
+                    entry.ipcHandles.assign(kTextureCount, nullptr);
+                    entry.hasIpcRelay = false;
 
-                bool ipcReady = false;
-                for (int ipcAttempt = 0; ipcAttempt < 2 && !ipcReady; ++ipcAttempt) {
-                    const bool useNtRelayHandles = (ipcAttempt == 0);
-                    entry.ipcHandlesAreNt = useNtRelayHandles;
+                    bool ipcReady = false;
+                    for (int ipcAttempt = 0; ipcAttempt < 2 && !ipcReady; ++ipcAttempt) {
+                        const bool useNtRelayHandles = (ipcAttempt == 0);
+                        entry.ipcHandlesAreNt = useNtRelayHandles;
 
-                    D3D11_TEXTURE2D_DESC ipcDesc = texDesc;
-                    // SHARED and SHARED_KEYEDMUTEX are mutually exclusive.
-                    // Use plain SHARED for KMT relay handles; use NTHANDLE+KEYEDMUTEX for NT relay handles.
-                    ipcDesc.MiscFlags = useNtRelayHandles
-                                            ? (D3D11_RESOURCE_MISC_SHARED_NTHANDLE |
-                                               D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX)
-                                            : D3D11_RESOURCE_MISC_SHARED;
+                        D3D11_TEXTURE2D_DESC ipcDesc = texDesc;
+                        // SHARED and SHARED_KEYEDMUTEX are mutually exclusive.
+                        // Use plain SHARED for KMT relay handles; use NTHANDLE+KEYEDMUTEX for NT relay handles.
+                        ipcDesc.MiscFlags =
+                            useNtRelayHandles
+                                ? (D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX)
+                                : D3D11_RESOURCE_MISC_SHARED;
 
-                    bool ipcFailed = false;
-                    for (uint32_t i = 0; i < kTextureCount; i++) {
-                        HRESULT hr = interopDev->device->CreateTexture2D(&ipcDesc, nullptr, &entry.ipcTextures[i]);
-                        if (FAILED(hr)) {
-                            LayerLog("Vulkan Layer: [Error] Failed to create IPC relay texture %d (hr=0x%08X)", i, hr);
-                            ipcFailed = true;
+                        bool ipcFailed = false;
+                        for (uint32_t i = 0; i < kTextureCount; i++) {
+                            HRESULT hr = interopDev->device->CreateTexture2D(&ipcDesc, nullptr, &entry.ipcTextures[i]);
+                            if (FAILED(hr)) {
+                                LayerLog("Vulkan Layer: [Error] Failed to create IPC relay texture %d (hr=0x%08X)", i,
+                                         hr);
+                                ipcFailed = true;
+                                break;
+                            }
+
+                            HANDLE ipcHandle = nullptr;
+                            if (useNtRelayHandles) {
+                                ComPtr<IDXGIResource1> dxgiRes1;
+                                hr = entry.ipcTextures[i]->QueryInterface(IID_PPV_ARGS(&dxgiRes1));
+                                if (FAILED(hr) || !dxgiRes1) {
+                                    LayerLog("Vulkan Layer: [Warn] IDXGIResource1 unavailable for NT IPC texture %d",
+                                             i);
+                                    ipcFailed = true;
+                                    break;
+                                }
+
+                                hr = dxgiRes1->CreateSharedHandle(
+                                    nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr,
+                                    &ipcHandle);
+                                if (FAILED(hr) || !ipcHandle) {
+                                    LayerLog(
+                                        "Vulkan Layer: [Warn] Failed to create NT IPC handle for texture %d "
+                                        "(hr=0x%08X)",
+                                        i, hr);
+                                    ipcFailed = true;
+                                    break;
+                                }
+                            } else {
+                                ComPtr<IDXGIResource> dxgiRes;
+                                hr = entry.ipcTextures[i]->QueryInterface(IID_PPV_ARGS(&dxgiRes));
+                                if (FAILED(hr) || !dxgiRes) {
+                                    LayerLog("Vulkan Layer: [Error] IDXGIResource unavailable for KMT IPC texture %d",
+                                             i);
+                                    ipcFailed = true;
+                                    break;
+                                }
+
+                                hr = dxgiRes->GetSharedHandle(&ipcHandle);
+                                if (FAILED(hr) || !ipcHandle) {
+                                    LayerLog(
+                                        "Vulkan Layer: [Error] Failed to get KMT IPC handle for texture %d (hr=0x%08X)",
+                                        i, hr);
+                                    ipcFailed = true;
+                                    break;
+                                }
+                            }
+                            entry.ipcHandles[i] = ipcHandle;
+                        }
+
+                        if (!ipcFailed) {
+                            ipcReady = true;
                             break;
                         }
 
-                        HANDLE ipcHandle = nullptr;
+                        // Clean up partially created IPC relay resources before fallback/retry.
+                        for (auto& handle : entry.ipcHandles) {
+                            if (entry.ipcHandlesAreNt && handle) {
+                                CloseHandle(handle);
+                            }
+                            handle = nullptr;
+                        }
+                        for (auto*& tex : entry.ipcTextures) {
+                            if (tex) {
+                                tex->Release();
+                                tex = nullptr;
+                            }
+                        }
+
                         if (useNtRelayHandles) {
-                            ComPtr<IDXGIResource1> dxgiRes1;
-                            hr = entry.ipcTextures[i]->QueryInterface(IID_PPV_ARGS(&dxgiRes1));
-                            if (FAILED(hr) || !dxgiRes1) {
-                                LayerLog("Vulkan Layer: [Warn] IDXGIResource1 unavailable for NT IPC texture %d", i);
-                                ipcFailed = true;
-                                break;
-                            }
-
-                            hr = dxgiRes1->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
-                                                              nullptr, &ipcHandle);
-                            if (FAILED(hr) || !ipcHandle) {
-                                LayerLog("Vulkan Layer: [Warn] Failed to create NT IPC handle for texture %d (hr=0x%08X)",
-                                         i, hr);
-                                ipcFailed = true;
-                                break;
-                            }
-                        } else {
-                            ComPtr<IDXGIResource> dxgiRes;
-                            hr = entry.ipcTextures[i]->QueryInterface(IID_PPV_ARGS(&dxgiRes));
-                            if (FAILED(hr) || !dxgiRes) {
-                                LayerLog("Vulkan Layer: [Error] IDXGIResource unavailable for KMT IPC texture %d", i);
-                                ipcFailed = true;
-                                break;
-                            }
-
-                            hr = dxgiRes->GetSharedHandle(&ipcHandle);
-                            if (FAILED(hr) || !ipcHandle) {
-                                LayerLog("Vulkan Layer: [Error] Failed to get KMT IPC handle for texture %d (hr=0x%08X)",
-                                         i, hr);
-                                ipcFailed = true;
-                                break;
-                            }
-                        }
-                        entry.ipcHandles[i] = ipcHandle;
-                    }
-
-                    if (!ipcFailed) {
-                        ipcReady = true;
-                        break;
-                    }
-
-                    // Clean up partially created IPC relay resources before fallback/retry.
-                    for (auto& handle : entry.ipcHandles) {
-                        if (entry.ipcHandlesAreNt && handle) {
-                            CloseHandle(handle);
-                        }
-                        handle = nullptr;
-                    }
-                    for (auto*& tex : entry.ipcTextures) {
-                        if (tex) {
-                            tex->Release();
-                            tex = nullptr;
+                            LayerLog(
+                                "Vulkan Layer: [Warn] NT IPC relay handles unavailable, falling back to KMT relay");
                         }
                     }
 
-                    if (useNtRelayHandles) {
-                        LayerLog("Vulkan Layer: [Warn] NT IPC relay handles unavailable, falling back to KMT relay");
+                    if (!ipcReady) {
+                        LayerLog("Vulkan Layer: [Warn] IPC relay creation failed, encoder may not receive frames");
+                    } else {
+                        entry.hasIpcRelay = true;
+                        LayerLog("Vulkan Layer: Created %d IPC relay textures (%s handles for encoder)", kTextureCount,
+                                 entry.ipcHandlesAreNt ? "NT" : "KMT");
                     }
-                }
-
-                if (!ipcReady) {
-                    LayerLog("Vulkan Layer: [Warn] IPC relay creation failed, encoder may not receive frames");
-                } else {
-                    entry.hasIpcRelay = true;
-                    LayerLog("Vulkan Layer: Created %d IPC relay textures (%s handles for encoder)", kTextureCount,
-                             entry.ipcHandlesAreNt ? "NT" : "KMT");
-                }
                 }  // end else (!dxvkActive)
             }
             entry.valid = true;
@@ -654,8 +659,8 @@ static bool CreateVulkanNativeSharedTextures(VkDevice vkDev, DeviceDispatch* dis
         return false;
     }
 
-    InstanceDispatch* instDisp = VulkanLayerState::Get().GetInstanceDispatch(
-        VulkanLayerState::Get().GetInstanceFromPhysicalDevice(physDev));
+    InstanceDispatch* instDisp =
+        VulkanLayerState::Get().GetInstanceDispatch(VulkanLayerState::Get().GetInstanceFromPhysicalDevice(physDev));
     if (!instDisp) {
         LayerLog("Vulkan Layer: [Error] No instance dispatch for Vulkan-native export");
         return false;
@@ -697,8 +702,7 @@ static bool CreateVulkanNativeSharedTextures(VkDevice vkDev, DeviceDispatch* dis
         disp->fp_vkGetImageMemoryRequirements(vkDev, entry.vkImages[i], &memReq);
 
         // NT handle export requires VkExportMemoryWin32HandleInfoKHR with security attributes
-        VkExportMemoryWin32HandleInfoKHR exportWin32MemInfo = {
-            VK_STRUCTURE_TYPE_EXPORT_MEMORY_WIN32_HANDLE_INFO_KHR};
+        VkExportMemoryWin32HandleInfoKHR exportWin32MemInfo = {VK_STRUCTURE_TYPE_EXPORT_MEMORY_WIN32_HANDLE_INFO_KHR};
         exportWin32MemInfo.pAttributes = &secAttr;
         exportWin32MemInfo.dwAccess = DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE;
         exportWin32MemInfo.name = nullptr;
@@ -1215,8 +1219,7 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     secAttr.bInheritHandle = FALSE;
     secAttr.lpSecurityDescriptor = nullptr;  // Default security descriptor (full access)
 
-    VkExportSemaphoreWin32HandleInfoKHR exportWin32Info = {
-        VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_WIN32_HANDLE_INFO_KHR};
+    VkExportSemaphoreWin32HandleInfoKHR exportWin32Info = {VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_WIN32_HANDLE_INFO_KHR};
     exportWin32Info.pAttributes = &secAttr;
     exportWin32Info.dwAccess = GENERIC_ALL;
     exportWin32Info.name = nullptr;
@@ -1252,7 +1255,7 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
                 state.sharedFenceHandle = hFence;
                 LayerLog("Vulkan Layer: Created Shared Fence %p (type=%s)", hFence,
                          semHandleType == VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE_BIT ? "D3D12_FENCE"
-                                                                                             : "OPAQUE_WIN32");
+                                                                                            : "OPAQUE_WIN32");
             } else {
                 LayerLog("Vulkan Layer: [Error] Failed to get fence handle (vkResult=%d)", fenceRes);
             }
@@ -1315,8 +1318,8 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
                     if (SUCCEEDED(hr) && state.ipcFenceHandle) {
                         LayerLog("Vulkan Layer: Created D3D11 IPC fence, handle=%p", state.ipcFenceHandle);
                     } else {
-                        LayerLog("Vulkan Layer: [Error] IPC fence CreateSharedHandle failed (hr=0x%08X, handle=%p)",
-                                 hr, state.ipcFenceHandle);
+                        LayerLog("Vulkan Layer: [Error] IPC fence CreateSharedHandle failed (hr=0x%08X, handle=%p)", hr,
+                                 state.ipcFenceHandle);
                         state.d3d11IpcFence->Release();
                         state.d3d11IpcFence = nullptr;
                     }

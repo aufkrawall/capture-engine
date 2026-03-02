@@ -58,12 +58,14 @@ HRESULT STDMETHODCALLTYPE CWrapD3D9Device::QueryInterface(REFIID riid, void** pp
     if (riid == IID_IUnknown || riid == IID_IDirect3DDevice9) {
         AddRef();
         *ppvObj = static_cast<IDirect3DDevice9*>(this);
+        WrapperLog("D3D9 Device: QueryInterface returning IDirect3DDevice9 (m_IsEx=%d)", m_IsEx);
         return S_OK;
     }
 
     if (riid == IID_IDirect3DDevice9Ex && m_IsEx) {
         AddRef();
         *ppvObj = static_cast<IDirect3DDevice9Ex*>(this);
+        WrapperLog("D3D9 Device: QueryInterface returning IDirect3DDevice9Ex");
         return S_OK;
     }
 
@@ -94,7 +96,13 @@ HRESULT STDMETHODCALLTYPE CWrapD3D9Device::Present(const RECT* pSourceRect, cons
     // recurse infinitely if overlay drawer calls SetRenderState/etc on 'this'
     DX9_PresentBegin(m_pReal, backBuffer);
 
-    HRESULT hr = m_pReal->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
+    HRESULT hr;
+    if (m_pRealEx) {
+        // Use PresentEx for D3D9Ex device
+        hr = m_pRealEx->PresentEx(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, 0);
+    } else {
+        hr = m_pReal->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
+    }
 
     DX9_PresentEnd(m_pReal, backBuffer);
     return hr;
@@ -259,6 +267,20 @@ HRESULT STDMETHODCALLTYPE CWrapD3D9Device::GetDeviceCaps(D3DCAPS9* pCaps) {
     return m_pReal->GetDeviceCaps(pCaps);
 }
 HRESULT STDMETHODCALLTYPE CWrapD3D9Device::GetDisplayMode(UINT iSwapChain, D3DDISPLAYMODE* pMode) {
+    if (m_pRealEx && pMode) {
+        WrapperLog("D3D9: GetDisplayMode() redirected to GetDisplayModeEx()");
+        D3DDISPLAYMODEEX modeEx = {};
+        modeEx.Size = sizeof(D3DDISPLAYMODEEX);
+        D3DDISPLAYROTATION rotation = D3DDISPLAYROTATION_IDENTITY;
+        HRESULT hr = m_pRealEx->GetDisplayModeEx(iSwapChain, &modeEx, &rotation);
+        if (SUCCEEDED(hr)) {
+            pMode->Width = modeEx.Width;
+            pMode->Height = modeEx.Height;
+            pMode->RefreshRate = modeEx.RefreshRate;
+            pMode->Format = modeEx.Format;
+        }
+        return hr;
+    }
     return m_pReal->GetDisplayMode(iSwapChain, pMode);
 }
 HRESULT STDMETHODCALLTYPE CWrapD3D9Device::GetCreationParameters(D3DDEVICE_CREATION_PARAMETERS* pParameters) {
@@ -285,6 +307,21 @@ UINT STDMETHODCALLTYPE CWrapD3D9Device::GetNumberOfSwapChains() {
     return m_pReal->GetNumberOfSwapChains();
 }
 HRESULT STDMETHODCALLTYPE CWrapD3D9Device::Reset(D3DPRESENT_PARAMETERS* pPresentationParameters) {
+    if (m_pRealEx) {
+        WrapperLog("D3D9: Reset() redirected to ResetEx()");
+        D3DDISPLAYMODEEX fullscreenMode = {};
+        D3DDISPLAYMODEEX* pMode = nullptr;
+        if (pPresentationParameters && !pPresentationParameters->Windowed) {
+            fullscreenMode.Size = sizeof(D3DDISPLAYMODEEX);
+            fullscreenMode.Width = pPresentationParameters->BackBufferWidth;
+            fullscreenMode.Height = pPresentationParameters->BackBufferHeight;
+            fullscreenMode.RefreshRate = pPresentationParameters->FullScreen_RefreshRateInHz;
+            fullscreenMode.Format = pPresentationParameters->BackBufferFormat;
+            fullscreenMode.ScanLineOrdering = D3DSCANLINEORDERING_PROGRESSIVE;
+            pMode = &fullscreenMode;
+        }
+        return m_pRealEx->ResetEx(pPresentationParameters, pMode);
+    }
     return m_pReal->Reset(pPresentationParameters);
 }
 HRESULT STDMETHODCALLTYPE CWrapD3D9Device::GetBackBuffer(UINT iSwapChain, UINT iBackBuffer, D3DBACKBUFFER_TYPE Type,
@@ -335,6 +372,12 @@ HRESULT STDMETHODCALLTYPE CWrapD3D9Device::CreateRenderTarget(UINT Width, UINT H
                                                               D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality,
                                                               BOOL Lockable, IDirect3DSurface9** ppSurface,
                                                               HANDLE* pSharedHandle) {
+    if (m_pRealEx) {
+        WrapperLog("D3D9: CreateRenderTarget() redirected to CreateRenderTargetEx() %ux%u fmt=%d", Width, Height,
+                   Format);
+        return m_pRealEx->CreateRenderTargetEx(Width, Height, Format, MultiSample, MultisampleQuality, Lockable,
+                                               ppSurface, pSharedHandle, D3DUSAGE_RENDERTARGET);
+    }
     return m_pReal->CreateRenderTarget(Width, Height, Format, MultiSample, MultisampleQuality, Lockable, ppSurface,
                                        pSharedHandle);
 }
@@ -343,6 +386,12 @@ HRESULT STDMETHODCALLTYPE CWrapD3D9Device::CreateDepthStencilSurface(UINT Width,
                                                                      DWORD MultisampleQuality, BOOL Discard,
                                                                      IDirect3DSurface9** ppSurface,
                                                                      HANDLE* pSharedHandle) {
+    if (m_pRealEx) {
+        WrapperLog("D3D9: CreateDepthStencilSurface() redirected to CreateDepthStencilSurfaceEx() %ux%u fmt=%d", Width,
+                   Height, Format);
+        return m_pRealEx->CreateDepthStencilSurfaceEx(Width, Height, Format, MultiSample, MultisampleQuality, Discard,
+                                                      ppSurface, pSharedHandle, D3DUSAGE_DEPTHSTENCIL);
+    }
     return m_pReal->CreateDepthStencilSurface(Width, Height, Format, MultiSample, MultisampleQuality, Discard,
                                               ppSurface, pSharedHandle);
 }
@@ -373,6 +422,12 @@ HRESULT STDMETHODCALLTYPE CWrapD3D9Device::ColorFill(IDirect3DSurface9* pSurface
 HRESULT STDMETHODCALLTYPE CWrapD3D9Device::CreateOffscreenPlainSurface(UINT Width, UINT Height, D3DFORMAT Format,
                                                                        D3DPOOL Pool, IDirect3DSurface9** ppSurface,
                                                                        HANDLE* pSharedHandle) {
+    if (m_pRealEx) {
+        WrapperLog(
+            "D3D9: CreateOffscreenPlainSurface() redirected to CreateOffscreenPlainSurfaceEx() %ux%u fmt=%d pool=%d",
+            Width, Height, Format, Pool);
+        return m_pRealEx->CreateOffscreenPlainSurfaceEx(Width, Height, Format, Pool, ppSurface, pSharedHandle, 0);
+    }
     return m_pReal->CreateOffscreenPlainSurface(Width, Height, Format, Pool, ppSurface, pSharedHandle);
 }
 HRESULT STDMETHODCALLTYPE CWrapD3D9Device::SetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9* pRenderTarget) {

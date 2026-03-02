@@ -185,8 +185,8 @@ private:
     // Encoder-owned shared textures (for Vulkan interop)
     // Vulkan games import these textures instead of creating their own
     ID3D11Texture2D* sharedCaptureTextures[8] = {};
-    HANDLE sharedCaptureHandles[8] = {};    // NT handles
-    HANDLE sharedCaptureKmtHandles[8] = {}; // KMT handles (global WDDM, for DXVK Vulkan import)
+    HANDLE sharedCaptureHandles[8] = {};     // NT handles
+    HANDLE sharedCaptureKmtHandles[8] = {};  // KMT handles (global WDDM, for DXVK Vulkan import)
     ID3D11Fence* sharedCaptureFence = nullptr;
     HANDLE sharedCaptureFenceHandle = nullptr;
     bool sharedCaptureTexturesCreated = false;
