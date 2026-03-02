@@ -118,6 +118,16 @@ namespace ManagedPoolFix {
 // D3D9Ex's auto-managed GPU upload but can't be shared (no zero-copy capture).
 static constexpr bool kSysmemDiagMode = false;
 
+// DYNAMIC pool approach: remap MANAGED → DEFAULT + D3DUSAGE_DYNAMIC instead of
+// DEFAULT + SYSTEMMEM staging. DYNAMIC textures/VBs/IBs are directly lockable,
+// eliminating ALL staging infrastructure (staging maps, Lock/Unlock hooks,
+// GetSurfaceLevel/SurfUnlockRect hooks, UpdateTexture redirects). This is the
+// industry-standard approach used by dxwrapper and other D3D9Ex promotion tools.
+static constexpr bool kUseDynamicPool = true;
+
+// Set of textures remapped from MANAGED → DEFAULT + DYNAMIC (for GetLevelDesc hook)
+static std::unordered_set<IDirect3DTexture9*> g_dynamicRemapped;
+
 static bool g_active = false;
 static std::atomic<int> g_texCreated{0};
 static std::atomic<int> g_vbCreated{0};
@@ -324,12 +334,16 @@ static ULONG STDMETHODCALLTYPE DetourTexRelease(IDirect3DTexture9* pTex) {
     pTex->AddRef();
     ULONG preRelease = oTexRelease(pTex);  // Undo our AddRef
     if (preRelease == 1) {
-        // Last reference - clean up staging before destruction
-        auto it = g_texStaging.find(pTex);
-        if (it != g_texStaging.end()) {
-            g_texDefault.erase(it->second);  // Remove reverse mapping
-            oTexRelease(it->second);          // Release staging
-            g_texStaging.erase(it);
+        if (kUseDynamicPool) {
+            g_dynamicRemapped.erase(pTex);
+        } else {
+            // Last reference - clean up staging before destruction
+            auto it = g_texStaging.find(pTex);
+            if (it != g_texStaging.end()) {
+                g_texDefault.erase(it->second);  // Remove reverse mapping
+                oTexRelease(it->second);          // Release staging
+                g_texStaging.erase(it);
+            }
         }
         g_texAutoGenMip.erase(pTex);
     }
@@ -413,9 +427,12 @@ static HRESULT STDMETHODCALLTYPE DetourSurfUnlockRect(IDirect3DSurface9* pSurf) 
 static HRESULT STDMETHODCALLTYPE DetourTexGetLevelDesc(IDirect3DTexture9* pTex, UINT Level, D3DSURFACE_DESC* pDesc) {
     HRESULT hr = oTexGetLevelDesc(pTex, Level, pDesc);
     if (SUCCEEDED(hr) && pDesc && pDesc->Pool == D3DPOOL_DEFAULT) {
-        auto it = g_texStaging.find(pTex);
-        if (it != g_texStaging.end()) {
+        bool isRemapped = kUseDynamicPool ? (g_dynamicRemapped.count(pTex) > 0)
+                                          : (g_texStaging.count(pTex) > 0);
+        if (isRemapped) {
             pDesc->Pool = D3DPOOL_MANAGED;
+            if (kUseDynamicPool)
+                pDesc->Usage &= ~D3DUSAGE_DYNAMIC;  // MANAGED doesn't have DYNAMIC
         }
     }
     return hr;
@@ -453,6 +470,30 @@ static void InstallTextureHooks(IDirect3DTexture9* pTex) {
         HookLogImportant("DX9: Managed pool fix: texture INLINE hooks installed (incl GetLevelDesc)");
     } else {
         HookLogImportant("DX9: MPF: texture inline hooks FAILED");
+    }
+}
+
+// DYNAMIC mode: only install GetLevelDesc + Release hooks (no Lock/Unlock/GetSurfaceLevel)
+static void InstallDynamicTextureHooks(IDirect3DTexture9* pTex) {
+    if (g_texHooksInstalled)
+        return;
+    uintptr_t* vtable = *(uintptr_t**)pTex;
+    void* tramp = nullptr;
+    bool ok = true;
+
+    if (InlineHook::Install((void*)vtable[17], (void*)&DetourTexGetLevelDesc, &tramp)) {
+        oTexGetLevelDesc = (TexGetLevelDesc_t)tramp;
+    } else { ok = false; }
+
+    if (ok && InlineHook::Install((void*)vtable[2], (void*)&DetourTexRelease, &tramp)) {
+        oTexRelease = (TexRelease_t)tramp;
+    } else if (ok) { ok = false; }
+
+    if (ok) {
+        g_texHooksInstalled = true;
+        HookLogImportant("DX9: MPF: DYNAMIC texture hooks installed (GetLevelDesc + Release only)");
+    } else {
+        HookLogImportant("DX9: MPF: DYNAMIC texture hooks FAILED");
     }
 }
 
@@ -676,6 +717,38 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9CreateTexture(IDirect3DDevice9* devic
             HookLogImportant("DX9: MPF SYSMEM DIAG: CreateTex SYSTEMMEM FAILED hr=0x%08X", (unsigned)hr);
             return hr;
         }
+
+        if (kUseDynamicPool) {
+            // DYNAMIC approach: DEFAULT + DYNAMIC is directly lockable, no staging needed.
+            // This is the industry-standard approach used by dxwrapper.
+            DWORD dynUsage = Usage | D3DUSAGE_DYNAMIC;
+            HRESULT hr = oCreateTexture(device, Width, Height, Levels, dynUsage, Format, D3DPOOL_DEFAULT, ppTexture,
+                                        pSharedHandle);
+            if (SUCCEEDED(hr)) {
+                g_dynamicRemapped.insert(*ppTexture);
+                if (!g_texHooksInstalled)
+                    InstallDynamicTextureHooks(*ppTexture);
+
+                int count = g_texCreated.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (count <= 20 || count % 100 == 0) {
+                    HookLogImportant("DX9: MPF: Tex #%d DYNAMIC %ux%u fmt=%d usage=0x%x levels=%u", count, Width,
+                                     Height, (int)Format, dynUsage, Levels);
+                }
+                return S_OK;
+            }
+            // Fallback: SYSTEMMEM (slower but compatible)
+            HookLogImportant("DX9: MPF: CreateTex DEFAULT+DYNAMIC FAILED %ux%u fmt=%d usage=0x%x hr=0x%08X, "
+                             "fallback SYSMEM",
+                             Width, Height, (int)Format, dynUsage, (unsigned)hr);
+            DWORD sysmemUsage = Usage & ~D3DUSAGE_AUTOGENMIPMAP;
+            hr = oCreateTexture(device, Width, Height, Levels, sysmemUsage, Format, D3DPOOL_SYSTEMMEM, ppTexture,
+                                pSharedHandle);
+            if (SUCCEEDED(hr))
+                g_texCreated.fetch_add(1, std::memory_order_relaxed);
+            return hr;
+        }
+
+        // Legacy staging approach: DEFAULT + SYSTEMMEM staging pair
         // Strip AUTOGENMIPMAP from staging (SYSTEMMEM doesn't support it)
         DWORD stagingUsage = Usage & ~D3DUSAGE_AUTOGENMIPMAP;
         bool hasAutoGenMip = (Usage & D3DUSAGE_AUTOGENMIPMAP) != 0;
@@ -735,21 +808,22 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9CreateVertexBuffer(IDirect3DDevice9* 
             if (SUCCEEDED(hr)) g_vbCreated.fetch_add(1, std::memory_order_relaxed);
             return hr;
         }
-        // Create DEFAULT + DYNAMIC for GPU use
+        // Create DEFAULT + DYNAMIC (directly lockable, no staging needed)
         HRESULT hr = oCreateVertexBuffer(device, Length, Usage | D3DUSAGE_DYNAMIC, FVF, D3DPOOL_DEFAULT, ppVB,
                                          pSharedHandle);
         if (SUCCEEDED(hr)) {
-            IDirect3DVertexBuffer9* staging = nullptr;
-            hr = oCreateVertexBuffer(device, Length, 0, FVF, D3DPOOL_SYSTEMMEM, &staging, nullptr);
-            if (SUCCEEDED(hr)) {
-                g_vbStaging[*ppVB] = staging;
-                if (!g_vbHooksInstalled)
-                    InstallVBHooks(*ppVB);
-                g_vbCreated.fetch_add(1, std::memory_order_relaxed);
-                return S_OK;
+            if (!kUseDynamicPool) {
+                // Legacy staging approach
+                IDirect3DVertexBuffer9* staging = nullptr;
+                hr = oCreateVertexBuffer(device, Length, 0, FVF, D3DPOOL_SYSTEMMEM, &staging, nullptr);
+                if (SUCCEEDED(hr)) {
+                    g_vbStaging[*ppVB] = staging;
+                    if (!g_vbHooksInstalled)
+                        InstallVBHooks(*ppVB);
+                }
             }
-            (*ppVB)->Release();
-            *ppVB = nullptr;
+            g_vbCreated.fetch_add(1, std::memory_order_relaxed);
+            return S_OK;
         }
         // Fallback: SYSTEMMEM (slower rendering but compatible with all usage flags)
         HookLogImportant("DX9: ManagedPoolFix: CreateVB DEFAULT+DYN FAILED len=%u usage=0x%x fvf=0x%x hr=0x%08X, "
@@ -782,17 +856,18 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9CreateIndexBuffer(IDirect3DDevice9* d
         HRESULT hr =
             oCreateIndexBuffer(device, Length, Usage | D3DUSAGE_DYNAMIC, Format, D3DPOOL_DEFAULT, ppIB, pSharedHandle);
         if (SUCCEEDED(hr)) {
-            IDirect3DIndexBuffer9* staging = nullptr;
-            hr = oCreateIndexBuffer(device, Length, 0, Format, D3DPOOL_SYSTEMMEM, &staging, nullptr);
-            if (SUCCEEDED(hr)) {
-                g_ibStaging[*ppIB] = staging;
-                if (!g_ibHooksInstalled)
-                    InstallIBHooks(*ppIB);
-                g_ibCreated.fetch_add(1, std::memory_order_relaxed);
-                return S_OK;
+            if (!kUseDynamicPool) {
+                // Legacy staging approach
+                IDirect3DIndexBuffer9* staging = nullptr;
+                hr = oCreateIndexBuffer(device, Length, 0, Format, D3DPOOL_SYSTEMMEM, &staging, nullptr);
+                if (SUCCEEDED(hr)) {
+                    g_ibStaging[*ppIB] = staging;
+                    if (!g_ibHooksInstalled)
+                        InstallIBHooks(*ppIB);
+                }
             }
-            (*ppIB)->Release();
-            *ppIB = nullptr;
+            g_ibCreated.fetch_add(1, std::memory_order_relaxed);
+            return S_OK;
         }
         // Fallback: SYSTEMMEM (slower rendering but compatible with all usage flags)
         HookLogImportant("DX9: ManagedPoolFix: CreateIB DEFAULT+DYN FAILED len=%u usage=0x%x hr=0x%08X, "
@@ -829,7 +904,8 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9CreateVolumeTexture(IDirect3DDevice9*
                                                                 HANDLE* pSharedHandle) {
     if (Pool == D3DPOOL_MANAGED) {
         g_volTexCreated.fetch_add(1, std::memory_order_relaxed);
-        HRESULT hr = oCreateVolumeTexture(device, Width, Height, Depth, Levels, Usage, Format, D3DPOOL_DEFAULT,
+        DWORD volUsage = kUseDynamicPool ? (Usage | D3DUSAGE_DYNAMIC) : Usage;
+        HRESULT hr = oCreateVolumeTexture(device, Width, Height, Depth, Levels, volUsage, Format, D3DPOOL_DEFAULT,
                                           ppVolumeTexture, pSharedHandle);
         if (SUCCEEDED(hr))
             return hr;
@@ -848,7 +924,8 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9CreateCubeTexture(IDirect3DDevice9* d
                                                               HANDLE* pSharedHandle) {
     if (Pool == D3DPOOL_MANAGED) {
         g_cubeTexCreated.fetch_add(1, std::memory_order_relaxed);
-        HRESULT hr = oCreateCubeTexture(device, EdgeLength, Levels, Usage, Format, D3DPOOL_DEFAULT, ppCubeTexture,
+        DWORD cubeUsage = kUseDynamicPool ? (Usage | D3DUSAGE_DYNAMIC) : Usage;
+        HRESULT hr = oCreateCubeTexture(device, EdgeLength, Levels, cubeUsage, Format, D3DPOOL_DEFAULT, ppCubeTexture,
                                          pSharedHandle);
         if (SUCCEEDED(hr))
             return hr;
@@ -915,23 +992,28 @@ static void InstallManagedPoolHooks(IDirect3DDevice9* device) {
             HookLogImportant("DX9: MPF: CreateCubeTexture inline hook FAILED at %p", (void*)vtable[25]);
         }
     }
-    // Diagnostic: Install SetTexture hook to detect staging texture leaks
-    if (!g_setTexHookInstalled) {
-        void* trampoline = nullptr;
-        if (InlineHook::Install((void*)vtable[65], (void*)&DetourSetTexture, &trampoline)) {
-            oSetTexture = (SetTexture_t)trampoline;
-            g_setTexHookInstalled = true;
-            HookLogImportant("DX9: MPF DIAG: SetTexture inline hook installed at %p", (void*)vtable[65]);
+    // DYNAMIC mode: SetTexture and UpdateTexture hooks are not needed (no staging)
+    if (!kUseDynamicPool) {
+        // Diagnostic: Install SetTexture hook to detect staging texture leaks
+        if (!g_setTexHookInstalled) {
+            void* trampoline = nullptr;
+            if (InlineHook::Install((void*)vtable[65], (void*)&DetourSetTexture, &trampoline)) {
+                oSetTexture = (SetTexture_t)trampoline;
+                g_setTexHookInstalled = true;
+                HookLogImportant("DX9: MPF DIAG: SetTexture inline hook installed at %p", (void*)vtable[65]);
+            }
         }
-    }
-    // Hook UpdateTexture to redirect source from DEFAULT→staging for remapped textures
-    if (!g_updateTexHookInstalled) {
-        void* trampoline = nullptr;
-        if (InlineHook::Install((void*)vtable[31], (void*)&DetourDeviceUpdateTexture, &trampoline)) {
-            oDeviceUpdateTexture = (DeviceUpdateTexture_t)trampoline;
-            g_updateTexHookInstalled = true;
-            HookLogImportant("DX9: MPF: UpdateTexture inline hook installed at %p", (void*)vtable[31]);
+        // Hook UpdateTexture to redirect source from DEFAULT→staging for remapped textures
+        if (!g_updateTexHookInstalled) {
+            void* trampoline = nullptr;
+            if (InlineHook::Install((void*)vtable[31], (void*)&DetourDeviceUpdateTexture, &trampoline)) {
+                oDeviceUpdateTexture = (DeviceUpdateTexture_t)trampoline;
+                g_updateTexHookInstalled = true;
+                HookLogImportant("DX9: MPF: UpdateTexture inline hook installed at %p", (void*)vtable[31]);
+            }
         }
+    } else {
+        HookLogImportant("DX9: MPF: DYNAMIC mode — skipping SetTexture/UpdateTexture hooks (no staging)");
     }
 }
 
@@ -940,6 +1022,13 @@ static void LogUploadDiagnostics() {
     if (g_uploadDiagDone)
         return;
     g_uploadDiagDone = true;
+
+    if (kUseDynamicPool) {
+        HookLogImportant("DX9: MPF DYNAMIC: %d textures, %d VBs, %d IBs, %d vol, %d cube remapped",
+                         g_texCreated.load(), g_vbCreated.load(), g_ibCreated.load(),
+                         g_volTexCreated.load(), g_cubeTexCreated.load());
+        return;
+    }
 
     int total = (int)g_texStaging.size();
     int uploaded = (int)g_texUploaded.size();
