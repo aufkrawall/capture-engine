@@ -104,6 +104,16 @@ struct DX12OverlayState {
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
     UINT bufferCount = 0;
     IDXGISwapChain* cachedSwapChain = nullptr;
+
+    // Dedicated overlay command queue - isolated from game's queue
+    // This avoids driver throttling issues during Alt+Tab
+    ID3D12CommandQueue* overlayQueue = nullptr;
+
+    // Cross-queue synchronization fence - shared between game queue and overlay queue
+    // This ensures proper ordering between game work and overlay work
+    ID3D12Fence* crossQueueFence = nullptr;
+    UINT64 crossQueueFenceValue = 0;
+
     void Cleanup() {
         for (auto& bb : backBuffers)
             if (bb)
@@ -133,8 +143,19 @@ struct DX12OverlayState {
             CloseHandle(fenceEvent);
             fenceEvent = nullptr;
         }
+        // CRITICAL: Release dedicated overlay queue
+        if (overlayQueue) {
+            overlayQueue->Release();
+            overlayQueue = nullptr;
+        }
+        // Release cross-queue synchronization fence
+        if (crossQueueFence) {
+            crossQueueFence->Release();
+            crossQueueFence = nullptr;
+        }
         overlayInit = false;
         syncInit = false;
+        crossQueueFenceValue = 0;
     }
 };
 
@@ -964,9 +985,13 @@ void CreateRTVs(ID3D12Device* device, IDXGISwapChain3* swapChain, int bufferCoun
     HookLog("CreateRTVs: Created %d RTVs", bufferCount);
 }
 
-void InitOverlaySync(ID3D12Device* device, int bufferCount) {
-    if (g_State.syncInit)
+void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* gameQueue) {
+    HookLogImportant("InitOverlaySync: ENTER (syncInit=%d)", g_State.syncInit);
+
+    if (g_State.syncInit) {
+        HookLogImportant("InitOverlaySync: Already initialized, returning early");
         return;
+    }
 
     // Release any previously allocated sync resources to prevent leaks when
     // syncInit was cleared by a resize or error path without calling Shutdown.
@@ -988,11 +1013,50 @@ void InitOverlaySync(ID3D12Device* device, int bufferCount) {
     g_State.allocators.clear();
     g_State.fenceValues.clear();
 
-    // Single-queue architecture: we use the game's command queue for overlay
-    // rendering No dedicated overlay queue needed - fence, allocators, and
-    // command list are device-level resources that don't depend on a specific
-    // queue
-    HookLog("InitOverlaySync: Using single-queue architecture (game queue)");
+    // Release previous overlay queue if any
+    if (g_State.overlayQueue) {
+        g_State.overlayQueue->Release();
+        g_State.overlayQueue = nullptr;
+    }
+    // Release previous cross-queue fence if any
+    if (g_State.crossQueueFence) {
+        g_State.crossQueueFence->Release();
+        g_State.crossQueueFence = nullptr;
+    }
+
+    // Dedicated overlay queue architecture: Create our own command queue
+    // This isolates overlay work from the game's queue, avoiding driver
+    // throttling issues during Alt+Tab
+    HookLog("InitOverlaySync: Creating dedicated overlay command queue");
+
+    D3D12_COMMAND_QUEUE_DESC queueDesc = {};
+    queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    queueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+    queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+    queueDesc.NodeMask = 0;
+
+    // Get the node mask from the game queue if available
+    if (gameQueue) {
+        D3D12_COMMAND_QUEUE_DESC gameQueueDesc;
+        gameQueue->GetDesc(&gameQueueDesc);
+        queueDesc.NodeMask = gameQueueDesc.NodeMask;
+        HookLog("InitOverlaySync: Using node mask 0x%X from game queue", queueDesc.NodeMask);
+    }
+
+    if (FAILED(device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&g_State.overlayQueue)))) {
+        HookLog("InitOverlaySync: FAILED to create overlay queue, falling back to single-queue");
+        // Continue without overlay queue - will fall back to game queue
+    } else {
+        HookLogImportant("InitOverlaySync: Dedicated overlay queue created successfully");
+    }
+
+    // Create cross-queue synchronization fence
+    // This fence is shared between game queue and overlay queue for ordering
+    if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_State.crossQueueFence)))) {
+        HookLog("InitOverlaySync: FAILED to create cross-queue fence");
+        // Not fatal - we can still work without cross-queue sync in some cases
+    }
+    g_State.crossQueueFenceValue = 0;
 
     if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_State.fence))))
         return;
@@ -1086,15 +1150,17 @@ void CleanupOverlay() {
     if (!g_State.syncInit)
         return;
 
-    // Flush game command queue before cleanup (single-queue architecture)
-    ID3D12CommandQueue* gameQueue = nullptr;
-    {
+    // Dedicated overlay queue: flush overlay queue instead of game queue
+    ID3D12CommandQueue* queueToFlush = g_State.overlayQueue;
+    if (!queueToFlush) {
+        // Fallback to game queue if no dedicated overlay queue
         std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
-        gameQueue = g_CommandQueue;
+        queueToFlush = g_CommandQueue;
     }
-    if (g_State.fence && gameQueue) {
+
+    if (g_State.fence && queueToFlush) {
         UINT64 waitValue = g_State.currentFenceValue + 1;
-        if (SUCCEEDED(gameQueue->Signal(g_State.fence, waitValue))) {
+        if (SUCCEEDED(queueToFlush->Signal(g_State.fence, waitValue))) {
             if (g_State.fence->GetCompletedValue() < waitValue) {
                 g_State.fence->SetEventOnCompletion(waitValue, g_State.fenceEvent);
                 WaitForSingleObject(g_State.fenceEvent, 200);
@@ -1118,7 +1184,18 @@ void CleanupOverlay() {
         g_State.fence->Release();
         g_State.fence = nullptr;
     }
+    // Release dedicated overlay queue
+    if (g_State.overlayQueue) {
+        g_State.overlayQueue->Release();
+        g_State.overlayQueue = nullptr;
+    }
+    // Release cross-queue synchronization fence
+    if (g_State.crossQueueFence) {
+        g_State.crossQueueFence->Release();
+        g_State.crossQueueFence = nullptr;
+    }
     g_State.currentFenceValue = 0;
+    g_State.crossQueueFenceValue = 0;
     g_State.allocIndex = 0;
     g_State.syncInit = false;
 }
@@ -1630,7 +1707,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                         actualBufferCount = 8;
                     }
                     CreateRTVs(g_Device.load(), sc3, actualBufferCount);
-                    InitOverlaySync(g_Device.load(), imguiBufferCount);
+                    InitOverlaySync(g_Device.load(), imguiBufferCount, gameQueue);
                     HookLog(
                         "DX12: ProcessFrame - ImGui initialized with %d RTVs, "
                         "syncInit=%d",
@@ -1745,8 +1822,12 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                                 HookLog("DX12: list->Close failed hr=0x%08X, forcing reinit", closeHr);
                                 g_State.syncInit = false;
                             }
-                            // Single-queue architecture: always use game's command queue
-                            ID3D12CommandQueue* targetQueue = gameQueue;
+                            // Dedicated overlay queue architecture: Use our own queue if available
+                            // This isolates overlay work from the game's queue, avoiding driver
+                            // throttling issues during Alt+Tab
+                            ID3D12CommandQueue* overlayQueue = g_State.overlayQueue;
+                            ID3D12CommandQueue* targetQueue = overlayQueue ? overlayQueue : gameQueue;
+                            bool usingDedicatedQueue = (overlayQueue != nullptr);
 
                             if (SUCCEEDED(closeHr) && targetQueue) {
                                 // GPU backpressure check: if the GPU is severely behind on
@@ -1759,53 +1840,93 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                                 bool gpuBackedUp = false;
                                 if (g_State.fence) {
                                     UINT64 completed = g_State.fence->GetCompletedValue();
-                                    // Allocator slot still in flight from 16 frames ago
-                                    if (g_State.fenceValues[idx] > 0 &&
-                                        completed < g_State.fenceValues[idx]) {
-                                        gpuBackedUp = true;
-                                    }
-                                    // GPU is 4+ overlay frames behind — definitely throttled
-                                    if (g_State.currentFenceValue > 4 &&
-                                        completed + 4 < g_State.currentFenceValue) {
-                                        gpuBackedUp = true;
+                                    // CRITICAL FIX: UINT64_MAX means fence hasn't been signaled yet
+                                    // (initial state). Don't treat this as GPU backlog.
+                                    const UINT64 UINT64_MAX_VAL = static_cast<UINT64>(-1);
+                                    if (completed == UINT64_MAX_VAL) {
+                                        // Fence not yet signaled - this is normal for first frame
+                                        gpuBackedUp = false;
+                                    } else {
+                                        // Allocator slot still in flight from 16 frames ago
+                                        if (g_State.fenceValues[idx] > 0 && completed < g_State.fenceValues[idx]) {
+                                            gpuBackedUp = true;
+                                        }
+                                        // GPU is 4+ overlay frames behind — definitely throttled
+                                        // Use careful arithmetic to avoid overflow
+                                        if (g_State.currentFenceValue > 4 &&
+                                            completed < g_State.currentFenceValue - 4) {
+                                            gpuBackedUp = true;
+                                        }
                                     }
                                 }
 
-                                if (gpuBackedUp) {
-                                    // Skip GPU submission. CPU-signal fence so
+                                // GPU backpressure handling: skip GPU submission only when GPU is
+                                // severely backed up. Don't skip based on foreground status alone
+                                // to ensure overlay remains visible during Alt+Tab.
+                                bool skipGpuSubmission = gpuBackedUp;
+                                // Use CPU-side fence signal when not using dedicated queue or when GPU is backed up
+                                // With dedicated queue, we can use GPU-side signals normally
+                                bool useCpuFenceSignal = !usingDedicatedQueue || gpuBackedUp;
+
+                                if (skipGpuSubmission) {
+                                    // Skip GPU submission entirely. CPU-signal fence so
                                     // WaitForOverlayCompletion doesn't block.
                                     static std::atomic<int> s_skipLog{0};
                                     int n = s_skipLog.fetch_add(1, std::memory_order_relaxed);
                                     if (n < 5 || n % 300 == 0) {
                                         UINT64 completed = g_State.fence->GetCompletedValue();
-                                        HookLog("DX12: GPU backed up (completed=%llu, current=%llu, "
-                                                "slot[%d]=%llu) — skipping overlay GPU submission",
-                                                (unsigned long long)completed,
-                                                (unsigned long long)g_State.currentFenceValue,
-                                                idx,
-                                                (unsigned long long)g_State.fenceValues[idx]);
-                                    }
-                                    if (g_State.fence) {
-                                        UINT64 nextFenceValue = g_State.currentFenceValue + 1;
-                                        g_State.currentFenceValue = nextFenceValue;
-                                        g_State.fenceValues[idx] = nextFenceValue;
-                                        g_State.fence->Signal(nextFenceValue);
+                                        HookLog(
+                                            "DX12: GPU backed up (completed=%llu, current=%llu, "
+                                            "slot[%d]=%llu) — skipping overlay GPU submission",
+                                            (unsigned long long)completed,
+                                            (unsigned long long)g_State.currentFenceValue, idx,
+                                            (unsigned long long)g_State.fenceValues[idx]);
                                     }
                                 } else {
+                                    // CRITICAL: Cross-queue synchronization
+                                    // When using dedicated overlay queue, we need to ensure proper
+                                    // ordering between game work and overlay work
+                                    if (usingDedicatedQueue && gameQueue && g_State.crossQueueFence) {
+                                        // Wait for game queue to finish before overlay submission
+                                        // This ensures the swapchain buffer is ready for our overlay
+                                        UINT64 waitValue = g_State.crossQueueFenceValue;
+                                        if (waitValue > 0) {
+                                            // Game queue already signaled - overlay queue waits
+                                            overlayQueue->Wait(g_State.crossQueueFence, waitValue);
+                                        }
+                                        // Signal from game queue for next frame
+                                        g_State.crossQueueFenceValue++;
+                                        gameQueue->Signal(g_State.crossQueueFence, g_State.crossQueueFenceValue);
+                                    }
+
+                                    // Submit overlay work to GPU
                                     ID3D12CommandList* lists[] = {list};
                                     targetQueue->ExecuteCommandLists(1, lists);
 
-                                    if (g_State.fence) {
-                                        UINT64 nextFenceValue = g_State.currentFenceValue + 1;
-                                        HRESULT signalHr =
-                                            targetQueue->Signal(g_State.fence, nextFenceValue);
-                                        if (SUCCEEDED(signalHr)) {
-                                            g_State.currentFenceValue = nextFenceValue;
-                                            g_State.fenceValues[idx] = nextFenceValue;
-                                        } else {
-                                            HookLog("DX12: Overlay fence signal failed hr=0x%08X",
-                                                    signalHr);
-                                        }
+                                    // If using dedicated queue, also signal completion so game queue can wait
+                                    if (usingDedicatedQueue && gameQueue && g_State.crossQueueFence) {
+                                        // Signal from overlay queue after submission
+                                        g_State.crossQueueFenceValue++;
+                                        overlayQueue->Signal(g_State.crossQueueFence, g_State.crossQueueFenceValue);
+                                    }
+                                }
+
+                                // Fence signaling: Use CPU-side or GPU-side based on queue type
+                                if (g_State.fence && useCpuFenceSignal) {
+                                    // CPU-side fence signal - always safe, no driver blocking
+                                    UINT64 nextFenceValue = g_State.currentFenceValue + 1;
+                                    g_State.currentFenceValue = nextFenceValue;
+                                    g_State.fenceValues[idx] = nextFenceValue;
+                                    g_State.fence->Signal(nextFenceValue);
+                                } else if (g_State.fence) {
+                                    // GPU-side fence signal from the target queue
+                                    UINT64 nextFenceValue = g_State.currentFenceValue + 1;
+                                    HRESULT signalHr = targetQueue->Signal(g_State.fence, nextFenceValue);
+                                    if (SUCCEEDED(signalHr)) {
+                                        g_State.currentFenceValue = nextFenceValue;
+                                        g_State.fenceValues[idx] = nextFenceValue;
+                                    } else {
+                                        HookLog("DX12: Overlay fence signal failed hr=0x%08X", signalHr);
                                     }
                                 }
                             }
@@ -2034,9 +2155,6 @@ void HandleDX12ResizeEnd() {
 // External function for swapchain wrapper to wait for overlay completion before
 // Present
 extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12CommandQueue* pGameQueue) {
-#if defined(_M_IX86)
-    // x86 driver stacks have shown sporadic hangs in queue Wait() during
-    // focus/alt-tab transitions. Keep this strictly non-blocking.
     (void)pGameQueue;
     if (!g_State.fence)
         return;
@@ -2045,49 +2163,18 @@ extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12Comman
     if (fenceValueToWait == 0)
         return;
 
+    // CRITICAL FIX: When window is not foreground, do NOT attempt any fence waiting.
+    // Even WaitForSingleObject(fenceEvent, 0) can hang in the kernel driver
+    // (NtGdiDdDDISubmitWaitForSyncObjectsToHwQueue) when GPU is throttled during Alt+Tab.
+    // Just check if fence is already signaled and return immediately.
+    // The overlay will be visible on the next frame when GPU resumes.
     if (g_State.fence->GetCompletedValue() >= fenceValueToWait)
         return;
 
-    // Read handle once to avoid a race with CleanupOverlay nulling it after close
-    HANDLE fenceEvent = g_State.fenceEvent;
-    if (fenceEvent && SUCCEEDED(g_State.fence->SetEventOnCompletion(fenceValueToWait, fenceEvent))) {
-        WaitForSingleObject(fenceEvent, 0);
-    }
-    return;
-#else
-
-    // PERFORMANCE FIX: Use GPU-side wait instead of CPU-side wait
-    // CPU-side wait stalls the game's CPU thread, causing GPU underutilization
-    // GPU-side wait allows the CPU to continue while GPU handles synchronization
-    if (!pGameQueue || !g_State.fence)
-        return;
-
-    // Get the most recent fence value that was signaled by the overlay queue
-    UINT64 fenceValueToWait = g_State.currentFenceValue;
-    if (fenceValueToWait == 0)
-        return;  // No overlay work submitted yet
-
-    // Check if overlay work is already complete (avoid unnecessary wait)
-    if (g_State.fence->GetCompletedValue() >= fenceValueToWait)
-        return;
-
-    // GPU-side wait: Queue a wait on the game's command queue
-    // This blocks the GPU at this point in the queue until the fence is signaled,
-    // but the CPU can continue immediately. The overlay render work happens
-    // before the game's Present, ensuring correct visual ordering.
-    HRESULT hr = pGameQueue->Wait(g_State.fence, fenceValueToWait);
-    if (FAILED(hr)) {
-        // Fallback: If GPU wait fails, try CPU wait with minimal timeout
-        // This should rarely happen but ensures safety
-        g_State.fence->SetEventOnCompletion(fenceValueToWait, g_State.fenceEvent);
-        WaitForSingleObject(g_State.fenceEvent, 1);
-    }
-
-    static int s_successCount = 0;
-    if (++s_successCount <= 5) {
-        HookLog("DX12: WaitForOverlay - GPU wait queued for fence value %llu", fenceValueToWait);
-    }
-#endif
+    // Fence not ready - don't wait, just return. This is safe because:
+    // 1. The overlay is still rendered, just might not be synchronized with this frame
+    // 2. On next frame when GPU resumes, everything will be back in sync
+    // 3. Prevents deadlock in driver when GPU is throttled
 }
 
 static const GUID SKID_D3D12SwapChainBufferBitmap = {
