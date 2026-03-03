@@ -5,8 +5,9 @@ Implement GDI interop zero-copy DX9 capture for native D3D9.
 - No D3D9Ex, no SYSTEMMEM, no Desktop Duplication, no WGC
 """
 import sys
+from script_safety import resolve_repo_path, write_text_atomic
 
-filepath = "hook/apis/dx9_hook.cpp"
+filepath = resolve_repo_path("hook/apis/dx9_hook.cpp")
 
 with open(filepath, 'r', newline='', encoding='utf-8') as f:
     content = f.read()
@@ -461,8 +462,7 @@ else:
 # ===========================================================================
 # Write
 # ===========================================================================
-with open(filepath, 'w', newline='', encoding='utf-8') as f:
-    f.write(content)
+write_text_atomic(filepath, content, newline='')
 
 print(f"\nTotal changes: {changes}")
 if changes >= 9:

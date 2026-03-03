@@ -86,6 +86,7 @@ void CWrapDXGIFactory2::PromoteInterfaces() {
 HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::QueryInterface(REFIID riid, void** ppvObj) {
     if (!ppvObj)
         return E_POINTER;
+    *ppvObj = nullptr;
 
     if (riid == IID_CWrapDXGIFactory) {
         AddRef();

@@ -32,6 +32,7 @@ CWrapD3D11Device::CWrapD3D11Device(ID3D11Device* pReal)
 CWrapD3D11Device::~CWrapD3D11Device() {
     WrapperLog("D3D11 Device Wrapper: Destroyed");
     if (m_pWrappedContext) {
+        m_pWrappedContext->InvalidateDeviceWrapper();
         m_pWrappedContext->Release();
         m_pWrappedContext = nullptr;
     }
@@ -131,8 +132,10 @@ void CWrapD3D11Device::ApplySamplerOverrides(D3D11_SAMPLER_DESC* pDesc) {
 HRESULT STDMETHODCALLTYPE CWrapD3D11Device::QueryInterface(REFIID riid, void** ppvObj) {
     if (!ppvObj)
         return E_POINTER;
+    *ppvObj = nullptr;
 
     if (riid == IID_CWrapD3D11Device) {
+        m_pReal->AddRef();
         *ppvObj = m_pReal;
         return S_OK;
     }

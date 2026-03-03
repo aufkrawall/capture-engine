@@ -44,6 +44,7 @@ void CWrapD3D10Device::ApplySamplerOverrides(D3D10_SAMPLER_DESC* pDesc) {
 HRESULT STDMETHODCALLTYPE CWrapD3D10Device::QueryInterface(REFIID riid, void** ppvObj) {
     if (!ppvObj)
         return E_POINTER;
+    *ppvObj = nullptr;
 
     if (riid == IID_IUnknown || riid == IID_ID3D10Device) {
         AddRef();

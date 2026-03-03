@@ -60,6 +60,29 @@ static std::atomic<uint32_t> g_WgcDroppedFrames{0};
 // Forward declaration
 void StopRecording();
 void StartRecording(const AppConfig& config);
+
+static bool JoinThreadWithTimeout(std::thread& thread, DWORD timeoutMs, const char* threadName) {
+    if (!thread.joinable()) {
+        return true;
+    }
+
+    HANDLE threadHandle = reinterpret_cast<HANDLE>(thread.native_handle());
+    DWORD waitResult = WaitForSingleObject(threadHandle, timeoutMs);
+    if (waitResult == WAIT_OBJECT_0) {
+        thread.join();
+        return true;
+    }
+
+    if (waitResult == WAIT_TIMEOUT) {
+        LogWarn("[Media] Timeout waiting for %s thread (%lu ms), detaching", threadName,
+                static_cast<unsigned long>(timeoutMs));
+    } else {
+        LogWarn("[Media] WaitForSingleObject failed for %s thread (error=%lu), detaching", threadName, GetLastError());
+    }
+    thread.detach();
+    return false;
+}
+
 void MediaLogCallback(const char* msg) {
     LogInfo("[Media] %s", msg);
 }
@@ -723,9 +746,7 @@ void StopRecording() {
 
     if (g_UseScreenGrab) {
         g_WgcCaptureShutdown = true;
-        if (g_WgcCaptureThread.joinable()) {
-            g_WgcCaptureThread.join();
-        }
+        JoinThreadWithTimeout(g_WgcCaptureThread, 5000, "WGC capture");
         if (g_WgcCap) {
             g_WgcCap->StopCapture();
             g_WgcCap->SetDirectFrameCallback(nullptr);
@@ -735,16 +756,12 @@ void StopRecording() {
         }
     } else {
         g_InjectCaptureShutdown = true;
-        if (g_InjectCaptureThread.joinable()) {
-            g_InjectCaptureThread.join();
-        }
+        JoinThreadWithTimeout(g_InjectCaptureThread, 5000, "inject capture");
     }
 
     g_EncoderRunning = false;
 
-    if (g_EncoderThread.joinable()) {
-        g_EncoderThread.join();
-    }
+    JoinThreadWithTimeout(g_EncoderThread, 10000, "encoder");
 
     g_FrameQueue.Clear();
     MediaEngine_StopRecording();
@@ -956,6 +973,19 @@ int MediaProcessMain(const AppConfig& config) {
     LARGE_INTEGER qpcFreq;
     QueryPerformanceFrequency(&qpcFreq);
     int64_t recordingStartTime = 0;
+    auto ensureWgcDevice = [&]() -> bool {
+        if (d3dDevice) {
+            return true;
+        }
+        d3dDevice = MediaEngine_GetD3D11Device();
+        if (!d3dDevice) {
+            return false;
+        }
+        if (!d3dContext) {
+            d3dDevice->GetImmediateContext(&d3dContext);
+        }
+        return true;
+    };
 
     while (g_Running) {
         // WGC window detection must run BEFORE resolution polling/texture creation.
@@ -1028,7 +1058,8 @@ int MediaProcessMain(const AppConfig& config) {
         // The Vulkan layer sets resolution when it creates the swapchain, then waits
         // for encoder KMT textures. We must create them ASAP to avoid timeout.
         // Skip when using screengrab (WGC) - the encoder should use the shared device.
-        if (g_pSharedMem && !g_UseScreenGrab && !g_pSharedMem->encoderTextures.kmtReady.load(std::memory_order_acquire)) {
+        if (g_pSharedMem && !g_UseScreenGrab &&
+            !g_pSharedMem->encoderTextures.kmtReady.load(std::memory_order_acquire)) {
             uint32_t w = g_pSharedMem->GetWidth();
             uint32_t h = g_pSharedMem->GetHeight();
             uint32_t f = g_pSharedMem->GetFormat();
@@ -1145,20 +1176,29 @@ int MediaProcessMain(const AppConfig& config) {
                         "Switching capture...",
                         foundWindow);
 
-                    g_UseScreenGrab = true;
-                    g_WgcCap.reset();
-                    g_WgcCap = std::make_unique<WGCCapture>();
-
-                    if (g_WgcCap->InitForWindow(d3dDevice, foundWindow)) {
-                        g_WgcCap->SetCaptureCursor(config.video.captureCursor);
-                        LogInfo("[Media] WGC re-initialized for Window 0x%p", foundWindow);
-                        currentCapturedWindow = foundWindow;
+                    if (!ensureWgcDevice()) {
+                        LogWarn("[Media] WGC trigger ignored: D3D11 device unavailable");
                     } else {
-                        LogError("[Media] Failed to init WGC for found window.");
                         g_WgcCap.reset();
                         g_WgcCap = std::make_unique<WGCCapture>();
-                        g_WgcCap->Init(d3dDevice);
-                        currentCapturedWindow = NULL;
+
+                        if (g_WgcCap->InitForWindow(d3dDevice, foundWindow)) {
+                            g_UseScreenGrab = true;
+                            g_WgcCap->SetCaptureCursor(config.video.captureCursor);
+                            LogInfo("[Media] WGC re-initialized for Window 0x%p", foundWindow);
+                            currentCapturedWindow = foundWindow;
+                        } else {
+                            LogError("[Media] Failed to init WGC for found window.");
+                            g_WgcCap.reset();
+                            g_WgcCap = std::make_unique<WGCCapture>();
+                            if (g_WgcCap->Init(d3dDevice)) {
+                                g_UseScreenGrab = true;
+                            } else {
+                                g_WgcCap.reset();
+                                g_UseScreenGrab = false;
+                            }
+                            currentCapturedWindow = NULL;
+                        }
                     }
                 } else if (!foundWindow && currentCapturedWindow != NULL) {
                     if (!IsWindow(currentCapturedWindow)) {
@@ -1167,9 +1207,16 @@ int MediaProcessMain(const AppConfig& config) {
                             "to monitor/inject.",
                             currentCapturedWindow);
                         currentCapturedWindow = NULL;
-                        g_WgcCap.reset();
-                        g_WgcCap = std::make_unique<WGCCapture>();
-                        g_WgcCap->Init(d3dDevice);
+                        if (ensureWgcDevice()) {
+                            g_WgcCap.reset();
+                            g_WgcCap = std::make_unique<WGCCapture>();
+                            if (!g_WgcCap->Init(d3dDevice)) {
+                                g_WgcCap.reset();
+                                g_UseScreenGrab = false;
+                            }
+                        } else {
+                            g_UseScreenGrab = false;
+                        }
                     }
                 }
             }
@@ -1199,33 +1246,47 @@ int MediaProcessMain(const AppConfig& config) {
                 }
 
                 if (forceWGC) {
-                    g_UseScreenGrab = true;
+                    if (!ensureWgcDevice()) {
+                        LogWarn("[Media] Overlay whitelist requested WGC but D3D11 device unavailable");
+                        g_UseScreenGrab = false;
+                    } else {
+                        g_UseScreenGrab = true;
 
-                    HWND hGameWindow = GetMainWindowForProcess(currentSourcePid);
-                    if (hGameWindow) {
-                        LogInfo(
-                            "[Media] Whitelist Optimization: Found main window 0x%p. "
-                            "Switching WGC to Window Mode.",
-                            hGameWindow);
+                        HWND hGameWindow = GetMainWindowForProcess(currentSourcePid);
+                        if (hGameWindow) {
+                            LogInfo(
+                                "[Media] Whitelist Optimization: Found main window 0x%p. "
+                                "Switching WGC to Window Mode.",
+                                hGameWindow);
 
-                        g_WgcCap.reset();
-                        g_WgcCap = std::make_unique<WGCCapture>();
-                        if (g_WgcCap->InitForWindow(d3dDevice, hGameWindow)) {
-                            g_WgcCap->SetCaptureCursor(config.video.captureCursor);
-                            LogInfo("[Media] WGC re-initialized for Window Capture");
-                        } else {
-                            LogError(
-                                "[Media] Failed to init WGC for window - falling back "
-                                "to Monitor");
                             g_WgcCap.reset();
                             g_WgcCap = std::make_unique<WGCCapture>();
-                            g_WgcCap->Init(d3dDevice);
+                            if (g_WgcCap->InitForWindow(d3dDevice, hGameWindow)) {
+                                g_WgcCap->SetCaptureCursor(config.video.captureCursor);
+                                LogInfo("[Media] WGC re-initialized for Window Capture");
+                            } else {
+                                LogError(
+                                    "[Media] Failed to init WGC for window - falling back "
+                                    "to Monitor");
+                                g_WgcCap.reset();
+                                g_WgcCap = std::make_unique<WGCCapture>();
+                                if (!g_WgcCap->Init(d3dDevice)) {
+                                    g_WgcCap.reset();
+                                    g_UseScreenGrab = false;
+                                }
+                            }
+                        } else {
+                            LogInfo(
+                                "[Media] Whitelist: No main window found for PID %u. Using "
+                                "Monitor Capture.",
+                                currentSourcePid);
+                            g_WgcCap.reset();
+                            g_WgcCap = std::make_unique<WGCCapture>();
+                            if (!g_WgcCap->Init(d3dDevice)) {
+                                g_WgcCap.reset();
+                                g_UseScreenGrab = false;
+                            }
                         }
-                    } else {
-                        LogInfo(
-                            "[Media] Whitelist: No main window found for PID %u. Using "
-                            "Monitor Capture.",
-                            currentSourcePid);
                     }
 
                 } else if (config.captureMethod != "screengrab" && config.captureMethod != "framegrab") {

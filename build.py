@@ -1368,6 +1368,45 @@ def normalize_compile_command_arg(arg: str) -> str:
     return arg
 
 
+def write_json_atomic(path: str, payload: Any) -> None:
+    """Write JSON payload atomically to avoid partial/corrupted files."""
+    tmp_path = f"{path}.tmp.{os.getpid()}"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=4)
+            f.write("\n")
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+
+def detect_clang_resource_dir(env: Dict[str, str], clang_exe: str) -> Optional[str]:
+    """Detect clang resource-dir via compiler query, then fallback to local scan."""
+    if clang_exe:
+        detected = run_command([os.path.normpath(clang_exe), "--print-resource-dir"], env=env, fail_exit=False).strip()
+        if detected:
+            detected_norm = os.path.normpath(detected)
+            if os.path.isdir(detected_norm):
+                return detected_norm.replace("\\", "/")
+
+    clang_lib_dir = os.path.join(PROJECT_ROOT, "build", "msys64", "clang64", "lib", "clang")
+    if not os.path.isdir(clang_lib_dir):
+        return None
+
+    versions = [
+        d for d in os.listdir(clang_lib_dir) if os.path.isdir(os.path.join(clang_lib_dir, d)) and d and d[0].isdigit()
+    ]
+    if not versions:
+        return None
+
+    versions.sort(key=lambda v: [int(x) for x in re.findall(r"\d+", v)], reverse=True)
+    return os.path.join(clang_lib_dir, versions[0]).replace("\\", "/")
+
+
 def compile_object(env: Dict[str, str], clang_exe: str, cflags: List[str], src: str, obj: str) -> bool:
     """Compile a single object file. Returns True if compiled, False if skipped."""
     dep_file = obj + ".d"
@@ -2894,8 +2933,14 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                     os.path.join(ffmpeg_lib_dir, "libswscale.dll.a"),
                     os.path.join(ffmpeg_lib_dir, "libavutil.dll.a"),
                 ]
-                cmd = [curr_clang_exe] + me_objs + common_objs + me_ldflags + ffmpeg_import_libs + ["-o", me_dll]
+                temp_me_dll = os.path.join(curr_obj_dir, "mediaengine.tmp.dll")
+                safe_delete_file(temp_me_dll)
+                cmd = [curr_clang_exe] + me_objs + common_objs + me_ldflags + ffmpeg_import_libs + ["-o", temp_me_dll]
                 run_command(cmd, env=curr_env)
+                if not safe_copy_file(temp_me_dll, me_dll):
+                    log("ERROR: Failed to place mediaengine.dll (destination may be locked)")
+                    sys.exit(1)
+                safe_delete_file(temp_me_dll)
                 # generate_hash(me_dll) # MediaEngine doesn't need hash check for injection
                 # Note: mediaengine.dll is output directly to BIN_DIR (main folder)
                 # It acts as a bridge to FFmpeg DLLs in ffmpeg/ subfolder
@@ -3038,8 +3083,14 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             os.path.join(OBJ_DIR, "x64", os.path.relpath(s, PROJECT_ROOT).replace(".cpp", ".o"))
             for s in glob.glob(os.path.join(PROJECT_ROOT, "common", "*.cpp"))
         ]
-        cmd = [get_compiler_exe("x64")] + ce_objs + x64_common_objs + ce_ldflags + ["-o", ce_exe]
+        temp_ce_exe = os.path.join(ce_obj_dir, "captureengine.tmp.exe")
+        safe_delete_file(temp_ce_exe)
+        cmd = [get_compiler_exe("x64")] + ce_objs + x64_common_objs + ce_ldflags + ["-o", temp_ce_exe]
         run_command(cmd, env=env)
+        if not safe_copy_file(temp_ce_exe, ce_exe):
+            log("ERROR: Failed to place captureengine.exe (destination may be locked)")
+            sys.exit(1)
+        safe_delete_file(temp_ce_exe)
 
     # 6. Compile Test Applications (DX9/10/11/12, Vulkan, OpenGL; x64/x86)
     x86_env_for_tests = None
@@ -3159,6 +3210,29 @@ def ensure_debug_logging():
         log(f"Warning: Failed to update config.ini: {e}")
 
 
+def run_sanitizer_regression_pass(skip_updates: bool, ccache_flag: bool) -> None:
+    """Run a second validation pass with ASan/UBSan + unit tests."""
+    cmd = [
+        sys.executable,
+        os.path.abspath(__file__),
+        "--run-tests",
+        "--sanitize",
+        "--incremental",
+        "--sanitize-regression-child",
+    ]
+    if skip_updates:
+        cmd.append("--skip-updates")
+    if ccache_flag:
+        cmd.append("--ccache")
+
+    log("=== Running sanitizer regression cadence pass ===")
+    result = subprocess.run(cmd, cwd=PROJECT_ROOT)
+    if result.returncode != 0:
+        log(f"ERROR: Sanitizer regression pass failed (exit code {result.returncode})")
+        sys.exit(result.returncode)
+    log("=== Sanitizer regression cadence pass: OK ===")
+
+
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)
@@ -3255,6 +3329,8 @@ def main():
     format_flag = "--format" in sys.argv
     ccache_flag = "--ccache" in sys.argv
     sanitize_flag = "--sanitize" in sys.argv
+    sanitize_regression_flag = "--sanitize-regression" in sys.argv
+    sanitize_regression_child = "--sanitize-regression-child" in sys.argv
     # --production: build signed production binaries (requires CE_PRODUCTION_BUILD=1)
     # Dev builds do NOT pass this flag; signature verification is a warning only.
     production_flag = "--production" in sys.argv or "CE_PRODUCTION_BUILD" in os.environ
@@ -3267,11 +3343,14 @@ def main():
         run_tests_flag = True
         lint_flag = True
         format_flag = True
+        sanitize_regression_flag = True
 
     if full_integration_flag:
         run_integration_flag = True
     if run_integration_flag:
         run_tests_flag = True
+    if sanitize_regression_child:
+        sanitize_regression_flag = False
 
     # Store flags in env for access in compile functions
     env["FORCE_REBUILD"] = "1" if force_flag else "0"
@@ -3326,6 +3405,8 @@ def main():
         log("FFmpeg updates disabled (--skip-updates)")
     if run_tests_flag:
         log("Unit/regression test suite enabled")
+    if sanitize_regression_flag:
+        log("Sanitizer regression cadence enabled")
     if run_integration_flag:
         if full_integration_flag:
             log("Integration mode: full matrix (--full-integration)")
@@ -3345,6 +3426,14 @@ def main():
             log("Lint/LSP checks reported issues.")
         if len(args) == 1 and "--lint" in args and not format_flag and not run_tests_flag and not run_integration_flag:
             return
+
+    if sanitize_regression_flag and not sanitize_regression_child:
+        if sanitize_flag:
+            log("Sanitizer regression cadence requested in sanitizer mode; skipping nested pass")
+        else:
+            # Run sanitizer validation first so final installed artifacts remain
+            # non-sanitized unless --sanitize was explicitly requested.
+            run_sanitizer_regression_pass(skip_updates=skip_updates, ccache_flag=ccache_flag)
 
     compile_project(env, clang_bin, skip_updates=skip_updates, should_run_tests=run_tests_flag)
 
@@ -3372,62 +3461,64 @@ def main():
                         unique_commands[i] = cmd
                         break
 
-        with open(os.path.join(PROJECT_ROOT, "compile_commands.json"), "w") as f:
-            json.dump(unique_commands, f, indent=4)
+        compile_commands_path = os.path.join(PROJECT_ROOT, "compile_commands.json")
+        write_json_atomic(compile_commands_path, unique_commands)
         log(f"Generated compile_commands.json ({len(unique_commands)} entries)")
         log("LSP: normalized compile_commands paths for clangd")
 
-        # Auto-detect installed Clang version and update .clangd resource-dir
-        # to prevent breakage when MSYS2 updates Clang (e.g. 21 -> 22).
-        _clang_lib_dir = os.path.join(PROJECT_ROOT, "build", "msys64", "clang64", "lib", "clang")
-        if os.path.isdir(_clang_lib_dir):
-            _versions = sorted(
-                [
-                    d
-                    for d in os.listdir(_clang_lib_dir)
-                    if os.path.isdir(os.path.join(_clang_lib_dir, d)) and d[0].isdigit()
-                ],
-                key=lambda v: [int(x) for x in v.split(".") if x.isdigit()],
-                reverse=True,
-            )
-            if _versions:
-                _detected_version = _versions[0]
-                _clangd_path = os.path.join(PROJECT_ROOT, ".clangd")
-                if os.path.exists(_clangd_path):
-                    with open(_clangd_path, "r", encoding="utf-8") as _f:
-                        _clangd_content = _f.read()
-                    import re as _re
+        # Auto-detect clang resource-dir and update .clangd so LSP survives toolchain updates.
+        _clangd_path = os.path.join(PROJECT_ROOT, ".clangd")
+        if os.path.exists(_clangd_path):
+            _clang_hint = ""
+            if unique_commands and unique_commands[0].get("arguments"):
+                _clang_hint = unique_commands[0]["arguments"][0]
+            if not _clang_hint:
+                _clang_hint = os.path.join(clang_bin, "clang++.exe" if IS_WINDOWS else "clang++")
 
-                    _normalized_resource_dir = f"build/msys64/clang64/lib/clang/{_detected_version}"
-                    _updated = _re.sub(
-                        r"(-resource-dir=)(?:[^\"\n]*/)?clang64/lib/clang/[^\"\n]+",
-                        rf"\g<1>{_normalized_resource_dir}",
-                        _clangd_content,
-                    )
-                    _updated = _re.sub(
-                        r"(^\s*Compiler:\s*).*$",
-                        r"\g<1>build/msys64/clang64/bin/clang++.exe",
-                        _updated,
-                        flags=_re.MULTILINE,
-                    )
-                    _updated = _re.sub(
-                        r'(^\s*-\s*")[^"\n]*clang64/include/c\+\+/v1(".*$)',
-                        r"\1build/msys64/clang64/include/c++/v1\2",
-                        _updated,
-                        flags=_re.MULTILINE,
-                    )
-                    _updated = _re.sub(
-                        r'(^\s*-\s*")[^"\n]*clang64/include(?!/c\+\+/v1)(".*$)',
-                        r"\1build/msys64/clang64/include\2",
-                        _updated,
-                        flags=_re.MULTILINE,
-                    )
-                    if _updated != _clangd_content:
-                        with open(_clangd_path, "w", encoding="utf-8") as _f:
-                            _f.write(_updated)
-                        log(f"LSP: Updated .clangd compiler/resource/include paths (clang/{_detected_version})")
-                    else:
-                        log(f"LSP: .clangd compiler/resource/include paths already correct (clang/{_detected_version})")
+            _detected_resource_dir = detect_clang_resource_dir(env, _clang_hint)
+            if _detected_resource_dir:
+                with open(_clangd_path, "r", encoding="utf-8") as _f:
+                    _clangd_content = _f.read()
+                import re as _re
+
+                _normalized_resource_dir = _detected_resource_dir.replace("\\", "/")
+                _project_root_norm = PROJECT_ROOT.replace("\\", "/").rstrip("/")
+                if _normalized_resource_dir.lower().startswith(_project_root_norm.lower() + "/"):
+                    _normalized_resource_dir = _normalized_resource_dir[len(_project_root_norm) + 1 :]
+
+                _updated, _resource_subs = _re.subn(
+                    r"(-resource-dir=)(?:[^\"\n]*/)?clang64/lib/clang/[^\"\n]+",
+                    rf"\g<1>{_normalized_resource_dir}",
+                    _clangd_content,
+                )
+                _updated = _re.sub(
+                    r"(^\s*Compiler:\s*).*$",
+                    r"\g<1>build/msys64/clang64/bin/clang++.exe",
+                    _updated,
+                    flags=_re.MULTILINE,
+                )
+                _updated = _re.sub(
+                    r'(^\s*-\s*")[^"\n]*clang64/include/c\+\+/v1(".*$)',
+                    r"\1build/msys64/clang64/include/c++/v1\2",
+                    _updated,
+                    flags=_re.MULTILINE,
+                )
+                _updated = _re.sub(
+                    r'(^\s*-\s*")[^"\n]*clang64/include(?!/c\+\+/v1)(".*$)',
+                    r"\1build/msys64/clang64/include\2",
+                    _updated,
+                    flags=_re.MULTILINE,
+                )
+                if _updated != _clangd_content:
+                    with open(_clangd_path, "w", encoding="utf-8") as _f:
+                        _f.write(_updated)
+                    log(f"LSP: Updated .clangd compiler/resource/include paths ({_normalized_resource_dir})")
+                else:
+                    log(f"LSP: .clangd compiler/resource/include paths already correct ({_normalized_resource_dir})")
+                if _resource_subs == 0:
+                    log("LSP: WARNING: .clangd resource-dir pattern not found; please verify .clangd format")
+            else:
+                log("LSP: WARNING: Could not detect clang resource-dir; .clangd was not updated")
     except Exception as e:
         log(f"Error writing compile_commands.json: {e}")
 

@@ -48,6 +48,7 @@ CWrapD3D9Device::~CWrapD3D9Device() {
 HRESULT STDMETHODCALLTYPE CWrapD3D9Device::QueryInterface(REFIID riid, void** ppvObj) {
     if (!ppvObj)
         return E_POINTER;
+    *ppvObj = nullptr;
 
     if (riid == IID_CWrapD3D9Device) {
         AddRef();

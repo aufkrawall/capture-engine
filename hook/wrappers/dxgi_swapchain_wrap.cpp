@@ -420,6 +420,7 @@ void CWrapDXGISwapChain::DrawOverlay() {
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::QueryInterface(REFIID riid, void** ppvObj) {
     if (!ppvObj)
         return E_POINTER;
+    *ppvObj = nullptr;
     EnsurePromoted();
 
     // CRITICAL FIX: Block Streamline base interface to prevent FSR FG / DLSS FG

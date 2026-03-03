@@ -123,17 +123,7 @@ void FreezeWatchdog::Stop() {
     }
 
     if (watchdogThread_.joinable()) {
-        constexpr auto kJoinTimeout = std::chrono::milliseconds(2000);
-        auto deadline = std::chrono::steady_clock::now() + kJoinTimeout;
-
-        while (watchdogThread_.joinable() && std::chrono::steady_clock::now() < deadline) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-
-        if (watchdogThread_.joinable()) {
-            OutputDebugStringA("[FreezeWatchdog] Warning: Thread didn't exit in time\n");
-            watchdogThread_.detach();
-        }
+        watchdogThread_.join();
     }
 }
 

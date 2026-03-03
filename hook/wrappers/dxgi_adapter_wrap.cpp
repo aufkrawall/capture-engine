@@ -96,15 +96,15 @@ void CWrapDXGIAdapter::PromoteInterfaces() {
 HRESULT STDMETHODCALLTYPE CWrapDXGIAdapter::QueryInterface(REFIID riid, void** ppvObj) {
     if (!ppvObj)
         return E_POINTER;
+    *ppvObj = nullptr;
 
-    // CRITICAL FIX: Do NOT return the real adapter pointer for
-    // IID_CWrapDXGIAdapter Games like Strange Brigade query for the real adapter
-    // and then use it directly for VRAM queries, bypassing our wrapper entirely.
-    // Returning the wrapper ensures all VRAM queries go through our wrapped
-    // methods. if (riid == IID_CWrapDXGIAdapter) {
-    //     *ppvObj = m_pReal;
-    //     return S_OK;
-    // }
+    // Private unwrap interface: returns wrapper-side adapter accessor, not the
+    // real adapter COM interface directly.
+    if (riid == IID_CWrapDXGIAdapter) {
+        AddRef();
+        *ppvObj = static_cast<ICWrapDXGIAdapter*>(this);
+        return S_OK;
+    }
 
     // Return ourselves for DXGI Adapter interfaces
     if (riid == IID_IUnknown || riid == IID_IDXGIObject || riid == IID_IDXGIAdapter) {

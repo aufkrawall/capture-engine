@@ -30,6 +30,28 @@ typedef struct _SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION {
 typedef NTSTATUS(WINAPI* NtQuerySystemInformationPtr)(ULONG SystemInformationClass, PVOID SystemInformation,
                                                       ULONG SystemInformationLength, PULONG ReturnLength);
 
+namespace {
+bool JoinThreadWithTimeout(std::thread& thread, DWORD timeoutMs, const char* context) {
+    if (!thread.joinable()) {
+        return true;
+    }
+
+    HANDLE threadHandle = reinterpret_cast<HANDLE>(thread.native_handle());
+    DWORD waitResult = WaitForSingleObject(threadHandle, timeoutMs);
+    if (waitResult == WAIT_OBJECT_0) {
+        thread.join();
+        return true;
+    }
+
+    if (waitResult == WAIT_TIMEOUT) {
+        EarlyLog("%s: thread join timed out after %lu ms", context, static_cast<unsigned long>(timeoutMs));
+    } else {
+        EarlyLog("%s: WaitForSingleObject failed (error=%lu)", context, GetLastError());
+    }
+    return false;
+}
+}  // namespace
+
 SystemMetricsCollector& SystemMetricsCollector::Get() {
     static SystemMetricsCollector instance;
     return instance;
@@ -46,15 +68,7 @@ SystemMetricsCollector::~SystemMetricsCollector() {
     stopThread = true;
 
     if (updateThread.joinable()) {
-        // Wait up to 1500ms: the background loop sleeps in 10ms increments and
-        // checks stopThread each iteration, so it should exit within ~200ms.
-        // A longer timeout covers the rare DXGI VRAM query path.
-        auto start = std::chrono::steady_clock::now();
-        while (threadRunning.load() && std::chrono::steady_clock::now() - start < std::chrono::milliseconds(1500)) {
-            Sleep(10);
-        }
-
-        if (threadRunning.load()) {
+        if (!JoinThreadWithTimeout(updateThread, 1500, "SystemMetricsCollector::~SystemMetricsCollector")) {
             // Thread didn't stop in time.  Since this is a static singleton destroyed
             // at DLL unload, we must NOT free the PDH/DXGI resources while the thread
             // is still using them.  Detach and skip resource cleanup — the OS will
@@ -62,7 +76,6 @@ SystemMetricsCollector::~SystemMetricsCollector() {
             updateThread.detach();
             return;
         }
-        updateThread.join();
     }
 
     if (cpuQuery) {
@@ -96,16 +109,10 @@ void SystemMetricsCollector::Shutdown() {
 
     // Wait for thread to exit with a timeout
     if (updateThread.joinable()) {
-        auto start = std::chrono::steady_clock::now();
-        while (threadRunning.load() && std::chrono::steady_clock::now() - start < std::chrono::milliseconds(1500)) {
-            Sleep(10);
-        }
-
-        if (threadRunning.load()) {
+        if (!JoinThreadWithTimeout(updateThread, 1500, "SystemMetricsCollector::Shutdown")) {
             updateThread.detach();
         } else {
             EarlyLog("SystemMetricsCollector: Thread exited cleanly, joining");
-            updateThread.join();
         }
     }
     EarlyLog("SystemMetricsCollector: Shutdown() complete");

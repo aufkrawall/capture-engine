@@ -26,6 +26,9 @@ CWrapD3D11DeviceContext::CWrapD3D11DeviceContext(ID3D11DeviceContext* pReal, CWr
         pReal->AddRef();
         PromoteInterfaces();
     }
+    if (m_pDevice) {
+        m_pDevice->AddRef();
+    }
     WrapperLog("D3D11 Context Wrapper: Created (real=%p, version=%d)", pReal, m_Version);
 }
 
@@ -39,8 +42,17 @@ CWrapD3D11DeviceContext::~CWrapD3D11DeviceContext() {
         m_pReal2->Release();
     if (m_pReal1)
         m_pReal1->Release();
+    if (m_pDevice)
+        m_pDevice->Release();
     if (m_pReal)
         m_pReal->Release();
+}
+
+void CWrapD3D11DeviceContext::InvalidateDeviceWrapper() {
+    if (m_pDevice) {
+        m_pDevice->Release();
+        m_pDevice = nullptr;
+    }
 }
 
 void CWrapD3D11DeviceContext::PromoteInterfaces() {
@@ -65,6 +77,7 @@ void CWrapD3D11DeviceContext::PromoteInterfaces() {
 HRESULT STDMETHODCALLTYPE CWrapD3D11DeviceContext::QueryInterface(REFIID riid, void** ppvObj) {
     if (!ppvObj)
         return E_POINTER;
+    *ppvObj = nullptr;
 
     if (riid == IID_CWrapD3D11DeviceContext) {
         AddRef();

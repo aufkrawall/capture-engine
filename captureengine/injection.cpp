@@ -88,6 +88,7 @@ InjectionManager::InjectionManager(const AppConfig& config) : config(config) {
 InjectionManager::~InjectionManager() {
     // CRITICAL FIX: Signal all delayed injection threads to stop
     RequestShutdown();
+    WaitForInjectionThreads(5000);
 
     ShutdownWMI();
     EjectAll();
@@ -420,7 +421,7 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
                     // UE5 games with DLSS FG CRITICAL FIX: Use shared_ptr to prevent
                     // use-after-free if InjectionManager is destroyed
                     std::shared_ptr<InjectionManager> managerShared = pManager->shared_from_this();
-                    std::thread([managerShared, pid, name]() {
+                    std::thread delayedThread([managerShared, pid, name]() {
                         LogInfo(
                             "[WMI] %s (PID: %d) - Waiting for graphics API "
                             "initialization before injection...",
@@ -512,7 +513,28 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
                                 managerShared->failedInjections.push_back({pid, GetTickCount64()});
                             }
                         }
-                    }).detach();
+                    });
+
+                    {
+                        std::lock_guard<std::mutex> threadLock(managerShared->threadListMutex);
+                        for (auto it = managerShared->delayedInjectionThreads.begin();
+                             it != managerShared->delayedInjectionThreads.end();) {
+                            if (!it->joinable()) {
+                                it = managerShared->delayedInjectionThreads.erase(it);
+                                continue;
+                            }
+
+                            HANDLE existingThreadHandle = reinterpret_cast<HANDLE>(it->native_handle());
+                            if (WaitForSingleObject(existingThreadHandle, 0) == WAIT_OBJECT_0) {
+                                it->join();
+                                it = managerShared->delayedInjectionThreads.erase(it);
+                            } else {
+                                ++it;
+                            }
+                        }
+
+                        managerShared->delayedInjectionThreads.emplace_back(std::move(delayedThread));
+                    }
                 }
             }
 
@@ -876,19 +898,34 @@ void InjectionManager::WaitForInjectionThreads(int timeoutMs) {
         delayedInjectionThreads.clear();
     }
 
-    // Join threads with timeout
-    auto startTime = std::chrono::steady_clock::now();
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
     for (auto& t : threadsToJoin) {
-        if (t.joinable()) {
-            auto elapsed =
-                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTime)
-                    .count();
-            if (elapsed >= timeoutMs) {
-                LogWarn("[Injection] Timeout waiting for injection threads, detaching remaining");
-                t.detach();
+        if (!t.joinable()) {
+            continue;
+        }
+
+        auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+            LogWarn("[Injection] Timeout waiting for injection threads, detaching remaining");
+            t.detach();
+            continue;
+        }
+
+        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
+        DWORD waitMs = static_cast<DWORD>(std::max<int64_t>(remaining, 1));
+        HANDLE threadHandle = reinterpret_cast<HANDLE>(t.native_handle());
+        DWORD waitResult = WaitForSingleObject(threadHandle, waitMs);
+
+        if (waitResult == WAIT_OBJECT_0) {
+            t.join();
+        } else {
+            if (waitResult == WAIT_TIMEOUT) {
+                LogWarn("[Injection] Timeout waiting for injection thread, detaching");
             } else {
-                t.join();
+                LogWarn("[Injection] WaitForSingleObject failed for injection thread (error=%lu), detaching",
+                        GetLastError());
             }
+            t.detach();
         }
     }
     LogInfo("[Injection] All delayed injection threads cleaned up");

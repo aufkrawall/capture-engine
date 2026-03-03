@@ -196,6 +196,7 @@ bool AppAudioCapture::StartByPID(DWORD processId) {
     }
 
     DLL_Log("[AppAudioCapture] Starting capture for PID %lu", processId);
+    shouldStop.store(false);
     targetPID.store(processId);
     targetProcessName.clear();
 
@@ -632,7 +633,6 @@ void AppAudioCapture::CaptureLoop() {
             packet.channels = pwfx->nChannels;
             packet.sampleRate = pwfx->nSamplesPerSec;
             packet.bitsPerSample = pwfx->wBitsPerSample;
-            packet.blockAlign = pwfx->nBlockAlign;
             packet.blockAlign = pwfx->nBlockAlign;
             packet.validBitsPerSample = 0;
             packet.devicePosition = devicePosition;  // Store for debug drift analysis

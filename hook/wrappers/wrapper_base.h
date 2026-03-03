@@ -54,28 +54,36 @@ template <typename T>
 inline T* DeWrap(T* p) {
     if (!p)
         return nullptr;
+
+    // Unwrap contract matrix:
+    // - IID_CWrapD3D11Device      -> returns real ID3D11Device*
+    // - IID_CWrapD3D12CommandQueue-> returns real ID3D12CommandQueue*
+    // - IID_CWrapDXGIAdapter      -> returns ICWrapDXGIAdapter wrapper interface;
+    //                                real pointer is retrieved via GetReal()
+    // - Other IID_CWrap* markers may intentionally return wrappers.
+    //
+    // The returned pointer is borrowed (no additional ownership transfer).
     T* pReal = nullptr;
-    // We try multiple private IIDs because we don't know the exact type of p
+
     if (SUCCEEDED(p->QueryInterface(IID_CWrapD3D11Device, (void**)&pReal))) {
         pReal->Release();
         return pReal;
     }
-    if (SUCCEEDED(p->QueryInterface(IID_CWrapD3D12Device, (void**)&pReal))) {
-        pReal->Release();
-        return pReal;
-    }
-    if (SUCCEEDED(p->QueryInterface(IID_CWrapDXGISwapChain, (void**)&pReal))) {
-        pReal->Release();
-        return pReal;
-    }
-    if (SUCCEEDED(p->QueryInterface(IID_CWrapDXGIFactory, (void**)&pReal))) {
-        pReal->Release();
-        return pReal;
-    }
+
     if (SUCCEEDED(p->QueryInterface(IID_CWrapD3D12CommandQueue, (void**)&pReal))) {
         pReal->Release();
         return pReal;
     }
+
+    ICWrapDXGIAdapter* pAdapterWrap = nullptr;
+    if (SUCCEEDED(p->QueryInterface(IID_CWrapDXGIAdapter, (void**)&pAdapterWrap)) && pAdapterWrap) {
+        void* pRealVoid = static_cast<void*>(pAdapterWrap->GetReal());
+        pAdapterWrap->Release();
+        if (pRealVoid) {
+            return static_cast<T*>(pRealVoid);
+        }
+    }
+
     return p;  // Not a wrapper or unknown wrapper
 }
 

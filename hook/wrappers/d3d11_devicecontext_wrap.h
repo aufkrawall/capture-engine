@@ -14,9 +14,9 @@
 class CWrapD3D11Device;
 
 // Wrapper GUID for identification
-// {E5F67890-ABCD-EF12-3456-789012345678}
+// {F6A78901-BCDE-F123-4567-890123456789}
 static const GUID IID_CWrapD3D11DeviceContext = {
-    0xe5f67890, 0xabcd, 0xef12, {0x34, 0x56, 0x78, 0x90, 0x12, 0x34, 0x56, 0x78}};
+    0xf6a78901, 0xbcde, 0xf123, {0x45, 0x67, 0x89, 0x01, 0x23, 0x45, 0x67, 0x89}};
 
 /**
  * CWrapD3D11DeviceContext - Wraps ID3D11DeviceContext through
@@ -34,6 +34,10 @@ public:
     ID3D11DeviceContext* GetReal() const {
         return m_pReal;
     }
+
+    // Break wrapper back-reference during device teardown to avoid stale pointer
+    // access when context wrappers outlive the owning device wrapper.
+    void InvalidateDeviceWrapper();
 
     // ========================================================================
     // IUnknown

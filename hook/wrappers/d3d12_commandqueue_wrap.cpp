@@ -43,6 +43,7 @@ CWrapD3D12CommandQueue::~CWrapD3D12CommandQueue() {
 HRESULT STDMETHODCALLTYPE CWrapD3D12CommandQueue::QueryInterface(REFIID riid, void** ppvObj) {
     if (!ppvObj)
         return E_POINTER;
+    *ppvObj = nullptr;
 
     if (riid == IID_CWrapD3D12CommandQueue) {
         // Return REAL object for unwrapping

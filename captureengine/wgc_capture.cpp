@@ -245,7 +245,14 @@ public:
     }
 
     bool CreateForMonitor(HMONITOR hmon) {
-        auto interopFactory = winrt::get_activation_factory<winrt::GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
+        winrt::com_ptr<IGraphicsCaptureItemInterop> interopFactory;
+        winrt::hstring className = L"Windows.Graphics.Capture.GraphicsCaptureItem";
+        HRESULT factoryHr = RoGetActivationFactory(reinterpret_cast<HSTRING>(winrt::get_abi(className)),
+                                                   __uuidof(IGraphicsCaptureItemInterop), interopFactory.put_void());
+        if (FAILED(factoryHr) || !interopFactory) {
+            LogError("[WGC] RoGetActivationFactory(CreateForMonitor) failed: 0x%x", factoryHr);
+            return false;
+        }
 
         winrt::GraphicsCaptureItem item{nullptr};
         HRESULT hr =
@@ -261,7 +268,14 @@ public:
     }
 
     bool CreateForWindow(HWND hwnd) {
-        auto interopFactory = winrt::get_activation_factory<winrt::GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
+        winrt::com_ptr<IGraphicsCaptureItemInterop> interopFactory;
+        winrt::hstring className = L"Windows.Graphics.Capture.GraphicsCaptureItem";
+        HRESULT factoryHr = RoGetActivationFactory(reinterpret_cast<HSTRING>(winrt::get_abi(className)),
+                                                   __uuidof(IGraphicsCaptureItemInterop), interopFactory.put_void());
+        if (FAILED(factoryHr) || !interopFactory) {
+            LogError("[WGC] RoGetActivationFactory(CreateForWindow) failed: 0x%x", factoryHr);
+            return false;
+        }
 
         winrt::GraphicsCaptureItem item{nullptr};
         HRESULT hr =
@@ -492,6 +506,15 @@ WGCCapture::WGCCapture() : impl_(std::make_unique<Impl>()) {}
 
 WGCCapture::~WGCCapture() {
     StopCapture();
+
+    // Release WinRT/COM capture objects before apartment teardown.
+    impl_.reset();
+
+    if (context_) {
+        context_->Release();
+        context_ = nullptr;
+    }
+
 #if HAS_WGC
     if (roInitialized_) {
         RoUninitialize();
@@ -511,6 +534,10 @@ bool WGCCapture::IsSupported() {
 
 bool WGCCapture::Init(ID3D11Device* device) {
 #if HAS_WGC
+    if (!device) {
+        LogError("[WGC] Init failed: D3D11 device is null");
+        return false;
+    }
     device_ = device;
     device_->GetImmediateContext(&context_);
     impl_->d3dDevice_ = device;
@@ -546,6 +573,14 @@ bool WGCCapture::Init(ID3D11Device* device) {
 
 bool WGCCapture::InitForWindow(ID3D11Device* device, void* hwnd) {
 #if HAS_WGC
+    if (!device) {
+        LogError("[WGC] InitForWindow failed: D3D11 device is null");
+        return false;
+    }
+    if (!hwnd) {
+        LogError("[WGC] InitForWindow failed: window handle is null");
+        return false;
+    }
     device_ = device;
     device_->GetImmediateContext(&context_);
     impl_->d3dDevice_ = device;
@@ -582,6 +617,14 @@ void WGCCapture::SetCaptureCursor(bool enabled) {
 
 bool WGCCapture::InitForMonitor(ID3D11Device* device, void* hmonitor) {
 #if HAS_WGC
+    if (!device) {
+        LogError("[WGC] InitForMonitor failed: D3D11 device is null");
+        return false;
+    }
+    if (!hmonitor) {
+        LogError("[WGC] InitForMonitor failed: monitor handle is null");
+        return false;
+    }
     device_ = device;
     device_->GetImmediateContext(&context_);
     impl_->d3dDevice_ = device;

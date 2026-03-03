@@ -42,6 +42,7 @@ CWrapDirect3D9::~CWrapDirect3D9() {
 HRESULT STDMETHODCALLTYPE CWrapDirect3D9::QueryInterface(REFIID riid, void** ppvObj) {
     if (!ppvObj)
         return E_POINTER;
+    *ppvObj = nullptr;
 
     if (riid == IID_CWrapDirect3D9) {
         AddRef();

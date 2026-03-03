@@ -1,9 +1,8 @@
 import sys
+from script_safety import read_text_file, resolve_repo_path, write_text_atomic
 
-filepath = r'%REPO_ROOT%\hook\apis\dx9_hook.cpp'
-
-with open(filepath, 'r', encoding='utf-8') as f:
-    content = f.read()
+filepath = resolve_repo_path("hook/apis/dx9_hook.cpp")
+content = read_text_file(filepath)
 
 # Find the old block
 old_start = '    // Try to silently upgrade to D3D9Ex for zero-copy shared texture capture.'
@@ -77,7 +76,6 @@ new_block = """    // Try to silently upgrade to D3D9Ex for zero-copy shared tex
 
 content = content[:start_idx] + new_block + content[end_idx:]
 
-with open(filepath, 'w', encoding='utf-8') as f:
-    f.write(content)
+write_text_atomic(filepath, content)
 
 print('Replacement successful')

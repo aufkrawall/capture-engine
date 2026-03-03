@@ -792,6 +792,24 @@ bool VideoEncoder::EnsureDevice() {
         }
     }
 
+    // CreateSharedCaptureTextures can run before Start() recreates codec/container
+    // contexts after a previous Stop(). In that pre-start phase we only need the
+    // D3D11 device for texture allocation; defer FFmpeg HW context wiring until
+    // Start() has rebuilt fmtCtx/codecCtx.
+    if (!codecCtx || !fmtCtx) {
+        if (!recordingRequested) {
+            DLL_Log(
+                "[VideoEncoder] EnsureDevice: device-only init (fmtCtx=%p codecCtx=%p), "
+                "deferring codec prewarm to Start()",
+                (void*)fmtCtx, (void*)codecCtx);
+            return true;
+        }
+
+        DLL_Log("[VideoEncoder] EnsureDevice failed: missing contexts while recording (fmtCtx=%p codecCtx=%p)",
+                (void*)fmtCtx, (void*)codecCtx);
+        return false;
+    }
+
     // Set up FFmpeg HW device context with our D3D11 device (shared for both
     // paths)
     if (!d3d11DeviceCtx) {
@@ -2596,8 +2614,8 @@ void VideoEncoder::Stop() {
     recordingRequested = false;
 
     if (wasRecording) {
-        DLL_Log("[VideoEncoder] Recording stats: input=%lld output=%lld skipped=%lld duplicated=%lld",
-                inputFrameCount, outputFrameCount, skippedFrameCount, duplicatedFrameCount);
+        DLL_Log("[VideoEncoder] Recording stats: input=%lld output=%lld skipped=%lld duplicated=%lld", inputFrameCount,
+                outputFrameCount, skippedFrameCount, duplicatedFrameCount);
     }
 
     if (wasRecording && writerRunning) {
@@ -2955,21 +2973,27 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
         // Compare IUnknown identity (COM identity rule)
         IUnknown* texUnk = nullptr;
         IUnknown* vpDevUnk = nullptr;
-        if (texDev) texDev->QueryInterface(__uuidof(IUnknown), (void**)&texUnk);
+        if (texDev)
+            texDev->QueryInterface(__uuidof(IUnknown), (void**)&texUnk);
 
         // Get device from videoDevice
         ID3D11Device* vpBaseDevice = nullptr;
         if (videoDevice) {
             videoDevice->QueryInterface(__uuidof(ID3D11Device), (void**)&vpBaseDevice);
-            if (vpBaseDevice) vpBaseDevice->QueryInterface(__uuidof(IUnknown), (void**)&vpDevUnk);
+            if (vpBaseDevice)
+                vpBaseDevice->QueryInterface(__uuidof(IUnknown), (void**)&vpDevUnk);
         }
         bool sameDevice = (texUnk && vpDevUnk && texUnk == vpDevUnk);
-        DLL_Log("[VP DEBUG] Texture device=%p VP device=%p IUnknown: tex=%p vp=%p SAME=%s",
-                texDev, vpBaseDevice, texUnk, vpDevUnk, sameDevice ? "YES" : "NO");
-        if (texUnk) texUnk->Release();
-        if (vpDevUnk) vpDevUnk->Release();
-        if (vpBaseDevice) vpBaseDevice->Release();
-        if (texDev) texDev->Release();
+        DLL_Log("[VP DEBUG] Texture device=%p VP device=%p IUnknown: tex=%p vp=%p SAME=%s", texDev, vpBaseDevice,
+                texUnk, vpDevUnk, sameDevice ? "YES" : "NO");
+        if (texUnk)
+            texUnk->Release();
+        if (vpDevUnk)
+            vpDevUnk->Release();
+        if (vpBaseDevice)
+            vpBaseDevice->Release();
+        if (texDev)
+            texDev->Release();
     }
 
     HRESULT hr =

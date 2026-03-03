@@ -1119,6 +1119,10 @@ public:
             DLL_Log("MediaEngine: CreateSharedCaptureTextures - no encoder");
             return false;
         }
+        if (!sharedMem) {
+            DLL_Log("MediaEngine: CreateSharedCaptureTextures - sharedMem is null");
+            return false;
+        }
 
         // IMPORTANT: Set encoder dimensions and LUID from the parameters before
         // EnsureDevice Otherwise EnsureDevice fails because width/height are still

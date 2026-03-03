@@ -24,8 +24,8 @@
 #include "../common/performance_metrics.h"
 #include "../common/streamline_compat.h"
 
-#include "../common/freeze_watchdog.h"
 #include "../common/fps_limiter.h"
+#include "../common/freeze_watchdog.h"
 #include "../common/perf_logger.h"
 #include "../common/swapchain_wrapper.h"
 #include "../common/system_metrics.h"
@@ -1222,6 +1222,36 @@ static void ApplyPrerenderLimitDX12(float limit) {
     if (g_PrerenderFences.empty())
         return;
 
+    constexpr DWORD kPrerenderWaitTimeoutMs = 8;
+    static std::atomic<int> s_prerenderWarnLogs{0};
+    auto waitFenceBounded = [&](ID3D12Fence* waitFence, HANDLE waitEvent, uint64_t waitValue) -> bool {
+        if (!waitFence || !waitEvent)
+            return false;
+        if (waitFence->GetCompletedValue() >= waitValue)
+            return true;
+
+        HRESULT setHr = waitFence->SetEventOnCompletion(waitValue, waitEvent);
+        if (FAILED(setHr)) {
+            if (s_prerenderWarnLogs.fetch_add(1, std::memory_order_relaxed) < 20) {
+                HookLog("DX12: Prerender SetEventOnCompletion failed hr=0x%08X value=%llu", setHr, waitValue);
+            }
+            return false;
+        }
+
+        DWORD waitResult = WaitForSingleObject(waitEvent, kPrerenderWaitTimeoutMs);
+        if (waitResult == WAIT_OBJECT_0)
+            return true;
+
+        if (s_prerenderWarnLogs.fetch_add(1, std::memory_order_relaxed) < 20) {
+            if (waitResult == WAIT_TIMEOUT) {
+                HookLog("DX12: Prerender wait timed out (%lums) value=%llu", kPrerenderWaitTimeoutMs, waitValue);
+            } else {
+                HookLog("DX12: Prerender wait failed result=%lu value=%llu", waitResult, waitValue);
+            }
+        }
+        return false;
+    };
+
     size_t idx = g_PrerenderFrameIndex % g_PrerenderFences.size();
     ID3D12Fence* fence = g_PrerenderFences[idx];
     HANDLE event = g_PrerenderEvents[idx];
@@ -1229,9 +1259,11 @@ static void ApplyPrerenderLimitDX12(float limit) {
     if (limit == 0.0f) {
         // Strict Serial: Signal and immediately wait
         uint64_t value = g_PrerenderFrameIndex + 1;
-        ctx.queue->Signal(fence, value);
-        if (SUCCEEDED(fence->SetEventOnCompletion(value, event))) {
-            WaitForSingleObject(event, INFINITE);
+        HRESULT signalHr = ctx.queue->Signal(fence, value);
+        if (SUCCEEDED(signalHr)) {
+            waitFenceBounded(fence, event, value);
+        } else if (s_prerenderWarnLogs.fetch_add(1, std::memory_order_relaxed) < 20) {
+            HookLog("DX12: Prerender signal failed hr=0x%08X value=%llu", signalHr, value);
         }
     } else {
         // Buffered Limit: For fractional limits (e.g., 0.5), we use Buffered 1
@@ -1242,7 +1274,14 @@ static void ApplyPrerenderLimitDX12(float limit) {
 
         // Signal current frame
         uint64_t signalValue = g_PrerenderFrameIndex + 1;
-        ctx.queue->Signal(fence, signalValue);
+        HRESULT signalHr = ctx.queue->Signal(fence, signalValue);
+        if (FAILED(signalHr)) {
+            if (s_prerenderWarnLogs.fetch_add(1, std::memory_order_relaxed) < 20) {
+                HookLog("DX12: Prerender signal failed hr=0x%08X value=%llu", signalHr, signalValue);
+            }
+            g_PrerenderFrameIndex++;
+            return;
+        }
 
         // Wait on N frames ago
         if (g_PrerenderFrameIndex >= (uint64_t)lookback) {
@@ -1252,9 +1291,7 @@ static void ApplyPrerenderLimitDX12(float limit) {
             uint64_t waitValue = (g_PrerenderFrameIndex - lookback) + 1;
 
             if (waitFence->GetCompletedValue() < waitValue) {
-                if (SUCCEEDED(waitFence->SetEventOnCompletion(waitValue, waitEvent))) {
-                    WaitForSingleObject(waitEvent, INFINITE);
-                }
+                waitFenceBounded(waitFence, waitEvent, waitValue);
             }
         }
     }
@@ -1275,8 +1312,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     auto perfGuard = ce::make_scope_guard([&]() {
         if (PerfLogger::Get().IsEnabled()) {
             perfMetrics.totalUs = static_cast<int32_t>((PerfLogger::GetQpcUs() - perfMetrics.qpcUs));
-            perfMetrics.fpsLimitWaitUs =
-                static_cast<int32_t>(g_SharedFpsLimiter.GetLastWaitUs());
+            perfMetrics.fpsLimitWaitUs = static_cast<int32_t>(g_SharedFpsLimiter.GetLastWaitUs());
             PerfLogger::Get().LogFrame(perfMetrics);
         }
     });
@@ -1296,6 +1332,37 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         HookLog("DX12: ProcessFrame - early return (null=%d, inResize=%d)", !pSwapChain, inResize);
         return;
     }
+
+    HWND swapchainWindow = nullptr;
+    DXGI_SWAP_CHAIN_DESC focusDesc = {};
+    if (SUCCEEDED(pSwapChain->GetDesc(&focusDesc))) {
+        swapchainWindow = focusDesc.OutputWindow;
+    }
+
+    bool isForegroundWindow = true;
+    if (swapchainWindow) {
+        HWND foregroundWindow = GetForegroundWindow();
+        isForegroundWindow = (foregroundWindow == swapchainWindow) && !IsIconic(swapchainWindow);
+    }
+
+    static bool s_lastForegroundState = true;
+    static DWORD s_lastForegroundResumeTick = 0;
+    if (!isForegroundWindow) {
+        s_lastForegroundState = false;
+    } else if (!s_lastForegroundState) {
+        s_lastForegroundState = true;
+        s_lastForegroundResumeTick = GetTickCount();
+        HookLog("DX12: Foreground resumed, delaying overlay work briefly for swapchain stabilization");
+    }
+
+    bool fgResumeCooldown = false;
+    if (isForegroundWindow && s_lastForegroundResumeTick != 0) {
+        DWORD elapsedSinceResumeMs = GetTickCount() - s_lastForegroundResumeTick;
+        fgResumeCooldown = (elapsedSinceResumeMs < 250);
+    }
+    // Keep overlay active even when the window is unfocused; only pause briefly
+    // right after focus returns to let DXGI/driver state settle.
+    const bool allowOverlayWork = !fgResumeCooldown;
 
     // CRITICAL: Detect swapchain change (e.g., FSR FG activation creates new
     // swapchain) and force re-initialization to work with the new swapchain
@@ -1483,7 +1550,13 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     }
     // Remove delay - install overlay immediately (Strange Brigade compatibility)
     static std::atomic<int> s_framesBeforeInit{0};
-    if (!g_State.overlayInit) {
+    if (!g_State.overlayInit && !allowOverlayWork) {
+        static std::atomic<int> s_overlayDeferredLogs{0};
+        if (s_overlayDeferredLogs.fetch_add(1, std::memory_order_relaxed) < 10) {
+            HookLog("DX12: ProcessFrame - deferring overlay init (foreground=%d, cooldown=%d)", isForegroundWindow,
+                    fgResumeCooldown ? 1 : 0);
+        }
+    } else if (!g_State.overlayInit) {
         int frames = ++s_framesBeforeInit;
         if (frames < 1) {
             return;
@@ -1593,7 +1666,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     UINT currentBackBufferIdx = 0;
     bool hasCurrentBackBufferIdx = false;
 
-    if (g_State.overlayInit && g_State.syncInit) {
+    if (g_State.overlayInit && g_State.syncInit && allowOverlayWork) {
         // Single log on first successful overlay render
         static int s_firstOverlayLogged = 0;
         if (s_firstOverlayLogged == 0) {
@@ -1688,9 +1761,14 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
 
                                 // Signal fence after overlay commands complete
                                 if (g_State.fence) {
-                                    g_State.currentFenceValue++;
-                                    g_State.fenceValues[idx] = g_State.currentFenceValue;
-                                    targetQueue->Signal(g_State.fence, g_State.currentFenceValue);
+                                    UINT64 nextFenceValue = g_State.currentFenceValue + 1;
+                                    HRESULT signalHr = targetQueue->Signal(g_State.fence, nextFenceValue);
+                                    if (SUCCEEDED(signalHr)) {
+                                        g_State.currentFenceValue = nextFenceValue;
+                                        g_State.fenceValues[idx] = nextFenceValue;
+                                    } else {
+                                        HookLog("DX12: Overlay fence signal failed hr=0x%08X", signalHr);
+                                    }
                                 }
                             }
 
@@ -1911,6 +1989,26 @@ void HandleDX12ResizeEnd() {
 // External function for swapchain wrapper to wait for overlay completion before
 // Present
 extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12CommandQueue* pGameQueue) {
+#if defined(_M_IX86)
+    // x86 driver stacks have shown sporadic hangs in queue Wait() during
+    // focus/alt-tab transitions. Keep this strictly non-blocking.
+    (void)pGameQueue;
+    if (!g_State.fence)
+        return;
+
+    UINT64 fenceValueToWait = g_State.currentFenceValue;
+    if (fenceValueToWait == 0)
+        return;
+
+    if (g_State.fence->GetCompletedValue() >= fenceValueToWait)
+        return;
+
+    if (g_State.fenceEvent && SUCCEEDED(g_State.fence->SetEventOnCompletion(fenceValueToWait, g_State.fenceEvent))) {
+        WaitForSingleObject(g_State.fenceEvent, 0);
+    }
+    return;
+#else
+
     // PERFORMANCE FIX: Use GPU-side wait instead of CPU-side wait
     // CPU-side wait stalls the game's CPU thread, causing GPU underutilization
     // GPU-side wait allows the CPU to continue while GPU handles synchronization
@@ -1942,6 +2040,7 @@ extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12Comman
     if (++s_successCount <= 5) {
         HookLog("DX12: WaitForOverlay - GPU wait queued for fence value %llu", fenceValueToWait);
     }
+#endif
 }
 
 static const GUID SKID_D3D12SwapChainBufferBitmap = {

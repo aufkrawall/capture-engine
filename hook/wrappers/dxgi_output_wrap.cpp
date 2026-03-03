@@ -82,6 +82,7 @@ void CWrapDXGIOutput::PromoteInterfaces() {
 HRESULT STDMETHODCALLTYPE CWrapDXGIOutput::QueryInterface(REFIID riid, void** ppvObj) {
     if (!ppvObj)
         return E_POINTER;
+    *ppvObj = nullptr;
 
     // Return ourselves for DXGI Output interfaces
     if (riid == IID_IUnknown || riid == IID_IDXGIObject || riid == IID_IDXGIOutput) {

@@ -351,22 +351,20 @@ public:
             // Periodic stats logging (every 120 frames)
             if (localFrameCount_ % 120 == 0) {
                 // Average FPS over the interval
-                int64_t intervalUs =
-                    ((now.QuadPart - localStatsIntervalStart_) * 1000000) / qpcFrequency;
-                double avgFps =
-                    (intervalUs > 0) ? (localStatsFrameCount_ * 1000000.0 / intervalUs) : 0;
+                int64_t intervalUs = ((now.QuadPart - localStatsIntervalStart_) * 1000000) / qpcFrequency;
+                double avgFps = (intervalUs > 0) ? (localStatsFrameCount_ * 1000000.0 / intervalUs) : 0;
                 // Instantaneous FPS (last frame only)
                 double instantFps = 0;
                 if (lastApplyEntryQpc_ != 0) {
-                    int64_t interFrameUs =
-                        ((now.QuadPart - lastApplyEntryQpc_) * 1000000) / qpcFrequency;
+                    int64_t interFrameUs = ((now.QuadPart - lastApplyEntryQpc_) * 1000000) / qpcFrequency;
                     instantFps = (interFrameUs > 0) ? (1000000.0 / interFrameUs) : 0;
                 }
                 TraceLog("Apply: LOCAL stats frames=%u waitUs=%lld avgFps=%.1f instFps=%.1f target=%d",
                          localFrameCount_, waitUs, avgFps, instantFps, targetFps);
-                HookLog("FPS Limiter: Local capture sync (%u frames): lastWait=%lldus avgFps=%.1f "
-                        "instFps=%.1f target=%d",
-                        localFrameCount_, waitUs, avgFps, instantFps, targetFps);
+                HookLog(
+                    "FPS Limiter: Local capture sync (%u frames): lastWait=%lldus avgFps=%.1f "
+                    "instFps=%.1f target=%d",
+                    localFrameCount_, waitUs, avgFps, instantFps, targetFps);
                 localStatsIntervalStart_ = now.QuadPart;
                 localStatsFrameCount_ = 0;
             }
@@ -571,12 +569,12 @@ private:
     int targetLogCount_ = 0;
     int lastTargetFps_ = 0;
     bool lastUsedCaptureSync_ = false;
-    int64_t lastApplyReturnQpc = 0;  // QPC tick when Apply() last returned from wait (dedup guard)
-    int64_t localTargetTime_ = 0;    // QPC target for local capture sync cadence
-    uint32_t localFrameCount_ = 0;   // Frame count for local capture sync stats
-    int64_t localStatsIntervalStart_ = 0;  // QPC start of current stats interval
-    uint32_t localStatsFrameCount_ = 0;    // Frame count within current stats interval
-    int64_t lastActualWaitUs_ = 0;         // Last Apply() actual wait time in μs
+    int64_t lastApplyReturnQpc = 0;                // QPC tick when Apply() last returned from wait (dedup guard)
+    int64_t localTargetTime_ = 0;                  // QPC target for local capture sync cadence
+    uint32_t localFrameCount_ = 0;                 // Frame count for local capture sync stats
+    int64_t localStatsIntervalStart_ = 0;          // QPC start of current stats interval
+    uint32_t localStatsFrameCount_ = 0;            // Frame count within current stats interval
+    int64_t lastActualWaitUs_ = 0;                 // Last Apply() actual wait time in μs
     std::atomic<bool> isActivelyLimiting_{false};  // True when limiter is actively pacing frames
     uint32_t applyWaitCount_ = 0;
     uint32_t applySuccessCount_ = 0;

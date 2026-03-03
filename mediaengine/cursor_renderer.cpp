@@ -1,5 +1,6 @@
 #include "cursor_renderer.h"
 #include <cstring>
+#include <new>
 #include "mediaengine.h"
 
 // Simple vertex/pixel shader for alpha-blended cursor overlay
@@ -293,8 +294,18 @@ bool CursorRenderer::ExtractCursorBitmap(HICON icon, uint8_t** outBitmap, uint32
         }
 
         uint32_t size = bmpColor.bmHeight * bmpColor.bmWidthBytes;
-        colorData = new uint8_t[size];
-        GetBitmapBits(ii.hbmColor, size, colorData);
+        colorData = new (std::nothrow) uint8_t[size];
+        if (!colorData) {
+            DeleteObject(ii.hbmColor);
+            DeleteObject(ii.hbmMask);
+            return false;
+        }
+        if (GetBitmapBits(ii.hbmColor, size, colorData) != static_cast<LONG>(size)) {
+            delete[] colorData;
+            DeleteObject(ii.hbmColor);
+            DeleteObject(ii.hbmMask);
+            return false;
+        }
 
         *outWidth = bmpColor.bmWidth;
         *outHeight = bmpColor.bmHeight;
@@ -302,8 +313,20 @@ bool CursorRenderer::ExtractCursorBitmap(HICON icon, uint8_t** outBitmap, uint32
         // Check if we need to apply mask for alpha
         if (ii.hbmMask && GetObject(ii.hbmMask, sizeof(bmpMask), &bmpMask) != 0) {
             uint32_t maskSize = bmpMask.bmHeight * bmpMask.bmWidthBytes;
-            maskData = new uint8_t[maskSize];
-            GetBitmapBits(ii.hbmMask, maskSize, maskData);
+            maskData = new (std::nothrow) uint8_t[maskSize];
+            if (!maskData) {
+                delete[] colorData;
+                DeleteObject(ii.hbmColor);
+                DeleteObject(ii.hbmMask);
+                return false;
+            }
+            if (GetBitmapBits(ii.hbmMask, maskSize, maskData) != static_cast<LONG>(maskSize)) {
+                delete[] maskData;
+                delete[] colorData;
+                DeleteObject(ii.hbmColor);
+                DeleteObject(ii.hbmMask);
+                return false;
+            }
 
             // Check if color bitmap has alpha
             bool hasAlpha = false;
@@ -343,11 +366,30 @@ bool CursorRenderer::ExtractCursorBitmap(HICON icon, uint8_t** outBitmap, uint32
         *outWidth = bmpMask.bmWidth;
         *outHeight = bmpMask.bmHeight / 2;
         uint32_t pixels = (*outWidth) * (*outHeight);
-        *outBitmap = new uint8_t[pixels * 4];
+        *outBitmap = new (std::nothrow) uint8_t[pixels * 4];
+        if (!*outBitmap) {
+            DeleteObject(ii.hbmColor);
+            DeleteObject(ii.hbmMask);
+            return false;
+        }
 
         uint32_t maskSize = bmpMask.bmHeight * bmpMask.bmWidthBytes;
-        maskData = new uint8_t[maskSize];
-        GetBitmapBits(ii.hbmMask, maskSize, maskData);
+        maskData = new (std::nothrow) uint8_t[maskSize];
+        if (!maskData) {
+            delete[] *outBitmap;
+            *outBitmap = nullptr;
+            DeleteObject(ii.hbmColor);
+            DeleteObject(ii.hbmMask);
+            return false;
+        }
+        if (GetBitmapBits(ii.hbmMask, maskSize, maskData) != static_cast<LONG>(maskSize)) {
+            delete[] maskData;
+            delete[] *outBitmap;
+            *outBitmap = nullptr;
+            DeleteObject(ii.hbmColor);
+            DeleteObject(ii.hbmMask);
+            return false;
+        }
 
         uint32_t bottomOffset = bmpMask.bmWidthBytes * (*outHeight);
 
