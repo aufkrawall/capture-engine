@@ -758,6 +758,22 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         g_SharedFpsLimiter.Apply();
     }
 
+    // When the FPS limiter is active, override SyncInterval to 0 for precise frame pacing.
+    // SyncInterval=0 on FLIP model means "present at next vblank, non-blocking if queue not full."
+    // This is tear-free (frames still sync to vblank) but avoids the vsync blocking that
+    // would absorb the limiter's delay. The present queue drains at display refresh rate;
+    // since our limiter targets <= display rate, the queue never saturates and Present
+    // returns immediately, letting the limiter control the actual frame cadence.
+    // We do NOT use DXGI_PRESENT_ALLOW_TEARING — it bypasses vblank sync entirely and
+    // causes visible tearing with DirectFlip (even in windowed/borderless mode).
+    if (g_SharedFpsLimiter.IsActivelyLimiting() && !m_State.isFullscreen) {
+        static int s_syncLog = 0;
+        if (s_syncLog++ < 30) {
+            WrapperLog("Present: Limiter active, SyncInterval %u->0 (vblank-synced, tear-free)", SyncInterval);
+        }
+        SyncInterval = 0;
+    }
+
     HRESULT hr = pRealCached->Present(SyncInterval, Flags);
     return hr;
 }
@@ -773,7 +789,14 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::SetFullscreenState(BOOL Fullscreen
     IDXGISwapChain* pReal = GetRealSafe();
     if (!pReal)
         return DXGI_ERROR_INVALID_CALL;
-    return pReal->SetFullscreenState(Fullscreen, pTarget);
+    HRESULT hr = pReal->SetFullscreenState(Fullscreen, pTarget);
+    if (SUCCEEDED(hr)) {
+        // Update cached fullscreen state immediately so ALLOW_TEARING gate in
+        // Present/Present1 uses accurate state even before ResizeBuffers is called.
+        m_State.isFullscreen = (Fullscreen != FALSE);
+        WrapperLog("SetFullscreenState: Fullscreen=%d hr=0x%08X", Fullscreen ? 1 : 0, hr);
+    }
+    return hr;
 }
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetFullscreenState(BOOL* pFullscreen, IDXGIOutput** ppTarget) {
     IDXGISwapChain* pReal = GetRealSafe();
@@ -869,8 +892,11 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers(UINT BufferCount, UI
 
     WrapperLog("ResizeBuffers: calling DX12_OnSwapchainResizeEnd");
     DX12_OnSwapchainResizeEnd();
-    if (SUCCEEDED(hr))
+    if (SUCCEEDED(hr)) {
         m_OverlayResourcesValid = true;
+        // Refresh cached state (resolution, format, fullscreen, ALLOW_TEARING)
+        DetectSwapChainState();
+    }
     s_ResizeInProgress.store(false, std::memory_order_release);
     if (s_resizeDepth.fetch_sub(1) == 1) {
         s_resizeThreadId.store(0);
@@ -1003,6 +1029,15 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     if (g_IPC) {
         g_SharedFpsLimiter.SetIPCClient(g_IPC);
         g_SharedFpsLimiter.Apply();
+    }
+
+    // Same SyncInterval=0 override as Present() — tear-free via vblank sync.
+    if (g_SharedFpsLimiter.IsActivelyLimiting() && !m_State.isFullscreen) {
+        static int s_syncLog1 = 0;
+        if (s_syncLog1++ < 30) {
+            WrapperLog("Present1: Limiter active, SyncInterval %u->0 (vblank-synced, tear-free)", SyncInterval);
+        }
+        SyncInterval = 0;
     }
 
     HRESULT hr = pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters);
@@ -1154,8 +1189,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers1(UINT BufferCount, U
     }
 
     DX12_OnSwapchainResizeEnd();
-    if (SUCCEEDED(hr))
+    if (SUCCEEDED(hr)) {
         m_OverlayResourcesValid = true;
+        DetectSwapChainState();
+    }
     s_ResizeInProgress.store(false, std::memory_order_release);
     if (s_resize1Depth.fetch_sub(1) == 1) {
         s_resize1ThreadId.store(0);

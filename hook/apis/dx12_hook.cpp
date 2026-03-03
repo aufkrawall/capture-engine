@@ -25,6 +25,7 @@
 #include "../common/streamline_compat.h"
 
 #include "../common/freeze_watchdog.h"
+#include "../common/fps_limiter.h"
 #include "../common/perf_logger.h"
 #include "../common/swapchain_wrapper.h"
 #include "../common/system_metrics.h"
@@ -1274,6 +1275,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     auto perfGuard = ce::make_scope_guard([&]() {
         if (PerfLogger::Get().IsEnabled()) {
             perfMetrics.totalUs = static_cast<int32_t>((PerfLogger::GetQpcUs() - perfMetrics.qpcUs));
+            perfMetrics.fpsLimitWaitUs =
+                static_cast<int32_t>(g_SharedFpsLimiter.GetLastWaitUs());
             PerfLogger::Get().LogFrame(perfMetrics);
         }
     });

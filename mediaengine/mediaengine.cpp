@@ -545,21 +545,21 @@ public:
             audioSyncPending.store(false);
         }
 
-        // Calculate Real Elapsed Time
-        int64_t realElapsedMs =
-            std::chrono::duration_cast<std::chrono::milliseconds>(now - this->recordingStartTime).count();
+        // Calculate Real Elapsed Time (microseconds for precise PTS)
+        int64_t realElapsedUs =
+            std::chrono::duration_cast<std::chrono::microseconds>(now - this->recordingStartTime).count();
 
-        // Update Atomic Member (for Audio Thread / Pull)
-        this->videoElapsedMs.store(realElapsedMs);
+        // Update Atomic Member (for Audio Thread / Pull) — keep ms for audio sync
+        this->videoElapsedMs.store(realElapsedUs / 1000);
 
         // Maybe we want preview later? For now, recording only.
         videoEnc->SetAdapterLUID(luidLow, luidHigh);
-        bool res = videoEnc->EncodeFrame((HANDLE)handle, (HANDLE)fenceHandle, fenceVal, realElapsedMs, sourcePid, width,
+        bool res = videoEnc->EncodeFrame((HANDLE)handle, (HANDLE)fenceHandle, fenceVal, realElapsedUs, sourcePid, width,
                                          height, format, isHDR, isShmem, shmemSlot);
         (void)res;  // Avoid unused warn if not logging success here
 
         // Track last video frame timestamp for audio trimming
-        lastVideoFrameMs = realElapsedMs;
+        lastVideoFrameMs = realElapsedUs / 1000;
 
         // Update audio stream index for all sources
         for (size_t i = 0; i < audioSources.size(); i++) {
@@ -632,17 +632,17 @@ public:
             audioSyncPending.store(false);
         }
 
-        // Calculate Real Elapsed Time
-        int64_t realElapsedMs =
-            std::chrono::duration_cast<std::chrono::milliseconds>(now - this->recordingStartTime).count();
+        // Calculate Real Elapsed Time (microseconds for precise PTS)
+        int64_t realElapsedUs =
+            std::chrono::duration_cast<std::chrono::microseconds>(now - this->recordingStartTime).count();
 
-        // Update Atomic Member (for Audio Thread / Pull)
-        this->videoElapsedMs.store(realElapsedMs);
+        // Update Atomic Member (for Audio Thread / Pull) — keep ms for audio sync
+        this->videoElapsedMs.store(realElapsedUs / 1000);
 
-        videoEnc->EncodeFrameD3D11((ID3D11Texture2D*)texture, realElapsedMs, width, height);
+        videoEnc->EncodeFrameD3D11((ID3D11Texture2D*)texture, realElapsedUs, width, height);
 
         // Track last video frame timestamp for audio trimming
-        lastVideoFrameMs = realElapsedMs;
+        lastVideoFrameMs = realElapsedUs / 1000;
 
         // Update audio stream index for all sources
         for (size_t i = 0; i < audioSources.size(); i++) {
@@ -1611,7 +1611,7 @@ MEDIAENGINE_API ID3D11Device* MediaEngine_GetD3D11Device() {
     D3D_FEATURE_LEVEL featureLevels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
     D3D_FEATURE_LEVEL featureLevel;
 
-    UINT createFlags = D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
+    UINT createFlags = D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT;
 #ifdef _DEBUG
     createFlags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif

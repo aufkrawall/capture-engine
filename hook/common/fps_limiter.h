@@ -39,6 +39,16 @@ public:
     bool IsEventsInitialized() const {
         return eventsInitialized;
     }
+    // Get last actual wait time in microseconds (for perf logging)
+    int64_t GetLastWaitUs() const {
+        return lastActualWaitUs_;
+    }
+    // Returns true when the limiter is actively pacing frames (capture_sync or general).
+    // Used by Present hooks to disable vsync (SyncInterval=0) so that the limiter
+    // has full control over frame pacing — vsync's vblank wait absorbs our delay otherwise.
+    bool IsActivelyLimiting() const {
+        return isActivelyLimiting_.load(std::memory_order_relaxed);
+    }
 
     // Ensure 1ms timer resolution is enabled
     void EnsureTimerResolution() {
@@ -90,7 +100,13 @@ public:
 
                 if (SetWaitableTimer(highResTimer, &dueTime, 0, NULL, NULL, FALSE)) {
                     WaitForSingleObject(highResTimer, (DWORD)(diffUs / 1000 + 5));
-                    return true;
+                    // Fall through to spin-wait for sub-μs precision trim
+                    QueryPerformanceCounter(&now);
+                    diff = targetTick - now.QuadPart;
+                    diffUs = (diff * 1000000) / qpcFrequency;
+                    if (diff <= 0)
+                        return true;
+                    // Remaining time handled by spin-wait below
                 }
             }
         }
@@ -99,7 +115,8 @@ public:
         // - If > 2ms remaining, use Sleep(1) for power efficiency
         // - If 0.5ms - 2ms, use SwitchToThread() or Sleep(0)
         // - If < 0.5ms, spin-wait for precision
-        while (diffUs > 0) {
+        // Exit when QPC ticks reach target (not when diffUs rounds to 0)
+        while (diff > 0) {
             if (diffUs > 10000) {  // > 10ms
                 Sleep(1);
             } else if (diffUs > 2000) {  // 2ms - 10ms
@@ -122,7 +139,7 @@ public:
 
     // Direct trace log for debugging — bypasses all log infrastructure
     void TraceLog(const char* fmt, ...) {
-        if (traceLogCount_ >= 30)
+        if (traceLogCount_ >= 200)
             return;
         traceLogCount_++;
         // Resolve absolute path from DLL location
@@ -187,10 +204,19 @@ public:
         }
         LARGE_INTEGER nowQpc;
         QueryPerformanceCounter(&nowQpc);
-        const int64_t kDedupTicks = qpcFrequency / 500;  // 2ms
-        if (lastApplyReturnQpc != 0 && (nowQpc.QuadPart - lastApplyReturnQpc) < kDedupTicks) {
-            applyDedupCount_++;
-            return;
+
+        // Dedup guard: DXVK fires Present+PresentEx per render frame. The second call
+        // arrives within ~1ms. Skip if called within 2ms of the previous return.
+        // BUT: when the FPS limiter is active and ALLOW_TEARING disables vsync,
+        // frames arrive very fast (1-2ms) and dedup would skip legitimate frames.
+        // Only apply dedup when the limiter is NOT active.
+        if (!isActivelyLimiting_.load(std::memory_order_relaxed)) {
+            const int64_t kDedupTicks = qpcFrequency / 500;  // 2ms
+            if (lastApplyReturnQpc != 0 && (nowQpc.QuadPart - lastApplyReturnQpc) < kDedupTicks) {
+                applyDedupCount_++;
+                lastActualWaitUs_ = 0;
+                return;
+            }
         }
 
         bool isRecording = shm->runtimeState.isRecording;
@@ -234,6 +260,8 @@ public:
         }
 
         if (!limiterActive) {
+            isActivelyLimiting_.store(false, std::memory_order_relaxed);
+            lastActualWaitUs_ = 0;
             // Release timer resolution if we had it set
             if (timerResolutionSet) {
                 timeEndPeriod(1);
@@ -243,6 +271,8 @@ public:
             if (localTargetTime_ != 0) {
                 localTargetTime_ = 0;
                 localFrameCount_ = 0;
+                localStatsIntervalStart_ = 0;
+                localStatsFrameCount_ = 0;
             }
             if (!loggedInactive_) {
                 TraceLog("Apply: INACTIVE rec=%d capSync=%d genEn=%d genFps=%d capFps=%d vfr=%d", isRecording ? 1 : 0,
@@ -272,6 +302,7 @@ public:
 
         // Ensure 1ms timer resolution when limiter is active
         EnsureTimerResolution();
+        isActivelyLimiting_.store(true, std::memory_order_relaxed);
 
         if (targetFps <= 0)
             targetFps = 60;
@@ -290,12 +321,19 @@ public:
                 // First frame: start cadence one interval from now
                 localTargetTime_ = now.QuadPart + intervalTicks;
                 localFrameCount_ = 0;
+                localStatsIntervalStart_ = now.QuadPart;
+                localStatsFrameCount_ = 0;
             }
 
             // Wait until the target time
             int64_t waitTicks = localTargetTime_ - now.QuadPart;
             int64_t waitUs = (waitTicks > 0) ? (waitTicks * 1000000 / qpcFrequency) : 0;
+            LARGE_INTEGER beforeWait;
+            QueryPerformanceCounter(&beforeWait);
             SmartWait(localTargetTime_);
+            LARGE_INTEGER afterWait;
+            QueryPerformanceCounter(&afterWait);
+            lastActualWaitUs_ = ((afterWait.QuadPart - beforeWait.QuadPart) * 1000000) / qpcFrequency;
 
             // Advance target by fixed interval (preserves absolute cadence)
             localTargetTime_ += intervalTicks;
@@ -306,18 +344,31 @@ public:
                 localTargetTime_ = now.QuadPart + intervalTicks;
             }
 
-            // Periodic stats logging
+            // Track stats
             localFrameCount_++;
+            localStatsFrameCount_++;
+
+            // Periodic stats logging (every 120 frames)
             if (localFrameCount_ % 120 == 0) {
-                // Measure actual inter-frame interval
+                // Average FPS over the interval
+                int64_t intervalUs =
+                    ((now.QuadPart - localStatsIntervalStart_) * 1000000) / qpcFrequency;
+                double avgFps =
+                    (intervalUs > 0) ? (localStatsFrameCount_ * 1000000.0 / intervalUs) : 0;
+                // Instantaneous FPS (last frame only)
+                double instantFps = 0;
                 if (lastApplyEntryQpc_ != 0) {
-                    int64_t interFrameUs = ((now.QuadPart - lastApplyEntryQpc_) * 1000000) / qpcFrequency;
-                    double measuredFps = (interFrameUs > 0) ? (1000000.0 / interFrameUs) : 0;
-                    TraceLog("Apply: LOCAL stats frames=%u waitUs=%lld measFps=%.1f target=%d", localFrameCount_,
-                             waitUs, measuredFps, targetFps);
-                    HookLog("FPS Limiter: Local capture sync (%u frames): lastWait=%lldus measFps=%.1f target=%d",
-                            localFrameCount_, waitUs, measuredFps, targetFps);
+                    int64_t interFrameUs =
+                        ((now.QuadPart - lastApplyEntryQpc_) * 1000000) / qpcFrequency;
+                    instantFps = (interFrameUs > 0) ? (1000000.0 / interFrameUs) : 0;
                 }
+                TraceLog("Apply: LOCAL stats frames=%u waitUs=%lld avgFps=%.1f instFps=%.1f target=%d",
+                         localFrameCount_, waitUs, avgFps, instantFps, targetFps);
+                HookLog("FPS Limiter: Local capture sync (%u frames): lastWait=%lldus avgFps=%.1f "
+                        "instFps=%.1f target=%d",
+                        localFrameCount_, waitUs, avgFps, instantFps, targetFps);
+                localStatsIntervalStart_ = now.QuadPart;
+                localStatsFrameCount_ = 0;
             }
             lastApplyEntryQpc_ = now.QuadPart;
 
@@ -493,8 +544,11 @@ public:
         lastTargetFps_ = 0;
         lastUsedCaptureSync_ = false;
         lastApplyReturnQpc = 0;
+        isActivelyLimiting_.store(false, std::memory_order_relaxed);
         localTargetTime_ = 0;
         localFrameCount_ = 0;
+        localStatsIntervalStart_ = 0;
+        localStatsFrameCount_ = 0;
     }
 
 private:
@@ -520,6 +574,10 @@ private:
     int64_t lastApplyReturnQpc = 0;  // QPC tick when Apply() last returned from wait (dedup guard)
     int64_t localTargetTime_ = 0;    // QPC target for local capture sync cadence
     uint32_t localFrameCount_ = 0;   // Frame count for local capture sync stats
+    int64_t localStatsIntervalStart_ = 0;  // QPC start of current stats interval
+    uint32_t localStatsFrameCount_ = 0;    // Frame count within current stats interval
+    int64_t lastActualWaitUs_ = 0;         // Last Apply() actual wait time in μs
+    std::atomic<bool> isActivelyLimiting_{false};  // True when limiter is actively pacing frames
     uint32_t applyWaitCount_ = 0;
     uint32_t applySuccessCount_ = 0;
     int64_t lastApplyEntryQpc_ = 0;

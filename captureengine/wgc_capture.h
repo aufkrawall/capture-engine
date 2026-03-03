@@ -93,6 +93,13 @@ public:
     // Get last GPU copy time in microseconds (for profiling)
     int64_t GetLastCopyTimeUs() const;
 
+    // Throttle capture rate to avoid wasting GPU bandwidth on excess frames.
+    // Set to target recording FPS. 0 disables throttle.
+    void SetTargetFps(uint32_t fps);
+
+    // Get count of frames skipped by throttle (for profiling)
+    uint32_t GetSkippedFrameCount() const;
+
 private:
     class Impl;  // PIMPL to hide WinRT dependencies
     std::unique_ptr<Impl> impl_;

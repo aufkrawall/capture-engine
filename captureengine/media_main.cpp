@@ -29,7 +29,7 @@ static std::atomic<bool> g_Recording{false};
 static std::atomic<bool> g_EncoderRunning{false};
 static std::atomic<bool> g_IsEncoderBottlenecked{false};
 
-static FrameQueue g_FrameQueue(16);
+static FrameQueue g_FrameQueue(8);
 static std::thread g_EncoderThread;
 static QueuedFrame g_LastFrame;
 static bool g_HasLastFrame = false;
@@ -369,9 +369,10 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             uint32_t totalDropped = g_WgcDroppedFrames.load(std::memory_order_relaxed) - totalDroppedAtStart;
             int64_t copyUs = g_WgcCap->GetLastCopyTimeUs();
             int64_t encodeUs = MediaEngine_GetLastFrameEncodeTimeUs();
+            uint32_t skipped = g_WgcCap->GetSkippedFrameCount();
 
-            LogInfo("[WGC Perf] FPS: %u | Queue: %u | Dropped: %u | Copy: %lldus | Encode: %lldus",
-                    framesThisSecond, (uint32_t)g_FrameQueue.Size(), totalDropped, copyUs, encodeUs);
+            LogInfo("[WGC Perf] FPS: %u | Queue: %u | Dropped: %u | Skipped: %u | Copy: %lldus | Encode: %lldus",
+                    framesThisSecond, (uint32_t)g_FrameQueue.Size(), totalDropped, skipped, copyUs, encodeUs);
 
             lastCallbackCount = currentCount;
             lastDiagTime = now;
@@ -462,7 +463,25 @@ void EncoderThreadFunc(const AppConfig& config) {
         }
 
         QueuedFrame frame;
-        bool popped = g_FrameQueue.Pop(frame, 0);
+        bool popped = false;
+
+        if (g_UseScreenGrab) {
+            // WGC/screengrab: drain queue and take newest frame.
+            // Reduces latency from ~56ms (queue depth 8) to 0-7ms
+            // while producing identical content selection (same Bresenham pattern).
+            QueuedFrame temp;
+            while (g_FrameQueue.Pop(temp, 0)) {
+                if (popped && !frame.isInjectMode && frame.texture) {
+                    frame.texture->Release();
+                }
+                frame = temp;
+                popped = true;
+            }
+        } else {
+            // Inject: pop one frame (queue depth stays 0-2 since
+            // inject pacing matches encoder rate).
+            popped = g_FrameQueue.Pop(frame, 0);
+        }
 
         QueuedFrame* frameToProcess = nullptr;
         bool isDuplicate = false;
@@ -615,6 +634,15 @@ void StartRecording(const AppConfig& config) {
 
         g_WgcCap->StartCapture();
         g_WgcCap->ResetStats();
+        // Throttle at 2× target FPS to filter WGC duplicate frames
+        // (DWM delivers at 2× display Hz) while ensuring enough unique
+        // frames for any display Hz / game FPS combination.
+        // E.g., 120fps target → 240fps throttle (4.17ms min interval).
+        // This ensures:
+        // - 60Hz display: captures all 60 unique fps
+        // - 143Hz: captures all 143 unique fps (skips 143 dups)
+        // - 240Hz: captures all 240 unique fps (skips 240 dups)
+        g_WgcCap->SetTargetFps(config.video.fps * 2);
         g_WgcDroppedFrames.store(0, std::memory_order_relaxed);
 
         g_WgcCaptureShutdown = false;
@@ -848,15 +876,18 @@ int MediaProcessMain(const AppConfig& config) {
         // Create shared capture textures immediately so Vulkan layer doesn't timeout
         // waiting for them. The textures will be created with current dimensions
         // and resized if needed when SetDimensions is called later.
-        uint32_t width = g_pSharedMem->GetWidth();
-        uint32_t height = g_pSharedMem->GetHeight();
-        uint32_t format = g_pSharedMem->GetFormat();
-        if (width > 0 && height > 0 && !g_pSharedMem->encoderTextures.ready.load(std::memory_order_acquire)) {
-            LogInfo("[Media] Creating shared capture textures early: %dx%d format=%d", width, height, format);
-            if (MediaEngine_CreateSharedCaptureTextures(width, height, format, g_pSharedMem)) {
-                LogInfo("[Media] Shared capture textures created successfully");
-            } else {
-                LogWarn("[Media] Failed to create shared capture textures early - will retry on first frame");
+        // Skip if screengrab mode - encoder will use WGC's shared device instead.
+        if (!g_UseScreenGrab) {
+            uint32_t width = g_pSharedMem->GetWidth();
+            uint32_t height = g_pSharedMem->GetHeight();
+            uint32_t format = g_pSharedMem->GetFormat();
+            if (width > 0 && height > 0 && !g_pSharedMem->encoderTextures.ready.load(std::memory_order_acquire)) {
+                LogInfo("[Media] Creating shared capture textures early: %dx%d format=%d", width, height, format);
+                if (MediaEngine_CreateSharedCaptureTextures(width, height, format, g_pSharedMem)) {
+                    LogInfo("[Media] Shared capture textures created successfully");
+                } else {
+                    LogWarn("[Media] Failed to create shared capture textures early - will retry on first frame");
+                }
             }
         }
 
@@ -927,10 +958,77 @@ int MediaProcessMain(const AppConfig& config) {
     int64_t recordingStartTime = 0;
 
     while (g_Running) {
+        // WGC window detection must run BEFORE resolution polling/texture creation.
+        // CreateSharedCaptureTextures sets the encoder's LUID device, which conflicts
+        // with WGC's shared device. By scanning first, g_UseScreenGrab is set correctly
+        // and we skip the LUID-based texture creation for WGC games.
+        if (g_pSharedMem && !config.wgcWindowTitles.empty() && !g_UseScreenGrab) {
+            static DWORD lastEarlyWgcScan = 0;
+            DWORD now = GetTickCount();
+            if (now - lastEarlyWgcScan > 500) {
+                lastEarlyWgcScan = now;
+
+                struct WgcSearchContext {
+                    const std::vector<std::string>* targets;
+                    HWND result;
+                };
+                WgcSearchContext ctx = {&config.wgcWindowTitles, NULL};
+                EnumWindows(
+                    [](HWND hwnd, LPARAM lParam) -> BOOL {
+                        WgcSearchContext* context = (WgcSearchContext*)lParam;
+                        if (!IsWindowVisible(hwnd))
+                            return TRUE;
+                        if (GetWindow(hwnd, GW_OWNER) != 0)
+                            return TRUE;
+
+                        char title[256];
+                        GetWindowTextA(hwnd, title, sizeof(title));
+                        std::string titleStr = title;
+                        std::transform(titleStr.begin(), titleStr.end(), titleStr.begin(), ::tolower);
+
+                        for (const auto& target : *context->targets) {
+                            std::string targetLower = target;
+                            std::transform(targetLower.begin(), targetLower.end(), targetLower.begin(), ::tolower);
+
+                            DWORD pid = 0;
+                            GetWindowThreadProcessId(hwnd, &pid);
+                            if (pid != 0) {
+                                HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+                                if (hProcess) {
+                                    char exePath[MAX_PATH];
+                                    DWORD size = MAX_PATH;
+                                    if (QueryFullProcessImageNameA(hProcess, 0, exePath, &size)) {
+                                        std::string procName = exePath;
+                                        auto pos = procName.find_last_of("\\/");
+                                        if (pos != std::string::npos)
+                                            procName = procName.substr(pos + 1);
+                                        std::transform(procName.begin(), procName.end(), procName.begin(), ::tolower);
+                                        if (procName == targetLower) {
+                                            context->result = hwnd;
+                                            CloseHandle(hProcess);
+                                            return FALSE;
+                                        }
+                                    }
+                                    CloseHandle(hProcess);
+                                }
+                            }
+                        }
+                        return TRUE;
+                    },
+                    (LPARAM)&ctx);
+
+                if (ctx.result) {
+                    LogInfo("[Media] WGC early scan: Found matching window. Setting screengrab mode.");
+                    g_UseScreenGrab = true;
+                }
+            }
+        }
+
         // Poll for resolution availability and create encoder textures early.
         // The Vulkan layer sets resolution when it creates the swapchain, then waits
         // for encoder KMT textures. We must create them ASAP to avoid timeout.
-        if (g_pSharedMem && !g_pSharedMem->encoderTextures.kmtReady.load(std::memory_order_acquire)) {
+        // Skip when using screengrab (WGC) - the encoder should use the shared device.
+        if (g_pSharedMem && !g_UseScreenGrab && !g_pSharedMem->encoderTextures.kmtReady.load(std::memory_order_acquire)) {
             uint32_t w = g_pSharedMem->GetWidth();
             uint32_t h = g_pSharedMem->GetHeight();
             uint32_t f = g_pSharedMem->GetFormat();
@@ -1205,6 +1303,7 @@ int MediaProcessMain(const AppConfig& config) {
 
                     g_WgcCap->StartCapture();
                     g_WgcCap->ResetStats();
+                    g_WgcCap->SetTargetFps(config.video.fps * 2);
                     g_WgcDroppedFrames.store(0, std::memory_order_relaxed);
 
                     g_WgcCaptureShutdown = false;

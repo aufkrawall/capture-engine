@@ -221,6 +221,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChain(IUnknown* pDevice, 
                 WrapperLog("CreateSwapChain: Overriding BufferCount to %u", modifiedDesc.BufferCount);
             }
         }
+
         pDesc = &modifiedDesc;
     }
 
@@ -319,6 +320,7 @@ CWrapDXGIFactory2::CreateSwapChainForHwnd(IUnknown* pDevice, HWND hWnd, const DX
                 WrapperLog("CreateSwapChainForHwnd: Overriding BufferCount to %u", modifiedDesc.BufferCount);
             }
         }
+
         pDesc = &modifiedDesc;
     }
 
@@ -380,6 +382,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForCoreWindow(IUnkno
                 WrapperLog("CreateSwapChainForCoreWindow: Overriding BufferCount to %u", modifiedDesc.BufferCount);
             }
         }
+
         pDesc = &modifiedDesc;
     }
 

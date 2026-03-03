@@ -1330,6 +1330,10 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
             return false;
         }
 
+        // Log actual stream time_base after muxer init (MKV may override)
+        DLL_Log("[VideoEncoder] Stream time_base after write_header: %d/%d (codec: %d/%d)", stream->time_base.num,
+                stream->time_base.den, codecCtx->time_base.num, codecCtx->time_base.den);
+
         // Force header to hit disk immediately. This prevents 0KB files when
         // subsequent writes fail and makes I/O errors surface at the true failure
         // point.
@@ -1900,30 +1904,27 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     d3d11Frame->data[0] = (uint8_t*)nv12Tex;
     d3d11Frame->data[1] = 0;  // index
 
-    // Calculate relative PTS (start from 0)
+    // Calculate relative PTS (start from 0) — timestamp is in microseconds
     if (startPts < 0) {
         startPts = timestamp;
-        DLL_Log("[VideoEncoder] Recording started at PTS %lld", startPts.load());
+        DLL_Log("[VideoEncoder] Recording started at PTS %lld us", startPts.load());
     }
 
     int64_t targetPts = 0;
     if (savedConfig.useVFR && startPts >= 0) {
-        // VFR: PTS based on actual capture timestamp (microseconds)
-        // timestamp is MS, startPts is MS. Diff is MS.
-        // time_base is 1us (1/1000000). So we need to convert MS diff to us.
-        targetPts = (timestamp - startPts) * 1000;
+        // VFR: PTS in microseconds, matches time_base 1/1000000
+        targetPts = timestamp - startPts;
     } else {
         // CFR: derive PTS from real elapsed time to avoid playback speed drift
-        // when delivered frame cadence differs from target FPS.
         int fps = (codecCtx && codecCtx->framerate.num > 0) ? codecCtx->framerate.num : savedConfig.fps;
         if (fps <= 0) {
             fps = 60;
         }
-        int64_t elapsedMs = timestamp - startPts;
-        if (elapsedMs < 0) {
-            elapsedMs = 0;
+        int64_t elapsedUs = timestamp - startPts;
+        if (elapsedUs < 0) {
+            elapsedUs = 0;
         }
-        targetPts = av_rescale(elapsedMs, fps, 1000);
+        targetPts = av_rescale(elapsedUs, fps, 1000000);
     }
 
     // 5. Encode (Direct D3D11 Frame) - with proper packet draining
@@ -2122,6 +2123,8 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     if (!recordingRequested)
         return false;
 
+    inputFrameCount++;
+
     // Use captured frame dimensions if not yet set
     if (width == 0 || height == 0) {
         width = (int)frameWidth;
@@ -2283,28 +2286,27 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     d3d11Frame->data[0] = (uint8_t*)nv12Tex;
     d3d11Frame->data[1] = 0;
 
-    // Calculate PTS based on elapsed time (VFR support)
-    // pts is in milliseconds (from DxgiCapture/WGC)
+    // Calculate PTS — pts is in microseconds
     if (startPts < 0) {
         startPts = pts;
-        DLL_Log("[VideoEncoder] Framegrab recording started at PTS %lld", startPts.load());
+        DLL_Log("[VideoEncoder] Framegrab recording started at PTS %lld us", startPts.load());
     }
 
     int64_t targetPts = 0;
-    int64_t elapsedMs = pts - startPts;
-    if (elapsedMs < 0)
-        elapsedMs = 0;
+    int64_t elapsedUs = pts - startPts;
+    if (elapsedUs < 0)
+        elapsedUs = 0;
 
     if (savedConfig.useVFR) {
-        // VFR codec time base is 1/1000000.
-        targetPts = elapsedMs * 1000;
+        // VFR: PTS in microseconds, matches time_base 1/1000000
+        targetPts = elapsedUs;
     } else {
-        // CFR codec time base is 1/fps.
+        // CFR: derive frame index from elapsed time
         int fps = 60;  // Default
         if (codecCtx && codecCtx->framerate.num > 0) {
             fps = codecCtx->framerate.num;
         }
-        targetPts = av_rescale(elapsedMs, fps, 1000);
+        targetPts = av_rescale(elapsedUs, fps, 1000000);
     }
 
     // Encode
@@ -2408,6 +2410,9 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
 
     if (success) {
         success = sendFrame(d3d11Frame);
+        if (success) {
+            outputFrameCount++;
+        }
     }
 
     if (!success) {
@@ -2589,6 +2594,11 @@ void VideoEncoder::CleanupResources() {
 void VideoEncoder::Stop() {
     bool wasRecording = recordingRequested;
     recordingRequested = false;
+
+    if (wasRecording) {
+        DLL_Log("[VideoEncoder] Recording stats: input=%lld output=%lld skipped=%lld duplicated=%lld",
+                inputFrameCount, outputFrameCount, skippedFrameCount, duplicatedFrameCount);
+    }
 
     if (wasRecording && writerRunning) {
         DLL_Log("[VideoEncoder] Stop: Signaling finalize (queueBytes=%zu)...", currentQueueBytes.load());
@@ -2935,8 +2945,32 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
     inputViewDesc.Texture2D.MipSlice = 0;
 
     ID3D11VideoProcessorInputView* localInputView = nullptr;
-    // ID3D11Texture2D *inputTexture = bgraTexture; // Use source directly by
-    // default
+
+    // Debug: Compare texture device vs VP device on first call
+    static bool deviceCompared = false;
+    if (!deviceCompared) {
+        deviceCompared = true;
+        ID3D11Device* texDev = nullptr;
+        bgraTexture->GetDevice(&texDev);
+        // Compare IUnknown identity (COM identity rule)
+        IUnknown* texUnk = nullptr;
+        IUnknown* vpDevUnk = nullptr;
+        if (texDev) texDev->QueryInterface(__uuidof(IUnknown), (void**)&texUnk);
+
+        // Get device from videoDevice
+        ID3D11Device* vpBaseDevice = nullptr;
+        if (videoDevice) {
+            videoDevice->QueryInterface(__uuidof(ID3D11Device), (void**)&vpBaseDevice);
+            if (vpBaseDevice) vpBaseDevice->QueryInterface(__uuidof(IUnknown), (void**)&vpDevUnk);
+        }
+        bool sameDevice = (texUnk && vpDevUnk && texUnk == vpDevUnk);
+        DLL_Log("[VP DEBUG] Texture device=%p VP device=%p IUnknown: tex=%p vp=%p SAME=%s",
+                texDev, vpBaseDevice, texUnk, vpDevUnk, sameDevice ? "YES" : "NO");
+        if (texUnk) texUnk->Release();
+        if (vpDevUnk) vpDevUnk->Release();
+        if (vpBaseDevice) vpBaseDevice->Release();
+        if (texDev) texDev->Release();
+    }
 
     HRESULT hr =
         videoDevice->CreateVideoProcessorInputView(bgraTexture, videoProcessorEnum, &inputViewDesc, &localInputView);
@@ -3462,6 +3496,8 @@ bool VideoEncoder::EncodeFrameCuda(HANDLE sharedHandle, uint64_t fenceValue, int
     if (!cudaInterop)
         return false;
 
+    inputFrameCount++;
+
     if (!fileOpened) {
         DLL_Log("[VideoEncoder] Opening Output File: %s (CUDA)", outputFilename.c_str());
         if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
@@ -3516,26 +3552,27 @@ bool VideoEncoder::EncodeFrameCuda(HANDLE sharedHandle, uint64_t fenceValue, int
     cudaFrame->linesize[0] = (int)nv12Pitch;
     cudaFrame->linesize[1] = (int)nv12Pitch;
 
-    // Calculate PTS
+    // Calculate PTS — pts is in microseconds
     if (startPts < 0) {
         startPts = pts;
-        DLL_Log("[VideoEncoder] Recording started at PTS %lld (CUDA)", startPts.load());
+        DLL_Log("[VideoEncoder] Recording started at PTS %lld us (CUDA)", startPts.load());
     }
 
     int64_t targetPts = 0;
-    int64_t relativePts_ms = pts - startPts;
-    if (relativePts_ms < 0) {
-        relativePts_ms = 0;
+    int64_t elapsedUs = pts - startPts;
+    if (elapsedUs < 0) {
+        elapsedUs = 0;
     }
 
     if (savedConfig.useVFR) {
-        targetPts = relativePts_ms * 1000;
+        // VFR: PTS in microseconds, matches time_base 1/1000000
+        targetPts = elapsedUs;
     } else {
         int fps = (codecCtx && codecCtx->framerate.num > 0) ? codecCtx->framerate.num : savedConfig.fps;
         if (fps <= 0) {
             fps = 60;
         }
-        targetPts = av_rescale(relativePts_ms, fps, 1000);
+        targetPts = av_rescale(elapsedUs, fps, 1000000);
     }
 
     // Encode
@@ -3613,6 +3650,9 @@ bool VideoEncoder::EncodeFrameCuda(HANDLE sharedHandle, uint64_t fenceValue, int
 
     if (success) {
         success = sendFrame(cudaFrame);
+        if (success) {
+            outputFrameCount++;
+        }
     }
 
     av_packet_free(&pkt);

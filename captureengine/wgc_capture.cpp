@@ -99,6 +99,11 @@ public:
     std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t)> frameCallback_;
     std::atomic<uint32_t> callbackFrameCount_{0};
 
+    // Frame throttle: skip CopyResource if we're ahead of target FPS
+    int64_t targetIntervalQPC_ = 0;  // Minimum QPC ticks between captured frames (0 = no throttle)
+    int64_t lastCapturedQPC_ = 0;    // QPC of last frame we actually copied
+    std::atomic<uint32_t> skippedFrameCount_{0};
+
     // Perf tracking
     std::atomic<int64_t> lastCopyUs_{0};
 
@@ -122,7 +127,11 @@ public:
         copyDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
         copyDesc.SampleDesc.Count = 1;
         copyDesc.Usage = D3D11_USAGE_DEFAULT;
-        copyDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+        // No bind flags: compatible with both CopyResource target and
+        // Video Processor input views. BIND_SHADER_RESOURCE/RENDER_TARGET
+        // cause VP CreateVideoProcessorInputView to return E_INVALIDARG,
+        // forcing an extra staging copy per frame.
+        copyDesc.BindFlags = 0;
 
         for (int i = 0; i < TEXTURE_POOL_SIZE; i++) {
             HRESULT hr = d3dDevice_->CreateTexture2D(&copyDesc, nullptr, &texturePool_[i]);
@@ -142,6 +151,20 @@ public:
         auto winrtFrame = sender.TryGetNextFrame();
         if (!winrtFrame) {
             return;
+        }
+
+        // Throttle: skip GPU copy if we're capturing faster than target FPS.
+        // Always drain TryGetNextFrame above to return buffers to the pool.
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        if (targetIntervalQPC_ > 0 && lastCapturedQPC_ > 0) {
+            int64_t elapsed = now.QuadPart - lastCapturedQPC_;
+            if (elapsed < targetIntervalQPC_) {
+                // Too soon - skip this frame to reduce GPU bandwidth
+                skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+                winrtFrame.Close();
+                return;
+            }
         }
 
         auto surface = winrtFrame.Surface();
@@ -165,29 +188,27 @@ public:
                     // D3D11 Multithread protection is enabled on the device, so
                     // we skip the application-level mutex to avoid blocking the
                     // WGC callback while the encoder holds the lock for BGRA→NV12.
+                    // No Flush() needed: D3D11 implicit resource tracking ensures
+                    // the GPU completes CopyResource before reusing source/dest
+                    // buffers through the same device. The 6-texture pool provides
+                    // sufficient lag so dest slot N isn't reused before its copy
+                    // completes.
                     d3dContext_->CopyResource(target, texture);
-                    // Flush ensures the GPU copy completes before we close the
-                    // WGC frame (returning its buffer to the pool). Without this,
-                    // WGC can reuse the source buffer while the GPU is still
-                    // reading from it, causing pool exhaustion at high refresh
-                    // rates.
-                    d3dContext_->Flush();
 
                     QueryPerformanceCounter(&copyEnd);
 
                     // Track copy time for profiling
-                    LARGE_INTEGER freq;
-                    QueryPerformanceFrequency(&freq);
-                    int64_t copyUs = ((copyEnd.QuadPart - copyStart.QuadPart) * 1000000) / freq.QuadPart;
+                    int64_t copyUs = 0;
+                    if (qpcFreq_ > 0) {
+                        copyUs = ((copyEnd.QuadPart - copyStart.QuadPart) * 1000000) / qpcFreq_;
+                    }
                     lastCopyUs_.store(copyUs, std::memory_order_relaxed);
 
-                    LARGE_INTEGER t;
-                    QueryPerformanceCounter(&t);
-                    int64_t timestampQPC = t.QuadPart;
+                    lastCapturedQPC_ = copyEnd.QuadPart;
 
                     if (frameCallback_) {
                         target->AddRef();
-                        frameCallback_(target, desc.Width, desc.Height, timestampQPC);
+                        frameCallback_(target, desc.Width, desc.Height, copyEnd.QuadPart);
                     }
 
                     callbackFrameCount_.fetch_add(1, std::memory_order_relaxed);
@@ -258,6 +279,11 @@ public:
     bool StartCapture(uint32_t& width, uint32_t& height, bool captureCursor) {
         if (!item_ || !winrtDevice_)
             return false;
+
+        // Cache QPC frequency for timestamp and throttle calculations
+        LARGE_INTEGER freq;
+        QueryPerformanceFrequency(&freq);
+        qpcFreq_ = freq.QuadPart;
 
         auto size = item_.Size();
         width = size.Width;
@@ -637,6 +663,27 @@ uint32_t WGCCapture::GetCallbackFrameCount() const {
 int64_t WGCCapture::GetLastCopyTimeUs() const {
 #if HAS_WGC
     return impl_ ? impl_->lastCopyUs_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+void WGCCapture::SetTargetFps(uint32_t fps) {
+#if HAS_WGC
+    if (impl_ && fps > 0 && impl_->qpcFreq_ > 0) {
+        impl_->targetIntervalQPC_ = impl_->qpcFreq_ / fps;
+        LogInfo("[WGC] Frame throttle set to %u fps (interval=%lld QPC ticks)", fps,
+                (long long)impl_->targetIntervalQPC_);
+    } else if (impl_) {
+        impl_->targetIntervalQPC_ = 0;
+        LogInfo("[WGC] Frame throttle disabled");
+    }
+#endif
+}
+
+uint32_t WGCCapture::GetSkippedFrameCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->skippedFrameCount_.load(std::memory_order_relaxed) : 0;
 #else
     return 0;
 #endif

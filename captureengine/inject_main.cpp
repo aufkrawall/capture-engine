@@ -314,10 +314,17 @@ int InjectProcessMain(const AppConfig& config) {
     LogInfo("[Inject] Shared memory created and initialized");
 
     // Initialize injector (WMI based)
-    // Skip entirely when capture_method=screengrab to prevent hook DLL injection
-    // into game processes. WMI callbacks in the constructor would inject
-    // independently of the Update() check, so we must not create the object.
-    bool allowInjection = (config.captureMethod != "screengrab" && config.captureMethod != "framegrab");
+    // In screengrab/desktop_dup mode we still allow explicit overlay targets, but
+    // restrict WMI injection to overlay_whitelist entries only.
+    const bool screenGrabMode = (config.captureMethod == "screengrab" || config.captureMethod == "framegrab" ||
+                                 config.captureMethod == "desktop_dup");
+    const bool overlayOnlyInjection = screenGrabMode && !config.overlayWhitelist.empty();
+    bool allowInjection = !screenGrabMode || overlayOnlyInjection;
+    AppConfig injectorConfig = config;
+    if (overlayOnlyInjection) {
+        injectorConfig.gameWhitelist.clear();
+        LogInfo("[Inject] Screengrab mode + overlay_whitelist: enabling overlay-only injection");
+    }
     std::shared_ptr<InjectionManager> injector;
 
     if (allowInjection) {
@@ -325,7 +332,7 @@ int InjectProcessMain(const AppConfig& config) {
         // enable_shared_from_this. Stack allocation causes shared_from_this() to
         // throw bad_weak_ptr in WMI callback, which silently prevents ALL process
         // injection.
-        injector = std::make_shared<InjectionManager>(config);
+        injector = std::make_shared<InjectionManager>(injectorConfig);
 
         // Register callback to reload config on injection
         injector->SetOnInjectCallback([&](const std::string& processName) {
@@ -341,7 +348,8 @@ int InjectProcessMain(const AppConfig& config) {
 
         LogInfo("[Inject] Injection manager initialized");
     } else {
-        LogInfo("[Inject] Injection manager SKIPPED (capture_method=%s)", config.captureMethod.c_str());
+        LogInfo("[Inject] Injection manager SKIPPED (capture_method=%s, no overlay whitelist targets)",
+                config.captureMethod.c_str());
     }
 
     LogInfo("[Inject] Process started (PID: %d)", GetCurrentProcessId());

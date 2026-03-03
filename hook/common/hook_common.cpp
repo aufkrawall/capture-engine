@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <mutex>
 #include <unordered_map>
+#include "fps_limiter.h"
 #include "hook_context.h"
 #include "performance_metrics.h"
 #include "system_metrics.h"
@@ -645,6 +646,16 @@ VSyncOverride GetVSyncOverride() {
 
 // Process VSync override on Present parameters
 void ProcessVSyncOverride(UINT& SyncInterval, UINT& Flags) {
+    // When the FPS limiter is actively pacing frames, disable vsync so the limiter
+    // controls frame timing. With FLIP model, SyncInterval=0 alone still throttles
+    // at vblank rate; the wrapper path adds DXGI_PRESENT_ALLOW_TEARING for swap chains
+    // it created with that flag. Here we only set SyncInterval=0 since we don't know
+    // if the swap chain supports ALLOW_TEARING.
+    if (g_SharedFpsLimiter.IsActivelyLimiting()) {
+        SyncInterval = 0;
+        return;
+    }
+
     VSyncOverride override = GetVSyncOverride();
 
     // DXGI spec: ALLOW_TEARING is only valid with SyncInterval == 0.
