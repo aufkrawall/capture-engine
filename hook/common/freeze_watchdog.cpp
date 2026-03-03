@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <iomanip>
 #include <sstream>
+#include "dxgi_shared.h"
 #include "hook_common.h"
 
 FreezeWatchdog g_RenderWatchdog;
@@ -128,7 +129,11 @@ void FreezeWatchdog::Stop() {
 }
 
 void FreezeWatchdog::Heartbeat() {
-    lastHeartbeat_.store(GetCurrentMicros());
+    DWORD heartbeatTid = GetCurrentThreadId();
+    if (monitoredThreadId_.load(std::memory_order_acquire) != heartbeatTid) {
+        monitoredThreadId_.store(heartbeatTid, std::memory_order_release);
+    }
+    lastHeartbeat_.store(GetCurrentMicros(), std::memory_order_release);
 }
 
 void FreezeWatchdog::SetFreezeCallback(FreezeCallback callback) {
@@ -151,10 +156,21 @@ bool FreezeWatchdog::IsFrozen() const {
         return false;
     }
 
+    bool inPresentCall = DXGIShared::g_SharedState.presentInFlightDepth.load(std::memory_order_acquire) > 0;
+
     // Alt+Tab/minimized games can legitimately stop presenting for a while.
-    // Only treat missing heartbeats as a freeze while the game is foreground.
+    // Suppress background freezes only when no Present is in flight. If a
+    // Present call is already in progress and heartbeats stop, it's likely a
+    // real driver/render hang and should still produce a dump.
     if (!IsProcessInForeground(processId_)) {
-        return false;
+        if (!inPresentCall) {
+            return false;
+        }
+        double inFlightTimeout = timeoutSeconds_.load();
+        if (inFlightTimeout > 15.0) {
+            inFlightTimeout = 15.0;
+        }
+        return elapsed > inFlightTimeout;
     }
 
     return elapsed > timeoutSeconds_.load();

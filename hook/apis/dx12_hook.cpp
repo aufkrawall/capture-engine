@@ -948,12 +948,16 @@ void CreateRTVs(ID3D12Device* device, IDXGISwapChain3* swapChain, int bufferCoun
     g_State.bufferCount = bufferCount;
     g_State.cachedSwapChain = swapChain;
     g_State.rtvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    g_State.backBuffers.clear();
+    g_State.backBuffers.reserve(bufferCount);
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
     for (int i = 0; i < bufferCount; i++) {
         ID3D12Resource* bb = nullptr;
         if (SUCCEEDED(swapChain->GetBuffer(i, IID_PPV_ARGS(&bb))) && bb) {
             device->CreateRenderTargetView(bb, nullptr, rtvHandle);
-            bb->Release();
+            g_State.backBuffers.push_back(bb);
+        } else {
+            g_State.backBuffers.push_back(nullptr);
         }
         rtvHandle.ptr += g_State.rtvDescriptorSize;
     }
@@ -1333,48 +1337,39 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         return;
     }
 
-    HWND swapchainWindow = nullptr;
-    DXGI_SWAP_CHAIN_DESC focusDesc = {};
-    if (SUCCEEDED(pSwapChain->GetDesc(&focusDesc))) {
-        swapchainWindow = focusDesc.OutputWindow;
+    DXGI_SWAP_CHAIN_DESC frameDesc = {};
+    if (FAILED(pSwapChain->GetDesc(&frameDesc))) {
+        HookLog("DX12: ProcessFrame - failed to get swapchain desc (precheck)");
+        return;
     }
 
-    bool isForegroundWindow = true;
-    if (swapchainWindow) {
-        HWND foregroundWindow = GetForegroundWindow();
-        isForegroundWindow = (foregroundWindow == swapchainWindow) && !IsIconic(swapchainWindow);
+    const bool zeroSizedSwapchain = (frameDesc.BufferDesc.Width == 0 || frameDesc.BufferDesc.Height == 0);
+    const bool iconicWindow = frameDesc.OutputWindow && IsIconic(frameDesc.OutputWindow);
+    // When the window loses focus (but is not minimized), the GPU can be throttled by the driver.
+    // Track this so we can CPU-signal our fence immediately after queueing the GPU Signal, which
+    // prevents DXGI's internal Present() flush from blocking on an unexecuted fence signal.
+    const bool notForeground = frameDesc.OutputWindow && (GetForegroundWindow() != frameDesc.OutputWindow);
+    static std::atomic<bool> s_wasNotForeground{false};
+    if (notForeground && !s_wasNotForeground.exchange(true, std::memory_order_relaxed)) {
+        HookLog("DX12: ProcessFrame: window lost foreground (hwnd=%p fg=%p), CPU fence protection active",
+                frameDesc.OutputWindow, GetForegroundWindow());
+    } else if (!notForeground && s_wasNotForeground.exchange(false, std::memory_order_relaxed)) {
+        HookLog("DX12: ProcessFrame: window regained foreground");
     }
-
-    static bool s_lastForegroundState = true;
-    static DWORD s_lastForegroundResumeTick = 0;
-    if (!isForegroundWindow) {
-        s_lastForegroundState = false;
-    } else if (!s_lastForegroundState) {
-        s_lastForegroundState = true;
-        s_lastForegroundResumeTick = GetTickCount();
-        HookLog("DX12: Foreground resumed, delaying overlay work briefly for swapchain stabilization");
+    const bool suspendOverlayWork = zeroSizedSwapchain || iconicWindow;
+    static bool s_swapchainSuspended = false;
+    if (suspendOverlayWork) {
+        if (!s_swapchainSuspended) {
+            s_swapchainSuspended = true;
+            g_State.overlayInit = false;
+            CleanupRTVs();
+            HookLog("DX12: ProcessFrame - suspending overlay (w=%u h=%u iconic=%d)", frameDesc.BufferDesc.Width,
+                    frameDesc.BufferDesc.Height, iconicWindow ? 1 : 0);
+        }
+    } else if (s_swapchainSuspended) {
+        s_swapchainSuspended = false;
+        HookLog("DX12: ProcessFrame - resuming overlay after drawable swapchain restored");
     }
-
-    bool fgResumeCooldown = false;
-    if (isForegroundWindow && s_lastForegroundResumeTick != 0) {
-        DWORD elapsedSinceResumeMs = GetTickCount() - s_lastForegroundResumeTick;
-        fgResumeCooldown = (elapsedSinceResumeMs < 250);
-    }
-    // Keep overlay active even when the window is unfocused; only pause briefly
-    // right after focus returns to let DXGI/driver state settle.
-    const bool allowOverlayWork = !fgResumeCooldown;
-
-    // CRITICAL: Detect swapchain change (e.g., FSR FG activation creates new
-    // swapchain) and force re-initialization to work with the new swapchain
-    static IDXGISwapChain* s_lastSwapChain = nullptr;
-    if (pSwapChain != s_lastSwapChain && g_State.overlayInit) {
-        HookLog("DX12: Swapchain changed (%p -> %p), forcing re-initialization", s_lastSwapChain, pSwapChain);
-        CleanupOverlay();
-        CleanupRTVs();
-        g_State.overlayInit = false;
-        g_State.syncInit = false;
-    }
-    s_lastSwapChain = pSwapChain;
 
     // CPU Prerender Limit - Apply before any rendering
     float prerenderLimit = GetActivePrerenderLimit();
@@ -1508,22 +1503,30 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             }
         }
 
-        if (g_Device.load() == nullptr || activeDevice != g_Device.load() || pSwapChain != g_LastSwapChain) {
-            if (g_Device.load()) {
+        ID3D12Device* trackedDevice = g_Device.load();
+        bool firstTrackedDevice = (trackedDevice == nullptr);
+        bool deviceChanged = (!firstTrackedDevice && activeDevice != trackedDevice);
+        bool swapchainChanged = (pSwapChain != g_LastSwapChain);
+
+        if (firstTrackedDevice || deviceChanged || swapchainChanged) {
+            if (trackedDevice) {
                 // Only cleanup swapchain-bound resources (RTVs)
                 // Device-level resources (fence, allocators, cmdList) survive swapchain
                 // changes
                 CleanupRTVs();
 
                 g_SharedCaptureD3D12.Reset();
-                // Only release device if it's actually a new device, not just swapchain
-                // change
-                if (activeDevice != g_Device.load()) {
-                    g_Device.load()->Release();
+                if (deviceChanged) {
+                    // Force sync-object reinit only when device actually changes.
+                    // Swapchain-only transitions should keep sync objects alive.
+                    g_State.syncInit = false;
+                    trackedDevice->Release();
                 }
             }
-            g_Device.store(activeDevice);
-            activeDevice->AddRef();
+            if (firstTrackedDevice || deviceChanged) {
+                g_Device.store(activeDevice);
+                activeDevice->AddRef();
+            }
             if (g_LastSwapChain)
                 g_LastSwapChain->Release();
             g_LastSwapChain = pSwapChain;
@@ -1531,7 +1534,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             g_State.overlayInit = false;
             HookLog(
                 "DX12: ProcessFrame - new device/swapchain, overlay reset "
-                "(device-level resources preserved)");
+                "(sync preserved=%d, deviceChanged=%d)",
+                g_State.syncInit ? 1 : 0, deviceChanged ? 1 : 0);
         }
         activeDevice->Release();
         perfMetrics.deviceInitUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - deviceInitStartUs);
@@ -1550,13 +1554,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     }
     // Remove delay - install overlay immediately (Strange Brigade compatibility)
     static std::atomic<int> s_framesBeforeInit{0};
-    if (!g_State.overlayInit && !allowOverlayWork) {
-        static std::atomic<int> s_overlayDeferredLogs{0};
-        if (s_overlayDeferredLogs.fetch_add(1, std::memory_order_relaxed) < 10) {
-            HookLog("DX12: ProcessFrame - deferring overlay init (foreground=%d, cooldown=%d)", isForegroundWindow,
-                    fgResumeCooldown ? 1 : 0);
-        }
-    } else if (!g_State.overlayInit) {
+    if (!suspendOverlayWork && !g_State.overlayInit) {
         int frames = ++s_framesBeforeInit;
         if (frames < 1) {
             return;
@@ -1666,7 +1664,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     UINT currentBackBufferIdx = 0;
     bool hasCurrentBackBufferIdx = false;
 
-    if (g_State.overlayInit && g_State.syncInit && allowOverlayWork) {
+    if (!suspendOverlayWork && g_State.overlayInit && g_State.syncInit) {
         // Single log on first successful overlay render
         static int s_firstOverlayLogged = 0;
         if (s_firstOverlayLogged == 0) {
@@ -1709,12 +1707,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                             bufferIdx = g_State.bufferCount - 1;
                         }
                         ID3D12Resource* bb = nullptr;
-                        bool bbNeedsRelease = false;
                         if (swapchainBufferIdx < g_State.backBuffers.size()) {
                             bb = g_State.backBuffers[swapchainBufferIdx];
-                        }
-                        if (!bb && SUCCEEDED(pSwapChain->GetBuffer(swapchainBufferIdx, IID_PPV_ARGS(&bb)))) {
-                            bbNeedsRelease = true;
                         }
                         if (bb) {
                             // Transition buffer to RENDER_TARGET for overlay rendering
@@ -1755,25 +1749,76 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                             ID3D12CommandQueue* targetQueue = gameQueue;
 
                             if (SUCCEEDED(closeHr) && targetQueue) {
-                                // Allocator is always ready due to large pool - no waiting needed
-                                ID3D12CommandList* lists[] = {list};
-                                targetQueue->ExecuteCommandLists(1, lists);
-
-                                // Signal fence after overlay commands complete
+                                // GPU backpressure check: if the GPU is severely behind on
+                                // processing our overlay commands, skip GPU submission to avoid
+                                // blocking in ExecuteCommandLists when the ring buffer is full
+                                // (which happens when NVIDIA throttles the GPU on focus loss).
+                                // The overlay remains visible — no new frame is displayed while
+                                // the GPU is stalled, so the last presented frame (with overlay)
+                                // stays on screen.
+                                bool gpuBackedUp = false;
                                 if (g_State.fence) {
-                                    UINT64 nextFenceValue = g_State.currentFenceValue + 1;
-                                    HRESULT signalHr = targetQueue->Signal(g_State.fence, nextFenceValue);
-                                    if (SUCCEEDED(signalHr)) {
+                                    UINT64 completed = g_State.fence->GetCompletedValue();
+                                    // Allocator slot still in flight from 16 frames ago
+                                    if (g_State.fenceValues[idx] > 0 &&
+                                        completed < g_State.fenceValues[idx]) {
+                                        gpuBackedUp = true;
+                                    }
+                                    // GPU is 4+ overlay frames behind — definitely throttled
+                                    if (g_State.currentFenceValue > 4 &&
+                                        completed + 4 < g_State.currentFenceValue) {
+                                        gpuBackedUp = true;
+                                    }
+                                }
+
+                                if (gpuBackedUp) {
+                                    // Skip GPU submission. CPU-signal fence so
+                                    // WaitForOverlayCompletion doesn't block.
+                                    static std::atomic<int> s_skipLog{0};
+                                    int n = s_skipLog.fetch_add(1, std::memory_order_relaxed);
+                                    if (n < 5 || n % 300 == 0) {
+                                        UINT64 completed = g_State.fence->GetCompletedValue();
+                                        HookLog("DX12: GPU backed up (completed=%llu, current=%llu, "
+                                                "slot[%d]=%llu) — skipping overlay GPU submission",
+                                                (unsigned long long)completed,
+                                                (unsigned long long)g_State.currentFenceValue,
+                                                idx,
+                                                (unsigned long long)g_State.fenceValues[idx]);
+                                    }
+                                    if (g_State.fence) {
+                                        UINT64 nextFenceValue = g_State.currentFenceValue + 1;
                                         g_State.currentFenceValue = nextFenceValue;
                                         g_State.fenceValues[idx] = nextFenceValue;
-                                    } else {
-                                        HookLog("DX12: Overlay fence signal failed hr=0x%08X", signalHr);
+                                        g_State.fence->Signal(nextFenceValue);
+                                    }
+                                } else {
+                                    ID3D12CommandList* lists[] = {list};
+                                    targetQueue->ExecuteCommandLists(1, lists);
+
+                                    if (g_State.fence) {
+                                        UINT64 nextFenceValue = g_State.currentFenceValue + 1;
+                                        HRESULT signalHr =
+                                            targetQueue->Signal(g_State.fence, nextFenceValue);
+                                        if (SUCCEEDED(signalHr)) {
+                                            g_State.currentFenceValue = nextFenceValue;
+                                            g_State.fenceValues[idx] = nextFenceValue;
+                                        } else {
+                                            HookLog("DX12: Overlay fence signal failed hr=0x%08X",
+                                                    signalHr);
+                                        }
                                     }
                                 }
                             }
-
-                            if (bbNeedsRelease && bb)
-                                bb->Release();
+                        } else {
+                            static std::atomic<int> s_missingBackBufferLogs{0};
+                            if (s_missingBackBufferLogs.fetch_add(1, std::memory_order_relaxed) < 20) {
+                                HookLog(
+                                    "DX12: Missing cached backbuffer idx=%u "
+                                    "(cached=%u), forcing RTV reinit",
+                                    swapchainBufferIdx, static_cast<unsigned int>(g_State.backBuffers.size()));
+                            }
+                            CleanupRTVs();
+                            g_State.overlayInit = false;
                         }
                         sc3->Release();
                     } else {
@@ -2003,8 +2048,10 @@ extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12Comman
     if (g_State.fence->GetCompletedValue() >= fenceValueToWait)
         return;
 
-    if (g_State.fenceEvent && SUCCEEDED(g_State.fence->SetEventOnCompletion(fenceValueToWait, g_State.fenceEvent))) {
-        WaitForSingleObject(g_State.fenceEvent, 0);
+    // Read handle once to avoid a race with CleanupOverlay nulling it after close
+    HANDLE fenceEvent = g_State.fenceEvent;
+    if (fenceEvent && SUCCEEDED(g_State.fence->SetEventOnCompletion(fenceValueToWait, fenceEvent))) {
+        WaitForSingleObject(fenceEvent, 0);
     }
     return;
 #else

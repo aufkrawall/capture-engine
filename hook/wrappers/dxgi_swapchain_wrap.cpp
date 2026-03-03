@@ -608,6 +608,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     g_InWrapperPresent = true;
     auto wrapperPresentGuard = ::ce::make_scope_guard([&] { g_InWrapperPresent = false; });
 
+    DXGIShared::g_SharedState.presentInFlightDepth.fetch_add(1, std::memory_order_acq_rel);
+    auto presentInFlightGuard = ::ce::make_scope_guard(
+        []() { DXGIShared::g_SharedState.presentInFlightDepth.fetch_sub(1, std::memory_order_acq_rel); });
+
     // EXTREME DEBUG: Log entry with full state
     DWORD threadId = GetCurrentThreadId();
     static std::atomic<int> s_presentCallCount{0};
@@ -775,7 +779,40 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         SyncInterval = 0;
     }
 
-    HRESULT hr = pRealCached->Present(SyncInterval, Flags);
+    // When the window is not in the foreground, the GPU can be throttled by the driver.
+    // FLIP model Present() with SyncInterval>0 blocks waiting for the flip queue to drain;
+    // with a throttled GPU, that never happens. Force SyncInterval=0 and add DO_NOT_WAIT
+    // so DXGI returns WAS_STILL_DRAWING immediately instead of spinning for 10-30 seconds.
+    // DXGI_PRESENT_DO_NOT_WAIT = 0x8 (compatible with FLIP_SEQUENTIAL/FLIP_DISCARD only).
+    UINT presentFlags = Flags;
+    if (m_hWnd && !m_State.isFullscreen) {
+        HWND foreground = GetForegroundWindow();
+        if (foreground != m_hWnd) {
+            static std::atomic<int> s_focusLossLog{0};
+            int n = s_focusLossLog.fetch_add(1, std::memory_order_relaxed);
+            if (n == 0 || n % 300 == 0) {
+                WrapperLog(
+                    "Present#%d: Not foreground (fg=%p vs ours=%p), "
+                    "SyncInterval %u->0 + DO_NOT_WAIT (GPU throttle protection)",
+                    callCount, foreground, m_hWnd, SyncInterval);
+            }
+            SyncInterval = 0;
+            // Only add DO_NOT_WAIT when compatible (cannot combine with ALLOW_TEARING or RESTART)
+            if (!(presentFlags & (0x00000200U | 0x00000004U)))  // ALLOW_TEARING | RESTART
+                presentFlags |= 0x00000008U;                    // DO_NOT_WAIT
+        }
+    }
+
+    HRESULT hr = pRealCached->Present(SyncInterval, presentFlags);
+
+    // DXGI_ERROR_WAS_STILL_DRAWING: the previous flip is still pending (GPU throttled).
+    // Drop this frame silently — the overlay remains visible from the last rendered frame.
+    if (hr == (HRESULT)0x887A000A) {  // DXGI_ERROR_WAS_STILL_DRAWING
+        static std::atomic<int> s_dropLog{0};
+        if (s_dropLog.fetch_add(1, std::memory_order_relaxed) < 10)
+            WrapperLog("Present#%d: WAS_STILL_DRAWING — frame dropped (GPU throttled)", callCount);
+        hr = S_OK;
+    }
     return hr;
 }
 

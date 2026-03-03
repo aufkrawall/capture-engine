@@ -89,6 +89,9 @@ public:
             }
 
             if (highResTimer) {
+                // Snapshot handle to a local to prevent TOCTOU race with Shutdown() closing it
+                // between the null check and SetWaitableTimer/WaitForSingleObject.
+                HANDLE localTimer = highResTimer;
                 // Convert to 100ns intervals (negative = relative)
                 // Use double to avoid int64 overflow when diff * 10000000 > INT64_MAX.
                 // At qpcFrequency ~10MHz and diff up to ~200ms, diff*10M can exceed 2^53 in double
@@ -98,8 +101,8 @@ public:
                 dueTime.QuadPart =
                     -static_cast<int64_t>(static_cast<double>(diff) * (10000000.0 / static_cast<double>(qpcFrequency)));
 
-                if (SetWaitableTimer(highResTimer, &dueTime, 0, NULL, NULL, FALSE)) {
-                    WaitForSingleObject(highResTimer, (DWORD)(diffUs / 1000 + 5));
+                if (SetWaitableTimer(localTimer, &dueTime, 0, NULL, NULL, FALSE)) {
+                    WaitForSingleObject(localTimer, (DWORD)(diffUs / 1000 + 5));
                     // Fall through to spin-wait for sub-μs precision trim
                     QueryPerformanceCounter(&now);
                     diff = targetTick - now.QuadPart;

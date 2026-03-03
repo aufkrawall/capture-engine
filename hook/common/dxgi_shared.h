@@ -23,6 +23,7 @@ struct SharedState {
     std::atomic<bool> swapchainInvalid{false};
     std::atomic<bool> fsr4RecreationPending{false};
     std::atomic<int> wrapperResizeDepth{0};
+    std::atomic<uint32_t> presentInFlightDepth{0};
     std::atomic<uint64_t> frameCount{0};
     std::atomic<bool> deviceRemovedFatal{false};
     std::atomic<uint64_t> presentCallCount{0};

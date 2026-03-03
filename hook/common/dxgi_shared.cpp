@@ -252,6 +252,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         return DXGI_ERROR_INVALID_CALL;
     }
 
+    g_SharedState.presentInFlightDepth.fetch_add(1, std::memory_order_acq_rel);
+    auto presentInFlightGuard =
+        ce::make_scope_guard([]() { g_SharedState.presentInFlightDepth.fetch_sub(1, std::memory_order_acq_rel); });
+
     if (IsShuttingDown()) {
         if (IsReadableMemory(pSwapChain, sizeof(void*))) {
             return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
@@ -417,6 +421,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     if (!pSwapChain) {
         return DXGI_ERROR_INVALID_CALL;
     }
+
+    g_SharedState.presentInFlightDepth.fetch_add(1, std::memory_order_acq_rel);
+    auto presentInFlightGuard =
+        ce::make_scope_guard([]() { g_SharedState.presentInFlightDepth.fetch_sub(1, std::memory_order_acq_rel); });
 
     if (IsShuttingDown()) {
         if (IsReadableMemory(pSwapChain, sizeof(void*))) {
