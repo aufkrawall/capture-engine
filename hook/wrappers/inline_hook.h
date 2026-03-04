@@ -33,4 +33,26 @@ bool Remove(void* target);
 // Remove all installed hooks and free trampoline memory.
 void RemoveAll();
 
+// Install a deep hook that fully wraps a function past an external JMP patch.
+// When another component (e.g. Streamline) hooks a function at byte 0 with a
+// JMP and uses a saved trampoline for internal calls (bypassing our normal
+// hook), this patches the function body at the resume offset to redirect ALL
+// callers to wrapperFn — including those using saved trampolines.
+//
+// The wrapperFn must have the exact same calling convention and signature as
+// the target function. It receives all original parameters and should call the
+// returned trampoline to invoke the real function.
+//
+// Requirements: the original bytes [0, resumeOffset) must all be PUSH
+// instructions (standard function prolog). The hook undoes these pushes and
+// redirects to wrapperFn, which calls the original via the returned trampoline.
+//
+// - target: address of the function (must have a JMP at byte 0)
+// - wrapperFn: replacement function with same signature as target
+// Returns trampoline to call original function, or nullptr on failure.
+void* InstallDeepHook(void* target, void* wrapperFn);
+
+// Remove a deep hook installed by InstallDeepHook.
+bool RemoveDeepHook(void* target);
+
 }  // namespace InlineHook

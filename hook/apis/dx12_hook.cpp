@@ -39,6 +39,7 @@
 #include "graphics_hook.h"
 #include "lod_helper.h"
 
+#include "../wrappers/inline_hook.h"
 #include "../wrappers/vtable_hook.h"
 #include "../wrappers/wrapper_base.h"
 #include "dxgi_shared.h"
@@ -535,6 +536,212 @@ typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateSwapChainForHwnd)(IDXGIFactory2*, I
 static PFN_CreateSwapChain oCreateSwapChainGlobal = nullptr;
 static PFN_CreateSwapChainForHwnd oCreateSwapChainForHwndGlobal = nullptr;
 
+// Inline hook trampoline for CreateSwapChainForHwnd (code-level hook in dxgi.dll)
+// This catches ALL calls regardless of which factory vtable is used (including
+// Streamline SL proxy factories that bypass our vtable hooks).
+static PFN_CreateSwapChainForHwnd s_oCreateSCForHwndInline = nullptr;
+
+// Address of the real CreateSwapChainForHwnd in dxgi.dll (for deep hook removal)
+static void* s_realCreateSCForHwndAddr = nullptr;
+
+// Deep hook trampoline for calling the real CreateSwapChainForHwnd
+static PFN_CreateSwapChainForHwnd s_deepHookTrampoline = nullptr;
+
+// HWND → swapchain tracking for diagnostics and E_ACCESSDENIED recovery.
+// We do NOT AddRef tracked swapchains — this avoids extending their lifetime
+// beyond what the game intends, which previously caused UE5 assertion crashes
+// during FG switching (our AddRef kept the old SC alive, holding the HWND,
+// and our forced destruction happened at the wrong time in UE5's lifecycle).
+static std::mutex s_hwndSwapchainMutex;
+static std::map<HWND, std::vector<IDXGISwapChain*>> s_hwndSwapchainMap;
+
+// Track a swapchain's HWND association (called from ProcessFrame and deep hook).
+// NO AddRef — raw pointer tracking only. Pointers may become stale when the
+// game destroys the swapchain, which is fine because we only use them for
+// reactive E_ACCESSDENIED recovery with SEH protection.
+static void TrackSwapchainHwnd(IDXGISwapChain* pSwapChain, HWND hWnd) {
+    if (!hWnd || !pSwapChain)
+        return;
+    std::lock_guard<std::mutex> lock(s_hwndSwapchainMutex);
+    auto& vec = s_hwndSwapchainMap[hWnd];
+    for (auto* sc : vec) {
+        if (sc == pSwapChain)
+            return;  // Already tracked
+    }
+    vec.push_back(pSwapChain);
+}
+
+// Deep hook wrapper for CreateSwapChainForHwnd.
+// Intercepts ALL callers (including Streamline's internal trampoline calls).
+// Uses REACTIVE E_ACCESSDENIED recovery: tries the call first, only intervenes
+// if it fails. This avoids destroying swapchains prematurely (which caused UE5
+// assertion crashes when our proactive pre-check destroyed SCs that UE5's
+// deferred viewport code still referenced).
+static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* pThis, IUnknown* pDevice, HWND hWnd,
+                                                                const DXGI_SWAP_CHAIN_DESC1* pDesc,
+                                                                const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFDesc,
+                                                                IDXGIOutput* pOut, IDXGISwapChain1** ppSC) {
+    if (HookIsShuttingDown()) {
+        if (s_deepHookTrampoline)
+            return s_deepHookTrampoline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
+        return E_FAIL;
+    }
+
+    HookLogImportant("DeepHook: CreateSwapChainForHwnd ENTER factory=%p device=%p hwnd=%p", pThis, pDevice, hWnd);
+
+    // Try the call first — let the game/SL handle SC lifecycle naturally
+    HRESULT hr = s_deepHookTrampoline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
+    HookLogImportant("DeepHook: Trampoline returned hr=0x%08X sc=%p", hr, (ppSC ? *ppSC : nullptr));
+
+    // Reactive recovery: if E_ACCESSDENIED, an old SC still holds the HWND.
+    // Try to force-release tracked SCs (pointers may be stale — use SEH).
+    if (hr == E_ACCESSDENIED && hWnd) {
+        HookLogImportant("DeepHook: E_ACCESSDENIED for HWND=%p — attempting reactive recovery", hWnd);
+
+        std::vector<IDXGISwapChain*> oldSCs;
+        {
+            std::lock_guard<std::mutex> lock(s_hwndSwapchainMutex);
+            auto it = s_hwndSwapchainMap.find(hWnd);
+            if (it != s_hwndSwapchainMap.end()) {
+                oldSCs = std::move(it->second);
+                s_hwndSwapchainMap.erase(it);
+            }
+        }
+
+        if (!oldSCs.empty()) {
+            g_LastSwapChain = nullptr;
+            CleanupOverlay();
+
+            for (auto* oldSC : oldSCs) {
+                // Tracked pointers have no AddRef — validate before use.
+                MEMORY_BASIC_INFORMATION mbi = {};
+                if (!VirtualQuery(oldSC, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT ||
+                    !(mbi.Protect & (PAGE_READWRITE | PAGE_READONLY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) {
+                    HookLogImportant("DeepHook: SC %p is stale (VQ), skipping", oldSC);
+                    continue;
+                }
+                ULONG probeRef = oldSC->AddRef();
+                ULONG currentRef = probeRef;
+                HookLogImportant("DeepHook: Reactive release SC %p refcount=%lu", oldSC, currentRef - 1);
+                for (ULONG i = 0; i < currentRef && i < 200; i++) {
+                    ULONG remaining = oldSC->Release();
+                    if (remaining == 0) {
+                        HookLogImportant("DeepHook: SC %p destroyed after %lu releases", oldSC, i + 1);
+                        break;
+                    }
+                }
+            }
+
+            Sleep(1);
+
+            // Retry
+            hr = s_deepHookTrampoline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
+            HookLogImportant("DeepHook: Retry returned hr=0x%08X sc=%p", hr, (ppSC ? *ppSC : nullptr));
+        } else {
+            HookLogImportant("DeepHook: No tracked SCs for HWND=%p, cannot recover", hWnd);
+        }
+    }
+
+    // Post-track: record the new swapchain for future reactive recovery
+    if (SUCCEEDED(hr) && ppSC && *ppSC && hWnd) {
+        TrackSwapchainHwnd(*ppSC, hWnd);
+        HookLogImportant("DeepHook: Created & tracked swapchain %p for HWND=%p", *ppSC, hWnd);
+    } else if (FAILED(hr)) {
+        HookLogImportant("DeepHook: CreateSwapChainForHwnd FAILED hr=0x%08X hwnd=%p", hr, hWnd);
+    }
+
+    return hr;
+}
+
+// Inline hook detour for CreateSwapChainForHwnd.
+// This code-level hook fires for ALL calls to the real DXGI function,
+// including internal calls by Streamline's DLFG module (linkSwapchainToCmdQueue).
+// When E_ACCESSDENIED occurs (HWND already has a flip-model swapchain), we
+// force-release the old swapchain and retry, preventing the fatal crash during
+// FSR FG → DLSS FG runtime switching.
+static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory2* pThis, IUnknown* pDevice, HWND hWnd,
+                                                                    const DXGI_SWAP_CHAIN_DESC1* pDesc,
+                                                                    const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFDesc,
+                                                                    IDXGIOutput* pOut, IDXGISwapChain1** ppSC) {
+    if (HookIsShuttingDown()) {
+        if (s_oCreateSCForHwndInline)
+            return s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
+        return E_FAIL;
+    }
+
+    HookLogImportant("CreateSwapChainForHwnd INLINE: factory=%p device=%p hwnd=%p", pThis, pDevice, hWnd);
+
+    HRESULT hr = s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
+    HookLogImportant("CreateSwapChainForHwnd INLINE: result hr=0x%08X sc=%p", hr, (ppSC && *ppSC) ? *ppSC : nullptr);
+
+    if (hr == E_ACCESSDENIED && hWnd) {
+        HookLogImportant(
+            "CreateSwapChainForHwnd: E_ACCESSDENIED for HWND=%p — "
+            "attempting FG-switch recovery (force-release old swapchain)",
+            hWnd);
+
+        // Find ALL old swapchains occupying this HWND
+        std::vector<IDXGISwapChain*> oldSCs;
+        {
+            std::lock_guard<std::mutex> lock(s_hwndSwapchainMutex);
+            auto it = s_hwndSwapchainMap.find(hWnd);
+            if (it != s_hwndSwapchainMap.end()) {
+                oldSCs = std::move(it->second);
+                s_hwndSwapchainMap.erase(it);
+            }
+        }
+
+        if (!oldSCs.empty()) {
+            HookLogImportant("CreateSwapChainForHwnd: Found %zu old swapchain(s), force-releasing", oldSCs.size());
+
+            // Clean up our overlay resources before destroying the old swapchains
+            CleanupOverlay();
+            g_LastSwapChain = nullptr;
+
+            for (auto* oldSC : oldSCs) {
+                // Tracked pointers have no AddRef — validate before use.
+                MEMORY_BASIC_INFORMATION mbi = {};
+                if (!VirtualQuery(oldSC, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT ||
+                    !(mbi.Protect & (PAGE_READWRITE | PAGE_READONLY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) {
+                    HookLogImportant("CreateSwapChainForHwnd: SC %p stale (VQ), skipping", oldSC);
+                    continue;
+                }
+                ULONG probeRef = oldSC->AddRef();
+                ULONG currentRef = probeRef;
+                HookLogImportant("CreateSwapChainForHwnd: SC %p refcount=%lu, releasing", oldSC, currentRef - 1);
+                for (ULONG i = 0; i < currentRef && i < 100; i++) {
+                    ULONG remaining = oldSC->Release();
+                    if (remaining == 0) {
+                        HookLogImportant("CreateSwapChainForHwnd: SC %p destroyed after %lu releases", oldSC, i + 1);
+                        break;
+                    }
+                }
+            }
+
+            // Brief sleep for DXGI internal cleanup
+            Sleep(1);
+
+            // Retry the CreateSwapChainForHwnd call
+            hr = s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
+            HookLogImportant("CreateSwapChainForHwnd: Retry result=0x%08X %s", hr,
+                             SUCCEEDED(hr) ? "SUCCESS" : "FAILED");
+        } else {
+            HookLogImportant(
+                "CreateSwapChainForHwnd: No tracked swapchain for HWND=%p, "
+                "cannot recover",
+                hWnd);
+        }
+    }
+
+    if (SUCCEEDED(hr) && ppSC && *ppSC) {
+        // Track the new swapchain's HWND association
+        TrackSwapchainHwnd(*ppSC, hWnd);
+        HookLog("CreateSwapChainForHwnd INLINE: Created swapchain %p for HWND=%p", *ppSC, hWnd);
+    }
+
+    return hr;
+}
+
 // Detour for global CreateSwapChain hook
 static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis, IUnknown* pDevice,
                                                              DXGI_SWAP_CHAIN_DESC* pDesc,
@@ -603,7 +810,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
         return E_FAIL;
     }
 
-    HookLog(
+    HookLogImportant(
         "DetourCreateSwapChainForHwndGlobal: CALLED (factory=%p, device=%p, "
         "hwnd=%p)",
         pThis, pDevice, hWnd);
@@ -682,6 +889,10 @@ static void InstallGlobalVTableHooks() {
     void** vtable = *(void***)pFactory;
     HookLog("DX12: Factory vtable at %p", vtable);
 
+    // Save the real CreateSwapChainForHwnd address BEFORE vtable patching
+    void* realCreateSCForHwndAddr = vtable[15];
+    s_realCreateSCForHwndAddr = realCreateSCForHwndAddr;
+
     // Hook CreateSwapChain (vtable[10] for IDXGIFactory)
     // Hook CreateSwapChainForHwnd (vtable[15] for IDXGIFactory2)
     if (VTableHook::Create(&vtable[10], (LPVOID)DetourCreateSwapChainGlobal, (LPVOID*)&oCreateSwapChainGlobal)) {
@@ -695,10 +906,63 @@ static void InstallGlobalVTableHooks() {
 
     pFactory->Release();
 
+    // Install inline hook on CreateSwapChainForHwnd in dxgi.dll.
+    // VTable hooks only patch a single vtable and miss calls through
+    // Streamline's SL proxy factory (different COM vtable). Inline hooks
+    // patch the actual function code and catch ALL callers.
+    if (realCreateSCForHwndAddr && !s_oCreateSCForHwndInline) {
+        void* trampoline = nullptr;
+        if (InlineHook::Install(realCreateSCForHwndAddr, (void*)DetourCreateSwapChainForHwndInline, &trampoline)) {
+            s_oCreateSCForHwndInline = (PFN_CreateSwapChainForHwnd)trampoline;
+            HookLog("DX12: Installed INLINE hook on CreateSwapChainForHwnd at %p", realCreateSCForHwndAddr);
+        } else {
+            HookLog("DX12: FAILED to install inline hook on CreateSwapChainForHwnd");
+        }
+    }
+
+    // Install DEEP hook on CreateSwapChainForHwnd.
+    // When Streamline hooks CreateSwapChainForHwnd at byte 0 and uses a saved
+    // trampoline for internal calls (bypassing both our vtable and inline hooks),
+    // the deep hook patches the function body past Streamline's JMP so ALL
+    // callers are intercepted — including Streamline's linkSwapchainToCmdQueue.
+    // The full wrapper pre-releases stale swapchains AND post-tracks new ones,
+    // ensuring SL's shadow swapchains are tracked for subsequent releases.
+    if (realCreateSCForHwndAddr) {
+        void* trampoline = InlineHook::InstallDeepHook(realCreateSCForHwndAddr, (void*)DeepHookCreateSwapChainForHwnd);
+        if (trampoline) {
+            s_deepHookTrampoline = (PFN_CreateSwapChainForHwnd)trampoline;
+            HookLog("DX12: Installed DEEP hook on CreateSwapChainForHwnd at %p (trampoline=%p)",
+                    realCreateSCForHwndAddr, trampoline);
+        } else {
+            HookLog("DX12: Deep hook not needed or failed for CreateSwapChainForHwnd");
+        }
+    }
+
     HookLog("DX12: Global factory vtable hooks installed");
 }
 
 void RemoveGlobalVTableHooks() {
+    // Remove deep hook first (patches function body past external JMP)
+    if (s_realCreateSCForHwndAddr) {
+        InlineHook::RemoveDeepHook(s_realCreateSCForHwndAddr);
+        s_realCreateSCForHwndAddr = nullptr;
+        s_deepHookTrampoline = nullptr;
+    }
+
+    // Remove inline CreateSwapChainForHwnd hook
+    if (s_oCreateSCForHwndInline) {
+        // InlineHook::RemoveAll() is called from dxgi_shared.cpp during shutdown,
+        // but we also null our trampoline pointer to prevent use-after-free.
+        s_oCreateSCForHwndInline = nullptr;
+        HookLog("DX12: Cleared inline CreateSwapChainForHwnd hook trampoline");
+    }
+
+    // Clear tracked swapchains (no Release needed — we don't AddRef tracked SCs)
+    {
+        std::lock_guard<std::mutex> lock(s_hwndSwapchainMutex);
+        s_hwndSwapchainMap.clear();
+    }
+
     if (!oCreateSwapChainGlobal && !oCreateSwapChainForHwndGlobal) {
         return;
     }
@@ -949,9 +1213,9 @@ void DrawOverlay(ID3D12GraphicsCommandList* cmdList, bool isRealFrame, UINT buff
         if (GetModuleHandleA("d3d12core.dll") && (GetModuleHandleA("libvkd3d-1.dll") || GetModuleHandleA("vkd3d.dll")))
             api = "DX12 (VKD3D)";
         g_OverlayAdapter.SetGraphicsAPI(api);
-        bool isHDR =
-            (g_State.format == DXGI_FORMAT_R16G16B16A16_FLOAT || g_State.format == DXGI_FORMAT_R10G10B10A2_UNORM);
-        g_OverlayAdapter.SetHDR(isHDR, (int)g_State.format);
+        // HDR state is set during overlay init (ProcessFrame) by querying the
+        // display output's actual color space — not here, to avoid the false
+        // positive of R10G10B10A2_UNORM being treated as HDR in SDR mode.
     }
 
     // Set Render Target for Custom Overlay
@@ -1258,24 +1522,21 @@ void DX12_OnSwapchainResizeBegin() {
     }
 
     DXGIShared::g_SharedState.lastSwapchainCreation = std::chrono::steady_clock::now();
-    HookLog("DX12: DX12_OnSwapchainResizeBegin - step 1: timestamp updated");
 
-    // ResizeBuffers must see a fully invalidated overlay state; skipping cleanup
-    // here leaves stale RTV descriptors/backbuffer state that can hang drivers.
     std::lock_guard<std::recursive_mutex> lock(g_OverlayMutex);
-    HookLog("DX12: DX12_OnSwapchainResizeBegin - step 2: got mutex");
 
-    // Invalidate and release swapchain-bound resources before ResizeBuffers.
-    g_State.overlayInit = false;
-    g_State.syncInit = false;
+    // CRITICAL: Flush GPU before releasing resources.  In-flight overlay
+    // commands still reference backbuffers; ResizeBuffers returns
+    // E_ACCESSDENIED if any GPU references remain.
+    CleanupOverlay();  // waits on fence, releases sync resources
     CleanupRTVs();
-    HookLog("DX12: DX12_OnSwapchainResizeBegin - step 3: marked state invalid");
+    g_State.overlayInit = false;
 
     // g_LastSwapChain is stored as a raw (non-AddRef'd) pointer to avoid
     // interfering with FSR FG's reference count management.  Do NOT Release it.
     g_PendingSwapChainCleanup = nullptr;
     g_LastSwapChain = nullptr;
-    HookLog("DX12: DX12_OnSwapchainResizeBegin - complete");
+    HookLog("DX12: DX12_OnSwapchainResizeBegin - complete (GPU flushed)");
 }
 
 void DX12_OnSwapchainResizeEnd() {
@@ -1454,6 +1715,11 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         return;
     }
 
+    // Track HWND → swapchain mapping for FG-switch recovery
+    if (frameDesc.OutputWindow) {
+        TrackSwapchainHwnd(pSwapChain, frameDesc.OutputWindow);
+    }
+
     const bool zeroSizedSwapchain = (frameDesc.BufferDesc.Width == 0 || frameDesc.BufferDesc.Height == 0);
     const bool iconicWindow = frameDesc.OutputWindow && IsIconic(frameDesc.OutputWindow);
     const bool suspendOverlayWork = zeroSizedSwapchain || iconicWindow;
@@ -1546,17 +1812,27 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     // after the first few frames is a strong signal that FG has activated.
     {
         static ID3D12CommandQueue* s_initialQueue = nullptr;
-        static bool s_queueChangeDetected = false;
+        static ID3D12CommandQueue* s_currentFGQueue = nullptr;
         static int s_queueFrameCount = 0;
         ++s_queueFrameCount;
         if (s_queueFrameCount <= 5) {
             // Capture initial queue during first 5 frames (before FG activates)
             s_initialQueue = gameQueue;
-        } else if (!s_queueChangeDetected && s_initialQueue && gameQueue != s_initialQueue) {
-            s_queueChangeDetected = true;
-            HookLogImportant("DX12: FG detected via queue change (initial=%p, current=%p, frame=%d)", s_initialQueue,
-                             gameQueue, s_queueFrameCount);
-            g_FGCompat.SetFSRFGActive(true);
+        } else if (s_initialQueue) {
+            bool isFGQueue = (gameQueue != s_initialQueue);
+            if (isFGQueue && !s_currentFGQueue) {
+                // Queue changed away from initial → FSR FG activated
+                s_currentFGQueue = gameQueue;
+                HookLogImportant("DX12: FG detected via queue change (initial=%p, current=%p, frame=%d)",
+                                 s_initialQueue, gameQueue, s_queueFrameCount);
+                g_FGCompat.SetFSRFGActive(true);
+            } else if (!isFGQueue && s_currentFGQueue) {
+                // Queue reverted to initial → FSR FG deactivated (FG type switch)
+                HookLogImportant("DX12: FG deactivated via queue revert (initial=%p, fgQueue=%p, frame=%d)",
+                                 s_initialQueue, s_currentFGQueue, s_queueFrameCount);
+                s_currentFGQueue = nullptr;
+                g_FGCompat.SetFSRFGActive(false);
+            }
         }
     }
 
@@ -1636,6 +1912,31 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                     }
                     CreateRTVs(g_Device.load(), sc3, actualBufferCount);
                     InitOverlaySync(g_Device.load(), imguiBufferCount, gameQueue);
+
+                    // Detect actual HDR state from the display output, not just format.
+                    // R10G10B10A2_UNORM is used for both SDR 10-bit and HDR10/PQ.
+                    // Only enable HDR overlay mode if the display is actually in HDR.
+                    bool isActualHDR = false;
+                    if (desc.BufferDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT) {
+                        isActualHDR = true;  // FP16 is always HDR (scRGB)
+                    } else if (desc.BufferDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM) {
+                        IDXGIOutput* output = nullptr;
+                        if (SUCCEEDED(sc3->GetContainingOutput(&output)) && output) {
+                            IDXGIOutput6* output6 = nullptr;
+                            if (SUCCEEDED(output->QueryInterface(IID_PPV_ARGS(&output6)))) {
+                                DXGI_OUTPUT_DESC1 desc1 = {};
+                                if (SUCCEEDED(output6->GetDesc1(&desc1))) {
+                                    isActualHDR = (desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020);
+                                    HookLogImportant("DX12: Display HDR check — colorSpace=%d, isHDR=%d",
+                                                     (int)desc1.ColorSpace, isActualHDR);
+                                }
+                                output6->Release();
+                            }
+                            output->Release();
+                        }
+                    }
+                    g_OverlayAdapter.SetHDR(isActualHDR, (int)desc.BufferDesc.Format);
+
                     HookLog(
                         "DX12: ProcessFrame - ImGui initialized with %d RTVs, "
                         "syncInit=%d",

@@ -211,6 +211,7 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
          code == 0xC0000374 ||                                        // Heap corruption
          code == 0xC00000FD ||                                        // Stack overflow (alt)
          code == 0x00008000 ||                                        // UE5 GPU crash (D3D device removed)
+         code == 0x00004000 ||                                        // UE5 fatal assertion (check/ensure)
          code == 0x80000002 ||                                        // Guard page violation
          code == 0xC000013A ||                                        // Control-C/Control-Break
          code == 0xC0000142);                                         // DLL init failed

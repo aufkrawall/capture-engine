@@ -496,6 +496,18 @@ static size_t g_trampolineOffset = 0;
 static constexpr size_t TRAMPOLINE_POOL_SIZE = 4096;
 static constexpr size_t TRAMPOLINE_ENTRY_SIZE = 64;  // Max per hook
 
+// Deep hook data structures (forward declaration for RemoveAll)
+struct DeepHookEntry {
+    void* target;           // Original function address
+    void* hookAddr;         // Address where the JMP was written (target + resumeOffset)
+    int patchSize;          // Size of displaced instructions at hookAddr
+    uint8_t origBytes[32];  // Original bytes at hookAddr (for removal)
+    uint8_t* trampoline;    // VirtualAlloc'd executable trampoline memory
+    bool installed;
+};
+
+static std::vector<DeepHookEntry> g_deepHooks;
+
 #ifdef _WIN64
 static constexpr int PATCH_SIZE = 14;  // FF 25 00 00 00 00 + 8-byte address
 #else
@@ -1306,6 +1318,24 @@ void RemoveAll() {
     }
     g_hooks.clear();
 
+    // Also remove deep hooks
+    for (auto& d : g_deepHooks) {
+        if (d.installed) {
+            DWORD oldProtect;
+            if (VirtualProtect(d.hookAddr, d.patchSize, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+                memcpy(d.hookAddr, d.origBytes, d.patchSize);
+                VirtualProtect(d.hookAddr, d.patchSize, oldProtect, &oldProtect);
+                FlushInstructionCache(GetCurrentProcess(), d.hookAddr, d.patchSize);
+            }
+            d.installed = false;
+        }
+        if (d.trampoline) {
+            VirtualFree(d.trampoline, 0, MEM_RELEASE);
+            d.trampoline = nullptr;
+        }
+    }
+    g_deepHooks.clear();
+
     if (!g_trampolinePools.empty()) {
         for (uint8_t* pool : g_trampolinePools) {
             if (pool) {
@@ -1321,6 +1351,409 @@ void RemoveAll() {
     }
     g_trampolinePool = nullptr;
     g_trampolineOffset = 0;
+}
+
+// ============================================================================
+// Deep Hook Implementation
+// ============================================================================
+//
+// A "deep hook" patches the function body PAST an external hook's JMP patch.
+// This catches callers that use saved trampolines (e.g. Streamline's internal
+// DXGI calls) which bypass the JMP at byte 0.
+//
+// The hook undoes the initial push prolog and redirects to a caller-provided
+// wrapper function with the same calling convention as the original. A full
+// trampoline is built containing the complete original prolog, allowing the
+// wrapper to call through to the real function and capture the return value.
+
+// Read original (unpatched) function bytes from the DLL file on disk.
+static bool ReadOrigBytesFromDisk(void* funcAddr, uint8_t* outBuf, int count) {
+    HMODULE hMod = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            (LPCSTR)funcAddr, &hMod) ||
+        !hMod) {
+        return false;
+    }
+
+    char modPath[MAX_PATH];
+    if (!GetModuleFileNameA(hMod, modPath, MAX_PATH))
+        return false;
+
+    uintptr_t rva = (uintptr_t)funcAddr - (uintptr_t)hMod;
+
+    HANDLE hFile =
+        CreateFileA(modPath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE)
+        return false;
+
+    bool success = false;
+    DWORD br;
+
+    IMAGE_DOS_HEADER dosH;
+    if (!ReadFile(hFile, &dosH, sizeof(dosH), &br, nullptr) || dosH.e_magic != IMAGE_DOS_SIGNATURE) {
+        CloseHandle(hFile);
+        return false;
+    }
+
+    if (SetFilePointer(hFile, dosH.e_lfanew, nullptr, FILE_BEGIN) == INVALID_SET_FILE_POINTER) {
+        CloseHandle(hFile);
+        return false;
+    }
+
+    DWORD sig;
+    if (!ReadFile(hFile, &sig, 4, &br, nullptr) || sig != IMAGE_NT_SIGNATURE) {
+        CloseHandle(hFile);
+        return false;
+    }
+
+    IMAGE_FILE_HEADER fh;
+    if (!ReadFile(hFile, &fh, sizeof(fh), &br, nullptr)) {
+        CloseHandle(hFile);
+        return false;
+    }
+
+    // Skip optional header to reach section headers
+    if (SetFilePointer(hFile, fh.SizeOfOptionalHeader, nullptr, FILE_CURRENT) == INVALID_SET_FILE_POINTER) {
+        CloseHandle(hFile);
+        return false;
+    }
+
+    for (WORD i = 0; i < fh.NumberOfSections; i++) {
+        IMAGE_SECTION_HEADER sh;
+        if (!ReadFile(hFile, &sh, sizeof(sh), &br, nullptr))
+            break;
+
+        if (rva >= sh.VirtualAddress && rva < sh.VirtualAddress + sh.Misc.VirtualSize) {
+            DWORD fileOff = sh.PointerToRawData + (DWORD)(rva - sh.VirtualAddress);
+            if (SetFilePointer(hFile, fileOff, nullptr, FILE_BEGIN) != INVALID_SET_FILE_POINTER) {
+                if (ReadFile(hFile, outBuf, (DWORD)count, &br, nullptr) && (int)br == count)
+                    success = true;
+            }
+            break;
+        }
+    }
+
+    CloseHandle(hFile);
+    return success;
+}
+
+void* InstallDeepHook(void* target, void* wrapperFn) {
+#ifndef _WIN64
+    HookLog("DeepHook: Only supported on x64");
+    return nullptr;
+#else
+    if (!target || !wrapperFn)
+        return nullptr;
+
+    std::lock_guard<std::mutex> lock(g_hookMutex);
+
+    // Check not already deep-hooked
+    for (auto& d : g_deepHooks) {
+        if (d.target == target && d.installed) {
+            HookLog("DeepHook: Target %p already deep-hooked", target);
+            return nullptr;
+        }
+    }
+
+    const uint8_t* code = (const uint8_t*)target;
+
+    // Step 1: Detect existing hook at byte 0
+    int existingJmpSize = 0;
+    if (code[0] == 0xE9) {
+        existingJmpSize = 5;
+    } else if (code[0] == 0xFF && code[1] == 0x25) {
+        existingJmpSize = 14;
+    } else {
+        HookLog("DeepHook: No external hook at byte 0 of %p (byte=0x%02X)", target, code[0]);
+        return nullptr;
+    }
+
+    HookLog("DeepHook: External %d-byte JMP detected at %p", existingJmpSize, target);
+
+    // Step 2: Read original (unpatched) bytes from DLL on disk
+    uint8_t origDiskBytes[64];
+    if (!ReadOrigBytesFromDisk(target, origDiskBytes, 64)) {
+        HookLog("DeepHook: Failed to read original bytes from disk for %p", target);
+        return nullptr;
+    }
+
+    // Log original bytes from disk
+    HookLog("DeepHook: Original disk bytes at %p:", target);
+    for (int i = 0; i < 32; i += 8) {
+        HookLog("  [%02d] %02X %02X %02X %02X %02X %02X %02X %02X", i, origDiskBytes[i], origDiskBytes[i + 1],
+                origDiskBytes[i + 2], origDiskBytes[i + 3], origDiskBytes[i + 4], origDiskBytes[i + 5],
+                origDiskBytes[i + 6], origDiskBytes[i + 7]);
+    }
+
+    // Step 3: Determine resume offset (first instruction boundary >= external JMP size)
+    int resumeOffset = 0;
+    while (resumeOffset < existingJmpSize) {
+        int len = GetInstructionLength(origDiskBytes + resumeOffset, true);
+        if (len == 0) {
+            HookLog("DeepHook: Failed to decode instruction at disk offset %d", resumeOffset);
+            return nullptr;
+        }
+        resumeOffset += len;
+    }
+
+    HookLog("DeepHook: Resume offset = %d (past %d-byte external JMP)", resumeOffset, existingJmpSize);
+
+    // Verify live bytes at resumeOffset match disk (external hook only patches [0, jmpSize))
+    bool bytesMatch = (memcmp(code + resumeOffset, origDiskBytes + resumeOffset, 16) == 0);
+    if (!bytesMatch) {
+        HookLog("DeepHook: WARNING - live bytes at +%d differ from disk!", resumeOffset);
+        for (int i = 0; i < 16; i++)
+            HookLog("  live[%02d]=0x%02X  disk[%02d]=0x%02X", resumeOffset + i, code[resumeOffset + i],
+                    resumeOffset + i, origDiskBytes[resumeOffset + i]);
+    }
+
+    // Step 4: Count push instructions in [0, resumeOffset) to determine stack undo
+    // These pushes are executed by the external hook's trampoline before reaching
+    // our patch point. We undo them so the wrapper sees the original call state.
+    int numPushes = 0;
+    {
+        int pos = 0;
+        while (pos < resumeOffset) {
+            uint8_t b = origDiskBytes[pos];
+            if (b >= 0x50 && b <= 0x57) {
+                // push rax-rdi (1 byte, no REX)
+                numPushes++;
+                pos++;
+            } else if (b >= 0x40 && b <= 0x4F && pos + 1 < resumeOffset && origDiskBytes[pos + 1] >= 0x50 &&
+                       origDiskBytes[pos + 1] <= 0x57) {
+                // REX prefix (0x40-0x4F) + push (0x50-0x57)
+                numPushes++;
+                pos += 2;
+            } else {
+                HookLog("DeepHook: Non-push instruction at prolog offset %d (byte=0x%02X) - cannot undo", pos, b);
+                return nullptr;
+            }
+        }
+    }
+    int stackUndo = numPushes * 8;
+    HookLog("DeepHook: Prolog has %d pushes (%d bytes of stack to undo)", numPushes, stackUndo);
+
+    // Step 5: Determine how many bytes to displace at resume offset (need >= patch size)
+    const uint8_t* resumeCode = code + resumeOffset;
+    int displaceSize = 0;
+    // The in-place patch is: add rsp,N (4 or 7 bytes) + jmp [rip+0] addr (14 bytes)
+    int undoEncodingSize = (stackUndo <= 127) ? 4 : 7;
+    int neededPatchSize = undoEncodingSize + PATCH_SIZE;
+    while (displaceSize < neededPatchSize) {
+        int len = GetInstructionLength(resumeCode + displaceSize, true);
+        if (len == 0) {
+            HookLog("DeepHook: Failed to decode at resume+%d (byte=0x%02X)", displaceSize, resumeCode[displaceSize]);
+            return nullptr;
+        }
+        displaceSize += len;
+    }
+
+    HookLog("DeepHook: Will displace %d bytes at offset %d (patch needs %d)", displaceSize, resumeOffset,
+            neededPatchSize);
+
+    // Step 6: Allocate executable memory nearby for the full trampoline
+    // The trampoline contains: original prolog [0, resumeOffset+displaceSize) + JMP to continue
+    uint8_t* trampoline = nullptr;
+    {
+        uintptr_t tgt = (uintptr_t)target;
+        for (uintptr_t delta = 0x10000; delta < 0x7FFF0000ULL; delta += 0x10000) {
+            if (tgt > delta) {
+                uintptr_t tryAddr = (tgt - delta + 0xFFFF) & ~(uintptr_t)0xFFFF;
+                trampoline =
+                    (uint8_t*)VirtualAlloc((void*)tryAddr, 256, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+                if (trampoline)
+                    break;
+            }
+            uintptr_t tryAddr = ((tgt + delta) + 0xFFFF) & ~(uintptr_t)0xFFFF;
+            trampoline = (uint8_t*)VirtualAlloc((void*)tryAddr, 256, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+            if (trampoline)
+                break;
+        }
+    }
+    if (!trampoline) {
+        trampoline = (uint8_t*)VirtualAlloc(nullptr, 256, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    }
+    if (!trampoline) {
+        HookLog("DeepHook: Failed to allocate trampoline memory");
+        return nullptr;
+    }
+    memset(trampoline, 0xCC, 256);  // Fill with INT3 for safety
+
+    HookLog("DeepHook: Trampoline at %p (distance=%lld)", trampoline,
+            (long long)((intptr_t)trampoline - (intptr_t)target));
+
+    // Step 7: Build the full trampoline
+    // Layout: [original prolog bytes 0..resumeOffset] [displaced bytes with RIP fixups] [JMP continue]
+    int tOff = 0;
+
+    // Copy original push instructions [0, resumeOffset) from disk
+    memcpy(trampoline, origDiskBytes, resumeOffset);
+    tOff = resumeOffset;
+
+    // Copy displaced bytes [resumeOffset, resumeOffset+displaceSize) with RIP-relative fixups
+    int srcOff = 0;
+    bool fixupFailed = false;
+    while (srcOff < displaceSize) {
+        int instrLen = GetInstructionLength(resumeCode + srcOff, true);
+        memcpy(trampoline + tOff, resumeCode + srcOff, instrLen);
+
+        int dispOff = GetRipRelativeDispOffset(resumeCode + srcOff, instrLen, true);
+        if (dispOff >= 0) {
+            int32_t origDisp;
+            memcpy(&origDisp, resumeCode + srcOff + dispOff, 4);
+            uintptr_t absTarget = (uintptr_t)(resumeCode + srcOff + instrLen) + origDisp;
+            uintptr_t newInstrEnd = (uintptr_t)(trampoline + tOff + instrLen);
+            int64_t newDisp = (int64_t)absTarget - (int64_t)newInstrEnd;
+
+            if (newDisp > INT32_MAX || newDisp < INT32_MIN) {
+                uint8_t op = resumeCode[srcOff];
+                if (op == 0xE9 || op == 0xE8) {
+                    trampoline[tOff] = 0xFF;
+                    trampoline[tOff + 1] = (op == 0xE9) ? 0x25 : 0x15;
+                    trampoline[tOff + 2] = 0;
+                    trampoline[tOff + 3] = 0;
+                    trampoline[tOff + 4] = 0;
+                    trampoline[tOff + 5] = 0;
+                    memcpy(trampoline + tOff + 6, &absTarget, 8);
+                    tOff += 14;
+                    srcOff += instrLen;
+                    continue;
+                }
+                HookLog("DeepHook: RIP fixup out of range at resume+%d", srcOff);
+                fixupFailed = true;
+                break;
+            }
+            int32_t newDisp32 = (int32_t)newDisp;
+            memcpy(trampoline + tOff + dispOff, &newDisp32, 4);
+            HookLog("DeepHook: Fixed RIP-relative at +%d: origDisp=0x%08X -> newDisp=0x%08X", srcOff,
+                    (unsigned)origDisp, (unsigned)newDisp32);
+        }
+        tOff += instrLen;
+        srcOff += instrLen;
+    }
+
+    if (fixupFailed) {
+        VirtualFree(trampoline, 0, MEM_RELEASE);
+        return nullptr;
+    }
+
+    // JMP to (target + resumeOffset + displaceSize) — function body continues here
+    uintptr_t continueAddr = (uintptr_t)target + resumeOffset + displaceSize;
+    trampoline[tOff++] = 0xFF;
+    trampoline[tOff++] = 0x25;
+    trampoline[tOff++] = 0x00;
+    trampoline[tOff++] = 0x00;
+    trampoline[tOff++] = 0x00;
+    trampoline[tOff++] = 0x00;
+    memcpy(&trampoline[tOff], &continueAddr, 8);
+    tOff += 8;
+
+    FlushInstructionCache(GetCurrentProcess(), trampoline, tOff);
+
+    HookLog("DeepHook: Trampoline built, %d bytes (prolog=%d, displaced=%d, jmp=%d)", tOff, resumeOffset, displaceSize,
+            PATCH_SIZE);
+
+    // Step 8: Build the in-place patch at resumeOffset
+    // Format: add rsp, <stackUndo> ; jmp [rip+0] <wrapperFn>
+    uint8_t patchBuf[32];
+    int pOff = 0;
+
+    if (stackUndo <= 127) {
+        patchBuf[pOff++] = 0x48;                // REX.W
+        patchBuf[pOff++] = 0x83;                // ADD r/m64, imm8
+        patchBuf[pOff++] = 0xC4;                // ModRM: RSP
+        patchBuf[pOff++] = (uint8_t)stackUndo;  // imm8
+    } else {
+        patchBuf[pOff++] = 0x48;  // REX.W
+        patchBuf[pOff++] = 0x81;  // ADD r/m64, imm32
+        patchBuf[pOff++] = 0xC4;  // ModRM: RSP
+        uint32_t undoVal = (uint32_t)stackUndo;
+        memcpy(&patchBuf[pOff], &undoVal, 4);
+        pOff += 4;
+    }
+
+    // jmp [rip+0] <wrapperFn>
+    patchBuf[pOff++] = 0xFF;
+    patchBuf[pOff++] = 0x25;
+    patchBuf[pOff++] = 0x00;
+    patchBuf[pOff++] = 0x00;
+    patchBuf[pOff++] = 0x00;
+    patchBuf[pOff++] = 0x00;
+    uintptr_t wrapAddr = (uintptr_t)wrapperFn;
+    memcpy(&patchBuf[pOff], &wrapAddr, 8);
+    pOff += 8;
+
+    // Fill remaining displaced bytes with NOP
+    while (pOff < displaceSize)
+        patchBuf[pOff++] = 0x90;
+
+    // Step 9: Patch the live code at resumeOffset
+    DeepHookEntry entry = {};
+    entry.target = target;
+    entry.hookAddr = (void*)resumeCode;
+    entry.patchSize = displaceSize;
+    memcpy(entry.origBytes, resumeCode, displaceSize);
+    entry.trampoline = trampoline;
+    entry.installed = false;
+
+    DWORD oldProtect;
+    if (!VirtualProtect((void*)resumeCode, displaceSize, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        HookLog("DeepHook: VirtualProtect failed (error=%lu)", GetLastError());
+        VirtualFree(trampoline, 0, MEM_RELEASE);
+        return nullptr;
+    }
+
+    // Write INT3 first for safety (atomic single-byte write)
+    volatile uint8_t* pPatch = (volatile uint8_t*)resumeCode;
+    pPatch[0] = 0xCC;
+    FlushInstructionCache(GetCurrentProcess(), (void*)resumeCode, 1);
+
+    // Fill remaining with INT3
+    for (int i = 1; i < displaceSize; i++)
+        pPatch[i] = 0xCC;
+
+    // Write the actual patch (add rsp + jmp wrapper)
+    memcpy((void*)resumeCode, patchBuf, displaceSize);
+
+    DWORD dummy;
+    VirtualProtect((void*)resumeCode, displaceSize, oldProtect, &dummy);
+    FlushInstructionCache(GetCurrentProcess(), (void*)resumeCode, displaceSize);
+
+    entry.installed = true;
+    g_deepHooks.push_back(entry);
+
+    HookLog("DeepHook: SUCCESS at %p+%d (trampoline=%p, displaced=%d, continues at %p)", target, resumeOffset,
+            trampoline, displaceSize, (void*)continueAddr);
+    return trampoline;
+#endif
+}
+
+bool RemoveDeepHook(void* target) {
+    if (!target)
+        return false;
+
+    std::lock_guard<std::mutex> lock(g_hookMutex);
+
+    for (auto& d : g_deepHooks) {
+        if (d.target == target && d.installed) {
+            DWORD oldProtect;
+            if (VirtualProtect(d.hookAddr, d.patchSize, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+                memcpy(d.hookAddr, d.origBytes, d.patchSize);
+                VirtualProtect(d.hookAddr, d.patchSize, oldProtect, &oldProtect);
+                FlushInstructionCache(GetCurrentProcess(), d.hookAddr, d.patchSize);
+            }
+            d.installed = false;
+            if (d.trampoline) {
+                VirtualFree(d.trampoline, 0, MEM_RELEASE);
+                d.trampoline = nullptr;
+            }
+            HookLog("DeepHook: Removed at %p", target);
+            return true;
+        }
+    }
+
+    HookLog("DeepHook: No hook found for %p", target);
+    return false;
 }
 
 }  // namespace InlineHook
