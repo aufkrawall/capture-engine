@@ -1031,7 +1031,12 @@ void CheckAndInstallHooks() {
     bool legacyD3DLoaded = (GetModuleHandleA("d3d9.dll") != nullptr) ||
                            (GetModuleHandleA("d3d8.dll") != nullptr) ||
                            (GetModuleHandleA("ddraw.dll") != nullptr);
-    bool d3dDeviceCreated = WasD3D12DeviceCreated() ||
+    // Also treat d3d12.dll/d3d11.dll presence as D3D evidence — UE5 loads
+    // vulkan-1.dll even for DX12 games, and our D3D12CreateDevice wrapper may
+    // not be installed yet if d3d12.dll loaded after our initial IAT scan.
+    bool d3dDllPresent = (GetModuleHandleA("d3d12.dll") != nullptr) ||
+                         (GetModuleHandleA("d3d11.dll") != nullptr);
+    bool d3dDeviceCreated = WasD3D12DeviceCreated() || d3dDllPresent ||
                             WasD3D11Or10DeviceCreated() || legacyD3DLoaded;
     if (hVulkan && !d3dDeviceCreated) {
       if (!s_vulkanActive) {
@@ -1065,19 +1070,22 @@ void CheckAndInstallHooks() {
   // ExecuteCommandLists hooking. We do NOT install DXGI vtable hooks anymore -
   // wrappers handle Present/ResizeBuffers. NOTE: Skip for Vulkan games to
   // prevent DXGI interference
-  if (!s_vulkanActive && !g_DX12Hook && GetModuleHandleA("d3d12.dll")) {
-    EarlyLog("Detected d3d12.dll. Initializing DX12 hook instance...");
+  {
+    HMODULE hD3D12 = GetModuleHandleA("d3d12.dll");
+    if (!s_vulkanActive && !g_DX12Hook && hD3D12) {
+      HookLogImportant("Detected d3d12.dll. Initializing DX12 hook instance...");
 
-    // STATIC DESTRUCTOR FIX: Dynamically allocate the hook instance
-    if (!g_dx12HookInstance) {
-      g_dx12HookInstance = new DX12Hook();
+      // STATIC DESTRUCTOR FIX: Dynamically allocate the hook instance
+      if (!g_dx12HookInstance) {
+        g_dx12HookInstance = new DX12Hook();
+      }
+      g_DX12Hook = g_dx12HookInstance;
+
+      // Note: DX12Hook::Init() now only hooks ExecuteCommandLists for frame
+      // detection. DXGI Present/Resize is handled by CWrapDXGISwapChain.
+      g_DX12Hook->Init();
+      HookLogImportant("DX12 hook instance ready (wrappers active)");
     }
-    g_DX12Hook = g_dx12HookInstance;
-
-    // Note: DX12Hook::Init() now only hooks ExecuteCommandLists for frame
-    // detection. DXGI Present/Resize is handled by CWrapDXGISwapChain.
-    g_DX12Hook->Init();
-    EarlyLog("DX12 hook instance ready (wrappers active)");
   }
 
   // IMPORTANT: Install DX11 hooks based on ACTUAL API usage, not just DLL
@@ -1393,12 +1401,12 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     }
   }
 
-  EarlyLog("HookThread: IAT hooks installed");
+  HookLogImportant("HookThread: IAT hooks installed");
 
   // Initial Check
   CheckAndInstallHooks();
 
-  EarlyLog("HookThread: All hooks installed, entering exit monitor loop");
+  HookLogImportant("HookThread: All hooks installed, entering exit monitor loop");
 
   // Monitor Loop - Waits for Event OR Timeout (for Exit Checks)
   DWORD lastPeriodicHookCheck = GetTickCount();

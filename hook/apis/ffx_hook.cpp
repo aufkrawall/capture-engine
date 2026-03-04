@@ -1,4 +1,5 @@
 #include "ffx_hook.h"
+#include <psapi.h>
 #include <atomic>
 #include <mutex>
 #include <unordered_map>
@@ -165,9 +166,9 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* context, const ffxAllocatio
 // Hook Installation via GetProcAddress Detour
 // ============================================================================
 
-void InstallHooksForModule(HMODULE hModule, const char* moduleName) {
+bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
     if (!hModule)
-        return;
+        return false;
 
     HookLog("FFX Hook: Installing hooks for module %s (%p)", moduleName, hModule);
 
@@ -176,8 +177,8 @@ void InstallHooksForModule(HMODULE hModule, const char* moduleName) {
     PfnFfxDestroyContext destroyCtx = (PfnFfxDestroyContext)GetProcAddress(hModule, "ffxDestroyContext");
 
     if (!createCtx && !destroyCtx) {
-        HookLog("FFX Hook: Neither ffxCreateContext nor ffxDestroyContext found in %s", moduleName);
-        return;
+        HookLog("FFX Hook: Neither ffxCreateContext nor ffxDestroyContext found in %s - skipping", moduleName);
+        return false;
     }
 
     // Store originals
@@ -206,6 +207,7 @@ void InstallHooksForModule(HMODULE hModule, const char* moduleName) {
     }
 
     HookLog("FFX Hook: Hooks installed successfully for %s", moduleName);
+    return true;
 }
 
 }  // anonymous namespace
@@ -222,6 +224,9 @@ void Init() {
     if (g_Initialized.load(std::memory_order_acquire)) {
         return;
     }
+
+    static int s_initCallCount = 0;
+    ++s_initCallCount;
 
     if (!g_NoModulesLogged.load(std::memory_order_acquire)) {
         HookLog("FFX Hook: Initializing...");
@@ -254,15 +259,48 @@ void Init() {
         HMODULE hMod = GetModuleHandleW(ffxModules[i]);
         if (hMod) {
             HookLog("FFX Hook: Found module %s at %p", ffxModuleNames[i], hMod);
-            InstallHooksForModule(hMod, ffxModuleNames[i]);
-            g_Initialized.store(true, std::memory_order_release);
-            g_NoModulesLogged.store(false, std::memory_order_release);
-            return;
+            if (InstallHooksForModule(hMod, ffxModuleNames[i])) {
+                g_Initialized.store(true, std::memory_order_release);
+                g_NoModulesLogged.store(false, std::memory_order_release);
+                return;
+            }
+            // Module exists but has no FFX exports (e.g. real nvngx_dlssg.dll)
+            HookLog("FFX Hook: Module %s has no FFX exports, continuing search", ffxModuleNames[i]);
         }
     }
 
     if (!g_NoModulesLogged.exchange(true, std::memory_order_acq_rel)) {
         HookLog("FFX Hook: No FFX modules found, hooks not installed");
+    }
+
+    // One-time diagnostic at 30th retry: enumerate loaded modules for debugging
+    if (s_initCallCount == 30) {
+        HookLogImportant("FFX Hook: Module enumeration diagnostic (call #%d):", s_initCallCount);
+        HMODULE hMods[1024];
+        DWORD cbNeeded;
+        if (EnumProcessModules(GetCurrentProcess(), hMods, sizeof(hMods), &cbNeeded)) {
+            int found = 0;
+            for (DWORD i = 0; i < cbNeeded / sizeof(HMODULE); i++) {
+                wchar_t modName[MAX_PATH];
+                if (GetModuleFileNameW(hMods[i], modName, MAX_PATH)) {
+                    std::wstring lower(modName);
+                    for (auto& c : lower)
+                        c = towlower(c);
+                    if (lower.find(L"fidelity") != std::wstring::npos || lower.find(L"ffx") != std::wstring::npos ||
+                        lower.find(L"framegen") != std::wstring::npos || lower.find(L"fsr") != std::wstring::npos ||
+                        lower.find(L"amd_") != std::wstring::npos) {
+                        char narrowName[MAX_PATH];
+                        WideCharToMultiByte(CP_UTF8, 0, modName, -1, narrowName, MAX_PATH, NULL, NULL);
+                        HookLogImportant("FFX Hook:   Loaded: %s", narrowName);
+                        found++;
+                    }
+                }
+            }
+            if (found == 0) {
+                HookLogImportant("FFX Hook:   No AMD/FFX/FSR modules among %d loaded",
+                                 (int)(cbNeeded / sizeof(HMODULE)));
+            }
+        }
     }
 }
 
