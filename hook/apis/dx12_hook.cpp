@@ -105,14 +105,19 @@ struct DX12OverlayState {
     UINT bufferCount = 0;
     IDXGISwapChain* cachedSwapChain = nullptr;
 
-    // Dedicated overlay command queue - isolated from game's queue
-    // This avoids driver throttling issues during Alt+Tab
+    // Dedicated overlay command queue for FG-safe rendering.
+    // When FG is active, overlay commands execute on this queue with CPU-side
+    // fence synchronization to avoid interfering with Streamline's game queue
+    // management.  When FG is not active, overlay commands go on the game queue
+    // directly (zero CPU waits).
     ID3D12CommandQueue* overlayQueue = nullptr;
 
-    // Cross-queue synchronization fence - shared between game queue and overlay queue
-    // This ensures proper ordering between game work and overlay work
+    // Cross-queue fence: game queue signals to mark work completion, then
+    // CPU-side wait before submitting overlay work on the overlay queue.
+    // GPU-side CommandQueue::Wait was removed (NVIDIA WaitImpl Alt+Tab hang).
     ID3D12Fence* crossQueueFence = nullptr;
     UINT64 crossQueueFenceValue = 0;
+    HANDLE crossQueueFenceEvent = nullptr;
 
     void Cleanup() {
         for (auto& bb : backBuffers)
@@ -148,7 +153,11 @@ struct DX12OverlayState {
             overlayQueue->Release();
             overlayQueue = nullptr;
         }
-        // Release cross-queue synchronization fence
+        // Release cross-queue synchronization fence and event
+        if (crossQueueFenceEvent) {
+            CloseHandle(crossQueueFenceEvent);
+            crossQueueFenceEvent = nullptr;
+        }
         if (crossQueueFence) {
             crossQueueFence->Release();
             crossQueueFence = nullptr;
@@ -280,6 +289,14 @@ static std::vector<ID3D12Fence*> g_PrerenderFences;
 static std::vector<HANDLE> g_PrerenderEvents;
 static uint64_t g_PrerenderFrameIndex = 0;
 static std::mutex g_PrerenderMutex;
+
+// Re-entrancy guard: set when the current thread is inside DetourECL.
+// During Alt+Tab, D3D12's internal WaitImpl inside ECL can pump window messages
+// (DefWindowProc), which may trigger Present → ProcessFrame.  If ProcessFrame
+// submits an overlay ECL while the outer ECL is still inside WaitImpl, a second
+// WaitImpl cascades and the render thread hangs.  ProcessFrame checks this flag
+// and skips overlay rendering when it's set.
+static thread_local bool s_insideECL = false;
 
 // Forward Declarations
 void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT NumCommandLists,
@@ -881,17 +898,18 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
     g_State.format = format;
 
     // Use OverlayAdapter instead of ImGui
-    // Single-queue architecture: always use game's command queue for overlay
-    // rendering
-    ID3D12CommandQueue* gameQueue = nullptr;
+    // Rendering always goes through the game queue since GPU drivers require
+    // swapchain writes from the owning queue. The overlay queue handles fence
+    // management independently.
+    ID3D12CommandQueue* queueForBackend = nullptr;
     {
         std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
-        gameQueue = g_CommandQueue.load();
+        queueForBackend = g_CommandQueue.load();
     }
     g_OverlayAdapter.SetHwnd(hwnd);
-    if (!g_OverlayAdapter.InitDX12(device, gameQueue, format)) {
-        HookLog("[Overlay] DX12: OverlayAdapter::InitDX12 FAILED (device=%p, queue=%p, fmt=%d)", device, gameQueue,
-                format);
+    if (!g_OverlayAdapter.InitDX12(device, queueForBackend, format)) {
+        HookLog("[Overlay] DX12: OverlayAdapter::InitDX12 FAILED (device=%p, queue=%p, fmt=%d)", device,
+                queueForBackend, format);
         return false;
     }
 
@@ -1018,15 +1036,21 @@ void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* 
         g_State.overlayQueue->Release();
         g_State.overlayQueue = nullptr;
     }
-    // Release previous cross-queue fence if any
+    // Release previous cross-queue fence and event if any
+    if (g_State.crossQueueFenceEvent) {
+        CloseHandle(g_State.crossQueueFenceEvent);
+        g_State.crossQueueFenceEvent = nullptr;
+    }
     if (g_State.crossQueueFence) {
         g_State.crossQueueFence->Release();
         g_State.crossQueueFence = nullptr;
-    }
+    };
 
-    // Dedicated overlay queue architecture: Create our own command queue
-    // This isolates overlay work from the game's queue, avoiding driver
-    // throttling issues during Alt+Tab
+    // Dedicated overlay queue: when FG is active, overlay commands execute on
+    // this queue instead of the game queue.  This avoids interfering with
+    // Streamline's game queue management.  CPU-side fence waits provide
+    // cross-queue synchronization (GPU-side Wait was removed due to NVIDIA
+    // WaitImpl Alt+Tab hangs).
     HookLog("InitOverlaySync: Creating dedicated overlay command queue");
 
     D3D12_COMMAND_QUEUE_DESC queueDesc = {};
@@ -1047,16 +1071,18 @@ void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* 
         HookLog("InitOverlaySync: FAILED to create overlay queue, falling back to single-queue");
         // Continue without overlay queue - will fall back to game queue
     } else {
-        HookLogImportant("InitOverlaySync: Dedicated overlay queue created successfully");
+        HookLogImportant("InitOverlaySync: Dedicated overlay queue created (ptr=%p, gameQueue=%p)",
+                         g_State.overlayQueue, gameQueue);
     }
 
-    // Create cross-queue synchronization fence
-    // This fence is shared between game queue and overlay queue for ordering
+    // Cross-queue fence: game queue signals to mark work completion before
+    // overlay queue starts.  CPU-side WaitForSingleObject is used instead of
+    // GPU-side CommandQueue::Wait to avoid NVIDIA WaitImpl Alt+Tab hangs.
     if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_State.crossQueueFence)))) {
         HookLog("InitOverlaySync: FAILED to create cross-queue fence");
-        // Not fatal - we can still work without cross-queue sync in some cases
     }
     g_State.crossQueueFenceValue = 0;
+    g_State.crossQueueFenceEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
 
     if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_State.fence))))
         return;
@@ -1092,6 +1118,7 @@ void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* 
     if (success) {
         g_State.cmdList->Close();
         g_State.fenceEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+
         g_State.syncInit = true;
     } else {
         // Cleanup partial initialization
@@ -1381,6 +1408,16 @@ static void ApplyPrerenderLimitDX12(float limit) {
 }
 
 void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
+    // Re-entrancy guard: NVIDIA driver can pump window messages during
+    // ExecuteCommandLists (via WaitImpl → DefWindowProc), which can re-enter
+    // our overlay code.  Detect and skip the re-entrant call.
+    static thread_local bool s_inProcessFrame = false;
+    if (s_inProcessFrame) {
+        return;
+    }
+    s_inProcessFrame = true;
+    auto reentryGuard = ce::make_scope_guard([&]() { s_inProcessFrame = false; });
+
     // Performance metrics for this frame
     FrameMetrics perfMetrics;
     perfMetrics.qpcUs = PerfLogger::GetQpcUs();
@@ -1422,17 +1459,6 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
 
     const bool zeroSizedSwapchain = (frameDesc.BufferDesc.Width == 0 || frameDesc.BufferDesc.Height == 0);
     const bool iconicWindow = frameDesc.OutputWindow && IsIconic(frameDesc.OutputWindow);
-    // When the window loses focus (but is not minimized), the GPU can be throttled by the driver.
-    // Track this so we can CPU-signal our fence immediately after queueing the GPU Signal, which
-    // prevents DXGI's internal Present() flush from blocking on an unexecuted fence signal.
-    const bool notForeground = frameDesc.OutputWindow && (GetForegroundWindow() != frameDesc.OutputWindow);
-    static std::atomic<bool> s_wasNotForeground{false};
-    if (notForeground && !s_wasNotForeground.exchange(true, std::memory_order_relaxed)) {
-        HookLog("DX12: ProcessFrame: window lost foreground (hwnd=%p fg=%p), CPU fence protection active",
-                frameDesc.OutputWindow, GetForegroundWindow());
-    } else if (!notForeground && s_wasNotForeground.exchange(false, std::memory_order_relaxed)) {
-        HookLog("DX12: ProcessFrame: window regained foreground");
-    }
     const bool suspendOverlayWork = zeroSizedSwapchain || iconicWindow;
     static bool s_swapchainSuspended = false;
     if (suspendOverlayWork) {
@@ -1472,8 +1498,9 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         return;
     }
 
-    // Single-queue architecture: we use game's command queue (g_CommandQueue)
-    // No dedicated overlay queue needed
+    // Dedicated overlay queue architecture: when FG is active, overlay commands
+    // execute on the overlay queue with CPU-side fence sync to avoid interfering
+    // with Streamline.  When FG is not active, commands go on the game queue.
 
     // OPTIMIZATION: Only resolve device if swapchain changed or device not yet
     // known
@@ -1707,6 +1734,9 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                         actualBufferCount = 8;
                     }
                     CreateRTVs(g_Device.load(), sc3, actualBufferCount);
+                    // Create overlay sync AFTER InitImGui so the overlay queue exists.
+                    // InitImGui will use the game queue for backend init (fine - the
+                    // backend doesn't execute on that queue, it records to a command list).
                     InitOverlaySync(g_Device.load(), imguiBufferCount, gameQueue);
                     HookLog(
                         "DX12: ProcessFrame - ImGui initialized with %d RTVs, "
@@ -1741,7 +1771,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     UINT currentBackBufferIdx = 0;
     bool hasCurrentBackBufferIdx = false;
 
-    if (!suspendOverlayWork && g_State.overlayInit && g_State.syncInit) {
+    if (!suspendOverlayWork && !s_insideECL && g_State.overlayInit && g_State.syncInit) {
         // Single log on first successful overlay render
         static int s_firstOverlayLogged = 0;
         if (s_firstOverlayLogged == 0) {
@@ -1755,13 +1785,27 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         int idx = g_State.allocIndex;
         g_State.allocIndex = (idx + 1) % DX12OverlayState::ALLOC_POOL_SIZE;
 
-        // With 16 allocators, we never need to wait - by the time we wrap around,
-        // the GPU is guaranteed to have finished. At 60fps with 100ms GPU latency,
-        // only 6 allocators are in flight. 16 provides 2.5x headroom.
-
+        // With 16 allocators, we never need to wait under normal conditions.
+        // However, during Alt+Tab / GPU throttle, the GPU may stall and the
+        // fence value for this allocator slot won't advance.  We must check
+        // before Reset() to avoid undefined behaviour (driver hang / crash).
         auto* list = g_State.cmdList;
         auto* alloc = (idx < (int)g_State.allocators.size()) ? g_State.allocators[idx] : nullptr;
         if (list && alloc) {
+            // Guard: skip overlay render if this allocator is still in flight.
+            if (g_State.fence && idx < (int)g_State.fenceValues.size() && g_State.fenceValues[idx] > 0) {
+                UINT64 completed = g_State.fence->GetCompletedValue();
+                if (completed < g_State.fenceValues[idx]) {
+                    static std::atomic<int> s_allocSkipLogs{0};
+                    if (s_allocSkipLogs.fetch_add(1, std::memory_order_relaxed) < 30) {
+                        HookLog(
+                            "DX12: Allocator[%d] still in-flight (completed=%llu, "
+                            "needed=%llu), skipping overlay this frame",
+                            idx, completed, g_State.fenceValues[idx]);
+                    }
+                    goto overlay_done;
+                }
+            }
             HRESULT allocResetHr = alloc->Reset();
             if (SUCCEEDED(allocResetHr)) {
                 HRESULT listResetHr = list->Reset(alloc, nullptr);
@@ -1788,7 +1832,13 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                             bb = g_State.backBuffers[swapchainBufferIdx];
                         }
                         if (bb) {
-                            // Transition buffer to RENDER_TARGET for overlay rendering
+                            D3D12_CPU_DESCRIPTOR_HANDLE rtv = g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
+                            rtv.ptr += (SIZE_T)bufferIdx * g_State.rtvDescriptorSize;
+                            D3D12_VIEWPORT vp = {0, 0, (float)g_State.cachedWidth, (float)g_State.cachedHeight, 0, 1};
+                            D3D12_RECT scissor = {0, 0, (LONG)g_State.cachedWidth, (LONG)g_State.cachedHeight};
+
+                            bool cmdRecordOk = false;
+
                             {
                                 D3D12_RESOURCE_BARRIER b = {
                                     D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
@@ -1797,18 +1847,12 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                                      D3D12_RESOURCE_STATE_RENDER_TARGET}};
                                 list->ResourceBarrier(1, &b);
                             }
-                            D3D12_CPU_DESCRIPTOR_HANDLE rtv = g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
-                            rtv.ptr += (SIZE_T)bufferIdx * g_State.rtvDescriptorSize;
                             list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-
-                            D3D12_VIEWPORT vp = {0, 0, (float)g_State.cachedWidth, (float)g_State.cachedHeight, 0, 1};
                             list->RSSetViewports(1, &vp);
-                            D3D12_RECT scissor = {0, 0, (LONG)g_State.cachedWidth, (LONG)g_State.cachedHeight};
                             list->RSSetScissorRects(1, &scissor);
                             int64_t overlayStartUs = PerfLogger::GetQpcUs();
                             DrawOverlay(list, processCapture, bufferIdx);
                             perfMetrics.overlayUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - overlayStartUs);
-                            // Transition back to PRESENT
                             {
                                 D3D12_RESOURCE_BARRIER b = {
                                     D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
@@ -1822,112 +1866,68 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                                 HookLog("DX12: list->Close failed hr=0x%08X, forcing reinit", closeHr);
                                 g_State.syncInit = false;
                             }
-                            // Dedicated overlay queue architecture: Use our own queue if available
-                            // This isolates overlay work from the game's queue, avoiding driver
-                            // throttling issues during Alt+Tab
-                            ID3D12CommandQueue* overlayQueue = g_State.overlayQueue;
-                            ID3D12CommandQueue* targetQueue = overlayQueue ? overlayQueue : gameQueue;
-                            bool usingDedicatedQueue = (overlayQueue != nullptr);
 
-                            if (SUCCEEDED(closeHr) && targetQueue) {
-                                // GPU backpressure check: if the GPU is severely behind on
-                                // processing our overlay commands, skip GPU submission to avoid
-                                // blocking in ExecuteCommandLists when the ring buffer is full
-                                // (which happens when NVIDIA throttles the GPU on focus loss).
-                                // The overlay remains visible — no new frame is displayed while
-                                // the GPU is stalled, so the last presented frame (with overlay)
-                                // stays on screen.
-                                bool gpuBackedUp = false;
-                                if (g_State.fence) {
-                                    UINT64 completed = g_State.fence->GetCompletedValue();
-                                    // CRITICAL FIX: UINT64_MAX means fence hasn't been signaled yet
-                                    // (initial state). Don't treat this as GPU backlog.
-                                    const UINT64 UINT64_MAX_VAL = static_cast<UINT64>(-1);
-                                    if (completed == UINT64_MAX_VAL) {
-                                        // Fence not yet signaled - this is normal for first frame
-                                        gpuBackedUp = false;
+                            // FG-safe path: when Frame Generation is active, submit
+                            // overlay commands on the dedicated overlay queue to avoid
+                            // interfering with Streamline's game queue management.
+                            // CPU-side fence waits provide cross-queue sync (GPU-side
+                            // Wait was removed due to NVIDIA WaitImpl Alt+Tab hangs).
+                            bool useFGSafePath = SUCCEEDED(closeHr) && g_State.overlayQueue &&
+                                                 g_State.crossQueueFence && g_State.crossQueueFenceEvent &&
+                                                 g_FGCompat.IsFGActive();
+
+                            if (useFGSafePath) {
+                                ID3D12CommandList* lists[] = {list};
+                                // Signal cross-queue fence on game queue to mark all
+                                // prior game work (rendering + barriers) as complete.
+                                UINT64 syncVal = ++g_State.crossQueueFenceValue;
+                                HRESULT shr = gameQueue->Signal(g_State.crossQueueFence, syncVal);
+                                if (SUCCEEDED(shr)) {
+                                    // CPU-side wait for game queue completion.  When
+                                    // Present is called, game rendering is nearly done
+                                    // so this wait is typically sub-millisecond.
+                                    g_State.crossQueueFence->SetEventOnCompletion(syncVal,
+                                                                                  g_State.crossQueueFenceEvent);
+                                    DWORD waitRes = WaitForSingleObject(g_State.crossQueueFenceEvent, 500);
+                                    if (waitRes == WAIT_OBJECT_0) {
+                                        // Submit overlay on the overlay queue (invisible
+                                        // to Streamline).
+                                        g_State.overlayQueue->ExecuteCommandLists(1, lists);
+                                        cmdRecordOk = true;
                                     } else {
-                                        // Allocator slot still in flight from 16 frames ago
-                                        if (g_State.fenceValues[idx] > 0 && completed < g_State.fenceValues[idx]) {
-                                            gpuBackedUp = true;
-                                        }
-                                        // GPU is 4+ overlay frames behind — definitely throttled
-                                        // Use careful arithmetic to avoid overflow
-                                        if (g_State.currentFenceValue > 4 &&
-                                            completed < g_State.currentFenceValue - 4) {
-                                            gpuBackedUp = true;
+                                        static std::atomic<int> s_syncWaitLogs{0};
+                                        if (s_syncWaitLogs.fetch_add(1) < 5) {
+                                            HookLog("DX12: Cross-queue sync wait timeout (res=%lu)", waitRes);
                                         }
                                     }
                                 }
+                            } else if (SUCCEEDED(closeHr) && gameQueue) {
+                                // Non-FG path: submit directly on game queue (current
+                                // behavior, zero CPU waits).
+                                ID3D12CommandList* lists[] = {list};
+                                gameQueue->ExecuteCommandLists(1, lists);
+                                cmdRecordOk = true;
+                            }
 
-                                // GPU backpressure handling: skip GPU submission only when GPU is
-                                // severely backed up. Don't skip based on foreground status alone
-                                // to ensure overlay remains visible during Alt+Tab.
-                                bool skipGpuSubmission = gpuBackedUp;
-                                // Use CPU-side fence signal when not using dedicated queue or when GPU is backed up
-                                // With dedicated queue, we can use GPU-side signals normally
-                                bool useCpuFenceSignal = !usingDedicatedQueue || gpuBackedUp;
+                            // Fence signaling for allocator pool management.
+                            if (cmdRecordOk && g_State.fence) {
+                                UINT64 next = g_State.currentFenceValue + 1;
+                                // Signal on overlay queue when FG-safe, else game queue.
+                                ID3D12CommandQueue* signalQueue = useFGSafePath ? g_State.overlayQueue : gameQueue;
+                                HRESULT shr = signalQueue->Signal(g_State.fence, next);
+                                if (SUCCEEDED(shr)) {
+                                    g_State.currentFenceValue = next;
+                                    g_State.fenceValues[idx] = next;
 
-                                if (skipGpuSubmission) {
-                                    // Skip GPU submission entirely. CPU-signal fence so
-                                    // WaitForOverlayCompletion doesn't block.
-                                    static std::atomic<int> s_skipLog{0};
-                                    int n = s_skipLog.fetch_add(1, std::memory_order_relaxed);
-                                    if (n < 5 || n % 300 == 0) {
-                                        UINT64 completed = g_State.fence->GetCompletedValue();
-                                        HookLog(
-                                            "DX12: GPU backed up (completed=%llu, current=%llu, "
-                                            "slot[%d]=%llu) — skipping overlay GPU submission",
-                                            (unsigned long long)completed,
-                                            (unsigned long long)g_State.currentFenceValue, idx,
-                                            (unsigned long long)g_State.fenceValues[idx]);
+                                    // FG path: CPU-side wait for overlay completion to
+                                    // ensure backbuffer is back in PRESENT state before
+                                    // the real Present call proceeds.
+                                    if (useFGSafePath) {
+                                        g_State.fence->SetEventOnCompletion(next, g_State.fenceEvent);
+                                        WaitForSingleObject(g_State.fenceEvent, 500);
                                     }
                                 } else {
-                                    // CRITICAL: Cross-queue synchronization
-                                    // When using dedicated overlay queue, we need to ensure proper
-                                    // ordering between game work and overlay work
-                                    if (usingDedicatedQueue && gameQueue && g_State.crossQueueFence) {
-                                        // Wait for game queue to finish before overlay submission
-                                        // This ensures the swapchain buffer is ready for our overlay
-                                        UINT64 waitValue = g_State.crossQueueFenceValue;
-                                        if (waitValue > 0) {
-                                            // Game queue already signaled - overlay queue waits
-                                            overlayQueue->Wait(g_State.crossQueueFence, waitValue);
-                                        }
-                                        // Signal from game queue for next frame
-                                        g_State.crossQueueFenceValue++;
-                                        gameQueue->Signal(g_State.crossQueueFence, g_State.crossQueueFenceValue);
-                                    }
-
-                                    // Submit overlay work to GPU
-                                    ID3D12CommandList* lists[] = {list};
-                                    targetQueue->ExecuteCommandLists(1, lists);
-
-                                    // If using dedicated queue, also signal completion so game queue can wait
-                                    if (usingDedicatedQueue && gameQueue && g_State.crossQueueFence) {
-                                        // Signal from overlay queue after submission
-                                        g_State.crossQueueFenceValue++;
-                                        overlayQueue->Signal(g_State.crossQueueFence, g_State.crossQueueFenceValue);
-                                    }
-                                }
-
-                                // Fence signaling: Use CPU-side or GPU-side based on queue type
-                                if (g_State.fence && useCpuFenceSignal) {
-                                    // CPU-side fence signal - always safe, no driver blocking
-                                    UINT64 nextFenceValue = g_State.currentFenceValue + 1;
-                                    g_State.currentFenceValue = nextFenceValue;
-                                    g_State.fenceValues[idx] = nextFenceValue;
-                                    g_State.fence->Signal(nextFenceValue);
-                                } else if (g_State.fence) {
-                                    // GPU-side fence signal from the target queue
-                                    UINT64 nextFenceValue = g_State.currentFenceValue + 1;
-                                    HRESULT signalHr = targetQueue->Signal(g_State.fence, nextFenceValue);
-                                    if (SUCCEEDED(signalHr)) {
-                                        g_State.currentFenceValue = nextFenceValue;
-                                        g_State.fenceValues[idx] = nextFenceValue;
-                                    } else {
-                                        HookLog("DX12: Overlay fence signal failed hr=0x%08X", signalHr);
-                                    }
+                                    HookLog("DX12: Overlay fence signal failed hr=0x%08X", shr);
                                 }
                             }
                         } else {
@@ -1956,6 +1956,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         } else {
             HookLog("DX12: ProcessFrame - null list or alloc");
         }
+    overlay_done:;
     }
 
     // Change 6: Remove verbose debug logging - keep only error logging
@@ -2126,15 +2127,24 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
     int count = g_CommandListsExecutedThisFrame.exchange(0);
     ++g_FGDebugFrameCount;
     g_FGCompat.RecordFrame(count);
-    // Only render overlay on real game frames. FSR3/DLSS frame-generated presents
-    // have GPU work on a separate unhooked queue. Submitting our overlay on
-    // g_SwapchainQueue without synchronization to that queue produces a race that
-    // results in black output. Pass interpolated presents through untouched.
-    if (count == 0) {
+    // Interpolated (FG) frame detection: the game submits zero command lists
+    // between consecutive Present calls for frames generated by the FG engine.
+    bool isInterpolatedFrame = (count == 0);
+
+    // With the dedicated overlay queue, overlay commands execute on a separate
+    // GPU queue with CPU-side fence synchronization, so it is safe to render
+    // on both real and interpolated FG frames.  Without an overlay queue, we
+    // must skip interpolated frames to avoid submitting work on the game queue
+    // during Streamline's Present pipeline.
+    bool hasDedicatedQueue = (g_State.overlayQueue != nullptr && g_State.crossQueueFence != nullptr &&
+                              g_State.crossQueueFenceEvent != nullptr);
+    if (isInterpolatedFrame && !hasDedicatedQueue) {
         sc3->Release();
         return;
     }
-    ProcessFrame(sc3, true);
+    // For interpolated frames, only render overlay (no capture processing) since
+    // the backbuffer content is from the FG engine, not a real game frame.
+    ProcessFrame(sc3, /*processCapture=*/!isInterpolatedFrame);
     sc3->Release();
 }
 
@@ -2186,17 +2196,33 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     // Heartbeat for freeze watchdog - ExecuteCommandLists is called frequently
     g_RenderWatchdog.Heartbeat();
 
+    // Track that this thread is inside an ECL call.  During Alt+Tab, D3D12's
+    // internal WaitImpl can pump window messages which may trigger Present →
+    // ProcessFrame.  ProcessFrame checks s_insideECL and skips overlay rendering
+    // to prevent a cascading second WaitImpl that hangs the render thread.
+    bool wasInsideECL = s_insideECL;
+    s_insideECL = true;
+    auto eclGuard = ce::make_scope_guard([&]() { s_insideECL = wasInsideECL; });
+
+    // Skip our own overlay queue - don't count overlay submissions as game
+    // command lists and don't re-register the overlay queue as the game queue.
+    if (pThis == g_State.overlayQueue) {
+        ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
+        if (original)
+            original(pThis, NumCommandLists, ppCommandLists);
+        return;
+    }
+
     // Debug: Log first few calls to verify hook is working
     int count = ++g_ECLCallCount;
     if (count <= 5) {
         HookLog("DX12: ExecuteCommandLists called #%d (queue=%p)", count, pThis);
     }
 
-    // Single-queue architecture: all overlay work is submitted to the game's
-    // queue Count command lists from all queues to detect real frames
+    // Count command lists from game queues to detect real frames
     g_CommandListsExecutedThisFrame.fetch_add(NumCommandLists, std::memory_order_relaxed);
 
-    // Register game's queue for overlay execution (single-queue architecture)
+    // Register game's queue for overlay execution
     DX12_SetCommandQueue(pThis);
 
     ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
@@ -2206,6 +2232,10 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
 
 void DX12_HookQueueVTable(ID3D12CommandQueue* queue) {
     if (!queue)
+        return;
+
+    // Never hook our own overlay queue to avoid re-entry in ECL
+    if (queue == g_State.overlayQueue)
         return;
 
     // We ALWAYS hook the queue for freeze detection heartbeat
