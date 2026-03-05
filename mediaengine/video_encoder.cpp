@@ -298,7 +298,27 @@ void VideoEncoder::SetDimensions(uint32_t w, uint32_t h) {
 
 bool VideoEncoder::CreateSharedCaptureTextures(uint32_t w, uint32_t h, uint32_t fmt, SharedMemoryLayout* sharedMem) {
     if (sharedCaptureTexturesCreated) {
-        return true;  // Already created
+        if (sharedCaptureTextureFormat == fmt) {
+            return true;  // Already created with same format
+        }
+        // Format changed (e.g. DX9 BGRA→DX11 RGBA) — destroy and recreate
+        DLL_Log("[VideoEncoder] KMT texture format changed %d -> %d, recreating", sharedCaptureTextureFormat, fmt);
+        for (int i = 0; i < 4; i++) {
+            if (sharedCaptureTextures[i]) {
+                sharedCaptureTextures[i]->Release();
+                sharedCaptureTextures[i] = nullptr;
+            }
+            sharedCaptureKmtHandles[i] = nullptr;
+        }
+        if (sharedCaptureFence) {
+            sharedCaptureFence->Release();
+            sharedCaptureFence = nullptr;
+        }
+        if (sharedCaptureFenceHandle) {
+            CloseHandle(sharedCaptureFenceHandle);
+            sharedCaptureFenceHandle = nullptr;
+        }
+        sharedCaptureTexturesCreated = false;
     }
 
     if (!d3d11Device) {
@@ -387,6 +407,7 @@ bool VideoEncoder::CreateSharedCaptureTextures(uint32_t w, uint32_t h, uint32_t 
         DLL_Log("[VideoEncoder] Published encoder KMT textures to shared memory");
     }
 
+    sharedCaptureTextureFormat = fmt;
     sharedCaptureTexturesCreated = true;
     return true;
 }
@@ -2588,6 +2609,7 @@ void VideoEncoder::CleanupResources() {
             sharedCaptureFenceHandle = nullptr;
         }
         sharedCaptureTexturesCreated = false;
+        sharedCaptureTextureFormat = 0;
     }
 
     if (bgraStagingTexture) {

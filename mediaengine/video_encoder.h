@@ -181,6 +181,7 @@ private:
     ID3D11Fence* sharedCaptureFence = nullptr;
     HANDLE sharedCaptureFenceHandle = nullptr;
     bool sharedCaptureTexturesCreated = false;
+    uint32_t sharedCaptureTextureFormat = 0;  // DXGI_FORMAT used to create KMT textures
 
     // Pointer to shared memory layout for SHMEM capture fallback
     struct SharedMemoryLayout* pSharedMem = nullptr;
