@@ -356,8 +356,11 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         "API...");
     // Detect DXVK wrapping a D3D API: d3d11.dll from non-System32 = DXVK.
     // Check d3d10/d3d10_1.dll too to distinguish DX10 vs DX11.
+    // VKD3D-Proton wraps D3D12: d3d12.dll from non-System32 = VKD3D-Proton.
     const char* apiName = "Vulkan";
-    if (IsDXVKDll("d3d11.dll")) {
+    if (IsDXVKDll("d3d12.dll")) {
+        apiName = "DX12 (VKD3D-Proton)";
+    } else if (IsDXVKDll("d3d11.dll")) {
         // Distinguish DX10 from DX11: DX10 games load d3d10.dll (even DXVK uses System32's d3d10.dll).
         // DX11-only games never load d3d10.dll. We check for its presence regardless of path.
         bool hasDX10 = (GetModuleHandleA("d3d10.dll") != nullptr || GetModuleHandleA("d3d10_1.dll") != nullptr);
