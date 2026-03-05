@@ -952,8 +952,8 @@ int MediaProcessMain(const AppConfig& config) {
                             std::string targetLower = target;
                             std::transform(targetLower.begin(), targetLower.end(), targetLower.begin(), ::tolower);
 
-                            const bool isExeTarget = targetLower.length() > 4 &&
-                                                     targetLower.substr(targetLower.length() - 4) == ".exe";
+                            const bool isExeTarget =
+                                targetLower.length() > 4 && targetLower.substr(targetLower.length() - 4) == ".exe";
 
                             if (!isExeTarget) {
                                 // Title-based match: no process handle needed
@@ -975,7 +975,8 @@ int MediaProcessMain(const AppConfig& config) {
                                             auto pos = procName.find_last_of("\\/");
                                             if (pos != std::string::npos)
                                                 procName = procName.substr(pos + 1);
-                                            std::transform(procName.begin(), procName.end(), procName.begin(), ::tolower);
+                                            std::transform(procName.begin(), procName.end(), procName.begin(),
+                                                           ::tolower);
                                             if (procName == targetLower) {
                                                 context->result = hwnd;
                                                 CloseHandle(hProcess);

@@ -23,8 +23,7 @@ namespace AntiLag2DX12 {
 // COM interface to the AMD Anti-Lag 2 driver extension.
 // IID: {44085fbe-e839-40c5-bf38-0ebc5ab4d0a6}
 static const GUID IID_IAmdExtAntiLagApi = {
-    0x44085fbe, 0xe839, 0x40c5, {0xbf, 0x38, 0x0e, 0xbc, 0x5a, 0xb4, 0xd0, 0xa6}
-};
+    0x44085fbe, 0xe839, 0x40c5, {0xbf, 0x38, 0x0e, 0xbc, 0x5a, 0xb4, 0xd0, 0xa6}};
 
 struct IAmdExtAntiLagApi : public IUnknown {
     virtual HRESULT UpdateAntiLagState(void* pData) = 0;
@@ -33,16 +32,16 @@ struct IAmdExtAntiLagApi : public IUnknown {
 // Persistent context — declare once, zero-initialize, pass address to all functions.
 struct Context {
     IAmdExtAntiLagApi* pAntiLagAPI = nullptr;
-    bool               enabled     = false;
-    unsigned int       maxFPS      = 0;
+    bool enabled = false;
+    unsigned int maxFPS = 0;
 };
 
 // v1 state struct: sets enable/disable and FPS cap
 struct APIData_v1 {
     unsigned int uiSize;
     unsigned int uiVersion;
-    unsigned int eMode;           // 1 = enabled, 2 = disabled
-    const char*  sControlStr;
+    unsigned int eMode;  // 1 = enabled, 2 = disabled
+    const char* sControlStr;
     unsigned int uiControlStrLength;
     unsigned int maxFPS;
 };
@@ -66,9 +65,8 @@ inline HRESULT Initialize(Context* context, ID3D12Device* device) {
     if (!hModule)
         return E_HANDLE;  // Not an AMD GPU or driver not loaded
 
-    typedef HRESULT(__cdecl* PFNAmdExtD3DCreateInterface)(IUnknown*, REFIID, void**);
-    auto createFn = reinterpret_cast<PFNAmdExtD3DCreateInterface>(
-        GetProcAddress(hModule, "AmdExtD3DCreateInterface"));
+    typedef HRESULT(__cdecl * PFNAmdExtD3DCreateInterface)(IUnknown*, REFIID, void**);
+    auto createFn = reinterpret_cast<PFNAmdExtD3DCreateInterface>(GetProcAddress(hModule, "AmdExtD3DCreateInterface"));
     if (!createFn)
         return E_NOINTERFACE;
 
@@ -76,10 +74,10 @@ inline HRESULT Initialize(Context* context, ID3D12Device* device) {
     if (hr == S_OK && context->pAntiLagAPI) {
         // Initialize with disabled state
         APIData_v1 data = {};
-        data.uiSize    = sizeof(data);
+        data.uiSize = sizeof(data);
         data.uiVersion = 1;
-        data.eMode     = 2;  // disabled
-        hr             = context->pAntiLagAPI->UpdateAntiLagState(&data);
+        data.eMode = 2;  // disabled
+        hr = context->pAntiLagAPI->UpdateAntiLagState(&data);
     }
     if (hr != S_OK)
         DeInitialize(context);
@@ -91,8 +89,8 @@ inline ULONG DeInitialize(Context* context) {
     ULONG refCount = 0;
     if (context) {
         if (context->pAntiLagAPI) {
-            refCount               = context->pAntiLagAPI->Release();
-            context->pAntiLagAPI   = nullptr;
+            refCount = context->pAntiLagAPI->Release();
+            context->pAntiLagAPI = nullptr;
         }
         context->enabled = false;
     }
@@ -108,13 +106,13 @@ inline HRESULT Update(Context* context, bool enable, unsigned int maxFPS) {
     // Only update driver state when settings change
     if (context->enabled != enable || context->maxFPS != maxFPS) {
         context->enabled = enable;
-        context->maxFPS  = maxFPS;
+        context->maxFPS = maxFPS;
 
         APIData_v1 data = {};
-        data.uiSize    = sizeof(data);
+        data.uiSize = sizeof(data);
         data.uiVersion = 1;
-        data.eMode     = enable ? 1 : 2;
-        data.maxFPS    = maxFPS;
+        data.eMode = enable ? 1 : 2;
+        data.maxFPS = maxFPS;
         context->pAntiLagAPI->UpdateAntiLagState(&data);
     }
 

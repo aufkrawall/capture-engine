@@ -2,13 +2,13 @@
 #define WINVER 0x0A00
 #define _WIN32_WINNT 0x0A00
 
-#include <windows.h>
 #include <avrt.h>
 #include <d3d10.h>
 #include <d3dcompiler.h>
 #include <dxgi.h>
 #include <dxgi1_3.h>
 #include <shellscalingapi.h>
+#include <windows.h>
 #include <wrl/client.h>
 #include <chrono>
 #include <cmath>
@@ -76,8 +76,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 static bool InitDX10(HWND hwnd) {
     UINT flags = D3D10_CREATE_DEVICE_BGRA_SUPPORT;
 
-    if (FAILED(D3D10CreateDevice(nullptr, D3D10_DRIVER_TYPE_HARDWARE, nullptr, flags, D3D10_SDK_VERSION,
-                                 &g_Device)))
+    if (FAILED(D3D10CreateDevice(nullptr, D3D10_DRIVER_TYPE_HARDWARE, nullptr, flags, D3D10_SDK_VERSION, &g_Device)))
         return false;
 
     // Get IDXGIFactory2 from device to support waitable swap chain
@@ -282,8 +281,8 @@ int main(int argc, char* argv[]) {
     DWORD winStyle = g_Fullscreen ? WS_POPUP : WS_OVERLAPPEDWINDOW;
     int posX = g_Fullscreen ? 0 : CW_USEDEFAULT;
     int posY = g_Fullscreen ? 0 : CW_USEDEFAULT;
-    HWND hwnd = CreateWindowW(WINDOW_CLASS, L"DX10 Test", winStyle, posX, posY,
-                              g_WindowWidth, g_WindowHeight, nullptr, nullptr, wc.hInstance, nullptr);
+    HWND hwnd = CreateWindowW(WINDOW_CLASS, L"DX10 Test", winStyle, posX, posY, g_WindowWidth, g_WindowHeight, nullptr,
+                              nullptr, wc.hInstance, nullptr);
     if (!InitDX10(hwnd))
         return 1;
 

@@ -588,7 +588,8 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     // FPS Limiter
     config.fpsLimiter.captureSyncEnabled = GetBool("FpsLimiter", "capture_sync_enabled", false);
     config.fpsLimiter.captureSyncMultiplier = GetInt("FpsLimiter", "capture_sync_multiplier", 1);
-    config.fpsLimiter.captureSyncLimiterMode = ParseLimiterMode(GetStr("FpsLimiter", "capture_sync_limiter_mode", "auto"));
+    config.fpsLimiter.captureSyncLimiterMode =
+        ParseLimiterMode(GetStr("FpsLimiter", "capture_sync_limiter_mode", "auto"));
     config.fpsLimiter.generalEnabled = GetBool("FpsLimiter", "general_enabled", false);
     config.fpsLimiter.generalFps = GetInt("FpsLimiter", "general_fps", 120);
     config.fpsLimiter.generalLimiterMode = ParseLimiterMode(GetStr("FpsLimiter", "general_limiter_mode", "auto"));

@@ -69,9 +69,9 @@ public:
             return false;
         }
 
-        unsigned fps  = targetFps_.load(std::memory_order_acquire);
-        HRESULT  hr   = AMD::AntiLag2DX12::Update(&context_, fps > 0, fps);
-        bool     ok   = (hr == S_OK);
+        unsigned fps = targetFps_.load(std::memory_order_acquire);
+        HRESULT hr = AMD::AntiLag2DX12::Update(&context_, fps > 0, fps);
+        bool ok = (hr == S_OK);
         if (!ok && updateSucceeded_.load(std::memory_order_acquire))
             HookLog("AntiLag2Limiter: Update failed hr=0x%08X", (unsigned)hr);
         updateSucceeded_.store(ok, std::memory_order_release);
@@ -89,10 +89,10 @@ public:
 
 private:
     AMD::AntiLag2DX12::Context context_{};
-    std::atomic<bool>          inited_{false};
-    std::atomic<bool>          available_{false};
-    std::atomic<bool>          updateSucceeded_{false};
-    std::atomic<unsigned>      targetFps_{0};
+    std::atomic<bool> inited_{false};
+    std::atomic<bool> available_{false};
+    std::atomic<bool> updateSucceeded_{false};
+    std::atomic<unsigned> targetFps_{0};
 };
 
 inline AntiLag2Limiter g_AntiLag2Limiter;

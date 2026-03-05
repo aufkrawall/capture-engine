@@ -946,6 +946,9 @@ bool Install(void* target, void* detour, void** outTrampoline) {
                             int trampolineOff = 0;
                             int srcOff = 0;
                             bool fixupFailed = false;
+                            uintptr_t chainPendingAbsCallTarget = 0;
+                            bool chainHasPendingAbsCall = false;
+                            int chainPendingCallInstrOff = -1;
                             while (srcOff < chainCopySize) {
                                 int instrLen = GetInstructionLength(chainCode + srcOff, is64bit);
                                 memcpy(chainTrampoline + trampolineOff, chainCode + srcOff, instrLen);
@@ -961,15 +964,30 @@ bool Install(void* target, void* detour, void** outTrampoline) {
                                     if (newDisp > INT32_MAX || newDisp < INT32_MIN) {
                                         uint8_t op = chainCode[srcOff];
                                         if (op == 0xE9 || op == 0xE8) {
-                                            // Convert to absolute 14-byte FF 25 jump/call
-                                            chainTrampoline[trampolineOff] = 0xFF;
-                                            chainTrampoline[trampolineOff + 1] = (op == 0xE9) ? 0x25 : 0x15;
-                                            chainTrampoline[trampolineOff + 2] = 0;
-                                            chainTrampoline[trampolineOff + 3] = 0;
-                                            chainTrampoline[trampolineOff + 4] = 0;
-                                            chainTrampoline[trampolineOff + 5] = 0;
-                                            memcpy(chainTrampoline + trampolineOff + 6, &absTarget, 8);
-                                            trampolineOff += 14;
+                                            if (op == 0xE9) {
+                                                // JMP: FF 25 00 00 00 00 [8-byte address]
+                                                chainTrampoline[trampolineOff] = 0xFF;
+                                                chainTrampoline[trampolineOff + 1] = 0x25;
+                                                chainTrampoline[trampolineOff + 2] = 0;
+                                                chainTrampoline[trampolineOff + 3] = 0;
+                                                chainTrampoline[trampolineOff + 4] = 0;
+                                                chainTrampoline[trampolineOff + 5] = 0;
+                                                memcpy(chainTrampoline + trampolineOff + 6, &absTarget, 8);
+                                                trampolineOff += 14;
+                                            } else {
+                                                // CALL: write FF 15 with placeholder; patch disp
+                                                // after loop+JMP-back when ptr location is known.
+                                                chainPendingCallInstrOff = trampolineOff;
+                                                chainTrampoline[trampolineOff] = 0xFF;
+                                                chainTrampoline[trampolineOff + 1] = 0x15;
+                                                chainTrampoline[trampolineOff + 2] = 0;  // placeholder
+                                                chainTrampoline[trampolineOff + 3] = 0;
+                                                chainTrampoline[trampolineOff + 4] = 0;
+                                                chainTrampoline[trampolineOff + 5] = 0;
+                                                trampolineOff += 6;
+                                                chainPendingAbsCallTarget = absTarget;
+                                                chainHasPendingAbsCall = true;
+                                            }
                                             srcOff += instrLen;
                                             continue;
                                         }
@@ -995,6 +1013,16 @@ bool Install(void* target, void* detour, void** outTrampoline) {
                             int32_t jmpOffset =
                                 (int32_t)((uintptr_t)(chainCode + chainCopySize) - (uintptr_t)(jmpSite + 5));
                             memcpy(jmpSite + 1, &jmpOffset, 4);
+                            // If a CALL abs conversion was deferred, its ptr goes after the
+                            // E9 JMP-back. Patch the displacement in the FF 15 instruction now
+                            // that we know both locations.
+                            if (chainHasPendingAbsCall) {
+                                uint8_t* ptrAddr = jmpSite + 5;  // right after the 5-byte E9 JMP
+                                int32_t disp =
+                                    (int32_t)((uint8_t*)ptrAddr - (chainTrampoline + chainPendingCallInstrOff + 6));
+                                memcpy(chainTrampoline + chainPendingCallInstrOff + 2, &disp, 4);
+                                memcpy(ptrAddr, &chainPendingAbsCallTarget, 8);
+                            }
                             LogDirect("Chain trampoline: %d src bytes -> %d trampoline bytes, JMP -> %p (rel=0x%08X)",
                                       chainCopySize, trampolineOff, (void*)(chainCode + chainCopySize),
                                       (unsigned)jmpOffset);
@@ -1111,6 +1139,10 @@ bool Install(void* target, void* detour, void** outTrampoline) {
     // Copy original instructions to trampoline, fixing up RIP-relative refs
     int trampolineOffset = 0;
     int srcOffset = 0;
+    // For CALL rel32→absolute: write FF 15 [placeholder] now, patch displacement after loop.
+    uintptr_t pendingAbsCallTarget = 0;
+    bool hasPendingAbsCall = false;
+    int pendingCallInstrOffset = -1;  // trampoline offset where the FF 15 CALL was written
     while (srcOffset < copySize) {
         int instrLen = GetInstructionLength(code + srcOffset, is64bit);
 
@@ -1146,22 +1178,36 @@ bool Install(void* target, void* detour, void** outTrampoline) {
                 // Check if this is a JMP rel32 (0xE9) or CALL rel32 (0xE8) that we can convert to absolute
                 uint8_t opcode = code[srcOffset];
                 if (opcode == 0xE9 || opcode == 0xE8) {
-                    // Convert to absolute jump/call using 14-byte sequence:
-                    // FF 25 00 00 00 00 [8-byte absolute address]
-                    // For JMP: just jump to absTarget
-                    // For CALL: same but it's a call
                     HookLog("InlineHook: Converting %s rel32 to absolute at offset %d (target=%p)",
                             opcode == 0xE9 ? "JMP" : "CALL", srcOffset, (void*)absTarget);
 
-                    // Write absolute jump/call
-                    trampoline[trampolineOffset] = 0xFF;                              // JMP/CALL [rip+0]
-                    trampoline[trampolineOffset + 1] = opcode == 0xE9 ? 0x25 : 0x15;  // 0x25=JMP, 0x15=CALL
-                    trampoline[trampolineOffset + 2] = 0x00;
-                    trampoline[trampolineOffset + 3] = 0x00;
-                    trampoline[trampolineOffset + 4] = 0x00;
-                    trampoline[trampolineOffset + 5] = 0x00;
-                    memcpy(trampoline + trampolineOffset + 6, &absTarget, 8);
-                    trampolineOffset += 14;  // 14 bytes for absolute jump
+                    if (opcode == 0xE9) {
+                        // JMP: FF 25 00 00 00 00 [8-byte address] (14 bytes).
+                        // Never returns, so pointer-after-instruction layout is fine.
+                        trampoline[trampolineOffset] = 0xFF;
+                        trampoline[trampolineOffset + 1] = 0x25;
+                        trampoline[trampolineOffset + 2] = 0x00;
+                        trampoline[trampolineOffset + 3] = 0x00;
+                        trampoline[trampolineOffset + 4] = 0x00;
+                        trampoline[trampolineOffset + 5] = 0x00;
+                        memcpy(trampoline + trampolineOffset + 6, &absTarget, 8);
+                        trampolineOffset += 14;
+                    } else {
+                        // CALL: write FF 15 with a placeholder displacement; we patch the
+                        // real disp AFTER the loop+WriteJump when we know the ptr location.
+                        // Return address = trampolineOffset+6 (post-fetch RIP).
+                        // Ptr is written after WriteJump; disp is patched at that point.
+                        pendingCallInstrOffset = trampolineOffset;
+                        trampoline[trampolineOffset] = 0xFF;
+                        trampoline[trampolineOffset + 1] = 0x15;
+                        trampoline[trampolineOffset + 2] = 0;  // placeholder
+                        trampoline[trampolineOffset + 3] = 0;
+                        trampoline[trampolineOffset + 4] = 0;
+                        trampoline[trampolineOffset + 5] = 0;
+                        trampolineOffset += 6;  // only the CALL instruction; pointer written later
+                        pendingAbsCallTarget = absTarget;
+                        hasPendingAbsCall = true;
+                    }
                     srcOffset += instrLen;
                     continue;  // Skip the normal fixup path
                 }
@@ -1190,6 +1236,20 @@ bool Install(void* target, void* detour, void** outTrampoline) {
             copySize);
     WriteJump(trampoline + trampolineOffset, jumpTarget);
     trampolineOffset += PATCH_SIZE;
+
+    // If a CALL rel32→absolute was converted, its target pointer goes here
+    // (after the WriteJump), so the CALL return address correctly falls through
+    // to the WriteJump continuation above.
+    if (hasPendingAbsCall) {
+        // Ptr lands here (after WriteJump). Patch the displacement back into the
+        // FF 15 instruction: disp = ptrOffset - returnAddrOffset
+        //   returnAddr = trampoline + pendingCallInstrOffset + 6  (post-fetch RIP)
+        //   ptrOffset   = trampoline + trampolineOffset
+        int32_t disp = trampolineOffset - (pendingCallInstrOffset + 6);
+        memcpy(trampoline + pendingCallInstrOffset + 2, &disp, 4);
+        memcpy(trampoline + trampolineOffset, &pendingAbsCallTarget, 8);
+        trampolineOffset += 8;
+    }
 
     // Dump trampoline bytes for diagnosis
     HookLog("InlineHook: Trampoline bytes (%d bytes total):", trampolineOffset);
@@ -1593,6 +1653,9 @@ void* InstallDeepHook(void* target, void* wrapperFn) {
     // Copy displaced bytes [resumeOffset, resumeOffset+displaceSize) with RIP-relative fixups
     int srcOff = 0;
     bool fixupFailed = false;
+    uintptr_t deepPendingAbsCallTarget = 0;
+    bool deepHasPendingAbsCall = false;
+    int deepPendingCallInstrOff = -1;
     while (srcOff < displaceSize) {
         int instrLen = GetInstructionLength(resumeCode + srcOff, true);
         memcpy(trampoline + tOff, resumeCode + srcOff, instrLen);
@@ -1608,14 +1671,30 @@ void* InstallDeepHook(void* target, void* wrapperFn) {
             if (newDisp > INT32_MAX || newDisp < INT32_MIN) {
                 uint8_t op = resumeCode[srcOff];
                 if (op == 0xE9 || op == 0xE8) {
-                    trampoline[tOff] = 0xFF;
-                    trampoline[tOff + 1] = (op == 0xE9) ? 0x25 : 0x15;
-                    trampoline[tOff + 2] = 0;
-                    trampoline[tOff + 3] = 0;
-                    trampoline[tOff + 4] = 0;
-                    trampoline[tOff + 5] = 0;
-                    memcpy(trampoline + tOff + 6, &absTarget, 8);
-                    tOff += 14;
+                    if (op == 0xE9) {
+                        // JMP: FF 25 00 00 00 00 [8-byte address]
+                        trampoline[tOff] = 0xFF;
+                        trampoline[tOff + 1] = 0x25;
+                        trampoline[tOff + 2] = 0;
+                        trampoline[tOff + 3] = 0;
+                        trampoline[tOff + 4] = 0;
+                        trampoline[tOff + 5] = 0;
+                        memcpy(trampoline + tOff + 6, &absTarget, 8);
+                        tOff += 14;
+                    } else {
+                        // CALL: write FF 15 with placeholder; patch disp after the
+                        // JMP-continue block when we know the ptr location.
+                        deepPendingCallInstrOff = tOff;
+                        trampoline[tOff] = 0xFF;
+                        trampoline[tOff + 1] = 0x15;
+                        trampoline[tOff + 2] = 0;  // placeholder
+                        trampoline[tOff + 3] = 0;
+                        trampoline[tOff + 4] = 0;
+                        trampoline[tOff + 5] = 0;
+                        tOff += 6;
+                        deepPendingAbsCallTarget = absTarget;
+                        deepHasPendingAbsCall = true;
+                    }
                     srcOff += instrLen;
                     continue;
                 }
@@ -1647,6 +1726,16 @@ void* InstallDeepHook(void* target, void* wrapperFn) {
     trampoline[tOff++] = 0x00;
     memcpy(&trampoline[tOff], &continueAddr, 8);
     tOff += 8;
+
+    // If a CALL abs conversion was deferred, write its target pointer here and
+    // patch the displacement back into the FF 15 instruction now that we know
+    // the exact ptr location.
+    if (deepHasPendingAbsCall) {
+        int32_t disp = tOff - (deepPendingCallInstrOff + 6);
+        memcpy(trampoline + deepPendingCallInstrOff + 2, &disp, 4);
+        memcpy(&trampoline[tOff], &deepPendingAbsCallTarget, 8);
+        tOff += 8;
+    }
 
     FlushInstructionCache(GetCurrentProcess(), trampoline, tOff);
 

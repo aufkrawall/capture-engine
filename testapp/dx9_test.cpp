@@ -1,8 +1,8 @@
 // DX9 Test App for Capture + FPS Limiter Testing
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
 #include <avrt.h>
 #include <d3d9.h>
+#include <windows.h>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -140,8 +140,8 @@ int main(int argc, char* argv[]) {
     DWORD winStyle = g_Fullscreen ? WS_POPUP : WS_OVERLAPPEDWINDOW;
     int posX = g_Fullscreen ? 0 : CW_USEDEFAULT;
     int posY = g_Fullscreen ? 0 : CW_USEDEFAULT;
-    HWND hwnd = CreateWindowW(L"DX9Test", L"DX9 Test", winStyle, posX, posY, g_WindowWidth,
-                              g_WindowHeight, nullptr, nullptr, wc.hInstance, nullptr);
+    HWND hwnd = CreateWindowW(L"DX9Test", L"DX9 Test", winStyle, posX, posY, g_WindowWidth, g_WindowHeight, nullptr,
+                              nullptr, wc.hInstance, nullptr);
     if (!InitDX9(hwnd))
         return 1;
     ShowWindow(hwnd, SW_SHOW);

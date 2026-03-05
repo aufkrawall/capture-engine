@@ -6,12 +6,12 @@
 // clang-format on
 #include <intrin.h>
 #include <atomic>
+#include "antilag2_limiter.h"
+#include "fg_detection.h"
 #include "hook_common.h"
 #include "hook_context.h"
 #include "ipc_client.h"
-#include "fg_detection.h"
 #include "reflex_limiter.h"
-#include "antilag2_limiter.h"
 #include "xell_limiter.h"
 
 // LimiterMode values matching the enum in config.h (duplicated here to avoid
@@ -19,7 +19,7 @@
 namespace LimiterModeValues {
 constexpr uint32_t kBasic = 0;
 constexpr uint32_t kFGFallback = 1;
-constexpr uint32_t kNative = 2;     // NVIDIA Reflex
+constexpr uint32_t kNative = 2;  // NVIDIA Reflex
 constexpr uint32_t kAuto = 3;
 constexpr uint32_t kAntiLag2 = 4;  // AMD Anti-Lag 2
 constexpr uint32_t kXeLL = 5;      // Intel XeLL
@@ -187,8 +187,8 @@ public:
         SYSTEMTIME st;
         GetLocalTime(&st);
         char line[600];
-        int len = snprintf(line, sizeof(line) - 1, "[%02u:%02u:%02u.%03u] %s\n",
-                           st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, buf);
+        int len = snprintf(line, sizeof(line) - 1, "[%02u:%02u:%02u.%03u] %s\n", st.wHour, st.wMinute, st.wSecond,
+                           st.wMilliseconds, buf);
         if (len <= 0)
             return;
         HANDLE hFile = CreateFileA(traceLogPath_, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
@@ -339,8 +339,10 @@ public:
         // FG implies at least 2x output (1 real + 1 interpolated per base frame).
         // Pattern detection may determine higher (3x/4x for multi-frame gen),
         // but 2x is the safe minimum when FG is API-confirmed.
-        if (fgActive && fgMultiplier < 2) fgMultiplier = 2;
-        if (fgMultiplier > 4) fgMultiplier = 4;
+        if (fgActive && fgMultiplier < 2)
+            fgMultiplier = 2;
+        if (fgMultiplier > 4)
+            fgMultiplier = 4;
 
         uint32_t effectiveMode = configuredMode;
 
@@ -376,30 +378,36 @@ public:
         // When FG is active, the output frame rate is fgMultiplier × base rate.
         // To hit targetFps output, the base game needs to render at targetFps / fgMultiplier.
         int effectiveTargetFps = targetFps;
-        bool isNativeMode = (effectiveMode == LimiterModeValues::kNative ||
-                             effectiveMode == LimiterModeValues::kAntiLag2 ||
-                             effectiveMode == LimiterModeValues::kXeLL);
+        bool isNativeMode =
+            (effectiveMode == LimiterModeValues::kNative || effectiveMode == LimiterModeValues::kAntiLag2 ||
+             effectiveMode == LimiterModeValues::kXeLL);
         if (fgActive && (effectiveMode == LimiterModeValues::kFGFallback || isNativeMode)) {
             effectiveTargetFps = targetFps / fgMultiplier;
-            if (effectiveTargetFps < 1) effectiveTargetFps = 1;
+            if (effectiveTargetFps < 1)
+                effectiveTargetFps = 1;
         }
 
         // Log mode transitions
         if (!loggedActive_ || lastTargetFps_ != effectiveTargetFps || lastUsedCaptureSync_ != usingCaptureSync ||
             lastEffectiveMode_ != effectiveMode) {
             const char* modeStr = "basic";
-            if (effectiveMode == LimiterModeValues::kFGFallback) modeStr = "fg_fallback";
-            else if (effectiveMode == LimiterModeValues::kNative) modeStr = "native(reflex)";
-            else if (effectiveMode == LimiterModeValues::kAntiLag2) modeStr = "anti_lag2";
-            else if (effectiveMode == LimiterModeValues::kXeLL) modeStr = "xell";
-            else if (effectiveMode == LimiterModeValues::kAuto) modeStr = "auto";
+            if (effectiveMode == LimiterModeValues::kFGFallback)
+                modeStr = "fg_fallback";
+            else if (effectiveMode == LimiterModeValues::kNative)
+                modeStr = "native(reflex)";
+            else if (effectiveMode == LimiterModeValues::kAntiLag2)
+                modeStr = "anti_lag2";
+            else if (effectiveMode == LimiterModeValues::kXeLL)
+                modeStr = "xell";
+            else if (effectiveMode == LimiterModeValues::kAuto)
+                modeStr = "auto";
 
             TraceLog("Apply: ACTIVE sync=%s limiter=%s target=%d effective=%d fg=%d fgMult=%d",
-                     usingCaptureSync ? "capture" : "general", modeStr, targetFps, effectiveTargetFps,
-                     fgActive ? 1 : 0, fgMultiplier);
+                     usingCaptureSync ? "capture" : "general", modeStr, targetFps, effectiveTargetFps, fgActive ? 1 : 0,
+                     fgMultiplier);
             HookLog("FPS Limiter: Active (sync=%s, limiter=%s, target=%d, effective=%d, fg=%d/%dx, isRec=%d)",
-                    usingCaptureSync ? "capture" : "general", modeStr, targetFps, effectiveTargetFps,
-                    fgActive ? 1 : 0, fgMultiplier, isRecording ? 1 : 0);
+                    usingCaptureSync ? "capture" : "general", modeStr, targetFps, effectiveTargetFps, fgActive ? 1 : 0,
+                    fgMultiplier, isRecording ? 1 : 0);
             loggedActive_ = true;
             lastTargetFps_ = effectiveTargetFps;
             lastUsedCaptureSync_ = usingCaptureSync;
@@ -611,7 +619,8 @@ public:
             // If OpenEvent failed, we'll retry next frame (limiter might not be ready yet)
             if (releaseEvent && requestEvent) {
                 eventsInitialized = true;
-                TraceLog("Apply: Events OK release=%p request=%p target=%d", releaseEvent, requestEvent, effectiveTargetFps);
+                TraceLog("Apply: Events OK release=%p request=%p target=%d", releaseEvent, requestEvent,
+                         effectiveTargetFps);
                 HookLog(
                     "FPS Limiter: Events Initialized (target: %d FPS, release=%p, "
                     "request=%p)",
@@ -799,11 +808,11 @@ private:
     int lastTargetFps_ = 0;
     bool lastUsedCaptureSync_ = false;
     uint32_t lastEffectiveMode_ = LimiterModeValues::kAuto;  // Track mode changes for logging
-    bool reflexInitAttempted_ = false;                        // Lazy init flag for Reflex hook
-    bool reflexLimiterActive_ = false;                        // True when Reflex is handling pacing
-    bool reflexDeviceProvided_ = false;                       // True once we've given device to ReflexLimiter
-    bool antilag2InitAttempted_ = false;                      // Lazy init flag for Anti-Lag 2
-    bool xellInitAttempted_ = false;                          // Lazy init flag for XeLL
+    bool reflexInitAttempted_ = false;                       // Lazy init flag for Reflex hook
+    bool reflexLimiterActive_ = false;                       // True when Reflex is handling pacing
+    bool reflexDeviceProvided_ = false;                      // True once we've given device to ReflexLimiter
+    bool antilag2InitAttempted_ = false;                     // Lazy init flag for Anti-Lag 2
+    bool xellInitAttempted_ = false;                         // Lazy init flag for XeLL
     int64_t lastApplyReturnQpc = 0;                // QPC tick when Apply() last returned from wait (dedup guard)
     int64_t localTargetTime_ = 0;                  // QPC target for local capture sync cadence
     uint32_t localFrameCount_ = 0;                 // Frame count for local capture sync stats

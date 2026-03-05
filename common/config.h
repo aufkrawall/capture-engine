@@ -91,12 +91,18 @@ enum class LimiterMode : uint32_t {
 };
 
 inline LimiterMode ParseLimiterMode(const std::string& val) {
-    if (val == "basic") return LimiterMode::kBasic;
-    if (val == "fg_fallback" || val == "fallback") return LimiterMode::kFGFallback;
-    if (val == "native" || val == "reflex") return LimiterMode::kNative;
-    if (val == "anti_lag2" || val == "antilag2") return LimiterMode::kAntiLag2;
-    if (val == "xell" || val == "intel") return LimiterMode::kXeLL;
-    if (val == "auto") return LimiterMode::kAuto;
+    if (val == "basic")
+        return LimiterMode::kBasic;
+    if (val == "fg_fallback" || val == "fallback")
+        return LimiterMode::kFGFallback;
+    if (val == "native" || val == "reflex")
+        return LimiterMode::kNative;
+    if (val == "anti_lag2" || val == "antilag2")
+        return LimiterMode::kAntiLag2;
+    if (val == "xell" || val == "intel")
+        return LimiterMode::kXeLL;
+    if (val == "auto")
+        return LimiterMode::kAuto;
     return LimiterMode::kAuto;  // Default to auto
 }
 

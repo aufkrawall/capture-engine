@@ -2,13 +2,13 @@
 #define WIN32_LEAN_AND_MEAN
 #define WINVER 0x0A00
 #define _WIN32_WINNT 0x0A00
-#include <windows.h>
 #include <avrt.h>
 #include <d3d11.h>
 #include <d3d11_1.h>
 #include <dxgi.h>
 #include <dxgi1_3.h>
 #include <shellscalingapi.h>
+#include <windows.h>
 #include <wrl/client.h>
 #include <chrono>
 #include <cmath>
@@ -73,8 +73,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 bool InitDX11(HWND hwnd) {
     D3D_FEATURE_LEVEL featureLevels[] = {D3D_FEATURE_LEVEL_11_0};
     UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
-    if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, featureLevels, 1,
-                                 D3D11_SDK_VERSION, &g_Device, nullptr, &g_Context)))
+    if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, featureLevels, 1, D3D11_SDK_VERSION,
+                                 &g_Device, nullptr, &g_Context)))
         return false;
 
     // Get IDXGIFactory2 from the device for waitable swap chain support
@@ -194,8 +194,8 @@ int main(int argc, char* argv[]) {
     DWORD winStyle = g_Fullscreen ? WS_POPUP : WS_OVERLAPPEDWINDOW;
     int posX = g_Fullscreen ? 0 : CW_USEDEFAULT;
     int posY = g_Fullscreen ? 0 : CW_USEDEFAULT;
-    HWND hwnd = CreateWindowW(WINDOW_CLASS, L"DX11 Test", winStyle, posX, posY, g_WindowWidth,
-                              g_WindowHeight, nullptr, nullptr, wc.hInstance, nullptr);
+    HWND hwnd = CreateWindowW(WINDOW_CLASS, L"DX11 Test", winStyle, posX, posY, g_WindowWidth, g_WindowHeight, nullptr,
+                              nullptr, wc.hInstance, nullptr);
     if (!InitDX11(hwnd))
         return 1;
     ShowWindow(hwnd, SW_SHOW);

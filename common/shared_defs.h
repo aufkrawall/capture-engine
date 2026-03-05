@@ -539,8 +539,8 @@ public:
         std::atomic<int32_t> captureSyncMultiplier_{0};  // 1-8
         std::atomic<uint32_t> generalEnabled_{0};
         std::atomic<int32_t> generalFps_{0};
-        std::atomic<int32_t> captureFps_{0};  // Video capture FPS (set when recording starts)
-        std::atomic<uint32_t> useVFR_{0};     // If true, limiter acts as passthrough
+        std::atomic<int32_t> captureFps_{0};               // Video capture FPS (set when recording starts)
+        std::atomic<uint32_t> useVFR_{0};                  // If true, limiter acts as passthrough
         std::atomic<uint32_t> captureSyncLimiterMode_{3};  // LimiterMode enum (default: kAuto=3)
         std::atomic<uint32_t> generalLimiterMode_{3};      // LimiterMode enum (default: kAuto=3)
 

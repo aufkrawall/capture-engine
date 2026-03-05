@@ -1,9 +1,9 @@
 // OpenGL Test App for Capture + FPS Limiter Testing
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <avrt.h>
 #include <GL/gl.h>
 #include <GL/glu.h>
+#include <avrt.h>
+#include <windows.h>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -209,8 +209,8 @@ int main(int argc, char* argv[]) {
         winH = wr.bottom - wr.top;
     }
 
-    HWND hWnd = CreateWindow("OpenGLTestApp", "OpenGL Test", winStyle, posX, posY,
-                             winW, winH, nullptr, nullptr, wc.hInstance, nullptr);
+    HWND hWnd = CreateWindow("OpenGLTestApp", "OpenGL Test", winStyle, posX, posY, winW, winH, nullptr, nullptr,
+                             wc.hInstance, nullptr);
 
     // Ensure window is actually shown and not just a title bar
     ShowWindow(hWnd, SW_SHOW);

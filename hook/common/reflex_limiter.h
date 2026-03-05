@@ -21,8 +21,8 @@
 #include <windows.h>
 // clang-format on
 #include <atomic>
-#include "reflex_defs.h"
 #include "hook_common.h"
+#include "reflex_defs.h"
 
 class ReflexLimiter {
 public:
@@ -40,28 +40,26 @@ public:
             return false;
         }
 
-        origQueryInterface_ = reinterpret_cast<PFN_NvAPI_QueryInterface>(
-            GetProcAddress(hNvApi, "nvapi_QueryInterface"));
+        origQueryInterface_ =
+            reinterpret_cast<PFN_NvAPI_QueryInterface>(GetProcAddress(hNvApi, "nvapi_QueryInterface"));
         if (!origQueryInterface_) {
             HookLog("ReflexLimiter: nvapi_QueryInterface not found");
             return false;
         }
 
         // Resolve original function pointers
-        origSetSleepMode_ = reinterpret_cast<PFN_NvAPI_D3D_SetSleepMode>(
-            origQueryInterface_(NVAPI_ID_D3D_SetSleepMode));
-        origSleep_ = reinterpret_cast<PFN_NvAPI_D3D_Sleep>(
-            origQueryInterface_(NVAPI_ID_D3D_Sleep));
+        origSetSleepMode_ =
+            reinterpret_cast<PFN_NvAPI_D3D_SetSleepMode>(origQueryInterface_(NVAPI_ID_D3D_SetSleepMode));
+        origSleep_ = reinterpret_cast<PFN_NvAPI_D3D_Sleep>(origQueryInterface_(NVAPI_ID_D3D_Sleep));
 
         if (!origSetSleepMode_ || !origSleep_) {
-            HookLog("ReflexLimiter: SetSleepMode=%p Sleep=%p (incomplete)",
-                     (void*)origSetSleepMode_, (void*)origSleep_);
+            HookLog("ReflexLimiter: SetSleepMode=%p Sleep=%p (incomplete)", (void*)origSetSleepMode_,
+                    (void*)origSleep_);
             return false;
         }
 
         available_.store(true, std::memory_order_release);
-        HookLog("ReflexLimiter: Ready (SetSleepMode=%p, Sleep=%p)",
-                 (void*)origSetSleepMode_, (void*)origSleep_);
+        HookLog("ReflexLimiter: Ready (SetSleepMode=%p, Sleep=%p)", (void*)origSetSleepMode_, (void*)origSleep_);
         return true;
     }
 
@@ -154,8 +152,12 @@ public:
     }
 
     // Get original function pointers (for pass-through when not overriding)
-    PFN_NvAPI_D3D_SetSleepMode GetOrigSetSleepMode() const { return origSetSleepMode_; }
-    PFN_NvAPI_D3D_Sleep GetOrigSleep() const { return origSleep_; }
+    PFN_NvAPI_D3D_SetSleepMode GetOrigSetSleepMode() const {
+        return origSetSleepMode_;
+    }
+    PFN_NvAPI_D3D_Sleep GetOrigSleep() const {
+        return origSleep_;
+    }
 
 private:
     std::atomic<bool> inited_{false};

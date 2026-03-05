@@ -887,6 +887,17 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
                 LayerLog("Vulkan Layer: DXVK d3d9 - skipping overlay, initializing Vulkan capture (%ux%u)",
                          sd->extent.width, sd->extent.height);
                 InitializeCapture(device, *pSwapchain, sd->format, sd->extent, count);
+                // Ensure vulkanLayerActive is set: may have been missed at vkCreateInstance if IPC
+                // wasn't ready yet. DX9 hook checks this flag to decide whether to use Vulkan
+                // capture vs its own staging path. Setting it here (before any Present) guarantees
+                // the Vulkan layer capture path is used for all frames.
+                auto* shmPtr = g_IPCClient.GetSharedMem();
+                if (shmPtr && !shmPtr->runtimeState.vulkanLayerActive.load(std::memory_order_acquire)) {
+                    LayerLog(
+                        "Vulkan Layer: DXVK d3d9 swapchain - setting vulkanLayerActive=true (deferred from "
+                        "vkCreateInstance)");
+                    shmPtr->runtimeState.vulkanLayerActive.store(true, std::memory_order_release);
+                }
             } else {
                 InitializeOverlay(device, *pSwapchain, sd->format, sd->extent, count, sd->images.data(), window);
                 LayerLog(

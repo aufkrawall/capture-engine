@@ -14,10 +14,10 @@
 // clang-format off
 #include <windows.h>
 // clang-format on
-#include <atomic>
 #include <d3d12.h>
-#include "xell_defs.h"
+#include <atomic>
 #include "hook_common.h"
+#include "xell_defs.h"
 
 class XeLLLimiter {
 public:
@@ -79,17 +79,17 @@ public:
         // Update driver params only when interval changes
         uint32_t intervalUs = targetIntervalUs_.load(std::memory_order_acquire);
         if (intervalUs != lastIntervalUs_) {
-            lastIntervalUs_          = intervalUs;
+            lastIntervalUs_ = intervalUs;
             xell_sleep_params_t params = {};
             params.minimumIntervalUs = intervalUs;
-            params.bLowLatencyMode   = 1;
-            params.bLowLatencyBoost  = 0;
+            params.bLowLatencyMode = 1;
+            params.bLowLatencyBoost = 0;
             xellSetSleepMode_(ctx_, &params);
         }
 
-        uint32_t      frameId = frameCounter_.fetch_add(1, std::memory_order_relaxed);
-        xell_result_t result  = xellSleep_(ctx_, frameId);
-        bool          ok      = (result == XELL_RESULT_SUCCESS);
+        uint32_t frameId = frameCounter_.fetch_add(1, std::memory_order_relaxed);
+        xell_result_t result = xellSleep_(ctx_, frameId);
+        bool ok = (result == XELL_RESULT_SUCCESS);
         if (!ok && sleepSucceeded_.load(std::memory_order_acquire))
             HookLog("XeLLLimiter: Sleep failed (%d)", (int)result);
         sleepSucceeded_.store(ok, std::memory_order_release);
@@ -119,29 +119,27 @@ private:
         if (!hMod)
             return false;
 
-        xellD3D12CreateContext_ = reinterpret_cast<PFN_xellD3D12CreateContext>(
-            GetProcAddress(hMod, "xellD3D12CreateContext"));
-        xellDestroyContext_ = reinterpret_cast<PFN_xellDestroyContext>(
-            GetProcAddress(hMod, "xellDestroyContext"));
-        xellSetSleepMode_ = reinterpret_cast<PFN_xellSetSleepMode>(
-            GetProcAddress(hMod, "xellSetSleepMode"));
+        xellD3D12CreateContext_ =
+            reinterpret_cast<PFN_xellD3D12CreateContext>(GetProcAddress(hMod, "xellD3D12CreateContext"));
+        xellDestroyContext_ = reinterpret_cast<PFN_xellDestroyContext>(GetProcAddress(hMod, "xellDestroyContext"));
+        xellSetSleepMode_ = reinterpret_cast<PFN_xellSetSleepMode>(GetProcAddress(hMod, "xellSetSleepMode"));
         xellSleep_ = reinterpret_cast<PFN_xellSleep>(GetProcAddress(hMod, "xellSleep"));
 
         return xellD3D12CreateContext_ && xellDestroyContext_ && xellSetSleepMode_ && xellSleep_;
     }
 
-    xell_context_handle_t      ctx_                    = nullptr;
-    PFN_xellD3D12CreateContext xellD3D12CreateContext_  = nullptr;
-    PFN_xellDestroyContext     xellDestroyContext_      = nullptr;
-    PFN_xellSetSleepMode       xellSetSleepMode_        = nullptr;
-    PFN_xellSleep              xellSleep_               = nullptr;
+    xell_context_handle_t ctx_ = nullptr;
+    PFN_xellD3D12CreateContext xellD3D12CreateContext_ = nullptr;
+    PFN_xellDestroyContext xellDestroyContext_ = nullptr;
+    PFN_xellSetSleepMode xellSetSleepMode_ = nullptr;
+    PFN_xellSleep xellSleep_ = nullptr;
 
-    std::atomic<bool>     inited_{false};
-    std::atomic<bool>     available_{false};
-    std::atomic<bool>     sleepSucceeded_{false};
+    std::atomic<bool> inited_{false};
+    std::atomic<bool> available_{false};
+    std::atomic<bool> sleepSucceeded_{false};
     std::atomic<uint32_t> targetIntervalUs_{0};
     std::atomic<uint32_t> frameCounter_{0};
-    uint32_t              lastIntervalUs_ = UINT32_MAX;
+    uint32_t lastIntervalUs_ = UINT32_MAX;
 };
 
 inline XeLLLimiter g_XeLLLimiter;

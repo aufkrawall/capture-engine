@@ -266,6 +266,6 @@ TEST(LimiterModeParseTest, ParsesAllValues) {
     EXPECT_EQ(ParseLimiterMode("xell"), LimiterMode::kXeLL);
     EXPECT_EQ(ParseLimiterMode("intel"), LimiterMode::kXeLL);
     EXPECT_EQ(ParseLimiterMode("auto"), LimiterMode::kAuto);
-    EXPECT_EQ(ParseLimiterMode(""), LimiterMode::kAuto);       // Default
-    EXPECT_EQ(ParseLimiterMode("invalid"), LimiterMode::kAuto); // Default
+    EXPECT_EQ(ParseLimiterMode(""), LimiterMode::kAuto);         // Default
+    EXPECT_EQ(ParseLimiterMode("invalid"), LimiterMode::kAuto);  // Default
 }

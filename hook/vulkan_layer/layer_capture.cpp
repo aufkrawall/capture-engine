@@ -240,10 +240,30 @@ static uint32_t VkFormatToDXGI(VkFormat vkFormat) {
     switch (vkFormat) {
         case VK_FORMAT_B8G8R8A8_UNORM:
             return DXGI_FORMAT_B8G8R8A8_UNORM;
+        case VK_FORMAT_B8G8R8A8_SRGB:
+            // Map SRGB to UNORM: same byte layout, avoids SRGB shared-texture compatibility issues
+            return DXGI_FORMAT_B8G8R8A8_UNORM;
         case VK_FORMAT_R8G8B8A8_UNORM:
+            return DXGI_FORMAT_R8G8B8A8_UNORM;
+        case VK_FORMAT_R8G8B8A8_SRGB:
             return DXGI_FORMAT_R8G8B8A8_UNORM;
         default:
             return DXGI_FORMAT_UNKNOWN;
+    }
+}
+
+// Normalize SRGB swapchain formats to their UNORM equivalents for D3D11 interop.
+// D3D11 KMT textures are created as UNORM (SRGB isn't needed for byte-level copies),
+// so the VkImage used to import them must also be UNORM for a valid format match.
+// vkCmdCopyImage between compatible 32-bit format classes (SRGB↔UNORM) is spec-valid.
+static VkFormat NormalizeVkFormat(VkFormat fmt) {
+    switch (fmt) {
+        case VK_FORMAT_B8G8R8A8_SRGB:
+            return VK_FORMAT_B8G8R8A8_UNORM;
+        case VK_FORMAT_R8G8B8A8_SRGB:
+            return VK_FORMAT_R8G8B8A8_UNORM;
+        default:
+            return fmt;
     }
 }
 
@@ -947,8 +967,6 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
 
     if (dxvkActive && mem) {
         // DXVK zero-copy path: import encoder's KMT handles into Vulkan.
-        // The D3D11 interop device inside DXVK processes creates textures with
-        // invalid shared handles, so we use textures from the encoder process instead.
 
         // Publish resolution FIRST so the encoder can create textures
         mem->SetWidth(extent.width);
@@ -991,7 +1009,7 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
                 newEntry.luidKey = MakeLuidKey(luid);
                 newEntry.width = extent.width;
                 newEntry.height = extent.height;
-                newEntry.vkFormat = format;
+                newEntry.vkFormat = NormalizeVkFormat((VkFormat)format);
                 newEntry.vkImages.assign(4, VK_NULL_HANDLE);
                 newEntry.vkMemories.assign(4, VK_NULL_HANDLE);
                 newEntry.textureHandles.assign(4, nullptr);
@@ -1005,7 +1023,7 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
 
                     VkImageCreateInfo imgInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, &extInfo};
                     imgInfo.imageType = VK_IMAGE_TYPE_2D;
-                    imgInfo.format = (VkFormat)format;
+                    imgInfo.format = NormalizeVkFormat((VkFormat)format);
                     imgInfo.extent = {extent.width, extent.height, 1};
                     imgInfo.mipLevels = 1;
                     imgInfo.arrayLayers = 1;
@@ -1111,8 +1129,8 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
 
     // Fallback: D3D11 interop textures (non-DXVK or when encoder textures unavailable)
     if (!sharedTextures) {
-        sharedTextures =
-            GetOrCreateSharedTextures(device, disp, disp->physicalDevice, luid, extent.width, extent.height, format);
+        sharedTextures = GetOrCreateSharedTextures(device, disp, disp->physicalDevice, luid, extent.width,
+                                                   extent.height, NormalizeVkFormat((VkFormat)format));
     }
     if (!sharedTextures || !sharedTextures->valid) {
         LayerLog("Vulkan Layer: [Error] Failed to get shared textures");

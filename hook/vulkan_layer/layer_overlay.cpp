@@ -20,6 +20,19 @@
 
 #include "../common/input_manager.h"
 
+// Detect if a DLL is loaded from outside System32 (i.e. a DXVK replacement).
+static bool IsDXVKDll(const char* dllName) {
+    HMODULE hMod = GetModuleHandleA(dllName);
+    if (!hMod)
+        return false;
+    char loadedPath[MAX_PATH] = {};
+    char systemDir[MAX_PATH] = {};
+    GetModuleFileNameA(hMod, loadedPath, MAX_PATH);
+    GetSystemDirectoryA(systemDir, MAX_PATH);
+    size_t sysLen = strlen(systemDir);
+    return _strnicmp(loadedPath, systemDir, sysLen) != 0 || (loadedPath[sysLen] != '\\' && loadedPath[sysLen] != '/');
+}
+
 namespace {
 
 // Overlay state per device - manages Vulkan frame resources
@@ -341,7 +354,16 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     LayerLog(
         "Vulkan Layer: InitializeOverlay - IPC client set, setting graphics "
         "API...");
-    state.overlayAdapter->SetGraphicsAPI("Vulkan");
+    // Detect DXVK wrapping a D3D API: d3d11.dll from non-System32 = DXVK.
+    // Check d3d10/d3d10_1.dll too to distinguish DX10 vs DX11.
+    const char* apiName = "Vulkan";
+    if (IsDXVKDll("d3d11.dll")) {
+        // Distinguish DX10 from DX11: DX10 games load d3d10.dll (even DXVK uses System32's d3d10.dll).
+        // DX11-only games never load d3d10.dll. We check for its presence regardless of path.
+        bool hasDX10 = (GetModuleHandleA("d3d10.dll") != nullptr || GetModuleHandleA("d3d10_1.dll") != nullptr);
+        apiName = hasDX10 ? "DX10 (DXVK)" : "DX11 (DXVK)";
+    }
+    state.overlayAdapter->SetGraphicsAPI(apiName);
 
     // Detect HDR from swapchain format
     bool isHDR = (state.format == VK_FORMAT_R16G16B16A16_SFLOAT || state.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ||
