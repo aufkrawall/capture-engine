@@ -89,6 +89,7 @@ OverlayAdapter::~OverlayAdapter() {
 void OverlayAdapter::SetGraphicsAPI(const char* api) {
     strncpy(graphicsAPI, api, sizeof(graphicsAPI) - 1);
     graphicsAPI[sizeof(graphicsAPI) - 1] = '\0';
+    layoutDirty = true;
 }
 
 bool OverlayAdapter::InitDX9(void* device) {

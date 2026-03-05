@@ -97,7 +97,7 @@ private:
     PerformanceMetrics* metrics = nullptr;
     IPCClient* ipc = nullptr;
     void* hwnd = nullptr;
-    char graphicsAPI[16] = "";
+    char graphicsAPI[32] = "";
     uint32_t droppedFrames = 0;
     bool isHDR = false;
     int renderTargetFormat = 0;
