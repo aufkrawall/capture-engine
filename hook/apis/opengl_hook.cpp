@@ -610,7 +610,10 @@ public:
         // Blit backbuffer to capture texture
         pglBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
         pglBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
-        pglBlitFramebuffer(0, 0, width, height, 0, 0, width, height, 0x4000 /*GL_COLOR_BUFFER_BIT*/,
+        // Flip Y during blit: OpenGL framebuffer is bottom-up (y=0=bottom) but
+        // D3D11 textures are top-down (row 0=top). Swapping srcY0/srcY1 flips
+        // the image so that the captured texture has row 0 = top of screen.
+        pglBlitFramebuffer(0, height, width, 0, 0, 0, width, height, 0x4000 /*GL_COLOR_BUFFER_BIT*/,
                            0x2600 /*GL_NEAREST*/);
         pglBindFramebuffer(GL_FRAMEBUFFER, 0);
 
