@@ -60,6 +60,31 @@ static bool IsDXVKD3D9WrapperLoaded() {
     return true;
 }
 
+// Returns true when d3d11.dll is loaded from outside System32 (i.e. DXVK's d3d11 wrapper).
+// Used alongside IsDXVKD3D9WrapperLoaded() to distinguish pure DX9-DXVK games
+// (only d3d9 from DXVK) from DX10/11-DXVK games where d3d9.dll is also present.
+static bool IsDXVKD3D11WrapperLoaded() {
+    HMODULE d3d11 = GetModuleHandleA("d3d11.dll");
+    if (!d3d11)
+        return false;
+
+    char d3d11Path[MAX_PATH] = {};
+    DWORD d3d11Len = GetModuleFileNameA(d3d11, d3d11Path, MAX_PATH);
+    if (d3d11Len == 0 || d3d11Len >= MAX_PATH)
+        return false;
+
+    char systemDir[MAX_PATH] = {};
+    UINT systemLen = GetSystemDirectoryA(systemDir, MAX_PATH);
+    if (systemLen == 0 || systemLen >= MAX_PATH)
+        return false;
+
+    if (_strnicmp(d3d11Path, systemDir, systemLen) == 0 &&
+        (d3d11Path[systemLen] == '\\' || d3d11Path[systemLen] == '/')) {
+        return false;
+    }
+    return true;
+}
+
 static void ApplyPrerenderLimitVulkan(VkDevice device, VkQueue queue, float limit) {
     // CPU prerender limit for Vulkan
     //
@@ -875,7 +900,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
         HWND window = VulkanLayerState::Get().GetSurfaceWindow(pCreateInfo->surface);
         LayerLog("Vulkan Layer: Initializing overlay for swapchain %p, images=%d", *pSwapchain, count);
         const bool isTinySwapchain = (sd->extent.width < 320 || sd->extent.height < 180);
-        const bool preferDX9Path = IsDXVKD3D9WrapperLoaded();
+        const bool preferDX9Path = IsDXVKD3D9WrapperLoaded() && !IsDXVKD3D11WrapperLoaded();
         if (isTinySwapchain) {
             LayerLog(
                 "Vulkan Layer: [Info] Skipping overlay/capture init for tiny "
@@ -948,7 +973,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         shm->runtimeState.vulkanPresentTick.store(GetTickCount64(), std::memory_order_release);
     }
 
-    const bool preferDX9Path = IsDXVKD3D9WrapperLoaded();
+    const bool preferDX9Path = IsDXVKD3D9WrapperLoaded() && !IsDXVKD3D11WrapperLoaded();
     bool isFirstHook = !g_InPresentHook;
     g_InPresentHook = true;
 
