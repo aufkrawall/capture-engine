@@ -1121,8 +1121,9 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
 
     if (!usingEncoderTextures) {
         if (!dxvkActive && mem) {
-            // Non-DXVK: wait for encoder textures (NT handles) for publishing
-            const int maxWaitMs = 5000;
+            // Non-DXVK: check once for encoder textures; fall through immediately
+            // to IPC relay if not ready (avoids a 5-second startup stall).
+            const int maxWaitMs = 0;
             const int checkIntervalMs = 10;
             int waitedMs = 0;
 
