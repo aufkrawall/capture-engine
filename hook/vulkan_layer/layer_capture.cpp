@@ -972,8 +972,24 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         mem->SetWidth(extent.width);
         mem->SetHeight(extent.height);
         mem->SetFormat(VkFormatToDXGI(format));
-        LayerLog("Vulkan Layer: DXVK active - published resolution %dx%d fmt=%d, waiting for encoder KMT textures",
-                 extent.width, extent.height, VkFormatToDXGI(format));
+
+        // If existing KMT textures have a different format, clear kmtReady to
+        // force the encoder to recreate them with the correct format.
+        uint32_t ourDxgiFormat = VkFormatToDXGI(format);
+        if (mem->encoderTextures.kmtReady.load(std::memory_order_acquire)) {
+            uint32_t existingFormat = mem->encoderTextures.GetFormat();
+            if (existingFormat != 0 && existingFormat != ourDxgiFormat) {
+                LayerLog(
+                    "Vulkan Layer: KMT format mismatch (existing=%d, need=%d) - requesting recreation",
+                    existingFormat, ourDxgiFormat);
+                mem->encoderTextures.kmtReady.store(false, std::memory_order_release);
+            }
+        }
+
+        LayerLog(
+            "Vulkan Layer: DXVK InitCapture - VkFmt=%d NormVkFmt=%d DXGIFmt=%d - "
+            "published %dx%d, waiting for encoder KMT textures",
+            format, NormalizeVkFormat((VkFormat)format), VkFormatToDXGI(format), extent.width, extent.height);
 
         const int maxWaitMs = 5000;
         const int checkIntervalMs = 50;
