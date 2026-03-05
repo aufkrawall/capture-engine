@@ -60,6 +60,13 @@ public:
     // Get recommended timeout based on detected game engine
     double GetRecommendedTimeout() const;
 
+    // Force freeze monitoring even when the process is in the background.
+    // Set when the GPU device is removed so the watchdog can detect a stuck
+    // driver call (e.g. ECL blocking in NtGdiDdDDICreateAllocation).
+    void SetForceMonitor(bool force) {
+        forceMonitor_.store(force, std::memory_order_release);
+    }
+
 private:
     void WatchdogThread();
     void CreateMinidumpWithThreadContext(const std::string& reason);
@@ -77,6 +84,7 @@ private:
     std::atomic<uint64_t> startupTime_{0};
     std::atomic<double> timeoutSeconds_{5.0};
     std::atomic<DWORD> monitoredThreadId_{0};
+    std::atomic<bool> forceMonitor_{false};
 
     static constexpr double STARTUP_GRACE_PERIOD = 10.0;
     static constexpr double DEFAULT_TIMEOUT = 30.0;

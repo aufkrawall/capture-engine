@@ -365,6 +365,10 @@ void DX12_SignalFSR4SwapchainRecreated() {
     HookLog("DX12: FSR4 swapchain recreation signaled");
 }
 
+// Device-removed flag: once set, skip overlay rendering AND heartbeats so the
+// freeze watchdog can detect the stuck state and create a diagnostic dump.
+static std::atomic<bool> g_DeviceRemoved{false};
+
 // C Linkage Exports for cross-module calls (e.g. from C clients or
 // GetProcAddress)
 extern "C" {
@@ -394,6 +398,18 @@ void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) {
                 if (g_Device.load())
                     g_Device.load()->Release();
                 g_Device.store(dev);
+
+                // Clear device-removed flag — a new device means recovery.
+                g_DeviceRemoved.store(false, std::memory_order_release);
+                DXGIShared::g_SharedState.deviceRemovedFatal.store(false, std::memory_order_release);
+                g_RenderWatchdog.SetForceMonitor(false);
+
+                // Report GPU LUID for host metrics (PDH counter filtering).
+                // ID3D12Device has GetAdapterLuid() directly — don't use
+                // IDXGIDevice (D3D12 devices don't implement it).
+                LUID adapterLuid = dev->GetAdapterLuid();
+                ReportLUID(adapterLuid.LowPart, adapterLuid.HighPart);
+                HookLog("DX12: Reported LUID %08x-%08x", adapterLuid.HighPart, adapterLuid.LowPart);
             } else
                 dev->Release();
         }
@@ -547,6 +563,20 @@ static void* s_realCreateSCForHwndAddr = nullptr;
 // Deep hook trampoline for calling the real CreateSwapChainForHwnd
 static PFN_CreateSwapChainForHwnd s_deepHookTrampoline = nullptr;
 
+// Overlay suspension: cooldown after swapchain creation (FG switch, resize, etc.)
+// to reduce our D3D12 footprint while the game's internal state machine stabilizes.
+static std::atomic<int64_t> g_OverlayCooldownUntilQpc{0};
+static constexpr int64_t kTransitionCooldownMs = 1500;  // 1.5 s
+
+static void StartTransitionCooldown() {
+    LARGE_INTEGER freq, now;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&now);
+    g_OverlayCooldownUntilQpc.store(now.QuadPart + freq.QuadPart * kTransitionCooldownMs / 1000,
+                                    std::memory_order_release);
+    HookLogImportant("DX12: Overlay transition cooldown started (%lldms)", (long long)kTransitionCooldownMs);
+}
+
 // HWND → swapchain tracking for diagnostics and E_ACCESSDENIED recovery.
 // We do NOT AddRef tracked swapchains — this avoids extending their lifetime
 // beyond what the game intends, which previously caused UE5 assertion crashes
@@ -589,56 +619,38 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
 
     HookLogImportant("DeepHook: CreateSwapChainForHwnd ENTER factory=%p device=%p hwnd=%p", pThis, pDevice, hWnd);
 
+    // Suspend overlay rendering during the swapchain transition.
+    StartTransitionCooldown();
+
     // Try the call first — let the game/SL handle SC lifecycle naturally
     HRESULT hr = s_deepHookTrampoline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
     HookLogImportant("DeepHook: Trampoline returned hr=0x%08X sc=%p", hr, (ppSC ? *ppSC : nullptr));
 
     // Reactive recovery: if E_ACCESSDENIED, an old SC still holds the HWND.
-    // Try to force-release tracked SCs (pointers may be stale — use SEH).
+    // DON'T force-destroy — that invalidates game-held references and causes
+    // delayed UE5 assertion crashes.  Instead, wait for the game/FG module to
+    // naturally release the old SC, then retry.
     if (hr == E_ACCESSDENIED && hWnd) {
-        HookLogImportant("DeepHook: E_ACCESSDENIED for HWND=%p — attempting reactive recovery", hWnd);
+        HookLogImportant("DeepHook: E_ACCESSDENIED for HWND=%p — waiting for natural release", hWnd);
 
-        std::vector<IDXGISwapChain*> oldSCs;
+        // Clean up our overlay resources so we don't hold stale back-buffer refs
+        g_LastSwapChain = nullptr;
+        CleanupOverlay();
+
+        // Clear our tracking entries (raw pointers, no Release needed)
         {
             std::lock_guard<std::mutex> lock(s_hwndSwapchainMutex);
-            auto it = s_hwndSwapchainMap.find(hWnd);
-            if (it != s_hwndSwapchainMap.end()) {
-                oldSCs = std::move(it->second);
-                s_hwndSwapchainMap.erase(it);
-            }
+            s_hwndSwapchainMap.erase(hWnd);
         }
 
-        if (!oldSCs.empty()) {
-            g_LastSwapChain = nullptr;
-            CleanupOverlay();
-
-            for (auto* oldSC : oldSCs) {
-                // Tracked pointers have no AddRef — validate before use.
-                MEMORY_BASIC_INFORMATION mbi = {};
-                if (!VirtualQuery(oldSC, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT ||
-                    !(mbi.Protect & (PAGE_READWRITE | PAGE_READONLY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) {
-                    HookLogImportant("DeepHook: SC %p is stale (VQ), skipping", oldSC);
-                    continue;
-                }
-                ULONG probeRef = oldSC->AddRef();
-                ULONG currentRef = probeRef;
-                HookLogImportant("DeepHook: Reactive release SC %p refcount=%lu", oldSC, currentRef - 1);
-                for (ULONG i = 0; i < currentRef && i < 200; i++) {
-                    ULONG remaining = oldSC->Release();
-                    if (remaining == 0) {
-                        HookLogImportant("DeepHook: SC %p destroyed after %lu releases", oldSC, i + 1);
-                        break;
-                    }
-                }
-            }
-
-            Sleep(1);
-
-            // Retry
+        // Wait-and-retry: the FG module shutting down should release the old SC,
+        // freeing the HWND for a new flip-model SC.
+        for (int attempt = 1; attempt <= 40 && hr == E_ACCESSDENIED; ++attempt) {
+            Sleep(attempt <= 10 ? 10 : 50);  // 100ms fast + 1500ms slow = 1.6s max
             hr = s_deepHookTrampoline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
-            HookLogImportant("DeepHook: Retry returned hr=0x%08X sc=%p", hr, (ppSC ? *ppSC : nullptr));
-        } else {
-            HookLogImportant("DeepHook: No tracked SCs for HWND=%p, cannot recover", hWnd);
+            if (attempt % 5 == 0 || SUCCEEDED(hr)) {
+                HookLogImportant("DeepHook: Retry #%d hr=0x%08X sc=%p", attempt, hr, (ppSC ? *ppSC : nullptr));
+            }
         }
     }
 
@@ -676,60 +688,25 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
 
     if (hr == E_ACCESSDENIED && hWnd) {
         HookLogImportant(
-            "CreateSwapChainForHwnd: E_ACCESSDENIED for HWND=%p — "
-            "attempting FG-switch recovery (force-release old swapchain)",
+            "CreateSwapChainForHwnd INLINE: E_ACCESSDENIED for HWND=%p — "
+            "waiting for natural release",
             hWnd);
 
-        // Find ALL old swapchains occupying this HWND
-        std::vector<IDXGISwapChain*> oldSCs;
+        // Clean up overlay and clear tracking (same as deep hook)
+        g_LastSwapChain = nullptr;
+        CleanupOverlay();
         {
             std::lock_guard<std::mutex> lock(s_hwndSwapchainMutex);
-            auto it = s_hwndSwapchainMap.find(hWnd);
-            if (it != s_hwndSwapchainMap.end()) {
-                oldSCs = std::move(it->second);
-                s_hwndSwapchainMap.erase(it);
-            }
+            s_hwndSwapchainMap.erase(hWnd);
         }
 
-        if (!oldSCs.empty()) {
-            HookLogImportant("CreateSwapChainForHwnd: Found %zu old swapchain(s), force-releasing", oldSCs.size());
-
-            // Clean up our overlay resources before destroying the old swapchains
-            CleanupOverlay();
-            g_LastSwapChain = nullptr;
-
-            for (auto* oldSC : oldSCs) {
-                // Tracked pointers have no AddRef — validate before use.
-                MEMORY_BASIC_INFORMATION mbi = {};
-                if (!VirtualQuery(oldSC, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT ||
-                    !(mbi.Protect & (PAGE_READWRITE | PAGE_READONLY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) {
-                    HookLogImportant("CreateSwapChainForHwnd: SC %p stale (VQ), skipping", oldSC);
-                    continue;
-                }
-                ULONG probeRef = oldSC->AddRef();
-                ULONG currentRef = probeRef;
-                HookLogImportant("CreateSwapChainForHwnd: SC %p refcount=%lu, releasing", oldSC, currentRef - 1);
-                for (ULONG i = 0; i < currentRef && i < 100; i++) {
-                    ULONG remaining = oldSC->Release();
-                    if (remaining == 0) {
-                        HookLogImportant("CreateSwapChainForHwnd: SC %p destroyed after %lu releases", oldSC, i + 1);
-                        break;
-                    }
-                }
-            }
-
-            // Brief sleep for DXGI internal cleanup
-            Sleep(1);
-
-            // Retry the CreateSwapChainForHwnd call
+        // Wait-and-retry without force-destroying
+        for (int attempt = 1; attempt <= 40 && hr == E_ACCESSDENIED; ++attempt) {
+            Sleep(attempt <= 10 ? 10 : 50);
             hr = s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
-            HookLogImportant("CreateSwapChainForHwnd: Retry result=0x%08X %s", hr,
-                             SUCCEEDED(hr) ? "SUCCESS" : "FAILED");
-        } else {
-            HookLogImportant(
-                "CreateSwapChainForHwnd: No tracked swapchain for HWND=%p, "
-                "cannot recover",
-                hWnd);
+            if (attempt % 5 == 0 || SUCCEEDED(hr)) {
+                HookLogImportant("CreateSwapChainForHwnd INLINE: Retry #%d hr=0x%08X", attempt, hr);
+            }
         }
     }
 
@@ -814,6 +791,9 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
         "DetourCreateSwapChainForHwndGlobal: CALLED (factory=%p, device=%p, "
         "hwnd=%p)",
         pThis, pDevice, hWnd);
+
+    // Suspend overlay rendering during the swapchain transition.
+    StartTransitionCooldown();
 
     HRESULT hr = oCreateSwapChainForHwndGlobal(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
 
@@ -1703,6 +1683,31 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         return;
     }
 
+    // Skip everything when device is removed — avoids reinit spam on a dead
+    // device.  DX12_SetCommandQueue clears g_DeviceRemoved when a new device
+    // arrives.
+    if (g_DeviceRemoved.load(std::memory_order_relaxed)) {
+        return;
+    }
+
+    // Actively detect device removal every frame — covers cases where the
+    // device gets removed during a suspension/cooldown period and
+    // g_DeviceRemoved hasn't been set yet (the render-path check only runs
+    // when overlayInit is true).
+    {
+        ID3D12Device* devCheck = g_Device.load();
+        if (devCheck && FAILED(devCheck->GetDeviceRemovedReason())) {
+            g_DeviceRemoved.store(true, std::memory_order_release);
+            DXGIShared::g_SharedState.deviceRemovedFatal.store(true, std::memory_order_release);
+            g_RenderWatchdog.SetForceMonitor(true);
+            HookLogImportant("DX12: GPU device removed (0x%08X) — stopping overlay",
+                             (unsigned)devCheck->GetDeviceRemovedReason());
+            g_State.overlayInit = false;
+            CleanupRTVs();
+            return;
+        }
+    }
+
     bool inResize = g_InSwapchainResizeCleanup.load(std::memory_order_acquire);
     if (!pSwapChain || inResize) {
         HookLog("DX12: ProcessFrame - early return (null=%d, inResize=%d)", !pSwapChain, inResize);
@@ -1722,15 +1727,72 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
 
     const bool zeroSizedSwapchain = (frameDesc.BufferDesc.Width == 0 || frameDesc.BufferDesc.Height == 0);
     const bool iconicWindow = frameDesc.OutputWindow && IsIconic(frameDesc.OutputWindow);
-    const bool suspendOverlayWork = zeroSizedSwapchain || iconicWindow;
+
+    // Transition cooldown: after CreateSwapChainForHwnd, pause overlay D3D12
+    // work so we don't interfere with the game's internal state machine (FG
+    // switch, Anti-Lag2 teardown, etc.).
+    bool inTransitionCooldown = false;
+    {
+        int64_t cooldownEnd = g_OverlayCooldownUntilQpc.load(std::memory_order_acquire);
+        if (cooldownEnd > 0) {
+            LARGE_INTEGER now;
+            QueryPerformanceCounter(&now);
+            if (now.QuadPart < cooldownEnd) {
+                inTransitionCooldown = true;
+            } else {
+                g_OverlayCooldownUntilQpc.store(0, std::memory_order_release);
+            }
+        }
+    }
+
+    // Focus-change cooldown: during DXGI focus transitions the compositor
+    // reconfigures the flip chain.  Our resource barriers can conflict with
+    // that, causing TDR (DEVICE_HUNG).  Pause overlay briefly when the GAME
+    // window itself transitions focus — NOT on arbitrary foreground changes
+    // (which would trigger on tooltips, notifications, etc.).
+    bool inFocusCooldown = false;
+    if (frameDesc.OutputWindow) {
+        static bool s_gameWasForeground = true;
+        static int64_t s_focusCooldownEnd = 0;
+        static constexpr int64_t kFocusCooldownMs = 500;
+
+        HWND fg = GetForegroundWindow();
+        bool gameIsForeground = (fg == frameDesc.OutputWindow);
+        if (gameIsForeground != s_gameWasForeground) {
+            s_gameWasForeground = gameIsForeground;
+            LARGE_INTEGER freq, now;
+            QueryPerformanceFrequency(&freq);
+            QueryPerformanceCounter(&now);
+            s_focusCooldownEnd = now.QuadPart + freq.QuadPart * kFocusCooldownMs / 1000;
+            HookLog("DX12: Focus cooldown started (gameForeground=%d)", gameIsForeground ? 1 : 0);
+        }
+        if (s_focusCooldownEnd > 0) {
+            LARGE_INTEGER now;
+            QueryPerformanceCounter(&now);
+            if (now.QuadPart < s_focusCooldownEnd) {
+                inFocusCooldown = true;
+            } else {
+                s_focusCooldownEnd = 0;
+            }
+        }
+    }
+
+    // Heavy suspension: zero-size, iconic, or transition cooldown requires
+    // full resource teardown because the swapchain is in an invalid state.
+    const bool suspendOverlayHeavy = zeroSizedSwapchain || iconicWindow || inTransitionCooldown;
+    // Light suspension: focus cooldown just skips rendering — resources stay
+    // alive to avoid expensive reinit cycles that stress the GPU driver.
+    const bool suspendOverlayRender = suspendOverlayHeavy || inFocusCooldown;
+
     static bool s_swapchainSuspended = false;
-    if (suspendOverlayWork) {
+    if (suspendOverlayHeavy) {
         if (!s_swapchainSuspended) {
             s_swapchainSuspended = true;
             g_State.overlayInit = false;
             CleanupRTVs();
-            HookLog("DX12: ProcessFrame - suspending overlay (w=%u h=%u iconic=%d)", frameDesc.BufferDesc.Width,
-                    frameDesc.BufferDesc.Height, iconicWindow ? 1 : 0);
+            HookLog("DX12: ProcessFrame - suspending overlay (w=%u h=%u iconic=%d cooldown=%d)",
+                    frameDesc.BufferDesc.Width, frameDesc.BufferDesc.Height, iconicWindow ? 1 : 0,
+                    inTransitionCooldown ? 1 : 0);
         }
     } else if (s_swapchainSuspended) {
         s_swapchainSuspended = false;
@@ -1838,12 +1900,22 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
 
     // Remove delay - install overlay immediately(Strange Brigade compatibility)
     static std::atomic<int> s_framesBeforeInit{0};
-    if (!suspendOverlayWork && !g_State.overlayInit) {
+    if (!suspendOverlayRender && !g_State.overlayInit) {
         int frames = ++s_framesBeforeInit;
         if (frames < 1) {
             return;
         } else if (frames == 1) {
             HookLog("DX12: ProcessFrame - Proceeding with overlay init");
+        }
+
+        // Rate-limit reinit attempts: after 3 consecutive failures, back off
+        // exponentially (wait 60, 120, 240… frames). This prevents the log-spam
+        // and driver-stall loop that occurs when the device is removed but the
+        // early health check at the top of ProcessFrame somehow misses it.
+        static int s_consecutiveInitFails = 0;
+        static int s_nextRetryFrame = 0;
+        if (s_consecutiveInitFails >= 3 && frames < s_nextRetryFrame) {
+            return;
         }
 
         // CRITICAL FIX: Don't initialize ImGui during FG suspension, FSR
@@ -1905,6 +1977,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 }
 
                 if (InitImGui(g_Device.load(), imguiBufferCount, desc.BufferDesc.Format, desc.OutputWindow)) {
+                    s_consecutiveInitFails = 0;
+                    s_nextRetryFrame = 0;
                     int actualBufferCount = desc.BufferCount;
                     if (actualBufferCount > 8) {
                         HookLog("DX12: Swapchain has %d buffers, limiting RTVs to 8", actualBufferCount);
@@ -1942,7 +2016,14 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                         "syncInit=%d",
                         actualBufferCount, g_State.syncInit);
                 } else {
-                    HookLog("DX12: ProcessFrame - ImGui initialization FAILED");
+                    s_consecutiveInitFails++;
+                    int backoffFrames = 60 * (1 << std::min(s_consecutiveInitFails - 3, 5));
+                    s_nextRetryFrame = frames + backoffFrames;
+                    if (s_consecutiveInitFails <= 5 || (s_consecutiveInitFails % 100) == 0) {
+                        HookLog(
+                            "DX12: ProcessFrame - ImGui initialization FAILED (attempt %d, next retry in %d frames)",
+                            s_consecutiveInitFails, backoffFrames);
+                    }
                 }
                 // SAFETY: Check sc3 is still valid before releasing
                 if (sc3) {
@@ -1969,7 +2050,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     UINT currentBackBufferIdx = 0;
     bool hasCurrentBackBufferIdx = false;
 
-    if (!suspendOverlayWork && !s_insideECL && g_State.overlayInit && g_State.syncInit) {
+    if (!suspendOverlayRender && !s_insideECL && g_State.overlayInit && g_State.syncInit) {
         // Single log on first successful overlay render
         static int s_firstOverlayLogged = 0;
         if (s_firstOverlayLogged == 0) {
@@ -2004,13 +2085,28 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 g_State.allocIndex);
         }
 
-        // Check device removed BEFORE rendering - skip if GPU is already in error
+        // Check device removed BEFORE rendering.  On first detection, tear
+        // down overlay resources and set g_DeviceRemoved so heartbeats stop
+        // (letting the freeze watchdog create a dump if we spin forever).
         {
             ID3D12Device* devCheck = g_Device.load();
             if (devCheck && FAILED(devCheck->GetDeviceRemovedReason())) {
-                HookLogImportant("DX12: GPU device removed (0x%08X), skipping overlay",
-                                 (unsigned)devCheck->GetDeviceRemovedReason());
+                if (!g_DeviceRemoved.load(std::memory_order_relaxed)) {
+                    g_DeviceRemoved.store(true, std::memory_order_release);
+                    DXGIShared::g_SharedState.deviceRemovedFatal.store(true, std::memory_order_release);
+                    g_RenderWatchdog.SetForceMonitor(true);
+                    HookLogImportant("DX12: GPU device removed (0x%08X) — cleaning up overlay",
+                                     (unsigned)devCheck->GetDeviceRemovedReason());
+                    g_State.overlayInit = false;
+                    CleanupRTVs();
+                }
                 goto overlay_done;
+            } else if (g_DeviceRemoved.load(std::memory_order_relaxed)) {
+                // Device recovered (new device set via DX12_SetCommandQueue)
+                g_DeviceRemoved.store(false, std::memory_order_release);
+                DXGIShared::g_SharedState.deviceRemovedFatal.store(false, std::memory_order_release);
+                g_RenderWatchdog.SetForceMonitor(false);
+                HookLogImportant("DX12: Device recovered — overlay will reinitialize");
             }
         }
 
@@ -2245,10 +2341,11 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
         return;
     }
 
-    // CRITICAL: Heartbeat FIRST - before ANY checks that might early-return
-    // This ensures the freeze watchdog gets heartbeats even with FSR/DLSS FG
-    // active
-    g_RenderWatchdog.Heartbeat();
+    // Heartbeat for freeze watchdog — skip when device is removed so the
+    // watchdog can detect the stuck state and create a diagnostic dump.
+    if (!g_DeviceRemoved.load(std::memory_order_relaxed)) {
+        g_RenderWatchdog.Heartbeat();
+    }
 
     // Retry FFX hook initialization periodically for late-loading FSR FG modules.
     // UE5 games often load amd_fidelityfx_framegeneration_dx12.dll after initial
@@ -2433,8 +2530,10 @@ static std::atomic<int> g_ECLCallCount{0};
 
 void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT NumCommandLists,
                                                  ID3D12CommandList* const* ppCommandLists) {
-    // Heartbeat for freeze watchdog - ExecuteCommandLists is called frequently
-    g_RenderWatchdog.Heartbeat();
+    // Heartbeat for freeze watchdog — skip when device is removed
+    if (!g_DeviceRemoved.load(std::memory_order_relaxed)) {
+        g_RenderWatchdog.Heartbeat();
+    }
 
     // CRITICAL: Recursion depth guard.  If an FG engine (FSR FG, DLSS FG)
     // hooks ECL and its "original" pointer loops back to us, we'd recurse

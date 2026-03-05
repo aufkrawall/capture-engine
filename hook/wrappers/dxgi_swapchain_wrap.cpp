@@ -677,8 +677,9 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
 
     // CRITICAL: Heartbeat FIRST - before ANY checks that might early-return
     // This ensures the freeze watchdog gets heartbeats even with FSR/DLSS FG
-    // active
-    g_RenderWatchdog.Heartbeat();
+    // active.  BUT skip heartbeat after device removal so the watchdog can fire.
+    if (!DXGIShared::g_SharedState.deviceRemovedFatal.load(std::memory_order_relaxed))
+        g_RenderWatchdog.Heartbeat();
 
     // FSR FG FIX: Skip overlay processing on FSR internal swapchains
     // FSR creates internal swapchains for frame generation that we should not
@@ -999,8 +1000,9 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
 
     // CRITICAL: Heartbeat FIRST - before ANY checks that might early-return
     // This ensures the freeze watchdog gets heartbeats even with FSR/DLSS FG
-    // active
-    g_RenderWatchdog.Heartbeat();
+    // active.  BUT skip heartbeat after device removal so the watchdog can fire.
+    if (!DXGIShared::g_SharedState.deviceRemovedFatal.load(std::memory_order_relaxed))
+        g_RenderWatchdog.Heartbeat();
 
     // CRITICAL FIX: Lock mutex to protect swapchain pointer access
     std::lock_guard<std::mutex> lock(m_ResourceLock);

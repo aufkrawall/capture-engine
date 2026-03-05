@@ -199,6 +199,58 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
              pExceptionPointers->ExceptionRecord->ExceptionAddress, GetCurrentProcessId(), GetCurrentThreadId());
     TraceCrash(codeStr);
 
+    // UE5 ensure() assertion (0x4000): continuable, but UE5 may call
+    // TerminateProcess shortly after.  Write a FAST MiniDumpNormal for
+    // diagnostics (<50 ms, ~100 KB) then let UE5's handler continue.
+    if (code == 0x00004000) {
+        {
+            HMODULE hMod = NULL;
+            GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               (LPCSTR)pExceptionPointers->ExceptionRecord->ExceptionAddress, &hMod);
+            char modName[MAX_PATH] = "unknown";
+            if (hMod)
+                GetModuleFileNameA(hMod, modName, MAX_PATH);
+            char* baseName = strrchr(modName, '\\');
+            baseName = baseName ? baseName + 1 : modName;
+            char loc[512];
+            snprintf(loc, sizeof(loc), "UE5 ensure() in %s at %p (offset 0x%llX)", baseName,
+                     pExceptionPointers->ExceptionRecord->ExceptionAddress,
+                     hMod ? (unsigned long long)((uintptr_t)pExceptionPointers->ExceptionRecord->ExceptionAddress -
+                                                 (uintptr_t)hMod)
+                          : 0ULL);
+            TraceCrash(loc);
+        }
+
+        // Quick inline dump — MiniDumpNormal only, no worker thread / timeout.
+        if (g_pMiniDumpWriteDump) {
+            SYSTEMTIME st;
+            GetLocalTime(&st);
+            char dumpPath[MAX_PATH];
+            snprintf(dumpPath, sizeof(dumpPath), "%s\\assert_%04u%02u%02u_%02u%02u%02u_%03u_pid%lu.dmp",
+                     g_DumpDir.c_str(), st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
+                     st.wMilliseconds, GetCurrentProcessId());
+
+            HANDLE hFile = CreateFileA(dumpPath, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                                       FILE_ATTRIBUTE_NORMAL, NULL);
+            if (hFile != INVALID_HANDLE_VALUE) {
+                MINIDUMP_EXCEPTION_INFORMATION mdei;
+                mdei.ThreadId = GetCurrentThreadId();
+                mdei.ExceptionPointers = pExceptionPointers;
+                mdei.ClientPointers = FALSE;
+
+                if (g_pMiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile, MiniDumpNormal, &mdei, NULL,
+                                         NULL)) {
+                    TraceCrash("Quick assert dump written");
+                    char msg[256];
+                    snprintf(msg, sizeof(msg), "Assert dump: %s", dumpPath);
+                    TraceCrash(msg);
+                }
+                CloseHandle(hFile);
+            }
+        }
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
     // Also catch common crash types explicitly
     bool isKnownCrash =
         (code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_ILLEGAL_INSTRUCTION ||
@@ -211,7 +263,6 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
          code == 0xC0000374 ||                                        // Heap corruption
          code == 0xC00000FD ||                                        // Stack overflow (alt)
          code == 0x00008000 ||                                        // UE5 GPU crash (D3D device removed)
-         code == 0x00004000 ||                                        // UE5 fatal assertion (check/ensure)
          code == 0x80000002 ||                                        // Guard page violation
          code == 0xC000013A ||                                        // Control-C/Control-Break
          code == 0xC0000142);                                         // DLL init failed

@@ -322,7 +322,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         HookLog("DetourPresent: Processing frame #%d (not wrapped, not in wrapper)", s_processCount);
     }
 
-    g_RenderWatchdog.Heartbeat();
+    // Only send heartbeat if device is healthy — after device removal,
+    // suppressing heartbeats lets the freeze watchdog fire and create a dump.
+    if (!g_SharedState.deviceRemovedFatal.load(std::memory_order_relaxed))
+        g_RenderWatchdog.Heartbeat();
 
     if (IsVulkanActive()) {
         return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
@@ -467,7 +470,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     }
     auto presentDepthGuard = ce::make_scope_guard([]() { ReleasePresent(); });
 
-    g_RenderWatchdog.Heartbeat();
+    // Only send heartbeat if device is healthy — after device removal,
+    // suppressing heartbeats lets the freeze watchdog fire and create a dump.
+    if (!g_SharedState.deviceRemovedFatal.load(std::memory_order_relaxed))
+        g_RenderWatchdog.Heartbeat();
 
     if (IsVulkanActive()) {
         return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);

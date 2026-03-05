@@ -151,8 +151,9 @@ bool FreezeWatchdog::IsFrozen() const {
     }
 
     // Vulkan / DXVK paths can pause or bypass the DXGI/D3D heartbeat patterns
-    // used by this watchdog. Skip freeze assertions in those cases.
-    if (GetModuleHandleW(L"vulkan-1.dll") || GetModuleHandleW(L"winevulkan.dll")) {
+    // used by this watchdog. Skip freeze assertions in those cases — BUT only
+    // when D3D12 is NOT also loaded (UE5 loads vulkan-1.dll even for DX12).
+    if ((GetModuleHandleW(L"vulkan-1.dll") || GetModuleHandleW(L"winevulkan.dll")) && !GetModuleHandleW(L"d3d12.dll")) {
         return false;
     }
 
@@ -162,7 +163,9 @@ bool FreezeWatchdog::IsFrozen() const {
     // Suppress background freezes only when no Present is in flight. If a
     // Present call is already in progress and heartbeats stop, it's likely a
     // real driver/render hang and should still produce a dump.
-    if (!IsProcessInForeground(processId_)) {
+    // When forceMonitor_ is set (device removed), always check — the GPU
+    // driver may be stuck in a kernel call even though the window is unfocused.
+    if (!IsProcessInForeground(processId_) && !forceMonitor_.load(std::memory_order_relaxed)) {
         if (!inPresentCall) {
             return false;
         }

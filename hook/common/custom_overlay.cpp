@@ -328,7 +328,9 @@ void Renderer::DrawGraphPolyline(const float* xs, const float* ys, int count, ui
     if (count < 2)
         return;
 
-    const float AA_SIZE = 0.5f * dpiScale;
+    // Wider AA fringe smooths sub-pixel coverage changes when the line moves,
+    // reducing shimmer/jitter while keeping the core line the same thickness.
+    const float AA_SIZE = 1.0f * dpiScale;
     const float halfThick = thickness * 0.5f;
     const uint32_t colorAA = color & 0x00FFFFFFu;
 
@@ -386,44 +388,48 @@ void Renderer::DrawGraphPolyline(const float* xs, const float* ys, int count, ui
         }
     };
 
+    // Build 4 vertices per point (outer+, inner+, inner-, outer-) so that
+    // adjacent segments SHARE the joint vertices instead of duplicating them.
+    // This eliminates double-alpha at joints that causes brightness flickering.
+    const uint16_t firstIdx = (uint16_t)vertices.size();
+    for (int i = 0; i < count; i++) {
+        float nx, ny;
+        getNormal(i, nx, ny);
+        vertices.push_back({xs[i] + nx * (halfThick + AA_SIZE), ys[i] + ny * (halfThick + AA_SIZE), 0, 0, colorAA});
+        vertices.push_back({xs[i] + nx * halfThick, ys[i] + ny * halfThick, 0, 0, color});
+        vertices.push_back({xs[i] - nx * halfThick, ys[i] - ny * halfThick, 0, 0, color});
+        vertices.push_back({xs[i] - nx * (halfThick + AA_SIZE), ys[i] - ny * (halfThick + AA_SIZE), 0, 0, colorAA});
+    }
+
+    // 3 quads per segment (top fringe, core, bottom fringe) referencing the
+    // shared per-point vertices of adjacent points.
     for (int i = 0; i < count - 1; i++) {
-        float n0x, n0y, n1x, n1y;
-        getNormal(i, n0x, n0y);
-        getNormal(i + 1, n1x, n1y);
+        const uint16_t p0 = firstIdx + (uint16_t)(i * 4);
+        const uint16_t p1 = firstIdx + (uint16_t)((i + 1) * 4);
 
-        const float ox0 = n0x * (halfThick + AA_SIZE), oy0 = n0y * (halfThick + AA_SIZE);
-        const float ix0 = n0x * halfThick, iy0 = n0y * halfThick;
-        const float ox1 = n1x * (halfThick + AA_SIZE), oy1 = n1y * (halfThick + AA_SIZE);
-        const float ix1 = n1x * halfThick, iy1 = n1y * halfThick;
+        // Top AA fringe (outer+ → inner+)
+        indices.push_back(p0 + 0);
+        indices.push_back(p0 + 1);
+        indices.push_back(p1 + 1);
+        indices.push_back(p0 + 0);
+        indices.push_back(p1 + 1);
+        indices.push_back(p1 + 0);
 
-        const uint16_t baseIdx = (uint16_t)vertices.size();
-        vertices.push_back({xs[i] + ox0, ys[i] + oy0, 0, 0, colorAA});
-        vertices.push_back({xs[i] + ix0, ys[i] + iy0, 0, 0, color});
-        vertices.push_back({xs[i] - ix0, ys[i] - iy0, 0, 0, color});
-        vertices.push_back({xs[i] - ox0, ys[i] - oy0, 0, 0, colorAA});
-        vertices.push_back({xs[i + 1] + ox1, ys[i + 1] + oy1, 0, 0, colorAA});
-        vertices.push_back({xs[i + 1] + ix1, ys[i + 1] + iy1, 0, 0, color});
-        vertices.push_back({xs[i + 1] - ix1, ys[i + 1] - iy1, 0, 0, color});
-        vertices.push_back({xs[i + 1] - ox1, ys[i + 1] - oy1, 0, 0, colorAA});
+        // Core band (inner+ → inner-)
+        indices.push_back(p0 + 1);
+        indices.push_back(p0 + 2);
+        indices.push_back(p1 + 2);
+        indices.push_back(p0 + 1);
+        indices.push_back(p1 + 2);
+        indices.push_back(p1 + 1);
 
-        indices.push_back(baseIdx + 0);
-        indices.push_back(baseIdx + 1);
-        indices.push_back(baseIdx + 5);
-        indices.push_back(baseIdx + 0);
-        indices.push_back(baseIdx + 5);
-        indices.push_back(baseIdx + 4);
-        indices.push_back(baseIdx + 1);
-        indices.push_back(baseIdx + 2);
-        indices.push_back(baseIdx + 6);
-        indices.push_back(baseIdx + 1);
-        indices.push_back(baseIdx + 6);
-        indices.push_back(baseIdx + 5);
-        indices.push_back(baseIdx + 2);
-        indices.push_back(baseIdx + 3);
-        indices.push_back(baseIdx + 7);
-        indices.push_back(baseIdx + 2);
-        indices.push_back(baseIdx + 7);
-        indices.push_back(baseIdx + 6);
+        // Bottom AA fringe (inner- → outer-)
+        indices.push_back(p0 + 2);
+        indices.push_back(p0 + 3);
+        indices.push_back(p1 + 3);
+        indices.push_back(p0 + 2);
+        indices.push_back(p1 + 3);
+        indices.push_back(p1 + 2);
     }
 
     FlushBatch(false);
@@ -450,12 +456,11 @@ void Renderer::DrawFrameTimeGraph(float x, float y, float width, float height, c
     for (int i = 0; i < count; i++) {
         float val = frameTimes[i];
         val = (std::max)(minVal, (std::min)(maxVal, val));
-        // Snap both axes to nearest pixel. This keeps all segment geometry on
-        // integer boundaries so triangle coverage is identical every frame for
-        // the same data — eliminating temporal aliasing at peaks and flat sections
-        // as the graph scrolls horizontally.
+        // Snap X to integer pixels for stable horizontal scrolling (eliminates
+        // temporal shimmer).  Leave Y as sub-pixel float so the AA fringe
+        // geometry produces smooth diagonal segments instead of stair-steps.
         xs[i] = std::round(x + (float)i * stepX);
-        ys[i] = std::round(y + height - ((val - minVal) * invRange) * height);
+        ys[i] = y + height - ((val - minVal) * invRange) * height;
     }
 
     // Skip leading zero-value samples (unfilled ring buffer at startup).

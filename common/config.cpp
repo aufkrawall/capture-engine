@@ -485,7 +485,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     // General
     config.debugLogging = GetBool("General", "debug_logging", true);
     config.captureMethod = GetStr("General", "capture_method", "inject");
-    config.crashDumpDir = GetStr("General", "crash_dump_dir", "crashes");
+    config.crashDumpDir = GetStr("General", "crash_dump_dir", "");
 
     // Performance (Priority Settings)
     config.processPriority = GetStr("Performance", "process_priority", "normal");
