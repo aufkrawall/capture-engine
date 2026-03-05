@@ -195,15 +195,15 @@ bool ConnectToChildProcesses(DWORD timeoutMs) {
         bool allConnected = true;
 
         if (g_hInjectProcess && !g_InjectClient->IsConnected()) {
-            if (!g_InjectClient->Connect(100))
+            if (!g_InjectClient->Connect(10))
                 allConnected = false;
         }
         if (g_hMediaProcess && !g_MediaClient->IsConnected()) {
-            if (!g_MediaClient->Connect(100))
+            if (!g_MediaClient->Connect(10))
                 allConnected = false;
         }
         if (g_hLimiterProcess && !g_LimiterClient->IsConnected()) {
-            if (!g_LimiterClient->Connect(100))
+            if (!g_LimiterClient->Connect(10))
                 allConnected = false;
         }
         // Note: Logger and Sensors don't use pipe IPC yet, they use shared
@@ -211,7 +211,7 @@ bool ConnectToChildProcesses(DWORD timeoutMs) {
 
         if (allConnected)
             return true;
-        Sleep(100);
+        Sleep(25);
     }
 
     return false;
@@ -536,9 +536,6 @@ int ControllerMain(HINSTANCE hInstance) {
         return 1;
     }
 
-    // Wait a bit for inject to create shared memory and event
-    Sleep(500);
-
     g_hMediaProcess = SpawnChildProcess(ProcessMode::Media, g_ConfigPath.c_str());
     if (!g_hMediaProcess) {
         LogError("[Controller] Failed to spawn media process");
@@ -593,6 +590,7 @@ int ControllerMain(HINSTANCE hInstance) {
 
     // Main message loop
     MSG msg;
+    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
     while (g_Running) {
         // Process messages
         while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {

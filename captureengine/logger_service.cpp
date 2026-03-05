@@ -50,9 +50,8 @@ int LoggerProcessMain(const AppConfig& config) {
         }
     }
 
+    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
     while (true) {
-        // 1. Discover new sessions
-        // We look for CE_SM_XXXXXXXX names in the Local namespace
         // Since we don't have a global list of PIDs, we might need a better way.
         // DiscoveryInfo helps, but it only points to one PID.
 

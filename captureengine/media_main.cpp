@@ -812,7 +812,7 @@ int MediaProcessMain(const AppConfig& config) {
         }
 
         if (!g_pSharedMem) {
-            Sleep(200);
+            Sleep(50);
         }
     }
 
@@ -900,6 +900,7 @@ int MediaProcessMain(const AppConfig& config) {
 
     LogInfo("[Media] Process started (PID: %d) Mode: %s", GetCurrentProcessId(),
             g_UseScreenGrab ? "screengrab" : "inject");
+    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
 
     LARGE_INTEGER qpcFreq;
     QueryPerformanceFrequency(&qpcFreq);

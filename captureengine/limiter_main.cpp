@@ -334,6 +334,7 @@ int LimiterProcessMain(const AppConfig& config) {
         lastSessionId = shm->fpsLimiter.hookSessionId.load(std::memory_order_relaxed);
 
     LogInfo("[Limiter] Entering main loop");
+    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
 
     while (g_Running) {
         // Check for IPC commands (non-blocking)

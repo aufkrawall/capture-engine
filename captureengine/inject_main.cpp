@@ -357,6 +357,7 @@ int InjectProcessMain(const AppConfig& config) {
     }
 
     LogInfo("[Inject] Process started (PID: %d)", GetCurrentProcessId());
+    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
 
     // Track log polling
     uint32_t lastReadLogIndex = 0;

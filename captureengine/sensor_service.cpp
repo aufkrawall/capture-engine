@@ -37,6 +37,7 @@ int SensorProcessMain(const AppConfig& config) {
     // In a real plugin-based system, we'd load DLLs here.
     // For now, we reuse the scan_host logic but we will encapsulate it better.
 
+    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
     while (true) {
         // 1. Discover new sessions
         HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
