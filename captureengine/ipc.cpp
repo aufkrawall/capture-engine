@@ -139,8 +139,10 @@ void IPCManager::UpdateConfig(const AppConfig& config) {
     // Copy FPS limiter settings
     pSharedMem->fpsLimiter.SetCaptureSyncEnabled(config.fpsLimiter.captureSyncEnabled);
     pSharedMem->fpsLimiter.SetCaptureSyncMultiplier(config.fpsLimiter.captureSyncMultiplier);
+    pSharedMem->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(config.fpsLimiter.captureSyncLimiterMode));
     pSharedMem->fpsLimiter.SetGeneralEnabled(config.fpsLimiter.generalEnabled);
     pSharedMem->fpsLimiter.SetGeneralFps(config.fpsLimiter.generalFps);
+    pSharedMem->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(config.fpsLimiter.generalLimiterMode));
     pSharedMem->fpsLimiter.SetCaptureFps(config.video.fps);
     pSharedMem->fpsLimiter.SetUseVFR(config.video.useVFR);
 

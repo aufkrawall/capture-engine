@@ -27,7 +27,7 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 8: Added DLSS state telemetry
 // Version 9: Added SharedGraphicsConfig::dlssFGFactor override field
 // Version 10: Added encoder KMT texture handles for DXVK zero-copy capture
-static constexpr uint32_t SHARED_MEMORY_VERSION = 10;
+static constexpr uint32_t SHARED_MEMORY_VERSION = 11;
 
 // Minimum supported version for backward compatibility
 static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
@@ -541,6 +541,8 @@ public:
         std::atomic<int32_t> generalFps_{0};
         std::atomic<int32_t> captureFps_{0};  // Video capture FPS (set when recording starts)
         std::atomic<uint32_t> useVFR_{0};     // If true, limiter acts as passthrough
+        std::atomic<uint32_t> captureSyncLimiterMode_{3};  // LimiterMode enum (default: kAuto=3)
+        std::atomic<uint32_t> generalLimiterMode_{3};      // LimiterMode enum (default: kAuto=3)
 
     public:
         // Atomic accessors
@@ -584,6 +586,20 @@ public:
         }
         void SetUseVFR(bool val) {
             useVFR_.store(val ? 1u : 0u, std::memory_order_release);
+        }
+
+        uint32_t GetCaptureSyncLimiterMode() const {
+            return captureSyncLimiterMode_.load(std::memory_order_acquire);
+        }
+        void SetCaptureSyncLimiterMode(uint32_t val) {
+            captureSyncLimiterMode_.store(val, std::memory_order_release);
+        }
+
+        uint32_t GetGeneralLimiterMode() const {
+            return generalLimiterMode_.load(std::memory_order_acquire);
+        }
+        void SetGeneralLimiterMode(uint32_t val) {
+            generalLimiterMode_.store(val, std::memory_order_release);
         }
 
         // Remote Limiter IPC

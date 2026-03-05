@@ -125,3 +125,137 @@ TEST_F(FpsLimiterTest, Apply_NoTarget_ReturnsImmediately) {
     // Should return almost immediately (< 5ms)
     EXPECT_LT(elapsedMs, 5.0);
 }
+
+// Test that limiter mode config values are stored/read correctly in shared memory
+TEST_F(FpsLimiterTest, LimiterMode_SharedMemory) {
+    mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kFGFallback));
+    EXPECT_EQ(mockShm->fpsLimiter.GetCaptureSyncLimiterMode(), 1u);
+
+    mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kNative));
+    EXPECT_EQ(mockShm->fpsLimiter.GetGeneralLimiterMode(), 2u);
+
+    mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kAuto));
+    EXPECT_EQ(mockShm->fpsLimiter.GetGeneralLimiterMode(), 3u);
+}
+
+// Test that FG fallback mode doubles interval via capture sync local limiter
+TEST_F(FpsLimiterTest, FGFallback_CaptureSync_DoublesInterval) {
+    // Setup capture sync at 60fps with FG fallback mode
+    mockShm->runtimeState.isRecording = true;
+    mockShm->fpsLimiter.SetCaptureSyncEnabled(true);
+    mockShm->fpsLimiter.SetCaptureSyncMultiplier(1);
+    mockShm->fpsLimiter.SetCaptureFps(60);
+    mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kFGFallback));
+
+    // Simulate FG active (DLSS FG)
+    g_FGCompat.SetDLSSFGActive(true);
+
+    // Call Apply twice: first sets up cadence, second actually waits
+    limiter.Apply();  // First call: sets up localTargetTime_
+
+    LARGE_INTEGER start, end;
+    QueryPerformanceCounter(&start);
+    limiter.Apply();  // Second call: should wait ~33ms (60/2 = 30fps = 33.3ms)
+    QueryPerformanceCounter(&end);
+
+    double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
+
+    // With FG active and 60fps target, effective is 30fps → ~33ms interval
+    // Allow wide margin for scheduling
+    EXPECT_GE(elapsedMs, 25.0);  // At least ~25ms (33ms - jitter)
+    EXPECT_LT(elapsedMs, 45.0);  // Less than ~45ms
+
+    // Cleanup
+    g_FGCompat.SetDLSSFGActive(false);
+}
+
+// Test basic mode ignores FG (no interval doubling)
+TEST_F(FpsLimiterTest, BasicMode_IgnoresFG) {
+    mockShm->runtimeState.isRecording = true;
+    mockShm->fpsLimiter.SetCaptureSyncEnabled(true);
+    mockShm->fpsLimiter.SetCaptureSyncMultiplier(1);
+    mockShm->fpsLimiter.SetCaptureFps(60);
+    mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
+
+    // Simulate FG active
+    g_FGCompat.SetDLSSFGActive(true);
+
+    limiter.Apply();  // First call: cadence setup
+
+    LARGE_INTEGER start, end;
+    QueryPerformanceCounter(&start);
+    limiter.Apply();  // Second call: should wait ~16.6ms (60fps, no halving)
+    QueryPerformanceCounter(&end);
+
+    double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
+
+    // Basic mode: 60fps target stays 60fps → ~16.6ms interval
+    EXPECT_GE(elapsedMs, 13.0);
+    EXPECT_LT(elapsedMs, 22.0);
+
+    g_FGCompat.SetDLSSFGActive(false);
+}
+
+// Test auto mode falls back to basic when no FG and no Reflex
+TEST_F(FpsLimiterTest, AutoMode_FallsBackToBasic) {
+    mockShm->runtimeState.isRecording = true;
+    mockShm->fpsLimiter.SetCaptureSyncEnabled(true);
+    mockShm->fpsLimiter.SetCaptureSyncMultiplier(1);
+    mockShm->fpsLimiter.SetCaptureFps(60);
+    mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kAuto));
+
+    // No FG, no Reflex → auto should resolve to basic
+    g_FGCompat.SetDLSSFGActive(false);
+
+    limiter.Apply();  // First call: cadence setup
+
+    LARGE_INTEGER start, end;
+    QueryPerformanceCounter(&start);
+    limiter.Apply();
+    QueryPerformanceCounter(&end);
+
+    double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
+
+    // Auto → basic: 60fps → ~16.6ms
+    EXPECT_GE(elapsedMs, 13.0);
+    EXPECT_LT(elapsedMs, 22.0);
+}
+
+// Test auto mode uses FG fallback when FG is active but no Reflex
+TEST_F(FpsLimiterTest, AutoMode_UsesFGFallbackWhenFGActive) {
+    mockShm->runtimeState.isRecording = true;
+    mockShm->fpsLimiter.SetCaptureSyncEnabled(true);
+    mockShm->fpsLimiter.SetCaptureSyncMultiplier(1);
+    mockShm->fpsLimiter.SetCaptureFps(60);
+    mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kAuto));
+
+    // FG active, no Reflex → auto should resolve to fg_fallback
+    g_FGCompat.SetFSRFGActive(true);
+
+    limiter.Apply();  // First call: cadence setup
+
+    LARGE_INTEGER start, end;
+    QueryPerformanceCounter(&start);
+    limiter.Apply();
+    QueryPerformanceCounter(&end);
+
+    double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
+
+    // Auto → fg_fallback: 60fps / 2 = 30fps → ~33ms
+    EXPECT_GE(elapsedMs, 25.0);
+    EXPECT_LT(elapsedMs, 45.0);
+
+    g_FGCompat.SetFSRFGActive(false);
+}
+
+// Test ParseLimiterMode
+TEST(LimiterModeParseTest, ParsesAllValues) {
+    EXPECT_EQ(ParseLimiterMode("basic"), LimiterMode::kBasic);
+    EXPECT_EQ(ParseLimiterMode("fg_fallback"), LimiterMode::kFGFallback);
+    EXPECT_EQ(ParseLimiterMode("fallback"), LimiterMode::kFGFallback);
+    EXPECT_EQ(ParseLimiterMode("native"), LimiterMode::kNative);
+    EXPECT_EQ(ParseLimiterMode("reflex"), LimiterMode::kNative);
+    EXPECT_EQ(ParseLimiterMode("auto"), LimiterMode::kAuto);
+    EXPECT_EQ(ParseLimiterMode(""), LimiterMode::kAuto);       // Default
+    EXPECT_EQ(ParseLimiterMode("invalid"), LimiterMode::kAuto); // Default
+}

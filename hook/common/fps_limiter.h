@@ -7,7 +7,19 @@
 #include <intrin.h>
 #include <atomic>
 #include "hook_common.h"
+#include "hook_context.h"
 #include "ipc_client.h"
+#include "fg_detection.h"
+#include "reflex_limiter.h"
+
+// LimiterMode values matching the enum in config.h (duplicated here to avoid
+// config.h dependency in the hook DLL which has no STL string support at load).
+namespace LimiterModeValues {
+constexpr uint32_t kBasic = 0;
+constexpr uint32_t kFGFallback = 1;
+constexpr uint32_t kNative = 2;
+constexpr uint32_t kAuto = 3;
+}  // namespace LimiterModeValues
 
 // Shared FPS limiter - event-based synchronization with limiter process
 // Call Apply() each frame before present
@@ -229,6 +241,8 @@ public:
         int generalFps = shm->fpsLimiter.GetGeneralFps();
         int captureFps = shm->fpsLimiter.GetCaptureFps();
         bool useVFR = shm->fpsLimiter.GetUseVFR();
+        uint32_t captureSyncMode = shm->fpsLimiter.GetCaptureSyncLimiterMode();
+        uint32_t generalMode = shm->fpsLimiter.GetGeneralLimiterMode();
 
         // Publish session ID once — use QPC ticks for better entropy
         if (!sessionIdPublished) {
@@ -241,20 +255,29 @@ public:
             HookLog("FPS Limiter: Published Session ID: %u", sid);
         }
 
+        // Lazily initialize Reflex hook (only once, on first Apply call)
+        if (!reflexInitAttempted_) {
+            reflexInitAttempted_ = true;
+            g_ReflexLimiter.Init();
+        }
+
         // Check if limiter should be active
         bool limiterActive = false;
         int targetFps = 0;
         bool usingCaptureSync = false;
+        uint32_t configuredMode = LimiterModeValues::kAuto;
 
         if (isRecording && captureSyncEnabled) {
             if (captureFps > 0 && captureSyncMultiplier >= 1 && captureSyncMultiplier <= 8) {
                 limiterActive = true;
                 targetFps = captureFps * captureSyncMultiplier;
                 usingCaptureSync = true;
+                configuredMode = captureSyncMode;
             }
         } else if (generalEnabled && generalFps > 0) {
             limiterActive = true;
             targetFps = generalFps;
+            configuredMode = generalMode;
         }
 
         // VFR Mode Passthrough: Disable limiter if VFR is active
@@ -277,6 +300,11 @@ public:
                 localStatsIntervalStart_ = 0;
                 localStatsFrameCount_ = 0;
             }
+            // Clear Reflex override when limiter is inactive
+            if (reflexLimiterActive_) {
+                g_ReflexLimiter.SetTargetFps(0);
+                reflexLimiterActive_ = false;
+            }
             if (!loggedInactive_) {
                 TraceLog("Apply: INACTIVE rec=%d capSync=%d genEn=%d genFps=%d capFps=%d vfr=%d", isRecording ? 1 : 0,
                          captureSyncEnabled ? 1 : 0, generalEnabled ? 1 : 0, generalFps, captureFps, useVFR ? 1 : 0);
@@ -291,31 +319,138 @@ public:
             return;
         }
         loggedInactive_ = false;  // Reset so transitions back to inactive are logged
-        if (!loggedActive_ || lastTargetFps_ != targetFps || lastUsedCaptureSync_ != usingCaptureSync) {
-            TraceLog("Apply: ACTIVE mode=%s target=%d capFps=%d mult=%d rec=%d",
-                     usingCaptureSync ? "capture_sync" : "general", targetFps, captureFps, captureSyncMultiplier,
-                     isRecording ? 1 : 0);
-            HookLog("FPS Limiter: Active (mode=%s, target=%d, captureFps=%d, mult=%d, general=%d/%d, isRecording=%d)",
-                    usingCaptureSync ? "capture_sync" : "general", targetFps, captureFps, captureSyncMultiplier,
-                    generalEnabled ? 1 : 0, generalFps, isRecording ? 1 : 0);
-            loggedActive_ = true;
-            lastTargetFps_ = targetFps;
-            lastUsedCaptureSync_ = usingCaptureSync;
+
+        // =====================================================================
+        // Resolve effective limiter mode (auto fallback chain)
+        // =====================================================================
+        bool fgActive = g_FGCompat.IsFGActive();
+        int fgMultiplier = fgActive ? g_FGCompat.GetFGMultiplier() : 1;
+        // FG implies at least 2x output (1 real + 1 interpolated per base frame).
+        // Pattern detection may determine higher (3x/4x for multi-frame gen),
+        // but 2x is the safe minimum when FG is API-confirmed.
+        if (fgActive && fgMultiplier < 2) fgMultiplier = 2;
+        if (fgMultiplier > 4) fgMultiplier = 4;
+
+        uint32_t effectiveMode = configuredMode;
+
+        if (configuredMode == LimiterModeValues::kAuto) {
+            if (fgActive && g_ReflexLimiter.IsAvailable()) {
+                // FG active + Reflex available → try native first (best compatibility)
+                effectiveMode = LimiterModeValues::kNative;
+            } else if (fgActive) {
+                // FG active but no Reflex → use FG-compatible fallback
+                effectiveMode = LimiterModeValues::kFGFallback;
+            } else if (g_ReflexLimiter.IsActive()) {
+                // No FG but Reflex working → native for lowest latency
+                effectiveMode = LimiterModeValues::kNative;
+            } else {
+                // No FG, no Reflex → basic timer limiter
+                effectiveMode = LimiterModeValues::kBasic;
+            }
         }
+
+        // Validate: native mode requires Reflex availability
+        if (effectiveMode == LimiterModeValues::kNative && !g_ReflexLimiter.IsAvailable()) {
+            effectiveMode = fgActive ? LimiterModeValues::kFGFallback : LimiterModeValues::kBasic;
+        }
+
+        // FG-aware FPS adjustment for fallback and native modes:
+        // When FG is active, the output frame rate is fgMultiplier × base rate.
+        // To hit targetFps output, the base game needs to render at targetFps / fgMultiplier.
+        int effectiveTargetFps = targetFps;
+        if (fgActive && (effectiveMode == LimiterModeValues::kFGFallback || effectiveMode == LimiterModeValues::kNative)) {
+            effectiveTargetFps = targetFps / fgMultiplier;
+            if (effectiveTargetFps < 1) effectiveTargetFps = 1;
+        }
+
+        // Log mode transitions
+        if (!loggedActive_ || lastTargetFps_ != effectiveTargetFps || lastUsedCaptureSync_ != usingCaptureSync ||
+            lastEffectiveMode_ != effectiveMode) {
+            const char* modeStr = "basic";
+            if (effectiveMode == LimiterModeValues::kFGFallback) modeStr = "fg_fallback";
+            else if (effectiveMode == LimiterModeValues::kNative) modeStr = "native";
+            else if (effectiveMode == LimiterModeValues::kAuto) modeStr = "auto";
+
+            TraceLog("Apply: ACTIVE sync=%s limiter=%s target=%d effective=%d fg=%d fgMult=%d",
+                     usingCaptureSync ? "capture" : "general", modeStr, targetFps, effectiveTargetFps,
+                     fgActive ? 1 : 0, fgMultiplier);
+            HookLog("FPS Limiter: Active (sync=%s, limiter=%s, target=%d, effective=%d, fg=%d/%dx, isRec=%d)",
+                    usingCaptureSync ? "capture" : "general", modeStr, targetFps, effectiveTargetFps,
+                    fgActive ? 1 : 0, fgMultiplier, isRecording ? 1 : 0);
+            loggedActive_ = true;
+            lastTargetFps_ = effectiveTargetFps;
+            lastUsedCaptureSync_ = usingCaptureSync;
+            lastEffectiveMode_ = effectiveMode;
+        }
+
+        // =====================================================================
+        // Native (Reflex) mode: delegate pacing to the driver's pipeline
+        // =====================================================================
+        if (effectiveMode == LimiterModeValues::kNative && g_ReflexLimiter.IsAvailable()) {
+            // Lazy init: provide device from HookContext if not yet set
+            if (!reflexDeviceProvided_) {
+                auto* ctx = ce::GetHookContext();
+                if (ctx) {
+                    IUnknown* dev = nullptr;
+                    if (ctx->activeAPI == ce::ActiveGraphicsAPI::DX11) {
+                        dev = static_cast<IUnknown*>(ctx->graphicsData.dx11.device);
+                    } else if (ctx->activeAPI == ce::ActiveGraphicsAPI::DX12) {
+                        dev = static_cast<IUnknown*>(ctx->graphicsData.dx12.device);
+                    }
+                    if (dev) {
+                        g_ReflexLimiter.SetDevice(dev);
+                        reflexDeviceProvided_ = true;
+                    }
+                }
+            }
+
+            g_ReflexLimiter.SetTargetFps(effectiveTargetFps);
+
+            // Try to push our limit through the Reflex pipeline
+            if (g_ReflexLimiter.PushFpsLimit()) {
+                reflexLimiterActive_ = true;
+
+                // Driver handles frame pacing — we don't SmartWait
+                isActivelyLimiting_.store(false, std::memory_order_relaxed);
+                lastActualWaitUs_ = 0;
+
+                LARGE_INTEGER retQpc;
+                QueryPerformanceCounter(&retQpc);
+                lastApplyReturnQpc = retQpc.QuadPart;
+                return;
+            }
+
+            // Push failed — fall through to timer-based limiting
+            if (reflexLimiterActive_) {
+                HookLog("FPS Limiter: Reflex push failed, falling back to timer");
+            }
+        }
+
+        // Clear Reflex override if we were using it but switched away
+        if (reflexLimiterActive_) {
+            g_ReflexLimiter.SetTargetFps(0);
+            reflexLimiterActive_ = false;
+        }
+
+        // =====================================================================
+        // Timer-based limiting (basic or FG fallback)
+        // Both use the same SmartWait mechanism; the only difference is that
+        // FG fallback has already adjusted effectiveTargetFps above.
+        // =====================================================================
 
         // Ensure 1ms timer resolution when limiter is active
         EnsureTimerResolution();
         isActivelyLimiting_.store(true, std::memory_order_relaxed);
 
-        if (targetFps <= 0)
-            targetFps = 60;
+        if (effectiveTargetFps <= 0)
+            effectiveTargetFps = 60;
 
         // LOCAL FPS LIMITING for capture sync mode.
         // Bypasses the cross-process event round-trip (hook→limiter→hook) which
         // adds ~3-4ms latency per frame and drops FPS well below target.
         // Instead, maintain a local cadence using SmartWait for sub-ms precision.
         if (usingCaptureSync) {
-            int64_t intervalTicks = qpcFrequency / targetFps;
+            int64_t intervalTicks = qpcFrequency / effectiveTargetFps;
 
             LARGE_INTEGER now;
             QueryPerformanceCounter(&now);
@@ -363,11 +498,11 @@ public:
                     instantFps = (interFrameUs > 0) ? (1000000.0 / interFrameUs) : 0;
                 }
                 TraceLog("Apply: LOCAL stats frames=%u waitUs=%lld avgFps=%.1f instFps=%.1f target=%d",
-                         localFrameCount_, waitUs, avgFps, instantFps, targetFps);
+                         localFrameCount_, waitUs, avgFps, instantFps, effectiveTargetFps);
                 HookLog(
                     "FPS Limiter: Local capture sync (%u frames): lastWait=%lldus avgFps=%.1f "
                     "instFps=%.1f target=%d",
-                    localFrameCount_, waitUs, avgFps, instantFps, targetFps);
+                    localFrameCount_, waitUs, avgFps, instantFps, effectiveTargetFps);
                 localStatsIntervalStart_ = now.QuadPart;
                 localStatsFrameCount_ = 0;
             }
@@ -397,11 +532,11 @@ public:
             // If OpenEvent failed, we'll retry next frame (limiter might not be ready yet)
             if (releaseEvent && requestEvent) {
                 eventsInitialized = true;
-                TraceLog("Apply: Events OK release=%p request=%p target=%d", releaseEvent, requestEvent, targetFps);
+                TraceLog("Apply: Events OK release=%p request=%p target=%d", releaseEvent, requestEvent, effectiveTargetFps);
                 HookLog(
                     "FPS Limiter: Events Initialized (target: %d FPS, release=%p, "
                     "request=%p)",
-                    targetFps, releaseEvent, requestEvent);
+                    effectiveTargetFps, releaseEvent, requestEvent);
             } else {
                 HookLog(
                     "FPS Limiter: Failed to open events (release=%p, request=%p), "
@@ -432,7 +567,7 @@ public:
             if (releaseEvent) {
                 // Calculate appropriate timeout based on target frame interval
                 // Use 3x frame interval for safety margin
-                DWORD frameTimeMs = 1000 / targetFps;
+                DWORD frameTimeMs = 1000 / effectiveTargetFps;
                 DWORD timeoutMs = frameTimeMs * 3;
                 if (timeoutMs < 10)
                     timeoutMs = 10;
@@ -544,12 +679,20 @@ public:
         targetLogCount_ = 0;
         lastTargetFps_ = 0;
         lastUsedCaptureSync_ = false;
+        lastEffectiveMode_ = LimiterModeValues::kAuto;
         lastApplyReturnQpc = 0;
         isActivelyLimiting_.store(false, std::memory_order_relaxed);
         localTargetTime_ = 0;
         localFrameCount_ = 0;
         localStatsIntervalStart_ = 0;
         localStatsFrameCount_ = 0;
+        reflexInitAttempted_ = false;
+        reflexDeviceProvided_ = false;
+        if (reflexLimiterActive_) {
+            g_ReflexLimiter.SetTargetFps(0);
+            reflexLimiterActive_ = false;
+        }
+        g_ReflexLimiter.Shutdown();
     }
 
 private:
@@ -572,6 +715,10 @@ private:
     int targetLogCount_ = 0;
     int lastTargetFps_ = 0;
     bool lastUsedCaptureSync_ = false;
+    uint32_t lastEffectiveMode_ = LimiterModeValues::kAuto;  // Track mode changes for logging
+    bool reflexInitAttempted_ = false;                        // Lazy init flag for Reflex hook
+    bool reflexLimiterActive_ = false;                        // True when Reflex is handling pacing
+    bool reflexDeviceProvided_ = false;                       // True once we've given device to ReflexLimiter
     int64_t lastApplyReturnQpc = 0;                // QPC tick when Apply() last returned from wait (dedup guard)
     int64_t localTargetTime_ = 0;                  // QPC target for local capture sync cadence
     uint32_t localFrameCount_ = 0;                 // Frame count for local capture sync stats

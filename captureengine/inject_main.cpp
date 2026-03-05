@@ -112,8 +112,10 @@ static void UpdateSharedMemoryFromConfig(SharedMemoryLayout* pSharedMem, const A
     // FPS Limiter
     pSharedMem->fpsLimiter.SetCaptureSyncEnabled(config.fpsLimiter.captureSyncEnabled);
     pSharedMem->fpsLimiter.SetCaptureSyncMultiplier(config.fpsLimiter.captureSyncMultiplier);
+    pSharedMem->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(config.fpsLimiter.captureSyncLimiterMode));
     pSharedMem->fpsLimiter.SetGeneralEnabled(config.fpsLimiter.generalEnabled);
     pSharedMem->fpsLimiter.SetGeneralFps(config.fpsLimiter.generalFps);
+    pSharedMem->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(config.fpsLimiter.generalLimiterMode));
     // Note: captureFps is usually set dynamically during recording start,
     // but we can update it here if it's based on config.video.fps
     pSharedMem->fpsLimiter.SetCaptureFps(config.video.fps);
@@ -281,8 +283,10 @@ int InjectProcessMain(const AppConfig& config) {
     // Copy FPS limiter settings
     pSharedMem->fpsLimiter.SetCaptureSyncEnabled(config.fpsLimiter.captureSyncEnabled);
     pSharedMem->fpsLimiter.SetCaptureSyncMultiplier(config.fpsLimiter.captureSyncMultiplier);
+    pSharedMem->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(config.fpsLimiter.captureSyncLimiterMode));
     pSharedMem->fpsLimiter.SetGeneralEnabled(config.fpsLimiter.generalEnabled);
     pSharedMem->fpsLimiter.SetGeneralFps(config.fpsLimiter.generalFps);
+    pSharedMem->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(config.fpsLimiter.generalLimiterMode));
     pSharedMem->fpsLimiter.SetCaptureFps(config.video.fps);
 
     // Copy overlay config (seqlock for consistency with hook readers)

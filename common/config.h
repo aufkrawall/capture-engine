@@ -80,14 +80,32 @@ struct VideoConfig {
     ScalingConfig scaling;
 };
 
+// FPS limiter mode for FG-compatible and native low-latency frame pacing
+enum class LimiterMode : uint32_t {
+    kBasic = 0,       // Our own timer-based limiter (no FG awareness)
+    kFGFallback = 1,  // FG-compatible: double interval when frame generation detected
+    kNative = 2,      // Reflex/Anti-Lag 2: delegate pacing to the game's low-latency pipeline
+    kAuto = 3,        // Auto: try native → FG fallback → basic
+};
+
+inline LimiterMode ParseLimiterMode(const std::string& val) {
+    if (val == "basic") return LimiterMode::kBasic;
+    if (val == "fg_fallback" || val == "fallback") return LimiterMode::kFGFallback;
+    if (val == "native" || val == "reflex") return LimiterMode::kNative;
+    if (val == "auto") return LimiterMode::kAuto;
+    return LimiterMode::kAuto;  // Default to auto
+}
+
 struct FpsLimiterConfig {
     // Capture-Synced Limiter (active during recording)
     bool captureSyncEnabled = false;
     int captureSyncMultiplier = 1;  // 1-8
+    LimiterMode captureSyncLimiterMode = LimiterMode::kAuto;
 
     // General Limiter (active always, overridden by capture sync when recording)
     bool generalEnabled = false;
     int generalFps = 120;
+    LimiterMode generalLimiterMode = LimiterMode::kAuto;
 };
 
 struct GraphicsConfig {
