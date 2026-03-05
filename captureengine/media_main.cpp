@@ -16,7 +16,6 @@
 #include "../common/logging.h"
 #include "../common/process_ipc.h"
 #include "../common/shared_defs.h"
-#include "dxgi_capture.h"
 #include "mediaengine_loader.h"
 #include "wgc_capture.h"
 
@@ -36,7 +35,6 @@ static bool g_HasLastFrame = false;
 
 // Screengrab mode components
 static std::unique_ptr<WGCCapture> g_WgcCap;
-static std::unique_ptr<DxgiCapture> g_DxgiCap;
 static bool g_UseScreenGrab = false;
 
 // Shared memory for hook communication
@@ -672,59 +670,6 @@ void StartRecording(const AppConfig& config) {
         g_WgcCaptureThread = std::thread(WgcCaptureThreadFunc, std::ref(config));
         SetThreadPriority(reinterpret_cast<HANDLE>(g_WgcCaptureThread.native_handle()), THREAD_PRIORITY_ABOVE_NORMAL);
         LogInfo("[Media] WGC capture with direct callback started");
-    } else if (g_UseScreenGrab && g_DxgiCap) {
-        if (g_DxgiCap->StartCapture()) {
-            LogInfo("[Media] DXGI Desktop Duplication capture started");
-
-            g_WgcCaptureShutdown = false;
-            g_WgcCaptureThread = std::thread(
-                [](const AppConfig& cfg) {
-                    LogInfo("[DXGI Thread] Started");
-                    g_WgcCaptureRunning = true;
-
-                    auto lastLog = GetTickCount64();
-                    int framesLogged = 0;
-
-                    while (!g_WgcCaptureShutdown && g_DxgiCap) {
-                        WGCCapturedFrame frame;
-                        bool gotFrame = g_DxgiCap->GetNextFrame(frame, g_IsEncoderBottlenecked);
-
-                        if (gotFrame) {
-                            QueuedFrame qf;
-                            qf.isInjectMode = false;
-                            qf.texture = frame.texture;
-                            qf.width = frame.width;
-                            qf.height = frame.height;
-                            qf.timestamp = frame.timestamp;
-
-                            if (!g_FrameQueue.Push(qf, g_IsEncoderBottlenecked)) {
-                                frame.texture->Release();
-                            } else {
-                                framesLogged++;
-                            }
-                        } else {
-                            std::this_thread::yield();
-                        }
-
-                        auto now = GetTickCount64();
-                        if (now - lastLog > 1000) {
-                            LogInfo("[DXGI Diag] FPS: %d, Queue: %d", framesLogged, g_FrameQueue.Size());
-                            framesLogged = 0;
-                            lastLog = now;
-                        }
-                    }
-                    g_WgcCaptureRunning = false;
-                    LogInfo("[DXGI Thread] Stopped");
-                },
-                std::ref(config));
-
-            SetThreadPriority(reinterpret_cast<HANDLE>(g_WgcCaptureThread.native_handle()),
-                              THREAD_PRIORITY_ABOVE_NORMAL);
-        } else {
-            LogError("[Media] Failed to start DXGI capture");
-            StopRecording();
-            return;
-        }
     } else if (!g_UseScreenGrab) {
         LogInfo("[Media] Starting InjectCaptureThread for Shared Memory Capture");
         g_InjectCaptureShutdown = false;
@@ -750,9 +695,6 @@ void StopRecording() {
         if (g_WgcCap) {
             g_WgcCap->StopCapture();
             g_WgcCap->SetDirectFrameCallback(nullptr);
-        }
-        if (g_DxgiCap) {
-            g_DxgiCap->StopCapture();
         }
     } else {
         g_InjectCaptureShutdown = true;
@@ -937,18 +879,7 @@ int MediaProcessMain(const AppConfig& config) {
         } else {
             d3dDevice->GetImmediateContext(&d3dContext);
 
-            if (config.captureMethod == "desktop_dup") {
-                LogInfo("[Media] Initializing Desktop Duplication...");
-                g_DxgiCap = std::make_unique<DxgiCapture>();
-                if (g_DxgiCap->Init(d3dDevice, 0)) {
-                    LogInfo("[Media] Desktop Duplication initialized");
-                } else {
-                    LogError("[Media] Desktop Duplication init failed");
-                    MediaEngine_Shutdown();
-                    timeEndPeriod(1);
-                    return 1;
-                }
-            } else if (WGCCapture::IsSupported()) {
+            if (WGCCapture::IsSupported()) {
                 g_WgcCap = std::make_unique<WGCCapture>();
                 if (g_WgcCap->Init(d3dDevice)) {
                     LogInfo("[Media] WGC capture initialized%s", g_UseScreenGrab ? "" : " (standby for auto fallback)");

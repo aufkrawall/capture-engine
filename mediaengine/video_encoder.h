@@ -22,14 +22,7 @@ extern "C" {
 #include <libavutil/hwcontext_d3d11va.h>
 #include <libavutil/hwcontext_d3d12va.h>
 #include <libswscale/swscale.h>
-#ifdef HAS_CUDA
-#include <libavutil/hwcontext_cuda.h>
-#endif
 }
-
-#ifdef HAS_CUDA
-class CudaInterop;  // Forward declaration
-#endif
 
 class CursorRenderer;  // Forward declaration
 
@@ -114,8 +107,6 @@ private:
     AVStream* stream;
     AVBufferRef* hwDeviceCtx;
     AVBufferRef* hwFramesCtx;
-    AVBufferRef* cudaDeviceCtx;
-    AVBufferRef* cudaFramesCtx;
 
     AVBufferRef* d3d11DeviceCtx;
     AVBufferRef* d3d11FramesCtx;
@@ -137,7 +128,7 @@ private:
     std::atomic<bool> flushRequested = false;  // signaled by Stop()
     std::atomic<bool> codecOpenFailed{false};  // Prevent infinite retry loop if codec fails to open
 
-    std::string colorConversion = "d3d11";  // "d3d11", "cuda", or "auto"
+    std::string colorConversion = "d3d11";  // "d3d11" or "auto"
     std::atomic<int64_t> startPts{-1};      // First frame PTS for relative timestamps
     VideoConfig savedConfig;                // Stored config for encoder options
     int width, height;                      // Currently configured encoder dimensions (may be scaled)
@@ -229,8 +220,7 @@ private:
     std::vector<ID3D11VideoProcessorOutputView*> outputViews;
     int currentNV12Buffer = 0;
 
-    // BGRA staging texture for Desktop Duplication compatibility
-    // DD textures often have incompatible bind flags for VideoProcessor input
+    // BGRA staging texture for VideoProcessor input compatibility
     ID3D11Texture2D* bgraStagingTexture = nullptr;
 
     ID3D11VideoProcessorInputView* inputView = nullptr;
@@ -272,17 +262,6 @@ private:
     void CleanupVideoProcessor();
     bool ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture2D** nv12Output, bool cursorVisible = false,
                            int cursorX = 0, int cursorY = 0);
-
-#ifdef HAS_CUDA
-    // CUDA path members
-    bool useCudaPath = false;
-    CudaInterop* cudaInterop = nullptr;
-
-    bool InitCudaPath();
-    bool EncodeFrameCuda(HANDLE sharedHandle, uint64_t fenceValue, int64_t pts, uint32_t pid, uint32_t frameWidth,
-                         uint32_t frameHeight);
-    void CleanupCuda();
-#endif
 
     // ASYNC PACKET WRITER
     // Decouples file I/O from the capture thread to prevent stalls on network

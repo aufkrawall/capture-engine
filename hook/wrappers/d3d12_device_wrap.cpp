@@ -7,7 +7,6 @@
 
 #include "d3d12_device_wrap.h"
 #include "d3d12_commandqueue_wrap.h"
-#include "d3d12_wrapper_interface.h"
 #include "wrapper_base.h"
 
 #include <vector>

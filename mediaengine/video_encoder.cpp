@@ -180,8 +180,6 @@ VideoEncoder::VideoEncoder()
       stream(nullptr),
       hwDeviceCtx(nullptr),
       hwFramesCtx(nullptr),
-      cudaDeviceCtx(nullptr),
-      cudaFramesCtx(nullptr),
       d3d11DeviceCtx(nullptr),
       d3d11FramesCtx(nullptr),
       d3d11Device(nullptr),
@@ -1299,11 +1297,6 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     if (!EnsureDevice())
         return false;
 
-#ifdef HAS_CUDA
-    if (useCudaPath) {
-        return EncodeFrameCuda(sharedHandle, fenceValue, timestamp, sourcePid, width, height);
-    }
-#endif
     // Fall through to D3D11 path below
 
     if (!fileOpened) {
@@ -2531,10 +2524,6 @@ void VideoEncoder::CleanupResources() {
             av_buffer_unref(&d3d11FramesCtx);
     }
 
-    if (cudaDeviceCtx)
-        av_buffer_unref(&cudaDeviceCtx);
-    if (cudaFramesCtx)
-        av_buffer_unref(&cudaFramesCtx);
     if (hwDeviceCtx)
         av_buffer_unref(&hwDeviceCtx);
     if (hwFramesCtx)
@@ -2584,9 +2573,6 @@ void VideoEncoder::CleanupResources() {
 
     CleanupVideoProcessor();
     CleanupCursorCache();
-#ifdef HAS_CUDA
-    CleanupCuda();
-#endif
 
     initDone = false;
     fileOpened = false;
@@ -3431,281 +3417,6 @@ VideoEncoder::CursorCacheEntry* VideoEncoder::GetCursorCacheEntry(HCURSOR handle
 
     return &entry;
 }
-
-// ============================================================================
-// CUDA Path Implementation (Optional, for NVIDIA GPUs)
-// ============================================================================
-#ifdef HAS_CUDA
-
-bool VideoEncoder::InitCudaPath() {
-    DLL_Log("[VideoEncoder] Initializing CUDA path...");
-
-    cudaInterop = new CudaInterop();
-    if (!cudaInterop->Init(luidLow, luidHigh)) {
-        delete cudaInterop;
-        cudaInterop = nullptr;
-        return false;
-    }
-
-    // Create CUDA hardware context for FFmpeg
-    cudaDeviceCtx = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_CUDA);
-    if (!cudaDeviceCtx) {
-        DLL_Log("[VideoEncoder] Failed to alloc CUDA device context");
-        return false;
-    }
-
-    AVHWDeviceContext* hwDevCtx = (AVHWDeviceContext*)cudaDeviceCtx->data;
-    AVCUDADeviceContext* cudaCtx = (AVCUDADeviceContext*)hwDevCtx->hwctx;
-
-    // Note: cudaCtx requires a CUcontext; we let FFmpeg create one
-    if (av_hwdevice_ctx_init(cudaDeviceCtx) < 0) {
-        DLL_Log("[VideoEncoder] Failed to init CUDA device context");
-        av_buffer_unref(&cudaDeviceCtx);
-        return false;
-    }
-
-    // Set CUDA pixel format in codec context
-    codecCtx->pix_fmt = AV_PIX_FMT_CUDA;
-    codecCtx->hw_device_ctx = av_buffer_ref(cudaDeviceCtx);
-
-    // Create CUDA frames context
-    cudaFramesCtx = av_hwframe_ctx_alloc(cudaDeviceCtx);
-    AVHWFramesContext* framesCtx = (AVHWFramesContext*)cudaFramesCtx->data;
-    framesCtx->format = AV_PIX_FMT_CUDA;
-    framesCtx->sw_format = AV_PIX_FMT_NV12;
-    framesCtx->width = width;
-    framesCtx->height = height;
-    framesCtx->initial_pool_size = 4;
-
-    if (av_hwframe_ctx_init(cudaFramesCtx) < 0) {
-        DLL_Log("[VideoEncoder] Failed to init CUDA frames context");
-        av_buffer_unref(&cudaFramesCtx);
-        av_buffer_unref(&cudaDeviceCtx);
-        // CRITICAL: Reset codecCtx for D3D11 fallback
-        av_buffer_unref(&codecCtx->hw_device_ctx);
-        codecCtx->pix_fmt = AV_PIX_FMT_NONE;
-        return false;
-    }
-    codecCtx->hw_frames_ctx = av_buffer_ref(cudaFramesCtx);
-
-    // Update codec dimensions
-    codecCtx->width = width;
-    codecCtx->height = height;
-    codecCtx->max_b_frames = 0;
-
-    const AVCodec* codec = codecCtx->codec;
-    DLL_Log("[VideoEncoder] Opening Codec (CUDA path)...");
-    int ret = avcodec_open2(codecCtx, codec, nullptr);
-    if (ret < 0) {
-        char errbuf[AV_ERROR_MAX_STRING_SIZE];
-        av_strerror(ret, errbuf, AV_ERROR_MAX_STRING_SIZE);
-        DLL_Log("[VideoEncoder] Failed to open codec (CUDA): %s", errbuf);
-        return false;
-    }
-    DLL_Log("[VideoEncoder] Codec Opened (CUDA path).");
-
-    stream = avformat_new_stream(fmtCtx, codec);
-    avcodec_parameters_from_context(stream->codecpar, codecCtx);
-    stream->time_base = codecCtx->time_base;
-    stream->avg_frame_rate = codecCtx->framerate;
-    stream->r_frame_rate = codecCtx->framerate;
-
-    initDone = true;
-    DLL_Log("[VideoEncoder] CUDA path initialized successfully");
-    return true;
-}
-
-bool VideoEncoder::EncodeFrameCuda(HANDLE sharedHandle, uint64_t fenceValue, int64_t pts, uint32_t pid,
-                                   uint32_t frameWidth, uint32_t frameHeight) {
-    if (!cudaInterop)
-        return false;
-
-    inputFrameCount++;
-
-    if (!fileOpened) {
-        DLL_Log("[VideoEncoder] Opening Output File: %s (CUDA)", outputFilename.c_str());
-        if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
-            int ret = avio_open(&fmtCtx->pb, outputFilename.c_str(), AVIO_FLAG_WRITE);
-            if (ret < 0) {
-                DLL_Log("Failed to open output file: %d", ret);
-                return false;
-            }
-        }
-        if (fmtCtx->priv_data) {
-            av_opt_set(fmtCtx->priv_data, "reserve_index_space", "200000", 0);
-        }
-        if (avformat_write_header(fmtCtx, nullptr) < 0) {
-            DLL_Log("Failed to write header");
-            return false;
-        }
-        fileOpened = true;
-    }
-
-    // Import D3D12 texture to CUDA
-    if (!cudaInterop->ImportD3D12Texture(sharedHandle, frameWidth, frameHeight, pid)) {
-        DLL_Log("[VideoEncoder] CUDA: Failed to import D3D12 texture");
-        return false;
-    }
-
-    // Convert BGRA to NV12 using CUDA kernel
-    CUdeviceptr nv12Ptr = 0;
-    size_t nv12Pitch = 0;
-    if (!cudaInterop->ConvertBGRAtoNV12(&nv12Ptr, &nv12Pitch)) {
-        DLL_Log("[VideoEncoder] CUDA: Failed to convert BGRA to NV12");
-        return false;
-    }
-
-    // Create AVFrame with CUDA data
-    AVFrame* cudaFrame = av_frame_alloc();
-    cudaFrame->format = AV_PIX_FMT_CUDA;
-    cudaFrame->width = width;
-    cudaFrame->height = height;
-    cudaFrame->hw_frames_ctx = av_buffer_ref(cudaFramesCtx);
-
-    // Get a frame from the pool and copy our NV12 data
-    if (av_hwframe_get_buffer(cudaFramesCtx, cudaFrame, 0) < 0) {
-        DLL_Log("[VideoEncoder] CUDA: Failed to get hw frame buffer");
-        av_frame_free(&cudaFrame);
-        return false;
-    }
-
-    // Copy NV12 data to the frame (data[0] = Y, data[1] = UV)
-    // Note: We're using the CUDA device pointer directly
-    cudaFrame->data[0] = (uint8_t*)nv12Ptr;
-    cudaFrame->data[1] = (uint8_t*)(nv12Ptr + nv12Pitch * height);
-    cudaFrame->linesize[0] = (int)nv12Pitch;
-    cudaFrame->linesize[1] = (int)nv12Pitch;
-
-    // Calculate PTS — pts is in microseconds
-    if (startPts < 0) {
-        startPts = pts;
-        DLL_Log("[VideoEncoder] Recording started at PTS %lld us (CUDA)", startPts.load());
-    }
-
-    int64_t targetPts = 0;
-    int64_t elapsedUs = pts - startPts;
-    if (elapsedUs < 0) {
-        elapsedUs = 0;
-    }
-
-    if (savedConfig.useVFR) {
-        // VFR: PTS in microseconds, matches time_base 1/1000000
-        targetPts = elapsedUs;
-    } else {
-        int fps = (codecCtx && codecCtx->framerate.num > 0) ? codecCtx->framerate.num : savedConfig.fps;
-        if (fps <= 0) {
-            fps = 60;
-        }
-        targetPts = av_rescale(elapsedUs, fps, 1000000);
-    }
-
-    // Encode
-    AVPacket* pkt = av_packet_alloc();
-    int packetCount = 0;
-
-    auto drainPackets = [&]() {
-        while (true) {
-            int ret = avcodec_receive_packet(codecCtx, pkt);
-            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
-                break;
-            if (ret < 0)
-                break;
-            packetCount++;
-            pkt->stream_index = stream->index;
-
-            // CRITICAL: Set packet duration to 1 frame in codec time_base
-            if (savedConfig.useVFR) {
-                pkt->duration = 1000000 / (savedConfig.fps > 0 ? savedConfig.fps : 60);
-            } else {
-                pkt->duration = 1;
-            }
-
-            if (onPacket)
-                onPacket(pkt);
-            av_packet_unref(pkt);
-        }
-    };
-
-    auto sendFrame = [&](AVFrame* frame) -> bool {
-        drainPackets();
-        int ret = avcodec_send_frame(codecCtx, frame);
-        int retries = 0;
-        while (ret == AVERROR(EAGAIN) && retries < 10) {
-            drainPackets();
-            ret = avcodec_send_frame(codecCtx, frame);
-            retries++;
-        }
-        drainPackets();
-        return ret >= 0 || ret == AVERROR(EAGAIN);
-    };
-
-    bool success = true;
-
-    if (!savedConfig.useVFR) {
-        if (lastAssignedVideoPts >= 0) {
-            if (targetPts <= lastAssignedVideoPts) {
-                // Frame arrived too early (game FPS > target FPS). Drop it.
-                skippedFrameCount++;
-                av_packet_free(&pkt);
-                av_frame_free(&cudaFrame);
-                return true;
-            }
-
-            // If targetPts > lastAssignedVideoPts + 1, we need to duplicate frames
-            while (targetPts > lastAssignedVideoPts + 1) {
-                AVFrame* dupFrame = av_frame_clone(cudaFrame);
-                if (dupFrame) {
-                    dupFrame->pts = lastAssignedVideoPts + 1;
-                    lastAssignedVideoPts = dupFrame->pts;
-                    duplicatedFrameCount++;
-                    if (!sendFrame(dupFrame)) {
-                        success = false;
-                    }
-                    av_frame_free(&dupFrame);
-                } else {
-                    break;
-                }
-            }
-        }
-    }
-
-    cudaFrame->pts = targetPts;
-    lastAssignedVideoPts = cudaFrame->pts;
-
-    if (success) {
-        success = sendFrame(cudaFrame);
-        if (success) {
-            outputFrameCount++;
-        }
-    }
-
-    av_packet_free(&pkt);
-
-    static int framesSent = 0;
-    static int totalPackets = 0;
-    framesSent++;
-    totalPackets += packetCount;
-    if (framesSent % 60 == 0) {
-        DLL_Log(
-            "[VideoEncoder] CUDA Stats: %d frames sent, %d packets "
-            "produced",
-            framesSent, totalPackets);
-    }
-
-    av_frame_free(&cudaFrame);
-    return true;
-}
-
-void VideoEncoder::CleanupCuda() {
-    if (cudaInterop) {
-        cudaInterop->Cleanup();
-        delete cudaInterop;
-        cudaInterop = nullptr;
-    }
-    useCudaPath = false;
-}
-
-#endif  // HAS_CUDA
 
 int64_t VideoEncoder::GetExpectedFinalDurationUs() const {
     if (lastAssignedVideoPts < 0)

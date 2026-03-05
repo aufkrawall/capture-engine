@@ -29,7 +29,6 @@
 #include "../common/perf_logger.h"
 #include "../common/swapchain_wrapper.h"
 #include "../common/system_metrics.h"
-#include "../wrappers/d3d12_wrapper_interface.h"
 #include "../wrappers/dxgi_swapchain_wrap.h"
 #include "../wrappers/root_signature_parser.h"
 #include "../wrappers/wrapper_hooks.h"

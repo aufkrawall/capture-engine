@@ -12,13 +12,6 @@
 #include "dxgi_swapchain_wrap.h"
 #include "wrapper_base.h"
 
-// D3D12 wrapper is compiled with MSVC due to ABI incompatibility
-// with WIDL_EXPLICIT_AGGREGATE_RETURNS in MinGW's d3d12.h.
-// We use a C interface to call into the MSVC-compiled code.
-#ifdef ENABLE_D3D12_WRAPPER
-#include "d3d12_wrapper_interface.h"
-#endif
-
 // ============================================================================
 // DXGI Factory Hook
 // ============================================================================

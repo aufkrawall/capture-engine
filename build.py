@@ -2472,8 +2472,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         if os.path.exists(msys2_include):
             cflags.append("-I" + msys2_include)
 
-    # Compile D3D12 wrappers (MSVC)
-
     # --- Architecture Loop ---
     arch_targets = ["x64", "x86"]
     if env.get("CE_SANITIZE") == "1":
@@ -2600,11 +2598,9 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
 
         # Exclude D3D12 device/commandqueue wrappers due to MinGW ABI incompatibility
         # (MSYS2's D3D12 headers use WIDL_EXPLICIT_AGGREGATE_RETURNS which has different vtable layout)
-        # d3d12_wrapper_interface.cpp is compiled by MSVC and linked as a static lib
         excluded_files = [
             os.path.join(PROJECT_ROOT, "hook", "wrappers", "d3d12_device_wrap.cpp"),
             os.path.join(PROJECT_ROOT, "hook", "wrappers", "d3d12_commandqueue_wrap.cpp"),
-            os.path.join(PROJECT_ROOT, "hook", "wrappers", "d3d12_wrapper_interface.cpp"),
             os.path.join(PROJECT_ROOT, "hook", "apis", "dx12_hook_stable.cpp"),  # WIP - not ready
         ]
         hk_src = [f for f in hk_src if f not in excluded_files]
@@ -3301,8 +3297,6 @@ def main():
 
     # Clean legacy log files from root/bin
     legacy_logs = [
-        os.path.join(BIN_DIR, "msvc_debug.log"),
-        os.path.join(PROJECT_ROOT, "msvc_debug.log"),
         os.path.join(BIN_DIR, "Layer"),
         os.path.join(PROJECT_ROOT, "Layer"),
     ]

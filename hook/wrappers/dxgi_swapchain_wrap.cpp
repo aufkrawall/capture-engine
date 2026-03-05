@@ -12,7 +12,6 @@
 #include "../apis/graphics_hook.h"
 #include "../common/dxgi_shared.h"
 #include "../common/performance_metrics.h"
-#include "d3d12_wrapper_interface.h"
 #include "hook_common.h"
 
 // External overlay functions (implemented in dx11_hook.cpp / dx12_hook.cpp)
