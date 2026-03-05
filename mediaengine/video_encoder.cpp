@@ -854,6 +854,10 @@ bool VideoEncoder::EnsureDevice() {
         framesHeight = savedConfig.scaling.outputHeight;
     }
 
+    // D3D11 NV12 HW frames require even-aligned dimensions
+    framesWidth = framesWidth & ~1;
+    framesHeight = framesHeight & ~1;
+
     d11Frames->width = framesWidth;
     d11Frames->height = framesHeight;
     d11Frames->initial_pool_size = 0;
@@ -1287,8 +1291,28 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         } else {
             DLL_Log("[VideoEncoder] Resolution CHANGE detected: %dx%d -> %dx%d", this->width, this->height, width,
                     height);
-            // For now we might need to recreate the encoder, but let's at least
-            // update the variables
+            if (!fileOpened && initDone) {
+                // Pre-warm used stale/wrong dimensions. Reset codec and container
+                // so EnsureDevice() reinitializes them at the correct resolution
+                // before the file header is written.
+                DLL_Log("[VideoEncoder] Reinitializing encoder at correct resolution (pre-file-open)");
+                avcodec_free_context(&codecCtx);
+                if (d3d11FramesCtx) {
+                    av_buffer_unref(&d3d11FramesCtx);
+                    d3d11FramesCtx = nullptr;
+                }
+                stream = nullptr;
+                if (fmtCtx) {
+                    avformat_free_context(fmtCtx);
+                    fmtCtx = nullptr;
+                    avformat_alloc_output_context2(&fmtCtx, nullptr, nullptr, outputFilename.c_str());
+                }
+                const AVCodec* c = avcodec_find_encoder_by_name(savedConfig.encoder.c_str());
+                if (c)
+                    codecCtx = avcodec_alloc_context3(c);
+                audioStreamIndex = -1;
+                initDone = false;
+            }
         }
         this->width = width;
         this->height = height;
@@ -2689,6 +2713,14 @@ bool VideoEncoder::InitVideoProcessor() {
         outputHeight = height;
     }
 
+    // NV12 output textures require even-aligned dimensions
+    outputWidth = outputWidth & ~1u;
+    outputHeight = outputHeight & ~1u;
+    if (outputWidth == 0 || outputHeight == 0) {
+        DLL_Log("[VideoProcessor] Dimensions too small after NV12 alignment");
+        return false;
+    }
+
     // Check if scaling is actually needed (input != output)
     scalingEnabled = (inputWidth != outputWidth || inputHeight != outputHeight);
 
@@ -3074,27 +3106,22 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
     // Stream 1: Cursor overlay (only if visible and VP supports it)
     bool useCursorStream = cursorVisible && vpSupportsOverlay && activeCursor && activeCursor->inputView;
     if (useCursorStream) {
-        // Calculate DPI scale from frame size vs virtual screen size
-        // This works even when app is not DPI-aware (Windows lies about
-        // DPI) Frame is physical pixels (e.g., 3840x2160 for native 4K)
-        // Screen is virtual pixels (e.g., 2560x1440 at 150% DPI)
-        static float cachedDpiScale = 0.0f;
-        static bool dpiCalculated = false;
+        // Calculate DPI scale from frame size vs physical screen size each call.
+        // This must NOT be cached statically — frame dimensions change between
+        // capture sessions (e.g., DPI-unaware OpenGL then full-res Vulkan),
+        // so a stale scale from a previous session would produce wrong cursor
+        // size/position.
+        // Media engine runs DPI-aware so GetSystemMetrics returns physical pixels.
+        int screenW = GetSystemMetrics(SM_CXSCREEN);
+        int screenH = GetSystemMetrics(SM_CYSCREEN);
+        float scaleX = screenW > 0 ? (float)width / (float)screenW : 1.0f;
+        float scaleY = screenH > 0 ? (float)height / (float)screenH : 1.0f;
+        float cachedDpiScale = (scaleX + scaleY) / 2.0f;
 
-        if (!dpiCalculated) {
-            int virtualScreenWidth = GetSystemMetrics(SM_CXSCREEN);
-            int virtualScreenHeight = GetSystemMetrics(SM_CYSCREEN);
-
-            // DPI scale = frame physical pixels / screen virtual pixels
-            float scaleX = (float)width / (float)virtualScreenWidth;
-            float scaleY = (float)height / (float)virtualScreenHeight;
-            cachedDpiScale = (scaleX + scaleY) / 2.0f;  // Average, should be same
-
-            DLL_Log(
-                "[Cursor] DPI scale (calculated): %.2f (frame=%dx%d, "
-                "screen=%dx%d)",
-                cachedDpiScale, width, height, virtualScreenWidth, virtualScreenHeight);
-            dpiCalculated = true;
+        static int dpiLogCount = 0;
+        if (dpiLogCount++ % 600 == 0) {
+            DLL_Log("[Cursor] DPI scale (calculated): %.2f (frame=%dx%d, screen=%dx%d)", cachedDpiScale, width, height,
+                    screenW, screenH);
         }
 
         float dpiScale = cachedDpiScale > 0.5f ? cachedDpiScale : 1.0f;

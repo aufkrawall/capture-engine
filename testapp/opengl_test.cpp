@@ -153,6 +153,8 @@ void Render() {
 }
 
 int main(int argc, char* argv[]) {
+    // Enable Per-Monitor DPI awareness for true physical pixel sizes
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     LoadConfig();
     bool forceLegacy = false;
     if (argc >= 3) {
