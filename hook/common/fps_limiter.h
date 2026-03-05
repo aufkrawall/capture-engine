@@ -11,14 +11,18 @@
 #include "ipc_client.h"
 #include "fg_detection.h"
 #include "reflex_limiter.h"
+#include "antilag2_limiter.h"
+#include "xell_limiter.h"
 
 // LimiterMode values matching the enum in config.h (duplicated here to avoid
 // config.h dependency in the hook DLL which has no STL string support at load).
 namespace LimiterModeValues {
 constexpr uint32_t kBasic = 0;
 constexpr uint32_t kFGFallback = 1;
-constexpr uint32_t kNative = 2;
+constexpr uint32_t kNative = 2;     // NVIDIA Reflex
 constexpr uint32_t kAuto = 3;
+constexpr uint32_t kAntiLag2 = 4;  // AMD Anti-Lag 2
+constexpr uint32_t kXeLL = 5;      // Intel XeLL
 }  // namespace LimiterModeValues
 
 // Shared FPS limiter - event-based synchronization with limiter process
@@ -334,31 +338,41 @@ public:
         uint32_t effectiveMode = configuredMode;
 
         if (configuredMode == LimiterModeValues::kAuto) {
-            if (fgActive && g_ReflexLimiter.IsAvailable()) {
-                // FG active + Reflex available → try native first (best compatibility)
+            // Priority: Reflex (NVIDIA) → XeLL (Intel) → Anti-Lag 2 (AMD) → FG fallback → basic
+            if (g_ReflexLimiter.IsAvailable()) {
                 effectiveMode = LimiterModeValues::kNative;
+            } else if (g_XeLLLimiter.IsAvailable()) {
+                effectiveMode = LimiterModeValues::kXeLL;
+            } else if (g_AntiLag2Limiter.IsAvailable()) {
+                effectiveMode = LimiterModeValues::kAntiLag2;
             } else if (fgActive) {
-                // FG active but no Reflex → use FG-compatible fallback
+                // No native low-latency API but FG active → FG-compatible fallback
                 effectiveMode = LimiterModeValues::kFGFallback;
-            } else if (g_ReflexLimiter.IsActive()) {
-                // No FG but Reflex working → native for lowest latency
-                effectiveMode = LimiterModeValues::kNative;
             } else {
-                // No FG, no Reflex → basic timer limiter
                 effectiveMode = LimiterModeValues::kBasic;
             }
         }
 
-        // Validate: native mode requires Reflex availability
+        // Validate: native modes require the respective DLL to be available.
+        // Fall back gracefully if the selected mode is not supported on this system.
         if (effectiveMode == LimiterModeValues::kNative && !g_ReflexLimiter.IsAvailable()) {
             effectiveMode = fgActive ? LimiterModeValues::kFGFallback : LimiterModeValues::kBasic;
         }
+        if (effectiveMode == LimiterModeValues::kAntiLag2 && !g_AntiLag2Limiter.IsAvailable()) {
+            effectiveMode = fgActive ? LimiterModeValues::kFGFallback : LimiterModeValues::kBasic;
+        }
+        if (effectiveMode == LimiterModeValues::kXeLL && !g_XeLLLimiter.IsAvailable()) {
+            effectiveMode = fgActive ? LimiterModeValues::kFGFallback : LimiterModeValues::kBasic;
+        }
 
-        // FG-aware FPS adjustment for fallback and native modes:
+        // FG-aware FPS adjustment for FG fallback and all native low-latency modes:
         // When FG is active, the output frame rate is fgMultiplier × base rate.
         // To hit targetFps output, the base game needs to render at targetFps / fgMultiplier.
         int effectiveTargetFps = targetFps;
-        if (fgActive && (effectiveMode == LimiterModeValues::kFGFallback || effectiveMode == LimiterModeValues::kNative)) {
+        bool isNativeMode = (effectiveMode == LimiterModeValues::kNative ||
+                             effectiveMode == LimiterModeValues::kAntiLag2 ||
+                             effectiveMode == LimiterModeValues::kXeLL);
+        if (fgActive && (effectiveMode == LimiterModeValues::kFGFallback || isNativeMode)) {
             effectiveTargetFps = targetFps / fgMultiplier;
             if (effectiveTargetFps < 1) effectiveTargetFps = 1;
         }
@@ -368,7 +382,9 @@ public:
             lastEffectiveMode_ != effectiveMode) {
             const char* modeStr = "basic";
             if (effectiveMode == LimiterModeValues::kFGFallback) modeStr = "fg_fallback";
-            else if (effectiveMode == LimiterModeValues::kNative) modeStr = "native";
+            else if (effectiveMode == LimiterModeValues::kNative) modeStr = "native(reflex)";
+            else if (effectiveMode == LimiterModeValues::kAntiLag2) modeStr = "anti_lag2";
+            else if (effectiveMode == LimiterModeValues::kXeLL) modeStr = "xell";
             else if (effectiveMode == LimiterModeValues::kAuto) modeStr = "auto";
 
             TraceLog("Apply: ACTIVE sync=%s limiter=%s target=%d effective=%d fg=%d fgMult=%d",
@@ -430,6 +446,62 @@ public:
         if (reflexLimiterActive_) {
             g_ReflexLimiter.SetTargetFps(0);
             reflexLimiterActive_ = false;
+        }
+
+        // =====================================================================
+        // AMD Anti-Lag 2 mode: delegate pacing to AMD driver extension
+        // =====================================================================
+        if (effectiveMode == LimiterModeValues::kAntiLag2) {
+            // Lazy init: Anti-Lag 2 requires a DX12 device (DX12 only)
+            if (!antilag2InitAttempted_) {
+                auto* ctx = ce::GetHookContext();
+                if (ctx && ctx->activeAPI == ce::ActiveGraphicsAPI::DX12) {
+                    auto* dev = static_cast<ID3D12Device*>(ctx->graphicsData.dx12.device);
+                    g_AntiLag2Limiter.Init(dev);
+                }
+                antilag2InitAttempted_ = true;
+            }
+
+            g_AntiLag2Limiter.SetTargetFps(effectiveTargetFps);
+
+            if (g_AntiLag2Limiter.Update()) {
+                isActivelyLimiting_.store(false, std::memory_order_relaxed);
+                lastActualWaitUs_ = 0;
+                LARGE_INTEGER retQpc;
+                QueryPerformanceCounter(&retQpc);
+                lastApplyReturnQpc = retQpc.QuadPart;
+                return;
+            }
+
+            // Anti-Lag 2 update failed — fall through to timer-based limiting
+        }
+
+        // =====================================================================
+        // Intel XeLL mode: delegate pacing to Intel Arc driver
+        // =====================================================================
+        if (effectiveMode == LimiterModeValues::kXeLL) {
+            // Lazy init: XeLL requires a DX12 device (DX12 only)
+            if (!xellInitAttempted_) {
+                auto* ctx = ce::GetHookContext();
+                if (ctx && ctx->activeAPI == ce::ActiveGraphicsAPI::DX12) {
+                    auto* dev = static_cast<ID3D12Device*>(ctx->graphicsData.dx12.device);
+                    g_XeLLLimiter.Init(dev);
+                }
+                xellInitAttempted_ = true;
+            }
+
+            g_XeLLLimiter.SetTargetFps(effectiveTargetFps);
+
+            if (g_XeLLLimiter.Sleep()) {
+                isActivelyLimiting_.store(false, std::memory_order_relaxed);
+                lastActualWaitUs_ = 0;
+                LARGE_INTEGER retQpc;
+                QueryPerformanceCounter(&retQpc);
+                lastApplyReturnQpc = retQpc.QuadPart;
+                return;
+            }
+
+            // XeLL sleep failed — fall through to timer-based limiting
         }
 
         // =====================================================================
@@ -693,6 +765,10 @@ public:
             reflexLimiterActive_ = false;
         }
         g_ReflexLimiter.Shutdown();
+        antilag2InitAttempted_ = false;
+        g_AntiLag2Limiter.Shutdown();
+        xellInitAttempted_ = false;
+        g_XeLLLimiter.Shutdown();
     }
 
 private:
@@ -719,6 +795,8 @@ private:
     bool reflexInitAttempted_ = false;                        // Lazy init flag for Reflex hook
     bool reflexLimiterActive_ = false;                        // True when Reflex is handling pacing
     bool reflexDeviceProvided_ = false;                       // True once we've given device to ReflexLimiter
+    bool antilag2InitAttempted_ = false;                      // Lazy init flag for Anti-Lag 2
+    bool xellInitAttempted_ = false;                          // Lazy init flag for XeLL
     int64_t lastApplyReturnQpc = 0;                // QPC tick when Apply() last returned from wait (dedup guard)
     int64_t localTargetTime_ = 0;                  // QPC target for local capture sync cadence
     uint32_t localFrameCount_ = 0;                 // Frame count for local capture sync stats

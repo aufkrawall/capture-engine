@@ -128,13 +128,13 @@ copy_queue_priority=normal
 capture_sync_enabled=false
 ; capture_sync_multiplier - Values: 1-8
 capture_sync_multiplier=1
-; capture_sync_limiter_mode - Values: auto, basic, fg_fallback, native
+; capture_sync_limiter_mode - Values: auto, basic, fg_fallback, native (reflex), anti_lag2, xell
 capture_sync_limiter_mode=auto
 ; general_enabled - Values: true, false
 general_enabled=false
 ; general_fps - Values: integer > 0
 general_fps=120
-; general_limiter_mode - Values: auto, basic, fg_fallback, native
+; general_limiter_mode - Values: auto, basic, fg_fallback, native (reflex), anti_lag2, xell
 general_limiter_mode=auto
 
 [Graphics]
