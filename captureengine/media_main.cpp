@@ -120,21 +120,21 @@ static HWND GetMainWindowForProcess(DWORD pid) {
 }
 
 static std::string GetProcessNameFromPID(DWORD pid) {
-    char buffer[MAX_PATH] = "unknown";
-    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+    char exePath[MAX_PATH] = {};
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (hProcess) {
-        if (GetModuleBaseNameA(hProcess, NULL, buffer, MAX_PATH)) {
-            // Success
+        DWORD size = MAX_PATH;
+        if (QueryFullProcessImageNameA(hProcess, 0, exePath, &size)) {
+            CloseHandle(hProcess);
+            std::string name = exePath;
+            auto pos = name.find_last_of("\\/");
+            if (pos != std::string::npos)
+                name = name.substr(pos + 1);
+            return name;
         }
         CloseHandle(hProcess);
     }
-    // Strip path if present
-    std::string name = buffer;
-    size_t lastSlash = name.find_last_of("\\/");
-    if (lastSlash != std::string::npos) {
-        name = name.substr(lastSlash + 1);
-    }
-    return name;
+    return "unknown";
 }
 
 // =================================================================================================
@@ -1020,26 +1020,38 @@ int MediaProcessMain(const AppConfig& config) {
                             std::string targetLower = target;
                             std::transform(targetLower.begin(), targetLower.end(), targetLower.begin(), ::tolower);
 
-                            DWORD pid = 0;
-                            GetWindowThreadProcessId(hwnd, &pid);
-                            if (pid != 0) {
-                                HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-                                if (hProcess) {
-                                    char exePath[MAX_PATH];
-                                    DWORD size = MAX_PATH;
-                                    if (QueryFullProcessImageNameA(hProcess, 0, exePath, &size)) {
-                                        std::string procName = exePath;
-                                        auto pos = procName.find_last_of("\\/");
-                                        if (pos != std::string::npos)
-                                            procName = procName.substr(pos + 1);
-                                        std::transform(procName.begin(), procName.end(), procName.begin(), ::tolower);
-                                        if (procName == targetLower) {
-                                            context->result = hwnd;
-                                            CloseHandle(hProcess);
-                                            return FALSE;
+                            const bool isExeTarget = targetLower.length() > 4 &&
+                                                     targetLower.substr(targetLower.length() - 4) == ".exe";
+
+                            if (!isExeTarget) {
+                                // Title-based match: no process handle needed
+                                if (!titleStr.empty() && titleStr.find(targetLower) != std::string::npos) {
+                                    context->result = hwnd;
+                                    return FALSE;
+                                }
+                            } else {
+                                // Exe-name match: open minimal handle only for this window
+                                DWORD pid = 0;
+                                GetWindowThreadProcessId(hwnd, &pid);
+                                if (pid != 0) {
+                                    HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+                                    if (hProcess) {
+                                        char exePath[MAX_PATH];
+                                        DWORD size = MAX_PATH;
+                                        if (QueryFullProcessImageNameA(hProcess, 0, exePath, &size)) {
+                                            std::string procName = exePath;
+                                            auto pos = procName.find_last_of("\\/");
+                                            if (pos != std::string::npos)
+                                                procName = procName.substr(pos + 1);
+                                            std::transform(procName.begin(), procName.end(), procName.begin(), ::tolower);
+                                            if (procName == targetLower) {
+                                                context->result = hwnd;
+                                                CloseHandle(hProcess);
+                                                return FALSE;
+                                            }
                                         }
+                                        CloseHandle(hProcess);
                                     }
-                                    CloseHandle(hProcess);
                                 }
                             }
                         }
