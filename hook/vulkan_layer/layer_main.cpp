@@ -155,7 +155,10 @@ void LayerLog(const char* fmt, ...) {
 
     // Also to log file
     if (g_LogFile) {
-        fprintf(g_LogFile, "[VulkanLayer] %s\n", buf);
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        fprintf(g_LogFile, "[%02u:%02u:%02u.%03u] [VulkanLayer] %s\n",
+                st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, buf);
         fflush(g_LogFile);
     }
 

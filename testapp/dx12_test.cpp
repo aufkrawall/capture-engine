@@ -9,12 +9,13 @@
 #define WIN32_LEAN_AND_MEAN
 #define WINVER 0x0A00
 #define _WIN32_WINNT 0x0A00
+#include <windows.h>
+#include <avrt.h>
 #include <DirectXMath.h>
 #include <d3d12.h>
 #include <d3dcompiler.h>
 #include <dxgi1_4.h>
 #include <shellscalingapi.h>
-#include <windows.h>
 #include <wrl/client.h>
 #include <chrono>
 #include <cmath>
@@ -36,6 +37,7 @@ static int g_WindowWidth = 3840;
 static int g_WindowHeight = 2160;
 static int g_GpuLoadPasses = 40;  // Default ~70% GPU at 4K 120fps
 static int g_VSync = 0;           // 0 = off, 1 = on
+static int g_Fullscreen = 1;
 
 // Read config from testappconfig.ini
 void LoadConfig() {
@@ -50,6 +52,7 @@ void LoadConfig() {
     g_WindowHeight = GetPrivateProfileIntA("Display", "height", g_WindowHeight, configPath.c_str());
     g_GpuLoadPasses = GetPrivateProfileIntA("Performance", "gpu_load", g_GpuLoadPasses, configPath.c_str());
     g_VSync = GetPrivateProfileIntA("Rendering", "vsync", g_VSync, configPath.c_str());
+    g_Fullscreen = GetPrivateProfileIntA("Display", "fullscreen", g_Fullscreen, configPath.c_str());
 }
 
 const wchar_t* WINDOW_CLASS = L"CaptureTestDX12";
@@ -65,6 +68,7 @@ ComPtr<ID3D12CommandAllocator> g_CommandAllocators[FRAME_COUNT];
 ComPtr<ID3D12GraphicsCommandList> g_CommandList;
 ComPtr<ID3D12Fence> g_Fence;
 HANDLE g_FenceEvent;
+HANDLE g_FrameWaitHandle = nullptr;
 UINT64 g_FenceValues[FRAME_COUNT] = {};
 UINT g_FrameIndex = 0;
 UINT g_RtvDescriptorSize = 0;
@@ -160,12 +164,19 @@ bool InitDX12(HWND hwnd) {
     swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     swapChainDesc.SampleDesc.Count = 1;
+    swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
 
     ComPtr<IDXGISwapChain1> swapChain1;
     factory->CreateSwapChainForHwnd(g_CommandQueue.Get(), hwnd, &swapChainDesc, nullptr, nullptr, &swapChain1);
     factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
     swapChain1.As(&g_SwapChain);
     g_FrameIndex = g_SwapChain->GetCurrentBackBufferIndex();
+
+    // Get waitable object for smooth background frame pacing
+    ComPtr<IDXGISwapChain2> swapChain2;
+    swapChain1.As(&swapChain2);
+    swapChain2->SetMaximumFrameLatency(1);
+    g_FrameWaitHandle = swapChain2->GetFrameLatencyWaitableObject();
 
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
     rtvHeapDesc.NumDescriptors = FRAME_COUNT;
@@ -268,6 +279,19 @@ int main(int argc, char* argv[]) {
     // Enable Per-Monitor DPI awareness for true pixel sizes
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
+    // Win11 scheduling: opt out of EcoQoS, prefer P-cores, register as Games workload
+    PROCESS_POWER_THROTTLING_STATE pts = {};
+    pts.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    pts.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    pts.StateMask = 0;
+    SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &pts, sizeof(pts));
+    SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
+    DWORD mmcssTaskIndex = 0;
+    HANDLE mmcssHandle = AvSetMmThreadCharacteristics(TEXT("Games"), &mmcssTaskIndex);
+    if (mmcssHandle)
+        AvSetMmThreadPriority(mmcssHandle, AVRT_PRIORITY_HIGH);
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+
     printf("DX12 Capture Test App\n");
     printf("=====================\n");
     printf("Resolution: %dx%d\n", g_WindowWidth, g_WindowHeight);
@@ -284,9 +308,12 @@ int main(int argc, char* argv[]) {
     wc.lpszClassName = WINDOW_CLASS;
     RegisterClassExW(&wc);
 
-    // Use borderless (popup) window for large resolutions to avoid decorations
-    // that would cause the window to exceed screen bounds
-    DWORD style = (g_WindowWidth >= 2560 || g_WindowHeight >= 1440) ? WS_POPUP : WS_OVERLAPPEDWINDOW;
+    // Use borderless fullscreen window when configured
+    if (g_Fullscreen) {
+        g_WindowWidth = GetSystemMetrics(SM_CXSCREEN);
+        g_WindowHeight = GetSystemMetrics(SM_CYSCREEN);
+    }
+    DWORD style = g_Fullscreen ? WS_POPUP : WS_OVERLAPPEDWINDOW;
 
     // Create window with exact pixel dimensions
     RECT rc = {0, 0, g_WindowWidth, g_WindowHeight};
@@ -313,6 +340,7 @@ int main(int argc, char* argv[]) {
             DispatchMessage(&msg);
         }
         if (g_Running) {
+            WaitForSingleObjectEx(g_FrameWaitHandle, 1000, FALSE);
             Render();
         }
     }

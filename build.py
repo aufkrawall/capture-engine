@@ -2010,12 +2010,14 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
     if os.path.exists(dx12_src):
         dx12_ldflags = [
             "-static",
+            "-Wl,--subsystem,windows",
             "-ld3d12",
             "-ldxgi",
             "-ld3dcompiler",
             "-lgdi32",
             "-luser32",
             "-lshcore",
+            "-lavrt",
         ]
         add_task(
             "dx12_test.exe",
@@ -2035,11 +2037,13 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
     if os.path.exists(dx11_src):
         dx11_ldflags = [
             "-static",
+            "-Wl,--subsystem,windows",
             "-ld3d11",
             "-ldxgi",
             "-lgdi32",
             "-luser32",
             "-lshcore",
+            "-lavrt",
         ]
         add_task(
             "dx11_test.exe",
@@ -2057,7 +2061,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
     dx9_src = os.path.join(testapp_src_dir, "dx9_test.cpp")
     dx9_exe = os.path.join(testapp_bin_dir, "dx9_test.exe")
     if os.path.exists(dx9_src):
-        dx9_ldflags = ["-static", "-ld3d9", "-lgdi32", "-luser32"]
+        dx9_ldflags = ["-static", "-Wl,--subsystem,windows", "-ld3d9", "-lgdi32", "-luser32", "-lavrt"]
         add_task("dx9_test.exe", make_cmd(clang_exe, cflags, dx9_src, dx9_ldflags, dx9_exe))
 
         if have_x86:
@@ -2073,12 +2077,14 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
     if os.path.exists(dx10_src):
         dx10_ldflags = [
             "-static",
+            "-Wl,--subsystem,windows",
             "-ld3d10",
             "-ldxgi",
             "-ld3dcompiler",
             "-lgdi32",
             "-luser32",
             "-lshcore",
+            "-lavrt",
         ]
         add_task(
             "dx10_test.exe",
@@ -2134,14 +2140,15 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
     opengl_src = os.path.join(testapp_src_dir, "opengl_test.cpp")
     opengl_exe = os.path.join(testapp_bin_dir, "opengl_test.exe")
     if os.path.exists(opengl_src):
-        # opengl_ldflags = ["-static", "-static-libgcc", "-static-libstdc++",
         opengl_ldflags = [
             "-static",
+            "-Wl,--subsystem,windows",
             "-lopengl32",
             "-lglu32",
             "-lgdi32",
             "-luser32",
             "-lshcore",
+            "-lavrt",
         ]
 
         add_task(

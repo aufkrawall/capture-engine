@@ -1,7 +1,8 @@
 // DX9 Test App for Capture + FPS Limiter Testing
 #define WIN32_LEAN_AND_MEAN
-#include <d3d9.h>
 #include <windows.h>
+#include <avrt.h>
+#include <d3d9.h>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -14,6 +15,7 @@ static int g_WindowWidth = 1280;
 static int g_WindowHeight = 720;
 static int g_GpuLoadPasses = 5;
 static int g_VSync = 0;
+static int g_Fullscreen = 1;
 
 void LoadConfig() {
     char path[MAX_PATH];
@@ -27,10 +29,11 @@ void LoadConfig() {
     g_WindowHeight = GetPrivateProfileIntA("Display", "height", g_WindowHeight, configPath.c_str());
     g_GpuLoadPasses = GetPrivateProfileIntA("Performance", "gpu_load", g_GpuLoadPasses, configPath.c_str());
     g_VSync = GetPrivateProfileIntA("Rendering", "vsync", g_VSync, configPath.c_str());
+    g_Fullscreen = GetPrivateProfileIntA("Display", "fullscreen", g_Fullscreen, configPath.c_str());
 }
 
-LPDIRECT3D9 g_pD3D = nullptr;
-LPDIRECT3DDEVICE9 g_pd3dDevice = nullptr;
+IDirect3D9Ex* g_pD3D = nullptr;
+IDirect3DDevice9Ex* g_pd3dDevice = nullptr;
 bool g_Running = true;
 float g_BarPosition = 0.0f;
 auto g_StartTime = std::chrono::high_resolution_clock::now();
@@ -50,15 +53,18 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 }
 
 bool InitDX9(HWND hwnd) {
-    if ((g_pD3D = Direct3DCreate9(D3D_SDK_VERSION)) == nullptr)
+    if (FAILED(Direct3DCreate9Ex(D3D_SDK_VERSION, &g_pD3D)))
         return false;
     D3DPRESENT_PARAMETERS d3dpp = {};
     d3dpp.Windowed = TRUE;
-    d3dpp.SwapEffect = D3DSWAPEFFECT_DISCARD;
-    d3dpp.BackBufferFormat = D3DFMT_UNKNOWN;
+    d3dpp.SwapEffect = D3DSWAPEFFECT_FLIPEX;
+    d3dpp.BackBufferFormat = D3DFMT_X8R8G8B8;
+    d3dpp.BackBufferCount = 2;
+    d3dpp.BackBufferWidth = g_WindowWidth;
+    d3dpp.BackBufferHeight = g_WindowHeight;
     d3dpp.PresentationInterval = g_VSync ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE;
-    if (FAILED(g_pD3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd, D3DCREATE_HARDWARE_VERTEXPROCESSING,
-                                    &d3dpp, &g_pd3dDevice)))
+    if (FAILED(g_pD3D->CreateDeviceEx(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd, D3DCREATE_HARDWARE_VERTEXPROCESSING,
+                                      &d3dpp, nullptr, &g_pd3dDevice)))
         return false;
     return true;
 }
@@ -92,6 +98,19 @@ int main(int argc, char* argv[]) {
     Sleep(500);
 
     SetProcessDPIAware();
+
+    // Win11 scheduling: opt out of EcoQoS, prefer P-cores, register as Games workload
+    PROCESS_POWER_THROTTLING_STATE pts = {};
+    pts.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    pts.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    pts.StateMask = 0;
+    SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &pts, sizeof(pts));
+    SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
+    DWORD mmcssTaskIndex = 0;
+    HANDLE mmcssHandle = AvSetMmThreadCharacteristics(TEXT("Games"), &mmcssTaskIndex);
+    if (mmcssHandle)
+        AvSetMmThreadPriority(mmcssHandle, AVRT_PRIORITY_HIGH);
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     LoadConfig();
     if (argc >= 3) {
         g_WindowWidth = atoi(argv[1]);
@@ -114,7 +133,14 @@ int main(int argc, char* argv[]) {
                       L"DX9Test",
                       nullptr};
     RegisterClassExW(&wc);
-    HWND hwnd = CreateWindowW(L"DX9Test", L"DX9 Test", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, g_WindowWidth,
+    if (g_Fullscreen) {
+        g_WindowWidth = GetSystemMetrics(SM_CXSCREEN);
+        g_WindowHeight = GetSystemMetrics(SM_CYSCREEN);
+    }
+    DWORD winStyle = g_Fullscreen ? WS_POPUP : WS_OVERLAPPEDWINDOW;
+    int posX = g_Fullscreen ? 0 : CW_USEDEFAULT;
+    int posY = g_Fullscreen ? 0 : CW_USEDEFAULT;
+    HWND hwnd = CreateWindowW(L"DX9Test", L"DX9 Test", winStyle, posX, posY, g_WindowWidth,
                               g_WindowHeight, nullptr, nullptr, wc.hInstance, nullptr);
     if (!InitDX9(hwnd))
         return 1;

@@ -179,16 +179,23 @@ public:
         char buf[512];
         va_list args;
         va_start(args, fmt);
-        int len = vsnprintf(buf, sizeof(buf) - 1, fmt, args);
+        int msgLen = vsnprintf(buf, sizeof(buf) - 32, fmt, args);
         va_end(args);
+        if (msgLen <= 0)
+            return;
+
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        char line[600];
+        int len = snprintf(line, sizeof(line) - 1, "[%02u:%02u:%02u.%03u] %s\n",
+                           st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, buf);
         if (len <= 0)
             return;
-        buf[len] = '\n';
         HANDLE hFile = CreateFileA(traceLogPath_, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                                    OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (hFile != INVALID_HANDLE_VALUE) {
             DWORD written;
-            WriteFile(hFile, buf, (DWORD)(len + 1), &written, nullptr);
+            WriteFile(hFile, line, (DWORD)len, &written, nullptr);
             CloseHandle(hFile);
         }
     }

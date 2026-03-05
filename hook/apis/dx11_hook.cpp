@@ -1828,7 +1828,7 @@ static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int fr
     if (g_OverlayAdapter.IsInitialized()) {
         g_OverlayAdapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
         g_OverlayAdapter.SetIPCClient(g_IPC);
-        g_OverlayAdapter.SetGraphicsAPI("D3D10");
+        g_OverlayAdapter.SetGraphicsAPI("DX10");
 
         RECT rect;
         if (GetClientRect(currentHwnd, &rect)) {

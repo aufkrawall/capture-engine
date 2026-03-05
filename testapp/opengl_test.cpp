@@ -1,8 +1,9 @@
 // OpenGL Test App for Capture + FPS Limiter Testing
 #define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <avrt.h>
 #include <GL/gl.h>
 #include <GL/glu.h>
-#include <windows.h>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -18,6 +19,7 @@ static int g_WindowWidth = 800;
 static int g_WindowHeight = 600;
 static int g_GpuLoadPasses = 10;
 static int g_VSync = 0;
+static int g_Fullscreen = 1;
 bool g_Running = true;
 float g_BarPosition = 0.0f;
 auto g_StartTime = std::chrono::high_resolution_clock::now();
@@ -34,6 +36,7 @@ void LoadConfig() {
     g_WindowHeight = GetPrivateProfileIntA("Display", "height", g_WindowHeight, configPath.c_str());
     g_GpuLoadPasses = GetPrivateProfileIntA("Performance", "gpu_load", g_GpuLoadPasses, configPath.c_str());
     g_VSync = GetPrivateProfileIntA("Rendering", "vsync", g_VSync, configPath.c_str());
+    g_Fullscreen = GetPrivateProfileIntA("Display", "fullscreen", g_Fullscreen, configPath.c_str());
 }
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -156,6 +159,20 @@ int main(int argc, char* argv[]) {
     // Enable Per-Monitor DPI awareness for true physical pixel sizes
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     LoadConfig();
+
+    // Win11 scheduling: opt out of EcoQoS, prefer P-cores, register as Games workload
+    PROCESS_POWER_THROTTLING_STATE pts = {};
+    pts.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    pts.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    pts.StateMask = 0;
+    SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &pts, sizeof(pts));
+    SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
+    DWORD mmcssTaskIndex = 0;
+    HANDLE mmcssHandle = AvSetMmThreadCharacteristics(TEXT("Games"), &mmcssTaskIndex);
+    if (mmcssHandle)
+        AvSetMmThreadPriority(mmcssHandle, AVRT_PRIORITY_HIGH);
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+
     bool forceLegacy = false;
     if (argc >= 3) {
         g_WindowWidth = atoi(argv[1]);
@@ -176,27 +193,24 @@ int main(int argc, char* argv[]) {
     wc.lpszClassName = "OpenGLTestApp";
     RegisterClass(&wc);
 
-    RECT wr = {0, 0, g_WindowWidth, g_WindowHeight};
-    AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, FALSE);
+    if (g_Fullscreen) {
+        g_WindowWidth = GetSystemMetrics(SM_CXSCREEN);
+        g_WindowHeight = GetSystemMetrics(SM_CYSCREEN);
+    }
+    DWORD winStyle = g_Fullscreen ? (WS_POPUP | WS_VISIBLE) : (WS_OVERLAPPEDWINDOW | WS_VISIBLE);
+    int posX = g_Fullscreen ? 0 : CW_USEDEFAULT;
+    int posY = g_Fullscreen ? 0 : CW_USEDEFAULT;
+    int winW = g_WindowWidth;
+    int winH = g_WindowHeight;
+    if (!g_Fullscreen) {
+        RECT wr = {0, 0, g_WindowWidth, g_WindowHeight};
+        AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, FALSE);
+        winW = wr.right - wr.left;
+        winH = wr.bottom - wr.top;
+    }
 
-    // Use Work Area to avoid taskbar and ensure centering doesn't cut off title
-    // bar
-    RECT workArea;
-    SystemParametersInfo(SPI_GETWORKAREA, 0, &workArea, 0);
-    int workAreaWidth = workArea.right - workArea.left;
-    int workAreaHeight = workArea.bottom - workArea.top;
-
-    int posX = workArea.left + (workAreaWidth - (wr.right - wr.left)) / 2;
-    int posY = workArea.top + (workAreaHeight - (wr.bottom - wr.top)) / 2;
-
-    // Clamp to at least 0 (plus a small margin for title bar visibility)
-    if (posX < 0)
-        posX = 0;
-    if (posY < 0)
-        posY = 0;
-
-    HWND hWnd = CreateWindow("OpenGLTestApp", "OpenGL Test", WS_OVERLAPPEDWINDOW | WS_VISIBLE, posX, posY,
-                             wr.right - wr.left, wr.bottom - wr.top, nullptr, nullptr, wc.hInstance, nullptr);
+    HWND hWnd = CreateWindow("OpenGLTestApp", "OpenGL Test", winStyle, posX, posY,
+                             winW, winH, nullptr, nullptr, wc.hInstance, nullptr);
 
     // Ensure window is actually shown and not just a title bar
     ShowWindow(hWnd, SW_SHOW);

@@ -206,6 +206,13 @@ int LimiterProcessMain(const AppConfig& config) {
     SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS);
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 
+    // Opt out of EcoQoS: ensure this thread runs on P-cores, not E-cores
+    THREAD_POWER_THROTTLING_STATE tpts = {};
+    tpts.Version = THREAD_POWER_THROTTLING_CURRENT_VERSION;
+    tpts.ControlMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED;
+    tpts.StateMask = 0;  // 0 = disable throttling (prefer performance core)
+    SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &tpts, sizeof(tpts));
+
     // Set thread affinity to Core 1 (Core 0 is usually busy with OS, Core 2/3 for
     // Capture)
     SetThreadAffinityMask(GetCurrentThread(), 0x02);

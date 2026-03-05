@@ -763,6 +763,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     // Enable 1ms timer resolution
     timeBeginPeriod(1);
 
+    // Opt out of Windows 11 EcoQoS / power throttling for all sub-processes.
+    // This tells the scheduler to prefer P-cores over E-cores on hybrid CPUs.
+    PROCESS_POWER_THROTTLING_STATE pts = {};
+    pts.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    pts.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    pts.StateMask = 0;  // 0 = disable throttling (prefer performance cores)
+    SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &pts, sizeof(pts));
+
     // Controller: Single instance check
     if (mode == ProcessMode::Controller) {
         CreateMutexA(0, FALSE, "Local\\CaptureEngine_Instance_Mutex");
