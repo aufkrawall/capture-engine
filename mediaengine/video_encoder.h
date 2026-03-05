@@ -227,6 +227,21 @@ private:
     ID3D11VideoProcessorInputView* inputView = nullptr;
     bool videoProcessorInit = false;
 
+    // RGBA→BGRA swap shader (for DXVK KMT textures that arrive as RGBA)
+    ID3D11VertexShader* swapRBShaderVS = nullptr;
+    ID3D11PixelShader* swapRBShaderPS = nullptr;
+    ID3D11SamplerState* swapRBSampler = nullptr;
+    ID3D11Texture2D* swapRBTexture = nullptr;
+    ID3D11RenderTargetView* swapRBTextureRTV = nullptr;
+    uint32_t swapRBTexWidth = 0;
+    uint32_t swapRBTexHeight = 0;
+    bool swapRBShaderCreated = false;
+
+    // Per-recording log flags (reset each recording via CleanupVideoProcessor)
+    bool vpFirstCallLogged = false;
+    bool vpDeviceCompareLogged = false;
+    bool vpInputViewLogged = false;
+
     // Cursor overlay via VP multi-stream (Option C)
     bool vpSupportsOverlay = false;  // MaxInputStreams >= 2
 
@@ -263,6 +278,8 @@ private:
     void CleanupVideoProcessor();
     bool ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture2D** nv12Output, bool cursorVisible = false,
                            int cursorX = 0, int cursorY = 0);
+    bool EnsureSwapRBShader();
+    ID3D11Texture2D* SwapRBChannels(ID3D11Texture2D* input, uint32_t w, uint32_t h);
 
     // ASYNC PACKET WRITER
     // Decouples file I/O from the capture thread to prevent stalls on network

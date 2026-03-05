@@ -2983,14 +2983,12 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
             return false;
     }
 
-    // Debug: Log texture descriptions on first call
-    static bool firstCall = true;
-    if (firstCall) {
+    // Debug: Log texture descriptions on first call per recording
+    if (!vpFirstCallLogged) {
         D3D11_TEXTURE2D_DESC srcDesc;
         bgraTexture->GetDesc(&srcDesc);
         DLL_Log("[VP DEBUG] Source tex: %dx%d fmt=%d bind=%x misc=%x", srcDesc.Width, srcDesc.Height, srcDesc.Format,
                 srcDesc.BindFlags, srcDesc.MiscFlags);
-        firstCall = false;
     }
 
     // Try to create input view directly from source texture first
@@ -3004,10 +3002,9 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
 
     ID3D11VideoProcessorInputView* localInputView = nullptr;
 
-    // Debug: Compare texture device vs VP device on first call
-    static bool deviceCompared = false;
-    if (!deviceCompared) {
-        deviceCompared = true;
+    // Debug: Compare texture device vs VP device on first call per recording
+    if (!vpDeviceCompareLogged) {
+        vpDeviceCompareLogged = true;
         ID3D11Device* texDev = nullptr;
         bgraTexture->GetDevice(&texDev);
         // Compare IUnknown identity (COM identity rule)
@@ -3036,8 +3033,41 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
             texDev->Release();
     }
 
+    // If input is RGBA, swap R/B channels to produce BGRA before VP processing.
+    // D3D11 Video Processor expects BGRA input; DXVK KMT textures may be RGBA.
+    // A fullscreen shader pass with a BGRA render target handles the byte reorder.
+    ID3D11Texture2D* vpInputTexture = bgraTexture;
+    bool needReleaseConverted = false;
+    {
+        D3D11_TEXTURE2D_DESC srcDesc;
+        bgraTexture->GetDesc(&srcDesc);
+        if (srcDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM) {
+            ID3D11Texture2D* converted = SwapRBChannels(bgraTexture, srcDesc.Width, srcDesc.Height);
+            if (converted) {
+                vpInputTexture = converted;
+                needReleaseConverted = true;
+                if (!vpFirstCallLogged)
+                    DLL_Log("[VP] RGBA input detected - R/B swap applied before VP");
+            } else {
+                if (!vpFirstCallLogged)
+                    DLL_Log("[VP] RGBA input: R/B swap failed, proceeding with original (colors may be wrong)");
+            }
+        }
+    }
+
+    vpFirstCallLogged = true;
+
     HRESULT hr =
-        videoDevice->CreateVideoProcessorInputView(bgraTexture, videoProcessorEnum, &inputViewDesc, &localInputView);
+        videoDevice->CreateVideoProcessorInputView(vpInputTexture, videoProcessorEnum, &inputViewDesc, &localInputView);
+
+    // Log CreateVideoProcessorInputView result on first call per recording
+    if (!vpInputViewLogged) {
+        vpInputViewLogged = true;
+        D3D11_TEXTURE2D_DESC vpDesc;
+        vpInputTexture->GetDesc(&vpDesc);
+        DLL_Log("[VP] CreateVideoProcessorInputView(fmt=%d, bind=%x): HR=%x%s", vpDesc.Format, vpDesc.BindFlags, hr,
+                SUCCEEDED(hr) ? " (direct OK)" : "");
+    }
 
     if (FAILED(hr)) {
         // Direct access failed (likely Desktop Duplication texture with
@@ -3254,14 +3284,201 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
                 hr, streamCount, bufIdx, srcDesc.Format, srcDesc.Width, srcDesc.Height, srcDesc.BindFlags,
                 srcDesc.MiscFlags, inputWidth, inputHeight, outputWidth, outputHeight);
         }
+        if (needReleaseConverted)
+            vpInputTexture->Release();
         return false;
     }
+
+    if (needReleaseConverted)
+        vpInputTexture->Release();
 
     // Return current buffer and advance to next
     *nv12Output = nv12StagingTextures[bufIdx];
     nv12StagingTextures[bufIdx]->AddRef();  // Caller will release
     currentNV12Buffer = (currentNV12Buffer + 1) % nv12BufferCount;
     return true;
+}
+
+// HLSL shader: fullscreen triangle that samples RGBA input and writes to BGRA render target.
+// The pixel shader is identity — the BGRA render target format handles the byte reorder.
+static const char* SWAP_RB_SHADER_SRC = R"(
+Texture2D texIn : register(t0);
+SamplerState sam : register(s0);
+
+struct VS_OUT {
+    float4 pos : SV_POSITION;
+    float2 uv  : TEXCOORD;
+};
+
+VS_OUT VS_Main(uint id : SV_VertexID) {
+    VS_OUT o;
+    o.uv  = float2((id == 1) ? 2.0f : 0.0f, (id == 2) ? 2.0f : 0.0f);
+    o.pos = float4(o.uv.x * 2.0f - 1.0f, 1.0f - o.uv.y * 2.0f, 0.0f, 1.0f);
+    return o;
+}
+
+float4 PS_Main(VS_OUT input) : SV_TARGET {
+    float4 c = texIn.Sample(sam, input.uv);
+    return c;  // BGRA render target handles RGBA->BGRA byte reorder
+}
+)";
+
+bool VideoEncoder::EnsureSwapRBShader() {
+    if (swapRBShaderCreated)
+        return true;
+
+    HMODULE d3dCompiler = LoadLibraryW(L"d3dcompiler_47.dll");
+    if (!d3dCompiler) {
+        DLL_Log("[SwapRB] Failed to load d3dcompiler_47.dll");
+        return false;
+    }
+
+    typedef HRESULT(WINAPI* pD3DCompile)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR,
+                                         LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
+    pD3DCompile d3dCompile = (pD3DCompile)GetProcAddress(d3dCompiler, "D3DCompile");
+    if (!d3dCompile) {
+        DLL_Log("[SwapRB] Failed to get D3DCompile");
+        FreeLibrary(d3dCompiler);
+        return false;
+    }
+
+    ID3DBlob* vsBlob = nullptr;
+    ID3DBlob* psBlob = nullptr;
+    ID3DBlob* errBlob = nullptr;
+
+    HRESULT hr = d3dCompile(SWAP_RB_SHADER_SRC, strlen(SWAP_RB_SHADER_SRC), nullptr, nullptr, nullptr, "VS_Main",
+                            "vs_4_0", 0, 0, &vsBlob, &errBlob);
+    if (FAILED(hr)) {
+        if (errBlob) {
+            DLL_Log("[SwapRB] VS error: %s", (char*)errBlob->GetBufferPointer());
+            errBlob->Release();
+        }
+        FreeLibrary(d3dCompiler);
+        return false;
+    }
+
+    hr = d3dCompile(SWAP_RB_SHADER_SRC, strlen(SWAP_RB_SHADER_SRC), nullptr, nullptr, nullptr, "PS_Main", "ps_4_0", 0,
+                    0, &psBlob, &errBlob);
+    if (FAILED(hr)) {
+        if (errBlob) {
+            DLL_Log("[SwapRB] PS error: %s", (char*)errBlob->GetBufferPointer());
+            errBlob->Release();
+        }
+        vsBlob->Release();
+        FreeLibrary(d3dCompiler);
+        return false;
+    }
+
+    hr = d3d11Device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &swapRBShaderVS);
+    vsBlob->Release();
+    if (FAILED(hr)) {
+        DLL_Log("[SwapRB] CreateVertexShader failed: HR=%x", hr);
+        psBlob->Release();
+        FreeLibrary(d3dCompiler);
+        return false;
+    }
+
+    hr = d3d11Device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &swapRBShaderPS);
+    psBlob->Release();
+    FreeLibrary(d3dCompiler);
+    if (FAILED(hr)) {
+        DLL_Log("[SwapRB] CreatePixelShader failed: HR=%x", hr);
+        return false;
+    }
+
+    D3D11_SAMPLER_DESC sampDesc = {};
+    sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+    sampDesc.AddressU = sampDesc.AddressV = sampDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    hr = d3d11Device->CreateSamplerState(&sampDesc, &swapRBSampler);
+    if (FAILED(hr)) {
+        DLL_Log("[SwapRB] CreateSamplerState failed: HR=%x", hr);
+        return false;
+    }
+
+    swapRBShaderCreated = true;
+    DLL_Log("[SwapRB] Shader created successfully");
+    return true;
+}
+
+ID3D11Texture2D* VideoEncoder::SwapRBChannels(ID3D11Texture2D* input, uint32_t w, uint32_t h) {
+    if (!EnsureSwapRBShader())
+        return nullptr;
+
+    // Recreate BGRA output texture if size changed
+    if (!swapRBTexture || swapRBTexWidth != w || swapRBTexHeight != h) {
+        if (swapRBTextureRTV) {
+            swapRBTextureRTV->Release();
+            swapRBTextureRTV = nullptr;
+        }
+        if (swapRBTexture) {
+            swapRBTexture->Release();
+            swapRBTexture = nullptr;
+        }
+
+        D3D11_TEXTURE2D_DESC outDesc = {};
+        outDesc.Width = w;
+        outDesc.Height = h;
+        outDesc.MipLevels = 1;
+        outDesc.ArraySize = 1;
+        outDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        outDesc.SampleDesc.Count = 1;
+        outDesc.Usage = D3D11_USAGE_DEFAULT;
+        outDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+
+        HRESULT hr = d3d11Device->CreateTexture2D(&outDesc, nullptr, &swapRBTexture);
+        if (FAILED(hr)) {
+            DLL_Log("[SwapRB] Failed to create BGRA output texture: HR=%x", hr);
+            return nullptr;
+        }
+
+        hr = d3d11Device->CreateRenderTargetView(swapRBTexture, nullptr, &swapRBTextureRTV);
+        if (FAILED(hr)) {
+            DLL_Log("[SwapRB] Failed to create RTV: HR=%x", hr);
+            swapRBTexture->Release();
+            swapRBTexture = nullptr;
+            return nullptr;
+        }
+
+        swapRBTexWidth = w;
+        swapRBTexHeight = h;
+    }
+
+    // Create SRV for the RGBA input
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MipLevels = 1;
+    ID3D11ShaderResourceView* srv = nullptr;
+    HRESULT hr = d3d11Device->CreateShaderResourceView(input, &srvDesc, &srv);
+    if (FAILED(hr)) {
+        DLL_Log("[SwapRB] Failed to create SRV for input: HR=%x", hr);
+        return nullptr;
+    }
+
+    // Draw fullscreen triangle: RGBA input → BGRA output
+    D3D11_VIEWPORT vp = {};
+    vp.Width = (float)w;
+    vp.Height = (float)h;
+    vp.MaxDepth = 1.0f;
+    d3d11Context->RSSetViewports(1, &vp);
+    d3d11Context->OMSetRenderTargets(1, &swapRBTextureRTV, nullptr);
+    d3d11Context->VSSetShader(swapRBShaderVS, nullptr, 0);
+    d3d11Context->PSSetShader(swapRBShaderPS, nullptr, 0);
+    d3d11Context->PSSetShaderResources(0, 1, &srv);
+    d3d11Context->PSSetSamplers(0, 1, &swapRBSampler);
+    d3d11Context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    d3d11Context->IASetInputLayout(nullptr);
+    d3d11Context->Draw(3, 0);
+
+    // Unbind render target and SRV
+    ID3D11RenderTargetView* nullRTV = nullptr;
+    d3d11Context->OMSetRenderTargets(1, &nullRTV, nullptr);
+    ID3D11ShaderResourceView* nullSRV = nullptr;
+    d3d11Context->PSSetShaderResources(0, 1, &nullSRV);
+    srv->Release();
+
+    swapRBTexture->AddRef();  // Caller releases
+    return swapRBTexture;
 }
 
 void VideoEncoder::CleanupVideoProcessor() {
@@ -3303,6 +3520,36 @@ void VideoEncoder::CleanupVideoProcessor() {
         videoDevice = nullptr;
     }
     videoProcessorInit = false;
+
+    // Cleanup SwapRB shader resources
+    if (swapRBTextureRTV) {
+        swapRBTextureRTV->Release();
+        swapRBTextureRTV = nullptr;
+    }
+    if (swapRBTexture) {
+        swapRBTexture->Release();
+        swapRBTexture = nullptr;
+    }
+    if (swapRBSampler) {
+        swapRBSampler->Release();
+        swapRBSampler = nullptr;
+    }
+    if (swapRBShaderPS) {
+        swapRBShaderPS->Release();
+        swapRBShaderPS = nullptr;
+    }
+    if (swapRBShaderVS) {
+        swapRBShaderVS->Release();
+        swapRBShaderVS = nullptr;
+    }
+    swapRBShaderCreated = false;
+    swapRBTexWidth = 0;
+    swapRBTexHeight = 0;
+
+    // Reset per-recording log flags
+    vpFirstCallLogged = false;
+    vpDeviceCompareLogged = false;
+    vpInputViewLogged = false;
 }
 
 // ============================================================================
