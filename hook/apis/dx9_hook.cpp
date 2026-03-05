@@ -2754,6 +2754,14 @@ public:
                     CleanupDX9(true);
                     return;
                 }
+
+                // D3D11 maps D3DFMT_X8R8G8B8 to DXGI_FORMAT_B8G8R8X8_UNORM, not B8G8R8A8_UNORM.
+                // Sync 'format' to the actual D3D11 format so ring buffer textures use the same
+                // format as d3d11SharedTexture — CopySubresourceRegion requires exact format match.
+                D3D11_TEXTURE2D_DESC sharedDesc = {};
+                d3d11SharedTexture->GetDesc(&sharedDesc);
+                format = (uint32_t)sharedDesc.Format;
+                EarlyLog("DX9: Shared resource format: %d (d3d9fmt=%d)", sharedDesc.Format, d3d9Format);
             }
 
             // Create D3D9 event query for cross-API synchronization.
