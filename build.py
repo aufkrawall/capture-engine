@@ -2309,6 +2309,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         "-ldxgi",
         "-lshcore",
         "-lwinmm",
+        "-lversion",
         "-o",
         layer_dll,
     ]

@@ -21,16 +21,11 @@
 #include "../common/input_manager.h"
 
 // Detect if a DLL is loaded from outside System32 (i.e. a DXVK replacement).
+// NOTE: IsDllFromProject() from layer_main.h provides a more reliable version-
+// verified check; this local helper is kept only as a fallback for callers that
+// don't have the full version-check path available.
 static bool IsDXVKDll(const char* dllName) {
-    HMODULE hMod = GetModuleHandleA(dllName);
-    if (!hMod)
-        return false;
-    char loadedPath[MAX_PATH] = {};
-    char systemDir[MAX_PATH] = {};
-    GetModuleFileNameA(hMod, loadedPath, MAX_PATH);
-    GetSystemDirectoryA(systemDir, MAX_PATH);
-    size_t sysLen = strlen(systemDir);
-    return _strnicmp(loadedPath, systemDir, sysLen) != 0 || (loadedPath[sysLen] != '\\' && loadedPath[sysLen] != '/');
+    return IsDllFromProject(dllName, "dxvk");
 }
 
 namespace {
@@ -356,15 +351,17 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         "API...");
     // Detect DXVK wrapping a D3D API: d3d11.dll from non-System32 = DXVK.
     // Check d3d10/d3d10_1.dll too to distinguish DX10 vs DX11.
-    // VKD3D-Proton wraps D3D12: d3d12.dll from non-System32 = VKD3D-Proton.
+    // VKD3D-Proton wraps D3D12: d3d12.dll from non-System32 with vkd3d version = VKD3D-Proton.
+    // IMPORTANT: Check d3d11 (DXVK) BEFORE d3d12 (VKD3D-Proton). A user may have all DXVK/VKD3D
+    // DLLs in the game folder; if d3d11 is DXVK the game is DX10/11 regardless of d3d12.dll.
     const char* apiName = "Vulkan";
-    if (IsDXVKDll("d3d12.dll")) {
-        apiName = "DX12 (VKD3D-Proton)";
-    } else if (IsDXVKDll("d3d11.dll")) {
+    if (IsDXVKDll("d3d11.dll")) {
         // Distinguish DX10 from DX11: DX10 games load d3d10.dll (even DXVK uses System32's d3d10.dll).
         // DX11-only games never load d3d10.dll. We check for its presence regardless of path.
         bool hasDX10 = (GetModuleHandleA("d3d10.dll") != nullptr || GetModuleHandleA("d3d10_1.dll") != nullptr);
         apiName = hasDX10 ? "DX10 (DXVK)" : "DX11 (DXVK)";
+    } else if (IsDllFromProject("d3d12.dll", "vkd3d")) {
+        apiName = "DX12 (VKD3D-Proton)";
     }
     state.overlayAdapter->SetGraphicsAPI(apiName);
 

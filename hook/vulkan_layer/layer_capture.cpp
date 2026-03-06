@@ -123,42 +123,26 @@ static uint64_t MakeLuidKey(const LUID& luid) {
     return (static_cast<uint64_t>(luid.HighPart) << 32) | static_cast<uint32_t>(luid.LowPart);
 }
 
-// Detect DXVK by checking if d3d11.dll is NOT from System32.
-// DXVK replaces d3d11.dll in the game directory, and LoadLibraryA returns
-// DXVK's module due to Windows DLL name deduplication.
+// Detect DXVK by checking if d3d11.dll is NOT from System32 AND has DXVK version info.
 static bool IsDXVKD3D11Active() {
-    HMODULE hD3D11 = GetModuleHandleA("d3d11.dll");
-    if (!hD3D11)
+    if (!IsDllFromProject("d3d11.dll", "dxvk"))
         return false;
     char loadedPath[MAX_PATH] = {};
+    HMODULE hD3D11 = GetModuleHandleA("d3d11.dll");
     GetModuleFileNameA(hD3D11, loadedPath, MAX_PATH);
-    char systemDir[MAX_PATH] = {};
-    GetSystemDirectoryA(systemDir, MAX_PATH);
-    size_t sysLen = strlen(systemDir);
-    if (_strnicmp(loadedPath, systemDir, sysLen) == 0 && (loadedPath[sysLen] == '\\' || loadedPath[sysLen] == '/')) {
-        return false;  // Real d3d11 from System32
-    }
     LayerLog("Vulkan Layer: DXVK d3d11.dll detected at: %s", loadedPath);
     return true;
 }
 
 // Unified DXVK detection: checks dxgi.dll, d3d11.dll, and d3d9.dll.
-// Returns true if ANY of them are loaded from outside System32.
-// This catches both DXVK d3d11 and DXVK d3d9 (e.g. Trine 3 via DXVK d3d9) variants.
+// Returns true if ANY of them are loaded from outside System32 AND carry DXVK version info.
 static bool IsDXVKActive() {
-    char systemDir[MAX_PATH] = {};
-    GetSystemDirectoryA(systemDir, MAX_PATH);
-    size_t sysLen = strlen(systemDir);
-
     const char* dllNames[] = {"dxgi.dll", "d3d11.dll", "d3d9.dll"};
     for (const char* dllName : dllNames) {
-        HMODULE hMod = GetModuleHandleA(dllName);
-        if (!hMod)
-            continue;
-        char loadedPath[MAX_PATH] = {};
-        GetModuleFileNameA(hMod, loadedPath, MAX_PATH);
-        if (_strnicmp(loadedPath, systemDir, sysLen) != 0 ||
-            (loadedPath[sysLen] != '\\' && loadedPath[sysLen] != '/')) {
+        if (IsDllFromProject(dllName, "dxvk")) {
+            HMODULE hMod = GetModuleHandleA(dllName);
+            char loadedPath[MAX_PATH] = {};
+            GetModuleFileNameA(hMod, loadedPath, MAX_PATH);
             LayerLog("Vulkan Layer: DXVK detected - %s loaded from: %s (not System32)", dllName, loadedPath);
             return true;
         }

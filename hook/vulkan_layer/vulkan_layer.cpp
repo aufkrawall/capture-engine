@@ -40,49 +40,14 @@ static std::mutex g_FrameLimitMutex;
 static std::unordered_map<VkQueue, FrameLimitState> g_FrameLimitStates;
 
 static bool IsDXVKD3D9WrapperLoaded() {
-    HMODULE d3d9 = GetModuleHandleA("d3d9.dll");
-    if (!d3d9)
-        return false;
-
-    char d3d9Path[MAX_PATH] = {};
-    DWORD d3d9Len = GetModuleFileNameA(d3d9, d3d9Path, MAX_PATH);
-    if (d3d9Len == 0 || d3d9Len >= MAX_PATH)
-        return false;
-
-    char systemDir[MAX_PATH] = {};
-    UINT systemLen = GetSystemDirectoryA(systemDir, MAX_PATH);
-    if (systemLen == 0 || systemLen >= MAX_PATH)
-        return false;
-
-    if (_strnicmp(d3d9Path, systemDir, systemLen) == 0 && (d3d9Path[systemLen] == '\\' || d3d9Path[systemLen] == '/')) {
-        return false;
-    }
-    return true;
+    return IsDllFromProject("d3d9.dll", "dxvk");
 }
 
-// Returns true when d3d11.dll is loaded from outside System32 (i.e. DXVK's d3d11 wrapper).
+// Returns true when d3d11.dll is a DXVK wrapper (outside System32, version info contains "dxvk").
 // Used alongside IsDXVKD3D9WrapperLoaded() to distinguish pure DX9-DXVK games
 // (only d3d9 from DXVK) from DX10/11-DXVK games where d3d9.dll is also present.
 static bool IsDXVKD3D11WrapperLoaded() {
-    HMODULE d3d11 = GetModuleHandleA("d3d11.dll");
-    if (!d3d11)
-        return false;
-
-    char d3d11Path[MAX_PATH] = {};
-    DWORD d3d11Len = GetModuleFileNameA(d3d11, d3d11Path, MAX_PATH);
-    if (d3d11Len == 0 || d3d11Len >= MAX_PATH)
-        return false;
-
-    char systemDir[MAX_PATH] = {};
-    UINT systemLen = GetSystemDirectoryA(systemDir, MAX_PATH);
-    if (systemLen == 0 || systemLen >= MAX_PATH)
-        return false;
-
-    if (_strnicmp(d3d11Path, systemDir, systemLen) == 0 &&
-        (d3d11Path[systemLen] == '\\' || d3d11Path[systemLen] == '/')) {
-        return false;
-    }
-    return true;
+    return IsDllFromProject("d3d11.dll", "dxvk");
 }
 
 static void ApplyPrerenderLimitVulkan(VkDevice device, VkQueue queue, float limit) {
