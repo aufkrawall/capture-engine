@@ -579,9 +579,9 @@ IDirect3D9* WINAPI Wrapped_Direct3DCreate9(UINT SDKVersion) {
     //
     // DX9Hook's vtable hook on IDirect3D9::CreateDevice (installed by
     // DetourDirect3DCreate9 when this call reaches dx9_hook.cpp) intercepts
-    // device creation.  QueryInterface for IDirect3D9Ex on an IDirect3D9 factory
-    // correctly returns E_NOINTERFACE, so DetourCreateDevice safely falls back
-    // to the original CreateDevice path — no D3D9Ex upgrade, no crash.
+    // device creation. That path only promotes to D3D9Ex when compatibility checks
+    // allow it, so DXVK and MirrorsEdge-style layout-sensitive cases stay on the
+    // native D3D9 path.
     if (!oDirect3DCreate9)
         return nullptr;
     IDirect3D9* pReal = oDirect3DCreate9(SDKVersion);

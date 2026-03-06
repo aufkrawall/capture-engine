@@ -46,6 +46,7 @@ typedef HRESULT(STDMETHODCALLTYPE* ResetEx_t)(IDirect3DDevice9Ex*, D3DPRESENT_PA
 typedef HRESULT(STDMETHODCALLTYPE* EndScene_t)(IDirect3DDevice9*);
 typedef HRESULT(STDMETHODCALLTYPE* SetSamplerState_t)(IDirect3DDevice9*, DWORD, D3DSAMPLERSTATETYPE, DWORD);
 typedef HRESULT(STDMETHODCALLTYPE* SetTextureStageState_t)(IDirect3DDevice9*, DWORD, D3DTEXTURESTAGESTATETYPE, DWORD);
+typedef IDirect3D9*(WINAPI* Direct3DCreate9Helper_t)(UINT);
 typedef HRESULT(WINAPI* Direct3DCreate9Ex_t)(UINT, IDirect3D9Ex**);
 
 // Original function pointers for VTable hooks
@@ -214,6 +215,16 @@ typedef HRESULT(STDMETHODCALLTYPE* SetTexture_t)(IDirect3DDevice9*, DWORD, IDire
 static SetTexture_t oSetTexture = nullptr;
 static bool g_setTexHookInstalled = false;
 static std::atomic<int> g_stagingLeakCount{0};
+
+static bool ShouldCopyManagedBufferData(const char* resourceType, const void* resource, UINT size, HRESULT hrSrc,
+                                        HRESULT hrDst, const void* srcData, const void* dstData) {
+    if (FAILED(hrSrc) || FAILED(hrDst) || (size > 0 && (!srcData || !dstData))) {
+        HookLogImportant("DX9: MPF: %s sync skipped for %p size=%u hrSrc=0x%08X hrDst=0x%08X src=%p dst=%p",
+                         resourceType, resource, size, (unsigned)hrSrc, (unsigned)hrDst, srcData, dstData);
+        return false;
+    }
+    return size > 0;
+}
 
 static HRESULT STDMETHODCALLTYPE DetourSetTexture(IDirect3DDevice9* device, DWORD Stage,
                                                   IDirect3DBaseTexture9* pTexture) {
@@ -523,8 +534,8 @@ static HRESULT STDMETHODCALLTYPE DetourVBUnlock(IDirect3DVertexBuffer9* pVB) {
             // Lock staging via direct COM, lock DEFAULT via original vtable
             HRESULT hrSrc = it->second->Lock(0, desc.Size, &srcData, D3DLOCK_READONLY);
             HRESULT hrDst = oVBLock(pVB, 0, desc.Size, &dstData, D3DLOCK_DISCARD);
-            if (SUCCEEDED(hrSrc) && SUCCEEDED(hrDst)) {
-                memcpy(dstData, srcData, desc.Size);
+            if (ShouldCopyManagedBufferData("VB", pVB, desc.Size, hrSrc, hrDst, srcData, dstData)) {
+                std::memcpy(dstData, srcData, desc.Size);
             }
             int n = g_vbOpsLogged.fetch_add(1, std::memory_order_relaxed);
             if (n < 10)
@@ -549,8 +560,8 @@ static HRESULT STDMETHODCALLTYPE DetourVBUnlock(IDirect3DVertexBuffer9* pVB) {
             void* dstData = nullptr;
             HRESULT hrSrc = itIB->second->Lock(0, desc.Size, &srcData, D3DLOCK_READONLY);
             HRESULT hrDst = oVBLock(pVB, 0, desc.Size, &dstData, D3DLOCK_DISCARD);
-            if (SUCCEEDED(hrSrc) && SUCCEEDED(hrDst)) {
-                memcpy(dstData, srcData, desc.Size);
+            if (ShouldCopyManagedBufferData("IB(VB unlock path)", pIB, desc.Size, hrSrc, hrDst, srcData, dstData)) {
+                std::memcpy(dstData, srcData, desc.Size);
             }
             if (SUCCEEDED(hrDst))
                 oVBUnlock(pVB);
@@ -637,8 +648,8 @@ static HRESULT STDMETHODCALLTYPE DetourIBUnlock(IDirect3DIndexBuffer9* pIB) {
             void* dstData = nullptr;
             HRESULT hrSrc = it->second->Lock(0, desc.Size, &srcData, D3DLOCK_READONLY);
             HRESULT hrDst = oIBLock(pIB, 0, desc.Size, &dstData, D3DLOCK_DISCARD);
-            if (SUCCEEDED(hrSrc) && SUCCEEDED(hrDst)) {
-                memcpy(dstData, srcData, desc.Size);
+            if (ShouldCopyManagedBufferData("IB", pIB, desc.Size, hrSrc, hrDst, srcData, dstData)) {
+                std::memcpy(dstData, srcData, desc.Size);
             }
             if (SUCCEEDED(hrDst))
                 oIBUnlock(pIB);
@@ -1095,6 +1106,19 @@ static void LogUploadDiagnostics() {
 
 // Vulkan coordination: if Vulkan layer is actively presenting, skip DX9
 // present-time processing to avoid duplicate overlay/limiter effects in DXVK.
+static bool IsCurrentProcessNamed(const char* expectedExeName) {
+    if (!expectedExeName)
+        return false;
+
+    char exePath[MAX_PATH] = {};
+    if (!GetModuleFileNameA(nullptr, exePath, MAX_PATH))
+        return false;
+
+    const char* exeName = strrchr(exePath, '\\');
+    exeName = exeName ? (exeName + 1) : exePath;
+    return _stricmp(exeName, expectedExeName) == 0;
+}
+
 static bool IsDXVKD3D9WrapperLoaded() {
     HMODULE d3d9 = GetModuleHandleA("d3d9.dll");
     if (!d3d9)
@@ -1114,6 +1138,13 @@ static bool IsDXVKD3D9WrapperLoaded() {
         return false;
     }
     return true;
+}
+
+static bool ShouldBlockD3D9ExPromotionForCompatibility() {
+    // Mirror's Edge is known to read D3D9 object internals directly. Returning a
+    // plain IDirect3D9 factory avoids one crash path, but promoting the created
+    // device to D3D9Ex still swaps in the incompatible binary layout.
+    return IsCurrentProcessNamed("MirrorsEdge.exe");
 }
 
 static bool ShouldSkipDX9PresentForVulkan() {
@@ -1826,6 +1857,34 @@ static DXGI_FORMAT D3D9ToDXGIFormat(D3DFORMAT format) {
     }
 }
 
+static const char* D3D9FormatName(D3DFORMAT format) {
+    switch (format) {
+        case D3DFMT_A8R8G8B8:
+            return "A8R8G8B8";
+        case D3DFMT_X8R8G8B8:
+            return "X8R8G8B8";
+        case D3DFMT_A2B10G10R10:
+            return "A2B10G10R10";
+        case D3DFMT_UNKNOWN:
+            return "UNKNOWN";
+        default:
+            return "OTHER";
+    }
+}
+
+static D3DFORMAT GetD3D9SharedTextureFormat(D3DFORMAT format) {
+    switch (format) {
+        case D3DFMT_X8R8G8B8:
+            // D3D9->D3D11 shared textures require an alpha-bearing 32-bit format.
+            return D3DFMT_A8R8G8B8;
+        case D3DFMT_A8R8G8B8:
+        case D3DFMT_A2B10G10R10:
+            return format;
+        default:
+            return format;
+    }
+}
+
 static D3DMULTISAMPLE_TYPE ParseD3D9MSAA(const char* msaa) {
     if (strcmp(msaa, "2x") == 0 || strcmp(msaa, "2") == 0)
         return D3DMULTISAMPLE_2_SAMPLES;
@@ -1927,6 +1986,7 @@ public:
 
     HANDLE sharedHandle9 = NULL;  // Handle for D3D11 interop
     D3DFORMAT d3d9Format = D3DFMT_UNKNOWN;
+    D3DFORMAT d3d9SharedFormat = D3DFMT_UNKNOWN;
     HRESULT hr = S_OK;
 
     // D3D11 resources for sharing
@@ -1936,6 +1996,7 @@ public:
     IDirect3DTexture9* overlayTexture9 = nullptr;
 
     ID3D11Texture2D* sharedTextures[CAPTURE_TEXTURE_COUNT]{};
+    IDXGISurface1* gdiSharedRingSurfaces[CAPTURE_TEXTURE_COUNT]{};
     // NOTE: sharedTextureHandles and sharedFenceHandle are now member variables
     // (std::atomic<HANDLE>) from CaptureBase class to prevent race conditions
 
@@ -1976,6 +2037,20 @@ public:
     int zeroCopyPendingIdx = -1;
     IDirect3DQuery9* zeroCopyQuery = nullptr;  // D3D9 event query for cross-API sync
 
+    // Direct D3D9 shared ring path: the game device stretches directly into a
+    // ring of shared D3D9 textures, then we only signal the cross-process fence
+    // after the D3D9 event query confirms the GPU copy completed.
+    bool useDirectD3D9SharedRing = false;
+    IDirect3DTexture9* directSharedTextures9[CAPTURE_TEXTURE_COUNT] = {};
+    IDirect3DSurface9* directSharedSurfaces9[CAPTURE_TEXTURE_COUNT] = {};
+    IDirect3DQuery9* directSharedQueries9[CAPTURE_TEXTURE_COUNT] = {};
+    IDirect3DTexture9* directSharedProducerTextures9[CAPTURE_TEXTURE_COUNT] = {};
+    IDirect3D9* directSharedFactory = nullptr;
+    IDirect3DDevice9* directSharedProducerDevice = nullptr;
+    IDirect3D9Ex* directSharedFactoryEx = nullptr;
+    IDirect3DDevice9Ex* directSharedProducerDeviceEx = nullptr;
+    HWND directSharedHelperWindow = nullptr;
+
     // Per-frame staging metrics (set by CaptureFrame, read by PresentEnd)
     int32_t stagingStretchRectUs = 0;
     int32_t stagingReadbackSubmitUs = 0;
@@ -1997,6 +2072,7 @@ public:
     IDirect3DSurface9* gdiCopySurfaces[2] = {};               // Double-buffered lockable D3D9 RTs
     ID3D11Texture2D* gdiTexture = nullptr;                    // D3D11 GDI-compatible intermediate
     IDXGISurface1* gdiSurface = nullptr;                      // DXGI surface for GetDC
+    bool gdiDirectSharedRing = false;                         // Write GDI blits straight into shared ring textures
     int gdiWriteIdx = 0;                                      // Current write buffer index (0 or 1)
     bool gdiHasPrevFrame = false;                             // True after first StretchRect completes
     int64_t gdiLastCaptureQpc = 0;                            // Rate-limiting timestamp
@@ -2056,7 +2132,7 @@ public:
 
     // Background capture thread for GDI interop path.
     // Dequeues frames from the pending ring and runs the expensive
-    // GetDC+BitBlt+CopySubresource pipeline off the render thread.
+    // GetDC+BitBlt transfer work off the render thread.
     void GDICaptureThreadProc() {
         captureThreadRunning = true;
         EarlyLog("DX9: GDI capture thread started");
@@ -2118,17 +2194,499 @@ public:
         CleanupDX9(false);
     }
 
+    void ReleaseSharedTextureRing() {
+        for (int i = 0; i < CAPTURE_TEXTURE_COUNT; ++i) {
+            if (gdiSharedRingSurfaces[i]) {
+                gdiSharedRingSurfaces[i]->Release();
+                gdiSharedRingSurfaces[i] = nullptr;
+            }
+            if (sharedTextures[i]) {
+                sharedTextures[i]->Release();
+                sharedTextures[i] = nullptr;
+            }
+            sharedTextureHandles[i].store(NULL, std::memory_order_release);
+        }
+        gdiDirectSharedRing = false;
+    }
+
+    bool CreateSharedTextureRing(bool gdiCompatible) {
+        ReleaseSharedTextureRing();
+
+        D3D11_TEXTURE2D_DESC texDesc = {};
+        texDesc.Width = width;
+        texDesc.Height = height;
+        texDesc.MipLevels = 1;
+        texDesc.ArraySize = 1;
+        texDesc.Format = (DXGI_FORMAT)format;
+        texDesc.SampleDesc.Count = 1;
+        texDesc.Usage = D3D11_USAGE_DEFAULT;
+        texDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+        if (gdiCompatible) {
+            texDesc.MiscFlags |= D3D11_RESOURCE_MISC_GDI_COMPATIBLE;
+        }
+
+        for (int i = 0; i < CAPTURE_TEXTURE_COUNT; ++i) {
+            HRESULT createHr = d3d11Device->CreateTexture2D(&texDesc, NULL, &sharedTextures[i]);
+            if (FAILED(createHr) || !sharedTextures[i]) {
+                HookLogImportant("DX9: Failed to create %sring texture %d (hr=0x%08x)",
+                                 gdiCompatible ? "GDI-shared " : "", i, (unsigned)createHr);
+                ReleaseSharedTextureRing();
+                return false;
+            }
+
+            IDXGIResource* resource = nullptr;
+            HRESULT handleHr = sharedTextures[i]->QueryInterface(IID_PPV_ARGS(&resource));
+            if (FAILED(handleHr) || !resource) {
+                HookLogImportant("DX9: Failed to query IDXGIResource for ring texture %d (hr=0x%08x)", i,
+                                 (unsigned)handleHr);
+                ReleaseSharedTextureRing();
+                return false;
+            }
+
+            HANDLE handle = NULL;
+            resource->GetSharedHandle(&handle);
+            resource->Release();
+            if (!handle) {
+                HookLogImportant("DX9: Failed to get shared handle for ring texture %d", i);
+                ReleaseSharedTextureRing();
+                return false;
+            }
+            sharedTextureHandles[i].store(handle, std::memory_order_release);
+
+            if (gdiCompatible) {
+                HRESULT surfaceHr = sharedTextures[i]->QueryInterface(IID_PPV_ARGS(&gdiSharedRingSurfaces[i]));
+                if (FAILED(surfaceHr) || !gdiSharedRingSurfaces[i]) {
+                    HookLogImportant("DX9: Ring texture %d is not GDI-compatible (hr=0x%08x)", i, (unsigned)surfaceHr);
+                    ReleaseSharedTextureRing();
+                    return false;
+                }
+            }
+        }
+
+        gdiDirectSharedRing = gdiCompatible;
+        return true;
+    }
+
+    void ReleaseDirectD3D9RingResources() {
+        for (int i = 0; i < CAPTURE_TEXTURE_COUNT; ++i) {
+            if (directSharedQueries9[i]) {
+                directSharedQueries9[i]->Release();
+                directSharedQueries9[i] = nullptr;
+            }
+            if (directSharedSurfaces9[i]) {
+                directSharedSurfaces9[i]->Release();
+                directSharedSurfaces9[i] = nullptr;
+            }
+            if (directSharedTextures9[i]) {
+                directSharedTextures9[i]->Release();
+                directSharedTextures9[i] = nullptr;
+            }
+            if (directSharedProducerTextures9[i]) {
+                directSharedProducerTextures9[i]->Release();
+                directSharedProducerTextures9[i] = nullptr;
+            }
+            sharedTextureHandles[i].store(NULL, std::memory_order_release);
+        }
+
+        useDirectD3D9SharedRing = false;
+        zeroCopyPendingCopy = false;
+        zeroCopyPendingIdx = -1;
+    }
+
+    void ReleaseDirectD3D9HelperDevices() {
+        if (directSharedProducerDevice) {
+            directSharedProducerDevice->Release();
+            directSharedProducerDevice = nullptr;
+        }
+        if (directSharedFactory) {
+            directSharedFactory->Release();
+            directSharedFactory = nullptr;
+        }
+        if (directSharedProducerDeviceEx) {
+            directSharedProducerDeviceEx->Release();
+            directSharedProducerDeviceEx = nullptr;
+        }
+        if (directSharedFactoryEx) {
+            directSharedFactoryEx->Release();
+            directSharedFactoryEx = nullptr;
+        }
+        if (directSharedHelperWindow) {
+            DestroyWindow(directSharedHelperWindow);
+            directSharedHelperWindow = nullptr;
+        }
+    }
+
+    void ReleaseDirectD3D9SharedRing() {
+        ReleaseDirectD3D9RingResources();
+        ReleaseDirectD3D9HelperDevices();
+    }
+
+    bool EnsureDirectD3D9HelperWindow() {
+        if (directSharedHelperWindow)
+            return true;
+
+        static constexpr const char* kHelperWindowClass = "CE_DX9SharedRingHelper";
+
+        WNDCLASSEXA wc = {sizeof(wc)};
+        wc.style = CS_CLASSDC;
+        wc.lpfnWndProc = DefWindowProcA;
+        wc.hInstance = GetModuleHandle(nullptr);
+        wc.lpszClassName = kHelperWindowClass;
+        if (!RegisterClassExA(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+            HookLogImportant("DX9: Direct D3D9 shared ring unavailable - helper window class registration failed");
+            return false;
+        }
+
+        directSharedHelperWindow = CreateWindowA(kHelperWindowClass, "CE DX9 Shared Ring", WS_OVERLAPPED, 0, 0, 64, 64,
+                                                 nullptr, nullptr, wc.hInstance, nullptr);
+        if (!directSharedHelperWindow) {
+            HookLogImportant("DX9: Direct D3D9 shared ring unavailable - helper window creation failed");
+            return false;
+        }
+        ShowWindow(directSharedHelperWindow, SW_HIDE);
+        return true;
+    }
+
+    static DWORD BuildDirectD3D9HelperBehaviorFlags(DWORD gameBehaviorFlags) {
+        DWORD helperFlags = D3DCREATE_MULTITHREADED;
+        if (gameBehaviorFlags & D3DCREATE_FPU_PRESERVE) {
+            helperFlags |= D3DCREATE_FPU_PRESERVE;
+        }
+
+        if (gameBehaviorFlags & D3DCREATE_HARDWARE_VERTEXPROCESSING) {
+            helperFlags |= D3DCREATE_HARDWARE_VERTEXPROCESSING;
+        } else if (gameBehaviorFlags & D3DCREATE_MIXED_VERTEXPROCESSING) {
+            helperFlags |= D3DCREATE_MIXED_VERTEXPROCESSING;
+        } else {
+            helperFlags |= D3DCREATE_SOFTWARE_VERTEXPROCESSING;
+        }
+
+        return helperFlags;
+    }
+
+    void LogDirectD3D9SharingDiagnostics(IDirect3DDevice9* device, const D3DDEVICE_CREATION_PARAMETERS& params,
+                                         const char* label) {
+        if (!device || !label)
+            return;
+
+        IDirect3D9* direct3D = nullptr;
+        HRESULT getD3DHr = device->GetDirect3D(&direct3D);
+        if (FAILED(getD3DHr) || !direct3D) {
+            HookLogImportant("DX9: %s diagnostics unavailable - GetDirect3D failed (hr=0x%08x)", label,
+                             (unsigned)getD3DHr);
+            return;
+        }
+
+        IDirect3DDevice9Ex* deviceEx = nullptr;
+        const bool isEx =
+            SUCCEEDED(device->QueryInterface(__uuidof(IDirect3DDevice9Ex), (void**)&deviceEx)) && deviceEx;
+        if (deviceEx) {
+            deviceEx->Release();
+        }
+
+        D3DCAPS9 caps = {};
+        D3DADAPTER_IDENTIFIER9 identifier = {};
+        D3DDISPLAYMODE displayMode = {};
+        const HRESULT capsHr = direct3D->GetDeviceCaps(params.AdapterOrdinal, params.DeviceType, &caps);
+        const HRESULT identHr = direct3D->GetAdapterIdentifier(params.AdapterOrdinal, 0, &identifier);
+        const HRESULT modeHr = direct3D->GetAdapterDisplayMode(params.AdapterOrdinal, &displayMode);
+        const D3DFORMAT adapterFormat = SUCCEEDED(modeHr) ? displayMode.Format : d3d9Format;
+        const HRESULT sharedFmtHr =
+            direct3D->CheckDeviceFormat(params.AdapterOrdinal, params.DeviceType, adapterFormat, D3DUSAGE_RENDERTARGET,
+                                        D3DRTYPE_TEXTURE, d3d9SharedFormat);
+        bool canShareResource = false;
+#ifdef D3DCAPS2_CANSHARERESOURCE
+        canShareResource = SUCCEEDED(capsHr) && ((caps.Caps2 & D3DCAPS2_CANSHARERESOURCE) != 0);
+#endif
+
+        HookLogImportant(
+            "DX9: %s diagnostics: adapter=%u type=%u flags=0x%08x ex=%d adapterFmt=%s/%d backBufferFmt=%s/%d "
+            "sharedFmt=%s/%d capsHr=0x%08x caps2=0x%08x canShare=%d fmtCheck=0x%08x vendor=%04x device=%04x driver=%s",
+            label, params.AdapterOrdinal, (unsigned)params.DeviceType, (unsigned)params.BehaviorFlags, isEx ? 1 : 0,
+            D3D9FormatName(adapterFormat), (int)adapterFormat, D3D9FormatName(d3d9Format), (int)d3d9Format,
+            D3D9FormatName(d3d9SharedFormat), (int)d3d9SharedFormat, (unsigned)capsHr,
+            SUCCEEDED(capsHr) ? (unsigned)caps.Caps2 : 0u, canShareResource ? 1 : 0, (unsigned)sharedFmtHr,
+            SUCCEEDED(identHr) ? identifier.VendorId : 0u, SUCCEEDED(identHr) ? identifier.DeviceId : 0u,
+            SUCCEEDED(identHr) ? identifier.Driver : "?");
+
+        direct3D->Release();
+    }
+
+    bool ProbeDirectD3D9SharedTexture(IDirect3DDevice9* device, const char* label) {
+        if (!device || !label)
+            return false;
+
+        HANDLE sharedHandle = NULL;
+        IDirect3DTexture9* texture = nullptr;
+        const HRESULT probeHr = device->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, d3d9SharedFormat,
+                                                      D3DPOOL_DEFAULT, &texture, &sharedHandle);
+        const bool success = SUCCEEDED(probeHr) && texture && sharedHandle;
+        HookLogImportant("DX9: %s shared-texture probe fmt=%s/%d hr=0x%08x tex=%p handle=%p", label,
+                         D3D9FormatName(d3d9SharedFormat), (int)d3d9SharedFormat, (unsigned)probeHr, texture,
+                         sharedHandle);
+        if (texture) {
+            texture->Release();
+        }
+        if (sharedHandle) {
+            CloseHandle(sharedHandle);
+        }
+        return success;
+    }
+
+    bool EnsureDirectD3D9ExProducerDevice(const D3DDEVICE_CREATION_PARAMETERS& params) {
+        if (directSharedProducerDeviceEx)
+            return true;
+
+        HMODULE d3d9Module = GetModuleHandleA("d3d9.dll");
+        if (!d3d9Module) {
+            HookLogImportant("DX9: Direct D3D9 shared ring unavailable - d3d9.dll missing");
+            return false;
+        }
+        if (!EnsureDirectD3D9HelperWindow()) {
+            return false;
+        }
+
+        if (!directSharedFactoryEx) {
+            Direct3DCreate9Ex_t create9Ex =
+                reinterpret_cast<Direct3DCreate9Ex_t>(GetProcAddress(d3d9Module, "Direct3DCreate9Ex"));
+            if (!create9Ex) {
+                HookLogImportant("DX9: Direct D3D9Ex helper unavailable - Direct3DCreate9Ex missing");
+                return false;
+            }
+
+            const HRESULT factoryHr = create9Ex(D3D_SDK_VERSION, &directSharedFactoryEx);
+            if (FAILED(factoryHr) || !directSharedFactoryEx) {
+                HookLogImportant("DX9: Direct D3D9Ex helper unavailable - Direct3DCreate9Ex failed (0x%08x)",
+                                 (unsigned)factoryHr);
+                directSharedFactoryEx = nullptr;
+                return false;
+            }
+        }
+
+        D3DPRESENT_PARAMETERS pp = {};
+        pp.Windowed = TRUE;
+        pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
+        pp.hDeviceWindow = directSharedHelperWindow;
+        const DWORD helperFlags = BuildDirectD3D9HelperBehaviorFlags(params.BehaviorFlags);
+        HookLogImportant("DX9: Trying helper D3D9Ex producer (adapter=%u type=%u flags=0x%08x)", params.AdapterOrdinal,
+                         (unsigned)params.DeviceType, (unsigned)helperFlags);
+
+        const HRESULT deviceHr =
+            directSharedFactoryEx->CreateDeviceEx(params.AdapterOrdinal, params.DeviceType, directSharedHelperWindow,
+                                                  helperFlags, &pp, nullptr, &directSharedProducerDeviceEx);
+        if (FAILED(deviceHr) || !directSharedProducerDeviceEx) {
+            HookLogImportant("DX9: Direct D3D9Ex helper unavailable - CreateDeviceEx failed (0x%08x)",
+                             (unsigned)deviceHr);
+            if (directSharedProducerDeviceEx) {
+                directSharedProducerDeviceEx->Release();
+                directSharedProducerDeviceEx = nullptr;
+            }
+            return false;
+        }
+
+        ProbeDirectD3D9SharedTexture(directSharedProducerDeviceEx, "helper D3D9Ex producer");
+        return true;
+    }
+
+    bool EnsureDirectD3D9LegacyProducerDevice(const D3DDEVICE_CREATION_PARAMETERS& params) {
+        if (directSharedProducerDevice)
+            return true;
+
+        HMODULE d3d9Module = GetModuleHandleA("d3d9.dll");
+        if (!d3d9Module) {
+            HookLogImportant("DX9: Direct D3D9 shared ring unavailable - d3d9.dll missing");
+            return false;
+        }
+        if (!EnsureDirectD3D9HelperWindow()) {
+            return false;
+        }
+
+        if (!directSharedFactory) {
+            Direct3DCreate9Helper_t create9 =
+                reinterpret_cast<Direct3DCreate9Helper_t>(GetProcAddress(d3d9Module, "Direct3DCreate9"));
+            if (!create9) {
+                HookLogImportant("DX9: Direct D3D9 helper unavailable - Direct3DCreate9 missing");
+                return false;
+            }
+
+            directSharedFactory = create9(D3D_SDK_VERSION);
+            if (!directSharedFactory) {
+                HookLogImportant("DX9: Direct D3D9 helper unavailable - Direct3DCreate9 failed");
+                return false;
+            }
+        }
+
+        D3DPRESENT_PARAMETERS pp = {};
+        pp.Windowed = TRUE;
+        pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
+        pp.hDeviceWindow = directSharedHelperWindow;
+        const DWORD helperFlags = BuildDirectD3D9HelperBehaviorFlags(params.BehaviorFlags);
+        HookLogImportant("DX9: Trying helper legacy D3D9 producer (adapter=%u type=%u flags=0x%08x)",
+                         params.AdapterOrdinal, (unsigned)params.DeviceType, (unsigned)helperFlags);
+
+        const HRESULT deviceHr =
+            directSharedFactory->CreateDevice(params.AdapterOrdinal, params.DeviceType, directSharedHelperWindow,
+                                              helperFlags, &pp, &directSharedProducerDevice);
+        if (FAILED(deviceHr) || !directSharedProducerDevice) {
+            HookLogImportant("DX9: Direct D3D9 helper unavailable - CreateDevice failed (0x%08x)", (unsigned)deviceHr);
+            if (directSharedProducerDevice) {
+                directSharedProducerDevice->Release();
+                directSharedProducerDevice = nullptr;
+            }
+            return false;
+        }
+
+        ProbeDirectD3D9SharedTexture(directSharedProducerDevice, "helper legacy D3D9 producer");
+        return true;
+    }
+
+    bool ValidateDirectD3D9SharedHandle(HANDLE sharedHandle) {
+        if (!d3d11Device || !sharedHandle)
+            return false;
+
+        ID3D11Texture2D* openedTexture = nullptr;
+        HRESULT openHr =
+            d3d11Device->OpenSharedResource(sharedHandle, __uuidof(ID3D11Texture2D), (void**)&openedTexture);
+        if (FAILED(openHr) || !openedTexture) {
+            HookLogImportant("DX9: Direct D3D9 shared ring validation failed (OpenSharedResource hr=0x%08x)",
+                             (unsigned)openHr);
+            return false;
+        }
+
+        D3D11_TEXTURE2D_DESC desc = {};
+        openedTexture->GetDesc(&desc);
+        format = static_cast<uint32_t>(desc.Format);
+        HookLogImportant("DX9: Direct D3D9 shared ring validated in D3D11 (format=%u)", (unsigned)desc.Format);
+        openedTexture->Release();
+        return true;
+    }
+
+    bool TrySetupDirectD3D9SharedRingWithProducer(IDirect3DDevice9* gameDevice, IDirect3DDevice9* producerDevice,
+                                                  bool useHelperProducer, const char* producerLabel) {
+        if (!gameDevice || !producerDevice || !producerLabel)
+            return false;
+
+        auto failSetup = [&](const char* message, HRESULT failureHr) {
+            HookLogImportant("DX9: %s (producer=%s hr=0x%08x)", message, producerLabel, (unsigned)failureHr);
+            CleanupSharedHandles();
+            ReleaseDirectD3D9RingResources();
+            return false;
+        };
+
+        ReleaseDirectD3D9RingResources();
+
+        for (int i = 0; i < CAPTURE_TEXTURE_COUNT; ++i) {
+            HANDLE sharedHandle = NULL;
+            IDirect3DTexture9* producerTexture = nullptr;
+            const HRESULT producerHr =
+                producerDevice->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, d3d9SharedFormat,
+                                              D3DPOOL_DEFAULT, &producerTexture, &sharedHandle);
+            if (FAILED(producerHr) || !producerTexture || !sharedHandle) {
+                if (producerTexture) {
+                    producerTexture->Release();
+                }
+                return failSetup("Direct D3D9 shared ring producer texture creation failed", producerHr);
+            }
+
+            IDirect3DTexture9* captureTexture = producerTexture;
+            if (useHelperProducer) {
+                HANDLE openHandle = sharedHandle;
+                const HRESULT openHr =
+                    gameDevice->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, d3d9SharedFormat,
+                                              D3DPOOL_DEFAULT, &captureTexture, &openHandle);
+                if (FAILED(openHr) || !captureTexture) {
+                    producerTexture->Release();
+                    return failSetup("Direct D3D9 shared ring open-on-game-device failed", openHr);
+                }
+                if (openHandle) {
+                    sharedHandle = openHandle;
+                }
+                directSharedProducerTextures9[i] = producerTexture;
+            }
+
+            directSharedTextures9[i] = captureTexture;
+
+            const HRESULT surfaceHr = captureTexture->GetSurfaceLevel(0, &directSharedSurfaces9[i]);
+            if (FAILED(surfaceHr) || !directSharedSurfaces9[i]) {
+                return failSetup("Direct D3D9 shared ring GetSurfaceLevel failed", surfaceHr);
+            }
+
+            const HRESULT queryHr = gameDevice->CreateQuery(D3DQUERYTYPE_EVENT, &directSharedQueries9[i]);
+            if (FAILED(queryHr) || !directSharedQueries9[i]) {
+                return failSetup("Direct D3D9 shared ring query creation failed", queryHr);
+            }
+
+            sharedTextureHandles[i].store(sharedHandle, std::memory_order_release);
+        }
+
+        if (!ValidateDirectD3D9SharedHandle(sharedTextureHandles[0].load(std::memory_order_acquire))) {
+            CleanupSharedHandles();
+            ReleaseDirectD3D9RingResources();
+            return false;
+        }
+
+        useDirectD3D9SharedRing = true;
+        HookLogImportant("DX9: Direct D3D9 shared ring zero-copy path active (%s)", producerLabel);
+        return true;
+    }
+
+    bool SetupDirectD3D9SharedRing(IDirect3DDevice9* device, bool isD3D9Ex) {
+        if (!device || IsDXVKD3D9WrapperLoaded())
+            return false;
+
+        CleanupSharedHandles();
+        ReleaseDirectD3D9SharedRing();
+
+        D3DDEVICE_CREATION_PARAMETERS params = {};
+        if (FAILED(device->GetCreationParameters(&params))) {
+            HookLogImportant("DX9: Direct D3D9 shared ring unavailable - GetCreationParameters failed");
+            return false;
+        }
+
+        LogDirectD3D9SharingDiagnostics(device, params, "game device");
+        ProbeDirectD3D9SharedTexture(device, "game device");
+
+        if (isD3D9Ex && d3d9DeviceEx) {
+            if (TrySetupDirectD3D9SharedRingWithProducer(device, d3d9DeviceEx, false, "native D3D9Ex producer")) {
+                return true;
+            }
+        }
+
+        if (EnsureDirectD3D9ExProducerDevice(params)) {
+            D3DDEVICE_CREATION_PARAMETERS helperParams = {};
+            if (SUCCEEDED(directSharedProducerDeviceEx->GetCreationParameters(&helperParams))) {
+                LogDirectD3D9SharingDiagnostics(directSharedProducerDeviceEx, helperParams, "helper D3D9Ex producer");
+            }
+            if (TrySetupDirectD3D9SharedRingWithProducer(device, directSharedProducerDeviceEx, true,
+                                                         "helper D3D9Ex producer")) {
+                return true;
+            }
+        }
+
+        if (EnsureDirectD3D9LegacyProducerDevice(params)) {
+            D3DDEVICE_CREATION_PARAMETERS helperParams = {};
+            if (SUCCEEDED(directSharedProducerDevice->GetCreationParameters(&helperParams))) {
+                LogDirectD3D9SharingDiagnostics(directSharedProducerDevice, helperParams,
+                                                "helper legacy D3D9 producer");
+            }
+            if (TrySetupDirectD3D9SharedRingWithProducer(device, directSharedProducerDevice, true,
+                                                         "helper legacy D3D9 producer")) {
+                return true;
+            }
+        }
+
+        HookLogImportant("DX9: Direct D3D9 shared ring unavailable after all producer attempts");
+        return false;
+    }
+
     void CleanupDX9(bool permanentFailure = false) {
         StopCaptureThread();
         // Close shared handles first via base class
         CleanupSharedHandles();
 
-        for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
-            if (sharedTextures[i]) {
-                sharedTextures[i]->Release();
-                sharedTextures[i] = nullptr;
-            }
-        }
+        ReleaseSharedTextureRing();
+        ReleaseDirectD3D9SharedRing();
 
         if (fence) {
             fence->Release();
@@ -2152,6 +2710,7 @@ public:
             sharedTexture9 = nullptr;
         }
         sharedHandle9 = NULL;
+        useDirectD3D9SharedRing = false;
 
         if (gdiSurface) {
             gdiSurface->Release();
@@ -2170,6 +2729,7 @@ public:
             gdiCopySurfaces[1] = nullptr;
         }
         useGDIInterop = false;
+        gdiDirectSharedRing = false;
         gdiHasPrevFrame = false;
         gdiWriteIdx = 0;
         gdiBufferBusy[0].store(false, std::memory_order_relaxed);
@@ -2206,6 +2766,7 @@ public:
         }
 
         d3d9Format = D3DFMT_UNKNOWN;
+        d3d9SharedFormat = D3DFMT_UNKNOWN;
         initialized = false;
         useFences = false;
         fenceValue = 0;
@@ -2333,10 +2894,10 @@ public:
         return true;
     }
 
-    // Complete GDI interop transfer from a specific D3D9 RT to D3D11 ring buffer.
+    // Complete GDI interop transfer from a specific D3D9 RT to the published D3D11 ring.
     // The surface should have been written to in a PREVIOUS frame so GetDC won't stall.
     void CompleteGDIInteropCapture(IDirect3DSurface9* srcSurface) {
-        if (!srcSurface || !gdiSurface || !d3d11Context)
+        if (!srcSurface || !d3d11Context)
             return;
 
         static int64_t qpcFreq = 0;
@@ -2361,14 +2922,22 @@ public:
             return;
         }
 
+        const int idx = writeIndex.load(std::memory_order_acquire) % CAPTURE_TEXTURE_COUNT;
+        IDXGISurface1* dstSurface = gdiDirectSharedRing ? gdiSharedRingSurfaces[idx] : gdiSurface;
+        if (!dstSurface) {
+            srcSurface->ReleaseDC(srcDC);
+            return;
+        }
+
         // Get GDI DC from D3D11 texture (destination, discard previous)
         HDC dstDC = nullptr;
-        hr = gdiSurface->GetDC(TRUE, &dstDC);
+        hr = dstSurface->GetDC(TRUE, &dstDC);
         if (FAILED(hr) || !dstDC) {
             srcSurface->ReleaseDC(srcDC);  // Release on correct surface
             static bool logged = false;
             if (!logged) {
-                HookLogImportant("DX9: GDI: GetDC(D3D11) failed 0x%08x", (unsigned)hr);
+                HookLogImportant("DX9: GDI: GetDC(D3D11%s) failed 0x%08x", gdiDirectSharedRing ? " shared-ring" : "",
+                                 (unsigned)hr);
                 logged = true;
             }
             return;
@@ -2377,23 +2946,20 @@ public:
         // GPU-accelerated blit on WDDM 2.0+ (both surfaces are GPU-resident)
         BitBlt(dstDC, 0, 0, width, height, srcDC, 0, 0, SRCCOPY);
 
-        gdiSurface->ReleaseDC(nullptr);
+        dstSurface->ReleaseDC(nullptr);
         srcSurface->ReleaseDC(srcDC);
 
         LARGE_INTEGER blitEnd;
         QueryPerformanceCounter(&blitEnd);
         zeroCopyQueryWaitUs = static_cast<int32_t>(((blitEnd.QuadPart - copyStart.QuadPart) * 1000000) / qpcFreq);
 
-        // Copy from GDI texture to ring buffer shared texture
-        int idx = writeIndex.load(std::memory_order_acquire) % CAPTURE_TEXTURE_COUNT;
-        d3d11Context->CopySubresourceRegion(sharedTextures[idx], 0, 0, 0, 0, gdiTexture, 0, nullptr);
-
         LARGE_INTEGER qpc;
         QueryPerformanceCounter(&qpc);
 
-        if (useFences && fence && context4) {
+        if (gdiDirectSharedRing && useFences && fence && context4) {
             fenceValue++;
             context4->Signal(fence, fenceValue);
+            d3d11Context->Flush();
             SignalFrameReady(g_IPC, idx, qpc.QuadPart, fenceValue);
         } else {
             d3d11Context->Flush();
@@ -2575,8 +3141,13 @@ public:
         width = desc.Width;
         height = desc.Height;
         d3d9Format = desc.Format;
+        d3d9SharedFormat = GetD3D9SharedTextureFormat(desc.Format);
         format = D3D9ToDXGIFormat(desc.Format);
         EarlyLog("DX9: Init Step 4: Format check. w=%d, h=%d, fmt=%d", width, height, d3d9Format);
+        if (d3d9SharedFormat != d3d9Format) {
+            HookLogImportant("DX9: Using shared-texture format %d for backbuffer format %d", d3d9SharedFormat,
+                             d3d9Format);
+        }
 
         if (format == DXGI_FORMAT_UNKNOWN) {
             EarlyLog("DX9: Unsupported format %d", desc.Format);
@@ -2597,11 +3168,15 @@ public:
             HookLogImportant("DX9: Device supports D3D9Ex (zero-copy capture available)");
             isD3D9Ex = true;
         } else {
-            HookLogImportant("DX9: Device is legacy D3D9 (D3D11 staging path will be used)");
+            HookLogImportant("DX9: Device is legacy D3D9 (helper-assisted shared zero-copy will be attempted)");
             d3d9DeviceEx = nullptr;
         }
 
-        HookLogImportant("DX9: Init Step 7: Create DX9 Shared Texture");
+        HookLogImportant("DX9: Init Step 7: Create DX9 Shared Resource");
+        if (SetupDirectD3D9SharedRing(device, isD3D9Ex)) {
+            goto create_ring_buffer;
+        }
+        HookLogImportant("DX9: Direct D3D9 shared ring unavailable, trying legacy shared-surface path");
         sharedHandle9 = NULL;
 
         // DXVK's D3D9Ex::CreateTexture returns Vulkan-internal IDs as shared
@@ -2611,7 +3186,7 @@ public:
         // uses only system D3D11 textures whose handles are always valid.
         // For native D3D9Ex (non-DXVK), try zero-copy as before.
         if (!IsDXVKD3D9WrapperLoaded()) {
-            hr = device->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, d3d9Format, D3DPOOL_DEFAULT,
+            hr = device->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, d3d9SharedFormat, D3DPOOL_DEFAULT,
                                        &sharedTexture9, &sharedHandle9);
         } else {
             HookLogImportant("DX9: DXVK d3d9 detected - forcing D3D11 staging path (zero-copy skipped)");
@@ -2621,7 +3196,7 @@ public:
         if (FAILED(hr) || !sharedTexture9 || !sharedHandle9) {
             HookLogImportant(
                 "DX9: Shared texture failed (hr=0x%08x, tex=%p, handle=%p), "
-                "using D3D11 staging path...",
+                "trying native D3D9 fallback paths...",
                 hr, sharedTexture9, sharedHandle9);
 
             // Cleanup failed D3D9 shared texture
@@ -2761,7 +3336,8 @@ public:
                 D3D11_TEXTURE2D_DESC sharedDesc = {};
                 d3d11SharedTexture->GetDesc(&sharedDesc);
                 format = (uint32_t)sharedDesc.Format;
-                EarlyLog("DX9: Shared resource format: %d (d3d9fmt=%d)", sharedDesc.Format, d3d9Format);
+                EarlyLog("DX9: Shared resource format: %d (sharedD3D9Fmt=%d, backBufferFmt=%d)", sharedDesc.Format,
+                         d3d9SharedFormat, d3d9Format);
             }
 
             // Create D3D9 event query for cross-API synchronization.
@@ -2778,21 +3354,6 @@ public:
         EarlyLog("DX9: Init Step 10: Create Ring Buffer Shared Textures");
         bool success = true;
         if (!useShmem) {
-            D3D11_TEXTURE2D_DESC texDesc = {};
-            texDesc.Width = width;
-            texDesc.Height = height;
-            texDesc.MipLevels = 1;
-            texDesc.ArraySize = 1;
-            texDesc.Format = (DXGI_FORMAT)format;
-            texDesc.SampleDesc.Count = 1;
-            texDesc.Usage = D3D11_USAGE_DEFAULT;
-            texDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-            // Use legacy KMT shared handles for cross-process sharing.
-            // KMT handles are globally unique and don't require DuplicateHandle or keyed mutex.
-            // SHARED_NTHANDLE + SHARED_KEYEDMUTEX requires AcquireSync/ReleaseSync around
-            // every GPU access, which conflicts with our fence-based synchronization.
-            texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
-
             // Try to enable fences
             ID3D11Device5* device5 = nullptr;
             HRESULT qiHr = d3d11Device->QueryInterface(IID_PPV_ARGS(&device5));
@@ -2826,21 +3387,28 @@ public:
                 EarlyLog("DX9: Fence not available, using synchronous copy");
             }
 
-            for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
-                hr = d3d11Device->CreateTexture2D(&texDesc, NULL, &sharedTextures[i]);
-                if (SUCCEEDED(hr)) {
-                    IDXGIResource* pResource = nullptr;
-                    if (SUCCEEDED(sharedTextures[i]->QueryInterface(IID_PPV_ARGS(&pResource)))) {
-                        HANDLE hTemp = NULL;
-                        pResource->GetSharedHandle(&hTemp);
-                        sharedTextureHandles[i].store(hTemp, std::memory_order_release);
-                        pResource->Release();
+            if (useDirectD3D9SharedRing) {
+                success = true;
+                EarlyLog("DX9: Direct D3D9 shared ring active - skipping D3D11 shared texture ring creation");
+            } else if (useGDIInterop) {
+                success = CreateSharedTextureRing(true);
+                if (success) {
+                    if (gdiSurface) {
+                        gdiSurface->Release();
+                        gdiSurface = nullptr;
                     }
+                    if (gdiTexture) {
+                        gdiTexture->Release();
+                        gdiTexture = nullptr;
+                    }
+                    HookLogImportant(
+                        "DX9: GDI interop using shared ring textures (direct publish, no extra D3D11 copy)");
                 } else {
-                    // Legacy fallback no longer needed (already using D3D11_RESOURCE_MISC_SHARED)
-                    success = false;
-                    EarlyLog("DX9: Failed to create texture %d (hr=0x%08x)", i, hr);
+                    HookLogImportant("DX9: Shared GDI ring unavailable, using intermediate GDI copy path");
+                    success = CreateSharedTextureRing(false);
                 }
+            } else {
+                success = CreateSharedTextureRing(false);
             }
         } else {
             EarlyLog("DX9: SHMEM transport active - skipping D3D11 shared handle ring setup");
@@ -2863,12 +3431,14 @@ public:
                 StartCaptureThread([this]() { GDICaptureThreadProc(); });
             }
 
-            HookLogImportant("DX9 Capture Initialized (%s%s): %dx%d (LUID: %08x)",
-                             useShmem          ? "SHMEM"
-                             : useD3D11Staging ? "D3D11-STAGING"
-                             : useGDIInterop   ? "GDI-INTEROP+ASYNC"
-                                               : "ZERO-COPY",
-                             (useD3D11Staging && captureThreadRunning) ? "+ASYNC" : "", width, height, luidLow);
+            const char* captureMode = useShmem                  ? "SHMEM"
+                                      : useDirectD3D9SharedRing ? "D3D9-SHARED-DIRECT"
+                                      : useD3D11Staging         ? "D3D11-STAGING"
+                                      : useGDIInterop ? (gdiDirectSharedRing ? "GDI-INTEROP+DIRECT" : "GDI-INTEROP")
+                                                      : "ZERO-COPY";
+            const char* asyncSuffix = ((useD3D11Staging || useGDIInterop) && captureThreadRunning) ? "+ASYNC" : "";
+            HookLogImportant("DX9 Capture Initialized (%s%s): %dx%d (LUID: %08x)", captureMode, asyncSuffix, width,
+                             height, luidLow);
             if (ManagedPoolFix::g_active) {
                 HookLogImportant("DX9: Managed pool fix: %d tex, %d VB, %d IB, %d vol, %d cube remapped",
                                  ManagedPoolFix::g_texCreated.load(), ManagedPoolFix::g_vbCreated.load(),
@@ -3209,30 +3779,35 @@ public:
             }
             shmemCurTex = (shmemCurTex + 1) % CAPTURE_TEXTURE_COUNT;
         } else {
-            // Zero-copy path (D3D9Ex): pipelined one frame behind.
-            // 1. Complete PREVIOUS frame's D3D11 copy (query has had an entire frame to finish)
-            // 2. StretchRect CURRENT frame's backbuffer to shared surface
-            // 3. Issue D3D9 event query for NEXT frame's sync
+            // Zero-copy path: pipelined one frame behind.
+            // 1. Complete PREVIOUS frame's GPU work (query has had an entire frame to finish)
+            // 2. StretchRect CURRENT frame's backbuffer to the shared surface/ring slot
+            // 3. Issue a D3D9 event query for NEXT frame's synchronization
             CompletePendingZeroCopy();
 
             int idx = writeIndex.load(std::memory_order_acquire);
+            IDirect3DSurface9* targetSurface = useDirectD3D9SharedRing ? directSharedSurfaces9[idx] : copySurface;
+            if (!targetSurface) {
+                return;
+            }
 
-            HRESULT hr = device->StretchRect(backBuffer, NULL, copySurface, NULL, D3DTEXF_NONE);
+            HRESULT hr = device->StretchRect(backBuffer, NULL, targetSurface, NULL, D3DTEXF_NONE);
             if (FAILED(hr)) {
                 return;
             }
 
-            if (zeroCopyQuery)
-                zeroCopyQuery->Issue(D3DISSUE_END);
+            IDirect3DQuery9* completionQuery = useDirectD3D9SharedRing ? directSharedQueries9[idx] : zeroCopyQuery;
+            if (completionQuery)
+                completionQuery->Issue(D3DISSUE_END);
 
             zeroCopyPendingCopy = true;
             zeroCopyPendingIdx = idx;
         }
     }
 
-    // Completes a pending zero-copy D3D11 copy. Called at the start of the
-    // NEXT frame's CaptureFrame (pipelined) so the D3D9 event query has had
-    // an entire frame of rendering time to finish — typically completes instantly.
+    // Completes a pending zero-copy submission. Called at the start of the next
+    // frame's CaptureFrame so the D3D9 event query has had an entire frame of
+    // rendering time to finish — typically completes instantly.
     void CompletePendingZeroCopy() {
         if (!zeroCopyPendingCopy)
             return;
@@ -3250,13 +3825,31 @@ public:
         LARGE_INTEGER queryStart, queryEnd;
         QueryPerformanceCounter(&queryStart);
 
-        if (zeroCopyQuery) {
-            while (zeroCopyQuery->GetData(NULL, 0, D3DGETDATA_FLUSH) == S_FALSE) {
+        IDirect3DQuery9* completionQuery = useDirectD3D9SharedRing ? directSharedQueries9[idx] : zeroCopyQuery;
+        if (completionQuery) {
+            while (completionQuery->GetData(NULL, 0, D3DGETDATA_FLUSH) == S_FALSE) {
                 _mm_pause();
             }
         }
         QueryPerformanceCounter(&queryEnd);
         zeroCopyQueryWaitUs = static_cast<int32_t>(((queryEnd.QuadPart - queryStart.QuadPart) * 1000000) / qpcFreq);
+
+        if (useDirectD3D9SharedRing) {
+            LARGE_INTEGER qpc;
+            QueryPerformanceCounter(&qpc);
+
+            if (useFences && fence && context4) {
+                fenceValue++;
+                context4->Signal(fence, fenceValue);
+                SignalFrameReady(g_IPC, idx, qpc.QuadPart, fenceValue);
+            } else {
+                SignalFrameReady(g_IPC, idx, qpc.QuadPart, 0);
+            }
+
+            zeroCopyReadbackUs = 0;
+            AdvanceWriteIndex();
+            return;
+        }
 
         if (d3d11Context && d3d11SharedTexture && sharedTextures[idx]) {
             LARGE_INTEGER copyStart;
@@ -4815,7 +5408,25 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDevice(IDirect3D9* self, UINT Adapt
     // Using staging ManagedPoolFix (DEFAULT + SYSTEMMEM) to correctly emulate
     // MANAGED pool behavior and avoid visual corruption.
     HRESULT hr = E_FAIL;
-    if (s_d3d9ExForUpgrade) {
+    if (IsDXVKD3D9WrapperLoaded()) {
+        ManagedPoolFix::g_active = false;
+        static int dxvkUpgradeSkipLogCount = 0;
+        if (dxvkUpgradeSkipLogCount < 6) {
+            HookLogImportant(
+                "DX9: DXVK d3d9 wrapper detected - using native D3D9 device (skipping D3D9Ex upgrade and "
+                "ManagedPoolFix)");
+            dxvkUpgradeSkipLogCount++;
+        }
+    } else if (ShouldBlockD3D9ExPromotionForCompatibility()) {
+        ManagedPoolFix::g_active = false;
+        static int compatUpgradeSkipLogCount = 0;
+        if (compatUpgradeSkipLogCount < 6) {
+            HookLogImportant(
+                "DX9: MirrorsEdge compatibility - using native D3D9 device (skipping D3D9Ex upgrade and "
+                "ManagedPoolFix)");
+            compatUpgradeSkipLogCount++;
+        }
+    } else if (s_d3d9ExForUpgrade) {
         IDirect3D9Ex* selfEx = nullptr;
         bool isUnifiedFactory = SUCCEEDED(self->QueryInterface(__uuidof(IDirect3D9Ex), (void**)&selfEx)) && selfEx;
         if (selfEx)
@@ -4862,6 +5473,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDevice(IDirect3D9* self, UINT Adapt
             hr = E_FAIL;
         }
     } else {
+        ManagedPoolFix::g_active = false;
         HookLogImportant("DX9: No D3D9Ex factory available, using legacy capture path");
     }
 
@@ -4907,7 +5519,19 @@ static IDirect3D9* WINAPI DetourDirect3DCreate9(UINT SDKVersion) {
     //   the worst case is a plain D3D9 device (which works fine, no crash).
     typedef HRESULT(WINAPI * PFN_Create9Ex)(UINT, IDirect3D9Ex**);
     HMODULE d3d9Mod = GetModuleHandleA("d3d9.dll");
-    if (d3d9Mod && !s_d3d9ExForUpgrade) {
+    if (IsDXVKD3D9WrapperLoaded()) {
+        static int dxvkFactorySkipLogCount = 0;
+        if (dxvkFactorySkipLogCount < 6) {
+            HookLogImportant("DX9: DXVK d3d9 wrapper detected - skipping separate D3D9Ex upgrade factory");
+            dxvkFactorySkipLogCount++;
+        }
+    } else if (ShouldBlockD3D9ExPromotionForCompatibility()) {
+        static int compatFactorySkipLogCount = 0;
+        if (compatFactorySkipLogCount < 6) {
+            HookLogImportant("DX9: MirrorsEdge compatibility - skipping separate D3D9Ex upgrade factory");
+            compatFactorySkipLogCount++;
+        }
+    } else if (d3d9Mod && !s_d3d9ExForUpgrade) {
         PFN_Create9Ex pfnCreate9Ex = (PFN_Create9Ex)GetProcAddress(d3d9Mod, "Direct3DCreate9Ex");
         if (pfnCreate9Ex) {
             IDirect3D9Ex* d3d9Ex = nullptr;
@@ -5091,7 +5715,7 @@ void DX9Hook::Init() {
     // IDirect3D9Ex have DIFFERENT vtables, so hooking one does NOT hook the other.
     // We must hook the plain IDirect3D9 vtable to catch games that already called
     // Direct3DCreate9 before injection (common in manual/late injection).
-    if (!s_d3d9ExForUpgrade && pD3DCreate9Ex) {
+    if (!ShouldBlockD3D9ExPromotionForCompatibility() && !s_d3d9ExForUpgrade && pD3DCreate9Ex) {
         typedef HRESULT(WINAPI * PFN_Create9Ex)(UINT, IDirect3D9Ex**);
         PFN_Create9Ex pfnCreate9Ex = (PFN_Create9Ex)pD3DCreate9Ex;
         HRESULT hr = pfnCreate9Ex(D3D_SDK_VERSION, &s_d3d9ExForUpgrade);
@@ -5108,6 +5732,12 @@ void DX9Hook::Init() {
         } else {
             s_d3d9ExForUpgrade = nullptr;
             EarlyLog("DX9: D3D9Ex factory init failed (hr=0x%08X)", hr);
+        }
+    } else if (ShouldBlockD3D9ExPromotionForCompatibility()) {
+        static bool s_compatPreinitLogged = false;
+        if (!s_compatPreinitLogged) {
+            EarlyLog("DX9: MirrorsEdge compatibility - skipping D3D9Ex factory pre-init");
+            s_compatPreinitLogged = true;
         }
     }
 
