@@ -360,7 +360,10 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         // DX11-only games never load d3d10.dll. We check for its presence regardless of path.
         bool hasDX10 = (GetModuleHandleA("d3d10.dll") != nullptr || GetModuleHandleA("d3d10_1.dll") != nullptr);
         apiName = hasDX10 ? "DX10 (DXVK)" : "DX11 (DXVK)";
-    } else if (IsDllFromProject("d3d12.dll", "vkd3d")) {
+    } else if (IsDllOutsideSystem32("d3d12.dll")) {
+        // d3d12.dll is loaded from outside System32: VKD3D-Proton replacement.
+        // We only reach here when d3d11.dll is NOT a DXVK wrapper, so this cannot
+        // be a false positive from a DX11 DXVK game that has VKD3D-Proton alongside.
         apiName = "DX12 (VKD3D-Proton)";
     }
     state.overlayAdapter->SetGraphicsAPI(apiName);
