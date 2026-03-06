@@ -100,6 +100,10 @@ public:
         pShmem = shmBuf;
     }
 
+    // Release encoder-owned D3D11 textures and device after game exits (frees VRAM).
+    // Only call when not recording.
+    void ReleasePreservedEncoderTextures();
+
 private:
     std::function<void(AVPacket*)> onPacket;  // Callback member
     AVFormatContext* fmtCtx;

@@ -1553,6 +1553,11 @@ MEDIAENGINE_API void MediaEngine_StopRecording() {
         g_Engine->StopRecording();
 }
 
+MEDIAENGINE_API void MediaEngine_ReleaseEncoderTextures() {
+    if (g_Engine && g_Engine->videoEnc)
+        g_Engine->videoEnc->ReleasePreservedEncoderTextures();
+}
+
 MEDIAENGINE_API void MediaEngine_Shutdown() {
     if (g_Engine)
         g_Engine->StopRecording();

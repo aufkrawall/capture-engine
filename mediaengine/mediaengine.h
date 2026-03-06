@@ -41,6 +41,9 @@ MEDIAENGINE_API bool MediaEngine_StartRecording();
 // Stop Recording (Flush encoders, close files)
 MEDIAENGINE_API void MediaEngine_StopRecording();
 
+// Release preserved encoder textures (call after game exits to free VRAM)
+MEDIAENGINE_API void MediaEngine_ReleaseEncoderTextures();
+
 // Create or get a D3D11 device for framegrab mode
 // This ensures ScreenCapture and VideoEncoder share the same D3D11 device
 // Returns nullptr on failure, caller should NOT release the device

@@ -979,9 +979,8 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         if (mem->encoderTextures.kmtReady.load(std::memory_order_acquire)) {
             uint32_t existingFormat = mem->encoderTextures.GetFormat();
             if (existingFormat != 0 && existingFormat != ourDxgiFormat) {
-                LayerLog(
-                    "Vulkan Layer: KMT format mismatch (existing=%d, need=%d) - requesting recreation",
-                    existingFormat, ourDxgiFormat);
+                LayerLog("Vulkan Layer: KMT format mismatch (existing=%d, need=%d) - requesting recreation",
+                         existingFormat, ourDxgiFormat);
                 mem->encoderTextures.kmtReady.store(false, std::memory_order_release);
             }
         }
@@ -1479,6 +1478,16 @@ void CleanupCapture(VkDevice device) {
                 entry.valid = false;
                 LayerLog("Vulkan Layer: Cleaned up texture cache entry for LUID %llx", luidKey);
             }
+        }
+
+        // Signal media process to release its preserved encoder textures.
+        // The VkImages we exported are gone; the D3D11 textures in the media process
+        // are now unused and should be freed to reclaim VRAM.
+        auto* sharedMem = g_IPCClient.GetSharedMem();
+        if (sharedMem && sharedMem->useEncoderTextures.load(std::memory_order_acquire)) {
+            sharedMem->useEncoderTextures.store(false, std::memory_order_release);
+            sharedMem->encoderTextures.kmtReady.store(false, std::memory_order_release);
+            LayerLog("Vulkan Layer: Cleared useEncoderTextures on vkDestroyDevice");
         }
     }
 }

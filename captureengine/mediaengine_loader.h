@@ -24,6 +24,7 @@ typedef void (*MediaEngine_ProcessFrame_t)(uint64_t textureHandle, uint64_t fenc
 typedef void (*MediaEngine_ProcessFrameD3D11_t)(void* texture, int64_t timestamp, uint32_t width, uint32_t height);
 typedef bool (*MediaEngine_StartRecording_t)();
 typedef void (*MediaEngine_StopRecording_t)();
+typedef void (*MediaEngine_ReleaseEncoderTextures_t)();
 typedef ID3D11Device* (*MediaEngine_GetD3D11Device_t)();
 typedef bool (*MediaEngine_CreateSharedCaptureTextures_t)(uint32_t width, uint32_t height, uint32_t format,
                                                           struct SharedMemoryLayout* sharedMem);
@@ -43,6 +44,7 @@ extern MediaEngine_ProcessFrame_t MediaEngine_ProcessFrame;
 extern MediaEngine_ProcessFrameD3D11_t MediaEngine_ProcessFrameD3D11;
 extern MediaEngine_StartRecording_t MediaEngine_StartRecording;
 extern MediaEngine_StopRecording_t MediaEngine_StopRecording;
+extern MediaEngine_ReleaseEncoderTextures_t MediaEngine_ReleaseEncoderTextures;
 extern MediaEngine_GetD3D11Device_t MediaEngine_GetD3D11Device;
 extern MediaEngine_CreateSharedCaptureTextures_t MediaEngine_CreateSharedCaptureTextures;
 extern MediaEngine_GetLastFrameEncodeTimeUs_t MediaEngine_GetLastFrameEncodeTimeUs;

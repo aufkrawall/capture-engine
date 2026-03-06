@@ -1241,6 +1241,18 @@ int MediaProcessMain(const AppConfig& config) {
             }
         }
 
+        // Release preserved encoder textures once the hook signals it no longer uses them.
+        // The Vulkan layer clears useEncoderTextures in CleanupCapture (vkDestroyDevice).
+        if (!g_Recording && g_pSharedMem && MediaEngine_ReleaseEncoderTextures) {
+            static bool lastUseEncoderTextures = false;
+            bool curUseEncoderTextures = g_pSharedMem->useEncoderTextures.load(std::memory_order_acquire);
+            if (lastUseEncoderTextures && !curUseEncoderTextures) {
+                LogInfo("[Media] Game released encoder textures - freeing preserved D3D11/VRAM resources");
+                MediaEngine_ReleaseEncoderTextures();
+            }
+            lastUseEncoderTextures = curUseEncoderTextures;
+        }
+
         bool hasPendingInputs = false;
 
         if (g_UseScreenGrab && g_Recording) {

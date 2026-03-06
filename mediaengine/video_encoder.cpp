@@ -2641,6 +2641,61 @@ void VideoEncoder::CleanupResources() {
     cachedCursorVisible = false;
 }
 
+void VideoEncoder::ReleasePreservedEncoderTextures() {
+    if (!sharedCaptureTexturesCreated)
+        return;
+
+    DLL_Log("[VideoEncoder] Releasing preserved encoder textures (game exited)");
+
+    // Clear shared memory flags so a new game won't try to import stale handles
+    if (pSharedMem) {
+        pSharedMem->encoderTextures.kmtReady.store(false, std::memory_order_release);
+        pSharedMem->encoderTextures.ready.store(false, std::memory_order_release);
+    }
+
+    // Release encoder-owned KMT textures (mirrors !preserveEncoderTextures path in CleanupResources)
+    for (int i = 0; i < 8; i++) {
+        if (sharedCaptureTextures[i]) {
+            sharedCaptureTextures[i]->Release();
+            sharedCaptureTextures[i] = nullptr;
+        }
+        if (sharedCaptureHandles[i]) {
+            CloseHandle(sharedCaptureHandles[i]);
+            sharedCaptureHandles[i] = nullptr;
+        }
+        sharedCaptureKmtHandles[i] = nullptr;
+    }
+    if (sharedCaptureFence) {
+        sharedCaptureFence->Release();
+        sharedCaptureFence = nullptr;
+    }
+    if (sharedCaptureFenceHandle) {
+        CloseHandle(sharedCaptureFenceHandle);
+        sharedCaptureFenceHandle = nullptr;
+    }
+    sharedCaptureTexturesCreated = false;
+    sharedCaptureTextureFormat = 0;
+
+    // Release D3D11 device and all resources that depend on it
+    CleanupVideoProcessor();
+
+    if (d3d11Context) {
+        d3d11Context->Release();
+        d3d11Context = nullptr;
+    }
+    if (d3d11Device) {
+        d3d11Device->Release();
+        d3d11Device = nullptr;
+    }
+    if (d3d11DeviceCtx)
+        av_buffer_unref(&d3d11DeviceCtx);
+    if (d3d11FramesCtx)
+        av_buffer_unref(&d3d11FramesCtx);
+
+    initDone = false;
+    DLL_Log("[VideoEncoder] Preserved encoder textures released");
+}
+
 void VideoEncoder::Stop() {
     bool wasRecording = recordingRequested;
     recordingRequested = false;
@@ -3333,8 +3388,8 @@ bool VideoEncoder::EnsureSwapRBShader() {
         return false;
     }
 
-    typedef HRESULT(WINAPI* pD3DCompile)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR,
-                                         LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
+    typedef HRESULT(WINAPI * pD3DCompile)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR,
+                                          LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
     pD3DCompile d3dCompile = (pD3DCompile)GetProcAddress(d3dCompiler, "D3DCompile");
     if (!d3dCompile) {
         DLL_Log("[SwapRB] Failed to get D3DCompile");
