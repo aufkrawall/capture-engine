@@ -190,6 +190,7 @@ int main(int argc, char* argv[]) {
     wc.style = CS_OWNDC;
     wc.lpfnWndProc = WndProc;
     wc.hInstance = GetModuleHandle(nullptr);
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.lpszClassName = "OpenGLTestApp";
     RegisterClass(&wc);
 

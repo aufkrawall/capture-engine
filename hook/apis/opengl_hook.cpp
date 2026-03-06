@@ -396,7 +396,7 @@ public:
             return false;
         }
 
-        // Get LUID
+        // Get LUID and prevent DXGI from stealing window focus/cursor
         IDXGIDevice* dxgiDevice = nullptr;
         if (SUCCEEDED(d3d11Device->QueryInterface(IID_PPV_ARGS(&dxgiDevice)))) {
             IDXGIAdapter* adapter = nullptr;
@@ -411,6 +411,16 @@ public:
 
                 // Report LUID to shared memory for out-of-process polling
                 ReportLUID(luidLow, luidHigh);
+
+                // Prevent DXGI from associating with the game window; without this DXGI
+                // hides the hardware cursor and intercepts Alt+Enter on D3D11 device creation.
+                IDXGIFactory* factory = nullptr;
+                if (SUCCEEDED(adapter->GetParent(IID_PPV_ARGS(&factory)))) {
+                    HWND hwnd = g_CaptureHDC ? WindowFromDC(g_CaptureHDC) : nullptr;
+                    if (hwnd)
+                        factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_WINDOW_CHANGES | DXGI_MWA_NO_ALT_ENTER);
+                    factory->Release();
+                }
 
                 adapter->Release();
             }
@@ -611,6 +621,24 @@ public:
             }
         }
 
+        // Rate-limit captures to avoid overwriting textures before the encoder reads them.
+        // At very high FPS (1000+ fps), the ring buffer cycles faster than the encoder can
+        // process, causing races. Cap at ~500fps (2ms min interval) to leave ample time.
+        static int64_t capRateFreq = 0;
+        static int64_t lastCapTime = 0;
+        if (capRateFreq == 0) {
+            LARGE_INTEGER f;
+            QueryPerformanceFrequency(&f);
+            capRateFreq = f.QuadPart;
+        }
+        {
+            LARGE_INTEGER now;
+            QueryPerformanceCounter(&now);
+            if (lastCapTime && (now.QuadPart - lastCapTime) < (capRateFreq / 500))
+                return;
+            lastCapTime = now.QuadPart;
+        }
+
         int idx = writeIndex;
 
         // Blit backbuffer to capture texture
@@ -635,7 +663,9 @@ public:
         int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
 
         if (usingNVInterop) {
-            // Lock D3D11-backed GL texture, copy framebuffer contents into it, then unlock
+            // Lock D3D11-backed GL texture, copy framebuffer contents into it, then unlock.
+            // Only signal the frame if the lock actually succeeded; signaling on lock failure
+            // would push stale (previously-written) texture data to the encoder.
             if (wglDXLockObjectsNV(nvDevice, 1, &nvTextureHandles[idx])) {
                 pglBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
                 pglBindTexture(GL_TEXTURE_2D, glTextures[idx]);
@@ -644,10 +674,8 @@ public:
                 pglBindTexture(GL_TEXTURE_2D, 0);
                 pglBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
                 wglDXUnlockObjectsNV(nvDevice, 1, &nvTextureHandles[idx]);
+                SignalFrameReady(g_IPC, idx, qpc.QuadPart, 0);
             }
-
-            // PASS RAW QPC
-            SignalFrameReady(g_IPC, idx, qpc.QuadPart, 0);
         } else if (usePBO) {
             // PBO async readback
             int readPBO = currentPBO;
