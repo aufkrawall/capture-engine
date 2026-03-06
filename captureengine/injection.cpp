@@ -117,9 +117,20 @@ void InjectionManager::SetOnInjectCallback(std::function<void(const std::string&
     this->onInjectCallback = callback;
 }
 
+void InjectionManager::UpdateConfig(const AppConfig& newConfig) {
+    std::lock_guard<std::mutex> lock(configMutex);
+    config = newConfig;
+}
+
+void InjectionManager::RescanExistingProcesses() {
+    ScanExistingProcesses();
+}
+
 bool InjectionManager::IsWhitelisted(const std::string& processName) {
     std::string lowerName = processName;
     std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
+
+    std::lock_guard<std::mutex> configLock(configMutex);
 
     // Strict Whitelist Mode (WMI only injects explicit whitelist entries)
     if (config.gameWhitelist.empty() && config.overlayWhitelist.empty()) {
@@ -220,7 +231,9 @@ void InjectionManager::Update() {
             std::string name = it->name;
 
             // Re-verify it's still running and not injected
-            if (!IsAlreadyInjected(pid) && !IsRecentlyFailed(pid)) {
+            if (!IsWhitelisted(name)) {
+                LogInfo("[WMI] Skipping deferred injection for %s (PID: %d) - no longer whitelisted", name.c_str(), pid);
+            } else if (!IsAlreadyInjected(pid) && !IsRecentlyFailed(pid)) {
                 LogInfo("[WMI] Injecting deferred: %s (PID: %d)", name.c_str(), pid);
                 if (Inject(pid, name)) {
                     LogInfo("Injection successful.");
@@ -561,7 +574,9 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
 
                         // Perform injection
                         std::lock_guard<std::mutex> lock(managerShared->injectMutex);
-                        if (!managerShared->IsAlreadyInjected(pid) && !managerShared->IsRecentlyFailed(pid)) {
+                        if (!managerShared->IsWhitelisted(name)) {
+                            LogInfo("[WMI] %s (PID: %d) - No longer whitelisted, skipping injection", name.c_str(), pid);
+                        } else if (!managerShared->IsAlreadyInjected(pid) && !managerShared->IsRecentlyFailed(pid)) {
                             LogInfo(
                                 "[WMI] %s (PID: %d) - Injecting (%s detected, waited %d "
                                 "ms)",
@@ -1339,6 +1354,7 @@ void InjectionManager::ScanExistingProcesses() {
         do {
             ++scannedProcesses;
             std::string name = pe32.szExeFile;
+            std::lock_guard<std::mutex> injectLock(injectMutex);
             if (IsWhitelisted(name)) {
                 ++whitelistedProcesses;
                 if (!IsAlreadyInjected(pe32.th32ProcessID) && !IsRecentlyFailed(pe32.th32ProcessID)) {

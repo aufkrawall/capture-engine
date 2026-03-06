@@ -13,6 +13,29 @@
 
 namespace CustomOverlay {
 
+namespace {
+
+void SetStage0Mode(IDirect3DDevice9* device, bool useTexture) {
+    if (useTexture) {
+        device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+        device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+        device->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+        device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+        device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+        device->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+    } else {
+        device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+        device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+        device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+        device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+    }
+
+    device->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    device->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+}
+
+}  // namespace
+
 // Custom vertex format for DX9
 struct DX9Vertex {
     float x, y, z, rhw;
@@ -197,8 +220,32 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
     // Redirect to backbuffer so the overlay always lands on the presented surface,
     // regardless of what render target the game left active when it called Present.
     IDirect3DSurface9* oldRT = nullptr;
+    IDirect3DStateBlock9* stateBlock = nullptr;
+    D3DMATRIX oldWorld = {};
+    D3DMATRIX oldView = {};
+    D3DMATRIX oldProjection = {};
+    bool hasOldWorld = SUCCEEDED(device->GetTransform(D3DTS_WORLD, &oldWorld));
+    bool hasOldView = SUCCEEDED(device->GetTransform(D3DTS_VIEW, &oldView));
+    bool hasOldProjection = SUCCEEDED(device->GetTransform(D3DTS_PROJECTION, &oldProjection));
+    D3DVIEWPORT9 oldViewport = {};
+    bool hasOldViewport = SUCCEEDED(device->GetViewport(&oldViewport));
     IDirect3DSurface9* backBuffer = nullptr;
     device->GetRenderTarget(0, &oldRT);
+    HRESULT stateBlockHr = device->CreateStateBlock(D3DSBT_ALL, &stateBlock);
+    if (SUCCEEDED(stateBlockHr) && stateBlock) {
+        stateBlockHr = stateBlock->Capture();
+    }
+    if (FAILED(stateBlockHr)) {
+        HookLogImportant("[Overlay] DX9::Render: Create/CaptureStateBlock FAILED hr=0x%08X", (unsigned)stateBlockHr);
+        if (stateBlock) {
+            stateBlock->Release();
+            stateBlock = nullptr;
+        }
+        if (oldRT) {
+            oldRT->Release();
+        }
+        return;
+    }
     if (SUCCEEDED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer))) {
         device->SetRenderTarget(0, backBuffer);
         // Use the actual backbuffer dimensions as the viewport, which may differ
@@ -224,53 +271,6 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
         }
     }
 
-    // Save minimal state
-    DWORD oldFVF;
-    IDirect3DVertexBuffer9* oldVB = nullptr;
-    UINT oldVBOffset = 0, oldVBStride = 0;
-    IDirect3DIndexBuffer9* oldIB = nullptr;
-    IDirect3DBaseTexture9* oldTex = nullptr;
-    DWORD oldAlphaBlend, oldSrcBlend, oldDestBlend, oldBlendOp, oldSeparateAlphaBlend;
-    DWORD oldZEnable, oldCullMode, oldLighting;
-    DWORD oldColorWriteEnable, oldAlphaTestEnable, oldStencilEnable, oldScissorTestEnable;
-    DWORD oldColorOp, oldColorArg1, oldColorArg2, oldAlphaOp, oldAlphaArg1, oldAlphaArg2;
-    DWORD oldColorOp1, oldAlphaOp1;
-    DWORD oldMinFilter, oldMagFilter, oldMipFilter;
-    IDirect3DVertexShader9* oldVertexShader = nullptr;
-    IDirect3DPixelShader9* oldPixelShader = nullptr;
-    D3DVIEWPORT9 oldViewport;
-
-    device->GetFVF(&oldFVF);
-    device->GetStreamSource(0, &oldVB, &oldVBOffset, &oldVBStride);
-    device->GetIndices(&oldIB);
-    device->GetTexture(0, &oldTex);
-    device->GetRenderState(D3DRS_ALPHABLENDENABLE, &oldAlphaBlend);
-    device->GetRenderState(D3DRS_SRCBLEND, &oldSrcBlend);
-    device->GetRenderState(D3DRS_DESTBLEND, &oldDestBlend);
-    device->GetRenderState(D3DRS_BLENDOP, &oldBlendOp);
-    device->GetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, &oldSeparateAlphaBlend);
-    device->GetRenderState(D3DRS_ZENABLE, &oldZEnable);
-    device->GetRenderState(D3DRS_CULLMODE, &oldCullMode);
-    device->GetRenderState(D3DRS_LIGHTING, &oldLighting);
-    device->GetRenderState(D3DRS_COLORWRITEENABLE, &oldColorWriteEnable);
-    device->GetRenderState(D3DRS_ALPHATESTENABLE, &oldAlphaTestEnable);
-    device->GetRenderState(D3DRS_STENCILENABLE, &oldStencilEnable);
-    device->GetRenderState(D3DRS_SCISSORTESTENABLE, &oldScissorTestEnable);
-    device->GetTextureStageState(0, D3DTSS_COLOROP, &oldColorOp);
-    device->GetTextureStageState(0, D3DTSS_COLORARG1, &oldColorArg1);
-    device->GetTextureStageState(0, D3DTSS_COLORARG2, &oldColorArg2);
-    device->GetTextureStageState(0, D3DTSS_ALPHAOP, &oldAlphaOp);
-    device->GetTextureStageState(0, D3DTSS_ALPHAARG1, &oldAlphaArg1);
-    device->GetTextureStageState(0, D3DTSS_ALPHAARG2, &oldAlphaArg2);
-    device->GetTextureStageState(1, D3DTSS_COLOROP, &oldColorOp1);
-    device->GetTextureStageState(1, D3DTSS_ALPHAOP, &oldAlphaOp1);
-    device->GetSamplerState(0, D3DSAMP_MINFILTER, &oldMinFilter);
-    device->GetSamplerState(0, D3DSAMP_MAGFILTER, &oldMagFilter);
-    device->GetSamplerState(0, D3DSAMP_MIPFILTER, &oldMipFilter);
-    device->GetVertexShader(&oldVertexShader);
-    device->GetPixelShader(&oldPixelShader);
-    device->GetViewport(&oldViewport);
-
     // Set viewport
     D3DVIEWPORT9 vp = {0, 0, (DWORD)viewportWidth, (DWORD)viewportHeight, 0.0f, 1.0f};
     device->SetViewport(&vp);
@@ -295,19 +295,15 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
     device->SetRenderState(D3DRS_ZENABLE, FALSE);
     device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
     device->SetRenderState(D3DRS_LIGHTING, FALSE);
-    device->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);  // All channels
+    device->SetRenderState(D3DRS_COLORWRITEENABLE,
+                           D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
     device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
     device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
     device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+    device->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
+    device->SetRenderState(D3DRS_FOGENABLE, FALSE);
 
-    device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
-    device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-    device->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
-    device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
-    device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
-    device->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
-    device->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
-    device->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+    SetStage0Mode(device, true);
 
     // Bind font atlas before sampler setup so DX9 sampler override logic can
     // correctly detect this as a single-mip UI texture.
@@ -315,15 +311,22 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
     device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
     device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
     device->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+    device->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, 0);
 
     device->SetStreamSource(0, vertexBuffer, 0, sizeof(DX9Vertex));
     device->SetIndices(indexBuffer);
     device->SetFVF(D3DFVF_CUSTOMVERTEX);
 
     // Draw with texture caching. Track the texture we just bound above.
+    bool lastUseTexture = true;
     lastTexture = fontTexture;
     static int drawHrLogCount = 0;
     for (const auto& cmd : commands) {
+        if (cmd.useTexture != lastUseTexture) {
+            SetStage0Mode(device, cmd.useTexture);
+            lastUseTexture = cmd.useTexture;
+        }
+
         IDirect3DBaseTexture9* targetTex = cmd.useTexture ? fontTexture : nullptr;
 
         if (targetTex != lastTexture) {
@@ -349,55 +352,35 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
         }
     }
 
-    // Restore state
-    device->SetFVF(oldFVF);
-    device->SetStreamSource(0, oldVB, oldVBOffset, oldVBStride);
-    device->SetIndices(oldIB);
-    device->SetTexture(0, oldTex);
-    device->SetRenderState(D3DRS_ALPHABLENDENABLE, oldAlphaBlend);
-    device->SetRenderState(D3DRS_SRCBLEND, oldSrcBlend);
-    device->SetRenderState(D3DRS_DESTBLEND, oldDestBlend);
-    device->SetRenderState(D3DRS_BLENDOP, oldBlendOp);
-    device->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, oldSeparateAlphaBlend);
-    device->SetRenderState(D3DRS_ZENABLE, oldZEnable);
-    device->SetRenderState(D3DRS_CULLMODE, oldCullMode);
-    device->SetRenderState(D3DRS_LIGHTING, oldLighting);
-    device->SetRenderState(D3DRS_COLORWRITEENABLE, oldColorWriteEnable);
-    device->SetRenderState(D3DRS_ALPHATESTENABLE, oldAlphaTestEnable);
-    device->SetRenderState(D3DRS_STENCILENABLE, oldStencilEnable);
-    device->SetRenderState(D3DRS_SCISSORTESTENABLE, oldScissorTestEnable);
-    device->SetTextureStageState(0, D3DTSS_COLOROP, oldColorOp);
-    device->SetTextureStageState(0, D3DTSS_COLORARG1, oldColorArg1);
-    device->SetTextureStageState(0, D3DTSS_COLORARG2, oldColorArg2);
-    device->SetTextureStageState(0, D3DTSS_ALPHAOP, oldAlphaOp);
-    device->SetTextureStageState(0, D3DTSS_ALPHAARG1, oldAlphaArg1);
-    device->SetTextureStageState(0, D3DTSS_ALPHAARG2, oldAlphaArg2);
-    device->SetTextureStageState(1, D3DTSS_COLOROP, oldColorOp1);
-    device->SetTextureStageState(1, D3DTSS_ALPHAOP, oldAlphaOp1);
-    device->SetSamplerState(0, D3DSAMP_MINFILTER, oldMinFilter);
-    device->SetSamplerState(0, D3DSAMP_MAGFILTER, oldMagFilter);
-    device->SetSamplerState(0, D3DSAMP_MIPFILTER, oldMipFilter);
-    device->SetVertexShader(oldVertexShader);
-    device->SetPixelShader(oldPixelShader);
-    device->SetViewport(&oldViewport);
+    if (stateBlock) {
+        HRESULT applyHr = stateBlock->Apply();
+        static int applyLogCount = 0;
+        if (applyLogCount < 2) {
+            HookLogImportant("[Overlay] DX9::Render: ApplyStateBlock hr=0x%08X", (unsigned)applyHr);
+            applyLogCount++;
+        }
+        stateBlock->Release();
+        stateBlock = nullptr;
+    }
+
+    if (hasOldWorld) {
+        device->SetTransform(D3DTS_WORLD, &oldWorld);
+    }
+    if (hasOldView) {
+        device->SetTransform(D3DTS_VIEW, &oldView);
+    }
+    if (hasOldProjection) {
+        device->SetTransform(D3DTS_PROJECTION, &oldProjection);
+    }
+    if (hasOldViewport) {
+        device->SetViewport(&oldViewport);
+    }
 
     // Restore render target
     if (oldRT) {
         device->SetRenderTarget(0, oldRT);
         oldRT->Release();
     }
-
-    // Release saved state
-    if (oldVB)
-        oldVB->Release();
-    if (oldIB)
-        oldIB->Release();
-    if (oldTex)
-        oldTex->Release();
-    if (oldVertexShader)
-        oldVertexShader->Release();
-    if (oldPixelShader)
-        oldPixelShader->Release();
 }
 
 }  // namespace CustomOverlay

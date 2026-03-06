@@ -25,6 +25,10 @@ public:
   // Check running processes (cleanup) and process pending injections
   void Update();
 
+  // Hot-reload whitelist/injection settings without restarting the injector.
+  void UpdateConfig(const AppConfig &newConfig);
+  void RescanExistingProcesses();
+
   // WMI Methods
   bool InitializeWMI();
   void ShutdownWMI();
@@ -81,7 +85,8 @@ public:
   };
 
 private:
-  const AppConfig &config;
+  AppConfig config;
+  mutable std::mutex configMutex;
   std::string hookDllPathX64;
   std::string hookDllPathX86;
 

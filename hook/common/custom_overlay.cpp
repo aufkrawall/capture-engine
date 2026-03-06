@@ -295,8 +295,7 @@ void Renderer::DrawRectFilled(float x, float y, float w, float h, uint32_t color
     if (!initialized)
         return;
 
-    // Use texture coordinates outside atlas (solid white area)
-    // Or just use (0,0) which should be white in our font texture
+    // Solid-color quads use the diffuse-only backend path on APIs that support it.
     AddQuad(x, y, w, h, 0, 0, 0, 0, color);
     FlushBatch(false);  // Solid color, no texture sampling needed for color
 }

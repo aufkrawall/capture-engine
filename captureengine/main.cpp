@@ -111,12 +111,28 @@ bool ShouldStartLimiterProcessAtStartup(const AppConfig& config) {
     return config.fpsLimiter.generalEnabled || (g_AutoRecordEnabled && config.fpsLimiter.captureSyncEnabled);
 }
 
+bool ShouldKeepLimiterProcessRunning(const AppConfig& config) {
+    return config.fpsLimiter.generalEnabled || (g_Recording && config.fpsLimiter.captureSyncEnabled) ||
+           (g_AutoRecordEnabled && config.fpsLimiter.captureSyncEnabled);
+}
+
 bool ShouldStartLoggerProcess(const AppConfig& config) {
     return config.debugLogging;
 }
 
 bool ShouldStartSensorProcess(const AppConfig& config) {
     return config.overlay.showCPU || config.overlay.showGPU || config.overlay.showRAM || config.overlay.showVRAM;
+}
+
+bool HotkeyConfigEquals(const AppConfig::HotkeyConfig& a, const AppConfig::HotkeyConfig& b) {
+    return a.vkey == b.vkey && a.ctrl == b.ctrl && a.shift == b.shift && a.alt == b.alt && a.win == b.win;
+}
+
+void CloseProcessHandle(HANDLE& processHandle) {
+    if (processHandle) {
+        CloseHandle(processHandle);
+        processHandle = NULL;
+    }
 }
 
 bool EnsureChildProcessConnected(ProcessMode mode, HANDLE& processHandle, ProcessIPCClient* client, DWORD timeoutMs,
@@ -169,6 +185,98 @@ bool EnsureMediaProcessReady(DWORD timeoutMs) {
 bool EnsureLimiterProcessReady(DWORD timeoutMs) {
     return EnsureChildProcessConnected(ProcessMode::Limiter, g_hLimiterProcess, g_LimiterClient.get(), timeoutMs,
                                        "limiter");
+}
+
+bool ShutdownIpcChildProcess(HANDLE& processHandle, ProcessIPCClient* client, const char* processName, DWORD timeoutMs) {
+    if (!processHandle) {
+        if (client) {
+            client->Disconnect();
+        }
+        return true;
+    }
+
+    if (client && client->IsConnected()) {
+        ProcessResponse response = ProcessResponse::Ack;
+        if (!client->SendCommand(ProcessCommand::Shutdown, nullptr, &response, timeoutMs)) {
+            LogWarn("[Controller] Failed to send shutdown command to %s process", processName);
+        }
+        client->Disconnect();
+    }
+
+    DWORD waitResult = WaitForSingleObject(processHandle, timeoutMs);
+    if (waitResult != WAIT_OBJECT_0) {
+        LogWarn("[Controller] Timed out waiting for %s process to exit", processName);
+    }
+    CloseProcessHandle(processHandle);
+    return waitResult == WAIT_OBJECT_0;
+}
+
+void SyncLimiterProcess(const AppConfig& config) {
+    if (ShouldKeepLimiterProcessRunning(config)) {
+        EnsureLimiterProcessReady(10000);
+        return;
+    }
+
+    if (g_hLimiterProcess) {
+        LogInfo("[Controller] Limiter no longer needed; shutting it down");
+        ShutdownIpcChildProcess(g_hLimiterProcess, g_LimiterClient.get(), "limiter", 5000);
+    } else if (g_LimiterClient) {
+        g_LimiterClient->Disconnect();
+    }
+}
+
+void SyncLoggerAndSensorProcesses(const AppConfig& config) {
+    const bool wantLogger = ShouldStartLoggerProcess(config);
+    const bool wantSensor = ShouldStartSensorProcess(config);
+    const bool loggerRunning = IsProcessRunning(g_hLoggerProcess);
+    const bool sensorRunning = IsProcessRunning(g_hSensorProcess);
+
+    if (loggerRunning == wantLogger && sensorRunning == wantSensor) {
+        if (!loggerRunning) {
+            CloseProcessHandle(g_hLoggerProcess);
+        }
+        if (!sensorRunning) {
+            CloseProcessHandle(g_hSensorProcess);
+        }
+        return;
+    }
+
+    LogInfo("[Controller] Reloading logger/sensor services (logger=%d sensor=%d)", wantLogger ? 1 : 0,
+            wantSensor ? 1 : 0);
+
+    wchar_t shutdownEventName[64];
+    GenerateShutdownEventName(shutdownEventName, 64, GetCurrentProcessId());
+    HANDLE hShutdownEvent = CreateEventW(NULL, TRUE, FALSE, shutdownEventName);
+    if (hShutdownEvent) {
+        SetEvent(hShutdownEvent);
+    }
+
+    if (g_hLoggerProcess) {
+        WaitForSingleObject(g_hLoggerProcess, 5000);
+        CloseProcessHandle(g_hLoggerProcess);
+    }
+    if (g_hSensorProcess) {
+        WaitForSingleObject(g_hSensorProcess, 5000);
+        CloseProcessHandle(g_hSensorProcess);
+    }
+
+    if (hShutdownEvent) {
+        ResetEvent(hShutdownEvent);
+        CloseHandle(hShutdownEvent);
+    }
+
+    if (wantLogger) {
+        g_hLoggerProcess = SpawnChildProcess(ProcessMode::Logger, g_ConfigPath.c_str());
+        if (!g_hLoggerProcess) {
+            LogError("[Controller] Failed to restart logger process");
+        }
+    }
+    if (wantSensor) {
+        g_hSensorProcess = SpawnChildProcess(ProcessMode::Sensors, g_ConfigPath.c_str());
+        if (!g_hSensorProcess) {
+            LogError("[Controller] Failed to restart sensor process");
+        }
+    }
 }
 }  // namespace
 
@@ -799,39 +907,33 @@ int ControllerMain(HINSTANCE hInstance) {
         // Check child process health
         CheckChildProcessHealth();
 
-        // Config hot-reload (when not recording)
-        if (!g_Recording) {
-            static DWORD lastConfigCheck = 0;
-            if (GetTickCount() - lastConfigCheck > 2000) {
-                WIN32_FILE_ATTRIBUTE_DATA fileInfo;
-                if (GetFileAttributesExA(g_ConfigPath.c_str(), GetFileExInfoStandard, &fileInfo)) {
-                    static FILETIME lastWriteTime = fileInfo.ftLastWriteTime;
-                    if (CompareFileTime(&fileInfo.ftLastWriteTime, &lastWriteTime) > 0) {
-                        LogInfo("[Controller] Config change detected, reloading...");
-                        lastWriteTime = fileInfo.ftLastWriteTime;
-                        LoadConfig(g_ConfigPath, g_Config);
-                        if (!IsProcessRunning(g_hLoggerProcess) && g_hLoggerProcess) {
-                            CloseHandle(g_hLoggerProcess);
-                            g_hLoggerProcess = NULL;
+        // Config hot-reload
+        static DWORD lastConfigCheck = 0;
+        if (GetTickCount() - lastConfigCheck > 2000) {
+            WIN32_FILE_ATTRIBUTE_DATA fileInfo;
+            if (GetFileAttributesExA(g_ConfigPath.c_str(), GetFileExInfoStandard, &fileInfo)) {
+                static FILETIME lastWriteTime = fileInfo.ftLastWriteTime;
+                if (CompareFileTime(&fileInfo.ftLastWriteTime, &lastWriteTime) > 0) {
+                    LogInfo("[Controller] Config change detected, reloading...");
+                    lastWriteTime = fileInfo.ftLastWriteTime;
+
+                    AppConfig oldConfig = g_Config;
+                    LoadConfig(g_ConfigPath, g_Config);
+
+                    if (!HotkeyConfigEquals(oldConfig.hotkeyStartStop, g_Config.hotkeyStartStop)) {
+                        UnregisterHotKey(NULL, HOTKEY_ID_RECORD);
+                        if (!RegisterHotKey(NULL, HOTKEY_ID_RECORD, g_Config.hotkeyStartStop.GetModifiers(),
+                                            g_Config.hotkeyStartStop.vkey)) {
+                            LogError("[Controller] Failed to re-register recording hotkey");
                         }
-                        if (ShouldStartLoggerProcess(g_Config) && !g_hLoggerProcess) {
-                            g_hLoggerProcess = SpawnChildProcess(ProcessMode::Logger, g_ConfigPath.c_str());
-                        }
-                        if (!IsProcessRunning(g_hSensorProcess) && g_hSensorProcess) {
-                            CloseHandle(g_hSensorProcess);
-                            g_hSensorProcess = NULL;
-                        }
-                        if (ShouldStartSensorProcess(g_Config) && !g_hSensorProcess) {
-                            g_hSensorProcess = SpawnChildProcess(ProcessMode::Sensors, g_ConfigPath.c_str());
-                        }
-                        if (ShouldStartLimiterProcessAtStartup(g_Config) && !IsProcessRunning(g_hLimiterProcess)) {
-                            EnsureLimiterProcessReady(10000);
-                        }
-                        SendCommandToAll(ProcessCommand::ReloadConfig);
                     }
+
+                    SyncLoggerAndSensorProcesses(g_Config);
+                    SyncLimiterProcess(g_Config);
+                    SendCommandToAll(ProcessCommand::ReloadConfig);
                 }
-                lastConfigCheck = GetTickCount();
             }
+            lastConfigCheck = GetTickCount();
         }
 
         // Auto-record logic

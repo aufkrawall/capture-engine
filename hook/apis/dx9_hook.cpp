@@ -4096,9 +4096,23 @@ struct PresentTiming {
     int64_t presentCallTime;
 };
 static thread_local PresentTiming g_Timing;
-// Tracks whether DrawDX9Overlay was already called from DetourEndScene this frame.
-// Reset at the top of DetourEndScene; checked in DX9_PresentBegin to avoid double-drawing.
-static thread_local bool g_overlayDrawnInEndScene = false;
+// Tracks whether the overlay was already drawn before the current Present call.
+static thread_local bool g_overlayDrawnBeforePresent = false;
+// Tracks whether the overlay was redrawn from a nested EndScene during Present.
+static thread_local bool g_overlayDrawnInPresentEndScene = false;
+static thread_local bool g_sawPresentNestedEndScene = false;
+static std::atomic<bool> g_PreferOverlayInPresentEndScene{false};
+
+static bool IsD3D9On12Loaded() {
+    static int s_loaded = -1;
+    HMODULE d3d9on12 = GetModuleHandleA("d3d9on12.dll");
+    if (d3d9on12) {
+        s_loaded = 1;
+    } else if (s_loaded < 0) {
+        s_loaded = 0;
+    }
+    return s_loaded > 0;
+}
 
 // Present hook helpers
 void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) {
@@ -4183,6 +4197,9 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
     g_PresentRecurse++;
     if (g_PresentRecurse == 1) {
         std::lock_guard<std::mutex> lock(g_PresentMutex);  // Protect against concurrent calls
+
+        g_overlayDrawnInPresentEndScene = false;
+        g_sawPresentNestedEndScene = false;
 
         static bool luidReported = false;
         if (!luidReported) {
@@ -4279,9 +4296,10 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
         }
         bool preferEndSceneOverlay = shouldDrawOverlay && endSceneHookActive;
 
-        // Lambda for overlay drawing — skip if already drawn in DetourEndScene this frame
+        // Lambda for overlay drawing — skip if EndScene already handled it for this frame
         auto doOverlay = [&]() {
-            if (shouldDrawOverlay && !preferEndSceneOverlay && !g_overlayDrawnInEndScene) {
+            if (shouldDrawOverlay && !preferEndSceneOverlay && !g_overlayDrawnBeforePresent &&
+                !g_overlayDrawnInPresentEndScene) {
                 DrawDX9Overlay(device);
             }
         };
@@ -4541,16 +4559,30 @@ void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer) {
             }
         }
     }
+
+    if (g_PresentRecurse == 1) {
+        if (g_PreferOverlayInPresentEndScene.load(std::memory_order_acquire) && !g_sawPresentNestedEndScene &&
+            !IsD3D9On12Loaded()) {
+            g_PreferOverlayInPresentEndScene.store(false, std::memory_order_release);
+            static int nestedFallbackLogCount = 0;
+            if (nestedFallbackLogCount < 8) {
+                HookLogImportant("DX9: Nested EndScene missing during Present, falling back to top-level EndScene overlay");
+                nestedFallbackLogCount++;
+            }
+        }
+        g_overlayDrawnBeforePresent = false;
+        g_overlayDrawnInPresentEndScene = false;
+        g_sawPresentNestedEndScene = false;
+    }
     g_PresentRecurse--;
 }
 
 // Hook: IDirect3DDevice9::EndScene (vtable[42])
-// Draw overlay BEFORE the original EndScene so our draws are part of the same
-// D3D12 command batch. In D3D9On12, EndScene flushes/closes the D3D12 command
-// list — drawing after EndScene (at Present time) puts our calls in a new batch
-// that is discarded when the game clears the next frame.
+// Draw overlay at EndScene so it stays in the active frame, but on classic D3D9
+// prefer the nested EndScene reached from Present when a third-party overlay adds
+// one there. That lets our overlay land after their popup/tint pass instead of
+// underneath it.
 static HRESULT STDMETHODCALLTYPE DetourEndScene(IDirect3DDevice9* device) {
-    g_overlayDrawnInEndScene = false;  // Reset for this frame
     if (ShouldSkipDX9PresentForVulkan()) {
         static int endSceneSkipLogCount = 0;
         if (endSceneSkipLogCount < 6) {
@@ -4559,17 +4591,41 @@ static HRESULT STDMETHODCALLTYPE DetourEndScene(IDirect3DDevice9* device) {
         }
         return oEndScene(device);
     }
+    if (g_InOverlayRender) {
+        return oEndScene(device);
+    }
 
     SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+    const bool d3d9On12Loaded = IsD3D9On12Loaded();
+    const bool preferPresentEndScene =
+        !d3d9On12Loaded && g_PreferOverlayInPresentEndScene.load(std::memory_order_acquire);
     static int endSceneLogCount = 0;
     if (endSceneLogCount < 8) {
         HookLogImportant("DX9: DetourEndScene #%d recurse=%d showOverlay=%d", endSceneLogCount, g_PresentRecurse,
                          (shm && shm->overlayConfig.showOverlay) ? 1 : 0);
         endSceneLogCount++;
     }
-    if (shm && shm->overlayConfig.showOverlay && g_PresentRecurse == 0) {
+
+    if (g_PresentRecurse > 0 && !d3d9On12Loaded) {
+        g_sawPresentNestedEndScene = true;
+        if (!g_PreferOverlayInPresentEndScene.exchange(true, std::memory_order_acq_rel)) {
+            static int nestedModeLogCount = 0;
+            if (nestedModeLogCount < 8) {
+                HookLogImportant("DX9: Nested EndScene during Present detected, moving overlay draw to the later scene");
+                nestedModeLogCount++;
+            }
+        }
+        if (shm && shm->overlayConfig.showOverlay && !g_overlayDrawnInPresentEndScene) {
+            DrawDX9Overlay(device);
+            g_overlayDrawnInPresentEndScene = true;
+        }
+        return oEndScene(device);
+    }
+
+    if (shm && shm->overlayConfig.showOverlay && g_PresentRecurse == 0 && !preferPresentEndScene &&
+        !g_overlayDrawnBeforePresent) {
         DrawDX9Overlay(device);
-        g_overlayDrawnInEndScene = true;
+        g_overlayDrawnBeforePresent = true;
     }
     return oEndScene(device);
 }

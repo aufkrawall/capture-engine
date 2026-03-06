@@ -135,6 +135,26 @@ static std::string GetProcessNameFromPID(DWORD pid) {
     return "unknown";
 }
 
+static std::string GetLocalConfigPath() {
+    char exePath[MAX_PATH];
+    GetModuleFileNameA(NULL, exePath, MAX_PATH);
+    std::string path = exePath;
+    return path.substr(0, path.find_last_of("\\/")) + "\\config.ini";
+}
+
+static void ApplyMediaProcessPriority(const AppConfig& config) {
+    DWORD priorityClass = NORMAL_PRIORITY_CLASS;
+    if (config.processPriority == "idle")
+        priorityClass = IDLE_PRIORITY_CLASS;
+    else if (config.processPriority == "below_normal")
+        priorityClass = BELOW_NORMAL_PRIORITY_CLASS;
+    else if (config.processPriority == "above_normal")
+        priorityClass = ABOVE_NORMAL_PRIORITY_CLASS;
+    else if (config.processPriority == "high")
+        priorityClass = HIGH_PRIORITY_CLASS;
+    SetPriorityClass(GetCurrentProcess(), priorityClass);
+}
+
 // =================================================================================================
 // THREAD FUNCTIONS
 // =================================================================================================
@@ -726,6 +746,7 @@ int MediaProcessMain(const AppConfig& config) {
     GetModuleFileNameA(NULL, exePath, MAX_PATH);
     std::string exeDir = std::string(exePath);
     exeDir = exeDir.substr(0, exeDir.find_last_of("\\/"));
+    const std::string configPath = GetLocalConfigPath();
 
     // Load mediaengine.dll dynamically (with FFmpeg DLLs in ffmpeg/ subfolder)
     if (!MediaEngine_Load(exeDir.c_str())) {
@@ -733,16 +754,7 @@ int MediaProcessMain(const AppConfig& config) {
         return 1;
     }
 
-    DWORD priorityClass = NORMAL_PRIORITY_CLASS;
-    if (config.processPriority == "idle")
-        priorityClass = IDLE_PRIORITY_CLASS;
-    else if (config.processPriority == "below_normal")
-        priorityClass = BELOW_NORMAL_PRIORITY_CLASS;
-    else if (config.processPriority == "above_normal")
-        priorityClass = ABOVE_NORMAL_PRIORITY_CLASS;
-    else if (config.processPriority == "high")
-        priorityClass = HIGH_PRIORITY_CLASS;
-    SetPriorityClass(GetCurrentProcess(), priorityClass);
+    ApplyMediaProcessPriority(config);
 
     ProcessIPCServer ipc(ProcessMode::Media);
     if (!ipc.Init()) {
@@ -1035,10 +1047,28 @@ int MediaProcessMain(const AppConfig& config) {
                 case ProcessCommand::Ping:
                     ipc.SendResponse(ProcessResponse::Pong);
                     break;
-                case ProcessCommand::ReloadConfig:
-                    MediaEngine_ReloadConfig(&config);
+                case ProcessCommand::ReloadConfig: {
+                    AppConfig reloadedConfig;
+                    LoadConfig(configPath, reloadedConfig);
+                    if (g_pSharedMem) {
+                        const uint32_t sourcePid = g_pSharedMem->GetSourcePid();
+                        if (sourcePid != 0) {
+                            const std::string processName = GetProcessNameFromPID(sourcePid);
+                            if (!processName.empty() && processName != "unknown") {
+                                LoadConfig(configPath, reloadedConfig, processName);
+                            }
+                        }
+                    }
+
+                    ApplyMediaProcessPriority(reloadedConfig);
+                    MediaEngine_SetLogCallback(reloadedConfig.debugLogging ? MediaLogCallback : nullptr);
+                    if (g_WgcCap) {
+                        g_WgcCap->SetCaptureCursor(reloadedConfig.video.captureCursor);
+                    }
+                    MediaEngine_ReloadConfig(&reloadedConfig);
                     ipc.SendResponse(ProcessResponse::Ack);
                     break;
+                }
                 default:
                     ipc.SendResponse(ProcessResponse::Ack);
                     break;

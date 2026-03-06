@@ -46,10 +46,66 @@ static std::string GetProcessNameFromPID(DWORD pid) {
     return name;
 }
 
+struct InjectorConfigState {
+    AppConfig config;
+    bool allowInjection = false;
+};
+
+static InjectorConfigState BuildInjectorConfigState(const AppConfig& config) {
+    const bool screenGrabMode = (config.captureMethod == "screengrab" || config.captureMethod == "framegrab" ||
+                                 config.captureMethod == "desktop_dup");
+    const bool overlayOnlyInjection = screenGrabMode && !config.overlayWhitelist.empty();
+
+    InjectorConfigState state;
+    state.config = config;
+    state.allowInjection = !screenGrabMode || overlayOnlyInjection;
+
+    if (!state.allowInjection) {
+        state.config.gameWhitelist.clear();
+        state.config.overlayWhitelist.clear();
+    } else if (overlayOnlyInjection) {
+        state.config.gameWhitelist.clear();
+    }
+
+    return state;
+}
+
+static bool ShouldRescanForConfigChange(const AppConfig& oldBaseConfig, const InjectorConfigState& oldState,
+                                        const AppConfig& newBaseConfig, const InjectorConfigState& newState) {
+    return oldState.allowInjection != newState.allowInjection || oldBaseConfig.debugLogging != newBaseConfig.debugLogging ||
+           oldState.config.gameWhitelist != newState.config.gameWhitelist ||
+           oldState.config.overlayWhitelist != newState.config.overlayWhitelist;
+}
+
+static AppConfig ResolveActiveTargetConfig(const std::string& configPath, SharedMemoryLayout* pSharedMem,
+                                           const AppConfig& baseConfig) {
+    AppConfig activeConfig = baseConfig;
+    if (!pSharedMem) {
+        return activeConfig;
+    }
+
+    const uint32_t sourcePid = pSharedMem->GetSourcePid();
+    if (sourcePid == 0) {
+        return activeConfig;
+    }
+
+    const std::string processName = GetProcessNameFromPID(sourcePid);
+    if (!processName.empty() && processName != "unknown") {
+        LoadConfig(configPath, activeConfig, processName);
+    }
+
+    return activeConfig;
+}
+
 // Helper: Update shared memory from config
 static void UpdateSharedMemoryFromConfig(SharedMemoryLayout* pSharedMem, const AppConfig& config) {
     if (!pSharedMem)
         return;
+
+    pSharedMem->SetDebugLogging(config.debugLogging);
+    pSharedMem->SetLogLevel(LogLevel::Info);
+    strncpy(pSharedMem->logFilePath, config.logFilePath.c_str(), sizeof(pSharedMem->logFilePath) - 1);
+    pSharedMem->logFilePath[sizeof(pSharedMem->logFilePath) - 1] = '\0';
 
     // Graphics
     strncpy(pSharedMem->graphicsConfig.vsyncMode, config.graphics.vsyncMode.c_str(), 31);
@@ -176,6 +232,8 @@ static void PopulateWhitelistCache(DiscoveryInfo* pDisc, const AppConfig& config
 int InjectProcessMain(const AppConfig& config) {
     // Register console control handler
     SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
+    AppConfig currentConfig = config;
+    InjectorConfigState injectorState = BuildInjectorConfigState(currentConfig);
 
     // Setup IPC server
     ProcessIPCServer ipc(ProcessMode::Inject);
@@ -226,7 +284,7 @@ int InjectProcessMain(const AppConfig& config) {
         if (pDiscovery) {
             pDiscovery->injectPid = GetCurrentProcessId();
             pDiscovery->magic = DISCOVERY_MAGIC;
-            PopulateWhitelistCache(pDiscovery, config);
+            PopulateWhitelistCache(pDiscovery, currentConfig);
             // Set logs path for Vulkan layer to use
             std::string logsDir = baseDir + "\\logs";
             strncpy(pDiscovery->logsPath, logsDir.c_str(), sizeof(pDiscovery->logsPath) - 1);
@@ -238,24 +296,24 @@ int InjectProcessMain(const AppConfig& config) {
     // Initialize shared memory
     ZeroMemory(pSharedMem, sizeof(SharedMemoryLayout));
     pSharedMem->SetHostPID(GetCurrentProcessId());
-    pSharedMem->SetDebugLogging(config.debugLogging);
+    pSharedMem->SetDebugLogging(currentConfig.debugLogging);
     pSharedMem->SetLogLevel(LogLevel::Info);
 
     // Copy log path
-    std::string logPath = config.logFilePath;
+    std::string logPath = currentConfig.logFilePath;
     strncpy(pSharedMem->logFilePath, logPath.c_str(), sizeof(pSharedMem->logFilePath) - 1);
 
     // Copy priority settings
-    pSharedMem->SetGpuPriority(config.video.gpuPriority);
-    if (config.copyQueuePriority == "low")
+    pSharedMem->SetGpuPriority(currentConfig.video.gpuPriority);
+    if (currentConfig.copyQueuePriority == "low")
         pSharedMem->SetCopyQueuePriority(0);
-    else if (config.copyQueuePriority == "high")
+    else if (currentConfig.copyQueuePriority == "high")
         pSharedMem->SetCopyQueuePriority(2);
     else
         pSharedMem->SetCopyQueuePriority(1);
 
-    pSharedMem->SetFenceWaitMode(config.fenceWaitMode);
-    pSharedMem->SetUseGameQueue(config.useGameQueue);
+    pSharedMem->SetFenceWaitMode(currentConfig.fenceWaitMode);
+    pSharedMem->SetUseGameQueue(currentConfig.useGameQueue);
 
     // Create separate Shmem mapping for large buffer
     wchar_t shmemName[64];
@@ -281,21 +339,22 @@ int InjectProcessMain(const AppConfig& config) {
     }
 
     // Copy FPS limiter settings
-    pSharedMem->fpsLimiter.SetCaptureSyncEnabled(config.fpsLimiter.captureSyncEnabled);
-    pSharedMem->fpsLimiter.SetCaptureSyncMultiplier(config.fpsLimiter.captureSyncMultiplier);
-    pSharedMem->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(config.fpsLimiter.captureSyncLimiterMode));
-    pSharedMem->fpsLimiter.SetGeneralEnabled(config.fpsLimiter.generalEnabled);
-    pSharedMem->fpsLimiter.SetGeneralFps(config.fpsLimiter.generalFps);
-    pSharedMem->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(config.fpsLimiter.generalLimiterMode));
-    pSharedMem->fpsLimiter.SetCaptureFps(config.video.fps);
+    pSharedMem->fpsLimiter.SetCaptureSyncEnabled(currentConfig.fpsLimiter.captureSyncEnabled);
+    pSharedMem->fpsLimiter.SetCaptureSyncMultiplier(currentConfig.fpsLimiter.captureSyncMultiplier);
+    pSharedMem->fpsLimiter.SetCaptureSyncLimiterMode(
+        static_cast<uint32_t>(currentConfig.fpsLimiter.captureSyncLimiterMode));
+    pSharedMem->fpsLimiter.SetGeneralEnabled(currentConfig.fpsLimiter.generalEnabled);
+    pSharedMem->fpsLimiter.SetGeneralFps(currentConfig.fpsLimiter.generalFps);
+    pSharedMem->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(currentConfig.fpsLimiter.generalLimiterMode));
+    pSharedMem->fpsLimiter.SetCaptureFps(currentConfig.video.fps);
 
     // Copy overlay config (seqlock for consistency with hook readers)
     pSharedMem->BeginWriteOverlayConfig();
-    pSharedMem->overlayConfig = config.overlay;
+    pSharedMem->overlayConfig = currentConfig.overlay;
     pSharedMem->EndWriteOverlayConfig();
 
     // Copy graphics overrides
-    UpdateSharedMemoryFromConfig(pSharedMem, config);
+    UpdateSharedMemoryFromConfig(pSharedMem, currentConfig);
 
     // Create FPS limiter events (named for cross-process access)
     wchar_t releaseEventName[64];
@@ -320,29 +379,17 @@ int InjectProcessMain(const AppConfig& config) {
     // Initialize injector (WMI based)
     // In screengrab/desktop_dup mode we still allow explicit overlay targets, but
     // restrict WMI injection to overlay_whitelist entries only.
-    const bool screenGrabMode = (config.captureMethod == "screengrab" || config.captureMethod == "framegrab" ||
-                                 config.captureMethod == "desktop_dup");
-    const bool overlayOnlyInjection = screenGrabMode && !config.overlayWhitelist.empty();
-    bool allowInjection = !screenGrabMode || overlayOnlyInjection;
-    AppConfig injectorConfig = config;
-    if (overlayOnlyInjection) {
-        injectorConfig.gameWhitelist.clear();
+    if (injectorState.allowInjection && injectorState.config.gameWhitelist.empty() &&
+        !currentConfig.gameWhitelist.empty()) {
         LogInfo("[Inject] Screengrab mode + overlay_whitelist: enabling overlay-only injection");
     }
     std::shared_ptr<InjectionManager> injector;
+    auto configureInjector = [&](const std::shared_ptr<InjectionManager>& manager) {
+        if (!manager) {
+            return;
+        }
 
-    if (allowInjection) {
-        // CRITICAL: Must use make_shared because InjectionManager inherits
-        // enable_shared_from_this. Stack allocation causes shared_from_this() to
-        // throw bad_weak_ptr in WMI callback, which silently prevents ALL process
-        // injection.
-        const int64_t injectorInitStartUs = Log_GetQpcUs();
-        injector = std::make_shared<InjectionManager>(injectorConfig);
-        LogInfo("[StartupPerf] Injection manager construction took %.3f ms",
-                static_cast<double>(Log_GetQpcUs() - injectorInitStartUs) / 1000.0);
-
-        // Register callback to reload config on injection
-        injector->SetOnInjectCallback([&](const std::string& processName) {
+        manager->SetOnInjectCallback([&](const std::string& processName) {
             LogInfo("[Inject] Reloading config for target: %s", processName.c_str());
 
             // Load fresh config with process-specific overrides
@@ -352,11 +399,22 @@ int InjectProcessMain(const AppConfig& config) {
             // Update Shared Memory with new values
             UpdateSharedMemoryFromConfig(pSharedMem, targetConfig);
         });
+    };
 
+    if (injectorState.allowInjection) {
+        // CRITICAL: Must use make_shared because InjectionManager inherits
+        // enable_shared_from_this. Stack allocation causes shared_from_this() to
+        // throw bad_weak_ptr in WMI callback, which silently prevents ALL process
+        // injection.
+        const int64_t injectorInitStartUs = Log_GetQpcUs();
+        injector = std::make_shared<InjectionManager>(injectorState.config);
+        LogInfo("[StartupPerf] Injection manager construction took %.3f ms",
+                static_cast<double>(Log_GetQpcUs() - injectorInitStartUs) / 1000.0);
+        configureInjector(injector);
         LogInfo("[Inject] Injection manager initialized");
     } else {
         LogInfo("[Inject] Injection manager SKIPPED (capture_method=%s, no overlay whitelist targets)",
-                config.captureMethod.c_str());
+                currentConfig.captureMethod.c_str());
     }
 
     LogInfo("[Inject] Process started (PID: %d)", GetCurrentProcessId());
@@ -397,11 +455,43 @@ int InjectProcessMain(const AppConfig& config) {
                 case ProcessCommand::Ping:
                     ipc.SendResponse(ProcessResponse::Pong);
                     break;
-                case ProcessCommand::ReloadConfig:
-                    // Reload and update shared memory
-                    // (In a full implementation, we'd reload the config here)
+                case ProcessCommand::ReloadConfig: {
+                    AppConfig reloadedConfig;
+                    LoadConfig(configPath, reloadedConfig);
+
+                    InjectorConfigState newInjectorState = BuildInjectorConfigState(reloadedConfig);
+                    const bool shouldRescan =
+                        ShouldRescanForConfigChange(currentConfig, injectorState, reloadedConfig, newInjectorState);
+
+                    currentConfig = reloadedConfig;
+                    injectorState = newInjectorState;
+
+                    if (pDiscovery) {
+                        PopulateWhitelistCache(pDiscovery, currentConfig);
+                    }
+
+                    AppConfig activeConfig = ResolveActiveTargetConfig(configPath, pSharedMem, currentConfig);
+                    UpdateSharedMemoryFromConfig(pSharedMem, activeConfig);
+
+                    if (injector) {
+                        injector->UpdateConfig(injectorState.config);
+                        if (shouldRescan && injectorState.allowInjection) {
+                            LogInfo("[Inject] Config reload changed whitelist/injection policy, rescanning running processes");
+                            injector->RescanExistingProcesses();
+                        } else if (!injectorState.allowInjection) {
+                            LogInfo("[Inject] Config reload disabled new injections; existing injected targets are left alone");
+                        }
+                    } else if (injectorState.allowInjection) {
+                        const int64_t injectorInitStartUs = Log_GetQpcUs();
+                        injector = std::make_shared<InjectionManager>(injectorState.config);
+                        configureInjector(injector);
+                        LogInfo("[Inject] Injection manager started after config reload in %.3f ms",
+                                static_cast<double>(Log_GetQpcUs() - injectorInitStartUs) / 1000.0);
+                    }
+
                     ipc.SendResponse(ProcessResponse::Ack);
                     break;
+                }
                 default:
                     ipc.SendResponse(ProcessResponse::Ack);
                     break;
