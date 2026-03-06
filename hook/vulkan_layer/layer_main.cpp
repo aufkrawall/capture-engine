@@ -93,6 +93,7 @@ BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID reserved) {
         auto* sharedMem = g_IPCClient.GetSharedMem();
         if (sharedMem) {
             sharedMem->runtimeState.vulkanLayerActive.store(false, std::memory_order_release);
+            sharedMem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagVulkanOverlayActive, false);
             EarlyLog("Cleared vulkanLayerActive flag in shared memory");
         }
     }

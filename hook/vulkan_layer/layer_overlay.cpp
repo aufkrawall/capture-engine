@@ -28,6 +28,10 @@ static bool IsDXVKDll(const char* dllName) {
     return IsDllFromProject(dllName, "dxvk");
 }
 
+static bool IsVKD3DDll(const char* dllName) {
+    return IsDllFromProject(dllName, "vkd3d");
+}
+
 namespace {
 
 // Overlay state per device - manages Vulkan frame resources
@@ -57,6 +61,17 @@ struct OverlayState {
 
 static std::mutex g_OverlayMutex;
 static std::unordered_map<VkDevice, OverlayState> g_OverlayStates;
+
+static void SyncOverlayActiveFlagLocked() {
+    bool overlayActive = false;
+    for (const auto& entry : g_OverlayStates) {
+        if (entry.second.initialized) {
+            overlayActive = true;
+            break;
+        }
+    }
+    LayerIPC_SetOverlayActive(overlayActive);
+}
 
 }  // anonymous namespace
 
@@ -166,6 +181,7 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
             "it before re-init");
         CleanupOverlayState(existing->second, device, disp);
         g_OverlayStates.erase(existing);
+        SyncOverlayActiveFlagLocked();
     }
 
     LayerLog("Vulkan Layer: InitializeOverlay - Getting instance dispatch...");
@@ -349,21 +365,18 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     LayerLog(
         "Vulkan Layer: InitializeOverlay - IPC client set, setting graphics "
         "API...");
-    // Detect DXVK wrapping a D3D API: d3d11.dll from non-System32 = DXVK.
-    // Check d3d10/d3d10_1.dll too to distinguish DX10 vs DX11.
-    // VKD3D-Proton wraps D3D12: d3d12.dll from non-System32 with vkd3d version = VKD3D-Proton.
-    // IMPORTANT: Check d3d11 (DXVK) BEFORE d3d12 (VKD3D-Proton). A user may have all DXVK/VKD3D
-    // DLLs in the game folder; if d3d11 is DXVK the game is DX10/11 regardless of d3d12.dll.
+    // Detect translated D3D APIs using version-verified wrapper fingerprints rather
+    // than DLL name presence alone. Check d3d9 first because DXVK game folders may
+    // contain multiple translated API DLLs even when the game is actually D3D9.
     const char* apiName = "Vulkan";
-    if (IsDXVKDll("d3d11.dll")) {
+    if (IsDXVKDll("d3d9.dll")) {
+        apiName = "DX9 (DXVK)";
+    } else if (IsDXVKDll("d3d11.dll")) {
         // Distinguish DX10 from DX11: DX10 games load d3d10.dll (even DXVK uses System32's d3d10.dll).
         // DX11-only games never load d3d10.dll. We check for its presence regardless of path.
         bool hasDX10 = (GetModuleHandleA("d3d10.dll") != nullptr || GetModuleHandleA("d3d10_1.dll") != nullptr);
         apiName = hasDX10 ? "DX10 (DXVK)" : "DX11 (DXVK)";
-    } else if (IsDllOutsideSystem32("d3d12.dll")) {
-        // d3d12.dll is loaded from outside System32: VKD3D-Proton replacement.
-        // We only reach here when d3d11.dll is NOT a DXVK wrapper, so this cannot
-        // be a false positive from a DX11 DXVK game that has VKD3D-Proton alongside.
+    } else if (IsVKD3DDll("d3d12.dll")) {
         apiName = "DX12 (VKD3D-Proton)";
     }
     state.overlayAdapter->SetGraphicsAPI(apiName);
@@ -419,6 +432,7 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     // Only mark as initialized AFTER all resources are created successfully
     state.initialized = true;
     g_OverlayStates[device] = state;
+    SyncOverlayActiveFlagLocked();
 
     // DEFERRED: Initialize SystemMetricsCollector only after overlay is ready
     // This prevents race conditions between the background thread and overlay
@@ -503,6 +517,7 @@ void CleanupOverlay(VkDevice device) {
     state.metrics = nullptr;
 
     g_OverlayStates.erase(it);
+    SyncOverlayActiveFlagLocked();
     LayerLog("Vulkan Layer: CleanupOverlay complete");
 }
 

@@ -269,6 +269,7 @@ public:
     int currentPBO = 0;
     bool usePBO = false;
     bool pboPopulated = false;  // true after first PBO write cycle completes
+    int64_t pboTimestampQpc[2]{};
 
     // D3D11.3 Fence support
     ID3D11Fence* fence = nullptr;
@@ -360,6 +361,8 @@ public:
         usingNVInterop = false;
         usePBO = false;
         pboPopulated = false;
+        pboTimestampQpc[0] = 0;
+        pboTimestampQpc[1] = 0;
         fenceValue = 0;
     }
 
@@ -665,6 +668,9 @@ public:
 
         int idx = writeIndex;
 
+        LARGE_INTEGER qpc;
+        QueryPerformanceCounter(&qpc);
+
         // Blit backbuffer to capture texture
         pglBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
         pglBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
@@ -674,17 +680,6 @@ public:
         pglBlitFramebuffer(0, height, width, 0, 0, 0, width, height, 0x4000 /*GL_COLOR_BUFFER_BIT*/,
                            0x2600 /*GL_NEAREST*/);
         pglBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-        // Get timestamp
-        static int64_t qpcFreq = 0;
-        if (qpcFreq == 0) {
-            LARGE_INTEGER f;
-            QueryPerformanceFrequency(&f);
-            qpcFreq = f.QuadPart;
-        }
-        LARGE_INTEGER qpc;
-        QueryPerformanceCounter(&qpc);
-        int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
 
         if (usingNVInterop) {
             // Lock D3D11-backed GL texture, copy framebuffer contents into it, then unlock.
@@ -710,6 +705,7 @@ public:
             pglBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
             pglReadPixels(0, 0, width, height, GL_BGRA, GL_UNSIGNED_BYTE, 0);
             pglBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+            pboTimestampQpc[writePBO] = qpc.QuadPart;
 
             // Read from previous PBO (only valid from 2nd frame onwards)
             pglBindBuffer(GL_PIXEL_PACK_BUFFER, pbos[readPBO]);
@@ -720,7 +716,7 @@ public:
                     d3d11Context->UpdateSubresource(sharedTextures[idx], 0, NULL, data, width * 4, 0);
                     pglUnmapBuffer(GL_PIXEL_PACK_BUFFER);
                     d3d11Context->Flush();  // Ensure GPU copy is submitted before encoder reads
-                    SignalFrameReady(g_IPC, idx, qpc.QuadPart, 0);
+                    SignalFrameReady(g_IPC, idx, pboTimestampQpc[readPBO], 0);
                 } else {
                     pglUnmapBuffer(GL_PIXEL_PACK_BUFFER);
                 }

@@ -64,6 +64,9 @@ public:
      */
     bool GetNextPacket(AudioPacket& packet);
 
+    // Drop any queued packets without stopping capture.
+    void DiscardPendingPackets();
+
     /**
      * Check if currently capturing audio.
      */

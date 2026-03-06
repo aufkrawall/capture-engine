@@ -502,120 +502,108 @@ static bool CreateSharedTextures(D3D11InteropDevice* interopDev, VkDevice vkDev,
             if (useNtIpcHandles) {
                 LayerLog("Vulkan Layer: Using NT IPC handles with NT Vulkan import");
             } else {
-                // KMT import path succeeded. Under DXVK, skip IPC relay entirely:
-                // KMT handles are global WDDM handles that the encoder can open directly
-                // via OpenSharedResource. This avoids the relay copy for true zero-copy.
-                bool dxvkActive = IsDXVKActive();
-                if (dxvkActive) {
-                    LayerLog("Vulkan Layer: DXVK active - publishing KMT handles directly (no IPC relay, zero-copy)");
-                } else {
-                    // Create separate IPC relay textures for encoder access.
-                    // Prefer NT relay handles first for reliable cross-process/cross-bitness transport,
-                    // then fallback to KMT relay handles if NT relay creation fails.
-                    entry.ipcTextures.assign(kTextureCount, nullptr);
-                    entry.ipcHandles.assign(kTextureCount, nullptr);
-                    entry.hasIpcRelay = false;
+                // Fallback path for layer-owned textures: always create encoder relay textures.
+                // When encoder-owned textures are not ready yet, publishing these imported KMT handles
+                // directly can leave the media process with un-openable handles (seen in Trine 3 DXVK).
+                // The relay textures keep the Vulkan import local and expose dedicated encoder handles/fence.
+                entry.ipcTextures.assign(kTextureCount, nullptr);
+                entry.ipcHandles.assign(kTextureCount, nullptr);
+                entry.hasIpcRelay = false;
 
-                    bool ipcReady = false;
-                    for (int ipcAttempt = 0; ipcAttempt < 2 && !ipcReady; ++ipcAttempt) {
-                        const bool useNtRelayHandles = (ipcAttempt == 0);
-                        entry.ipcHandlesAreNt = useNtRelayHandles;
+                bool ipcReady = false;
+                for (int ipcAttempt = 0; ipcAttempt < 2 && !ipcReady; ++ipcAttempt) {
+                    const bool useNtRelayHandles = (ipcAttempt != 0);
+                    entry.ipcHandlesAreNt = useNtRelayHandles;
 
-                        D3D11_TEXTURE2D_DESC ipcDesc = texDesc;
-                        // SHARED and SHARED_KEYEDMUTEX are mutually exclusive.
-                        // Use plain SHARED for KMT relay handles; use NTHANDLE+KEYEDMUTEX for NT relay handles.
-                        ipcDesc.MiscFlags =
-                            useNtRelayHandles
-                                ? (D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX)
-                                : D3D11_RESOURCE_MISC_SHARED;
+                    D3D11_TEXTURE2D_DESC ipcDesc = texDesc;
+                    // SHARED and SHARED_KEYEDMUTEX are mutually exclusive.
+                    // Use plain SHARED for KMT relay handles; use NTHANDLE+KEYEDMUTEX for NT relay handles.
+                    ipcDesc.MiscFlags = useNtRelayHandles
+                                            ? (D3D11_RESOURCE_MISC_SHARED_NTHANDLE |
+                                               D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX)
+                                            : D3D11_RESOURCE_MISC_SHARED;
 
-                        bool ipcFailed = false;
-                        for (uint32_t i = 0; i < kTextureCount; i++) {
-                            HRESULT hr = interopDev->device->CreateTexture2D(&ipcDesc, nullptr, &entry.ipcTextures[i]);
-                            if (FAILED(hr)) {
-                                LayerLog("Vulkan Layer: [Error] Failed to create IPC relay texture %d (hr=0x%08X)", i,
-                                         hr);
+                    bool ipcFailed = false;
+                    for (uint32_t i = 0; i < kTextureCount; i++) {
+                        HRESULT hr = interopDev->device->CreateTexture2D(&ipcDesc, nullptr, &entry.ipcTextures[i]);
+                        if (FAILED(hr)) {
+                            LayerLog("Vulkan Layer: [Error] Failed to create IPC relay texture %d (hr=0x%08X)", i, hr);
+                            ipcFailed = true;
+                            break;
+                        }
+
+                        HANDLE ipcHandle = nullptr;
+                        if (useNtRelayHandles) {
+                            ComPtr<IDXGIResource1> dxgiRes1;
+                            hr = entry.ipcTextures[i]->QueryInterface(IID_PPV_ARGS(&dxgiRes1));
+                            if (FAILED(hr) || !dxgiRes1) {
+                                LayerLog("Vulkan Layer: [Warn] IDXGIResource1 unavailable for NT IPC texture %d", i);
                                 ipcFailed = true;
                                 break;
                             }
 
-                            HANDLE ipcHandle = nullptr;
-                            if (useNtRelayHandles) {
-                                ComPtr<IDXGIResource1> dxgiRes1;
-                                hr = entry.ipcTextures[i]->QueryInterface(IID_PPV_ARGS(&dxgiRes1));
-                                if (FAILED(hr) || !dxgiRes1) {
-                                    LayerLog("Vulkan Layer: [Warn] IDXGIResource1 unavailable for NT IPC texture %d",
-                                             i);
-                                    ipcFailed = true;
-                                    break;
-                                }
-
-                                hr = dxgiRes1->CreateSharedHandle(
-                                    nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr,
-                                    &ipcHandle);
-                                if (FAILED(hr) || !ipcHandle) {
-                                    LayerLog(
-                                        "Vulkan Layer: [Warn] Failed to create NT IPC handle for texture %d "
-                                        "(hr=0x%08X)",
-                                        i, hr);
-                                    ipcFailed = true;
-                                    break;
-                                }
-                            } else {
-                                ComPtr<IDXGIResource> dxgiRes;
-                                hr = entry.ipcTextures[i]->QueryInterface(IID_PPV_ARGS(&dxgiRes));
-                                if (FAILED(hr) || !dxgiRes) {
-                                    LayerLog("Vulkan Layer: [Error] IDXGIResource unavailable for KMT IPC texture %d",
-                                             i);
-                                    ipcFailed = true;
-                                    break;
-                                }
-
-                                hr = dxgiRes->GetSharedHandle(&ipcHandle);
-                                if (FAILED(hr) || !ipcHandle) {
-                                    LayerLog(
-                                        "Vulkan Layer: [Error] Failed to get KMT IPC handle for texture %d (hr=0x%08X)",
-                                        i, hr);
-                                    ipcFailed = true;
-                                    break;
-                                }
+                            hr = dxgiRes1->CreateSharedHandle(nullptr,
+                                                              DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
+                                                              nullptr, &ipcHandle);
+                            if (FAILED(hr) || !ipcHandle) {
+                                LayerLog("Vulkan Layer: [Warn] Failed to create NT IPC handle for texture %d "
+                                         "(hr=0x%08X)",
+                                         i, hr);
+                                ipcFailed = true;
+                                break;
                             }
-                            entry.ipcHandles[i] = ipcHandle;
-                        }
-
-                        if (!ipcFailed) {
-                            ipcReady = true;
-                            break;
-                        }
-
-                        // Clean up partially created IPC relay resources before fallback/retry.
-                        for (auto& handle : entry.ipcHandles) {
-                            if (entry.ipcHandlesAreNt && handle) {
-                                CloseHandle(handle);
+                        } else {
+                            ComPtr<IDXGIResource> dxgiRes;
+                            hr = entry.ipcTextures[i]->QueryInterface(IID_PPV_ARGS(&dxgiRes));
+                            if (FAILED(hr) || !dxgiRes) {
+                                LayerLog("Vulkan Layer: [Error] IDXGIResource unavailable for KMT IPC texture %d", i);
+                                ipcFailed = true;
+                                break;
                             }
-                            handle = nullptr;
-                        }
-                        for (auto*& tex : entry.ipcTextures) {
-                            if (tex) {
-                                tex->Release();
-                                tex = nullptr;
+
+                            hr = dxgiRes->GetSharedHandle(&ipcHandle);
+                            if (FAILED(hr) || !ipcHandle) {
+                                LayerLog("Vulkan Layer: [Error] Failed to get KMT IPC handle for texture %d "
+                                         "(hr=0x%08X)",
+                                         i, hr);
+                                ipcFailed = true;
+                                break;
                             }
                         }
+                        entry.ipcHandles[i] = ipcHandle;
+                    }
 
-                        if (useNtRelayHandles) {
-                            LayerLog(
-                                "Vulkan Layer: [Warn] NT IPC relay handles unavailable, falling back to KMT relay");
+                    if (!ipcFailed) {
+                        ipcReady = true;
+                        break;
+                    }
+
+                    // Clean up partially created IPC relay resources before fallback/retry.
+                    for (auto& handle : entry.ipcHandles) {
+                        if (entry.ipcHandlesAreNt && handle) {
+                            CloseHandle(handle);
+                        }
+                        handle = nullptr;
+                    }
+                    for (auto*& tex : entry.ipcTextures) {
+                        if (tex) {
+                            tex->Release();
+                            tex = nullptr;
                         }
                     }
 
-                    if (!ipcReady) {
-                        LayerLog("Vulkan Layer: [Warn] IPC relay creation failed, encoder may not receive frames");
-                    } else {
-                        entry.hasIpcRelay = true;
-                        LayerLog("Vulkan Layer: Created %d IPC relay textures (%s handles for encoder)", kTextureCount,
-                                 entry.ipcHandlesAreNt ? "NT" : "KMT");
+                    if (!useNtRelayHandles) {
+                        LayerLog("Vulkan Layer: [Warn] KMT IPC relay handles unavailable, falling back to NT relay");
                     }
-                }  // end else (!dxvkActive)
+                }
+
+                if (!ipcReady) {
+                    LayerLog("Vulkan Layer: [Warn] IPC relay creation failed, encoder may not receive frames");
+                } else {
+                    entry.hasIpcRelay = true;
+                    LayerLog("Vulkan Layer: Created %d IPC relay textures (%s handles for encoder)", kTextureCount,
+                             entry.ipcHandlesAreNt ? "NT" : "KMT");
+                }
             }
             entry.valid = true;
             return true;
@@ -813,13 +801,10 @@ static SharedTextureEntry* GetOrCreateSharedTextures(VkDevice vkDev, DeviceDispa
         ++it;
     }
 
-    // Under DXVK, use D3D11 interop with KMT handles (no IPC relay).
-    // - Vulkan-native D3D11_TEXTURE_BIT export handles are NOT openable by D3D11
-    //   OpenSharedResource1 (E_INVALIDARG) despite successful vkGetMemoryWin32HandleKHR.
-    // - D3D11 interop NT import into Vulkan fails (VK_ERROR_OUT_OF_DEVICE_MEMORY).
-    // - D3D11 interop KMT import into Vulkan SUCCEEDS.
-    // - KMT handles are global WDDM handles the encoder can OpenSharedResource directly.
-    // - No IPC relay copy needed = true zero-copy path.
+    // Under DXVK, prefer encoder-owned KMT textures for the true zero-copy path.
+    // If those are unavailable, fall back to D3D11 interop textures and expose
+    // dedicated relay handles/fences for the encoder instead of publishing the
+    // imported Vulkan-side KMT handles directly.
     bool dxvkActive = IsDXVKActive();
 
     // Get D3D11 device
@@ -861,6 +846,9 @@ struct VulkanCaptureState {
     bool initialized = false;
     VkDevice device = VK_NULL_HANDLE;
     uint64_t luidKey = 0;
+    uint32_t captureWidth = 0;
+    uint32_t captureHeight = 0;
+    uint32_t captureFormat = 0;
 
     VkCommandPool commandPool = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> commandBuffers;
@@ -882,6 +870,8 @@ struct VulkanCaptureState {
     // This separate D3D11 fence has a standard shared handle the encoder can open.
     ID3D11Fence* d3d11IpcFence = nullptr;
     HANDLE ipcFenceHandle = nullptr;
+
+    uint64_t nextEncoderImportRetryFrame = 0;
 };
 
 static std::mutex g_CaptureMutex;
@@ -905,6 +895,153 @@ static bool GetLUIDFromPhysicalDevice(VkPhysicalDevice physDev, LUID* outLuid) {
         return true;
     }
     return false;
+}
+
+static bool ImportEncoderKmtTextures(VkDevice device, DeviceDispatch* disp, uint64_t luidKey, uint32_t width,
+                                     uint32_t height, uint32_t vkFormat, SharedMemoryLayout* mem,
+                                     SharedTextureEntry* outEntry, HANDLE outKmtHandles[4]) {
+    if (!disp || !mem || !outEntry || !outKmtHandles)
+        return false;
+
+    if (!mem->encoderTextures.kmtReady.load(std::memory_order_acquire))
+        return false;
+
+    const uint32_t expectedDxgiFormat = VkFormatToDXGI((VkFormat)vkFormat);
+    const uint32_t encoderWidth = mem->encoderTextures.GetWidth();
+    const uint32_t encoderHeight = mem->encoderTextures.GetHeight();
+    const uint32_t encoderFormat = mem->encoderTextures.GetFormat();
+
+    if (encoderWidth != width || encoderHeight != height) {
+        LayerLog("Vulkan Layer: Encoder KMT size mismatch (%ux%u vs %ux%u)", encoderWidth, encoderHeight, width,
+                 height);
+        return false;
+    }
+    if (encoderFormat != 0 && encoderFormat != expectedDxgiFormat) {
+        LayerLog("Vulkan Layer: Encoder KMT format mismatch (existing=%u, need=%u)", encoderFormat,
+                 expectedDxgiFormat);
+        return false;
+    }
+
+    bool allValid = true;
+    for (int i = 0; i < 4; i++) {
+        outKmtHandles[i] = (HANDLE)mem->encoderTextures.GetKmtTextureHandle(i);
+        if (!outKmtHandles[i]) {
+            allValid = false;
+            break;
+        }
+    }
+    if (!allValid)
+        return false;
+
+    LayerLog("Vulkan Layer: Encoder KMT handles received, importing into Vulkan");
+    for (int i = 0; i < 4; i++) {
+        LayerLog("Vulkan Layer: Encoder KMT handle %d = %p", i, outKmtHandles[i]);
+    }
+
+    SharedTextureEntry newEntry;
+    newEntry.luidKey = luidKey;
+    newEntry.width = width;
+    newEntry.height = height;
+    newEntry.vkFormat = vkFormat;
+    newEntry.vkImages.assign(4, VK_NULL_HANDLE);
+    newEntry.vkMemories.assign(4, VK_NULL_HANDLE);
+    newEntry.textureHandles.assign(4, nullptr);
+    newEntry.textureHandlesAreNt = false;
+    newEntry.hasIpcRelay = false;
+
+    auto cleanupImportedEntry = [&]() {
+        for (auto& mem2 : newEntry.vkMemories) {
+            if (mem2 != VK_NULL_HANDLE) {
+                disp->fp_vkFreeMemory(device, mem2, nullptr);
+            }
+        }
+        for (auto& img : newEntry.vkImages) {
+            if (img != VK_NULL_HANDLE) {
+                disp->fp_vkDestroyImage(device, img, nullptr);
+            }
+        }
+    };
+
+    for (uint32_t i = 0; i < 4; i++) {
+        VkExternalMemoryImageCreateInfo extInfo = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO};
+        extInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT;
+
+        VkImageCreateInfo imgInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, &extInfo};
+        imgInfo.imageType = VK_IMAGE_TYPE_2D;
+        imgInfo.format = (VkFormat)vkFormat;
+        imgInfo.extent = {width, height, 1};
+        imgInfo.mipLevels = 1;
+        imgInfo.arrayLayers = 1;
+        imgInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imgInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imgInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        imgInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        VkResult vkRes = disp->fp_vkCreateImage(device, &imgInfo, nullptr, &newEntry.vkImages[i]);
+        if (vkRes != VK_SUCCESS) {
+            LayerLog("Vulkan Layer: [Error] vkCreateImage failed for encoder KMT %d: %d", i, vkRes);
+            cleanupImportedEntry();
+            return false;
+        }
+
+        VkMemoryRequirements memReq;
+        disp->fp_vkGetImageMemoryRequirements(device, newEntry.vkImages[i], &memReq);
+
+        VkImportMemoryWin32HandleInfoKHR importInfo = {VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR};
+        importInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT;
+        importInfo.handle = outKmtHandles[i];
+
+        VkMemoryDedicatedAllocateInfo dedicatedInfo = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO};
+        dedicatedInfo.image = newEntry.vkImages[i];
+        importInfo.pNext = &dedicatedInfo;
+
+        VkMemoryAllocateInfo allocInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &importInfo};
+        allocInfo.allocationSize = memReq.size;
+
+        VkPhysicalDeviceMemoryProperties memProps;
+        InstanceDispatch* instDisp = VulkanLayerState::Get().GetInstanceDispatch(
+            VulkanLayerState::Get().GetInstanceFromPhysicalDevice(disp->physicalDevice));
+        instDisp->fp_vkGetPhysicalDeviceMemoryProperties(disp->physicalDevice, &memProps);
+
+        uint32_t memType = 0xFFFFFFFF;
+        for (uint32_t j = 0; j < memProps.memoryTypeCount; j++) {
+            if ((memReq.memoryTypeBits & (1 << j)) &&
+                (memProps.memoryTypes[j].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+                memType = j;
+                break;
+            }
+        }
+        if (memType == 0xFFFFFFFF) {
+            for (uint32_t j = 0; j < memProps.memoryTypeCount; j++) {
+                if (memReq.memoryTypeBits & (1 << j)) {
+                    memType = j;
+                    break;
+                }
+            }
+        }
+        allocInfo.memoryTypeIndex = memType;
+
+        vkRes = disp->fp_vkAllocateMemory(device, &allocInfo, nullptr, &newEntry.vkMemories[i]);
+        if (vkRes != VK_SUCCESS) {
+            LayerLog("Vulkan Layer: [Error] vkAllocateMemory failed for encoder KMT %d: %d", i, vkRes);
+            cleanupImportedEntry();
+            return false;
+        }
+
+        vkRes = disp->fp_vkBindImageMemory(device, newEntry.vkImages[i], newEntry.vkMemories[i], 0);
+        if (vkRes != VK_SUCCESS) {
+            LayerLog("Vulkan Layer: [Error] vkBindImageMemory failed for encoder KMT %d: %d", i, vkRes);
+            cleanupImportedEntry();
+            return false;
+        }
+
+        newEntry.textureHandles[i] = outKmtHandles[i];
+    }
+
+    newEntry.valid = true;
+    *outEntry = std::move(newEntry);
+    return true;
 }
 
 void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkExtent2D extent,
@@ -987,141 +1124,27 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         }
 
         if (mem->encoderTextures.kmtReady.load(std::memory_order_acquire)) {
-            HANDLE kmtHandles[4];
-            bool allValid = true;
-            for (int i = 0; i < 4; i++) {
-                kmtHandles[i] = (HANDLE)mem->encoderTextures.GetKmtTextureHandle(i);
-                if (!kmtHandles[i]) {
-                    allValid = false;
-                    break;
-                }
-            }
+            SharedTextureEntry encoderEntry;
+            HANDLE kmtHandles[4] = {};
+            if (ImportEncoderKmtTextures(device, disp, luidKey, extent.width, extent.height,
+                                         NormalizeVkFormat((VkFormat)format), mem, &encoderEntry, kmtHandles)) {
+                std::lock_guard<std::mutex> texLock(g_InteropMutex);
+                g_TextureCache.push_back(std::move(encoderEntry));
+                sharedTextures = &g_TextureCache.back();
 
-            if (allValid) {
-                LayerLog("Vulkan Layer: Encoder KMT handles received, importing into Vulkan");
-                for (int i = 0; i < 4; i++) {
-                    LayerLog("Vulkan Layer: Encoder KMT handle %d = %p", i, kmtHandles[i]);
-                }
-
-                // Create a SharedTextureEntry by importing encoder KMT handles
-                SharedTextureEntry newEntry;
-                newEntry.luidKey = MakeLuidKey(luid);
-                newEntry.width = extent.width;
-                newEntry.height = extent.height;
-                newEntry.vkFormat = NormalizeVkFormat((VkFormat)format);
-                newEntry.vkImages.assign(4, VK_NULL_HANDLE);
-                newEntry.vkMemories.assign(4, VK_NULL_HANDLE);
-                newEntry.textureHandles.assign(4, nullptr);
-                newEntry.textureHandlesAreNt = false;
-                newEntry.hasIpcRelay = false;
-
-                bool importOk = true;
-                for (uint32_t i = 0; i < 4; i++) {
-                    VkExternalMemoryImageCreateInfo extInfo = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO};
-                    extInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT;
-
-                    VkImageCreateInfo imgInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, &extInfo};
-                    imgInfo.imageType = VK_IMAGE_TYPE_2D;
-                    imgInfo.format = NormalizeVkFormat((VkFormat)format);
-                    imgInfo.extent = {extent.width, extent.height, 1};
-                    imgInfo.mipLevels = 1;
-                    imgInfo.arrayLayers = 1;
-                    imgInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-                    imgInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-                    imgInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-                    imgInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-                    imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-                    VkResult vkRes = disp->fp_vkCreateImage(device, &imgInfo, nullptr, &newEntry.vkImages[i]);
-                    if (vkRes != VK_SUCCESS) {
-                        LayerLog("Vulkan Layer: [Error] vkCreateImage failed for encoder KMT %d: %d", i, vkRes);
-                        importOk = false;
-                        break;
-                    }
-
-                    VkMemoryRequirements memReq;
-                    disp->fp_vkGetImageMemoryRequirements(device, newEntry.vkImages[i], &memReq);
-
-                    VkImportMemoryWin32HandleInfoKHR importInfo = {
-                        VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR};
-                    importInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT;
-                    importInfo.handle = kmtHandles[i];
-
-                    VkMemoryDedicatedAllocateInfo dedicatedInfo = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO};
-                    dedicatedInfo.image = newEntry.vkImages[i];
-                    importInfo.pNext = &dedicatedInfo;
-
-                    VkMemoryAllocateInfo allocInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &importInfo};
-                    allocInfo.allocationSize = memReq.size;
-
-                    // Find device-local memory type
-                    VkPhysicalDeviceMemoryProperties memProps;
-                    InstanceDispatch* instDisp = VulkanLayerState::Get().GetInstanceDispatch(
-                        VulkanLayerState::Get().GetInstanceFromPhysicalDevice(disp->physicalDevice));
-                    instDisp->fp_vkGetPhysicalDeviceMemoryProperties(disp->physicalDevice, &memProps);
-                    uint32_t memType = 0xFFFFFFFF;
-                    for (uint32_t j = 0; j < memProps.memoryTypeCount; j++) {
-                        if ((memReq.memoryTypeBits & (1 << j)) &&
-                            (memProps.memoryTypes[j].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
-                            memType = j;
-                            break;
-                        }
-                    }
-                    if (memType == 0xFFFFFFFF) {
-                        for (uint32_t j = 0; j < memProps.memoryTypeCount; j++) {
-                            if (memReq.memoryTypeBits & (1 << j)) {
-                                memType = j;
-                                break;
-                            }
-                        }
-                    }
-                    allocInfo.memoryTypeIndex = memType;
-
-                    vkRes = disp->fp_vkAllocateMemory(device, &allocInfo, nullptr, &newEntry.vkMemories[i]);
-                    if (vkRes != VK_SUCCESS) {
-                        LayerLog("Vulkan Layer: [Error] vkAllocateMemory failed for encoder KMT %d: %d", i, vkRes);
-                        importOk = false;
-                        break;
-                    }
-
-                    vkRes = disp->fp_vkBindImageMemory(device, newEntry.vkImages[i], newEntry.vkMemories[i], 0);
-                    if (vkRes != VK_SUCCESS) {
-                        LayerLog("Vulkan Layer: [Error] vkBindImageMemory failed for encoder KMT %d: %d", i, vkRes);
-                        importOk = false;
-                        break;
-                    }
-
-                    newEntry.textureHandles[i] = kmtHandles[i];
-                }
-
-                if (importOk) {
-                    newEntry.valid = true;
-                    std::lock_guard<std::mutex> texLock(g_InteropMutex);
-                    g_TextureCache.push_back(std::move(newEntry));
-                    sharedTextures = &g_TextureCache.back();
-
-                    // Publish encoder KMT handles to ring buffer
-                    LayerIPC_SetTextures(kmtHandles, 4, extent.width, extent.height, VkFormatToDXGI(format));
-                    // Tell encoder to use its own textures directly
-                    mem->useEncoderTextures.store(true, std::memory_order_release);
-                    usingEncoderTextures = true;
-                    LayerLog("Vulkan Layer: DXVK zero-copy: imported %d encoder KMT textures into Vulkan", 4);
-                } else {
-                    // Clean up failed import
-                    for (auto& mem2 : newEntry.vkMemories) {
-                        if (mem2 != VK_NULL_HANDLE)
-                            disp->fp_vkFreeMemory(device, mem2, nullptr);
-                    }
-                    for (auto& img : newEntry.vkImages) {
-                        if (img != VK_NULL_HANDLE)
-                            disp->fp_vkDestroyImage(device, img, nullptr);
-                    }
-                    LayerLog("Vulkan Layer: [Warn] Failed to import encoder KMT textures, falling back to interop");
-                }
+                // Publish encoder KMT handles to ring buffer
+                LayerIPC_SetTextures(kmtHandles, 4, extent.width, extent.height, VkFormatToDXGI(format));
+                // Tell encoder to use its own textures directly
+                mem->useEncoderTextures.store(true, std::memory_order_release);
+                usingEncoderTextures = true;
+                LayerLog("Vulkan Layer: DXVK zero-copy: imported %d encoder KMT textures into Vulkan", 4);
+            } else {
+                LayerLog("Vulkan Layer: [Warn] Failed to import encoder KMT textures, falling back to interop");
             }
         }
 
         if (!usingEncoderTextures) {
+            mem->useEncoderTextures.store(false, std::memory_order_release);
             LayerLog("Vulkan Layer: [Warn] Encoder KMT textures not available, falling back to D3D11 interop");
         }
     }
@@ -1192,6 +1215,9 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     VulkanCaptureState state = {};
     state.device = device;
     state.luidKey = luidKey;
+    state.captureWidth = extent.width;
+    state.captureHeight = extent.height;
+    state.captureFormat = NormalizeVkFormat((VkFormat)format);
     state.initialized = true;
 
     // Create command pool
@@ -1349,15 +1375,16 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     }
 
     // Publish the appropriate fence handle for the encoder.
-    // In IPC relay mode, avoid publishing Vulkan fence fallback when D3D11 IPC fence is unavailable:
-    // several DXVK titles fail OpenSharedFence cross-process for that handle type.
+    // When relay uses the shared Vulkan fence as its signal target, publish that
+    // handle so the encoder can still wait on the post-relay fence value.
     HANDLE fenceToPublish = nullptr;
     if (state.ipcFenceHandle) {
         fenceToPublish = state.ipcFenceHandle;
-    } else if (!sharedTextures->hasIpcRelay) {
-        fenceToPublish = state.sharedFenceHandle;
     } else if (state.sharedFenceHandle) {
-        LayerLog("Vulkan Layer: [Warn] IPC relay active but D3D11 IPC fence unavailable; clearing shared fence handle");
+        fenceToPublish = state.sharedFenceHandle;
+        if (sharedTextures->hasIpcRelay) {
+            LayerLog("Vulkan Layer: [Warn] IPC relay fence export unavailable; falling back to shared Vulkan fence");
+        }
     }
 
     mem = g_IPCClient.GetSharedMem();
@@ -1365,10 +1392,10 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         if (mem) {
             if (mem->encoderTextures.ready.load(std::memory_order_acquire)) {
                 mem->encoderTextures.SetFenceHandle((uint64_t)fenceToPublish);
-                LayerLog("Vulkan Layer: Set D3D11 IPC fence handle %p to encoderTextures", fenceToPublish);
+                LayerLog("Vulkan Layer: Published capture fence handle %p to encoderTextures", fenceToPublish);
             } else {
                 LayerIPC_SetFence(fenceToPublish);
-                LayerLog("Vulkan Layer: Set D3D11 IPC fence handle %p", fenceToPublish);
+                LayerLog("Vulkan Layer: Published capture fence handle %p", fenceToPublish);
             }
         }
     } else if (mem) {
@@ -1506,6 +1533,36 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (!disp)
         return;
+
+    auto* mem = g_IPCClient.GetSharedMem();
+    if (mem && !mem->useEncoderTextures.load(std::memory_order_acquire) &&
+        mem->encoderTextures.kmtReady.load(std::memory_order_acquire) &&
+        state.captureFrameCounter >= state.nextEncoderImportRetryFrame) {
+        SharedTextureEntry encoderEntry;
+        HANDLE kmtHandles[4] = {};
+        if (ImportEncoderKmtTextures(device, disp, state.luidKey, state.captureWidth, state.captureHeight,
+                                     state.captureFormat, mem, &encoderEntry, kmtHandles)) {
+            {
+                std::lock_guard<std::mutex> texLock(g_InteropMutex);
+                for (auto& entry : g_TextureCache) {
+                    if (entry.luidKey == state.luidKey && entry.width == state.captureWidth &&
+                        entry.height == state.captureHeight && entry.vkFormat == state.captureFormat) {
+                        entry.valid = false;
+                    }
+                }
+                g_TextureCache.push_back(std::move(encoderEntry));
+            }
+
+            LayerIPC_SetTextures(kmtHandles, 4, state.captureWidth, state.captureHeight,
+                                 VkFormatToDXGI((VkFormat)state.captureFormat));
+            uint32_t writeIndex = mem->frameRing.writeIndex.load(std::memory_order_acquire);
+            mem->frameRing.readIndex.store(writeIndex, std::memory_order_release);
+            mem->useEncoderTextures.store(true, std::memory_order_release);
+            LayerLog("Vulkan Layer: DXVK zero-copy: adopted encoder KMT textures after media startup");
+        } else {
+            state.nextEncoderImportRetryFrame = state.captureFrameCounter + 60;
+        }
+    }
 
     // Get shared textures from cache
     SharedTextureEntry* sharedTextures = nullptr;

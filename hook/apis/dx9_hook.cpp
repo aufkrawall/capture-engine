@@ -26,6 +26,7 @@
 #include "../common/overlay_adapter.h"
 #include "../common/perf_logger.h"
 #include "../wrappers/inline_hook.h"
+#include "../vulkan_layer/layer_main.h"
 #include "../wrappers/vtable_hook.h"
 #include "hook_common.h"
 #include "lod_helper.h"
@@ -1164,6 +1165,21 @@ static bool ShouldSkipDX9PresentForVulkan() {
     return true;
 }
 
+static bool ShouldSkipDX9OverlayForVulkan() {
+    SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+    if (!shm || !shm->runtimeState.vulkanLayerActive.load(std::memory_order_acquire))
+        return false;
+    if (!shm->runtimeState.HasRuntimeFlag(kCaptureRuntimeFlagVulkanOverlayActive))
+        return false;
+
+    static int overlaySkipLogCount = 0;
+    if (overlaySkipLogCount < 6) {
+        HookLogImportant("DX9: Vulkan layer overlay active; skipping DX9 overlay rendering");
+        overlaySkipLogCount++;
+    }
+    return true;
+}
+
 static float D3D9BitsToFloat(DWORD value) {
     return std::bit_cast<float>(value);
 }
@@ -2026,6 +2042,7 @@ public:
     int stagingReadIdx = 0;
     int stagingPending = 0;
     int64_t stagingLastSubmitQpc = 0;
+    int64_t stagingTimestampQpc[CAPTURE_TEXTURE_COUNT] = {};
 
     // Deferred readback: StretchRect happens before Present, GetRenderTargetData
     // happens after Present to avoid blocking the D3D9 Present call.
@@ -2035,6 +2052,7 @@ public:
     // CopySubresourceRegion to encoder ring after Present (when StretchRect done).
     bool zeroCopyPendingCopy = false;
     int zeroCopyPendingIdx = -1;
+    int64_t zeroCopyPendingTimestampQpc = 0;
     IDirect3DQuery9* zeroCopyQuery = nullptr;  // D3D9 event query for cross-API sync
 
     // Direct D3D9 shared ring path: the game device stretches directly into a
@@ -2076,6 +2094,7 @@ public:
     int gdiWriteIdx = 0;                                      // Current write buffer index (0 or 1)
     bool gdiHasPrevFrame = false;                             // True after first StretchRect completes
     int64_t gdiLastCaptureQpc = 0;                            // Rate-limiting timestamp
+    int64_t gdiBufferTimestampQpc[2] = {};
     std::atomic<bool> gdiBufferBusy[2] = {{false}, {false}};  // Per-buffer busy flags
 
     // Background capture thread proc for D3D11 staging path.
@@ -2162,7 +2181,7 @@ public:
             LARGE_INTEGER captureStart;
             QueryPerformanceCounter(&captureStart);
 
-            CompleteGDIInteropCapture(gdiCopySurfaces[surfIdx]);
+            CompleteGDIInteropCapture(gdiCopySurfaces[surfIdx], frame.timestampQPC);
 
             LARGE_INTEGER captureEnd;
             QueryPerformanceCounter(&captureEnd);
@@ -2292,6 +2311,7 @@ public:
         useDirectD3D9SharedRing = false;
         zeroCopyPendingCopy = false;
         zeroCopyPendingIdx = -1;
+        zeroCopyPendingTimestampQpc = 0;
     }
 
     void ReleaseDirectD3D9HelperDevices() {
@@ -2732,6 +2752,9 @@ public:
         gdiDirectSharedRing = false;
         gdiHasPrevFrame = false;
         gdiWriteIdx = 0;
+        gdiLastCaptureQpc = 0;
+        gdiBufferTimestampQpc[0] = 0;
+        gdiBufferTimestampQpc[1] = 0;
         gdiBufferBusy[0].store(false, std::memory_order_relaxed);
         gdiBufferBusy[1].store(false, std::memory_order_relaxed);
 
@@ -2791,6 +2814,7 @@ public:
                 shmemQueries[i] = nullptr;
             }
             shmemTextureReady[i] = false;
+            stagingTimestampQpc[i] = 0;
         }
 
         stagingWriteIdx = 0;
@@ -2896,7 +2920,7 @@ public:
 
     // Complete GDI interop transfer from a specific D3D9 RT to the published D3D11 ring.
     // The surface should have been written to in a PREVIOUS frame so GetDC won't stall.
-    void CompleteGDIInteropCapture(IDirect3DSurface9* srcSurface) {
+    void CompleteGDIInteropCapture(IDirect3DSurface9* srcSurface, int64_t frameTimestampQpc) {
         if (!srcSurface || !d3d11Context)
             return;
 
@@ -2953,20 +2977,17 @@ public:
         QueryPerformanceCounter(&blitEnd);
         zeroCopyQueryWaitUs = static_cast<int32_t>(((blitEnd.QuadPart - copyStart.QuadPart) * 1000000) / qpcFreq);
 
-        LARGE_INTEGER qpc;
-        QueryPerformanceCounter(&qpc);
-
         if (gdiDirectSharedRing && useFences && fence && context4) {
             fenceValue++;
             context4->Signal(fence, fenceValue);
             d3d11Context->Flush();
-            SignalFrameReady(g_IPC, idx, qpc.QuadPart, fenceValue);
+            SignalFrameReady(g_IPC, idx, frameTimestampQpc, fenceValue);
         } else {
             d3d11Context->Flush();
-            SignalFrameReady(g_IPC, idx, qpc.QuadPart, 0);
+            SignalFrameReady(g_IPC, idx, frameTimestampQpc, 0);
         }
 
-        zeroCopyReadbackUs = static_cast<int32_t>(((qpc.QuadPart - copyStart.QuadPart) * 1000000) / qpcFreq);
+        zeroCopyReadbackUs = static_cast<int32_t>(((blitEnd.QuadPart - copyStart.QuadPart) * 1000000) / qpcFreq);
         AdvanceWriteIndex();
     }
 
@@ -3496,11 +3517,12 @@ public:
                     // Enqueue PREVIOUS frame's RT to capture thread
                     if (gdiHasPrevFrame) {
                         int readIdx = 1 - gdiWriteIdx;
-                        LARGE_INTEGER now;
-                        QueryPerformanceCounter(&now);
-                        EnqueueFrame(now.QuadPart, 0, readIdx, nullptr);
-                        gdiLastCaptureQpc = now.QuadPart;
+                        EnqueueFrame(gdiBufferTimestampQpc[readIdx], 0, readIdx, nullptr);
+                        gdiLastCaptureQpc = gdiBufferTimestampQpc[readIdx];
                     }
+                    LARGE_INTEGER now;
+                    QueryPerformanceCounter(&now);
+                    gdiBufferTimestampQpc[gdiWriteIdx] = now.QuadPart;
                     gdiHasPrevFrame = true;
                     gdiWriteIdx = 1 - gdiWriteIdx;
                 }
@@ -3577,7 +3599,7 @@ public:
                             shmemTextureReady[consumeIdx] = false;
                             stagingReadIdx = (stagingReadIdx + 1) % CAPTURE_TEXTURE_COUNT;
                             stagingPending--;
-                            EnqueueFrame(qpc.QuadPart, 0, consumeIdx, nullptr);
+                            EnqueueFrame(stagingTimestampQpc[consumeIdx], 0, consumeIdx, nullptr);
                         } else {
                             // Inline fallback: process on render thread
                             LARGE_INTEGER lockStart, lockEnd;
@@ -3615,10 +3637,10 @@ public:
                                     if (useFences && fence && context4) {
                                         fenceValue++;
                                         context4->Signal(fence, fenceValue);
-                                        SignalFrameReady(g_IPC, idx, qpc.QuadPart, fenceValue);
+                                        SignalFrameReady(g_IPC, idx, stagingTimestampQpc[consumeIdx], fenceValue);
                                     } else {
                                         d3d11Context->Flush();
-                                        SignalFrameReady(g_IPC, idx, qpc.QuadPart, 0);
+                                        SignalFrameReady(g_IPC, idx, stagingTimestampQpc[consumeIdx], 0);
                                     }
                                     AdvanceWriteIndex();
                                 }
@@ -3697,6 +3719,7 @@ public:
                             if (shmemQueries[submitIdx])
                                 shmemQueries[submitIdx]->Issue(D3DISSUE_END);
                             shmemTextureReady[submitIdx] = true;
+                            stagingTimestampQpc[submitIdx] = qpc.QuadPart;
                             stagingWriteIdx = (submitIdx + 1) % CAPTURE_TEXTURE_COUNT;
                             stagingPending++;
                             stagingLastSubmitQpc = submitEnd.QuadPart;
@@ -3707,6 +3730,7 @@ public:
                             static_cast<int32_t>(((stretchEnd.QuadPart - stretchStart.QuadPart) * 1000000) / qpcFreq);
                         // Defer GetRenderTargetData to after Present (PostPresentReadback).
                         // This prevents the GPU->CPU DMA from blocking the Present call.
+                        stagingTimestampQpc[submitIdx] = qpc.QuadPart;
                         stagingPendingBlitIdx = submitIdx;
                     }
                 } else {
@@ -3722,6 +3746,7 @@ public:
                         if (shmemQueries[submitIdx])
                             shmemQueries[submitIdx]->Issue(D3DISSUE_END);
                         shmemTextureReady[submitIdx] = true;
+                        stagingTimestampQpc[submitIdx] = qpc.QuadPart;
                         stagingWriteIdx = (submitIdx + 1) % CAPTURE_TEXTURE_COUNT;
                         stagingPending++;
                         stagingLastSubmitQpc = submitEnd.QuadPart;
@@ -3802,6 +3827,7 @@ public:
 
             zeroCopyPendingCopy = true;
             zeroCopyPendingIdx = idx;
+            zeroCopyPendingTimestampQpc = qpc.QuadPart;
         }
     }
 
@@ -3821,6 +3847,8 @@ public:
 
         zeroCopyPendingCopy = false;
         const int idx = zeroCopyPendingIdx;
+        const int64_t frameTimestampQpc = zeroCopyPendingTimestampQpc;
+        zeroCopyPendingTimestampQpc = 0;
 
         LARGE_INTEGER queryStart, queryEnd;
         QueryPerformanceCounter(&queryStart);
@@ -3835,15 +3863,12 @@ public:
         zeroCopyQueryWaitUs = static_cast<int32_t>(((queryEnd.QuadPart - queryStart.QuadPart) * 1000000) / qpcFreq);
 
         if (useDirectD3D9SharedRing) {
-            LARGE_INTEGER qpc;
-            QueryPerformanceCounter(&qpc);
-
             if (useFences && fence && context4) {
                 fenceValue++;
                 context4->Signal(fence, fenceValue);
-                SignalFrameReady(g_IPC, idx, qpc.QuadPart, fenceValue);
+                SignalFrameReady(g_IPC, idx, frameTimestampQpc, fenceValue);
             } else {
-                SignalFrameReady(g_IPC, idx, qpc.QuadPart, 0);
+                SignalFrameReady(g_IPC, idx, frameTimestampQpc, 0);
             }
 
             zeroCopyReadbackUs = 0;
@@ -3857,19 +3882,19 @@ public:
 
             d3d11Context->CopySubresourceRegion(sharedTextures[idx], 0, 0, 0, 0, d3d11SharedTexture, 0, NULL);
 
-            LARGE_INTEGER qpc;
-            QueryPerformanceCounter(&qpc);
+            LARGE_INTEGER copyEnd;
+            QueryPerformanceCounter(&copyEnd);
 
             if (useFences && fence && context4) {
                 fenceValue++;
                 context4->Signal(fence, fenceValue);
-                SignalFrameReady(g_IPC, idx, qpc.QuadPart, fenceValue);
+                SignalFrameReady(g_IPC, idx, frameTimestampQpc, fenceValue);
             } else {
                 d3d11Context->Flush();
-                SignalFrameReady(g_IPC, idx, qpc.QuadPart, 0);
+                SignalFrameReady(g_IPC, idx, frameTimestampQpc, 0);
             }
 
-            zeroCopyReadbackUs = static_cast<int32_t>(((qpc.QuadPart - copyStart.QuadPart) * 1000000) / qpcFreq);
+            zeroCopyReadbackUs = static_cast<int32_t>(((copyEnd.QuadPart - copyStart.QuadPart) * 1000000) / qpcFreq);
 
             AdvanceWriteIndex();
         }
@@ -4018,6 +4043,9 @@ static HRESULT STDMETHODCALLTYPE DetourEndScene(IDirect3DDevice9* device);
 
 // Draw overlay using CustomOverlay
 static void DrawDX9Overlay(IDirect3DDevice9* device) {
+    if (ShouldSkipDX9OverlayForVulkan()) {
+        return;
+    }
     static int drawLogCount = 0;
     static int initFailCount = 0;
 
@@ -4073,9 +4101,7 @@ static void DrawDX9Overlay(IDirect3DDevice9* device) {
     g_OverlayAdapter.SetMetrics(&g_PerfMetrics);
     g_OverlayAdapter.SetIPCClient(g_IPC);
     g_OverlayAdapter.SetDroppedFrames(g_DX9Capture.droppedFrames.load(std::memory_order_relaxed));
-    const char* finalApi = "DX9";
-    if (GetModuleHandleA("vulkan-1.dll") || GetModuleHandleA("winevulkan.dll"))
-        finalApi = "DX9 (DXVK)";
+    const char* finalApi = IsDXVKD3D9WrapperLoaded() ? "DX9 (DXVK)" : "DX9";
     g_OverlayAdapter.SetGraphicsAPI(finalApi);
 
     // Render Custom Overlay
@@ -4100,6 +4126,7 @@ static thread_local PresentTiming g_Timing;
 static thread_local bool g_overlayDrawnBeforePresent = false;
 // Tracks whether the overlay was redrawn from a nested EndScene during Present.
 static thread_local bool g_overlayDrawnInPresentEndScene = false;
+static thread_local bool g_captureDeferredToPresentEndScene = false;
 static thread_local bool g_sawPresentNestedEndScene = false;
 static std::atomic<bool> g_PreferOverlayInPresentEndScene{false};
 
@@ -4199,6 +4226,7 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
         std::lock_guard<std::mutex> lock(g_PresentMutex);  // Protect against concurrent calls
 
         g_overlayDrawnInPresentEndScene = false;
+        g_captureDeferredToPresentEndScene = false;
         g_sawPresentNestedEndScene = false;
 
         static bool luidReported = false;
@@ -4276,10 +4304,11 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
             HookLogImportant("DX9: DXVK+VulkanLayer mode - deferring capture and FPS limiter to Vulkan layer");
             dxvkVulkanCaptureLogged = true;
         }
-        bool shouldDrawOverlay = shm && shm->overlayConfig.showOverlay;
+        const bool skipDX9Overlay = ShouldSkipDX9OverlayForVulkan();
+        bool shouldDrawOverlay = shm && shm->overlayConfig.showOverlay && !skipDX9Overlay;
         bool endSceneHookActive = false;
         uintptr_t* vtable = *(uintptr_t**)device;
-        if (vtable) {
+        if (vtable && !skipDX9Overlay) {
             endSceneHookActive = ((void*)vtable[42] == (void*)&DetourEndScene);
             if (!endSceneHookActive) {
                 void* driftedTarget = (void*)vtable[42];
@@ -4295,6 +4324,9 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
             }
         }
         bool preferEndSceneOverlay = shouldDrawOverlay && endSceneHookActive;
+        const bool deferCaptureToPresentEndScene =
+            captureIncludeOverlay && shouldDrawOverlay &&
+            g_PreferOverlayInPresentEndScene.load(std::memory_order_acquire);
 
         // Lambda for overlay drawing — skip if EndScene already handled it for this frame
         auto doOverlay = [&]() {
@@ -4362,7 +4394,16 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
             }
             if (ipc && ipc->IsRecording()) {
                 if (g_DX9Capture.initialized && backBuffer) {
-                    g_DX9Capture.CaptureFrame(device, backBuffer);
+                    if (deferCaptureToPresentEndScene) {
+                        static int deferredCaptureLogCount = 0;
+                        if (deferredCaptureLogCount < 8) {
+                            HookLogImportant("DX9: Deferring capture until nested EndScene overlay draw");
+                            deferredCaptureLogCount++;
+                        }
+                        g_captureDeferredToPresentEndScene = true;
+                    } else {
+                        g_DX9Capture.CaptureFrame(device, backBuffer);
+                    }
                 }
             }
             // Don't cleanup when recording stops - keep initialized for next recording
@@ -4570,6 +4611,7 @@ void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer) {
                 nestedFallbackLogCount++;
             }
         }
+        g_captureDeferredToPresentEndScene = false;
         g_overlayDrawnBeforePresent = false;
         g_overlayDrawnInPresentEndScene = false;
         g_sawPresentNestedEndScene = false;
@@ -4583,7 +4625,7 @@ void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer) {
 // one there. That lets our overlay land after their popup/tint pass instead of
 // underneath it.
 static HRESULT STDMETHODCALLTYPE DetourEndScene(IDirect3DDevice9* device) {
-    if (ShouldSkipDX9PresentForVulkan()) {
+    if (ShouldSkipDX9OverlayForVulkan()) {
         static int endSceneSkipLogCount = 0;
         if (endSceneSkipLogCount < 6) {
             HookLogImportant("DX9: EndScene overlay skipped (Vulkan layer active)");
@@ -4618,6 +4660,19 @@ static HRESULT STDMETHODCALLTYPE DetourEndScene(IDirect3DDevice9* device) {
         if (shm && shm->overlayConfig.showOverlay && !g_overlayDrawnInPresentEndScene) {
             DrawDX9Overlay(device);
             g_overlayDrawnInPresentEndScene = true;
+        }
+        if (g_captureDeferredToPresentEndScene && g_IPC && g_IPC->IsRecording() && g_DX9Capture.initialized) {
+            IDirect3DSurface9* captureBackBuffer = nullptr;
+            if (SUCCEEDED(device->GetRenderTarget(0, &captureBackBuffer)) && captureBackBuffer) {
+                static int deferredCaptureCommitLogCount = 0;
+                if (deferredCaptureCommitLogCount < 8) {
+                    HookLogImportant("DX9: Capturing after nested EndScene overlay draw");
+                    deferredCaptureCommitLogCount++;
+                }
+                g_DX9Capture.CaptureFrame(device, captureBackBuffer);
+                captureBackBuffer->Release();
+            }
+            g_captureDeferredToPresentEndScene = false;
         }
         return oEndScene(device);
     }

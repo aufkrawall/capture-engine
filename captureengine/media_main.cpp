@@ -519,9 +519,15 @@ void EncoderThreadFunc(const AppConfig& config) {
                 popped = true;
             }
         } else {
-            // Inject: pop one frame (queue depth stays 0-2 since
-            // inject pacing matches encoder rate).
-            popped = g_FrameQueue.Pop(frame, 0);
+            // Inject: drain the queue and use the newest frame for this output tick.
+            // DX9/DXVK sources can run slightly ahead of the encoder cadence, leaving
+            // a small steady backlog. Sampling the newest queued frame reduces stale
+            // frame selection and visible judder without changing the fixed output rate.
+            QueuedFrame temp;
+            while (g_FrameQueue.Pop(temp, 0)) {
+                frame = temp;
+                popped = true;
+            }
         }
 
         QueuedFrame* frameToProcess = nullptr;

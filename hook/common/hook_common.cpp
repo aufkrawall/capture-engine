@@ -195,6 +195,7 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
         return;
     if (len >= (int)sizeof(lineBuffer))
         len = (int)sizeof(lineBuffer) - 1;
+    lineBuffer[len] = '\0';
 
     // --- PRIMARY: Push to Shared Memory Ring Buffer (Lock-Free) ---
     // When IPC is connected, we ONLY write to shared memory.
@@ -302,8 +303,9 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
         }
 
         if (hFile != INVALID_HANDLE_VALUE) {
+            const DWORD lineLen = static_cast<DWORD>(strlen(lineBuffer));
             DWORD written;
-            WriteFile(hFile, lineBuffer, len, &written, NULL);
+            WriteFile(hFile, lineBuffer, lineLen, &written, NULL);
             WriteFile(hFile, "\r\n", 2, &written, NULL);
         }
     }

@@ -163,21 +163,6 @@ public:
         if (traceLogCount_ >= 200)
             return;
         traceLogCount_++;
-        // Resolve absolute path from DLL location
-        if (traceLogPath_[0] == '\0') {
-            HMODULE hMod = nullptr;
-            GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                               (LPCSTR)this, &hMod);
-            if (hMod) {
-                GetModuleFileNameA(hMod, traceLogPath_, MAX_PATH);
-                char* lastSlash = strrchr(traceLogPath_, '\\');
-                if (lastSlash)
-                    *lastSlash = '\0';
-                strncat(traceLogPath_, "\\logs\\fps_limiter_trace.log", MAX_PATH - strlen(traceLogPath_) - 1);
-            }
-        }
-        if (traceLogPath_[0] == '\0')
-            return;
         char buf[512];
         va_list args;
         va_start(args, fmt);
@@ -193,13 +178,38 @@ public:
                            st.wMilliseconds, buf);
         if (len <= 0)
             return;
-        HANDLE hFile = CreateFileA(traceLogPath_, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                                   OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (hFile != INVALID_HANDLE_VALUE) {
-            DWORD written;
-            WriteFile(hFile, line, (DWORD)len, &written, nullptr);
-            CloseHandle(hFile);
+        static std::mutex s_TraceLogMutex;
+        static HANDLE s_TraceFile = INVALID_HANDLE_VALUE;
+        static char s_TraceLogPath[MAX_PATH] = {0};
+
+        std::unique_lock<std::mutex> lock(s_TraceLogMutex, std::defer_lock);
+        if (!lock.try_lock())
+            return;  // Drop trace if another thread is writing; never stall Present
+
+        if (s_TraceLogPath[0] == '\0') {
+            HMODULE hMod = nullptr;
+            GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               (LPCSTR)this, &hMod);
+            if (hMod) {
+                GetModuleFileNameA(hMod, s_TraceLogPath, MAX_PATH);
+                char* lastSlash = strrchr(s_TraceLogPath, '\\');
+                if (lastSlash)
+                    *lastSlash = '\0';
+                strncat(s_TraceLogPath, "\\logs\\fps_limiter_trace.log", MAX_PATH - strlen(s_TraceLogPath) - 1);
+            }
         }
+        if (s_TraceLogPath[0] == '\0')
+            return;
+
+        if (s_TraceFile == INVALID_HANDLE_VALUE) {
+            s_TraceFile = CreateFileA(s_TraceLogPath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                      OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (s_TraceFile == INVALID_HANDLE_VALUE)
+                return;
+        }
+
+        DWORD written = 0;
+        WriteFile(s_TraceFile, line, static_cast<DWORD>(len), &written, nullptr);
     }
 
     // Called each frame before present
@@ -301,6 +311,7 @@ public:
         if (!limiterActive) {
             isActivelyLimiting_.store(false, std::memory_order_relaxed);
             lastActualWaitUs_ = 0;
+            loggedNativeFallback_ = false;
             // Release timer resolution if we had it set
             if (timerResolutionSet) {
                 timeEndPeriod(1);
@@ -375,6 +386,9 @@ public:
         if (effectiveMode == LimiterModeValues::kXeLL && !g_XeLLLimiter.IsAvailable()) {
             effectiveMode = fgActive ? LimiterModeValues::kFGFallback : LimiterModeValues::kBasic;
         }
+        if (effectiveMode != LimiterModeValues::kNative) {
+            loggedNativeFallback_ = false;
+        }
 
         // FG-aware FPS adjustment for FG fallback and all native low-latency modes:
         // When FG is active, the output frame rate is fgMultiplier × base rate.
@@ -442,6 +456,7 @@ public:
             // Try to push our limit through the Reflex pipeline
             if (g_ReflexLimiter.PushFpsLimit()) {
                 reflexLimiterActive_ = true;
+                loggedNativeFallback_ = false;
 
                 // Driver handles frame pacing — we don't SmartWait
                 isActivelyLimiting_.store(false, std::memory_order_relaxed);
@@ -456,6 +471,10 @@ public:
             // Push failed — fall through to timer-based limiting
             if (reflexLimiterActive_) {
                 HookLog("FPS Limiter: Reflex push failed, falling back to timer");
+            }
+            if (!loggedNativeFallback_) {
+                HookLog("FPS Limiter: Reflex native mode unavailable at runtime; using timer fallback");
+                loggedNativeFallback_ = true;
             }
         }
 
@@ -813,6 +832,7 @@ private:
     bool reflexInitAttempted_ = false;                       // Lazy init flag for Reflex hook
     bool reflexLimiterActive_ = false;                       // True when Reflex is handling pacing
     bool reflexDeviceProvided_ = false;                      // True once we've given device to ReflexLimiter
+    bool loggedNativeFallback_ = false;                      // Avoid spam when native mode falls back to timer
     bool antilag2InitAttempted_ = false;                     // Lazy init flag for Anti-Lag 2
     bool xellInitAttempted_ = false;                         // Lazy init flag for XeLL
     int64_t lastApplyReturnQpc = 0;                // QPC tick when Apply() last returned from wait (dedup guard)
@@ -830,7 +850,6 @@ private:
     int applyTraceCount_ = 0;
     uint32_t applyDedupCount_ = 0;
     int traceLogCount_ = 0;
-    char traceLogPath_[MAX_PATH] = {0};
 };
 
 // Global FPS limiter instance

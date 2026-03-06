@@ -242,6 +242,7 @@ void AppAudioCapture::Stop() {
         captureThread.join();
     }
 
+    DiscardPendingPackets();
     CleanupCapture();
     targetPID.store(0);
     targetProcessName.clear();
@@ -254,6 +255,14 @@ bool AppAudioCapture::GetNextPacket(AudioPacket& packet) {
     packet = packetQueue.front();
     packetQueue.pop_front();
     return true;
+}
+
+void AppAudioCapture::DiscardPendingPackets() {
+    std::lock_guard<std::mutex> lock(queueMutex);
+    if (!packetQueue.empty()) {
+        DLL_Log("[AppAudioCapture] Discarding %zu queued packets for PID %lu", packetQueue.size(), targetPID.load());
+        packetQueue.clear();
+    }
 }
 
 bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {

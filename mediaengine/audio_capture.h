@@ -37,6 +37,9 @@ public:
     // Read available packets
     bool GetNextPacket(AudioPacket& packet);
 
+    // Drop any queued packets without stopping capture.
+    void DiscardPendingPackets();
+
 private:
     IMMDeviceEnumerator* pEnumerator;
     IMMDevice* pDevice;

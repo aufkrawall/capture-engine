@@ -296,16 +296,17 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
     // audio behind
     int64_t driftSamples = audioSamplesOutput - expectedSamples;
 
-    // DEADBAND: Ignore high-frequency jitter (up to 5ms = 240 samples at 48kHz)
-    // from WASAPI block delivery intervals to prevent pitch oscillation
-    if (std::abs(driftSamples) < 240) {
+    // DEADBAND: Ignore high-frequency jitter and normal 10ms WASAPI packetization
+    // wobble. Treat sub-10ms error as zero so the drift corrector does not turn
+    // stable clocks into audible modulation.
+    if (std::abs(driftSamples) < 480) {
         driftSamples = 0;
     }
 
-    // STARTUP GUARD: Skip pitch correction for the first 2 seconds to allow
-    // the ring buffer to reach steady-state fill level. Beyond that, the
-    // PI controller rate-limiting and smoothing are sufficient safeguards.
-    const int64_t STARTUP_PERIOD_MS = 2000;
+    // STARTUP GUARD: Let the ring buffer settle before any pitch correction.
+    // Startup packet bursts and late-start padding are normal and should not be
+    // interpreted as clock drift.
+    const int64_t STARTUP_PERIOD_MS = 15000;
     if (videoElapsedMs < STARTUP_PERIOD_MS) {
         if (largeSkipCounter_++ % 100 == 0) {
             DLL_Log("[AudioResampler] Startup period (%lldms) - skipping pitch correction", videoElapsedMs);
@@ -322,6 +323,16 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
     // Select active PI gains based on mode
     double activeKp = fastModeActive ? kKpFast : kKpSteady;
     double activeKi = fastModeActive ? kKiFast : kKiSteady;
+
+    // ANTI-WINDUP / UNWIND:
+    // Startup backlog can leave a large stored integral even after the buffer error
+    // has settled or flipped sign. Decay the integral inside the deadband, and
+    // drop stored bias immediately when the live error opposes it.
+    if (driftSamples == 0) {
+        integralError *= 0.5;
+    } else if ((driftSamples > 0 && integralError < 0.0) || (driftSamples < 0 && integralError > 0.0)) {
+        integralError = 0.0;
+    }
 
     // 1. SMOOTHING STAGE (Low Pass Filter)
     // Alpha 0.05 = ~20 update time constant (~2s at 10Hz updates)
@@ -371,18 +382,17 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
         targetDelta = -maxDelta;
 
     // 2. RATE LIMITING STAGE (Inertia)
-    // Max change: 20 samples per update (at 10Hz = 200/sec). This allows
-    // reaching the 1% maximum correction (~4800) in about 24 seconds,
-    // fast enough to drain accumulated lead without audible pitch steps.
-    // At 0.004%/s acceleration even maximum ramp-up is inaudible.
-    const int32_t maxChange = 20;
+    // Favor artifact-free ramp-up, but unwind stale correction much faster once the
+    // error has settled or changed direction.
+    const int32_t maxRise = 10;
+    const int32_t maxFall = 40;
 
     if (currentDelta < targetDelta) {
-        currentDelta += maxChange;
+        currentDelta += maxRise;
         if (currentDelta > targetDelta)
             currentDelta = targetDelta;
     } else if (currentDelta > targetDelta) {
-        currentDelta -= maxChange;
+        currentDelta -= maxFall;
         if (currentDelta < targetDelta)
             currentDelta = targetDelta;
     }

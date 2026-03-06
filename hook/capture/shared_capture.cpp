@@ -175,6 +175,9 @@ bool SharedCaptureD3D11::CaptureFrame(ID3D11DeviceContext* pContext) {
         }
     }
 
+    LARGE_INTEGER qpc;
+    QueryPerformanceCounter(&qpc);
+
     // Copy the back buffer to our shared texture
     pContext->CopyResource(m_SharedTextures[writeIdx].Get(), backBuffer.Get());
 
@@ -189,9 +192,6 @@ bool SharedCaptureD3D11::CaptureFrame(ID3D11DeviceContext* pContext) {
 
         D3D11_TEXTURE2D_DESC texDesc;
         backBuffer->GetDesc(&texDesc);
-
-        LARGE_INTEGER qpc;
-        QueryPerformanceCounter(&qpc);
 
         m_CurrentFrame.sharedHandle = m_SharedHandles[writeIdx];
         m_CurrentFrame.width = texDesc.Width;
@@ -522,6 +522,11 @@ bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, UINT ba
 
     m_CommandList->Close();
 
+    // Timestamp the source frame before queue submission so PTS reflects the
+    // frame's visual time, not GPU copy latency.
+    LARGE_INTEGER qpc;
+    QueryPerformanceCounter(&qpc);
+
     // Execute
     ID3D12CommandList* cmdLists[] = {m_CommandList.Get()};
     pCommandQueue->ExecuteCommandLists(1, cmdLists);
@@ -538,9 +543,6 @@ bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, UINT ba
         std::lock_guard<std::mutex> lock(m_Lock);
 
         D3D12_RESOURCE_DESC resDesc = backBuffer->GetDesc();
-
-        LARGE_INTEGER qpc;
-        QueryPerformanceCounter(&qpc);
 
         m_CurrentFrame.sharedHandle = m_SharedHandles[writeIdx];
         m_CurrentFrame.width = (UINT)resDesc.Width;

@@ -1418,8 +1418,8 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
 
     if (inputFrameCount - lastLogFrameCount >= kFpsLogIntervalFrames) {
         if (startPts >= 0 && timestamp > startPts) {
-            // timestamp and startPts are both in milliseconds
-            double elapsedSec = (double)(timestamp - startPts) / 1000.0;
+            // Inject-mode timestamps are in microseconds.
+            double elapsedSec = (double)(timestamp - startPts) / 1000000.0;
             double outputFps = (elapsedSec > 0.001) ? ((double)inputFrameCount / elapsedSec) : 0.0;
             DLL_Log("[FPS] Output: %.1f frames, %.1f fps over %.1fs", (double)inputFrameCount, outputFps, elapsedSec);
         }
@@ -1439,12 +1439,12 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     // Performance timing for this frame
     FrameStats stats;
     stats.frameNumber = encodeFrameCounter;
-    stats.ptsMs = timestamp;
+    stats.ptsMs = timestamp / 1000;
 
     // Calculate frame timing for smoothness analysis
     double expectedFrameMs = 1000.0 / codecCtx->framerate.num;
     if (g_lastFramePts >= 0) {
-        stats.actualPtsDiff = timestamp - g_lastFramePts;
+        stats.actualPtsDiff = (timestamp - g_lastFramePts) / 1000;
         stats.expectedPtsDiff = (int64_t)expectedFrameMs;
     }
     g_lastFramePts = timestamp;

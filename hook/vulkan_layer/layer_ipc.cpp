@@ -301,7 +301,10 @@ void LayerIPC_SetCaptureActive(bool active) {
 
 // Set overlay active status
 void LayerIPC_SetOverlayActive(bool active) {
-    // No specific field in SharedMemoryLayout for "Overlay Active Ack"
+    auto* mem = g_IPCClient.GetSharedMem();
+    if (!mem)
+        return;
+    mem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagVulkanOverlayActive, active);
 }
 
 void LayerIPC_SetLUID(int32_t low, int32_t high) {

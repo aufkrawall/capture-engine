@@ -79,6 +79,36 @@ public:
         return videoElapsedMs.load();
     }
 
+    void DiscardPendingAudioPackets() {
+        for (auto& src : audioSources) {
+            if (src.capture) {
+                src.capture->DiscardPendingPackets();
+            }
+            if (src.appCapture) {
+                src.appCapture->DiscardPendingPackets();
+            }
+        }
+    }
+
+    void SyncAudioToFirstVideoFrame(int64_t startQpcMs) {
+        recordingStartSystemQPCMs.store(startQpcMs, std::memory_order_release);
+
+        // Discard anything captured before the first video frame so audio starts on
+        // the same timeline anchor as video, even if packets were still queued in
+        // the capture objects.
+        audioSyncPending.store(true);
+        DiscardPendingAudioPackets();
+        for (auto& src : audioSources) {
+            if (src.sharedEncoderPtr) {
+                src.sharedEncoderPtr->SetRecordingStart(0);
+            }
+            if (src.ringBuffer) {
+                src.ringBuffer->Clear();
+            }
+        }
+        audioSyncPending.store(false);
+    }
+
     // Pull Model: Track encoded samples per source for progressive encoding
     std::vector<int64_t> encodedSamplesPerSource;
 
@@ -514,35 +544,14 @@ public:
             this->firstVideoFrameMs = debugTimestamp;  // Store QPC-based start for logs
             this->recordingStartTime = now;
 
-            // Capture System QPC for accurate Audio Alignment
-            LARGE_INTEGER qpc, freq;
-            QueryPerformanceCounter(&qpc);
-            QueryPerformanceFrequency(&freq);
-            this->recordingStartSystemQPCMs = (qpc.QuadPart * 1000) / freq.QuadPart;
-
             DLL_Log(
                 "MediaEngine: First inject frame at %lld ms (QPC: %lld) - "
-                "syncing audio (SystemQPC: %lld)",
-                debugTimestamp, timestampQPC, this->recordingStartSystemQPCMs.load());
+                "syncing audio (StartQPC: %lld)",
+                debugTimestamp, timestampQPC, debugTimestamp);
 
-            // Set recording start for all audio encoders to match video start
-            // (Microseconds) SYNC FIX: Pause AudioLoop writes during buffer clear to
-            // prevent race
-            audioSyncPending.store(true);
-            for (auto& src : audioSources) {
-                if (src.sharedEncoderPtr) {
-                    src.sharedEncoderPtr->SetRecordingStart(0);
-                }
-                // CRITICAL: Clear ring buffers now!
-                // This drops any audio captured while waiting for the first video
-                // frame.
-                if (src.ringBuffer) {
-                    src.ringBuffer->Clear();
-                }
-                // NOTE: Do NOT reset src.resampler here. It is used by AudioLoop
-                // thread. Clearing ring buffer is sufficient to sync start.
-            }
-            audioSyncPending.store(false);
+            // Use the source frame's QPC as the audio sync anchor rather than when
+            // the media process happened to receive the frame.
+            SyncAudioToFirstVideoFrame(debugTimestamp);
         }
 
         // Calculate Real Elapsed Time (microseconds for precise PTS)
@@ -595,41 +604,16 @@ public:
             this->firstVideoFrameMs = debugTimestamp;
             this->recordingStartTime = now;
 
-            // Capture System QPC for accurate Audio Alignment
-            LARGE_INTEGER qpc, freq;
-            QueryPerformanceCounter(&qpc);
-            QueryPerformanceFrequency(&freq);
-            this->recordingStartSystemQPCMs = (qpc.QuadPart * 1000) / freq.QuadPart;
-
             // Start of recording logic
             DLL_Log(
                 "MediaEngine: First D3D11 frame at %lld ms (QPC: %lld) "
-                "(SystemQPC: %lld)",
-                debugTimestamp, timestampQPC, this->recordingStartSystemQPCMs.load());
+                "(StartQPC: %lld)",
+                debugTimestamp, timestampQPC, debugTimestamp);
 
             // Reset elapsed clock for audio sync
             videoElapsedMs.store(0);
 
-            // Set recording start for all audio encoders to match video start
-            // (Microseconds) SYNC FIX: Pause AudioLoop writes during buffer clear to
-            // prevent race
-            audioSyncPending.store(true);
-            for (auto& src : audioSources) {
-                if (src.sharedEncoderPtr) {
-                    src.sharedEncoderPtr->SetRecordingStart(0);
-                }
-                // CRITICAL: Clear ring buffers now!
-                // This drops any audio captured while waiting for the first video
-                // frame. Critical: Clear ring buffers now!
-                if (src.ringBuffer) {
-                    src.ringBuffer->Clear();
-                }
-                // NOTE: Do NOT reset src.resampler here. Used by AudioLoop.
-                // if (src.resampler) {
-                //    src.resampler->Reset();
-                // }
-            }
-            audioSyncPending.store(false);
+            SyncAudioToFirstVideoFrame(debugTimestamp);
         }
 
         // Calculate Real Elapsed Time (microseconds for precise PTS)
@@ -782,13 +766,13 @@ public:
                 if (src.syncResampler && src.syncResampler->IsReady()) {
                     size_t rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;  // Samples per channel
 
-                    // HARD LATENCY CAP: If audio capture runs ahead while video timeline
-                    // isn't advancing (e.g. no new frames yet at start), the ring buffer
-                    // will accumulate and eventually overflow, dropping early audio and
-                    // creating "silence bursts" / delayed start. Keep only a small
-                    // bounded lead.
-                    const int64_t MAX_LEAD_SAMPLES = SAMPLE_RATE / 25;                           // 40ms
-                    const int64_t MAX_DROP_PER_CALL = SAMPLE_RATE / 100;                         // 10ms
+                    // HARD LATENCY CAP: This is an emergency guard, not a normal control
+                    // loop. WASAPI and process loopback can legitimately arrive tens of
+                    // milliseconds late/early relative to video, so trimming at ~60ms total
+                    // lead creates audible crackle long before it prevents a real runaway.
+                    // Only trim when the source is far ahead, and do it gently.
+                    const int64_t MAX_LEAD_SAMPLES = SAMPLE_RATE / 10;                           // 100ms
+                    const int64_t MAX_DROP_PER_CALL = SAMPLE_RATE / 200;                         // 5ms
                     const int64_t DROP_FADE_SAMPLES = SAMPLE_RATE / 200;                         // 5ms
                     const int64_t MIN_COMPENSATION_BUFFER_SAMPLES = TARGET_LATENCY_SAMPLES / 4;  // 5ms
                     if ((int64_t)rbAvailable > TARGET_LATENCY_SAMPLES + MAX_LEAD_SAMPLES) {
@@ -1344,6 +1328,7 @@ private:
         const int CHUNK_SIZE = MIX_CHUNK_SAMPLES * CHANNELS;
 
         std::vector<int64_t> sourceTimestamps(audioSources.size(), 0);
+        std::vector<bool> sourceLoggedPreStartDrop(audioSources.size(), false);
         std::map<int, int64_t> trackNextTimestamp;  // Track continuous timestamps for mixing
         std::vector<AudioPacket> sourceLastPackets(audioSources.size());
         std::vector<std::chrono::steady_clock::time_point> lastPacketTime(audioSources.size(),
@@ -1361,6 +1346,7 @@ private:
                 if (currentStartQPC != lastSeenStartQPC) {
                     lastSeenStartQPC = currentStartQPC;
                     std::fill(sourceTimestamps.begin(), sourceTimestamps.end(), 0);
+                    std::fill(sourceLoggedPreStartDrop.begin(), sourceLoggedPreStartDrop.end(), false);
                 }
             }
 
@@ -1385,6 +1371,16 @@ private:
                 }
 
                 if (gotPacket && !packet.data.empty()) {
+                    int64_t startQPC = recordingStartSystemQPCMs.load(std::memory_order_acquire);
+                    if (startQPC != 0 && sourceTimestamps[srcIdx] == 0 && packet.timestamp < (startQPC - 5)) {
+                        if (!sourceLoggedPreStartDrop[srcIdx]) {
+                            DLL_Log("[AudioLoop] Discarding pre-start packet src=%d packet=%lld start=%lld", (int)srcIdx,
+                                    packet.timestamp, startQPC);
+                            sourceLoggedPreStartDrop[srcIdx] = true;
+                        }
+                        continue;
+                    }
+
                     gotAnyPacket = true;
                     packetCount++;
                     sourceLastPackets[srcIdx] = packet;
@@ -1476,7 +1472,9 @@ private:
                                 // then writes new audio. No race between GetFree/Skip/Write.
                                 src.ringBuffer->WriteRetainNew((float*)resampledData[0], numFloats);
                             } else if (src.ringBuffer && audioSyncPending.load()) {
-                                sourceTimestamps[srcIdx] = packet.timestamp;
+                                // The sync gate is still closed, so this packet is
+                                // intentionally discarded and must not establish the
+                                // source timeline yet.
                             } else if (!src.ringBuffer) {
                                 DLL_Log("[AudioLoop] ERROR: No RingBuffer for source %d", (int)srcIdx);
                             }

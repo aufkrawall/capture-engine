@@ -18,6 +18,7 @@
 #include "../common/overlay_adapter.h"
 #include "../common/perf_logger.h"
 #include "../common/system_metrics.h"
+#include "../vulkan_layer/layer_main.h"
 #include "../wrappers/dxgi_swapchain_wrap.h"
 #include "../wrappers/iat_hook.h"
 #include "../wrappers/wrapper_base.h"
@@ -1639,6 +1640,10 @@ public:
             }
         }
 
+        LARGE_INTEGER qpc;
+        QueryPerformanceCounter(&qpc);
+        int64_t timestamp = qpc.QuadPart;
+
         // Perform GPU copy: backbuffer -> shared texture
         // For DXVK: copy into the DXVK-imported texture (system D3D11-owned,
         // imported into DXVK's device). The encoder opens the system D3D11 NT handle.
@@ -1658,11 +1663,6 @@ public:
             currentFenceValue = ++fenceValue;
             context4->Signal(fence, currentFenceValue);
         }
-
-        // Get timestamp using QPC for precision
-        LARGE_INTEGER qpc;
-        QueryPerformanceCounter(&qpc);
-        int64_t timestamp = qpc.QuadPart;
 
         // Signal frame ready to media process via IPC
         // Note: EnqueueFrame to internal pendingRing is skipped for inject mode
@@ -2053,9 +2053,12 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
     g_OverlayAdapter.SetIPCClient(g_IPC);
     g_OverlayAdapter.SetDroppedFrames(g_DX11Capture.droppedFrames.load(std::memory_order_relaxed));
     const char* finalApi = g_DetectedAPI;
-    if (GetModuleHandleA("vulkan-1.dll") || GetModuleHandleA("winevulkan.dll")) {
-        if (strcmp(g_DetectedAPI, "DX11") == 0)
+    if (IsDllFromProject("d3d11.dll", "dxvk")) {
+        if (strcmp(g_DetectedAPI, "DX10") == 0) {
+            finalApi = "DX10 (DXVK)";
+        } else if (strcmp(g_DetectedAPI, "DX11") == 0) {
             finalApi = "DX11 (DXVK)";
+        }
     }
     g_OverlayAdapter.SetGraphicsAPI(finalApi);
 

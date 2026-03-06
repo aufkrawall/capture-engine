@@ -27,7 +27,8 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 8: Added DLSS state telemetry
 // Version 9: Added SharedGraphicsConfig::dlssFGFactor override field
 // Version 10: Added encoder KMT texture handles for DXVK zero-copy capture
-static constexpr uint32_t SHARED_MEMORY_VERSION = 11;
+// Version 12: Added runtime coordination flags for cross-API overlay ownership
+static constexpr uint32_t SHARED_MEMORY_VERSION = 12;
 
 // Minimum supported version for backward compatibility
 static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
@@ -240,6 +241,10 @@ struct SharedGraphicsConfig {
     int32_t nvidiaSmoothMotionCompat;
 };
 
+enum CaptureRuntimeFlags : uint32_t {
+    kCaptureRuntimeFlagVulkanOverlayActive = 1u << 0,
+};
+
 struct alignas(8) CaptureState {
     std::atomic<int64_t> recordingStartTime{0};  // GetTickCount64 or similar - atomic for cross-process safety
     std::atomic<double> currentFPS{0.0};         // Atomic to prevent torn reads
@@ -262,9 +267,21 @@ struct alignas(8) CaptureState {
 
     std::atomic<bool> isRecording{false};            // Atomic to prevent race with cmdStartRecording
     std::atomic<bool> vulkanLayerActive{false};      // Set by Vulkan layer when initialized
-    uint8_t _statePadding[2];                        // Pad to 4 bytes
+    std::atomic<uint32_t> runtimeFlags{0};           // Cross-API coordination (overlay ownership, etc.)
     std::atomic<uint32_t> vulkanPresentThreadId{0};  // Thread ID currently presenting via Vulkan
     std::atomic<uint64_t> vulkanPresentTick{0};      // GetTickCount64 of last Vulkan present
+
+    bool HasRuntimeFlag(uint32_t flag) const {
+        return (runtimeFlags.load(std::memory_order_acquire) & flag) != 0;
+    }
+
+    void SetRuntimeFlag(uint32_t flag, bool enabled) {
+        if (enabled) {
+            runtimeFlags.fetch_or(flag, std::memory_order_acq_rel);
+        } else {
+            runtimeFlags.fetch_and(~flag, std::memory_order_acq_rel);
+        }
+    }
 };
 
 // Frame slot for ring buffer

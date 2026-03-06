@@ -123,6 +123,8 @@ void AudioCapture::Stop() {
     if (captureThread.joinable())
         captureThread.join();
 
+    DiscardPendingPackets();
+
     // NOTE: Do NOT call pAudioClient->Stop() here. On Windows 11, calling Stop() on
     // a loopback audio stream triggers a bug in AudioSes.dll where CLoopbackMixer::Cleanup()
     // crashes with an access violation (double-free of AudioLimiterAPO COM object).
@@ -292,4 +294,12 @@ bool AudioCapture::GetNextPacket(AudioPacket& packet) {
     packet = packetQueue.front();
     packetQueue.pop_front();  // O(1) for deque vs O(n) for vector
     return true;
+}
+
+void AudioCapture::DiscardPendingPackets() {
+    std::lock_guard<std::mutex> lock(queueMutex);
+    if (!packetQueue.empty()) {
+        DLL_Log("[AudioCapture] Discarding %zu queued packets", packetQueue.size());
+        packetQueue.clear();
+    }
 }
