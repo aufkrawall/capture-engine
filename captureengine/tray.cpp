@@ -30,8 +30,15 @@ void TrayIcon::InitWindow() {
 
     RegisterClassExA(&wc);
 
-    // Create hidden window
-    hWnd = CreateWindowExA(0, "CaptureEngineTray", "CaptureEngine", 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, hInstance, NULL);
+    // Use a hidden top-level tool window instead of a message-only window so
+    // Explorer can observe a real UI window during launch and clear the startup
+    // wait cursor promptly.
+    hWnd = CreateWindowExA(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, "CaptureEngineTray", "CaptureEngine", WS_POPUP, 0, 0, 0,
+                           0, NULL, NULL, hInstance, NULL);
+    if (!hWnd)
+        return;
+    ShowWindow(hWnd, SW_HIDE);
+    UpdateWindow(hWnd);
 
     // Store 'this' pointer
     SetWindowLongPtr(hWnd, GWLP_USERDATA, (LONG_PTR)this);

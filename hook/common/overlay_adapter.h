@@ -124,5 +124,16 @@ private:
     DWORD lastMaxFrameTimeUpdateTime = 0;
     float cachedMaxFrameTime = 0.0f;
     float cachedAvgFrameTimeForColor = 0.0f;
+
+    // Cached overlay draw data can be reused between meaningful content updates.
+    int lastViewportWidth = 0;
+    int lastViewportHeight = 0;
+    bool hasCachedFrame = false;
+    bool hasRenderedConfig = false;
+    bool lastFGActive = false;
+    bool lastRecordingActive = false;
+    bool lastShowOverloadWarning = false;
+    uint64_t lastRecordingSeconds = 0;
+    OverlayConfig lastRenderedConfig = {};
 };
 extern OverlayAdapter g_OverlayAdapter;

@@ -55,7 +55,15 @@
 
 namespace fs = std::filesystem;
 
+namespace {
+double QpcDeltaToMs(int64_t deltaUs) {
+    return static_cast<double>(deltaUs) / 1000.0;
+}
+}  // namespace
+
 InjectionManager::InjectionManager(const AppConfig& config) : config(config) {
+    const int64_t constructorStartUs = Log_GetQpcUs();
+
     // Determine DLL paths (assume next to exe)
     char buffer[MAX_PATH];
     GetModuleFileNameA(NULL, buffer, MAX_PATH);
@@ -81,8 +89,18 @@ InjectionManager::InjectionManager(const AppConfig& config) : config(config) {
     if (!fs::exists(hookDllPathX86))
         LogError("Capture Hook X86 DLL not found: %s", hookDllPathX86.c_str());
 
-    InitializeWMI();
+    const int64_t wmiStartUs = Log_GetQpcUs();
+    bool wmiInitialized = InitializeWMI();
+    const int64_t wmiTotalUs = Log_GetQpcUs() - wmiStartUs;
+
+    const int64_t scanStartUs = Log_GetQpcUs();
     ScanExistingProcesses();
+    const int64_t scanTotalUs = Log_GetQpcUs() - scanStartUs;
+
+    LogInfo("[StartupPerf] InjectionManager startup: InitializeWMI=%.3f ms (ok=%d), ScanExistingProcesses=%.3f ms, "
+            "total=%.3f ms",
+            QpcDeltaToMs(wmiTotalUs), wmiInitialized ? 1 : 0, QpcDeltaToMs(scanTotalUs),
+            QpcDeltaToMs(Log_GetQpcUs() - constructorStartUs));
 }
 
 InjectionManager::~InjectionManager() {
@@ -220,15 +238,28 @@ void InjectionManager::Update() {
 // WMI Implementation
 bool InjectionManager::InitializeWMI() {
     HRESULT hres;
+    const int64_t initStartUs = Log_GetQpcUs();
+    int64_t coInitUs = 0;
+    int64_t securityUs = 0;
+    int64_t locatorUs = 0;
+    int64_t connectUs = 0;
+    int64_t proxyBlanketUs = 0;
+    int64_t sinkSetupUs = 0;
+    int64_t notificationUs = 0;
 
     // Initialize COM
+    int64_t phaseStartUs = Log_GetQpcUs();
     hres = CoInitializeEx(0, COINIT_MULTITHREADED);
+    coInitUs = Log_GetQpcUs() - phaseStartUs;
     if (FAILED(hres)) {
+        LogInfo("[StartupPerf] InitializeWMI failed at CoInitializeEx after %.3f ms (hr=0x%X)",
+                QpcDeltaToMs(coInitUs), hres);
         LogError("Failed to initialize COM library. Error code = 0x%X", hres);
         return false;
     }
 
     // Initialize Security
+    phaseStartUs = Log_GetQpcUs();
     hres = CoInitializeSecurity(NULL,
                                 -1,                           // COM authentication
                                 NULL,                         // Authentication services
@@ -239,21 +270,29 @@ bool InjectionManager::InitializeWMI() {
                                 EOAC_NONE,                    // Additional capabilities
                                 NULL                          // Reserved
     );
+    securityUs = Log_GetQpcUs() - phaseStartUs;
 
     if (FAILED(hres) && hres != RPC_E_TOO_LATE) {
+        LogInfo("[StartupPerf] InitializeWMI failed at CoInitializeSecurity after %.3f ms (hr=0x%X)",
+                QpcDeltaToMs(securityUs), hres);
         LogError("Failed to initialize security. Error code = 0x%X", hres);
         return false;  // Don't return false if RPC_E_TOO_LATE (already init)
     }
 
     // Obtain the initial locator to WMI
+    phaseStartUs = Log_GetQpcUs();
     hres = CoCreateInstance(CLSID_WbemLocator, 0, CLSCTX_INPROC_SERVER, IID_IWbemLocator, (LPVOID*)&pLoc);
+    locatorUs = Log_GetQpcUs() - phaseStartUs;
 
     if (FAILED(hres)) {
+        LogInfo("[StartupPerf] InitializeWMI failed at CoCreateInstance after %.3f ms (hr=0x%X)",
+                QpcDeltaToMs(locatorUs), hres);
         LogError("Failed to create IWbemLocator object. Err: 0x%X", hres);
         return false;
     }
 
     // Connect to WMI
+    phaseStartUs = Log_GetQpcUs();
     hres = pLoc->ConnectServer(_bstr_t(L"ROOT\\CIMV2"),  // Object path of WMI namespace
                                NULL,                     // User name
                                NULL,                     // User password
@@ -263,8 +302,11 @@ bool InjectionManager::InitializeWMI() {
                                0,                        // Context object
                                &pSvc                     // IWbemServices proxy
     );
+    connectUs = Log_GetQpcUs() - phaseStartUs;
 
     if (FAILED(hres)) {
+        LogInfo("[StartupPerf] InitializeWMI failed at ConnectServer after %.3f ms (hr=0x%X)",
+                QpcDeltaToMs(connectUs), hres);
         LogError("Could not connect. Error code = 0x%X", hres);
         pLoc->Release();
         pLoc = nullptr;
@@ -272,6 +314,7 @@ bool InjectionManager::InitializeWMI() {
     }
 
     // Set security levels on the proxy
+    phaseStartUs = Log_GetQpcUs();
     hres = CoSetProxyBlanket(pSvc,                         // Indicates the proxy to set
                              RPC_C_AUTHN_WINNT,            // RPC_C_AUTHN_xxx
                              RPC_C_AUTHZ_NONE,             // RPC_C_AUTHZ_xxx
@@ -281,8 +324,11 @@ bool InjectionManager::InitializeWMI() {
                              NULL,                         // client identity
                              EOAC_NONE                     // proxy capabilities
     );
+    proxyBlanketUs = Log_GetQpcUs() - phaseStartUs;
 
     if (FAILED(hres)) {
+        LogInfo("[StartupPerf] InitializeWMI failed at CoSetProxyBlanket after %.3f ms (hr=0x%X)",
+                QpcDeltaToMs(proxyBlanketUs), hres);
         LogError("Could not set proxy blanket. Error code = 0x%X", hres);
         pSvc->Release();
         pSvc = nullptr;
@@ -292,6 +338,7 @@ bool InjectionManager::InitializeWMI() {
     }
 
     // Setup Unsecured Apartment for async callbacks
+    phaseStartUs = Log_GetQpcUs();
     hres = CoCreateInstance(CLSID_UnsecuredApartment, NULL, CLSCTX_LOCAL_SERVER, IID_IUnsecuredApartment,
                             (void**)&pUnsecApp);
     if (FAILED(hres)) {
@@ -316,19 +363,30 @@ bool InjectionManager::InitializeWMI() {
         pStubSink = pSink;
         pStubSink->AddRef();
     }
+    sinkSetupUs = Log_GetQpcUs() - phaseStartUs;
 
     // Exec Notification Query
     // Use WITHIN 0.1 for high responsiveness (100ms polling by WMI)
+    phaseStartUs = Log_GetQpcUs();
     hres = pSvc->ExecNotificationQueryAsync(_bstr_t("WQL"),
                                             _bstr_t("SELECT * FROM __InstanceCreationEvent WITHIN 0.1 WHERE "
                                                     "TargetInstance ISA 'Win32_Process'"),
                                             WBEM_FLAG_SEND_STATUS, NULL, pStubSink);
+    notificationUs = Log_GetQpcUs() - phaseStartUs;
 
     if (FAILED(hres)) {
+        LogInfo("[StartupPerf] InitializeWMI failed at ExecNotificationQueryAsync after %.3f ms (hr=0x%X)",
+                QpcDeltaToMs(notificationUs), hres);
         LogError("ExecNotificationQueryAsync failed. Error code = 0x%X", hres);
         return false;
     }
 
+    LogInfo("[StartupPerf] InitializeWMI: CoInitializeEx=%.3f ms, CoInitializeSecurity=%.3f ms, "
+            "CoCreateInstance=%.3f ms, ConnectServer=%.3f ms, CoSetProxyBlanket=%.3f ms, SinkSetup=%.3f ms, "
+            "NotificationQuery=%.3f ms, total=%.3f ms",
+            QpcDeltaToMs(coInitUs), QpcDeltaToMs(securityUs), QpcDeltaToMs(locatorUs), QpcDeltaToMs(connectUs),
+            QpcDeltaToMs(proxyBlanketUs), QpcDeltaToMs(sinkSetupUs), QpcDeltaToMs(notificationUs),
+            QpcDeltaToMs(Log_GetQpcUs() - initStartUs));
     LogInfo("WMI Event Sink Initialized");
     return true;
 }
@@ -1258,24 +1316,43 @@ std::string InjectionManager::ComputeFileHash(const std::string& filePath) {
 }
 
 void InjectionManager::ScanExistingProcesses() {
+    const int64_t scanStartUs = Log_GetQpcUs();
+    const int64_t snapshotStartUs = scanStartUs;
     HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (hSnapshot == INVALID_HANDLE_VALUE)
+    const int64_t snapshotUs = Log_GetQpcUs() - snapshotStartUs;
+    if (hSnapshot == INVALID_HANDLE_VALUE) {
+        LogInfo("[StartupPerf] ScanExistingProcesses: CreateToolhelp32Snapshot failed after %.3f ms (error=%lu)",
+                QpcDeltaToMs(snapshotUs), GetLastError());
         return;
+    }
 
     PROCESSENTRY32 pe32;
     pe32.dwSize = sizeof(PROCESSENTRY32);
+    int scannedProcesses = 0;
+    int whitelistedProcesses = 0;
+    int injectAttempts = 0;
+    int injectSuccesses = 0;
 
     if (Process32First(hSnapshot, &pe32)) {
         do {
+            ++scannedProcesses;
             std::string name = pe32.szExeFile;
             if (IsWhitelisted(name)) {
+                ++whitelistedProcesses;
                 if (!IsAlreadyInjected(pe32.th32ProcessID) && !IsRecentlyFailed(pe32.th32ProcessID)) {
+                    ++injectAttempts;
                     LogInfo("[Scan] Found existing whitelisted process: %s (PID: %d)", name.c_str(),
                             pe32.th32ProcessID);
-                    Inject(pe32.th32ProcessID, name);
+                    if (Inject(pe32.th32ProcessID, name)) {
+                        ++injectSuccesses;
+                    }
                 }
             }
         } while (Process32Next(hSnapshot, &pe32));
     }
     CloseHandle(hSnapshot);
+    LogInfo("[StartupPerf] ScanExistingProcesses: snapshot=%.3f ms, total=%.3f ms, scanned=%d, whitelisted=%d, "
+            "injectAttempts=%d, injectSuccesses=%d",
+            QpcDeltaToMs(snapshotUs), QpcDeltaToMs(Log_GetQpcUs() - scanStartUs), scannedProcesses,
+            whitelistedProcesses, injectAttempts, injectSuccesses);
 }

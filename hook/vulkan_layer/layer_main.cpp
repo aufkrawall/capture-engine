@@ -30,29 +30,35 @@ static std::string GetLayerDllDirectory() {
 
 // Simple early logging to file before file logging is initialized
 // Uses absolute path based on DLL location to avoid CWD issues
+static bool IsLayerDebugLoggingEnabled() {
+    auto* shm = g_IPCClient.GetSharedMem();
+    return shm && shm->GetDebugLogging();
+}
+
 static void EarlyLog(const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);
     va_list argsCopy;
     va_copy(argsCopy, args);
 
-    // Build absolute path to log file (next to the DLL)
-    static std::string logPath;
-    if (logPath.empty()) {
-        logPath = GetLayerDllDirectory() + "\\logs\\vulkan_layer_early.log";
-    }
+    if (IsLayerDebugLoggingEnabled()) {
+        // Build absolute path to log file (next to the DLL)
+        static std::string logPath;
+        if (logPath.empty()) {
+            logPath = GetLayerDllDirectory() + "\\logs\\vulkan_layer_early.log";
+        }
 
-    // Log to file immediately (don't rely on stderr for GUI apps)
-    FILE* earlyLog = fopen(logPath.c_str(), "a");
-    if (earlyLog) {
-        SYSTEMTIME st;
-        GetLocalTime(&st);
-        fprintf(earlyLog, "[%02d:%02d:%02d.%03d] [VulkanLayer-Init] ", st.wHour, st.wMinute, st.wSecond,
-                st.wMilliseconds);
-        vfprintf(earlyLog, fmt, argsCopy);
-        fprintf(earlyLog, "\n");
-        fflush(earlyLog);
-        fclose(earlyLog);
+        FILE* earlyLog = fopen(logPath.c_str(), "a");
+        if (earlyLog) {
+            SYSTEMTIME st;
+            GetLocalTime(&st);
+            fprintf(earlyLog, "[%02d:%02d:%02d.%03d] [VulkanLayer-Init] ", st.wHour, st.wMinute, st.wSecond,
+                    st.wMilliseconds);
+            vfprintf(earlyLog, fmt, argsCopy);
+            fprintf(earlyLog, "\n");
+            fflush(earlyLog);
+            fclose(earlyLog);
+        }
     }
     va_end(argsCopy);
 
@@ -110,7 +116,7 @@ static FILE* g_LogFile = nullptr;
 static bool g_LogFileInitialized = false;
 
 static void InitLayerLogFile() {
-    if (g_LogFileInitialized)
+    if (g_LogFileInitialized || !IsLayerDebugLoggingEnabled())
         return;
     g_LogFileInitialized = true;
 
@@ -130,10 +136,7 @@ static void InitLayerLogFile() {
 
 // Logging implementation
 void LayerLog(const char* fmt, ...) {
-    // OPTIMIZATION: Only process logs if debug logging is enabled in shared
-    // memory or if the layer hasn't initialized IPC yet (for early errors).
-    auto* shm = g_IPCClient.GetSharedMem();
-    if (shm && !shm->GetDebugLogging())
+    if (!IsLayerDebugLoggingEnabled())
         return;
 
     va_list args;

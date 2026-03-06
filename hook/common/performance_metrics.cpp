@@ -1,6 +1,10 @@
 #include "performance_metrics.h"
 #include <cstring>
 
+namespace {
+constexpr int64_t kDuplicateFrameThresholdUs = 100;
+}
+
 PerformanceMetrics::PerformanceMetrics() {
     memset(m_history, 0, sizeof(m_history));
     memset(m_frameTimeWindow, 0, sizeof(m_frameTimeWindow));
@@ -41,9 +45,9 @@ void PerformanceMetrics::Update(int64_t currentQpcUs) {
         frameToFrameUs = currentQpcUs - lastUs;
     }
 
-    // Debounce: ignore calls that are too close together (< 2000us = 2ms)
-    // This happens when both a Wrapper and a Hook call Update for the same frame.
-    if (lastUs > 0 && frameToFrameUs < 2000) {
+    // Filter true duplicate hook re-entry without capping legitimate high-FPS
+    // frame pacing. A 2ms debounce incorrectly flattened real >500 FPS sessions.
+    if (lastUs > 0 && frameToFrameUs > 0 && frameToFrameUs < kDuplicateFrameThresholdUs) {
         return;
     }
 

@@ -56,6 +56,18 @@ bool IsProcessTerminating();
 #include "../../common/config.h"
 extern AppConfig* g_pLocalConfig;
 
+inline bool HookDebugLoggingEnabled() {
+    if (g_IPC && g_IPC->GetSharedMem())
+        return g_IPC->GetSharedMem()->GetDebugLogging();
+#ifndef VK_LAYER_CE_OVERLAY
+    if (g_pSharedMem)
+        return g_pSharedMem->GetDebugLogging();
+    if (g_pLocalConfig)
+        return g_pLocalConfig->debugLogging;
+#endif
+    return false;
+}
+
 // Helper to get active config (Local > IPC)
 GraphicsConfig GetActiveGraphicsConfig();
 float GetActivePrerenderLimit();

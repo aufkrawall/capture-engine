@@ -95,6 +95,16 @@ void Renderer::EndFrame() {
     frameStarted = false;
 }
 
+bool Renderer::RenderCachedFrame(int width, int height) {
+    if (!initialized || !backend || commands.empty())
+        return false;
+
+    viewportWidth = width;
+    viewportHeight = height;
+    backend->Render(vertices, indices, commands, viewportWidth, viewportHeight);
+    return true;
+}
+
 void Renderer::AddQuad(float x, float y, float w, float h, float u0, float v0, float u1, float v1, uint32_t color) {
     uint16_t baseIdx = (uint16_t)vertices.size();
 

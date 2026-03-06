@@ -336,7 +336,10 @@ int InjectProcessMain(const AppConfig& config) {
         // enable_shared_from_this. Stack allocation causes shared_from_this() to
         // throw bad_weak_ptr in WMI callback, which silently prevents ALL process
         // injection.
+        const int64_t injectorInitStartUs = Log_GetQpcUs();
         injector = std::make_shared<InjectionManager>(injectorConfig);
+        LogInfo("[StartupPerf] Injection manager construction took %.3f ms",
+                static_cast<double>(Log_GetQpcUs() - injectorInitStartUs) / 1000.0);
 
         // Register callback to reload config on injection
         injector->SetOnInjectCallback([&](const std::string& processName) {

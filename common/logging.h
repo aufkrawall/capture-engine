@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include "shared_defs.h"
 
@@ -12,3 +13,5 @@ void LogInfo(const char* format, ...);
 void LogError(const char* format, ...);
 void LogDebug(const char* format, ...);
 void LogWarn(const char* format, ...);
+
+int64_t Log_GetQpcUs();

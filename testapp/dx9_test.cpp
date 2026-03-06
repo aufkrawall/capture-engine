@@ -1,8 +1,8 @@
 // DX9 Test App for Capture + FPS Limiter Testing
 #define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 #include <avrt.h>
 #include <d3d9.h>
-#include <windows.h>
 #include <chrono>
 #include <cmath>
 #include <cstdio>

@@ -2161,6 +2161,58 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             cmd = [clang_exe_x86] + cflags_x86 + [opengl_src] + opengl_ldflags + ["-o", opengl_exe_x86]
             add_task("opengl_test.exe (x86)", cmd)
 
+    # Legacy OpenGL Test App
+    opengl_legacy_src = os.path.join(testapp_src_dir, "opengl_legacy_test.cpp")
+    opengl_legacy_exe = os.path.join(testapp_bin_dir, "opengl_legacy_test.exe")
+    if os.path.exists(opengl_legacy_src):
+        opengl_legacy_ldflags = [
+            "-static",
+            "-Wl,--subsystem,windows",
+            "-lopengl32",
+            "-lgdi32",
+            "-luser32",
+            "-lshcore",
+            "-lavrt",
+        ]
+
+        add_task(
+            "opengl_legacy_test.exe",
+            make_cmd(clang_exe, cflags, opengl_legacy_src, opengl_legacy_ldflags, opengl_legacy_exe),
+        )
+
+        if have_x86:
+            opengl_legacy_exe_x86 = os.path.join(x86_bin_dir, "opengl_legacy_test.exe")
+            add_task(
+                "opengl_legacy_test.exe (x86)",
+                make_cmd(clang_exe_x86, cflags_x86, opengl_legacy_src, opengl_legacy_ldflags, opengl_legacy_exe_x86),
+            )
+
+    # DirectDraw7 Test App
+    directdraw7_src = os.path.join(testapp_src_dir, "directdraw7_test.cpp")
+    directdraw7_exe = os.path.join(testapp_bin_dir, "directdraw7_test.exe")
+    if os.path.exists(directdraw7_src):
+        directdraw7_ldflags = [
+            "-static",
+            "-Wl,--subsystem,windows",
+            "-lddraw",
+            "-ldxguid",
+            "-lgdi32",
+            "-luser32",
+            "-lavrt",
+        ]
+
+        add_task(
+            "directdraw7_test.exe",
+            make_cmd(clang_exe, cflags, directdraw7_src, directdraw7_ldflags, directdraw7_exe),
+        )
+
+        if have_x86:
+            directdraw7_exe_x86 = os.path.join(x86_bin_dir, "directdraw7_test.exe")
+            add_task(
+                "directdraw7_test.exe (x86)",
+                make_cmd(clang_exe_x86, cflags_x86, directdraw7_src, directdraw7_ldflags, directdraw7_exe_x86),
+            )
+
     # Execute all tasks in parallel
     if not tasks:
         return

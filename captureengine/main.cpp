@@ -62,6 +62,119 @@ static std::unique_ptr<ProcessIPCClient> g_LimiterClient;
 
 static TrayIcon* g_Tray = nullptr;
 
+namespace {
+constexpr UINT kMsgCompleteControllerStartup = WM_APP + 1;
+
+struct ControllerStartupTimingState {
+    int64_t controllerStartUs = 0;
+    int64_t vulkanRegUs = 0;
+    int64_t trayCreateUs = 0;
+    bool complete = false;
+};
+
+ControllerStartupTimingState g_ControllerStartupTiming;
+
+double QpcDeltaToMs(int64_t deltaUs) {
+    return static_cast<double>(deltaUs) / 1000.0;
+}
+
+void PumpStartupMessages() {
+    MSG msg = {};
+    while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+}
+
+void PrimeStartupCursor() {
+    MSG msg = {};
+    PeekMessage(&msg, NULL, 0, 0, PM_NOREMOVE);
+    HCURSOR arrow = LoadCursor(nullptr, IDC_ARROW);
+    if (arrow) {
+        SetCursor(arrow);
+    }
+}
+
+bool IsProcessRunning(HANDLE hProcess) {
+    if (!hProcess) {
+        return false;
+    }
+    DWORD exitCode = 0;
+    return GetExitCodeProcess(hProcess, &exitCode) && exitCode == STILL_ACTIVE;
+}
+
+bool ShouldStartMediaProcessAtStartup() {
+    return g_AutoRecordEnabled;
+}
+
+bool ShouldStartLimiterProcessAtStartup(const AppConfig& config) {
+    return config.fpsLimiter.generalEnabled || (g_AutoRecordEnabled && config.fpsLimiter.captureSyncEnabled);
+}
+
+bool ShouldStartLoggerProcess(const AppConfig& config) {
+    return config.debugLogging;
+}
+
+bool ShouldStartSensorProcess(const AppConfig& config) {
+    return config.overlay.showCPU || config.overlay.showGPU || config.overlay.showRAM || config.overlay.showVRAM;
+}
+
+bool EnsureChildProcessConnected(ProcessMode mode,
+                                 HANDLE& processHandle,
+                                 ProcessIPCClient* client,
+                                 DWORD timeoutMs,
+                                 const char* processName) {
+    if (!processHandle || !IsProcessRunning(processHandle)) {
+        if (client) {
+            client->Disconnect();
+        }
+        if (processHandle) {
+            CloseHandle(processHandle);
+            processHandle = NULL;
+        }
+
+        const int64_t spawnStartUs = Log_GetQpcUs();
+        processHandle = SpawnChildProcess(mode, g_ConfigPath.c_str());
+        const int64_t spawnUs = Log_GetQpcUs() - spawnStartUs;
+        if (!processHandle) {
+            LogError("[Controller] Failed to spawn %s process on demand", processName);
+            return false;
+        }
+        LogInfo("[Controller] Spawned %s process on demand in %.3f ms", processName, QpcDeltaToMs(spawnUs));
+    }
+
+    if (!client || client->IsConnected()) {
+        return true;
+    }
+
+    const DWORD startTime = GetTickCount();
+    while (g_Running && GetTickCount() - startTime < timeoutMs) {
+        if (client->Connect(10)) {
+            return true;
+        }
+        if (!IsProcessRunning(processHandle)) {
+            break;
+        }
+        PumpStartupMessages();
+        PrimeStartupCursor();
+        MsgWaitForMultipleObjectsEx(0, nullptr, 25, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    }
+
+    LogError("[Controller] Failed to connect to %s process within %lu ms", processName,
+             static_cast<unsigned long>(timeoutMs));
+    return false;
+}
+
+bool EnsureMediaProcessReady(DWORD timeoutMs) {
+    return EnsureChildProcessConnected(ProcessMode::Media, g_hMediaProcess, g_MediaClient.get(), timeoutMs, "media");
+}
+
+bool EnsureLimiterProcessReady(DWORD timeoutMs) {
+    return EnsureChildProcessConnected(ProcessMode::Limiter, g_hLimiterProcess, g_LimiterClient.get(), timeoutMs,
+                                       "limiter");
+}
+}  // namespace
+
 static void PurgeAllLogsInDir(const std::string& logsDir) {
     CreateDirectoryA(logsDir.c_str(), NULL);
     const char* patterns[] = {"\\*.log", "\\*.csv"};
@@ -191,7 +304,7 @@ void LaunchGameSuspended(const std::string& path) {
 bool ConnectToChildProcesses(DWORD timeoutMs) {
     DWORD startTime = GetTickCount();
 
-    while (GetTickCount() - startTime < timeoutMs) {
+    while (g_Running && GetTickCount() - startTime < timeoutMs) {
         bool allConnected = true;
 
         if (g_hInjectProcess && !g_InjectClient->IsConnected()) {
@@ -211,7 +324,10 @@ bool ConnectToChildProcesses(DWORD timeoutMs) {
 
         if (allConnected)
             return true;
-        Sleep(25);
+        PumpStartupMessages();
+        PrimeStartupCursor();
+        MsgWaitForMultipleObjectsEx(0, nullptr, 25, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        PumpStartupMessages();
     }
 
     return false;
@@ -238,14 +354,16 @@ void ToggleRecording() {
     if (g_Recording) {
         LogInfo("[Controller] Starting recording...");
 
-        // Verify the media process is alive before attempting to record
-        DWORD mediaExitCode = STILL_ACTIVE;
-        if (!g_hMediaProcess ||
-            (GetExitCodeProcess(g_hMediaProcess, &mediaExitCode) && mediaExitCode != STILL_ACTIVE)) {
-            LogError(
-                "[Controller] Media process is not running (exit code %d), "
-                "cannot start recording",
-                mediaExitCode);
+        if (!EnsureMediaProcessReady(10000)) {
+            LogError("[Controller] Media process is not ready, cannot start recording");
+            g_Recording = false;
+            if (g_Tray)
+                g_Tray->SetRecordingState(false);
+            return;
+        }
+
+        if (g_Config.fpsLimiter.captureSyncEnabled && !EnsureLimiterProcessReady(10000)) {
+            LogError("[Controller] Limiter process is not ready for capture-synced recording");
             g_Recording = false;
             if (g_Tray)
                 g_Tray->SetRecordingState(false);
@@ -305,19 +423,29 @@ void ShutdownChildProcesses() {
 
     // Wait for processes to exit
     HANDLE handles[5];  // Increased size for Logger and Sensor
-    const char* handleNames[5] = {"Limiter", "Media", "Inject", "Logger", "Sensor"};
+    const char* handleNames[5] = {};
     int handleCount = 0;
 
-    if (g_hLimiterProcess)
-        handles[handleCount++] = g_hLimiterProcess;
-    if (g_hMediaProcess)
-        handles[handleCount++] = g_hMediaProcess;
-    if (g_hInjectProcess)
-        handles[handleCount++] = g_hInjectProcess;
-    if (g_hLoggerProcess)
-        handles[handleCount++] = g_hLoggerProcess;
-    if (g_hSensorProcess)
-        handles[handleCount++] = g_hSensorProcess;
+    if (g_hLimiterProcess) {
+        handles[handleCount] = g_hLimiterProcess;
+        handleNames[handleCount++] = "Limiter";
+    }
+    if (g_hMediaProcess) {
+        handles[handleCount] = g_hMediaProcess;
+        handleNames[handleCount++] = "Media";
+    }
+    if (g_hInjectProcess) {
+        handles[handleCount] = g_hInjectProcess;
+        handleNames[handleCount++] = "Inject";
+    }
+    if (g_hLoggerProcess) {
+        handles[handleCount] = g_hLoggerProcess;
+        handleNames[handleCount++] = "Logger";
+    }
+    if (g_hSensorProcess) {
+        handles[handleCount] = g_hSensorProcess;
+        handleNames[handleCount++] = "Sensor";
+    }
 
     if (handleCount > 0) {
         // Use MsgWaitForMultipleObjects to keep processing messages (for tray
@@ -434,6 +562,102 @@ void CheckChildProcessHealth() {
     checkProcess(g_hLimiterProcess, "Limiter", limiterDead);
 }
 
+bool CompleteControllerStartup() {
+    if (g_ControllerStartupTiming.complete) {
+        return true;
+    }
+
+    LogInfo("[Controller] Completing deferred startup...");
+    LogInfo("[Controller] Spawning child processes...");
+
+    const int64_t injectSpawnStartUs = Log_GetQpcUs();
+    g_hInjectProcess = SpawnChildProcess(ProcessMode::Inject, g_ConfigPath.c_str());
+    const int64_t injectSpawnUs = Log_GetQpcUs() - injectSpawnStartUs;
+    if (!g_hInjectProcess) {
+        LogError("[Controller] Failed to spawn inject process");
+        return false;
+    }
+
+    int64_t mediaSpawnUs = 0;
+    if (ShouldStartMediaProcessAtStartup()) {
+        const int64_t mediaSpawnStartUs = Log_GetQpcUs();
+        g_hMediaProcess = SpawnChildProcess(ProcessMode::Media, g_ConfigPath.c_str());
+        mediaSpawnUs = Log_GetQpcUs() - mediaSpawnStartUs;
+        if (!g_hMediaProcess) {
+            LogError("[Controller] Failed to spawn media process");
+            return false;
+        }
+    } else {
+        LogInfo("[Controller] Deferring media process startup until recording begins");
+    }
+
+    int64_t limiterSpawnUs = 0;
+    if (ShouldStartLimiterProcessAtStartup(g_Config)) {
+        const int64_t limiterSpawnStartUs = Log_GetQpcUs();
+        g_hLimiterProcess = SpawnChildProcess(ProcessMode::Limiter, g_ConfigPath.c_str());
+        limiterSpawnUs = Log_GetQpcUs() - limiterSpawnStartUs;
+        if (!g_hLimiterProcess) {
+            LogError("[Controller] Failed to spawn limiter process");
+            return false;
+        }
+    } else {
+        LogInfo("[Controller] Deferring limiter process startup until a limiter is enabled");
+    }
+
+    const int64_t auxSpawnStartUs = Log_GetQpcUs();
+    if (ShouldStartLoggerProcess(g_Config)) {
+        g_hLoggerProcess = SpawnChildProcess(ProcessMode::Logger, g_ConfigPath.c_str());
+        if (!g_hLoggerProcess) {
+            LogError("[Controller] Failed to spawn logger process");
+        }
+    }
+    if (ShouldStartSensorProcess(g_Config)) {
+        g_hSensorProcess = SpawnChildProcess(ProcessMode::Sensors, g_ConfigPath.c_str());
+        if (!g_hSensorProcess) {
+            LogError("[Controller] Failed to spawn sensor process");
+        }
+    }
+    const int64_t auxSpawnUs = Log_GetQpcUs() - auxSpawnStartUs;
+
+    LogInfo("[Controller] Waiting for child processes to connect...");
+    const int64_t ipcConnectStartUs = Log_GetQpcUs();
+    if (!ConnectToChildProcesses(10000)) {
+        LogError("[Controller] Failed to connect to all child processes");
+        return false;
+    }
+    const int64_t ipcConnectUs = Log_GetQpcUs() - ipcConnectStartUs;
+    LogInfo("[Controller] All child processes connected");
+
+    if (!g_DeferredLaunchPath.empty()) {
+        LogInfo("[Controller] Launching deferred game: %s", g_DeferredLaunchPath.c_str());
+        LaunchGameSuspended(g_DeferredLaunchPath);
+    }
+
+    LogInfo("[Controller] Registering hotkeys...");
+    const int64_t hotkeyStartUs = Log_GetQpcUs();
+    RegisterHotKey(NULL, HOTKEY_ID_RECORD, g_Config.hotkeyStartStop.GetModifiers(), g_Config.hotkeyStartStop.vkey);
+    const int64_t hotkeyUs = Log_GetQpcUs() - hotkeyStartUs;
+
+    LogInfo("[Controller] Ready. Press hotkey to start recording.");
+    PrimeStartupCursor();
+    LogInfo("[StartupPerf] Controller startup: VulkanRegistration=%.3f ms, SpawnInject=%.3f ms, "
+            "SpawnMedia=%.3f ms, SpawnLimiter=%.3f ms, SpawnAux=%.3f ms, IPCConnect=%.3f ms, TrayCreate=%.3f ms, "
+            "RegisterHotkeys=%.3f ms, TotalToReady=%.3f ms",
+            QpcDeltaToMs(g_ControllerStartupTiming.vulkanRegUs), QpcDeltaToMs(injectSpawnUs), QpcDeltaToMs(mediaSpawnUs),
+            QpcDeltaToMs(limiterSpawnUs), QpcDeltaToMs(auxSpawnUs), QpcDeltaToMs(ipcConnectUs),
+            QpcDeltaToMs(g_ControllerStartupTiming.trayCreateUs), QpcDeltaToMs(hotkeyUs),
+            QpcDeltaToMs(Log_GetQpcUs() - g_ControllerStartupTiming.controllerStartUs));
+
+    if (g_AutoRecordEnabled) {
+        LogInfo("[Controller] Auto-record enabled: delay=%dms, duration=%dms", g_AutoRecordDelayMs,
+                g_AutoRecordDurationMs);
+        g_AutoRecordStartTime = GetTickCount();
+    }
+
+    g_ControllerStartupTiming.complete = true;
+    return true;
+}
+
 static void Registry_ManageImplicitLayer(bool install) {
     // IMPORTANT: HKEY_CURRENT_USER does NOT get WOW64 redirected!
     // Both 32-bit and 64-bit apps read from the same HKCU\Software\Khronos\Vulkan\ImplicitLayers path.
@@ -512,12 +736,16 @@ BOOL WINAPI ControllerConsoleHandler(DWORD ctrlType) {
 
 // Controller main function
 int ControllerMain(HINSTANCE hInstance) {
+    const int64_t controllerStartUs = Log_GetQpcUs();
     LogInfo("[Controller] Starting...");
+    PrimeStartupCursor();
 
     SetConsoleCtrlHandler(ControllerConsoleHandler, TRUE);
 
     // Ephemeral Registration (RAII)
+    const int64_t vulkanRegStartUs = Log_GetQpcUs();
     ScopedVulkanRegistration vulkanReg;
+    const int64_t vulkanRegUs = Log_GetQpcUs() - vulkanRegStartUs;
     g_VulkanReg = &vulkanReg;
 
     // Create IPC clients
@@ -525,68 +753,23 @@ int ControllerMain(HINSTANCE hInstance) {
     g_MediaClient = std::make_unique<ProcessIPCClient>(ProcessMode::Media);
     g_LimiterClient = std::make_unique<ProcessIPCClient>(ProcessMode::Limiter);
 
-    // Spawn child processes
-    // Order matters: Inject first (creates shared memory), then Media, then
-    // Limiter
-    LogInfo("[Controller] Spawning child processes...");
-
-    g_hInjectProcess = SpawnChildProcess(ProcessMode::Inject, g_ConfigPath.c_str());
-    if (!g_hInjectProcess) {
-        LogError("[Controller] Failed to spawn inject process");
-        return 1;
-    }
-
-    g_hMediaProcess = SpawnChildProcess(ProcessMode::Media, g_ConfigPath.c_str());
-    if (!g_hMediaProcess) {
-        LogError("[Controller] Failed to spawn media process");
-        ShutdownChildProcesses();
-        return 1;
-    }
-
-    g_hLimiterProcess = SpawnChildProcess(ProcessMode::Limiter, g_ConfigPath.c_str());
-    if (!g_hLimiterProcess) {
-        LogError("[Controller] Failed to spawn limiter process");
-        ShutdownChildProcesses();
-        return 1;
-    }
-
-    g_hLoggerProcess = SpawnChildProcess(ProcessMode::Logger, g_ConfigPath.c_str());
-    g_hSensorProcess = SpawnChildProcess(ProcessMode::Sensors, g_ConfigPath.c_str());
-
-    // Wait for IPC connections
-    LogInfo("[Controller] Waiting for child processes to connect...");
-    if (!ConnectToChildProcesses(10000)) {
-        LogError("[Controller] Failed to connect to all child processes");
-        ShutdownChildProcesses();
-        return 1;
-    }
-    LogInfo("[Controller] All child processes connected");
-
-    // NOW launch the game if --launch was used (IPC is ready)
-    if (!g_DeferredLaunchPath.empty()) {
-        LogInfo("[Controller] Launching deferred game: %s", g_DeferredLaunchPath.c_str());
-        LaunchGameSuspended(g_DeferredLaunchPath);
-    }
-
-    // Create tray icon
+    // Create tray icon early so Explorer can clear the launch wait cursor even
+    // while child processes are still spinning up.
     LogInfo("[Controller] Creating tray icon...");
+    const int64_t trayCreateStartUs = Log_GetQpcUs();
     auto tray = std::make_unique<TrayIcon>(
         hInstance, []() { g_Running = false; },
         []() { ShellExecuteA(NULL, "open", g_ConfigPath.c_str(), NULL, NULL, SW_SHOW); });
+    const int64_t trayCreateUs = Log_GetQpcUs() - trayCreateStartUs;
     g_Tray = tray.get();
+    PrimeStartupCursor();
+    PumpStartupMessages();
 
-    // Register hotkeys
-    LogInfo("[Controller] Registering hotkeys...");
-    RegisterHotKey(NULL, HOTKEY_ID_RECORD, g_Config.hotkeyStartStop.GetModifiers(), g_Config.hotkeyStartStop.vkey);
-
-    LogInfo("[Controller] Ready. Press hotkey to start recording.");
-
-    // Auto-record: start timer after processes are ready
-    if (g_AutoRecordEnabled) {
-        LogInfo("[Controller] Auto-record enabled: delay=%dms, duration=%dms", g_AutoRecordDelayMs,
-                g_AutoRecordDurationMs);
-        g_AutoRecordStartTime = GetTickCount();
-    }
+    g_ControllerStartupTiming.controllerStartUs = controllerStartUs;
+    g_ControllerStartupTiming.vulkanRegUs = vulkanRegUs;
+    g_ControllerStartupTiming.trayCreateUs = trayCreateUs;
+    g_ControllerStartupTiming.complete = false;
+    PostThreadMessage(GetCurrentThreadId(), kMsgCompleteControllerStartup, 0, 0);
 
     // Main message loop
     MSG msg;
@@ -596,10 +779,20 @@ int ControllerMain(HINSTANCE hInstance) {
         while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) {
                 g_Running = false;
-            } else if (msg.message == WM_HOTKEY) {
+                continue;
+            }
+            if (msg.message == kMsgCompleteControllerStartup) {
+                if (!CompleteControllerStartup()) {
+                    ShutdownChildProcesses();
+                    g_Running = false;
+                }
+                continue;
+            }
+            if (msg.message == WM_HOTKEY) {
                 if (msg.wParam == HOTKEY_ID_RECORD) {
                     ToggleRecording();
                 }
+                continue;
             }
             TranslateMessage(&msg);
             DispatchMessage(&msg);
@@ -619,6 +812,23 @@ int ControllerMain(HINSTANCE hInstance) {
                         LogInfo("[Controller] Config change detected, reloading...");
                         lastWriteTime = fileInfo.ftLastWriteTime;
                         LoadConfig(g_ConfigPath, g_Config);
+                        if (!IsProcessRunning(g_hLoggerProcess) && g_hLoggerProcess) {
+                            CloseHandle(g_hLoggerProcess);
+                            g_hLoggerProcess = NULL;
+                        }
+                        if (ShouldStartLoggerProcess(g_Config) && !g_hLoggerProcess) {
+                            g_hLoggerProcess = SpawnChildProcess(ProcessMode::Logger, g_ConfigPath.c_str());
+                        }
+                        if (!IsProcessRunning(g_hSensorProcess) && g_hSensorProcess) {
+                            CloseHandle(g_hSensorProcess);
+                            g_hSensorProcess = NULL;
+                        }
+                        if (ShouldStartSensorProcess(g_Config) && !g_hSensorProcess) {
+                            g_hSensorProcess = SpawnChildProcess(ProcessMode::Sensors, g_ConfigPath.c_str());
+                        }
+                        if (ShouldStartLimiterProcessAtStartup(g_Config) && !IsProcessRunning(g_hLimiterProcess)) {
+                            EnsureLimiterProcessReady(10000);
+                        }
                         SendCommandToAll(ProcessCommand::ReloadConfig);
                     }
                 }
@@ -731,8 +941,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
             // Game launch will happen in ControllerMain AFTER child processes are
             // ready
-            Log_Init(baseDir + "\\logs\\launcher.log");
-            LogInfo("[Launcher] Deferred launch path: %s", g_DeferredLaunchPath.c_str());
+            if (g_Config.debugLogging) {
+                Log_Init(baseDir + "\\logs\\launcher.log");
+                LogInfo("[Launcher] Deferred launch path: %s", g_DeferredLaunchPath.c_str());
+            }
 
             // Continue as Controller
             mode = ProcessMode::Controller;
@@ -757,6 +969,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                                     : mode == ProcessMode::Sensors  ? "Sensors"
                                                                     : "Unknown");
     }
+
+    PrimeStartupCursor();
 
     // Enable 1ms timer resolution
     timeBeginPeriod(1);

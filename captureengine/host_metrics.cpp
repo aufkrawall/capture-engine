@@ -20,7 +20,7 @@ typedef NTSTATUS(WINAPI* NtQuerySystemInformationPtr)(SYSTEM_INFORMATION_CLASS S
                                                       PVOID SystemInformation, ULONG SystemInformationLength,
                                                       PULONG ReturnLength);
 
-void HostMetricsState::Initialize() {
+void HostMetricsState::Initialize(bool includeGpuMetrics) {
     if (!pdhInitialized) {
         if (PdhOpenQueryA(NULL, 0, &cpuQuery) == ERROR_SUCCESS) {
             // Total CPU
@@ -28,6 +28,10 @@ void HostMetricsState::Initialize() {
             PdhCollectQueryData(cpuQuery);
             pdhInitialized = true;
         }
+    }
+
+    if (!includeGpuMetrics) {
+        return;
     }
 
     if (!gpuPdhInitialized) {
@@ -97,6 +101,11 @@ void HostMetricsState::Cleanup() {
     pdhInitialized = gpuPdhInitialized = vramPdhInitialized = false;
     cachedVRAMTotal = 0;
     cachedAdapterLuid = {0, 0};
+    lastLoggedMissingGpuLuid = 0;
+    lastLoggedMissingVramLuid = 0;
+    lastLoggedMissingDxgiLuid = 0;
+    lastLoggedVramTotalLuid = 0;
+    lastLoggedVramTotal = 0;
 }
 
 uint64_t HostMetricsState::QueryVRAMTotalFromDXGI(int32_t luidLow, int32_t luidHigh) {
@@ -125,7 +134,11 @@ uint64_t HostMetricsState::QueryVRAMTotalFromDXGI(int32_t luidLow, int32_t luidH
         adapter->Release();
     }
 
-    LogInfo("[Metrics] DXGI: No adapter found matching LUID %08x:%08x", luidHigh, luidLow);
+    int64_t luid = (static_cast<int64_t>(static_cast<uint32_t>(luidHigh)) << 32) | static_cast<uint32_t>(luidLow);
+    if (lastLoggedMissingDxgiLuid != luid) {
+        LogInfo("[Metrics] DXGI: No adapter found matching LUID %08x:%08x", luidHigh, luidLow);
+        lastLoggedMissingDxgiLuid = luid;
+    }
     return 0;
 }
 
@@ -133,8 +146,11 @@ void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t lu
     if (!shm)
         return;
 
+    (void)targetPid;
+
     std::lock_guard<std::mutex> lock(g_MetricsMutex);
-    g_HostMetrics.Initialize();  // Init if needed
+    const bool hasValidLuid = (luid != 0);
+    g_HostMetrics.Initialize(hasValidLuid);  // Init if needed
 
     bool debugLogging = shm->GetDebugLogging();
 
@@ -166,7 +182,7 @@ void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t lu
     snprintf(luidStrLower, sizeof(luidStrLower), "luid_0x%08x_0x%08x", high, low);
 
     // GPU Load
-    if (g_HostMetrics.gpuPdhInitialized && g_HostMetrics.gpuCounter) {
+    if (hasValidLuid && g_HostMetrics.gpuPdhInitialized && g_HostMetrics.gpuCounter) {
         PdhCollectQueryData(g_HostMetrics.gpuQuery);
 
         DWORD bufSize = 0, itemCount = 0;
@@ -184,12 +200,6 @@ void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t lu
                 PDH_FMT_COUNTERVALUE_ITEM_A* items = (PDH_FMT_COUNTERVALUE_ITEM_A*)g_HostMetrics.pdhBuffer;
                 if (PdhGetFormattedCounterArrayA(g_HostMetrics.gpuCounter, PDH_FMT_DOUBLE, &g_HostMetrics.pdhBufferSize,
                                                  &itemCount, items) == ERROR_SUCCESS) {
-                    if (debugLogging) {
-                        LogInfo(
-                            "[Metrics] GPU Poll: Found %d engine items. Searching for "
-                            "%s or %s",
-                            (int)itemCount, luidStrUpper, luidStrLower);
-                    }
                     double totalLoad = 0;
                     bool foundAny = false;
                     for (DWORD i = 0; i < itemCount; i++) {
@@ -205,10 +215,9 @@ void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t lu
                             }
                         }
                     }
-                    if (debugLogging && !foundAny && luid != 0) {
-                        // Only warn if LUID is valid (non-zero). Zero LUID means no game is
-                        // running yet.
+                    if (debugLogging && !foundAny && g_HostMetrics.lastLoggedMissingGpuLuid != luid) {
                         LogInfo("[Metrics] Warning: No GPU engine found matching LUID %s", luidStrUpper);
+                        g_HostMetrics.lastLoggedMissingGpuLuid = luid;
                     }
                     if (totalLoad > 100.0)
                         totalLoad = 100.0;
@@ -262,7 +271,7 @@ void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t lu
     }
 
     // VRAM Usage
-    if (g_HostMetrics.vramPdhInitialized && g_HostMetrics.vramCounter) {
+    if (hasValidLuid && g_HostMetrics.vramPdhInitialized && g_HostMetrics.vramCounter) {
         PdhCollectQueryData(g_HostMetrics.vramQuery);
         DWORD bufSize = 0, itemCount = 0;
         PdhGetFormattedCounterArrayA(g_HostMetrics.vramCounter, PDH_FMT_LARGE, &bufSize, &itemCount, NULL);
@@ -271,9 +280,6 @@ void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t lu
             PDH_FMT_COUNTERVALUE_ITEM_A* items = (PDH_FMT_COUNTERVALUE_ITEM_A*)tempBuf.data();
             if (PdhGetFormattedCounterArrayA(g_HostMetrics.vramCounter, PDH_FMT_LARGE, &bufSize, &itemCount, items) ==
                 ERROR_SUCCESS) {
-                if (debugLogging) {
-                    LogInfo("[Metrics] VRAM Poll: Found %d adapter items.", (int)itemCount);
-                }
                 int64_t totalVRAM = 0;
                 bool foundAny = false;
                 for (DWORD i = 0; i < itemCount; i++) {
@@ -282,10 +288,9 @@ void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t lu
                         totalVRAM += items[i].FmtValue.largeValue;
                     }
                 }
-                if (debugLogging && !foundAny && luid != 0) {
-                    // Only warn if LUID is valid (non-zero). Zero LUID means no game is
-                    // running yet.
+                if (debugLogging && !foundAny && g_HostMetrics.lastLoggedMissingVramLuid != luid) {
                     LogInfo("[Metrics] Warning: No VRAM adapter found matching LUID %s", luidStrUpper);
+                    g_HostMetrics.lastLoggedMissingVramLuid = luid;
                 }
                 double vramMB = (double)totalVRAM / (1024.0 * 1024.0);
                 shm->systemMetrics.vramUsage.store((float)vramMB, std::memory_order_relaxed);
@@ -294,12 +299,15 @@ void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t lu
     }
 
     // VRAM Total via DXGI (64-bit host queries for 32-bit processes)
-    if (luid != 0) {
+    if (hasValidLuid) {
         uint64_t vramTotal = g_HostMetrics.QueryVRAMTotalFromDXGI((int32_t)low, (int32_t)high);
         if (vramTotal > 0) {
             shm->systemMetrics.vramTotal.store(vramTotal, std::memory_order_relaxed);
-            if (debugLogging) {
+            if (debugLogging &&
+                (g_HostMetrics.lastLoggedVramTotalLuid != luid || g_HostMetrics.lastLoggedVramTotal != vramTotal)) {
                 LogInfo("[Metrics] VRAM Total: %llu MB written to shared memory", vramTotal / (1024 * 1024));
+                g_HostMetrics.lastLoggedVramTotalLuid = luid;
+                g_HostMetrics.lastLoggedVramTotal = vramTotal;
             }
         }
     }

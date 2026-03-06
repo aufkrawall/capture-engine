@@ -34,9 +34,14 @@ struct HostMetricsState {
     IDXGIFactory1* dxgiFactory = nullptr;
     uint64_t cachedVRAMTotal = 0;
     LUID cachedAdapterLuid = {0, 0};
+    int64_t lastLoggedMissingGpuLuid = 0;
+    int64_t lastLoggedMissingVramLuid = 0;
+    int64_t lastLoggedMissingDxgiLuid = 0;
+    int64_t lastLoggedVramTotalLuid = 0;
+    uint64_t lastLoggedVramTotal = 0;
 
     // Helper
-    void Initialize();
+    void Initialize(bool includeGpuMetrics);
     void Cleanup();
 
     // Query VRAM total from DXGI (64-bit safe)

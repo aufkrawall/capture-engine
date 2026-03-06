@@ -93,3 +93,17 @@ TEST_F(PerformanceMetricsTest, SmartScaling) {
     EXPECT_NEAR(min, 0.0f, 0.001f);
     EXPECT_GT(max, 100.0f);  // Should be roughly 110ms
 }
+
+TEST_F(PerformanceMetricsTest, HighFpsFramesAreNotDebouncedAway) {
+    int64_t t = 1000000;
+    metrics.Update(t);
+
+    for (int i = 0; i < 10; ++i) {
+        t += 526;  // ~1901 FPS
+        metrics.Update(t);
+    }
+
+    EXPECT_EQ(metrics.GetHistoryIndex(), 10);
+    EXPECT_NEAR(metrics.GetHistoryArray()[9], 0.526f, 0.01f);
+    EXPECT_GT(metrics.GetCurrentFPS(), 1500.0f);
+}

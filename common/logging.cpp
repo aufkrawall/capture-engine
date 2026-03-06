@@ -1,7 +1,7 @@
 #include "logging.h"
+#include <windows.h>
 #include <cstdarg>
 #include <cstdio>
-#include <ctime>
 #include <filesystem>
 #include <mutex>
 #include "config.h"
@@ -40,12 +40,11 @@ void Log(LogLevel level, const char* format, ...) {
     va_list args;
     va_start(args, format);
 
-    // Timestamp
-    time_t now = time(nullptr);
-    struct tm t;
-    localtime_s(&t, &now);
     char timeBuf[64];
-    strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", &t);
+    SYSTEMTIME localTime = {};
+    GetLocalTime(&localTime);
+    snprintf(timeBuf, sizeof(timeBuf), "%04u-%02u-%02u %02u:%02u:%02u.%03u", localTime.wYear, localTime.wMonth,
+             localTime.wDay, localTime.wHour, localTime.wMinute, localTime.wSecond, localTime.wMilliseconds);
 
     const char* levelStr = "[INFO]";
     if (level == LogLevel::Debug)
@@ -110,4 +109,12 @@ void LogWarn(const char* format, ...) {
     vsnprintf(buffer, sizeof(buffer), format, args);
     va_end(args);
     Log(LogLevel::Warn, "%s", buffer);
+}
+
+int64_t Log_GetQpcUs() {
+    LARGE_INTEGER now = {};
+    LARGE_INTEGER freq = {};
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&freq);
+    return (now.QuadPart * 1000000) / freq.QuadPart;
 }

@@ -315,7 +315,7 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
 
 void EarlyLog(const char* fmt, ...) {
     // No hook-side logging when debug logging is disabled.
-    if (!g_pLocalConfig || !g_pLocalConfig->debugLogging)
+    if (!HookDebugLoggingEnabled())
         return;
 
     va_list args;
@@ -326,7 +326,7 @@ void EarlyLog(const char* fmt, ...) {
 
 // Logs to hook_debug.log (respects the debugLogging flag just like HookLog)
 void HookLogImportant(const char* fmt, ...) {
-    if (g_pLocalConfig && !g_pLocalConfig->debugLogging)
+    if (!HookDebugLoggingEnabled())
         return;
     va_list args;
     va_start(args, fmt);
@@ -335,7 +335,7 @@ void HookLogImportant(const char* fmt, ...) {
 }
 
 void NVNGXLog(const char* fmt, ...) {
-    if (!g_pLocalConfig || !g_pLocalConfig->debugLogging)
+    if (!HookDebugLoggingEnabled())
         return;
     va_list args;
     va_start(args, fmt);
@@ -362,9 +362,8 @@ static void HookLogInternal(LogLevel level, const char* fmt, va_list args) {
     if (g_IPC && g_IPC->GetSharedMem()) {
         if ((int)level > (int)g_IPC->GetSharedMem()->GetLogLevel())
             return;
-        if (!g_IPC->GetSharedMem()->GetDebugLogging())
-            return;
-    } else if (!g_pLocalConfig || !g_pLocalConfig->debugLogging) {
+    }
+    if (!HookDebugLoggingEnabled()) {
         return;
     }
 

@@ -1,9 +1,9 @@
 // OpenGL Test App for Capture + FPS Limiter Testing
 #define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 #include <GL/gl.h>
 #include <GL/glu.h>
 #include <avrt.h>
-#include <windows.h>
 #include <chrono>
 #include <cmath>
 #include <cstdio>

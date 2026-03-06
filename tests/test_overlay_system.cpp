@@ -179,11 +179,30 @@ TEST_F(RendererTest, BeginEndFrameCallsRender) {
     EXPECT_GT(backend.lastCommandCount, 0) << "Text should produce draw commands";
 }
 
+TEST_F(RendererTest, RenderCachedFrameReusesPreviousDrawData) {
+    renderer.BeginFrame(1920, 1080);
+    renderer.DrawText(10, 10, "FPS: 60", Colors::White);
+    renderer.EndFrame();
+
+    const int initialVertexCount = backend.lastVertexCount;
+    const int initialCommandCount = backend.lastCommandCount;
+
+    EXPECT_TRUE(renderer.RenderCachedFrame(1920, 1080));
+    EXPECT_EQ(backend.renderCallCount, 2);
+    EXPECT_EQ(backend.lastVertexCount, initialVertexCount);
+    EXPECT_EQ(backend.lastCommandCount, initialCommandCount);
+}
+
 TEST_F(RendererTest, EmptyFrameProducesNoRender) {
     renderer.BeginFrame(1920, 1080);
     renderer.EndFrame();  // No draw calls
 
     EXPECT_EQ(backend.renderCallCount, 0) << "Empty frame should not call Render";
+}
+
+TEST_F(RendererTest, RenderCachedFrameReturnsFalseWithoutDrawData) {
+    EXPECT_FALSE(renderer.RenderCachedFrame(1920, 1080));
+    EXPECT_EQ(backend.renderCallCount, 0);
 }
 
 TEST_F(RendererTest, DrawRectProducesVertices) {

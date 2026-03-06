@@ -61,6 +61,7 @@ public:
     // Frame lifecycle
     void BeginFrame(int viewportWidth, int viewportHeight);
     void EndFrame();
+    bool RenderCachedFrame(int viewportWidth, int viewportHeight);
 
     // Text rendering
     void DrawText(float x, float y, const char* text, uint32_t color);

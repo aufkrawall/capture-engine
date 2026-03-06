@@ -69,6 +69,10 @@ PFN_D3D12_SERIALIZE_ROOT_SIGNATURE oSerializeRootSignature = nullptr;
 PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE oSerializeVersionedRootSignature = nullptr;
 static std::recursive_mutex g_ExecuteCommandListsHookStateMutex;
 static std::map<void**, ExecuteCommandListsPtr> g_ExecuteCommandListsOriginalByVTable;
+// ExecuteCommandLists runs many times per frame in CPU-bound workloads, so keep a
+// lock-free cache for the most recently used vtable/original pair.
+static std::atomic<void**> g_LastExecuteCommandListsVTable{nullptr};
+static std::atomic<ExecuteCommandListsPtr> g_LastExecuteCommandListsOriginal{nullptr};
 
 // SwapChain Detour Pointers
 typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateSwapChain)(IDXGIFactory*, IUnknown*, DXGI_SWAP_CHAIN_DESC*,
@@ -311,12 +315,26 @@ static ExecuteCommandListsPtr GetOriginalExecuteCommandLists(ID3D12CommandQueue*
     if (!vtbl)
         return oExecuteCommandLists;
 
-    std::lock_guard<std::recursive_mutex> lock(g_ExecuteCommandListsHookStateMutex);
-    auto it = g_ExecuteCommandListsOriginalByVTable.find(vtbl);
-    if (it != g_ExecuteCommandListsOriginalByVTable.end())
-        return it->second;
+    void** cachedVtable = g_LastExecuteCommandListsVTable.load(std::memory_order_acquire);
+    if (cachedVtable == vtbl) {
+        ExecuteCommandListsPtr cachedOriginal = g_LastExecuteCommandListsOriginal.load(std::memory_order_acquire);
+        if (cachedOriginal)
+            return cachedOriginal;
+    }
 
-    return oExecuteCommandLists;
+    ExecuteCommandListsPtr original = oExecuteCommandLists;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_ExecuteCommandListsHookStateMutex);
+        auto it = g_ExecuteCommandListsOriginalByVTable.find(vtbl);
+        if (it != g_ExecuteCommandListsOriginalByVTable.end())
+            original = it->second;
+    }
+
+    if (original) {
+        g_LastExecuteCommandListsOriginal.store(original, std::memory_order_release);
+        g_LastExecuteCommandListsVTable.store(vtbl, std::memory_order_release);
+    }
+    return original;
 }
 
 HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory* pThis, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc,
@@ -373,6 +391,12 @@ static std::atomic<bool> g_DeviceRemoved{false};
 extern "C" {
 void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) {
     if (!pQueue)
+        return;
+
+    // ExecuteCommandLists may hit this many times per frame on the same queue.
+    // Once we've captured the active DIRECT queue, avoid the repeated GetDesc /
+    // lock / QueryInterface work on the hot path.
+    if (g_CommandQueue.load(std::memory_order_acquire) == pQueue)
         return;
 
     // CRITICAL FIX: Only allow DIRECT queues for overlay rendering.
@@ -1652,7 +1676,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     static bool s_firstFrame = true;
     if (s_firstFrame) {
         s_firstFrame = false;
-        HookLogImportant("DX12: ProcessFrame FIRST CALL (swapchain=%p)", (void*)pSwapChain);
+        HookLog("DX12: ProcessFrame FIRST CALL (swapchain=%p)", (void*)pSwapChain);
     }
 
     // Performance metrics for this frame
@@ -1662,9 +1686,15 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     perfMetrics.api[sizeof(perfMetrics.api) - 1] = '\0';
     static uint64_t s_perfFrameNum = 0;
     perfMetrics.frameNum = ++s_perfFrameNum;
+    PresentDebugSample* activeDebugSample = PerfLogger::Get().GetActiveDebugSample();
+    const int64_t processFrameStartUs = activeDebugSample ? PerfLogger::GetQpcUs() : 0;
 
     // Scope guard to log metrics on any exit path
     auto perfGuard = ce::make_scope_guard([&]() {
+        if (activeDebugSample) {
+            activeDebugSample->processFrameUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - processFrameStartUs);
+            activeDebugSample->captureUs = perfMetrics.captureUs;
+        }
         if (PerfLogger::Get().IsEnabled()) {
             perfMetrics.totalUs = static_cast<int32_t>((PerfLogger::GetQpcUs() - perfMetrics.qpcUs));
             perfMetrics.fpsLimitWaitUs = static_cast<int32_t>(g_SharedFpsLimiter.GetLastWaitUs());
@@ -1810,6 +1840,9 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     // This prevents stalling the render thread if another thread holds the lock
     if (!g_OverlayMutex.try_lock()) {
         // Another thread is processing, skip this frame
+        if (activeDebugSample) {
+            activeDebugSample->flags |= kPresentSampleFlagMutexBusy;
+        }
         HookLog("DX12: ProcessFrame - mutex busy, skipping frame");
         return;
     }
@@ -2000,8 +2033,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                                 DXGI_OUTPUT_DESC1 desc1 = {};
                                 if (SUCCEEDED(output6->GetDesc1(&desc1))) {
                                     isActualHDR = (desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020);
-                                    HookLogImportant("DX12: Display HDR check — colorSpace=%d, isHDR=%d",
-                                                     (int)desc1.ColorSpace, isActualHDR);
+                                    HookLog("DX12: Display HDR check — colorSpace=%d, isHDR=%d", (int)desc1.ColorSpace,
+                                            isActualHDR);
                                 }
                                 output6->Release();
                             }
@@ -2065,9 +2098,9 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         static bool s_lastFGActive = false;
         bool currentFGActive = g_FGCompat.IsFGActive();
         if (currentFGActive != s_lastFGActive) {
-            HookLogImportant("DX12: FG state changed: %s -> %s (type=%s)", s_lastFGActive ? "active" : "inactive",
-                             currentFGActive ? "active" : "inactive",
-                             g_FGCompat.GetFGTypeName(g_FGCompat.GetActiveFGType()));
+            HookLog("DX12: FG state changed: %s -> %s (type=%s)", s_lastFGActive ? "active" : "inactive",
+                    currentFGActive ? "active" : "inactive",
+                    g_FGCompat.GetFGTypeName(g_FGCompat.GetActiveFGType()));
             s_lastFGActive = currentFGActive;
         }
 
@@ -2077,7 +2110,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         if (frameNum == 1 || frameNum == 10 || frameNum == 50 || frameNum == 100 || (frameNum % 500) == 0) {
             ID3D12Device* dev = g_Device.load();
             HRESULT devRemovedHr = dev ? dev->GetDeviceRemovedReason() : E_FAIL;
-            HookLogImportant(
+            HookLog(
                 "DX12: Overlay frame #%llu (deviceRemoved=0x%08X, fgActive=%d, "
                 "queue=%p, allocIdx=%d)",
                 (unsigned long long)frameNum, (unsigned)devRemovedHr, currentFGActive ? 1 : 0, gameQueue,
@@ -2124,12 +2157,14 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 if (g_State.fence && idx < (int)g_State.fenceValues.size() && g_State.fenceValues[idx] > 0) {
                     UINT64 completed = g_State.fence->GetCompletedValue();
                     if (completed < g_State.fenceValues[idx]) {
+                        if (activeDebugSample) {
+                            activeDebugSample->flags |= kPresentSampleFlagAllocatorBusy;
+                        }
                         static std::atomic<int> s_allocSkipLogs{0};
                         if (s_allocSkipLogs.fetch_add(1, std::memory_order_relaxed) < 30) {
-                            HookLog(
-                                "DX12: Allocator[%d] still in-flight (completed=%llu, "
-                                "needed=%llu), skipping overlay this frame",
-                                idx, completed, g_State.fenceValues[idx]);
+                            HookLog("DX12: Allocator[%d] still in-flight (completed=%llu, needed=%llu), "
+                                    "skipping overlay this frame",
+                                    idx, completed, g_State.fenceValues[idx]);
                         }
                         goto overlay_done;
                     }
@@ -2356,10 +2391,10 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
         if (++s_ffxRetryCounter % 60 == 0) {
             FFXHook::Init();
             if (FFXHook::IsInitialized()) {
-                HookLogImportant("DX12: FFX Hook installed on render-frame retry #%d", s_ffxRetryCounter / 60);
+                HookLog("DX12: FFX Hook installed on render-frame retry #%d", s_ffxRetryCounter / 60);
             } else if (!s_ffxRetryLogged && s_ffxRetryCounter >= 600) {
                 s_ffxRetryLogged = true;
-                HookLogImportant(
+                HookLog(
                     "DX12: FFX Hook not found after %d render-frame retries (FG may use native integration)",
                     s_ffxRetryCounter / 60);
             }
@@ -2446,6 +2481,10 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
     // Interpolated (FG) frame detection: the game submits zero command lists
     // between consecutive Present calls for frames generated by the FG engine.
     bool isInterpolatedFrame = (count == 0);
+    if (PresentDebugSample* activeDebugSample = PerfLogger::Get().GetActiveDebugSample(); activeDebugSample &&
+                                                                                           isInterpolatedFrame) {
+        activeDebugSample->flags |= kPresentSampleFlagInterpolatedFrame;
+    }
 
     // ECL-count-based FG activation: detect frame generation via the pattern
     // of alternating real (ECL>0) and interpolated (ECL=0) frames.  This works
@@ -2567,9 +2606,12 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     }
 
     // Debug: Log first few calls to verify hook is working
-    int count = ++g_ECLCallCount;
-    if (count <= 5) {
-        HookLog("DX12: ExecuteCommandLists called #%d (queue=%p)", count, pThis);
+    int count = g_ECLCallCount.load(std::memory_order_relaxed);
+    if (count < 5) {
+        count = g_ECLCallCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (count <= 5) {
+            HookLog("DX12: ExecuteCommandLists called #%d (queue=%p)", count, pThis);
+        }
     }
 
     // Count command lists from game queues to detect real frames
@@ -2878,6 +2920,8 @@ void DX12Hook::Shutdown() {
         g_ExecuteCommandListsOriginalByVTable.clear();
         oExecuteCommandLists = nullptr;
     }
+    g_LastExecuteCommandListsVTable.store(nullptr, std::memory_order_release);
+    g_LastExecuteCommandListsOriginal.store(nullptr, std::memory_order_release);
     if (g_Device.load()) {
         g_Device.load()->Release();
         g_Device.store(nullptr);

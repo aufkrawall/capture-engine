@@ -100,6 +100,8 @@ void CreateDefaultConfig(const std::string& path) {
 [General]
 ; debug_logging - Values: true, false
 debug_logging=true
+; perf_metrics_logging - Values: true, false (per-frame CSV profiler; keep off unless profiling)
+perf_metrics_logging=false
 ; capture_method - Values: inject, screengrab, desktop_dup, auto
 capture_method=inject
 
@@ -488,6 +490,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 
     // General
     config.debugLogging = GetBool("General", "debug_logging", true);
+    config.perfMetricsLogging = GetBool("General", "perf_metrics_logging", false);
     config.captureMethod = GetStr("General", "capture_method", "inject");
     config.crashDumpDir = GetStr("General", "crash_dump_dir", "");
 

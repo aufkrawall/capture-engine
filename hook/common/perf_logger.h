@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <mutex>
 
 struct FrameMetrics {
     uint64_t frameNum = 0;
@@ -30,6 +31,31 @@ struct FrameMetrics {
     char api[8] = "";
 };
 
+enum PresentDebugSampleFlags : uint32_t {
+    kPresentSampleFlagOverlayCacheHit = 1u << 0,
+    kPresentSampleFlagOverlayRebuilt = 1u << 1,
+    kPresentSampleFlagInterpolatedFrame = 1u << 2,
+    kPresentSampleFlagMutexBusy = 1u << 3,
+    kPresentSampleFlagAllocatorBusy = 1u << 4,
+};
+
+struct PresentDebugSample {
+    uint64_t frameNum = 0;
+    int32_t wrapperTotalUs = 0;
+    int32_t swapchainAcquireUs = 0;
+    int32_t metricsUpdateUs = 0;
+    int32_t processFrameExternalUs = 0;
+    int32_t processFrameUs = 0;
+    int32_t overlayBuildUs = 0;
+    int32_t overlayRenderUs = 0;
+    int32_t captureUs = 0;
+    int32_t fpsLimiterUs = 0;
+    int32_t presentCallUs = 0;
+    int32_t csvWriteUs = 0;
+    uint32_t flags = 0;
+    char api[8] = "";
+};
+
 class PerfLogger {
 public:
     static PerfLogger& Get();
@@ -38,6 +64,11 @@ public:
     void Shutdown();
 
     void LogFrame(const FrameMetrics& metrics);
+    bool ShouldSampleDetailedFrame(uint64_t frameNum) const;
+    void ActivateDebugSample(PresentDebugSample* sample);
+    void DeactivateDebugSample(PresentDebugSample* sample);
+    PresentDebugSample* GetActiveDebugSample();
+    void CommitDebugSample(const PresentDebugSample& sample);
 
     bool IsEnabled() const {
         return file_ != nullptr;
@@ -50,6 +81,29 @@ public:
     static int64_t GetQpcFrequency();
 
 private:
+    struct DebugSummaryState {
+        uint64_t sampleCount = 0;
+        int64_t wrapperTotalUsSum = 0;
+        int64_t swapchainAcquireUsSum = 0;
+        int64_t metricsUpdateUsSum = 0;
+        int64_t processFrameExternalUsSum = 0;
+        int64_t processFrameUsSum = 0;
+        int64_t overlayBuildUsSum = 0;
+        int64_t overlayRenderUsSum = 0;
+        int64_t captureUsSum = 0;
+        int64_t fpsLimiterUsSum = 0;
+        int64_t presentCallUsSum = 0;
+        int64_t csvWriteUsSum = 0;
+        int32_t wrapperTotalUsMax = 0;
+        int32_t presentCallUsMax = 0;
+        int32_t csvWriteUsMax = 0;
+        uint64_t overlayCacheHitCount = 0;
+        uint64_t overlayRebuildCount = 0;
+        uint64_t interpolatedFrameCount = 0;
+        uint64_t mutexBusyCount = 0;
+        uint64_t allocatorBusyCount = 0;
+    };
+
     PerfLogger() = default;
     ~PerfLogger() {
         Shutdown();
@@ -62,6 +116,10 @@ private:
     std::atomic<uint64_t> frameCount_{0};
     int64_t qpcFreq_ = 0;
     bool headerWritten_ = false;
+    std::mutex debugSummaryMutex_;
+    DebugSummaryState debugSummary_;
+
+    void ResetDebugSummaryLocked();
 };
 
 class ScopedPerfTimer {

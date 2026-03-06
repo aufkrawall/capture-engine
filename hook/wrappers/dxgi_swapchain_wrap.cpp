@@ -7,11 +7,13 @@
 #include "dxgi_swapchain_wrap.h"
 #include <windows.h>
 #include <atomic>
+#include <cstring>
 #include <mutex>
 #include "../../common/raii_helpers.h"
 #include "../apis/graphics_hook.h"
 #include "../common/dxgi_shared.h"
 #include "../common/performance_metrics.h"
+#include "../common/perf_logger.h"
 #include "hook_common.h"
 
 // External overlay functions (implemented in dx11_hook.cpp / dx12_hook.cpp)
@@ -601,6 +603,29 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetDevice(REFIID riid, void** ppDe
 // ============================================================================
 
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Flags) {
+    PresentDebugSample debugSample = {};
+    PresentDebugSample* activeDebugSample = nullptr;
+    int64_t presentStartUs = 0;
+    if (m_IsD3D12 && PerfLogger::Get().IsEnabled()) {
+        static std::atomic<uint64_t> s_presentDebugFrame{0};
+        uint64_t debugFrameNum = s_presentDebugFrame.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (PerfLogger::Get().ShouldSampleDetailedFrame(debugFrameNum)) {
+            activeDebugSample = &debugSample;
+            activeDebugSample->frameNum = debugFrameNum;
+            strncpy(activeDebugSample->api, "DX12", sizeof(activeDebugSample->api) - 1);
+            activeDebugSample->api[sizeof(activeDebugSample->api) - 1] = '\0';
+            presentStartUs = PerfLogger::GetQpcUs();
+            PerfLogger::Get().ActivateDebugSample(activeDebugSample);
+        }
+    }
+    auto debugSampleGuard = ::ce::make_scope_guard([&] {
+        if (activeDebugSample) {
+            activeDebugSample->wrapperTotalUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - presentStartUs);
+            PerfLogger::Get().DeactivateDebugSample(activeDebugSample);
+            PerfLogger::Get().CommitDebugSample(*activeDebugSample);
+        }
+    });
+
     // CRITICAL: Set this FIRST before any other code, especially before recursion
     // guard This ensures DetourPresent knows we're in a wrapper call even if we
     // return early
@@ -620,6 +645,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     // This prevents race conditions with DestructionCallback running on another
     // thread
     IDXGISwapChain* pRealCached = nullptr;
+    const int64_t swapchainAcquireStartUs = activeDebugSample ? PerfLogger::GetQpcUs() : 0;
     {
         std::lock_guard<std::mutex> lock(m_ResourceLock);
 
@@ -635,6 +661,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         if (pRealCached) {
             pRealCached->AddRef();
         }
+    }
+    if (activeDebugSample) {
+        activeDebugSample->swapchainAcquireUs =
+            static_cast<int32_t>(PerfLogger::GetQpcUs() - swapchainAcquireStartUs);
     }
     // CRITICAL FIX: RAII guard to ensure Release is always called
     auto realSwapchainGuard = ::ce::make_scope_guard([&] {
@@ -730,6 +760,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
 
     // Update performance metrics for FPS calculation
     static int64_t qpcFreq = 0;
+    const int64_t metricsUpdateStartUs = activeDebugSample ? PerfLogger::GetQpcUs() : 0;
     if (qpcFreq == 0) {
         LARGE_INTEGER f;
         QueryPerformanceFrequency(&f);
@@ -739,6 +770,9 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     QueryPerformanceCounter(&qpc);
     int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
     DXGIShared::GetPerformanceMetrics()->Update(us);
+    if (activeDebugSample) {
+        activeDebugSample->metricsUpdateUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - metricsUpdateStartUs);
+    }
 
     // Apply VSync override from config (skip if FG is active - can break frame
     // pacing)
@@ -749,18 +783,27 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     }
 
     // Process frame for capture BEFORE calling real Present
+    const int64_t processFrameStartUs = activeDebugSample ? PerfLogger::GetQpcUs() : 0;
     if (m_IsD3D12) {
         DX12_ProcessFrameExternal(pRealCached);
     } else {
         // DX11/DX10: DX11_ProcessFrameExternal handles both capture AND overlay
         DX11_ProcessFrameExternal(pRealCached);
     }
+    if (activeDebugSample) {
+        activeDebugSample->processFrameExternalUs =
+            static_cast<int32_t>(PerfLogger::GetQpcUs() - processFrameStartUs);
+    }
 
     // FPS Limiter - apply frame pacing before present
     // This applies to both DX11 and DX12
+    const int64_t limiterStartUs = activeDebugSample ? PerfLogger::GetQpcUs() : 0;
     if (g_IPC) {
         g_SharedFpsLimiter.SetIPCClient(g_IPC);
         g_SharedFpsLimiter.Apply();
+    }
+    if (activeDebugSample) {
+        activeDebugSample->fpsLimiterUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - limiterStartUs);
     }
 
     // When the FPS limiter is active, override SyncInterval to 0 for precise frame pacing.
@@ -803,7 +846,11 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         }
     }
 
+    const int64_t presentCallStartUs = activeDebugSample ? PerfLogger::GetQpcUs() : 0;
     HRESULT hr = pRealCached->Present(SyncInterval, presentFlags);
+    if (activeDebugSample) {
+        activeDebugSample->presentCallUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - presentCallStartUs);
+    }
 
     // DXGI_ERROR_WAS_STILL_DRAWING: the previous flip is still pending (GPU throttled).
     // Drop this frame silently — the overlay remains visible from the last rendered frame.

@@ -39,13 +39,24 @@ FRAME_TIMES_CSV = CAPTURE_BIN / "logs" / "frame_times.csv"
 MEDIA_LOG = CAPTURE_BIN / "logs" / "media.log"
 DEFAULT_RESULTS_JSON = CAPTURE_BIN / "logs" / "integration_results.json"
 
-SUPPORTED_APIS = ["dx12", "dx11", "dx9", "vulkan", "opengl"]
+SUPPORTED_APIS = ["dx12", "dx11", "dx9", "vulkan", "opengl", "opengl_legacy", "directdraw7"]
 API_EXECUTABLES = {
     "dx12": "dx12_test.exe",
     "dx11": "dx11_test.exe",
     "dx9": "dx9_test.exe",
     "vulkan": "vulkan_test.exe",
     "opengl": "opengl_test.exe",
+    "opengl_legacy": "opengl_legacy_test.exe",
+    "directdraw7": "directdraw7_test.exe",
+}
+API_LOG_NAMES = {
+    "dx12": {"dx12"},
+    "dx11": {"dx11"},
+    "dx9": {"dx9"},
+    "vulkan": {"vulkan"},
+    "opengl": {"opengl"},
+    "opengl_legacy": {"opengl_legacy", "opengl"},
+    "directdraw7": {"directdraw7", "directdraw", "ddraw"},
 }
 
 
@@ -58,6 +69,8 @@ def kill_processes() -> None:
         "dx9_test.exe",
         "vulkan_test.exe",
         "opengl_test.exe",
+        "opengl_legacy_test.exe",
+        "directdraw7_test.exe",
     ]:
         subprocess.run(
             ["taskkill", "/F", "/IM", proc],
@@ -153,7 +166,8 @@ def parse_perf_metrics_frame_times(api: str, since_unix_ts: float) -> List[float
                 reader = csv.DictReader(f)
                 for row in reader:
                     api_name = str(row.get("api", "")).strip().lower()
-                    if api_name and api_name != api.lower():
+                    allowed_api_names = API_LOG_NAMES.get(api, {api.lower()})
+                    if api_name and api_name not in allowed_api_names:
                         continue
                     total_us_str = str(row.get("total_us", "")).strip()
                     if not total_us_str:
@@ -426,7 +440,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--api",
-        choices=["dx12", "dx11", "dx9", "vulkan", "opengl", "both", "all"],
+        choices=["dx12", "dx11", "dx9", "vulkan", "opengl", "opengl_legacy", "directdraw7", "both", "all"],
         default="all",
         help="API selection (default: all)",
     )

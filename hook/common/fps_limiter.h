@@ -158,6 +158,8 @@ public:
 
     // Direct trace log for debugging — bypasses all log infrastructure
     void TraceLog(const char* fmt, ...) {
+        if (!HookDebugLoggingEnabled())
+            return;
         if (traceLogCount_ >= 200)
             return;
         traceLogCount_++;

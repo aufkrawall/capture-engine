@@ -2,13 +2,13 @@
 #define WINVER 0x0A00
 #define _WIN32_WINNT 0x0A00
 
+#include <windows.h>
 #include <avrt.h>
 #include <d3d10.h>
 #include <d3dcompiler.h>
 #include <dxgi.h>
 #include <dxgi1_3.h>
 #include <shellscalingapi.h>
-#include <windows.h>
 #include <wrl/client.h>
 #include <chrono>
 #include <cmath>

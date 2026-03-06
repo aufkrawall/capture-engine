@@ -9,6 +9,7 @@
 #include "custom_overlay.h"
 #include "fg_detection.h"
 #include "hook_common.h"
+#include "perf_logger.h"
 
 // Include backends based on build context
 // VK_LAYER_CE_OVERLAY is defined when building the Vulkan layer
@@ -27,6 +28,24 @@
 
 // Global adapter instance
 OverlayAdapter g_OverlayAdapter;
+
+namespace {
+bool OverlayConfigEquals(const OverlayConfig& a, const OverlayConfig& b) {
+    return a.showOverlay == b.showOverlay && a.captureIncludeOverlay == b.captureIncludeOverlay &&
+           a.showFPS == b.showFPS && a.showFrameTime == b.showFrameTime && a.showCPU == b.showCPU &&
+           a.showGPU == b.showGPU && a.showRAM == b.showRAM && a.showVRAM == b.showVRAM &&
+           a.showRecording == b.showRecording && a.showFG == b.showFG && a.position == b.position &&
+           a.padding == b.padding && a.compactMode == b.compactMode && a.horizontalMode == b.horizontalMode &&
+           a.fontSize == b.fontSize && a.roundedCorners == b.roundedCorners && a.bgColor == b.bgColor &&
+           a.bgAlpha == b.bgAlpha && a.fpsColor == b.fpsColor && a.cpuColor == b.cpuColor &&
+           a.gpuColor == b.gpuColor && a.ramColor == b.ramColor && a.vramColor == b.vramColor &&
+           a.frametimeColor == b.frametimeColor && a.textColor == b.textColor &&
+           a.textOutline == b.textOutline && a.textOutlineColor == b.textOutlineColor &&
+           a.textOutlineThickness == b.textOutlineThickness && a.loadColorLow == b.loadColorLow &&
+           a.loadColorMed == b.loadColorMed && a.loadColorHigh == b.loadColorHigh &&
+           a.textUpdateInterval == b.textUpdateInterval && a.hdrPaperWhite == b.hdrPaperWhite;
+}
+}  // namespace
 
 // Helper to detect Windows DPI scaling
 static float GetWindowsDpiScale(HWND targetHwnd) {
@@ -308,6 +327,18 @@ void OverlayAdapter::Shutdown() {
     }
     backendType = OverlayBackendType::None;
     initialized = false;
+    hasCachedFrame = false;
+    hasRenderedConfig = false;
+    lastViewportWidth = 0;
+    lastViewportHeight = 0;
+    lastUpdateTime = 0;
+    lastFGActive = false;
+    lastRecordingActive = false;
+    lastShowOverloadWarning = false;
+    lastRecordingSeconds = 0;
+    lastEncoderOverloadTick = 0;
+    layoutDirty = true;
+    memset(&lastRenderedConfig, 0, sizeof(lastRenderedConfig));
 }
 
 void OverlayAdapter::SetDX12RenderTarget(void* cmdList, void* rtvHandle) {
@@ -333,29 +364,29 @@ uint32_t OverlayAdapter::GetLoadColor(float load) {
 void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     static int renderLogCount = 0;
     if (renderLogCount < 5) {
-        HookLogImportant("[Overlay] RenderOverlay#%d: init=%d renderer=%p ipc=%p shm=%p showOverlay=%d vp=%dx%d",
-                         renderLogCount, initialized ? 1 : 0, (void*)renderer, (void*)ipc,
-                         ipc ? (void*)ipc->GetSharedMem() : nullptr,
-                         (ipc && ipc->GetSharedMem()) ? ipc->GetSharedMem()->ReadOverlayConfig().showOverlay : -1,
-                         viewportWidth, viewportHeight);
+        HookLog("[Overlay] RenderOverlay#%d: init=%d renderer=%p ipc=%p shm=%p showOverlay=%d vp=%dx%d", renderLogCount,
+                initialized ? 1 : 0, (void*)renderer, (void*)ipc, ipc ? (void*)ipc->GetSharedMem() : nullptr,
+                (ipc && ipc->GetSharedMem()) ? ipc->GetSharedMem()->ReadOverlayConfig().showOverlay : -1, viewportWidth,
+                viewportHeight);
         renderLogCount++;
     }
 
     if (!initialized || !renderer) {
         if (renderLogCount < 5)
-            HookLogImportant("[Overlay] RenderOverlay: early return - not initialized or no renderer");
+            HookLog("[Overlay] RenderOverlay: early return - not initialized or no renderer");
         return;
     }
 
     if (!ipc || !ipc->GetSharedMem()) {
         if (renderLogCount < 5)
-            HookLogImportant("[Overlay] RenderOverlay: early return - no IPC or shared memory");
+            HookLog("[Overlay] RenderOverlay: early return - no IPC or shared memory");
         return;
     }
-    auto cfg = ipc->GetSharedMem()->ReadOverlayConfig();
+    auto* sharedMem = ipc->GetSharedMem();
+    auto cfg = sharedMem->ReadOverlayConfig();
     if (!cfg.showOverlay) {
         if (renderLogCount < 5)
-            HookLogImportant("[Overlay] RenderOverlay: early return - showOverlay is false");
+            HookLog("[Overlay] RenderOverlay: early return - showOverlay is false");
         return;
     }
 
@@ -376,6 +407,35 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
         }
     }
 
+    bool fgActive = metrics && metrics->IsFGActive();
+    bool isRecording = sharedMem->runtimeState.isRecording.load(std::memory_order_acquire);
+    uint64_t recordingSeconds = 0;
+    uint64_t nowTick64 = GetTickCount64();
+    if (cfg.showRecording && isRecording) {
+        int64_t startTime = sharedMem->runtimeState.recordingStartTime.load(std::memory_order_acquire);
+        if (startTime > 0) {
+            recordingSeconds = (nowTick64 - startTime) / 1000;
+        }
+        uint32_t overloadFlags = sharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
+        if (overloadFlags & 1u) {
+            lastEncoderOverloadTick = nowTick64;
+        }
+    } else {
+        lastEncoderOverloadTick = 0;
+    }
+    bool showOverloadWarning =
+        (lastEncoderOverloadTick != 0) && ((nowTick64 - lastEncoderOverloadTick) <= 5000);
+    PresentDebugSample* activeDebugSample = PerfLogger::Get().GetActiveDebugSample();
+    bool showGraph = cfg.showFrameTime && metrics;
+    bool shouldRefreshGraph = showGraph;
+    bool viewportChanged = (viewportWidth != lastViewportWidth) || (viewportHeight != lastViewportHeight);
+    bool configChanged = !hasRenderedConfig || !OverlayConfigEquals(cfg, lastRenderedConfig);
+    bool dynamicStateChanged = (fgActive != lastFGActive) || (isRecording != lastRecordingActive) ||
+                               (recordingSeconds != lastRecordingSeconds) ||
+                               (showOverloadWarning != lastShowOverloadWarning);
+    bool needRebuild = !hasCachedFrame || shouldUpdate || shouldRefreshGraph || viewportChanged || configChanged ||
+                       dynamicStateChanged || layoutDirty;
+
     // Pass HDR params to backend for shader constants
     if (backend) {
         float paperWhite = cfg.hdrPaperWhite;
@@ -390,9 +450,41 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
         backend->SetHDRParams(mode, paperWhite);
     }
 
+    if (!needRebuild) {
+        const int64_t cachedRenderStartUs = activeDebugSample ? PerfLogger::GetQpcUs() : 0;
+        if (renderer->RenderCachedFrame(viewportWidth, viewportHeight)) {
+            if (activeDebugSample) {
+                activeDebugSample->flags |= kPresentSampleFlagOverlayCacheHit;
+                activeDebugSample->overlayRenderUs +=
+                    static_cast<int32_t>(PerfLogger::GetQpcUs() - cachedRenderStartUs);
+            }
+            return;
+        }
+        hasCachedFrame = false;
+    }
+
+    const int64_t overlayBuildStartUs = activeDebugSample ? PerfLogger::GetQpcUs() : 0;
     renderer->BeginFrame(viewportWidth, viewportHeight);
     RenderContent(viewportWidth, viewportHeight, cfg, shouldUpdate);
+    if (activeDebugSample) {
+        activeDebugSample->flags |= kPresentSampleFlagOverlayRebuilt;
+        activeDebugSample->overlayBuildUs += static_cast<int32_t>(PerfLogger::GetQpcUs() - overlayBuildStartUs);
+    }
+    const int64_t overlayRenderStartUs = activeDebugSample ? PerfLogger::GetQpcUs() : 0;
     renderer->EndFrame();
+    if (activeDebugSample) {
+        activeDebugSample->overlayRenderUs += static_cast<int32_t>(PerfLogger::GetQpcUs() - overlayRenderStartUs);
+    }
+
+    hasCachedFrame = true;
+    hasRenderedConfig = true;
+    lastRenderedConfig = cfg;
+    lastViewportWidth = viewportWidth;
+    lastViewportHeight = viewportHeight;
+    lastFGActive = fgActive;
+    lastRecordingActive = isRecording;
+    lastRecordingSeconds = recordingSeconds;
+    lastShowOverloadWarning = showOverloadWarning;
 }
 
 void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const OverlayConfig& cfg, bool shouldUpdate) {
