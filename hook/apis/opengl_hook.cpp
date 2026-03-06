@@ -454,7 +454,10 @@ public:
         texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
         texDesc.SampleDesc.Count = 1;
         texDesc.Usage = D3D11_USAGE_DEFAULT;
-        texDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
+        // SHADER_RESOURCE is required for SwapRBChannels to create an SRV for
+        // RGBA→BGRA conversion in the encoder; RENDER_TARGET is required for NV
+        // interop write access from OpenGL.
+        texDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
         texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
 
         for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
@@ -603,6 +606,28 @@ public:
         // Publish to shared memory
         if (g_IPC) {
             PublishToSharedMemory(g_IPC);
+        }
+
+        // Re-assert MakeWindowAssociation after NV interop init: wglDXOpenDeviceNV
+        // may re-enable DXGI window/cursor management. Repeat the call to ensure it
+        // stays suppressed.
+        if (usingNVInterop) {
+            IDXGIDevice* dxgiDev = nullptr;
+            if (SUCCEEDED(d3d11Device->QueryInterface(IID_PPV_ARGS(&dxgiDev)))) {
+                IDXGIAdapter* adapter = nullptr;
+                if (SUCCEEDED(dxgiDev->GetAdapter(&adapter))) {
+                    IDXGIFactory* factory = nullptr;
+                    if (SUCCEEDED(adapter->GetParent(IID_PPV_ARGS(&factory)))) {
+                        HWND wnd = WindowFromDC(hDC);
+                        if (wnd)
+                            factory->MakeWindowAssociation(wnd,
+                                                           DXGI_MWA_NO_WINDOW_CHANGES | DXGI_MWA_NO_ALT_ENTER);
+                        factory->Release();
+                    }
+                    adapter->Release();
+                }
+                dxgiDev->Release();
+            }
         }
 
         initialized = true;
@@ -900,6 +925,15 @@ static void DetectGPU(HDC hdc) {
 
                 g_LuidReported = true;
                 HookLog("OpenGL: GPU Detected via D3D11 Interop (LUID: %08x)", lLow);
+
+                // Prevent DXGI from associating with the game window (cursor theft)
+                IDXGIFactory* factory = nullptr;
+                if (SUCCEEDED(adapter->GetParent(IID_PPV_ARGS(&factory)))) {
+                    HWND wnd = WindowFromDC(hdc);
+                    if (wnd)
+                        factory->MakeWindowAssociation(wnd, DXGI_MWA_NO_WINDOW_CHANGES | DXGI_MWA_NO_ALT_ENTER);
+                    factory->Release();
+                }
 
                 adapter->Release();
             }
