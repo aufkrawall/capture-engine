@@ -45,6 +45,7 @@ typedef uint64_t GLuint64;
 #define GL_TRUE 1
 #define GL_TEXTURE_2D 0x0DE1
 #define GL_RGBA 0x1908
+#define GL_BGRA 0x80E1
 #define GL_RGBA8 0x8058
 #define GL_UNSIGNED_BYTE 0x1401
 #define GL_READ_FRAMEBUFFER 0x8CA8
@@ -267,6 +268,7 @@ public:
     GLuint pbos[2]{};
     int currentPBO = 0;
     bool usePBO = false;
+    bool pboPopulated = false;  // true after first PBO write cycle completes
 
     // D3D11.3 Fence support
     ID3D11Fence* fence = nullptr;
@@ -357,6 +359,7 @@ public:
         useFences = false;
         usingNVInterop = false;
         usePBO = false;
+        pboPopulated = false;
         fenceValue = 0;
     }
 
@@ -436,7 +439,9 @@ public:
         texDesc.Height = height;
         texDesc.MipLevels = 1;
         texDesc.ArraySize = 1;
-        texDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        // Use RGBA format: OpenGL naturally writes RGBA, so using RGBA here avoids
+        // R↔B channel swap that would occur with BGRA.
+        texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
         texDesc.SampleDesc.Count = 1;
         texDesc.Usage = D3D11_USAGE_DEFAULT;
         texDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
@@ -470,6 +475,7 @@ public:
             }
         }
 
+        format = DXGI_FORMAT_R8G8B8A8_UNORM;  // GL writes RGBA naturally; encoder handles via SwapRB if needed
         usingNVInterop = true;
         HookLog("OpenGL: NV interop initialized successfully");
         return true;
@@ -647,25 +653,30 @@ public:
             int readPBO = currentPBO;
             int writePBO = (currentPBO + 1) % 2;
 
-            // Start async read to current PBO
+            // Start async read to current PBO (use GL_BGRA to match BGRA texture layout)
             pglBindBuffer(GL_PIXEL_PACK_BUFFER, pbos[writePBO]);
             pglBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
-            pglReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+            pglReadPixels(0, 0, width, height, GL_BGRA, GL_UNSIGNED_BYTE, 0);
             pglBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
 
-            // Read from previous PBO
+            // Read from previous PBO (only valid from 2nd frame onwards)
             pglBindBuffer(GL_PIXEL_PACK_BUFFER, pbos[readPBO]);
             void* data = pglMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
             if (data) {
-                // Copy to D3D11 texture
-                d3d11Context->UpdateSubresource(sharedTextures[idx], 0, NULL, data, width * 4, 0);
-                pglUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+                if (pboPopulated) {
+                    // Copy to D3D11 texture and signal
+                    d3d11Context->UpdateSubresource(sharedTextures[idx], 0, NULL, data, width * 4, 0);
+                    pglUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+                    d3d11Context->Flush();  // Ensure GPU copy is submitted before encoder reads
+                    SignalFrameReady(g_IPC, idx, qpc.QuadPart, 0);
+                } else {
+                    pglUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+                }
             }
             pglBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
 
             currentPBO = writePBO;
-            // PASS RAW QPC
-            SignalFrameReady(g_IPC, idx, qpc.QuadPart, 0);
+            pboPopulated = true;  // PBO[writePBO] now has valid data for next frame
         }
 
         AdvanceWriteIndex();
