@@ -411,13 +411,9 @@ static std::vector<BYTE> ModifyRootSignatureStaticSamplers(const void* pBlob, SI
     if (version != 0x1 && version != 0x2)
         return result;
 
-    // For now, just pass through - modifying root signature blobs is complex
-    // and would require deserializing, modifying, and re-serializing
-    // Most games use dynamic samplers via CreateSampler anyway
-
-    // TODO: Implement full root signature deserialization if needed
-    // The D3D12_ROOT_SIGNATURE_DESC structure contains pStaticSamplers
-    // which we would need to modify
+    // Static sampler blobs are passed through intentionally. Rewriting them would
+    // require full deserialize/modify/reserialize handling, while the common
+    // override path already intercepts dynamic samplers via CreateSampler().
 
     return result;
 }

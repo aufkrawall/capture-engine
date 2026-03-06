@@ -97,10 +97,11 @@ InjectionManager::InjectionManager(const AppConfig& config) : config(config) {
     ScanExistingProcesses();
     const int64_t scanTotalUs = Log_GetQpcUs() - scanStartUs;
 
-    LogInfo("[StartupPerf] InjectionManager startup: InitializeWMI=%.3f ms (ok=%d), ScanExistingProcesses=%.3f ms, "
-            "total=%.3f ms",
-            QpcDeltaToMs(wmiTotalUs), wmiInitialized ? 1 : 0, QpcDeltaToMs(scanTotalUs),
-            QpcDeltaToMs(Log_GetQpcUs() - constructorStartUs));
+    LogInfo(
+        "[StartupPerf] InjectionManager startup: InitializeWMI=%.3f ms (ok=%d), ScanExistingProcesses=%.3f ms, "
+        "total=%.3f ms",
+        QpcDeltaToMs(wmiTotalUs), wmiInitialized ? 1 : 0, QpcDeltaToMs(scanTotalUs),
+        QpcDeltaToMs(Log_GetQpcUs() - constructorStartUs));
 }
 
 InjectionManager::~InjectionManager() {
@@ -252,8 +253,8 @@ bool InjectionManager::InitializeWMI() {
     hres = CoInitializeEx(0, COINIT_MULTITHREADED);
     coInitUs = Log_GetQpcUs() - phaseStartUs;
     if (FAILED(hres)) {
-        LogInfo("[StartupPerf] InitializeWMI failed at CoInitializeEx after %.3f ms (hr=0x%X)",
-                QpcDeltaToMs(coInitUs), hres);
+        LogInfo("[StartupPerf] InitializeWMI failed at CoInitializeEx after %.3f ms (hr=0x%X)", QpcDeltaToMs(coInitUs),
+                hres);
         LogError("Failed to initialize COM library. Error code = 0x%X", hres);
         return false;
     }
@@ -305,8 +306,8 @@ bool InjectionManager::InitializeWMI() {
     connectUs = Log_GetQpcUs() - phaseStartUs;
 
     if (FAILED(hres)) {
-        LogInfo("[StartupPerf] InitializeWMI failed at ConnectServer after %.3f ms (hr=0x%X)",
-                QpcDeltaToMs(connectUs), hres);
+        LogInfo("[StartupPerf] InitializeWMI failed at ConnectServer after %.3f ms (hr=0x%X)", QpcDeltaToMs(connectUs),
+                hres);
         LogError("Could not connect. Error code = 0x%X", hres);
         pLoc->Release();
         pLoc = nullptr;
@@ -381,12 +382,13 @@ bool InjectionManager::InitializeWMI() {
         return false;
     }
 
-    LogInfo("[StartupPerf] InitializeWMI: CoInitializeEx=%.3f ms, CoInitializeSecurity=%.3f ms, "
-            "CoCreateInstance=%.3f ms, ConnectServer=%.3f ms, CoSetProxyBlanket=%.3f ms, SinkSetup=%.3f ms, "
-            "NotificationQuery=%.3f ms, total=%.3f ms",
-            QpcDeltaToMs(coInitUs), QpcDeltaToMs(securityUs), QpcDeltaToMs(locatorUs), QpcDeltaToMs(connectUs),
-            QpcDeltaToMs(proxyBlanketUs), QpcDeltaToMs(sinkSetupUs), QpcDeltaToMs(notificationUs),
-            QpcDeltaToMs(Log_GetQpcUs() - initStartUs));
+    LogInfo(
+        "[StartupPerf] InitializeWMI: CoInitializeEx=%.3f ms, CoInitializeSecurity=%.3f ms, "
+        "CoCreateInstance=%.3f ms, ConnectServer=%.3f ms, CoSetProxyBlanket=%.3f ms, SinkSetup=%.3f ms, "
+        "NotificationQuery=%.3f ms, total=%.3f ms",
+        QpcDeltaToMs(coInitUs), QpcDeltaToMs(securityUs), QpcDeltaToMs(locatorUs), QpcDeltaToMs(connectUs),
+        QpcDeltaToMs(proxyBlanketUs), QpcDeltaToMs(sinkSetupUs), QpcDeltaToMs(notificationUs),
+        QpcDeltaToMs(Log_GetQpcUs() - initStartUs));
     LogInfo("WMI Event Sink Initialized");
     return true;
 }
@@ -1351,8 +1353,9 @@ void InjectionManager::ScanExistingProcesses() {
         } while (Process32Next(hSnapshot, &pe32));
     }
     CloseHandle(hSnapshot);
-    LogInfo("[StartupPerf] ScanExistingProcesses: snapshot=%.3f ms, total=%.3f ms, scanned=%d, whitelisted=%d, "
-            "injectAttempts=%d, injectSuccesses=%d",
-            QpcDeltaToMs(snapshotUs), QpcDeltaToMs(Log_GetQpcUs() - scanStartUs), scannedProcesses,
-            whitelistedProcesses, injectAttempts, injectSuccesses);
+    LogInfo(
+        "[StartupPerf] ScanExistingProcesses: snapshot=%.3f ms, total=%.3f ms, scanned=%d, whitelisted=%d, "
+        "injectAttempts=%d, injectSuccesses=%d",
+        QpcDeltaToMs(snapshotUs), QpcDeltaToMs(Log_GetQpcUs() - scanStartUs), scannedProcesses, whitelistedProcesses,
+        injectAttempts, injectSuccesses);
 }

@@ -1,6 +1,8 @@
 #include "cursor_renderer.h"
 #include <cstring>
+#include <memory>
 #include <new>
+#include "../common/raii_helpers.h"
 #include "mediaengine.h"
 
 // Simple vertex/pixel shader for alpha-blended cursor overlay
@@ -116,9 +118,9 @@ bool CursorRenderer::CreateRenderingResources() {
     DLL_Log("[CursorRenderer] CreateRenderingResources starting");
 
     // Compile shaders
-    ID3DBlob* vsBlob = nullptr;
-    ID3DBlob* psBlob = nullptr;
-    ID3DBlob* errorBlob = nullptr;
+    ce::ComGuard<ID3DBlob> vsBlob;
+    ce::ComGuard<ID3DBlob> psBlob;
+    ce::ComGuard<ID3DBlob> errorBlob;
 
     // Load D3DCompile dynamically
     DLL_Log("[CursorRenderer] Loading d3dcompiler_47.dll");
@@ -145,58 +147,52 @@ bool CursorRenderer::CreateRenderingResources() {
     // Compile vertex shader
     DLL_Log("[CursorRenderer] Compiling vertex shader");
     hr = d3dCompile(CURSOR_SHADER_SOURCE, strlen(CURSOR_SHADER_SOURCE), nullptr, nullptr, nullptr, "VS_Main", "vs_4_0",
-                    0, 0, &vsBlob, &errorBlob);
+                    0, 0, vsBlob.put(), errorBlob.put());
     if (FAILED(hr)) {
         if (errorBlob) {
             DLL_Log("[CursorRenderer] VS compile error: %s", (char*)errorBlob->GetBufferPointer());
-            errorBlob->Release();
         }
         FreeLibrary(d3dCompiler);
         return false;
     }
+    errorBlob.reset();
     DLL_Log("[CursorRenderer] VS compiled OK");
 
     // Compile pixel shader
     DLL_Log("[CursorRenderer] Compiling pixel shader");
     hr = d3dCompile(CURSOR_SHADER_SOURCE, strlen(CURSOR_SHADER_SOURCE), nullptr, nullptr, nullptr, "PS_Main", "ps_4_0",
-                    0, 0, &psBlob, &errorBlob);
+                    0, 0, psBlob.put(), errorBlob.put());
     if (FAILED(hr)) {
         if (errorBlob) {
             DLL_Log("[CursorRenderer] PS compile error: %s", (char*)errorBlob->GetBufferPointer());
-            errorBlob->Release();
         }
-        vsBlob->Release();
         FreeLibrary(d3dCompiler);
         return false;
     }
+    errorBlob.reset();
     DLL_Log("[CursorRenderer] PS compiled OK");
 
     FreeLibrary(d3dCompiler);
 
     // Create shaders
-    DLL_Log("[CursorRenderer] Creating vertex shader, device=%p vsBlob=%p", (void*)device, (void*)vsBlob);
+    DLL_Log("[CursorRenderer] Creating vertex shader, device=%p vsBlob=%p", (void*)device, (void*)vsBlob.get());
     if (!device || !vsBlob) {
         DLL_Log("[CursorRenderer] ERROR: device or vsBlob is null!");
-        if (vsBlob)
-            vsBlob->Release();
-        if (psBlob)
-            psBlob->Release();
         return false;
     }
     DLL_Log("[CursorRenderer] vsBlob size=%zu", vsBlob->GetBufferSize());
     hr = device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &vertexShader);
-    vsBlob->Release();
     if (FAILED(hr)) {
         DLL_Log("[CursorRenderer] Failed to create vertex shader");
-        psBlob->Release();
+        Cleanup();
         return false;
     }
 
     DLL_Log("[CursorRenderer] Creating pixel shader");
     hr = device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &pixelShader);
-    psBlob->Release();
     if (FAILED(hr)) {
         DLL_Log("[CursorRenderer] Failed to create pixel shader");
+        Cleanup();
         return false;
     }
 
@@ -211,6 +207,7 @@ bool CursorRenderer::CreateRenderingResources() {
     hr = device->CreateBuffer(&cbDesc, nullptr, &constantBuffer);
     if (FAILED(hr)) {
         DLL_Log("[CursorRenderer] Failed to create constant buffer");
+        Cleanup();
         return false;
     }
 
@@ -227,6 +224,7 @@ bool CursorRenderer::CreateRenderingResources() {
     hr = device->CreateSamplerState(&sampDesc, &sampler);
     if (FAILED(hr)) {
         DLL_Log("[CursorRenderer] Failed to create sampler");
+        Cleanup();
         return false;
     }
 
@@ -245,6 +243,7 @@ bool CursorRenderer::CreateRenderingResources() {
     hr = device->CreateBlendState(&blendDesc, &blendState);
     if (FAILED(hr)) {
         DLL_Log("[CursorRenderer] Failed to create blend state");
+        Cleanup();
         return false;
     }
 
@@ -257,6 +256,7 @@ bool CursorRenderer::CreateRenderingResources() {
     hr = device->CreateRasterizerState(&rastDesc, &rasterizerState);
     if (FAILED(hr)) {
         DLL_Log("[CursorRenderer] Failed to create rasterizer state");
+        Cleanup();
         return false;
     }
 
@@ -267,6 +267,15 @@ bool CursorRenderer::CreateRenderingResources() {
 
 bool CursorRenderer::ExtractCursorBitmap(HICON icon, uint8_t** outBitmap, uint32_t* outWidth, uint32_t* outHeight,
                                          bool* outIsMonochrome) {
+    if (!outBitmap || !outWidth || !outHeight || !outIsMonochrome) {
+        return false;
+    }
+
+    *outBitmap = nullptr;
+    *outWidth = 0;
+    *outHeight = 0;
+    *outIsMonochrome = false;
+
     ICONINFO ii;
     if (!GetIconInfo(icon, &ii)) {
         return false;
@@ -274,8 +283,8 @@ bool CursorRenderer::ExtractCursorBitmap(HICON icon, uint8_t** outBitmap, uint32
 
     BITMAP bmpColor = {};
     BITMAP bmpMask = {};
-    uint8_t* colorData = nullptr;
-    uint8_t* maskData = nullptr;
+    std::unique_ptr<uint8_t[]> colorData;
+    std::unique_ptr<uint8_t[]> maskData;
 
     *outIsMonochrome = (ii.hbmColor == nullptr);
 
@@ -294,14 +303,13 @@ bool CursorRenderer::ExtractCursorBitmap(HICON icon, uint8_t** outBitmap, uint32
         }
 
         uint32_t size = bmpColor.bmHeight * bmpColor.bmWidthBytes;
-        colorData = new (std::nothrow) uint8_t[size];
+        colorData.reset(new (std::nothrow) uint8_t[size]);
         if (!colorData) {
             DeleteObject(ii.hbmColor);
             DeleteObject(ii.hbmMask);
             return false;
         }
-        if (GetBitmapBits(ii.hbmColor, size, colorData) != static_cast<LONG>(size)) {
-            delete[] colorData;
+        if (GetBitmapBits(ii.hbmColor, size, colorData.get()) != static_cast<LONG>(size)) {
             DeleteObject(ii.hbmColor);
             DeleteObject(ii.hbmMask);
             return false;
@@ -313,16 +321,13 @@ bool CursorRenderer::ExtractCursorBitmap(HICON icon, uint8_t** outBitmap, uint32
         // Check if we need to apply mask for alpha
         if (ii.hbmMask && GetObject(ii.hbmMask, sizeof(bmpMask), &bmpMask) != 0) {
             uint32_t maskSize = bmpMask.bmHeight * bmpMask.bmWidthBytes;
-            maskData = new (std::nothrow) uint8_t[maskSize];
+            maskData.reset(new (std::nothrow) uint8_t[maskSize]);
             if (!maskData) {
-                delete[] colorData;
                 DeleteObject(ii.hbmColor);
                 DeleteObject(ii.hbmMask);
                 return false;
             }
-            if (GetBitmapBits(ii.hbmMask, maskSize, maskData) != static_cast<LONG>(maskSize)) {
-                delete[] maskData;
-                delete[] colorData;
+            if (GetBitmapBits(ii.hbmMask, maskSize, maskData.get()) != static_cast<LONG>(maskSize)) {
                 DeleteObject(ii.hbmColor);
                 DeleteObject(ii.hbmMask);
                 return false;
@@ -350,11 +355,9 @@ bool CursorRenderer::ExtractCursorBitmap(HICON icon, uint8_t** outBitmap, uint32
                     }
                 }
             }
-
-            delete[] maskData;
         }
 
-        *outBitmap = colorData;
+        *outBitmap = colorData.release();
     } else {
         // Monochrome cursor - not fully supported, create placeholder
         if (!GetObject(ii.hbmMask, sizeof(bmpMask), &bmpMask)) {
@@ -366,26 +369,21 @@ bool CursorRenderer::ExtractCursorBitmap(HICON icon, uint8_t** outBitmap, uint32
         *outWidth = bmpMask.bmWidth;
         *outHeight = bmpMask.bmHeight / 2;
         uint32_t pixels = (*outWidth) * (*outHeight);
-        *outBitmap = new (std::nothrow) uint8_t[pixels * 4];
-        if (!*outBitmap) {
+        std::unique_ptr<uint8_t[]> bitmap(new (std::nothrow) uint8_t[pixels * 4]);
+        if (!bitmap) {
             DeleteObject(ii.hbmColor);
             DeleteObject(ii.hbmMask);
             return false;
         }
 
         uint32_t maskSize = bmpMask.bmHeight * bmpMask.bmWidthBytes;
-        maskData = new (std::nothrow) uint8_t[maskSize];
+        maskData.reset(new (std::nothrow) uint8_t[maskSize]);
         if (!maskData) {
-            delete[] *outBitmap;
-            *outBitmap = nullptr;
             DeleteObject(ii.hbmColor);
             DeleteObject(ii.hbmMask);
             return false;
         }
-        if (GetBitmapBits(ii.hbmMask, maskSize, maskData) != static_cast<LONG>(maskSize)) {
-            delete[] maskData;
-            delete[] *outBitmap;
-            *outBitmap = nullptr;
+        if (GetBitmapBits(ii.hbmMask, maskSize, maskData.get()) != static_cast<LONG>(maskSize)) {
             DeleteObject(ii.hbmColor);
             DeleteObject(ii.hbmMask);
             return false;
@@ -407,10 +405,9 @@ bool CursorRenderer::ExtractCursorBitmap(HICON icon, uint8_t** outBitmap, uint32
                 color = xorMask ? 0xFFFFFFFF : 0x00000000;  // Inverted or transparent
             }
 
-            memcpy((*outBitmap) + i * 4, &color, 4);
+            memcpy(bitmap.get() + i * 4, &color, 4);
         }
-
-        delete[] maskData;
+        *outBitmap = bitmap.release();
     }
 
     DeleteObject(ii.hbmColor);
@@ -452,11 +449,12 @@ bool CursorRenderer::UpdateCursorTexture() {
     DeleteObject(ii.hbmColor);
     DeleteObject(ii.hbmMask);
 
-    uint8_t* bitmap = nullptr;
-    if (!ExtractCursorBitmap(icon, &bitmap, &cursorWidth, &cursorHeight, &isMonochrome)) {
+    uint8_t* rawBitmap = nullptr;
+    if (!ExtractCursorBitmap(icon, &rawBitmap, &cursorWidth, &cursorHeight, &isMonochrome)) {
         DestroyIcon(icon);
         return false;
     }
+    std::unique_ptr<uint8_t[]> bitmap(rawBitmap);
 
     DestroyIcon(icon);
 
@@ -481,11 +479,10 @@ bool CursorRenderer::UpdateCursorTexture() {
     texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 
     D3D11_SUBRESOURCE_DATA initData = {};
-    initData.pSysMem = bitmap;
+    initData.pSysMem = bitmap.get();
     initData.SysMemPitch = cursorWidth * 4;
 
     HRESULT hr = device->CreateTexture2D(&texDesc, &initData, &cursorTexture);
-    delete[] bitmap;
 
     if (FAILED(hr)) {
         DLL_Log("[CursorRenderer] Failed to create cursor texture");

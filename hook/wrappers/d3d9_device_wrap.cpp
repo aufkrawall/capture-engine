@@ -124,7 +124,7 @@ HRESULT STDMETHODCALLTYPE CWrapD3D9Device::PresentEx(const RECT* pSourceRect, co
     if (m_ForceVSync) {
         flags &= ~D3DPRESENT_DONOTWAIT;
     }
-    // TODO: Could add D3DPRESENT_DONOTWAIT if disabling VSync
+    // Leave the non-VSync path unchanged so we preserve the game's pacing model.
 
     HRESULT hr = m_pRealEx->PresentEx(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, flags);
 

@@ -9,9 +9,11 @@
 #define WIN32_LEAN_AND_MEAN
 #define WINVER 0x0A00
 #define _WIN32_WINNT 0x0A00
+// clang-format off
 #include <windows.h>
-#include <DirectXMath.h>
 #include <avrt.h>
+// clang-format on
+#include <DirectXMath.h>
 #include <d3d12.h>
 #include <d3dcompiler.h>
 #include <dxgi1_4.h>

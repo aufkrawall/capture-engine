@@ -135,9 +135,6 @@ static struct {
 namespace D3DKMTHooks {
 
 void InitializeConfig() {
-    // Check if VRAM override is configured
-    const auto& gfx = GetActiveGraphicsConfig();
-
     // IMPORTANT: Following SpecialK's approach - do NOT override VRAM values.
     // Games need real VRAM values for proper memory management and feature
     // detection. Overriding VRAM can cause:
@@ -151,21 +148,9 @@ void InitializeConfig() {
     g_VramConfig.dedicatedVramBytes = 0;
     g_VramConfig.sharedVramBytes = 0;
     g_VramConfig.scaleFactor = 1.0f;
-
-    // Check if user explicitly wants VRAM override (not recommended)
-    // Config key: d3dkmt_vram_override_mb = 8192
-    // Only override if explicitly requested
-    int explicitOverrideMB = 0;
-    // TODO: Read from config if needed
-    if (explicitOverrideMB > 0) {
-        g_VramConfig.enabled = true;
-        g_VramConfig.dedicatedVramBytes = static_cast<UINT64>(explicitOverrideMB) * 1024 * 1024;
-        HookLog("D3DKMT: VRAM override ENABLED (user requested) - Dedicated: %d MB", explicitOverrideMB);
-    } else {
-        HookLog(
-            "D3DKMT: VRAM override disabled - passing through real values "
-            "(SpecialK-style)");
-    }
+    HookLog(
+        "D3DKMT: VRAM override disabled - passing through real values "
+        "(SpecialK-style)");
 }
 
 // Hook for D3DKMTQueryVideoMemoryInfo

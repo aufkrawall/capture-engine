@@ -201,10 +201,10 @@ struct GraphicsConfig {
 
 struct AppConfig {
     // General
-    bool debugLogging = true;       // Default to true, matches LoadConfig default
+    bool debugLogging = true;  // Default to true, matches LoadConfig default
     bool perfMetricsLogging = false;
-    std::string captureMethod;      // "inject", "screengrab", "auto"
-    std::string logFilePath;        // Path to captureengine.log
+    std::string captureMethod;  // "inject", "screengrab", "auto"
+    std::string logFilePath;    // Path to captureengine.log
 
     std::string crashDumpDir;  // Directory for crash dumps
 

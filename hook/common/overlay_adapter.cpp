@@ -37,10 +37,9 @@ bool OverlayConfigEquals(const OverlayConfig& a, const OverlayConfig& b) {
            a.showRecording == b.showRecording && a.showFG == b.showFG && a.position == b.position &&
            a.padding == b.padding && a.compactMode == b.compactMode && a.horizontalMode == b.horizontalMode &&
            a.fontSize == b.fontSize && a.roundedCorners == b.roundedCorners && a.bgColor == b.bgColor &&
-           a.bgAlpha == b.bgAlpha && a.fpsColor == b.fpsColor && a.cpuColor == b.cpuColor &&
-           a.gpuColor == b.gpuColor && a.ramColor == b.ramColor && a.vramColor == b.vramColor &&
-           a.frametimeColor == b.frametimeColor && a.textColor == b.textColor &&
-           a.textOutline == b.textOutline && a.textOutlineColor == b.textOutlineColor &&
+           a.bgAlpha == b.bgAlpha && a.fpsColor == b.fpsColor && a.cpuColor == b.cpuColor && a.gpuColor == b.gpuColor &&
+           a.ramColor == b.ramColor && a.vramColor == b.vramColor && a.frametimeColor == b.frametimeColor &&
+           a.textColor == b.textColor && a.textOutline == b.textOutline && a.textOutlineColor == b.textOutlineColor &&
            a.textOutlineThickness == b.textOutlineThickness && a.loadColorLow == b.loadColorLow &&
            a.loadColorMed == b.loadColorMed && a.loadColorHigh == b.loadColorHigh &&
            a.textUpdateInterval == b.textUpdateInterval && a.hdrPaperWhite == b.hdrPaperWhite;
@@ -423,8 +422,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     } else {
         lastEncoderOverloadTick = 0;
     }
-    bool showOverloadWarning =
-        (lastEncoderOverloadTick != 0) && ((nowTick64 - lastEncoderOverloadTick) <= 5000);
+    bool showOverloadWarning = (lastEncoderOverloadTick != 0) && ((nowTick64 - lastEncoderOverloadTick) <= 5000);
     PresentDebugSample* activeDebugSample = PerfLogger::Get().GetActiveDebugSample();
     bool showGraph = cfg.showFrameTime && metrics;
     bool shouldRefreshGraph = showGraph;

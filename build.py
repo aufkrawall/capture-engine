@@ -22,6 +22,24 @@ IS_LINUX = sys.platform.startswith("linux")
 IS_WSL = IS_LINUX and "microsoft" in platform.uname().release.lower()
 
 # --- Optimization Flags ---
+# These flags are safe for both host and injected binaries and provide basic
+# hardening without changing program behavior. _FORTIFY_SOURCE requires the
+# optimization level that all current build profiles already enable.
+COMMON_HARDENING_FLAGS = [
+    "-fstack-protector-strong",
+    "-D_FORTIFY_SOURCE=2",
+]
+CPP_STD_FLAGS = ["-std=c++20"]
+COMMON_WARNING_FLAGS = [
+    "-Wall",
+    "-Wextra",
+    "-Wshadow",
+    "-Wformat=2",
+    "-Wundef",
+    "-Wno-unused-parameter",
+]
+COMMON_WINDOWS_COMPILE_FLAGS = ["-D_WIN32_WINNT=0x0A00"]
+
 # x86-64-v3 requires AVX2 (Haswell 2013+), provides ~10-20% performance boost
 # Used only for the host process (captureengine.exe) where CPU is controlled.
 OPT_FLAGS_X64 = [
@@ -33,7 +51,7 @@ OPT_FLAGS_X64 = [
     "-fvisibility=hidden",
     "-ffunction-sections",
     "-fdata-sections",
-]
+] + COMMON_HARDENING_FLAGS
 
 # Hook DLL flags: injected into arbitrary game processes — must not require AVX2
 # and must not use -ffast-math (audio encoder correctness requires IEEE 754 semantics).
@@ -48,7 +66,7 @@ HOOK_OPT_FLAGS_X64 = [
     # Hook DLL performs aliased pointer access (vtable patching, SHM reinterpret_cast).
     # Without -fno-strict-aliasing the optimizer may miscompile these pointer casts.
     "-fno-strict-aliasing",
-]
+] + COMMON_HARDENING_FLAGS
 
 # x86 builds use generic optimization (no AVX on 32-bit)
 OPT_FLAGS_X86 = [
@@ -60,7 +78,7 @@ OPT_FLAGS_X86 = [
     "-fvisibility=hidden",
     "-ffunction-sections",
     "-fdata-sections",
-]
+] + COMMON_HARDENING_FLAGS
 
 # x86 hook DLL: no -ffast-math (audio correctness)
 # LTO is NOT enabled for x86: the mingw32 toolchain uses a GCC runtime that
@@ -73,7 +91,7 @@ HOOK_OPT_FLAGS_X86 = [
     "-ffunction-sections",
     "-fdata-sections",
     "-fno-strict-aliasing",  # Same aliasing concerns as x64 hook DLL
-]
+] + COMMON_HARDENING_FLAGS
 
 # Linker optimization flags
 # -g1 keeps minimal DWARF info (function names + file/line) for crash symbolication
@@ -104,6 +122,37 @@ CAPTURE_BIN_DIR = os.path.join(INSTALLED_DIR, "captureengine")
 TESTAPP_BIN_DIR = os.path.join(INSTALLED_DIR, "testapp")
 BIN_DIR = CAPTURE_BIN_DIR  # output captureengine binaries to installed\captureengine
 LOG_FILE = os.path.join(PROJECT_ROOT, "build.log")
+
+
+def append_linux_msys2_include(flags: List[str]) -> None:
+    if not IS_LINUX:
+        return
+    msys2_dir = get_linux_msys2_dir()
+    msys2_include = os.path.join(msys2_dir, "clang64", "include")
+    if os.path.exists(msys2_include):
+        flags.append("-I" + msys2_include)
+
+
+def make_cpp_cflags(
+    opt_flags: List[str],
+    *,
+    arch_flags: Optional[List[str]] = None,
+    extra_flags: Optional[List[str]] = None,
+    suppress_microsoft_exception_spec: bool = False,
+    production_build: bool = False,
+) -> List[str]:
+    flags = CPP_STD_FLAGS + opt_flags + (arch_flags or []) + COMMON_WARNING_FLAGS
+    if suppress_microsoft_exception_spec:
+        flags.append("-Wno-microsoft-exception-spec")
+    flags += COMMON_WINDOWS_COMPILE_FLAGS
+    flags.append("-I" + os.path.join(PROJECT_ROOT, "common"))
+    if production_build:
+        flags.append("-DCE_PRODUCTION_BUILD=1")
+    if extra_flags:
+        flags.extend(extra_flags)
+    append_linux_msys2_include(flags)
+    return flags
+
 
 # IMGUI_URL and IMGUI_DIR removed - Custom overlay renderer replaces ImGui
 
@@ -2507,30 +2556,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
     clang_exe = get_compiler_exe("x64")
     pkg_config = shutil.which("pkg-config") if IS_LINUX else os.path.join(clang_bin, "pkg-config.exe")
 
-    cflags = (
-        [
-            "-std=c++20",
-        ]
-        + OPT_FLAGS_X64
-        + [
-            "-Wall",
-            "-Wextra",
-            "-Wshadow",
-            "-Wformat=2",
-            "-Wundef",
-            "-Wno-unused-parameter",
-            "-D_WIN32_WINNT=0x0A00",
-            "-I" + os.path.join(PROJECT_ROOT, "common"),
-        ]
-        + (["-DCE_PRODUCTION_BUILD=1"] if env.get("CE_PRODUCTION_BUILD") == "1" else [])
-    )
-
-    # Add MSYS2 include path on Linux for Windows headers (cppwinrt, etc.)
-    if IS_LINUX:
-        msys2_dir = get_linux_msys2_dir()
-        msys2_include = os.path.join(msys2_dir, "clang64", "include")
-        if os.path.exists(msys2_include):
-            cflags.append("-I" + msys2_include)
+    cflags = make_cpp_cflags(OPT_FLAGS_X64, production_build=env.get("CE_PRODUCTION_BUILD") == "1")
 
     # --- Architecture Loop ---
     arch_targets = ["x64", "x86"]
@@ -2561,57 +2587,19 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         curr_pkg_config = shutil.which("pkg-config") if IS_LINUX else os.path.join(curr_clang_bin, "pkg-config.exe")
 
         if arch == "x64":
-            curr_cflags = (
-                [
-                    "-std=c++20",
-                ]
-                + OPT_FLAGS_X64
-                + [
-                    "-Wall",
-                    "-Wextra",
-                    "-Wshadow",
-                    "-Wformat=2",
-                    "-Wundef",
-                    "-Wno-unused-parameter",
-                    "-Wno-microsoft-exception-spec",
-                    "-D_WIN32_WINNT=0x0A00",
-                    "-I" + os.path.join(PROJECT_ROOT, "common"),
-                ]
-            )
+            curr_cflags = make_cpp_cflags(OPT_FLAGS_X64, suppress_microsoft_exception_spec=True)
         else:  # x86
-            curr_cflags = (
-                [
-                    "-std=c++20",
-                ]
-                + OPT_FLAGS_X86
-                + [
-                    "-m32",
-                    "-mstackrealign",
-                    "-Wall",
-                    "-Wextra",
-                    "-Wshadow",
-                    "-Wformat=2",
-                    "-Wundef",
-                    "-Wno-unused-parameter",
-                    "-Wno-microsoft-exception-spec",
-                    "-D_WIN32_WINNT=0x0A00",
-                    "-I" + os.path.join(PROJECT_ROOT, "common"),
-                ]
+            curr_cflags = make_cpp_cflags(
+                OPT_FLAGS_X86,
+                arch_flags=["-m32", "-mstackrealign"],
+                suppress_microsoft_exception_spec=True,
             )
-        # Add MSYS2 include path on Linux for Windows headers
-        if IS_LINUX:
-            msys2_dir = get_linux_msys2_dir()
-            msys2_include = os.path.join(msys2_dir, "clang64", "include")
-            if os.path.exists(msys2_include):
-                curr_cflags.append("-I" + msys2_include)
 
         if arch == "x64":
             if not IS_LINUX:
                 mingw_lib = os.path.join(MSYS2_DIR, "clang64", "lib")
 
         if arch == "x86":
-            curr_cflags.append("-m32")
-            curr_cflags.append("-mstackrealign")
             if not IS_LINUX:
                 try:
                     # Use curr_clang_exe (the x86 clang++ binary) not clang_bin
@@ -2725,45 +2713,18 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         # Hook DLL must use conservative arch flags (injected into game processes
         # with unknown CPU support). Replace curr_cflags march/ffast-math flags.
         if arch == "x64":
-            hook_base_cflags = (
-                ["-std=c++20"]
-                + HOOK_OPT_FLAGS_X64
-                + [
-                    "-Wall",
-                    "-Wextra",
-                    "-Wshadow",
-                    "-Wformat=2",
-                    "-Wundef",
-                    "-Wno-unused-parameter",
-                    "-Wno-microsoft-exception-spec",
-                    "-D_WIN32_WINNT=0x0A00",
-                    "-I" + os.path.join(PROJECT_ROOT, "common"),
-                ]
-            )
+            hook_base_cflags = make_cpp_cflags(HOOK_OPT_FLAGS_X64, suppress_microsoft_exception_spec=True)
         else:
-            hook_base_cflags = (
-                ["-std=c++20"]
-                + HOOK_OPT_FLAGS_X86
-                + [
-                    "-m32",
-                    "-mstackrealign",
-                    "-Wall",
-                    "-Wextra",
-                    "-Wshadow",
-                    "-Wformat=2",
-                    "-Wundef",
-                    "-Wno-unused-parameter",
-                    "-Wno-microsoft-exception-spec",
-                    "-D_WIN32_WINNT=0x0A00",
-                    "-I" + os.path.join(PROJECT_ROOT, "common"),
-                ]
+            hook_base_cflags = make_cpp_cflags(
+                HOOK_OPT_FLAGS_X86,
+                arch_flags=["-m32", "-mstackrealign"],
+                suppress_microsoft_exception_spec=True,
             )
 
         hk_cflags = (
             hook_base_cflags
             + ["-DVK_NO_PROTOTYPES", "-DBUILDING_CAPTURE_HOOK"]
             + [  # Vulkan hooks now in layer
-                "-I" + os.path.join(PROJECT_ROOT, "common"),
                 "-I" + os.path.join(PROJECT_ROOT, "hook", "common"),
                 "-I" + os.path.join(PROJECT_ROOT, "hook", "apis"),
                 "-I" + os.path.join(PROJECT_ROOT, "hook", "capture"),
@@ -3162,18 +3123,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         x86_clang = get_compiler_exe("x86")
         # Check if x86 compiler exists (on Linux it might not)
         if IS_LINUX or os.path.exists(x86_clang):
-            x86_cflags = [
-                "-std=c++20",
-                "-O3",
-                "-m32",
-                "-Wall",
-                "-Wextra",
-                "-Wshadow",
-                "-Wformat=2",
-                "-Wundef",
-                "-Wno-unused-parameter",
-                "-D_WIN32_WINNT=0x0A00",
-            ]
+            x86_cflags = make_cpp_cflags(["-O3"], arch_flags=["-m32"])
             compile_vulkan_layer(x86_env, x86_clang, x86_cflags, "x86")
     elif env.get("CE_SANITIZE") == "1":
         log("Sanitizer mode: skipping x86 Vulkan layer (ASan runtime unavailable)")

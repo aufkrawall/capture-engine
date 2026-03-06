@@ -18,12 +18,8 @@ static std::mutex g_SyncMutex;
 // Sync HookContext with legacy global variables
 // This provides a bridge during the gradual migration from scattered globals to
 // HookContext.
-//
-// TODO(MIGRATION): This function should be called:
-//   1. After HookContext::Initialize() completes
-//   2. After any legacy global is modified that has a HookContext equivalent
-//   3. Before accessing state that might differ between the two systems
-//
+// Callers already sync after HookContext initialization and when shared legacy
+// state changes; this bridge remains until the remaining globals are retired.
 // Future migration steps:
 //   - Move ownership of IPCClient from g_IPC to HookContext
 //   - Move ownership of AppConfig from g_pLocalConfig to HookContext

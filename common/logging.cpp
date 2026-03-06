@@ -1,5 +1,6 @@
 #include "logging.h"
 #include <windows.h>
+#include <atomic>
 #include <cstdarg>
 #include <cstdio>
 #include <filesystem>
@@ -8,6 +9,7 @@
 
 static FILE* g_LogFile = nullptr;
 static std::mutex g_LogMutex;
+static std::atomic<bool> g_LoggingEnabled{false};
 
 void Log_Init(const std::string& filename) {
     std::lock_guard<std::mutex> lock(g_LogMutex);
@@ -22,10 +24,12 @@ void Log_Init(const std::string& filename) {
         setvbuf(g_LogFile, nullptr, _IOLBF, 4096);
         fprintf(g_LogFile, "[BUILD] Version=%s Built=%s\n", CAPTURE_VERSION, BUILD_TIMESTAMP);
     }
+    g_LoggingEnabled.store(g_LogFile != nullptr, std::memory_order_release);
 }
 
 void Log_Shutdown() {
     std::lock_guard<std::mutex> lock(g_LogMutex);
+    g_LoggingEnabled.store(false, std::memory_order_release);
     if (g_LogFile) {
         fclose(g_LogFile);
         g_LogFile = nullptr;
@@ -65,8 +69,8 @@ void Log(LogLevel level, const char* format, ...) {
 }
 
 void LogInfo(const char* format, ...) {
-    if (!g_LogFile)
-        return;  // Skip all work when logging disabled
+    if (!g_LoggingEnabled.load(std::memory_order_acquire))
+        return;
     va_list args;
     va_start(args, format);
     // Helper to avoid duplicate va_list logic, but we can't forward va_list
@@ -79,8 +83,8 @@ void LogInfo(const char* format, ...) {
 }
 
 void LogError(const char* format, ...) {
-    if (!g_LogFile)
-        return;  // Skip all work when logging disabled
+    if (!g_LoggingEnabled.load(std::memory_order_acquire))
+        return;
     va_list args;
     va_start(args, format);
     char buffer[2048];
@@ -90,8 +94,8 @@ void LogError(const char* format, ...) {
 }
 
 void LogDebug(const char* format, ...) {
-    if (!g_LogFile)
-        return;  // Skip all work when logging disabled
+    if (!g_LoggingEnabled.load(std::memory_order_acquire))
+        return;
     va_list args;
     va_start(args, format);
     char buffer[2048];
@@ -101,8 +105,8 @@ void LogDebug(const char* format, ...) {
 }
 
 void LogWarn(const char* format, ...) {
-    if (!g_LogFile)
-        return;  // Skip all work when logging disabled
+    if (!g_LoggingEnabled.load(std::memory_order_acquire))
+        return;
     va_list args;
     va_start(args, format);
     char buffer[2048];

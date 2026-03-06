@@ -104,6 +104,9 @@ private:
     HANDLE hPipe;
     bool connected;
     uint32_t lastSequence;
+    HANDLE connectEvent;
+    OVERLAPPED connectOverlapped;
+    bool connectPending;
 };
 
 // Client side (controller) - sends commands to child processes

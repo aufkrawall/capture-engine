@@ -2,8 +2,10 @@
 #define WIN32_LEAN_AND_MEAN
 #define WINVER 0x0A00
 #define _WIN32_WINNT 0x0A00
+// clang-format off
 #include <windows.h>
 #include <avrt.h>
+// clang-format on
 #include <d3d11.h>
 #include <d3d11_1.h>
 #include <dxgi.h>

@@ -399,7 +399,8 @@ HRESULT WINAPI Wrapped_D3D11CreateDevice(IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE
 
     if (ppImmediateContext) {
         *ppImmediateContext = pRealContext;
-        // TODO: Could wrap context here too
+        // Keep the runtime-created immediate context unchanged here; callers that
+        // need the wrapped variant can still obtain it via the wrapped device.
     }
 
     return hr;

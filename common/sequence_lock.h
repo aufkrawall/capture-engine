@@ -25,6 +25,7 @@
 #include <atomic>
 #include <cstdint>
 #include <thread>
+#include <type_traits>
 
 namespace ce {
 
@@ -32,11 +33,9 @@ template <typename T>
 class SequenceLock {
 public:
     static_assert(sizeof(T) <= 1024, "SequenceLock data should fit in cache line for efficiency");
+    static_assert(std::is_trivially_copyable_v<T>, "SequenceLock requires trivially copyable data");
 
-    SequenceLock() : sequence_(0) {
-        // Initialize data to zero
-        memset(&data_, 0, sizeof(T));
-    }
+    SequenceLock() : sequence_(0), data_{} {}
 
     // Non-copyable, non-movable
     SequenceLock(const SequenceLock&) = delete;
@@ -158,18 +157,32 @@ public:
      * @return true if config was updated
      */
     bool ReadIfChanged(T& out, uint32_t& lastVersion) const {
-        uint32_t currentVersion = lock_.GetSequence();
+        constexpr int MAX_RETRIES = 100;
 
-        if (currentVersion == lastVersion || lock_.IsWriting()) {
-            return false;  // No change or write in progress
+        for (int retry = 0; retry < MAX_RETRIES; ++retry) {
+            uint32_t seqBefore = lock_.GetSequence();
+
+            if (seqBefore == lastVersion) {
+                return false;  // No change
+            }
+
+            if (seqBefore & 1) {
+                std::this_thread::yield();
+                continue;
+            }
+
+            if (!lock_.Read(out)) {
+                return false;
+            }
+
+            uint32_t seqAfter = lock_.GetSequence();
+            if (seqBefore == seqAfter) {
+                lastVersion = seqAfter;
+                return true;
+            }
         }
 
-        if (lock_.Read(out)) {
-            lastVersion = currentVersion;
-            return true;
-        }
-
-        return false;  // Read failed (too many retries)
+        return false;  // Read failed or kept racing with writers
     }
 
     /**

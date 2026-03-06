@@ -12,8 +12,8 @@
 #include "../../common/raii_helpers.h"
 #include "../apis/graphics_hook.h"
 #include "../common/dxgi_shared.h"
-#include "../common/performance_metrics.h"
 #include "../common/perf_logger.h"
+#include "../common/performance_metrics.h"
 #include "hook_common.h"
 
 // External overlay functions (implemented in dx11_hook.cpp / dx12_hook.cpp)
@@ -663,8 +663,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         }
     }
     if (activeDebugSample) {
-        activeDebugSample->swapchainAcquireUs =
-            static_cast<int32_t>(PerfLogger::GetQpcUs() - swapchainAcquireStartUs);
+        activeDebugSample->swapchainAcquireUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - swapchainAcquireStartUs);
     }
     // CRITICAL FIX: RAII guard to ensure Release is always called
     auto realSwapchainGuard = ::ce::make_scope_guard([&] {
@@ -791,8 +790,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         DX11_ProcessFrameExternal(pRealCached);
     }
     if (activeDebugSample) {
-        activeDebugSample->processFrameExternalUs =
-            static_cast<int32_t>(PerfLogger::GetQpcUs() - processFrameStartUs);
+        activeDebugSample->processFrameExternalUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - processFrameStartUs);
     }
 
     // FPS Limiter - apply frame pacing before present

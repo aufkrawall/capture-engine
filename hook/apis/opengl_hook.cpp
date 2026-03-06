@@ -620,8 +620,7 @@ public:
                     if (SUCCEEDED(adapter->GetParent(IID_PPV_ARGS(&factory)))) {
                         HWND wnd = WindowFromDC(hDC);
                         if (wnd)
-                            factory->MakeWindowAssociation(wnd,
-                                                           DXGI_MWA_NO_WINDOW_CHANGES | DXGI_MWA_NO_ALT_ENTER);
+                            factory->MakeWindowAssociation(wnd, DXGI_MWA_NO_WINDOW_CHANGES | DXGI_MWA_NO_ALT_ENTER);
                         factory->Release();
                     }
                     adapter->Release();

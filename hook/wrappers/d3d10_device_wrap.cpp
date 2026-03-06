@@ -3,6 +3,7 @@
  */
 
 #include "d3d10_device_wrap.h"
+#include <cstdlib>
 #include "hook_common.h"
 
 // ============================================================================
@@ -34,7 +35,58 @@ CWrapD3D10Device::~CWrapD3D10Device() {
 void CWrapD3D10Device::ApplySamplerOverrides(D3D10_SAMPLER_DESC* pDesc) {
     if (!pDesc)
         return;
-    // TODO: Get from config and apply AF/mip overrides
+    if (!g_GraphicsOverridesActive.load(std::memory_order_acquire))
+        return;
+
+    if (pDesc->MaxLOD == 0.0f || pDesc->MinLOD == pDesc->MaxLOD)
+        return;
+
+    const auto& gfx = GetActiveGraphicsConfig();
+
+    const std::string& af = gfx.anisotropicFiltering;
+    if (af != "default" && !af.empty()) {
+        if (af == "off") {
+            if (pDesc->Filter == D3D10_FILTER_ANISOTROPIC || pDesc->Filter == D3D10_FILTER_COMPARISON_ANISOTROPIC) {
+                bool comparison = (pDesc->Filter == D3D10_FILTER_COMPARISON_ANISOTROPIC);
+                pDesc->Filter =
+                    comparison ? D3D10_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR : D3D10_FILTER_MIN_MAG_MIP_LINEAR;
+                pDesc->MaxAnisotropy = 1;
+            }
+        } else {
+            UINT maxAniso = 16;
+            if (af == "2x")
+                maxAniso = 2;
+            else if (af == "4x")
+                maxAniso = 4;
+            else if (af == "8x")
+                maxAniso = 8;
+
+            if (pDesc->AddressU != D3D10_TEXTURE_ADDRESS_BORDER && pDesc->AddressV != D3D10_TEXTURE_ADDRESS_BORDER &&
+                pDesc->AddressW != D3D10_TEXTURE_ADDRESS_BORDER) {
+                bool comparison = (pDesc->Filter >= D3D10_FILTER_COMPARISON_MIN_MAG_MIP_POINT);
+                pDesc->Filter = comparison ? D3D10_FILTER_COMPARISON_ANISOTROPIC : D3D10_FILTER_ANISOTROPIC;
+                pDesc->MaxAnisotropy = maxAniso;
+            }
+        }
+    }
+
+    const std::string& bias = gfx.mipBias;
+    if (bias != "default" && !bias.empty()) {
+        char* end = nullptr;
+        float userBiasVal = std::strtof(bias.c_str(), &end);
+        if (end != bias.c_str()) {
+            const std::string& mode = gfx.mipBiasMode;
+            float originalBias = pDesc->MipLODBias;
+            if (mode == "offset") {
+                pDesc->MipLODBias = originalBias + userBiasVal;
+            } else if (mode == "base") {
+                if (originalBias < 0.0f)
+                    pDesc->MipLODBias = originalBias + userBiasVal;
+            } else {
+                pDesc->MipLODBias = userBiasVal;
+            }
+        }
+    }
 }
 
 // ============================================================================

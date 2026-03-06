@@ -73,7 +73,10 @@ ProcessIPCServer::ProcessIPCServer(ProcessMode mode)
     : mode(mode),
       hPipe(INVALID_HANDLE_VALUE),
       connected(false),
-      lastSequence(0) {}
+      lastSequence(0),
+      connectEvent(NULL),
+      connectOverlapped{},
+      connectPending(false) {}
 
 ProcessIPCServer::~ProcessIPCServer() {
     Shutdown();
@@ -102,49 +105,116 @@ bool ProcessIPCServer::Init() {
         return false;
     }
 
+    connectEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+    if (!connectEvent) {
+        LogError("[IPC] Failed to create connect event: %d", GetLastError());
+        CloseHandle(hPipe);
+        hPipe = INVALID_HANDLE_VALUE;
+        return false;
+    }
+
+    connectOverlapped = {};
+    connectOverlapped.hEvent = connectEvent;
+
     LogInfo("[IPC] Server pipe created, waiting for connection...");
     return true;
 }
 
 void ProcessIPCServer::Shutdown() {
+    if (hPipe != INVALID_HANDLE_VALUE && connectPending) {
+        CancelIoEx(hPipe, &connectOverlapped);
+        connectPending = false;
+    }
     if (hPipe != INVALID_HANDLE_VALUE) {
         DisconnectNamedPipe(hPipe);
         CloseHandle(hPipe);
         hPipe = INVALID_HANDLE_VALUE;
     }
+    if (connectEvent) {
+        CloseHandle(connectEvent);
+        connectEvent = NULL;
+    }
+    connectOverlapped = {};
     connected = false;
+    lastSequence = 0;
 }
 
 bool ProcessIPCServer::PollCommand(ProcessCommand& outCmd, char* outPayload, size_t payloadSize) {
     if (hPipe == INVALID_HANDLE_VALUE)
         return false;
 
+    auto ResetConnectOverlapped = [this]() {
+        connectPending = false;
+        connectOverlapped = {};
+        connectOverlapped.hEvent = connectEvent;
+    };
+
     // If not connected, try to accept connection (non-blocking)
     if (!connected) {
-        OVERLAPPED ov = {};
-        ce::HandleGuard ovEvent(CreateEvent(NULL, TRUE, FALSE, NULL));
-        ov.hEvent = ovEvent.get();
-        ConnectNamedPipe(hPipe, &ov);
+        if (!connectPending) {
+            ResetEvent(connectEvent);
+            ResetConnectOverlapped();
 
-        DWORD result = WaitForSingleObject(ov.hEvent, 0);  // Immediate check
+            BOOL connectResult = ConnectNamedPipe(hPipe, &connectOverlapped);
+            if (connectResult) {
+                connected = true;
+                LogInfo("[IPC] Controller connected");
+            } else {
+                DWORD connectError = GetLastError();
+                if (connectError == ERROR_PIPE_CONNECTED) {
+                    SetEvent(connectEvent);
+                    connected = true;
+                    LogInfo("[IPC] Controller already connected");
+                } else if (connectError == ERROR_IO_PENDING) {
+                    connectPending = true;
+                    return false;
+                } else {
+                    LogError("[IPC] ConnectNamedPipe failed: %d", connectError);
+                    return false;
+                }
+            }
+        }
 
-        if (result == WAIT_OBJECT_0) {
+        if (connectPending) {
+            DWORD waitResult = WaitForSingleObject(connectEvent, 0);
+            if (waitResult == WAIT_TIMEOUT) {
+                return false;
+            }
+            if (waitResult != WAIT_OBJECT_0) {
+                LogError("[IPC] WaitForSingleObject on connect event failed: %d", GetLastError());
+                CancelIoEx(hPipe, &connectOverlapped);
+                ResetConnectOverlapped();
+                return false;
+            }
+
+            DWORD bytesTransferred = 0;
+            if (!GetOverlappedResult(hPipe, &connectOverlapped, &bytesTransferred, FALSE)) {
+                DWORD connectError = GetLastError();
+                if (connectError != ERROR_PIPE_CONNECTED) {
+                    if (connectError == ERROR_BROKEN_PIPE || connectError == ERROR_NO_DATA) {
+                        DisconnectNamedPipe(hPipe);
+                    } else {
+                        LogError("[IPC] ConnectNamedPipe completion failed: %d", connectError);
+                    }
+                    ResetConnectOverlapped();
+                    return false;
+                }
+            }
+
+            ResetConnectOverlapped();
             connected = true;
             LogInfo("[IPC] Controller connected");
-        } else if (GetLastError() == ERROR_PIPE_CONNECTED) {
-            connected = true;
-            LogInfo("[IPC] Controller already connected");
-        } else {
-            return false;  // Not connected yet
         }
     }
 
     // Check for incoming message (non-blocking)
     DWORD bytesAvailable = 0;
     if (!PeekNamedPipe(hPipe, NULL, 0, NULL, &bytesAvailable, NULL)) {
-        if (GetLastError() == ERROR_BROKEN_PIPE) {
+        DWORD pipeError = GetLastError();
+        if (pipeError == ERROR_BROKEN_PIPE || pipeError == ERROR_NO_DATA) {
             LogInfo("[IPC] Controller disconnected");
             connected = false;
+            ResetConnectOverlapped();
             DisconnectNamedPipe(hPipe);
         }
         return false;

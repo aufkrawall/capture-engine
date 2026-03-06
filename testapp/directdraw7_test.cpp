@@ -3,8 +3,10 @@
 #define WINVER 0x0A00
 #define _WIN32_WINNT 0x0A00
 #define DIRECTDRAW_VERSION 0x0700
+// clang-format off
 #include <windows.h>
 #include <avrt.h>
+// clang-format on
 #include <ddraw.h>
 #include <algorithm>
 #include <chrono>
@@ -396,7 +398,7 @@ static bool ResetDirectDraw(HWND hwnd) {
 
     printf("DirectDraw7: reset presentation surfaces after focus/display change (%s)\n",
            g_ExclusiveFullscreen ? "fullscreen flip chain"
-                                  : (g_DesktopBlitFullscreen ? "desktop fullscreen blit" : "windowed blit"));
+                                 : (g_DesktopBlitFullscreen ? "desktop fullscreen blit" : "windowed blit"));
     return true;
 }
 
@@ -516,8 +518,8 @@ int main(int argc, char* argv[]) {
         winH = wr.bottom - wr.top;
     }
 
-    HWND hwnd = CreateWindowW(L"CaptureTestDirectDraw7", L"DirectDraw7 Test", winStyle, posX, posY, winW, winH,
-                              nullptr, nullptr, wc.hInstance, nullptr);
+    HWND hwnd = CreateWindowW(L"CaptureTestDirectDraw7", L"DirectDraw7 Test", winStyle, posX, posY, winW, winH, nullptr,
+                              nullptr, wc.hInstance, nullptr);
     if (!hwnd)
         return 1;
 
@@ -532,8 +534,9 @@ int main(int argc, char* argv[]) {
     g_WindowActive = true;
     g_ResetPending = false;
 
-    const char* presentMode =
-        g_ExclusiveFullscreen ? "fullscreen flip chain" : (g_DesktopBlitFullscreen ? "desktop fullscreen blit" : "windowed blit");
+    const char* presentMode = g_ExclusiveFullscreen
+                                  ? "fullscreen flip chain"
+                                  : (g_DesktopBlitFullscreen ? "desktop fullscreen blit" : "windowed blit");
     printf("Running DirectDraw7 test render=%dx%d present=%dx%d (%s)\n", g_WindowWidth, g_WindowHeight, g_PresentWidth,
            g_PresentHeight, presentMode);
 

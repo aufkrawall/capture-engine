@@ -2,9 +2,11 @@
 #define WIN32_LEAN_AND_MEAN
 #define WINVER 0x0A00
 #define _WIN32_WINNT 0x0A00
+// clang-format off
 #include <windows.h>
-#include <GL/gl.h>
 #include <avrt.h>
+// clang-format on
+#include <GL/gl.h>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -124,11 +126,7 @@ static HGLRC CreateLegacyContext(HDC hDC) {
     }
 
     const int attribs[] = {
-        WGL_CONTEXT_MAJOR_VERSION_ARB,
-        2,
-        WGL_CONTEXT_MINOR_VERSION_ARB,
-        1,
-        0,
+        WGL_CONTEXT_MAJOR_VERSION_ARB, 2, WGL_CONTEXT_MINOR_VERSION_ARB, 1, 0,
     };
 
     HGLRC legacyContext = wglCreateContextAttribsARB(hDC, nullptr, attribs);

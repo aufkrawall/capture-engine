@@ -119,10 +119,7 @@ bool ShouldStartSensorProcess(const AppConfig& config) {
     return config.overlay.showCPU || config.overlay.showGPU || config.overlay.showRAM || config.overlay.showVRAM;
 }
 
-bool EnsureChildProcessConnected(ProcessMode mode,
-                                 HANDLE& processHandle,
-                                 ProcessIPCClient* client,
-                                 DWORD timeoutMs,
+bool EnsureChildProcessConnected(ProcessMode mode, HANDLE& processHandle, ProcessIPCClient* client, DWORD timeoutMs,
                                  const char* processName) {
     if (!processHandle || !IsProcessRunning(processHandle)) {
         if (client) {
@@ -640,13 +637,14 @@ bool CompleteControllerStartup() {
 
     LogInfo("[Controller] Ready. Press hotkey to start recording.");
     PrimeStartupCursor();
-    LogInfo("[StartupPerf] Controller startup: VulkanRegistration=%.3f ms, SpawnInject=%.3f ms, "
-            "SpawnMedia=%.3f ms, SpawnLimiter=%.3f ms, SpawnAux=%.3f ms, IPCConnect=%.3f ms, TrayCreate=%.3f ms, "
-            "RegisterHotkeys=%.3f ms, TotalToReady=%.3f ms",
-            QpcDeltaToMs(g_ControllerStartupTiming.vulkanRegUs), QpcDeltaToMs(injectSpawnUs), QpcDeltaToMs(mediaSpawnUs),
-            QpcDeltaToMs(limiterSpawnUs), QpcDeltaToMs(auxSpawnUs), QpcDeltaToMs(ipcConnectUs),
-            QpcDeltaToMs(g_ControllerStartupTiming.trayCreateUs), QpcDeltaToMs(hotkeyUs),
-            QpcDeltaToMs(Log_GetQpcUs() - g_ControllerStartupTiming.controllerStartUs));
+    LogInfo(
+        "[StartupPerf] Controller startup: VulkanRegistration=%.3f ms, SpawnInject=%.3f ms, "
+        "SpawnMedia=%.3f ms, SpawnLimiter=%.3f ms, SpawnAux=%.3f ms, IPCConnect=%.3f ms, TrayCreate=%.3f ms, "
+        "RegisterHotkeys=%.3f ms, TotalToReady=%.3f ms",
+        QpcDeltaToMs(g_ControllerStartupTiming.vulkanRegUs), QpcDeltaToMs(injectSpawnUs), QpcDeltaToMs(mediaSpawnUs),
+        QpcDeltaToMs(limiterSpawnUs), QpcDeltaToMs(auxSpawnUs), QpcDeltaToMs(ipcConnectUs),
+        QpcDeltaToMs(g_ControllerStartupTiming.trayCreateUs), QpcDeltaToMs(hotkeyUs),
+        QpcDeltaToMs(Log_GetQpcUs() - g_ControllerStartupTiming.controllerStartUs));
 
     if (g_AutoRecordEnabled) {
         LogInfo("[Controller] Auto-record enabled: delay=%dms, duration=%dms", g_AutoRecordDelayMs,

@@ -161,7 +161,7 @@ HRESULT STDMETHODCALLTYPE CWrapD3D11DeviceContext::SetPrivateDataInterface(REFGU
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::PSSetSamplers(UINT StartSlot, UINT NumSamplers,
                                                               ID3D11SamplerState* const* ppSamplers) {
-    // TODO: If device has override samplers, replace them here
+    // Sampler overrides are applied during CreateSamplerState interception.
     m_pReal->PSSetSamplers(StartSlot, NumSamplers, ppSamplers);
 }
 
