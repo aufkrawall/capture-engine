@@ -127,7 +127,7 @@ struct GraphicsConfig {
     bool forceMipBiasClamp = false;      // Force all texture mip bias values to 0
     std::string msaaSamples;             // "off", "2x", "4x", "8x"
     float cpuPrerenderLimit = -1.0f;     // -1 = default, 0, 0.5, 1-6
-    int backbufferCount = 0;             // 0 = default, 2-6
+    int backbufferCount = -1;            // -1 = app controlled, 2-6
     int frameLatency = 0;                // 0 = default, 1-6 (SetMaximumFrameLatency)
     bool sgssaa = false;                 // Enable Sparse Grid Supersampling
     bool disableAutoMipBias = false;     // Disable auto mip bias for SGSSAA
@@ -144,8 +144,8 @@ struct GraphicsConfig {
     std::string dlssPresetUltraQuality;
 
     // Global Presets
-    std::string dlssSRPreset;  // "default", "A"..."K"
-    std::string dlssRRPreset;  // "default", "A"..."G"
+    std::string dlssSRPreset;  // "default", "A"..."Z"
+    std::string dlssRRPreset;  // "default", "A"..."Z"
 
     // Ray Reconstruction Presets
     std::string dlssRRPresetDLAA;
@@ -203,7 +203,6 @@ struct GraphicsConfig {
 struct AppConfig {
     // General
     bool debugLogging = true;  // Default to true, matches LoadConfig default
-    bool perfMetricsLogging = false;
     std::string captureMethod;  // "inject", "screengrab", "auto"
     std::string logFilePath;    // Path to captureengine.log
 

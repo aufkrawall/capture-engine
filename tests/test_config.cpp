@@ -45,6 +45,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_EQ(config.captureMethod, "auto");
     EXPECT_EQ(config.video.scaling.sharpness, 100);
     EXPECT_FALSE(config.graphics.forceMipBiasClamp);
+    EXPECT_EQ(config.graphics.backbufferCount, -1);
 
     std::ifstream generated(missingFile);
     ASSERT_TRUE(generated.is_open());
@@ -53,6 +54,8 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("capture_method=auto"), std::string::npos);
     EXPECT_NE(generatedText.find("sharpness=100"), std::string::npos);
     EXPECT_NE(generatedText.find("; backbuffer_count - Values: 0, 2-6"), std::string::npos);
+    EXPECT_NE(generatedText.find("backbuffer_count=-1"), std::string::npos);
+    EXPECT_EQ(generatedText.find("perf_metrics_logging="), std::string::npos);
     EXPECT_EQ(generatedText.find("nvidia_smooth_motion_compat="), std::string::npos);
     EXPECT_EQ(generatedText.find("\nvfr="), std::string::npos);
     EXPECT_EQ(generatedText.find("\nvfr_audio_sync="), std::string::npos);
@@ -82,6 +85,20 @@ TEST_F(ConfigTest, ParseValues) {
     EXPECT_EQ(config.video.encoder, "av1_nvenc");
     EXPECT_EQ(config.video.fps, 60);
     EXPECT_EQ(config.video.bitrate, "50Mbps");
+}
+
+TEST_F(ConfigTest, LegacyPerfMetricsLoggingEnablesUnifiedDebugLogging) {
+    std::string iniContent =
+        "[General]\n"
+        "debug_logging=false\n"
+        "perf_metrics_logging=true\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_TRUE(config.debugLogging);
 }
 
 TEST_F(ConfigTest, WhitelistParsing) {
@@ -128,6 +145,19 @@ TEST_F(ConfigTest, ParseGraphicsOverrideOptions) {
     EXPECT_TRUE(config.graphics.forceMipBiasClamp);
 }
 
+TEST_F(ConfigTest, LegacyBackbufferZeroRemainsAppControlled) {
+    std::string iniContent =
+        "[Graphics]\n"
+        "backbuffer_count=0\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_EQ(config.graphics.backbufferCount, -1);
+}
+
 TEST_F(ConfigTest, LegacyScalingFilterStillAppliesWhenSharpnessMissing) {
     std::string iniContent =
         "[Scaling]\n"
@@ -140,4 +170,20 @@ TEST_F(ConfigTest, LegacyScalingFilterStillAppliesWhenSharpnessMissing) {
 
     EXPECT_EQ(config.video.scaling.quality, "best");
     EXPECT_EQ(config.video.scaling.sharpness, 50);
+}
+
+TEST(ConfigHelpersTest, BackbufferOverrideRangeStartsAtTwo) {
+    EXPECT_FALSE(HasBackbufferCountOverride(-1));
+    EXPECT_FALSE(HasBackbufferCountOverride(0));
+    EXPECT_FALSE(HasBackbufferCountOverride(1));
+    EXPECT_TRUE(HasBackbufferCountOverride(2));
+    EXPECT_TRUE(HasBackbufferCountOverride(6));
+    EXPECT_FALSE(HasBackbufferCountOverride(7));
+}
+
+TEST(ConfigHelpersTest, DlssPresetParsingAcceptsFutureLetters) {
+    EXPECT_EQ(ParseDlssPreset("A"), 1u);
+    EXPECT_EQ(ParseDlssPreset("Z"), 26u);
+    EXPECT_EQ(ParseDlssRRPreset("A"), 1u);
+    EXPECT_EQ(ParseDlssRRPreset("Z"), 26u);
 }

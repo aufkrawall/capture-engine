@@ -927,7 +927,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers(UINT BufferCount, UI
     // Apply backbuffer count override from config
     if (g_IPC) {
         const auto& gfx = GetActiveGraphicsConfig();
-        if (gfx.backbufferCount > 0) {
+        if (HasBackbufferCountOverride(gfx.backbufferCount)) {
             UINT requested = (UINT)gfx.backbufferCount;
             // Check swap effect from current swapchain desc
             DXGI_SWAP_CHAIN_DESC scDesc = {};
@@ -943,8 +943,6 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers(UINT BufferCount, UI
                     "(flip model)",
                     requested, gameCount);
             } else {
-                if (isFlip && requested < 2)
-                    requested = 2;
                 BufferCount = requested;
                 WrapperLog("ResizeBuffers: Overriding BufferCount to %u", BufferCount);
             }

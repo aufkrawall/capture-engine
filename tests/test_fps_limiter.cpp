@@ -15,6 +15,8 @@ protected:
         limiter.SetSharedMemory(mockShm.get());
         limiter.ResetMissedFrames();
         QueryPerformanceFrequency(&freq);
+        g_FGCompat.SetDLSSFGActive(false);
+        g_FGCompat.SetFSRFGActive(false);
     }
 };
 
@@ -252,6 +254,31 @@ TEST_F(FpsLimiterTest, AutoMode_UsesFGFallbackWhenFGActive) {
     EXPECT_LT(elapsedMs, 45.0);
 
     g_FGCompat.SetFSRFGActive(false);
+}
+
+TEST_F(FpsLimiterTest, FGFallback_UsesExplicitDLSSMultiplier) {
+    mockShm->runtimeState.isRecording = true;
+    mockShm->fpsLimiter.SetCaptureSyncEnabled(true);
+    mockShm->fpsLimiter.SetCaptureSyncMultiplier(1);
+    mockShm->fpsLimiter.SetCaptureFps(60);
+    mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kFGFallback));
+
+    g_FGCompat.SetDLSSFGMultiplier(3);
+    g_FGCompat.SetDLSSFGActive(true);
+
+    limiter.Apply();
+
+    LARGE_INTEGER start, end;
+    QueryPerformanceCounter(&start);
+    limiter.Apply();
+    QueryPerformanceCounter(&end);
+
+    double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
+
+    EXPECT_GE(elapsedMs, 40.0);
+    EXPECT_LT(elapsedMs, 70.0);
+
+    g_FGCompat.SetDLSSFGActive(false);
 }
 
 // Test ParseLimiterMode

@@ -5,6 +5,7 @@
 #include "apis/dx8_hook.h"
 #include "apis/dx9_hook.h"
 #include "apis/opengl_hook.h"
+#include "apis/streamline_hook.h"
 // CRITICAL: windows.h MUST come before psapi.h and intrin.h
 #include <windows.h>
 #include <winternl.h>
@@ -521,6 +522,14 @@ LSTATUS WINAPI HookedRegQueryValueExW(HKEY hKey, LPCWSTR lpValueName,
 static std::string g_SpoofedCmdLineA;
 static std::wstring g_SpoofedCmdLineW;
 
+void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
+  if (!module)
+    return;
+
+  if (g_hCheckHooksEvent)
+    SetEvent(g_hCheckHooksEvent);
+}
+
 LPSTR WINAPI HookedGetCommandLineA() {
   LPSTR original = OriginalGetCommandLineA();
 
@@ -608,21 +617,19 @@ HMODULE WINAPI HookedLoadLibraryA(LPCSTR lpLibFileName) {
     std::string redirect = GetRedirectedPath(lpLibFileName);
     if (!redirect.empty()) {
       HMODULE hMod = OriginalLoadLibraryA(redirect.c_str());
-      if (hMod && g_hCheckHooksEvent)
-        SetEvent(g_hCheckHooksEvent);
+      NotifyHookModuleLoaded(hMod, redirect.c_str());
       return hMod;
     }
   }
   HMODULE hMod = OriginalLoadLibraryA(lpLibFileName);
-  if (hMod && g_hCheckHooksEvent)
-    SetEvent(g_hCheckHooksEvent);
+  NotifyHookModuleLoaded(hMod, lpLibFileName);
   return hMod;
 }
 
 HMODULE WINAPI HookedLoadLibraryW(LPCWSTR lpLibFileName) {
+  char pathUtf8[MAX_PATH] = {};
   if (lpLibFileName) {
     // Convert to UTF-8 for check
-    char pathUtf8[MAX_PATH];
     WideCharToMultiByte(CP_UTF8, 0, lpLibFileName, -1, pathUtf8, MAX_PATH, NULL,
                         NULL);
     std::string redirect = GetRedirectedPath(pathUtf8);
@@ -642,15 +649,13 @@ HMODULE WINAPI HookedLoadLibraryW(LPCWSTR lpLibFileName) {
           redirectW.pop_back();
 
         HMODULE hMod = OriginalLoadLibraryW(redirectW.c_str());
-        if (hMod && g_hCheckHooksEvent)
-          SetEvent(g_hCheckHooksEvent);
+        NotifyHookModuleLoaded(hMod, redirect.c_str());
         return hMod;
       }
     }
   }
   HMODULE hMod = OriginalLoadLibraryW(lpLibFileName);
-  if (hMod && g_hCheckHooksEvent)
-    SetEvent(g_hCheckHooksEvent);
+  NotifyHookModuleLoaded(hMod, pathUtf8);
   return hMod;
 }
 
@@ -666,21 +671,19 @@ HMODULE WINAPI HookedLoadLibraryExA(LPCSTR lpLibFileName, HANDLE hFile,
       // LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR might be an issue. Let's try to trust
       // the user path is absolute.
       HMODULE hMod = OriginalLoadLibraryExA(redirect.c_str(), hFile, dwFlags);
-      if (hMod && g_hCheckHooksEvent)
-        SetEvent(g_hCheckHooksEvent);
+      NotifyHookModuleLoaded(hMod, redirect.c_str());
       return hMod;
     }
   }
   HMODULE hMod = OriginalLoadLibraryExA(lpLibFileName, hFile, dwFlags);
-  if (hMod && g_hCheckHooksEvent)
-    SetEvent(g_hCheckHooksEvent);
+  NotifyHookModuleLoaded(hMod, lpLibFileName);
   return hMod;
 }
 
 HMODULE WINAPI HookedLoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile,
                                     DWORD dwFlags) {
+  char pathUtf8[MAX_PATH] = {};
   if (lpLibFileName) {
-    char pathUtf8[MAX_PATH];
     WideCharToMultiByte(CP_UTF8, 0, lpLibFileName, -1, pathUtf8, MAX_PATH, NULL,
                         NULL);
     std::string redirect = GetRedirectedPath(pathUtf8);
@@ -696,33 +699,31 @@ HMODULE WINAPI HookedLoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile,
 
         HMODULE hMod =
             OriginalLoadLibraryExW(redirectW.c_str(), hFile, dwFlags);
-        if (hMod && g_hCheckHooksEvent)
-          SetEvent(g_hCheckHooksEvent);
+        NotifyHookModuleLoaded(hMod, redirect.c_str());
         return hMod;
       }
     }
   }
   HMODULE hMod = OriginalLoadLibraryExW(lpLibFileName, hFile, dwFlags);
-  if (hMod && g_hCheckHooksEvent)
-    SetEvent(g_hCheckHooksEvent);
+  NotifyHookModuleLoaded(hMod, pathUtf8);
   return hMod;
 }
 
 NTSTATUS NTAPI HookedLdrLoadDll(PWSTR SearchPath, PULONG DllCharacteristics,
                                 PUNICODE_STRING DllName, PVOID *BaseAddress) {
+  std::string requestedPath;
   if (DllName && DllName->Buffer && DllName->Length > 0 && OriginalLdrLoadDll) {
     std::wstring requestedW(DllName->Buffer, DllName->Length / sizeof(wchar_t));
 
     if (!requestedW.empty()) {
-      int utf8Len = WideCharToMultiByte(CP_UTF8, 0, requestedW.c_str(),
-                                        static_cast<int>(requestedW.size()),
-                                        nullptr, 0, nullptr, nullptr);
+      int utf8Len =
+          WideCharToMultiByte(CP_UTF8, 0, requestedW.c_str(), -1, nullptr, 0, nullptr, nullptr);
       if (utf8Len > 0) {
-        std::string requestedPath;
         requestedPath.resize(static_cast<size_t>(utf8Len));
-        WideCharToMultiByte(CP_UTF8, 0, requestedW.c_str(),
-                            static_cast<int>(requestedW.size()),
-                            requestedPath.data(), utf8Len, nullptr, nullptr);
+        WideCharToMultiByte(CP_UTF8, 0, requestedW.c_str(), -1, requestedPath.data(), utf8Len, nullptr, nullptr);
+        if (!requestedPath.empty() && requestedPath.back() == '\0') {
+          requestedPath.pop_back();
+        }
 
         std::string redirect = GetRedirectedPath(requestedPath);
         if (!redirect.empty()) {
@@ -743,8 +744,8 @@ NTSTATUS NTAPI HookedLdrLoadDll(PWSTR SearchPath, PULONG DllCharacteristics,
             NTSTATUS status = OriginalLdrLoadDll(SearchPath, DllCharacteristics,
                                                  &redirectName, BaseAddress);
             if (NT_SUCCESS(status)) {
-              if (g_hCheckHooksEvent)
-                SetEvent(g_hCheckHooksEvent);
+              NotifyHookModuleLoaded(BaseAddress ? (HMODULE)*BaseAddress : nullptr,
+                                     redirect.c_str());
               return status;
             }
           }
@@ -758,8 +759,9 @@ NTSTATUS NTAPI HookedLdrLoadDll(PWSTR SearchPath, PULONG DllCharacteristics,
 
   NTSTATUS status = OriginalLdrLoadDll(SearchPath, DllCharacteristics, DllName,
                                        BaseAddress);
-  if (NT_SUCCESS(status) && g_hCheckHooksEvent)
-    SetEvent(g_hCheckHooksEvent);
+  if (NT_SUCCESS(status))
+    NotifyHookModuleLoaded(BaseAddress ? (HMODULE)*BaseAddress : nullptr,
+                           requestedPath.c_str());
   return status;
 }
 
@@ -1175,6 +1177,7 @@ void CheckAndInstallHooks() {
   // activation. Now safe with dedicated overlay queue - no race conditions with
   // game queue.
   FFXHook::Init();
+  StreamlineHook::Init();
 
   // Install NVNGX and D3DKMT hooks for all games (injection delay prevents
   // D3D12 init crashes)
@@ -1246,9 +1249,9 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
 #endif // ENABLE_D3D12_WRAPPER
     }
 
-    // Keep the per-frame CSV profiler opt-in; normal debug logging already covers
-    // the common diagnostics without per-present disk traffic.
-    if (g_pLocalConfig && g_pLocalConfig->debugLogging && g_pLocalConfig->perfMetricsLogging) {
+    // perf_metrics_logging now folds into debug_logging so a single switch
+    // controls all hook-side diagnostics.
+    if (g_pLocalConfig && g_pLocalConfig->debugLogging) {
       char perfLogPath[MAX_PATH];
       snprintf(perfLogPath, sizeof(perfLogPath),
                "%s\\logs\\perf_metrics_%d.csv", dir.c_str(),

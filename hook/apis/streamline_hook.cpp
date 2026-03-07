@@ -1,0 +1,706 @@
+#include "streamline_hook.h"
+#include <windows.h>
+#include <algorithm>
+#include <atomic>
+#include <cstdint>
+#include <cstring>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include "../common/fg_detection.h"
+#include "../common/hook_common.h"
+#include "../wrappers/iat_hook.h"
+#include "../wrappers/inline_hook.h"
+
+namespace {
+
+using slResult = int;
+
+constexpr slResult kSlResultOk = 0;
+constexpr slResult kSlResultErrorInvalidState = 38;
+constexpr uint32_t kSLFeatureDLSSG = 1000;
+constexpr size_t kSLStructVersion1 = 1;
+constexpr size_t kSLStructVersion2 = 2;
+constexpr size_t kSLStructVersion3 = 3;
+constexpr size_t kSLStructVersion4 = 4;
+constexpr char kSLBooleanInvalid = 2;
+
+struct slStructType {
+    uint32_t data1;
+    uint16_t data2;
+    uint16_t data3;
+    uint8_t data4[8];
+};
+
+struct slBaseStructure {
+    slBaseStructure() = default;
+    slBaseStructure(slStructType type, size_t version) : structType(type), structVersion(version) {}
+
+    slBaseStructure* next = nullptr;
+    slStructType structType{};
+    size_t structVersion = 0;
+};
+
+constexpr slStructType kDLSSGOptionsStructType = {
+    0xfac5f1cb, 0x2dfd, 0x4f36, {0xa1, 0xe6, 0x3a, 0x9e, 0x86, 0x52, 0x56, 0xc5}};
+constexpr slStructType kDLSSGStateStructType = {
+    0xcc8ac8e1, 0xa179, 0x44f5, {0x97, 0xfa, 0xe7, 0x41, 0x12, 0xf9, 0xbc, 0x61}};
+constexpr slStructType kViewportHandleStructType = {
+    0x171b6435, 0x9b3c, 0x4fc8, {0x99, 0x94, 0xfb, 0xe5, 0x25, 0x69, 0xaa, 0xa4}};
+
+struct slViewportHandle : slBaseStructure {
+    slViewportHandle() : slBaseStructure(kViewportHandleStructType, kSLStructVersion1) {}
+
+    uint32_t value = 0xFFFFFFFFu;
+};
+
+struct slDLSSGOptions : slBaseStructure {
+    slDLSSGOptions() : slBaseStructure(kDLSSGOptionsStructType, kSLStructVersion4) {}
+
+    uint32_t mode = 0;
+    uint32_t numFramesToGenerate = 1;
+    uint32_t flags = 0;
+    uint32_t dynamicResWidth = 0;
+    uint32_t dynamicResHeight = 0;
+    uint32_t numBackBuffers = 0;
+    uint32_t mvecDepthWidth = 0;
+    uint32_t mvecDepthHeight = 0;
+    uint32_t colorWidth = 0;
+    uint32_t colorHeight = 0;
+    uint32_t colorBufferFormat = 0;
+    uint32_t mvecBufferFormat = 0;
+    uint32_t depthBufferFormat = 0;
+    uint32_t hudLessBufferFormat = 0;
+    uint32_t uiBufferFormat = 0;
+    void* onErrorCallback = nullptr;
+    char bReserved15 = kSLBooleanInvalid;
+    uint32_t queueParallelismMode = 0;
+    char bReserved16 = kSLBooleanInvalid;
+};
+
+struct slDLSSGState : slBaseStructure {
+    slDLSSGState() : slBaseStructure(kDLSSGStateStructType, kSLStructVersion3) {}
+
+    uint64_t estimatedVRAMUsageInBytes = 0;
+    uint32_t status = 0;
+    uint32_t minWidthOrHeight = 0;
+    uint32_t numFramesActuallyPresented = 0;
+    uint32_t numFramesToGenerateMax = 0;
+    char bReserved4 = kSLBooleanInvalid;
+    char bIsVsyncSupportAvailable = kSLBooleanInvalid;
+    void* inputsProcessingCompletionFence = nullptr;
+    uint64_t lastPresentInputsProcessingCompletionFenceValue = 0;
+};
+
+using PFN_slGetFeatureFunction = slResult (*)(uint32_t feature, const char* functionName, void*& function);
+using PFN_slSetD3DDevice = slResult (*)(void* d3dDevice);
+using PFN_slDLSSGSetOptions = slResult (*)(const slViewportHandle& viewport, const slDLSSGOptions& options);
+using PFN_slDLSSGGetState = slResult (*)(const slViewportHandle& viewport, slDLSSGState& state,
+                                         const slDLSSGOptions* options);
+
+struct ViewportFGState {
+    bool active = false;
+    int multiplier = 0;
+    uint32_t generatedFrames = 0;
+    uint32_t capabilityMax = 0;
+};
+
+std::mutex g_InitMutex;
+std::mutex g_StateMutex;
+std::mutex g_ModuleHookMutex;
+std::mutex g_FeatureHookMutex;
+
+std::atomic<bool> g_DynamicHooksRegistered{false};
+std::atomic<bool> g_NoModulesLogged{false};
+std::atomic<uint32_t> g_IATPatchesMask{0};
+std::atomic<uint32_t> g_InstalledModuleMask{0};
+
+std::atomic<void*> g_SLGetFeatureFunctionTarget{nullptr};
+std::atomic<void*> g_SLSetD3DDeviceTarget{nullptr};
+std::atomic<void*> g_DLSSGSetOptionsTarget{nullptr};
+std::atomic<void*> g_DLSSGGetStateTarget{nullptr};
+
+std::atomic<bool> g_SLGetFeatureFunctionHooked{false};
+std::atomic<bool> g_SLSetD3DDeviceHooked{false};
+std::atomic<bool> g_DLSSGSetOptionsHooked{false};
+std::atomic<bool> g_DLSSGGetStateHooked{false};
+
+std::unordered_map<uint32_t, ViewportFGState> g_ViewportStates;
+std::unordered_map<uint32_t, uint32_t> g_ViewportCapabilityMax;
+
+PFN_slGetFeatureFunction g_Original_slGetFeatureFunction = nullptr;
+PFN_slSetD3DDevice g_Original_slSetD3DDevice = nullptr;
+PFN_slDLSSGSetOptions g_Original_slDLSSGSetOptions = nullptr;
+PFN_slDLSSGGetState g_Original_slDLSSGGetState = nullptr;
+
+slResult Hooked_slGetFeatureFunction(uint32_t feature, const char* functionName, void*& function);
+slResult Hooked_slSetD3DDevice(void* d3dDevice);
+slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSSGOptions& options);
+slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& state, const slDLSSGOptions* options);
+
+const char* GetDLSSGModeName(uint32_t mode) {
+    switch (mode) {
+        case 0:
+            return "off";
+        case 1:
+            return "on";
+        case 2:
+            return "auto";
+        default:
+            return "unknown";
+    }
+}
+
+bool IsDLSSGEnabled(uint32_t mode) {
+    return mode != 0;
+}
+
+const char* GetModuleBaseName(const char* moduleNameOrPath) {
+    if (!moduleNameOrPath || !moduleNameOrPath[0]) {
+        return nullptr;
+    }
+
+    const char* baseName = moduleNameOrPath;
+    for (const char* cursor = moduleNameOrPath; *cursor; ++cursor) {
+        if (*cursor == '\\' || *cursor == '/') {
+            baseName = cursor + 1;
+        }
+    }
+    return baseName;
+}
+
+bool IsStreamlineModuleName(const char* moduleNameOrPath) {
+    const char* baseName = GetModuleBaseName(moduleNameOrPath);
+    return baseName &&
+           (!_stricmp(baseName, "sl.interposer.dll") || !_stricmp(baseName, "sl.common.dll"));
+}
+
+uint32_t GetModuleMaskBit(const char* moduleNameOrPath) {
+    const char* baseName = GetModuleBaseName(moduleNameOrPath);
+    if (!baseName) {
+        return 0;
+    }
+    if (!_stricmp(baseName, "sl.interposer.dll")) {
+        return 1u << 0;
+    }
+    if (!_stricmp(baseName, "sl.common.dll")) {
+        return 1u << 1;
+    }
+    return 0;
+}
+
+uint32_t GetViewportKey(const slViewportHandle& viewport) {
+    return viewport.value;
+}
+
+slDLSSGOptions CloneDLSSGOptions(const slDLSSGOptions& source) {
+    slDLSSGOptions copy;
+    copy.next = source.next;
+    copy.structType = source.structType;
+    copy.structVersion = source.structVersion;
+    copy.mode = source.mode;
+    copy.numFramesToGenerate = source.numFramesToGenerate;
+    copy.flags = source.flags;
+    copy.dynamicResWidth = source.dynamicResWidth;
+    copy.dynamicResHeight = source.dynamicResHeight;
+    copy.numBackBuffers = source.numBackBuffers;
+    copy.mvecDepthWidth = source.mvecDepthWidth;
+    copy.mvecDepthHeight = source.mvecDepthHeight;
+    copy.colorWidth = source.colorWidth;
+    copy.colorHeight = source.colorHeight;
+    copy.colorBufferFormat = source.colorBufferFormat;
+    copy.mvecBufferFormat = source.mvecBufferFormat;
+    copy.depthBufferFormat = source.depthBufferFormat;
+    copy.hudLessBufferFormat = source.hudLessBufferFormat;
+    copy.uiBufferFormat = source.uiBufferFormat;
+    copy.onErrorCallback = source.onErrorCallback;
+    if (source.structVersion >= kSLStructVersion2) {
+        copy.bReserved15 = source.bReserved15;
+    }
+    if (source.structVersion >= kSLStructVersion3) {
+        copy.queueParallelismMode = source.queueParallelismMode;
+    }
+    if (source.structVersion >= kSLStructVersion4) {
+        copy.bReserved16 = source.bReserved16;
+    }
+    return copy;
+}
+
+int GetEffectiveMultiplier(const slDLSSGOptions& options) {
+    if (!IsDLSSGEnabled(options.mode)) {
+        return 0;
+    }
+    const int multiplier = StreamlineGeneratedFramesToDLSSFGMultiplier(options.numFramesToGenerate);
+    return multiplier > 0 ? multiplier : 2;
+}
+
+uint32_t GetCachedCapabilityMax(uint32_t viewportKey) {
+    std::lock_guard<std::mutex> lock(g_StateMutex);
+    const auto it = g_ViewportCapabilityMax.find(viewportKey);
+    return it != g_ViewportCapabilityMax.end() ? it->second : 0u;
+}
+
+void CacheCapabilityMax(uint32_t viewportKey, uint32_t capabilityMax) {
+    if (capabilityMax == 0) {
+        return;
+    }
+
+    bool changed = false;
+    {
+        std::lock_guard<std::mutex> lock(g_StateMutex);
+        auto& cached = g_ViewportCapabilityMax[viewportKey];
+        if (cached != capabilityMax) {
+            cached = capabilityMax;
+            changed = true;
+        }
+    }
+
+    if (changed && HookDebugLoggingEnabled()) {
+        HookLog("Streamline Hook: Viewport %u reports max generated frames=%u (%dx max)", viewportKey, capabilityMax,
+                capabilityMax + 1);
+    }
+}
+
+void ApplyCombinedDLSSFGState(bool active, int multiplier) {
+    if (active) {
+        const int effectiveMultiplier = std::clamp(multiplier, 2, 4);
+        g_FGCompat.SetDLSSFGMultiplier(effectiveMultiplier);
+        g_FGCompat.SetDLSSFGActive(true);
+
+        if (g_IPC && g_IPC->GetSharedMem()) {
+            g_IPC->GetSharedMem()->dlssState.fgActive = true;
+            g_IPC->GetSharedMem()->dlssState.mfgMultiplier = effectiveMultiplier;
+        }
+    } else {
+        g_FGCompat.SetDLSSFGActive(false);
+        g_FGCompat.SetDLSSFGMultiplier(0);
+
+        if (g_IPC && g_IPC->GetSharedMem()) {
+            g_IPC->GetSharedMem()->dlssState.fgActive = false;
+            g_IPC->GetSharedMem()->dlssState.mfgMultiplier = 0;
+        }
+    }
+}
+
+void UpdateViewportRuntimeState(uint32_t viewportKey, bool active, int multiplier, uint32_t generatedFrames,
+                                uint32_t capabilityMax) {
+    ViewportFGState previousState{};
+    bool hadPreviousState = false;
+    bool stateChanged = false;
+    bool anyActive = false;
+    int combinedMultiplier = 0;
+
+    {
+        std::lock_guard<std::mutex> lock(g_StateMutex);
+        const auto existing = g_ViewportStates.find(viewportKey);
+        if (existing != g_ViewportStates.end()) {
+            previousState = existing->second;
+            hadPreviousState = true;
+        }
+
+        if (active) {
+            g_ViewportStates[viewportKey] = {true, multiplier, generatedFrames, capabilityMax};
+        } else {
+            g_ViewportStates.erase(viewportKey);
+        }
+
+        const auto current = g_ViewportStates.find(viewportKey);
+        const ViewportFGState currentState =
+            current != g_ViewportStates.end() ? current->second : ViewportFGState{false, 0, 0, capabilityMax};
+
+        stateChanged = !hadPreviousState || previousState.active != currentState.active ||
+                       previousState.multiplier != currentState.multiplier ||
+                       previousState.generatedFrames != currentState.generatedFrames ||
+                       previousState.capabilityMax != currentState.capabilityMax;
+
+        for (const auto& [_, state] : g_ViewportStates) {
+            if (!state.active) {
+                continue;
+            }
+            anyActive = true;
+            combinedMultiplier = std::max(combinedMultiplier, state.multiplier);
+        }
+    }
+
+    ApplyCombinedDLSSFGState(anyActive, combinedMultiplier);
+
+    if (stateChanged) {
+        HookLog("Streamline Hook: Viewport %u state active=%d multiplier=%dx generatedFrames=%u capabilityMax=%u",
+                viewportKey, active ? 1 : 0, active ? multiplier : 0, generatedFrames, capabilityMax);
+    }
+}
+
+template <typename T>
+bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<bool>& installedFlag,
+                           std::atomic<void*>& targetSlot, const char* hookName) {
+    if (!target) {
+        return false;
+    }
+
+    if (target == detour) {
+        original = nullptr;
+        targetSlot.store(target, std::memory_order_release);
+        installedFlag.store(true, std::memory_order_release);
+        return true;
+    }
+
+    const void* installedTarget = targetSlot.load(std::memory_order_acquire);
+    if (installedFlag.load(std::memory_order_acquire) && installedTarget == target) {
+        return false;
+    }
+
+    void* trampoline = nullptr;
+    if (!InlineHook::Install(target, detour, &trampoline)) {
+        HookLogImportant("Streamline Hook: Failed to inline hook %s at %p", hookName, target);
+        return false;
+    }
+
+    original = reinterpret_cast<T>(trampoline);
+    targetSlot.store(target, std::memory_order_release);
+    installedFlag.store(true, std::memory_order_release);
+    HookLogImportant("Streamline Hook: Inline hook installed for %s at %p (trampoline=%p)", hookName, target, trampoline);
+    return true;
+}
+
+bool MaybeHookDLSSGSetOptions(void*& function, bool fallbackToReturnedWrapper) {
+    if (!function) {
+        return false;
+    }
+
+    if (function == reinterpret_cast<void*>(Hooked_slDLSSGSetOptions)) {
+        g_DLSSGSetOptionsHooked.store(true, std::memory_order_release);
+        return true;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_FeatureHookMutex);
+        if (!g_DLSSGSetOptionsHooked.load(std::memory_order_acquire) ||
+            g_DLSSGSetOptionsTarget.load(std::memory_order_acquire) != function) {
+            InstallInlineHookOnce(reinterpret_cast<void*>(function), reinterpret_cast<void*>(Hooked_slDLSSGSetOptions),
+                                  g_Original_slDLSSGSetOptions, g_DLSSGSetOptionsHooked, g_DLSSGSetOptionsTarget,
+                                  "slDLSSGSetOptions");
+        }
+    }
+
+    if (fallbackToReturnedWrapper && !g_DLSSGSetOptionsHooked.load(std::memory_order_acquire)) {
+        if (!g_Original_slDLSSGSetOptions) {
+            g_Original_slDLSSGSetOptions = reinterpret_cast<PFN_slDLSSGSetOptions>(function);
+        }
+        function = reinterpret_cast<void*>(Hooked_slDLSSGSetOptions);
+        return true;
+    }
+
+    return g_DLSSGSetOptionsHooked.load(std::memory_order_acquire);
+}
+
+bool MaybeHookDLSSGGetState(void*& function, bool fallbackToReturnedWrapper) {
+    if (!function) {
+        return false;
+    }
+
+    if (function == reinterpret_cast<void*>(Hooked_slDLSSGGetState)) {
+        g_DLSSGGetStateHooked.store(true, std::memory_order_release);
+        return true;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_FeatureHookMutex);
+        if (!g_DLSSGGetStateHooked.load(std::memory_order_acquire) ||
+            g_DLSSGGetStateTarget.load(std::memory_order_acquire) != function) {
+            InstallInlineHookOnce(reinterpret_cast<void*>(function), reinterpret_cast<void*>(Hooked_slDLSSGGetState),
+                                  g_Original_slDLSSGGetState, g_DLSSGGetStateHooked, g_DLSSGGetStateTarget,
+                                  "slDLSSGGetState");
+        }
+    }
+
+    if (fallbackToReturnedWrapper && !g_DLSSGGetStateHooked.load(std::memory_order_acquire)) {
+        if (!g_Original_slDLSSGGetState) {
+            g_Original_slDLSSGGetState = reinterpret_cast<PFN_slDLSSGGetState>(function);
+        }
+        function = reinterpret_cast<void*>(Hooked_slDLSSGGetState);
+        return true;
+    }
+
+    return g_DLSSGGetStateHooked.load(std::memory_order_acquire);
+}
+
+bool TryResolveDLSSGFeatureHooks() {
+    if (!g_Original_slGetFeatureFunction) {
+        return false;
+    }
+
+    bool hookedAnything = false;
+
+    if (!g_DLSSGSetOptionsHooked.load(std::memory_order_acquire)) {
+        void* function = nullptr;
+        const slResult result = g_Original_slGetFeatureFunction(kSLFeatureDLSSG, "slDLSSGSetOptions", function);
+        if (result == kSlResultOk && function) {
+            hookedAnything |= MaybeHookDLSSGSetOptions(function, false);
+        }
+    }
+
+    if (!g_DLSSGGetStateHooked.load(std::memory_order_acquire)) {
+        void* function = nullptr;
+        const slResult result = g_Original_slGetFeatureFunction(kSLFeatureDLSSG, "slDLSSGGetState", function);
+        if (result == kSlResultOk && function) {
+            hookedAnything |= MaybeHookDLSSGGetState(function, false);
+        }
+    }
+
+    return hookedAnything || g_DLSSGSetOptionsHooked.load(std::memory_order_acquire);
+}
+
+uint32_t QueryCapabilityMax(const slViewportHandle& viewport, const slDLSSGOptions* options) {
+    if (!g_Original_slDLSSGGetState && !TryResolveDLSSGFeatureHooks()) {
+        return 0;
+    }
+    if (!g_Original_slDLSSGGetState) {
+        return 0;
+    }
+
+    slDLSSGState state;
+    const slResult result = g_Original_slDLSSGGetState(viewport, state, options);
+    if (result != kSlResultOk || state.numFramesToGenerateMax == 0) {
+        return 0;
+    }
+
+    const uint32_t viewportKey = GetViewportKey(viewport);
+    CacheCapabilityMax(viewportKey, state.numFramesToGenerateMax);
+    return state.numFramesToGenerateMax;
+}
+
+void RegisterDynamicHooksOnce() {
+    if (g_DynamicHooksRegistered.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+
+    IATHook::RegisterDynamicHook("slGetFeatureFunction", reinterpret_cast<void*>(Hooked_slGetFeatureFunction),
+                                 reinterpret_cast<void**>(&g_Original_slGetFeatureFunction));
+    IATHook::RegisterDynamicHook("slSetD3DDevice", reinterpret_cast<void*>(Hooked_slSetD3DDevice),
+                                 reinterpret_cast<void**>(&g_Original_slSetD3DDevice));
+    HookLogImportant("Streamline Hook: Registered dynamic hooks for slGetFeatureFunction and slSetD3DDevice");
+}
+
+bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
+    if (!module || !IsStreamlineModuleName(moduleNameOrPath)) {
+        return false;
+    }
+
+    RegisterDynamicHooksOnce();
+
+    const char* moduleBaseName = GetModuleBaseName(moduleNameOrPath);
+    const uint32_t moduleBit = GetModuleMaskBit(moduleBaseName);
+    const auto originalGetFeatureFunction =
+        reinterpret_cast<PFN_slGetFeatureFunction>(GetProcAddress(module, "slGetFeatureFunction"));
+    const auto originalSetD3DDevice = reinterpret_cast<PFN_slSetD3DDevice>(GetProcAddress(module, "slSetD3DDevice"));
+
+    if (!originalGetFeatureFunction && !originalSetD3DDevice) {
+        return false;
+    }
+
+    if (moduleBit != 0 && (g_InstalledModuleMask.load(std::memory_order_acquire) & moduleBit) != 0) {
+        return false;
+    }
+
+    bool hookedAnything = false;
+    {
+        std::lock_guard<std::mutex> lock(g_ModuleHookMutex);
+
+        if (originalGetFeatureFunction) {
+            if (!g_Original_slGetFeatureFunction) {
+                g_Original_slGetFeatureFunction = originalGetFeatureFunction;
+            }
+
+            hookedAnything |= InstallInlineHookOnce(reinterpret_cast<void*>(originalGetFeatureFunction),
+                                                    reinterpret_cast<void*>(Hooked_slGetFeatureFunction),
+                                                    g_Original_slGetFeatureFunction, g_SLGetFeatureFunctionHooked,
+                                                    g_SLGetFeatureFunctionTarget, "slGetFeatureFunction");
+        }
+
+        if (originalSetD3DDevice) {
+            if (!g_Original_slSetD3DDevice) {
+                g_Original_slSetD3DDevice = originalSetD3DDevice;
+            }
+
+            hookedAnything |= InstallInlineHookOnce(reinterpret_cast<void*>(originalSetD3DDevice),
+                                                    reinterpret_cast<void*>(Hooked_slSetD3DDevice),
+                                                    g_Original_slSetD3DDevice, g_SLSetD3DDeviceHooked,
+                                                    g_SLSetD3DDeviceTarget, "slSetD3DDevice");
+        }
+
+        if (moduleBit != 0 && (g_IATPatchesMask.load(std::memory_order_acquire) & moduleBit) == 0) {
+            void* dummy = nullptr;
+            if (originalGetFeatureFunction) {
+                IATHook::PatchIATAllModules(moduleBaseName, "slGetFeatureFunction",
+                                            reinterpret_cast<void*>(Hooked_slGetFeatureFunction), &dummy);
+            }
+            if (originalSetD3DDevice) {
+                IATHook::PatchIATAllModules(moduleBaseName, "slSetD3DDevice", reinterpret_cast<void*>(Hooked_slSetD3DDevice),
+                                            &dummy);
+            }
+            g_IATPatchesMask.fetch_or(moduleBit, std::memory_order_acq_rel);
+        }
+    }
+
+    if (hookedAnything) {
+        if (moduleBit != 0) {
+            g_InstalledModuleMask.fetch_or(moduleBit, std::memory_order_acq_rel);
+        }
+        HookLogImportant("Streamline Hook: Installed hooks for %s (%p)", moduleBaseName, module);
+    }
+    return true;
+}
+
+slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& state, const slDLSSGOptions* options) {
+    if (!g_Original_slDLSSGGetState) {
+        return kSlResultErrorInvalidState;
+    }
+
+    const slResult result = g_Original_slDLSSGGetState(viewport, state, options);
+    if (result == kSlResultOk && state.numFramesToGenerateMax > 0) {
+        CacheCapabilityMax(GetViewportKey(viewport), state.numFramesToGenerateMax);
+    }
+
+    return result;
+}
+
+slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSSGOptions& options) {
+    if (!g_Original_slDLSSGSetOptions) {
+        return kSlResultErrorInvalidState;
+    }
+
+    slDLSSGOptions adjustedOptions = CloneDLSSGOptions(options);
+    const uint32_t viewportKey = GetViewportKey(viewport);
+    const int configuredFactor = NormalizeDLSSFGFactor(GetActiveGraphicsConfig().parsed.dlssFGFactor);
+    const uint32_t originalGeneratedFrames = options.numFramesToGenerate;
+    const bool wasEnabled = IsDLSSGEnabled(options.mode);
+
+    uint32_t capabilityMax = GetCachedCapabilityMax(viewportKey);
+    bool overrideApplied = false;
+    bool overrideClamped = false;
+
+    if (configuredFactor > 0 && wasEnabled) {
+        const uint32_t desiredGeneratedFrames = DLSSFGMultiplierToGeneratedFrames(configuredFactor);
+        if (capabilityMax == 0 && desiredGeneratedFrames > 1) {
+            capabilityMax = QueryCapabilityMax(viewport, &adjustedOptions);
+        }
+
+        uint32_t finalGeneratedFrames = desiredGeneratedFrames;
+        if (capabilityMax > 0 && finalGeneratedFrames > capabilityMax) {
+            finalGeneratedFrames = capabilityMax;
+            overrideClamped = true;
+        }
+
+        if (finalGeneratedFrames > 0 && finalGeneratedFrames != adjustedOptions.numFramesToGenerate) {
+            adjustedOptions.numFramesToGenerate = finalGeneratedFrames;
+            overrideApplied = true;
+        }
+    }
+
+    const slResult result = g_Original_slDLSSGSetOptions(viewport, adjustedOptions);
+    if (result == kSlResultOk) {
+        const int effectiveMultiplier = GetEffectiveMultiplier(adjustedOptions);
+        UpdateViewportRuntimeState(viewportKey, effectiveMultiplier > 0, effectiveMultiplier,
+                                   effectiveMultiplier > 0 ? adjustedOptions.numFramesToGenerate : 0u, capabilityMax);
+
+        if (overrideApplied || overrideClamped) {
+            if (capabilityMax > 0) {
+                HookLog("Streamline Hook: Overrode DLSS-G viewport=%u mode=%s generatedFrames=%u->%u (%dx, max=%u)",
+                        viewportKey, GetDLSSGModeName(adjustedOptions.mode), originalGeneratedFrames,
+                        adjustedOptions.numFramesToGenerate, effectiveMultiplier, capabilityMax);
+            } else {
+                HookLog("Streamline Hook: Overrode DLSS-G viewport=%u mode=%s generatedFrames=%u->%u (%dx)", viewportKey,
+                        GetDLSSGModeName(adjustedOptions.mode), originalGeneratedFrames, adjustedOptions.numFramesToGenerate,
+                        effectiveMultiplier);
+            }
+        }
+    } else if (overrideApplied || overrideClamped) {
+        HookLogImportant("Streamline Hook: DLSS-G override failed viewport=%u mode=%s generatedFrames=%u->%u result=%d",
+                         viewportKey, GetDLSSGModeName(adjustedOptions.mode), originalGeneratedFrames,
+                         adjustedOptions.numFramesToGenerate, result);
+    }
+
+    return result;
+}
+
+slResult Hooked_slGetFeatureFunction(uint32_t feature, const char* functionName, void*& function) {
+    if (!g_Original_slGetFeatureFunction) {
+        return kSlResultErrorInvalidState;
+    }
+
+    const slResult result = g_Original_slGetFeatureFunction(feature, functionName, function);
+    if (result != kSlResultOk || feature != kSLFeatureDLSSG || !functionName || !function) {
+        return result;
+    }
+
+    if (strcmp(functionName, "slDLSSGSetOptions") == 0) {
+        MaybeHookDLSSGSetOptions(function, true);
+        if (HookDebugLoggingEnabled()) {
+            HookLog("Streamline Hook: Intercepted slDLSSGSetOptions lookup (returned=%p)", function);
+        }
+    } else if (strcmp(functionName, "slDLSSGGetState") == 0) {
+        MaybeHookDLSSGGetState(function, true);
+        if (HookDebugLoggingEnabled()) {
+            HookLog("Streamline Hook: Intercepted slDLSSGGetState lookup (returned=%p)", function);
+        }
+    }
+
+    return result;
+}
+
+slResult Hooked_slSetD3DDevice(void* d3dDevice) {
+    if (!g_Original_slSetD3DDevice) {
+        return kSlResultErrorInvalidState;
+    }
+
+    const slResult result = g_Original_slSetD3DDevice(d3dDevice);
+    if (result == kSlResultOk) {
+        TryResolveDLSSGFeatureHooks();
+    }
+    return result;
+}
+
+}  // namespace
+
+namespace StreamlineHook {
+
+void Init() {
+    std::lock_guard<std::mutex> lock(g_InitMutex);
+    RegisterDynamicHooksOnce();
+
+    bool foundModule = false;
+    const struct {
+        const wchar_t* wideName;
+        const char* narrowName;
+    } modules[] = {
+        {L"sl.interposer.dll", "sl.interposer.dll"},
+        {L"sl.common.dll", "sl.common.dll"},
+    };
+
+    for (const auto& module : modules) {
+        if (HMODULE handle = GetModuleHandleW(module.wideName)) {
+            foundModule = true;
+            InstallHooksForModule(handle, module.narrowName);
+        }
+    }
+
+    if (!foundModule) {
+        if (!g_NoModulesLogged.exchange(true, std::memory_order_acq_rel)) {
+            HookLog("Streamline Hook: No Streamline core modules loaded yet; waiting for module load");
+        }
+    } else {
+        g_NoModulesLogged.store(false, std::memory_order_release);
+    }
+}
+
+bool IsInitialized() {
+    return g_DynamicHooksRegistered.load(std::memory_order_acquire);
+}
+
+void Shutdown() {
+    std::lock_guard<std::mutex> lock(g_StateMutex);
+    g_ViewportStates.clear();
+    g_ViewportCapabilityMax.clear();
+}
+
+}  // namespace StreamlineHook

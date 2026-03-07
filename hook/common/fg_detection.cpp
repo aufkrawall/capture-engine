@@ -87,6 +87,9 @@ bool FGCompatibility::IsFGActive() const {
 
 void FGCompatibility::SetDLSSFGActive(bool active) {
     bool wasActive = dlssFGApiActive.exchange(active, std::memory_order_acq_rel);
+    if (!active) {
+        dlssFGMultiplier.store(0, std::memory_order_release);
+    }
     if (wasActive != active) {
         HookLog("FG: DLSS FG API %s (dormant=%d)", active ? "ACTIVATED" : "DEACTIVATED", dormantMode.load() ? 1 : 0);
 
@@ -104,6 +107,14 @@ void FGCompatibility::SetDLSSFGActive(bool active) {
                 HookLog("FG: Invalidated swapchain for FG transition");
             }
         }
+    }
+}
+
+void FGCompatibility::SetDLSSFGMultiplier(int multiplier) {
+    const int normalizedMultiplier = NormalizeDLSSFGFactor(multiplier);
+    const int previousMultiplier = dlssFGMultiplier.exchange(normalizedMultiplier, std::memory_order_acq_rel);
+    if (previousMultiplier != normalizedMultiplier) {
+        HookLog("FG: DLSS FG multiplier %d -> %d", previousMultiplier, normalizedMultiplier);
     }
 }
 
@@ -400,7 +411,7 @@ void FGCompatibility::LogStatus() const {
     HookLog(
         "FG Status: active=%s, apiDLSS=%d, apiFSR=%d, mult=%d, "
         "outputFPS=%.1f, baseFPS=%.1f, dormant=%d",
-        GetFGTypeName(active), dlssFGApiActive.load() ? 1 : 0, fsrFGApiActive.load() ? 1 : 0, cachedMultiplier.load(),
+        GetFGTypeName(active), dlssFGApiActive.load() ? 1 : 0, fsrFGApiActive.load() ? 1 : 0, GetFGMultiplier(),
         cachedOutputFPS.load(), cachedBaseFPS.load(), dormantMode.load() ? 1 : 0);
 }
 

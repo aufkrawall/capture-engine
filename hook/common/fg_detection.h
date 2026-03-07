@@ -32,7 +32,8 @@ public:
     bool IsFGActive() const;
     FGType GetActiveFGType() const;
     int GetFGMultiplier() const {
-        return cachedMultiplier.load();
+        const int apiMultiplier = dlssFGMultiplier.load(std::memory_order_acquire);
+        return apiMultiplier >= 2 ? apiMultiplier : cachedMultiplier.load(std::memory_order_acquire);
     }
 
     // FPS metrics
@@ -97,6 +98,7 @@ public:
     // NOTE: These still work in dormant mode - they just report API state
     // =========================================================================
     void SetDLSSFGActive(bool active);
+    void SetDLSSFGMultiplier(int multiplier);
     void SetFSRFGActive(bool active);
     bool IsDLSSFGApiActive() const {
         return dlssFGApiActive.load(std::memory_order_acquire);
@@ -150,6 +152,7 @@ private:
     // Usage-based FG activation flags (set by API hooks)
     std::atomic<bool> dlssFGApiActive{false};
     std::atomic<bool> fsrFGApiActive{false};
+    std::atomic<int> dlssFGMultiplier{0};
 
     // Internal methods
     void UpdateMetrics();

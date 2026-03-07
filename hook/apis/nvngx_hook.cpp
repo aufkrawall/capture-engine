@@ -106,8 +106,8 @@ static PFN_GetUI oGetUI = nullptr;
 static std::atomic<char> g_UserPresetHints[6] = {'?', '?', '?', '?', '?', '?'};
 
 static char PresetIDToChar(uint32_t id) {
-    if (id >= 1 && id <= 13)
-        return 'A' + (id - 1);  // 1=A ... 13=M
+    if (id >= 1 && id <= 26)
+        return 'A' + (id - 1);  // 1=A ... 26=Z
     return '?';
 }
 
@@ -151,8 +151,7 @@ static bool IsSafeString(const char* s) {
 }
 
 static int GetConfiguredFGMultiplier(const GraphicsConfig& cfg) {
-    const int fgFactor = cfg.parsed.dlssFGFactor;
-    return (fgFactor >= 2 && fgFactor <= 4) ? fgFactor : 0;
+    return NormalizeDLSSFGFactor(cfg.parsed.dlssFGFactor);
 }
 
 static void LogOncePerParam(const char* param, const char* msg, ...) {
@@ -1171,16 +1170,18 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
                             mfgMultiplier);
 
                     // Signal FG activation (MFG is a form of frame generation)
+                    g_FGCompat.SetDLSSFGMultiplier(mfgMultiplier);
                     g_FGCompat.SetDLSSFGActive(true);
                 } else {
                     // DLSS Frame Generation - Feature IDs 9 and 0xB (11)
                     state.fgActive = true;
-                    state.mfgMultiplier = 1;  // Standard FG is 1x (doubles frame rate)
+                    state.mfgMultiplier = 2;  // Standard FG is a 2x output multiplier
                     if (g_IPC->GetSharedMem()->GetDebugLogging())
                         NVNGXLog("Hooked_CreateFeature: DLSS FG ACTIVATED (ID 0x%X)", featureID);
 
                     // CRITICAL: Signal FG activation to the detection system
                     // This enables usage-based detection instead of DLL-based detection
+                    g_FGCompat.SetDLSSFGMultiplier(2);
                     g_FGCompat.SetDLSSFGActive(true);
                 }
             } else {

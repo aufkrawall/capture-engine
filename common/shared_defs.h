@@ -45,6 +45,23 @@ static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
 // Frame ring buffer size (must be power of 2 for efficient modulo)
 static const int FRAME_RING_SIZE = 32;
 
+inline bool HasBackbufferCountOverride(int32_t backbufferCount) {
+    return backbufferCount >= 2 && backbufferCount <= 6;
+}
+
+inline int NormalizeDLSSFGFactor(int32_t dlssFGFactor) {
+    return (dlssFGFactor >= 2 && dlssFGFactor <= 4) ? dlssFGFactor : 0;
+}
+
+inline uint32_t DLSSFGMultiplierToGeneratedFrames(int32_t dlssFGFactor) {
+    const int normalized = NormalizeDLSSFGFactor(dlssFGFactor);
+    return normalized > 0 ? static_cast<uint32_t>(normalized - 1) : 0u;
+}
+
+inline int StreamlineGeneratedFramesToDLSSFGMultiplier(uint32_t generatedFrames) {
+    return (generatedFrames >= 1 && generatedFrames <= 3) ? static_cast<int>(generatedFrames + 1) : 0;
+}
+
 // Discovery structure - small shared memory to help hook find inject process
 struct DiscoveryInfo {
     std::atomic<uint32_t> injectPid{0};  // PID of inject process
@@ -209,14 +226,14 @@ struct SharedGraphicsConfig {
     bool forceMipBiasClamp;              // Force all texture mip bias values to 0
     char msaaSamples[32];                // "default", "off", "2x", "4x", "8x"
     float prerenderLimit;                // -1=default, 0=serial, 0.5=hybrid, >=1 buffered
-    int32_t backbufferCount;             // 0=default, 2-6 actual count
+    int32_t backbufferCount;             // -1=app controlled, 2-6 actual count
     int32_t frameLatency;                // 0=default, 1-6 (SetMaximumFrameLatency)
     bool sgssaa;                         // Enable Sparse Grid Supersampling
     bool disableAutoMipBias;             // If true, don't adjust mip bias for SGSSAA
     char dlssAutoExposure[32];           // "default", "on", "off"
     char dlssExposureNormalization[32];  // "default", "on", "off"
 
-    // DLSS Presets (Super Resolution) - 0=Default, 1-11 = A-K
+    // DLSS Presets (Super Resolution) - 0=Default, 1-26 = A-Z
     uint32_t dlssPresetDLAA;
     uint32_t dlssPresetQuality;
     uint32_t dlssPresetBalanced;
@@ -224,7 +241,7 @@ struct SharedGraphicsConfig {
     uint32_t dlssPresetUltraPerformance;
     uint32_t dlssPresetUltraQuality;
 
-    // Ray Reconstruction Presets - 0=Default, 1-7 = A-G
+    // Ray Reconstruction Presets - 0=Default, 1-26 = A-Z
     uint32_t dlssRRPresetDLAA;
     uint32_t dlssRRPresetQuality;
     uint32_t dlssRRPresetBalanced;
@@ -772,7 +789,7 @@ public:
         std::atomic<int32_t> qualityMode{-1};   // -1=Unknown, 0=Perf, 1=Bal, 2=Qual,
                                                 // 3=UltraPerf, 4=UltraQual, 5=DLAA
         std::atomic<bool> fgActive{false};      // Redundant with g_FGCompat but useful for IPC/Host visibility
-        std::atomic<int32_t> mfgMultiplier{0};  // 0=No MFG, 2/3/4 = DLSS Multi-Frame Generation multiplier
+        std::atomic<int32_t> mfgMultiplier{0};  // 0=No DLSS FG, 2/3/4 = effective output multiplier
     } dlssState;
 
     // Encoder queue monitoring (Host -> Hook)

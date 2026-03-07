@@ -204,7 +204,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChain(IUnknown* pDevice, 
     if (pDesc) {
         modifiedDesc = *pDesc;
         const auto& gfx = GetActiveGraphicsConfig();
-        if (gfx.backbufferCount > 0) {
+        if (HasBackbufferCountOverride(gfx.backbufferCount)) {
             UINT requested = (UINT)gfx.backbufferCount;
             bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
                            modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
@@ -216,8 +216,6 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChain(IUnknown* pDevice, 
                     "(flip model)",
                     requested, modifiedDesc.BufferCount);
             } else {
-                if (isFlip && requested < 2)
-                    requested = 2;
                 modifiedDesc.BufferCount = requested;
                 WrapperLog("CreateSwapChain: Overriding BufferCount to %u", modifiedDesc.BufferCount);
             }
@@ -305,7 +303,7 @@ CWrapDXGIFactory2::CreateSwapChainForHwnd(IUnknown* pDevice, HWND hWnd, const DX
     if (pDesc) {
         modifiedDesc = *pDesc;
         const auto& gfx = GetActiveGraphicsConfig();
-        if (gfx.backbufferCount > 0) {
+        if (HasBackbufferCountOverride(gfx.backbufferCount)) {
             UINT requested = (UINT)gfx.backbufferCount;
             bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
                            modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
@@ -315,8 +313,6 @@ CWrapDXGIFactory2::CreateSwapChainForHwnd(IUnknown* pDevice, HWND hWnd, const DX
                     "game's %u (flip model)",
                     requested, modifiedDesc.BufferCount);
             } else {
-                if (isFlip && requested < 2)
-                    requested = 2;
                 modifiedDesc.BufferCount = requested;
                 WrapperLog("CreateSwapChainForHwnd: Overriding BufferCount to %u", modifiedDesc.BufferCount);
             }
@@ -367,7 +363,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForCoreWindow(IUnkno
     if (pDesc) {
         modifiedDesc = *pDesc;
         const auto& gfx = GetActiveGraphicsConfig();
-        if (gfx.backbufferCount > 0) {
+        if (HasBackbufferCountOverride(gfx.backbufferCount)) {
             UINT requested = (UINT)gfx.backbufferCount;
             bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
                            modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
@@ -377,8 +373,6 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForCoreWindow(IUnkno
                     "%u < game's %u (flip model)",
                     requested, modifiedDesc.BufferCount);
             } else {
-                if (isFlip && requested < 2)
-                    requested = 2;
                 modifiedDesc.BufferCount = requested;
                 WrapperLog("CreateSwapChainForCoreWindow: Overriding BufferCount to %u", modifiedDesc.BufferCount);
             }
@@ -452,7 +446,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForComposition(IUnkn
     if (pDesc) {
         modifiedDesc = *pDesc;
         const auto& gfx = GetActiveGraphicsConfig();
-        if (gfx.backbufferCount > 0) {
+        if (HasBackbufferCountOverride(gfx.backbufferCount)) {
             UINT requested = (UINT)gfx.backbufferCount;
             bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
                            modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
@@ -462,8 +456,6 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForComposition(IUnkn
                     "%u < game's %u (flip model)",
                     requested, modifiedDesc.BufferCount);
             } else {
-                if (isFlip && requested < 2)
-                    requested = 2;
                 modifiedDesc.BufferCount = requested;
                 WrapperLog("CreateSwapChainForComposition: Overriding BufferCount to %u", modifiedDesc.BufferCount);
             }

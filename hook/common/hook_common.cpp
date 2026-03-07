@@ -486,7 +486,7 @@ GraphicsConfig GetActiveGraphicsConfig() {
         if (g_pLocalConfig->graphics.vsyncMode != "default" && !g_pLocalConfig->graphics.vsyncMode.empty()) {
             mergedConfig.vsyncMode = g_pLocalConfig->graphics.vsyncMode;
         }
-        if (g_pLocalConfig->graphics.backbufferCount > 0) {
+        if (HasBackbufferCountOverride(g_pLocalConfig->graphics.backbufferCount)) {
             mergedConfig.backbufferCount = g_pLocalConfig->graphics.backbufferCount;
         }
         if (g_pLocalConfig->graphics.frameLatency > 0) {
@@ -586,7 +586,7 @@ GraphicsConfig GetActiveGraphicsConfig() {
         anyActive = true;
     else if (mergedConfig.cpuPrerenderLimit > -0.5f)
         anyActive = true;
-    else if (mergedConfig.backbufferCount > 0)
+    else if (HasBackbufferCountOverride(mergedConfig.backbufferCount))
         anyActive = true;
     else if (mergedConfig.frameLatency > 0)
         anyActive = true;

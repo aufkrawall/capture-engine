@@ -24,23 +24,23 @@ bool ParseBool(const std::string& val) {
     return lower == "true" || lower == "1" || lower == "yes" || lower == "on";
 }
 
-// Helper to parse DLSS presets (A-M -> 1-13, Default -> 0)
-// DLSS 3.10.5+ added L and M presets beyond the original A-K
+// Helper to parse DLSS presets (A-Z -> 1-26, Default -> 0)
+// Accept the full alphabet so future NGX preset letters work without another update.
 uint32_t ParseDlssPreset(const std::string& val) {
     if (val.empty() || _stricmp(val.c_str(), "default") == 0)
         return 0;
     char c = toupper(val[0]);
-    if (c >= 'A' && c <= 'M')
+    if (c >= 'A' && c <= 'Z')
         return (uint32_t)(c - 'A' + 1);
     return 0;
 }
 
-// Helper to parse Ray Reconstruction presets (A-G -> 1-7, Default -> 0)
+// Helper to parse Ray Reconstruction presets (A-Z -> 1-26, Default -> 0)
 uint32_t ParseDlssRRPreset(const std::string& val) {
     if (val.empty() || _stricmp(val.c_str(), "default") == 0)
         return 0;
     char c = toupper(val[0]);
-    if (c >= 'A' && c <= 'G')
+    if (c >= 'A' && c <= 'Z')
         return (uint32_t)(c - 'A' + 1);
     return 0;
 }
@@ -98,22 +98,20 @@ void CreateDefaultConfig(const std::string& path) {
 ; =============================================================================
 
 [General]
-; debug_logging - Values: true, false
+; debug_logging - Values: true, false (also enables the per-frame CSV profiler)
 debug_logging=true
-; perf_metrics_logging - Values: true, false (per-frame CSV profiler; keep off unless profiling)
-perf_metrics_logging=false
-; capture_method - Values: inject, screengrab, desktop_dup, auto
+; capture_method - Values: inject, screengrab, auto
 capture_method=auto
 
 [Injection]
 ; whitelist - Values: process names (one per line in (...) or comma-separated)
-; Note: only listed executables are injected. Empty list disables process injection.
+; Note: only listed executables are injected. Enables overlay and various render override features. DO NOT USE IN MULTIPLAYER GAMES!
 whitelist=(
 )
-; overlay_whitelist - Values: process names for overlay-only targeting
+; overlay_whitelist - Values: process names for overlay-only targeting. DO NOT USE IN MULTIPLAYER GAMES!
 overlay_whitelist=(
 )
-; wgc_window_detection - Values: window titles for WGC app/window matching
+; wgc_window_detection - Values: window titles for WGC app/window matching, might be a bit faster than global WGC desktop capture. Should be safe with anti-cheats, does not require inject and overlay.
 wgc_window_detection=(
 )
 
@@ -152,16 +150,16 @@ mip_bias=default
 mip_bias_mode=strict
 ; force_mip_bias_clamp - Values: true, false
 force_mip_bias_clamp=false
-; cpu_prerender_limit - Values: -1, 0, 0.5, 1-6
+; cpu_prerender_limit - Values: -1, 0, 1-6
 cpu_prerender_limit=-1
 ; backbuffer_count - Values: 0, 2-6
-backbuffer_count=0
+backbuffer_count=-1
 ; DLSS options below also support per-app overrides via Graphics.<key> in [App.N].
 ; dlss_auto_exposure - Values: default, on, off
 dlss_auto_exposure=default
-; dlss_sr_preset - Values: default, A-M
+; dlss_sr_preset - Values: default, A-Z
 dlss_sr_preset=default
-; dlss_rr_preset - Values: default, A-G
+; dlss_rr_preset - Values: default, A-Z
 dlss_rr_preset=default
 ; dlss_sharpening - Values: default, off, 0.0-1.0
 dlss_sharpening=default
@@ -358,7 +356,7 @@ toggle_fps=
 ; Process - Values: executable name (case-insensitive)
 ; Process=game.exe
 ; Overlay.enabled - Values: true, false
-; Graphics.dlss_sr_preset - Values: default, A-M
+; Graphics.dlss_sr_preset - Values: default, A-Z
 ; Video.bitrate - Values: e.g. 100Mbps
 )CFG";
 
@@ -486,7 +484,10 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 
     // General
     config.debugLogging = GetBool("General", "debug_logging", true);
-    config.perfMetricsLogging = GetBool("General", "perf_metrics_logging", false);
+    std::string legacyPerfMetricsLogging = GetStr("General", "perf_metrics_logging", "");
+    if (!legacyPerfMetricsLogging.empty() && ParseBool(legacyPerfMetricsLogging)) {
+        config.debugLogging = true;
+    }
     config.captureMethod = GetStr("General", "capture_method", "auto");
     config.crashDumpDir = GetStr("General", "crash_dump_dir", "");
 
@@ -509,7 +510,10 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.graphics.forceMipBiasClamp = GetBool("Graphics", "force_mip_bias_clamp", false);
     config.graphics.msaaSamples = GetStr("Graphics", "msaa_samples", "default");
     config.graphics.cpuPrerenderLimit = GetFloat("Graphics", "cpu_prerender_limit", -1.0f);
-    config.graphics.backbufferCount = GetInt("Graphics", "backbuffer_count", 0);
+    config.graphics.backbufferCount = GetInt("Graphics", "backbuffer_count", -1);
+    if (config.graphics.backbufferCount == 0) {
+        config.graphics.backbufferCount = -1;
+    }
     config.graphics.sgssaa = GetBool("Graphics", "sgssaa", false);
     config.graphics.disableAutoMipBias = GetBool("Graphics", "disable_auto_mip_bias", false);
     config.graphics.dlssAutoExposure = GetStr("Graphics", "dlss_auto_exposure", "default");
@@ -581,7 +585,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
                 config.graphics.parsed.srPreset);
         if (config.graphics.parsed.srPreset > 0) {
             LogInfo("Config: Global SR Preset Override Active: '%c'",
-                    (config.graphics.parsed.srPreset <= 13) ? ('A' + config.graphics.parsed.srPreset - 1) : '?');
+                    (config.graphics.parsed.srPreset <= 26) ? ('A' + config.graphics.parsed.srPreset - 1) : '?');
         }
     }
 

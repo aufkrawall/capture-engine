@@ -120,3 +120,24 @@ TEST_F(ConfigOverrideTest, MultipleAppSections) {
     LoadConfig(tempConfigFile, config, "game2.exe");
     EXPECT_TRUE(config.overlay.showOverlay);
 }
+
+TEST_F(ConfigOverrideTest, PerAppDLSSFGFactorOverride) {
+    std::string iniContent =
+        "[Graphics]\n"
+        "dlss_fg_factor=2x\n"
+        "dlss_sr_preset=K\n"
+        "\n"
+        "[App.1]\n"
+        "Process=RoboCop-Win64-Shipping.exe\n"
+        "dlss_fg_factor=3x\n"
+        "dlss_sr_preset=L\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "RoboCop-Win64-Shipping.exe");
+
+    EXPECT_EQ(config.graphics.dlssFgFactor, "3x");
+    EXPECT_EQ(config.graphics.parsed.dlssFGFactor, 3);
+    EXPECT_EQ(config.graphics.parsed.srPreset, 12u);
+}
