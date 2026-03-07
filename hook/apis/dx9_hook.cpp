@@ -4781,38 +4781,18 @@ static HRESULT STDMETHODCALLTYPE DetourSetSamplerState(IDirect3DDevice9* device,
                         }
                     }
                 } else if (Type == D3DSAMP_MIPMAPLODBIAS) {
-                    const char* biasStr = gfx.mipBias.c_str();
-                    if (biasStr[0] != 'd') {
-                        char* end;
-                        float configBias = strtof(biasStr, &end);
-                        if (end != biasStr) {
-                            float originalBias = D3D9BitsToFloat(Value);
-                            std::string mode = gfx.mipBiasMode;
-
-                            if (mode == "offset") {
-                                float finalBias = originalBias + configBias;
-                                Value = D3D9FloatToBits(finalBias);
-                            } else if (mode == "base") {
-                                if (originalBias < 0.0f) {
-                                    float finalBias = originalBias + configBias;
-                                    Value = D3D9FloatToBits(finalBias);
-                                }
-                            } else {
-                                // Strict (default)
-                                Value = D3D9FloatToBits(configBias);
-                            }
-                        }
-                    }
+                    float finalBias = ApplyConfiguredMipBias(gfx, D3D9BitsToFloat(Value));
 
                     // Auto-bias
-                    if (gfx.sgssaa && !gfx.disableAutoMipBias) {
+                    if (gfx.sgssaa && !gfx.disableAutoMipBias && !gfx.forceMipBiasClamp) {
                         float sgBias = 0.0f;
                         if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgBias)) {
-                            float currentBias = D3D9BitsToFloat(Value);
-                            currentBias += sgBias;
-                            Value = D3D9FloatToBits(currentBias);
+                            finalBias += sgBias;
                         }
                     }
+
+                    finalBias = FinalizeMipBias(gfx, finalBias);
+                    Value = D3D9FloatToBits(finalBias);
                 }
             }
 

@@ -1274,24 +1274,9 @@ static void WINAPI DetourGlTexParameterf(GLenum target, GLenum pname, GLfloat pa
     if (g_IPC) {
         const auto& gfx = GetActiveGraphicsConfig();
         // Mip Bias: GL_TEXTURE_LOD_BIAS = 0x8501
-        const auto& bias = gfx.mipBias;
-        if (bias != "default" && !bias.empty() && pname == 0x8501) {
-            try {
-                float userBias = std::stof(bias);
-                float originalBias = param;
-                const auto& mode = gfx.mipBiasMode;
-
-                if (mode == "offset") {
-                    param = originalBias + userBias;
-                } else if (mode == "base") {
-                    if (originalBias < 0.0f) {
-                        param = originalBias + userBias;
-                    }
-                } else {
-                    // Strict
-                    param = userBias;
-                }
-            } catch (...) {}
+        if (pname == 0x8501 && (gfx.forceMipBiasClamp || HasConfiguredMipBias(gfx))) {
+            float finalBias = ApplyConfiguredMipBias(gfx, param);
+            param = FinalizeMipBias(gfx, finalBias);
         }
 
         // Anisotropy (floats allowed)

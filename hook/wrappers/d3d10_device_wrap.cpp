@@ -4,6 +4,7 @@
 
 #include "d3d10_device_wrap.h"
 #include <cstdlib>
+#include "../apis/lod_helper.h"
 #include "hook_common.h"
 
 // ============================================================================
@@ -71,21 +72,10 @@ void CWrapD3D10Device::ApplySamplerOverrides(D3D10_SAMPLER_DESC* pDesc) {
     }
 
     const std::string& bias = gfx.mipBias;
-    if (bias != "default" && !bias.empty()) {
-        char* end = nullptr;
-        float userBiasVal = std::strtof(bias.c_str(), &end);
-        if (end != bias.c_str()) {
-            const std::string& mode = gfx.mipBiasMode;
-            float originalBias = pDesc->MipLODBias;
-            if (mode == "offset") {
-                pDesc->MipLODBias = originalBias + userBiasVal;
-            } else if (mode == "base") {
-                if (originalBias < 0.0f)
-                    pDesc->MipLODBias = originalBias + userBiasVal;
-            } else {
-                pDesc->MipLODBias = userBiasVal;
-            }
-        }
+    if ((bias != "default" && !bias.empty()) || gfx.forceMipBiasClamp) {
+        float originalBias = pDesc->MipLODBias;
+        pDesc->MipLODBias = ApplyConfiguredMipBias(gfx, originalBias);
+        pDesc->MipLODBias = FinalizeMipBias(gfx, pDesc->MipLODBias);
     }
 }
 

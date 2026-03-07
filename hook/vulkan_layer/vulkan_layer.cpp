@@ -121,7 +121,9 @@ VulkanLayerState::VulkanLayerState()
       m_AnisotropyOverrideActive(false),
       m_MipLodBias(0.0f),
       m_MipBiasOverrideActive(false),
+      m_ForceMipBiasClamp(false),
       m_MipBiasMode("strict"),
+      m_MipMapping("default"),
       m_VsyncMode("default"),
       m_BackbufferCount(0),
       m_PrerenderLimit(-1.0f) {}
@@ -300,6 +302,9 @@ void VulkanLayerState::UpdateFromSharedMemory(IPCClient* ipc) {
     else
         m_MipBiasMode = "strict";
 
+    m_ForceMipBiasClamp = cfg.forceMipBiasClamp;
+    m_MipMapping = cfg.mipMapping[0] ? cfg.mipMapping : "default";
+
     // VSync mode
     m_VsyncMode = cfg.vsyncMode;
 
@@ -311,8 +316,9 @@ void VulkanLayerState::UpdateFromSharedMemory(IPCClient* ipc) {
 
     LayerLog(
         "VulkanLayerState: Updated from config - AF=%d, MipBias=%.1f, "
-        "VSync=%s, BBCount=%d",
-        m_MaxAnisotropy, m_MipLodBias, m_VsyncMode.c_str(), m_BackbufferCount);
+        "MipMap=%s, Clamp=%d, VSync=%s, BBCount=%d",
+        m_MaxAnisotropy, m_MipLodBias, m_MipMapping.c_str(), m_ForceMipBiasClamp ? 1 : 0, m_VsyncMode.c_str(),
+        m_BackbufferCount);
 }
 
 // ============================================================================
@@ -1097,8 +1103,21 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(VkDevice device, const Vk
                 }
             }
 
+            const char* mipMapping = state.GetMipMapping();
+            if (strcmp(mipMapping, "trilinear") == 0) {
+                modified.minFilter = VK_FILTER_LINEAR;
+                modified.magFilter = VK_FILTER_LINEAR;
+                modified.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+            } else if (strcmp(mipMapping, "bilinear") == 0) {
+                modified.minFilter = VK_FILTER_LINEAR;
+                modified.magFilter = VK_FILTER_LINEAR;
+                modified.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+            }
+
             // Mip bias override with mode support
-            if (state.IsMipBiasOverrideActive()) {
+            if (state.IsForceMipBiasClampEnabled()) {
+                modified.mipLodBias = 0.0f;
+            } else if (state.IsMipBiasOverrideActive()) {
                 float userBias = state.GetMipLodBias();
                 const char* mode = state.GetMipBiasMode();
                 float originalBias = pCreateInfo->mipLodBias;

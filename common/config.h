@@ -124,6 +124,7 @@ struct GraphicsConfig {
     std::string mipMapping;              // "bilinear", "trilinear"
     std::string mipBias;                 // "default", "0", "0.5", "-0.5", etc.
     std::string mipBiasMode = "strict";  // "strict", "offset", "base"
+    bool forceMipBiasClamp = false;      // Force all texture mip bias values to 0
     std::string msaaSamples;             // "off", "2x", "4x", "8x"
     float cpuPrerenderLimit = -1.0f;     // -1 = default, 0, 0.5, 1-6
     int backbufferCount = 0;             // 0 = default, 2-6

@@ -803,26 +803,11 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8SetTextureStageState(IDirect3DDevice8
         }
 
         // Mip Bias
-        std::string bias = gfx.mipBias;
-        if (bias != "default" && Type == 19 /*D3DTSS_MIPMAPLODBIAS*/) {
-            try {
-                float fBias = std::stof(bias);
-                float originalBias = *((float*)&Value);
-                std::string mode = gfx.mipBiasMode;
-
-                if (mode == "offset") {
-                    float finalBias = originalBias + fBias;
-                    Value = *((DWORD*)&finalBias);
-                } else if (mode == "base") {
-                    if (originalBias < 0.0f) {
-                        float finalBias = originalBias + fBias;
-                        Value = *((DWORD*)&finalBias);
-                    }
-                } else {
-                    // Strict
-                    Value = *((DWORD*)&fBias);
-                }
-            } catch (...) {}
+        if (Type == 19 /*D3DTSS_MIPMAPLODBIAS*/) {
+            float originalBias = *((float*)&Value);
+            float finalBias = ApplyConfiguredMipBias(gfx, originalBias);
+            finalBias = FinalizeMipBias(gfx, finalBias);
+            Value = *((DWORD*)&finalBias);
         }
     }
     return oD3D8SetTextureStageState(device, Stage, Type, Value);

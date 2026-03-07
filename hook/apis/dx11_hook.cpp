@@ -2480,35 +2480,16 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device* pDevice, const 
         }
 
         // Mip Bias
-        std::string bias = gfx.mipBias;
-        bool userBiasActive = false;
         float userBiasVal = 0.0f;
-        if (bias != "default") {
-            try {
-                userBiasVal = std::stof(bias);
-                userBiasActive = true;
-
-                float originalBias = pSamplerDesc->MipLODBias;
-                std::string mode = gfx.mipBiasMode;
-
-                if (mode == "offset") {
-                    desc.MipLODBias = originalBias + userBiasVal;
-                } else if (mode == "base") {
-                    if (originalBias < 0.0f) {
-                        desc.MipLODBias = originalBias + userBiasVal;
-                    } else {
-                        desc.MipLODBias = originalBias;
-                    }
-                } else {
-                    desc.MipLODBias = userBiasVal;
-                }
-
-                modified = true;
-            } catch (...) {}
+        bool userBiasActive = TryParseConfiguredMipBias(gfx, userBiasVal);
+        float originalBias = pSamplerDesc->MipLODBias;
+        desc.MipLODBias = ApplyConfiguredMipBias(gfx, originalBias);
+        if (desc.MipLODBias != originalBias) {
+            modified = true;
         }
 
         // SGSSAA Auto-Bias
-        if (gfx.sgssaa && !gfx.disableAutoMipBias) {
+        if (gfx.sgssaa && !gfx.disableAutoMipBias && !gfx.forceMipBiasClamp) {
             float sgBias = 0.0f;
             if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgBias)) {
                 desc.MipLODBias += sgBias;
@@ -2516,11 +2497,17 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device* pDevice, const 
             }
         }
 
-        if (userBiasActive && userBiasVal < 0.0f && !gfx.sgssaa && IsUnityProcess()) {
+        if (userBiasActive && userBiasVal < 0.0f && !gfx.sgssaa && IsUnityProcess() && !gfx.forceMipBiasClamp) {
             if (desc.MipLODBias < -0.5f) {
                 desc.MipLODBias = -0.5f;
                 modified = true;
             }
+        }
+
+        float finalizedBias = FinalizeMipBias(gfx, desc.MipLODBias);
+        if (finalizedBias != desc.MipLODBias) {
+            desc.MipLODBias = finalizedBias;
+            modified = true;
         }
     }
 
@@ -2617,35 +2604,16 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState10(ID3D10Device* pDevice, cons
         }
 
         // Mip Bias
-        std::string bias = gfx.mipBias;
-        bool userBiasActive = false;
         float userBiasVal = 0.0f;
-        if (bias != "default") {
-            try {
-                userBiasVal = std::stof(bias);
-                userBiasActive = true;
-
-                float originalBias = pSamplerDesc->MipLODBias;
-                std::string mode = gfx.mipBiasMode;
-
-                if (mode == "offset") {
-                    desc.MipLODBias = originalBias + userBiasVal;
-                } else if (mode == "base") {
-                    if (originalBias < 0.0f) {
-                        desc.MipLODBias = originalBias + userBiasVal;
-                    } else {
-                        desc.MipLODBias = originalBias;
-                    }
-                } else {
-                    desc.MipLODBias = userBiasVal;
-                }
-
-                modified = true;
-            } catch (...) {}
+        bool userBiasActive = TryParseConfiguredMipBias(gfx, userBiasVal);
+        float originalBias = pSamplerDesc->MipLODBias;
+        desc.MipLODBias = ApplyConfiguredMipBias(gfx, originalBias);
+        if (desc.MipLODBias != originalBias) {
+            modified = true;
         }
 
         // SGSSAA Auto-Bias
-        if (gfx.sgssaa && !gfx.disableAutoMipBias) {
+        if (gfx.sgssaa && !gfx.disableAutoMipBias && !gfx.forceMipBiasClamp) {
             float sgBias = 0.0f;
             if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgBias)) {
                 desc.MipLODBias += sgBias;
@@ -2653,11 +2621,17 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState10(ID3D10Device* pDevice, cons
             }
         }
 
-        if (userBiasActive && userBiasVal < 0.0f && !gfx.sgssaa && IsUnityProcess()) {
+        if (userBiasActive && userBiasVal < 0.0f && !gfx.sgssaa && IsUnityProcess() && !gfx.forceMipBiasClamp) {
             if (desc.MipLODBias < -0.5f) {
                 desc.MipLODBias = -0.5f;
                 modified = true;
             }
+        }
+
+        float finalizedBias = FinalizeMipBias(gfx, desc.MipLODBias);
+        if (finalizedBias != desc.MipLODBias) {
+            desc.MipLODBias = finalizedBias;
+            modified = true;
         }
     }
 
@@ -2769,36 +2743,25 @@ static ID3D10SamplerState* GetOrCreateReplacementSampler10(ID3D10Device* pDevice
     }
 
     // Mip Bias
-    std::string bias = gfx.mipBias;
-    if (bias != "default") {
-        try {
-            float biasVal = std::stof(bias);
-            std::string mode = gfx.mipBiasMode;
-
-            if (mode == "offset") {
-                desc.MipLODBias += biasVal;
-                modified = true;
-            } else if (mode == "base") {
-                // Apply only if original has negative bias
-                if (desc.MipLODBias < 0.0f) {
-                    desc.MipLODBias += biasVal;
-                    modified = true;
-                }
-            } else {
-                // Strict (default) - Absolute override
-                desc.MipLODBias = biasVal;
-                modified = true;
-            }
-        } catch (...) {}
+    float originalBias = desc.MipLODBias;
+    desc.MipLODBias = ApplyConfiguredMipBias(gfx, originalBias);
+    if (desc.MipLODBias != originalBias) {
+        modified = true;
     }
 
     // SGSSAA Auto-Bias
-    if (gfx.sgssaa && !gfx.disableAutoMipBias) {
+    if (gfx.sgssaa && !gfx.disableAutoMipBias && !gfx.forceMipBiasClamp) {
         float sgBias = 0.0f;
         if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgBias)) {
             desc.MipLODBias += sgBias;
             modified = true;
         }
+    }
+
+    float finalizedBias = FinalizeMipBias(gfx, desc.MipLODBias);
+    if (finalizedBias != desc.MipLODBias) {
+        desc.MipLODBias = finalizedBias;
+        modified = true;
     }
 
     if (!modified) {

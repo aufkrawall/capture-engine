@@ -7,6 +7,7 @@
 #include "root_signature_parser.h"
 #include <algorithm>
 #include <cstring>
+#include "../apis/lod_helper.h"
 #include "../common/hook_common.h"
 
 namespace RootSignatureParser {
@@ -74,34 +75,13 @@ bool ApplyStaticSamplerOverrides(D3D12_STATIC_SAMPLER_DESC& sampler) {
 
     // Mip bias override
     std::string biasStr = gfx.mipBias;
-    if (biasStr != "default") {
-        try {
-            float userBias = std::stof(biasStr);
-            std::string mode = gfx.mipBiasMode;
-
-            float originalBias = sampler.MipLODBias;
-
-            if (mode == "offset") {
-                sampler.MipLODBias += userBias;
-            } else if (mode == "base") {
-                if (sampler.MipLODBias >= 0.0f) {
-                    sampler.MipLODBias = userBias;
-                }
-            } else {
-                // "strict" or "override" - force the value
-                sampler.MipLODBias = userBias;
-            }
-
-            // Clamp to valid range
-            if (sampler.MipLODBias < -16.0f)
-                sampler.MipLODBias = -16.0f;
-            if (sampler.MipLODBias > 15.99f)
-                sampler.MipLODBias = 15.99f;
-
-            if (sampler.MipLODBias != originalBias) {
-                modified = true;
-            }
-        } catch (...) {}
+    if (biasStr != "default" || gfx.forceMipBiasClamp) {
+        float originalBias = sampler.MipLODBias;
+        sampler.MipLODBias = ApplyConfiguredMipBias(gfx, sampler.MipLODBias);
+        sampler.MipLODBias = FinalizeMipBias(gfx, sampler.MipLODBias);
+        if (sampler.MipLODBias != originalBias) {
+            modified = true;
+        }
     }
 
     if (modified) {

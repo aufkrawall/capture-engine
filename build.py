@@ -605,7 +605,7 @@ def bump_and_write_build_version():
         log(f"Warning: Failed to write {build_num_path}: {e}")
 
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    version_str = f"1.1.0-dev+build.{build_number}"
+    version_str = f"0.1.{build_number}"
 
     contents = (
         "#pragma once\n\n"

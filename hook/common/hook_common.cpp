@@ -429,6 +429,7 @@ GraphicsConfig GetActiveGraphicsConfig() {
         mergedConfig.mipMapping = shmGfx.mipMapping;
         mergedConfig.mipBias = shmGfx.mipBias;
         mergedConfig.mipBiasMode = shmGfx.mipBiasMode;
+        mergedConfig.forceMipBiasClamp = shmGfx.forceMipBiasClamp;
         mergedConfig.msaaSamples = shmGfx.msaaSamples;
         mergedConfig.cpuPrerenderLimit = shmGfx.prerenderLimit;
         mergedConfig.backbufferCount = shmGfx.backbufferCount;
@@ -517,6 +518,12 @@ GraphicsConfig GetActiveGraphicsConfig() {
         if (g_pLocalConfig->graphics.mipBias != "default" && !g_pLocalConfig->graphics.mipBias.empty()) {
             mergedConfig.mipBias = g_pLocalConfig->graphics.mipBias;
         }
+        if (g_pLocalConfig->graphics.mipBiasMode != "strict" && !g_pLocalConfig->graphics.mipBiasMode.empty()) {
+            mergedConfig.mipBiasMode = g_pLocalConfig->graphics.mipBiasMode;
+        }
+        if (g_pLocalConfig->graphics.forceMipBiasClamp) {
+            mergedConfig.forceMipBiasClamp = true;
+        }
         if (g_pLocalConfig->graphics.msaaSamples != "default" && !g_pLocalConfig->graphics.msaaSamples.empty()) {
             mergedConfig.msaaSamples = g_pLocalConfig->graphics.msaaSamples;
         }
@@ -572,6 +579,8 @@ GraphicsConfig GetActiveGraphicsConfig() {
     else if (mergedConfig.mipMapping != "default" && !mergedConfig.mipMapping.empty())
         anyActive = true;
     else if (mergedConfig.mipBias != "default" && !mergedConfig.mipBias.empty())
+        anyActive = true;
+    else if (mergedConfig.forceMipBiasClamp)
         anyActive = true;
     else if (mergedConfig.msaaSamples != "default" && !mergedConfig.msaaSamples.empty())
         anyActive = true;

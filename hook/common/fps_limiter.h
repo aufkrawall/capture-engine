@@ -410,7 +410,7 @@ public:
             if (effectiveMode == LimiterModeValues::kFGFallback)
                 modeStr = "fg_fallback";
             else if (effectiveMode == LimiterModeValues::kNative)
-                modeStr = "native(reflex)";
+                modeStr = "reflex";
             else if (effectiveMode == LimiterModeValues::kAntiLag2)
                 modeStr = "anti_lag2";
             else if (effectiveMode == LimiterModeValues::kXeLL)

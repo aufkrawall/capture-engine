@@ -7,7 +7,7 @@
 ; debug_logging - Values: true, false
 debug_logging=true
 ; capture_method - Values: inject, screengrab, desktop_dup, auto
-capture_method=inject
+capture_method=auto
 
 [Injection]
 ; whitelist - Values: process names (one per line in (...) or comma-separated)
@@ -31,13 +31,17 @@ copy_queue_priority=normal
 
 [FpsLimiter]
 ; capture_sync_enabled - Values: true, false
-capture_sync_enabled=true
+capture_sync_enabled=false
 ; capture_sync_multiplier - Values: 1-8
 capture_sync_multiplier=1
+; capture_sync_limiter_mode - Values: auto, basic, fg_fallback, reflex, anti_lag2, xell
+capture_sync_limiter_mode=auto
 ; general_enabled - Values: true, false
 general_enabled=false
 ; general_fps - Values: integer > 0
 general_fps=120
+; general_limiter_mode - Values: auto, basic, fg_fallback, reflex, anti_lag2, xell
+general_limiter_mode=auto
 
 [Graphics]
 ; vsync_mode - Values: default, off, fifo, adaptive, mailbox
@@ -50,12 +54,12 @@ mip_mapping=default
 mip_bias=default
 ; mip_bias_mode - Values: strict, offset, base
 mip_bias_mode=strict
+; force_mip_bias_clamp - Values: true, false
+force_mip_bias_clamp=false
 ; cpu_prerender_limit - Values: -1, 0, 0.5, 1-6
 cpu_prerender_limit=-1
-; backbuffer_count - Values: 0-6
+; backbuffer_count - Values: 0, 2-6
 backbuffer_count=0
-; nvidia_smooth_motion_compat - Values: auto, on, off
-nvidia_smooth_motion_compat=auto
 ; DLSS options below also support per-app overrides via Graphics.<key> in [App.N].
 ; dlss_auto_exposure - Values: default, on, off
 dlss_auto_exposure=default
@@ -101,10 +105,6 @@ b_frames=0
 custom_options=
 ; capture_cursor - Values: true, false
 capture_cursor=true
-; vfr - Values: true, false
-vfr=false
-; vfr_audio_sync - Values: true, false
-vfr_audio_sync=false
 ; bit_depth - Values: auto, 8, 10
 bit_depth=auto
 ; color_space - Values: auto, bt709, bt2020
@@ -148,7 +148,7 @@ output_resolution=native
 ; quality - Values: normal, best
 quality=best
 ; sharpness - Values: 0-100
-sharpness=0
+sharpness=100
 
 [Audio]
 ; enabled - Values: true, false

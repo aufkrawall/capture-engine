@@ -1,8 +1,10 @@
 #pragma once
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
-#include "../../common/shared_defs.h"
+#include "../../common/config.h"
 
 // Helper to check if SGSSAA is requested and what the sample count is
 // Returns true if SGSSAA should be applied, false otherwise.
@@ -43,4 +45,44 @@ inline bool GetSGSSAABias(bool sgssaa, const char* msaa, float& outBias, int ove
 
     outBias = -0.5f * std::log2((float)samples);
     return true;
+}
+
+inline bool HasConfiguredMipBias(const GraphicsConfig& gfx) {
+    return !gfx.mipBias.empty() && gfx.mipBias != "default";
+}
+
+inline bool TryParseConfiguredMipBias(const GraphicsConfig& gfx, float& outBias) {
+    if (!HasConfiguredMipBias(gfx)) {
+        return false;
+    }
+
+    char* end = nullptr;
+    outBias = std::strtof(gfx.mipBias.c_str(), &end);
+    return end != gfx.mipBias.c_str();
+}
+
+inline float ApplyConfiguredMipBias(const GraphicsConfig& gfx, float originalBias) {
+    if (gfx.forceMipBiasClamp) {
+        return 0.0f;
+    }
+
+    float userBias = 0.0f;
+    if (!TryParseConfiguredMipBias(gfx, userBias)) {
+        return originalBias;
+    }
+
+    if (gfx.mipBiasMode == "offset") {
+        return originalBias + userBias;
+    }
+    if (gfx.mipBiasMode == "base") {
+        return (originalBias < 0.0f) ? (originalBias + userBias) : originalBias;
+    }
+    return userBias;
+}
+
+inline float FinalizeMipBias(const GraphicsConfig& gfx, float bias) {
+    if (gfx.forceMipBiasClamp) {
+        return 0.0f;
+    }
+    return std::clamp(bias, -16.0f, 15.99f);
 }

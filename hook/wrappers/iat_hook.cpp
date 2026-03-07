@@ -11,6 +11,7 @@
 #include <atomic>
 #include <mutex>
 #include <unordered_map>
+#include "../apis/lod_helper.h"
 #include "../apis/dx11_hook.h"
 #include "hook_common.h"
 #include "wrapper_hooks.h"
@@ -76,28 +77,10 @@ extern "C" BOOL WINAPI ApplyDX12SamplerOverridesCallback(D3D12_SAMPLER_DESC* pDe
 
     // Mip Bias override
     std::string biasStr = gfx.mipBias;
-    if (biasStr != "default") {
-        try {
-            float userBias = std::stof(biasStr);
-            std::string mode = gfx.mipBiasMode;
-
-            if (mode == "offset") {
-                pDesc->MipLODBias += userBias;
-            } else if (mode == "base") {
-                if (pDesc->MipLODBias < 0.0f)
-                    pDesc->MipLODBias += userBias;
-            } else {
-                // "strict" (default) or any other mode - absolute override
-                pDesc->MipLODBias = userBias;
-            }
-        } catch (...) {}
+    if (biasStr != "default" || gfx.forceMipBiasClamp) {
+        pDesc->MipLODBias = ApplyConfiguredMipBias(gfx, pDesc->MipLODBias);
+        pDesc->MipLODBias = FinalizeMipBias(gfx, pDesc->MipLODBias);
     }
-
-    // Clamp mip bias
-    if (pDesc->MipLODBias < -16.0f)
-        pDesc->MipLODBias = -16.0f;
-    if (pDesc->MipLODBias > 15.99f)
-        pDesc->MipLODBias = 15.99f;
 
     if (origFilter != pDesc->Filter || origAniso != pDesc->MaxAnisotropy || origBias != pDesc->MipLODBias) {
         HookLog(

@@ -199,8 +199,14 @@ public:
     bool IsMipBiasOverrideActive() const {
         return m_MipBiasOverrideActive;
     }
+    bool IsForceMipBiasClampEnabled() const {
+        return m_ForceMipBiasClamp;
+    }
     const char* GetMipBiasMode() const {
         return m_MipBiasMode.c_str();
+    }
+    const char* GetMipMapping() const {
+        return m_MipMapping.c_str();
     }
     const char* GetVsyncMode() const {
         return m_VsyncMode.c_str();
@@ -231,7 +237,9 @@ private:
     bool m_AnisotropyOverrideActive;
     float m_MipLodBias;
     bool m_MipBiasOverrideActive;
+    bool m_ForceMipBiasClamp;
     std::string m_MipBiasMode;
+    std::string m_MipMapping;
     std::string m_VsyncMode;
     int32_t m_BackbufferCount;
     float m_PrerenderLimit;

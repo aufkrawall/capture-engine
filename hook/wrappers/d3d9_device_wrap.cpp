@@ -205,38 +205,18 @@ HRESULT STDMETHODCALLTYPE CWrapD3D9Device::SetSamplerState(DWORD Sampler, D3DSAM
                     }
                 }
             } else if (Type == D3DSAMP_MIPMAPLODBIAS) {
-                const char* biasStr = gfx.mipBias.c_str();
-                if (biasStr[0] != 'd') {
-                    char* end;
-                    float configBias = strtof(biasStr, &end);
-                    if (end != biasStr) {
-                        float originalBias = *((float*)&Value);
-                        std::string mode = gfx.mipBiasMode;
-
-                        if (mode == "offset") {
-                            float finalBias = originalBias + configBias;
-                            Value = *((DWORD*)&finalBias);
-                        } else if (mode == "base") {
-                            if (originalBias < 0.0f) {
-                                float finalBias = originalBias + configBias;
-                                Value = *((DWORD*)&finalBias);
-                            }
-                        } else {
-                            // Strict (default)
-                            Value = *((DWORD*)&configBias);
-                        }
-                    }
-                }
+                float finalBias = ApplyConfiguredMipBias(gfx, *((float*)&Value));
 
                 // Auto-bias
-                if (gfx.sgssaa && !gfx.disableAutoMipBias) {
+                if (gfx.sgssaa && !gfx.disableAutoMipBias && !gfx.forceMipBiasClamp) {
                     float sgBias = 0.0f;
                     if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgBias)) {
-                        float currentBias = *((float*)&Value);
-                        currentBias += sgBias;
-                        Value = *((DWORD*)&currentBias);
+                        finalBias += sgBias;
                     }
                 }
+
+                finalBias = FinalizeMipBias(gfx, finalBias);
+                Value = *((DWORD*)&finalBias);
             }
         }
     }

@@ -114,6 +114,7 @@ static void UpdateSharedMemoryFromConfig(SharedMemoryLayout* pSharedMem, const A
     strncpy(pSharedMem->graphicsConfig.mipMapping, config.graphics.mipMapping.c_str(), 31);
     strncpy(pSharedMem->graphicsConfig.mipBias, config.graphics.mipBias.c_str(), 31);
     strncpy(pSharedMem->graphicsConfig.mipBiasMode, config.graphics.mipBiasMode.c_str(), 31);
+    pSharedMem->graphicsConfig.forceMipBiasClamp = config.graphics.forceMipBiasClamp;
     strncpy(pSharedMem->graphicsConfig.msaaSamples, config.graphics.msaaSamples.c_str(), 31);
     pSharedMem->graphicsConfig.prerenderLimit = config.graphics.cpuPrerenderLimit;
     pSharedMem->graphicsConfig.backbufferCount = config.graphics.backbufferCount;

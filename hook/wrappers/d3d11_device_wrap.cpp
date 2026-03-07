@@ -6,6 +6,7 @@
 
 #include "d3d11_device_wrap.h"
 #include "d3d11_devicecontext_wrap.h"
+#include "../apis/lod_helper.h"
 #include "hook_common.h"
 
 // ============================================================================
@@ -108,20 +109,10 @@ void CWrapD3D11Device::ApplySamplerOverrides(D3D11_SAMPLER_DESC* pDesc) {
 
     // Mip Bias
     const std::string& bias = gfx.mipBias;
-    if (bias != "default" && !bias.empty()) {
-        try {
-            float userBiasVal = std::stof(bias);
-            const std::string& mode = gfx.mipBiasMode;
-            float originalBias = pDesc->MipLODBias;
-            if (mode == "offset") {
-                pDesc->MipLODBias = originalBias + userBiasVal;
-            } else if (mode == "base") {
-                if (originalBias < 0.0f)
-                    pDesc->MipLODBias = originalBias + userBiasVal;
-            } else {
-                pDesc->MipLODBias = userBiasVal;
-            }
-        } catch (...) {}
+    if ((bias != "default" && !bias.empty()) || gfx.forceMipBiasClamp) {
+        float originalBias = pDesc->MipLODBias;
+        pDesc->MipLODBias = ApplyConfiguredMipBias(gfx, originalBias);
+        pDesc->MipLODBias = FinalizeMipBias(gfx, pDesc->MipLODBias);
     }
 }
 

@@ -406,7 +406,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
         }
     }
 
-    bool fgActive = metrics && metrics->IsFGActive();
+    bool fgVisible = cfg.showFG && metrics && metrics->IsFGActive();
     bool isRecording = sharedMem->runtimeState.isRecording.load(std::memory_order_acquire);
     uint64_t recordingSeconds = 0;
     uint64_t nowTick64 = GetTickCount64();
@@ -428,7 +428,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     bool shouldRefreshGraph = showGraph;
     bool viewportChanged = (viewportWidth != lastViewportWidth) || (viewportHeight != lastViewportHeight);
     bool configChanged = !hasRenderedConfig || !OverlayConfigEquals(cfg, lastRenderedConfig);
-    bool dynamicStateChanged = (fgActive != lastFGActive) || (isRecording != lastRecordingActive) ||
+    bool dynamicStateChanged = (fgVisible != lastFGActive) || (isRecording != lastRecordingActive) ||
                                (recordingSeconds != lastRecordingSeconds) ||
                                (showOverloadWarning != lastShowOverloadWarning);
     bool needRebuild = !hasCachedFrame || shouldUpdate || shouldRefreshGraph || viewportChanged || configChanged ||
@@ -479,7 +479,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     lastRenderedConfig = cfg;
     lastViewportWidth = viewportWidth;
     lastViewportHeight = viewportHeight;
-    lastFGActive = fgActive;
+    lastFGActive = fgVisible;
     lastRecordingActive = isRecording;
     lastRecordingSeconds = recordingSeconds;
     lastShowOverloadWarning = showOverloadWarning;
@@ -511,6 +511,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
 
     // Check dynamic states used by both sizing and rendering
     bool fgActive = metrics && metrics->IsFGActive();
+    bool showFGDetails = cfg.showFG && fgActive;
     bool isRecording = mem.runtimeState.isRecording.load(std::memory_order_acquire);
 
     // Adaptive overlay width: measure visible labels/values and size to content.
@@ -588,7 +589,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
             maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth(apiLabel));
             maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
 
-            if (fgActive) {
+            if (showFGDetails) {
                 float baseFPS = metrics->GetFGBaseFPS();
                 float outputFPS = metrics->GetFGOutputFPS();
                 if (baseFPS < 1.0f)
@@ -607,7 +608,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
                 maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
             }
         }
-        if (cfg.showFG && fgActive) {
+        if (showFGDetails) {
             int multiplier = metrics->GetFGMultiplier();
             snprintf(measureBuf, sizeof(measureBuf), "FG %dx", multiplier);
             maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth("FG"));
@@ -658,10 +659,10 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         if (cachedAvgFPS > 0)
             requiredHeight += lineHeight;
         // Base/Display line when FG is active
-        if (fgActive)
+        if (showFGDetails)
             requiredHeight += lineHeight;
     }
-    if (cfg.showFG && fgActive)
+    if (showFGDetails)
         requiredHeight += lineHeight;
     if (cfg.showRecording && isRecording)
         requiredHeight += lineHeight;
@@ -718,10 +719,10 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         graphCursorY += lineHeight;
         if (cachedAvgFPS > 0 && cached1PercentLow > 0)
             graphCursorY += lineHeight;
-        if (fgActive)
+        if (showFGDetails)
             graphCursorY += lineHeight;
     }
-    if (cfg.showFG && fgActive)
+    if (showFGDetails)
         graphCursorY += lineHeight;
     if (cfg.showRecording && isRecording)
         graphCursorY += lineHeight;
@@ -879,7 +880,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         cursorY += lineHeight;
 
         // Base/Display FPS when FG is active (shown first as in reference)
-        if (fgActive) {
+        if (showFGDetails) {
             float baseFPS = metrics->GetFGBaseFPS();
             float outputFPS = metrics->GetFGOutputFPS();
             if (baseFPS < 1.0f)
@@ -903,7 +904,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     }
 
     // FG Status line
-    if (cfg.showFG && fgActive) {
+    if (showFGDetails) {
         int multiplier = metrics->GetFGMultiplier();
         snprintf(buf, 64, "FG %dx", multiplier);
         renderer->DrawTextWithShadow(labelCol, cursorY, "FG", Colors::LabelCyan, shadowColor);

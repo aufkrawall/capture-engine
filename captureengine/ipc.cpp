@@ -165,6 +165,7 @@ void IPCManager::UpdateConfig(const AppConfig& config) {
 
         strncpy(dst.mipBiasMode, src.mipBiasMode.c_str(), sizeof(dst.mipBiasMode) - 1);
         dst.mipBiasMode[sizeof(dst.mipBiasMode) - 1] = '\0';
+        dst.forceMipBiasClamp = src.forceMipBiasClamp;
 
         strncpy(dst.msaaSamples, src.msaaSamples.c_str(), sizeof(dst.msaaSamples) - 1);
         dst.msaaSamples[sizeof(dst.msaaSamples) - 1] = '\0';

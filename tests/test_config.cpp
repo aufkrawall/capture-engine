@@ -42,6 +42,20 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
 
     // Default is TRUE in config.cpp
     EXPECT_TRUE(config.debugLogging);
+    EXPECT_EQ(config.captureMethod, "auto");
+    EXPECT_EQ(config.video.scaling.sharpness, 100);
+    EXPECT_FALSE(config.graphics.forceMipBiasClamp);
+
+    std::ifstream generated(missingFile);
+    ASSERT_TRUE(generated.is_open());
+    std::string generatedText((std::istreambuf_iterator<char>(generated)), std::istreambuf_iterator<char>());
+    generated.close();
+    EXPECT_NE(generatedText.find("capture_method=auto"), std::string::npos);
+    EXPECT_NE(generatedText.find("sharpness=100"), std::string::npos);
+    EXPECT_NE(generatedText.find("; backbuffer_count - Values: 0, 2-6"), std::string::npos);
+    EXPECT_EQ(generatedText.find("nvidia_smooth_motion_compat="), std::string::npos);
+    EXPECT_EQ(generatedText.find("\nvfr="), std::string::npos);
+    EXPECT_EQ(generatedText.find("\nvfr_audio_sync="), std::string::npos);
 
     // Clean up the created default file
     remove(missingFile.c_str());
@@ -97,4 +111,33 @@ TEST_F(ConfigTest, WhitelistParsing) {
 
 TEST_F(ConfigTest, InvalidValuesFallBack) {
     // Test robustness if needed
+}
+
+TEST_F(ConfigTest, ParseGraphicsOverrideOptions) {
+    std::string iniContent =
+        "[Graphics]\n"
+        "mip_mapping=trilinear\n"
+        "force_mip_bias_clamp=true\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_EQ(config.graphics.mipMapping, "trilinear");
+    EXPECT_TRUE(config.graphics.forceMipBiasClamp);
+}
+
+TEST_F(ConfigTest, LegacyScalingFilterStillAppliesWhenSharpnessMissing) {
+    std::string iniContent =
+        "[Scaling]\n"
+        "filter=lanczos\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_EQ(config.video.scaling.quality, "best");
+    EXPECT_EQ(config.video.scaling.sharpness, 50);
 }

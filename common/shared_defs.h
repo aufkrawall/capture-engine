@@ -28,7 +28,8 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 9: Added SharedGraphicsConfig::dlssFGFactor override field
 // Version 10: Added encoder KMT texture handles for DXVK zero-copy capture
 // Version 12: Added runtime coordination flags for cross-API overlay ownership
-static constexpr uint32_t SHARED_MEMORY_VERSION = 12;
+// Version 13: Added SharedGraphicsConfig::forceMipBiasClamp override field
+static constexpr uint32_t SHARED_MEMORY_VERSION = 13;
 
 // Minimum supported version for backward compatibility
 static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
@@ -205,6 +206,7 @@ struct SharedGraphicsConfig {
     char mipMapping[32];                 // "default", "bilinear", "trilinear"
     char mipBias[32];                    // "default", "0.0", "-0.5", etc.
     char mipBiasMode[32];                // "strict", "offset", "base"
+    bool forceMipBiasClamp;              // Force all texture mip bias values to 0
     char msaaSamples[32];                // "default", "off", "2x", "4x", "8x"
     float prerenderLimit;                // -1=default, 0=serial, 0.5=hybrid, >=1 buffered
     int32_t backbufferCount;             // 0=default, 2-6 actual count

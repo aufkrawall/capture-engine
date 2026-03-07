@@ -60,6 +60,7 @@ __pycache__/
 *~
 obj/
 nul
+AGENTS.md
 
 # Machine-local/generated project files
 telemetry-id

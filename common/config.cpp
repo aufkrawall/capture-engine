@@ -103,7 +103,7 @@ debug_logging=true
 ; perf_metrics_logging - Values: true, false (per-frame CSV profiler; keep off unless profiling)
 perf_metrics_logging=false
 ; capture_method - Values: inject, screengrab, desktop_dup, auto
-capture_method=inject
+capture_method=auto
 
 [Injection]
 ; whitelist - Values: process names (one per line in (...) or comma-separated)
@@ -130,13 +130,13 @@ copy_queue_priority=normal
 capture_sync_enabled=false
 ; capture_sync_multiplier - Values: 1-8
 capture_sync_multiplier=1
-; capture_sync_limiter_mode - Values: auto, basic, fg_fallback, native (reflex), anti_lag2, xell
+; capture_sync_limiter_mode - Values: auto, basic, fg_fallback, reflex, anti_lag2, xell
 capture_sync_limiter_mode=auto
 ; general_enabled - Values: true, false
 general_enabled=false
 ; general_fps - Values: integer > 0
 general_fps=120
-; general_limiter_mode - Values: auto, basic, fg_fallback, native (reflex), anti_lag2, xell
+; general_limiter_mode - Values: auto, basic, fg_fallback, reflex, anti_lag2, xell
 general_limiter_mode=auto
 
 [Graphics]
@@ -150,12 +150,12 @@ mip_mapping=default
 mip_bias=default
 ; mip_bias_mode - Values: strict, offset, base
 mip_bias_mode=strict
+; force_mip_bias_clamp - Values: true, false
+force_mip_bias_clamp=false
 ; cpu_prerender_limit - Values: -1, 0, 0.5, 1-6
 cpu_prerender_limit=-1
-; backbuffer_count - Values: 0-6
+; backbuffer_count - Values: 0, 2-6
 backbuffer_count=0
-; nvidia_smooth_motion_compat - Values: auto, on, off
-nvidia_smooth_motion_compat=auto
 ; DLSS options below also support per-app overrides via Graphics.<key> in [App.N].
 ; dlss_auto_exposure - Values: default, on, off
 dlss_auto_exposure=default
@@ -201,10 +201,6 @@ b_frames=0
 custom_options=
 ; capture_cursor - Values: true, false
 capture_cursor=true
-; vfr - Values: true, false
-vfr=false
-; vfr_audio_sync - Values: true, false
-vfr_audio_sync=false
 ; bit_depth - Values: auto, 8, 10
 bit_depth=auto
 ; color_space - Values: auto, bt709, bt2020
@@ -248,7 +244,7 @@ output_resolution=native
 ; quality - Values: normal, best
 quality=best
 ; sharpness - Values: 0-100
-sharpness=0
+sharpness=100
 
 [Audio]
 ; enabled - Values: true, false
@@ -491,7 +487,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     // General
     config.debugLogging = GetBool("General", "debug_logging", true);
     config.perfMetricsLogging = GetBool("General", "perf_metrics_logging", false);
-    config.captureMethod = GetStr("General", "capture_method", "inject");
+    config.captureMethod = GetStr("General", "capture_method", "auto");
     config.crashDumpDir = GetStr("General", "crash_dump_dir", "");
 
     // Performance (Priority Settings)
@@ -510,6 +506,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.graphics.mipMapping = GetStr("Graphics", "mip_mapping", "default");
     config.graphics.mipBias = GetStr("Graphics", "mip_bias", "default");
     config.graphics.mipBiasMode = GetStr("Graphics", "mip_bias_mode", "strict");
+    config.graphics.forceMipBiasClamp = GetBool("Graphics", "force_mip_bias_clamp", false);
     config.graphics.msaaSamples = GetStr("Graphics", "msaa_samples", "default");
     config.graphics.cpuPrerenderLimit = GetFloat("Graphics", "cpu_prerender_limit", -1.0f);
     config.graphics.backbufferCount = GetInt("Graphics", "backbuffer_count", 0);
@@ -874,12 +871,14 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 
     // NEW: Honest configuration
     config.video.scaling.quality = GetStr("Scaling", "quality", "normal");
-    config.video.scaling.sharpness = GetInt("Scaling", "sharpness", 0);
+    std::string sharpnessValue = GetStr("Scaling", "sharpness", "");
+    bool hasExplicitSharpness = !sharpnessValue.empty();
+    config.video.scaling.sharpness = hasExplicitSharpness ? GetInt("Scaling", "sharpness", 100) : 100;
 
     // Backward compatibility: Convert "filter" to quality/sharpness if "filter"
-    // is set and "sharpness" is 0
+    // is set and "sharpness" was not explicitly configured.
     std::string legacyFilter = GetStr("Scaling", "filter", "");
-    if (!legacyFilter.empty() && legacyFilter != "auto" && config.video.scaling.sharpness == 0) {
+    if (!legacyFilter.empty() && legacyFilter != "auto" && !hasExplicitSharpness) {
         std::transform(legacyFilter.begin(), legacyFilter.end(), legacyFilter.begin(), ::tolower);
         if (legacyFilter == "lanczos") {
             config.video.scaling.quality = "best";
