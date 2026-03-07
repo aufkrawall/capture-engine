@@ -38,16 +38,23 @@ build/bin/UECC-*/
 # IDE/cache/temp files
 .vs/
 .vscode/
+.idea/
 .cache/
 .ruff_cache/
 .claude/
 __pycache__/
+.pytest_cache/
+.mypy_cache/
+.pyre/
+.hypothesis/
 *.pyc
 *.swp
 *.swo
 *.user
 *.suo
 *.orig
+*.bak
+*.tmp
 *~
 obj/
 nul
