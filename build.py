@@ -9,6 +9,8 @@ import time
 import datetime
 import hashlib
 import platform
+import shlex
+import stat
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from multiprocessing import cpu_count
 import re
@@ -495,19 +497,72 @@ def run_command(
 
     log(f"Running: {cmd_str}")
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=cwd, input=input_str)
+        input_bytes = input_str.encode("utf-8") if input_str is not None else None
+        result = subprocess.run(cmd, capture_output=True, env=env, cwd=cwd, input=input_bytes)
+        stdout = result.stdout.decode("utf-8", errors="replace") if result.stdout else ""
+        stderr = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
         if result.returncode != 0:
             log(f"ERROR: Command failed with code {result.returncode}")
-            log(f"STDOUT: {result.stdout}")
-            log(f"STDERR: {result.stderr}")
+            log(f"STDOUT: {stdout}")
+            log(f"STDERR: {stderr}")
             if fail_exit:
                 sys.exit(1)
-        return result.stdout
+        return stdout
     except Exception as e:
         log(f"EXCEPTION: {e}")
         if fail_exit:
             sys.exit(1)
         return ""
+
+
+def is_windows_process_running(image_name: str) -> bool:
+    if not IS_WINDOWS:
+        return False
+
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", f"IMAGENAME eq {image_name}", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except Exception as e:
+        log(f"Warning: Failed to query {image_name}: {e}")
+        return False
+
+    if result.returncode != 0:
+        return False
+
+    stdout = result.stdout.decode("utf-8", errors="ignore") if result.stdout else ""
+    for raw_line in stdout.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("INFO:"):
+            continue
+        parts = line.strip('"').split('","')
+        if parts and parts[0].lower() == image_name.lower():
+            return True
+
+    return False
+
+
+def clear_stale_msys2_pacman_lock() -> None:
+    if not IS_WINDOWS:
+        return
+
+    lock_path = os.path.join(MSYS2_DIR, "var", "lib", "pacman", "db.lck")
+    if not os.path.exists(lock_path):
+        return
+
+    if is_windows_process_running("pacman.exe"):
+        log(f"MSYS2 package manager lock is active: {lock_path}")
+        return
+
+    try:
+        os.chmod(lock_path, stat.S_IWRITE | stat.S_IREAD)
+        os.remove(lock_path)
+        log(f"Removed stale MSYS2 pacman lock: {lock_path}")
+    except OSError as e:
+        log(f"Warning: Failed to remove stale MSYS2 pacman lock {lock_path}: {e}")
 
 
 def bump_and_write_build_version():
@@ -644,8 +699,11 @@ def setup_msys2():
             safe_extract_tar(f, BUILD_DIR)
 
         msys_bash = os.path.join(MSYS2_DIR, "usr", "bin", "bash.exe")
+        clear_stale_msys2_pacman_lock()
         run_command([msys_bash, "-lc", "pacman-key --init"])
+        clear_stale_msys2_pacman_lock()
         run_command([msys_bash, "-lc", "pacman-key --populate msys2"])
+        clear_stale_msys2_pacman_lock()
         run_command([msys_bash, "-lc", "pacman -Sy --noconfirm"])
     else:
         log("MSYS2 found.")
@@ -653,6 +711,7 @@ def setup_msys2():
     log("Installing Packages...")
     msys_bash = os.path.join(MSYS2_DIR, "usr", "bin", "bash.exe")
     pkg_cmd = f"pacman -S --needed --noconfirm {' '.join(PACKAGES)}"
+    clear_stale_msys2_pacman_lock()
     run_command([msys_bash, "-lc", pkg_cmd], input_str="\n")
     patch_amf_header()
 
@@ -843,6 +902,35 @@ def get_linux_msys2_dir():
 # --- FFmpeg Configuration ---
 FFMPEG_URL = "https://git.ffmpeg.org/ffmpeg.git"
 FFNVCODEC_URL = "https://git.videolan.org/git/ffmpeg/nv-codec-headers.git"
+FFMPEG_RUNTIME_DLL_PATTERNS = [
+    "avcodec-*.dll",
+    "avformat-*.dll",
+    "avutil-*.dll",
+    "swresample-*.dll",
+    "swscale-*.dll",
+]
+WINDOWS_FFMPEG_RUNTIME_DEPS = [
+    "libiconv-2.dll",
+    "libva_win32.dll",
+    "libva.dll",
+    "libvpl-2.dll",
+    "libc++.dll",
+    "libunwind.dll",
+]
+LINUX_FFMPEG_RUNTIME_DEPS = [
+    "libbz2-1.dll",
+    "libxml2-16.dll",
+    "libmodplug-1.dll",
+    "libgme.dll",
+    "libiconv-2.dll",
+    "libc++.dll",
+    "libva.dll",
+    "libva_win32.dll",
+    "libvpl-2.dll",
+    "libwinpthread-1.dll",
+    "libgcc_s_seh-1.dll",
+    "libstdc++-6.dll",
+]
 
 
 def to_unix(p):
@@ -852,6 +940,128 @@ def to_unix(p):
         drive = p[0].lower()
         return "/" + drive + p[2:]
     return p
+
+
+def get_ffmpeg_runtime_dlls(ffmpeg_bin_src):
+    dlls = []
+    seen = set()
+    for pattern in FFMPEG_RUNTIME_DLL_PATTERNS:
+        for dll in sorted(glob.glob(os.path.join(ffmpeg_bin_src, pattern))):
+            name = os.path.basename(dll).lower()
+            if name in seen:
+                continue
+            seen.add(name)
+            dlls.append(dll)
+    return dlls
+
+
+def sync_ffmpeg_runtime_dlls(ffmpeg_bin_src, ffmpeg_bin_dst, runtime_deps, extra_search_dirs):
+    ffmpeg_dlls = get_ffmpeg_runtime_dlls(ffmpeg_bin_src)
+    if not ffmpeg_dlls:
+        raise RuntimeError(f"No FFmpeg runtime DLLs found in {ffmpeg_bin_src}")
+
+    dep_sources = {}
+    for dep in runtime_deps:
+        for search_dir in extra_search_dirs:
+            src = os.path.join(search_dir, dep)
+            if os.path.exists(src):
+                dep_sources[dep] = src
+                break
+
+    keep_names = {os.path.basename(dll).lower() for dll in ffmpeg_dlls}
+    keep_names.update(dep.lower() for dep in dep_sources)
+
+    os.makedirs(ffmpeg_bin_dst, exist_ok=True)
+    for existing in glob.glob(os.path.join(ffmpeg_bin_dst, "*.dll")):
+        existing_name = os.path.basename(existing).lower()
+        if existing_name in keep_names:
+            continue
+        if safe_delete_file(existing):
+            log(f"Removed stale FFmpeg/runtime DLL {os.path.basename(existing)}")
+        else:
+            log(f"WARNING: Could not remove stale FFmpeg/runtime DLL {os.path.basename(existing)}")
+
+    for dll in ffmpeg_dlls:
+        dst = os.path.join(ffmpeg_bin_dst, os.path.basename(dll))
+        if not safe_copy_file(dll, dst):
+            raise RuntimeError(f"Failed to copy {os.path.basename(dll)} to {ffmpeg_bin_dst}")
+        log(f"Copied {os.path.basename(dll)} to ffmpeg dir")
+
+    for dep in runtime_deps:
+        src = dep_sources.get(dep)
+        if not src:
+            continue
+        dst = os.path.join(ffmpeg_bin_dst, dep)
+        if not safe_copy_file(src, dst):
+            raise RuntimeError(f"Failed to copy runtime dependency {dep} to {ffmpeg_bin_dst}")
+        log(f"Copied runtime dep {dep} to ffmpeg dir")
+
+
+def get_msys_license_root():
+    if IS_LINUX:
+        return os.path.join(get_linux_msys2_dir(), "clang64", "share", "licenses")
+    return os.path.join(MSYS2_DIR, "clang64", "share", "licenses")
+
+
+def copy_bundled_runtime_licenses(licenses_dst, ffmpeg_bin_dst):
+    if not os.path.isdir(licenses_dst) or not os.path.isdir(ffmpeg_bin_dst):
+        return
+
+    license_root = get_msys_license_root()
+    license_specs = [
+        (
+            "libiconv-2.dll",
+            os.path.join(license_root, "libiconv", "COPYING.LIB"),
+            "LGPLv2.1_libiconv.txt",
+        ),
+        (
+            "libvpl-2.dll",
+            os.path.join(license_root, "libvpl", "LICENSE"),
+            "MIT_libvpl.txt",
+        ),
+        (
+            "libc++.dll",
+            os.path.join(license_root, "libc++", "LICENSE"),
+            "Apache-2.0_with_LLVM-exception_llvm-runtime.txt",
+        ),
+        (
+            "libunwind.dll",
+            os.path.join(license_root, "libunwind", "LICENSE"),
+            "Apache-2.0_with_LLVM-exception_llvm-runtime.txt",
+        ),
+    ]
+
+    bundled_dlls = {
+        entry.lower()
+        for entry in os.listdir(ffmpeg_bin_dst)
+        if entry.lower().endswith(".dll")
+    }
+    copied_license_names = set()
+    mapped_runtime_dlls = set()
+
+    for dll_name, src, dst_name in license_specs:
+        dll_name_lower = dll_name.lower()
+        if dll_name_lower not in bundled_dlls:
+            continue
+        mapped_runtime_dlls.add(dll_name_lower)
+        if not os.path.exists(src):
+            raise RuntimeError(f"Missing bundled runtime license source: {src}")
+        dst_name_lower = dst_name.lower()
+        if dst_name_lower in copied_license_names:
+            continue
+        dst = os.path.join(licenses_dst, dst_name)
+        if not safe_copy_file(src, dst):
+            raise RuntimeError(f"Failed to copy bundled runtime license {dst_name}")
+        copied_license_names.add(dst_name_lower)
+        log(f"Copied bundled runtime license {dst_name}")
+
+    known_ffmpeg_prefixes = ("avcodec-", "avformat-", "avutil-", "swresample-", "swscale-")
+    for dll_name in sorted(bundled_dlls):
+        if dll_name.startswith(known_ffmpeg_prefixes):
+            continue
+        if dll_name in mapped_runtime_dlls:
+            continue
+        log(f"WARNING: Bundled runtime DLL {dll_name} has no configured license copy rule")
 
 
 class FFmpegBuilder:
@@ -922,8 +1132,12 @@ class FFmpegBuilder:
 
     def run(self, cmd, cwd=None, env=None, check=True):
         # Always pass a list to subprocess.run to avoid shell=True injection risk.
-        cmd_list = cmd if isinstance(cmd, list) else cmd.split()
-        cmd_str = " ".join(cmd_list)
+        if isinstance(cmd, list):
+            cmd_list = cmd
+            cmd_str = " ".join(cmd_list)
+        else:
+            cmd_list = shlex.split(cmd, posix=False)
+            cmd_str = cmd
         log(f"[FFmpeg] EXEC: {cmd_str}")
         try:
             if env is None:
@@ -1016,7 +1230,7 @@ class FFmpegBuilder:
         nv_dir, _ = self.git_clone(FFNVCODEC_URL, "ffnvcodec", update=update)
         make_exe = self.get_tool_path("make")
         self.run(
-            f'{make_exe} PREFIX="{self.prefix}" install',
+            [make_exe, f"PREFIX={self.prefix}", "install"],
             cwd=nv_dir,
             env=self.get_msys_env(),
         )
@@ -1041,7 +1255,7 @@ class FFmpegBuilder:
         conf = [
             bash_exe,
             "./configure",
-            f'--prefix="{self.prefix}"',
+            f"--prefix={self.prefix}",
             "--target-os=mingw32",
             "--enable-shared",
             "--disable-static",  # SHARED BUILD
@@ -1050,9 +1264,9 @@ class FFmpegBuilder:
             # Linking fixes
             # We explicitly link dependent C++ libraries to ensure they are available to avcodec.dll
             # libvpl (for QSV) often needs -lvpl -lstdc++ and system libs
-            '--extra-libs="-lc++ -lvpl -lstdc++ -lole32 -lgdi32 -luuid"',
+            "--extra-libs=-lc++ -lvpl -lstdc++ -lole32 -lgdi32 -luuid",
             # Toolchain
-            '--extra-libs="-lc++"',
+            "--extra-libs=-lc++",
             # Toolchain - Use MSYS2 Clang
             "--cc=clang",
             "--cxx=clang++",
@@ -1060,24 +1274,22 @@ class FFmpegBuilder:
             "--nm=llvm-nm",
             "--ranlib=llvm-ranlib",
             # Optimization
-            '--extra-cflags="-O3 -ffast-math -flto"',
-            '--extra-cxxflags="-O3 -ffast-math -flto"',
-            '--extra-ldflags="-flto -O3"',
-            f'--extra-ldflags="-L{msys_lib}"',
-            # Licensing
-            "--disable-gpl",  # NO GPL
-            "--enable-version3",
-            "--enable-nonfree",  # NVENC requires nonfree, but nonfree + lgpl is compatible?
-            # Wait, NVENC headers are MIT. But --enable-nvenc in ffmpeg might trigger nonfree?
-            # Actually, "The resulting binary will be nonfree".
-            # If so, it's not LGPL. It's proprietary.
-            # User wants MIT release. "MIT + proprietary generic binary" is allowed.
-            # Key is: Don't link GPL code.
+            "--extra-cflags=-O3 -ffast-math -flto",
+            "--extra-cxxflags=-O3 -ffast-math -flto",
+            "--extra-ldflags=-flto -O3",
+            f"--extra-ldflags=-L{msys_lib}",
+            # Keep the FFmpeg build redistributable under LGPLv2.1+.
+            # The extra components used here (FFNVCodec headers, AMF headers,
+            # oneVPL/libvpl, MediaFoundation, Windows HW accel APIs) do not
+            # require enabling GPL, version3, or nonfree mode.
+            "--disable-gpl",
             # Components
             "--disable-doc",
             "--disable-programs",
             "--enable-ffmpeg",
             "--enable-ffprobe",
+            "--disable-avdevice",
+            "--disable-avfilter",
             "--disable-zlib",
             "--disable-bzlib",
             "--disable-lzma",
@@ -1115,15 +1327,13 @@ class FFmpegBuilder:
             "--enable-decoder=h264,hevc,av1,vp9,mjpeg",
             "--enable-decoder=h264_qsv,hevc_qsv,av1_qsv,vp9_qsv",
             "--enable-decoder=h264_cuvid,hevc_cuvid,vp9_cuvid,av1_cuvid",
-            # Filters
-            "--enable-filter=scale,scale_qsv,vpp_qsv",
             "--enable-hwaccel=h264_nvdec,hevc_nvdec,av1_nvdec",
             "--enable-hwaccel=h264_d3d11va,hevc_d3d11va,av1_d3d11va",
         ]
 
-        self.run(" ".join(conf), cwd=build_dir, env=env)
-        self.run(f"{make_exe} -j16", cwd=build_dir, env=env)
-        self.run(f"{make_exe} install", cwd=build_dir, env=env)
+        self.run(conf, cwd=build_dir, env=env)
+        self.run([make_exe, "-j16"], cwd=build_dir, env=env)
+        self.run([make_exe, "install"], cwd=build_dir, env=env)
 
 
 def compile_custom_ffmpeg(skip_updates=False):
@@ -1135,14 +1345,6 @@ def compile_custom_ffmpeg(skip_updates=False):
     if IS_LINUX:
         log("Running on Linux/WSL - using MSYS2 FFmpeg (downloaded from repo)")
         return  # FFmpeg is downloaded as part of MSYS2 packages
-
-    # SEMI-HARDCODED: Skip FFmpeg setup if DLLs already exist in bin/ffmpeg
-    ffmpeg_bin_dst = os.path.join(BIN_DIR, "ffmpeg")
-    # Check for any avcodec DLL (version number varies)
-    avcodec_dlls = glob.glob(os.path.join(ffmpeg_bin_dst, "avcodec-*.dll"))
-    if avcodec_dlls:
-        log("FFmpeg DLLs already exist in target ffmpeg dir - skipping whole FFmpeg setup to avoid permission locks.")
-        return
 
     # Use internal builder
     builder = FFmpegBuilder(root_dir=PROJECT_ROOT, msys_dir=MSYS2_DIR, install_dir=FFMPEG_DIR)
@@ -1230,27 +1432,13 @@ def compile_custom_ffmpeg(skip_updates=False):
         log("Copying FFmpeg DLLs...")
         ffmpeg_bin_src = os.path.join(FFMPEG_DIR, "bin")
         ffmpeg_bin_dst = os.path.join(BIN_DIR, "ffmpeg")
-        os.makedirs(ffmpeg_bin_dst, exist_ok=True)
-
-        for f in glob.glob(os.path.join(ffmpeg_bin_src, "*.dll")):
-            shutil.copy(f, ffmpeg_bin_dst)
-            log(f"Copied {os.path.basename(f)} to ffmpeg dir")
-
-        # Copy MSYS2 runtime dependencies that FFmpeg DLLs need
         msys_bin = os.path.join(MSYS2_DIR, "clang64", "bin")
-        runtime_deps = [
-            "libiconv-2.dll",
-            "libva_win32.dll",
-            "libva.dll",
-            "libvpl-2.dll",
-            "libc++.dll",
-            "libunwind.dll",  # libc++ often needs this
-        ]
-        for dep in runtime_deps:
-            src = os.path.join(msys_bin, dep)
-            if os.path.exists(src):
-                shutil.copy(src, ffmpeg_bin_dst)
-                log(f"Copied runtime dep {dep} to bin/ffmpeg")
+        sync_ffmpeg_runtime_dlls(
+            ffmpeg_bin_src,
+            ffmpeg_bin_dst,
+            WINDOWS_FFMPEG_RUNTIME_DEPS,
+            [msys_bin],
+        )
 
         log("Custom FFmpeg Setup Complete.")
     except Exception as e:
@@ -1557,7 +1745,7 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
     if IS_LINUX:
         # Use system FFmpeg on Linux
         ffmpeg_cflags, ffmpeg_libs = get_system_ffmpeg_flags()
-        ffmpeg_flags = ffmpeg_cflags + ffmpeg_libs
+        ffmpeg_link_flags = ffmpeg_libs
     else:
         # Use local FFmpeg on Windows
         env_ffmpeg = env.copy()
@@ -1566,105 +1754,60 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
         )
 
         pkgs = ["libavcodec", "libavformat", "libavutil", "libswresample", "libswscale"]
-        pkg_cmd = [
-            pkg_config,
-            "--cflags",
-            "--libs",
-        ] + pkgs  # Removed --static for shared linking
-        ffmpeg_flags_raw = run_command(pkg_cmd, env=env_ffmpeg).strip().split()
-        ffmpeg_flags = [f for f in ffmpeg_flags_raw if f not in ["-ldl", "-lshaderc_shared"]]
+        ffmpeg_cflags = run_command([pkg_config, "--cflags"] + pkgs, env=env_ffmpeg).strip().split()
+        ffmpeg_lib_dir = os.path.join(FFMPEG_DIR, "lib")
+        ffmpeg_link_flags = [
+            os.path.join(ffmpeg_lib_dir, "libavformat.dll.a"),
+            os.path.join(ffmpeg_lib_dir, "libavcodec.dll.a"),
+            os.path.join(ffmpeg_lib_dir, "libswresample.dll.a"),
+            os.path.join(ffmpeg_lib_dir, "libswscale.dll.a"),
+            os.path.join(ffmpeg_lib_dir, "libavutil.dll.a"),
+        ]
 
-    # Link against gtest, common, hook, mediaengine, and ffmpeg
-    # Add VPL for QSV symbols, ole32/gdi32/uuid as VPL deps
+    msys2_dir = get_linux_msys2_dir() if IS_LINUX else MSYS2_DIR
+    vulkan_lib = os.path.join(msys2_dir, "clang64", "lib", "libvulkan-1.dll.a")
+
+    # Link against gtest, common, hook/common sources, mediaengine, and FFmpeg.
+    # Keep this aligned with the actual hook/mediaengine linker inputs to avoid
+    # dragging in stale transitive dependencies that are not shipped in MSYS2.
     ldflags_test = [
         "-static-libgcc",
         "-static-libstdc++",
         "-Wl,--allow-multiple-definition",
         "-lgtest",
         "-lgtest_main",
-        "-lwinmm",
-        "-lshlwapi",
+        "-ld3d9",
+        "-ld3d10",
         "-ld3d11",
         "-ld3d12",
-        "-ldxgi",
         "-ld3dcompiler",
-        "-lgdi32",
-        "-luser32",
-        "-ldwmapi",
-        "-ldbghelp",
-        "-lavrt",
-        "-lpdh",
-        "-lshcore",
+        "-ldxguid",
+        "-lws2_32",
         "-lole32",
+        "-lwinmm",
+        "-luser32",
+        "-lgdi32",
+        "-lopengl32",
+        vulkan_lib,
+        "-lversion",
+        "-ldxgi",
+        "-lpdh",
+        "-lpsapi",
+        "-lavrt",
+        "-ldbghelp",
+        "-lshlwapi",
+        "-ldwmapi",
+        "-lshcore",
         "-lmfplat",
         "-lmfuuid",
         "-lbcrypt",
         "-lsecur32",
-        "-lws2_32",
         "-lmmdevapi",
-        "-lvpl",
-        "-luuid",  # VPL for QSV
-        "-lshaderc_combined",
-        "-lglslang",
-        "-lSPIRV-Tools",
-        "-lSPIRV-Tools-opt",
-        "-lSPIRV-Tools-link",
-        "-lMachineIndependent",
-        "-lGenericCodeGen",
-        "-lOSDependent",
-        "-lSPIRV",
-        "-ljxl_cms",
-        "-ljxl_threads",
-        "-lhwy",
-        "-llcms2",
-        "-ltasn1",
-        "-lnettle",
-        "-lhogweed",
-        "-lgmp",
-        "-lpangocairo-1.0",
-        "-lpangowin32-1.0",
-        "-lpangoft2-1.0",
-        "-lpango-1.0",
-        "-lharfbuzz",
-        "-lfreetype",
-        "-lgraphite2",
-        "-lfribidi",
-        "-lthai",
-        "-ldatrie",
-        "-lintl",
-        "-lfontconfig",
-        "-lexpat",
-        "-lcairo-gobject",
-        "-lpixman-1",
-        "-lffi",
-        "-lpcre2-8",
-        "-lgmodule-2.0",
-        "-lssl",
-        "-lcrypto",
-        "-lsharpyuv",
-        "-lcrypt32",
-        "-lncrypt",
-        "-lntdll",
-        "-luserenv",
-        "-lwinmm",
-        "-liphlpapi",
-        "-lgdiplus",
-        "-lshlwapi",
-        "-lrpcrt4",
-        "-ldwrite",
-        "-ldnsapi",
-        "-lmsimg32",
-        "-lbrotlienc",
-        "-lbrotlidec",
-        "-lbrotlicommon",
-        "-lz",
-        "-llzma",
-        "-lbz2",
-        "-liconv",
-        "-lunistring",
-        "-lzstd",
-        "-lidn2",
-    ] + ffmpeg_flags
+        "-luuid",
+        "-lsetupapi",
+        "-lcfgmgr32",
+        "-ladvapi32",
+    ] + ffmpeg_link_flags
     if any(flag.startswith("-fsanitize=") for flag in cflags):
         ldflags_test.append("-fsanitize=address,undefined")
 
@@ -1675,7 +1818,7 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
     # We need to compile MediaEngine with MEDIAENGINE_EXPORTS or similar if needed,
     # but for static linking in tests, we just need the symbols.
     # Note: AudioEncoder.cpp might rely on specific defines.
-    me_cflags = cflags + ffmpeg_flags + ["-DMEDIAENGINE_EXPORTS"]
+    me_cflags = cflags + ffmpeg_cflags + ["-DMEDIAENGINE_EXPORTS"]
 
     for src in me_src:
         rel_path = os.path.relpath(src, PROJECT_ROOT)
@@ -1686,7 +1829,7 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
     parallel_compile(env, clang_exe, me_cflags, src_obj_pairs)
 
     # 3. Compile Tests
-    test_cflags = cflags + [
+    test_cflags = cflags + ffmpeg_cflags + [
         "-I" + os.path.join(PROJECT_ROOT, "mediaengine"),
         "-I" + os.path.join(PROJECT_ROOT, "hook", "wrappers"),
         "-I" + os.path.join(PROJECT_ROOT, "hook", "common"),
@@ -2973,42 +3116,19 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                         ffmpeg_bin_src = os.path.join(msys2_dir, "clang64", "bin")
 
                     ffmpeg_bin_dst = os.path.join(BIN_DIR, "ffmpeg")
-                    os.makedirs(ffmpeg_bin_dst, exist_ok=True)
-
-                    # Copy ALL DLLs from FFmpeg bin folder (includes dependencies)
-                    for dll in glob.glob(os.path.join(ffmpeg_bin_src, "*.dll")):
-                        shutil.copy(dll, ffmpeg_bin_dst)
-                        log(f"Copied {os.path.basename(dll)} to bin/ffmpeg/")
-
-                    # Copy MSYS2 runtime dependencies that FFmpeg DLLs need
                     msys2_dir = get_linux_msys2_dir()
                     msys_bin = os.path.join(msys2_dir, "clang64", "bin")
-                    runtime_deps = [
-                        "libbz2-1.dll",
-                        "libxml2-16.dll",
-                        "libmodplug-1.dll",
-                        "libgme.dll",
-                        "libiconv-2.dll",
-                        "libc++.dll",
-                        "libva.dll",
-                        "libva_win32.dll",
-                        "libvpl-2.dll",
-                        "libwinpthread-1.dll",
-                        "libgcc_s_seh-1.dll",
-                        "libstdc++-6.dll",
-                    ]
-                    for dep in runtime_deps:
-                        # Try MSYS2 first, then system mingw
-                        src = os.path.join(msys_bin, dep)
-                        if not os.path.exists(src):
-                            # Try system mingw bin directory
-                            if arch == "x64":
-                                src = os.path.join("/usr", "x86_64-w64-mingw32", "bin", dep)
-                            else:
-                                src = os.path.join("/usr", "i686-w64-mingw32", "bin", dep)
-                        if os.path.exists(src):
-                            safe_copy_file(src, os.path.join(ffmpeg_bin_dst, dep))
-                            log(f"Copied runtime dep {dep}")
+                    mingw_bin = (
+                        os.path.join("/usr", "x86_64-w64-mingw32", "bin")
+                        if arch == "x64"
+                        else os.path.join("/usr", "i686-w64-mingw32", "bin")
+                    )
+                    sync_ffmpeg_runtime_dlls(
+                        ffmpeg_bin_src,
+                        ffmpeg_bin_dst,
+                        LINUX_FFMPEG_RUNTIME_DEPS,
+                        [msys_bin, mingw_bin],
+                    )
 
     # Compile and run tests (using x64 objects) if requested
     if should_run_tests:
@@ -3144,6 +3264,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         if os.path.exists(licenses_dst):
             shutil.rmtree(licenses_dst)
         shutil.copytree(licenses_src, licenses_dst)
+        copy_bundled_runtime_licenses(licenses_dst, os.path.join(BIN_DIR, "ffmpeg"))
         log("Copied licenses/ directory to installed/captureengine/")
 
     # Keep runtime DLLs in tests/ current so unit_tests.exe can run directly
@@ -3343,10 +3464,9 @@ def main():
     force_flag = not incremental_flag  # Force rebuild by default
 
     if default_quality_mode:
-        log("Default quality mode: running auto-repair, lint/LSP checks, and " "unit/regression tests")
+        log("Default quality mode: running lint/LSP checks and unit/regression tests")
         run_tests_flag = True
         lint_flag = True
-        format_flag = True
         sanitize_regression_flag = True
 
     if full_integration_flag:

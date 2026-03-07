@@ -25,8 +25,8 @@
 #include "../common/input_manager.h"
 #include "../common/overlay_adapter.h"
 #include "../common/perf_logger.h"
-#include "../wrappers/inline_hook.h"
 #include "../vulkan_layer/layer_main.h"
+#include "../wrappers/inline_hook.h"
 #include "../wrappers/vtable_hook.h"
 #include "hook_common.h"
 #include "lod_helper.h"
@@ -2087,13 +2087,13 @@ public:
     // The heavy GetDC+BitBlt work runs on a dedicated capture thread to avoid
     // blocking the render thread. Render thread only does StretchRect (async GPU).
     bool useGDIInterop = false;
-    IDirect3DSurface9* gdiCopySurfaces[2] = {};               // Double-buffered lockable D3D9 RTs
-    ID3D11Texture2D* gdiTexture = nullptr;                    // D3D11 GDI-compatible intermediate
-    IDXGISurface1* gdiSurface = nullptr;                      // DXGI surface for GetDC
-    bool gdiDirectSharedRing = false;                         // Write GDI blits straight into shared ring textures
-    int gdiWriteIdx = 0;                                      // Current write buffer index (0 or 1)
-    bool gdiHasPrevFrame = false;                             // True after first StretchRect completes
-    int64_t gdiLastCaptureQpc = 0;                            // Rate-limiting timestamp
+    IDirect3DSurface9* gdiCopySurfaces[2] = {};  // Double-buffered lockable D3D9 RTs
+    ID3D11Texture2D* gdiTexture = nullptr;       // D3D11 GDI-compatible intermediate
+    IDXGISurface1* gdiSurface = nullptr;         // DXGI surface for GetDC
+    bool gdiDirectSharedRing = false;            // Write GDI blits straight into shared ring textures
+    int gdiWriteIdx = 0;                         // Current write buffer index (0 or 1)
+    bool gdiHasPrevFrame = false;                // True after first StretchRect completes
+    int64_t gdiLastCaptureQpc = 0;               // Rate-limiting timestamp
     int64_t gdiBufferTimestampQpc[2] = {};
     std::atomic<bool> gdiBufferBusy[2] = {{false}, {false}};  // Per-buffer busy flags
 
@@ -4324,9 +4324,8 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
             }
         }
         bool preferEndSceneOverlay = shouldDrawOverlay && endSceneHookActive;
-        const bool deferCaptureToPresentEndScene =
-            captureIncludeOverlay && shouldDrawOverlay &&
-            g_PreferOverlayInPresentEndScene.load(std::memory_order_acquire);
+        const bool deferCaptureToPresentEndScene = captureIncludeOverlay && shouldDrawOverlay &&
+                                                   g_PreferOverlayInPresentEndScene.load(std::memory_order_acquire);
 
         // Lambda for overlay drawing — skip if EndScene already handled it for this frame
         auto doOverlay = [&]() {
@@ -4607,7 +4606,8 @@ void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer) {
             g_PreferOverlayInPresentEndScene.store(false, std::memory_order_release);
             static int nestedFallbackLogCount = 0;
             if (nestedFallbackLogCount < 8) {
-                HookLogImportant("DX9: Nested EndScene missing during Present, falling back to top-level EndScene overlay");
+                HookLogImportant(
+                    "DX9: Nested EndScene missing during Present, falling back to top-level EndScene overlay");
                 nestedFallbackLogCount++;
             }
         }
@@ -4653,7 +4653,8 @@ static HRESULT STDMETHODCALLTYPE DetourEndScene(IDirect3DDevice9* device) {
         if (!g_PreferOverlayInPresentEndScene.exchange(true, std::memory_order_acq_rel)) {
             static int nestedModeLogCount = 0;
             if (nestedModeLogCount < 8) {
-                HookLogImportant("DX9: Nested EndScene during Present detected, moving overlay draw to the later scene");
+                HookLogImportant(
+                    "DX9: Nested EndScene during Present detected, moving overlay draw to the later scene");
                 nestedModeLogCount++;
             }
         }

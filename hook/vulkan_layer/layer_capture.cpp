@@ -518,10 +518,10 @@ static bool CreateSharedTextures(D3D11InteropDevice* interopDev, VkDevice vkDev,
                     D3D11_TEXTURE2D_DESC ipcDesc = texDesc;
                     // SHARED and SHARED_KEYEDMUTEX are mutually exclusive.
                     // Use plain SHARED for KMT relay handles; use NTHANDLE+KEYEDMUTEX for NT relay handles.
-                    ipcDesc.MiscFlags = useNtRelayHandles
-                                            ? (D3D11_RESOURCE_MISC_SHARED_NTHANDLE |
-                                               D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX)
-                                            : D3D11_RESOURCE_MISC_SHARED;
+                    ipcDesc.MiscFlags =
+                        useNtRelayHandles
+                            ? (D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX)
+                            : D3D11_RESOURCE_MISC_SHARED;
 
                     bool ipcFailed = false;
                     for (uint32_t i = 0; i < kTextureCount; i++) {
@@ -542,13 +542,13 @@ static bool CreateSharedTextures(D3D11InteropDevice* interopDev, VkDevice vkDev,
                                 break;
                             }
 
-                            hr = dxgiRes1->CreateSharedHandle(nullptr,
-                                                              DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
-                                                              nullptr, &ipcHandle);
+                            hr = dxgiRes1->CreateSharedHandle(
+                                nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr, &ipcHandle);
                             if (FAILED(hr) || !ipcHandle) {
-                                LayerLog("Vulkan Layer: [Warn] Failed to create NT IPC handle for texture %d "
-                                         "(hr=0x%08X)",
-                                         i, hr);
+                                LayerLog(
+                                    "Vulkan Layer: [Warn] Failed to create NT IPC handle for texture %d "
+                                    "(hr=0x%08X)",
+                                    i, hr);
                                 ipcFailed = true;
                                 break;
                             }
@@ -563,9 +563,10 @@ static bool CreateSharedTextures(D3D11InteropDevice* interopDev, VkDevice vkDev,
 
                             hr = dxgiRes->GetSharedHandle(&ipcHandle);
                             if (FAILED(hr) || !ipcHandle) {
-                                LayerLog("Vulkan Layer: [Error] Failed to get KMT IPC handle for texture %d "
-                                         "(hr=0x%08X)",
-                                         i, hr);
+                                LayerLog(
+                                    "Vulkan Layer: [Error] Failed to get KMT IPC handle for texture %d "
+                                    "(hr=0x%08X)",
+                                    i, hr);
                                 ipcFailed = true;
                                 break;
                             }
@@ -917,8 +918,7 @@ static bool ImportEncoderKmtTextures(VkDevice device, DeviceDispatch* disp, uint
         return false;
     }
     if (encoderFormat != 0 && encoderFormat != expectedDxgiFormat) {
-        LayerLog("Vulkan Layer: Encoder KMT format mismatch (existing=%u, need=%u)", encoderFormat,
-                 expectedDxgiFormat);
+        LayerLog("Vulkan Layer: Encoder KMT format mismatch (existing=%u, need=%u)", encoderFormat, expectedDxgiFormat);
         return false;
     }
 

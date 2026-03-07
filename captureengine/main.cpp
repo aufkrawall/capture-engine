@@ -187,7 +187,8 @@ bool EnsureLimiterProcessReady(DWORD timeoutMs) {
                                        "limiter");
 }
 
-bool ShutdownIpcChildProcess(HANDLE& processHandle, ProcessIPCClient* client, const char* processName, DWORD timeoutMs) {
+bool ShutdownIpcChildProcess(HANDLE& processHandle, ProcessIPCClient* client, const char* processName,
+                             DWORD timeoutMs) {
     if (!processHandle) {
         if (client) {
             client->Disconnect();

@@ -232,7 +232,8 @@ void InjectionManager::Update() {
 
             // Re-verify it's still running and not injected
             if (!IsWhitelisted(name)) {
-                LogInfo("[WMI] Skipping deferred injection for %s (PID: %d) - no longer whitelisted", name.c_str(), pid);
+                LogInfo("[WMI] Skipping deferred injection for %s (PID: %d) - no longer whitelisted", name.c_str(),
+                        pid);
             } else if (!IsAlreadyInjected(pid) && !IsRecentlyFailed(pid)) {
                 LogInfo("[WMI] Injecting deferred: %s (PID: %d)", name.c_str(), pid);
                 if (Inject(pid, name)) {
@@ -575,7 +576,8 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
                         // Perform injection
                         std::lock_guard<std::mutex> lock(managerShared->injectMutex);
                         if (!managerShared->IsWhitelisted(name)) {
-                            LogInfo("[WMI] %s (PID: %d) - No longer whitelisted, skipping injection", name.c_str(), pid);
+                            LogInfo("[WMI] %s (PID: %d) - No longer whitelisted, skipping injection", name.c_str(),
+                                    pid);
                         } else if (!managerShared->IsAlreadyInjected(pid) && !managerShared->IsRecentlyFailed(pid)) {
                             LogInfo(
                                 "[WMI] %s (PID: %d) - Injecting (%s detected, waited %d "

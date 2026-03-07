@@ -1374,8 +1374,8 @@ private:
                     int64_t startQPC = recordingStartSystemQPCMs.load(std::memory_order_acquire);
                     if (startQPC != 0 && sourceTimestamps[srcIdx] == 0 && packet.timestamp < (startQPC - 5)) {
                         if (!sourceLoggedPreStartDrop[srcIdx]) {
-                            DLL_Log("[AudioLoop] Discarding pre-start packet src=%d packet=%lld start=%lld", (int)srcIdx,
-                                    packet.timestamp, startQPC);
+                            DLL_Log("[AudioLoop] Discarding pre-start packet src=%d packet=%lld start=%lld",
+                                    (int)srcIdx, packet.timestamp, startQPC);
                             sourceLoggedPreStartDrop[srcIdx] = true;
                         }
                         continue;

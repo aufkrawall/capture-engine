@@ -72,7 +72,8 @@ static InjectorConfigState BuildInjectorConfigState(const AppConfig& config) {
 
 static bool ShouldRescanForConfigChange(const AppConfig& oldBaseConfig, const InjectorConfigState& oldState,
                                         const AppConfig& newBaseConfig, const InjectorConfigState& newState) {
-    return oldState.allowInjection != newState.allowInjection || oldBaseConfig.debugLogging != newBaseConfig.debugLogging ||
+    return oldState.allowInjection != newState.allowInjection ||
+           oldBaseConfig.debugLogging != newBaseConfig.debugLogging ||
            oldState.config.gameWhitelist != newState.config.gameWhitelist ||
            oldState.config.overlayWhitelist != newState.config.overlayWhitelist;
 }
@@ -476,10 +477,14 @@ int InjectProcessMain(const AppConfig& config) {
                     if (injector) {
                         injector->UpdateConfig(injectorState.config);
                         if (shouldRescan && injectorState.allowInjection) {
-                            LogInfo("[Inject] Config reload changed whitelist/injection policy, rescanning running processes");
+                            LogInfo(
+                                "[Inject] Config reload changed whitelist/injection policy, rescanning running "
+                                "processes");
                             injector->RescanExistingProcesses();
                         } else if (!injectorState.allowInjection) {
-                            LogInfo("[Inject] Config reload disabled new injections; existing injected targets are left alone");
+                            LogInfo(
+                                "[Inject] Config reload disabled new injections; existing injected targets are left "
+                                "alone");
                         }
                     } else if (injectorState.allowInjection) {
                         const int64_t injectorInitStartUs = Log_GetQpcUs();
