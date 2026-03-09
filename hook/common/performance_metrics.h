@@ -55,7 +55,8 @@ public:
     void SetRecording(bool isRecording);
 
     // Frame Generation metrics (for displaying base vs output FPS like RTSS)
-    void SetFGMetrics(float outputFPS, float baseFPS, int multiplier);
+    // fgType: 0=None, 1=DLSS_FG, 2=FSR_FG, 3=NVIDIA_SM
+    void SetFGMetrics(float outputFPS, float baseFPS, int multiplier, int fgType = 0);
     float GetFGOutputFPS() const {
         return m_fgOutputFPS.load(std::memory_order_relaxed);
     }
@@ -67,6 +68,15 @@ public:
     }
     bool IsFGActive() const {
         return m_fgMultiplier.load(std::memory_order_relaxed) >= 2;
+    }
+    // Returns short label: "DLSS FG", "FSR FG", "NVIDIA SM", or "FG"
+    const char* GetFGTypeLabel() const {
+        switch (m_fgType.load(std::memory_order_relaxed)) {
+            case 1: return "DLSS FG";
+            case 2: return "FSR FG";
+            case 3: return "NVIDIA SM";
+            default: return "FG";
+        }
     }
 
 private:
@@ -104,4 +114,5 @@ private:
     std::atomic<float> m_fgOutputFPS{0.0f};
     std::atomic<float> m_fgBaseFPS{0.0f};
     std::atomic<int> m_fgMultiplier{1};
+    std::atomic<int> m_fgType{0};
 };

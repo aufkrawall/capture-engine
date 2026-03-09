@@ -41,15 +41,16 @@ public:
         return cachedOutputFPS.load();
     }
     float GetBaseFPS() const {
-        // When DLSS FG multiplier is known from Streamline API, derive base FPS
-        // directly from output FPS.  The ECL-count-based cachedBaseFPS is unreliable
-        // for DLSS FG because our ECL hook counts ALL queues, including Streamline's
-        // internal FG queue — making real and interpolated frames look identical.
-        const int apiMultiplier = dlssFGMultiplier.load(std::memory_order_acquire);
-        if (apiMultiplier >= 2) {
+        // When FG multiplier is known (from Streamline API or pattern analysis),
+        // derive base FPS directly from output FPS.  This is more reliable than
+        // ECL-count-based cachedBaseFPS for DLSS FG (where our ECL hook counts
+        // ALL queues including Streamline's internal FG queue).  For heuristic
+        // FSR FG, cachedMultiplier from pattern analysis provides the multiplier.
+        const int mult = GetFGMultiplier();
+        if (mult >= 2) {
             float output = cachedOutputFPS.load();
             if (output > 1.0f)
-                return output / apiMultiplier;
+                return output / mult;
         }
         return cachedBaseFPS.load();
     }

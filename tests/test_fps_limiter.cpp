@@ -20,6 +20,7 @@ protected:
         g_FGCompat.SetDLSSFGActive(false);
         g_FGCompat.SetFSRFGActive(false);
         g_FGCompat.SetHeuristicFSRFGActive(false);
+        g_FGCompat.SetDormantMode(true);  // Reset to default dormant state
     }
 };
 
@@ -284,14 +285,23 @@ TEST_F(FpsLimiterTest, FGFallback_UsesExplicitDLSSMultiplier) {
     g_FGCompat.SetDLSSFGActive(false);
 }
 
-TEST_F(FpsLimiterTest, HeuristicFSRStateIsClearedWhenDLSSFGActivates) {
+TEST_F(FpsLimiterTest, HeuristicFSRPriorityOverTransientDLSSFG) {
     g_FGCompat.SetHeuristicFSRFGActive(true);
     EXPECT_TRUE(g_FGCompat.IsFGActive());
     EXPECT_EQ(g_FGCompat.GetActiveFGType(), FGCompatibility::FGType::FSR_FG);
 
+    // DLSS FG API activation is suppressed while heuristic FSR FG is active
+    // (prevents ping-pong from transient Streamline state toggling).
+    g_FGCompat.SetDLSSFGActive(true);
+    EXPECT_EQ(g_FGCompat.GetActiveFGType(), FGCompatibility::FGType::FSR_FG);
+    EXPECT_TRUE(g_FGCompat.IsHeuristicFSRFGActive());
+
+    // Deactivating heuristic FSR FG allows DLSS FG to take over.
+    g_FGCompat.SetHeuristicFSRFGActive(false);
+    EXPECT_FALSE(g_FGCompat.IsHeuristicFSRFGActive());
+    g_FGCompat.SetDLSSFGMultiplier(2);
     g_FGCompat.SetDLSSFGActive(true);
     EXPECT_EQ(g_FGCompat.GetActiveFGType(), FGCompatibility::FGType::DLSS_FG);
-    EXPECT_FALSE(g_FGCompat.IsHeuristicFSRFGActive());
 
     g_FGCompat.SetDLSSFGActive(false);
     EXPECT_EQ(g_FGCompat.GetActiveFGType(), FGCompatibility::FGType::None);

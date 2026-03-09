@@ -93,9 +93,14 @@ bool FGCompatibility::IsFGActive() const {
 
 void FGCompatibility::SetDLSSFGActive(bool active) {
     if (active) {
-        bool heuristicWasActive = heuristicFSRFGActive.exchange(false, std::memory_order_acq_rel);
-        if (heuristicWasActive) {
-            HookLog("FG: Cleared heuristic FSR FG state because DLSS FG API activated");
+        // If heuristic FSR FG is confirmed active, suppress the DLSS FG API call.
+        // Games can load both Streamline and FSR modules, and Streamline's
+        // slDLSSGSetOptions may keep firing with transient active states during
+        // FSR FG operation.  The heuristic detection (ECL pattern) is the ground
+        // truth for FSR FG.
+        if (heuristicFSRFGActive.load(std::memory_order_acquire)) {
+            HookLog("FG: Suppressing DLSS FG API activation — heuristic FSR FG is active");
+            return;
         }
     }
 
@@ -106,13 +111,18 @@ void FGCompatibility::SetDLSSFGActive(bool active) {
     if (wasActive != active) {
         HookLog("FG: DLSS FG API %s (dormant=%d)", active ? "ACTIVATED" : "DEACTIVATED", dormantMode.load() ? 1 : 0);
 
+        // Enable metrics when FG is confirmed active
+        if (active && dormantMode.load()) {
+            dormantMode.store(false, std::memory_order_release);
+            HookLog("FG: Disabled dormant mode for DLSS FG metrics");
+        }
+
         // Update the combined active behavior
         FGType newType = GetActiveFGType();
         FGType oldType = activeBehavior.exchange(newType);
         if (oldType != newType) {
             HookLog("FG: Active type changed: %s -> %s", GetFGTypeName(oldType), GetFGTypeName(newType));
 
-            // DORMANT MODE: Skip swapchain invalidation when dormant
             if (!dormantMode.load() && HAS_DX12_INVALIDATE &&
                 ((newType == FGType::DLSS_FG && oldType == FGType::FSR_FG) ||
                  (newType == FGType::FSR_FG && oldType == FGType::DLSS_FG))) {
@@ -136,6 +146,24 @@ void FGCompatibility::SetHeuristicFSRFGActive(bool active) {
     if (wasActive != active) {
         HookLog("FG: Heuristic FSR FG %s (dormant=%d)", active ? "ACTIVATED" : "DEACTIVATED",
                 dormantMode.load() ? 1 : 0);
+
+        // When heuristic FSR FG is confirmed, clear any DLSS FG API false positive.
+        // Games like GTA5 Enhanced load Streamline modules even when using FSR FG,
+        // and the DLSS FG API state may toggle transiently during the switch.
+        if (active && dlssFGApiActive.load(std::memory_order_acquire)) {
+            HookLog("FG: Clearing DLSS FG API state — heuristic FSR FG takes priority");
+            dlssFGApiActive.store(false, std::memory_order_release);
+            dlssFGMultiplier.store(0, std::memory_order_release);
+        }
+
+        // Enable metrics computation when FG is confirmed active.  Dormant mode
+        // (default) suppresses UpdateMetrics/DetectPattern, so cachedOutputFPS,
+        // cachedBaseFPS and cachedMultiplier are never computed.  Disabling dormant
+        // mode lets the overlay display accurate base/display FPS for FSR FG.
+        if (active && dormantMode.load()) {
+            dormantMode.store(false, std::memory_order_release);
+            HookLog("FG: Disabled dormant mode for heuristic FSR FG metrics");
+        }
 
         FGType newType = GetActiveFGType();
         FGType oldType = activeBehavior.exchange(newType);

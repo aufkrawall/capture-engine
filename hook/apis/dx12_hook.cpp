@@ -782,23 +782,19 @@ static bool KnownDLSSFGModuleLoaded() {
 }
 
 static bool CanUseFSRFGHeuristics(const char** blockedReason = nullptr) {
-    if (g_FGCompat.IsDLSSFGApiActive() || KnownDLSSFGModuleLoaded()) {
-        if (blockedReason) {
-            *blockedReason = "Streamline/DLSS modules are loaded";
+    // Only block when DLSS FG is confirmed active WITH a known multiplier.
+    // When DLSS modules are merely loaded but FG is off (or API state is transiently
+    // toggling — common when switching to FSR FG), heuristics are safe.  The
+    // g_PrimaryGameQueue filter ensures only game-queue ECL calls are counted,
+    // preventing false positives from FG runtime queues.
+    if (g_FGCompat.IsDLSSFGApiActive()) {
+        int mult = g_FGCompat.GetFGMultiplier();
+        if (mult >= 2) {
+            if (blockedReason) {
+                *blockedReason = "DLSS FG is actively generating frames";
+            }
+            return false;
         }
-        return false;
-    }
-
-    // Only block FSR FG heuristics for startup-blocking overlays (Social Club, EOS)
-    // that interfere with ECL/queue-based detection. Benign overlays (Steam, Discord,
-    // RTSS, etc.) do not affect the heuristic signals and should not suppress detection.
-    if (const char* overlayModule = ce::overlay_compat::GetStartupBlockingOverlayModuleName()) {
-        if (blockedReason) {
-            static thread_local char s_overlayReason[128];
-            snprintf(s_overlayReason, sizeof(s_overlayReason), "startup-blocking overlay %s is loaded", overlayModule);
-            *blockedReason = s_overlayReason;
-        }
-        return false;
     }
 
     if (blockedReason) {
@@ -896,7 +892,21 @@ static void ResetStartupOverlayBackendActivationStage() {
 }
 
 static bool IsActualFrameGenerationActive() {
-    return g_FGCompat.IsDLSSFGApiActive() || g_FGCompat.IsFSRFGApiActive();
+    // FSR FG API (ffxCreateContext-based) detection
+    if (g_FGCompat.IsFSRFGApiActive())
+        return true;
+
+    // DLSS FG: require both the API flag AND a confirmed multiplier (>= 2).
+    // During FSR FG mode switches, the DLSS FG API state can toggle transiently
+    // without setting a multiplier.  Without the multiplier check, the transient
+    // state would trigger dedicated queue creation/destruction cycles → flickering.
+    if (g_FGCompat.IsDLSSFGApiActive()) {
+        int mult = g_FGCompat.GetFGMultiplier();
+        if (mult >= 2)
+            return true;
+    }
+
+    return false;
 }
 
 static ExecuteCommandListsPtr GetOriginalExecuteCommandLists(ID3D12CommandQueue* queue);
@@ -4596,11 +4606,16 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
     // on both real and interpolated FG frames.  Without an overlay queue, we
     // must skip interpolated frames to avoid submitting work on the game queue
     // during Streamline's Present pipeline.
+    // EXCEPTION: For heuristic FSR FG in single-queue mode, the overlay submits
+    // to the swapchain queue (which FSR FG owns), so rendering on interpolated
+    // frames is safe and required to avoid flickering (otherwise overlay only
+    // appears on real frames = half the output).
     // Check ShouldUseDedicatedOverlayQueue() (FG active) instead of just queue
     // existence, since the queue is now kept alive across FG mode switches.
     bool hasDedicatedQueue = ShouldUseDedicatedOverlayQueue() && g_State.overlayQueue != nullptr &&
                              g_State.crossQueueFence != nullptr && g_State.crossQueueFenceEvent != nullptr;
-    if (isInterpolatedFrame && !hasDedicatedQueue) {
+    bool heuristicFSRFG = g_FGCompat.IsHeuristicFSRFGActive();
+    if (isInterpolatedFrame && !hasDedicatedQueue && !heuristicFSRFG) {
         sc3->Release();
         return;
     }

@@ -676,8 +676,9 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         }
         if (showFGDetails) {
             int multiplier = metrics->GetFGMultiplier();
-            snprintf(measureBuf, sizeof(measureBuf), "FG %dx", multiplier);
-            maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth("FG"));
+            const char* fgLabel = metrics->GetFGTypeLabel();
+            snprintf(measureBuf, sizeof(measureBuf), "%s %dx", fgLabel, multiplier);
+            maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth(fgLabel));
             maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
         }
 
@@ -980,8 +981,9 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     // FG Status line
     if (showFGDetails) {
         int multiplier = metrics->GetFGMultiplier();
-        snprintf(buf, 64, "FG %dx", multiplier);
-        renderer->DrawTextWithShadow(labelCol, cursorY, "FG", Colors::LabelCyan, shadowColor);
+        const char* fgLabel = metrics->GetFGTypeLabel();
+        snprintf(buf, 64, "%s %dx", fgLabel, multiplier);
+        renderer->DrawTextWithShadow(labelCol, cursorY, fgLabel, Colors::LabelCyan, shadowColor);
         renderer->DrawTextRightAligned(valueRightEdge, cursorY, buf, Colors::LabelCyan, shadowColor);
         cursorY += lineHeight;
     }

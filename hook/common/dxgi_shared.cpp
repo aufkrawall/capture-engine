@@ -450,10 +450,18 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     if (isFirstHook) {
         g_DXGIPerfMetrics.Update(us);
         if (g_FGCompat.IsFGActive()) {
+            auto fgType = g_FGCompat.GetActiveFGType();
+            int typeInt = 0;
+            if (fgType == FGCompatibility::FGType::DLSS_FG || fgType == FGCompatibility::FGType::DLSS_MSFG)
+                typeInt = 1;
+            else if (fgType == FGCompatibility::FGType::FSR_FG)
+                typeInt = 2;
+            else if (fgType == FGCompatibility::FGType::NVIDIA_SM)
+                typeInt = 3;
             g_DXGIPerfMetrics.SetFGMetrics(g_FGCompat.GetOutputFPS(), g_FGCompat.GetBaseFPS(),
-                                           g_FGCompat.GetFGMultiplier());
+                                           g_FGCompat.GetFGMultiplier(), typeInt);
         } else {
-            g_DXGIPerfMetrics.SetFGMetrics(0.0f, 0.0f, 1);
+            g_DXGIPerfMetrics.SetFGMetrics(0.0f, 0.0f, 1, 0);
         }
     }
 

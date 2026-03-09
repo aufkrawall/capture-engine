@@ -31,10 +31,11 @@ void PerformanceMetrics::SetRecording(bool isRecording) {
     }
 }
 
-void PerformanceMetrics::SetFGMetrics(float outputFPS, float baseFPS, int multiplier) {
+void PerformanceMetrics::SetFGMetrics(float outputFPS, float baseFPS, int multiplier, int fgType) {
     m_fgOutputFPS.store(outputFPS, std::memory_order_relaxed);
     m_fgBaseFPS.store(baseFPS, std::memory_order_relaxed);
     m_fgMultiplier.store(multiplier, std::memory_order_relaxed);
+    m_fgType.store(fgType, std::memory_order_relaxed);
 }
 
 void PerformanceMetrics::Update(int64_t currentQpcUs) {
