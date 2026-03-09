@@ -301,6 +301,34 @@ bool OverlayAdapter::InitVulkan(void* device, void* physDevice, void* queue, uin
     return true;
 }
 
+bool OverlayAdapter::InitCustom(CustomOverlay::RendererBackend* customBackend,
+                                OverlayBackendType type) {
+    if (initialized)
+        return true;
+    if (!customBackend) {
+        HookLogImportant("[Overlay] InitCustom failed: null backend");
+        return false;
+    }
+
+    HookLogImportant("[Overlay] Initializing custom backend (type=%d, ptr=%p)", (int)type, customBackend);
+    backend = customBackend;
+    backendType = type;
+
+    renderer = new CustomOverlay::Renderer();
+    float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
+    if (!renderer->Initialize(backend, dpiScale)) {
+        HookLogImportant("[Overlay] InitCustom: Renderer::Initialize FAILED (dpiScale=%.2f)", dpiScale);
+        delete renderer;
+        renderer = nullptr;
+        backend = nullptr;
+        return false;
+    }
+
+    initialized = true;
+    HookLogImportant("[Overlay] Custom backend initialized successfully (dpiScale=%.2f)", dpiScale);
+    return true;
+}
+
 void OverlayAdapter::SetShutdownMode(bool skipRelease) {
     skipDeviceRelease = skipRelease;
     if (renderer) {
@@ -349,6 +377,26 @@ void OverlayAdapter::SetDX12RenderTarget(void* cmdList, void* rtvHandle) {
         dx12Backend->SetRenderTarget((ID3D12GraphicsCommandList*)cmdList, rtv);
     }
 #endif
+}
+
+bool OverlayAdapter::PrimeDX12Resources(void* cmdList) {
+#ifndef VK_LAYER_CE_OVERLAY
+    if (backendType == OverlayBackendType::DX12 && backend) {
+        auto dx12Backend = static_cast<CustomOverlay::DX12Backend*>(backend);
+        return dx12Backend->PrimeResources(static_cast<ID3D12GraphicsCommandList*>(cmdList));
+    }
+#endif
+    return false;
+}
+
+bool OverlayAdapter::HasPendingDX12Resources() const {
+#ifndef VK_LAYER_CE_OVERLAY
+    if (backendType == OverlayBackendType::DX12 && backend) {
+        auto dx12Backend = static_cast<CustomOverlay::DX12Backend*>(backend);
+        return dx12Backend->HasPendingResources();
+    }
+#endif
+    return false;
 }
 
 uint32_t OverlayAdapter::GetLoadColor(float load) {
@@ -433,6 +481,13 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                                (showOverloadWarning != lastShowOverloadWarning);
     bool needRebuild = !hasCachedFrame || shouldUpdate || shouldRefreshGraph || viewportChanged || configChanged ||
                        dynamicStateChanged || layoutDirty;
+    static int renderPathLogCount = 0;
+    if (renderPathLogCount < 10) {
+        HookLogImportant("[Overlay] RenderOverlay path: rebuild=%d cache=%d shouldUpdate=%d viewportChanged=%d cfgChanged=%d",
+                         needRebuild ? 1 : 0, hasCachedFrame ? 1 : 0, shouldUpdate ? 1 : 0,
+                         viewportChanged ? 1 : 0, configChanged ? 1 : 0);
+        renderPathLogCount++;
+    }
 
     // Pass HDR params to backend for shader constants
     if (backend) {
@@ -462,6 +517,9 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     }
 
     const int64_t overlayBuildStartUs = activeDebugSample ? PerfLogger::GetQpcUs() : 0;
+    if (renderPathLogCount < 10) {
+        HookLogImportant("[Overlay] RenderOverlay: BeginFrame %dx%d", viewportWidth, viewportHeight);
+    }
     renderer->BeginFrame(viewportWidth, viewportHeight);
     RenderContent(viewportWidth, viewportHeight, cfg, shouldUpdate);
     if (activeDebugSample) {
@@ -469,6 +527,9 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
         activeDebugSample->overlayBuildUs += static_cast<int32_t>(PerfLogger::GetQpcUs() - overlayBuildStartUs);
     }
     const int64_t overlayRenderStartUs = activeDebugSample ? PerfLogger::GetQpcUs() : 0;
+    if (renderPathLogCount < 10) {
+        HookLogImportant("[Overlay] RenderOverlay: EndFrame");
+    }
     renderer->EndFrame();
     if (activeDebugSample) {
         activeDebugSample->overlayRenderUs += static_cast<int32_t>(PerfLogger::GetQpcUs() - overlayRenderStartUs);
@@ -592,10 +653,15 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
             if (showFGDetails) {
                 float baseFPS = metrics->GetFGBaseFPS();
                 float outputFPS = metrics->GetFGOutputFPS();
-                if (baseFPS < 1.0f)
-                    baseFPS = cachedFPS;
+                int fgMult = metrics->GetFGMultiplier();
                 if (outputFPS < 1.0f)
                     outputFPS = cachedFPS;
+                if (baseFPS < 1.0f) {
+                    if (fgMult >= 2)
+                        baseFPS = outputFPS / fgMult;
+                    else
+                        baseFPS = cachedFPS;
+                }
                 snprintf(measureBuf, sizeof(measureBuf), "%.0f / %.0f FPS", baseFPS, outputFPS);
                 maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth("Base/Display"));
                 maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
@@ -883,10 +949,18 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         if (showFGDetails) {
             float baseFPS = metrics->GetFGBaseFPS();
             float outputFPS = metrics->GetFGOutputFPS();
-            if (baseFPS < 1.0f)
-                baseFPS = cachedFPS;
+            int fgMult = metrics->GetFGMultiplier();
+
+            // When metrics haven't been computed (dormant mode or early startup),
+            // derive values from the live per-frame FPS and the known multiplier.
             if (outputFPS < 1.0f)
                 outputFPS = cachedFPS;
+            if (baseFPS < 1.0f) {
+                if (fgMult >= 2)
+                    baseFPS = outputFPS / fgMult;
+                else
+                    baseFPS = cachedFPS;
+            }
 
             snprintf(buf, 64, "%.0f / %.0f FPS", baseFPS, outputFPS);
             renderer->DrawTextWithShadow(labelCol, cursorY, "Base/Display", Colors::LabelYellow, shadowColor);

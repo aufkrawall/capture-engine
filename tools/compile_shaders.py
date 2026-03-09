@@ -163,6 +163,72 @@ float4 main(PS_INPUT input) : SV_Target {
 }
 """
 
+# Descriptor-free textured pixel shader:
+# Uses ByteAddressBuffer (root SRV at t0) instead of Texture2D, so
+# SetDescriptorHeaps is never needed.  Avoids the NVIDIA driver stall
+# caused by SetDescriptorHeaps + OMSetRenderTargets(swapchain) in the
+# same command list.  Manual bilinear filtering matches the static
+# sampler quality of the standard textured PS.
+PS_TEXTURED_DESCFREE_SRC = b"""
+cbuffer Constants : register(b0) {
+    float2 viewportSize;
+    float hdrMode;
+    float paperWhiteNits;
+    float2 fontTexSize;
+};
+ByteAddressBuffer fontBuffer : register(t0);
+struct PS_INPUT {
+    float4 pos : SV_POSITION;
+    float2 uv : TEXCOORD0;
+    float4 col : COLOR0;
+};
+float SRGBToLinear(float s) {
+    return (s <= 0.04045) ? (s / 12.92) : pow((s + 0.055) / 1.055, 2.4);
+}
+float LinearToPQ(float L) {
+    float Lp = pow(L / 10000.0, 0.1593017578125);
+    return pow((0.8359375 + 18.8515625 * Lp) / (1.0 + 18.6875 * Lp), 78.84375);
+}
+float3 ApplyHDR(float3 srgb) {
+    float3 lin = float3(SRGBToLinear(srgb.r), SRGBToLinear(srgb.g), SRGBToLinear(srgb.b));
+    if (hdrMode < 1.5) {
+        return lin * (paperWhiteNits / 80.0);
+    } else {
+        float3 nits = lin * paperWhiteNits;
+        return float3(LinearToPQ(nits.r), LinearToPQ(nits.g), LinearToPQ(nits.b));
+    }
+}
+float4 LoadTexel(int2 coord) {
+    coord = clamp(coord, int2(0, 0), int2(fontTexSize) - 1);
+    uint offset = (uint(coord.y) * uint(fontTexSize.x) + uint(coord.x)) * 4u;
+    uint packed = fontBuffer.Load(offset);
+    return float4(
+        float((packed      ) & 0xFFu) / 255.0,
+        float((packed >>  8) & 0xFFu) / 255.0,
+        float((packed >> 16) & 0xFFu) / 255.0,
+        float((packed >> 24) & 0xFFu) / 255.0
+    );
+}
+float4 SampleBilinear(float2 uv) {
+    float2 texel = uv * fontTexSize - 0.5;
+    int2 t0 = int2(floor(texel));
+    float2 f = frac(texel);
+    float4 tl = LoadTexel(t0);
+    float4 tr = LoadTexel(t0 + int2(1, 0));
+    float4 bl = LoadTexel(t0 + int2(0, 1));
+    float4 br = LoadTexel(t0 + int2(1, 1));
+    return lerp(lerp(tl, tr, f.x), lerp(bl, br, f.x), f.y);
+}
+float4 main(PS_INPUT input) : SV_Target {
+    float4 texColor = SampleBilinear(input.uv);
+    float3 color = input.col.rgb;
+    if (hdrMode > 0.5) {
+        color = ApplyHDR(color);
+    }
+    return float4(color, input.col.a * texColor.a);
+}
+"""
+
 def compile_shader(source, target, name):
     code = ID3DBlobPtr()
     errors = ID3DBlobPtr()
@@ -210,6 +276,7 @@ def main():
         (PS_TEXTURED_SRC, "ps_5_0", "g_PS_Textured_5_0"),
         (PS_SOLID_SRC, "ps_4_0", "g_PS_Solid_4_0"),
         (PS_SOLID_SRC, "ps_5_0", "g_PS_Solid_5_0"),
+        (PS_TEXTURED_DESCFREE_SRC, "ps_5_0", "g_PS_Textured_DescFree_5_0"),
     ]
 
     output = []

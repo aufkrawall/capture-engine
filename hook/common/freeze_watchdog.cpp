@@ -1,11 +1,14 @@
 #include "freeze_watchdog.h"
+#include <algorithm>
 #include <tlhelp32.h>
 #include <chrono>
+#include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <iomanip>
 #include <sstream>
 #include "dxgi_shared.h"
+#include "fg_detection.h"
 #include "hook_common.h"
 
 FreezeWatchdog g_RenderWatchdog;
@@ -42,6 +45,73 @@ static bool IsProcessInForeground(DWORD processId) {
     GetWindowThreadProcessId(fgWindow, &fgPid);
     return fgPid == processId;
 }
+
+namespace {
+struct DialogInfo {
+    HWND hwnd = nullptr;
+    DWORD threadId = 0;
+    bool visible = false;
+    char title[256] = {};
+};
+
+struct DialogSearchContext {
+    DWORD processId = 0;
+    DialogInfo* info = nullptr;
+};
+
+BOOL CALLBACK FindProcessDialogWindowProc(HWND hwnd, LPARAM lParam) {
+    auto* context = reinterpret_cast<DialogSearchContext*>(lParam);
+    if (!context || !context->info) {
+        return TRUE;
+    }
+
+    DWORD windowProcessId = 0;
+    const DWORD windowThreadId = GetWindowThreadProcessId(hwnd, &windowProcessId);
+    if (windowProcessId != context->processId) {
+        return TRUE;
+    }
+
+    char className[64] = {};
+    if (!GetClassNameA(hwnd, className, static_cast<int>(sizeof(className)))) {
+        return TRUE;
+    }
+
+    if (_stricmp(className, "#32770") != 0) {
+        return TRUE;
+    }
+
+    context->info->hwnd = hwnd;
+    context->info->threadId = windowThreadId;
+    context->info->visible = IsWindowVisible(hwnd) != FALSE;
+    GetWindowTextA(hwnd, context->info->title, static_cast<int>(sizeof(context->info->title)));
+    return FALSE;
+}
+
+bool FindBlockingDialogWindow(DWORD processId, DialogInfo& info) {
+    DialogSearchContext context = {};
+    context.processId = processId;
+    context.info = &info;
+    EnumWindows(FindProcessDialogWindowProc, reinterpret_cast<LPARAM>(&context));
+    return info.hwnd != nullptr;
+}
+
+std::string DescribeDialog(const DialogInfo& info) {
+    std::string description = info.visible ? "visible dialog" : "hidden dialog";
+    if (info.title[0] != '\0') {
+        description += " '";
+        description += info.title;
+        description += "'";
+    }
+    return description;
+}
+
+std::string GetDialogIdentity(const DialogInfo& info) {
+    if (info.title[0] != '\0') {
+        return info.title;
+    }
+    return "#32770";
+}
+}  // namespace
 
 FreezeWatchdog::FreezeWatchdog() : processId_(GetCurrentProcessId()) {
     char name[MAX_PATH] = {0};
@@ -95,10 +165,13 @@ bool FreezeWatchdog::Start(double timeoutSeconds) {
 
     double finalTimeout = timeoutSeconds;
 
-    if (IsUE5Active()) {
+    const bool ue5Active = IsUE5Active();
+    const bool dlssFGActive = IsDLSSFGActive();
+
+    if (ue5Active) {
         finalTimeout = UE5_TIMEOUT;
         OutputDebugStringA("[FreezeWatchdog] UE5 detected, using extended timeout\n");
-    } else if (IsDLSSFGActive()) {
+    } else if (dlssFGActive) {
         finalTimeout = DLSS_FG_TIMEOUT;
         OutputDebugStringA("[FreezeWatchdog] DLSS FG detected, using extended timeout\n");
     }
@@ -112,6 +185,8 @@ bool FreezeWatchdog::Start(double timeoutSeconds) {
     snprintf(logMsg, sizeof(logMsg), "[FreezeWatchdog] Starting: timeout=%.1fs, grace=%.1fs\n", finalTimeout,
              STARTUP_GRACE_PERIOD);
     OutputDebugStringA(logMsg);
+    HookLogImportant("FreezeWatchdog: Started (timeout=%.1fs, monitoredTid=%lu, ue5=%d, dlssFg=%d)", finalTimeout,
+                     monitoredThreadId_.load(std::memory_order_acquire), ue5Active ? 1 : 0, dlssFGActive ? 1 : 0);
 
     watchdogThread_ = std::thread(&FreezeWatchdog::WatchdogThread, this);
 
@@ -130,8 +205,12 @@ void FreezeWatchdog::Stop() {
 
 void FreezeWatchdog::Heartbeat() {
     DWORD heartbeatTid = GetCurrentThreadId();
-    if (monitoredThreadId_.load(std::memory_order_acquire) != heartbeatTid) {
-        monitoredThreadId_.store(heartbeatTid, std::memory_order_release);
+    DWORD previousTid = monitoredThreadId_.exchange(heartbeatTid, std::memory_order_acq_rel);
+    if (previousTid != 0 && previousTid != heartbeatTid) {
+        static std::atomic<int> s_threadSwitchLogCount{0};
+        if (s_threadSwitchLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
+            HookLog("FreezeWatchdog: Monitored thread switched %lu -> %lu", previousTid, heartbeatTid);
+        }
     }
     lastHeartbeat_.store(GetCurrentMicros(), std::memory_order_release);
 }
@@ -180,10 +259,7 @@ bool FreezeWatchdog::IsFrozen() const {
 }
 
 bool FreezeWatchdog::IsDLSSFGActive() const {
-    if (GetModuleHandleW(L"nvngx_dlssg.dll")) {
-        return true;
-    }
-    return false;
+    return g_FGCompat.IsDLSSFGApiActive() || g_FGCompat.GetActiveFGType() == FGCompatibility::FGType::DLSS_FG;
 }
 
 bool FreezeWatchdog::IsUE5Active() const {
@@ -275,7 +351,18 @@ void FreezeWatchdog::CreateFreezeExceptionRecord(EXCEPTION_RECORD& record, const
 
 void FreezeWatchdog::WatchdogThread() {
     const auto checkInterval = std::chrono::milliseconds(500);
+    constexpr double kDialogDumpDelaySeconds = 5.0;
+    constexpr double kDialogStartupWindowSeconds = 90.0;
+    constexpr uint64_t kDialogDumpDedupWindowMicros = 10'000'000;
     uint64_t lastLogTime = 0;
+    uint64_t dialogSeenSince = 0;
+    DWORD dialogThreadId = 0;
+    std::string dialogDescription;
+    std::string dialogIdentity;
+    bool dialogDumpWritten = false;
+    bool freezeDumpSuppressionLogged = false;
+    uint64_t lastDialogDumpTime = 0;
+    std::string lastDialogDumpIdentity;
 
     OutputDebugStringA("[FreezeWatchdog] Watchdog thread started\n");
 
@@ -288,23 +375,102 @@ void FreezeWatchdog::WatchdogThread() {
         }
 
         uint64_t now = GetCurrentMicros();
+        uint64_t lastBeat = lastHeartbeat_.load(std::memory_order_acquire);
+        double elapsed = (now - lastBeat) / 1'000'000.0;
+        double sinceStartup = (now - startupTime_.load(std::memory_order_acquire)) / 1'000'000.0;
+        DialogInfo dialogInfo = {};
+        bool hasDialog = FindBlockingDialogWindow(processId_, dialogInfo);
+        if (hasDialog) {
+            std::string currentDialogDescription = DescribeDialog(dialogInfo);
+            std::string currentDialogIdentity = GetDialogIdentity(dialogInfo);
+            if (dialogSeenSince == 0 || dialogIdentity != currentDialogIdentity) {
+                dialogSeenSince = now;
+                dialogThreadId = dialogInfo.threadId;
+                dialogDescription = currentDialogDescription;
+                dialogIdentity = currentDialogIdentity;
+                dialogDumpWritten = false;
+                freezeDumpSuppressionLogged = false;
+                HookLogImportant("FreezeWatchdog: Detected %s (hwnd=%p tid=%lu)", dialogDescription.c_str(),
+                                 dialogInfo.hwnd, dialogThreadId);
+            } else if (dialogThreadId != dialogInfo.threadId || dialogDescription != currentDialogDescription) {
+                HookLog("FreezeWatchdog: Dialog state changed to %s (hwnd=%p tid=%lu)", currentDialogDescription.c_str(),
+                        dialogInfo.hwnd, dialogInfo.threadId);
+                dialogThreadId = dialogInfo.threadId;
+                dialogDescription = currentDialogDescription;
+            }
+        } else if (dialogSeenSince != 0) {
+            HookLog("FreezeWatchdog: Blocking dialog cleared");
+            dialogSeenSince = 0;
+            dialogThreadId = 0;
+            dialogDescription.clear();
+            dialogIdentity.clear();
+            dialogDumpWritten = false;
+            freezeDumpSuppressionLogged = false;
+        }
+
         if (now - lastLogTime > 10'000'000) {
             lastLogTime = now;
-            uint64_t lastBeat = lastHeartbeat_.load();
-            double elapsed = (now - lastBeat) / 1'000'000.0;
-            char logMsg[128];
-            snprintf(logMsg, sizeof(logMsg), "[FreezeWatchdog] Status: elapsed=%.1fs, timeout=%.1fs\n", elapsed,
-                     timeoutSeconds_.load());
+            char logMsg[256];
+            snprintf(logMsg, sizeof(logMsg),
+                     "[FreezeWatchdog] Status: elapsed=%.1fs, timeout=%.1fs, monitoredTid=%lu, dialogTid=%lu\n",
+                     elapsed, timeoutSeconds_.load(), monitoredThreadId_.load(std::memory_order_acquire), dialogThreadId);
             OutputDebugStringA(logMsg);
+            HookLog("FreezeWatchdog: Status elapsed=%.1fs timeout=%.1fs monitoredTid=%lu dialogTid=%lu", elapsed,
+                    timeoutSeconds_.load(), monitoredThreadId_.load(std::memory_order_acquire), dialogThreadId);
+        }
+
+        if (dialogSeenSince != 0 && !dialogDumpWritten) {
+            double dialogElapsed = (now - dialogSeenSince) / 1'000'000.0;
+            const bool isErrGfxStateDialog = dialogDescription.find("ERR_GFX_STATE") != std::string::npos;
+            const double requiredDialogDumpDelay = isErrGfxStateDialog ? 0.0 : kDialogDumpDelaySeconds;
+            const bool withinDialogDumpWindow = sinceStartup <= kDialogStartupWindowSeconds || isErrGfxStateDialog;
+            if (dialogElapsed >= requiredDialogDumpDelay && withinDialogDumpWindow) {
+                if (!dialogIdentity.empty() && dialogIdentity == lastDialogDumpIdentity &&
+                    (now - lastDialogDumpTime) < kDialogDumpDedupWindowMicros) {
+                    HookLogImportant(
+                        "FreezeWatchdog: Suppressing duplicate dialog dump for %s because a dump was already captured %.1fs ago",
+                        dialogDescription.c_str(), (now - lastDialogDumpTime) / 1'000'000.0);
+                    dialogDumpWritten = true;
+                    continue;
+                }
+
+                std::string reason = dialogDescription.empty() ? "Blocking dialog detected"
+                                                               : ("Blocking " + dialogDescription + " detected");
+                if (isErrGfxStateDialog) {
+                    HookLogImportant("FreezeWatchdog: Critical dialog %s detected - capturing dump immediately",
+                                     dialogDescription.c_str());
+                } else {
+                    HookLogImportant("FreezeWatchdog: Persistent dialog detected after %.1fs - capturing dump",
+                                     dialogElapsed);
+                }
+                if (freezeCallback_) {
+                    freezeCallback_(reason);
+                }
+                CreateMinidumpWithThreadContext(reason, dialogThreadId);
+                dialogDumpWritten = true;
+                lastDialogDumpTime = now;
+                lastDialogDumpIdentity = dialogIdentity;
+            }
         }
 
         if (IsFrozen()) {
-            double elapsed = (GetCurrentMicros() - lastHeartbeat_.load()) / 1'000'000.0;
+            if (dialogSeenSince != 0 && dialogDumpWritten) {
+                if (!freezeDumpSuppressionLogged) {
+                    HookLogImportant(
+                        "FreezeWatchdog: Suppressing redundant freeze dump because a dialog dump was already captured for %s",
+                        dialogDescription.c_str());
+                    freezeDumpSuppressionLogged = true;
+                }
+                continue;
+            }
+            freezeDumpSuppressionLogged = false;
+
             std::string reason = "Render thread frozen for " + std::to_string(static_cast<int>(elapsed)) + " seconds";
 
             OutputDebugStringA("[FreezeWatchdog] FREEZE DETECTED!\n");
             OutputDebugStringA(reason.c_str());
             OutputDebugStringA("\n");
+            HookLogImportant("FreezeWatchdog: Freeze detected (%s)", reason.c_str());
 
             if (freezeCallback_) {
                 freezeCallback_(reason);
@@ -324,7 +490,7 @@ void FreezeWatchdog::WatchdogThread() {
     OutputDebugStringA("[FreezeWatchdog] Watchdog thread exiting\n");
 }
 
-void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason) {
+void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason, DWORD preferredThreadId) {
     OutputDebugStringA("[FreezeWatchdog] Creating minidump with thread context...\n");
 
     if (!pMiniDumpWriteDump_) {
@@ -340,16 +506,20 @@ void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason) 
 
     auto now = std::chrono::system_clock::now();
     auto time_t_now = std::chrono::system_clock::to_time_t(now);
+    const auto totalMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    const auto millisecondPart = static_cast<int>(totalMilliseconds % 1000);
     std::tm local_tm;
     localtime_s(&local_tm, &time_t_now);
 
     std::stringstream ss;
-    ss << logsDir << "\\" << processName_ << "_FREEZE_" << std::put_time(&local_tm, "%Y-%m-%d_%H-%M-%S") << ".dmp";
+    ss << logsDir << "\\" << processName_ << "_FREEZE_" << std::put_time(&local_tm, "%Y-%m-%d_%H-%M-%S") << "_"
+       << std::setw(3) << std::setfill('0') << millisecondPart << ".dmp";
     std::string dumpPath = ss.str();
 
     char logMsg[512];
     snprintf(logMsg, sizeof(logMsg), "[FreezeWatchdog] Dump path: %s\n", dumpPath.c_str());
     OutputDebugStringA(logMsg);
+    HookLogImportant("FreezeWatchdog: Writing dump to %s", dumpPath.c_str());
 
     HANDLE hFile =
         CreateFileA(dumpPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -372,7 +542,8 @@ void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason) 
     EXCEPTION_RECORD exceptionRecord = {};
     EXCEPTION_POINTERS exceptionPointers = {&exceptionRecord, &threadCtx};
 
-    DWORD monitoredTid = monitoredThreadId_.load();
+    DWORD monitoredTid = preferredThreadId ? preferredThreadId : monitoredThreadId_.load();
+    HookLogImportant("FreezeWatchdog: Capturing dump for reason '%s' (targetTid=%lu)", reason.c_str(), monitoredTid);
     bool hasContext = false;
 
     if (monitoredTid != 0) {
@@ -400,10 +571,12 @@ void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason) 
     if (success) {
         snprintf(logMsg, sizeof(logMsg), "[FreezeWatchdog] SUCCESS: Dump created: %s\n", dumpPath.c_str());
         OutputDebugStringA(logMsg);
+        HookLogImportant("FreezeWatchdog: Dump created at %s", dumpPath.c_str());
     } else {
         DWORD err = GetLastError();
         snprintf(logMsg, sizeof(logMsg), "[FreezeWatchdog] FAILED to write dump, error=%lu\n", err);
         OutputDebugStringA(logMsg);
+        HookLogImportant("FreezeWatchdog: Dump creation failed at %s (error=%lu)", dumpPath.c_str(), err);
     }
 }
 

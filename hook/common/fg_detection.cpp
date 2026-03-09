@@ -65,6 +65,9 @@ FGCompatibility::FGType FGCompatibility::GetActiveFGType() const {
         if (dlssFGApiActive.load(std::memory_order_acquire)) {
             return FGType::DLSS_FG;
         }
+        if (heuristicFSRFGActive.load(std::memory_order_acquire)) {
+            return FGType::FSR_FG;
+        }
         return FGType::None;
     }
 
@@ -74,6 +77,9 @@ FGCompatibility::FGType FGCompatibility::GetActiveFGType() const {
     }
     if (dlssFGApiActive.load(std::memory_order_acquire)) {
         return FGType::DLSS_FG;
+    }
+    if (heuristicFSRFGActive.load(std::memory_order_acquire)) {
+        return FGType::FSR_FG;
     }
     if (IsNvidiaSmoothMotionActive()) {
         return FGType::NVIDIA_SM;
@@ -86,6 +92,13 @@ bool FGCompatibility::IsFGActive() const {
 }
 
 void FGCompatibility::SetDLSSFGActive(bool active) {
+    if (active) {
+        bool heuristicWasActive = heuristicFSRFGActive.exchange(false, std::memory_order_acq_rel);
+        if (heuristicWasActive) {
+            HookLog("FG: Cleared heuristic FSR FG state because DLSS FG API activated");
+        }
+    }
+
     bool wasActive = dlssFGApiActive.exchange(active, std::memory_order_acq_rel);
     if (!active) {
         dlssFGMultiplier.store(0, std::memory_order_release);
@@ -115,6 +128,27 @@ void FGCompatibility::SetDLSSFGMultiplier(int multiplier) {
     const int previousMultiplier = dlssFGMultiplier.exchange(normalizedMultiplier, std::memory_order_acq_rel);
     if (previousMultiplier != normalizedMultiplier) {
         HookLog("FG: DLSS FG multiplier %d -> %d", previousMultiplier, normalizedMultiplier);
+    }
+}
+
+void FGCompatibility::SetHeuristicFSRFGActive(bool active) {
+    bool wasActive = heuristicFSRFGActive.exchange(active, std::memory_order_acq_rel);
+    if (wasActive != active) {
+        HookLog("FG: Heuristic FSR FG %s (dormant=%d)", active ? "ACTIVATED" : "DEACTIVATED",
+                dormantMode.load() ? 1 : 0);
+
+        FGType newType = GetActiveFGType();
+        FGType oldType = activeBehavior.exchange(newType);
+        if (oldType != newType) {
+            HookLog("FG: Active type changed: %s -> %s", GetFGTypeName(oldType), GetFGTypeName(newType));
+
+            if (!dormantMode.load() && HAS_DX12_INVALIDATE &&
+                ((newType == FGType::DLSS_FG && oldType == FGType::FSR_FG) ||
+                 (newType == FGType::FSR_FG && oldType == FGType::DLSS_FG))) {
+                DX12_InvalidateSwapchain();
+                HookLog("FG: Invalidated swapchain for FG transition");
+            }
+        }
     }
 }
 

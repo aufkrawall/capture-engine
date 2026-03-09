@@ -69,7 +69,7 @@ public:
 
 private:
     void WatchdogThread();
-    void CreateMinidumpWithThreadContext(const std::string& reason);
+    void CreateMinidumpWithThreadContext(const std::string& reason, DWORD preferredThreadId = 0);
     void TerminateProcessSafely();
     bool InitializeDbgHelp();
 

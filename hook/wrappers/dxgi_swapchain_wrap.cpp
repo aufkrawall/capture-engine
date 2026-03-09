@@ -12,6 +12,7 @@
 #include "../../common/raii_helpers.h"
 #include "../apis/graphics_hook.h"
 #include "../common/dxgi_shared.h"
+#include "../common/overlay_compat.h"
 #include "../common/perf_logger.h"
 #include "../common/performance_metrics.h"
 #include "hook_common.h"
@@ -78,6 +79,18 @@ thread_local bool g_InWrapperPresent = false;
 // Function to check if we're in wrapper Present (same DLL, no export needed)
 bool IsInWrapperPresent() {
     return g_InWrapperPresent;
+}
+
+static bool ShouldDelegateDX12PresentToInlineHook() {
+    if (!DXGIShared::HasPresentInlineHooks()) {
+        return false;
+    }
+
+    if (!ce::overlay_compat::GetStartupBlockingOverlayModuleName()) {
+        return false;
+    }
+
+    return !g_FGCompat.IsDLSSFGApiActive() && !g_FGCompat.IsFSRFGApiActive();
 }
 
 // FSR Frame Generation detection helpers
@@ -726,6 +739,18 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         return pRealCached->Present(SyncInterval, Flags);
     }
 
+    if (m_IsD3D12 && ShouldDelegateDX12PresentToInlineHook()) {
+        static std::atomic<int> s_inlineRouteLogCount{0};
+        const char* overlayModule = ce::overlay_compat::GetStartupBlockingOverlayModuleName();
+        if (s_inlineRouteLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
+            WrapperLog("Present: Delegating DX12 Present to inline hook for external overlay %s",
+                       overlayModule ? overlayModule : "module");
+        }
+        g_InWrapperPresent = false;
+        auto delegateGuard = ::ce::make_scope_guard([&] { g_InWrapperPresent = true; });
+        return pRealCached->Present(SyncInterval, Flags);
+    }
+
     // DEBUG: Log first few Present calls to verify wrapper is being invoked
     if (callCount < 10) {
         WrapperLog("Present: call#%d (m_IsD3D12=%d, flipModel=%d, FG=%d)", callCount, m_IsD3D12, m_FlipModel.active,
@@ -842,6 +867,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
             if (!(presentFlags & (0x00000200U | 0x00000004U)))  // ALLOW_TEARING | RESTART
                 presentFlags |= 0x00000008U;                    // DO_NOT_WAIT
         }
+    }
+
+    if (m_IsD3D12) {
+        DX12_WaitForOverlayCompletion(nullptr);
     }
 
     const int64_t presentCallStartUs = activeDebugSample ? PerfLogger::GetQpcUs() : 0;
@@ -1060,6 +1089,18 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
         return pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters);
     }
 
+    if (m_IsD3D12 && ShouldDelegateDX12PresentToInlineHook()) {
+        static std::atomic<int> s_inlineRouteLogCount1{0};
+        const char* overlayModule = ce::overlay_compat::GetStartupBlockingOverlayModuleName();
+        if (s_inlineRouteLogCount1.fetch_add(1, std::memory_order_relaxed) < 20) {
+            WrapperLog("Present1: Delegating DX12 Present1 to inline hook for external overlay %s",
+                       overlayModule ? overlayModule : "module");
+        }
+        g_InWrapperPresent = false;
+        auto delegateGuard = ::ce::make_scope_guard([&] { g_InWrapperPresent = true; });
+        return pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters);
+    }
+
     // RECURSION GUARD: Prevent infinite recursion with Steam/other overlays
     static std::atomic<DWORD> s_present1ThreadId{0};
     static std::atomic<int> s_present1Depth{0};
@@ -1120,6 +1161,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
             WrapperLog("Present1: Limiter active, SyncInterval %u->0 (vblank-synced, tear-free)", SyncInterval);
         }
         SyncInterval = 0;
+    }
+
+    if (m_IsD3D12) {
+        DX12_WaitForOverlayCompletion(nullptr);
     }
 
     HRESULT hr = pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters);

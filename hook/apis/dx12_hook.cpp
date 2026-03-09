@@ -1,4 +1,6 @@
 #include <combaseapi.h>
+#include <d3d11.h>
+#include <d3d11on12.h>
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <unknwn.h>
@@ -17,9 +19,11 @@
 #include "../../common/raii_helpers.h"
 #include "../capture/shared_capture.h"
 #include "../common/capture_base.h"
+#include "../common/custom_overlay_dx12.h"
 #include "../common/fg_detection.h"
 #include "../common/hook_common.h"
 #include "../common/input_manager.h"
+#include "../common/overlay_compat.h"
 #include "../common/overlay_adapter.h"
 #include "../common/performance_metrics.h"
 #include "../common/streamline_compat.h"
@@ -37,6 +41,9 @@
 #include "ffx_hook.h"
 #include "graphics_hook.h"
 #include "lod_helper.h"
+
+#include "../common/custom_overlay.h"
+#include "../common/overlay_shader_bytecode.h"
 
 #include "../wrappers/inline_hook.h"
 #include "../wrappers/vtable_hook.h"
@@ -74,6 +81,15 @@ static std::map<void**, ExecuteCommandListsPtr> g_ExecuteCommandListsOriginalByV
 static std::atomic<void**> g_LastExecuteCommandListsVTable{nullptr};
 static std::atomic<ExecuteCommandListsPtr> g_LastExecuteCommandListsOriginal{nullptr};
 
+#if defined(__clang__) || defined(__GNUC__)
+#define CE_RETURN_ADDRESS() __builtin_extract_return_addr(__builtin_return_address(0))
+#elif defined(_MSC_VER)
+#include <intrin.h>
+#define CE_RETURN_ADDRESS() _ReturnAddress()
+#else
+#define CE_RETURN_ADDRESS() nullptr
+#endif
+
 // SwapChain Detour Pointers
 typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateSwapChain)(IDXGIFactory*, IUnknown*, DXGI_SWAP_CHAIN_DESC*,
                                                         IDXGISwapChain**);
@@ -84,6 +100,373 @@ typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateSwapChainForHwnd)(IDXGIFactory2*, I
 
 static PFN_CreateSwapChain oCreateSwapChain = nullptr;
 static PFN_CreateSwapChainForHwnd oCreateSwapChainForHwnd = nullptr;
+
+// ---------------------------------------------------------------------------
+// Descriptor-free DX12 overlay backend.
+//
+// Renders the overlay using root constants + root SRV (ByteAddressBuffer for
+// the font atlas).  No descriptor heaps are bound, so SetDescriptorHeaps is
+// never called.  This avoids the NVIDIA driver stall triggered by
+// SetDescriptorHeaps + OMSetRenderTargets(swapchain backbuffer) in the same
+// command list.
+//
+// The command list and RTV are set externally before each Render() call via
+// the static pointers below.
+// ---------------------------------------------------------------------------
+
+static ID3D12GraphicsCommandList* s_descFreeCmdList = nullptr;
+static D3D12_CPU_DESCRIPTOR_HANDLE s_descFreeRtv = {};
+
+class DX12DescFreeBackend : public CustomOverlay::RendererBackend {
+public:
+    ~DX12DescFreeBackend() override { Shutdown(); }
+
+    // Non-virtual: create device-dependent resources (root sig, PSOs)
+    bool InitDevice(ID3D12Device* dev, DXGI_FORMAT rtvFormat) {
+        if (deviceReady_)
+            return true;
+        device_ = dev;
+        rtvFormat_ = rtvFormat;
+        if (!CreateRootSignature() || !CreatePSOs()) {
+            Shutdown();
+            return false;
+        }
+        if (!CreateBuffers()) {
+            Shutdown();
+            return false;
+        }
+        deviceReady_ = true;
+        return true;
+    }
+
+    // RendererBackend: upload font atlas as a ByteAddressBuffer
+    bool Initialize(int fontWidth, int fontHeight, const uint8_t* fontData) override {
+        if (!device_ || !fontData)
+            return false;
+        fontWidth_ = fontWidth;
+        fontHeight_ = fontHeight;
+
+        size_t dataSize = (size_t)fontWidth * fontHeight * 4; // RGBA8
+
+        D3D12_HEAP_PROPERTIES hp = {};
+        hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+        D3D12_RESOURCE_DESC rd = {};
+        rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        rd.Width = dataSize;
+        rd.Height = 1;
+        rd.DepthOrArraySize = 1;
+        rd.MipLevels = 1;
+        rd.Format = DXGI_FORMAT_UNKNOWN;
+        rd.SampleDesc.Count = 1;
+        rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+        HRESULT hr = device_->CreateCommittedResource(
+            &hp, D3D12_HEAP_FLAG_NONE, &rd,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+            IID_PPV_ARGS(&fontBuffer_));
+        if (FAILED(hr)) {
+            HookLogImportant("DescFree: font buffer create failed hr=0x%08X", hr);
+            return false;
+        }
+
+        void* mapped = nullptr;
+        D3D12_RANGE readRange = {0, 0};
+        hr = fontBuffer_->Map(0, &readRange, &mapped);
+        if (FAILED(hr)) {
+            HookLogImportant("DescFree: font buffer map failed hr=0x%08X", hr);
+            fontBuffer_->Release();
+            fontBuffer_ = nullptr;
+            return false;
+        }
+        memcpy(mapped, fontData, dataSize);
+        fontBuffer_->Unmap(0, nullptr);
+
+        fontGpuAddr_ = fontBuffer_->GetGPUVirtualAddress();
+        HookLogImportant("DescFree: font buffer ready (%dx%d, %zu bytes, gpu=0x%llX)",
+                         fontWidth, fontHeight, dataSize, (unsigned long long)fontGpuAddr_);
+        return true;
+    }
+
+    void Render(const std::vector<CustomOverlay::DrawVertex>& vertices,
+                const std::vector<uint16_t>& indices,
+                const std::vector<CustomOverlay::DrawCommand>& commands,
+                int vpW, int vpH) override {
+        auto* cmdList = s_descFreeCmdList;
+        if (!cmdList || !deviceReady_ || !fontBuffer_ || vertices.empty())
+            return;
+
+        // Upload vertex data
+        int slot = frameIdx_ % kPoolSize;
+        frameIdx_++;
+        size_t vbBytes = vertices.size() * sizeof(CustomOverlay::DrawVertex);
+        if (vbBytes > vbSize_[slot]) {
+            if (!ResizeBuffer(vb_[slot], vbPtr_[slot], vbSize_[slot], vbBytes))
+                return;
+        }
+        memcpy(vbPtr_[slot], vertices.data(), vbBytes);
+
+        // Upload index data
+        size_t ibBytes = indices.size() * sizeof(uint16_t);
+        if (ibBytes > ibSize_[slot]) {
+            if (!ResizeBuffer(ib_[slot], ibPtr_[slot], ibSize_[slot], ibBytes))
+                return;
+        }
+        memcpy(ibPtr_[slot], indices.data(), ibBytes);
+
+        // Set pipeline — NO SetDescriptorHeaps!
+        cmdList->SetGraphicsRootSignature(rootSig_);
+
+        // Root constants: viewportW, viewportH, hdrMode, paperWhiteNits, fontW, fontH
+        float constants[6] = {
+            (float)vpW, (float)vpH,
+            (float)hdrMode, paperWhiteNits,
+            (float)fontWidth_, (float)fontHeight_
+        };
+        cmdList->SetGraphicsRoot32BitConstants(0, 6, constants, 0);
+
+        // Root SRV: font buffer (ByteAddressBuffer at t0)
+        cmdList->SetGraphicsRootShaderResourceView(1, fontGpuAddr_);
+
+        // Render target + viewport
+        cmdList->OMSetRenderTargets(1, &s_descFreeRtv, FALSE, nullptr);
+        D3D12_VIEWPORT vp = {0, 0, (float)vpW, (float)vpH, 0, 1};
+        D3D12_RECT scissor = {0, 0, (LONG)vpW, (LONG)vpH};
+        cmdList->RSSetViewports(1, &vp);
+        cmdList->RSSetScissorRects(1, &scissor);
+
+        // Vertex/index buffers
+        D3D12_VERTEX_BUFFER_VIEW vbv = {};
+        vbv.BufferLocation = vb_[slot]->GetGPUVirtualAddress();
+        vbv.SizeInBytes = (UINT)vbBytes;
+        vbv.StrideInBytes = sizeof(CustomOverlay::DrawVertex);
+        cmdList->IASetVertexBuffers(0, 1, &vbv);
+
+        D3D12_INDEX_BUFFER_VIEW ibv = {};
+        ibv.BufferLocation = ib_[slot]->GetGPUVirtualAddress();
+        ibv.SizeInBytes = (UINT)ibBytes;
+        ibv.Format = DXGI_FORMAT_R16_UINT;
+        cmdList->IASetIndexBuffer(&ibv);
+
+        cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+        // Draw
+        ID3D12PipelineState* lastPSO = nullptr;
+        for (const auto& cmd : commands) {
+            auto* pso = cmd.useTexture ? psoTextured_ : psoSolid_;
+            if (pso != lastPSO) {
+                cmdList->SetPipelineState(pso);
+                lastPSO = pso;
+            }
+            cmdList->DrawIndexedInstanced(cmd.indexCount, 1, cmd.indexOffset, 0, 0);
+        }
+    }
+
+    void Shutdown() override {
+        for (int i = 0; i < kPoolSize; i++) {
+            if (vb_[i]) { vb_[i]->Unmap(0, nullptr); vb_[i]->Release(); vb_[i] = nullptr; }
+            if (ib_[i]) { ib_[i]->Unmap(0, nullptr); ib_[i]->Release(); ib_[i] = nullptr; }
+            vbPtr_[i] = nullptr;
+            ibPtr_[i] = nullptr;
+            vbSize_[i] = 0;
+            ibSize_[i] = 0;
+        }
+        if (fontBuffer_) { fontBuffer_->Release(); fontBuffer_ = nullptr; }
+        if (psoTextured_) { psoTextured_->Release(); psoTextured_ = nullptr; }
+        if (psoSolid_) { psoSolid_->Release(); psoSolid_ = nullptr; }
+        if (rootSig_) { rootSig_->Release(); rootSig_ = nullptr; }
+        fontGpuAddr_ = 0;
+        deviceReady_ = false;
+    }
+
+private:
+    bool CreateRootSignature() {
+        // Parameter 0: 6 root constants at b0
+        //   [0-1] viewportSize, [2] hdrMode, [3] paperWhiteNits, [4-5] fontTexSize
+        D3D12_ROOT_PARAMETER params[2] = {};
+        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        params[0].Constants.ShaderRegister = 0;
+        params[0].Constants.RegisterSpace = 0;
+        params[0].Constants.Num32BitValues = 6;
+        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+        // Parameter 1: root SRV at t0 (font ByteAddressBuffer)
+        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+        params[1].Descriptor.ShaderRegister = 0;
+        params[1].Descriptor.RegisterSpace = 0;
+        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+        rsDesc.NumParameters = 2;
+        rsDesc.pParameters = params;
+        rsDesc.NumStaticSamplers = 0;  // No sampler needed — manual bilinear in shader
+        rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+        ID3DBlob* blob = nullptr;
+        ID3DBlob* err = nullptr;
+        HRESULT hr = D3D12SerializeRootSignature(
+            &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err);
+        if (FAILED(hr)) {
+            HookLogImportant("DescFree: SerializeRootSignature failed hr=0x%08X", hr);
+            if (err) err->Release();
+            return false;
+        }
+        hr = device_->CreateRootSignature(0, blob->GetBufferPointer(),
+                                          blob->GetBufferSize(), IID_PPV_ARGS(&rootSig_));
+        blob->Release();
+        if (err) err->Release();
+        if (FAILED(hr)) {
+            HookLogImportant("DescFree: CreateRootSignature failed hr=0x%08X", hr);
+            return false;
+        }
+        return true;
+    }
+
+    bool CreatePSOs() {
+        D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
+            {"POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 0,
+             D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+            {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 8,
+             D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+            {"COLOR", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 16,
+             D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        };
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+        psoDesc.InputLayout = {inputLayout, 3};
+        psoDesc.pRootSignature = rootSig_;
+        psoDesc.VS = {g_VS_5_0, sizeof(g_VS_5_0)};
+        psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+        psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        psoDesc.RasterizerState.DepthClipEnable = TRUE;
+
+        // Alpha blending
+        D3D12_RENDER_TARGET_BLEND_DESC& blendRT = psoDesc.BlendState.RenderTarget[0];
+        blendRT.BlendEnable = TRUE;
+        blendRT.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+        blendRT.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+        blendRT.BlendOp = D3D12_BLEND_OP_ADD;
+        blendRT.SrcBlendAlpha = D3D12_BLEND_ONE;
+        blendRT.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+        blendRT.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        blendRT.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+        psoDesc.DepthStencilState.DepthEnable = FALSE;
+        psoDesc.SampleMask = UINT_MAX;
+        psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        psoDesc.NumRenderTargets = 1;
+        psoDesc.RTVFormats[0] = rtvFormat_;
+        psoDesc.SampleDesc.Count = 1;
+
+        // Textured PSO — uses ByteAddressBuffer (descriptor-free)
+        psoDesc.PS = {g_PS_Textured_DescFree_5_0, sizeof(g_PS_Textured_DescFree_5_0)};
+        HRESULT hr = device_->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoTextured_));
+        if (FAILED(hr)) {
+            HookLogImportant("DescFree: CreatePSO(textured) failed hr=0x%08X", hr);
+            return false;
+        }
+
+        // Solid PSO — no texture, uses same root sig (t0 unused)
+        psoDesc.PS = {g_PS_Solid_5_0, sizeof(g_PS_Solid_5_0)};
+        hr = device_->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoSolid_));
+        if (FAILED(hr)) {
+            HookLogImportant("DescFree: CreatePSO(solid) failed hr=0x%08X", hr);
+            return false;
+        }
+
+        HookLogImportant("DescFree: PSOs created (fmt=%d)", rtvFormat_);
+        return true;
+    }
+
+    bool CreateBuffers() {
+        D3D12_HEAP_PROPERTIES hp = {};
+        hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+        D3D12_RESOURCE_DESC rd = {};
+        rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        rd.Height = 1;
+        rd.DepthOrArraySize = 1;
+        rd.MipLevels = 1;
+        rd.Format = DXGI_FORMAT_UNKNOWN;
+        rd.SampleDesc.Count = 1;
+        rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+        D3D12_RANGE readRange = {0, 0};
+        for (int i = 0; i < kPoolSize; i++) {
+            rd.Width = kInitVBBytes;
+            HRESULT hr = device_->CreateCommittedResource(
+                &hp, D3D12_HEAP_FLAG_NONE, &rd,
+                D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&vb_[i]));
+            if (FAILED(hr)) return false;
+            vb_[i]->Map(0, &readRange, &vbPtr_[i]);
+            vbSize_[i] = kInitVBBytes;
+
+            rd.Width = kInitIBBytes;
+            hr = device_->CreateCommittedResource(
+                &hp, D3D12_HEAP_FLAG_NONE, &rd,
+                D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&ib_[i]));
+            if (FAILED(hr)) return false;
+            ib_[i]->Map(0, &readRange, &ibPtr_[i]);
+            ibSize_[i] = kInitIBBytes;
+        }
+        return true;
+    }
+
+    bool ResizeBuffer(ID3D12Resource*& buf, void*& ptr, size_t& curSize, size_t needed) {
+        size_t newSize = curSize;
+        while (newSize < needed) newSize *= 2;
+
+        buf->Unmap(0, nullptr);
+        buf->Release();
+
+        D3D12_HEAP_PROPERTIES hp = {};
+        hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+        D3D12_RESOURCE_DESC rd = {};
+        rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        rd.Width = newSize;
+        rd.Height = 1;
+        rd.DepthOrArraySize = 1;
+        rd.MipLevels = 1;
+        rd.Format = DXGI_FORMAT_UNKNOWN;
+        rd.SampleDesc.Count = 1;
+        rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+        HRESULT hr = device_->CreateCommittedResource(
+            &hp, D3D12_HEAP_FLAG_NONE, &rd,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&buf));
+        if (FAILED(hr)) return false;
+
+        D3D12_RANGE readRange = {0, 0};
+        buf->Map(0, &readRange, &ptr);
+        curSize = newSize;
+        return true;
+    }
+
+    static constexpr int kPoolSize = 4;
+    static constexpr size_t kInitVBBytes = 4096 * 20;  // 4096 vertices * 20 bytes
+    static constexpr size_t kInitIBBytes = 8192 * 2;   // 8192 indices * 2 bytes
+
+    ID3D12Device* device_ = nullptr;
+    DXGI_FORMAT rtvFormat_ = DXGI_FORMAT_R8G8B8A8_UNORM;
+    bool deviceReady_ = false;
+
+    ID3D12RootSignature* rootSig_ = nullptr;
+    ID3D12PipelineState* psoTextured_ = nullptr;
+    ID3D12PipelineState* psoSolid_ = nullptr;
+
+    ID3D12Resource* fontBuffer_ = nullptr;
+    D3D12_GPU_VIRTUAL_ADDRESS fontGpuAddr_ = 0;
+    int fontWidth_ = 0;
+    int fontHeight_ = 0;
+
+    ID3D12Resource* vb_[kPoolSize] = {};
+    ID3D12Resource* ib_[kPoolSize] = {};
+    void* vbPtr_[kPoolSize] = {};
+    void* ibPtr_[kPoolSize] = {};
+    size_t vbSize_[kPoolSize] = {};
+    size_t ibSize_[kPoolSize] = {};
+    int frameIdx_ = 0;
+};
+
+static DX12DescFreeBackend* g_DescFreeBackend = nullptr;
 
 // --- DX12 Overlay State Management ---
 struct DX12OverlayState {
@@ -110,6 +493,16 @@ struct DX12OverlayState {
     UINT bufferCount = 0;
     IDXGISwapChain* cachedSwapChain = nullptr;
 
+    // Offscreen render target for overlay compositing.
+    // Avoids OMSetRenderTargets(swapchain) + SetDescriptorHeaps on the same ECL,
+    // which causes GPU pipeline stalls (~40% utilization loss) in some games.
+    // Flow: copy backbuffer → offscreen, render overlay → offscreen, copy back.
+    ID3D12Resource* offscreenRT = nullptr;
+    ID3D12DescriptorHeap* offscreenRtvHeap = nullptr;
+    UINT offscreenWidth = 0;
+    UINT offscreenHeight = 0;
+    DXGI_FORMAT offscreenFormat = DXGI_FORMAT_UNKNOWN;
+
     // Dedicated overlay command queue for FG-safe rendering.
     // When FG is active, overlay commands execute on this queue with CPU-side
     // fence synchronization to avoid interfering with Streamline's game queue
@@ -124,9 +517,33 @@ struct DX12OverlayState {
     UINT64 crossQueueFenceValue = 0;
     HANDLE crossQueueFenceEvent = nullptr;
 
+    IDXGISwapChain3* cachedSC3 = nullptr;  // cached from first successful QI
+
+
+    // D3D11On12 overlay bridge: renders overlay via D3D11 on top of the D3D12
+    // backbuffer.  D3D11 doesn't use descriptor heaps, avoiding the NVIDIA
+    // driver stall triggered by SetDescriptorHeaps + OMSetRenderTargets(swapchain).
+    ID3D11Device* d3d11on12Device = nullptr;
+    ID3D11DeviceContext* d3d11on12Context = nullptr;
+    ID3D11On12Device* d3d11on12 = nullptr;
+    std::vector<ID3D11Resource*> d3d11WrappedBBs;
+    std::vector<ID3D11RenderTargetView*> d3d11RTVs;
+    bool d3d11on12Init = false;
+
     void Cleanup() {
         // FG-SAFE: backBuffers no longer holds references
         backBuffers.clear();
+        if (offscreenRT) {
+            offscreenRT->Release();
+            offscreenRT = nullptr;
+        }
+        if (offscreenRtvHeap) {
+            offscreenRtvHeap->Release();
+            offscreenRtvHeap = nullptr;
+        }
+        offscreenWidth = 0;
+        offscreenHeight = 0;
+        offscreenFormat = DXGI_FORMAT_UNKNOWN;
         if (rtvDescHeap) {
             rtvDescHeap->Release();
             rtvDescHeap = nullptr;
@@ -168,11 +585,22 @@ struct DX12OverlayState {
         overlayInit = false;
         syncInit = false;
         crossQueueFenceValue = 0;
+        cachedSC3 = nullptr;  // weak ref, no Release needed
+        // D3D11On12 cleanup
+        for (auto* rtv : d3d11RTVs) if (rtv) rtv->Release();
+        d3d11RTVs.clear();
+        for (auto* res : d3d11WrappedBBs) if (res) res->Release();
+        d3d11WrappedBBs.clear();
+        if (d3d11on12) { d3d11on12->Release(); d3d11on12 = nullptr; }
+        if (d3d11on12Context) { d3d11on12Context->Release(); d3d11on12Context = nullptr; }
+        if (d3d11on12Device) { d3d11on12Device->Release(); d3d11on12Device = nullptr; }
+        d3d11on12Init = false;
     }
 };
 
 static DX12OverlayState g_State;
 static SharedCaptureD3D12 g_SharedCaptureD3D12;
+static OverlayAdapter g_D3D11On12Adapter;
 
 // CRITICAL FIX: Use atomic pointers for thread-safe access
 // These are read/written from multiple threads (hook thread, present thread, etc.)
@@ -248,6 +676,15 @@ static std::atomic<uint64_t> g_FrameIndex{0};
 static std::atomic<int> g_CommandListsExecutedThisFrame{0};
 static std::atomic<uint64_t> g_FGDebugFrameCount{0};
 
+// Primary game queue — set once from the first ECL call (always the game's queue,
+// since the game creates its queue before any FG runtime).  Used to filter ECL
+// counting: only game-queue ECL calls count toward frame classification.
+// FG runtimes (FSR FG) create their own queues that share the vtable, so our ECL
+// hook fires for them too.  Without this filter, interpolated frames look like
+// real frames (similar ECL counts).
+static std::atomic<ID3D12CommandQueue*> g_PrimaryGameQueue{nullptr};
+static std::atomic<bool> g_KnownDLSSFGModuleSeen{false};
+
 // Last swapchain reference for device change detection
 static IDXGISwapChain* g_LastSwapChain = nullptr;
 // Pending swapchain cleanup - released after ResizeBuffers completes
@@ -279,6 +716,7 @@ static std::atomic<bool> g_InSwapchainResizeCleanup{false};
 // Frame counter for post-ImGui-init delay (skip first frame to let GPU
 // stabilize)
 static std::atomic<int> s_framesSinceInit{0};
+static std::atomic<int> s_framesBeforeInit{0};
 
 // Use pointer to prevent static destructor execution in non-game processes
 // (Explorer fix)
@@ -293,6 +731,24 @@ static std::vector<HANDLE> g_PrerenderEvents;
 static uint64_t g_PrerenderFrameIndex = 0;
 static std::mutex g_PrerenderMutex;
 
+// ECL piggyback overlay: for games (like GTA5 Enhanced) that reject separate ECL
+// submissions touching backbuffers, render the overlay by appending our command
+// list to the game's own ExecuteCommandLists call.
+static std::atomic<bool> g_PiggybackOverlayActive{false};
+static std::atomic<bool> g_PiggybackDrawnThisFrame{false};
+
+
+// Deferred Signal: avoid the NVIDIA driver stall caused by Signal between our
+// overlay ECL and Present.  Instead of calling Signal immediately after our ECL,
+// we defer it to the START of the NEXT frame's Present hook (after the previous
+// Present has already been called).  This keeps the ECL→Present path clean.
+static std::atomic<UINT64> g_deferredSignalValue{0};
+static std::atomic<int> g_deferredSignalAllocIdx{-1};
+// Track which queue the deferred ECL was submitted on, so the deferred Signal
+// goes to the same queue.  When FG runtimes create swapchains with their own
+// queue, this may differ from g_CommandQueue.
+static std::atomic<ID3D12CommandQueue*> g_deferredSignalQueue{nullptr};
+
 // Re-entrancy guard: set when the current thread is inside DetourECL.
 // During Alt+Tab, D3D12's internal WaitImpl inside ECL can pump window messages
 // (DefWindowProc), which may trigger Present → ProcessFrame.  If ProcessFrame
@@ -300,6 +756,587 @@ static std::mutex g_PrerenderMutex;
 // WaitImpl cascades and the render thread hangs.  ProcessFrame checks this flag
 // and skips overlay rendering when it's set.
 static thread_local bool s_insideECL = false;
+
+static bool KnownDLSSFGModuleLoaded() {
+    if (g_KnownDLSSFGModuleSeen.load(std::memory_order_acquire)) {
+        return true;
+    }
+
+    constexpr const wchar_t* kKnownDLSSFGModules[] = {
+        L"sl.interposer.dll",
+        L"sl.common.dll",
+        L"sl.dlss.dll",
+        L"sl.dlss_g.dll",
+        L"nvngx_dlssg.dll",
+        L"nvngx_dlss.dll",
+    };
+
+    for (const wchar_t* moduleName : kKnownDLSSFGModules) {
+        if (GetModuleHandleW(moduleName)) {
+            g_KnownDLSSFGModuleSeen.store(true, std::memory_order_release);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool CanUseFSRFGHeuristics(const char** blockedReason = nullptr) {
+    if (g_FGCompat.IsDLSSFGApiActive() || KnownDLSSFGModuleLoaded()) {
+        if (blockedReason) {
+            *blockedReason = "Streamline/DLSS modules are loaded";
+        }
+        return false;
+    }
+
+    // Only block FSR FG heuristics for startup-blocking overlays (Social Club, EOS)
+    // that interfere with ECL/queue-based detection. Benign overlays (Steam, Discord,
+    // RTSS, etc.) do not affect the heuristic signals and should not suppress detection.
+    if (const char* overlayModule = ce::overlay_compat::GetStartupBlockingOverlayModuleName()) {
+        if (blockedReason) {
+            static thread_local char s_overlayReason[128];
+            snprintf(s_overlayReason, sizeof(s_overlayReason), "startup-blocking overlay %s is loaded", overlayModule);
+            *blockedReason = s_overlayReason;
+        }
+        return false;
+    }
+
+    if (blockedReason) {
+        *blockedReason = nullptr;
+    }
+    return true;
+}
+
+static bool UpdateHeuristicFSRFGState(bool active, const char* source) {
+    const char* blockedReason = nullptr;
+    if (!CanUseFSRFGHeuristics(&blockedReason)) {
+        g_FGCompat.SetHeuristicFSRFGActive(false);
+
+        if (active) {
+            static std::atomic<int> s_suppressedLogCount{0};
+            if (s_suppressedLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+                HookLog("DX12: Suppressing %s FSR FG heuristic because %s", source,
+                        blockedReason ? blockedReason : "it is unsafe");
+            }
+        }
+        return false;
+    }
+
+    g_FGCompat.SetHeuristicFSRFGActive(active);
+    return true;
+}
+
+void ShutdownImGui();
+void CleanupOverlay();
+void CleanupRTVs();
+static void DrawOverlay(ID3D12GraphicsCommandList* list, bool isRealFrame, UINT bufferIdx,
+                        D3D12_CPU_DESCRIPTOR_HANDLE* rtvOverride = nullptr);
+
+static constexpr ULONGLONG kStartupOverlayWindowPollMs = 100;
+static constexpr ULONGLONG kStartupOverlayInitGraceMs = 500;
+static constexpr ULONGLONG kStartupOverlayWarmupMs = 500;
+static constexpr ULONGLONG kStartupOverlayQuietPeriodMs = 200;
+static constexpr ULONGLONG kStartupOverlayPostResumeSettleMs = 100;
+static constexpr ULONGLONG kStartupOverlayPostBackendInitSettleMs = 0;
+static constexpr ULONGLONG kStartupOverlayPostRTVInitSettleMs = 0;
+static constexpr ULONGLONG kStartupOverlayPostSyncInitSettleMs = 100;
+static constexpr ULONGLONG kStartupOverlayPostResourcePrimeSettleMs = 100;
+static constexpr ULONGLONG kStartupOverlayFirstDrawProbeSettleMs = 0;
+static constexpr ULONGLONG kStartupOverlayLoadedRenderModuleMaxBlockMs = 500;
+static constexpr ULONGLONG kStartupOverlayRenderModuleQuietPeriodMs = 500;
+static constexpr DWORD kOverlayCrossQueueWaitMs = 16;
+
+enum class StartupOverlayActivationStage {
+    kNone = 0,
+    kDelayRTVInitAfterBackendInit,
+    kDelaySyncInitAfterRTVInit,
+};
+
+enum class StartupOverlayFirstDrawProbeStage {
+    kNone = 0,
+    kBackbufferTouchOnly,
+    kPipelineStateOnly,
+    kActualRender,
+    kComplete,
+};
+
+static StartupOverlayActivationStage s_startupOverlayActivationStage = StartupOverlayActivationStage::kNone;
+static StartupOverlayFirstDrawProbeStage s_startupOverlayFirstDrawProbeStage =
+    StartupOverlayFirstDrawProbeStage::kNone;
+static ULONGLONG s_startupOverlayActivationStageMs = 0;
+static ULONGLONG s_startupOverlaySyncInitMs = 0;
+static ULONGLONG s_startupOverlayResourcePrimeMs = 0;
+static ULONGLONG s_startupOverlayFirstDrawProbeMs = 0;
+static std::atomic<ULONGLONG> s_lastStartupBlockingRenderModuleActivityMs{0};
+
+static const char* GetStartupOverlayFirstDrawProbeStageName(StartupOverlayFirstDrawProbeStage stage) {
+    switch (stage) {
+    case StartupOverlayFirstDrawProbeStage::kBackbufferTouchOnly:
+        return "backbuffer touch";
+    case StartupOverlayFirstDrawProbeStage::kPipelineStateOnly:
+        return "pipeline state setup";
+    case StartupOverlayFirstDrawProbeStage::kActualRender:
+        return "real overlay draw";
+    case StartupOverlayFirstDrawProbeStage::kComplete:
+        return "complete";
+    case StartupOverlayFirstDrawProbeStage::kNone:
+    default:
+        return "overlay probe";
+    }
+}
+
+static void ResetStartupOverlayBackendActivationStage() {
+    s_startupOverlayActivationStage = StartupOverlayActivationStage::kNone;
+    s_startupOverlayFirstDrawProbeStage = StartupOverlayFirstDrawProbeStage::kNone;
+    s_startupOverlayActivationStageMs = 0;
+    s_startupOverlaySyncInitMs = 0;
+    s_startupOverlayResourcePrimeMs = 0;
+    s_startupOverlayFirstDrawProbeMs = 0;
+    s_lastStartupBlockingRenderModuleActivityMs.store(0, std::memory_order_release);
+}
+
+static bool IsActualFrameGenerationActive() {
+    return g_FGCompat.IsDLSSFGApiActive() || g_FGCompat.IsFSRFGApiActive();
+}
+
+static ExecuteCommandListsPtr GetOriginalExecuteCommandLists(ID3D12CommandQueue* queue);
+
+static bool ShouldUseDedicatedOverlayQueue(const char** disabledByOverlayModule = nullptr) {
+    const char* overlayModule = ce::overlay_compat::GetStartupBlockingOverlayModuleName();
+    const bool processNeedsDelay = ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess(g_ProcessName);
+    const bool actualFGActive = IsActualFrameGenerationActive();
+    const bool shouldUseDedicatedQueue =
+        ce::overlay_compat::ShouldUseDedicatedDX12OverlayQueue(actualFGActive, processNeedsDelay, overlayModule);
+    if (disabledByOverlayModule) {
+        *disabledByOverlayModule = shouldUseDedicatedQueue ? nullptr : overlayModule;
+    }
+
+    return shouldUseDedicatedQueue;
+}
+
+static bool WaitForGameQueueBeforeDedicatedOverlaySubmission(ID3D12CommandQueue* gameQueue, const char* phase) {
+    if (!g_State.overlayQueue || !g_State.crossQueueFence || !g_State.crossQueueFenceEvent) {
+        return true;
+    }
+    if (!gameQueue) {
+        HookLogImportant("DX12: Cannot synchronize dedicated overlay queue before %s because the game queue is null",
+                         phase ? phase : "overlay submission");
+        return false;
+    }
+
+    const UINT64 waitValue = g_State.crossQueueFenceValue + 1;
+    HRESULT signalHr = gameQueue->Signal(g_State.crossQueueFence, waitValue);
+    if (FAILED(signalHr)) {
+        HookLogImportant("DX12: Failed to signal game queue before %s on dedicated overlay queue hr=0x%08X",
+                         phase ? phase : "overlay submission", signalHr);
+        return false;
+    }
+
+    g_State.crossQueueFenceValue = waitValue;
+    if (g_State.crossQueueFence->GetCompletedValue() >= waitValue) {
+        return true;
+    }
+
+    HRESULT setHr = g_State.crossQueueFence->SetEventOnCompletion(waitValue, g_State.crossQueueFenceEvent);
+    if (FAILED(setHr)) {
+        HookLogImportant("DX12: Failed to arm cross-queue wait before %s hr=0x%08X",
+                         phase ? phase : "overlay submission", setHr);
+        return false;
+    }
+
+    DWORD waitHr = WaitForSingleObject(g_State.crossQueueFenceEvent, kOverlayCrossQueueWaitMs);
+    if (waitHr == WAIT_OBJECT_0) {
+        static std::atomic<int> s_crossQueueWaitSuccessLogCount{0};
+        if (s_crossQueueWaitSuccessLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+            HookLogImportant("DX12: Dedicated overlay queue synchronized with game queue for %s (value=%llu)",
+                             phase ? phase : "overlay submission", static_cast<unsigned long long>(waitValue));
+        }
+        return true;
+    }
+
+    if (waitHr == WAIT_TIMEOUT) {
+        HookLogImportant("DX12: Timed out waiting for game queue before %s on dedicated overlay queue (value=%llu)",
+                         phase ? phase : "overlay submission", static_cast<unsigned long long>(waitValue));
+    } else {
+        HookLogImportant("DX12: WaitForSingleObject failed before %s on dedicated overlay queue result=%lu",
+                         phase ? phase : "overlay submission", waitHr);
+    }
+    return false;
+}
+
+static bool SubmitOverlayCommandList(ID3D12CommandQueue* gameQueue, ID3D12CommandList* list, int allocatorIndex,
+                                     const char* phase, bool requireGameQueueDrain) {
+    // Use the dedicated queue only when FG is actually active.  The queue stays
+    // alive across FG mode switches to avoid destructive reinit, but submissions
+    // go to the game queue when FG is inactive.
+    bool useDedicated = g_State.overlayQueue && ShouldUseDedicatedOverlayQueue();
+    ID3D12CommandQueue* submitQueue = useDedicated ? g_State.overlayQueue : gameQueue;
+    if (!submitQueue || !list) {
+        HookLogImportant("DX12: Cannot submit %s (submitQueue=%p, list=%p)", phase ? phase : "overlay command list",
+                         submitQueue, list);
+        return false;
+    }
+
+    if (requireGameQueueDrain && submitQueue != gameQueue &&
+        !WaitForGameQueueBeforeDedicatedOverlaySubmission(gameQueue, phase)) {
+        return false;
+    }
+
+    static std::atomic<int> s_submitLogCount{0};
+    if (s_submitLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
+        HookLogImportant("DX12: Submitting %s on %s queue (submitQueue=%p, gameQueue=%p, allocator=%d)",
+                         phase ? phase : "overlay command list", submitQueue == gameQueue ? "game" : "dedicated overlay",
+                         submitQueue, gameQueue, allocatorIndex);
+    }
+
+    ID3D12CommandList* lists[] = {list};
+    ExecuteCommandListsPtr origECL = GetOriginalExecuteCommandLists(submitQueue);
+    if (origECL) {
+        origECL(submitQueue, 1, lists);
+    } else {
+        submitQueue->ExecuteCommandLists(1, lists);
+    }
+
+    if (g_State.fence) {
+        UINT64 next = g_State.currentFenceValue + 1;
+        HRESULT signalHr = submitQueue->Signal(g_State.fence, next);
+        if (SUCCEEDED(signalHr)) {
+            g_State.currentFenceValue = next;
+            if (allocatorIndex >= 0 && allocatorIndex < static_cast<int>(g_State.fenceValues.size())) {
+                g_State.fenceValues[allocatorIndex] = next;
+            }
+        } else {
+            HookLog("DX12: Overlay fence signal failed for %s hr=0x%08X",
+                    phase ? phase : "overlay command list", signalHr);
+        }
+    }
+
+    return true;
+}
+
+
+static void NoteStartupBlockingRenderModuleActivityFromECL(ID3D12CommandQueue* queue, const void* callerAddress) {
+    // Fast early-out: once overlay probe is complete, no need to track anymore
+    if (s_startupOverlayFirstDrawProbeStage == StartupOverlayFirstDrawProbeStage::kComplete) {
+        return;
+    }
+
+    if (!queue || !callerAddress ||
+        !ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess(g_ProcessName) ||
+        IsActualFrameGenerationActive()) {
+        return;
+    }
+
+    const char* blockingRenderModule = ce::overlay_compat::GetStartupBlockingOverlayRenderModuleName();
+    if (!blockingRenderModule) {
+        return;
+    }
+
+    // Cache the blocking module handle to avoid GetModuleHandleA kernel call
+    // on every ECL invocation. The module won't unload during gameplay.
+    static HMODULE s_cachedBlockingModule = nullptr;
+    static bool s_cachedBlockingModuleLookedUp = false;
+    if (!s_cachedBlockingModuleLookedUp) {
+        s_cachedBlockingModule = GetModuleHandleA(blockingRenderModule);
+        s_cachedBlockingModuleLookedUp = true;
+    }
+    HMODULE blockingModuleHandle = s_cachedBlockingModule;
+    if (!blockingModuleHandle) {
+        // Module not loaded yet — retry next time
+        s_cachedBlockingModuleLookedUp = false;
+        return;
+    }
+
+    HMODULE callerModuleHandle = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCSTR>(callerAddress), &callerModuleHandle) ||
+        !callerModuleHandle || callerModuleHandle != blockingModuleHandle) {
+        return;
+    }
+
+    const ULONGLONG now = GetTickCount64();
+    s_lastStartupBlockingRenderModuleActivityMs.store(now, std::memory_order_release);
+
+    static std::atomic<int> s_blockingModuleActivityLogCount{0};
+    if (s_blockingModuleActivityLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
+        char modulePath[MAX_PATH] = {};
+        const char* moduleForLog = blockingRenderModule;
+        if (GetModuleFileNameA(callerModuleHandle, modulePath, MAX_PATH) > 0) {
+            moduleForLog = modulePath;
+        }
+        HookLogImportant(
+            "DX12: Startup-blocking render module activity detected via ExecuteCommandLists (module=%s, queue=%p, caller=%p)",
+            moduleForLog, queue, callerAddress);
+    }
+}
+
+static bool ShouldSuppressOverlayForStartupCompat(HWND gameWindow, const char** overlayModule = nullptr,
+                                                  ULONGLONG* remainingMs = nullptr,
+                                                  ce::overlay_compat::AuxiliaryProcessWindowInfo* activeWindow = nullptr) {
+    const char* blockingOverlayModule = ce::overlay_compat::GetStartupBlockingOverlayModuleName();
+    const bool actualFGActive = IsActualFrameGenerationActive();
+    static ULONGLONG s_firstOverlayDetectedMs = 0;
+    static ULONGLONG s_lastPollMs = 0;
+    static ULONGLONG s_lastVisibleMs = 0;
+    static bool s_auxiliaryWindowVisible = false;
+    static ce::overlay_compat::AuxiliaryProcessWindowInfo s_auxiliaryWindow = {};
+    if (overlayModule) {
+        *overlayModule = blockingOverlayModule;
+    }
+    if (remainingMs) {
+        *remainingMs = 0;
+    }
+    if (activeWindow) {
+        *activeWindow = {};
+    }
+
+    if (!blockingOverlayModule || actualFGActive || !IsWindow(gameWindow)) {
+        s_firstOverlayDetectedMs = 0;
+        s_lastPollMs = 0;
+        s_lastVisibleMs = 0;
+        s_auxiliaryWindowVisible = false;
+        s_auxiliaryWindow = {};
+        return false;
+    }
+
+    const ULONGLONG now = GetTickCount64();
+    if (s_firstOverlayDetectedMs == 0) {
+        s_firstOverlayDetectedMs = now;
+    }
+
+    if (s_lastPollMs == 0 || now - s_lastPollMs >= kStartupOverlayWindowPollMs) {
+        s_lastPollMs = now;
+
+        ce::overlay_compat::AuxiliaryProcessWindowInfo visibleWindow = {};
+        s_auxiliaryWindowVisible =
+            ce::overlay_compat::FindAuxiliaryProcessWindow(GetCurrentProcessId(), gameWindow, &visibleWindow);
+        if (s_auxiliaryWindowVisible) {
+            s_lastVisibleMs = now;
+            s_auxiliaryWindow = visibleWindow;
+        } else {
+            s_auxiliaryWindow = {};
+        }
+    }
+
+    if (activeWindow) {
+        *activeWindow = s_auxiliaryWindow;
+    }
+
+    const ULONGLONG msSinceOverlayDetected = now - s_firstOverlayDetectedMs;
+    const ULONGLONG msSinceLastVisible =
+        s_lastVisibleMs == 0 ? kStartupOverlayQuietPeriodMs : (now - s_lastVisibleMs);
+    const bool suppress = ce::overlay_compat::ShouldSuppressDX12OverlayForStartup(
+        true, actualFGActive, s_auxiliaryWindowVisible, msSinceOverlayDetected, kStartupOverlayWarmupMs,
+        msSinceLastVisible, kStartupOverlayQuietPeriodMs);
+    if (remainingMs && suppress) {
+        ULONGLONG warmupRemaining =
+            msSinceOverlayDetected < kStartupOverlayWarmupMs ? (kStartupOverlayWarmupMs - msSinceOverlayDetected) : 0;
+        ULONGLONG quietRemaining =
+            !s_auxiliaryWindowVisible && msSinceLastVisible < kStartupOverlayQuietPeriodMs
+                ? (kStartupOverlayQuietPeriodMs - msSinceLastVisible)
+                : 0;
+        *remainingMs = std::max(warmupRemaining, quietRemaining);
+    }
+    return suppress;
+}
+
+static bool ShouldDeferOverlayInitForStartupCompat(HWND gameWindow, ULONGLONG* remainingMs = nullptr) {
+    static ULONGLONG s_firstDeferredInitEligibleMs = 0;
+    if (remainingMs) {
+        *remainingMs = 0;
+    }
+
+    if (!ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess(g_ProcessName) ||
+        IsActualFrameGenerationActive() || !IsWindow(gameWindow)) {
+        s_firstDeferredInitEligibleMs = 0;
+        return false;
+    }
+
+    if (g_State.overlayInit || ce::overlay_compat::GetStartupBlockingOverlayModuleName()) {
+        return false;
+    }
+
+    const ULONGLONG now = GetTickCount64();
+    if (s_firstDeferredInitEligibleMs == 0) {
+        s_firstDeferredInitEligibleMs = now;
+    }
+
+    const ULONGLONG elapsedMs = now - s_firstDeferredInitEligibleMs;
+    if (elapsedMs >= kStartupOverlayInitGraceMs) {
+        return false;
+    }
+
+    if (remainingMs) {
+        *remainingMs = kStartupOverlayInitGraceMs - elapsedMs;
+    }
+    return true;
+}
+
+static bool ShouldDelayOverlayInitAfterStartupResumeCompat(bool allowOverlayRender, HWND gameWindow,
+                                                           ULONGLONG* remainingMs = nullptr) {
+    static bool s_hadStartupSuppression = false;
+    static ULONGLONG s_resumeStableSinceMs = 0;
+    static HWND s_resumeWindow = nullptr;
+    if (remainingMs) {
+        *remainingMs = 0;
+    }
+
+    const bool processNeedsDelay =
+        ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess(g_ProcessName);
+    const bool actualFGActive = IsActualFrameGenerationActive();
+    if (!processNeedsDelay || actualFGActive) {
+        s_hadStartupSuppression = false;
+        s_resumeStableSinceMs = 0;
+        s_resumeWindow = nullptr;
+        return false;
+    }
+
+    if (!allowOverlayRender) {
+        s_hadStartupSuppression = true;
+        s_resumeStableSinceMs = 0;
+        s_resumeWindow = nullptr;
+        return false;
+    }
+
+    if (!s_hadStartupSuppression || !IsWindow(gameWindow)) {
+        return false;
+    }
+
+    RECT clientRect = {};
+    LONG width = 0;
+    LONG height = 0;
+    if (GetClientRect(gameWindow, &clientRect)) {
+        width = clientRect.right - clientRect.left;
+        height = clientRect.bottom - clientRect.top;
+    }
+
+    const bool windowForeground = (GetForegroundWindow() == gameWindow);
+    const ULONGLONG now = GetTickCount64();
+    if (!windowForeground || !ce::overlay_compat::HasUsableDX12OverlayStartupWindowSize(width, height)) {
+        s_resumeStableSinceMs = 0;
+        s_resumeWindow = gameWindow;
+        return true;
+    }
+
+    if (s_resumeWindow != gameWindow || s_resumeStableSinceMs == 0) {
+        s_resumeWindow = gameWindow;
+        s_resumeStableSinceMs = now;
+    }
+
+    const ULONGLONG msSinceResumeReady = now - s_resumeStableSinceMs;
+    if (ce::overlay_compat::ShouldDelayDX12OverlayInitAfterStartupResume(
+            processNeedsDelay, s_hadStartupSuppression, actualFGActive, windowForeground, width, height,
+            msSinceResumeReady, kStartupOverlayPostResumeSettleMs)) {
+        if (remainingMs) {
+            *remainingMs = kStartupOverlayPostResumeSettleMs - std::min(msSinceResumeReady, kStartupOverlayPostResumeSettleMs);
+        }
+        return true;
+    }
+
+    s_hadStartupSuppression = false;
+    s_resumeStableSinceMs = 0;
+    s_resumeWindow = nullptr;
+    return false;
+}
+
+static bool ApplyOverlayStartupCompatMode(HWND gameWindow) {
+    const char* overlayModule = nullptr;
+    ULONGLONG remainingMs = 0;
+    ce::overlay_compat::AuxiliaryProcessWindowInfo activeWindow = {};
+    const bool suppressOverlay =
+        ShouldSuppressOverlayForStartupCompat(gameWindow, &overlayModule, &remainingMs, &activeWindow);
+    const bool allowOverlay = !suppressOverlay;
+    static bool s_overlayCompatSuppressed = false;
+    static bool s_loggedVisibleWindowSuppression = false;
+    static HWND s_loggedWindowHandle = nullptr;
+
+    if (!allowOverlay) {
+        if (activeWindow.hwnd) {
+            if (!s_overlayCompatSuppressed || !s_loggedVisibleWindowSuppression ||
+                s_loggedWindowHandle != activeWindow.hwnd) {
+                HookLogImportant(
+                    "DX12: Pausing DX12 overlay submissions while startup window from %s is visible "
+                    "(hwnd=%p visible=%d class='%s' title='%s')",
+                    overlayModule ? overlayModule : "module", activeWindow.hwnd,
+                    activeWindow.visible ? 1 : 0,
+                    activeWindow.className[0] ? activeWindow.className : "<unknown>",
+                    activeWindow.title[0] ? activeWindow.title : "<untitled>");
+                s_loggedVisibleWindowSuppression = true;
+                s_loggedWindowHandle = activeWindow.hwnd;
+            }
+        } else if (!s_overlayCompatSuppressed || s_loggedVisibleWindowSuppression) {
+            HookLogImportant(
+                "DX12: Keeping DX12 overlay submissions paused for startup-overlay warm-up/cool-down "
+                "(overlay=%s remaining=%llums)",
+                overlayModule ? overlayModule : "module", remainingMs);
+            s_loggedVisibleWindowSuppression = false;
+            s_loggedWindowHandle = nullptr;
+        }
+        if (!s_overlayCompatSuppressed) {
+            s_overlayCompatSuppressed = true;
+        }
+        return false;
+    }
+
+    if (s_overlayCompatSuppressed) {
+        HookLogImportant("DX12: Resuming DX12 overlay after startup overlay windows settled");
+        s_overlayCompatSuppressed = false;
+        s_loggedVisibleWindowSuppression = false;
+        s_loggedWindowHandle = nullptr;
+    }
+
+    return true;
+}
+
+static void DisableDedicatedOverlayQueueForOverlayCompat() {
+    // When FG goes inactive, we keep the dedicated overlay queue alive to avoid
+    // a destructive teardown/rebuild cycle during FG mode switches (e.g. 2x→3x).
+    // Destroying and recreating queue + fence + allocators mid-transition causes
+    // ERR_GFX_STATE because InitOverlaySync releases D3D12 objects while the GPU
+    // still has in-flight work (deferred Signal not yet flushed).
+    //
+    // The queue sits idle when FG is inactive (submissions go to the game queue).
+    // When FG reactivates, the queue is ready — no reinit needed.
+    if (ShouldUseDedicatedOverlayQueue()) {
+        return;
+    }
+
+    if (!g_State.overlayQueue) {
+        return;
+    }
+
+    static bool s_loggedSuspend = false;
+    if (!s_loggedSuspend) {
+        const char* overlayModule = nullptr;
+        ShouldUseDedicatedOverlayQueue(&overlayModule);
+        if (overlayModule) {
+            HookLogImportant(
+                "DX12: Suspending dedicated overlay queue (FG inactive, external overlay %s) — queue kept alive",
+                overlayModule);
+        } else {
+            HookLogImportant("DX12: Suspending dedicated overlay queue (FG inactive) — queue kept alive");
+        }
+        s_loggedSuspend = true;
+    }
+}
+
+static void EnsureDedicatedOverlayQueueForFGCompat() {
+    if (!ShouldUseDedicatedOverlayQueue()) {
+        return;
+    }
+
+    if (!g_State.syncInit || g_State.overlayQueue) {
+        // Queue already exists or not yet initialized — nothing to do.
+        // If the queue was "suspended" (FG inactive), just resuming FG reactivates it
+        // because SubmitOverlayCommandList checks ShouldUseDedicatedOverlayQueue().
+        return;
+    }
+
+    // Only reach here on first FG activation (queue never created yet).
+    HookLogImportant("DX12: FG became active — dedicated overlay queue not yet created, forcing sync reinit");
+    g_State.syncInit = false;
+    g_State.overlayInit = false;
+}
 
 // Forward Declarations
 void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT NumCommandLists,
@@ -409,6 +1446,12 @@ void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) {
         return;
     }
 
+    // Set primary game queue once — the first DIRECT queue seen is always the
+    // game's queue (created before any FG runtime initializes).  Used to filter
+    // ECL counting for accurate real-vs-interpolated frame classification.
+    ID3D12CommandQueue* expected = nullptr;
+    g_PrimaryGameQueue.compare_exchange_strong(expected, pQueue, std::memory_order_acq_rel);
+
     std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
     if (g_CommandQueue.load() != pQueue) {
         if (g_CommandQueue.load())
@@ -426,6 +1469,9 @@ void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) {
                 g_DeviceRemoved.store(false, std::memory_order_release);
                 DXGIShared::g_SharedState.deviceRemovedFatal.store(false, std::memory_order_release);
                 g_RenderWatchdog.SetForceMonitor(false);
+
+                // Reset primary game queue — new device means new queues.
+                g_PrimaryGameQueue.store(pQueue, std::memory_order_release);
 
                 // Report GPU LUID for host metrics (PDH counter filtering).
                 // ID3D12Device has GetAdapterLuid() directly — don't use
@@ -459,7 +1505,7 @@ static void DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue) {
             g_SwapchainQueue->Release();
         g_SwapchainQueue = pQueue;
         g_SwapchainQueue->AddRef();
-        HookLog("DX12: Swapchain queue captured (queue=%p)", pQueue);
+        HookLogImportant("DX12: Swapchain queue captured (queue=%p)", pQueue);
     }
 
     // Also hook the vtable so ECL fires for this queue
@@ -564,6 +1610,29 @@ static void FindAndWrapPreExistingSwapchains() {
     HookLog("DX12: Pre-existing swapchain support enabled via inline Present hooks");
 }
 
+static void EnsurePresentInlineHooksForRealSwapchain(IDXGISwapChain* pSwapChain, const char* source) {
+    if (!pSwapChain || DXGIShared::HasPresentInlineHooks()) {
+        return;
+    }
+
+    static std::atomic<int> s_installAttemptCount{0};
+    const int attempt = s_installAttemptCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    HookLog("DX12: Installing Present inline hooks via %s swapchain #%d (swapchain=%p)", source ? source : "real",
+            attempt, pSwapChain);
+
+    if (!DXGIShared::InstallPresentInlineHooks(pSwapChain)) {
+        HookLog("DX12: Present inline hook installation via %s swapchain failed", source ? source : "real");
+        return;
+    }
+
+    if (DXGIShared::HasPresentInlineHooks()) {
+        HookLogImportant("DX12: Present inline hooks are active via %s swapchain", source ? source : "real");
+    } else {
+        HookLog("DX12: Present inline hook installation via %s swapchain deferred to existing external hook chain",
+                source ? source : "real");
+    }
+}
+
 // Function pointers for global factory vtable hooks
 typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateSwapChain)(IDXGIFactory*, IUnknown*, DXGI_SWAP_CHAIN_DESC*,
                                                         IDXGISwapChain**);
@@ -597,6 +1666,10 @@ static void StartTransitionCooldown() {
     QueryPerformanceCounter(&now);
     g_OverlayCooldownUntilQpc.store(now.QuadPart + freq.QuadPart * kTransitionCooldownMs / 1000,
                                     std::memory_order_release);
+    // Discard any pending deferred Signal — the queue may change during FG switch
+    g_deferredSignalValue.store(0, std::memory_order_release);
+    g_deferredSignalAllocIdx.store(-1, std::memory_order_release);
+    g_deferredSignalQueue.store(nullptr, std::memory_order_release);
     HookLogImportant("DX12: Overlay transition cooldown started (%lldms)", (long long)kTransitionCooldownMs);
 }
 
@@ -623,6 +1696,9 @@ static void TrackSwapchainHwnd(IDXGISwapChain* pSwapChain, HWND hWnd) {
     }
     vec.push_back(pSwapChain);
 }
+
+// Forward declaration — defined below near DetourCreateSwapChainGlobal
+static bool IsStreamlineLoaded();
 
 // Deep hook wrapper for CreateSwapChainForHwnd.
 // Intercepts ALL callers (including Streamline's internal trampoline calls).
@@ -651,28 +1727,35 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
 
     // Reactive recovery: if E_ACCESSDENIED, an old SC still holds the HWND.
     // DON'T force-destroy — that invalidates game-held references and causes
-    // delayed UE5 assertion crashes.  Instead, wait for the game/FG module to
-    // naturally release the old SC, then retry.
+    // delayed UE5 assertion crashes.  Clean up our overlay refs and do a very
+    // brief retry.  If it still fails, return the error so the caller
+    // (Streamline/game) can manage its own state machine — long blocking here
+    // causes DLSS FG activation crashes.
     if (hr == E_ACCESSDENIED && hWnd) {
-        HookLogImportant("DeepHook: E_ACCESSDENIED for HWND=%p — waiting for natural release", hWnd);
+        if (IsStreamlineLoaded()) {
+            HookLogImportant("DeepHook: E_ACCESSDENIED for HWND=%p — Streamline present, passing through", hWnd);
+        } else {
+            HookLogImportant("DeepHook: E_ACCESSDENIED for HWND=%p — cleaning up overlay refs", hWnd);
 
-        // Clean up our overlay resources so we don't hold stale back-buffer refs
-        g_LastSwapChain = nullptr;
-        CleanupOverlay();
+            // Clean up our overlay resources so we don't hold stale back-buffer refs
+            g_LastSwapChain = nullptr;
+            CleanupOverlay();
 
-        // Clear our tracking entries (raw pointers, no Release needed)
-        {
-            std::lock_guard<std::mutex> lock(s_hwndSwapchainMutex);
-            s_hwndSwapchainMap.erase(hWnd);
-        }
+            // Clear our tracking entries (raw pointers, no Release needed)
+            {
+                std::lock_guard<std::mutex> lock(s_hwndSwapchainMutex);
+                s_hwndSwapchainMap.erase(hWnd);
+            }
 
-        // Wait-and-retry: the FG module shutting down should release the old SC,
-        // freeing the HWND for a new flip-model SC.
-        for (int attempt = 1; attempt <= 40 && hr == E_ACCESSDENIED; ++attempt) {
-            Sleep(attempt <= 10 ? 10 : 50);  // 100ms fast + 1500ms slow = 1.6s max
-            hr = s_deepHookTrampoline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
-            if (attempt % 5 == 0 || SUCCEEDED(hr)) {
-                HookLogImportant("DeepHook: Retry #%d hr=0x%08X sc=%p", attempt, hr, (ppSC ? *ppSC : nullptr));
+            // Brief retry: 5 attempts × 10ms = 50ms max (safe for FG state machines)
+            for (int attempt = 1; attempt <= 5 && hr == E_ACCESSDENIED; ++attempt) {
+                Sleep(10);
+                hr = s_deepHookTrampoline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
+            }
+            if (SUCCEEDED(hr)) {
+                HookLogImportant("DeepHook: Retry succeeded hr=0x%08X sc=%p", hr, (ppSC ? *ppSC : nullptr));
+            } else {
+                HookLogImportant("DeepHook: Returning E_ACCESSDENIED to caller (HWND=%p)", hWnd);
             }
         }
     }
@@ -710,36 +1793,103 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
     HookLogImportant("CreateSwapChainForHwnd INLINE: result hr=0x%08X sc=%p", hr, (ppSC && *ppSC) ? *ppSC : nullptr);
 
     if (hr == E_ACCESSDENIED && hWnd) {
-        HookLogImportant(
-            "CreateSwapChainForHwnd INLINE: E_ACCESSDENIED for HWND=%p — "
-            "waiting for natural release",
-            hWnd);
+        // When Streamline is managing swapchain lifecycle, don't interfere.
+        // Our CleanupOverlay() flushes the GPU (200ms Signal+Wait) and destroys
+        // overlay resources, which disrupts Streamline's internal state machine.
+        if (IsStreamlineLoaded()) {
+            HookLogImportant(
+                "CreateSwapChainForHwnd INLINE: E_ACCESSDENIED for HWND=%p — "
+                "Streamline present, passing through without cleanup",
+                hWnd);
+        } else {
+            HookLogImportant(
+                "CreateSwapChainForHwnd INLINE: E_ACCESSDENIED for HWND=%p — "
+                "cleaning up overlay refs",
+                hWnd);
 
-        // Clean up overlay and clear tracking (same as deep hook)
-        g_LastSwapChain = nullptr;
-        CleanupOverlay();
-        {
-            std::lock_guard<std::mutex> lock(s_hwndSwapchainMutex);
-            s_hwndSwapchainMap.erase(hWnd);
-        }
+            // Clean up overlay and clear tracking (same as deep hook)
+            g_LastSwapChain = nullptr;
+            CleanupOverlay();
+            {
+                std::lock_guard<std::mutex> lock(s_hwndSwapchainMutex);
+                s_hwndSwapchainMap.erase(hWnd);
+            }
 
-        // Wait-and-retry without force-destroying
-        for (int attempt = 1; attempt <= 40 && hr == E_ACCESSDENIED; ++attempt) {
-            Sleep(attempt <= 10 ? 10 : 50);
-            hr = s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
-            if (attempt % 5 == 0 || SUCCEEDED(hr)) {
-                HookLogImportant("CreateSwapChainForHwnd INLINE: Retry #%d hr=0x%08X", attempt, hr);
+            // Brief retry: 5 attempts × 10ms = 50ms max
+            for (int attempt = 1; attempt <= 5 && hr == E_ACCESSDENIED; ++attempt) {
+                Sleep(10);
+                hr = s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
+            }
+            if (SUCCEEDED(hr)) {
+                HookLogImportant("CreateSwapChainForHwnd INLINE: Retry succeeded hr=0x%08X", hr);
+            } else {
+                HookLogImportant(
+                    "CreateSwapChainForHwnd INLINE: Returning E_ACCESSDENIED to caller (HWND=%p)", hWnd);
             }
         }
     }
 
     if (SUCCEEDED(hr) && ppSC && *ppSC) {
-        // Track the new swapchain's HWND association
         TrackSwapchainHwnd(*ppSC, hWnd);
-        HookLog("CreateSwapChainForHwnd INLINE: Created swapchain %p for HWND=%p", *ppSC, hWnd);
+        HookLogImportant("CreateSwapChainForHwnd INLINE: Created swapchain %p for HWND=%p", *ppSC, hWnd);
+
+        // Capture the swapchain queue so overlay submissions use the correct queue.
+        // Per DXGI spec, pDevice for DX12 is an ID3D12CommandQueue.
+        // QI may fail if Streamline or other middleware wraps the queue object.
+        ID3D12CommandQueue* pQueue = nullptr;
+        if (pDevice) {
+            HRESULT qiHr = pDevice->QueryInterface(IID_PPV_ARGS(&pQueue));
+            if (SUCCEEDED(qiHr) && pQueue) {
+                HookLogImportant("CreateSwapChainForHwnd INLINE: QI for queue succeeded (queue=%p)", pQueue);
+                DX12_SetSwapchainQueue(pQueue);
+                pQueue->Release();
+            } else {
+                // QI failed — pDevice may be wrapped by Streamline or similar.
+                // Per DXGI spec pDevice MUST be a command queue for DX12, so try
+                // a direct cast as a last resort.
+                HookLogImportant(
+                    "CreateSwapChainForHwnd INLINE: QI for ID3D12CommandQueue failed "
+                    "(hr=0x%08X) on device=%p — trying direct cast",
+                    qiHr, pDevice);
+                auto* pDirectQueue = static_cast<ID3D12CommandQueue*>((IUnknown*)pDevice);
+                D3D12_COMMAND_QUEUE_DESC testDesc = pDirectQueue->GetDesc();
+                if (testDesc.Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
+                    HookLogImportant(
+                        "CreateSwapChainForHwnd INLINE: Direct cast succeeded — "
+                        "DIRECT queue at %p",
+                        pDirectQueue);
+                    DX12_SetSwapchainQueue(pDirectQueue);
+                } else {
+                    HookLogImportant(
+                        "CreateSwapChainForHwnd INLINE: Direct cast queue type=%d, "
+                        "not DIRECT — skipping",
+                        (int)testDesc.Type);
+                }
+            }
+        }
     }
 
     return hr;
+}
+
+// Check if Streamline (DLSS FG interposer) is loaded.
+// When present, we MUST NOT wrap swapchains with CWrapDXGISwapChain because:
+// - Streamline manages the real swapchain lifecycle internally
+// - Our wrapper adds an extra COM ref layer that prevents Streamline from
+//   destroying the old SC before creating the FG SC on the same HWND
+// - This causes E_ACCESSDENIED when DLSS FG tries to activate
+// The inline Present hooks (installed on the real DXGI function) provide the
+// same interception without interfering with Streamline's lifecycle management.
+static bool IsStreamlineLoaded() {
+    static bool detected = false;
+    if (detected)
+        return true;
+    if (GetModuleHandleA("sl.interposer.dll") != nullptr) {
+        detected = true;
+        HookLogImportant("DX12: Streamline interposer detected — skipping swapchain wrapping for FG compat");
+        return true;
+    }
+    return false;
 }
 
 // Detour for global CreateSwapChain hook
@@ -765,6 +1915,17 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis
                     pDesc->BufferDesc.Height);
         }
 
+        EnsurePresentInlineHooksForRealSwapchain(*ppSwapChain, "CreateSwapChain");
+
+        // When Streamline is loaded, skip wrapping to avoid blocking FG swapchain
+        // lifecycle management.  Inline Present hooks provide the same interception.
+        if (IsStreamlineLoaded()) {
+            HookLog("DetourCreateSwapChainGlobal: Streamline present, skipping wrap (sc=%p)", *ppSwapChain);
+            // Don't capture queue here — global hooks fire for non-game swapchains
+            // (e.g. Social Club).  The inline hook handles queue capture for the game.
+            return hr;
+        }
+
         // NOTE: We don't install global Present vtable hooks for DX12.
         // The wrapper (CWrapDXGISwapChain) handles all Present interception.
         // This avoids conflicts between vtable hooks and wrapper interception
@@ -787,12 +1948,8 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis
         *ppSwapChain = wrapper;
         HookLog("DetourCreateSwapChainGlobal: Swapchain wrapped successfully");
 
-        // For DX12, capture the swapchain queue so overlay uses the correct queue
-        ID3D12CommandQueue* pQueue = nullptr;
-        if (pDevice && SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&pQueue)))) {
-            DX12_SetSwapchainQueue(pQueue);
-            pQueue->Release();
-        }
+        // Don't capture queue here — global hooks fire for non-game swapchains
+        // (e.g. Social Club internal).  The inline hook handles queue capture.
     }
 
     return hr;
@@ -826,6 +1983,16 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
             HookLog("DetourCreateSwapChainForHwndGlobal: Creating swapchain %ux%u", pDesc->Width, pDesc->Height);
         }
 
+        EnsurePresentInlineHooksForRealSwapchain(*ppSC, "CreateSwapChainForHwnd");
+
+        // When Streamline is loaded, skip wrapping to avoid blocking FG swapchain
+        // lifecycle management.  Inline Present hooks provide the same interception.
+        if (IsStreamlineLoaded()) {
+            HookLog("DetourCreateSwapChainForHwndGlobal: Streamline present, skipping wrap (sc=%p)", *ppSC);
+            // Don't capture queue here — inline hook handles it
+            return hr;
+        }
+
         // NOTE: We don't install global Present vtable hooks for DX12.
         // The wrapper (CWrapDXGISwapChain) handles all Present interception.
         // This avoids conflicts between vtable hooks and wrapper interception
@@ -847,17 +2014,12 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
         *ppSC = (IDXGISwapChain1*)wrapper;
         HookLog("DetourCreateSwapChainForHwndGlobal: Swapchain wrapped successfully");
 
-        ID3D12CommandQueue* pQueue = nullptr;
-        if (pDevice && SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&pQueue)))) {
-            DX12_SetSwapchainQueue(pQueue);
-            pQueue->Release();
-        }
+        // Don't capture queue here — inline hook handles queue capture for all
+        // CreateSwapChainForHwnd calls, including FG runtime swapchains.
     }
 
     return hr;
 }
-
-// Install global hooks on the DXGI factory to catch ALL swapchain creation
 // This hooks the factory vtable directly in the DXGI module
 static void InstallGlobalVTableHooks() {
     HookLog("DX12: InstallGlobalVTableHooks called");
@@ -1197,13 +2359,21 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
     return true;
 }
 
-void DrawOverlay(ID3D12GraphicsCommandList* cmdList, bool isRealFrame, UINT bufferIdx) {
+void DrawOverlay(ID3D12GraphicsCommandList* cmdList, bool isRealFrame, UINT bufferIdx,
+                 D3D12_CPU_DESCRIPTOR_HANDLE* rtvOverride) {
     // CRITICAL FIX: Lock mutex to prevent concurrent access during overlay
     // shutdown/reinit
     std::lock_guard<std::recursive_mutex> lock(g_OverlayMutex);
 
     if (!g_State.overlayInit || !cmdList)
         return;
+
+    static std::atomic<int> s_drawOverlayLogCount{0};
+    const bool logThisDraw = s_drawOverlayLogCount.fetch_add(1, std::memory_order_relaxed) < 10;
+    if (logThisDraw) {
+        HookLogImportant("DX12: DrawOverlay begin (cmdList=%p, bufferIdx=%u, realFrame=%d, overlayInit=%d, syncInit=%d)",
+                         cmdList, bufferIdx, isRealFrame ? 1 : 0, g_State.overlayInit ? 1 : 0, g_State.syncInit ? 1 : 0);
+    }
 
     // CRITICAL FIX: Always set IPC client regardless of frame type.
     // RenderOverlay() guards on ipc being non-null, so if this was only set
@@ -1212,9 +2382,11 @@ void DrawOverlay(ID3D12GraphicsCommandList* cmdList, bool isRealFrame, UINT buff
 
     if (isRealFrame) {
         g_OverlayAdapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
-        const char* api = "DX12";
-        if (GetModuleHandleA("d3d12core.dll") && (GetModuleHandleA("libvkd3d-1.dll") || GetModuleHandleA("vkd3d.dll")))
-            api = "DX12 (VKD3D)";
+        static const bool s_isVKD3D = []() {
+            return GetModuleHandleA("d3d12core.dll") &&
+                   (GetModuleHandleA("libvkd3d-1.dll") || GetModuleHandleA("vkd3d.dll"));
+        }();
+        const char* api = s_isVKD3D ? "DX12 (VKD3D)" : "DX12";
         g_OverlayAdapter.SetGraphicsAPI(api);
         // HDR state is set during overlay init (ProcessFrame) by querying the
         // display output's actual color space — not here, to avoid the false
@@ -1222,23 +2394,316 @@ void DrawOverlay(ID3D12GraphicsCommandList* cmdList, bool isRealFrame, UINT buff
     }
 
     // Set Render Target for Custom Overlay
-    // CRITICAL FIX: Add null check for rtvDescHeap to prevent crash
-    if (!g_State.rtvDescHeap) {
-        HookLog("DrawOverlay: rtvDescHeap is null, skipping overlay");
-        return;
+    // When rtvOverride is set (offscreen compositing path), use it instead of the backbuffer RTV.
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle;
+    if (rtvOverride) {
+        rtvHandle = *rtvOverride;
+    } else {
+        // CRITICAL FIX: Add null check for rtvDescHeap to prevent crash
+        if (!g_State.rtvDescHeap) {
+            HookLog("DrawOverlay: rtvDescHeap is null, skipping overlay");
+            return;
+        }
+        rtvHandle = g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
+        rtvHandle.ptr += bufferIdx * g_State.rtvDescriptorSize;
     }
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
-    rtvHandle.ptr += bufferIdx * g_State.rtvDescriptorSize;
 
     g_OverlayAdapter.SetDX12RenderTarget(cmdList, (void*)rtvHandle.ptr);
 
     // Render overlay content
     g_OverlayAdapter.RenderOverlay(g_State.cachedWidth, g_State.cachedHeight);
+    if (logThisDraw) {
+        HookLogImportant("DX12: DrawOverlay end (bufferIdx=%u)", bufferIdx);
+    }
 }
+
+// Ensure offscreen render target exists and matches backbuffer dimensions/format.
+// Used for the copy-render-copy overlay compositing path that avoids
+// OMSetRenderTargets(swapchain) + SetDescriptorHeaps GPU pipeline stalls.
+static bool EnsureOffscreenRT(ID3D12Device* device, UINT width, UINT height, DXGI_FORMAT format) {
+    if (g_State.offscreenRT && g_State.offscreenWidth == width && g_State.offscreenHeight == height &&
+        g_State.offscreenFormat == format) {
+        return true;
+    }
+
+    // Release old resources if dimensions/format changed
+    if (g_State.offscreenRT) {
+        g_State.offscreenRT->Release();
+        g_State.offscreenRT = nullptr;
+    }
+    if (g_State.offscreenRtvHeap) {
+        g_State.offscreenRtvHeap->Release();
+        g_State.offscreenRtvHeap = nullptr;
+    }
+
+    // Create RTV descriptor heap for offscreen target
+    D3D12_DESCRIPTOR_HEAP_DESC rtvDesc = {};
+    rtvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    rtvDesc.NumDescriptors = 1;
+    HRESULT hr = device->CreateDescriptorHeap(&rtvDesc, IID_PPV_ARGS(&g_State.offscreenRtvHeap));
+    if (FAILED(hr)) {
+        HookLog("DX12: Failed to create offscreen RTV heap hr=0x%08X", hr);
+        return false;
+    }
+
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_RESOURCE_DESC resDesc = {};
+    resDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    resDesc.Width = width;
+    resDesc.Height = height;
+    resDesc.DepthOrArraySize = 1;
+    resDesc.MipLevels = 1;
+    resDesc.Format = format;
+    resDesc.SampleDesc.Count = 1;
+    resDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+    D3D12_CLEAR_VALUE clearVal = {};
+    clearVal.Format = format;
+
+    hr = device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &resDesc,
+                                         D3D12_RESOURCE_STATE_COMMON, &clearVal,
+                                         IID_PPV_ARGS(&g_State.offscreenRT));
+    if (FAILED(hr)) {
+        HookLog("DX12: Failed to create offscreen RT %ux%u fmt=%d hr=0x%08X", width, height, format, hr);
+        g_State.offscreenRtvHeap->Release();
+        g_State.offscreenRtvHeap = nullptr;
+        return false;
+    }
+
+    device->CreateRenderTargetView(g_State.offscreenRT, nullptr,
+                                   g_State.offscreenRtvHeap->GetCPUDescriptorHandleForHeapStart());
+
+    g_State.offscreenWidth = width;
+    g_State.offscreenHeight = height;
+    g_State.offscreenFormat = format;
+
+    HookLogImportant("DX12: Created offscreen RT %ux%u fmt=%d for overlay compositing", width, height, format);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// D3D11On12 overlay bridge: renders overlay via D3D11 wrapping the D3D12
+// backbuffer.  D3D11 doesn't use descriptor heaps, so the NVIDIA driver
+// stall triggered by SetDescriptorHeaps + OMSetRenderTargets(swapchain) in
+// the same D3D12 ECL is completely avoided.  The D3D11on12 layer handles
+// all resource state transitions internally.
+// ---------------------------------------------------------------------------
+
+static bool InitD3D11On12(ID3D12Device* d3d12Dev, ID3D12CommandQueue* queue,
+                           IDXGISwapChain* swapChain, UINT bufferCount) {
+    if (g_State.d3d11on12Init)
+        return true;
+
+    HookLogImportant("DX12 D3D11On12: Initializing bridge (dev=%p queue=%p bufCnt=%u)",
+                     d3d12Dev, queue, bufferCount);
+
+    if (!d3d12Dev || !queue || !swapChain || bufferCount == 0)
+        return false;
+
+    // Dynamically load D3D11On12CreateDevice
+    HMODULE d3d11Lib = GetModuleHandleA("d3d11.dll");
+    if (!d3d11Lib)
+        d3d11Lib = LoadLibraryA("d3d11.dll");
+    if (!d3d11Lib) {
+        HookLogImportant("DX12 D3D11On12: d3d11.dll not available");
+        return false;
+    }
+
+    using PFN_D3D11On12 = decltype(&D3D11On12CreateDevice);
+    auto pfnCreate = (PFN_D3D11On12)GetProcAddress(d3d11Lib, "D3D11On12CreateDevice");
+    if (!pfnCreate) {
+        HookLogImportant("DX12 D3D11On12: D3D11On12CreateDevice not found");
+        return false;
+    }
+
+    // Create D3D11on12 device wrapping the game's D3D12 device + queue
+    IUnknown* queues[] = {queue};
+    ID3D11Device* d3d11Dev = nullptr;
+    ID3D11DeviceContext* d3d11Ctx = nullptr;
+    HRESULT hr = pfnCreate(d3d12Dev, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                           nullptr, 0, queues, 1, 0,
+                           &d3d11Dev, &d3d11Ctx, nullptr);
+    if (FAILED(hr) || !d3d11Dev) {
+        HookLogImportant("DX12 D3D11On12: D3D11On12CreateDevice failed hr=0x%08X", hr);
+        return false;
+    }
+
+    // Get the ID3D11On12Device interface for wrapping resources
+    ID3D11On12Device* d3d11on12 = nullptr;
+    hr = d3d11Dev->QueryInterface(IID_PPV_ARGS(&d3d11on12));
+    if (FAILED(hr)) {
+        HookLogImportant("DX12 D3D11On12: QI for ID3D11On12Device failed hr=0x%08X", hr);
+        d3d11Ctx->Release();
+        d3d11Dev->Release();
+        return false;
+    }
+
+    HookLogImportant("DX12 D3D11On12: Bridge device created successfully");
+
+    // Wrap each D3D12 backbuffer for D3D11 use
+    IDXGISwapChain3* sc3 = nullptr;
+    hr = swapChain->QueryInterface(IID_PPV_ARGS(&sc3));
+    if (FAILED(hr)) {
+        HookLogImportant("DX12 D3D11On12: QI for IDXGISwapChain3 failed hr=0x%08X", hr);
+        d3d11on12->Release();
+        d3d11Ctx->Release();
+        d3d11Dev->Release();
+        return false;
+    }
+
+    std::vector<ID3D11Resource*> wrappedBBs;
+    std::vector<ID3D11RenderTargetView*> rtvs;
+    bool wrapOk = true;
+
+    for (UINT i = 0; i < bufferCount && wrapOk; i++) {
+        ID3D12Resource* d3d12BB = nullptr;
+        hr = sc3->GetBuffer(i, IID_PPV_ARGS(&d3d12BB));
+        if (FAILED(hr) || !d3d12BB) {
+            HookLogImportant("DX12 D3D11On12: GetBuffer(%u) failed hr=0x%08X", i, hr);
+            wrapOk = false;
+            break;
+        }
+
+        D3D11_RESOURCE_FLAGS flags = {};
+        flags.BindFlags = D3D11_BIND_RENDER_TARGET;
+
+        ID3D11Resource* wrapped = nullptr;
+        hr = d3d11on12->CreateWrappedResource(
+            d3d12BB, &flags,
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            D3D12_RESOURCE_STATE_PRESENT,
+            IID_PPV_ARGS(&wrapped));
+        d3d12BB->Release();
+        if (FAILED(hr) || !wrapped) {
+            HookLogImportant("DX12 D3D11On12: CreateWrappedResource(%u) failed hr=0x%08X", i, hr);
+            wrapOk = false;
+            break;
+        }
+
+        ID3D11RenderTargetView* rtv = nullptr;
+        hr = d3d11Dev->CreateRenderTargetView(wrapped, nullptr, &rtv);
+        if (FAILED(hr)) {
+            HookLogImportant("DX12 D3D11On12: CreateRenderTargetView(%u) failed hr=0x%08X", i, hr);
+            wrapped->Release();
+            wrapOk = false;
+            break;
+        }
+
+        wrappedBBs.push_back(wrapped);
+        rtvs.push_back(rtv);
+    }
+    sc3->Release();
+
+    if (!wrapOk) {
+        for (auto* r : rtvs) if (r) r->Release();
+        for (auto* w : wrappedBBs) if (w) w->Release();
+        d3d11on12->Release();
+        d3d11Ctx->Release();
+        d3d11Dev->Release();
+        return false;
+    }
+
+    // Initialize the overlay adapter with the D3D11on12 device.
+    // This creates the DX11Backend (shaders, font texture, blend states).
+    if (!g_D3D11On12Adapter.InitDX11(d3d11Dev, d3d11Ctx)) {
+        HookLogImportant("DX12 D3D11On12: OverlayAdapter.InitDX11 failed");
+        for (auto* r : rtvs) if (r) r->Release();
+        for (auto* w : wrappedBBs) if (w) w->Release();
+        d3d11on12->Release();
+        d3d11Ctx->Release();
+        d3d11Dev->Release();
+        return false;
+    }
+
+    // Store everything
+    g_State.d3d11on12Device = d3d11Dev;
+    g_State.d3d11on12Context = d3d11Ctx;
+    g_State.d3d11on12 = d3d11on12;
+    g_State.d3d11WrappedBBs = std::move(wrappedBBs);
+    g_State.d3d11RTVs = std::move(rtvs);
+    g_State.d3d11on12Init = true;
+
+    HookLogImportant("DX12 D3D11On12: Initialized (%u buffers wrapped)", bufferCount);
+    return true;
+}
+
+static bool RenderOverlayViaD3D11On12(int bufferIdx, bool isRealFrame) {
+    if (!g_State.d3d11on12Init || !g_State.d3d11on12 || !g_State.d3d11on12Context)
+        return false;
+
+    if (bufferIdx < 0 || bufferIdx >= (int)g_State.d3d11WrappedBBs.size())
+        return false;
+
+    auto* wrapped = g_State.d3d11WrappedBBs[bufferIdx];
+    auto* rtv = g_State.d3d11RTVs[bufferIdx];
+    if (!wrapped || !rtv)
+        return false;
+
+    static uint64_t s_d3d11on12FrameCount = 0;
+    s_d3d11on12FrameCount++;
+    if (s_d3d11on12FrameCount <= 5 || (s_d3d11on12FrameCount % 300) == 0) {
+        HookLogImportant("DX12 D3D11On12: RenderOverlay frame #%llu (bufIdx=%d)",
+                         (unsigned long long)s_d3d11on12FrameCount, bufferIdx);
+    }
+
+    // Acquire: internally transitions backbuffer to RENDER_TARGET
+    g_State.d3d11on12->AcquireWrappedResources(&wrapped, 1);
+
+    // Set render target on D3D11 context
+    g_State.d3d11on12Context->OMSetRenderTargets(1, &rtv, nullptr);
+
+    D3D11_VIEWPORT vp = {0.0f, 0.0f,
+                          (float)g_State.cachedWidth, (float)g_State.cachedHeight,
+                          0.0f, 1.0f};
+    g_State.d3d11on12Context->RSSetViewports(1, &vp);
+
+    // Feed data to the D3D11on12 overlay adapter
+    g_D3D11On12Adapter.SetIPCClient(g_IPC);
+    if (isRealFrame) {
+        g_D3D11On12Adapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
+        static const bool s_isVKD3D = []() {
+            return GetModuleHandleA("d3d12core.dll") &&
+                   (GetModuleHandleA("libvkd3d-1.dll") || GetModuleHandleA("vkd3d.dll"));
+        }();
+        const char* api = s_isVKD3D ? "DX12 (VKD3D)" : "DX12";
+        g_D3D11On12Adapter.SetGraphicsAPI(api);
+    }
+
+    // Render overlay via D3D11 backend (no descriptor heaps!)
+    g_D3D11On12Adapter.RenderOverlay(g_State.cachedWidth, g_State.cachedHeight);
+
+    // Release: internally transitions backbuffer back to PRESENT
+    g_State.d3d11on12->ReleaseWrappedResources(&wrapped, 1);
+
+    // Flush submits all D3D11 commands to the D3D12 queue
+    g_State.d3d11on12Context->Flush();
+
+    return true;
+}
+
+static void CleanupD3D11On12() {
+    if (g_D3D11On12Adapter.IsInitialized()) {
+        g_D3D11On12Adapter.SetShutdownMode(true);
+        g_D3D11On12Adapter.Shutdown();
+        // Shutdown() deleted g_DescFreeBackend via `delete backend`
+        g_DescFreeBackend = nullptr;
+    } else if (g_DescFreeBackend) {
+        // InitCustom was never called — we still own the backend
+        g_DescFreeBackend->Shutdown();
+        delete g_DescFreeBackend;
+        g_DescFreeBackend = nullptr;
+    }
+    // Device-level D3D11On12 cleanup happens in g_State.Cleanup()
+}
+
+
 
 void CreateRTVs(ID3D12Device* device, IDXGISwapChain3* swapChain, int bufferCount) {
     if (g_State.rtvDescHeap)
         return;
+
+    HookLogImportant("CreateRTVs: ENTER (bufferCount=%d)", bufferCount);
 
     // DLSS FG FIX: Validate buffer count before creating RTVs
     if (bufferCount <= 0 || bufferCount > 8) {
@@ -1248,8 +2713,11 @@ void CreateRTVs(ID3D12Device* device, IDXGISwapChain3* swapChain, int bufferCoun
 
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {D3D12_DESCRIPTOR_HEAP_TYPE_RTV, (UINT)bufferCount,
                                               D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 0};
-    if (FAILED(device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&g_State.rtvDescHeap))))
+    HRESULT rtvHeapHr = device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&g_State.rtvDescHeap));
+    if (FAILED(rtvHeapHr)) {
+        HookLog("CreateRTVs: Failed to create RTV descriptor heap hr=0x%08X (count=%d)", rtvHeapHr, bufferCount);
         return;
+    }
     g_State.bufferCount = bufferCount;
     g_State.cachedSwapChain = swapChain;
     g_State.rtvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
@@ -1266,7 +2734,7 @@ void CreateRTVs(ID3D12Device* device, IDXGISwapChain3* swapChain, int bufferCoun
         }
         rtvHandle.ptr += g_State.rtvDescriptorSize;
     }
-    HookLog("CreateRTVs: Created %d RTVs (no held refs)", bufferCount);
+    HookLogImportant("CreateRTVs: Created %d RTVs (no held refs)", bufferCount);
 }
 
 void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* gameQueue) {
@@ -1275,6 +2743,53 @@ void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* 
     if (g_State.syncInit) {
         HookLogImportant("InitOverlaySync: Already initialized, returning early");
         return;
+    }
+
+    // CRITICAL: Flush any pending deferred Signal and wait for all GPU work to
+    // complete BEFORE releasing D3D12 objects.  Without this, allocators/fences
+    // can be released while the GPU is still executing commands that reference
+    // them, causing ERR_GFX_STATE (especially during FG mode switches where
+    // EnsureDedicatedOverlayQueueForFGCompat triggers a reinit).
+    {
+        UINT64 deferredVal = g_deferredSignalValue.load(std::memory_order_acquire);
+        if (deferredVal != 0 && g_State.fence) {
+            // Use the queue that submitted the deferred ECL, fall back to gameQueue
+            ID3D12CommandQueue* sigQueue = g_deferredSignalQueue.load(std::memory_order_acquire);
+            if (!sigQueue)
+                sigQueue = gameQueue;
+            if (sigQueue) {
+                HRESULT hr = sigQueue->Signal(g_State.fence, deferredVal);
+                if (SUCCEEDED(hr)) {
+                    int allocIdx = g_deferredSignalAllocIdx.load(std::memory_order_acquire);
+                    g_State.currentFenceValue = deferredVal;
+                    if (allocIdx >= 0 && allocIdx < (int)g_State.fenceValues.size())
+                        g_State.fenceValues[allocIdx] = deferredVal;
+                }
+            }
+            g_deferredSignalValue.store(0, std::memory_order_release);
+            g_deferredSignalAllocIdx.store(-1, std::memory_order_release);
+            g_deferredSignalQueue.store(nullptr, std::memory_order_release);
+        }
+
+        if (g_State.fence && g_State.currentFenceValue > 0) {
+            ID3D12CommandQueue* flushQueue = g_State.overlayQueue ? g_State.overlayQueue : gameQueue;
+            if (flushQueue) {
+                UINT64 waitValue = g_State.currentFenceValue;
+                if (g_State.fence->GetCompletedValue() < waitValue) {
+                    HANDLE waitEvent = g_State.fenceEvent ? g_State.fenceEvent : CreateEvent(nullptr, FALSE, FALSE, nullptr);
+                    bool createdEvent = (waitEvent != g_State.fenceEvent);
+                    if (waitEvent) {
+                        g_State.fence->SetEventOnCompletion(waitValue, waitEvent);
+                        WaitForSingleObject(waitEvent, 200);
+                        if (createdEvent)
+                            CloseHandle(waitEvent);
+                    }
+                    HookLogImportant("InitOverlaySync: Waited for GPU completion (fenceValue=%llu, completed=%llu)",
+                                     (unsigned long long)waitValue,
+                                     (unsigned long long)g_State.fence->GetCompletedValue());
+                }
+            }
+        }
     }
 
     // Release any previously allocated sync resources to prevent leaks when
@@ -1312,49 +2827,90 @@ void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* 
         g_State.crossQueueFence = nullptr;
     };
 
+    g_State.crossQueueFenceValue = 0;
+
     // Dedicated overlay queue: when FG is active, overlay commands execute on
     // this queue instead of the game queue.  This avoids interfering with
     // Streamline's game queue management.  CPU-side fence waits provide
     // cross-queue synchronization (GPU-side Wait was removed due to NVIDIA
-    // WaitImpl Alt+Tab hangs).
-    HookLog("InitOverlaySync: Creating dedicated overlay command queue");
-
-    D3D12_COMMAND_QUEUE_DESC queueDesc = {};
-    queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-    queueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
-    queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
-    queueDesc.NodeMask = 0;
-
-    // Get the node mask from the game queue if available
-    if (gameQueue) {
-        D3D12_COMMAND_QUEUE_DESC gameQueueDesc;
-        gameQueue->GetDesc(&gameQueueDesc);
-        queueDesc.NodeMask = gameQueueDesc.NodeMask;
-        HookLog("InitOverlaySync: Using node mask 0x%X from game queue", queueDesc.NodeMask);
-    }
-
-    if (FAILED(device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&g_State.overlayQueue)))) {
-        HookLog("InitOverlaySync: FAILED to create overlay queue, falling back to single-queue");
-        // Continue without overlay queue - will fall back to game queue
+    // WaitImpl Alt+Tab hangs). Third-party overlays can also insert their own
+    // queue transitions, so stay on the game queue in that compatibility mode.
+    const char* overlayModule = nullptr;
+    if (!ShouldUseDedicatedOverlayQueue(&overlayModule)) {
+        if (overlayModule) {
+            HookLogImportant(
+                "InitOverlaySync: Real FG inactive while external overlay %s is present, using single-queue overlay mode",
+                overlayModule);
+        } else {
+            HookLogImportant("InitOverlaySync: Real FG inactive, using single-queue overlay mode");
+        }
     } else {
-        HookLogImportant("InitOverlaySync: Dedicated overlay queue created (ptr=%p, gameQueue=%p)",
-                         g_State.overlayQueue, gameQueue);
+        const char* startupOverlayModule = ce::overlay_compat::GetStartupBlockingOverlayModuleName();
+        const bool processNeedsStartupCompatDelay =
+            ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess(g_ProcessName);
+        if (!IsActualFrameGenerationActive() && processNeedsStartupCompatDelay && startupOverlayModule) {
+            HookLogImportant("InitOverlaySync: Using dedicated overlay queue for %s startup compatibility with %s",
+                             g_ProcessName, startupOverlayModule);
+        } else {
+            HookLog("InitOverlaySync: Creating dedicated overlay command queue");
+        }
+        D3D12_COMMAND_QUEUE_DESC queueDesc = {};
+        queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+        queueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+        queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+        queueDesc.NodeMask = 0;
+
+        // Get the node mask from the game queue if available
+        if (gameQueue) {
+            D3D12_COMMAND_QUEUE_DESC gameQueueDesc;
+            gameQueue->GetDesc(&gameQueueDesc);
+            queueDesc.NodeMask = gameQueueDesc.NodeMask;
+            HookLog("InitOverlaySync: Using node mask 0x%X from game queue", queueDesc.NodeMask);
+        }
+
+        if (FAILED(device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&g_State.overlayQueue)))) {
+            HookLog("InitOverlaySync: FAILED to create overlay queue, falling back to single-queue");
+            // Continue without overlay queue - will fall back to game queue
+        } else {
+            HookLogImportant("InitOverlaySync: Dedicated overlay queue created (ptr=%p, gameQueue=%p)",
+                             g_State.overlayQueue, gameQueue);
+        }
     }
 
     // Cross-queue fence: game queue signals to mark work completion before
     // overlay queue starts.  CPU-side WaitForSingleObject is used instead of
     // GPU-side CommandQueue::Wait to avoid NVIDIA WaitImpl Alt+Tab hangs.
-    if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_State.crossQueueFence)))) {
+    if (g_State.overlayQueue &&
+        FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_State.crossQueueFence)))) {
         HookLog("InitOverlaySync: FAILED to create cross-queue fence");
     }
     g_State.crossQueueFenceValue = 0;
-    g_State.crossQueueFenceEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+    if (g_State.crossQueueFence) {
+        g_State.crossQueueFenceEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+        if (!g_State.crossQueueFenceEvent) {
+            HookLog("InitOverlaySync: FAILED to create cross-queue fence event");
+            g_State.crossQueueFence->Release();
+            g_State.crossQueueFence = nullptr;
+        }
+    }
 
     if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_State.fence))))
         return;
 
-    g_State.allocators.resize(DX12OverlayState::ALLOC_POOL_SIZE);
-    g_State.fenceValues.resize(DX12OverlayState::ALLOC_POOL_SIZE);
+    size_t allocatorPoolSize = DX12OverlayState::ALLOC_POOL_SIZE;
+    const bool startupOverlayPresent = (overlayModule != nullptr);
+    const bool processNeedsStartupCompatDelay =
+        ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess(g_ProcessName);
+    allocatorPoolSize = ce::overlay_compat::GetStartupCompatibleDX12AllocatorPoolSize(
+        processNeedsStartupCompatDelay, startupOverlayPresent, IsActualFrameGenerationActive(),
+        DX12OverlayState::ALLOC_POOL_SIZE);
+    if (allocatorPoolSize < DX12OverlayState::ALLOC_POOL_SIZE) {
+        HookLogImportant("InitOverlaySync: Using minimal %u-slot allocator pool for startup overlay %s",
+                         static_cast<unsigned>(allocatorPoolSize), overlayModule ? overlayModule : "module");
+    }
+
+    g_State.allocators.resize(allocatorPoolSize);
+    g_State.fenceValues.resize(allocatorPoolSize);
 
     // CRITICAL FIX: Reset all fence values to 0 for fresh start
     // After resize/reinit, old fence values could be stale and cause infinite
@@ -1366,7 +2922,7 @@ void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* 
     HookLog("InitOverlaySync: Fence values reset to 0, currentFenceValue=0");
 
     bool success = true;
-    for (int i = 0; i < DX12OverlayState::ALLOC_POOL_SIZE; i++) {
+    for (size_t i = 0; i < allocatorPoolSize; i++) {
         if (FAILED(
                 device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&g_State.allocators[i])))) {
             success = false;
@@ -1491,6 +3047,15 @@ void CleanupOverlay() {
     g_State.crossQueueFenceValue = 0;
     g_State.allocIndex = 0;
     g_State.syncInit = false;
+    g_State.cachedSC3 = nullptr;
+    // Discard any pending deferred Signal — fence is being released
+    g_deferredSignalValue.store(0, std::memory_order_release);
+    g_deferredSignalAllocIdx.store(-1, std::memory_order_release);
+    g_deferredSignalQueue.store(nullptr, std::memory_order_release);
+    ResetStartupOverlayBackendActivationStage();
+
+    // Clean up piggyback state
+    g_PiggybackOverlayActive.store(false, std::memory_order_relaxed);
 }
 
 void CleanupRTVs() {
@@ -1500,6 +3065,20 @@ void CleanupRTVs() {
         g_DummyBackBuffer->Release();
         g_DummyBackBuffer = nullptr;
     }
+    // Clean up D3D11On12 overlay bridge (holds wrapped backbuffer references)
+    CleanupD3D11On12();
+    // Release offscreen compositing resources
+    if (g_State.offscreenRT) {
+        g_State.offscreenRT->Release();
+        g_State.offscreenRT = nullptr;
+    }
+    if (g_State.offscreenRtvHeap) {
+        g_State.offscreenRtvHeap->Release();
+        g_State.offscreenRtvHeap = nullptr;
+    }
+    g_State.offscreenWidth = 0;
+    g_State.offscreenHeight = 0;
+    g_State.offscreenFormat = DXGI_FORMAT_UNKNOWN;
     if (g_State.rtvDescHeap) {
         g_State.rtvDescHeap->Release();
         g_State.rtvDescHeap = nullptr;
@@ -1510,6 +3089,7 @@ void CleanupRTVs() {
     }
     g_State.bufferCount = 0;
     g_State.cachedSwapChain = nullptr;
+    g_State.cachedSC3 = nullptr;
 }
 
 void DX12_OnSwapchainResizeBegin() {
@@ -1855,6 +3435,26 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         return;
     }
 
+    bool allowOverlayRender = ApplyOverlayStartupCompatMode(frameDesc.OutputWindow);
+
+    ULONGLONG postResumeSettleRemainingMs = 0;
+    const bool deferOverlayInitAfterResume =
+        ShouldDelayOverlayInitAfterStartupResumeCompat(allowOverlayRender, frameDesc.OutputWindow,
+                                                       &postResumeSettleRemainingMs);
+    const bool processNeedsStartupOverlayInitDelay =
+        ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess(g_ProcessName) &&
+        !IsActualFrameGenerationActive();
+    if (processNeedsStartupOverlayInitDelay) {
+        if ((!allowOverlayRender || deferOverlayInitAfterResume) &&
+            s_startupOverlayActivationStage == StartupOverlayActivationStage::kNone) {
+            s_startupOverlayActivationStage = StartupOverlayActivationStage::kDelayRTVInitAfterBackendInit;
+        }
+    } else {
+        ResetStartupOverlayBackendActivationStage();
+    }
+    DisableDedicatedOverlayQueueForOverlayCompat();
+    EnsureDedicatedOverlayQueueForFGCompat();
+
     // Dedicated overlay queue architecture: when FG is active, overlay commands
     // execute on the overlay queue with CPU-side fence sync to avoid interfering
     // with Streamline.  When FG is not active, commands go on the game queue.
@@ -1878,6 +3478,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             CleanupRTVs();
             g_SharedCaptureD3D12.Reset();
             g_State.overlayInit = false;
+            ResetStartupOverlayBackendActivationStage();
         }
         // Store raw pointer for change detection only - no AddRef to avoid
         // interfering with FSR FG's swapchain lifecycle management
@@ -1894,7 +3495,17 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     ID3D12CommandQueue* gameQueue = nullptr;
     {
         std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
-        gameQueue = g_SwapchainQueue ? g_SwapchainQueue : g_CommandQueue.load();
+        // Prefer g_SwapchainQueue (captured from CreateSwapChainForHwnd) — this is
+        // the queue associated with the current swapchain's backbuffers.  When FG
+        // runtimes (FSR FG, DLSS FG) create new swapchains with their own queue,
+        // g_CommandQueue may still point to the game's original queue, which differs
+        // from the swapchain queue.  Submitting overlay ECL on a different queue
+        // than the swapchain's causes D3D12 resource state conflicts (ERR_GFX_STATE).
+        // Fall back to g_CommandQueue (set by ECL hook — always fresh) when the
+        // swapchain queue hasn't been captured yet.
+        gameQueue = g_SwapchainQueue;
+        if (!gameQueue)
+            gameQueue = g_CommandQueue.load();
     }
     if (!gameQueue) {
         HookLog("DX12: ProcessFrame - no game queue, skipping overlay");
@@ -1915,24 +3526,100 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         } else if (s_initialQueue) {
             bool isFGQueue = (gameQueue != s_initialQueue);
             if (isFGQueue && !s_currentFGQueue) {
-                // Queue changed away from initial → FSR FG activated
-                s_currentFGQueue = gameQueue;
-                HookLogImportant("DX12: FG detected via queue change (initial=%p, current=%p, frame=%d)",
-                                 s_initialQueue, gameQueue, s_queueFrameCount);
-                g_FGCompat.SetFSRFGActive(true);
+                if (UpdateHeuristicFSRFGState(true, "queue-change")) {
+                    // Queue changed away from initial → FSR FG activated
+                    s_currentFGQueue = gameQueue;
+                    HookLogImportant("DX12: FG detected via queue change (initial=%p, current=%p, frame=%d)",
+                                     s_initialQueue, gameQueue, s_queueFrameCount);
+                } else {
+                    static std::atomic<int> s_ignoredQueueChangeLogCount{0};
+                    if (s_ignoredQueueChangeLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+                        HookLog("DX12: Ignoring queue change heuristic (initial=%p, current=%p, frame=%d)",
+                                s_initialQueue, gameQueue, s_queueFrameCount);
+                    }
+                }
             } else if (!isFGQueue && s_currentFGQueue) {
                 // Queue reverted to initial → FSR FG deactivated (FG type switch)
                 HookLogImportant("DX12: FG deactivated via queue revert (initial=%p, fgQueue=%p, frame=%d)",
                                  s_initialQueue, s_currentFGQueue, s_queueFrameCount);
                 s_currentFGQueue = nullptr;
-                g_FGCompat.SetFSRFGActive(false);
+                UpdateHeuristicFSRFGState(false, "queue-change");
             }
         }
     }
 
+    // Conditional block: when a startup-blocking overlay (Social Club, EOS) is present
+    // and FG is inactive, only allow overlay rendering if we have the correct swapchain
+    // queue captured.  GTA5 Enhanced rejects ECL submissions on any queue other than the
+    // one the swapchain was created with.  Without g_SwapchainQueue we'd fall back to
+    // g_CommandQueue (from ECL hooks) which is often a different queue → ERR_GFX_STATE.
+    const bool startupOverlayPresent =
+        ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess(g_ProcessName) &&
+        ce::overlay_compat::GetStartupBlockingOverlayModuleName() != nullptr &&
+        !IsActualFrameGenerationActive();
+    if (startupOverlayPresent) {
+        bool hasSwapchainQueue;
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+            hasSwapchainQueue = (g_SwapchainQueue != nullptr);
+        }
+        if (!hasSwapchainQueue) {
+            allowOverlayRender = false;
+            g_PiggybackOverlayActive.store(false, std::memory_order_relaxed);
+            static std::atomic<int> s_noQueueBlockLogCount{0};
+            if (s_noQueueBlockLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+                HookLogImportant(
+                    "DX12: Overlay blocked for %s - startup-blocking overlay present, "
+                    "FG inactive, swapchain queue not captured (would use wrong queue)",
+                    g_ProcessName);
+            }
+        } else {
+            // Swapchain queue captured: allow normal overlay rendering.
+            // The rendering block will use barrier-free mode when
+            // startupOverlayPresent is true.
+            static std::atomic<int> s_queueOkLogCount{0};
+            if (s_queueOkLogCount.fetch_add(1, std::memory_order_relaxed) < 3) {
+                HookLogImportant(
+                    "DX12: Overlay allowed for %s - startup-blocking overlay present "
+                    "but swapchain queue captured, using barrier-free mode",
+                    g_ProcessName);
+            }
+        }
+    } else {
+        g_PiggybackOverlayActive.store(false, std::memory_order_relaxed);
+    }
+
     // Remove delay - install overlay immediately(Strange Brigade compatibility)
-    static std::atomic<int> s_framesBeforeInit{0};
-    if (!suspendOverlayRender && !g_State.overlayInit) {
+    if (allowOverlayRender && !suspendOverlayRender && !g_State.overlayInit) {
+        ULONGLONG startupInitDelayRemainingMs = 0;
+        if (ShouldDeferOverlayInitForStartupCompat(frameDesc.OutputWindow, &startupInitDelayRemainingMs)) {
+            static std::atomic<int> s_startupInitDelayLogCount{0};
+            if (s_startupInitDelayLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
+                HookLogImportant(
+                    "DX12: Delaying overlay init during startup compatibility grace for %s (remaining=%llums)",
+                    g_ProcessName, startupInitDelayRemainingMs);
+            }
+            return;
+        }
+
+        if (deferOverlayInitAfterResume) {
+            static std::atomic<int> s_postResumeSettleLogCount{0};
+            if (s_postResumeSettleLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
+                HookLogImportant(
+                    "DX12: Keeping overlay init deferred after startup-overlay resume for %s (remaining=%llums)",
+                    g_ProcessName, postResumeSettleRemainingMs);
+            }
+            return;
+        }
+
+        if (s_insideECL) {
+            static std::atomic<int> s_initDeferredInEclLogCount{0};
+            if (s_initDeferredInEclLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
+                HookLog("DX12: Deferring overlay init while inside ExecuteCommandLists re-entry");
+            }
+            return;
+        }
+
         int frames = ++s_framesBeforeInit;
         if (frames < 1) {
             return;
@@ -2011,13 +3698,6 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 if (InitImGui(g_Device.load(), imguiBufferCount, desc.BufferDesc.Format, desc.OutputWindow)) {
                     s_consecutiveInitFails = 0;
                     s_nextRetryFrame = 0;
-                    int actualBufferCount = desc.BufferCount;
-                    if (actualBufferCount > 8) {
-                        HookLog("DX12: Swapchain has %d buffers, limiting RTVs to 8", actualBufferCount);
-                        actualBufferCount = 8;
-                    }
-                    CreateRTVs(g_Device.load(), sc3, actualBufferCount);
-                    InitOverlaySync(g_Device.load(), imguiBufferCount, gameQueue);
 
                     // Detect actual HDR state from the display output, not just format.
                     // R10G10B10A2_UNORM is used for both SDR 10-bit and HDR10/PQ.
@@ -2043,10 +3723,30 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                     }
                     g_OverlayAdapter.SetHDR(isActualHDR, (int)desc.BufferDesc.Format);
 
-                    HookLog(
-                        "DX12: ProcessFrame - ImGui initialized with %d RTVs, "
-                        "syncInit=%d",
-                        actualBufferCount, g_State.syncInit);
+                    if (s_startupOverlayActivationStage == StartupOverlayActivationStage::kDelayRTVInitAfterBackendInit) {
+                        s_startupOverlayActivationStageMs = GetTickCount64();
+                        HookLogImportant(
+                            "DX12: Startup compat staged activation - backend init complete, delaying RTV init for %llums",
+                            kStartupOverlayPostBackendInitSettleMs);
+                    } else {
+                        int actualBufferCount = desc.BufferCount;
+                        if (actualBufferCount > 8) {
+                            HookLog("DX12: Swapchain has %d buffers, limiting RTVs to 8", actualBufferCount);
+                            actualBufferCount = 8;
+                        }
+                        CreateRTVs(g_Device.load(), sc3, actualBufferCount);
+                        if (!g_State.rtvDescHeap) {
+                            HookLogImportant("DX12: RTV initialization failed during overlay init, deferring sync init");
+                            sc3->Release();
+                            return;
+                        }
+                        InitOverlaySync(g_Device.load(), imguiBufferCount, gameQueue);
+
+                        HookLog(
+                            "DX12: ProcessFrame - ImGui initialized with %d RTVs, "
+                            "syncInit=%d",
+                            actualBufferCount, g_State.syncInit);
+                    }
                 } else {
                     s_consecutiveInitFails++;
                     int backoffFrames = 60 * (1 << std::min(s_consecutiveInitFails - 3, 5));
@@ -2069,6 +3769,98 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         }
     }
 
+    if (allowOverlayRender && !suspendOverlayRender && !s_insideECL && g_State.overlayInit && !g_State.syncInit) {
+        if (s_startupOverlayActivationStage == StartupOverlayActivationStage::kDelayRTVInitAfterBackendInit &&
+            s_startupOverlayActivationStageMs != 0) {
+            const ULONGLONG now = GetTickCount64();
+            const ULONGLONG elapsedSinceBackendInit = now - s_startupOverlayActivationStageMs;
+            if (elapsedSinceBackendInit < kStartupOverlayPostBackendInitSettleMs) {
+                static std::atomic<int> s_postBackendStageLogCount{0};
+                if (s_postBackendStageLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
+                    HookLogImportant(
+                        "DX12: Waiting to initialize staged overlay RTVs after backend init for %s (remaining=%llums)",
+                        g_ProcessName, kStartupOverlayPostBackendInitSettleMs - elapsedSinceBackendInit);
+                }
+                return;
+            }
+        }
+
+        DXGI_SWAP_CHAIN_DESC desc = {};
+        if (FAILED(pSwapChain->GetDesc(&desc))) {
+            HookLog("DX12: ProcessFrame - failed to get swapchain desc for staged activation");
+            return;
+        }
+
+        IDXGISwapChain3* sc3 = nullptr;
+        if (FAILED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3))) || !sc3) {
+            HookLog("DX12: ProcessFrame - failed to get SwapChain3 for staged activation");
+            return;
+        }
+
+        int actualBufferCount = desc.BufferCount;
+        if (actualBufferCount > 8) {
+            HookLog("DX12: Swapchain has %d buffers during staged activation, limiting RTVs to 8", actualBufferCount);
+            actualBufferCount = 8;
+        }
+
+        if (s_startupOverlayActivationStage == StartupOverlayActivationStage::kDelayRTVInitAfterBackendInit) {
+            if (!g_State.rtvDescHeap) {
+                HookLogImportant("DX12: Finalizing staged overlay activation step 1/2 - creating RTVs");
+                CreateRTVs(g_Device.load(), sc3, actualBufferCount);
+                if (!g_State.rtvDescHeap) {
+                    HookLogImportant("DX12: Staged overlay RTV init failed, keeping sync init deferred");
+                    sc3->Release();
+                    return;
+                }
+            }
+            s_startupOverlayActivationStage = StartupOverlayActivationStage::kDelaySyncInitAfterRTVInit;
+            s_startupOverlayActivationStageMs = GetTickCount64();
+            HookLogImportant(
+                "DX12: Startup compat staged activation - RTV init complete, delaying sync init for %llums",
+                kStartupOverlayPostRTVInitSettleMs);
+            sc3->Release();
+            return;
+        }
+
+        if (s_startupOverlayActivationStage == StartupOverlayActivationStage::kDelaySyncInitAfterRTVInit &&
+            s_startupOverlayActivationStageMs != 0) {
+            const ULONGLONG now = GetTickCount64();
+            const ULONGLONG elapsedSinceRTVInit = now - s_startupOverlayActivationStageMs;
+            if (elapsedSinceRTVInit < kStartupOverlayPostRTVInitSettleMs) {
+                static std::atomic<int> s_postRtvStageLogCount{0};
+                if (s_postRtvStageLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
+                    HookLogImportant(
+                        "DX12: Waiting to initialize staged overlay sync after RTV init for %s (remaining=%llums)",
+                        g_ProcessName, kStartupOverlayPostRTVInitSettleMs - elapsedSinceRTVInit);
+                }
+                sc3->Release();
+                return;
+            }
+        }
+
+        if (!g_State.rtvDescHeap) {
+            CreateRTVs(g_Device.load(), sc3, actualBufferCount);
+            if (!g_State.rtvDescHeap) {
+                HookLogImportant("DX12: RTV initialization failed during staged sync init, keeping overlay deferred");
+                sc3->Release();
+                return;
+            }
+        }
+        HookLogImportant("DX12: Finalizing staged overlay activation step 2/2 - initializing sync");
+        InitOverlaySync(g_Device.load(), desc.BufferCount, gameQueue);
+        sc3->Release();
+
+        if (g_State.syncInit) {
+            ResetStartupOverlayBackendActivationStage();
+            s_startupOverlaySyncInitMs = GetTickCount64();
+            HookLogImportant(
+                "DX12: Startup compat staged activation - sync init complete, delaying overlay rendering for %llums",
+                kStartupOverlayPostSyncInitSettleMs);
+            HookLogImportant("DX12: Staged overlay activation completed after backend-only init");
+        }
+        return;
+    }
+
     // Single log on first frame to verify overlay system is entering
     static int s_firstFrameLogged = 0;
     if (s_firstFrameLogged == 0) {
@@ -2081,14 +3873,125 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
 
     UINT currentBackBufferIdx = 0;
     bool hasCurrentBackBufferIdx = false;
+    bool delayOverlayRenderAfterSyncInit = false;
+    bool suppressOverlayRenderForLoadedStartupOverlay = false;
+    bool delayOverlayRenderAfterResourcePrime = false;
+    bool delayOverlayRenderAfterFirstDrawProbe = false;
+    const bool shouldRunStartupOverlayDrawProbe =
+        ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess(g_ProcessName) &&
+        !IsActualFrameGenerationActive();
 
-    if (!suspendOverlayRender && !s_insideECL && g_State.overlayInit && g_State.syncInit) {
+    if (allowOverlayRender && !suspendOverlayRender && !s_insideECL && g_State.overlayInit && g_State.syncInit &&
+        s_startupOverlaySyncInitMs != 0) {
+        const ULONGLONG now = GetTickCount64();
+        const ULONGLONG msSinceSyncInit = now - s_startupOverlaySyncInitMs;
+        const bool processNeedsRenderDelay =
+            ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess(g_ProcessName);
+        const bool actualFGActive = IsActualFrameGenerationActive();
+        const char* blockingOverlayModule = ce::overlay_compat::GetStartupBlockingOverlayRenderModuleName();
+        const ULONGLONG lastBlockingRenderActivityMs =
+            s_lastStartupBlockingRenderModuleActivityMs.load(std::memory_order_acquire);
+        const bool hasRecentBlockingRenderActivity = ce::overlay_compat::HasRecentDX12StartupBlockingRenderActivity(
+            lastBlockingRenderActivityMs, now, kStartupOverlayRenderModuleQuietPeriodMs);
+        if (ce::overlay_compat::ShouldDelayDX12OverlayRenderAfterSyncInit(
+                processNeedsRenderDelay, actualFGActive, msSinceSyncInit, kStartupOverlayPostSyncInitSettleMs)) {
+            static std::atomic<int> s_postSyncStageLogCount{0};
+            if (s_postSyncStageLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
+                HookLogImportant("DX12: Waiting to render staged overlay after sync init for %s (remaining=%llums)",
+                                 g_ProcessName, kStartupOverlayPostSyncInitSettleMs - msSinceSyncInit);
+            }
+            delayOverlayRenderAfterSyncInit = true;
+        } else if (ce::overlay_compat::ShouldSuppressDX12OverlayRenderForLoadedStartupOverlay(
+                       processNeedsRenderDelay, actualFGActive, blockingOverlayModule, msSinceSyncInit,
+                       kStartupOverlayLoadedRenderModuleMaxBlockMs)) {
+            static std::atomic<int> s_loadedStartupOverlayRenderSuppressLogCount{0};
+            if (s_loadedStartupOverlayRenderSuppressLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
+                HookLogImportant(
+                    "DX12: Keeping overlay rendering disabled while startup-blocking render module %s remains loaded for %s (remaining=%llums)",
+                    blockingOverlayModule, g_ProcessName, kStartupOverlayLoadedRenderModuleMaxBlockMs - msSinceSyncInit);
+            }
+            suppressOverlayRenderForLoadedStartupOverlay = true;
+        } else if (ce::overlay_compat::ShouldSuppressDX12OverlayRenderForRecentBlockingRendererActivity(
+                       processNeedsRenderDelay, actualFGActive, blockingOverlayModule, hasRecentBlockingRenderActivity)) {
+            static std::atomic<int> s_recentBlockingRendererSuppressLogCount{0};
+            const ULONGLONG msSinceLastActivity = now - lastBlockingRenderActivityMs;
+            if (s_recentBlockingRendererSuppressLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
+                HookLogImportant(
+                    "DX12: Keeping overlay rendering disabled while startup-blocking render module %s still shows recent D3D12 activity for %s (quietRemaining=%llums)",
+                    blockingOverlayModule, g_ProcessName,
+                    kStartupOverlayRenderModuleQuietPeriodMs - msSinceLastActivity);
+            }
+            suppressOverlayRenderForLoadedStartupOverlay = true;
+        } else {
+            if (blockingOverlayModule && processNeedsRenderDelay && !actualFGActive) {
+                if (lastBlockingRenderActivityMs != 0) {
+                    HookLogImportant(
+                        "DX12: Startup-blocking render module %s has been quiet for %llums; allowing overlay rendering for %s",
+                        blockingOverlayModule, now - lastBlockingRenderActivityMs, g_ProcessName);
+                } else {
+                    HookLogImportant(
+                        "DX12: Startup-blocking render module %s exceeded the startup safety window with no recent activity; allowing overlay rendering for %s",
+                        blockingOverlayModule, g_ProcessName);
+                }
+            } else {
+                HookLogImportant("DX12: Startup compat sync settle complete - allowing overlay rendering for %s",
+                                 g_ProcessName);
+            }
+            s_startupOverlaySyncInitMs = 0;
+        }
+    }
+
+    if (allowOverlayRender && !suspendOverlayRender && !s_insideECL && g_State.overlayInit && g_State.syncInit &&
+        s_startupOverlayResourcePrimeMs != 0) {
+        const ULONGLONG now = GetTickCount64();
+        const ULONGLONG msSinceResourcePrime = now - s_startupOverlayResourcePrimeMs;
+        const bool processNeedsRenderDelay =
+            ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess(g_ProcessName);
+        if (processNeedsRenderDelay && !IsActualFrameGenerationActive() &&
+            msSinceResourcePrime < kStartupOverlayPostResourcePrimeSettleMs) {
+            static std::atomic<int> s_postResourcePrimeLogCount{0};
+            if (s_postResourcePrimeLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
+                HookLogImportant(
+                    "DX12: Waiting to draw staged overlay after resource priming for %s (remaining=%llums)", g_ProcessName,
+                    kStartupOverlayPostResourcePrimeSettleMs - msSinceResourcePrime);
+            }
+            delayOverlayRenderAfterResourcePrime = true;
+        } else {
+            HookLogImportant("DX12: Startup compat resource-prime settle complete - allowing first overlay draw for %s",
+                             g_ProcessName);
+            s_startupOverlayResourcePrimeMs = 0;
+        }
+    }
+
+    if (allowOverlayRender && !suspendOverlayRender && !s_insideECL && g_State.overlayInit && g_State.syncInit &&
+        s_startupOverlayFirstDrawProbeMs != 0) {
+        const ULONGLONG now = GetTickCount64();
+        const ULONGLONG msSinceProbe = now - s_startupOverlayFirstDrawProbeMs;
+        if (shouldRunStartupOverlayDrawProbe && msSinceProbe < kStartupOverlayFirstDrawProbeSettleMs) {
+            static std::atomic<int> s_firstDrawProbeWaitLogCount{0};
+            if (s_firstDrawProbeWaitLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
+                HookLogImportant("DX12: Waiting to continue GTA overlay probe with %s for %s (remaining=%llums)",
+                                 GetStartupOverlayFirstDrawProbeStageName(s_startupOverlayFirstDrawProbeStage),
+                                 g_ProcessName,
+                                 kStartupOverlayFirstDrawProbeSettleMs - msSinceProbe);
+            }
+            delayOverlayRenderAfterFirstDrawProbe = true;
+        } else {
+            HookLogImportant("DX12: GTA overlay probe settle complete - allowing %s for %s",
+                             GetStartupOverlayFirstDrawProbeStageName(s_startupOverlayFirstDrawProbeStage), g_ProcessName);
+            s_startupOverlayFirstDrawProbeMs = 0;
+        }
+    }
+
+    if (allowOverlayRender && !suspendOverlayRender && !s_insideECL && g_State.overlayInit && g_State.syncInit &&
+        !delayOverlayRenderAfterSyncInit && !suppressOverlayRenderForLoadedStartupOverlay &&
+        !delayOverlayRenderAfterResourcePrime && !delayOverlayRenderAfterFirstDrawProbe) {
         // Single log on first successful overlay render
         static int s_firstOverlayLogged = 0;
         if (s_firstOverlayLogged == 0) {
             s_firstOverlayLogged = 1;
-            HookLog(
-                "DX12: ProcessFrame - first successful overlay render (fence=%p, "
+            HookLogImportant(
+                "DX12: ProcessFrame - first overlay render attempt (fence=%p, "
                 "cmdList=%p, fgActive=%d, fgType=%s)",
                 g_State.fence, g_State.cmdList, g_FGCompat.IsFGActive() ? 1 : 0,
                 g_FGCompat.GetFGTypeName(g_FGCompat.GetActiveFGType()));
@@ -2142,8 +4045,13 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         }
 
         {
-            int idx = g_State.allocIndex;
-            g_State.allocIndex = (idx + 1) % DX12OverlayState::ALLOC_POOL_SIZE;
+            int allocatorPoolSize = static_cast<int>(g_State.allocators.size());
+            if (allocatorPoolSize <= 0) {
+                goto overlay_done;
+            }
+
+            int idx = g_State.allocIndex % allocatorPoolSize;
+            g_State.allocIndex = (idx + 1) % allocatorPoolSize;
 
             // With 16 allocators, we never need to wait under normal conditions.
             // However, during Alt+Tab / GPU throttle, the GPU may stall and the
@@ -2173,8 +4081,57 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 if (SUCCEEDED(allocResetHr)) {
                     HRESULT listResetHr = list->Reset(alloc, nullptr);
                     if (SUCCEEDED(listResetHr)) {
-                        IDXGISwapChain3* sc3 = nullptr;
-                        if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3)))) {
+                        const bool shouldPrimeStartupOverlayResources =
+                            ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess(g_ProcessName) &&
+                            !IsActualFrameGenerationActive() && s_startupOverlayResourcePrimeMs == 0 &&
+                            g_OverlayAdapter.HasPendingDX12Resources();
+                        if (shouldPrimeStartupOverlayResources) {
+                            HookLogImportant("DX12: Priming DX12 overlay resources before first GTA overlay draw");
+                            if (!g_OverlayAdapter.PrimeDX12Resources(list)) {
+                                HookLogImportant("DX12: DX12 overlay resource priming failed; deferring first overlay draw");
+                                goto overlay_done;
+                            }
+
+                            HRESULT closeHr = list->Close();
+                            if (FAILED(closeHr)) {
+                                HookLog("DX12: Priming command list close failed hr=0x%08X, forcing reinit", closeHr);
+                                g_State.syncInit = false;
+                                goto overlay_done;
+                            }
+
+                            if (!SubmitOverlayCommandList(gameQueue, list, idx, "startup resource priming", false)) {
+                                HookLogImportant("DX12: Startup resource priming submission failed; deferring first overlay draw");
+                                goto overlay_done;
+                            }
+
+                            s_startupOverlayResourcePrimeMs = GetTickCount64();
+                            HookLogImportant(
+                                "DX12: DX12 overlay resource priming submitted, delaying first overlay draw for %llums",
+                                kStartupOverlayPostResourcePrimeSettleMs);
+                            goto overlay_done;
+                        }
+
+                        if (shouldRunStartupOverlayDrawProbe &&
+                            s_startupOverlayFirstDrawProbeStage == StartupOverlayFirstDrawProbeStage::kNone) {
+                            // Probe system removed: go straight to rendering.
+                            // The 3-stage probe (backbuffer touch → pipeline state → real draw) caused
+                            // ERR_GFX_STATE in GTA5 Enhanced because even barrier-only probes on a
+                            // dedicated overlay queue conflict with the game's D3D12 state tracking.
+                            // With single-queue mode (fix for dedicated queue), we can render directly.
+                            s_startupOverlayFirstDrawProbeStage = StartupOverlayFirstDrawProbeStage::kActualRender;
+                        }
+
+                        IDXGISwapChain3* sc3 = g_State.cachedSC3;
+                        if (!sc3) {
+                            if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3)))) {
+                                sc3->Release();  // drop QI ref — weak cache is safe
+                                g_State.cachedSC3 = sc3;  // because swapchain is alive during Present
+                            }
+                        }
+                        LARGE_INTEGER perfQI, perfGetBuf, perfRecord, perfSubmit, perfEnd, perfFreq;
+                        QueryPerformanceFrequency(&perfFreq);
+                        QueryPerformanceCounter(&perfQI);
+                        if (sc3) {
                             UINT swapchainBufferIdx = sc3->GetCurrentBackBufferIndex();
                             currentBackBufferIdx = swapchainBufferIdx;
                             hasCurrentBackBufferIdx = true;
@@ -2196,6 +4153,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                             // are held persistently.
                             ID3D12Resource* bb = nullptr;
                             bool bbNeedsRelease = false;
+                            QueryPerformanceCounter(&perfGetBuf);
                             if (SUCCEEDED(sc3->GetBuffer(swapchainBufferIdx, IID_PPV_ARGS(&bb))) && bb) {
                                 bbNeedsRelease = true;
                                 // Recreate RTV for this buffer index (cheap CPU-side op).
@@ -2208,58 +4166,178 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                             }
                             if (bb) {
                                 bool cmdRecordOk = false;
-
-                                // Barrier: PRESENT -> RENDER_TARGET
-                                D3D12_RESOURCE_BARRIER barrier = {};
-                                barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                                barrier.Transition.pResource = bb;
-                                barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-                                barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-                                barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                                list->ResourceBarrier(1, &barrier);
-
-                                // Set render target
-                                D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle =
-                                    g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
-                                UINT rtvSize =
-                                    g_Device.load()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-                                rtvHandle.ptr += (SIZE_T)bufferIdx * rtvSize;
-                                list->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
-
-                                // Draw overlay
-                                bool isRealFrame = g_FGCompat.IsCurrentFrameReal();
-                                DrawOverlay(list, isRealFrame, bufferIdx);
-
-                                // Barrier: RENDER_TARGET -> PRESENT
-                                barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-                                barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-                                list->ResourceBarrier(1, &barrier);
-
-                                HRESULT closeHr = list->Close();
-                                if (FAILED(closeHr)) {
-                                    HookLog("DX12: list->Close failed hr=0x%08X, forcing reinit", closeHr);
-                                    g_State.syncInit = false;
-                                } else {
-                                    // Submit on game queue
-                                    ID3D12CommandList* lists[] = {list};
-                                    ExecuteCommandListsPtr origECL = GetOriginalExecuteCommandLists(gameQueue);
-                                    if (origECL) {
-                                        origECL(gameQueue, 1, lists);
-                                    } else {
-                                        gameQueue->ExecuteCommandLists(1, lists);
-                                    }
-                                    cmdRecordOk = true;
+                                static std::atomic<int> s_firstBackBufferLogCount{0};
+                                if (s_firstBackBufferLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+                                    HookLogImportant("DX12: Preparing overlay draw for backbuffer idx=%u resource=%p via %s queue (queue=%p)",
+                                                     bufferIdx, bb,
+                                                     g_State.overlayQueue ? "dedicated overlay" : (gameQueue == g_SwapchainQueue ? "swapchain" : "game"),
+                                                     gameQueue);
                                 }
 
-                                // Fence signaling for allocator pool management
-                                if (cmdRecordOk && g_State.fence) {
-                                    UINT64 next = g_State.currentFenceValue + 1;
-                                    HRESULT shr = gameQueue->Signal(g_State.fence, next);
-                                    if (SUCCEEDED(shr)) {
-                                        g_State.currentFenceValue = next;
-                                        g_State.fenceValues[idx] = next;
+                                // ================================================================
+                                // PRIMARY PATH: Barrier-free offscreen compositing.
+                                // Renders overlay to offscreen RT (no swapchain stall),
+                                // then copies to backbuffer with implicit state promotion.
+                                // DComp disabled — Direct Flip prevents reliable display.
+                                // ================================================================
+
+                                    // ============================================================
+                                    // PRIMARY: Descriptor-free DX12 overlay.
+                                    // Uses root constants + root SRV (ByteAddressBuffer for font)
+                                    // instead of descriptor heaps.  SetDescriptorHeaps is never
+                                    // called, avoiding the NVIDIA driver stall caused by
+                                    // SetDescriptorHeaps + OMSetRenderTargets(swapchain) in the
+                                    // same command list.
+                                    // ============================================================
+                                    bool usedDescFree = false;
+                                    {
+                                        auto* dev = g_Device.load();
+                                        if (dev && !g_DescFreeBackend) {
+                                            auto* backend = new DX12DescFreeBackend();
+                                            if (backend->InitDevice(dev, g_State.format)) {
+                                                g_DescFreeBackend = backend;
+                                                g_D3D11On12Adapter.InitCustom(
+                                                    g_DescFreeBackend, OverlayBackendType::DX12);
+                                                HookLogImportant("DX12: Descriptor-free overlay backend ready");
+                                            } else {
+                                                delete backend;
+                                                HookLogImportant("DX12: Descriptor-free backend init failed, "
+                                                                 "falling back to standard DX12");
+                                            }
+                                        }
+                                        if (g_DescFreeBackend && g_D3D11On12Adapter.IsInitialized()) {
+                                            bool isRealFrame = g_FGCompat.IsCurrentFrameReal();
+
+                                            // Barrier-free rendering: the backbuffer is in
+                                            // PRESENT (= COMMON) state.  Swapchain backbuffers
+                                            // have ALLOW_SIMULTANEOUS_ACCESS, so COMMON
+                                            // promotes implicitly to RENDER_TARGET on the
+                                            // DIRECT queue.  After ECL the promoted state
+                                            // decays back to COMMON/PRESENT.
+                                            D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle =
+                                                g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
+                                            UINT rtvSize = dev->GetDescriptorHandleIncrementSize(
+                                                D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+                                            rtvHandle.ptr += (SIZE_T)bufferIdx * rtvSize;
+
+                                            s_descFreeCmdList = list;
+                                            s_descFreeRtv = rtvHandle;
+
+                                            g_D3D11On12Adapter.SetIPCClient(g_IPC);
+                                            if (isRealFrame) {
+                                                g_D3D11On12Adapter.SetMetrics(
+                                                    DXGIShared::GetPerformanceMetrics());
+                                                static const bool s_isVKD3D = []() {
+                                                    return GetModuleHandleA("d3d12core.dll") &&
+                                                           (GetModuleHandleA("libvkd3d-1.dll") || GetModuleHandleA("vkd3d.dll"));
+                                                }();
+                                                const char* api = s_isVKD3D ? "DX12 (VKD3D)" : "DX12";
+                                                g_D3D11On12Adapter.SetGraphicsAPI(api);
+                                            }
+
+                                            g_D3D11On12Adapter.RenderOverlay(
+                                                g_State.cachedWidth, g_State.cachedHeight);
+
+                                            s_descFreeCmdList = nullptr;
+                                            usedDescFree = true;
+                                        }
+                                    }
+
+                                    // Fallback: standard DX12 rendering (uses SetDescriptorHeaps —
+                                    // may cause 60% GPU on some NVIDIA configs)
+                                    if (!usedDescFree) {
+                                        if (!startupOverlayPresent) {
+                                            D3D12_RESOURCE_BARRIER barrier = {};
+                                            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                                            barrier.Transition.pResource = bb;
+                                            barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+                                            barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+                                            barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                                            list->ResourceBarrier(1, &barrier);
+                                        }
+
+                                        D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle =
+                                            g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
+                                        UINT rtvSize =
+                                            g_Device.load()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+                                        rtvHandle.ptr += (SIZE_T)bufferIdx * rtvSize;
+                                        list->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+
+                                        bool isRealFrame = g_FGCompat.IsCurrentFrameReal();
+                                        DrawOverlay(list, isRealFrame, bufferIdx);
+
+                                        if (!startupOverlayPresent) {
+                                            D3D12_RESOURCE_BARRIER barrier = {};
+                                            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                                            barrier.Transition.pResource = bb;
+                                            barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+                                            barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+                                            barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                                            list->ResourceBarrier(1, &barrier);
+                                        }
+                                    }
+
+                                    QueryPerformanceCounter(&perfRecord);
+
+                                    HRESULT closeHr = list->Close();
+                                    if (FAILED(closeHr)) {
+                                        HookLog("DX12: list->Close failed hr=0x%08X, forcing reinit", closeHr);
+                                        g_State.syncInit = false;
                                     } else {
-                                        HookLog("DX12: Overlay fence signal failed hr=0x%08X", shr);
+                                        // Submit overlay ECL on gameQueue, then DEFER the fence
+                                        // Signal to the next frame.  This avoids the NVIDIA driver
+                                        // stall caused by Signal between ECL and Present.
+                                        ExecuteCommandListsPtr origECL =
+                                            GetOriginalExecuteCommandLists(gameQueue);
+                                        ID3D12CommandList* lists[] = {list};
+                                        if (origECL)
+                                            origECL(gameQueue, 1, lists);
+                                        else
+                                            gameQueue->ExecuteCommandLists(1, lists);
+
+                                        // Defer fence Signal to next frame's ProcessFrame entry
+                                        if (g_State.fence) {
+                                            UINT64 next = g_State.currentFenceValue + 1;
+                                            g_deferredSignalQueue.store(gameQueue, std::memory_order_release);
+                                            g_deferredSignalValue.store(next, std::memory_order_release);
+                                            g_deferredSignalAllocIdx.store(idx, std::memory_order_release);
+                                            // Don't update currentFenceValue yet — the deferred
+                                            // flush at next frame start will do it.
+                                        }
+                                        cmdRecordOk = true;
+                                        QueryPerformanceCounter(&perfSubmit);
+                                    }
+
+                                QueryPerformanceCounter(&perfEnd);
+                                // Periodic perf dump every 300 frames
+                                static int s_perfDumpCounter = 0;
+                                if (++s_perfDumpCounter % 300 == 0) {
+                                    double toUs = 1000000.0 / (double)perfFreq.QuadPart;
+                                    double qiUs = (double)(perfGetBuf.QuadPart - perfQI.QuadPart) * toUs;
+                                    double getBufUs = (double)(perfRecord.QuadPart - perfGetBuf.QuadPart) * toUs;
+                                    double submitUs = (double)(perfSubmit.QuadPart - perfRecord.QuadPart) * toUs;
+                                    double totalUs = (double)(perfEnd.QuadPart - perfQI.QuadPart) * toUs;
+                                    HookLogImportant(
+                                        "DX12: Overlay perf: QI+idx=%.0fus getBuf+record=%.0fus submit=%.0fus total=%.0fus",
+                                        qiUs, getBufUs, submitUs, totalUs);
+                                }
+
+                                if (cmdRecordOk) {
+                                    static int s_firstOverlaySubmitLogged = 0;
+                                    if (s_firstOverlaySubmitLogged == 0) {
+                                        s_firstOverlaySubmitLogged = 1;
+                                        HookLogImportant(
+                                            "DX12: ProcessFrame - first overlay render command list submitted successfully");
+                                    }
+
+                                    // Clear probe state if we were in a probe sequence
+                                    if (shouldRunStartupOverlayDrawProbe &&
+                                        s_startupOverlayFirstDrawProbeStage ==
+                                            StartupOverlayFirstDrawProbeStage::kActualRender) {
+                                        HookLogImportant("DX12: Startup overlay probe complete - rendering stably");
+                                        s_startupOverlayFirstDrawProbeStage =
+                                            StartupOverlayFirstDrawProbeStage::kComplete;
+                                        s_startupOverlayFirstDrawProbeMs = 0;
                                     }
                                 }
                                 // FG-SAFE: Release per-frame backbuffer reference
@@ -2270,7 +4348,6 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                                 CleanupRTVs();
                                 g_State.overlayInit = false;
                             }
-                            sc3->Release();
                         } else {
                             HookLog("DX12: ProcessFrame - failed to get SwapChain3 interface");
                         }
@@ -2287,6 +4364,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             }
         }  // end device-removed-check scope
     overlay_done:;
+
     }
 
     // Change 6: Remove verbose debug logging - keep only error logging
@@ -2354,7 +4432,6 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
 // This prevents GPU crashes when frame generation tech (DLSS FG/FSR FG) is
 // initializing
 static std::atomic<bool> s_initDelayComplete{false};
-static std::atomic<int> s_framesBeforeInit{0};  // Defined earlier in ProcessFrame
 
 void DX12_ResetImGuiFrameCounter() {
     s_framesBeforeInit = 0;
@@ -2477,6 +4554,9 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
     int count = g_CommandListsExecutedThisFrame.exchange(0);
     ++g_FGDebugFrameCount;
     g_FGCompat.RecordFrame(count);
+    if (!CanUseFSRFGHeuristics()) {
+        g_FGCompat.SetHeuristicFSRFGActive(false);
+    }
     // Interpolated (FG) frame detection: the game submits zero command lists
     // between consecutive Present calls for frames generated by the FG engine.
     bool isInterpolatedFrame = (count == 0);
@@ -2493,15 +4573,21 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
         static int s_eclRealFrames = 0;
         static int s_eclInterpFrames = 0;
         static bool s_eclFGDetected = false;
+        if (s_eclFGDetected && !g_FGCompat.IsHeuristicFSRFGActive()) {
+            s_eclFGDetected = false;
+            s_eclRealFrames = 0;
+            s_eclInterpFrames = 0;
+        }
         if (isInterpolatedFrame)
             ++s_eclInterpFrames;
         else
             ++s_eclRealFrames;
         if (!s_eclFGDetected && s_eclInterpFrames >= 10 && s_eclRealFrames >= 5) {
-            s_eclFGDetected = true;
-            HookLogImportant("DX12: FG detected via ECL count pattern (real=%d, interp=%d)", s_eclRealFrames,
-                             s_eclInterpFrames);
-            g_FGCompat.SetFSRFGActive(true);
+            if (UpdateHeuristicFSRFGState(true, "ecl-pattern")) {
+                s_eclFGDetected = true;
+                HookLogImportant("DX12: FG detected via ECL count pattern (real=%d, interp=%d)", s_eclRealFrames,
+                                 s_eclInterpFrames);
+            }
         }
     }
 
@@ -2510,8 +4596,10 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
     // on both real and interpolated FG frames.  Without an overlay queue, we
     // must skip interpolated frames to avoid submitting work on the game queue
     // during Streamline's Present pipeline.
-    bool hasDedicatedQueue = (g_State.overlayQueue != nullptr && g_State.crossQueueFence != nullptr &&
-                              g_State.crossQueueFenceEvent != nullptr);
+    // Check ShouldUseDedicatedOverlayQueue() (FG active) instead of just queue
+    // existence, since the queue is now kept alive across FG mode switches.
+    bool hasDedicatedQueue = ShouldUseDedicatedOverlayQueue() && g_State.overlayQueue != nullptr &&
+                             g_State.crossQueueFence != nullptr && g_State.crossQueueFenceEvent != nullptr;
     if (isInterpolatedFrame && !hasDedicatedQueue) {
         sc3->Release();
         return;
@@ -2536,6 +4624,34 @@ void HandleDX12ResizeEnd() {
 }
 }  // namespace DXGIShared
 
+// Flush the deferred fence Signal AFTER Present.  The NVIDIA driver stalls the
+// GPU when a Signal call sits between the overlay ECL and Present.  By deferring
+// the Signal to after Present, the presentation pipeline is uninterrupted.
+extern "C" __declspec(dllexport) void DX12_FlushDeferredSignal() {
+    UINT64 deferredVal = g_deferredSignalValue.load(std::memory_order_acquire);
+    if (deferredVal == 0 || !g_State.fence)
+        return;
+
+    // Use the queue that actually submitted the overlay ECL.  When FG runtimes
+    // create swapchains with their own queue, this may differ from g_CommandQueue.
+    ID3D12CommandQueue* q = g_deferredSignalQueue.load(std::memory_order_acquire);
+    if (!q)
+        q = g_CommandQueue.load(std::memory_order_acquire);
+    if (!q)
+        return;
+
+    HRESULT hr = q->Signal(g_State.fence, deferredVal);
+    if (SUCCEEDED(hr)) {
+        int allocIdx = g_deferredSignalAllocIdx.load(std::memory_order_acquire);
+        g_State.currentFenceValue = deferredVal;
+        if (allocIdx >= 0 && allocIdx < (int)g_State.fenceValues.size())
+            g_State.fenceValues[allocIdx] = deferredVal;
+    }
+    g_deferredSignalValue.store(0, std::memory_order_release);
+    g_deferredSignalAllocIdx.store(-1, std::memory_order_release);
+    g_deferredSignalQueue.store(nullptr, std::memory_order_release);
+}
+
 // External function for swapchain wrapper to wait for overlay completion before
 // Present
 extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12CommandQueue* pGameQueue) {
@@ -2547,18 +4663,47 @@ extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12Comman
     if (fenceValueToWait == 0)
         return;
 
-    // CRITICAL FIX: When window is not foreground, do NOT attempt any fence waiting.
-    // Even WaitForSingleObject(fenceEvent, 0) can hang in the kernel driver
-    // (NtGdiDdDDISubmitWaitForSyncObjectsToHwQueue) when GPU is throttled during Alt+Tab.
-    // Just check if fence is already signaled and return immediately.
-    // The overlay will be visible on the next frame when GPU resumes.
+    const char* overlayModule = ce::overlay_compat::GetStartupBlockingOverlayModuleName();
+    const bool actualFGActive = IsActualFrameGenerationActive();
+    // Check ShouldUseDedicatedOverlayQueue() (FG active) instead of just queue
+    // existence, since the queue is now kept alive across FG mode switches.
+    const bool usingDedicatedQueue = ShouldUseDedicatedOverlayQueue() && (g_State.overlayQueue != nullptr);
+    if ((!usingDedicatedQueue && (!overlayModule || actualFGActive)) || !g_State.fenceEvent)
+        return;
+
+    if (!usingDedicatedQueue) {
+        DWORD foregroundPid = 0;
+        HWND foregroundWindow = GetForegroundWindow();
+        if (!foregroundWindow)
+            return;
+        GetWindowThreadProcessId(foregroundWindow, &foregroundPid);
+        if (foregroundPid != GetCurrentProcessId())
+            return;
+    }
+
     if (g_State.fence->GetCompletedValue() >= fenceValueToWait)
         return;
 
-    // Fence not ready - don't wait, just return. This is safe because:
-    // 1. The overlay is still rendered, just might not be synchronized with this frame
-    // 2. On next frame when GPU resumes, everything will be back in sync
-    // 3. Prevents deadlock in driver when GPU is throttled
+    HRESULT setHr = g_State.fence->SetEventOnCompletion(fenceValueToWait, g_State.fenceEvent);
+    if (FAILED(setHr))
+        return;
+
+    static std::atomic<int> s_waitLogCount{0};
+    constexpr DWORD kCompatWaitTimeoutMs = 16;
+    DWORD waitHr = WaitForSingleObject(g_State.fenceEvent, kCompatWaitTimeoutMs);
+    if (waitHr == WAIT_TIMEOUT) {
+        if (s_waitLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
+            HookLog("DX12: Overlay completion wait timed out for %s mode (fence=%llu)",
+                    usingDedicatedQueue ? "dedicated-queue" : (overlayModule ? overlayModule : "single-queue"),
+                    (unsigned long long)fenceValueToWait);
+        }
+    } else if (waitHr == WAIT_OBJECT_0) {
+        if (s_waitLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
+            HookLog("DX12: Overlay completion wait finished for %s mode (fence=%llu)",
+                    usingDedicatedQueue ? "dedicated-queue" : (overlayModule ? overlayModule : "single-queue"),
+                    (unsigned long long)fenceValueToWait);
+        }
+    }
 }
 
 static const GUID SKID_D3D12SwapChainBufferBitmap = {
@@ -2604,6 +4749,8 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         return;
     }
 
+    NoteStartupBlockingRenderModuleActivityFromECL(pThis, CE_RETURN_ADDRESS());
+
     // Debug: Log first few calls to verify hook is working
     int count = g_ECLCallCount.load(std::memory_order_relaxed);
     if (count < 5) {
@@ -2613,13 +4760,20 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         }
     }
 
-    // Count command lists from game queues to detect real frames
-    g_CommandListsExecutedThisFrame.fetch_add(NumCommandLists, std::memory_order_relaxed);
+    // Count command lists only from the primary game queue to detect real frames.
+    // FG runtimes (FSR FG) create their own queues that share the vtable; without
+    // this filter, interpolated frames have similar ECL counts to real frames.
+    ID3D12CommandQueue* primaryQ = g_PrimaryGameQueue.load(std::memory_order_acquire);
+    if (!primaryQ || pThis == primaryQ) {
+        g_CommandListsExecutedThisFrame.fetch_add(NumCommandLists, std::memory_order_relaxed);
+    }
 
     // Register game's queue for overlay execution
     DX12_SetCommandQueue(pThis);
 
     ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
+
+
     if (original)
         original(pThis, NumCommandLists, ppCommandLists);
 }
@@ -2775,7 +4929,14 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2* pThis, IUn
         if (SUCCEEDED((*ppSC)->QueryInterface(IID_PPV_ARGS(&sc3)))) {
             sc3->Release();
         }
+        // NOTE: Do NOT call DX12_SetSwapchainQueue here.  This factory vtable
+        // hook fires for ALL callers (including Streamline/Social Club internal
+        // swapchain operations).  Capturing queues from non-game swapchains
+        // corrupts g_SwapchainQueue and causes ERR_GFX_STATE.  The inline and
+        // global hooks already capture the queue for legitimate game/FG calls.
     }
+
+    return hr;
 }
 
 void STDMETHODCALLTYPE DetourCreateSampler(ID3D12Device* pDevice, const D3D12_SAMPLER_DESC* pDesc,

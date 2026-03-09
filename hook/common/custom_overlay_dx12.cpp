@@ -12,6 +12,15 @@ namespace CustomOverlay {
 
 static uint64_t s_FrameCounter = 0;
 static uint64_t s_RenderCounter = 0;
+static std::atomic<int> s_dx12RenderProbeMode{static_cast<int>(DX12RenderProbeMode::kNone)};
+
+void SetDX12RenderProbeMode(DX12RenderProbeMode mode) {
+    s_dx12RenderProbeMode.store(static_cast<int>(mode), std::memory_order_release);
+}
+
+DX12RenderProbeMode GetDX12RenderProbeMode() {
+    return static_cast<DX12RenderProbeMode>(s_dx12RenderProbeMode.load(std::memory_order_acquire));
+}
 
 DX12Backend::DX12Backend(ID3D12Device* dev, ID3D12CommandQueue* queue, DXGI_FORMAT format)
     : device(dev),
@@ -442,6 +451,60 @@ void DX12Backend::SetRenderTarget(ID3D12GraphicsCommandList* cmdList, D3D12_CPU_
     currentRTV = rtvHandle;
 }
 
+bool DX12Backend::PrimeResources(ID3D12GraphicsCommandList* cmdList) {
+    DX12_DEBUG_STEP("PrimeResources", "START - initialized=%d, cmdList=%p, pending=%d", initialized ? 1 : 0, cmdList,
+                    HasPendingResources() ? 1 : 0);
+
+    if (!initialized || !cmdList) {
+        DX12_DEBUG_STEP("PrimeResources", "FAILED - initialized=%d, cmdList=%p", initialized ? 1 : 0, cmdList);
+        return false;
+    }
+
+    return UploadFontTextureIfNeeded(cmdList);
+}
+
+bool DX12Backend::UploadFontTextureIfNeeded(ID3D12GraphicsCommandList* cmdList) {
+    if (fontUploaded.load(std::memory_order_acquire) || !uploadBuffer || !fontTexture) {
+        DX12_DEBUG_STEP("UploadFontTextureIfNeeded", "No deferred upload needed");
+        return true;
+    }
+    if (!cmdList) {
+        DX12_DEBUG_STEP("UploadFontTextureIfNeeded", "FAILED - no command list");
+        return false;
+    }
+
+    DX12_DEBUG_STEP("UploadFontTextureIfNeeded", "Font upload: Copying texture to default heap");
+
+    D3D12_TEXTURE_COPY_LOCATION srcLoc = {};
+    srcLoc.pResource = uploadBuffer.Get();
+    srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    srcLoc.PlacedFootprint = fontTextureFootprint;
+
+    D3D12_TEXTURE_COPY_LOCATION dstLoc = {};
+    dstLoc.pResource = fontTexture.Get();
+    dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    dstLoc.SubresourceIndex = 0;
+
+    DX12_DEBUG_STEP("UploadFontTextureIfNeeded", "Font upload: Calling CopyTextureRegion");
+    cmdList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+    DX12_DEBUG_STEP("UploadFontTextureIfNeeded", "Font upload: CopyTextureRegion complete");
+
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = fontTexture.Get();
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+
+    DX12_DEBUG_STEP("UploadFontTextureIfNeeded", "Font upload: Transitioning COPY_DEST -> PIXEL_SHADER_RESOURCE");
+    cmdList->ResourceBarrier(1, &barrier);
+    DX12_DEBUG_STEP("UploadFontTextureIfNeeded", "Font upload: Barrier submitted");
+
+    fontUploaded.store(true, std::memory_order_release);
+    DX12_DEBUG_STEP("UploadFontTextureIfNeeded", "Font upload: COMPLETE - fontUploaded=true");
+    return true;
+}
+
 bool DX12Backend::ResizeVertexBuffer(int slot, size_t requiredBytes) {
     DX12_DEBUG_STEP("ResizeVertexBuffer", "START - slot=%d, required=%zu, current=%zu", slot, requiredBytes,
                     vertexBufferSize[slot]);
@@ -561,43 +624,30 @@ void DX12Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
     s_RenderCounter++;
     DX12_DEBUG_FRAME(s_RenderCounter, "Render: vertices=%zu, indices=%zu, commands=%zu, viewport=%dx%d",
                      vertices.size(), indices.size(), commands.size(), viewportWidth, viewportHeight);
+    static std::atomic<int> s_renderImportantLogCount{0};
+    const bool logThisRender = s_renderImportantLogCount.fetch_add(1, std::memory_order_relaxed) < 10;
+    if (logThisRender) {
+        HookLogImportant("DX12 Overlay: Backend render begin (verts=%zu, indices=%zu, commands=%zu, fontUploaded=%d)",
+                         vertices.size(), indices.size(), commands.size(),
+                         fontUploaded.load(std::memory_order_acquire) ? 1 : 0);
+    }
 
     if (!initialized || !currentCmdList || vertices.empty()) {
         DX12_DEBUG_STEP("Render", "EARLY RETURN - initialized=%d, cmdList=%p, verts=%zu", initialized, currentCmdList,
                         vertices.size());
+        if (logThisRender) {
+            HookLogImportant("DX12 Overlay: Backend render skipped (initialized=%d, cmdList=%p, verts=%zu)",
+                             initialized ? 1 : 0, currentCmdList, vertices.size());
+        }
         return;
     }
 
-    if (!fontUploaded && uploadBuffer && fontTexture) {
-        DX12_DEBUG_STEP("Render", "Font upload: Copying texture to default heap");
-
-        D3D12_TEXTURE_COPY_LOCATION srcLoc = {};
-        srcLoc.pResource = uploadBuffer.Get();
-        srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-        srcLoc.PlacedFootprint = fontTextureFootprint;
-
-        D3D12_TEXTURE_COPY_LOCATION dstLoc = {};
-        dstLoc.pResource = fontTexture.Get();
-        dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-        dstLoc.SubresourceIndex = 0;
-
-        DX12_DEBUG_STEP("Render", "Font upload: Calling CopyTextureRegion");
-        currentCmdList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
-        DX12_DEBUG_STEP("Render", "Font upload: CopyTextureRegion complete");
-
-        D3D12_RESOURCE_BARRIER barrier = {};
-        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        barrier.Transition.pResource = fontTexture.Get();
-        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-
-        DX12_DEBUG_STEP("Render", "Font upload: Transitioning COPY_DEST -> PIXEL_SHADER_RESOURCE");
-        currentCmdList->ResourceBarrier(1, &barrier);
-        DX12_DEBUG_STEP("Render", "Font upload: Barrier submitted");
-
-        fontUploaded.store(true, std::memory_order_release);
-        DX12_DEBUG_STEP("Render", "Font upload: COMPLETE - fontUploaded=true");
+    if (!UploadFontTextureIfNeeded(currentCmdList)) {
+        DX12_DEBUG_STEP("Render", "EARLY RETURN - deferred font upload failed");
+        if (logThisRender) {
+            HookLogImportant("DX12 Overlay: Backend render aborted because deferred font upload failed");
+        }
+        return;
     }
 
     size_t vbSize = vertices.size() * sizeof(DrawVertex);
@@ -671,17 +721,32 @@ void DX12Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
     currentCmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
     ID3D12PipelineState* lastPSO = nullptr;
+    int psoBindCount = 0;
+    const DX12RenderProbeMode probeMode = GetDX12RenderProbeMode();
     int drawCallCount = 0;
     for (const auto& cmd : commands) {
         ID3D12PipelineState* pso = cmd.useTexture ? pipelineState.Get() : pipelineStateSolid.Get();
         if (pso != lastPSO) {
             currentCmdList->SetPipelineState(pso);
             lastPSO = pso;
+            ++psoBindCount;
+        }
+        if (probeMode == DX12RenderProbeMode::kStateSetupOnly) {
+            continue;
         }
         currentCmdList->DrawIndexedInstanced(cmd.indexCount, 1, cmd.indexOffset, 0, 0);
         drawCallCount++;
     }
     DX12_DEBUG_FRAME(s_RenderCounter, "Render complete: %d draw calls", drawCallCount);
+    if (logThisRender) {
+        if (probeMode == DX12RenderProbeMode::kStateSetupOnly) {
+            HookLogImportant(
+                "DX12 Overlay: Backend state probe complete (drawCalls skipped, psoBinds=%d, slot=%d)", psoBindCount,
+                slot);
+        } else {
+            HookLogImportant("DX12 Overlay: Backend render complete (drawCalls=%d, slot=%d)", drawCallCount, slot);
+        }
+    }
 }
 
 }  // namespace CustomOverlay

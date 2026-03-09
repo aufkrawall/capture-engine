@@ -9,6 +9,7 @@
 #include "freeze_watchdog.h"
 #include "hook_common.h"
 #include "logging.h"
+#include "overlay_compat.h"
 #include "performance_metrics.h"
 
 #include <d3d11.h>
@@ -32,6 +33,71 @@ static bool IsShuttingDown() {
 
 // Check if we're inside a CWrapDXGISwapChain Present call
 extern bool IsInWrapperPresent();
+
+#ifdef BUILDING_CAPTURE_HOOK
+extern "C" void DX12_WaitForOverlayCompletion(ID3D12CommandQueue* pQueue);
+extern "C" void DX12_FlushDeferredSignal();
+
+static void InvokeDX12WaitForOverlayCompletion(ID3D12CommandQueue* pQueue) {
+    DX12_WaitForOverlayCompletion(pQueue);
+}
+static void InvokeDX12FlushDeferredSignal() {
+    DX12_FlushDeferredSignal();
+}
+#else
+using PFN_DX12WaitForOverlayCompletion = void (*)(ID3D12CommandQueue* pQueue);
+using PFN_DX12FlushDeferredSignal = void (*)();
+
+static PFN_DX12WaitForOverlayCompletion ResolveDX12WaitForOverlayCompletion() {
+    static std::once_flag s_once;
+    static PFN_DX12WaitForOverlayCompletion s_fn = nullptr;
+
+    std::call_once(s_once, []() {
+        HMODULE hHook = GetModuleHandleA("capture_hook_x64.dll");
+        if (!hHook) {
+            hHook = GetModuleHandleA("capture_hook_x86.dll");
+        }
+        if (hHook) {
+            s_fn = reinterpret_cast<PFN_DX12WaitForOverlayCompletion>(
+                GetProcAddress(hHook, "DX12_WaitForOverlayCompletion"));
+        }
+    });
+
+    return s_fn;
+}
+
+static PFN_DX12FlushDeferredSignal ResolveDX12FlushDeferredSignal() {
+    static std::once_flag s_once;
+    static PFN_DX12FlushDeferredSignal s_fn = nullptr;
+
+    std::call_once(s_once, []() {
+        HMODULE hHook = GetModuleHandleA("capture_hook_x64.dll");
+        if (!hHook) {
+            hHook = GetModuleHandleA("capture_hook_x86.dll");
+        }
+        if (hHook) {
+            s_fn = reinterpret_cast<PFN_DX12FlushDeferredSignal>(
+                GetProcAddress(hHook, "DX12_FlushDeferredSignal"));
+        }
+    });
+
+    return s_fn;
+}
+
+static void InvokeDX12WaitForOverlayCompletion(ID3D12CommandQueue* pQueue) {
+    PFN_DX12WaitForOverlayCompletion fn = ResolveDX12WaitForOverlayCompletion();
+    if (fn) {
+        fn(pQueue);
+    }
+}
+
+static void InvokeDX12FlushDeferredSignal() {
+    PFN_DX12FlushDeferredSignal fn = ResolveDX12FlushDeferredSignal();
+    if (fn) {
+        fn();
+    }
+}
+#endif
 
 namespace DXGIShared {
 
@@ -210,9 +276,8 @@ static bool IsVulkanActive() {
     return s_vulkanPresent;
 }
 
-static bool IsSteamOverlayLoaded() {
-    return GetModuleHandleA("gameoverlayrenderer64.dll") != nullptr ||
-           GetModuleHandleA("gameoverlayrenderer.dll") != nullptr;
+static bool IsThirdPartyOverlayLoaded() {
+    return ce::overlay_compat::IsThirdPartyOverlayLoaded();
 }
 
 // Unified Detours
@@ -408,7 +473,17 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
 
     ProcessVSyncOverride(SyncInterval, Flags);
 
+    if (api == APIType::D3D12) {
+        InvokeDX12WaitForOverlayCompletion(nullptr);
+    }
+
     HRESULT hr = CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+
+    // Flush deferred overlay fence Signal AFTER Present.  The NVIDIA driver
+    // stalls the GPU when Signal sits between our overlay ECL and Present.
+    if (api == APIType::D3D12) {
+        InvokeDX12FlushDeferredSignal();
+    }
 
     if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
         if (!g_SharedState.deviceRemovedFatal.exchange(true)) {
@@ -516,7 +591,16 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
 
     ProcessVSyncOverride(SyncInterval, Flags);
 
+    if (api == APIType::D3D12) {
+        InvokeDX12WaitForOverlayCompletion(nullptr);
+    }
+
     HRESULT hr = CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+
+    // Flush deferred overlay fence Signal AFTER Present.
+    if (api == APIType::D3D12) {
+        InvokeDX12FlushDeferredSignal();
+    }
 
     if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
         if (!g_SharedState.deviceRemovedFatal.exchange(true)) {
@@ -719,10 +803,11 @@ bool InstallHooks(IDXGISwapChain* pSwapChain, bool presentOnly) {
     HookLog("DXGIShared::InstallHooks CALLED #%d (swapchain=%p, presentOnly=%d)", count, pSwapChain,
             presentOnly ? 1 : 0);
 
-    // Steam overlay + DXGI vtable hooks can create recursive Present chains.
-    // In this case wrapper-based interception remains active and avoids hook wars.
-    if (IsSteamOverlayLoaded()) {
-        HookLog("DXGIShared::InstallHooks: Steam overlay detected, skipping DXGI swapchain hooks");
+    // Third-party overlays can install their own DXGI hooks and form recursive
+    // Present chains with vtable patching. In that case the wrapper-based path
+    // remains active and avoids hook wars.
+    if (IsThirdPartyOverlayLoaded()) {
+        HookLog("DXGIShared::InstallHooks: External overlay detected, skipping DXGI swapchain hooks");
         return true;
     }
 
@@ -772,6 +857,10 @@ bool InstallHooks(IDXGISwapChain* pSwapChain, bool presentOnly) {
     VirtualProtect(vtable, 40 * sizeof(void*), oldProtect, &oldProtect);
     HookLog("DXGIShared::InstallHooks: All vtable hooks installed successfully");
     return true;
+}
+
+bool HasPresentInlineHooks() {
+    return oPresentTrampoline != nullptr || oPresent1Trampoline != nullptr;
 }
 
 // Lazy hook installation - installs hooks on first Present if they were

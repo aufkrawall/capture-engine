@@ -18,6 +18,14 @@ namespace CustomOverlay {
 
 using Microsoft::WRL::ComPtr;
 
+enum class DX12RenderProbeMode : int {
+    kNone = 0,
+    kStateSetupOnly = 1,
+};
+
+void SetDX12RenderProbeMode(DX12RenderProbeMode mode);
+DX12RenderProbeMode GetDX12RenderProbeMode();
+
 class DX12Backend : public RendererBackend {
 public:
     DX12Backend(ID3D12Device* device, ID3D12CommandQueue* queue, DXGI_FORMAT rtvFormat);
@@ -38,12 +46,17 @@ public:
 
     // DX12-specific: Set render target before rendering
     void SetRenderTarget(ID3D12GraphicsCommandList* cmdList, D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle);
+    bool PrimeResources(ID3D12GraphicsCommandList* cmdList);
+    bool HasPendingResources() const {
+        return !fontUploaded.load(std::memory_order_acquire) && uploadBuffer && fontTexture;
+    }
 
 private:
     bool CreateRootSignature();
     bool CreatePipelineState();
     bool CreateBuffers();
     bool CreateFontTexture(int width, int height, const uint8_t* data);
+    bool UploadFontTextureIfNeeded(ID3D12GraphicsCommandList* cmdList);
     bool ResizeVertexBuffer(int slot, size_t requiredBytes);
     bool ResizeIndexBuffer(int slot, size_t requiredBytes);
 

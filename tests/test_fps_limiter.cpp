@@ -3,6 +3,8 @@
 #include <chrono>
 #include <thread>
 #include "../hook/common/fps_limiter.h"
+#include "../hook/common/freeze_watchdog.h"
+#include "../hook/common/overlay_compat.h"
 
 class FpsLimiterTest : public ::testing::Test {
 protected:
@@ -17,6 +19,7 @@ protected:
         QueryPerformanceFrequency(&freq);
         g_FGCompat.SetDLSSFGActive(false);
         g_FGCompat.SetFSRFGActive(false);
+        g_FGCompat.SetHeuristicFSRFGActive(false);
     }
 };
 
@@ -281,6 +284,19 @@ TEST_F(FpsLimiterTest, FGFallback_UsesExplicitDLSSMultiplier) {
     g_FGCompat.SetDLSSFGActive(false);
 }
 
+TEST_F(FpsLimiterTest, HeuristicFSRStateIsClearedWhenDLSSFGActivates) {
+    g_FGCompat.SetHeuristicFSRFGActive(true);
+    EXPECT_TRUE(g_FGCompat.IsFGActive());
+    EXPECT_EQ(g_FGCompat.GetActiveFGType(), FGCompatibility::FGType::FSR_FG);
+
+    g_FGCompat.SetDLSSFGActive(true);
+    EXPECT_EQ(g_FGCompat.GetActiveFGType(), FGCompatibility::FGType::DLSS_FG);
+    EXPECT_FALSE(g_FGCompat.IsHeuristicFSRFGActive());
+
+    g_FGCompat.SetDLSSFGActive(false);
+    EXPECT_EQ(g_FGCompat.GetActiveFGType(), FGCompatibility::FGType::None);
+}
+
 // Test ParseLimiterMode
 TEST(LimiterModeParseTest, ParsesAllValues) {
     EXPECT_EQ(ParseLimiterMode("basic"), LimiterMode::kBasic);
@@ -295,4 +311,108 @@ TEST(LimiterModeParseTest, ParsesAllValues) {
     EXPECT_EQ(ParseLimiterMode("auto"), LimiterMode::kAuto);
     EXPECT_EQ(ParseLimiterMode(""), LimiterMode::kAuto);         // Default
     EXPECT_EQ(ParseLimiterMode("invalid"), LimiterMode::kAuto);  // Default
+}
+
+TEST(OverlayCompatTest, DetectsKnownOverlayModulePaths) {
+    EXPECT_TRUE(ce::overlay_compat::IsThirdPartyOverlayModulePath("C:\\Games\\GTAV\\socialclub.dll"));
+    EXPECT_TRUE(
+        ce::overlay_compat::IsThirdPartyOverlayModulePath("C:\\Games\\GTAV\\EOSOVH_Win64_Shipping.dll"));
+    EXPECT_TRUE(
+        ce::overlay_compat::IsThirdPartyOverlayModulePath(L"C:\\Program Files\\Epic\\EOSOVH_Win64_Shipping.dll"));
+    EXPECT_FALSE(ce::overlay_compat::IsThirdPartyOverlayModulePath("C:\\capture\\capture_hook_x64.dll"));
+}
+
+TEST(OverlayCompatTest, StartupOverlaySuppressionTracksVisibleWindowAndCooldown) {
+    EXPECT_TRUE(ce::overlay_compat::ShouldSuppressDX12OverlayForStartup(true, false, false, 0, 5000, 5000, 5000));
+    EXPECT_TRUE(ce::overlay_compat::ShouldSuppressDX12OverlayForStartup(true, false, true, 6000, 5000, 0, 5000));
+    EXPECT_TRUE(
+        ce::overlay_compat::ShouldSuppressDX12OverlayForStartup(true, false, false, 6000, 5000, 1000, 5000));
+    EXPECT_FALSE(
+        ce::overlay_compat::ShouldSuppressDX12OverlayForStartup(true, false, false, 6000, 5000, 5000, 5000));
+    EXPECT_FALSE(ce::overlay_compat::ShouldSuppressDX12OverlayForStartup(true, true, false, 0, 5000, 0, 5000));
+    EXPECT_FALSE(ce::overlay_compat::ShouldSuppressDX12OverlayForStartup(false, false, false, 0, 5000, 0, 5000));
+}
+
+TEST(OverlayCompatTest, DetectsProcessesNeedingStartupInitGrace) {
+    EXPECT_TRUE(ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess("GTA5.exe"));
+    EXPECT_TRUE(ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess("GTA5_Enhanced.exe"));
+    EXPECT_FALSE(ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess("Cyberpunk2077.exe"));
+}
+
+TEST(OverlayCompatTest, PostResumeInitDelayRequiresForegroundAndUsableWindow) {
+    EXPECT_TRUE(ce::overlay_compat::ShouldDelayDX12OverlayInitAfterStartupResume(true, true, false, true, 1280, 720, 0,
+                                                                                 5000));
+    EXPECT_TRUE(ce::overlay_compat::ShouldDelayDX12OverlayInitAfterStartupResume(true, true, false, false, 1280, 720,
+                                                                                 6000, 5000));
+    EXPECT_TRUE(ce::overlay_compat::ShouldDelayDX12OverlayInitAfterStartupResume(true, true, false, true, 320, 200,
+                                                                                 6000, 5000));
+    EXPECT_FALSE(ce::overlay_compat::ShouldDelayDX12OverlayInitAfterStartupResume(true, true, false, true, 1280, 720,
+                                                                                  5000, 5000));
+    EXPECT_FALSE(ce::overlay_compat::ShouldDelayDX12OverlayInitAfterStartupResume(true, false, false, true, 1280, 720,
+                                                                                  0, 5000));
+    EXPECT_FALSE(ce::overlay_compat::ShouldDelayDX12OverlayInitAfterStartupResume(true, true, true, true, 1280, 720,
+                                                                                  0, 5000));
+}
+
+TEST(OverlayCompatTest, StartupCompatibleAllocatorPoolCanShrinkForStartupOverlay) {
+    EXPECT_EQ(3u, ce::overlay_compat::GetStartupCompatibleDX12AllocatorPoolSize(true, true, false, 16));
+    EXPECT_EQ(16u, ce::overlay_compat::GetStartupCompatibleDX12AllocatorPoolSize(true, false, false, 16));
+    EXPECT_EQ(16u, ce::overlay_compat::GetStartupCompatibleDX12AllocatorPoolSize(true, true, true, 16));
+    EXPECT_EQ(16u, ce::overlay_compat::GetStartupCompatibleDX12AllocatorPoolSize(false, true, false, 16));
+}
+
+TEST(OverlayCompatTest, StartupCompatibleRenderDelayOnlyAppliesBeforeSettle) {
+    EXPECT_TRUE(ce::overlay_compat::ShouldDelayDX12OverlayRenderAfterSyncInit(true, false, 4999, 5000));
+    EXPECT_FALSE(ce::overlay_compat::ShouldDelayDX12OverlayRenderAfterSyncInit(true, false, 5000, 5000));
+    EXPECT_FALSE(ce::overlay_compat::ShouldDelayDX12OverlayRenderAfterSyncInit(true, true, 1000, 5000));
+    EXPECT_FALSE(ce::overlay_compat::ShouldDelayDX12OverlayRenderAfterSyncInit(false, false, 1000, 5000));
+}
+
+TEST(OverlayCompatTest, StartupBlockingOverlayCanSuppressDX12Render) {
+    EXPECT_TRUE(
+        ce::overlay_compat::ShouldSuppressDX12OverlayRenderForLoadedStartupOverlay(true, false,
+                                                                                   "SocialClubD3D12Renderer.dll", 1000, 30000));
+    EXPECT_FALSE(
+        ce::overlay_compat::ShouldSuppressDX12OverlayRenderForLoadedStartupOverlay(true, true,
+                                                                                   "SocialClubD3D12Renderer.dll", 1000, 30000));
+    EXPECT_FALSE(
+        ce::overlay_compat::ShouldSuppressDX12OverlayRenderForLoadedStartupOverlay(true, false,
+                                                                                   "SocialClubD3D12Renderer.dll", 30000, 30000));
+    EXPECT_FALSE(
+        ce::overlay_compat::ShouldSuppressDX12OverlayRenderForLoadedStartupOverlay(true, false, nullptr, 1000, 30000));
+    EXPECT_FALSE(
+        ce::overlay_compat::ShouldSuppressDX12OverlayRenderForLoadedStartupOverlay(false, false,
+                                                                                   "SocialClubD3D12Renderer.dll", 1000, 30000));
+}
+
+TEST(OverlayCompatTest, RecentBlockingRendererActivityExtendsDX12RenderSuppression) {
+    EXPECT_TRUE(ce::overlay_compat::HasRecentDX12StartupBlockingRenderActivity(9000, 10000, 2000));
+    EXPECT_FALSE(ce::overlay_compat::HasRecentDX12StartupBlockingRenderActivity(8000, 10000, 2000));
+    EXPECT_FALSE(ce::overlay_compat::HasRecentDX12StartupBlockingRenderActivity(0, 10000, 2000));
+    EXPECT_TRUE(ce::overlay_compat::ShouldSuppressDX12OverlayRenderForRecentBlockingRendererActivity(
+        true, false, "SocialClubD3D12Renderer.dll", true));
+    EXPECT_FALSE(ce::overlay_compat::ShouldSuppressDX12OverlayRenderForRecentBlockingRendererActivity(
+        true, false, "SocialClubD3D12Renderer.dll", false));
+    EXPECT_FALSE(ce::overlay_compat::ShouldSuppressDX12OverlayRenderForRecentBlockingRendererActivity(
+        true, true, "SocialClubD3D12Renderer.dll", true));
+}
+
+TEST(OverlayCompatTest, DedicatedQueueSupportsFGAndStartupCompat) {
+    EXPECT_FALSE(ce::overlay_compat::ShouldUseDedicatedDX12OverlayQueue(false, false, nullptr));
+    EXPECT_TRUE(ce::overlay_compat::ShouldUseDedicatedDX12OverlayQueue(true, false, nullptr));
+    // Dedicated queue is now FG-only; startup compat uses single-queue mode to avoid
+    // cross-queue resource state conflicts (ERR_GFX_STATE in GTA5 Enhanced).
+    EXPECT_FALSE(ce::overlay_compat::ShouldUseDedicatedDX12OverlayQueue(false, true, "socialclub.dll"));
+    EXPECT_FALSE(ce::overlay_compat::ShouldUseDedicatedDX12OverlayQueue(false, true, nullptr));
+}
+
+TEST_F(FpsLimiterTest, FreezeWatchdogTimeoutOnlyExpandsForActiveDLSSFG) {
+    FreezeWatchdog watchdog;
+    const double baselineTimeout = watchdog.GetRecommendedTimeout();
+
+    g_FGCompat.SetDLSSFGActive(true);
+    EXPECT_GT(watchdog.GetRecommendedTimeout(), baselineTimeout);
+
+    g_FGCompat.SetDLSSFGActive(false);
+    EXPECT_DOUBLE_EQ(watchdog.GetRecommendedTimeout(), baselineTimeout);
 }

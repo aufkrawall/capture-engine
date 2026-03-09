@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include "../apis/lod_helper.h"
 #include "../apis/dx11_hook.h"
+#include "../common/overlay_compat.h"
 #include "hook_common.h"
 #include "wrapper_hooks.h"
 
@@ -331,8 +332,7 @@ bool PatchIATAllModules(const char* sourceModule, const char* functionName, void
                 std::wstring wsModName(szModName);
                 if (wsModName.find(L"capture_hook") != std::wstring::npos ||
                     wsModName.find(L"d3d12_wrappers") != std::wstring::npos ||
-                    wsModName.find(L"gameoverlayrenderer") != std::wstring::npos ||  // Steam overlay
-                    wsModName.find(L"discord_hook") != std::wstring::npos) {         // Discord overlay
+                    ce::overlay_compat::IsThirdPartyOverlayModulePath(szModName)) {
                     // Skip our own modules and third-party overlay DLLs that also hook
                     // graphics APIs. Patching their GetProcAddress IAT causes them to
                     // receive our hook address as the "original" function, creating a
@@ -890,7 +890,7 @@ FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
                     for (char* p = callerPath; *p; ++p)
                         *p = (char)tolower((unsigned char)*p);
                     if (strstr(callerPath, "\\system32\\") || strstr(callerPath, "\\syswow64\\") ||
-                        strstr(callerPath, "gameoverlayrenderer") || strstr(callerPath, "discord_hook")) {
+                        ce::overlay_compat::IsThirdPartyOverlayModulePath(callerPath)) {
                         return proc;
                     }
                 }

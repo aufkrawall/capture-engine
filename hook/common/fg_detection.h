@@ -41,6 +41,16 @@ public:
         return cachedOutputFPS.load();
     }
     float GetBaseFPS() const {
+        // When DLSS FG multiplier is known from Streamline API, derive base FPS
+        // directly from output FPS.  The ECL-count-based cachedBaseFPS is unreliable
+        // for DLSS FG because our ECL hook counts ALL queues, including Streamline's
+        // internal FG queue — making real and interpolated frames look identical.
+        const int apiMultiplier = dlssFGMultiplier.load(std::memory_order_acquire);
+        if (apiMultiplier >= 2) {
+            float output = cachedOutputFPS.load();
+            if (output > 1.0f)
+                return output / apiMultiplier;
+        }
         return cachedBaseFPS.load();
     }
 
@@ -100,11 +110,15 @@ public:
     void SetDLSSFGActive(bool active);
     void SetDLSSFGMultiplier(int multiplier);
     void SetFSRFGActive(bool active);
+    void SetHeuristicFSRFGActive(bool active);
     bool IsDLSSFGApiActive() const {
         return dlssFGApiActive.load(std::memory_order_acquire);
     }
     bool IsFSRFGApiActive() const {
         return fsrFGApiActive.load(std::memory_order_acquire);
+    }
+    bool IsHeuristicFSRFGActive() const {
+        return heuristicFSRFGActive.load(std::memory_order_acquire);
     }
 
 private:
@@ -152,6 +166,7 @@ private:
     // Usage-based FG activation flags (set by API hooks)
     std::atomic<bool> dlssFGApiActive{false};
     std::atomic<bool> fsrFGApiActive{false};
+    std::atomic<bool> heuristicFSRFGActive{false};
     std::atomic<int> dlssFGMultiplier{0};
 
     // Internal methods

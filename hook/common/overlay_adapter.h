@@ -46,6 +46,10 @@ public:
                     void* instanceDispatch = nullptr);  // VkDevice, VkPhysicalDevice, VkQueue,
                                                         // DeviceDispatch*, InstanceDispatch*
 
+    // Initialize with a pre-created backend (for descriptor-free DX12, etc.)
+    bool InitCustom(CustomOverlay::RendererBackend* customBackend,
+                    OverlayBackendType type = OverlayBackendType::DX12);
+
     void Shutdown();
     void SetShutdownMode(bool skipDeviceRelease);  // Call before Shutdown when
                                                    // device is being destroyed
@@ -82,6 +86,8 @@ public:
 
     // DX12-specific: Set render target before RenderOverlay
     void SetDX12RenderTarget(void* cmdList, void* rtvHandle);
+    bool PrimeDX12Resources(void* cmdList);
+    bool HasPendingDX12Resources() const;
 
     // Render the overlay (called after BeginFrame in hook's render path)
     void RenderOverlay(int viewportWidth, int viewportHeight);
