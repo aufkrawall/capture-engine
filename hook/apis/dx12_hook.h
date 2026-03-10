@@ -74,6 +74,7 @@ void DX12_OnSwapchainResizeEnd();
 void DX12_InvalidateSwapchain();
 void DX12_SignalFSR4SwapchainRecreated();
 void DX12_AdjustWrapperResizeDepth(int delta);
+void DX12_StartTransitionCooldown();
 void RemoveGlobalVTableHooks();
 
 extern "C" {

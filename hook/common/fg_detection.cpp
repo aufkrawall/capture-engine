@@ -93,14 +93,18 @@ bool FGCompatibility::IsFGActive() const {
 
 void FGCompatibility::SetDLSSFGActive(bool active) {
     if (active) {
-        // If heuristic FSR FG is confirmed active, suppress the DLSS FG API call.
-        // Games can load both Streamline and FSR modules, and Streamline's
-        // slDLSSGSetOptions may keep firing with transient active states during
-        // FSR FG operation.  The heuristic detection (ECL pattern) is the ground
-        // truth for FSR FG.
+        // If heuristic FSR FG is active BUT the Streamline hook has NOT
+        // signaled FG, suppress — the SL API call might be spurious.
+        // When streamlineFGSignal IS set, SL told us it's really running
+        // FG, so trust that over the heuristic and clear the FSR flag.
         if (heuristicFSRFGActive.load(std::memory_order_acquire)) {
-            HookLog("FG: Suppressing DLSS FG API activation — heuristic FSR FG is active");
-            return;
+            if (!streamlineFGSignal.load(std::memory_order_acquire)) {
+                HookLog("FG: Suppressing DLSS FG API activation — heuristic FSR FG is active, SL signal OFF");
+                return;
+            }
+            // SL says FG is running AND heuristic says FSR FG — SL wins.
+            heuristicFSRFGActive.store(false, std::memory_order_release);
+            HookLog("FG: SL FG signal overrides heuristic FSR FG — clearing heuristic flag");
         }
     }
 
@@ -123,12 +127,12 @@ void FGCompatibility::SetDLSSFGActive(bool active) {
         if (oldType != newType) {
             HookLog("FG: Active type changed: %s -> %s", GetFGTypeName(oldType), GetFGTypeName(newType));
 
-            if (!dormantMode.load() && HAS_DX12_INVALIDATE &&
-                ((newType == FGType::DLSS_FG && oldType == FGType::FSR_FG) ||
-                 (newType == FGType::FSR_FG && oldType == FGType::DLSS_FG))) {
-                DX12_InvalidateSwapchain();
-                HookLog("FG: Invalidated swapchain for FG transition");
-            }
+            // NOTE: We intentionally do NOT call DX12_InvalidateSwapchain() here.
+            // swapchainInvalid=true blocks DetourPresent from calling ProcessFrame,
+            // and is only cleared by ResizeBuffers — which may never come during a
+            // pure FG type switch.  Actual swapchain recreation (if any) is handled
+            // by CreateSwapChainForHwnd → StartTransitionCooldown.  ProcessFrame's
+            // FG transition cooldown handles the overlay pause/resume.
         }
     }
 }
@@ -169,13 +173,6 @@ void FGCompatibility::SetHeuristicFSRFGActive(bool active) {
         FGType oldType = activeBehavior.exchange(newType);
         if (oldType != newType) {
             HookLog("FG: Active type changed: %s -> %s", GetFGTypeName(oldType), GetFGTypeName(newType));
-
-            if (!dormantMode.load() && HAS_DX12_INVALIDATE &&
-                ((newType == FGType::DLSS_FG && oldType == FGType::FSR_FG) ||
-                 (newType == FGType::FSR_FG && oldType == FGType::DLSS_FG))) {
-                DX12_InvalidateSwapchain();
-                HookLog("FG: Invalidated swapchain for FG transition");
-            }
         }
     }
 }
@@ -189,14 +186,6 @@ void FGCompatibility::SetFSRFGActive(bool active) {
         FGType oldType = activeBehavior.exchange(newType);
         if (oldType != newType) {
             HookLog("FG: Active type changed: %s -> %s", GetFGTypeName(oldType), GetFGTypeName(newType));
-
-            // DORMANT MODE: Skip swapchain invalidation when dormant
-            if (!dormantMode.load() && HAS_DX12_INVALIDATE &&
-                ((newType == FGType::DLSS_FG && oldType == FGType::FSR_FG) ||
-                 (newType == FGType::FSR_FG && oldType == FGType::DLSS_FG))) {
-                DX12_InvalidateSwapchain();
-                HookLog("FG: Invalidated swapchain for FG transition");
-            }
         }
     }
 }

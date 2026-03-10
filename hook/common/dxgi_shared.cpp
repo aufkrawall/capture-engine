@@ -104,6 +104,15 @@ namespace DXGIShared {
 SharedState g_SharedState;
 std::mutex g_SharedMutex;
 
+// Post-SL FG overlay callback (set by dx12_hook.cpp when SL FG is active).
+std::atomic<PostSLOverlayRenderFn> g_PostSLOverlayRenderCallback{nullptr};
+
+// Direct Streamline FG running signal (set by streamline_hook.cpp).
+std::atomic<bool> g_StreamlineFGRunning{false};
+
+// Present call counter — incremented by DetourPresent, read by SL hook to detect bypass.
+std::atomic<uint64_t> g_PresentCallCounter{0};
+
 // Global metrics for DXGI-based APIs
 static PerformanceMetrics g_DXGIPerfMetrics;
 
@@ -192,6 +201,13 @@ static PFN_ResizeBuffers1 oResizeBuffers1 = nullptr;
 // Inline hook trampolines - calling these bypasses the hook entirely
 static PFN_Present oPresentTrampoline = nullptr;
 static PFN_Present1 oPresent1Trampoline = nullptr;
+
+// Bypass trampolines — skip external E9/FF25 hooks (e.g. Streamline) at the
+// function entry point by executing original prologue bytes read from disk.
+// Used in re-entrant Present calls to actually present the frame without
+// re-entering the external hook chain.
+static PFN_Present oPresentBypass = nullptr;
+static PFN_Present1 oPresent1Bypass = nullptr;
 
 // Stored vtable pointer for unhooking Present when COM wrapper takes over
 static void** s_hookedVTable = nullptr;
@@ -299,11 +315,80 @@ static bool IsReadableMemory(const void* ptr, size_t size) {
             (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_WRITECOPY)) != 0;
 }
 
+// Forward declarations for SL vtable hook (defined below).
+HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags);
+HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
+                                         const DXGI_PRESENT_PARAMETERS* pPresentParameters);
+
 namespace {
 thread_local bool s_bypassVtableHook = false;
+
+// Streamline FG routing state.
+//
+// Problem: When SL hooks Present with an E9 JMP at the function entry, our
+// inline hook trampoline (oPresentTrampoline) bypasses SL's hook entirely,
+// because the trampoline contains the ORIGINAL function bytes (from before
+// any hooks).  With SL bypassed, Frame Generation never runs.
+//
+// Solution: Detect SL's E9 JMP on the Present function and route through it
+// instead of through the trampoline.  This way:
+//   Game → vtable[8] (DetourPresent) → overlay render →
+//   oPresent (has SL E9 JMP) → SL_Detour → SL trampoline (has our FF 25) →
+//   DetourPresent (re-entrant, forwarded to oPresentTrampoline) →
+//   real Present → SL post-Present FG → return
+//
+// The vtable already points to DetourPresent (from inline hook install).
+// We just need to change the FINAL call from oPresentTrampoline to oPresent.
+static std::atomic<bool> s_slRoutingActive{false};
+
+static bool IsSLInterposerLoaded() {
+    static bool detected = false;
+    if (detected)
+        return true;
+    detected = (GetModuleHandleA("sl.interposer.dll") != nullptr);
+    return detected;
 }
 
+// Detect if SL has hooked the Present function with an E9 JMP.
+// If so, set up routing so our final Present call goes through SL's hook
+// chain instead of bypassing it via the trampoline.
+static void DetectSLPresentHook() {
+    if (s_slRoutingActive.load(std::memory_order_acquire))
+        return;
+    if (!oPresent || !oPresentTrampoline)
+        return;
+
+    auto* funcBytes = (const uint8_t*)oPresent;
+    if (!IsReadableMemory(funcBytes, 16))
+        return;
+
+    HookLogImportant("DetectSLPresentHook: oPresent=%p bytes: %02X %02X %02X %02X %02X %02X",
+                     oPresent, funcBytes[0], funcBytes[1], funcBytes[2], funcBytes[3], funcBytes[4], funcBytes[5]);
+
+    // SL overwrites our inline hook's first 5 bytes (FF 25 00 00 00 00)
+    // with an E9 relative JMP.  Detect this.
+    if (funcBytes[0] != 0xE9) {
+        HookLog("DetectSLPresentHook: No E9 JMP detected at oPresent, SL not active yet");
+        return;
+    }
+
+    // Verify that our trampoline is different (it should have the original
+    // function bytes, not the E9 JMP).
+    auto* trampolineBytes = (const uint8_t*)oPresentTrampoline;
+    HookLogImportant("DetectSLPresentHook: trampoline=%p bytes: %02X %02X %02X %02X %02X %02X",
+                     oPresentTrampoline, trampolineBytes[0], trampolineBytes[1], trampolineBytes[2],
+                     trampolineBytes[3], trampolineBytes[4], trampolineBytes[5]);
+
+    s_slRoutingActive.store(true, std::memory_order_release);
+    HookLogImportant(
+        "SL routing ACTIVE: Present calls will go through oPresent=%p "
+        "(SL E9 JMP) instead of trampoline=%p.  SL FG chain will execute.",
+        oPresent, oPresentTrampoline);
+}
+}  // namespace
+
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
+    g_PresentCallCounter.fetch_add(1, std::memory_order_relaxed);
     static int s_entryCount = 0;
     int entryNum = ++s_entryCount;
     if (entryNum <= 10) {
@@ -369,17 +454,56 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
     }
 
-    // Break infinite re-entrancy loop caused by external overlays (e.g. Steam's
-    // gameoverlayrenderer64.dll) that read vtable[8] dynamically inside their hook
-    // and call back into DetourPresent instead of using a saved trampoline.
+    // Re-entrant Present call. When SL is loaded, calling oPresent enters SL's
+    // E9 hook, and SL may call pSwapChain->Present() via the vtable for FG frames.
+    // That vtable call hits Steam → DetourPresent → re-entrant. If we forward
+    // to oPresent here, it re-enters SL → infinite loop / stack overflow.
+    //
+    // Solution: use the bypass trampoline which executes original Present bytes
+    // from disk, jumping past SL's E9 JMP. This actually presents the frame
+    // without re-entering the external hook chain.
     if (IsRecursivePresent()) {
-        static int s_loopBreakCount = 0;
-        if (s_loopBreakCount++ < 3) {
-            HookLogImportant("DetourPresent: Re-entrancy loop broken (external overlay compat)");
+        // Post-SL overlay rendering: when SL FG is active, the overlay is
+        // rendered HERE (after SL's FG interpolation), not in ProcessFrame
+        // (which runs before SL).  This matches RTSS's approach — overlay
+        // appears on both real and interpolated frames without interfering
+        // with SL's FG pipeline.
+        auto postSLCallback = g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
+        if (postSLCallback) {
+            postSLCallback(pSwapChain);
+        }
+        static std::atomic<int> s_reentrantLogCount{0};
+        int reentrantNum = s_reentrantLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (reentrantNum <= 10 || reentrantNum == 50 || reentrantNum == 100 || (reentrantNum % 500) == 0) {
+            HookLogImportant("DetourPresent: Re-entrant #%d (postSL=%p, trampoline=%p, bypass=%p, tid=0x%04X)",
+                    reentrantNum, (void*)postSLCallback, (void*)oPresentTrampoline, (void*)oPresentBypass,
+                    GetCurrentThreadId());
+        }
+        if (oPresentTrampoline) {
+            return oPresentTrampoline(pSwapChain, SyncInterval, Flags);
+        }
+        if (oPresentBypass) {
+            return oPresentBypass(pSwapChain, SyncInterval, Flags);
+        }
+        if (reentrantNum <= 10) {
+            HookLogImportant("DetourPresent: Re-entrant #%d → S_OK (no bypass trampoline)", reentrantNum);
         }
         return S_OK;
     }
     auto presentDepthGuard = ce::make_scope_guard([]() { ReleasePresent(); });
+
+    // Detect SL's E9 JMP on Present if not already detected.
+    if (!s_slRoutingActive.load(std::memory_order_relaxed)) {
+        static int s_slCheckCount = 0;
+        bool slLoaded = IsSLInterposerLoaded();
+        if (s_slCheckCount++ < 10) {
+            HookLogImportant("DetourPresent: SL check #%d (slLoaded=%d, oPresent=%p, oPresentTrampoline=%p)",
+                             s_slCheckCount, slLoaded ? 1 : 0, oPresent, oPresentTrampoline);
+        }
+        if (slLoaded) {
+            DetectSLPresentHook();
+        }
+    }
 
     static int s_processCount = 0;
     if (s_processCount < 5) {
@@ -431,8 +555,33 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
     }
 
-    if (g_SharedState.swapchainInvalid.load(std::memory_order_acquire)) {
-        return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+    {
+        // Safety: auto-clear swapchainInvalid after 3 seconds if no resize arrives.
+        // This prevents permanent overlay death from invalidation without a matching
+        // ResizeBuffers (e.g., FG type transitions that don't recreate the swapchain).
+        static int64_t s_invalidSinceQpc = 0;
+        if (g_SharedState.swapchainInvalid.load(std::memory_order_acquire)) {
+            if (s_invalidSinceQpc == 0) {
+                LARGE_INTEGER now;
+                QueryPerformanceCounter(&now);
+                s_invalidSinceQpc = now.QuadPart;
+            }
+            LARGE_INTEGER now, freq;
+            QueryPerformanceCounter(&now);
+            QueryPerformanceFrequency(&freq);
+            double elapsedMs = (double)(now.QuadPart - s_invalidSinceQpc) * 1000.0 / (double)freq.QuadPart;
+            if (elapsedMs > 3000.0) {
+                HookLogImportant("DetourPresent: swapchainInvalid auto-cleared after %.0fms (no resize arrived)",
+                                 elapsedMs);
+                g_SharedState.swapchainInvalid.store(false, std::memory_order_release);
+                s_invalidSinceQpc = 0;
+                // Fall through to normal processing
+            } else {
+                return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+            }
+        } else {
+            s_invalidSinceQpc = 0;
+        }
     }
 
     APIType api = DetectAPIType(pSwapChain);
@@ -485,7 +634,22 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         InvokeDX12WaitForOverlayCompletion(nullptr);
     }
 
-    HRESULT hr = CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+    HRESULT hr;
+    if (s_slRoutingActive.load(std::memory_order_acquire)) {
+        // Route through oPresent which has SL's E9 JMP.  This lets SL
+        // process FG.  SL's trampoline will re-enter DetourPresent
+        // (handled above — forwarded to oPresentTrampoline for real Present).
+        static int s_slCallCount = 0;
+        if (s_slCallCount++ < 20) {
+            HookLog("DetourPresent: Calling oPresent=%p (SL E9 route, call #%d)", oPresent, s_slCallCount);
+        }
+        hr = oPresent(pSwapChain, SyncInterval, Flags);
+        if (s_slCallCount <= 20) {
+            HookLog("DetourPresent: oPresent returned hr=0x%08X", hr);
+        }
+    } else {
+        hr = CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+    }
 
     // Flush deferred overlay fence Signal AFTER Present.  The NVIDIA driver
     // stalls the GPU when Signal sits between our overlay ECL and Present.
@@ -543,15 +707,36 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
     }
 
-    // Break re-entrancy loop (same external overlay pattern as DetourPresent).
+    // Re-entrant Present1 call — same logic as DetourPresent.
     if (IsRecursivePresent()) {
-        static int s_loopBreakCount1 = 0;
-        if (s_loopBreakCount1++ < 3) {
-            HookLogImportant("DetourPresent1: Re-entrancy loop broken (external overlay compat)");
+        // Post-SL overlay rendering (same as DetourPresent).
+        auto postSLCallback = g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
+        if (postSLCallback) {
+            postSLCallback(pSwapChain);
+        }
+        static std::atomic<int> s_reentrantLogCount1{0};
+        int reentrantNum1 = s_reentrantLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (reentrantNum1 <= 10 || reentrantNum1 == 50 || reentrantNum1 == 100 || (reentrantNum1 % 500) == 0) {
+            HookLog("DetourPresent1: Re-entrant #%d (postSL=%p, trampoline=%p, bypass=%p)",
+                    reentrantNum1, (void*)postSLCallback, (void*)oPresent1Trampoline, (void*)oPresent1Bypass);
+        }
+        if (oPresent1Trampoline) {
+            return oPresent1Trampoline(pSwapChain, SyncInterval, Flags, pPresentParameters);
+        }
+        if (oPresent1Bypass) {
+            return oPresent1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
+        }
+        if (reentrantNum1 <= 10) {
+            HookLog("DetourPresent1: Re-entrant #%d → S_OK (no bypass trampoline)", reentrantNum1);
         }
         return S_OK;
     }
     auto presentDepthGuard = ce::make_scope_guard([]() { ReleasePresent(); });
+
+    // Detect SL's E9 JMP if not yet done (same as DetourPresent).
+    if (!s_slRoutingActive.load(std::memory_order_relaxed) && IsSLInterposerLoaded()) {
+        DetectSLPresentHook();
+    }
 
     // Only send heartbeat if device is healthy — after device removal,
     // suppressing heartbeats lets the freeze watchdog fire and create a dump.
@@ -603,7 +788,12 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         InvokeDX12WaitForOverlayCompletion(nullptr);
     }
 
-    HRESULT hr = CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+    HRESULT hr;
+    if (s_slRoutingActive.load(std::memory_order_acquire) && oPresent1) {
+        hr = oPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+    } else {
+        hr = CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+    }
 
     // Flush deferred overlay fence Signal AFTER Present.
     if (api == APIType::D3D12) {
@@ -820,8 +1010,14 @@ bool InstallHooks(IDXGISwapChain* pSwapChain, bool presentOnly) {
     }
 
     if (s_hookedVTable) {
-        HookLog("DXGIShared::InstallHooks: Hooks already installed on vtable %p", s_hookedVTable);
-        return true;
+        void** newVTable = *(void***)pSwapChain;
+        if (newVTable == s_hookedVTable) {
+            HookLog("DXGIShared::InstallHooks: Hooks already installed on vtable %p", s_hookedVTable);
+            return true;
+        }
+        // New swapchain with a DIFFERENT vtable — need to re-hook.
+        HookLogImportant("DXGIShared::InstallHooks: NEW vtable detected (old=%p new=%p) — re-hooking",
+                         s_hookedVTable, newVTable);
     }
 
     void** vtable = *(void***)pSwapChain;
@@ -989,12 +1185,71 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
     }
 
     if (externalJmpDetected) {
-        // External overlay is actively hooking Present
-        // Skip inline hook installation and rely on swapchain wrapper
-        HookLog("InstallPresentInlineHooks: Deferring to external overlay");
-        HookLog("InstallPresentInlineHooks: Swapchain wrapper will handle frame processing");
-        s_inlineHooksInstalled = true;  // Mark as "installed" to prevent repeated attempts
-        return true;                    // Return success to allow initialization to continue
+        HookLogImportant("InstallPresentInlineHooks: External E9 JMP detected — using vtable hook path");
+        // External overlay (e.g. Streamline) has hooked Present with an E9 JMP.
+        // DO NOT inline-hook the external detour — patching 14 bytes of the
+        // external function's prologue corrupts its internal state and crashes
+        // under Frame Generation (where more code paths are exercised).
+        //
+        // Instead, use a clean vtable hook:
+        //   Game calls Present → vtable[8] → DetourPresent (our overlay) →
+        //   CallOriginalPresent → oPresent (the SL-hooked function) →
+        //   SL E9 JMP → SL processes FG normally → real Present
+        //
+        // Also create bypass trampolines from the original disk bytes so that
+        // re-entrant Present calls (from SL's vtable callback) can call the real
+        // DXGI Present without re-entering the external E9 JMP hook chain.
+
+        void** vtable = *(void***)pSwapChain;
+        if (!vtable) {
+            HookLog("InstallPresentInlineHooks: External JMP detected but vtable is null");
+            s_inlineHooksInstalled = true;
+            return true;
+        }
+
+        DWORD oldProtect;
+        if (!VirtualProtect(vtable, 40 * sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+            HookLog("InstallPresentInlineHooks: VirtualProtect failed for vtable hook");
+            s_inlineHooksInstalled = true;
+            return true;
+        }
+
+        s_hookedVTable = vtable;
+
+        oPresent = (PFN_Present)vtable[8];
+        vtable[8] = (void*)DetourPresent;
+        HookLogImportant(
+            "InstallPresentInlineHooks: VTable hook on Present (original=%p, vtable=%p) — "
+            "external E9 JMP detected, using non-invasive hook for FG compat",
+            oPresent, vtable);
+
+        // Create bypass trampoline for Present — reads original bytes from dxgi.dll
+        // on disk and builds a trampoline that skips the external E9 JMP.
+        void* presentBypass = InlineHook::CreateBypassTrampoline(presentAddr);
+        if (presentBypass) {
+            oPresentBypass = (PFN_Present)presentBypass;
+            HookLog("InstallPresentInlineHooks: Present bypass trampoline created at %p", presentBypass);
+        } else {
+            HookLog("InstallPresentInlineHooks: WARNING - Failed to create Present bypass trampoline");
+        }
+
+        if (present1Addr) {
+            oPresent1 = (PFN_Present1)vtable[22];
+            vtable[22] = (void*)DetourPresent1;
+            HookLog("InstallPresentInlineHooks: VTable hook on Present1 (original=%p)", oPresent1);
+
+            // Create bypass trampoline for Present1 too
+            void* present1Bypass = InlineHook::CreateBypassTrampoline(present1Addr);
+            if (present1Bypass) {
+                oPresent1Bypass = (PFN_Present1)present1Bypass;
+                HookLog("InstallPresentInlineHooks: Present1 bypass trampoline created at %p", present1Bypass);
+            }
+        }
+
+        VirtualProtect(vtable, 40 * sizeof(void*), oldProtect, &oldProtect);
+
+        s_inlineHooksInstalled = true;
+        return true;
     }
 
     void* presentTrampoline = nullptr;
@@ -1004,10 +1259,10 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
     }
     oPresentTrampoline = (PFN_Present)presentTrampoline;
     oPresent = oPresentTrampoline;
-    HookLog(
-        "InstallPresentInlineHooks: Present inline hook installed (addr=%p, "
-        "trampoline=%p)",
-        presentAddr, presentTrampoline);
+    HookLogImportant(
+        "InstallPresentInlineHooks: Present INLINE hook installed (addr=%p, "
+        "trampoline=%p) — s_hookedVTable remains %p",
+        presentAddr, presentTrampoline, s_hookedVTable);
 
     if (present1Addr) {
         void* present1Trampoline = nullptr;
@@ -1028,11 +1283,15 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
 void RemovePresentHooks() {
     InlineHook::RemoveAll();
 
-    if (!s_hookedVTable || !oPresent)
+    s_slRoutingActive.store(false, std::memory_order_release);
+    oPresentBypass = nullptr;
+    oPresent1Bypass = nullptr;
+
+    if (!s_hookedVTable)
         return;
 
     DWORD oldProtect;
-    if (s_hookedVTable[8] == (void*)DetourPresent) {
+    if (oPresent && s_hookedVTable[8] == (void*)DetourPresent) {
         VirtualProtect(&s_hookedVTable[8], sizeof(void*), PAGE_READWRITE, &oldProtect);
         s_hookedVTable[8] = (void*)oPresent;
         VirtualProtect(&s_hookedVTable[8], sizeof(void*), oldProtect, &oldProtect);
@@ -1047,15 +1306,72 @@ void RemovePresentHooks() {
     }
 }
 
+void RepairVTableHooksIfNeeded() {
+    if (!s_hookedVTable) {
+        static std::atomic<uint32_t> s_nullLogCount{0};
+        if (s_nullLogCount.fetch_add(1, std::memory_order_relaxed) < 3) {
+            HookLogImportant("DXGIShared: RepairVTable — s_hookedVTable is NULL, cannot repair");
+        }
+        return;
+    }
+    if (!IsReadableMemory(s_hookedVTable, 23 * sizeof(void*))) {
+        HookLogImportant("DXGIShared: RepairVTable — s_hookedVTable %p not readable", s_hookedVTable);
+        return;
+    }
+
+    bool repaired = false;
+    DWORD oldProtect;
+
+    // Check Present hook at vtable[8]
+    if (s_hookedVTable[8] != (void*)DetourPresent) {
+        HookLogImportant("DXGIShared: vtable[8] OVERWRITTEN! was=%p expected=%p — re-hooking",
+                         s_hookedVTable[8], (void*)DetourPresent);
+        oPresent = (PFN_Present)s_hookedVTable[8];
+        if (VirtualProtect(&s_hookedVTable[8], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+            s_hookedVTable[8] = (void*)DetourPresent;
+            VirtualProtect(&s_hookedVTable[8], sizeof(void*), oldProtect, &oldProtect);
+            repaired = true;
+            HookLogImportant("DXGIShared: vtable[8] re-hooked (new oPresent=%p)", oPresent);
+        }
+    }
+
+    // Check Present1 hook at vtable[22]
+    if (s_hookedVTable[22] != (void*)DetourPresent1) {
+        HookLogImportant("DXGIShared: vtable[22] OVERWRITTEN! was=%p expected=%p — re-hooking",
+                         s_hookedVTable[22], (void*)DetourPresent1);
+        oPresent1 = (PFN_Present1)s_hookedVTable[22];
+        if (VirtualProtect(&s_hookedVTable[22], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+            s_hookedVTable[22] = (void*)DetourPresent1;
+            VirtualProtect(&s_hookedVTable[22], sizeof(void*), oldProtect, &oldProtect);
+            repaired = true;
+            HookLogImportant("DXGIShared: vtable[22] re-hooked (new oPresent1=%p)", oPresent1);
+        }
+    }
+
+    static std::atomic<uint32_t> s_intactLogCount{0};
+    if (repaired) {
+        s_intactLogCount.store(0, std::memory_order_relaxed);
+    } else {
+        if (s_intactLogCount.fetch_add(1, std::memory_order_relaxed) < 3) {
+            HookLogImportant("DXGIShared: RepairVTableHooksIfNeeded — hooks intact (vtable=%p, [8]=%p, [22]=%p)",
+                            s_hookedVTable, s_hookedVTable[8], s_hookedVTable[22]);
+        }
+    }
+}
+
 void RemoveSwapchainVTableHooks() {
     InlineHook::RemoveAll();
 
-    if (!s_hookedVTable || !oPresent)
+    s_slRoutingActive.store(false, std::memory_order_release);
+    oPresentBypass = nullptr;
+    oPresent1Bypass = nullptr;
+
+    if (!s_hookedVTable)
         return;
 
     DWORD oldProtect;
 
-    if (s_hookedVTable[8] == (void*)DetourPresent) {
+    if (oPresent && s_hookedVTable[8] == (void*)DetourPresent) {
         VirtualProtect(&s_hookedVTable[8], sizeof(void*), PAGE_READWRITE, &oldProtect);
         s_hookedVTable[8] = (void*)oPresent;
         VirtualProtect(&s_hookedVTable[8], sizeof(void*), oldProtect, &oldProtect);
@@ -1094,7 +1410,25 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
     // Inline-hook path: trampoline always bypasses the detour safely.
     if (oPresentTrampoline) {
+        static int s_copLogCount = 0;
+        if (s_copLogCount++ < 5) {
+            HookLog("CallOriginalPresent: trampoline path=%p", oPresentTrampoline);
+        }
         return oPresentTrampoline(pSwapChain, SyncInterval, Flags);
+    }
+
+    // When SL is loaded (vtable hook mode), call oPresent directly.
+    // Don't re-read vtable[8] — Steam or other overlays may have re-hooked it
+    // after us, which would create a re-entrant loop:
+    //   DetourPresent → vtable[8](SteamPresent) → Steam → DetourPresent → ...
+    // oPresent = the saved original from vtable[8] at hook install time.
+    bool slLoaded = IsSLInterposerLoaded();
+    if (slLoaded && oPresent && oPresent != DetourPresent) {
+        static int s_copLogCount2 = 0;
+        if (s_copLogCount2++ < 5) {
+            HookLog("CallOriginalPresent: SL fast-path oPresent=%p", oPresent);
+        }
+        return oPresent(pSwapChain, SyncInterval, Flags);
     }
 
     // Prefer the current object's vtable entry when it is not detoured.
@@ -1104,6 +1438,11 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         if (vtable && IsReadableMemory(vtable, 9 * sizeof(void*)) && vtable[8]) {
             auto currentPresent = reinterpret_cast<PFN_Present>(vtable[8]);
             if (currentPresent != DetourPresent) {
+                static int s_copLogCount3 = 0;
+                if (s_copLogCount3++ < 5) {
+                    HookLog("CallOriginalPresent: vtable[8] path=%p (slLoaded=%d, oPresent=%p)",
+                            currentPresent, slLoaded, oPresent);
+                }
                 return currentPresent(pSwapChain, SyncInterval, Flags);
             }
         }
@@ -1111,9 +1450,15 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
     // Vtable-hook path fallback: use saved original only if it is not detoured.
     if (oPresent && oPresent != DetourPresent) {
+        static int s_copLogCount4 = 0;
+        if (s_copLogCount4++ < 5) {
+            HookLog("CallOriginalPresent: fallback oPresent=%p (slLoaded=%d)", oPresent, slLoaded);
+        }
         return oPresent(pSwapChain, SyncInterval, Flags);
     }
 
+    HookLog("CallOriginalPresent: NO PATH AVAILABLE (oPresent=%p, oPresentTrampoline=%p, slLoaded=%d)",
+            oPresent, oPresentTrampoline, slLoaded);
     return DXGI_ERROR_INVALID_CALL;
 }
 
@@ -1126,6 +1471,11 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
     // Inline-hook path: trampoline always bypasses the detour safely.
     if (oPresent1Trampoline) {
         return oPresent1Trampoline(pSwapChain, SyncInterval, Flags, pParams);
+    }
+
+    // When SL is loaded, call oPresent1 directly (same reason as Present).
+    if (IsSLInterposerLoaded() && oPresent1 && oPresent1 != DetourPresent1) {
+        return oPresent1(pSwapChain, SyncInterval, Flags, pParams);
     }
 
     // Prefer the current object's Present1 slot when it is not detoured.

@@ -9,8 +9,10 @@
 #include <unordered_map>
 #include "../common/fg_detection.h"
 #include "../common/hook_common.h"
+#include "../common/dxgi_shared.h"
 #include "../wrappers/iat_hook.h"
 #include "../wrappers/inline_hook.h"
+
 
 namespace {
 
@@ -561,6 +563,13 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
         CacheCapabilityMax(GetViewportKey(viewport), state.numFramesToGenerateMax);
     }
 
+    // SL may overwrite our Present vtable hook asynchronously during FG
+    // activation (not necessarily inside slDLSSGSetOptions).  This check
+    // runs every frame the game polls FG state and will re-patch if needed.
+    if (DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire)) {
+        DXGIShared::RepairVTableHooksIfNeeded();
+    }
+
     return result;
 }
 
@@ -597,7 +606,60 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
         }
     }
 
+    // Track FG state transitions for diagnostics.
+    // We do NOT trigger overlay cooldown here — the overlay hook chain
+    // (inline or vtable) works correctly through FG transitions.
+    // Cooldown-triggered teardown/reinit during rapid FG cycling caused
+    // repeated D3D12 resource churn and eventual crashes.
+    // Any swapchain changes during FG transitions are handled by the
+    // CreateSwapChainForHwnd / ResizeBuffers hooks instead.
+    {
+        static std::atomic<bool> s_prevFGEnabled{false};
+        bool prev = s_prevFGEnabled.load(std::memory_order_relaxed);
+        if (wasEnabled != prev) {
+            s_prevFGEnabled.store(wasEnabled, std::memory_order_relaxed);
+            // Update the global signal IMMEDIATELY so the DX12 hook can
+            // switch overlay routing (pre-SL ↔ post-SL) before the next
+            // Present call.  GetActiveFGType() heuristics may lag.
+            DXGIShared::g_StreamlineFGRunning.store(wasEnabled, std::memory_order_release);
+            // Also update FGCompatibility's signal so SetDLSSFGActive
+            // knows to trust SL over heuristic FSR FG detection.
+            g_FGCompat.SetStreamlineFGSignal(wasEnabled);
+            HookLogImportant("Streamline Hook: FG state transition %s->%s (signals set)",
+                             prev ? "ON" : "OFF", wasEnabled ? "ON" : "OFF");
+        }
+    }
+
     const slResult result = g_Original_slDLSSGSetOptions(viewport, adjustedOptions);
+
+    // SL may overwrite our vtable hooks during slDLSSGSetOptions (especially
+    // when re-activating FG).  Verify and repair immediately.
+    if (wasEnabled) {
+        DXGIShared::RepairVTableHooksIfNeeded();
+
+        // Detect Present bypass: if DetourPresent hasn't fired in the last N
+        // slDLSSGSetOptions calls despite DLSS FG being active, it means SL's
+        // wrapper is bypassing our vtable hook entirely.
+        static uint64_t s_lastPresentCount = 0;
+        static uint32_t s_stallFrames = 0;
+        uint64_t currentPresentCount = DXGIShared::g_PresentCallCounter.load(std::memory_order_relaxed);
+        if (currentPresentCount == s_lastPresentCount) {
+            s_stallFrames++;
+            if (s_stallFrames == 10 || s_stallFrames == 30 || s_stallFrames == 100 || (s_stallFrames % 500) == 0) {
+                HookLogImportant("Streamline Hook: Present STALLED for %u frames (counter=%llu) — "
+                                 "vtable hook bypassed?",
+                                 s_stallFrames, (unsigned long long)currentPresentCount);
+            }
+        } else {
+            if (s_stallFrames > 0) {
+                HookLogImportant("Streamline Hook: Present resumed after %u stalled frames (counter=%llu)",
+                                 s_stallFrames, (unsigned long long)currentPresentCount);
+            }
+            s_stallFrames = 0;
+        }
+        s_lastPresentCount = currentPresentCount;
+    }
+
     if (result == kSlResultOk) {
         const int effectiveMultiplier = GetEffectiveMultiplier(adjustedOptions);
         UpdateViewportRuntimeState(viewportKey, effectiveMultiplier > 0, effectiveMultiplier,
@@ -695,6 +757,10 @@ void Init() {
 
 bool IsInitialized() {
     return g_DynamicHooksRegistered.load(std::memory_order_acquire);
+}
+
+bool IsDLSSFGRequestedViaStreamline() {
+    return g_FGCompat.IsDLSSFGApiActive();
 }
 
 void Shutdown() {

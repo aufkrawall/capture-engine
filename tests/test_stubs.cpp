@@ -27,6 +27,9 @@ bool InlineHook::Install(void*, void*, void**) {
     return false;
 }
 void InlineHook::RemoveAll() {}
+void* InlineHook::CreateBypassTrampoline(void*) {
+    return nullptr;
+}
 
 // Stubs for DX12 - C++ linkage (matching header declarations in dx12_hook.h)
 // Note: These are regular C++ functions, not extern "C"

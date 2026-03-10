@@ -1845,4 +1845,179 @@ bool RemoveDeepHook(void* target) {
     return false;
 }
 
+// ============================================================================
+// Bypass Trampoline — execute real function body past an external E9/FF25 hook
+// ============================================================================
+
+void* CreateBypassTrampoline(void* target) {
+#ifndef _WIN64
+    HookLog("BypassTrampoline: Only supported on x64");
+    return nullptr;
+#else
+    if (!target)
+        return nullptr;
+
+    std::lock_guard<std::mutex> lock(g_hookMutex);
+
+    const uint8_t* code = (const uint8_t*)target;
+
+    // Step 1: Detect external hook at byte 0
+    int existingJmpSize = 0;
+    if (code[0] == 0xE9) {
+        existingJmpSize = 5;
+    } else if (code[0] == 0xFF && code[1] == 0x25) {
+        existingJmpSize = 14;
+    } else {
+        HookLog("BypassTrampoline: No external hook at byte 0 of %p (byte=0x%02X)", target, code[0]);
+        return nullptr;
+    }
+
+    HookLog("BypassTrampoline: External %d-byte JMP detected at %p", existingJmpSize, target);
+
+    // Step 2: Read original (unpatched) bytes from DLL on disk
+    uint8_t origDiskBytes[64];
+    if (!ReadOrigBytesFromDisk(target, origDiskBytes, 64)) {
+        HookLog("BypassTrampoline: Failed to read original bytes from disk for %p", target);
+        return nullptr;
+    }
+
+    HookLog("BypassTrampoline: Original disk bytes at %p:", target);
+    for (int i = 0; i < 32; i += 8) {
+        HookLog("  [%02d] %02X %02X %02X %02X %02X %02X %02X %02X", i, origDiskBytes[i], origDiskBytes[i + 1],
+                origDiskBytes[i + 2], origDiskBytes[i + 3], origDiskBytes[i + 4], origDiskBytes[i + 5],
+                origDiskBytes[i + 6], origDiskBytes[i + 7]);
+    }
+
+    // Step 3: Find first instruction boundary >= external JMP size
+    int resumeOffset = 0;
+    while (resumeOffset < existingJmpSize) {
+        int len = GetInstructionLength(origDiskBytes + resumeOffset, true);
+        if (len == 0) {
+            HookLog("BypassTrampoline: Failed to decode instruction at disk offset %d", resumeOffset);
+            return nullptr;
+        }
+        resumeOffset += len;
+    }
+
+    HookLog("BypassTrampoline: Resume offset = %d (past %d-byte external JMP)", resumeOffset, existingJmpSize);
+
+    // Verify live bytes at resumeOffset match disk (external hook only patches [0, jmpSize))
+    bool bytesMatch = (memcmp(code + resumeOffset, origDiskBytes + resumeOffset, 16) == 0);
+    if (!bytesMatch) {
+        HookLog("BypassTrampoline: WARNING - live bytes at +%d differ from disk!", resumeOffset);
+        for (int i = 0; i < 16; i++)
+            HookLog("  live[%02d]=0x%02X  disk[%02d]=0x%02X", resumeOffset + i, code[resumeOffset + i],
+                    resumeOffset + i, origDiskBytes[resumeOffset + i]);
+    }
+
+    // Step 4: Allocate trampoline slot near the target
+    uint8_t* trampoline = GetTrampolineSlot(target);
+    if (!trampoline) {
+        HookLog("BypassTrampoline: Failed to allocate trampoline slot near %p", target);
+        return nullptr;
+    }
+
+    // Step 5: Copy original instructions to trampoline with RIP-relative fixups.
+    // The source bytes are from disk (original code), but RIP-relative addresses
+    // must be computed as if the instructions live at their original location.
+    int trampolineOffset = 0;
+    int srcOffset = 0;
+    uintptr_t pendingAbsCallTarget = 0;
+    bool hasPendingAbsCall = false;
+    int pendingCallInstrOffset = -1;
+
+    while (srcOffset < resumeOffset) {
+        int instrLen = GetInstructionLength(origDiskBytes + srcOffset, true);
+        if (instrLen == 0) {
+            HookLog("BypassTrampoline: Instruction decode failed at offset %d", srcOffset);
+            return nullptr;
+        }
+
+        memcpy(trampoline + trampolineOffset, origDiskBytes + srcOffset, instrLen);
+
+        // Fix up RIP-relative addressing.
+        // The original instruction was at (target + srcOffset), so compute the
+        // absolute target from the original location, then adjust the displacement
+        // for the trampoline location.
+        int dispOff = GetRipRelativeDispOffset(origDiskBytes + srcOffset, instrLen, true);
+        if (dispOff >= 0) {
+            int32_t origDisp;
+            memcpy(&origDisp, origDiskBytes + srcOffset + dispOff, 4);
+
+            // Absolute target = original instruction end + displacement
+            uintptr_t absTarget = (uintptr_t)((uint8_t*)target + srcOffset + instrLen) + origDisp;
+
+            // New displacement from trampoline position
+            uintptr_t newInstrEnd = (uintptr_t)(trampoline + trampolineOffset + instrLen);
+            int64_t newDisp = (int64_t)absTarget - (int64_t)newInstrEnd;
+
+            HookLog("BypassTrampoline: RIP fixup at srcOff=%d, absTarget=%p, newDisp=0x%llX", srcOffset,
+                    (void*)absTarget, (long long)newDisp);
+
+            if (newDisp > INT32_MAX || newDisp < INT32_MIN) {
+                uint8_t opcode = origDiskBytes[srcOffset];
+                if (opcode == 0xE9) {
+                    trampoline[trampolineOffset] = 0xFF;
+                    trampoline[trampolineOffset + 1] = 0x25;
+                    trampoline[trampolineOffset + 2] = 0x00;
+                    trampoline[trampolineOffset + 3] = 0x00;
+                    trampoline[trampolineOffset + 4] = 0x00;
+                    trampoline[trampolineOffset + 5] = 0x00;
+                    memcpy(trampoline + trampolineOffset + 6, &absTarget, 8);
+                    trampolineOffset += 14;
+                    srcOffset += instrLen;
+                    continue;
+                } else if (opcode == 0xE8) {
+                    pendingCallInstrOffset = trampolineOffset;
+                    trampoline[trampolineOffset] = 0xFF;
+                    trampoline[trampolineOffset + 1] = 0x15;
+                    trampoline[trampolineOffset + 2] = 0;
+                    trampoline[trampolineOffset + 3] = 0;
+                    trampoline[trampolineOffset + 4] = 0;
+                    trampoline[trampolineOffset + 5] = 0;
+                    trampolineOffset += 6;
+                    pendingAbsCallTarget = absTarget;
+                    hasPendingAbsCall = true;
+                    srcOffset += instrLen;
+                    continue;
+                }
+
+                HookLog("BypassTrampoline: RIP fixup out of range at offset %d (opcode=0x%02X)", srcOffset,
+                        origDiskBytes[srcOffset]);
+                return nullptr;
+            }
+
+            int32_t newDisp32 = (int32_t)newDisp;
+            memcpy(trampoline + trampolineOffset + dispOff, &newDisp32, 4);
+        }
+
+        trampolineOffset += instrLen;
+        srcOffset += instrLen;
+    }
+
+    // Step 6: Write JMP back to the real code PAST the external hook
+    void* jumpTarget = (void*)((uint8_t*)target + resumeOffset);
+    HookLog("BypassTrampoline: Writing JMP back from trampoline+%d to %p (target+%d)", trampolineOffset, jumpTarget,
+            resumeOffset);
+    WriteJump(trampoline + trampolineOffset, jumpTarget);
+    trampolineOffset += PATCH_SIZE;
+
+    // Patch pending absolute CALL if needed
+    if (hasPendingAbsCall) {
+        int32_t disp = trampolineOffset - (pendingCallInstrOffset + 6);
+        memcpy(trampoline + pendingCallInstrOffset + 2, &disp, 4);
+        memcpy(trampoline + trampolineOffset, &pendingAbsCallTarget, 8);
+        trampolineOffset += 8;
+        HookLog("BypassTrampoline: Patched absolute CALL target at trampoline+%d", trampolineOffset - 8);
+    }
+
+    FlushInstructionCache(GetCurrentProcess(), trampoline, trampolineOffset);
+
+    HookLog("BypassTrampoline: Created at %p (%d bytes) — bypasses %d-byte external hook at %p", trampoline,
+            trampolineOffset, existingJmpSize, target);
+
+    return trampoline;
+#endif
+}
+
 }  // namespace InlineHook

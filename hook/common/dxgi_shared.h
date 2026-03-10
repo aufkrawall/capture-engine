@@ -9,6 +9,11 @@
 // Forward declaration
 class PerformanceMetrics;
 
+// Post-SL overlay rendering callback.  Invoked during re-entrant Present
+// (after Streamline's FG pipeline finishes) so the overlay renders AFTER FG
+// interpolation — matching RTSS's approach for FG compatibility.
+using PostSLOverlayRenderFn = void (*)(IDXGISwapChain* pSwapChain);
+
 namespace DXGIShared {
 
 enum class APIType {
@@ -35,6 +40,17 @@ struct SharedState {
 extern SharedState g_SharedState;
 extern std::mutex g_SharedMutex;
 
+// Callback for post-SL FG overlay rendering (set by dx12_hook.cpp).
+extern std::atomic<PostSLOverlayRenderFn> g_PostSLOverlayRenderCallback;
+
+// Direct Streamline FG active signal — set by streamline_hook.cpp when
+// slDLSSGSetOptions transitions FG on/off.  More immediate than heuristic
+// FG type detection.  Used by DX12 hook for pre-SL vs post-SL routing.
+extern std::atomic<bool> g_StreamlineFGRunning;
+
+// Present call counter for bypass detection by SL hook.
+extern std::atomic<uint64_t> g_PresentCallCounter;
+
 // Initialization
 void Init();
 
@@ -43,6 +59,10 @@ bool InstallHooks(IDXGISwapChain* pSwapChain, bool presentOnly = false);
 
 // Set pending swapchain for lazy hook installation (called from DX12 hook)
 void SetPendingSwapChainForLazyHook(IDXGISwapChain* pSwapChain);
+
+// Verify and re-install vtable hooks if they were overwritten by
+// third-party software (e.g. Streamline during FG re-activation).
+void RepairVTableHooksIfNeeded();
 
 // Common helpers
 bool IsVulkanPrimary();

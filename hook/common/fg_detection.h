@@ -122,6 +122,14 @@ public:
         return heuristicFSRFGActive.load(std::memory_order_acquire);
     }
 
+    // Direct signal from Streamline hook — faster than heuristic detection.
+    void SetStreamlineFGSignal(bool active) {
+        streamlineFGSignal.store(active, std::memory_order_release);
+    }
+    bool IsStreamlineFGSignaled() const {
+        return streamlineFGSignal.load(std::memory_order_acquire);
+    }
+
 private:
     // Dormant mode flag - when true, skip all pattern-based detection
     std::atomic<bool> dormantMode{kDefaultDormantMode};
@@ -169,6 +177,10 @@ private:
     std::atomic<bool> fsrFGApiActive{false};
     std::atomic<bool> heuristicFSRFGActive{false};
     std::atomic<int> dlssFGMultiplier{0};
+
+    // Direct signal from Streamline hook — set IMMEDIATELY when
+    // slDLSSGSetOptions transitions FG on/off.  Faster than heuristic.
+    std::atomic<bool> streamlineFGSignal{false};
 
     // Internal methods
     void UpdateMetrics();
