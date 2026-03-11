@@ -146,6 +146,20 @@ static bool IsRecursivePresent() {
         return true;
     }
 
+    // Different thread owns it — during Streamline DLSS FG, SL calls Present
+    // from worker threads for generated frames while the game thread is still
+    // inside oPresent (SL's wrapper).  These cross-thread Present calls MUST
+    // be treated as re-entrant so that:
+    //   1. PostSL overlay callback fires (correct timing: after SL's GPU work)
+    //   2. Pre-SL overlay rendering is skipped (would conflict with SL's GPU work)
+    //   3. oPresentBypass is used (avoids re-entering SL's hook chain)
+    // Without this, the cross-thread call runs the full non-re-entrant path
+    // including DX12ProcessFrame, causing DEVICE_HUNG from concurrent backbuffer
+    // access between our overlay and SL's FG pipeline.
+    if (expected != 0 && g_StreamlineFGRunning.load(std::memory_order_acquire)) {
+        return true;
+    }
+
     // Different thread owns it — treat as non-recursive, let it proceed
     // (this matches original behavior: each thread processes Present
     // independently)
