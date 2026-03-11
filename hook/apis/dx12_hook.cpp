@@ -3930,35 +3930,33 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
 
         if (g_PostSLLockedQueue) {
             queue = g_PostSLLockedQueue;
-        } else if (slFGNow && !g_HadFSRFGPhase && g_OriginalGameQueue) {
-            // Pure DLSS FG (no prior FSR): use origGame.
-            // SL hooks origGame, swapchain is on origGame, everything serialized.
-            queue = g_OriginalGameQueue;
-            static int s_postSLQueueLog = 0;
-            if (s_postSLQueueLog++ < 5)
-                HookLog("DX12: PostSL queue — using origGame %p (pure DLSS)", queue);
-        } else if (slFGNow && g_HadFSRFGPhase) {
-            // Post-FSR DLSS FG: use SL's wrapper queue.
-            // After FSR→DLSS, neither origGame nor scQueue can safely access
-            // the backbuffer (both cause DEVICE_REMOVED at BB barrier probes).
-            // SL's wrapper queue routes through SL's ECL interception to the
-            // correct internal queue, serializing our overlay work with SL's
-            // BB operations.
+        } else if (slFGNow) {
+            // During SL FG: ALWAYS prefer SL's wrapper queue over origGame.
+            // In GTA V, barrier-free ECL on origGame still causes DEVICE_HUNG
+            // because realECL bypasses SL's serialization.  SL's wrapper queue
+            // dispatches through SL's COM handler → serialized with FG work.
             ID3D12CommandQueue* slWrapper = g_SLWrapperQueue.load(std::memory_order_acquire);
             if (slWrapper) {
                 queue = slWrapper;
                 static int s_slWrapperLog = 0;
                 if (s_slWrapperLog++ < 5)
-                    HookLog("DX12: PostSL queue — using SL wrapper %p (post-FSR, origGame=%p scQ=%p)", queue, g_OriginalGameQueue, scQueue);
+                    HookLog("DX12: PostSL queue — using SL wrapper %p (hadFSR=%d origGame=%p scQ=%p)",
+                            queue, g_HadFSRFGPhase ? 1 : 0, g_OriginalGameQueue, scQueue);
             } else {
-                // SL wrapper not captured yet — try g_CommandQueue as fallback
+                // No SL wrapper captured yet — try cmdQ as SL wrapper fallback
                 ID3D12CommandQueue* cmdQ = g_CommandQueue.load(std::memory_order_acquire);
                 if (cmdQ && cmdQ != g_OriginalGameQueue && cmdQ != scQueue) {
                     queue = cmdQ;
-                    HookLog("DX12: PostSL queue — using cmdQ %p as SL wrapper fallback (post-FSR)", queue);
-                } else if (g_OriginalGameQueue) {
-                    queue = g_OriginalGameQueue;
-                    HookLog("DX12: PostSL queue — last-resort origGame %p (post-FSR, no SL wrapper)", queue);
+                    static int s_cmdFallbackLog = 0;
+                    if (s_cmdFallbackLog++ < 5)
+                        HookLog("DX12: PostSL queue — using cmdQ %p as SL wrapper fallback", queue);
+                } else {
+                    // SKIP PostSL: origGame causes DEVICE_HUNG in GTA V during SL FG.
+                    // Better to have no overlay than to crash the game.
+                    static int s_skipLog = 0;
+                    if (s_skipLog++ < 5)
+                        HookLogImportant("DX12: PostSL SKIPPING — no SL wrapper available, won't risk origGame during SL FG");
+                    return;
                 }
             }
         } else if (scQueue) {
@@ -4442,25 +4440,15 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     }
 
     if (willRender) {
-        // After FSR→DLSS transition, the backbuffer may NOT be in PRESENT state.
-        // PRESENT→RT barrier causes DEVICE_HUNG. Skip it — the backbuffer appears
-        // to be in RT state already (SL's PostSL callback returns after SL's render).
-        if (!g_HadFSRFGPhase) {
-            // SL transitions the backbuffer to PRESENT state before our callback.
-            // Transition PRESENT → RENDER_TARGET for overlay drawing.
-            D3D12_RESOURCE_BARRIER barrier = {};
-            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-            barrier.Transition.pResource = bb;
-            barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-            barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-            barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-            list->ResourceBarrier(1, &barrier);
-        } else {
-            static bool s_loggedBarrierSkip = false;
-            if (!s_loggedBarrierSkip) {
-                s_loggedBarrierSkip = true;
-                HookLogImportant("DX12: PostSL post-FSR — SKIPPING PRESENT→RT barrier (backbuffer not in PRESENT state)");
-            }
+        // BARRIER-FREE PostSL: SL's callback fires after SL's FG processing.
+        // The backbuffer state is managed by SL internally — we don't know if it's
+        // in PRESENT or RT state. PRESENT→RT barrier on origGame causes DEVICE_HUNG
+        // in GTA V (and DEVICE_REMOVED after FSR→DLSS transitions).
+        // Skip ALL barriers — DescFree rendering works without them on release D3D12.
+        static bool s_loggedBarrierSkip = false;
+        if (!s_loggedBarrierSkip) {
+            s_loggedBarrierSkip = true;
+            HookLogImportant("DX12: PostSL — barrier-free rendering (SL manages BB state, hadFSR=%d)", g_HadFSRFGPhase ? 1 : 0);
         }
     }
     if (willRender) {
@@ -4500,23 +4488,9 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                              g_D3D11On12Adapter.IsInitialized() ? 1 : 0);
     }
 
-    // Post-render barrier: transition back to PRESENT for the actual Present call.
-    // For post-FSR barrier-free rendering, skip this too — SL manages BB state.
-    if (rendered && !g_HadFSRFGPhase) {
-        D3D12_RESOURCE_BARRIER barrier = {};
-        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        barrier.Transition.pResource = bb;
-        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        list->ResourceBarrier(1, &barrier);
-    } else if (rendered && g_HadFSRFGPhase) {
-        static bool s_loggedPostFSRBarrierSkip = false;
-        if (!s_loggedPostFSRBarrierSkip) {
-            s_loggedPostFSRBarrierSkip = true;
-            HookLogImportant("DX12: PostSL post-FSR — SKIPPING RT→PRESENT barrier (SL manages BB state)");
-        }
-    }
+    // BARRIER-FREE PostSL: Skip RT→PRESENT barrier too.
+    // SL manages BB state transitions — our barriers would conflict.
+    // (No post-render barrier needed)
 
     // If we can't render, don't submit an empty command list — just bail.
     // Submitting empty ECLs on potentially-stale queues risks DEVICE_REMOVED.
@@ -5802,12 +5776,21 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 g_PostSLDedicatedQueue->Release();
                 g_PostSLDedicatedQueue = nullptr;
             }
-            // Release SL wrapper queue captured from ECL detour
+            // Release SL wrapper queue only when FG is truly turning OFF.
+            // During FG→FG transitions (FSR→DLSS, DLSS→FSR), keep the wrapper
+            // alive — PostSL needs it immediately after cooldown.  SL reuses
+            // the same COM wrapper queues across FG type changes.
             {
-                ID3D12CommandQueue* oldWrapper = g_SLWrapperQueue.exchange(nullptr, std::memory_order_acq_rel);
-                if (oldWrapper) {
-                    oldWrapper->Release();
-                    HookLogImportant("DX12: SL OFF — released SL wrapper queue %p", oldWrapper);
+                bool targetIsFGOff_wrapper = (currentFGType == FGCompatibility::FGType::None);
+                if (targetIsFGOff_wrapper) {
+                    ID3D12CommandQueue* oldWrapper = g_SLWrapperQueue.exchange(nullptr, std::memory_order_acq_rel);
+                    if (oldWrapper) {
+                        oldWrapper->Release();
+                        HookLogImportant("DX12: SL OFF — released SL wrapper queue %p", oldWrapper);
+                    }
+                } else {
+                    ID3D12CommandQueue* kept = g_SLWrapperQueue.load(std::memory_order_acquire);
+                    HookLogImportant("DX12: FG→FG transition — keeping SL wrapper queue %p alive", kept);
                 }
             }
             g_PostSLConfirmedRendering.store(false, std::memory_order_release);  // Re-probe needed
