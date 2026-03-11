@@ -349,31 +349,44 @@ static bool IsSLInterposerLoaded() {
     return detected;
 }
 
-// Detect if SL has hooked the Present function with an E9 JMP.
-// If so, set up routing so our final Present call goes through SL's hook
-// chain instead of bypassing it via the trampoline.
+// Detect if SL has hooked the Present function with an E9 JMP or FF 25
+// indirect JMP.  If so, set up routing so our final Present call goes
+// through SL's hook chain instead of bypassing it via the trampoline.
 static void DetectSLPresentHook() {
     if (s_slRoutingActive.load(std::memory_order_acquire))
         return;
     if (!oPresent || !oPresentTrampoline)
         return;
 
+    // If oPresent is our own trampoline, SL hasn't hooked the vtable yet.
+    // The vtable repair code sets oPresent to SL's hook when detected.
+    if (oPresent == oPresentTrampoline)
+        return;
+
     auto* funcBytes = (const uint8_t*)oPresent;
     if (!IsReadableMemory(funcBytes, 16))
         return;
 
-    HookLogImportant("DetectSLPresentHook: oPresent=%p bytes: %02X %02X %02X %02X %02X %02X",
-                     oPresent, funcBytes[0], funcBytes[1], funcBytes[2], funcBytes[3], funcBytes[4], funcBytes[5]);
+    // Rate-limit diagnostic logging to avoid per-frame spam.
+    static int s_checkCount = 0;
+    int checkNum = ++s_checkCount;
+    if (checkNum <= 5 || (checkNum <= 50 && (checkNum % 10) == 0) || (checkNum % 500) == 0) {
+        HookLogImportant("DetectSLPresentHook: oPresent=%p bytes: %02X %02X %02X %02X %02X %02X (check #%d)",
+                         oPresent, funcBytes[0], funcBytes[1], funcBytes[2], funcBytes[3],
+                         funcBytes[4], funcBytes[5], checkNum);
+    }
 
-    // SL overwrites our inline hook's first 5 bytes (FF 25 00 00 00 00)
-    // with an E9 relative JMP.  Detect this.
-    if (funcBytes[0] != 0xE9) {
-        HookLog("DetectSLPresentHook: No E9 JMP detected at oPresent, SL not active yet");
+    // Detect SL hooks: E9 relative JMP or FF 25 indirect JMP (JMP [RIP+0]).
+    // SL may use either pattern depending on version and game.
+    bool isE9 = (funcBytes[0] == 0xE9);
+    bool isFF25 = (funcBytes[0] == 0xFF && funcBytes[1] == 0x25);
+
+    if (!isE9 && !isFF25) {
         return;
     }
 
     // Verify that our trampoline is different (it should have the original
-    // function bytes, not the E9 JMP).
+    // function bytes, not a JMP).
     auto* trampolineBytes = (const uint8_t*)oPresentTrampoline;
     HookLogImportant("DetectSLPresentHook: trampoline=%p bytes: %02X %02X %02X %02X %02X %02X",
                      oPresentTrampoline, trampolineBytes[0], trampolineBytes[1], trampolineBytes[2],
@@ -382,8 +395,8 @@ static void DetectSLPresentHook() {
     s_slRoutingActive.store(true, std::memory_order_release);
     HookLogImportant(
         "SL routing ACTIVE: Present calls will go through oPresent=%p "
-        "(SL E9 JMP) instead of trampoline=%p.  SL FG chain will execute.",
-        oPresent, oPresentTrampoline);
+        "(%s JMP) instead of trampoline=%p.  SL FG chain will execute.",
+        oPresent, isE9 ? "E9" : "FF25", oPresentTrampoline);
 }
 }  // namespace
 
@@ -636,12 +649,12 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
 
     HRESULT hr;
     if (s_slRoutingActive.load(std::memory_order_acquire)) {
-        // Route through oPresent which has SL's E9 JMP.  This lets SL
-        // process FG.  SL's trampoline will re-enter DetourPresent
+        // Route through oPresent which has SL's JMP (E9 or FF 25).  This
+        // lets SL process FG.  SL's trampoline will re-enter DetourPresent
         // (handled above — forwarded to oPresentTrampoline for real Present).
         static int s_slCallCount = 0;
         if (s_slCallCount++ < 20) {
-            HookLog("DetourPresent: Calling oPresent=%p (SL E9 route, call #%d)", oPresent, s_slCallCount);
+            HookLog("DetourPresent: Calling oPresent=%p (SL route, call #%d)", oPresent, s_slCallCount);
         }
         hr = oPresent(pSwapChain, SyncInterval, Flags);
         if (s_slCallCount <= 20) {

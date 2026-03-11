@@ -88,6 +88,11 @@ OverlayAdapter::OverlayAdapter() {
 }
 
 OverlayAdapter::~OverlayAdapter() {
+    // During process termination, skip all GPU resource cleanup to avoid
+    // driver access violations (D3D12/NVIDIA may be partially torn down).
+#ifndef VK_LAYER_CE_OVERLAY
+    if (IsProcessTerminating()) return;
+#endif
     if (skipDeviceRelease) {
         if (renderer) {
             renderer->SetSkipDeviceRelease(true);
