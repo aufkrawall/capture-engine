@@ -2059,6 +2059,30 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
         IDXGISwapChain* newSC = static_cast<IDXGISwapChain*>(*ppSC);
         DXGIShared::InstallHooks(newSC, /*presentOnly=*/true);
         DXGIShared::RepairVTableHooksIfNeeded();
+
+        // Capture the swapchain queue so overlay submissions use the
+        // correct queue.  Per DXGI spec pDevice for DX12 is an
+        // ID3D12CommandQueue.  Same logic as the inline hook path.
+        if (pDevice) {
+            ID3D12CommandQueue* pQueue = nullptr;
+            HRESULT qiHr = pDevice->QueryInterface(IID_PPV_ARGS(&pQueue));
+            if (SUCCEEDED(qiHr) && pQueue) {
+                HookLogImportant("DeepHook: QI for queue succeeded (queue=%p)", pQueue);
+                DX12_SetSwapchainQueue(pQueue);
+                pQueue->Release();
+            } else {
+                // QI may fail if wrapped by Streamline or similar middleware.
+                auto* pDirectQueue = static_cast<ID3D12CommandQueue*>((IUnknown*)pDevice);
+                D3D12_COMMAND_QUEUE_DESC testDesc = pDirectQueue->GetDesc();
+                if (testDesc.Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
+                    HookLogImportant("DeepHook: Direct cast queue succeeded (queue=%p)", pDirectQueue);
+                    DX12_SetSwapchainQueue(pDirectQueue);
+                } else {
+                    HookLogImportant("DeepHook: pDevice queue type=%d, not DIRECT — skipping",
+                                     (int)testDesc.Type);
+                }
+            }
+        }
     } else if (FAILED(hr)) {
         HookLogImportant("DeepHook: CreateSwapChainForHwnd FAILED hr=0x%08X hwnd=%p", hr, hWnd);
     }
@@ -2637,19 +2661,21 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
     // Rendering always goes through the game queue since GPU drivers require
     // swapchain writes from the owning queue. The overlay queue handles fence
     // management independently.
-    // CRITICAL: Use same queue preference as ProcessFrame — prefer g_SwapchainQueue
-    // (captured at swapchain creation time) over g_CommandQueue (from ECL hook).
-    // During FG transitions, g_CommandQueue may point to SL's internal FG queue
-    // which is unsuitable for overlay rendering.  g_SwapchainQueue is the queue
-    // that owns the swapchain backbuffers.
-    // EXCEPTION: During SL FG, g_SwapchainQueue may be SL's internal queue
-    // (from SL calling CreateSwapChainForHwnd).  Use g_OriginalGameQueue instead.
+    // CRITICAL: Use same queue preference as ProcessFrame.
+    // SL FG: use origGame (SL manages cross-queue internally).
+    // FSR FG: use g_SwapchainQueue (FSR's swapchain uses FSR's queue;
+    //   submitting on origGame causes cross-queue DEVICE_REMOVED).
     ID3D12CommandQueue* queueForBackend = nullptr;
     {
         std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
         bool slFGNow = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+        bool fsrFGNow = g_FGCompat.IsFGActive() && !slFGNow;
         if (slFGNow && g_OriginalGameQueue) {
             queueForBackend = g_OriginalGameQueue;
+        } else if (fsrFGNow && g_SwapchainQueue) {
+            queueForBackend = g_SwapchainQueue;
+        } else if (fsrFGNow && g_OriginalGameQueue) {
+            queueForBackend = g_OriginalGameQueue;  // fallback
         } else {
             queueForBackend = g_SwapchainQueue;
             if (!queueForBackend) queueForBackend = g_CommandQueue.load();
@@ -3646,11 +3672,20 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     static int s_callsSinceReactivation = 0;
     static int s_postSLProbeFrames = 0;
     static bool s_wasActive = false;
+    static HANDLE s_dedicatedFenceEvent = nullptr;
+    static ID3D12Fence* s_dedicatedSyncFence = nullptr;
+    static UINT64 s_dedicatedSyncFenceValue = 0;
     bool active = g_PostSLOverlayActive.load(std::memory_order_acquire);
     if (active && !s_wasActive) {
         s_reactivationEpoch++;
         s_callsSinceReactivation = 0;
         s_postSLProbeFrames = 0;  // Reset probe counter for new reactivation
+        // Destroy dedicated queue from previous epoch — will be recreated fresh
+        if (g_PostSLDedicatedQueue) {
+            HookLogImportant("DX12: PostSL destroying dedicated queue %p for new epoch", g_PostSLDedicatedQueue);
+            g_PostSLDedicatedQueue->Release();
+            g_PostSLDedicatedQueue = nullptr;
+        }
         HookLogImportant("DX12: PostSL REACTIVATED (epoch=%d)", s_reactivationEpoch);
     }
     s_wasActive = active;
@@ -3771,12 +3806,9 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     // a real D3D12 queue that works with realECL.
     //
     // Queue selection:
-    // 0. g_PostSLDedicatedQueue — fresh queue we created ourselves (immune to SL driver corruption)
     // 1. g_PostSLLockedQueue — if set, always use it (proven working this epoch)
-    // 2. g_OriginalGameQueue — the game's very first queue (never polluted by SL/FSR)
-    // 3. g_PreFGGameQueue — game queue captured before current FG transition
-    // 4. g_SwapchainQueue — current swapchain queue (may be SL's during FG)
-    // 5. g_CommandQueue — last resort, may be SL's internal queue during FG
+    // 2. g_OriginalGameQueue — the game's very first queue (SL synchronizes with it)
+    // 3. g_CommandQueue — last resort, may be SL's internal queue during FG
     //
     // After FG transitions (FSR→DLSS), the NVIDIA driver's internal state for
     // existing queues (including origGame) can become corrupted.  On reactivation
@@ -3799,22 +3831,37 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
         scQueue = g_SwapchainQueue;
 
-        // Priority during SL FG: locked > scQueue (swapchain queue) > origGame > cmdQueue
-        // scQueue is set by SL's CreateSwapChainForHwnd — it's the queue the
-        // swapchain was created with.  NVIDIA's DLSS FG driver wraps THIS queue
-        // internally.  ECL on origGame at epoch≥2 crashes because the driver's
-        // internal state for origGame is nulled when DLSS FG operates on scQueue.
-        // At epoch=1, scQueue is NULL → origGame (= swapchain queue) works fine.
-        // At epoch≥2, scQueue is set → use it (barrier-free avoids state conflicts).
+        // Queue selection strategy for PostSL:
         //
-        // Priority outside SL FG: locked > scQueue > origGame > preFG > cmdQueue
+        // Epoch 1 (first DLSS FG activation): origGame is the game's original queue
+        //   with valid NVIDIA driver state → use origGame.
+        //
+        // Epoch ≥2 (after FG transitions like FSR→DLSS):
+        //   - origGame: NVIDIA driver corruption (null deref at offset 0x1188 in
+        //     nvwgf2umx) → ACCESS_VIOLATION.  Unusable after FSR FG phase.
+        //   - Dedicated queue: DXGI_ERROR_ACCESS_DENIED (0x887A002B) — NVIDIA driver
+        //     restricts backbuffer access to authorized queues during DLSS FG.
+        //   → Use g_CommandQueue (SL's wrapper queue) with origECL.  SL's wrapper
+        //     dispatches to an authorized internal queue, bypassing both issues.
+        //     Must use origECL (not realECL) because SL's wrapper is a COM object,
+        //     not a raw D3D12 CCommandQueue.
+        //
+        // Outside SL FG: locked > scQueue > origGame > preFG > cmdQueue
         bool slFGNow = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
         if (g_PostSLLockedQueue) {
             queue = g_PostSLLockedQueue;
-        } else if (slFGNow && scQueue) {
-            queue = scQueue;
+        } else if (slFGNow && s_reactivationEpoch > 1) {
+            // Epoch ≥2: use SL's current queue (g_CommandQueue).
+            // SL's wrapper is authorized for backbuffer access and dispatches to
+            // SL's internal real queue.  We MUST use origECL (not realECL) because
+            // realECL expects a raw CCommandQueue, not SL's COM wrapper.
+            queue = g_CommandQueue.load(std::memory_order_acquire);
+            if (!queue && g_OriginalGameQueue)
+                queue = g_OriginalGameQueue;  // Last resort fallback
         } else if (slFGNow && g_OriginalGameQueue) {
             queue = g_OriginalGameQueue;
+        } else if (slFGNow) {
+            queue = g_CommandQueue.load(std::memory_order_acquire);
         } else if (scQueue) {
             queue = scQueue;
         } else if (g_OriginalGameQueue) {
@@ -3833,15 +3880,15 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     }
 
     // Lock to the first queue we select and REFUSE to follow g_CommandQueue changes.
-    // During DLSS FG, SL switches g_CommandQueue to its internal FG worker queue
-    // ~20 frames after activation.  SL's FG queues are COM wrappers incompatible
-    // with realECL (origECL == realECL for them).  The game's original queue,
-    // captured at FG start, is a real D3D12 queue that works with realECL.
+    // Epoch 1: locks to origGame (real D3D12 queue, uses realECL).
+    // Epoch ≥2: locks to SL's wrapper queue (uses origECL — dispatches through SL).
+    // Lock prevents mid-epoch queue switching that could cause state mismatches.
     if (g_PostSLLockedQueue == nullptr) {
         g_PostSLLockedQueue = queue;
-        HookLogImportant("DX12: PostSL locked to queue %p (origGame=%p scQueue=%p cmdQueue=%p preFG=%p)",
+        HookLogImportant("DX12: PostSL locked to queue %p (origGame=%p scQueue=%p cmdQueue=%p preFG=%p epoch=%d slWrapper=%d)",
                          queue, g_OriginalGameQueue, scQueue,
-                         (void*)g_CommandQueue.load(), g_PreFGGameQueue);
+                         (void*)g_CommandQueue.load(), g_PreFGGameQueue, s_reactivationEpoch,
+                         (s_reactivationEpoch > 1 && queue != g_OriginalGameQueue) ? 1 : 0);
     } else if (queue != g_PostSLLockedQueue) {
         // g_CommandQueue changed (SL switched to its FG worker queue).
         // KEEP using the locked queue — it's proven safe.
@@ -4030,17 +4077,14 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         }
     }
 
-    // Graduated probing after FG transition reactivation (epoch ≥ 2).
-    // Probe 1: empty ECL (tests queue health)
-    // Probe 2: barrier-free ClearRTV (tests backbuffer access without state transition)
-    // Frame 3+: full barrier-free render
-    //
-    // BARRIER-FREE RENDERING: After FG transitions, we cannot use PRESENT→RT
-    // barriers because SL's internal pipeline transitions the backbuffer on its
-    // own queue.  D3D12 tracks resource state per-queue, so our barrier on a
-    // different queue causes DEVICE_REMOVED.  Rendering without barriers works
-    // because the GPU executes commands in queue order — the backbuffer memory
-    // is accessible regardless of D3D12 state tracking.
+    // Detect if we're using SL's wrapper queue (epoch ≥2 after FG transitions).
+    // When using SL's wrapper, we MUST use origECL (dispatches through SL's handler)
+    // instead of realECL (expects raw D3D12 CCommandQueue, would crash on COM wrapper).
+    bool isSLWrapperQ = (s_reactivationEpoch > 1 && queue != g_OriginalGameQueue &&
+                         queue != g_PostSLDedicatedQueue);
+
+    // PROBE: After FG transitions (epoch > 1), test queue health before full render.
+    // Probe 1: empty ECL (tests queue). Probe 2: ClearRTV with barriers (tests backbuffer).
     bool isPostTransitionProbe = (s_reactivationEpoch > 1 && s_postSLProbeFrames < 2);
     if (isPostTransitionProbe) {
         s_postSLProbeFrames++;
@@ -4050,7 +4094,15 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             // Probe 1: empty ECL — tests basic queue health
             list->Close();
         } else {
-            // Probe 2: barrier-free ClearRTV — tests backbuffer access
+            // Probe 2: ClearRTV with barriers — tests backbuffer access
+            D3D12_RESOURCE_BARRIER barrier = {};
+            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            barrier.Transition.pResource = bb;
+            barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+            barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            list->ResourceBarrier(1, &barrier);
+
             D3D12_CPU_DESCRIPTOR_HANDLE probeRtv =
                 g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
             UINT rtvSize = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
@@ -4059,19 +4111,32 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
 
             float clearColor[4] = {0, 0, 0, 0};
             list->ClearRenderTargetView(probeRtv, clearColor, 0, nullptr);
+
+            D3D12_RESOURCE_BARRIER barrierBack = {};
+            barrierBack.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            barrierBack.Transition.pResource = bb;
+            barrierBack.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            barrierBack.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+            barrierBack.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            list->ResourceBarrier(1, &barrierBack);
             list->Close();
         }
 
-        // Submit probe — prefer origECL on scQueue, realECL otherwise
-        ExecuteCommandListsPtr eclFn = nullptr;
-        if (queue == scQueue) {
-            eclFn = GetOriginalExecuteCommandLists(queue);
-        }
-        if (!eclFn) eclFn = g_RealD3D12ECL.load(std::memory_order_acquire);
-        if (eclFn) {
-            eclFn(queue, 1, probeList);
+        // Submit probe — use origECL for SL wrapper queue, realECL otherwise
+        if (isSLWrapperQ) {
+            ExecuteCommandListsPtr origECL = GetOriginalExecuteCommandLists(queue);
+            if (origECL) {
+                origECL(queue, 1, probeList);
+            } else {
+                queue->ExecuteCommandLists(1, probeList);
+            }
         } else {
-            queue->ExecuteCommandLists(1, probeList);
+            ExecuteCommandListsPtr eclFn = g_RealD3D12ECL.load(std::memory_order_acquire);
+            if (eclFn) {
+                eclFn(queue, 1, probeList);
+            } else {
+                queue->ExecuteCommandLists(1, probeList);
+            }
         }
 
         // Signal fence for allocator tracking
@@ -4086,9 +4151,9 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         }
 
         HRESULT probeHr = dev->GetDeviceRemovedReason();
-        HookLogImportant("DX12: PostSL PROBE #%d on queue=%p (scQ=%p) — %s devRemoved=0x%08X %s",
-                         s_postSLProbeFrames, queue, scQueue,
-                         s_postSLProbeFrames == 1 ? "empty ECL" : "barrier-free ClearRTV",
+        HookLogImportant("DX12: PostSL PROBE #%d on queue=%p (scQ=%p epoch=%d slWrapper=%d) — %s devRemoved=0x%08X %s",
+                         s_postSLProbeFrames, queue, scQueue, s_reactivationEpoch, isSLWrapperQ ? 1 : 0,
+                         s_postSLProbeFrames == 1 ? "empty ECL" : "ClearRTV+barriers",
                          probeHr,
                          FAILED(probeHr) ? "FAILED" : "OK");
         if (FAILED(probeHr)) {
@@ -4100,15 +4165,15 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     }
 
     if (willRender) {
-        // BARRIER-FREE RENDERING during PostSL: SL manages backbuffer state
-        // transitions on its own internal queues.  Explicit PRESENT→RT barriers
-        // on our queue cause cross-queue state mismatch → DEVICE_REMOVED.
-        // The GPU executes commands in queue order, so rendering without barriers
-        // works — the backbuffer memory is accessible regardless of D3D12 state.
-        // Note: epoch=1 (first DLSS activation) may use barriers if on the same
-        // queue as the swapchain, but epoch≥2 requires barrier-free.
-        // For simplicity, always skip barriers in PostSL — this is safe because
-        // SL already transitioned the backbuffer before our callback fires.
+        // SL transitions the backbuffer to PRESENT state before our callback.
+        // Transition PRESENT → RENDER_TARGET for overlay drawing.
+        D3D12_RESOURCE_BARRIER barrier = {};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition.pResource = bb;
+        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        list->ResourceBarrier(1, &barrier);
     }
     if (willRender) {
         // Recreate RTV for this buffer index (cheap CPU-side op)
@@ -4147,9 +4212,16 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                              g_D3D11On12Adapter.IsInitialized() ? 1 : 0);
     }
 
-    // BARRIER-FREE: No post-render RT→PRESENT barrier needed.
-    // SL manages the backbuffer state; we don't touch D3D12 state tracking.
-    // The Present call following our callback uses SL's state, which is unchanged.
+    // Post-render barrier: transition back to PRESENT for the actual Present call.
+    if (rendered) {
+        D3D12_RESOURCE_BARRIER barrier = {};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition.pResource = bb;
+        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        list->ResourceBarrier(1, &barrier);
+    }
 
     // If we can't render, don't submit an empty command list — just bail.
     // Submitting empty ECLs on potentially-stale queues risks DEVICE_REMOVED.
@@ -4219,19 +4291,10 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         }
     }
 
-    // Submit ECL.  Two paths depending on whether the queue is SL's wrapper:
-    //
-    // A) queue == scQueue (SL's swapchain queue): Use the saved original ECL
-    //    from GetOriginalExecuteCommandLists.  This calls through SL's wrapper
-    //    (not our DetourECL — avoiding re-entrancy; not the raw d3d12.dll ECL
-    //    — avoiding SL wrapper object incompatibility).  SL creates its internal
-    //    queues as COM wrapper/aggregation objects whose memory layout differs
-    //    from real D3D12 CCommandQueue.  The raw d3d12.dll ECL function expects
-    //    a real CCommandQueue `this` → DEVICE_REMOVED with SL's wrapper.
-    //
-    // B) queue != scQueue (game's queue): Use g_RealD3D12ECL to bypass all hooks
-    //    (SL vtable hook + our DetourECL).  Game queues are real D3D12 objects with
-    //    vtable-swapped hooks — calling the real function with them works.
+    // Submit ECL.
+    // - SL wrapper queue (epoch≥2): use origECL — SL's COM wrapper dispatches to
+    //   an authorized internal queue.  realECL would crash (expects raw CCommandQueue).
+    // - origGame (epoch 1): use realECL — bypasses all hook chains, works on raw queue.
     ExecuteCommandListsPtr realECL = g_RealD3D12ECL.load(std::memory_order_acquire);
     ID3D12CommandList* lists[] = {list};
     bool usedRealECL = false;
@@ -4241,37 +4304,34 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     static std::atomic<int> s_eclDiagCount{0};
     if (s_eclDiagCount.load(std::memory_order_relaxed) < 10) {
         ExecuteCommandListsPtr origECLDiag = GetOriginalExecuteCommandLists(queue);
-        HookLogImportant("DX12: PostSL ECL diag — queue=%p scQueue=%p origECL=%p realECL=%p match=%d sameQueue=%d",
+        HookLogImportant("DX12: PostSL ECL diag — queue=%p scQueue=%p origECL=%p realECL=%p match=%d sameQueue=%d slWrapper=%d",
                          queue, scQueue, (void*)origECLDiag, (void*)realECL,
                          origECLDiag == realECL ? 1 : 0,
-                         queue == scQueue ? 1 : 0);
+                         queue == scQueue ? 1 : 0,
+                         isSLWrapperQ ? 1 : 0);
         s_eclDiagCount.fetch_add(1, std::memory_order_relaxed);
     }
 
-    // Prefer origECL when on scQueue (SL's wrapper queue needs SL's ECL).
-    // Use realECL only on game queues (real D3D12 CCommandQueue objects).
-    if (queue == scQueue) {
+    if (isSLWrapperQ) {
+        // SL wrapper: use origECL (dispatches through SL's handler to authorized queue)
         ExecuteCommandListsPtr origECL = GetOriginalExecuteCommandLists(queue);
         if (origECL) {
             origECL(queue, 1, lists);
             usedOrigECL = true;
-        } else if (realECL) {
-            realECL(queue, 1, lists);
-            usedRealECL = true;
         } else {
             queue->ExecuteCommandLists(1, lists);
         }
+    } else if (realECL) {
+        // Real D3D12 queue (origGame): use realECL to bypass all hooks
+        realECL(queue, 1, lists);
+        usedRealECL = true;
     } else {
-        if (realECL) {
-            realECL(queue, 1, lists);
-            usedRealECL = true;
-        } else {
-            ExecuteCommandListsPtr origECL = GetOriginalExecuteCommandLists(queue);
-            if (origECL)
-                origECL(queue, 1, lists);
-            else
-                queue->ExecuteCommandLists(1, lists);
+        ExecuteCommandListsPtr origECL = GetOriginalExecuteCommandLists(queue);
+        if (origECL) {
+            origECL(queue, 1, lists);
             usedOrigECL = true;
+        } else {
+            queue->ExecuteCommandLists(1, lists);
         }
     }
 
@@ -4284,21 +4344,12 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             if (idx >= 0 && idx < (int)g_State.fenceValues.size())
                 g_State.fenceValues[idx] = next;
 
-            // Cross-queue GPU sync: if we submitted to g_CommandQueue but Present
-            // runs on g_SwapchainQueue (different queue), insert a GPU-side wait
-            // on scQueue.  This ensures real Present won't read the backbuffer
-            // until our overlay draw completes on the submission queue.
-            // Without this, cross-queue rendering causes visible flicker (overlay
-            // appears on some frames, not others, depending on GPU execution order).
-            //
-            // EXCEPTION: During SL FG, scQueue may be SL's internal queue (captured
-            // from CreateSwapChainForHwnd).  Calling Wait() on SL's queue with our
-            // fence causes DEVICE_REMOVED.  Skip cross-queue sync in this case —
-            // during SL FG, SL manages its own queue synchronization.
+            // Cross-queue GPU sync for non-SL-FG queues:
             bool slFGNow = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
             bool crossQueueSafe = scQueue && scQueue != queue && !slFGNow;
             if (crossQueueSafe) {
                 HRESULT waitHr = scQueue->Wait(g_State.fence, next);
+                crossQueueSynced = true;
                 if (FAILED(waitHr)) {
                     static int s_waitFail = 0;
                     if (s_waitFail++ < 5)
@@ -4330,12 +4381,11 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     }
 
     if (renderNum <= 20 || (renderNum % 10) == 0 || FAILED(postDevReason)) {
-        HookLogImportant("DX12: Post-SL overlay SUBMIT #%d (bufIdx=%u queue=%p scQueue=%p rendered=%d "
-                         "realECL=%d origECL=%d xqSync=%d tid=0x%04X devRemoved=0x%08X fenceVal=%llu)",
-                         renderNum, bufIdx, queue, scQueue, rendered ? 1 : 0, usedRealECL ? 1 : 0,
+        HookLogImportant("DX12: Post-SL overlay SUBMIT #%d (bufIdx=%u queue=%p scQueue=%p slWrapper=%d rendered=%d "
+                         "realECL=%d origECL=%d xqSync=%d tid=0x%04X devRemoved=0x%08X epoch=%d)",
+                         renderNum, bufIdx, queue, scQueue, isSLWrapperQ ? 1 : 0, rendered ? 1 : 0, usedRealECL ? 1 : 0,
                          usedOrigECL ? 1 : 0, crossQueueSynced ? 1 : 0,
-                         GetCurrentThreadId(), (unsigned)postDevReason,
-                         (unsigned long long)g_State.currentFenceValue);
+                         GetCurrentThreadId(), (unsigned)postDevReason, s_reactivationEpoch);
     }
     // Early warning: if device just failed, log immediately
     if (FAILED(postDevReason)) {
@@ -4582,7 +4632,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     // Update the FG recency counter BEFORE swapchain change check.
     {
         bool fgNow = IsActualFrameGenerationActive() ||
-                     DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+                     DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) ||
+                     g_FGCompat.IsFGActive();
         if (fgNow)
             g_FramesSinceFGActive = 0;
         else if (g_FramesSinceFGActive < 9999)
@@ -4603,7 +4654,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             // swapchain.  Set a transition cooldown so the reinit path (below) defers
             // until the FG runtime is stable.
             bool fgCurrentlyActive = IsActualFrameGenerationActive() ||
-                                     DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+                                     DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) ||
+                                     g_FGCompat.IsFGActive();
             // Also protect if FG was active within the last ~5 seconds (~300 frames).
             // When switching FG modes, the game may disable one FG type many frames
             // before the swapchain actually changes.  Heuristic detection goes inactive
@@ -4648,13 +4700,31 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     // by SL's CreateSwapChainForHwnd (SL creates its own swapchain with its
     // internal queue).  In that case, use g_OriginalGameQueue — the game's
     // real queue captured before any FG ever activated.
+    //
+    // FSR FG: FSR creates a NEW swapchain with its own queue. Our Present
+    // detour sees pSwapChain = FSR's swapchain, so GetBuffer returns FSR's
+    // backbuffers.  We MUST submit on the swapchain's associated queue
+    // (g_SwapchainQueue = FSR's queue) — submitting on origGame causes
+    // cross-queue resource access without synchronization → DEVICE_REMOVED.
     ID3D12CommandQueue* gameQueue = nullptr;
     {
         std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
         bool slFGNow = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+        bool fsrFGNow = g_FGCompat.IsFGActive() && !slFGNow;
         if (slFGNow && g_OriginalGameQueue) {
-            // During SL FG, prefer the game's original queue (proven safe).
-            // g_SwapchainQueue might be SL's internal queue after FG transitions.
+            // SL FG: g_SwapchainQueue polluted by SL's CreateSwapChainForHwnd.
+            // Use origGame — SL manages cross-queue sync internally.
+            // NOTE: Requires hysteresis in FSR FG detection to prevent
+            //   per-frame oscillation of IsFGActive() (see queue-change detection).
+            gameQueue = g_OriginalGameQueue;
+        } else if (fsrFGNow && g_SwapchainQueue) {
+            // FSR FG: pSwapChain is FSR's swapchain, backbuffers belong to
+            // FSR's queue.  Submit on the swapchain queue to avoid cross-queue
+            // resource state conflicts.  We use realECL to bypass FSR's ECL
+            // hook on this queue.
+            gameQueue = g_SwapchainQueue;
+        } else if (fsrFGNow && g_OriginalGameQueue) {
+            // FSR FG but g_SwapchainQueue not captured yet — fall back to origGame.
             gameQueue = g_OriginalGameQueue;
         } else {
             gameQueue = g_SwapchainQueue;
@@ -4673,11 +4743,23 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         ++s_queueLogCount;
         if (s_queueLogCount <= 10 || (s_queueLogCount % 300) == 0) {
             bool slFGNow = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
-            HookLogImportant("DX12: ProcessFrame queue=%p (slFG=%d origQ=%p scQ=%p cmdQ=%p path=%s) #%d",
-                             gameQueue, slFGNow ? 1 : 0,
+            bool fsrFGActive = g_FGCompat.IsFGActive();
+            const char* qPath = "unknown";
+            if (slFGNow && g_OriginalGameQueue && gameQueue == g_OriginalGameQueue)
+                qPath = "origGame(SL-FG)";
+            else if (fsrFGActive && gameQueue == g_SwapchainQueue)
+                qPath = "scQueue(FSR-FG)";
+            else if (fsrFGActive && gameQueue == g_OriginalGameQueue)
+                qPath = "origGame(FSR-FG-fallback)";
+            else if (gameQueue == g_SwapchainQueue)
+                qPath = "scQueue";
+            else
+                qPath = "cmdQueue";
+            HookLogImportant("DX12: ProcessFrame queue=%p (slFG=%d fsrFG=%d origQ=%p scQ=%p cmdQ=%p path=%s) #%d",
+                             gameQueue, slFGNow ? 1 : 0, fsrFGActive ? 1 : 0,
                              g_OriginalGameQueue, g_SwapchainQueue,
                              (void*)g_CommandQueue.load(),
-                             (slFGNow && g_OriginalGameQueue) ? "origGame" : (g_SwapchainQueue ? "scQueue" : "cmdQueue"),
+                             qPath,
                              s_queueLogCount);
         }
     }
@@ -4696,35 +4778,67 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     // Queue-change-based FG detection: FSR FG creates its own command queue
     // and reroutes all ECL calls through it.  Detecting a queue pointer change
     // after the first few frames is a strong signal that FG has activated.
+    //
+    // IMPORTANT: FSR FG alternates between origGame queue and FSR's internal
+    // queue every frame (real frame vs interpolated frame).  We use hysteresis
+    // to avoid rapid on/off oscillation:
+    //   - Activation: trigger immediately on first queue change
+    //   - Deactivation: require N CONSECUTIVE frames on initial queue
+    //
+    // CRITICAL: Use the RAW command queue (g_CommandQueue from ECL hook), NOT
+    // the overridden gameQueue.  When FG is active, gameQueue is forced to
+    // g_OriginalGameQueue, which would mask FSR's queue alternation and cause
+    // the deactivation counter to fire incorrectly.
     {
         static ID3D12CommandQueue* s_initialQueue = nullptr;
         static ID3D12CommandQueue* s_currentFGQueue = nullptr;
         static int s_queueFrameCount = 0;
+        static int s_consecutiveInitialQueueFrames = 0;
+        constexpr int kDeactivationThreshold = 120;  // ~2s at 60fps before declaring FG off
+        ID3D12CommandQueue* rawQueue = g_CommandQueue.load(std::memory_order_acquire);
         ++s_queueFrameCount;
         if (s_queueFrameCount <= 5) {
             // Capture initial queue during first 5 frames (before FG activates)
-            s_initialQueue = gameQueue;
+            s_initialQueue = rawQueue;
         } else if (s_initialQueue) {
-            bool isFGQueue = (gameQueue != s_initialQueue);
-            if (isFGQueue && !s_currentFGQueue) {
-                if (UpdateHeuristicFSRFGState(true, "queue-change")) {
-                    // Queue changed away from initial → FSR FG activated
-                    s_currentFGQueue = gameQueue;
-                    HookLogImportant("DX12: FG detected via queue change (initial=%p, current=%p, frame=%d)",
-                                     s_initialQueue, gameQueue, s_queueFrameCount);
-                } else {
-                    static std::atomic<int> s_ignoredQueueChangeLogCount{0};
-                    if (s_ignoredQueueChangeLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
-                        HookLog("DX12: Ignoring queue change heuristic (initial=%p, current=%p, frame=%d)",
-                                s_initialQueue, gameQueue, s_queueFrameCount);
+            bool isFGQueue = (rawQueue != s_initialQueue);
+            if (isFGQueue) {
+                // Reset consecutive-initial counter — we just saw the FG queue
+                s_consecutiveInitialQueueFrames = 0;
+
+                if (!s_currentFGQueue) {
+                    if (UpdateHeuristicFSRFGState(true, "queue-change")) {
+                        // Queue changed away from initial → FSR FG activated
+                        s_currentFGQueue = rawQueue;
+                        HookLogImportant("DX12: FG detected via queue change (initial=%p, current=%p, gameQ=%p, frame=%d)",
+                                         s_initialQueue, rawQueue, gameQueue, s_queueFrameCount);
+                    } else {
+                        static std::atomic<int> s_ignoredQueueChangeLogCount{0};
+                        if (s_ignoredQueueChangeLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+                            HookLog("DX12: Ignoring queue change heuristic (initial=%p, current=%p, rawQ=%p, frame=%d)",
+                                    s_initialQueue, rawQueue, gameQueue, s_queueFrameCount);
+                        }
                     }
                 }
-            } else if (!isFGQueue && s_currentFGQueue) {
-                // Queue reverted to initial → FSR FG deactivated (FG type switch)
-                HookLogImportant("DX12: FG deactivated via queue revert (initial=%p, fgQueue=%p, frame=%d)",
-                                 s_initialQueue, s_currentFGQueue, s_queueFrameCount);
-                s_currentFGQueue = nullptr;
-                UpdateHeuristicFSRFGState(false, "queue-change");
+                // else: FG already active, FG queue seen again — normal FSR FG alternation
+            } else {
+                // Seeing initial queue.  During FSR FG this happens every other frame.
+                // Only deactivate after many CONSECUTIVE initial-queue frames.
+                if (s_currentFGQueue) {
+                    ++s_consecutiveInitialQueueFrames;
+                    if (s_consecutiveInitialQueueFrames >= kDeactivationThreshold) {
+                        HookLogImportant("DX12: FG deactivated via queue revert after %d consecutive initial-queue frames "
+                                         "(initial=%p, fgQueue=%p, frame=%d)",
+                                         s_consecutiveInitialQueueFrames,
+                                         s_initialQueue, s_currentFGQueue, s_queueFrameCount);
+                        s_currentFGQueue = nullptr;
+                        s_consecutiveInitialQueueFrames = 0;
+                        UpdateHeuristicFSRFGState(false, "queue-change");
+                    } else if (s_consecutiveInitialQueueFrames == 1 || s_consecutiveInitialQueueFrames == 30) {
+                        HookLog("DX12: Seeing initial queue while FG active (consecutive=%d/%d, frame=%d)",
+                                s_consecutiveInitialQueueFrames, kDeactivationThreshold, s_queueFrameCount);
+                    }
+                }
             }
         }
     }
@@ -5006,6 +5120,15 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         if (g_FGTransitionCooldown == 0) {
             s_synclessCooldownLogCount.store(0, std::memory_order_relaxed);
             HookLogImportant("DX12: FG cooldown complete (sync-invalidated) — staged activation can proceed");
+            // Device health check after cooldown — if device already dead,
+            // sync reinit would be futile and might trigger secondary crashes.
+            auto* cooldownDev = g_Device.load(std::memory_order_acquire);
+            if (cooldownDev) {
+                HRESULT cooldownDevHr = cooldownDev->GetDeviceRemovedReason();
+                if (FAILED(cooldownDevHr)) {
+                    HookLogImportant("DX12: WARNING — device already dead at cooldown end! hr=0x%08X", cooldownDevHr);
+                }
+            }
         }
     }
 
@@ -5264,6 +5387,29 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             currentFGActive = true;
         }
 
+        // When SL signal goes from ON→OFF, the ECL heuristic may briefly
+        // false-positive as FSR_FG (elevated ECL count from departing DLSS FG
+        // looks like frame generation).  Suppress heuristic-only FG detection
+        // for a grace period after SL deactivates.  This prevents
+        // DLSS_FG→FSR_FG misclassification that causes queue/sync mismatch.
+        static int s_slOffGraceFrames = 0;
+        if (s_lastSLFGRunning && !currentSLFGRunning) {
+            // SL just turned OFF — start grace period
+            s_slOffGraceFrames = 120;
+            HookLogImportant("DX12: SL FG OFF — suppressing heuristic FG for 120 frames");
+        }
+        if (s_slOffGraceFrames > 0) {
+            s_slOffGraceFrames--;
+            // During grace period, only trust API-based FG detection (not heuristic).
+            // If the current detection is heuristic FSR FG, override to None.
+            bool isHeuristicOnly = (currentFGType == FGCompatibility::FGType::FSR_FG &&
+                                    !currentSLFGRunning);
+            if (isHeuristicOnly) {
+                currentFGActive = false;
+                currentFGType = FGCompatibility::FGType::None;
+            }
+        }
+
         // Detect FG on/off changes AND FG type changes (e.g., FSR FG → DLSS FG)
         // Also detect SL FG signal changes (immediate from SL hook)
         bool fgChanged = (currentFGActive != s_lastFGActive);
@@ -5292,6 +5438,27 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             // interfere with SL's FG initialization).
             g_PostSLOverlayActive.store(false, std::memory_order_release);
             DXGIShared::g_PostSLOverlayRenderCallback.store(nullptr, std::memory_order_release);
+
+            // When SL goes OFF, drain in-flight PostSL GPU work before SL
+            // tears down its internal queues.  Without this, command lists
+            // submitted on SL's wrapper queue may still be executing when
+            // SL destroys the queue → DEVICE_REMOVED.
+            if (slSignalChanged && !currentSLFGRunning && g_State.fence) {
+                UINT64 lastVal = g_State.currentFenceValue;
+                HANDLE drainEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+                if (drainEvent) {
+                    HRESULT drainHr = g_State.fence->SetEventOnCompletion(lastVal, drainEvent);
+                    if (SUCCEEDED(drainHr)) {
+                        DWORD waitResult = WaitForSingleObject(drainEvent, 200);
+                        HookLogImportant("DX12: SL OFF — drained PostSL GPU work (fenceVal=%llu wait=%u)",
+                                         (unsigned long long)lastVal, waitResult);
+                    } else {
+                        HookLogImportant("DX12: SL OFF — fence drain failed hr=0x%08X", drainHr);
+                    }
+                    CloseHandle(drainEvent);
+                }
+            }
+
             g_PostSLLockedQueue = nullptr;  // Reset locked queue for re-acquisition
             if (g_PostSLDedicatedQueue) {
                 g_PostSLDedicatedQueue->Release();
@@ -5319,6 +5486,31 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             if (g_State.syncInit) {
                 HookLogImportant("DX12: FG transition — forcing syncInit=false for fresh resources");
                 g_State.syncInit = false;
+            }
+
+            // Clear stale swapchain queue only when transitioning TO SL-based FG.
+            // FSR FG → DLSS FG: g_SwapchainQueue still points to FSR's queue.
+            // SL's swapchain creation bypasses our hooks, leaving scQueue stale.
+            // PostSL would pick FSR's dead queue → DEVICE_REMOVED.
+            // But DLSS FG → FSR FG: FSR already set scQueue via CreateSwapChainForHwnd
+            // and NEEDS it for correct backbuffer queue matching — do NOT clear.
+            if (fgTypeChanged) {
+                bool newTypeNeedsScQueue =
+                    (currentFGType == FGCompatibility::FGType::FSR_FG);
+                if (!newTypeNeedsScQueue) {
+                    std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
+                    if (g_SwapchainQueue) {
+                        HookLogImportant(
+                            "DX12: FG type change to %s — clearing stale g_SwapchainQueue %p",
+                            g_FGCompat.GetFGTypeName(currentFGType), g_SwapchainQueue);
+                        g_SwapchainQueue->Release();
+                        g_SwapchainQueue = nullptr;
+                    }
+                } else {
+                    HookLogImportant(
+                        "DX12: FG type change to %s — keeping g_SwapchainQueue %p (FSR needs it)",
+                        g_FGCompat.GetFGTypeName(currentFGType), g_SwapchainQueue);
+                }
             }
 
             // Probe real D3D12 ECL when SL FG first activates.  Must happen
@@ -5355,6 +5547,20 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             // During cooldown, suppress BOTH pre-SL and post-SL rendering.
             g_PostSLOverlayActive.store(false, std::memory_order_release);
             g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
+
+            // Periodic device-removed check during cooldown to pinpoint
+            // when the device dies (overlay is NOT rendering during this time).
+            if ((g_FGTransitionCooldown % 10) == 0) {
+                auto* cooldownDev = g_Device.load(std::memory_order_acquire);
+                if (cooldownDev) {
+                    HRESULT cooldownDevHr = cooldownDev->GetDeviceRemovedReason();
+                    if (FAILED(cooldownDevHr)) {
+                        HookLogImportant("DX12: DEVICE REMOVED DURING COOLDOWN (cooldown=%d devRemoved=0x%08X tid=0x%04X)",
+                                         g_FGTransitionCooldown, (unsigned)cooldownDevHr, GetCurrentThreadId());
+                    }
+                }
+            }
+
             if (g_FGTransitionCooldown == 0) {
                 auto fgType = g_FGCompat.GetActiveFGType();
                 bool slFG = currentFGActive &&
@@ -5594,6 +5800,15 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 HRESULT allocResetHr = alloc->Reset();
                 if (SUCCEEDED(allocResetHr)) {
                     HRESULT listResetHr = list->Reset(alloc, nullptr);
+                    // Log Reset results during FG for diagnostics
+                    if (g_FGCompat.IsFGActive() || slFGActive) {
+                        static std::atomic<int> s_fgResetLogs{0};
+                        int fgResetLog = s_fgResetLogs.fetch_add(1, std::memory_order_relaxed);
+                        if (fgResetLog < 5) {
+                            HookLogImportant("DX12: FG overlay alloc/list Reset (allocHr=0x%08X listHr=0x%08X idx=%d)",
+                                             (unsigned)allocResetHr, (unsigned)listResetHr, idx);
+                        }
+                    }
                     if (SUCCEEDED(listResetHr)) {
                         const bool shouldPrimeStartupOverlayResources =
                             ce::overlay_compat::ShouldPreemptivelyDelayDX12OverlayInitForProcess(g_ProcessName) &&
@@ -5720,6 +5935,14 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                                     bool usedDescFree = false;
                                     {
                                         auto* dev = g_Device.load();
+                                        // Pre-DescFree device health check
+                                        if (dev) {
+                                            HRESULT preDescFreeDevHr = dev->GetDeviceRemovedReason();
+                                            if (FAILED(preDescFreeDevHr)) {
+                                                HookLogImportant("DX12: DEVICE ALREADY REMOVED before DescFree init (devRemoved=0x%08X tid=0x%04X)",
+                                                                 (unsigned)preDescFreeDevHr, GetCurrentThreadId());
+                                            }
+                                        }
                                         if (dev && !g_DescFreeBackend) {
                                             auto* backend = new DX12DescFreeBackend();
                                             if (backend->InitDevice(dev, g_State.format)) {
@@ -5742,6 +5965,22 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                                                 D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
                                             rtvHandle.ptr += (SIZE_T)bufferIdx * rtvSize;
 
+                                            // During FG, the backbuffer may not be in
+                                            // COMMON/PRESENT state (FG runtimes manage
+                                            // backbuffer transitions internally). Use
+                                            // explicit PRESENT→RT barrier instead of
+                                            // relying on implicit state promotion.
+                                            bool fgBarriersNeeded = g_FGCompat.IsFGActive() || slFGActive;
+                                            if (fgBarriersNeeded && bb) {
+                                                D3D12_RESOURCE_BARRIER barrier = {};
+                                                barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                                                barrier.Transition.pResource = bb;
+                                                barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+                                                barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+                                                barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                                                list->ResourceBarrier(1, &barrier);
+                                            }
+
                                             s_descFreeCmdList = list;
                                             s_descFreeRtv = rtvHandle;
 
@@ -5759,6 +5998,17 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
 
                                             g_D3D11On12Adapter.RenderOverlay(
                                                 g_State.cachedWidth, g_State.cachedHeight);
+
+                                            // Transition back to PRESENT after overlay draw
+                                            if (fgBarriersNeeded && bb) {
+                                                D3D12_RESOURCE_BARRIER barrier = {};
+                                                barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                                                barrier.Transition.pResource = bb;
+                                                barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+                                                barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+                                                barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                                                list->ResourceBarrier(1, &barrier);
+                                            }
 
                                             s_descFreeCmdList = nullptr;
                                             usedDescFree = true;
@@ -5802,6 +6052,13 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                                     QueryPerformanceCounter(&perfRecord);
 
                                     HRESULT closeHr = list->Close();
+                                    // Log Close result during FG
+                                    if (g_FGCompat.IsFGActive() || slFGActive) {
+                                        static std::atomic<int> s_fgCloseLogs{0};
+                                        if (s_fgCloseLogs.fetch_add(1, std::memory_order_relaxed) < 5) {
+                                            HookLogImportant("DX12: FG overlay list->Close hr=0x%08X", (unsigned)closeHr);
+                                        }
+                                    }
                                     if (FAILED(closeHr)) {
                                         HookLog("DX12: list->Close failed hr=0x%08X, forcing reinit", closeHr);
                                         g_State.syncInit = false;
@@ -5852,14 +6109,34 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                                             GetOriginalExecuteCommandLists(eclQueue);
                                         ID3D12CommandList* lists[] = {list};
 
-                                        // During SL FG on the game queue, call the real
-                                        // D3D12 ECL directly (bypasses our vtable detour).
-                                        // This avoids incrementing ECL count and other
-                                        // side effects of our detour.
+                                        // Pre-ECL device health check — distinguish
+                                        // "device already dead" from "our ECL killed it"
+                                        {
+                                            auto* preEclDev = g_Device.load(std::memory_order_acquire);
+                                            if (preEclDev) {
+                                                HRESULT preEclDevHr = preEclDev->GetDeviceRemovedReason();
+                                                if (FAILED(preEclDevHr)) {
+                                                    HookLogImportant("DX12: DEVICE ALREADY REMOVED before overlay ECL "
+                                                                     "(devRemoved=0x%08X queue=%p realECL=%p origECL=%p tid=0x%04X)",
+                                                                     (unsigned)preEclDevHr, eclQueue,
+                                                                     (void*)g_RealD3D12ECL.load(), (void*)origECL,
+                                                                     GetCurrentThreadId());
+                                                }
+                                            }
+                                        }
+
+                                        // During ANY FG on the game queue, call the real
+                                        // D3D12 ECL directly (bypasses our vtable detour
+                                        // AND any FG runtime ECL hooks).
+                                        // SL FG: avoids incrementing ECL count + SL detour.
+                                        // FSR FG: avoids FSR's ECL hook which counts our
+                                        //   overlay submission as a game command list,
+                                        //   confusing FSR's frame interpolation tracking.
                                         ExecuteCommandListsPtr realECL =
                                             g_RealD3D12ECL.load(std::memory_order_acquire);
                                         bool usedRealECL = false;
-                                        if (slFGActive && !useDedicated && realECL) {
+                                        bool anyFGActive = slFGActive || g_FGCompat.IsFGActive();
+                                        if (anyFGActive && !useDedicated && realECL) {
                                             realECL(eclQueue, 1, lists);
                                             usedRealECL = true;
                                         } else if (origECL) {
@@ -5868,29 +6145,58 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                                             eclQueue->ExecuteCommandLists(1, lists);
                                         }
 
-                                        // SL FG diagnostic: log after ECL submission
-                                        if (slFGActive) {
-                                            static std::atomic<int> s_slFGSubmitCount{0};
-                                            int fgSubmit = s_slFGSubmitCount.fetch_add(1, std::memory_order_relaxed) + 1;
-                                            if (fgSubmit <= 20 || (fgSubmit % 10) == 0) {
+                                        // SL/FSR FG diagnostic: log after ECL submission
+                                        if (slFGActive || g_FGCompat.IsFGActive()) {
+                                            static std::atomic<int> s_fgSubmitCount{0};
+                                            int fgSubmit = s_fgSubmitCount.fetch_add(1, std::memory_order_relaxed) + 1;
+                                            if (fgSubmit <= 20 || (fgSubmit % 100) == 0) {
                                                 auto* diagDev2 = g_Device.load(std::memory_order_acquire);
                                                 HRESULT devHr2 = diagDev2 ? diagDev2->GetDeviceRemovedReason() : E_FAIL;
-                                                HookLogImportant("DX12: SL-FG overlay SUBMIT #%d (queue=%p descFree=%d realECL=%d gameQ=%d devRemoved=0x%08X)",
+                                                HookLogImportant("DX12: FG overlay SUBMIT #%d (queue=%p descFree=%d realECL=%d "
+                                                                 "slFG=%d fsrFG=%d gameQ=%d devRemoved=0x%08X tid=0x%04X)",
                                                                  fgSubmit, eclQueue, usedDescFree ? 1 : 0,
-                                                                 usedRealECL ? 1 : 0, !useDedicated ? 1 : 0,
-                                                                 (unsigned)devHr2);
+                                                                 usedRealECL ? 1 : 0,
+                                                                 slFGActive ? 1 : 0, g_FGCompat.IsFGActive() ? 1 : 0,
+                                                                 !useDedicated ? 1 : 0,
+                                                                 (unsigned)devHr2, GetCurrentThreadId());
+                                            }
+                                        }
+
+                                        // Post-FG-transition diagnostic: log first 20 frames after any FG change.
+                                        // Catches DEVICE_REMOVED right after overlay resumes following FG switches.
+                                        {
+                                            static int s_postTransitionFrames = 0;
+                                            static int s_lastTransitionCooldown = -1;
+                                            int curCooldown = g_FGTransitionCooldown;
+                                            if (curCooldown > 0 && s_lastTransitionCooldown <= 0)
+                                                s_postTransitionFrames = 0;  // new transition started
+                                            if (curCooldown <= 0 && s_lastTransitionCooldown > 0)
+                                                s_postTransitionFrames = 0;  // transition just ended
+                                            s_lastTransitionCooldown = curCooldown;
+                                            if (s_postTransitionFrames < 20) {
+                                                s_postTransitionFrames++;
+                                                auto* diagDev3 = g_Device.load(std::memory_order_acquire);
+                                                HRESULT devHr3 = diagDev3 ? diagDev3->GetDeviceRemovedReason() : E_FAIL;
+                                                HookLogImportant("DX12: Post-transition SUBMIT #%d (queue=%p origQ=%p cmdQ=%p "
+                                                                 "fgActive=%d slFG=%d descFree=%d devRemoved=0x%08X tid=0x%04X)",
+                                                                 s_postTransitionFrames, eclQueue, g_OriginalGameQueue,
+                                                                 (void*)g_CommandQueue.load(),
+                                                                 g_FGCompat.IsFGActive() ? 1 : 0,
+                                                                 DXGIShared::g_StreamlineFGRunning.load(std::memory_order_relaxed) ? 1 : 0,
+                                                                 usedDescFree ? 1 : 0,
+                                                                 (unsigned)devHr3, GetCurrentThreadId());
                                             }
                                         }
 
                                         if (g_State.fence) {
                                             UINT64 next = g_State.currentFenceValue + 1;
-                                            if (slFGActive && !useDedicated) {
-                                                // During SL FG on the game queue, SKIP the
+                                            if (anyFGActive && !useDedicated) {
+                                                // During ANY FG on the game queue, SKIP the
                                                 // deferred fence signal entirely.  The Signal
                                                 // virtual call goes through the game queue's
-                                                // vtable, which SL might monitor for frame
+                                                // vtable, which SL/FSR might monitor for frame
                                                 // synchronization.  Extra Signals between
-                                                // Present calls can desync SL's FG pipeline.
+                                                // Present calls can desync the FG pipeline.
                                                 // Allocator reuse is safe: stale fence values
                                                 // from pre-FG frames are long-completed.
                                             } else if (useDedicated) {
@@ -6402,6 +6708,22 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
 
     // Register game's queue for overlay execution
     DX12_SetCommandQueue(pThis);
+
+    // Periodic device-removed check in ECL detour during FG —
+    // helps pinpoint when GPU dies relative to our hook activity.
+    if ((eclCount & 0x3FF) == 0x200 && g_FGCompat.IsFGActive()) {
+        auto* eclDev = g_Device.load(std::memory_order_acquire);
+        if (eclDev) {
+            HRESULT eclDevHr = eclDev->GetDeviceRemovedReason();
+            if (FAILED(eclDevHr)) {
+                static std::atomic<int> s_eclDevRemovedLogs{0};
+                if (s_eclDevRemovedLogs.fetch_add(1, std::memory_order_relaxed) < 5) {
+                    HookLogImportant("DX12: DEVICE REMOVED in ECL detour (eclCount=%llu queue=%p devRemoved=0x%08X tid=0x%04X)",
+                                     (unsigned long long)eclCount, pThis, (unsigned)eclDevHr, GetCurrentThreadId());
+                }
+            }
+        }
+    }
 
     ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
 
