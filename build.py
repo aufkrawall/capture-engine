@@ -3399,32 +3399,12 @@ def main():
     #     except Exception as e:
     #         log(f"Warning: Could not clean {OBJ_DIR}: {e}")
 
-    # Clean log files in logs/ subfolder
+    # Preserve log files in logs/ subfolder across builds.
+    # Logs, crash dumps, and CSV files are kept so that crash analysis can
+    # be performed even after a rebuild.  Delete them manually when needed.
     logs_dir = os.path.join(BIN_DIR, "logs")
     if os.path.exists(logs_dir):
-        log("Cleaning log files...")
-        for log_file in glob.glob(os.path.join(logs_dir, "*.log")):
-            try:
-                os.remove(log_file)
-            except Exception as e:
-                log(f"Warning: Could not delete {log_file}: {e}")
-        for csv_file in glob.glob(os.path.join(logs_dir, "*.csv")):
-            try:
-                os.remove(csv_file)
-            except Exception as e:
-                log(f"Warning: Could not delete {csv_file}: {e}")
-        # Clean crash dumps and crash handler traces
-        for dmp_file in glob.glob(os.path.join(logs_dir, "*.dmp")):
-            try:
-                os.remove(dmp_file)
-            except Exception as e:
-                log(f"Warning: Could not delete {dmp_file}: {e}")
-        crash_trace_file = os.path.join(logs_dir, "crash_handler_trace.txt")
-        if os.path.exists(crash_trace_file):
-            try:
-                os.remove(crash_trace_file)
-            except Exception as e:
-                log(f"Warning: Could not delete {crash_trace_file}: {e}")
+        log("Preserving existing log files (not cleaning logs/).")
 
     # Clean legacy log files from root/bin
     legacy_logs = [
