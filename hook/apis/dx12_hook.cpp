@@ -179,6 +179,11 @@ static std::atomic<int> g_PostSLStableFrameCount{0};
 // detection → wrong queue selection → DEVICE_HUNG.
 static std::atomic<bool> g_ResetQueueChangeHeuristic{false};
 
+// Outer SL transition epoch — incremented each time the outer FG state management
+// block processes an SL FG ON/OFF transition.  The inner transition handler checks
+// this to avoid redundant transition processing (double cooldowns, duplicate drain).
+static std::atomic<uint32_t> g_OuterSLTransitionEpoch{0};
+
 // Locked queue for PostSL overlay — stays on the first successful queue
 // (game's render queue) instead of following SL's FG worker queue changes.
 // Reset when PostSL rendering is disabled (FG transition off).
@@ -6053,8 +6058,16 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                                  slTurnedOn ? "ON" : "OFF");
             }
 
+            // Clear NVIDIA_SM detection state — the cached 2× multiplier from
+            // departing DLSS FG would otherwise trigger false NVIDIA_SM detection
+            // in DetectPattern() within a few frames.
+            g_FGCompat.ClearNvidiaSMState();
+
             // Reset queue-change heuristic so it re-captures initial queue
             g_ResetQueueChangeHeuristic.store(true, std::memory_order_release);
+
+            // Bump epoch so the inner transition handler skips redundant processing
+            g_OuterSLTransitionEpoch.fetch_add(1, std::memory_order_release);
 
             if (slTurnedOff) {
                 // FG→off: restore g_SwapchainQueue to origGame so the startup
@@ -6147,6 +6160,30 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         auto currentFGType = g_FGCompat.GetActiveFGType();
         bool currentSLFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
 
+        // Grace period counter — declared here so epoch sync can reference it.
+        static int s_slOffGraceFrames = 0;
+
+        // Epoch sync: when the outer FG state management block has already
+        // processed an SL FG transition, bring our tracking variables in sync
+        // to avoid redundant transition processing (double cooldowns, duplicate
+        // GPU drain, swapchain queue re-clearing).
+        static uint32_t s_innerSyncedEpoch = 0;
+        uint32_t outerEpoch = g_OuterSLTransitionEpoch.load(std::memory_order_acquire);
+        if (s_innerSyncedEpoch != outerEpoch) {
+            bool wasSlOn = s_lastSLFGRunning;
+            s_lastFGActive = currentFGActive;
+            s_lastFGType = currentFGType;
+            s_lastSLFGRunning = currentSLFGRunning;
+            s_innerSyncedEpoch = outerEpoch;
+            // If SL turned off, start grace period (mirroring normal detection)
+            if (wasSlOn && !currentSLFGRunning) {
+                s_slOffGraceFrames = 300;
+            }
+            HookLogImportant("DX12: [inner] Synced tracking to outer epoch %u (fgActive=%d fgType=%s slFG=%d grace=%d)",
+                             outerEpoch, currentFGActive ? 1 : 0, g_FGCompat.GetFGTypeName(currentFGType),
+                             currentSLFGRunning ? 1 : 0, s_slOffGraceFrames);
+        }
+
         // If SL directly signals FG is running, force currentFGActive true.
         // Heuristic detection may lag behind the SL hook's immediate signal,
         // creating a gap where IsFGActive() returns false even though SL FG
@@ -6157,10 +6194,9 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
 
         // When SL signal goes from ON→OFF, the ECL heuristic may briefly
         // false-positive as FSR_FG (elevated ECL count from departing DLSS FG
-        // looks like frame generation).  Suppress heuristic-only FG detection
-        // for a grace period after SL deactivates.  This prevents
-        // DLSS_FG→FSR_FG misclassification that causes queue/sync mismatch.
-        static int s_slOffGraceFrames = 0;
+        // looks like frame generation).  Suppress non-API FG detection for a
+        // grace period after SL deactivates.  Also suppresses NVIDIA_SM false
+        // positives from the cached 2× multiplier.
         if (s_lastSLFGRunning && !currentSLFGRunning) {
             // SL just turned OFF — start grace period.
             // 300 frames covers the slow ECL ratio decay after DLSS FG shutdown.
@@ -6169,13 +6205,18 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         }
         if (s_slOffGraceFrames > 0) {
             s_slOffGraceFrames--;
-            // During grace period, only trust API-based FG detection (not heuristic).
-            // If the current detection is heuristic FSR FG, override to None.
-            bool isHeuristicOnly = (currentFGType == FGCompatibility::FGType::FSR_FG &&
-                                    !currentSLFGRunning);
-            if (isHeuristicOnly) {
-                currentFGActive = false;
-                currentFGType = FGCompatibility::FGType::None;
+            // During grace period after SL FG OFF, suppress ALL non-API-confirmed
+            // FG types.  The cached 2× multiplier from departing DLSS FG falsely
+            // activates NVIDIA_SM detection, and elevated ECL counts falsely
+            // trigger heuristic FSR_FG.  Only trust explicit API hooks
+            // (fsrFGApiActive from ffxCreateContext).  DLSS_FG API requires SL
+            // running, which is false during this grace period.
+            if (!currentSLFGRunning && currentFGActive) {
+                bool fsrApiConfirmed = g_FGCompat.IsFSRFGApiActive();
+                if (!fsrApiConfirmed) {
+                    currentFGActive = false;
+                    currentFGType = FGCompatibility::FGType::None;
+                }
             }
         }
 

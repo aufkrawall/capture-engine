@@ -122,6 +122,17 @@ public:
         return heuristicFSRFGActive.load(std::memory_order_acquire);
     }
 
+    // Clear NVIDIA Smooth Motion detection state.  Called when SL FG turns OFF
+    // to prevent the cached 2× multiplier from falsely triggering NVIDIA_SM.
+    void ClearNvidiaSMState() {
+        nvidiaSMConfirmCount.store(0, std::memory_order_release);
+        FGType current = activeBehavior.load(std::memory_order_acquire);
+        if (current == FGType::NVIDIA_SM) {
+            activeBehavior.store(FGType::None, std::memory_order_release);
+            HookLog("FG: Cleared NVIDIA_SM state (SL FG transition cleanup)");
+        }
+    }
+
     // Direct signal from Streamline hook — faster than heuristic detection.
     void SetStreamlineFGSignal(bool active) {
         streamlineFGSignal.store(active, std::memory_order_release);
