@@ -161,6 +161,24 @@ static std::atomic<bool> g_PostSLConfirmedRendering{false};
 // enough time to fire during normal FG before pre-SL takes over.
 static std::atomic<int> g_PostSLStallCounter{0};
 
+// Counts consecutive successful PostSL renders since the last FG transition.
+// Incremented by PostSLOverlayRender, reset to 0 by FG transition handler.
+// The stall fallback is only enabled once this exceeds kPostSLWarmupThreshold,
+// preventing pre-SL rendering during FG warmup (SL pipeline still initializing).
+//
+// PROBLEM: After FG OFF→ON (menu close), SL generates ONE re-entrant Present
+// immediately (setting PostSLConfirmed=true), then stalls briefly while the FG
+// pipeline warms up.  Without this counter, the stall fallback fires during
+// warmup and renders on origGame → DEVICE_HUNG (cross-queue backbuffer access).
+static std::atomic<int> g_PostSLStableFrameCount{0};
+
+// Flag to reset the queue-change heuristic's internal state.  Set during FG
+// transitions so that the heuristic starts fresh afterward (re-captures the
+// "initial queue" from the next 5 frames).  Without this, SL's leftover queue
+// persists in the heuristic's state after FG OFF → immediate false FSR FG
+// detection → wrong queue selection → DEVICE_HUNG.
+static std::atomic<bool> g_ResetQueueChangeHeuristic{false};
+
 // Locked queue for PostSL overlay — stays on the first successful queue
 // (game's render queue) instead of following SL's FG worker queue changes.
 // Reset when PostSL rendering is disabled (FG transition off).
@@ -4952,6 +4970,9 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     }
     // Reset stall counter — PostSL is actively rendering, no need for pre-SL fallback
     g_PostSLStallCounter.store(0, std::memory_order_release);
+    // Track PostSL warmup — stable frame count since last FG transition.
+    // Stall fallback is only enabled after this exceeds warmup threshold.
+    g_PostSLStableFrameCount.fetch_add(1, std::memory_order_release);
 
     // Track last working queue — survives FG transitions so we can prefer
     // a proven-safe queue when PostSL re-activates after FSR→DLSS switch.
@@ -5415,6 +5436,20 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         static int s_queueFrameCount = 0;
         static int s_consecutiveInitialQueueFrames = 0;
         constexpr int kDeactivationThreshold = 120;  // ~2s at 60fps before declaring FG off
+
+        // FG transition handler sets this flag to force a full reset.
+        // Without this, SL's leftover queue persists in s_initialQueue/
+        // s_currentFGQueue and immediately re-triggers false FSR FG detection.
+        if (g_ResetQueueChangeHeuristic.exchange(false, std::memory_order_acquire)) {
+            HookLog("DX12: Queue-change heuristic reset (FG transition) — "
+                     "was initial=%p fgQ=%p frame=%d",
+                     s_initialQueue, s_currentFGQueue, s_queueFrameCount);
+            s_initialQueue = nullptr;
+            s_currentFGQueue = nullptr;
+            s_queueFrameCount = 0;
+            s_consecutiveInitialQueueFrames = 0;
+        }
+
         ID3D12CommandQueue* rawQueue = g_CommandQueue.load(std::memory_order_acquire);
         ++s_queueFrameCount;
         if (s_queueFrameCount <= 5) {
@@ -6060,15 +6095,25 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             g_PostSLOverlayActive.store(false, std::memory_order_release);
             DXGIShared::g_PostSLOverlayRenderCallback.store(nullptr, std::memory_order_release);
             g_PostSLStallCounter.store(0, std::memory_order_release);  // Fresh start after transition
+            g_PostSLStableFrameCount.store(0, std::memory_order_release);  // Reset warmup counter
 
-            // When SL FG turns ON, clear any false heuristic FSR FG state.
+            // When SL FG turns ON or OFF, clear any false heuristic FSR FG state.
             // SL's queue changes trigger the queue-change heuristic, causing
-            // false FSR FG detection.  Clear it now and CanUseFSRFGHeuristics()
-            // will block further heuristic activation while SL FG is running.
-            if (currentSLFGRunning && g_FGCompat.IsHeuristicFSRFGActive()) {
+            // false FSR FG detection.  Clear it during ANY SL FG transition:
+            //   - ON: SL creates new queues → queue-change heuristic fires falsely
+            //   - OFF: SL's queue was "current FG queue" → not cleared until
+            //          consecutive initial-queue frames pass the threshold
+            if (g_FGCompat.IsHeuristicFSRFGActive()) {
                 g_FGCompat.SetHeuristicFSRFGActive(false);
-                HookLogImportant("DX12: Cleared false heuristic FSR FG — SL FG is running");
+                HookLogImportant("DX12: Cleared heuristic FSR FG during SL FG %s transition",
+                                 currentSLFGRunning ? "ON" : "OFF");
             }
+
+            // Reset the queue-change heuristic's internal state so it re-captures
+            // the "initial queue" after the transition.  SL's leftover queue would
+            // otherwise persist as s_initialQueue/s_currentFGQueue and immediately
+            // re-trigger false FSR FG detection.
+            g_ResetQueueChangeHeuristic.store(true, std::memory_order_release);
 
             // When SL goes OFF, drain in-flight PostSL GPU work before SL
             // tears down its internal queues.  Without this, command lists
@@ -6156,7 +6201,31 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             if (fgTypeChanged) {
                 bool newTypeNeedsScQueue =
                     (currentFGType == FGCompatibility::FGType::FSR_FG);
-                if (!newTypeNeedsScQueue && !g_HadFSRFGPhase) {
+                bool targetIsNone = (currentFGType == FGCompatibility::FGType::None);
+                if (targetIsNone && !g_HadFSRFGPhase) {
+                    // FG→off: game returns to its original swapchain.  Restore
+                    // g_SwapchainQueue to the original game queue so the startup
+                    // overlay blocker (Social Club) doesn't falsely block rendering
+                    // because of a null swapchain queue.  The game's swapchain was
+                    // created on g_OriginalGameQueue; after FG teardown, that's
+                    // the correct queue for backbuffer access.
+                    std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
+                    ID3D12CommandQueue* origQ = g_OriginalGameQueue;
+                    if (origQ && g_SwapchainQueue != origQ) {
+                        if (g_SwapchainQueue) g_SwapchainQueue->Release();
+                        origQ->AddRef();
+                        g_SwapchainQueue = origQ;
+                        HookLogImportant(
+                            "DX12: FG→off — restored g_SwapchainQueue to origGame %p (game's original swapchain queue)",
+                            origQ);
+                    } else if (!origQ && g_SwapchainQueue) {
+                        HookLogImportant(
+                            "DX12: FG→off — clearing stale g_SwapchainQueue %p (no origGame to restore)",
+                            g_SwapchainQueue);
+                        g_SwapchainQueue->Release();
+                        g_SwapchainQueue = nullptr;
+                    }
+                } else if (!newTypeNeedsScQueue && !g_HadFSRFGPhase) {
                     std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
                     if (g_SwapchainQueue) {
                         HookLogImportant(
@@ -6341,27 +6410,41 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                         // each successful render.  After kPostSLStallThreshold frames
                         // without a reset, allow pre-SL as fallback.
                         //
-                        // When PostSL resumes (FG generates frames again), it resets
-                        // the counter → pre-SL suppressed → PostSL takes over.
-                        //
-                        // THRESHOLD: 5 frames is short enough to make the overlay
-                        // gap imperceptible, but long enough to not false-positive
-                        // during normal FG (where PostSL fires multiple times per
-                        // game Present call for interpolated + real frames).
+                        // WARMUP GUARD: The stall fallback is ONLY safe when SL's FG
+                        // pipeline is genuinely idle (suspension).  During FG warmup
+                        // (just after OFF→ON or re-confirmation), SL's pipeline is
+                        // actively processing, and pre-SL ECLs on origGame cause
+                        // DEVICE_HUNG.  g_PostSLStableFrameCount tracks consecutive
+                        // PostSL frames since the last FG transition.  Fallback is
+                        // only enabled after kPostSLWarmupThreshold frames of stable
+                        // PostSL rendering, proving the FG pipeline is fully operational.
                         //
                         // TESTED: GTA V Enhanced (menu pauses FG), Talos Reawakened
                         // (continuous FG — stall never triggers during normal play).
                         constexpr int kPostSLStallThreshold = 5;
+                        constexpr int kPostSLWarmupThreshold = 30;  // ~0.5s at 60fps
+                        int stableFrames = g_PostSLStableFrameCount.load(std::memory_order_acquire);
                         int stallCount = g_PostSLStallCounter.fetch_add(1, std::memory_order_acq_rel) + 1;
-                        if (stallCount <= kPostSLStallThreshold) {
+
+                        if (stableFrames < kPostSLWarmupThreshold) {
+                            // FG pipeline still warming up — don't fall back to pre-SL.
+                            // Just skip rendering until PostSL stabilizes.
+                            skipOverlayDraw = true;
+                            static int s_warmupSuppressLog = 0;
+                            if (s_warmupSuppressLog++ < 5 || (s_warmupSuppressLog % 200) == 0) {
+                                HookLogImportant("DX12: PostSL warmup — suppressing stall fallback "
+                                                 "(stableFrames=%d stallCount=%d threshold=%d) #%d",
+                                                 stableFrames, stallCount, kPostSLWarmupThreshold, s_warmupSuppressLog);
+                            }
+                        } else if (stallCount <= kPostSLStallThreshold) {
                             skipOverlayDraw = true;  // PostSL recently active — suppress pre-SL
                         } else {
                             // PostSL has stalled — SL FG is nominally on but not generating
                             // frames.  Allow pre-SL rendering as fallback.
                             static int s_stallFallbackLog = 0;
                             if (s_stallFallbackLog < 10 || (s_stallFallbackLog % 200) == 0) {
-                                HookLogImportant("DX12: PostSL stalled (%d frames) — falling back to pre-SL rendering #%d",
-                                                 stallCount, s_stallFallbackLog);
+                                HookLogImportant("DX12: PostSL stalled (%d frames, stableFrames=%d) — falling back to pre-SL rendering #%d",
+                                                 stallCount, stableFrames, s_stallFallbackLog);
                             }
                             s_stallFallbackLog++;
                             // Don't skip pre-SL draw — it will render the overlay
@@ -6376,6 +6459,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                     // Reset PostSL confirmed flag so pre-SL rendering resumes immediately
                     g_PostSLConfirmedRendering.store(false, std::memory_order_release);
                     g_PostSLStallCounter.store(0, std::memory_order_release);
+                    g_PostSLStableFrameCount.store(0, std::memory_order_release);
                     HookLogImportant("DX12: Disabled post-SL callback — rendering pre-SL in ProcessFrame (fgType=%s)",
                                      g_FGCompat.GetFGTypeName(g_FGCompat.GetActiveFGType()));
                 }
@@ -6388,7 +6472,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             ++s_routingFrameCount;
             if ((s_routingFrameCount % 300) == 0) {
                 HookLogImportant("DX12: Routing state: frame=%llu fgActive=%d slFGActive=%d slSignal=%d "
-                        "cooldown=%d sceneCool=%d postSLCallback=%d postSLActive=%d skip=%d stallCount=%d fgType=%s",
+                        "cooldown=%d sceneCool=%d postSLCallback=%d postSLActive=%d skip=%d stallCount=%d stableFrames=%d fgType=%s",
                         s_routingFrameCount, currentFGActive ? 1 : 0, slFGActive ? 1 : 0,
                         currentSLFGRunning ? 1 : 0, g_FGTransitionCooldown,
                         g_SceneTransitionCooldown.load(std::memory_order_relaxed),
@@ -6396,6 +6480,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                         g_PostSLOverlayActive.load(std::memory_order_relaxed) ? 1 : 0,
                         skipOverlayDraw ? 1 : 0,
                         g_PostSLStallCounter.load(std::memory_order_relaxed),
+                        g_PostSLStableFrameCount.load(std::memory_order_relaxed),
                         g_FGCompat.GetFGTypeName(currentFGType));
             }
         }
