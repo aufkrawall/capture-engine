@@ -76,8 +76,7 @@ static PFN_DX12FlushDeferredSignal ResolveDX12FlushDeferredSignal() {
             hHook = GetModuleHandleA("capture_hook_x86.dll");
         }
         if (hHook) {
-            s_fn = reinterpret_cast<PFN_DX12FlushDeferredSignal>(
-                GetProcAddress(hHook, "DX12_FlushDeferredSignal"));
+            s_fn = reinterpret_cast<PFN_DX12FlushDeferredSignal>(GetProcAddress(hHook, "DX12_FlushDeferredSignal"));
         }
     });
 
@@ -385,9 +384,8 @@ static void DetectSLPresentHook() {
     static int s_checkCount = 0;
     int checkNum = ++s_checkCount;
     if (checkNum <= 5 || (checkNum <= 50 && (checkNum % 10) == 0) || (checkNum % 500) == 0) {
-        HookLogImportant("DetectSLPresentHook: oPresent=%p bytes: %02X %02X %02X %02X %02X %02X (check #%d)",
-                         oPresent, funcBytes[0], funcBytes[1], funcBytes[2], funcBytes[3],
-                         funcBytes[4], funcBytes[5], checkNum);
+        HookLogImportant("DetectSLPresentHook: oPresent=%p bytes: %02X %02X %02X %02X %02X %02X (check #%d)", oPresent,
+                         funcBytes[0], funcBytes[1], funcBytes[2], funcBytes[3], funcBytes[4], funcBytes[5], checkNum);
     }
 
     // Detect SL hooks: E9 relative JMP or FF 25 indirect JMP (JMP [RIP+0]).
@@ -402,9 +400,9 @@ static void DetectSLPresentHook() {
     // Verify that our trampoline is different (it should have the original
     // function bytes, not a JMP).
     auto* trampolineBytes = (const uint8_t*)oPresentTrampoline;
-    HookLogImportant("DetectSLPresentHook: trampoline=%p bytes: %02X %02X %02X %02X %02X %02X",
-                     oPresentTrampoline, trampolineBytes[0], trampolineBytes[1], trampolineBytes[2],
-                     trampolineBytes[3], trampolineBytes[4], trampolineBytes[5]);
+    HookLogImportant("DetectSLPresentHook: trampoline=%p bytes: %02X %02X %02X %02X %02X %02X", oPresentTrampoline,
+                     trampolineBytes[0], trampolineBytes[1], trampolineBytes[2], trampolineBytes[3], trampolineBytes[4],
+                     trampolineBytes[5]);
 
     s_slRoutingActive.store(true, std::memory_order_release);
     HookLogImportant(
@@ -448,11 +446,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                 // ProcessFrame from ever running again.
                 DWORD presentOwner = g_presentThreadId.load(std::memory_order_relaxed);
                 int presentDepthVal = g_presentDepth.load(std::memory_order_relaxed);
-                HookLogImportant("DetourPresent: heartbeat #%d gap=%.0fms presentOwner=0x%04X depth=%d slFG=%d tid=0x%04X",
-                                 s_heartbeatCount, gapMs,
-                                 presentOwner, presentDepthVal,
-                                 g_StreamlineFGRunning.load(std::memory_order_relaxed) ? 1 : 0,
-                                 GetCurrentThreadId());
+                HookLogImportant(
+                    "DetourPresent: heartbeat #%d gap=%.0fms presentOwner=0x%04X depth=%d slFG=%d tid=0x%04X",
+                    s_heartbeatCount, gapMs, presentOwner, presentDepthVal,
+                    g_StreamlineFGRunning.load(std::memory_order_relaxed) ? 1 : 0, GetCurrentThreadId());
             }
         }
         s_lastPresentTime = now;
@@ -544,8 +541,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         int reentrantNum = s_reentrantLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (reentrantNum <= 10 || reentrantNum == 50 || reentrantNum == 100 || (reentrantNum % 500) == 0) {
             HookLogImportant("DetourPresent: Re-entrant #%d (postSL=%p, trampoline=%p, bypass=%p, tid=0x%04X)",
-                    reentrantNum, (void*)postSLCallback, (void*)oPresentTrampoline, (void*)oPresentBypass,
-                    GetCurrentThreadId());
+                             reentrantNum, (void*)postSLCallback, (void*)oPresentTrampoline, (void*)oPresentBypass,
+                             GetCurrentThreadId());
         }
         if (oPresentTrampoline) {
             return oPresentTrampoline(pSwapChain, SyncInterval, Flags);
@@ -785,8 +782,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         static std::atomic<int> s_reentrantLogCount1{0};
         int reentrantNum1 = s_reentrantLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
         if (reentrantNum1 <= 10 || reentrantNum1 == 50 || reentrantNum1 == 100 || (reentrantNum1 % 500) == 0) {
-            HookLog("DetourPresent1: Re-entrant #%d (postSL=%p, trampoline=%p, bypass=%p)",
-                    reentrantNum1, (void*)postSLCallback, (void*)oPresent1Trampoline, (void*)oPresent1Bypass);
+            HookLog("DetourPresent1: Re-entrant #%d (postSL=%p, trampoline=%p, bypass=%p)", reentrantNum1,
+                    (void*)postSLCallback, (void*)oPresent1Trampoline, (void*)oPresent1Bypass);
         }
         if (oPresent1Trampoline) {
             return oPresent1Trampoline(pSwapChain, SyncInterval, Flags, pPresentParameters);
@@ -1084,8 +1081,8 @@ bool InstallHooks(IDXGISwapChain* pSwapChain, bool presentOnly) {
             return true;
         }
         // New swapchain with a DIFFERENT vtable — need to re-hook.
-        HookLogImportant("DXGIShared::InstallHooks: NEW vtable detected (old=%p new=%p) — re-hooking",
-                         s_hookedVTable, newVTable);
+        HookLogImportant("DXGIShared::InstallHooks: NEW vtable detected (old=%p new=%p) — re-hooking", s_hookedVTable,
+                         newVTable);
     }
 
     void** vtable = *(void***)pSwapChain;
@@ -1392,8 +1389,8 @@ void RepairVTableHooksIfNeeded() {
 
     // Check Present hook at vtable[8]
     if (s_hookedVTable[8] != (void*)DetourPresent) {
-        HookLogImportant("DXGIShared: vtable[8] OVERWRITTEN! was=%p expected=%p — re-hooking",
-                         s_hookedVTable[8], (void*)DetourPresent);
+        HookLogImportant("DXGIShared: vtable[8] OVERWRITTEN! was=%p expected=%p — re-hooking", s_hookedVTable[8],
+                         (void*)DetourPresent);
         oPresent = (PFN_Present)s_hookedVTable[8];
         if (VirtualProtect(&s_hookedVTable[8], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
             s_hookedVTable[8] = (void*)DetourPresent;
@@ -1405,8 +1402,8 @@ void RepairVTableHooksIfNeeded() {
 
     // Check Present1 hook at vtable[22]
     if (s_hookedVTable[22] != (void*)DetourPresent1) {
-        HookLogImportant("DXGIShared: vtable[22] OVERWRITTEN! was=%p expected=%p — re-hooking",
-                         s_hookedVTable[22], (void*)DetourPresent1);
+        HookLogImportant("DXGIShared: vtable[22] OVERWRITTEN! was=%p expected=%p — re-hooking", s_hookedVTable[22],
+                         (void*)DetourPresent1);
         oPresent1 = (PFN_Present1)s_hookedVTable[22];
         if (VirtualProtect(&s_hookedVTable[22], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
             s_hookedVTable[22] = (void*)DetourPresent1;
@@ -1422,7 +1419,7 @@ void RepairVTableHooksIfNeeded() {
     } else {
         if (s_intactLogCount.fetch_add(1, std::memory_order_relaxed) < 3) {
             HookLogImportant("DXGIShared: RepairVTableHooksIfNeeded — hooks intact (vtable=%p, [8]=%p, [22]=%p)",
-                            s_hookedVTable, s_hookedVTable[8], s_hookedVTable[22]);
+                             s_hookedVTable, s_hookedVTable[8], s_hookedVTable[22]);
         }
     }
 }
@@ -1508,8 +1505,8 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             if (currentPresent != DetourPresent) {
                 static int s_copLogCount3 = 0;
                 if (s_copLogCount3++ < 5) {
-                    HookLog("CallOriginalPresent: vtable[8] path=%p (slLoaded=%d, oPresent=%p)",
-                            currentPresent, slLoaded, oPresent);
+                    HookLog("CallOriginalPresent: vtable[8] path=%p (slLoaded=%d, oPresent=%p)", currentPresent,
+                            slLoaded, oPresent);
                 }
                 return currentPresent(pSwapChain, SyncInterval, Flags);
             }
@@ -1525,8 +1522,8 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         return oPresent(pSwapChain, SyncInterval, Flags);
     }
 
-    HookLog("CallOriginalPresent: NO PATH AVAILABLE (oPresent=%p, oPresentTrampoline=%p, slLoaded=%d)",
-            oPresent, oPresentTrampoline, slLoaded);
+    HookLog("CallOriginalPresent: NO PATH AVAILABLE (oPresent=%p, oPresentTrampoline=%p, slLoaded=%d)", oPresent,
+            oPresentTrampoline, slLoaded);
     return DXGI_ERROR_INVALID_CALL;
 }
 

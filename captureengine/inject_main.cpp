@@ -28,7 +28,7 @@ BOOL WINAPI ConsoleCtrlHandler(DWORD ctrlType) {
 }
 
 // Helper: Get process name from PID
-static std::string GetProcessNameFromPID(DWORD pid) {
+std::string GetProcessNameFromPID(DWORD pid) {
     char buffer[MAX_PATH] = "unknown";
     HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
     if (hProcess) {
@@ -251,7 +251,6 @@ int InjectProcessMain(const AppConfig& config) {
     std::string baseDir = exePath.substr(0, exePath.find_last_of("\\/"));
     std::string configPath = baseDir + "\\config.ini";
 
-    HHOOK hCBTHook = NULL;
     HMODULE hHookDll = NULL;
 
     // Create shared memory with unique name based on our PID
@@ -262,7 +261,7 @@ int InjectProcessMain(const AppConfig& config) {
         CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, sizeof(SharedMemoryLayout), sharedMemName);
 
     if (hMapFile == NULL) {
-        LogError("[Inject] Failed to create shared memory: %d", GetLastError());
+        LogError("[Inject] Failed to create shared memory: %lu", GetLastError());
         return 1;
     }
 
@@ -371,7 +370,7 @@ int InjectProcessMain(const AppConfig& config) {
     HANDLE hLimiterRequestEvent = CreateEventW(NULL, FALSE, FALSE, requestEventName);  // Auto-reset
 
     if (!hLimiterReleaseEvent || !hLimiterRequestEvent) {
-        LogError("[Inject] Failed to create limiter events: %d", GetLastError());
+        LogError("[Inject] Failed to create limiter events: %lu", GetLastError());
     } else {
         LogInfo("[Inject] Created limiter events");
     }
@@ -419,11 +418,11 @@ int InjectProcessMain(const AppConfig& config) {
                 currentConfig.captureMethod.c_str());
     }
 
-    LogInfo("[Inject] Process started (PID: %d)", GetCurrentProcessId());
+    LogInfo("[Inject] Process started (PID: %lu)", GetCurrentProcessId());
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
 
     // Track log polling
-    uint32_t lastReadLogIndex = 0;
+    [[maybe_unused]] uint32_t lastReadLogIndex = 0;
 
     // Main loop
     while (g_Running) {
@@ -563,18 +562,6 @@ int InjectProcessMain(const AppConfig& config) {
         CloseHandle(hLimiterReleaseEvent);
     if (hLimiterRequestEvent)
         CloseHandle(hLimiterRequestEvent);
-    if (hCBTHook) {
-        UnhookWindowsHookEx(hCBTHook);
-        LogInfo("[Inject] Uninstalled global CBT hook");
-
-        // Broadcast WM_NULL to wake up processes and process the unhook event
-        // This helps release the DLL lock from processes like DataExchangeHost
-        // SendMessageTimeout prevents hanging if a window is unresponsive
-        DWORD_PTR dwResult;
-        SendMessageTimeoutA(HWND_BROADCAST, WM_NULL, 0, 0, SMTO_ABORTIFHUNG | SMTO_NOTIMEOUTIFNOTHUNG, 100, &dwResult);
-        LogInfo("[Inject] Broadcasted WM_NULL to flush hooks");
-    }
-
     if (hHookDll) {
         FreeLibrary(hHookDll);
     }

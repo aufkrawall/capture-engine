@@ -60,8 +60,8 @@ public:
     HANDLE captureEvent = NULL;
 
     // Completion fence for back-pressure
-    uint64_t completionFenceValue = 0;
-    uint64_t pendingCaptureWaitValue = 0;
+    std::atomic<uint64_t> completionFenceValue{0};
+    std::atomic<uint64_t> pendingCaptureWaitValue{0};
 
     // Recording session tracking
     std::atomic<int> recordingSessionID{0};
@@ -95,9 +95,9 @@ public:
         f.apiData = apiData;
         f.syncObject = syncObject;
 
-        completionFenceValue++;
-        f.completionFenceValue = completionFenceValue;
-        pendingCaptureWaitValue = completionFenceValue;
+        uint64_t val = completionFenceValue.fetch_add(1, std::memory_order_acq_rel) + 1;
+        f.completionFenceValue = val;
+        pendingCaptureWaitValue.store(val, std::memory_order_release);
 
         pendingWriteIdx.store(wIdx + 1, std::memory_order_release);
         if (captureEvent)
@@ -225,8 +225,8 @@ public:
         pendingWriteIdx.store(0, std::memory_order_relaxed);
         pendingReadIdx.store(0, std::memory_order_relaxed);
         writeIndex.store(0, std::memory_order_relaxed);
-        completionFenceValue = 0;
-        pendingCaptureWaitValue = 0;
+        completionFenceValue.store(0, std::memory_order_relaxed);
+        pendingCaptureWaitValue.store(0, std::memory_order_relaxed);
         recordingSessionID++;
     }
 

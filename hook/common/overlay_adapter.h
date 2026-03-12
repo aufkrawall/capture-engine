@@ -47,8 +47,7 @@ public:
                                                         // DeviceDispatch*, InstanceDispatch*
 
     // Initialize with a pre-created backend (for descriptor-free DX12, etc.)
-    bool InitCustom(CustomOverlay::RendererBackend* customBackend,
-                    OverlayBackendType type = OverlayBackendType::DX12);
+    bool InitCustom(CustomOverlay::RendererBackend* customBackend, OverlayBackendType type = OverlayBackendType::DX12);
 
     void Shutdown();
     void SetShutdownMode(bool skipDeviceRelease);  // Call before Shutdown when

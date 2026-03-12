@@ -227,8 +227,13 @@ inline Result Err(ErrorCode c, const char* msg = nullptr) {
 #include <cstdio>
 
 inline bool g_DebugLoggingEnabled = false;
-
-inline void CE_LogImpl(const char* level, const char* module, int line, const char* fmt, ...) {
+inline void CE_LogImpl(const char* level, const char* module, int line, const char* fmt, ...)
+#if defined(__GNUC__) || defined(__clang__)
+    __attribute__((format(printf, 4, 5)))
+#endif
+{
+    if (!g_DebugLoggingEnabled)
+        return;
     char buffer[512];
     char* p = buffer;
     int remaining = sizeof(buffer);

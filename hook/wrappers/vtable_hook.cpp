@@ -79,7 +79,7 @@ Status Create(void* pVTableEntry, void* pDetour, void** ppOriginal) {
     }
 
     // DEBUG: Log memory region details
-    MEMORY_BASIC_INFORMATION mbi = {0};
+    MEMORY_BASIC_INFORMATION mbi = {};
     if (VirtualQuery(ppEntry, &mbi, sizeof(mbi))) {
         HookLog(
             "VTableHook: DEBUG - Target %p in region: Base=%p, Size=%zu, "

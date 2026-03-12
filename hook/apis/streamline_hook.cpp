@@ -7,12 +7,11 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include "../common/dxgi_shared.h"
 #include "../common/fg_detection.h"
 #include "../common/hook_common.h"
-#include "../common/dxgi_shared.h"
 #include "../wrappers/iat_hook.h"
 #include "../wrappers/inline_hook.h"
-
 
 namespace {
 
@@ -173,8 +172,7 @@ const char* GetModuleBaseName(const char* moduleNameOrPath) {
 
 bool IsStreamlineModuleName(const char* moduleNameOrPath) {
     const char* baseName = GetModuleBaseName(moduleNameOrPath);
-    return baseName &&
-           (!_stricmp(baseName, "sl.interposer.dll") || !_stricmp(baseName, "sl.common.dll"));
+    return baseName && (!_stricmp(baseName, "sl.interposer.dll") || !_stricmp(baseName, "sl.common.dll"));
 }
 
 uint32_t GetModuleMaskBit(const char* moduleNameOrPath) {
@@ -360,7 +358,8 @@ bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<
     original = reinterpret_cast<T>(trampoline);
     targetSlot.store(target, std::memory_order_release);
     installedFlag.store(true, std::memory_order_release);
-    HookLogImportant("Streamline Hook: Inline hook installed for %s at %p (trampoline=%p)", hookName, target, trampoline);
+    HookLogImportant("Streamline Hook: Inline hook installed for %s at %p (trampoline=%p)", hookName, target,
+                     trampoline);
     return true;
 }
 
@@ -524,10 +523,9 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
                 g_Original_slSetD3DDevice = originalSetD3DDevice;
             }
 
-            hookedAnything |= InstallInlineHookOnce(reinterpret_cast<void*>(originalSetD3DDevice),
-                                                    reinterpret_cast<void*>(Hooked_slSetD3DDevice),
-                                                    g_Original_slSetD3DDevice, g_SLSetD3DDeviceHooked,
-                                                    g_SLSetD3DDeviceTarget, "slSetD3DDevice");
+            hookedAnything |= InstallInlineHookOnce(
+                reinterpret_cast<void*>(originalSetD3DDevice), reinterpret_cast<void*>(Hooked_slSetD3DDevice),
+                g_Original_slSetD3DDevice, g_SLSetD3DDeviceHooked, g_SLSetD3DDeviceTarget, "slSetD3DDevice");
         }
 
         if (moduleBit != 0 && (g_IATPatchesMask.load(std::memory_order_acquire) & moduleBit) == 0) {
@@ -537,8 +535,8 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
                                             reinterpret_cast<void*>(Hooked_slGetFeatureFunction), &dummy);
             }
             if (originalSetD3DDevice) {
-                IATHook::PatchIATAllModules(moduleBaseName, "slSetD3DDevice", reinterpret_cast<void*>(Hooked_slSetD3DDevice),
-                                            &dummy);
+                IATHook::PatchIATAllModules(moduleBaseName, "slSetD3DDevice",
+                                            reinterpret_cast<void*>(Hooked_slSetD3DDevice), &dummy);
             }
             g_IATPatchesMask.fetch_or(moduleBit, std::memory_order_acq_rel);
         }
@@ -625,8 +623,8 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
             // Also update FGCompatibility's signal so SetDLSSFGActive
             // knows to trust SL over heuristic FSR FG detection.
             g_FGCompat.SetStreamlineFGSignal(wasEnabled);
-            HookLogImportant("Streamline Hook: FG state transition %s->%s (signals set)",
-                             prev ? "ON" : "OFF", wasEnabled ? "ON" : "OFF");
+            HookLogImportant("Streamline Hook: FG state transition %s->%s (signals set)", prev ? "ON" : "OFF",
+                             wasEnabled ? "ON" : "OFF");
         }
     }
 
@@ -646,9 +644,10 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
         if (currentPresentCount == s_lastPresentCount) {
             s_stallFrames++;
             if (s_stallFrames == 10 || s_stallFrames == 30 || s_stallFrames == 100 || (s_stallFrames % 500) == 0) {
-                HookLogImportant("Streamline Hook: Present STALLED for %u frames (counter=%llu) — "
-                                 "vtable hook bypassed?",
-                                 s_stallFrames, (unsigned long long)currentPresentCount);
+                HookLogImportant(
+                    "Streamline Hook: Present STALLED for %u frames (counter=%llu) — "
+                    "vtable hook bypassed?",
+                    s_stallFrames, (unsigned long long)currentPresentCount);
             }
         } else {
             if (s_stallFrames > 0) {
@@ -671,9 +670,9 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
                         viewportKey, GetDLSSGModeName(adjustedOptions.mode), originalGeneratedFrames,
                         adjustedOptions.numFramesToGenerate, effectiveMultiplier, capabilityMax);
             } else {
-                HookLog("Streamline Hook: Overrode DLSS-G viewport=%u mode=%s generatedFrames=%u->%u (%dx)", viewportKey,
-                        GetDLSSGModeName(adjustedOptions.mode), originalGeneratedFrames, adjustedOptions.numFramesToGenerate,
-                        effectiveMultiplier);
+                HookLog("Streamline Hook: Overrode DLSS-G viewport=%u mode=%s generatedFrames=%u->%u (%dx)",
+                        viewportKey, GetDLSSGModeName(adjustedOptions.mode), originalGeneratedFrames,
+                        adjustedOptions.numFramesToGenerate, effectiveMultiplier);
             }
         }
     } else if (overrideApplied || overrideClamped) {

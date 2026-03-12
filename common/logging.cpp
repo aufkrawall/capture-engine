@@ -116,9 +116,13 @@ void LogWarn(const char* format, ...) {
 }
 
 int64_t Log_GetQpcUs() {
+    static const int64_t qpcFreq = [] {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        return f.QuadPart;
+    }();
+
     LARGE_INTEGER now = {};
-    LARGE_INTEGER freq = {};
     QueryPerformanceCounter(&now);
-    QueryPerformanceFrequency(&freq);
-    return (now.QuadPart * 1000000) / freq.QuadPart;
+    return (now.QuadPart * 1000000) / qpcFreq;
 }

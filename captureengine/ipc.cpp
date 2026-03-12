@@ -36,7 +36,7 @@ bool IPCManager::Init() {
     // (A;;GA;;;AC) - All Application Packages (UWP): Generic All
     // S: SACL
     // (ML;;NW;;;LW) - Mandatory Label: No Write Up, Low Integrity Level
-    SECURITY_ATTRIBUTES sa = {0};
+    SECURITY_ATTRIBUTES sa = {};
     sa.nLength = sizeof(sa);
     sa.bInheritHandle = FALSE;
 
@@ -109,47 +109,47 @@ bool IPCManager::Init() {
     return true;
 }
 
-void IPCManager::UpdateConfig(const AppConfig& config) {
+void IPCManager::UpdateConfig(const AppConfig& newConfig) {
     if (!pSharedMem)
         return;
     pSharedMem->BeginWriteOverlayConfig();
-    pSharedMem->overlayConfig = config.overlay;
+    pSharedMem->overlayConfig = newConfig.overlay;
     pSharedMem->EndWriteOverlayConfig();
-    pSharedMem->SetDebugLogging(config.debugLogging);
+    pSharedMem->SetDebugLogging(newConfig.debugLogging);
     pSharedMem->SetLogLevel(LogLevel::Info);
 
     // Copy log file path for hook logging
-    strncpy(pSharedMem->logFilePath, config.logFilePath.c_str(), sizeof(pSharedMem->logFilePath) - 1);
+    strncpy(pSharedMem->logFilePath, newConfig.logFilePath.c_str(), sizeof(pSharedMem->logFilePath) - 1);
     pSharedMem->logFilePath[sizeof(pSharedMem->logFilePath) - 1] = '\0';
 
     // Copy priority settings for hook/encoder
-    pSharedMem->SetGpuPriority(config.video.gpuPriority);
+    pSharedMem->SetGpuPriority(newConfig.video.gpuPriority);
     // Convert string to int: low=0, normal=1, high=2
-    if (config.copyQueuePriority == "low")
+    if (newConfig.copyQueuePriority == "low")
         pSharedMem->SetCopyQueuePriority(0);
-    else if (config.copyQueuePriority == "high")
+    else if (newConfig.copyQueuePriority == "high")
         pSharedMem->SetCopyQueuePriority(2);
     else
         pSharedMem->SetCopyQueuePriority(1);  // normal default
 
     // Copy fence wait mode for debugging
-    pSharedMem->SetFenceWaitMode(config.fenceWaitMode);
-    pSharedMem->SetUseGameQueue(config.useGameQueue);
+    pSharedMem->SetFenceWaitMode(newConfig.fenceWaitMode);
+    pSharedMem->SetUseGameQueue(newConfig.useGameQueue);
 
     // Copy FPS limiter settings
-    pSharedMem->fpsLimiter.SetCaptureSyncEnabled(config.fpsLimiter.captureSyncEnabled);
-    pSharedMem->fpsLimiter.SetCaptureSyncMultiplier(config.fpsLimiter.captureSyncMultiplier);
-    pSharedMem->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(config.fpsLimiter.captureSyncLimiterMode));
-    pSharedMem->fpsLimiter.SetGeneralEnabled(config.fpsLimiter.generalEnabled);
-    pSharedMem->fpsLimiter.SetGeneralFps(config.fpsLimiter.generalFps);
-    pSharedMem->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(config.fpsLimiter.generalLimiterMode));
-    pSharedMem->fpsLimiter.SetCaptureFps(config.video.fps);
-    pSharedMem->fpsLimiter.SetUseVFR(config.video.useVFR);
+    pSharedMem->fpsLimiter.SetCaptureSyncEnabled(newConfig.fpsLimiter.captureSyncEnabled);
+    pSharedMem->fpsLimiter.SetCaptureSyncMultiplier(newConfig.fpsLimiter.captureSyncMultiplier);
+    pSharedMem->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(newConfig.fpsLimiter.captureSyncLimiterMode));
+    pSharedMem->fpsLimiter.SetGeneralEnabled(newConfig.fpsLimiter.generalEnabled);
+    pSharedMem->fpsLimiter.SetGeneralFps(newConfig.fpsLimiter.generalFps);
+    pSharedMem->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(newConfig.fpsLimiter.generalLimiterMode));
+    pSharedMem->fpsLimiter.SetCaptureFps(newConfig.video.fps);
+    pSharedMem->fpsLimiter.SetUseVFR(newConfig.video.useVFR);
 
     // Copy Graphics Config (SharedGraphicsConfig)
     {
         auto& dst = pSharedMem->graphicsConfig;
-        const auto& src = config.graphics;
+        const auto& src = newConfig.graphics;
 
         strncpy(dst.vsyncMode, src.vsyncMode.c_str(), sizeof(dst.vsyncMode) - 1);
         dst.vsyncMode[sizeof(dst.vsyncMode) - 1] = '\0';
@@ -169,9 +169,6 @@ void IPCManager::UpdateConfig(const AppConfig& config) {
 
         strncpy(dst.msaaSamples, src.msaaSamples.c_str(), sizeof(dst.msaaSamples) - 1);
         dst.msaaSamples[sizeof(dst.msaaSamples) - 1] = '\0';
-
-        strncpy(dst.mipBiasMode, src.mipBiasMode.c_str(), sizeof(dst.mipBiasMode) - 1);
-        dst.mipBiasMode[sizeof(dst.mipBiasMode) - 1] = '\0';
 
         dst.prerenderLimit = src.cpuPrerenderLimit;
         dst.backbufferCount = src.backbufferCount;
@@ -307,9 +304,6 @@ void IPCManager::PollLogs() {
 
         const char* msg = pSharedMem->logs.buffer[lastReadLogIndex % SharedMemoryLayout::LogBuffer::SLOT_COUNT];
         // Log it
-        printf("[Hook] %s\n", msg);
-        // Also to file via LogInfo if available, but I don't have LogInfo here?
-        // Use std::cout or similar, or include logging.h
         LogInfo("[Hook] %s", msg);
 
         lastReadLogIndex++;

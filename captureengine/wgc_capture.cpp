@@ -136,7 +136,7 @@ public:
         for (int i = 0; i < TEXTURE_POOL_SIZE; i++) {
             HRESULT hr = d3dDevice_->CreateTexture2D(&copyDesc, nullptr, &texturePool_[i]);
             if (FAILED(hr)) {
-                LogError("[WGC] Failed to create texture pool[%d]: 0x%x", i, hr);
+                LogError("[WGC] Failed to create texture pool[%d]: 0x%lX", i, (unsigned long)hr);
                 return false;
             }
         }
@@ -250,7 +250,7 @@ public:
         HRESULT factoryHr = RoGetActivationFactory(reinterpret_cast<HSTRING>(winrt::get_abi(className)),
                                                    __uuidof(IGraphicsCaptureItemInterop), interopFactory.put_void());
         if (FAILED(factoryHr) || !interopFactory) {
-            LogError("[WGC] RoGetActivationFactory(CreateForMonitor) failed: 0x%x", factoryHr);
+            LogError("[WGC] RoGetActivationFactory(CreateForMonitor) failed: 0x%lx", factoryHr);
             return false;
         }
 
@@ -259,7 +259,7 @@ public:
             interopFactory->CreateForMonitor(hmon, winrt::guid_of<winrt::GraphicsCaptureItem>(), winrt::put_abi(item));
 
         if (FAILED(hr) || !item) {
-            LogError("[WGC] CreateForMonitor failed: 0x%x", hr);
+            LogError("[WGC] CreateForMonitor failed: 0x%lx", hr);
             return false;
         }
 
@@ -273,7 +273,7 @@ public:
         HRESULT factoryHr = RoGetActivationFactory(reinterpret_cast<HSTRING>(winrt::get_abi(className)),
                                                    __uuidof(IGraphicsCaptureItemInterop), interopFactory.put_void());
         if (FAILED(factoryHr) || !interopFactory) {
-            LogError("[WGC] RoGetActivationFactory(CreateForWindow) failed: 0x%x", factoryHr);
+            LogError("[WGC] RoGetActivationFactory(CreateForWindow) failed: 0x%lx", factoryHr);
             return false;
         }
 
@@ -282,7 +282,7 @@ public:
             interopFactory->CreateForWindow(hwnd, winrt::guid_of<winrt::GraphicsCaptureItem>(), winrt::put_abi(item));
 
         if (FAILED(hr) || !item) {
-            LogError("[WGC] CreateForWindow failed: 0x%x", hr);
+            LogError("[WGC] CreateForWindow failed: 0x%lx", hr);
             return false;
         }
 
@@ -403,6 +403,12 @@ public:
             cachedTexture_ = nullptr;
         }
         frameReady_ = false;
+
+        // Close the frame arrived event handle
+        if (frameArrivedEvent_) {
+            CloseHandle(frameArrivedEvent_);
+            frameArrivedEvent_ = NULL;
+        }
     }
 
     bool GetNextFrame(WGCCapturedFrame& frame) {
@@ -459,7 +465,7 @@ public:
                 }
 
                 if (cachedTexture_) {
-                    LARGE_INTEGER t2, freq;
+                    LARGE_INTEGER t2;
 
                     MediaEngine_LockD3D11();
                     d3dContext_->CopyResource(cachedTexture_, texture);
@@ -546,7 +552,7 @@ bool WGCCapture::Init(ID3D11Device* device) {
     // Initialize COM for WinRT
     HRESULT hr = RoInitialize(RO_INIT_MULTITHREADED);
     if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
-        LogError("[WGC] RoInitialize failed: 0x%x", hr);
+        LogError("[WGC] RoInitialize failed: 0x%lx", hr);
         return false;
     }
     roInitialized_ = SUCCEEDED(hr);  // Track so we can balance with RoUninitialize
@@ -588,7 +594,7 @@ bool WGCCapture::InitForWindow(ID3D11Device* device, void* hwnd) {
 
     HRESULT hr = RoInitialize(RO_INIT_MULTITHREADED);
     if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
-        LogError("[WGC] RoInitialize failed: 0x%x", hr);
+        LogError("[WGC] RoInitialize failed: 0x%lx", hr);
         return false;
     }
     roInitialized_ = SUCCEEDED(hr);
@@ -632,7 +638,7 @@ bool WGCCapture::InitForMonitor(ID3D11Device* device, void* hmonitor) {
 
     HRESULT hr = RoInitialize(RO_INIT_MULTITHREADED);
     if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
-        LogError("[WGC] RoInitialize failed: 0x%x", hr);
+        LogError("[WGC] RoInitialize failed: 0x%lx", hr);
         return false;
     }
     roInitialized_ = SUCCEEDED(hr);

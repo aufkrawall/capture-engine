@@ -14,7 +14,6 @@
 #include <mutex>
 #include <string>
 #include <vector>
-#include <windows.h>
 
 // CRITICAL FIX: Inherit from enable_shared_from_this for safe delayed injection
 class InjectionManager : public std::enable_shared_from_this<InjectionManager> {
@@ -97,7 +96,7 @@ private:
     LPVOID remoteMemory;  // Remote memory allocated for DLL path (APC injection)
   };
 
-  std::vector<InjectedProcess> injectedProcesses;
+  mutable std::vector<InjectedProcess> injectedProcesses;
 
   struct FailedInjection {
     DWORD pid;

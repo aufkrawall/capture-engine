@@ -20,19 +20,15 @@
 Clangd:
   Tidy: true
 
-# Provide explicit configuration for system includes
-# clangd needs these because it doesn't inherit the compiler's implicit paths
+# Query the compiler driver for correct implicit include paths
+# This ensures clangd uses the same libc++ headers and clang resource dir as the build
 CompileFlags:
   Compiler: build/msys64/clang64/bin/clang++.exe
   Add:
-    # Resource directory (clang intrinsics)
+    # Skip ODR checks in global module fragments (clang 21 libc++ workaround)
+    - "-fskip-odr-check-in-gmf"
+    # Ensure correct clang resource dir for builtins (mmintrin.h etc.)
     - "-resource-dir=build/msys64/clang64/lib/clang/21"
-    # C++ standard library
-    - "-isystem"
-    - "build/msys64/clang64/include/c++/v1"
-    # Windows SDK and other system headers
-    - "-isystem"
-    - "build/msys64/clang64/include"
   Remove:
     # Flags clangd doesn't understand or that cause spurious errors
     - "-march=*"
@@ -47,6 +43,7 @@ CompileFlags:
     - "-MMD"
     - "-MF"
     - "-Wno-microsoft-exception-spec"
+    - "-D_FORTIFY_SOURCE=*"
 
 Diagnostics:
   Suppress:

@@ -114,23 +114,18 @@ typedef NTSTATUS(NTAPI *LdrLoadDll_t)(PWSTR SearchPath,
                                       PUNICODE_STRING DllName,
                                       PVOID *BaseAddress);
 
-LoadLibraryA_t OriginalLoadLibraryA = nullptr;
-LoadLibraryW_t OriginalLoadLibraryW = nullptr;
-LoadLibraryExA_t OriginalLoadLibraryExA = nullptr;
-LoadLibraryExW_t OriginalLoadLibraryExW = nullptr;
-LdrLoadDll_t OriginalLdrLoadDll = nullptr;
+std::atomic<LoadLibraryA_t> OriginalLoadLibraryA{nullptr};
+std::atomic<LoadLibraryW_t> OriginalLoadLibraryW{nullptr};
+std::atomic<LoadLibraryExA_t> OriginalLoadLibraryExA{nullptr};
+std::atomic<LoadLibraryExW_t> OriginalLoadLibraryExW{nullptr};
+std::atomic<LdrLoadDll_t> OriginalLdrLoadDll{nullptr};
 
 typedef LPSTR(WINAPI *GetCommandLineA_t)();
 typedef LPWSTR(WINAPI *GetCommandLineW_t)();
-GetCommandLineA_t OriginalGetCommandLineA = nullptr;
-GetCommandLineW_t OriginalGetCommandLineW = nullptr;
+std::atomic<GetCommandLineA_t> OriginalGetCommandLineA{nullptr};
+std::atomic<GetCommandLineW_t> OriginalGetCommandLineW{nullptr};
 
-typedef int(WINAPI *getmainargs_t)(int *argc, char ***argv, char ***env,
-                                   int doWildCard, void *startInfo);
-typedef int(WINAPI *wgetmainargs_t)(int *argc, wchar_t ***argv, wchar_t ***env,
-                                    int doWildCard, void *startInfo);
-static getmainargs_t Original_getmainargs = nullptr;
-static wgetmainargs_t Original_wgetmainargs = nullptr;
+
 
 // CreateProcess Hook Typedefs for child process injection
 typedef BOOL(WINAPI *CreateProcessA_t)(LPCSTR, LPSTR, LPSECURITY_ATTRIBUTES,
@@ -141,8 +136,8 @@ typedef BOOL(WINAPI *CreateProcessW_t)(LPCWSTR, LPWSTR, LPSECURITY_ATTRIBUTES,
                                        LPSECURITY_ATTRIBUTES, BOOL, DWORD,
                                        LPVOID, LPCWSTR, LPSTARTUPINFOW,
                                        LPPROCESS_INFORMATION);
-CreateProcessA_t OriginalCreateProcessA = nullptr;
-CreateProcessW_t OriginalCreateProcessW = nullptr;
+std::atomic<CreateProcessA_t> OriginalCreateProcessA{nullptr};
+std::atomic<CreateProcessW_t> OriginalCreateProcessW{nullptr};
 
 // Registry Hook Typedefs (for DLSS Debug Overlay)
 typedef LSTATUS(WINAPI *RegQueryValueExW_t)(HKEY hKey, LPCWSTR lpValueName,
@@ -340,7 +335,7 @@ BOOL WINAPI HookedCreateProcessA(LPCSTR lpApp, LPSTR lpCmd,
   bool shouldInject = ShouldInjectChild(exePath);
 
   DWORD modifiedFlags = shouldInject ? (dwFlags | CREATE_SUSPENDED) : dwFlags;
-  BOOL result = OriginalCreateProcessA(lpApp, lpCmd, lpPA, lpTA, bInherit,
+  BOOL result = OriginalCreateProcessA.load(std::memory_order_acquire)(lpApp, lpCmd, lpPA, lpTA, bInherit,
                                        modifiedFlags, lpEnv, lpDir, lpSI, lpPI);
 
   if (result && lpPI && shouldInject) {
@@ -367,7 +362,7 @@ BOOL WINAPI HookedCreateProcessW(LPCWSTR lpApp, LPWSTR lpCmd,
   bool shouldInject = ShouldInjectChild(exePath);
 
   DWORD modifiedFlags = shouldInject ? (dwFlags | CREATE_SUSPENDED) : dwFlags;
-  BOOL result = OriginalCreateProcessW(lpApp, lpCmd, lpPA, lpTA, bInherit,
+  BOOL result = OriginalCreateProcessW.load(std::memory_order_acquire)(lpApp, lpCmd, lpPA, lpTA, bInherit,
                                        modifiedFlags, lpEnv, lpDir, lpSI, lpPI);
 
   if (result && lpPI && shouldInject) {
@@ -531,7 +526,7 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
 }
 
 LPSTR WINAPI HookedGetCommandLineA() {
-  LPSTR original = OriginalGetCommandLineA();
+  LPSTR original = OriginalGetCommandLineA.load(std::memory_order_acquire)();
 
   // Only spoof if config is loaded and feature forced
   if (g_pLocalConfig && g_pLocalConfig->graphics.forceRayReconstruction) {
@@ -561,7 +556,7 @@ LPSTR WINAPI HookedGetCommandLineA() {
 }
 
 LPWSTR WINAPI HookedGetCommandLineW() {
-  LPWSTR original = OriginalGetCommandLineW();
+  LPWSTR original = OriginalGetCommandLineW.load(std::memory_order_acquire)();
 
   if (g_pLocalConfig && g_pLocalConfig->graphics.forceRayReconstruction) {
     static bool s_Logged = false;
@@ -589,39 +584,19 @@ LPWSTR WINAPI HookedGetCommandLineW() {
   return original;
 }
 
-// CRT Hook Wrappers
-int WINAPI Hooked_getmainargs(int *argc, char ***argv, char ***env,
-                              int doWildCard, void *startInfo) {
-  int result = Original_getmainargs(argc, argv, env, doWildCard, startInfo);
-  if (g_pLocalConfig && g_pLocalConfig->graphics.forceRayReconstruction &&
-      result == 0 && *argc > 0) {
-    HookLog("Hooked_getmainargs called. Argc=%d", *argc);
-    // GetCommandLine approach is used instead of argv modification
-  }
-  return result;
-}
 
-int WINAPI Hooked_wgetmainargs(int *argc, wchar_t ***argv, wchar_t ***env,
-                               int doWildCard, void *startInfo) {
-  int result = Original_wgetmainargs(argc, argv, env, doWildCard, startInfo);
-  if (g_pLocalConfig && g_pLocalConfig->graphics.forceRayReconstruction &&
-      result == 0 && *argc > 0) {
-    HookLog("Hooked_wgetmainargs called. Argc=%d", *argc);
-  }
-  return result;
-}
 
 // Hooked Functions - Signal Event & Redirect
 HMODULE WINAPI HookedLoadLibraryA(LPCSTR lpLibFileName) {
   if (lpLibFileName) {
     std::string redirect = GetRedirectedPath(lpLibFileName);
     if (!redirect.empty()) {
-      HMODULE hMod = OriginalLoadLibraryA(redirect.c_str());
+      HMODULE hMod = OriginalLoadLibraryA.load(std::memory_order_acquire)(redirect.c_str());
       NotifyHookModuleLoaded(hMod, redirect.c_str());
       return hMod;
     }
   }
-  HMODULE hMod = OriginalLoadLibraryA(lpLibFileName);
+  HMODULE hMod = OriginalLoadLibraryA.load(std::memory_order_acquire)(lpLibFileName);
   NotifyHookModuleLoaded(hMod, lpLibFileName);
   return hMod;
 }
@@ -648,13 +623,13 @@ HMODULE WINAPI HookedLoadLibraryW(LPCWSTR lpLibFileName) {
         if (redirectW.back() == L'\0')
           redirectW.pop_back();
 
-        HMODULE hMod = OriginalLoadLibraryW(redirectW.c_str());
+        HMODULE hMod = OriginalLoadLibraryW.load(std::memory_order_acquire)(redirectW.c_str());
         NotifyHookModuleLoaded(hMod, redirect.c_str());
         return hMod;
       }
     }
   }
-  HMODULE hMod = OriginalLoadLibraryW(lpLibFileName);
+  HMODULE hMod = OriginalLoadLibraryW.load(std::memory_order_acquire)(lpLibFileName);
   NotifyHookModuleLoaded(hMod, pathUtf8);
   return hMod;
 }
@@ -670,12 +645,12 @@ HMODULE WINAPI HookedLoadLibraryExA(LPCSTR lpLibFileName, HANDLE hFile,
       // absolute path? Actually, usually users just want to load the DLL.
       // LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR might be an issue. Let's try to trust
       // the user path is absolute.
-      HMODULE hMod = OriginalLoadLibraryExA(redirect.c_str(), hFile, dwFlags);
+      HMODULE hMod = OriginalLoadLibraryExA.load(std::memory_order_acquire)(redirect.c_str(), hFile, dwFlags);
       NotifyHookModuleLoaded(hMod, redirect.c_str());
       return hMod;
     }
   }
-  HMODULE hMod = OriginalLoadLibraryExA(lpLibFileName, hFile, dwFlags);
+  HMODULE hMod = OriginalLoadLibraryExA.load(std::memory_order_acquire)(lpLibFileName, hFile, dwFlags);
   NotifyHookModuleLoaded(hMod, lpLibFileName);
   return hMod;
 }
@@ -698,13 +673,13 @@ HMODULE WINAPI HookedLoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile,
           redirectW.pop_back();
 
         HMODULE hMod =
-            OriginalLoadLibraryExW(redirectW.c_str(), hFile, dwFlags);
+            OriginalLoadLibraryExW.load(std::memory_order_acquire)(redirectW.c_str(), hFile, dwFlags);
         NotifyHookModuleLoaded(hMod, redirect.c_str());
         return hMod;
       }
     }
   }
-  HMODULE hMod = OriginalLoadLibraryExW(lpLibFileName, hFile, dwFlags);
+  HMODULE hMod = OriginalLoadLibraryExW.load(std::memory_order_acquire)(lpLibFileName, hFile, dwFlags);
   NotifyHookModuleLoaded(hMod, pathUtf8);
   return hMod;
 }
@@ -741,7 +716,7 @@ NTSTATUS NTAPI HookedLdrLoadDll(PWSTR SearchPath, PULONG DllCharacteristics,
             redirectName.Length = static_cast<USHORT>(redirectW.size() * sizeof(wchar_t));
             redirectName.MaximumLength = redirectName.Length + sizeof(wchar_t);
 
-            NTSTATUS status = OriginalLdrLoadDll(SearchPath, DllCharacteristics,
+            NTSTATUS status = OriginalLdrLoadDll.load(std::memory_order_acquire)(SearchPath, DllCharacteristics,
                                                  &redirectName, BaseAddress);
             if (NT_SUCCESS(status)) {
               NotifyHookModuleLoaded(BaseAddress ? (HMODULE)*BaseAddress : nullptr,
@@ -757,7 +732,7 @@ NTSTATUS NTAPI HookedLdrLoadDll(PWSTR SearchPath, PULONG DllCharacteristics,
   if (!OriginalLdrLoadDll)
     return STATUS_DLL_NOT_FOUND;
 
-  NTSTATUS status = OriginalLdrLoadDll(SearchPath, DllCharacteristics, DllName,
+  NTSTATUS status = OriginalLdrLoadDll.load(std::memory_order_acquire)(SearchPath, DllCharacteristics, DllName,
                                        BaseAddress);
   if (NT_SUCCESS(status))
     NotifyHookModuleLoaded(BaseAddress ? (HMODULE)*BaseAddress : nullptr,
@@ -995,7 +970,7 @@ void EnforceRR() {
 
 // Check if Steam overlay is present - if so, we need to be very careful about
 // hook installation to avoid recursion crashes
-static bool IsSteamOverlayPresent() {
+[[maybe_unused]] static bool IsSteamOverlayPresent() {
   static bool s_checked = false;
   static bool s_present = false;
 
@@ -1223,7 +1198,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
       // Loading DLLs in DllMain can cause loader lock deadlocks.
       // HookThread runs after DllMain returns, so it's safe to call LoadLibrary
       // here.
-      bool hasGraphicsAPI = (GetModuleHandleA("d3d12.dll") != NULL ||
+      [[maybe_unused]] bool hasGraphicsAPI = (GetModuleHandleA("d3d12.dll") != NULL ||
                              GetModuleHandleA("d3d11.dll") != NULL ||
                              GetModuleHandleA("d3d10.dll") != NULL ||
                              GetModuleHandleA("d3d9.dll") != NULL);
@@ -1254,7 +1229,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     if (g_pLocalConfig && g_pLocalConfig->debugLogging) {
       char perfLogPath[MAX_PATH];
       snprintf(perfLogPath, sizeof(perfLogPath),
-               "%s\\logs\\perf_metrics_%d.csv", dir.c_str(),
+               "%s\\logs\\perf_metrics_%lu.csv", dir.c_str(),
                GetCurrentProcessId());
       PerfLogger::Get().Init(perfLogPath);
     }
@@ -1279,10 +1254,10 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   if (g_ProcessCategory == ProcessCategory::Launcher) {
     // launchers only need CreateProcess hooks. No IPC, no graphics.
     // Use IAT patching
-    OriginalCreateProcessA = (CreateProcessA_t)GetProcAddress(
-        GetModuleHandleA("kernel32.dll"), "CreateProcessA");
-    OriginalCreateProcessW = (CreateProcessW_t)GetProcAddress(
-        GetModuleHandleA("kernel32.dll"), "CreateProcessW");
+    OriginalCreateProcessA.store((CreateProcessA_t)GetProcAddress(
+        GetModuleHandleA("kernel32.dll"), "CreateProcessA"), std::memory_order_release);
+    OriginalCreateProcessW.store((CreateProcessW_t)GetProcAddress(
+        GetModuleHandleA("kernel32.dll"), "CreateProcessW"), std::memory_order_release);
 
     void *dummy;
     IATHook::PatchIATAllModules("kernel32.dll", "CreateProcessA",
@@ -1372,15 +1347,31 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   EarlyLog("HookThread: Initializing IAT-based kernel32 hooks...");
 
   // Install LoadLibrary and CreateProcess hooks via IAT patching
+  // Use temporary plain pointers for IAT hook init, then store atomically
   HookLog("Installing LoadLibrary/CreateProcess hooks via IAT patching...");
 
+  LoadLibraryA_t tmpLoadLibraryA = nullptr;
+  LoadLibraryW_t tmpLoadLibraryW = nullptr;
+  LoadLibraryExA_t tmpLoadLibraryExA = nullptr;
+  LoadLibraryExW_t tmpLoadLibraryExW = nullptr;
+  CreateProcessA_t tmpCreateProcessA = nullptr;
+  CreateProcessW_t tmpCreateProcessW = nullptr;
+
   IATHook::InitializeKernel32Hooks(
-      (void *)&HookedLoadLibraryA, (void **)&OriginalLoadLibraryA,
-      (void *)&HookedLoadLibraryW, (void **)&OriginalLoadLibraryW,
-      (void *)&HookedLoadLibraryExA, (void **)&OriginalLoadLibraryExA,
-      (void *)&HookedLoadLibraryExW, (void **)&OriginalLoadLibraryExW,
-      (void *)&HookedCreateProcessA, (void **)&OriginalCreateProcessA,
-      (void *)&HookedCreateProcessW, (void **)&OriginalCreateProcessW);
+      (void *)&HookedLoadLibraryA, (void **)&tmpLoadLibraryA,
+      (void *)&HookedLoadLibraryW, (void **)&tmpLoadLibraryW,
+      (void *)&HookedLoadLibraryExA, (void **)&tmpLoadLibraryExA,
+      (void *)&HookedLoadLibraryExW, (void **)&tmpLoadLibraryExW,
+      (void *)&HookedCreateProcessA, (void **)&tmpCreateProcessA,
+      (void *)&HookedCreateProcessW, (void **)&tmpCreateProcessW);
+
+  // Store atomically so other threads see consistent values
+  OriginalLoadLibraryA.store(tmpLoadLibraryA, std::memory_order_release);
+  OriginalLoadLibraryW.store(tmpLoadLibraryW, std::memory_order_release);
+  OriginalLoadLibraryExA.store(tmpLoadLibraryExA, std::memory_order_release);
+  OriginalLoadLibraryExW.store(tmpLoadLibraryExW, std::memory_order_release);
+  OriginalCreateProcessA.store(tmpCreateProcessA, std::memory_order_release);
+  OriginalCreateProcessW.store(tmpCreateProcessW, std::memory_order_release);
 
   // Install RegQueryValueExW for DLSS Debug Overlay
   if (GetModuleHandleA("advapi32.dll")) {
@@ -1393,13 +1384,13 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
 
   // Install low-level loader hook so redirected DLL names also work for implicit
   // dependency loads resolved by ntdll loader internals.
-  if (!OriginalLdrLoadDll) {
+  if (!OriginalLdrLoadDll.load(std::memory_order_acquire)) {
     if (HMODULE hNtdll = GetModuleHandleA("ntdll.dll")) {
       if (void *pLdrLoadDll = (void *)GetProcAddress(hNtdll, "LdrLoadDll")) {
         void *trampoline = nullptr;
         if (InlineHook::Install(pLdrLoadDll, (void *)&HookedLdrLoadDll,
                                 &trampoline)) {
-          OriginalLdrLoadDll = (LdrLoadDll_t)trampoline;
+          OriginalLdrLoadDll.store((LdrLoadDll_t)trampoline, std::memory_order_release);
           HookLog("Installed LdrLoadDll hook");
         } else {
           HookLog("Failed to install LdrLoadDll hook");

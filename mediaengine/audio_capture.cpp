@@ -249,12 +249,15 @@ void AudioCapture::CaptureLoop() {
             }
 
             // Convert QPC to MS - avoid overflow by dividing first
+            static const int64_t qpcFreq = [] {
+                LARGE_INTEGER f;
+                QueryPerformanceFrequency(&f);
+                return f.QuadPart;
+            }();
             LARGE_INTEGER qpc;
             qpc.QuadPart = qpcPosition;
-            LARGE_INTEGER freq;
-            QueryPerformanceFrequency(&freq);
             // Reordered to prevent overflow: qpc / (freq/1000) instead of (qpc*1000)/freq
-            packet.timestamp = qpc.QuadPart / (freq.QuadPart / 1000);
+            packet.timestamp = (qpc.QuadPart * 1000) / qpcFreq;
 
             // Copy data - or generate silence if silent flag is set (critical for A/V
             // sync!)

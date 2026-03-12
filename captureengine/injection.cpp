@@ -18,7 +18,9 @@
 #include <iomanip>
 #include <sstream>
 
+#ifdef _MSC_VER
 #pragma comment(lib, "wintrust.lib")
+#endif
 
 /*
  * ANTI-CHEAT DETECTION LIMITATIONS
@@ -168,6 +170,8 @@ bool InjectionManager::IsWhitelisted(const std::string& processName) {
 }
 
 bool InjectionManager::IsAlreadyInjected(DWORD pid) {
+    std::lock_guard<std::mutex> lock(injectMutex);
+
     // First check our in-memory tracking
     for (const auto& p : injectedProcesses) {
         if (p.pid == pid)
@@ -232,10 +236,10 @@ void InjectionManager::Update() {
 
             // Re-verify it's still running and not injected
             if (!IsWhitelisted(name)) {
-                LogInfo("[WMI] Skipping deferred injection for %s (PID: %d) - no longer whitelisted", name.c_str(),
-                        pid);
+                LogInfo("[WMI] Skipping deferred injection for %s (PID: %lu) - no longer whitelisted", name.c_str(),
+                        (unsigned long)pid);
             } else if (!IsAlreadyInjected(pid) && !IsRecentlyFailed(pid)) {
-                LogInfo("[WMI] Injecting deferred: %s (PID: %d)", name.c_str(), pid);
+                LogInfo("[WMI] Injecting deferred: %s (PID: %lu)", name.c_str(), pid);
                 if (Inject(pid, name)) {
                     LogInfo("Injection successful.");
                 } else {
@@ -267,9 +271,9 @@ bool InjectionManager::InitializeWMI() {
     hres = CoInitializeEx(0, COINIT_MULTITHREADED);
     coInitUs = Log_GetQpcUs() - phaseStartUs;
     if (FAILED(hres)) {
-        LogInfo("[StartupPerf] InitializeWMI failed at CoInitializeEx after %.3f ms (hr=0x%X)", QpcDeltaToMs(coInitUs),
-                hres);
-        LogError("Failed to initialize COM library. Error code = 0x%X", hres);
+        LogInfo("[StartupPerf] InitializeWMI failed at CoInitializeEx after %.3f ms (hr=0x%lX)", QpcDeltaToMs(coInitUs),
+                (unsigned long)hres);
+        LogError("Failed to initialize COM library. Error code = 0x%lX", hres);
         return false;
     }
 
@@ -288,9 +292,9 @@ bool InjectionManager::InitializeWMI() {
     securityUs = Log_GetQpcUs() - phaseStartUs;
 
     if (FAILED(hres) && hres != RPC_E_TOO_LATE) {
-        LogInfo("[StartupPerf] InitializeWMI failed at CoInitializeSecurity after %.3f ms (hr=0x%X)",
-                QpcDeltaToMs(securityUs), hres);
-        LogError("Failed to initialize security. Error code = 0x%X", hres);
+        LogInfo("[StartupPerf] InitializeWMI failed at CoInitializeSecurity after %.3f ms (hr=0x%lX)",
+                QpcDeltaToMs(securityUs), (unsigned long)hres);
+        LogError("Failed to initialize security. Error code = 0x%lX", hres);
         return false;  // Don't return false if RPC_E_TOO_LATE (already init)
     }
 
@@ -300,9 +304,9 @@ bool InjectionManager::InitializeWMI() {
     locatorUs = Log_GetQpcUs() - phaseStartUs;
 
     if (FAILED(hres)) {
-        LogInfo("[StartupPerf] InitializeWMI failed at CoCreateInstance after %.3f ms (hr=0x%X)",
-                QpcDeltaToMs(locatorUs), hres);
-        LogError("Failed to create IWbemLocator object. Err: 0x%X", hres);
+        LogInfo("[StartupPerf] InitializeWMI failed at CoCreateInstance after %.3f ms (hr=0x%lX)",
+                QpcDeltaToMs(locatorUs), (unsigned long)hres);
+        LogError("Failed to create IWbemLocator object. Err: 0x%lX", hres);
         return false;
     }
 
@@ -320,9 +324,9 @@ bool InjectionManager::InitializeWMI() {
     connectUs = Log_GetQpcUs() - phaseStartUs;
 
     if (FAILED(hres)) {
-        LogInfo("[StartupPerf] InitializeWMI failed at ConnectServer after %.3f ms (hr=0x%X)", QpcDeltaToMs(connectUs),
-                hres);
-        LogError("Could not connect. Error code = 0x%X", hres);
+        LogInfo("[StartupPerf] InitializeWMI failed at ConnectServer after %.3f ms (hr=0x%lX)", QpcDeltaToMs(connectUs),
+                (unsigned long)hres);
+        LogError("Could not connect. Error code = 0x%lX", hres);
         pLoc->Release();
         pLoc = nullptr;
         return false;
@@ -342,9 +346,9 @@ bool InjectionManager::InitializeWMI() {
     proxyBlanketUs = Log_GetQpcUs() - phaseStartUs;
 
     if (FAILED(hres)) {
-        LogInfo("[StartupPerf] InitializeWMI failed at CoSetProxyBlanket after %.3f ms (hr=0x%X)",
-                QpcDeltaToMs(proxyBlanketUs), hres);
-        LogError("Could not set proxy blanket. Error code = 0x%X", hres);
+        LogInfo("[StartupPerf] InitializeWMI failed at CoSetProxyBlanket after %.3f ms (hr=0x%lX)",
+                QpcDeltaToMs(proxyBlanketUs), (unsigned long)hres);
+        LogError("Could not set proxy blanket. Error code = 0x%lX", hres);
         pSvc->Release();
         pSvc = nullptr;
         pLoc->Release();
@@ -357,7 +361,7 @@ bool InjectionManager::InitializeWMI() {
     hres = CoCreateInstance(CLSID_UnsecuredApartment, NULL, CLSCTX_LOCAL_SERVER, IID_IUnsecuredApartment,
                             (void**)&pUnsecApp);
     if (FAILED(hres)) {
-        LogError("Failed to create UnsecuredApartment: 0x%X", hres);
+        LogError("Failed to create UnsecuredApartment: 0x%lX", hres);
         // Continue anyway? Callbacks might fail permission checks without it
     }
 
@@ -369,7 +373,7 @@ bool InjectionManager::InitializeWMI() {
     if (pUnsecApp) {
         hres = pUnsecApp->CreateObjectStub(pSink, (IUnknown**)&pStubSink);
         if (FAILED(hres)) {
-            LogError("CreateObjectStub failed: 0x%X", hres);
+            LogError("CreateObjectStub failed: 0x%lX", hres);
             // Fallback?
             pStubSink = pSink;
             pStubSink->AddRef();
@@ -390,9 +394,9 @@ bool InjectionManager::InitializeWMI() {
     notificationUs = Log_GetQpcUs() - phaseStartUs;
 
     if (FAILED(hres)) {
-        LogInfo("[StartupPerf] InitializeWMI failed at ExecNotificationQueryAsync after %.3f ms (hr=0x%X)",
-                QpcDeltaToMs(notificationUs), hres);
-        LogError("ExecNotificationQueryAsync failed. Error code = 0x%X", hres);
+        LogInfo("[StartupPerf] InitializeWMI failed at ExecNotificationQueryAsync after %.3f ms (hr=0x%lX)",
+                QpcDeltaToMs(notificationUs), (unsigned long)hres);
+        LogError("ExecNotificationQueryAsync failed. Error code = 0x%lX", hres);
         return false;
     }
 
@@ -497,9 +501,9 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
                     std::shared_ptr<InjectionManager> managerShared = pManager->shared_from_this();
                     std::thread delayedThread([managerShared, pid, name]() {
                         LogInfo(
-                            "[WMI] %s (PID: %d) - Waiting for graphics API "
+                            "[WMI] %s (PID: %lu) - Waiting for graphics API "
                             "initialization before injection...",
-                            name.c_str(), pid);
+                            name.c_str(), (unsigned long)pid);
 
                         // Wait up to 30 seconds for graphics API initialization
                         bool ready = false;
@@ -509,16 +513,16 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
                             // CRITICAL FIX: Check if shutdown requested
                             if (managerShared->IsShuttingDown()) {
                                 LogInfo(
-                                    "[WMI] %s (PID: %d) - Shutdown requested, aborting "
+                                    "[WMI] %s (PID: %lu) - Shutdown requested, aborting "
                                     "delayed injection",
-                                    name.c_str(), pid);
+                                    name.c_str(), (unsigned long)pid);
                                 return;
                             }
 
                             // Check if process is still running
                             HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, FALSE, pid);
                             if (!hProcess) {
-                                LogInfo("[WMI] %s (PID: %d) - Process exited before injection", name.c_str(), pid);
+                                LogInfo("[WMI] %s (PID: %lu) - Process exited before injection", name.c_str(), (unsigned long)pid);
                                 return;
                             }
 
@@ -526,7 +530,7 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
                             DWORD exitCode = 0;
                             if (GetExitCodeProcess(hProcess, &exitCode) && exitCode != STILL_ACTIVE) {
                                 CloseHandle(hProcess);
-                                LogInfo("[WMI] %s (PID: %d) - Process exited before injection", name.c_str(), pid);
+                                LogInfo("[WMI] %s (PID: %lu) - Process exited before injection", name.c_str(), (unsigned long)pid);
                                 return;
                             }
 
@@ -542,9 +546,9 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
                                             if (strstr(szModName, "d3d12.dll")) {
                                                 d3d12Loaded = true;
                                                 LogInfo(
-                                                    "[WMI] %s (PID: %d) - D3D12.dll detected, "
+                                                    "[WMI] %s (PID: %lu) - D3D12.dll detected, "
                                                     "waiting for init...",
-                                                    name.c_str(), pid);
+                                                    name.c_str(), (unsigned long)pid);
                                                 break;
                                             }
                                         }
@@ -576,13 +580,13 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
                         // Perform injection
                         std::lock_guard<std::mutex> lock(managerShared->injectMutex);
                         if (!managerShared->IsWhitelisted(name)) {
-                            LogInfo("[WMI] %s (PID: %d) - No longer whitelisted, skipping injection", name.c_str(),
-                                    pid);
+                            LogInfo("[WMI] %s (PID: %lu) - No longer whitelisted, skipping injection", name.c_str(),
+                                    (unsigned long)pid);
                         } else if (!managerShared->IsAlreadyInjected(pid) && !managerShared->IsRecentlyFailed(pid)) {
                             LogInfo(
-                                "[WMI] %s (PID: %d) - Injecting (%s detected, waited %d "
+                                "[WMI] %s (PID: %lu) - Injecting (%s detected, waited %d "
                                 "ms)",
-                                name.c_str(), pid, d3d12Loaded ? "D3D12" : "non-D3D12 (DX11/DX9/Vulkan)", waitMs);
+                                name.c_str(), (unsigned long)pid, d3d12Loaded ? "D3D12" : "non-D3D12 (DX11/DX9/Vulkan)", waitMs);
                             if (managerShared->Inject(pid, name)) {
                                 LogInfo("[WMI] Injection successful.");
                             } else {
@@ -619,7 +623,7 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
         }
     } catch (const _com_error& e) {
         // COM exception - log and continue gracefully
-        LogError("WMI Indicate: COM exception 0x%X: %s", e.Error(), e.ErrorMessage());
+        LogError("WMI Indicate: COM exception 0x%lX: %s", (unsigned long)e.Error(), e.ErrorMessage());
     } catch (const std::exception& e) {
         // Standard exception
         LogError("WMI Indicate: Exception: %s", e.what());
@@ -637,9 +641,8 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::SetStatus(LONG lFl
 }
 
 bool InjectionManager::IsRecentlyFailed(DWORD pid) {
-    // Already holding mutex in Update context, need to be careful if called from
-    // elsewhere? Current usage is only inside Update (locked) or Indicate
-    // (Locked) Safe for now
+    std::lock_guard<std::mutex> lock(injectMutex);
+
     for (const auto& fail : failedInjections) {
         if (fail.pid == pid)
             return true;
@@ -659,7 +662,7 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
         PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_CREATE_THREAD,
         FALSE, pid));
     if (!hProcess) {
-        LogError("Failed to open process %d for injection", pid);
+        LogError("Failed to open process %lu for injection", (unsigned long)pid);
         return false;
     }
 
@@ -690,10 +693,13 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
 #else
     // DEVELOPMENT BUILD: Warn about unsigned DLL but allow injection.
     // Check for explicit opt-out via environment variable.
+#ifndef CE_PRODUCTION_BUILD
     const char* skipVerification = getenv("SKIP_DLL_VERIFICATION");
     if (skipVerification && strcmp(skipVerification, "1") == 0) {
         LogWarn("[SECURITY] Skipping DLL verification (SKIP_DLL_VERIFICATION=1)");
-    } else if (!VerifyDLLSignature(dllPath, false)) {
+    } else
+#endif
+        if (!VerifyDLLSignature(dllPath, false)) {
         // Log warning but do NOT block injection for dev/unsigned builds
         LogWarn("[SECURITY] DLL is not Authenticode-signed: %s", dllPath.c_str());
         LogWarn(
@@ -821,7 +827,7 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
     }
 
     if (!pLoadLibrary) {
-        LogError("Failed to resolve LoadLibrary for PID %d", pid);
+        LogError("Failed to resolve LoadLibrary for PID %lu", pid);
         return false;
     }
 
@@ -829,19 +835,19 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
     ce::VirtualAllocGuard pRemotePath(
         hProcess.get(), VirtualAllocEx(hProcess.get(), NULL, dllPath.size() + 1, MEM_COMMIT, PAGE_READWRITE));
     if (!pRemotePath) {
-        LogError("VirtualAllocEx failed for PID %d", pid);
+        LogError("VirtualAllocEx failed for PID %lu", pid);
         return false;
     }
 
     if (!WriteProcessMemory(hProcess.get(), pRemotePath.get(), dllPath.c_str(), dllPath.size() + 1, NULL)) {
-        LogError("WriteProcessMemory failed for PID %d", pid);
+        LogError("WriteProcessMemory failed for PID %lu", pid);
         return false;
     }
 
     ce::HandleGuard hThread(
         CreateRemoteThread(hProcess.get(), NULL, 0, (LPTHREAD_START_ROUTINE)pLoadLibrary, pRemotePath.get(), 0, NULL));
     if (!hThread) {
-        LogError("CreateRemoteThread failed for PID %d", pid);
+        LogError("CreateRemoteThread failed for PID %lu", pid);
         return false;
     }
 
@@ -856,7 +862,7 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
                 "failed to load.");
             return false;
         } else {
-            LogInfo("LoadLibraryA succeeded (Remote Handle: 0x%X)", exitCode);
+            LogInfo("LoadLibraryA succeeded (Remote Handle: 0x%lX)", (unsigned long)exitCode);
         }
     } else {
         LogError("Failed to get thread exit code.");
@@ -883,8 +889,8 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
         if (!dllFound) {
             LogError(
                 "DLL injection verification failed - hook DLL not found in "
-                "module list for PID %d",
-                pid);
+                "module list for PID %lu",
+                (unsigned long)pid);
         }
     }
 
@@ -902,7 +908,7 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
 }
 
 bool InjectionManager::InjectEarly(DWORD pid, const std::string& dllPath, HANDLE hMainThread) {
-    LogInfo("[APC] Attempting early APC injection for PID %d", pid);
+    LogInfo("[APC] Attempting early APC injection for PID %lu", pid);
 
     HANDLE hProcess = OpenProcess(
         PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_CREATE_THREAD,
@@ -923,13 +929,13 @@ bool InjectionManager::InjectEarly(DWORD pid, const std::string& dllPath, HANDLE
     SIZE_T pathSize = dllPath.size() + 1;
     LPVOID pRemotePath = VirtualAllocEx(hProcess, NULL, pathSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!pRemotePath) {
-        LogError("[APC] VirtualAllocEx failed: %d", GetLastError());
+        LogError("[APC] VirtualAllocEx failed: %lu", GetLastError());
         CloseHandle(hProcess);
         return false;
     }
 
     if (!WriteProcessMemory(hProcess, pRemotePath, dllPath.c_str(), pathSize, NULL)) {
-        LogError("[APC] WriteProcessMemory failed: %d", GetLastError());
+        LogError("[APC] WriteProcessMemory failed: %lu", GetLastError());
         VirtualFreeEx(hProcess, pRemotePath, 0, MEM_RELEASE);
         CloseHandle(hProcess);
         return false;
@@ -937,7 +943,7 @@ bool InjectionManager::InjectEarly(DWORD pid, const std::string& dllPath, HANDLE
 
     DWORD result = QueueUserAPC((PAPCFUNC)pLoadLibraryA, hMainThread, (ULONG_PTR)pRemotePath);
     if (!result) {
-        LogError("[APC] QueueUserAPC failed: %d", GetLastError());
+        LogError("[APC] QueueUserAPC failed: %lu", GetLastError());
         VirtualFreeEx(hProcess, pRemotePath, 0, MEM_RELEASE);
         CloseHandle(hProcess);
         return false;
@@ -1010,6 +1016,7 @@ void InjectionManager::WaitForInjectionThreads(int timeoutMs) {
 
 // Check if any process is currently injected
 bool InjectionManager::HasActiveInjections() const {
+    std::lock_guard<std::mutex> lock(injectMutex);
     return !injectedProcesses.empty();
 }
 
@@ -1060,7 +1067,7 @@ void InjectionManager::Eject(DWORD pid) {
 }
 
 // SHA256 using Windows CNG (bcrypt.dll)
-static std::string ComputeFileHash(const std::string& path) {
+[[maybe_unused]] static std::string ComputeFileHash(const std::string& path) {
     std::ifstream file(path, std::ios::binary);
     if (!file)
         return "";
@@ -1108,7 +1115,12 @@ bool InjectionManager::ValidateDllSecurity(const std::string& dllPath) {
     fs::path checkPath = fs::absolute(dllPath);
 
     // 1. Path Validation
-    if (checkPath.string().find(exePath.string()) != 0) {
+    std::error_code ec;
+    auto canonicalCheck = fs::weakly_canonical(checkPath, ec);
+    auto canonicalExe = fs::weakly_canonical(exePath, ec);
+    if (ec || canonicalCheck.string().find(canonicalExe.string()) != 0 ||
+        (canonicalCheck.string().size() > canonicalExe.string().size() &&
+         canonicalCheck.string()[canonicalExe.string().size()] != '\\')) {
         LogError("[Security] DLL path is outside application directory: %s", checkPath.string().c_str());
         return false;
     }
@@ -1118,7 +1130,7 @@ bool InjectionManager::ValidateDllSecurity(const std::string& dllPath) {
     PSECURITY_DESCRIPTOR pSD = NULL;
     if (GetNamedSecurityInfoA(dllPath.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, NULL, NULL, &pDacl, NULL,
                               &pSD) == ERROR_SUCCESS) {
-        TRUSTEE_A trustee = {0};
+        TRUSTEE_A trustee = {};
         trustee.TrusteeForm = TRUSTEE_IS_SID;
         trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
 
@@ -1135,12 +1147,12 @@ bool InjectionManager::ValidateDllSecurity(const std::string& dllPath) {
         LocalFree(pSD);  // also frees pDacl if it points into pSD
 
         if (access & (FILE_WRITE_DATA | FILE_APPEND_DATA | WRITE_DAC | WRITE_OWNER)) {
-            // In dev builds we might trigger this if file permissions are lax. allow
-            // warning? User requested check. We log error.
-            LogError("[Security] DLL is writable by Everyone! Access Mask: 0x%X", access);
-            // return false; // Strict mode. For dev, maybe warn? User said "proceed"
-            // with plan. Implementing as Warning for Dev environment to avoid
-            // blocking testing if permissions are weird on MSYS2 return false;
+            LogError("[Security] DLL is writable by Everyone! Access Mask: 0x%lX", access);
+#ifdef CE_PRODUCTION_BUILD
+            return false;  // Strict mode in production
+#else
+            LogError("[Security] WARNING: Proceeding despite world-writable DLL (dev build)");
+#endif
         }
     }
 
@@ -1189,7 +1201,7 @@ bool InjectionManager::VerifyDLLSignature(const std::string& dllPath, bool logFa
         return true;
     } else {
         if (logFailures) {
-            LogError("[Security] DLL signature verification failed: %s (error 0x%X)", dllPath.c_str(), status);
+            LogError("[Security] DLL signature verification failed: %s (error 0x%lu)", dllPath.c_str(), (unsigned long)status);
             if (status == TRUST_E_NOSIGNATURE) {
                 LogError("[Security] DLL is not signed");
             } else if (status == TRUST_E_EXPLICIT_DISTRUST) {
@@ -1361,8 +1373,8 @@ void InjectionManager::ScanExistingProcesses() {
                 ++whitelistedProcesses;
                 if (!IsAlreadyInjected(pe32.th32ProcessID) && !IsRecentlyFailed(pe32.th32ProcessID)) {
                     ++injectAttempts;
-                    LogInfo("[Scan] Found existing whitelisted process: %s (PID: %d)", name.c_str(),
-                            pe32.th32ProcessID);
+                    LogInfo("[Scan] Found existing whitelisted process: %s (PID: %lu)", name.c_str(),
+                            (unsigned long)pe32.th32ProcessID);
                     if (Inject(pe32.th32ProcessID, name)) {
                         ++injectSuccesses;
                     }

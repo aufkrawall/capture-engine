@@ -5,8 +5,8 @@
  */
 
 #include "d3d11_device_wrap.h"
-#include "d3d11_devicecontext_wrap.h"
 #include "../apis/lod_helper.h"
+#include "d3d11_devicecontext_wrap.h"
 #include "hook_common.h"
 
 // ============================================================================

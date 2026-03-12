@@ -871,7 +871,6 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     // GPU Scaling settings (from [Scaling] section)
     config.video.scaling.enabled = GetBool("Scaling", "enabled", false);
     config.video.scaling.outputResolution = GetStr("Scaling", "output_resolution", "native");
-    config.video.scaling.outputResolution = GetStr("Scaling", "output_resolution", "native");
 
     // NEW: Honest configuration
     config.video.scaling.quality = GetStr("Scaling", "quality", "normal");

@@ -72,10 +72,14 @@ public:
     // Returns short label: "DLSS FG", "FSR FG", "NVIDIA SM", or "FG"
     const char* GetFGTypeLabel() const {
         switch (m_fgType.load(std::memory_order_relaxed)) {
-            case 1: return "DLSS FG";
-            case 2: return "FSR FG";
-            case 3: return "NVIDIA SM";
-            default: return "FG";
+            case 1:
+                return "DLSS FG";
+            case 2:
+                return "FSR FG";
+            case 3:
+                return "NVIDIA SM";
+            default:
+                return "FG";
         }
     }
 

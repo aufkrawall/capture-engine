@@ -1061,8 +1061,8 @@ void AudioEncoder::Flush() {
 
     if (discardPaddingSamples > 0 && !flushedPackets.empty()) {
         AVPacket* lastPkt = flushedPackets.back();
-        // AV_PKT_DATA_SKIP_SAMPLES expects 10 bytes: 32-bit start skip, 32-bit end skip
-        uint32_t* skipData = (uint32_t*)av_packet_new_side_data(lastPkt, AV_PKT_DATA_SKIP_SAMPLES, 10);
+        // AV_PKT_DATA_SKIP_SAMPLES expects 8 bytes: 32-bit start skip, 32-bit end skip
+        uint32_t* skipData = (uint32_t*)av_packet_new_side_data(lastPkt, AV_PKT_DATA_SKIP_SAMPLES, 8);
         if (skipData) {
             skipData[0] = 0;                                // No skip from start
             skipData[1] = (uint32_t)discardPaddingSamples;  // Skip from end

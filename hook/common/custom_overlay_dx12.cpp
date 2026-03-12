@@ -740,9 +740,8 @@ void DX12Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
     DX12_DEBUG_FRAME(s_RenderCounter, "Render complete: %d draw calls", drawCallCount);
     if (logThisRender) {
         if (probeMode == DX12RenderProbeMode::kStateSetupOnly) {
-            HookLogImportant(
-                "DX12 Overlay: Backend state probe complete (drawCalls skipped, psoBinds=%d, slot=%d)", psoBindCount,
-                slot);
+            HookLogImportant("DX12 Overlay: Backend state probe complete (drawCalls skipped, psoBinds=%d, slot=%d)",
+                             psoBindCount, slot);
         } else {
             HookLogImportant("DX12 Overlay: Backend render complete (drawCalls=%d, slot=%d)", drawCallCount, slot);
         }

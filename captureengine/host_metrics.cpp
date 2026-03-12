@@ -8,7 +8,9 @@
 
 // For NTQuerySystemInformation
 #include <winternl.h>
+#ifdef _MSC_VER
 #pragma comment(lib, "ntdll.lib")
+#endif
 
 namespace scan_host {
 
@@ -66,7 +68,7 @@ void HostMetricsState::Initialize(bool includeGpuMetrics) {
                 vramPdhInitialized = true;
                 LogInfo("[Metrics] VRAM Usage PDH initialized successfully");
             } else {
-                LogInfo("[Metrics] VRAM Usage PDH init failed with status: 0x%X", status);
+                LogInfo("[Metrics] VRAM Usage PDH init failed with status: 0x%lX", (unsigned long)status);
                 PdhCloseQuery(vramQuery);
                 vramQuery = nullptr;
             }
@@ -79,7 +81,7 @@ void HostMetricsState::Initialize(bool includeGpuMetrics) {
         if (SUCCEEDED(hr)) {
             LogInfo("[Metrics] DXGI Factory created for VRAM Total queries");
         } else {
-            LogInfo("[Metrics] Failed to create DXGI Factory: 0x%X", hr);
+            LogInfo("[Metrics] Failed to create DXGI Factory: 0x%lX", (unsigned long)hr);
         }
     }
 }
@@ -125,7 +127,7 @@ uint64_t HostMetricsState::QueryVRAMTotalFromDXGI(int32_t luidLow, int32_t luidH
             if (desc.AdapterLuid.LowPart == (DWORD)luidLow && desc.AdapterLuid.HighPart == (LONG)luidHigh) {
                 cachedVRAMTotal = desc.DedicatedVideoMemory;
                 cachedAdapterLuid = desc.AdapterLuid;
-                LogInfo("[Metrics] DXGI: Found VRAM Total %llu MB for LUID %08x:%08x", cachedVRAMTotal / (1024 * 1024),
+                LogInfo("[Metrics] DXGI: Found VRAM Total %llu MB for LUID %08lx:%08lx", cachedVRAMTotal / (1024 * 1024),
                         desc.AdapterLuid.HighPart, desc.AdapterLuid.LowPart);
                 adapter->Release();
                 return cachedVRAMTotal;
@@ -136,7 +138,7 @@ uint64_t HostMetricsState::QueryVRAMTotalFromDXGI(int32_t luidLow, int32_t luidH
 
     int64_t luid = (static_cast<int64_t>(static_cast<uint32_t>(luidHigh)) << 32) | static_cast<uint32_t>(luidLow);
     if (lastLoggedMissingDxgiLuid != luid) {
-        LogInfo("[Metrics] DXGI: No adapter found matching LUID %08x:%08x", luidHigh, luidLow);
+        LogInfo("[Metrics] DXGI: No adapter found matching LUID %08lx:%08lx", luidHigh, luidLow);
         lastLoggedMissingDxgiLuid = luid;
     }
     return 0;
@@ -198,8 +200,9 @@ void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t lu
 
             if (g_HostMetrics.pdhBuffer) {
                 PDH_FMT_COUNTERVALUE_ITEM_A* items = (PDH_FMT_COUNTERVALUE_ITEM_A*)g_HostMetrics.pdhBuffer;
-                if (PdhGetFormattedCounterArrayA(g_HostMetrics.gpuCounter, PDH_FMT_DOUBLE, &g_HostMetrics.pdhBufferSize,
-                                                 &itemCount, items) == ERROR_SUCCESS) {
+                DWORD actualBufSize = bufSize;
+                if (PdhGetFormattedCounterArrayA(g_HostMetrics.gpuCounter, PDH_FMT_DOUBLE, &actualBufSize, &itemCount,
+                                                 items) == ERROR_SUCCESS) {
                     double totalLoad = 0;
                     bool foundAny = false;
                     for (DWORD i = 0; i < itemCount; i++) {

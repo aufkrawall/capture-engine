@@ -53,7 +53,12 @@ public:
     bool CachePrimaryAdapter();
 
     // Get cached adapter info (returns nullptr if not cached)
-    const AdapterInfo* GetCachedInfo() const;
+    const AdapterInfo* GetCachedInfo() const {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (!m_cached.load(std::memory_order_acquire))
+            return nullptr;
+        return &m_info;
+    }
 
     // Check if we have cached info
     bool HasCachedInfo() const {

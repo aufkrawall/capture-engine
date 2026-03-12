@@ -6,7 +6,6 @@
 
 #include <chrono>
 #include <deque>
-#include <iostream>
 #include <map>
 #include <mutex>
 #include <thread>

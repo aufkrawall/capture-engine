@@ -202,7 +202,7 @@ struct GraphicsConfig {
 
 struct AppConfig {
     // General
-    bool debugLogging = true;  // Default to true, matches LoadConfig default
+    bool debugLogging = true;   // Default to true, matches LoadConfig default
     std::string captureMethod;  // "inject", "screengrab", "auto"
     std::string logFilePath;    // Path to captureengine.log
 

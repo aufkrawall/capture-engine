@@ -2,8 +2,8 @@
 
 #include <windows.h>
 
-#include <cstddef>
 #include <cctype>
+#include <cstddef>
 #include <cwctype>
 
 namespace ce::overlay_compat {
@@ -91,16 +91,8 @@ inline BOOL CALLBACK FindAuxiliaryProcessWindowProc(HWND hwnd, LPARAM lParam) {
 
 inline bool IsThirdPartyOverlayModulePath(const char* path) {
     static constexpr const char* kOverlayTokens[] = {
-        "gameoverlayrenderer",
-        "discord_hook",
-        "socialclub",
-        "eosovh",
-        "eossdk_win64_shipping",
-        "eossdk-win64-shipping",
-        "nvspcap",
-        "nvoverlay",
-        "rtsshooks",
-        "specialk",
+        "gameoverlayrenderer",   "discord_hook", "socialclub", "eosovh",    "eossdk_win64_shipping",
+        "eossdk-win64-shipping", "nvspcap",      "nvoverlay",  "rtsshooks", "specialk",
     };
 
     for (const char* token : kOverlayTokens) {
@@ -113,16 +105,8 @@ inline bool IsThirdPartyOverlayModulePath(const char* path) {
 
 inline bool IsThirdPartyOverlayModulePath(const wchar_t* path) {
     static constexpr const wchar_t* kOverlayTokens[] = {
-        L"gameoverlayrenderer",
-        L"discord_hook",
-        L"socialclub",
-        L"eosovh",
-        L"eossdk_win64_shipping",
-        L"eossdk-win64-shipping",
-        L"nvspcap",
-        L"nvoverlay",
-        L"rtsshooks",
-        L"specialk",
+        L"gameoverlayrenderer",   L"discord_hook", L"socialclub", L"eosovh",    L"eossdk_win64_shipping",
+        L"eossdk-win64-shipping", L"nvspcap",      L"nvoverlay",  L"rtsshooks", L"specialk",
     };
 
     for (const wchar_t* token : kOverlayTokens) {
@@ -212,12 +196,8 @@ inline const char* GetStartupBlockingOverlayModuleName() {
 
 inline const char* GetStartupBlockingOverlayRenderModuleName() {
     static constexpr const char* kBlockingOverlayRenderModules[] = {
-        "SocialClubD3D12Renderer.dll",
-        "SocialClubD3D12Renderer",
-        "EOSOVH_Win64_Shipping.dll",
-        "EOSOVH_Win64_Shipping",
-        "EOSOVH_Win32_Shipping.dll",
-        "EOSOVH_Win32_Shipping",
+        "SocialClubD3D12Renderer.dll", "SocialClubD3D12Renderer",   "EOSOVH_Win64_Shipping.dll",
+        "EOSOVH_Win64_Shipping",       "EOSOVH_Win32_Shipping.dll", "EOSOVH_Win32_Shipping",
     };
 
     for (const char* moduleName : kBlockingOverlayRenderModules) {
@@ -276,14 +256,16 @@ inline bool HasRecentDX12StartupBlockingRenderActivity(ULONGLONG lastActivityMs,
     return lastActivityMs != 0 && now >= lastActivityMs && (now - lastActivityMs) < quietPeriodMs;
 }
 
-inline bool ShouldSuppressDX12OverlayRenderForRecentBlockingRendererActivity(bool processNeedsDelay, bool actualFGActive,
+inline bool ShouldSuppressDX12OverlayRenderForRecentBlockingRendererActivity(bool processNeedsDelay,
+                                                                             bool actualFGActive,
                                                                              const char* startupBlockingOverlayModule,
                                                                              bool hasRecentBlockingRendererActivity) {
     return processNeedsDelay && !actualFGActive && startupBlockingOverlayModule != nullptr &&
            hasRecentBlockingRendererActivity;
 }
 
-inline bool FindAuxiliaryProcessWindow(DWORD processId, HWND primaryWindow, AuxiliaryProcessWindowInfo* info = nullptr) {
+inline bool FindAuxiliaryProcessWindow(DWORD processId, HWND primaryWindow,
+                                       AuxiliaryProcessWindowInfo* info = nullptr) {
     AuxiliaryProcessWindowInfo scratch = {};
     AuxiliaryProcessWindowInfo* targetInfo = info ? info : &scratch;
     *targetInfo = {};

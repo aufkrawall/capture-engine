@@ -416,7 +416,7 @@ static int GetRipRelativeDispOffset(const uint8_t* code, int instrLen, bool is64
         }
     }
 
-    const uint8_t* opcodeStart = p;
+    [[maybe_unused]] const uint8_t* opcodeStart = p;
     uint8_t opcode = *p++;
     bool isTwoByte = false;
 
@@ -688,7 +688,7 @@ static bool IsAlreadyHooked(const uint8_t* code, bool is64bit) {
 // Try to restore a function that has been hooked by patching a known prologue.
 // This is used when we detect a stale hook from a previous process.
 // Returns true if restoration was successful.
-static bool TryRestoreHookedFunction(void* target, bool is64bit) {
+[[maybe_unused]] static bool TryRestoreHookedFunction(void* target, bool is64bit) {
     // Common DXGI Present prologue patterns (x64):
     // The standard prologue typically saves rbx, rsi, rdi, rbp, and r12-r15
     // Pattern 1 (most common):
@@ -812,7 +812,10 @@ bool Install(void* target, void* detour, void** outTrampoline) {
         va_list args;
         va_start(args, fmt);
         char buf[1024];
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
         vsnprintf(buf, sizeof(buf), fmt, args);
+#pragma GCC diagnostic pop
         va_end(args);
         HookLog("%s", buf);
     };
@@ -1001,7 +1004,7 @@ bool Install(void* target, void* detour, void** outTrampoline) {
                                 trampolineOff += instrLen;
                                 srcOff += instrLen;
                             }
-                            if (fixupFailed || trampolineOff + 5 > TRAMPOLINE_ENTRY_SIZE) {
+                            if (fixupFailed || static_cast<size_t>(trampolineOff + 5) > TRAMPOLINE_ENTRY_SIZE) {
                                 LogDirect("Chain hook: trampoline build failed (off=%d)", trampolineOff);
                                 return false;
                             }
@@ -1275,17 +1278,10 @@ bool Install(void* target, void* detour, void** outTrampoline) {
     }
     LogDirect("VirtualProtect succeeded, oldProtect=0x%08X", oldProtect);
 
-    // Write INT3 first for safety (atomic single-byte write)
+    // Write the jump to the detour function FIRST, then NOP-fill the rest,
+    // then do a single FlushInstructionCache. This avoids the race window
+    // where another thread could execute past a partial INT3 fill.
     volatile uint8_t* pTarget = (volatile uint8_t*)target;
-    pTarget[0] = 0xCC;
-    FlushInstructionCache(GetCurrentProcess(), target, 1);
-
-    // Fill remaining patch area with INT3
-    for (int i = 1; i < copySize; i++) {
-        pTarget[i] = 0xCC;
-    }
-
-    // Write the jump to the detour function
 #ifdef _WIN64
     // x64: Use absolute jump via [RIP+0] - 14 bytes total
     // FF 25 00 00 00 00 [8-byte absolute address]

@@ -251,7 +251,7 @@ inline bool HookContext::Initialize(HMODULE hModule) {
         }
     }
 
-    CE_LOG_INFO("HookCtx", "init pid=%u exe=%s", processId, processName);
+    CE_LOG_INFO("HookCtx", "init pid=%lu exe=%s", processId, processName);
 
     // Transition to Connecting state
     if (!hookLifecycle.TransitionTo(HookState::Connecting)) {
@@ -445,7 +445,7 @@ inline GraphicsConfig HookContext::GetActiveGraphicsConfig() const {
 }
 
 inline void HookContext::OnFrame() {
-    uint64_t frame = frameCount.fetch_add(1, std::memory_order_relaxed);
+    [[maybe_unused]] uint64_t frame = frameCount.fetch_add(1, std::memory_order_relaxed);
 
     // Periodic health check in debug builds
 #ifdef _DEBUG

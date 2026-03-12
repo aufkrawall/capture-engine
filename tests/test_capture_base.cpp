@@ -153,17 +153,17 @@ TEST(CaptureBaseTest, AdvanceWriteIndex) {
 TEST(CaptureBaseTest, CompletionFenceTracking) {
     TestCapture capture;
 
-    EXPECT_EQ(capture.completionFenceValue, 0);
-    EXPECT_EQ(capture.pendingCaptureWaitValue, 0);
+    EXPECT_EQ(capture.completionFenceValue.load(std::memory_order_relaxed), 0);
+    EXPECT_EQ(capture.pendingCaptureWaitValue.load(std::memory_order_relaxed), 0);
 
     // Enqueue frames and check completion fence advances
     capture.EnqueueFrame(1000, 10, 0, nullptr);
-    EXPECT_EQ(capture.completionFenceValue, 1);
-    EXPECT_EQ(capture.pendingCaptureWaitValue, 1);
+    EXPECT_EQ(capture.completionFenceValue.load(std::memory_order_relaxed), 1);
+    EXPECT_EQ(capture.pendingCaptureWaitValue.load(std::memory_order_relaxed), 1);
 
     capture.EnqueueFrame(2000, 20, 1, nullptr);
-    EXPECT_EQ(capture.completionFenceValue, 2);
-    EXPECT_EQ(capture.pendingCaptureWaitValue, 2);
+    EXPECT_EQ(capture.completionFenceValue.load(std::memory_order_relaxed), 2);
+    EXPECT_EQ(capture.pendingCaptureWaitValue.load(std::memory_order_relaxed), 2);
 }
 
 TEST(CaptureBaseTest, ResetForNewRecordingClearsPendingState) {
@@ -182,8 +182,8 @@ TEST(CaptureBaseTest, ResetForNewRecordingClearsPendingState) {
     EXPECT_EQ(capture.pendingWriteIdx.load(std::memory_order_relaxed), 0u);
     EXPECT_EQ(capture.pendingReadIdx.load(std::memory_order_relaxed), 0u);
     EXPECT_EQ(capture.writeIndex.load(std::memory_order_relaxed), 0);
-    EXPECT_EQ(capture.completionFenceValue, 0u);
-    EXPECT_EQ(capture.pendingCaptureWaitValue, 0u);
+    EXPECT_EQ(capture.completionFenceValue.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(capture.pendingCaptureWaitValue.load(std::memory_order_relaxed), 0u);
 }
 
 TEST(CaptureBaseTest, PublishToSharedMemoryCopiesCaptureMetadata) {

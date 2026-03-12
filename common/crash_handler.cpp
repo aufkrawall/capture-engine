@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdio>
 #include <ctime>
+#include <memory>
 #include <string>
 #include "logging.h"
 
@@ -13,7 +14,7 @@ static std::string g_DumpDir = ".\\logs";
 static char g_ProcessName[256] = "unknown";
 static HMODULE g_hDbgHelp = NULL;
 static std::atomic<bool> g_DumpAlreadyWritten{false};
-static thread_local bool g_ForceUnhandledDump = false;
+static std::atomic<bool> g_ForceUnhandledDump{false};
 typedef BOOL(WINAPI* MINIDUMPWRITEDUMP)(HANDLE hProcess, DWORD ProcessId, HANDLE hFile, MINIDUMP_TYPE DumpType,
                                         PMINIDUMP_EXCEPTION_INFORMATION ExceptionParam,
                                         PMINIDUMP_USER_STREAM_INFORMATION UserStreamParam,
@@ -52,7 +53,7 @@ struct DumpParams {
 
 // Worker thread to write minidump safely away from the crashed stack
 DWORD WINAPI DumpWorker(LPVOID lpParam) {
-    DumpParams* params = (DumpParams*)lpParam;
+    std::unique_ptr<DumpParams> params(static_cast<DumpParams*>(lpParam));
 
     TraceCrash("DumpWorker started");
 
@@ -180,7 +181,7 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
     DWORD code = pExceptionPointers->ExceptionRecord->ExceptionCode;
 
     // Skip known benign first-chance exceptions to avoid high-volume log spam.
-    bool forceUnhandledDump = g_ForceUnhandledDump;
+    bool forceUnhandledDump = g_ForceUnhandledDump.load(std::memory_order_acquire);
     bool isKnownDebugException = (code == 0x406D1388 ||  // Thread naming
                                   code == 0x40010006 ||  // OutputDebugString
                                   code == 0x4001000A ||  // WOW64 debug
@@ -354,12 +355,12 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
-    DumpParams params;
-    params.pExceptionPointers = pExceptionPointers;
-    params.threadId = GetCurrentThreadId();
+    // Heap-allocate params to avoid dangling pointer if this function returns
+    // before the worker thread starts reading the data.
+    auto* params = new DumpParams{pExceptionPointers, GetCurrentThreadId()};
 
     // Spawn thread to handle dump writing (crucial for Stack Overflow exceptions)
-    HANDLE hThread = CreateThread(NULL, 0, DumpWorker, &params, 0, NULL);
+    HANDLE hThread = CreateThread(NULL, 0, DumpWorker, params, 0, NULL);
 
     if (hThread) {
         TraceCrash("Worker thread spawned, waiting (15s timeout)...");
@@ -372,7 +373,7 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
         CloseHandle(hThread);
     } else {
         TraceCrash("Failed to create worker thread! Attempting inline dump...");
-        DumpWorker(&params);  // Fallback to inline if thread creation fails
+        DumpWorker(params);  // Fallback to inline if thread creation fails (DumpWorker takes ownership)
     }
 
     TraceCrash("Handler finished - Returning EXCEPTION_CONTINUE_SEARCH");
@@ -392,9 +393,9 @@ LONG WINAPI UnhandledExceptionFilterCallback(EXCEPTION_POINTERS* pExceptionPoint
     TraceCrash(codeStr);
 
     TraceCrash("Unhandled exception reached top-level filter - forcing dump");
-    g_ForceUnhandledDump = true;
+    g_ForceUnhandledDump.store(true, std::memory_order_release);
     LONG result = CrashHandlerExceptionFilter(pExceptionPointers);
-    g_ForceUnhandledDump = false;
+    g_ForceUnhandledDump.store(false, std::memory_order_release);
     if (g_OldUnhandledFilter && g_OldUnhandledFilter != UnhandledExceptionFilterCallback) {
         LONG prevResult = g_OldUnhandledFilter(pExceptionPointers);
         if (prevResult != EXCEPTION_CONTINUE_SEARCH) {
@@ -420,9 +421,17 @@ void InstallCrashHandler() {
     TraceCrash("Installing crash handler...");
 
     // Pre-load DbgHelp.dll to ensure it's available during a crash (avoid loader
-    // lock issues)
+    // lock issues). Load from System32 to prevent DLL hijacking.
     if (!g_hDbgHelp) {
-        g_hDbgHelp = LoadLibraryA("DbgHelp.dll");
+        char sysDir[MAX_PATH];
+        UINT len = GetSystemDirectoryA(sysDir, MAX_PATH);
+        if (len > 0 && len < MAX_PATH - 16) {
+            strcat(sysDir, "\\DbgHelp.dll");
+            g_hDbgHelp = LoadLibraryA(sysDir);
+        }
+        if (!g_hDbgHelp) {
+            g_hDbgHelp = LoadLibraryA("DbgHelp.dll");
+        }
         if (g_hDbgHelp) {
             g_pMiniDumpWriteDump = (MINIDUMPWRITEDUMP)GetProcAddress(g_hDbgHelp, "MiniDumpWriteDump");
             TraceCrash(g_pMiniDumpWriteDump ? "DbgHelp loaded successfully" : "Failed to get MiniDumpWriteDump");

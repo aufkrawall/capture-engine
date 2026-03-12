@@ -1031,11 +1031,7 @@ def copy_bundled_runtime_licenses(licenses_dst, ffmpeg_bin_dst):
         ),
     ]
 
-    bundled_dlls = {
-        entry.lower()
-        for entry in os.listdir(ffmpeg_bin_dst)
-        if entry.lower().endswith(".dll")
-    }
+    bundled_dlls = {entry.lower() for entry in os.listdir(ffmpeg_bin_dst) if entry.lower().endswith(".dll")}
     copied_license_names = set()
     mapped_runtime_dlls = set()
 
@@ -1055,7 +1051,13 @@ def copy_bundled_runtime_licenses(licenses_dst, ffmpeg_bin_dst):
         copied_license_names.add(dst_name_lower)
         log(f"Copied bundled runtime license {dst_name}")
 
-    known_ffmpeg_prefixes = ("avcodec-", "avformat-", "avutil-", "swresample-", "swscale-")
+    known_ffmpeg_prefixes = (
+        "avcodec-",
+        "avformat-",
+        "avutil-",
+        "swresample-",
+        "swscale-",
+    )
     for dll_name in sorted(bundled_dlls):
         if dll_name.startswith(known_ffmpeg_prefixes):
             continue
@@ -1332,7 +1334,7 @@ class FFmpegBuilder:
         ]
 
         self.run(conf, cwd=build_dir, env=env)
-        self.run([make_exe, "-j16"], cwd=build_dir, env=env)
+        self.run([make_exe, f"-j{cpu_count()}"], cwd=build_dir, env=env)
         self.run([make_exe, "install"], cwd=build_dir, env=env)
 
 
@@ -1624,7 +1626,11 @@ def write_json_atomic(path: str, payload: Any) -> None:
 def detect_clang_resource_dir(env: Dict[str, str], clang_exe: str) -> Optional[str]:
     """Detect clang resource-dir via compiler query, then fallback to local scan."""
     if clang_exe:
-        detected = run_command([os.path.normpath(clang_exe), "--print-resource-dir"], env=env, fail_exit=False).strip()
+        detected = run_command(
+            [os.path.normpath(clang_exe), "--print-resource-dir"],
+            env=env,
+            fail_exit=False,
+        ).strip()
         if detected:
             detected_norm = os.path.normpath(detected)
             if os.path.isdir(detected_norm):
@@ -1829,11 +1835,15 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
     parallel_compile(env, clang_exe, me_cflags, src_obj_pairs)
 
     # 3. Compile Tests
-    test_cflags = cflags + ffmpeg_cflags + [
-        "-I" + os.path.join(PROJECT_ROOT, "mediaengine"),
-        "-I" + os.path.join(PROJECT_ROOT, "hook", "wrappers"),
-        "-I" + os.path.join(PROJECT_ROOT, "hook", "common"),
-    ]  # Ensure we can include audio_encoder.h and hook headers for stubs
+    test_cflags = (
+        cflags
+        + ffmpeg_cflags
+        + [
+            "-I" + os.path.join(PROJECT_ROOT, "mediaengine"),
+            "-I" + os.path.join(PROJECT_ROOT, "hook", "wrappers"),
+            "-I" + os.path.join(PROJECT_ROOT, "hook", "common"),
+        ]
+    )  # Ensure we can include audio_encoder.h and hook headers for stubs
     test_objs = []
     src_obj_pairs = []
     for src in src_files:
@@ -2253,7 +2263,14 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
     dx9_src = os.path.join(testapp_src_dir, "dx9_test.cpp")
     dx9_exe = os.path.join(testapp_bin_dir, "dx9_test.exe")
     if os.path.exists(dx9_src):
-        dx9_ldflags = ["-static", "-Wl,--subsystem,windows", "-ld3d9", "-lgdi32", "-luser32", "-lavrt"]
+        dx9_ldflags = [
+            "-static",
+            "-Wl,--subsystem,windows",
+            "-ld3d9",
+            "-lgdi32",
+            "-luser32",
+            "-lavrt",
+        ]
         add_task("dx9_test.exe", make_cmd(clang_exe, cflags, dx9_src, dx9_ldflags, dx9_exe))
 
         if have_x86:
@@ -2369,14 +2386,26 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
 
         add_task(
             "opengl_legacy_test.exe",
-            make_cmd(clang_exe, cflags, opengl_legacy_src, opengl_legacy_ldflags, opengl_legacy_exe),
+            make_cmd(
+                clang_exe,
+                cflags,
+                opengl_legacy_src,
+                opengl_legacy_ldflags,
+                opengl_legacy_exe,
+            ),
         )
 
         if have_x86:
             opengl_legacy_exe_x86 = os.path.join(x86_bin_dir, "opengl_legacy_test.exe")
             add_task(
                 "opengl_legacy_test.exe (x86)",
-                make_cmd(clang_exe_x86, cflags_x86, opengl_legacy_src, opengl_legacy_ldflags, opengl_legacy_exe_x86),
+                make_cmd(
+                    clang_exe_x86,
+                    cflags_x86,
+                    opengl_legacy_src,
+                    opengl_legacy_ldflags,
+                    opengl_legacy_exe_x86,
+                ),
             )
 
     # DirectDraw7 Test App
@@ -2402,7 +2431,13 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             directdraw7_exe_x86 = os.path.join(x86_bin_dir, "directdraw7_test.exe")
             add_task(
                 "directdraw7_test.exe (x86)",
-                make_cmd(clang_exe_x86, cflags_x86, directdraw7_src, directdraw7_ldflags, directdraw7_exe_x86),
+                make_cmd(
+                    clang_exe_x86,
+                    cflags_x86,
+                    directdraw7_src,
+                    directdraw7_ldflags,
+                    directdraw7_exe_x86,
+                ),
             )
 
     # Execute all tasks in parallel
@@ -2462,8 +2497,10 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
     obj_dir = os.path.join(PROJECT_ROOT, "build", "obj", arch, "vulkan_layer")
     os.makedirs(obj_dir, exist_ok=True)
 
-    # Layer source files
-    layer_sources = [
+    # Layer source files - split into layer-specific and hook/common sources
+    # hook/common sources are shared with the hook DLL and must use the same
+    # optimization flags (HOOK_OPT_FLAGS_X64/X86) to maintain consistency.
+    layer_only_sources = [
         os.path.join(layer_dir, "layer_main.cpp"),
         os.path.join(layer_dir, "vulkan_layer.cpp"),
         os.path.join(layer_dir, "layer_ipc.cpp"),
@@ -2471,6 +2508,8 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         os.path.join(layer_dir, "layer_capture.cpp"),
         os.path.join(layer_dir, "layer_bridge.cpp"),
         os.path.join(layer_dir, "layer_hooks.cpp"),
+    ]
+    hook_common_sources = [
         os.path.join(PROJECT_ROOT, "hook", "common", "fg_detection.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "common", "ipc_client.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "common", "system_metrics.cpp"),
@@ -2485,8 +2524,8 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         os.path.join(PROJECT_ROOT, "hook", "common", "cached_overlay_renderer.cpp"),
     ]
 
-    # Compile layer sources
-    layer_cflags = cflags + [
+    # Shared layer-specific flags (include paths, defines)
+    layer_extra_flags = [
         "-I" + layer_dir,
         "-I" + os.path.join(PROJECT_ROOT, "common"),
         "-I" + os.path.join(PROJECT_ROOT, "hook", "common"),
@@ -2496,36 +2535,59 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         "-DVK_LAYER_CE_OVERLAY",
     ]
 
+    # Build separate cflags: hook/common sources use hook optimization flags
+    if arch == "x64":
+        hook_opt_flags = HOOK_OPT_FLAGS_X64
+    else:
+        hook_opt_flags = HOOK_OPT_FLAGS_X86
+
+    hook_cflags = make_cpp_cflags(hook_opt_flags, suppress_microsoft_exception_spec=True) + layer_extra_flags
+    layer_cflags = cflags + layer_extra_flags
+
     # Add Vulkan headers include path (from MSYS2 on Linux)
     if IS_LINUX:
         vulkan_include = os.path.join(get_linux_msys2_dir(), "clang64", "include")
         if os.path.exists(vulkan_include):
+            hook_cflags.append("-I" + vulkan_include)
             layer_cflags.append("-I" + vulkan_include)
 
     layer_objs = []
 
-    # Compile all sources in parallel
-    src_obj_pairs = []
-
     # helper to add sources
     def add_sources(sources, dest_obj_dir):
+        added = []
         for src in sources:
             if not os.path.exists(src):
                 log(f"Warning: Layer source not found: {src}")
                 continue
             basename = os.path.splitext(os.path.basename(src))[0]
             obj = os.path.join(dest_obj_dir, basename + ".o")
-            src_obj_pairs.append((src, obj))
+            added.append((src, obj))
             layer_objs.append(obj)
+        return added
 
-    add_sources(layer_sources, obj_dir)
+    # Compile layer-specific sources with layer cflags
+    layer_src_obj_pairs = add_sources(layer_only_sources, obj_dir)
+    # Compile hook/common sources with hook cflags (consistent with hook DLL)
+    hook_src_obj_pairs = add_sources(hook_common_sources, obj_dir)
 
-    if not src_obj_pairs:
+    if not layer_src_obj_pairs and not hook_src_obj_pairs:
         log("Error: No layer sources found.")
         return
 
-    # Run parallel compilation
-    compiled, skipped = parallel_compile(env, clang_exe, layer_cflags, src_obj_pairs)
+    # Run parallel compilation for each group with their respective flags
+    total_compiled = 0
+    total_skipped = 0
+    if layer_src_obj_pairs:
+        c, s = parallel_compile(env, clang_exe, layer_cflags, layer_src_obj_pairs)
+        total_compiled += c
+        total_skipped += s
+    if hook_src_obj_pairs:
+        c, s = parallel_compile(env, clang_exe, hook_cflags, hook_src_obj_pairs)
+        total_compiled += c
+        total_skipped += s
+    compiled = total_compiled
+    skipped = total_skipped
     if compiled > 0:
         log(f"Vulkan Layer ({arch}): compiled {compiled}, skipped {skipped}")
 
@@ -2579,7 +2641,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
             # Rebuild all layer objects with -stdlib=libstdc++
             x86_layer_cflags = layer_cflags + ["-stdlib=libstdc++"]
             rebuilt_objs = []
-            for src in layer_sources:
+            for src in layer_only_sources + hook_common_sources:
                 if not os.path.exists(src):
                     continue
                 basename = os.path.splitext(os.path.basename(src))[0]

@@ -8,10 +8,10 @@
 void Log_Init(const std::string& filename);
 void Log_Shutdown();
 
-void Log(LogLevel level, const char* format, ...);
-void LogInfo(const char* format, ...);
-void LogError(const char* format, ...);
-void LogDebug(const char* format, ...);
-void LogWarn(const char* format, ...);
+void Log(LogLevel level, const char* format, ...) __attribute__((format(printf, 2, 3)));
+void LogInfo(const char* format, ...) __attribute__((format(printf, 1, 2)));
+void LogError(const char* format, ...) __attribute__((format(printf, 1, 2)));
+void LogDebug(const char* format, ...) __attribute__((format(printf, 1, 2)));
+void LogWarn(const char* format, ...) __attribute__((format(printf, 1, 2)));
 
 int64_t Log_GetQpcUs();

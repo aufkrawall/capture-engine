@@ -36,14 +36,14 @@ static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
 
 // IPC Constants - base names, actual names are generated with process ID for
 // uniqueness
-#define SHARED_MEM_BASE_NAME L"Local\\CE_SM_"
+static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_";
 // Discovery shared memory - fixed name, contains inject process PID for fast
 // lookup
-#define SHARED_MEM_DISCOVERY L"Local\\CE_Disc"
-#define IPC_BUFFER_SIZE 4096
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc";
+static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 
 // Frame ring buffer size (must be power of 2 for efficient modulo)
-static const int FRAME_RING_SIZE = 32;
+static constexpr int FRAME_RING_SIZE = 32;
 
 inline bool HasBackbufferCountOverride(int32_t backbufferCount) {
     return backbufferCount >= 2 && backbufferCount <= 6;
@@ -474,12 +474,17 @@ public:
     // Hook reader: use ReadOverlayConfig() which retries until consistent.
     void BeginWriteOverlayConfig() {
         // Enter write section by transitioning sequence to odd.
-        // Use acq_rel so subsequent field writes are ordered after lock acquisition.
-        uint32_t seq = overlayConfigSeq.fetch_add(1, std::memory_order_acq_rel) + 1;
-        if ((seq & 1u) == 0u) {
-            // Handle rare wrap-around edge so writers always publish an odd sequence.
-            overlayConfigSeq.fetch_add(1, std::memory_order_acq_rel);
-        }
+        // Use CAS loop to avoid the wrap-around race window where two fetch_add
+        // calls leave the sequence momentarily even while the writer is still active.
+        uint32_t seq = overlayConfigSeq.load(std::memory_order_relaxed);
+        uint32_t desired;
+        do {
+            desired = seq + 1;
+            if ((desired & 1u) == 0u) {
+                desired++;  // Skip even values to stay locked (odd)
+            }
+        } while (!overlayConfigSeq.compare_exchange_weak(seq, desired, std::memory_order_acq_rel,
+                                                         std::memory_order_relaxed));
     }
     void EndWriteOverlayConfig() {
         // Publish writer completion by transitioning sequence back to even.

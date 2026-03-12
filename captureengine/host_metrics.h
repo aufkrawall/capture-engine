@@ -7,8 +7,10 @@
 #include <vector>
 #include "../common/shared_defs.h"
 
+#ifdef _MSC_VER
 #pragma comment(lib, "pdh.lib")
 #pragma comment(lib, "dxgi.lib")
+#endif
 
 namespace scan_host {
 

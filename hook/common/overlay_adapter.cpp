@@ -91,7 +91,8 @@ OverlayAdapter::~OverlayAdapter() {
     // During process termination, skip all GPU resource cleanup to avoid
     // driver access violations (D3D12/NVIDIA may be partially torn down).
 #ifndef VK_LAYER_CE_OVERLAY
-    if (IsProcessTerminating()) return;
+    if (IsProcessTerminating())
+        return;
 #endif
     if (skipDeviceRelease) {
         if (renderer) {
@@ -306,8 +307,7 @@ bool OverlayAdapter::InitVulkan(void* device, void* physDevice, void* queue, uin
     return true;
 }
 
-bool OverlayAdapter::InitCustom(CustomOverlay::RendererBackend* customBackend,
-                                OverlayBackendType type) {
+bool OverlayAdapter::InitCustom(CustomOverlay::RendererBackend* customBackend, OverlayBackendType type) {
     if (initialized)
         return true;
     if (!customBackend) {
@@ -488,9 +488,10 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                        dynamicStateChanged || layoutDirty;
     static int renderPathLogCount = 0;
     if (renderPathLogCount < 10) {
-        HookLogImportant("[Overlay] RenderOverlay path: rebuild=%d cache=%d shouldUpdate=%d viewportChanged=%d cfgChanged=%d",
-                         needRebuild ? 1 : 0, hasCachedFrame ? 1 : 0, shouldUpdate ? 1 : 0,
-                         viewportChanged ? 1 : 0, configChanged ? 1 : 0);
+        HookLogImportant(
+            "[Overlay] RenderOverlay path: rebuild=%d cache=%d shouldUpdate=%d viewportChanged=%d cfgChanged=%d",
+            needRebuild ? 1 : 0, hasCachedFrame ? 1 : 0, shouldUpdate ? 1 : 0, viewportChanged ? 1 : 0,
+            configChanged ? 1 : 0);
         renderPathLogCount++;
     }
 

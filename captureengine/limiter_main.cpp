@@ -56,24 +56,26 @@
  * - Power: Slight increase due to timeBeginPeriod(1)
  */
 
+#ifdef _MSC_VER
 #pragma comment(lib, "avrt.lib")
+#endif
 
 #ifdef _MSC_VER
 #pragma comment(lib, "winmm.lib")
 #endif
 
 static std::atomic<bool> g_Running{true};
-static std::atomic<bool> g_LimiterActive{true};
+[[maybe_unused]] static std::atomic<bool> g_LimiterActive{true};
 
 // Limiter state
-static LARGE_INTEGER g_QpcFreq = {{0}};
-static LARGE_INTEGER g_TargetTime = {{0}};
+static LARGE_INTEGER g_QpcFreq = {};
+static LARGE_INTEGER g_TargetTime = {};
 static int64_t g_FrameCount = 0;
 // Ramp-up for smooth activation (Reduced for faster lock)
 constexpr int64_t RAMP_UP_FRAMES = 10;
 static int64_t g_LastIntervalTicks = 0;
 // Variance window stats (last 120 frames = ~1 sec at 120fps)
-static constexpr int VARIANCE_WINDOW = 120;
+[[maybe_unused]] static constexpr int VARIANCE_WINDOW = 120;
 
 void ApplyFramePacing(SharedMemoryLayout* shm) {
     if (!shm)
@@ -274,21 +276,16 @@ int LimiterProcessMain(const AppConfig& config) {
         CloseHandle(hDiscovery);
     }
 
-    LogInfo("[Limiter] Process started (PID: %d)", GetCurrentProcessId());
+    LogInfo("[Limiter] Process started (PID: %lu)", GetCurrentProcessId());
 
-    // Create synchronization events
-    wchar_t releaseName[64];
-    wchar_t requestName[64];
-    swprintf_s(releaseName, L"Local\\CaptureLimiterRelease_%d", GetCurrentProcessId());
-    swprintf_s(requestName, L"Local\\CaptureLimiterRequest_%d", GetCurrentProcessId());
-
-    HANDLE hReleaseEvent = CreateEventW(NULL, FALSE, FALSE, releaseName);  // Auto-reset
-    HANDLE hRequestEvent = CreateEventW(NULL, FALSE, FALSE, requestName);  // Auto-reset
-
-    if (!hReleaseEvent || !hRequestEvent) {
-        LogError("[Limiter] Failed to create sync events");
-        return 1;
-    }
+    // Use event names already created by the inject process (published in shared memory).
+    // The inject process creates these events and publishes their names at CE_LR_*/CE_LQ_*.
+    // We must NOT create our own events with different names, as the hook polls the names
+    // from shared memory and would open the wrong events.
+    wchar_t releaseName[64] = L"";
+    wchar_t requestName[64] = L"";
+    HANDLE hReleaseEvent = NULL;
+    HANDLE hRequestEvent = NULL;
 
     // Wait for SHM if not found initially (retry with discovery)
     while (!shm && g_Running) {
@@ -321,9 +318,21 @@ int LimiterProcessMain(const AppConfig& config) {
     }
 
     if (shm) {
-        wcscpy_s(shm->fpsLimiter.releaseEventName, releaseName);
-        wcscpy_s(shm->fpsLimiter.requestEventName, requestName);
-        LogInfo("[Limiter] Published event names");
+        // Open the events already created by the inject process
+        if (shm->fpsLimiter.releaseEventName[0] != L'\0') {
+            wcscpy_s(releaseName, 64, shm->fpsLimiter.releaseEventName);
+            hReleaseEvent = OpenEventW(EVENT_MODIFY_STATE | SYNCHRONIZE, FALSE, releaseName);
+        }
+        if (shm->fpsLimiter.requestEventName[0] != L'\0') {
+            wcscpy_s(requestName, 64, shm->fpsLimiter.requestEventName);
+            hRequestEvent = OpenEventW(EVENT_MODIFY_STATE | SYNCHRONIZE, FALSE, requestName);
+        }
+        if (!hReleaseEvent || !hRequestEvent) {
+            LogError("[Limiter] Failed to open inject-created events (inject may not have created them yet)");
+            // Don't overwrite the names - the inject process owns them
+        } else {
+            LogInfo("[Limiter] Opened inject-created limiter events");
+        }
     }
 
     // Main loop: Handle requests from hook via shared memory
@@ -403,6 +412,8 @@ int LimiterProcessMain(const AppConfig& config) {
     LogInfo("[Limiter] Shutting down");
     if (hReleaseEvent)
         CloseHandle(hReleaseEvent);
+    if (hRequestEvent)
+        CloseHandle(hRequestEvent);
     if (shm)
         UnmapViewOfFile(shm);
     if (hMapFile)

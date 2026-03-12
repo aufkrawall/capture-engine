@@ -3,10 +3,10 @@
  */
 
 #include "custom_overlay.h"
-#include "hook_common.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include "hook_common.h"
 
 namespace CustomOverlay {
 
@@ -14,7 +14,8 @@ Renderer::Renderer() {}
 
 Renderer::~Renderer() {
 #ifndef VK_LAYER_CE_OVERLAY
-    if (IsProcessTerminating()) return;
+    if (IsProcessTerminating())
+        return;
 #endif
     Shutdown();
 }

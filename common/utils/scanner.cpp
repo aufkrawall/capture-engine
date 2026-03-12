@@ -1,6 +1,7 @@
 #include "scanner.h"
 #include <psapi.h>
 #include <cstdint>
+#include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -38,7 +39,10 @@ uintptr_t Scan(HMODULE module, const char* pattern) {
     size_t size = moduleInfo.SizeOfImage;
     std::vector<int> patternBytes = ParsePattern(pattern);
 
-    for (size_t i = 0; i < size - patternBytes.size(); ++i) {
+    if (patternBytes.size() > size)
+        return 0;
+
+    for (size_t i = 0; i <= size - patternBytes.size(); ++i) {
         bool found = true;
         for (size_t j = 0; j < patternBytes.size(); ++j) {
             if (patternBytes[j] != -1 && start[i + j] != (uint8_t)patternBytes[j]) {
@@ -79,7 +83,10 @@ uintptr_t ScanForStringRef(HMODULE module, const char* string) {
 
     uintptr_t stringAddr = 0;
 
-    for (size_t i = 0; i < size - stringBytes.size(); ++i) {
+    if (stringBytes.size() > size)
+        return 0;
+
+    for (size_t i = 0; i <= size - stringBytes.size(); ++i) {
         bool found = true;
         for (size_t j = 0; j < stringBytes.size(); ++j) {
             if (base[i + j] != (uint8_t)stringBytes[j]) {
@@ -108,6 +115,9 @@ uintptr_t ScanForStringRef(HMODULE module, const char* string) {
     uint8_t* p = base;
     uint8_t* end = base + size - 7;
 
+    if (size < 7)
+        return 0;
+
     for (; p < end; p++) {
         // Check for LEA/MOV instruction patterns?
         // Or just check if (p + 7 + *(int32*)(p+3)) == stringAddr
@@ -120,7 +130,8 @@ uintptr_t ScanForStringRef(HMODULE module, const char* string) {
 
         // Pattern: Op1 Op2 Op3 Disp Disp Disp Disp
         // Check offset at +3
-        int32_t disp = *(int32_t*)(p + 3);
+        int32_t disp;
+        memcpy(&disp, p + 3, sizeof(disp));
         if ((uintptr_t)(p + 7 + disp) == stringAddr) {
             // Check if it looks like LEA
             if (p[0] == 0x48 || p[0] == 0x4C) {  // REX prefix

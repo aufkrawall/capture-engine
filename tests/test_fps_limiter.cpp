@@ -325,8 +325,7 @@ TEST(LimiterModeParseTest, ParsesAllValues) {
 
 TEST(OverlayCompatTest, DetectsKnownOverlayModulePaths) {
     EXPECT_TRUE(ce::overlay_compat::IsThirdPartyOverlayModulePath("C:\\Games\\GTAV\\socialclub.dll"));
-    EXPECT_TRUE(
-        ce::overlay_compat::IsThirdPartyOverlayModulePath("C:\\Games\\GTAV\\EOSOVH_Win64_Shipping.dll"));
+    EXPECT_TRUE(ce::overlay_compat::IsThirdPartyOverlayModulePath("C:\\Games\\GTAV\\EOSOVH_Win64_Shipping.dll"));
     EXPECT_TRUE(
         ce::overlay_compat::IsThirdPartyOverlayModulePath(L"C:\\Program Files\\Epic\\EOSOVH_Win64_Shipping.dll"));
     EXPECT_FALSE(ce::overlay_compat::IsThirdPartyOverlayModulePath("C:\\capture\\capture_hook_x64.dll"));
@@ -335,10 +334,8 @@ TEST(OverlayCompatTest, DetectsKnownOverlayModulePaths) {
 TEST(OverlayCompatTest, StartupOverlaySuppressionTracksVisibleWindowAndCooldown) {
     EXPECT_TRUE(ce::overlay_compat::ShouldSuppressDX12OverlayForStartup(true, false, false, 0, 5000, 5000, 5000));
     EXPECT_TRUE(ce::overlay_compat::ShouldSuppressDX12OverlayForStartup(true, false, true, 6000, 5000, 0, 5000));
-    EXPECT_TRUE(
-        ce::overlay_compat::ShouldSuppressDX12OverlayForStartup(true, false, false, 6000, 5000, 1000, 5000));
-    EXPECT_FALSE(
-        ce::overlay_compat::ShouldSuppressDX12OverlayForStartup(true, false, false, 6000, 5000, 5000, 5000));
+    EXPECT_TRUE(ce::overlay_compat::ShouldSuppressDX12OverlayForStartup(true, false, false, 6000, 5000, 1000, 5000));
+    EXPECT_FALSE(ce::overlay_compat::ShouldSuppressDX12OverlayForStartup(true, false, false, 6000, 5000, 5000, 5000));
     EXPECT_FALSE(ce::overlay_compat::ShouldSuppressDX12OverlayForStartup(true, true, false, 0, 5000, 0, 5000));
     EXPECT_FALSE(ce::overlay_compat::ShouldSuppressDX12OverlayForStartup(false, false, false, 0, 5000, 0, 5000));
 }
@@ -350,18 +347,18 @@ TEST(OverlayCompatTest, DetectsProcessesNeedingStartupInitGrace) {
 }
 
 TEST(OverlayCompatTest, PostResumeInitDelayRequiresForegroundAndUsableWindow) {
-    EXPECT_TRUE(ce::overlay_compat::ShouldDelayDX12OverlayInitAfterStartupResume(true, true, false, true, 1280, 720, 0,
-                                                                                 5000));
+    EXPECT_TRUE(
+        ce::overlay_compat::ShouldDelayDX12OverlayInitAfterStartupResume(true, true, false, true, 1280, 720, 0, 5000));
     EXPECT_TRUE(ce::overlay_compat::ShouldDelayDX12OverlayInitAfterStartupResume(true, true, false, false, 1280, 720,
                                                                                  6000, 5000));
     EXPECT_TRUE(ce::overlay_compat::ShouldDelayDX12OverlayInitAfterStartupResume(true, true, false, true, 320, 200,
                                                                                  6000, 5000));
     EXPECT_FALSE(ce::overlay_compat::ShouldDelayDX12OverlayInitAfterStartupResume(true, true, false, true, 1280, 720,
                                                                                   5000, 5000));
-    EXPECT_FALSE(ce::overlay_compat::ShouldDelayDX12OverlayInitAfterStartupResume(true, false, false, true, 1280, 720,
-                                                                                  0, 5000));
-    EXPECT_FALSE(ce::overlay_compat::ShouldDelayDX12OverlayInitAfterStartupResume(true, true, true, true, 1280, 720,
-                                                                                  0, 5000));
+    EXPECT_FALSE(
+        ce::overlay_compat::ShouldDelayDX12OverlayInitAfterStartupResume(true, false, false, true, 1280, 720, 0, 5000));
+    EXPECT_FALSE(
+        ce::overlay_compat::ShouldDelayDX12OverlayInitAfterStartupResume(true, true, true, true, 1280, 720, 0, 5000));
 }
 
 TEST(OverlayCompatTest, StartupCompatibleAllocatorPoolCanShrinkForStartupOverlay) {
@@ -379,20 +376,16 @@ TEST(OverlayCompatTest, StartupCompatibleRenderDelayOnlyAppliesBeforeSettle) {
 }
 
 TEST(OverlayCompatTest, StartupBlockingOverlayCanSuppressDX12Render) {
-    EXPECT_TRUE(
-        ce::overlay_compat::ShouldSuppressDX12OverlayRenderForLoadedStartupOverlay(true, false,
-                                                                                   "SocialClubD3D12Renderer.dll", 1000, 30000));
-    EXPECT_FALSE(
-        ce::overlay_compat::ShouldSuppressDX12OverlayRenderForLoadedStartupOverlay(true, true,
-                                                                                   "SocialClubD3D12Renderer.dll", 1000, 30000));
-    EXPECT_FALSE(
-        ce::overlay_compat::ShouldSuppressDX12OverlayRenderForLoadedStartupOverlay(true, false,
-                                                                                   "SocialClubD3D12Renderer.dll", 30000, 30000));
+    EXPECT_TRUE(ce::overlay_compat::ShouldSuppressDX12OverlayRenderForLoadedStartupOverlay(
+        true, false, "SocialClubD3D12Renderer.dll", 1000, 30000));
+    EXPECT_FALSE(ce::overlay_compat::ShouldSuppressDX12OverlayRenderForLoadedStartupOverlay(
+        true, true, "SocialClubD3D12Renderer.dll", 1000, 30000));
+    EXPECT_FALSE(ce::overlay_compat::ShouldSuppressDX12OverlayRenderForLoadedStartupOverlay(
+        true, false, "SocialClubD3D12Renderer.dll", 30000, 30000));
     EXPECT_FALSE(
         ce::overlay_compat::ShouldSuppressDX12OverlayRenderForLoadedStartupOverlay(true, false, nullptr, 1000, 30000));
-    EXPECT_FALSE(
-        ce::overlay_compat::ShouldSuppressDX12OverlayRenderForLoadedStartupOverlay(false, false,
-                                                                                   "SocialClubD3D12Renderer.dll", 1000, 30000));
+    EXPECT_FALSE(ce::overlay_compat::ShouldSuppressDX12OverlayRenderForLoadedStartupOverlay(
+        false, false, "SocialClubD3D12Renderer.dll", 1000, 30000));
 }
 
 TEST(OverlayCompatTest, RecentBlockingRendererActivityExtendsDX12RenderSuppression) {

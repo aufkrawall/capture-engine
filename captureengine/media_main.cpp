@@ -85,7 +85,9 @@ void MediaLogCallback(const char* msg) {
     LogInfo("[Media] %s", msg);
 }
 
-// Helper: Get process name from PID
+// Defined in inject_main.cpp
+extern std::string GetProcessNameFromPID(DWORD pid);
+
 // Window finding helper
 struct WindowSearch {
     DWORD pid;
@@ -115,24 +117,6 @@ static HWND GetMainWindowForProcess(DWORD pid) {
     WindowSearch search = {pid, NULL};
     EnumWindows(EnumWindowsCallback, (LPARAM)&search);
     return search.hwnd;
-}
-
-static std::string GetProcessNameFromPID(DWORD pid) {
-    char exePath[MAX_PATH] = {};
-    HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-    if (hProcess) {
-        DWORD size = MAX_PATH;
-        if (QueryFullProcessImageNameA(hProcess, 0, exePath, &size)) {
-            CloseHandle(hProcess);
-            std::string name = exePath;
-            auto pos = name.find_last_of("\\/");
-            if (pos != std::string::npos)
-                name = name.substr(pos + 1);
-            return name;
-        }
-        CloseHandle(hProcess);
-    }
-    return "unknown";
 }
 
 static std::string GetLocalConfigPath() {
@@ -301,10 +285,10 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                         qf.shmemSlot = 0;
                         if (texIdx >= 0 && texIdx < 8) {
                             qf.sharedHandle = (HANDLE)g_pSharedMem->GetSharedHandle(texIdx);
-                            LogInfo("[Inject Thread] Read handle for texIdx=%d: %p", texIdx, qf.sharedHandle);
+                            LogDebug("[Inject Thread] Read handle for texIdx=%d: %p", texIdx, qf.sharedHandle);
                         } else {
                             qf.sharedHandle = (HANDLE)g_pSharedMem->GetSharedHandle(0);
-                            LogInfo("[Inject Thread] Invalid texIdx=%d, using handle 0: %p", texIdx, qf.sharedHandle);
+                            LogDebug("[Inject Thread] Invalid texIdx=%d, using handle 0: %p", texIdx, qf.sharedHandle);
                         }
                         qf.fenceHandle = (HANDLE)g_pSharedMem->GetFenceShareHandle();
                         qf.fenceValue = slot.fenceValue;
@@ -462,18 +446,6 @@ void EncoderThreadFunc(const AppConfig& config) {
             g_pSharedMem->encoderQueueDepth.store(queueDepth, std::memory_order_relaxed);
             g_pSharedMem->throttleCapture.store(shouldThrottle, std::memory_order_release);
             g_pSharedMem->runtimeState.hostDroppedFrames.store(static_cast<uint32_t>(g_FrameQueue.GetDroppedCount()));
-
-            static DWORD lastMemLog = 0;
-            if (GetTickCount() - lastMemLog > 1000) {
-                PROCESS_MEMORY_COUNTERS_EX pmc;
-                if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) {
-                    SIZE_T privateBytes = pmc.PrivateUsage;
-                    SIZE_T workingSet = pmc.WorkingSetSize;
-                    LogInfo("[System] Memory: Private=%zu MB, WorkingSet=%zu MB", privateBytes / (1024 * 1024),
-                            workingSet / (1024 * 1024));
-                }
-                lastMemLog = GetTickCount();
-            }
         }
 
         if (g_EncoderRunning) {
@@ -780,8 +752,11 @@ int MediaProcessMain(const AppConfig& config) {
     LogInfo("[Media] SharedMemory Layout Check:");
     LogInfo("[Media] sizeof(FrameSlot) = %zu", sizeof(FrameSlot));
     LogInfo("[Media] sizeof(CaptureState) = %zu", sizeof(CaptureState));
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winvalid-offsetof"
     LogInfo("[Media] offsetof(frameRing) = %zu", offsetof(SharedMemoryLayout, frameRing));
     LogInfo("[Media] offsetof(runtimeState) = %zu", offsetof(SharedMemoryLayout, runtimeState));
+#pragma GCC diagnostic pop
 
     ID3D11Device* d3dDevice = nullptr;
     ID3D11DeviceContext* d3dContext = nullptr;
@@ -916,7 +891,7 @@ int MediaProcessMain(const AppConfig& config) {
         }
     }
 
-    LogInfo("[Media] Process started (PID: %d) Mode: %s", GetCurrentProcessId(),
+    LogInfo("[Media] Process started (PID: %lu) Mode: %s", GetCurrentProcessId(),
             g_UseScreenGrab ? "screengrab" : "inject");
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
 
@@ -1334,7 +1309,7 @@ int MediaProcessMain(const AppConfig& config) {
                 DWORD elapsed = GetTickCount() - injectModeStartTime;
                 if (elapsed > 200) {
                     LogInfo(
-                        "[Media] No frames from inject mode after %dms - falling "
+                        "[Media] No frames from inject mode after %lums - falling "
                         "back to WGC",
                         elapsed);
 

@@ -1,6 +1,6 @@
 #include "freeze_watchdog.h"
-#include <algorithm>
 #include <tlhelp32.h>
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <ctime>
@@ -393,8 +393,8 @@ void FreezeWatchdog::WatchdogThread() {
                 HookLogImportant("FreezeWatchdog: Detected %s (hwnd=%p tid=%lu)", dialogDescription.c_str(),
                                  dialogInfo.hwnd, dialogThreadId);
             } else if (dialogThreadId != dialogInfo.threadId || dialogDescription != currentDialogDescription) {
-                HookLog("FreezeWatchdog: Dialog state changed to %s (hwnd=%p tid=%lu)", currentDialogDescription.c_str(),
-                        dialogInfo.hwnd, dialogInfo.threadId);
+                HookLog("FreezeWatchdog: Dialog state changed to %s (hwnd=%p tid=%lu)",
+                        currentDialogDescription.c_str(), dialogInfo.hwnd, dialogInfo.threadId);
                 dialogThreadId = dialogInfo.threadId;
                 dialogDescription = currentDialogDescription;
             }
@@ -413,7 +413,8 @@ void FreezeWatchdog::WatchdogThread() {
             char logMsg[256];
             snprintf(logMsg, sizeof(logMsg),
                      "[FreezeWatchdog] Status: elapsed=%.1fs, timeout=%.1fs, monitoredTid=%lu, dialogTid=%lu\n",
-                     elapsed, timeoutSeconds_.load(), monitoredThreadId_.load(std::memory_order_acquire), dialogThreadId);
+                     elapsed, timeoutSeconds_.load(), monitoredThreadId_.load(std::memory_order_acquire),
+                     dialogThreadId);
             OutputDebugStringA(logMsg);
             HookLog("FreezeWatchdog: Status elapsed=%.1fs timeout=%.1fs monitoredTid=%lu dialogTid=%lu", elapsed,
                     timeoutSeconds_.load(), monitoredThreadId_.load(std::memory_order_acquire), dialogThreadId);
@@ -428,7 +429,8 @@ void FreezeWatchdog::WatchdogThread() {
                 if (!dialogIdentity.empty() && dialogIdentity == lastDialogDumpIdentity &&
                     (now - lastDialogDumpTime) < kDialogDumpDedupWindowMicros) {
                     HookLogImportant(
-                        "FreezeWatchdog: Suppressing duplicate dialog dump for %s because a dump was already captured %.1fs ago",
+                        "FreezeWatchdog: Suppressing duplicate dialog dump for %s because a dump was already captured "
+                        "%.1fs ago",
                         dialogDescription.c_str(), (now - lastDialogDumpTime) / 1'000'000.0);
                     dialogDumpWritten = true;
                     continue;
@@ -457,7 +459,8 @@ void FreezeWatchdog::WatchdogThread() {
             if (dialogSeenSince != 0 && dialogDumpWritten) {
                 if (!freezeDumpSuppressionLogged) {
                     HookLogImportant(
-                        "FreezeWatchdog: Suppressing redundant freeze dump because a dialog dump was already captured for %s",
+                        "FreezeWatchdog: Suppressing redundant freeze dump because a dialog dump was already captured "
+                        "for %s",
                         dialogDescription.c_str());
                     freezeDumpSuppressionLogged = true;
                 }
@@ -506,7 +509,8 @@ void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason, 
 
     auto now = std::chrono::system_clock::now();
     auto time_t_now = std::chrono::system_clock::to_time_t(now);
-    const auto totalMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    const auto totalMilliseconds =
+        std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
     const auto millisecondPart = static_cast<int>(totalMilliseconds % 1000);
     std::tm local_tm;
     localtime_s(&local_tm, &time_t_now);

@@ -13,8 +13,8 @@ class FramePacer {
 public:
     // Initialize with target FPS and optional QPC frequency
     // If qpcFreq is 0, it will be queried automatically
-    void Init(double targetFps, int64_t qpcFreq = 0) {
-        this->targetFps = targetFps;
+    void Init(double fps, int64_t qpcFreq = 0) {
+        this->targetFps = fps;
         if (qpcFreq == 0) {
             LARGE_INTEGER freq;
             QueryPerformanceFrequency(&freq);
@@ -24,8 +24,8 @@ public:
         }
 
         // Calculate interval in ticks
-        if (targetFps > 0) {
-            targetIntervalTicks = qpcFrequency / targetFps;
+        if (fps > 0) {
+            targetIntervalTicks = qpcFrequency / fps;
         } else {
             targetIntervalTicks = 0;  // Variable framerate
         }

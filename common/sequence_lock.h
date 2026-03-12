@@ -95,20 +95,22 @@ public:
      */
     template <typename CopyFunc>
     void Write(const T& source, CopyFunc copyFunc) {
-        // Increment to odd (lock)
-        uint32_t seq = sequence_.fetch_add(1, std::memory_order_acq_rel) + 1;
-
-        // Ensure odd (in case of overflow)
-        if ((seq & 1) == 0) {
-            sequence_.fetch_add(1, std::memory_order_acq_rel);
-            ++seq;
-        }
+        // Use CAS loop to avoid the wrap-around race window where two fetch_add
+        // calls leave the sequence momentarily even while the writer is still active.
+        uint32_t seq = sequence_.load(std::memory_order_relaxed);
+        uint32_t desired;
+        do {
+            desired = seq + 1;
+            if ((desired & 1) == 0) {
+                desired++;  // Skip even values to stay locked (odd)
+            }
+        } while (!sequence_.compare_exchange_weak(seq, desired, std::memory_order_acq_rel, std::memory_order_relaxed));
 
         // Write data
         copyFunc(data_, source);
 
         // Increment to even (unlock)
-        sequence_.store(seq + 1, std::memory_order_release);
+        sequence_.store(desired + 1, std::memory_order_release);
     }
 
     /**
