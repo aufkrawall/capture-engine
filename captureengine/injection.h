@@ -122,7 +122,9 @@ private:
   void ScanExistingProcesses();
   bool IsWhitelisted(const std::string &processName);
   bool IsAlreadyInjected(DWORD pid);
+  bool IsAlreadyInjectedLocked(DWORD pid);  // Assumes injectMutex is held
   bool IsRecentlyFailed(DWORD pid);
+  bool IsRecentlyFailedLocked(DWORD pid);   // Assumes injectMutex is held
 
   // CRITICAL FIX: Shutdown flag for thread safety
   std::atomic<bool> shuttingDown{false};

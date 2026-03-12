@@ -7,6 +7,7 @@
 #include <cctype>
 #include <filesystem>
 #include "../common/config.h"
+#include "../common/crash_handler.h"
 #include "../common/logging.h"
 #include "../common/process_ipc.h"
 #include "../common/shared_defs.h"
@@ -232,6 +233,9 @@ static void PopulateWhitelistCache(DiscoveryInfo* pDisc, const AppConfig& config
 }
 
 int InjectProcessMain(const AppConfig& config) {
+    // Install crash handler for this process
+    InstallCrashHandler();
+
     // Register console control handler
     SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
     AppConfig currentConfig = config;

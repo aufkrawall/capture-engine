@@ -171,6 +171,11 @@ bool InjectionManager::IsWhitelisted(const std::string& processName) {
 
 bool InjectionManager::IsAlreadyInjected(DWORD pid) {
     std::lock_guard<std::mutex> lock(injectMutex);
+    return IsAlreadyInjectedLocked(pid);
+}
+
+bool InjectionManager::IsAlreadyInjectedLocked(DWORD pid) {
+    // Caller must hold injectMutex
 
     // First check our in-memory tracking
     for (const auto& p : injectedProcesses) {
@@ -500,6 +505,7 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
                     // use-after-free if InjectionManager is destroyed
                     std::shared_ptr<InjectionManager> managerShared = pManager->shared_from_this();
                     std::thread delayedThread([managerShared, pid, name]() {
+                        try {
                         LogInfo(
                             "[WMI] %s (PID: %lu) - Waiting for graphics API "
                             "initialization before injection...",
@@ -522,7 +528,7 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
                             // Check if process is still running
                             HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, FALSE, pid);
                             if (!hProcess) {
-                                LogInfo("[WMI] %s (PID: %lu) - Process exited before injection", name.c_str(), (unsigned long)pid);
+                                LogInfo("[WMI] %s (PID: %lu) - Process exited before injection (OpenProcess failed, error=%lu)", name.c_str(), (unsigned long)pid, (unsigned long)GetLastError());
                                 return;
                             }
 
@@ -530,7 +536,7 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
                             DWORD exitCode = 0;
                             if (GetExitCodeProcess(hProcess, &exitCode) && exitCode != STILL_ACTIVE) {
                                 CloseHandle(hProcess);
-                                LogInfo("[WMI] %s (PID: %lu) - Process exited before injection", name.c_str(), (unsigned long)pid);
+                                LogInfo("[WMI] %s (PID: %lu) - Process exited before injection (exit code=%lu)", name.c_str(), (unsigned long)pid, (unsigned long)exitCode);
                                 return;
                             }
 
@@ -553,6 +559,8 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
                                             }
                                         }
                                     }
+                                } else {
+                                    LogInfo("[WMI] %s (PID: %lu) - EnumProcessModules failed (error=%lu)", name.c_str(), (unsigned long)pid, (unsigned long)GetLastError());
                                 }
                             }
                             CloseHandle(hProcess);
@@ -577,12 +585,15 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
                             }
                         }
 
+                        LogInfo("[WMI] %s (PID: %lu) - Wait loop exited (ready=%d, d3d12=%d, waitMs=%d), attempting injection",
+                                name.c_str(), (unsigned long)pid, (int)ready, (int)d3d12Loaded, waitMs);
+
                         // Perform injection
                         std::lock_guard<std::mutex> lock(managerShared->injectMutex);
                         if (!managerShared->IsWhitelisted(name)) {
                             LogInfo("[WMI] %s (PID: %lu) - No longer whitelisted, skipping injection", name.c_str(),
                                     (unsigned long)pid);
-                        } else if (!managerShared->IsAlreadyInjected(pid) && !managerShared->IsRecentlyFailed(pid)) {
+                        } else if (!managerShared->IsAlreadyInjectedLocked(pid) && !managerShared->IsRecentlyFailedLocked(pid)) {
                             LogInfo(
                                 "[WMI] %s (PID: %lu) - Injecting (%s detected, waited %d "
                                 "ms)",
@@ -593,6 +604,13 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
                                 LogError("[WMI] Injection failed.");
                                 managerShared->failedInjections.push_back({pid, GetTickCount64()});
                             }
+                        } else {
+                            LogInfo("[WMI] %s (PID: %lu) - Already injected or recently failed, skipping", name.c_str(), (unsigned long)pid);
+                        }
+                        } catch (const std::exception& e) {
+                            LogError("[WMI] Delayed injection thread exception for PID %lu: %s", (unsigned long)pid, e.what());
+                        } catch (...) {
+                            LogError("[WMI] Delayed injection thread unknown exception for PID %lu", (unsigned long)pid);
                         }
                     });
 
@@ -642,7 +660,11 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::SetStatus(LONG lFl
 
 bool InjectionManager::IsRecentlyFailed(DWORD pid) {
     std::lock_guard<std::mutex> lock(injectMutex);
+    return IsRecentlyFailedLocked(pid);
+}
 
+bool InjectionManager::IsRecentlyFailedLocked(DWORD pid) {
+    // Caller must hold injectMutex
     for (const auto& fail : failedInjections) {
         if (fail.pid == pid)
             return true;

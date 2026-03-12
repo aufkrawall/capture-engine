@@ -11,6 +11,8 @@
 #include "hook_common.h"
 #include "perf_logger.h"
 
+#include <cfloat>  // FLT_MAX
+
 // Include backends based on build context
 // VK_LAYER_CE_OVERLAY is defined when building the Vulkan layer
 #ifndef VK_LAYER_CE_OVERLAY
@@ -827,14 +829,30 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
             recentAvgFrameTime = cachedAvgFrameTimeForColor;
         }
 
-        // Calculate graph scaling based on all samples - use exact peak value
+        // Calculate graph scaling - use exact peak with dynamic minimum for
+        // better vertical centering. Instead of always starting at 0ms,
+        // calculate a minimum that provides ~15% padding below the lowest point.
         float peakVal = 0.0f;
+        float minVal = FLT_MAX;
         for (int i = 0; i < GRAPH_SAMPLES; i++) {
             if (graphData[i] > peakVal)
                 peakVal = graphData[i];
+            if (graphData[i] > 0.001f && graphData[i] < minVal)
+                minVal = graphData[i];
         }
-        // Set max to peak value (rounded up nicely), with minimum of 20ms
-        graphMaxVal = (std::max)(peakVal, 20.0f);
+        if (minVal == FLT_MAX)
+            minVal = 0.0f;
+        
+        // Set max to peak value with 10% headroom, minimum of 20ms
+        float rawMax = (std::max)(peakVal * 1.1f, 20.0f);
+        
+        // Dynamic minimum: leave ~15% padding below lowest point, but never go negative
+        // This makes the graph line appear more vertically centered
+        float range = rawMax - minVal;
+        float dynamicMin = (std::max)(0.0f, minVal - range * 0.15f);
+        
+        graphMinVal = dynamicMin;
+        graphMaxVal = rawMax;
 
         graphWidth = bgWidth;
         graphHeight = 50.0f * dpiScale;

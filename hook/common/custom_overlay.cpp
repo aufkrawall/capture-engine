@@ -463,8 +463,18 @@ void Renderer::DrawFrameTimeGraph(float x, float y, float width, float height, c
     if (count > kMaxPoints)
         count = kMaxPoints;
 
+    // CRITICAL: Ensure stepX is an integer to eliminate vertical stripe artifacts.
+    // When stepX is fractional (e.g., 1.73px), rounding creates inconsistent segment
+    // widths (1px and 2px alternating), causing visible vertical stripes.
+    // Snap the effective width to a multiple of (count-1) so every step is exactly N px.
+    float stepX = width / (float)(count - 1);
+    float effectiveWidth = std::round(stepX) * (float)(count - 1);
+    float adjustedX = x + (width - effectiveWidth) * 0.5f;  // Center the adjusted width
+    stepX = std::round(stepX);
+    if (stepX < 1.0f)
+        stepX = 1.0f;
+
     float xs[kMaxPoints], ys[kMaxPoints];
-    const float stepX = width / (float)(count - 1);
     const float invRange = 1.0f / range;
 
     for (int i = 0; i < count; i++) {
@@ -473,7 +483,7 @@ void Renderer::DrawFrameTimeGraph(float x, float y, float width, float height, c
         // Snap X to integer pixels for stable horizontal scrolling (eliminates
         // temporal shimmer).  Leave Y as sub-pixel float so the AA fringe
         // geometry produces smooth diagonal segments instead of stair-steps.
-        xs[i] = std::round(x + (float)i * stepX);
+        xs[i] = std::round(adjustedX + (float)i * stepX);
         ys[i] = y + height - ((val - minVal) * invRange) * height;
     }
 

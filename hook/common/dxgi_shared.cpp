@@ -231,6 +231,127 @@ bool IsVulkanPrimary() {
     return false;
 }
 
+// Apply backbuffer_count and cpu_prerender_limit overrides to an existing swapchain.
+// Called on each Present for each swapchain until overrides are successfully applied.
+// Uses ResizeBuffers to change buffer count and SetMaximumFrameLatency to control CPU prerender limit.
+static void ApplySwapChainOverrides(IDXGISwapChain* pSwapChain) {
+    // Track which swapchains we've successfully applied overrides to
+    static std::atomic<uint64_t> g_swapchainOverridesDone{0};
+    static std::atomic<int> s_attemptCount{0};
+    static std::atomic<bool> s_loggedDone{0};
+    static std::atomic<bool> s_loggedEntry{0};
+    
+    // One-time entry log to confirm function is called
+    // Use direct file write to bypass HookDebugLoggingEnabled check
+    if (!s_loggedEntry.exchange(1)) {
+        // Try HookLogImportant first
+        HookLogImportant("[CE] ApplySwapChainOverrides ENTER");
+        // Also write directly as backup
+        FILE* f = fopen("capture_hook_overrides.log", "a");
+        if (f) {
+            SYSTEMTIME st;
+            GetLocalTime(&st);
+            fprintf(f, "[%02d:%02d:%02d.%03d] ApplySwapChainOverrides ENTER\n", 
+                    st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+            fclose(f);
+        }
+    }
+    
+    // Check if already done for this swapchain
+    uint64_t scKey = reinterpret_cast<uint64_t>(pSwapChain);
+    uint64_t doneVal = g_swapchainOverridesDone.load(std::memory_order_acquire);
+    if (doneVal == scKey)
+        return;  // Already successfully applied
+    
+    const auto& cfg = GetActiveGraphicsConfig();
+    
+    // Check if we have any overrides to apply
+    bool hasBackbufferOverride = HasBackbufferCountOverride(cfg.backbufferCount);
+    bool hasPrerenderOverride = (cfg.cpuPrerenderLimit > 0);
+    
+    if (!hasBackbufferOverride && !hasPrerenderOverride) {
+        // Mark as done so we don't keep checking
+        if (!s_loggedDone.exchange(1)) {
+            HookLogImportant("[CE] ApplySwapChainOverrides: no overrides configured (backbuffer=%d prerender=%d)",
+                    (int)cfg.backbufferCount, (int)cfg.cpuPrerenderLimit);
+        }
+        g_swapchainOverridesDone.store(scKey, std::memory_order_release);
+        return;  // No overrides configured, nothing to do
+    }
+    
+    // Limit attempts to avoid spamming on every frame if ResizeBuffers keeps failing
+    int attemptNum = s_attemptCount.load(std::memory_order_relaxed);
+    if (attemptNum >= 100) {
+        // Too many attempts, give up but mark as done to stop retrying
+        g_swapchainOverridesDone.store(scKey, std::memory_order_release);
+        return;
+    }
+    s_attemptCount.fetch_add(1, std::memory_order_relaxed);
+    
+    // Try to claim this swapchain for override application
+    static std::atomic<uint64_t> g_swapchainOverridesInProgress{0};
+    uint64_t expected = 0;
+    if (!g_swapchainOverridesInProgress.compare_exchange_strong(expected, scKey)) {
+        if (expected != scKey)
+            return;  // Another swapchain is being processed
+    }
+    
+    // Get current swapchain description
+    DXGI_SWAP_CHAIN_DESC desc;
+    if (FAILED(pSwapChain->GetDesc(&desc))) {
+        g_swapchainOverridesInProgress.store(0, std::memory_order_release);
+        return;
+    }
+    
+    bool allSucceeded = true;
+    
+    // Apply backbuffer_count override via ResizeBuffers
+    if (hasBackbufferOverride) {
+        UINT requested = static_cast<UINT>(cfg.backbufferCount);
+        if (requested > 0 && requested != desc.BufferCount) {
+            if (!oResizeBuffers) {
+                allSucceeded = false;
+            } else {
+                HRESULT hr = oResizeBuffers(pSwapChain, requested, desc.BufferDesc.Width, desc.BufferDesc.Height,
+                               desc.BufferDesc.Format, desc.Flags);
+                if (FAILED(hr)) {
+                    allSucceeded = false;
+                }
+            }
+        }
+    }
+    
+    // Apply cpu_prerender_limit via SetMaximumFrameLatency
+    if (hasPrerenderOverride) {
+        IDXGISwapChain2* sc2 = nullptr;
+        if (SUCCEEDED(pSwapChain->QueryInterface(__uuidof(IDXGISwapChain2), (void**)&sc2))) {
+            UINT requested = static_cast<UINT>(cfg.cpuPrerenderLimit);
+            sc2->SetMaximumFrameLatency(requested);
+            sc2->Release();
+        }
+    }
+    
+    // Mark as done - either succeeded or gave up
+    if (allSucceeded) {
+        g_swapchainOverridesDone.store(scKey, std::memory_order_release);
+    } else if (attemptNum >= 99) {
+        // Give up after 100 attempts
+        g_swapchainOverridesDone.store(scKey, std::memory_order_release);
+    }
+    
+    // One-time log when IPC is ready (log both success and failure)
+    if ((allSucceeded || attemptNum == 0) && !s_loggedDone.exchange(true) && g_IPC && g_IPC->GetSharedMem()) {
+        if (allSucceeded) {
+            HookLogImportant("[CE] SwapChain overrides applied: backbuffer=%d prerender=%d",
+                    hasBackbufferOverride ? (int)cfg.backbufferCount : -1,
+                    hasPrerenderOverride ? (int)cfg.cpuPrerenderLimit : -1);
+        } else {
+            HookLogImportant("[CE] SwapChain overrides: ResizeBuffers FAILED (will retry, attempt %d)", attemptNum + 1);
+        }
+    }
+    g_swapchainOverridesInProgress.store(0, std::memory_order_release);
+}
+
 PerformanceMetrics* GetPerformanceMetrics() {
     return &g_DXGIPerfMetrics;
 }
@@ -414,6 +535,29 @@ static void DetectSLPresentHook() {
 
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
     g_PresentCallCounter.fetch_add(1, std::memory_order_relaxed);
+
+    // CRITICAL: Recursion guard using thread-local depth counter.
+    // When using vtable hooking with Steam overlay, Steam's trampoline can call
+    // back into DetourPresent via early-return paths (wrapped swapchain, shutdown, etc.)
+    // before reaching the normal IsRecursivePresent() check at line ~530.
+    // This caused stack overflow crashes (0xC00000FD) with ~500 recursive frames.
+    static thread_local int s_presentRecurseDepth = 0;
+    const bool isReentrant = (s_presentRecurseDepth > 0);
+    s_presentRecurseDepth++;
+    auto depthGuard = ce::make_scope_guard([]() { s_presentRecurseDepth--; });
+
+    if (isReentrant) {
+        // Re-entrant call - forward directly to bypass or return S_OK
+        if (oPresentTrampoline) {
+            return oPresentTrampoline(pSwapChain, SyncInterval, Flags);
+        }
+        if (oPresentBypass) {
+            return oPresentBypass(pSwapChain, SyncInterval, Flags);
+        }
+        // No bypass available - return S_OK to break recursion loop
+        return S_OK;
+    }
+
     static int s_entryCount = 0;
     int entryNum = ++s_entryCount;
 
@@ -686,6 +830,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             HandleDX11ProcessFrame(pSwapChain, true);
         }
     }
+
+    // Apply backbuffer_count and cpu_prerender_limit overrides on first Present
+    ApplySwapChainOverrides(pSwapChain);
 
     // FPS Limiter - apply frame pacing before present
     if (g_IPC) {

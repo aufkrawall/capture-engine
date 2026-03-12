@@ -5696,7 +5696,10 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDeviceEx(IDirect3D9Ex* self, UINT A
             HookLog("DX9: CreateDeviceEx: Overriding BackBufferCount to %d", count);
         }
 
-        HookLogImportant(
+        // Log DX9 overrides at debug level only (not important level).
+        // Many games create a DX9 device for intro videos but render on DX12,
+        // making this log misleading. The overrides still apply to the DX9 device.
+        HookLog(
             "DX9: CreateDeviceEx overrides vsync=%s interval %u->%u refresh %u->%u "
             "backbufferCfg=%d d3dBackBufferCount %u->%u prerender=%.2f",
             gfx.vsyncMode.c_str(), originalInterval, pPresentationParameters->PresentationInterval, originalRefresh,
