@@ -6007,6 +6007,119 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         }
     }
 
+    // =========================================================================
+    // FG STATE MANAGEMENT — runs unconditionally when overlay resources exist.
+    // =========================================================================
+    //
+    // CRITICAL: This block must run even when overlay RENDERING is blocked
+    // (e.g., by the startup overlay blocker setting allowOverlayRender=false).
+    // Without it, FG ON↔OFF transitions are missed while the overlay is blocked,
+    // causing:
+    //   - g_SwapchainQueue stays null → startup blocker keeps blocking forever
+    //   - Queue-change heuristic never reset → false FSR FG on next FG cycle
+    //   - PostSL warmup counter never reset → stall fallback fires during warmup
+    //   - PostSL callback not managed → stale callbacks fire on wrong state
+    //
+    // The inner block (inside allowOverlayRender gate) also handles transitions
+    // but only runs when rendering is allowed.  This outer block is the safety
+    // net that ensures state is ALWAYS correct.
+    if (!s_insideECL && g_State.overlayInit && g_State.syncInit) {
+        bool outerSLFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+        static bool s_outerLastSLFGRunning = false;
+
+        if (outerSLFGRunning != s_outerLastSLFGRunning) {
+            bool slTurnedOff = s_outerLastSLFGRunning && !outerSLFGRunning;
+            bool slTurnedOn = !s_outerLastSLFGRunning && outerSLFGRunning;
+            s_outerLastSLFGRunning = outerSLFGRunning;
+
+            HookLogImportant("DX12: [outer] SL FG %s (allowOverlayRender=%d)",
+                             slTurnedOn ? "ON" : "OFF", allowOverlayRender ? 1 : 0);
+
+            // Set cooldown — prevents rendering during transition window
+            g_FGTransitionCooldown = std::max(g_FGTransitionCooldown, 60);
+            g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
+
+            // Reset PostSL state for fresh start after transition
+            g_PostSLOverlayActive.store(false, std::memory_order_release);
+            DXGIShared::g_PostSLOverlayRenderCallback.store(nullptr, std::memory_order_release);
+            g_PostSLStallCounter.store(0, std::memory_order_release);
+            g_PostSLStableFrameCount.store(0, std::memory_order_release);
+            g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+
+            // Clear false heuristic FSR FG (SL's queues trigger queue-change heuristic)
+            if (g_FGCompat.IsHeuristicFSRFGActive()) {
+                g_FGCompat.SetHeuristicFSRFGActive(false);
+                HookLogImportant("DX12: [outer] Cleared heuristic FSR FG during SL FG %s",
+                                 slTurnedOn ? "ON" : "OFF");
+            }
+
+            // Reset queue-change heuristic so it re-captures initial queue
+            g_ResetQueueChangeHeuristic.store(true, std::memory_order_release);
+
+            if (slTurnedOff) {
+                // FG→off: restore g_SwapchainQueue to origGame so the startup
+                // overlay blocker doesn't falsely block (null swapchain queue).
+                std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
+                ID3D12CommandQueue* origQ = g_OriginalGameQueue;
+                if (origQ && g_SwapchainQueue != origQ) {
+                    if (g_SwapchainQueue) g_SwapchainQueue->Release();
+                    origQ->AddRef();
+                    g_SwapchainQueue = origQ;
+                    HookLogImportant("DX12: [outer] FG→off — restored g_SwapchainQueue to origGame %p", origQ);
+                }
+
+                // Disable PostSL immediately — SL is tearing down
+                g_PostSLOverlayActive.store(false, std::memory_order_release);
+                DXGIShared::g_PostSLOverlayRenderCallback.store(nullptr, std::memory_order_release);
+
+                // Drain in-flight GPU work
+                if (g_State.fence) {
+                    UINT64 lastVal = g_State.currentFenceValue;
+                    HANDLE drainEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+                    if (drainEvent) {
+                        HRESULT drainHr = g_State.fence->SetEventOnCompletion(lastVal, drainEvent);
+                        if (SUCCEEDED(drainHr)) {
+                            WaitForSingleObject(drainEvent, 50);
+                        }
+                        CloseHandle(drainEvent);
+                    }
+                }
+            }
+        }
+
+        // Cooldown countdown — must always tick even when overlay blocked
+        if (g_FGTransitionCooldown > 0 && !allowOverlayRender) {
+            // Only decrement here when the inner block won't run.
+            // The inner block (inside allowOverlayRender gate) has its own
+            // countdown logic.  Avoid double-decrementing.
+            --g_FGTransitionCooldown;
+            g_PostSLOverlayActive.store(false, std::memory_order_release);
+            g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
+            if (g_FGTransitionCooldown == 0) {
+                HookLogImportant("DX12: [outer] FG transition cooldown complete (slFG=%d)",
+                                 outerSLFGRunning ? 1 : 0);
+                if (outerSLFGRunning) {
+                    g_PostSLOverlayActive.store(true, std::memory_order_release);
+                }
+            }
+        }
+
+        // PostSL callback management — register when SL FG active, even if overlay blocked
+        if (outerSLFGRunning && g_FGTransitionCooldown == 0) {
+            if (DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != &PostSLOverlayRender) {
+                DXGIShared::g_PostSLOverlayRenderCallback.store(&PostSLOverlayRender, std::memory_order_release);
+                g_PostSLOverlayActive.store(true, std::memory_order_release);
+                HookLogImportant("DX12: [outer] Registered PostSL callback (overlay blocked, SL FG active)");
+            }
+        } else if (!outerSLFGRunning && g_FGTransitionCooldown == 0) {
+            if (DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != nullptr) {
+                DXGIShared::g_PostSLOverlayRenderCallback.store(nullptr, std::memory_order_release);
+                g_PostSLOverlayActive.store(false, std::memory_order_release);
+                g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+            }
+        }
+    }
+
     if (allowOverlayRender && !suspendOverlayRender && !s_insideECL && g_State.overlayInit && g_State.syncInit &&
         !delayOverlayRenderAfterSyncInit && !suppressOverlayRenderForLoadedStartupOverlay &&
         !delayOverlayRenderAfterResourcePrime && !delayOverlayRenderAfterFirstDrawProbe) {
