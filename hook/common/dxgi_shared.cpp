@@ -418,6 +418,47 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     g_PresentCallCounter.fetch_add(1, std::memory_order_relaxed);
     static int s_entryCount = 0;
     int entryNum = ++s_entryCount;
+
+    // Present-call heartbeat diagnostic:
+    // Logs periodically (every 1000th call) and whenever there's a gap >500ms.
+    // Purpose: Detect whether the game stops calling Present during menus/pauses.
+    //
+    // GTA V Enhanced: During pause menu, Present calls stop entirely (10+ second
+    // gaps observed).  This means our overlay can't render unless we detect the
+    // gap and use an alternative rendering mechanism (like the pre-SL stall
+    // fallback in ProcessFrame).
+    //
+    // Also logs: IsRecursivePresent (SL FG re-entrant calls), g_StreamlineFGRunning
+    // (whether SL thinks FG is active), and thread ID (SL uses worker threads).
+    {
+        static LARGE_INTEGER s_lastPresentTime = {};
+        static int s_heartbeatCount = 0;
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        if (s_lastPresentTime.QuadPart != 0) {
+            LARGE_INTEGER freq;
+            QueryPerformanceFrequency(&freq);
+            double gapMs = (double)(now.QuadPart - s_lastPresentTime.QuadPart) * 1000.0 / freq.QuadPart;
+            // Log if gap is large (menu/pause) or every 1000th call
+            if (gapMs > 500.0 || (s_heartbeatCount % 1000 == 0)) {
+                // READ-ONLY state peek: DO NOT call IsRecursivePresent() here!
+                // IsRecursivePresent() has side effects (CAS on g_presentThreadId)
+                // and would permanently corrupt the present ownership tracking,
+                // making ALL subsequent calls appear recursive and blocking
+                // ProcessFrame from ever running again.
+                DWORD presentOwner = g_presentThreadId.load(std::memory_order_relaxed);
+                int presentDepthVal = g_presentDepth.load(std::memory_order_relaxed);
+                HookLogImportant("DetourPresent: heartbeat #%d gap=%.0fms presentOwner=0x%04X depth=%d slFG=%d tid=0x%04X",
+                                 s_heartbeatCount, gapMs,
+                                 presentOwner, presentDepthVal,
+                                 g_StreamlineFGRunning.load(std::memory_order_relaxed) ? 1 : 0,
+                                 GetCurrentThreadId());
+            }
+        }
+        s_lastPresentTime = now;
+        s_heartbeatCount++;
+    }
+
     if (entryNum <= 10) {
         HookLog(
             "DetourPresent: ENTRY #%d (pSwapChain=%p, IsInWrapper=%d, "
