@@ -126,10 +126,15 @@ public:
     // to prevent the cached 2× multiplier from falsely triggering NVIDIA_SM.
     void ClearNvidiaSMState() {
         nvidiaSMConfirmCount.store(0, std::memory_order_release);
+        // Reset cached multiplier — after SL FG teardown the real multiplier
+        // is 1×.  Without this reset, the stale 2× causes NVIDIA_SM to be
+        // re-detected within 3 frames, triggering a phantom FG transition
+        // and a second unnecessary cooldown.
+        cachedMultiplier.store(1, std::memory_order_release);
         FGType current = activeBehavior.load(std::memory_order_acquire);
         if (current == FGType::NVIDIA_SM) {
             activeBehavior.store(FGType::None, std::memory_order_release);
-            HookLog("FG: Cleared NVIDIA_SM state (SL FG transition cleanup)");
+            HookLog("FG: Cleared NVIDIA_SM state + multiplier (SL FG transition cleanup)");
         }
     }
 
