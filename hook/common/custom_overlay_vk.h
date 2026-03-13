@@ -9,6 +9,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include "custom_overlay.h"
 
 // Vulkan headers - use dynamic loading with Win32 platform support
@@ -17,6 +18,17 @@
 #endif
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
+
+// Fallback forward declarations if vulkan.h wasn't found (LSP environments)
+#ifndef VULKAN_H_
+struct VkDevice_T;
+struct VkPhysicalDevice_T;
+struct VkQueue_T;
+using VkDevice = VkDevice_T*;
+using VkPhysicalDevice = VkPhysicalDevice_T*;
+using VkQueue = VkQueue_T*;
+using VkInstance = struct VkInstance_T*;
+#endif
 
 namespace CustomOverlay {
 

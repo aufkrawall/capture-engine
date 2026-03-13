@@ -93,86 +93,76 @@ void CreateDefaultConfig(const std::string& path) {
         return;
 
     cfg << R"CFG(; =============================================================================
-; CaptureEngine Configuration (generated)
+; CaptureEngine Configuration
 ; All keys below can also be overridden per process in [App.N] sections.
 ; =============================================================================
 
 [General]
 ; debug_logging - Values: true, false (also enables the per-frame CSV profiler)
 debug_logging=true
-; capture_method - Values: inject, screengrab, auto
+; capture_method - Values: inject, screen or window grab (WGC), auto (WGC, unless application is on inject whitelist)
 capture_method=auto
 
-[Injection]
-; whitelist - Values: process names (one per line in (...) or comma-separated)
-; Note: only listed executables are injected. Enables overlay and various render override features. DO NOT USE IN MULTIPLAYER GAMES!
-whitelist=(
-)
-; overlay_whitelist - Values: process names for overlay-only targeting. DO NOT USE IN MULTIPLAYER GAMES!
-overlay_whitelist=(
-)
-; wgc_window_detection - Values: window titles for WGC app/window matching, might be a bit faster than global WGC desktop capture. Should be safe with anti-cheats, does not require inject and overlay.
+; wgc_window_detection - Values: window titles for WGC app/window matching, might be a bit faster than global WGC desktop capture. Should be safe with anti-cheats (no guarantees!), does not require inject and overlay. Tries to find corresponding window name when providing process name instead.
 wgc_window_detection=(
 )
 
-[Performance]
-; process_priority - Values: idle, below_normal, normal, above_normal, high, realtime
-process_priority=normal
-; gpu_priority - Values: integer -7..7
-gpu_priority=0
-; copy_queue_priority - Values: low, normal, high
-copy_queue_priority=normal
+[Injection]
+; match_mode - Values: exact, title_executable, title_type
+; exact: exact process name or window title match (default)
+; title_executable: match window title, fall back to executable name
+; title_type: match window title, fall back to window class
+match_mode=exact
+; whitelist - Values: process names (one per line in (...) or comma-separated)
+; Note: only listed executables are injected. Enables overlay and various render feature overrides. DO NOT USE IN MULTIPLAYER GAMES!
+whitelist=(
+)
 
-[FpsLimiter]
-; capture_sync_enabled - Values: true, false
-capture_sync_enabled=false
-; capture_sync_multiplier - Values: 1-8
-capture_sync_multiplier=1
-; capture_sync_limiter_mode - Values: auto, basic, fg_fallback, reflex, anti_lag2, xell
-capture_sync_limiter_mode=auto
-; general_enabled - Values: true, false
-general_enabled=false
-; general_fps - Values: integer > 0
-general_fps=120
-; general_limiter_mode - Values: auto, basic, fg_fallback, reflex, anti_lag2, xell
-general_limiter_mode=auto
+; overlay_whitelist - Values: process names for overlay-only targeting, e.g. when using overlay with WGC capture. DO NOT USE IN MULTIPLAYER GAMES!
+overlay_whitelist=(
+)
 
-[Graphics]
-; vsync_mode - Values: default, off, fifo, adaptive, mailbox
-vsync_mode=default
-; anisotropic_filtering - Values: default, off, 2x, 4x, 8x, 16x
-anisotropic_filtering=default
-; mip_mapping - Values: default, bilinear, trilinear
-mip_mapping=default
-; mip_bias - Values: default or float (e.g. -0.5, 0, 0.5)
-mip_bias=default
-; mip_bias_mode - Values: strict, offset, base
-mip_bias_mode=strict
-; force_mip_bias_clamp - Values: true, false
-force_mip_bias_clamp=false
-; cpu_prerender_limit - Values: -1, 0, 1-6
-cpu_prerender_limit=-1
-; backbuffer_count - Values: 0, 2-6
-backbuffer_count=-1
-; DLSS options below also support per-app overrides via Graphics.<key> in [App.N].
-; dlss_auto_exposure - Values: default, on, off
-dlss_auto_exposure=default
-; dlss_sr_preset - Values: default, A-Z
-dlss_sr_preset=default
-; dlss_rr_preset - Values: default, A-Z
-dlss_rr_preset=default
-; dlss_sharpening - Values: default, off, 0.0-1.0
-dlss_sharpening=default
-; dlss_fg_factor - Values: default, 2x, 3x, 4x
-dlss_fg_factor=default
-; dlss_debug_overlay - Values: default, on, off
-dlss_debug_overlay=default
-; dlss_sr_dll_path - Values: empty, absolute DLL path, or absolute directory path
-dlss_sr_dll_path=
-; dlss_rr_dll_path - Values: empty, absolute DLL path, or absolute directory path
-dlss_rr_dll_path=
-; dlss_fg_dll_path - Values: empty, absolute DLL path, or absolute directory path
-dlss_fg_dll_path=
+[Overlay]
+; enabled - Values: true, false
+enabled=true
+; capture_include_overlay - Values: true, false
+capture_include_overlay=true
+; position - Values: TopLeft, TopRight, BottomLeft, BottomRight
+position=TopLeft
+; padding - Values: integer >= 0
+padding=10
+; show_fps - Values: true, false
+show_fps=true
+; show_frametime - Values: true, false
+show_frametime=true
+; show_cpu - Values: true, false
+show_cpu=true
+; show_gpu - Values: true, false
+show_gpu=true
+; show_ram - Values: true, false
+show_ram=true
+; show_vram - Values: true, false
+show_vram=true
+; show_recording - Values: true, false
+show_recording=true
+; show_fg - Values: true, false
+show_fg=true
+; compact_mode (untested) - Values: true, false
+compact_mode=false
+; horizontal_mode (untested) - Values: true, false
+horizontal_mode=false
+; font_size (untested) - Values: 0 (auto) or float
+font_size=0
+; rounded_corners (untested) - Values: float >= 0
+rounded_corners=8
+; text_update_interval (untested) - Values: integer milliseconds
+text_update_interval=500
+
+[Hotkeys]
+; start_stop - Values: key string (e.g. F9, Ctrl+Shift+F10)
+start_stop=F9
+; toggle_fps - Values: key string or empty (disabled)
+toggle_fps=
 
 [Video]
 ; encoder - Values: av1_nvenc, hevc_nvenc, h264_nvenc, av1_amf, hevc_amf, h264_amf, av1_qsv, hevc_qsv, h264_qsv, av1_mf, hevc_mf, h264_mf
@@ -238,7 +228,7 @@ hw_encoding=true
 ; enabled - Values: true, false
 enabled=false
 ; output_resolution - Values: native, 720p, 1080p, 1440p, 4k, WxH
-output_resolution=native
+output_resolution=1080p
 ; quality - Values: normal, best
 quality=best
 ; sharpness - Values: 0-100
@@ -253,7 +243,7 @@ device=
 track=1
 ; codec - Values: aac, alac, flac, opus, pcm
 codec=alac
-; bitrate - Values: integer Kbps
+; bitrate (ignored with lossless codecs)- Values: integer Kbps
 bitrate=192
 ; sample_rate - Values: default, 44100, 48000, 96000
 sample_rate=default
@@ -270,94 +260,97 @@ device=
 ; track - Values: 1-8 or comma-separated list
 track=2
 
-[AppAudio.1]
-; enabled - Values: true, false
-enabled=false
-; process - Values: process name (e.g. game.exe)
-process=
-; process_id - Values: process ID, 0 = use process
-process_id=0
+[Performance]
+; For video capture. These usually don't need to be changed
+; process_priority - Values: idle, below_normal, normal, above_normal, high, realtime
+process_priority=normal
+; gpu_priority - Values: integer -7..7
+gpu_priority=0
+; copy_queue_priority - Values: low, normal, high
+copy_queue_priority=normal
+
+[FpsLimiter]
+; capture_sync_enabled, limits game fps to video fps - Values: true, false
+capture_sync_enabled=false
+; capture_sync_multiplier, e.g. set to 2 to make fps limiter run at 120fps for still smooth 60fps video capture - Values: 1-8
+capture_sync_multiplier=1
+; capture_sync_limiter_mode - Values: auto, basic, fg_fallback, reflex, anti_lag2, xell
+; auto probing order: reflex (NVIDIA, requires game activation) → anti_lag2 (AMD, requires game activation) → xell (Intel, requires game activation) → fg_fallback (when DLSS/FSR FG active) → basic
+capture_sync_limiter_mode=auto
+; general_enabled, general fps limiter also without active video capture - Values: true, false
+general_enabled=false
+; general_fps - Values: integer > 0
+general_fps=120
+; general_limiter_mode - Values: auto, basic, fg_fallback, reflex, anti_lag2, xell
+; auto probing order: reflex (NVIDIA, requires game activation) → anti_lag2 (AMD, requires game activation) → xell (Intel, requires game activation) → fg_fallback (when DLSS/FSR FG active) → basic
+general_limiter_mode=auto
+
+[Graphics]
+; global graphics overrides (you can also use per-profile overrides instead)
+; vsync_mode - Values: default, off, fifo, adaptive, mailbox
+vsync_mode=default
+; anisotropic_filtering - Values: default, off, 2x, 4x, 8x, 16x
+anisotropic_filtering=default
+; mip_mapping (untested) - Values: default, bilinear, trilinear
+mip_mapping=default
+; mip_bias - Values: default or float (e.g. -0.5, 0, 0.5)
+mip_bias=default
+; mip_bias_mode (untested) - Values: strict, offset, base
+mip_bias_mode=strict
+; force_mip_bias_clamp (untested) - Values: true, false
+force_mip_bias_clamp=false
+; cpu_prerender_limit - Values: -1, 0, 1-6
+cpu_prerender_limit=-1
+; backbuffer_count, affecting vsync - Values: -1, 2-6. Does not work in Steam D3D12 games, also potentially not other cases.
+backbuffer_count=-1
+
+; global DLSS override options (you can also use per-profile overrides instead)
+; dlss_auto_exposure - Values: default, on, off
+dlss_auto_exposure=default
+; dlss_sr_preset - Values: default, A-Z
+dlss_sr_preset=default
+; dlss_rr_preset - Values: default, A-Z
+dlss_rr_preset=default
+; dlss_sharpening - Values: default, off, 0.0-1.0
+dlss_sharpening=default
+; dlss_fg_factor - Values: default, 2x, 3x, 4x
+dlss_fg_factor=default
+; dlss_debug_overlay - Values: default, on, off
+dlss_debug_overlay=default
+; dlss_sr_dll_path - Values: empty, absolute DLL path, or absolute directory path
+dlss_sr_dll_path=
+; dlss_rr_dll_path - Values: empty, absolute DLL path, or absolute directory path
+dlss_rr_dll_path=
+; dlss_fg_dll_path - Values: empty, absolute DLL path, or absolute directory path
+dlss_fg_dll_path=
+
+; Application overrides and application audio settings. Comment out all/most lines to use per-profile overrides instead.
+
+; [AppAudio.1]
+; enabled=true
+; Process=StrangeBrigade_DX12.exe
 ; track - Values: 1-8 or comma-separated list
-track=3
-; codec - Values: aac, alac, flac, opus, pcm
-codec=alac
-; bitrate - Values: integer Kbps
-bitrate=192
-; sample_rate - Values: default, 44100, 48000, 96000
-sample_rate=default
-; bit_depth - Values: default, 16, 24, 32
-bit_depth=default
+; track=2,3
 ; downmix - Values: true, false
-downmix=false
+; downmix=false
 
-[AppAudio.2]
-; enabled - Values: true, false
-enabled=false
-; process - Values: process name (e.g. discord.exe)
-process=
-; process_id - Values: process ID, 0 = use process
-process_id=0
-; track - Values: 1-8 or comma-separated list
-track=4
-; codec - Values: aac, alac, flac, opus, pcm
-codec=alac
-; bitrate - Values: integer Kbps
-bitrate=192
-; sample_rate - Values: default, 44100, 48000, 96000
-sample_rate=default
-; bit_depth - Values: default, 16, 24, 32
-bit_depth=default
-; downmix - Values: true, false
-downmix=false
+; [AppAudio.2]
+; ...
 
-[Overlay]
-; enabled - Values: true, false
-enabled=true
-; capture_include_overlay - Values: true, false
-capture_include_overlay=true
-; position - Values: TopLeft, TopRight, BottomLeft, BottomRight
-position=TopLeft
-; padding - Values: integer >= 0
-padding=10
-; show_fps - Values: true, false
-show_fps=true
-; show_frametime - Values: true, false
-show_frametime=true
-; show_cpu - Values: true, false
-show_cpu=true
-; show_gpu - Values: true, false
-show_gpu=true
-; show_ram - Values: true, false
-show_ram=true
-; show_vram - Values: true, false
-show_vram=true
-; show_recording - Values: true, false
-show_recording=true
-; show_fg - Values: true, false
-show_fg=true
-; compact_mode - Values: true, false
-compact_mode=false
-; horizontal_mode - Values: true, false
-horizontal_mode=false
-; font_size - Values: 0 (auto) or float
-font_size=0
-; rounded_corners - Values: float >= 0
-rounded_corners=8
-; text_update_interval - Values: integer milliseconds
-text_update_interval=500
+; [App.1]
+; Process=StrangeBrigade_DX12.exe
+; anisotropic_filtering=16x
+; cpu_prerender_limit=1
+; backbuffer_count=2
+; vsync_mode=fifo
+; mip_bias=-3.0
 
-[Hotkeys]
-; start_stop - Values: key string (e.g. F9, Ctrl+Shift+F10)
-start_stop=F9
-; toggle_fps - Values: key string or empty (disabled)
-toggle_fps=
-
-[App.1]
-; Process - Values: executable name (case-insensitive)
-; Process=game.exe
-; Overlay.enabled - Values: true, false
-; Graphics.dlss_sr_preset - Values: default, A-Z
-; Video.bitrate - Values: e.g. 100Mbps
+; [App.2]
+; Process=Talos1-Win64-Shipping.exe
+; anisotropic_filtering=16x
+; cpu_prerender_limit=1
+; vsync_mode=fifo
+; mip_bias=-3.0
 )CFG";
 
     cfg.close();
@@ -490,6 +483,16 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     }
     config.captureMethod = GetStr("General", "capture_method", "auto");
     config.crashDumpDir = GetStr("General", "crash_dump_dir", "");
+    
+    // Injection match mode (OBS-style window/process matching)
+    std::string matchMode = GetStr("Injection", "match_mode", "exact");
+    if (matchMode == "title_executable" || matchMode == "title_exec") {
+        config.matchMode = "title_executable";
+    } else if (matchMode == "title_type" || matchMode == "title_class") {
+        config.matchMode = "title_type";
+    } else {
+        config.matchMode = "exact";
+    }
 
     // Performance (Priority Settings)
     config.processPriority = GetStr("Performance", "process_priority", "normal");

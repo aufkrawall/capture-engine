@@ -843,8 +843,26 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         if (minVal == FLT_MAX)
             minVal = 0.0f;
         
-        // Set max to peak value with 10% headroom, minimum of 20ms
-        float rawMax = (std::max)(peakVal * 1.1f, 20.0f);
+        // Smarter scaling to avoid over-dramatizing frame time variations.
+        // Instead of just 10% above peak, use a scale that provides meaningful
+        // context (e.g., 30fps vs 60fps threshold should be visible).
+        float avgVal = 0;
+        int avgCount = 0;
+        for (int i = 0; i < GRAPH_SAMPLES; i++) {
+            if (graphData[i] > 0.001f) {
+                avgVal += graphData[i];
+                avgCount++;
+            }
+        }
+        if (avgCount > 0)
+            avgVal /= (float)avgCount;
+        
+        // Scale based on average with generous headroom:
+        // - At least 50% above average (not peak) to avoid zooming in on noise
+        // - At least 2x the minimum (so 8ms avg shows 0-16ms, not 0-12ms)
+        // - Minimum 33ms range to show 30fps threshold
+        float scaleBase = (std::max)(avgVal, minVal * 2.0f);
+        float rawMax = (std::max)(scaleBase * 1.5f, 33.0f);
         
         // Dynamic minimum: leave ~15% padding below lowest point, but never go negative
         // This makes the graph line appear more vertically centered

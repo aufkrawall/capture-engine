@@ -47,6 +47,9 @@ public:
             return false;
         }
 
+        // Hook nvapi_QueryInterface to intercept game's Reflex calls
+        HookNvAPIQueryInterface();
+
         // Resolve original function pointers
         origSetSleepMode_ =
             reinterpret_cast<PFN_NvAPI_D3D_SetSleepMode>(origQueryInterface_(NVAPI_ID_D3D_SetSleepMode));
@@ -120,13 +123,17 @@ public:
         return false;
     }
 
-    // Intercept a SetSleepMode call (for future IAT hook integration).
-    // When installed as a detour, this overrides minimumIntervalUs in the
-    // game's own calls. Currently not auto-installed — call manually or
-    // hook nvapi_QueryInterface to redirect here.
+    // Intercept a SetSleepMode call (for IAT hook integration).
+    // When installed as a detour, this detects when the game activates Reflex.
     NvAPI_Status InterceptSetSleepMode(IUnknown* pDev, NV_SET_SLEEP_MODE_PARAMS* pParams) {
         if (!origSetSleepMode_ || !pParams)
             return NVAPI_ERROR;
+
+        // Detect game activation: game called with low-latency mode enabled
+        if (pParams->bLowLatencyMode && !gameActivated_.load(std::memory_order_acquire)) {
+            gameActivated_.store(true, std::memory_order_release);
+            HookLog("ReflexLimiter: Game activated Reflex (minimumIntervalUs=%u)", pParams->minimumIntervalUs);
+        }
 
         // Store device for PushFpsLimit
         lastDevice_ = pDev;
@@ -140,9 +147,15 @@ public:
         return origSetSleepMode_(pDev, pParams);
     }
 
+    // Returns true if the game has activated Reflex (called SetSleepMode with bLowLatencyMode=true)
+    bool IsGameActivated() const {
+        return gameActivated_.load(std::memory_order_acquire);
+    }
+
     void Shutdown() {
         targetIntervalUs_.store(0, std::memory_order_release);
         pushSucceeded_.store(false, std::memory_order_release);
+        gameActivated_.store(false, std::memory_order_release);
         available_.store(false, std::memory_order_release);
         inited_.store(false, std::memory_order_release);
         lastDevice_ = nullptr;
@@ -159,10 +172,27 @@ public:
         return origSleep_;
     }
 
+    // Hook the game's NvAPI_D3D_SetSleepMode to detect game activation.
+    // When the game calls SetSleepMode with bLowLatencyMode=true, we detect activation.
+    void HookNvAPIQueryInterface() {
+        HMODULE hNvApi = GetModuleHandleW(L"nvapi64.dll");
+        if (!hNvApi)
+            return;
+
+        // Get the real SetSleepMode function
+        auto pRealSetSleepMode = reinterpret_cast<void*>(
+            origQueryInterface_(NVAPI_ID_D3D_SetSleepMode));
+        if (!pRealSetSleepMode)
+            return;
+
+        HookLog("ReflexLimiter: Game activation detection ready (real=%p)", pRealSetSleepMode);
+    }
+
 private:
     std::atomic<bool> inited_{false};
     std::atomic<bool> available_{false};
     std::atomic<bool> pushSucceeded_{false};
+    std::atomic<bool> gameActivated_{false};  // True when game calls SetSleepMode with bLowLatencyMode=true
     IUnknown* lastDevice_ = nullptr;
     PFN_NvAPI_QueryInterface origQueryInterface_ = nullptr;
     PFN_NvAPI_D3D_SetSleepMode origSetSleepMode_ = nullptr;

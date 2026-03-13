@@ -217,6 +217,12 @@ struct AppConfig {
     std::vector<std::string> gameWhitelist;
     std::vector<std::string> overlayWhitelist;
     std::vector<std::string> wgcWindowTitles;
+    
+    // Match mode for process/window detection (OBS-style)
+    // exact: exact process name or window title match (default)
+    // title_executable: match window title, fall back to executable name
+    // title_type: match window title, fall back to window class
+    std::string matchMode = "exact";
 
     // Graphics Overrides
     GraphicsConfig graphics;

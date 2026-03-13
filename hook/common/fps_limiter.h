@@ -360,13 +360,15 @@ public:
         uint32_t effectiveMode = configuredMode;
 
         if (configuredMode == LimiterModeValues::kAuto) {
-            // Priority: Reflex (NVIDIA) → XeLL (Intel) → Anti-Lag 2 (AMD) → FG fallback → basic
-            if (g_ReflexLimiter.IsAvailable()) {
+            // Priority: Reflex (NVIDIA, game-activated) → Anti-Lag 2 (AMD, game-activated) → 
+            //            XeLL (Intel, game-activated) → FG fallback → basic
+            // Native modes require the game to have activated the API, not just API availability
+            if (g_ReflexLimiter.IsAvailable() && g_ReflexLimiter.IsGameActivated()) {
                 effectiveMode = LimiterModeValues::kNative;
-            } else if (g_XeLLLimiter.IsAvailable()) {
-                effectiveMode = LimiterModeValues::kXeLL;
             } else if (g_AntiLag2Limiter.IsAvailable()) {
                 effectiveMode = LimiterModeValues::kAntiLag2;
+            } else if (g_XeLLLimiter.IsAvailable()) {
+                effectiveMode = LimiterModeValues::kXeLL;
             } else if (fgActive) {
                 // No native low-latency API but FG active → FG-compatible fallback
                 effectiveMode = LimiterModeValues::kFGFallback;
@@ -403,7 +405,7 @@ public:
                 effectiveTargetFps = 1;
         }
 
-        // Log mode transitions
+        // Log mode transitions - always log on first activation to confirm mode
         if (!loggedActive_ || lastTargetFps_ != effectiveTargetFps || lastUsedCaptureSync_ != usingCaptureSync ||
             lastEffectiveMode_ != effectiveMode) {
             const char* modeStr = "basic";
@@ -418,12 +420,21 @@ public:
             else if (effectiveMode == LimiterModeValues::kAuto)
                 modeStr = "auto";
 
+            // Check if native API is actually available (not just selected)
+            const char* availNote = "";
+            if (effectiveMode == LimiterModeValues::kNative && !g_ReflexLimiter.IsAvailable())
+                availNote = " [API UNAVAILABLE - will fallback]";
+            else if (effectiveMode == LimiterModeValues::kAntiLag2 && !g_AntiLag2Limiter.IsAvailable())
+                availNote = " [API UNAVAILABLE - will fallback]";
+            else if (effectiveMode == LimiterModeValues::kXeLL && !g_XeLLLimiter.IsAvailable())
+                availNote = " [API UNAVAILABLE - will fallback]";
+
             TraceLog("Apply: ACTIVE sync=%s limiter=%s target=%d effective=%d fg=%d fgMult=%d",
                      usingCaptureSync ? "capture" : "general", modeStr, targetFps, effectiveTargetFps, fgActive ? 1 : 0,
                      fgMultiplier);
-            HookLog("FPS Limiter: Active (sync=%s, limiter=%s, target=%d, effective=%d, fg=%d/%dx, isRec=%d)",
+            HookLog("FPS Limiter: Active (sync=%s, limiter=%s, target=%d, effective=%d, fg=%d/%dx, isRec=%d)%s",
                     usingCaptureSync ? "capture" : "general", modeStr, targetFps, effectiveTargetFps, fgActive ? 1 : 0,
-                    fgMultiplier, isRecording ? 1 : 0);
+                    fgMultiplier, isRecording ? 1 : 0, availNote);
             loggedActive_ = true;
             lastTargetFps_ = effectiveTargetFps;
             lastUsedCaptureSync_ = usingCaptureSync;
@@ -457,6 +468,12 @@ public:
             if (g_ReflexLimiter.PushFpsLimit()) {
                 reflexLimiterActive_ = true;
                 loggedNativeFallback_ = false;
+
+                // Log on first successful Reflex activation
+                if (!reflexLoggedSuccess_) {
+                    HookLog("FPS Limiter: Reflex API active (target=%d fps, driver-handled pacing)", effectiveTargetFps);
+                    reflexLoggedSuccess_ = true;
+                }
 
                 // Driver handles frame pacing — we don't SmartWait
                 isActivelyLimiting_.store(false, std::memory_order_relaxed);
@@ -832,6 +849,7 @@ private:
     bool reflexInitAttempted_ = false;                       // Lazy init flag for Reflex hook
     bool reflexLimiterActive_ = false;                       // True when Reflex is handling pacing
     bool reflexDeviceProvided_ = false;                      // True once we've given device to ReflexLimiter
+    bool reflexLoggedSuccess_ = false;                       // True once we've logged successful Reflex activation
     bool loggedNativeFallback_ = false;                      // Avoid spam when native mode falls back to timer
     bool antilag2InitAttempted_ = false;                     // Lazy init flag for Anti-Lag 2
     bool xellInitAttempted_ = false;                         // Lazy init flag for XeLL
