@@ -29,6 +29,12 @@ public:
 
         inited_.store(true, std::memory_order_release);
 
+        // Detect game activation: amd_ags_x64.dll loaded means game uses AGS
+        if (GetModuleHandleA("amd_ags_x64.dll")) {
+            gameActivated_.store(true, std::memory_order_release);
+            HookLog("AntiLag2Limiter: Game detected using AMD AGS (amd_ags_x64.dll loaded)");
+        }
+
         if (!device) {
             HookLog("AntiLag2Limiter: no DX12 device");
             return false;
@@ -60,6 +66,12 @@ public:
         return updateSucceeded_.load(std::memory_order_acquire);
     }
 
+    // Returns true if the game is using AMD AGS (amd_ags_x64.dll loaded).
+    // Used by auto mode to determine if Anti-Lag 2 should be active.
+    bool IsGameActivated() const {
+        return gameActivated_.load(std::memory_order_acquire);
+    }
+
     // Call once per frame before Present.
     // Blocks to enforce the FPS cap via AMD driver latency pipeline.
     // Returns true on success.
@@ -84,6 +96,7 @@ public:
         available_.store(false, std::memory_order_release);
         inited_.store(false, std::memory_order_release);
         updateSucceeded_.store(false, std::memory_order_release);
+        gameActivated_.store(false, std::memory_order_release);
         targetFps_.store(0, std::memory_order_release);
     }
 
@@ -92,6 +105,7 @@ private:
     std::atomic<bool> inited_{false};
     std::atomic<bool> available_{false};
     std::atomic<bool> updateSucceeded_{false};
+    std::atomic<bool> gameActivated_{false};  // True when amd_ags_x64.dll is loaded
     std::atomic<unsigned> targetFps_{0};
 };
 

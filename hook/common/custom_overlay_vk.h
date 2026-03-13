@@ -19,15 +19,46 @@
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 
-// Fallback forward declarations if vulkan.h wasn't found (LSP environments)
+// Fallback forward declarations if vulkan.h wasn't found (LSP environments
+// without Vulkan SDK). VULKAN_H_ is defined by the official vulkan.h header.
 #ifndef VULKAN_H_
 struct VkDevice_T;
 struct VkPhysicalDevice_T;
 struct VkQueue_T;
+struct VkInstance_T;
+struct VkImage_T;
+struct VkImageView_T;
+struct VkDeviceMemory_T;
+struct VkBuffer_T;
+struct VkSampler_T;
+struct VkRenderPass_T;
+struct VkFramebuffer_T;
+struct VkCommandBuffer_T;
+struct VkPipeline_T;
+struct VkPipelineLayout_T;
+struct VkDescriptorSetLayout_T;
+struct VkDescriptorPool_T;
+struct VkDescriptorSet_T;
 using VkDevice = VkDevice_T*;
 using VkPhysicalDevice = VkPhysicalDevice_T*;
 using VkQueue = VkQueue_T*;
-using VkInstance = struct VkInstance_T*;
+using VkInstance = VkInstance_T*;
+using VkImage = VkImage_T*;
+using VkImageView = VkImageView_T*;
+using VkDeviceMemory = VkDeviceMemory_T*;
+using VkBuffer = VkBuffer_T*;
+using VkSampler = VkSampler_T*;
+using VkRenderPass = VkRenderPass_T*;
+using VkFramebuffer = VkFramebuffer_T*;
+using VkCommandBuffer = VkCommandBuffer_T*;
+using VkPipeline = VkPipeline_T*;
+using VkPipelineLayout = VkPipelineLayout_T*;
+using VkDescriptorSetLayout = VkDescriptorSetLayout_T*;
+using VkDescriptorPool = VkDescriptorPool_T*;
+using VkDescriptorSet = VkDescriptorSet_T*;
+using VkMemoryPropertyFlags = uint32_t;
+using VkExtent2D = struct { uint32_t width; uint32_t height; };
+#define VK_NULL_HANDLE nullptr
 #endif
 
 namespace CustomOverlay {

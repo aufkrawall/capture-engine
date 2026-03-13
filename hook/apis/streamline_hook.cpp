@@ -10,6 +10,7 @@
 #include "../common/dxgi_shared.h"
 #include "../common/fg_detection.h"
 #include "../common/hook_common.h"
+#include "../common/reflex_limiter.h"
 #include "../wrappers/iat_hook.h"
 #include "../wrappers/inline_hook.h"
 
@@ -20,11 +21,28 @@ using slResult = int;
 constexpr slResult kSlResultOk = 0;
 constexpr slResult kSlResultErrorInvalidState = 38;
 constexpr uint32_t kSLFeatureDLSSG = 1000;
+constexpr uint32_t kSLFeatureReflex = 0x00000009;  // Streamline Reflex feature ID
 constexpr size_t kSLStructVersion1 = 1;
 constexpr size_t kSLStructVersion2 = 2;
 constexpr size_t kSLStructVersion3 = 3;
 constexpr size_t kSLStructVersion4 = 4;
 constexpr char kSLBooleanInvalid = 2;
+
+// Streamline Reflex mode constants
+constexpr int kSLReflexModeOff = 0;
+constexpr int kSLReflexModeEnabled = 1;
+constexpr int kSLReflexModeLowLatency = 2;
+constexpr int kSLReflexModeLowLatencyWithBoost = 3;
+
+// Streamline sl::ReflexConstants structure (matches Streamline SDK)
+struct SLReflexConstants {
+    size_t structSize = sizeof(SLReflexConstants);
+    uint32_t version = static_cast<uint32_t>(kSLStructVersion1);
+    int32_t mode = kSLReflexModeOff;
+    uint32_t frameLimitUs = 0;
+    uint32_t markersEnabled = 0;
+    uint32_t useMarkersToOptimize = 0;
+};
 
 struct slStructType {
     uint32_t data1;
@@ -98,6 +116,7 @@ using PFN_slSetD3DDevice = slResult (*)(void* d3dDevice);
 using PFN_slDLSSGSetOptions = slResult (*)(const slViewportHandle& viewport, const slDLSSGOptions& options);
 using PFN_slDLSSGGetState = slResult (*)(const slViewportHandle& viewport, slDLSSGState& state,
                                          const slDLSSGOptions* options);
+using PFN_slReflexSetConstants = slResult (*)(const SLReflexConstants& consts);
 
 struct ViewportFGState {
     bool active = false;
@@ -120,11 +139,13 @@ std::atomic<void*> g_SLGetFeatureFunctionTarget{nullptr};
 std::atomic<void*> g_SLSetD3DDeviceTarget{nullptr};
 std::atomic<void*> g_DLSSGSetOptionsTarget{nullptr};
 std::atomic<void*> g_DLSSGGetStateTarget{nullptr};
+std::atomic<void*> g_ReflexSetConstantsTarget{nullptr};
 
 std::atomic<bool> g_SLGetFeatureFunctionHooked{false};
 std::atomic<bool> g_SLSetD3DDeviceHooked{false};
 std::atomic<bool> g_DLSSGSetOptionsHooked{false};
 std::atomic<bool> g_DLSSGGetStateHooked{false};
+std::atomic<bool> g_ReflexSetConstantsHooked{false};
 
 std::unordered_map<uint32_t, ViewportFGState> g_ViewportStates;
 std::unordered_map<uint32_t, uint32_t> g_ViewportCapabilityMax;
@@ -133,11 +154,13 @@ PFN_slGetFeatureFunction g_Original_slGetFeatureFunction = nullptr;
 PFN_slSetD3DDevice g_Original_slSetD3DDevice = nullptr;
 PFN_slDLSSGSetOptions g_Original_slDLSSGSetOptions = nullptr;
 PFN_slDLSSGGetState g_Original_slDLSSGGetState = nullptr;
+PFN_slReflexSetConstants g_Original_slReflexSetConstants = nullptr;
 
 slResult Hooked_slGetFeatureFunction(uint32_t feature, const char* functionName, void*& function);
 slResult Hooked_slSetD3DDevice(void* d3dDevice);
 slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSSGOptions& options);
 slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& state, const slDLSSGOptions* options);
+slResult Hooked_slReflexSetConstants(const SLReflexConstants& consts);
 
 const char* GetDLSSGModeName(uint32_t mode) {
     switch (mode) {
@@ -690,19 +713,32 @@ slResult Hooked_slGetFeatureFunction(uint32_t feature, const char* functionName,
     }
 
     const slResult result = g_Original_slGetFeatureFunction(feature, functionName, function);
-    if (result != kSlResultOk || feature != kSLFeatureDLSSG || !functionName || !function) {
+    if (result != kSlResultOk || !functionName || !function) {
         return result;
     }
 
-    if (strcmp(functionName, "slDLSSGSetOptions") == 0) {
-        MaybeHookDLSSGSetOptions(function, true);
-        if (HookDebugLoggingEnabled()) {
-            HookLog("Streamline Hook: Intercepted slDLSSGSetOptions lookup (returned=%p)", function);
+    // DLSS Frame Generation feature hooks
+    if (feature == kSLFeatureDLSSG) {
+        if (strcmp(functionName, "slDLSSGSetOptions") == 0) {
+            MaybeHookDLSSGSetOptions(function, true);
+            if (HookDebugLoggingEnabled()) {
+                HookLog("Streamline Hook: Intercepted slDLSSGSetOptions lookup (returned=%p)", function);
+            }
+        } else if (strcmp(functionName, "slDLSSGGetState") == 0) {
+            MaybeHookDLSSGGetState(function, true);
+            if (HookDebugLoggingEnabled()) {
+                HookLog("Streamline Hook: Intercepted slDLSSGGetState lookup (returned=%p)", function);
+            }
         }
-    } else if (strcmp(functionName, "slDLSSGGetState") == 0) {
-        MaybeHookDLSSGGetState(function, true);
-        if (HookDebugLoggingEnabled()) {
-            HookLog("Streamline Hook: Intercepted slDLSSGGetState lookup (returned=%p)", function);
+    }
+    // Reflex feature hook — detect game activation of native Reflex
+    else if (feature == kSLFeatureReflex) {
+        if (strcmp(functionName, "slReflexSetConstants") == 0 && !g_ReflexSetConstantsHooked.exchange(true)) {
+            g_Original_slReflexSetConstants = reinterpret_cast<PFN_slReflexSetConstants>(function);
+            g_ReflexSetConstantsTarget.store(function, std::memory_order_release);
+            function = reinterpret_cast<void*>(&Hooked_slReflexSetConstants);
+            HookLogImportant("Streamline Hook: Intercepted slReflexSetConstants (original=%p)",
+                             g_Original_slReflexSetConstants);
         }
     }
 
@@ -719,6 +755,31 @@ slResult Hooked_slSetD3DDevice(void* d3dDevice) {
         TryResolveDLSSGFeatureHooks();
     }
     return result;
+}
+
+// Hook for slReflexSetConstants — detects when game activates Reflex via Streamline.
+slResult Hooked_slReflexSetConstants(const SLReflexConstants& consts) {
+    if (!g_Original_slReflexSetConstants) {
+        return kSlResultErrorInvalidState;
+    }
+
+    // Detect game activation: mode is low-latency (enabled, low latency, or boost)
+    if (consts.mode >= kSLReflexModeEnabled) {
+        if (!g_ReflexLimiter.IsGameActivated()) {
+            HookLogImportant(
+                "Streamline Hook: Game ACTIVATED Reflex via slReflexSetConstants (mode=%d, frameLimitUs=%u)",
+                consts.mode, consts.frameLimitUs);
+        }
+        g_ReflexLimiter.SetGameActivated(true);
+    } else if (consts.mode == kSLReflexModeOff) {
+        if (g_ReflexLimiter.IsGameActivated()) {
+            HookLogImportant("Streamline Hook: Game DEACTIVATED Reflex via slReflexSetConstants (mode=off)");
+        }
+        g_ReflexLimiter.SetGameActivated(false);
+    }
+
+    // Forward to the real slReflexSetConstants
+    return g_Original_slReflexSetConstants(consts);
 }
 
 }  // namespace

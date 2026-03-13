@@ -29,6 +29,12 @@ public:
 
         inited_.store(true, std::memory_order_release);
 
+        // Detect game activation: libxell.dll loaded means game uses XeLL
+        if (GetModuleHandleW(L"libxell.dll")) {
+            gameActivated_.store(true, std::memory_order_release);
+            HookLog("XeLLLimiter: Game detected using Intel XeLL (libxell.dll loaded)");
+        }
+
         if (!device) {
             HookLog("XeLLLimiter: no DX12 device");
             return false;
@@ -65,6 +71,12 @@ public:
     // True after at least one successful Sleep() call.
     bool IsActive() const {
         return sleepSucceeded_.load(std::memory_order_acquire);
+    }
+
+    // Returns true if the game is using Intel XeLL (libxell.dll loaded).
+    // Used by auto mode to determine if XeLL should be active.
+    bool IsGameActivated() const {
+        return gameActivated_.load(std::memory_order_acquire);
     }
 
     // Call once per frame before Present.
@@ -104,6 +116,7 @@ public:
         available_.store(false, std::memory_order_release);
         inited_.store(false, std::memory_order_release);
         sleepSucceeded_.store(false, std::memory_order_release);
+        gameActivated_.store(false, std::memory_order_release);
         targetIntervalUs_.store(0, std::memory_order_release);
         lastIntervalUs_ = UINT32_MAX;
         frameCounter_.store(0, std::memory_order_relaxed);
@@ -137,6 +150,7 @@ private:
     std::atomic<bool> inited_{false};
     std::atomic<bool> available_{false};
     std::atomic<bool> sleepSucceeded_{false};
+    std::atomic<bool> gameActivated_{false};  // True when libxell.dll is loaded
     std::atomic<uint32_t> targetIntervalUs_{0};
     std::atomic<uint32_t> frameCounter_{0};
     uint32_t lastIntervalUs_ = UINT32_MAX;

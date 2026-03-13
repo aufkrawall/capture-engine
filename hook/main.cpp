@@ -24,6 +24,7 @@
 #include "common/input_manager.h"
 #include "common/ipc_client.h"
 #include "common/perf_logger.h"
+#include "common/reflex_limiter.h"
 #include "common/system_metrics.h"
 #include "wrappers/d3dkmt_hook.h"
 #include "wrappers/dxgi_swapchain_wrap.h"
@@ -520,6 +521,19 @@ static std::wstring g_SpoofedCmdLineW;
 void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
   if (!module)
     return;
+
+  // Detect nvapi64.dll loading — trigger Reflex limiter initialization immediately
+  // so our dynamic hook is registered before the game calls GetProcAddress.
+  if (moduleNameOrPath) {
+    const char *baseName = strrchr(moduleNameOrPath, '\\');
+    baseName = baseName ? baseName + 1 : moduleNameOrPath;
+    const char *slash = strrchr(baseName, '/');
+    baseName = slash ? slash + 1 : baseName;
+    if (_stricmp(baseName, "nvapi64.dll") == 0 || _stricmp(baseName, "nvapi.dll") == 0) {
+      HookLog("NotifyHookModuleLoaded: %s detected — initializing Reflex limiter", baseName);
+      g_ReflexLimiter.Init();
+    }
+  }
 
   if (g_hCheckHooksEvent)
     SetEvent(g_hCheckHooksEvent);

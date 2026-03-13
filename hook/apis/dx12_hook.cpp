@@ -4,6 +4,9 @@
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <unknwn.h>
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #include <algorithm>
 #include <atomic>

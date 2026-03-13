@@ -278,10 +278,18 @@ public:
             HookLog("FPS Limiter: Published Session ID: %u", sid);
         }
 
-        // Lazily initialize Reflex hook (only once, on first Apply call)
-        if (!reflexInitAttempted_) {
-            reflexInitAttempted_ = true;
+        // Periodically check for native low-latency APIs (Reflex, AntiLag2, XeLL).
+        // Games may load these dynamically (e.g., user enables Reflex in settings).
+        // Re-check every ~1 second (60 frames at 60fps) to catch late-loaded APIs.
+        nativeApiRecheckCounter_++;
+        if (nativeApiRecheckCounter_ >= 60) {
+            nativeApiRecheckCounter_ = 0;
+            bool reflexWasAvailable = g_ReflexLimiter.IsAvailable();
             g_ReflexLimiter.Init();
+            bool reflexNowAvailable = g_ReflexLimiter.IsAvailable();
+            if (!reflexWasAvailable && reflexNowAvailable) {
+                HookLogImportant("FPS Limiter: Reflex became available (nvapi64.dll loaded late)");
+            }
         }
 
         // Check if limiter should be active
@@ -363,11 +371,18 @@ public:
             // Priority: Reflex (NVIDIA, game-activated) → Anti-Lag 2 (AMD, game-activated) →
             //            XeLL (Intel, game-activated) → FG fallback → basic
             // Native modes require the game to have activated the API, not just API availability
-            if (g_ReflexLimiter.IsAvailable() && g_ReflexLimiter.IsGameActivated()) {
+            bool reflexAvail = g_ReflexLimiter.IsAvailable();
+            bool reflexActive = g_ReflexLimiter.IsGameActivated();
+            bool al2Avail = g_AntiLag2Limiter.IsAvailable();
+            bool al2Active = g_AntiLag2Limiter.IsGameActivated();
+            bool xellAvail = g_XeLLLimiter.IsAvailable();
+            bool xellActive = g_XeLLLimiter.IsGameActivated();
+
+            if (reflexAvail && reflexActive) {
                 effectiveMode = LimiterModeValues::kNative;
-            } else if (g_AntiLag2Limiter.IsAvailable()) {
+            } else if (al2Avail && al2Active) {
                 effectiveMode = LimiterModeValues::kAntiLag2;
-            } else if (g_XeLLLimiter.IsAvailable()) {
+            } else if (xellAvail && xellActive) {
                 effectiveMode = LimiterModeValues::kXeLL;
             } else if (fgActive) {
                 // No native low-latency API but FG active → FG-compatible fallback
@@ -375,9 +390,43 @@ public:
             } else {
                 effectiveMode = LimiterModeValues::kBasic;
             }
+
+            // Log auto mode decision (only on changes or first activation)
+            static uint32_t lastLoggedAutoMode = 0;
+            if (effectiveMode != lastLoggedAutoMode || !loggedActive_) {
+                lastLoggedAutoMode = effectiveMode;
+                const char* reason = "";
+                if (effectiveMode == LimiterModeValues::kNative)
+                    reason = "reflex available + game activated";
+                else if (effectiveMode == LimiterModeValues::kAntiLag2)
+                    reason = "anti-lag2 available + game activated";
+                else if (effectiveMode == LimiterModeValues::kXeLL)
+                    reason = "xell available + game activated";
+                else if (effectiveMode == LimiterModeValues::kFGFallback)
+                    reason = "frame generation active";
+                else if (effectiveMode == LimiterModeValues::kBasic)
+                    reason = "no native API active";
+
+                HookLog(
+                    "FPS Limiter [AUTO]: reflex=%s(%s) antiLag2=%s(%s) xell=%s(%s) fg=%s → selected=%s (%s)",
+                    reflexAvail ? "avail" : "n/a", reflexActive ? "active" : "inactive",
+                    al2Avail ? "avail" : "n/a", al2Active ? "active" : "inactive",
+                    xellAvail ? "avail" : "n/a", xellActive ? "active" : "inactive",
+                    fgActive ? "yes" : "no",
+                    (effectiveMode == LimiterModeValues::kNative)
+                        ? "reflex"
+                        : (effectiveMode == LimiterModeValues::kAntiLag2)
+                              ? "anti_lag2"
+                              : (effectiveMode == LimiterModeValues::kXeLL)
+                                    ? "xell"
+                                    : (effectiveMode == LimiterModeValues::kFGFallback) ? "fg_fallback" : "basic",
+                    reason);
+            }
         }
 
         // Validate: native modes require the respective DLL to be available.
+        // In explicit mode, availability is sufficient (user override).
+        // In auto mode, we already checked game activation above.
         // Fall back gracefully if the selected mode is not supported on this system.
         if (effectiveMode == LimiterModeValues::kNative && !g_ReflexLimiter.IsAvailable()) {
             effectiveMode = fgActive ? LimiterModeValues::kFGFallback : LimiterModeValues::kBasic;
@@ -813,7 +862,7 @@ public:
         localFrameCount_ = 0;
         localStatsIntervalStart_ = 0;
         localStatsFrameCount_ = 0;
-        reflexInitAttempted_ = false;
+        nativeApiRecheckCounter_ = 0;
         reflexDeviceProvided_ = false;
         if (reflexLimiterActive_) {
             g_ReflexLimiter.SetTargetFps(0);
@@ -847,7 +896,7 @@ private:
     int lastTargetFps_ = 0;
     bool lastUsedCaptureSync_ = false;
     uint32_t lastEffectiveMode_ = LimiterModeValues::kAuto;  // Track mode changes for logging
-    bool reflexInitAttempted_ = false;                       // Lazy init flag for Reflex hook
+    int nativeApiRecheckCounter_ = 0;                          // Frame counter for periodic native API re-check
     bool reflexLimiterActive_ = false;                       // True when Reflex is handling pacing
     bool reflexDeviceProvided_ = false;                      // True once we've given device to ReflexLimiter
     bool reflexLoggedSuccess_ = false;                       // True once we've logged successful Reflex activation

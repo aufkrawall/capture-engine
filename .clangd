@@ -29,14 +29,20 @@ CompileFlags:
     - "-fskip-odr-check-in-gmf"
     # Ensure correct clang resource dir for builtins (mmintrin.h etc.)
     - "-resource-dir=build/msys64/clang64/lib/clang/21"
+    # Force libc++ from MinGW toolchain (avoids MSVC STL conflicts)
+    - "-stdlib=libc++"
     # Add MinGW include paths for Windows headers
     - "build/msys64/clang64/include/c++/v1"
     - "build/msys64/clang64/include"
     - "-isystembuild/msys64/clang64/lib/clang/21/include"
     - "-isystembuild/msys64/clang64/x86_64-w64-mingw32/include"
+    # Vulkan SDK headers (provided by MSYS2 vulkan-headers package)
+    - "build/msys64/clang64/include"
     # Suppress GCC extension warnings
     - "-Wno-gnu-zero-variadic-macro-arguments"
     - "-Wno-microsoft-exception-spec"
+    # Prevent windows.h max/min macros from conflicting with std::max/min
+    - "-DNOMINMAX"
   Remove:
     # Flags clangd doesn't understand or that cause spurious errors
     - "-march=*"
@@ -58,10 +64,8 @@ Diagnostics:
     - "unused-parameter"
     - "gnu-zero-variadic-macro-arguments"
     - "microsoft-exception-spec"
-    # False positives from clangd parsing D3D12/Vulkan headers
-    - "expected-unqualified-id"
+    # False positives from clangd parsing D3D12 COM interface macros
     - "typecheck-invalid-constexpr"
-    - "pp_file_not_found"
   ClangTidy:
     Add:
       - "modernize-use-nullptr"
