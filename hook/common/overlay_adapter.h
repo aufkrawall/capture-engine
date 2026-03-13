@@ -16,15 +16,10 @@
 #pragma once
 
 #include <atomic>
+#include "custom_overlay.h"
 #include "ipc_client.h"
 #include "performance_metrics.h"
 #include "system_metrics.h"
-
-// Forward declarations for backends
-namespace CustomOverlay {
-class Renderer;
-class RendererBackend;
-}  // namespace CustomOverlay
 
 // Backend type enum
 enum class OverlayBackendType { None, DX9, DX10, DX11, DX12, OpenGL, Vulkan };

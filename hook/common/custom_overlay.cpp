@@ -405,14 +405,29 @@ void Renderer::DrawGraphPolyline(const float* xs, const float* ys, int count, ui
     // Build 4 vertices per point (outer+, inner+, inner-, outer-) so that
     // adjacent segments SHARE the joint vertices instead of duplicating them.
     // This eliminates double-alpha at joints that causes brightness flickering.
+    //
+    // At endpoints (first/last), the AA fringe is suppressed to prevent the
+    // perpendicular normal from extending the fringe inward into the graph,
+    // which would make the edges appear thicker than the interior segments.
     const uint16_t firstIdx = (uint16_t)vertices.size();
     for (int i = 0; i < count; i++) {
         float nx, ny;
         getNormal(i, nx, ny);
-        vertices.push_back({xs[i] + nx * (halfThick + AA_SIZE), ys[i] + ny * (halfThick + AA_SIZE), 0, 0, colorAA});
-        vertices.push_back({xs[i] + nx * halfThick, ys[i] + ny * halfThick, 0, 0, color});
-        vertices.push_back({xs[i] - nx * halfThick, ys[i] - ny * halfThick, 0, 0, color});
-        vertices.push_back({xs[i] - nx * (halfThick + AA_SIZE), ys[i] - ny * (halfThick + AA_SIZE), 0, 0, colorAA});
+        const bool isEndpoint = (i == 0 || i == count - 1);
+        if (isEndpoint) {
+            // No AA fringe at endpoints - just core vertices (flat cap)
+            vertices.push_back({xs[i] + nx * halfThick, ys[i] + ny * halfThick, 0, 0, color});
+            vertices.push_back({xs[i] + nx * halfThick, ys[i] + ny * halfThick, 0, 0, color});
+            vertices.push_back({xs[i] - nx * halfThick, ys[i] - ny * halfThick, 0, 0, color});
+            vertices.push_back({xs[i] - nx * halfThick, ys[i] - ny * halfThick, 0, 0, color});
+        } else {
+            vertices.push_back(
+                {xs[i] + nx * (halfThick + AA_SIZE), ys[i] + ny * (halfThick + AA_SIZE), 0, 0, colorAA});
+            vertices.push_back({xs[i] + nx * halfThick, ys[i] + ny * halfThick, 0, 0, color});
+            vertices.push_back({xs[i] - nx * halfThick, ys[i] - ny * halfThick, 0, 0, color});
+            vertices.push_back(
+                {xs[i] - nx * (halfThick + AA_SIZE), ys[i] - ny * (halfThick + AA_SIZE), 0, 0, colorAA});
+        }
     }
 
     // 3 quads per segment (top fringe, core, bottom fringe) referencing the
@@ -475,11 +490,21 @@ void Renderer::DrawFrameTimeGraph(float x, float y, float width, float height, c
     if (stepX < 1.0f)
         stepX = 1.0f;
     float effectiveWidth = stepX * (float)(count - 1);
-    float adjustedX = x + (width - effectiveWidth) * 0.5f;  // Center within background
 
-    // Clamp bounds to prevent graph from extending beyond background
-    float minX = x + 1.0f;
-    float maxX = x + width - 1.0f;
+    // Center the graph and compute symmetric edge insets.
+    // Snap first/last point positions to integers, then derive adjustedX from
+    // their midpoint. This ensures both edges have equal pixel inset, preventing
+    // asymmetric gaps that cause visible vertical stripe artifacts.
+    float tempFirst = x + (width - effectiveWidth) * 0.5f;
+    float tempLast = tempFirst + effectiveWidth;
+    float snappedFirst = std::round(tempFirst);
+    float snappedLast = std::round(tempLast);
+    float snappedWidth = snappedLast - snappedFirst;
+    float adjustedX = snappedFirst + (snappedWidth - stepX * (float)(count - 1)) * 0.5f;
+
+    // Clamp bounds - 2px inset from background edge for AA fringe clearance
+    float minX = x + 2.0f;
+    float maxX = x + width - 2.0f;
 
     float xs[kMaxPoints], ys[kMaxPoints];
     const float invRange = 1.0f / range;

@@ -1078,7 +1078,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     // Frame time graph labels and markers
     if (showGraph) {
         uint32_t graphLabelColor = Colors::Green;
-        uint32_t grayColor = 0xFF808080;  // Gray for scale marker
+        uint32_t grayColor = 0xFFB0B0B0;  // Light gray for scale marker
         float smallFontScale = 0.75f;     // Smaller font for graph labels
 
         // Scale marker: small gray line at top left with ceiling value (with ms
