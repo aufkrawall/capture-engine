@@ -730,6 +730,31 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
                 continue;
             }
 
+            // wgc_window_detection is in [General], not [Injection] - parse outside section check
+            if (trimmed.find("wgc-window-detection=") == 0 || trimmed.find("wgc_window_detection=") == 0) {
+                size_t eqPos = trimmed.find('=');
+                std::string rest = trimmed.substr(eqPos + 1);
+                rest = Trim(rest);
+                if (!rest.empty() && rest != "(" && rest != ")") {
+                    std::stringstream ss(rest);
+                    std::string item;
+                    while (std::getline(ss, item, ',')) {
+                        AddEntry(item, config.wgcWindowTitles);
+                    }
+                }
+                inWhitelist = false;
+                inOverlayWhitelist = false;
+                inWgcWindowDetection = true;
+            } else if (inWgcWindowDetection) {
+                if (trimmed.find('=') != std::string::npos) {
+                    inWgcWindowDetection = false;
+                } else if (trimmed == ")") {
+                    inWgcWindowDetection = false;
+                } else if (trimmed != "(") {
+                    AddEntry(trimmed, config.wgcWindowTitles);
+                }
+            }
+
             if (inInjection) {
                 if (trimmed.find("whitelist=") == 0) {
                     std::string rest = trimmed.substr(10);
@@ -758,20 +783,6 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
                     inWhitelist = false;
                     inOverlayWhitelist = true;
                     inWgcWindowDetection = false;
-                } else if (trimmed.find("wgc-window-detection=") == 0 || trimmed.find("wgc_window_detection=") == 0) {
-                    size_t eqPos = trimmed.find('=');
-                    std::string rest = trimmed.substr(eqPos + 1);
-                    rest = Trim(rest);
-                    if (!rest.empty() && rest != "(" && rest != ")") {
-                        std::stringstream ss(rest);
-                        std::string item;
-                        while (std::getline(ss, item, ',')) {
-                            AddEntry(item, config.wgcWindowTitles);
-                        }
-                    }
-                    inWhitelist = false;
-                    inOverlayWhitelist = false;
-                    inWgcWindowDetection = true;
                 } else if (inWhitelist) {
                     if (trimmed.find('=') != std::string::npos) {
                         inWhitelist = false;
@@ -787,14 +798,6 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
                         inOverlayWhitelist = false;
                     } else if (trimmed != "(") {
                         AddEntry(trimmed, config.overlayWhitelist);
-                    }
-                } else if (inWgcWindowDetection) {
-                    if (trimmed.find('=') != std::string::npos) {
-                        inWgcWindowDetection = false;
-                    } else if (trimmed == ")") {
-                        inWgcWindowDetection = false;
-                    } else if (trimmed != "(") {
-                        AddEntry(trimmed, config.wgcWindowTitles);
                     }
                 }
             }
