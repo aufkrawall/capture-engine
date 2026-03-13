@@ -560,7 +560,16 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
                                         }
                                     }
                                 } else {
-                                    LogInfo("[WMI] %s (PID: %lu) - EnumProcessModules failed (error=%lu)", name.c_str(), (unsigned long)pid, (unsigned long)GetLastError());
+                                    DWORD err = GetLastError();
+                                    LogInfo("[WMI] %s (PID: %lu) - EnumProcessModules failed (error=%lu)", name.c_str(), (unsigned long)pid, (unsigned long)err);
+                                    // ACCESS_DENIED (5) likely means we can't read due to security.
+                                    // The game might still be D3D12 - wait briefly for graphics init.
+                                    if (err == ERROR_ACCESS_DENIED && i < 10) {
+                                        CloseHandle(hProcess);
+                                        Sleep(100);
+                                        waitMs += 100;
+                                        continue;
+                                    }
                                 }
                             }
                             CloseHandle(hProcess);
@@ -1411,3 +1420,4 @@ void InjectionManager::ScanExistingProcesses() {
         QpcDeltaToMs(snapshotUs), QpcDeltaToMs(Log_GetQpcUs() - scanStartUs), scannedProcesses, whitelistedProcesses,
         injectAttempts, injectSuccesses);
 }
+

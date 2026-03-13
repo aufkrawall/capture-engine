@@ -233,10 +233,11 @@ bool IsVulkanPrimary() {
 
 // Apply backbuffer_count and cpu_prerender_limit overrides to an existing swapchain.
 // Called on each Present for each swapchain until overrides are successfully applied.
-// Uses ResizeBuffers to change buffer count and SetMaximumFrameLatency to control CPU prerender limit.
+// Apply cpu_prerender_limit via SetMaximumFrameLatency.
+// NOTE: backbuffer_count is now handled at swapchain creation time (DetourCreateSwapChainForHwndGlobal)
+// and at resize time (DetourResizeBuffers), not here.
 static void ApplySwapChainOverrides(IDXGISwapChain* pSwapChain) {
     static std::atomic<uint64_t> g_swapchainOverridesDone{0};
-    static std::atomic<int> s_attemptCount{0};
     
     // Check if already done for this swapchain
     uint64_t scKey = reinterpret_cast<uint64_t>(pSwapChain);
@@ -246,91 +247,21 @@ static void ApplySwapChainOverrides(IDXGISwapChain* pSwapChain) {
     
     const auto& cfg = GetActiveGraphicsConfig();
     
-    bool hasBackbufferOverride = HasBackbufferCountOverride(cfg.backbufferCount);
-    bool hasPrerenderOverride = (cfg.cpuPrerenderLimit > 0);
-    
-    if (!hasBackbufferOverride && !hasPrerenderOverride) {
-        g_swapchainOverridesDone.store(scKey, std::memory_order_release);
-        return;  // No overrides configured
-    }
-    
-    // Limit attempts to avoid spamming
-    int attemptNum = s_attemptCount.load(std::memory_order_relaxed);
-    if (attemptNum >= 100) {
-        g_swapchainOverridesDone.store(scKey, std::memory_order_release);
-        return;
-    }
-    s_attemptCount.fetch_add(1, std::memory_order_relaxed);
-    
-    // Try to claim this swapchain for override application
-    static std::atomic<uint64_t> g_swapchainOverridesInProgress{0};
-    uint64_t expected = 0;
-    if (!g_swapchainOverridesInProgress.compare_exchange_strong(expected, scKey)) {
-        if (expected != scKey)
-            return;  // Another swapchain is being processed
-    }
-    
-    // Get current swapchain description
-    DXGI_SWAP_CHAIN_DESC desc;
-    if (FAILED(pSwapChain->GetDesc(&desc))) {
-        g_swapchainOverridesInProgress.store(0, std::memory_order_release);
-        return;
-    }
-    
-    // Log on first attempt only
-    if (attemptNum == 0) {
-        HookLogImportant("ApplySwapChainOverrides: backbufferCount=%d cpuPrerenderLimit=%d BufferCount=%u",
-                (int)cfg.backbufferCount, (int)cfg.cpuPrerenderLimit, desc.BufferCount);
-    }
-    
-    bool allSucceeded = true;
-    
-    // Apply backbuffer_count override via ResizeBuffers
-    // For DX12, call ResizeBuffers directly on the swapchain (oResizeBuffers is DX11-only)
-    // NOTE: ResizeBuffers often fails with DXGI_ERROR_INVALID_CALL (0x887A0001) on active
-    // DX12 swapchains because GPU work may still reference the buffers. This is a known
-    // limitation - backbuffer_count requires swapchain recreation to take effect.
-    if (hasBackbufferOverride && attemptNum == 0) {
-        UINT requested = static_cast<UINT>(cfg.backbufferCount);
-        if (requested > 0 && requested != desc.BufferCount) {
-            HRESULT hr = pSwapChain->ResizeBuffers(requested, desc.BufferDesc.Width, desc.BufferDesc.Height,
-                                                   desc.BufferDesc.Format, desc.Flags);
-            if (FAILED(hr)) {
-                HookLogImportant("ApplySwapChainOverrides: ResizeBuffers(%u->%u) FAILED hr=0x%08lX (expected for active DX12 swapchains)", 
-                        desc.BufferCount, requested, (unsigned long)hr);
-            } else {
-                HookLogImportant("ApplySwapChainOverrides: ResizeBuffers(%u->%u) SUCCESS!", 
-                        desc.BufferCount, requested);
-            }
-        } else {
-            HookLogImportant("ApplySwapChainOverrides: BufferCount already=%u", desc.BufferCount);
-        }
-    }
-    
-    // Mark backbuffer as failed (expected) - don't retry, just give up
-    if (hasBackbufferOverride) {
-        allSucceeded = false;  // Always mark as failed since ResizeBuffers typically fails on active swapchains
-    }
-    
     // Apply cpu_prerender_limit via SetMaximumFrameLatency
-    if (hasPrerenderOverride) {
+    if (cfg.cpuPrerenderLimit > 0) {
         IDXGISwapChain2* sc2 = nullptr;
         if (SUCCEEDED(pSwapChain->QueryInterface(__uuidof(IDXGISwapChain2), (void**)&sc2))) {
             UINT requested = static_cast<UINT>(cfg.cpuPrerenderLimit);
             sc2->SetMaximumFrameLatency(requested);
-            if (attemptNum == 0) {
-                HookLogImportant("ApplySwapChainOverrides: SetMaximumFrameLatency(%u) OK", requested);
-            }
+            HookLogImportant("ApplySwapChainOverrides: SetMaximumFrameLatency(%u) OK", requested);
             sc2->Release();
-        } else if (attemptNum == 0) {
-            HookLogImportant("ApplySwapChainOverrides: IDXGISwapChain2 not available");
+        } else {
+            HookLogImportant("ApplySwapChainOverrides: IDXGISwapChain2 not available for frame latency");
         }
     }
     
-    // Mark as done after first attempt - ResizeBuffers typically fails on active DX12 swapchains
-    // (this is expected behavior, not an error). Frame latency override is applied immediately.
+    // Mark as done after first attempt
     g_swapchainOverridesDone.store(scKey, std::memory_order_release);
-    g_swapchainOverridesInProgress.store(0, std::memory_order_release);
 }
 
 PerformanceMetrics* GetPerformanceMetrics() {
@@ -618,13 +549,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         return DXGI_ERROR_INVALID_CALL;
     }
 
-    // Apply backbuffer_count and cpu_prerender_limit overrides
-    // Must be BEFORE the wrapper/recursive checks since those return early
-    static bool s_loggedOverride = false;
-    if (!s_loggedOverride) {
-        s_loggedOverride = true;
-        HookLogImportant("DXGI: calling ApplySwapChainOverrides");
-    }
+    // Apply SetMaximumFrameLatency override (must be BEFORE wrapper/recursive checks)
     ApplySwapChainOverrides(pSwapChain);
 
     void* pWrapper = nullptr;
@@ -1020,6 +945,34 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
         return S_OK;
     }
 
+    // Apply backbuffer count override from config
+    // When the game calls ResizeBuffers (window resize, alt-tab, resolution change),
+    // this ensures our buffer count is applied even if CreateSwapChain override was missed.
+    {
+        const auto& cfg = GetActiveGraphicsConfig();
+        if (HasBackbufferCountOverride(cfg.backbufferCount)) {
+            UINT requested = static_cast<UINT>(cfg.backbufferCount);
+            if (requested > 0 && requested != BufferCount) {
+                // Check swap effect for flip-model safety
+                DXGI_SWAP_CHAIN_DESC scDesc = {};
+                bool canOverride = true;
+                if (SUCCEEDED(pSwapChain->GetDesc(&scDesc))) {
+                    bool isFlip = (scDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
+                                   scDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+                    if (isFlip && requested < BufferCount) {
+                        canOverride = false;
+                        HookLog("DetourResizeBuffers: Skipping BufferCount override %u < game's %u (flip model)",
+                                requested, BufferCount);
+                    }
+                }
+                if (canOverride) {
+                    HookLogImportant("DetourResizeBuffers: Overriding BufferCount %u -> %u", BufferCount, requested);
+                    BufferCount = requested;
+                }
+            }
+        }
+    }
+
     // CRITICAL FIX: When Vulkan is active, pass through DXGI ResizeBuffers calls
     if (IsVulkanActive()) {
         return oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
@@ -1104,6 +1057,29 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
 HRESULT STDMETHODCALLTYPE DetourResizeBuffers1(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height,
                                                DXGI_FORMAT NewFormat, UINT SwapChainFlags,
                                                const UINT* pCreationNodeMask, IUnknown* const* ppPresentQueue) {
+    // Apply backbuffer count override from config
+    {
+        const auto& cfg = GetActiveGraphicsConfig();
+        if (HasBackbufferCountOverride(cfg.backbufferCount)) {
+            UINT requested = static_cast<UINT>(cfg.backbufferCount);
+            if (requested > 0 && requested != BufferCount) {
+                DXGI_SWAP_CHAIN_DESC scDesc = {};
+                bool canOverride = true;
+                if (SUCCEEDED(pSwapChain->GetDesc(&scDesc))) {
+                    bool isFlip = (scDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
+                                   scDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+                    if (isFlip && requested < BufferCount) {
+                        canOverride = false;
+                    }
+                }
+                if (canOverride) {
+                    HookLogImportant("DetourResizeBuffers1: Overriding BufferCount %u -> %u", BufferCount, requested);
+                    BufferCount = requested;
+                }
+            }
+        }
+    }
+
     // Vulkan passthrough
     if (IsVulkanActive()) {
         return oResizeBuffers1(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags, pCreationNodeMask,

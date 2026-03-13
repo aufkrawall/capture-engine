@@ -466,13 +466,20 @@ void Renderer::DrawFrameTimeGraph(float x, float y, float width, float height, c
     // CRITICAL: Ensure stepX is an integer to eliminate vertical stripe artifacts.
     // When stepX is fractional (e.g., 1.73px), rounding creates inconsistent segment
     // widths (1px and 2px alternating), causing visible vertical stripes.
-    // Snap the effective width to a multiple of (count-1) so every step is exactly N px.
-    float stepX = width / (float)(count - 1);
-    float effectiveWidth = std::round(stepX) * (float)(count - 1);
-    float adjustedX = x + (width - effectiveWidth) * 0.5f;  // Center the adjusted width
-    stepX = std::round(stepX);
+    float safeWidth = width - 4.0f;  // 2px padding on each side for AA fringe
+    if (safeWidth < 10.0f)
+        safeWidth = width;
+
+    float rawStepX = safeWidth / (float)(count - 1);
+    float stepX = std::round(rawStepX);
     if (stepX < 1.0f)
         stepX = 1.0f;
+    float effectiveWidth = stepX * (float)(count - 1);
+    float adjustedX = x + (width - effectiveWidth) * 0.5f;  // Center within background
+
+    // Clamp bounds to prevent graph from extending beyond background
+    float minX = x + 1.0f;
+    float maxX = x + width - 1.0f;
 
     float xs[kMaxPoints], ys[kMaxPoints];
     const float invRange = 1.0f / range;
@@ -483,7 +490,11 @@ void Renderer::DrawFrameTimeGraph(float x, float y, float width, float height, c
         // Snap X to integer pixels for stable horizontal scrolling (eliminates
         // temporal shimmer).  Leave Y as sub-pixel float so the AA fringe
         // geometry produces smooth diagonal segments instead of stair-steps.
-        xs[i] = std::round(adjustedX + (float)i * stepX);
+        float px = std::round(adjustedX + (float)i * stepX);
+        // Clamp to prevent graph from extending beyond background box
+        if (px < minX) px = minX;
+        if (px > maxX) px = maxX;
+        xs[i] = px;
         ys[i] = y + height - ((val - minVal) * invRange) * height;
     }
 

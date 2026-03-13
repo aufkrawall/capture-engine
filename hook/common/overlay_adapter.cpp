@@ -859,6 +859,14 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         graphX = x - 4 * dpiScale;
         graphY = graphCursorY + 4 * dpiScale;  // Small gap below stats
 
+        // Debug: log graph dimensions on first render
+        static bool s_loggedGraphDims = false;
+        if (!s_loggedGraphDims) {
+            s_loggedGraphDims = true;
+            HookLogImportant("[Overlay] Graph dims: graphX=%.1f graphWidth=%.1f bgWidth=%.1f x=%.1f kBgLeftPad=%.1f",
+                    graphX, graphWidth, bgWidth, x, kBgLeftPad);
+        }
+
         // Top padding keeps the graph line below the scale marker and frame time
         // labels that are drawn at graphY + ~6px.
         float graphTopPad = 14.0f * dpiScale;

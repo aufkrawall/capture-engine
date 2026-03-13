@@ -2240,13 +2240,36 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
         return s_deepHookTrampoline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
     }
 
-    HookLogImportant("DeepHook: CreateSwapChainForHwnd ENTER factory=%p device=%p hwnd=%p", pThis, pDevice, hWnd);
+    HookLogImportant("DeepHook: CreateSwapChainForHwnd ENTER factory=%p device=%p hwnd=%p BufferCount=%u SwapEffect=%d",
+            pThis, pDevice, hWnd, pDesc ? pDesc->BufferCount : 0, pDesc ? (int)pDesc->SwapEffect : -1);
 
     // Suspend overlay rendering during the swapchain transition.
     StartTransitionCooldown();
 
+    // Apply backbuffer count override from config
+    DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
+    const DXGI_SWAP_CHAIN_DESC1* pDescToUse = pDesc;
+    if (pDesc) {
+        modifiedDesc = *pDesc;
+        const auto& gfx = GetActiveGraphicsConfig();
+        if (HasBackbufferCountOverride(gfx.backbufferCount)) {
+            UINT requested = (UINT)gfx.backbufferCount;
+            bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
+                           modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+            if (isFlip && requested < modifiedDesc.BufferCount) {
+                HookLogImportant("DeepHook: Skipping BufferCount override %u < game's %u (flip model)",
+                        requested, modifiedDesc.BufferCount);
+            } else {
+                HookLogImportant("DeepHook: Overriding BufferCount %u -> %u",
+                        modifiedDesc.BufferCount, requested);
+                modifiedDesc.BufferCount = requested;
+            }
+        }
+        pDescToUse = &modifiedDesc;
+    }
+
     // Try the call first — let the game/SL handle SC lifecycle naturally
-    HRESULT hr = s_deepHookTrampoline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
+    HRESULT hr = s_deepHookTrampoline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
     HookLogImportant("DeepHook: Trampoline returned hr=0x%08X sc=%p", hr, (ppSC ? *ppSC : nullptr));
 
     // Reactive recovery: if E_ACCESSDENIED, an old SC still holds the HWND.
@@ -2274,7 +2297,7 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
             // Brief retry: 5 attempts × 10ms = 50ms max (safe for FG state machines)
             for (int attempt = 1; attempt <= 5 && hr == E_ACCESSDENIED; ++attempt) {
                 Sleep(10);
-                hr = s_deepHookTrampoline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
+                hr = s_deepHookTrampoline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
             }
             if (SUCCEEDED(hr)) {
                 HookLogImportant("DeepHook: Retry succeeded hr=0x%08X sc=%p", hr, (ppSC ? *ppSC : nullptr));
@@ -2349,7 +2372,29 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
 
     HookLogImportant("CreateSwapChainForHwnd INLINE: factory=%p device=%p hwnd=%p", pThis, pDevice, hWnd);
 
-    HRESULT hr = s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
+    // Apply backbuffer count override from config
+    DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
+    const DXGI_SWAP_CHAIN_DESC1* pDescToUse = pDesc;
+    if (pDesc) {
+        modifiedDesc = *pDesc;
+        const auto& gfx = GetActiveGraphicsConfig();
+        if (HasBackbufferCountOverride(gfx.backbufferCount)) {
+            UINT requested = (UINT)gfx.backbufferCount;
+            bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
+                           modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+            if (isFlip && requested < modifiedDesc.BufferCount) {
+                HookLogImportant("INLINE: Skipping BufferCount override %u < game's %u (flip model)",
+                        requested, modifiedDesc.BufferCount);
+            } else {
+                HookLogImportant("INLINE: Overriding BufferCount %u -> %u",
+                        modifiedDesc.BufferCount, requested);
+                modifiedDesc.BufferCount = requested;
+            }
+        }
+        pDescToUse = &modifiedDesc;
+    }
+
+    HRESULT hr = s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
     HookLogImportant("CreateSwapChainForHwnd INLINE: result hr=0x%08X sc=%p", hr, (ppSC && *ppSC) ? *ppSC : nullptr);
 
     if (hr == E_ACCESSDENIED && hWnd) {
@@ -2462,10 +2507,33 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis
         return E_FAIL;
     }
 
-    HookLog("DetourCreateSwapChainGlobal: CALLED (factory=%p, device=%p)", pThis, pDevice);
+    HookLog("DetourCreateSwapChainGlobal: CALLED (factory=%p, device=%p, swapEffect=%d)",
+            pThis, pDevice, pDesc ? (int)pDesc->SwapEffect : -1);
 
-    // Call original first
-    HRESULT hr = oCreateSwapChainGlobal(pThis, pDevice, pDesc, ppSwapChain);
+    // Apply backbuffer count override from config
+    DXGI_SWAP_CHAIN_DESC modifiedDesc;
+    DXGI_SWAP_CHAIN_DESC* pDescToUse = pDesc;
+    if (pDesc) {
+        modifiedDesc = *pDesc;
+        const auto& gfx = GetActiveGraphicsConfig();
+        if (HasBackbufferCountOverride(gfx.backbufferCount)) {
+            UINT requested = (UINT)gfx.backbufferCount;
+            bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
+                           modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+            if (isFlip && requested < modifiedDesc.BufferCount) {
+                HookLog("DetourCreateSwapChainGlobal: Skipping BufferCount override %u < game's %u (flip model)",
+                        requested, modifiedDesc.BufferCount);
+            } else {
+                HookLog("DetourCreateSwapChainGlobal: Overriding BufferCount %u -> %u",
+                        modifiedDesc.BufferCount, requested);
+                modifiedDesc.BufferCount = requested;
+            }
+        }
+        pDescToUse = &modifiedDesc;
+    }
+
+    // Call original with (possibly) modified descriptor
+    HRESULT hr = oCreateSwapChainGlobal(pThis, pDevice, pDescToUse, ppSwapChain);
 
     if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
         // Log swapchain details
@@ -2534,7 +2602,31 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
     // Suspend overlay rendering during the swapchain transition.
     StartTransitionCooldown();
 
-    HRESULT hr = oCreateSwapChainForHwndGlobal(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
+    // Apply backbuffer count override from config
+    DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
+    const DXGI_SWAP_CHAIN_DESC1* pDescToUse = pDesc;
+    if (pDesc) {
+        modifiedDesc = *pDesc;
+        const auto& gfx = GetActiveGraphicsConfig();
+        if (HasBackbufferCountOverride(gfx.backbufferCount)) {
+            UINT requested = (UINT)gfx.backbufferCount;
+            bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
+                           modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+            if (isFlip && requested < modifiedDesc.BufferCount) {
+                HookLogImportant(
+                    "DetourCreateSwapChainForHwndGlobal: Skipping BufferCount override %u < game's %u (flip model)",
+                    requested, modifiedDesc.BufferCount);
+            } else {
+                HookLogImportant(
+                    "DetourCreateSwapChainForHwndGlobal: Overriding BufferCount %u -> %u",
+                    modifiedDesc.BufferCount, requested);
+                modifiedDesc.BufferCount = requested;
+            }
+        }
+        pDescToUse = &modifiedDesc;
+    }
+
+    HRESULT hr = oCreateSwapChainForHwndGlobal(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
 
     if (SUCCEEDED(hr) && ppSC && *ppSC) {
         // Log swapchain details
@@ -2629,6 +2721,40 @@ static void InstallGlobalVTableHooks() {
     }
 
     pFactory->Release();
+
+    // Also hook IDXGIFactory4 and IDXGIFactory6 vtables to catch games that
+    // QueryInterface for higher factory versions (different vtable pointers).
+    // CreateSwapChainForHwnd is at the same slot (15) in all factory versions
+    // because IDXGIFactory4 inherits from IDXGIFactory3 → IDXGIFactory2.
+    IDXGIFactory4* pFactory4 = nullptr;
+    if (SUCCEEDED(pCreateFactory(IID_PPV_ARGS(&pFactory4)))) {
+        void** vtable4 = *(void***)pFactory4;
+        HookLog("DX12: IDXGIFactory4 available, vtable=%p (IDXGIFactory2=%p, same=%d)", 
+                vtable4, vtable, (int)(vtable4 == vtable));
+        if (vtable4 != vtable) {  // Different vtable pointer
+            VTableHook::Create(&vtable4[10], (LPVOID)DetourCreateSwapChainGlobal, nullptr);
+            VTableHook::Create(&vtable4[15], (LPVOID)DetourCreateSwapChainForHwndGlobal, nullptr);
+            HookLog("DX12: Hooked IDXGIFactory4 vtable[10] and vtable[15]");
+        }
+        pFactory4->Release();
+    } else {
+        HookLog("DX12: IDXGIFactory4 not available");
+    }
+
+    IDXGIFactory6* pFactory6 = nullptr;
+    if (SUCCEEDED(pCreateFactory(IID_PPV_ARGS(&pFactory6)))) {
+        void** vtable6 = *(void***)pFactory6;
+        HookLog("DX12: IDXGIFactory6 available, vtable=%p (IDXGIFactory2=%p, same=%d)", 
+                vtable6, vtable, (int)(vtable6 == vtable));
+        if (vtable6 != vtable) {  // Different vtable pointer
+            VTableHook::Create(&vtable6[10], (LPVOID)DetourCreateSwapChainGlobal, nullptr);
+            VTableHook::Create(&vtable6[15], (LPVOID)DetourCreateSwapChainForHwndGlobal, nullptr);
+            HookLog("DX12: Hooked IDXGIFactory6 vtable[10] and vtable[15]");
+        }
+        pFactory6->Release();
+    } else {
+        HookLog("DX12: IDXGIFactory6 not available");
+    }
 
     // Install inline hook on CreateSwapChainForHwnd in dxgi.dll.
     // VTable hooks only patch a single vtable and miss calls through
