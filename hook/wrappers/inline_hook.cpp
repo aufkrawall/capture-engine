@@ -14,8 +14,8 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
-#include <string>
 #include <mutex>
+#include <string>
 #include <vector>
 
 // Forward declaration for HookLog (defined in hook_common.cpp)
@@ -919,19 +919,20 @@ bool Install(void* target, void* detour, void** outTrampoline) {
                 // Installing a hook inside Steam/discord overlay code causes infinite recursion
                 // because the overlay's trampoline calls back into the original function.
                 HMODULE hModule = nullptr;
-                if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                       (LPCSTR)chainTarget, &hModule)) {
+                if (GetModuleHandleExA(
+                        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                        (LPCSTR)chainTarget, &hModule)) {
                     char moduleName[MAX_PATH] = {};
                     GetModuleFileNameA(hModule, moduleName, MAX_PATH);
                     std::string modLower(moduleName);
                     std::transform(modLower.begin(), modLower.end(), modLower.begin(), ::tolower);
                     if (modLower.find("gameoverlayrenderer") != std::string::npos ||
                         modLower.find("d3doverlay") != std::string::npos ||
-                        modLower.find("discord") != std::string::npos ||
-                        modLower.find("nvidia") != std::string::npos ||
+                        modLower.find("discord") != std::string::npos || modLower.find("nvidia") != std::string::npos ||
                         modLower.find("amd") != std::string::npos) {
                         LogDirect("Chain target is inside overlay module %s - skipping to avoid recursion", moduleName);
-                        HookLog("InlineHook: Skipping chain hook into overlay module %s (would cause recursion)", moduleName);
+                        HookLog("InlineHook: Skipping chain hook into overlay module %s (would cause recursion)",
+                                moduleName);
                         LogDirect("FAILED: Function at %p is already hooked by external overlay", target);
                         HookLog("InlineHook: Function at %p is already hooked by external overlay", target);
                         HookLog("InlineHook: Chain hooking skipped (overlay module protection)");

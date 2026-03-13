@@ -492,8 +492,10 @@ void Renderer::DrawFrameTimeGraph(float x, float y, float width, float height, c
         // geometry produces smooth diagonal segments instead of stair-steps.
         float px = std::round(adjustedX + (float)i * stepX);
         // Clamp to prevent graph from extending beyond background box
-        if (px < minX) px = minX;
-        if (px > maxX) px = maxX;
+        if (px < minX)
+            px = minX;
+        if (px > maxX)
+            px = maxX;
         xs[i] = px;
         ys[i] = y + height - ((val - minVal) * invRange) * height;
     }

@@ -200,6 +200,57 @@ struct GraphicsConfig {
     std::string dlssDebugOverlay;  // "default", "on", "off"
 };
 
+// Match mode for process/window detection (OBS-style)
+enum class MatchMode : uint8_t {
+    kExact = 0,            // Exact process name or window title match
+    kTitleExecutable = 1,  // Match window title, fall back to executable name
+    kTitleType = 2         // Match window title, fall back to window class
+};
+
+inline const char* MatchModeToString(MatchMode mode) {
+    switch (mode) {
+        case MatchMode::kExact:
+            return "exact";
+        case MatchMode::kTitleExecutable:
+            return "title_executable";
+        case MatchMode::kTitleType:
+            return "title_type";
+        default:
+            return "exact";
+    }
+}
+
+inline MatchMode ParseMatchMode(const std::string& val) {
+    if (val == "title_executable" || val == "title_exec")
+        return MatchMode::kTitleExecutable;
+    if (val == "title_type" || val == "title_class")
+        return MatchMode::kTitleType;
+    return MatchMode::kExact;
+}
+
+// Whitelist entry with process, window, and match mode fields
+// Parsed from "process:window:mode" format. All fields optional except at least one of process/window.
+struct WhitelistEntry {
+    std::string pattern;     // Process name (e.g., "game.exe") or empty for window-only
+    std::string windowName;  // Window title (e.g., "My Game Window") or empty for process-only
+    MatchMode mode = MatchMode::kExact;
+
+    // For injection: pattern is required. For WGC: at least one of pattern/windowName required.
+    bool HasProcess() const {
+        return !pattern.empty();
+    }
+    bool HasWindow() const {
+        return !windowName.empty();
+    }
+
+    bool operator==(const WhitelistEntry& other) const {
+        return pattern == other.pattern && windowName == other.windowName && mode == other.mode;
+    }
+    bool operator!=(const WhitelistEntry& other) const {
+        return !(*this == other);
+    }
+};
+
 struct AppConfig {
     // General
     bool debugLogging = true;   // Default to true, matches LoadConfig default
@@ -214,15 +265,9 @@ struct AppConfig {
     std::string copyQueuePriority;  // low, normal, high (D3D12 COPY queue)
     int fenceWaitMode = 1;          // 0=always, 1=first_only, 2=never (debug)
     bool useGameQueue = false;      // Use game's command queue for capture (reduces GPU contention)
-    std::vector<std::string> gameWhitelist;
-    std::vector<std::string> overlayWhitelist;
-    std::vector<std::string> wgcWindowTitles;
-    
-    // Match mode for process/window detection (OBS-style)
-    // exact: exact process name or window title match (default)
-    // title_executable: match window title, fall back to executable name
-    // title_type: match window title, fall back to window class
-    std::string matchMode = "exact";
+    std::vector<WhitelistEntry> gameWhitelist;
+    std::vector<WhitelistEntry> overlayWhitelist;
+    std::vector<WhitelistEntry> wgcWindowTitles;
 
     // Graphics Overrides
     GraphicsConfig graphics;

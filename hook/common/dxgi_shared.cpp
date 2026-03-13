@@ -238,15 +238,15 @@ bool IsVulkanPrimary() {
 // and at resize time (DetourResizeBuffers), not here.
 static void ApplySwapChainOverrides(IDXGISwapChain* pSwapChain) {
     static std::atomic<uint64_t> g_swapchainOverridesDone{0};
-    
+
     // Check if already done for this swapchain
     uint64_t scKey = reinterpret_cast<uint64_t>(pSwapChain);
     uint64_t doneVal = g_swapchainOverridesDone.load(std::memory_order_acquire);
     if (doneVal == scKey)
         return;  // Already successfully applied
-    
+
     const auto& cfg = GetActiveGraphicsConfig();
-    
+
     // Apply cpu_prerender_limit via SetMaximumFrameLatency
     if (cfg.cpuPrerenderLimit > 0) {
         IDXGISwapChain2* sc2 = nullptr;
@@ -259,7 +259,7 @@ static void ApplySwapChainOverrides(IDXGISwapChain* pSwapChain) {
             HookLogImportant("ApplySwapChainOverrides: IDXGISwapChain2 not available for frame latency");
         }
     }
-    
+
     // Mark as done after first attempt
     g_swapchainOverridesDone.store(scKey, std::memory_order_release);
 }
@@ -587,7 +587,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         if (rc == 0) {
             HookLogImportant("DetourPresent: IsRecursivePresent=TRUE - returning early");
         }
-        
+
         // Post-SL overlay rendering: when SL FG is active, the overlay is
         // rendered HERE (after SL's FG interpolation), not in ProcessFrame
         // (which runs before SL).  This matches RTSS's approach — overlay

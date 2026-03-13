@@ -17,6 +17,87 @@ std::string Trim(const std::string& s, const char* chars = " \t\r\n\"()") {
     return res;
 }
 
+// Split string by unquoted colons (quotes prevent splitting)
+static std::vector<std::string> SplitUnquoted(const std::string& s) {
+    std::vector<std::string> parts;
+    std::string current;
+    bool inQuotes = false;
+    for (size_t i = 0; i < s.size(); ++i) {
+        char c = s[i];
+        if (c == '"') {
+            inQuotes = !inQuotes;
+            current += c;
+        } else if (c == ':' && !inQuotes) {
+            parts.push_back(current);
+            current.clear();
+        } else {
+            current += c;
+        }
+    }
+    parts.push_back(current);
+    return parts;
+}
+
+// Strip surrounding quotes from a string
+static std::string StripOuterQuotes(const std::string& s) {
+    if (s.size() >= 2 && s.front() == '"' && s.back() == '"') {
+        return s.substr(1, s.size() - 2);
+    }
+    return s;
+}
+
+// Check if string is a known match mode keyword
+static bool IsMatchModeKeyword(const std::string& s) {
+    std::string lower = s;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    return lower == "exact" || lower == "title_executable" || lower == "title_exec" || lower == "title_type" ||
+           lower == "title_class";
+}
+
+// Parse "process:window:mode" format into a WhitelistEntry
+// Examples:
+//   game.exe                     -> pattern=game.exe
+//   "Game.exe":"My Window"       -> pattern=Game.exe, windowName=My Window
+//   game.exe:exact               -> pattern=game.exe, mode=exact
+//   :"My Window":title_type      -> windowName=My Window, mode=title_type
+//   "Game: DX12.exe":"Win: dow":title_exec -> pattern=Game: DX12.exe, windowName=Win: dow, mode=title_executable
+static WhitelistEntry ParseEntry(const std::string& raw) {
+    WhitelistEntry entry;
+    std::vector<std::string> segments = SplitUnquoted(raw);
+
+    if (segments.empty())
+        return entry;
+
+    // Check if last segment is a match mode keyword
+    MatchMode mode = MatchMode::kExact;
+    size_t count = segments.size();
+    if (count >= 2 && IsMatchModeKeyword(segments.back())) {
+        mode = ParseMatchMode(segments.back());
+        --count;
+    }
+
+    // Map segments: last=window, second-last=process (if available)
+    if (count >= 2) {
+        entry.pattern = Trim(StripOuterQuotes(segments[count - 2]));
+        entry.windowName = Trim(StripOuterQuotes(segments[count - 1]));
+    } else if (count == 1) {
+        // Single segment: determine if it's process or window
+        std::string val = Trim(StripOuterQuotes(segments[0]));
+        std::string lower = val;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        if (lower.size() > 4 &&
+            (lower.substr(lower.size() - 4) == ".exe" || lower.substr(lower.size() - 4) == ".com" ||
+             lower.substr(lower.size() - 4) == ".scr" || lower.substr(lower.size() - 4) == ".bat")) {
+            entry.pattern = val;
+        } else if (!val.empty()) {
+            // Treat as window name (for wgc_window_detection)
+            entry.windowName = val;
+        }
+    }
+    entry.mode = mode;
+    return entry;
+}
+
 // Helper to parse bool
 bool ParseBool(const std::string& val) {
     std::string lower = val;
@@ -103,22 +184,38 @@ debug_logging=true
 ; capture_method - Values: inject, screen or window grab (WGC), auto (WGC, unless application is on inject whitelist)
 capture_method=auto
 
-; wgc_window_detection - Values: window titles for WGC app/window matching, might be a bit faster than global WGC desktop capture. Should be safe with anti-cheats (no guarantees!), does not require inject and overlay. Tries to find corresponding window name when providing process name instead.
+; wgc_window_detection - Window Capture (WGC) targets. Does not inject or overlay.
+; Format: process:window:mode - see [Injection] section for full format documentation.
+; Safe with anti-cheats (no guarantees!). Tries to find corresponding window name when providing process name instead.
 wgc_window_detection=(
 )
 
 [Injection]
-; match_mode - Values: exact, title_executable, title_type
-; exact: exact process name or window title match (default)
-; title_executable: match window title, fall back to executable name
-; title_type: match window title, fall back to window class
-match_mode=exact
-; whitelist - Values: process names (one per line in (...) or comma-separated)
-; Note: only listed executables are injected. Enables overlay and various render feature overrides. DO NOT USE IN MULTIPLAYER GAMES!
+; Entry format: process:window:mode
+;   process  - executable name (e.g., game.exe). Can be quoted to contain colons or spaces.
+;   window   - window title to match. Can be quoted to contain colons or spaces.
+;   mode     - exact (default), title_executable, title_type
+;     exact            : exact match only (case-insensitive)
+;     title_executable : try window title substring, fall back to exe name substring
+;     title_type       : try window title substring, fall back to window class substring
+;
+; At least one of process/window must be provided. Unspecified fields default to empty.
+; Simple entries (just a process name) work as before: game.exe
+;
+; Examples:
+;   game.exe                                  ; exact exe match (default mode)
+;   game.exe:title_executable                 ; exe match with flexible mode
+;   game.exe:My Game:title_executable         ; match by window title, fall back to exe
+;   :My Game Window:title_type                ; window-only: match by title or window class
+;   "Game: Special.exe":"Game: Special":exact ; quotes protect colons in names
+;
+; whitelist - Processes to inject into. Enables overlay and render feature overrides.
+; DO NOT USE IN MULTIPLAYER GAMES!
 whitelist=(
 )
 
-; overlay_whitelist - Values: process names for overlay-only targeting, e.g. when using overlay with WGC capture. DO NOT USE IN MULTIPLAYER GAMES!
+; overlay_whitelist - Overlay-only injection (no capture). For use with WGC capture.
+; DO NOT USE IN MULTIPLAYER GAMES!
 overlay_whitelist=(
 )
 
@@ -398,19 +495,18 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
             }
 
             if (!configProc.empty()) {
-                // Automatic Whitelisting: Any process defined in an App section is a
-                // target
-                if (std::find(config.gameWhitelist.begin(), config.gameWhitelist.end(), configProc) ==
+                // Support x:x:x format in [App.N] process= field
+                WhitelistEntry autoEntry = ParseEntry(configProc);
+                if (std::find(config.gameWhitelist.begin(), config.gameWhitelist.end(), autoEntry) ==
                     config.gameWhitelist.end()) {
-                    config.gameWhitelist.push_back(configProc);
+                    config.gameWhitelist.push_back(autoEntry);
                 }
 
-                std::string configProcLower = configProc;
-                std::transform(configProcLower.begin(), configProcLower.end(), configProcLower.begin(), ::tolower);
-                if (configProcLower == procNameLower) {
+                // Match by process name for override section selection
+                std::string matchName = autoEntry.pattern;
+                std::transform(matchName.begin(), matchName.end(), matchName.begin(), ::tolower);
+                if (matchName == procNameLower) {
                     overrideSection = appSec;
-                    // Note: We don't break here because we want to collect all App.N
-                    // processes into the whitelist
                 }
             }
         }
@@ -483,16 +579,6 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     }
     config.captureMethod = GetStr("General", "capture_method", "auto");
     config.crashDumpDir = GetStr("General", "crash_dump_dir", "");
-    
-    // Injection match mode (OBS-style window/process matching)
-    std::string matchMode = GetStr("Injection", "match_mode", "exact");
-    if (matchMode == "title_executable" || matchMode == "title_exec") {
-        config.matchMode = "title_executable";
-    } else if (matchMode == "title_type" || matchMode == "title_class") {
-        config.matchMode = "title_type";
-    } else {
-        config.matchMode = "exact";
-    }
 
     // Performance (Priority Settings)
     config.processPriority = GetStr("Performance", "process_priority", "normal");
@@ -613,9 +699,9 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         bool inOverlayWhitelist = false;
         bool inWgcWindowDetection = false;
 
-        auto AddEntry = [&](std::string entry, std::vector<std::string>& targetList) {
-            entry = Trim(entry);
-            if (!entry.empty()) {
+        auto AddEntry = [&](const std::string& raw, std::vector<WhitelistEntry>& targetList) {
+            WhitelistEntry entry = ParseEntry(raw);
+            if (!entry.pattern.empty() || !entry.windowName.empty()) {
                 // Check for duplicates
                 if (std::find(targetList.begin(), targetList.end(), entry) == targetList.end()) {
                     targetList.push_back(entry);

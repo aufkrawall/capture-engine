@@ -10,14 +10,36 @@ debug_logging=true
 capture_method=auto
 
 [Injection]
-; whitelist - Values: process names (one per line in (...) or comma-separated)
-; Note: only listed executables are injected. Empty list disables process injection.
+; Entry format: process:window:mode
+;   process  - executable name (e.g., game.exe). Can be quoted to contain colons or spaces.
+;   window   - window title to match. Can be quoted to contain colons or spaces.
+;   mode     - exact (default), title_executable, title_type
+;     exact            : exact match only (case-insensitive)
+;     title_executable : try window title substring, fall back to exe name substring
+;     title_type       : try window title substring, fall back to window class substring
+;
+; At least one of process/window must be provided. Unspecified fields default to empty.
+; Simple entries (just a process name) work as before: game.exe
+;
+; Examples:
+;   game.exe                                  ; exact exe match (default mode)
+;   game.exe:title_executable                 ; exe match with flexible mode
+;   game.exe:My Game:title_executable         ; match by window title, fall back to exe
+;   :My Game Window:title_type                ; window-only: match by title or window class
+;   "Game: Special.exe":"Game: Special":exact ; quotes protect colons in names
+;
+; whitelist - Processes to inject into. Enables overlay and render feature overrides.
+; DO NOT USE IN MULTIPLAYER GAMES!
 whitelist=(
 )
-; overlay_whitelist - Values: process names for overlay-only targeting
+
+; overlay_whitelist - Overlay-only injection (no capture). For use with WGC capture.
+; DO NOT USE IN MULTIPLAYER GAMES!
 overlay_whitelist=(
 )
-; wgc_window_detection - Values: window titles for WGC app/window matching
+
+; wgc_window_detection - Window Capture (WGC) targets. Does not inject or overlay.
+; Safe with anti-cheats (no guarantees!). Tries to find corresponding window name when providing process name instead.
 wgc_window_detection=(
 )
 

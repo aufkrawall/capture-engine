@@ -140,30 +140,57 @@ bool InjectionManager::IsWhitelisted(const std::string& processName) {
     }
 
     // Check Game Whitelist
-    for (const auto& item : config.gameWhitelist) {
-        std::string lowerItem = item;
+    for (const auto& entry : config.gameWhitelist) {
+        // Window-only entries don't apply to injection (no window handle available here)
+        if (!entry.HasProcess())
+            continue;
+
+        std::string lowerItem = entry.pattern;
         std::transform(lowerItem.begin(), lowerItem.end(), lowerItem.begin(), ::tolower);
-        if (lowerName == lowerItem) {
-            LogInfo("[WMI] Whitelist match (Exact): %s matches %s", processName.c_str(), item.c_str());
-            return true;
-        }
-        if (lowerName.find(lowerItem) != std::string::npos) {
-            LogInfo("[WMI] Whitelist match (Partial): %s matches %s", processName.c_str(), item.c_str());
-            return true;
+
+        if (entry.mode == MatchMode::kExact) {
+            if (lowerName == lowerItem) {
+                LogInfo("[WMI] Whitelist match (Exact): %s matches %s", processName.c_str(), entry.pattern.c_str());
+                return true;
+            }
+        } else {
+            // title_executable or title_type: exact match or substring match
+            if (lowerName == lowerItem) {
+                LogInfo("[WMI] Whitelist match (Exact): %s matches %s", processName.c_str(), entry.pattern.c_str());
+                return true;
+            }
+            if (lowerName.find(lowerItem) != std::string::npos) {
+                LogInfo("[WMI] Whitelist match (Partial): %s matches %s", processName.c_str(), entry.pattern.c_str());
+                return true;
+            }
         }
     }
 
     // Check Overlay Whitelist
-    for (const auto& item : config.overlayWhitelist) {
-        std::string lowerItem = item;
+    for (const auto& entry : config.overlayWhitelist) {
+        if (!entry.HasProcess())
+            continue;
+
+        std::string lowerItem = entry.pattern;
         std::transform(lowerItem.begin(), lowerItem.end(), lowerItem.begin(), ::tolower);
-        if (lowerName == lowerItem) {
-            LogInfo("[WMI] Overlay target match (Exact): %s matches %s", processName.c_str(), item.c_str());
-            return true;
-        }
-        if (lowerName.find(lowerItem) != std::string::npos) {
-            LogInfo("[WMI] Overlay target match (Partial): %s matches %s", processName.c_str(), item.c_str());
-            return true;
+
+        if (entry.mode == MatchMode::kExact) {
+            if (lowerName == lowerItem) {
+                LogInfo("[WMI] Overlay target match (Exact): %s matches %s", processName.c_str(),
+                        entry.pattern.c_str());
+                return true;
+            }
+        } else {
+            if (lowerName == lowerItem) {
+                LogInfo("[WMI] Overlay target match (Exact): %s matches %s", processName.c_str(),
+                        entry.pattern.c_str());
+                return true;
+            }
+            if (lowerName.find(lowerItem) != std::string::npos) {
+                LogInfo("[WMI] Overlay target match (Partial): %s matches %s", processName.c_str(),
+                        entry.pattern.c_str());
+                return true;
+            }
         }
     }
     return false;
@@ -506,120 +533,133 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
                     std::shared_ptr<InjectionManager> managerShared = pManager->shared_from_this();
                     std::thread delayedThread([managerShared, pid, name]() {
                         try {
-                        LogInfo(
-                            "[WMI] %s (PID: %lu) - Waiting for graphics API "
-                            "initialization before injection...",
-                            name.c_str(), (unsigned long)pid);
+                            LogInfo(
+                                "[WMI] %s (PID: %lu) - Waiting for graphics API "
+                                "initialization before injection...",
+                                name.c_str(), (unsigned long)pid);
 
-                        // Wait up to 30 seconds for graphics API initialization
-                        bool ready = false;
-                        bool d3d12Loaded = false;
-                        int waitMs = 0;
-                        for (int i = 0; i < 300 && !ready; i++) {
-                            // CRITICAL FIX: Check if shutdown requested
-                            if (managerShared->IsShuttingDown()) {
-                                LogInfo(
-                                    "[WMI] %s (PID: %lu) - Shutdown requested, aborting "
-                                    "delayed injection",
-                                    name.c_str(), (unsigned long)pid);
-                                return;
-                            }
+                            // Wait up to 30 seconds for graphics API initialization
+                            bool ready = false;
+                            bool d3d12Loaded = false;
+                            int waitMs = 0;
+                            for (int i = 0; i < 300 && !ready; i++) {
+                                // CRITICAL FIX: Check if shutdown requested
+                                if (managerShared->IsShuttingDown()) {
+                                    LogInfo(
+                                        "[WMI] %s (PID: %lu) - Shutdown requested, aborting "
+                                        "delayed injection",
+                                        name.c_str(), (unsigned long)pid);
+                                    return;
+                                }
 
-                            // Check if process is still running
-                            HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, FALSE, pid);
-                            if (!hProcess) {
-                                LogInfo("[WMI] %s (PID: %lu) - Process exited before injection (OpenProcess failed, error=%lu)", name.c_str(), (unsigned long)pid, (unsigned long)GetLastError());
-                                return;
-                            }
+                                // Check if process is still running
+                                HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, FALSE, pid);
+                                if (!hProcess) {
+                                    LogInfo(
+                                        "[WMI] %s (PID: %lu) - Process exited before injection (OpenProcess failed, "
+                                        "error=%lu)",
+                                        name.c_str(), (unsigned long)pid, (unsigned long)GetLastError());
+                                    return;
+                                }
 
-                            // Check if process has exited
-                            DWORD exitCode = 0;
-                            if (GetExitCodeProcess(hProcess, &exitCode) && exitCode != STILL_ACTIVE) {
-                                CloseHandle(hProcess);
-                                LogInfo("[WMI] %s (PID: %lu) - Process exited before injection (exit code=%lu)", name.c_str(), (unsigned long)pid, (unsigned long)exitCode);
-                                return;
-                            }
+                                // Check if process has exited
+                                DWORD exitCode = 0;
+                                if (GetExitCodeProcess(hProcess, &exitCode) && exitCode != STILL_ACTIVE) {
+                                    CloseHandle(hProcess);
+                                    LogInfo("[WMI] %s (PID: %lu) - Process exited before injection (exit code=%lu)",
+                                            name.c_str(), (unsigned long)pid, (unsigned long)exitCode);
+                                    return;
+                                }
 
-                            // Check if D3D12.dll is loaded (wait for graphics init to
-                            // complete)
-                            if (!d3d12Loaded) {
-                                HMODULE hMods[1024];
-                                DWORD cbNeeded;
-                                if (EnumProcessModules(hProcess, hMods, sizeof(hMods), &cbNeeded)) {
-                                    for (unsigned int j = 0; j < (cbNeeded / sizeof(HMODULE)); j++) {
-                                        char szModName[MAX_PATH];
-                                        if (GetModuleFileNameExA(hProcess, hMods[j], szModName, sizeof(szModName))) {
-                                            if (strstr(szModName, "d3d12.dll")) {
-                                                d3d12Loaded = true;
-                                                LogInfo(
-                                                    "[WMI] %s (PID: %lu) - D3D12.dll detected, "
-                                                    "waiting for init...",
-                                                    name.c_str(), (unsigned long)pid);
-                                                break;
+                                // Check if D3D12.dll is loaded (wait for graphics init to
+                                // complete)
+                                if (!d3d12Loaded) {
+                                    HMODULE hMods[1024];
+                                    DWORD cbNeeded;
+                                    if (EnumProcessModules(hProcess, hMods, sizeof(hMods), &cbNeeded)) {
+                                        for (unsigned int j = 0; j < (cbNeeded / sizeof(HMODULE)); j++) {
+                                            char szModName[MAX_PATH];
+                                            if (GetModuleFileNameExA(hProcess, hMods[j], szModName,
+                                                                     sizeof(szModName))) {
+                                                if (strstr(szModName, "d3d12.dll")) {
+                                                    d3d12Loaded = true;
+                                                    LogInfo(
+                                                        "[WMI] %s (PID: %lu) - D3D12.dll detected, "
+                                                        "waiting for init...",
+                                                        name.c_str(), (unsigned long)pid);
+                                                    break;
+                                                }
                                             }
                                         }
-                                    }
-                                } else {
-                                    DWORD err = GetLastError();
-                                    LogInfo("[WMI] %s (PID: %lu) - EnumProcessModules failed (error=%lu)", name.c_str(), (unsigned long)pid, (unsigned long)err);
-                                    // ACCESS_DENIED (5) likely means we can't read due to security.
-                                    // The game might still be D3D12 - wait briefly for graphics init.
-                                    if (err == ERROR_ACCESS_DENIED && i < 10) {
-                                        CloseHandle(hProcess);
-                                        Sleep(100);
-                                        waitMs += 100;
-                                        continue;
+                                    } else {
+                                        DWORD err = GetLastError();
+                                        LogInfo("[WMI] %s (PID: %lu) - EnumProcessModules failed (error=%lu)",
+                                                name.c_str(), (unsigned long)pid, (unsigned long)err);
+                                        // ACCESS_DENIED (5) likely means we can't read due to security.
+                                        // The game might still be D3D12 - wait briefly for graphics init.
+                                        if (err == ERROR_ACCESS_DENIED && i < 10) {
+                                            CloseHandle(hProcess);
+                                            Sleep(100);
+                                            waitMs += 100;
+                                            continue;
+                                        }
                                     }
                                 }
-                            }
-                            CloseHandle(hProcess);
+                                CloseHandle(hProcess);
 
-                            // FIX: Inject as early as possible for DX9/DX11/Vulkan games.
-                            // D3D9 games call Direct3DCreate9 + CreateDevice shortly after
-                            // startup; early injection lets us intercept those calls and
-                            // upgrade the device to D3D9Ex for zero-copy capture.
-                            // D3D12 games (especially UE5+DLSS FG) still need a full 1-second
-                            // wait after d3d12.dll loads for the device to finish initializing.
-                            if (d3d12Loaded && i >= 10) {
-                                ready = true;  // D3D12: 1 second after detection
-                            } else if (!d3d12Loaded && i >= 0) {
-                                // Inject immediately when D3D12 is not yet present so we can
-                                // still hook early API initialization paths.
-                                ready = true;
+                                // FIX: Inject as early as possible for DX9/DX11/Vulkan games.
+                                // D3D9 games call Direct3DCreate9 + CreateDevice shortly after
+                                // startup; early injection lets us intercept those calls and
+                                // upgrade the device to D3D9Ex for zero-copy capture.
+                                // D3D12 games (especially UE5+DLSS FG) still need a full 1-second
+                                // wait after d3d12.dll loads for the device to finish initializing.
+                                if (d3d12Loaded && i >= 10) {
+                                    ready = true;  // D3D12: 1 second after detection
+                                } else if (!d3d12Loaded && i >= 0) {
+                                    // Inject immediately when D3D12 is not yet present so we can
+                                    // still hook early API initialization paths.
+                                    ready = true;
+                                }
+
+                                if (!ready) {
+                                    Sleep(100);  // 100ms * 300 = 30 seconds max
+                                    waitMs += 100;
+                                }
                             }
 
-                            if (!ready) {
-                                Sleep(100);  // 100ms * 300 = 30 seconds max
-                                waitMs += 100;
-                            }
-                        }
-
-                        LogInfo("[WMI] %s (PID: %lu) - Wait loop exited (ready=%d, d3d12=%d, waitMs=%d), attempting injection",
+                            LogInfo(
+                                "[WMI] %s (PID: %lu) - Wait loop exited (ready=%d, d3d12=%d, waitMs=%d), attempting "
+                                "injection",
                                 name.c_str(), (unsigned long)pid, (int)ready, (int)d3d12Loaded, waitMs);
 
-                        // Perform injection
-                        std::lock_guard<std::mutex> lock(managerShared->injectMutex);
-                        if (!managerShared->IsWhitelisted(name)) {
-                            LogInfo("[WMI] %s (PID: %lu) - No longer whitelisted, skipping injection", name.c_str(),
-                                    (unsigned long)pid);
-                        } else if (!managerShared->IsAlreadyInjectedLocked(pid) && !managerShared->IsRecentlyFailedLocked(pid)) {
-                            LogInfo(
-                                "[WMI] %s (PID: %lu) - Injecting (%s detected, waited %d "
-                                "ms)",
-                                name.c_str(), (unsigned long)pid, d3d12Loaded ? "D3D12" : "non-D3D12 (DX11/DX9/Vulkan)", waitMs);
-                            if (managerShared->Inject(pid, name)) {
-                                LogInfo("[WMI] Injection successful.");
+                            // Perform injection
+                            std::lock_guard<std::mutex> lock(managerShared->injectMutex);
+                            if (!managerShared->IsWhitelisted(name)) {
+                                LogInfo("[WMI] %s (PID: %lu) - No longer whitelisted, skipping injection", name.c_str(),
+                                        (unsigned long)pid);
+                            } else if (!managerShared->IsAlreadyInjectedLocked(pid) &&
+                                       !managerShared->IsRecentlyFailedLocked(pid)) {
+                                LogInfo(
+                                    "[WMI] %s (PID: %lu) - Injecting (%s detected, waited %d "
+                                    "ms)",
+                                    name.c_str(), (unsigned long)pid,
+                                    d3d12Loaded ? "D3D12" : "non-D3D12 (DX11/DX9/Vulkan)", waitMs);
+                                if (managerShared->Inject(pid, name)) {
+                                    LogInfo("[WMI] Injection successful.");
+                                } else {
+                                    LogError("[WMI] Injection failed.");
+                                    managerShared->failedInjections.push_back({pid, GetTickCount64()});
+                                }
                             } else {
-                                LogError("[WMI] Injection failed.");
-                                managerShared->failedInjections.push_back({pid, GetTickCount64()});
+                                LogInfo("[WMI] %s (PID: %lu) - Already injected or recently failed, skipping",
+                                        name.c_str(), (unsigned long)pid);
                             }
-                        } else {
-                            LogInfo("[WMI] %s (PID: %lu) - Already injected or recently failed, skipping", name.c_str(), (unsigned long)pid);
-                        }
                         } catch (const std::exception& e) {
-                            LogError("[WMI] Delayed injection thread exception for PID %lu: %s", (unsigned long)pid, e.what());
+                            LogError("[WMI] Delayed injection thread exception for PID %lu: %s", (unsigned long)pid,
+                                     e.what());
                         } catch (...) {
-                            LogError("[WMI] Delayed injection thread unknown exception for PID %lu", (unsigned long)pid);
+                            LogError("[WMI] Delayed injection thread unknown exception for PID %lu",
+                                     (unsigned long)pid);
                         }
                     });
 
@@ -1232,7 +1272,8 @@ bool InjectionManager::VerifyDLLSignature(const std::string& dllPath, bool logFa
         return true;
     } else {
         if (logFailures) {
-            LogError("[Security] DLL signature verification failed: %s (error 0x%lu)", dllPath.c_str(), (unsigned long)status);
+            LogError("[Security] DLL signature verification failed: %s (error 0x%lu)", dllPath.c_str(),
+                     (unsigned long)status);
             if (status == TRUST_E_NOSIGNATURE) {
                 LogError("[Security] DLL is not signed");
             } else if (status == TRUST_E_EXPLICIT_DISTRUST) {
@@ -1420,4 +1461,3 @@ void InjectionManager::ScanExistingProcesses() {
         QpcDeltaToMs(snapshotUs), QpcDeltaToMs(Log_GetQpcUs() - scanStartUs), scannedProcesses, whitelistedProcesses,
         injectAttempts, injectSuccesses);
 }
-

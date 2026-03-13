@@ -842,7 +842,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         }
         if (minVal == FLT_MAX)
             minVal = 0.0f;
-        
+
         // Smarter scaling to avoid over-dramatizing frame time variations.
         // Instead of just 10% above peak, use a scale that provides meaningful
         // context (e.g., 30fps vs 60fps threshold should be visible).
@@ -856,19 +856,19 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         }
         if (avgCount > 0)
             avgVal /= (float)avgCount;
-        
+
         // Scale based on average with generous headroom:
         // - At least 50% above average (not peak) to avoid zooming in on noise
         // - At least 2x the minimum (so 8ms avg shows 0-16ms, not 0-12ms)
         // - Minimum 33ms range to show 30fps threshold
         float scaleBase = (std::max)(avgVal, minVal * 2.0f);
         float rawMax = (std::max)(scaleBase * 1.5f, 33.0f);
-        
+
         // Dynamic minimum: leave ~15% padding below lowest point, but never go negative
         // This makes the graph line appear more vertically centered
         float range = rawMax - minVal;
         float dynamicMin = (std::max)(0.0f, minVal - range * 0.15f);
-        
+
         graphMinVal = dynamicMin;
         graphMaxVal = rawMax;
 
@@ -882,7 +882,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         if (!s_loggedGraphDims) {
             s_loggedGraphDims = true;
             HookLogImportant("[Overlay] Graph dims: graphX=%.1f graphWidth=%.1f bgWidth=%.1f x=%.1f kBgLeftPad=%.1f",
-                    graphX, graphWidth, bgWidth, x, kBgLeftPad);
+                             graphX, graphWidth, bgWidth, x, kBgLeftPad);
         }
 
         // Top padding keeps the graph line below the scale marker and frame time

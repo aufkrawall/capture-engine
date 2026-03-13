@@ -924,7 +924,7 @@ int MediaProcessMain(const AppConfig& config) {
                 lastEarlyWgcScan = now;
 
                 struct WgcSearchContext {
-                    const std::vector<std::string>* targets;
+                    const std::vector<WhitelistEntry>* targets;
                     HWND result;
                 };
                 WgcSearchContext ctx = {&config.wgcWindowTitles, NULL};
@@ -941,21 +941,44 @@ int MediaProcessMain(const AppConfig& config) {
                         std::string titleStr = title;
                         std::transform(titleStr.begin(), titleStr.end(), titleStr.begin(), ::tolower);
 
-                        for (const auto& target : *context->targets) {
-                            std::string targetLower = target;
-                            std::transform(targetLower.begin(), targetLower.end(), targetLower.begin(), ::tolower);
+                        for (const auto& entry : *context->targets) {
+                            MatchMode mode = entry.mode;
 
-                            const bool isExeTarget =
-                                targetLower.length() > 4 && targetLower.substr(targetLower.length() - 4) == ".exe";
+                            // Window title matching (if entry has windowName)
+                            if (entry.HasWindow()) {
+                                std::string winLower = entry.windowName;
+                                std::transform(winLower.begin(), winLower.end(), winLower.begin(), ::tolower);
 
-                            if (!isExeTarget) {
-                                // Title-based match: no process handle needed
-                                if (!titleStr.empty() && titleStr.find(targetLower) != std::string::npos) {
-                                    context->result = hwnd;
-                                    return FALSE;
+                                if (mode == MatchMode::kExact) {
+                                    if (!titleStr.empty() && titleStr == winLower) {
+                                        context->result = hwnd;
+                                        return FALSE;
+                                    }
+                                } else {
+                                    // title_executable or title_type: substring match on title
+                                    if (!titleStr.empty() && titleStr.find(winLower) != std::string::npos) {
+                                        context->result = hwnd;
+                                        return FALSE;
+                                    }
+                                    // title_type: also try window class
+                                    if (mode == MatchMode::kTitleType) {
+                                        char className[256];
+                                        GetClassNameA(hwnd, className, sizeof(className));
+                                        std::string classStr = className;
+                                        std::transform(classStr.begin(), classStr.end(), classStr.begin(), ::tolower);
+                                        if (!classStr.empty() && classStr.find(winLower) != std::string::npos) {
+                                            context->result = hwnd;
+                                            return FALSE;
+                                        }
+                                    }
                                 }
-                            } else {
-                                // Exe-name match: open minimal handle only for this window
+                            }
+
+                            // Process/exe name matching (if entry has pattern)
+                            if (entry.HasProcess()) {
+                                std::string procLower = entry.pattern;
+                                std::transform(procLower.begin(), procLower.end(), procLower.begin(), ::tolower);
+
                                 DWORD pid = 0;
                                 GetWindowThreadProcessId(hwnd, &pid);
                                 if (pid != 0) {
@@ -970,10 +993,19 @@ int MediaProcessMain(const AppConfig& config) {
                                                 procName = procName.substr(pos + 1);
                                             std::transform(procName.begin(), procName.end(), procName.begin(),
                                                            ::tolower);
-                                            if (procName == targetLower) {
-                                                context->result = hwnd;
-                                                CloseHandle(hProcess);
-                                                return FALSE;
+                                            if (mode == MatchMode::kExact) {
+                                                if (procName == procLower) {
+                                                    context->result = hwnd;
+                                                    CloseHandle(hProcess);
+                                                    return FALSE;
+                                                }
+                                            } else {
+                                                if (procName == procLower ||
+                                                    procName.find(procLower) != std::string::npos) {
+                                                    context->result = hwnd;
+                                                    CloseHandle(hProcess);
+                                                    return FALSE;
+                                                }
                                             }
                                         }
                                         CloseHandle(hProcess);
@@ -1080,7 +1112,7 @@ int MediaProcessMain(const AppConfig& config) {
                 lastWindowScanTime = now;
 
                 struct WgcSearchContext {
-                    const std::vector<std::string>* targets;
+                    const std::vector<WhitelistEntry>* targets;
                     HWND result;
                 };
 
@@ -1099,24 +1131,69 @@ int MediaProcessMain(const AppConfig& config) {
                         std::string titleStr = title;
                         std::transform(titleStr.begin(), titleStr.end(), titleStr.begin(), ::tolower);
 
-                        for (const auto& target : *context->targets) {
-                            std::string targetLower = target;
-                            std::transform(targetLower.begin(), targetLower.end(), targetLower.begin(), ::tolower);
+                        for (const auto& entry : *context->targets) {
+                            MatchMode mode = entry.mode;
 
-                            if (!titleStr.empty() && titleStr.find(targetLower) != std::string::npos) {
-                                context->result = hwnd;
-                                return FALSE;
+                            // Window title matching (if entry has windowName)
+                            if (entry.HasWindow()) {
+                                std::string winLower = entry.windowName;
+                                std::transform(winLower.begin(), winLower.end(), winLower.begin(), ::tolower);
+
+                                if (mode == MatchMode::kExact) {
+                                    if (!titleStr.empty() && titleStr == winLower) {
+                                        context->result = hwnd;
+                                        return FALSE;
+                                    }
+                                } else {
+                                    if (!titleStr.empty() && titleStr.find(winLower) != std::string::npos) {
+                                        context->result = hwnd;
+                                        return FALSE;
+                                    }
+                                    if (mode == MatchMode::kTitleType) {
+                                        char className[256];
+                                        GetClassNameA(hwnd, className, sizeof(className));
+                                        std::string classStr = className;
+                                        std::transform(classStr.begin(), classStr.end(), classStr.begin(), ::tolower);
+                                        if (!classStr.empty() && classStr.find(winLower) != std::string::npos) {
+                                            context->result = hwnd;
+                                            return FALSE;
+                                        }
+                                    }
+                                }
                             }
 
-                            if (targetLower.length() > 4 && targetLower.substr(targetLower.length() - 4) == ".exe") {
-                                DWORD pid = 0;
-                                GetWindowThreadProcessId(hwnd, &pid);
-                                std::string procName = GetProcessNameFromPID(pid);
-                                std::transform(procName.begin(), procName.end(), procName.begin(), ::tolower);
+                            // Process/exe name matching (if entry has pattern)
+                            if (entry.HasProcess()) {
+                                std::string procLower = entry.pattern;
+                                std::transform(procLower.begin(), procLower.end(), procLower.begin(), ::tolower);
 
-                                if (procName == targetLower) {
-                                    context->result = hwnd;
-                                    return FALSE;
+                                if (mode == MatchMode::kExact) {
+                                    DWORD pid = 0;
+                                    GetWindowThreadProcessId(hwnd, &pid);
+                                    std::string procName = GetProcessNameFromPID(pid);
+                                    std::transform(procName.begin(), procName.end(), procName.begin(), ::tolower);
+                                    if (procName == procLower) {
+                                        context->result = hwnd;
+                                        return FALSE;
+                                    }
+                                } else {
+                                    // title_executable or title_type: title substring first, then exe fallback
+                                    if (entry.HasWindow()) {
+                                        std::string winLower = entry.windowName;
+                                        std::transform(winLower.begin(), winLower.end(), winLower.begin(), ::tolower);
+                                        if (!titleStr.empty() && titleStr.find(winLower) != std::string::npos) {
+                                            context->result = hwnd;
+                                            return FALSE;
+                                        }
+                                    }
+                                    DWORD pid = 0;
+                                    GetWindowThreadProcessId(hwnd, &pid);
+                                    std::string procName = GetProcessNameFromPID(pid);
+                                    std::transform(procName.begin(), procName.end(), procName.begin(), ::tolower);
+                                    if (procName == procLower || procName.find(procLower) != std::string::npos) {
+                                        context->result = hwnd;
+                                        return FALSE;
+                                    }
                                 }
                             }
                         }
@@ -1190,13 +1267,25 @@ int MediaProcessMain(const AppConfig& config) {
                     std::string lowerName = procName;
                     std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
 
-                    for (const auto& item : config.overlayWhitelist) {
-                        std::string lowerItem = item;
+                    for (const auto& entry : config.overlayWhitelist) {
+                        if (!entry.HasProcess())
+                            continue;
+
+                        std::string lowerItem = entry.pattern;
                         std::transform(lowerItem.begin(), lowerItem.end(), lowerItem.begin(), ::tolower);
-                        if (lowerName == lowerItem || lowerName.find(lowerItem) != std::string::npos) {
-                            forceWGC = true;
-                            LogInfo("[Media] Overlay Whitelist Match! Forcing WGC for %s", procName.c_str());
-                            break;
+
+                        if (entry.mode == MatchMode::kExact) {
+                            if (lowerName == lowerItem) {
+                                forceWGC = true;
+                                LogInfo("[Media] Overlay Whitelist Match! Forcing WGC for %s", procName.c_str());
+                                break;
+                            }
+                        } else {
+                            if (lowerName == lowerItem || lowerName.find(lowerItem) != std::string::npos) {
+                                forceWGC = true;
+                                LogInfo("[Media] Overlay Whitelist Match! Forcing WGC for %s", procName.c_str());
+                                break;
+                            }
                         }
                     }
                 }

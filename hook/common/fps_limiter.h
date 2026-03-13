@@ -360,7 +360,7 @@ public:
         uint32_t effectiveMode = configuredMode;
 
         if (configuredMode == LimiterModeValues::kAuto) {
-            // Priority: Reflex (NVIDIA, game-activated) → Anti-Lag 2 (AMD, game-activated) → 
+            // Priority: Reflex (NVIDIA, game-activated) → Anti-Lag 2 (AMD, game-activated) →
             //            XeLL (Intel, game-activated) → FG fallback → basic
             // Native modes require the game to have activated the API, not just API availability
             if (g_ReflexLimiter.IsAvailable() && g_ReflexLimiter.IsGameActivated()) {
@@ -471,7 +471,8 @@ public:
 
                 // Log on first successful Reflex activation
                 if (!reflexLoggedSuccess_) {
-                    HookLog("FPS Limiter: Reflex API active (target=%d fps, driver-handled pacing)", effectiveTargetFps);
+                    HookLog("FPS Limiter: Reflex API active (target=%d fps, driver-handled pacing)",
+                            effectiveTargetFps);
                     reflexLoggedSuccess_ = true;
                 }
 

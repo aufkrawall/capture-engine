@@ -127,8 +127,8 @@ uint64_t HostMetricsState::QueryVRAMTotalFromDXGI(int32_t luidLow, int32_t luidH
             if (desc.AdapterLuid.LowPart == (DWORD)luidLow && desc.AdapterLuid.HighPart == (LONG)luidHigh) {
                 cachedVRAMTotal = desc.DedicatedVideoMemory;
                 cachedAdapterLuid = desc.AdapterLuid;
-                LogInfo("[Metrics] DXGI: Found VRAM Total %llu MB for LUID %08lx:%08lx", cachedVRAMTotal / (1024 * 1024),
-                        desc.AdapterLuid.HighPart, desc.AdapterLuid.LowPart);
+                LogInfo("[Metrics] DXGI: Found VRAM Total %llu MB for LUID %08lx:%08lx",
+                        cachedVRAMTotal / (1024 * 1024), desc.AdapterLuid.HighPart, desc.AdapterLuid.LowPart);
                 adapter->Release();
                 return cachedVRAMTotal;
             }

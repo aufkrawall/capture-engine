@@ -213,13 +213,13 @@ static void PopulateWhitelistCache(DiscoveryInfo* pDisc, const AppConfig& config
         }
     };
 
-    for (const auto& name : config.gameWhitelist) {
-        addName(name);
-        LogInfo("[Inject] Added game to whitelist cache: %s", name.c_str());
+    for (const auto& entry : config.gameWhitelist) {
+        addName(entry.pattern);
+        LogInfo("[Inject] Added game to whitelist cache: %s", entry.pattern.c_str());
     }
-    for (const auto& name : config.overlayWhitelist) {
-        addName(name);
-        LogInfo("[Inject] Added overlay target to whitelist cache: %s", name.c_str());
+    for (const auto& entry : config.overlayWhitelist) {
+        addName(entry.pattern);
+        LogInfo("[Inject] Added overlay target to whitelist cache: %s", entry.pattern.c_str());
     }
 
     // Always whitelist our test processes too

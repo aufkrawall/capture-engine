@@ -2241,7 +2241,7 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
     }
 
     HookLogImportant("DeepHook: CreateSwapChainForHwnd ENTER factory=%p device=%p hwnd=%p BufferCount=%u SwapEffect=%d",
-            pThis, pDevice, hWnd, pDesc ? pDesc->BufferCount : 0, pDesc ? (int)pDesc->SwapEffect : -1);
+                     pThis, pDevice, hWnd, pDesc ? pDesc->BufferCount : 0, pDesc ? (int)pDesc->SwapEffect : -1);
 
     // Suspend overlay rendering during the swapchain transition.
     StartTransitionCooldown();
@@ -2257,11 +2257,10 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
             bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
                            modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
             if (isFlip && requested < modifiedDesc.BufferCount) {
-                HookLogImportant("DeepHook: Skipping BufferCount override %u < game's %u (flip model)",
-                        requested, modifiedDesc.BufferCount);
+                HookLogImportant("DeepHook: Skipping BufferCount override %u < game's %u (flip model)", requested,
+                                 modifiedDesc.BufferCount);
             } else {
-                HookLogImportant("DeepHook: Overriding BufferCount %u -> %u",
-                        modifiedDesc.BufferCount, requested);
+                HookLogImportant("DeepHook: Overriding BufferCount %u -> %u", modifiedDesc.BufferCount, requested);
                 modifiedDesc.BufferCount = requested;
             }
         }
@@ -2383,11 +2382,10 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
             bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
                            modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
             if (isFlip && requested < modifiedDesc.BufferCount) {
-                HookLogImportant("INLINE: Skipping BufferCount override %u < game's %u (flip model)",
-                        requested, modifiedDesc.BufferCount);
+                HookLogImportant("INLINE: Skipping BufferCount override %u < game's %u (flip model)", requested,
+                                 modifiedDesc.BufferCount);
             } else {
-                HookLogImportant("INLINE: Overriding BufferCount %u -> %u",
-                        modifiedDesc.BufferCount, requested);
+                HookLogImportant("INLINE: Overriding BufferCount %u -> %u", modifiedDesc.BufferCount, requested);
                 modifiedDesc.BufferCount = requested;
             }
         }
@@ -2507,8 +2505,8 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis
         return E_FAIL;
     }
 
-    HookLog("DetourCreateSwapChainGlobal: CALLED (factory=%p, device=%p, swapEffect=%d)",
-            pThis, pDevice, pDesc ? (int)pDesc->SwapEffect : -1);
+    HookLog("DetourCreateSwapChainGlobal: CALLED (factory=%p, device=%p, swapEffect=%d)", pThis, pDevice,
+            pDesc ? (int)pDesc->SwapEffect : -1);
 
     // Apply backbuffer count override from config
     DXGI_SWAP_CHAIN_DESC modifiedDesc;
@@ -2524,8 +2522,8 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis
                 HookLog("DetourCreateSwapChainGlobal: Skipping BufferCount override %u < game's %u (flip model)",
                         requested, modifiedDesc.BufferCount);
             } else {
-                HookLog("DetourCreateSwapChainGlobal: Overriding BufferCount %u -> %u",
-                        modifiedDesc.BufferCount, requested);
+                HookLog("DetourCreateSwapChainGlobal: Overriding BufferCount %u -> %u", modifiedDesc.BufferCount,
+                        requested);
                 modifiedDesc.BufferCount = requested;
             }
         }
@@ -2617,9 +2615,8 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
                     "DetourCreateSwapChainForHwndGlobal: Skipping BufferCount override %u < game's %u (flip model)",
                     requested, modifiedDesc.BufferCount);
             } else {
-                HookLogImportant(
-                    "DetourCreateSwapChainForHwndGlobal: Overriding BufferCount %u -> %u",
-                    modifiedDesc.BufferCount, requested);
+                HookLogImportant("DetourCreateSwapChainForHwndGlobal: Overriding BufferCount %u -> %u",
+                                 modifiedDesc.BufferCount, requested);
                 modifiedDesc.BufferCount = requested;
             }
         }
@@ -2729,8 +2726,8 @@ static void InstallGlobalVTableHooks() {
     IDXGIFactory4* pFactory4 = nullptr;
     if (SUCCEEDED(pCreateFactory(IID_PPV_ARGS(&pFactory4)))) {
         void** vtable4 = *(void***)pFactory4;
-        HookLog("DX12: IDXGIFactory4 available, vtable=%p (IDXGIFactory2=%p, same=%d)", 
-                vtable4, vtable, (int)(vtable4 == vtable));
+        HookLog("DX12: IDXGIFactory4 available, vtable=%p (IDXGIFactory2=%p, same=%d)", vtable4, vtable,
+                (int)(vtable4 == vtable));
         if (vtable4 != vtable) {  // Different vtable pointer
             VTableHook::Create(&vtable4[10], (LPVOID)DetourCreateSwapChainGlobal, nullptr);
             VTableHook::Create(&vtable4[15], (LPVOID)DetourCreateSwapChainForHwndGlobal, nullptr);
@@ -2744,8 +2741,8 @@ static void InstallGlobalVTableHooks() {
     IDXGIFactory6* pFactory6 = nullptr;
     if (SUCCEEDED(pCreateFactory(IID_PPV_ARGS(&pFactory6)))) {
         void** vtable6 = *(void***)pFactory6;
-        HookLog("DX12: IDXGIFactory6 available, vtable=%p (IDXGIFactory2=%p, same=%d)", 
-                vtable6, vtable, (int)(vtable6 == vtable));
+        HookLog("DX12: IDXGIFactory6 available, vtable=%p (IDXGIFactory2=%p, same=%d)", vtable6, vtable,
+                (int)(vtable6 == vtable));
         if (vtable6 != vtable) {  // Different vtable pointer
             VTableHook::Create(&vtable6[10], (LPVOID)DetourCreateSwapChainGlobal, nullptr);
             VTableHook::Create(&vtable6[15], (LPVOID)DetourCreateSwapChainForHwndGlobal, nullptr);

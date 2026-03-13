@@ -180,8 +180,7 @@ public:
             return;
 
         // Get the real SetSleepMode function
-        auto pRealSetSleepMode = reinterpret_cast<void*>(
-            origQueryInterface_(NVAPI_ID_D3D_SetSleepMode));
+        auto pRealSetSleepMode = reinterpret_cast<void*>(origQueryInterface_(NVAPI_ID_D3D_SetSleepMode));
         if (!pRealSetSleepMode)
             return;
 
