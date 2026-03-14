@@ -875,6 +875,8 @@ int MediaProcessMain(const AppConfig& config) {
             if (WGCCapture::IsSupported()) {
                 g_WgcCap = std::make_unique<WGCCapture>();
                 if (g_WgcCap->Init(d3dDevice)) {
+                    // Connect encoder bottleneck flag to WGC for throttle
+                    g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
                     LogInfo("[Media] WGC capture initialized%s", g_UseScreenGrab ? "" : " (standby for auto fallback)");
                 } else {
                     if (g_UseScreenGrab) {
@@ -1213,6 +1215,7 @@ int MediaProcessMain(const AppConfig& config) {
 
                         if (g_WgcCap->InitForWindow(d3dDevice, foundWindow)) {
                             g_WgcCap->SetCaptureCursor(config.video.captureCursor);
+                            g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
                             g_WgcCap->SetDirectFrameCallback(
                                 [](ID3D11Texture2D* texture, uint32_t width, uint32_t height, int64_t timestamp) {
                                     QueuedFrame qf;
@@ -1321,6 +1324,7 @@ int MediaProcessMain(const AppConfig& config) {
                             g_WgcCap = std::make_unique<WGCCapture>();
                             if (g_WgcCap->InitForWindow(d3dDevice, hGameWindow)) {
                                 g_WgcCap->SetCaptureCursor(config.video.captureCursor);
+                                g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
                                 g_WgcCap->SetDirectFrameCallback(
                                     [](ID3D11Texture2D* texture, uint32_t width, uint32_t height, int64_t timestamp) {
                                         QueuedFrame qf;

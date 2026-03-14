@@ -1094,6 +1094,11 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         mem->SetHeight(extent.height);
         mem->SetFormat(VkFormatToDXGI(format));
 
+        // Propagate HDR state to encoder
+        bool isHDR = (format == VK_FORMAT_R16G16B16A16_SFLOAT || format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ||
+                      format == VK_FORMAT_A2R10G10B10_UNORM_PACK32);
+        mem->SetIsHDR(isHDR);
+
         // If existing KMT textures have a different format, clear kmtReady to
         // force the encoder to recreate them with the correct format.
         uint32_t ourDxgiFormat = VkFormatToDXGI(format);

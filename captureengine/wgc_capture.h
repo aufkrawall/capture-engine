@@ -100,6 +100,11 @@ public:
     // Get count of frames skipped by throttle (for profiling)
     uint32_t GetSkippedFrameCount() const;
 
+    // Set external throttle flag (e.g., encoder bottleneck indicator).
+    // When *throttleFlag is true, CopyResource is skipped but TryGetNextFrame
+    // is still drained to return WGC buffers.
+    void SetThrottleFlag(const std::atomic<bool>* flag);
+
 private:
     class Impl;  // PIMPL to hide WinRT dependencies
     std::unique_ptr<Impl> impl_;

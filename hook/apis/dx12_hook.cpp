@@ -3623,8 +3623,7 @@ void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* 
 
         // Get the node mask from the game queue if available
         if (gameQueue) {
-            D3D12_COMMAND_QUEUE_DESC gameQueueDesc;
-            gameQueue->GetDesc(&gameQueueDesc);
+            D3D12_COMMAND_QUEUE_DESC gameQueueDesc = gameQueue->GetDesc();
             queueDesc.NodeMask = gameQueueDesc.NodeMask;
             HookLog("InitOverlaySync: Using node mask 0x%X from game queue", queueDesc.NodeMask);
         }
@@ -6200,6 +6199,11 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                         }
                     }
                     g_OverlayAdapter.SetHDR(isActualHDR, (int)desc.BufferDesc.Format);
+
+                    // Propagate HDR state to media engine via shared memory
+                    if (g_pSharedMem) {
+                        g_pSharedMem->SetIsHDR(isActualHDR);
+                    }
 
                     if (s_startupOverlayActivationStage ==
                         StartupOverlayActivationStage::kDelayRTVInitAfterBackendInit) {

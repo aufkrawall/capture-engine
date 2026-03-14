@@ -104,11 +104,19 @@ public:
     int64_t lastCapturedQPC_ = 0;    // QPC of last frame we actually copied
     std::atomic<uint32_t> skippedFrameCount_{0};
 
+    // External throttle flag (e.g., encoder bottlenecked)
+    const std::atomic<bool>* throttleFlag_ = nullptr;
+
+    // Dynamic format detection
+    bool formatDetected_ = false;  // True after first frame format is checked
+
     // Perf tracking
     std::atomic<int64_t> lastCopyUs_{0};
 
-    bool EnsureTexturePool(uint32_t width, uint32_t height) {
-        if (poolWidth_ == (int32_t)width && poolHeight_ == (int32_t)height && texturePool_[0])
+    DXGI_FORMAT poolFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
+
+    bool EnsureTexturePool(uint32_t width, uint32_t height, DXGI_FORMAT format = DXGI_FORMAT_B8G8R8A8_UNORM) {
+        if (poolWidth_ == (int32_t)width && poolHeight_ == (int32_t)height && poolFormat_ == format && texturePool_[0])
             return true;
 
         // Release old pool
@@ -124,13 +132,9 @@ public:
         copyDesc.Height = height;
         copyDesc.MipLevels = 1;
         copyDesc.ArraySize = 1;
-        copyDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        copyDesc.Format = format;  // Match WGC source format
         copyDesc.SampleDesc.Count = 1;
         copyDesc.Usage = D3D11_USAGE_DEFAULT;
-        // No bind flags: compatible with both CopyResource target and
-        // Video Processor input views. BIND_SHADER_RESOURCE/RENDER_TARGET
-        // cause VP CreateVideoProcessorInputView to return E_INVALIDARG,
-        // forcing an extra staging copy per frame.
         copyDesc.BindFlags = 0;
 
         for (int i = 0; i < TEXTURE_POOL_SIZE; i++) {
@@ -143,7 +147,8 @@ public:
 
         poolWidth_ = width;
         poolHeight_ = height;
-        LogInfo("[WGC] Texture pool created: %dx%d x%d", width, height, TEXTURE_POOL_SIZE);
+        poolFormat_ = format;
+        LogInfo("[WGC] Texture pool created: %dx%d fmt=%d x%d", width, height, format, TEXTURE_POOL_SIZE);
         return true;
     }
 
@@ -167,6 +172,13 @@ public:
             }
         }
 
+        // External throttle: skip GPU copy when encoder is bottlenecked.
+        if (throttleFlag_ && throttleFlag_->load(std::memory_order_relaxed)) {
+            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+            winrtFrame.Close();
+            return;
+        }
+
         auto surface = winrtFrame.Surface();
         IDirect3DDxgiInterfaceAccess* access = nullptr;
 
@@ -177,7 +189,13 @@ public:
                 D3D11_TEXTURE2D_DESC desc;
                 texture->GetDesc(&desc);
 
-                if (EnsureTexturePool(desc.Width, desc.Height)) {
+                // Log source format on first frame
+                if (!formatDetected_) {
+                    formatDetected_ = true;
+                    LogInfo("[WGC] Source format: fmt=%d %ux%u", desc.Format, desc.Width, desc.Height);
+                }
+
+                if (EnsureTexturePool(desc.Width, desc.Height, desc.Format)) {
                     // Round-robin through texture pool so each frame gets unique storage
                     uint32_t idx = poolWriteIndex_.fetch_add(1, std::memory_order_relaxed) % TEXTURE_POOL_SIZE;
                     ID3D11Texture2D* target = texturePool_[idx];
@@ -308,6 +326,8 @@ public:
         // callbacks to fire. CreateFreeThreaded() uses an internal worker thread
         // for callbacks. Using 8 buffers to prevent pool exhaustion at high Hz
         // monitors (143Hz+ needs headroom for GPU copy latency)
+        // Use BGRA8 for WGC. FP16/R10G10B10A2 cause color issues (gamma mismatch, DWM compositing bugs).
+        // 10-bit capture is available via Desktop Duplication and inject mode.
         framePool_ = winrt::Direct3D11CaptureFramePool::CreateFreeThreaded(
             winrtDevice_, winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized, 8, size);
 
@@ -735,5 +755,13 @@ uint32_t WGCCapture::GetSkippedFrameCount() const {
     return impl_ ? impl_->skippedFrameCount_.load(std::memory_order_relaxed) : 0;
 #else
     return 0;
+#endif
+}
+
+void WGCCapture::SetThrottleFlag(const std::atomic<bool>* flag) {
+#if HAS_WGC
+    if (impl_) {
+        impl_->throttleFlag_ = flag;
+    }
 #endif
 }

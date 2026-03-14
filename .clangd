@@ -31,16 +31,15 @@ CompileFlags:
     - "-resource-dir=build/msys64/clang64/lib/clang/21"
     # Force libc++ from MinGW toolchain (avoids MSVC STL conflicts)
     - "-stdlib=libc++"
-    # Add MinGW include paths for Windows headers
+    # Add MinGW include paths for Windows headers (system includes)
     - "build/msys64/clang64/include/c++/v1"
     - "build/msys64/clang64/include"
     - "-isystembuild/msys64/clang64/lib/clang/21/include"
     - "-isystembuild/msys64/clang64/x86_64-w64-mingw32/include"
-    # Vulkan SDK headers (provided by MSYS2 vulkan-headers package)
-    - "build/msys64/clang64/include"
-    # Suppress GCC extension warnings
+    # Suppress warnings
     - "-Wno-gnu-zero-variadic-macro-arguments"
     - "-Wno-microsoft-exception-spec"
+    - "-Wno-language-extension-token"
     # Prevent windows.h max/min macros from conflicting with std::max/min
     - "-DNOMINMAX"
   Remove:
@@ -59,6 +58,22 @@ CompileFlags:
     - "-Wno-microsoft-exception-spec"
     - "-D_FORTIFY_SOURCE=*"
 
+# Additional compile flags for test files (not in compile_commands.json)
+If:
+  PathMatch:
+    - tests/.*
+    - "**/test_*.cpp"
+  CompileFlags:
+    Compiler: build/msys64/clang64/bin/clang++.exe
+    Add:
+      - "-Icommon"
+      - "-Ihook/common"
+      - "-Itests"
+      - "build/msys64/clang64/include"
+      - "build/msys64/clang64/include/c++/v1"
+      - "-stdlib=libc++"
+      - "-std=c++20"
+
 Diagnostics:
   Suppress:
     - "unused-parameter"
@@ -66,6 +81,11 @@ Diagnostics:
     - "microsoft-exception-spec"
     # False positives from clangd parsing D3D12 COM interface macros
     - "typecheck-invalid-constexpr"
+    # False positives from missing Vulkan headers in LSP (build uses MSYS2 paths)
+    - "pp_file_not_found"
+    # Win32 API type conversion warnings (harmless in hook code)
+    - "microsoft-cast"
+    - "language-extension-token"
   ClangTidy:
     Add:
       - "modernize-use-nullptr"

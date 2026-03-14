@@ -2049,6 +2049,12 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
     bool isHDR = (desc.BufferDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT ||
                   desc.BufferDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM);
     g_OverlayAdapter.SetHDR(isHDR, (int)desc.BufferDesc.Format);
+
+    // Propagate HDR state to media engine via shared memory
+    if (g_pSharedMem) {
+        g_pSharedMem->SetIsHDR(isHDR);
+    }
+
     g_OverlayAdapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
     g_OverlayAdapter.SetIPCClient(g_IPC);
     g_OverlayAdapter.SetDroppedFrames(g_DX11Capture.droppedFrames.load(std::memory_order_relaxed));
