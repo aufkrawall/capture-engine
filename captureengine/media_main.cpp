@@ -506,10 +506,11 @@ void EncoderThreadFunc(const AppConfig& config) {
         bool isDuplicate = false;
 
         if (popped) {
-            frameToProcess = &frame;
             if (frame.isInjectMode) {
                 g_LastFrame = std::move(frame);
                 g_HasLastFrame = true;
+                // After move, frame fields are nullptr - use g_LastFrame for processing
+                frameToProcess = &g_LastFrame;
             } else {
                 if (g_HasLastFrame && !g_LastFrame.isInjectMode && g_LastFrame.texture) {
                     g_LastFrame.texture->Release();
@@ -520,6 +521,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 }
                 g_LastFrame = std::move(frame);
                 g_HasLastFrame = true;
+                // After move, frame.texture is nullptr - use g_LastFrame for processing
+                frameToProcess = &g_LastFrame;
             }
         } else if (g_HasLastFrame && g_EncoderRunning) {
             // CFR FIX: Re-encode last frame when no new frame is available.
