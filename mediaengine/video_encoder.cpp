@@ -3213,37 +3213,37 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
     // Stream 1: Cursor overlay (only if visible and VP supports it)
     bool useCursorStream = cursorVisible && vpSupportsOverlay && activeCursor && activeCursor->inputView;
     if (useCursorStream) {
-        // Calculate DPI scale from frame size vs physical screen size each call.
-        // This must NOT be cached statically — frame dimensions change between
-        // capture sessions (e.g., DPI-unaware OpenGL then full-res Vulkan),
-        // so a stale scale from a previous session would produce wrong cursor
-        // size/position.
-        // Media engine runs DPI-aware so GetSystemMetrics returns physical pixels.
-        int screenW = GetSystemMetrics(SM_CXSCREEN);
-        int screenH = GetSystemMetrics(SM_CYSCREEN);
-        float scaleX = screenW > 0 ? (float)width / (float)screenW : 1.0f;
-        float scaleY = screenH > 0 ? (float)height / (float)screenH : 1.0f;
-        float cachedDpiScale = (scaleX + scaleY) / 2.0f;
+        // Get actual DPI for virtual→physical coordinate conversion.
+        // GetCursorInfo() returns cursor position in virtual (DPI-scaled) screen coords.
+        // The frame is in physical pixels, so we need to convert.
+        UINT dpiX = 96, dpiY = 96;
+        HDC hdc = GetDC(nullptr);
+        if (hdc) {
+            dpiX = GetDeviceCaps(hdc, LOGPIXELSX);
+            dpiY = GetDeviceCaps(hdc, LOGPIXELSY);
+            ReleaseDC(nullptr, hdc);
+        }
+        float positionScaleX = dpiX / 96.0f;
+        float positionScaleY = dpiY / 96.0f;
 
         static int dpiLogCount = 0;
         if (dpiLogCount++ % 600 == 0) {
-            DLL_Log("[Cursor] DPI scale (calculated): %.2f (frame=%dx%d, screen=%dx%d)", cachedDpiScale, width, height,
-                    screenW, screenH);
+            DLL_Log("[Cursor] DPI position scale: %.2f x %.2f (DPI=%ux%u, frame=%dx%d)", positionScaleX, positionScaleY,
+                    dpiX, dpiY, width, height);
         }
 
-        float dpiScale = cachedDpiScale > 0.5f ? cachedDpiScale : 1.0f;
+        // Cursor size: already pre-scaled to DPI-correct display size in GetCursorCacheEntry.
+        // No additional scaling needed — VP does 1:1 blit (no bilinear blur).
+        int scaledWidth = (int)activeCursor->width;
+        int scaledHeight = (int)activeCursor->height;
 
-        // Scale cursor size by DPI (use cached entry)
-        int scaledWidth = (int)(activeCursor->width * dpiScale);
-        int scaledHeight = (int)(activeCursor->height * dpiScale);
+        // Convert cursor position from virtual → physical pixels
+        int physicalX = (int)(cursorX * positionScaleX);
+        int physicalY = (int)(cursorY * positionScaleY);
 
-        // Scale cursor position: screen virtual coords -> frame physical coords
-        int physicalX = (int)(cursorX * dpiScale);
-        int physicalY = (int)(cursorY * dpiScale);
-
-        // Apply hotspot offset (also scaled)
-        int hotspotXScaled = (int)(activeCursor->hotspotX * dpiScale);
-        int hotspotYScaled = (int)(activeCursor->hotspotY * dpiScale);
+        // Apply hotspot offset (already pre-scaled in cache entry)
+        int hotspotXScaled = activeCursor->hotspotX;
+        int hotspotYScaled = activeCursor->hotspotY;
 
         // Set cursor destination rectangle
         RECT cursorRect;
@@ -3252,11 +3252,12 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
         cursorRect.right = cursorRect.left + scaledWidth;
         cursorRect.bottom = cursorRect.top + scaledHeight;
 
-        // Log cursot rect periodically for debugging
+        // Log cursor rect periodically for debugging
         static int logCounter = 0;
         if (logCounter++ % 200 == 0) {
-            DLL_Log("[Cursor] Rect: (%d,%d)-(%d,%d) dpi=%.2f pos=(%d,%d)", cursorRect.left, cursorRect.top,
-                    cursorRect.right, cursorRect.bottom, dpiScale, cursorX, cursorY);
+            DLL_Log("[Cursor] Rect: (%d,%d)-(%d,%d) posScale=%.2f pos=(%d,%d) size=%dx%d", cursorRect.left,
+                    cursorRect.top, cursorRect.right, cursorRect.bottom, positionScaleX, cursorX, cursorY, scaledWidth,
+                    scaledHeight);
         }
 
         // CLIPPING: VideoProcessorBlt fails with E_INVALIDARG if the destination
@@ -3631,6 +3632,225 @@ void VideoEncoder::CleanupCursorCache() {
     }
     activeCursor = nullptr;
     cursorFrameCounter = 0;
+
+    // Clean up GPU cursor scaling resources
+    if (cursorScaleVS) {
+        cursorScaleVS->Release();
+        cursorScaleVS = nullptr;
+    }
+    if (cursorScalePS) {
+        cursorScalePS->Release();
+        cursorScalePS = nullptr;
+    }
+    if (cursorScaleSampler) {
+        cursorScaleSampler->Release();
+        cursorScaleSampler = nullptr;
+    }
+    cursorScalingInit = false;
+}
+
+bool VideoEncoder::InitCursorScaling() {
+    if (cursorScalingInit)
+        return true;
+
+    if (!d3d11Device)
+        return false;
+
+    // Minimal fullscreen-triangle shaders for point-filtered texture copy/scale
+    static const char* SCALE_SHADER_SRC = R"(
+Texture2D srcTex : register(t0);
+SamplerState pointSam : register(s0);
+struct VS_OUT { float4 pos : SV_POSITION; float2 uv : TEXCOORD; };
+VS_OUT VS_Main(uint id : SV_VertexID) {
+    VS_OUT o;
+    o.uv = float2((id == 1) ? 2.0f : 0.0f, (id == 2) ? 2.0f : 0.0f);
+    o.pos = float4(o.uv.x * 2.0f - 1.0f, 1.0f - o.uv.y * 2.0f, 0.0f, 1.0f);
+    return o;
+}
+float4 PS_Main(VS_OUT i) : SV_TARGET { return srcTex.Sample(pointSam, i.uv); }
+)";
+
+    ID3D11Device* baseDev = nullptr;
+    d3d11Device->QueryInterface(IID_PPV_ARGS(&baseDev));
+    if (!baseDev)
+        return false;
+
+    // Load compiler
+    HMODULE d3dCompiler = LoadLibraryW(L"d3dcompiler_47.dll");
+    if (!d3dCompiler) {
+        baseDev->Release();
+        return false;
+    }
+    typedef HRESULT(WINAPI * PFN_D3DCompile)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR,
+                                             LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
+    auto d3dCompile = (PFN_D3DCompile)GetProcAddress(d3dCompiler, "D3DCompile");
+    if (!d3dCompile) {
+        FreeLibrary(d3dCompiler);
+        baseDev->Release();
+        return false;
+    }
+
+    // Compile shaders
+    ID3DBlob *vsBlob = nullptr, *psBlob = nullptr, *errBlob = nullptr;
+    HRESULT hr = d3dCompile(SCALE_SHADER_SRC, strlen(SCALE_SHADER_SRC), nullptr, nullptr, nullptr, "VS_Main", "vs_4_0",
+                            0, 0, &vsBlob, &errBlob);
+    if (FAILED(hr)) {
+        if (errBlob)
+            errBlob->Release();
+        FreeLibrary(d3dCompiler);
+        baseDev->Release();
+        return false;
+    }
+    hr = d3dCompile(SCALE_SHADER_SRC, strlen(SCALE_SHADER_SRC), nullptr, nullptr, nullptr, "PS_Main", "ps_4_0", 0, 0,
+                    &psBlob, &errBlob);
+    if (FAILED(hr)) {
+        vsBlob->Release();
+        if (errBlob)
+            errBlob->Release();
+        FreeLibrary(d3dCompiler);
+        baseDev->Release();
+        return false;
+    }
+
+    hr = baseDev->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &cursorScaleVS);
+    vsBlob->Release();
+    if (FAILED(hr)) {
+        psBlob->Release();
+        FreeLibrary(d3dCompiler);
+        baseDev->Release();
+        return false;
+    }
+
+    hr = baseDev->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &cursorScalePS);
+    psBlob->Release();
+    FreeLibrary(d3dCompiler);
+    if (FAILED(hr)) {
+        baseDev->Release();
+        return false;
+    }
+
+    // Point sampler for crisp nearest-neighbor scaling
+    D3D11_SAMPLER_DESC sampDesc = {};
+    sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+    sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sampDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    hr = baseDev->CreateSamplerState(&sampDesc, &cursorScaleSampler);
+    baseDev->Release();
+    if (FAILED(hr))
+        return false;
+
+    cursorScalingInit = true;
+    return true;
+}
+
+bool VideoEncoder::ScaleCursorOnGPU(ID3D11Texture2D* srcTex, uint32_t srcW, uint32_t srcH, ID3D11Texture2D** dstTex,
+                                    uint32_t dstW, uint32_t dstH) {
+    if (!cursorScalingInit && !InitCursorScaling())
+        return false;
+
+    ID3D11Device* baseDev = nullptr;
+    d3d11Device->QueryInterface(IID_PPV_ARGS(&baseDev));
+    if (!baseDev)
+        return false;
+
+    ID3D11DeviceContext* baseCtx = nullptr;
+    d3d11Context->QueryInterface(IID_PPV_ARGS(&baseCtx));
+    if (!baseCtx) {
+        baseDev->Release();
+        return false;
+    }
+
+    // Create source SRV
+    ID3D11ShaderResourceView* srcSRV = nullptr;
+    HRESULT hr = baseDev->CreateShaderResourceView(srcTex, nullptr, &srcSRV);
+    if (FAILED(hr)) {
+        baseDev->Release();
+        baseCtx->Release();
+        return false;
+    }
+
+    // Create destination texture (with RTV bind for rendering)
+    D3D11_TEXTURE2D_DESC dstDesc = {};
+    dstDesc.Width = dstW;
+    dstDesc.Height = dstH;
+    dstDesc.MipLevels = 1;
+    dstDesc.ArraySize = 1;
+    dstDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    dstDesc.SampleDesc.Count = 1;
+    dstDesc.Usage = D3D11_USAGE_DEFAULT;
+    dstDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+
+    ID3D11Texture2D* scaledTex = nullptr;
+    hr = baseDev->CreateTexture2D(&dstDesc, nullptr, &scaledTex);
+    if (FAILED(hr)) {
+        srcSRV->Release();
+        baseDev->Release();
+        baseCtx->Release();
+        return false;
+    }
+
+    // Create RTV for destination
+    ID3D11RenderTargetView* dstRTV = nullptr;
+    hr = baseDev->CreateRenderTargetView(scaledTex, nullptr, &dstRTV);
+    if (FAILED(hr)) {
+        scaledTex->Release();
+        srcSRV->Release();
+        baseDev->Release();
+        baseCtx->Release();
+        return false;
+    }
+
+    // Save state
+    ID3D11RenderTargetView* oldRTV = nullptr;
+    ID3D11DepthStencilView* oldDSV = nullptr;
+    D3D11_VIEWPORT oldVP;
+    UINT numVPs = 1;
+    baseCtx->OMGetRenderTargets(1, &oldRTV, &oldDSV);
+    baseCtx->RSGetViewports(&numVPs, &oldVP);
+
+    // Set up render state
+    D3D11_VIEWPORT vp = {};
+    vp.Width = (float)dstW;
+    vp.Height = (float)dstH;
+    vp.MaxDepth = 1.0f;
+
+    float clearColor[4] = {0, 0, 0, 0};
+    baseCtx->OMSetRenderTargets(1, &dstRTV, nullptr);
+    baseCtx->RSSetViewports(1, &vp);
+    baseCtx->ClearRenderTargetView(dstRTV, clearColor);
+
+    // Set shaders
+    baseCtx->VSSetShader(cursorScaleVS, nullptr, 0);
+    baseCtx->PSSetShader(cursorScalePS, nullptr, 0);
+    baseCtx->PSSetShaderResources(0, 1, &srcSRV);
+    baseCtx->PSSetSamplers(0, 1, &cursorScaleSampler);
+
+    // Disable blending (straight copy)
+    baseCtx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
+
+    // Draw fullscreen triangle
+    baseCtx->IASetInputLayout(nullptr);
+    baseCtx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    baseCtx->Draw(3, 0);
+
+    // Restore state
+    baseCtx->OMSetRenderTargets(1, &oldRTV, oldDSV);
+    baseCtx->RSSetViewports(1, &oldVP);
+
+    if (oldRTV)
+        oldRTV->Release();
+    if (oldDSV)
+        oldDSV->Release();
+
+    // Cleanup
+    dstRTV->Release();
+    srcSRV->Release();
+    baseDev->Release();
+    baseCtx->Release();
+
+    *dstTex = scaledTex;
+    return true;
 }
 
 VideoEncoder::CursorCacheEntry* VideoEncoder::GetCursorCacheEntry(HCURSOR handle) {
@@ -3694,11 +3914,12 @@ VideoEncoder::CursorCacheEntry* VideoEncoder::GetCursorCacheEntry(HCURSOR handle
     if (!icon)
         return nullptr;
 
-    // Get hotspot info
+    // Get hotspot info (original, before any scaling)
     ICONINFO ii;
+    int32_t origHotspotX = 0, origHotspotY = 0;
     if (GetIconInfo(icon, &ii)) {
-        entry.hotspotX = ii.xHotspot;
-        entry.hotspotY = ii.yHotspot;
+        origHotspotX = (int32_t)ii.xHotspot;
+        origHotspotY = (int32_t)ii.yHotspot;
         DeleteObject(ii.hbmColor);
         DeleteObject(ii.hbmMask);
     }
@@ -3713,7 +3934,26 @@ VideoEncoder::CursorCacheEntry* VideoEncoder::GetCursorCacheEntry(HCURSOR handle
     }
     DestroyIcon(icon);
 
-    // Create D3D11 texture
+    // Pre-scale cursor bitmap to DPI-correct display size on the GPU.
+    // Uses a pixel shader with point sampling for crisp nearest-neighbor upscale.
+    // This prevents bilinear blur from VP scaling when the extracted bitmap
+    // (typically 32x32) is smaller than the expected display size at >100% DPI.
+    int expectedW = GetSystemMetrics(SM_CXCURSOR);
+    int expectedH = GetSystemMetrics(SM_CYCURSOR);
+    bool needsScaling = (expectedW > 0 && expectedH > 0 && ((uint32_t)expectedW != w || (uint32_t)expectedH != h));
+
+    if (needsScaling) {
+        // Scale hotspot proportionally
+        float sx = (float)expectedW / (float)w;
+        float sy = (float)expectedH / (float)h;
+        origHotspotX = (int32_t)(origHotspotX * sx);
+        origHotspotY = (int32_t)(origHotspotY * sy);
+    }
+
+    entry.hotspotX = origHotspotX;
+    entry.hotspotY = origHotspotY;
+
+    // Create D3D11 texture at ORIGINAL extracted size (with SRV bind for GPU scaling)
     D3D11_TEXTURE2D_DESC texDesc = {};
     texDesc.Width = w;
     texDesc.Height = h;
@@ -3722,15 +3962,16 @@ VideoEncoder::CursorCacheEntry* VideoEncoder::GetCursorCacheEntry(HCURSOR handle
     texDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
     texDesc.SampleDesc.Count = 1;
     texDesc.Usage = D3D11_USAGE_DEFAULT;
-    texDesc.BindFlags = 0;
+    texDesc.BindFlags = needsScaling ? D3D11_BIND_SHADER_RESOURCE : 0;
 
     D3D11_SUBRESOURCE_DATA initData = {};
     initData.pSysMem = bitmap;
     initData.SysMemPitch = w * 4;
 
+    ID3D11Texture2D* srcTexture = nullptr;
     ID3D11Device* baseDevice = nullptr;
     d3d11Device->QueryInterface(IID_PPV_ARGS(&baseDevice));
-    HRESULT hr = baseDevice->CreateTexture2D(&texDesc, &initData, &entry.texture);
+    HRESULT hr = baseDevice->CreateTexture2D(&texDesc, &initData, &srcTexture);
     baseDevice->Release();
     delete[] bitmap;
 
@@ -3739,7 +3980,30 @@ VideoEncoder::CursorCacheEntry* VideoEncoder::GetCursorCacheEntry(HCURSOR handle
         return nullptr;
     }
 
-    // Create VP input view
+    if (needsScaling) {
+        // GPU scale: render srcTexture to a new texture at target display size
+        // using point sampling (nearest-neighbor, no blur)
+        ID3D11Texture2D* scaledTex = nullptr;
+        if (ScaleCursorOnGPU(srcTexture, w, h, &scaledTex, (uint32_t)expectedW, (uint32_t)expectedH)) {
+            srcTexture->Release();
+            entry.texture = scaledTex;
+            entry.width = (uint32_t)expectedW;
+            entry.height = (uint32_t)expectedH;
+            DLL_Log("[CursorCache] GPU-scaled cursor: %ux%u -> %ux%u", w, h, expectedW, expectedH);
+        } else {
+            // GPU scaling failed - fall back to original texture
+            DLL_Log("[CursorCache] GPU scaling failed, using original %ux%u", w, h);
+            entry.texture = srcTexture;
+            entry.width = w;
+            entry.height = h;
+        }
+    } else {
+        entry.texture = srcTexture;
+        entry.width = w;
+        entry.height = h;
+    }
+
+    // Create VP input view from the (possibly GPU-scaled) texture
     D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC ivDesc = {};
     ivDesc.FourCC = 0;
     ivDesc.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
@@ -3755,8 +4019,6 @@ VideoEncoder::CursorCacheEntry* VideoEncoder::GetCursorCacheEntry(HCURSOR handle
     }
 
     entry.handle = handle;
-    entry.width = w;
-    entry.height = h;
     entry.lastUsedFrame = cursorFrameCounter;
 
     static int cacheHits = 0, cacheMisses = 0;

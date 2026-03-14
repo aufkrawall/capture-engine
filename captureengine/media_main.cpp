@@ -985,8 +985,8 @@ int MediaProcessMain(const AppConfig& config) {
                                     if (!titleStr.empty() && titleStr.find(winLower) != std::string::npos)
                                         matched = true;
                                     // title_type: also try window class
-                                    if (!matched && mode == MatchMode::kTitleType &&
-                                        !classStr.empty() && classStr.find(winLower) != std::string::npos)
+                                    if (!matched && mode == MatchMode::kTitleType && !classStr.empty() &&
+                                        classStr.find(winLower) != std::string::npos)
                                         matched = true;
                                 }
                             }
@@ -1168,8 +1168,8 @@ int MediaProcessMain(const AppConfig& config) {
                                 } else {
                                     if (!titleStr.empty() && titleStr.find(winLower) != std::string::npos)
                                         matched = true;
-                                    if (!matched && mode == MatchMode::kTitleType &&
-                                        !classStr.empty() && classStr.find(winLower) != std::string::npos)
+                                    if (!matched && mode == MatchMode::kTitleType && !classStr.empty() &&
+                                        classStr.find(winLower) != std::string::npos)
                                         matched = true;
                                 }
                             }
@@ -1214,8 +1214,7 @@ int MediaProcessMain(const AppConfig& config) {
                         if (g_WgcCap->InitForWindow(d3dDevice, foundWindow)) {
                             g_WgcCap->SetCaptureCursor(config.video.captureCursor);
                             g_WgcCap->SetDirectFrameCallback(
-                                [](ID3D11Texture2D* texture, uint32_t width, uint32_t height,
-                                   int64_t timestamp) {
+                                [](ID3D11Texture2D* texture, uint32_t width, uint32_t height, int64_t timestamp) {
                                     QueuedFrame qf;
                                     qf.isInjectMode = false;
                                     qf.texture = texture;
@@ -1323,8 +1322,7 @@ int MediaProcessMain(const AppConfig& config) {
                             if (g_WgcCap->InitForWindow(d3dDevice, hGameWindow)) {
                                 g_WgcCap->SetCaptureCursor(config.video.captureCursor);
                                 g_WgcCap->SetDirectFrameCallback(
-                                    [](ID3D11Texture2D* texture, uint32_t width, uint32_t height,
-                                       int64_t timestamp) {
+                                    [](ID3D11Texture2D* texture, uint32_t width, uint32_t height, int64_t timestamp) {
                                         QueuedFrame qf;
                                         qf.isInjectMode = false;
                                         qf.texture = texture;

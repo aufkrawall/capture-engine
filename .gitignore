@@ -49,6 +49,7 @@ __pycache__/
 .mypy_cache/
 .pyre/
 .hypothesis/
+.kilo/
 *.pyc
 *.swp
 *.swo

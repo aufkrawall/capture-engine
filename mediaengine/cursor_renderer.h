@@ -3,6 +3,13 @@
 #include <d3d11.h>
 #include <windows.h>
 #include <cstdint>
+#include <memory>
+
+// Scale a BGRA bitmap using nearest-neighbor (point) filtering.
+// Used to pre-scale cursor bitmaps to DPI-correct display size before GPU upload,
+// so the D3D11 Video Processor does a 1:1 blit with no bilinear blur.
+std::unique_ptr<uint8_t[]> ScaleBitmapNearestNeighbor(const uint8_t* src, uint32_t srcW, uint32_t srcH, uint32_t dstW,
+                                                      uint32_t dstH);
 
 // GPU-accelerated cursor renderer using D3D11 pixel shader compositing
 // Design: Zero overhead when cursor is hidden - only GetCursorInfo() check

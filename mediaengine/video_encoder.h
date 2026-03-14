@@ -249,6 +249,15 @@ private:
     // Cursor overlay via VP multi-stream (Option C)
     bool vpSupportsOverlay = false;  // MaxInputStreams >= 2
 
+    // GPU cursor scaling infrastructure (point-filtered upscale via pixel shader)
+    ID3D11VertexShader* cursorScaleVS = nullptr;
+    ID3D11PixelShader* cursorScalePS = nullptr;
+    ID3D11SamplerState* cursorScaleSampler = nullptr;  // Point sampling for crisp upscale
+    bool cursorScalingInit = false;
+    bool InitCursorScaling();  // Create shader + sampler (once)
+    bool ScaleCursorOnGPU(ID3D11Texture2D* srcTex, uint32_t srcW, uint32_t srcH, ID3D11Texture2D** dstTex,
+                          uint32_t dstW, uint32_t dstH);
+
     // LRU Cursor Cache - avoids recreating textures for common cursor shapes
     static constexpr int kCursorCacheSize = 8;
     struct CursorCacheEntry {

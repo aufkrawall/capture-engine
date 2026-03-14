@@ -407,20 +407,16 @@ public:
                 else if (effectiveMode == LimiterModeValues::kBasic)
                     reason = "no native API active";
 
-                HookLog(
-                    "FPS Limiter [AUTO]: reflex=%s(%s) antiLag2=%s(%s) xell=%s(%s) fg=%s → selected=%s (%s)",
-                    reflexAvail ? "avail" : "n/a", reflexActive ? "active" : "inactive",
-                    al2Avail ? "avail" : "n/a", al2Active ? "active" : "inactive",
-                    xellAvail ? "avail" : "n/a", xellActive ? "active" : "inactive",
-                    fgActive ? "yes" : "no",
-                    (effectiveMode == LimiterModeValues::kNative)
-                        ? "reflex"
-                        : (effectiveMode == LimiterModeValues::kAntiLag2)
-                              ? "anti_lag2"
-                              : (effectiveMode == LimiterModeValues::kXeLL)
-                                    ? "xell"
-                                    : (effectiveMode == LimiterModeValues::kFGFallback) ? "fg_fallback" : "basic",
-                    reason);
+                HookLog("FPS Limiter [AUTO]: reflex=%s(%s) antiLag2=%s(%s) xell=%s(%s) fg=%s → selected=%s (%s)",
+                        reflexAvail ? "avail" : "n/a", reflexActive ? "active" : "inactive", al2Avail ? "avail" : "n/a",
+                        al2Active ? "active" : "inactive", xellAvail ? "avail" : "n/a",
+                        xellActive ? "active" : "inactive", fgActive ? "yes" : "no",
+                        (effectiveMode == LimiterModeValues::kNative)       ? "reflex"
+                        : (effectiveMode == LimiterModeValues::kAntiLag2)   ? "anti_lag2"
+                        : (effectiveMode == LimiterModeValues::kXeLL)       ? "xell"
+                        : (effectiveMode == LimiterModeValues::kFGFallback) ? "fg_fallback"
+                                                                            : "basic",
+                        reason);
             }
         }
 
@@ -896,7 +892,7 @@ private:
     int lastTargetFps_ = 0;
     bool lastUsedCaptureSync_ = false;
     uint32_t lastEffectiveMode_ = LimiterModeValues::kAuto;  // Track mode changes for logging
-    int nativeApiRecheckCounter_ = 0;                          // Frame counter for periodic native API re-check
+    int nativeApiRecheckCounter_ = 0;                        // Frame counter for periodic native API re-check
     bool reflexLimiterActive_ = false;                       // True when Reflex is handling pacing
     bool reflexDeviceProvided_ = false;                      // True once we've given device to ReflexLimiter
     bool reflexLoggedSuccess_ = false;                       // True once we've logged successful Reflex activation

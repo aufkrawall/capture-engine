@@ -421,12 +421,10 @@ void Renderer::DrawGraphPolyline(const float* xs, const float* ys, int count, ui
             vertices.push_back({xs[i] - nx * halfThick, ys[i] - ny * halfThick, 0, 0, color});
             vertices.push_back({xs[i] - nx * halfThick, ys[i] - ny * halfThick, 0, 0, color});
         } else {
-            vertices.push_back(
-                {xs[i] + nx * (halfThick + AA_SIZE), ys[i] + ny * (halfThick + AA_SIZE), 0, 0, colorAA});
+            vertices.push_back({xs[i] + nx * (halfThick + AA_SIZE), ys[i] + ny * (halfThick + AA_SIZE), 0, 0, colorAA});
             vertices.push_back({xs[i] + nx * halfThick, ys[i] + ny * halfThick, 0, 0, color});
             vertices.push_back({xs[i] - nx * halfThick, ys[i] - ny * halfThick, 0, 0, color});
-            vertices.push_back(
-                {xs[i] - nx * (halfThick + AA_SIZE), ys[i] - ny * (halfThick + AA_SIZE), 0, 0, colorAA});
+            vertices.push_back({xs[i] - nx * (halfThick + AA_SIZE), ys[i] - ny * (halfThick + AA_SIZE), 0, 0, colorAA});
         }
     }
 

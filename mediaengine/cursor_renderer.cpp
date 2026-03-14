@@ -53,6 +53,39 @@ float4 PS_Main(VS_OUTPUT input) : SV_TARGET {
 }
 )";
 
+std::unique_ptr<uint8_t[]> ScaleBitmapNearestNeighbor(const uint8_t* src, uint32_t srcW, uint32_t srcH, uint32_t dstW,
+                                                      uint32_t dstH) {
+    if (!src || srcW == 0 || srcH == 0 || dstW == 0 || dstH == 0) {
+        return nullptr;
+    }
+    if (srcW == dstW && srcH == dstH) {
+        // No scaling needed - return a copy
+        uint32_t size = dstW * dstH * 4;
+        auto result = std::make_unique<uint8_t[]>(size);
+        memcpy(result.get(), src, size);
+        return result;
+    }
+
+    auto result = std::make_unique<uint8_t[]>(dstW * dstH * 4);
+    uint8_t* dst = result.get();
+
+    for (uint32_t dy = 0; dy < dstH; dy++) {
+        uint32_t sy = dy * srcH / dstH;
+        const uint8_t* srcRow = src + sy * srcW * 4;
+        uint8_t* dstRow = dst + dy * dstW * 4;
+        for (uint32_t dx = 0; dx < dstW; dx++) {
+            uint32_t sx = dx * srcW / dstW;
+            const uint8_t* srcPixel = srcRow + sx * 4;
+            uint8_t* dstPixel = dstRow + dx * 4;
+            dstPixel[0] = srcPixel[0];  // B
+            dstPixel[1] = srcPixel[1];  // G
+            dstPixel[2] = srcPixel[2];  // R
+            dstPixel[3] = srcPixel[3];  // A
+        }
+    }
+    return result;
+}
+
 CursorRenderer::CursorRenderer() = default;
 
 CursorRenderer::~CursorRenderer() {
@@ -214,7 +247,7 @@ bool CursorRenderer::CreateRenderingResources() {
     // Create sampler
     DLL_Log("[CursorRenderer] Creating sampler");
     D3D11_SAMPLER_DESC sampDesc = {};
-    sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
     sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
     sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
     sampDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -536,12 +569,23 @@ bool CursorRenderer::CompositeOntoFrame(ID3D11Texture2D* targetTexture, int fram
         return false;
     }
 
-    // Get cursor position
+    // Get cursor position (virtual screen coords) and convert to physical
     POINT cursorPos = ci.ptScreenPos;
 
-    // Calculate normalized cursor position and size
-    float cursorX = (float)(cursorPos.x - hotspotX) / (float)frameWidth;
-    float cursorY = (float)(cursorPos.y - hotspotY) / (float)frameHeight;
+    // Get DPI for virtual→physical coordinate conversion
+    UINT dpiX = 96, dpiY = 96;
+    HDC hdc = GetDC(nullptr);
+    if (hdc) {
+        dpiX = GetDeviceCaps(hdc, LOGPIXELSX);
+        dpiY = GetDeviceCaps(hdc, LOGPIXELSY);
+        ReleaseDC(nullptr, hdc);
+    }
+    float posScaleX = dpiX / 96.0f;
+    float posScaleY = dpiY / 96.0f;
+
+    // Calculate normalized cursor position and size (DPI-aware)
+    float cursorX = (float)((int)(cursorPos.x * posScaleX) - hotspotX) / (float)frameWidth;
+    float cursorY = (float)((int)(cursorPos.y * posScaleY) - hotspotY) / (float)frameHeight;
     float cursorW = (float)cursorWidth / (float)frameWidth;
     float cursorH = (float)cursorHeight / (float)frameHeight;
 

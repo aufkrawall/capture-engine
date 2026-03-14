@@ -81,12 +81,13 @@ public:
 
         if (!origSetSleepMode_ || !origSleep_) {
             HookLogImportant("ReflexLimiter: nvapi_QueryInterface resolved but SetSleepMode=%p Sleep=%p (incomplete)",
-                    (void*)origSetSleepMode_, (void*)origSleep_);
+                             (void*)origSetSleepMode_, (void*)origSleep_);
             return false;
         }
 
         available_.store(true, std::memory_order_release);
-        HookLogImportant("ReflexLimiter: Ready (SetSleepMode=%p, Sleep=%p)", (void*)origSetSleepMode_, (void*)origSleep_);
+        HookLogImportant("ReflexLimiter: Ready (SetSleepMode=%p, Sleep=%p)", (void*)origSetSleepMode_,
+                         (void*)origSleep_);
         return true;
     }
 

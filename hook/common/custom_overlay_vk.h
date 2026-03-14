@@ -2,7 +2,8 @@
  * Custom Overlay - Vulkan Backend
  *
  * Renders overlay using Vulkan.
- * Note: The project uses a Vulkan layer for hooking, so this backend
+ * Note: The project uses a Vulkan layer for
+ * hooking, so this backend
  * requires dispatch table access because VK_NO_PROTOTYPES is defined.
  */
 
@@ -57,7 +58,10 @@ using VkDescriptorSetLayout = VkDescriptorSetLayout_T*;
 using VkDescriptorPool = VkDescriptorPool_T*;
 using VkDescriptorSet = VkDescriptorSet_T*;
 using VkMemoryPropertyFlags = uint32_t;
-using VkExtent2D = struct { uint32_t width; uint32_t height; };
+using VkExtent2D = struct {
+    uint32_t width;
+    uint32_t height;
+};
 #define VK_NULL_HANDLE nullptr
 #endif
 
