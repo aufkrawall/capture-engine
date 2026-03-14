@@ -167,7 +167,6 @@ private:
     int64_t inputFrameCount = 0;       // Number of frames received from hook
     int64_t skippedFrameCount = 0;     // Frames skipped (game fps > target)
     int64_t duplicatedFrameCount = 0;  // Frames duplicated (game fps < target)
-    // ID3D11Texture2D *lastNV12Texture = nullptr; // For frame duplication
 
     // Cached shared textures (avoid reopening every frame)
     // Octo-buffered support (8 textures to prevent overwrite race)

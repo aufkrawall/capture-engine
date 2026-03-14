@@ -52,12 +52,13 @@ public:
     // Query and cache primary adapter (adapter 0)
     bool CachePrimaryAdapter();
 
-    // Get cached adapter info (returns nullptr if not cached)
-    const AdapterInfo* GetCachedInfo() const {
+    // Get cached adapter info (returns copy to avoid dangling pointer after lock release)
+    bool GetCachedInfo(AdapterInfo& out) const {
         std::lock_guard<std::mutex> lock(m_mutex);
         if (!m_cached.load(std::memory_order_acquire))
-            return nullptr;
-        return &m_info;
+            return false;
+        out = m_info;
+        return true;
     }
 
     // Check if we have cached info

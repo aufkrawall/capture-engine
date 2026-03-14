@@ -1,7 +1,7 @@
 {
   "typeCheckingMode": "basic",
   "pythonVersion": "3.10",
-  "pythonPlatform": "Linux",
+  "pythonPlatform": "Windows",
   "include": ["build.py", "testapp"],
   "exclude": [
     "**/node_modules",
@@ -14,7 +14,7 @@
   "ignore": [],
   "strict": [],
   "defineConstant": {
-    "IS_WINDOWS": false
+    "IS_WINDOWS": true
   },
   "executionEnvironments": [
     {

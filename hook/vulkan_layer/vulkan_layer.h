@@ -9,6 +9,7 @@
 #endif
 #include <vulkan/vk_layer.h>
 #include <vulkan/vulkan.h>
+#include <atomic>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -230,6 +231,9 @@ private:
     std::unordered_map<VkSwapchainKHR, SwapchainData*> m_Swapchains;
     std::unordered_map<VkSurfaceKHR, HWND> m_Surfaces;
     std::unordered_map<VkPhysicalDevice, VkInstance> m_PhysDevToInstance;
+
+    // Generation counter to invalidate TLS swapchain caches on unregister
+    std::atomic<uint64_t> m_SwapchainGeneration{0};
 
     bool m_OverlayEnabled;
     bool m_CaptureEnabled;

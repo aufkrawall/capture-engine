@@ -4,6 +4,7 @@
 // Provides macros for input validation, error checking, and debug assertions.
 // All macros are designed for minimal overhead in release builds.
 
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 
@@ -11,7 +12,7 @@
 void CE_LogImpl(const char* level, const char* module, int line, const char* fmt, ...);
 
 // Global debug logging flag (set from config.ini)
-extern bool g_DebugLoggingEnabled;
+extern std::atomic<bool> g_DebugLoggingEnabled;
 
 // Compact log format: [CE:L:M] msg  or [CE:L:M:line] msg for errors
 // L = Level (D/I/W/E), M = Module
@@ -226,7 +227,7 @@ inline Result Err(ErrorCode c, const char* msg = nullptr) {
 #include <cstdarg>
 #include <cstdio>
 
-inline bool g_DebugLoggingEnabled = false;
+inline std::atomic<bool> g_DebugLoggingEnabled{false};
 inline void CE_LogImpl(const char* level, const char* module, int line, const char* fmt, ...)
 #if defined(__GNUC__) || defined(__clang__)
     __attribute__((format(printf, 4, 5)))

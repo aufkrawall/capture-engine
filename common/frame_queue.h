@@ -11,7 +11,35 @@
 #include <vector>
 
 // Frame data that can represent either inject or framegrab mode
+// Non-copyable to prevent accidental texture double-release.
+// Use std::move() to transfer ownership.
 struct QueuedFrame {
+    QueuedFrame() = default;
+    ~QueuedFrame() = default;
+    QueuedFrame(const QueuedFrame&) = delete;
+    QueuedFrame& operator=(const QueuedFrame&) = delete;
+    QueuedFrame(QueuedFrame&& other) noexcept { *this = std::move(other); }
+    QueuedFrame& operator=(QueuedFrame&& other) noexcept {
+        if (this != &other) {
+            sharedHandle = other.sharedHandle; other.sharedHandle = nullptr;
+            fenceHandle = other.fenceHandle; other.fenceHandle = nullptr;
+            fenceValue = other.fenceValue; other.fenceValue = 0;
+            luidLow = other.luidLow; other.luidLow = 0;
+            luidHigh = other.luidHigh; other.luidHigh = 0;
+            sourcePid = other.sourcePid; other.sourcePid = 0;
+            ringIndex = other.ringIndex; other.ringIndex = 0;
+            format = other.format; other.format = 0;
+            texture = other.texture; other.texture = nullptr;
+            timestamp = other.timestamp; other.timestamp = 0;
+            width = other.width; other.width = 0;
+            height = other.height; other.height = 0;
+            isInjectMode = other.isInjectMode; other.isInjectMode = false;
+            isHDR = other.isHDR; other.isHDR = false;
+            isShmem = other.isShmem; other.isShmem = false;
+            shmemSlot = other.shmemSlot; other.shmemSlot = 0;
+        }
+        return *this;
+    }
     // For inject mode (D3D12 shared handles)
     HANDLE sharedHandle = nullptr;
     HANDLE fenceHandle = nullptr;
@@ -68,9 +96,9 @@ public:
         }
     }
 
-    // Producer: Push a frame (non-blocking)
+    // Producer: Push a frame (non-blocking, moves ownership)
     // Returns false if queue is full (frame will be dropped)
-    bool Push(const QueuedFrame& frame, bool countAsDrop = true) {
+    bool Push(QueuedFrame&& frame, bool countAsDrop = true) {
         ID3D11Texture2D* textureToRelease = nullptr;
         {
             std::lock_guard<std::mutex> lock(mtx);
@@ -80,6 +108,7 @@ public:
                 auto& oldest = buffer.front();
                 if (!oldest.isInjectMode && oldest.texture) {
                     textureToRelease = oldest.texture;
+                    oldest.texture = nullptr;
                 }
                 buffer.pop_front();
 
@@ -92,7 +121,7 @@ public:
                 }
             }
 
-            buffer.push_back(frame);
+            buffer.push_back(std::move(frame));
             cv.notify_one();
         }
         if (textureToRelease) {
@@ -101,7 +130,7 @@ public:
         return true;
     }
 
-    // Consumer: Pop a frame (blocking with timeout)
+    // Consumer: Pop a frame (blocking with timeout, moves ownership)
     // Returns false if timeout elapsed with no frame available
     bool Pop(QueuedFrame& frame, int timeoutMs) {
         std::unique_lock<std::mutex> lock(mtx);
@@ -115,17 +144,18 @@ public:
             }
         }
 
-        frame = buffer.front();
+        frame = std::move(buffer.front());
         buffer.pop_front();
         return true;
     }
 
-    // Peek at front without removing (for duplicate detection)
-    bool Peek(QueuedFrame& frame) const {
+    // Peek at front timestamp without removing (for duplicate detection)
+    // Returns false if queue is empty
+    bool PeekTimestamp(int64_t& timestamp) const {
         std::lock_guard<std::mutex> lock(mtx);
         if (buffer.empty())
             return false;
-        frame = buffer.front();
+        timestamp = buffer.front().timestamp;
         return true;
     }
 

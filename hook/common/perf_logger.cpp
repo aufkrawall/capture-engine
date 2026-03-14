@@ -42,6 +42,7 @@ PerfLogger& PerfLogger::Get() {
 }
 
 void PerfLogger::Init(const char* logPath) {
+    std::lock_guard<std::mutex> lock(fileMutex_);
     if (file_ || !HookDebugLoggingEnabled())
         return;
 
@@ -72,6 +73,7 @@ void PerfLogger::Init(const char* logPath) {
 }
 
 void PerfLogger::Shutdown() {
+    std::lock_guard<std::mutex> lock(fileMutex_);
     if (file_) {
         fflush(file_);
         fclose(file_);
@@ -81,6 +83,7 @@ void PerfLogger::Shutdown() {
 }
 
 void PerfLogger::LogFrame(const FrameMetrics& metrics) {
+    std::lock_guard<std::mutex> lock(fileMutex_);
     if (!file_)
         return;
 

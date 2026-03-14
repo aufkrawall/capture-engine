@@ -189,5 +189,14 @@ int LoggerProcessMain(const AppConfig& config) {
     if (hShutdownEvent != INVALID_HANDLE_VALUE)
         CloseHandle(hShutdownEvent);
 
+    // Close all cached file handles to prevent handle leak
+    for (auto& [path, hFile] : openFiles) {
+        if (hFile != INVALID_HANDLE_VALUE) {
+            FlushFileBuffers(hFile);
+            CloseHandle(hFile);
+        }
+    }
+    openFiles.clear();
+
     return 0;
 }

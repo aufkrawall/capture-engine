@@ -113,6 +113,7 @@ private:
     PerfLogger& operator=(const PerfLogger&) = delete;
 
     FILE* file_ = nullptr;
+    std::mutex fileMutex_;
     std::atomic<uint64_t> frameCount_{0};
     int64_t qpcFreq_ = 0;
     bool headerWritten_ = false;

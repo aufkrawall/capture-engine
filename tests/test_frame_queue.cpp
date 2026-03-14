@@ -91,7 +91,7 @@ TEST(FrameQueueTest, PushPop) {
     QueuedFrame frameIn;
     frameIn.timestamp = 12345;
 
-    EXPECT_TRUE(queue.Push(frameIn));
+    EXPECT_TRUE(queue.Push(std::move(frameIn)));
     EXPECT_EQ(queue.Size(), 1);
 
     QueuedFrame frameOut;
@@ -102,22 +102,23 @@ TEST(FrameQueueTest, PushPop) {
 
 TEST(FrameQueueTest, CapacityAndDrop) {
     FrameQueue queue(2);
-    QueuedFrame f1{.timestamp = 1};
-    QueuedFrame f2{.timestamp = 2};
-    QueuedFrame f3{.timestamp = 3};
 
-    EXPECT_TRUE(queue.Push(f1));
-    EXPECT_TRUE(queue.Push(f2));
+    QueuedFrame f1; f1.timestamp = 1;
+    QueuedFrame f2; f2.timestamp = 2;
+    QueuedFrame f3; f3.timestamp = 3;
+
+    EXPECT_TRUE(queue.Push(std::move(f1)));
+    EXPECT_TRUE(queue.Push(std::move(f2)));
     EXPECT_TRUE(queue.IsFull());
 
-    // Third push should drop the oldest (f1)
-    EXPECT_TRUE(queue.Push(f3));
+    // Third push should drop the oldest (timestamp=1)
+    EXPECT_TRUE(queue.Push(std::move(f3)));
     EXPECT_EQ(queue.Size(), 2);
     EXPECT_EQ(queue.GetDroppedCount(), 1);
 
     QueuedFrame out;
     EXPECT_TRUE(queue.Pop(out, 0));
-    EXPECT_EQ(out.timestamp, 2);  // f1 dropped, expect f2
+    EXPECT_EQ(out.timestamp, 2);  // timestamp=1 dropped, expect 2
 
     EXPECT_TRUE(queue.Pop(out, 0));
     EXPECT_EQ(out.timestamp, 3);
@@ -157,15 +158,17 @@ TEST(FrameQueueHardeningTest, DropReleasesOldestTexture) {
     FrameQueue queue(1);
 
     FakeTexture2D droppedTexture;
-    QueuedFrame firstFrame;
-    firstFrame.texture = &droppedTexture;
-
-    QueuedFrame secondFrame;
-    secondFrame.isInjectMode = true;
-    secondFrame.timestamp = 2;
-
-    EXPECT_TRUE(queue.Push(firstFrame, false));
-    EXPECT_TRUE(queue.Push(secondFrame, false));
+    {
+        QueuedFrame firstFrame;
+        firstFrame.texture = &droppedTexture;
+        queue.Push(std::move(firstFrame), false);
+    }
+    {
+        QueuedFrame secondFrame;
+        secondFrame.isInjectMode = true;
+        secondFrame.timestamp = 2;
+        queue.Push(std::move(secondFrame), false);
+    }
     EXPECT_EQ(droppedTexture.ReleaseCallCount(), 1u);
 }
 
@@ -175,13 +178,16 @@ TEST(FrameQueueHardeningTest, ClearReleasesAllQueuedTextures) {
     FakeTexture2D textureA;
     FakeTexture2D textureB;
 
-    QueuedFrame frameA;
-    frameA.texture = &textureA;
-    QueuedFrame frameB;
-    frameB.texture = &textureB;
-
-    EXPECT_TRUE(queue.Push(frameA, false));
-    EXPECT_TRUE(queue.Push(frameB, false));
+    {
+        QueuedFrame frameA;
+        frameA.texture = &textureA;
+        queue.Push(std::move(frameA), false);
+    }
+    {
+        QueuedFrame frameB;
+        frameB.texture = &textureB;
+        queue.Push(std::move(frameB), false);
+    }
 
     queue.Clear();
 
@@ -197,7 +203,7 @@ TEST(FrameQueueHardeningTest, DestructorReleasesRemainingTextures) {
         QueuedFrame frame;
         frame.texture = &texture;
 
-        EXPECT_TRUE(queue.Push(frame, false));
+        queue.Push(std::move(frame), false);
         EXPECT_EQ(texture.ReleaseCallCount(), 0u);
     }
 

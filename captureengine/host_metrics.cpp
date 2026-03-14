@@ -195,6 +195,9 @@ void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t lu
                 if (newBuf) {
                     g_HostMetrics.pdhBuffer = newBuf;
                     g_HostMetrics.pdhBufferSize = bufSize;
+                } else {
+                    // realloc failed - keep using old buffer with old size
+                    bufSize = g_HostMetrics.pdhBufferSize;
                 }
             }
 

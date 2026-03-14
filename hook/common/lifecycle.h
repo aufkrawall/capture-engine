@@ -36,10 +36,17 @@ public:
             return false;
         }
 
-        CE_LOG_DEBUG(LogTag, "%s->%s", NameFn(current), NameFn(newState));
+        // CAS loop to prevent TOCTOU: validate+store must be atomic
+        while (!state_.compare_exchange_weak(current, newState, std::memory_order_acq_rel,
+                                              std::memory_order_acquire)) {
+            if (!IsValidTransition(current, newState)) {
+                CE_LOG_ERROR(LogTag, "raced invalid %s->%s", NameFn(current), NameFn(newState));
+                CE_ASSERT(false);
+                return false;
+            }
+        }
 
-        // Store state BEFORE executing callbacks so callbacks see the new state
-        state_.store(newState, std::memory_order_release);
+        CE_LOG_DEBUG(LogTag, "%s->%s", NameFn(current), NameFn(newState));
 
         {
             std::lock_guard<std::mutex> lock(callbackMutex_);

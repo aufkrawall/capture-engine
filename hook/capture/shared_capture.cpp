@@ -165,7 +165,7 @@ bool SharedCaptureD3D11::CaptureFrame(ID3D11DeviceContext* pContext) {
         return false;
     }
 
-    UINT writeIdx = m_WriteIndex;
+    UINT writeIdx = m_WriteIndex.load(std::memory_order_relaxed);
 
     // Acquire keyed mutex for writing
     if (m_KeyedMutexes[writeIdx]) {
@@ -203,7 +203,7 @@ bool SharedCaptureD3D11::CaptureFrame(ID3D11DeviceContext* pContext) {
     }
 
     // Flip write index
-    m_WriteIndex = 1 - m_WriteIndex;
+    m_WriteIndex.store(1 - writeIdx, std::memory_order_relaxed);
 
     return true;
 }
@@ -325,8 +325,8 @@ void SharedCaptureD3D12::Reset() {
         m_FenceShareHandle = nullptr;
     }
 
-    m_FenceValue = 0;
-    m_WriteIndex = 0;
+    m_FenceValue.store(0, std::memory_order_relaxed);
+    m_WriteIndex.store(0, std::memory_order_relaxed);
 }
 
 bool SharedCaptureD3D12::Initialize(ID3D12Device* pDevice, IDXGISwapChain* pSwapChain) {
@@ -473,7 +473,7 @@ bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, UINT ba
         return false;
     }
 
-    UINT writeIdx = m_WriteIndex;
+    UINT writeIdx = m_WriteIndex.load(std::memory_order_relaxed);
 
     // SAFETY: Wait for this allocator to be finished by GPU before reusing
     if (m_FenceValues[writeIdx] > 0) {
@@ -532,11 +532,11 @@ bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, UINT ba
     pCommandQueue->ExecuteCommandLists(1, cmdLists);
 
     // Signal fence
-    m_FenceValue++;
-    pCommandQueue->Signal(m_Fence.Get(), m_FenceValue);
+    UINT64 fenceVal = m_FenceValue.fetch_add(1, std::memory_order_relaxed) + 1;
+    pCommandQueue->Signal(m_Fence.Get(), fenceVal);
 
     // Store completion value for this allocator
-    m_FenceValues[writeIdx] = m_FenceValue;
+    m_FenceValues[writeIdx] = fenceVal;
 
     // Update frame descriptor
     {
@@ -556,7 +556,7 @@ bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, UINT ba
     }
 
     // Flip write index
-    m_WriteIndex = 1 - m_WriteIndex;
+    m_WriteIndex.store(1 - writeIdx, std::memory_order_relaxed);
 
     return true;
 }

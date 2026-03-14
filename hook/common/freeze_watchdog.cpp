@@ -583,10 +583,3 @@ void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason, 
         HookLogImportant("FreezeWatchdog: Dump creation failed at %s (error=%lu)", dumpPath.c_str(), err);
     }
 }
-
-void FreezeWatchdog::TerminateProcessSafely() {
-    OutputDebugStringA("[FreezeWatchdog] Terminating process due to freeze\n");
-
-    ::TerminateProcess(GetCurrentProcess(), 0xDEAD);
-    __fastfail(0xDEAD);
-}

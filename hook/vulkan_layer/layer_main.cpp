@@ -81,11 +81,21 @@ static bool IsExecutableFunctionPointer(const void* ptr) {
     return (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
 }
 
+// File logging for when IPC is not available (declared before DllMain for cleanup)
+static FILE* g_LogFile = nullptr;
+static bool g_LogFileInitialized = false;
+
 BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         EarlyLog("DLL_PROCESS_ATTACH - Layer DLL loaded");
     } else if (reason == DLL_PROCESS_DETACH) {
         EarlyLog("DLL_PROCESS_DETACH - Layer DLL unloading, clearing vulkanLayerActive flag");
+        // Close log file to prevent handle leak
+        if (g_LogFile) {
+            fprintf(g_LogFile, "\n=== Layer DLL Unloading ===\n");
+            fclose(g_LogFile);
+            g_LogFile = nullptr;
+        }
         // CRITICAL: Clear the vulkanLayerActive flag so other APIs (OpenGL, DX) know
         // Vulkan is no longer active. Without this, the flag persists in shared memory
         // and causes OpenGL/DX overlays to skip rendering because they think Vulkan is primary.
@@ -111,10 +121,6 @@ extern "C" __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetI
                                                                                                 const char* pName);
 extern "C" __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device,
                                                                                               const char* pName);
-
-// File logging for when IPC is not available
-static FILE* g_LogFile = nullptr;
-static bool g_LogFileInitialized = false;
 
 static void InitLayerLogFile() {
     if (g_LogFileInitialized || !IsLayerDebugLoggingEnabled())

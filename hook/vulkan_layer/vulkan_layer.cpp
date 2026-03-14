@@ -213,12 +213,24 @@ void VulkanLayerState::UnregisterSwapchain(VkSwapchainKHR swapchain) {
     if (it != m_Swapchains.end()) {
         delete it->second;
         m_Swapchains.erase(it);
+        // Increment generation to invalidate all TLS caches
+        m_SwapchainGeneration.fetch_add(1, std::memory_order_release);
     }
 }
 
 SwapchainData* VulkanLayerState::GetSwapchainData(VkSwapchainKHR swapchain) {
     static thread_local VkSwapchainKHR tls_LastSwapchain = VK_NULL_HANDLE;
     static thread_local SwapchainData* tls_LastData = nullptr;
+    static thread_local uint64_t tls_LastGeneration = 0;
+
+    // Check if TLS cache is still valid (no swapchains unregistered since last lookup)
+    uint64_t currentGen = m_SwapchainGeneration.load(std::memory_order_acquire);
+    if (currentGen != tls_LastGeneration) {
+        tls_LastSwapchain = VK_NULL_HANDLE;
+        tls_LastData = nullptr;
+        tls_LastGeneration = currentGen;
+    }
+
     if (swapchain == tls_LastSwapchain && tls_LastData)
         return tls_LastData;
 
@@ -227,6 +239,7 @@ SwapchainData* VulkanLayerState::GetSwapchainData(VkSwapchainKHR swapchain) {
     if (it != m_Swapchains.end()) {
         tls_LastSwapchain = swapchain;
         tls_LastData = it->second;
+        tls_LastGeneration = m_SwapchainGeneration.load(std::memory_order_acquire);
         return tls_LastData;
     }
     return nullptr;

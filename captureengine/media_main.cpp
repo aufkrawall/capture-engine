@@ -328,7 +328,7 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     }
 
                     if (validHandles) {
-                        if (g_FrameQueue.Push(qf, g_IsEncoderBottlenecked)) {
+                        if (g_FrameQueue.Push(std::move(qf), g_IsEncoderBottlenecked)) {
                             pushedCount++;
                         } else {
                             droppedCount++;
@@ -487,7 +487,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 if (popped && !frame.isInjectMode && frame.texture) {
                     frame.texture->Release();
                 }
-                frame = temp;
+                frame = std::move(temp);
                 popped = true;
             }
         } else {
@@ -497,7 +497,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             // frame selection and visible judder without changing the fixed output rate.
             QueuedFrame temp;
             while (g_FrameQueue.Pop(temp, 0)) {
-                frame = temp;
+                frame = std::move(temp);
                 popped = true;
             }
         }
@@ -508,16 +508,17 @@ void EncoderThreadFunc(const AppConfig& config) {
         if (popped) {
             frameToProcess = &frame;
             if (frame.isInjectMode) {
-                g_LastFrame = frame;
+                g_LastFrame = std::move(frame);
                 g_HasLastFrame = true;
             } else {
                 if (g_HasLastFrame && !g_LastFrame.isInjectMode && g_LastFrame.texture) {
                     g_LastFrame.texture->Release();
                 }
-                g_LastFrame = frame;
-                if (g_LastFrame.texture) {
-                    g_LastFrame.texture->AddRef();
+                // AddRef for cache ownership before moving
+                if (frame.texture) {
+                    frame.texture->AddRef();
                 }
+                g_LastFrame = std::move(frame);
                 g_HasLastFrame = true;
             }
         } else if (g_HasLastFrame && g_EncoderRunning) {
@@ -645,7 +646,7 @@ void StartRecording(const AppConfig& config) {
                 qf.height = height;
                 qf.timestamp = timestamp;
 
-                if (!g_FrameQueue.Push(qf, g_IsEncoderBottlenecked)) {
+                if (!g_FrameQueue.Push(std::move(qf), g_IsEncoderBottlenecked)) {
                     g_WgcDroppedFrames.fetch_add(1, std::memory_order_relaxed);
                     texture->Release();
                 }
@@ -1224,7 +1225,7 @@ int MediaProcessMain(const AppConfig& config) {
                                     qf.width = width;
                                     qf.height = height;
                                     qf.timestamp = timestamp;
-                                    if (!g_FrameQueue.Push(qf, g_IsEncoderBottlenecked)) {
+                                    if (!g_FrameQueue.Push(std::move(qf), g_IsEncoderBottlenecked)) {
                                         g_WgcDroppedFrames.fetch_add(1, std::memory_order_relaxed);
                                         texture->Release();
                                     }
@@ -1333,7 +1334,7 @@ int MediaProcessMain(const AppConfig& config) {
                                         qf.width = width;
                                         qf.height = height;
                                         qf.timestamp = timestamp;
-                                        if (!g_FrameQueue.Push(qf, g_IsEncoderBottlenecked)) {
+                                        if (!g_FrameQueue.Push(std::move(qf), g_IsEncoderBottlenecked)) {
                                             g_WgcDroppedFrames.fetch_add(1, std::memory_order_relaxed);
                                             texture->Release();
                                         }
@@ -1447,7 +1448,7 @@ int MediaProcessMain(const AppConfig& config) {
                             qf.height = height;
                             qf.timestamp = timestamp;
 
-                            if (!g_FrameQueue.Push(qf, g_IsEncoderBottlenecked)) {
+                            if (!g_FrameQueue.Push(std::move(qf), g_IsEncoderBottlenecked)) {
                                 g_WgcDroppedFrames.fetch_add(1, std::memory_order_relaxed);
                                 texture->Release();
                             }

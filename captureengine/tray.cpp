@@ -126,7 +126,6 @@ void TrayIcon::UpdateBlinkState() {
         nid.hIcon = hIconShutdown ? hIconShutdown : LoadIcon(NULL, IDI_WINLOGO);
     }
 
-    // LogInfo("Tray blinking: state=%d", blinkState);
     Shell_NotifyIconA(NIM_MODIFY, &nid);
 }
 

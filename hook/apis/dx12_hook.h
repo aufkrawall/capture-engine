@@ -1,6 +1,7 @@
 #pragma once
 #include <d3d12.h>
 #include <dxgi1_4.h>
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -12,7 +13,7 @@
 // These macros provide step-by-step logging for diagnosing DX12 overlay issues.
 // Enable via config.ini: debug_logging = true
 
-extern bool g_DebugLoggingEnabled;
+extern std::atomic<bool> g_DebugLoggingEnabled;
 
 #define DX12_DEBUG(fmt, ...)                       \
     do {                                           \

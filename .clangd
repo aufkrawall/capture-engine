@@ -29,13 +29,16 @@ CompileFlags:
     - "-fskip-odr-check-in-gmf"
     # Ensure correct clang resource dir for builtins (mmintrin.h etc.)
     - "-resource-dir=build/msys64/clang64/lib/clang/21"
-    # Force libc++ from MinGW toolchain (avoids MSVC STL conflicts)
+    # Prevent MSVC STL from being picked up; force MinGW libc++
+    - "-nostdinc++"
     - "-stdlib=libc++"
     # Add MinGW include paths for Windows headers (system includes)
     - "build/msys64/clang64/include/c++/v1"
     - "build/msys64/clang64/include"
     - "-isystembuild/msys64/clang64/lib/clang/21/include"
     - "-isystembuild/msys64/clang64/x86_64-w64-mingw32/include"
+    # Vulkan headers via MSYS2
+    - "build/msys64/clang64/include"
     # Suppress warnings
     - "-Wno-gnu-zero-variadic-macro-arguments"
     - "-Wno-microsoft-exception-spec"
@@ -62,17 +65,21 @@ CompileFlags:
 If:
   PathMatch:
     - tests/.*
-    - "**/test_*.cpp"
+    - ".*test_.*\\.cpp$"
   CompileFlags:
     Compiler: build/msys64/clang64/bin/clang++.exe
     Add:
+      - "-nostdinc++"
+      - "-stdlib=libc++"
+      - "-std=c++20"
       - "-Icommon"
       - "-Ihook/common"
       - "-Itests"
-      - "build/msys64/clang64/include"
       - "build/msys64/clang64/include/c++/v1"
-      - "-stdlib=libc++"
-      - "-std=c++20"
+      - "build/msys64/clang64/include"
+      - "-isystembuild/msys64/clang64/lib/clang/21/include"
+      - "-isystembuild/msys64/clang64/x86_64-w64-mingw32/include"
+      - "-DNOMINMAX"
 
 Diagnostics:
   Suppress:
@@ -86,6 +93,11 @@ Diagnostics:
     # Win32 API type conversion warnings (harmless in hook code)
     - "microsoft-cast"
     - "language-extension-token"
+    # MSVC STL attribute warnings when using MinGW headers
+    - "ignored-attributes"
+    - "dll-attribute-on-redeclaration"
+    # Missing type info from MSVC/MinGW mismatch
+    - "unknown-attributes"
   ClangTidy:
     Add:
       - "modernize-use-nullptr"

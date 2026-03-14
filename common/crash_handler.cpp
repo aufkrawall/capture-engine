@@ -7,14 +7,17 @@
 #include <cstdio>
 #include <ctime>
 #include <memory>
+#include <mutex>
 #include <string>
 #include "logging.h"
 
 static std::string g_DumpDir = ".\\logs";
+static std::mutex g_DumpDirMutex;
 static char g_ProcessName[256] = "unknown";
 static HMODULE g_hDbgHelp = NULL;
 static std::atomic<bool> g_DumpAlreadyWritten{false};
 static std::atomic<bool> g_ForceUnhandledDump{false};
+static std::mutex g_TraceCrashMutex;
 typedef BOOL(WINAPI* MINIDUMPWRITEDUMP)(HANDLE hProcess, DWORD ProcessId, HANDLE hFile, MINIDUMP_TYPE DumpType,
                                         PMINIDUMP_EXCEPTION_INFORMATION ExceptionParam,
                                         PMINIDUMP_USER_STREAM_INFORMATION UserStreamParam,
@@ -22,6 +25,7 @@ typedef BOOL(WINAPI* MINIDUMPWRITEDUMP)(HANDLE hProcess, DWORD ProcessId, HANDLE
 static MINIDUMPWRITEDUMP g_pMiniDumpWriteDump = NULL;
 
 void SetCrashDumpDirectory(const std::string& dir) {
+    std::lock_guard<std::mutex> lock(g_DumpDirMutex);
     g_DumpDir = dir;
 }
 
@@ -33,9 +37,16 @@ void SetCrashProcessName(const char* name) {
 }
 
 // Trace function for debugging the crash handler itself
+// Thread-safe: uses mutex to prevent concurrent file corruption
 void TraceCrash(const char* msg) {
+    std::lock_guard<std::mutex> lock(g_TraceCrashMutex);
+    std::string dumpDir;
+    {
+        std::lock_guard<std::mutex> dirLock(g_DumpDirMutex);
+        dumpDir = g_DumpDir;
+    }
     char path[MAX_PATH];
-    snprintf(path, sizeof(path), "%s\\crash.log", g_DumpDir.c_str());
+    snprintf(path, sizeof(path), "%s\\crash.log", dumpDir.c_str());
     FILE* f = fopen(path, "a");
     if (f) {
         SYSTEMTIME st;
@@ -57,6 +68,13 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
 
     TraceCrash("DumpWorker started");
 
+    // Read dump directory under mutex
+    std::string dumpDir;
+    {
+        std::lock_guard<std::mutex> dirLock(g_DumpDirMutex);
+        dumpDir = g_DumpDir;
+    }
+
     SYSTEMTIME st;
     GetLocalTime(&st);
     char buf[128];
@@ -64,13 +82,13 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
              st.wMinute, st.wSecond, st.wMilliseconds, GetCurrentProcessId(), params->threadId);
 
     char dumpPath[MAX_PATH];
-    snprintf(dumpPath, sizeof(dumpPath), "%s\\crash_%s.dmp", g_DumpDir.c_str(), buf);
+    snprintf(dumpPath, sizeof(dumpPath), "%s\\crash_%s.dmp", dumpDir.c_str(), buf);
 
     TraceCrash("Creating dump file...");
     TraceCrash(dumpPath);
 
     // Ensure directory exists with proper error checking
-    if (CreateDirectoryA(g_DumpDir.c_str(), NULL)) {
+    if (CreateDirectoryA(dumpDir.c_str(), NULL)) {
         TraceCrash("Created dump directory");
     } else {
         DWORD dirErr = GetLastError();
@@ -162,7 +180,7 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
             OutputDebugStringA(msg);
 
             char errPath[MAX_PATH];
-            snprintf(errPath, sizeof(errPath), "%s\\crash_error.txt", g_DumpDir.c_str());
+            snprintf(errPath, sizeof(errPath), "%s\\crash_error.txt", dumpDir.c_str());
             FILE* f = fopen(errPath, "w");
             if (f) {
                 fprintf(f, "MiniDumpWriteDump failed. Error: %lu (0x%08lX)\nDump Path: %s\n", err, err, dumpPath);
@@ -179,6 +197,17 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
 
 LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) {
     DWORD code = pExceptionPointers->ExceptionRecord->ExceptionCode;
+
+    // Read dump directory with try_lock to avoid deadlock if crashed thread owns the mutex
+    std::string dumpDir;
+    {
+        std::unique_lock<std::mutex> dirLock(g_DumpDirMutex, std::try_to_lock);
+        if (dirLock.owns_lock()) {
+            dumpDir = g_DumpDir;
+        } else {
+            dumpDir = ".\\logs";  // Fallback default if mutex is contended
+        }
+    }
 
     // Skip known benign first-chance exceptions to avoid high-volume log spam.
     bool forceUnhandledDump = g_ForceUnhandledDump.load(std::memory_order_acquire);
@@ -228,7 +257,7 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
             GetLocalTime(&st);
             char dumpPath[MAX_PATH];
             snprintf(dumpPath, sizeof(dumpPath), "%s\\assert_%04u%02u%02u_%02u%02u%02u_%03u_pid%lu.dmp",
-                     g_DumpDir.c_str(), st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
+                     dumpDir.c_str(), st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
                      st.wMilliseconds, GetCurrentProcessId());
 
             HANDLE hFile = CreateFileA(dumpPath, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,

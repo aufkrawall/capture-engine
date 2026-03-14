@@ -175,7 +175,6 @@ static glTexImage2DMultisample_t pglTexImage2DMultisample = nullptr;
 
 // Globals
 static PerformanceMetrics g_PerfMetrics;
-static bool g_ImGuiInitialized = false;
 static HWND g_CachedHwnd = NULL;
 static bool g_HooksInitialized = false;
 static bool g_FunctionsLoaded = false;
@@ -1406,6 +1405,14 @@ void OpenGLHook::Shutdown() {
     if (g_OverlayAdapter.IsInitialized()) {
         g_OverlayAdapter.Shutdown();
     }
+
+    // Clean up prerender sync objects
+    if (pglDeleteSync) {
+        for (auto sync : g_PrerenderSyncs) {
+            if (sync) pglDeleteSync(sync);
+        }
+    }
+    g_PrerenderSyncs.clear();
 
     g_OpenGLCapture.Cleanup();
     // IAT hooks remain until process exit

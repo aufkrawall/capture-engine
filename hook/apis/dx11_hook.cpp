@@ -73,9 +73,6 @@ static IDXGISwapChain* g_pSwapChain = NULL;
 static bool g_IsDX10Device = false;
 static const char* g_DetectedAPI = "DX11";
 
-static bool g_IsDX11Active = false;
-static bool g_IsDX10Active = false;
-
 // Prerender Limit Fencing
 static std::vector<ID3D11Query*> g_PrerenderQueries;
 static uint64_t g_PrerenderFrameIndex = 0;
@@ -187,6 +184,7 @@ static std::vector<ID3D10SamplerState*> g_ReplacementSamplers10;  // Prevent rec
 
 // Helper for linear search
 static ID3D10SamplerState* FindReplacementSampler(ID3D10SamplerState* original) {
+    std::shared_lock<std::shared_mutex> lock(g_SamplerCacheMutex10);
     for (const auto& entry : g_SamplerCache10) {
         if (entry.first == original)
             return entry.second;
@@ -195,6 +193,7 @@ static ID3D10SamplerState* FindReplacementSampler(ID3D10SamplerState* original) 
 }
 
 static void AddReplacementSampler(ID3D10SamplerState* original, ID3D10SamplerState* replacement) {
+    std::unique_lock<std::shared_mutex> lock(g_SamplerCacheMutex10);
     g_SamplerCache10.push_back({original, replacement});
 }
 
@@ -3084,6 +3083,12 @@ void DX11Hook::Shutdown() {
         g_SamplerCache10.clear();
         g_ReplacementSamplers10.clear();
     }
+
+    // Clean up prerender queries
+    for (auto* q : g_PrerenderQueries) {
+        if (q) q->Release();
+    }
+    g_PrerenderQueries.clear();
 
     g_DX11Capture.Cleanup();
     if (g_mainRenderTargetView) {

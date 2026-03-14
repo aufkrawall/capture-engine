@@ -9054,6 +9054,35 @@ void DX12Hook::Shutdown() {
     CleanupResources();
     CleanupOverlay();
     CleanupRTVs();
+
+    // Clean up drain fence/event (used for FSR→DLSS transition)
+    if (g_DrainFence) {
+        g_DrainFence->Release();
+        g_DrainFence = nullptr;
+    }
+    if (g_DrainEvent) {
+        CloseHandle(g_DrainEvent);
+        g_DrainEvent = nullptr;
+    }
+    g_DrainFenceValue = 0;
+
+    // Clean up prerender fences/events
+    for (auto* fence : g_PrerenderFences) {
+        if (fence) fence->Release();
+    }
+    g_PrerenderFences.clear();
+    for (auto event : g_PrerenderEvents) {
+        if (event) CloseHandle(event);
+    }
+    g_PrerenderEvents.clear();
+
+    // Clean up descriptor-free backend
+    if (g_DescFreeBackend) {
+        g_DescFreeBackend->Shutdown();
+        delete g_DescFreeBackend;
+        g_DescFreeBackend = nullptr;
+    }
+
     {
         std::lock_guard<std::recursive_mutex> lock(g_DeviceQueuesMutex);
         for (auto& pair : g_DeviceQueues)

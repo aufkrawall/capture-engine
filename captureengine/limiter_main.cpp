@@ -65,7 +65,6 @@
 #endif
 
 static std::atomic<bool> g_Running{true};
-[[maybe_unused]] static std::atomic<bool> g_LimiterActive{true};
 
 // Limiter state
 static LARGE_INTEGER g_QpcFreq = {};
@@ -74,8 +73,6 @@ static int64_t g_FrameCount = 0;
 // Ramp-up for smooth activation (Reduced for faster lock)
 constexpr int64_t RAMP_UP_FRAMES = 10;
 static int64_t g_LastIntervalTicks = 0;
-// Variance window stats (last 120 frames = ~1 sec at 120fps)
-[[maybe_unused]] static constexpr int VARIANCE_WINDOW = 120;
 
 void ApplyFramePacing(SharedMemoryLayout* shm) {
     if (!shm)

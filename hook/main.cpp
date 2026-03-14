@@ -982,24 +982,6 @@ void EnforceRR() {
 }
 } // namespace UE5
 
-// Check if Steam overlay is present - if so, we need to be very careful about
-// hook installation to avoid recursion crashes
-[[maybe_unused]] static bool IsSteamOverlayPresent() {
-  static bool s_checked = false;
-  static bool s_present = false;
-
-  if (!s_checked) {
-    s_checked = true;
-    if (GetModuleHandleA("gameoverlayrenderer64.dll") ||
-        GetModuleHandleA("gameoverlayrenderer.dll")) {
-      s_present = true;
-      EarlyLog("STEAM OVERLAY DETECTED - Will use minimal hook mode to avoid "
-               "recursion");
-    }
-  }
-  return s_present;
-}
-
 // Centralized Hook Detection Logic (Executed by HookThread)
 void CheckAndInstallHooks() {
   std::lock_guard<std::mutex> lock(g_HookMutex);

@@ -96,7 +96,7 @@ private:
 
     std::mutex m_Lock;
     SharedFrameDescriptor m_CurrentFrame;
-    UINT m_WriteIndex;
+    std::atomic<UINT> m_WriteIndex;
     UINT m_FrameCounter;
     std::atomic<bool> m_Active;
 };
@@ -148,7 +148,7 @@ private:
     ComPtr<ID3D12Fence> m_Fence;
     HANDLE m_FenceShareHandle;
     HANDLE m_FenceEvent;
-    UINT64 m_FenceValue;
+    std::atomic<UINT64> m_FenceValue;
 
     // Command allocator/list for copy operations
     // Double-buffered allocators to allow CPU to record next frame while GPU
@@ -161,7 +161,7 @@ private:
 
     std::mutex m_Lock;
     SharedFrameDescriptor m_CurrentFrame;
-    UINT m_WriteIndex;
+    std::atomic<UINT> m_WriteIndex;
     UINT m_FrameCounter;
     std::atomic<bool> m_Active;
 };

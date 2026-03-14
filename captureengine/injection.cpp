@@ -1096,11 +1096,13 @@ void InjectionManager::Eject(DWORD pid) {
     auto it = std::find_if(injectedProcesses.begin(), injectedProcesses.end(),
                            [&](const InjectedProcess& p) { return p.pid == pid; });
     HANDLE hProcess = (it != injectedProcesses.end()) ? it->hProcess : NULL;
+    bool openedProcessHandle = false;
 
     if (!hProcess) {
         hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
         if (!hProcess)
             return;
+        openedProcessHandle = true;
     }
 
     HMODULE hMods[1024];
@@ -1133,7 +1135,7 @@ void InjectionManager::Eject(DWORD pid) {
         }
     }
 
-    if (it == injectedProcesses.end())
+    if (openedProcessHandle)
         CloseHandle(hProcess);
 }
 

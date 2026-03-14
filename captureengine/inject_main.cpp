@@ -425,9 +425,6 @@ int InjectProcessMain(const AppConfig& config) {
     LogInfo("[Inject] Process started (PID: %lu)", GetCurrentProcessId());
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
 
-    // Track log polling
-    [[maybe_unused]] uint32_t lastReadLogIndex = 0;
-
     // Main loop
     while (g_Running) {
         // Check for IPC commands
