@@ -2079,7 +2079,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     // overlay)
     auto beforeConvert = PerfTimer::now();
     ID3D11Texture2D* nv12Tex = nullptr;
-    if (!ConvertBGRAtoNV12(bgraTex, &nv12Tex, cursorVisible, cursorX, cursorY)) {
+    if (!ConvertBGRAtoNV12(bgraTex, &nv12Tex, cursorVisible, cursorX, cursorY, true)) {
         DLL_Log("[VideoEncoder] Frame %d: GPU color conversion failed", encodeFrameCounter);
         bgraTex->Release();
         return false;
@@ -2459,7 +2459,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     ID3D11Texture2D* nv12Tex = nullptr;
 
     // Scoped Lock for D3D11 Immediate Context (protects Blt/CopyResource)
-    bool convertSuccess = ConvertBGRAtoNV12(bgraTexture, &nv12Tex, cursorVisible, cursorX, cursorY);
+    bool convertSuccess = ConvertBGRAtoNV12(bgraTexture, &nv12Tex, cursorVisible, cursorX, cursorY, false);
 
     if (!convertSuccess) {
         DLL_Log("[VideoEncoder] Frame %d: GPU color conversion failed", encodeFrameCounter);
@@ -3188,7 +3188,7 @@ bool VideoEncoder::InitVideoProcessor() {
 }
 
 bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture2D** nv12Output, bool cursorVisible,
-                                     int cursorX, int cursorY) {
+                                     int cursorX, int cursorY, bool allowDirectInputView) {
     if (!videoProcessorInit) {
         if (!InitVideoProcessor())
             return false;
@@ -3225,10 +3225,11 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
         }
     }
 
-    // Try to create input view directly from source texture first
-    // This works for inject mode where the texture has compatible
-    // bind flags Only fall back to staging copy for Desktop
-    // Duplication (screengrab) textures
+    // Try to create the VP input view directly from the source texture only for
+    // inject/shared-handle frames. WGC/direct-texture frames are valid capture
+    // inputs, but probing them with CreateVideoProcessorInputView can raise a
+    // handled D3D11 C++ exception before we fall back to the already-working
+    // staging path.
     D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC inputViewDesc = {};
     inputViewDesc.FourCC = 0;
     inputViewDesc.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
@@ -3239,6 +3240,7 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
     // A fullscreen shader pass with a BGRA render target handles the byte reorder.
     ID3D11Texture2D* vpInputTexture = bgraTexture;
     bool needReleaseConverted = false;
+    D3D11_TEXTURE2D_DESC vpInputDesc = {};
     {
         D3D11_TEXTURE2D_DESC srcDesc;
         bgraTexture->GetDesc(&srcDesc);
@@ -3258,7 +3260,6 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
         // D3D11's CreateVideoProcessorInputView throws SEH for incompatible formats,
         // and MinGW catch(...) CANNOT catch SEH exceptions (__fastfail).
         // We must prevent the call by checking format compatibility first.
-        D3D11_TEXTURE2D_DESC vpInputDesc;
         vpInputTexture->GetDesc(&vpInputDesc);
         bool vpCompatible =
             (vpInputDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM || vpInputDesc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
@@ -3282,39 +3283,40 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
     // The texture format was pre-validated above, but the try/catch is a safety net.
     ID3D11VideoProcessorInputView* localInputView = nullptr;
     HRESULT hr = E_FAIL;
-    try {
-        hr = videoDevice->CreateVideoProcessorInputView(vpInputTexture, videoProcessorEnum, &inputViewDesc,
-                                                        &localInputView);
-    } catch (...) {
-        hr = E_FAIL;
-        DLL_Log("[VP] CreateVideoProcessorInputView threw exception (fmt=%d)", vpInputTexture ? 0 : -1);
+    if (allowDirectInputView) {
+        try {
+            hr = videoDevice->CreateVideoProcessorInputView(vpInputTexture, videoProcessorEnum, &inputViewDesc,
+                                                            &localInputView);
+        } catch (...) {
+            hr = E_FAIL;
+            DLL_Log("[VP] CreateVideoProcessorInputView threw exception (fmt=%d)", vpInputDesc.Format);
+        }
     }
 
     // Log CreateVideoProcessorInputView result on first call per recording
-    if (!vpInputViewLogged) {
+    if (allowDirectInputView && !vpInputViewLogged) {
         vpInputViewLogged = true;
-        D3D11_TEXTURE2D_DESC vpDesc;
-        vpInputTexture->GetDesc(&vpDesc);
-        DLL_Log("[VP] CreateVideoProcessorInputView(fmt=%d, bind=%x): HR=%x%s", vpDesc.Format, vpDesc.BindFlags, hr,
-                SUCCEEDED(hr) ? " (direct OK)" : "");
+        DLL_Log("[VP] CreateVideoProcessorInputView(fmt=%d, bind=%x): HR=%x%s", vpInputDesc.Format,
+                vpInputDesc.BindFlags, hr, SUCCEEDED(hr) ? " (direct OK)" : "");
     }
 
-    if (FAILED(hr)) {
-        // Direct access failed (likely Desktop Duplication texture with
-        // incompatible bind flags) Fall back to staging copy - but we
-        // need to match the format!
-        static bool stagingLogged = false;
-        if (!stagingLogged) {
-            DLL_Log(
-                "[VP] Direct input view failed (HR=%x), using "
-                "staging copy",
-                hr);
-            stagingLogged = true;
+    if (!allowDirectInputView || FAILED(hr)) {
+        if (allowDirectInputView) {
+            static bool stagingLogged = false;
+            if (!stagingLogged) {
+                DLL_Log(
+                    "[VP] Direct input view failed (HR=%x), using "
+                    "staging copy",
+                    hr);
+                stagingLogged = true;
+            }
+        } else {
+            static bool stagingBypassLogged = false;
+            if (!stagingBypassLogged) {
+                DLL_Log("[VP] D3D11 direct-texture path uses staging input by design");
+                stagingBypassLogged = true;
+            }
         }
-
-        // Recreate staging texture with same format as source if needed
-        D3D11_TEXTURE2D_DESC srcDesc;
-        bgraTexture->GetDesc(&srcDesc);
 
         if (bgraStagingTexture) {
             D3D11_TEXTURE2D_DESC stageDesc;
@@ -3322,8 +3324,10 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
 
             // Check if staging texture needs to be recreated with correct
             // format
-            if (stageDesc.Format != srcDesc.Format) {
-                DLL_Log("[VP] Recreating staging texture: fmt %d -> %d", stageDesc.Format, srcDesc.Format);
+            if (stageDesc.Format != vpInputDesc.Format || stageDesc.Width != vpInputDesc.Width ||
+                stageDesc.Height != vpInputDesc.Height) {
+                DLL_Log("[VP] Recreating staging texture: %ux%u fmt %d -> %ux%u fmt %d", stageDesc.Width,
+                        stageDesc.Height, stageDesc.Format, vpInputDesc.Width, vpInputDesc.Height, vpInputDesc.Format);
                 bgraStagingTexture->Release();
                 bgraStagingTexture = nullptr;
             }
@@ -3332,11 +3336,11 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
         // Create staging texture if needed
         if (!bgraStagingTexture) {
             D3D11_TEXTURE2D_DESC stageDesc = {};
-            stageDesc.Width = srcDesc.Width;
-            stageDesc.Height = srcDesc.Height;
+            stageDesc.Width = vpInputDesc.Width;
+            stageDesc.Height = vpInputDesc.Height;
             stageDesc.MipLevels = 1;
             stageDesc.ArraySize = 1;
-            stageDesc.Format = srcDesc.Format;  // Match source format!
+            stageDesc.Format = vpInputDesc.Format;  // Match the texture fed into the VP path.
             stageDesc.SampleDesc.Count = 1;
             stageDesc.Usage = D3D11_USAGE_DEFAULT;
             stageDesc.BindFlags = 0;  // Compatible with VP
@@ -3350,14 +3354,15 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
                 DLL_Log("[VP] Failed to create staging texture: HR=%x", hr);
                 return false;
             }
-            DLL_Log("[VP] Created staging texture: fmt=%d", srcDesc.Format);
+            DLL_Log("[VP] Created staging texture: %ux%u fmt=%d", vpInputDesc.Width, vpInputDesc.Height,
+                    vpInputDesc.Format);
         }
 
         // Copy to staging
         ID3D11DeviceContext* ctx = nullptr;
         d3d11Device->GetImmediateContext(&ctx);
         if (ctx) {
-            ctx->CopyResource(bgraStagingTexture, bgraTexture);
+            ctx->CopyResource(bgraStagingTexture, vpInputTexture);
 
             // Debug: Log copy on first few frames
             static int copyCount = 0;

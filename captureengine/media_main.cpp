@@ -121,9 +121,35 @@ static void QueueWgcFrame(ID3D11Texture2D* texture, uint32_t width, uint32_t hei
     }
 }
 
+static void ResetInjectFrameRingToLatest(const char* reason) {
+    if (!g_pSharedMem) {
+        return;
+    }
+
+    FrameRingBuffer& ring = g_pSharedMem->frameRing;
+    uint32_t readIndex = ring.readIndex.load(std::memory_order_acquire);
+    uint32_t writeIndex = ring.writeIndex.load(std::memory_order_acquire);
+    if (readIndex == writeIndex) {
+        return;
+    }
+
+    ring.readIndex.store(writeIndex, std::memory_order_release);
+    LogInfo("[Media] Discarded %u stale inject frame(s) before %s", static_cast<unsigned>(writeIndex - readIndex),
+            reason);
+}
+
+static void ResetLastQueuedFrameCache() {
+    if (g_HasLastFrame && !g_LastFrame.isInjectMode && g_LastFrame.texture) {
+        g_LastFrame.texture->Release();
+    }
+    g_LastFrame = QueuedFrame{};
+    g_HasLastFrame = false;
+}
+
 static void StopInjectCapturePipeline() {
     g_InjectCaptureShutdown = true;
     JoinThreadWithTimeout(g_InjectCaptureThread, 5000, "inject capture");
+    ResetInjectFrameRingToLatest("inject pipeline stop");
 }
 
 static void StopWgcCapturePipeline() {
@@ -611,6 +637,9 @@ void EncoderThreadFunc(const AppConfig& config) {
             // frame selection and visible judder without changing the fixed output rate.
             QueuedFrame temp;
             while (g_FrameQueue.Pop(temp, 0)) {
+                if (popped && !frame.isInjectMode && frame.texture) {
+                    frame.texture->Release();
+                }
                 frame = std::move(temp);
                 popped = true;
             }
@@ -621,6 +650,10 @@ void EncoderThreadFunc(const AppConfig& config) {
 
         if (popped) {
             if (frame.isInjectMode) {
+                if (g_HasLastFrame && !g_LastFrame.isInjectMode && g_LastFrame.texture) {
+                    g_LastFrame.texture->Release();
+                    g_LastFrame.texture = nullptr;
+                }
                 g_LastFrame = std::move(frame);
                 g_HasLastFrame = true;
                 // After move, frame fields are nullptr - use g_LastFrame for processing
@@ -740,13 +773,10 @@ void StartRecording(const AppConfig& config) {
 
     StopWgcCapturePipeline();
     StopInjectCapturePipeline();
+    ResetInjectFrameRingToLatest("recording start");
 
     g_FrameQueue.Clear();
-    if (g_HasLastFrame && !g_LastFrame.isInjectMode && g_LastFrame.texture) {
-        g_LastFrame.texture->Release();
-        g_LastFrame.texture = nullptr;
-    }
-    g_HasLastFrame = false;
+    ResetLastQueuedFrameCache();
 
     if (g_pSharedMem) {
         g_pSharedMem->runtimeState.duplicateFrames = 0;
@@ -813,6 +843,8 @@ void StopRecording() {
     JoinThreadWithTimeout(g_EncoderThread, 10000, "encoder");
 
     g_FrameQueue.Clear();
+    ResetLastQueuedFrameCache();
+    ResetInjectFrameRingToLatest("recording stop");
     MediaEngine_StopRecording();
 
     if (g_pSharedMem) {

@@ -304,7 +304,7 @@ private:
     bool InitVideoProcessor();
     void CleanupVideoProcessor();
     bool ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture2D** nv12Output, bool cursorVisible = false,
-                           int cursorX = 0, int cursorY = 0);
+                           int cursorX = 0, int cursorY = 0, bool allowDirectInputView = true);
     bool EnsureSwapRBShader();
     ID3D11Texture2D* SwapRBChannels(ID3D11Texture2D* input, uint32_t w, uint32_t h);
 

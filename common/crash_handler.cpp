@@ -343,10 +343,12 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
-    // C++ exceptions: these are first-chance and usually caught by the app.
-    // BUT if we get too many, it's likely a catch() block that re-throws into
-    // a crash. Dump after 3 consecutive C++ exceptions.
-    if (!forceDump && code == 0xE06D7363 && callCount < 3) {
+    // Generic MSVC/CRT C++ exceptions are commonly used for recoverable
+    // library error paths (for example, D3D11 throwing before the caller
+    // falls back to a safe path). Do not treat first-chance C++ EH as a
+    // crash here; if it is truly unhandled, the top-level UEF path will
+    // re-enter with forceDump=true and write the dump there.
+    if (!forceDump && code == 0xE06D7363) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
