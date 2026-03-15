@@ -3333,12 +3333,18 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                     "-lgdi32",
                 ]
                 if curr_env.get("CE_DISABLE_LTO") != "1":
-                    me_ldflags.append("-flto")
+                    # LTO disabled for mediaengine: on MinGW/clang, LTO can strip
+                    # exception handling tables needed for D3D11 SEH exception catching
+                    pass  # me_ldflags.append("-flto") - DISABLED for D3D11 exception safety
                 if any(flag.startswith("-fsanitize=") for flag in curr_cflags):
                     me_ldflags.append("-fsanitize=address,undefined")
                 me_ldflags.append(f"-Wl,--out-implib,{me_lib}")
 
                 me_cflags = curr_cflags + ["-DMEDIAENGINE_EXPORTS"] + ffmpeg_flags
+                # Remove LTO from mediaengine: on MinGW/clang, LTO strips exception handling
+                # tables needed to catch D3D11's SEH exceptions (0xE06D7363) from OpenSharedFence
+                # and other D3D11 APIs. These functions throw instead of returning HRESULT errors.
+                me_cflags = [f for f in me_cflags if not f.startswith("-flto")]
                 me_objs = []
                 src_obj_pairs = []
                 for src in me_src:

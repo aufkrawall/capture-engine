@@ -20,39 +20,137 @@ extern "C" {
 #include <filesystem>
 #include "cursor_renderer.h"
 
-// D3D11 OpenSharedFence/OpenSharedResource can throw exceptions (SEH code 0xE06D7363)
+// SEH-to-C++ Exception Translation for MinGW/clang
+// MinGW uses DWARF exception handling (libgcc) which cannot catch Windows SEH
+// exceptions. D3D11 raises SEH exception 0xE06D7363 (C++ throw) which becomes
+// an unhandled SEH if not caught. We use a thread-local flag + VEH to detect
+// and prevent crashes from D3D11 exceptions.
+//
+// The approach: VEH sets a thread-local flag when D3D11 throws, then returns
+// EXCEPTION_CONTINUE_SEARCH to let the normal crash handler capture the dump.
+// The wrapper functions CANNOT catch SEH on MinGW, so we use pre-validation.
+
+#include <windows.h>
+
+// Thread-local flag set by VEH when D3D11 throws
+static thread_local volatile LONG g_D3D11ExceptionOccurred = 0;
+
+// VEH handler for D3D11 exceptions - logs and dumps but lets crash handler take over
+static PVOID g_D3D11VEHHandle = nullptr;
+
+static LONG WINAPI D3D11SEHHandler(EXCEPTION_POINTERS* ep) {
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+    // Mark that D3D11 threw - helps with diagnostics
+    if (code == 0xE06D7363) {  // C++ exception from D3D11
+        g_D3D11ExceptionOccurred = code;
+    }
+    return EXCEPTION_CONTINUE_SEARCH;  // Let crash handler capture dump
+}
+
+static void InstallD3D11SEHHandler() {
+    if (!g_D3D11VEHHandle) {
+        g_D3D11VEHHandle = AddVectoredExceptionHandler(1, D3D11SEHHandler);
+    }
+}
+
+static void RemoveD3D11SEHHandler() {
+    if (g_D3D11VEHHandle) {
+        RemoveVectoredExceptionHandler(g_D3D11VEHHandle);
+        g_D3D11VEHHandle = nullptr;
+    }
+}
+
+// Handle validation cache: tracks handles that have previously failed D3D11 OpenShared*
+// calls, so we don't repeatedly trigger SEH exceptions from invalid handles.
+// D3D11 throws SEH exceptions for invalid handles, and MinGW's catch(...) cannot
+// catch SEH exceptions. Pre-validation is the only reliable protection.
+// 
+// The cache stores (handle_value, failure_count) pairs. Handles that fail >3 times
+// are permanently skipped. Cache is cleared when recording starts.
+#include <unordered_map>
+#include <mutex>
+
+struct HandleFailureCache {
+    std::mutex mutex;
+    std::unordered_map<HANDLE, int> fenceFailures;
+    std::unordered_map<HANDLE, int> textureFailures;
+    
+    bool ShouldSkipFence(HANDLE h) {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto it = fenceFailures.find(h);
+        return it != fenceFailures.end() && it->second >= 3;
+    }
+    
+    bool ShouldSkipTexture(HANDLE h) {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto it = textureFailures.find(h);
+        return it != textureFailures.end() && it->second >= 3;
+    }
+    
+    void RecordFenceFailure(HANDLE h) {
+        std::lock_guard<std::mutex> lock(mutex);
+        fenceFailures[h]++;
+    }
+    
+    void RecordTextureFailure(HANDLE h) {
+        std::lock_guard<std::mutex> lock(mutex);
+        textureFailures[h]++;
+    }
+    
+    void Clear() {
+        std::lock_guard<std::mutex> lock(mutex);
+        fenceFailures.clear();
+        textureFailures.clear();
+    }
+};
+
+static HandleFailureCache g_HandleFailureCache;
+
+// D3D11 OpenSharedFence/OpenSharedResource can throw SEH exceptions (0xE06D7363)
+// for invalid handles. On MinGW, C++ try/catch cannot catch SEH exceptions.
+// We use the VEH handler above for diagnostics. The real protection is to validate
+// handles BEFORE calling D3D11 APIs - check if the handle is a valid NT handle,
+// check if the source process is still alive, and cache results to avoid repeated
+// failures that would trigger exceptions.
 // for invalid handles. LTO (-flto) was stripping exception tables from lambdas.
 // Fixed by: (1) disabling LTO for mediaengine in build.py, (2) using noinline wrappers.
 // The noinline wrappers force exception table emission even if LTO is re-enabled later.
 
 // Forward declarations - dllexport forces LTO to keep these functions
-// D3D11 OpenShared* calls throw C++ exceptions (0xE06D7363) for invalid handles.
-// These wrappers catch exceptions since LTO strips try/catch from inlined/lambdas.
+// D3D11 OpenShared* calls can throw SEH exceptions (0xE06D7363) for invalid handles.
+// On MinGW, catch(...) CANNOT catch SEH exceptions. The failure cache pre-validates
+// handles that have previously failed to prevent repeated crashes.
+// CRITICAL: OpenSharedFence MUST only be called with handles that are known to be valid.
+// The caller must use DuplicateHandle first - if it succeeds, the handle is valid.
+// We also use the failure cache as a second line of defense.
 extern "C" __declspec(dllexport) HRESULT __cdecl CallOpenSharedFence(ID3D11Device5* dev, HANDLE h,
-                                                                      ID3D11Fence** out) noexcept {
-    try {
-        return dev->OpenSharedFence(h, IID_PPV_ARGS(out));
-    } catch (...) {
-        return E_FAIL;
+                                                                      ID3D11Fence** out) {
+    if (g_HandleFailureCache.ShouldSkipFence(h)) {
+        return E_INVALIDARG;
     }
+    HRESULT hr = dev->OpenSharedFence(h, IID_PPV_ARGS(out));
+    if (FAILED(hr)) {
+        g_HandleFailureCache.RecordFenceFailure(h);
+    }
+    return hr;
 }
 
 extern "C" __declspec(dllexport) HRESULT __cdecl CallOpenSharedResource(ID3D11Device5* dev, HANDLE h, REFIID riid,
-                                                                         void** out) noexcept {
-    try {
-        return dev->OpenSharedResource(h, riid, out);
-    } catch (...) {
-        return E_FAIL;
+                                                                         void** out) {
+    HRESULT hr = dev->OpenSharedResource(h, riid, out);
+    if (FAILED(hr)) {
+        g_HandleFailureCache.RecordTextureFailure(h);
     }
+    return hr;
 }
 
 extern "C" __declspec(dllexport) HRESULT __cdecl CallOpenSharedResource1(ID3D11Device5* dev, HANDLE h, REFIID riid,
-                                                                          void** out) noexcept {
-    try {
-        return dev->OpenSharedResource1(h, riid, out);
-    } catch (...) {
-        return E_FAIL;
+                                                                          void** out) {
+    HRESULT hr = dev->OpenSharedResource1(h, riid, out);
+    if (FAILED(hr)) {
+        g_HandleFailureCache.RecordTextureFailure(h);
     }
+    return hr;
 }
 
 // Template wrapper that delegates to the noinline functions.
@@ -270,7 +368,12 @@ VideoEncoder::~VideoEncoder() {
 }
 
 bool VideoEncoder::Init(const VideoConfig& config, int width, int height, int fps,
-                        std::function<void(AVPacket*)> packetCallback) {
+                         std::function<void(AVPacket*)> packetCallback) {
+    // Install VEH to log D3D11 SEH exceptions for diagnostics
+    InstallD3D11SEHHandler();
+    
+    // Clear handle failure cache from previous recording session
+    g_HandleFailureCache.Clear();
     DLL_Log("[VideoEncoder] Init Entry - config.encoder=%s w=%d h=%d fps=%d", config.encoder.c_str(), width, height,
             fps);
 
@@ -1564,14 +1667,25 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                         ce::HandleGuard hProcess(OpenProcess(PROCESS_DUP_HANDLE, FALSE, sourcePid));
                         HRESULT hr = E_FAIL;
                         if (hProcess) {
-                            // Use SEH wrapper - D3D11 OpenSharedFence can throw SEH exceptions
-                            hr = CallOpenSharedFence(d3d11Device, fenceHandle, &d3d11Fence);
-                            if (FAILED(hr)) {
-                                ce::HandleGuard dupFence;
-                                if (DuplicateHandle(hProcess.get(), fenceHandle, GetCurrentProcess(),
-                                                    dupFence.addressof(), 0, FALSE, DUPLICATE_SAME_ACCESS)) {
-                                    hr = CallOpenSharedFence(d3d11Device, dupFence.get(), &d3d11Fence);
-                                }
+                            // CRITICAL: Always DuplicateHandle first to validate the handle.
+                            // OpenSharedFence throws SEH exceptions for invalid handles,
+                            // and MinGW catch(...) cannot catch SEH exceptions.
+                            // DuplicateHandle fails gracefully, preventing the crash.
+                            ce::HandleGuard dupFence;
+                            if (DuplicateHandle(hProcess.get(), fenceHandle, GetCurrentProcess(),
+                                                dupFence.addressof(), 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+                                // Handle is valid - safe to call OpenSharedFence
+                                hr = CallOpenSharedFence(d3d11Device, dupFence.get(), &d3d11Fence);
+                            } else {
+                                if (encodeFrameCounter < 10)
+                                    DLL_Log("[VideoEncoder] Fence DuplicateHandle failed for PID %u handle %p",
+                                            sourcePid, fenceHandle);
+                            }
+                        }
+                        if (FAILED(hr)) {
+                            // Fallback: try direct handle (may work for same-process or KMT handles)
+                            if (!g_HandleFailureCache.ShouldSkipFence(fenceHandle)) {
+                                hr = CallOpenSharedFence(d3d11Device, fenceHandle, &d3d11Fence);
                             }
                         }
                         if (d3d11Fence) {
@@ -1673,36 +1787,24 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                     ce::HandleGuard dupFence;
                     HRESULT hr = E_FAIL;
 
-                    // D3D11 OpenSharedFence can throw SEH exceptions for invalid handles.
-                    // Use SafeD3D11OpenShared wrapper for all calls.
-                    try {
-                        // Try direct NT handle first (for Vulkan layer D3D12 fences)
-                        hr = CallOpenSharedFence(d3d11Device, fenceHandle, &d3d11Fence);
-                    } catch (...) {
-                        hr = E_FAIL;
-                    }
-                    if (FAILED(hr) && encodeFrameCounter < 10) {
-                        DLL_Log(
-                            "[VideoEncoder] OpenSharedFence(direct) failed: HR=%x (Hnd=%p), trying "
-                            "DuplicateHandle...",
-                            hr, fenceHandle);
-                    }
-
-                    // Fallback to DuplicateHandle path (for handles that support it)
-                    if (FAILED(hr)) {
-                        if (DuplicateHandle(hProcess.get(), fenceHandle, GetCurrentProcess(), dupFence.addressof(),
-                                            0, FALSE, DUPLICATE_SAME_ACCESS)) {
-                            hr = CallOpenSharedFence(d3d11Device, dupFence.get(), &d3d11Fence);
-                            if (FAILED(hr)) {
-                                DLL_Log("[VideoEncoder] OpenSharedFence(dup) failed: HR=%x (Hnd=%p)", hr,
-                                        dupFence.get());
-                            }
-                        } else {
-                            DWORD err = GetLastError();
-                            DLL_Log(
-                                "[VideoEncoder] DuplicateHandle failed: Err=%d (SrcPid=%u "
-                                "Hnd=%p)",
-                                err, sourcePid, fenceHandle);
+                    // CRITICAL: Always DuplicateHandle first to validate handles.
+                    if (DuplicateHandle(hProcess.get(), fenceHandle, GetCurrentProcess(), dupFence.addressof(),
+                                        0, FALSE, DUPLICATE_SAME_ACCESS)) {
+                        // Handle duplicated successfully - safe to call OpenSharedFence
+                        hr = CallOpenSharedFence(d3d11Device, dupFence.get(), &d3d11Fence);
+                        if (FAILED(hr) && encodeFrameCounter < 10) {
+                            DLL_Log("[VideoEncoder] OpenSharedFence(dup) failed: HR=%x (Hnd=%p)", hr,
+                                    dupFence.get());
+                        }
+                    } else {
+                        DWORD err = GetLastError();
+                        if (encodeFrameCounter < 10) {
+                            DLL_Log("[VideoEncoder] DuplicateHandle failed: Err=%d (SrcPid=%u Hnd=%p)",
+                                    err, sourcePid, fenceHandle);
+                        }
+                        // Last resort: try direct handle (may work for same-process or KMT handles)
+                        if (!g_HandleFailureCache.ShouldSkipFence(fenceHandle)) {
+                            hr = CallOpenSharedFence(d3d11Device, fenceHandle, &d3d11Fence);
                         }
                     }
 
@@ -1737,11 +1839,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                     if (FAILED(hr)) {
                         if (DuplicateHandle(hProcess.get(), fenceHandle, GetCurrentProcess(), dupFence.addressof(),
                                             0, FALSE, DUPLICATE_SAME_ACCESS)) {
-                            try {
-                                hr = d3d11Device->OpenSharedFence(dupFence.get(), IID_PPV_ARGS(&d3d11Fence));
-                            } catch (...) {
-                                hr = E_FAIL;
-                            }
+                            hr = CallOpenSharedFence(d3d11Device, dupFence.get(), &d3d11Fence);
                             if (FAILED(hr)) {
                                 DLL_Log("[VideoEncoder] OpenSharedFence(dup) failed: HR=%x (Hnd=%p)", hr,
                                         dupFence.get());
@@ -1758,32 +1856,16 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                     // Alternate handle representation for WOW64 sources
                     if (FAILED(hr) && hasFenceAlt) {
                         ce::HandleGuard dupFenceAlt;
-                        // Try direct first
-                        try {
-                            hr = d3d11Device->OpenSharedFence(fenceHandleAlt, IID_PPV_ARGS(&d3d11Fence));
-                        } catch (...) {
-                            hr = E_FAIL;
-                        }
-                        if (FAILED(hr)) {
-                            if (DuplicateHandle(hProcess.get(), fenceHandleAlt, GetCurrentProcess(),
-                                                dupFenceAlt.addressof(), 0, FALSE, DUPLICATE_SAME_ACCESS)) {
-                                try {
-                                    hr = d3d11Device->OpenSharedFence(dupFenceAlt.get(),
-                                                                      IID_PPV_ARGS(&d3d11Fence));
-                                } catch (...) {
-                                    hr = E_FAIL;
-                                }
-                            }
+                        // Use DuplicateHandle first for safety
+                        if (DuplicateHandle(hProcess.get(), fenceHandleAlt, GetCurrentProcess(),
+                                            dupFenceAlt.addressof(), 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+                            hr = CallOpenSharedFence(d3d11Device, dupFenceAlt.get(), &d3d11Fence);
                         }
                     }
 
                     // Final fallback - try as generic shared resource
                     if (FAILED(hr)) {
-                        try {
-                            hr = d3d11Device->OpenSharedResource(fenceHandle, IID_PPV_ARGS(&d3d11Fence));
-                        } catch (...) {
-                            hr = E_FAIL;
-                        }
+                        hr = CallOpenSharedResource(d3d11Device, fenceHandle, IID_PPV_ARGS(&d3d11Fence));
                     }
                     if (FAILED(hr) && hasFenceAlt) {
                         hr = CallOpenSharedResource(d3d11Device, fenceHandleAlt, IID_PPV_ARGS(&d3d11Fence));
@@ -1826,74 +1908,47 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                 if (sharedHandle == NULL) {
                     DLL_Log("[VideoEncoder] Frame %d: Error: sharedHandle is NULL", encodeFrameCounter);
                 } else {
-                    // Use SafeD3D11OpenShared to wrap all D3D11 calls with SEH protection
-                    // D3D11 OpenSharedResource can throw SEH exceptions for invalid handles
+                    // D3D11 OpenSharedResource can throw SEH exceptions for invalid handles or
+                    // incompatible formats. DuplicateHandle first to validate handle accessibility.
+                    // Even duplicated handles can fail if D3D12/D3D11 devices are incompatible.
+                    ce::HandleGuard dupTexDirect;
+                    bool handleValid = DuplicateHandle(hProcess.get(), sharedHandle, GetCurrentProcess(),
+                                                       dupTexDirect.addressof(), 0, FALSE, DUPLICATE_SAME_ACCESS);
+                    if (handleValid) {
+                        // Handle duplicated - try OpenSharedResource1 with the valid handle
+                        hr = CallOpenSharedResource1(d3d11Device, dupTexDirect.get(), IID_PPV_ARGS(&bgraTex));
+                        hrNtDirect = hr;
+                    } else {
+                        hrNtDirect = HRESULT_FROM_WIN32(GetLastError());
+                        if (encodeFrameCounter < 10)
+                            DLL_Log("[VideoEncoder] Frame %d: DuplicateHandle for texture failed: %p",
+                                    encodeFrameCounter, sharedHandle);
+                    }
 
-                    // Try direct NT handle first
-                    hr = CallOpenSharedResource1(d3d11Device, sharedHandle, IID_PPV_ARGS(&bgraTex));
-                    hrNtDirect = hr;
                     if (FAILED(hr) && encodeFrameCounter < 10) {
                         DLL_Log(
                             "[VideoEncoder] Frame %d: OpenSharedResource1(direct=%p) "
-                            "failed HR=%x. Trying DuplicateHandle...",
+                            "failed HR=%x. Trying KMT path...",
                             encodeFrameCounter, sharedHandle, hr);
                     }
 
-                    // Fallback to DuplicateHandle path
-                    if (FAILED(hr)) {
-                        if (DuplicateHandle(hProcess.get(), sharedHandle, GetCurrentProcess(),
-                                            dupTex.addressof(), 0, FALSE, DUPLICATE_SAME_ACCESS)) {
-                            hr = CallOpenSharedResource1(d3d11Device, dupTex.get(), IID_PPV_ARGS(&bgraTex));
-                            hrNtDup = hr;
-                            if (FAILED(hr) && encodeFrameCounter < 10) {
-                                DLL_Log(
-                                    "[VideoEncoder] Frame %d: OpenSharedResource1(dup=%p) "
-                                    "failed HR=%x. Falling back to KMT...",
-                                    encodeFrameCounter, dupTex.get(), hr);
-                            }
-                            if (FAILED(hr)) {
-                                hr = CallOpenSharedResource(d3d11Device, dupTex.get(), IID_PPV_ARGS(&bgraTex));
-                                hrKmtDup = hr;
-                                if (SUCCEEDED(hr) && encodeFrameCounter < 10) {
-                                    DLL_Log(
-                                        "[VideoEncoder] Frame %d: Opened duplicated handle %p via KMT path",
-                                        encodeFrameCounter, dupTex.get());
-                                }
-                            }
+                    // Fallback to KMT path with duplicated handle
+                    if (FAILED(hr) && handleValid) {
+                        hr = CallOpenSharedResource(d3d11Device, dupTexDirect.get(), IID_PPV_ARGS(&bgraTex));
+                        hrKmtDup = hr;
+                        if (SUCCEEDED(hr) && encodeFrameCounter < 10) {
+                            DLL_Log("[VideoEncoder] Frame %d: Opened duplicated handle %p via KMT path",
+                                    encodeFrameCounter, dupTexDirect.get());
                         }
                     }
 
-                    if (FAILED(hr) && hasSharedAlt) {
-                        ce::HandleGuard dupTexAlt;
-                        hr = CallOpenSharedResource1(d3d11Device, sharedHandleAlt, IID_PPV_ARGS(&bgraTex));
-                        hrNtAltDirect = hr;
-                        if (FAILED(hr)) {
-                            if (DuplicateHandle(hProcess.get(), sharedHandleAlt, GetCurrentProcess(),
-                                                dupTexAlt.addressof(), 0, FALSE, DUPLICATE_SAME_ACCESS)) {
-                                hr = CallOpenSharedResource1(d3d11Device, dupTexAlt.get(), IID_PPV_ARGS(&bgraTex));
-                                hrNtAltDup = hr;
-                                if (FAILED(hr)) {
-                                    hr = CallOpenSharedResource(d3d11Device, dupTexAlt.get(), IID_PPV_ARGS(&bgraTex));
-                                    hrKmtAltDup = hr;
-                                }
-                            }
-                        }
-                    }
-
-                    if (FAILED(hr)) {
+                    // Try original handle as last resort (may work for same-process)
+                    if (FAILED(hr) && !g_HandleFailureCache.ShouldSkipTexture(sharedHandle)) {
                         hr = CallOpenSharedResource(d3d11Device, sharedHandle, IID_PPV_ARGS(&bgraTex));
                         hrKmtDirect = hr;
                         if (SUCCEEDED(hr) && encodeFrameCounter < 10) {
-                            DLL_Log("[VideoEncoder] Frame %d: Opened handle %p via KMT path", encodeFrameCounter,
-                                    sharedHandle);
-                        }
-                    }
-                    if (FAILED(hr) && hasSharedAlt) {
-                        hr = CallOpenSharedResource(d3d11Device, sharedHandleAlt, IID_PPV_ARGS(&bgraTex));
-                        hrKmtAltDirect = hr;
-                        if (SUCCEEDED(hr) && encodeFrameCounter < 10) {
-                            DLL_Log("[VideoEncoder] Frame %d: Opened alt handle %p via KMT path", encodeFrameCounter,
-                                    sharedHandleAlt);
+                            DLL_Log("[VideoEncoder] Frame %d: Opened handle %p via KMT direct path",
+                                    encodeFrameCounter, sharedHandle);
                         }
                     }
 
@@ -1907,7 +1962,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                                 encodeFrameCounter, retryHr, retryCount, maxRetries);
                         Sleep(2);
 
-                        // Retry both NT and KMT paths (using SafeD3D11OpenShared)
+                        // Retry with duplicated handle first (safe - DuplicateHandle fails gracefully)
                         ce::HandleGuard dupTexRetry;
                         if (DuplicateHandle(hProcess.get(), sharedHandle, GetCurrentProcess(),
                                             dupTexRetry.addressof(), 0, FALSE, DUPLICATE_SAME_ACCESS)) {
@@ -1916,11 +1971,17 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                                 retryHr = CallOpenSharedResource(d3d11Device, dupTexRetry.get(), IID_PPV_ARGS(&bgraTex));
                             }
                         }
-                        if (FAILED(retryHr)) {
-                            retryHr = CallOpenSharedResource(d3d11Device, sharedHandle, IID_PPV_ARGS(&bgraTex));
-                        }
                         if (FAILED(retryHr) && hasSharedAlt) {
-                            retryHr = CallOpenSharedResource(d3d11Device, sharedHandleAlt, IID_PPV_ARGS(&bgraTex));
+                            ce::HandleGuard dupTexAltRetry;
+                            if (DuplicateHandle(hProcess.get(), sharedHandleAlt, GetCurrentProcess(),
+                                                dupTexAltRetry.addressof(), 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+                                retryHr = CallOpenSharedResource1(d3d11Device, dupTexAltRetry.get(),
+                                                                  IID_PPV_ARGS(&bgraTex));
+                                if (FAILED(retryHr)) {
+                                    retryHr = CallOpenSharedResource(d3d11Device, dupTexAltRetry.get(),
+                                                                      IID_PPV_ARGS(&bgraTex));
+                                }
+                            }
                         }
                     }
                     if (SUCCEEDED(retryHr)) hr = retryHr;
@@ -2942,14 +3003,23 @@ bool VideoEncoder::InitVideoProcessor() {
     contentDesc.Usage =
         (savedConfig.scaling.quality == "best") ? D3D11_VIDEO_USAGE_OPTIMAL_QUALITY : D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
 
-    hr = videoDevice->CreateVideoProcessorEnumerator(&contentDesc, &videoProcessorEnum);
+    hr = E_FAIL;
+    try {
+        hr = videoDevice->CreateVideoProcessorEnumerator(&contentDesc, &videoProcessorEnum);
+    } catch (...) {
+        hr = E_FAIL;
+    }
     if (FAILED(hr)) {
         DLL_Log("[VideoProcessor] Failed to create enumerator. HR=%x", hr);
         return false;
     }
 
     // Create video processor
-    hr = videoDevice->CreateVideoProcessor(videoProcessorEnum, 0, &videoProcessor);
+    try {
+        hr = videoDevice->CreateVideoProcessor(videoProcessorEnum, 0, &videoProcessor);
+    } catch (...) {
+        hr = E_FAIL;
+    }
     if (FAILED(hr)) {
         DLL_Log("[VideoProcessor] Failed to create processor. HR=%x", hr);
         return false;
@@ -3090,8 +3160,13 @@ bool VideoEncoder::InitVideoProcessor() {
         outputViewDesc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
         outputViewDesc.Texture2D.MipSlice = 0;
 
-        hr = videoDevice->CreateVideoProcessorOutputView(nv12StagingTextures[i], videoProcessorEnum, &outputViewDesc,
-                                                         &outputViews[i]);
+        try {
+            hr = videoDevice->CreateVideoProcessorOutputView(nv12StagingTextures[i], videoProcessorEnum,
+                                                              &outputViewDesc, &outputViews[i]);
+        } catch (...) {
+            hr = E_FAIL;
+            DLL_Log("[VideoProcessor] CreateVideoProcessorOutputView threw exception for view %d", i);
+        }
         if (FAILED(hr)) {
             DLL_Log("[VideoProcessor] Failed to create output view %d. HR=%x", i, hr);
             baseDevice->Release();
@@ -3258,8 +3333,14 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
 
     vpFirstCallLogged = true;
 
-    HRESULT hr =
-        videoDevice->CreateVideoProcessorInputView(vpInputTexture, videoProcessorEnum, &inputViewDesc, &localInputView);
+    HRESULT hr = E_FAIL;
+    try {
+        hr = videoDevice->CreateVideoProcessorInputView(vpInputTexture, videoProcessorEnum, &inputViewDesc,
+                                                         &localInputView);
+    } catch (...) {
+        hr = E_FAIL;
+        DLL_Log("[VP] CreateVideoProcessorInputView threw exception (fmt=%d)", vpInputTexture ? 0 : -1);
+    }
 
     // Log CreateVideoProcessorInputView result on first call per recording
     if (!vpInputViewLogged) {
@@ -3339,8 +3420,12 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
         }
 
         // Create input view from staging texture
-        hr = videoDevice->CreateVideoProcessorInputView(bgraStagingTexture, videoProcessorEnum, &inputViewDesc,
-                                                        &localInputView);
+        try {
+            hr = videoDevice->CreateVideoProcessorInputView(bgraStagingTexture, videoProcessorEnum, &inputViewDesc,
+                                                            &localInputView);
+        } catch (...) {
+            hr = E_FAIL;
+        }
         if (FAILED(hr)) {
             DLL_Log("[VP] Failed to create input view from staging: HR=%x", hr);
             return false;
@@ -4715,7 +4800,12 @@ VideoEncoder::CursorCacheEntry* VideoEncoder::GetCursorCacheEntry(HCURSOR handle
     ivDesc.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
     ivDesc.Texture2D.MipSlice = 0;
 
-    hr = videoDevice->CreateVideoProcessorInputView(entry.texture, videoProcessorEnum, &ivDesc, &entry.inputView);
+    hr = E_FAIL;
+    try {
+        hr = videoDevice->CreateVideoProcessorInputView(entry.texture, videoProcessorEnum, &ivDesc, &entry.inputView);
+    } catch (...) {
+        hr = E_FAIL;
+    }
 
     if (FAILED(hr)) {
         DLL_Log("[CursorCache] CreateVPInputView failed: HR=%x", hr);

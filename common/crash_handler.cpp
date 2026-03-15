@@ -269,6 +269,17 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
         }
     }
 
+    // COM disconnect exceptions on thread pool workers are benign during
+    // process shutdown. COM's LRPC infrastructure tries to dispatch pending
+    // RPC calls after the process has started releasing COM objects.
+    // This causes RPC_E_DISCONNECTED on a TppWorkerThread.
+    // Only dump if we get an excessive number (indicates a real issue).
+    if (!forceDump && code == 0x80010108) {
+        if (callCount < 5) {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+    }
+
     // Breakpoints: only skip if we haven't been called too many times
     // (excessive breakpoints suggest a real crash loop)
     if (!forceDump && code == 0x80000003 && callCount < 5) {

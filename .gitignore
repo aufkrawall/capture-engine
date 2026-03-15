@@ -28,6 +28,8 @@
 !.flake8
 *.csv
 *.dmp
+*.ps1
+test_loop.py
 compile.log
 build.log
 git-clean.log
