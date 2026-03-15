@@ -589,7 +589,7 @@ public:
 
     // Direct D3D11 texture processing for screengrab mode (zero-copy)
     // Direct D3D11 texture processing for screengrab mode (zero-copy)
-    void ProcessFrameD3D11(void* texture, int64_t timestampQPC, uint32_t width, uint32_t height) {
+    void ProcessFrameD3D11(void* texture, int64_t timestampQPC, uint32_t width, uint32_t height, bool isHDR) {
         std::lock_guard<std::recursive_mutex> lock(muxMutex);
         if (!videoEnc || !recording)
             return;
@@ -622,7 +622,7 @@ public:
         // Update Atomic Member (for Audio Thread / Pull) — keep ms for audio sync
         this->videoElapsedMs.store(realElapsedUs / 1000);
 
-        videoEnc->EncodeFrameD3D11((ID3D11Texture2D*)texture, realElapsedUs, width, height);
+        videoEnc->EncodeFrameD3D11((ID3D11Texture2D*)texture, realElapsedUs, width, height, isHDR);
 
         // Track last video frame timestamp for audio trimming
         lastVideoFrameMs = realElapsedUs / 1000;
@@ -1570,9 +1570,10 @@ MEDIAENGINE_API void MediaEngine_ProcessFrame(uint64_t textureHandle, uint64_t f
                                height, format, isHDR, isShmem, shmemSlot);
     }
 }
-MEDIAENGINE_API void MediaEngine_ProcessFrameD3D11(void* texture, int64_t timestamp, uint32_t width, uint32_t height) {
+MEDIAENGINE_API void MediaEngine_ProcessFrameD3D11(void* texture, int64_t timestamp, uint32_t width, uint32_t height,
+                                                   bool isHDR) {
     if (g_Engine)
-        g_Engine->ProcessFrameD3D11(texture, timestamp, width, height);
+        g_Engine->ProcessFrameD3D11(texture, timestamp, width, height, isHDR);
 }
 
 MEDIAENGINE_API bool MediaEngine_CreateSharedCaptureTextures(uint32_t width, uint32_t height, uint32_t format,

@@ -19,6 +19,7 @@ struct WGCCapturedFrame {
     uint32_t width = 0;
     uint32_t height = 0;
     int64_t timestamp = 0;  // QPC ticks (same unit as inject mode)
+    bool isHDR = false;     // True when the captured target is currently HDR/PQ
 };
 
 // Windows Graphics Capture implementation
@@ -84,8 +85,8 @@ public:
     HANDLE GetFrameArrivedEvent() const;
 
     // OBS-style direct callback: frames processed directly in WinRT callback
-    // Callback receives: texture, width, height, timestampMs
-    void SetDirectFrameCallback(std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t)> callback);
+    // Callback receives: texture, width, height, QPC timestamp, HDR flag
+    void SetDirectFrameCallback(std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, bool)> callback);
 
     // Get count of frames processed via direct callback
     uint32_t GetCallbackFrameCount() const;

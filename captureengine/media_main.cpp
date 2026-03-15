@@ -107,13 +107,14 @@ void MediaLogCallback(const char* msg) {
     LogInfo("[Media] %s", msg);
 }
 
-static void QueueWgcFrame(ID3D11Texture2D* texture, uint32_t width, uint32_t height, int64_t timestamp) {
+static void QueueWgcFrame(ID3D11Texture2D* texture, uint32_t width, uint32_t height, int64_t timestamp, bool isHDR) {
     QueuedFrame qf;
     qf.isInjectMode = false;
     qf.texture = texture;
     qf.width = width;
     qf.height = height;
     qf.timestamp = timestamp;
+    qf.isHDR = isHDR;
 
     if (!g_FrameQueue.Push(std::move(qf), g_IsEncoderBottlenecked)) {
         g_WgcDroppedFrames.fetch_add(1, std::memory_order_relaxed);
@@ -188,7 +189,9 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
     }
 
     g_WgcCap->ResetStats();
-    g_WgcCap->SetTargetFps(config.video.fps * 2);
+    const uint32_t wgcHeadroomFps = (config.video.fps >= 120) ? 8u : ((config.video.fps >= 60) ? 4u : 2u);
+    const uint32_t wgcTargetFps = static_cast<uint32_t>(config.video.fps) + wgcHeadroomFps;
+    g_WgcCap->SetTargetFps(wgcTargetFps);
     g_WgcDroppedFrames.store(0, std::memory_order_relaxed);
 
     g_WgcCaptureShutdown = false;
@@ -699,7 +702,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                                          frameToProcess->isShmem, frameToProcess->shmemSlot);
             } else {
                 MediaEngine_ProcessFrameD3D11(frameToProcess->texture, frameToProcess->timestamp, frameToProcess->width,
-                                              frameToProcess->height);
+                                              frameToProcess->height, frameToProcess->isHDR);
             }
 
             QueryPerformanceCounter(&endEnc);

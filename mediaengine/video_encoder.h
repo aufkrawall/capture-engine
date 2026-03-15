@@ -47,7 +47,7 @@ public:
                      int shmemSlot = 0);
 
     // Encode a D3D11 texture directly (framegrab mode - zero copy)
-    bool EncodeFrameD3D11(ID3D11Texture2D* texture, int64_t pts, uint32_t frameWidth, uint32_t frameHeight);
+    bool EncodeFrameD3D11(ID3D11Texture2D* texture, int64_t pts, uint32_t frameWidth, uint32_t frameHeight, bool isHDR);
 
     // Write a packet (already encoded)
     void WriteFrame(AVPacket* pkt);
@@ -126,6 +126,7 @@ private:
 
     std::atomic<bool> initDone{false};
     bool currentIsHDR = false;  // Track HDR state (thread-local to EncodeFrame mostly)
+    bool currentUse10BitInput = false;
     std::atomic<bool> fileOpened{false};
     std::atomic<bool> recordingRequested{false};
     std::atomic<bool> isStopping = false;      // signaled by Stop()
@@ -214,6 +215,7 @@ private:
     // D3D11 Video Processor for GPU-accelerated BGRA → NV12 conversion
     ID3D11VideoDevice* videoDevice = nullptr;
     ID3D11VideoContext* videoContext = nullptr;
+    ID3D11VideoContext1* videoContext1 = nullptr;
     ID3D11VideoProcessor* videoProcessor = nullptr;
     ID3D11VideoProcessorEnumerator* videoProcessorEnum = nullptr;
 
@@ -230,20 +232,26 @@ private:
     ID3D11VideoProcessorInputView* inputView = nullptr;
     bool videoProcessorInit = false;
 
-    // RGBA→BGRA swap shader (for DXVK KMT textures that arrive as RGBA)
+    // Fullscreen copy shader reused for RGBA→BGRA and FP16→RGB10A2
     ID3D11VertexShader* swapRBShaderVS = nullptr;
     ID3D11PixelShader* swapRBShaderPS = nullptr;
     ID3D11SamplerState* swapRBSampler = nullptr;
+    ID3D11Buffer* swapRBShaderCB = nullptr;
     ID3D11Texture2D* swapRBTexture = nullptr;
     ID3D11RenderTargetView* swapRBTextureRTV = nullptr;
     uint32_t swapRBTexWidth = 0;
     uint32_t swapRBTexHeight = 0;
+    ID3D11Texture2D* rgb10IntermediateTexture = nullptr;
+    ID3D11RenderTargetView* rgb10IntermediateRTV = nullptr;
+    uint32_t rgb10IntermediateWidth = 0;
+    uint32_t rgb10IntermediateHeight = 0;
     bool swapRBShaderCreated = false;
 
     // Per-recording log flags (reset each recording via CleanupVideoProcessor)
     bool vpFirstCallLogged = false;
     bool vpDeviceCompareLogged = false;
     bool vpInputViewLogged = false;
+    bool vpFp16CompatLogged = false;
 
     // Cursor overlay via VP multi-stream (Option C)
     bool vpSupportsOverlay = false;  // MaxInputStreams >= 2
@@ -298,6 +306,15 @@ private:
     CursorCacheEntry* GetCursorCacheEntry(HCURSOR handle);
     bool ConfigureAndOpenCodec();
     void CleanupCursorCache();
+    bool ShouldUse10BitOutput() const {
+        if (savedConfig.bitDepth == "10") {
+            return true;
+        }
+        if (savedConfig.bitDepth == "8") {
+            return false;
+        }
+        return currentUse10BitInput;
+    }
 
     void CleanupResources();
 
@@ -306,7 +323,12 @@ private:
     bool ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture2D** nv12Output, bool cursorVisible = false,
                            int cursorX = 0, int cursorY = 0, bool allowDirectInputView = true);
     bool EnsureSwapRBShader();
+    ID3D11Texture2D* RenderFullscreenCopy(ID3D11Texture2D* input, uint32_t w, uint32_t h, DXGI_FORMAT inputSrvFormat,
+                                          DXGI_FORMAT outputFormat, ID3D11Texture2D*& cachedTexture,
+                                          ID3D11RenderTargetView*& cachedRTV, uint32_t& cachedWidth,
+                                          uint32_t& cachedHeight, const char* logPrefix, bool linearToSrgb = false);
     ID3D11Texture2D* SwapRBChannels(ID3D11Texture2D* input, uint32_t w, uint32_t h);
+    ID3D11Texture2D* ConvertFP16ToRGB10A2(ID3D11Texture2D* input, uint32_t w, uint32_t h, bool linearToSrgb);
 
     // ASYNC PACKET WRITER
     // Decouples file I/O from the capture thread to prevent stalls on network

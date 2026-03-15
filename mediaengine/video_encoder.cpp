@@ -159,6 +159,41 @@ namespace fs = std::filesystem;
 #define D3D11_FORMAT_SUPPORT_SHAREABLE 0x2000
 #endif
 
+namespace {
+bool IsHighPrecisionRgbInputFormat(DXGI_FORMAT format) {
+    return format == DXGI_FORMAT_R10G10B10A2_UNORM || format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+}
+
+DXGI_COLOR_SPACE_TYPE GetVideoProcessorInputColorSpace(DXGI_FORMAT format, bool isHDR, bool forceLinear = false) {
+    if (forceLinear || format == DXGI_FORMAT_R16G16B16A16_FLOAT) {
+        return DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
+    }
+    if (isHDR) {
+        return DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+    }
+    if (format == DXGI_FORMAT_R10G10B10A2_UNORM) {
+        return DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+    }
+    return DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+}
+
+DXGI_COLOR_SPACE_TYPE GetVideoProcessorOutputColorSpace(bool use10Bit, bool isHDR, const std::string& colorSpace) {
+    if (use10Bit) {
+        if (isHDR) {
+            return DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_LEFT_P2020;
+        }
+        if (colorSpace == "bt2020") {
+            return DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P2020;
+        }
+        return DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709;
+    }
+    if (colorSpace == "bt2020") {
+        return DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P2020;
+    }
+    return DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709;
+}
+}  // namespace
+
 static HANDLE NormalizeSourceHandleForWow64(HANDLE handle, uint32_t sourcePid) {
 #if defined(_WIN64)
     if (!handle || sourcePid == 0) {
@@ -326,6 +361,7 @@ VideoEncoder::VideoEncoder()
       luidHigh(0),
       initDone(false),
       currentIsHDR(false),
+      currentUse10BitInput(false),
       fileOpened(false),
       recordingRequested(false),
       isStopping(false),
@@ -634,7 +670,7 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     // Bit depth and chroma subsampling → pixel format
     std::string bd = savedConfig.bitDepth;
     if (bd == "auto" || bd.empty()) {
-        bd = currentIsHDR ? "10" : "8";
+        bd = ShouldUse10BitOutput() ? "10" : "8";
     }
     std::string chroma = savedConfig.chromaSubsampling;
     if (chroma == "auto" || chroma.empty()) {
@@ -934,8 +970,13 @@ bool VideoEncoder::EnsureDevice() {
         if (SUCCEEDED(d3d11Device->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice))) {
             // Range -7 to 7 (DXGI_GPU_THREAD_PRIORITY_MAX/MIN)
             // Positive = higher than game, negative = lower than game
-            // Value comes from config.ini [Performance] gpu_priority
+            // Value comes from config.ini [Performance] gpu_priority.
+            // Keep the default neutral behavior unless the 10-bit pipeline is active, where
+            // a small boost helps the extra GPU color conversion stay real-time under load.
             int priority = gpuPriority;  // Passed to Init() from config
+            if (priority == 0 && ShouldUse10BitOutput()) {
+                priority = 1;
+            }
 
             // Clamp to valid range
             if (priority < -7)
@@ -1010,7 +1051,7 @@ bool VideoEncoder::EnsureDevice() {
     d11Frames->format = AV_PIX_FMT_D3D11;
 
     // Use P010 for 10-bit/HDR content, NV12 for 8-bit SDR
-    bool use10bit = (savedConfig.bitDepth == "10") || (savedConfig.bitDepth == "auto" && currentIsHDR);
+    bool use10bit = ShouldUse10BitOutput();
     d11Frames->sw_format = use10bit ? AV_PIX_FMT_P010 : AV_PIX_FMT_NV12;
     if (use10bit) {
         DLL_Log("[VideoEncoder] Using P010 (10-bit) sw_format for D3D11 HW frames");
@@ -1177,7 +1218,7 @@ bool VideoEncoder::Start() {
         // Apply configured pixel format
         std::string bd = savedConfig.bitDepth;
         if (bd == "auto" || bd.empty())
-            bd = currentIsHDR ? "10" : "8";
+            bd = ShouldUse10BitOutput() ? "10" : "8";
         std::string chroma = savedConfig.chromaSubsampling;
         if (chroma == "auto" || chroma.empty())
             chroma = "420";
@@ -1187,7 +1228,9 @@ bool VideoEncoder::Start() {
         else if (chroma == "422")
             codecCtx->pix_fmt = use10bit ? AV_PIX_FMT_YUV422P10LE : AV_PIX_FMT_YUV422P;
         else
-            codecCtx->pix_fmt = use10bit ? AV_PIX_FMT_P010 : AV_PIX_FMT_D3D11;
+            // Keep using D3D11 hardware frames for 4:2:0. The hw-frames
+            // sw_format decides whether those textures are NV12 or P010.
+            codecCtx->pix_fmt = AV_PIX_FMT_D3D11;
 
         DLL_Log("[VideoEncoder] Recreated codec context for new recording");
 
@@ -1433,12 +1476,11 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                 fenceValue);
     }
 
-    if (!initDone || isHDR != currentIsHDR) {
+    const bool wants10BitInput = isHDR || IsHighPrecisionRgbInputFormat(static_cast<DXGI_FORMAT>(format));
+    if (!initDone || isHDR != currentIsHDR || wants10BitInput != currentUse10BitInput) {
         if (initDone) {
-            DLL_Log(
-                "[VideoEncoder] HDR Mode changed (New=%d, Old=%d). "
-                "Re-initializing...",
-                isHDR, currentIsHDR);
+            DLL_Log("[VideoEncoder] Format mode changed (hdr=%d->%d use10bit=%d->%d). Re-initializing...", currentIsHDR,
+                    isHDR, currentUse10BitInput, wants10BitInput);
             Stop();  // Clean up existing encoder
             initDone = false;
             // Also need to clear codecOpenFailed?
@@ -1446,9 +1488,10 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         }
 
         currentIsHDR = isHDR;
+        currentUse10BitInput = wants10BitInput;
         // Re-Init with saved config (Init uses currentIsHDR to pick format)
         if (!Init(savedConfig, width, height, savedConfig.fps ? savedConfig.fps : 60, onPacket)) {
-            DLL_Log("[VideoEncoder] Failed to Re-Init for HDR change");
+            DLL_Log("[VideoEncoder] Failed to Re-Init for format mode change");
             return false;
         }
     }
@@ -2319,9 +2362,9 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
 }
 
 // EncodeFrameD3D11: Direct D3D11 texture encoding for framegrab
-// mode Zero-copy path - texture is converted BGRA->NV12 directly
+// mode Zero-copy path - texture is converted RGB/BGRA -> NV12/P010 directly on GPU
 bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, uint32_t frameWidth,
-                                    uint32_t frameHeight) {
+                                    uint32_t frameHeight, bool isHDR) {
     if (!recordingRequested)
         return false;
 
@@ -2360,18 +2403,25 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         }
     }
 
-    // Detect input format BEFORE encoder init so we can configure
-    // P010/NV12 frames context correctly
-    if (bgraTexture) {
-        D3D11_TEXTURE2D_DESC texDesc = {};
-        bgraTexture->GetDesc(&texDesc);
-        bool isHDR =
-            (texDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM || texDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT);
-        if (isHDR && !currentIsHDR) {
-            currentIsHDR = true;
-            use10BitPipeline = true;
-            DLL_Log("[VideoEncoder] Pre-init: 10-bit/HDR input detected (fmt=%d), will use P010 pipeline",
-                    texDesc.Format);
+    D3D11_TEXTURE2D_DESC texDesc = {};
+    bgraTexture->GetDesc(&texDesc);
+    const bool wants10BitInput = IsHighPrecisionRgbInputFormat(texDesc.Format);
+    if (!initDone || isHDR != currentIsHDR || wants10BitInput != currentUse10BitInput) {
+        if (initDone) {
+            DLL_Log("[VideoEncoder] WGC mode changed (fmt=%d hdr=%d->%d use10bit=%d->%d). Re-initializing...",
+                    texDesc.Format, currentIsHDR, isHDR, currentUse10BitInput, wants10BitInput);
+            Stop();
+            initDone = false;
+            codecOpenFailed = false;
+        }
+
+        currentIsHDR = isHDR;
+        currentUse10BitInput = wants10BitInput;
+        use10BitPipeline = ShouldUse10BitOutput();
+        if (!Init(savedConfig, width ? width : (int)frameWidth, height ? height : (int)frameHeight,
+                  savedConfig.fps ? savedConfig.fps : 60, onPacket)) {
+            DLL_Log("[VideoEncoder] Failed to Re-Init for WGC format mode change");
+            return false;
         }
     }
 
@@ -2436,24 +2486,12 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     // Performance timing
     auto frameStart = PerfTimer::now();
 
-    // Detect format for 10-bit/HDR auto-selection (WGC mode)
-    {
-        D3D11_TEXTURE2D_DESC frameDesc;
-        bgraTexture->GetDesc(&frameDesc);
-        bool isHDR =
-            (frameDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM || frameDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT);
-        if (isHDR != currentIsHDR) {
-            currentIsHDR = isHDR;
-            DLL_Log("[VideoEncoder] WGC format change: fmt=%d, HDR=%d", frameDesc.Format, isHDR);
-        }
-    }
-
     // WGC capture includes the cursor natively (composited by DWM).
     // No software cursor overlay needed — pass false to disable it.
     bool cursorVisible = false;
     int cursorX = 0, cursorY = 0;
 
-    // Convert BGRA → NV12 using Video Processor (no cursor overlay —
+    // Convert captured RGB → NV12/P010 using Video Processor (no cursor overlay —
     // WGC already has the cursor baked into the captured frame)
     auto beforeConvert = PerfTimer::now();
     ID3D11Texture2D* nv12Tex = nullptr;
@@ -2917,6 +2955,10 @@ bool VideoEncoder::InitVideoProcessor() {
         DLL_Log("[VideoProcessor] Failed to get ID3D11VideoContext. HR=%x", hr);
         return false;
     }
+    hr = videoContext->QueryInterface(__uuidof(ID3D11VideoContext1), (void**)&videoContext1);
+    if (FAILED(hr)) {
+        videoContext1 = nullptr;
+    }
 
     // Store input dimensions (captured frame size)
     inputWidth = width;
@@ -3075,20 +3117,26 @@ bool VideoEncoder::InitVideoProcessor() {
         "Limited YCbCr "
         "(16-235, BT.709)");
 
-    // Create triple-buffered NV12 staging textures for output
-    // IMPORTANT: Use OUTPUT dimensions for the NV12 textures (after scaling)
+    // Create triple-buffered NV12/P010 output textures.
+    // IMPORTANT: Use OUTPUT dimensions for the textures (after scaling).
+    const bool use10BitOutput = ShouldUse10BitOutput();
+    const DXGI_FORMAT outputFormat = use10BitOutput ? DXGI_FORMAT_P010 : DXGI_FORMAT_NV12;
     D3D11_TEXTURE2D_DESC nv12Desc = {};
     nv12Desc.Width = outputWidth;
     nv12Desc.Height = outputHeight;
     nv12Desc.MipLevels = 1;
     nv12Desc.ArraySize = 1;
-    nv12Desc.Format = DXGI_FORMAT_NV12;  // NV12 for NVENC
+    nv12Desc.Format = outputFormat;
     nv12Desc.SampleDesc.Count = 1;
     nv12Desc.Usage = D3D11_USAGE_DEFAULT;
-    nv12Desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_VIDEO_ENCODER;
 
     ID3D11Device* baseDevice = nullptr;
     d3d11Device->QueryInterface(__uuidof(ID3D11Device), (void**)&baseDevice);
+    if (!baseDevice) {
+        DLL_Log("[VideoProcessor] Failed to query base D3D11 device");
+        CleanupVideoProcessor();
+        return false;
+    }
 
     nv12BufferCount = savedConfig.lookahead ? 40 : 3;
     if (nv12BufferCount < 3) {
@@ -3101,42 +3149,100 @@ bool VideoEncoder::InitVideoProcessor() {
     outputViews.assign(nv12BufferCount, nullptr);
     currentNV12Buffer = 0;
 
-    for (int i = 0; i < nv12BufferCount; i++) {
-        hr = baseDevice->CreateTexture2D(&nv12Desc, nullptr, &nv12StagingTextures[i]);
-        if (FAILED(hr)) {
-            DLL_Log(
-                "[VideoProcessor] Failed to create NV12 texture %d. "
-                "HR=%x",
-                i, hr);
-            baseDevice->Release();
-            CleanupVideoProcessor();
-            return false;
-        }
-
-        // Create output view for each NV12 texture
-        D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC outputViewDesc = {};
-        outputViewDesc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
-        outputViewDesc.Texture2D.MipSlice = 0;
-
-        try {
-            hr = videoDevice->CreateVideoProcessorOutputView(nv12StagingTextures[i], videoProcessorEnum,
-                                                             &outputViewDesc, &outputViews[i]);
-        } catch (...) {
-            hr = E_FAIL;
-            DLL_Log("[VideoProcessor] CreateVideoProcessorOutputView threw exception for view %d", i);
-        }
-        if (FAILED(hr)) {
-            DLL_Log("[VideoProcessor] Failed to create output view %d. HR=%x", i, hr);
-            baseDevice->Release();
-            CleanupVideoProcessor();
-            return false;
-        }
+    UINT formatSupport = 0;
+    hr = baseDevice->CheckFormatSupport(outputFormat, &formatSupport);
+    if (SUCCEEDED(hr)) {
+        DLL_Log("[VideoProcessor] Output fmt=%d formatSupport=0x%x", outputFormat, formatSupport);
+    } else {
+        DLL_Log("[VideoProcessor] CheckFormatSupport(fmt=%d) failed. HR=%x", outputFormat, hr);
     }
+
+    auto releaseOutputPool = [&]() {
+        for (auto*& view : outputViews) {
+            if (view) {
+                view->Release();
+                view = nullptr;
+            }
+        }
+        for (auto*& tex : nv12StagingTextures) {
+            if (tex) {
+                tex->Release();
+                tex = nullptr;
+            }
+        }
+    };
+
+    struct OutputBindAttempt {
+        UINT bindFlags;
+        const char* name;
+    };
+    const OutputBindAttempt bindAttempts[] = {
+        {D3D11_BIND_RENDER_TARGET | D3D11_BIND_VIDEO_ENCODER, "render-target|video-encoder"},
+        {D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, "render-target|shader-resource"},
+        {D3D11_BIND_RENDER_TARGET, "render-target"},
+    };
+
+    bool outputPoolCreated = false;
+    HRESULT lastOutputHr = E_FAIL;
+    const char* lastOutputAttempt = "none";
+    for (const auto& bindAttempt : bindAttempts) {
+        nv12Desc.BindFlags = bindAttempt.bindFlags;
+        lastOutputAttempt = bindAttempt.name;
+        DLL_Log("[VideoProcessor] Trying output surfaces fmt=%d bind=%x (%s)", outputFormat, bindAttempt.bindFlags,
+                bindAttempt.name);
+
+        bool attemptSucceeded = true;
+        for (int i = 0; i < nv12BufferCount; i++) {
+            hr = baseDevice->CreateTexture2D(&nv12Desc, nullptr, &nv12StagingTextures[i]);
+            if (FAILED(hr)) {
+                DLL_Log("[VideoProcessor] Failed to create output texture %d (fmt=%d bind=%x %s). HR=%x", i,
+                        outputFormat, bindAttempt.bindFlags, bindAttempt.name, hr);
+                lastOutputHr = hr;
+                attemptSucceeded = false;
+                break;
+            }
+
+            D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC outputViewDesc = {};
+            outputViewDesc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
+            outputViewDesc.Texture2D.MipSlice = 0;
+
+            try {
+                hr = videoDevice->CreateVideoProcessorOutputView(nv12StagingTextures[i], videoProcessorEnum,
+                                                                 &outputViewDesc, &outputViews[i]);
+            } catch (...) {
+                hr = E_FAIL;
+                DLL_Log("[VideoProcessor] CreateVideoProcessorOutputView threw exception for view %d", i);
+            }
+            if (FAILED(hr)) {
+                DLL_Log("[VideoProcessor] Failed to create output view %d (fmt=%d bind=%x %s). HR=%x", i, outputFormat,
+                        bindAttempt.bindFlags, bindAttempt.name, hr);
+                lastOutputHr = hr;
+                attemptSucceeded = false;
+                break;
+            }
+        }
+
+        if (attemptSucceeded) {
+            if (bindAttempt.bindFlags != bindAttempts[0].bindFlags) {
+                DLL_Log("[VideoProcessor] Using fallback output bind flags %s for fmt=%d", bindAttempt.name,
+                        outputFormat);
+            }
+            outputPoolCreated = true;
+            break;
+        }
+
+        releaseOutputPool();
+    }
+
     baseDevice->Release();
-    DLL_Log(
-        "[VideoProcessor] Created %d NV12 staging textures at %dx%d "
-        "(triple buffering)",
-        nv12BufferCount, outputWidth, outputHeight);
+    if (!outputPoolCreated) {
+        DLL_Log("[VideoProcessor] Failed to create output surface pool fmt=%d after trying %s. Last HR=%x",
+                outputFormat, lastOutputAttempt, lastOutputHr);
+        CleanupVideoProcessor();
+        return false;
+    }
+    DLL_Log("[VideoProcessor] Created %d %s output textures at %dx%d (triple buffering)", nv12BufferCount,
+            use10BitOutput ? "P010" : "NV12", outputWidth, outputHeight);
 
     // Create BGRA staging texture for Desktop Duplication
     // compatibility DD textures often have D3D11_BIND_RENDER_TARGET
@@ -3176,13 +3282,11 @@ bool VideoEncoder::InitVideoProcessor() {
     if (scalingEnabled) {
         DLL_Log(
             "[VideoProcessor] Initialized with SCALING: %dx%d -> %dx%d "
-            "BGRA→NV12",
-            inputWidth, inputHeight, outputWidth, outputHeight);
+            "RGB→%s",
+            inputWidth, inputHeight, outputWidth, outputHeight, use10BitOutput ? "P010" : "NV12");
     } else {
-        DLL_Log(
-            "[VideoProcessor] Initialized for %dx%d "
-            "BGRA→NV12 (no scaling)",
-            outputWidth, outputHeight);
+        DLL_Log("[VideoProcessor] Initialized for %dx%d RGB→%s (no scaling)", outputWidth, outputHeight,
+                use10BitOutput ? "P010" : "NV12");
     }
     return true;
 }
@@ -3202,26 +3306,14 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
                 srcDesc.BindFlags, srcDesc.MiscFlags);
     }
 
-    // Format detection: route 10-bit/HDR inputs to compute shader → P010 path
-    // VP only accepts 8-bit BGRA/RGBA input; 10-bit and FP16 formats need GPU compute conversion
+    // Track whether this recording is using the direct VP P010 path.
     {
         D3D11_TEXTURE2D_DESC srcDesc;
         bgraTexture->GetDesc(&srcDesc);
-        if (srcDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM || srcDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT) {
-            if (!use10BitPipeline) {
-                use10BitPipeline = true;
-                DLL_Log("[VP] 10-bit/HDR input detected (fmt=%d), using P010 pipeline", srcDesc.Format);
-            }
-            ID3D11Texture2D* p010Tex = nullptr;
-            if (ConvertRGBtoP010_GPU(bgraTexture, srcDesc.Format, &p010Tex, srcDesc.Width, srcDesc.Height)) {
-                *nv12Output = p010Tex;
-                return true;
-            }
-            DLL_Log("[VP] P010 GPU conversion failed, frame dropped");
-            return false;
-        } else if (use10BitPipeline) {
-            use10BitPipeline = false;
-            DLL_Log("[VP] Input switched back to 8-bit, using VP NV12 pipeline");
+        const bool shouldUse10BitPipeline = IsHighPrecisionRgbInputFormat(srcDesc.Format) && ShouldUse10BitOutput();
+        if (shouldUse10BitPipeline != use10BitPipeline) {
+            use10BitPipeline = shouldUse10BitPipeline;
+            DLL_Log("[VP] Input fmt=%d, VP output pipeline=%s", srcDesc.Format, use10BitPipeline ? "P010" : "NV12");
         }
     }
 
@@ -3239,7 +3331,9 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
     // D3D11 Video Processor expects BGRA input; DXVK KMT textures may be RGBA.
     // A fullscreen shader pass with a BGRA render target handles the byte reorder.
     ID3D11Texture2D* vpInputTexture = bgraTexture;
+    bool allowVpInputView = allowDirectInputView;
     bool needReleaseConverted = false;
+    bool vpInputIsLinear = false;
     D3D11_TEXTURE2D_DESC vpInputDesc = {};
     {
         D3D11_TEXTURE2D_DESC srcDesc;
@@ -3261,6 +3355,31 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
         // and MinGW catch(...) CANNOT catch SEH exceptions (__fastfail).
         // We must prevent the call by checking format compatibility first.
         vpInputTexture->GetDesc(&vpInputDesc);
+        if (!allowVpInputView && vpInputDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT && ShouldUse10BitOutput()) {
+            const bool encodeSdrGamma = !currentIsHDR;
+            ID3D11Texture2D* converted =
+                ConvertFP16ToRGB10A2(vpInputTexture, vpInputDesc.Width, vpInputDesc.Height, encodeSdrGamma);
+            if (!converted) {
+                DLL_Log("[VP] Failed to convert FP16 input to RGB10A2 before VP");
+                if (needReleaseConverted && vpInputTexture != bgraTexture) {
+                    vpInputTexture->Release();
+                }
+                return false;
+            }
+            if (needReleaseConverted && vpInputTexture != bgraTexture) {
+                vpInputTexture->Release();
+            }
+            vpInputTexture = converted;
+            needReleaseConverted = true;
+            allowVpInputView = true;
+            vpInputIsLinear = !encodeSdrGamma;
+            vpInputTexture->GetDesc(&vpInputDesc);
+            if (!vpFp16CompatLogged) {
+                DLL_Log("[VP] Converted FP16 input to RGB10A2 for VP compatibility (%s)",
+                        encodeSdrGamma ? "SDR gamma encoded" : "linear passthrough");
+                vpFp16CompatLogged = true;
+            }
+        }
         bool vpCompatible =
             (vpInputDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM || vpInputDesc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
              vpInputDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT ||
@@ -3278,12 +3397,24 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
 
     vpFirstCallLogged = true;
 
+    if (videoContext1) {
+        std::string configuredColorSpace = savedConfig.colorSpace;
+        if (configuredColorSpace == "auto" || configuredColorSpace.empty()) {
+            configuredColorSpace = currentIsHDR ? "bt2020" : "bt709";
+        }
+        videoContext1->VideoProcessorSetStreamColorSpace1(
+            videoProcessor, 0, GetVideoProcessorInputColorSpace(vpInputDesc.Format, currentIsHDR, vpInputIsLinear));
+        videoContext1->VideoProcessorSetOutputColorSpace1(
+            videoProcessor,
+            GetVideoProcessorOutputColorSpace(ShouldUse10BitOutput(), currentIsHDR, configuredColorSpace));
+    }
+
     // CRITICAL: CreateVideoProcessorInputView can throw SEH for incompatible formats,
     // and MinGW catch(...) CANNOT catch SEH exceptions (__fastfail).
     // The texture format was pre-validated above, but the try/catch is a safety net.
     ID3D11VideoProcessorInputView* localInputView = nullptr;
     HRESULT hr = E_FAIL;
-    if (allowDirectInputView) {
+    if (allowVpInputView) {
         try {
             hr = videoDevice->CreateVideoProcessorInputView(vpInputTexture, videoProcessorEnum, &inputViewDesc,
                                                             &localInputView);
@@ -3294,14 +3425,14 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
     }
 
     // Log CreateVideoProcessorInputView result on first call per recording
-    if (allowDirectInputView && !vpInputViewLogged) {
+    if (allowVpInputView && !vpInputViewLogged) {
         vpInputViewLogged = true;
         DLL_Log("[VP] CreateVideoProcessorInputView(fmt=%d, bind=%x): HR=%x%s", vpInputDesc.Format,
                 vpInputDesc.BindFlags, hr, SUCCEEDED(hr) ? " (direct OK)" : "");
     }
 
-    if (!allowDirectInputView || FAILED(hr)) {
-        if (allowDirectInputView) {
+    if (!allowVpInputView || FAILED(hr)) {
+        if (allowVpInputView) {
             static bool stagingLogged = false;
             if (!stagingLogged) {
                 DLL_Log(
@@ -3553,11 +3684,19 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
     return true;
 }
 
-// HLSL shader: fullscreen triangle that samples RGBA input and writes to BGRA render target.
-// The pixel shader is identity — the BGRA render target format handles the byte reorder.
+// HLSL shader: fullscreen triangle that samples the input texture and optionally
+// applies SDR gamma encoding before writing to the render target.
 static const char* SWAP_RB_SHADER_SRC = R"(
 Texture2D texIn : register(t0);
 SamplerState sam : register(s0);
+
+cbuffer CopyCB : register(b0)
+{
+    uint colorTransform;
+    uint _pad0;
+    uint _pad1;
+    uint _pad2;
+};
 
 struct VS_OUT {
     float4 pos : SV_POSITION;
@@ -3571,9 +3710,21 @@ VS_OUT VS_Main(uint id : SV_VertexID) {
     return o;
 }
 
+float3 LinearToSRGB(float3 c)
+{
+    float3 lo = c * 12.92;
+    float3 hi = 1.055 * pow(max(c, 0.0), 1.0 / 2.4) - 0.055;
+    return float3(c.r < 0.0031308 ? lo.r : hi.r,
+                  c.g < 0.0031308 ? lo.g : hi.g,
+                  c.b < 0.0031308 ? lo.b : hi.b);
+}
+
 float4 PS_Main(VS_OUT input) : SV_TARGET {
     float4 c = texIn.Sample(sam, input.uv);
-    return c;  // BGRA render target handles RGBA->BGRA byte reorder
+    if (colorTransform != 0) {
+        c.rgb = LinearToSRGB(saturate(c.rgb));
+    }
+    return c;  // Render target format handles packing / channel layout
 }
 )";
 
@@ -3649,24 +3800,38 @@ bool VideoEncoder::EnsureSwapRBShader() {
         return false;
     }
 
+    D3D11_BUFFER_DESC cbDesc = {};
+    cbDesc.ByteWidth = 16;
+    cbDesc.Usage = D3D11_USAGE_DYNAMIC;
+    cbDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    cbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    hr = d3d11Device->CreateBuffer(&cbDesc, nullptr, &swapRBShaderCB);
+    if (FAILED(hr)) {
+        DLL_Log("[SwapRB] Create constant buffer failed: HR=%x", hr);
+        return false;
+    }
+
     swapRBShaderCreated = true;
     DLL_Log("[SwapRB] Shader created successfully");
     return true;
 }
 
-ID3D11Texture2D* VideoEncoder::SwapRBChannels(ID3D11Texture2D* input, uint32_t w, uint32_t h) {
+ID3D11Texture2D* VideoEncoder::RenderFullscreenCopy(ID3D11Texture2D* input, uint32_t w, uint32_t h,
+                                                    DXGI_FORMAT inputSrvFormat, DXGI_FORMAT outputFormat,
+                                                    ID3D11Texture2D*& cachedTexture, ID3D11RenderTargetView*& cachedRTV,
+                                                    uint32_t& cachedWidth, uint32_t& cachedHeight,
+                                                    const char* logPrefix, bool linearToSrgb) {
     if (!EnsureSwapRBShader())
         return nullptr;
 
-    // Recreate BGRA output texture if size changed
-    if (!swapRBTexture || swapRBTexWidth != w || swapRBTexHeight != h) {
-        if (swapRBTextureRTV) {
-            swapRBTextureRTV->Release();
-            swapRBTextureRTV = nullptr;
+    if (!cachedTexture || cachedWidth != w || cachedHeight != h) {
+        if (cachedRTV) {
+            cachedRTV->Release();
+            cachedRTV = nullptr;
         }
-        if (swapRBTexture) {
-            swapRBTexture->Release();
-            swapRBTexture = nullptr;
+        if (cachedTexture) {
+            cachedTexture->Release();
+            cachedTexture = nullptr;
         }
 
         D3D11_TEXTURE2D_DESC outDesc = {};
@@ -3674,52 +3839,65 @@ ID3D11Texture2D* VideoEncoder::SwapRBChannels(ID3D11Texture2D* input, uint32_t w
         outDesc.Height = h;
         outDesc.MipLevels = 1;
         outDesc.ArraySize = 1;
-        outDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        outDesc.Format = outputFormat;
         outDesc.SampleDesc.Count = 1;
         outDesc.Usage = D3D11_USAGE_DEFAULT;
         outDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
 
-        HRESULT hr = d3d11Device->CreateTexture2D(&outDesc, nullptr, &swapRBTexture);
+        HRESULT hr = d3d11Device->CreateTexture2D(&outDesc, nullptr, &cachedTexture);
         if (FAILED(hr)) {
-            DLL_Log("[SwapRB] Failed to create BGRA output texture: HR=%x", hr);
+            DLL_Log("[%s] Failed to create output texture fmt=%d: HR=%x", logPrefix, outputFormat, hr);
             return nullptr;
         }
 
-        hr = d3d11Device->CreateRenderTargetView(swapRBTexture, nullptr, &swapRBTextureRTV);
+        hr = d3d11Device->CreateRenderTargetView(cachedTexture, nullptr, &cachedRTV);
         if (FAILED(hr)) {
-            DLL_Log("[SwapRB] Failed to create RTV: HR=%x", hr);
-            swapRBTexture->Release();
-            swapRBTexture = nullptr;
+            DLL_Log("[%s] Failed to create RTV: HR=%x", logPrefix, hr);
+            cachedTexture->Release();
+            cachedTexture = nullptr;
             return nullptr;
         }
 
-        swapRBTexWidth = w;
-        swapRBTexHeight = h;
+        cachedWidth = w;
+        cachedHeight = h;
     }
 
-    // Create SRV for the RGBA input
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-    srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    srvDesc.Format = inputSrvFormat;
     srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
     srvDesc.Texture2D.MipLevels = 1;
     ID3D11ShaderResourceView* srv = nullptr;
     HRESULT hr = d3d11Device->CreateShaderResourceView(input, &srvDesc, &srv);
     if (FAILED(hr)) {
-        DLL_Log("[SwapRB] Failed to create SRV for input: HR=%x", hr);
+        DLL_Log("[%s] Failed to create SRV for input fmt=%d: HR=%x", logPrefix, inputSrvFormat, hr);
         return nullptr;
     }
 
-    // Draw fullscreen triangle: RGBA input → BGRA output
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    hr = d3d11Context->Map(swapRBShaderCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+    if (FAILED(hr) || !mapped.pData) {
+        DLL_Log("[%s] Failed to map shader constant buffer: HR=%x", logPrefix, hr);
+        srv->Release();
+        return nullptr;
+    }
+    uint32_t* cbData = static_cast<uint32_t*>(mapped.pData);
+    cbData[0] = linearToSrgb ? 1u : 0u;
+    cbData[1] = 0;
+    cbData[2] = 0;
+    cbData[3] = 0;
+    d3d11Context->Unmap(swapRBShaderCB, 0);
+
     D3D11_VIEWPORT vp = {};
     vp.Width = (float)w;
     vp.Height = (float)h;
     vp.MaxDepth = 1.0f;
     d3d11Context->RSSetViewports(1, &vp);
-    d3d11Context->OMSetRenderTargets(1, &swapRBTextureRTV, nullptr);
+    d3d11Context->OMSetRenderTargets(1, &cachedRTV, nullptr);
     d3d11Context->VSSetShader(swapRBShaderVS, nullptr, 0);
     d3d11Context->PSSetShader(swapRBShaderPS, nullptr, 0);
     d3d11Context->PSSetShaderResources(0, 1, &srv);
     d3d11Context->PSSetSamplers(0, 1, &swapRBSampler);
+    d3d11Context->PSSetConstantBuffers(0, 1, &swapRBShaderCB);
     d3d11Context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     d3d11Context->IASetInputLayout(nullptr);
     d3d11Context->Draw(3, 0);
@@ -3731,8 +3909,19 @@ ID3D11Texture2D* VideoEncoder::SwapRBChannels(ID3D11Texture2D* input, uint32_t w
     d3d11Context->PSSetShaderResources(0, 1, &nullSRV);
     srv->Release();
 
-    swapRBTexture->AddRef();  // Caller releases
-    return swapRBTexture;
+    cachedTexture->AddRef();  // Caller releases
+    return cachedTexture;
+}
+
+ID3D11Texture2D* VideoEncoder::SwapRBChannels(ID3D11Texture2D* input, uint32_t w, uint32_t h) {
+    return RenderFullscreenCopy(input, w, h, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM, swapRBTexture,
+                                swapRBTextureRTV, swapRBTexWidth, swapRBTexHeight, "SwapRB");
+}
+
+ID3D11Texture2D* VideoEncoder::ConvertFP16ToRGB10A2(ID3D11Texture2D* input, uint32_t w, uint32_t h, bool linearToSrgb) {
+    return RenderFullscreenCopy(input, w, h, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R10G10B10A2_UNORM,
+                                rgb10IntermediateTexture, rgb10IntermediateRTV, rgb10IntermediateWidth,
+                                rgb10IntermediateHeight, "RGB10", linearToSrgb);
 }
 
 void VideoEncoder::CleanupVideoProcessor() {
@@ -3769,11 +3958,16 @@ void VideoEncoder::CleanupVideoProcessor() {
         videoContext->Release();
         videoContext = nullptr;
     }
+    if (videoContext1) {
+        videoContext1->Release();
+        videoContext1 = nullptr;
+    }
     if (videoDevice) {
         videoDevice->Release();
         videoDevice = nullptr;
     }
     videoProcessorInit = false;
+    use10BitPipeline = false;
 
     // Cleanup SwapRB shader resources
     if (swapRBTextureRTV) {
@@ -3784,9 +3978,21 @@ void VideoEncoder::CleanupVideoProcessor() {
         swapRBTexture->Release();
         swapRBTexture = nullptr;
     }
+    if (rgb10IntermediateRTV) {
+        rgb10IntermediateRTV->Release();
+        rgb10IntermediateRTV = nullptr;
+    }
+    if (rgb10IntermediateTexture) {
+        rgb10IntermediateTexture->Release();
+        rgb10IntermediateTexture = nullptr;
+    }
     if (swapRBSampler) {
         swapRBSampler->Release();
         swapRBSampler = nullptr;
+    }
+    if (swapRBShaderCB) {
+        swapRBShaderCB->Release();
+        swapRBShaderCB = nullptr;
     }
     if (swapRBShaderPS) {
         swapRBShaderPS->Release();
@@ -3799,11 +4005,14 @@ void VideoEncoder::CleanupVideoProcessor() {
     swapRBShaderCreated = false;
     swapRBTexWidth = 0;
     swapRBTexHeight = 0;
+    rgb10IntermediateWidth = 0;
+    rgb10IntermediateHeight = 0;
 
     // Reset per-recording log flags
     vpFirstCallLogged = false;
     vpDeviceCompareLogged = false;
     vpInputViewLogged = false;
+    vpFp16CompatLogged = false;
 }
 
 // ============================================================================

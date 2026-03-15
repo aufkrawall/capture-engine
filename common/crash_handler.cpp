@@ -343,12 +343,13 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
-    // Generic MSVC/CRT C++ exceptions are commonly used for recoverable
-    // library error paths (for example, D3D11 throwing before the caller
-    // falls back to a safe path). Do not treat first-chance C++ EH as a
-    // crash here; if it is truly unhandled, the top-level UEF path will
-    // re-enter with forceDump=true and write the dump there.
-    if (!forceDump && code == 0xE06D7363) {
+    // Generic C++ exceptions are commonly used for recoverable library error
+    // paths (for example, D3D11/WinRT throwing before the caller falls back to
+    // a safe path). MinGW/clang uses 0x20474343 (" GCC"), while MSVC/CRT uses
+    // 0xE06D7363. Do not treat first-chance C++ EH as a crash here; if it is
+    // truly unhandled, the top-level UEF path will re-enter with forceDump=true
+    // and write the dump there.
+    if (!forceDump && (code == 0xE06D7363 || code == 0x20474343)) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
 

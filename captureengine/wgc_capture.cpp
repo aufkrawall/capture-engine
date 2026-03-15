@@ -5,6 +5,7 @@
 #include "wgc_capture.h"
 #include <d3d11.h>
 #include <dxgi.h>
+#include <dxgi1_6.h>
 #include <chrono>
 #include "../common/logging.h"
 #include "mediaengine_loader.h"
@@ -56,6 +57,22 @@ using namespace Windows::Graphics::Capture;
 using namespace Windows::Graphics::DirectX;
 using namespace Windows::Graphics::DirectX::Direct3D11;
 }  // namespace winrt
+
+namespace {
+bool IsHdrOutputColorSpace(DXGI_COLOR_SPACE_TYPE colorSpace) {
+    switch (colorSpace) {
+        case DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020:
+        case DXGI_COLOR_SPACE_RGB_STUDIO_G2084_NONE_P2020:
+        case DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_LEFT_P2020:
+        case DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_TOPLEFT_P2020:
+        case DXGI_COLOR_SPACE_YCBCR_STUDIO_GHLG_TOPLEFT_P2020:
+        case DXGI_COLOR_SPACE_YCBCR_FULL_GHLG_TOPLEFT_P2020:
+            return true;
+        default:
+            return false;
+    }
+}
+}  // namespace
 #endif
 
 class WGCCapture::Impl {
@@ -101,12 +118,13 @@ public:
     int64_t qpcFreq_ = 0;
 
     // Callback function for direct frame processing (OBS-style)
-    std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t)> frameCallback_;
+    std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, bool)> frameCallback_;
     std::atomic<uint32_t> callbackFrameCount_{0};
 
     // Frame throttle: skip CopyResource if we're ahead of target FPS
     int64_t targetIntervalQPC_ = 0;  // Minimum QPC ticks between captured frames (0 = no throttle)
     int64_t lastCapturedQPC_ = 0;    // QPC of last frame we actually copied
+    int64_t nextCaptureQPC_ = 0;     // Next QPC deadline that is allowed to perform a GPU copy
     std::atomic<uint32_t> skippedFrameCount_{0};
 
     // External throttle flag (e.g., encoder bottlenecked)
@@ -119,6 +137,123 @@ public:
     std::atomic<int64_t> lastCopyUs_{0};
 
     DXGI_FORMAT poolFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
+    winrt::DirectXPixelFormat capturePixelFormat_ = winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized;
+    DXGI_FORMAT captureDxgiFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
+    HWND targetWindow_ = nullptr;
+    HMONITOR targetMonitor_ = nullptr;
+    bool useHighPrecisionCapture_ = false;
+    bool captureIsHDR_ = false;
+    UINT outputBitsPerColor_ = 8;
+    DXGI_COLOR_SPACE_TYPE outputColorSpace_ = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+
+    const char* DescribeCaptureFormat() const {
+        switch (captureDxgiFormat_) {
+            case DXGI_FORMAT_R16G16B16A16_FLOAT:
+                return "R16G16B16A16_FLOAT";
+            case DXGI_FORMAT_R10G10B10A2_UNORM:
+                return "R10G10B10A2_UNORM";
+            case DXGI_FORMAT_B8G8R8A8_UNORM:
+                return "B8G8R8A8_UNORM";
+            default:
+                return "UNKNOWN";
+        }
+    }
+
+    HMONITOR ResolveTargetMonitor() const {
+        if (targetWindow_) {
+            return MonitorFromWindow(targetWindow_, MONITOR_DEFAULTTONEAREST);
+        }
+        if (targetMonitor_) {
+            return targetMonitor_;
+        }
+        return MonitorFromWindow(GetDesktopWindow(), MONITOR_DEFAULTTOPRIMARY);
+    }
+
+    bool QueryOutputDesc1ForMonitor(HMONITOR monitor, DXGI_OUTPUT_DESC1& desc1) {
+        if (!monitor) {
+            return false;
+        }
+
+        IDXGIFactory1* factory = nullptr;
+        HRESULT hr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
+        if (FAILED(hr) || !factory) {
+            LogWarn("[WGC] CreateDXGIFactory1 failed while probing output format: 0x%lX", (unsigned long)hr);
+            return false;
+        }
+
+        bool found = false;
+        for (UINT adapterIndex = 0; !found; ++adapterIndex) {
+            IDXGIAdapter1* adapter = nullptr;
+            hr = factory->EnumAdapters1(adapterIndex, &adapter);
+            if (hr == DXGI_ERROR_NOT_FOUND) {
+                break;
+            }
+            if (FAILED(hr) || !adapter) {
+                continue;
+            }
+
+            for (UINT outputIndex = 0; !found; ++outputIndex) {
+                IDXGIOutput* output = nullptr;
+                hr = adapter->EnumOutputs(outputIndex, &output);
+                if (hr == DXGI_ERROR_NOT_FOUND) {
+                    break;
+                }
+                if (FAILED(hr) || !output) {
+                    continue;
+                }
+
+                DXGI_OUTPUT_DESC outputDesc = {};
+                if (SUCCEEDED(output->GetDesc(&outputDesc)) && outputDesc.Monitor == monitor) {
+                    IDXGIOutput6* output6 = nullptr;
+                    hr = output->QueryInterface(IID_PPV_ARGS(&output6));
+                    if (SUCCEEDED(hr) && output6) {
+                        found = SUCCEEDED(output6->GetDesc1(&desc1));
+                        output6->Release();
+                    }
+                }
+
+                output->Release();
+            }
+
+            adapter->Release();
+        }
+
+        factory->Release();
+        return found;
+    }
+
+    void UpdateCaptureFormatSelection() {
+        useHighPrecisionCapture_ = false;
+        captureIsHDR_ = false;
+        outputBitsPerColor_ = 8;
+        outputColorSpace_ = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+        capturePixelFormat_ = winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized;
+        captureDxgiFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
+
+        DXGI_OUTPUT_DESC1 desc1 = {};
+        const HMONITOR monitor = ResolveTargetMonitor();
+        if (!QueryOutputDesc1ForMonitor(monitor, desc1)) {
+            LogInfo("[WGC] Output probe unavailable, using BGRA8 capture");
+            return;
+        }
+
+        outputBitsPerColor_ = desc1.BitsPerColor;
+        outputColorSpace_ = desc1.ColorSpace;
+        captureIsHDR_ = IsHdrOutputColorSpace(desc1.ColorSpace);
+        if (captureIsHDR_) {
+            useHighPrecisionCapture_ = true;
+            capturePixelFormat_ = winrt::DirectXPixelFormat::R16G16B16A16Float;
+            captureDxgiFormat_ = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        } else if (desc1.BitsPerColor > 8) {
+            useHighPrecisionCapture_ = true;
+            capturePixelFormat_ = winrt::DirectXPixelFormat::R10G10B10A2UIntNormalized;
+            captureDxgiFormat_ = DXGI_FORMAT_R10G10B10A2_UNORM;
+        }
+
+        LogInfo("[WGC] Output probe: bpc=%u colorSpace=%d hdr=%s highPrecision=%s captureFormat=%s",
+                outputBitsPerColor_, (int)outputColorSpace_, captureIsHDR_ ? "YES" : "NO",
+                useHighPrecisionCapture_ ? "YES" : "NO", DescribeCaptureFormat());
+    }
 
     bool EnsureTexturePool(uint32_t width, uint32_t height, DXGI_FORMAT format = DXGI_FORMAT_B8G8R8A8_UNORM) {
         if (poolWidth_ == (int32_t)width && poolHeight_ == (int32_t)height && poolFormat_ == format && texturePool_[0])
@@ -184,14 +319,11 @@ public:
         // Always drain TryGetNextFrame above to return buffers to the pool.
         LARGE_INTEGER now;
         QueryPerformanceCounter(&now);
-        if (targetIntervalQPC_ > 0 && lastCapturedQPC_ > 0) {
-            int64_t elapsed = now.QuadPart - lastCapturedQPC_;
-            if (elapsed < targetIntervalQPC_) {
-                // Too soon - skip this frame to reduce GPU bandwidth
-                skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
-                winrtFrame.Close();
-                return;
-            }
+        if (targetIntervalQPC_ > 0 && nextCaptureQPC_ > 0 && now.QuadPart < nextCaptureQPC_) {
+            // Too soon - skip this frame to reduce GPU bandwidth
+            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+            winrtFrame.Close();
+            return;
         }
 
         // External throttle: skip GPU copy when encoder is bottlenecked.
@@ -245,10 +377,21 @@ public:
                     lastCopyUs_.store(copyUs, std::memory_order_relaxed);
 
                     lastCapturedQPC_ = copyEnd.QuadPart;
+                    if (targetIntervalQPC_ > 0) {
+                        if (nextCaptureQPC_ <= 0) {
+                            nextCaptureQPC_ = copyEnd.QuadPart + targetIntervalQPC_;
+                        } else {
+                            do {
+                                nextCaptureQPC_ += targetIntervalQPC_;
+                            } while (nextCaptureQPC_ <= copyEnd.QuadPart);
+                        }
+                    } else {
+                        nextCaptureQPC_ = 0;
+                    }
 
                     if (frameCallback_) {
                         target->AddRef();
-                        frameCallback_(target, desc.Width, desc.Height, copyEnd.QuadPart);
+                        frameCallback_(target, desc.Width, desc.Height, copyEnd.QuadPart, captureIsHDR_);
                     }
 
                     callbackFrameCount_.fetch_add(1, std::memory_order_relaxed);
@@ -304,6 +447,8 @@ public:
         }
 
         item_ = item;
+        targetMonitor_ = hmon;
+        targetWindow_ = nullptr;
         return true;
     }
 
@@ -327,6 +472,8 @@ public:
         }
 
         item_ = item;
+        targetWindow_ = hwnd;
+        targetMonitor_ = nullptr;
         return true;
     }
 
@@ -342,16 +489,53 @@ public:
         auto size = item_.Size();
         width = size.Width;
         height = size.Height;
+        UpdateCaptureFormatSelection();
 
         // CRITICAL: Must use CreateFreeThreaded (not Create) because we have no
         // message pump! Create() requires a DispatcherQueue pumping messages for
         // callbacks to fire. CreateFreeThreaded() uses an internal worker thread
         // for callbacks. Using 8 buffers to prevent pool exhaustion at high Hz
         // monitors (143Hz+ needs headroom for GPU copy latency)
-        // Use BGRA8 for WGC. FP16/R10G10B10A2 cause color issues (gamma mismatch, DWM compositing bugs).
-        // 10-bit capture is available via Desktop Duplication and inject mode.
-        framePool_ = winrt::Direct3D11CaptureFramePool::CreateFreeThreaded(
-            winrtDevice_, winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized, 8, size);
+        auto tryCreateFramePool = [&](winrt::DirectXPixelFormat format) -> bool {
+            try {
+                framePool_ = winrt::Direct3D11CaptureFramePool::CreateFreeThreaded(winrtDevice_, format, 8, size);
+                return framePool_ != nullptr;
+            } catch (const winrt::hresult_error& e) {
+                LogWarn("[WGC] Frame pool creation failed for format=%d: 0x%08X", (int)format,
+                        (unsigned)e.code().value);
+                framePool_ = nullptr;
+                return false;
+            }
+        };
+
+        if (!tryCreateFramePool(capturePixelFormat_)) {
+            if (!captureIsHDR_ && capturePixelFormat_ == winrt::DirectXPixelFormat::R10G10B10A2UIntNormalized) {
+                LogWarn("[WGC] R10G10B10A2 frame pool unavailable, falling back to FP16 capture");
+                capturePixelFormat_ = winrt::DirectXPixelFormat::R16G16B16A16Float;
+                captureDxgiFormat_ = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            } else {
+                capturePixelFormat_ = winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized;
+                captureDxgiFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
+                useHighPrecisionCapture_ = false;
+            }
+
+            if (!tryCreateFramePool(capturePixelFormat_)) {
+                if (capturePixelFormat_ != winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized) {
+                    LogWarn("[WGC] High-precision frame pool unavailable, falling back to BGRA8 capture");
+                    capturePixelFormat_ = winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized;
+                    captureDxgiFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
+                    useHighPrecisionCapture_ = false;
+                    if (!tryCreateFramePool(capturePixelFormat_)) {
+                        LogError("[WGC] Failed to create frame pool in all capture formats");
+                        return false;
+                    }
+                } else {
+                    LogError("[WGC] Failed to create BGRA8 frame pool");
+                    return false;
+                }
+            }
+        }
+        LogInfo("[WGC] Frame pool format: %s", DescribeCaptureFormat());
 
         // Create event for frame arrival signaling (OBS-style immediate wake)
         // Auto-reset event ensures we wake once per signal
@@ -531,7 +715,11 @@ public:
 
                     // Pass Raw QPC
                     QueryPerformanceCounter(&t2);
+                    frame.texture = cachedTexture_;
+                    frame.width = desc.Width;
+                    frame.height = desc.Height;
                     frame.timestamp = t2.QuadPart;
+                    frame.isHDR = captureIsHDR_;
                     success = true;
                 }
                 texture->Release();
@@ -751,7 +939,8 @@ HANDLE WGCCapture::GetFrameArrivedEvent() const {
 #endif
 }
 
-void WGCCapture::SetDirectFrameCallback(std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t)> callback) {
+void WGCCapture::SetDirectFrameCallback(
+    std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, bool)> callback) {
 #if HAS_WGC
     if (impl_) {
         impl_->frameCallback_ = callback;
@@ -779,10 +968,14 @@ void WGCCapture::SetTargetFps(uint32_t fps) {
 #if HAS_WGC
     if (impl_ && fps > 0 && impl_->qpcFreq_ > 0) {
         impl_->targetIntervalQPC_ = impl_->qpcFreq_ / fps;
+        impl_->lastCapturedQPC_ = 0;
+        impl_->nextCaptureQPC_ = 0;
         LogInfo("[WGC] Frame throttle set to %u fps (interval=%lld QPC ticks)", fps,
                 (long long)impl_->targetIntervalQPC_);
     } else if (impl_) {
         impl_->targetIntervalQPC_ = 0;
+        impl_->lastCapturedQPC_ = 0;
+        impl_->nextCaptureQPC_ = 0;
         LogInfo("[WGC] Frame throttle disabled");
     }
 #endif

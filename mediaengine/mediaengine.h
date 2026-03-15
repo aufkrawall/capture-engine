@@ -31,9 +31,10 @@ MEDIAENGINE_API void MediaEngine_ProcessFrame(uint64_t textureHandle, uint64_t f
                                               bool isShmem = false, int shmemSlot = 0);
 
 // Process a frame from D3D11 texture directly (framegrab mode - zero copy)
-// texture: D3D11 texture in BGRA format (caller retains ownership)
+// texture: D3D11 texture in RGB/BGRA/FP16 format (caller retains ownership)
 // timestamp: Frame timestamp in milliseconds
-MEDIAENGINE_API void MediaEngine_ProcessFrameD3D11(void* texture, int64_t timestamp, uint32_t width, uint32_t height);
+MEDIAENGINE_API void MediaEngine_ProcessFrameD3D11(void* texture, int64_t timestamp, uint32_t width, uint32_t height,
+                                                   bool isHDR);
 
 // Start Recording (Create file, start encoders)
 MEDIAENGINE_API bool MediaEngine_StartRecording();
