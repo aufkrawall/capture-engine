@@ -47,6 +47,7 @@ static ShmemBuffer* g_pShmem = nullptr;
 // Inject thread specific
 static std::atomic<bool> g_InjectCaptureRunning{false};
 static std::atomic<bool> g_InjectCaptureShutdown{false};
+static std::atomic<bool> g_InjectSessionReset{true};  // Set true on StartRecording to reset inject session state
 static std::thread g_InjectCaptureThread;
 
 // WGC thread specific
@@ -175,7 +176,8 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
     while (!g_InjectCaptureShutdown && g_Recording) {
         // Create encoder textures as soon as resolution is available (before frames arrive)
         // This is critical for DXVK where the Vulkan layer waits for encoder KMT textures
-        static bool earlyTexturesCreated = false;
+        // NOTE: non-static so it resets per thread lifetime (new recording = new thread)
+        bool earlyTexturesCreated = false;
         if (!earlyTexturesCreated && g_pSharedMem->GetWidth() > 0 && g_pSharedMem->GetHeight() > 0) {
             if (!g_pSharedMem->encoderTextures.kmtReady.load(std::memory_order_acquire)) {
                 if (MediaEngine_CreateSharedCaptureTextures(g_pSharedMem->GetWidth(), g_pSharedMem->GetHeight(),
@@ -302,7 +304,8 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     qf.luidHigh = g_pSharedMem->GetLuidHighPart();
                     qf.isHDR = g_pSharedMem->GetIsHDR();
 
-                    static bool sharedTexturesCreated = false;
+                    // Per-recording state (reset on thread creation)
+                    bool sharedTexturesCreated = false;
                     if (!sharedTexturesCreated && g_pSharedMem->GetWidth() > 0 && g_pSharedMem->GetHeight() > 0) {
                         if (!g_pSharedMem->encoderTextures.ready.load(std::memory_order_acquire)) {
                             if (MediaEngine_CreateSharedCaptureTextures(g_pSharedMem->GetWidth(),
@@ -606,6 +609,20 @@ void StartRecording(const AppConfig& config) {
         return;
 
     LogInfo("[Media] Starting recording...");
+
+    // Clear any stale shared memory commands/state from previous (possibly crashed)
+    // recording sessions. If a previous media process crashed, cmdStopRecording
+    // may still be true, causing the new recording to stop immediately.
+    if (g_pSharedMem) {
+        StoreRelease(g_pSharedMem->runtimeState.cmdStartRecording, false);
+        StoreRelease(g_pSharedMem->runtimeState.cmdStopRecording, false);
+        // Also clear stale recording state from crashed session
+        g_pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
+        g_pSharedMem->runtimeState.recordingStartTime.store(0, std::memory_order_release);
+    }
+
+    // Reset inject session state so main loop re-initializes on new recording
+    g_InjectSessionReset.store(true, std::memory_order_release);
 
     g_FrameQueue.Clear();
     if (g_HasLastFrame && !g_LastFrame.isInjectMode && g_LastFrame.texture) {
@@ -1413,6 +1430,17 @@ int MediaProcessMain(const AppConfig& config) {
             static DWORD injectModeStartTime = 0;
             static bool sessionInitialized = false;
 
+            static bool sharedTexturesCreated = false;
+
+            // Reset session state when a new recording starts
+            if (g_InjectSessionReset.exchange(false, std::memory_order_acq_rel)) {
+                sessionInitialized = false;
+                localReadIdx = 0;
+                receivedFirstFrame = false;
+                injectModeStartTime = 0;
+                sharedTexturesCreated = false;
+            }
+
             if (!sessionInitialized) {
                 localReadIdx = wIdx;
                 receivedFirstFrame = false;
@@ -1474,7 +1502,6 @@ int MediaProcessMain(const AppConfig& config) {
                 }
             }
 
-            static bool sharedTexturesCreated = false;
             if (!sharedTexturesCreated && g_pSharedMem->GetWidth() > 0 && g_pSharedMem->GetHeight() > 0) {
                 if (g_pSharedMem->encoderTextures.ready.load(std::memory_order_acquire)) {
                     sharedTexturesCreated = true;

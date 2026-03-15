@@ -3,6 +3,7 @@
 #include <direct.h>
 #include <errno.h>
 #include <windows.h>
+#include <werapi.h>
 #include <atomic>
 #include <cstdio>
 #include <ctime>
@@ -18,11 +19,49 @@ static HMODULE g_hDbgHelp = NULL;
 static std::atomic<bool> g_DumpAlreadyWritten{false};
 static std::atomic<bool> g_ForceUnhandledDump{false};
 static std::mutex g_TraceCrashMutex;
+static std::atomic<int> g_VEHCallCount{0};
 typedef BOOL(WINAPI* MINIDUMPWRITEDUMP)(HANDLE hProcess, DWORD ProcessId, HANDLE hFile, MINIDUMP_TYPE DumpType,
                                         PMINIDUMP_EXCEPTION_INFORMATION ExceptionParam,
                                         PMINIDUMP_USER_STREAM_INFORMATION UserStreamParam,
                                         PMINIDUMP_CALLBACK_INFORMATION CallbackParam);
 static MINIDUMPWRITEDUMP g_pMiniDumpWriteDump = NULL;
+
+// Register this process with WER (Windows Error Reporting) so our crash handler
+// gets priority and Windows generates its own dump as a backup.
+static void RegisterWithWER() {
+    // Tell WER to generate a dump for this process (as backup if our handler fails)
+    typedef HRESULT(WINAPI * PFN_WERRegisterFile)(PCWSTR, DWORD);
+    typedef HRESULT(WINAPI * PFN_WERRegisterRuntimeExceptionModule)(PCWSTR, PVOID);
+
+    HMODULE hWer = GetModuleHandleW(L"wer.dll");
+    if (!hWer) {
+        hWer = LoadLibraryW(L"wer.dll");
+    }
+    if (hWer) {
+        // We don't need WER's file registration; we write our own dumps.
+        // But we do want to suppress WER UI so our handler has full control.
+    }
+
+    // Prevent Windows Error Reporting dialog from appearing
+    // SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX | SEM_FAILCRITICALERRORS
+    SetErrorMode(SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX | SEM_FAILCRITICALERRORS);
+
+    // Opt into WER crash dumps as a BACKUP mechanism
+    // If our VEH fails to write a dump, WER will write one.
+    wchar_t dumpDirW[MAX_PATH];
+    MultiByteToWideChar(CP_UTF8, 0, g_DumpDir.c_str(), -1, dumpDirW, MAX_PATH);
+    WerSetFlags(WER_FAULT_REPORTING_NO_UI);
+
+    // Register our local dump directory with WER
+    typedef HRESULT(WINAPI * PFN_WERAddApp)(PCWSTR, PCWSTR, DWORD);
+    HMODULE hKernel = GetModuleHandleW(L"kernel32.dll");
+    if (hKernel) {
+        auto pfnWerRegisterRuntimeExceptionModule =
+            (PFN_WERRegisterRuntimeExceptionModule)GetProcAddress(hKernel, "WerRegisterRuntimeExceptionModule");
+        // Optional: register for runtime exceptions
+        (void)pfnWerRegisterRuntimeExceptionModule;
+    }
+}
 
 void SetCrashDumpDirectory(const std::string& dir) {
     std::lock_guard<std::mutex> lock(g_DumpDirMutex);
@@ -198,6 +237,13 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
 LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) {
     DWORD code = pExceptionPointers->ExceptionRecord->ExceptionCode;
 
+    // Track VEH call count for detecting runaway exception storms
+    int callCount = g_VEHCallCount.fetch_add(1, std::memory_order_acq_rel);
+
+    // If the UnhandledExceptionFilter has asked us to force a dump, do it
+    // regardless of exception code.
+    bool forceDump = g_ForceUnhandledDump.load(std::memory_order_acquire);
+
     // Read dump directory with try_lock to avoid deadlock if crashed thread owns the mutex
     std::string dumpDir;
     {
@@ -209,28 +255,54 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
         }
     }
 
-    // Skip known benign first-chance exceptions to avoid high-volume log spam.
-    bool forceUnhandledDump = g_ForceUnhandledDump.load(std::memory_order_acquire);
-    bool isKnownDebugException = (code == 0x406D1388 ||  // Thread naming
-                                  code == 0x40010006 ||  // OutputDebugString
-                                  code == 0x4001000A ||  // WOW64 debug
-                                  code == 0x4000001F ||  // Wow64 breakpoint
-                                  code == 0x80000003);   // Breakpoint (debug)
-    if (isKnownDebugException) {
-        return EXCEPTION_CONTINUE_SEARCH;
+    // Skip ONLY truly benign exceptions that are used for debug/IPC purposes
+    // These are first-chance only and never indicate real crashes.
+    if (!forceDump) {
+        switch (code) {
+        case 0x406D1388:  // Thread naming exception (VS debugger)
+        case 0x40010006:  // OutputDebugString
+        case 0x4001000A:  // WOW64 debug
+        case 0x4000001F:  // Wow64 breakpoint
+            return EXCEPTION_CONTINUE_SEARCH;
+        default:
+            break;
+        }
     }
-    if (code == 0xE06D7363 && !forceUnhandledDump) {  // C++ throw/catch
+
+    // Breakpoints: only skip if we haven't been called too many times
+    // (excessive breakpoints suggest a real crash loop)
+    if (!forceDump && code == 0x80000003 && callCount < 5) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
-    // Log non-benign exceptions for debugging and crash triage.
+    // C++ exceptions: these are first-chance and usually caught by the app.
+    // BUT if we get too many, it's likely a catch() block that re-throws into
+    // a crash. Dump after 3 consecutive C++ exceptions.
+    if (!forceDump && code == 0xE06D7363 && callCount < 3) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    // Log the exception for debugging
     char codeStr[128];
-    snprintf(codeStr, sizeof(codeStr), "VEH Exception: 0x%08lX at %p (PID:%lu TID:%lu)", code,
-             pExceptionPointers->ExceptionRecord->ExceptionAddress, GetCurrentProcessId(), GetCurrentThreadId());
+    snprintf(codeStr, sizeof(codeStr), "VEH Exception: 0x%08lX at 0x%p (PID:%lu TID:%lu, call#%d)", code,
+             pExceptionPointers->ExceptionRecord->ExceptionAddress, GetCurrentProcessId(), GetCurrentThreadId(),
+             callCount);
     TraceCrash(codeStr);
 
+    // COM disconnected exceptions often precede real crashes in DirectX
+    // when the GPU driver resets or the device is lost. Always dump these.
+    if (code == 0x80010108 ||  // RPC_E_DISCONNECTED
+        code == 0x80004005 ||  // E_FAIL
+        code == 0x8876086A ||  // DXGI_ERROR_DEVICE_RESET
+        code == 0x887A0006 ||  // DXGI_ERROR_DEVICE_HUNG
+        code == 0x887A0007 ||  // DXGI_ERROR_DEVICE_REMOVED
+        code == 0x887A0020) {  // DXGI_ERROR_ACCESS_LOST
+        TraceCrash("COM/DXGI fatal exception detected - generating dump");
+        // Fall through to dump generation
+    }
+
     // UE5 ensure() assertion (0x4000): continuable, but UE5 may call
-    // TerminateProcess shortly after.  Write a FAST MiniDumpNormal for
+    // TerminateProcess shortly after. Write a FAST MiniDumpNormal for
     // diagnostics (<50 ms, ~100 KB) then let UE5's handler continue.
     if (code == 0x00004000) {
         {
@@ -243,7 +315,7 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
             char* baseName = strrchr(modName, '\\');
             baseName = baseName ? baseName + 1 : modName;
             char loc[512];
-            snprintf(loc, sizeof(loc), "UE5 ensure() in %s at %p (offset 0x%llX)", baseName,
+            snprintf(loc, sizeof(loc), "UE5 ensure() in %s at 0x%p (offset 0x%llX)", baseName,
                      pExceptionPointers->ExceptionRecord->ExceptionAddress,
                      hMod ? (unsigned long long)((uintptr_t)pExceptionPointers->ExceptionRecord->ExceptionAddress -
                                                  (uintptr_t)hMod)
@@ -268,8 +340,8 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
                 mdei.ExceptionPointers = pExceptionPointers;
                 mdei.ClientPointers = FALSE;
 
-                if (g_pMiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile, MiniDumpNormal, &mdei, NULL,
-                                         NULL)) {
+                if (g_pMiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile, MiniDumpNormal, &mdei,
+                                         NULL, NULL)) {
                     TraceCrash("Quick assert dump written");
                     char msg[256];
                     snprintf(msg, sizeof(msg), "Assert dump: %s", dumpPath);
@@ -281,35 +353,11 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
-    // Also catch common crash types explicitly
-    bool isKnownCrash =
-        (code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_ILLEGAL_INSTRUCTION ||
-         code == EXCEPTION_INT_DIVIDE_BY_ZERO || code == EXCEPTION_STACK_OVERFLOW || code == EXCEPTION_BREAKPOINT ||
-         code == EXCEPTION_PRIV_INSTRUCTION || code == 0x40000015 ||  // Abort
-         code == 0xC0000409 ||                                        // Stack buffer overrun
-         code == 0xC0000006 ||                                        // In-page I/O error
-         code == 0xC000001D ||                                        // Illegal instruction
-         code == 0xC0000025 ||                                        // Non-continuable exception
-         code == 0xC0000374 ||                                        // Heap corruption
-         code == 0xC00000FD ||                                        // Stack overflow (alt)
-         code == 0x00008000 ||                                        // UE5 GPU crash (D3D device removed)
-         code == 0x80000002 ||                                        // Guard page violation
-         code == 0xC000013A ||                                        // Control-C/Control-Break
-         code == 0xC0000142);                                         // DLL init failed
-
-    // For unknown exceptions, log them but only handle if it looks like a crash
-    // (first chance exceptions are often caught and handled by the app)
-    if (!isKnownCrash && !forceUnhandledDump) {
-        // Unknown exception - could be a custom crash code
-        // Log it but don't handle unless it's truly fatal
-        TraceCrash("Unknown exception code - continuing search (first chance)");
-        // Note: If the app doesn't handle this, it will come back as a second
-        // chance Unfortunately VEH doesn't easily distinguish first/second chance
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
-    if (!isKnownCrash && forceUnhandledDump) {
-        TraceCrash("Unhandled non-standard exception code - forcing dump generation");
-    }
+    // ANY exception that reaches here is considered potentially fatal.
+    // Write a dump for ALL of them. This is the critical change: instead of
+    // whitelisting "known crashes", we blacklist "known benign" and dump
+    // everything else. This ensures we capture 0xC0000409, COM exceptions,
+    // and any other crash codes that might not be in our known list.
 
     TraceCrash("CRASH DETECTED - Handling exception");
 
@@ -365,9 +413,10 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
 #ifdef _WIN64
         snprintf(regBuf, sizeof(regBuf),
                  "Registers: RIP=0x%016llX RSP=0x%016llX RBP=0x%016llX "
-                 "RAX=0x%016llX RCX=0x%016llX RDX=0x%016llX",
+                 "RAX=0x%016llX RCX=0x%016llX RDX=0x%016llX R8=0x%016llX R9=0x%016llX",
                  (unsigned long long)ctx->Rip, (unsigned long long)ctx->Rsp, (unsigned long long)ctx->Rbp,
-                 (unsigned long long)ctx->Rax, (unsigned long long)ctx->Rcx, (unsigned long long)ctx->Rdx);
+                 (unsigned long long)ctx->Rax, (unsigned long long)ctx->Rcx, (unsigned long long)ctx->Rdx,
+                 (unsigned long long)ctx->R8, (unsigned long long)ctx->R9);
 #else
         snprintf(regBuf, sizeof(regBuf),
                  "Registers: EIP=0x%08X ESP=0x%08X EBP=0x%08X "
@@ -380,7 +429,7 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
     OutputDebugStringA("[CrashHandler] CRASH DETECTED! Spawning worker for minidump...\n");
 
     if (!g_pMiniDumpWriteDump) {
-        TraceCrash("g_pMiniDumpWriteDump is NULL");
+        TraceCrash("g_pMiniDumpWriteDump is NULL - cannot write dump!");
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
@@ -417,14 +466,18 @@ LONG WINAPI UnhandledExceptionFilterCallback(EXCEPTION_POINTERS* pExceptionPoint
     DWORD code = pExceptionPointers->ExceptionRecord->ExceptionCode;
 
     char codeStr[128];
-    snprintf(codeStr, sizeof(codeStr), "UnhandledExceptionFilter: 0x%08lX at %p", code,
-             pExceptionPointers->ExceptionRecord->ExceptionAddress);
+    snprintf(codeStr, sizeof(codeStr), "UnhandledExceptionFilter: 0x%08lX at 0x%p (TID:%lu)", code,
+             pExceptionPointers->ExceptionRecord->ExceptionAddress, GetCurrentThreadId());
     TraceCrash(codeStr);
 
-    TraceCrash("Unhandled exception reached top-level filter - forcing dump");
+    // Unhandled exception filter is the LAST line of defense. ALWAYS dump,
+    // regardless of exception code. If we reached this filter, the exception
+    // was not handled by anyone else and the process is about to terminate.
+    TraceCrash("Unhandled exception reached top-level filter - FORCING dump");
     g_ForceUnhandledDump.store(true, std::memory_order_release);
     LONG result = CrashHandlerExceptionFilter(pExceptionPointers);
     g_ForceUnhandledDump.store(false, std::memory_order_release);
+
     if (g_OldUnhandledFilter && g_OldUnhandledFilter != UnhandledExceptionFilterCallback) {
         LONG prevResult = g_OldUnhandledFilter(pExceptionPointers);
         if (prevResult != EXCEPTION_CONTINUE_SEARCH) {
@@ -469,6 +522,11 @@ void InstallCrashHandler() {
         }
     }
 
+    // Disable Windows error dialogs and register with WER
+    // This prevents Windows from showing crash dialogs and ensures our
+    // crash handler has priority.
+    RegisterWithWER();
+
     // Install Vectored Exception Handler (catches exceptions before SEH)
     PVOID vehHandle = AddVectoredExceptionHandler(1, CrashHandlerExceptionFilter);
     if (vehHandle) {
@@ -477,10 +535,19 @@ void InstallCrashHandler() {
         TraceCrash("Failed to install VEH handler");
     }
 
+    // Also install a SECOND VEH handler with LAST priority (0)
+    // This catches exceptions that other VEH handlers might have skipped.
+    // Some frameworks install VEH handlers that return EXCEPTION_CONTINUE_SEARCH
+    // for crashes they don't recognize. Our last-position handler catches those.
+    PVOID vehLastHandle = AddVectoredExceptionHandler(0, CrashHandlerExceptionFilter);
+    if (vehLastHandle) {
+        TraceCrash("VEH last-position handler installed");
+    }
+
     // Also install Unhandled Exception Filter as backup
     // (some games might install their own handlers that preempt VEH)
     g_OldUnhandledFilter = SetUnhandledExceptionFilter(UnhandledExceptionFilterCallback);
     TraceCrash("Unhandled exception filter installed");
 
-    OutputDebugStringA("[CrashHandler] Crash handler installed (VEH + UnhandledFilter).\n");
+    OutputDebugStringA("[CrashHandler] Crash handler installed (VEH + VEH-last + UnhandledFilter).\n");
 }

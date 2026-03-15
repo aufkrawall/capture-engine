@@ -362,10 +362,12 @@ public:
         }
 
         // Configure cursor capture
+        // WGC native cursor is reliable now - use it directly (cursor is composited
+        // into the captured frame by DWM). Software cursor overlay is not used for WGC.
         try {
             if (session_) {
                 session_.IsCursorCaptureEnabled(captureCursor);
-                LogInfo("[WGC] Native cursor capture allowed: %s", captureCursor ? "YES" : "NO");
+                LogInfo("[WGC] Native cursor capture: %s", captureCursor ? "YES" : "NO");
             }
         } catch (...) {
             // Not available on older Windows versions
