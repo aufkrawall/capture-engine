@@ -6,6 +6,7 @@
 // clang-format on
 #include <intrin.h>
 #include <atomic>
+#include <mutex>
 #include "antilag2_limiter.h"
 #include "fg_detection.h"
 #include "hook_common.h"
@@ -53,6 +54,7 @@ public:
         missedFrames = 0;
     }
     bool IsEventsInitialized() const {
+        std::lock_guard<std::mutex> lock(eventStateMutex_);
         return eventsInitialized;
     }
     // Get last actual wait time in microseconds (for perf logging)
@@ -68,10 +70,17 @@ public:
 
     // Ensure 1ms timer resolution is enabled
     void EnsureTimerResolution() {
-        if (!timerResolutionSet) {
-            timeBeginPeriod(1);
-            timerResolutionSet = true;
+        std::lock_guard<std::mutex> lock(timerStateMutex_);
+        if (timerResolutionSet)
+            return;
+
+        if (s_TimerResolutionRefCount.fetch_add(1, std::memory_order_acq_rel) == 0) {
+            if (timeBeginPeriod(1) != TIMERR_NOERROR) {
+                s_TimerResolutionRefCount.fetch_sub(1, std::memory_order_acq_rel);
+                return;
+            }
         }
+        timerResolutionSet = true;
     }
 
     // Smart wait until target QPC time
@@ -96,6 +105,7 @@ public:
         // Try high-resolution waitable timer for waits > 1ms (available on Win10
         // 1803+)
         if (diffUs > 1000 && !highResTimerFailed) {
+            std::lock_guard<std::mutex> lock(timerStateMutex_);
             if (!highResTimer) {
                 // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION = 0x2
                 highResTimer = CreateWaitableTimerExW(NULL, NULL, 0x2, TIMER_ALL_ACCESS);
@@ -105,9 +115,6 @@ public:
             }
 
             if (highResTimer) {
-                // Snapshot handle to a local to prevent TOCTOU race with Shutdown() closing it
-                // between the null check and SetWaitableTimer/WaitForSingleObject.
-                HANDLE localTimer = highResTimer;
                 // Convert to 100ns intervals (negative = relative)
                 // Use double to avoid int64 overflow when diff * 10000000 > INT64_MAX.
                 // At qpcFrequency ~10MHz and diff up to ~200ms, diff*10M can exceed 2^53 in double
@@ -117,8 +124,8 @@ public:
                 dueTime.QuadPart =
                     -static_cast<int64_t>(static_cast<double>(diff) * (10000000.0 / static_cast<double>(qpcFrequency)));
 
-                if (SetWaitableTimer(localTimer, &dueTime, 0, NULL, NULL, FALSE)) {
-                    WaitForSingleObject(localTimer, (DWORD)(diffUs / 1000 + 5));
+                if (SetWaitableTimer(highResTimer, &dueTime, 0, NULL, NULL, FALSE)) {
+                    WaitForSingleObject(highResTimer, (DWORD)(diffUs / 1000 + 5));
                     // Fall through to spin-wait for sub-μs precision trim
                     QueryPerformanceCounter(&now);
                     diff = targetTick - now.QuadPart;
@@ -179,37 +186,53 @@ public:
         if (len <= 0)
             return;
         static std::mutex s_TraceLogMutex;
-        static HANDLE s_TraceFile = INVALID_HANDLE_VALUE;
-        static char s_TraceLogPath[MAX_PATH] = {0};
+        struct TraceFileState {
+            HANDLE file = INVALID_HANDLE_VALUE;
+            char path[MAX_PATH] = {0};
+            ~TraceFileState() {
+                if (file != INVALID_HANDLE_VALUE) {
+                    CloseHandle(file);
+                }
+            }
+        };
+        static TraceFileState s_TraceState;
 
         std::unique_lock<std::mutex> lock(s_TraceLogMutex, std::defer_lock);
         if (!lock.try_lock())
             return;  // Drop trace if another thread is writing; never stall Present
 
-        if (s_TraceLogPath[0] == '\0') {
+        if (s_TraceState.path[0] == '\0') {
             HMODULE hMod = nullptr;
             GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                                (LPCSTR)this, &hMod);
             if (hMod) {
-                GetModuleFileNameA(hMod, s_TraceLogPath, MAX_PATH);
-                char* lastSlash = strrchr(s_TraceLogPath, '\\');
+                GetModuleFileNameA(hMod, s_TraceState.path, MAX_PATH);
+                char* lastSlash = strrchr(s_TraceState.path, '\\');
                 if (lastSlash)
                     *lastSlash = '\0';
-                strncat(s_TraceLogPath, "\\logs\\fps_limiter_trace.log", MAX_PATH - strlen(s_TraceLogPath) - 1);
+                char logDirPath[MAX_PATH];
+                strncpy_s(logDirPath, s_TraceState.path, _TRUNCATE);
+                strncat(logDirPath, "\\logs", MAX_PATH - strlen(logDirPath) - 1);
+                CreateDirectoryA(logDirPath, nullptr);
+                strncat(s_TraceState.path, "\\logs\\fps_limiter_trace.log", MAX_PATH - strlen(s_TraceState.path) - 1);
             }
         }
-        if (s_TraceLogPath[0] == '\0')
+        if (s_TraceState.path[0] == '\0')
             return;
 
-        if (s_TraceFile == INVALID_HANDLE_VALUE) {
-            s_TraceFile = CreateFileA(s_TraceLogPath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                                      OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-            if (s_TraceFile == INVALID_HANDLE_VALUE)
+        if (s_TraceState.file == INVALID_HANDLE_VALUE) {
+            s_TraceState.file = CreateFileA(s_TraceState.path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                            nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (s_TraceState.file == INVALID_HANDLE_VALUE)
                 return;
         }
 
         DWORD written = 0;
-        WriteFile(s_TraceFile, line, static_cast<DWORD>(len), &written, nullptr);
+        if (!WriteFile(s_TraceState.file, line, static_cast<DWORD>(len), &written, nullptr) ||
+            written != static_cast<DWORD>(len)) {
+            CloseHandle(s_TraceState.file);
+            s_TraceState.file = INVALID_HANDLE_VALUE;
+        }
     }
 
     // Called each frame before present
@@ -321,9 +344,14 @@ public:
             lastActualWaitUs_ = 0;
             loggedNativeFallback_ = false;
             // Release timer resolution if we had it set
-            if (timerResolutionSet) {
-                timeEndPeriod(1);
-                timerResolutionSet = false;
+            {
+                std::lock_guard<std::mutex> lock(timerStateMutex_);
+                if (timerResolutionSet) {
+                    if (s_TimerResolutionRefCount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                        timeEndPeriod(1);
+                    }
+                    timerResolutionSet = false;
+                }
             }
             // Reset local limiter state when inactive
             if (localTargetTime_ != 0) {
@@ -688,55 +716,61 @@ public:
         // Initialize events if not done (general limiter mode only)
         // Only try to open events if we are not in test mode (implied by dbgShm
         // presence usually, but let's just check name)
-        if (!eventsInitialized && shm->fpsLimiter.releaseEventName[0] != L'\0') {
-            releaseEvent = OpenEventW(SYNCHRONIZE, FALSE, shm->fpsLimiter.releaseEventName);
-            requestEvent = OpenEventW(EVENT_MODIFY_STATE, FALSE, shm->fpsLimiter.requestEventName);
-
-            // Query QPC frequency for timing calculations
-            if (qpcFrequency == 0) {
-                LARGE_INTEGER freq;
-                QueryPerformanceFrequency(&freq);
-                qpcFrequency = freq.QuadPart;
-            }
-
-            // Only mark as initialized if we got valid events
-            // If OpenEvent failed, we'll retry next frame (limiter might not be ready yet)
-            if (releaseEvent && requestEvent) {
-                eventsInitialized = true;
-                TraceLog("Apply: Events OK release=%p request=%p target=%d", releaseEvent, requestEvent,
-                         effectiveTargetFps);
-                HookLog(
-                    "FPS Limiter: Events Initialized (target: %d FPS, release=%p, "
-                    "request=%p)",
-                    effectiveTargetFps, releaseEvent, requestEvent);
-            } else {
-                HookLog(
-                    "FPS Limiter: Failed to open events (release=%p, request=%p), "
-                    "will retry. Names: %ls / %ls",
-                    releaseEvent, requestEvent, shm->fpsLimiter.releaseEventName, shm->fpsLimiter.requestEventName);
-                // Don't mark as initialized - we'll retry next frame
-            }
-        }
-
-        // In test mode (dbgShm), we might assume events are initialized or not
-        // needed for SmartWait test But for full Apply() test, we need them if we
-        // want to hit the event path. If not, we fall through.
-
-        // Request next frame timing
         uint32_t myRequest = shm->fpsLimiter.requestCount.fetch_add(1, std::memory_order_acq_rel) + 1;
-        if (requestEvent)
-            SetEvent(requestEvent);
+        DWORD waitResult = WAIT_TIMEOUT;
+        bool haveReleaseEvent = false;
+        {
+            std::lock_guard<std::mutex> lock(eventStateMutex_);
 
-        // Wait for release from limiter process
-        if (releaseEvent || dbgShm) {  // Allow test mode to use SmartWait if manual
-                                       // targetTime is set
-            // For real usage: check releaseEvent. For test: if dbgShm is set, we
-            // might skip the WaitForSingleObject or mocking it. But typically tests
-            // won't have the external limiter process running. So let's make the test
-            // set targetTimeTicks manually, and we skp WaitForSingleObject if it's a
-            // test? Better: In a test, we can CreateEvent ourselves.
+            if (!eventsInitialized && shm->fpsLimiter.releaseEventName[0] != L'\0') {
+                HANDLE newReleaseEvent = OpenEventW(SYNCHRONIZE, FALSE, shm->fpsLimiter.releaseEventName);
+                HANDLE newRequestEvent = OpenEventW(EVENT_MODIFY_STATE, FALSE, shm->fpsLimiter.requestEventName);
 
+                // Query QPC frequency for timing calculations
+                if (qpcFrequency == 0) {
+                    LARGE_INTEGER freq;
+                    QueryPerformanceFrequency(&freq);
+                    qpcFrequency = freq.QuadPart;
+                }
+
+                // Only mark as initialized if we got valid events
+                // If OpenEvent failed, we'll retry next frame (limiter might not be ready yet)
+                if (newReleaseEvent && newRequestEvent) {
+                    releaseEvent = newReleaseEvent;
+                    requestEvent = newRequestEvent;
+                    eventsInitialized = true;
+                    TraceLog("Apply: Events OK release=%p request=%p target=%d", releaseEvent, requestEvent,
+                             effectiveTargetFps);
+                    HookLog(
+                        "FPS Limiter: Events Initialized (target: %d FPS, release=%p, "
+                        "request=%p)",
+                        effectiveTargetFps, releaseEvent, requestEvent);
+                } else {
+                    if (newReleaseEvent) {
+                        CloseHandle(newReleaseEvent);
+                    }
+                    if (newRequestEvent) {
+                        CloseHandle(newRequestEvent);
+                    }
+                    HookLog(
+                        "FPS Limiter: Failed to open events (release=%p, request=%p), "
+                        "will retry. Names: %ls / %ls",
+                        newReleaseEvent, newRequestEvent, shm->fpsLimiter.releaseEventName,
+                        shm->fpsLimiter.requestEventName);
+                }
+            }
+
+            // In test mode (dbgShm), we might assume events are initialized or not
+            // needed for SmartWait test But for full Apply() test, we need them if we
+            // want to hit the event path. If not, we fall through.
+
+            // Request next frame timing
+            if (requestEvent)
+                SetEvent(requestEvent);
+
+            // Wait for release from limiter process
             if (releaseEvent) {
+                haveReleaseEvent = true;
                 // Calculate appropriate timeout based on target frame interval
                 // Use 3x frame interval for safety margin
                 DWORD frameTimeMs = 1000 / effectiveTargetFps;
@@ -746,8 +780,21 @@ public:
                 if (timeoutMs > 100)
                     timeoutMs = 100;
 
-                DWORD waitResult = WaitForSingleObject(releaseEvent, timeoutMs);
+                waitResult = WaitForSingleObject(releaseEvent, timeoutMs);
+            } else if (dbgShm) {
+                waitResult = WAIT_OBJECT_0;
+            }
+        }
 
+        if (haveReleaseEvent || dbgShm) {  // Allow test mode to use SmartWait if manual
+                                           // targetTime is set
+            // For real usage: check releaseEvent. For test: if dbgShm is set, we
+            // might skip the WaitForSingleObject or mocking it. But typically tests
+            // won't have the external limiter process running. So let's make the test
+            // set targetTimeTicks manually, and we skp WaitForSingleObject if it's a
+            // test? Better: In a test, we can CreateEvent ourselves.
+
+            if (haveReleaseEvent) {
                 // Log wait statistics and measured FPS periodically
                 applyWaitCount_++;
                 if (waitResult == WAIT_OBJECT_0) {
@@ -823,25 +870,34 @@ public:
     }
 
     void Shutdown() {
-        if (releaseEvent) {
-            CloseHandle(releaseEvent);
-            releaseEvent = NULL;
+        {
+            std::lock_guard<std::mutex> lock(eventStateMutex_);
+            if (releaseEvent) {
+                CloseHandle(releaseEvent);
+                releaseEvent = NULL;
+            }
+            if (requestEvent) {
+                CloseHandle(requestEvent);
+                requestEvent = NULL;
+            }
+            eventsInitialized = false;
         }
-        if (requestEvent) {
-            CloseHandle(requestEvent);
-            requestEvent = NULL;
+        {
+            std::lock_guard<std::mutex> lock(timerStateMutex_);
+            if (highResTimer) {
+                CancelWaitableTimer(highResTimer);
+                CloseHandle(highResTimer);
+                highResTimer = NULL;
+            }
+            if (timerResolutionSet) {
+                if (s_TimerResolutionRefCount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                    timeEndPeriod(1);
+                }
+                timerResolutionSet = false;
+            }
+            highResTimerFailed = false;
         }
-        if (highResTimer) {
-            CloseHandle(highResTimer);
-            highResTimer = NULL;
-        }
-        if (timerResolutionSet) {
-            timeEndPeriod(1);
-            timerResolutionSet = false;
-        }
-        eventsInitialized = false;
         sessionIdPublished = false;
-        highResTimerFailed = false;
         loggedInactive_ = false;
         loggedNoEvent_ = false;
         loggedActive_ = false;
@@ -914,6 +970,9 @@ private:
     int applyTraceCount_ = 0;
     uint32_t applyDedupCount_ = 0;
     int traceLogCount_ = 0;
+    mutable std::mutex eventStateMutex_;
+    mutable std::mutex timerStateMutex_;
+    static inline std::atomic<int> s_TimerResolutionRefCount{0};
 };
 
 // Global FPS limiter instance

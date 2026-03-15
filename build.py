@@ -3338,6 +3338,9 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                     pass  # me_ldflags.append("-flto") - DISABLED for D3D11 exception safety
                 if any(flag.startswith("-fsanitize=") for flag in curr_cflags):
                     me_ldflags.append("-fsanitize=address,undefined")
+                # Don't strip sections for mediaengine - needed for exception handling tables
+                # --gc-sections strips .eh_frame/.gcc_except_table, preventing catch(...) from working
+                me_ldflags.append("-Wl,--no-gc-sections")
                 me_ldflags.append(f"-Wl,--out-implib,{me_lib}")
 
                 me_cflags = curr_cflags + ["-DMEDIAENGINE_EXPORTS"] + ffmpeg_flags
@@ -3848,7 +3851,7 @@ def main():
             and not run_tests_flag
             and not run_integration_flag
         ):
-            return
+            sys.exit(0 if format_ok else 1)
 
     if lint_flag:
         lint_ok = run_lint(env)
@@ -3861,7 +3864,7 @@ def main():
             and not run_tests_flag
             and not run_integration_flag
         ):
-            return
+            sys.exit(0 if lint_ok else 1)
 
     if sanitize_regression_flag and not sanitize_regression_child:
         if sanitize_flag:
@@ -3977,6 +3980,7 @@ def main():
                 )
     except Exception as e:
         log(f"Error writing compile_commands.json: {e}")
+        sys.exit(1)
 
     if run_integration_flag:
         ensure_debug_logging()

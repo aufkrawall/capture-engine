@@ -9068,11 +9068,13 @@ void DX12Hook::Shutdown() {
 
     // Clean up prerender fences/events
     for (auto* fence : g_PrerenderFences) {
-        if (fence) fence->Release();
+        if (fence)
+            fence->Release();
     }
     g_PrerenderFences.clear();
     for (auto event : g_PrerenderEvents) {
-        if (event) CloseHandle(event);
+        if (event)
+            CloseHandle(event);
     }
     g_PrerenderEvents.clear();
 

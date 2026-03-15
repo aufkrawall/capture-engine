@@ -103,9 +103,12 @@ TEST(FrameQueueTest, PushPop) {
 TEST(FrameQueueTest, CapacityAndDrop) {
     FrameQueue queue(2);
 
-    QueuedFrame f1; f1.timestamp = 1;
-    QueuedFrame f2; f2.timestamp = 2;
-    QueuedFrame f3; f3.timestamp = 3;
+    QueuedFrame f1;
+    f1.timestamp = 1;
+    QueuedFrame f2;
+    f2.timestamp = 2;
+    QueuedFrame f3;
+    f3.timestamp = 3;
 
     EXPECT_TRUE(queue.Push(std::move(f1)));
     EXPECT_TRUE(queue.Push(std::move(f2)));

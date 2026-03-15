@@ -35,7 +35,8 @@ static bool g_HasLastFrame = false;
 
 // Screengrab mode components
 static std::unique_ptr<WGCCapture> g_WgcCap;
-static bool g_UseScreenGrab = false;
+static std::atomic<bool> g_UseScreenGrab{false};     // Active capture mode for the current recording
+static std::atomic<bool> g_PreferScreenGrab{false};  // Preferred mode for the next recording
 
 // Shared memory for hook communication
 static HANDLE g_hMapFile = NULL;
@@ -57,8 +58,28 @@ static std::thread g_WgcCaptureThread;
 static std::atomic<uint32_t> g_WgcDroppedFrames{0};
 
 // Forward declaration
+void InjectCaptureThreadFunc(const AppConfig& config);
+void WgcCaptureThreadFunc(const AppConfig& config);
 void StopRecording();
 void StartRecording(const AppConfig& config);
+
+namespace {
+bool IsActiveScreenGrab() {
+    return g_UseScreenGrab.load(std::memory_order_acquire);
+}
+
+void SetActiveScreenGrab(bool enabled) {
+    g_UseScreenGrab.store(enabled, std::memory_order_release);
+}
+
+bool IsPreferredScreenGrab() {
+    return g_PreferScreenGrab.load(std::memory_order_acquire);
+}
+
+void SetPreferredScreenGrab(bool enabled) {
+    g_PreferScreenGrab.store(enabled, std::memory_order_release);
+}
+}  // namespace
 
 static bool JoinThreadWithTimeout(std::thread& thread, DWORD timeoutMs, const char* threadName) {
     if (!thread.joinable()) {
@@ -84,6 +105,70 @@ static bool JoinThreadWithTimeout(std::thread& thread, DWORD timeoutMs, const ch
 
 void MediaLogCallback(const char* msg) {
     LogInfo("[Media] %s", msg);
+}
+
+static void QueueWgcFrame(ID3D11Texture2D* texture, uint32_t width, uint32_t height, int64_t timestamp) {
+    QueuedFrame qf;
+    qf.isInjectMode = false;
+    qf.texture = texture;
+    qf.width = width;
+    qf.height = height;
+    qf.timestamp = timestamp;
+
+    if (!g_FrameQueue.Push(std::move(qf), g_IsEncoderBottlenecked)) {
+        g_WgcDroppedFrames.fetch_add(1, std::memory_order_relaxed);
+        texture->Release();
+    }
+}
+
+static void StopInjectCapturePipeline() {
+    g_InjectCaptureShutdown = true;
+    JoinThreadWithTimeout(g_InjectCaptureThread, 5000, "inject capture");
+}
+
+static void StopWgcCapturePipeline() {
+    if (g_WgcCap) {
+        g_WgcCap->SetDirectFrameCallback(nullptr);
+        if (g_WgcCap->IsCapturing()) {
+            g_WgcCap->StopCapture();
+        }
+    }
+
+    g_WgcCaptureShutdown = true;
+    JoinThreadWithTimeout(g_WgcCaptureThread, 5000, "WGC capture");
+}
+
+static bool StartWgcRecordingCapture(const AppConfig& config) {
+    if (!g_WgcCap) {
+        return false;
+    }
+
+    if (g_WgcCaptureThread.joinable()) {
+        LogWarn("[Media] Cleaning up stale WGC capture thread before restart");
+        g_WgcCaptureShutdown = true;
+        JoinThreadWithTimeout(g_WgcCaptureThread, 5000, "WGC capture");
+    }
+
+    if (g_WgcCap->IsCapturing()) {
+        g_WgcCap->SetDirectFrameCallback(nullptr);
+        g_WgcCap->StopCapture();
+    }
+
+    g_WgcCap->SetCaptureCursor(config.video.captureCursor);
+    g_WgcCap->SetDirectFrameCallback(QueueWgcFrame);
+    if (!g_WgcCap->StartCapture()) {
+        g_WgcCap->SetDirectFrameCallback(nullptr);
+        return false;
+    }
+
+    g_WgcCap->ResetStats();
+    g_WgcCap->SetTargetFps(config.video.fps * 2);
+    g_WgcDroppedFrames.store(0, std::memory_order_relaxed);
+
+    g_WgcCaptureShutdown = false;
+    g_WgcCaptureThread = std::thread(WgcCaptureThreadFunc, std::ref(config));
+    SetThreadPriority(reinterpret_cast<HANDLE>(g_WgcCaptureThread.native_handle()), THREAD_PRIORITY_ABOVE_NORMAL);
+    return true;
 }
 
 // Defined in inject_main.cpp
@@ -265,6 +350,19 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                 }
 
                 if (shouldProcess) {
+                    // Validate shared memory frame data before using it
+                    uint32_t fw = g_pSharedMem->GetWidth();
+                    uint32_t fh = g_pSharedMem->GetHeight();
+                    int32_t texIdx = slot.textureIndex;
+
+                    bool dropFrame = false;
+                    if (fw == 0 || fh == 0 || fw > 15360 || fh > 8640 || texIdx < 0 || texIdx > 200) {
+                        if (localReadIndex % 100 == 0) {
+                            LogWarn("[Inject Thread] Invalid frame data: %ux%u texIdx=%d, dropping", fw, fh, texIdx);
+                        }
+                        dropFrame = true;
+                    }
+
                     QueuedFrame qf;
                     qf.isInjectMode = true;
                     qf.ringIndex = localReadIndex;
@@ -273,8 +371,6 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     // CRITICAL FIX: Reset valid flag after reading to prevent stale data
                     // on slot reuse
                     slot.valid.store(0, std::memory_order_release);
-
-                    int32_t texIdx = slot.textureIndex;
 
                     if (texIdx >= 100) {
                         qf.isShmem = true;
@@ -330,15 +426,30 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                         }
                     }
 
-                    if (validHandles) {
+                    if (!dropFrame && validHandles) {
                         if (g_FrameQueue.Push(std::move(qf), g_IsEncoderBottlenecked)) {
                             pushedCount++;
                         } else {
                             droppedCount++;
+                            dropFrame = true;
                         }
                     } else {
                         droppedCount++;
+                        dropFrame = true;
                     }
+
+                    if (dropFrame) {
+                        localReadIndex++;
+                        g_pSharedMem->frameRing.readIndex.store(localReadIndex, std::memory_order_release);
+                        continue;
+                    }
+                } else {
+                    // Pacing drop: release the ring slot immediately so the producer
+                    // does not stall behind frames that will never be encoded.
+                    slot.valid.store(0, std::memory_order_release);
+                    localReadIndex++;
+                    g_pSharedMem->frameRing.readIndex.store(localReadIndex, std::memory_order_release);
+                    continue;
                 }
 
                 localReadIndex++;
@@ -481,7 +592,7 @@ void EncoderThreadFunc(const AppConfig& config) {
         QueuedFrame frame;
         bool popped = false;
 
-        if (g_UseScreenGrab) {
+        if (IsActiveScreenGrab()) {
             // WGC/screengrab: drain queue and take newest frame.
             // Reduces latency from ~56ms (queue depth 8) to 0-7ms
             // while producing identical content selection (same Bresenham pattern).
@@ -610,6 +721,9 @@ void StartRecording(const AppConfig& config) {
 
     LogInfo("[Media] Starting recording...");
 
+    const bool useScreenGrab = IsPreferredScreenGrab();
+    SetActiveScreenGrab(useScreenGrab);
+
     // Clear any stale shared memory commands/state from previous (possibly crashed)
     // recording sessions. If a previous media process crashed, cmdStopRecording
     // may still be true, causing the new recording to stop immediately.
@@ -623,6 +737,9 @@ void StartRecording(const AppConfig& config) {
 
     // Reset inject session state so main loop re-initializes on new recording
     g_InjectSessionReset.store(true, std::memory_order_release);
+
+    StopWgcCapturePipeline();
+    StopInjectCapturePipeline();
 
     g_FrameQueue.Clear();
     if (g_HasLastFrame && !g_LastFrame.isInjectMode && g_LastFrame.texture) {
@@ -654,42 +771,22 @@ void StartRecording(const AppConfig& config) {
     g_EncoderThread = std::thread(EncoderThreadFunc, std::ref(config));
     SetThreadPriority(reinterpret_cast<HANDLE>(g_EncoderThread.native_handle()), THREAD_PRIORITY_ABOVE_NORMAL);
 
-    if (g_UseScreenGrab && g_WgcCap) {
-        g_WgcCap->SetCaptureCursor(config.video.captureCursor);
-
-        g_WgcCap->SetDirectFrameCallback(
-            [](ID3D11Texture2D* texture, uint32_t width, uint32_t height, int64_t timestamp) {
-                QueuedFrame qf;
-                qf.isInjectMode = false;
-                qf.texture = texture;
-                qf.width = width;
-                qf.height = height;
-                qf.timestamp = timestamp;
-
-                if (!g_FrameQueue.Push(std::move(qf), g_IsEncoderBottlenecked)) {
-                    g_WgcDroppedFrames.fetch_add(1, std::memory_order_relaxed);
-                    texture->Release();
-                }
-            });
-
-        g_WgcCap->StartCapture();
-        g_WgcCap->ResetStats();
-        // Throttle at 2× target FPS to filter WGC duplicate frames
-        // (DWM delivers at 2× display Hz) while ensuring enough unique
-        // frames for any display Hz / game FPS combination.
-        // E.g., 120fps target → 240fps throttle (4.17ms min interval).
-        // This ensures:
-        // - 60Hz display: captures all 60 unique fps
-        // - 143Hz: captures all 143 unique fps (skips 143 dups)
-        // - 240Hz: captures all 240 unique fps (skips 240 dups)
-        g_WgcCap->SetTargetFps(config.video.fps * 2);
-        g_WgcDroppedFrames.store(0, std::memory_order_relaxed);
-
-        g_WgcCaptureShutdown = false;
-        g_WgcCaptureThread = std::thread(WgcCaptureThreadFunc, std::ref(config));
-        SetThreadPriority(reinterpret_cast<HANDLE>(g_WgcCaptureThread.native_handle()), THREAD_PRIORITY_ABOVE_NORMAL);
+    if (useScreenGrab && g_WgcCap) {
+        if (!StartWgcRecordingCapture(config)) {
+            LogError("[Media] Failed to start WGC capture");
+            g_EncoderRunning = false;
+            JoinThreadWithTimeout(g_EncoderThread, 10000, "encoder");
+            g_Recording = false;
+            if (g_pSharedMem) {
+                g_pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
+                g_pSharedMem->runtimeState.recordingStartTime.store(0, std::memory_order_release);
+            }
+            MediaEngine_StopRecording();
+            SetActiveScreenGrab(false);
+            return;
+        }
         LogInfo("[Media] WGC capture with direct callback started");
-    } else if (!g_UseScreenGrab) {
+    } else if (!useScreenGrab) {
         LogInfo("[Media] Starting InjectCaptureThread for Shared Memory Capture");
         g_InjectCaptureShutdown = false;
         g_InjectCaptureThread = std::thread(InjectCaptureThreadFunc, std::ref(config));
@@ -708,17 +805,8 @@ void StopRecording() {
 
     g_Recording = false;
 
-    if (g_UseScreenGrab) {
-        g_WgcCaptureShutdown = true;
-        JoinThreadWithTimeout(g_WgcCaptureThread, 5000, "WGC capture");
-        if (g_WgcCap) {
-            g_WgcCap->StopCapture();
-            g_WgcCap->SetDirectFrameCallback(nullptr);
-        }
-    } else {
-        g_InjectCaptureShutdown = true;
-        JoinThreadWithTimeout(g_InjectCaptureThread, 5000, "inject capture");
-    }
+    StopWgcCapturePipeline();
+    StopInjectCapturePipeline();
 
     g_EncoderRunning = false;
 
@@ -733,6 +821,8 @@ void StopRecording() {
         g_pSharedMem->runtimeState.encoderOverloadFlags.store(0, std::memory_order_relaxed);
         g_pSharedMem->runtimeState.muxQueueBytes.store(0, std::memory_order_relaxed);
     }
+
+    SetActiveScreenGrab(false);
 
     LogInfo("[Media] Recording stopped");
 }
@@ -785,7 +875,7 @@ int MediaProcessMain(const AppConfig& config) {
     bool explicitScreengrab = (config.captureMethod == "screengrab" || config.captureMethod == "framegrab" ||
                                config.captureMethod == "desktop_dup");
     if (explicitScreengrab) {
-        g_UseScreenGrab = true;
+        SetPreferredScreenGrab(true);
         LogInfo("[Media] Using screengrab mode (explicit)");
     }
 
@@ -850,7 +940,7 @@ int MediaProcessMain(const AppConfig& config) {
         // waiting for them. The textures will be created with current dimensions
         // and resized if needed when SetDimensions is called later.
         // Skip if screengrab mode - encoder will use WGC's shared device instead.
-        if (!g_UseScreenGrab) {
+        if (!IsPreferredScreenGrab()) {
             uint32_t width = g_pSharedMem->GetWidth();
             uint32_t height = g_pSharedMem->GetHeight();
             uint32_t format = g_pSharedMem->GetFormat();
@@ -865,10 +955,10 @@ int MediaProcessMain(const AppConfig& config) {
         }
 
         if (explicitScreengrab) {
-            g_UseScreenGrab = true;
+            SetPreferredScreenGrab(true);
             LogInfo("[Media] Connected to shared memory - using screengrab for capture");
         } else {
-            g_UseScreenGrab = false;
+            SetPreferredScreenGrab(false);
             LogInfo("[Media] Connected to shared memory - using inject mode");
         }
     } else if (config.captureMethod == "inject") {
@@ -877,14 +967,14 @@ int MediaProcessMain(const AppConfig& config) {
         timeEndPeriod(1);
         return 1;
     } else {
-        g_UseScreenGrab = true;
+        SetPreferredScreenGrab(true);
         LogInfo("[Media] Shared memory not available - using screengrab mode");
     }
 
-    if (g_UseScreenGrab || config.captureMethod == "auto") {
+    if (IsPreferredScreenGrab() || config.captureMethod == "auto") {
         d3dDevice = MediaEngine_GetD3D11Device();
         if (!d3dDevice) {
-            if (g_UseScreenGrab) {
+            if (IsPreferredScreenGrab()) {
                 LogError("[Media] Failed to get D3D11 device");
                 MediaEngine_Shutdown();
                 timeEndPeriod(1);
@@ -898,9 +988,10 @@ int MediaProcessMain(const AppConfig& config) {
                 if (g_WgcCap->Init(d3dDevice)) {
                     // Connect encoder bottleneck flag to WGC for throttle
                     g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
-                    LogInfo("[Media] WGC capture initialized%s", g_UseScreenGrab ? "" : " (standby for auto fallback)");
+                    LogInfo("[Media] WGC capture initialized%s",
+                            IsPreferredScreenGrab() ? "" : " (standby for auto fallback)");
                 } else {
-                    if (g_UseScreenGrab) {
+                    if (IsPreferredScreenGrab()) {
                         LogError("[Media] WGC capture init failed");
                         MediaEngine_Shutdown();
                         timeEndPeriod(1);
@@ -915,7 +1006,7 @@ int MediaProcessMain(const AppConfig& config) {
     }
 
     LogInfo("[Media] Process started (PID: %lu) Mode: %s", GetCurrentProcessId(),
-            g_UseScreenGrab ? "screengrab" : "inject");
+            IsPreferredScreenGrab() ? "screengrab" : "inject");
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
 
     LARGE_INTEGER qpcFreq;
@@ -938,9 +1029,9 @@ int MediaProcessMain(const AppConfig& config) {
     while (g_Running) {
         // WGC window detection must run BEFORE resolution polling/texture creation.
         // CreateSharedCaptureTextures sets the encoder's LUID device, which conflicts
-        // with WGC's shared device. By scanning first, g_UseScreenGrab is set correctly
+        // with WGC's shared device. By scanning first, the preferred capture mode is set correctly
         // and we skip the LUID-based texture creation for WGC games.
-        if (g_pSharedMem && !config.wgcWindowTitles.empty() && !g_UseScreenGrab) {
+        if (g_pSharedMem && !config.wgcWindowTitles.empty() && !IsPreferredScreenGrab() && !g_Recording) {
             static DWORD lastEarlyWgcScan = 0;
             DWORD now = GetTickCount();
             if (now - lastEarlyWgcScan > 500) {
@@ -1037,7 +1128,7 @@ int MediaProcessMain(const AppConfig& config) {
                     },
                     (LPARAM)&ctx);
                 if (ctx.result) {
-                    g_UseScreenGrab = true;
+                    SetPreferredScreenGrab(true);
                 }
             }
         }
@@ -1046,7 +1137,7 @@ int MediaProcessMain(const AppConfig& config) {
         // The Vulkan layer sets resolution when it creates the swapchain, then waits
         // for encoder KMT textures. We must create them ASAP to avoid timeout.
         // Skip when using screengrab (WGC) - the encoder should use the shared device.
-        if (g_pSharedMem && !g_UseScreenGrab &&
+        if (g_pSharedMem && !IsPreferredScreenGrab() &&
             !g_pSharedMem->encoderTextures.kmtReady.load(std::memory_order_acquire)) {
             uint32_t w = g_pSharedMem->GetWidth();
             uint32_t h = g_pSharedMem->GetHeight();
@@ -1126,7 +1217,7 @@ int MediaProcessMain(const AppConfig& config) {
             static HWND currentCapturedWindow = NULL;
 
             DWORD now = GetTickCount();
-            if (!config.wgcWindowTitles.empty() && (now - lastWindowScanTime > 1000)) {
+            if (!g_Recording && !config.wgcWindowTitles.empty() && (now - lastWindowScanTime > 1000)) {
                 lastWindowScanTime = now;
 
                 struct WgcSearchContext {
@@ -1237,35 +1328,19 @@ int MediaProcessMain(const AppConfig& config) {
                         if (g_WgcCap->InitForWindow(d3dDevice, foundWindow)) {
                             g_WgcCap->SetCaptureCursor(config.video.captureCursor);
                             g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
-                            g_WgcCap->SetDirectFrameCallback(
-                                [](ID3D11Texture2D* texture, uint32_t width, uint32_t height, int64_t timestamp) {
-                                    QueuedFrame qf;
-                                    qf.isInjectMode = false;
-                                    qf.texture = texture;
-                                    qf.width = width;
-                                    qf.height = height;
-                                    qf.timestamp = timestamp;
-                                    if (!g_FrameQueue.Push(std::move(qf), g_IsEncoderBottlenecked)) {
-                                        g_WgcDroppedFrames.fetch_add(1, std::memory_order_relaxed);
-                                        texture->Release();
-                                    }
-                                });
-                            g_WgcCap->StartCapture();
-                            g_WgcCap->ResetStats();
-                            g_WgcCap->SetTargetFps(config.video.fps * 2);
-                            g_WgcDroppedFrames.store(0, std::memory_order_relaxed);
-                            g_UseScreenGrab = true;
-                            LogInfo("[Media] WGC re-initialized for Window 0x%p", foundWindow);
+                            SetPreferredScreenGrab(true);
+                            LogInfo("[Media] WGC target primed for window 0x%p", foundWindow);
                             currentCapturedWindow = foundWindow;
                         } else {
                             LogError("[Media] Failed to init WGC for found window.");
                             g_WgcCap.reset();
                             g_WgcCap = std::make_unique<WGCCapture>();
                             if (g_WgcCap->Init(d3dDevice)) {
-                                g_UseScreenGrab = true;
+                                g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
+                                SetPreferredScreenGrab(true);
                             } else {
                                 g_WgcCap.reset();
-                                g_UseScreenGrab = false;
+                                SetPreferredScreenGrab(false);
                             }
                             currentCapturedWindow = NULL;
                         }
@@ -1282,10 +1357,13 @@ int MediaProcessMain(const AppConfig& config) {
                             g_WgcCap = std::make_unique<WGCCapture>();
                             if (!g_WgcCap->Init(d3dDevice)) {
                                 g_WgcCap.reset();
-                                g_UseScreenGrab = false;
+                                SetPreferredScreenGrab(false);
+                            } else {
+                                g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
+                                SetPreferredScreenGrab(true);
                             }
                         } else {
-                            g_UseScreenGrab = false;
+                            SetPreferredScreenGrab(false);
                         }
                     }
                 }
@@ -1327,12 +1405,12 @@ int MediaProcessMain(const AppConfig& config) {
                     }
                 }
 
-                if (forceWGC) {
+                if (!g_Recording && forceWGC) {
                     if (!ensureWgcDevice()) {
                         LogWarn("[Media] Overlay whitelist requested WGC but D3D11 device unavailable");
-                        g_UseScreenGrab = false;
+                        SetPreferredScreenGrab(false);
                     } else {
-                        g_UseScreenGrab = true;
+                        SetPreferredScreenGrab(true);
 
                         HWND hGameWindow = GetMainWindowForProcess(currentSourcePid);
                         if (hGameWindow) {
@@ -1346,24 +1424,8 @@ int MediaProcessMain(const AppConfig& config) {
                             if (g_WgcCap->InitForWindow(d3dDevice, hGameWindow)) {
                                 g_WgcCap->SetCaptureCursor(config.video.captureCursor);
                                 g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
-                                g_WgcCap->SetDirectFrameCallback(
-                                    [](ID3D11Texture2D* texture, uint32_t width, uint32_t height, int64_t timestamp) {
-                                        QueuedFrame qf;
-                                        qf.isInjectMode = false;
-                                        qf.texture = texture;
-                                        qf.width = width;
-                                        qf.height = height;
-                                        qf.timestamp = timestamp;
-                                        if (!g_FrameQueue.Push(std::move(qf), g_IsEncoderBottlenecked)) {
-                                            g_WgcDroppedFrames.fetch_add(1, std::memory_order_relaxed);
-                                            texture->Release();
-                                        }
-                                    });
-                                g_WgcCap->StartCapture();
-                                g_WgcCap->ResetStats();
-                                g_WgcCap->SetTargetFps(config.video.fps * 2);
-                                g_WgcDroppedFrames.store(0, std::memory_order_relaxed);
-                                LogInfo("[Media] WGC re-initialized for Window Capture");
+                                LogInfo("[Media] WGC window target primed for PID %u", currentSourcePid);
+                                currentCapturedWindow = hGameWindow;
                             } else {
                                 LogError(
                                     "[Media] Failed to init WGC for window - falling back "
@@ -1372,7 +1434,10 @@ int MediaProcessMain(const AppConfig& config) {
                                 g_WgcCap = std::make_unique<WGCCapture>();
                                 if (!g_WgcCap->Init(d3dDevice)) {
                                     g_WgcCap.reset();
-                                    g_UseScreenGrab = false;
+                                    SetPreferredScreenGrab(false);
+                                } else {
+                                    g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
+                                    currentCapturedWindow = NULL;
                                 }
                             }
                         } else {
@@ -1384,13 +1449,17 @@ int MediaProcessMain(const AppConfig& config) {
                             g_WgcCap = std::make_unique<WGCCapture>();
                             if (!g_WgcCap->Init(d3dDevice)) {
                                 g_WgcCap.reset();
-                                g_UseScreenGrab = false;
+                                SetPreferredScreenGrab(false);
+                            } else {
+                                g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
+                                currentCapturedWindow = NULL;
                             }
                         }
                     }
 
-                } else if (config.captureMethod != "screengrab" && config.captureMethod != "framegrab") {
-                    g_UseScreenGrab = false;
+                } else if (!g_Recording && config.captureMethod != "screengrab" &&
+                           config.captureMethod != "framegrab") {
+                    SetPreferredScreenGrab(false);
                     LogInfo("[Media] Using Inject Mode (Default)");
                 }
             }
@@ -1410,7 +1479,7 @@ int MediaProcessMain(const AppConfig& config) {
 
         bool hasPendingInputs = false;
 
-        if (g_UseScreenGrab && g_Recording) {
+        if (IsActiveScreenGrab() && g_Recording) {
             if (recordingStartTime == 0) {
                 LARGE_INTEGER now;
                 QueryPerformanceCounter(&now);
@@ -1422,7 +1491,7 @@ int MediaProcessMain(const AppConfig& config) {
                     g_WgcDroppedFrames.load(std::memory_order_relaxed) + (uint32_t)g_FrameQueue.GetDroppedCount();
                 g_pSharedMem->runtimeState.hostDroppedFrames.store(totalDropped);
             }
-        } else if (!g_UseScreenGrab && g_Recording && g_pSharedMem) {
+        } else if (!IsActiveScreenGrab() && g_Recording && g_pSharedMem) {
             FrameRingBuffer& ring = g_pSharedMem->frameRing;
             uint32_t wIdx = ring.writeIndex.load(std::memory_order_acquire);
             static uint32_t localReadIdx = 0;
@@ -1468,35 +1537,13 @@ int MediaProcessMain(const AppConfig& config) {
                         "back to WGC",
                         elapsed);
 
-                    g_WgcCap->SetCaptureCursor(config.video.captureCursor);
-
-                    g_WgcCap->SetDirectFrameCallback(
-                        [](ID3D11Texture2D* texture, uint32_t width, uint32_t height, int64_t timestamp) {
-                            QueuedFrame qf;
-                            qf.isInjectMode = false;
-                            qf.texture = texture;
-                            qf.width = width;
-                            qf.height = height;
-                            qf.timestamp = timestamp;
-
-                            if (!g_FrameQueue.Push(std::move(qf), g_IsEncoderBottlenecked)) {
-                                g_WgcDroppedFrames.fetch_add(1, std::memory_order_relaxed);
-                                texture->Release();
-                            }
-                        });
-
-                    g_WgcCap->StartCapture();
-                    g_WgcCap->ResetStats();
-                    g_WgcCap->SetTargetFps(config.video.fps * 2);
-                    g_WgcDroppedFrames.store(0, std::memory_order_relaxed);
-
-                    g_WgcCaptureShutdown = false;
-                    g_WgcCaptureThread = std::thread(WgcCaptureThreadFunc, std::ref(config));
-                    SetThreadPriority(reinterpret_cast<HANDLE>(g_WgcCaptureThread.native_handle()),
-                                      THREAD_PRIORITY_NORMAL);
-
-                    g_UseScreenGrab = true;
-                    LogInfo("[Media] Switched to WGC capture mode with direct callback");
+                    StopInjectCapturePipeline();
+                    if (StartWgcRecordingCapture(config)) {
+                        SetActiveScreenGrab(true);
+                        LogInfo("[Media] Switched to WGC capture mode with direct callback");
+                    } else {
+                        LogWarn("[Media] WGC fallback failed; inject monitoring remains unavailable");
+                    }
 
                     injectModeStartTime = 0;
                 }
@@ -1535,14 +1582,12 @@ int MediaProcessMain(const AppConfig& config) {
 
     StopRecording();
 
-    if (g_UseScreenGrab) {
-        if (g_WgcCap)
-            g_WgcCap->StopCapture();
-        if (d3dContext)
-            d3dContext->Release();
-        if (d3dDevice)
-            d3dDevice->Release();
-    }
+    if (g_WgcCap)
+        g_WgcCap->StopCapture();
+    if (d3dContext)
+        d3dContext->Release();
+    if (d3dDevice)
+        d3dDevice->Release();
 
     // Shutdown media engine BEFORE unmapping shared memory to avoid use-after-free
     // (VideoEncoder::CleanupResources accesses pSharedMem during destruction)

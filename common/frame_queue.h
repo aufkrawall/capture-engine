@@ -18,25 +18,43 @@ struct QueuedFrame {
     ~QueuedFrame() = default;
     QueuedFrame(const QueuedFrame&) = delete;
     QueuedFrame& operator=(const QueuedFrame&) = delete;
-    QueuedFrame(QueuedFrame&& other) noexcept { *this = std::move(other); }
+    QueuedFrame(QueuedFrame&& other) noexcept {
+        *this = std::move(other);
+    }
     QueuedFrame& operator=(QueuedFrame&& other) noexcept {
         if (this != &other) {
-            sharedHandle = other.sharedHandle; other.sharedHandle = nullptr;
-            fenceHandle = other.fenceHandle; other.fenceHandle = nullptr;
-            fenceValue = other.fenceValue; other.fenceValue = 0;
-            luidLow = other.luidLow; other.luidLow = 0;
-            luidHigh = other.luidHigh; other.luidHigh = 0;
-            sourcePid = other.sourcePid; other.sourcePid = 0;
-            ringIndex = other.ringIndex; other.ringIndex = 0;
-            format = other.format; other.format = 0;
-            texture = other.texture; other.texture = nullptr;
-            timestamp = other.timestamp; other.timestamp = 0;
-            width = other.width; other.width = 0;
-            height = other.height; other.height = 0;
-            isInjectMode = other.isInjectMode; other.isInjectMode = false;
-            isHDR = other.isHDR; other.isHDR = false;
-            isShmem = other.isShmem; other.isShmem = false;
-            shmemSlot = other.shmemSlot; other.shmemSlot = 0;
+            sharedHandle = other.sharedHandle;
+            other.sharedHandle = nullptr;
+            fenceHandle = other.fenceHandle;
+            other.fenceHandle = nullptr;
+            fenceValue = other.fenceValue;
+            other.fenceValue = 0;
+            luidLow = other.luidLow;
+            other.luidLow = 0;
+            luidHigh = other.luidHigh;
+            other.luidHigh = 0;
+            sourcePid = other.sourcePid;
+            other.sourcePid = 0;
+            ringIndex = other.ringIndex;
+            other.ringIndex = 0;
+            format = other.format;
+            other.format = 0;
+            texture = other.texture;
+            other.texture = nullptr;
+            timestamp = other.timestamp;
+            other.timestamp = 0;
+            width = other.width;
+            other.width = 0;
+            height = other.height;
+            other.height = 0;
+            isInjectMode = other.isInjectMode;
+            other.isInjectMode = false;
+            isHDR = other.isHDR;
+            other.isHDR = false;
+            isShmem = other.isShmem;
+            other.isShmem = false;
+            shmemSlot = other.shmemSlot;
+            other.shmemSlot = 0;
         }
         return *this;
     }

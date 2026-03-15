@@ -3,6 +3,32 @@
 #include "logging.h"
 #include "raii_helpers.h"
 
+namespace {
+
+void CancelAndDrainOverlapped(HANDLE handle, OVERLAPPED* overlapped, HANDLE eventHandle, DWORD waitMs) {
+    if (handle == INVALID_HANDLE_VALUE || !overlapped)
+        return;
+
+    if (!CancelIoEx(handle, overlapped)) {
+        DWORD cancelError = GetLastError();
+        if (cancelError != ERROR_NOT_FOUND && cancelError != ERROR_INVALID_HANDLE) {
+            LogError("[IPC] CancelIoEx failed: %d", cancelError);
+        }
+    }
+
+    HANDLE waitHandle = eventHandle ? eventHandle : overlapped->hEvent;
+    if (!waitHandle)
+        return;
+
+    DWORD waitResult = WaitForSingleObject(waitHandle, waitMs);
+    if (waitResult == WAIT_OBJECT_0) {
+        DWORD bytesTransferred = 0;
+        GetOverlappedResult(handle, overlapped, &bytesTransferred, FALSE);
+    }
+}
+
+}  // namespace
+
 // Parse --mode= from command line
 ProcessMode ParseProcessMode(int argc, char* argv[]) {
     for (int i = 1; i < argc; i++) {
@@ -82,7 +108,34 @@ ProcessIPCServer::~ProcessIPCServer() {
     Shutdown();
 }
 
+void ProcessIPCServer::ResetConnectOverlappedLocked() {
+    connectPending = false;
+    connectOverlapped = {};
+    connectOverlapped.hEvent = connectEvent;
+}
+
+void ProcessIPCServer::HandlePipeDisconnectLocked(bool logDisconnect) {
+    if (logDisconnect) {
+        LogInfo("[IPC] Controller disconnected");
+    }
+
+    connected.store(false, std::memory_order_release);
+    if (hPipe != INVALID_HANDLE_VALUE) {
+        if (connectPending) {
+            CancelAndDrainOverlapped(hPipe, &connectOverlapped, connectEvent, 50);
+        }
+        DisconnectNamedPipe(hPipe);
+    }
+
+    ResetConnectOverlappedLocked();
+}
+
 bool ProcessIPCServer::Init() {
+    std::lock_guard<std::mutex> lock(stateMutex);
+
+    if (hPipe != INVALID_HANDLE_VALUE)
+        return true;
+
     const wchar_t* pipeName = GetPipeName(mode);
     if (!pipeName) {
         LogError("[IPC] Invalid process mode for server");
@@ -121,10 +174,13 @@ bool ProcessIPCServer::Init() {
 }
 
 void ProcessIPCServer::Shutdown() {
+    std::lock_guard<std::mutex> lock(stateMutex);
+
     if (hPipe != INVALID_HANDLE_VALUE && connectPending) {
-        CancelIoEx(hPipe, &connectOverlapped);
-        connectPending = false;
+        CancelAndDrainOverlapped(hPipe, &connectOverlapped, connectEvent, 50);
     }
+    connectPending = false;
+    connected.store(false, std::memory_order_release);
     if (hPipe != INVALID_HANDLE_VALUE) {
         DisconnectNamedPipe(hPipe);
         CloseHandle(hPipe);
@@ -140,30 +196,26 @@ void ProcessIPCServer::Shutdown() {
 }
 
 bool ProcessIPCServer::PollCommand(ProcessCommand& outCmd, char* outPayload, size_t payloadSize) {
+    std::lock_guard<std::mutex> lock(stateMutex);
+
     if (hPipe == INVALID_HANDLE_VALUE)
         return false;
 
-    auto ResetConnectOverlapped = [this]() {
-        connectPending = false;
-        connectOverlapped = {};
-        connectOverlapped.hEvent = connectEvent;
-    };
-
     // If not connected, try to accept connection (non-blocking)
-    if (!connected) {
+    if (!connected.load(std::memory_order_acquire)) {
         if (!connectPending) {
             ResetEvent(connectEvent);
-            ResetConnectOverlapped();
+            ResetConnectOverlappedLocked();
 
             BOOL connectResult = ConnectNamedPipe(hPipe, &connectOverlapped);
             if (connectResult) {
-                connected = true;
+                connected.store(true, std::memory_order_release);
                 LogInfo("[IPC] Controller connected");
             } else {
                 DWORD connectError = GetLastError();
                 if (connectError == ERROR_PIPE_CONNECTED) {
                     SetEvent(connectEvent);
-                    connected = true;
+                    connected.store(true, std::memory_order_release);
                     LogInfo("[IPC] Controller already connected");
                 } else if (connectError == ERROR_IO_PENDING) {
                     connectPending = true;
@@ -182,8 +234,8 @@ bool ProcessIPCServer::PollCommand(ProcessCommand& outCmd, char* outPayload, siz
             }
             if (waitResult != WAIT_OBJECT_0) {
                 LogError("[IPC] WaitForSingleObject on connect event failed: %d", GetLastError());
-                CancelIoEx(hPipe, &connectOverlapped);
-                ResetConnectOverlapped();
+                CancelAndDrainOverlapped(hPipe, &connectOverlapped, connectEvent, 50);
+                ResetConnectOverlappedLocked();
                 return false;
             }
 
@@ -193,16 +245,19 @@ bool ProcessIPCServer::PollCommand(ProcessCommand& outCmd, char* outPayload, siz
                 if (connectError != ERROR_PIPE_CONNECTED) {
                     if (connectError == ERROR_BROKEN_PIPE || connectError == ERROR_NO_DATA) {
                         DisconnectNamedPipe(hPipe);
+                    } else if (connectError == ERROR_OPERATION_ABORTED) {
+                        ResetConnectOverlappedLocked();
+                        return false;
                     } else {
                         LogError("[IPC] ConnectNamedPipe completion failed: %d", connectError);
                     }
-                    ResetConnectOverlapped();
+                    ResetConnectOverlappedLocked();
                     return false;
                 }
             }
 
-            ResetConnectOverlapped();
-            connected = true;
+            ResetConnectOverlappedLocked();
+            connected.store(true, std::memory_order_release);
             LogInfo("[IPC] Controller connected");
         }
     }
@@ -212,10 +267,7 @@ bool ProcessIPCServer::PollCommand(ProcessCommand& outCmd, char* outPayload, siz
     if (!PeekNamedPipe(hPipe, NULL, 0, NULL, &bytesAvailable, NULL)) {
         DWORD pipeError = GetLastError();
         if (pipeError == ERROR_BROKEN_PIPE || pipeError == ERROR_NO_DATA) {
-            LogInfo("[IPC] Controller disconnected");
-            connected = false;
-            ResetConnectOverlapped();
-            DisconnectNamedPipe(hPipe);
+            HandlePipeDisconnectLocked(true);
         }
         return false;
     }
@@ -227,7 +279,12 @@ bool ProcessIPCServer::PollCommand(ProcessCommand& outCmd, char* outPayload, siz
     ProcessMessage msg = {};
     DWORD bytesRead = 0;
     if (!ReadFile(hPipe, &msg, sizeof(msg), &bytesRead, NULL)) {
-        LogError("[IPC] ReadFile failed: %d", GetLastError());
+        DWORD readError = GetLastError();
+        if (readError == ERROR_BROKEN_PIPE || readError == ERROR_NO_DATA) {
+            HandlePipeDisconnectLocked(true);
+        } else {
+            LogError("[IPC] ReadFile failed: %d", readError);
+        }
         return false;
     }
 
@@ -252,7 +309,9 @@ bool ProcessIPCServer::PollCommand(ProcessCommand& outCmd, char* outPayload, siz
 }
 
 bool ProcessIPCServer::SendResponse(ProcessResponse response, const char* payload) {
-    if (!connected || hPipe == INVALID_HANDLE_VALUE)
+    std::lock_guard<std::mutex> lock(stateMutex);
+
+    if (!connected.load(std::memory_order_acquire) || hPipe == INVALID_HANDLE_VALUE)
         return false;
 
     ProcessMessage msg = {};
@@ -267,7 +326,12 @@ bool ProcessIPCServer::SendResponse(ProcessResponse response, const char* payloa
 
     DWORD bytesWritten = 0;
     if (!WriteFile(hPipe, &msg, sizeof(msg), &bytesWritten, NULL)) {
-        LogError("[IPC] WriteFile failed: %d", GetLastError());
+        DWORD writeError = GetLastError();
+        if (writeError == ERROR_BROKEN_PIPE || writeError == ERROR_NO_DATA) {
+            HandlePipeDisconnectLocked(true);
+        } else {
+            LogError("[IPC] WriteFile failed: %d", writeError);
+        }
         return false;
     }
 
@@ -288,6 +352,9 @@ ProcessIPCClient::~ProcessIPCClient() {
 }
 
 bool ProcessIPCClient::Connect(DWORD timeoutMs) {
+    if (hPipe != INVALID_HANDLE_VALUE)
+        return true;
+
     const wchar_t* pipeName = GetPipeName(targetMode);
     if (!pipeName) {
         LogError("[IPC] Invalid target mode for client");
@@ -310,7 +377,11 @@ bool ProcessIPCClient::Connect(DWORD timeoutMs) {
 
     // Set message mode
     DWORD mode = PIPE_READMODE_MESSAGE;
-    SetNamedPipeHandleState(hPipe, &mode, NULL, NULL);
+    if (!SetNamedPipeHandleState(hPipe, &mode, NULL, NULL)) {
+        LogError("[IPC] Failed to set pipe message mode: %d", GetLastError());
+        Disconnect();
+        return false;
+    }
 
     LogInfo("[IPC] Connected to %s process", targetMode == ProcessMode::Inject    ? "inject"
                                              : targetMode == ProcessMode::Media   ? "media"
@@ -357,10 +428,14 @@ bool ProcessIPCClient::SendCommand(ProcessCommand cmd, const char* payload, Proc
         // Wait for write to complete
         DWORD waitResult = WaitForSingleObject(ovWrite.hEvent, timeoutMs);
         if (waitResult == WAIT_OBJECT_0) {
-            GetOverlappedResult(hPipe, &ovWrite, &bytesWritten, FALSE);
+            if (!GetOverlappedResult(hPipe, &ovWrite, &bytesWritten, FALSE)) {
+                LogError("[IPC] SendCommand WriteFile completion failed: %d - disconnecting", GetLastError());
+                Disconnect();
+                return false;
+            }
             writeResult = TRUE;
         } else {
-            CancelIo(hPipe);
+            CancelAndDrainOverlapped(hPipe, &ovWrite, ovWrite.hEvent, 50);
             LogError("[IPC] SendCommand WriteFile timeout - disconnecting for reconnect");
             Disconnect();  // Close and reconnect on next attempt
             return false;
@@ -387,10 +462,14 @@ bool ProcessIPCClient::SendCommand(ProcessCommand cmd, const char* payload, Proc
     if (!readResult && GetLastError() == ERROR_IO_PENDING) {
         DWORD waitResult = WaitForSingleObject(ovRead.hEvent, timeoutMs);
         if (waitResult == WAIT_OBJECT_0) {
-            GetOverlappedResult(hPipe, &ovRead, &bytesRead, FALSE);
+            if (!GetOverlappedResult(hPipe, &ovRead, &bytesRead, FALSE)) {
+                LogError("[IPC] SendCommand read completion failed: %d - disconnecting", GetLastError());
+                Disconnect();
+                return false;
+            }
             readResult = TRUE;
         } else {
-            CancelIo(hPipe);
+            CancelAndDrainOverlapped(hPipe, &ovRead, ovRead.hEvent, 50);
             LogError("[IPC] SendCommand read timeout - disconnecting for reconnect");
             Disconnect();  // Close and reconnect on next attempt
             return false;

@@ -27,6 +27,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <memory>
 
 // Global adapter instance
 OverlayAdapter g_OverlayAdapter;
@@ -96,247 +97,50 @@ OverlayAdapter::~OverlayAdapter() {
     if (IsProcessTerminating())
         return;
 #endif
+    std::lock_guard<std::mutex> lock(stateMutex);
     if (skipDeviceRelease) {
-        if (renderer) {
-            renderer->SetSkipDeviceRelease(true);
-            delete renderer;
-            renderer = nullptr;
-        }
-        if (backend) {
-            delete backend;
-            backend = nullptr;
-        }
-        initialized = false;
+        DestroyResourcesLocked(false);
+        ResetStateLocked();
         return;
     }
-    Shutdown();
+    DestroyResourcesLocked(true);
+    ResetStateLocked();
 }
 
 void OverlayAdapter::SetGraphicsAPI(const char* api) {
+    std::lock_guard<std::mutex> lock(stateMutex);
     strncpy(graphicsAPI, api, sizeof(graphicsAPI) - 1);
     graphicsAPI[sizeof(graphicsAPI) - 1] = '\0';
     layoutDirty = true;
 }
 
-bool OverlayAdapter::InitDX9(void* device) {
-#ifndef VK_LAYER_CE_OVERLAY
-    if (initialized)
+bool OverlayAdapter::InitializeBackendLocked(CustomOverlay::RendererBackend* newBackend, OverlayBackendType type,
+                                             const char* backendName, float dpiScale) {
+    if (!newBackend) {
+        return false;
+    }
+
+    if (initialized.load(std::memory_order_acquire)) {
+        delete newBackend;
         return true;
-    if (!device) {
-        HookLogImportant("[Overlay] InitDX9 failed: null device pointer");
+    }
+
+    auto newRenderer = std::make_unique<CustomOverlay::Renderer>();
+    if (!newRenderer->Initialize(newBackend, dpiScale)) {
+        HookLogImportant("[Overlay] Init%s: Renderer::Initialize FAILED (dpiScale=%.2f)", backendName, dpiScale);
+        delete newBackend;
         return false;
     }
 
-    HookLogImportant("[Overlay] Initializing DX9 backend (device=%p)", device);
-    auto dx9Backend = new CustomOverlay::DX9Backend((IDirect3DDevice9*)device);
-    backend = dx9Backend;
-    backendType = OverlayBackendType::DX9;
-
-    renderer = new CustomOverlay::Renderer();
-    float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
-    if (!renderer->Initialize(backend, dpiScale)) {
-        HookLogImportant("[Overlay] InitDX9: Renderer::Initialize FAILED (dpiScale=%.2f)", dpiScale);
-        delete renderer;
-        delete backend;
-        renderer = nullptr;
-        backend = nullptr;
-        return false;
-    }
-
-    initialized = true;
-    HookLogImportant("[Overlay] DX9 backend initialized successfully (dpiScale=%.2f)", dpiScale);
-#endif
-    return true;
-}
-
-bool OverlayAdapter::InitDX10(void* device) {
-#ifndef VK_LAYER_CE_OVERLAY
-    if (initialized)
-        return true;
-    if (!device) {
-        HookLogImportant("[Overlay] InitDX10 failed: null device pointer");
-        return false;
-    }
-
-    HookLogImportant("[Overlay] Initializing DX10 backend (device=%p)", device);
-    auto dx10Backend = new CustomOverlay::DX10Backend((ID3D10Device*)device);
-    backend = dx10Backend;
-    backendType = OverlayBackendType::DX10;
-
-    renderer = new CustomOverlay::Renderer();
-    float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
-    if (!renderer->Initialize(backend, dpiScale)) {
-        HookLogImportant("[Overlay] InitDX10: Renderer::Initialize FAILED (dpiScale=%.2f)", dpiScale);
-        delete renderer;
-        delete backend;
-        renderer = nullptr;
-        backend = nullptr;
-        return false;
-    }
-
-    initialized = true;
-    HookLogImportant("[Overlay] DX10 backend initialized successfully (dpiScale=%.2f)", dpiScale);
-#endif
-    return true;
-}
-
-bool OverlayAdapter::InitDX11(void* device, void* context) {
-#ifndef VK_LAYER_CE_OVERLAY
-    if (initialized)
-        return true;
-    if (!device || !context) {
-        HookLogImportant("[Overlay] InitDX11 failed: null device=%p context=%p", device, context);
-        return false;
-    }
-
-    HookLogImportant("[Overlay] Initializing DX11 backend (device=%p, context=%p)", device, context);
-    auto dx11Backend = new CustomOverlay::DX11Backend((ID3D11Device*)device, (ID3D11DeviceContext*)context);
-    backend = dx11Backend;
-    backendType = OverlayBackendType::DX11;
-
-    renderer = new CustomOverlay::Renderer();
-    float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
-    if (!renderer->Initialize(backend, dpiScale)) {
-        HookLogImportant("[Overlay] InitDX11: Renderer::Initialize FAILED (dpiScale=%.2f)", dpiScale);
-        delete renderer;
-        delete backend;
-        renderer = nullptr;
-        backend = nullptr;
-        return false;
-    }
-
-    initialized = true;
-    HookLogImportant("[Overlay] DX11 backend initialized successfully (dpiScale=%.2f)", dpiScale);
-#endif
-    return true;
-}
-
-bool OverlayAdapter::InitDX12(void* device, void* queue, int rtvFormat) {
-#ifndef VK_LAYER_CE_OVERLAY
-    if (initialized)
-        return true;
-    if (!device || !queue) {
-        HookLogImportant("[Overlay] InitDX12 failed: null device=%p queue=%p", device, queue);
-        return false;
-    }
-
-    HookLogImportant("[Overlay] Initializing DX12 backend (device=%p, queue=%p, fmt=%d)", device, queue, rtvFormat);
-    auto dx12Backend =
-        new CustomOverlay::DX12Backend((ID3D12Device*)device, (ID3D12CommandQueue*)queue, (DXGI_FORMAT)rtvFormat);
-    backend = dx12Backend;
-    backendType = OverlayBackendType::DX12;
-
-    renderer = new CustomOverlay::Renderer();
-    float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
-    if (!renderer->Initialize(backend, dpiScale)) {
-        HookLogImportant("[Overlay] InitDX12: Renderer::Initialize FAILED (dpiScale=%.2f)", dpiScale);
-        delete renderer;
-        delete backend;
-        renderer = nullptr;
-        backend = nullptr;
-        return false;
-    }
-
-    initialized = true;
-    HookLogImportant("[Overlay] DX12 backend initialized successfully (fmt=%d, dpiScale=%.2f)", rtvFormat, dpiScale);
-#endif
-    return true;
-}
-
-bool OverlayAdapter::InitOpenGL() {
-#ifndef VK_LAYER_CE_OVERLAY
-    if (initialized)
-        return true;
-
-    HookLogImportant("[Overlay] Initializing OpenGL backend");
-    auto glBackend = new CustomOverlay::OpenGLBackend();
-    backend = glBackend;
-    backendType = OverlayBackendType::OpenGL;
-
-    renderer = new CustomOverlay::Renderer();
-    float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
-    if (!renderer->Initialize(backend, dpiScale)) {
-        HookLogImportant("[Overlay] InitOpenGL: Renderer::Initialize FAILED (dpiScale=%.2f)", dpiScale);
-        delete renderer;
-        delete backend;
-        renderer = nullptr;
-        backend = nullptr;
-        return false;
-    }
-
-    initialized = true;
-    HookLogImportant("[Overlay] OpenGL backend initialized successfully (dpiScale=%.2f)", dpiScale);
-#endif
-    return true;
-}
-
-bool OverlayAdapter::InitVulkan(void* device, void* physDevice, void* queue, uint32_t queueFamily, void* deviceDispatch,
-                                void* instanceDispatch) {
-    if (initialized)
-        return true;
-    if (!device) {
-        HookLogImportant("[Overlay] InitVulkan failed: null device pointer");
-        return false;
-    }
-
-    HookLogImportant("[Overlay] Initializing Vulkan backend (device=%p, queue=%p, family=%u)", device, queue,
-                     queueFamily);
-
-    auto vkBackend =
-        new CustomOverlay::VulkanBackend((VkDevice)device, (VkPhysicalDevice)physDevice, (VkQueue)queue, queueFamily);
-
-    // Set dispatch tables before initialization
-    if (deviceDispatch && instanceDispatch) {
-        vkBackend->SetDispatchTable(deviceDispatch, instanceDispatch);
-    }
-
-    backend = vkBackend;
-    backendType = OverlayBackendType::Vulkan;
-
-    renderer = new CustomOverlay::Renderer();
-    float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
-    if (!renderer->Initialize(backend, dpiScale)) {
-        HookLogImportant("[Overlay] InitVulkan: Renderer::Initialize FAILED (dpiScale=%.2f)", dpiScale);
-        delete renderer;
-        delete backend;
-        renderer = nullptr;
-        backend = nullptr;
-        return false;
-    }
-
-    initialized = true;
-    HookLogImportant("[Overlay] Vulkan backend initialized successfully (dpiScale=%.2f)", dpiScale);
-    return true;
-}
-
-bool OverlayAdapter::InitCustom(CustomOverlay::RendererBackend* customBackend, OverlayBackendType type) {
-    if (initialized)
-        return true;
-    if (!customBackend) {
-        HookLogImportant("[Overlay] InitCustom failed: null backend");
-        return false;
-    }
-
-    HookLogImportant("[Overlay] Initializing custom backend (type=%d, ptr=%p)", (int)type, customBackend);
-    backend = customBackend;
+    renderer = newRenderer.release();
+    backend = newBackend;
     backendType = type;
-
-    renderer = new CustomOverlay::Renderer();
-    float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
-    if (!renderer->Initialize(backend, dpiScale)) {
-        HookLogImportant("[Overlay] InitCustom: Renderer::Initialize FAILED (dpiScale=%.2f)", dpiScale);
-        delete renderer;
-        renderer = nullptr;
-        backend = nullptr;
-        return false;
-    }
-
-    initialized = true;
-    HookLogImportant("[Overlay] Custom backend initialized successfully (dpiScale=%.2f)", dpiScale);
+    initialized.store(true, std::memory_order_release);
+    HookLogImportant("[Overlay] %s backend initialized successfully (dpiScale=%.2f)", backendName, dpiScale);
     return true;
 }
 
-void OverlayAdapter::SetShutdownMode(bool skipRelease) {
+void OverlayAdapter::ApplyShutdownModeLocked(bool skipRelease) {
     skipDeviceRelease = skipRelease;
     if (renderer) {
         renderer->SetSkipDeviceRelease(skipRelease);
@@ -349,18 +153,26 @@ void OverlayAdapter::SetShutdownMode(bool skipRelease) {
 #endif
 }
 
-void OverlayAdapter::Shutdown() {
+void OverlayAdapter::DestroyResourcesLocked(bool shutdownRenderer) {
+    ApplyShutdownModeLocked(skipDeviceRelease);
+
     if (renderer) {
-        renderer->Shutdown();
+        if (shutdownRenderer) {
+            renderer->Shutdown();
+        }
         delete renderer;
         renderer = nullptr;
     }
+
     if (backend) {
         delete backend;
         backend = nullptr;
     }
+}
+
+void OverlayAdapter::ResetStateLocked() {
     backendType = OverlayBackendType::None;
-    initialized = false;
+    initialized.store(false, std::memory_order_release);
     hasCachedFrame = false;
     hasRenderedConfig = false;
     lastViewportWidth = 0;
@@ -375,8 +187,145 @@ void OverlayAdapter::Shutdown() {
     memset(&lastRenderedConfig, 0, sizeof(lastRenderedConfig));
 }
 
+bool OverlayAdapter::InitDX9(void* device) {
+#ifndef VK_LAYER_CE_OVERLAY
+    std::lock_guard<std::mutex> lock(stateMutex);
+    if (initialized.load(std::memory_order_acquire))
+        return true;
+    if (!device) {
+        HookLogImportant("[Overlay] InitDX9 failed: null device pointer");
+        return false;
+    }
+
+    HookLogImportant("[Overlay] Initializing DX9 backend (device=%p)", device);
+    float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
+    return InitializeBackendLocked(new CustomOverlay::DX9Backend((IDirect3DDevice9*)device), OverlayBackendType::DX9,
+                                   "DX9", dpiScale);
+#endif
+    return true;
+}
+
+bool OverlayAdapter::InitDX10(void* device) {
+#ifndef VK_LAYER_CE_OVERLAY
+    std::lock_guard<std::mutex> lock(stateMutex);
+    if (initialized.load(std::memory_order_acquire))
+        return true;
+    if (!device) {
+        HookLogImportant("[Overlay] InitDX10 failed: null device pointer");
+        return false;
+    }
+
+    HookLogImportant("[Overlay] Initializing DX10 backend (device=%p)", device);
+    float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
+    return InitializeBackendLocked(new CustomOverlay::DX10Backend((ID3D10Device*)device), OverlayBackendType::DX10,
+                                   "DX10", dpiScale);
+#endif
+    return true;
+}
+
+bool OverlayAdapter::InitDX11(void* device, void* context) {
+#ifndef VK_LAYER_CE_OVERLAY
+    std::lock_guard<std::mutex> lock(stateMutex);
+    if (initialized.load(std::memory_order_acquire))
+        return true;
+    if (!device || !context) {
+        HookLogImportant("[Overlay] InitDX11 failed: null device=%p context=%p", device, context);
+        return false;
+    }
+
+    HookLogImportant("[Overlay] Initializing DX11 backend (device=%p, context=%p)", device, context);
+    float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
+    return InitializeBackendLocked(new CustomOverlay::DX11Backend((ID3D11Device*)device, (ID3D11DeviceContext*)context),
+                                   OverlayBackendType::DX11, "DX11", dpiScale);
+#endif
+    return true;
+}
+
+bool OverlayAdapter::InitDX12(void* device, void* queue, int rtvFormat) {
+#ifndef VK_LAYER_CE_OVERLAY
+    std::lock_guard<std::mutex> lock(stateMutex);
+    if (initialized.load(std::memory_order_acquire))
+        return true;
+    if (!device || !queue) {
+        HookLogImportant("[Overlay] InitDX12 failed: null device=%p queue=%p", device, queue);
+        return false;
+    }
+
+    HookLogImportant("[Overlay] Initializing DX12 backend (device=%p, queue=%p, fmt=%d)", device, queue, rtvFormat);
+    float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
+    return InitializeBackendLocked(
+        new CustomOverlay::DX12Backend((ID3D12Device*)device, (ID3D12CommandQueue*)queue, (DXGI_FORMAT)rtvFormat),
+        OverlayBackendType::DX12, "DX12", dpiScale);
+#endif
+    return true;
+}
+
+bool OverlayAdapter::InitOpenGL() {
+#ifndef VK_LAYER_CE_OVERLAY
+    std::lock_guard<std::mutex> lock(stateMutex);
+    if (initialized.load(std::memory_order_acquire))
+        return true;
+
+    HookLogImportant("[Overlay] Initializing OpenGL backend");
+    float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
+    return InitializeBackendLocked(new CustomOverlay::OpenGLBackend(), OverlayBackendType::OpenGL, "OpenGL", dpiScale);
+#endif
+    return true;
+}
+
+bool OverlayAdapter::InitVulkan(void* device, void* physDevice, void* queue, uint32_t queueFamily, void* deviceDispatch,
+                                void* instanceDispatch) {
+    std::lock_guard<std::mutex> lock(stateMutex);
+    if (initialized.load(std::memory_order_acquire))
+        return true;
+    if (!device) {
+        HookLogImportant("[Overlay] InitVulkan failed: null device pointer");
+        return false;
+    }
+
+    HookLogImportant("[Overlay] Initializing Vulkan backend (device=%p, queue=%p, family=%u)", device, queue,
+                     queueFamily);
+
+    auto* vkBackend =
+        new CustomOverlay::VulkanBackend((VkDevice)device, (VkPhysicalDevice)physDevice, (VkQueue)queue, queueFamily);
+
+    // Set dispatch tables before initialization
+    if (deviceDispatch && instanceDispatch) {
+        vkBackend->SetDispatchTable(deviceDispatch, instanceDispatch);
+    }
+
+    float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
+    return InitializeBackendLocked(vkBackend, OverlayBackendType::Vulkan, "Vulkan", dpiScale);
+}
+
+bool OverlayAdapter::InitCustom(CustomOverlay::RendererBackend* customBackend, OverlayBackendType type) {
+    std::lock_guard<std::mutex> lock(stateMutex);
+    if (initialized.load(std::memory_order_acquire))
+        return true;
+    if (!customBackend) {
+        HookLogImportant("[Overlay] InitCustom failed: null backend");
+        return false;
+    }
+
+    HookLogImportant("[Overlay] Initializing custom backend (type=%d, ptr=%p)", (int)type, customBackend);
+    float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
+    return InitializeBackendLocked(customBackend, type, "Custom", dpiScale);
+}
+
+void OverlayAdapter::SetShutdownMode(bool skipRelease) {
+    std::lock_guard<std::mutex> lock(stateMutex);
+    ApplyShutdownModeLocked(skipRelease);
+}
+
+void OverlayAdapter::Shutdown() {
+    std::lock_guard<std::mutex> lock(stateMutex);
+    DestroyResourcesLocked(true);
+    ResetStateLocked();
+}
+
 void OverlayAdapter::SetDX12RenderTarget(void* cmdList, void* rtvHandle) {
 #ifndef VK_LAYER_CE_OVERLAY
+    std::lock_guard<std::mutex> lock(stateMutex);
     if (backendType == OverlayBackendType::DX12 && backend) {
         auto dx12Backend = static_cast<CustomOverlay::DX12Backend*>(backend);
         D3D12_CPU_DESCRIPTOR_HANDLE rtv;
@@ -388,6 +337,7 @@ void OverlayAdapter::SetDX12RenderTarget(void* cmdList, void* rtvHandle) {
 
 bool OverlayAdapter::PrimeDX12Resources(void* cmdList) {
 #ifndef VK_LAYER_CE_OVERLAY
+    std::lock_guard<std::mutex> lock(stateMutex);
     if (backendType == OverlayBackendType::DX12 && backend) {
         auto dx12Backend = static_cast<CustomOverlay::DX12Backend*>(backend);
         return dx12Backend->PrimeResources(static_cast<ID3D12GraphicsCommandList*>(cmdList));
@@ -398,6 +348,7 @@ bool OverlayAdapter::PrimeDX12Resources(void* cmdList) {
 
 bool OverlayAdapter::HasPendingDX12Resources() const {
 #ifndef VK_LAYER_CE_OVERLAY
+    std::lock_guard<std::mutex> lock(stateMutex);
     if (backendType == OverlayBackendType::DX12 && backend) {
         auto dx12Backend = static_cast<CustomOverlay::DX12Backend*>(backend);
         return dx12Backend->HasPendingResources();
@@ -416,6 +367,7 @@ uint32_t OverlayAdapter::GetLoadColor(float load) {
 }
 
 void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
+    std::lock_guard<std::mutex> lock(stateMutex);
     static int renderLogCount = 0;
     if (renderLogCount < 5) {
         HookLog("[Overlay] RenderOverlay#%d: init=%d renderer=%p ipc=%p shm=%p showOverlay=%d vp=%dx%d", renderLogCount,

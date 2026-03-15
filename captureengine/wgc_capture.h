@@ -100,6 +100,12 @@ public:
     // Get count of frames skipped by throttle (for profiling)
     uint32_t GetSkippedFrameCount() const;
 
+    // Get count of in-flight OnFrameArrived callbacks (for shutdown synchronization)
+    int32_t GetInflightCallbackCount() const;
+
+    // Force-reset WGC session to stop in-flight callbacks (emergency cleanup)
+    void ForceReset();
+
     // Set external throttle flag (e.g., encoder bottleneck indicator).
     // When *throttleFlag is true, CopyResource is skipped but TryGetNextFrame
     // is still drained to return WGC buffers.

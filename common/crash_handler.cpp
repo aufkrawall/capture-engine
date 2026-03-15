@@ -2,8 +2,8 @@
 #include <dbghelp.h>
 #include <direct.h>
 #include <errno.h>
-#include <windows.h>
 #include <werapi.h>
+#include <windows.h>
 #include <atomic>
 #include <cstdio>
 #include <ctime>
@@ -26,40 +26,88 @@ typedef BOOL(WINAPI* MINIDUMPWRITEDUMP)(HANDLE hProcess, DWORD ProcessId, HANDLE
                                         PMINIDUMP_CALLBACK_INFORMATION CallbackParam);
 static MINIDUMPWRITEDUMP g_pMiniDumpWriteDump = NULL;
 
-// Register this process with WER (Windows Error Reporting) so our crash handler
-// gets priority and Windows generates its own dump as a backup.
+// Register this process with WER (Windows Error Reporting) so crash dumps are
+// generated even for __fastfail() which bypasses VEH and UEF handlers.
+// This is critical for catching /GS stack buffer overrun (0xC0000409) crashes.
 static void RegisterWithWER() {
-    // Tell WER to generate a dump for this process (as backup if our handler fails)
-    typedef HRESULT(WINAPI * PFN_WERRegisterFile)(PCWSTR, DWORD);
-    typedef HRESULT(WINAPI * PFN_WERRegisterRuntimeExceptionModule)(PCWSTR, PVOID);
-
-    HMODULE hWer = GetModuleHandleW(L"wer.dll");
-    if (!hWer) {
-        hWer = LoadLibraryW(L"wer.dll");
-    }
-    if (hWer) {
-        // We don't need WER's file registration; we write our own dumps.
-        // But we do want to suppress WER UI so our handler has full control.
-    }
-
     // Prevent Windows Error Reporting dialog from appearing
-    // SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX | SEM_FAILCRITICALERRORS
     SetErrorMode(SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX | SEM_FAILCRITICALERRORS);
 
-    // Opt into WER crash dumps as a BACKUP mechanism
-    // If our VEH fails to write a dump, WER will write one.
-    wchar_t dumpDirW[MAX_PATH];
-    MultiByteToWideChar(CP_UTF8, 0, g_DumpDir.c_str(), -1, dumpDirW, MAX_PATH);
-    WerSetFlags(WER_FAULT_REPORTING_NO_UI);
+    // Enable WER crash dumps - this catches __fastfail and other exceptions
+    // that bypass our VEH handler
+    HMODULE hWer = GetModuleHandleW(L"wer.dll");
+    if (!hWer)
+        hWer = LoadLibraryW(L"wer.dll");
+    if (hWer) {
+        typedef HRESULT(WINAPI * PFN_WerSetFlags)(DWORD);
+        auto pfnWerSetFlags = (PFN_WerSetFlags)GetProcAddress(hWer, "WerSetFlags");
+        if (pfnWerSetFlags) {
+            pfnWerSetFlags(0x00000003);  // WER_FAULT_REPORTING_NO_UI | WER_FAULT_REPORTING_QUEUE
+        }
+    }
 
-    // Register our local dump directory with WER
-    typedef HRESULT(WINAPI * PFN_WERAddApp)(PCWSTR, PCWSTR, DWORD);
+    // Also register our dump directory with WER so dumps go to our logs folder
     HMODULE hKernel = GetModuleHandleW(L"kernel32.dll");
     if (hKernel) {
-        auto pfnWerRegisterRuntimeExceptionModule =
-            (PFN_WERRegisterRuntimeExceptionModule)GetProcAddress(hKernel, "WerRegisterRuntimeExceptionModule");
-        // Optional: register for runtime exceptions
-        (void)pfnWerRegisterRuntimeExceptionModule;
+        // WerRegisterFile - registers a file with WER to include in crash reports
+        typedef HRESULT(WINAPI * PFN_WerRegisterFile)(PCWSTR, DWORD, DWORD);
+        auto pfnWerRegisterFile = (PFN_WerRegisterFile)GetProcAddress(hKernel, "WerRegisterFile");
+        if (pfnWerRegisterFile) {
+            // Register our dump directory as a file to include in WER reports
+            wchar_t dumpDirW[MAX_PATH];
+            MultiByteToWideChar(CP_UTF8, 0, g_DumpDir.c_str(), -1, dumpDirW, MAX_PATH);
+            pfnWerRegisterFile(dumpDirW, 1 /*WER_FILE_ANOTHER*/, 0);
+        }
+
+        // Enable WER local dumps programmatically (creates dumps in %LOCALAPPDATA%\CrashDumps)
+        // This is a fallback in case our VEH/UEF crash handlers don't catch the exception
+        typedef HRESULT(WINAPI * PFN_WerAddNamedDumpStore)(PCWSTR, PCWSTR);
+        auto pfnWerAddNamedDumpStore = (PFN_WerAddNamedDumpStore)GetProcAddress(hKernel, "WerAddNamedDumpStore");
+        if (pfnWerAddNamedDumpStore) {
+            wchar_t dumpDirW[MAX_PATH];
+            MultiByteToWideChar(CP_UTF8, 0, g_DumpDir.c_str(), -1, dumpDirW, MAX_PATH);
+            pfnWerAddNamedDumpStore(L"CaptureEngine", dumpDirW);
+        }
+    }
+
+    // Also set WER registry keys for local dump generation as last resort
+    // This catches __fastfail crashes that bypass VEH and UEF
+    HKEY hKey = NULL;
+    wchar_t procPath[MAX_PATH];
+    GetModuleFileNameW(NULL, procPath, MAX_PATH);
+    std::wstring procName(procPath);
+    size_t lastSlash = procName.find_last_of(L'\\');
+    if (lastSlash != std::wstring::npos)
+        procName = procName.substr(lastSlash + 1);
+
+    // Per-application WER dump settings
+    std::wstring regPath = L"SOFTWARE\\Microsoft\\Windows\\Windows Error Reporting\\LocalDumps\\" + procName;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, regPath.c_str(), 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) ==
+        ERROR_SUCCESS) {
+        DWORD dumpType = 2;  // MiniDumpWithFullMemory
+        DWORD dumpCount = 10;
+        wchar_t dumpDirW[MAX_PATH];
+        MultiByteToWideChar(CP_UTF8, 0, g_DumpDir.c_str(), -1, dumpDirW, MAX_PATH);
+        RegSetValueExW(hKey, L"DumpType", 0, REG_DWORD, (BYTE*)&dumpType, sizeof(dumpType));
+        RegSetValueExW(hKey, L"DumpCount", 0, REG_DWORD, (BYTE*)&dumpCount, sizeof(dumpCount));
+        RegSetValueExW(hKey, L"DumpFolder", 0, REG_EXPAND_SZ, (BYTE*)dumpDirW,
+                       (DWORD)((wcslen(dumpDirW) + 1) * sizeof(wchar_t)));
+        RegCloseKey(hKey);
+    }
+
+    // Also set global WER settings for ALL apps (covers subprocesses, thread pool crashes)
+    regPath = L"SOFTWARE\\Microsoft\\Windows\\Windows Error Reporting\\LocalDumps";
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, regPath.c_str(), 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) ==
+        ERROR_SUCCESS) {
+        DWORD dumpType = 2;
+        DWORD dumpCount = 10;
+        wchar_t dumpDirW2[MAX_PATH];
+        MultiByteToWideChar(CP_UTF8, 0, g_DumpDir.c_str(), -1, dumpDirW2, MAX_PATH);
+        RegSetValueExW(hKey, L"DumpType", 0, REG_DWORD, (BYTE*)&dumpType, sizeof(dumpType));
+        RegSetValueExW(hKey, L"DumpCount", 0, REG_DWORD, (BYTE*)&dumpCount, sizeof(dumpCount));
+        RegSetValueExW(hKey, L"DumpFolder", 0, REG_EXPAND_SZ, (BYTE*)dumpDirW2,
+                       (DWORD)((wcslen(dumpDirW2) + 1) * sizeof(wchar_t)));
+        RegCloseKey(hKey);
     }
 }
 
@@ -259,13 +307,13 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
     // These are first-chance only and never indicate real crashes.
     if (!forceDump) {
         switch (code) {
-        case 0x406D1388:  // Thread naming exception (VS debugger)
-        case 0x40010006:  // OutputDebugString
-        case 0x4001000A:  // WOW64 debug
-        case 0x4000001F:  // Wow64 breakpoint
-            return EXCEPTION_CONTINUE_SEARCH;
-        default:
-            break;
+            case 0x406D1388:  // Thread naming exception (VS debugger)
+            case 0x40010006:  // OutputDebugString
+            case 0x4001000A:  // WOW64 debug
+            case 0x4000001F:  // Wow64 breakpoint
+                return EXCEPTION_CONTINUE_SEARCH;
+            default:
+                break;
         }
     }
 
@@ -276,6 +324,15 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
     // Only dump if we get an excessive number (indicates a real issue).
     if (!forceDump && code == 0x80010108) {
         if (callCount < 5) {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+    }
+
+    // RPC_S_SERVER_UNAVAILABLE (0x800706ba) on thread pool timer callbacks:
+    // Windows COM timer tries to clean up marshaling context for a dead process.
+    // This is benign during cross-process teardown (e.g., inject process exits).
+    if (!forceDump && code == 0x800706ba) {
+        if (callCount < 3) {
             return EXCEPTION_CONTINUE_SEARCH;
         }
     }
@@ -291,6 +348,20 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
     // a crash. Dump after 3 consecutive C++ exceptions.
     if (!forceDump && code == 0xE06D7363 && callCount < 3) {
         return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    // STATUS_STACK_BUFFER_OVERRUN (0xC0000409) is often raised via __fastfail()
+    // which bypasses normal VEH. If we catch it here, it's a second-chance
+    // or the process has a custom handler. Always dump these - they indicate
+    // real corruption.
+    if (code == 0xC0000409) {
+        TraceCrash("STACK_BUFFER_OVERRUN detected - generating dump");
+        // Fall through to dump generation
+    }
+
+    // STATUS_FATAL_USER_CALLBACK_EXCEPTION - crash in a Windows callback
+    if (code == 0xC000041D) {
+        TraceCrash("FATAL_USER_CALLBACK_EXCEPTION - generating dump");
     }
 
     // Log the exception for debugging
@@ -340,8 +411,8 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
             GetLocalTime(&st);
             char dumpPath[MAX_PATH];
             snprintf(dumpPath, sizeof(dumpPath), "%s\\assert_%04u%02u%02u_%02u%02u%02u_%03u_pid%lu.dmp",
-                     dumpDir.c_str(), st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
-                     st.wMilliseconds, GetCurrentProcessId());
+                     dumpDir.c_str(), st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+                     GetCurrentProcessId());
 
             HANDLE hFile = CreateFileA(dumpPath, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
                                        FILE_ATTRIBUTE_NORMAL, NULL);
@@ -351,8 +422,8 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
                 mdei.ExceptionPointers = pExceptionPointers;
                 mdei.ClientPointers = FALSE;
 
-                if (g_pMiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile, MiniDumpNormal, &mdei,
-                                         NULL, NULL)) {
+                if (g_pMiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile, MiniDumpNormal, &mdei, NULL,
+                                         NULL)) {
                     TraceCrash("Quick assert dump written");
                     char msg[256];
                     snprintf(msg, sizeof(msg), "Assert dump: %s", dumpPath);

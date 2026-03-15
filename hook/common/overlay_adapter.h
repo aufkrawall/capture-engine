@@ -16,6 +16,7 @@
 #pragma once
 
 #include <atomic>
+#include <mutex>
 #include "custom_overlay.h"
 #include "ipc_client.h"
 #include "performance_metrics.h"
@@ -48,32 +49,39 @@ public:
     void SetShutdownMode(bool skipDeviceRelease);  // Call before Shutdown when
                                                    // device is being destroyed
     bool IsInitialized() const {
-        return initialized;
+        return initialized.load(std::memory_order_acquire);
     }
     OverlayBackendType GetBackendType() const {
+        std::lock_guard<std::mutex> lock(stateMutex);
         return backendType;
     }
 
     // Get the backend for Vulkan-specific operations (SetRenderContext, etc.)
     CustomOverlay::RendererBackend* GetBackend() {
+        std::lock_guard<std::mutex> lock(stateMutex);
         return backend;
     }
 
     // Set external data sources
     void SetMetrics(PerformanceMetrics* m) {
+        std::lock_guard<std::mutex> lock(stateMutex);
         metrics = m;
     }
     void SetIPCClient(IPCClient* ipc) {
+        std::lock_guard<std::mutex> lock(stateMutex);
         this->ipc = ipc;
     }
     void SetHwnd(void* hwnd) {
+        std::lock_guard<std::mutex> lock(stateMutex);
         this->hwnd = hwnd;
     }
     void SetGraphicsAPI(const char* api);
     void SetDroppedFrames(uint32_t count) {
+        std::lock_guard<std::mutex> lock(stateMutex);
         droppedFrames = count;
     }
     void SetHDR(bool enabled, int rtvFormat = 0) {
+        std::lock_guard<std::mutex> lock(stateMutex);
         isHDR = enabled;
         renderTargetFormat = rtvFormat;
     }
@@ -87,6 +95,11 @@ public:
     void RenderOverlay(int viewportWidth, int viewportHeight);
 
 private:
+    bool InitializeBackendLocked(CustomOverlay::RendererBackend* newBackend, OverlayBackendType type,
+                                 const char* backendName, float dpiScale);
+    void ApplyShutdownModeLocked(bool skipRelease);
+    void DestroyResourcesLocked(bool shutdownRenderer);
+    void ResetStateLocked();
     void RenderContent(int viewportWidth, int viewportHeight, const OverlayConfig& cfg, bool shouldUpdate);
     uint32_t GetLoadColor(float load);
 
@@ -103,6 +116,7 @@ private:
     int renderTargetFormat = 0;
     std::atomic<bool> initialized{false};
     bool skipDeviceRelease = false;  // When true, Shutdown won't release device refs (app is closing)
+    mutable std::mutex stateMutex;
 
     // Cached values for throttled updates
     DWORD lastUpdateTime = 0;

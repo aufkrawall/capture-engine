@@ -37,8 +37,7 @@ public:
         }
 
         // CAS loop to prevent TOCTOU: validate+store must be atomic
-        while (!state_.compare_exchange_weak(current, newState, std::memory_order_acq_rel,
-                                              std::memory_order_acquire)) {
+        while (!state_.compare_exchange_weak(current, newState, std::memory_order_acq_rel, std::memory_order_acquire)) {
             if (!IsValidTransition(current, newState)) {
                 CE_LOG_ERROR(LogTag, "raced invalid %s->%s", NameFn(current), NameFn(newState));
                 CE_ASSERT(false);

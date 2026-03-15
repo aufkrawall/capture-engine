@@ -3086,7 +3086,8 @@ void DX11Hook::Shutdown() {
 
     // Clean up prerender queries
     for (auto* q : g_PrerenderQueries) {
-        if (q) q->Release();
+        if (q)
+            q->Release();
     }
     g_PrerenderQueries.clear();
 

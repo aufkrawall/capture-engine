@@ -9,6 +9,10 @@
 #include "../common/logging.h"
 #include "mediaengine_loader.h"
 
+// Global inflight callback counter - outlives WGCCapture::Impl destruction
+// to prevent use-after-free when WinRT thread pool callbacks access Impl members
+static std::atomic<int32_t> g_WgcInflightCallbacks{0};
+
 // WinRT/C++WinRT headers for WGC
 #include <winrt/base.h>
 
@@ -57,6 +61,7 @@ using namespace Windows::Graphics::DirectX::Direct3D11;
 class WGCCapture::Impl {
 public:
 #if HAS_WGC
+    std::atomic<bool> alive_{true};
     winrt::GraphicsCaptureItem item_{nullptr};
     winrt::Direct3D11CaptureFramePool framePool_{nullptr};
     winrt::GraphicsCaptureSession session_{nullptr};
@@ -135,7 +140,9 @@ public:
         copyDesc.Format = format;  // Match WGC source format
         copyDesc.SampleDesc.Count = 1;
         copyDesc.Usage = D3D11_USAGE_DEFAULT;
-        copyDesc.BindFlags = 0;
+        // CRITICAL: VP input view requires RENDER_TARGET bind flag
+        // Using only SHADER_RESOURCE causes D3D11 internal stack corruption (0xC0000409)
+        copyDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
 
         for (int i = 0; i < TEXTURE_POOL_SIZE; i++) {
             HRESULT hr = d3dDevice_->CreateTexture2D(&copyDesc, nullptr, &texturePool_[i]);
@@ -153,6 +160,21 @@ public:
     }
 
     void OnFrameArrived(winrt::Direct3D11CaptureFramePool const& sender, winrt::IInspectable const&) {
+        // Use global atomic for inflight count - survives Impl destruction
+        // to prevent use-after-free on WinRT thread pool callbacks
+        g_WgcInflightCallbacks.fetch_add(1, std::memory_order_acq_rel);
+
+        struct DecrementGuard {
+            ~DecrementGuard() {
+                g_WgcInflightCallbacks.fetch_sub(1, std::memory_order_acq_rel);
+            }
+        } decrementGuard;
+
+        // Check if Impl is still alive
+        if (!alive_.load(std::memory_order_acquire)) {
+            return;
+        }
+
         auto winrtFrame = sender.TryGetNextFrame();
         if (!winrtFrame) {
             return;
@@ -241,7 +263,7 @@ public:
         if (frameArrivedEvent_) {
             SetEvent(frameArrivedEvent_);
         }
-    }
+    }  // decrementGuard destructor fires here, decrementing inflightCallbacks_
 
     bool CreateWinRTDevice() {
         // Get DXGI device from D3D11 device
@@ -390,9 +412,10 @@ public:
     }
 
     void StopCapture() {
-        // Clear callback first to prevent races
+        // Clear callback first to prevent new frames from being processed
         frameCallback_ = nullptr;
 
+        // Stop WinRT session and frame pool - this prevents new callbacks
         if (session_) {
             session_.Close();
             session_ = nullptr;
@@ -402,6 +425,19 @@ public:
             framePool_.Close();
             framePool_ = nullptr;
         }
+
+        // Wait for any in-flight OnFrameArrived callbacks to finish
+        // (WinRT thread pool may still be processing a frame)
+        int waitMs = 0;
+        while (g_WgcInflightCallbacks.load(std::memory_order_acquire) > 0 && waitMs < 2000) {
+            SwitchToThread();
+            waitMs++;
+        }
+        if (g_WgcInflightCallbacks.load(std::memory_order_acquire) > 0) {
+            LogWarn("[WGC] %d callbacks still in-flight after %dms wait - proceeding with cleanup",
+                    g_WgcInflightCallbacks.load(), waitMs);
+        }
+
         // NOTE: Do NOT null item_ - it's the capture target (monitor) and doesn't
         // change between recordings. StartCapture() needs item_ to exist.
 
@@ -757,6 +793,58 @@ uint32_t WGCCapture::GetSkippedFrameCount() const {
     return impl_ ? impl_->skippedFrameCount_.load(std::memory_order_relaxed) : 0;
 #else
     return 0;
+#endif
+}
+
+int32_t WGCCapture::GetInflightCallbackCount() const {
+    return g_WgcInflightCallbacks.load(std::memory_order_acquire);
+}
+
+void WGCCapture::ForceReset() {
+#if HAS_WGC
+    capturing_ = false;
+    frameCallback_ = nullptr;
+
+    if (impl_) {
+        // Mark Impl as dead BEFORE destroying - prevents callbacks from accessing freed memory
+        impl_->alive_.store(false, std::memory_order_release);
+
+        // Close session first - this stops new callbacks
+        if (impl_->session_) {
+            impl_->session_.Close();
+            impl_->session_ = nullptr;
+        }
+        if (impl_->framePool_) {
+            impl_->framePool_.FrameArrived(impl_->frameArrivedToken_);
+            impl_->framePool_.Close();
+            impl_->framePool_ = nullptr;
+        }
+
+        // Wait for in-flight callbacks to finish BEFORE destroying resources
+        int waitMs = 0;
+        while (g_WgcInflightCallbacks.load(std::memory_order_acquire) > 0 && waitMs < 5000) {
+            SwitchToThread();
+            waitMs++;
+        }
+
+        // Now safe to release textures
+        for (int i = 0; i < Impl::TEXTURE_POOL_SIZE; i++) {
+            if (impl_->texturePool_[i]) {
+                impl_->texturePool_[i]->Release();
+                impl_->texturePool_[i] = nullptr;
+            }
+        }
+        if (impl_->latestFrame_) {
+            impl_->latestFrame_->Release();
+            impl_->latestFrame_ = nullptr;
+        }
+
+        impl_.reset();
+        impl_ = std::make_unique<Impl>();
+        impl_->d3dDevice_ = device_;
+
+        LogWarn("[WGC] ForceReset complete - WGC session recreated");
+    }
 #endif
 }
 

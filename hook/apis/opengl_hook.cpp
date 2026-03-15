@@ -1409,7 +1409,8 @@ void OpenGLHook::Shutdown() {
     // Clean up prerender sync objects
     if (pglDeleteSync) {
         for (auto sync : g_PrerenderSyncs) {
-            if (sync) pglDeleteSync(sync);
+            if (sync)
+                pglDeleteSync(sync);
         }
     }
     g_PrerenderSyncs.clear();

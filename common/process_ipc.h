@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <string>
 
 // Process modes - determined by command-line flag
@@ -96,17 +97,21 @@ public:
 
     // Check if controller is connected
     bool IsConnected() const {
-        return connected;
+        return connected.load(std::memory_order_acquire);
     }
 
 private:
+    void ResetConnectOverlappedLocked();
+    void HandlePipeDisconnectLocked(bool logDisconnect);
+
     ProcessMode mode;
     HANDLE hPipe;
-    bool connected;
+    std::atomic<bool> connected;
     uint32_t lastSequence;
     HANDLE connectEvent;
     OVERLAPPED connectOverlapped;
     bool connectPending;
+    mutable std::mutex stateMutex;
 };
 
 // Client side (controller) - sends commands to child processes

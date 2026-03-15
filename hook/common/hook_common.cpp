@@ -280,6 +280,7 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
         // process exit is sufficient for debug logs).
         auto it = s_FileCache.handles.find(fullLogPath);
         HANDLE hFile = INVALID_HANDLE_VALUE;
+        bool insertedHandle = false;
         if (it != s_FileCache.handles.end()) {
             hFile = it->second;
         } else {
@@ -299,14 +300,24 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
                     }
                 }
                 s_FileCache.handles[fullLogPath] = hFile;
+                it = s_FileCache.handles.find(fullLogPath);
+                insertedHandle = true;
             }
         }
 
         if (hFile != INVALID_HANDLE_VALUE) {
             const DWORD lineLen = static_cast<DWORD>(strlen(lineBuffer));
-            DWORD written;
-            WriteFile(hFile, lineBuffer, lineLen, &written, NULL);
-            WriteFile(hFile, "\r\n", 2, &written, NULL);
+            DWORD written = 0;
+            bool lineOk = WriteFile(hFile, lineBuffer, lineLen, &written, NULL) && written == lineLen;
+            bool newlineOk = lineOk && WriteFile(hFile, "\r\n", 2, &written, NULL) && written == 2;
+            if (!newlineOk) {
+                CloseHandle(hFile);
+                if (it != s_FileCache.handles.end()) {
+                    s_FileCache.handles.erase(it);
+                } else if (insertedHandle) {
+                    s_FileCache.handles.erase(fullLogPath);
+                }
+            }
         }
     }
 }
