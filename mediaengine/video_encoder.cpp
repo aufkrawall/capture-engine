@@ -20,45 +20,16 @@ extern "C" {
 #include <filesystem>
 #include "cursor_renderer.h"
 
-// SEH-to-C++ Exception Translation for MinGW/clang
+// D3D11 exception safety for MinGW/clang
 // MinGW uses DWARF exception handling (libgcc) which cannot catch Windows SEH
-// exceptions. D3D11 raises SEH exception 0xE06D7363 (C++ throw) which becomes
-// an unhandled SEH if not caught. We use a thread-local flag + VEH to detect
-// and prevent crashes from D3D11 exceptions.
+// exceptions. D3D11 raises SEH exceptions (e.g., 0xE06D7363) for invalid handles.
 //
-// The approach: VEH sets a thread-local flag when D3D11 throws, then returns
-// EXCEPTION_CONTINUE_SEARCH to let the normal crash handler capture the dump.
-// The wrapper functions CANNOT catch SEH on MinGW, so we use pre-validation.
+// Protection strategy:
+// 1. HandleFailureCache tracks handles that have failed - skip them on retry
+// 2. DuplicateHandle-first validates handles before calling D3D11
+// 3. dllexport wrapper functions prevent LTO from stripping error paths
 
 #include <windows.h>
-
-// Thread-local flag set by VEH when D3D11 throws
-static thread_local volatile LONG g_D3D11ExceptionOccurred = 0;
-
-// VEH handler for D3D11 exceptions - logs and dumps but lets crash handler take over
-static PVOID g_D3D11VEHHandle = nullptr;
-
-static LONG WINAPI D3D11SEHHandler(EXCEPTION_POINTERS* ep) {
-    DWORD code = ep->ExceptionRecord->ExceptionCode;
-    // Mark that D3D11 threw - helps with diagnostics
-    if (code == 0xE06D7363) {  // C++ exception from D3D11
-        g_D3D11ExceptionOccurred = code;
-    }
-    return EXCEPTION_CONTINUE_SEARCH;  // Let crash handler capture dump
-}
-
-static void InstallD3D11SEHHandler() {
-    if (!g_D3D11VEHHandle) {
-        g_D3D11VEHHandle = AddVectoredExceptionHandler(1, D3D11SEHHandler);
-    }
-}
-
-static void RemoveD3D11SEHHandler() {
-    if (g_D3D11VEHHandle) {
-        RemoveVectoredExceptionHandler(g_D3D11VEHHandle);
-        g_D3D11VEHHandle = nullptr;
-    }
-}
 
 // Handle validation cache: tracks handles that have previously failed D3D11 OpenShared*
 // calls, so we don't repeatedly trigger SEH exceptions from invalid handles.
@@ -153,12 +124,6 @@ extern "C" __declspec(dllexport) HRESULT __cdecl CallOpenSharedResource1(ID3D11D
     return hr;
 }
 
-// Template wrapper that delegates to the noinline functions.
-// This preserves the existing call-site syntax while ensuring exception safety.
-template <typename Func>
-static HRESULT SafeD3D11OpenShared(Func&& func) {
-    return func();
-}
 namespace fs = std::filesystem;
 
 #ifndef D3D11_FORMAT_SUPPORT_SHAREABLE
@@ -369,9 +334,6 @@ VideoEncoder::~VideoEncoder() {
 
 bool VideoEncoder::Init(const VideoConfig& config, int width, int height, int fps,
                          std::function<void(AVPacket*)> packetCallback) {
-    // Install VEH to log D3D11 SEH exceptions for diagnostics
-    InstallD3D11SEHHandler();
-    
     // Clear handle failure cache from previous recording session
     g_HandleFailureCache.Clear();
     DLL_Log("[VideoEncoder] Init Entry - config.encoder=%s w=%d h=%d fps=%d", config.encoder.c_str(), width, height,
