@@ -1035,8 +1035,9 @@ static HWND g_CachedHwnd = NULL;
 thread_local int g_ResizeBuffersDepth = 0;
 
 // DX11 Capture Implementation extending HookCaptureBase
-// Supports both DX11 and DX10 games - DX10 games require creating a D3D11
-// device
+// Supports both DX11 and DX10 games.
+// DX10 capture must copy on the real D3D10 device and publish DXGI shared
+// texture handles that the media-side D3D11 device can open.
 class DX11Capture : public HookCaptureBase {
 public:
     ID3D11Texture2D* sharedTextures[CAPTURE_TEXTURE_COUNT]{};
@@ -1044,15 +1045,20 @@ public:
     ID3D11Device* cachedDevice = nullptr;
     ID3D11DeviceContext* cachedContext = nullptr;
 
-    // For DX10 games: we own a D3D11 device for creating shared textures
-    ID3D11Device* ownedDevice = nullptr;
-    ID3D11DeviceContext* ownedContext = nullptr;
+    // DX10 capture must stay on the real D3D10 device to avoid invalid
+    // cross-device copies from a DX10 swapchain buffer into D3D11-owned
+    // textures, which can produce corrupted output.
+    ID3D10Device* cachedDevice10 = nullptr;
+    ID3D10Texture2D* sharedTextures10[CAPTURE_TEXTURE_COUNT]{};
+    ID3D10Query* copyQueries10[CAPTURE_TEXTURE_COUNT]{};
     bool isDX10Mode = false;
 
     // For DXVK games: the game's D3D11 is DXVK's (Vulkan-backed). Shared handles
     // from DXVK are Vulkan-internal IDs the real encoder D3D11 can't open.
     // Fix: create ring buffer textures in a real system D3D11 device (ownedDevice),
     // then import each into DXVK's device for CopyResource.
+    ID3D11Device* ownedDevice = nullptr;
+    ID3D11DeviceContext* ownedContext = nullptr;
     bool isDXVKMode = false;
     ID3D11Texture2D* dxvkImportedTextures[CAPTURE_TEXTURE_COUNT]{};  // DXVK-side imports
 
@@ -1080,6 +1086,12 @@ public:
             g_DeferredRelease.Queue(copyQueries[i]);
             copyQueries[i] = nullptr;
 
+            g_DeferredRelease.Queue(sharedTextures10[i]);
+            sharedTextures10[i] = nullptr;
+
+            g_DeferredRelease.Queue(copyQueries10[i]);
+            copyQueries10[i] = nullptr;
+
             g_DeferredRelease.Queue(dxvkImportedTextures[i]);
             dxvkImportedTextures[i] = nullptr;
         }
@@ -1101,6 +1113,9 @@ public:
             keyedMutexes[i] = nullptr;
         }
 
+        g_DeferredRelease.Queue(cachedDevice10);
+        cachedDevice10 = nullptr;
+
         cachedDevice = nullptr;
         cachedContext = nullptr;
         initialized = false;
@@ -1116,88 +1131,43 @@ public:
         // We need the device to create resources, so we'll store it in Init
     }
 
-    // Create a D3D11 device matching the same GPU adapter (for DX10 interop)
-    bool CreateD3D11DeviceForAdapter(IDXGIAdapter* adapter) {
-        D3D_FEATURE_LEVEL featureLevels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0};
-        D3D_FEATURE_LEVEL featureLevel;
-
-        // Load system D3D11 by full path to avoid DXVK's d3d11.dll in DXVK processes
-        char systemDir[MAX_PATH] = {};
-        if (GetSystemDirectoryA(systemDir, MAX_PATH) == 0) {
-            HookLog("DX10: GetSystemDirectory failed");
-            return false;
-        }
-        std::string dxgiPath = std::string(systemDir) + "\\dxgi.dll";
-        std::string d3d11Path = std::string(systemDir) + "\\d3d11.dll";
-        HMODULE hDXGI = LoadLibraryA(dxgiPath.c_str());
-        HMODULE hD3D11 = LoadLibraryA(d3d11Path.c_str());
-        if (!hD3D11) {
-            HookLog("DX10: System D3D11 DLL not found");
-            return false;
-        }
-        if (hDXGI)
-            RedirectModuleImports(hD3D11, "dxgi.dll", hDXGI);
-
-        typedef HRESULT(WINAPI * PFN_D3D11_CREATE_DEVICE)(IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT,
-                                                          const D3D_FEATURE_LEVEL*, UINT, UINT, ID3D11Device**,
-                                                          D3D_FEATURE_LEVEL*, ID3D11DeviceContext**);
-        PFN_D3D11_CREATE_DEVICE pD3D11CreateDevice =
-            (PFN_D3D11_CREATE_DEVICE)GetProcAddress(hD3D11, "D3D11CreateDevice");
-        if (!pD3D11CreateDevice)
-            return false;
-
-        HRESULT hr = pD3D11CreateDevice(adapter,
-                                        D3D_DRIVER_TYPE_UNKNOWN,  // Must use UNKNOWN when adapter is specified
-                                        NULL, 0, featureLevels, 3, D3D11_SDK_VERSION, &ownedDevice, &featureLevel,
-                                        &ownedContext);
-
-        if (FAILED(hr)) {
-            HookLog("DX10: Failed to create D3D11 device for capture (hr=0x%08x)", hr);
-            return false;
-        }
-
-        HookLog("DX10: Created D3D11 device for capture (feature level %d)", featureLevel);
-        return true;
-    }
-
-    // Initialize for DX10 games - creates D3D11 device on same adapter
+    // Initialize for DX10 games - capture stays on the real D3D10 device and
+    // publishes DXGI shared handles that the media-side D3D11 device opens.
     bool InitDX10(IDXGISwapChain* swapChain) {
-        // Get adapter from swapchain
         IDXGIDevice* dxgiDevice = nullptr;
         IDXGIAdapter* adapter = nullptr;
+        ID3D10Device* device10 = nullptr;
 
-        // Get the device from swapchain (could be DX10 or DX10.1)
-        IUnknown* pDevice = nullptr;
-        if (FAILED(swapChain->GetDevice(__uuidof(ID3D10Device), (void**)&pDevice))) {
-            if (FAILED(swapChain->GetDevice(__uuidof(ID3D10Device1), (void**)&pDevice))) {
+        if (FAILED(swapChain->GetDevice(__uuidof(ID3D10Device), (void**)&device10))) {
+            ID3D10Device1* device10_1 = nullptr;
+            if (FAILED(swapChain->GetDevice(__uuidof(ID3D10Device1), (void**)&device10_1)) || !device10_1) {
                 HookLog("DX10: Failed to get device from swapchain");
                 return false;
             }
+            device10 = device10_1;
         }
 
-        if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&dxgiDevice)))) {
+        if (!device10) {
+            HookLog("DX10: Swapchain returned null device");
+            return false;
+        }
+
+        cachedDevice10 = device10;  // Keep GetDevice() reference until Cleanup()
+
+        if (SUCCEEDED(device10->QueryInterface(IID_PPV_ARGS(&dxgiDevice)))) {
             if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter))) {
                 DXGI_ADAPTER_DESC adapterDesc;
-                adapter->GetDesc(&adapterDesc);
-                luidLow = adapterDesc.AdapterLuid.LowPart;
-                luidHigh = adapterDesc.AdapterLuid.HighPart;
+                if (SUCCEEDED(adapter->GetDesc(&adapterDesc))) {
+                    luidLow = adapterDesc.AdapterLuid.LowPart;
+                    luidHigh = adapterDesc.AdapterLuid.HighPart;
 
-                // Initialize SystemMetricsCollector with adapter LUID for GPU stats
-                SystemMetricsCollector::Get().Initialize(luidLow, luidHigh);
-                SystemMetricsCollector::Get().SetVRAMTotal(adapterDesc.DedicatedVideoMemory);
-
-                // Create D3D11 device on same adapter
-                if (!CreateD3D11DeviceForAdapter(adapter)) {
-                    adapter->Release();
-                    dxgiDevice->Release();
-                    pDevice->Release();
-                    return false;
+                    SystemMetricsCollector::Get().Initialize(luidLow, luidHigh);
+                    SystemMetricsCollector::Get().SetVRAMTotal(adapterDesc.DedicatedVideoMemory);
                 }
                 adapter->Release();
             }
             dxgiDevice->Release();
         }
-        pDevice->Release();
 
         isDX10Mode = true;
         return true;
@@ -1309,10 +1279,76 @@ public:
         ID3D11Device* captureDevice = device;
 
         if (isDX10Mode) {
-            // Use our owned D3D11 device
-            captureDevice = ownedDevice;
-            cachedDevice = nullptr;  // We don't cache the DX10 device
-            cachedContext = ownedContext;
+            if (!cachedDevice10) {
+                EarlyLog("DX10: Missing cached D3D10 device during capture init");
+                return;
+            }
+
+            D3D10_TEXTURE2D_DESC texDesc10 = {};
+            texDesc10.Width = width;
+            texDesc10.Height = height;
+            texDesc10.MipLevels = 1;
+            texDesc10.ArraySize = 1;
+            texDesc10.Format = (DXGI_FORMAT)format;
+            texDesc10.SampleDesc.Count = 1;
+            texDesc10.Usage = D3D10_USAGE_DEFAULT;
+            texDesc10.BindFlags = D3D10_BIND_RENDER_TARGET | D3D10_BIND_SHADER_RESOURCE;
+            texDesc10.CPUAccessFlags = 0;
+            texDesc10.MiscFlags = D3D10_RESOURCE_MISC_SHARED;
+
+            useFences = false;
+            sharedFenceHandle.store(NULL, std::memory_order_release);
+
+            bool success = true;
+            for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
+                HRESULT hr = cachedDevice10->CreateTexture2D(&texDesc10, NULL, &sharedTextures10[i]);
+                if (SUCCEEDED(hr) && sharedTextures10[i]) {
+                    IDXGIResource* resource = nullptr;
+                    if (SUCCEEDED(sharedTextures10[i]->QueryInterface(IID_PPV_ARGS(&resource))) && resource) {
+                        HANDLE hTemp = NULL;
+                        hr = resource->GetSharedHandle(&hTemp);
+                        sharedTextureHandles[i].store(hTemp, std::memory_order_release);
+                        resource->Release();
+                    } else {
+                        EarlyLog("DX10: Error - Failed to query IDXGIResource for texture %d", i);
+                        success = false;
+                    }
+
+                    if (sharedTextureHandles[i].load(std::memory_order_acquire) == NULL) {
+                        EarlyLog("DX10: Critical - Shared handle is NULL for texture %d", i);
+                        success = false;
+                    }
+                } else {
+                    success = false;
+                    HookLog("DX10: Failed to create shared texture %d (hr=0x%08x)", i, hr);
+                }
+            }
+
+            if (success) {
+                D3D10_QUERY_DESC queryDesc = {};
+                queryDesc.Query = D3D10_QUERY_EVENT;
+                queryDesc.MiscFlags = 0;
+
+                for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
+                    HRESULT queryHr = cachedDevice10->CreateQuery(&queryDesc, &copyQueries10[i]);
+                    if (FAILED(queryHr)) {
+                        HookLog("DX10: Failed to create copy query %d (hr=0x%08x)", i, queryHr);
+                        copyQueries10[i] = nullptr;
+                    }
+                }
+            }
+
+            if (success) {
+                if (g_IPC) {
+                    PublishToSharedMemory(g_IPC);
+                }
+                initialized = true;
+                HookLogImportant("DX10 Capture Initialized: %dx%d (Fence: OFF, Queries: %s, DXVK: OFF)", width,
+                                 height, (copyQueries10[0] != nullptr) ? "ON" : "OFF");
+            } else {
+                EarlyLog("DX10 Capture Init FAILED (success=false)");
+            }
+            return;
         } else {
             // Get LUID from DX11 device
             IDXGIDevice* dxgiDevice = nullptr;
@@ -1535,9 +1571,9 @@ public:
         return true;
     }
 
-    // Get the context to use for capture operations
+    // Get the context to use for DX11 capture operations
     ID3D11DeviceContext* GetCaptureContext() {
-        return isDX10Mode ? ownedContext : cachedContext;
+        return cachedContext;
     }
 
     // Capture a frame from the swapchain to shared texture
@@ -1561,31 +1597,98 @@ public:
         // Initialize capture if needed (GetDevice only called during init to avoid per-frame COM overhead)
         if (!initialized) {
             HookLog("DX11Capture: [%d] Not initialized, initializing...", frameNum);
-            ID3D11Device* device = nullptr;
-            HRESULT initHr = swapChain->GetDevice(IID_PPV_ARGS(&device));
-            if (FAILED(initHr) || !device) {
-                HookLog("DX11Capture: [%d] GetDevice failed hr=0x%08X", frameNum, initHr);
-                return false;
-            }
-            // Check if this is a DX10 device
             ID3D10Device* device10 = nullptr;
             if (SUCCEEDED(swapChain->GetDevice(__uuidof(ID3D10Device), (void**)&device10))) {
-                device10->Release();
-                // Initialize for DX10 mode
                 if (!InitDX10(swapChain)) {
                     HookLog("DX11Capture: [%d] InitDX10 failed", frameNum);
-                    device->Release();
+                    device10->Release();
                     return false;
                 }
+                device10->Release();
+                Init(nullptr, swapChain);
+            } else {
+                ID3D10Device1* device10_1 = nullptr;
+                if (SUCCEEDED(swapChain->GetDevice(__uuidof(ID3D10Device1), (void**)&device10_1))) {
+                    if (!InitDX10(swapChain)) {
+                        HookLog("DX11Capture: [%d] InitDX10 failed", frameNum);
+                        device10_1->Release();
+                        return false;
+                    }
+                    device10_1->Release();
+                    Init(nullptr, swapChain);
+                } else {
+                    ID3D11Device* device = nullptr;
+                    HRESULT initHr = swapChain->GetDevice(IID_PPV_ARGS(&device));
+                    if (FAILED(initHr) || !device) {
+                        HookLog("DX11Capture: [%d] GetDevice failed hr=0x%08X", frameNum, initHr);
+                        return false;
+                    }
+                    Init(device, swapChain);
+                    device->Release();
+                }
             }
-            // Now initialize with the device
-            Init(device, swapChain);
-            device->Release();
         }
 
         if (!initialized) {
             HookLog("DX11Capture: [%d] Still not initialized after Init", frameNum);
             return false;
+        }
+
+        if (isDX10Mode) {
+            if (!cachedDevice10) {
+                HookLog("DX10Capture: [%d] cachedDevice10 is null", frameNum);
+                return false;
+            }
+
+            ID3D10Texture2D* backbuffer10 = nullptr;
+            UINT bufferIndex = ResolveDX11BackBufferIndex(swapChain);
+            HRESULT hr = swapChain->GetBuffer(bufferIndex, __uuidof(ID3D10Texture2D), (void**)&backbuffer10);
+            if (FAILED(hr) || !backbuffer10) {
+                HookLog("DX10Capture: [%d] GetBuffer(%u) failed hr=0x%08X", frameNum, bufferIndex, hr);
+                return false;
+            }
+
+            int writeIdx = writeIndex % CAPTURE_TEXTURE_COUNT;
+            if (frameNum <= 20 || frameNum % 60 == 0) {
+                HookLog("DX10Capture: [%d] Copying to texture %d (writeIndex=%d)", frameNum, writeIdx,
+                        writeIndex.load());
+            }
+
+            if (copyQueries10[writeIdx]) {
+                BOOL data = FALSE;
+                HRESULT queryHr = copyQueries10[writeIdx]->GetData(&data, sizeof(data), 0);
+                if (queryHr == S_FALSE) {
+                    // Previous copy to this slot is still pending. We keep the current
+                    // non-blocking behavior and rely on the ring depth to absorb it.
+                }
+            }
+
+            LARGE_INTEGER qpc;
+            QueryPerformanceCounter(&qpc);
+            int64_t timestamp = qpc.QuadPart;
+
+            cachedDevice10->CopyResource(sharedTextures10[writeIdx], backbuffer10);
+            backbuffer10->Release();
+
+            if (copyQueries10[writeIdx]) {
+                copyQueries10[writeIdx]->End();
+            }
+
+            // D3D10->D3D11 shared-texture interop requires a producer-side Flush()
+            // so the media process sees the latest contents of the shared surface.
+            cachedDevice10->Flush();
+
+            if (g_IPC) {
+                SignalFrameReady(g_IPC, writeIdx, timestamp, 0);
+                if (frameNum <= 10) {
+                    HookLog("DX10Capture: [%d] Signaled frame ready via IPC (texture=%d)", frameNum, writeIdx);
+                }
+            } else {
+                HookLog("DX10Capture: [%d] g_IPC is NULL - cannot signal frame", frameNum);
+            }
+
+            AdvanceWriteIndex();
+            return true;
         }
 
         // Get immediate context for copy
@@ -1838,13 +1941,6 @@ static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int fr
             }
         }
     }
-
-    // CRITICAL: Flush D3D10 command queue before capture
-    // DX10 games use a D3D10 device for rendering, but we use a separate D3D11
-    // device for capture. Without this flush, the overlay may not be visible
-    // in captured frames because the D3D10 commands haven't completed yet.
-    // This fixes the black flicker/flashing artifacts in DX10 captures.
-    device->Flush();
 
     device->Release();
 }
