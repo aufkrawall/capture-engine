@@ -83,7 +83,15 @@ int SensorProcessMain(const AppConfig& config) {
         // 2. Poll metrics for all active sessions
         for (auto it = sessions.begin(); it != sessions.end();) {
             Session& s = it->second;
+            uint32_t sourcePid = s.shm->GetSourcePid();
 
+            // No hooked source yet: skip expensive PDH/DXGI work while idle, but
+            // keep checking shared memory so metrics come online quickly once a game
+            // is attached.
+            if (sourcePid == 0) {
+                ++it;
+                continue;
+            }
             // Read LUID from shared memory
             int64_t luid = ((int64_t)s.shm->GetLuidHighPart() << 32) | (uint32_t)s.shm->GetLuidLowPart();
 
@@ -96,22 +104,24 @@ int SensorProcessMain(const AppConfig& config) {
             int64_t effectiveLuid = (luid != 0) ? luid : s.cachedLuid;
 
             if (s.shm->GetDebugLogging() && effectiveLuid != 0) {
-                LogInfo("[Sensors] Updating PID %u (Game: %u), LUID: 0x%llX", it->first, s.shm->GetSourcePid(),
-                        effectiveLuid);
+                LogInfo("[Sensors] Updating PID %u (Game: %u), LUID: 0x%llX", it->first, sourcePid, effectiveLuid);
             }
 
             // Update metrics using the existing host_metrics logic
-            scan_host::UpdateSystemMetrics(s.shm, it->first, effectiveLuid);
+            scan_host::UpdateSystemMetrics(s.shm, sourcePid, effectiveLuid);
 
             ++it;
         }
 
-        Sleep(1000);  // Poll every 1s (standard for system sensors)
-
-        // Check for shutdown signal
-        if (hShutdownEvent != INVALID_HANDLE_VALUE && WaitForSingleObject(hShutdownEvent, 0) == WAIT_OBJECT_0) {
-            LogInfo("[Sensors] Shutdown signal received, exiting");
-            break;
+        DWORD waitMs = 1000;
+        if (hShutdownEvent != INVALID_HANDLE_VALUE) {
+            DWORD waitResult = WaitForSingleObject(hShutdownEvent, waitMs);
+            if (waitResult == WAIT_OBJECT_0) {
+                LogInfo("[Sensors] Shutdown signal received, exiting");
+                break;
+            }
+        } else {
+            Sleep(waitMs);
         }
     }
 

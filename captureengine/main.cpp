@@ -124,6 +124,34 @@ bool ShouldStartSensorProcess(const AppConfig& config) {
     return config.overlay.showCPU || config.overlay.showGPU || config.overlay.showRAM || config.overlay.showVRAM;
 }
 
+DWORD GetControllerLoopWaitMs(DWORD lastConfigCheck) {
+    DWORD waitMs = 1000;
+    DWORD now = GetTickCount();
+
+    DWORD configElapsed = now - lastConfigCheck;
+    if (configElapsed >= 2000) {
+        return 0;
+    }
+    DWORD configWaitMs = 2000 - configElapsed;
+    if (configWaitMs < waitMs) {
+        waitMs = configWaitMs;
+    }
+
+    if (g_AutoRecordEnabled && g_AutoRecordStartTime > 0) {
+        DWORD elapsed = now - g_AutoRecordStartTime;
+        DWORD nextAutoActionMs = !g_Recording ? g_AutoRecordDelayMs : (g_AutoRecordDelayMs + g_AutoRecordDurationMs);
+        if (elapsed >= nextAutoActionMs) {
+            return 0;
+        }
+        DWORD autoWaitMs = nextAutoActionMs - elapsed;
+        if (autoWaitMs < waitMs) {
+            waitMs = autoWaitMs;
+        }
+    }
+
+    return waitMs;
+}
+
 bool HotkeyConfigEquals(const AppConfig::HotkeyConfig& a, const AppConfig::HotkeyConfig& b) {
     return a.vkey == b.vkey && a.ctrl == b.ctrl && a.shift == b.shift && a.alt == b.alt && a.win == b.win;
 }
@@ -950,7 +978,8 @@ int ControllerMain(HINSTANCE hInstance) {
             }
         }
 
-        Sleep(10);
+        MsgWaitForMultipleObjectsEx(0, nullptr, GetControllerLoopWaitMs(lastConfigCheck), QS_ALLINPUT,
+                                    MWMO_INPUTAVAILABLE);
     }
 
     // Unregister hotkeys first
@@ -1073,9 +1102,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     PrimeStartupCursor();
 
-    // Enable 1ms timer resolution
-    timeBeginPeriod(1);
-
     // Opt out of Windows 11 EcoQoS / power throttling for all sub-processes.
     // This tells the scheduler to prefer P-cores over E-cores on hybrid CPUs.
     PROCESS_POWER_THROTTLING_STATE pts = {};
@@ -1134,7 +1160,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
 
     // Cleanup
-    timeEndPeriod(1);
     Log_Shutdown();
 
     return result;

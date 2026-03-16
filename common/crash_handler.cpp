@@ -18,6 +18,7 @@ static char g_ProcessName[256] = "unknown";
 static HMODULE g_hDbgHelp = NULL;
 static std::atomic<bool> g_DumpAlreadyWritten{false};
 static std::atomic<bool> g_ForceUnhandledDump{false};
+static std::atomic<bool> g_CrashTraceActive{false};
 static std::mutex g_TraceCrashMutex;
 static std::atomic<int> g_VEHCallCount{0};
 static std::atomic<int> g_RPCDisconnectedExceptionCount{0};
@@ -31,6 +32,10 @@ static MINIDUMPWRITEDUMP g_pMiniDumpWriteDump = NULL;
 
 static int IncrementExceptionCount(std::atomic<int>& counter) {
     return counter.fetch_add(1, std::memory_order_acq_rel) + 1;
+}
+
+static void ActivateCrashTrace() {
+    g_CrashTraceActive.store(true, std::memory_order_release);
 }
 
 // Register this process with WER (Windows Error Reporting) so crash dumps are
@@ -133,6 +138,9 @@ void SetCrashProcessName(const char* name) {
 // Trace function for debugging the crash handler itself
 // Thread-safe: uses mutex to prevent concurrent file corruption
 void TraceCrash(const char* msg) {
+    if (!msg || !g_CrashTraceActive.load(std::memory_order_acquire)) {
+        return;
+    }
     std::lock_guard<std::mutex> lock(g_TraceCrashMutex);
     std::string dumpDir;
     {
@@ -160,6 +168,7 @@ struct DumpParams {
 DWORD WINAPI DumpWorker(LPVOID lpParam) {
     std::unique_ptr<DumpParams> params(static_cast<DumpParams*>(lpParam));
 
+    ActivateCrashTrace();
     TraceCrash("DumpWorker started");
 
     // Read dump directory under mutex
@@ -366,6 +375,8 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
+    ActivateCrashTrace();
+
     // STATUS_STACK_BUFFER_OVERRUN (0xC0000409) is often raised via __fastfail()
     // which bypasses normal VEH. If we catch it here, it's a second-chance
     // or the process has a custom handler. Always dump these - they indicate
@@ -563,6 +574,7 @@ static LPTOP_LEVEL_EXCEPTION_FILTER g_OldUnhandledFilter = NULL;
 LONG WINAPI UnhandledExceptionFilterCallback(EXCEPTION_POINTERS* pExceptionPointers) {
     DWORD code = pExceptionPointers->ExceptionRecord->ExceptionCode;
 
+    ActivateCrashTrace();
     char codeStr[128];
     snprintf(codeStr, sizeof(codeStr), "UnhandledExceptionFilter: 0x%08lX at 0x%p (TID:%lu)", code,
              pExceptionPointers->ExceptionRecord->ExceptionAddress, GetCurrentThreadId());

@@ -417,10 +417,11 @@ bool InjectionManager::InitializeWMI() {
     sinkSetupUs = Log_GetQpcUs() - phaseStartUs;
 
     // Exec Notification Query
-    // Use WITHIN 0.1 for high responsiveness (100ms polling by WMI)
+    // Use WITHIN 0.5 to reduce idle WMI churn while still reacting to launches
+    // within half a second.
     phaseStartUs = Log_GetQpcUs();
     hres = pSvc->ExecNotificationQueryAsync(_bstr_t("WQL"),
-                                            _bstr_t("SELECT * FROM __InstanceCreationEvent WITHIN 0.1 WHERE "
+                                            _bstr_t("SELECT * FROM __InstanceCreationEvent WITHIN 0.5 WHERE "
                                                     "TargetInstance ISA 'Win32_Process'"),
                                             WBEM_FLAG_SEND_STATUS, NULL, pStubSink);
     notificationUs = Log_GetQpcUs() - phaseStartUs;

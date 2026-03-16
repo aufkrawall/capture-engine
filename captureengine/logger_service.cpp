@@ -103,8 +103,13 @@ int LoggerProcessMain(const AppConfig& config) {
         }
 
         // 2. Poll all active sessions for new logs
+        bool hasPendingLogs = false;
+        bool hasActiveSource = false;
         for (auto it = sessions.begin(); it != sessions.end();) {
             Session& s = it->second;
+            if (s.shm->GetSourcePid() != 0) {
+                hasActiveSource = true;
+            }
 
             // Check if process is still alive?
             // We can check if shm is still valid or use GetExitCodeProcess if we had
@@ -112,6 +117,9 @@ int LoggerProcessMain(const AppConfig& config) {
 
             uint32_t writeIdx = s.shm->logs.writeIndex.load(std::memory_order_acquire);
             uint32_t readIdx = s.lastReadIndex;  // Use session's tracked index, not SHM's stale value
+            if (readIdx != writeIdx) {
+                hasPendingLogs = true;
+            }
 
             while (readIdx != writeIdx) {
                 uint32_t slotIdx = readIdx % SharedMemoryLayout::LogBuffer::SLOT_COUNT;
@@ -177,12 +185,15 @@ int LoggerProcessMain(const AppConfig& config) {
             ++it;
         }
 
-        Sleep(100);  // Poll every 100ms
-
-        // Check for shutdown signal
-        if (hShutdownEvent != INVALID_HANDLE_VALUE && WaitForSingleObject(hShutdownEvent, 0) == WAIT_OBJECT_0) {
-            LogInfo("[Logger] Shutdown signal received, exiting");
-            break;
+        DWORD waitMs = hasPendingLogs ? 100 : (hasActiveSource ? 250 : 1000);
+        if (hShutdownEvent != INVALID_HANDLE_VALUE) {
+            DWORD waitResult = WaitForSingleObject(hShutdownEvent, waitMs);
+            if (waitResult == WAIT_OBJECT_0) {
+                LogInfo("[Logger] Shutdown signal received, exiting");
+                break;
+            }
+        } else {
+            Sleep(waitMs);
         }
     }
 

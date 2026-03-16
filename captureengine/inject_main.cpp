@@ -56,10 +56,11 @@ static InjectorConfigState BuildInjectorConfigState(const AppConfig& config) {
     const bool screenGrabMode = (config.captureMethod == "screengrab" || config.captureMethod == "framegrab" ||
                                  config.captureMethod == "desktop_dup");
     const bool overlayOnlyInjection = screenGrabMode && !config.overlayWhitelist.empty();
+    const bool hasInjectionTargets = !config.gameWhitelist.empty() || !config.overlayWhitelist.empty();
 
     InjectorConfigState state;
     state.config = config;
-    state.allowInjection = !screenGrabMode || overlayOnlyInjection;
+    state.allowInjection = hasInjectionTargets && (!screenGrabMode || overlayOnlyInjection);
 
     if (!state.allowInjection) {
         state.config.gameWhitelist.clear();
@@ -418,7 +419,7 @@ int InjectProcessMain(const AppConfig& config) {
         configureInjector(injector);
         LogInfo("[Inject] Injection manager initialized");
     } else {
-        LogInfo("[Inject] Injection manager SKIPPED (capture_method=%s, no overlay whitelist targets)",
+        LogInfo("[Inject] Injection manager SKIPPED (capture_method=%s, no active whitelist targets)",
                 currentConfig.captureMethod.c_str());
     }
 
@@ -525,11 +526,14 @@ int InjectProcessMain(const AppConfig& config) {
 
         // Update injector (scan for games, inject)
         // Update injector (process pending WMI injections)
-        if (injector) {
+        static DWORD lastInjectorUpdate = 0;
+        DWORD now = GetTickCount();
+        if (injector && (lastInjectorUpdate == 0 || (now - lastInjectorUpdate) >= 500)) {
             injector->Update();
+            lastInjectorUpdate = now;
         }
 
-        Sleep(10);  // Main loop sleep (low latency for IPC)
+        Sleep(injector ? 100 : 250);
     }
 
     // Signal hook to exit
