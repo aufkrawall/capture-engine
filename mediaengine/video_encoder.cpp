@@ -2881,6 +2881,17 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
 
     encodeFrameCounter++;
 
+    FrameStats stats;
+    stats.frameNumber = encodeFrameCounter;
+    stats.ptsMs = pts / 1000;
+
+    double expectedFrameMs = 1000.0 / codecCtx->framerate.num;
+    if (g_lastFramePts >= 0) {
+        stats.actualPtsDiff = (pts - g_lastFramePts) / 1000;
+        stats.expectedPtsDiff = (int64_t)expectedFrameMs;
+    }
+    g_lastFramePts = pts;
+
     // Log frame stats periodically (every 120 frames = ~1 sec at 120fps)
     if (encodeFrameCounter - lastLogFrameCount >= kFpsLogIntervalFrames) {
         if (startPts >= 0 && pts > startPts) {
@@ -3104,7 +3115,6 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     av_packet_free(&pkt);
 
     // Log individual slow frames for debugging
-    double expectedFrameMs = 1000.0 / (double)codecCtx->framerate.num;
     if (totalMs > expectedFrameMs * 2.0) {
         std::string features = "";
         if (savedConfig.lookahead)
@@ -3126,9 +3136,13 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     if (encodeFrameCounter % 120 == 0) {
         DLL_Log(
             "[Framegrab PERF] Frame %d: total=%.2fms convert=%.2f "
-            "encode=%.2f "
-            "packets=%d",
-            encodeFrameCounter, totalMs, convertMs, encodeMs, packetCount);
+            "encode=%.2f packets=%d skipped=%lld duplicated=%lld",
+            encodeFrameCounter, totalMs, convertMs, encodeMs, packetCount, skippedFrameCount, duplicatedFrameCount);
+        if (stats.actualPtsDiff > 0) {
+            double jitter = (double)(stats.actualPtsDiff - stats.expectedPtsDiff);
+            DLL_Log("[Framegrab SMOOTHNESS] Expected frame interval: %lldms Actual: %lldms Jitter: %.2fms",
+                    stats.expectedPtsDiff, stats.actualPtsDiff, jitter);
+        }
     }
 
     av_frame_free(&d3d11Frame);

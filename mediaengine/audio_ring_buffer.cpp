@@ -41,7 +41,10 @@ size_t AudioRingBuffer::WriteRetainNew(const float* data, size_t count) {
 
     if (count > capacity) {
         // Can't fit even in an empty buffer; write only the newest `capacity` samples.
-        data += (count - capacity);
+        size_t dropped = count - capacity;
+        retainedSamples.fetch_add(dropped, std::memory_order_relaxed);
+        overflowFlag.store(true, std::memory_order_relaxed);
+        data += dropped;
         count = capacity;
     }
 
@@ -49,8 +52,11 @@ size_t AudioRingBuffer::WriteRetainNew(const float* data, size_t count) {
     size_t freeSpace = capacity - avail;
 
     if (count > freeSpace) {
-        // Drop oldest samples to make room — no droppedSamples increment.
+        // Drop oldest samples to make room and track the trim separately from
+        // true "new input was discarded" overflow drops.
         size_t needDrop = count - freeSpace;
+        retainedSamples.fetch_add(needDrop, std::memory_order_relaxed);
+        overflowFlag.store(true, std::memory_order_relaxed);
         readPos = (readPos + needDrop) % capacity;
         avail -= needDrop;
     }
@@ -129,4 +135,5 @@ void AudioRingBuffer::Clear() {
     available.store(0, std::memory_order_release);
     overflowFlag.store(false, std::memory_order_relaxed);
     droppedSamples.store(0, std::memory_order_relaxed);  // Reset dropped counter on clear
+    retainedSamples.store(0, std::memory_order_relaxed);
 }

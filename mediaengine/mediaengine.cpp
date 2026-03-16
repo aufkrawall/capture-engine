@@ -46,6 +46,10 @@ public:
         int dropFadeSamplesRemaining = 0;               // Remaining samples for post-drop transition smoothing
         float dropFadeStartL = 0.0f;                    // Left sample anchor for drop transition
         float dropFadeStartR = 0.0f;                    // Right sample anchor for drop transition
+        uint64_t overflowDropSamples = 0;               // Newest samples dropped before entering the ring buffer
+        uint64_t latencyTrimSamples = 0;                // Oldest samples trimmed to keep latency bounded
+        uint64_t postResampleTrimSamples = 0;           // Samples discarded from post-resample backlog cap
+        uint64_t underrunPadSamples = 0;                // Silence-padded samples due to source underrun
 
         AudioConfig config;
         int track = 0;  // Target track number
@@ -397,6 +401,10 @@ public:
                 src.dropFadeSamplesRemaining = 0;
                 src.dropFadeStartL = 0.0f;
                 src.dropFadeStartR = 0.0f;
+                src.overflowDropSamples = 0;
+                src.latencyTrimSamples = 0;
+                src.postResampleTrimSamples = 0;
+                src.underrunPadSamples = 0;
             }
 
             // Start all audio sources
@@ -510,6 +518,10 @@ public:
             src.dropFadeSamplesRemaining = 0;
             src.dropFadeStartL = 0.0f;
             src.dropFadeStartR = 0.0f;
+            src.overflowDropSamples = 0;
+            src.latencyTrimSamples = 0;
+            src.postResampleTrimSamples = 0;
+            src.underrunPadSamples = 0;
         }
 
         // Reset video frame tracking for next recording
@@ -747,6 +759,7 @@ public:
                 size_t droppedFloats = src.ringBuffer->GetAndClearDroppedSamples();
                 if (droppedFloats > 0) {
                     size_t droppedSamples = droppedFloats / CHANNELS;
+                    src.overflowDropSamples += droppedSamples;
                     DLL_Log(
                         "[PullAudio] WARNING: Ring buffer overflow - %zu samples "
                         "dropped for src=%d",
@@ -756,6 +769,16 @@ public:
                     // Without this, the controller sees fewer output samples than
                     // expected and overcorrects the resampling ratio.
                     src.syncSamplesOutput += (int64_t)droppedSamples;
+                }
+
+                size_t retainedFloats = src.ringBuffer->GetAndClearRetainedSamples();
+                if (retainedFloats > 0) {
+                    size_t retainedSamples = retainedFloats / CHANNELS;
+                    src.latencyTrimSamples += retainedSamples;
+                    DLL_Log(
+                        "[PullAudio] WARNING: Ring buffer latency trim - %zu oldest samples "
+                        "dropped for src=%d",
+                        retainedSamples, (int)srcIdx);
                 }
 
                 // =====================================================
@@ -790,12 +813,14 @@ public:
                             }
                             src.dropFadeSamplesRemaining = (int)DROP_FADE_SAMPLES;
 
-                            src.ringBuffer->Skip((size_t)dropSamples * CHANNELS);
+                            size_t trimmedFloats = src.ringBuffer->Skip((size_t)dropSamples * CHANNELS);
+                            size_t trimmedSamples = trimmedFloats / CHANNELS;
+                            src.latencyTrimSamples += trimmedSamples;
                             if (dropLogCounter++ % 500 == 0) {
                                 DLL_Log(
                                     "[PullAudio] Audio latency cap: src %d ahead by %lld samples - "
                                     "trimming %lld (capped from %lld)",
-                                    (int)srcIdx, (int64_t)rbAvailable - TARGET_LATENCY_SAMPLES, dropSamples,
+                                    (int)srcIdx, (int64_t)rbAvailable - TARGET_LATENCY_SAMPLES, trimmedSamples,
                                     dropSamplesTotal);
                             }
                             rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
@@ -917,6 +942,14 @@ public:
                 const size_t MAX_POST_RESAMPLE_FLOATS = std::max(totalFloats * 4, MIN_POST_RESAMPLE_FLOATS);
                 if (src.postResampleBuffer.size() > MAX_POST_RESAMPLE_FLOATS) {
                     size_t excess = src.postResampleBuffer.size() - MAX_POST_RESAMPLE_FLOATS;
+                    src.postResampleTrimSamples += excess / CHANNELS;
+                    if (dropLogCounter++ % 100 == 0) {
+                        DLL_Log(
+                            "[PullAudio] WARNING: Post-resample buffer trim - src %d dropping %zu samples "
+                            "(buffer=%zu cap=%zu)",
+                            (int)srcIdx, excess / CHANNELS, src.postResampleBuffer.size() / CHANNELS,
+                            MAX_POST_RESAMPLE_FLOATS / CHANNELS);
+                    }
                     src.postResampleBuffer.erase(src.postResampleBuffer.begin(),
                                                  src.postResampleBuffer.begin() + (std::ptrdiff_t)excess);
                 }
@@ -931,6 +964,16 @@ public:
                     src.postResampleBuffer.erase(src.postResampleBuffer.begin(),
                                                  src.postResampleBuffer.begin() + toCopy);
                     activeSources++;
+                }
+                if (toCopy < totalFloats) {
+                    size_t padSamples = (totalFloats - toCopy) / CHANNELS;
+                    src.underrunPadSamples += padSamples;
+                    if (padSamples >= (size_t)(SAMPLE_RATE / 200) && dropLogCounter++ % 100 == 0) {
+                        DLL_Log(
+                            "[PullAudio] WARNING: Source underrun - src %d padding %zu samples with silence "
+                            "(available=%zu needed=%zu)",
+                            (int)srcIdx, padSamples, available / CHANNELS, totalFloats / CHANNELS);
+                    }
                 }
                 // If toCopy < totalFloats, the rest is already zero (silence padding)
 
@@ -1055,9 +1098,10 @@ public:
                 encodedSamplesPerSource[srcIdx] += samplesToEncode;
             }
 
-            // A/V SYNC MONITORING: Periodic check for drift detection
-            // Log every ~60 seconds (6000 frames @ 100fps, 7200 @ 120fps)
-            if (syncCheckCounter++ % 6000 == 0 && firstSrcIdx < encodedSamplesPerSource.size()) {
+            // A/V SYNC MONITORING: Periodic check for drift detection and audio health.
+            // Log about every 10 seconds at high capture rates so short-lived issues
+            // still leave useful breadcrumbs in the recording logs.
+            if (syncCheckCounter++ % 1200 == 0 && firstSrcIdx < encodedSamplesPerSource.size()) {
                 int64_t wallVideoMs = videoElapsedMs.load();
                 int64_t videoMs = wallVideoMs;
                 if (videoEnc) {
@@ -1073,19 +1117,28 @@ public:
                 // Gather ring buffer level and drift compensation data
                 size_t rbLevel = 0;
                 int64_t syncOutput = 0;
-                size_t droppedTotal = 0;
+                uint64_t overflowDropped = 0;
+                uint64_t latencyTrimmed = 0;
+                uint64_t postTrimmed = 0;
+                uint64_t underrunPadded = 0;
                 if (firstSrcIdx < audioSources.size()) {
                     auto& src = audioSources[firstSrcIdx];
                     if (src.ringBuffer)
                         rbLevel = src.ringBuffer->GetAvailable() / CHANNELS;
                     syncOutput = src.syncSamplesOutput;
+                    overflowDropped = src.overflowDropSamples;
+                    latencyTrimmed = src.latencyTrimSamples;
+                    postTrimmed = src.postResampleTrimSamples;
+                    underrunPadded = src.underrunPadSamples;
                 }
 
                 DLL_Log(
                     "[A/V SYNC CHECK] Track %d: Video=%lld ms, Audio=%lld ms, "
                     "Drift=%lld ms, VideoWall=%lld ms, RBLevel=%zu samples, "
-                    "SyncOutput=%lld, Dropped=%zu",
-                    track, videoMs, audioMs, avDrift, wallVideoMs, rbLevel, syncOutput, droppedTotal);
+                    "SyncOutput=%lld, Overflow=%llu, LatencyTrim=%llu, PostTrim=%llu, Pad=%llu",
+                    track, videoMs, audioMs, avDrift, wallVideoMs, rbLevel, syncOutput,
+                    (unsigned long long)overflowDropped, (unsigned long long)latencyTrimmed,
+                    (unsigned long long)postTrimmed, (unsigned long long)underrunPadded);
 
                 if (std::abs(avDrift) > 100) {
                     DLL_Log(

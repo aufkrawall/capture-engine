@@ -9,6 +9,7 @@ TEST(AudioRingBufferTest, InitialState) {
     EXPECT_EQ(ring.GetFree(), 8u);
     EXPECT_FALSE(ring.HasOverflowed());
     EXPECT_EQ(ring.GetAndClearDroppedSamples(), 0u);
+    EXPECT_EQ(ring.GetAndClearRetainedSamples(), 0u);
 }
 
 TEST(AudioRingBufferTest, WriteReadRoundTrip) {
@@ -53,6 +54,7 @@ TEST(AudioRingBufferTest, WriteRetainNewKeepsLatestSamples) {
     EXPECT_EQ(ring.Write(initial, 4), 4u);
     EXPECT_EQ(ring.WriteRetainNew(newest, 3), 3u);
     EXPECT_EQ(ring.GetAndClearDroppedSamples(), 0u);
+    EXPECT_EQ(ring.GetAndClearRetainedSamples(), 3u);
 
     std::vector<float> output(4, 0.0f);
     EXPECT_EQ(ring.Read(output.data(), output.size()), 4u);
@@ -69,9 +71,11 @@ TEST(AudioRingBufferTest, ClearResetsStateAndCounters) {
     EXPECT_EQ(ring.Write(input, 6), 4u);
     EXPECT_TRUE(ring.HasOverflowed());
     EXPECT_EQ(ring.GetAndClearDroppedSamples(), 2u);
+    EXPECT_EQ(ring.GetAndClearRetainedSamples(), 0u);
 
     ring.Clear();
     EXPECT_EQ(ring.GetAndClearDroppedSamples(), 0u);
+    EXPECT_EQ(ring.GetAndClearRetainedSamples(), 0u);
     EXPECT_EQ(ring.Write(input, 6), 4u);
     EXPECT_TRUE(ring.HasOverflowed());
 
@@ -80,4 +84,5 @@ TEST(AudioRingBufferTest, ClearResetsStateAndCounters) {
     EXPECT_EQ(ring.GetFree(), 4u);
     EXPECT_FALSE(ring.HasOverflowed());
     EXPECT_EQ(ring.GetAndClearDroppedSamples(), 0u);
+    EXPECT_EQ(ring.GetAndClearRetainedSamples(), 0u);
 }

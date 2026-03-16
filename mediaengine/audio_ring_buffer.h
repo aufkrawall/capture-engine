@@ -12,7 +12,8 @@
  *
  * Overflow Handling:
  * - When buffer is full, new samples are dropped (not old)
- * - droppedSamples counter tracks total drops for gap compensation
+ * - droppedSamples counter tracks total drops of NEW samples for gap compensation
+ * - retainedSamples counter tracks OLD samples trimmed to keep the newest audio
  * - Downstream encoder should check GetAndClearDroppedSamples() and insert
  * silence
  */
@@ -35,8 +36,8 @@ public:
     // Atomically makes room by dropping the OLDEST samples if needed, then
     // writes all of `data`. Used by the capture thread to ensure recent audio
     // always reaches the ring buffer without a race between GetFree()/Skip()/
-    // Write(). Does NOT increment droppedSamples — this is intentional latency
-    // management, not true data loss.
+    // Write(). Trims are tracked separately via GetAndClearRetainedSamples() so
+    // telemetry can distinguish latency management from dropped new input.
     // Returns count (always writes all data unless count > capacity).
     size_t WriteRetainNew(const float* data, size_t count);
 
@@ -86,6 +87,12 @@ public:
         return droppedSamples.exchange(0);
     }
 
+    // Get total oldest samples trimmed since last clear (telemetry only).
+    // Returns the count AND resets to zero atomically.
+    size_t GetAndClearRetainedSamples() {
+        return retainedSamples.exchange(0);
+    }
+
 private:
     std::vector<float> buffer;
     size_t capacity;
@@ -93,6 +100,7 @@ private:
     size_t writePos;
     std::atomic<size_t> available;
     std::atomic<bool> overflowFlag{false};
-    std::atomic<size_t> droppedSamples{0};  // Track samples dropped due to overflow
+    std::atomic<size_t> droppedSamples{0};   // Track samples dropped due to overflow
+    std::atomic<size_t> retainedSamples{0};  // Track oldest samples trimmed to keep latest audio
     std::mutex mutex;
 };

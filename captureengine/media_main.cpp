@@ -474,6 +474,8 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
     uint32_t droppedCount = 0;
     uint32_t pacingDroppedCount = 0;
     uint32_t emptySpinCount = 0;
+    uint32_t lastDuplicateCount = 0;
+    uint32_t lastLateCount = 0;
 
     while (!g_InjectCaptureShutdown && g_Recording) {
         // Create encoder textures as soon as resolution is available (before frames arrive)
@@ -683,16 +685,32 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
         }
 
         DWORD now = GetTickCount();
-        if (now - lastLog >= 2000) {
-            if (pushedCount > 0 || droppedCount > 0 || pacingDroppedCount > 0) {
-                LogInfo(
-                    "[Inject Thread] Pushed: %u, Dropped(Full): %u, "
-                    "Dropped(Pacing): %u",
-                    pushedCount, droppedCount, pacingDroppedCount);
-                pushedCount = 0;
-                droppedCount = 0;
-                pacingDroppedCount = 0;
+        if (now - lastLog >= 1000) {
+            uint32_t dupDelta = 0;
+            uint32_t lateDelta = 0;
+            uint32_t overloadFlags = 0;
+            uint32_t muxQueueBytes = 0;
+            if (g_pSharedMem) {
+                uint32_t currentDup = g_pSharedMem->runtimeState.duplicateFrames.load(std::memory_order_relaxed);
+                uint32_t currentLate = g_pSharedMem->runtimeState.lateFrames.load(std::memory_order_relaxed);
+                dupDelta = currentDup - lastDuplicateCount;
+                lateDelta = currentLate - lastLateCount;
+                lastDuplicateCount = currentDup;
+                lastLateCount = currentLate;
+                overloadFlags = g_pSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
+                muxQueueBytes = g_pSharedMem->runtimeState.muxQueueBytes.load(std::memory_order_relaxed);
             }
+
+            uint32_t inputFrames = pushedCount + droppedCount + pacingDroppedCount;
+            LogInfo(
+                "[Inject Perf] Input: %u | Queued: %u | DropFull: %u | DropPace: %u | Queue: %u | Dup: %u | "
+                "Late: %u | Encode: %lldus | Fence: %lldus | Mux: %uKB | Overload: 0x%X",
+                inputFrames, pushedCount, droppedCount, pacingDroppedCount, (uint32_t)g_FrameQueue.Size(), dupDelta,
+                lateDelta, MediaEngine_GetLastFrameEncodeTimeUs(), MediaEngine_GetLastFrameFenceWaitUs(),
+                (muxQueueBytes + 1023u) / 1024u, overloadFlags);
+            pushedCount = 0;
+            droppedCount = 0;
+            pacingDroppedCount = 0;
             lastLog = now;
         }
     }
@@ -708,6 +726,8 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
     DWORD lastDiagTime = 0;
     uint32_t lastCallbackCount = 0;
     uint64_t totalDroppedAtStart = 0;
+    uint32_t lastDuplicateCount = 0;
+    uint32_t lastLateCount = 0;
     bool sessionPrimed = false;
 
     while (!g_WgcCaptureShutdown) {
@@ -717,6 +737,8 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             sessionPrimed = false;
             lastCallbackCount = 0;
             totalDroppedAtStart = 0;
+            lastDuplicateCount = 0;
+            lastLateCount = 0;
             lastDiagTime = 0;
             continue;
         }
@@ -724,6 +746,10 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
         if (!sessionPrimed) {
             lastCallbackCount = g_WgcCap->GetCallbackFrameCount();
             totalDroppedAtStart = g_FrameQueue.GetDroppedCount();
+            if (g_pSharedMem) {
+                lastDuplicateCount = g_pSharedMem->runtimeState.duplicateFrames.load(std::memory_order_relaxed);
+                lastLateCount = g_pSharedMem->runtimeState.lateFrames.load(std::memory_order_relaxed);
+            }
             lastDiagTime = GetTickCount();
             sessionPrimed = true;
             continue;
@@ -738,10 +764,28 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
                 static_cast<uint32_t>(queueDropped >= totalDroppedAtStart ? (queueDropped - totalDroppedAtStart) : 0);
             int64_t copyUs = g_WgcCap->GetLastCopyTimeUs();
             int64_t encodeUs = MediaEngine_GetLastFrameEncodeTimeUs();
+            int64_t fenceUs = MediaEngine_GetLastFrameFenceWaitUs();
             uint32_t skipped = g_WgcCap->GetSkippedFrameCount();
+            uint32_t dupDelta = 0;
+            uint32_t lateDelta = 0;
+            uint32_t overloadFlags = 0;
+            uint32_t muxQueueBytes = 0;
+            if (g_pSharedMem) {
+                uint32_t currentDup = g_pSharedMem->runtimeState.duplicateFrames.load(std::memory_order_relaxed);
+                uint32_t currentLate = g_pSharedMem->runtimeState.lateFrames.load(std::memory_order_relaxed);
+                dupDelta = currentDup - lastDuplicateCount;
+                lateDelta = currentLate - lastLateCount;
+                lastDuplicateCount = currentDup;
+                lastLateCount = currentLate;
+                overloadFlags = g_pSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
+                muxQueueBytes = g_pSharedMem->runtimeState.muxQueueBytes.load(std::memory_order_relaxed);
+            }
 
-            LogInfo("[WGC Perf] FPS: %u | Queue: %u | Dropped: %u | Skipped: %u | Copy: %lldus | Encode: %lldus",
-                    framesThisSecond, (uint32_t)g_FrameQueue.Size(), totalDropped, skipped, copyUs, encodeUs);
+            LogInfo(
+                "[WGC Perf] FPS: %u | Queue: %u | Dropped: %u | Skipped: %u | Dup: %u | Late: %u | "
+                "Copy: %lldus | Encode: %lldus | Fence: %lldus | Mux: %uKB | Overload: 0x%X",
+                framesThisSecond, (uint32_t)g_FrameQueue.Size(), totalDropped, skipped, dupDelta, lateDelta, copyUs,
+                encodeUs, fenceUs, (muxQueueBytes + 1023u) / 1024u, overloadFlags);
 
             lastCallbackCount = currentCount;
             lastDiagTime = now;
