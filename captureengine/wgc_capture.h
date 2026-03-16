@@ -64,12 +64,10 @@ public:
     // Timestamp is in QPC ticks (consistent with inject mode)
     bool GetNextFrame(WGCCapturedFrame& frame);
 
-    // Set whether the cursor should be included in the recording output.
-    // In WGC mode we composite it in the encoder rather than using WGC native cursor capture.
+    // Set whether the cursor should be included in the WGC capture session.
     void SetCaptureCursor(bool enabled);
 
     // Get the top-left corner of the captured content in screen coordinates.
-    // Used so software cursor overlay can convert global cursor coordinates into frame-relative space.
     bool GetCaptureOrigin(int32_t& left, int32_t& top) const;
 
     // Optional: Set callback for frame arrival (for async processing)

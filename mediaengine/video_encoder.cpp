@@ -2529,48 +2529,13 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         }
     }
 
-    // WGC native cursor capture is disabled to avoid compositor hitches on
-    // cursor motion. Reuse the same encoder-side cursor overlay path we use in
-    // inject mode, but offset into the captured region.
-    bool cursorVisible = false;
-    int cursorX = 0, cursorY = 0;
-    bool useSoftwareCursorComposite = false;
-
-    if (captureCursor && cursorRenderer) {
-        if (vpSupportsOverlay) {
-            CURSORINFO ci = {sizeof(CURSORINFO)};
-            if (GetCursorInfo(&ci)) {
-                if (encodeFrameCounter % 100 == 1) {
-                    DLL_Log("[WGC Cursor] Frame %d: flags=%d hCursor=%p pos=(%d,%d) origin=(%d,%d)", encodeFrameCounter,
-                            ci.flags, (void*)ci.hCursor, ci.ptScreenPos.x, ci.ptScreenPos.y, captureLeft, captureTop);
-                }
-
-                if (ci.hCursor) {
-                    cursorVisible = true;
-                    cursorX = ci.ptScreenPos.x - captureLeft;
-                    cursorY = ci.ptScreenPos.y - captureTop;
-                    activeCursor = GetCursorCacheEntry(ci.hCursor);
-                }
-            }
-        } else if (cursorRenderer->Init(d3d11Device, d3d11Context)) {
-            useSoftwareCursorComposite = true;
-        }
-    }
-
-    if (useSoftwareCursorComposite &&
-        !cursorRenderer->CompositeOntoFrame(bgraTexture, frameWidth, frameHeight, captureLeft, captureTop) &&
-        encodeFrameCounter % 300 == 1) {
-        DLL_Log("[WGC Cursor] Software cursor composite unavailable for frame %d", encodeFrameCounter);
-    }
-
-    // Convert captured RGB -> NV12/P010 using Video Processor. Cursor overlay is
-    // either supplied as a secondary VP stream or already composited onto the
-    // BGRA frame above.
+    // Convert captured RGB -> NV12/P010 using Video Processor. In WGC mode the
+    // cursor is supplied by Windows via native cursor capture when enabled.
     auto beforeConvert = PerfTimer::now();
     ID3D11Texture2D* nv12Tex = nullptr;
 
     // Scoped Lock for D3D11 Immediate Context (protects Blt/CopyResource)
-    bool convertSuccess = ConvertBGRAtoNV12(bgraTexture, &nv12Tex, cursorVisible, cursorX, cursorY, false);
+    bool convertSuccess = ConvertBGRAtoNV12(bgraTexture, &nv12Tex, false, 0, 0, false);
 
     if (!convertSuccess) {
         DLL_Log("[VideoEncoder] Frame %d: GPU color conversion failed", encodeFrameCounter);
@@ -3393,6 +3358,36 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
         }
     }
 
+    struct KeyedMutexGuard {
+        IDXGIKeyedMutex* mutex = nullptr;
+        bool acquired = false;
+
+        ~KeyedMutexGuard() {
+            if (!mutex) {
+                return;
+            }
+            if (acquired) {
+                mutex->ReleaseSync(0);
+            }
+            mutex->Release();
+        }
+    } keyedMutexGuard;
+
+    bgraTexture->QueryInterface(IID_PPV_ARGS(&keyedMutexGuard.mutex));
+    if (keyedMutexGuard.mutex) {
+        HRESULT kmHr = keyedMutexGuard.mutex->AcquireSync(0, 0);
+        if (kmHr != S_OK) {
+            static int kmFailCount = 0;
+            if (kmFailCount++ < 5) {
+                DLL_Log("[VideoProcessor] KeyedMutex AcquireSync failed: HR=%x", kmHr);
+            }
+            keyedMutexGuard.mutex->Release();
+            keyedMutexGuard.mutex = nullptr;
+            return false;
+        }
+        keyedMutexGuard.acquired = true;
+    }
+
     // Try to create the VP input view directly from the source texture only for
     // inject/shared-handle frames. WGC/direct-texture frames are valid capture
     // inputs, but probing them with CreateVideoProcessorInputView can raise a
@@ -3693,22 +3688,6 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
         }
     }
 
-    // Acquire keyed mutex if the source texture has SHARED_KEYEDMUTEX.
-    // NT-handle shared textures require mutex acquisition before GPU reads.
-    IDXGIKeyedMutex* keyedMutex = nullptr;
-    bgraTexture->QueryInterface(IID_PPV_ARGS(&keyedMutex));
-    if (keyedMutex) {
-        HRESULT kmHr = keyedMutex->AcquireSync(0, 0);
-        if (FAILED(kmHr)) {
-            static int kmFailCount = 0;
-            if (kmFailCount++ < 5) {
-                DLL_Log("[VideoProcessor] KeyedMutex AcquireSync failed: HR=%x", kmHr);
-            }
-            keyedMutex->Release();
-            keyedMutex = nullptr;
-        }
-    }
-
     // Perform the conversion using current buffer
     int bufIdx = currentNV12Buffer;
     hr = videoContext->VideoProcessorBlt(videoProcessor, outputViews[bufIdx], 0, streamCount, streams);
@@ -3727,11 +3706,6 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
     }
 
     localInputView->Release();
-
-    if (keyedMutex) {
-        keyedMutex->ReleaseSync(0);
-        keyedMutex->Release();
-    }
 
     if (FAILED(hr)) {
         static int bltFailCount = 0;

@@ -78,6 +78,82 @@ bool IsPreferredScreenGrab() {
 void SetPreferredScreenGrab(bool enabled) {
     g_PreferScreenGrab.store(enabled, std::memory_order_release);
 }
+
+bool GetWindowClientRectInScreen(HWND hwnd, RECT& rect) {
+    RECT clientRect = {};
+    if (!GetClientRect(hwnd, &clientRect)) {
+        return false;
+    }
+
+    POINT topLeft = {clientRect.left, clientRect.top};
+    POINT bottomRight = {clientRect.right, clientRect.bottom};
+    if (!ClientToScreen(hwnd, &topLeft) || !ClientToScreen(hwnd, &bottomRight)) {
+        return false;
+    }
+
+    rect.left = topLeft.x;
+    rect.top = topLeft.y;
+    rect.right = bottomRight.x;
+    rect.bottom = bottomRight.y;
+    return true;
+}
+
+bool RectNearlyMatches(const RECT& lhs, const RECT& rhs, LONG tolerance) {
+    auto absDiff = [](LONG a, LONG b) -> LONG { return (a >= b) ? (a - b) : (b - a); };
+
+    return absDiff(lhs.left, rhs.left) <= tolerance && absDiff(lhs.top, rhs.top) <= tolerance &&
+           absDiff(lhs.right, rhs.right) <= tolerance && absDiff(lhs.bottom, rhs.bottom) <= tolerance;
+}
+
+bool IsWindowFullscreenLike(HWND hwnd) {
+    if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd)) {
+        return false;
+    }
+
+    HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    if (!monitor) {
+        return false;
+    }
+
+    MONITORINFO monitorInfo = {sizeof(monitorInfo)};
+    if (!GetMonitorInfo(monitor, &monitorInfo)) {
+        return false;
+    }
+
+    RECT windowRect = {};
+    RECT clientRect = {};
+    const bool haveWindowRect = GetWindowRect(hwnd, &windowRect) != FALSE;
+    const bool haveClientRect = GetWindowClientRectInScreen(hwnd, clientRect);
+    constexpr LONG kFullscreenTolerancePx = 8;
+
+    if (!haveWindowRect && !haveClientRect) {
+        return false;
+    }
+
+    const bool windowMatchesMonitor =
+        haveWindowRect && RectNearlyMatches(windowRect, monitorInfo.rcMonitor, kFullscreenTolerancePx);
+    const bool clientMatchesMonitor =
+        haveClientRect && RectNearlyMatches(clientRect, monitorInfo.rcMonitor, kFullscreenTolerancePx);
+    if (!windowMatchesMonitor && !clientMatchesMonitor) {
+        return false;
+    }
+
+    return true;
+}
+
+bool WindowBelongsToProcess(HWND hwnd, DWORD pid) {
+    if (!hwnd || pid == 0) {
+        return false;
+    }
+
+    DWORD windowPid = 0;
+    GetWindowThreadProcessId(hwnd, &windowPid);
+    return windowPid == pid;
+}
+
+bool ShouldPreferInjectCaptureForFullscreenWindow(HWND hwnd, DWORD pid) {
+    return WindowBelongsToProcess(hwnd, pid) && IsWindowFullscreenLike(hwnd);
+}
 }  // namespace
 
 static bool JoinThreadWithTimeout(std::thread& thread, DWORD timeoutMs, const char* threadName) {
@@ -114,9 +190,6 @@ static void QueueWgcFrame(ID3D11Texture2D* texture, uint32_t width, uint32_t hei
     qf.height = height;
     qf.timestamp = timestamp;
     qf.isHDR = isHDR;
-    if (g_WgcCap) {
-        g_WgcCap->GetCaptureOrigin(qf.captureLeft, qf.captureTop);
-    }
 
     if (!g_FrameQueue.Push(std::move(qf))) {
         texture->Release();
@@ -186,8 +259,7 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
     g_WgcCap->SetDirectFrameCallback(QueueWgcFrame);
     g_WgcCap->ResetStats();
     g_IsEncoderBottlenecked.store(false, std::memory_order_relaxed);
-    const uint32_t wgcHeadroomFps = (config.video.fps >= 120) ? 8u : ((config.video.fps >= 60) ? 4u : 2u);
-    const uint32_t wgcTargetFps = static_cast<uint32_t>(config.video.fps) + wgcHeadroomFps;
+    const uint32_t wgcTargetFps = (config.video.fps > 0) ? static_cast<uint32_t>(config.video.fps) : 0u;
     g_WgcCap->SetTargetFps(wgcTargetFps);
     if (!g_WgcCap->StartCapture()) {
         g_WgcCap->SetDirectFrameCallback(nullptr);
@@ -1207,9 +1279,15 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     DWORD lastEarlyWgcScan = 0;
     DWORD lastWindowScanTime = 0;
     HWND currentCapturedWindow = NULL;
+    bool currentTargetPrefersInject = false;
     uint32_t lastSourcePid = 0;
     uint32_t activeConfigSourcePid = 0;
     std::string activeConfigProcessName;
+
+    auto clearCurrentWgcTarget = [&]() {
+        currentCapturedWindow = NULL;
+        currentTargetPrefersInject = false;
+    };
 
     auto refreshActiveConfig = [&](bool forceReload) -> std::string {
         uint32_t sourcePid = 0;
@@ -1247,7 +1325,32 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         return processName;
     };
 
+    auto markInjectPreferredTarget = [&](HWND targetWindow, uint32_t sourcePid, const char* reason) -> bool {
+        if (!ShouldPreferInjectCaptureForFullscreenWindow(targetWindow, sourcePid)) {
+            return false;
+        }
+
+        if (currentTargetPrefersInject && currentCapturedWindow == targetWindow) {
+            SetPreferredScreenGrab(false);
+            return true;
+        }
+
+        currentCapturedWindow = targetWindow;
+        currentTargetPrefersInject = true;
+        SetPreferredScreenGrab(false);
+        LogInfo("[Media] %s: hooked fullscreen-like window 0x%p will use inject capture instead of WGC", reason,
+                targetWindow);
+        return true;
+    };
+
     auto primeWgcMonitorTarget = [&]() -> bool {
+        if (currentCapturedWindow == NULL && !currentTargetPrefersInject && g_WgcCap) {
+            g_WgcCap->SetCaptureCursor(config.video.captureCursor);
+            g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
+            SetPreferredScreenGrab(true);
+            return true;
+        }
+
         if (!ensureWgcDevice()) {
             return false;
         }
@@ -1263,6 +1366,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
         SetPreferredScreenGrab(true);
         currentCapturedWindow = NULL;
+        currentTargetPrefersInject = false;
         return true;
     };
 
@@ -1271,7 +1375,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             return false;
         }
 
-        if (currentCapturedWindow == targetWindow && g_WgcCap) {
+        if (currentCapturedWindow == targetWindow && g_WgcCap && !currentTargetPrefersInject) {
             g_WgcCap->SetCaptureCursor(config.video.captureCursor);
             g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
             SetPreferredScreenGrab(true);
@@ -1290,6 +1394,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
             SetPreferredScreenGrab(true);
             currentCapturedWindow = targetWindow;
+            currentTargetPrefersInject = false;
             if (logPrimed) {
                 LogInfo("[Media] WGC target primed for window 0x%p", targetWindow);
             }
@@ -1299,7 +1404,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         LogError("[Media] Failed to init WGC for found window.");
         if (!primeWgcMonitorTarget()) {
             SetPreferredScreenGrab(false);
-            currentCapturedWindow = NULL;
+            clearCurrentWgcTarget();
             return false;
         }
         return true;
@@ -1307,37 +1412,43 @@ int MediaProcessMain(const AppConfig& initialConfig) {
 
     auto prepareCaptureForRecordingStart = [&]() {
         const std::string processName = refreshActiveConfig(false);
+        const uint32_t sourcePid = g_pSharedMem ? g_pSharedMem->GetSourcePid() : 0;
 
         if (!config.wgcWindowTitles.empty()) {
             HWND matchedWindow = FindMatchingWgcWindow(config.wgcWindowTitles);
             if (matchedWindow) {
+                if (markInjectPreferredTarget(matchedWindow, sourcePid, "WGC title match")) {
+                    return;
+                }
                 primeWgcWindowTarget(matchedWindow, false);
                 return;
             }
         }
 
-        const uint32_t sourcePid = g_pSharedMem ? g_pSharedMem->GetSourcePid() : 0;
         if (sourcePid != 0 && MatchesProcessEntries(config.overlayWhitelist, processName)) {
             if (!ensureWgcDevice()) {
                 LogWarn("[Media] Overlay whitelist requested WGC but D3D11 device unavailable");
                 SetPreferredScreenGrab(false);
-                currentCapturedWindow = NULL;
+                clearCurrentWgcTarget();
                 return;
             }
 
             SetPreferredScreenGrab(true);
             HWND hGameWindow = GetMainWindowForProcess(sourcePid);
             if (hGameWindow) {
+                if (markInjectPreferredTarget(hGameWindow, sourcePid, "Overlay whitelist")) {
+                    return;
+                }
                 primeWgcWindowTarget(hGameWindow, false);
             } else if (!primeWgcMonitorTarget()) {
                 SetPreferredScreenGrab(false);
-                currentCapturedWindow = NULL;
+                clearCurrentWgcTarget();
             }
             return;
         }
 
         if (currentCapturedWindow != NULL && !IsWindow(currentCapturedWindow)) {
-            currentCapturedWindow = NULL;
+            clearCurrentWgcTarget();
         }
 
         if (!isExplicitScreenGrabConfig()) {
@@ -1356,7 +1467,10 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                 lastEarlyWgcScan = now;
                 HWND matchedWindow = FindMatchingWgcWindow(config.wgcWindowTitles);
                 if (matchedWindow) {
-                    primeWgcWindowTarget(matchedWindow, false);
+                    uint32_t sourcePid = g_pSharedMem->GetSourcePid();
+                    if (!markInjectPreferredTarget(matchedWindow, sourcePid, "Early WGC scan")) {
+                        primeWgcWindowTarget(matchedWindow, false);
+                    }
                 }
             }
         }
@@ -1431,12 +1545,18 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                 lastWindowScanTime = now;
                 HWND foundWindow = FindMatchingWgcWindow(config.wgcWindowTitles);
 
-                if (foundWindow && foundWindow != currentCapturedWindow) {
-                    LogInfo(
-                        "[Media] WGC Trigger: Found window (0x%p) matching config. "
-                        "Switching capture...",
-                        foundWindow);
-                    if (!primeWgcWindowTarget(foundWindow, true) && !ensureWgcDevice()) {
+                if (foundWindow) {
+                    if (foundWindow != currentCapturedWindow) {
+                        LogInfo(
+                            "[Media] WGC Trigger: Found window (0x%p) matching config. "
+                            "Switching capture...",
+                            foundWindow);
+                    }
+                    if (markInjectPreferredTarget(foundWindow, g_pSharedMem->GetSourcePid(), "WGC trigger")) {
+                        continue;
+                    }
+                    if (!primeWgcWindowTarget(foundWindow, foundWindow != currentCapturedWindow) &&
+                        !ensureWgcDevice()) {
                         LogWarn("[Media] WGC trigger ignored: D3D11 device unavailable");
                     }
                 } else if (!foundWindow && currentCapturedWindow != NULL) {
@@ -1445,7 +1565,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                             "[Media] Captured window 0x%p no longer valid. Reverting "
                             "to monitor/inject.",
                             currentCapturedWindow);
-                        currentCapturedWindow = NULL;
+                        clearCurrentWgcTarget();
                         if (!primeWgcMonitorTarget()) {
                             SetPreferredScreenGrab(false);
                         }
@@ -1472,6 +1592,10 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                     HWND matchedWindow =
                         config.wgcWindowTitles.empty() ? NULL : FindMatchingWgcWindow(config.wgcWindowTitles);
                     if (matchedWindow) {
+                        if (markInjectPreferredTarget(matchedWindow, currentSourcePid,
+                                                      "Overlay whitelist title match")) {
+                            continue;
+                        }
                         primeWgcWindowTarget(matchedWindow, false);
                         continue;
                     }
@@ -1479,12 +1603,16 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                     if (!ensureWgcDevice()) {
                         LogWarn("[Media] Overlay whitelist requested WGC but D3D11 device unavailable");
                         SetPreferredScreenGrab(false);
-                        currentCapturedWindow = NULL;
+                        clearCurrentWgcTarget();
                     } else {
                         SetPreferredScreenGrab(true);
 
                         HWND hGameWindow = GetMainWindowForProcess(currentSourcePid);
                         if (hGameWindow) {
+                            if (markInjectPreferredTarget(hGameWindow, currentSourcePid,
+                                                          "Overlay whitelist main window")) {
+                                continue;
+                            }
                             LogInfo(
                                 "[Media] Whitelist Optimization: Found main window 0x%p. "
                                 "Switching WGC to Window Mode.",

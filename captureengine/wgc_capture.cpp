@@ -4,8 +4,10 @@
 
 #include "wgc_capture.h"
 #include <d3d11.h>
+#include <d3d11_4.h>
 #include <dxgi.h>
 #include <dxgi1_6.h>
+#include <algorithm>
 #include <chrono>
 #include "../common/logging.h"
 #include "mediaengine_loader.h"
@@ -25,6 +27,7 @@ static std::atomic<int32_t> g_WgcInflightCallbacks{0};
 #define HAS_WGC 1
 #include <windows.graphics.capture.h>
 #include <windows.graphics.capture.interop.h>
+#include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Graphics.Capture.h>
 #include <winrt/Windows.Graphics.DirectX.Direct3D11.h>
@@ -59,6 +62,14 @@ using namespace Windows::Graphics::DirectX::Direct3D11;
 }  // namespace winrt
 
 namespace {
+template <typename T>
+void SafeRelease(T*& ptr) {
+    if (ptr) {
+        ptr->Release();
+        ptr = nullptr;
+    }
+}
+
 bool IsHdrOutputColorSpace(DXGI_COLOR_SPACE_TYPE colorSpace) {
     switch (colorSpace) {
         case DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020:
@@ -72,12 +83,87 @@ bool IsHdrOutputColorSpace(DXGI_COLOR_SPACE_TYPE colorSpace) {
             return false;
     }
 }
+
+bool GetWindowClientRectInScreen(HWND hwnd, RECT& rect) {
+    RECT clientRect = {};
+    if (!GetClientRect(hwnd, &clientRect)) {
+        return false;
+    }
+
+    POINT topLeft = {clientRect.left, clientRect.top};
+    POINT bottomRight = {clientRect.right, clientRect.bottom};
+    if (!ClientToScreen(hwnd, &topLeft) || !ClientToScreen(hwnd, &bottomRight)) {
+        return false;
+    }
+
+    rect.left = topLeft.x;
+    rect.top = topLeft.y;
+    rect.right = bottomRight.x;
+    rect.bottom = bottomRight.y;
+    return true;
+}
+
+bool RectNearlyMatches(const RECT& lhs, const RECT& rhs, LONG tolerance) {
+    auto absDiff = [](LONG a, LONG b) -> LONG { return (a >= b) ? (a - b) : (b - a); };
+
+    return absDiff(lhs.left, rhs.left) <= tolerance && absDiff(lhs.top, rhs.top) <= tolerance &&
+           absDiff(lhs.right, rhs.right) <= tolerance && absDiff(lhs.bottom, rhs.bottom) <= tolerance;
+}
+
+bool IsFullscreenLikeWindow(HWND hwnd) {
+    if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd)) {
+        return false;
+    }
+
+    HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    if (!monitor) {
+        return false;
+    }
+
+    MONITORINFO monitorInfo = {};
+    monitorInfo.cbSize = sizeof(monitorInfo);
+    if (!GetMonitorInfo(monitor, &monitorInfo)) {
+        return false;
+    }
+
+    RECT windowRect = {};
+    RECT clientRect = {};
+    const bool haveWindowRect = GetWindowRect(hwnd, &windowRect) != FALSE;
+    const bool haveClientRect = GetWindowClientRectInScreen(hwnd, clientRect);
+    constexpr LONG kFullscreenTolerancePx = 8;
+
+    if (!haveWindowRect && !haveClientRect) {
+        return false;
+    }
+
+    const bool windowMatchesMonitor =
+        haveWindowRect && RectNearlyMatches(windowRect, monitorInfo.rcMonitor, kFullscreenTolerancePx);
+    const bool clientMatchesMonitor =
+        haveClientRect && RectNearlyMatches(clientRect, monitorInfo.rcMonitor, kFullscreenTolerancePx);
+    return windowMatchesMonitor || clientMatchesMonitor;
+}
 }  // namespace
 #endif
 
 class WGCCapture::Impl {
 public:
 #if HAS_WGC
+    ~Impl() {
+        ReleaseTexturePool();
+        SafeRelease(latestFrame_);
+        SafeRelease(cachedTexture_);
+        SafeRelease(d3dContext_);
+        if (usingDedicatedCaptureDevice_) {
+            SafeRelease(d3dDevice_);
+        } else {
+            d3dDevice_ = nullptr;
+        }
+        if (frameArrivedEvent_) {
+            CloseHandle(frameArrivedEvent_);
+            frameArrivedEvent_ = NULL;
+        }
+    }
+
     std::atomic<bool> alive_{true};
     winrt::GraphicsCaptureItem item_{nullptr};
     winrt::Direct3D11CaptureFramePool framePool_{nullptr};
@@ -88,8 +174,10 @@ public:
 
     // Texture pool for zero-copy pipeline: each frame gets its own texture
     // so the encoder can consume frame N while frame N+1 is being copied.
-    static constexpr int TEXTURE_POOL_SIZE = 6;  // Enough for 120fps + encoder latency
-    ID3D11Texture2D* texturePool_[TEXTURE_POOL_SIZE] = {};
+    static constexpr int TEXTURE_POOL_SIZE = 6;                    // Enough for 120fps + encoder latency
+    ID3D11Texture2D* texturePool_[TEXTURE_POOL_SIZE] = {};         // Encoder-device textures
+    ID3D11Texture2D* captureTexturePool_[TEXTURE_POOL_SIZE] = {};  // Capture-device views when split
+    IDXGIKeyedMutex* captureTextureMutexPool_[TEXTURE_POOL_SIZE] = {};
     int32_t poolWidth_ = 0;
     int32_t poolHeight_ = 0;
     std::atomic<uint32_t> poolWriteIndex_{0};
@@ -106,8 +194,10 @@ public:
     uint32_t frameHeight_ = 0;
     int64_t frameTimestamp_ = 0;
 
-    ID3D11Device* d3dDevice_ = nullptr;
+    ID3D11Device* encoderDevice_ = nullptr;  // Non-owning MediaEngine device
+    ID3D11Device* d3dDevice_ = nullptr;      // Capture device (dedicated when split succeeds)
     ID3D11DeviceContext* d3dContext_ = nullptr;
+    bool usingDedicatedCaptureDevice_ = false;
 
     winrt::event_token frameArrivedToken_;
 
@@ -122,10 +212,19 @@ public:
     std::atomic<uint32_t> callbackFrameCount_{0};
 
     // Frame throttle: skip CopyResource if we're ahead of target FPS
+    uint32_t targetFps_ = 0;
     int64_t targetIntervalQPC_ = 0;  // Minimum QPC ticks between captured frames (0 = no throttle)
     int64_t lastCapturedQPC_ = 0;    // QPC of last frame we actually copied
     int64_t nextCaptureQPC_ = 0;     // Next QPC deadline that is allowed to perform a GPU copy
     std::atomic<uint32_t> skippedFrameCount_{0};
+    bool dirtyRegionModeEnabled_ = false;
+    HCURSOR lastCursorHandle_ = nullptr;
+    POINT lastCursorScreenPos_ = {};
+    bool lastCursorScreenPosValid_ = false;
+    int32_t lastCursorWidth_ = 64;
+    int32_t lastCursorHeight_ = 64;
+    int32_t lastCursorHotspotX_ = 0;
+    int32_t lastCursorHotspotY_ = 0;
 
     // External throttle flag (e.g., encoder bottlenecked)
     const std::atomic<bool>* throttleFlag_ = nullptr;
@@ -160,12 +259,286 @@ public:
         }
     }
 
+    void ReleaseTexturePool() {
+        for (int i = 0; i < TEXTURE_POOL_SIZE; ++i) {
+            SafeRelease(captureTextureMutexPool_[i]);
+            SafeRelease(captureTexturePool_[i]);
+            SafeRelease(texturePool_[i]);
+        }
+        poolWidth_ = 0;
+        poolHeight_ = 0;
+        poolFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
+        poolWriteIndex_.store(0, std::memory_order_relaxed);
+    }
+
+    void EnableMultithreadProtection(ID3D11Device* device, const char* label) {
+        if (!device) {
+            return;
+        }
+
+        ID3D11Multithread* multithread = nullptr;
+        if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&multithread))) && multithread) {
+            multithread->SetMultithreadProtected(TRUE);
+            multithread->Release();
+            LogInfo("[WGC] D3D11 multithread protection enabled on %s device", label);
+        }
+    }
+
+    bool InitializeDevices(ID3D11Device* encoderDevice) {
+        if (!encoderDevice) {
+            return false;
+        }
+
+        ReleaseTexturePool();
+        SafeRelease(d3dContext_);
+        if (usingDedicatedCaptureDevice_) {
+            SafeRelease(d3dDevice_);
+        } else {
+            d3dDevice_ = nullptr;
+        }
+
+        encoderDevice_ = encoderDevice;
+        usingDedicatedCaptureDevice_ = false;
+
+        IDXGIDevice* dxgiDevice = nullptr;
+        IDXGIAdapter* adapter = nullptr;
+        HRESULT hr = encoderDevice->QueryInterface(IID_PPV_ARGS(&dxgiDevice));
+        if (SUCCEEDED(hr) && dxgiDevice) {
+            hr = dxgiDevice->GetAdapter(&adapter);
+        }
+        SafeRelease(dxgiDevice);
+
+        if (SUCCEEDED(hr) && adapter) {
+            DXGI_ADAPTER_DESC adapterDesc = {};
+            adapter->GetDesc(&adapterDesc);
+
+            D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_11_0;
+            hr = D3D11CreateDevice(adapter, D3D_DRIVER_TYPE_UNKNOWN, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr,
+                                   0, D3D11_SDK_VERSION, &d3dDevice_, &featureLevel, &d3dContext_);
+            SafeRelease(adapter);
+
+            if (SUCCEEDED(hr) && d3dDevice_ && d3dContext_) {
+                usingDedicatedCaptureDevice_ = (d3dDevice_ != encoderDevice_);
+                EnableMultithreadProtection(d3dDevice_, "capture");
+                LogInfo("[WGC] Dedicated capture D3D11 device created (FL=0x%x, adapter=%ls)", featureLevel,
+                        adapterDesc.Description);
+                return true;
+            }
+
+            SafeRelease(d3dContext_);
+            SafeRelease(d3dDevice_);
+            LogWarn("[WGC] Dedicated capture device creation failed (0x%08lX); falling back to shared device",
+                    (unsigned long)hr);
+        } else {
+            SafeRelease(adapter);
+            LogWarn("[WGC] Failed to resolve encoder adapter for dedicated capture device; falling back");
+        }
+
+        d3dDevice_ = encoderDevice_;
+        d3dDevice_->GetImmediateContext(&d3dContext_);
+        if (!d3dContext_) {
+            LogError("[WGC] Failed to acquire fallback shared D3D11 immediate context");
+            d3dDevice_ = nullptr;
+            return false;
+        }
+        EnableMultithreadProtection(d3dDevice_, "shared capture");
+        return true;
+    }
+
     void ResetStats() {
         callbackFrameCount_.store(0, std::memory_order_relaxed);
         skippedFrameCount_.store(0, std::memory_order_relaxed);
         lastCopyUs_.store(0, std::memory_order_relaxed);
         lastCapturedQPC_ = 0;
         nextCaptureQPC_ = 0;
+        lastCursorScreenPosValid_ = false;
+    }
+
+    void ApplyFrameThrottleInterval() {
+        if (targetFps_ > 0 && qpcFreq_ > 0) {
+            targetIntervalQPC_ = qpcFreq_ / targetFps_;
+        } else {
+            targetIntervalQPC_ = 0;
+        }
+        lastCapturedQPC_ = 0;
+        nextCaptureQPC_ = 0;
+    }
+
+    void ApplyMinUpdateInterval() {
+        if (!session_) {
+            return;
+        }
+
+        try {
+            if (targetFps_ > 0) {
+                int64_t interval100ns = 10000000ll / targetFps_;
+                if (interval100ns <= 0) {
+                    interval100ns = 1;
+                }
+                session_.MinUpdateInterval(winrt::Windows::Foundation::TimeSpan{interval100ns});
+                LogInfo("[WGC] MinUpdateInterval set to %lld (100ns) for %u fps target", (long long)interval100ns,
+                        targetFps_);
+            } else {
+                session_.MinUpdateInterval(winrt::Windows::Foundation::TimeSpan{0});
+                LogInfo("[WGC] MinUpdateInterval set to 0 (max rate)");
+            }
+        } catch (...) {
+            LogInfo("[WGC] MinUpdateInterval not available (older Windows)");
+        }
+    }
+
+    bool RefreshCursorMetrics(HCURSOR cursorHandle) {
+        if (!cursorHandle) {
+            return false;
+        }
+
+        if (lastCursorHandle_ == cursorHandle) {
+            return true;
+        }
+
+        lastCursorHandle_ = cursorHandle;
+        lastCursorWidth_ = 64;
+        lastCursorHeight_ = 64;
+        lastCursorHotspotX_ = 0;
+        lastCursorHotspotY_ = 0;
+
+        HICON icon = CopyIcon(cursorHandle);
+        if (!icon) {
+            return false;
+        }
+
+        ICONINFO iconInfo = {};
+        if (!GetIconInfo(icon, &iconInfo)) {
+            DestroyIcon(icon);
+            return false;
+        }
+
+        BITMAP bitmap = {};
+        if (iconInfo.hbmColor && GetObject(iconInfo.hbmColor, sizeof(bitmap), &bitmap) == sizeof(bitmap)) {
+            lastCursorWidth_ = std::max<LONG>(1, bitmap.bmWidth);
+            lastCursorHeight_ = std::max<LONG>(1, std::abs(bitmap.bmHeight));
+        } else if (iconInfo.hbmMask && GetObject(iconInfo.hbmMask, sizeof(bitmap), &bitmap) == sizeof(bitmap)) {
+            lastCursorWidth_ = std::max<LONG>(1, bitmap.bmWidth);
+            lastCursorHeight_ = std::max<LONG>(1, std::abs(bitmap.bmHeight) / 2);
+        }
+
+        lastCursorHotspotX_ = static_cast<int32_t>(iconInfo.xHotspot);
+        lastCursorHotspotY_ = static_cast<int32_t>(iconInfo.yHotspot);
+
+        if (iconInfo.hbmColor) {
+            DeleteObject(iconInfo.hbmColor);
+        }
+        if (iconInfo.hbmMask) {
+            DeleteObject(iconInfo.hbmMask);
+        }
+        DestroyIcon(icon);
+        return true;
+    }
+
+    static RECT ClampRectToFrame(RECT rect, uint32_t frameWidth, uint32_t frameHeight) {
+        rect.left = std::clamp<LONG>(rect.left, 0, static_cast<LONG>(frameWidth));
+        rect.top = std::clamp<LONG>(rect.top, 0, static_cast<LONG>(frameHeight));
+        rect.right = std::clamp<LONG>(rect.right, 0, static_cast<LONG>(frameWidth));
+        rect.bottom = std::clamp<LONG>(rect.bottom, 0, static_cast<LONG>(frameHeight));
+        if (rect.right < rect.left) {
+            rect.right = rect.left;
+        }
+        if (rect.bottom < rect.top) {
+            rect.bottom = rect.top;
+        }
+        return rect;
+    }
+
+    RECT BuildCursorRectForScreenPoint(const POINT& screenPos, int32_t captureLeft, int32_t captureTop,
+                                       uint32_t frameWidth, uint32_t frameHeight, LONG padding) const {
+        RECT rect = {};
+        rect.left = static_cast<LONG>(screenPos.x - captureLeft - lastCursorHotspotX_ - padding);
+        rect.top = static_cast<LONG>(screenPos.y - captureTop - lastCursorHotspotY_ - padding);
+        rect.right = rect.left + lastCursorWidth_ + padding * 2;
+        rect.bottom = rect.top + lastCursorHeight_ + padding * 2;
+        return ClampRectToFrame(rect, frameWidth, frameHeight);
+    }
+
+    static bool RectContainsRect(const RECT& outer, const RECT& inner) {
+        return inner.left >= outer.left && inner.top >= outer.top && inner.right <= outer.right &&
+               inner.bottom <= outer.bottom;
+    }
+
+    bool ShouldSkipCursorOnlyDirtyFrame(const winrt::Direct3D11CaptureFrame& frame, uint32_t frameWidth,
+                                        uint32_t frameHeight) {
+        if (!dirtyRegionModeEnabled_) {
+            return false;
+        }
+
+        auto frame2 = frame.try_as<winrt::Windows::Graphics::Capture::IDirect3D11CaptureFrame2>();
+        if (!frame2) {
+            return false;
+        }
+
+        auto dirtyRegions = frame2.DirtyRegions();
+        if (!dirtyRegions) {
+            return false;
+        }
+
+        const uint32_t dirtyRegionCount = dirtyRegions.Size();
+        if (dirtyRegionCount == 0 || dirtyRegionCount > 8) {
+            return false;
+        }
+
+        int32_t captureLeft = 0;
+        int32_t captureTop = 0;
+        if (!GetCaptureOrigin(captureLeft, captureTop)) {
+            return false;
+        }
+
+        CURSORINFO cursorInfo = {};
+        cursorInfo.cbSize = sizeof(CURSORINFO);
+        if (!GetCursorInfo(&cursorInfo) || !cursorInfo.hCursor) {
+            lastCursorScreenPosValid_ = false;
+            return false;
+        }
+
+        RefreshCursorMetrics(cursorInfo.hCursor);
+
+        constexpr LONG kCursorPaddingPx = 48;
+        RECT currentCursorRect = BuildCursorRectForScreenPoint(cursorInfo.ptScreenPos, captureLeft, captureTop,
+                                                               frameWidth, frameHeight, kCursorPaddingPx);
+        RECT previousCursorRect = currentCursorRect;
+        if (lastCursorScreenPosValid_) {
+            previousCursorRect = BuildCursorRectForScreenPoint(lastCursorScreenPos_, captureLeft, captureTop,
+                                                               frameWidth, frameHeight, kCursorPaddingPx);
+        }
+
+        const int64_t expandedCursorArea =
+            static_cast<int64_t>(std::max<LONG>(1, currentCursorRect.right - currentCursorRect.left)) *
+            static_cast<int64_t>(std::max<LONG>(1, currentCursorRect.bottom - currentCursorRect.top));
+        const int64_t maxDirtyArea = expandedCursorArea * 3;
+
+        int64_t dirtyArea = 0;
+        bool cursorOnly = true;
+        for (uint32_t i = 0; i < dirtyRegionCount; ++i) {
+            const auto dirtyRegion = dirtyRegions.GetAt(i);
+            RECT dirtyRect = {dirtyRegion.X, dirtyRegion.Y, dirtyRegion.X + dirtyRegion.Width,
+                              dirtyRegion.Y + dirtyRegion.Height};
+            dirtyRect = ClampRectToFrame(dirtyRect, frameWidth, frameHeight);
+
+            const int64_t regionArea = static_cast<int64_t>(std::max<LONG>(0, dirtyRect.right - dirtyRect.left)) *
+                                       static_cast<int64_t>(std::max<LONG>(0, dirtyRect.bottom - dirtyRect.top));
+            dirtyArea += regionArea;
+            if (dirtyArea > maxDirtyArea) {
+                cursorOnly = false;
+                break;
+            }
+
+            if (!RectContainsRect(currentCursorRect, dirtyRect) && !RectContainsRect(previousCursorRect, dirtyRect)) {
+                cursorOnly = false;
+                break;
+            }
+        }
+
+        lastCursorScreenPos_ = cursorInfo.ptScreenPos;
+        lastCursorScreenPosValid_ = true;
+        return cursorOnly;
     }
 
     HMONITOR ResolveTargetMonitor() const {
@@ -201,7 +574,8 @@ public:
             return false;
         }
 
-        MONITORINFO monitorInfo = {sizeof(monitorInfo)};
+        MONITORINFO monitorInfo = {};
+        monitorInfo.cbSize = sizeof(monitorInfo);
         HMONITOR monitor = ResolveTargetMonitor();
         if (monitor && GetMonitorInfo(monitor, &monitorInfo)) {
             left = monitorInfo.rcMonitor.left;
@@ -299,16 +673,14 @@ public:
     }
 
     bool EnsureTexturePool(uint32_t width, uint32_t height, DXGI_FORMAT format = DXGI_FORMAT_B8G8R8A8_UNORM) {
-        if (poolWidth_ == (int32_t)width && poolHeight_ == (int32_t)height && poolFormat_ == format && texturePool_[0])
+        const bool splitDevicePool =
+            usingDedicatedCaptureDevice_ && encoderDevice_ && d3dDevice_ && encoderDevice_ != d3dDevice_;
+        if (poolWidth_ == (int32_t)width && poolHeight_ == (int32_t)height && poolFormat_ == format &&
+            texturePool_[0] && (!splitDevicePool || captureTexturePool_[0])) {
             return true;
-
-        // Release old pool
-        for (int i = 0; i < TEXTURE_POOL_SIZE; i++) {
-            if (texturePool_[i]) {
-                texturePool_[i]->Release();
-                texturePool_[i] = nullptr;
-            }
         }
+
+        ReleaseTexturePool();
 
         D3D11_TEXTURE2D_DESC copyDesc = {};
         copyDesc.Width = width;
@@ -321,20 +693,138 @@ public:
         // CRITICAL: VP input view requires RENDER_TARGET bind flag
         // Using only SHADER_RESOURCE causes D3D11 internal stack corruption (0xC0000409)
         copyDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        copyDesc.MiscFlags = splitDevicePool ? D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX : 0;
 
         for (int i = 0; i < TEXTURE_POOL_SIZE; i++) {
-            HRESULT hr = d3dDevice_->CreateTexture2D(&copyDesc, nullptr, &texturePool_[i]);
+            HRESULT hr =
+                (splitDevicePool ? encoderDevice_ : d3dDevice_)->CreateTexture2D(&copyDesc, nullptr, &texturePool_[i]);
             if (FAILED(hr)) {
                 LogError("[WGC] Failed to create texture pool[%d]: 0x%lX", i, (unsigned long)hr);
+                ReleaseTexturePool();
                 return false;
+            }
+
+            if (splitDevicePool) {
+                IDXGIResource* dxgiResource = nullptr;
+                hr = texturePool_[i]->QueryInterface(IID_PPV_ARGS(&dxgiResource));
+                if (FAILED(hr) || !dxgiResource) {
+                    LogError("[WGC] Failed to query IDXGIResource for shared texture pool[%d]: 0x%lX", i,
+                             (unsigned long)hr);
+                    SafeRelease(dxgiResource);
+                    ReleaseTexturePool();
+                    return false;
+                }
+
+                HANDLE sharedHandle = nullptr;
+                hr = dxgiResource->GetSharedHandle(&sharedHandle);
+                SafeRelease(dxgiResource);
+                if (FAILED(hr) || !sharedHandle) {
+                    LogError("[WGC] Failed to get shared handle for texture pool[%d]: 0x%lX", i, (unsigned long)hr);
+                    ReleaseTexturePool();
+                    return false;
+                }
+
+                hr = d3dDevice_->OpenSharedResource(sharedHandle, IID_PPV_ARGS(&captureTexturePool_[i]));
+                if (FAILED(hr) || !captureTexturePool_[i]) {
+                    LogError("[WGC] Failed to open shared capture texture pool[%d]: 0x%lX", i, (unsigned long)hr);
+                    ReleaseTexturePool();
+                    return false;
+                }
+
+                hr = captureTexturePool_[i]->QueryInterface(IID_PPV_ARGS(&captureTextureMutexPool_[i]));
+                if (FAILED(hr) || !captureTextureMutexPool_[i]) {
+                    LogError("[WGC] Failed to query keyed mutex for capture texture pool[%d]: 0x%lX", i,
+                             (unsigned long)hr);
+                    ReleaseTexturePool();
+                    return false;
+                }
             }
         }
 
         poolWidth_ = width;
         poolHeight_ = height;
         poolFormat_ = format;
-        LogInfo("[WGC] Texture pool created: %dx%d fmt=%d x%d", width, height, format, TEXTURE_POOL_SIZE);
+        LogInfo("[WGC] Texture pool created: %dx%d fmt=%d x%d (%s)", width, height, format, TEXTURE_POOL_SIZE,
+                splitDevicePool ? "dedicated capture device" : "shared device");
         return true;
+    }
+
+    bool CopyFrameToPool(ID3D11Texture2D* sourceTexture, const D3D11_TEXTURE2D_DESC& sourceDesc, ID3D11Texture2D** out,
+                         int64_t& copyCompleteQpc) {
+        if (!sourceTexture || !out) {
+            return false;
+        }
+
+        *out = nullptr;
+        copyCompleteQpc = 0;
+
+        if (!EnsureTexturePool(sourceDesc.Width, sourceDesc.Height, sourceDesc.Format)) {
+            return false;
+        }
+
+        const uint32_t startIndex = poolWriteIndex_.fetch_add(1, std::memory_order_relaxed) % TEXTURE_POOL_SIZE;
+        for (int attempt = 0; attempt < TEXTURE_POOL_SIZE; ++attempt) {
+            const uint32_t idx = (startIndex + attempt) % TEXTURE_POOL_SIZE;
+            ID3D11Texture2D* copyTarget = captureTexturePool_[idx] ? captureTexturePool_[idx] : texturePool_[idx];
+            IDXGIKeyedMutex* writeMutex = captureTextureMutexPool_[idx];
+            bool mutexAcquired = false;
+
+            if (writeMutex) {
+                const HRESULT kmHr = writeMutex->AcquireSync(0, 0);
+                if (kmHr != S_OK) {
+                    continue;
+                }
+                mutexAcquired = true;
+            }
+
+            LARGE_INTEGER copyStart = {};
+            LARGE_INTEGER copyEnd = {};
+            QueryPerformanceCounter(&copyStart);
+
+            d3dContext_->CopyResource(copyTarget, sourceTexture);
+            if (mutexAcquired) {
+                d3dContext_->Flush();
+                const HRESULT releaseHr = writeMutex->ReleaseSync(0);
+                if (releaseHr != S_OK) {
+                    LogWarn("[WGC] Shared texture ReleaseSync failed for slot %u: 0x%08lX", idx,
+                            (unsigned long)releaseHr);
+                    continue;
+                }
+            }
+
+            QueryPerformanceCounter(&copyEnd);
+
+            int64_t copyUs = 0;
+            if (qpcFreq_ > 0) {
+                copyUs = ((copyEnd.QuadPart - copyStart.QuadPart) * 1000000) / qpcFreq_;
+            }
+            lastCopyUs_.store(copyUs, std::memory_order_relaxed);
+
+            lastCapturedQPC_ = copyEnd.QuadPart;
+            if (targetIntervalQPC_ > 0) {
+                if (nextCaptureQPC_ <= 0) {
+                    nextCaptureQPC_ = copyEnd.QuadPart + targetIntervalQPC_;
+                } else {
+                    do {
+                        nextCaptureQPC_ += targetIntervalQPC_;
+                    } while (nextCaptureQPC_ <= copyEnd.QuadPart);
+                }
+            } else {
+                nextCaptureQPC_ = 0;
+            }
+
+            texturePool_[idx]->AddRef();
+            *out = texturePool_[idx];
+            copyCompleteQpc = copyEnd.QuadPart;
+            return true;
+        }
+
+        skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+        static std::atomic<int> contentionLogCount{0};
+        if (contentionLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+            LogWarn("[WGC] Shared texture pool saturated; dropping frame");
+        }
+        return false;
     }
 
     void OnFrameArrived(winrt::Direct3D11CaptureFramePool const& sender, winrt::IInspectable const&) {
@@ -392,49 +882,13 @@ public:
                     LogInfo("[WGC] Source format: fmt=%d %ux%u", desc.Format, desc.Width, desc.Height);
                 }
 
-                if (EnsureTexturePool(desc.Width, desc.Height, desc.Format)) {
-                    // Round-robin through texture pool so each frame gets unique storage
-                    uint32_t idx = poolWriteIndex_.fetch_add(1, std::memory_order_relaxed) % TEXTURE_POOL_SIZE;
-                    ID3D11Texture2D* target = texturePool_[idx];
-
-                    LARGE_INTEGER copyStart, copyEnd;
-                    QueryPerformanceCounter(&copyStart);
-
-                    // D3D11 Multithread protection is enabled on the device, so
-                    // we skip the application-level mutex to avoid blocking the
-                    // WGC callback while the encoder holds the lock for BGRA→NV12.
-                    // No Flush() needed: D3D11 implicit resource tracking ensures
-                    // the GPU completes CopyResource before reusing source/dest
-                    // buffers through the same device. The 6-texture pool provides
-                    // sufficient lag so dest slot N isn't reused before its copy
-                    // completes.
-                    d3dContext_->CopyResource(target, texture);
-
-                    QueryPerformanceCounter(&copyEnd);
-
-                    // Track copy time for profiling
-                    int64_t copyUs = 0;
-                    if (qpcFreq_ > 0) {
-                        copyUs = ((copyEnd.QuadPart - copyStart.QuadPart) * 1000000) / qpcFreq_;
-                    }
-                    lastCopyUs_.store(copyUs, std::memory_order_relaxed);
-
-                    lastCapturedQPC_ = copyEnd.QuadPart;
-                    if (targetIntervalQPC_ > 0) {
-                        if (nextCaptureQPC_ <= 0) {
-                            nextCaptureQPC_ = copyEnd.QuadPart + targetIntervalQPC_;
-                        } else {
-                            do {
-                                nextCaptureQPC_ += targetIntervalQPC_;
-                            } while (nextCaptureQPC_ <= copyEnd.QuadPart);
-                        }
-                    } else {
-                        nextCaptureQPC_ = 0;
-                    }
-
+                ID3D11Texture2D* copiedTexture = nullptr;
+                int64_t copyCompleteQpc = 0;
+                if (CopyFrameToPool(texture, desc, &copiedTexture, copyCompleteQpc)) {
                     if (frameCallback_) {
-                        target->AddRef();
-                        frameCallback_(target, desc.Width, desc.Height, copyEnd.QuadPart, captureIsHDR_);
+                        frameCallback_(copiedTexture, desc.Width, desc.Height, copyCompleteQpc, captureIsHDR_);
+                    } else {
+                        SafeRelease(copiedTexture);
                     }
 
                     callbackFrameCount_.fetch_add(1, std::memory_order_relaxed);
@@ -528,6 +982,11 @@ public:
         LARGE_INTEGER freq;
         QueryPerformanceFrequency(&freq);
         qpcFreq_ = freq.QuadPart;
+        ApplyFrameThrottleInterval();
+        if (targetFps_ > 0 && targetIntervalQPC_ > 0) {
+            LogInfo("[WGC] Frame throttle active at %u fps (interval=%lld QPC ticks)", targetFps_,
+                    (long long)targetIntervalQPC_);
+        }
 
         auto size = item_.Size();
         width = size.Width;
@@ -614,29 +1073,19 @@ public:
         }
 
         // Configure cursor capture
-        // WGC native cursor updates can stall compositor-heavy games when the
-        // hardware cursor moves. Keep native cursor capture disabled and reuse
-        // the encoder-side cursor overlay path instead.
         try {
             if (session_) {
-                session_.IsCursorCaptureEnabled(false);
-                LogInfo("[WGC] Native cursor capture: NO");
-                LogInfo("[WGC] Cursor capture path: %s", captureCursor ? "encoder overlay" : "disabled");
+                session_.IsCursorCaptureEnabled(captureCursor);
+                LogInfo("[WGC] Native cursor capture: %s", captureCursor ? "YES" : "NO");
             }
         } catch (...) {
             // Not available on older Windows versions
             LogInfo("[WGC] IsCursorCaptureEnabled not available");
         }
 
-        // Request minimum update interval (maximum capture rate)
-        try {
-            if (session_) {
-                session_.MinUpdateInterval(winrt::Windows::Foundation::TimeSpan{0});
-                LogInfo("[WGC] MinUpdateInterval set to 0 (max rate)");
-            }
-        } catch (...) {
-            LogInfo("[WGC] MinUpdateInterval not available (older Windows)");
-        }
+        // Ask WGC to wake no faster than the requested recording cadence so
+        // cursor movement cannot drive compositor work far above output FPS.
+        ApplyMinUpdateInterval();
 
         session_.StartCapture();
         LogInfo("[WGC] Capture session started: %dx%d", width, height);
@@ -674,25 +1123,11 @@ public:
         // change between recordings. StartCapture() needs item_ to exist.
 
         std::lock_guard<std::mutex> lock(frameMutex_);
-        if (latestFrame_) {
-            latestFrame_->Release();
-            latestFrame_ = nullptr;
-        }
-        // Release texture pool
-        for (int i = 0; i < TEXTURE_POOL_SIZE; i++) {
-            if (texturePool_[i]) {
-                texturePool_[i]->Release();
-                texturePool_[i] = nullptr;
-            }
-        }
-        poolWidth_ = 0;
-        poolHeight_ = 0;
+        SafeRelease(latestFrame_);
+        ReleaseTexturePool();
         borderlessCapture_ = false;
 
-        if (cachedTexture_) {
-            cachedTexture_->Release();
-            cachedTexture_ = nullptr;
-        }
+        SafeRelease(cachedTexture_);
         frameReady_ = false;
 
         // Close the frame arrived event handle
@@ -723,6 +1158,20 @@ public:
             return false;
         }
 
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        if (targetIntervalQPC_ > 0 && nextCaptureQPC_ > 0 && now.QuadPart < nextCaptureQPC_) {
+            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+            latestWinrtFrame.Close();
+            return false;
+        }
+
+        if (throttleFlag_ && throttleFlag_->load(std::memory_order_relaxed)) {
+            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+            latestWinrtFrame.Close();
+            return false;
+        }
+
         // Process the latest frame
         bool success = false;
         auto surface = latestWinrtFrame.Surface();
@@ -735,41 +1184,27 @@ public:
                 D3D11_TEXTURE2D_DESC desc;
                 texture->GetDesc(&desc);
 
-                // Recreate cache if needed
-                if (!cachedTexture_ || cachedWidth_ != (int32_t)desc.Width || cachedHeight_ != (int32_t)desc.Height) {
-                    if (cachedTexture_)
-                        cachedTexture_->Release();
-                    D3D11_TEXTURE2D_DESC copyDesc = desc;
-                    copyDesc.Usage = D3D11_USAGE_DEFAULT;
-                    copyDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-                    copyDesc.CPUAccessFlags = 0;
-                    copyDesc.MiscFlags = 0;
-
-                    if (FAILED(d3dDevice_->CreateTexture2D(&copyDesc, nullptr, &cachedTexture_))) {
-                        LogError("[WGC] Failed to create cache texture");
-                        // Continue, will ensure cleanup
-                    } else {
-                        cachedWidth_ = desc.Width;
-                        cachedHeight_ = desc.Height;
-                        LogInfo("[WGC] (Pull) New cache texture: %dx%d", cachedWidth_, cachedHeight_);
-                    }
+                if (!formatDetected_) {
+                    formatDetected_ = true;
+                    LogInfo("[WGC] Source format: fmt=%d %ux%u", desc.Format, desc.Width, desc.Height);
                 }
 
-                if (cachedTexture_) {
-                    LARGE_INTEGER t2;
+                if (ShouldSkipCursorOnlyDirtyFrame(latestWinrtFrame, desc.Width, desc.Height)) {
+                    skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+                    texture->Release();
+                    access->Release();
+                    latestWinrtFrame.Close();
+                    return false;
+                }
 
-                    MediaEngine_LockD3D11();
-                    d3dContext_->CopyResource(cachedTexture_, texture);
-                    MediaEngine_UnlockD3D11();
-
-                    // Pass Raw QPC
-                    QueryPerformanceCounter(&t2);
-                    frame.texture = cachedTexture_;
+                int64_t copyCompleteQpc = 0;
+                if (CopyFrameToPool(texture, desc, &frame.texture, copyCompleteQpc)) {
                     frame.width = desc.Width;
                     frame.height = desc.Height;
-                    frame.timestamp = t2.QuadPart;
+                    frame.timestamp = copyCompleteQpc;
                     frame.isHDR = captureIsHDR_;
                     GetCaptureOrigin(frame.captureLeft, frame.captureTop);
+                    callbackFrameCount_.fetch_add(1, std::memory_order_relaxed);
                     success = true;
                 }
                 texture->Release();
@@ -844,9 +1279,10 @@ bool WGCCapture::Init(ID3D11Device* device) {
         return false;
     }
     device_ = device;
-    device_->GetImmediateContext(&context_);
-    impl_->d3dDevice_ = device;
-    impl_->d3dContext_ = context_;
+    if (!impl_->InitializeDevices(device_)) {
+        LogError("[WGC] Failed to initialize capture devices");
+        return false;
+    }
 
     // Initialize COM for WinRT
     HRESULT hr = RoInitialize(RO_INIT_MULTITHREADED);
@@ -887,9 +1323,10 @@ bool WGCCapture::InitForWindow(ID3D11Device* device, void* hwnd) {
         return false;
     }
     device_ = device;
-    device_->GetImmediateContext(&context_);
-    impl_->d3dDevice_ = device;
-    impl_->d3dContext_ = context_;
+    if (!impl_->InitializeDevices(device_)) {
+        LogError("[WGC] Failed to initialize capture devices for window capture");
+        return false;
+    }
 
     HRESULT hr = RoInitialize(RO_INIT_MULTITHREADED);
     if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
@@ -931,9 +1368,10 @@ bool WGCCapture::InitForMonitor(ID3D11Device* device, void* hmonitor) {
         return false;
     }
     device_ = device;
-    device_->GetImmediateContext(&context_);
-    impl_->d3dDevice_ = device;
-    impl_->d3dContext_ = context_;
+    if (!impl_->InitializeDevices(device_)) {
+        LogError("[WGC] Failed to initialize capture devices for monitor capture");
+        return false;
+    }
 
     HRESULT hr = RoInitialize(RO_INIT_MULTITHREADED);
     if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
@@ -1039,17 +1477,21 @@ void WGCCapture::ResetStats() {
 
 void WGCCapture::SetTargetFps(uint32_t fps) {
 #if HAS_WGC
-    if (impl_ && fps > 0 && impl_->qpcFreq_ > 0) {
-        impl_->targetIntervalQPC_ = impl_->qpcFreq_ / fps;
-        impl_->lastCapturedQPC_ = 0;
-        impl_->nextCaptureQPC_ = 0;
-        LogInfo("[WGC] Frame throttle set to %u fps (interval=%lld QPC ticks)", fps,
-                (long long)impl_->targetIntervalQPC_);
-    } else if (impl_) {
-        impl_->targetIntervalQPC_ = 0;
-        impl_->lastCapturedQPC_ = 0;
-        impl_->nextCaptureQPC_ = 0;
-        LogInfo("[WGC] Frame throttle disabled");
+    if (impl_) {
+        impl_->targetFps_ = fps;
+        impl_->ApplyFrameThrottleInterval();
+        impl_->ApplyMinUpdateInterval();
+
+        if (fps > 0) {
+            if (impl_->targetIntervalQPC_ > 0) {
+                LogInfo("[WGC] Frame throttle set to %u fps (interval=%lld QPC ticks)", fps,
+                        (long long)impl_->targetIntervalQPC_);
+            } else {
+                LogInfo("[WGC] Frame throttle armed for %u fps (pending capture start)", fps);
+            }
+        } else {
+            LogInfo("[WGC] Frame throttle disabled");
+        }
     }
 #endif
 }
@@ -1094,20 +1536,14 @@ void WGCCapture::ForceReset() {
         }
 
         // Now safe to release textures
-        for (int i = 0; i < Impl::TEXTURE_POOL_SIZE; i++) {
-            if (impl_->texturePool_[i]) {
-                impl_->texturePool_[i]->Release();
-                impl_->texturePool_[i] = nullptr;
-            }
-        }
-        if (impl_->latestFrame_) {
-            impl_->latestFrame_->Release();
-            impl_->latestFrame_ = nullptr;
-        }
+        impl_->ReleaseTexturePool();
+        SafeRelease(impl_->latestFrame_);
 
         impl_.reset();
         impl_ = std::make_unique<Impl>();
-        impl_->d3dDevice_ = device_;
+        if (!impl_->InitializeDevices(device_)) {
+            LogError("[WGC] ForceReset failed to reinitialize capture devices");
+        }
 
         LogWarn("[WGC] ForceReset complete - WGC session recreated");
     }
