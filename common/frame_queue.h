@@ -77,6 +77,8 @@ struct QueuedFrame {
     uint32_t height = 0;
     bool isInjectMode = false;  // true = use inject fields, false = use framegrab fields
     bool isHDR = false;         // New: Signals Rec.2100 PQ content
+    int32_t captureLeft = 0;    // Screen-space origin for partial-capture cursor overlay
+    int32_t captureTop = 0;
 
     // For shmem fallback (D3D9 Win11)
     bool isShmem = false;
@@ -114,8 +116,9 @@ public:
         }
     }
 
-    // Producer: Push a frame (non-blocking, moves ownership)
-    // Returns false if queue is full (frame will be dropped)
+    // Producer: Push a frame (non-blocking, moves ownership).
+    // The queue always takes ownership; if it is already full, the oldest queued
+    // frame is dropped to make room. Use GetDroppedCount() for overflow telemetry.
     bool Push(QueuedFrame&& frame, bool countAsDrop = true) {
         ID3D11Texture2D* textureToRelease = nullptr;
         {

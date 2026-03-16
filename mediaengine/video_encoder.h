@@ -47,7 +47,8 @@ public:
                      int shmemSlot = 0);
 
     // Encode a D3D11 texture directly (framegrab mode - zero copy)
-    bool EncodeFrameD3D11(ID3D11Texture2D* texture, int64_t pts, uint32_t frameWidth, uint32_t frameHeight, bool isHDR);
+    bool EncodeFrameD3D11(ID3D11Texture2D* texture, int64_t pts, uint32_t frameWidth, uint32_t frameHeight, bool isHDR,
+                          int32_t captureLeft, int32_t captureTop);
 
     // Write a packet (already encoded)
     void WriteFrame(AVPacket* pkt);
@@ -74,7 +75,7 @@ public:
     int64_t GetLastFrameEncodeTimeUs() const;  // Get duration of last frame encoding (excluding wait)
     int64_t GetLastFrameFenceWaitUs() const;   // Get duration of last fence wait (GPU wait)
 
-    int AddAudioStream(const AudioConfig& config, AVCodecContext* audioCtx = nullptr);
+    int AddAudioStream(const AudioConfig& config, AVCodecContext* audioCtx = nullptr, int track = -1);
 
     // Store audio config/context for deferred audio stream creation
     // For single audio source (backward compatible)

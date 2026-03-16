@@ -20,6 +20,8 @@ struct WGCCapturedFrame {
     uint32_t height = 0;
     int64_t timestamp = 0;  // QPC ticks (same unit as inject mode)
     bool isHDR = false;     // True when the captured target is currently HDR/PQ
+    int32_t captureLeft = 0;
+    int32_t captureTop = 0;
 };
 
 // Windows Graphics Capture implementation
@@ -62,9 +64,13 @@ public:
     // Timestamp is in QPC ticks (consistent with inject mode)
     bool GetNextFrame(WGCCapturedFrame& frame);
 
-    // Set whether to capture the system cursor natively (default: false)
-    // Must be called before StartCapture
+    // Set whether the cursor should be included in the recording output.
+    // In WGC mode we composite it in the encoder rather than using WGC native cursor capture.
     void SetCaptureCursor(bool enabled);
+
+    // Get the top-left corner of the captured content in screen coordinates.
+    // Used so software cursor overlay can convert global cursor coordinates into frame-relative space.
+    bool GetCaptureOrigin(int32_t& left, int32_t& top) const;
 
     // Optional: Set callback for frame arrival (for async processing)
     using FrameCallback = std::function<void(WGCCapturedFrame&)>;
@@ -76,9 +82,7 @@ public:
     std::atomic<uint32_t> droppedFrames{0};
 
     // Reset counters for new recording
-    void ResetStats() {
-        droppedFrames.store(0, std::memory_order_relaxed);
-    }
+    void ResetStats();
 
     // Event signaled when new frame arrives (for efficient polling)
     // Use WaitForSingleObject with timeout based on expected frame interval

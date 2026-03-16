@@ -55,7 +55,6 @@ static std::thread g_InjectCaptureThread;
 static std::atomic<bool> g_WgcCaptureRunning{false};
 static std::atomic<bool> g_WgcCaptureShutdown{false};
 static std::thread g_WgcCaptureThread;
-static std::atomic<uint32_t> g_WgcDroppedFrames{0};
 
 // Forward declaration
 void InjectCaptureThreadFunc(const AppConfig& config);
@@ -115,9 +114,11 @@ static void QueueWgcFrame(ID3D11Texture2D* texture, uint32_t width, uint32_t hei
     qf.height = height;
     qf.timestamp = timestamp;
     qf.isHDR = isHDR;
+    if (g_WgcCap) {
+        g_WgcCap->GetCaptureOrigin(qf.captureLeft, qf.captureTop);
+    }
 
-    if (!g_FrameQueue.Push(std::move(qf), g_IsEncoderBottlenecked)) {
-        g_WgcDroppedFrames.fetch_add(1, std::memory_order_relaxed);
+    if (!g_FrameQueue.Push(std::move(qf))) {
         texture->Release();
     }
 }
@@ -183,16 +184,15 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
 
     g_WgcCap->SetCaptureCursor(config.video.captureCursor);
     g_WgcCap->SetDirectFrameCallback(QueueWgcFrame);
+    g_WgcCap->ResetStats();
+    g_IsEncoderBottlenecked.store(false, std::memory_order_relaxed);
+    const uint32_t wgcHeadroomFps = (config.video.fps >= 120) ? 8u : ((config.video.fps >= 60) ? 4u : 2u);
+    const uint32_t wgcTargetFps = static_cast<uint32_t>(config.video.fps) + wgcHeadroomFps;
+    g_WgcCap->SetTargetFps(wgcTargetFps);
     if (!g_WgcCap->StartCapture()) {
         g_WgcCap->SetDirectFrameCallback(nullptr);
         return false;
     }
-
-    g_WgcCap->ResetStats();
-    const uint32_t wgcHeadroomFps = (config.video.fps >= 120) ? 8u : ((config.video.fps >= 60) ? 4u : 2u);
-    const uint32_t wgcTargetFps = static_cast<uint32_t>(config.video.fps) + wgcHeadroomFps;
-    g_WgcCap->SetTargetFps(wgcTargetFps);
-    g_WgcDroppedFrames.store(0, std::memory_order_relaxed);
 
     g_WgcCaptureShutdown = false;
     g_WgcCaptureThread = std::thread(WgcCaptureThreadFunc, std::ref(config));
@@ -232,6 +232,122 @@ static HWND GetMainWindowForProcess(DWORD pid) {
     WindowSearch search = {pid, NULL};
     EnumWindows(EnumWindowsCallback, (LPARAM)&search);
     return search.hwnd;
+}
+
+static bool MatchesProcessEntry(const WhitelistEntry& entry, const std::string& lowerProcessName) {
+    if (!entry.HasProcess() || lowerProcessName.empty()) {
+        return false;
+    }
+
+    std::string lowerItem = entry.pattern;
+    std::transform(lowerItem.begin(), lowerItem.end(), lowerItem.begin(), ::tolower);
+
+    if (entry.mode == MatchMode::kExact) {
+        return lowerProcessName == lowerItem;
+    }
+
+    return lowerProcessName == lowerItem || lowerProcessName.find(lowerItem) != std::string::npos;
+}
+
+static bool MatchesProcessEntries(const std::vector<WhitelistEntry>& entries, const std::string& processName) {
+    if (processName.empty()) {
+        return false;
+    }
+
+    std::string lowerName = processName;
+    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
+
+    for (const auto& entry : entries) {
+        if (MatchesProcessEntry(entry, lowerName)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets) {
+    struct WgcSearchContext {
+        const std::vector<WhitelistEntry>* targets;
+        HWND result;
+        int checked;
+    };
+
+    WgcSearchContext ctx = {&targets, NULL, 0};
+    EnumWindows(
+        [](HWND hwnd, LPARAM lParam) -> BOOL {
+            WgcSearchContext* context = (WgcSearchContext*)lParam;
+            if (!IsWindowVisible(hwnd)) {
+                return TRUE;
+            }
+            if (GetWindow(hwnd, GW_OWNER) != 0) {
+                return TRUE;
+            }
+
+            context->checked++;
+
+            char title[256];
+            GetWindowTextA(hwnd, title, sizeof(title));
+            std::string titleStr = title;
+            std::transform(titleStr.begin(), titleStr.end(), titleStr.begin(), ::tolower);
+
+            char className[256];
+            GetClassNameA(hwnd, className, sizeof(className));
+            std::string classStr = className;
+            std::transform(classStr.begin(), classStr.end(), classStr.begin(), ::tolower);
+
+            DWORD pid = 0;
+            GetWindowThreadProcessId(hwnd, &pid);
+            std::string procName;
+            if (pid != 0) {
+                HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+                if (hProcess) {
+                    char exePath[MAX_PATH];
+                    DWORD size = MAX_PATH;
+                    if (QueryFullProcessImageNameA(hProcess, 0, exePath, &size)) {
+                        procName = exePath;
+                        auto pos = procName.find_last_of("\\/");
+                        if (pos != std::string::npos) {
+                            procName = procName.substr(pos + 1);
+                        }
+                        std::transform(procName.begin(), procName.end(), procName.begin(), ::tolower);
+                    }
+                    CloseHandle(hProcess);
+                }
+            }
+
+            for (const auto& entry : *context->targets) {
+                MatchMode mode = entry.mode;
+                bool matched = false;
+
+                if (entry.HasWindow()) {
+                    std::string winLower = entry.windowName;
+                    std::transform(winLower.begin(), winLower.end(), winLower.begin(), ::tolower);
+
+                    if (mode == MatchMode::kExact) {
+                        matched = !titleStr.empty() && titleStr == winLower;
+                    } else {
+                        matched = !titleStr.empty() && titleStr.find(winLower) != std::string::npos;
+                        if (!matched && mode == MatchMode::kTitleType && !classStr.empty()) {
+                            matched = classStr.find(winLower) != std::string::npos;
+                        }
+                    }
+                }
+
+                if (!matched && MatchesProcessEntry(entry, procName)) {
+                    matched = true;
+                }
+
+                if (matched) {
+                    context->result = hwnd;
+                    return FALSE;
+                }
+            }
+            return TRUE;
+        },
+        (LPARAM)&ctx);
+
+    return ctx.result;
 }
 
 static std::string GetLocalConfigPath() {
@@ -456,7 +572,7 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     }
 
                     if (!dropFrame && validHandles) {
-                        if (g_FrameQueue.Push(std::move(qf), g_IsEncoderBottlenecked)) {
+                        if (g_FrameQueue.Push(std::move(qf))) {
                             pushedCount++;
                         } else {
                             droppedCount++;
@@ -517,16 +633,27 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
     LogInfo("[WGC CaptureThread] Started (OBS-style direct callback mode)");
     g_WgcCaptureRunning = true;
 
-    DWORD lastDiagTime = GetTickCount();
+    DWORD lastDiagTime = 0;
     uint32_t lastCallbackCount = 0;
-    uint32_t totalDroppedAtStart = g_WgcDroppedFrames.load(std::memory_order_relaxed);
+    uint64_t totalDroppedAtStart = 0;
+    bool sessionPrimed = false;
 
     while (!g_WgcCaptureShutdown) {
         Sleep(1000);
 
         if (!g_Recording || !g_WgcCap) {
+            sessionPrimed = false;
             lastCallbackCount = 0;
+            totalDroppedAtStart = 0;
+            lastDiagTime = 0;
+            continue;
+        }
+
+        if (!sessionPrimed) {
+            lastCallbackCount = g_WgcCap->GetCallbackFrameCount();
+            totalDroppedAtStart = g_FrameQueue.GetDroppedCount();
             lastDiagTime = GetTickCount();
+            sessionPrimed = true;
             continue;
         }
 
@@ -534,7 +661,9 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
         if (now - lastDiagTime >= 1000) {
             uint32_t currentCount = g_WgcCap->GetCallbackFrameCount();
             uint32_t framesThisSecond = currentCount - lastCallbackCount;
-            uint32_t totalDropped = g_WgcDroppedFrames.load(std::memory_order_relaxed) - totalDroppedAtStart;
+            uint64_t queueDropped = g_FrameQueue.GetDroppedCount();
+            uint32_t totalDropped =
+                static_cast<uint32_t>(queueDropped >= totalDroppedAtStart ? (queueDropped - totalDroppedAtStart) : 0);
             int64_t copyUs = g_WgcCap->GetLastCopyTimeUs();
             int64_t encodeUs = MediaEngine_GetLastFrameEncodeTimeUs();
             uint32_t skipped = g_WgcCap->GetSkippedFrameCount();
@@ -702,7 +831,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                                          frameToProcess->isShmem, frameToProcess->shmemSlot);
             } else {
                 MediaEngine_ProcessFrameD3D11(frameToProcess->texture, frameToProcess->timestamp, frameToProcess->width,
-                                              frameToProcess->height, frameToProcess->isHDR);
+                                              frameToProcess->height, frameToProcess->isHDR,
+                                              frameToProcess->captureLeft, frameToProcess->captureTop);
             }
 
             QueryPerformanceCounter(&endEnc);
@@ -720,7 +850,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 g_pSharedMem->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
             }
 
-            g_IsEncoderBottlenecked = (smoothedEncodeMs > frameIntervalMs * 0.95);
+            g_IsEncoderBottlenecked.store(smoothedEncodeMs > frameIntervalMs * 0.95, std::memory_order_relaxed);
 
             static DWORD lastWarningTime = 0;
             if (smoothedEncodeMs > frameIntervalMs * 0.85) {
@@ -780,12 +910,16 @@ void StartRecording(const AppConfig& config) {
 
     g_FrameQueue.Clear();
     ResetLastQueuedFrameCache();
+    g_IsEncoderBottlenecked.store(false, std::memory_order_relaxed);
 
     if (g_pSharedMem) {
         g_pSharedMem->runtimeState.duplicateFrames = 0;
         g_pSharedMem->runtimeState.lateFrames = 0;
         g_pSharedMem->runtimeState.encoderOverloadFlags.store(0, std::memory_order_relaxed);
         g_pSharedMem->runtimeState.muxQueueBytes.store(0, std::memory_order_relaxed);
+        g_pSharedMem->runtimeState.hostDroppedFrames.store(0, std::memory_order_relaxed);
+        g_pSharedMem->encoderQueueDepth.store(0, std::memory_order_relaxed);
+        g_pSharedMem->throttleCapture.store(false, std::memory_order_release);
     }
 
     if (!MediaEngine_StartRecording()) {
@@ -849,12 +983,16 @@ void StopRecording() {
     ResetLastQueuedFrameCache();
     ResetInjectFrameRingToLatest("recording stop");
     MediaEngine_StopRecording();
+    g_IsEncoderBottlenecked.store(false, std::memory_order_relaxed);
 
     if (g_pSharedMem) {
         g_pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
         g_pSharedMem->runtimeState.recordingStartTime.store(0, std::memory_order_release);
         g_pSharedMem->runtimeState.encoderOverloadFlags.store(0, std::memory_order_relaxed);
         g_pSharedMem->runtimeState.muxQueueBytes.store(0, std::memory_order_relaxed);
+        g_pSharedMem->runtimeState.hostDroppedFrames.store(0, std::memory_order_relaxed);
+        g_pSharedMem->encoderQueueDepth.store(0, std::memory_order_relaxed);
+        g_pSharedMem->throttleCapture.store(false, std::memory_order_release);
     }
 
     SetActiveScreenGrab(false);
@@ -862,7 +1000,8 @@ void StopRecording() {
     LogInfo("[Media] Recording stopped");
 }
 
-int MediaProcessMain(const AppConfig& config) {
+int MediaProcessMain(const AppConfig& initialConfig) {
+    AppConfig config = initialConfig;
     timeBeginPeriod(1);
 
     // Get exe directory for DLL loading
@@ -1060,6 +1199,151 @@ int MediaProcessMain(const AppConfig& config) {
         }
         return true;
     };
+    auto isExplicitScreenGrabConfig = [&]() -> bool {
+        return config.captureMethod == "screengrab" || config.captureMethod == "framegrab" ||
+               config.captureMethod == "desktop_dup";
+    };
+
+    DWORD lastEarlyWgcScan = 0;
+    DWORD lastWindowScanTime = 0;
+    HWND currentCapturedWindow = NULL;
+    uint32_t lastSourcePid = 0;
+    uint32_t activeConfigSourcePid = 0;
+    std::string activeConfigProcessName;
+
+    auto refreshActiveConfig = [&](bool forceReload) -> std::string {
+        uint32_t sourcePid = 0;
+        std::string processName;
+        if (g_pSharedMem) {
+            sourcePid = g_pSharedMem->GetSourcePid();
+            if (sourcePid != 0) {
+                processName = GetProcessNameFromPID(sourcePid);
+                if (processName == "unknown") {
+                    processName.clear();
+                }
+            }
+        }
+
+        if (!forceReload && sourcePid == activeConfigSourcePid && processName == activeConfigProcessName) {
+            return processName;
+        }
+
+        AppConfig resolvedConfig;
+        LoadConfig(configPath, resolvedConfig);
+        if (!processName.empty()) {
+            LoadConfig(configPath, resolvedConfig, processName);
+        }
+
+        config = std::move(resolvedConfig);
+        activeConfigSourcePid = sourcePid;
+        activeConfigProcessName = processName;
+
+        ApplyMediaProcessPriority(config);
+        MediaEngine_SetLogCallback(config.debugLogging ? MediaLogCallback : nullptr);
+        if (g_WgcCap) {
+            g_WgcCap->SetCaptureCursor(config.video.captureCursor);
+        }
+        MediaEngine_ReloadConfig(&config);
+        return processName;
+    };
+
+    auto primeWgcMonitorTarget = [&]() -> bool {
+        if (!ensureWgcDevice()) {
+            return false;
+        }
+
+        g_WgcCap.reset();
+        g_WgcCap = std::make_unique<WGCCapture>();
+        if (!g_WgcCap->Init(d3dDevice)) {
+            g_WgcCap.reset();
+            return false;
+        }
+
+        g_WgcCap->SetCaptureCursor(config.video.captureCursor);
+        g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
+        SetPreferredScreenGrab(true);
+        currentCapturedWindow = NULL;
+        return true;
+    };
+
+    auto primeWgcWindowTarget = [&](HWND targetWindow, bool logPrimed) -> bool {
+        if (!targetWindow) {
+            return false;
+        }
+
+        if (currentCapturedWindow == targetWindow && g_WgcCap) {
+            g_WgcCap->SetCaptureCursor(config.video.captureCursor);
+            g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
+            SetPreferredScreenGrab(true);
+            return true;
+        }
+
+        if (!ensureWgcDevice()) {
+            SetPreferredScreenGrab(false);
+            return false;
+        }
+
+        g_WgcCap.reset();
+        g_WgcCap = std::make_unique<WGCCapture>();
+        if (g_WgcCap->InitForWindow(d3dDevice, targetWindow)) {
+            g_WgcCap->SetCaptureCursor(config.video.captureCursor);
+            g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
+            SetPreferredScreenGrab(true);
+            currentCapturedWindow = targetWindow;
+            if (logPrimed) {
+                LogInfo("[Media] WGC target primed for window 0x%p", targetWindow);
+            }
+            return true;
+        }
+
+        LogError("[Media] Failed to init WGC for found window.");
+        if (!primeWgcMonitorTarget()) {
+            SetPreferredScreenGrab(false);
+            currentCapturedWindow = NULL;
+            return false;
+        }
+        return true;
+    };
+
+    auto prepareCaptureForRecordingStart = [&]() {
+        const std::string processName = refreshActiveConfig(false);
+
+        if (!config.wgcWindowTitles.empty()) {
+            HWND matchedWindow = FindMatchingWgcWindow(config.wgcWindowTitles);
+            if (matchedWindow) {
+                primeWgcWindowTarget(matchedWindow, false);
+                return;
+            }
+        }
+
+        const uint32_t sourcePid = g_pSharedMem ? g_pSharedMem->GetSourcePid() : 0;
+        if (sourcePid != 0 && MatchesProcessEntries(config.overlayWhitelist, processName)) {
+            if (!ensureWgcDevice()) {
+                LogWarn("[Media] Overlay whitelist requested WGC but D3D11 device unavailable");
+                SetPreferredScreenGrab(false);
+                currentCapturedWindow = NULL;
+                return;
+            }
+
+            SetPreferredScreenGrab(true);
+            HWND hGameWindow = GetMainWindowForProcess(sourcePid);
+            if (hGameWindow) {
+                primeWgcWindowTarget(hGameWindow, false);
+            } else if (!primeWgcMonitorTarget()) {
+                SetPreferredScreenGrab(false);
+                currentCapturedWindow = NULL;
+            }
+            return;
+        }
+
+        if (currentCapturedWindow != NULL && !IsWindow(currentCapturedWindow)) {
+            currentCapturedWindow = NULL;
+        }
+
+        if (!isExplicitScreenGrabConfig()) {
+            SetPreferredScreenGrab(false);
+        }
+    };
 
     while (g_Running) {
         // WGC window detection must run BEFORE resolution polling/texture creation.
@@ -1067,103 +1351,12 @@ int MediaProcessMain(const AppConfig& config) {
         // with WGC's shared device. By scanning first, the preferred capture mode is set correctly
         // and we skip the LUID-based texture creation for WGC games.
         if (g_pSharedMem && !config.wgcWindowTitles.empty() && !IsPreferredScreenGrab() && !g_Recording) {
-            static DWORD lastEarlyWgcScan = 0;
             DWORD now = GetTickCount();
             if (now - lastEarlyWgcScan > 500) {
                 lastEarlyWgcScan = now;
-
-                struct WgcSearchContext {
-                    const std::vector<WhitelistEntry>* targets;
-                    HWND result;
-                    int checked;
-                };
-                WgcSearchContext ctx = {&config.wgcWindowTitles, NULL, 0};
-                EnumWindows(
-                    [](HWND hwnd, LPARAM lParam) -> BOOL {
-                        WgcSearchContext* context = (WgcSearchContext*)lParam;
-                        if (!IsWindowVisible(hwnd))
-                            return TRUE;
-                        if (GetWindow(hwnd, GW_OWNER) != 0)
-                            return TRUE;
-
-                        context->checked++;
-
-                        char title[256];
-                        GetWindowTextA(hwnd, title, sizeof(title));
-                        std::string titleStr = title;
-                        std::transform(titleStr.begin(), titleStr.end(), titleStr.begin(), ::tolower);
-
-                        char className[256];
-                        GetClassNameA(hwnd, className, sizeof(className));
-                        std::string classStr = className;
-                        std::transform(classStr.begin(), classStr.end(), classStr.begin(), ::tolower);
-
-                        DWORD pid = 0;
-                        GetWindowThreadProcessId(hwnd, &pid);
-                        std::string procName;
-                        if (pid != 0) {
-                            HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-                            if (hProcess) {
-                                char exePath[MAX_PATH];
-                                DWORD size = MAX_PATH;
-                                if (QueryFullProcessImageNameA(hProcess, 0, exePath, &size)) {
-                                    procName = exePath;
-                                    auto pos = procName.find_last_of("\\/");
-                                    if (pos != std::string::npos)
-                                        procName = procName.substr(pos + 1);
-                                    std::transform(procName.begin(), procName.end(), procName.begin(), ::tolower);
-                                }
-                                CloseHandle(hProcess);
-                            }
-                        }
-
-                        for (const auto& entry : *context->targets) {
-                            MatchMode mode = entry.mode;
-                            bool matched = false;
-
-                            // Window title matching (if entry has windowName)
-                            if (entry.HasWindow()) {
-                                std::string winLower = entry.windowName;
-                                std::transform(winLower.begin(), winLower.end(), winLower.begin(), ::tolower);
-
-                                if (mode == MatchMode::kExact) {
-                                    if (!titleStr.empty() && titleStr == winLower)
-                                        matched = true;
-                                } else {
-                                    // title_executable or title_type: substring match on title
-                                    if (!titleStr.empty() && titleStr.find(winLower) != std::string::npos)
-                                        matched = true;
-                                    // title_type: also try window class
-                                    if (!matched && mode == MatchMode::kTitleType && !classStr.empty() &&
-                                        classStr.find(winLower) != std::string::npos)
-                                        matched = true;
-                                }
-                            }
-
-                            // Process/exe name matching (if entry has pattern)
-                            if (!matched && entry.HasProcess() && !procName.empty()) {
-                                std::string procLower = entry.pattern;
-                                std::transform(procLower.begin(), procLower.end(), procLower.begin(), ::tolower);
-
-                                if (mode == MatchMode::kExact) {
-                                    if (procName == procLower)
-                                        matched = true;
-                                } else {
-                                    if (procName == procLower || procName.find(procLower) != std::string::npos)
-                                        matched = true;
-                                }
-                            }
-
-                            if (matched) {
-                                context->result = hwnd;
-                                return FALSE;
-                            }
-                        }
-                        return TRUE;
-                    },
-                    (LPARAM)&ctx);
-                if (ctx.result) {
-                    SetPreferredScreenGrab(true);
+                HWND matchedWindow = FindMatchingWgcWindow(config.wgcWindowTitles);
+                if (matchedWindow) {
+                    primeWgcWindowTarget(matchedWindow, false);
                 }
             }
         }
@@ -1194,6 +1387,7 @@ int MediaProcessMain(const AppConfig& config) {
                     ipc.SendResponse(ProcessResponse::Ack);
                     break;
                 case ProcessCommand::StartRecording:
+                    prepareCaptureForRecordingStart();
                     StartRecording(config);
                     ipc.SendResponse(ProcessResponse::RecordingStarted);
                     break;
@@ -1205,24 +1399,7 @@ int MediaProcessMain(const AppConfig& config) {
                     ipc.SendResponse(ProcessResponse::Pong);
                     break;
                 case ProcessCommand::ReloadConfig: {
-                    AppConfig reloadedConfig;
-                    LoadConfig(configPath, reloadedConfig);
-                    if (g_pSharedMem) {
-                        const uint32_t sourcePid = g_pSharedMem->GetSourcePid();
-                        if (sourcePid != 0) {
-                            const std::string processName = GetProcessNameFromPID(sourcePid);
-                            if (!processName.empty() && processName != "unknown") {
-                                LoadConfig(configPath, reloadedConfig, processName);
-                            }
-                        }
-                    }
-
-                    ApplyMediaProcessPriority(reloadedConfig);
-                    MediaEngine_SetLogCallback(reloadedConfig.debugLogging ? MediaLogCallback : nullptr);
-                    if (g_WgcCap) {
-                        g_WgcCap->SetCaptureCursor(reloadedConfig.video.captureCursor);
-                    }
-                    MediaEngine_ReloadConfig(&reloadedConfig);
+                    refreshActiveConfig(true);
                     ipc.SendResponse(ProcessResponse::Ack);
                     break;
                 }
@@ -1236,6 +1413,7 @@ int MediaProcessMain(const AppConfig& config) {
             if (LoadAcquire(g_pSharedMem->runtimeState.cmdStartRecording)) {
                 StoreRelease(g_pSharedMem->runtimeState.cmdStartRecording, false);
                 if (!g_Recording) {
+                    prepareCaptureForRecordingStart();
                     StartRecording(config);
                     g_pSharedMem->runtimeState.ackRecordingStarted.store(true, std::memory_order_release);
                 }
@@ -1248,137 +1426,18 @@ int MediaProcessMain(const AppConfig& config) {
                 }
             }
 
-            static DWORD lastWindowScanTime = 0;
-            static HWND currentCapturedWindow = NULL;
-
             DWORD now = GetTickCount();
             if (!g_Recording && !config.wgcWindowTitles.empty() && (now - lastWindowScanTime > 1000)) {
                 lastWindowScanTime = now;
-
-                struct WgcSearchContext {
-                    const std::vector<WhitelistEntry>* targets;
-                    HWND result;
-                    int checked;
-                };
-
-                WgcSearchContext ctx = {&config.wgcWindowTitles, NULL, 0};
-
-                EnumWindows(
-                    [](HWND hwnd, LPARAM lParam) -> BOOL {
-                        WgcSearchContext* context = (WgcSearchContext*)lParam;
-                        if (!IsWindowVisible(hwnd))
-                            return TRUE;
-                        if (GetWindow(hwnd, GW_OWNER) != 0)
-                            return TRUE;
-
-                        context->checked++;
-
-                        char title[256];
-                        GetWindowTextA(hwnd, title, sizeof(title));
-                        std::string titleStr = title;
-                        std::transform(titleStr.begin(), titleStr.end(), titleStr.begin(), ::tolower);
-
-                        char className[256];
-                        GetClassNameA(hwnd, className, sizeof(className));
-                        std::string classStr = className;
-                        std::transform(classStr.begin(), classStr.end(), classStr.begin(), ::tolower);
-
-                        DWORD pid = 0;
-                        GetWindowThreadProcessId(hwnd, &pid);
-                        std::string procName;
-                        if (pid != 0) {
-                            HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-                            if (hProcess) {
-                                char exePath[MAX_PATH];
-                                DWORD size = MAX_PATH;
-                                if (QueryFullProcessImageNameA(hProcess, 0, exePath, &size)) {
-                                    procName = exePath;
-                                    auto pos = procName.find_last_of("\\/");
-                                    if (pos != std::string::npos)
-                                        procName = procName.substr(pos + 1);
-                                    std::transform(procName.begin(), procName.end(), procName.begin(), ::tolower);
-                                }
-                                CloseHandle(hProcess);
-                            }
-                        }
-
-                        for (const auto& entry : *context->targets) {
-                            MatchMode mode = entry.mode;
-                            bool matched = false;
-
-                            // Window title matching (if entry has windowName)
-                            if (entry.HasWindow()) {
-                                std::string winLower = entry.windowName;
-                                std::transform(winLower.begin(), winLower.end(), winLower.begin(), ::tolower);
-
-                                if (mode == MatchMode::kExact) {
-                                    if (!titleStr.empty() && titleStr == winLower)
-                                        matched = true;
-                                } else {
-                                    if (!titleStr.empty() && titleStr.find(winLower) != std::string::npos)
-                                        matched = true;
-                                    if (!matched && mode == MatchMode::kTitleType && !classStr.empty() &&
-                                        classStr.find(winLower) != std::string::npos)
-                                        matched = true;
-                                }
-                            }
-
-                            // Process/exe name matching (if entry has pattern)
-                            if (!matched && entry.HasProcess() && !procName.empty()) {
-                                std::string procLower = entry.pattern;
-                                std::transform(procLower.begin(), procLower.end(), procLower.begin(), ::tolower);
-
-                                if (mode == MatchMode::kExact) {
-                                    if (procName == procLower)
-                                        matched = true;
-                                } else {
-                                    if (procName == procLower || procName.find(procLower) != std::string::npos)
-                                        matched = true;
-                                }
-                            }
-
-                            if (matched) {
-                                context->result = hwnd;
-                                return FALSE;
-                            }
-                        }
-                        return TRUE;
-                    },
-                    (LPARAM)&ctx);
-
-                HWND foundWindow = ctx.result;
+                HWND foundWindow = FindMatchingWgcWindow(config.wgcWindowTitles);
 
                 if (foundWindow && foundWindow != currentCapturedWindow) {
                     LogInfo(
                         "[Media] WGC Trigger: Found window (0x%p) matching config. "
                         "Switching capture...",
                         foundWindow);
-
-                    if (!ensureWgcDevice()) {
+                    if (!primeWgcWindowTarget(foundWindow, true) && !ensureWgcDevice()) {
                         LogWarn("[Media] WGC trigger ignored: D3D11 device unavailable");
-                    } else {
-                        g_WgcCap.reset();
-                        g_WgcCap = std::make_unique<WGCCapture>();
-
-                        if (g_WgcCap->InitForWindow(d3dDevice, foundWindow)) {
-                            g_WgcCap->SetCaptureCursor(config.video.captureCursor);
-                            g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
-                            SetPreferredScreenGrab(true);
-                            LogInfo("[Media] WGC target primed for window 0x%p", foundWindow);
-                            currentCapturedWindow = foundWindow;
-                        } else {
-                            LogError("[Media] Failed to init WGC for found window.");
-                            g_WgcCap.reset();
-                            g_WgcCap = std::make_unique<WGCCapture>();
-                            if (g_WgcCap->Init(d3dDevice)) {
-                                g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
-                                SetPreferredScreenGrab(true);
-                            } else {
-                                g_WgcCap.reset();
-                                SetPreferredScreenGrab(false);
-                            }
-                            currentCapturedWindow = NULL;
-                        }
                     }
                 } else if (!foundWindow && currentCapturedWindow != NULL) {
                     if (!IsWindow(currentCapturedWindow)) {
@@ -1387,63 +1446,40 @@ int MediaProcessMain(const AppConfig& config) {
                             "to monitor/inject.",
                             currentCapturedWindow);
                         currentCapturedWindow = NULL;
-                        if (ensureWgcDevice()) {
-                            g_WgcCap.reset();
-                            g_WgcCap = std::make_unique<WGCCapture>();
-                            if (!g_WgcCap->Init(d3dDevice)) {
-                                g_WgcCap.reset();
-                                SetPreferredScreenGrab(false);
-                            } else {
-                                g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
-                                SetPreferredScreenGrab(true);
-                            }
-                        } else {
+                        if (!primeWgcMonitorTarget()) {
                             SetPreferredScreenGrab(false);
                         }
                     }
                 }
             }
 
-            static uint32_t lastSourcePid = 0;
             uint32_t currentSourcePid = g_pSharedMem->GetSourcePid();
 
             if (currentSourcePid != 0 && currentSourcePid != lastSourcePid) {
                 lastSourcePid = currentSourcePid;
-                std::string procName = GetProcessNameFromPID(currentSourcePid);
+                std::string procName = refreshActiveConfig(false);
+                if (procName.empty()) {
+                    procName = GetProcessNameFromPID(currentSourcePid);
+                }
                 LogInfo("[Media] Hook connected: %s (PID: %u)", procName.c_str(), currentSourcePid);
 
-                bool forceWGC = false;
-                if (!config.overlayWhitelist.empty()) {
-                    std::string lowerName = procName;
-                    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
-
-                    for (const auto& entry : config.overlayWhitelist) {
-                        if (!entry.HasProcess())
-                            continue;
-
-                        std::string lowerItem = entry.pattern;
-                        std::transform(lowerItem.begin(), lowerItem.end(), lowerItem.begin(), ::tolower);
-
-                        if (entry.mode == MatchMode::kExact) {
-                            if (lowerName == lowerItem) {
-                                forceWGC = true;
-                                LogInfo("[Media] Overlay Whitelist Match! Forcing WGC for %s", procName.c_str());
-                                break;
-                            }
-                        } else {
-                            if (lowerName == lowerItem || lowerName.find(lowerItem) != std::string::npos) {
-                                forceWGC = true;
-                                LogInfo("[Media] Overlay Whitelist Match! Forcing WGC for %s", procName.c_str());
-                                break;
-                            }
-                        }
-                    }
+                const bool forceWGC = MatchesProcessEntries(config.overlayWhitelist, procName);
+                if (forceWGC) {
+                    LogInfo("[Media] Overlay Whitelist Match! Forcing WGC for %s", procName.c_str());
                 }
 
                 if (!g_Recording && forceWGC) {
+                    HWND matchedWindow =
+                        config.wgcWindowTitles.empty() ? NULL : FindMatchingWgcWindow(config.wgcWindowTitles);
+                    if (matchedWindow) {
+                        primeWgcWindowTarget(matchedWindow, false);
+                        continue;
+                    }
+
                     if (!ensureWgcDevice()) {
                         LogWarn("[Media] Overlay whitelist requested WGC but D3D11 device unavailable");
                         SetPreferredScreenGrab(false);
+                        currentCapturedWindow = NULL;
                     } else {
                         SetPreferredScreenGrab(true);
 
@@ -1454,46 +1490,23 @@ int MediaProcessMain(const AppConfig& config) {
                                 "Switching WGC to Window Mode.",
                                 hGameWindow);
 
-                            g_WgcCap.reset();
-                            g_WgcCap = std::make_unique<WGCCapture>();
-                            if (g_WgcCap->InitForWindow(d3dDevice, hGameWindow)) {
-                                g_WgcCap->SetCaptureCursor(config.video.captureCursor);
-                                g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
+                            if (primeWgcWindowTarget(hGameWindow, false)) {
                                 LogInfo("[Media] WGC window target primed for PID %u", currentSourcePid);
-                                currentCapturedWindow = hGameWindow;
                             } else {
-                                LogError(
-                                    "[Media] Failed to init WGC for window - falling back "
-                                    "to Monitor");
-                                g_WgcCap.reset();
-                                g_WgcCap = std::make_unique<WGCCapture>();
-                                if (!g_WgcCap->Init(d3dDevice)) {
-                                    g_WgcCap.reset();
-                                    SetPreferredScreenGrab(false);
-                                } else {
-                                    g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
-                                    currentCapturedWindow = NULL;
-                                }
+                                LogError("[Media] Failed to init WGC for window - falling back to Monitor");
                             }
                         } else {
                             LogInfo(
                                 "[Media] Whitelist: No main window found for PID %u. Using "
                                 "Monitor Capture.",
                                 currentSourcePid);
-                            g_WgcCap.reset();
-                            g_WgcCap = std::make_unique<WGCCapture>();
-                            if (!g_WgcCap->Init(d3dDevice)) {
-                                g_WgcCap.reset();
+                            if (!primeWgcMonitorTarget()) {
                                 SetPreferredScreenGrab(false);
-                            } else {
-                                g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
-                                currentCapturedWindow = NULL;
                             }
                         }
                     }
 
-                } else if (!g_Recording && config.captureMethod != "screengrab" &&
-                           config.captureMethod != "framegrab") {
+                } else if (!g_Recording && !isExplicitScreenGrabConfig()) {
                     SetPreferredScreenGrab(false);
                     LogInfo("[Media] Using Inject Mode (Default)");
                 }
@@ -1522,9 +1535,8 @@ int MediaProcessMain(const AppConfig& config) {
             }
 
             if (g_pSharedMem) {
-                uint32_t totalDropped =
-                    g_WgcDroppedFrames.load(std::memory_order_relaxed) + (uint32_t)g_FrameQueue.GetDroppedCount();
-                g_pSharedMem->runtimeState.hostDroppedFrames.store(totalDropped);
+                g_pSharedMem->runtimeState.hostDroppedFrames.store(
+                    static_cast<uint32_t>(g_FrameQueue.GetDroppedCount()), std::memory_order_relaxed);
             }
         } else if (!IsActiveScreenGrab() && g_Recording && g_pSharedMem) {
             FrameRingBuffer& ring = g_pSharedMem->frameRing;

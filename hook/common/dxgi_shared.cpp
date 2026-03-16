@@ -225,6 +225,74 @@ static PFN_Present1 oPresent1Bypass = nullptr;
 // Stored vtable pointer for unhooking Present when COM wrapper takes over
 static void** s_hookedVTable = nullptr;
 
+enum class DX12StartupPresentMode {
+    kNone,
+    kPassThroughOriginal,
+    kBypassExternalHook,
+};
+
+static bool IsSteamOverlayModule(const char* overlayModule) {
+    return overlayModule && ce::overlay_compat::detail::ContainsInsensitive(overlayModule, "gameoverlayrenderer");
+}
+
+static bool IsWrappedSwapChainObject(IDXGISwapChain* pSwapChain) {
+    if (!pSwapChain) {
+        return false;
+    }
+
+    void* pWrapper = nullptr;
+    if (SUCCEEDED(pSwapChain->QueryInterface(IID_CWrapDXGISwapChain, &pWrapper))) {
+        ((IUnknown*)pWrapper)->Release();
+        return true;
+    }
+
+    return false;
+}
+
+APIType DetectAPIType(IDXGISwapChain* pSwapChain);
+
+static bool ShouldForceSteamDX12Bypass(IDXGISwapChain* pSwapChain, bool bypassAvailable, bool slLoaded,
+                                       const char** overlayModuleOut = nullptr) {
+    const char* overlayModule = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
+    if (overlayModuleOut) {
+        *overlayModuleOut = overlayModule;
+    }
+    if (!pSwapChain || !bypassAvailable || slLoaded || !IsSteamOverlayModule(overlayModule)) {
+        return false;
+    }
+    if (IsInWrapperPresent() || IsWrappedSwapChainObject(pSwapChain)) {
+        return false;
+    }
+    return DetectAPIType(pSwapChain) == APIType::D3D12;
+}
+
+static DX12StartupPresentMode GetDX12StartupPresentMode(bool bypassAvailable, const char** overlayModuleOut = nullptr,
+                                                        int* passIndexOut = nullptr) {
+    const char* overlayModule = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
+    if (overlayModuleOut) {
+        *overlayModuleOut = overlayModule;
+    }
+    if (!overlayModule || oPresentTrampoline || oPresent1Trampoline) {
+        return DX12StartupPresentMode::kNone;
+    }
+
+    static std::atomic<int> s_startupPassCount{0};
+    const bool steamOverlay = IsSteamOverlayModule(overlayModule);
+    const int startupCompatFrames = (steamOverlay && bypassAvailable) ? 16 : 3;
+    int expected = s_startupPassCount.load(std::memory_order_acquire);
+    while (expected < startupCompatFrames) {
+        if (s_startupPassCount.compare_exchange_weak(expected, expected + 1, std::memory_order_acq_rel,
+                                                     std::memory_order_acquire)) {
+            if (passIndexOut) {
+                *passIndexOut = expected + 1;
+            }
+            return (steamOverlay && bypassAvailable) ? DX12StartupPresentMode::kBypassExternalHook
+                                                     : DX12StartupPresentMode::kPassThroughOriginal;
+        }
+    }
+    return DX12StartupPresentMode::kNone;
+}
+
 // Vulkan detection via ICD layer - returns false since we use layer approach
 bool IsVulkanPrimary() {
     // VK_LAYER_CE_overlay handles Vulkan separately
@@ -710,6 +778,24 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     }
 
     APIType api = DetectAPIType(pSwapChain);
+    if (api == APIType::D3D12) {
+        const char* overlayModule = nullptr;
+        int startupPass = 0;
+        DX12StartupPresentMode startupMode =
+            GetDX12StartupPresentMode(oPresentBypass != nullptr, &overlayModule, &startupPass);
+        if (startupMode == DX12StartupPresentMode::kBypassExternalHook) {
+            HookLogImportant("DetourPresent: Startup bypass #%d for Steam overlay %s", startupPass,
+                             overlayModule ? overlayModule : "module");
+            s_bypassVtableHook = true;
+            auto bypassGuard = ce::make_scope_guard([]() { s_bypassVtableHook = false; });
+            return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+        }
+        if (startupMode == DX12StartupPresentMode::kPassThroughOriginal) {
+            HookLogImportant("DetourPresent: Startup pass-through #%d for third-party overlay %s", startupPass,
+                             overlayModule ? overlayModule : "module");
+            return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+        }
+    }
     g_SharedState.frameCount.fetch_add(1, std::memory_order_relaxed);
 
     static int64_t qpcFreq = 0;
@@ -893,6 +979,24 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     }
 
     APIType api = DetectAPIType(pSwapChain);
+    if (api == APIType::D3D12) {
+        const char* overlayModule = nullptr;
+        int startupPass = 0;
+        DX12StartupPresentMode startupMode =
+            GetDX12StartupPresentMode(oPresent1Bypass != nullptr, &overlayModule, &startupPass);
+        if (startupMode == DX12StartupPresentMode::kBypassExternalHook) {
+            HookLogImportant("DetourPresent1: Startup bypass #%d for Steam overlay %s", startupPass,
+                             overlayModule ? overlayModule : "module");
+            s_bypassVtableHook = true;
+            auto bypassGuard = ce::make_scope_guard([]() { s_bypassVtableHook = false; });
+            return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+        }
+        if (startupMode == DX12StartupPresentMode::kPassThroughOriginal) {
+            HookLogImportant("DetourPresent1: Startup pass-through #%d for third-party overlay %s", startupPass,
+                             overlayModule ? overlayModule : "module");
+            return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+        }
+    }
     g_SharedState.frameCount.fetch_add(1, std::memory_order_relaxed);
 
     if (api == APIType::D3D12) {
@@ -1243,6 +1347,10 @@ bool HasPresentInlineHooks() {
     return oPresentTrampoline != nullptr || oPresent1Trampoline != nullptr;
 }
 
+bool HasPresentDetourHooks() {
+    return s_hookedVTable != nullptr || oPresentTrampoline != nullptr || oPresent1Trampoline != nullptr;
+}
+
 // Lazy hook installation - installs hooks on first Present if they were
 // deferred during swapchain creation
 static IDXGISwapChain* s_PendingSwapChainForLazyHook = nullptr;
@@ -1584,13 +1692,35 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         return DXGI_ERROR_INVALID_CALL;
     }
 
+    const PFN_Present presentTrampoline = oPresentTrampoline;
+    const PFN_Present presentOriginal = oPresent;
+    const PFN_Present presentBypass = oPresentBypass;
+    bool slLoaded = IsSLInterposerLoaded();
+
     // Inline-hook path: trampoline always bypasses the detour safely.
-    if (oPresentTrampoline) {
+    if (presentTrampoline) {
         static int s_copLogCount = 0;
         if (s_copLogCount++ < 5) {
-            HookLog("CallOriginalPresent: trampoline path=%p", oPresentTrampoline);
+            HookLog("CallOriginalPresent: trampoline path=%p", presentTrampoline);
         }
-        return oPresentTrampoline(pSwapChain, SyncInterval, Flags);
+        return presentTrampoline(pSwapChain, SyncInterval, Flags);
+    }
+
+    if (s_bypassVtableHook && presentBypass) {
+        static int s_copBypassLogCount = 0;
+        if (s_copBypassLogCount++ < 5) {
+            HookLogImportant("CallOriginalPresent: bypass path=%p", presentBypass);
+        }
+        return presentBypass(pSwapChain, SyncInterval, Flags);
+    }
+
+    const char* forcedBypassOverlay = nullptr;
+    if (ShouldForceSteamDX12Bypass(pSwapChain, presentBypass != nullptr, slLoaded, &forcedBypassOverlay)) {
+        static int s_forcedBypassLogCount = 0;
+        if (s_forcedBypassLogCount++ < 10) {
+            HookLogImportant("CallOriginalPresent: forcing DXGI bypass for Steam overlay %s", forcedBypassOverlay);
+        }
+        return presentBypass(pSwapChain, SyncInterval, Flags);
     }
 
     // When SL is loaded (vtable hook mode), call oPresent directly.
@@ -1598,13 +1728,12 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     // after us, which would create a re-entrant loop:
     //   DetourPresent → vtable[8](SteamPresent) → Steam → DetourPresent → ...
     // oPresent = the saved original from vtable[8] at hook install time.
-    bool slLoaded = IsSLInterposerLoaded();
-    if (slLoaded && oPresent && oPresent != DetourPresent) {
+    if (slLoaded && presentOriginal && presentOriginal != DetourPresent) {
         static int s_copLogCount2 = 0;
         if (s_copLogCount2++ < 5) {
-            HookLog("CallOriginalPresent: SL fast-path oPresent=%p", oPresent);
+            HookLog("CallOriginalPresent: SL fast-path oPresent=%p", presentOriginal);
         }
-        return oPresent(pSwapChain, SyncInterval, Flags);
+        return presentOriginal(pSwapChain, SyncInterval, Flags);
     }
 
     // Prefer the current object's vtable entry when it is not detoured.
@@ -1625,16 +1754,16 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     }
 
     // Vtable-hook path fallback: use saved original only if it is not detoured.
-    if (oPresent && oPresent != DetourPresent) {
+    if (presentOriginal && presentOriginal != DetourPresent) {
         static int s_copLogCount4 = 0;
         if (s_copLogCount4++ < 5) {
-            HookLog("CallOriginalPresent: fallback oPresent=%p (slLoaded=%d)", oPresent, slLoaded);
+            HookLog("CallOriginalPresent: fallback oPresent=%p (slLoaded=%d)", presentOriginal, slLoaded);
         }
-        return oPresent(pSwapChain, SyncInterval, Flags);
+        return presentOriginal(pSwapChain, SyncInterval, Flags);
     }
 
-    HookLog("CallOriginalPresent: NO PATH AVAILABLE (oPresent=%p, oPresentTrampoline=%p, slLoaded=%d)", oPresent,
-            oPresentTrampoline, slLoaded);
+    HookLog("CallOriginalPresent: NO PATH AVAILABLE (oPresent=%p, oPresentTrampoline=%p, slLoaded=%d)", presentOriginal,
+            presentTrampoline, slLoaded);
     return DXGI_ERROR_INVALID_CALL;
 }
 
@@ -1644,14 +1773,36 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
         return DXGI_ERROR_INVALID_CALL;
     }
 
+    const PFN_Present1 present1Trampoline = oPresent1Trampoline;
+    const PFN_Present1 present1Original = oPresent1;
+    const PFN_Present1 present1Bypass = oPresent1Bypass;
+    bool slLoaded = IsSLInterposerLoaded();
+
     // Inline-hook path: trampoline always bypasses the detour safely.
-    if (oPresent1Trampoline) {
-        return oPresent1Trampoline(pSwapChain, SyncInterval, Flags, pParams);
+    if (present1Trampoline) {
+        return present1Trampoline(pSwapChain, SyncInterval, Flags, pParams);
+    }
+
+    if (s_bypassVtableHook && present1Bypass) {
+        static int s_copBypassLogCount = 0;
+        if (s_copBypassLogCount++ < 5) {
+            HookLogImportant("CallOriginalPresent1: bypass path=%p", present1Bypass);
+        }
+        return present1Bypass(pSwapChain, SyncInterval, Flags, pParams);
+    }
+
+    const char* forcedBypassOverlay = nullptr;
+    if (ShouldForceSteamDX12Bypass(pSwapChain, present1Bypass != nullptr, slLoaded, &forcedBypassOverlay)) {
+        static int s_forcedBypassLogCount = 0;
+        if (s_forcedBypassLogCount++ < 10) {
+            HookLogImportant("CallOriginalPresent1: forcing DXGI bypass for Steam overlay %s", forcedBypassOverlay);
+        }
+        return present1Bypass(pSwapChain, SyncInterval, Flags, pParams);
     }
 
     // When SL is loaded, call oPresent1 directly (same reason as Present).
-    if (IsSLInterposerLoaded() && oPresent1 && oPresent1 != DetourPresent1) {
-        return oPresent1(pSwapChain, SyncInterval, Flags, pParams);
+    if (slLoaded && present1Original && present1Original != DetourPresent1) {
+        return present1Original(pSwapChain, SyncInterval, Flags, pParams);
     }
 
     // Prefer the current object's Present1 slot when it is not detoured.
@@ -1666,8 +1817,8 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
     }
 
     // Vtable-hook path fallback: use saved original only if it is not detoured.
-    if (oPresent1 && oPresent1 != DetourPresent1) {
-        return oPresent1(pSwapChain, SyncInterval, Flags, pParams);
+    if (present1Original && present1Original != DetourPresent1) {
+        return present1Original(pSwapChain, SyncInterval, Flags, pParams);
     }
 
     // Last resort: fall back to Present.

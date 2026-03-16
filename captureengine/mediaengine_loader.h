@@ -22,7 +22,7 @@ typedef void (*MediaEngine_ProcessFrame_t)(uint64_t textureHandle, uint64_t fenc
                                            uint32_t width, uint32_t height, uint32_t format, bool isHDR, bool isShmem,
                                            int shmemSlot);
 typedef void (*MediaEngine_ProcessFrameD3D11_t)(void* texture, int64_t timestamp, uint32_t width, uint32_t height,
-                                                bool isHDR);
+                                                bool isHDR, int32_t captureLeft, int32_t captureTop);
 typedef bool (*MediaEngine_StartRecording_t)();
 typedef void (*MediaEngine_StopRecording_t)();
 typedef void (*MediaEngine_ReleaseEncoderTextures_t)();

@@ -2128,7 +2128,7 @@ static void FindAndWrapPreExistingSwapchains() {
 }
 
 static void EnsurePresentInlineHooksForRealSwapchain(IDXGISwapChain* pSwapChain, const char* source) {
-    if (!pSwapChain || DXGIShared::HasPresentInlineHooks()) {
+    if (!pSwapChain || DXGIShared::HasPresentDetourHooks()) {
         return;
     }
 
@@ -2144,6 +2144,9 @@ static void EnsurePresentInlineHooksForRealSwapchain(IDXGISwapChain* pSwapChain,
 
     if (DXGIShared::HasPresentInlineHooks()) {
         HookLogImportant("DX12: Present inline hooks are active via %s swapchain", source ? source : "real");
+    } else if (DXGIShared::HasPresentDetourHooks()) {
+        HookLogImportant("DX12: Present detour hooks are active via %s swapchain (external overlay-compatible path)",
+                         source ? source : "real");
     } else {
         HookLog("DX12: Present inline hook installation via %s swapchain deferred to existing external hook chain",
                 source ? source : "real");

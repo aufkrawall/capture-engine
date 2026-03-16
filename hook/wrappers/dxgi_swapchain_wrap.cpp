@@ -81,15 +81,25 @@ bool IsInWrapperPresent() {
     return g_InWrapperPresent;
 }
 
-static bool ShouldDelegateDX12PresentToInlineHook() {
-    if (!DXGIShared::HasPresentInlineHooks()) {
+static const char* GetDX12PresentDelegationOverlayModuleName() {
+    const char* overlayModule = ce::overlay_compat::GetStartupBlockingOverlayModuleName();
+    if (overlayModule) {
+        return overlayModule;
+    }
+    return ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
+}
+
+// When a third-party overlay already owns the DXGI Present chain, route the
+// wrapper through our detour path instead of running a second wrapper-managed
+// Present path. This avoids wrapper -> detour -> external overlay re-entry.
+static bool ShouldDelegateDX12PresentToDetourHook(const char** overlayModuleOut = nullptr) {
+    const char* overlayModule = GetDX12PresentDelegationOverlayModuleName();
+    if (overlayModuleOut) {
+        *overlayModuleOut = overlayModule;
+    }
+    if (!overlayModule || !DXGIShared::HasPresentDetourHooks()) {
         return false;
     }
-
-    if (!ce::overlay_compat::GetStartupBlockingOverlayModuleName()) {
-        return false;
-    }
-
     return !g_FGCompat.IsDLSSFGApiActive() && !g_FGCompat.IsFSRFGApiActive();
 }
 
@@ -739,12 +749,12 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         return pRealCached->Present(SyncInterval, Flags);
     }
 
-    if (m_IsD3D12 && ShouldDelegateDX12PresentToInlineHook()) {
+    const char* delegationOverlayModule = nullptr;
+    if (m_IsD3D12 && ShouldDelegateDX12PresentToDetourHook(&delegationOverlayModule)) {
         static std::atomic<int> s_inlineRouteLogCount{0};
-        const char* overlayModule = ce::overlay_compat::GetStartupBlockingOverlayModuleName();
         if (s_inlineRouteLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
-            WrapperLog("Present: Delegating DX12 Present to inline hook for external overlay %s",
-                       overlayModule ? overlayModule : "module");
+            WrapperLog("Present: Delegating DX12 Present to detour hook for external overlay %s",
+                       delegationOverlayModule ? delegationOverlayModule : "module");
         }
         g_InWrapperPresent = false;
         auto delegateGuard = ::ce::make_scope_guard([&] { g_InWrapperPresent = true; });
@@ -1089,12 +1099,12 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
         return pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters);
     }
 
-    if (m_IsD3D12 && ShouldDelegateDX12PresentToInlineHook()) {
+    const char* delegationOverlayModule = nullptr;
+    if (m_IsD3D12 && ShouldDelegateDX12PresentToDetourHook(&delegationOverlayModule)) {
         static std::atomic<int> s_inlineRouteLogCount1{0};
-        const char* overlayModule = ce::overlay_compat::GetStartupBlockingOverlayModuleName();
         if (s_inlineRouteLogCount1.fetch_add(1, std::memory_order_relaxed) < 20) {
-            WrapperLog("Present1: Delegating DX12 Present1 to inline hook for external overlay %s",
-                       overlayModule ? overlayModule : "module");
+            WrapperLog("Present1: Delegating DX12 Present1 to detour hook for external overlay %s",
+                       delegationOverlayModule ? delegationOverlayModule : "module");
         }
         g_InWrapperPresent = false;
         auto delegateGuard = ::ce::make_scope_guard([&] { g_InWrapperPresent = true; });

@@ -534,7 +534,8 @@ bool CursorRenderer::UpdateCursorTexture() {
     return true;
 }
 
-bool CursorRenderer::CompositeOntoFrame(ID3D11Texture2D* targetTexture, int frameWidth, int frameHeight) {
+bool CursorRenderer::CompositeOntoFrame(ID3D11Texture2D* targetTexture, int frameWidth, int frameHeight,
+                                        int captureOriginX, int captureOriginY) {
     if (!resourcesCreated || !device || !context) {
         return false;
     }
@@ -584,8 +585,8 @@ bool CursorRenderer::CompositeOntoFrame(ID3D11Texture2D* targetTexture, int fram
     float posScaleY = dpiY / 96.0f;
 
     // Calculate normalized cursor position and size (DPI-aware)
-    float cursorX = (float)((int)(cursorPos.x * posScaleX) - hotspotX) / (float)frameWidth;
-    float cursorY = (float)((int)(cursorPos.y * posScaleY) - hotspotY) / (float)frameHeight;
+    float cursorX = (float)((int)((cursorPos.x - captureOriginX) * posScaleX) - hotspotX) / (float)frameWidth;
+    float cursorY = (float)((int)((cursorPos.y - captureOriginY) * posScaleY) - hotspotY) / (float)frameHeight;
     float cursorW = (float)cursorWidth / (float)frameWidth;
     float cursorH = (float)cursorHeight / (float)frameHeight;
 

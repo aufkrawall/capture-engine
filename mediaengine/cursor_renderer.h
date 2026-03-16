@@ -24,10 +24,12 @@ public:
     // Cleanup resources
     void Cleanup();
 
-    // Composite cursor onto target texture if cursor is visible
+    // Composite cursor onto target texture if cursor is visible.
+    // captureOrigin is the top-left screen-space origin of the captured content.
     // Returns true if cursor was drawn, false if cursor hidden or error
     // This is optimized to be very fast when cursor is hidden (single API call)
-    bool CompositeOntoFrame(ID3D11Texture2D* targetTexture, int frameWidth, int frameHeight);
+    bool CompositeOntoFrame(ID3D11Texture2D* targetTexture, int frameWidth, int frameHeight, int captureOriginX = 0,
+                            int captureOriginY = 0);
 
     // Extract cursor bitmap to CPU memory (public for VP overlay use)
     bool ExtractCursorBitmap(HICON icon, uint8_t** outBitmap, uint32_t* outWidth, uint32_t* outHeight,

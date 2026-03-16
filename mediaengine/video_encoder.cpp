@@ -255,11 +255,33 @@ static HANDLE NormalizeSourceHandleForWow64(HANDLE handle, uint32_t sourcePid) {
 }
 
 // Helper to generate robust output filename
+static fs::path GetExecutableDirectory() {
+    wchar_t modulePath[MAX_PATH] = {};
+    DWORD len = GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) {
+        std::error_code ec;
+        fs::path cwd = fs::current_path(ec);
+        return ec ? fs::path(".") : cwd;
+    }
+
+    fs::path exePath(modulePath);
+    if (exePath.has_parent_path()) {
+        return exePath.parent_path();
+    }
+
+    std::error_code ec;
+    fs::path cwd = fs::current_path(ec);
+    return ec ? fs::path(".") : cwd;
+}
+
 static std::string GenerateOutputFilename(const VideoConfig& config) {
-    // Default to "captures" subdirectory if outputDir is not specified
-    fs::path outDir = config.outputDir;
-    if (outDir.empty()) {
-        outDir = "captures";
+    const fs::path exeDir = GetExecutableDirectory();
+
+    // Respect output_dir when set. When left empty, keep the documented behavior
+    // of writing next to the executable.
+    fs::path outDir = config.outputDir.empty() ? exeDir : fs::path(config.outputDir);
+    if (!config.outputDir.empty() && outDir.is_relative()) {
+        outDir = exeDir / outDir;
     }
 
     // Create directory if it doesn't exist
@@ -270,9 +292,9 @@ static std::string GenerateOutputFilename(const VideoConfig& config) {
         } else {
             DLL_Log(
                 "[VideoEncoder] Failed to create output directory: %s (Error: "
-                "%d). Fallback to current dir.",
+                "%d). Falling back to executable directory.",
                 outDir.string().c_str(), ec.value());
-            outDir = ".";
+            outDir = exeDir;
         }
     } else {
         // DLL_Log("[VideoEncoder] Output directory exists: %s",
@@ -819,7 +841,7 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
 
     for (auto& actx : audioContexts) {
         if (actx.codecCtx) {
-            actx.streamIndex = AddAudioStream(actx.config, actx.codecCtx);
+            actx.streamIndex = AddAudioStream(actx.config, actx.codecCtx, actx.track);
             if (actx.streamIndex >= 0 && audioStreamIndex < 0)
                 audioStreamIndex = actx.streamIndex;
         }
@@ -1084,7 +1106,7 @@ bool VideoEncoder::EnsureDevice() {
     return ConfigureAndOpenCodec();
 }
 
-int VideoEncoder::AddAudioStream(const AudioConfig& config, AVCodecContext* audioCtx) {
+int VideoEncoder::AddAudioStream(const AudioConfig& config, AVCodecContext* audioCtx, int track) {
     if (!fmtCtx)
         return -1;
 
@@ -1119,6 +1141,11 @@ int VideoEncoder::AddAudioStream(const AudioConfig& config, AVCodecContext* audi
         st->codecpar->sample_rate = sampleRate;
         st->codecpar->ch_layout.nb_channels = 2;
     }
+
+    if (track > 0) {
+        std::string title = "Track " + std::to_string(track);
+        av_dict_set(&st->metadata, "title", title.c_str(), 0);
+    }
     return st->index;
 }
 
@@ -1144,6 +1171,22 @@ int VideoEncoder::AddAudioContext(const AudioConfig& config, AVCodecContext* aud
     ctx.codecCtx = audioCtx;
     ctx.track = track;
     ctx.streamIndex = -1;
+
+    for (auto it = audioContexts.begin(); it != audioContexts.end(); ++it) {
+        if (it->track == track) {
+            it->config = config;
+            it->codecCtx = audioCtx;
+            it->streamIndex = -1;
+            DLL_Log("[VideoEncoder] AddAudioContext: track=%d replaced existing entry", track);
+            return track;
+        }
+        if (it->track > track) {
+            audioContexts.insert(it, ctx);
+            DLL_Log("[VideoEncoder] AddAudioContext: track=%d, total=%d", ctx.track, (int)audioContexts.size());
+            return ctx.track;
+        }
+    }
+
     audioContexts.push_back(ctx);
 
     DLL_Log("[VideoEncoder] AddAudioContext: track=%d, total=%d", ctx.track, (int)audioContexts.size());
@@ -2364,7 +2407,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
 // EncodeFrameD3D11: Direct D3D11 texture encoding for framegrab
 // mode Zero-copy path - texture is converted RGB/BGRA -> NV12/P010 directly on GPU
 bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, uint32_t frameWidth,
-                                    uint32_t frameHeight, bool isHDR) {
+                                    uint32_t frameHeight, bool isHDR, int32_t captureLeft, int32_t captureTop) {
     if (!recordingRequested)
         return false;
 
@@ -2468,14 +2511,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     // Log frame stats periodically (every 120 frames = ~1 sec at 120fps)
     if (encodeFrameCounter - lastLogFrameCount >= kFpsLogIntervalFrames) {
         if (startPts >= 0 && pts > startPts) {
-            // Use cached QPC frequency (class member, initialized in EncodeFrame)
-            if (qpcFrequency == 0) {
-                LARGE_INTEGER li;
-                QueryPerformanceFrequency(&li);
-                qpcFrequency = li.QuadPart;
-            }
-
-            double elapsedSec = (double)(pts - startPts) / (double)qpcFrequency;
+            double elapsedSec = static_cast<double>(pts - startPts) / 1000000.0;
             double outputFps = (elapsedSec > 0.001) ? ((double)encodeFrameCounter / elapsedSec) : 0.0;
             DLL_Log("[FPS] Framegrab: %.1f frames, %.1f fps over %.1fs", (double)encodeFrameCounter, outputFps,
                     elapsedSec);
@@ -2486,13 +2522,50 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     // Performance timing
     auto frameStart = PerfTimer::now();
 
-    // WGC capture includes the cursor natively (composited by DWM).
-    // No software cursor overlay needed — pass false to disable it.
+    if (captureCursor && !videoProcessorInit) {
+        if (!InitVideoProcessor()) {
+            DLL_Log("[VideoEncoder] Frame %d: VP init failed", encodeFrameCounter);
+            return false;
+        }
+    }
+
+    // WGC native cursor capture is disabled to avoid compositor hitches on
+    // cursor motion. Reuse the same encoder-side cursor overlay path we use in
+    // inject mode, but offset into the captured region.
     bool cursorVisible = false;
     int cursorX = 0, cursorY = 0;
+    bool useSoftwareCursorComposite = false;
 
-    // Convert captured RGB → NV12/P010 using Video Processor (no cursor overlay —
-    // WGC already has the cursor baked into the captured frame)
+    if (captureCursor && cursorRenderer) {
+        if (vpSupportsOverlay) {
+            CURSORINFO ci = {sizeof(CURSORINFO)};
+            if (GetCursorInfo(&ci)) {
+                if (encodeFrameCounter % 100 == 1) {
+                    DLL_Log("[WGC Cursor] Frame %d: flags=%d hCursor=%p pos=(%d,%d) origin=(%d,%d)", encodeFrameCounter,
+                            ci.flags, (void*)ci.hCursor, ci.ptScreenPos.x, ci.ptScreenPos.y, captureLeft, captureTop);
+                }
+
+                if (ci.hCursor) {
+                    cursorVisible = true;
+                    cursorX = ci.ptScreenPos.x - captureLeft;
+                    cursorY = ci.ptScreenPos.y - captureTop;
+                    activeCursor = GetCursorCacheEntry(ci.hCursor);
+                }
+            }
+        } else if (cursorRenderer->Init(d3d11Device, d3d11Context)) {
+            useSoftwareCursorComposite = true;
+        }
+    }
+
+    if (useSoftwareCursorComposite &&
+        !cursorRenderer->CompositeOntoFrame(bgraTexture, frameWidth, frameHeight, captureLeft, captureTop) &&
+        encodeFrameCounter % 300 == 1) {
+        DLL_Log("[WGC Cursor] Software cursor composite unavailable for frame %d", encodeFrameCounter);
+    }
+
+    // Convert captured RGB -> NV12/P010 using Video Processor. Cursor overlay is
+    // either supplied as a secondary VP stream or already composited onto the
+    // BGRA frame above.
     auto beforeConvert = PerfTimer::now();
     ID3D11Texture2D* nv12Tex = nullptr;
 
@@ -2660,6 +2733,9 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     auto afterEncode = PerfTimer::now();
     double encodeMs = PerfTimer::elapsed_ms(afterConvert, afterEncode);
     double totalMs = PerfTimer::elapsed_ms(frameStart, afterEncode);
+
+    lastEncodeTimeUs = static_cast<int64_t>(PerfTimer::elapsed_ms(beforeConvert, afterEncode) * 1000.0);
+    lastFenceWaitUs = 0;
 
     av_packet_free(&pkt);
 

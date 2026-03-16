@@ -20,11 +20,18 @@ static std::atomic<bool> g_DumpAlreadyWritten{false};
 static std::atomic<bool> g_ForceUnhandledDump{false};
 static std::mutex g_TraceCrashMutex;
 static std::atomic<int> g_VEHCallCount{0};
+static std::atomic<int> g_RPCDisconnectedExceptionCount{0};
+static std::atomic<int> g_RPCServerUnavailableExceptionCount{0};
+static std::atomic<int> g_BreakpointExceptionCount{0};
 typedef BOOL(WINAPI* MINIDUMPWRITEDUMP)(HANDLE hProcess, DWORD ProcessId, HANDLE hFile, MINIDUMP_TYPE DumpType,
                                         PMINIDUMP_EXCEPTION_INFORMATION ExceptionParam,
                                         PMINIDUMP_USER_STREAM_INFORMATION UserStreamParam,
                                         PMINIDUMP_CALLBACK_INFORMATION CallbackParam);
 static MINIDUMPWRITEDUMP g_pMiniDumpWriteDump = NULL;
+
+static int IncrementExceptionCount(std::atomic<int>& counter) {
+    return counter.fetch_add(1, std::memory_order_acq_rel) + 1;
+}
 
 // Register this process with WER (Windows Error Reporting) so crash dumps are
 // generated even for __fastfail() which bypasses VEH and UEF handlers.
@@ -321,9 +328,11 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
     // process shutdown. COM's LRPC infrastructure tries to dispatch pending
     // RPC calls after the process has started releasing COM objects.
     // This causes RPC_E_DISCONNECTED on a TppWorkerThread.
-    // Only dump if we get an excessive number (indicates a real issue).
+    // Only dump if we get an excessive number of THIS exception (indicates a
+    // real issue). A global VEH counter is too noisy because unrelated
+    // first-chance exceptions happen frequently in graphics processes.
     if (!forceDump && code == 0x80010108) {
-        if (callCount < 5) {
+        if (IncrementExceptionCount(g_RPCDisconnectedExceptionCount) <= 5) {
             return EXCEPTION_CONTINUE_SEARCH;
         }
     }
@@ -331,16 +340,20 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
     // RPC_S_SERVER_UNAVAILABLE (0x800706ba) on thread pool timer callbacks:
     // Windows COM timer tries to clean up marshaling context for a dead process.
     // This is benign during cross-process teardown (e.g., inject process exits).
+    // Apply the threshold per exception code rather than per total VEH count so
+    // earlier benign exceptions do not force a dump here.
     if (!forceDump && code == 0x800706ba) {
-        if (callCount < 3) {
+        if (IncrementExceptionCount(g_RPCServerUnavailableExceptionCount) <= 3) {
             return EXCEPTION_CONTINUE_SEARCH;
         }
     }
 
-    // Breakpoints: only skip if we haven't been called too many times
-    // (excessive breakpoints suggest a real crash loop)
-    if (!forceDump && code == 0x80000003 && callCount < 5) {
-        return EXCEPTION_CONTINUE_SEARCH;
+    // Breakpoints: only skip if we haven't seen too many breakpoint exceptions.
+    // Count actual breakpoint occurrences rather than total VEH entries.
+    if (!forceDump && code == 0x80000003) {
+        if (IncrementExceptionCount(g_BreakpointExceptionCount) <= 5) {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
     }
 
     // Generic C++ exceptions are commonly used for recoverable library error

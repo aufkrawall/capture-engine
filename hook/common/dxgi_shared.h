@@ -88,6 +88,7 @@ void RemoveSwapchainVTableHooks();
 // bypasses the hook - preventing re-entry issues with wrapped swapchains
 bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain);
 bool HasPresentInlineHooks();
+bool HasPresentDetourHooks();
 
 // Direct-call helpers: bypass vtable hooks by calling saved original function
 // pointers directly. Used by CWrapDXGISwapChain to avoid re-entry through

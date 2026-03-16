@@ -143,6 +143,7 @@ public:
     HMONITOR targetMonitor_ = nullptr;
     bool useHighPrecisionCapture_ = false;
     bool captureIsHDR_ = false;
+    bool borderlessCapture_ = false;
     UINT outputBitsPerColor_ = 8;
     DXGI_COLOR_SPACE_TYPE outputColorSpace_ = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
 
@@ -159,6 +160,14 @@ public:
         }
     }
 
+    void ResetStats() {
+        callbackFrameCount_.store(0, std::memory_order_relaxed);
+        skippedFrameCount_.store(0, std::memory_order_relaxed);
+        lastCopyUs_.store(0, std::memory_order_relaxed);
+        lastCapturedQPC_ = 0;
+        nextCaptureQPC_ = 0;
+    }
+
     HMONITOR ResolveTargetMonitor() const {
         if (targetWindow_) {
             return MonitorFromWindow(targetWindow_, MONITOR_DEFAULTTONEAREST);
@@ -167,6 +176,40 @@ public:
             return targetMonitor_;
         }
         return MonitorFromWindow(GetDesktopWindow(), MONITOR_DEFAULTTOPRIMARY);
+    }
+
+    bool GetCaptureOrigin(int32_t& left, int32_t& top) const {
+        left = 0;
+        top = 0;
+
+        if (targetWindow_) {
+            if (borderlessCapture_) {
+                POINT clientTopLeft = {0, 0};
+                if (ClientToScreen(targetWindow_, &clientTopLeft)) {
+                    left = clientTopLeft.x;
+                    top = clientTopLeft.y;
+                    return true;
+                }
+            }
+
+            RECT windowRect = {};
+            if (GetWindowRect(targetWindow_, &windowRect)) {
+                left = windowRect.left;
+                top = windowRect.top;
+                return true;
+            }
+            return false;
+        }
+
+        MONITORINFO monitorInfo = {sizeof(monitorInfo)};
+        HMONITOR monitor = ResolveTargetMonitor();
+        if (monitor && GetMonitorInfo(monitor, &monitorInfo)) {
+            left = monitorInfo.rcMonitor.left;
+            top = monitorInfo.rcMonitor.top;
+            return true;
+        }
+
+        return false;
     }
 
     bool QueryOutputDesc1ForMonitor(HMONITOR monitor, DXGI_OUTPUT_DESC1& desc1) {
@@ -553,6 +596,7 @@ public:
         session_ = framePool_.CreateCaptureSession(item_);
 
         // Try to request borderless access and enable border removal (like OBS)
+        borderlessCapture_ = false;
         try {
             if (session_) {
                 // Request borderless access first (required on Windows 11+)
@@ -560,20 +604,24 @@ public:
                     winrt::Windows::Graphics::Capture::GraphicsCaptureAccessKind::Borderless)
                     .get();
                 session_.IsBorderRequired(false);
+                borderlessCapture_ = true;
                 LogInfo("[WGC] Borderless access granted, border removal enabled");
             }
         } catch (...) {
             // Not available on older Windows versions
+            borderlessCapture_ = false;
             LogInfo("[WGC] Borderless access not available (Windows 10)");
         }
 
         // Configure cursor capture
-        // WGC native cursor is reliable now - use it directly (cursor is composited
-        // into the captured frame by DWM). Software cursor overlay is not used for WGC.
+        // WGC native cursor updates can stall compositor-heavy games when the
+        // hardware cursor moves. Keep native cursor capture disabled and reuse
+        // the encoder-side cursor overlay path instead.
         try {
             if (session_) {
-                session_.IsCursorCaptureEnabled(captureCursor);
-                LogInfo("[WGC] Native cursor capture: %s", captureCursor ? "YES" : "NO");
+                session_.IsCursorCaptureEnabled(false);
+                LogInfo("[WGC] Native cursor capture: NO");
+                LogInfo("[WGC] Cursor capture path: %s", captureCursor ? "encoder overlay" : "disabled");
             }
         } catch (...) {
             // Not available on older Windows versions
@@ -639,6 +687,7 @@ public:
         }
         poolWidth_ = 0;
         poolHeight_ = 0;
+        borderlessCapture_ = false;
 
         if (cachedTexture_) {
             cachedTexture_->Release();
@@ -720,6 +769,7 @@ public:
                     frame.height = desc.Height;
                     frame.timestamp = t2.QuadPart;
                     frame.isHDR = captureIsHDR_;
+                    GetCaptureOrigin(frame.captureLeft, frame.captureTop);
                     success = true;
                 }
                 texture->Release();
@@ -744,11 +794,14 @@ public:
     bool CreateForWindow(void*) {
         return false;
     }
-    bool StartCapture(uint32_t&, uint32_t&) {
+    bool StartCapture(uint32_t&, uint32_t&, bool) {
         return false;
     }
     void StopCapture() {}
     bool GetNextFrame(WGCCapturedFrame&) {
+        return false;
+    }
+    bool GetCaptureOrigin(int32_t&, int32_t&) const {
         return false;
     }
 #endif
@@ -931,6 +984,17 @@ bool WGCCapture::GetNextFrame(WGCCapturedFrame& frame) {
     return impl_->GetNextFrame(frame);
 }
 
+bool WGCCapture::GetCaptureOrigin(int32_t& left, int32_t& top) const {
+#if HAS_WGC
+    if (impl_) {
+        return impl_->GetCaptureOrigin(left, top);
+    }
+#endif
+    left = 0;
+    top = 0;
+    return false;
+}
+
 HANDLE WGCCapture::GetFrameArrivedEvent() const {
 #if HAS_WGC
     return impl_ ? impl_->frameArrivedEvent_ : NULL;
@@ -961,6 +1025,15 @@ int64_t WGCCapture::GetLastCopyTimeUs() const {
     return impl_ ? impl_->lastCopyUs_.load(std::memory_order_relaxed) : 0;
 #else
     return 0;
+#endif
+}
+
+void WGCCapture::ResetStats() {
+    droppedFrames.store(0, std::memory_order_relaxed);
+#if HAS_WGC
+    if (impl_) {
+        impl_->ResetStats();
+    }
 #endif
 }
 
