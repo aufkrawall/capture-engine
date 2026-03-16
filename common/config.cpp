@@ -292,7 +292,7 @@ bit_depth=auto
 color_space=auto
 ; color_range - Values: auto, full, limited
 color_range=auto
-; chroma_subsampling - Values: auto, 420, 422, 444
+; chroma_subsampling - Values: auto, 420, 422, 444 (422 and 444 currently unsupported)
 chroma_subsampling=auto
 
 [NVENC]
