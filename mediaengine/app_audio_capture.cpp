@@ -6,7 +6,8 @@
 #include <chrono>
 #include <functional>
 #include "audio_capture.h"  // For AudioPacket
-#include "mediaengine.h"    // For DLL_Log
+#include "audio_time_utils.h"
+#include "mediaengine.h"  // For DLL_Log
 
 // Required for ActivateAudioInterfaceAsync
 #pragma comment(lib, "mmdevapi.lib")
@@ -461,7 +462,7 @@ void AppAudioCapture::CaptureLoop() {
     UINT64 devicePosition;
 
     UINT64 qpcPosition;
-    uint64_t lastQpcPosition = 0;  // Track QPC for synthesis continuity
+    uint64_t lastQpcPosition = 0;  // Track QPC in 100-ns units for synthesis continuity
 
     // Debug: Drift tracking variables (non-static to support multiple instances)
     uint64_t firstDevicePos = 0;
@@ -558,22 +559,21 @@ void AppAudioCapture::CaptureLoop() {
                 // CRITICAL: Ensure QPC continuity.
                 // Don't just sample "Now", calculate strictly from previous position to
                 // avoid jitter.
-                LARGE_INTEGER freq;
-                QueryPerformanceFrequency(&freq);
-
                 // Valid packet updates lastQpcPosition. If we are pure synthesis
                 // (start), init it.
                 if (lastQpcPosition == 0) {
                     LARGE_INTEGER qpc;
                     QueryPerformanceCounter(&qpc);
-                    lastQpcPosition = qpc.QuadPart;
+                    LARGE_INTEGER freq;
+                    QueryPerformanceFrequency(&freq);
+                    lastQpcPosition = ce::audio::RawQpcToHundredNanoseconds(qpc.QuadPart, freq.QuadPart);
                 }
 
-                // Advance logic QPC by 20ms
-                uint64_t qpcIncrement = freq.QuadPart / 50;
+                // Advance logical QPC by 20ms in the same 100-ns units returned by WASAPI.
+                uint64_t qpcIncrement = ce::audio::kHundredNanosecondsPerSecond / 50;
                 lastQpcPosition += qpcIncrement;
 
-                silencePacket.timestamp = (lastQpcPosition * 1000) / freq.QuadPart;
+                silencePacket.timestamp = (int64_t)ce::audio::HundredNanosecondsToMilliseconds(lastQpcPosition);
                 silencePacket.devicePosition = 0;
                 silencePacket.qpcPosition = lastQpcPosition;
 
@@ -623,11 +623,8 @@ void AppAudioCapture::CaptureLoop() {
                 DLL_Log("[AppAudioCapture] Source Sync Start (%lu): DevPos=%llu QPC=%llu", targetPID.load(),
                         firstDevicePos, firstQpcPos);
             } else if (firstSet && logCounter++ % 500 == 0) {  // Log every ~5 seconds
-                LARGE_INTEGER freq;
-                QueryPerformanceFrequency(&freq);
-
                 double samplesDuration = (double)(devicePosition - firstDevicePos) / pwfx->nSamplesPerSec;
-                double qpcDuration = (double)(qpcPosition - firstQpcPos) / freq.QuadPart;
+                double qpcDuration = ce::audio::HundredNanosecondsToSeconds(qpcPosition - firstQpcPos);
                 double driftMs = (samplesDuration - qpcDuration) * 1000.0;
 
                 DLL_Log(
@@ -662,12 +659,7 @@ void AppAudioCapture::CaptureLoop() {
                 packet.validBitsPerSample = wfex->Samples.wValidBitsPerSample;
             }
 
-            // Convert QPC to MS
-            LARGE_INTEGER qpc;
-            qpc.QuadPart = qpcPosition;
-            LARGE_INTEGER freq;
-            QueryPerformanceFrequency(&freq);
-            packet.timestamp = (qpc.QuadPart * 1000) / freq.QuadPart;
+            packet.timestamp = (int64_t)ce::audio::HundredNanosecondsToMilliseconds(qpcPosition);
 
             // Copy or generate silence
             size_t bytes = numFramesAvailable * pwfx->nBlockAlign;

@@ -12,6 +12,7 @@
 #include <thread>
 #include "audio_resampler.h"
 #include "audio_ring_buffer.h"  // Pull Model Buffer
+#include "audio_sync_utils.h"
 #include "video_encoder.h"
 
 extern "C" {
@@ -118,6 +119,22 @@ public:
             if (src.ringBuffer) {
                 src.ringBuffer->Clear();
             }
+            if (src.syncResampler) {
+                src.syncResampler->Reset();
+            }
+            // AudioLoop may have already preprocessed packets while waiting for the first
+            // video frame. Drop that conversion state too so the track starts from a clean
+            // audio timeline anchor.
+            src.resampler.reset();
+            src.postResampleBuffer.clear();
+            src.syncSamplesOutput = 0;
+            src.dropFadeSamplesRemaining = 0;
+            src.dropFadeStartL = 0.0f;
+            src.dropFadeStartR = 0.0f;
+            src.overflowDropSamples = 0;
+            src.latencyTrimSamples = 0;
+            src.postResampleTrimSamples = 0;
+            src.underrunPadSamples = 0;
         }
         audioSyncPending.store(false);
     }
@@ -703,16 +720,20 @@ public:
         // Drive audio from authoritative encoded video timeline once available.
         // This prevents long-run drift when effective delivered frame cadence
         // differs from nominal FPS (e.g. 112fps delivered at 120fps target).
+        const int64_t wallVideoMs = this->videoElapsedMs.load();
+        int64_t encodedVideoMs = 0;
         int64_t audioTargetMs = videoTimestampMs;
         if (videoEnc) {
             int64_t encodedVideoUs = videoEnc->GetEncodedDurationUs();
             if (encodedVideoUs > 0) {
-                audioTargetMs = encodedVideoUs / 1000;
+                encodedVideoMs = encodedVideoUs / 1000;
+                audioTargetMs = encodedVideoMs;
             }
         }
         if (audioTargetMs <= 0) {
-            audioTargetMs = this->videoElapsedMs.load();
+            audioTargetMs = wallVideoMs;
         }
+        const int64_t videoPipelineLagMs = ce::audio::ComputeVideoPipelineLagMs(wallVideoMs, encodedVideoMs);
 
         // Apply a latency offset to allow audio capture to buffer.
         // WASAPI loopback has ~20-50ms latency. If we pull exactly up to the video time,
@@ -820,8 +841,13 @@ public:
                 // =====================================================
                 // DRIFT COMPENSATION via syncResampler
                 // =====================================================
-                // Target latency: ~20ms (960 samples @ 48kHz)
-                const int64_t TARGET_LATENCY_SAMPLES = 960;
+                // Target latency: base ~20ms jitter cushion plus any current video pipeline
+                // lag. During startup, the video encoder can trail wall clock by hundreds of
+                // milliseconds; that backlog is expected and should not be mistaken for audio
+                // drift or trigger trimming.
+                const int64_t BASE_TARGET_LATENCY_SAMPLES = 960;
+                const int64_t TARGET_LATENCY_SAMPLES = ce::audio::ComputeBufferedAudioTargetSamples(
+                    SAMPLE_RATE, BASE_TARGET_LATENCY_SAMPLES, videoPipelineLagMs);
 
                 if (src.syncResampler && src.syncResampler->IsReady()) {
                     size_t rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;  // Samples per channel
@@ -831,10 +857,10 @@ public:
                     // milliseconds late/early relative to video, so trimming at ~60ms total
                     // lead creates audible crackle long before it prevents a real runaway.
                     // Only trim when the source is far ahead, and do it gently.
-                    const int64_t MAX_LEAD_SAMPLES = SAMPLE_RATE / 10;                           // 100ms
-                    const int64_t MAX_DROP_PER_CALL = SAMPLE_RATE / 200;                         // 5ms
-                    const int64_t DROP_FADE_SAMPLES = SAMPLE_RATE / 200;                         // 5ms
-                    const int64_t MIN_COMPENSATION_BUFFER_SAMPLES = TARGET_LATENCY_SAMPLES / 4;  // 5ms
+                    const int64_t MAX_LEAD_SAMPLES = SAMPLE_RATE / 10;    // 100ms above target
+                    const int64_t MAX_DROP_PER_CALL = SAMPLE_RATE / 200;  // 5ms
+                    const int64_t DROP_FADE_SAMPLES = SAMPLE_RATE / 200;  // 5ms
+                    const int64_t MIN_COMPENSATION_BUFFER_SAMPLES = BASE_TARGET_LATENCY_SAMPLES / 4;  // 5ms
                     if ((int64_t)rbAvailable > TARGET_LATENCY_SAMPLES + MAX_LEAD_SAMPLES) {
                         int64_t dropSamplesTotal = (int64_t)rbAvailable - (TARGET_LATENCY_SAMPLES + MAX_LEAD_SAMPLES);
                         int64_t dropSamples = std::min(dropSamplesTotal, MAX_DROP_PER_CALL);
@@ -855,9 +881,9 @@ public:
                             if (dropLogCounter++ % 500 == 0) {
                                 DLL_Log(
                                     "[PullAudio] Audio latency cap: src %d ahead by %lld samples - "
-                                    "trimming %lld (capped from %lld)",
+                                    "trimming %lld (capped from %lld, target=%lld, pipelineLag=%lldms)",
                                     (int)srcIdx, (int64_t)rbAvailable - TARGET_LATENCY_SAMPLES, trimmedSamples,
-                                    dropSamplesTotal);
+                                    dropSamplesTotal, TARGET_LATENCY_SAMPLES, videoPipelineLagMs);
                             }
                             rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
                         }
@@ -896,9 +922,9 @@ public:
                             // Show calculated drift (which is output - expected = output -
                             // (output - rbError) = rbError)
                             DLL_Log(
-                                "[PullAudio] Src %d Buffer Level: %zu (Err: %lld) -> Comp "
-                                "Drift: %lld",
-                                (int)srcIdx, rbAvailable, rbError, rbError);
+                                "[PullAudio] Src %d Buffer Level: %zu (Err: %lld, target=%lld, pipelineLag=%lldms) "
+                                "-> Comp Drift: %lld",
+                                (int)srcIdx, rbAvailable, rbError, TARGET_LATENCY_SAMPLES, videoPipelineLagMs, rbError);
                         }
                     } else if (driftLogCounter++ % 2000 == 0) {
                         DLL_Log("[PullAudio] Src %d Buffer low (%zu) - holding drift compensation", (int)srcIdx,
@@ -1149,6 +1175,7 @@ public:
                 int64_t audioSamples = encodedSamplesPerSource[firstSrcIdx];
                 int64_t audioMs = (audioSamples * 1000) / SAMPLE_RATE;
                 int64_t avDrift = audioMs - videoMs;
+                int64_t pipelineLagMs = ce::audio::ComputeVideoPipelineLagMs(wallVideoMs, videoMs);
 
                 // Gather ring buffer level and drift compensation data
                 size_t rbLevel = 0;
@@ -1170,9 +1197,9 @@ public:
 
                 DLL_Log(
                     "[A/V SYNC CHECK] Track %d: Video=%lld ms, Audio=%lld ms, "
-                    "Drift=%lld ms, VideoWall=%lld ms, RBLevel=%zu samples, "
+                    "Drift=%lld ms, VideoWall=%lld ms, PipelineLag=%lld ms, RBLevel=%zu samples, "
                     "SyncOutput=%lld, Overflow=%llu, LatencyTrim=%llu, PostTrim=%llu, Pad=%llu",
-                    track, videoMs, audioMs, avDrift, wallVideoMs, rbLevel, syncOutput,
+                    track, videoMs, audioMs, avDrift, wallVideoMs, pipelineLagMs, rbLevel, syncOutput,
                     (unsigned long long)overflowDropped, (unsigned long long)latencyTrimmed,
                     (unsigned long long)postTrimmed, (unsigned long long)underrunPadded);
 

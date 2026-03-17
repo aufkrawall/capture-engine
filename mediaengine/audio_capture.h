@@ -20,7 +20,7 @@ struct AudioPacket {
     int validBitsPerSample;
     bool isFloat;
     uint64_t devicePosition;  // For debug drift analysis
-    uint64_t qpcPosition;     // For debug drift analysis
+    uint64_t qpcPosition;     // WASAPI GetBuffer QPC position in 100-ns units
 };
 
 class AudioCapture {

@@ -1,5 +1,6 @@
 #include "audio_capture.h"
 #include <iostream>
+#include "audio_time_utils.h"
 #include "mediaengine.h"  // For DLL_Log
 
 #define REFTIMES_PER_SEC 10000000
@@ -201,9 +202,10 @@ void AudioCapture::CaptureLoop() {
             if (FAILED(hr))
                 break;
 
-            // Debug: Check drift between Device Position (samples) and QPC (time)
+            // Debug: Check drift between Device Position (samples) and QPC time.
+            // WASAPI already converts qpcPosition to 100-ns units.
             // devicePosition is cumulative frame count
-            // qpcPosition is QPC timestamp at that position
+            // qpcPosition is the timestamp of that position in 100-ns units.
 
             if (!firstSet && devicePosition > 0) {
                 firstDevicePos = devicePosition;
@@ -211,11 +213,8 @@ void AudioCapture::CaptureLoop() {
                 firstSet = true;
                 DLL_Log("[AudioCapture] Source Sync Start: DevPos=%llu QPC=%llu", firstDevicePos, firstQpcPos);
             } else if (firstSet && logCounter++ % 500 == 0) {  // Log every ~5 seconds
-                LARGE_INTEGER freq;
-                QueryPerformanceFrequency(&freq);
-
                 double samplesDuration = (double)(devicePosition - firstDevicePos) / pwfx->nSamplesPerSec;
-                double qpcDuration = (double)(qpcPosition - firstQpcPos) / freq.QuadPart;
+                double qpcDuration = ce::audio::HundredNanosecondsToSeconds(qpcPosition - firstQpcPos);
                 double driftMs = (samplesDuration - qpcDuration) * 1000.0;
 
                 DLL_Log(
@@ -248,16 +247,7 @@ void AudioCapture::CaptureLoop() {
                 packet.validBitsPerSample = wfex->Samples.wValidBitsPerSample;
             }
 
-            // Convert QPC to MS - avoid overflow by dividing first
-            static const int64_t qpcFreq = [] {
-                LARGE_INTEGER f;
-                QueryPerformanceFrequency(&f);
-                return f.QuadPart;
-            }();
-            LARGE_INTEGER qpc;
-            qpc.QuadPart = qpcPosition;
-            // Reordered to prevent overflow: qpc / (freq/1000) instead of (qpc*1000)/freq
-            packet.timestamp = (qpc.QuadPart * 1000) / qpcFreq;
+            packet.timestamp = (int64_t)ce::audio::HundredNanosecondsToMilliseconds(qpcPosition);
 
             // Copy data - or generate silence if silent flag is set (critical for A/V
             // sync!)
