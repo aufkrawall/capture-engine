@@ -1061,13 +1061,12 @@ public:
 
         if (!tryCreateFramePool(capturePixelFormat_)) {
             if (!captureIsHDR_ && capturePixelFormat_ == winrt::DirectXPixelFormat::R10G10B10A2UIntNormalized) {
-                // SDR 10-bpc: fall directly to BGRA8 instead of FP16.
-                // FP16 is needlessly expensive for SDR and forces an extra
-                // GPU conversion in the video processor path.
-                LogWarn("[WGC] R10G10B10A2 frame pool unavailable for SDR, falling back to BGRA8");
-                capturePixelFormat_ = winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized;
-                captureDxgiFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
-                useHighPrecisionCapture_ = false;
+                // SDR 10-bpc: try FP16 to preserve full 10-bit precision in the
+                // captured texture.  Only fall to BGRA8 if FP16 also fails.
+                LogWarn("[WGC] R10G10B10A2 frame pool unavailable for SDR 10-bit, trying FP16");
+                capturePixelFormat_ = winrt::DirectXPixelFormat::R16G16B16A16Float;
+                captureDxgiFormat_ = DXGI_FORMAT_R16G16B16A16_FLOAT;
+                // useHighPrecisionCapture_ stays true
             } else {
                 capturePixelFormat_ = winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized;
                 captureDxgiFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;

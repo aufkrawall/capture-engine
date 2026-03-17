@@ -212,9 +212,7 @@ def safe_extract_tar(archive: tarfile.TarFile, destination: str) -> None:
     """Safely extract tar archive, preventing path traversal."""
     dest_abs = os.path.normcase(os.path.abspath(destination))
     for member in archive.getmembers():
-        member_abs = os.path.normcase(
-            os.path.abspath(os.path.join(dest_abs, member.name))
-        )
+        member_abs = os.path.normcase(os.path.abspath(os.path.join(dest_abs, member.name)))
         if member_abs != dest_abs and not member_abs.startswith(dest_abs + os.sep):
             raise RuntimeError(f"Unsafe archive member path: {member.name}")
     archive.extractall(dest_abs)
@@ -231,9 +229,7 @@ def patch_amf_header():
     if IS_LINUX:
         return  # Not needed on Linux - uses prebuilt FFmpeg
 
-    amf_header = os.path.join(
-        MSYS2_DIR, "clang64", "include", "AMF", "components", "DisplayCapture.h"
-    )
+    amf_header = os.path.join(MSYS2_DIR, "clang64", "include", "AMF", "components", "DisplayCapture.h")
 
     if not os.path.exists(amf_header):
         log("[AMF] Header not found - skipping patch")
@@ -243,11 +239,7 @@ def patch_amf_header():
         content = f.read()
 
     # Check if already patched (look for the correct pattern)
-    if (
-        "#ifdef __cplusplus" in content
-        and 'extern "C"' in content
-        and "AMFCreateComponentDisplayCapture" in content
-    ):
+    if "#ifdef __cplusplus" in content and 'extern "C"' in content and "AMFCreateComponentDisplayCapture" in content:
         # Check if properly structured (extern C inside ifdef)
         import re
 
@@ -331,9 +323,7 @@ def find_process_locking_file(filepath: str) -> List[str]:
         import subprocess
 
         # Use handle.exe from Sysinternals if available
-        result = subprocess.run(
-            ["handle.exe", filepath], capture_output=True, text=True, timeout=5
-        )
+        result = subprocess.run(["handle.exe", filepath], capture_output=True, text=True, timeout=5)
         if result.returncode == 0:
             # Parse handle.exe output
             for line in result.stdout.split("\n"):
@@ -345,9 +335,7 @@ def find_process_locking_file(filepath: str) -> List[str]:
     return processes
 
 
-def safe_delete_file(
-    filepath: str, max_retries: int = 3, retry_delay: float = 0.5
-) -> bool:
+def safe_delete_file(filepath: str, max_retries: int = 3, retry_delay: float = 0.5) -> bool:
     """
     Safely delete a file, handling locked files gracefully.
 
@@ -387,13 +375,9 @@ def safe_delete_file(
         try:
             import random
 
-            trash_name = (
-                f"{filepath}.old.{int(time.time())}.{random.randint(1000, 9999)}"
-            )
+            trash_name = f"{filepath}.old.{int(time.time())}.{random.randint(1000, 9999)}"
             os.rename(filepath, trash_name)
-            log(
-                f"[SafeDelete] Renamed locked {filename} to {os.path.basename(trash_name)}"
-            )
+            log(f"[SafeDelete] Renamed locked {filename} to {os.path.basename(trash_name)}")
 
             # Now try to delete the renamed file (non-blocking)
             try:
@@ -407,9 +391,7 @@ def safe_delete_file(
                     kernel32 = getattr(ctypes, "windll").kernel32
                     MOVEFILE_DELAY_UNTIL_REBOOT = 0x4
                     kernel32.MoveFileExW(trash_name, None, MOVEFILE_DELAY_UNTIL_REBOOT)
-                    log(
-                        f"[SafeDelete] Scheduled {filename} for deletion on next reboot"
-                    )
+                    log(f"[SafeDelete] Scheduled {filename} for deletion on next reboot")
                 except Exception:
                     pass
 
@@ -454,13 +436,9 @@ def safe_copy_file(src: str, dst: str) -> bool:
         if is_file_locked(dst):
             log(f"[SafeCopy] {dst_name} is locked, attempting rename...")
             try:
-                trash_name = (
-                    f"{dst}.old.{int(time.time())}.{random.randint(1000, 9999)}"
-                )
+                trash_name = f"{dst}.old.{int(time.time())}.{random.randint(1000, 9999)}"
                 os.rename(dst, trash_name)
-                log(
-                    f"[SafeCopy] Renamed locked {dst_name} to {os.path.basename(trash_name)}"
-                )
+                log(f"[SafeCopy] Renamed locked {dst_name} to {os.path.basename(trash_name)}")
                 # Try to delete the renamed file, schedule for reboot if fails
                 try:
                     os.remove(trash_name)
@@ -470,12 +448,8 @@ def safe_copy_file(src: str, dst: str) -> bool:
 
                         kernel32 = getattr(ctypes, "windll").kernel32
                         MOVEFILE_DELAY_UNTIL_REBOOT = 0x4
-                        kernel32.MoveFileExW(
-                            trash_name, None, MOVEFILE_DELAY_UNTIL_REBOOT
-                        )
-                        log(
-                            f"[SafeCopy] Scheduled old {dst_name} for deletion on next reboot"
-                        )
+                        kernel32.MoveFileExW(trash_name, None, MOVEFILE_DELAY_UNTIL_REBOOT)
+                        log(f"[SafeCopy] Scheduled old {dst_name} for deletion on next reboot")
                     except Exception:
                         pass
             except OSError as e:
@@ -494,9 +468,7 @@ def safe_copy_file(src: str, dst: str) -> bool:
         shutil.copy2(src, dst)
         return True
     except Exception as e:
-        log(
-            f"[SafeCopy] ERROR: Failed to copy {os.path.basename(src)} to {dst_name}: {e}"
-        )
+        log(f"[SafeCopy] ERROR: Failed to copy {os.path.basename(src)} to {dst_name}: {e}")
         return False
 
 
@@ -533,15 +505,9 @@ def run_command(
     log(f"Running: {cmd_str}")
     try:
         input_bytes = input_str.encode("utf-8") if input_str is not None else None
-        result = subprocess.run(
-            cmd, capture_output=True, env=env, cwd=cwd, input=input_bytes
-        )
-        stdout = (
-            result.stdout.decode("utf-8", errors="replace") if result.stdout else ""
-        )
-        stderr = (
-            result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
-        )
+        result = subprocess.run(cmd, capture_output=True, env=env, cwd=cwd, input=input_bytes)
+        stdout = result.stdout.decode("utf-8", errors="replace") if result.stdout else ""
+        stderr = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
         if result.returncode != 0:
             log(f"ERROR: Command failed with code {result.returncode}")
             log(f"STDOUT: {stdout}")
@@ -678,20 +644,14 @@ def get_mingw_compilers():
         x86_compiler = x86_clang or x86_gcc
 
         if not x64_compiler:
-            log(
-                "ERROR: No mingw-w64 x64 compiler found. Install: sudo apt install mingw-w64"
-            )
+            log("ERROR: No mingw-w64 x64 compiler found. Install: sudo apt install mingw-w64")
             sys.exit(1)
 
         x64_bin = os.path.dirname(x64_compiler)
         x86_bin = os.path.dirname(x86_compiler) if x86_compiler else x64_bin
 
         x64_cc = x64_compiler.replace("clang++", "clang").replace("g++", "gcc")
-        x86_cc = (
-            x86_compiler.replace("clang++", "clang").replace("g++", "gcc")
-            if x86_compiler
-            else None
-        )
+        x86_cc = x86_compiler.replace("clang++", "clang").replace("g++", "gcc") if x86_compiler else None
 
         return {
             "x64": {"bin": x64_bin, "cxx": x64_compiler, "cc": x64_cc},
@@ -724,9 +684,7 @@ def get_windres_exe(arch="x64"):
         else:
             return shutil.which("i686-w64-mingw32-windres") or "windres"
     else:
-        return os.path.join(
-            MSYS2_DIR, "clang64" if arch == "x64" else "mingw32", "bin", "windres.exe"
-        )
+        return os.path.join(MSYS2_DIR, "clang64" if arch == "x64" else "mingw32", "bin", "windres.exe")
 
 
 def setup_msys2():
@@ -771,9 +729,7 @@ def check_mingw_packages():
         return
 
     log("Checking for mingw-w64 compilers...")
-    x64_compiler = shutil.which("x86_64-w64-mingw32-g++") or shutil.which(
-        "x86_64-w64-mingw32-clang++"
-    )
+    x64_compiler = shutil.which("x86_64-w64-mingw32-g++") or shutil.which("x86_64-w64-mingw32-clang++")
 
     if not x64_compiler:
         log("mingw-w64 not found. Installing via apt...")
@@ -877,9 +833,7 @@ def download_msys2_packages_for_linux():
         try:
             # Find package file in repo (with version)
             log(f"Checking for {pkg} in MSYS2 repo...")
-            req = urllib.request.Request(
-                MSYS2_REPO_URL, headers={"User-Agent": "Mozilla/5.0"}
-            )
+            req = urllib.request.Request(MSYS2_REPO_URL, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=30) as response:
                 html = response.read().decode()
 
@@ -1008,9 +962,7 @@ def get_ffmpeg_runtime_dlls(ffmpeg_bin_src):
     return dlls
 
 
-def sync_ffmpeg_runtime_dlls(
-    ffmpeg_bin_src, ffmpeg_bin_dst, runtime_deps, extra_search_dirs
-):
+def sync_ffmpeg_runtime_dlls(ffmpeg_bin_src, ffmpeg_bin_dst, runtime_deps, extra_search_dirs):
     ffmpeg_dlls = get_ffmpeg_runtime_dlls(ffmpeg_bin_src)
     if not ffmpeg_dlls:
         raise RuntimeError(f"No FFmpeg runtime DLLs found in {ffmpeg_bin_src}")
@@ -1034,16 +986,12 @@ def sync_ffmpeg_runtime_dlls(
         if safe_delete_file(existing):
             log(f"Removed stale FFmpeg/runtime DLL {os.path.basename(existing)}")
         else:
-            log(
-                f"WARNING: Could not remove stale FFmpeg/runtime DLL {os.path.basename(existing)}"
-            )
+            log(f"WARNING: Could not remove stale FFmpeg/runtime DLL {os.path.basename(existing)}")
 
     for dll in ffmpeg_dlls:
         dst = os.path.join(ffmpeg_bin_dst, os.path.basename(dll))
         if not safe_copy_file(dll, dst):
-            raise RuntimeError(
-                f"Failed to copy {os.path.basename(dll)} to {ffmpeg_bin_dst}"
-            )
+            raise RuntimeError(f"Failed to copy {os.path.basename(dll)} to {ffmpeg_bin_dst}")
         log(f"Copied {os.path.basename(dll)} to ffmpeg dir")
 
     for dep in runtime_deps:
@@ -1052,9 +1000,7 @@ def sync_ffmpeg_runtime_dlls(
             continue
         dst = os.path.join(ffmpeg_bin_dst, dep)
         if not safe_copy_file(src, dst):
-            raise RuntimeError(
-                f"Failed to copy runtime dependency {dep} to {ffmpeg_bin_dst}"
-            )
+            raise RuntimeError(f"Failed to copy runtime dependency {dep} to {ffmpeg_bin_dst}")
         log(f"Copied runtime dep {dep} to ffmpeg dir")
 
 
@@ -1092,11 +1038,7 @@ def copy_bundled_runtime_licenses(licenses_dst, ffmpeg_bin_dst):
         ),
     ]
 
-    bundled_dlls = {
-        entry.lower()
-        for entry in os.listdir(ffmpeg_bin_dst)
-        if entry.lower().endswith(".dll")
-    }
+    bundled_dlls = {entry.lower() for entry in os.listdir(ffmpeg_bin_dst) if entry.lower().endswith(".dll")}
     copied_license_names = set()
     mapped_runtime_dlls = set()
 
@@ -1128,9 +1070,7 @@ def copy_bundled_runtime_licenses(licenses_dst, ffmpeg_bin_dst):
             continue
         if dll_name in mapped_runtime_dlls:
             continue
-        log(
-            f"WARNING: Bundled runtime DLL {dll_name} has no configured license copy rule"
-        )
+        log(f"WARNING: Bundled runtime DLL {dll_name} has no configured license copy rule")
 
 
 class FFmpegBuilder:
@@ -1173,12 +1113,8 @@ class FFmpegBuilder:
 
         env["CC"] = "clang"
         env["CXX"] = "clang++"
-        env["CFLAGS"] = (
-            f"-O3 -ffunction-sections -fdata-sections -I{self.prefix}/include -I{msys_inc}"
-        )
-        env["CXXFLAGS"] = (
-            f"-O3 -ffunction-sections -fdata-sections -I{self.prefix}/include -I{msys_inc}"
-        )
+        env["CFLAGS"] = f"-O3 -ffunction-sections -fdata-sections -I{self.prefix}/include -I{msys_inc}"
+        env["CXXFLAGS"] = f"-O3 -ffunction-sections -fdata-sections -I{self.prefix}/include -I{msys_inc}"
         env["LDFLAGS"] = f"-Wl,--gc-sections -L{self.prefix}/lib -L{msys_lib}"
         env["PKG_CONFIG"] = f"{pkg_config} --static"
         env["PKG_CONFIG_PATH"] = f"{self.prefix}/lib/pkgconfig"
@@ -1239,11 +1175,7 @@ class FFmpegBuilder:
             return dest, False
 
         # Get current commit before update
-        old_commit = (
-            subprocess.check_output([git_exe, "rev-parse", "HEAD"], cwd=dest, env=env)
-            .decode()
-            .strip()
-        )
+        old_commit = subprocess.check_output([git_exe, "rev-parse", "HEAD"], cwd=dest, env=env).decode().strip()
 
         # Fetch and reset to latest
         log(f"[FFmpeg] Checking for updates to {name}...")
@@ -1265,11 +1197,7 @@ class FFmpegBuilder:
             return dest, False
 
         # Get new commit
-        new_commit = (
-            subprocess.check_output([git_exe, "rev-parse", "HEAD"], cwd=dest, env=env)
-            .decode()
-            .strip()
-        )
+        new_commit = subprocess.check_output([git_exe, "rev-parse", "HEAD"], cwd=dest, env=env).decode().strip()
 
         if old_commit != new_commit:
             log(f"[FFmpeg] Updated {name}: {old_commit[:8]} -> {new_commit[:8]}")
@@ -1428,9 +1356,7 @@ def compile_custom_ffmpeg(skip_updates=False):
         return  # FFmpeg is downloaded as part of MSYS2 packages
 
     # Use internal builder
-    builder = FFmpegBuilder(
-        root_dir=PROJECT_ROOT, msys_dir=MSYS2_DIR, install_dir=FFMPEG_DIR
-    )
+    builder = FFmpegBuilder(root_dir=PROJECT_ROOT, msys_dir=MSYS2_DIR, install_dir=FFMPEG_DIR)
     builder.setup_dirs()
 
     # Check if FFmpeg repo exists and get current commit for tracking
@@ -1626,9 +1552,7 @@ def parse_dep_file(dep_path: str) -> List[str]:
                     placeholder = "__CE_ESC_SPACE__"
                     dep_part = dep_part.replace("\\ ", placeholder)
                     files = dep_part.split()
-                    deps = [
-                        f.strip().replace(placeholder, " ") for f in files if f.strip()
-                    ]
+                    deps = [f.strip().replace(placeholder, " ") for f in files if f.strip()]
     except Exception:
         pass
     return deps
@@ -1738,16 +1662,12 @@ def detect_clang_resource_dir(env: Dict[str, str], clang_exe: str) -> Optional[s
             if os.path.isdir(detected_norm):
                 return detected_norm.replace("\\", "/")
 
-    clang_lib_dir = os.path.join(
-        PROJECT_ROOT, "build", "msys64", "clang64", "lib", "clang"
-    )
+    clang_lib_dir = os.path.join(PROJECT_ROOT, "build", "msys64", "clang64", "lib", "clang")
     if not os.path.isdir(clang_lib_dir):
         return None
 
     versions = [
-        d
-        for d in os.listdir(clang_lib_dir)
-        if os.path.isdir(os.path.join(clang_lib_dir, d)) and d and d[0].isdigit()
+        d for d in os.listdir(clang_lib_dir) if os.path.isdir(os.path.join(clang_lib_dir, d)) and d and d[0].isdigit()
     ]
     if not versions:
         return None
@@ -1756,9 +1676,7 @@ def detect_clang_resource_dir(env: Dict[str, str], clang_exe: str) -> Optional[s
     return os.path.join(clang_lib_dir, versions[0]).replace("\\", "/")
 
 
-def compile_object(
-    env: Dict[str, str], clang_exe: str, cflags: List[str], src: str, obj: str
-) -> bool:
+def compile_object(env: Dict[str, str], clang_exe: str, cflags: List[str], src: str, obj: str) -> bool:
     """Compile a single object file. Returns True if compiled, False if skipped."""
     dep_file = obj + ".d"
 
@@ -1794,11 +1712,7 @@ def compile_object(
 
     if ccache_exe:
         # ccache on Windows often dislikes absolute paths for the compiler
-        cmd = (
-            [ccache_exe, os.path.basename(clang_exe)]
-            + compile_flags
-            + ["-c", src, "-o", obj]
-        )
+        cmd = [ccache_exe, os.path.basename(clang_exe)] + compile_flags + ["-c", src, "-o", obj]
     else:
         cmd = [clang_exe] + compile_flags + ["-c", src, "-o", obj]
 
@@ -1822,9 +1736,7 @@ def parallel_compile(env, clang_exe, cflags, src_obj_pairs):
         try:
             num_workers = int(requested_workers)
         except ValueError:
-            log(
-                f"Warning: invalid CE_BUILD_JOBS={requested_workers!r}; using auto worker count"
-            )
+            log(f"Warning: invalid CE_BUILD_JOBS={requested_workers!r}; using auto worker count")
             num_workers = cpu_count()
     else:
         num_workers = cpu_count()
@@ -1869,15 +1781,11 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
         # Use local FFmpeg on Windows
         env_ffmpeg = env.copy()
         env_ffmpeg["PKG_CONFIG_PATH"] = (
-            os.path.join(FFMPEG_DIR, "lib", "pkgconfig")
-            + os.pathsep
-            + env_ffmpeg.get("PKG_CONFIG_PATH", "")
+            os.path.join(FFMPEG_DIR, "lib", "pkgconfig") + os.pathsep + env_ffmpeg.get("PKG_CONFIG_PATH", "")
         )
 
         pkgs = ["libavcodec", "libavformat", "libavutil", "libswresample", "libswscale"]
-        ffmpeg_cflags = (
-            run_command([pkg_config, "--cflags"] + pkgs, env=env_ffmpeg).strip().split()
-        )
+        ffmpeg_cflags = run_command([pkg_config, "--cflags"] + pkgs, env=env_ffmpeg).strip().split()
         ffmpeg_lib_dir = os.path.join(FFMPEG_DIR, "lib")
         ffmpeg_link_flags = [
             os.path.join(ffmpeg_lib_dir, "libavformat.dll.a"),
@@ -1945,9 +1853,7 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
 
     for src in me_src:
         rel_path = os.path.relpath(src, PROJECT_ROOT)
-        obj = os.path.join(obj_dir, os.path.splitext(rel_path)[0] + ".o").replace(
-            "\\", "/"
-        )
+        obj = os.path.join(obj_dir, os.path.splitext(rel_path)[0] + ".o").replace("\\", "/")
         src_obj_pairs.append((src, obj))
         me_objs.append(obj)
 
@@ -1967,9 +1873,7 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
     src_obj_pairs = []
     for src in src_files:
         rel_path = os.path.relpath(src, PROJECT_ROOT)
-        obj = os.path.join(obj_dir, os.path.splitext(rel_path)[0] + ".o").replace(
-            "\\", "/"
-        )
+        obj = os.path.join(obj_dir, os.path.splitext(rel_path)[0] + ".o").replace("\\", "/")
         src_obj_pairs.append((src, obj))
         test_objs.append(obj)
 
@@ -1981,24 +1885,14 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
     src_obj_pairs = []
     for src in hook_common_src:
         rel_path = os.path.relpath(src, PROJECT_ROOT)
-        obj = os.path.join(obj_dir, os.path.splitext(rel_path)[0] + ".o").replace(
-            "\\", "/"
-        )
+        obj = os.path.join(obj_dir, os.path.splitext(rel_path)[0] + ".o").replace("\\", "/")
         src_obj_pairs.append((src, obj))
         hook_common_objs.append(obj)
     parallel_compile(env, clang_exe, cflags, src_obj_pairs)
 
     log("Linking Unit Tests...")
     # Order: Tests -> Common -> MediaEngine -> HookCommon -> Libs
-    cmd = (
-        [clang_exe]
-        + test_objs
-        + common_objs
-        + me_objs
-        + hook_common_objs
-        + ldflags_test
-        + ["-o", test_exe]
-    )
+    cmd = [clang_exe] + test_objs + common_objs + me_objs + hook_common_objs + ldflags_test + ["-o", test_exe]
     run_command(cmd, env=env)
     copy_test_runtime_dlls(tests_dir)
     return test_exe
@@ -2036,9 +1930,7 @@ def run_tests(env, test_exe):
     msys_bin = os.path.join(PROJECT_ROOT, "build", "msys64", "clang64", "bin")
     ffmpeg_dir = os.path.join(PROJECT_ROOT, "installed", "captureengine", "ffmpeg")
     test_env = dict(env)
-    test_env["PATH"] = (
-        msys_bin + os.pathsep + ffmpeg_dir + os.pathsep + test_env.get("PATH", "")
-    )
+    test_env["PATH"] = msys_bin + os.pathsep + ffmpeg_dir + os.pathsep + test_env.get("PATH", "")
 
     cmd = [test_exe]
     result = subprocess.run(cmd, env=test_env)
@@ -2331,13 +2223,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
     def make_cmd(compiler, flags, source, linker_flags, output):
         cmd_base = [compiler] + flags + [source] + linker_flags + ["-o", output]
         if ccache_exe:
-            return (
-                [ccache_exe, os.path.basename(compiler)]
-                + flags
-                + [source]
-                + linker_flags
-                + ["-o", output]
-            )
+            return [ccache_exe, os.path.basename(compiler)] + flags + [source] + linker_flags + ["-o", output]
         return cmd_base
 
     # Get vulkan lib path
@@ -2369,9 +2255,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             dx12_exe_x86 = os.path.join(x86_bin_dir, "dx12_test.exe")
             add_task(
                 "dx12_test.exe (x86)",
-                make_cmd(
-                    clang_exe_x86, cflags_x86, dx12_src, dx12_ldflags, dx12_exe_x86
-                ),
+                make_cmd(clang_exe_x86, cflags_x86, dx12_src, dx12_ldflags, dx12_exe_x86),
             )
 
     # DX11 Test App
@@ -2397,9 +2281,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             dx11_exe_x86 = os.path.join(x86_bin_dir, "dx11_test.exe")
             add_task(
                 "dx11_test.exe (x86)",
-                make_cmd(
-                    clang_exe_x86, cflags_x86, dx11_src, dx11_ldflags, dx11_exe_x86
-                ),
+                make_cmd(clang_exe_x86, cflags_x86, dx11_src, dx11_ldflags, dx11_exe_x86),
             )
 
     # DX9 Test App
@@ -2414,9 +2296,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             "-luser32",
             "-lavrt",
         ]
-        add_task(
-            "dx9_test.exe", make_cmd(clang_exe, cflags, dx9_src, dx9_ldflags, dx9_exe)
-        )
+        add_task("dx9_test.exe", make_cmd(clang_exe, cflags, dx9_src, dx9_ldflags, dx9_exe))
 
         if have_x86:
             dx9_exe_x86 = os.path.join(x86_bin_dir, "dx9_test.exe")
@@ -2449,9 +2329,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             dx10_exe_x86 = os.path.join(x86_bin_dir, "dx10_test.exe")
             add_task(
                 "dx10_test.exe (x86)",
-                make_cmd(
-                    clang_exe_x86, cflags_x86, dx10_src, dx10_ldflags, dx10_exe_x86
-                ),
+                make_cmd(clang_exe_x86, cflags_x86, dx10_src, dx10_ldflags, dx10_exe_x86),
             )
 
     # Vulkan Test App
@@ -2514,13 +2392,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
 
         if have_x86:
             opengl_exe_x86 = os.path.join(x86_bin_dir, "opengl_test.exe")
-            cmd = (
-                [clang_exe_x86]
-                + cflags_x86
-                + [opengl_src]
-                + opengl_ldflags
-                + ["-o", opengl_exe_x86]
-            )
+            cmd = [clang_exe_x86] + cflags_x86 + [opengl_src] + opengl_ldflags + ["-o", opengl_exe_x86]
             add_task("opengl_test.exe (x86)", cmd)
 
     # Legacy OpenGL Test App
@@ -2577,9 +2449,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
 
         add_task(
             "directdraw7_test.exe",
-            make_cmd(
-                clang_exe, cflags, directdraw7_src, directdraw7_ldflags, directdraw7_exe
-            ),
+            make_cmd(clang_exe, cflags, directdraw7_src, directdraw7_ldflags, directdraw7_exe),
         )
 
         if have_x86:
@@ -2624,9 +2494,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
         desc, cmd, cwd, tenv = t
         log(f"Compiling {desc}...")
         try:
-            subprocess.run(
-                cmd, env=tenv, cwd=cwd, check=True, capture_output=True, text=True
-            )
+            subprocess.run(cmd, env=tenv, cwd=cwd, check=True, capture_output=True, text=True)
             log(f"Built: {desc}")
         except subprocess.CalledProcessError as e:
             log(f"ERROR compiling {desc}:")
@@ -2701,10 +2569,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
     else:
         hook_opt_flags = HOOK_OPT_FLAGS_X86
 
-    hook_cflags = (
-        make_cpp_cflags(hook_opt_flags, suppress_microsoft_exception_spec=True)
-        + layer_extra_flags
-    )
+    hook_cflags = make_cpp_cflags(hook_opt_flags, suppress_microsoft_exception_spec=True) + layer_extra_flags
     layer_cflags = cflags + layer_extra_flags
 
     # x86 Clang requires -stdlib=libstdc++ because mingw32 only has libstdc++,
@@ -2771,13 +2636,9 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
 
     # Use MSYS2 Vulkan import library
     if arch == "x64":
-        vulkan_lib = os.path.join(
-            get_linux_msys2_dir(), "clang64", "lib", "libvulkan-1.dll.a"
-        )
+        vulkan_lib = os.path.join(get_linux_msys2_dir(), "clang64", "lib", "libvulkan-1.dll.a")
     else:
-        vulkan_lib = os.path.join(
-            get_linux_msys2_dir(), "mingw32", "lib", "libvulkan-1.dll.a"
-        )
+        vulkan_lib = os.path.join(get_linux_msys2_dir(), "mingw32", "lib", "libvulkan-1.dll.a")
 
     layer_dll = os.path.join(bin_dir, layer_dll_name)
 
@@ -2822,9 +2683,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
             # Even if we can't delete, we can still build if we renamed it
             # Check if the file still exists with original name
             if os.path.exists(layer_dll):
-                log(
-                    f"[Warning] {os.path.basename(layer_dll)} is still locked, build may fail"
-                )
+                log(f"[Warning] {os.path.basename(layer_dll)} is still locked, build may fail")
                 # Check if locked and log helpful info
                 if is_file_locked(layer_dll):
                     log("[Info] File is actively locked by another process")
@@ -2840,11 +2699,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         # This ensures the path is always correct and current
         import json
 
-        manifest_name = (
-            "VK_LAYER_CE_overlay.json"
-            if arch == "x64"
-            else "VK_LAYER_CE_overlay_x86.json"
-        )
+        manifest_name = "VK_LAYER_CE_overlay.json" if arch == "x64" else "VK_LAYER_CE_overlay_x86.json"
         manifest_path = os.path.join(bin_dir, manifest_name)
 
         # Keep manifest portable/private by using a DLL name relative to the
@@ -2855,9 +2710,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
 
         # Use different layer names for x64 vs x86 to avoid "wrong bit-type" conflicts
         # Both 32-bit and 64-bit apps read from HKCU (no WOW64 redirection for HKCU)
-        layer_name = (
-            "VK_LAYER_CE_overlay" if arch == "x64" else "VK_LAYER_CE_overlay_x86"
-        )
+        layer_name = "VK_LAYER_CE_overlay" if arch == "x64" else "VK_LAYER_CE_overlay_x86"
 
         manifest = {
             "file_format_version": "1.2.0",
@@ -2917,15 +2770,9 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
 
     compile_custom_ffmpeg(skip_updates=skip_updates)
     clang_exe = get_compiler_exe("x64")
-    pkg_config = (
-        shutil.which("pkg-config")
-        if IS_LINUX
-        else os.path.join(clang_bin, "pkg-config.exe")
-    )
+    pkg_config = shutil.which("pkg-config") if IS_LINUX else os.path.join(clang_bin, "pkg-config.exe")
 
-    cflags = make_cpp_cflags(
-        OPT_FLAGS_X64, production_build=env.get("CE_PRODUCTION_BUILD") == "1"
-    )
+    cflags = make_cpp_cflags(OPT_FLAGS_X64, production_build=env.get("CE_PRODUCTION_BUILD") == "1")
 
     # --- Architecture Loop ---
     arch_targets = ["x64", "x86"]
@@ -2953,16 +2800,10 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                     curr_env[_flag] = env[_flag]
 
         curr_clang_exe = get_compiler_exe(arch)
-        curr_pkg_config = (
-            shutil.which("pkg-config")
-            if IS_LINUX
-            else os.path.join(curr_clang_bin, "pkg-config.exe")
-        )
+        curr_pkg_config = shutil.which("pkg-config") if IS_LINUX else os.path.join(curr_clang_bin, "pkg-config.exe")
 
         if arch == "x64":
-            curr_cflags = make_cpp_cflags(
-                OPT_FLAGS_X64, suppress_microsoft_exception_spec=True
-            )
+            curr_cflags = make_cpp_cflags(OPT_FLAGS_X64, suppress_microsoft_exception_spec=True)
         else:  # x86
             curr_cflags = make_cpp_cflags(
                 OPT_FLAGS_X86,
@@ -2996,16 +2837,14 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
 
         # 1. Compile Common (ImGui removed - using custom overlay)
         log(f"Compiling Common {arch}...")
-        common_src = glob.glob(
-            os.path.join(PROJECT_ROOT, "common", "*.cpp")
-        ) + glob.glob(os.path.join(PROJECT_ROOT, "common", "utils", "*.cpp"))
+        common_src = glob.glob(os.path.join(PROJECT_ROOT, "common", "*.cpp")) + glob.glob(
+            os.path.join(PROJECT_ROOT, "common", "utils", "*.cpp")
+        )
         common_objs = []
         src_obj_pairs = []
         for src in common_src:
             rel_path = os.path.relpath(src, PROJECT_ROOT)
-            obj = os.path.join(
-                curr_obj_dir, os.path.splitext(rel_path)[0] + ".o"
-            ).replace("\\", "/")
+            obj = os.path.join(curr_obj_dir, os.path.splitext(rel_path)[0] + ".o").replace("\\", "/")
             src_obj_pairs.append((src, obj))
             common_objs.append(obj)
         parallel_compile(curr_env, curr_clang_exe, curr_cflags, src_obj_pairs)
@@ -3025,12 +2864,8 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         # (MSYS2's D3D12 headers use WIDL_EXPLICIT_AGGREGATE_RETURNS which has different vtable layout)
         excluded_files = [
             os.path.join(PROJECT_ROOT, "hook", "wrappers", "d3d12_device_wrap.cpp"),
-            os.path.join(
-                PROJECT_ROOT, "hook", "wrappers", "d3d12_commandqueue_wrap.cpp"
-            ),
-            os.path.join(
-                PROJECT_ROOT, "hook", "apis", "dx12_hook_stable.cpp"
-            ),  # WIP - not ready
+            os.path.join(PROJECT_ROOT, "hook", "wrappers", "d3d12_commandqueue_wrap.cpp"),
+            os.path.join(PROJECT_ROOT, "hook", "apis", "dx12_hook_stable.cpp"),  # WIP - not ready
         ]
         hk_src = [f for f in hk_src if f not in excluded_files]
 
@@ -3095,9 +2930,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         # Hook DLL must use conservative arch flags (injected into game processes
         # with unknown CPU support). Replace curr_cflags march/ffast-math flags.
         if arch == "x64":
-            hook_base_cflags = make_cpp_cflags(
-                HOOK_OPT_FLAGS_X64, suppress_microsoft_exception_spec=True
-            )
+            hook_base_cflags = make_cpp_cflags(HOOK_OPT_FLAGS_X64, suppress_microsoft_exception_spec=True)
         else:
             hook_base_cflags = make_cpp_cflags(
                 HOOK_OPT_FLAGS_X86,
@@ -3126,9 +2959,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         src_obj_pairs = []
         for src in hk_src:
             rel_path = os.path.relpath(src, PROJECT_ROOT)
-            obj = os.path.join(
-                curr_obj_dir, os.path.splitext(rel_path)[0] + ".o"
-            ).replace("\\", "/")
+            obj = os.path.join(curr_obj_dir, os.path.splitext(rel_path)[0] + ".o").replace("\\", "/")
             src_obj_pairs.append((src, obj))
             hk_objs.append(obj)
 
@@ -3141,9 +2972,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             if not safe_delete_file(hk_dll):
                 # Even if we can't delete, we can still build if we renamed it
                 if os.path.exists(hk_dll):
-                    log(
-                        f"[Warning] {os.path.basename(hk_dll)} is still locked, build may fail"
-                    )
+                    log(f"[Warning] {os.path.basename(hk_dll)} is still locked, build may fail")
                     if is_file_locked(hk_dll):
                         log("[Info] File is actively locked by another process")
                         locking = find_process_locking_file(hk_dll)
@@ -3163,9 +2992,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 strings_exe = os.path.join(MSYS2_DIR, "clang64", "bin", "strings.exe")
                 if not os.path.exists(strings_exe):
                     strings_exe = "strings"  # fallback
-                result = sp.run(
-                    [strings_exe, hk_dll], capture_output=True, text=True, timeout=10
-                )
+                result = sp.run([strings_exe, hk_dll], capture_output=True, text=True, timeout=10)
                 version_match = re.search(r"1\.1\.0-dev\+build\.(\d+)", result.stdout)
                 if version_match:
                     embedded_build = int(version_match.group(1))
@@ -3177,9 +3004,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                     else:
                         log(f"[OK] Hook DLL verified: build.{embedded_build}")
                 else:
-                    log(
-                        f"[WARNING] Could not find version string in {os.path.basename(hk_dll)}"
-                    )
+                    log(f"[WARNING] Could not find version string in {os.path.basename(hk_dll)}")
             except Exception as e:
                 log(f"[Warning] Could not verify DLL version: {e}")
 
@@ -3195,16 +3020,12 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                     # Use downloaded MSYS2 FFmpeg on Linux
                     msys2_dir = get_linux_msys2_dir()
                     # MSYS2 FFmpeg headers are in a versioned subdirectory
-                    ffmpeg_include = os.path.join(
-                        msys2_dir, "clang64", "include", "ffmpeg7.1"
-                    )
+                    ffmpeg_include = os.path.join(msys2_dir, "clang64", "include", "ffmpeg7.1")
                     if not os.path.exists(ffmpeg_include):
                         # Try to find the actual FFmpeg include directory
                         include_dir = os.path.join(msys2_dir, "clang64", "include")
                         for d in os.listdir(include_dir):
-                            if d.startswith("ffmpeg") and os.path.isdir(
-                                os.path.join(include_dir, d)
-                            ):
+                            if d.startswith("ffmpeg") and os.path.isdir(os.path.join(include_dir, d)):
                                 ffmpeg_include = os.path.join(include_dir, d)
                                 break
                     ffmpeg_lib = os.path.join(msys2_dir, "clang64", "lib")
@@ -3212,11 +3033,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                     # Use pkg-config from the MSYS2 FFmpeg if available, otherwise use include/lib paths directly
                     pkg_config_path = os.path.join(ffmpeg_lib, "pkgconfig")
                     env_ffmpeg = curr_env.copy()
-                    env_ffmpeg["PKG_CONFIG_PATH"] = (
-                        pkg_config_path
-                        + os.pathsep
-                        + env_ffmpeg.get("PKG_CONFIG_PATH", "")
-                    )
+                    env_ffmpeg["PKG_CONFIG_PATH"] = pkg_config_path + os.pathsep + env_ffmpeg.get("PKG_CONFIG_PATH", "")
 
                     try:
                         pkgs = [
@@ -3227,9 +3044,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                             "libswscale",
                         ]
                         pkg_cmd = [curr_pkg_config, "--cflags", "--libs"] + pkgs
-                        ffmpeg_flags_raw = (
-                            run_command(pkg_cmd, env=env_ffmpeg).strip().split()
-                        )
+                        ffmpeg_flags_raw = run_command(pkg_cmd, env=env_ffmpeg).strip().split()
 
                         # Convert MSYS2-relative paths to absolute paths
                         # pkg-config returns paths like "-I/clang64/include" which are relative to MSYS2 root
@@ -3281,14 +3096,8 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                     pkg_cmd = [curr_pkg_config, "--cflags", "--libs"] + pkgs
                     # Removed --static for pkg-config to get shared linking flags
 
-                    ffmpeg_flags_raw = (
-                        run_command(pkg_cmd, env=env_ffmpeg).strip().split()
-                    )
-                    ffmpeg_flags = [
-                        f
-                        for f in ffmpeg_flags_raw
-                        if f not in ["-ldl", "-lshaderc_shared"]
-                    ]
+                    ffmpeg_flags_raw = run_command(pkg_cmd, env=env_ffmpeg).strip().split()
+                    ffmpeg_flags = [f for f in ffmpeg_flags_raw if f not in ["-ldl", "-lshaderc_shared"]]
 
                 # For shared build, linking usually requires -Lpath -lavcodec.
                 # We need to make sure the DLLs are findable at runtime.
@@ -3352,9 +3161,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 src_obj_pairs = []
                 for src in me_src:
                     rel_path = os.path.relpath(src, PROJECT_ROOT)
-                    obj = os.path.join(
-                        curr_obj_dir, os.path.splitext(rel_path)[0] + ".o"
-                    ).replace("\\", "/")
+                    obj = os.path.join(curr_obj_dir, os.path.splitext(rel_path)[0] + ".o").replace("\\", "/")
                     src_obj_pairs.append((src, obj))
                     me_objs.append(obj)
                 parallel_compile(curr_env, curr_clang_exe, me_cflags, src_obj_pairs)
@@ -3371,19 +3178,10 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                 ]
                 temp_me_dll = os.path.join(curr_obj_dir, "mediaengine.tmp.dll")
                 safe_delete_file(temp_me_dll)
-                cmd = (
-                    [curr_clang_exe]
-                    + me_objs
-                    + common_objs
-                    + me_ldflags
-                    + ffmpeg_import_libs
-                    + ["-o", temp_me_dll]
-                )
+                cmd = [curr_clang_exe] + me_objs + common_objs + me_ldflags + ffmpeg_import_libs + ["-o", temp_me_dll]
                 run_command(cmd, env=curr_env)
                 if not safe_copy_file(temp_me_dll, me_dll):
-                    log(
-                        "ERROR: Failed to place mediaengine.dll (destination may be locked)"
-                    )
+                    log("ERROR: Failed to place mediaengine.dll (destination may be locked)")
                     sys.exit(1)
                 safe_delete_file(temp_me_dll)
                 # generate_hash(me_dll) # MediaEngine doesn't need hash check for injection
@@ -3418,9 +3216,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
     # Compile and run tests (using x64 objects) if requested
     if should_run_tests:
         x64_common_objs = [
-            os.path.join(
-                OBJ_DIR, "x64", os.path.relpath(s, PROJECT_ROOT).replace(".cpp", ".o")
-            )
+            os.path.join(OBJ_DIR, "x64", os.path.relpath(s, PROJECT_ROOT).replace(".cpp", ".o"))
             for s in glob.glob(os.path.join(PROJECT_ROOT, "common", "*.cpp"))
         ]
         # We use x64 obj dir for tests
@@ -3449,18 +3245,14 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             if "screen_capture.cpp" in src:
                 continue
             rel_path = os.path.relpath(src, PROJECT_ROOT)
-            obj = os.path.join(
-                ce_obj_dir, os.path.splitext(rel_path)[0] + ".o"
-            ).replace("\\", "/")
+            obj = os.path.join(ce_obj_dir, os.path.splitext(rel_path)[0] + ".o").replace("\\", "/")
             src_obj_pairs.append((src, obj))
             ce_objs.append(obj)
         parallel_compile(env, get_compiler_exe("x64"), cflags, src_obj_pairs)
 
         # Resource file
         rc_file = os.path.join(PROJECT_ROOT, "captureengine", "captureengine.rc")
-        rc_obj = os.path.join(
-            ce_obj_dir, "captureengine", "captureengine.res.o"
-        ).replace("\\", "/")
+        rc_obj = os.path.join(ce_obj_dir, "captureengine", "captureengine.res.o").replace("\\", "/")
         if os.path.exists(rc_file):
             windres = get_windres_exe("x64")
             log("Compiling resource file (manifest)...")
@@ -3511,20 +3303,12 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             ce_ldflags.append("-ldelayimp")
         # x64 common objects
         x64_common_objs = [
-            os.path.join(
-                OBJ_DIR, "x64", os.path.relpath(s, PROJECT_ROOT).replace(".cpp", ".o")
-            )
+            os.path.join(OBJ_DIR, "x64", os.path.relpath(s, PROJECT_ROOT).replace(".cpp", ".o"))
             for s in glob.glob(os.path.join(PROJECT_ROOT, "common", "*.cpp"))
         ]
         temp_ce_exe = os.path.join(ce_obj_dir, "captureengine.tmp.exe")
         safe_delete_file(temp_ce_exe)
-        cmd = (
-            [get_compiler_exe("x64")]
-            + ce_objs
-            + x64_common_objs
-            + ce_ldflags
-            + ["-o", temp_ce_exe]
-        )
+        cmd = [get_compiler_exe("x64")] + ce_objs + x64_common_objs + ce_ldflags + ["-o", temp_ce_exe]
         run_command(cmd, env=env)
         if not safe_copy_file(temp_ce_exe, ce_exe):
             log("ERROR: Failed to place captureengine.exe (destination may be locked)")
@@ -3752,9 +3536,7 @@ def main():
             try:
                 jobs_flag = int(sys.argv[i + 1])
             except ValueError:
-                log(
-                    f"Warning: invalid --jobs value {sys.argv[i + 1]!r}; using auto worker count"
-                )
+                log(f"Warning: invalid --jobs value {sys.argv[i + 1]!r}; using auto worker count")
             break
         elif arg.startswith("--jobs="):
             try:
@@ -3844,43 +3626,25 @@ def main():
         format_ok = run_format(env)
         if not format_ok:
             log("Auto-format completed with issues.")
-        if (
-            len(args) == 1
-            and "--format" in args
-            and not lint_flag
-            and not run_tests_flag
-            and not run_integration_flag
-        ):
+        if len(args) == 1 and "--format" in args and not lint_flag and not run_tests_flag and not run_integration_flag:
             sys.exit(0 if format_ok else 1)
 
     if lint_flag:
         lint_ok = run_lint(env)
         if not lint_ok:
             log("Lint/LSP checks reported issues.")
-        if (
-            len(args) == 1
-            and "--lint" in args
-            and not format_flag
-            and not run_tests_flag
-            and not run_integration_flag
-        ):
+        if len(args) == 1 and "--lint" in args and not format_flag and not run_tests_flag and not run_integration_flag:
             sys.exit(0 if lint_ok else 1)
 
     if sanitize_regression_flag and not sanitize_regression_child:
         if sanitize_flag:
-            log(
-                "Sanitizer regression cadence requested in sanitizer mode; skipping nested pass"
-            )
+            log("Sanitizer regression cadence requested in sanitizer mode; skipping nested pass")
         else:
             # Run sanitizer validation first so final installed artifacts remain
             # non-sanitized unless --sanitize was explicitly requested.
-            run_sanitizer_regression_pass(
-                skip_updates=skip_updates, ccache_flag=ccache_flag
-            )
+            run_sanitizer_regression_pass(skip_updates=skip_updates, ccache_flag=ccache_flag)
 
-    compile_project(
-        env, clang_bin, skip_updates=skip_updates, should_run_tests=run_tests_flag
-    )
+    compile_project(env, clang_bin, skip_updates=skip_updates, should_run_tests=run_tests_flag)
 
     # Write compile_commands.json
     try:
@@ -3918,9 +3682,7 @@ def main():
             if unique_commands and unique_commands[0].get("arguments"):
                 _clang_hint = unique_commands[0]["arguments"][0]
             if not _clang_hint:
-                _clang_hint = os.path.join(
-                    clang_bin, "clang++.exe" if IS_WINDOWS else "clang++"
-                )
+                _clang_hint = os.path.join(clang_bin, "clang++.exe" if IS_WINDOWS else "clang++")
 
             _detected_resource_dir = detect_clang_resource_dir(env, _clang_hint)
             if _detected_resource_dir:
@@ -3930,12 +3692,8 @@ def main():
 
                 _normalized_resource_dir = _detected_resource_dir.replace("\\", "/")
                 _project_root_norm = PROJECT_ROOT.replace("\\", "/").rstrip("/")
-                if _normalized_resource_dir.lower().startswith(
-                    _project_root_norm.lower() + "/"
-                ):
-                    _normalized_resource_dir = _normalized_resource_dir[
-                        len(_project_root_norm) + 1 :
-                    ]
+                if _normalized_resource_dir.lower().startswith(_project_root_norm.lower() + "/"):
+                    _normalized_resource_dir = _normalized_resource_dir[len(_project_root_norm) + 1 :]
 
                 _updated, _resource_subs = _re.subn(
                     r"(-resource-dir=)(?:[^\"\n]*/)?clang64/lib/clang/[^\"\n]+",
@@ -3963,21 +3721,13 @@ def main():
                 if _updated != _clangd_content:
                     with open(_clangd_path, "w", encoding="utf-8") as _f:
                         _f.write(_updated)
-                    log(
-                        f"LSP: Updated .clangd compiler/resource/include paths ({_normalized_resource_dir})"
-                    )
+                    log(f"LSP: Updated .clangd compiler/resource/include paths ({_normalized_resource_dir})")
                 else:
-                    log(
-                        f"LSP: .clangd compiler/resource/include paths already correct ({_normalized_resource_dir})"
-                    )
+                    log(f"LSP: .clangd compiler/resource/include paths already correct ({_normalized_resource_dir})")
                 if _resource_subs == 0:
-                    log(
-                        "LSP: WARNING: .clangd resource-dir pattern not found; please verify .clangd format"
-                    )
+                    log("LSP: WARNING: .clangd resource-dir pattern not found; please verify .clangd format")
             else:
-                log(
-                    "LSP: WARNING: Could not detect clang resource-dir; .clangd was not updated"
-                )
+                log("LSP: WARNING: Could not detect clang resource-dir; .clangd was not updated")
     except Exception as e:
         log(f"Error writing compile_commands.json: {e}")
         sys.exit(1)

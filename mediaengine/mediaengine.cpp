@@ -1741,6 +1741,7 @@ MEDIAENGINE_API void MediaEngine_UnlockD3D11() {
 
 MEDIAENGINE_API void MediaEngine_SetSourcePrefers10Bit(bool prefer10Bit) {
     if (g_Engine && g_Engine->videoEnc) {
+        DLL_Log("[VideoEncoder] SetSourcePrefers10Bit(%s)", prefer10Bit ? "true" : "false");
         g_Engine->videoEnc->SetSourcePrefers10Bit(prefer10Bit);
     }
 }

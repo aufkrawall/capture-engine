@@ -273,7 +273,11 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
     // bit_depth=auto resolves to 10-bit even when the WGC frame pool fell
     // back to BGRA8 (e.g. R10G10B10A2 pool creation failed).
     if (MediaEngine_SetSourcePrefers10Bit) {
-        MediaEngine_SetSourcePrefers10Bit(g_WgcCap->IsHighPrecisionSource());
+        const bool hiPrec = g_WgcCap->IsHighPrecisionSource();
+        LogInfo("[Media] WGC source high-precision=%s, notifying encoder", hiPrec ? "YES" : "NO");
+        MediaEngine_SetSourcePrefers10Bit(hiPrec);
+    } else {
+        LogWarn("[Media] MediaEngine_SetSourcePrefers10Bit not available (old mediaengine.dll?)");
     }
 
     g_WgcCaptureShutdown = false;

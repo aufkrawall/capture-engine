@@ -1343,8 +1343,8 @@ public:
                     PublishToSharedMemory(g_IPC);
                 }
                 initialized = true;
-                HookLogImportant("DX10 Capture Initialized: %dx%d (Fence: OFF, Queries: %s, DXVK: OFF)", width,
-                                 height, (copyQueries10[0] != nullptr) ? "ON" : "OFF");
+                HookLogImportant("DX10 Capture Initialized: %dx%d (Fence: OFF, Queries: %s, DXVK: OFF)", width, height,
+                                 (copyQueries10[0] != nullptr) ? "ON" : "OFF");
             } else {
                 EarlyLog("DX10 Capture Init FAILED (success=false)");
             }
