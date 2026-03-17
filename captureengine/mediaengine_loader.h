@@ -35,6 +35,7 @@ typedef void (*MediaEngine_Shutdown_t)();
 typedef void (*MediaEngine_SetSharedMem_t)(void* pSharedMem, void* pShmem);
 typedef void (*MediaEngine_LockD3D11_t)();
 typedef void (*MediaEngine_UnlockD3D11_t)();
+typedef void (*MediaEngine_SetSourcePrefers10Bit_t)(bool prefer10Bit);
 
 // Function pointers (set by MediaEngine_Load)
 extern MediaEngine_SetLogCallback_t MediaEngine_SetLogCallback;
@@ -54,6 +55,7 @@ extern MediaEngine_Shutdown_t MediaEngine_Shutdown;
 extern MediaEngine_SetSharedMem_t MediaEngine_SetSharedMem;
 extern MediaEngine_LockD3D11_t MediaEngine_LockD3D11;
 extern MediaEngine_UnlockD3D11_t MediaEngine_UnlockD3D11;
+extern MediaEngine_SetSourcePrefers10Bit_t MediaEngine_SetSourcePrefers10Bit;
 
 // Load mediaengine.dll from exe_dir/ffmpeg/ folder
 // Returns true on success, false on failure

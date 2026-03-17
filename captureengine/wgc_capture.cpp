@@ -1570,6 +1570,15 @@ int32_t WGCCapture::GetInflightCallbackCount() const {
     return g_WgcInflightCallbacks.load(std::memory_order_acquire);
 }
 
+bool WGCCapture::IsHighPrecisionSource() const {
+#if HAS_WGC
+    if (impl_) {
+        return impl_->useHighPrecisionCapture_;
+    }
+#endif
+    return false;
+}
+
 void WGCCapture::ForceReset() {
 #if HAS_WGC
     capturing_ = false;

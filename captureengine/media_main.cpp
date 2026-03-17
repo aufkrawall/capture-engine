@@ -269,6 +269,13 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
         return false;
     }
 
+    // Tell the encoder whether the capture source runs at >8 bpc so that
+    // bit_depth=auto resolves to 10-bit even when the WGC frame pool fell
+    // back to BGRA8 (e.g. R10G10B10A2 pool creation failed).
+    if (MediaEngine_SetSourcePrefers10Bit) {
+        MediaEngine_SetSourcePrefers10Bit(g_WgcCap->IsHighPrecisionSource());
+    }
+
     g_WgcCaptureShutdown = false;
     g_WgcCaptureThread = std::thread(WgcCaptureThreadFunc, std::ref(config));
     SetThreadPriority(reinterpret_cast<HANDLE>(g_WgcCaptureThread.native_handle()), THREAD_PRIORITY_ABOVE_NORMAL);
@@ -1174,6 +1181,10 @@ void StopRecording() {
     ResetLastQueuedFrameCache();
     ResetInjectFrameRingToLatest("recording stop");
     MediaEngine_StopRecording();
+    // Reset WGC-specific 10-bit hint so inject-mode recordings don't inherit it.
+    if (MediaEngine_SetSourcePrefers10Bit) {
+        MediaEngine_SetSourcePrefers10Bit(false);
+    }
     g_IsEncoderBottlenecked.store(false, std::memory_order_relaxed);
 
     if (g_pSharedMem) {

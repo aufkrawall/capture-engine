@@ -98,6 +98,10 @@ public:
     // Get count of in-flight OnFrameArrived callbacks (for shutdown synchronization)
     int32_t GetInflightCallbackCount() const;
 
+    // Returns true when the captured display output runs at >8 bpc, even if
+    // the actual capture texture fell back to an 8-bit format.
+    bool IsHighPrecisionSource() const;
+
     // Force-reset WGC session to stop in-flight callbacks (emergency cleanup)
     void ForceReset();
 

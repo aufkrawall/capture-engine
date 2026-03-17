@@ -75,4 +75,9 @@ MEDIAENGINE_API void MediaEngine_SetSharedMem(void* pSharedMem, void* pShmem = n
 // Context
 MEDIAENGINE_API void MediaEngine_LockD3D11();
 MEDIAENGINE_API void MediaEngine_UnlockD3D11();
+
+// Hint that the capture source display runs at >8 bpc.  Used by
+// bit_depth=auto to choose 10-bit encoding even when the captured texture
+// format fell back to 8-bit (e.g. WGC R10G10B10A2 frame pool unavailable).
+MEDIAENGINE_API void MediaEngine_SetSourcePrefers10Bit(bool prefer10Bit);
 }

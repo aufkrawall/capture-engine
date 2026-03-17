@@ -20,6 +20,7 @@ MediaEngine_Shutdown_t MediaEngine_Shutdown = nullptr;
 MediaEngine_SetSharedMem_t MediaEngine_SetSharedMem = nullptr;
 MediaEngine_LockD3D11_t MediaEngine_LockD3D11 = nullptr;
 MediaEngine_UnlockD3D11_t MediaEngine_UnlockD3D11 = nullptr;
+MediaEngine_SetSourcePrefers10Bit_t MediaEngine_SetSourcePrefers10Bit = nullptr;
 
 static HMODULE g_MediaEngineModule = nullptr;
 
@@ -86,6 +87,7 @@ bool MediaEngine_Load(const char* exeDir) {
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_SetSharedMem", &MediaEngine_SetSharedMem);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_LockD3D11", &MediaEngine_LockD3D11);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_UnlockD3D11", &MediaEngine_UnlockD3D11);
+    success &= GetFunc(g_MediaEngineModule, "MediaEngine_SetSourcePrefers10Bit", &MediaEngine_SetSourcePrefers10Bit);
 
     if (!success) {
         LogError("[MediaEngine] Failed to get all function pointers");
@@ -122,6 +124,7 @@ void MediaEngine_Unload() {
     MediaEngine_SetSharedMem = nullptr;
     MediaEngine_LockD3D11 = nullptr;
     MediaEngine_UnlockD3D11 = nullptr;
+    MediaEngine_SetSourcePrefers10Bit = nullptr;
 
     SetDllDirectoryA(nullptr);
 }

@@ -101,6 +101,13 @@ public:
         pShmem = shmBuf;
     }
 
+    // Hint that the capture source prefers 10-bit encoding even if the
+    // captured texture format is 8-bit (e.g. display runs at 10 bpc but
+    // the WGC frame pool could not allocate an R10G10B10A2 pool).
+    void SetSourcePrefers10Bit(bool prefer) {
+        sourcePrefers10Bit_ = prefer;
+    }
+
     // Release encoder-owned D3D11 textures and device after game exits (frees VRAM).
     // Only call when not recording.
     void ReleasePreservedEncoderTextures();
@@ -128,6 +135,7 @@ private:
     std::atomic<bool> initDone{false};
     bool currentIsHDR = false;  // Track HDR state (thread-local to EncodeFrame mostly)
     bool currentUse10BitInput = false;
+    bool sourcePrefers10Bit_ = false;  // Set by WGC when source display is >8 bpc
     std::atomic<bool> fileOpened{false};
     std::atomic<bool> recordingRequested{false};
     std::atomic<bool> isStopping = false;      // signaled by Stop()
@@ -314,7 +322,10 @@ private:
         if (savedConfig.bitDepth == "8") {
             return false;
         }
-        return currentUse10BitInput;
+        // "auto": prefer 10-bit when input is high-precision OR the source
+        // display runs at >8 bpc (even if the capture texture is 8-bit due
+        // to WGC frame pool format fallback).
+        return currentUse10BitInput || sourcePrefers10Bit_;
     }
 
     void CleanupResources();
