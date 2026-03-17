@@ -49,6 +49,7 @@ MEDIAENGINE_API void MediaEngine_ReleaseEncoderTextures();
 // This ensures ScreenCapture and VideoEncoder share the same D3D11 device
 // Returns nullptr on failure, caller should NOT release the device
 MEDIAENGINE_API ID3D11Device* MediaEngine_GetD3D11Device();
+MEDIAENGINE_API void MediaEngine_ReleaseSharedD3D11Device();
 
 // Create shared D3D11 textures for Vulkan games to import
 // Call this once dimensions are known (first frame from hook)

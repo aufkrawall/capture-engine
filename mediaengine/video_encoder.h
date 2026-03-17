@@ -113,6 +113,10 @@ public:
     void ReleasePreservedEncoderTextures();
 
 private:
+    void BeginDeferredRecording();
+    bool AdoptTextureDevice(ID3D11Texture2D* texture);
+    void ReleaseInjectDeviceStateForScreenGrab();
+
     std::function<void(AVPacket*)> onPacket;  // Callback member
     AVFormatContext* fmtCtx;
     AVCodecContext* codecCtx;

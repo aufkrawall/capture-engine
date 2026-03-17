@@ -21,6 +21,23 @@ extern "C" {
 #include <filesystem>
 #include "cursor_renderer.h"
 
+static void TrimD3D11Residency(ID3D11Device* device, ID3D11DeviceContext* context, const char* label) {
+    if (context) {
+        context->ClearState();
+        context->Flush();
+    }
+    if (!device) {
+        return;
+    }
+
+    IDXGIDevice3* dxgiDevice3 = nullptr;
+    if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&dxgiDevice3))) && dxgiDevice3) {
+        dxgiDevice3->Trim();
+        dxgiDevice3->Release();
+        DLL_Log("[VideoEncoder] Trimmed D3D11 residency for %s", label);
+    }
+}
+
 // D3D11 exception safety for MinGW/clang
 // MinGW uses DWARF exception handling (libgcc) which cannot catch Windows SEH
 // exceptions. D3D11 raises SEH exceptions (e.g., 0xE06D7363) for invalid handles.
@@ -665,6 +682,122 @@ void VideoEncoder::SetDimensions(uint32_t w, uint32_t h) {
         this->height = h;
         DLL_Log("[VideoEncoder] SetDimensions: %dx%d", w, h);
     }
+}
+
+bool VideoEncoder::AdoptTextureDevice(ID3D11Texture2D* texture) {
+    if (!texture) {
+        return false;
+    }
+
+    ID3D11Device* texDevice = nullptr;
+    texture->GetDevice(&texDevice);
+    if (!texDevice) {
+        DLL_Log("[VideoEncoder] Framegrab: Failed to get D3D11 device from texture");
+        return false;
+    }
+
+    ID3D11Device5* adoptedDevice = nullptr;
+    HRESULT hr = texDevice->QueryInterface(__uuidof(ID3D11Device5), (void**)&adoptedDevice);
+    if (FAILED(hr) || !adoptedDevice) {
+        DLL_Log("[VideoEncoder] Framegrab: Failed to query ID3D11Device5 from texture device. HR=%x", hr);
+        texDevice->Release();
+        return false;
+    }
+
+    ID3D11DeviceContext* immediateContext = nullptr;
+    texDevice->GetImmediateContext(&immediateContext);
+    ID3D11DeviceContext4* adoptedContext = nullptr;
+    if (immediateContext) {
+        hr = immediateContext->QueryInterface(__uuidof(ID3D11DeviceContext4), (void**)&adoptedContext);
+        immediateContext->Release();
+    } else {
+        hr = E_NOINTERFACE;
+    }
+    texDevice->Release();
+
+    if (FAILED(hr) || !adoptedContext) {
+        DLL_Log("[VideoEncoder] Framegrab: Failed to query ID3D11DeviceContext4 from texture device. HR=%x", hr);
+        adoptedDevice->Release();
+        return false;
+    }
+
+    if (d3d11Context) {
+        d3d11Context->Release();
+    }
+    if (d3d11Device) {
+        d3d11Device->Release();
+    }
+
+    d3d11Device = adoptedDevice;
+    d3d11Context = adoptedContext;
+    return true;
+}
+
+void VideoEncoder::ReleaseInjectDeviceStateForScreenGrab() {
+    const bool hadInjectLuid = (luidLow != 0 || luidHigh != 0);
+    const bool hadSharedCapture = sharedCaptureTexturesCreated;
+    if (!hadInjectLuid && !hadSharedCapture) {
+        return;
+    }
+
+    DLL_Log("[VideoEncoder] ScreenGrab: Releasing inject device state (luid=%08x %08x shared=%d)", luidLow, luidHigh,
+            hadSharedCapture ? 1 : 0);
+    luidLow = 0;
+    luidHigh = 0;
+
+    if (pSharedMem) {
+        pSharedMem->useEncoderTextures.store(false, std::memory_order_release);
+        pSharedMem->encoderTextures.ready.store(false, std::memory_order_release);
+        pSharedMem->encoderTextures.kmtReady.store(false, std::memory_order_release);
+    }
+
+    if (hadSharedCapture) {
+        ReleasePreservedEncoderTextures();
+        return;
+    }
+
+    for (int i = 0; i < 8; i++) {
+        if (cachedSharedTextures[i]) {
+            cachedSharedTextures[i]->Release();
+            cachedSharedTextures[i] = nullptr;
+        }
+        cachedTextureHandles[i] = nullptr;
+    }
+
+    if (cachedD3D11Fence) {
+        cachedD3D11Fence->Release();
+        cachedD3D11Fence = nullptr;
+    }
+    cachedFenceHandle = nullptr;
+    cachedSourcePid = 0;
+
+    if (bgraStagingTexture) {
+        bgraStagingTexture->Release();
+        bgraStagingTexture = nullptr;
+    }
+
+    CleanupVideoProcessor();
+    CleanupCursorCache();
+    if (cursorRenderer) {
+        cursorRenderer->Cleanup();
+    }
+
+    TrimD3D11Residency(d3d11Device, d3d11Context, "screen-grab-switch");
+    if (d3d11Context) {
+        d3d11Context->Release();
+        d3d11Context = nullptr;
+    }
+    if (d3d11Device) {
+        d3d11Device->Release();
+        d3d11Device = nullptr;
+    }
+    if (d3d11DeviceCtx) {
+        av_buffer_unref(&d3d11DeviceCtx);
+    }
+    if (d3d11FramesCtx) {
+        av_buffer_unref(&d3d11FramesCtx);
+    }
+    initDone = false;
 }
 
 AVPixelFormat VideoEncoder::GetActiveD3D11SwFormat() const {
@@ -1564,6 +1697,35 @@ int VideoEncoder::GetAudioStreamIndex(int track) const {
     return -1;
 }
 
+void VideoEncoder::BeginDeferredRecording() {
+    codecOpenFailed = false;
+    encodedDurationUs.store(0, std::memory_order_relaxed);
+    lastAssignedVideoPts = -1;
+
+    audioPacketCount = 0;
+    videoPacketCount = 0;
+    vidDebugCount = 0;
+    asyncWriteErrorCount = 0;
+
+    recordingRequested = true;
+    needsCounterReset = true;
+    DLL_Log("[VideoEncoder] Start Recording Requested (Deferred).");
+
+    g_lastFramePts = -1;
+    g_framesEncoded = 0;
+    g_totalFenceWait = 0.0;
+    g_totalColorConvert = 0.0;
+    g_totalEncode = 0.0;
+    g_maxFrameTime = 0.0;
+    g_slowFrameCount = 0;
+
+    if (!writerRunning) {
+        writerRunning = true;
+        writerThread = std::thread(&VideoEncoder::AsyncWriteLoop, this);
+        DLL_Log("[VideoEncoder] Started Writer Thread");
+    }
+}
+
 bool VideoEncoder::Start() {
     // Ensure previous recording is fully finalized and resources cleaned up.
     // Stop() will signal the async finalize if needed, then we wait for it to
@@ -1627,16 +1789,6 @@ bool VideoEncoder::Start() {
         }
     }
 
-    // Reset flags that block recording if previous recording had issues
-    codecOpenFailed = false;
-    encodedDurationUs.store(0, std::memory_order_relaxed);
-    lastAssignedVideoPts = -1;
-
-    // Reset WriteFrame debug counters for multi-recording support
-    audioPacketCount = 0;
-    videoPacketCount = 0;
-    vidDebugCount = 0;
-
     // Pre-warm device and codec to reduce first-frame latency
     // This moves heavy initialization (D3D11 device, codec open, video processor)
     // from first frame to Start() call, avoiding game stutter on recording start
@@ -1658,24 +1810,7 @@ bool VideoEncoder::Start() {
         }
     }
 
-    recordingRequested = true;
-    DLL_Log("[VideoEncoder] Start Recording Requested (Deferred).");
-
-    // Reset per-recording perf stats so second+ recordings show correct data.
-    g_lastFramePts = -1;
-    g_framesEncoded = 0;
-    g_totalFenceWait = 0.0;
-    g_totalColorConvert = 0.0;
-    g_totalEncode = 0.0;
-    g_maxFrameTime = 0.0;
-    g_slowFrameCount = 0;
-
-    // Start Async Allocator Thread
-    if (!writerRunning) {
-        writerRunning = true;
-        writerThread = std::thread(&VideoEncoder::AsyncWriteLoop, this);
-        DLL_Log("[VideoEncoder] Started Writer Thread");
-    }
+    BeginDeferredRecording();
 
     return true;
 }
@@ -1865,7 +2000,9 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
 
     const bool wants10BitInput = isHDR || IsHighPrecisionRgbInputFormat(static_cast<DXGI_FORMAT>(format));
     if (!initDone || isHDR != currentIsHDR || wants10BitInput != currentUse10BitInput) {
-        if (initDone) {
+        const bool reinitializingActiveRecording = initDone;
+        const std::string preservedOutputFilename = outputFilename;
+        if (reinitializingActiveRecording) {
             DLL_Log("[VideoEncoder] Format mode changed (hdr=%d->%d use10bit=%d->%d). Re-initializing...", currentIsHDR,
                     isHDR, currentUse10BitInput, wants10BitInput);
             Stop();  // Clean up existing encoder
@@ -1880,6 +2017,14 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         if (!Init(savedConfig, width, height, savedConfig.fps ? savedConfig.fps : 60, onPacket)) {
             DLL_Log("[VideoEncoder] Failed to Re-Init for format mode change");
             return false;
+        }
+        if (reinitializingActiveRecording) {
+            if (!preservedOutputFilename.empty()) {
+                outputFilename = preservedOutputFilename;
+                DLL_Log("[VideoEncoder] Preserving output filename across format mode re-init: %s",
+                        outputFilename.c_str());
+            }
+            BeginDeferredRecording();
         }
     }
 
@@ -2786,6 +2931,8 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
 
     inputFrameCount++;
 
+    ReleaseInjectDeviceStateForScreenGrab();
+
     // Use captured frame dimensions if not yet set
     if (width == 0 || height == 0) {
         width = (int)frameWidth;
@@ -2796,25 +2943,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     // Ensure D3D11 device is available (we need it for Video
     // Processor)
     if (!d3d11Device || !d3d11Context) {
-        // Get device from the texture
-        ID3D11Device* texDevice = nullptr;
-        bgraTexture->GetDevice(&texDevice);
-        if (texDevice) {
-            texDevice->QueryInterface(__uuidof(ID3D11Device5), (void**)&d3d11Device);
-            ID3D11DeviceContext* ctx = nullptr;
-            texDevice->GetImmediateContext(&ctx);
-            if (ctx) {
-                ctx->QueryInterface(__uuidof(ID3D11DeviceContext4), (void**)&d3d11Context);
-                ctx->Release();
-            }
-            texDevice->Release();
-        }
-
-        if (!d3d11Device || !d3d11Context) {
-            DLL_Log(
-                "[VideoEncoder] Framegrab: Failed to get D3D11 "
-                "device from "
-                "texture");
+        if (!AdoptTextureDevice(bgraTexture)) {
             return false;
         }
     }
@@ -2823,7 +2952,9 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     bgraTexture->GetDesc(&texDesc);
     const bool wants10BitInput = IsHighPrecisionRgbInputFormat(texDesc.Format);
     if (!initDone || isHDR != currentIsHDR || wants10BitInput != currentUse10BitInput) {
-        if (initDone) {
+        const bool reinitializingActiveRecording = initDone;
+        const std::string preservedOutputFilename = outputFilename;
+        if (reinitializingActiveRecording) {
             DLL_Log("[VideoEncoder] WGC mode changed (fmt=%d hdr=%d->%d use10bit=%d->%d). Re-initializing...",
                     texDesc.Format, currentIsHDR, isHDR, currentUse10BitInput, wants10BitInput);
             Stop();
@@ -2838,6 +2969,18 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
                   savedConfig.fps ? savedConfig.fps : 60, onPacket)) {
             DLL_Log("[VideoEncoder] Failed to Re-Init for WGC format mode change");
             return false;
+        }
+        if (!AdoptTextureDevice(bgraTexture)) {
+            DLL_Log("[VideoEncoder] Failed to adopt WGC texture device after format mode change");
+            return false;
+        }
+        if (reinitializingActiveRecording) {
+            if (!preservedOutputFilename.empty()) {
+                outputFilename = preservedOutputFilename;
+                DLL_Log("[VideoEncoder] Preserving output filename across WGC mode re-init: %s",
+                        outputFilename.c_str());
+            }
+            BeginDeferredRecording();
         }
     }
 
@@ -3187,20 +3330,6 @@ void VideoEncoder::CleanupResources() {
             av_buffer_unref(&d3d11FramesCtx);
         // Reset initDone so EnsureDevice() rebuilds FFmpeg contexts but reuses the device
         initDone = false;
-    } else {
-        if (d3d11Context) {
-            d3d11Context->Release();
-            d3d11Context = nullptr;
-        }
-        if (d3d11Device) {
-            d3d11Device->Release();
-            d3d11Device = nullptr;
-        }
-
-        if (d3d11DeviceCtx)
-            av_buffer_unref(&d3d11DeviceCtx);
-        if (d3d11FramesCtx)
-            av_buffer_unref(&d3d11FramesCtx);
     }
 
     if (hwDeviceCtx)
@@ -3253,6 +3382,26 @@ void VideoEncoder::CleanupResources() {
 
     CleanupVideoProcessor();
     CleanupCursorCache();
+    if (cursorRenderer) {
+        cursorRenderer->Cleanup();
+    }
+
+    if (!preserveEncoderTextures) {
+        TrimD3D11Residency(d3d11Device, d3d11Context, "encoder");
+        if (d3d11Context) {
+            d3d11Context->Release();
+            d3d11Context = nullptr;
+        }
+        if (d3d11Device) {
+            d3d11Device->Release();
+            d3d11Device = nullptr;
+        }
+
+        if (d3d11DeviceCtx)
+            av_buffer_unref(&d3d11DeviceCtx);
+        if (d3d11FramesCtx)
+            av_buffer_unref(&d3d11FramesCtx);
+    }
 
     initDone = false;
     fileOpened = false;
@@ -3312,6 +3461,14 @@ void VideoEncoder::ReleasePreservedEncoderTextures() {
 
     // Release D3D11 device and all resources that depend on it
     CleanupVideoProcessor();
+    if (bgraStagingTexture) {
+        bgraStagingTexture->Release();
+        bgraStagingTexture = nullptr;
+    }
+    if (cursorRenderer) {
+        cursorRenderer->Cleanup();
+    }
+    TrimD3D11Residency(d3d11Device, d3d11Context, "preserved-encoder");
 
     if (d3d11Context) {
         d3d11Context->Release();
@@ -4468,6 +4625,22 @@ void VideoEncoder::CleanupVideoProcessor() {
     swapRBTexHeight = 0;
     rgb10IntermediateWidth = 0;
     rgb10IntermediateHeight = 0;
+
+    if (rgbToYuvCS) {
+        rgbToYuvCS->Release();
+        rgbToYuvCS = nullptr;
+    }
+    if (gammaCB) {
+        gammaCB->Release();
+        gammaCB = nullptr;
+    }
+    for (int i = 0; i < kP010BufferCount; ++i) {
+        if (p010Textures[i]) {
+            p010Textures[i]->Release();
+            p010Textures[i] = nullptr;
+        }
+    }
+    currentP010Buffer = 0;
 
     // Reset per-recording log flags
     vpFirstCallLogged = false;

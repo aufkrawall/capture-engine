@@ -56,6 +56,9 @@ static std::thread g_InjectCaptureThread;
 static std::atomic<bool> g_WgcCaptureRunning{false};
 static std::atomic<bool> g_WgcCaptureShutdown{false};
 static std::thread g_WgcCaptureThread;
+static std::atomic<bool> g_InjectDeliveredFirstFrame{false};
+static std::atomic<bool> g_RejectInjectFrames{false};
+static std::atomic<bool> g_AutoWgcFallbackArmed{false};
 
 // Forward declaration
 void InjectCaptureThreadFunc(const AppConfig& config);
@@ -668,7 +671,13 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     }
 
                     if (!dropFrame && validHandles) {
-                        if (g_FrameQueue.Push(std::move(qf))) {
+                        if (g_RejectInjectFrames.load(std::memory_order_acquire)) {
+                            droppedCount++;
+                            dropFrame = true;
+                        } else if (g_FrameQueue.Push(std::move(qf))) {
+                            if (!g_InjectDeliveredFirstFrame.exchange(true, std::memory_order_acq_rel)) {
+                                LogInfo("[Inject Thread] First actual inject frame queued");
+                            }
                             pushedCount++;
                         } else {
                             droppedCount++;
@@ -845,6 +854,16 @@ void EncoderThreadFunc(const AppConfig& config) {
             queuedFrame.texture = nullptr;
         }
     };
+    auto DiscardQueuedFrame = [&](QueuedFrame& queuedFrame) {
+        if (queuedFrame.isInjectMode) {
+            if (g_pSharedMem) {
+                g_pSharedMem->frameRing.readIndex.store(queuedFrame.ringIndex + 1, std::memory_order_release);
+            }
+        } else {
+            ReleaseQueuedFrameTexture(queuedFrame);
+        }
+        queuedFrame = QueuedFrame{};
+    };
     std::vector<QueuedFrame> drainedScreenGrabFrames;
     drainedScreenGrabFrames.reserve(8);
     QueuedFrame bufferedScreenGrabFrame;
@@ -908,7 +927,18 @@ void EncoderThreadFunc(const AppConfig& config) {
                 drainedScreenGrabFrames.clear();
                 QueuedFrame temp;
                 while (g_FrameQueue.Pop(temp, 0)) {
+                    if (g_RejectInjectFrames.load(std::memory_order_acquire) && temp.isInjectMode) {
+                        DiscardQueuedFrame(temp);
+                        continue;
+                    }
                     drainedScreenGrabFrames.push_back(std::move(temp));
+                }
+
+                if (hasBufferedScreenGrabFrame) {
+                    if (g_RejectInjectFrames.load(std::memory_order_acquire) && bufferedScreenGrabFrame.isInjectMode) {
+                        DiscardQueuedFrame(bufferedScreenGrabFrame);
+                        hasBufferedScreenGrabFrame = false;
+                    }
                 }
 
                 if (hasBufferedScreenGrabFrame) {
@@ -943,6 +973,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                 // VFR: keep the existing lowest-latency newest-frame sampling.
                 QueuedFrame temp;
                 while (g_FrameQueue.Pop(temp, 0)) {
+                    if (g_RejectInjectFrames.load(std::memory_order_acquire) && temp.isInjectMode) {
+                        DiscardQueuedFrame(temp);
+                        continue;
+                    }
                     if (popped && !frame.isInjectMode && frame.texture) {
                         frame.texture->Release();
                     }
@@ -962,6 +996,10 @@ void EncoderThreadFunc(const AppConfig& config) {
             // frame selection and visible judder without changing the fixed output rate.
             QueuedFrame temp;
             while (g_FrameQueue.Pop(temp, 0)) {
+                if (g_RejectInjectFrames.load(std::memory_order_acquire) && temp.isInjectMode) {
+                    DiscardQueuedFrame(temp);
+                    continue;
+                }
                 if (popped && !frame.isInjectMode && frame.texture) {
                     frame.texture->Release();
                 }
@@ -972,6 +1010,16 @@ void EncoderThreadFunc(const AppConfig& config) {
 
         QueuedFrame* frameToProcess = nullptr;
         bool isDuplicate = false;
+
+        if (popped && frame.isInjectMode && g_RejectInjectFrames.load(std::memory_order_acquire)) {
+            DiscardQueuedFrame(frame);
+            popped = false;
+        }
+
+        if (g_HasLastFrame && g_LastFrame.isInjectMode && g_RejectInjectFrames.load(std::memory_order_acquire)) {
+            g_LastFrame = QueuedFrame{};
+            g_HasLastFrame = false;
+        }
 
         if (popped) {
             if (frame.isInjectMode) {
@@ -1107,6 +1155,8 @@ void StartRecording(const AppConfig& config) {
 
     g_FrameQueue.Clear();
     ResetLastQueuedFrameCache();
+    g_InjectDeliveredFirstFrame.store(false, std::memory_order_release);
+    g_RejectInjectFrames.store(false, std::memory_order_release);
     g_IsEncoderBottlenecked.store(false, std::memory_order_relaxed);
 
     if (g_pSharedMem) {
@@ -1119,7 +1169,7 @@ void StartRecording(const AppConfig& config) {
         g_pSharedMem->throttleCapture.store(false, std::memory_order_release);
     }
 
-    if (!MediaEngine_StartRecording()) {
+    if (!MediaEngine_StartRecording || !MediaEngine_StartRecording()) {
         LogError("[Media] Failed to start MediaEngine recording");
         return;
     }
@@ -1152,7 +1202,7 @@ void StartRecording(const AppConfig& config) {
         LogInfo("[Media] Active recording path: WGC direct callback (source cadence -> %d fps output)",
                 config.video.fps);
     } else if (!useScreenGrab) {
-        if (config.captureMethod == "auto" && g_WgcCap) {
+        if (config.captureMethod == "auto" && g_WgcCap && g_AutoWgcFallbackArmed.load(std::memory_order_acquire)) {
             LogInfo("[Media] Active recording path: inject shared-memory capture (WGC auto-fallback armed)");
         } else {
             LogInfo("[Media] Active recording path: inject shared-memory capture");
@@ -1178,13 +1228,29 @@ void StopRecording() {
     StopInjectCapturePipeline();
 
     g_EncoderRunning = false;
+    g_InjectDeliveredFirstFrame.store(false, std::memory_order_release);
+    g_RejectInjectFrames.store(false, std::memory_order_release);
+    g_AutoWgcFallbackArmed.store(false, std::memory_order_release);
 
     JoinThreadWithTimeout(g_EncoderThread, 10000, "encoder");
 
     g_FrameQueue.Clear();
     ResetLastQueuedFrameCache();
     ResetInjectFrameRingToLatest("recording stop");
+
+    if (g_pSharedMem) {
+        // Recording has stopped, so zero-copy encoder textures must not stay
+        // live. Clear the handshake before stopping the encoder so the DLL
+        // tears down all preserved D3D11/KMT resources immediately.
+        g_pSharedMem->useEncoderTextures.store(false, std::memory_order_release);
+        g_pSharedMem->encoderTextures.ready.store(false, std::memory_order_release);
+        g_pSharedMem->encoderTextures.kmtReady.store(false, std::memory_order_release);
+    }
+
     MediaEngine_StopRecording();
+    if (MediaEngine_ReleaseEncoderTextures) {
+        MediaEngine_ReleaseEncoderTextures();
+    }
     // Reset WGC-specific 10-bit hint so inject-mode recordings don't inherit it.
     if (MediaEngine_SetSourcePrefers10Bit) {
         MediaEngine_SetSourcePrefers10Bit(false);
@@ -1202,6 +1268,7 @@ void StopRecording() {
     }
 
     SetActiveScreenGrab(false);
+    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
 
     LogInfo("[Media] Recording stopped");
 }
@@ -1216,12 +1283,45 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     std::string exeDir = std::string(exePath);
     exeDir = exeDir.substr(0, exeDir.find_last_of("\\/"));
     const std::string configPath = GetLocalConfigPath();
+    bool mediaEngineReady = false;
 
-    // Load mediaengine.dll dynamically (with FFmpeg DLLs in ffmpeg/ subfolder)
-    if (!MediaEngine_Load(exeDir.c_str())) {
-        LogError("[Media] Failed to load mediaengine.dll");
-        return 1;
-    }
+    auto unloadMediaEngineIdle = [&]() {
+        if (mediaEngineReady && MediaEngine_Shutdown) {
+            MediaEngine_Shutdown();
+            mediaEngineReady = false;
+        }
+        MediaEngine_Unload();
+        LogInfo("[Media] MediaEngine unloaded for idle state");
+    };
+
+    auto ensureMediaEngineReady = [&]() -> bool {
+        if (mediaEngineReady) {
+            return true;
+        }
+
+        if (!MediaEngine_Load(exeDir.c_str())) {
+            LogError("[Media] Failed to load mediaengine.dll");
+            return false;
+        }
+
+        MediaEngine_SetLogCallback(config.debugLogging ? MediaLogCallback : nullptr);
+        if (!MediaEngine_Init(&config)) {
+            LogError("[Media] Failed to initialize MediaEngine");
+            if (MediaEngine_Shutdown) {
+                MediaEngine_Shutdown();
+            }
+            MediaEngine_Unload();
+            return false;
+        }
+
+        if (g_pSharedMem || g_pShmem) {
+            MediaEngine_SetSharedMem(g_pSharedMem, g_pShmem);
+        }
+
+        mediaEngineReady = true;
+        LogInfo("[Media] MediaEngine initialized");
+        return true;
+    };
 
     ApplyMediaProcessPriority(config);
 
@@ -1232,13 +1332,10 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         return 1;
     }
 
-    MediaEngine_SetLogCallback(config.debugLogging ? MediaLogCallback : nullptr);
-    if (!MediaEngine_Init(&config)) {
-        LogError("[Media] Failed to initialize MediaEngine");
+    if (!ensureMediaEngineReady()) {
         timeEndPeriod(1);
         return 1;
     }
-    LogInfo("[Media] MediaEngine initialized");
 
     LogInfo("[Media] SharedMemory Layout Check:");
     LogInfo("[Media] sizeof(FrameSlot) = %zu", sizeof(FrameSlot));
@@ -1314,24 +1411,8 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             }
         }
 
-        MediaEngine_SetSharedMem(g_pSharedMem, g_pShmem);
-
-        // Create shared capture textures immediately so Vulkan layer doesn't timeout
-        // waiting for them. The textures will be created with current dimensions
-        // and resized if needed when SetDimensions is called later.
-        // Skip if screengrab mode - encoder will use WGC's shared device instead.
-        if (!IsPreferredScreenGrab()) {
-            uint32_t width = g_pSharedMem->GetWidth();
-            uint32_t height = g_pSharedMem->GetHeight();
-            uint32_t format = g_pSharedMem->GetFormat();
-            if (width > 0 && height > 0 && !g_pSharedMem->encoderTextures.ready.load(std::memory_order_acquire)) {
-                LogInfo("[Media] Creating shared capture textures early: %dx%d format=%d", width, height, format);
-                if (MediaEngine_CreateSharedCaptureTextures(width, height, format, g_pSharedMem)) {
-                    LogInfo("[Media] Shared capture textures created successfully");
-                } else {
-                    LogWarn("[Media] Failed to create shared capture textures early - will retry on first frame");
-                }
-            }
+        if (mediaEngineReady) {
+            MediaEngine_SetSharedMem(g_pSharedMem, g_pShmem);
         }
 
         if (explicitScreengrab) {
@@ -1343,7 +1424,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         }
     } else if (config.captureMethod == "inject") {
         LogError("[Media] Failed to connect to shared memory in inject mode!");
-        MediaEngine_Shutdown();
+        unloadMediaEngineIdle();
         timeEndPeriod(1);
         return 1;
     } else {
@@ -1352,11 +1433,15 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     }
 
     if (IsPreferredScreenGrab() || config.captureMethod == "auto") {
+        if (!ensureMediaEngineReady()) {
+            timeEndPeriod(1);
+            return 1;
+        }
         d3dDevice = MediaEngine_GetD3D11Device();
         if (!d3dDevice) {
             if (IsPreferredScreenGrab()) {
                 LogError("[Media] Failed to get D3D11 device");
-                MediaEngine_Shutdown();
+                unloadMediaEngineIdle();
                 timeEndPeriod(1);
                 return 1;
             }
@@ -1373,7 +1458,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                 } else {
                     if (IsPreferredScreenGrab()) {
                         LogError("[Media] WGC capture init failed");
-                        MediaEngine_Shutdown();
+                        unloadMediaEngineIdle();
                         timeEndPeriod(1);
                         return 1;
                     } else {
@@ -1393,6 +1478,9 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     QueryPerformanceFrequency(&qpcFreq);
     int64_t recordingStartTime = 0;
     auto ensureWgcDevice = [&]() -> bool {
+        if (!ensureMediaEngineReady()) {
+            return false;
+        }
         if (d3dDevice) {
             return true;
         }
@@ -1404,6 +1492,40 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             d3dDevice->GetImmediateContext(&d3dContext);
         }
         return true;
+    };
+    auto ensureWgcStandby = [&]() -> bool {
+        if (g_WgcCap) {
+            g_WgcCap->SetCaptureCursor(config.video.captureCursor);
+            g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
+            return true;
+        }
+        if (!ensureWgcDevice()) {
+            return false;
+        }
+        g_WgcCap = std::make_unique<WGCCapture>();
+        if (!g_WgcCap->Init(d3dDevice)) {
+            g_WgcCap.reset();
+            return false;
+        }
+        g_WgcCap->SetCaptureCursor(config.video.captureCursor);
+        g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
+        return true;
+    };
+    auto releaseIdleWgcResources = [&]() {
+        StopWgcCapturePipeline();
+        g_WgcCap.reset();
+        if (d3dContext) {
+            d3dContext->ClearState();
+            d3dContext->Flush();
+            d3dContext->Release();
+            d3dContext = nullptr;
+        }
+        d3dDevice = nullptr;
+        if (MediaEngine_ReleaseSharedD3D11Device) {
+            MediaEngine_ReleaseSharedD3D11Device();
+        }
+        SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+        LogInfo("[Media] Released idle WGC D3D11 resources");
     };
     auto isExplicitScreenGrabConfig = [&]() -> bool {
         return config.captureMethod == "screengrab" || config.captureMethod == "framegrab" ||
@@ -1451,11 +1573,16 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         activeConfigProcessName = processName;
 
         ApplyMediaProcessPriority(config);
-        MediaEngine_SetLogCallback(config.debugLogging ? MediaLogCallback : nullptr);
         if (g_WgcCap) {
             g_WgcCap->SetCaptureCursor(config.video.captureCursor);
         }
-        MediaEngine_ReloadConfig(&config);
+        if (mediaEngineReady) {
+            MediaEngine_SetLogCallback(config.debugLogging ? MediaLogCallback : nullptr);
+            MediaEngine_ReloadConfig(&config);
+            if (g_pSharedMem || g_pShmem) {
+                MediaEngine_SetSharedMem(g_pSharedMem, g_pShmem);
+            }
+        }
         return processName;
     };
 
@@ -1547,6 +1674,9 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     auto prepareCaptureForRecordingStart = [&]() {
         const std::string processName = refreshActiveConfig(false);
         const uint32_t sourcePid = g_pSharedMem ? g_pSharedMem->GetSourcePid() : 0;
+        const bool injectWhitelisted = !processName.empty() && MatchesProcessEntries(config.gameWhitelist, processName);
+
+        g_AutoWgcFallbackArmed.store(false, std::memory_order_release);
 
         if (!config.wgcWindowTitles.empty()) {
             HWND matchedWindow = FindMatchingWgcWindow(config.wgcWindowTitles);
@@ -1581,12 +1711,35 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             return;
         }
 
+        if (isExplicitScreenGrabConfig()) {
+            if (!primeWgcMonitorTarget()) {
+                SetPreferredScreenGrab(false);
+                clearCurrentWgcTarget();
+            }
+            return;
+        }
+
         if (currentCapturedWindow != NULL && !IsWindow(currentCapturedWindow)) {
             clearCurrentWgcTarget();
         }
 
         if (!isExplicitScreenGrabConfig()) {
             SetPreferredScreenGrab(false);
+        }
+
+        if (injectWhitelisted) {
+            LogInfo("[Media] Injection whitelist matched %s; auto mode will stay on inject capture",
+                    processName.c_str());
+            return;
+        }
+
+        if (config.captureMethod == "auto" && WGCCapture::IsSupported()) {
+            if (g_WgcCap || ensureWgcStandby()) {
+                g_AutoWgcFallbackArmed.store(true, std::memory_order_release);
+                LogInfo("[Media] WGC fallback armed for this recording");
+            } else {
+                LogWarn("[Media] Failed to arm WGC fallback for this recording");
+            }
         }
     };
 
@@ -1595,7 +1748,8 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         // CreateSharedCaptureTextures sets the encoder's LUID device, which conflicts
         // with WGC's shared device. By scanning first, the preferred capture mode is set correctly
         // and we skip the LUID-based texture creation for WGC games.
-        if (g_pSharedMem && !config.wgcWindowTitles.empty() && !IsPreferredScreenGrab() && !g_Recording) {
+        if (mediaEngineReady && g_pSharedMem && !config.wgcWindowTitles.empty() && !IsPreferredScreenGrab() &&
+            !g_Recording) {
             DWORD now = GetTickCount();
             if (now - lastEarlyWgcScan > 500) {
                 lastEarlyWgcScan = now;
@@ -1613,7 +1767,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         // The Vulkan layer sets resolution when it creates the swapchain, then waits
         // for encoder KMT textures. We must create them ASAP to avoid timeout.
         // Skip when using screengrab (WGC) - the encoder should use the shared device.
-        if (g_pSharedMem && !IsPreferredScreenGrab() &&
+        if (g_Recording && g_pSharedMem && !IsPreferredScreenGrab() &&
             !g_pSharedMem->encoderTextures.kmtReady.load(std::memory_order_acquire)) {
             uint32_t w = g_pSharedMem->GetWidth();
             uint32_t h = g_pSharedMem->GetHeight();
@@ -1635,12 +1789,18 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                     ipc.SendResponse(ProcessResponse::Ack);
                     break;
                 case ProcessCommand::StartRecording:
+                    if (!ensureMediaEngineReady()) {
+                        LogError("[Media] Failed to reinitialize MediaEngine for recording start");
+                        ipc.SendResponse(ProcessResponse::Ack);
+                        break;
+                    }
                     prepareCaptureForRecordingStart();
                     StartRecording(config);
                     ipc.SendResponse(ProcessResponse::RecordingStarted);
                     break;
                 case ProcessCommand::StopRecording:
                     StopRecording();
+                    releaseIdleWgcResources();
                     ipc.SendResponse(ProcessResponse::RecordingStopped);
                     break;
                 case ProcessCommand::Ping:
@@ -1661,15 +1821,20 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             if (LoadAcquire(g_pSharedMem->runtimeState.cmdStartRecording)) {
                 StoreRelease(g_pSharedMem->runtimeState.cmdStartRecording, false);
                 if (!g_Recording) {
-                    prepareCaptureForRecordingStart();
-                    StartRecording(config);
-                    g_pSharedMem->runtimeState.ackRecordingStarted.store(true, std::memory_order_release);
+                    if (!ensureMediaEngineReady()) {
+                        LogError("[Media] Failed to reinitialize MediaEngine for shared-memory recording start");
+                    } else {
+                        prepareCaptureForRecordingStart();
+                        StartRecording(config);
+                        g_pSharedMem->runtimeState.ackRecordingStarted.store(true, std::memory_order_release);
+                    }
                 }
             }
             if (LoadAcquire(g_pSharedMem->runtimeState.cmdStopRecording)) {
                 StoreRelease(g_pSharedMem->runtimeState.cmdStopRecording, false);
                 if (g_Recording) {
                     StopRecording();
+                    releaseIdleWgcResources();
                     g_pSharedMem->runtimeState.ackRecordingStopped.store(true, std::memory_order_release);
                 }
             }
@@ -1718,6 +1883,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                 LogInfo("[Media] Hook connected: %s (PID: %u)", procName.c_str(), currentSourcePid);
 
                 const bool forceWGC = MatchesProcessEntries(config.overlayWhitelist, procName);
+                const bool injectWhitelisted = MatchesProcessEntries(config.gameWhitelist, procName);
                 if (forceWGC) {
                     LogInfo("[Media] Overlay whitelist matched %s; preferring WGC when the target allows it",
                             procName.c_str());
@@ -1726,6 +1892,12 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                             "[Media] Current recording stays on inject; WGC remains armed "
                             "only as a startup fallback");
                     }
+                }
+
+                if (g_Recording && !IsActiveScreenGrab() && injectWhitelisted &&
+                    g_AutoWgcFallbackArmed.exchange(false, std::memory_order_acq_rel)) {
+                    LogInfo("[Media] Injection whitelist matched %s; disarming WGC startup fallback for this recording",
+                            procName.c_str());
                 }
 
                 if (!g_Recording && forceWGC) {
@@ -1844,7 +2016,13 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                 receivedFirstFrame = false;
             }
 
-            if (!receivedFirstFrame && config.captureMethod == "auto" && g_WgcCap) {
+            if (!receivedFirstFrame && g_InjectDeliveredFirstFrame.load(std::memory_order_acquire)) {
+                receivedFirstFrame = true;
+                LogInfo("[Media] Inject delivery confirmed before monitor observed ring activity");
+            }
+
+            if (!receivedFirstFrame && config.captureMethod == "auto" &&
+                g_AutoWgcFallbackArmed.load(std::memory_order_acquire) && g_WgcCap) {
                 DWORD elapsed = GetTickCount() - injectModeStartTime;
                 const uint32_t activeSourcePid = g_pSharedMem ? g_pSharedMem->GetSourcePid() : 0;
                 const DWORD fallbackDelayMs = (activeSourcePid == 0) ? 100 : 200;
@@ -1854,6 +2032,8 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                         "back to WGC",
                         elapsed);
 
+                    g_RejectInjectFrames.store(true, std::memory_order_release);
+                    g_AutoWgcFallbackArmed.store(false, std::memory_order_release);
                     StopInjectCapturePipeline();
                     if (StartWgcRecordingCapture(config)) {
                         SetActiveScreenGrab(true);
@@ -1905,12 +2085,14 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         g_WgcCap->StopCapture();
     if (d3dContext)
         d3dContext->Release();
-    if (d3dDevice)
-        d3dDevice->Release();
+    d3dDevice = nullptr;
 
     // Shutdown media engine BEFORE unmapping shared memory to avoid use-after-free
     // (VideoEncoder::CleanupResources accesses pSharedMem during destruction)
-    MediaEngine_Shutdown();
+    if (mediaEngineReady && MediaEngine_Shutdown) {
+        MediaEngine_Shutdown();
+        mediaEngineReady = false;
+    }
     MediaEngine_Unload();
 
     if (g_pShmem)

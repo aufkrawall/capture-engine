@@ -4,6 +4,7 @@
 #include "audio_capture.h"
 #include "audio_encoder.h"
 
+#include <dxgi1_5.h>
 #include <chrono>
 #include <deque>
 #include <map>
@@ -12,6 +13,13 @@
 #include "audio_resampler.h"
 #include "audio_ring_buffer.h"  // Pull Model Buffer
 #include "video_encoder.h"
+
+extern "C" {
+extern ID3D11Device* g_SharedD3D11Device;
+extern ID3D11DeviceContext* g_SharedD3D11Context;
+}
+
+static void ReleaseSharedD3D11DeviceGlobals();
 
 // Global or Singleton state preferred for DLL functions
 // Or we map config to instance.
@@ -1642,6 +1650,7 @@ MEDIAENGINE_API void MediaEngine_Shutdown() {
     if (g_Engine)
         g_Engine->StopRecording();
     g_Engine.reset();
+    ReleaseSharedD3D11DeviceGlobals();
 }
 
 MEDIAENGINE_API void MediaEngine_ProcessFrame(uint64_t textureHandle, uint64_t fenceHandle, uint64_t fenceValue,
@@ -1693,6 +1702,29 @@ MEDIAENGINE_API int64_t MediaEngine_GetLastFrameFenceWaitUs() {
 ID3D11Device* g_SharedD3D11Device = nullptr;
 ID3D11DeviceContext* g_SharedD3D11Context = nullptr;
 
+static void ReleaseSharedD3D11DeviceGlobals() {
+    if (g_SharedD3D11Context) {
+        g_SharedD3D11Context->ClearState();
+        g_SharedD3D11Context->Flush();
+    }
+    if (g_SharedD3D11Device) {
+        IDXGIDevice3* dxgiDevice3 = nullptr;
+        if (SUCCEEDED(g_SharedD3D11Device->QueryInterface(IID_PPV_ARGS(&dxgiDevice3))) && dxgiDevice3) {
+            dxgiDevice3->Trim();
+            dxgiDevice3->Release();
+            DLL_Log("[MediaEngine] Trimmed shared D3D11 device residency");
+        }
+    }
+    if (g_SharedD3D11Context) {
+        g_SharedD3D11Context->Release();
+        g_SharedD3D11Context = nullptr;
+    }
+    if (g_SharedD3D11Device) {
+        g_SharedD3D11Device->Release();
+        g_SharedD3D11Device = nullptr;
+    }
+}
+
 MEDIAENGINE_API ID3D11Device* MediaEngine_GetD3D11Device() {
     if (g_SharedD3D11Device)
         return g_SharedD3D11Device;
@@ -1724,6 +1756,10 @@ MEDIAENGINE_API ID3D11Device* MediaEngine_GetD3D11Device() {
     }
 
     return g_SharedD3D11Device;
+}
+
+MEDIAENGINE_API void MediaEngine_ReleaseSharedD3D11Device() {
+    ReleaseSharedD3D11DeviceGlobals();
 }
 
 // D3D11 Immediate Context Mutex

@@ -1187,6 +1187,29 @@ public:
             CloseHandle(frameArrivedEvent_);
             frameArrivedEvent_ = NULL;
         }
+
+        // Drop idle WGC device state between recordings so desktop capture
+        // releases its D3D/WinRT memory footprint instead of keeping standby
+        // resources resident until process shutdown.
+        winrtDevice_ = nullptr;
+        if (d3dContext_) {
+            d3dContext_->ClearState();
+            d3dContext_->Flush();
+        }
+        if (d3dDevice_) {
+            IDXGIDevice3* dxgiDevice3 = nullptr;
+            if (SUCCEEDED(d3dDevice_->QueryInterface(IID_PPV_ARGS(&dxgiDevice3))) && dxgiDevice3) {
+                dxgiDevice3->Trim();
+                dxgiDevice3->Release();
+                LogInfo("[WGC] Trimmed capture-device residency");
+            }
+        }
+        SafeRelease(d3dContext_);
+        if (usingDedicatedCaptureDevice_) {
+            SafeRelease(d3dDevice_);
+        } else {
+            d3dDevice_ = nullptr;
+        }
     }
 
     bool GetNextFrame(WGCCapturedFrame& frame) {
@@ -1456,6 +1479,17 @@ bool WGCCapture::InitForMonitor(ID3D11Device* device, void* hmonitor) {
 bool WGCCapture::StartCapture() {
     if (!initialized_)
         return false;
+
+#if HAS_WGC
+    if ((!impl_->d3dDevice_ || !impl_->d3dContext_) && !impl_->InitializeDevices(device_)) {
+        LogError("[WGC] Failed to rebuild capture devices for restart");
+        return false;
+    }
+    if (!impl_->winrtDevice_ && !impl_->CreateWinRTDevice()) {
+        LogError("[WGC] Failed to rebuild WinRT capture device for restart");
+        return false;
+    }
+#endif
 
     bool result = impl_->StartCapture(width_, height_, captureCursor_);
     if (result) {
