@@ -2,6 +2,7 @@
 #include "../common/raii_helpers.h"
 #include "../common/shared_defs.h"
 #include "mediaengine.h"
+#include "video_encoder_options.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -1086,19 +1087,7 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     DLL_Log("[VideoEncoder] ==============================================");
 
     // Check encoder type for option compatibility
-    bool isAv1 = (savedConfig.encoder.find("av1") != std::string::npos);
     bool isMF = (savedConfig.encoder.find("_mf") != std::string::npos);
-    bool isNVENC = (savedConfig.encoder.find("_nvenc") != std::string::npos);
-
-    // Apply preset (p1-p7 for NVENC, speed/quality for AMF/QSV - NOT for MF)
-    if (!isMF && !savedConfig.preset.empty()) {
-        av_dict_set(&opts, "preset", savedConfig.preset.c_str(), 0);
-    }
-
-    // Apply tuning (NVENC only)
-    if (isNVENC && !savedConfig.tuning.empty()) {
-        av_dict_set(&opts, "tune", savedConfig.tuning.c_str(), 0);
-    }
 
     // Set color properties from config (with auto-detection defaults)
     // Color space
@@ -1158,83 +1147,28 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
         GetPixFmtNameSafe(resolvedFormat.d3d11SwFormat), resolvedFormat.usesVideoProcessor ? "vp-yuv" : "direct-rgb",
         currentIsHDR);
 
-    // Apply rate control mode
-    if (!isMF && !savedConfig.rateControl.empty()) {
-        std::string rc = savedConfig.rateControl;
-        if (rc == "VBR")
-            rc = "vbr";
-        else if (rc == "CBR")
-            rc = "cbr";
-        else if (rc == "CQ" || rc == "CQP" || rc == "constqp")
-            rc = "constqp";
-        av_dict_set(&opts, "rc", rc.c_str(), 0);
-
-        if (isNVENC && (savedConfig.rateControl == "CQ" || savedConfig.rateControl == "CQP")) {
-            av_dict_set_int(&opts, "qp", savedConfig.qp, 0);
-            DLL_Log("[VideoEncoder] Applied NVENC qp=%d for CQ mode", savedConfig.qp);
+    const ce::video::EncoderOptionPlan optionPlan = ce::video::BuildEncoderOptionPlan(savedConfig, use10bit, chroma);
+    for (const auto& warning : optionPlan.warnings) {
+        DLL_Log("[VideoEncoder] %s", warning.c_str());
+    }
+    if (!optionPlan.errors.empty()) {
+        for (const auto& error : optionPlan.errors) {
+            DLL_Log("[VideoEncoder] %s", error.c_str());
         }
+        return false;
+    }
+    for (const auto& option : optionPlan.generatedOptions) {
+        av_dict_set(&opts, option.key.c_str(), option.value.c_str(), 0);
     }
 
-    // Bitrate and max bitrate
-    if (!savedConfig.bitrate.empty()) {
-        std::string br = savedConfig.bitrate;
-        int64_t bitrate_val = 0;
-        if (br.find("Mbps") != std::string::npos)
-            bitrate_val = std::stoll(br.substr(0, br.find("Mbps"))) * 1000000;
-        else if (br.find("Kbps") != std::string::npos)
-            bitrate_val = std::stoll(br.substr(0, br.find("Kbps"))) * 1000;
-        else
-            try {
-                bitrate_val = std::stoll(br);
-            } catch (...) {}
-        if (bitrate_val > 0)
-            codecCtx->bit_rate = bitrate_val;
-    }
+    codecCtx->bit_rate = optionPlan.bitRate.value_or(0);
+    codecCtx->rc_max_rate = optionPlan.maxBitRate.value_or(0);
+    codecCtx->max_b_frames = optionPlan.maxBFrames;
 
-    if (!savedConfig.maxBitrate.empty()) {
-        std::string maxbr = savedConfig.maxBitrate;
-        int64_t maxbitrate_val = 0;
-        if (maxbr.find("Mbps") != std::string::npos)
-            maxbitrate_val = std::stoll(maxbr.substr(0, maxbr.find("Mbps"))) * 1000000;
-        else if (maxbr.find("Kbps") != std::string::npos)
-            maxbitrate_val = std::stoll(maxbr.substr(0, maxbr.find("Kbps"))) * 1000;
-        else
-            try {
-                maxbitrate_val = std::stoll(maxbr);
-            } catch (...) {}
-        if (maxbitrate_val > 0)
-            codecCtx->rc_max_rate = maxbitrate_val;
-    }
-
-    if (isNVENC) {
-        av_dict_set(&opts, "rc-lookahead", savedConfig.lookahead ? "32" : "0", 0);
-        if (!isAv1 && savedConfig.aq) {
-            av_dict_set(&opts, "spatial-aq", "1", 0);
-            av_dict_set(&opts, "temporal-aq", "1", 0);
-        }
-        if (!savedConfig.multipass.empty() && savedConfig.multipass != "disabled") {
-            av_dict_set(&opts, "multipass", savedConfig.multipass.c_str(), 0);
-        }
-    }
-
-    codecCtx->max_b_frames = (luidLow == 0 && luidHigh == 0) ? 0 : savedConfig.bFrames;
     if (savedConfig.keyframeInterval > 0) {
         codecCtx->gop_size = savedConfig.fps * savedConfig.keyframeInterval;
-    }
-
-    if (!isMF) {
-        std::string profileToUse = savedConfig.profile;
-        if (profileToUse == "auto" || profileToUse.empty()) {
-            bool isH264 = savedConfig.encoder.find("264") != std::string::npos;
-            bool isHEVC = savedConfig.encoder.find("hevc") != std::string::npos ||
-                          savedConfig.encoder.find("265") != std::string::npos;
-            if (isH264)
-                profileToUse = use10bit ? "high10" : "high";
-            else if (isHEVC)
-                profileToUse = use10bit ? "main10" : "main";
-        }
-        if (!profileToUse.empty() && !isAv1)
-            av_dict_set(&opts, "profile", profileToUse.c_str(), 0);
+    } else if (savedConfig.keyframeInterval < 0) {
+        DLL_Log("[VideoEncoder] keyframe_interval=%d is invalid; using encoder default", savedConfig.keyframeInterval);
     }
 
     if (isMF) {
@@ -1245,6 +1179,10 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
         if (!savedConfig.mfScenario.empty())
             av_dict_set(&opts, "scenario", savedConfig.mfScenario.c_str(), 0);
         av_dict_set_int(&opts, "hw_encoding", savedConfig.mfHwEncoding ? 1 : 0, 0);
+    }
+
+    for (const auto& option : optionPlan.customOptions) {
+        av_dict_set(&opts, option.key.c_str(), option.value.c_str(), 0);
     }
 
     if (savedConfig.useVFR) {

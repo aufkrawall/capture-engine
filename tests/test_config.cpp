@@ -43,6 +43,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     // Default is TRUE in config.cpp
     EXPECT_TRUE(config.debugLogging);
     EXPECT_EQ(config.captureMethod, "auto");
+    EXPECT_EQ(config.video.profile, "auto");
     EXPECT_EQ(config.video.scaling.sharpness, 100);
     EXPECT_FALSE(config.graphics.forceMipBiasClamp);
     EXPECT_EQ(config.graphics.backbufferCount, -1);
@@ -52,6 +53,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     std::string generatedText((std::istreambuf_iterator<char>(generated)), std::istreambuf_iterator<char>());
     generated.close();
     EXPECT_NE(generatedText.find("capture_method=auto"), std::string::npos);
+    EXPECT_NE(generatedText.find("profile=auto"), std::string::npos);
     EXPECT_NE(generatedText.find("sharpness=100"), std::string::npos);
     EXPECT_NE(generatedText.find("; backbuffer_count, affecting vsync"), std::string::npos);
     EXPECT_NE(generatedText.find("backbuffer_count=-1"), std::string::npos);

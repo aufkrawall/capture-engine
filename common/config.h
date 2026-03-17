@@ -57,7 +57,7 @@ struct VideoConfig {
     bool captureCursor = true;  // Capture mouse cursor in recording (WGC native)
 
     // NVENC-specific settings
-    int qp = 23;  // Quality parameter for CQ mode (0-51)
+    int qp = 23;  // Quality value used for NVENC CQ/CQP modes (valid range depends on codec/mode)
 
     // Media Foundation encoder-specific settings (h264_mf, hevc_mf)
     std::string mfRateControl;  // cbr, pc_vbr, u_vbr, quality, ld_vbr, g_vbr

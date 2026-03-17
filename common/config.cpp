@@ -270,7 +270,7 @@ fps=120
 container=mkv
 ; output_dir - Values: path, empty = executable directory
 output_dir=
-; rate_control - Values: VBR, CBR, CQ
+; rate_control - Values: VBR, CBR, CQ, CQP
 rate_control=VBR
 ; bitrate - Values: e.g. 75Mbps, 60000Kbps, 60000000
 bitrate=75Mbps
@@ -278,8 +278,8 @@ bitrate=75Mbps
 max_bitrate=150Mbps
 ; keyframe_interval - Values: integer seconds
 keyframe_interval=2
-; profile - Values: baseline, main, high, main10
-profile=high
+; profile - Values: auto (recommended), or codec-specific values like baseline, main, high, high10, main10, rext
+profile=auto
 ; b_frames - Values: 0-4
 b_frames=0
 ; custom_options - Values: FFmpeg opts (key=val:key=val), empty = none
@@ -302,7 +302,7 @@ preset=p1
 tuning=hq
 ; multipass - Values: disabled, qres, fullres
 multipass=disabled
-; qp - Values: 0-51 (used when rate_control=CQ)
+; qp - Values: integer >= 0 (used for NVENC CQ/CQP quality; H.264/HEVC typically 0-51, AV1 CQ 0-63)
 qp=23
 ; lookahead - Values: true, false
 lookahead=false
@@ -932,7 +932,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.video.bitrate = GetStr("Video", "bitrate", "75Mbps");
     config.video.maxBitrate = GetStr("Video", "max_bitrate", "150Mbps");
     config.video.keyframeInterval = GetInt("Video", "keyframe_interval", 2);
-    config.video.profile = GetStr("Video", "profile", "high");
+    config.video.profile = GetStr("Video", "profile", "auto");
     config.video.bFrames = GetInt("Video", "b_frames", 0);
     config.video.customOptions = GetStr("Video", "custom_options", "");
     config.video.captureCursor = ParseBool(GetStr("Video", "capture_cursor", "true"));
