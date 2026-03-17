@@ -731,7 +731,7 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
 }
 
 void WgcCaptureThreadFunc(const AppConfig& config) {
-    LogInfo("[WGC CaptureThread] Started (OBS-style direct callback mode)");
+    LogInfo("[WGC CaptureThread] Started (diagnostics logger)");
     g_WgcCaptureRunning = true;
 
     DWORD lastDiagTime = 0;

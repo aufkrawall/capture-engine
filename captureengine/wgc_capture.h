@@ -6,8 +6,6 @@
 #include <atomic>
 #include <functional>
 #include <memory>
-#include <mutex>
-#include <string>
 
 // Forward declarations to avoid including WinRT headers in public interface
 struct ID3D11Texture2D;
@@ -70,12 +68,6 @@ public:
     // Get the top-left corner of the captured content in screen coordinates.
     bool GetCaptureOrigin(int32_t& left, int32_t& top) const;
 
-    // Optional: Set callback for frame arrival (for async processing)
-    using FrameCallback = std::function<void(WGCCapturedFrame&)>;
-    void SetFrameCallback(FrameCallback callback) {
-        frameCallback_ = callback;
-    }
-
     // Frame statistics for smoothness tracking
     std::atomic<uint32_t> droppedFrames{0};
 
@@ -119,7 +111,6 @@ private:
     std::unique_ptr<Impl> impl_;
 
     ID3D11Device* device_ = nullptr;
-    ID3D11DeviceContext* context_ = nullptr;
 
     uint32_t width_ = 0;
     uint32_t height_ = 0;
@@ -127,7 +118,4 @@ private:
     bool capturing_ = false;
     bool captureCursor_ = false;
     bool roInitialized_ = false;  // true when RoInitialize succeeded and we must call RoUninitialize
-
-    FrameCallback frameCallback_;
-    std::mutex frameMutex_;
 };

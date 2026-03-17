@@ -218,8 +218,13 @@ public:
     int64_t qpcFreq_ = 0;
     std::atomic<int64_t> lastDeliveredSourceQpc_{0};
 
-    // Callback function for direct frame processing (OBS-style)
-    std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, bool)> frameCallback_;
+    // Callback function for direct frame processing.
+    // Atomic raw function pointer: only static functions (or nullptr) are ever
+    // stored, so std::function overhead and its non-atomic nature are avoided.
+    // This eliminates the data race between the WinRT callback thread (reader)
+    // and the main thread (writer during start/stop recording).
+    using DirectFrameCallbackFn = void (*)(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, bool);
+    std::atomic<DirectFrameCallbackFn> frameCallback_{nullptr};
     std::atomic<uint32_t> callbackFrameCount_{0};
 
     // Frame throttle: skip CopyResource if we're ahead of target FPS
@@ -927,9 +932,10 @@ public:
                     if (sourceFrameQpc > 0) {
                         lastDeliveredSourceQpc_.store(sourceFrameQpc, std::memory_order_relaxed);
                     }
-                    if (frameCallback_) {
-                        frameCallback_(copiedTexture, desc.Width, desc.Height,
-                                       sourceFrameQpc > 0 ? sourceFrameQpc : copyCompleteQpc, captureIsHDR_);
+                    auto cb = frameCallback_.load(std::memory_order_acquire);
+                    if (cb) {
+                        cb(copiedTexture, desc.Width, desc.Height,
+                           sourceFrameQpc > 0 ? sourceFrameQpc : copyCompleteQpc, captureIsHDR_);
                     } else {
                         SafeRelease(copiedTexture);
                     }
@@ -1055,9 +1061,13 @@ public:
 
         if (!tryCreateFramePool(capturePixelFormat_)) {
             if (!captureIsHDR_ && capturePixelFormat_ == winrt::DirectXPixelFormat::R10G10B10A2UIntNormalized) {
-                LogWarn("[WGC] R10G10B10A2 frame pool unavailable, falling back to FP16 capture");
-                capturePixelFormat_ = winrt::DirectXPixelFormat::R16G16B16A16Float;
-                captureDxgiFormat_ = DXGI_FORMAT_R16G16B16A16_FLOAT;
+                // SDR 10-bpc: fall directly to BGRA8 instead of FP16.
+                // FP16 is needlessly expensive for SDR and forces an extra
+                // GPU conversion in the video processor path.
+                LogWarn("[WGC] R10G10B10A2 frame pool unavailable for SDR, falling back to BGRA8");
+                capturePixelFormat_ = winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized;
+                captureDxgiFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
+                useHighPrecisionCapture_ = false;
             } else {
                 capturePixelFormat_ = winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized;
                 captureDxgiFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -1136,10 +1146,7 @@ public:
     }
 
     void StopCapture() {
-        // Clear callback first to prevent new frames from being processed
-        frameCallback_ = nullptr;
-
-        // Stop WinRT session and frame pool - this prevents new callbacks
+        // Stop WinRT session and frame pool first - prevents new callbacks
         if (session_) {
             session_.Close();
             session_ = nullptr;
@@ -1154,13 +1161,16 @@ public:
         // (WinRT thread pool may still be processing a frame)
         int waitMs = 0;
         while (g_WgcInflightCallbacks.load(std::memory_order_acquire) > 0 && waitMs < 2000) {
-            SwitchToThread();
+            Sleep(1);
             waitMs++;
         }
         if (g_WgcInflightCallbacks.load(std::memory_order_acquire) > 0) {
             LogWarn("[WGC] %d callbacks still in-flight after %dms wait - proceeding with cleanup",
                     g_WgcInflightCallbacks.load(), waitMs);
         }
+
+        // Safe to clear callback now - no more concurrent readers
+        frameCallback_.store(nullptr, std::memory_order_release);
 
         // NOTE: Do NOT null item_ - it's the capture target (monitor) and doesn't
         // change between recordings. StartCapture() needs item_ to exist.
@@ -1300,11 +1310,6 @@ WGCCapture::~WGCCapture() {
 
     // Release WinRT/COM capture objects before apartment teardown.
     impl_.reset();
-
-    if (context_) {
-        context_->Release();
-        context_ = nullptr;
-    }
 
 #if HAS_WGC
     if (roInitialized_) {
@@ -1496,7 +1501,13 @@ void WGCCapture::SetDirectFrameCallback(
     std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, bool)> callback) {
 #if HAS_WGC
     if (impl_) {
-        impl_->frameCallback_ = callback;
+        // Extract the raw function pointer from std::function.
+        // Only static/free functions are ever passed (QueueWgcFrame or nullptr).
+        Impl::DirectFrameCallbackFn rawPtr = nullptr;
+        if (callback) {
+            rawPtr = *callback.target<Impl::DirectFrameCallbackFn>();
+        }
+        impl_->frameCallback_.store(rawPtr, std::memory_order_release);
     }
 #endif
 }
@@ -1562,9 +1573,11 @@ int32_t WGCCapture::GetInflightCallbackCount() const {
 void WGCCapture::ForceReset() {
 #if HAS_WGC
     capturing_ = false;
-    frameCallback_ = nullptr;
 
     if (impl_) {
+        // Clear the active direct-frame callback before tearing down
+        impl_->frameCallback_.store(nullptr, std::memory_order_release);
+
         // Mark Impl as dead BEFORE destroying - prevents callbacks from accessing freed memory
         impl_->alive_.store(false, std::memory_order_release);
 
@@ -1582,7 +1595,7 @@ void WGCCapture::ForceReset() {
         // Wait for in-flight callbacks to finish BEFORE destroying resources
         int waitMs = 0;
         while (g_WgcInflightCallbacks.load(std::memory_order_acquire) > 0 && waitMs < 5000) {
-            SwitchToThread();
+            Sleep(1);
             waitMs++;
         }
 
