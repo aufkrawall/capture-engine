@@ -172,6 +172,28 @@ public:
         return 0;
     }
 
+    void ReleaseEncoderTextures() {
+        std::lock_guard<std::recursive_mutex> lock(muxMutex);
+        if (videoEnc) {
+            videoEnc->ReleasePreservedEncoderTextures();
+        }
+    }
+
+    void UpdateVideoEncoderSharedMem(void* sharedMem, void* shmemBuffer) {
+        std::lock_guard<std::recursive_mutex> lock(muxMutex);
+        if (videoEnc) {
+            videoEnc->SetSharedMem((SharedMemoryLayout*)sharedMem, (ShmemBuffer*)shmemBuffer);
+        }
+    }
+
+    void SetSourcePrefers10BitHint(bool prefer10Bit) {
+        std::lock_guard<std::recursive_mutex> lock(muxMutex);
+        if (videoEnc) {
+            DLL_Log("[VideoEncoder] SetSourcePrefers10Bit(%s)", prefer10Bit ? "true" : "false");
+            videoEnc->SetSourcePrefers10Bit(prefer10Bit);
+        }
+    }
+
     // Trusted System QPC Frequency
     int64_t qpcFreq = 0;
 
@@ -1622,29 +1644,32 @@ private:
 };
 
 static std::unique_ptr<MediaEngine> g_Engine;
+static std::recursive_mutex g_EngineApiMutex;
 
 extern "C" {
 
 // Global Logger
-static LogCallback g_LogCallback = nullptr;
+static std::atomic<LogCallback> g_LogCallback{nullptr};
 
 MEDIAENGINE_API void DLL_Log(const char* fmt, ...) {
-    if (!g_LogCallback)
+    LogCallback callback = g_LogCallback.load(std::memory_order_acquire);
+    if (!callback)
         return;
     char buffer[1024];
     va_list args;
     va_start(args, fmt);
     vsnprintf(buffer, sizeof(buffer), fmt, args);
     va_end(args);
-    g_LogCallback(buffer);
+    callback(buffer);
 }
 
 MEDIAENGINE_API void MediaEngine_SetLogCallback(LogCallback callback) {
-    g_LogCallback = callback;
+    g_LogCallback.store(callback, std::memory_order_release);
     DLL_Log("MediaEngine Logging Initialized");
 }
 
 MEDIAENGINE_API bool MediaEngine_Init(const AppConfig* config) {
+    std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
     DLL_Log("[Media] MediaEngine_Init Called. Version: %s (Built: %s)", CAPTURE_VERSION, BUILD_TIMESTAMP);
     if (!g_Engine)
         g_Engine = std::make_unique<MediaEngine>();
@@ -1653,27 +1678,32 @@ MEDIAENGINE_API bool MediaEngine_Init(const AppConfig* config) {
 }
 
 MEDIAENGINE_API bool MediaEngine_StartRecording() {
+    std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
     if (g_Engine)
         return g_Engine->StartRecording();
     return false;
 }
 
 MEDIAENGINE_API void MediaEngine_ReloadConfig(const AppConfig* config) {
+    std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
     if (g_Engine)
         g_Engine->ReloadConfig(config);
 }
 
 MEDIAENGINE_API void MediaEngine_StopRecording() {
+    std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
     if (g_Engine)
         g_Engine->StopRecording();
 }
 
 MEDIAENGINE_API void MediaEngine_ReleaseEncoderTextures() {
-    if (g_Engine && g_Engine->videoEnc)
-        g_Engine->videoEnc->ReleasePreservedEncoderTextures();
+    std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
+    if (g_Engine)
+        g_Engine->ReleaseEncoderTextures();
 }
 
 MEDIAENGINE_API void MediaEngine_Shutdown() {
+    std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
     if (g_Engine)
         g_Engine->StopRecording();
     g_Engine.reset();
@@ -1684,6 +1714,7 @@ MEDIAENGINE_API void MediaEngine_ProcessFrame(uint64_t textureHandle, uint64_t f
                                               int64_t timestamp, int32_t luidLow, int32_t luidHigh, uint32_t sourcePid,
                                               uint32_t width, uint32_t height, uint32_t format, bool isHDR,
                                               bool isShmem, int shmemSlot) {
+    std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
     if (g_Engine) {
         g_Engine->ProcessFrame(textureHandle, fenceHandle, fenceValue, timestamp, luidLow, luidHigh, sourcePid, width,
                                height, format, isHDR, isShmem, shmemSlot);
@@ -1691,12 +1722,14 @@ MEDIAENGINE_API void MediaEngine_ProcessFrame(uint64_t textureHandle, uint64_t f
 }
 MEDIAENGINE_API void MediaEngine_ProcessFrameD3D11(void* texture, int64_t timestamp, uint32_t width, uint32_t height,
                                                    bool isHDR, int32_t captureLeft, int32_t captureTop) {
+    std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
     if (g_Engine)
         g_Engine->ProcessFrameD3D11(texture, timestamp, width, height, isHDR, captureLeft, captureTop);
 }
 
 MEDIAENGINE_API bool MediaEngine_CreateSharedCaptureTextures(uint32_t width, uint32_t height, uint32_t format,
                                                              SharedMemoryLayout* sharedMem) {
+    std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
     if (!g_Engine) {
         DLL_Log("[MediaEngine] CreateSharedCaptureTextures: Engine not ready");
         return false;
@@ -1705,6 +1738,7 @@ MEDIAENGINE_API bool MediaEngine_CreateSharedCaptureTextures(uint32_t width, uin
 }
 
 MEDIAENGINE_API int64_t MediaEngine_GetLastFrameEncodeTimeUs() {
+    std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
     if (g_Engine) {
         return g_Engine->GetLastVideoEncodeTimeUs();
     }
@@ -1712,12 +1746,13 @@ MEDIAENGINE_API int64_t MediaEngine_GetLastFrameEncodeTimeUs() {
 }
 
 MEDIAENGINE_API void MediaEngine_SetSharedMem(void* pSharedMem, void* pShmem) {
-    if (g_Engine && g_Engine->videoEnc) {
-        g_Engine->videoEnc->SetSharedMem((SharedMemoryLayout*)pSharedMem, (ShmemBuffer*)pShmem);
-    }
+    std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
+    if (g_Engine)
+        g_Engine->UpdateVideoEncoderSharedMem(pSharedMem, pShmem);
 }
 
 MEDIAENGINE_API int64_t MediaEngine_GetLastFrameFenceWaitUs() {
+    std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
     if (g_Engine) {
         return g_Engine->GetLastFrameFenceWaitUs();
     }
@@ -1803,10 +1838,9 @@ MEDIAENGINE_API void MediaEngine_UnlockD3D11() {
 }
 
 MEDIAENGINE_API void MediaEngine_SetSourcePrefers10Bit(bool prefer10Bit) {
-    if (g_Engine && g_Engine->videoEnc) {
-        DLL_Log("[VideoEncoder] SetSourcePrefers10Bit(%s)", prefer10Bit ? "true" : "false");
-        g_Engine->videoEnc->SetSourcePrefers10Bit(prefer10Bit);
-    }
+    std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
+    if (g_Engine)
+        g_Engine->SetSourcePrefers10BitHint(prefer10Bit);
 }
 
 }  // extern "C"

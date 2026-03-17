@@ -9,6 +9,7 @@
 #include <dxgi1_6.h>
 #include <algorithm>
 #include <chrono>
+#include <mutex>
 #include "../common/logging.h"
 #include "mediaengine_loader.h"
 
@@ -151,6 +152,45 @@ bool IsFullscreenLikeWindow(HWND hwnd) {
     const bool clientMatchesMonitor =
         haveClientRect && RectNearlyMatches(clientRect, monitorInfo.rcMonitor, kFullscreenTolerancePx);
     return windowMatchesMonitor || clientMatchesMonitor;
+}
+
+constexpr int kBorderlessAccessUnknown = 0;
+constexpr int kBorderlessAccessAllowed = 1;
+constexpr int kBorderlessAccessDenied = 2;
+constexpr int kBorderlessAccessUnavailable = 3;
+
+std::once_flag g_BorderlessAccessRequestOnce;
+std::atomic<int> g_BorderlessAccessRequestState{kBorderlessAccessUnknown};
+
+int GetBorderlessAccessRequestState() {
+    return g_BorderlessAccessRequestState.load(std::memory_order_acquire);
+}
+
+bool EnsureBorderlessAccessRequested() {
+    std::call_once(g_BorderlessAccessRequestOnce, []() {
+        int state = kBorderlessAccessUnavailable;
+        try {
+            const auto status = winrt::Windows::Graphics::Capture::GraphicsCaptureAccess::RequestAccessAsync(
+                                    winrt::Windows::Graphics::Capture::GraphicsCaptureAccessKind::Borderless)
+                                    .get();
+            if (status ==
+                winrt::Windows::Security::Authorization::AppCapabilityAccess::AppCapabilityAccessStatus::Allowed) {
+                state = kBorderlessAccessAllowed;
+                LogInfo("[WGC] Borderless access granted by OS");
+            } else {
+                state = kBorderlessAccessDenied;
+                LogInfo("[WGC] Borderless access denied by OS (status=%d)", static_cast<int>(status));
+            }
+        } catch (winrt::hresult_error const& e) {
+            LogInfo("[WGC] Borderless access request unavailable: 0x%08lX", static_cast<unsigned long>(e.code().value));
+        } catch (...) {
+            LogInfo("[WGC] Borderless access request unavailable");
+        }
+
+        g_BorderlessAccessRequestState.store(state, std::memory_order_release);
+    });
+
+    return GetBorderlessAccessRequestState() == kBorderlessAccessAllowed;
 }
 }  // namespace
 #endif
@@ -1108,20 +1148,29 @@ public:
 
         // Try to request borderless access and enable border removal (like OBS)
         borderlessCapture_ = false;
-        try {
-            if (session_) {
-                // Request borderless access first (required on Windows 11+)
-                winrt::Windows::Graphics::Capture::GraphicsCaptureAccess::RequestAccessAsync(
-                    winrt::Windows::Graphics::Capture::GraphicsCaptureAccessKind::Borderless)
-                    .get();
-                session_.IsBorderRequired(false);
-                borderlessCapture_ = true;
-                LogInfo("[WGC] Borderless access granted, border removal enabled");
+        if (session_) {
+            if (EnsureBorderlessAccessRequested()) {
+                try {
+                    session_.IsBorderRequired(false);
+                    borderlessCapture_ = true;
+                    LogInfo("[WGC] Borderless access granted, border removal enabled");
+                } catch (winrt::hresult_error const& e) {
+                    borderlessCapture_ = false;
+                    LogInfo("[WGC] Borderless access granted but border removal failed: 0x%08lX",
+                            static_cast<unsigned long>(e.code().value));
+                } catch (...) {
+                    borderlessCapture_ = false;
+                    LogInfo("[WGC] Borderless access granted but border removal failed");
+                }
+            } else {
+                borderlessCapture_ = false;
+                const int accessState = GetBorderlessAccessRequestState();
+                if (accessState == kBorderlessAccessDenied) {
+                    LogInfo("[WGC] Borderless access denied, keeping default border");
+                } else {
+                    LogInfo("[WGC] Borderless access unavailable, keeping default border");
+                }
             }
-        } catch (...) {
-            // Not available on older Windows versions
-            borderlessCapture_ = false;
-            LogInfo("[WGC] Borderless access not available (Windows 10)");
         }
 
         // Configure cursor capture

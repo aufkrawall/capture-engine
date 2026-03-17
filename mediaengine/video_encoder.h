@@ -105,7 +105,7 @@ public:
     // captured texture format is 8-bit (e.g. display runs at 10 bpc but
     // the WGC frame pool could not allocate an R10G10B10A2 pool).
     void SetSourcePrefers10Bit(bool prefer) {
-        sourcePrefers10Bit_ = prefer;
+        sourcePrefers10Bit_.store(prefer, std::memory_order_relaxed);
     }
 
     // Release encoder-owned D3D11 textures and device after game exits (frees VRAM).
@@ -139,7 +139,7 @@ private:
     std::atomic<bool> initDone{false};
     bool currentIsHDR = false;  // Track HDR state (thread-local to EncodeFrame mostly)
     bool currentUse10BitInput = false;
-    bool sourcePrefers10Bit_ = false;  // Set by WGC when source display is >8 bpc
+    std::atomic<bool> sourcePrefers10Bit_{false};  // Set by WGC when source display is >8 bpc
     std::atomic<bool> fileOpened{false};
     std::atomic<bool> recordingRequested{false};
     std::atomic<bool> isStopping = false;      // signaled by Stop()
@@ -265,6 +265,12 @@ private:
     bool vpDeviceCompareLogged = false;
     bool vpInputViewLogged = false;
     bool vpFp16CompatLogged = false;
+    enum class Fp16VpInputStrategy {
+        kUnknown,
+        kUseStaging,
+        kUseRgb10Compat,
+    };
+    Fp16VpInputStrategy fp16VpInputStrategy = Fp16VpInputStrategy::kUnknown;
 
     // Cursor overlay via VP multi-stream (Option C)
     bool vpSupportsOverlay = false;  // MaxInputStreams >= 2
@@ -329,7 +335,7 @@ private:
         // "auto": prefer 10-bit when input is high-precision OR the source
         // display runs at >8 bpc (even if the capture texture is 8-bit due
         // to WGC frame pool format fallback).
-        return currentUse10BitInput || sourcePrefers10Bit_;
+        return currentUse10BitInput || sourcePrefers10Bit_.load(std::memory_order_relaxed);
     }
 
     void CleanupResources();

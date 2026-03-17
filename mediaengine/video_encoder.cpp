@@ -3910,7 +3910,31 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
     bool allowVpInputView = allowDirectInputView;
     bool needReleaseConverted = false;
     bool vpInputIsLinear = false;
+    bool wantsFp16VpStagingPath = false;
     D3D11_TEXTURE2D_DESC vpInputDesc = {};
+    auto prepareFp16CompatInput = [&](HRESULT priorHr) -> bool {
+        const bool encodeSdrGamma = !currentIsHDR;
+        ID3D11Texture2D* converted =
+            ConvertFP16ToRGB10A2(vpInputTexture, vpInputDesc.Width, vpInputDesc.Height, encodeSdrGamma);
+        if (!converted) {
+            DLL_Log("[VP] Failed to convert FP16 input to RGB10A2 before VP");
+            return false;
+        }
+        if (needReleaseConverted && vpInputTexture != bgraTexture) {
+            vpInputTexture->Release();
+        }
+        vpInputTexture = converted;
+        needReleaseConverted = true;
+        allowVpInputView = true;
+        vpInputIsLinear = !encodeSdrGamma;
+        vpInputTexture->GetDesc(&vpInputDesc);
+        if (priorHr != S_OK && !vpFp16CompatLogged) {
+            DLL_Log("[VP] FP16 staging input view failed (HR=%x), using RGB10A2 compatibility path (%s)", priorHr,
+                    encodeSdrGamma ? "SDR gamma encoded" : "linear passthrough");
+            vpFp16CompatLogged = true;
+        }
+        return true;
+    };
     {
         D3D11_TEXTURE2D_DESC srcDesc;
         bgraTexture->GetDesc(&srcDesc);
@@ -3931,29 +3955,14 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
         // and MinGW catch(...) CANNOT catch SEH exceptions (__fastfail).
         // We must prevent the call by checking format compatibility first.
         vpInputTexture->GetDesc(&vpInputDesc);
-        if (!allowVpInputView && vpInputDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT && ShouldUse10BitOutput()) {
-            const bool encodeSdrGamma = !currentIsHDR;
-            ID3D11Texture2D* converted =
-                ConvertFP16ToRGB10A2(vpInputTexture, vpInputDesc.Width, vpInputDesc.Height, encodeSdrGamma);
-            if (!converted) {
-                DLL_Log("[VP] Failed to convert FP16 input to RGB10A2 before VP");
+        wantsFp16VpStagingPath =
+            !allowDirectInputView && vpInputDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT && ShouldUse10BitOutput();
+        if (wantsFp16VpStagingPath && fp16VpInputStrategy == Fp16VpInputStrategy::kUseRgb10Compat) {
+            if (!prepareFp16CompatInput(S_OK)) {
                 if (needReleaseConverted && vpInputTexture != bgraTexture) {
                     vpInputTexture->Release();
                 }
                 return false;
-            }
-            if (needReleaseConverted && vpInputTexture != bgraTexture) {
-                vpInputTexture->Release();
-            }
-            vpInputTexture = converted;
-            needReleaseConverted = true;
-            allowVpInputView = true;
-            vpInputIsLinear = !encodeSdrGamma;
-            vpInputTexture->GetDesc(&vpInputDesc);
-            if (!vpFp16CompatLogged) {
-                DLL_Log("[VP] Converted FP16 input to RGB10A2 for VP compatibility (%s)",
-                        encodeSdrGamma ? "SDR gamma encoded" : "linear passthrough");
-                vpFp16CompatLogged = true;
             }
         }
         bool vpCompatible =
@@ -3972,19 +3981,6 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
     }
 
     vpFirstCallLogged = true;
-
-    if (videoContext1) {
-        std::string configuredColorSpace = savedConfig.colorSpace;
-        if (configuredColorSpace == "auto" || configuredColorSpace.empty()) {
-            configuredColorSpace = currentIsHDR ? "bt2020" : "bt709";
-        }
-        const OutputRangeMode outputRange = GetEffectiveOutputRange(savedConfig.colorRange, currentIsHDR);
-        videoContext1->VideoProcessorSetStreamColorSpace1(
-            videoProcessor, 0, GetVideoProcessorInputColorSpace(vpInputDesc.Format, currentIsHDR, vpInputIsLinear));
-        videoContext1->VideoProcessorSetOutputColorSpace1(
-            videoProcessor,
-            GetVideoProcessorOutputColorSpace(ShouldUse10BitOutput(), currentIsHDR, configuredColorSpace, outputRange));
-    }
 
     // CRITICAL: CreateVideoProcessorInputView can throw SEH for incompatible formats,
     // and MinGW catch(...) CANNOT catch SEH exceptions (__fastfail).
@@ -4088,10 +4084,48 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
             hr = E_FAIL;
         }
         if (FAILED(hr)) {
-            DLL_Log("[VP] Failed to create input view from staging: HR=%x", hr);
-            return false;
+            if (wantsFp16VpStagingPath && vpInputDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT) {
+                const HRESULT stagingHr = hr;
+                if (!prepareFp16CompatInput(stagingHr)) {
+                    return false;
+                }
+                try {
+                    hr = videoDevice->CreateVideoProcessorInputView(vpInputTexture, videoProcessorEnum, &inputViewDesc,
+                                                                    &localInputView);
+                } catch (...) {
+                    hr = E_FAIL;
+                    DLL_Log(
+                        "[VP] CreateVideoProcessorInputView threw exception after FP16 compatibility conversion "
+                        "(fmt=%d)",
+                        vpInputDesc.Format);
+                }
+                if (FAILED(hr)) {
+                    DLL_Log("[VP] Failed to create RGB10A2 compatibility input view: HR=%x", hr);
+                    return false;
+                }
+                fp16VpInputStrategy = Fp16VpInputStrategy::kUseRgb10Compat;
+            } else {
+                DLL_Log("[VP] Failed to create input view from staging: HR=%x", hr);
+                return false;
+            }
+        } else if (wantsFp16VpStagingPath && fp16VpInputStrategy == Fp16VpInputStrategy::kUnknown) {
+            fp16VpInputStrategy = Fp16VpInputStrategy::kUseStaging;
+            DLL_Log("[VP] Using native FP16 staging input for 10-bit VP path");
         }
         // inputTexture = bgraStagingTexture;
+    }
+
+    if (videoContext1) {
+        std::string configuredColorSpace = savedConfig.colorSpace;
+        if (configuredColorSpace == "auto" || configuredColorSpace.empty()) {
+            configuredColorSpace = currentIsHDR ? "bt2020" : "bt709";
+        }
+        const OutputRangeMode outputRange = GetEffectiveOutputRange(savedConfig.colorRange, currentIsHDR);
+        videoContext1->VideoProcessorSetStreamColorSpace1(
+            videoProcessor, 0, GetVideoProcessorInputColorSpace(vpInputDesc.Format, currentIsHDR, vpInputIsLinear));
+        videoContext1->VideoProcessorSetOutputColorSpace1(
+            videoProcessor,
+            GetVideoProcessorOutputColorSpace(ShouldUse10BitOutput(), currentIsHDR, configuredColorSpace, outputRange));
     }
 
     // Setup streams array
@@ -4585,6 +4619,7 @@ void VideoEncoder::CleanupVideoProcessor() {
     vpDeviceCompareLogged = false;
     vpInputViewLogged = false;
     vpFp16CompatLogged = false;
+    fp16VpInputStrategy = Fp16VpInputStrategy::kUnknown;
 }
 
 // ============================================================================
