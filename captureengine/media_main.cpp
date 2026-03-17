@@ -10,6 +10,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 #include "../common/config.h"
 #include "../common/frame_queue.h"
 #include "../common/frame_timing.h"
@@ -259,8 +260,10 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
     g_WgcCap->SetDirectFrameCallback(QueueWgcFrame);
     g_WgcCap->ResetStats();
     g_IsEncoderBottlenecked.store(false, std::memory_order_relaxed);
-    const uint32_t wgcTargetFps = (config.video.fps > 0) ? static_cast<uint32_t>(config.video.fps) : 0u;
-    g_WgcCap->SetTargetFps(wgcTargetFps);
+    // Capture WGC at source cadence and let the fixed-rate encoder thread choose
+    // the best frame each output tick. Pre-throttling WGC to the output FPS
+    // throws away temporal information that helps smooth 140 -> 120 style cases.
+    g_WgcCap->SetTargetFps(0);
     if (!g_WgcCap->StartCapture()) {
         g_WgcCap->SetDirectFrameCallback(nullptr);
         return false;
@@ -448,7 +451,7 @@ static void ApplyMediaProcessPriority(const AppConfig& config) {
 
 void InjectCaptureThreadFunc(const AppConfig& config) {
     LogInfo(
-        "[Inject Thread] Started (High Priority Polling with Source-Side "
+        "[Inject Thread] Started (High Priority Polling with adaptive source-side "
         "Pacing)");
     g_InjectCaptureRunning = true;
 
@@ -528,15 +531,23 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                 // it. This acts as a smart decimator for 144Hz/200Hz inputs.
                 bool shouldProcess = false;
 
-                if (nextPushTime == 0) {
+                const uint32_t queueDepth = static_cast<uint32_t>(g_FrameQueue.Size());
+                const bool useSourceSidePacing =
+                    g_IsEncoderBottlenecked.load(std::memory_order_relaxed) || queueDepth >= 4;
+
+                if (!useSourceSidePacing) {
+                    // When the queue is shallow and the encoder is healthy, keep all source
+                    // cadence information and let the fixed-rate encoder thread choose the
+                    // freshest frame each output tick.
+                    shouldProcess = true;
+                    nextPushTime = 0;
+                } else if (nextPushTime == 0) {
                     // First frame or resync
                     nextPushTime = slot.timestamp;
                     shouldProcess = true;
                 } else {
-                    // IMPROVED PACING: Use a more lenient jitter window to reduce drops
-                    // Old: half-interval was too aggressive for high FPS games (144Hz+,
-                    // 240Hz+) New: allow up to 80% of interval before dropping, with
-                    // adaptive resync
+                    // Under real backlog/bottleneck pressure, re-enable source-side pacing
+                    // to stop the queue from running away.
                     int64_t jitterWindow = (targetIntervalTicks * 8) / 10;  // 80% tolerance
 
                     if (slot.timestamp >= nextPushTime - jitterWindow) {
@@ -782,7 +793,7 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             }
 
             LogInfo(
-                "[WGC Perf] FPS: %u | Queue: %u | Dropped: %u | Skipped: %u | Dup: %u | Late: %u | "
+                "[WGC Perf] CaptureFPS: %u | Queue: %u | Dropped: %u | Skipped: %u | Dup: %u | Late: %u | "
                 "Copy: %lldus | Encode: %lldus | Fence: %lldus | Mux: %uKB | Overload: 0x%X",
                 framesThisSecond, (uint32_t)g_FrameQueue.Size(), totalDropped, skipped, dupDelta, lateDelta, copyUs,
                 encodeUs, fenceUs, (muxQueueBytes + 1023u) / 1024u, overloadFlags);
@@ -817,8 +828,18 @@ void EncoderThreadFunc(const AppConfig& config) {
 
     double smoothedEncodeMs = 0.0;
     double frameIntervalMs = 1000.0 / config.video.fps;
+    auto ReleaseQueuedFrameTexture = [](QueuedFrame& queuedFrame) {
+        if (!queuedFrame.isInjectMode && queuedFrame.texture) {
+            queuedFrame.texture->Release();
+            queuedFrame.texture = nullptr;
+        }
+    };
+    std::vector<QueuedFrame> drainedScreenGrabFrames;
+    drainedScreenGrabFrames.reserve(8);
+    QueuedFrame bufferedScreenGrabFrame;
+    bool hasBufferedScreenGrabFrame = false;
 
-    while (g_EncoderRunning || g_FrameQueue.Size() > 0) {
+    while (g_EncoderRunning || g_FrameQueue.Size() > 0 || hasBufferedScreenGrabFrame) {
         static DWORD lastThreadLog = 0;
         if (GetTickCount() - lastThreadLog > 1000) {
             LogInfo("[EncoderThread] Alive. QueueSize=%u Bottleneck=%d", (unsigned int)g_FrameQueue.Size(),
@@ -867,18 +888,63 @@ void EncoderThreadFunc(const AppConfig& config) {
         bool popped = false;
 
         if (IsActiveScreenGrab()) {
-            // WGC/screengrab: drain queue and take newest frame.
-            // Reduces latency from ~56ms (queue depth 8) to 0-7ms
-            // while producing identical content selection (same Bresenham pattern).
-            QueuedFrame temp;
-            while (g_FrameQueue.Pop(temp, 0)) {
-                if (popped && !frame.isInjectMode && frame.texture) {
-                    frame.texture->Release();
+            if (!config.video.useVFR) {
+                // Keep a tiny one-frame reserve for CFR WGC/screengrab capture. WGC
+                // delivery often arrives in short bursts even when the average source
+                // cadence is above the target FPS, and always taking the newest frame
+                // turns those bursts into avoidable duplicate output ticks. Buffering
+                // one future frame smooths that jitter without reintroducing a deep queue.
+                drainedScreenGrabFrames.clear();
+                QueuedFrame temp;
+                while (g_FrameQueue.Pop(temp, 0)) {
+                    drainedScreenGrabFrames.push_back(std::move(temp));
                 }
-                frame = std::move(temp);
-                popped = true;
+
+                if (hasBufferedScreenGrabFrame) {
+                    frame = std::move(bufferedScreenGrabFrame);
+                    hasBufferedScreenGrabFrame = false;
+                    popped = true;
+                }
+
+                if (!drainedScreenGrabFrames.empty()) {
+                    const size_t newestIndex = drainedScreenGrabFrames.size() - 1;
+                    if (popped) {
+                        for (size_t i = 0; i < newestIndex; ++i) {
+                            ReleaseQueuedFrameTexture(drainedScreenGrabFrames[i]);
+                        }
+                        bufferedScreenGrabFrame = std::move(drainedScreenGrabFrames[newestIndex]);
+                        hasBufferedScreenGrabFrame = true;
+                    } else if (drainedScreenGrabFrames.size() >= 2) {
+                        const size_t processIndex = newestIndex - 1;
+                        for (size_t i = 0; i < processIndex; ++i) {
+                            ReleaseQueuedFrameTexture(drainedScreenGrabFrames[i]);
+                        }
+                        frame = std::move(drainedScreenGrabFrames[processIndex]);
+                        bufferedScreenGrabFrame = std::move(drainedScreenGrabFrames[newestIndex]);
+                        hasBufferedScreenGrabFrame = true;
+                        popped = true;
+                    } else {
+                        frame = std::move(drainedScreenGrabFrames[newestIndex]);
+                        popped = true;
+                    }
+                }
+            } else {
+                // VFR: keep the existing lowest-latency newest-frame sampling.
+                QueuedFrame temp;
+                while (g_FrameQueue.Pop(temp, 0)) {
+                    if (popped && !frame.isInjectMode && frame.texture) {
+                        frame.texture->Release();
+                    }
+                    frame = std::move(temp);
+                    popped = true;
+                }
             }
         } else {
+            if (hasBufferedScreenGrabFrame) {
+                ReleaseQueuedFrameTexture(bufferedScreenGrabFrame);
+                bufferedScreenGrabFrame = QueuedFrame{};
+                hasBufferedScreenGrabFrame = false;
+            }
             // Inject: drain the queue and use the newest frame for this output tick.
             // DX9/DXVK sources can run slightly ahead of the encoder cadence, leaving
             // a small steady backlog. Sampling the newest queued frame reduces stale
@@ -919,7 +985,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 // After move, frame.texture is nullptr - use g_LastFrame for processing
                 frameToProcess = &g_LastFrame;
             }
-        } else if (g_HasLastFrame && g_EncoderRunning) {
+        } else if (g_HasLastFrame && g_EncoderRunning && g_Recording) {
             // CFR FIX: Re-encode last frame when no new frame is available.
             // This applies to both screengrab and inject modes so output cadence
             // remains stable when source FPS dips below target.
@@ -992,6 +1058,10 @@ void EncoderThreadFunc(const AppConfig& config) {
 
     if (hTimer) {
         CloseHandle(hTimer);
+    }
+
+    if (hasBufferedScreenGrabFrame) {
+        ReleaseQueuedFrameTexture(bufferedScreenGrabFrame);
     }
 
     LogInfo("[EncoderThread] Stopped");
@@ -1068,9 +1138,14 @@ void StartRecording(const AppConfig& config) {
             SetActiveScreenGrab(false);
             return;
         }
-        LogInfo("[Media] WGC capture with direct callback started");
+        LogInfo("[Media] Active recording path: WGC direct callback (source cadence -> %d fps output)",
+                config.video.fps);
     } else if (!useScreenGrab) {
-        LogInfo("[Media] Starting InjectCaptureThread for Shared Memory Capture");
+        if (config.captureMethod == "auto" && g_WgcCap) {
+            LogInfo("[Media] Active recording path: inject shared-memory capture (WGC auto-fallback armed)");
+        } else {
+            LogInfo("[Media] Active recording path: inject shared-memory capture");
+        }
         g_InjectCaptureShutdown = false;
         g_InjectCaptureThread = std::thread(InjectCaptureThreadFunc, std::ref(config));
         SetThreadPriority(reinterpret_cast<HANDLE>(g_InjectCaptureThread.native_handle()),
@@ -1278,7 +1353,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                 if (g_WgcCap->Init(d3dDevice)) {
                     // Connect encoder bottleneck flag to WGC for throttle
                     g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
-                    LogInfo("[Media] WGC capture initialized%s",
+                    LogInfo("[Media] WGC support initialized%s",
                             IsPreferredScreenGrab() ? "" : " (standby for auto fallback)");
                 } else {
                     if (IsPreferredScreenGrab()) {
@@ -1629,7 +1704,13 @@ int MediaProcessMain(const AppConfig& initialConfig) {
 
                 const bool forceWGC = MatchesProcessEntries(config.overlayWhitelist, procName);
                 if (forceWGC) {
-                    LogInfo("[Media] Overlay Whitelist Match! Forcing WGC for %s", procName.c_str());
+                    LogInfo("[Media] Overlay whitelist matched %s; preferring WGC when the target allows it",
+                            procName.c_str());
+                    if (g_Recording && !IsActiveScreenGrab()) {
+                        LogInfo(
+                            "[Media] Current recording stays on inject; WGC remains armed "
+                            "only as a startup fallback");
+                    }
                 }
 
                 if (!g_Recording && forceWGC) {
@@ -1750,7 +1831,9 @@ int MediaProcessMain(const AppConfig& initialConfig) {
 
             if (!receivedFirstFrame && config.captureMethod == "auto" && g_WgcCap) {
                 DWORD elapsed = GetTickCount() - injectModeStartTime;
-                if (elapsed > 200) {
+                const uint32_t activeSourcePid = g_pSharedMem ? g_pSharedMem->GetSourcePid() : 0;
+                const DWORD fallbackDelayMs = (activeSourcePid == 0) ? 100 : 200;
+                if (elapsed > fallbackDelayMs) {
                     LogInfo(
                         "[Media] No frames from inject mode after %lums - falling "
                         "back to WGC",
@@ -1759,7 +1842,9 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                     StopInjectCapturePipeline();
                     if (StartWgcRecordingCapture(config)) {
                         SetActiveScreenGrab(true);
-                        LogInfo("[Media] Switched to WGC capture mode with direct callback");
+                        LogInfo(
+                            "[Media] Active recording path switched to WGC direct callback "
+                            "(auto fallback from inject)");
                     } else {
                         LogWarn("[Media] WGC fallback failed; inject monitoring remains unavailable");
                     }
