@@ -1,3 +1,25 @@
+# MIT License
+#
+# Copyright (c) 2026 aufkrawall
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 import os
 import sys
 import glob
@@ -1253,6 +1275,22 @@ class FFmpegBuilder:
         if os.path.exists(build_dir):
             shutil.rmtree(build_dir, onerror=self.rmtree_onerror)
         shutil.copytree(src_dir, build_dir)
+
+        # Apply custom patches (LGPL 2.1) from patches/ffmpeg/
+        patches_dir = os.path.join(PROJECT_ROOT, "patches", "ffmpeg")
+        if os.path.isdir(patches_dir):
+            git_exe = self.get_tool_path("git")
+            patch_files = sorted(f for f in os.listdir(patches_dir) if f.endswith(".patch"))
+            for pf in patch_files:
+                patch_path = os.path.join(patches_dir, pf)
+                log(f"[FFmpeg] Applying patch: {pf}")
+                self.run(
+                    [git_exe, "apply", "--verbose", patch_path],
+                    cwd=build_dir,
+                    env=self.get_msys_env(),
+                )
+            if patch_files:
+                log(f"[FFmpeg] Applied {len(patch_files)} patch(es)")
 
         env = self.get_msys_env()
         make_exe = self.get_tool_path("make")

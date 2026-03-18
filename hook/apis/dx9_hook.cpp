@@ -20,6 +20,7 @@
 #include <vector>
 #include "../../common/frame_timing.h"
 #include "../common/capture_base.h"
+#include "../common/capture_pacing.h"
 #include "../common/fps_limiter.h"
 #include "../common/freeze_watchdog.h"
 #include "../common/input_manager.h"
@@ -3484,24 +3485,12 @@ public:
         // Render thread only does StretchRect (async GPU, ~0us overhead).
         // Heavy GetDC+BitBlt runs on dedicated capture thread off render path.
         if (useGDIInterop) {
-            // Rate-limit: skip frames when game runs faster than capture target
+            // Cadence gating: skip frames when game runs faster than capture target
             if (g_IPC && g_IPC->GetSharedMem()) {
                 if (g_IPC->GetSharedMem()->throttleCapture.load(std::memory_order_acquire))
                     return;
-                static int64_t gdiQpcFreq = 0;
-                if (gdiQpcFreq == 0) {
-                    LARGE_INTEGER f;
-                    QueryPerformanceFrequency(&f);
-                    gdiQpcFreq = f.QuadPart;
-                }
-                const int captureFps = g_IPC->GetSharedMem()->fpsLimiter.GetCaptureFps();
-                if (captureFps > 0 && gdiLastCaptureQpc != 0) {
-                    LARGE_INTEGER now;
-                    QueryPerformanceCounter(&now);
-                    int64_t elapsed = ((now.QuadPart - gdiLastCaptureQpc) * 1000000) / gdiQpcFreq;
-                    if (elapsed < 1000000LL / (int64_t)captureFps)
-                        return;  // Too soon, skip
-                }
+                if (ShouldSkipCaptureForTargetCadence(g_IPC->GetSharedMem(), "DX9"))
+                    return;
             }
 
             // Check that write buffer isn't still being read by capture thread
@@ -4401,7 +4390,10 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
                         }
                         g_captureDeferredToPresentEndScene = true;
                     } else {
-                        g_DX9Capture.CaptureFrame(device, backBuffer);
+                        SharedMemoryLayout* shm = ipc ? ipc->GetSharedMem() : nullptr;
+                        if (!ShouldSkipCaptureForTargetCadence(shm, "DX9")) {
+                            g_DX9Capture.CaptureFrame(device, backBuffer);
+                        }
                     }
                 }
             }
@@ -4670,7 +4662,10 @@ static HRESULT STDMETHODCALLTYPE DetourEndScene(IDirect3DDevice9* device) {
                     HookLogImportant("DX9: Capturing after nested EndScene overlay draw");
                     deferredCaptureCommitLogCount++;
                 }
-                g_DX9Capture.CaptureFrame(device, captureBackBuffer);
+                SharedMemoryLayout* capShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+                if (!ShouldSkipCaptureForTargetCadence(capShm, "DX9")) {
+                    g_DX9Capture.CaptureFrame(device, captureBackBuffer);
+                }
                 captureBackBuffer->Release();
             }
             g_captureDeferredToPresentEndScene = false;

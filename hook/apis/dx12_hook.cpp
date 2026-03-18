@@ -22,6 +22,7 @@
 #include "../../common/raii_helpers.h"
 #include "../capture/shared_capture.h"
 #include "../common/capture_base.h"
+#include "../common/capture_pacing.h"
 #include "../common/custom_overlay_dx12.h"
 #include "../common/fg_detection.h"
 #include "../common/hook_common.h"
@@ -1926,46 +1927,8 @@ static bool ShouldSuppressLikelyDuplicateTopLevelPresent(IDXGISwapChain3* sc3, U
 }
 
 static bool ShouldSkipCaptureForTargetCadence() {
-    if (!g_IPC) {
-        return false;
-    }
-
-    SharedMemoryLayout* shm = g_IPC->GetSharedMem();
-    if (!shm) {
-        return false;
-    }
-
-    if (!shm->runtimeState.captureRequested.load(std::memory_order_acquire)) {
-        return false;
-    }
-
-    const int captureFps = shm->fpsLimiter.GetCaptureFps();
-    if (captureFps <= 0) {
-        return false;
-    }
-
-    const int64_t targetIntervalUs = 1000000LL / static_cast<int64_t>(captureFps);
-    const int64_t nowUs = PerfLogger::GetQpcUs();
-
-    static std::atomic<int64_t> s_lastAcceptedCaptureUs{0};
-    static std::atomic<uint64_t> s_pacedCaptureSkipCount{0};
-
-    int64_t lastAcceptedCaptureUs = s_lastAcceptedCaptureUs.load(std::memory_order_acquire);
-    if (lastAcceptedCaptureUs != 0) {
-        int64_t sinceLastUs = nowUs - lastAcceptedCaptureUs;
-        if (sinceLastUs > 0 && sinceLastUs < targetIntervalUs) {
-            uint64_t skipCount = s_pacedCaptureSkipCount.fetch_add(1, std::memory_order_relaxed) + 1;
-            if (skipCount <= 10 || (skipCount % 1000) == 0) {
-                HookLogImportant("DX12: Pacing capture skip #%llu (since=%lldus interval=%lldus captureFps=%d)",
-                                 static_cast<unsigned long long>(skipCount), static_cast<long long>(sinceLastUs),
-                                 static_cast<long long>(targetIntervalUs), captureFps);
-            }
-            return true;
-        }
-    }
-
-    s_lastAcceptedCaptureUs.store(nowUs, std::memory_order_release);
-    return false;
+    SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+    return ShouldSkipCaptureForTargetCadence(shm, "DX12");
 }
 
 // C Linkage Exports for cross-module calls (e.g. from C clients or

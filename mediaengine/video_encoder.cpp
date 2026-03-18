@@ -1816,20 +1816,25 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
         }
     }
 
-    // CRITICAL: For video packets, explicitly set duration after rescaling
-    // The MKV muxer or interleaved write may compute wrong duration for first
-    // packet. Duration should be calculated from actual configured FPS.
+    // CRITICAL: For video packets, explicitly set duration after rescaling.
+    // In CFR mode, the Bresenham PTS distribution (e.g. 120fps at 1/1000 time_base
+    // produces gaps of 8,8,9,8,8,9...) means a fixed duration of 8 leaves a 1ms
+    // gap for every 9ms step.  Compute each frame's exact duration from the
+    // sequential PTS difference so it always matches the actual PTS spacing.
     if (pkt->stream_index == stream->index) {
-        // Set duration to exactly 1 frame in stream time_base
-        // For video with stream time_base 1/1000: duration = 1000/fps
         int fps = codecCtx->framerate.num;
-        if (fps > 0) {
-            // stream time_base is typically 1/1000, so duration = 1000/fps
-            pkt->duration = st->time_base.den / fps;
+        if (fps <= 0)
+            fps = 60;
+        if (!savedConfig.useVFR) {
+            // CFR: derive per-frame duration from the Bresenham PTS sequence
+            int64_t frameNum = videoPacketCount - 1;
+            int64_t nextPts = av_rescale_q(frameNum + 1, codecCtx->time_base, st->time_base);
+            pkt->duration = nextPts - pkt->pts;
         } else {
-            // Fallback to 60fps if framerate not set
-            pkt->duration = st->time_base.den / 60;
+            pkt->duration = av_rescale(1, st->time_base.den, fps);
         }
+        if (pkt->duration <= 0)
+            pkt->duration = 1;
     }
 
     // Track authoritative encoded video duration from packet timeline.
@@ -2037,6 +2042,17 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         // or show correct duration without reading the whole file first.
         if (fmtCtx->priv_data) {
             av_opt_set(fmtCtx->priv_data, "reserve_index_space", "200000", 0);  // 200KB
+
+            // Try to set microsecond timestamp precision for MKV.  Standard FFmpeg
+            // builds may not expose this option yet, so we log and continue if it
+            // is unavailable rather than treating it as an error.
+            int tsRet = av_opt_set(fmtCtx->priv_data, "timestamp_precision", "1000", 0);
+            if (tsRet < 0) {
+                DLL_Log(
+                    "[VideoEncoder] MKV timestamp_precision option not available (ret=%d), "
+                    "using default 1ms precision",
+                    tsRet);
+            }
         }
 
         int ret = avformat_write_header(fmtCtx, nullptr);
@@ -2071,13 +2087,15 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     // We just encode every frame we receive using frame counter for CFR output
     inputFrameCount++;
 
-    // Log frame stats periodically (every 120 frames = ~1 sec at 120fps)
+    const int fpsLogIntervalFrames = (savedConfig.fps > 0) ? savedConfig.fps : 60;
+
+    // Log frame stats periodically (about once per second at the configured FPS)
     // Detect new recording start (startPts is -1) and reset counters
     if (startPts < 0) {
         needsCounterReset = true;  // Mark that we need to reset on first frame
     }
 
-    if (inputFrameCount - lastLogFrameCount >= kFpsLogIntervalFrames) {
+    if (inputFrameCount - lastLogFrameCount >= fpsLogIntervalFrames) {
         if (startPts >= 0 && timestamp > startPts) {
             // Inject-mode timestamps are in microseconds.
             double elapsedSec = (double)(timestamp - startPts) / 1000000.0;
@@ -2655,19 +2673,14 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
 
     int64_t targetPts = 0;
     if (savedConfig.useVFR && startPts >= 0) {
-        // VFR: PTS in microseconds, matches time_base 1/1000000
+        // VFR: PTS in microseconds, matches time_base 1/1000000.
         targetPts = timestamp - startPts;
     } else {
-        // CFR: derive PTS from real elapsed time to avoid playback speed drift
-        int fps = (codecCtx && codecCtx->framerate.num > 0) ? codecCtx->framerate.num : savedConfig.fps;
-        if (fps <= 0) {
-            fps = 60;
-        }
-        int64_t elapsedUs = timestamp - startPts;
-        if (elapsedUs < 0) {
-            elapsedUs = 0;
-        }
-        targetPts = av_rescale(elapsedUs, fps, 1000000);
+        // CFR: the capture thread already emits frames on the exact output cadence
+        // and explicitly replays the previous frame when the source falls behind.
+        // Encode every received frame as the next sequential CFR tick so timing
+        // jitter in this process does not trigger a second round of skip/dup logic.
+        targetPts = (lastAssignedVideoPts >= 0) ? (lastAssignedVideoPts + 1) : 0;
     }
 
     // 5. Encode (Direct D3D11 Frame) - with proper packet draining
@@ -2734,34 +2747,6 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
 
     bool success = true;
 
-    if (!savedConfig.useVFR) {
-        if (lastAssignedVideoPts >= 0) {
-            if (targetPts <= lastAssignedVideoPts) {
-                // Frame arrived too early (game FPS > target FPS). Drop it.
-                skippedFrameCount++;
-                av_packet_free(&pkt);
-                av_frame_free(&d3d11Frame);
-                return true;
-            }
-
-            // If targetPts > lastAssignedVideoPts + 1, we need to duplicate frames
-            while (targetPts > lastAssignedVideoPts + 1) {
-                AVFrame* dupFrame = av_frame_clone(d3d11Frame);
-                if (dupFrame) {
-                    dupFrame->pts = lastAssignedVideoPts + 1;
-                    lastAssignedVideoPts = dupFrame->pts;
-                    duplicatedFrameCount++;
-                    if (!sendFrame(dupFrame)) {
-                        success = false;
-                    }
-                    av_frame_free(&dupFrame);
-                } else {
-                    break;
-                }
-            }
-        }
-    }
-
     d3d11Frame->pts = targetPts;
     lastAssignedVideoPts = d3d11Frame->pts;
 
@@ -2817,9 +2802,8 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
             stats.ptsMs, stats.packetsProduced, features.c_str());
     }
 
-    // Periodic performance summary (every 120 frames ~1 sec at
-    // 120fps)
-    if (encodeFrameCounter % 120 == 0) {
+    // Periodic performance summary (about once per second at the configured FPS)
+    if (encodeFrameCounter % fpsLogIntervalFrames == 0) {
         double avgFence = g_totalFenceWait / g_framesEncoded;
         double avgConvert = g_totalColorConvert / g_framesEncoded;
         double avgEncode = g_totalEncode / g_framesEncoded;
@@ -2936,6 +2920,13 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         }
         if (fmtCtx->priv_data) {
             av_opt_set(fmtCtx->priv_data, "reserve_index_space", "200000", 0);
+            int tsRet = av_opt_set(fmtCtx->priv_data, "timestamp_precision", "1000", 0);
+            if (tsRet < 0) {
+                DLL_Log(
+                    "[VideoEncoder] MKV timestamp_precision option not available (ret=%d), "
+                    "using default 1ms precision",
+                    tsRet);
+            }
         }
         if (avformat_write_header(fmtCtx, nullptr) < 0) {
             DLL_Log("Failed to write header");
@@ -2972,8 +2963,10 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     }
     g_lastFramePts = pts;
 
-    // Log frame stats periodically (every 120 frames = ~1 sec at 120fps)
-    if (encodeFrameCounter - lastLogFrameCount >= kFpsLogIntervalFrames) {
+    const int fpsLogIntervalFrames = (savedConfig.fps > 0) ? savedConfig.fps : 60;
+
+    // Log frame stats periodically (about once per second at the configured FPS)
+    if (encodeFrameCounter - lastLogFrameCount >= fpsLogIntervalFrames) {
         if (startPts >= 0 && pts > startPts) {
             double elapsedSec = static_cast<double>(pts - startPts) / 1000000.0;
             double outputFps = (elapsedSec > 0.001) ? ((double)encodeFrameCounter / elapsedSec) : 0.0;
@@ -3065,12 +3058,11 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         // VFR: PTS in microseconds, matches time_base 1/1000000
         targetPts = elapsedUs;
     } else {
-        // CFR: derive frame index from elapsed time
-        int fps = 60;  // Default
-        if (codecCtx && codecCtx->framerate.num > 0) {
-            fps = codecCtx->framerate.num;
-        }
-        targetPts = av_rescale(elapsedUs, fps, 1000000);
+        // CFR: the capture thread already drives a fixed-rate output schedule and
+        // explicitly repeats the last frame when no fresh source frame arrives.
+        // Stamp each received frame onto the next sequential CFR slot instead of
+        // resampling elapsed wall time again here.
+        targetPts = (lastAssignedVideoPts >= 0) ? (lastAssignedVideoPts + 1) : 0;
     }
 
     // Encode
@@ -3136,34 +3128,6 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
 
     bool success = true;
 
-    if (!savedConfig.useVFR) {
-        if (lastAssignedVideoPts >= 0) {
-            if (targetPts <= lastAssignedVideoPts) {
-                // Frame arrived too early (game FPS > target FPS). Drop it.
-                skippedFrameCount++;
-                av_packet_free(&pkt);
-                av_frame_free(&d3d11Frame);
-                return true;
-            }
-
-            // If targetPts > lastAssignedVideoPts + 1, we need to duplicate frames
-            while (targetPts > lastAssignedVideoPts + 1) {
-                AVFrame* dupFrame = av_frame_clone(d3d11Frame);
-                if (dupFrame) {
-                    dupFrame->pts = lastAssignedVideoPts + 1;
-                    lastAssignedVideoPts = dupFrame->pts;
-                    duplicatedFrameCount++;
-                    if (!sendFrame(dupFrame)) {
-                        success = false;
-                    }
-                    av_frame_free(&dupFrame);
-                } else {
-                    break;
-                }
-            }
-        }
-    }
-
     d3d11Frame->pts = targetPts;
     lastAssignedVideoPts = d3d11Frame->pts;
 
@@ -3212,8 +3176,8 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
             encodeFrameCounter, totalMs, convertMs, encodeMs, packetCount, features.c_str());
     }
 
-    // Log periodic stats
-    if (encodeFrameCounter % 120 == 0) {
+    // Log periodic stats (about once per second at the configured FPS)
+    if (encodeFrameCounter % fpsLogIntervalFrames == 0) {
         DLL_Log(
             "[Framegrab PERF] Frame %d: total=%.2fms convert=%.2f "
             "encode=%.2f packets=%d skipped=%lld duplicated=%lld",
@@ -5688,8 +5652,16 @@ void VideoEncoder::AsyncWriteLoop() {
                         pkt->dts = pkt->pts;
                     }
                     if (pkt->duration <= 0) {
-                        int64_t duration = av_rescale_q(1, codecCtx->time_base, stream->time_base);
-                        pkt->duration = duration > 0 ? duration : 1;
+                        int fps = codecCtx->framerate.num;
+                        if (fps > 0) {
+                            pkt->duration = av_rescale(1, stream->time_base.den, fps);
+                        }
+                        if (pkt->duration <= 0) {
+                            pkt->duration = av_rescale_q(1, codecCtx->time_base, stream->time_base);
+                        }
+                        if (pkt->duration <= 0) {
+                            pkt->duration = 1;
+                        }
                     }
 
                     if (pkt->pts != AV_NOPTS_VALUE) {

@@ -11,6 +11,7 @@
 #include "../../common/frame_timing.h"
 #include "../../common/raii_helpers.h"
 #include "../common/capture_base.h"
+#include "../common/capture_pacing.h"
 #include "../common/deferred_release.h"
 #include "../common/dll_utils.h"
 #include "../common/fg_detection.h"
@@ -1802,7 +1803,10 @@ void DX11_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
 
     // CAPTURE: Copy frame after overlay is drawn (overlay now visible in recording)
     if (g_IPC && g_IPC->IsRecording()) {
-        g_DX11Capture.CaptureFrame(pSwapChain);
+        SharedMemoryLayout* shm = g_IPC->GetSharedMem();
+        if (!ShouldSkipCaptureForTargetCadence(shm, "DX11")) {
+            g_DX11Capture.CaptureFrame(pSwapChain);
+        }
     }
 }
 
@@ -2483,7 +2487,10 @@ void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame) {
 
     // Capture frame AFTER overlay is drawn
     if (g_IPC && g_IPC->IsRecording()) {
-        g_DX11Capture.CaptureFrame(pSwapChain);
+        SharedMemoryLayout* shm = g_IPC->GetSharedMem();
+        if (!ShouldSkipCaptureForTargetCadence(shm, "DX11")) {
+            g_DX11Capture.CaptureFrame(pSwapChain);
+        }
     }
 }
 

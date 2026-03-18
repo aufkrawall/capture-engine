@@ -61,6 +61,7 @@ static std::atomic<bool> g_InjectDeliveredFirstFrame{false};
 static std::atomic<bool> g_RejectInjectFrames{false};
 static std::atomic<bool> g_AutoWgcFallbackArmed{false};
 static std::atomic<uint32_t> g_InjectBufferedTrimmedFrames{0};
+static std::atomic<uint32_t> g_InjectCadenceDroppedFrames{0};
 
 // Forward declaration
 void InjectCaptureThreadFunc(const AppConfig& config);
@@ -339,7 +340,7 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
 
     g_WgcCaptureShutdown = false;
     g_WgcCaptureThread = std::thread(WgcCaptureThreadFunc, std::ref(config));
-    SetThreadPriority(reinterpret_cast<HANDLE>(g_WgcCaptureThread.native_handle()), THREAD_PRIORITY_ABOVE_NORMAL);
+    SetThreadPriority(reinterpret_cast<HANDLE>(g_WgcCaptureThread.native_handle()), THREAD_PRIORITY_HIGHEST);
     return true;
 }
 
@@ -548,6 +549,7 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
     uint32_t lastDuplicateCount = 0;
     uint32_t lastLateCount = 0;
     uint32_t lastTrimmedCount = g_InjectBufferedTrimmedFrames.load(std::memory_order_relaxed);
+    uint32_t lastCadenceDroppedCount = g_InjectCadenceDroppedFrames.load(std::memory_order_relaxed);
 
     while (!g_InjectCaptureShutdown && g_Recording) {
         // Create encoder textures as soon as resolution is available (before frames arrive)
@@ -596,8 +598,9 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                 std::atomic_thread_fence(std::memory_order_acquire);
 
                 // PACING CHECK:
-                // If this frame is too early relative to our target 120Hz grid, drop
-                // it. This acts as a smart decimator for 144Hz/200Hz inputs.
+                // If this frame is too early relative to the configured output grid,
+                // drop it. This acts as a smart decimator for inputs running above the
+                // requested capture FPS.
                 bool shouldProcess = false;
 
                 const uint32_t queueDepth = static_cast<uint32_t>(g_FrameQueue.Size());
@@ -609,7 +612,7 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                 if (!useSourceSidePacing) {
                     // When the queue is shallow and the encoder is healthy, keep all source
                     // cadence information and let the fixed-rate encoder thread choose the
-                    // freshest frame each output tick.
+                    // best source frame for each output tick.
                     shouldProcess = true;
                     nextPushTime = 0;
                 } else if (nextPushTime == 0) {
@@ -777,6 +780,7 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
             uint32_t dupDelta = 0;
             uint32_t lateDelta = 0;
             uint32_t trimDelta = 0;
+            uint32_t cadenceDropDelta = 0;
             uint32_t overloadFlags = 0;
             uint32_t muxQueueBytes = 0;
             uint32_t encoderQueueDepth = static_cast<uint32_t>(g_FrameQueue.Size());
@@ -784,28 +788,35 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                 uint32_t currentDup = g_pSharedMem->runtimeState.duplicateFrames.load(std::memory_order_relaxed);
                 uint32_t currentLate = g_pSharedMem->runtimeState.lateFrames.load(std::memory_order_relaxed);
                 uint32_t currentTrimmed = g_InjectBufferedTrimmedFrames.load(std::memory_order_relaxed);
+                uint32_t currentCadenceDropped = g_InjectCadenceDroppedFrames.load(std::memory_order_relaxed);
                 dupDelta = currentDup - lastDuplicateCount;
                 lateDelta = currentLate - lastLateCount;
                 trimDelta = currentTrimmed - lastTrimmedCount;
+                cadenceDropDelta = currentCadenceDropped - lastCadenceDroppedCount;
                 lastDuplicateCount = currentDup;
                 lastLateCount = currentLate;
                 lastTrimmedCount = currentTrimmed;
+                lastCadenceDroppedCount = currentCadenceDropped;
                 overloadFlags = g_pSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
                 muxQueueBytes = g_pSharedMem->runtimeState.muxQueueBytes.load(std::memory_order_relaxed);
                 encoderQueueDepth = g_pSharedMem->encoderQueueDepth.load(std::memory_order_relaxed);
             } else {
                 uint32_t currentTrimmed = g_InjectBufferedTrimmedFrames.load(std::memory_order_relaxed);
+                uint32_t currentCadenceDropped = g_InjectCadenceDroppedFrames.load(std::memory_order_relaxed);
                 trimDelta = currentTrimmed - lastTrimmedCount;
+                cadenceDropDelta = currentCadenceDropped - lastCadenceDroppedCount;
                 lastTrimmedCount = currentTrimmed;
+                lastCadenceDroppedCount = currentCadenceDropped;
             }
 
             uint32_t inputFrames = pushedCount + droppedCount + pacingDroppedCount;
             LogInfo(
                 "[Inject Perf] Input: %u | Queued: %u | DropFull: %u | DropPace: %u | HostQ: %u | EncQ: %u | Dup: %u "
-                "| Late: %u | Trim: %u | Encode: %lldus | Fence: %lldus | Mux: %uKB | Overload: 0x%X",
+                "| Late: %u | Trim: %u | SelDrop: %u | Encode: %lldus | Fence: %lldus | Mux: %uKB | Overload: 0x%X",
                 inputFrames, pushedCount, droppedCount, pacingDroppedCount, static_cast<uint32_t>(g_FrameQueue.Size()),
-                encoderQueueDepth, dupDelta, lateDelta, trimDelta, MediaEngine_GetLastFrameEncodeTimeUs(),
-                MediaEngine_GetLastFrameFenceWaitUs(), (muxQueueBytes + 1023u) / 1024u, overloadFlags);
+                encoderQueueDepth, dupDelta, lateDelta, trimDelta, cadenceDropDelta,
+                MediaEngine_GetLastFrameEncodeTimeUs(), MediaEngine_GetLastFrameFenceWaitUs(),
+                (muxQueueBytes + 1023u) / 1024u, overloadFlags);
             pushedCount = 0;
             droppedCount = 0;
             pacingDroppedCount = 0;
@@ -999,8 +1010,19 @@ void EncoderThreadFunc(const AppConfig& config) {
             return 0;
         }
 
-        size_t reserveFrames = 2;
+        // Start with minimal reserve (1 frame).  The GPU fence typically signals
+        // well before the encoder reads the frame, so holding two frames in reserve
+        // when the fence wait is near-zero only forces the encoder to duplicate
+        // frames it could have consumed — the primary cause of CFR micro-stutter
+        // when game FPS is close to or below the recording target.
+        //
+        // The reserve automatically scales up when the fence EMA shows the GPU
+        // copy genuinely needs more lead time.
         const double reserveFramesNeeded = smoothedInjectFenceMs / frameIntervalMs;
+        size_t reserveFrames = 1;
+        if (reserveFramesNeeded > 0.5) {
+            reserveFrames = 2;
+        }
         if (reserveFramesNeeded > 1.25) {
             reserveFrames = 3;
         }
@@ -1055,8 +1077,12 @@ void EncoderThreadFunc(const AppConfig& config) {
 
             nextSampleTime.QuadPart += targetIntervalTicks;
 
+            // Preserve every overdue output tick once recording is live so CFR stays
+            // phase-continuous and the file duration matches wall clock even if the
+            // thread wakes up late for a few intervals. Hidden warmup can still
+            // rebase freely because those frames are discarded before the file starts.
             QueryPerformanceCounter(&now);
-            if (now.QuadPart > nextSampleTime.QuadPart + targetIntervalTicks * 2) {
+            if (!recordingOutputLive && now.QuadPart > nextSampleTime.QuadPart + targetIntervalTicks * 2) {
                 nextSampleTime = now;
             }
         }
@@ -1164,7 +1190,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 }
 
                 const size_t injectReserveFrames = GetInjectReserveFrames();
-                constexpr size_t kMaxInjectBufferedHeadroomFrames = 6;
+                constexpr size_t kMaxInjectBufferedHeadroomFrames = 12;
                 const size_t maxBufferedInjectFrames = injectReserveFrames + kMaxInjectBufferedHeadroomFrames;
                 maxBufferedInjectDepthSinceLog = std::max(maxBufferedInjectDepthSinceLog, bufferedInjectFrames.size());
                 uint32_t trimmedInjectFrames = 0;
@@ -1409,6 +1435,7 @@ void StartRecording(const AppConfig& config) {
     g_RejectInjectFrames.store(false, std::memory_order_release);
     g_IsEncoderBottlenecked.store(false, std::memory_order_relaxed);
     g_InjectBufferedTrimmedFrames.store(0, std::memory_order_relaxed);
+    g_InjectCadenceDroppedFrames.store(0, std::memory_order_relaxed);
 
     if (g_pSharedMem) {
         g_pSharedMem->runtimeState.duplicateFrames = 0;
@@ -1433,7 +1460,7 @@ void StartRecording(const AppConfig& config) {
     g_EncoderRunning = true;
 
     g_EncoderThread = std::thread(EncoderThreadFunc, std::ref(config));
-    SetThreadPriority(reinterpret_cast<HANDLE>(g_EncoderThread.native_handle()), THREAD_PRIORITY_ABOVE_NORMAL);
+    SetThreadPriority(reinterpret_cast<HANDLE>(g_EncoderThread.native_handle()), THREAD_PRIORITY_HIGHEST);
 
     if (useScreenGrab && g_WgcCap) {
         if (!StartWgcRecordingCapture(config)) {
@@ -1457,8 +1484,7 @@ void StartRecording(const AppConfig& config) {
         }
         g_InjectCaptureShutdown = false;
         g_InjectCaptureThread = std::thread(InjectCaptureThreadFunc, std::ref(config));
-        SetThreadPriority(reinterpret_cast<HANDLE>(g_InjectCaptureThread.native_handle()),
-                          THREAD_PRIORITY_ABOVE_NORMAL);
+        SetThreadPriority(reinterpret_cast<HANDLE>(g_InjectCaptureThread.native_handle()), THREAD_PRIORITY_HIGHEST);
     }
 
     LogInfo("[Media] Recording warmup armed");

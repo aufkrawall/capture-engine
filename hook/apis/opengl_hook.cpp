@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include "../common/capture_base.h"
+#include "../common/capture_pacing.h"
 #include "../common/fps_limiter.h"
 #include "../common/frame_timing.h"
 #include "../common/input_manager.h"
@@ -647,22 +648,11 @@ public:
             }
         }
 
-        // Rate-limit captures to avoid overwriting textures before the encoder reads them.
-        // At very high FPS (1000+ fps), the ring buffer cycles faster than the encoder can
-        // process, causing races. Cap at ~500fps (2ms min interval) to leave ample time.
-        static int64_t capRateFreq = 0;
-        static int64_t lastCapTime = 0;
-        if (capRateFreq == 0) {
-            LARGE_INTEGER f;
-            QueryPerformanceFrequency(&f);
-            capRateFreq = f.QuadPart;
-        }
-        {
-            LARGE_INTEGER now;
-            QueryPerformanceCounter(&now);
-            if (lastCapTime && (now.QuadPart - lastCapTime) < (capRateFreq / 500))
-                return;
-            lastCapTime = now.QuadPart;
+        // Cadence gating: skip frames to maintain target FPS cadence.
+        // Replaces the old hard-coded 500fps cap with proper deadline-based pacing.
+        SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+        if (ShouldSkipCaptureForTargetCadence(shm, "OpenGL")) {
+            return;
         }
 
         int idx = writeIndex;

@@ -27,9 +27,7 @@ extern "C" {
 class CursorRenderer;  // Forward declaration
 
 // Logging interval constants (in frames)
-constexpr int kFpsLogIntervalFrames = 120;     // ~1 sec at 120fps
-constexpr int kCacheLogIntervalFrames = 500;   // Log cache hits periodically
-constexpr int kCursorLogIntervalFrames = 100;  // Cursor state logging
+constexpr int kCacheLogIntervalFrames = 500;  // Log cache hits periodically
 
 class VideoEncoder {
 public:
@@ -175,12 +173,14 @@ private:
     };
     std::vector<AudioStreamContext> audioContexts;
 
-    // Frame rate control for CFR output
+    // Frame counters for recording diagnostics. In CFR mode the capture thread now
+    // owns drop/repeat decisions, so encoder-side skip/dup counts should normally
+    // stay at zero.
     int64_t nextOutputTime_ms = -1;    // Next time we should output a frame (ms)
     int64_t outputFrameCount = 0;      // Number of frames output to encoder
     int64_t inputFrameCount = 0;       // Number of frames received from hook
-    int64_t skippedFrameCount = 0;     // Frames skipped (game fps > target)
-    int64_t duplicatedFrameCount = 0;  // Frames duplicated (game fps < target)
+    int64_t skippedFrameCount = 0;     // Encoder-side skips
+    int64_t duplicatedFrameCount = 0;  // Encoder-side duplicates
 
     // Cached shared textures (avoid reopening every frame)
     // Octo-buffered support (8 textures to prevent overwrite race)

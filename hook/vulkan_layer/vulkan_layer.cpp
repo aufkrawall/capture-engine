@@ -10,6 +10,7 @@
 #include <deque>
 #include <mutex>
 #include <vector>
+#include "../common/capture_pacing.h"
 #include "../common/fps_limiter.h"
 #include "../common/perf_logger.h"
 #include "layer_main.h"  // For LayerLog and g_LayerState
@@ -1025,6 +1026,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
             if (shm && shm->runtimeState.captureRequested.load(std::memory_order_acquire)) {
                 if (shm->throttleCapture.load(std::memory_order_acquire)) {
                     // Skip capture to let encoder catch up
+                } else if (ShouldSkipCaptureForTargetCadence(shm, "Vulkan")) {
+                    // Skip capture to maintain target FPS cadence
                 } else {
                     int64_t captureStartUs = PerfLogger::GetQpcUs();
                     VkSemaphore captureDone = GetCaptureSemaphore(sd->device, idx);
