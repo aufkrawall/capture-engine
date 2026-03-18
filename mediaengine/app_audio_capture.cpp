@@ -5,6 +5,7 @@
 #include <tlhelp32.h>
 #include <chrono>
 #include <functional>
+#include "../common/raii_helpers.h"
 #include "audio_capture.h"  // For AudioPacket
 #include "audio_time_utils.h"
 #include "mediaengine.h"  // For DLL_Log
@@ -267,11 +268,15 @@ void AppAudioCapture::DiscardPendingPackets() {
 }
 
 bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {
-    HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
-        DLL_Log("[AppAudioCapture] CoInitializeEx failed: 0x%x", hr);
+    const HRESULT coInitHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (FAILED(coInitHr) && coInitHr != RPC_E_CHANGED_MODE) {
+        DLL_Log("[AppAudioCapture] CoInitializeEx failed: 0x%x", coInitHr);
         return false;
     }
+    const bool coInitOwned = (coInitHr == S_OK);
+    CE_SCOPE_EXIT(if (coInitOwned) { CoUninitialize(); });
+
+    HRESULT hr;
 
     // Reset the completion event
     ResetEvent(activationCompleteEvent);
@@ -368,11 +373,11 @@ bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {
     // AUTOCONVERTPCM AUTOCONVERTPCM tells Windows to convert the process audio to
     // our format Use 10ms buffer (100000 hns) to reduce latency and burstiness
     // CRITICAL FIX: AUTOCONVERTPCM is a FLAG, not a buffer duration parameter
-    hr = pAudioClient->Initialize(AUDCLNT_SHAREMODE_SHARED,
-                                  AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK |
-                                      AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,  // CORRECT: flags combined here
-                                  100000,                                  // hnsBufferDuration
-                                  0,                                       // hnsPeriodicity (must be 0 for SHARED)
+    DWORD streamFlags =
+        AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM;
+    hr = pAudioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, streamFlags,
+                                  100000,  // hnsBufferDuration
+                                  0,       // hnsPeriodicity (must be 0 for SHARED)
                                   pwfx, nullptr);
     if (FAILED(hr)) {
         // Try without EVENTCALLBACK
@@ -380,15 +385,15 @@ bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {
             "[AppAudioCapture] Initialize with EVENTCALLBACK failed: 0x%x, "
             "trying without",
             hr);
-        hr = pAudioClient->Initialize(AUDCLNT_SHAREMODE_SHARED,
-                                      AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, 2000000, 0,
-                                      pwfx, nullptr);
+        streamFlags = AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM;
+        hr = pAudioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, streamFlags, 2000000, 0, pwfx, nullptr);
         if (FAILED(hr)) {
             // Try without any special flags
             DLL_Log(
                 "[AppAudioCapture] Initialize with LOOPBACK failed: 0x%x, trying "
                 "plain",
                 hr);
+            streamFlags = 0;
             hr = pAudioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 2000000, 0, pwfx, nullptr);
             if (FAILED(hr)) {
                 DLL_Log("[AppAudioCapture] Initialize failed: 0x%x", hr);
@@ -397,6 +402,7 @@ bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {
             }
         }
     }
+    activeStreamFlags = streamFlags;
 
     // Get capture client
     hr = pAudioClient->GetService(__uuidof(IAudioCaptureClient), reinterpret_cast<void**>(&pCaptureClient));
@@ -423,6 +429,11 @@ bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {
         packetQueue.clear();
     }
 
+    m_lastRealTime = std::chrono::steady_clock::time_point{};
+    m_synthesizedMs = 0;
+    m_heartbeatInit = false;
+    m_silenceLogCounter_ = 0;
+
     isCapturing.store(true);
     captureThread = std::thread(&AppAudioCapture::CaptureLoop, this);
 
@@ -430,7 +441,9 @@ bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {
 }
 
 void AppAudioCapture::CleanupCapture() {
-    if (pAudioClient) {
+    // Match AudioCapture teardown: process loopback uses LOOPBACK streams too, and
+    // releasing the interfaces directly avoids the crash-sensitive Stop() path.
+    if (pAudioClient && (activeStreamFlags & AUDCLNT_STREAMFLAGS_LOOPBACK) == 0) {
         pAudioClient->Stop();
     }
 
@@ -448,10 +461,16 @@ void AppAudioCapture::CleanupCapture() {
         CoTaskMemFree(pwfx);
         pwfx = nullptr;
     }
+
+    activeStreamFlags = 0;
+    m_lastRealTime = std::chrono::steady_clock::time_point{};
+    m_synthesizedMs = 0;
+    m_heartbeatInit = false;
+    m_silenceLogCounter_ = 0;
 }
 
 void AppAudioCapture::CaptureLoop() {
-    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const HRESULT coInitHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     DLL_Log("[AppAudioCapture] Capture loop started for PID %lu", targetPID.load());
 
     UINT32 packetLength = 0;
@@ -685,7 +704,9 @@ void AppAudioCapture::CaptureLoop() {
 
     DLL_Log("[AppAudioCapture] Capture loop exited");
     isCapturing.store(false);
-    CoUninitialize();
+    if (SUCCEEDED(coInitHr) && coInitHr != S_FALSE) {
+        CoUninitialize();
+    }
 }
 
 void AppAudioCapture::ProcessMonitorLoop() {

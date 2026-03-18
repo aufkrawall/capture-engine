@@ -266,6 +266,7 @@ public:
     using DirectFrameCallbackFn = void (*)(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, bool);
     std::atomic<DirectFrameCallbackFn> frameCallback_{nullptr};
     std::atomic<uint32_t> callbackFrameCount_{0};
+    std::atomic<uint32_t> inputFrameCount_{0};
 
     // Frame throttle: skip CopyResource if we're ahead of target FPS
     uint32_t targetFps_ = 0;
@@ -273,6 +274,11 @@ public:
     int64_t lastCapturedQPC_ = 0;    // QPC of last frame we actually copied
     int64_t nextCaptureQPC_ = 0;     // Next QPC deadline that is allowed to perform a GPU copy
     std::atomic<uint32_t> skippedFrameCount_{0};
+    std::atomic<uint32_t> pacingSkipCount_{0};
+    std::atomic<uint32_t> throttleSkipCount_{0};
+    std::atomic<uint32_t> staleSkipCount_{0};
+    std::atomic<uint32_t> cursorOnlySkipCount_{0};
+    std::atomic<uint32_t> poolDropCount_{0};
     bool dirtyRegionModeEnabled_ = false;
     HCURSOR lastCursorHandle_ = nullptr;
     POINT lastCursorScreenPos_ = {};
@@ -403,7 +409,13 @@ public:
 
     void ResetStats() {
         callbackFrameCount_.store(0, std::memory_order_relaxed);
+        inputFrameCount_.store(0, std::memory_order_relaxed);
         skippedFrameCount_.store(0, std::memory_order_relaxed);
+        pacingSkipCount_.store(0, std::memory_order_relaxed);
+        throttleSkipCount_.store(0, std::memory_order_relaxed);
+        staleSkipCount_.store(0, std::memory_order_relaxed);
+        cursorOnlySkipCount_.store(0, std::memory_order_relaxed);
+        poolDropCount_.store(0, std::memory_order_relaxed);
         lastCopyUs_.store(0, std::memory_order_relaxed);
         lastDeliveredSourceQpc_.store(0, std::memory_order_relaxed);
         lastCapturedQPC_ = 0;
@@ -891,6 +903,7 @@ public:
         }
 
         skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+        poolDropCount_.fetch_add(1, std::memory_order_relaxed);
         static std::atomic<int> contentionLogCount{0};
         if (contentionLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
             LogWarn("[WGC] Shared texture pool saturated; dropping frame");
@@ -918,6 +931,7 @@ public:
         if (!winrtFrame) {
             return;
         }
+        inputFrameCount_.fetch_add(1, std::memory_order_relaxed);
 
         // Throttle: skip GPU copy if we're capturing faster than target FPS.
         // Always drain TryGetNextFrame above to return buffers to the pool.
@@ -925,6 +939,7 @@ public:
         if (targetIntervalQPC_ > 0 && nextCaptureQPC_ > 0 && sourceFrameQpc > 0 && sourceFrameQpc < nextCaptureQPC_) {
             // Too soon - skip this frame to reduce GPU bandwidth
             skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+            pacingSkipCount_.fetch_add(1, std::memory_order_relaxed);
             winrtFrame.Close();
             return;
         }
@@ -932,12 +947,14 @@ public:
         // External throttle: skip GPU copy when encoder is bottlenecked.
         if (throttleFlag_ && throttleFlag_->load(std::memory_order_relaxed)) {
             skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+            throttleSkipCount_.fetch_add(1, std::memory_order_relaxed);
             winrtFrame.Close();
             return;
         }
 
         if (IsStaleSourceFrameQpc(sourceFrameQpc)) {
             skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+            staleSkipCount_.fetch_add(1, std::memory_order_relaxed);
             winrtFrame.Close();
             return;
         }
@@ -960,6 +977,7 @@ public:
 
                 if (ShouldSkipCursorOnlyDirtyFrame(winrtFrame, desc.Width, desc.Height)) {
                     skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+                    cursorOnlySkipCount_.fetch_add(1, std::memory_order_relaxed);
                     texture->Release();
                     access->Release();
                     winrtFrame.Close();
@@ -1281,22 +1299,26 @@ public:
             // No new frame available
             return false;
         }
+        inputFrameCount_.fetch_add(1, std::memory_order_relaxed);
 
         const int64_t sourceFrameQpc = GetFrameSourceQpc(latestWinrtFrame);
         if (targetIntervalQPC_ > 0 && nextCaptureQPC_ > 0 && sourceFrameQpc > 0 && sourceFrameQpc < nextCaptureQPC_) {
             skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+            pacingSkipCount_.fetch_add(1, std::memory_order_relaxed);
             latestWinrtFrame.Close();
             return false;
         }
 
         if (throttleFlag_ && throttleFlag_->load(std::memory_order_relaxed)) {
             skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+            throttleSkipCount_.fetch_add(1, std::memory_order_relaxed);
             latestWinrtFrame.Close();
             return false;
         }
 
         if (IsStaleSourceFrameQpc(sourceFrameQpc)) {
             skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+            staleSkipCount_.fetch_add(1, std::memory_order_relaxed);
             latestWinrtFrame.Close();
             return false;
         }
@@ -1320,6 +1342,7 @@ public:
 
                 if (ShouldSkipCursorOnlyDirtyFrame(latestWinrtFrame, desc.Width, desc.Height)) {
                     skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+                    cursorOnlySkipCount_.fetch_add(1, std::memory_order_relaxed);
                     texture->Release();
                     access->Release();
                     latestWinrtFrame.Close();
@@ -1602,9 +1625,57 @@ uint32_t WGCCapture::GetCallbackFrameCount() const {
 #endif
 }
 
+uint32_t WGCCapture::GetInputFrameCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->inputFrameCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
 int64_t WGCCapture::GetLastCopyTimeUs() const {
 #if HAS_WGC
     return impl_ ? impl_->lastCopyUs_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetPacingSkipCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->pacingSkipCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetThrottleSkipCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->throttleSkipCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetStaleSkipCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->staleSkipCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetCursorOnlySkipCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->cursorOnlySkipCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetPoolDropCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->poolDropCount_.load(std::memory_order_relaxed) : 0;
 #else
     return 0;
 #endif

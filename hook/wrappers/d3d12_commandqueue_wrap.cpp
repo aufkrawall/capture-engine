@@ -135,11 +135,11 @@ void STDMETHODCALLTYPE CWrapD3D12CommandQueue::CopyTileMappings(
 
 void STDMETHODCALLTYPE CWrapD3D12CommandQueue::ExecuteCommandLists(UINT NumCommandLists,
                                                                    ID3D12CommandList* const* ppCommandLists) {
-    // Notify hook of command list execution for frame classification (real vs
-    // interpolated frames) This must happen before the actual ExecuteCommandLists
-    // call to ensure proper counting
+    // Register the real queue before the first ExecuteCommandLists call so the
+    // main hook can install its authoritative vtable detour on the real queue.
+    // Queue-aware notify is only a fallback when registration is unavailable.
     static std::once_flag s_lookupFlag;
-    static void (*s_notifyFn)(UINT) = nullptr;
+    static void (*s_notifyQueueFn)(ID3D12CommandQueue*, UINT) = nullptr;
     static void (*s_setQueueFn)(ID3D12CommandQueue*) = nullptr;
     static bool s_lookupDone = false;
 
@@ -155,25 +155,16 @@ void STDMETHODCALLTYPE CWrapD3D12CommandQueue::ExecuteCommandLists(UINT NumComma
 
         if (hMod) {
             WrapperLog("D3D12 CQW: Found hook DLL at %p", hMod);
-            s_notifyFn = (void (*)(UINT))GetProcAddress(hMod, "DX12_NotifyCommandLists");
+            s_notifyQueueFn =
+                (void (*)(ID3D12CommandQueue*, UINT))GetProcAddress(hMod, "DX12_NotifyCommandListsForQueue");
             s_setQueueFn = (void (*)(ID3D12CommandQueue*))GetProcAddress(hMod, "DX12_SetCommandQueue");
-            WrapperLog("D3D12 CQW: DX12_NotifyCommandLists=%p, DX12_SetCommandQueue=%p", s_notifyFn, s_setQueueFn);
+            WrapperLog("D3D12 CQW: DX12_NotifyCommandListsForQueue=%p, DX12_SetCommandQueue=%p", s_notifyQueueFn,
+                       s_setQueueFn);
         } else {
             WrapperLog("D3D12 CQW: Hook DLL NOT FOUND!");
         }
         s_lookupDone = true;
     });
-
-    if (s_notifyFn) {
-        s_notifyFn(NumCommandLists);
-    } else if (s_lookupDone) {
-        // Only log once after lookup is done to avoid spam
-        static bool s_loggedMissing = false;
-        if (!s_loggedMissing) {
-            WrapperLog("D3D12 CQW: WARNING - Notify function not available");
-            s_loggedMissing = true;
-        }
-    }
 
     // Register this queue with the main hook if not already done
     if (!m_bRegistered && s_setQueueFn) {
@@ -181,6 +172,19 @@ void STDMETHODCALLTYPE CWrapD3D12CommandQueue::ExecuteCommandLists(UINT NumComma
             WrapperLog("D3D12 CQW: Registering command queue %p (type=%d)", m_pReal, m_Type);
             s_setQueueFn(m_pReal);
             m_bRegistered = true;
+        }
+    }
+
+    if (!m_bRegistered && s_notifyQueueFn && m_pReal && m_Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
+        s_notifyQueueFn(m_pReal, NumCommandLists);
+    } else if (!m_bRegistered && s_lookupDone) {
+        // Only log once after lookup is done to avoid spam
+        static bool s_loggedMissing = false;
+        if (!s_loggedMissing) {
+            WrapperLog(
+                "D3D12 CQW: WARNING - Queue registration unavailable, falling back "
+                "without classification notify");
+            s_loggedMissing = true;
         }
     }
 

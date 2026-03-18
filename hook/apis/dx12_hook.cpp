@@ -1868,6 +1868,106 @@ void DX12_SignalFSR4SwapchainRecreated() {
 // freeze watchdog can detect the stuck state and create a diagnostic dump.
 static std::atomic<bool> g_DeviceRemoved{false};
 
+static ID3D12CommandQueue* GetFrameClassificationQueue() {
+    ID3D12CommandQueue* queue = g_OriginalGameQueue;
+    if (!queue) {
+        queue = g_PrimaryGameQueue.load(std::memory_order_acquire);
+    }
+    return queue;
+}
+
+static bool ShouldSuppressLikelyDuplicateTopLevelPresent(IDXGISwapChain3* sc3, UINT backBufferIdx) {
+    if (!sc3 || !g_IPC || !g_IPC->IsCaptureRequested()) {
+        return false;
+    }
+
+    SharedMemoryLayout* shm = g_IPC->GetSharedMem();
+    if (!shm) {
+        return false;
+    }
+
+    const int captureFps = shm->fpsLimiter.GetCaptureFps();
+    if (captureFps <= 0) {
+        return false;
+    }
+
+    const int64_t targetIntervalUs = 1000000LL / static_cast<int64_t>(captureFps);
+    const int64_t suppressWindowUs = std::clamp((targetIntervalUs * 3) / 4, 1500LL, 7000LL);
+    const int64_t nowUs = PerfLogger::GetQpcUs();
+    IDXGISwapChain* swapchain = static_cast<IDXGISwapChain*>(sc3);
+
+    static std::atomic<IDXGISwapChain*> s_lastAcceptedSwapchain{nullptr};
+    static std::atomic<uint32_t> s_lastAcceptedBackBufferIdx{UINT32_MAX};
+    static std::atomic<int64_t> s_lastAcceptedPresentUs{0};
+    static std::atomic<uint64_t> s_suppressedPresentCount{0};
+
+    IDXGISwapChain* lastSwapchain = s_lastAcceptedSwapchain.load(std::memory_order_acquire);
+    uint32_t lastBackBufferIdx = s_lastAcceptedBackBufferIdx.load(std::memory_order_acquire);
+    int64_t lastAcceptedPresentUs = s_lastAcceptedPresentUs.load(std::memory_order_acquire);
+    int64_t sinceLastUs = nowUs - lastAcceptedPresentUs;
+
+    if (lastSwapchain == swapchain && lastBackBufferIdx == backBufferIdx && lastAcceptedPresentUs != 0 &&
+        sinceLastUs > 0 && sinceLastUs < suppressWindowUs) {
+        uint64_t suppressCount = s_suppressedPresentCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (suppressCount <= 10 || (suppressCount % 1000) == 0) {
+            HookLogImportant(
+                "DX12: Suppressing likely duplicate top-level Present #%llu "
+                "(sc=%p bb=%u since=%lldus window=%lldus captureFps=%d)",
+                static_cast<unsigned long long>(suppressCount), swapchain, backBufferIdx,
+                static_cast<long long>(sinceLastUs), static_cast<long long>(suppressWindowUs), captureFps);
+        }
+        return true;
+    }
+
+    s_lastAcceptedSwapchain.store(swapchain, std::memory_order_release);
+    s_lastAcceptedBackBufferIdx.store(backBufferIdx, std::memory_order_release);
+    s_lastAcceptedPresentUs.store(nowUs, std::memory_order_release);
+    return false;
+}
+
+static bool ShouldSkipCaptureForTargetCadence() {
+    if (!g_IPC) {
+        return false;
+    }
+
+    SharedMemoryLayout* shm = g_IPC->GetSharedMem();
+    if (!shm) {
+        return false;
+    }
+
+    if (!shm->runtimeState.captureRequested.load(std::memory_order_acquire)) {
+        return false;
+    }
+
+    const int captureFps = shm->fpsLimiter.GetCaptureFps();
+    if (captureFps <= 0) {
+        return false;
+    }
+
+    const int64_t targetIntervalUs = 1000000LL / static_cast<int64_t>(captureFps);
+    const int64_t nowUs = PerfLogger::GetQpcUs();
+
+    static std::atomic<int64_t> s_lastAcceptedCaptureUs{0};
+    static std::atomic<uint64_t> s_pacedCaptureSkipCount{0};
+
+    int64_t lastAcceptedCaptureUs = s_lastAcceptedCaptureUs.load(std::memory_order_acquire);
+    if (lastAcceptedCaptureUs != 0) {
+        int64_t sinceLastUs = nowUs - lastAcceptedCaptureUs;
+        if (sinceLastUs > 0 && sinceLastUs < targetIntervalUs) {
+            uint64_t skipCount = s_pacedCaptureSkipCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (skipCount <= 10 || (skipCount % 1000) == 0) {
+                HookLogImportant("DX12: Pacing capture skip #%llu (since=%lldus interval=%lldus captureFps=%d)",
+                                 static_cast<unsigned long long>(skipCount), static_cast<long long>(sinceLastUs),
+                                 static_cast<long long>(targetIntervalUs), captureFps);
+            }
+            return true;
+        }
+    }
+
+    s_lastAcceptedCaptureUs.store(nowUs, std::memory_order_release);
+    return false;
+}
+
 // C Linkage Exports for cross-module calls (e.g. from C clients or
 // GetProcAddress)
 extern "C" {
@@ -2025,10 +2125,53 @@ void DX12_AdjustWrapperResizeDepth_C(int delta) {
     DX12_AdjustWrapperResizeDepth(delta);
 }
 
-// Export for D3D12 wrapper to notify command list execution (frame
-// classification)
-void DX12_NotifyCommandLists(UINT numCommandLists) {
+// Queue-aware wrapper fallback for frame classification.
+// The wrapper path is only used when the real queue has not been registered yet;
+// once registration succeeds, the vtable ECL detour becomes the authoritative
+// source of command-list counts.
+__attribute__((noinline)) void DX12_NotifyCommandListsForQueue(ID3D12CommandQueue* pQueue, UINT numCommandLists) {
+    if (!pQueue || numCommandLists == 0) {
+        return;
+    }
+
+    auto vtblPtr = *reinterpret_cast<void* volatile const*>(pQueue);
+    if (!vtblPtr) {
+        return;
+    }
+
+    D3D12_COMMAND_QUEUE_DESC desc = pQueue->GetDesc();
+    if (desc.Type != D3D12_COMMAND_LIST_TYPE_DIRECT) {
+        return;
+    }
+
+    ID3D12CommandQueue* classificationQueue = GetFrameClassificationQueue();
+    if (!classificationQueue || pQueue != classificationQueue) {
+        static std::atomic<int> s_skippedWrapperNotifyLogCount{0};
+        int skipCount = s_skippedWrapperNotifyLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (skipCount < 10 || (skipCount % 2048) == 2047) {
+            HookLog(
+                "DX12: Ignoring wrapper queue notify for non-classification queue "
+                "%p (class=%p, primary=%p, orig=%p, num=%u)",
+                pQueue, classificationQueue, g_PrimaryGameQueue.load(std::memory_order_relaxed), g_OriginalGameQueue,
+                numCommandLists);
+        }
+        return;
+    }
+
     g_CommandListsExecutedThisFrame.fetch_add(numCommandLists, std::memory_order_relaxed);
+}
+
+// Legacy queue-less wrapper notify. Ignore it so stale helper traffic cannot
+// mark auxiliary command queue work as a real frame.
+void DX12_NotifyCommandLists(UINT numCommandLists) {
+    static std::atomic<int> s_legacyNotifyLogCount{0};
+    int logCount = s_legacyNotifyLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (logCount < 5) {
+        HookLog(
+            "DX12: Ignoring legacy queue-less DX12_NotifyCommandLists(%u) to avoid "
+            "false real-frame classification",
+            numCommandLists);
+    }
 }
 }
 
@@ -5648,7 +5791,10 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     if (pSwapChain != g_LastSwapChain) {
         if (g_LastSwapChain) {
             CleanupRTVs();
-            g_SharedCaptureD3D12.Reset();
+            {
+                std::lock_guard<std::recursive_mutex> capLock(g_DX12CaptureMutex);
+                g_SharedCaptureD3D12.Reset();
+            }
             g_State.overlayInit = false;
             ResetStartupOverlayBackendActivationStage();
 
@@ -8237,8 +8383,10 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     if (captureQueue && g_SharedCaptureD3D12.CaptureFrame(captureQueue, bbIdx)) {
                         SharedFrameDescriptor desc;
                         if (g_SharedCaptureD3D12.GetCurrentFrame(&desc)) {
-                            shm->SetSharedHandle(0, (uint64_t)g_SharedCaptureD3D12.GetSharedHandle(0));
-                            shm->SetSharedHandle(1, (uint64_t)g_SharedCaptureD3D12.GetSharedHandle(1));
+                            for (UINT i = 0; i < SharedCaptureD3D12::kSharedTextureCount; ++i) {
+                                shm->SetSharedHandle(static_cast<int>(i),
+                                                     (uint64_t)g_SharedCaptureD3D12.GetSharedHandle((int)i));
+                            }
                             shm->SetFenceShareHandle((uint64_t)g_SharedCaptureD3D12.GetFenceShareHandle());
                             shm->SetWidth(desc.width);
                             shm->SetHeight(desc.height);
@@ -8407,6 +8555,8 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
         activeDebugSample->flags |= kPresentSampleFlagInterpolatedFrame;
     }
 
+    UINT currentBackBufferIdx = sc3->GetCurrentBackBufferIndex();
+
     // ECL-count-based FG activation: detect frame generation via the pattern
     // of alternating real (ECL>0) and interpolated (ECL=0) frames.  This works
     // for UE5 native FSR FG and other implementations that don't use hookable
@@ -8451,9 +8601,17 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
         sc3->Release();
         return;
     }
+    if (!isInterpolatedFrame && ShouldSuppressLikelyDuplicateTopLevelPresent(sc3, currentBackBufferIdx)) {
+        sc3->Release();
+        return;
+    }
+    bool processCapture = !isInterpolatedFrame;
+    if (processCapture && ShouldSkipCaptureForTargetCadence()) {
+        processCapture = false;
+    }
     // For interpolated frames, only render overlay (no capture processing) since
     // the backbuffer content is from the FG engine, not a real game frame.
-    ProcessFrame(sc3, /*processCapture=*/!isInterpolatedFrame);
+    ProcessFrame(sc3, processCapture);
     sc3->Release();
 }
 
@@ -8672,11 +8830,13 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         }
     }
 
-    // Count command lists only from the primary game queue to detect real frames.
-    // FG runtimes (FSR FG) create their own queues that share the vtable; without
-    // this filter, interpolated frames have similar ECL counts to real frames.
+    // Count command lists only from the trusted frame-classification queue.
+    // Once ProcessFrame has identified the original game queue, prefer it over
+    // the "first direct queue seen" heuristic to avoid auxiliary queue bursts
+    // being misclassified as real presents.
     ID3D12CommandQueue* primaryQ = g_PrimaryGameQueue.load(std::memory_order_acquire);
-    if (!primaryQ || pThis == primaryQ) {
+    ID3D12CommandQueue* classificationQueue = GetFrameClassificationQueue();
+    if (!classificationQueue || pThis == classificationQueue) {
         g_CommandListsExecutedThisFrame.fetch_add(NumCommandLists, std::memory_order_relaxed);
     }
 
@@ -9137,8 +9297,10 @@ void DX12Hook::Shutdown() {
     if (g_LastSwapChain) {
         g_LastSwapChain = nullptr;
     }
-    if (g_SharedCaptureD3D12.IsActive())
+    if (g_SharedCaptureD3D12.IsActive()) {
+        std::lock_guard<std::recursive_mutex> capLock(g_DX12CaptureMutex);
         g_SharedCaptureD3D12.Reset();
+    }
     g_IPCReady = false;
 }
 

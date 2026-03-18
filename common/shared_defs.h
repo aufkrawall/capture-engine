@@ -29,7 +29,8 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 10: Added encoder KMT texture handles for DXVK zero-copy capture
 // Version 12: Added runtime coordination flags for cross-API overlay ownership
 // Version 13: Added SharedGraphicsConfig::forceMipBiasClamp override field
-static constexpr uint32_t SHARED_MEMORY_VERSION = 13;
+// Version 14: Added captureRequested so hooks can warm up capture before REC goes live
+static constexpr uint32_t SHARED_MEMORY_VERSION = 14;
 
 // Minimum supported version for backward compatibility
 static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
@@ -265,7 +266,7 @@ enum CaptureRuntimeFlags : uint32_t {
 };
 
 struct alignas(8) CaptureState {
-    std::atomic<int64_t> recordingStartTime{0};  // GetTickCount64 or similar - atomic for cross-process safety
+    std::atomic<int64_t> recordingStartTime{0};  // File-output / REC-indicator start time
     std::atomic<double> currentFPS{0.0};         // Atomic to prevent torn reads
     std::atomic<double> gameFPS{0.0};            // Atomic to prevent torn reads
     std::atomic<uint32_t> hostDroppedFrames{0};  // Atomic counter
@@ -284,7 +285,8 @@ struct alignas(8) CaptureState {
     std::atomic<bool> ackRecordingStarted{false};
     std::atomic<bool> ackRecordingStopped{false};
 
-    std::atomic<bool> isRecording{false};            // Atomic to prevent race with cmdStartRecording
+    std::atomic<bool> captureRequested{false};       // Hooks should keep feeding frames (warmup + live recording)
+    std::atomic<bool> isRecording{false};            // File output and REC overlay indicator are live
     std::atomic<bool> vulkanLayerActive{false};      // Set by Vulkan layer when initialized
     std::atomic<uint32_t> runtimeFlags{0};           // Cross-API coordination (overlay ownership, etc.)
     std::atomic<uint32_t> vulkanPresentThreadId{0};  // Thread ID currently presenting via Vulkan

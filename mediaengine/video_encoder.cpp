@@ -2525,7 +2525,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
             DWORD waitRes = WaitForSingleObject(fenceEvent, 200);  // 200ms timeout (increased for GPU contention)
             if (waitRes == WAIT_TIMEOUT) {
                 // Frame is too late or GPU is hung - skip this frame
-                DLL_Log("[VideoEncoder] Frame %d: GPU Fence Timeout (50ms) - Skipping", encodeFrameCounter);
+                DLL_Log("[VideoEncoder] Frame %d: GPU Fence Timeout (200ms) - Skipping", encodeFrameCounter);
                 bgraTex->Release();
                 d3d11Fence->Release();
                 d3d11Fence = nullptr;
@@ -2538,7 +2538,6 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     }
     auto afterFence = PerfTimer::now();
     stats.fenceWaitMs = PerfTimer::elapsed_ms(beforeFence, afterFence);
-    stats.fenceWaitMs = PerfTimer::elapsed_ms(frameStart, afterFence);
 
     if (d3d11Fence) {
         d3d11Fence->Release();

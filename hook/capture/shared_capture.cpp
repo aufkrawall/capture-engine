@@ -232,11 +232,11 @@ void SharedCaptureD3D11::ReleaseFrame(UINT frameNumber) {
 // ============================================================================
 
 SharedCaptureD3D12::SharedCaptureD3D12()
-    : m_SharedHandles{nullptr, nullptr},
+    : m_SharedHandles{},
       m_FenceShareHandle(nullptr),
       m_FenceEvent(nullptr),
       m_FenceValue(0),
-      m_FenceValues{0, 0},
+      m_FenceValues{},
       m_WriteIndex(0),
       m_FrameCounter(0),
       m_Active(false) {
@@ -254,7 +254,7 @@ SharedCaptureD3D12::~SharedCaptureD3D12() {
         m_pDevice.Detach();
         m_pSwapChain.Detach();
         m_Fence.Detach();
-        for (int i = 0; i < 2; i++) {
+        for (UINT i = 0; i < kSharedTextureCount; ++i) {
             m_CommandAllocators[i].Detach();
             m_SharedResources[i].Detach();
         }
@@ -268,7 +268,7 @@ SharedCaptureD3D12::~SharedCaptureD3D12() {
             CloseHandle(m_FenceShareHandle);
             m_FenceShareHandle = nullptr;
         }
-        for (int i = 0; i < 2; i++) {
+        for (UINT i = 0; i < kSharedTextureCount; ++i) {
             if (m_SharedHandles[i]) {
                 CloseHandle(m_SharedHandles[i]);
                 m_SharedHandles[i] = nullptr;
@@ -287,7 +287,7 @@ SharedCaptureD3D12::~SharedCaptureD3D12() {
         m_FenceShareHandle = nullptr;
     }
 
-    for (int i = 0; i < 2; i++) {
+    for (UINT i = 0; i < kSharedTextureCount; ++i) {
         if (m_SharedHandles[i]) {
             CloseHandle(m_SharedHandles[i]);
             m_SharedHandles[i] = nullptr;
@@ -298,15 +298,41 @@ SharedCaptureD3D12::~SharedCaptureD3D12() {
 void SharedCaptureD3D12::Reset() {
     m_Active = false;
 
+    UINT64 pendingFenceValue = 0;
+    for (UINT64 fenceValue : m_FenceValues) {
+        if (fenceValue > pendingFenceValue) {
+            pendingFenceValue = fenceValue;
+        }
+    }
+    if (m_Fence && m_FenceEvent && pendingFenceValue > 0) {
+        UINT64 completed = m_Fence->GetCompletedValue();
+        if (completed < pendingFenceValue) {
+            HRESULT hr = m_Fence->SetEventOnCompletion(pendingFenceValue, m_FenceEvent);
+            if (SUCCEEDED(hr)) {
+                DWORD waitResult = WaitForSingleObject(m_FenceEvent, 5000);
+                if (waitResult != WAIT_OBJECT_0) {
+                    EarlyLog("DX12: SharedCapture Reset wait incomplete (wait=%lu fence=%llu completed=%llu)",
+                             waitResult, pendingFenceValue, m_Fence->GetCompletedValue());
+                }
+            } else {
+                EarlyLog("DX12: SharedCapture Reset SetEventOnCompletion failed hr=0x%08X", hr);
+            }
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_Lock);
+        ZeroMemory(&m_CurrentFrame, sizeof(m_CurrentFrame));
+    }
+
     // Release D3D12 ComPtrs
     m_pDevice.Reset();
     m_pSwapChain.Reset();
     m_Fence.Reset();
-    m_CommandAllocators[0].Reset();
-    m_CommandAllocators[1].Reset();
     m_CommandList.Reset();
 
-    for (int i = 0; i < 2; i++) {
+    for (UINT i = 0; i < kSharedTextureCount; ++i) {
+        m_CommandAllocators[i].Reset();
         m_SharedResources[i].Reset();
         m_FenceValues[i] = 0;
         if (m_SharedHandles[i]) {
@@ -327,6 +353,7 @@ void SharedCaptureD3D12::Reset() {
 
     m_FenceValue.store(0, std::memory_order_relaxed);
     m_WriteIndex.store(0, std::memory_order_relaxed);
+    m_FrameCounter = 0;
 }
 
 bool SharedCaptureD3D12::Initialize(ID3D12Device* pDevice, IDXGISwapChain* pSwapChain) {
@@ -366,11 +393,12 @@ bool SharedCaptureD3D12::Initialize(ID3D12Device* pDevice, IDXGISwapChain* pSwap
         return false;
     }
 
-    // Create command allocators (double buffered)
-    for (int i = 0; i < 2; i++) {
+    // Create one allocator per capture slot so multiple frames can stay in flight
+    // while the GPU drains earlier copy work.
+    for (UINT i = 0; i < kSharedTextureCount; ++i) {
         if (FAILED(pDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
                                                    IID_PPV_ARGS(&m_CommandAllocators[i])))) {
-            EarlyLog("DX12: SharedCapture - Failed to Create Command Allocator %d", i);
+            EarlyLog("DX12: SharedCapture - Failed to Create Command Allocator %u", i);
             return false;
         }
     }
@@ -418,7 +446,7 @@ bool SharedCaptureD3D12::CreateSharedResources(UINT width, UINT height, DXGI_FOR
     heapProps.CreationNodeMask = 1;
     heapProps.VisibleNodeMask = 1;
 
-    for (int i = 0; i < 2; i++) {
+    for (UINT i = 0; i < kSharedTextureCount; ++i) {
         // KEY: Old working state - COMMON (not COPY_DEST)
         // KEY: Old working heap flag - just D3D12_HEAP_FLAG_SHARED (not
         // cross-adapter)
@@ -429,7 +457,7 @@ bool SharedCaptureD3D12::CreateSharedResources(UINT width, UINT height, DXGI_FOR
         if (FAILED(hr)) {
             EarlyLog(
                 "DX12: CreateSharedResources - Failed to create D3D12 texture "
-                "%d (hr=0x%08X)",
+                "%u (hr=0x%08X)",
                 i, hr);
             return false;
         }
@@ -441,7 +469,7 @@ bool SharedCaptureD3D12::CreateSharedResources(UINT width, UINT height, DXGI_FOR
         if (FAILED(hr)) {
             EarlyLog(
                 "DX12: CreateSharedResources - Failed to create shared handle "
-                "for texture %d (hr=0x%08X)",
+                "for texture %u (hr=0x%08X)",
                 i, hr);
             return false;
         }
@@ -548,15 +576,16 @@ bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, UINT ba
         m_CurrentFrame.width = (UINT)resDesc.Width;
         m_CurrentFrame.height = resDesc.Height;
         m_CurrentFrame.format = resDesc.Format;
-        m_CurrentFrame.fenceValue = m_FenceValue;
+        m_CurrentFrame.fenceValue = fenceVal;
         m_CurrentFrame.presentTime = qpc.QuadPart;
         m_CurrentFrame.frameNumber = ++m_FrameCounter;
         m_CurrentFrame.textureIndex = (int32_t)writeIdx;
         m_CurrentFrame.ready = true;
     }
 
-    // Flip write index
-    m_WriteIndex.store(1 - writeIdx, std::memory_order_relaxed);
+    // Advance through the full producer ring so temporary GPU backlog does not
+    // collapse capture onto just two textures.
+    m_WriteIndex.store((writeIdx + 1) % kSharedTextureCount, std::memory_order_relaxed);
 
     return true;
 }

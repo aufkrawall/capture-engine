@@ -16,9 +16,13 @@ public:
     ShmemBuffer* GetShmem();  // Returns current mapping or attempts to connect if
                               // metadata exists
 
-    // Check if host requested capture
+    // Check if host requested capture, including the short hidden startup warmup.
+    bool IsCaptureRequested() const {
+        return pSharedMem && pSharedMem->runtimeState.captureRequested.load(std::memory_order_acquire);
+    }
+
     bool IsRecording() const {
-        return pSharedMem && pSharedMem->runtimeState.isRecording;
+        return IsCaptureRequested();
     }
 
 private:

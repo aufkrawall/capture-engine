@@ -196,6 +196,10 @@ public:
         return buffer.empty();
     }
 
+    size_t Capacity() const {
+        return maxCapacity;
+    }
+
     uint64_t GetDroppedCount() const {
         return droppedFrames.load(std::memory_order_relaxed);
     }

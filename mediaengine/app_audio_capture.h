@@ -128,6 +128,7 @@ private:
     IAudioClient* pAudioClient = nullptr;
     IAudioCaptureClient* pCaptureClient = nullptr;
     WAVEFORMATEX* pwfx = nullptr;
+    DWORD activeStreamFlags = 0;
 
     // Target process info
     std::atomic<DWORD> targetPID{0};

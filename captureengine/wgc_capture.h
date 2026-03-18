@@ -85,8 +85,18 @@ public:
     // Get count of frames processed via direct callback
     uint32_t GetCallbackFrameCount() const;
 
+    // Get total frames received from the WGC frame pool before any filtering.
+    uint32_t GetInputFrameCount() const;
+
     // Get last GPU copy time in microseconds (for profiling)
     int64_t GetLastCopyTimeUs() const;
+
+    // Get counts of frames skipped for specific reasons (for profiling)
+    uint32_t GetPacingSkipCount() const;
+    uint32_t GetThrottleSkipCount() const;
+    uint32_t GetStaleSkipCount() const;
+    uint32_t GetCursorOnlySkipCount() const;
+    uint32_t GetPoolDropCount() const;
 
     // Throttle capture rate to avoid wasting GPU bandwidth on excess frames.
     // Set to target recording FPS. 0 disables throttle.

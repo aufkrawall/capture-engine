@@ -86,6 +86,7 @@ TEST_F(FpsLimiterTest, SmartWait_WithTarget) {
 TEST_F(FpsLimiterTest, Apply_WithTargetTimeTicks) {
     // Setup for general FPS limit
     mockShm->runtimeState.isRecording = false;
+    mockShm->runtimeState.captureRequested = false;
     mockShm->fpsLimiter.SetGeneralEnabled(true);
     mockShm->fpsLimiter.SetGeneralFps(60);
 
@@ -112,6 +113,7 @@ TEST_F(FpsLimiterTest, Apply_WithTargetTimeTicks) {
 TEST_F(FpsLimiterTest, Apply_NoTarget_ReturnsImmediately) {
     // Setup for general FPS limit
     mockShm->runtimeState.isRecording = false;
+    mockShm->runtimeState.captureRequested = false;
     mockShm->fpsLimiter.SetGeneralEnabled(true);
     mockShm->fpsLimiter.SetGeneralFps(60);
 
@@ -130,6 +132,29 @@ TEST_F(FpsLimiterTest, Apply_NoTarget_ReturnsImmediately) {
 
     // Should return almost immediately (< 5ms)
     EXPECT_LT(elapsedMs, 5.0);
+}
+
+TEST_F(FpsLimiterTest, CaptureWarmupUsesCaptureRequestedForCaptureSync) {
+    mockShm->runtimeState.captureRequested = true;
+    mockShm->runtimeState.isRecording = false;
+    mockShm->fpsLimiter.SetCaptureSyncEnabled(true);
+    mockShm->fpsLimiter.SetCaptureSyncMultiplier(1);
+    mockShm->fpsLimiter.SetCaptureFps(60);
+
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    mockShm->fpsLimiter.targetTimeTicks.store(now.QuadPart + (5 * freq.QuadPart / 1000), std::memory_order_release);
+
+    LARGE_INTEGER start, end;
+    QueryPerformanceCounter(&start);
+
+    limiter.Apply();
+
+    QueryPerformanceCounter(&end);
+
+    double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
+    EXPECT_GE(elapsedMs, 3.0);
+    EXPECT_LT(elapsedMs, 30.0);
 }
 
 // Test that limiter mode config values are stored/read correctly in shared memory
@@ -153,6 +178,7 @@ TEST_F(FpsLimiterTest, LimiterMode_SharedMemory) {
 // Test that FG fallback mode doubles interval via capture sync local limiter
 TEST_F(FpsLimiterTest, FGFallback_CaptureSync_DoublesInterval) {
     // Setup capture sync at 60fps with FG fallback mode
+    mockShm->runtimeState.captureRequested = true;
     mockShm->runtimeState.isRecording = true;
     mockShm->fpsLimiter.SetCaptureSyncEnabled(true);
     mockShm->fpsLimiter.SetCaptureSyncMultiplier(1);
@@ -183,6 +209,7 @@ TEST_F(FpsLimiterTest, FGFallback_CaptureSync_DoublesInterval) {
 
 // Test basic mode ignores FG (no interval doubling)
 TEST_F(FpsLimiterTest, BasicMode_IgnoresFG) {
+    mockShm->runtimeState.captureRequested = true;
     mockShm->runtimeState.isRecording = true;
     mockShm->fpsLimiter.SetCaptureSyncEnabled(true);
     mockShm->fpsLimiter.SetCaptureSyncMultiplier(1);
@@ -210,6 +237,7 @@ TEST_F(FpsLimiterTest, BasicMode_IgnoresFG) {
 
 // Test auto mode falls back to basic when no FG and no Reflex
 TEST_F(FpsLimiterTest, AutoMode_FallsBackToBasic) {
+    mockShm->runtimeState.captureRequested = true;
     mockShm->runtimeState.isRecording = true;
     mockShm->fpsLimiter.SetCaptureSyncEnabled(true);
     mockShm->fpsLimiter.SetCaptureSyncMultiplier(1);
@@ -235,6 +263,7 @@ TEST_F(FpsLimiterTest, AutoMode_FallsBackToBasic) {
 
 // Test auto mode uses FG fallback when FG is active but no Reflex
 TEST_F(FpsLimiterTest, AutoMode_UsesFGFallbackWhenFGActive) {
+    mockShm->runtimeState.captureRequested = true;
     mockShm->runtimeState.isRecording = true;
     mockShm->fpsLimiter.SetCaptureSyncEnabled(true);
     mockShm->fpsLimiter.SetCaptureSyncMultiplier(1);
@@ -261,6 +290,7 @@ TEST_F(FpsLimiterTest, AutoMode_UsesFGFallbackWhenFGActive) {
 }
 
 TEST_F(FpsLimiterTest, FGFallback_UsesExplicitDLSSMultiplier) {
+    mockShm->runtimeState.captureRequested = true;
     mockShm->runtimeState.isRecording = true;
     mockShm->fpsLimiter.SetCaptureSyncEnabled(true);
     mockShm->fpsLimiter.SetCaptureSyncMultiplier(1);

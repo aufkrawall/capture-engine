@@ -438,19 +438,18 @@ int InjectProcessMain(const AppConfig& config) {
                     ipc.SendResponse(ProcessResponse::Ack);
                     break;
                 case ProcessCommand::StartRecording:
-                    // Only reset start time if not already recording to avoid resetting the
-                    // overlay timer on duplicate commands (e.g. if IPC state was desynced).
-                    if (!pSharedMem->runtimeState.isRecording.load()) {
-                        pSharedMem->runtimeState.recordingStartTime.store(GetTickCount64());
+                    if (!pSharedMem->runtimeState.captureRequested.exchange(true, std::memory_order_acq_rel)) {
+                        pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
+                        pSharedMem->runtimeState.recordingStartTime.store(0, std::memory_order_release);
                     }
-                    pSharedMem->runtimeState.isRecording.store(true);
                     // Set command flag for media process to poll (use atomic store)
                     pSharedMem->runtimeState.cmdStartRecording.store(true, std::memory_order_release);
                     ipc.SendResponse(ProcessResponse::Ack);
                     break;
                 case ProcessCommand::StopRecording:
-                    pSharedMem->runtimeState.isRecording.store(false);
-                    pSharedMem->runtimeState.recordingStartTime.store(0);
+                    pSharedMem->runtimeState.captureRequested.store(false, std::memory_order_release);
+                    pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
+                    pSharedMem->runtimeState.recordingStartTime.store(0, std::memory_order_release);
                     // Set command flag for media process to poll (use atomic store)
                     pSharedMem->runtimeState.cmdStopRecording.store(true, std::memory_order_release);
                     ipc.SendResponse(ProcessResponse::Ack);

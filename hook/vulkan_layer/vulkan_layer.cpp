@@ -1022,7 +1022,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                 }
             }
 
-            if (shm && shm->runtimeState.isRecording.load(std::memory_order_acquire)) {
+            if (shm && shm->runtimeState.captureRequested.load(std::memory_order_acquire)) {
                 if (shm->throttleCapture.load(std::memory_order_acquire)) {
                     // Skip capture to let encoder catch up
                 } else {

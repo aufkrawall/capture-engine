@@ -32,7 +32,7 @@ struct SharedFrameDescriptor {
     UINT64 fenceValue;     // Sync fence value
     UINT64 presentTime;    // QPC timestamp
     UINT frameNumber;      // Monotonic frame counter
-    int32_t textureIndex;  // Index of shared texture (0-1)
+    int32_t textureIndex;  // Index of shared texture
     bool ready;            // Frame is ready for consumption
 };
 
@@ -107,6 +107,8 @@ private:
 
 class SharedCaptureD3D12 : public ISharedCaptureTarget {
 public:
+    static constexpr UINT kSharedTextureCount = 8;
+
     SharedCaptureD3D12();
     ~SharedCaptureD3D12() override;
 
@@ -125,7 +127,7 @@ public:
 
     // Get shared handles for IPC sync
     HANDLE GetSharedHandle(int index) const {
-        return (index >= 0 && index < 2) ? m_SharedHandles[index] : nullptr;
+        return (index >= 0 && index < static_cast<int>(kSharedTextureCount)) ? m_SharedHandles[index] : nullptr;
     }
     HANDLE GetFenceShareHandle() const {
         return m_FenceShareHandle;
@@ -140,9 +142,10 @@ private:
     ComPtr<ID3D12Device> m_pDevice;
     ComPtr<IDXGISwapChain3> m_pSwapChain;
 
-    // D3D12 shared resources (can be opened by D3D11 encoder cross-process)
-    ComPtr<ID3D12Resource> m_SharedResources[2];
-    HANDLE m_SharedHandles[2];
+    // Multi-buffered D3D12 shared resources opened by the D3D11 encoder.
+    // A deeper ring avoids source-side capture starvation when the GPU is saturated.
+    ComPtr<ID3D12Resource> m_SharedResources[kSharedTextureCount];
+    HANDLE m_SharedHandles[kSharedTextureCount];
 
     // Fence for synchronization
     ComPtr<ID3D12Fence> m_Fence;
@@ -150,12 +153,10 @@ private:
     HANDLE m_FenceEvent;
     std::atomic<UINT64> m_FenceValue;
 
-    // Command allocator/list for copy operations
-    // Double-buffered allocators to allow CPU to record next frame while GPU
-    // processes previous
-    ComPtr<ID3D12CommandAllocator> m_CommandAllocators[2];
-    UINT64 m_FenceValues[2];  // Fence value to wait for before resetting allocator
-                              // [i]
+    // Per-slot allocators let the hook keep multiple capture copies in flight without
+    // stalling on the two-slot producer ring under heavy GPU load.
+    ComPtr<ID3D12CommandAllocator> m_CommandAllocators[kSharedTextureCount];
+    UINT64 m_FenceValues[kSharedTextureCount];
 
     ComPtr<ID3D12GraphicsCommandList> m_CommandList;
 

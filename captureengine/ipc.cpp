@@ -241,6 +241,7 @@ bool IPCManager::GetLatestFrame(SharedMemoryLayout& outState) {
     outState.SetLuidHighPart(pSharedMem->GetLuidHighPart());
     outState.SetSourcePid(pSharedMem->GetSourcePid());
     // Copy CaptureState fields individually (can't copy struct with atomics)
+    outState.runtimeState.captureRequested = pSharedMem->runtimeState.captureRequested.load();
     outState.runtimeState.isRecording = pSharedMem->runtimeState.isRecording.load();
     outState.runtimeState.recordingStartTime = pSharedMem->runtimeState.recordingStartTime.load();
     outState.runtimeState.currentFPS = pSharedMem->runtimeState.currentFPS.load();
@@ -256,6 +257,7 @@ void IPCManager::SendCaptureState(const CaptureState& state) {
     if (!pSharedMem)
         return;
     // Copy fields individually (can't copy struct with atomics)
+    pSharedMem->runtimeState.captureRequested.store(state.captureRequested);
     pSharedMem->runtimeState.isRecording.store(state.isRecording);
     pSharedMem->runtimeState.recordingStartTime.store(state.recordingStartTime);
     pSharedMem->runtimeState.currentFPS.store(state.currentFPS);

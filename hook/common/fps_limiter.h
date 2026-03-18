@@ -280,7 +280,7 @@ public:
             }
         }
 
-        bool isRecording = shm->runtimeState.isRecording;
+        bool captureRequested = shm->runtimeState.captureRequested.load(std::memory_order_acquire);
         bool captureSyncEnabled = shm->fpsLimiter.GetCaptureSyncEnabled();
         int captureSyncMultiplier = shm->fpsLimiter.GetCaptureSyncMultiplier();
         bool generalEnabled = shm->fpsLimiter.GetGeneralEnabled();
@@ -321,7 +321,7 @@ public:
         bool usingCaptureSync = false;
         uint32_t configuredMode = LimiterModeValues::kAuto;
 
-        if (isRecording && captureSyncEnabled) {
+        if (captureRequested && captureSyncEnabled) {
             if (captureFps > 0 && captureSyncMultiplier >= 1 && captureSyncMultiplier <= 8) {
                 limiterActive = true;
                 targetFps = captureFps * captureSyncMultiplier;
@@ -366,12 +366,13 @@ public:
                 reflexLimiterActive_ = false;
             }
             if (!loggedInactive_) {
-                TraceLog("Apply: INACTIVE rec=%d capSync=%d genEn=%d genFps=%d capFps=%d vfr=%d", isRecording ? 1 : 0,
-                         captureSyncEnabled ? 1 : 0, generalEnabled ? 1 : 0, generalFps, captureFps, useVFR ? 1 : 0);
+                TraceLog("Apply: INACTIVE capReq=%d capSync=%d genEn=%d genFps=%d capFps=%d vfr=%d",
+                         captureRequested ? 1 : 0, captureSyncEnabled ? 1 : 0, generalEnabled ? 1 : 0, generalFps,
+                         captureFps, useVFR ? 1 : 0);
                 HookLog(
                     "FPS Limiter: Inactive (general_enabled=%d, generalFps=%d, "
-                    "captureSync=%d, isRecording=%d, useVFR=%d)",
-                    generalEnabled ? 1 : 0, generalFps, captureSyncEnabled ? 1 : 0, isRecording ? 1 : 0,
+                    "captureSync=%d, captureRequested=%d, useVFR=%d)",
+                    generalEnabled ? 1 : 0, generalFps, captureSyncEnabled ? 1 : 0, captureRequested ? 1 : 0,
                     useVFR ? 1 : 0);
                 loggedInactive_ = true;
             }
@@ -505,9 +506,9 @@ public:
             TraceLog("Apply: ACTIVE sync=%s limiter=%s target=%d effective=%d fg=%d fgMult=%d",
                      usingCaptureSync ? "capture" : "general", modeStr, targetFps, effectiveTargetFps, fgActive ? 1 : 0,
                      fgMultiplier);
-            HookLog("FPS Limiter: Active (sync=%s, limiter=%s, target=%d, effective=%d, fg=%d/%dx, isRec=%d)%s",
+            HookLog("FPS Limiter: Active (sync=%s, limiter=%s, target=%d, effective=%d, fg=%d/%dx, capReq=%d)%s",
                     usingCaptureSync ? "capture" : "general", modeStr, targetFps, effectiveTargetFps, fgActive ? 1 : 0,
-                    fgMultiplier, isRecording ? 1 : 0, availNote);
+                    fgMultiplier, captureRequested ? 1 : 0, availNote);
             loggedActive_ = true;
             lastTargetFps_ = effectiveTargetFps;
             lastUsedCaptureSync_ = usingCaptureSync;

@@ -6,9 +6,11 @@
 
 #include <dxgi1_5.h>
 #include <chrono>
+#include <cstdio>
 #include <deque>
 #include <map>
 #include <mutex>
+#include <string>
 #include <thread>
 #include "audio_resampler.h"
 #include "audio_ring_buffer.h"  // Pull Model Buffer
@@ -152,7 +154,7 @@ public:
     int warpCount = 0;
     int dropLogCounter = 0;
     int driftLogCounter = 0;
-    int syncCheckCounter = 0;
+    std::map<int, int> trackSyncCheckCounters;
 
     // Per-recording frame log counters (avoid statics that leak across recordings)
     int injectFrameLogCount = 0;
@@ -424,7 +426,7 @@ public:
             warpCount = 0;
             dropLogCounter = 0;
             driftLogCounter = 0;
-            syncCheckCounter = 0;
+            trackSyncCheckCounters.clear();
             injectFrameLogCount = 0;
             screengrabFrameLogCount = 0;
             silenceLogCounter = 0;
@@ -1183,9 +1185,10 @@ public:
             }
 
             // A/V SYNC MONITORING: Periodic check for drift detection and audio health.
-            // Log about every 10 seconds at high capture rates so short-lived issues
-            // still leave useful breadcrumbs in the recording logs.
-            if (syncCheckCounter++ % 1200 == 0 && firstSrcIdx < encodedSamplesPerSource.size()) {
+            // Track counters per audio track so multi-track sessions surface every
+            // track's health instead of only whichever track hits the shared modulo.
+            int& trackSyncCheckCounter = trackSyncCheckCounters[track];
+            if (trackSyncCheckCounter++ % 1200 == 0 && firstSrcIdx < encodedSamplesPerSource.size()) {
                 int64_t wallVideoMs = videoElapsedMs.load();
                 int64_t videoMs = wallVideoMs;
                 if (videoEnc) {
@@ -1199,31 +1202,59 @@ public:
                 int64_t avDrift = audioMs - videoMs;
                 int64_t pipelineLagMs = ce::audio::ComputeVideoPipelineLagMs(wallVideoMs, videoMs);
 
-                // Gather ring buffer level and drift compensation data
-                size_t rbLevel = 0;
-                int64_t syncOutput = 0;
+                // Summarize all sources contributing to this track so issues on a
+                // secondary app/system source are visible in the periodic sync log.
                 uint64_t overflowDropped = 0;
                 uint64_t latencyTrimmed = 0;
                 uint64_t postTrimmed = 0;
                 uint64_t underrunPadded = 0;
-                if (firstSrcIdx < audioSources.size()) {
-                    auto& src = audioSources[firstSrcIdx];
-                    if (src.ringBuffer)
-                        rbLevel = src.ringBuffer->GetAvailable() / CHANNELS;
-                    syncOutput = src.syncSamplesOutput;
-                    overflowDropped = src.overflowDropSamples;
-                    latencyTrimmed = src.latencyTrimSamples;
-                    postTrimmed = src.postResampleTrimSamples;
-                    underrunPadded = src.underrunPadSamples;
+                std::string sourceSummary;
+                for (size_t srcIdx : srcIndices) {
+                    size_t rbLevel = 0;
+                    int64_t syncOutput = 0;
+                    uint64_t srcOverflowDropped = 0;
+                    uint64_t srcLatencyTrimmed = 0;
+                    uint64_t srcPostTrimmed = 0;
+                    uint64_t srcUnderrunPadded = 0;
+                    if (srcIdx < audioSources.size()) {
+                        auto& src = audioSources[srcIdx];
+                        if (src.ringBuffer) {
+                            rbLevel = src.ringBuffer->GetAvailable() / CHANNELS;
+                        }
+                        syncOutput = src.syncSamplesOutput;
+                        srcOverflowDropped = src.overflowDropSamples;
+                        srcLatencyTrimmed = src.latencyTrimSamples;
+                        srcPostTrimmed = src.postResampleTrimSamples;
+                        srcUnderrunPadded = src.underrunPadSamples;
+                    }
+
+                    overflowDropped += srcOverflowDropped;
+                    latencyTrimmed += srcLatencyTrimmed;
+                    postTrimmed += srcPostTrimmed;
+                    underrunPadded += srcUnderrunPadded;
+
+                    char sourceState[192];
+                    std::snprintf(sourceState, sizeof(sourceState),
+                                  "src%zu(rb=%zu sync=%lld ovf=%llu lat=%llu post=%llu pad=%llu)", srcIdx, rbLevel,
+                                  syncOutput, (unsigned long long)srcOverflowDropped,
+                                  (unsigned long long)srcLatencyTrimmed, (unsigned long long)srcPostTrimmed,
+                                  (unsigned long long)srcUnderrunPadded);
+                    if (!sourceSummary.empty()) {
+                        sourceSummary += "; ";
+                    }
+                    sourceSummary += sourceState;
+                }
+                if (sourceSummary.empty()) {
+                    sourceSummary = "none";
                 }
 
                 DLL_Log(
                     "[A/V SYNC CHECK] Track %d: Video=%lld ms, Audio=%lld ms, "
-                    "Drift=%lld ms, VideoWall=%lld ms, PipelineLag=%lld ms, RBLevel=%zu samples, "
-                    "SyncOutput=%lld, Overflow=%llu, LatencyTrim=%llu, PostTrim=%llu, Pad=%llu",
-                    track, videoMs, audioMs, avDrift, wallVideoMs, pipelineLagMs, rbLevel, syncOutput,
-                    (unsigned long long)overflowDropped, (unsigned long long)latencyTrimmed,
-                    (unsigned long long)postTrimmed, (unsigned long long)underrunPadded);
+                    "Drift=%lld ms, VideoWall=%lld ms, PipelineLag=%lld ms, Overflow=%llu, "
+                    "LatencyTrim=%llu, PostTrim=%llu, Pad=%llu, Sources=%s",
+                    track, videoMs, audioMs, avDrift, wallVideoMs, pipelineLagMs, (unsigned long long)overflowDropped,
+                    (unsigned long long)latencyTrimmed, (unsigned long long)postTrimmed,
+                    (unsigned long long)underrunPadded, sourceSummary.c_str());
 
                 if (std::abs(avDrift) > 100) {
                     DLL_Log(
