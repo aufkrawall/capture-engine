@@ -3,6 +3,8 @@
 #include "logging.h"
 #include "raii_helpers.h"
 
+std::string g_SessionDirName;
+
 namespace {
 
 void CancelAndDrainOverlapped(HANDLE handle, OVERLAPPED* overlapped, HANDLE eventHandle, DWORD waitMs) {
@@ -71,6 +73,19 @@ ProcessMode ParseProcessMode(LPSTR lpCmdLine) {
         return ProcessMode::Sensors;
 
     return ProcessMode::Controller;
+}
+
+std::string ParseSessionDir(LPSTR lpCmdLine) {
+    if (!lpCmdLine || lpCmdLine[0] == '\0')
+        return {};
+    const char* ptr = strstr(lpCmdLine, "--session-dir=");
+    if (!ptr)
+        return {};
+    ptr += 14;  // Skip "--session-dir="
+    const char* end = ptr;
+    while (*end && *end != ' ' && *end != '\t')
+        end++;
+    return std::string(ptr, end);
 }
 
 const char* GetLogFileName(ProcessMode mode) {
@@ -522,6 +537,12 @@ HANDLE SpawnChildProcess(ProcessMode mode, const char* configPath) {
     if (mode == ProcessMode::Logger || mode == ProcessMode::Sensors) {
         size_t len = strlen(cmdLine);
         snprintf(cmdLine + len, sizeof(cmdLine) - len, " --parent-pid=%u", GetCurrentProcessId());
+    }
+
+    // Pass session directory name so children log into the same session folder
+    if (!g_SessionDirName.empty()) {
+        size_t len = strlen(cmdLine);
+        snprintf(cmdLine + len, sizeof(cmdLine) - len, " --session-dir=%s", g_SessionDirName.c_str());
     }
 
     STARTUPINFOA si = {};

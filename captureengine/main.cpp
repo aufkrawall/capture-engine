@@ -8,9 +8,11 @@
 #include <timeapi.h>
 #include <winreg.h>
 // clang-format on
+#include <algorithm>
 #include <atomic>
 #include <filesystem>
 #include <string>
+#include <vector>
 #include "../common/config.h"
 #include "../common/crash_handler.h"
 #include "../common/logging.h"
@@ -309,8 +311,37 @@ void SyncLoggerAndSensorProcesses(const AppConfig& config) {
 }
 }  // namespace
 
-static void PurgeAllLogsInDir(const std::string& logsDir) {
-    CreateDirectoryA(logsDir.c_str(), NULL);
+// Remove old session directories from logs/, keeping the most recent maxKeep.
+// Also cleans up any stale flat .log/.csv files from pre-session-dir versions.
+static void CleanupOldSessionDirs(const std::string& logsDir, size_t maxKeep = 20) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+
+    // Collect session subdirectories (names are YYYYMMDD_HHMMSS, so lexicographic sort = chronological)
+    std::vector<fs::directory_entry> sessions;
+    for (auto& entry : fs::directory_iterator(logsDir, ec)) {
+        if (!entry.is_directory(ec))
+            continue;
+        auto name = entry.path().filename().string();
+        // Validate timestamp format: 15 chars, YYYYMMDD_HHMMSS
+        if (name.size() == 15 && name[8] == '_')
+            sessions.push_back(entry);
+    }
+
+    // Sort oldest-first by name
+    std::sort(sessions.begin(), sessions.end(), [](const fs::directory_entry& a, const fs::directory_entry& b) {
+        return a.path().filename() < b.path().filename();
+    });
+
+    // Remove oldest sessions beyond maxKeep
+    if (sessions.size() > maxKeep) {
+        size_t toRemove = sessions.size() - maxKeep;
+        for (size_t i = 0; i < toRemove; i++) {
+            fs::remove_all(sessions[i].path(), ec);
+        }
+    }
+
+    // Clean up stale flat files from pre-session-dir versions
     const char* patterns[] = {"\\*.log", "\\*.csv"};
     for (int p = 0; p < 2; p++) {
         std::string pattern = logsDir + patterns[p];
@@ -1023,12 +1054,30 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     // Install crash handler early (before config loading) so any startup crash
     // produces a minidump. The dump directory will be updated after config loads.
-    std::string earlyLogsDir = baseDir + "\\logs";
+    std::string logsRootDir = baseDir + "\\logs";
+    CreateDirectoryA(logsRootDir.c_str(), NULL);
+
+    // Determine session directory: Controller generates a new timestamped folder,
+    // child processes inherit the name from --session-dir= on the command line.
+    if (mode == ProcessMode::Controller) {
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        char ts[32];
+        snprintf(ts, sizeof(ts), "%04d%02d%02d_%02d%02d%02d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
+                 st.wSecond);
+        g_SessionDirName = ts;
+        CleanupOldSessionDirs(logsRootDir);
+    } else {
+        g_SessionDirName = ParseSessionDir(lpCmdLine);
+    }
+
+    std::string earlyLogsDir;
+    if (!g_SessionDirName.empty()) {
+        earlyLogsDir = logsRootDir + "\\" + g_SessionDirName;
+    } else {
+        earlyLogsDir = logsRootDir;
+    }
     CreateDirectoryA(earlyLogsDir.c_str(), NULL);
-    // Only the Controller process owns the log directory; child processes must
-    // not wipe logs written by siblings or the crash handler.
-    if (mode == ProcessMode::Controller)
-        PurgeAllLogsInDir(earlyLogsDir);
     SetCrashDumpDirectory(earlyLogsDir);
     InstallCrashHandler();
 
@@ -1072,7 +1121,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             // Game launch will happen in ControllerMain AFTER child processes are
             // ready
             if (g_Config.debugLogging) {
-                Log_Init(baseDir + "\\logs\\launcher.log");
+                Log_Init(earlyLogsDir + "\\launcher.log");
                 LogInfo("[Launcher] Deferred launch path: %s", g_DeferredLaunchPath.c_str());
             }
 
@@ -1081,10 +1130,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         }
     }
 
-    // Setup logging with process-specific log file in logs/ subfolder
-    std::string logsDir = baseDir + "\\logs";
-    CreateDirectoryA(logsDir.c_str(),
-                     NULL);  // Create logs folder if it doesn't exist
+    // Setup logging with process-specific log file in session logs subfolder
+    std::string logsDir = earlyLogsDir;
+    CreateDirectoryA(logsDir.c_str(), NULL);
     std::string logPath = logsDir + "\\" + GetLogFileName(mode);
     g_Config.logFilePath = logPath;
 

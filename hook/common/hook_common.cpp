@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <mutex>
 #include <unordered_map>
+#include "../../common/shared_defs.h"
 #include "fps_limiter.h"
 #include "hook_context.h"
 #include "performance_metrics.h"
@@ -103,31 +104,46 @@ bool BuildLogFilePathForModuleAddress(const void* address, const char* fileName,
     if (!fileName || fileName[0] == '\0')
         return false;
 
-    HMODULE hMod = NULL;
-    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            (LPCSTR)address, &hMod) ||
-        !hMod) {
-        return false;
+    // Try session-specific logs path from DiscoveryInfo first
+    char logDir[MAX_PATH] = {};
+    HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+    if (hDisc) {
+        DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
+        if (pDisc && pDisc->GetMagic() == DISCOVERY_MAGIC && pDisc->logsPath[0]) {
+            strncpy(logDir, pDisc->logsPath, sizeof(logDir) - 1);
+        }
+        if (pDisc)
+            UnmapViewOfFile(pDisc);
+        CloseHandle(hDisc);
     }
 
-    char modulePath[MAX_PATH];
-    DWORD n = GetModuleFileNameA(hMod, modulePath, MAX_PATH);
-    if (n == 0 || n >= MAX_PATH)
-        return false;
+    // Fall back to {moduleDir}\logs if DiscoveryInfo unavailable
+    if (logDir[0] == '\0') {
+        HMODULE hMod = NULL;
+        if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                (LPCSTR)address, &hMod) ||
+            !hMod) {
+            return false;
+        }
 
-    char* lastSlash = strrchr(modulePath, '\\');
-    if (!lastSlash)
-        return false;
-    *lastSlash = '\0';
+        char modulePath[MAX_PATH];
+        DWORD n = GetModuleFileNameA(hMod, modulePath, MAX_PATH);
+        if (n == 0 || n >= MAX_PATH)
+            return false;
 
-    char logDir[MAX_PATH];
-    int written = snprintf(logDir, sizeof(logDir), "%s\\logs", modulePath);
-    if (written <= 0 || written >= (int)sizeof(logDir))
-        return false;
+        char* lastSlash = strrchr(modulePath, '\\');
+        if (!lastSlash)
+            return false;
+        *lastSlash = '\0';
+
+        int written = snprintf(logDir, sizeof(logDir), "%s\\logs", modulePath);
+        if (written <= 0 || written >= (int)sizeof(logDir))
+            return false;
+    }
 
     CreateDirectoryA(logDir, NULL);
 
-    written = snprintf(outPath, outPathLen, "%s\\%s", logDir, fileName);
+    int written = snprintf(outPath, outPathLen, "%s\\%s", logDir, fileName);
     if (written <= 0 || (size_t)written >= outPathLen) {
         outPath[0] = '\0';
         return false;

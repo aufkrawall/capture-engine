@@ -1223,9 +1223,31 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     // perf_metrics_logging now folds into debug_logging so a single switch
     // controls all hook-side diagnostics.
     if (g_pLocalConfig && g_pLocalConfig->debugLogging) {
+      // Read session-specific logs path from DiscoveryInfo (set by inject process)
+      std::string sessionLogsDir;
+      HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+      if (hDisc) {
+        DiscoveryInfo *pDisc = (DiscoveryInfo *)MapViewOfFile(
+            hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
+        if (pDisc && pDisc->GetMagic() == DISCOVERY_MAGIC && pDisc->logsPath[0]) {
+          sessionLogsDir = pDisc->logsPath;
+        }
+        if (pDisc) UnmapViewOfFile(pDisc);
+        CloseHandle(hDisc);
+      }
+
+      // Fall back to {dllDir}\logs if DiscoveryInfo unavailable
+      if (sessionLogsDir.empty())
+        sessionLogsDir = dir + "\\logs";
+
+      CreateDirectoryA(sessionLogsDir.c_str(), NULL);
+
+      // Update crash dump directory to session folder
+      SetCrashDumpDirectory(sessionLogsDir);
+
       char perfLogPath[MAX_PATH];
       snprintf(perfLogPath, sizeof(perfLogPath),
-               "%s\\logs\\perf_metrics_%lu.csv", dir.c_str(),
+               "%s\\perf_metrics_%lu.csv", sessionLogsDir.c_str(),
                GetCurrentProcessId());
       PerfLogger::Get().Init(perfLogPath);
     }
@@ -1646,9 +1668,8 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     }
 
     // Install Crash Handler immediately to catch startup crashes
-    // CRITICAL FIX: Always use captureengine/logs directory, not the DLL's
-    // directory This ensures dumps go to the correct location even when DLL is
-    // loaded from testapp
+    // Use session-specific logs directory from DiscoveryInfo if available,
+    // otherwise fall back to {captureEngineDir}/logs.
     std::string crashDir;
     char dllPath[MAX_PATH] = {0};
     if (GetModuleFileNameA(hinstDLL, dllPath, MAX_PATH)) {
@@ -1660,10 +1681,25 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
       }
       // Set process name for crash logging
       SetCrashProcessName(fileName);
-      crashDir = (captureEngineDir / "logs").string();
+
+      // Try DiscoveryInfo for session-specific logs path
+      HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+      if (hDisc) {
+        DiscoveryInfo *pDisc = (DiscoveryInfo *)MapViewOfFile(
+            hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
+        if (pDisc && pDisc->GetMagic() == DISCOVERY_MAGIC && pDisc->logsPath[0]) {
+          crashDir = pDisc->logsPath;
+        }
+        if (pDisc) UnmapViewOfFile(pDisc);
+        CloseHandle(hDisc);
+      }
+
+      if (crashDir.empty())
+        crashDir = (captureEngineDir / "logs").string();
     } else {
       crashDir = ".\\logs";
     }
+    CreateDirectoryA(crashDir.c_str(), NULL);
     SetCrashDumpDirectory(crashDir);
 
     // CRITICAL FIX: Install crash handler IMMEDIATELY for all non-service

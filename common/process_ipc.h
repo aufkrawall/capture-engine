@@ -138,6 +138,14 @@ private:
     uint32_t sequence;
 };
 
+// Global session directory name (e.g., "20260318_200247").
+// Set by Controller at startup, parsed from --session-dir= by children.
+extern std::string g_SessionDirName;
+
+// Parse --session-dir=<name> from WinMain lpCmdLine string.
+// Returns the session dir name or empty string if not present.
+std::string ParseSessionDir(LPSTR lpCmdLine);
+
 // Utility: Spawn a child process with specified mode
 // Returns process handle on success, NULL on failure
 HANDLE SpawnChildProcess(ProcessMode mode, const char* configPath);
