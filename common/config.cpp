@@ -271,6 +271,10 @@ container=mkv
 ; output_dir - Values: path, empty = executable directory
 output_dir=
 ; rate_control - Values: VBR, CBR, CQ, CQP
+;   VBR  = Variable Bitrate (uses bitrate + max_bitrate)
+;   CBR  = Constant Bitrate  (uses bitrate + max_bitrate)
+;   CQ   = VBR with Target Quality (like OBS "VBR"); uses qp as quality target + max_bitrate as ceiling, bitrate ignored
+;   CQP  = True Constant QP (like OBS "CQP"); uses qp only, no bitrate limit at all
 rate_control=VBR
 ; bitrate - Values: e.g. 75Mbps, 60000Kbps, 60000000
 bitrate=75Mbps
@@ -302,7 +306,9 @@ preset=p1
 tuning=hq
 ; multipass - Values: disabled, qres, fullres
 multipass=disabled
-; qp - Values: integer >= 0 (used for NVENC CQ/CQP quality; H.264/HEVC typically 0-51, AV1 CQ 0-63)
+; qp - Quality/QP value used by CQ and CQP rate control modes
+;   CQ mode:  target quality (H.264/HEVC: 0-51, AV1: 0-63; lower = better)
+;   CQP mode: fixed quantizer  (H.264/HEVC: 0-51, AV1: 0-255; lower = better)
 qp=23
 ; lookahead - Values: true, false
 lookahead=false
