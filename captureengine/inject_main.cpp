@@ -543,11 +543,10 @@ int InjectProcessMain(const AppConfig& config) {
     pSharedMem->SetRequestExit(true);
     Sleep(200);  // Give hook time to unload
 
-    // Cleanup injector (ejects all hooks)
-    // Destructor handles this
-
-    // Cleanup shared memory and handles
+    // Destroy injector explicitly before other cleanup so WMI teardown
+    // (CancelAsyncCall + drain) completes while COM is still initialized.
     LogInfo("[Inject] Cleaning up...");
+    injector.reset();
     if (pShmem)
         UnmapViewOfFile(pShmem);
     if (hMapShmem)

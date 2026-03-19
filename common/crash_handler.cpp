@@ -23,6 +23,7 @@ static std::mutex g_TraceCrashMutex;
 static std::atomic<int> g_VEHCallCount{0};
 static std::atomic<int> g_RPCDisconnectedExceptionCount{0};
 static std::atomic<int> g_RPCServerUnavailableExceptionCount{0};
+static std::atomic<int> g_ENoInterfaceExceptionCount{0};
 static std::atomic<int> g_BreakpointExceptionCount{0};
 typedef BOOL(WINAPI* MINIDUMPWRITEDUMP)(HANDLE hProcess, DWORD ProcessId, HANDLE hFile, MINIDUMP_TYPE DumpType,
                                         PMINIDUMP_EXCEPTION_INFORMATION ExceptionParam,
@@ -353,6 +354,17 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
     // earlier benign exceptions do not force a dump here.
     if (!forceDump && code == 0x800706ba) {
         if (IncrementExceptionCount(g_RPCServerUnavailableExceptionCount) <= 3) {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+    }
+
+    // E_NOINTERFACE (0x80004002) on thread pool workers during COM shutdown:
+    // WMI async callbacks already queued on the thread pool may try to dispatch
+    // after CancelAsyncCall + Release have torn down the stub sink. The COM
+    // runtime raises E_NOINTERFACE when it fails to QI the dead stub. This is
+    // benign during process teardown — the notification is no longer needed.
+    if (!forceDump && code == 0x80004002) {
+        if (IncrementExceptionCount(g_ENoInterfaceExceptionCount) <= 5) {
             return EXCEPTION_CONTINUE_SEARCH;
         }
     }

@@ -445,8 +445,18 @@ bool InjectionManager::InitializeWMI() {
 }
 
 void InjectionManager::ShutdownWMI() {
+    // Mark the sink as done FIRST so any in-flight callback returns immediately
+    if (pSink) {
+        pSink->MarkDone();
+    }
+
     if (pSvc) {
         pSvc->CancelAsyncCall(pStubSink);
+        // Brief delay to let thread pool drain any WMI callbacks already queued.
+        // CancelAsyncCall prevents NEW notifications but callbacks already in the
+        // LRPC thread pool queue can still dispatch. 100ms is sufficient for the
+        // thread pool to complete any pending dispatch.
+        Sleep(100);
         pSvc->Release();
         pSvc = nullptr;
     }
@@ -495,7 +505,7 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
     // Exception handling: WMI callbacks can throw COM exceptions
     // Catching them prevents crashes and allows graceful degradation
     try {
-        if (bDone || !pManager)
+        if (bDone.load(std::memory_order_acquire) || !pManager)
             return WBEM_S_NO_ERROR;
 
         for (int i = 0; i < lObjectCount; i++) {

@@ -64,13 +64,15 @@ public:
   // WMI Event Sink
   class ProcessEventSink : public IWbemObjectSink {
     LONG m_lRef;
-    bool bDone;
+    std::atomic<bool> bDone;
     InjectionManager *pManager;
 
   public:
     ProcessEventSink(InjectionManager *manager)
         : m_lRef(0), bDone(false), pManager(manager) {}
-    virtual ~ProcessEventSink() { bDone = true; }
+    virtual ~ProcessEventSink() { bDone.store(true, std::memory_order_release); }
+
+    void MarkDone() { bDone.store(true, std::memory_order_release); }
 
     virtual ULONG STDMETHODCALLTYPE AddRef();
     virtual ULONG STDMETHODCALLTYPE Release();
