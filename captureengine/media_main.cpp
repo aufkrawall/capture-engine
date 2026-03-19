@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <deque>
 #include <mutex>
 #include <string>
@@ -1006,6 +1007,13 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint32_t pendingInjectTrimmedLogCount = 0;
     size_t maxBufferedInjectDepthSinceLog = 0;
     DWORD lastInjectTrimLog = GetTickCount();
+    // Bresenham credit-based frame pacing state: distributes duplicates evenly
+    // when game fps < recording target fps instead of clustering them at
+    // frame-timing jitter boundaries.
+    uint32_t pacingInputThisWindow = 0;
+    uint32_t pacingTicksThisWindow = 0;
+    double smoothedInputPerTick = 1.0;    // EMA: avg unique frames per encoder tick
+    double frameCreditAccumulator = 0.0;  // Bresenham error term
     auto ClearBufferedInjectFrames = [&]() {
         while (!bufferedInjectFrames.empty()) {
             QueuedFrame queuedFrame = std::move(bufferedInjectFrames.front());
@@ -1043,8 +1051,8 @@ void EncoderThreadFunc(const AppConfig& config) {
     while (g_EncoderRunning || g_FrameQueue.Size() > 0 || hasBufferedScreenGrabFrame || !bufferedInjectFrames.empty()) {
         static DWORD lastThreadLog = 0;
         if (GetTickCount() - lastThreadLog > 1000) {
-            LogInfo("[EncoderThread] Alive. QueueSize=%u Bottleneck=%d", (unsigned int)g_FrameQueue.Size(),
-                    (int)g_IsEncoderBottlenecked);
+            LogInfo("[EncoderThread] Alive. QueueSize=%u Bottleneck=%d InputRate=%.3f",
+                    (unsigned int)g_FrameQueue.Size(), (int)g_IsEncoderBottlenecked, smoothedInputPerTick);
             lastThreadLog = GetTickCount();
         }
 
@@ -1197,6 +1205,16 @@ void EncoderThreadFunc(const AppConfig& config) {
                     bufferedInjectFrames.push_back(std::move(drainedFrame));
                 }
 
+                // Track frame arrival rate for Bresenham pacing (update every half-second)
+                pacingInputThisWindow += (uint32_t)drainedInjectFrames.size();
+                pacingTicksThisWindow++;
+                if (recordingOutputLive && pacingTicksThisWindow >= (uint32_t)config.video.fps / 2) {
+                    double measuredRate = (double)pacingInputThisWindow / (double)pacingTicksThisWindow;
+                    smoothedInputPerTick = smoothedInputPerTick * 0.5 + measuredRate * 0.5;
+                    pacingInputThisWindow = 0;
+                    pacingTicksThisWindow = 0;
+                }
+
                 const size_t injectReserveFrames = GetInjectReserveFrames();
                 constexpr size_t kMaxInjectBufferedHeadroomFrames = 12;
                 // During encoder startup (first 1500ms), the NVENC lookahead buffer
@@ -1234,19 +1252,35 @@ void EncoderThreadFunc(const AppConfig& config) {
                 }
                 size_t minBufferedInjectFrames = injectReserveFrames;
                 if (recordingOutputLive && minBufferedInjectFrames > 0) {
-                    // Once recording is already live, allow the reserve to drain by one
-                    // frame before duplicating so we don't visibly replay old frames
-                    // while fresh inject frames are still buffered and ready.
                     minBufferedInjectFrames -= 1;
                 }
+
+                // Bresenham credit-based pacing: add credit proportional to the
+                // measured game-frame arrival rate.  When game fps >= target,
+                // credit reaches 1.0 every tick → always pop unique frame (same
+                // behaviour as the old greedy drain).  When game fps < target,
+                // credit occasionally stays below 1.0 → a scheduled duplicate
+                // that is evenly distributed rather than clustered at jitter
+                // boundaries.
+                double creditPerTick = std::min(smoothedInputPerTick, 1.0);
+                frameCreditAccumulator += creditPerTick;
+
                 if (!g_EncoderRunning && !bufferedInjectFrames.empty()) {
                     frame = std::move(bufferedInjectFrames.front());
                     bufferedInjectFrames.pop_front();
                     popped = true;
-                } else if (bufferedInjectFrames.size() > minBufferedInjectFrames) {
+                    frameCreditAccumulator = std::min(frameCreditAccumulator, creditPerTick);
+                } else if (frameCreditAccumulator >= 1.0 && bufferedInjectFrames.size() > minBufferedInjectFrames) {
                     frame = std::move(bufferedInjectFrames.front());
                     bufferedInjectFrames.pop_front();
                     popped = true;
+                    frameCreditAccumulator -= 1.0;
+                } else if (bufferedInjectFrames.size() > injectReserveFrames + 6) {
+                    // Buffer pressure: pop to prevent unnecessary trimming
+                    frame = std::move(bufferedInjectFrames.front());
+                    bufferedInjectFrames.pop_front();
+                    popped = true;
+                    frameCreditAccumulator = std::fmod(frameCreditAccumulator, 1.0);
                 }
             } else {
                 // VFR: keep the existing newest-frame sampling for the lowest latency.
@@ -1293,6 +1327,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                                             bufferedInjectFrames.size(), injectReserveFrames, warmupElapsedMs)) {
                 recordingOutputLive = true;
                 recordingLiveTick = GetTickCount64();
+                // Reset Bresenham pacing state for a clean start
+                frameCreditAccumulator = 0.0;
+                pacingInputThisWindow = 0;
+                pacingTicksThisWindow = 0;
                 SetRecordingVisibleState(true);
                 LogInfo("[EncoderThread] Recording live after %llums hidden warmup (%s, hiddenFrames=%u)",
                         static_cast<unsigned long long>(warmupElapsedMs64), useScreenGrab ? "WGC" : "inject",
