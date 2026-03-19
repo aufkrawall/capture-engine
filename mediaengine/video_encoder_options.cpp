@@ -625,7 +625,8 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
         // making ALL B-frames in a mini-GOP look like the midpoint of
         // their references — causing a visible freeze-jump stutter pattern
         // (effective update rate drops to ref-frame rate ≈ fps/(b_frames+1)).
-        if (plan.maxBFrames > 0) {
+        // Note: NVENC AV1 does not support weighted_pred (returns ENOSYS).
+        if (plan.maxBFrames > 0 && kind.family != CodecFamily::kAV1) {
             AddGeneratedOption(&plan, "weighted_pred", "1");
         }
 
