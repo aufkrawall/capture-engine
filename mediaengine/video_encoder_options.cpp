@@ -654,27 +654,10 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
             AddGeneratedOption(&plan, "weighted_pred", "1");
         }
 
-        // B-frame reference mode handling.
-        //
-        // NVENC AV1 through FFmpeg: leaf B-frames (non-reference) get near-
-        // zero bits (~600 B for 4K), making them visually identical to a
-        // reference and creating periodic stutter.  Forcing b_ref_mode=each
-        // makes every B-frame a reference so the encoder must allocate real
-        // bits.  This is the only known mitigation through FFmpeg's av1_nvenc
-        // wrapper (native NVENC SDK handles this differently, which is why
-        // OBS doesn't have this issue).
-        if (plan.maxBFrames > 0 && kind.family == CodecFamily::kAV1) {
-            const auto userMode = CanonicalizeNvencBRefMode(config.bRefMode);
-            if (userMode.has_value() && *userMode != "each" && *userMode != "disabled") {
-                AddWarning(&plan, "NVENC AV1: b_ref_mode auto-upgraded from '" + *userMode +
-                                      "' to 'each'. Non-reference B-frames in NVENC AV1 (via FFmpeg) "
-                                      "receive near-zero bits, causing visible stutter. With "
-                                      "b_ref_mode=each all B-frames serve as references and get proper "
-                                      "bit allocation.");
-            }
-            AddGeneratedOption(&plan, "b_ref_mode", "each");
-        } else if (config.bRefMode.empty()) {
-            // When user hasn't set b_ref_mode, leave at NVENC default.
+        if (config.bRefMode.empty()) {
+            // When user hasn't set b_ref_mode, leave at NVENC default
+            // (disabled).  b_ref_mode=each gives smoothest results but is
+            // too slow for high b_frames counts in real-time capture.
         } else {
             const auto bRefMode = CanonicalizeNvencBRefMode(config.bRefMode);
             if (!bRefMode.has_value()) {
