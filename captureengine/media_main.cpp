@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <deque>
 #include <mutex>
 #include <string>
@@ -1008,12 +1009,19 @@ void EncoderThreadFunc(const AppConfig& config) {
     DWORD lastInjectTrimLog = GetTickCount();
     // Bresenham credit-based frame pacing state: distributes duplicates evenly
     // when game fps < recording target fps instead of clustering them at
-    // frame-timing jitter boundaries.
+    // frame-timing jitter boundaries.  When game fps > target fps, the
+    // Bresenham also distributes frame SKIPS evenly for smooth decimation.
     uint32_t pacingInputThisWindow = 0;
     uint32_t pacingTicksThisWindow = 0;
     uint32_t pacingEmaUpdates = 0;
     double smoothedInputPerTick = 1.0;    // EMA: avg unique frames per encoder tick
     double frameCreditAccumulator = 0.0;  // Bresenham error term
+    // Output-grid tracking for timestamp-aware frame selection.
+    // When multiple buffered frames are available (game fps > target fps),
+    // selecting the frame closest to the ideal output grid time produces
+    // the smoothest motion in the CFR output.
+    int64_t encoderGridStartQpc = 0;
+    int64_t encoderGridTickCount = 0;
     auto ClearBufferedInjectFrames = [&]() {
         while (!bufferedInjectFrames.empty()) {
             QueuedFrame queuedFrame = std::move(bufferedInjectFrames.front());
@@ -1158,15 +1166,24 @@ void EncoderThreadFunc(const AppConfig& config) {
                     ReleaseQueuedFrameTexture(stale);
                 }
 
-                // Bresenham credit-based pacing
-                double creditPerTick = std::min(smoothedInputPerTick, 1.0);
+                // Bresenham credit-based pacing (WGC path uses the same
+                // unclamped credit as inject for proper overcapture decimation)
+                double creditPerTick = smoothedInputPerTick;
                 frameCreditAccumulator += creditPerTick;
+
+                // Discard excess WGC frames (Bresenham skip)
+                while (frameCreditAccumulator >= 2.0 && bufferedWgcFrames.size() > 1) {
+                    QueuedFrame excess = std::move(bufferedWgcFrames.front());
+                    bufferedWgcFrames.pop_front();
+                    ReleaseQueuedFrameTexture(excess);
+                    frameCreditAccumulator -= 1.0;
+                }
 
                 if (!g_EncoderRunning && !bufferedWgcFrames.empty()) {
                     frame = std::move(bufferedWgcFrames.front());
                     bufferedWgcFrames.pop_front();
                     popped = true;
-                    frameCreditAccumulator = std::min(frameCreditAccumulator, creditPerTick);
+                    frameCreditAccumulator = std::min(frameCreditAccumulator, 1.0);
                 } else if (frameCreditAccumulator >= 1.0 && !bufferedWgcFrames.empty()) {
                     frame = std::move(bufferedWgcFrames.front());
                     bufferedWgcFrames.pop_front();
@@ -1280,24 +1297,65 @@ void EncoderThreadFunc(const AppConfig& config) {
 
                 // Bresenham credit-based pacing: add credit proportional to the
                 // measured game-frame arrival rate.  When game fps >= target,
-                // credit reaches 1.0 every tick → always pop unique frame (same
-                // behaviour as the old greedy drain).  When game fps < target,
-                // credit occasionally stays below 1.0 → a scheduled duplicate
-                // that is evenly distributed rather than clustered at jitter
-                // boundaries.
-                double creditPerTick = std::min(smoothedInputPerTick, 1.0);
+                // credit reaches 1.0 every tick → pop a unique frame.  When
+                // game fps < target, credit occasionally stays below 1.0 → a
+                // scheduled duplicate distributed evenly.  When game fps >
+                // target (overcapture), credit exceeds 2.0 → skip excess frames
+                // with Bresenham-even distribution for smoothest decimation.
+                double creditPerTick = smoothedInputPerTick;
                 frameCreditAccumulator += creditPerTick;
+
+                // Discard excess frames when overcapturing (Bresenham skip).
+                // Each discarded frame represents one "step" in the Bresenham
+                // line from input rate to output rate, distributing the skips
+                // as evenly as possible across the output timeline.
+                while (frameCreditAccumulator >= 2.0 && bufferedInjectFrames.size() > minBufferedInjectFrames + 1) {
+                    QueuedFrame excess = std::move(bufferedInjectFrames.front());
+                    bufferedInjectFrames.pop_front();
+                    DiscardQueuedFrame(excess);
+                    frameCreditAccumulator -= 1.0;
+                    g_InjectCadenceDroppedFrames.fetch_add(1, std::memory_order_relaxed);
+                }
 
                 if (!g_EncoderRunning && !bufferedInjectFrames.empty()) {
                     frame = std::move(bufferedInjectFrames.front());
                     bufferedInjectFrames.pop_front();
                     popped = true;
-                    frameCreditAccumulator = std::min(frameCreditAccumulator, creditPerTick);
+                    frameCreditAccumulator = std::min(frameCreditAccumulator, 1.0);
                 } else if (frameCreditAccumulator >= 1.0 && bufferedInjectFrames.size() > minBufferedInjectFrames) {
+                    // Timestamp-aware selection: when multiple frames are
+                    // available, pick the one closest to the ideal output grid
+                    // time.  This reduces temporal error and smooths the motion
+                    // cadence compared to always taking the oldest frame (FIFO).
+                    size_t availableCount = bufferedInjectFrames.size() - minBufferedInjectFrames;
+                    if (availableCount > 1 && encoderGridStartQpc > 0) {
+                        int64_t idealQpc = encoderGridStartQpc + encoderGridTickCount * targetIntervalTicks;
+                        size_t bestIdx = 0;
+                        int64_t bestDist = std::abs(bufferedInjectFrames[0].timestamp - idealQpc);
+                        for (size_t i = 1; i < availableCount; i++) {
+                            int64_t dist = std::abs(bufferedInjectFrames[i].timestamp - idealQpc);
+                            if (dist < bestDist) {
+                                bestDist = dist;
+                                bestIdx = i;
+                            }
+                        }
+                        // Discard all frames older than the selected one.
+                        for (size_t i = 0; i < bestIdx; i++) {
+                            QueuedFrame stale = std::move(bufferedInjectFrames.front());
+                            bufferedInjectFrames.pop_front();
+                            DiscardQueuedFrame(stale);
+                            g_InjectCadenceDroppedFrames.fetch_add(1, std::memory_order_relaxed);
+                        }
+                    }
                     frame = std::move(bufferedInjectFrames.front());
                     bufferedInjectFrames.pop_front();
                     popped = true;
                     frameCreditAccumulator -= 1.0;
+                    // Update grid tracking for timestamp selection.
+                    if (encoderGridStartQpc == 0) {
+                        encoderGridStartQpc = frame.timestamp;
+                    }
+                    encoderGridTickCount++;
                 } else if (bufferedInjectFrames.size() > injectReserveFrames + 6) {
                     // Buffer pressure: pop to prevent unnecessary trimming
                     frame = std::move(bufferedInjectFrames.front());
@@ -1355,6 +1413,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 frameCreditAccumulator = 0.0;
                 pacingInputThisWindow = 0;
                 pacingTicksThisWindow = 0;
+                encoderGridStartQpc = 0;
+                encoderGridTickCount = 0;
                 SetRecordingVisibleState(true);
                 LogInfo(
                     "[EncoderThread] Recording live after %llums hidden warmup (%s, hiddenFrames=%u, "

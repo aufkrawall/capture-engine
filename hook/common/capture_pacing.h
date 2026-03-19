@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstdlib>
 
 #include "../../common/shared_defs.h"
 #include "hook_common.h"
@@ -12,6 +13,11 @@
 // Returns true if the current frame should be SKIPPED to maintain target FPS
 // cadence.  Uses an atomic deadline with compare-and-swap so that concurrent
 // Present threads (e.g. frame-generation paths) are handled lock-free.
+//
+// To minimize CFR judder when game FPS is near but above target FPS, the gate
+// accepts frames within half a target interval *before* the deadline.  This
+// captures the frame whose game timestamp is closest to each output grid tick,
+// giving the downstream encoder the smoothest possible source cadence.
 //
 // Each binary (hook DLL, Vulkan layer DLL) gets its own set of static atomics,
 // which is correct since only one graphics API is active per process.
@@ -31,6 +37,11 @@ inline bool ShouldSkipCaptureForTargetCadence(SharedMemoryLayout* shm, const cha
     }
 
     const int64_t targetIntervalUs = 1000000LL / static_cast<int64_t>(captureFps);
+    // Accept frames within half a target interval before the deadline.
+    // This selects the present whose timestamp is closest to the ideal output
+    // grid tick instead of always waiting for the first present *after* it,
+    // reducing the maximum temporal error from ~targetInterval to ~halfInterval.
+    const int64_t halfIntervalUs = targetIntervalUs / 2;
     const int64_t resetThresholdUs = targetIntervalUs * 4;
     const int64_t nowUs = PerfLogger::GetQpcUs();
 
@@ -50,8 +61,8 @@ inline bool ShouldSkipCaptureForTargetCadence(SharedMemoryLayout* shm, const cha
             continue;
         }
 
-        // Too early — skip this frame.
-        if (nowUs < nextCaptureDeadlineUs) {
+        // Well before deadline — skip this frame.
+        if (nowUs < nextCaptureDeadlineUs - halfIntervalUs) {
             uint64_t skipCount = s_pacedCaptureSkipCount.fetch_add(1, std::memory_order_relaxed) + 1;
             if (skipCount <= 10 || (skipCount % 1000) == 0) {
                 HookLogImportant("%s: Pacing capture skip #%llu (until=%lldus interval=%lldus captureFps=%d)", apiTag,
@@ -62,11 +73,19 @@ inline bool ShouldSkipCaptureForTargetCadence(SharedMemoryLayout* shm, const cha
             return true;  // Skip
         }
 
-        // Advance deadline past current time by whole intervals.
-        int64_t advancedDeadlineUs = nextCaptureDeadlineUs;
-        do {
-            advancedDeadlineUs += targetIntervalUs;
-        } while (advancedDeadlineUs <= nowUs);
+        // Frame is within the half-interval acceptance window OR past deadline.
+        // Capture it — it's the closest present to this output grid tick.
+        int64_t advancedDeadlineUs;
+        if (nowUs < nextCaptureDeadlineUs) {
+            // Early-accept: advance by exactly one interval from the grid.
+            advancedDeadlineUs = nextCaptureDeadlineUs + targetIntervalUs;
+        } else {
+            // At or past deadline: advance past current time by whole intervals.
+            advancedDeadlineUs = nextCaptureDeadlineUs;
+            do {
+                advancedDeadlineUs += targetIntervalUs;
+            } while (advancedDeadlineUs <= nowUs);
+        }
 
         if (s_nextCaptureDeadlineUs.compare_exchange_weak(nextCaptureDeadlineUs, advancedDeadlineUs,
                                                           std::memory_order_acq_rel, std::memory_order_acquire)) {
