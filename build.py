@@ -204,15 +204,13 @@ PACKAGES = [
     "mingw-w64-clang-x86_64-vulkan-headers",
     "mingw-w64-clang-x86_64-vulkan-loader",
     "mingw-w64-i686-toolchain",
-    "mingw-w64-i686-clang",
     "mingw-w64-i686-vulkan-headers",
     "mingw-w64-i686-vulkan-loader",
     "mingw-w64-clang-x86_64-cppwinrt",  # For Windows Graphics Capture
     "mingw-w64-clang-x86_64-gtest",
     "mingw-w64-clang-x86_64-amf-headers",
     "mingw-w64-clang-x86_64-onevpl",  # For QSV
-    "mingw-w64-clang-x86_64-lld",  # For delay-load support (x64)
-    "mingw-w64-i686-lld",  # For delay-load support (x86)
+    "mingw-w64-clang-x86_64-lld",  # For delay-load support (x64 + x86 cross-compile)
     "mingw-w64-clang-x86_64-clang-tools-extra",  # For clang-format
     "make",
     "ccache",
@@ -237,7 +235,7 @@ def safe_extract_tar(archive: tarfile.TarFile, destination: str) -> None:
         member_abs = os.path.normcase(os.path.abspath(os.path.join(dest_abs, member.name)))
         if member_abs != dest_abs and not member_abs.startswith(dest_abs + os.sep):
             raise RuntimeError(f"Unsafe archive member path: {member.name}")
-    archive.extractall(dest_abs)
+    archive.extractall(dest_abs, filter="data")
 
 
 def patch_amf_header():
@@ -695,7 +693,8 @@ def get_compiler_exe(arch="x64"):
         if arch == "x64":
             return os.path.join(MSYS2_DIR, "clang64", "bin", "clang++.exe")
         else:
-            return os.path.join(MSYS2_DIR, "mingw32", "bin", "clang++.exe")
+            # Cross-compile x86 from clang64 (mingw-w64-i686-clang was removed from MSYS2)
+            return os.path.join(MSYS2_DIR, "clang64", "bin", "clang++.exe")
 
 
 def get_windres_exe(arch="x64"):
@@ -1551,14 +1550,17 @@ def get_env_x86():
         env["DISABLE_CCACHE"] = "1"
         return env, x86_bin
 
-    clang_bin = os.path.join(MSYS2_DIR, "mingw32", "bin")
+    # Cross-compile x86 from clang64: both clang64/bin (compiler) and
+    # mingw32/bin (windres, pkg-config, runtime libs) must be on PATH.
+    clang64_bin = os.path.join(MSYS2_DIR, "clang64", "bin")
+    mingw32_bin = os.path.join(MSYS2_DIR, "mingw32", "bin")
     usr_bin = os.path.join(MSYS2_DIR, "usr", "bin")
     env = os.environ.copy()
-    env["PATH"] = clang_bin + os.pathsep + usr_bin + os.pathsep + env.get("PATH", "")
+    env["PATH"] = clang64_bin + os.pathsep + mingw32_bin + os.pathsep + usr_bin + os.pathsep + env.get("PATH", "")
     env["PKG_CONFIG_PATH"] = os.path.join(MSYS2_DIR, "mingw32", "lib", "pkgconfig")
     env["CCACHE_DIR"] = os.path.join(MSYS2_DIR, ".ccache")
     env["DISABLE_CCACHE"] = "1"
-    return env, clang_bin
+    return env, mingw32_bin
 
 
 def ensure_dirs():
@@ -2610,14 +2612,20 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
     hook_cflags = make_cpp_cflags(hook_opt_flags, suppress_microsoft_exception_spec=True) + layer_extra_flags
     layer_cflags = cflags + layer_extra_flags
 
-    # x86 Clang requires -stdlib=libstdc++ because mingw32 only has libstdc++,
-    # not libc++. Add it upfront to avoid a second compilation pass.
+    # x86 cross-compilation from clang64: need --target, --sysroot, and
+    # -stdlib=libstdc++ because mingw32 only has libstdc++, not libc++.
     if arch == "x86":
         is_clang = "clang" in os.path.basename(clang_exe).lower()
         if is_clang:
-            log("[INFO] x86 Vulkan layer: adding -stdlib=libstdc++ (Clang on mingw32)")
-            hook_cflags.append("-stdlib=libstdc++")
-            layer_cflags.append("-stdlib=libstdc++")
+            log("[INFO] x86 Vulkan layer: adding cross-compilation flags (Clang on mingw32)")
+            x86_cross_flags = [
+                "--target=i686-w64-mingw32",
+                "--sysroot=" + os.path.join(MSYS2_DIR, "mingw32"),
+                "-stdlib=libstdc++",
+                "-femulated-tls",
+            ]
+            hook_cflags.extend(x86_cross_flags)
+            layer_cflags.extend(x86_cross_flags)
 
     # Add Vulkan headers include path (from MSYS2 on Linux)
     if IS_LINUX:
@@ -2700,6 +2708,16 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         ldflags.extend(LD_OPT_FLAGS_X64)  # High-entropy ASLR (x64 only)
     if arch == "x86":
         ldflags.append("-Wl,--kill-at")
+        if not IS_LINUX:
+            ldflags.extend([
+                "--target=i686-w64-mingw32",
+                "--sysroot=" + os.path.join(MSYS2_DIR, "mingw32"),
+                "-fuse-ld=lld",
+                "-stdlib=libstdc++",
+                "-rtlib=libgcc",
+                "--unwindlib=libgcc",
+                "-lpthread",
+            ])
 
         # Re-add -static for proper linking
         if "-static" not in ldflags:
@@ -2845,7 +2863,13 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         else:  # x86
             curr_cflags = make_cpp_cflags(
                 OPT_FLAGS_X86,
-                arch_flags=["-m32", "-mstackrealign"],
+                arch_flags=[
+                    "--target=i686-w64-mingw32",
+                    "--sysroot=" + os.path.join(MSYS2_DIR, "mingw32"),
+                    "-mstackrealign",
+                    "-stdlib=libstdc++",
+                    "-femulated-tls",
+                ],
                 suppress_microsoft_exception_spec=True,
             )
 
@@ -2964,15 +2988,32 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         # LLD linker - use on Windows MSYS2, fallback to default on Linux
         if not IS_LINUX:
             ldflags_hook.extend(["-fuse-ld=lld", "-Wl,--exclude-all-symbols"])
+            if arch == "x86":
+                ldflags_hook.extend([
+                    "--target=i686-w64-mingw32",
+                    "--sysroot=" + os.path.join(MSYS2_DIR, "mingw32"),
+                    "-stdlib=libstdc++",
+                    "-static-libstdc++",
+                    "-rtlib=libgcc",
+                    "--unwindlib=libgcc",
+                    "-lpthread",
+                ])
 
         # Hook DLL must use conservative arch flags (injected into game processes
         # with unknown CPU support). Replace curr_cflags march/ffast-math flags.
         if arch == "x64":
             hook_base_cflags = make_cpp_cflags(HOOK_OPT_FLAGS_X64, suppress_microsoft_exception_spec=True)
         else:
+            x86_sysroot = os.path.join(MSYS2_DIR, "mingw32")
             hook_base_cflags = make_cpp_cflags(
                 HOOK_OPT_FLAGS_X86,
-                arch_flags=["-m32", "-mstackrealign"],
+                arch_flags=[
+                    "--target=i686-w64-mingw32",
+                    "--sysroot=" + x86_sysroot,
+                    "-mstackrealign",
+                    "-stdlib=libstdc++",
+                    "-femulated-tls",
+                ],
                 suppress_microsoft_exception_spec=True,
             )
 
@@ -3367,7 +3408,13 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         x86_clang = get_compiler_exe("x86")
         # Check if x86 compiler exists (on Linux it might not)
         if IS_LINUX or os.path.exists(x86_clang):
-            x86_cflags = make_cpp_cflags(["-O3"], arch_flags=["-m32"])
+            x86_cflags = make_cpp_cflags(
+                ["-O3"],
+                arch_flags=[
+                    "--target=i686-w64-mingw32",
+                    "--sysroot=" + os.path.join(MSYS2_DIR, "mingw32"),
+                ],
+            )
             compile_vulkan_layer(x86_env, x86_clang, x86_cflags, "x86")
     elif env.get("CE_SANITIZE") == "1":
         log("Sanitizer mode: skipping x86 Vulkan layer (ASan runtime unavailable)")

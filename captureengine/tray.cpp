@@ -95,6 +95,18 @@ LRESULT CALLBACK TrayIcon::WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARA
         if (pThis) {
             pThis->UpdateBlinkState();
         }
+    } else if (message == WM_QUERYENDSESSION) {
+        // Windows is asking if we can shut down — always say yes
+        return TRUE;
+    } else if (message == WM_ENDSESSION) {
+        if (wParam) {
+            // Session is ending (shutdown/logoff) — trigger graceful exit
+            if (pThis && pThis->onQuit && !pThis->shuttingDown) {
+                pThis->StartShutdownAnimation();
+                pThis->onQuit();
+            }
+        }
+        return 0;
     }
 
     return DefWindowProc(hWnd, message, wParam, lParam);

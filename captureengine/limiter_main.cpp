@@ -66,6 +66,15 @@
 
 static std::atomic<bool> g_Running{true};
 
+BOOL WINAPI LimiterConsoleHandler(DWORD ctrlType) {
+    if (ctrlType == CTRL_C_EVENT || ctrlType == CTRL_BREAK_EVENT || ctrlType == CTRL_CLOSE_EVENT ||
+        ctrlType == CTRL_LOGOFF_EVENT || ctrlType == CTRL_SHUTDOWN_EVENT) {
+        g_Running = false;
+        return TRUE;
+    }
+    return FALSE;
+}
+
 // Limiter state
 static LARGE_INTEGER g_QpcFreq = {};
 static LARGE_INTEGER g_TargetTime = {};
@@ -201,6 +210,8 @@ void ApplyFramePacing(SharedMemoryLayout* shm) {
 }
 
 int LimiterProcessMain(const AppConfig& config) {
+    SetConsoleCtrlHandler(LimiterConsoleHandler, TRUE);
+
     // Set realtime priority for minimal jitter
     SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS);
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);

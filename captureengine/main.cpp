@@ -563,6 +563,15 @@ void ToggleRecording() {
             }
         }
 
+        // Media process self-exits after recording stops to free GPU VRAM.
+        // Pre-clear handle so EnsureChildProcessConnected spawns fresh next time.
+        if (g_MediaClient)
+            g_MediaClient->Disconnect();
+        if (g_hMediaProcess) {
+            CloseHandle(g_hMediaProcess);
+            g_hMediaProcess = NULL;
+        }
+
         LogInfo("[Controller] Recording stopped");
     }
 
@@ -889,8 +898,9 @@ public:
 static ScopedVulkanRegistration* g_VulkanReg = nullptr;
 
 BOOL WINAPI ControllerConsoleHandler(DWORD ctrlType) {
-    if (ctrlType == CTRL_C_EVENT || ctrlType == CTRL_BREAK_EVENT || ctrlType == CTRL_CLOSE_EVENT) {
-        LogInfo("[Controller] Console Interrupted. Cleaning up...");
+    if (ctrlType == CTRL_C_EVENT || ctrlType == CTRL_BREAK_EVENT || ctrlType == CTRL_CLOSE_EVENT ||
+        ctrlType == CTRL_LOGOFF_EVENT || ctrlType == CTRL_SHUTDOWN_EVENT) {
+        LogInfo("[Controller] Console event %lu received. Cleaning up...", ctrlType);
         if (g_VulkanReg) {
             Registry_ManageImplicitLayer(false);  // Force cleanup
         }

@@ -30,6 +30,13 @@ static std::atomic<bool> g_Recording{false};
 static std::atomic<bool> g_EncoderRunning{false};
 static std::atomic<bool> g_IsEncoderBottlenecked{false};
 
+BOOL WINAPI MediaConsoleHandler(DWORD ctrlType) {
+    // Handle all console events including Windows shutdown/logoff
+    LogInfo("[Media] Console event %lu received, shutting down...", ctrlType);
+    g_Running = false;
+    return TRUE;
+}
+
 static FrameQueue g_FrameQueue(32);
 static std::thread g_EncoderThread;
 static QueuedFrame g_LastFrame;
@@ -1550,6 +1557,7 @@ void StopRecording() {
 int MediaProcessMain(const AppConfig& initialConfig) {
     AppConfig config = initialConfig;
     timeBeginPeriod(1);
+    SetConsoleCtrlHandler(MediaConsoleHandler, TRUE);
 
     // Get exe directory for DLL loading
     char exePath[MAX_PATH];
@@ -2076,6 +2084,10 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                     StopRecording();
                     releaseIdleWgcResources();
                     ipc.SendResponse(ProcessResponse::RecordingStopped);
+                    // Exit after recording stops to free GPU VRAM.
+                    // Controller respawns on next recording via EnsureMediaProcessReady.
+                    LogInfo("[Media] Recording finished, exiting to release GPU resources");
+                    g_Running = false;
                     break;
                 case ProcessCommand::Ping:
                     ipc.SendResponse(ProcessResponse::Pong);
@@ -2111,6 +2123,9 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                     releaseIdleWgcResources();
                     g_pSharedMem->runtimeState.ackRecordingStopped.store(true, std::memory_order_release);
                 }
+                // Exit after recording stops to free GPU VRAM.
+                LogInfo("[Media] Recording finished (shmem), exiting to release GPU resources");
+                g_Running = false;
             }
 
             DWORD now = GetTickCount();

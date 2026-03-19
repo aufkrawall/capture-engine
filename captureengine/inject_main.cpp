@@ -20,8 +20,9 @@ static std::atomic<bool> g_Running{true};
 
 // Console control handler for graceful cleanup
 BOOL WINAPI ConsoleCtrlHandler(DWORD ctrlType) {
-    if (ctrlType == CTRL_C_EVENT || ctrlType == CTRL_BREAK_EVENT || ctrlType == CTRL_CLOSE_EVENT) {
-        LogInfo("[Inject] Console interrupt received, shutting down...");
+    if (ctrlType == CTRL_C_EVENT || ctrlType == CTRL_BREAK_EVENT || ctrlType == CTRL_CLOSE_EVENT ||
+        ctrlType == CTRL_LOGOFF_EVENT || ctrlType == CTRL_SHUTDOWN_EVENT) {
+        LogInfo("[Inject] Console event %lu received, shutting down...", ctrlType);
         g_Running = false;
         return TRUE;
     }
