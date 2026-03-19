@@ -121,6 +121,11 @@ TEST(VideoEncoderOptionsTest, NvencCQUsesTrueCQAndWiresMissingSettings) {
     // multipass auto-upgraded since B-frames active and multipass=disabled
     ASSERT_TRUE(multipass.has_value());
     EXPECT_EQ(*multipass, "qres");
+    // AV1 B-frame QP constraints applied
+    ASSERT_TRUE(FindOptionValue(plan.generatedOptions, "qmin").has_value());
+    ASSERT_TRUE(FindOptionValue(plan.generatedOptions, "qmax").has_value());
+    EXPECT_EQ(*FindOptionValue(plan.generatedOptions, "qmin"), "1");
+    EXPECT_EQ(*FindOptionValue(plan.generatedOptions, "qmax"), "200");
 }
 
 TEST(VideoEncoderOptionsTest, AutoProfileChoosesCodecAwareDefaults) {
@@ -257,6 +262,9 @@ TEST(VideoEncoderOptionsTest, NvencMultipassAutoUpgradeWithBFrames) {
     EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "weighted_pred").has_value());
     // b_ref_mode still applied
     EXPECT_TRUE(FindOptionValue(plan.generatedOptions, "b_ref_mode").has_value());
+    // AV1 B-frame QP constraints
+    EXPECT_EQ(*FindOptionValue(plan.generatedOptions, "qmin"), "1");
+    EXPECT_EQ(*FindOptionValue(plan.generatedOptions, "qmax"), "200");
 }
 
 TEST(VideoEncoderOptionsTest, NvencMultipassNotUpgradedWhenExplicitlySet) {
@@ -324,4 +332,73 @@ TEST(VideoEncoderOptionsTest, NvencHEVCBFramesMultipassAutoUpgrade) {
     const std::optional<std::string> multipass = FindOptionValue(plan.generatedOptions, "multipass");
     ASSERT_TRUE(multipass.has_value());
     EXPECT_EQ(*multipass, "qres");
+    // HEVC should NOT get qmin/qmax (only AV1 has the 0-255 starvation issue)
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "qmin").has_value());
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "qmax").has_value());
+}
+
+TEST(VideoEncoderOptionsTest, NvencAV1BFramesGetQPConstraints) {
+    // NVENC AV1 with B-frames should get qmin/qmax to prevent the rate
+    // controller from pushing leaf B-frame QP to extreme values.
+    VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
+    config.bFrames = 4;
+    config.bRefMode = "middle";
+    config.multipass = "qres";
+
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_EQ(plan.maxBFrames, 4);
+    const std::optional<std::string> qmin = FindOptionValue(plan.generatedOptions, "qmin");
+    const std::optional<std::string> qmax = FindOptionValue(plan.generatedOptions, "qmax");
+    ASSERT_TRUE(qmin.has_value());
+    ASSERT_TRUE(qmax.has_value());
+    EXPECT_EQ(*qmin, "1");
+    EXPECT_EQ(*qmax, "200");
+}
+
+TEST(VideoEncoderOptionsTest, NvencAV1NoBFramesNoQPConstraints) {
+    // Without B-frames, no qmin/qmax constraints needed.
+    VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
+    config.bFrames = 0;
+
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_EQ(plan.maxBFrames, 0);
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "qmin").has_value());
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "qmax").has_value());
+}
+
+TEST(VideoEncoderOptionsTest, NvencHEVCBFramesNoQPConstraints) {
+    // HEVC has a natural QP range of 0-51, so qmin/qmax constraints are
+    // not needed (the starvation issue is AV1-specific with its 0-255 range).
+    VideoConfig config = MakeBaseVideoConfig("hevc_nvenc");
+    config.bFrames = 4;
+    config.bRefMode = "middle";
+    config.multipass = "qres";
+
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "qmin").has_value());
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "qmax").has_value());
+}
+
+TEST(VideoEncoderOptionsTest, NvencAV1BRefModeDisabledWithBFramesGetsQP) {
+    // Even with b_ref_mode=disabled (all leaf B-frames), QP constraints apply.
+    VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
+    config.bFrames = 2;
+    config.bRefMode = "disabled";
+    config.multipass = "qres";
+
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_EQ(plan.maxBFrames, 2);
+    // b_ref_mode=disabled means it's omitted from generated options
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "b_ref_mode").has_value());
+    // But QP constraints still apply since AV1 + B-frames
+    ASSERT_TRUE(FindOptionValue(plan.generatedOptions, "qmin").has_value());
+    ASSERT_TRUE(FindOptionValue(plan.generatedOptions, "qmax").has_value());
 }

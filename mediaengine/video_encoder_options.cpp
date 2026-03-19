@@ -670,6 +670,24 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
                 }
             }
         }
+
+        // NVENC AV1 B-frame QP constraint: prevent extreme leaf-B starvation.
+        //
+        // NVENC's VBR rate controller is free to push leaf (non-reference)
+        // B-frame QP to extreme values (240+ out of 255 for AV1), producing
+        // packets of a few hundred bytes for 4K — a 1:300 ratio versus
+        // reference frames.  This causes severe visible quality oscillation.
+        //
+        // Setting qmin/qmax enables hard QP bounds that the rate controller
+        // must respect.  AV1 QP range is [0, 255]; we use qmax=200 to still
+        // allow aggressive compression while ensuring every frame carries
+        // meaningful visual data.  qmin=1 is harmless (no encoder uses QP 0
+        // at normal bitrates).  H.264/HEVC have a QP range of [0, 51], so
+        // the same values would be clamped and have no practical effect.
+        if (plan.maxBFrames > 0 && kind.family == CodecFamily::kAV1) {
+            AddGeneratedOption(&plan, "qmin", "1");
+            AddGeneratedOption(&plan, "qmax", "200");
+        }
     }
 
     std::vector<EncoderOption> customOptions;

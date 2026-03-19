@@ -1184,10 +1184,15 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     codecCtx->rc_max_rate = optionPlan.maxBitRate.value_or(0);
     codecCtx->max_b_frames = optionPlan.maxBFrames;
 
-    // Equalize B-frame quality with P-frames (software encoders only).
-    // Hardware encoders (NVENC, AMF, QSV) handle rate control internally
-    // and ignore libavcodec's b_quant_factor / b_quant_offset fields.
-    if (optionPlan.maxBFrames > 0 && !optionPlan.isHardwareEncoder) {
+    // Equalize B-frame quality with P-frames.  For software encoders this
+    // directly controls the inter-frame QP relationship.  For hardware
+    // encoders (NVENC, AMF, QSV) the FFmpeg wrappers use b_quant_factor to
+    // compute initialRCQP.qpInterB in VBR mode — setting it to 1.0 makes
+    // the initial B-frame QP equal to the P-frame QP, giving the rate
+    // controller a better starting point instead of the FFmpeg default of
+    // b_quant_factor=1.25 / b_quant_offset=1.25 which biases B-frames
+    // towards lower quality from the start.
+    if (optionPlan.maxBFrames > 0) {
         codecCtx->b_quant_factor = 1.0f;
         codecCtx->b_quant_offset = 0.0f;
         DLL_Log("[VideoEncoder] B-frame quality equalized (b_quant_factor=1.0, b_quant_offset=0.0)");
