@@ -225,6 +225,24 @@ private:
     int vidDebugCount = 0;
     int asyncWriteErrorCount = 0;  // replaces static writeErrorCount in AsyncWriteLoop
 
+    // Per-packet type tracking for B-frame quality diagnostics
+    struct PacketStats {
+        int64_t keyframeBytes = 0;
+        int keyframeCount = 0;
+        int64_t refBytes = 0;  // Non-key reference frames (P-frames)
+        int refCount = 0;
+        int64_t sefBytes = 0;  // show_existing_frame (<=10 bytes)
+        int sefCount = 0;
+        int64_t bframeBytes = 0;  // Small non-keyframe packets (B-frames)
+        int bframeCount = 0;
+        int totalPackets = 0;
+
+        void Reset() {
+            *this = {};
+        }
+    };
+    PacketStats packetStats;
+
     // D3D11 Video Processor for GPU-accelerated BGRA → NV12 conversion
     ID3D11VideoDevice* videoDevice = nullptr;
     ID3D11VideoContext* videoContext = nullptr;

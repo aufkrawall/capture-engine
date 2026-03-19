@@ -1079,11 +1079,15 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     DLL_Log("[VideoEncoder] lookahead=%s", savedConfig.lookahead ? "true" : "false");
     DLL_Log("[VideoEncoder] aq=%s", savedConfig.aq ? "true" : "false");
     DLL_Log("[VideoEncoder] b_frames=%d", savedConfig.bFrames);
+    DLL_Log("[VideoEncoder] b_ref_mode=%s", savedConfig.bRefMode.empty() ? "(auto)" : savedConfig.bRefMode.c_str());
     DLL_Log("[VideoEncoder] multipass=%s", savedConfig.multipass.c_str());
     DLL_Log("[VideoEncoder] keyframe_interval=%d", savedConfig.keyframeInterval);
     DLL_Log("[VideoEncoder] qp=%d", savedConfig.qp);
     DLL_Log("[VideoEncoder] bit_depth=%s color_space=%s color_range=%s chroma=%s", savedConfig.bitDepth.c_str(),
             savedConfig.colorSpace.c_str(), savedConfig.colorRange.c_str(), savedConfig.chromaSubsampling.c_str());
+    if (!savedConfig.customOptions.empty()) {
+        DLL_Log("[VideoEncoder] custom_options=%s", savedConfig.customOptions.c_str());
+    }
     DLL_Log("[VideoEncoder] ==============================================");
 
     // Check encoder type for option compatibility
@@ -1161,6 +1165,21 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
         av_dict_set(&opts, option.key.c_str(), option.value.c_str(), 0);
     }
 
+    // Log all generated and custom encoder options
+    DLL_Log("[VideoEncoder] ===== GENERATED ENCODER OPTIONS =====");
+    for (const auto& option : optionPlan.generatedOptions) {
+        DLL_Log("[VideoEncoder]   %s=%s", option.key.c_str(), option.value.c_str());
+    }
+    if (!optionPlan.customOptions.empty()) {
+        DLL_Log("[VideoEncoder]   --- custom overrides ---");
+        for (const auto& option : optionPlan.customOptions) {
+            DLL_Log("[VideoEncoder]   %s=%s (custom)", option.key.c_str(), option.value.c_str());
+        }
+    }
+    DLL_Log("[VideoEncoder]   bitRate=%lld maxBitRate=%lld maxBFrames=%d", optionPlan.bitRate.value_or(0),
+            optionPlan.maxBitRate.value_or(0), optionPlan.maxBFrames);
+    DLL_Log("[VideoEncoder] ======================================");
+
     codecCtx->bit_rate = optionPlan.bitRate.value_or(0);
     codecCtx->rc_max_rate = optionPlan.maxBitRate.value_or(0);
     codecCtx->max_b_frames = optionPlan.maxBFrames;
@@ -1205,8 +1224,15 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
 
     DLL_Log("[VideoEncoder] Opening Codec with options...");
     int ret = avcodec_open2(codecCtx, codec, &opts);
-    if (opts)
+
+    // Log any options that the encoder didn't consume
+    if (opts) {
+        const AVDictionaryEntry* entry = nullptr;
+        while ((entry = av_dict_iterate(opts, entry))) {
+            DLL_Log("[VideoEncoder] WARNING: Unused encoder option: %s=%s", entry->key, entry->value);
+        }
         av_dict_free(&opts);
+    }
 
     if (ret < 0) {
         char errbuf[AV_ERROR_MAX_STRING_SIZE];
@@ -1217,6 +1243,22 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     }
 
     DLL_Log("[VideoEncoder] Codec Opened Successfully.");
+    DLL_Log("[VideoEncoder] ===== ACTIVE CODEC CONTEXT =====");
+    DLL_Log("[VideoEncoder]   codec=%s", codecCtx->codec->name);
+    DLL_Log("[VideoEncoder]   resolution=%dx%d", codecCtx->width, codecCtx->height);
+    DLL_Log("[VideoEncoder]   pix_fmt=%s sw_pix_fmt=%s", av_get_pix_fmt_name(codecCtx->pix_fmt),
+            GetPixFmtNameSafe(codecCtx->sw_pix_fmt));
+    DLL_Log("[VideoEncoder]   time_base=%d/%d framerate=%d/%d", codecCtx->time_base.num, codecCtx->time_base.den,
+            codecCtx->framerate.num, codecCtx->framerate.den);
+    DLL_Log("[VideoEncoder]   bit_rate=%lld rc_max_rate=%lld", (long long)codecCtx->bit_rate,
+            (long long)codecCtx->rc_max_rate);
+    DLL_Log("[VideoEncoder]   gop_size=%d max_b_frames=%d", codecCtx->gop_size, codecCtx->max_b_frames);
+    DLL_Log("[VideoEncoder]   b_quant_factor=%.2f b_quant_offset=%.2f", codecCtx->b_quant_factor,
+            codecCtx->b_quant_offset);
+    DLL_Log("[VideoEncoder]   i_quant_factor=%.2f i_quant_offset=%.2f", codecCtx->i_quant_factor,
+            codecCtx->i_quant_offset);
+    DLL_Log("[VideoEncoder]   has_b_frames=%d (encoder-reported reorder depth)", codecCtx->has_b_frames);
+    DLL_Log("[VideoEncoder] ================================");
     stream = avformat_new_stream(fmtCtx, codec);
     avcodec_parameters_from_context(stream->codecpar, codecCtx);
     stream->codecpar->chroma_location = codecCtx->chroma_sample_location;
@@ -1652,6 +1694,7 @@ void VideoEncoder::BeginDeferredRecording() {
     videoPacketCount = 0;
     vidDebugCount = 0;
     asyncWriteErrorCount = 0;
+    packetStats.Reset();
 
     recordingRequested = true;
     needsCounterReset = true;
@@ -1789,9 +1832,53 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
     // Debug: log first few video packets to verify PTS
     if (pkt->stream_index == stream->index && videoPacketCount++ < 5) {
         DLL_Log(
-            "[VideoEncoder] Queuing video pkt #%d: pts=%lld codec_tb=%d/%d "
-            "st_tb=%d/%d",
-            videoPacketCount, pkt->pts, codec_tb.num, codec_tb.den, st->time_base.num, st->time_base.den);
+            "[VideoEncoder] Queuing video pkt #%d: pts=%lld size=%d flags=%d "
+            "codec_tb=%d/%d st_tb=%d/%d",
+            videoPacketCount, pkt->pts, pkt->size, pkt->flags, codec_tb.num, codec_tb.den, st->time_base.num,
+            st->time_base.den);
+    }
+
+    // Track packet types for B-frame quality diagnostics
+    if (pkt->stream_index == stream->index) {
+        packetStats.totalPackets++;
+        if (pkt->flags & AV_PKT_FLAG_KEY) {
+            packetStats.keyframeBytes += pkt->size;
+            packetStats.keyframeCount++;
+        } else if (pkt->size <= 10) {
+            packetStats.sefBytes += pkt->size;
+            packetStats.sefCount++;
+        } else if (pkt->size < 2000) {
+            packetStats.bframeBytes += pkt->size;
+            packetStats.bframeCount++;
+        } else {
+            packetStats.refBytes += pkt->size;
+            packetStats.refCount++;
+        }
+
+        // Log packet type distribution every 600 packets (~5 seconds at 120fps)
+        if (packetStats.totalPackets > 0 && packetStats.totalPackets % 600 == 0) {
+            int total = packetStats.totalPackets;
+            int64_t avgKey = packetStats.keyframeCount > 0 ? packetStats.keyframeBytes / packetStats.keyframeCount : 0;
+            int64_t avgRef = packetStats.refCount > 0 ? packetStats.refBytes / packetStats.refCount : 0;
+            int64_t avgB = packetStats.bframeCount > 0 ? packetStats.bframeBytes / packetStats.bframeCount : 0;
+            DLL_Log(
+                "[VideoEncoder] PACKET STATS (%d pkts): "
+                "Key=%d(avg %lldKB) Ref=%d(avg %lldKB) "
+                "SEF=%d(%d%%) B-small=%d(avg %lldB)",
+                total, packetStats.keyframeCount, avgKey / 1024, packetStats.refCount, avgRef / 1024,
+                packetStats.sefCount, total > 0 ? packetStats.sefCount * 100 / total : 0, packetStats.bframeCount,
+                avgB);
+
+            // Warn about B-frame quality oscillation
+            if (packetStats.sefCount + packetStats.bframeCount > total / 3 && avgRef > 0 && avgB > 0 &&
+                avgB < avgRef / 50) {
+                DLL_Log(
+                    "[VideoEncoder] WARNING: B-frame quality oscillation detected! "
+                    "B-frames average %lldB vs reference frames %lldKB (ratio 1:%lld). "
+                    "Consider b_frames=0 for smoothest capture.",
+                    avgB, avgRef / 1024, avgRef / (avgB > 0 ? avgB : 1));
+            }
+        }
     }
 
     // Rescale timestamps properly using FFmpeg's exact rational math
@@ -3406,6 +3493,20 @@ void VideoEncoder::Stop() {
     if (wasRecording) {
         DLL_Log("[VideoEncoder] Recording stats: input=%lld output=%lld skipped=%lld duplicated=%lld", inputFrameCount,
                 outputFrameCount, skippedFrameCount, duplicatedFrameCount);
+
+        // Final packet type distribution summary
+        if (packetStats.totalPackets > 0) {
+            int total = packetStats.totalPackets;
+            int64_t avgKey = packetStats.keyframeCount > 0 ? packetStats.keyframeBytes / packetStats.keyframeCount : 0;
+            int64_t avgRef = packetStats.refCount > 0 ? packetStats.refBytes / packetStats.refCount : 0;
+            int64_t avgB = packetStats.bframeCount > 0 ? packetStats.bframeBytes / packetStats.bframeCount : 0;
+            DLL_Log(
+                "[VideoEncoder] FINAL PACKET STATS (%d pkts): "
+                "Key=%d(avg %lldKB) Ref=%d(avg %lldKB) "
+                "SEF=%d(%d%%) B-small=%d(avg %lldB)",
+                total, packetStats.keyframeCount, avgKey / 1024, packetStats.refCount, avgRef / 1024,
+                packetStats.sefCount, packetStats.sefCount * 100 / total, packetStats.bframeCount, avgB);
+        }
     }
 
     if (wasRecording && writerRunning) {

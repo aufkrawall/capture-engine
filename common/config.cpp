@@ -952,7 +952,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.video.qp = GetInt("NVENC", "qp", 23);
     config.video.lookahead = GetBool("NVENC", "lookahead", false);
     config.video.aq = GetBool("NVENC", "aq", false);
-    config.video.bRefMode = GetStr("NVENC", "b_ref_mode", "disabled");
+    config.video.bRefMode = GetStr("NVENC", "b_ref_mode", "");
 
     // Media Foundation encoder settings (from [MediaFoundation] section)
     config.video.mfRateControl = GetStr("MediaFoundation", "rate_control", "quality");
