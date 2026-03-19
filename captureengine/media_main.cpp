@@ -1012,6 +1012,7 @@ void EncoderThreadFunc(const AppConfig& config) {
     // frame-timing jitter boundaries.
     uint32_t pacingInputThisWindow = 0;
     uint32_t pacingTicksThisWindow = 0;
+    uint32_t pacingEmaUpdates = 0;
     double smoothedInputPerTick = 1.0;    // EMA: avg unique frames per encoder tick
     double frameCreditAccumulator = 0.0;  // Bresenham error term
     auto ClearBufferedInjectFrames = [&]() {
@@ -1205,14 +1206,22 @@ void EncoderThreadFunc(const AppConfig& config) {
                     bufferedInjectFrames.push_back(std::move(drainedFrame));
                 }
 
-                // Track frame arrival rate for Bresenham pacing (update every half-second)
+                // Track frame arrival rate for Bresenham pacing.  Use a short
+                // window during warmup/startup so the EMA is already calibrated
+                // when recording goes live, then widen to half-second for
+                // steady-state stability.
                 pacingInputThisWindow += (uint32_t)drainedInjectFrames.size();
                 pacingTicksThisWindow++;
-                if (recordingOutputLive && pacingTicksThisWindow >= (uint32_t)config.video.fps / 2) {
+                const uint32_t pacingWindowSize = (pacingEmaUpdates < 6) ? std::max((uint32_t)config.video.fps / 8, 8u)
+                                                                         : (uint32_t)config.video.fps / 2;
+                if (pacingTicksThisWindow >= pacingWindowSize) {
                     double measuredRate = (double)pacingInputThisWindow / (double)pacingTicksThisWindow;
-                    smoothedInputPerTick = smoothedInputPerTick * 0.5 + measuredRate * 0.5;
+                    // Higher alpha (0.7) for first 6 updates → converge in <1s
+                    double alpha = (pacingEmaUpdates < 6) ? 0.7 : 0.5;
+                    smoothedInputPerTick = smoothedInputPerTick * (1.0 - alpha) + measuredRate * alpha;
                     pacingInputThisWindow = 0;
                     pacingTicksThisWindow = 0;
+                    ++pacingEmaUpdates;
                 }
 
                 const size_t injectReserveFrames = GetInjectReserveFrames();
@@ -1327,14 +1336,17 @@ void EncoderThreadFunc(const AppConfig& config) {
                                             bufferedInjectFrames.size(), injectReserveFrames, warmupElapsedMs)) {
                 recordingOutputLive = true;
                 recordingLiveTick = GetTickCount64();
-                // Reset Bresenham pacing state for a clean start
+                // Reset Bresenham credit for a clean start; keep smoothedInputPerTick
+                // so the EMA calibration from warmup carries over.
                 frameCreditAccumulator = 0.0;
                 pacingInputThisWindow = 0;
                 pacingTicksThisWindow = 0;
                 SetRecordingVisibleState(true);
-                LogInfo("[EncoderThread] Recording live after %llums hidden warmup (%s, hiddenFrames=%u)",
-                        static_cast<unsigned long long>(warmupElapsedMs64), useScreenGrab ? "WGC" : "inject",
-                        hiddenStartupFrames);
+                LogInfo(
+                    "[EncoderThread] Recording live after %llums hidden warmup (%s, hiddenFrames=%u, "
+                    "inputRate=%.3f)",
+                    static_cast<unsigned long long>(warmupElapsedMs64), useScreenGrab ? "WGC" : "inject",
+                    hiddenStartupFrames, smoothedInputPerTick);
             }
         }
 
