@@ -561,6 +561,9 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
     EncoderOptionPlan plan;
     const EncoderKind kind = ClassifyEncoder(config.encoder);
 
+    plan.isHardwareEncoder = (kind.backend == EncoderBackend::kNVENC || kind.backend == EncoderBackend::kAMF ||
+                              kind.backend == EncoderBackend::kQSV || kind.backend == EncoderBackend::kMF);
+
     if (kind.backend == EncoderBackend::kNVENC) {
         if (!config.preset.empty()) {
             const auto preset = CanonicalizeNvencPreset(config.preset);
@@ -601,17 +604,23 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
 
     plan.maxBFrames = ClampBFrames(config.bFrames, &plan);
 
-    // NVENC AV1: auto-disable B-frames.  The hardware does not support
-    // weighted prediction (weighted_pred returns ENOSYS), so ALL leaf
-    // B-frames receive near-zero bits (≈600 B for 4K) and visually
-    // freeze on a reference, creating a periodic stutter at
-    // fps/(b_frames+1).  No combination of preset / multipass / AQ
-    // resolves this; the only effective fix is b_frames=0.
-    if (kind.backend == EncoderBackend::kNVENC && kind.family == CodecFamily::kAV1 && plan.maxBFrames > 0) {
-        AddWarning(&plan, "NVENC AV1: B-frames auto-disabled (b_frames " + std::to_string(plan.maxBFrames) +
-                              " -> 0). Hardware AV1 B-frames lack weighted prediction, causing severe quality "
-                              "oscillation. Use hevc_nvenc or h264_nvenc for B-frame support.");
-        plan.maxBFrames = 0;
+    // NVENC with B-frames: auto-enable quarter-resolution multipass when the
+    // user left multipass disabled.  Without a pre-pass, the rate controller
+    // has no complexity information and may under-allocate B-frames badly
+    // (observed ~600 B for 4K AV1 leaf B-frames with p1 + multipass=disabled).
+    // Quarter-res multipass (qres) adds negligible overhead but significantly
+    // improves bit allocation for B-frames on all NVENC codecs.
+    bool autoMultipass = false;
+    if (kind.backend == EncoderBackend::kNVENC && plan.maxBFrames > 0) {
+        const auto userMultipass = CanonicalizeNvencMultipass(config.multipass);
+        if (!userMultipass.has_value() || *userMultipass == "disabled") {
+            autoMultipass = true;
+            AddWarning(&plan,
+                       "NVENC: multipass auto-upgraded to 'qres' because B-frames=" + std::to_string(plan.maxBFrames) +
+                           ". Quarter-resolution multipass improves B-frame bit allocation with "
+                           "negligible overhead. Set multipass=qres (or fullres) explicitly to "
+                           "suppress this warning.");
+        }
     }
 
     if (kind.backend == EncoderBackend::kNVENC) {
@@ -621,7 +630,9 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
             AddGeneratedOption(&plan, "temporal-aq", "1");
         }
 
-        if (!config.multipass.empty()) {
+        if (autoMultipass) {
+            AddGeneratedOption(&plan, "multipass", "qres");
+        } else if (!config.multipass.empty()) {
             const auto multipass = CanonicalizeNvencMultipass(config.multipass);
             if (multipass.has_value()) {
                 if (*multipass != "disabled") {

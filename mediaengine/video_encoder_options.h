@@ -20,6 +20,7 @@ struct EncoderOptionPlan {
     std::optional<int64_t> bitRate;
     std::optional<int64_t> maxBitRate;
     int maxBFrames = 0;
+    bool isHardwareEncoder = false;
     std::vector<std::string> warnings;
     std::vector<std::string> errors;
 };
