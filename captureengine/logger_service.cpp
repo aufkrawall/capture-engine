@@ -1,5 +1,6 @@
 #include "logger_service.h"
 #include <windows.h>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -16,6 +17,19 @@ struct Session {
 
 int LoggerProcessMain(const AppConfig& config) {
     LogInfo("[Logger] Dedicated logging service started");
+
+    // Handle Windows shutdown/logoff when controller may already be gone
+    static std::atomic<bool> g_LoggerRunning{true};
+    SetConsoleCtrlHandler(
+        [](DWORD ctrlType) -> BOOL {
+            if (ctrlType == CTRL_C_EVENT || ctrlType == CTRL_BREAK_EVENT || ctrlType == CTRL_CLOSE_EVENT ||
+                ctrlType == CTRL_LOGOFF_EVENT || ctrlType == CTRL_SHUTDOWN_EVENT) {
+                g_LoggerRunning.store(false, std::memory_order_release);
+                return TRUE;
+            }
+            return FALSE;
+        },
+        TRUE);
 
     // Parse controller PID from command line for shutdown signaling
     uint32_t controllerPid = 0;
@@ -51,7 +65,7 @@ int LoggerProcessMain(const AppConfig& config) {
     }
 
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
-    while (true) {
+    while (g_LoggerRunning.load(std::memory_order_acquire)) {
         // Since we don't have a global list of PIDs, we might need a better way.
         // DiscoveryInfo helps, but it only points to one PID.
 

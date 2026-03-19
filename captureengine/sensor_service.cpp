@@ -1,5 +1,6 @@
 #include "sensor_service.h"
 #include <windows.h>
+#include <atomic>
 #include <map>
 #include <vector>
 #include "../common/logging.h"
@@ -15,6 +16,19 @@ struct Session {
 
 int SensorProcessMain(const AppConfig& config) {
     LogInfo("[Sensors] Dedicated sensor service started");
+
+    // Handle Windows shutdown/logoff when controller may already be gone
+    static std::atomic<bool> g_SensorRunning{true};
+    SetConsoleCtrlHandler(
+        [](DWORD ctrlType) -> BOOL {
+            if (ctrlType == CTRL_C_EVENT || ctrlType == CTRL_BREAK_EVENT || ctrlType == CTRL_CLOSE_EVENT ||
+                ctrlType == CTRL_LOGOFF_EVENT || ctrlType == CTRL_SHUTDOWN_EVENT) {
+                g_SensorRunning.store(false, std::memory_order_release);
+                return TRUE;
+            }
+            return FALSE;
+        },
+        TRUE);
 
     // Parse controller PID from command line for shutdown signaling
     uint32_t controllerPid = 0;
@@ -38,7 +52,7 @@ int SensorProcessMain(const AppConfig& config) {
     // For now, we reuse the scan_host logic but we will encapsulate it better.
 
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
-    while (true) {
+    while (g_SensorRunning.load(std::memory_order_acquire)) {
         // 1. Discover new sessions
         HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
         if (hDisc) {
