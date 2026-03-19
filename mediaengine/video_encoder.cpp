@@ -1265,6 +1265,16 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
             codecCtx->i_quant_offset);
     DLL_Log("[VideoEncoder]   has_b_frames=%d (encoder-reported reorder depth)", codecCtx->has_b_frames);
     DLL_Log("[VideoEncoder] ================================");
+
+    // AV1 NVENC driver warning: known driver bug (FFmpeg #11390, March 2026) where
+    // the encoder sometimes writes HEVC time_code SEI messages into AV1 bitstreams,
+    // producing undecodeable output.  Log a warning so users can correlate issues.
+    if (codec && codec->name && strstr(codec->name, "av1") != nullptr) {
+        DLL_Log(
+            "[VideoEncoder] NOTE: av1_nvenc has a known driver bug (FFmpeg #11390) that can "
+            "produce undecodeable bitstreams. If video artifacts occur, update GPU driver.");
+    }
+
     stream = avformat_new_stream(fmtCtx, codec);
     avcodec_parameters_from_context(stream->codecpar, codecCtx);
     stream->codecpar->chroma_location = codecCtx->chroma_sample_location;
@@ -1835,12 +1845,16 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
         }
     }
 
-    // Debug: log first few video packets to verify PTS
-    if (pkt->stream_index == stream->index && videoPacketCount++ < 5) {
+    // Debug: log first 20 video packets with DTS to verify B-frame ordering
+    if (pkt->stream_index == stream->index && videoPacketCount++ < 20) {
+        bool isKeyframe = (pkt->flags & AV_PKT_FLAG_KEY) != 0;
+        bool isTiny = (pkt->size <= 10 && codecCtx->max_b_frames > 0);
+        const char* type = isKeyframe ? "KEY" : (isTiny ? "SEF" : "DATA");
         DLL_Log(
-            "[VideoEncoder] Queuing video pkt #%d: pts=%lld size=%d flags=%d "
-            "codec_tb=%d/%d st_tb=%d/%d",
-            videoPacketCount, pkt->pts, pkt->size, pkt->flags, codec_tb.num, codec_tb.den, st->time_base.num,
+            "[VideoEncoder] Queuing video pkt #%d: pts=%lld dts=%lld dur=%lld "
+            "size=%d %s codec_tb=%d/%d st_tb=%d/%d",
+            videoPacketCount, (long long)pkt->pts, (long long)pkt->dts, (long long)pkt->duration,
+            pkt->size, type, codec_tb.num, codec_tb.den, st->time_base.num,
             st->time_base.den);
     }
 
@@ -1936,9 +1950,26 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
             // Round-trip the already-rescaled PTS back to the codec frame number
             // so the calculation is independent of packet arrival order (critical
             // for B-frame codecs that output packets in decode order).
-            int64_t frameNum = av_rescale_q_rnd(pkt->pts, st->time_base, codecCtx->time_base, AV_ROUND_NEAR_INF);
-            int64_t nextPts = av_rescale_q(frameNum + 1, codecCtx->time_base, st->time_base);
-            pkt->duration = nextPts - pkt->pts;
+            //
+            // Try codec-provided duration first (NVENC sets this correctly including
+            // for AV1 B-frames and SEF packets), fall back to round-trip rescaling.
+            if (pkt->duration > 0) {
+                // Codec provided a valid duration — use it directly
+            } else {
+                int64_t frameNum =
+                    av_rescale_q_rnd(pkt->pts, st->time_base, codecCtx->time_base, AV_ROUND_NEAR_INF);
+                int64_t nextPts = av_rescale_q(frameNum + 1, codecCtx->time_base, st->time_base);
+                pkt->duration = nextPts - pkt->pts;
+            }
+            // Clamp duration to sane range for CFR: [1, fps] to prevent
+            // 0-duration or extreme-duration packets from corrupting the
+            // MKV container timeline.  AV1 SEF packets can produce duration=0
+            // from the codec, and round-trip rescaling can produce 0 or 2
+            // due to integer rounding at non-power-of-2 FPS.
+            int64_t maxDuration = av_rescale_q(2, codecCtx->time_base, st->time_base);
+            if (maxDuration < 2) maxDuration = 2;
+            if (pkt->duration <= 0) pkt->duration = 1;
+            if (pkt->duration > maxDuration) pkt->duration = maxDuration;
         } else {
             pkt->duration = av_rescale(1, st->time_base.den, fps);
         }
@@ -2150,7 +2181,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         // Without this, cues are written at the END and many players can't seek
         // or show correct duration without reading the whole file first.
         if (fmtCtx->priv_data) {
-            av_opt_set(fmtCtx->priv_data, "reserve_index_space", "200000", 0);  // 200KB
+            av_opt_set(fmtCtx->priv_data, "reserve_index_space", "2000000", 0);  // 2MB
 
             // Try to set microsecond timestamp precision for MKV.  Standard FFmpeg
             // builds may not expose this option yet, so we log and continue if it
@@ -3028,7 +3059,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
             }
         }
         if (fmtCtx->priv_data) {
-            av_opt_set(fmtCtx->priv_data, "reserve_index_space", "200000", 0);
+            av_opt_set(fmtCtx->priv_data, "reserve_index_space", "2000000", 0);
             int tsRet = av_opt_set(fmtCtx->priv_data, "timestamp_precision", "1000", 0);
             if (tsRet < 0) {
                 DLL_Log(
@@ -5777,6 +5808,12 @@ void VideoEncoder::AsyncWriteLoop() {
                         if (pkt->duration <= 0) {
                             pkt->duration = 1;
                         }
+                    }
+                    // Clamp flushed packet duration to sane range
+                    {
+                        int64_t maxDuration = av_rescale_q(2, codecCtx->time_base, stream->time_base);
+                        if (maxDuration < 2) maxDuration = 2;
+                        if (pkt->duration > maxDuration) pkt->duration = maxDuration;
                     }
 
                     if (pkt->pts != AV_NOPTS_VALUE) {

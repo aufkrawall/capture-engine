@@ -610,17 +610,12 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
     // (observed ~600 B for 4K AV1 leaf B-frames with p1 + multipass=disabled).
     // Quarter-res multipass (qres) adds negligible overhead but significantly
     // improves bit allocation for B-frames on all NVENC codecs.
+    // Only auto-enable when the user didn't set multipass at all — respect
+    // explicit "disabled" from config.ini.
     bool autoMultipass = false;
-    if (kind.backend == EncoderBackend::kNVENC && plan.maxBFrames > 0) {
-        const auto userMultipass = CanonicalizeNvencMultipass(config.multipass);
-        if (!userMultipass.has_value() || *userMultipass == "disabled") {
-            autoMultipass = true;
-            AddWarning(&plan,
-                       "NVENC: multipass auto-upgraded to 'qres' because B-frames=" + std::to_string(plan.maxBFrames) +
-                           ". Quarter-resolution multipass improves B-frame bit allocation with "
-                           "negligible overhead. Set multipass=qres (or fullres) explicitly to "
-                           "suppress this warning.");
-        }
+    if (kind.backend == EncoderBackend::kNVENC && plan.maxBFrames > 0 &&
+        config.multipass.empty()) {
+        autoMultipass = true;
     }
 
     if (kind.backend == EncoderBackend::kNVENC) {
@@ -643,30 +638,36 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
             }
         }
 
-        // Enable weighted prediction when B-frames are active so that each
-        // B-frame's reference weighting reflects its temporal position.
-        // Without this, NVENC applies equal weights to both references,
-        // making ALL B-frames in a mini-GOP look like the midpoint of
-        // their references — causing a visible freeze-jump stutter pattern
-        // (effective update rate drops to ref-frame rate ≈ fps/(b_frames+1)).
-        // Note: NVENC AV1 does not support weighted_pred (returns ENOSYS).
-        if (plan.maxBFrames > 0 && kind.family != CodecFamily::kAV1) {
-            AddGeneratedOption(&plan, "weighted_pred", "1");
-        }
+        // OBS Studio does NOT set weighted_pred for NVENC B-frames and their
+        // recordings work smoothly.  Our previous auto-enable of weighted_pred=1
+        // for H.264/HEVC could cause driver issues on some configurations.
+        // Leave weighted_pred at NVENC defaults (user can set it explicitly
+        // via encoder_options if needed).
+
+        // AV1 NVENC B-frame note: b_ref_mode=middle is auto-enabled by our
+        // FFmpeg patch when B-frames are active and b_ref_mode is not set,
+        // which improves B-frame prediction quality.
 
         if (config.bRefMode.empty()) {
-            // When user hasn't set b_ref_mode, leave at NVENC default
-            // (disabled).  b_ref_mode=each gives smoothest results but is
-            // too slow for high b_frames counts in real-time capture.
+            // When user hasn't set b_ref_mode, don't emit any option.
+            // FFmpeg's patched NVENC wrapper will auto-enable b_ref_mode=middle
+            // when B-frames are active, giving better quality out of the box.
         } else {
             const auto bRefMode = CanonicalizeNvencBRefMode(config.bRefMode);
             if (!bRefMode.has_value()) {
                 AddError(&plan, "Unsupported NVENC b_ref_mode value: " + config.bRefMode);
-            } else if (*bRefMode != "disabled") {
-                if (plan.maxBFrames == 0) {
+            } else {
+                // ALWAYS emit the user's explicit choice (including "disabled").
+                // This prevents FFmpeg's auto-enable from overriding user intent.
+                if (plan.maxBFrames == 0 && *bRefMode != "disabled") {
                     AddWarning(&plan, "b_ref_mode is ignored when b_frames=0");
-                } else {
-                    AddGeneratedOption(&plan, "b_ref_mode", *bRefMode);
+                }
+                AddGeneratedOption(&plan, "b_ref_mode", *bRefMode);
+                if (*bRefMode == "each" && plan.maxBFrames > 2) {
+                    AddWarning(&plan,
+                               "b_ref_mode=each with b_frames=" + std::to_string(plan.maxBFrames) +
+                                   " may be too slow for real-time capture at high FPS. "
+                                   "Consider b_ref_mode=middle if encoding latency is too high.");
                 }
             }
         }

@@ -16,7 +16,6 @@
 #include <vector>
 #include "../common/config.h"
 #include "../common/frame_queue.h"
-#include "../common/frame_timing.h"
 #include "../common/logging.h"
 #include "../common/process_ipc.h"
 #include "../common/shared_defs.h"
@@ -619,11 +618,30 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     g_IsEncoderBottlenecked.load(std::memory_order_relaxed) || queueDepth >= queuePressureThreshold;
 
                 if (!useSourceSidePacing) {
-                    // When the queue is shallow and the encoder is healthy, keep all source
-                    // cadence information and let the fixed-rate encoder thread choose the
-                    // best source frame for each output tick.
-                    shouldProcess = true;
-                    nextPushTime = 0;
+                    // When the queue is shallow and the encoder is healthy, apply a
+                    // lightweight decimation gate at ~125% of target cadence.  This
+                    // prevents queue overflow when game FPS >> recording FPS (e.g.
+                    // 240fps game → 120fps recording) while still giving the encoder
+                    // thread enough candidate frames for timestamp-aware selection.
+                    // Without this gate, the 32-slot FrameQueue overflows between
+                    // 1-second EMA updates, causing drop-oldest of frames the Bresenham
+                    // would have selected.
+                    int64_t overcaptureInterval = (targetIntervalTicks * 4) / 5;  // 125% rate
+                    if (nextPushTime == 0) {
+                        nextPushTime = slot.timestamp;
+                        shouldProcess = true;
+                    } else if (slot.timestamp >= nextPushTime) {
+                        shouldProcess = true;
+                        nextPushTime += overcaptureInterval;
+                        // Resync on time jumps
+                        if (slot.timestamp > nextPushTime + (targetIntervalTicks * 5)) {
+                            nextPushTime = slot.timestamp + overcaptureInterval;
+                        }
+                    } else {
+                        // Frame arrived before next cadence gate — drop it
+                        shouldProcess = false;
+                        pacingDroppedCount++;
+                    }
                 } else if (nextPushTime == 0) {
                     // First frame or resync
                     nextPushTime = slot.timestamp;
@@ -1068,10 +1086,11 @@ void EncoderThreadFunc(const AppConfig& config) {
         if (GetTickCount() - lastThreadLog > 1000) {
             LogInfo(
                 "[EncoderThread] Alive. Q=%u Bot=%d Rate=%.3f Credit=%.2f IBuf=%zu WBuf=%zu Grid=%lld Live=%d "
-                "EMA=%u",
+                "EMA=%u Fence=%.2fms Encode=%.2fms",
                 (unsigned int)g_FrameQueue.Size(), (int)g_IsEncoderBottlenecked, smoothedInputPerTick,
                 frameCreditAccumulator, bufferedInjectFrames.size(), bufferedWgcFrames.size(),
-                static_cast<long long>(encoderGridTickCount), (int)recordingOutputLive, pacingEmaUpdates);
+                static_cast<long long>(encoderGridTickCount), (int)recordingOutputLive, pacingEmaUpdates,
+                smoothedInjectFenceMs, smoothedEncodeMs);
             lastThreadLog = GetTickCount();
         }
 
@@ -1114,8 +1133,23 @@ void EncoderThreadFunc(const AppConfig& config) {
             // phase-continuous and the file duration matches wall clock even if the
             // thread wakes up late for a few intervals. Hidden warmup can still
             // rebase freely because those frames are discarded before the file starts.
+            //
+            // During live recording: if the thread wakes more than 2 full intervals
+            // late, rebase to prevent a burst of immediate ticks that cascades into
+            // the Bresenham EMA and causes visible judder. This trades a single PTS
+            // gap for preventing N frames of mis-paced output.
             QueryPerformanceCounter(&now);
             if (!recordingOutputLive && now.QuadPart > nextSampleTime.QuadPart + targetIntervalTicks * 2) {
+                nextSampleTime = now;
+            } else if (recordingOutputLive && now.QuadPart > nextSampleTime.QuadPart + targetIntervalTicks * 2) {
+                static uint32_t s_jitterRebaseCount = 0;
+                s_jitterRebaseCount++;
+                if (s_jitterRebaseCount <= 5 || s_jitterRebaseCount % 120 == 0) {
+                    int64_t overshootTicks =
+                        (now.QuadPart - nextSampleTime.QuadPart + targetIntervalTicks - 1) / targetIntervalTicks;
+                    LogInfo("[EncoderThread] Timer jitter: rebasing (overshoot=%lld ticks, count=%u)",
+                            (long long)overshootTicks, s_jitterRebaseCount);
+                }
                 nextSampleTime = now;
             }
         }
@@ -1155,7 +1189,16 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                          : (uint32_t)config.video.fps / 2;
                 if (pacingTicksThisWindow >= wgcPacingWindowSize) {
                     double measuredRate = (double)pacingInputThisWindow / (double)pacingTicksThisWindow;
-                    double alpha = (pacingEmaUpdates < 6) ? 0.7 : 0.5;
+                    // Adaptive alpha: fast convergence during startup, burst detection, steady-state
+                    double alpha = 0.5;
+                    if (pacingEmaUpdates < 6) {
+                        alpha = 0.7;
+                    } else if (smoothedInputPerTick > 0.01) {
+                        double deviation = std::abs(measuredRate - smoothedInputPerTick) / smoothedInputPerTick;
+                        if (deviation > 0.20) {
+                            alpha = 0.8;
+                        }
+                    }
                     smoothedInputPerTick = smoothedInputPerTick * (1.0 - alpha) + measuredRate * alpha;
                     pacingInputThisWindow = 0;
                     pacingTicksThisWindow = 0;
@@ -1251,8 +1294,18 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                                          : (uint32_t)config.video.fps / 2;
                 if (pacingTicksThisWindow >= pacingWindowSize) {
                     double measuredRate = (double)pacingInputThisWindow / (double)pacingTicksThisWindow;
-                    // Higher alpha (0.7) for first 6 updates → converge in <1s
-                    double alpha = (pacingEmaUpdates < 6) ? 0.7 : 0.5;
+                    // Adaptive alpha: converge fast during startup (0.7), steady-state (0.5),
+                    // or when FPS transitions detected (>20% deviation → 0.8) to prevent
+                    // Bresenham mis-pacing during rapid FPS changes.
+                    double alpha = 0.5;
+                    if (pacingEmaUpdates < 6) {
+                        alpha = 0.7;
+                    } else if (smoothedInputPerTick > 0.01) {
+                        double deviation = std::abs(measuredRate - smoothedInputPerTick) / smoothedInputPerTick;
+                        if (deviation > 0.20) {
+                            alpha = 0.8;
+                        }
+                    }
                     smoothedInputPerTick = smoothedInputPerTick * (1.0 - alpha) + measuredRate * alpha;
                     pacingInputThisWindow = 0;
                     pacingTicksThisWindow = 0;
@@ -1420,6 +1473,28 @@ void EncoderThreadFunc(const AppConfig& config) {
                 pacingTicksThisWindow = 0;
                 encoderGridStartQpc = 0;
                 encoderGridTickCount = 0;
+                // CRITICAL: Reset nextSampleTime after sleeping one full interval
+                // so the first live tick fires at the correct cadence. During warmup,
+                // nextSampleTime advances freely (frames are discarded), so it can be
+                // far in the past when we transition to live. Without this, the first
+                // several live ticks fire immediately because nextSampleTime is behind
+                // now, creating a burst of frames at wrong spacing that causes visible
+                // judder in the first second of recording.
+                //
+                // The sleep ensures the encoder thread cadence is established BEFORE
+                // the first live encode, preventing the initial burst.
+                if (hTimer) {
+                    LARGE_INTEGER afterLive;
+                    QueryPerformanceCounter(&afterLive);
+                    int64_t sleepTicks = targetIntervalTicks;
+                    int64_t sleep100ns = (sleepTicks * 10000000) / qpcFreq.QuadPart;
+                    LARGE_INTEGER dueTime;
+                    dueTime.QuadPart = -sleep100ns;
+                    if (SetWaitableTimer(hTimer, &dueTime, 0, NULL, NULL, FALSE)) {
+                        WaitForSingleObject(hTimer, INFINITE);
+                    }
+                }
+                QueryPerformanceCounter(&nextSampleTime);
                 // Flush stale warmup frames from ALL buffers.  During the gap
                 // between capture start and encoder readiness, frames accumulate
                 // in the shmem ring → g_FrameQueue → bufferedInjectFrames.
@@ -1441,27 +1516,40 @@ void EncoderThreadFunc(const AppConfig& config) {
                     }
                 }
                 if (!bufferedInjectFrames.empty()) {
+                    // Keep reserve+1 frames instead of just 1 so the fence EMA
+                    // has enough lead time immediately after warmup flush.
+                    size_t keepCount = 1;
+                    {
+                        const double reserveFramesNeeded = smoothedInjectFenceMs / frameIntervalMs;
+                        if (reserveFramesNeeded > 0.5) keepCount = 2;
+                        if (reserveFramesNeeded > 1.25) keepCount = 3;
+                        if (reserveFramesNeeded > 2.25) keepCount = 4;
+                        keepCount += 1;
+                    }
                     size_t flushed = 0;
-                    while (bufferedInjectFrames.size() > 1) {
+                    while (bufferedInjectFrames.size() > keepCount) {
                         QueuedFrame stale = std::move(bufferedInjectFrames.front());
                         bufferedInjectFrames.pop_front();
                         DiscardQueuedFrame(stale);
                         flushed++;
                     }
                     if (flushed > 0) {
-                        LogInfo("[EncoderThread] Flushed %zu stale warmup inject frames", flushed);
+                        LogInfo("[EncoderThread] Flushed %zu stale warmup inject frames (keep=%zu)", flushed,
+                                keepCount);
                     }
                 }
                 if (!bufferedWgcFrames.empty()) {
+                    // Keep 2 WGC frames for immediate encoding availability
                     size_t flushed = 0;
-                    while (bufferedWgcFrames.size() > 1) {
+                    while (bufferedWgcFrames.size() > 2) {
                         QueuedFrame stale = std::move(bufferedWgcFrames.front());
                         bufferedWgcFrames.pop_front();
                         ReleaseQueuedFrameTexture(stale);
                         flushed++;
                     }
                     if (flushed > 0) {
-                        LogInfo("[EncoderThread] Flushed %zu stale warmup WGC frames", flushed);
+                        LogInfo("[EncoderThread] Flushed %zu stale warmup WGC frames (kept=%zu)", flushed,
+                                bufferedWgcFrames.size());
                     }
                 }
                 // Reset counters so per-second logs start clean at going-live.
@@ -1525,6 +1613,15 @@ void EncoderThreadFunc(const AppConfig& config) {
 
             if (isDuplicate && g_pSharedMem) {
                 g_pSharedMem->runtimeState.duplicateFrames.fetch_add(1, std::memory_order_relaxed);
+                // Log duplicate frame events for artifact diagnosis (throttled to 1/sec)
+                static uint64_t s_lastDupLogTick = 0;
+                uint64_t nowTick = GetTickCount64();
+                if (nowTick - s_lastDupLogTick >= 1000) {
+                    LogInfo("[EncoderThread] Duplicate frame: credit=%.3f rate=%.3f bufferedI=%zu bufferedW=%zu",
+                            frameCreditAccumulator, smoothedInputPerTick, bufferedInjectFrames.size(),
+                            bufferedWgcFrames.size());
+                    s_lastDupLogTick = nowTick;
+                }
             }
 
             if (frameToProcess->isInjectMode) {

@@ -709,7 +709,9 @@ public:
         lastD3D11ElapsedUs = realElapsedUs;
 
         // Drive WGC video/audio timing from source timestamps for VFR and from the
-        // fixed-rate encoder sample clock for CFR.
+        // fixed-rate encoder sample clock for CFR.  In CFR mode, videoElapsedMs is
+        // a fallback for audio sync only — the authoritative target is encodedDurationUs
+        // from PullAndEncodeAudio, which tracks the encoder's actual output timeline.
         this->videoElapsedMs.store(realElapsedUs / 1000);
 
         videoEnc->EncodeFrameD3D11((ID3D11Texture2D*)texture, realElapsedUs, width, height, isHDR, captureLeft,

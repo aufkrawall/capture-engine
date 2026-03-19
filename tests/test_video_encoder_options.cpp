@@ -81,6 +81,7 @@ TEST(VideoEncoderOptionsTest, NvencCQUsesTrueCQAndWiresMissingSettings) {
     config.aq = true;
     config.bFrames = 4;
     config.bRefMode = "middle";
+    config.multipass.clear();  // User didn't set multipass → auto-upgrade
 
     const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
     const std::optional<std::string> preset = FindOptionValue(plan.generatedOptions, "preset");
@@ -180,7 +181,9 @@ TEST(VideoEncoderOptionsTest, CustomOptionsParseAndValidate) {
     EXPECT_TRUE(HasMessageContaining(invalidPlan.errors, "missing '='"));
 }
 
-TEST(VideoEncoderOptionsTest, NvencWeightedPredEnabledForH264BFrames) {
+TEST(VideoEncoderOptionsTest, NvencWeightedPredNotAutoEnabledForH264BFrames) {
+    // OBS Studio does not set weighted_pred and works smoothly.
+    // We follow the same approach — leave at NVENC defaults.
     VideoConfig config = MakeBaseVideoConfig("h264_nvenc");
     config.bFrames = 4;
     config.bRefMode.clear();
@@ -189,16 +192,17 @@ TEST(VideoEncoderOptionsTest, NvencWeightedPredEnabledForH264BFrames) {
     const std::optional<std::string> weightedPred = FindOptionValue(plan.generatedOptions, "weighted_pred");
 
     EXPECT_TRUE(plan.errors.empty());
-    ASSERT_TRUE(weightedPred.has_value());
-    EXPECT_EQ(*weightedPred, "1");
+    EXPECT_FALSE(weightedPred.has_value());
 }
 
 TEST(VideoEncoderOptionsTest, NvencWeightedPredSkippedForAV1) {
     // NVENC AV1 does not support weighted_pred (returns ENOSYS), but
-    // B-frames themselves are allowed.  multipass should auto-upgrade.
+    // B-frames themselves are allowed.  multipass should auto-upgrade
+    // when user didn't set it explicitly.
     VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
     config.bFrames = 4;
     config.bRefMode.clear();
+    config.multipass.clear();  // User didn't set multipass → auto-upgrade
 
     const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
     const std::optional<std::string> weightedPred = FindOptionValue(plan.generatedOptions, "weighted_pred");
@@ -227,7 +231,9 @@ TEST(VideoEncoderOptionsTest, NvencWeightedPredNotSetWhenBFramesZero) {
 }
 
 TEST(VideoEncoderOptionsTest, NvencExplicitBRefModeDisabledIsRespected) {
-    // b_ref_mode=disabled should NOT appear in options; B-frames still allowed
+    // b_ref_mode=disabled SHOULD appear in options when explicitly set.
+    // This prevents FFmpeg's patched NVENC wrapper from auto-enabling
+    // b_ref_mode=middle, which would override the user's explicit choice.
     VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
     config.bFrames = 4;
     config.bRefMode = "disabled";
@@ -236,17 +242,17 @@ TEST(VideoEncoderOptionsTest, NvencExplicitBRefModeDisabledIsRespected) {
     const std::optional<std::string> bRefMode = FindOptionValue(plan.generatedOptions, "b_ref_mode");
 
     EXPECT_TRUE(plan.errors.empty());
-    EXPECT_FALSE(bRefMode.has_value());
+    ASSERT_TRUE(bRefMode.has_value());
+    EXPECT_EQ(*bRefMode, "disabled");
     EXPECT_EQ(plan.maxBFrames, 4);
 }
 
 TEST(VideoEncoderOptionsTest, NvencMultipassAutoUpgradeWithBFrames) {
-    // When B-frames are active and multipass is disabled, it should
+    // When B-frames are active and user didn't set multipass at all,
     // auto-upgrade to qres for better B-frame bit allocation.
     VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
     config.bFrames = 4;
-    config.preset = "p1";
-    config.multipass = "disabled";
+    config.multipass.clear();  // User didn't set multipass → auto-upgrade
     config.bRefMode = "middle";
     config.lookahead = true;
 
@@ -257,14 +263,29 @@ TEST(VideoEncoderOptionsTest, NvencMultipassAutoUpgradeWithBFrames) {
     EXPECT_EQ(plan.maxBFrames, 4);
     ASSERT_TRUE(multipass.has_value());
     EXPECT_EQ(*multipass, "qres");
-    EXPECT_TRUE(HasMessageContaining(plan.warnings, "multipass auto-upgraded"));
-    // weighted_pred skipped for AV1
+    EXPECT_FALSE(HasMessageContaining(plan.warnings, "multipass auto-upgraded"));
+    // weighted_pred not set (OBS approach)
     EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "weighted_pred").has_value());
     // b_ref_mode still applied
     EXPECT_TRUE(FindOptionValue(plan.generatedOptions, "b_ref_mode").has_value());
     // AV1 B-frame QP constraints
     EXPECT_EQ(*FindOptionValue(plan.generatedOptions, "qmin"), "1");
     EXPECT_EQ(*FindOptionValue(plan.generatedOptions, "qmax"), "200");
+}
+
+TEST(VideoEncoderOptionsTest, NvencMultipassDisabledRespected) {
+    // When user explicitly sets multipass=disabled, DON'T auto-upgrade.
+    // Respect the user's config.ini choice.
+    VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
+    config.bFrames = 4;
+    config.multipass = "disabled";  // Explicit user choice
+
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    const std::optional<std::string> multipass = FindOptionValue(plan.generatedOptions, "multipass");
+
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_FALSE(multipass.has_value());  // Not emitted → FFmpeg uses its default
+    EXPECT_FALSE(HasMessageContaining(plan.warnings, "multipass auto-upgraded"));
 }
 
 TEST(VideoEncoderOptionsTest, NvencMultipassNotUpgradedWhenExplicitlySet) {
@@ -316,18 +337,19 @@ TEST(VideoEncoderOptionsTest, IsHardwareEncoderFlagSetCorrectly) {
 }
 
 TEST(VideoEncoderOptionsTest, NvencHEVCBFramesMultipassAutoUpgrade) {
-    // HEVC NVENC with B-frames and multipass=disabled should also auto-upgrade
+    // HEVC NVENC with B-frames and no multipass set → auto-upgrade to qres
     VideoConfig config = MakeBaseVideoConfig("hevc_nvenc");
     config.bFrames = 4;
     config.bRefMode = "middle";
-    config.multipass = "disabled";
+    config.multipass.clear();  // User didn't set multipass → auto-upgrade
     config.lookahead = true;
 
     const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
 
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_EQ(plan.maxBFrames, 4);
-    EXPECT_TRUE(FindOptionValue(plan.generatedOptions, "weighted_pred").has_value());
+    // weighted_pred NOT set (OBS approach)
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "weighted_pred").has_value());
     EXPECT_TRUE(FindOptionValue(plan.generatedOptions, "b_ref_mode").has_value());
     const std::optional<std::string> multipass = FindOptionValue(plan.generatedOptions, "multipass");
     ASSERT_TRUE(multipass.has_value());
@@ -387,6 +409,7 @@ TEST(VideoEncoderOptionsTest, NvencHEVCBFramesNoQPConstraints) {
 
 TEST(VideoEncoderOptionsTest, NvencAV1BRefModeDisabledWithBFramesGetsQP) {
     // Even with b_ref_mode=disabled (all leaf B-frames), QP constraints apply.
+    // b_ref_mode=disabled IS emitted to prevent FFmpeg auto-enable from overriding.
     VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
     config.bFrames = 2;
     config.bRefMode = "disabled";
@@ -396,9 +419,10 @@ TEST(VideoEncoderOptionsTest, NvencAV1BRefModeDisabledWithBFramesGetsQP) {
 
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_EQ(plan.maxBFrames, 2);
-    // b_ref_mode=disabled means it's omitted from generated options
-    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "b_ref_mode").has_value());
-    // But QP constraints still apply since AV1 + B-frames
+    // b_ref_mode=disabled IS emitted to override FFmpeg's auto-enable
+    ASSERT_TRUE(FindOptionValue(plan.generatedOptions, "b_ref_mode").has_value());
+    EXPECT_EQ(*FindOptionValue(plan.generatedOptions, "b_ref_mode"), "disabled");
+    // QP constraints still apply since AV1 + B-frames
     ASSERT_TRUE(FindOptionValue(plan.generatedOptions, "qmin").has_value());
     ASSERT_TRUE(FindOptionValue(plan.generatedOptions, "qmax").has_value());
 }
