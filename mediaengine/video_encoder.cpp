@@ -1850,10 +1850,15 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
         if (pkt->flags & AV_PKT_FLAG_KEY) {
             packetStats.keyframeBytes += pkt->size;
             packetStats.keyframeCount++;
-        } else if (pkt->size <= 10) {
+        } else if (pkt->size <= 10 && codecCtx->max_b_frames > 0) {
+            // SEF (show_existing_frame) packets are tiny (<=10B) and only
+            // appear with AV1 B-frames enabled.
             packetStats.sefBytes += pkt->size;
             packetStats.sefCount++;
-        } else if (pkt->size < 2000) {
+        } else if (pkt->size < 2000 && codecCtx->max_b_frames > 0) {
+            // Likely a leaf B-frame with near-zero bit allocation.
+            // Only classify when B-frames are active — small P-frames are
+            // normal in non-B-frame mode and shouldn't be flagged.
             packetStats.bframeBytes += pkt->size;
             packetStats.bframeCount++;
         } else {
