@@ -121,7 +121,7 @@ void SetRecordingVisibleState(bool enabled) {
     }
 }
 
-bool ShouldCommitRecordingWarmup(bool useScreenGrab, bool useVFR, bool poppedFrame, bool hasBufferedScreenGrabFrame,
+bool ShouldCommitRecordingWarmup(bool useScreenGrab, bool useVFR, bool poppedFrame, bool hasBufferedWgcFrame,
                                  size_t bufferedInjectFrames, size_t injectReserveFrames, DWORD warmupElapsedMs) {
     if (!poppedFrame) {
         return false;
@@ -140,7 +140,7 @@ bool ShouldCommitRecordingWarmup(bool useScreenGrab, bool useVFR, bool poppedFra
     }
 
     if (useScreenGrab) {
-        return hasBufferedScreenGrabFrame;
+        return hasBufferedWgcFrame;
     }
 
     return bufferedInjectFrames >= injectReserveFrames;
@@ -993,8 +993,7 @@ void EncoderThreadFunc(const AppConfig& config) {
     };
     std::vector<QueuedFrame> drainedScreenGrabFrames;
     drainedScreenGrabFrames.reserve(8);
-    QueuedFrame bufferedScreenGrabFrame;
-    bool hasBufferedScreenGrabFrame = false;
+    std::deque<QueuedFrame> bufferedWgcFrames;
     std::vector<QueuedFrame> drainedInjectFrames;
     drainedInjectFrames.reserve(8);
     std::deque<QueuedFrame> bufferedInjectFrames;
@@ -1020,6 +1019,13 @@ void EncoderThreadFunc(const AppConfig& config) {
             QueuedFrame queuedFrame = std::move(bufferedInjectFrames.front());
             bufferedInjectFrames.pop_front();
             DiscardQueuedFrame(queuedFrame);
+        }
+    };
+    auto ClearBufferedWgcFrames = [&]() {
+        while (!bufferedWgcFrames.empty()) {
+            QueuedFrame queuedFrame = std::move(bufferedWgcFrames.front());
+            bufferedWgcFrames.pop_front();
+            ReleaseQueuedFrameTexture(queuedFrame);
         }
     };
     auto GetInjectReserveFrames = [&]() -> size_t {
@@ -1049,7 +1055,7 @@ void EncoderThreadFunc(const AppConfig& config) {
         return reserveFrames;
     };
 
-    while (g_EncoderRunning || g_FrameQueue.Size() > 0 || hasBufferedScreenGrabFrame || !bufferedInjectFrames.empty()) {
+    while (g_EncoderRunning || g_FrameQueue.Size() > 0 || !bufferedWgcFrames.empty() || !bufferedInjectFrames.empty()) {
         static DWORD lastThreadLog = 0;
         if (GetTickCount() - lastThreadLog > 1000) {
             LogInfo("[EncoderThread] Alive. QueueSize=%u Bottleneck=%d InputRate=%.3f",
@@ -1060,9 +1066,7 @@ void EncoderThreadFunc(const AppConfig& config) {
         if (g_pSharedMem) {
             uint32_t queueDepth = (uint32_t)g_FrameQueue.Size();
             queueDepth += static_cast<uint32_t>(bufferedInjectFrames.size());
-            if (hasBufferedScreenGrabFrame) {
-                queueDepth += 1;
-            }
+            queueDepth += static_cast<uint32_t>(bufferedWgcFrames.size());
             double fenceWaitMs = (double)MediaEngine_GetLastFrameFenceWaitUs() / 1000.0;
             const uint32_t queuePressureThreshold =
                 std::max<uint32_t>(8u, static_cast<uint32_t>(g_FrameQueue.Capacity() / 2));
@@ -1113,11 +1117,10 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
             smoothedInjectFenceMs = 0.0;
             if (!config.video.useVFR) {
-                // Keep a tiny one-frame reserve for CFR WGC/screengrab capture. WGC
-                // delivery often arrives in short bursts even when the average source
-                // cadence is above the target FPS, and always taking the newest frame
-                // turns those bursts into avoidable duplicate output ticks. Buffering
-                // one future frame smooths that jitter without reintroducing a deep queue.
+                // CFR WGC: use FIFO deque with Bresenham credit pacing (same
+                // algorithm as inject).  This distributes duplicates evenly
+                // when WGC delivery rate is below the recording target (e.g.
+                // 60 Hz monitor, 120 fps recording).
                 drainedScreenGrabFrames.clear();
                 QueuedFrame temp;
                 while (g_FrameQueue.Pop(temp, 0)) {
@@ -1128,40 +1131,53 @@ void EncoderThreadFunc(const AppConfig& config) {
                     drainedScreenGrabFrames.push_back(std::move(temp));
                 }
 
-                if (hasBufferedScreenGrabFrame) {
-                    if (g_RejectInjectFrames.load(std::memory_order_acquire) && bufferedScreenGrabFrame.isInjectMode) {
-                        DiscardQueuedFrame(bufferedScreenGrabFrame);
-                        hasBufferedScreenGrabFrame = false;
-                    }
+                for (auto& drainedFrame : drainedScreenGrabFrames) {
+                    bufferedWgcFrames.push_back(std::move(drainedFrame));
                 }
 
-                if (hasBufferedScreenGrabFrame) {
-                    frame = std::move(bufferedScreenGrabFrame);
-                    hasBufferedScreenGrabFrame = false;
+                // Track frame arrival rate for Bresenham pacing
+                pacingInputThisWindow += (uint32_t)drainedScreenGrabFrames.size();
+                pacingTicksThisWindow++;
+                const uint32_t wgcPacingWindowSize = (pacingEmaUpdates < 6)
+                                                         ? std::max((uint32_t)config.video.fps / 8, 8u)
+                                                         : (uint32_t)config.video.fps / 2;
+                if (pacingTicksThisWindow >= wgcPacingWindowSize) {
+                    double measuredRate = (double)pacingInputThisWindow / (double)pacingTicksThisWindow;
+                    double alpha = (pacingEmaUpdates < 6) ? 0.7 : 0.5;
+                    smoothedInputPerTick = smoothedInputPerTick * (1.0 - alpha) + measuredRate * alpha;
+                    pacingInputThisWindow = 0;
+                    pacingTicksThisWindow = 0;
+                    ++pacingEmaUpdates;
+                }
+
+                // Trim excess (WGC textures are COM-refcounted; keep buffer shallow)
+                constexpr size_t kMaxBufferedWgcFrames = 6;
+                while (bufferedWgcFrames.size() > kMaxBufferedWgcFrames) {
+                    QueuedFrame stale = std::move(bufferedWgcFrames.front());
+                    bufferedWgcFrames.pop_front();
+                    ReleaseQueuedFrameTexture(stale);
+                }
+
+                // Bresenham credit-based pacing
+                double creditPerTick = std::min(smoothedInputPerTick, 1.0);
+                frameCreditAccumulator += creditPerTick;
+
+                if (!g_EncoderRunning && !bufferedWgcFrames.empty()) {
+                    frame = std::move(bufferedWgcFrames.front());
+                    bufferedWgcFrames.pop_front();
                     popped = true;
-                }
-
-                if (!drainedScreenGrabFrames.empty()) {
-                    const size_t newestIndex = drainedScreenGrabFrames.size() - 1;
-                    if (popped) {
-                        for (size_t i = 0; i < newestIndex; ++i) {
-                            ReleaseQueuedFrameTexture(drainedScreenGrabFrames[i]);
-                        }
-                        bufferedScreenGrabFrame = std::move(drainedScreenGrabFrames[newestIndex]);
-                        hasBufferedScreenGrabFrame = true;
-                    } else if (drainedScreenGrabFrames.size() >= 2) {
-                        const size_t processIndex = newestIndex - 1;
-                        for (size_t i = 0; i < processIndex; ++i) {
-                            ReleaseQueuedFrameTexture(drainedScreenGrabFrames[i]);
-                        }
-                        frame = std::move(drainedScreenGrabFrames[processIndex]);
-                        bufferedScreenGrabFrame = std::move(drainedScreenGrabFrames[newestIndex]);
-                        hasBufferedScreenGrabFrame = true;
-                        popped = true;
-                    } else {
-                        frame = std::move(drainedScreenGrabFrames[newestIndex]);
-                        popped = true;
-                    }
+                    frameCreditAccumulator = std::min(frameCreditAccumulator, creditPerTick);
+                } else if (frameCreditAccumulator >= 1.0 && !bufferedWgcFrames.empty()) {
+                    frame = std::move(bufferedWgcFrames.front());
+                    bufferedWgcFrames.pop_front();
+                    popped = true;
+                    frameCreditAccumulator -= 1.0;
+                } else if (bufferedWgcFrames.size() > 4) {
+                    // Buffer pressure: pop to prevent unnecessary trimming
+                    frame = std::move(bufferedWgcFrames.front());
+                    bufferedWgcFrames.pop_front();
+                    popped = true;
+                    frameCreditAccumulator = std::fmod(frameCreditAccumulator, 1.0);
                 }
             } else {
                 // VFR: keep the existing lowest-latency newest-frame sampling.
@@ -1179,10 +1195,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 }
             }
         } else {
-            if (hasBufferedScreenGrabFrame) {
-                ReleaseQueuedFrameTexture(bufferedScreenGrabFrame);
-                bufferedScreenGrabFrame = QueuedFrame{};
-                hasBufferedScreenGrabFrame = false;
+            if (!bufferedWgcFrames.empty()) {
+                ClearBufferedWgcFrames();
             }
             if (g_RejectInjectFrames.load(std::memory_order_acquire) && !bufferedInjectFrames.empty()) {
                 ClearBufferedInjectFrames();
@@ -1332,7 +1346,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             const uint64_t warmupElapsedMs64 = GetTickCount64() - startupWarmupStartTick;
             const DWORD warmupElapsedMs =
                 warmupElapsedMs64 > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<DWORD>(warmupElapsedMs64);
-            if (ShouldCommitRecordingWarmup(useScreenGrab, config.video.useVFR, popped, hasBufferedScreenGrabFrame,
+            if (ShouldCommitRecordingWarmup(useScreenGrab, config.video.useVFR, popped, !bufferedWgcFrames.empty(),
                                             bufferedInjectFrames.size(), injectReserveFrames, warmupElapsedMs)) {
                 recordingOutputLive = true;
                 recordingLiveTick = GetTickCount64();
@@ -1465,8 +1479,8 @@ void EncoderThreadFunc(const AppConfig& config) {
         CloseHandle(hTimer);
     }
 
-    if (hasBufferedScreenGrabFrame) {
-        ReleaseQueuedFrameTexture(bufferedScreenGrabFrame);
+    if (!bufferedWgcFrames.empty()) {
+        ClearBufferedWgcFrames();
     }
 
     LogInfo("[EncoderThread] Stopped");
