@@ -1826,8 +1826,11 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
         if (fps <= 0)
             fps = 60;
         if (!savedConfig.useVFR) {
-            // CFR: derive per-frame duration from the Bresenham PTS sequence
-            int64_t frameNum = videoPacketCount - 1;
+            // CFR: derive per-frame duration from the Bresenham PTS sequence.
+            // Round-trip the already-rescaled PTS back to the codec frame number
+            // so the calculation is independent of packet arrival order (critical
+            // for B-frame codecs that output packets in decode order).
+            int64_t frameNum = av_rescale_q_rnd(pkt->pts, st->time_base, codecCtx->time_base, AV_ROUND_NEAR_INF);
             int64_t nextPts = av_rescale_q(frameNum + 1, codecCtx->time_base, st->time_base);
             pkt->duration = nextPts - pkt->pts;
         } else {
@@ -5652,9 +5655,19 @@ void VideoEncoder::AsyncWriteLoop() {
                         pkt->dts = pkt->pts;
                     }
                     if (pkt->duration <= 0) {
-                        int fps = codecCtx->framerate.num;
-                        if (fps > 0) {
-                            pkt->duration = av_rescale(1, stream->time_base.den, fps);
+                        // Use same Bresenham-aware duration as WriteFrame for
+                        // consistent frame timing in the last flushed packets.
+                        if (!savedConfig.useVFR && codecCtx->time_base.den > 0) {
+                            int64_t frameNum =
+                                av_rescale_q_rnd(pkt->pts, stream->time_base, codecCtx->time_base, AV_ROUND_NEAR_INF);
+                            int64_t nextPts = av_rescale_q(frameNum + 1, codecCtx->time_base, stream->time_base);
+                            pkt->duration = nextPts - pkt->pts;
+                        }
+                        if (pkt->duration <= 0) {
+                            int fps = codecCtx->framerate.num;
+                            if (fps > 0) {
+                                pkt->duration = av_rescale(1, stream->time_base.den, fps);
+                            }
                         }
                         if (pkt->duration <= 0) {
                             pkt->duration = av_rescale_q(1, codecCtx->time_base, stream->time_base);

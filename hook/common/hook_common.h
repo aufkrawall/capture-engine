@@ -40,6 +40,9 @@ void EarlyLog(const char* fmt, ...);
 // Logs to hook_debug.log (respects the debugLogging flag, same as HookLog)
 void HookLogImportant(const char* fmt, ...);
 void NVNGXLog(const char* fmt, ...);
+// Build a session-aware log file path using DiscoveryInfo.logsPath with fallback
+// to {moduleDir}\logs. Returns false if the path could not be constructed.
+bool BuildLogFilePathForModuleAddress(const void* address, const char* fileName, char* outPath, size_t outPathLen);
 void ReportLUID(uint32_t low, uint32_t high);
 extern char g_ProcessName[260];
 // Debug log independent of IPC

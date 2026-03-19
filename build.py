@@ -2709,15 +2709,17 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
     if arch == "x86":
         ldflags.append("-Wl,--kill-at")
         if not IS_LINUX:
-            ldflags.extend([
-                "--target=i686-w64-mingw32",
-                "--sysroot=" + os.path.join(MSYS2_DIR, "mingw32"),
-                "-fuse-ld=lld",
-                "-stdlib=libstdc++",
-                "-rtlib=libgcc",
-                "--unwindlib=libgcc",
-                "-lpthread",
-            ])
+            ldflags.extend(
+                [
+                    "--target=i686-w64-mingw32",
+                    "--sysroot=" + os.path.join(MSYS2_DIR, "mingw32"),
+                    "-fuse-ld=lld",
+                    "-stdlib=libstdc++",
+                    "-rtlib=libgcc",
+                    "--unwindlib=libgcc",
+                    "-lpthread",
+                ]
+            )
 
         # Re-add -static for proper linking
         if "-static" not in ldflags:
@@ -2989,15 +2991,17 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
         if not IS_LINUX:
             ldflags_hook.extend(["-fuse-ld=lld", "-Wl,--exclude-all-symbols"])
             if arch == "x86":
-                ldflags_hook.extend([
-                    "--target=i686-w64-mingw32",
-                    "--sysroot=" + os.path.join(MSYS2_DIR, "mingw32"),
-                    "-stdlib=libstdc++",
-                    "-static-libstdc++",
-                    "-rtlib=libgcc",
-                    "--unwindlib=libgcc",
-                    "-lpthread",
-                ])
+                ldflags_hook.extend(
+                    [
+                        "--target=i686-w64-mingw32",
+                        "--sysroot=" + os.path.join(MSYS2_DIR, "mingw32"),
+                        "-stdlib=libstdc++",
+                        "-static-libstdc++",
+                        "-rtlib=libgcc",
+                        "--unwindlib=libgcc",
+                        "-lpthread",
+                    ]
+                )
 
         # Hook DLL must use conservative arch flags (injected into game processes
         # with unknown CPU support). Replace curr_cflags march/ffast-math flags.

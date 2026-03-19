@@ -202,20 +202,8 @@ public:
             return;  // Drop trace if another thread is writing; never stall Present
 
         if (s_TraceState.path[0] == '\0') {
-            HMODULE hMod = nullptr;
-            GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                               (LPCSTR)this, &hMod);
-            if (hMod) {
-                GetModuleFileNameA(hMod, s_TraceState.path, MAX_PATH);
-                char* lastSlash = strrchr(s_TraceState.path, '\\');
-                if (lastSlash)
-                    *lastSlash = '\0';
-                char logDirPath[MAX_PATH];
-                strncpy_s(logDirPath, s_TraceState.path, _TRUNCATE);
-                strncat(logDirPath, "\\logs", MAX_PATH - strlen(logDirPath) - 1);
-                CreateDirectoryA(logDirPath, nullptr);
-                strncat(s_TraceState.path, "\\logs\\fps_limiter_trace.log", MAX_PATH - strlen(s_TraceState.path) - 1);
-            }
+            BuildLogFilePathForModuleAddress((const void*)this, "fps_limiter_trace.log", s_TraceState.path,
+                                             sizeof(s_TraceState.path));
         }
         if (s_TraceState.path[0] == '\0')
             return;
