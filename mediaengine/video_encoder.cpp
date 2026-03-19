@@ -4105,33 +4105,15 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
     // Stream 1: Cursor overlay (only if visible and VP supports it)
     bool useCursorStream = cursorVisible && vpSupportsOverlay && activeCursor && activeCursor->inputView;
     if (useCursorStream) {
-        // Get actual DPI for virtual→physical coordinate conversion.
-        // GetCursorInfo() returns cursor position in virtual (DPI-scaled) screen coords.
-        // The frame is in physical pixels, so we need to convert.
-        UINT dpiX = 96, dpiY = 96;
-        HDC hdc = GetDC(nullptr);
-        if (hdc) {
-            dpiX = GetDeviceCaps(hdc, LOGPIXELSX);
-            dpiY = GetDeviceCaps(hdc, LOGPIXELSY);
-            ReleaseDC(nullptr, hdc);
-        }
-        float positionScaleX = dpiX / 96.0f;
-        float positionScaleY = dpiY / 96.0f;
-
-        static int dpiLogCount = 0;
-        if (dpiLogCount++ % 600 == 0) {
-            DLL_Log("[Cursor] DPI position scale: %.2f x %.2f (DPI=%ux%u, frame=%dx%d)", positionScaleX, positionScaleY,
-                    dpiX, dpiY, width, height);
-        }
-
-        // Cursor size: already pre-scaled to DPI-correct display size in GetCursorCacheEntry.
-        // No additional scaling needed — VP does 1:1 blit (no bilinear blur).
+        // The process is Per-Monitor V2 DPI-aware (via embedded manifest), so
+        // GetCursorInfo() already returns physical screen coordinates.  No
+        // virtual→physical conversion needed.
         int scaledWidth = (int)activeCursor->width;
         int scaledHeight = (int)activeCursor->height;
 
-        // Convert cursor position from virtual → physical pixels
-        int physicalX = (int)(cursorX * positionScaleX);
-        int physicalY = (int)(cursorY * positionScaleY);
+        // Cursor position is already in physical pixels
+        int physicalX = cursorX;
+        int physicalY = cursorY;
 
         // Apply hotspot offset (already pre-scaled in cache entry)
         int hotspotXScaled = activeCursor->hotspotX;
@@ -4147,9 +4129,9 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
         // Log cursor rect periodically for debugging
         static int logCounter = 0;
         if (logCounter++ % 200 == 0) {
-            DLL_Log("[Cursor] Rect: (%d,%d)-(%d,%d) posScale=%.2f pos=(%d,%d) size=%dx%d", cursorRect.left,
-                    cursorRect.top, cursorRect.right, cursorRect.bottom, positionScaleX, cursorX, cursorY, scaledWidth,
-                    scaledHeight);
+            DLL_Log("[Cursor] Rect: (%d,%d)-(%d,%d) pos=(%d,%d) size=%dx%d frame=%dx%d", cursorRect.left,
+                    cursorRect.top, cursorRect.right, cursorRect.bottom, cursorX, cursorY, scaledWidth, scaledHeight,
+                    width, height);
         }
 
         // CLIPPING: VideoProcessorBlt fails with E_INVALIDARG if the destination

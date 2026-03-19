@@ -570,23 +570,14 @@ bool CursorRenderer::CompositeOntoFrame(ID3D11Texture2D* targetTexture, int fram
         return false;
     }
 
-    // Get cursor position (virtual screen coords) and convert to physical
+    // The process is Per-Monitor V2 DPI-aware (via embedded manifest), so
+    // GetCursorInfo() already returns physical screen coordinates.
+    // captureOrigin is also in physical coords.  No DPI conversion needed.
     POINT cursorPos = ci.ptScreenPos;
 
-    // Get DPI for virtual→physical coordinate conversion
-    UINT dpiX = 96, dpiY = 96;
-    HDC hdc = GetDC(nullptr);
-    if (hdc) {
-        dpiX = GetDeviceCaps(hdc, LOGPIXELSX);
-        dpiY = GetDeviceCaps(hdc, LOGPIXELSY);
-        ReleaseDC(nullptr, hdc);
-    }
-    float posScaleX = dpiX / 96.0f;
-    float posScaleY = dpiY / 96.0f;
-
-    // Calculate normalized cursor position and size (DPI-aware)
-    float cursorX = (float)((int)((cursorPos.x - captureOriginX) * posScaleX) - hotspotX) / (float)frameWidth;
-    float cursorY = (float)((int)((cursorPos.y - captureOriginY) * posScaleY) - hotspotY) / (float)frameHeight;
+    // Calculate normalized cursor position and size
+    float cursorX = (float)((cursorPos.x - captureOriginX) - hotspotX) / (float)frameWidth;
+    float cursorY = (float)((cursorPos.y - captureOriginY) - hotspotY) / (float)frameHeight;
     float cursorW = (float)cursorWidth / (float)frameWidth;
     float cursorH = (float)cursorHeight / (float)frameHeight;
 
