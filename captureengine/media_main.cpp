@@ -1415,6 +1415,50 @@ void EncoderThreadFunc(const AppConfig& config) {
                 pacingTicksThisWindow = 0;
                 encoderGridStartQpc = 0;
                 encoderGridTickCount = 0;
+                // Flush stale warmup frames from ALL buffers.  During the gap
+                // between capture start and encoder readiness, frames accumulate
+                // in the shmem ring → g_FrameQueue → bufferedInjectFrames.
+                // Without flushing, they burst into the encoder all at once,
+                // causing trimming and duplicate-induced judder in the first
+                // second of recording.
+                {
+                    QueuedFrame qf;
+                    size_t queueFlushed = 0;
+                    while (g_FrameQueue.Pop(qf, 0)) {
+                        if (qf.isInjectMode)
+                            DiscardQueuedFrame(qf);
+                        else if (qf.texture)
+                            ReleaseQueuedFrameTexture(qf);
+                        queueFlushed++;
+                    }
+                    if (queueFlushed > 0) {
+                        LogInfo("[EncoderThread] Flushed %zu warmup frames from queue", queueFlushed);
+                    }
+                }
+                if (!bufferedInjectFrames.empty()) {
+                    size_t flushed = 0;
+                    while (bufferedInjectFrames.size() > 1) {
+                        QueuedFrame stale = std::move(bufferedInjectFrames.front());
+                        bufferedInjectFrames.pop_front();
+                        DiscardQueuedFrame(stale);
+                        flushed++;
+                    }
+                    if (flushed > 0) {
+                        LogInfo("[EncoderThread] Flushed %zu stale warmup inject frames", flushed);
+                    }
+                }
+                if (!bufferedWgcFrames.empty()) {
+                    size_t flushed = 0;
+                    while (bufferedWgcFrames.size() > 1) {
+                        QueuedFrame stale = std::move(bufferedWgcFrames.front());
+                        bufferedWgcFrames.pop_front();
+                        ReleaseQueuedFrameTexture(stale);
+                        flushed++;
+                    }
+                    if (flushed > 0) {
+                        LogInfo("[EncoderThread] Flushed %zu stale warmup WGC frames", flushed);
+                    }
+                }
                 SetRecordingVisibleState(true);
                 LogInfo(
                     "[EncoderThread] Recording live after %llums hidden warmup (%s, hiddenFrames=%u, "
