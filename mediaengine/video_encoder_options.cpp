@@ -601,6 +601,19 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
 
     plan.maxBFrames = ClampBFrames(config.bFrames, &plan);
 
+    // NVENC AV1: auto-disable B-frames.  The hardware does not support
+    // weighted prediction (weighted_pred returns ENOSYS), so ALL leaf
+    // B-frames receive near-zero bits (≈600 B for 4K) and visually
+    // freeze on a reference, creating a periodic stutter at
+    // fps/(b_frames+1).  No combination of preset / multipass / AQ
+    // resolves this; the only effective fix is b_frames=0.
+    if (kind.backend == EncoderBackend::kNVENC && kind.family == CodecFamily::kAV1 && plan.maxBFrames > 0) {
+        AddWarning(&plan, "NVENC AV1: B-frames auto-disabled (b_frames " + std::to_string(plan.maxBFrames) +
+                              " -> 0). Hardware AV1 B-frames lack weighted prediction, causing severe quality "
+                              "oscillation. Use hevc_nvenc or h264_nvenc for B-frame support.");
+        plan.maxBFrames = 0;
+    }
+
     if (kind.backend == EncoderBackend::kNVENC) {
         AddGeneratedOption(&plan, "rc-lookahead", config.lookahead ? "32" : "0");
         if (config.aq) {

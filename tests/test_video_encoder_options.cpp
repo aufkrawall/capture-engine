@@ -71,11 +71,13 @@ TEST(VideoEncoderOptionsTest, ParseBitrateStringSupportsDocumentedFormats) {
 }
 
 TEST(VideoEncoderOptionsTest, NvencCQUsesTrueCQAndWiresMissingSettings) {
-    VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
+    // Use hevc_nvenc here to test full CQ + B-frame option wiring.
+    // (AV1 NVENC auto-disables B-frames due to lack of weighted_pred.)
+    VideoConfig config = MakeBaseVideoConfig("hevc_nvenc");
     config.rateControl = "CQ";
     config.bitrate = "100Mbps";
     config.maxBitrate = "150Mbps";
-    config.profile = "high";
+    config.profile = "auto";
     config.qp = 29;
     config.lookahead = true;
     config.aq = true;
@@ -110,13 +112,11 @@ TEST(VideoEncoderOptionsTest, NvencCQUsesTrueCQAndWiresMissingSettings) {
     EXPECT_EQ(*temporalAq, "1");
     EXPECT_EQ(*bRefMode, "middle");
     EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "qp").has_value());
-    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "profile").has_value());
     EXPECT_FALSE(plan.bitRate.has_value());
     ASSERT_TRUE(plan.maxBitRate.has_value());
     EXPECT_EQ(*plan.maxBitRate, 150000000);
     EXPECT_EQ(plan.maxBFrames, 4);
     EXPECT_TRUE(HasMessageContaining(plan.warnings, "bitrate is ignored"));
-    EXPECT_TRUE(HasMessageContaining(plan.warnings, "AV1"));
 }
 
 TEST(VideoEncoderOptionsTest, AutoProfileChoosesCodecAwareDefaults) {
@@ -185,7 +185,8 @@ TEST(VideoEncoderOptionsTest, NvencWeightedPredEnabledForH264BFrames) {
 }
 
 TEST(VideoEncoderOptionsTest, NvencWeightedPredSkippedForAV1) {
-    // NVENC AV1 does not support weighted_pred (returns ENOSYS)
+    // NVENC AV1 auto-disables B-frames (no weighted_pred support), so
+    // weighted_pred should NOT appear and maxBFrames should be 0.
     VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
     config.bFrames = 4;
     config.bRefMode.clear();
@@ -195,6 +196,9 @@ TEST(VideoEncoderOptionsTest, NvencWeightedPredSkippedForAV1) {
 
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_FALSE(weightedPred.has_value());
+    EXPECT_EQ(plan.maxBFrames, 0);
+    EXPECT_TRUE(HasMessageContaining(plan.warnings, "NVENC AV1"));
+    EXPECT_TRUE(HasMessageContaining(plan.warnings, "auto-disabled"));
 }
 
 TEST(VideoEncoderOptionsTest, NvencWeightedPredNotSetWhenBFramesZero) {
@@ -212,6 +216,7 @@ TEST(VideoEncoderOptionsTest, NvencWeightedPredNotSetWhenBFramesZero) {
 }
 
 TEST(VideoEncoderOptionsTest, NvencExplicitBRefModeDisabledIsRespected) {
+    // b_ref_mode=disabled should NOT appear, and AV1 auto-disables B-frames
     VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
     config.bFrames = 4;
     config.bRefMode = "disabled";
@@ -221,4 +226,53 @@ TEST(VideoEncoderOptionsTest, NvencExplicitBRefModeDisabledIsRespected) {
 
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_FALSE(bRefMode.has_value());
+    EXPECT_EQ(plan.maxBFrames, 0);
+}
+
+TEST(VideoEncoderOptionsTest, NvencAV1AutoDisablesBFrames) {
+    // NVENC AV1 lacks weighted_pred, causing severe B-frame quality oscillation.
+    // B-frames should be auto-disabled regardless of preset.
+    VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
+    config.bFrames = 4;
+    config.preset = "p7";
+    config.bRefMode = "each";
+    config.lookahead = true;
+
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_EQ(plan.maxBFrames, 0);
+    EXPECT_TRUE(HasMessageContaining(plan.warnings, "NVENC AV1"));
+    EXPECT_TRUE(HasMessageContaining(plan.warnings, "auto-disabled"));
+    // b_ref_mode should be omitted since b_frames=0
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "b_ref_mode").has_value());
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "weighted_pred").has_value());
+}
+
+TEST(VideoEncoderOptionsTest, NvencAV1BFramesZeroNotWarned) {
+    // AV1 with b_frames=0 should NOT trigger the auto-disable warning
+    VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
+    config.bFrames = 0;
+
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_EQ(plan.maxBFrames, 0);
+    EXPECT_FALSE(HasMessageContaining(plan.warnings, "auto-disabled"));
+}
+
+TEST(VideoEncoderOptionsTest, NvencHEVCBFramesPreserved) {
+    // HEVC NVENC supports weighted_pred — B-frames should NOT be auto-disabled
+    VideoConfig config = MakeBaseVideoConfig("hevc_nvenc");
+    config.bFrames = 4;
+    config.bRefMode = "middle";
+    config.lookahead = true;
+
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_EQ(plan.maxBFrames, 4);
+    EXPECT_FALSE(HasMessageContaining(plan.warnings, "auto-disabled"));
+    EXPECT_TRUE(FindOptionValue(plan.generatedOptions, "weighted_pred").has_value());
+    EXPECT_TRUE(FindOptionValue(plan.generatedOptions, "b_ref_mode").has_value());
 }
