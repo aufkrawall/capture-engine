@@ -1066,8 +1066,12 @@ void EncoderThreadFunc(const AppConfig& config) {
     while (g_EncoderRunning || g_FrameQueue.Size() > 0 || !bufferedWgcFrames.empty() || !bufferedInjectFrames.empty()) {
         static DWORD lastThreadLog = 0;
         if (GetTickCount() - lastThreadLog > 1000) {
-            LogInfo("[EncoderThread] Alive. QueueSize=%u Bottleneck=%d InputRate=%.3f",
-                    (unsigned int)g_FrameQueue.Size(), (int)g_IsEncoderBottlenecked, smoothedInputPerTick);
+            LogInfo(
+                "[EncoderThread] Alive. Q=%u Bot=%d Rate=%.3f Credit=%.2f IBuf=%zu WBuf=%zu Grid=%lld Live=%d "
+                "EMA=%u",
+                (unsigned int)g_FrameQueue.Size(), (int)g_IsEncoderBottlenecked, smoothedInputPerTick,
+                frameCreditAccumulator, bufferedInjectFrames.size(), bufferedWgcFrames.size(),
+                static_cast<long long>(encoderGridTickCount), (int)recordingOutputLive, pacingEmaUpdates);
             lastThreadLog = GetTickCount();
         }
 
@@ -1257,13 +1261,14 @@ void EncoderThreadFunc(const AppConfig& config) {
 
                 const size_t injectReserveFrames = GetInjectReserveFrames();
                 constexpr size_t kMaxInjectBufferedHeadroomFrames = 12;
-                // During encoder startup (first 1500ms), the NVENC lookahead buffer
-                // fills and then burst-outputs packets, causing a temporary stall.
-                // Use a larger headroom to prevent trimming live content frames.
+                // During warmup AND encoder startup (first 1500ms after going live),
+                // use large headroom.  During warmup, trimmed frames are wasted
+                // because the going-live flush discards them anyway.  During startup,
+                // overcaptured frames need room while the Bresenham EMA converges.
                 constexpr size_t kStartupInjectBufferedHeadroomFrames = 48;
                 constexpr uint64_t kEncoderStartupWindowMs = 1500;
                 const bool encoderStartup =
-                    recordingOutputLive && (GetTickCount64() - recordingLiveTick) < kEncoderStartupWindowMs;
+                    !recordingOutputLive || (GetTickCount64() - recordingLiveTick) < kEncoderStartupWindowMs;
                 const size_t headroom =
                     encoderStartup ? kStartupInjectBufferedHeadroomFrames : kMaxInjectBufferedHeadroomFrames;
                 const size_t maxBufferedInjectFrames = injectReserveFrames + headroom;
@@ -1459,6 +1464,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                         LogInfo("[EncoderThread] Flushed %zu stale warmup WGC frames", flushed);
                     }
                 }
+                // Reset counters so per-second logs start clean at going-live.
+                g_InjectBufferedTrimmedFrames.store(0, std::memory_order_relaxed);
+                g_InjectCadenceDroppedFrames.store(0, std::memory_order_relaxed);
                 SetRecordingVisibleState(true);
                 LogInfo(
                     "[EncoderThread] Recording live after %llums hidden warmup (%s, hiddenFrames=%u, "
