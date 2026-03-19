@@ -1000,6 +1000,7 @@ void EncoderThreadFunc(const AppConfig& config) {
     double smoothedInjectFenceMs = 0.0;
     bool recordingOutputLive = false;
     uint64_t startupWarmupStartTick = GetTickCount64();
+    uint64_t recordingLiveTick = 0;
     uint32_t hiddenStartupFrames = 0;
     bool warmupWasScreenGrab = IsActiveScreenGrab();
     uint32_t pendingInjectTrimmedLogCount = 0;
@@ -1198,7 +1199,16 @@ void EncoderThreadFunc(const AppConfig& config) {
 
                 const size_t injectReserveFrames = GetInjectReserveFrames();
                 constexpr size_t kMaxInjectBufferedHeadroomFrames = 12;
-                const size_t maxBufferedInjectFrames = injectReserveFrames + kMaxInjectBufferedHeadroomFrames;
+                // During encoder startup (first 1500ms), the NVENC lookahead buffer
+                // fills and then burst-outputs packets, causing a temporary stall.
+                // Use a larger headroom to prevent trimming live content frames.
+                constexpr size_t kStartupInjectBufferedHeadroomFrames = 48;
+                constexpr uint64_t kEncoderStartupWindowMs = 1500;
+                const bool encoderStartup =
+                    recordingOutputLive && (GetTickCount64() - recordingLiveTick) < kEncoderStartupWindowMs;
+                const size_t headroom =
+                    encoderStartup ? kStartupInjectBufferedHeadroomFrames : kMaxInjectBufferedHeadroomFrames;
+                const size_t maxBufferedInjectFrames = injectReserveFrames + headroom;
                 maxBufferedInjectDepthSinceLog = std::max(maxBufferedInjectDepthSinceLog, bufferedInjectFrames.size());
                 uint32_t trimmedInjectFrames = 0;
                 while (bufferedInjectFrames.size() > maxBufferedInjectFrames) {
@@ -1282,6 +1292,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             if (ShouldCommitRecordingWarmup(useScreenGrab, config.video.useVFR, popped, hasBufferedScreenGrabFrame,
                                             bufferedInjectFrames.size(), injectReserveFrames, warmupElapsedMs)) {
                 recordingOutputLive = true;
+                recordingLiveTick = GetTickCount64();
                 SetRecordingVisibleState(true);
                 LogInfo("[EncoderThread] Recording live after %llums hidden warmup (%s, hiddenFrames=%u)",
                         static_cast<unsigned long long>(warmupElapsedMs64), useScreenGrab ? "WGC" : "inject",
