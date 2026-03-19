@@ -28,6 +28,27 @@ static std::string GetLayerDllDirectory() {
     return ".";
 }
 
+// Resolve the session-specific logs directory.
+// Reads DiscoveryInfo.logsPath from shared memory (set by captureengine host).
+// Falls back to {DLL directory}\logs if DiscoveryInfo is not yet available.
+static std::string GetSessionLogsDirectory() {
+    HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+    if (hDisc) {
+        DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
+        if (pDisc && pDisc->GetMagic() == DISCOVERY_MAGIC && pDisc->logsPath[0] != '\0') {
+            std::string dir(pDisc->logsPath);
+            UnmapViewOfFile(pDisc);
+            CloseHandle(hDisc);
+            CreateDirectoryA(dir.c_str(), nullptr);
+            return dir;
+        }
+        if (pDisc)
+            UnmapViewOfFile(pDisc);
+        CloseHandle(hDisc);
+    }
+    return GetLayerDllDirectory() + "\\logs";
+}
+
 // Simple early logging to file before file logging is initialized
 // Uses absolute path based on DLL location to avoid CWD issues
 static bool IsLayerDebugLoggingEnabled() {
@@ -42,10 +63,9 @@ static void EarlyLog(const char* fmt, ...) {
     va_copy(argsCopy, args);
 
     if (IsLayerDebugLoggingEnabled()) {
-        // Build absolute path to log file (next to the DLL)
         static std::string logPath;
         if (logPath.empty()) {
-            logPath = GetLayerDllDirectory() + "\\logs\\vulkan_layer_early.log";
+            logPath = GetSessionLogsDirectory() + "\\vulkan_layer_early.log";
         }
 
         FILE* earlyLog = fopen(logPath.c_str(), "a");
@@ -127,7 +147,7 @@ static void InitLayerLogFile() {
         return;
     g_LogFileInitialized = true;
 
-    const std::filesystem::path logsDir = std::filesystem::path(GetLayerDllDirectory()) / "logs";
+    const std::filesystem::path logsDir = GetSessionLogsDirectory();
     std::error_code ec;
     std::filesystem::create_directories(logsDir, ec);
     const std::filesystem::path logPath = logsDir / "vulkan_layer.log";
