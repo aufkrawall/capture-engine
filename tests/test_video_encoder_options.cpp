@@ -170,3 +170,40 @@ TEST(VideoEncoderOptionsTest, CustomOptionsParseAndValidate) {
     EXPECT_FALSE(invalidPlan.errors.empty());
     EXPECT_TRUE(HasMessageContaining(invalidPlan.errors, "missing '='"));
 }
+
+TEST(VideoEncoderOptionsTest, NvencBRefModeDefaultsToEachWhenBFramesEnabled) {
+    VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
+    config.bFrames = 4;
+    config.bRefMode.clear();
+
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    const std::optional<std::string> bRefMode = FindOptionValue(plan.generatedOptions, "b_ref_mode");
+
+    EXPECT_TRUE(plan.errors.empty());
+    ASSERT_TRUE(bRefMode.has_value());
+    EXPECT_EQ(*bRefMode, "each");
+}
+
+TEST(VideoEncoderOptionsTest, NvencBRefModeNotSetWhenBFramesZeroAndUnspecified) {
+    VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
+    config.bFrames = 0;
+    config.bRefMode.clear();
+
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    const std::optional<std::string> bRefMode = FindOptionValue(plan.generatedOptions, "b_ref_mode");
+
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_FALSE(bRefMode.has_value());
+}
+
+TEST(VideoEncoderOptionsTest, NvencExplicitBRefModeDisabledIsRespected) {
+    VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
+    config.bFrames = 4;
+    config.bRefMode = "disabled";
+
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    const std::optional<std::string> bRefMode = FindOptionValue(plan.generatedOptions, "b_ref_mode");
+
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_FALSE(bRefMode.has_value());
+}

@@ -1165,6 +1165,14 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     codecCtx->rc_max_rate = optionPlan.maxBitRate.value_or(0);
     codecCtx->max_b_frames = optionPlan.maxBFrames;
 
+    // Equalize B-frame quality with P-frames to prevent quality oscillation
+    // that creates visible freeze-jump stutter in high-FPS screen capture.
+    if (optionPlan.maxBFrames > 0) {
+        codecCtx->b_quant_factor = 1.0f;
+        codecCtx->b_quant_offset = 0.0f;
+        DLL_Log("[VideoEncoder] B-frame quality equalized (b_quant_factor=1.0, b_quant_offset=0.0)");
+    }
+
     if (savedConfig.keyframeInterval > 0) {
         codecCtx->gop_size = savedConfig.fps * savedConfig.keyframeInterval;
     } else if (savedConfig.keyframeInterval < 0) {

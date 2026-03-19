@@ -619,14 +619,24 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
             }
         }
 
-        const auto bRefMode = CanonicalizeNvencBRefMode(config.bRefMode);
-        if (!bRefMode.has_value()) {
-            AddError(&plan, "Unsupported NVENC b_ref_mode value: " + config.bRefMode);
-        } else if (*bRefMode != "disabled") {
-            if (plan.maxBFrames == 0) {
-                AddWarning(&plan, "b_ref_mode is ignored when b_frames=0");
-            } else {
-                AddGeneratedOption(&plan, "b_ref_mode", *bRefMode);
+        if (config.bRefMode.empty()) {
+            // When B-frames enabled and user hasn't explicitly set b_ref_mode,
+            // default to "each" so all B-frames act as references and receive
+            // enough bits to carry meaningful visual data (avoids quality
+            // oscillation that looks like stutter at high FPS).
+            if (plan.maxBFrames > 0) {
+                AddGeneratedOption(&plan, "b_ref_mode", "each");
+            }
+        } else {
+            const auto bRefMode = CanonicalizeNvencBRefMode(config.bRefMode);
+            if (!bRefMode.has_value()) {
+                AddError(&plan, "Unsupported NVENC b_ref_mode value: " + config.bRefMode);
+            } else if (*bRefMode != "disabled") {
+                if (plan.maxBFrames == 0) {
+                    AddWarning(&plan, "b_ref_mode is ignored when b_frames=0");
+                } else {
+                    AddGeneratedOption(&plan, "b_ref_mode", *bRefMode);
+                }
             }
         }
     }
