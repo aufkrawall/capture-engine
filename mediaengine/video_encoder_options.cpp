@@ -619,14 +619,20 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
             }
         }
 
+        // Enable weighted prediction when B-frames are active so that each
+        // B-frame's reference weighting reflects its temporal position.
+        // Without this, NVENC applies equal weights to both references,
+        // making ALL B-frames in a mini-GOP look like the midpoint of
+        // their references — causing a visible freeze-jump stutter pattern
+        // (effective update rate drops to ref-frame rate ≈ fps/(b_frames+1)).
+        if (plan.maxBFrames > 0) {
+            AddGeneratedOption(&plan, "weighted_pred", "1");
+        }
+
         if (config.bRefMode.empty()) {
-            // When B-frames enabled and user hasn't explicitly set b_ref_mode,
-            // default to "each" so all B-frames act as references and receive
-            // enough bits to carry meaningful visual data (avoids quality
-            // oscillation that looks like stutter at high FPS).
-            if (plan.maxBFrames > 0) {
-                AddGeneratedOption(&plan, "b_ref_mode", "each");
-            }
+            // When user hasn't set b_ref_mode, leave at NVENC default
+            // (disabled).  b_ref_mode=each gives smoothest results but is
+            // too slow for high b_frames counts in real-time capture.
         } else {
             const auto bRefMode = CanonicalizeNvencBRefMode(config.bRefMode);
             if (!bRefMode.has_value()) {

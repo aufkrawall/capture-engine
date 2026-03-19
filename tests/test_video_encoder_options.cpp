@@ -171,29 +171,35 @@ TEST(VideoEncoderOptionsTest, CustomOptionsParseAndValidate) {
     EXPECT_TRUE(HasMessageContaining(invalidPlan.errors, "missing '='"));
 }
 
-TEST(VideoEncoderOptionsTest, NvencBRefModeDefaultsToEachWhenBFramesEnabled) {
+TEST(VideoEncoderOptionsTest, NvencWeightedPredEnabledWhenBFramesActive) {
     VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
     config.bFrames = 4;
     config.bRefMode.clear();
 
     const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
     const std::optional<std::string> bRefMode = FindOptionValue(plan.generatedOptions, "b_ref_mode");
+    const std::optional<std::string> weightedPred = FindOptionValue(plan.generatedOptions, "weighted_pred");
 
     EXPECT_TRUE(plan.errors.empty());
-    ASSERT_TRUE(bRefMode.has_value());
-    EXPECT_EQ(*bRefMode, "each");
+    // b_ref_mode not set when user hasn't specified (NVENC defaults to disabled)
+    EXPECT_FALSE(bRefMode.has_value());
+    // weighted_pred auto-enabled for B-frame temporal interpolation quality
+    ASSERT_TRUE(weightedPred.has_value());
+    EXPECT_EQ(*weightedPred, "1");
 }
 
-TEST(VideoEncoderOptionsTest, NvencBRefModeNotSetWhenBFramesZeroAndUnspecified) {
+TEST(VideoEncoderOptionsTest, NvencWeightedPredNotSetWhenBFramesZero) {
     VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
     config.bFrames = 0;
     config.bRefMode.clear();
 
     const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
     const std::optional<std::string> bRefMode = FindOptionValue(plan.generatedOptions, "b_ref_mode");
+    const std::optional<std::string> weightedPred = FindOptionValue(plan.generatedOptions, "weighted_pred");
 
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_FALSE(bRefMode.has_value());
+    EXPECT_FALSE(weightedPred.has_value());
 }
 
 TEST(VideoEncoderOptionsTest, NvencExplicitBRefModeDisabledIsRespected) {
