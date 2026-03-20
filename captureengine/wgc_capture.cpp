@@ -307,6 +307,28 @@ public:
     bool borderlessCapture_ = false;
     UINT outputBitsPerColor_ = 8;
     DXGI_COLOR_SPACE_TYPE outputColorSpace_ = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+    ULONGLONG lastHDRCheckTick_ = 0;
+
+    // Periodically re-check HDR state (handles mid-capture HDR toggle in Windows settings)
+    void MaybeRecheckHDR() {
+        ULONGLONG now = GetTickCount64();
+        if (now - lastHDRCheckTick_ < 2000)  // Re-check every 2 seconds
+            return;
+        lastHDRCheckTick_ = now;
+
+        if (!targetMonitor_)
+            return;
+
+        DXGI_OUTPUT_DESC1 desc1 = {};
+        if (QueryOutputDesc1ForMonitor(targetMonitor_, desc1)) {
+            bool newHDR = ::IsHdrOutputColorSpace(desc1.ColorSpace);
+            if (newHDR != captureIsHDR_) {
+                LogInfo("[WGC] HDR state changed mid-capture: %s -> %s", captureIsHDR_ ? "HDR" : "SDR",
+                        newHDR ? "HDR" : "SDR");
+                captureIsHDR_ = newHDR;
+            }
+        }
+    }
 
     const char* DescribeCaptureFormat() const {
         switch (captureDxgiFormat_) {
@@ -992,6 +1014,7 @@ public:
                     }
                     auto cb = frameCallback_.load(std::memory_order_acquire);
                     if (cb) {
+                        MaybeRecheckHDR();
                         cb(copiedTexture, desc.Width, desc.Height,
                            sourceFrameQpc > 0 ? sourceFrameQpc : copyCompleteQpc, captureIsHDR_);
                     } else {
@@ -1357,6 +1380,7 @@ public:
                     frame.width = desc.Width;
                     frame.height = desc.Height;
                     frame.timestamp = sourceFrameQpc > 0 ? sourceFrameQpc : copyCompleteQpc;
+                    MaybeRecheckHDR();
                     frame.isHDR = captureIsHDR_;
                     GetCaptureOrigin(frame.captureLeft, frame.captureTop);
                     callbackFrameCount_.fetch_add(1, std::memory_order_relaxed);

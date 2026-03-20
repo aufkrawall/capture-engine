@@ -4993,8 +4993,7 @@ bool VideoEncoder::ScaleCursorOnGPU(ID3D11Texture2D* srcTex, uint32_t srcW, uint
 // ============================================================================
 
 // Compute shader: writes Y and UV values to StructuredBuffers.
-// Handles both gamma-encoded sRGB (BGRA8) and linear RGB (FP16 from WGC) input.
-// When isLinear=1, applies sRGB gamma encoding before BT.709 YUV conversion.
+// Handles sRGB (BGRA8), linear SDR (FP16), and linear HDR (FP16/PQ) input.
 static const char* RGB_TO_YUV_CS_SRC = R"(
 Texture2D<float4> srcTex : register(t0);
 RWStructuredBuffer<uint> yOut : register(u0);    // w*h entries, one Y per pixel
@@ -5003,22 +5002,32 @@ RWStructuredBuffer<uint> uvVOut : register(u2);  // (w/2)*(h/2) entries
 
 cbuffer GammaCB : register(b0)
 {
-    uint isLinear;  // 1 = input is linear RGB (FP16), apply gamma before BT.709
+    uint isLinear;  // 1 = input is linear RGB (FP16)
+    uint isHDR;     // 1 = use BT.2020 + PQ (HDR10), 0 = use BT.709 + sRGB (SDR)
     uint _pad0;
     uint _pad1;
-    uint _pad2;
 };
 
 // Approximate sRGB gamma encoding: linear -> sRGB
 float3 LinearToSRGB(float3 c)
 {
-    // Fast approximation: pow(x, 1/2.2)
-    // Accurate enough for YUV conversion, avoids expensive exact sRGB curve
     float3 lo = c * 12.92;
     float3 hi = 1.055 * pow(max(c, 0.0), 1.0 / 2.4) - 0.055;
     return float3(c.r < 0.0031308 ? lo.r : hi.r,
                   c.g < 0.0031308 ? lo.g : hi.g,
                   c.b < 0.0031308 ? lo.b : hi.b);
+}
+
+// SMPTE ST 2084 (PQ) transfer function: linear [0,1] -> PQ [0,1]
+float3 LinearToPQ(float3 c)
+{
+    float m1 = 0.1593017578125;   // (2610 / 16384)
+    float m2 = 78.84375;          // (2523 / 32) * 128
+    float c1 = 0.8359375;         // 3424 / 4096
+    float c2 = 18.8515625;        // (2413 / 128)
+    float c3 = 18.6875;           // (2392 / 128)
+    float3 cp = pow(max(c, 0.0), m1);
+    return pow((c1 + c2 * cp) / (1.0 + c3 * cp), m2);
 }
 
 [numthreads(8, 8, 1)]
@@ -5031,16 +5040,25 @@ void CSMain(uint3 dtid : SV_DispatchThreadID)
     float4 c = srcTex.Load(dtid.xyz);
     float3 rgb = c.rgb;
 
-    // If input is linear (FP16 from WGC), encode to sRGB gamma before BT.709
-    if (isLinear != 0)
-    {
-        rgb = LinearToSRGB(saturate(rgb));
-    }
+    float Yf, Uf, Vf;
 
-    // BT.709 RGB→YUV (expects gamma-encoded sRGB input)
-    float Yf = saturate(0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b);
-    float Uf = saturate(-0.1146 * rgb.r - 0.3854 * rgb.g + 0.5000 * rgb.b + 0.5);
-    float Vf = saturate(0.5000 * rgb.r - 0.4542 * rgb.g - 0.0458 * rgb.b + 0.5);
+    if (isHDR != 0)
+    {
+        // HDR path: linear -> PQ, then BT.2020 RGB->YUV
+        rgb = LinearToPQ(saturate(rgb));
+        Yf = saturate(0.2627 * rgb.r + 0.6780 * rgb.g + 0.0593 * rgb.b);
+        Uf = saturate(-0.1396 * rgb.r - 0.3604 * rgb.g + 0.5000 * rgb.b + 0.5);
+        Vf = saturate(0.5000 * rgb.r - 0.4392 * rgb.g - 0.0608 * rgb.b + 0.5);
+    }
+    else
+    {
+        // SDR path: linear -> sRGB (if needed), then BT.709 RGB->YUV
+        if (isLinear != 0)
+            rgb = LinearToSRGB(saturate(rgb));
+        Yf = saturate(0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b);
+        Uf = saturate(-0.1146 * rgb.r - 0.3854 * rgb.g + 0.5000 * rgb.b + 0.5);
+        Vf = saturate(0.5000 * rgb.r - 0.4542 * rgb.g - 0.0458 * rgb.b + 0.5);
+    }
 
     // P010 range: 10-bit in 16-bit container
     uint Y = (uint)(Yf * 65472.0 + 0.5);
@@ -5135,7 +5153,7 @@ bool VideoEncoder::InitRgbToYuvCS() {
     return true;
 }
 
-void VideoEncoder::SetP010ShaderInput(bool isLinear) {
+void VideoEncoder::SetP010ShaderInput(bool isLinear, bool isHDR) {
     if (!gammaCB || !d3d11Context)
         return;
     D3D11_MAPPED_SUBRESOURCE mapped = {};
@@ -5143,7 +5161,7 @@ void VideoEncoder::SetP010ShaderInput(bool isLinear) {
     if (SUCCEEDED(hr)) {
         uint32_t* data = (uint32_t*)mapped.pData;
         data[0] = isLinear ? 1u : 0u;  // isLinear flag
-        data[1] = 0;
+        data[1] = isHDR ? 1u : 0u;     // isHDR flag
         data[2] = 0;
         data[3] = 0;
         d3d11Context->Unmap(gammaCB, 0);
@@ -5286,7 +5304,7 @@ bool VideoEncoder::ConvertRGBtoP010_GPU(ID3D11Texture2D* srcTex, DXGI_FORMAT src
 
         // Set gamma flag: FP16 input is linear RGB (needs gamma encoding before BT.709)
         bool isLinear = (srcFmt == DXGI_FORMAT_R16G16B16A16_FLOAT || srcFmt == DXGI_FORMAT_R16G16B16A16_UNORM);
-        SetP010ShaderInput(isLinear);
+        SetP010ShaderInput(isLinear, currentIsHDR);
 
         baseCtx->Dispatch(groupsX, groupsY, 1);
 

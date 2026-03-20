@@ -309,7 +309,7 @@ private:
     bool InitRgbToYuvCS();  // Compile compute shader + create CB (once)
     bool ConvertRGBtoP010_GPU(ID3D11Texture2D* srcTex, DXGI_FORMAT srcFmt, ID3D11Texture2D** dstTex, uint32_t w,
                               uint32_t h);
-    void SetP010ShaderInput(bool isLinear);  // Update constant buffer flag
+    void SetP010ShaderInput(bool isLinear, bool isHDR);  // Update constant buffer flags
 
     // P010 output textures for 10-bit encoding
     static constexpr int kP010BufferCount = 3;
