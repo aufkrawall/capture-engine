@@ -87,6 +87,56 @@ bool PseudoOverlay::IsForegroundTarget() {
     return match;
 }
 
+// ---- Inject overlay detection via shared memory ----
+
+bool PseudoOverlay::IsInjectOverlayActive() {
+    // Lazy-open shared memory on first call
+    if (!pSharedMem_) {
+        hDiscoveryMap_ = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+        if (!hDiscoveryMap_)
+            return false;
+
+        DiscoveryInfo* pDisc =
+            (DiscoveryInfo*)MapViewOfFile(hDiscoveryMap_, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
+        if (!pDisc) {
+            CloseHandle(hDiscoveryMap_);
+            hDiscoveryMap_ = NULL;
+            return false;
+        }
+
+        uint32_t magic = pDisc->GetMagic();
+        uint32_t pid = pDisc->GetInjectPid();
+        UnmapViewOfFile(pDisc);
+
+        if (magic != DISCOVERY_MAGIC || pid == 0) {
+            CloseHandle(hDiscoveryMap_);
+            hDiscoveryMap_ = NULL;
+            return false;
+        }
+
+        wchar_t sharedMemName[64];
+        GenerateSharedMemName(sharedMemName, 64, pid);
+        hSharedMemMap_ = OpenFileMappingW(FILE_MAP_READ, FALSE, sharedMemName);
+        if (!hSharedMemMap_) {
+            CloseHandle(hDiscoveryMap_);
+            hDiscoveryMap_ = NULL;
+            return false;
+        }
+
+        pSharedMem_ =
+            (SharedMemoryLayout*)MapViewOfFile(hSharedMemMap_, FILE_MAP_READ, 0, 0, sizeof(SharedMemoryLayout));
+        if (!pSharedMem_) {
+            CloseHandle(hSharedMemMap_);
+            hSharedMemMap_ = NULL;
+            CloseHandle(hDiscoveryMap_);
+            hDiscoveryMap_ = NULL;
+            return false;
+        }
+    }
+
+    return pSharedMem_->runtimeState.HasRuntimeFlag(kCaptureRuntimeFlagInjectOverlayActive);
+}
+
 // ---- GDI helpers ----
 
 void PseudoOverlay::InitGDI() {
@@ -121,6 +171,17 @@ void PseudoOverlay::CleanupGDI() {
 void PseudoOverlay::UpdateOverlay() {
     if (!initialized_)
         return;
+
+    // Suppress when inject overlay is active in a hooked game
+    if (IsInjectOverlayActive()) {
+        if (IsWindowVisible(hOv_))
+            ShowWindow(hOv_, SW_HIDE);
+        if (IsWindowVisible(hWarn_))
+            ShowWindow(hWarn_, SW_HIDE);
+        lastOv_ = {};
+        lastWarnVis_ = false;
+        return;
+    }
 
     int sw = GetSystemMetrics(SM_CXSCREEN);
     int sh = GetSystemMetrics(SM_CYSCREEN);
@@ -563,6 +624,20 @@ void PseudoOverlay::Shutdown() {
     }
 
     CleanupGDI();
+
+    // Release shared memory handles
+    if (pSharedMem_) {
+        UnmapViewOfFile(pSharedMem_);
+        pSharedMem_ = nullptr;
+    }
+    if (hSharedMemMap_) {
+        CloseHandle(hSharedMemMap_);
+        hSharedMemMap_ = NULL;
+    }
+    if (hDiscoveryMap_) {
+        CloseHandle(hDiscoveryMap_);
+        hDiscoveryMap_ = NULL;
+    }
 
     // Reset tracking state
     lastOv_ = {};

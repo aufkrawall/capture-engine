@@ -1852,7 +1852,8 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
         bool isTemporalDelimiter = false;
         if (isTiny && pkt->size >= 3 && pkt->data) {
             uint8_t obuType = (pkt->data[0] >> 3) & 0x0F;
-            if (obuType == 2) isTemporalDelimiter = true;
+            if (obuType == 2)
+                isTemporalDelimiter = true;
         }
         const char* type = isKeyframe ? "KEY" : (isTemporalDelimiter ? "TD" : (isTiny ? "SEF" : "DATA"));
         DLL_Log(
@@ -2697,10 +2698,14 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         // Check if fence is already satisfied (avoid SetEvent overhead if possible)
         if (d3d11Fence->GetCompletedValue() < fenceValue) {
             d3d11Fence->SetEventOnCompletion(fenceValue, fenceEvent);
-            DWORD waitRes = WaitForSingleObject(fenceEvent, 200);  // 200ms timeout (increased for GPU contention)
+            // Non-blocking fence check: poll with 0ms timeout instead of
+            // blocking the encoder thread. At 100% GPU, the fence may take
+            // 1-5ms to signal — blocking for 200ms collapses the cadence.
+            // If the fence isn't ready, we skip this frame (return false)
+            // and the Bresenham produces a duplicate. Stutter > corruption.
+            DWORD waitRes = WaitForSingleObject(fenceEvent, 0);
             if (waitRes == WAIT_TIMEOUT) {
-                // Frame is too late or GPU is hung - skip this frame
-                DLL_Log("[VideoEncoder] Frame %d: GPU Fence Timeout (200ms) - Skipping", encodeFrameCounter);
+                // Fence not ready — skip this frame, encoder thread stays responsive
                 bgraTex->Release();
                 d3d11Fence->Release();
                 d3d11Fence = nullptr;

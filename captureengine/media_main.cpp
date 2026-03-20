@@ -994,6 +994,8 @@ void EncoderThreadFunc(const AppConfig& config) {
 
     double smoothedEncodeMs = 0.0;
     double frameIntervalMs = 1000.0 / config.video.fps;
+    uint32_t adaptiveCadenceCounter = 0;
+    bool adaptiveCadenceActive = false;
     auto ReleaseQueuedFrameTexture = [](QueuedFrame& queuedFrame) {
         if (!queuedFrame.isInjectMode && queuedFrame.texture) {
             queuedFrame.texture->Release();
@@ -1619,30 +1621,43 @@ void EncoderThreadFunc(const AppConfig& config) {
             LARGE_INTEGER startEnc, endEnc;
             QueryPerformanceCounter(&startEnc);
 
-            if (isDuplicate && g_pSharedMem) {
-                g_pSharedMem->runtimeState.duplicateFrames.fetch_add(1, std::memory_order_relaxed);
-                // Log duplicate frame events for artifact diagnosis (throttled to 1/sec)
-                static uint64_t s_lastDupLogTick = 0;
-                uint64_t nowTick = GetTickCount64();
-                if (nowTick - s_lastDupLogTick >= 1000) {
-                    LogInfo("[EncoderThread] Duplicate frame: credit=%.3f rate=%.3f bufferedI=%zu bufferedW=%zu",
-                            frameCreditAccumulator, smoothedInputPerTick, bufferedInjectFrames.size(),
-                            bufferedWgcFrames.size());
-                    s_lastDupLogTick = nowTick;
+            bool adaptiveSkip = false;
+            if (adaptiveCadenceActive) {
+                static uint32_t s_adaptiveSkipCounter = 0;
+                s_adaptiveSkipCounter++;
+                if (s_adaptiveSkipCounter % 2 == 1) {
+                    adaptiveSkip = true;
+                    isDuplicate = true;
                 }
             }
 
-            if (frameToProcess->isInjectMode) {
-                MediaEngine_ProcessFrame((uint64_t)frameToProcess->sharedHandle, (uint64_t)frameToProcess->fenceHandle,
-                                         frameToProcess->fenceValue, frameToProcess->timestamp, frameToProcess->luidLow,
-                                         frameToProcess->luidHigh, frameToProcess->sourcePid, frameToProcess->width,
-                                         frameToProcess->height, frameToProcess->format, frameToProcess->isHDR,
-                                         frameToProcess->isShmem, frameToProcess->shmemSlot);
-            } else {
-                MediaEngine_ProcessFrameD3D11(frameToProcess->texture, frameToProcess->timestamp, frameToProcess->width,
-                                              frameToProcess->height, frameToProcess->isHDR,
-                                              frameToProcess->captureLeft, frameToProcess->captureTop);
-            }
+            if (!adaptiveSkip) {
+                if (isDuplicate && g_pSharedMem) {
+                    g_pSharedMem->runtimeState.duplicateFrames.fetch_add(1, std::memory_order_relaxed);
+                    // Log duplicate frame events for artifact diagnosis (throttled to 1/sec)
+                    static uint64_t s_lastDupLogTick = 0;
+                    uint64_t nowTick = GetTickCount64();
+                    if (nowTick - s_lastDupLogTick >= 1000) {
+                        LogInfo("[EncoderThread] Duplicate frame: credit=%.3f rate=%.3f bufferedI=%zu bufferedW=%zu",
+                                frameCreditAccumulator, smoothedInputPerTick, bufferedInjectFrames.size(),
+                                bufferedWgcFrames.size());
+                        s_lastDupLogTick = nowTick;
+                    }
+                }
+
+                if (frameToProcess->isInjectMode) {
+                    MediaEngine_ProcessFrame((uint64_t)frameToProcess->sharedHandle,
+                                             (uint64_t)frameToProcess->fenceHandle, frameToProcess->fenceValue,
+                                             frameToProcess->timestamp, frameToProcess->luidLow,
+                                             frameToProcess->luidHigh, frameToProcess->sourcePid, frameToProcess->width,
+                                             frameToProcess->height, frameToProcess->format, frameToProcess->isHDR,
+                                             frameToProcess->isShmem, frameToProcess->shmemSlot);
+                } else {
+                    MediaEngine_ProcessFrameD3D11(frameToProcess->texture, frameToProcess->timestamp,
+                                                  frameToProcess->width, frameToProcess->height, frameToProcess->isHDR,
+                                                  frameToProcess->captureLeft, frameToProcess->captureTop);
+                }
+            }  // !adaptiveSkip
 
             QueryPerformanceCounter(&endEnc);
             double currentEncodeMs = (double)(endEnc.QuadPart - startEnc.QuadPart) * 1000.0 / qpcFreq.QuadPart;
@@ -1669,6 +1684,22 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
 
             g_IsEncoderBottlenecked.store(smoothedEncodeMs > frameIntervalMs * 0.95, std::memory_order_relaxed);
+
+            if (smoothedEncodeMs > frameIntervalMs * 0.75) {
+                adaptiveCadenceCounter++;
+                if (adaptiveCadenceCounter >= 30 && !adaptiveCadenceActive) {
+                    adaptiveCadenceActive = true;
+                    LogInfo("[EncoderThread] Adaptive cadence ACTIVATED: encode=%.2fms budget=%.2fms", smoothedEncodeMs,
+                            frameIntervalMs);
+                }
+            } else if (smoothedEncodeMs < frameIntervalMs * 0.50) {
+                if (adaptiveCadenceActive) {
+                    LogInfo("[EncoderThread] Adaptive cadence DEACTIVATED: encode=%.2fms budget=%.2fms",
+                            smoothedEncodeMs, frameIntervalMs);
+                }
+                adaptiveCadenceActive = false;
+                adaptiveCadenceCounter = 0;
+            }
 
             static DWORD lastWarningTime = 0;
             if (smoothedEncodeMs > frameIntervalMs * 0.85) {

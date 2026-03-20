@@ -533,6 +533,10 @@ int InjectProcessMain(const AppConfig& config) {
         if (injector && (lastInjectorUpdate == 0 || (now - lastInjectorUpdate) >= 500)) {
             injector->Update();
             lastInjectorUpdate = now;
+
+            // Track inject overlay active state for pseudo-overlay suppression
+            bool hasActive = injector->HasActiveInjections();
+            pSharedMem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectOverlayActive, hasActive);
         }
 
         Sleep(injector ? 100 : 250);

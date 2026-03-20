@@ -263,6 +263,7 @@ struct SharedGraphicsConfig {
 
 enum CaptureRuntimeFlags : uint32_t {
     kCaptureRuntimeFlagVulkanOverlayActive = 1u << 0,
+    kCaptureRuntimeFlagInjectOverlayActive = 1u << 1,  // Inject hook is active in a game
 };
 
 struct alignas(8) CaptureState {

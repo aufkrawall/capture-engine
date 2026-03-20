@@ -49,6 +49,9 @@ private:
     // Foreground process detection
     bool IsForegroundTarget();
 
+    // Check if inject overlay is active in a hooked game (via shared memory)
+    bool IsInjectOverlayActive();
+
     // GDI rendering helpers
     void InitGDI();
     void CleanupGDI();
@@ -101,4 +104,9 @@ private:
 
     // Instance for static wndproc routing
     static PseudoOverlay* instance_;
+
+    // Shared memory handles for inject overlay detection
+    HANDLE hDiscoveryMap_ = NULL;
+    HANDLE hSharedMemMap_ = NULL;
+    struct SharedMemoryLayout* pSharedMem_ = nullptr;
 };
