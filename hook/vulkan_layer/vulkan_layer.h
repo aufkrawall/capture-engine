@@ -304,3 +304,6 @@ void CleanupCapture(VkDevice device);
 void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t imageIndex, VkSemaphore waitSemaphore,
                   VkSemaphore signalSemaphore);
 VkSemaphore GetCaptureSemaphore(VkDevice device, uint32_t imageIndex);
+
+void TakeVulkanScreenshot(struct DeviceDispatch* disp, VkDevice device, VkQueue queue, VkImage srcImage, uint32_t width,
+                          uint32_t height, VkFormat format, const char* outputPath);

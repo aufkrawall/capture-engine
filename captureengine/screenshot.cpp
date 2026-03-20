@@ -1,19 +1,21 @@
-// Screenshot capture using DXGI Desktop Duplication + WIC PNG encoding.
-// Captures the composed desktop output which includes fullscreen and windowed games.
+// Screenshot capture with two approaches:
+//   1. Hook-based: sets cmdTakeScreenshot in shared memory, hook reads backbuffer directly (DX11, DX10, DX9, OpenGL)
+//   2. GDI fallback: captures DWM-composed desktop via BitBlt (works for windowed/borderless, may fail for exclusive
+//   fullscreen)
 
 #include "screenshot.h"
 #include "../common/logging.h"
+#include "../common/shared_defs.h"
 
 // clang-format off
 #include <windows.h>
-#include <d3d11.h>
-#include <dxgi1_2.h>
 #include <wincodec.h>
 #include <wincodecsdk.h>
 // clang-format on
 
 #include <filesystem>
 #include <string>
+#include <vector>
 
 // Com helper to release COM objects
 template <typename T>
@@ -24,6 +26,247 @@ static void SafeRelease(T*& ptr) {
     }
 }
 
+// RAII handle closer
+struct HandleGuard {
+    HANDLE h;
+    HandleGuard() : h(NULL) {}
+    explicit HandleGuard(HANDLE handle) : h(handle) {}
+    ~HandleGuard() {
+        if (h && h != INVALID_HANDLE_VALUE)
+            CloseHandle(h);
+    }
+    operator HANDLE() const {
+        return h;
+    }
+    HANDLE* addressof() {
+        return &h;
+    }
+};
+
+// RAII COM initializer
+class ComInitializer {
+public:
+    ComInitializer() : initialized_(SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED))) {}
+    ~ComInitializer() {
+        if (initialized_)
+            CoUninitialize();
+    }
+    bool IsInitialized() const {
+        return initialized_;
+    }
+
+private:
+    bool initialized_;
+};
+
+// ---- Atomic PNG writer: write to temp file, flush, rename ----
+// Returns the WIC stream's file handle (for flushing) or NULL on failure.
+// On error, temp file is deleted.
+
+// Save BGRA pixel data as a PNG file using WIC.
+// Writes to fullPath.png.tmp first, then atomically renames.
+static bool SavePixelsAsPNG(const std::string& fullPath, uint32_t width, uint32_t height, const uint8_t* pixels,
+                            uint32_t rowPitch) {
+    std::string tempPath = fullPath + ".tmp";
+
+    // Delete any leftover temp file
+    DeleteFileA(tempPath.c_str());
+
+    IWICImagingFactory* factory = nullptr;
+    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
+    if (FAILED(hr)) {
+        LogError("[Screenshot] CoCreateInstance WICImagingFactory failed: hr=0x%08X", hr);
+        return false;
+    }
+
+    IWICStream* stream = nullptr;
+    hr = factory->CreateStream(&stream);
+    if (FAILED(hr)) {
+        SafeRelease(factory);
+        return false;
+    }
+
+    int wideLen = MultiByteToWideChar(CP_UTF8, 0, tempPath.c_str(), -1, nullptr, 0);
+    std::wstring widePath(wideLen, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, tempPath.c_str(), -1, widePath.data(), wideLen);
+
+    hr = stream->InitializeFromFilename(widePath.c_str(), GENERIC_WRITE);
+    if (FAILED(hr)) {
+        LogError("[Screenshot] InitializeFromFilename failed: hr=0x%08X", hr);
+        SafeRelease(stream);
+        SafeRelease(factory);
+        DeleteFileA(tempPath.c_str());
+        return false;
+    }
+
+    IWICBitmapEncoder* encoder = nullptr;
+    hr = factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder);
+    if (FAILED(hr)) {
+        SafeRelease(stream);
+        SafeRelease(factory);
+        DeleteFileA(tempPath.c_str());
+        return false;
+    }
+
+    hr = encoder->Initialize(stream, WICBitmapEncoderNoCache);
+    if (FAILED(hr)) {
+        SafeRelease(encoder);
+        SafeRelease(stream);
+        SafeRelease(factory);
+        DeleteFileA(tempPath.c_str());
+        return false;
+    }
+
+    IWICBitmapFrameEncode* frameEncode = nullptr;
+    IPropertyBag2* encoderOptions = nullptr;
+    hr = encoder->CreateNewFrame(&frameEncode, &encoderOptions);
+    if (FAILED(hr)) {
+        SafeRelease(encoder);
+        SafeRelease(stream);
+        SafeRelease(factory);
+        DeleteFileA(tempPath.c_str());
+        return false;
+    }
+
+    hr = frameEncode->Initialize(encoderOptions);
+    if (FAILED(hr)) {
+        SafeRelease(encoderOptions);
+        SafeRelease(frameEncode);
+        SafeRelease(encoder);
+        SafeRelease(stream);
+        SafeRelease(factory);
+        DeleteFileA(tempPath.c_str());
+        return false;
+    }
+
+    frameEncode->SetSize(width, height);
+
+    WICPixelFormatGUID pixelFormat = GUID_WICPixelFormat32bppBGRA;
+    frameEncode->SetPixelFormat(&pixelFormat);
+
+    hr = frameEncode->WritePixels(height, rowPitch, rowPitch * height, const_cast<BYTE*>(pixels));
+    if (FAILED(hr)) {
+        LogError("[Screenshot] WritePixels failed: hr=0x%08X", hr);
+        SafeRelease(encoderOptions);
+        SafeRelease(frameEncode);
+        SafeRelease(encoder);
+        SafeRelease(stream);
+        SafeRelease(factory);
+        DeleteFileA(tempPath.c_str());
+        return false;
+    }
+
+    frameEncode->Commit();
+    encoder->Commit();
+
+    // Get the underlying file handle from the IStream for flushing
+    // WICStream implements IStream; we can get the file handle via STATSTG
+    // But the simpler approach is to release all WIC objects (which flushes),
+    // then flush the file, then rename.
+
+    // Release WIC objects in correct order (encoder before stream)
+    SafeRelease(encoderOptions);
+    SafeRelease(frameEncode);
+    SafeRelease(encoder);
+
+    // The stream holds the file handle; query it for flushing
+    // WICStream uses a wrapped file handle internally. Use FlushFileBuffers via
+    // STATSTG to get the native handle, or just rely on stream release flushing.
+    // To be safe, reopen the temp file for flushing:
+    {
+        HANDLE hFile = CreateFileA(tempPath.c_str(), FILE_WRITE_DATA, 0, NULL, OPEN_EXISTING, 0, NULL);
+        if (hFile != INVALID_HANDLE_VALUE) {
+            FlushFileBuffers(hFile);
+            CloseHandle(hFile);
+        }
+    }
+
+    SafeRelease(stream);
+    SafeRelease(factory);
+
+    // Atomic rename: temp -> final (MOVEFILE_REPLACE_EXISTING overwrites if needed)
+    if (!MoveFileExA(tempPath.c_str(), fullPath.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        LogError("[Screenshot] MoveFileEx failed: error=%lu", GetLastError());
+        DeleteFileA(tempPath.c_str());
+        return false;
+    }
+
+    return true;
+}
+
+// ---- GDI capture: BitBlt the DWM-composed desktop ----
+static bool TakeGdiScreenshot(const std::string& fullPath) {
+    int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+    int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+
+    HDC hdcScreen = GetDC(NULL);
+    if (!hdcScreen) {
+        LogError("[Screenshot] GetDC(NULL) failed");
+        return false;
+    }
+
+    HDC hdcMem = CreateCompatibleDC(hdcScreen);
+    if (!hdcMem) {
+        LogError("[Screenshot] CreateCompatibleDC failed");
+        ReleaseDC(NULL, hdcScreen);
+        return false;
+    }
+
+    HBITMAP hBitmap = CreateCompatibleBitmap(hdcScreen, screenWidth, screenHeight);
+    if (!hBitmap) {
+        LogError("[Screenshot] CreateCompatibleBitmap failed");
+        DeleteDC(hdcMem);
+        ReleaseDC(NULL, hdcScreen);
+        return false;
+    }
+
+    HBITMAP hOldBmp = (HBITMAP)SelectObject(hdcMem, hBitmap);
+
+    // CAPTUREBLT includes layered windows and DWM composition
+    BOOL bltOk = BitBlt(hdcMem, 0, 0, screenWidth, screenHeight, hdcScreen, 0, 0, SRCCOPY | CAPTUREBLT);
+    if (!bltOk) {
+        LogError("[Screenshot] BitBlt failed: error=%lu", GetLastError());
+        SelectObject(hdcMem, hOldBmp);
+        DeleteObject(hBitmap);
+        DeleteDC(hdcMem);
+        ReleaseDC(NULL, hdcScreen);
+        return false;
+    }
+
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = screenWidth;
+    bmi.bmiHeader.biHeight = -screenHeight;  // Negative = top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    uint32_t rowPitch = screenWidth * 4;
+    uint32_t imageSize = rowPitch * screenHeight;
+    std::vector<uint8_t> pixels(imageSize);
+
+    int scanLines = GetDIBits(hdcMem, hBitmap, 0, screenHeight, pixels.data(), &bmi, DIB_RGB_COLORS);
+
+    SelectObject(hdcMem, hOldBmp);
+    DeleteObject(hBitmap);
+    DeleteDC(hdcMem);
+    ReleaseDC(NULL, hdcScreen);
+
+    if (scanLines == 0) {
+        LogError("[Screenshot] GetDIBits failed: error=%lu", GetLastError());
+        return false;
+    }
+
+    if (!SavePixelsAsPNG(fullPath, screenWidth, screenHeight, pixels.data(), rowPitch))
+        return false;
+
+    LogInfo("[Screenshot] Saved (GDI): %s (%dx%d)", fullPath.c_str(), screenWidth, screenHeight);
+    return true;
+}
+
+// ---- Screenshot public API ----
+// Uses GDI BitBlt to capture the DWM-composed desktop. Safe and crash-free.
+// For exclusive fullscreen games, use the inject overlay recording feature instead.
 bool TakeScreenshot(const std::string& screenshotDir) {
     // Determine output directory
     std::string outDir = screenshotDir;
@@ -35,7 +278,7 @@ bool TakeScreenshot(const std::string& screenshotDir) {
     }
     std::filesystem::create_directories(outDir);
 
-    // Generate filename: screenshot_YYYYMMDD_HHMMSS.png
+    // Generate filename (.png always)
     SYSTEMTIME st;
     GetLocalTime(&st);
     char filename[128];
@@ -43,285 +286,160 @@ bool TakeScreenshot(const std::string& screenshotDir) {
              st.wHour, st.wMinute, st.wSecond);
     std::string fullPath = outDir + "\\" + filename;
 
-    // --- Create D3D11 device ---
-    ID3D11Device* device = nullptr;
-    ID3D11DeviceContext* context = nullptr;
-    D3D_FEATURE_LEVEL featureLevel;
+    // --- Try hook-based screenshot (DX11, DX10, DX9, OpenGL, Vulkan) ---
+    // The hook reads the backbuffer directly using the game's device.
+    // Instead of waiting for an ack signal (unreliable), we poll for the .tmp.bmp
+    // file to appear on disk. This avoids race conditions when the hook is slow.
+    std::string bmpPath = fullPath + ".tmp.bmp";
+    DeleteFileA(bmpPath.c_str());  // Clean up any stale temp file
 
-    HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                                   nullptr, 0, D3D11_SDK_VERSION, &device, &featureLevel, &context);
-    if (FAILED(hr)) {
-        LogError("[Screenshot] D3D11CreateDevice failed: hr=0x%08X", hr);
-        return false;
-    }
+    bool hookHandled = false;
+    {
+        HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+        if (hDisc) {
+            DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
+            if (pDisc && pDisc->GetMagic() == DISCOVERY_MAGIC && pDisc->GetInjectPid() != 0) {
+                uint32_t injectPid = pDisc->GetInjectPid();
+                UnmapViewOfFile(pDisc);
+                CloseHandle(hDisc);
 
-    // --- Get DXGI adapter and output ---
-    IDXGIDevice* dxgiDevice = nullptr;
-    hr = device->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice);
-    if (FAILED(hr)) {
-        LogError("[Screenshot] QueryInterface IDXGIDevice failed: hr=0x%08X", hr);
-        SafeRelease(context);
-        SafeRelease(device);
-        return false;
-    }
+                wchar_t shmName[64];
+                GenerateSharedMemName(shmName, 64, injectPid);
+                HANDLE hShm = OpenFileMappingW(FILE_MAP_WRITE | FILE_MAP_READ, FALSE, shmName);
+                if (hShm) {
+                    SharedMemoryLayout* pShm = (SharedMemoryLayout*)MapViewOfFile(hShm, FILE_MAP_WRITE | FILE_MAP_READ,
+                                                                                  0, 0, sizeof(SharedMemoryLayout));
+                    if (pShm) {
+                        if (!pShm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire)) {
+                            strncpy(pShm->runtimeState.screenshotPath, bmpPath.c_str(),
+                                    sizeof(pShm->runtimeState.screenshotPath) - 1);
+                            pShm->runtimeState.screenshotPath[sizeof(pShm->runtimeState.screenshotPath) - 1] = '\0';
 
-    IDXGIAdapter* adapter = nullptr;
-    hr = dxgiDevice->GetAdapter(&adapter);
-    SafeRelease(dxgiDevice);
-    if (FAILED(hr)) {
-        LogError("[Screenshot] GetAdapter failed: hr=0x%08X", hr);
-        SafeRelease(context);
-        SafeRelease(device);
-        return false;
-    }
+                            pShm->runtimeState.ackScreenshotTaken.store(false, std::memory_order_release);
+                            pShm->runtimeState.cmdTakeScreenshot.store(true, std::memory_order_release);
 
-    // Get primary output (output 0)
-    IDXGIOutput* output = nullptr;
-    hr = adapter->EnumOutputs(0, &output);
-    SafeRelease(adapter);
-    if (FAILED(hr)) {
-        LogError("[Screenshot] EnumOutputs(0) failed: hr=0x%08X", hr);
-        SafeRelease(context);
-        SafeRelease(device);
-        return false;
-    }
+                            UnmapViewOfFile(pShm);
+                            CloseHandle(hShm);
 
-    IDXGIOutput1* output1 = nullptr;
-    hr = output->QueryInterface(__uuidof(IDXGIOutput1), (void**)&output1);
-    SafeRelease(output);
-    if (FAILED(hr)) {
-        LogError("[Screenshot] QueryInterface IDXGIOutput1 failed: hr=0x%08X", hr);
-        SafeRelease(context);
-        SafeRelease(device);
-        return false;
-    }
+                            // Poll for .tmp.bmp to appear on disk (up to 3 seconds)
+                            DWORD lastSize = 0;
+                            int stableCount = 0;
+                            for (int i = 0; i < 60; ++i) {
+                                Sleep(50);
+                                HANDLE hCheck =
+                                    CreateFileA(bmpPath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                                                OPEN_EXISTING, 0, NULL);
+                                if (hCheck != INVALID_HANDLE_VALUE) {
+                                    DWORD sz = GetFileSize(hCheck, NULL);
+                                    CloseHandle(hCheck);
+                                    if (sz > 54 && sz == lastSize) {
+                                        stableCount++;
+                                        if (stableCount >= 3) {
+                                            // File is stable (hook finished writing)
+                                            break;
+                                        }
+                                    } else {
+                                        stableCount = 0;
+                                    }
+                                    lastSize = sz;
+                                }
+                            }
 
-    // --- Duplicate output ---
-    IDXGIOutputDuplication* duplication = nullptr;
-    hr = output1->DuplicateOutput(device, &duplication);
-    SafeRelease(output1);
-    if (FAILED(hr)) {
-        LogError("[Screenshot] DuplicateOutput failed: hr=0x%08X", hr);
-        SafeRelease(context);
-        SafeRelease(device);
-        return false;
-    }
+                            // Check if we got a stable BMP file
+                            HANDLE hBmp = CreateFileA(bmpPath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL,
+                                                      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+                            if (hBmp != INVALID_HANDLE_VALUE) {
+                                DWORD fileSize = GetFileSize(hBmp, NULL);
+                                if (fileSize > 54) {
+                                    std::vector<uint8_t> bmpData(fileSize);
+                                    DWORD bytesRead = 0;
+                                    ReadFile(hBmp, bmpData.data(), fileSize, &bytesRead, NULL);
+                                    CloseHandle(hBmp);
 
-    DXGI_OUTDUPL_DESC dupDesc;
-    duplication->GetDesc(&dupDesc);
+#pragma pack(push, 1)
+                                    struct TmpBMPHeader {
+                                        uint16_t type;
+                                        uint32_t fileSize;
+                                        uint16_t r1, r2;
+                                        uint32_t offset;
+                                        uint32_t hdrSize;
+                                        int32_t w, h;
+                                        uint16_t planes, bpp;
+                                    };
+#pragma pack(pop)
+                                    auto* hdr = (TmpBMPHeader*)bmpData.data();
+                                    if (fileSize > 54 && hdr->w > 0 && hdr->h != 0) {
+                                        uint32_t w = hdr->w;
+                                        int32_t signedH = hdr->h;
+                                        uint32_t h = (signedH < 0) ? -signedH : signedH;
+                                        bool topDown = (signedH < 0);
+                                        uint32_t bpp = hdr->bpp;
+                                        uint8_t* pixelData = bmpData.data() + hdr->offset;
+                                        uint32_t bmpRowPitch = ((w * bpp / 8) + 3) & ~3u;
 
-    // --- Acquire one frame ---
-    IDXGIResource* desktopResource = nullptr;
-    DXGI_OUTDUPL_FRAME_INFO frameInfo;
+                                        ComInitializer com;
+                                        if (com.IsInitialized()) {
+                                            if (bpp == 24) {
+                                                uint32_t bgraRowPitch = w * 4;
+                                                std::vector<uint8_t> bgraPixels(bgraRowPitch * h);
+                                                for (uint32_t y = 0; y < h; ++y) {
+                                                    const uint8_t* src =
+                                                        pixelData + (topDown ? y : (h - 1 - y)) * bmpRowPitch;
+                                                    uint8_t* dst = bgraPixels.data() + y * bgraRowPitch;
+                                                    for (uint32_t x = 0; x < w; ++x) {
+                                                        dst[0] = src[0];
+                                                        dst[1] = src[1];
+                                                        dst[2] = src[2];
+                                                        dst[3] = 255;
+                                                        src += 3;
+                                                        dst += 4;
+                                                    }
+                                                }
+                                                hookHandled =
+                                                    SavePixelsAsPNG(fullPath, w, h, bgraPixels.data(), bgraRowPitch);
+                                            } else if (bpp == 32) {
+                                                hookHandled = SavePixelsAsPNG(fullPath, w, h, pixelData, bmpRowPitch);
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    CloseHandle(hBmp);
+                                }
+                            }
 
-    // Try to acquire a frame (wait up to 500ms)
-    hr = duplication->AcquireNextFrame(500, &frameInfo, &desktopResource);
-    if (FAILED(hr)) {
-        if (hr == DXGI_ERROR_WAIT_TIMEOUT) {
-            LogError("[Screenshot] AcquireNextFrame timed out (no desktop changes)");
-        } else {
-            LogError("[Screenshot] AcquireNextFrame failed: hr=0x%08X", hr);
+                            DeleteFileA(bmpPath.c_str());
+
+                            if (hookHandled) {
+                                LogInfo("[Screenshot] Saved (hook): %s", fullPath.c_str());
+                                return true;
+                            }
+                        } else {
+                            UnmapViewOfFile(pShm);
+                            CloseHandle(hShm);
+                        }
+                    } else {
+                        CloseHandle(hShm);
+                    }
+                }
+            } else {
+                if (pDisc)
+                    UnmapViewOfFile(pDisc);
+                CloseHandle(hDisc);
+            }
         }
-        SafeRelease(duplication);
-        SafeRelease(context);
-        SafeRelease(device);
+    }
+
+    // Clean up any .tmp.bmp the hook may have created
+    DeleteFileA(bmpPath.c_str());
+
+    // --- GDI fallback ---
+    LogInfo("[Screenshot] Hook screenshot not available, using GDI fallback");
+
+    ComInitializer com;
+    if (!com.IsInitialized()) {
+        LogError("[Screenshot] CoInitializeEx failed");
         return false;
     }
 
-    // Get desktop texture
-    ID3D11Texture2D* desktopTexture = nullptr;
-    hr = desktopResource->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&desktopTexture);
-    SafeRelease(desktopResource);
-    if (FAILED(hr)) {
-        LogError("[Screenshot] QueryInterface ID3D11Texture2D failed: hr=0x%08X", hr);
-        duplication->ReleaseFrame();
-        SafeRelease(duplication);
-        SafeRelease(context);
-        SafeRelease(device);
-        return false;
-    }
-
-    // Get texture dimensions
-    D3D11_TEXTURE2D_DESC texDesc;
-    desktopTexture->GetDesc(&texDesc);
-    uint32_t width = texDesc.Width;
-    uint32_t height = texDesc.Height;
-
-    // --- Create staging texture for CPU readback ---
-    D3D11_TEXTURE2D_DESC stagingDesc = {};
-    stagingDesc.Width = width;
-    stagingDesc.Height = height;
-    stagingDesc.MipLevels = 1;
-    stagingDesc.ArraySize = 1;
-    stagingDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    stagingDesc.SampleDesc.Count = 1;
-    stagingDesc.Usage = D3D11_USAGE_STAGING;
-    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-
-    ID3D11Texture2D* stagingTexture = nullptr;
-    hr = device->CreateTexture2D(&stagingDesc, nullptr, &stagingTexture);
-    if (FAILED(hr)) {
-        LogError("[Screenshot] CreateTexture2D (staging) failed: hr=0x%08X", hr);
-        SafeRelease(desktopTexture);
-        duplication->ReleaseFrame();
-        SafeRelease(duplication);
-        SafeRelease(context);
-        SafeRelease(device);
-        return false;
-    }
-
-    // Copy desktop texture to staging
-    context->CopyResource(stagingTexture, desktopTexture);
-    SafeRelease(desktopTexture);
-    duplication->ReleaseFrame();
-    SafeRelease(duplication);
-
-    // --- Map staging texture ---
-    D3D11_MAPPED_SUBRESOURCE mapped;
-    hr = context->Map(stagingTexture, 0, D3D11_MAP_READ, 0, &mapped);
-    if (FAILED(hr)) {
-        LogError("[Screenshot] Map staging texture failed: hr=0x%08X", hr);
-        SafeRelease(stagingTexture);
-        SafeRelease(context);
-        SafeRelease(device);
-        return false;
-    }
-
-    // --- Save as PNG using WIC ---
-    IWICImagingFactory* factory = nullptr;
-    hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
-    if (FAILED(hr)) {
-        LogError("[Screenshot] CoCreateInstance WICImagingFactory failed: hr=0x%08X", hr);
-        context->Unmap(stagingTexture, 0);
-        SafeRelease(stagingTexture);
-        SafeRelease(context);
-        SafeRelease(device);
-        return false;
-    }
-
-    IWICStream* stream = nullptr;
-    hr = factory->CreateStream(&stream);
-    if (FAILED(hr)) {
-        LogError("[Screenshot] CreateStream failed: hr=0x%08X", hr);
-        SafeRelease(factory);
-        context->Unmap(stagingTexture, 0);
-        SafeRelease(stagingTexture);
-        SafeRelease(context);
-        SafeRelease(device);
-        return false;
-    }
-
-    // Convert path to wide string for WIC
-    int wideLen = MultiByteToWideChar(CP_UTF8, 0, fullPath.c_str(), -1, nullptr, 0);
-    std::wstring widePath(wideLen, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, fullPath.c_str(), -1, widePath.data(), wideLen);
-
-    hr = stream->InitializeFromFilename(widePath.c_str(), GENERIC_WRITE);
-    if (FAILED(hr)) {
-        LogError("[Screenshot] InitializeFromFilename failed: hr=0x%08X", hr);
-        SafeRelease(stream);
-        SafeRelease(factory);
-        context->Unmap(stagingTexture, 0);
-        SafeRelease(stagingTexture);
-        SafeRelease(context);
-        SafeRelease(device);
-        return false;
-    }
-
-    IWICBitmapEncoder* encoder = nullptr;
-    hr = factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder);
-    if (FAILED(hr)) {
-        LogError("[Screenshot] CreateEncoder(PNG) failed: hr=0x%08X", hr);
-        SafeRelease(stream);
-        SafeRelease(factory);
-        context->Unmap(stagingTexture, 0);
-        SafeRelease(stagingTexture);
-        SafeRelease(context);
-        SafeRelease(device);
-        return false;
-    }
-
-    hr = encoder->Initialize(stream, WICBitmapEncoderNoCache);
-    if (FAILED(hr)) {
-        LogError("[Screenshot] encoder->Initialize failed: hr=0x%08X", hr);
-        SafeRelease(encoder);
-        SafeRelease(stream);
-        SafeRelease(factory);
-        context->Unmap(stagingTexture, 0);
-        SafeRelease(stagingTexture);
-        SafeRelease(context);
-        SafeRelease(device);
-        return false;
-    }
-
-    IWICBitmapFrameEncode* frameEncode = nullptr;
-    IPropertyBag2* encoderOptions = nullptr;
-    hr = encoder->CreateNewFrame(&frameEncode, &encoderOptions);
-    if (FAILED(hr)) {
-        LogError("[Screenshot] CreateNewFrame failed: hr=0x%08X", hr);
-        SafeRelease(encoder);
-        SafeRelease(stream);
-        SafeRelease(factory);
-        context->Unmap(stagingTexture, 0);
-        SafeRelease(stagingTexture);
-        SafeRelease(context);
-        SafeRelease(device);
-        return false;
-    }
-
-    hr = frameEncode->Initialize(encoderOptions);
-    if (FAILED(hr)) {
-        LogError("[Screenshot] frameEncode->Initialize failed: hr=0x%08X", hr);
-        SafeRelease(encoderOptions);
-        SafeRelease(frameEncode);
-        SafeRelease(encoder);
-        SafeRelease(stream);
-        SafeRelease(factory);
-        context->Unmap(stagingTexture, 0);
-        SafeRelease(stagingTexture);
-        SafeRelease(context);
-        SafeRelease(device);
-        return false;
-    }
-
-    frameEncode->SetSize(width, height);
-
-    // Set pixel format
-    WICPixelFormatGUID pixelFormat = GUID_WICPixelFormat32bppBGRA;
-    frameEncode->SetPixelFormat(&pixelFormat);
-
-    // Write pixels from mapped staging texture
-    // Desktop Duplication returns BGRA which matches WIC's 32bppBGRA
-    hr = frameEncode->WritePixels(height, mapped.RowPitch, mapped.RowPitch * height, static_cast<BYTE*>(mapped.pData));
-    if (FAILED(hr)) {
-        LogError("[Screenshot] WritePixels failed: hr=0x%08X", hr);
-        SafeRelease(encoderOptions);
-        SafeRelease(frameEncode);
-        SafeRelease(encoder);
-        SafeRelease(stream);
-        SafeRelease(factory);
-        context->Unmap(stagingTexture, 0);
-        SafeRelease(stagingTexture);
-        SafeRelease(context);
-        SafeRelease(device);
-        return false;
-    }
-
-    frameEncode->Commit();
-    encoder->Commit();
-
-    // --- Cleanup ---
-    SafeRelease(encoderOptions);
-    SafeRelease(frameEncode);
-    SafeRelease(encoder);
-    SafeRelease(stream);
-    SafeRelease(factory);
-
-    context->Unmap(stagingTexture, 0);
-    SafeRelease(stagingTexture);
-    SafeRelease(context);
-    SafeRelease(device);
-
-    LogInfo("[Screenshot] Saved: %s (%ux%u)", fullPath.c_str(), width, height);
-    return true;
+    return TakeGdiScreenshot(fullPath);
 }

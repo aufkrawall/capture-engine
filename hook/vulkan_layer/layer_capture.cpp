@@ -17,6 +17,7 @@
 #include <vector>
 #include "../../common/shared_defs.h"
 #include "../common/hook_common.h"
+#include "../common/screenshot_hook.h"
 #include "layer_main.h"
 #include "vulkan_layer.h"
 using Microsoft::WRL::ComPtr;
@@ -1753,4 +1754,164 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
     }
 
     LayerIPC_SignalFrameReady(slotIndex, encoderFenceValue);
+}
+
+// ---- Vulkan Screenshot ----
+// Reads pixels from the swapchain image using a staging buffer.
+// Uses the Vulkan dispatch table and creates a one-shot command buffer.
+void TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, VkImage srcImage, uint32_t width,
+                          uint32_t height, VkFormat format, const char* outputPath) {
+    if (!disp || !device || !srcImage || width == 0 || height == 0 || !outputPath)
+        return;
+
+    // Calculate row pitch (4 bytes per pixel for BGRA/RGBA)
+    uint32_t rowPitch = width * 4;
+    VkDeviceSize bufferSize = static_cast<VkDeviceSize>(rowPitch) * height;
+
+    // Find HOST_VISIBLE | HOST_COHERENT memory type
+    VkPhysicalDeviceMemoryProperties memProps;
+    VkPhysicalDevice physDev = disp->physicalDevice;
+    if (physDev == VK_NULL_HANDLE)
+        return;
+
+    auto* instDisp =
+        VulkanLayerState::Get().GetInstanceDispatch(VulkanLayerState::Get().GetInstanceFromPhysicalDevice(physDev));
+    if (!instDisp || !instDisp->fp_vkGetPhysicalDeviceMemoryProperties)
+        return;
+    instDisp->fp_vkGetPhysicalDeviceMemoryProperties(physDev, &memProps);
+
+    uint32_t memTypeIndex = UINT32_MAX;
+    for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i) {
+        if ((memProps.memoryTypes[i].propertyFlags &
+             (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
+            (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            memTypeIndex = i;
+            break;
+        }
+    }
+    if (memTypeIndex == UINT32_MAX) {
+        HookLog("[Screenshot] Vulkan: No HOST_VISIBLE memory type found");
+        return;
+    }
+
+    // Create staging buffer
+    VkBufferCreateInfo bufInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bufInfo.size = bufferSize;
+    bufInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
+    VkBuffer stagingBuffer = VK_NULL_HANDLE;
+    if (disp->fp_vkCreateBuffer(device, &bufInfo, nullptr, &stagingBuffer) != VK_SUCCESS)
+        return;
+
+    VkMemoryRequirements memReqs;
+    disp->fp_vkGetBufferMemoryRequirements(device, stagingBuffer, &memReqs);
+
+    VkMemoryAllocateInfo allocInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocInfo.allocationSize = memReqs.size;
+    allocInfo.memoryTypeIndex = memTypeIndex;
+
+    VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
+    if (disp->fp_vkAllocateMemory(device, &allocInfo, nullptr, &stagingMemory) != VK_SUCCESS) {
+        disp->fp_vkDestroyBuffer(device, stagingBuffer, nullptr);
+        return;
+    }
+    disp->fp_vkBindBufferMemory(device, stagingBuffer, stagingMemory, 0);
+
+    // Create command pool
+    VkCommandPoolCreateInfo poolInfo = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    poolInfo.queueFamilyIndex = 0;  // Present queue family
+    poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+
+    VkCommandPool cmdPool = VK_NULL_HANDLE;
+    if (disp->fp_vkCreateCommandPool(device, &poolInfo, nullptr, &cmdPool) != VK_SUCCESS) {
+        disp->fp_vkFreeMemory(device, stagingMemory, nullptr);
+        disp->fp_vkDestroyBuffer(device, stagingBuffer, nullptr);
+        return;
+    }
+
+    // Allocate command buffer
+    VkCommandBufferAllocateInfo cmdAllocInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    cmdAllocInfo.commandPool = cmdPool;
+    cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAllocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer cmdBuf = VK_NULL_HANDLE;
+    if (disp->fp_vkAllocateCommandBuffers(device, &cmdAllocInfo, &cmdBuf) != VK_SUCCESS) {
+        disp->fp_vkDestroyCommandPool(device, cmdPool, nullptr);
+        disp->fp_vkFreeMemory(device, stagingMemory, nullptr);
+        disp->fp_vkDestroyBuffer(device, stagingBuffer, nullptr);
+        return;
+    }
+
+    // Record commands
+    VkCommandBufferBeginInfo beginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    disp->fp_vkBeginCommandBuffer(cmdBuf, &beginInfo);
+
+    // Transition image: PRESENT_SRC_KHR -> TRANSFER_SRC_OPTIMAL
+    VkImageMemoryBarrier imgBarrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    imgBarrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+    imgBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    imgBarrier.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    imgBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    imgBarrier.image = srcImage;
+    imgBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    disp->fp_vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+                                  nullptr, 0, nullptr, 1, &imgBarrier);
+
+    // Copy image to buffer
+    VkBufferImageCopy copyRegion = {};
+    copyRegion.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    copyRegion.imageExtent = {width, height, 1};
+    disp->fp_vkCmdCopyImageToBuffer(cmdBuf, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stagingBuffer, 1,
+                                    &copyRegion);
+
+    // Transition image back: TRANSFER_SRC_OPTIMAL -> PRESENT_SRC_KHR
+    imgBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    imgBarrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+    imgBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    imgBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    disp->fp_vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0,
+                                  nullptr, 0, nullptr, 1, &imgBarrier);
+
+    disp->fp_vkEndCommandBuffer(cmdBuf);
+
+    // Create fence and submit
+    VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    VkFence fence = VK_NULL_HANDLE;
+    if (disp->fp_vkCreateFence(device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
+        disp->fp_vkFreeCommandBuffers(device, cmdPool, 1, &cmdBuf);
+        disp->fp_vkDestroyCommandPool(device, cmdPool, nullptr);
+        disp->fp_vkFreeMemory(device, stagingMemory, nullptr);
+        disp->fp_vkDestroyBuffer(device, stagingBuffer, nullptr);
+        return;
+    }
+
+    VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmdBuf;
+    disp->fp_vkQueueSubmit(queue, 1, &submitInfo, fence);
+
+    // Wait up to 500ms
+    VkResult waitResult = disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, 500000000ULL);  // 500ms in ns
+
+    if (waitResult == VK_SUCCESS) {
+        // Map and save
+        void* mappedData = nullptr;
+        disp->fp_vkMapMemory(device, stagingMemory, 0, VK_WHOLE_SIZE, 0, &mappedData);
+
+        // Write BMP async (Vulkan BGRA layout matches DXGI BGRA)
+        WriteBMPFileAsync(outputPath, static_cast<const uint8_t*>(mappedData), width, height, rowPitch);
+
+        disp->fp_vkUnmapMemory(device, stagingMemory);
+    } else {
+        HookLog("[Screenshot] Vulkan fence wait timed out or failed: %d", waitResult);
+    }
+
+    // Cleanup
+    disp->fp_vkDestroyFence(device, fence, nullptr);
+    disp->fp_vkFreeCommandBuffers(device, cmdPool, 1, &cmdBuf);
+    disp->fp_vkDestroyCommandPool(device, cmdPool, nullptr);
+    disp->fp_vkFreeMemory(device, stagingMemory, nullptr);
+    disp->fp_vkDestroyBuffer(device, stagingBuffer, nullptr);
 }

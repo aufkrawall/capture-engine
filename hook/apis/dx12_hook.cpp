@@ -35,6 +35,10 @@
 #include "../common/fps_limiter.h"
 #include "../common/freeze_watchdog.h"
 #include "../common/perf_logger.h"
+
+// Forward declaration for screenshot function (avoids include conflicts with extern "C" block)
+bool SaveDX12TextureAsBMP(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Resource* backBuffer,
+                          const char* outputPath);
 #include "../common/swapchain_wrapper.h"
 #include "../common/system_metrics.h"
 #include "../wrappers/dxgi_swapchain_wrap.h"
@@ -2015,6 +2019,9 @@ __attribute__((noinline)) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) 
     // creation This prevents hangs during DXGI internal operations
     DX12_HookQueueVTable(pQueue);
 }
+
+}  // extern "C" (DX12_SetCommandQueue)
+
 // Capture the queue that was passed to CreateSwapChain* so we can prefer it
 // for overlay submission.  Only accepts DIRECT queues (same rule as
 // DX12_SetCommandQueue).  Also hooks the queue vtable for ECL interception.
@@ -2135,7 +2142,6 @@ void DX12_NotifyCommandLists(UINT numCommandLists) {
             "false real-frame classification",
             numCommandLists);
     }
-}
 }
 
 void DX12_OnSwapchainResizeEnd();
@@ -8575,6 +8581,28 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
     // For interpolated frames, only render overlay (no capture processing) since
     // the backbuffer content is from the FG engine, not a real game frame.
     ProcessFrame(sc3, processCapture);
+
+    // SCREENSHOT: DX12 path — readback heap copy on the game's D3D12 device
+    if (g_IPC && g_IPC->GetSharedMem()) {
+        SharedMemoryLayout* shm = g_IPC->GetSharedMem();
+        if (shm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire)) {
+            ID3D12Device* dx12Device = g_Device.load();
+            ID3D12CommandQueue* dx12Queue = g_CommandQueue.load();
+            if (dx12Device && dx12Queue) {
+                UINT bbIdx = sc3->GetCurrentBackBufferIndex();
+                ID3D12Resource* backBuffer = nullptr;
+                if (SUCCEEDED(sc3->GetBuffer(bbIdx, IID_PPV_ARGS(&backBuffer)))) {
+                    SaveDX12TextureAsBMP(dx12Device, dx12Queue, backBuffer, shm->runtimeState.screenshotPath);
+                    backBuffer->Release();
+                }
+            }
+            shm->runtimeState.cmdTakeScreenshot.store(false, std::memory_order_release);
+            shm->runtimeState.ackScreenshotTaken.store(true, std::memory_order_release);
+            shm->runtimeState.notificationType.store(1, std::memory_order_release);
+            shm->runtimeState.notificationExpiry.store(GetTickCount64() + 3000ULL, std::memory_order_release);
+        }
+    }
+
     sc3->Release();
 }
 

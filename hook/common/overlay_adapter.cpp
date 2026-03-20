@@ -1027,6 +1027,25 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         lastEncoderOverloadTick = 0;
     }
 
+    // Transient notification (screenshot saved, etc.)
+    uint64_t notifExpiry = mem.runtimeState.notificationExpiry.load(std::memory_order_acquire);
+    uint32_t notifType = mem.runtimeState.notificationType.load(std::memory_order_relaxed);
+    if (notifExpiry > 0 && GetTickCount64() < notifExpiry && notifType != 0) {
+        const char* notifText = nullptr;
+        uint32_t notifColor = Colors::Green;
+        switch (notifType) {
+            case 1:
+                notifText = "Screenshot saved!";
+                break;
+            default:
+                break;
+        }
+        if (notifText) {
+            renderer->DrawTextWithShadow(labelCol, cursorY, notifText, notifColor, shadowColor);
+            cursorY += lineHeight;
+        }
+    }
+
     // Frame time graph labels and markers
     if (showGraph) {
         uint32_t graphLabelColor = Colors::Green;

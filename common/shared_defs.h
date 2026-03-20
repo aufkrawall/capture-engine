@@ -30,7 +30,7 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 12: Added runtime coordination flags for cross-API overlay ownership
 // Version 13: Added SharedGraphicsConfig::forceMipBiasClamp override field
 // Version 14: Added captureRequested so hooks can warm up capture before REC goes live
-static constexpr uint32_t SHARED_MEMORY_VERSION = 14;
+static constexpr uint32_t SHARED_MEMORY_VERSION = 15;
 
 // Minimum supported version for backward compatibility
 static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
@@ -286,12 +286,25 @@ struct alignas(8) CaptureState {
     std::atomic<bool> ackRecordingStarted{false};
     std::atomic<bool> ackRecordingStopped{false};
 
+    // Screenshot command (host -> hook)
+    // Host sets cmdTakeScreenshot=true and writes the output path into screenshotPath.
+    // Hook reads the backbuffer, saves as BMP, clears cmdTakeScreenshot, sets ackScreenshotTaken.
+    std::atomic<bool> cmdTakeScreenshot{false};
+    std::atomic<bool> ackScreenshotTaken{false};
+    char screenshotPath[512]{};  // Full path to output BMP file
+
     std::atomic<bool> captureRequested{false};       // Hooks should keep feeding frames (warmup + live recording)
     std::atomic<bool> isRecording{false};            // File output and REC overlay indicator are live
     std::atomic<bool> vulkanLayerActive{false};      // Set by Vulkan layer when initialized
     std::atomic<uint32_t> runtimeFlags{0};           // Cross-API coordination (overlay ownership, etc.)
     std::atomic<uint32_t> vulkanPresentThreadId{0};  // Thread ID currently presenting via Vulkan
     std::atomic<uint64_t> vulkanPresentTick{0};      // GetTickCount64 of last Vulkan present
+
+    // Transient overlay notification (host -> hook overlay)
+    // notificationExpiry: GetTickCount64() value after which notification disappears (0 = none)
+    // notificationType: 0=none, 1=screenshot saved
+    std::atomic<uint64_t> notificationExpiry{0};
+    std::atomic<uint32_t> notificationType{0};
 
     bool HasRuntimeFlag(uint32_t flag) const {
         return (runtimeFlags.load(std::memory_order_acquire) & flag) != 0;

@@ -994,7 +994,45 @@ int ControllerMain(HINSTANCE hInstance) {
                 if (msg.wParam == HOTKEY_ID_RECORD) {
                     ToggleRecording();
                 } else if (msg.wParam == HOTKEY_ID_SCREENSHOT) {
-                    TakeScreenshot(g_Config.screenshotDir);
+                    if (TakeScreenshot(g_Config.screenshotDir)) {
+                        // Show notification in pseudo-overlay (WGC/desktop)
+                        if (g_PseudoOverlay) {
+                            g_PseudoOverlay->ShowScreenshotNotification();
+                        }
+                        // Show notification in inject overlay (hooked game)
+                        {
+                            HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+                            if (hDisc) {
+                                DiscoveryInfo* pDisc =
+                                    (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
+                                if (pDisc && pDisc->GetMagic() == DISCOVERY_MAGIC) {
+                                    uint32_t injPid = pDisc->GetInjectPid();
+                                    UnmapViewOfFile(pDisc);
+                                    CloseHandle(hDisc);
+                                    if (injPid != 0) {
+                                        wchar_t shmName[64];
+                                        GenerateSharedMemName(shmName, 64, injPid);
+                                        HANDLE hShm = OpenFileMappingW(FILE_MAP_WRITE | FILE_MAP_READ, FALSE, shmName);
+                                        if (hShm) {
+                                            auto* pShm = (SharedMemoryLayout*)MapViewOfFile(
+                                                hShm, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0, sizeof(SharedMemoryLayout));
+                                            if (pShm) {
+                                                pShm->runtimeState.notificationType.store(1, std::memory_order_release);
+                                                pShm->runtimeState.notificationExpiry.store(GetTickCount64() + 2000ULL,
+                                                                                            std::memory_order_release);
+                                                UnmapViewOfFile(pShm);
+                                            }
+                                            CloseHandle(hShm);
+                                        }
+                                    }
+                                } else {
+                                    if (pDisc)
+                                        UnmapViewOfFile(pDisc);
+                                    CloseHandle(hDisc);
+                                }
+                            }
+                        }
+                    }
                 }
                 continue;
             }

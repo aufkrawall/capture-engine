@@ -26,6 +26,7 @@
 #include "../common/input_manager.h"
 #include "../common/overlay_adapter.h"
 #include "../common/perf_logger.h"
+#include "../common/screenshot_hook.h"
 #include "../vulkan_layer/layer_main.h"
 #include "../wrappers/inline_hook.h"
 #include "../wrappers/vtable_hook.h"
@@ -4407,6 +4408,38 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
         } else {
             doCapture();  // Capture first (clean frame)
             doOverlay();  // Then draw overlay (visible but not recorded)
+        }
+
+        // SCREENSHOT: DX9 path
+        if (ipc && ipc->GetSharedMem()) {
+            SharedMemoryLayout* shm = ipc->GetSharedMem();
+            if (shm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire)) {
+                IDirect3DSurface9* bb = nullptr;
+                if (SUCCEEDED(device->GetRenderTarget(0, &bb)) && bb) {
+                    D3DSURFACE_DESC bbDesc;
+                    bb->GetDesc(&bbDesc);
+
+                    IDirect3DSurface9* staging = nullptr;
+                    if (SUCCEEDED(device->CreateOffscreenPlainSurface(bbDesc.Width, bbDesc.Height, bbDesc.Format,
+                                                                      D3DPOOL_SYSTEMMEM, &staging, NULL))) {
+                        if (SUCCEEDED(device->GetRenderTargetData(bb, staging))) {
+                            D3DLOCKED_RECT locked;
+                            if (SUCCEEDED(staging->LockRect(&locked, NULL, D3DLOCK_READONLY))) {
+                                WriteBMPFileAsync(shm->runtimeState.screenshotPath,
+                                                  static_cast<const uint8_t*>(locked.pBits), bbDesc.Width,
+                                                  bbDesc.Height, locked.Pitch);
+                                staging->UnlockRect();
+                            }
+                        }
+                        staging->Release();
+                    }
+                    bb->Release();
+                }
+                shm->runtimeState.cmdTakeScreenshot.store(false, std::memory_order_release);
+                shm->runtimeState.ackScreenshotTaken.store(true, std::memory_order_release);
+                shm->runtimeState.notificationType.store(1, std::memory_order_release);
+                shm->runtimeState.notificationExpiry.store(GetTickCount64() + 3000ULL, std::memory_order_release);
+            }
         }
 
         QueryPerformanceCounter(&qpc);

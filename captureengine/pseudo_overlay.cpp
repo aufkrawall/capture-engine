@@ -11,6 +11,7 @@
 
 // ---- Palette (matching OBSIndicator exactly) ----
 static constexpr COLORREF kColWarnText = RGB(255, 20, 20);
+static constexpr COLORREF kColScreenshotText = RGB(20, 255, 20);
 
 // ---- Static instance pointer for wndproc routing ----
 PseudoOverlay* PseudoOverlay::instance_ = nullptr;
@@ -346,12 +347,15 @@ void PseudoOverlay::UpdateOverlay() {
     }
 
     // ---- Warning overlay update ----
-    bool showOverload = config_.showEncoderOverloadWarn && (GetTickCount64() < overloadWarnUntil_.load());
-    bool showW = warnVisible_ || showOverload;
+    ULONGLONG now = GetTickCount64();
+    bool showScreenshot = now < screenshotNotifyUntil_.load();
+    bool showOverload = !showScreenshot && config_.showEncoderOverloadWarn && (now < overloadWarnUntil_.load());
+    bool showW = warnVisible_ || showOverload || showScreenshot;
     BYTE warnAlpha = 0;
     bool doUpdateWarn = false;
 
-    const char* msg = showOverload ? "Encoder overloaded!" : "NOT RECORDING";
+    const char* msg = showScreenshot ? "Screenshot saved!" : (showOverload ? "Encoder overloaded!" : "NOT RECORDING");
+    bool isScreenshotMsg = showScreenshot;
 
     if (ghostActive) {
         warnAlpha = showW ? 255 : 0;
@@ -423,7 +427,7 @@ void PseudoOverlay::UpdateOverlay() {
             if (!oldBmWarn_)
                 oldBmWarn_ = oldWarnBm;
             SelectObject(hdcWarn_, fontWarn_);
-            SetTextColor(hdcWarn_, kColWarnText);
+            SetTextColor(hdcWarn_, isScreenshotMsg ? kColScreenshotText : kColWarnText);
             SetBkMode(hdcWarn_, TRANSPARENT);
 
             // Fill black (color key)
@@ -527,6 +531,16 @@ LRESULT CALLBACK PseudoOverlay::IndicatorWndProc(HWND h, UINT m, WPARAM w, LPARA
                 self->UpdateOverlay();
             }
             lastOverloadWarnUntil = current;
+        }
+
+        // Check screenshot notification expiry
+        {
+            static ULONGLONG lastScreenshotNotifyUntil = 0;
+            ULONGLONG current = self->screenshotNotifyUntil_.load();
+            if ((lastScreenshotNotifyUntil > 0 && current == 0) || (current > 0 && GetTickCount64() > current)) {
+                self->UpdateOverlay();
+            }
+            lastScreenshotNotifyUntil = current;
         }
 
         // Periodic refresh in info mode
@@ -684,6 +698,13 @@ void PseudoOverlay::SetRecordingState(bool recording) {
 
 void PseudoOverlay::TriggerEncoderOverloadWarning() {
     overloadWarnUntil_.store(GetTickCount64() + 5000ULL);
+    if (initialized_) {
+        UpdateOverlay();
+    }
+}
+
+void PseudoOverlay::ShowScreenshotNotification() {
+    screenshotNotifyUntil_.store(GetTickCount64() + 2000ULL);
     if (initialized_) {
         UpdateOverlay();
     }

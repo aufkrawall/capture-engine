@@ -12,6 +12,7 @@
 #include "../common/input_manager.h"
 #include "../common/overlay_adapter.h"
 #include "../common/perf_logger.h"
+#include "../common/screenshot_hook.h"
 #include "../wrappers/iat_hook.h"
 #include "hook_common.h"
 #include "lod_helper.h"
@@ -1078,6 +1079,31 @@ static void SwapBegin(HDC hdc) {
                 if (!g_LegacyContext)
                     doCapture();  // Capture first
                 doOverlay();      // Then draw overlay
+            }
+
+            // SCREENSHOT: OpenGL path — use glReadPixels
+            if (g_IPC && g_IPC->GetSharedMem()) {
+                SharedMemoryLayout* shm = g_IPC->GetSharedMem();
+                if (shm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire)) {
+                    if (pglReadPixels) {
+                        // Get viewport dimensions from the DC window
+                        RECT rc;
+                        if (GetClientRect(WindowFromDC(hdc), &rc)) {
+                            int w = rc.right;
+                            int h = rc.bottom;
+                            if (w > 0 && h > 0) {
+                                std::vector<uint8_t> pixels(w * h * 4);
+                                pglReadPixels(0, 0, w, h, 0x80E1 /*GL_BGRA*/, 0x1401 /*GL_UNSIGNED_BYTE*/,
+                                              pixels.data());
+                                WriteBMPFileAsync(shm->runtimeState.screenshotPath, pixels.data(), w, h, w * 4);
+                            }
+                        }
+                    }
+                    shm->runtimeState.cmdTakeScreenshot.store(false, std::memory_order_release);
+                    shm->runtimeState.ackScreenshotTaken.store(true, std::memory_order_release);
+                    shm->runtimeState.notificationType.store(1, std::memory_order_release);
+                    shm->runtimeState.notificationExpiry.store(GetTickCount64() + 3000ULL, std::memory_order_release);
+                }
             }
         }
     }

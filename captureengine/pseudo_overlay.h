@@ -31,6 +31,9 @@ public:
     // Notify encoder overload (warning shown for 5 seconds).
     void TriggerEncoderOverloadWarning();
 
+    // Show brief screenshot notification (2 seconds).
+    void ShowScreenshotNotification();
+
     // Force an immediate overlay update (called from timer or state changes).
     void UpdateOverlay();
 
@@ -67,6 +70,7 @@ private:
     // Atomic recording state
     std::atomic<bool> isRecording_{false};
     std::atomic<ULONGLONG> overloadWarnUntil_{0};
+    std::atomic<ULONGLONG> screenshotNotifyUntil_{0};
 
     // Warning blink state
     bool warnActive_ = false;

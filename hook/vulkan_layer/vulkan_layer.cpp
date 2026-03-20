@@ -1039,6 +1039,19 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                     }
                 }
             }
+
+            // SCREENSHOT: Vulkan path — readback from swapchain image via staging buffer
+            if (shm && shm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire)) {
+                DeviceDispatch* vkDisp = VulkanLayerState::Get().GetDeviceDispatch(sd->device);
+                if (vkDisp && idx < sd->images.size()) {
+                    TakeVulkanScreenshot(vkDisp, sd->device, queue, sd->images[idx], sd->extent.width,
+                                         sd->extent.height, sd->format, shm->runtimeState.screenshotPath);
+                }
+                shm->runtimeState.cmdTakeScreenshot.store(false, std::memory_order_release);
+                shm->runtimeState.ackScreenshotTaken.store(true, std::memory_order_release);
+                shm->runtimeState.notificationType.store(1, std::memory_order_release);
+                shm->runtimeState.notificationExpiry.store(GetTickCount64() + 3000ULL, std::memory_order_release);
+            }
         }
     }
 

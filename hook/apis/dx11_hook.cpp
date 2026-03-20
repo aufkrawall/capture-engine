@@ -19,6 +19,7 @@
 #include "../common/hook_common.h"
 #include "../common/overlay_adapter.h"
 #include "../common/perf_logger.h"
+#include "../common/screenshot_hook.h"
 #include "../common/system_metrics.h"
 #include "../wrappers/dxgi_swapchain_wrap.h"
 #include "../wrappers/iat_hook.h"
@@ -1808,6 +1809,36 @@ void DX11_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
             g_DX11Capture.CaptureFrame(pSwapChain);
         }
     }
+
+    // SCREENSHOT: Take a single screenshot if requested via shared memory
+    if (g_IPC && g_IPC->GetSharedMem()) {
+        SharedMemoryLayout* shm = g_IPC->GetSharedMem();
+        if (shm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire)) {
+            // Get backbuffer
+            ID3D11Texture2D* backbuffer = nullptr;
+            UINT bbIdx = ResolveDX11BackBufferIndex(pSwapChain);
+            pSwapChain->GetBuffer(bbIdx, IID_PPV_ARGS(&backbuffer));
+            if (backbuffer) {
+                ID3D11Device* device = nullptr;
+                backbuffer->GetDevice(&device);
+                if (device) {
+                    ID3D11DeviceContext* context = nullptr;
+                    device->GetImmediateContext(&context);
+                    if (context) {
+                        SaveD3D11TextureAsBMP(device, context, backbuffer, shm->runtimeState.screenshotPath);
+                        context->Release();
+                    }
+                    device->Release();
+                }
+                backbuffer->Release();
+            }
+            // Signal completion and show notification
+            shm->runtimeState.cmdTakeScreenshot.store(false, std::memory_order_release);
+            shm->runtimeState.ackScreenshotTaken.store(true, std::memory_order_release);
+            shm->runtimeState.notificationType.store(1, std::memory_order_release);
+            shm->runtimeState.notificationExpiry.store(GetTickCount64() + 3000ULL, std::memory_order_release);
+        }
+    }
 }
 
 // Helper to force rebind of all samplers (triggering our DetourSetSamplers)
@@ -1943,6 +1974,42 @@ static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int fr
             if (width > 0 && height > 0) {
                 g_OverlayAdapter.RenderOverlay(width, height);
             }
+        }
+    }
+
+    // SCREENSHOT: DX10 path — use D3D10 staging texture for CPU readback
+    if (g_IPC && g_IPC->GetSharedMem()) {
+        SharedMemoryLayout* shm = g_IPC->GetSharedMem();
+        if (shm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire)) {
+            IDXGISwapChain* sc = pSwapChain;
+            ID3D10Texture2D* backbuffer = nullptr;
+            if (SUCCEEDED(sc->GetBuffer(0, __uuidof(ID3D10Texture2D), (void**)&backbuffer))) {
+                D3D10_TEXTURE2D_DESC bbDesc;
+                backbuffer->GetDesc(&bbDesc);
+
+                D3D10_TEXTURE2D_DESC stagingDesc = bbDesc;
+                stagingDesc.Usage = D3D10_USAGE_STAGING;
+                stagingDesc.BindFlags = 0;
+                stagingDesc.CPUAccessFlags = D3D10_CPU_ACCESS_READ;
+                stagingDesc.MiscFlags = 0;
+
+                ID3D10Texture2D* staging = nullptr;
+                if (SUCCEEDED(device->CreateTexture2D(&stagingDesc, nullptr, &staging))) {
+                    device->CopyResource(staging, backbuffer);
+                    D3D10_MAPPED_TEXTURE2D mapped;
+                    if (SUCCEEDED(staging->Map(0, D3D10_MAP_READ, 0, &mapped))) {
+                        WriteBMPFileAsync(shm->runtimeState.screenshotPath, static_cast<const uint8_t*>(mapped.pData),
+                                          bbDesc.Width, bbDesc.Height, mapped.RowPitch);
+                        staging->Unmap(0);
+                    }
+                    staging->Release();
+                }
+                backbuffer->Release();
+            }
+            shm->runtimeState.cmdTakeScreenshot.store(false, std::memory_order_release);
+            shm->runtimeState.ackScreenshotTaken.store(true, std::memory_order_release);
+            shm->runtimeState.notificationType.store(1, std::memory_order_release);
+            shm->runtimeState.notificationExpiry.store(GetTickCount64() + 3000ULL, std::memory_order_release);
         }
     }
 
