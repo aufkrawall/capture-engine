@@ -1850,8 +1850,8 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
         bool isKeyframe = (pkt->flags & AV_PKT_FLAG_KEY) != 0;
         bool isTiny = (pkt->size <= 5 && codecCtx->max_b_frames > 0);
         bool isTemporalDelimiter = false;
-        if (isTiny && pkt->size >= 5 && pkt->data) {
-            uint8_t obuType = (pkt->data[2] >> 3) & 0x0F;
+        if (isTiny && pkt->size >= 3 && pkt->data) {
+            uint8_t obuType = (pkt->data[0] >> 3) & 0x0F;
             if (obuType == 2) isTemporalDelimiter = true;
         }
         const char* type = isKeyframe ? "KEY" : (isTemporalDelimiter ? "TD" : (isTiny ? "SEF" : "DATA"));
@@ -1870,13 +1870,12 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
             packetStats.keyframeCount++;
         } else if (pkt->size <= 5 && codecCtx->max_b_frames > 0) {
             // Check for AV1 temporal delimiter OBUs.
-            // MKV container adds ~2 prefix bytes before the OBU header,
-            // so the OBU header is at pkt->data[2], not pkt->data[0].
-            // Temporal delimiters have OBU type 2 and are ignored by players.
+            // Temporal delimiters (OBU type 2) have header byte 0x12 at pkt->data[0].
+            // They are normal AV1 frame-boundary markers that players ignore.
             bool isTemporalDelimiter = false;
-            if (pkt->size >= 5 && pkt->data) {
+            if (pkt->size >= 3 && pkt->data) {
                 // OBU header byte: bits 3-6 = obu_type, type 2 = temporal delimiter
-                uint8_t obuType = (pkt->data[2] >> 3) & 0x0F;
+                uint8_t obuType = (pkt->data[0] >> 3) & 0x0F;
                 if (obuType == 2) {
                     isTemporalDelimiter = true;
                 }
@@ -1884,8 +1883,6 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
             if (!isTemporalDelimiter) {
                 packetStats.sefBytes += pkt->size;
                 packetStats.sefCount++;
-            } else {
-                // Temporal delimiters — don't count as SEF
             }
         } else if (pkt->size < 2000 && codecCtx->max_b_frames > 0) {
             // Likely a leaf B-frame with near-zero bit allocation.
