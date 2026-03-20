@@ -1483,10 +1483,15 @@ void EncoderThreadFunc(const AppConfig& config) {
                 //
                 // The sleep ensures the encoder thread cadence is established BEFORE
                 // the first live encode, preventing the initial burst.
+                //
+                // WGC needs extra ticks because the encoder is lazily initialized at
+                // first frame encode (~127ms for codec open + MKV header + VP setup).
+                // Inject initializes the encoder at MediaEngine init, so only 1 tick
+                // is needed for the first frame's shader/texture setup (~12ms).
                 if (hTimer) {
                     LARGE_INTEGER afterLive;
                     QueryPerformanceCounter(&afterLive);
-                    int64_t sleepTicks = targetIntervalTicks;
+                    int64_t sleepTicks = useScreenGrab ? (targetIntervalTicks * 16) : targetIntervalTicks;
                     int64_t sleep100ns = (sleepTicks * 10000000) / qpcFreq.QuadPart;
                     LARGE_INTEGER dueTime;
                     dueTime.QuadPart = -sleep100ns;
