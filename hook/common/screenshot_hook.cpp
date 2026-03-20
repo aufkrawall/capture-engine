@@ -141,6 +141,232 @@ void WriteBMPFileAsync(const char* outputPath, const uint8_t* pixels, uint32_t w
     SavePixelsAsync(outputPath, pixels, width, height, rowPitch);
 }
 
+// ---- HDR Raw File Writing ----
+// HDR raw files have a 32-byte header followed by raw pixel data.
+// The controller reads this and encodes as AVIF via FFmpeg.
+
+struct HDRRawTask {
+    HDRRawHeader header;
+    std::vector<uint8_t> pixels;
+    std::string outputPath;
+};
+
+static DWORD WINAPI HDRRawWorker(LPVOID param) {
+    HDRRawTask* task = static_cast<HDRRawTask*>(param);
+
+    HANDLE hFile =
+        CreateFileA(task->outputPath.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile != INVALID_HANDLE_VALUE) {
+        DWORD written = 0;
+        WriteFile(hFile, &task->header, sizeof(task->header), &written, NULL);
+        WriteFile(hFile, task->pixels.data(), static_cast<DWORD>(task->pixels.size()), &written, NULL);
+        CloseHandle(hFile);
+        HookLog("[Screenshot] Saved HDR raw: %s (%ux%u)", task->outputPath.c_str(), task->header.width,
+                task->header.height);
+    }
+
+    delete task;
+    return 0;
+}
+
+void WriteHDRRawAsync(const char* outputPath, const uint8_t* pixels, uint32_t width, uint32_t height, uint32_t rowPitch,
+                      uint32_t format, bool isPQ) {
+    auto* task = new HDRRawTask;
+    task->header.magic = kHDRRawMagic;
+    task->header.width = width;
+    task->header.height = height;
+    task->header.format = format;
+    task->header.rowPitch = rowPitch;
+    task->header.isPQ = isPQ ? 1 : 0;
+    task->header.reserved[0] = 0;
+    task->header.reserved[1] = 0;
+    task->outputPath = outputPath;
+
+    uint32_t dataSize = rowPitch * height;
+    task->pixels.assign(pixels, pixels + dataSize);
+
+    HANDLE hThread = CreateThread(nullptr, 0, HDRRawWorker, task, 0, nullptr);
+    if (hThread) {
+        CloseHandle(hThread);
+    } else {
+        // Fallback: write synchronously
+        HANDLE hFile = CreateFileA(outputPath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hFile != INVALID_HANDLE_VALUE) {
+            DWORD written = 0;
+            WriteFile(hFile, &task->header, sizeof(task->header), &written, NULL);
+            WriteFile(hFile, task->pixels.data(), static_cast<DWORD>(task->pixels.size()), &written, NULL);
+            CloseHandle(hFile);
+        }
+        delete task;
+    }
+}
+
+// Save D3D11 texture as HDR raw (R10G10B10A2 or R16G16B16A16F)
+void SaveD3D11TextureAsHDR(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11Texture2D* texture, bool isPQ,
+                           const char* outputPath) {
+    if (!device || !context || !texture || !outputPath)
+        return;
+
+    D3D11_TEXTURE2D_DESC desc;
+    texture->GetDesc(&desc);
+
+    uint32_t format = (desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT) ? kHDRFormatR16F : kHDRFormatR10;
+
+    D3D11_TEXTURE2D_DESC stagingDesc = desc;
+    stagingDesc.Usage = D3D11_USAGE_STAGING;
+    stagingDesc.BindFlags = 0;
+    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    stagingDesc.MiscFlags = 0;
+
+    ID3D11Texture2D* staging = nullptr;
+    HRESULT hr = device->CreateTexture2D(&stagingDesc, nullptr, &staging);
+    if (FAILED(hr)) {
+        HookLog("[Screenshot] HDR CreateTexture2D failed: hr=0x%08X", hr);
+        return;
+    }
+
+    context->CopyResource(staging, texture);
+
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    hr = context->Map(staging, 0, D3D11_MAP_READ, 0, &mapped);
+    if (FAILED(hr)) {
+        staging->Release();
+        HookLog("[Screenshot] HDR Map failed: hr=0x%08X", hr);
+        return;
+    }
+
+    WriteHDRRawAsync(outputPath, static_cast<const uint8_t*>(mapped.pData), desc.Width, desc.Height, mapped.RowPitch,
+                     format, isPQ);
+
+    context->Unmap(staging, 0);
+    staging->Release();
+}
+
+// Save D3D12 texture as HDR raw
+bool SaveDX12TextureAsHDR(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, bool isPQ,
+                          const char* outputPath) {
+    if (!device || !queue || !backBuffer || !outputPath)
+        return false;
+
+    D3D12_RESOURCE_DESC bbDesc = backBuffer->GetDesc();
+    uint32_t width = static_cast<uint32_t>(bbDesc.Width);
+    uint32_t height = static_cast<uint32_t>(bbDesc.Height);
+
+    uint32_t bytesPerPixel = (bbDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT) ? 8 : 4;
+    UINT64 rowPitch = (width * bytesPerPixel + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) &
+                      ~(UINT64)(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
+    UINT64 bufferSize = rowPitch * height;
+
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_READBACK;
+
+    D3D12_RESOURCE_DESC bufDesc = {};
+    bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufDesc.Width = bufferSize;
+    bufDesc.Height = 1;
+    bufDesc.DepthOrArraySize = 1;
+    bufDesc.MipLevels = 1;
+    bufDesc.SampleDesc.Count = 1;
+    bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    ID3D12Resource* readback = nullptr;
+    HRESULT hr = device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufDesc,
+                                                 D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&readback));
+    if (FAILED(hr))
+        return false;
+
+    ID3D12CommandAllocator* cmdAlloc = nullptr;
+    hr = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&cmdAlloc));
+    if (FAILED(hr)) {
+        readback->Release();
+        return false;
+    }
+
+    ID3D12GraphicsCommandList* cmdList = nullptr;
+    hr = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmdAlloc, nullptr, IID_PPV_ARGS(&cmdList));
+    if (FAILED(hr)) {
+        cmdAlloc->Release();
+        readback->Release();
+        return false;
+    }
+
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = backBuffer;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    cmdList->ResourceBarrier(1, &barrier);
+
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
+    footprint.Footprint.Format = bbDesc.Format;
+    footprint.Footprint.Width = width;
+    footprint.Footprint.Height = height;
+    footprint.Footprint.Depth = 1;
+    footprint.Footprint.RowPitch = static_cast<UINT>(rowPitch);
+
+    D3D12_TEXTURE_COPY_LOCATION srcLoc = {};
+    srcLoc.pResource = backBuffer;
+    srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    srcLoc.SubresourceIndex = 0;
+
+    D3D12_TEXTURE_COPY_LOCATION dstLoc = {};
+    dstLoc.pResource = readback;
+    dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dstLoc.PlacedFootprint = footprint;
+
+    cmdList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+    cmdList->ResourceBarrier(1, &barrier);
+    cmdList->Close();
+
+    ID3D12CommandList* cmdLists[] = {cmdList};
+    queue->ExecuteCommandLists(1, cmdLists);
+
+    ID3D12Fence* fence = nullptr;
+    hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
+    if (FAILED(hr)) {
+        cmdList->Release();
+        cmdAlloc->Release();
+        readback->Release();
+        return false;
+    }
+
+    HANDLE fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+    queue->Signal(fence, 1);
+    fence->SetEventOnCompletion(1, fenceEvent);
+
+    bool done = (WaitForSingleObject(fenceEvent, 500) == WAIT_OBJECT_0);
+    CloseHandle(fenceEvent);
+
+    if (!done) {
+        fence->Release();
+        cmdList->Release();
+        cmdAlloc->Release();
+        readback->Release();
+        return false;
+    }
+
+    void* mappedData = nullptr;
+    D3D12_RANGE readRange = {0, static_cast<SIZE_T>(bufferSize)};
+    readback->Map(0, &readRange, &mappedData);
+
+    uint32_t format = (bbDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT) ? kHDRFormatR16F : kHDRFormatR10;
+    WriteHDRRawAsync(outputPath, static_cast<const uint8_t*>(mappedData), width, height,
+                     static_cast<uint32_t>(rowPitch), format, isPQ);
+
+    D3D12_RANGE writtenRange = {0, 0};
+    readback->Unmap(0, &writtenRange);
+
+    fence->Release();
+    cmdList->Release();
+    cmdAlloc->Release();
+    readback->Release();
+    return true;
+}
+
 // Save a D3D11 texture as BMP (DX11/DX10 screenshot path)
 // Copies pixels on render thread, writes BMP on worker thread.
 bool SaveD3D11TextureAsBMP(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11Texture2D* texture,

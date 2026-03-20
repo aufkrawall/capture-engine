@@ -36,8 +36,10 @@
 #include "../common/freeze_watchdog.h"
 #include "../common/perf_logger.h"
 
-// Forward declaration for screenshot function (avoids include conflicts with extern "C" block)
+// Forward declarations for screenshot functions
 bool SaveDX12TextureAsBMP(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Resource* backBuffer,
+                          const char* outputPath);
+bool SaveDX12TextureAsHDR(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, bool isPQ,
                           const char* outputPath);
 #include "../common/swapchain_wrapper.h"
 #include "../common/system_metrics.h"
@@ -8592,7 +8594,17 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
                 UINT bbIdx = sc3->GetCurrentBackBufferIndex();
                 ID3D12Resource* backBuffer = nullptr;
                 if (SUCCEEDED(sc3->GetBuffer(bbIdx, IID_PPV_ARGS(&backBuffer)))) {
-                    SaveDX12TextureAsBMP(dx12Device, dx12Queue, backBuffer, shm->runtimeState.screenshotPath);
+                    D3D12_RESOURCE_DESC desc = backBuffer->GetDesc();
+                    bool isHDR =
+                        (desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM || desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT);
+                    if (isHDR) {
+                        bool isPQ = (desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM);
+                        std::string rawPath(shm->runtimeState.screenshotPath);
+                        rawPath += ".raw";
+                        SaveDX12TextureAsHDR(dx12Device, dx12Queue, backBuffer, isPQ, rawPath.c_str());
+                    } else {
+                        SaveDX12TextureAsBMP(dx12Device, dx12Queue, backBuffer, shm->runtimeState.screenshotPath);
+                    }
                     backBuffer->Release();
                 }
             }

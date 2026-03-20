@@ -1349,6 +1349,7 @@ class FFmpegBuilder:
             "--enable-amf",
             "--enable-libvpl",  # QSV
             "--enable-mediafoundation",
+            "--enable-libsvtav1",  # SVT-AV1 encoder (fast AV1, BSD license)
             # Tuning
             "--disable-encoders",
             "--disable-decoders",
@@ -1358,7 +1359,7 @@ class FFmpegBuilder:
             "--disable-bsfs",
             "--disable-protocols",
             "--enable-protocol=file",
-            "--enable-muxer=mp4,matroska,mov,flv,ts",
+            "--enable-muxer=mp4,matroska,mov,flv,ts,avif",
             "--enable-demuxer=concat,matroska,mov,mp4",
             # SW Encoders (Audio)
             "--enable-encoder=aac,opus,flac,alac",
@@ -1369,6 +1370,7 @@ class FFmpegBuilder:
             "--enable-encoder=h264_amf,hevc_amf,av1_amf",
             "--enable-encoder=h264_qsv,hevc_qsv,av1_qsv,vp9_qsv",
             "--enable-encoder=h264_mf,hevc_mf",  # MediaFoundation
+            "--enable-encoder=libsvtav1",  # SVT-AV1 (for AVIF screenshots)
             # HW Decoders
             "--enable-decoder=h264,hevc,av1,vp9,mjpeg",
             "--enable-decoder=h264_qsv,hevc_qsv,av1_qsv,vp9_qsv",
@@ -3345,6 +3347,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             ce_objs.append(rc_obj)
 
         log("Linking CaptureEngine x64...")
+        ffmpeg_lib_dir = os.path.join(FFMPEG_DIR, "lib")
         ce_ldflags = [
             "-mwindows",
             "-static",
@@ -3373,6 +3376,10 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             "-lwintrust",
             "-lpdh",
             "-lntdll",
+            # FFmpeg for HDR screenshot encoding (AVIF via SVT-AV1)
+            os.path.join(ffmpeg_lib_dir, "libavformat.dll.a"),
+            os.path.join(ffmpeg_lib_dir, "libavcodec.dll.a"),
+            os.path.join(ffmpeg_lib_dir, "libavutil.dll.a"),
         ]
         if env.get("CE_DISABLE_LTO") != "1":
             ce_ldflags.append("-flto")

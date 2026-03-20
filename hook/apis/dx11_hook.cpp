@@ -1825,7 +1825,19 @@ void DX11_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
                     ID3D11DeviceContext* context = nullptr;
                     device->GetImmediateContext(&context);
                     if (context) {
-                        SaveD3D11TextureAsBMP(device, context, backbuffer, shm->runtimeState.screenshotPath);
+                        // Check format: HDR textures use R10G10B10A2 or R16G16B16A16F
+                        D3D11_TEXTURE2D_DESC bbDesc;
+                        backbuffer->GetDesc(&bbDesc);
+                        bool isHDR = (bbDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM ||
+                                      bbDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT);
+                        if (isHDR) {
+                            bool isPQ = (bbDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM);
+                            std::string rawPath(shm->runtimeState.screenshotPath);
+                            rawPath += ".raw";
+                            SaveD3D11TextureAsHDR(device, context, backbuffer, isPQ, rawPath.c_str());
+                        } else {
+                            SaveD3D11TextureAsBMP(device, context, backbuffer, shm->runtimeState.screenshotPath);
+                        }
                         context->Release();
                     }
                     device->Release();

@@ -1422,6 +1422,54 @@ bool WGCCapture::IsSupported() {
 #endif
 }
 
+bool WGCCapture::IsHdrOutputColorSpace(int colorSpace) {
+    return ::IsHdrOutputColorSpace(static_cast<DXGI_COLOR_SPACE_TYPE>(colorSpace));
+}
+
+bool WGCCapture::QueryOutputDesc1ForMonitor(HMONITOR monitor, DXGI_OUTPUT_DESC1& desc1) {
+    if (!monitor)
+        return false;
+
+    IDXGIFactory1* factory = nullptr;
+    HRESULT hr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
+    if (FAILED(hr) || !factory)
+        return false;
+
+    bool found = false;
+    for (UINT adapterIndex = 0; !found; ++adapterIndex) {
+        IDXGIAdapter1* adapter = nullptr;
+        hr = factory->EnumAdapters1(adapterIndex, &adapter);
+        if (hr == DXGI_ERROR_NOT_FOUND)
+            break;
+        if (FAILED(hr) || !adapter)
+            continue;
+
+        for (UINT outputIndex = 0; !found; ++outputIndex) {
+            IDXGIOutput* output = nullptr;
+            hr = adapter->EnumOutputs(outputIndex, &output);
+            if (hr == DXGI_ERROR_NOT_FOUND)
+                break;
+            if (FAILED(hr) || !output)
+                continue;
+
+            DXGI_OUTPUT_DESC outputDesc = {};
+            if (SUCCEEDED(output->GetDesc(&outputDesc)) && outputDesc.Monitor == monitor) {
+                IDXGIOutput6* output6 = nullptr;
+                hr = output->QueryInterface(IID_PPV_ARGS(&output6));
+                if (SUCCEEDED(hr) && output6) {
+                    found = SUCCEEDED(output6->GetDesc1(&desc1));
+                    output6->Release();
+                }
+            }
+            output->Release();
+        }
+        adapter->Release();
+    }
+
+    factory->Release();
+    return found;
+}
+
 bool WGCCapture::Init(ID3D11Device* device) {
 #if HAS_WGC
     if (!device) {

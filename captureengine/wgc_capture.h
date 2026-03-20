@@ -33,6 +33,12 @@ public:
     // Check if WGC is available on this system (Windows 10 1803+)
     static bool IsSupported();
 
+    // Check if a DXGI color space represents HDR (PQ or HLG)
+    static bool IsHdrOutputColorSpace(int colorSpace);
+
+    // Query DXGI_OUTPUT_DESC1 for a specific monitor (HDR detection, bits per color, etc.)
+    static bool QueryOutputDesc1ForMonitor(HMONITOR monitor, struct DXGI_OUTPUT_DESC1& desc1);
+
     // Initialize with shared D3D11 device - captures primary monitor
     bool Init(ID3D11Device* device);
 

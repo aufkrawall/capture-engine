@@ -1900,8 +1900,19 @@ void TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, 
         void* mappedData = nullptr;
         disp->fp_vkMapMemory(device, stagingMemory, 0, VK_WHOLE_SIZE, 0, &mappedData);
 
-        // Write BMP async (Vulkan BGRA layout matches DXGI BGRA)
-        WriteBMPFileAsync(outputPath, static_cast<const uint8_t*>(mappedData), width, height, rowPitch);
+        // Write pixels (SDR as BMP, HDR as raw)
+        bool isHDR = (format == VK_FORMAT_R16G16B16A16_SFLOAT || format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ||
+                      format == VK_FORMAT_A2R10G10B10_UNORM_PACK32);
+        if (isHDR) {
+            bool isPQ = (format != VK_FORMAT_R16G16B16A16_SFLOAT);
+            std::string rawPath(outputPath);
+            rawPath += ".raw";
+            uint32_t hdrFormat = (format == VK_FORMAT_R16G16B16A16_SFLOAT) ? kHDRFormatR16F : kHDRFormatR10;
+            WriteHDRRawAsync(rawPath.c_str(), static_cast<const uint8_t*>(mappedData), width, height, rowPitch,
+                             hdrFormat, isPQ);
+        } else {
+            WriteBMPFileAsync(outputPath, static_cast<const uint8_t*>(mappedData), width, height, rowPitch);
+        }
 
         disp->fp_vkUnmapMemory(device, stagingMemory);
     } else {
