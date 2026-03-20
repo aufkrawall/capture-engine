@@ -1848,8 +1848,13 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
     // Debug: log first 20 video packets with DTS to verify B-frame ordering
     if (pkt->stream_index == stream->index && videoPacketCount++ < 20) {
         bool isKeyframe = (pkt->flags & AV_PKT_FLAG_KEY) != 0;
-        bool isTiny = (pkt->size <= 10 && codecCtx->max_b_frames > 0);
-        const char* type = isKeyframe ? "KEY" : (isTiny ? "SEF" : "DATA");
+        bool isTiny = (pkt->size <= 5 && codecCtx->max_b_frames > 0);
+        bool isTemporalDelimiter = false;
+        if (isTiny && pkt->size >= 5 && pkt->data) {
+            uint8_t obuType = (pkt->data[2] >> 3) & 0x0F;
+            if (obuType == 2) isTemporalDelimiter = true;
+        }
+        const char* type = isKeyframe ? "KEY" : (isTemporalDelimiter ? "TD" : (isTiny ? "SEF" : "DATA"));
         DLL_Log(
             "[VideoEncoder] Queuing video pkt #%d: pts=%lld dts=%lld dur=%lld "
             "size=%d %s codec_tb=%d/%d st_tb=%d/%d",
@@ -1863,11 +1868,25 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
         if (pkt->flags & AV_PKT_FLAG_KEY) {
             packetStats.keyframeBytes += pkt->size;
             packetStats.keyframeCount++;
-        } else if (pkt->size <= 10 && codecCtx->max_b_frames > 0) {
-            // SEF (show_existing_frame) packets are tiny (<=10B) and only
-            // appear with AV1 B-frames enabled.
-            packetStats.sefBytes += pkt->size;
-            packetStats.sefCount++;
+        } else if (pkt->size <= 5 && codecCtx->max_b_frames > 0) {
+            // Check for AV1 temporal delimiter OBUs.
+            // MKV container adds ~2 prefix bytes before the OBU header,
+            // so the OBU header is at pkt->data[2], not pkt->data[0].
+            // Temporal delimiters have OBU type 2 and are ignored by players.
+            bool isTemporalDelimiter = false;
+            if (pkt->size >= 5 && pkt->data) {
+                // OBU header byte: bits 3-6 = obu_type, type 2 = temporal delimiter
+                uint8_t obuType = (pkt->data[2] >> 3) & 0x0F;
+                if (obuType == 2) {
+                    isTemporalDelimiter = true;
+                }
+            }
+            if (!isTemporalDelimiter) {
+                packetStats.sefBytes += pkt->size;
+                packetStats.sefCount++;
+            } else {
+                // Temporal delimiters — don't count as SEF
+            }
         } else if (pkt->size < 2000 && codecCtx->max_b_frames > 0) {
             // Likely a leaf B-frame with near-zero bit allocation.
             // Only classify when B-frames are active — small P-frames are
