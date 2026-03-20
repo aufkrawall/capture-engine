@@ -3365,6 +3365,7 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             "-lruntimeobject",
             "-lole32",
             "-loleaut32",
+            "-lwindowscodecs",
             "-ldbghelp",
             "-lwbemuuid",
             "-lbcrypt",

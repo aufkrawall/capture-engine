@@ -20,6 +20,7 @@
 #include "../common/shared_defs.h"
 #include "injection.h"
 #include "pseudo_overlay.h"
+#include "screenshot.h"
 #include "tray.h"
 
 #ifdef _MSC_VER
@@ -35,6 +36,7 @@ extern int SensorProcessMain(const AppConfig& config);
 
 // Hotkey IDs
 #define HOTKEY_ID_RECORD 1
+#define HOTKEY_ID_SCREENSHOT 2
 
 // Controller state
 static bool g_Running = true;
@@ -815,6 +817,10 @@ bool CompleteControllerStartup() {
     LogInfo("[Controller] Registering hotkeys...");
     const int64_t hotkeyStartUs = Log_GetQpcUs();
     RegisterHotKey(NULL, HOTKEY_ID_RECORD, g_Config.hotkeyStartStop.GetModifiers(), g_Config.hotkeyStartStop.vkey);
+    if (g_Config.hotkeyScreenshot.vkey != 0) {
+        RegisterHotKey(NULL, HOTKEY_ID_SCREENSHOT, g_Config.hotkeyScreenshot.GetModifiers(),
+                       g_Config.hotkeyScreenshot.vkey);
+    }
     const int64_t hotkeyUs = Log_GetQpcUs() - hotkeyStartUs;
 
     // Initialize pseudo-overlay for WGC capture
@@ -987,6 +993,8 @@ int ControllerMain(HINSTANCE hInstance) {
             if (msg.message == WM_HOTKEY) {
                 if (msg.wParam == HOTKEY_ID_RECORD) {
                     ToggleRecording();
+                } else if (msg.wParam == HOTKEY_ID_SCREENSHOT) {
+                    TakeScreenshot(g_Config.screenshotDir);
                 }
                 continue;
             }
@@ -1015,6 +1023,16 @@ int ControllerMain(HINSTANCE hInstance) {
                         if (!RegisterHotKey(NULL, HOTKEY_ID_RECORD, g_Config.hotkeyStartStop.GetModifiers(),
                                             g_Config.hotkeyStartStop.vkey)) {
                             LogError("[Controller] Failed to re-register recording hotkey");
+                        }
+                    }
+
+                    if (!HotkeyConfigEquals(oldConfig.hotkeyScreenshot, g_Config.hotkeyScreenshot)) {
+                        UnregisterHotKey(NULL, HOTKEY_ID_SCREENSHOT);
+                        if (g_Config.hotkeyScreenshot.vkey != 0) {
+                            if (!RegisterHotKey(NULL, HOTKEY_ID_SCREENSHOT, g_Config.hotkeyScreenshot.GetModifiers(),
+                                                g_Config.hotkeyScreenshot.vkey)) {
+                                LogError("[Controller] Failed to re-register screenshot hotkey");
+                            }
                         }
                     }
 
@@ -1062,6 +1080,7 @@ int ControllerMain(HINSTANCE hInstance) {
 
     // Unregister hotkeys first
     UnregisterHotKey(NULL, HOTKEY_ID_RECORD);
+    UnregisterHotKey(NULL, HOTKEY_ID_SCREENSHOT);
 
     // Keep tray icon alive during shutdown (animation already started by
     // right-click handler) Process messages during shutdown so animation

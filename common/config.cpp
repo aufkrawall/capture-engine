@@ -260,6 +260,8 @@ text_update_interval=500
 start_stop=F9
 ; toggle_fps - Values: key string or empty (disabled)
 toggle_fps=
+; screenshot - Screenshot hotkey (e.g. F12, Ctrl+F12). Empty = disabled
+screenshot=
 
 [Video]
 ; encoder - Values: av1_nvenc, hevc_nvenc, h264_nvenc, av1_amf, hevc_amf, h264_amf, av1_qsv, hevc_qsv, h264_qsv, av1_mf, hevc_mf, h264_mf
@@ -463,6 +465,10 @@ show_encoder_overload_warnings=false
 ; process_list - Pipe-delimited list of process names for warning detection (e.g. game1.exe|game2.exe)
 ; These are the processes where "NOT RECORDING" warning shows when focused but not recording
 process_list=
+
+[Screenshot]
+; screenshot_dir - Output directory for screenshots. Empty = "screenshots" subfolder next to exe
+screenshot_dir=
 
 ; [App.1]
 ; Process=StrangeBrigade_DX12.exe
@@ -1135,6 +1141,14 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     if (!toggleFpsKey.empty()) {
         config.hotkeyToggleFPS = ParseHotkey(toggleFpsKey);
     }
+
+    std::string screenshotKey = GetStr("Hotkeys", "screenshot", "");
+    if (!screenshotKey.empty()) {
+        config.hotkeyScreenshot = ParseHotkey(screenshotKey);
+    }
+
+    // Screenshot
+    config.screenshotDir = GetStr("Screenshot", "screenshot_dir", "");
 }
 
 // Parse hotkey string (e.g., "Ctrl+Shift+F9", "Alt+R", "F10")

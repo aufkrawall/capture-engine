@@ -316,6 +316,10 @@ struct AppConfig {
 
     HotkeyConfig hotkeyStartStop;
     HotkeyConfig hotkeyToggleFPS;
+    HotkeyConfig hotkeyScreenshot;
+
+    // Screenshot
+    std::string screenshotDir;  // Output directory (empty = "screenshots" next to exe)
 
     // FPS Limiter
     FpsLimiterConfig fpsLimiter;
