@@ -1526,9 +1526,12 @@ void EncoderThreadFunc(const AppConfig& config) {
                     size_t keepCount = 1;
                     {
                         const double reserveFramesNeeded = smoothedInjectFenceMs / frameIntervalMs;
-                        if (reserveFramesNeeded > 0.5) keepCount = 2;
-                        if (reserveFramesNeeded > 1.25) keepCount = 3;
-                        if (reserveFramesNeeded > 2.25) keepCount = 4;
+                        if (reserveFramesNeeded > 0.5)
+                            keepCount = 2;
+                        if (reserveFramesNeeded > 1.25)
+                            keepCount = 3;
+                        if (reserveFramesNeeded > 2.25)
+                            keepCount = 4;
                         keepCount += 1;
                     }
                     size_t flushed = 0;

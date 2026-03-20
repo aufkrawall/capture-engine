@@ -1853,9 +1853,8 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
         DLL_Log(
             "[VideoEncoder] Queuing video pkt #%d: pts=%lld dts=%lld dur=%lld "
             "size=%d %s codec_tb=%d/%d st_tb=%d/%d",
-            videoPacketCount, (long long)pkt->pts, (long long)pkt->dts, (long long)pkt->duration,
-            pkt->size, type, codec_tb.num, codec_tb.den, st->time_base.num,
-            st->time_base.den);
+            videoPacketCount, (long long)pkt->pts, (long long)pkt->dts, (long long)pkt->duration, pkt->size, type,
+            codec_tb.num, codec_tb.den, st->time_base.num, st->time_base.den);
     }
 
     // Track packet types for B-frame quality diagnostics
@@ -1956,8 +1955,7 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
             if (pkt->duration > 0) {
                 // Codec provided a valid duration — use it directly
             } else {
-                int64_t frameNum =
-                    av_rescale_q_rnd(pkt->pts, st->time_base, codecCtx->time_base, AV_ROUND_NEAR_INF);
+                int64_t frameNum = av_rescale_q_rnd(pkt->pts, st->time_base, codecCtx->time_base, AV_ROUND_NEAR_INF);
                 int64_t nextPts = av_rescale_q(frameNum + 1, codecCtx->time_base, st->time_base);
                 pkt->duration = nextPts - pkt->pts;
             }
@@ -1967,9 +1965,12 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
             // from the codec, and round-trip rescaling can produce 0 or 2
             // due to integer rounding at non-power-of-2 FPS.
             int64_t maxDuration = av_rescale_q(2, codecCtx->time_base, st->time_base);
-            if (maxDuration < 2) maxDuration = 2;
-            if (pkt->duration <= 0) pkt->duration = 1;
-            if (pkt->duration > maxDuration) pkt->duration = maxDuration;
+            if (maxDuration < 2)
+                maxDuration = 2;
+            if (pkt->duration <= 0)
+                pkt->duration = 1;
+            if (pkt->duration > maxDuration)
+                pkt->duration = maxDuration;
         } else {
             pkt->duration = av_rescale(1, st->time_base.den, fps);
         }
@@ -5812,8 +5813,10 @@ void VideoEncoder::AsyncWriteLoop() {
                     // Clamp flushed packet duration to sane range
                     {
                         int64_t maxDuration = av_rescale_q(2, codecCtx->time_base, stream->time_base);
-                        if (maxDuration < 2) maxDuration = 2;
-                        if (pkt->duration > maxDuration) pkt->duration = maxDuration;
+                        if (maxDuration < 2)
+                            maxDuration = 2;
+                        if (pkt->duration > maxDuration)
+                            pkt->duration = maxDuration;
                     }
 
                     if (pkt->pts != AV_NOPTS_VALUE) {

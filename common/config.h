@@ -251,6 +251,19 @@ struct WhitelistEntry {
     }
 };
 
+// Pseudo-overlay for WGC capture (no injection required)
+struct PseudoOverlayConfig {
+    bool enabled = false;
+    int size = 30;              // Indicator circle diameter (10-200)
+    int pad = 20;               // Padding from screen edge (0-100)
+    int pos = 0;                // 0=BR, 1=BL, 2=TR, 3=TL
+    int mode = 0;               // 0=InformationIndicator, 1=WarningAndIndicator, 2=WarningOnly
+    bool alwaysRender = false;  // Ghost mode: keep window present at alpha=1 when idle
+    bool alwaysRenderOnlyWhenGame = false;
+    bool showEncoderOverloadWarn = false;
+    std::string processList;  // Pipe-delimited process names for foreground detection
+};
+
 struct AppConfig {
     // General
     bool debugLogging = true;   // Default to true, matches LoadConfig default
@@ -274,6 +287,9 @@ struct AppConfig {
 
     // Overlay
     OverlayConfig overlay;
+
+    // Pseudo-overlay (for WGC capture, no injection)
+    PseudoOverlayConfig pseudoOverlay;
 
     // Hotkeys
     struct HotkeyConfig {

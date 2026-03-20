@@ -613,8 +613,7 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
     // Only auto-enable when the user didn't set multipass at all — respect
     // explicit "disabled" from config.ini.
     bool autoMultipass = false;
-    if (kind.backend == EncoderBackend::kNVENC && plan.maxBFrames > 0 &&
-        config.multipass.empty()) {
+    if (kind.backend == EncoderBackend::kNVENC && plan.maxBFrames > 0 && config.multipass.empty()) {
         autoMultipass = true;
     }
 
@@ -664,10 +663,9 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
                 }
                 AddGeneratedOption(&plan, "b_ref_mode", *bRefMode);
                 if (*bRefMode == "each" && plan.maxBFrames > 2) {
-                    AddWarning(&plan,
-                               "b_ref_mode=each with b_frames=" + std::to_string(plan.maxBFrames) +
-                                   " may be too slow for real-time capture at high FPS. "
-                                   "Consider b_ref_mode=middle if encoding latency is too high.");
+                    AddWarning(&plan, "b_ref_mode=each with b_frames=" + std::to_string(plan.maxBFrames) +
+                                          " may be too slow for real-time capture at high FPS. "
+                                          "Consider b_ref_mode=middle if encoding latency is too high.");
                 }
             }
         }

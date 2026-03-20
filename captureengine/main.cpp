@@ -19,6 +19,7 @@
 #include "../common/process_ipc.h"
 #include "../common/shared_defs.h"
 #include "injection.h"
+#include "pseudo_overlay.h"
 #include "tray.h"
 
 #ifdef _MSC_VER
@@ -63,6 +64,7 @@ static std::unique_ptr<ProcessIPCClient> g_MediaClient;
 static std::unique_ptr<ProcessIPCClient> g_LimiterClient;
 
 static TrayIcon* g_Tray = nullptr;
+static std::unique_ptr<PseudoOverlay> g_PseudoOverlay;
 
 namespace {
 constexpr UINT kMsgCompleteControllerStartup = WM_APP + 1;
@@ -577,6 +579,9 @@ void ToggleRecording() {
 
     if (g_Tray)
         g_Tray->SetRecordingState(g_Recording);
+
+    if (g_PseudoOverlay)
+        g_PseudoOverlay->SetRecordingState(g_Recording);
 }
 
 // Shutdown all child processes gracefully
@@ -812,6 +817,21 @@ bool CompleteControllerStartup() {
     RegisterHotKey(NULL, HOTKEY_ID_RECORD, g_Config.hotkeyStartStop.GetModifiers(), g_Config.hotkeyStartStop.vkey);
     const int64_t hotkeyUs = Log_GetQpcUs() - hotkeyStartUs;
 
+    // Initialize pseudo-overlay for WGC capture
+    if (g_Config.pseudoOverlay.enabled) {
+        LogInfo("[Controller] Initializing pseudo-overlay...");
+        g_PseudoOverlay = std::make_unique<PseudoOverlay>();
+        HMODULE hMod = GetModuleHandle(NULL);
+        if (g_PseudoOverlay->Init(reinterpret_cast<HINSTANCE>(hMod))) {
+            g_PseudoOverlay->UpdateConfig(g_Config.pseudoOverlay);
+            g_PseudoOverlay->SetRecordingState(g_Recording);
+            LogInfo("[Controller] Pseudo-overlay initialized");
+        } else {
+            LogError("[Controller] Failed to initialize pseudo-overlay");
+            g_PseudoOverlay.reset();
+        }
+    }
+
     LogInfo("[Controller] Ready. Press hotkey to start recording.");
     PrimeStartupCursor();
     LogInfo(
@@ -1001,6 +1021,23 @@ int ControllerMain(HINSTANCE hInstance) {
                     SyncLoggerAndSensorProcesses(g_Config);
                     SyncLimiterProcess(g_Config);
                     SendCommandToAll(ProcessCommand::ReloadConfig);
+
+                    // Pseudo-overlay config hot-reload
+                    if (g_PseudoOverlay) {
+                        g_PseudoOverlay->UpdateConfig(g_Config.pseudoOverlay);
+                    } else if (g_Config.pseudoOverlay.enabled) {
+                        // Enable pseudo-overlay at runtime
+                        g_PseudoOverlay = std::make_unique<PseudoOverlay>();
+                        HMODULE hMod = GetModuleHandle(NULL);
+                        if (g_PseudoOverlay->Init(reinterpret_cast<HINSTANCE>(hMod))) {
+                            g_PseudoOverlay->UpdateConfig(g_Config.pseudoOverlay);
+                            g_PseudoOverlay->SetRecordingState(g_Recording);
+                            LogInfo("[Controller] Pseudo-overlay enabled via config hot-reload");
+                        } else {
+                            LogError("[Controller] Failed to init pseudo-overlay on hot-reload");
+                            g_PseudoOverlay.reset();
+                        }
+                    }
                 }
             }
             lastConfigCheck = GetTickCount();
@@ -1031,6 +1068,12 @@ int ControllerMain(HINSTANCE hInstance) {
     // continues
     if (g_Tray) {
         g_Tray->StartShutdownAnimation();
+    }
+
+    // Shutdown pseudo-overlay before child processes
+    if (g_PseudoOverlay) {
+        g_PseudoOverlay->Shutdown();
+        g_PseudoOverlay.reset();
     }
 
     ShutdownChildProcesses();

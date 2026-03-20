@@ -280,6 +280,30 @@ start_stop=F9
 ; toggle_fps - Values: key string or empty (disabled)
 toggle_fps=
 
+[pseudo-overlay]
+; Pseudo-overlay indicator for WGC capture (no injection required)
+; Shows a colored circle in screen corner: red=recording, blue=idle, gray=disconnected
+; Blinking warning appears when a whitelisted game is focused but not recording
+; enabled - Values: true, false
+enabled=false
+; size - Values: 10-200 (indicator circle diameter in pixels)
+size=30
+; pad - Values: 0-100 (padding from screen edge in pixels)
+pad=20
+; pos - Values: 0=BottomRight, 1=BottomLeft, 2=TopRight, 3=TopLeft
+pos=0
+; mode - Values: 0=InformationIndicator, 1=WarningAndIndicator, 2=WarningOnly
+mode=0
+; always_render - Keep overlay window always present (invisible when idle, prevents MPO stutters)
+always_render=false
+; always_render_only_when_game - Only use always_render when a whitelisted game is focused
+always_render_only_when_game=false
+; show_encoder_overload_warnings - Show "Encoder overloaded!" warning
+show_encoder_overload_warnings=false
+; process_list - Pipe-delimited list of process names for warning detection (e.g. game1.exe|game2.exe)
+; These are the processes where "NOT RECORDING" warning shows when focused but not recording
+process_list=
+
 [App.1]
 ; Process - Values: executable name (case-insensitive)
 ; Process=game.exe

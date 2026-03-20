@@ -440,6 +440,30 @@ dlss_fg_dll_path=
 ; [AppAudio.2]
 ; ...
 
+[pseudo-overlay]
+; Pseudo-overlay indicator for WGC capture (no injection required)
+; Shows a colored circle in screen corner: red=recording, blue=idle, gray=disconnected
+; Blinking warning appears when a whitelisted game is focused but not recording
+; enabled - Values: true, false
+enabled=false
+; size - Values: 10-200 (indicator circle diameter in pixels)
+size=30
+; pad - Values: 0-100 (padding from screen edge in pixels)
+pad=20
+; pos - Values: 0=BottomRight, 1=BottomLeft, 2=TopRight, 3=TopLeft
+pos=0
+; mode - Values: 0=InformationIndicator, 1=WarningAndIndicator, 2=WarningOnly
+mode=0
+; always_render - Keep overlay window always present (invisible when idle, prevents MPO stutters)
+always_render=false
+; always_render_only_when_game - Only use always_render when a whitelisted game is focused
+always_render_only_when_game=false
+; show_encoder_overload_warnings - Show "Encoder overloaded!" warning
+show_encoder_overload_warnings=false
+; process_list - Pipe-delimited list of process names for warning detection (e.g. game1.exe|game2.exe)
+; These are the processes where "NOT RECORDING" warning shows when focused but not recording
+process_list=
+
 ; [App.1]
 ; Process=StrangeBrigade_DX12.exe
 ; anisotropic_filtering=16x
@@ -1078,6 +1102,23 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         if (appAudio.enabled && (!appAudio.processName.empty() || appAudio.processId != 0)) {
             config.audioSources.push_back(appAudio);
         }
+    }
+
+    // Pseudo-overlay (for WGC capture, no injection)
+    config.pseudoOverlay.enabled = GetBool("pseudo-overlay", "enabled", false);
+    config.pseudoOverlay.size = std::clamp(GetInt("pseudo-overlay", "size", 30), 10, 200);
+    config.pseudoOverlay.pad = std::clamp(GetInt("pseudo-overlay", "pad", 20), 0, 100);
+    config.pseudoOverlay.pos = std::clamp(GetInt("pseudo-overlay", "pos", 0), 0, 3);
+    config.pseudoOverlay.mode = std::clamp(GetInt("pseudo-overlay", "mode", 0), 0, 2);
+    config.pseudoOverlay.alwaysRender = GetBool("pseudo-overlay", "always_render", false);
+    config.pseudoOverlay.alwaysRenderOnlyWhenGame = GetBool("pseudo-overlay", "always_render_only_when_game", false);
+    config.pseudoOverlay.showEncoderOverloadWarn = GetBool("pseudo-overlay", "show_encoder_overload_warnings", false);
+    {
+        std::string procList = GetStr("pseudo-overlay", "process_list", "");
+        // Process list is pipe-delimited in INI (same as OBSIndicator convention)
+        if (procList.size() > 2048)
+            procList.resize(2048);
+        config.pseudoOverlay.processList = procList;
     }
 
     // Hotkeys
