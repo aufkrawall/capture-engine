@@ -301,8 +301,30 @@ bool SaveDX12TextureAsBMP(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D1
     D3D12_RANGE readRange = {0, static_cast<SIZE_T>(bufferSize)};
     readback->Map(0, &readRange, &mappedData);
 
-    SavePixelsAsync(outputPath, static_cast<const uint8_t*>(mappedData), width, height,
-                    static_cast<uint32_t>(rowPitch));
+    const uint8_t* pixels = static_cast<const uint8_t*>(mappedData);
+
+    // DX12 swapchains may use RGBA format (R8G8B8A8) instead of BGRA (B8G8R8A8).
+    // BMP writer expects BGRA, so swap R/B channels if needed.
+    bool isRGBA = (bbDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM || bbDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB);
+    if (isRGBA) {
+        uint32_t srcPitch = static_cast<uint32_t>(rowPitch);
+        std::vector<uint8_t> swapped(srcPitch * height);
+        for (uint32_t y = 0; y < height; ++y) {
+            const uint8_t* src = pixels + y * srcPitch;
+            uint8_t* dst = swapped.data() + y * srcPitch;
+            for (uint32_t x = 0; x < width; ++x) {
+                dst[0] = src[2];  // B <- R
+                dst[1] = src[1];  // G
+                dst[2] = src[0];  // R <- B
+                dst[3] = src[3];  // A
+                src += 4;
+                dst += 4;
+            }
+        }
+        SavePixelsAsync(outputPath, swapped.data(), width, height, srcPitch);
+    } else {
+        SavePixelsAsync(outputPath, pixels, width, height, static_cast<uint32_t>(rowPitch));
+    }
 
     D3D12_RANGE writtenRange = {0, 0};
     readback->Unmap(0, &writtenRange);

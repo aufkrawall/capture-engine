@@ -694,6 +694,13 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     if (cfg.showRecording && isRecording)
         requiredHeight += lineHeight;
 
+    // Extend by one line when screenshot notification is active
+    uint64_t notifExpiry = mem.runtimeState.notificationExpiry.load(std::memory_order_acquire);
+    uint32_t notifType = mem.runtimeState.notificationType.load(std::memory_order_relaxed);
+    bool showNotification = (notifExpiry > 0 && GetTickCount64() < notifExpiry && notifType != 0);
+    if (showNotification)
+        requiredHeight += lineHeight;
+
     constexpr int GRAPH_SAMPLES = 180;
     bool showGraph = cfg.showFrameTime && metrics;
     if (showGraph)
@@ -752,6 +759,8 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     if (showFGDetails)
         graphCursorY += lineHeight;
     if (cfg.showRecording && isRecording)
+        graphCursorY += lineHeight;
+    if (showNotification)
         graphCursorY += lineHeight;
 
     // Max frame time display values – recomputed at most once every 2 seconds so
@@ -855,6 +864,23 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
 
     // Column positions for alignment (DPI-aware)
     float labelCol = x;
+
+    // Transient notification inside the overlay panel (background extends to fit)
+    if (notifExpiry > 0 && GetTickCount64() < notifExpiry && notifType != 0) {
+        const char* notifText = nullptr;
+        uint32_t notifColor = Colors::Green;
+        switch (notifType) {
+            case 1:
+                notifText = "Screenshot saved!";
+                break;
+            default:
+                break;
+        }
+        if (notifText) {
+            renderer->DrawTextWithShadow(labelCol, cursorY, notifText, notifColor, shadowColor);
+            cursorY += lineHeight;
+        }
+    }
 
     // GPU - Name in green, % in yellow (based on load)
     if (cfg.showGPU) {
@@ -1025,25 +1051,6 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     } else {
         // Reset overload tracking when not recording
         lastEncoderOverloadTick = 0;
-    }
-
-    // Transient notification (screenshot saved, etc.)
-    uint64_t notifExpiry = mem.runtimeState.notificationExpiry.load(std::memory_order_acquire);
-    uint32_t notifType = mem.runtimeState.notificationType.load(std::memory_order_relaxed);
-    if (notifExpiry > 0 && GetTickCount64() < notifExpiry && notifType != 0) {
-        const char* notifText = nullptr;
-        uint32_t notifColor = Colors::Green;
-        switch (notifType) {
-            case 1:
-                notifText = "Screenshot saved!";
-                break;
-            default:
-                break;
-        }
-        if (notifText) {
-            renderer->DrawTextWithShadow(labelCol, cursorY, notifText, notifColor, shadowColor);
-            cursorY += lineHeight;
-        }
     }
 
     // Frame time graph labels and markers
