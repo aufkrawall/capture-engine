@@ -1493,7 +1493,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                 if (hTimer) {
                     LARGE_INTEGER afterLive;
                     QueryPerformanceCounter(&afterLive);
-                    int64_t sleepTicks = useScreenGrab ? (targetIntervalTicks * 16) : targetIntervalTicks;
+                    // Inject needs extra ticks for NVENC encode warmup (~21ms for
+                    // rate control init, lookahead buffer fill).  WGC needs more
+                    // because the codec itself initializes at first frame (~127ms).
+                    int64_t sleepTicks = useScreenGrab ? (targetIntervalTicks * 24) : (targetIntervalTicks * 4);
                     int64_t sleep100ns = (sleepTicks * 10000000) / qpcFreq.QuadPart;
                     LARGE_INTEGER dueTime;
                     dueTime.QuadPart = -sleep100ns;
