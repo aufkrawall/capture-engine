@@ -1,0 +1,68 @@
+#include <gtest/gtest.h>
+#include <deque>
+#include "../common/frame_queue.h"
+#include "../common/frame_timing_utils.h"
+
+TEST(FrameTimingUtilsTest, SelectFrameClosestToGridPrefersNearestTimestamp) {
+    std::deque<QueuedFrame> frames;
+
+    QueuedFrame frameA;
+    frameA.timestamp = 100;
+    frames.push_back(std::move(frameA));
+
+    QueuedFrame frameB;
+    frameB.timestamp = 150;
+    frames.push_back(std::move(frameB));
+
+    QueuedFrame frameC;
+    frameC.timestamp = 220;
+    frames.push_back(std::move(frameC));
+
+    const size_t bestIndex = SelectFrameClosestToGrid(frames, frames.size(), 100, 1, 60);
+    EXPECT_EQ(bestIndex, 1u);
+}
+
+TEST(FrameTimingUtilsTest, SelectFrameClosestToGridBreaksTiesTowardNewerFrame) {
+    std::deque<QueuedFrame> frames;
+
+    QueuedFrame older;
+    older.timestamp = 140;
+    frames.push_back(std::move(older));
+
+    QueuedFrame newer;
+    newer.timestamp = 160;
+    frames.push_back(std::move(newer));
+
+    const size_t bestIndex = SelectFrameClosestToGrid(frames, frames.size(), 100, 1, 50);
+    EXPECT_EQ(bestIndex, 1u);
+}
+
+TEST(FrameTimingUtilsTest, ComputeSourceDrivenElapsedUsUsesSourceClockWhenMonotonic) {
+    SourceTimelineState state;
+
+    EXPECT_EQ(ComputeSourceDrivenElapsedUs(1000, 5000, 0, state), 0);
+    EXPECT_EQ(state.startSourceQpc, 5000);
+    EXPECT_EQ(ComputeSourceDrivenElapsedUs(1000, 5042, 1300, state), 42000);
+    EXPECT_EQ(state.lastElapsedUs, 42000);
+}
+
+TEST(FrameTimingUtilsTest, ComputeSourceDrivenElapsedUsFallsBackToSteadyClockForReplays) {
+    SourceTimelineState state;
+
+    EXPECT_EQ(ComputeSourceDrivenElapsedUs(1000, 7000, 0, state), 0);
+    EXPECT_EQ(ComputeSourceDrivenElapsedUs(1000, 7010, 1500, state), 10000);
+    EXPECT_EQ(ComputeSourceDrivenElapsedUs(1000, 7010, 26000, state), 26000);
+    EXPECT_EQ(state.lastElapsedUs, 26000);
+}
+
+TEST(FrameTimingUtilsTest, QueuedFrameMovePreservesCaptureOrigin) {
+    QueuedFrame input;
+    input.captureLeft = 321;
+    input.captureTop = 654;
+
+    QueuedFrame moved(std::move(input));
+    EXPECT_EQ(moved.captureLeft, 321);
+    EXPECT_EQ(moved.captureTop, 654);
+    EXPECT_EQ(input.captureLeft, 0);
+    EXPECT_EQ(input.captureTop, 0);
+}

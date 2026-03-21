@@ -16,6 +16,7 @@
 #include "audio_ring_buffer.h"  // Pull Model Buffer
 #include "audio_sync_utils.h"
 #include "video_encoder.h"
+#include "../common/frame_timing_utils.h"
 
 extern "C" {
 extern ID3D11Device* g_SharedD3D11Device;
@@ -87,8 +88,8 @@ public:
     int64_t lastVideoFrameMs;                                  // Timestamp of last video frame for audio trimming
     std::atomic<int64_t> videoElapsedMs;                       // Elapsed video time in ms for audio clock sync
     std::atomic<int64_t> recordingStartSystemQPCMs{0};         // Start time in System QPC MS (for Audio Alignment)
-    int64_t recordingStartSourceQPC = 0;                       // Source-frame QPC for WGC-relative timing
-    int64_t lastD3D11ElapsedUs = 0;                            // Monotonic WGC timeline, including duplicate replays
+    SourceTimelineState injectTimelineState;                   // Source-frame QPC for inject-relative timing
+    SourceTimelineState d3d11TimelineState;                    // Source-frame QPC for WGC-relative timing
 
     // Get current video elapsed time for audio clock compensation
     int64_t GetVideoElapsedMs() const {
@@ -404,8 +405,8 @@ public:
             videoElapsedMs.store(0);             // CRITICAL: Reset video clock for new recording
                                                  // to prevent stale timestamps
             recordingStartSystemQPCMs.store(0);  // CRITICAL: Reset QPC start time for new recording
-            recordingStartSourceQPC = 0;
-            lastD3D11ElapsedUs = 0;
+            injectTimelineState.Reset();
+            d3d11TimelineState.Reset();
 
             // PULL MODEL: Reset audio encoding state for new recording
             encodedSamplesPerSource.clear();
@@ -580,8 +581,8 @@ public:
         // Reset video frame tracking for next recording
         firstVideoFrameMs = 0;
         lastVideoFrameMs = 0;
-        recordingStartSourceQPC = 0;
-        lastD3D11ElapsedUs = 0;
+        injectTimelineState.Reset();
+        d3d11TimelineState.Reset();
 
         // Note: We don't need to update VideoEncoder audio context here anymore
         // since we're using AddAudioContext and the contexts are stored per-source
@@ -620,9 +621,12 @@ public:
             SyncAudioToFirstVideoFrame(debugTimestamp);
         }
 
-        // Calculate Real Elapsed Time (microseconds for precise PTS)
-        int64_t realElapsedUs =
+        const int64_t steadyElapsedUs =
             std::chrono::duration_cast<std::chrono::microseconds>(now - this->recordingStartTime).count();
+        int64_t realElapsedUs = steadyElapsedUs;
+        if (config.video.useVFR) {
+            realElapsedUs = ComputeSourceDrivenElapsedUs(qpcFreq, timestampQPC, steadyElapsedUs, injectTimelineState);
+        }
 
         // Update Atomic Member (for Audio Thread / Pull) — keep ms for audio sync
         this->videoElapsedMs.store(realElapsedUs / 1000);
@@ -668,8 +672,6 @@ public:
         if (this->firstVideoFrameMs == 0) {
             this->firstVideoFrameMs = debugTimestamp;
             this->recordingStartTime = now;
-            this->recordingStartSourceQPC = timestampQPC;
-
             // Start of recording logic
             DLL_Log(
                 "MediaEngine: First D3D11 frame at %lld ms (QPC: %lld) "
@@ -686,27 +688,15 @@ public:
         const int64_t steadyElapsedUs =
             std::chrono::duration_cast<std::chrono::microseconds>(now - this->recordingStartTime).count();
         if (config.video.useVFR) {
-            int64_t sourceElapsedUs = -1;
-            if (qpcFreq > 0 && this->recordingStartSourceQPC > 0 && timestampQPC >= this->recordingStartSourceQPC) {
-                sourceElapsedUs = ((timestampQPC - this->recordingStartSourceQPC) * 1000000) / qpcFreq;
-            }
-
-            if (sourceElapsedUs >= 0 && sourceElapsedUs > lastD3D11ElapsedUs) {
-                realElapsedUs = sourceElapsedUs;
-            } else {
-                // Replayed WGC frames keep the last source timestamp when no fresh frame
-                // was available. Keep the mux timeline moving from the media-process
-                // clock so overload handling does not collapse the recording duration.
-                realElapsedUs = std::max(steadyElapsedUs, lastD3D11ElapsedUs);
-            }
+            realElapsedUs = ComputeSourceDrivenElapsedUs(qpcFreq, timestampQPC, steadyElapsedUs, d3d11TimelineState);
         } else {
             // CFR output cadence is already driven by the encoder thread's fixed-rate
             // sample loop. Feeding the video encoder WGC source timestamps here causes
             // avoidable skip/dup churn when callback cadence jitters around that output
             // grid, so prefer the sample-clock timeline instead.
-            realElapsedUs = std::max(steadyElapsedUs, lastD3D11ElapsedUs);
+            realElapsedUs = std::max(steadyElapsedUs, d3d11TimelineState.lastElapsedUs);
         }
-        lastD3D11ElapsedUs = realElapsedUs;
+        d3d11TimelineState.lastElapsedUs = realElapsedUs;
 
         // Drive WGC video/audio timing from source timestamps for VFR and from the
         // fixed-rate encoder sample clock for CFR.  In CFR mode, videoElapsedMs is

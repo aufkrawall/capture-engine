@@ -16,6 +16,7 @@
 #include <vector>
 #include "../common/config.h"
 #include "../common/frame_queue.h"
+#include "../common/frame_timing_utils.h"
 #include "../common/logging.h"
 #include "../common/process_ipc.h"
 #include "../common/shared_defs.h"
@@ -249,7 +250,8 @@ void MediaLogCallback(const char* msg) {
     LogInfo("[Media] %s", msg);
 }
 
-static void QueueWgcFrame(ID3D11Texture2D* texture, uint32_t width, uint32_t height, int64_t timestamp, bool isHDR) {
+static void QueueWgcFrame(ID3D11Texture2D* texture, uint32_t width, uint32_t height, int64_t timestamp, bool isHDR,
+                          int32_t captureLeft, int32_t captureTop) {
     QueuedFrame qf;
     qf.isInjectMode = false;
     qf.texture = texture;
@@ -257,6 +259,8 @@ static void QueueWgcFrame(ID3D11Texture2D* texture, uint32_t width, uint32_t hei
     qf.height = height;
     qf.timestamp = timestamp;
     qf.isHDR = isHDR;
+    qf.captureLeft = captureLeft;
+    qf.captureTop = captureTop;
 
     if (!g_FrameQueue.Push(std::move(qf))) {
         texture->Release();
@@ -994,8 +998,6 @@ void EncoderThreadFunc(const AppConfig& config) {
 
     double smoothedEncodeMs = 0.0;
     double frameIntervalMs = 1000.0 / config.video.fps;
-    uint32_t adaptiveCadenceCounter = 0;
-    bool adaptiveCadenceActive = false;
     auto ReleaseQueuedFrameTexture = [](QueuedFrame& queuedFrame) {
         if (!queuedFrame.isInjectMode && queuedFrame.texture) {
             queuedFrame.texture->Release();
@@ -1028,9 +1030,9 @@ void EncoderThreadFunc(const AppConfig& config) {
     size_t maxBufferedInjectDepthSinceLog = 0;
     DWORD lastInjectTrimLog = GetTickCount();
     // Bresenham credit-based frame pacing state: distributes duplicates evenly
-    // when game fps < recording target fps instead of clustering them at
-    // frame-timing jitter boundaries.  When game fps > target fps, the
-    // Bresenham also distributes frame SKIPS evenly for smooth decimation.
+    // when source fps < recording target fps instead of clustering them at
+    // frame-timing jitter boundaries. When source fps > target fps, selection
+    // stays timestamp-aware against the encoder output grid.
     uint32_t pacingInputThisWindow = 0;
     uint32_t pacingTicksThisWindow = 0;
     uint32_t pacingEmaUpdates = 0;
@@ -1165,10 +1167,8 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
             smoothedInjectFenceMs = 0.0;
             if (!config.video.useVFR) {
-                // CFR WGC: use FIFO deque with Bresenham credit pacing (same
-                // algorithm as inject).  This distributes duplicates evenly
-                // when WGC delivery rate is below the recording target (e.g.
-                // 60 Hz monitor, 120 fps recording).
+                // CFR WGC: buffer source-cadence frames, maintain a shallow pool,
+                // then select the frame closest to the encoder output grid.
                 drainedScreenGrabFrames.clear();
                 QueuedFrame temp;
                 while (g_FrameQueue.Pop(temp, 0)) {
@@ -1215,12 +1215,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                     ReleaseQueuedFrameTexture(stale);
                 }
 
-                // Bresenham credit-based pacing (WGC path uses the same
-                // unclamped credit as inject for proper overcapture decimation)
                 double creditPerTick = smoothedInputPerTick;
                 frameCreditAccumulator += creditPerTick;
 
-                // Discard excess WGC frames (Bresenham skip)
+                // Discard excess WGC frames only under clear overcapture pressure.
                 while (frameCreditAccumulator >= 2.0 && bufferedWgcFrames.size() > 1) {
                     QueuedFrame excess = std::move(bufferedWgcFrames.front());
                     bufferedWgcFrames.pop_front();
@@ -1234,6 +1232,17 @@ void EncoderThreadFunc(const AppConfig& config) {
                     popped = true;
                     frameCreditAccumulator = std::min(frameCreditAccumulator, 1.0);
                 } else if (frameCreditAccumulator >= 1.0 && !bufferedWgcFrames.empty()) {
+                    const size_t availableCount = bufferedWgcFrames.size();
+                    if (availableCount > 1 && encoderGridStartQpc > 0) {
+                        const size_t bestIdx = SelectFrameClosestToGrid(bufferedWgcFrames, availableCount,
+                                                                       encoderGridStartQpc, encoderGridTickCount,
+                                                                       targetIntervalTicks);
+                        for (size_t i = 0; i < bestIdx; ++i) {
+                            QueuedFrame stale = std::move(bufferedWgcFrames.front());
+                            bufferedWgcFrames.pop_front();
+                            ReleaseQueuedFrameTexture(stale);
+                        }
+                    }
                     frame = std::move(bufferedWgcFrames.front());
                     bufferedWgcFrames.pop_front();
                     popped = true;
@@ -1389,16 +1398,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                     // cadence compared to always taking the oldest frame (FIFO).
                     size_t availableCount = bufferedInjectFrames.size() - minBufferedInjectFrames;
                     if (availableCount > 1 && encoderGridStartQpc > 0) {
-                        int64_t idealQpc = encoderGridStartQpc + encoderGridTickCount * targetIntervalTicks;
-                        size_t bestIdx = 0;
-                        int64_t bestDist = std::abs(bufferedInjectFrames[0].timestamp - idealQpc);
-                        for (size_t i = 1; i < availableCount; i++) {
-                            int64_t dist = std::abs(bufferedInjectFrames[i].timestamp - idealQpc);
-                            if (dist < bestDist) {
-                                bestDist = dist;
-                                bestIdx = i;
-                            }
-                        }
+                        size_t bestIdx = SelectFrameClosestToGrid(bufferedInjectFrames, availableCount,
+                                                                  encoderGridStartQpc, encoderGridTickCount,
+                                                                  targetIntervalTicks);
                         // Discard all frames older than the selected one.
                         for (size_t i = 0; i < bestIdx; i++) {
                             QueuedFrame stale = std::move(bufferedInjectFrames.front());
@@ -1411,11 +1413,6 @@ void EncoderThreadFunc(const AppConfig& config) {
                     bufferedInjectFrames.pop_front();
                     popped = true;
                     frameCreditAccumulator -= 1.0;
-                    // Update grid tracking for timestamp selection.
-                    if (encoderGridStartQpc == 0) {
-                        encoderGridStartQpc = frame.timestamp;
-                    }
-                    encoderGridTickCount++;
                 } else if (bufferedInjectFrames.size() > injectReserveFrames + 6) {
                     // Buffer pressure: pop to prevent unnecessary trimming
                     frame = std::move(bufferedInjectFrames.front());
@@ -1586,6 +1583,12 @@ void EncoderThreadFunc(const AppConfig& config) {
         }
 
         if (popped) {
+            if (!config.video.useVFR) {
+                if (encoderGridStartQpc == 0) {
+                    encoderGridStartQpc = frame.timestamp;
+                }
+                encoderGridTickCount++;
+            }
             if (frame.isInjectMode) {
                 if (g_HasLastFrame && !g_LastFrame.isInjectMode && g_LastFrame.texture) {
                     g_LastFrame.texture->Release();
@@ -1624,43 +1627,30 @@ void EncoderThreadFunc(const AppConfig& config) {
             LARGE_INTEGER startEnc, endEnc;
             QueryPerformanceCounter(&startEnc);
 
-            bool adaptiveSkip = false;
-            if (adaptiveCadenceActive) {
-                static uint32_t s_adaptiveSkipCounter = 0;
-                s_adaptiveSkipCounter++;
-                if (s_adaptiveSkipCounter % 2 == 1) {
-                    adaptiveSkip = true;
-                    isDuplicate = true;
+            if (isDuplicate && g_pSharedMem) {
+                g_pSharedMem->runtimeState.duplicateFrames.fetch_add(1, std::memory_order_relaxed);
+                static uint64_t s_lastDupLogTick = 0;
+                uint64_t nowTick = GetTickCount64();
+                if (nowTick - s_lastDupLogTick >= 1000) {
+                    LogInfo("[EncoderThread] Duplicate frame: credit=%.3f rate=%.3f bufferedI=%zu bufferedW=%zu",
+                            frameCreditAccumulator, smoothedInputPerTick, bufferedInjectFrames.size(),
+                            bufferedWgcFrames.size());
+                    s_lastDupLogTick = nowTick;
                 }
             }
 
-            if (!adaptiveSkip) {
-                if (isDuplicate && g_pSharedMem) {
-                    g_pSharedMem->runtimeState.duplicateFrames.fetch_add(1, std::memory_order_relaxed);
-                    // Log duplicate frame events for artifact diagnosis (throttled to 1/sec)
-                    static uint64_t s_lastDupLogTick = 0;
-                    uint64_t nowTick = GetTickCount64();
-                    if (nowTick - s_lastDupLogTick >= 1000) {
-                        LogInfo("[EncoderThread] Duplicate frame: credit=%.3f rate=%.3f bufferedI=%zu bufferedW=%zu",
-                                frameCreditAccumulator, smoothedInputPerTick, bufferedInjectFrames.size(),
-                                bufferedWgcFrames.size());
-                        s_lastDupLogTick = nowTick;
-                    }
-                }
-
-                if (frameToProcess->isInjectMode) {
-                    MediaEngine_ProcessFrame((uint64_t)frameToProcess->sharedHandle,
-                                             (uint64_t)frameToProcess->fenceHandle, frameToProcess->fenceValue,
-                                             frameToProcess->timestamp, frameToProcess->luidLow,
-                                             frameToProcess->luidHigh, frameToProcess->sourcePid, frameToProcess->width,
-                                             frameToProcess->height, frameToProcess->format, frameToProcess->isHDR,
-                                             frameToProcess->isShmem, frameToProcess->shmemSlot);
-                } else {
-                    MediaEngine_ProcessFrameD3D11(frameToProcess->texture, frameToProcess->timestamp,
-                                                  frameToProcess->width, frameToProcess->height, frameToProcess->isHDR,
-                                                  frameToProcess->captureLeft, frameToProcess->captureTop);
-                }
-            }  // !adaptiveSkip
+            if (frameToProcess->isInjectMode) {
+                MediaEngine_ProcessFrame((uint64_t)frameToProcess->sharedHandle,
+                                         (uint64_t)frameToProcess->fenceHandle, frameToProcess->fenceValue,
+                                         frameToProcess->timestamp, frameToProcess->luidLow, frameToProcess->luidHigh,
+                                         frameToProcess->sourcePid, frameToProcess->width, frameToProcess->height,
+                                         frameToProcess->format, frameToProcess->isHDR, frameToProcess->isShmem,
+                                         frameToProcess->shmemSlot);
+            } else {
+                MediaEngine_ProcessFrameD3D11(frameToProcess->texture, frameToProcess->timestamp,
+                                              frameToProcess->width, frameToProcess->height, frameToProcess->isHDR,
+                                              frameToProcess->captureLeft, frameToProcess->captureTop);
+            }
 
             QueryPerformanceCounter(&endEnc);
             double currentEncodeMs = (double)(endEnc.QuadPart - startEnc.QuadPart) * 1000.0 / qpcFreq.QuadPart;
@@ -1687,22 +1677,6 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
 
             g_IsEncoderBottlenecked.store(smoothedEncodeMs > frameIntervalMs * 0.95, std::memory_order_relaxed);
-
-            if (smoothedEncodeMs > frameIntervalMs * 0.75) {
-                adaptiveCadenceCounter++;
-                if (adaptiveCadenceCounter >= 30 && !adaptiveCadenceActive) {
-                    adaptiveCadenceActive = true;
-                    LogInfo("[EncoderThread] Adaptive cadence ACTIVATED: encode=%.2fms budget=%.2fms", smoothedEncodeMs,
-                            frameIntervalMs);
-                }
-            } else if (smoothedEncodeMs < frameIntervalMs * 0.50) {
-                if (adaptiveCadenceActive) {
-                    LogInfo("[EncoderThread] Adaptive cadence DEACTIVATED: encode=%.2fms budget=%.2fms",
-                            smoothedEncodeMs, frameIntervalMs);
-                }
-                adaptiveCadenceActive = false;
-                adaptiveCadenceCounter = 0;
-            }
 
             static DWORD lastWarningTime = 0;
             if (smoothedEncodeMs > frameIntervalMs * 0.85) {

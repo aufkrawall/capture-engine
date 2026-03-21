@@ -51,6 +51,10 @@ struct QueuedFrame {
             other.isInjectMode = false;
             isHDR = other.isHDR;
             other.isHDR = false;
+            captureLeft = other.captureLeft;
+            other.captureLeft = 0;
+            captureTop = other.captureTop;
+            other.captureTop = 0;
             isShmem = other.isShmem;
             other.isShmem = false;
             shmemSlot = other.shmemSlot;

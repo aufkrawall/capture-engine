@@ -85,8 +85,9 @@ public:
     HANDLE GetFrameArrivedEvent() const;
 
     // OBS-style direct callback: frames processed directly in WinRT callback
-    // Callback receives: texture, width, height, QPC timestamp, HDR flag
-    void SetDirectFrameCallback(std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, bool)> callback);
+    // Callback receives: texture, width, height, QPC timestamp, HDR flag, capture origin
+    void SetDirectFrameCallback(
+        std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, bool, int32_t, int32_t)> callback);
 
     // Get count of frames processed via direct callback
     uint32_t GetCallbackFrameCount() const;

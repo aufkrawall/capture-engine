@@ -263,7 +263,7 @@ public:
     // stored, so std::function overhead and its non-atomic nature are avoided.
     // This eliminates the data race between the WinRT callback thread (reader)
     // and the main thread (writer during start/stop recording).
-    using DirectFrameCallbackFn = void (*)(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, bool);
+    using DirectFrameCallbackFn = void (*)(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, bool, int32_t, int32_t);
     std::atomic<DirectFrameCallbackFn> frameCallback_{nullptr};
     std::atomic<uint32_t> callbackFrameCount_{0};
     std::atomic<uint32_t> inputFrameCount_{0};
@@ -1015,8 +1015,11 @@ public:
                     auto cb = frameCallback_.load(std::memory_order_acquire);
                     if (cb) {
                         MaybeRecheckHDR();
-                        cb(copiedTexture, desc.Width, desc.Height,
-                           sourceFrameQpc > 0 ? sourceFrameQpc : copyCompleteQpc, captureIsHDR_);
+                        int32_t captureLeft = 0;
+                        int32_t captureTop = 0;
+                        GetCaptureOrigin(captureLeft, captureTop);
+                        cb(copiedTexture, desc.Width, desc.Height, sourceFrameQpc > 0 ? sourceFrameQpc : copyCompleteQpc,
+                           captureIsHDR_, captureLeft, captureTop);
                     } else {
                         SafeRelease(copiedTexture);
                     }
@@ -1675,7 +1678,7 @@ HANDLE WGCCapture::GetFrameArrivedEvent() const {
 }
 
 void WGCCapture::SetDirectFrameCallback(
-    std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, bool)> callback) {
+    std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, bool, int32_t, int32_t)> callback) {
 #if HAS_WGC
     if (impl_) {
         // Extract the raw function pointer from std::function.
