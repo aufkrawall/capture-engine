@@ -15,6 +15,7 @@
 #include <thread>
 #include <vector>
 #include "../common/config.h"
+#include "../common/capture_pipeline_policy.h"
 #include "../common/frame_queue.h"
 #include "../common/frame_timing_utils.h"
 #include "../common/logging.h"
@@ -95,9 +96,6 @@ void SetPreferredScreenGrab(bool enabled) {
     g_PreferScreenGrab.store(enabled, std::memory_order_release);
 }
 
-constexpr DWORD kRecordingWarmupMinMs = 120;
-constexpr DWORD kRecordingWarmupMaxMs = 350;
-
 void SetCaptureRequestedState(bool enabled) {
     if (!g_pSharedMem) {
         return;
@@ -120,31 +118,6 @@ void SetRecordingVisibleState(bool enabled) {
         g_pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
         g_pSharedMem->runtimeState.recordingStartTime.store(0, std::memory_order_release);
     }
-}
-
-bool ShouldCommitRecordingWarmup(bool useScreenGrab, bool useVFR, bool poppedFrame, bool hasBufferedWgcFrame,
-                                 size_t bufferedInjectFrames, size_t injectReserveFrames, DWORD warmupElapsedMs) {
-    if (!poppedFrame) {
-        return false;
-    }
-
-    if (warmupElapsedMs >= kRecordingWarmupMaxMs) {
-        return true;
-    }
-
-    if (warmupElapsedMs < kRecordingWarmupMinMs) {
-        return false;
-    }
-
-    if (useVFR) {
-        return true;
-    }
-
-    if (useScreenGrab) {
-        return hasBufferedWgcFrame;
-    }
-
-    return bufferedInjectFrames >= injectReserveFrames;
 }
 
 bool GetWindowClientRectInScreen(HWND hwnd, RECT& rect) {
@@ -1025,7 +998,9 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint64_t startupWarmupStartTick = GetTickCount64();
     uint64_t recordingLiveTick = 0;
     uint32_t hiddenStartupFrames = 0;
-    bool warmupWasScreenGrab = IsActiveScreenGrab();
+    ce::capture_policy::WarmupTransitionState warmupState = {
+        IsActiveScreenGrab(), GetTickCount64(), 0,
+    };
     uint32_t pendingInjectTrimmedLogCount = 0;
     size_t maxBufferedInjectDepthSinceLog = 0;
     DWORD lastInjectTrimLog = GetTickCount();
@@ -1058,33 +1033,6 @@ void EncoderThreadFunc(const AppConfig& config) {
             ReleaseQueuedFrameTexture(queuedFrame);
         }
     };
-    auto GetInjectReserveFrames = [&]() -> size_t {
-        if (config.video.useVFR) {
-            return 0;
-        }
-
-        // Start with minimal reserve (1 frame).  The GPU fence typically signals
-        // well before the encoder reads the frame, so holding two frames in reserve
-        // when the fence wait is near-zero only forces the encoder to duplicate
-        // frames it could have consumed — the primary cause of CFR micro-stutter
-        // when game FPS is close to or below the recording target.
-        //
-        // The reserve automatically scales up when the fence EMA shows the GPU
-        // copy genuinely needs more lead time.
-        const double reserveFramesNeeded = smoothedInjectFenceMs / frameIntervalMs;
-        size_t reserveFrames = 1;
-        if (reserveFramesNeeded > 0.5) {
-            reserveFrames = 2;
-        }
-        if (reserveFramesNeeded > 1.25) {
-            reserveFrames = 3;
-        }
-        if (reserveFramesNeeded > 2.25) {
-            reserveFrames = 4;
-        }
-        return reserveFrames;
-    };
-
     while (g_EncoderRunning || g_FrameQueue.Size() > 0 || !bufferedWgcFrames.empty() || !bufferedInjectFrames.empty()) {
         static DWORD lastThreadLog = 0;
         if (GetTickCount() - lastThreadLog > 1000) {
@@ -1323,19 +1271,11 @@ void EncoderThreadFunc(const AppConfig& config) {
                     ++pacingEmaUpdates;
                 }
 
-                const size_t injectReserveFrames = GetInjectReserveFrames();
-                constexpr size_t kMaxInjectBufferedHeadroomFrames = 12;
-                // During warmup AND encoder startup (first 1500ms after going live),
-                // use large headroom.  During warmup, trimmed frames are wasted
-                // because the going-live flush discards them anyway.  During startup,
-                // overcaptured frames need room while the Bresenham EMA converges.
-                constexpr size_t kStartupInjectBufferedHeadroomFrames = 48;
-                constexpr uint64_t kEncoderStartupWindowMs = 1500;
-                const bool encoderStartup =
-                    !recordingOutputLive || (GetTickCount64() - recordingLiveTick) < kEncoderStartupWindowMs;
-                const size_t headroom =
-                    encoderStartup ? kStartupInjectBufferedHeadroomFrames : kMaxInjectBufferedHeadroomFrames;
-                const size_t maxBufferedInjectFrames = injectReserveFrames + headroom;
+                const size_t injectReserveFrames =
+                    ce::capture_policy::GetInjectReserveFrames(config.video.useVFR, smoothedInjectFenceMs,
+                                                               frameIntervalMs);
+                const size_t maxBufferedInjectFrames = ce::capture_policy::GetMaxBufferedInjectFrames(
+                    injectReserveFrames, recordingOutputLive, recordingLiveTick, GetTickCount64());
                 maxBufferedInjectDepthSinceLog = std::max(maxBufferedInjectDepthSinceLog, bufferedInjectFrames.size());
                 uint32_t trimmedInjectFrames = 0;
                 while (bufferedInjectFrames.size() > maxBufferedInjectFrames) {
@@ -1359,10 +1299,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                     maxBufferedInjectDepthSinceLog = bufferedInjectFrames.size();
                     lastInjectTrimLog = now;
                 }
-                size_t minBufferedInjectFrames = injectReserveFrames;
-                if (recordingOutputLive && minBufferedInjectFrames > 0) {
-                    minBufferedInjectFrames -= 1;
-                }
+                size_t minBufferedInjectFrames =
+                    ce::capture_policy::GetMinBufferedInjectFrames(injectReserveFrames, recordingOutputLive);
 
                 // Bresenham credit-based pacing: add credit proportional to the
                 // measured game-frame arrival rate.  When game fps >= target,
@@ -1451,18 +1389,22 @@ void EncoderThreadFunc(const AppConfig& config) {
         }
 
         const bool useScreenGrab = IsActiveScreenGrab();
-        if (!recordingOutputLive && useScreenGrab != warmupWasScreenGrab) {
-            warmupWasScreenGrab = useScreenGrab;
-            startupWarmupStartTick = GetTickCount64();
-            hiddenStartupFrames = 0;
-        }
-        const size_t injectReserveFrames = (!useScreenGrab && !config.video.useVFR) ? GetInjectReserveFrames() : 0;
+        ce::capture_policy::ResetWarmupOnCaptureModeChange(recordingOutputLive, useScreenGrab, GetTickCount64(),
+                                                           warmupState);
+        startupWarmupStartTick = warmupState.startupWarmupStartTick;
+        hiddenStartupFrames = warmupState.hiddenStartupFrames;
+        const size_t injectReserveFrames =
+            (!useScreenGrab)
+                ? ce::capture_policy::GetInjectReserveFrames(config.video.useVFR, smoothedInjectFenceMs,
+                                                             frameIntervalMs)
+                : 0;
         if (!recordingOutputLive && g_Recording && g_EncoderRunning) {
             const uint64_t warmupElapsedMs64 = GetTickCount64() - startupWarmupStartTick;
             const DWORD warmupElapsedMs =
                 warmupElapsedMs64 > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<DWORD>(warmupElapsedMs64);
-            if (ShouldCommitRecordingWarmup(useScreenGrab, config.video.useVFR, popped, !bufferedWgcFrames.empty(),
-                                            bufferedInjectFrames.size(), injectReserveFrames, warmupElapsedMs)) {
+            if (ce::capture_policy::ShouldCommitRecordingWarmup(useScreenGrab, config.video.useVFR, popped,
+                                                                !bufferedWgcFrames.empty(), bufferedInjectFrames.size(),
+                                                                injectReserveFrames, warmupElapsedMs)) {
                 recordingOutputLive = true;
                 recordingLiveTick = GetTickCount64();
                 // Reset Bresenham credit for a clean start; keep smoothedInputPerTick
@@ -1525,17 +1467,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 if (!bufferedInjectFrames.empty()) {
                     // Keep reserve+1 frames instead of just 1 so the fence EMA
                     // has enough lead time immediately after warmup flush.
-                    size_t keepCount = 1;
-                    {
-                        const double reserveFramesNeeded = smoothedInjectFenceMs / frameIntervalMs;
-                        if (reserveFramesNeeded > 0.5)
-                            keepCount = 2;
-                        if (reserveFramesNeeded > 1.25)
-                            keepCount = 3;
-                        if (reserveFramesNeeded > 2.25)
-                            keepCount = 4;
-                        keepCount += 1;
-                    }
+                    size_t keepCount = ce::capture_policy::GetWarmupInjectKeepCount(smoothedInjectFenceMs,
+                                                                                     frameIntervalMs);
                     size_t flushed = 0;
                     while (bufferedInjectFrames.size() > keepCount) {
                         QueuedFrame stale = std::move(bufferedInjectFrames.front());
@@ -1577,6 +1510,7 @@ void EncoderThreadFunc(const AppConfig& config) {
         if (!recordingOutputLive) {
             if (popped) {
                 ++hiddenStartupFrames;
+                warmupState.hiddenStartupFrames = hiddenStartupFrames;
                 DiscardQueuedFrame(frame);
             }
             continue;
@@ -2614,8 +2548,10 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                 g_AutoWgcFallbackArmed.load(std::memory_order_acquire) && g_WgcCap) {
                 DWORD elapsed = GetTickCount() - injectModeStartTime;
                 const uint32_t activeSourcePid = g_pSharedMem ? g_pSharedMem->GetSourcePid() : 0;
-                const DWORD fallbackDelayMs = (activeSourcePid == 0) ? 100 : 200;
-                if (elapsed > fallbackDelayMs) {
+                if (ce::capture_policy::ShouldTriggerAutoWgcFallback(
+                        receivedFirstFrame, config.captureMethod == "auto",
+                        g_AutoWgcFallbackArmed.load(std::memory_order_acquire), g_WgcCap != nullptr, elapsed,
+                        activeSourcePid)) {
                     LogInfo(
                         "[Media] No frames from inject mode after %lums - falling "
                         "back to WGC",
