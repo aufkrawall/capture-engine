@@ -69,6 +69,17 @@ private:
     bool initialized_;
 };
 
+// RAII DLL directory setter — restores original on destruction
+class DllDirGuard {
+public:
+    explicit DllDirGuard(const char* dir) {
+        SetDllDirectoryA(dir);
+    }
+    ~DllDirGuard() {
+        SetDllDirectoryA(nullptr);
+    }
+};
+
 // ---- Atomic PNG writer: write to temp file, flush, rename ----
 // Returns the WIC stream's file handle (for flushing) or NULL on failure.
 // On error, temp file is deleted.
@@ -553,13 +564,17 @@ static bool TakeGdiScreenshot(const std::string& fullPath) {
 // Uses GDI BitBlt to capture the DWM-composed desktop. Safe and crash-free.
 // For exclusive fullscreen games, use the inject overlay recording feature instead.
 bool TakeScreenshot(const std::string& screenshotDir) {
+    // Ensure FFmpeg delay-loaded DLLs can be found (they live in ffmpeg/ subdirectory)
+    char exePath[MAX_PATH];
+    GetModuleFileNameA(NULL, exePath, MAX_PATH);
+    std::string exeDir = std::string(exePath).substr(0, std::string(exePath).find_last_of("\\/"));
+    std::string ffmpegDir = exeDir + "\\ffmpeg";
+    DllDirGuard dllDir(ffmpegDir.c_str());
+
     // Determine output directory
     std::string outDir = screenshotDir;
     if (outDir.empty()) {
-        char exePath[MAX_PATH];
-        GetModuleFileNameA(NULL, exePath, MAX_PATH);
-        std::string baseDir = std::string(exePath).substr(0, std::string(exePath).find_last_of("\\/"));
-        outDir = baseDir + "\\screenshots";
+        outDir = exeDir + "\\screenshots";
     }
     std::filesystem::create_directories(outDir);
 

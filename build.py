@@ -3376,10 +3376,13 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             "-lwintrust",
             "-lpdh",
             "-lntdll",
-            # FFmpeg for HDR screenshot encoding (AVIF via SVT-AV1)
+            # FFmpeg for HDR screenshot encoding (AVIF via SVT-AV1) — delay-loaded so SetDllDirectory works
             os.path.join(ffmpeg_lib_dir, "libavformat.dll.a"),
             os.path.join(ffmpeg_lib_dir, "libavcodec.dll.a"),
             os.path.join(ffmpeg_lib_dir, "libavutil.dll.a"),
+            "-Wl,--delayload=avformat-62.dll",
+            "-Wl,--delayload=avcodec-62.dll",
+            "-Wl,--delayload=avutil-60.dll",
         ]
         if env.get("CE_DISABLE_LTO") != "1":
             ce_ldflags.append("-flto")
@@ -3406,6 +3409,46 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             log("ERROR: Failed to place captureengine.exe (destination may be locked)")
             sys.exit(1)
         safe_delete_file(temp_ce_exe)
+
+    # Copy FFmpeg runtime DLLs to ffmpeg/ subdirectory (NOT main directory)
+    if not IS_LINUX:
+        ffmpeg_bin_src = os.path.join(FFMPEG_DIR, "bin")
+        ffmpeg_bin_dst = os.path.join(BIN_DIR, "ffmpeg")
+        os.makedirs(ffmpeg_bin_dst, exist_ok=True)
+        if os.path.isdir(ffmpeg_bin_src):
+            for dll_name in os.listdir(ffmpeg_bin_src):
+                if dll_name.lower().endswith(".dll"):
+                    src = os.path.join(ffmpeg_bin_src, dll_name)
+                    dst = os.path.join(ffmpeg_bin_dst, dll_name)
+                    if os.path.exists(src):
+                        shutil.copy2(src, dst)
+        msys_bin = os.path.join(MSYS2_DIR, "clang64", "bin")
+        for dep_name in [
+            "libva.dll",
+            "libva_win32.dll",
+            "libvpl-2.dll",
+            "libSvtAv1Enc-4.dll",
+            "libiconv-2.dll",
+            "libc++.dll",
+        ]:
+            src = os.path.join(msys_bin, dep_name)
+            dst = os.path.join(ffmpeg_bin_dst, dep_name)
+            if os.path.exists(src):
+                shutil.copy2(src, dst)
+        # Also copy MSYS2 runtime deps (libva, libvpl, SVT-AV1, iconv, libc++)
+        msys_bin = os.path.join(MSYS2_DIR, "clang64", "bin")
+        for dep_name in [
+            "libva.dll",
+            "libva_win32.dll",
+            "libvpl-2.dll",
+            "libSvtAv1Enc-4.dll",
+            "libiconv-2.dll",
+            "libc++.dll",
+        ]:
+            src = os.path.join(msys_bin, dep_name)
+            dst = os.path.join(BIN_DIR, dep_name)
+            if os.path.exists(src):
+                shutil.copy2(src, dst)
 
     # 6. Compile Test Applications (DX9/10/11/12, Vulkan, OpenGL; x64/x86)
     x86_env_for_tests = None
