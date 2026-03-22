@@ -9,13 +9,57 @@ inline int64_t AbsoluteTimestampDistance(int64_t lhs, int64_t rhs) {
 }
 
 template <typename FrameContainer>
+size_t SelectFrameClosestToTimestamp(const FrameContainer& frames, size_t availableCount, int64_t targetTimestampQpc) {
+    if (availableCount <= 1 || targetTimestampQpc <= 0) {
+        return 0;
+    }
+
+    size_t bestIndex = 0;
+    int64_t bestDistance = AbsoluteTimestampDistance(frames[0].timestamp, targetTimestampQpc);
+
+    for (size_t i = 1; i < availableCount; ++i) {
+        const int64_t distance = AbsoluteTimestampDistance(frames[i].timestamp, targetTimestampQpc);
+        if (distance < bestDistance ||
+            (distance == bestDistance && frames[i].timestamp > frames[bestIndex].timestamp)) {
+            bestDistance = distance;
+            bestIndex = i;
+        }
+    }
+
+    return bestIndex;
+}
+
+inline int64_t ComputeIdealOutputQpc(int64_t gridStartQpc, int64_t gridTickCount, int64_t targetIntervalTicks) {
+    if (gridStartQpc <= 0 || targetIntervalTicks <= 0 || gridTickCount <= 0) {
+        return gridStartQpc;
+    }
+
+    return gridStartQpc + (gridTickCount - 1) * targetIntervalTicks;
+}
+
+inline bool ShouldHoldFrameForNextTick(int64_t frameTimestampQpc, int64_t idealQpc, int64_t targetIntervalTicks,
+                                       int64_t holdSlackQpc) {
+    if (frameTimestampQpc <= 0 || idealQpc <= 0 || targetIntervalTicks <= 0) {
+        return false;
+    }
+
+    if (frameTimestampQpc <= idealQpc) {
+        return false;
+    }
+
+    const int64_t currentDistance = AbsoluteTimestampDistance(frameTimestampQpc, idealQpc);
+    const int64_t nextDistance = AbsoluteTimestampDistance(frameTimestampQpc, idealQpc + targetIntervalTicks);
+    return nextDistance + std::max<int64_t>(holdSlackQpc, 0) < currentDistance;
+}
+
+template <typename FrameContainer>
 size_t SelectFrameClosestToGrid(const FrameContainer& frames, size_t availableCount, int64_t gridStartQpc,
                                 int64_t gridTickCount, int64_t targetIntervalTicks) {
     if (availableCount <= 1 || gridStartQpc <= 0 || targetIntervalTicks <= 0) {
         return 0;
     }
 
-    const int64_t idealQpc = gridStartQpc + gridTickCount * targetIntervalTicks;
+    const int64_t idealQpc = ComputeIdealOutputQpc(gridStartQpc, gridTickCount, targetIntervalTicks);
     size_t bestIndex = 0;
     int64_t bestDistance = AbsoluteTimestampDistance(frames[0].timestamp, idealQpc);
 
@@ -37,7 +81,7 @@ size_t SelectFrameClosestToGridIf(const FrameContainer& frames, size_t available
         return availableCount;
     }
 
-    const int64_t idealQpc = gridStartQpc + gridTickCount * targetIntervalTicks;
+    const int64_t idealQpc = ComputeIdealOutputQpc(gridStartQpc, gridTickCount, targetIntervalTicks);
     size_t bestIndex = availableCount;
     int64_t bestDistance = 0;
 

@@ -18,7 +18,41 @@ TEST(FrameTimingUtilsTest, SelectFrameClosestToGridPrefersNearestTimestamp) {
     frameC.timestamp = 220;
     frames.push_back(std::move(frameC));
 
-    const size_t bestIndex = SelectFrameClosestToGrid(frames, frames.size(), 100, 1, 60);
+    const size_t bestIndex = SelectFrameClosestToGrid(frames, frames.size(), 100, 2, 60);
+    EXPECT_EQ(bestIndex, 1u);
+}
+
+TEST(FrameTimingUtilsTest, SelectFrameClosestToTimestampPrefersNearestTimestamp) {
+    std::deque<QueuedFrame> frames;
+
+    QueuedFrame older;
+    older.timestamp = 100;
+    frames.push_back(std::move(older));
+
+    QueuedFrame nearer;
+    nearer.timestamp = 158;
+    frames.push_back(std::move(nearer));
+
+    QueuedFrame newer;
+    newer.timestamp = 190;
+    frames.push_back(std::move(newer));
+
+    const size_t bestIndex = SelectFrameClosestToTimestamp(frames, frames.size(), 160);
+    EXPECT_EQ(bestIndex, 1u);
+}
+
+TEST(FrameTimingUtilsTest, SelectFrameClosestToTimestampBreaksTiesTowardNewerFrame) {
+    std::deque<QueuedFrame> frames;
+
+    QueuedFrame older;
+    older.timestamp = 140;
+    frames.push_back(std::move(older));
+
+    QueuedFrame newer;
+    newer.timestamp = 160;
+    frames.push_back(std::move(newer));
+
+    const size_t bestIndex = SelectFrameClosestToTimestamp(frames, frames.size(), 150);
     EXPECT_EQ(bestIndex, 1u);
 }
 
@@ -33,7 +67,7 @@ TEST(FrameTimingUtilsTest, SelectFrameClosestToGridBreaksTiesTowardNewerFrame) {
     newer.timestamp = 160;
     frames.push_back(std::move(newer));
 
-    const size_t bestIndex = SelectFrameClosestToGrid(frames, frames.size(), 100, 1, 50);
+    const size_t bestIndex = SelectFrameClosestToGrid(frames, frames.size(), 100, 2, 50);
     EXPECT_EQ(bestIndex, 1u);
 }
 
@@ -67,6 +101,47 @@ TEST(FrameTimingUtilsTest, SelectFrameClosestToGridIfReturnsAvailableCountWhenNo
         SelectFrameClosestToGridIf(frames, frames.size(), 100, 1, 50,
                                    [](const QueuedFrame&) { return false; });
     EXPECT_EQ(bestIndex, frames.size());
+}
+
+TEST(FrameTimingUtilsTest, ComputeIdealOutputQpcUsesPreviousGridTick) {
+    EXPECT_EQ(ComputeIdealOutputQpc(100, 1, 50), 100);
+    EXPECT_EQ(ComputeIdealOutputQpc(100, 3, 50), 200);
+}
+
+TEST(FrameTimingUtilsTest, SelectFrameClosestToGridUsesPreviousGridTickPhase) {
+    std::deque<QueuedFrame> frames;
+
+    QueuedFrame older;
+    older.timestamp = 100;
+    frames.push_back(std::move(older));
+
+    QueuedFrame newer;
+    newer.timestamp = 150;
+    frames.push_back(std::move(newer));
+
+    const size_t bestIndex = SelectFrameClosestToGrid(frames, frames.size(), 100, 1, 60);
+    EXPECT_EQ(bestIndex, 0u);
+}
+
+TEST(FrameTimingUtilsTest, SelectFrameClosestToGridBreaksTiesTowardNewerWithPreviousPhase) {
+    std::deque<QueuedFrame> frames;
+
+    QueuedFrame older;
+    older.timestamp = 140;
+    frames.push_back(std::move(older));
+
+    QueuedFrame newer;
+    newer.timestamp = 160;
+    frames.push_back(std::move(newer));
+
+    const size_t bestIndex = SelectFrameClosestToGrid(frames, frames.size(), 100, 2, 50);
+    EXPECT_EQ(bestIndex, 1u);
+}
+
+TEST(FrameTimingUtilsTest, ShouldHoldFrameForNextTickWhenFrameIsMuchCloserToNextGrid) {
+    const int64_t idealQpc = ComputeIdealOutputQpc(100, 3, 50);  // 200
+    EXPECT_TRUE(ShouldHoldFrameForNextTick(248, idealQpc, 50, 2));
+    EXPECT_FALSE(ShouldHoldFrameForNextTick(224, idealQpc, 50, 2));
 }
 
 TEST(FrameTimingUtilsTest, ComputeSourceDrivenElapsedUsUsesSourceClockWhenMonotonic) {

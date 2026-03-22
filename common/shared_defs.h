@@ -31,7 +31,8 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 13: Added SharedGraphicsConfig::forceMipBiasClamp override field
 // Version 14: Added captureRequested so hooks can warm up capture before REC goes live
 // Version 16: Added capture cadence/telemetry diagnostics fields
-static constexpr uint32_t SHARED_MEMORY_VERSION = 16;
+// Version 17: Added WGC-specific source cadence/jitter/throttle telemetry
+static constexpr uint32_t SHARED_MEMORY_VERSION = 19;
 
 // Minimum supported version for backward compatibility
 static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
@@ -353,6 +354,22 @@ struct alignas(8) CaptureState {
     std::atomic<uint32_t> selectionEarlyMaxUs{0};
     std::atomic<uint32_t> selectionLateMaxUs{0};
     std::atomic<uint32_t> oldestBufferedFrameAgeUs{0};
+    std::atomic<uint32_t> wgcSourceFrameIntervalAvgUs{0};
+    std::atomic<uint32_t> wgcSourceFrameJitterAvgUs{0};
+    std::atomic<uint32_t> wgcSourceFrameJitterMaxUs{0};
+    std::atomic<uint32_t> wgcSourceToCopyLatencyAvgUs{0};
+    std::atomic<uint32_t> wgcSourceToCopyLatencyMaxUs{0};
+    std::atomic<uint32_t> wgcTargetFps{0};
+    std::atomic<uint32_t> wgcDeliveredFramesPerSec{0};
+    std::atomic<uint32_t> wgcDeliveredMin250Fps{0};
+    std::atomic<uint32_t> wgcDeliveredMin500Fps{0};
+    std::atomic<uint32_t> wgcInputMin250Fps{0};
+    std::atomic<uint32_t> wgcInputMin500Fps{0};
+    std::atomic<uint32_t> wgcQueueEmptyTickPermille{0};
+    std::atomic<uint32_t> wgcBufferedAtTickAvgPermille{0};
+    std::atomic<uint32_t> wgcBufferedAtTickMin{0};
+    std::atomic<uint32_t> wgcStarvedTickCount{0};
+    std::atomic<uint32_t> wgcSingleFrameTickCount{0};
 
     // Command flags (controller -> media process via shared memory)
     // Using std::atomic for proper cross-process visibility and memory ordering

@@ -22,6 +22,7 @@
 #include "../common/frame_timing_utils.h"
 #include "../common/logging.h"
 #include "../common/process_ipc.h"
+#include "../common/rate_window_utils.h"
 #include "../common/shared_defs.h"
 #include "mediaengine_loader.h"
 #include "wgc_capture.h"
@@ -75,6 +76,7 @@ static std::atomic<bool> g_RejectInjectFrames{false};
 static std::atomic<bool> g_AutoWgcFallbackArmed{false};
 static std::atomic<uint32_t> g_InjectBufferedTrimmedFrames{0};
 static std::atomic<uint32_t> g_InjectCadenceDroppedFrames{0};
+static std::atomic<uint32_t> g_WgcAdaptiveTargetFps{0};
 
 // Forward declaration
 void InjectCaptureThreadFunc(const AppConfig& config);
@@ -204,6 +206,22 @@ void ResetRuntimeDiagnostics(SharedMemoryLayout* sharedMem) {
     state.selectionEarlyMaxUs.store(0, std::memory_order_relaxed);
     state.selectionLateMaxUs.store(0, std::memory_order_relaxed);
     state.oldestBufferedFrameAgeUs.store(0, std::memory_order_relaxed);
+    state.wgcSourceFrameIntervalAvgUs.store(0, std::memory_order_relaxed);
+    state.wgcSourceFrameJitterAvgUs.store(0, std::memory_order_relaxed);
+    state.wgcSourceFrameJitterMaxUs.store(0, std::memory_order_relaxed);
+    state.wgcSourceToCopyLatencyAvgUs.store(0, std::memory_order_relaxed);
+    state.wgcSourceToCopyLatencyMaxUs.store(0, std::memory_order_relaxed);
+    state.wgcTargetFps.store(0, std::memory_order_relaxed);
+    state.wgcDeliveredFramesPerSec.store(0, std::memory_order_relaxed);
+    state.wgcDeliveredMin250Fps.store(0, std::memory_order_relaxed);
+    state.wgcDeliveredMin500Fps.store(0, std::memory_order_relaxed);
+    state.wgcInputMin250Fps.store(0, std::memory_order_relaxed);
+    state.wgcInputMin500Fps.store(0, std::memory_order_relaxed);
+    state.wgcQueueEmptyTickPermille.store(0, std::memory_order_relaxed);
+    state.wgcBufferedAtTickAvgPermille.store(0, std::memory_order_relaxed);
+    state.wgcBufferedAtTickMin.store(0, std::memory_order_relaxed);
+    state.wgcStarvedTickCount.store(0, std::memory_order_relaxed);
+    state.wgcSingleFrameTickCount.store(0, std::memory_order_relaxed);
 }
 
 bool IsActiveScreenGrab() {
@@ -354,10 +372,21 @@ struct CadenceHealthCounters {
     uint32_t liveTickUniqueCount = 0;
     uint32_t liveTickDuplicateCount = 0;
     uint32_t liveTickMissCount = 0;
+    uint64_t outputScheduleErrorAccumUs = 0;
+    int64_t outputScheduleErrorSignedAccumUs = 0;
+    uint32_t outputScheduleErrorSamples = 0;
+    uint32_t outputScheduleErrorMaxUs = 0;
+    uint32_t outputScheduleEarlyMaxUs = 0;
+    uint32_t outputScheduleLateMaxUs = 0;
 
     void Reset() {
         *this = {};
     }
+};
+
+enum class WgcAdaptiveThrottleMode : uint32_t {
+    kOff = 0,
+    kHeadroom108 = 1,
 };
 
 InjectFrameLineage MakeInjectFrameLineage(const QueuedFrame& frame) {
@@ -474,13 +503,6 @@ static void ResetLastQueuedFrameCache() {
     g_HasLastFrame = false;
 }
 
-static int64_t GetIdealOutputQpc(int64_t gridStartQpc, int64_t gridTickIndex, int64_t targetIntervalTicks) {
-    if (gridStartQpc <= 0 || targetIntervalTicks <= 0 || gridTickIndex <= 0) {
-        return gridStartQpc;
-    }
-    return gridStartQpc + (gridTickIndex - 1) * targetIntervalTicks;
-}
-
 static void StopInjectCapturePipeline() {
     g_InjectCaptureShutdown = true;
     JoinThreadWithTimeout(g_InjectCaptureThread, 5000, "inject capture");
@@ -490,12 +512,14 @@ static void StopInjectCapturePipeline() {
 static void StopWgcCapturePipeline() {
     if (g_WgcCap) {
         g_WgcCap->SetDirectFrameCallback(nullptr);
+        g_WgcCap->SetTargetFps(0);
         if (g_WgcCap->IsCapturing()) {
             g_WgcCap->StopCapture();
         }
     }
 
     g_WgcCaptureShutdown = true;
+    g_WgcAdaptiveTargetFps.store(0, std::memory_order_relaxed);
     JoinThreadWithTimeout(g_WgcCaptureThread, 5000, "WGC capture");
 }
 
@@ -519,10 +543,14 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
     g_WgcCap->SetDirectFrameCallback(QueueWgcFrame);
     g_WgcCap->ResetStats();
     g_IsEncoderBottlenecked.store(false, std::memory_order_relaxed);
+    g_WgcAdaptiveTargetFps.store(0, std::memory_order_relaxed);
     // Capture WGC at source cadence and let the fixed-rate encoder thread choose
     // the best frame each output tick. Pre-throttling WGC to the output FPS
     // throws away temporal information that helps smooth 140 -> 120 style cases.
     g_WgcCap->SetTargetFps(0);
+    if (g_pSharedMem) {
+        g_pSharedMem->runtimeState.wgcTargetFps.store(0, std::memory_order_relaxed);
+    }
     if (!g_WgcCap->StartCapture()) {
         g_WgcCap->SetDirectFrameCallback(nullptr);
         return false;
@@ -1172,6 +1200,11 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             uint32_t poolDropDelta = currentPoolDropCount - lastPoolDropCount;
             uint32_t queuedFrames = deliveredFrames >= hostDropDelta ? (deliveredFrames - hostDropDelta) : 0;
             int64_t copyUs = g_WgcCap->GetLastCopyTimeUs();
+            int64_t srcIntervalAvgUs = g_WgcCap->GetSourceIntervalAvgUs();
+            int64_t srcJitterAvgUs = g_WgcCap->GetSourceJitterAvgUs();
+            int64_t srcJitterMaxUs = g_WgcCap->GetSourceJitterMaxUs();
+            int64_t srcToCopyAvgUs = g_WgcCap->GetSourceToCopyLatencyAvgUs();
+            int64_t srcToCopyMaxUs = g_WgcCap->GetSourceToCopyLatencyMaxUs();
             int64_t encodeUs = MediaEngine_GetLastFrameEncodeTimeUs();
             int64_t fenceUs = MediaEngine_GetLastFrameFenceWaitUs();
             uint32_t dupDelta = 0;
@@ -1179,6 +1212,34 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             uint32_t overloadFlags = 0;
             uint32_t muxQueueBytes = 0;
             uint32_t encoderQueueDepth = static_cast<uint32_t>(g_FrameQueue.Size());
+            uint32_t cadenceSelAvgUs = 0;
+            int32_t cadenceSelBiasUs = 0;
+            uint32_t throttleTargetFps = g_WgcCap->GetTargetFps();
+            const uint32_t deliveredRatePerSec = g_WgcCap->GetDeliveredRatePerSec();
+            const uint32_t deliveredMin250Fps = g_WgcCap->GetDeliveredMin250Fps();
+            const uint32_t deliveredMin500Fps = g_WgcCap->GetDeliveredMin500Fps();
+            const uint32_t inputMin250Fps = g_WgcCap->GetInputMin250Fps();
+            const uint32_t inputMin500Fps = g_WgcCap->GetInputMin500Fps();
+            const uint32_t queueEmptyPermille = g_pSharedMem
+                                                    ? g_pSharedMem->runtimeState.wgcQueueEmptyTickPermille.load(
+                                                          std::memory_order_relaxed)
+                                                    : 0u;
+            const uint32_t bufferedAtTickAvgPermille = g_pSharedMem
+                                                           ? g_pSharedMem->runtimeState.wgcBufferedAtTickAvgPermille.load(
+                                                                 std::memory_order_relaxed)
+                                                           : 0u;
+            const uint32_t bufferedAtTickMin = g_pSharedMem
+                                                   ? g_pSharedMem->runtimeState.wgcBufferedAtTickMin.load(
+                                                         std::memory_order_relaxed)
+                                                   : 0u;
+            const uint32_t starvedTicks = g_pSharedMem
+                                              ? g_pSharedMem->runtimeState.wgcStarvedTickCount.load(
+                                                    std::memory_order_relaxed)
+                                              : 0u;
+            const uint32_t singleFrameTicks = g_pSharedMem
+                                                  ? g_pSharedMem->runtimeState.wgcSingleFrameTickCount.load(
+                                                        std::memory_order_relaxed)
+                                                  : 0u;
             if (g_pSharedMem) {
                 uint32_t currentDup = g_pSharedMem->runtimeState.duplicateFrames.load(std::memory_order_relaxed);
                 uint32_t currentLate = g_pSharedMem->runtimeState.lateFrames.load(std::memory_order_relaxed);
@@ -1189,15 +1250,41 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
                 overloadFlags = g_pSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
                 muxQueueBytes = g_pSharedMem->runtimeState.muxQueueBytes.load(std::memory_order_relaxed);
                 encoderQueueDepth = g_pSharedMem->encoderQueueDepth.load(std::memory_order_relaxed);
+                cadenceSelAvgUs = g_pSharedMem->runtimeState.selectionErrorAvgUs.load(std::memory_order_relaxed);
+                cadenceSelBiasUs = g_pSharedMem->runtimeState.selectionErrorSignedAvgUs.load(std::memory_order_relaxed);
+                g_pSharedMem->runtimeState.wgcSourceFrameIntervalAvgUs.store(SaturatingToUint32(srcIntervalAvgUs),
+                                                                             std::memory_order_relaxed);
+                g_pSharedMem->runtimeState.wgcSourceFrameJitterAvgUs.store(SaturatingToUint32(srcJitterAvgUs),
+                                                                           std::memory_order_relaxed);
+                g_pSharedMem->runtimeState.wgcSourceFrameJitterMaxUs.store(SaturatingToUint32(srcJitterMaxUs),
+                                                                           std::memory_order_relaxed);
+                g_pSharedMem->runtimeState.wgcSourceToCopyLatencyAvgUs.store(SaturatingToUint32(srcToCopyAvgUs),
+                                                                             std::memory_order_relaxed);
+                g_pSharedMem->runtimeState.wgcSourceToCopyLatencyMaxUs.store(SaturatingToUint32(srcToCopyMaxUs),
+                                                                             std::memory_order_relaxed);
+                g_pSharedMem->runtimeState.wgcTargetFps.store(throttleTargetFps, std::memory_order_relaxed);
+                g_pSharedMem->runtimeState.wgcDeliveredFramesPerSec.store(deliveredRatePerSec, std::memory_order_relaxed);
+                g_pSharedMem->runtimeState.wgcDeliveredMin250Fps.store(deliveredMin250Fps, std::memory_order_relaxed);
+                g_pSharedMem->runtimeState.wgcDeliveredMin500Fps.store(deliveredMin500Fps, std::memory_order_relaxed);
+                g_pSharedMem->runtimeState.wgcInputMin250Fps.store(inputMin250Fps, std::memory_order_relaxed);
+                g_pSharedMem->runtimeState.wgcInputMin500Fps.store(inputMin500Fps, std::memory_order_relaxed);
             }
 
             LogInfo(
                 "[WGC Perf] Input: %u | Queued: %u | DropFull: %u | DropPace: %u | DropThrottle: %u | "
                 "DropStale: %u | DropCursor: %u | DropPool: %u | HostQ: %u | EncQ: %u | Dup: %u | Late: %u | "
-                "Copy: %lldus | Encode: %lldus | Fence: %lldus | Mux: %uKB | Overload: 0x%X",
+                "SrcAvg: %lldus | JitAvg: %lldus | JitMax: %lldus | Src->Copy: %lld/%lldus | Deliv: %u | "
+                "MinIn250/500: %u/%u | MinDel250/500: %u/%u | Empty: %upm | BufAvg: %upm | BufMin: %u | "
+                "Starved: %u | Single: %u | SelAvg: %uus "
+                "SelBias: %dus | Copy: %lldus | Encode: %lldus | Fence: %lldus | Throttle: %u | Mux: %uKB | "
+                "Overload: 0x%X",
                 inputFrames, queuedFrames, hostDropDelta, pacingSkipDelta, throttleSkipDelta, staleSkipDelta,
                 cursorSkipDelta, poolDropDelta, static_cast<uint32_t>(g_FrameQueue.Size()), encoderQueueDepth, dupDelta,
-                lateDelta, copyUs, encodeUs, fenceUs, (muxQueueBytes + 1023u) / 1024u, overloadFlags);
+                lateDelta, srcIntervalAvgUs, srcJitterAvgUs, srcJitterMaxUs, srcToCopyAvgUs, srcToCopyMaxUs,
+                deliveredRatePerSec, inputMin250Fps, inputMin500Fps, deliveredMin250Fps, deliveredMin500Fps,
+                queueEmptyPermille, bufferedAtTickAvgPermille, bufferedAtTickMin, starvedTicks, singleFrameTicks,
+                cadenceSelAvgUs, cadenceSelBiasUs, copyUs, encodeUs, fenceUs, throttleTargetFps,
+                (muxQueueBytes + 1023u) / 1024u, overloadFlags);
 
             lastInputCount = currentInputCount;
             lastCallbackCount = currentCount;
@@ -1306,6 +1393,29 @@ void EncoderThreadFunc(const AppConfig& config) {
     DWORD lastHealthLog = GetTickCount();
     LARGE_INTEGER liveStartQpc = {};
     uint64_t liveTicksOutput = 0;
+    uint64_t liveTicksScheduled = 0;
+    uint64_t wgcSelectionErrorAccumUs = 0;
+    int64_t wgcSelectionErrorSignedAccumUs = 0;
+    uint32_t wgcSelectionErrorSamples = 0;
+    uint32_t wgcSelectionErrorMaxUs = 0;
+    uint32_t wgcSelectionEarlyMaxUs = 0;
+    uint32_t wgcSelectionLateMaxUs = 0;
+    uint32_t wgcHoldForNextTickCount = 0;
+    uint32_t wgcAdaptiveThrottleAdjustments = 0;
+    WgcAdaptiveThrottleMode wgcAdaptiveThrottleMode = WgcAdaptiveThrottleMode::kOff;
+    uint64_t wgcAdaptiveThrottleLastChangeTick = 0;
+    uint32_t wgcRecentDeliveredFps = 0;
+    uint32_t wgcRecentDeliveredMin250Fps = 0;
+    uint32_t wgcRecentDeliveredMin500Fps = 0;
+    uint32_t wgcRecentInputMin250Fps = 0;
+    uint32_t wgcRecentInputMin500Fps = 0;
+    uint32_t wgcQueueEmptyTickCount = 0;
+    uint32_t wgcQueueTickSampleCount = 0;
+    uint32_t wgcQueueEmptyTickPermille = 0;
+    uint32_t wgcBufferedAtTickSum = 0;
+    uint32_t wgcBufferedAtTickMin = UINT32_MAX;
+    uint32_t wgcStarvedTickCount = 0;
+    uint32_t wgcSingleFrameTickCount = 0;
     auto ClearBufferedInjectFrames = [&]() {
         while (!bufferedInjectFrames.empty()) {
             QueuedFrame queuedFrame = std::move(bufferedInjectFrames.front());
@@ -1484,9 +1594,96 @@ void EncoderThreadFunc(const AppConfig& config) {
                     ++pacingEmaUpdates;
                 }
 
+                if (g_WgcCap && recordingOutputLive && g_Recording && targetIntervalTicks > 0) {
+                    const uint32_t currentTargetFps = g_WgcCap->GetTargetFps();
+                    uint32_t desiredTargetFps = 0;
+                    const uint32_t outputFps = std::max<uint32_t>(1u, static_cast<uint32_t>(config.video.fps));
+                    const double duplicateRatio = (cadenceCounters.liveTickEmitCount > 0)
+                                                      ? static_cast<double>(cadenceCounters.liveTickDuplicateCount) /
+                                                            static_cast<double>(cadenceCounters.liveTickEmitCount)
+                                                      : 0.0;
+                    const uint32_t averageJitterUs = SaturatingToUint32(g_WgcCap->GetSourceJitterAvgUs());
+                    wgcRecentDeliveredFps = g_WgcCap->GetDeliveredRatePerSec();
+                    wgcRecentDeliveredMin250Fps = g_WgcCap->GetDeliveredMin250Fps();
+                    wgcRecentDeliveredMin500Fps = g_WgcCap->GetDeliveredMin500Fps();
+                    wgcRecentInputMin250Fps = g_WgcCap->GetInputMin250Fps();
+                    wgcRecentInputMin500Fps = g_WgcCap->GetInputMin500Fps();
+                    const uint64_t nowTick = GetTickCount64();
+                    constexpr uint64_t kWgcThrottleEnableCooldownMs = 2000;
+                    constexpr uint64_t kWgcThrottleMinHoldMs = 1000;
+
+                    ce::capture_policy::WgcAdaptiveTelemetry throttleTelemetry{};
+                    throttleTelemetry.outputFps = outputFps;
+                    throttleTelemetry.recentDeliveredFps = wgcRecentDeliveredFps;
+                    throttleTelemetry.recentDeliveredMin250Fps = wgcRecentDeliveredMin250Fps;
+                    throttleTelemetry.recentDeliveredMin500Fps = wgcRecentDeliveredMin500Fps;
+                    throttleTelemetry.recentInputMin250Fps = wgcRecentInputMin250Fps;
+                    throttleTelemetry.recentInputMin500Fps = wgcRecentInputMin500Fps;
+                    throttleTelemetry.averageJitterUs = averageJitterUs;
+                    throttleTelemetry.emptyTickPermille = wgcQueueEmptyTickPermille;
+                    throttleTelemetry.bufferedWgcFrames = static_cast<uint32_t>(bufferedWgcFrames.size());
+                    throttleTelemetry.encoderQueueDepth = static_cast<uint32_t>(g_FrameQueue.Size());
+                    throttleTelemetry.duplicateRatio = duplicateRatio;
+
+                    if (wgcAdaptiveThrottleMode == WgcAdaptiveThrottleMode::kOff) {
+                        const bool canEnable = (wgcAdaptiveThrottleLastChangeTick == 0) ||
+                                               (nowTick - wgcAdaptiveThrottleLastChangeTick >=
+                                                kWgcThrottleEnableCooldownMs);
+                        if (canEnable && ce::capture_policy::ShouldEnterWgcHeadroomMode(throttleTelemetry)) {
+                            wgcAdaptiveThrottleMode = WgcAdaptiveThrottleMode::kHeadroom108;
+                            wgcAdaptiveThrottleLastChangeTick = nowTick;
+                        }
+                    } else {
+                        const bool holdSatisfied =
+                            (nowTick - wgcAdaptiveThrottleLastChangeTick) >= kWgcThrottleMinHoldMs;
+                        const bool shouldDisable = ce::capture_policy::ShouldExitWgcHeadroomMode(throttleTelemetry);
+                        if (holdSatisfied && shouldDisable) {
+                            wgcAdaptiveThrottleMode = WgcAdaptiveThrottleMode::kOff;
+                            wgcAdaptiveThrottleLastChangeTick = nowTick;
+                        }
+                    }
+
+                    if (wgcAdaptiveThrottleMode == WgcAdaptiveThrottleMode::kHeadroom108) {
+                        const uint32_t headroomFps = ce::capture_policy::GetWgcHeadroomTargetFps(outputFps);
+                        desiredTargetFps = std::clamp<uint32_t>(headroomFps, outputFps + 1,
+                                                                std::max<uint32_t>(outputFps + 1, outputFps + 24));
+                    }
+
+                    if (desiredTargetFps != currentTargetFps) {
+                        g_WgcCap->SetTargetFps(desiredTargetFps);
+                        g_WgcAdaptiveTargetFps.store(desiredTargetFps, std::memory_order_relaxed);
+                        ++wgcAdaptiveThrottleAdjustments;
+                    }
+                }
+
                 // Trim excess (WGC textures are COM-refcounted; keep buffer shallow)
-                constexpr size_t kMaxBufferedWgcFrames = 6;
-                while (bufferedWgcFrames.size() > kMaxBufferedWgcFrames) {
+                ce::capture_policy::WgcAdaptiveTelemetry sourceTelemetry{};
+                sourceTelemetry.outputFps = std::max<uint32_t>(1u, static_cast<uint32_t>(config.video.fps));
+                sourceTelemetry.recentDeliveredFps = wgcRecentDeliveredFps;
+                sourceTelemetry.recentDeliveredMin250Fps = wgcRecentDeliveredMin250Fps;
+                sourceTelemetry.recentDeliveredMin500Fps = wgcRecentDeliveredMin500Fps;
+                sourceTelemetry.recentInputMin250Fps = wgcRecentInputMin250Fps;
+                sourceTelemetry.recentInputMin500Fps = wgcRecentInputMin500Fps;
+                sourceTelemetry.averageJitterUs = SaturatingToUint32(g_WgcCap ? g_WgcCap->GetSourceJitterAvgUs() : 0);
+                sourceTelemetry.emptyTickPermille = wgcQueueEmptyTickPermille;
+                sourceTelemetry.bufferedWgcFrames = static_cast<uint32_t>(bufferedWgcFrames.size());
+                sourceTelemetry.encoderQueueDepth = static_cast<uint32_t>(g_FrameQueue.Size());
+                sourceTelemetry.duplicateRatio = (cadenceCounters.liveTickEmitCount > 0)
+                                                     ? static_cast<double>(cadenceCounters.liveTickDuplicateCount) /
+                                                           static_cast<double>(cadenceCounters.liveTickEmitCount)
+                                                     : 0.0;
+                const bool lowSourceMode = ce::capture_policy::ShouldUseWgcLowSourceMode(sourceTelemetry);
+                size_t maxBufferedWgcFrames = 6;
+                if (recordingOutputLive) {
+                    if (lowSourceMode) {
+                        maxBufferedWgcFrames = 8;
+                    } else if (smoothedInputPerTick < 1.01) {
+                        maxBufferedWgcFrames = 8;
+                    } else if (smoothedInputPerTick < 1.05) {
+                        maxBufferedWgcFrames = 7;
+                    }
+                }
+                while (bufferedWgcFrames.size() > maxBufferedWgcFrames) {
                     QueuedFrame stale = std::move(bufferedWgcFrames.front());
                     bufferedWgcFrames.pop_front();
                     ReleaseQueuedFrameTexture(stale);
@@ -1496,7 +1693,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 frameCreditAccumulator += creditPerTick;
 
                 // Discard excess WGC frames only under clear overcapture pressure.
-                while (frameCreditAccumulator >= 2.0 && bufferedWgcFrames.size() > 1) {
+                while (!lowSourceMode && frameCreditAccumulator >= 2.0 && bufferedWgcFrames.size() > 1) {
                     QueuedFrame excess = std::move(bufferedWgcFrames.front());
                     bufferedWgcFrames.pop_front();
                     ReleaseQueuedFrameTexture(excess);
@@ -1511,13 +1708,34 @@ void EncoderThreadFunc(const AppConfig& config) {
                 } else if (frameCreditAccumulator >= 1.0 && !bufferedWgcFrames.empty()) {
                     const size_t availableCount = bufferedWgcFrames.size();
                     if (availableCount > 1 && encoderGridStartQpc > 0) {
-                        const size_t bestIdx = SelectFrameClosestToGrid(bufferedWgcFrames, availableCount,
-                                                                       encoderGridStartQpc, selectionGridTick,
-                                                                       targetIntervalTicks);
-                        for (size_t i = 0; i < bestIdx; ++i) {
+                        const int64_t selectionTargetQpc =
+                            scheduledSampleQpc > 0 ? scheduledSampleQpc
+                                                   : (encoderGridStartQpc + selectionGridTick * targetIntervalTicks);
+                        size_t bestIdx =
+                            SelectFrameClosestToTimestamp(bufferedWgcFrames, availableCount, selectionTargetQpc);
+                        if (!lowSourceMode && bestIdx < availableCount) {
+                            const int64_t holdSlackQpc = targetIntervalTicks / 16;
+                            while (bestIdx > 0 &&
+                                   ShouldHoldFrameForNextTick(bufferedWgcFrames[bestIdx].timestamp, selectionTargetQpc,
+                                                               targetIntervalTicks, holdSlackQpc)) {
+                                --bestIdx;
+                                ++wgcHoldForNextTickCount;
+                            }
+                        } else if (lowSourceMode) {
+                            bestIdx = ce::capture_policy::ClampWgcSelectionIndexForLowSource(
+                                bestIdx, availableCount, bufferedWgcFrames.size(), wgcRecentDeliveredFps,
+                                static_cast<uint32_t>(config.video.fps), wgcQueueEmptyTickPermille);
+                        }
+                        const bool shouldDropFront = ce::capture_policy::ShouldDropFrontWgcFrameForSelection(
+                            bestIdx, bufferedWgcFrames.size(), lowSourceMode, wgcQueueEmptyTickPermille);
+                        for (size_t i = 0; i < bestIdx && shouldDropFront; ++i) {
                             QueuedFrame stale = std::move(bufferedWgcFrames.front());
                             bufferedWgcFrames.pop_front();
                             ReleaseQueuedFrameTexture(stale);
+                        }
+                        if (!shouldDropFront && bestIdx > 0) {
+                            std::rotate(bufferedWgcFrames.begin(), bufferedWgcFrames.begin() + static_cast<std::ptrdiff_t>(bestIdx),
+                                        bufferedWgcFrames.begin() + static_cast<std::ptrdiff_t>(bestIdx + 1));
                         }
                     }
                     frame = std::move(bufferedWgcFrames.front());
@@ -1695,8 +1913,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                         if (bestIdx > 0) {
                             selectionLogCounter++;
                             if (selectionLogCounter <= 12 || (selectionLogCounter % 240) == 0) {
-                                const int64_t idealQpc = GetIdealOutputQpc(encoderGridStartQpc, selectionGridTick,
-                                                                            targetIntervalTicks);
+                                const int64_t idealQpc = ComputeIdealOutputQpc(encoderGridStartQpc, selectionGridTick,
+                                                                               targetIntervalTicks);
                                 LogInfo("[EncoderThread] Select tick=%lld idealQpc=%lld chose idx=%zu frame=%u tex=%d ts=%lld oldest=%lld "
                                         "avail=%zu reserve=%zu credit=%.3f%s",
                                         static_cast<long long>(selectionGridTick), static_cast<long long>(idealQpc),
@@ -1798,9 +2016,15 @@ void EncoderThreadFunc(const AppConfig& config) {
             const uint64_t warmupElapsedMs64 = GetTickCount64() - startupWarmupStartTick;
             const DWORD warmupElapsedMs =
                 warmupElapsedMs64 > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<DWORD>(warmupElapsedMs64);
-            if (ce::capture_policy::ShouldCommitRecordingWarmup(useScreenGrab, config.video.useVFR, popped,
-                                                                !bufferedWgcFrames.empty(), bufferedInjectFrames.size(),
-                                                                injectReserveFrames, warmupElapsedMs)) {
+            const bool warmupReady = useScreenGrab
+                                         ? ce::capture_policy::ShouldCommitWgcWarmup(
+                                               popped, bufferedWgcFrames.size(), warmupElapsedMs,
+                                               smoothedInputPerTick * static_cast<double>(config.video.fps),
+                                               static_cast<uint32_t>(config.video.fps))
+                                         : ce::capture_policy::ShouldCommitRecordingWarmup(
+                                               useScreenGrab, config.video.useVFR, popped, !bufferedWgcFrames.empty(),
+                                               bufferedInjectFrames.size(), injectReserveFrames, warmupElapsedMs);
+            if (warmupReady) {
                 pendingLiveActivation = true;
                 // Reset Bresenham credit for a clean start; keep smoothedInputPerTick
                 // so the EMA calibration from warmup carries over.
@@ -1811,7 +2035,20 @@ void EncoderThreadFunc(const AppConfig& config) {
                 encoderGridStartQpc = 0;
                 encoderGridTickCount = 0;
                 liveTicksOutput = 0;
+                liveTicksScheduled = 0;
                 liveStartQpc = {};
+                wgcRecentDeliveredFps = 0;
+                wgcRecentDeliveredMin250Fps = 0;
+                wgcRecentDeliveredMin500Fps = 0;
+                wgcRecentInputMin250Fps = 0;
+                wgcRecentInputMin500Fps = 0;
+                wgcQueueEmptyTickCount = 0;
+                wgcQueueTickSampleCount = 0;
+                wgcQueueEmptyTickPermille = 0;
+                wgcBufferedAtTickSum = 0;
+                wgcBufferedAtTickMin = UINT32_MAX;
+                wgcStarvedTickCount = 0;
+                wgcSingleFrameTickCount = 0;
                 pendingLiveInjectReadyFrames = useScreenGrab ? 0 : ce::capture_policy::GetWarmupInjectKeepCount(
                                                                     smoothedInjectFenceMs, frameIntervalMs);
                 // CRITICAL: Reset nextSampleTime after sleeping one full interval
@@ -1990,6 +2227,23 @@ void EncoderThreadFunc(const AppConfig& config) {
         const bool scheduledLiveCfrTick = consumesCfrTick && isLivePhase;
         if (scheduledLiveCfrTick) {
             encoderGridTickCount = selectionGridTick;
+            ++liveTicksScheduled;
+            ++wgcQueueTickSampleCount;
+            if (useScreenGrab) {
+                const uint32_t bufferedAtTick = static_cast<uint32_t>(bufferedWgcFrames.size());
+                wgcBufferedAtTickSum += bufferedAtTick;
+                wgcBufferedAtTickMin = std::min(wgcBufferedAtTickMin, bufferedAtTick);
+                if (bufferedAtTick == 0) {
+                    ++wgcQueueEmptyTickCount;
+                    ++wgcStarvedTickCount;
+                } else if (bufferedAtTick == 1) {
+                    ++wgcSingleFrameTickCount;
+                }
+            }
+            wgcQueueEmptyTickPermille = wgcQueueTickSampleCount > 0
+                                            ? SaturatingToUint32((static_cast<uint64_t>(wgcQueueEmptyTickCount) * 1000ull) /
+                                                                 static_cast<uint64_t>(wgcQueueTickSampleCount))
+                                            : 0u;
         }
 
         auto recordDuplicate = [&](const QueuedFrame* duplicateFrame, const InjectFrameLineage* duplicateLineage,
@@ -1998,6 +2252,14 @@ void EncoderThreadFunc(const AppConfig& config) {
             cadenceCounters.consecutiveDuplicateFrames++;
             cadenceCounters.maxConsecutiveDuplicateFrames =
                 std::max(cadenceCounters.maxConsecutiveDuplicateFrames, cadenceCounters.consecutiveDuplicateFrames);
+            const bool duplicateFromNoSource =
+                !duplicateFromDrainReason && !duplicateFromDeferredReason && !duplicateFromTimerRebaseReason;
+            if (useScreenGrab && duplicateFromNoSource) {
+                frameCreditAccumulator = std::min(frameCreditAccumulator, bufferedWgcFrames.empty() ? 0.25 : 0.50);
+                if (bufferedWgcFrames.empty() && smoothedInputPerTick > 1.0) {
+                    smoothedInputPerTick = std::max(0.90, smoothedInputPerTick * 0.90);
+                }
+            }
             if (g_pSharedMem) {
                 g_pSharedMem->runtimeState.duplicateFrames.fetch_add(1, std::memory_order_relaxed);
                 if (duplicateFromDrainReason) {
@@ -2078,14 +2340,19 @@ void EncoderThreadFunc(const AppConfig& config) {
             bool encodeDeferred = false;
             const bool duplicateFromDrain = isDuplicate && isDrainPhase;
 
-            const int64_t idealQpc = (frameToProcess->isInjectMode && encoderGridStartQpc > 0 && targetIntervalTicks > 0)
-                                         ? GetIdealOutputQpc(encoderGridStartQpc, selectionGridTick, targetIntervalTicks)
+            const int64_t idealQpc = (encoderGridStartQpc > 0 && targetIntervalTicks > 0)
+                                         ? ComputeIdealOutputQpc(encoderGridStartQpc, selectionGridTick,
+                                                                 targetIntervalTicks)
                                          : 0;
             int64_t signedSelectionErrorUs = 0;
             int64_t absoluteSelectionErrorUs = 0;
-            if (idealQpc > 0) {
-                signedSelectionErrorUs = ((frameToProcess->timestamp - idealQpc) * 1000000) / qpcFreq.QuadPart;
-                absoluteSelectionErrorUs = signedSelectionErrorUs >= 0 ? signedSelectionErrorUs : -signedSelectionErrorUs;
+            const int64_t selectionMetricTargetQpc =
+                (!frameToProcess->isInjectMode && scheduledSampleQpc > 0) ? scheduledSampleQpc : idealQpc;
+            if (selectionMetricTargetQpc > 0) {
+                signedSelectionErrorUs =
+                    ((frameToProcess->timestamp - selectionMetricTargetQpc) * 1000000) / qpcFreq.QuadPart;
+                absoluteSelectionErrorUs =
+                    signedSelectionErrorUs >= 0 ? signedSelectionErrorUs : -signedSelectionErrorUs;
             }
 
             uint64_t frameAgeUs = 0;
@@ -2096,20 +2363,24 @@ void EncoderThreadFunc(const AppConfig& config) {
             cadenceCounters.frameAgeAccumUs += frameAgeUs;
             cadenceCounters.frameAgeSamples++;
             cadenceCounters.frameAgeMaxUs = std::max(cadenceCounters.frameAgeMaxUs, SaturatingToUint32(frameAgeUs));
-            if (idealQpc > 0) {
-                cadenceCounters.selectionErrorAccumUs += static_cast<uint64_t>(absoluteSelectionErrorUs);
-                cadenceCounters.selectionErrorSignedAccumUs += signedSelectionErrorUs;
-                cadenceCounters.selectionErrorSamples++;
-                cadenceCounters.selectionErrorMaxUs = std::max(cadenceCounters.selectionErrorMaxUs,
-                                                               SaturatingToUint32(static_cast<uint64_t>(absoluteSelectionErrorUs)));
-                if (signedSelectionErrorUs < 0) {
-                    cadenceCounters.selectionEarlyMaxUs =
-                        std::max(cadenceCounters.selectionEarlyMaxUs,
-                                 SaturatingToUint32(static_cast<uint64_t>(-signedSelectionErrorUs)));
+            if (scheduledLiveCfrTick && scheduledSampleQpc > 0) {
+                const int64_t signedOutputScheduleErrorUs =
+                    ((startEnc.QuadPart - scheduledSampleQpc) * 1000000) / qpcFreq.QuadPart;
+                const uint64_t absoluteOutputScheduleErrorUs = static_cast<uint64_t>(
+                    signedOutputScheduleErrorUs >= 0 ? signedOutputScheduleErrorUs : -signedOutputScheduleErrorUs);
+                cadenceCounters.outputScheduleErrorAccumUs += absoluteOutputScheduleErrorUs;
+                cadenceCounters.outputScheduleErrorSignedAccumUs += signedOutputScheduleErrorUs;
+                cadenceCounters.outputScheduleErrorSamples++;
+                cadenceCounters.outputScheduleErrorMaxUs = std::max(
+                    cadenceCounters.outputScheduleErrorMaxUs, SaturatingToUint32(absoluteOutputScheduleErrorUs));
+                if (signedOutputScheduleErrorUs < 0) {
+                    cadenceCounters.outputScheduleEarlyMaxUs = std::max(
+                        cadenceCounters.outputScheduleEarlyMaxUs,
+                        SaturatingToUint32(static_cast<uint64_t>(-signedOutputScheduleErrorUs)));
                 } else {
-                    cadenceCounters.selectionLateMaxUs =
-                        std::max(cadenceCounters.selectionLateMaxUs,
-                                 SaturatingToUint32(static_cast<uint64_t>(signedSelectionErrorUs)));
+                    cadenceCounters.outputScheduleLateMaxUs = std::max(
+                        cadenceCounters.outputScheduleLateMaxUs,
+                        SaturatingToUint32(static_cast<uint64_t>(signedOutputScheduleErrorUs)));
                 }
             }
 
@@ -2274,6 +2545,39 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
 
             if (encodeSucceeded) {
+                if (selectionMetricTargetQpc > 0 && !frameToProcess->isInjectMode && !isDuplicate) {
+                    cadenceCounters.selectionErrorAccumUs += static_cast<uint64_t>(absoluteSelectionErrorUs);
+                    cadenceCounters.selectionErrorSignedAccumUs += signedSelectionErrorUs;
+                    cadenceCounters.selectionErrorSamples++;
+                    cadenceCounters.selectionErrorMaxUs = std::max(
+                        cadenceCounters.selectionErrorMaxUs,
+                        SaturatingToUint32(static_cast<uint64_t>(absoluteSelectionErrorUs)));
+                    if (signedSelectionErrorUs < 0) {
+                        cadenceCounters.selectionEarlyMaxUs =
+                            std::max(cadenceCounters.selectionEarlyMaxUs,
+                                     SaturatingToUint32(static_cast<uint64_t>(-signedSelectionErrorUs)));
+                    } else {
+                        cadenceCounters.selectionLateMaxUs =
+                            std::max(cadenceCounters.selectionLateMaxUs,
+                                     SaturatingToUint32(static_cast<uint64_t>(signedSelectionErrorUs)));
+                    }
+                    wgcSelectionErrorAccumUs += static_cast<uint64_t>(absoluteSelectionErrorUs);
+                    wgcSelectionErrorSignedAccumUs += signedSelectionErrorUs;
+                    ++wgcSelectionErrorSamples;
+                    wgcSelectionErrorMaxUs =
+                        std::max(wgcSelectionErrorMaxUs,
+                                 SaturatingToUint32(static_cast<uint64_t>(absoluteSelectionErrorUs)));
+                    if (signedSelectionErrorUs < 0) {
+                        wgcSelectionEarlyMaxUs =
+                            std::max(wgcSelectionEarlyMaxUs,
+                                     SaturatingToUint32(static_cast<uint64_t>(-signedSelectionErrorUs)));
+                    } else {
+                        wgcSelectionLateMaxUs =
+                            std::max(wgcSelectionLateMaxUs,
+                                     SaturatingToUint32(static_cast<uint64_t>(signedSelectionErrorUs)));
+                    }
+                }
+
                 if (isDuplicate) {
                     const InjectFrameLineage duplicateLineage = frameToProcess ? MakeInjectFrameLineage(*frameToProcess)
                                                                                : InjectFrameLineage{};
@@ -2308,21 +2612,30 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                ? SaturatingToUint32(cadenceCounters.frameAgeAccumUs /
                                                                     cadenceCounters.frameAgeSamples)
                                                : 0;
-            const uint32_t avgSelectionErrorUs = cadenceCounters.selectionErrorSamples > 0
-                                                     ? SaturatingToUint32(cadenceCounters.selectionErrorAccumUs /
-                                                                          cadenceCounters.selectionErrorSamples)
+            const uint32_t avgSelectionErrorUs = cadenceCounters.outputScheduleErrorSamples > 0
+                                                     ? SaturatingToUint32(cadenceCounters.outputScheduleErrorAccumUs /
+                                                                          cadenceCounters.outputScheduleErrorSamples)
                                                      : 0;
-            const int32_t avgSignedSelectionErrorUs = cadenceCounters.selectionErrorSamples > 0
-                                                          ? static_cast<int32_t>(cadenceCounters.selectionErrorSignedAccumUs /
-                                                                                 static_cast<int64_t>(cadenceCounters.selectionErrorSamples))
+            const int32_t avgSignedSelectionErrorUs = cadenceCounters.outputScheduleErrorSamples > 0
+                                                          ? static_cast<int32_t>(
+                                                                cadenceCounters.outputScheduleErrorSignedAccumUs /
+                                                                static_cast<int64_t>(cadenceCounters.outputScheduleErrorSamples))
                                                           : 0;
+            const uint32_t avgWgcSelectionErrorUs =
+                wgcSelectionErrorSamples > 0 ? SaturatingToUint32(wgcSelectionErrorAccumUs / wgcSelectionErrorSamples)
+                                             : 0;
+            const int32_t avgSignedWgcSelectionErrorUs =
+                wgcSelectionErrorSamples > 0
+                    ? static_cast<int32_t>(wgcSelectionErrorSignedAccumUs /
+                                           static_cast<int64_t>(wgcSelectionErrorSamples))
+                    : 0;
             state.frameAgeAvgUs.store(avgFrameAgeUs, std::memory_order_relaxed);
             state.frameAgeMaxUs.store(cadenceCounters.frameAgeMaxUs, std::memory_order_relaxed);
             state.selectionErrorAvgUs.store(avgSelectionErrorUs, std::memory_order_relaxed);
-            state.selectionErrorMaxUs.store(cadenceCounters.selectionErrorMaxUs, std::memory_order_relaxed);
+            state.selectionErrorMaxUs.store(cadenceCounters.outputScheduleErrorMaxUs, std::memory_order_relaxed);
             state.selectionErrorSignedAvgUs.store(avgSignedSelectionErrorUs, std::memory_order_relaxed);
-            state.selectionEarlyMaxUs.store(cadenceCounters.selectionEarlyMaxUs, std::memory_order_relaxed);
-            state.selectionLateMaxUs.store(cadenceCounters.selectionLateMaxUs, std::memory_order_relaxed);
+            state.selectionEarlyMaxUs.store(cadenceCounters.outputScheduleEarlyMaxUs, std::memory_order_relaxed);
+            state.selectionLateMaxUs.store(cadenceCounters.outputScheduleLateMaxUs, std::memory_order_relaxed);
             state.consecutiveDeferredFrames.store(cadenceCounters.consecutiveDeferredFrames, std::memory_order_relaxed);
             state.maxConsecutiveDeferredFrames.store(cadenceCounters.maxConsecutiveDeferredFrames,
                                                      std::memory_order_relaxed);
@@ -2345,25 +2658,37 @@ void EncoderThreadFunc(const AppConfig& config) {
             const uint32_t nonMonotonicPts = state.nonMonotonicPtsCount.load(std::memory_order_relaxed);
             uint32_t outputShortfallTicks = 0;
             uint64_t liveWallElapsedUs = 0;
-            if (recordingOutputLive && liveStartQpc.QuadPart > 0 && targetIntervalTicks > 0) {
+            if (recordingOutputLive && liveStartQpc.QuadPart > 0 && targetIntervalTicks > 0 && liveTicksScheduled > 0) {
                 LARGE_INTEGER nowQpc;
                 QueryPerformanceCounter(&nowQpc);
                 if (nowQpc.QuadPart > liveStartQpc.QuadPart) {
                     liveWallElapsedUs = static_cast<uint64_t>((nowQpc.QuadPart - liveStartQpc.QuadPart) * 1000000 /
                                                               qpcFreq.QuadPart);
-                    const uint64_t expectedLiveTicks =
-                        static_cast<uint64_t>((nowQpc.QuadPart - liveStartQpc.QuadPart) / targetIntervalTicks);
-                    if (expectedLiveTicks > liveTicksOutput) {
-                        outputShortfallTicks = SaturatingToUint32(expectedLiveTicks - liveTicksOutput);
+                    if (liveTicksScheduled > liveTicksOutput) {
+                        outputShortfallTicks = SaturatingToUint32(liveTicksScheduled - liveTicksOutput);
                     }
                 }
             }
 
+            const uint32_t bufferedAtTickAvgPermille = wgcQueueTickSampleCount > 0
+                                                           ? SaturatingToUint32((static_cast<uint64_t>(wgcBufferedAtTickSum) * 1000ull) /
+                                                                                static_cast<uint64_t>(wgcQueueTickSampleCount))
+                                                           : 0u;
+            const uint32_t bufferedAtTickMinValue = (wgcBufferedAtTickMin == UINT32_MAX) ? 0u : wgcBufferedAtTickMin;
+            state.wgcQueueEmptyTickPermille.store(wgcQueueEmptyTickPermille, std::memory_order_relaxed);
+            state.wgcBufferedAtTickAvgPermille.store(bufferedAtTickAvgPermille, std::memory_order_relaxed);
+            state.wgcBufferedAtTickMin.store(bufferedAtTickMinValue, std::memory_order_relaxed);
+            state.wgcStarvedTickCount.store(wgcStarvedTickCount, std::memory_order_relaxed);
+            state.wgcSingleFrameTickCount.store(wgcSingleFrameTickCount, std::memory_order_relaxed);
+
             LogInfo(
-                "[Cadence Health] Phase=%s | AgeAvg=%uus AgeMax=%uus | SelAvg=%uus SelMax=%uus SelBias=%dus EarlyMax=%uus LateMax=%uus | DefStreak=%u/%u DupStreak=%u/%u | DupSrc=%u DupDef=%u DupTimer=%u DupDrain=%u | TickEmit=%u TickUnique=%u TickDup=%u TickMiss=%u | LiveWall=%lluus LiveTicks=%llu Shortfall=%u | TsReg=%u TsStall=%u | InvalidMeta=%u InvalidHandle=%u | PktClamp=%u NegPTS=%u NonMonoPTS=%u",
+                "[Cadence Health] Phase=%s | AgeAvg=%uus AgeMax=%uus | SelAvg=%uus SelMax=%uus SelBias=%dus EarlyMax=%uus LateMax=%uus | WgcSelAvg=%uus WgcSelMax=%uus WgcSelBias=%dus WgcEarly=%uus WgcLate=%uus Hold=%u | DefStreak=%u/%u DupStreak=%u/%u | DupSrc=%u DupDef=%u DupTimer=%u DupDrain=%u | TickEmit=%u TickUnique=%u TickDup=%u TickMiss=%u | LiveWall=%lluus LiveTicks=%llu Shortfall=%u Empty=%upm BufAvg=%upm BufMin=%u Starved=%u Single=%u | TsReg=%u TsStall=%u | InvalidMeta=%u InvalidHandle=%u | PktClamp=%u NegPTS=%u NonMonoPTS=%u | WgcThr=%u Adj=%u",
                 CapturePipelinePhaseToString(state.capturePhase.load(std::memory_order_relaxed)), avgFrameAgeUs,
-                cadenceCounters.frameAgeMaxUs, avgSelectionErrorUs, cadenceCounters.selectionErrorMaxUs,
-                avgSignedSelectionErrorUs, cadenceCounters.selectionEarlyMaxUs, cadenceCounters.selectionLateMaxUs,
+                cadenceCounters.frameAgeMaxUs, avgSelectionErrorUs, cadenceCounters.outputScheduleErrorMaxUs,
+                avgSignedSelectionErrorUs, cadenceCounters.outputScheduleEarlyMaxUs,
+                cadenceCounters.outputScheduleLateMaxUs,
+                avgWgcSelectionErrorUs, wgcSelectionErrorMaxUs, avgSignedWgcSelectionErrorUs, wgcSelectionEarlyMaxUs,
+                wgcSelectionLateMaxUs, wgcHoldForNextTickCount,
                 cadenceCounters.consecutiveDeferredFrames, cadenceCounters.maxConsecutiveDeferredFrames,
                 cadenceCounters.consecutiveDuplicateFrames, cadenceCounters.maxConsecutiveDuplicateFrames,
                 dupNoSource - lastDuplicateReasonNoSource, dupDeferred - lastDuplicateReasonDeferred,
@@ -2371,11 +2696,13 @@ void EncoderThreadFunc(const AppConfig& config) {
                 cadenceCounters.liveTickEmitCount, cadenceCounters.liveTickUniqueCount,
                 cadenceCounters.liveTickDuplicateCount, cadenceCounters.liveTickMissCount,
                 static_cast<unsigned long long>(liveWallElapsedUs), static_cast<unsigned long long>(liveTicksOutput),
-                outputShortfallTicks,
+                outputShortfallTicks, wgcQueueEmptyTickPermille, bufferedAtTickAvgPermille, bufferedAtTickMinValue,
+                wgcStarvedTickCount, wgcSingleFrameTickCount,
                 tsRegress - lastTimestampRegressionCount, tsStall - lastTimestampStallCount,
                 invalidMeta - lastInvalidMetaCount, invalidHandle - lastInvalidHandleCount,
                 packetClamps - lastPacketClampCount, negativePts - lastNegativePtsCount,
-                nonMonotonicPts - lastNonMonotonicPtsCount);
+                nonMonotonicPts - lastNonMonotonicPtsCount,
+                g_WgcAdaptiveTargetFps.load(std::memory_order_relaxed), wgcAdaptiveThrottleAdjustments);
 
             lastDuplicateReasonNoSource = dupNoSource;
             lastDuplicateReasonDeferred = dupDeferred;
@@ -2389,6 +2716,18 @@ void EncoderThreadFunc(const AppConfig& config) {
             lastNegativePtsCount = negativePts;
             lastNonMonotonicPtsCount = nonMonotonicPts;
             cadenceCounters.Reset();
+            wgcSelectionErrorAccumUs = 0;
+            wgcSelectionErrorSignedAccumUs = 0;
+            wgcSelectionErrorSamples = 0;
+            wgcSelectionErrorMaxUs = 0;
+            wgcSelectionEarlyMaxUs = 0;
+            wgcSelectionLateMaxUs = 0;
+            wgcHoldForNextTickCount = 0;
+            wgcAdaptiveThrottleAdjustments = 0;
+            wgcBufferedAtTickSum = 0;
+            wgcBufferedAtTickMin = UINT32_MAX;
+            wgcStarvedTickCount = 0;
+            wgcSingleFrameTickCount = 0;
             lastHealthLog = GetTickCount();
         }
     }

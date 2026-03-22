@@ -296,6 +296,22 @@ bool IPCManager::GetLatestFrame(SharedMemoryLayout& outState) {
     outState.runtimeState.selectionEarlyMaxUs = pSharedMem->runtimeState.selectionEarlyMaxUs.load();
     outState.runtimeState.selectionLateMaxUs = pSharedMem->runtimeState.selectionLateMaxUs.load();
     outState.runtimeState.oldestBufferedFrameAgeUs = pSharedMem->runtimeState.oldestBufferedFrameAgeUs.load();
+    outState.runtimeState.wgcSourceFrameIntervalAvgUs = pSharedMem->runtimeState.wgcSourceFrameIntervalAvgUs.load();
+    outState.runtimeState.wgcSourceFrameJitterAvgUs = pSharedMem->runtimeState.wgcSourceFrameJitterAvgUs.load();
+    outState.runtimeState.wgcSourceFrameJitterMaxUs = pSharedMem->runtimeState.wgcSourceFrameJitterMaxUs.load();
+    outState.runtimeState.wgcSourceToCopyLatencyAvgUs = pSharedMem->runtimeState.wgcSourceToCopyLatencyAvgUs.load();
+    outState.runtimeState.wgcSourceToCopyLatencyMaxUs = pSharedMem->runtimeState.wgcSourceToCopyLatencyMaxUs.load();
+    outState.runtimeState.wgcTargetFps = pSharedMem->runtimeState.wgcTargetFps.load();
+    outState.runtimeState.wgcDeliveredFramesPerSec = pSharedMem->runtimeState.wgcDeliveredFramesPerSec.load();
+    outState.runtimeState.wgcDeliveredMin250Fps = pSharedMem->runtimeState.wgcDeliveredMin250Fps.load();
+    outState.runtimeState.wgcDeliveredMin500Fps = pSharedMem->runtimeState.wgcDeliveredMin500Fps.load();
+    outState.runtimeState.wgcInputMin250Fps = pSharedMem->runtimeState.wgcInputMin250Fps.load();
+    outState.runtimeState.wgcInputMin500Fps = pSharedMem->runtimeState.wgcInputMin500Fps.load();
+    outState.runtimeState.wgcQueueEmptyTickPermille = pSharedMem->runtimeState.wgcQueueEmptyTickPermille.load();
+    outState.runtimeState.wgcBufferedAtTickAvgPermille = pSharedMem->runtimeState.wgcBufferedAtTickAvgPermille.load();
+    outState.runtimeState.wgcBufferedAtTickMin = pSharedMem->runtimeState.wgcBufferedAtTickMin.load();
+    outState.runtimeState.wgcStarvedTickCount = pSharedMem->runtimeState.wgcStarvedTickCount.load();
+    outState.runtimeState.wgcSingleFrameTickCount = pSharedMem->runtimeState.wgcSingleFrameTickCount.load();
     // Atomic flags accessed directly, not copied
     // Note: atomics (throttleCapture, encoderQueueDepth, frameRing, logs) must be
     // accessed via GetSharedMem()

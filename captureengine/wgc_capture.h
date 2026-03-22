@@ -98,6 +98,18 @@ public:
     // Get last GPU copy time in microseconds (for profiling)
     int64_t GetLastCopyTimeUs() const;
 
+    // Get smoothed source-cadence timing diagnostics (for profiling)
+    int64_t GetSourceIntervalAvgUs() const;
+    int64_t GetSourceJitterAvgUs() const;
+    int64_t GetSourceJitterMaxUs() const;
+    int64_t GetSourceToCopyLatencyAvgUs() const;
+    int64_t GetSourceToCopyLatencyMaxUs() const;
+    uint32_t GetDeliveredRatePerSec() const;
+    uint32_t GetDeliveredMin250Fps() const;
+    uint32_t GetDeliveredMin500Fps() const;
+    uint32_t GetInputMin250Fps() const;
+    uint32_t GetInputMin500Fps() const;
+
     // Get counts of frames skipped for specific reasons (for profiling)
     uint32_t GetPacingSkipCount() const;
     uint32_t GetThrottleSkipCount() const;
@@ -108,6 +120,7 @@ public:
     // Throttle capture rate to avoid wasting GPU bandwidth on excess frames.
     // Set to target recording FPS. 0 disables throttle.
     void SetTargetFps(uint32_t fps);
+    uint32_t GetTargetFps() const;
 
     // Get count of frames skipped by throttle (for profiling)
     uint32_t GetSkippedFrameCount() const;

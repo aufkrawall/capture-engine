@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <chrono>
 #include <mutex>
+#include "../common/frame_timing_utils.h"
+#include "../common/rate_window_utils.h"
 #include "../common/logging.h"
 #include "mediaengine_loader.h"
 
@@ -267,6 +269,16 @@ public:
     std::atomic<DirectFrameCallbackFn> frameCallback_{nullptr};
     std::atomic<uint32_t> callbackFrameCount_{0};
     std::atomic<uint32_t> inputFrameCount_{0};
+    std::atomic<int64_t> sourceIntervalAvgUs_{0};
+    std::atomic<int64_t> sourceJitterAvgUs_{0};
+    std::atomic<int64_t> sourceJitterMaxUs_{0};
+    std::atomic<int64_t> sourceToCopyLatencyAvgUs_{0};
+    std::atomic<int64_t> sourceToCopyLatencyMaxUs_{0};
+    std::atomic<uint32_t> deliveredRatePerSec_{0};
+    std::atomic<uint32_t> deliveredMin250Fps_{0};
+    std::atomic<uint32_t> deliveredMin500Fps_{0};
+    std::atomic<uint32_t> inputMin250Fps_{0};
+    std::atomic<uint32_t> inputMin500Fps_{0};
 
     // Frame throttle: skip CopyResource if we're ahead of target FPS
     uint32_t targetFps_ = 0;
@@ -296,6 +308,17 @@ public:
 
     // Perf tracking
     std::atomic<int64_t> lastCopyUs_{0};
+    int64_t lastObservedSourceQpc_ = 0;
+    int64_t smoothedSourceIntervalQpc_ = 0;
+    uint64_t sourceIntervalSamples_ = 0;
+    uint64_t sourceIntervalAccumUs_ = 0;
+    uint64_t sourceJitterAccumUs_ = 0;
+    uint32_t sourceJitterMaxUsValue_ = 0;
+    uint64_t sourceToCopyLatencySamples_ = 0;
+    uint64_t sourceToCopyLatencyAccumUs_ = 0;
+    uint32_t sourceToCopyLatencyMaxUsValue_ = 0;
+    ce::rate_window::SlidingRateWindow<> deliveredRateWindow_;
+    ce::rate_window::SlidingRateWindow<> inputRateWindow_;
 
     DXGI_FORMAT poolFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
     winrt::DirectXPixelFormat capturePixelFormat_ = winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized;
@@ -432,6 +455,16 @@ public:
     void ResetStats() {
         callbackFrameCount_.store(0, std::memory_order_relaxed);
         inputFrameCount_.store(0, std::memory_order_relaxed);
+        sourceIntervalAvgUs_.store(0, std::memory_order_relaxed);
+        sourceJitterAvgUs_.store(0, std::memory_order_relaxed);
+        sourceJitterMaxUs_.store(0, std::memory_order_relaxed);
+        sourceToCopyLatencyAvgUs_.store(0, std::memory_order_relaxed);
+        sourceToCopyLatencyMaxUs_.store(0, std::memory_order_relaxed);
+        deliveredRatePerSec_.store(0, std::memory_order_relaxed);
+        deliveredMin250Fps_.store(0, std::memory_order_relaxed);
+        deliveredMin500Fps_.store(0, std::memory_order_relaxed);
+        inputMin250Fps_.store(0, std::memory_order_relaxed);
+        inputMin500Fps_.store(0, std::memory_order_relaxed);
         skippedFrameCount_.store(0, std::memory_order_relaxed);
         pacingSkipCount_.store(0, std::memory_order_relaxed);
         throttleSkipCount_.store(0, std::memory_order_relaxed);
@@ -440,9 +473,92 @@ public:
         poolDropCount_.store(0, std::memory_order_relaxed);
         lastCopyUs_.store(0, std::memory_order_relaxed);
         lastDeliveredSourceQpc_.store(0, std::memory_order_relaxed);
+        lastObservedSourceQpc_ = 0;
+        smoothedSourceIntervalQpc_ = 0;
+        sourceIntervalSamples_ = 0;
+        sourceIntervalAccumUs_ = 0;
+        sourceJitterAccumUs_ = 0;
+        sourceJitterMaxUsValue_ = 0;
+        sourceToCopyLatencySamples_ = 0;
+        sourceToCopyLatencyAccumUs_ = 0;
+        sourceToCopyLatencyMaxUsValue_ = 0;
+        deliveredRateWindow_.Reset();
+        inputRateWindow_.Reset();
         lastCapturedQPC_ = 0;
         nextCaptureQPC_ = 0;
         lastCursorScreenPosValid_ = false;
+    }
+
+    void RecordInputFrameEvent() {
+        const uint64_t nowMs = GetTickCount64();
+        inputRateWindow_.AddSample(nowMs);
+        inputMin250Fps_.store(inputRateWindow_.MinRatePerSecond(nowMs, 250, 1000), std::memory_order_relaxed);
+        inputMin500Fps_.store(inputRateWindow_.MinRatePerSecond(nowMs, 500, 1000), std::memory_order_relaxed);
+    }
+
+    void RecordDeliveredFrameEvent() {
+        const uint64_t nowMs = GetTickCount64();
+        deliveredRateWindow_.AddSample(nowMs);
+        deliveredRatePerSec_.store(deliveredRateWindow_.RatePerSecond(nowMs, 1000), std::memory_order_relaxed);
+        deliveredMin250Fps_.store(deliveredRateWindow_.MinRatePerSecond(nowMs, 250, 1000), std::memory_order_relaxed);
+        deliveredMin500Fps_.store(deliveredRateWindow_.MinRatePerSecond(nowMs, 500, 1000), std::memory_order_relaxed);
+    }
+
+    void RecordSourceTimingSample(int64_t sourceFrameQpc) {
+        if (sourceFrameQpc <= 0 || qpcFreq_ <= 0) {
+            return;
+        }
+
+        if (lastObservedSourceQpc_ > 0 && sourceFrameQpc > lastObservedSourceQpc_) {
+            const int64_t intervalQpc = sourceFrameQpc - lastObservedSourceQpc_;
+            const int64_t intervalUs = (intervalQpc * 1000000) / qpcFreq_;
+            if (intervalUs > 0) {
+                sourceIntervalAccumUs_ += static_cast<uint64_t>(intervalUs);
+                sourceIntervalSamples_++;
+                sourceIntervalAvgUs_.store(static_cast<int64_t>(sourceIntervalAccumUs_ / sourceIntervalSamples_),
+                                           std::memory_order_relaxed);
+
+                if (smoothedSourceIntervalQpc_ <= 0) {
+                    smoothedSourceIntervalQpc_ = intervalQpc;
+                } else {
+                    smoothedSourceIntervalQpc_ = (smoothedSourceIntervalQpc_ * 7 + intervalQpc) / 8;
+                }
+
+                if (smoothedSourceIntervalQpc_ > 0) {
+                    const int64_t jitterQpc = intervalQpc >= smoothedSourceIntervalQpc_
+                                                  ? (intervalQpc - smoothedSourceIntervalQpc_)
+                                                  : (smoothedSourceIntervalQpc_ - intervalQpc);
+                    const int64_t jitterUs = (jitterQpc * 1000000) / qpcFreq_;
+                    sourceJitterAccumUs_ += static_cast<uint64_t>(jitterUs);
+                    sourceJitterAvgUs_.store(static_cast<int64_t>(sourceJitterAccumUs_ / sourceIntervalSamples_),
+                                             std::memory_order_relaxed);
+                    sourceJitterMaxUsValue_ =
+                        std::max<uint32_t>(sourceJitterMaxUsValue_, static_cast<uint32_t>(jitterUs));
+                    sourceJitterMaxUs_.store(sourceJitterMaxUsValue_, std::memory_order_relaxed);
+                }
+            }
+        }
+
+        lastObservedSourceQpc_ = sourceFrameQpc;
+    }
+
+    void RecordSourceToCopyLatency(int64_t sourceFrameQpc, int64_t copyCompleteQpc) {
+        if (sourceFrameQpc <= 0 || copyCompleteQpc <= sourceFrameQpc || qpcFreq_ <= 0) {
+            return;
+        }
+
+        const int64_t latencyUs = ((copyCompleteQpc - sourceFrameQpc) * 1000000) / qpcFreq_;
+        if (latencyUs < 0) {
+            return;
+        }
+
+        sourceToCopyLatencyAccumUs_ += static_cast<uint64_t>(latencyUs);
+        sourceToCopyLatencySamples_++;
+        sourceToCopyLatencyAvgUs_.store(
+            static_cast<int64_t>(sourceToCopyLatencyAccumUs_ / sourceToCopyLatencySamples_), std::memory_order_relaxed);
+        sourceToCopyLatencyMaxUsValue_ =
+            std::max<uint32_t>(sourceToCopyLatencyMaxUsValue_, static_cast<uint32_t>(latencyUs));
+        sourceToCopyLatencyMaxUs_.store(sourceToCopyLatencyMaxUsValue_, std::memory_order_relaxed);
     }
 
     void ApplyFrameThrottleInterval() {
@@ -904,6 +1020,8 @@ public:
                 copyUs = ((copyEnd.QuadPart - copyStart.QuadPart) * 1000000) / qpcFreq_;
             }
             lastCopyUs_.store(copyUs, std::memory_order_relaxed);
+            RecordSourceTimingSample(sourceFrameQpc);
+            RecordSourceToCopyLatency(sourceFrameQpc, copyEnd.QuadPart);
 
             lastCapturedQPC_ = sourceFrameQpc;
             if (targetIntervalQPC_ > 0) {
@@ -954,6 +1072,7 @@ public:
             return;
         }
         inputFrameCount_.fetch_add(1, std::memory_order_relaxed);
+        RecordInputFrameEvent();
 
         // Throttle: skip GPU copy if we're capturing faster than target FPS.
         // Always drain TryGetNextFrame above to return buffers to the pool.
@@ -1012,6 +1131,7 @@ public:
                     if (sourceFrameQpc > 0) {
                         lastDeliveredSourceQpc_.store(sourceFrameQpc, std::memory_order_relaxed);
                     }
+                    RecordDeliveredFrameEvent();
                     auto cb = frameCallback_.load(std::memory_order_acquire);
                     if (cb) {
                         MaybeRecheckHDR();
@@ -1326,6 +1446,7 @@ public:
             return false;
         }
         inputFrameCount_.fetch_add(1, std::memory_order_relaxed);
+        RecordInputFrameEvent();
 
         const int64_t sourceFrameQpc = GetFrameSourceQpc(latestWinrtFrame);
         if (targetIntervalQPC_ > 0 && nextCaptureQPC_ > 0 && sourceFrameQpc > 0 && sourceFrameQpc < nextCaptureQPC_) {
@@ -1380,6 +1501,7 @@ public:
                     if (sourceFrameQpc > 0) {
                         lastDeliveredSourceQpc_.store(sourceFrameQpc, std::memory_order_relaxed);
                     }
+                    RecordDeliveredFrameEvent();
                     frame.width = desc.Width;
                     frame.height = desc.Height;
                     frame.timestamp = sourceFrameQpc > 0 ? sourceFrameQpc : copyCompleteQpc;
@@ -1716,6 +1838,86 @@ int64_t WGCCapture::GetLastCopyTimeUs() const {
 #endif
 }
 
+int64_t WGCCapture::GetSourceIntervalAvgUs() const {
+#if HAS_WGC
+    return impl_ ? impl_->sourceIntervalAvgUs_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+int64_t WGCCapture::GetSourceJitterAvgUs() const {
+#if HAS_WGC
+    return impl_ ? impl_->sourceJitterAvgUs_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+int64_t WGCCapture::GetSourceJitterMaxUs() const {
+#if HAS_WGC
+    return impl_ ? impl_->sourceJitterMaxUs_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+int64_t WGCCapture::GetSourceToCopyLatencyAvgUs() const {
+#if HAS_WGC
+    return impl_ ? impl_->sourceToCopyLatencyAvgUs_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+int64_t WGCCapture::GetSourceToCopyLatencyMaxUs() const {
+#if HAS_WGC
+    return impl_ ? impl_->sourceToCopyLatencyMaxUs_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetDeliveredRatePerSec() const {
+#if HAS_WGC
+    return impl_ ? impl_->deliveredRatePerSec_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetDeliveredMin250Fps() const {
+#if HAS_WGC
+    return impl_ ? impl_->deliveredMin250Fps_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetDeliveredMin500Fps() const {
+#if HAS_WGC
+    return impl_ ? impl_->deliveredMin500Fps_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetInputMin250Fps() const {
+#if HAS_WGC
+    return impl_ ? impl_->inputMin250Fps_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetInputMin500Fps() const {
+#if HAS_WGC
+    return impl_ ? impl_->inputMin500Fps_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
 uint32_t WGCCapture::GetPacingSkipCount() const {
 #if HAS_WGC
     return impl_ ? impl_->pacingSkipCount_.load(std::memory_order_relaxed) : 0;
@@ -1783,6 +1985,14 @@ void WGCCapture::SetTargetFps(uint32_t fps) {
             LogInfo("[WGC] Frame throttle disabled");
         }
     }
+#endif
+}
+
+uint32_t WGCCapture::GetTargetFps() const {
+#if HAS_WGC
+    return impl_ ? impl_->targetFps_ : 0;
+#else
+    return 0;
 #endif
 }
 

@@ -82,6 +82,7 @@ private:
     COLORREF lastCol_ = 0;
     bool lastWarnVis_ = false;
     std::string lastWarnMsg_;
+    bool suspendedForFullscreen_ = false;
 
     // Windows
     HWND hOv_ = NULL;    // Indicator overlay window

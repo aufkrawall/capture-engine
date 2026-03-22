@@ -91,3 +91,94 @@ TEST(CapturePipelinePolicyTest, AutoWgcFallbackPolicyUsesSourcePidAwareDelayAndG
     EXPECT_TRUE(policy::ShouldTriggerAutoWgcFallback(false, true, true, true,
                                                      policy::kAutoWgcFallbackDelayWithPidMs + 1, 7));
 }
+
+TEST(CapturePipelinePolicyTest, WgcHeadroomEntryRequiresSustainedStrongSource) {
+    policy::WgcAdaptiveTelemetry telemetry{};
+    telemetry.outputFps = 120;
+    telemetry.recentDeliveredFps = 132;
+    telemetry.recentDeliveredMin250Fps = 131;
+    telemetry.recentDeliveredMin500Fps = 130;
+    telemetry.recentInputMin250Fps = 127;
+    telemetry.recentInputMin500Fps = 126;
+    telemetry.averageJitterUs = 700;
+    telemetry.emptyTickPermille = 20;
+    telemetry.bufferedWgcFrames = 1;
+    telemetry.encoderQueueDepth = 0;
+    telemetry.duplicateRatio = 0.005;
+
+    EXPECT_TRUE(policy::ShouldEnterWgcHeadroomMode(telemetry));
+
+    telemetry.recentDeliveredMin250Fps = 121;
+    EXPECT_FALSE(policy::ShouldEnterWgcHeadroomMode(telemetry));
+
+    telemetry.recentDeliveredMin250Fps = 131;
+    telemetry.recentInputMin250Fps = 120;
+    EXPECT_FALSE(policy::ShouldEnterWgcHeadroomMode(telemetry));
+}
+
+TEST(CapturePipelinePolicyTest, WgcHeadroomExitIsImmediateOnMarginalConditions) {
+    policy::WgcAdaptiveTelemetry telemetry{};
+    telemetry.outputFps = 120;
+    telemetry.recentDeliveredFps = 128;
+    telemetry.recentDeliveredMin250Fps = 127;
+    telemetry.recentDeliveredMin500Fps = 127;
+    telemetry.recentInputMin250Fps = 127;
+    telemetry.recentInputMin500Fps = 127;
+    telemetry.averageJitterUs = 700;
+    telemetry.emptyTickPermille = 40;
+    telemetry.bufferedWgcFrames = 1;
+    telemetry.encoderQueueDepth = 0;
+    telemetry.duplicateRatio = 0.005;
+
+    EXPECT_FALSE(policy::ShouldExitWgcHeadroomMode(telemetry));
+
+    telemetry.recentDeliveredMin250Fps = 122;
+    EXPECT_TRUE(policy::ShouldExitWgcHeadroomMode(telemetry));
+
+    telemetry.recentDeliveredMin250Fps = 127;
+    telemetry.emptyTickPermille = 130;
+    EXPECT_TRUE(policy::ShouldExitWgcHeadroomMode(telemetry));
+}
+
+TEST(CapturePipelinePolicyTest, WgcLowSourceModePrefersBufferCushionDuringUnderfeed) {
+    policy::WgcAdaptiveTelemetry telemetry{};
+    telemetry.outputFps = 120;
+    telemetry.recentDeliveredFps = 119;
+    telemetry.recentDeliveredMin250Fps = 118;
+    telemetry.recentDeliveredMin500Fps = 118;
+    telemetry.recentInputMin250Fps = 118;
+    telemetry.recentInputMin500Fps = 118;
+    telemetry.emptyTickPermille = 20;
+    EXPECT_TRUE(policy::ShouldUseWgcLowSourceMode(telemetry));
+
+    telemetry.recentDeliveredFps = 125;
+    telemetry.recentDeliveredMin250Fps = 124;
+    telemetry.recentDeliveredMin500Fps = 124;
+    telemetry.recentInputMin250Fps = 124;
+    telemetry.recentInputMin500Fps = 124;
+    telemetry.emptyTickPermille = 20;
+    EXPECT_FALSE(policy::ShouldUseWgcLowSourceMode(telemetry));
+
+    telemetry.emptyTickPermille = 100;
+    EXPECT_TRUE(policy::ShouldUseWgcLowSourceMode(telemetry));
+}
+
+TEST(CapturePipelinePolicyTest, WgcWarmupCommitRequiresStableBufferedSource) {
+    EXPECT_FALSE(policy::ShouldCommitWgcWarmup(false, 3, policy::kRecordingWarmupMaxMs, 120.0, 120));
+    EXPECT_FALSE(policy::ShouldCommitWgcWarmup(true, 2, policy::kRecordingWarmupMinMs, 120.0, 120));
+    EXPECT_TRUE(policy::ShouldCommitWgcWarmup(true, 3, policy::kRecordingWarmupMinMs, 120.0, 120));
+    EXPECT_FALSE(policy::ShouldCommitWgcWarmup(true, 3, policy::kRecordingWarmupMinMs, 115.0, 120));
+}
+
+TEST(CapturePipelinePolicyTest, WgcLowSourceSelectionClampProtectsFragileQueue) {
+    EXPECT_EQ(policy::ClampWgcSelectionIndexForLowSource(3, 4, 2, 116, 120, 130), 0u);
+    EXPECT_EQ(policy::ClampWgcSelectionIndexForLowSource(3, 4, 2, 119, 120, 90), 1u);
+    EXPECT_EQ(policy::ClampWgcSelectionIndexForLowSource(1, 4, 4, 130, 120, 10), 1u);
+}
+
+TEST(CapturePipelinePolicyTest, WgcLowSourceDropPolicyKeepsFrontFrameWhenQueueFragile) {
+    EXPECT_FALSE(policy::ShouldDropFrontWgcFrameForSelection(1, 2, true, 140));
+    EXPECT_FALSE(policy::ShouldDropFrontWgcFrameForSelection(0, 4, true, 10));
+    EXPECT_TRUE(policy::ShouldDropFrontWgcFrameForSelection(1, 4, false, 10));
+    EXPECT_TRUE(policy::ShouldDropFrontWgcFrameForSelection(1, 4, true, 10));
+}

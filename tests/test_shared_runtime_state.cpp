@@ -32,3 +32,18 @@ TEST(CaptureStateTest, CaptureRequestAndRecordingVisibilityAreIndependent) {
     EXPECT_FALSE(state.captureRequested.load(std::memory_order_relaxed));
     EXPECT_TRUE(state.isRecording.load(std::memory_order_relaxed));
 }
+
+TEST(CaptureStateTest, WgcDiagnosticsFieldsDefaultToZero) {
+    CaptureState state;
+
+    EXPECT_EQ(state.wgcDeliveredFramesPerSec.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(state.wgcDeliveredMin250Fps.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(state.wgcDeliveredMin500Fps.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(state.wgcInputMin250Fps.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(state.wgcInputMin500Fps.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(state.wgcQueueEmptyTickPermille.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(state.wgcBufferedAtTickAvgPermille.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(state.wgcBufferedAtTickMin.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(state.wgcStarvedTickCount.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(state.wgcSingleFrameTickCount.load(std::memory_order_relaxed), 0u);
+}
