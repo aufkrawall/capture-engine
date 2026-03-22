@@ -92,54 +92,6 @@ TEST(CapturePipelinePolicyTest, AutoWgcFallbackPolicyUsesSourcePidAwareDelayAndG
                                                      policy::kAutoWgcFallbackDelayWithPidMs + 1, 7));
 }
 
-TEST(CapturePipelinePolicyTest, WgcHeadroomEntryRequiresSustainedStrongSource) {
-    policy::WgcAdaptiveTelemetry telemetry{};
-    telemetry.outputFps = 120;
-    telemetry.recentDeliveredFps = 132;
-    telemetry.recentDeliveredMin250Fps = 131;
-    telemetry.recentDeliveredMin500Fps = 130;
-    telemetry.recentInputMin250Fps = 127;
-    telemetry.recentInputMin500Fps = 126;
-    telemetry.averageJitterUs = 700;
-    telemetry.emptyTickPermille = 20;
-    telemetry.bufferedWgcFrames = 1;
-    telemetry.encoderQueueDepth = 0;
-    telemetry.duplicateRatio = 0.005;
-
-    EXPECT_TRUE(policy::ShouldEnterWgcHeadroomMode(telemetry));
-
-    telemetry.recentDeliveredMin250Fps = 121;
-    EXPECT_FALSE(policy::ShouldEnterWgcHeadroomMode(telemetry));
-
-    telemetry.recentDeliveredMin250Fps = 131;
-    telemetry.recentInputMin250Fps = 120;
-    EXPECT_FALSE(policy::ShouldEnterWgcHeadroomMode(telemetry));
-}
-
-TEST(CapturePipelinePolicyTest, WgcHeadroomExitIsImmediateOnMarginalConditions) {
-    policy::WgcAdaptiveTelemetry telemetry{};
-    telemetry.outputFps = 120;
-    telemetry.recentDeliveredFps = 128;
-    telemetry.recentDeliveredMin250Fps = 127;
-    telemetry.recentDeliveredMin500Fps = 127;
-    telemetry.recentInputMin250Fps = 127;
-    telemetry.recentInputMin500Fps = 127;
-    telemetry.averageJitterUs = 700;
-    telemetry.emptyTickPermille = 40;
-    telemetry.bufferedWgcFrames = 1;
-    telemetry.encoderQueueDepth = 0;
-    telemetry.duplicateRatio = 0.005;
-
-    EXPECT_FALSE(policy::ShouldExitWgcHeadroomMode(telemetry));
-
-    telemetry.recentDeliveredMin250Fps = 122;
-    EXPECT_TRUE(policy::ShouldExitWgcHeadroomMode(telemetry));
-
-    telemetry.recentDeliveredMin250Fps = 127;
-    telemetry.emptyTickPermille = 130;
-    EXPECT_TRUE(policy::ShouldExitWgcHeadroomMode(telemetry));
-}
-
 TEST(CapturePipelinePolicyTest, WgcLowSourceModePrefersBufferCushionDuringUnderfeed) {
     policy::WgcAdaptiveTelemetry telemetry{};
     telemetry.outputFps = 120;
@@ -161,6 +113,19 @@ TEST(CapturePipelinePolicyTest, WgcLowSourceModePrefersBufferCushionDuringUnderf
 
     telemetry.emptyTickPermille = 100;
     EXPECT_TRUE(policy::ShouldUseWgcLowSourceMode(telemetry));
+    EXPECT_TRUE(policy::ShouldEnterWgcLowSourceMode(telemetry));
+
+    telemetry.recentDeliveredFps = 120;
+    telemetry.recentDeliveredMin250Fps = 120;
+    telemetry.recentDeliveredMin500Fps = 120;
+    telemetry.recentInputMin250Fps = 123;
+    telemetry.recentInputMin500Fps = 123;
+    telemetry.emptyTickPermille = 30;
+    telemetry.bufferedWgcFrames = 1;
+    EXPECT_TRUE(policy::ShouldExitWgcLowSourceMode(telemetry));
+
+    telemetry.emptyTickPermille = 60;
+    EXPECT_FALSE(policy::ShouldExitWgcLowSourceMode(telemetry));
 }
 
 TEST(CapturePipelinePolicyTest, WgcWarmupCommitRequiresStableBufferedSource) {
@@ -177,8 +142,19 @@ TEST(CapturePipelinePolicyTest, WgcLowSourceSelectionClampProtectsFragileQueue) 
 }
 
 TEST(CapturePipelinePolicyTest, WgcLowSourceDropPolicyKeepsFrontFrameWhenQueueFragile) {
-    EXPECT_FALSE(policy::ShouldDropFrontWgcFrameForSelection(1, 2, true, 140));
+    EXPECT_TRUE(policy::ShouldDropFrontWgcFrameForSelection(1, 2, true, 140));
     EXPECT_FALSE(policy::ShouldDropFrontWgcFrameForSelection(0, 4, true, 10));
     EXPECT_TRUE(policy::ShouldDropFrontWgcFrameForSelection(1, 4, false, 10));
     EXPECT_TRUE(policy::ShouldDropFrontWgcFrameForSelection(1, 4, true, 10));
+}
+
+TEST(CapturePipelinePolicyTest, WgcFreshnessGuardRequiresRecentTimestamp) {
+    const int64_t targetIntervalTicks = 100;
+    const int64_t minFreshNormal = policy::GetWgcMinimumFreshTimestampQpc(1000, 1500, targetIntervalTicks, false);
+    const int64_t minFreshLowSource = policy::GetWgcMinimumFreshTimestampQpc(1000, 1500, targetIntervalTicks, true);
+
+    EXPECT_EQ(minFreshNormal, 1300);
+    EXPECT_EQ(minFreshLowSource, 1200);
+    EXPECT_TRUE(policy::IsWgcTimestampFreshEnough(1300, minFreshNormal));
+    EXPECT_FALSE(policy::IsWgcTimestampFreshEnough(1299, minFreshNormal));
 }

@@ -14,15 +14,15 @@ constexpr size_t kStartupInjectBufferedHeadroomFrames = 48;
 constexpr uint64_t kEncoderStartupWindowMs = 1500;
 constexpr uint32_t kAutoWgcFallbackDelayNoPidMs = 100;
 constexpr uint32_t kAutoWgcFallbackDelayWithPidMs = 200;
-constexpr uint32_t kWgcHeadroomEnableMarginFps = 10;
-constexpr uint32_t kWgcHeadroomDisableMarginFps = 2;
-constexpr uint32_t kWgcHeadroomEnableMaxJitterUs = 900;
-constexpr uint32_t kWgcHeadroomDisableMaxJitterUs = 1100;
-constexpr uint32_t kWgcHeadroomEnableMaxEmptyTickPermille = 50;
-constexpr uint32_t kWgcHeadroomDisableEmptyTickPermille = 125;
 constexpr uint32_t kWgcLowSourceEmptyTickPermille = 80;
+constexpr uint32_t kWgcLowSourceExitEmptyTickPermille = 40;
+constexpr uint32_t kWgcLowSourceEnterHoldMs = 120;
+constexpr uint32_t kWgcLowSourceExitHoldMs = 250;
+constexpr uint32_t kWgcMaxSelectionLagTicks = 2;
+constexpr uint32_t kWgcLowSourceMaxSelectionLagTicks = 3;
 constexpr uint32_t kWgcWarmupBufferedFrames = 3;
 constexpr uint32_t kWgcWarmupStableSourceFps = 118;
+constexpr size_t kWgcWarmupFreshFrames = 2;
 
 struct WgcAdaptiveTelemetry {
     uint32_t outputFps = 0;
@@ -145,57 +145,7 @@ inline bool ShouldTriggerAutoWgcFallback(bool receivedFirstFrame, bool autoCaptu
     return elapsedMs > GetAutoWgcFallbackDelayMs(activeSourcePid);
 }
 
-inline uint32_t GetWgcHeadroomEnableThresholdFps(uint32_t outputFps) {
-    return outputFps + std::max<uint32_t>(kWgcHeadroomEnableMarginFps, outputFps / 12u);
-}
-
-inline uint32_t GetWgcHeadroomDisableThresholdFps(uint32_t outputFps) {
-    return outputFps + std::max<uint32_t>(kWgcHeadroomDisableMarginFps, outputFps / 60u);
-}
-
-inline uint32_t GetWgcHeadroomTargetFps(uint32_t outputFps) {
-    const uint32_t minimumHeadroomFps = outputFps + kWgcHeadroomEnableMarginFps;
-    const uint32_t scaledHeadroomFps = outputFps + std::max<uint32_t>(1u, (outputFps * 8u + 99u) / 100u);
-    return std::max(minimumHeadroomFps, scaledHeadroomFps);
-}
-
-inline bool ShouldEnterWgcHeadroomMode(const WgcAdaptiveTelemetry& telemetry) {
-    if (telemetry.outputFps == 0) {
-        return false;
-    }
-
-    const uint32_t enableThresholdFps = GetWgcHeadroomEnableThresholdFps(telemetry.outputFps);
-    const uint32_t safeInputThresholdFps = telemetry.outputFps + 6u;
-    const bool stableDelivered = telemetry.recentDeliveredFps >= enableThresholdFps &&
-                                 telemetry.recentDeliveredMin250Fps >= enableThresholdFps &&
-                                 telemetry.recentDeliveredMin500Fps >= enableThresholdFps;
-    const bool stableInput = telemetry.recentInputMin250Fps >= safeInputThresholdFps &&
-                             telemetry.recentInputMin500Fps >= safeInputThresholdFps;
-    const bool stableQueue = telemetry.emptyTickPermille <= kWgcHeadroomEnableMaxEmptyTickPermille &&
-                             telemetry.bufferedWgcFrames <= 2 && telemetry.encoderQueueDepth <= 1;
-    const bool lowDuplicatePressure = telemetry.duplicateRatio <= 0.01;
-    const bool lowJitter = telemetry.averageJitterUs > 0 && telemetry.averageJitterUs <= kWgcHeadroomEnableMaxJitterUs;
-    return stableDelivered && stableInput && stableQueue && lowDuplicatePressure && lowJitter;
-}
-
-inline bool ShouldExitWgcHeadroomMode(const WgcAdaptiveTelemetry& telemetry) {
-    if (telemetry.outputFps == 0) {
-        return true;
-    }
-
-    const uint32_t disableThresholdFps = GetWgcHeadroomDisableThresholdFps(telemetry.outputFps);
-    if (telemetry.recentDeliveredFps <= disableThresholdFps || telemetry.recentDeliveredMin250Fps <= disableThresholdFps ||
-        telemetry.recentDeliveredMin500Fps <= disableThresholdFps || telemetry.recentInputMin250Fps <= disableThresholdFps ||
-        telemetry.recentInputMin500Fps <= disableThresholdFps) {
-        return true;
-    }
-
-    return telemetry.duplicateRatio > 0.015 || telemetry.averageJitterUs >= kWgcHeadroomDisableMaxJitterUs ||
-           telemetry.emptyTickPermille >= kWgcHeadroomDisableEmptyTickPermille || telemetry.bufferedWgcFrames > 3 ||
-           telemetry.encoderQueueDepth > 2;
-}
-
-inline bool ShouldUseWgcLowSourceMode(const WgcAdaptiveTelemetry& telemetry) {
+inline bool ShouldEnterWgcLowSourceMode(const WgcAdaptiveTelemetry& telemetry) {
     if (telemetry.outputFps == 0) {
         return false;
     }
@@ -204,6 +154,24 @@ inline bool ShouldUseWgcLowSourceMode(const WgcAdaptiveTelemetry& telemetry) {
            telemetry.recentDeliveredMin500Fps < telemetry.outputFps || telemetry.recentInputMin250Fps < telemetry.outputFps ||
            telemetry.recentInputMin500Fps < telemetry.outputFps ||
            telemetry.emptyTickPermille >= kWgcLowSourceEmptyTickPermille;
+}
+
+inline bool ShouldExitWgcLowSourceMode(const WgcAdaptiveTelemetry& telemetry) {
+    if (telemetry.outputFps == 0) {
+        return true;
+    }
+
+    const uint32_t recoveredInputThresholdFps = telemetry.outputFps + 2u;
+    return telemetry.recentDeliveredFps >= telemetry.outputFps &&
+           telemetry.recentDeliveredMin250Fps >= telemetry.outputFps &&
+           telemetry.recentDeliveredMin500Fps >= telemetry.outputFps &&
+           telemetry.recentInputMin250Fps >= recoveredInputThresholdFps &&
+           telemetry.recentInputMin500Fps >= recoveredInputThresholdFps &&
+           telemetry.emptyTickPermille <= kWgcLowSourceExitEmptyTickPermille && telemetry.bufferedWgcFrames <= 4;
+}
+
+inline bool ShouldUseWgcLowSourceMode(const WgcAdaptiveTelemetry& telemetry) {
+    return ShouldEnterWgcLowSourceMode(telemetry);
 }
 
 inline bool ShouldCommitWgcWarmup(bool poppedFrame, size_t bufferedWgcFrames, uint32_t warmupElapsedMs,
@@ -222,6 +190,30 @@ inline bool ShouldCommitWgcWarmup(bool poppedFrame, size_t bufferedWgcFrames, ui
 
     const double stableSourceFps = std::max<double>(kWgcWarmupStableSourceFps, static_cast<double>(outputFps) - 2.0);
     return bufferedWgcFrames >= kWgcWarmupBufferedFrames && measuredInputFps >= stableSourceFps;
+}
+
+inline int64_t GetWgcMaxSelectionLagQpc(int64_t targetIntervalTicks, bool lowSourceMode) {
+    if (targetIntervalTicks <= 0) {
+        return 0;
+    }
+
+    const int64_t maxLagTicks =
+        lowSourceMode ? static_cast<int64_t>(kWgcLowSourceMaxSelectionLagTicks) : static_cast<int64_t>(kWgcMaxSelectionLagTicks);
+    return targetIntervalTicks * maxLagTicks;
+}
+
+inline int64_t GetWgcMinimumFreshTimestampQpc(int64_t lastEmittedSourceQpc, int64_t scheduledSampleQpc,
+                                              int64_t targetIntervalTicks, bool lowSourceMode) {
+    int64_t minFreshTimestampQpc = lastEmittedSourceQpc > 0 ? (lastEmittedSourceQpc + 1) : 0;
+    const int64_t maxSelectionLagQpc = GetWgcMaxSelectionLagQpc(targetIntervalTicks, lowSourceMode);
+    if (scheduledSampleQpc > 0 && maxSelectionLagQpc > 0) {
+        minFreshTimestampQpc = std::max(minFreshTimestampQpc, scheduledSampleQpc - maxSelectionLagQpc);
+    }
+    return minFreshTimestampQpc;
+}
+
+inline bool IsWgcTimestampFreshEnough(int64_t frameTimestampQpc, int64_t minFreshTimestampQpc) {
+    return frameTimestampQpc > 0 && (minFreshTimestampQpc <= 0 || frameTimestampQpc >= minFreshTimestampQpc);
 }
 
 inline size_t ClampWgcSelectionIndexForLowSource(size_t bestIdx, size_t availableCount, size_t bufferedWgcFrames,
@@ -246,16 +238,10 @@ inline size_t ClampWgcSelectionIndexForLowSource(size_t bestIdx, size_t availabl
 
 inline bool ShouldDropFrontWgcFrameForSelection(size_t dropIndex, size_t bufferedWgcFrames, bool lowSourceMode,
                                                 uint32_t emptyTickPermille) {
-    if (dropIndex == 0) {
-        return false;
-    }
-
-    if (!lowSourceMode) {
-        return true;
-    }
-
-    const bool fragileQueue = bufferedWgcFrames <= 2 || emptyTickPermille >= 120;
-    return !fragileQueue;
+    (void)bufferedWgcFrames;
+    (void)lowSourceMode;
+    (void)emptyTickPermille;
+    return dropIndex > 0;
 }
 
 }  // namespace ce::capture_policy

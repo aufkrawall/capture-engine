@@ -29,6 +29,31 @@ size_t SelectFrameClosestToTimestamp(const FrameContainer& frames, size_t availa
     return bestIndex;
 }
 
+template <typename FrameContainer, typename Predicate>
+size_t SelectFrameClosestToTimestampIf(const FrameContainer& frames, size_t availableCount, int64_t targetTimestampQpc,
+                                      Predicate&& predicate) {
+    if (availableCount == 0 || targetTimestampQpc <= 0) {
+        return availableCount;
+    }
+
+    size_t bestIndex = availableCount;
+    int64_t bestDistance = 0;
+    for (size_t i = 0; i < availableCount; ++i) {
+        if (!predicate(frames[i])) {
+            continue;
+        }
+
+        const int64_t distance = AbsoluteTimestampDistance(frames[i].timestamp, targetTimestampQpc);
+        if (bestIndex == availableCount || distance < bestDistance ||
+            (distance == bestDistance && frames[i].timestamp > frames[bestIndex].timestamp)) {
+            bestDistance = distance;
+            bestIndex = i;
+        }
+    }
+
+    return bestIndex;
+}
+
 inline int64_t ComputeIdealOutputQpc(int64_t gridStartQpc, int64_t gridTickCount, int64_t targetIntervalTicks) {
     if (gridStartQpc <= 0 || targetIntervalTicks <= 0 || gridTickCount <= 0) {
         return gridStartQpc;

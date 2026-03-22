@@ -56,6 +56,38 @@ TEST(FrameTimingUtilsTest, SelectFrameClosestToTimestampBreaksTiesTowardNewerFra
     EXPECT_EQ(bestIndex, 1u);
 }
 
+TEST(FrameTimingUtilsTest, SelectFrameClosestToTimestampIfSkipsRejectedFrames) {
+    std::deque<QueuedFrame> frames;
+
+    QueuedFrame blocked;
+    blocked.timestamp = 150;
+    blocked.frameIndex = 1;
+    frames.push_back(std::move(blocked));
+
+    QueuedFrame allowed;
+    allowed.timestamp = 162;
+    allowed.frameIndex = 2;
+    frames.push_back(std::move(allowed));
+
+    const size_t bestIndex =
+        SelectFrameClosestToTimestampIf(frames, frames.size(), 160,
+                                        [](const QueuedFrame& frame) { return frame.frameIndex == 2; });
+    EXPECT_EQ(bestIndex, 1u);
+}
+
+TEST(FrameTimingUtilsTest, SelectFrameClosestToTimestampIfReturnsAvailableCountWhenNoFramesMatch) {
+    std::deque<QueuedFrame> frames;
+
+    QueuedFrame frame;
+    frame.timestamp = 150;
+    frame.frameIndex = 3;
+    frames.push_back(std::move(frame));
+
+    const size_t bestIndex =
+        SelectFrameClosestToTimestampIf(frames, frames.size(), 160, [](const QueuedFrame&) { return false; });
+    EXPECT_EQ(bestIndex, frames.size());
+}
+
 TEST(FrameTimingUtilsTest, SelectFrameClosestToGridBreaksTiesTowardNewerFrame) {
     std::deque<QueuedFrame> frames;
 

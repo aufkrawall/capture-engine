@@ -47,3 +47,15 @@ TEST(CaptureStateTest, WgcDiagnosticsFieldsDefaultToZero) {
     EXPECT_EQ(state.wgcStarvedTickCount.load(std::memory_order_relaxed), 0u);
     EXPECT_EQ(state.wgcSingleFrameTickCount.load(std::memory_order_relaxed), 0u);
 }
+
+TEST(CaptureStateTest, WgcTelemetryFieldsRepresentFreshnessAndReserveCounters) {
+    CaptureState state;
+
+    state.wgcQueueEmptyTickPermille.store(375, std::memory_order_relaxed);
+    state.wgcStarvedTickCount.store(9, std::memory_order_relaxed);
+    state.wgcSingleFrameTickCount.store(15, std::memory_order_relaxed);
+
+    EXPECT_EQ(state.wgcQueueEmptyTickPermille.load(std::memory_order_relaxed), 375u);
+    EXPECT_EQ(state.wgcStarvedTickCount.load(std::memory_order_relaxed), 9u);
+    EXPECT_EQ(state.wgcSingleFrameTickCount.load(std::memory_order_relaxed), 15u);
+}

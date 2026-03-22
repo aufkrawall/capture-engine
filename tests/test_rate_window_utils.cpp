@@ -28,3 +28,16 @@ TEST(RateWindowUtilsTest, SlidingRateWindowDetectsShortUnderfeedWindows) {
     EXPECT_EQ(window.MinRatePerSecond(950, 250, 1000), 80u);
     EXPECT_EQ(window.MinRatePerSecond(950, 500, 1000), 100u);
 }
+
+TEST(RateWindowUtilsTest, SlidingRateWindowResetClearsHistory) {
+    rate_window::SlidingRateWindow<> window;
+
+    for (uint64_t t = 0; t < 500; t += 50) {
+        window.AddSample(t, 6);
+    }
+
+    EXPECT_GT(window.RatePerSecond(450, 500), 0u);
+    window.Reset();
+    EXPECT_EQ(window.RatePerSecond(450, 500), 0u);
+    EXPECT_EQ(window.MinRatePerSecond(450, 250, 500), 0u);
+}
