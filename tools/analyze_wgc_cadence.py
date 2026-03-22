@@ -14,6 +14,8 @@ CADENCE_BUFAVG_RE = re.compile(r"BufAvg=(\d+)pm")
 CADENCE_BUFMIN_RE = re.compile(r"BufMin=(\d+)")
 CADENCE_STARVED_RE = re.compile(r"(?:Starved|NoFresh)=(\d+)")
 CADENCE_SINGLE_RE = re.compile(r"(?:Single|NoReserve)=(\d+)")
+CADENCE_HOLD_FRESH_RE = re.compile(r"HoldFresh=(\d+)")
+CADENCE_SPEND_RE = re.compile(r"Spend=(\d+)")
 
 PERF_INPUT_RE = re.compile(r"\bInput:\s*(\d+)")
 PERF_DELIV_RE = re.compile(r"\bDeliv:\s*(\d+)")
@@ -67,6 +69,12 @@ def summarize_group(name, items):
         f"  avg buffered permille: {safe_mean([item['buf_avg_pm'] for item in items]):.2f}"
     )
     print(f"  avg starved ticks: {safe_mean([item['starved'] for item in items]):.2f}")
+    print(
+        f"  avg hold-fresh ticks: {safe_mean([item['hold_fresh'] for item in items]):.2f}"
+    )
+    print(
+        f"  avg reserve-spend ticks: {safe_mean([item['reserve_spend'] for item in items]):.2f}"
+    )
     print(f"  avg shortfall: {safe_mean([item['shortfall'] for item in items]):.2f}")
 
 
@@ -130,6 +138,8 @@ def main():
                     "buf_min": extract(CADENCE_BUFMIN_RE, line),
                     "starved": extract(CADENCE_STARVED_RE, line),
                     "single": extract(CADENCE_SINGLE_RE, line),
+                    "hold_fresh": extract(CADENCE_HOLD_FRESH_RE, line),
+                    "reserve_spend": extract(CADENCE_SPEND_RE, line),
                 }
             )
             samples.append(sample_with_problems(sample))
@@ -184,7 +194,8 @@ def main():
         print(
             "  perf_line={perf} cadence_line={cad} tick_dup={tick_dup} perf_dup={perf_dup} "
             "thr={thr} deliv={deliv} min_del250={min_del_250} min_in250={min_in_250} "
-            "drop_stale={drop_stale} empty={empty_pm} buf_avg={buf_avg_pm} buf_min={buf_min} "
+            "drop_stale={drop_stale} hold_fresh={hold_fresh} reserve_spend={reserve_spend} "
+            "empty={empty_pm} buf_avg={buf_avg_pm} buf_min={buf_min} "
             "starved={starved} shortfall={shortfall}".format(
                 perf=item["line"],
                 cad=item["cadence_line"],
@@ -195,6 +206,8 @@ def main():
                 min_del_250=item["min_del_250"],
                 min_in_250=item["min_in_250"],
                 drop_stale=item["drop_stale"],
+                hold_fresh=item["hold_fresh"],
+                reserve_spend=item["reserve_spend"],
                 empty_pm=item["empty_pm"],
                 buf_avg_pm=item["buf_avg_pm"],
                 buf_min=item["buf_min"],

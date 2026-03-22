@@ -67,6 +67,18 @@ size_t FindPreviousFrameIndexIf(const FrameContainer& frames, size_t startExclus
     return frames.size();
 }
 
+template <typename FrameContainer, typename Predicate>
+size_t FindNextFrameIndexIf(const FrameContainer& frames, size_t startExclusive, Predicate&& predicate) {
+    const size_t searchStart = std::min(startExclusive, frames.size());
+    for (size_t i = searchStart; i < frames.size(); ++i) {
+        if (predicate(frames[i])) {
+            return i;
+        }
+    }
+
+    return frames.size();
+}
+
 inline int64_t ComputeIdealOutputQpc(int64_t gridStartQpc, int64_t gridTickCount, int64_t targetIntervalTicks) {
     if (gridStartQpc <= 0 || targetIntervalTicks <= 0 || gridTickCount <= 0) {
         return gridStartQpc;

@@ -26,6 +26,7 @@ constexpr size_t kWgcWarmupFreshFrames = 2;
 constexpr uint32_t kWgcReservePressurePermille = 600;
 constexpr uint32_t kWgcReserveBiasPermille = 250;
 constexpr uint32_t kWgcReserveFragileBiasPermille = 375;
+constexpr uint32_t kWgcSingleFreshHoldInputPermille = 995;
 
 struct WgcAdaptiveTelemetry {
     uint32_t outputFps = 0;
@@ -252,6 +253,21 @@ inline bool ShouldPreferEarlierFreshWgcFrameToPreserveReserve(int64_t earlierFra
     const int64_t reserveBiasQpc = std::max<int64_t>((targetIntervalTicks * static_cast<int64_t>(biasPermille)) / 1000,
                                                      1);
     return earlierDistance <= (selectedDistance + reserveBiasQpc);
+}
+
+inline bool ShouldAllowSingleFreshWgcHold(bool reservePressureActive, bool lowSourceMode,
+                                          uint32_t recentInputMin250Fps, uint32_t outputFps,
+                                          double smoothedInputPerTick) {
+    if (!(reservePressureActive || lowSourceMode) || outputFps == 0) {
+        return false;
+    }
+
+    if (recentInputMin250Fps < outputFps) {
+        return true;
+    }
+
+    const double holdInputThreshold = static_cast<double>(kWgcSingleFreshHoldInputPermille) / 1000.0;
+    return smoothedInputPerTick < holdInputThreshold;
 }
 
 inline size_t ClampWgcSelectionIndexForLowSource(size_t bestIdx, size_t availableCount, size_t bufferedWgcFrames,

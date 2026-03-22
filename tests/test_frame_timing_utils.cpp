@@ -120,6 +120,38 @@ TEST(FrameTimingUtilsTest, FindPreviousFrameIndexIfReturnsSizeWhenNoEarlierMatch
     EXPECT_EQ(bestIndex, frames.size());
 }
 
+TEST(FrameTimingUtilsTest, FindNextFrameIndexIfFindsNearestLaterMatch) {
+    std::deque<QueuedFrame> frames;
+
+    QueuedFrame first;
+    first.frameIndex = 1;
+    frames.push_back(std::move(first));
+
+    QueuedFrame second;
+    second.frameIndex = 2;
+    frames.push_back(std::move(second));
+
+    QueuedFrame third;
+    third.frameIndex = 3;
+    frames.push_back(std::move(third));
+
+    const size_t bestIndex =
+        FindNextFrameIndexIf(frames, 1, [](const QueuedFrame& frame) { return frame.frameIndex != 2; });
+    EXPECT_EQ(bestIndex, 2u);
+}
+
+TEST(FrameTimingUtilsTest, FindNextFrameIndexIfReturnsSizeWhenNoLaterMatchExists) {
+    std::deque<QueuedFrame> frames;
+
+    QueuedFrame only;
+    only.frameIndex = 7;
+    frames.push_back(std::move(only));
+
+    const size_t bestIndex =
+        FindNextFrameIndexIf(frames, 1, [](const QueuedFrame& frame) { return frame.frameIndex == 8; });
+    EXPECT_EQ(bestIndex, frames.size());
+}
+
 TEST(FrameTimingUtilsTest, SelectFrameClosestToGridBreaksTiesTowardNewerFrame) {
     std::deque<QueuedFrame> frames;
 

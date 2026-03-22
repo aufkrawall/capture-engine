@@ -171,3 +171,10 @@ TEST(CapturePipelinePolicyTest, WgcReserveBiasPrefersEarlierFreshFrameWhenDiffer
     EXPECT_FALSE(policy::ShouldPreferEarlierFreshWgcFrameToPreserveReserve(920, 1040, 1020, 100, false, false));
     EXPECT_FALSE(policy::ShouldPreferEarlierFreshWgcFrameToPreserveReserve(900, 1040, 1020, 100, true, false));
 }
+
+TEST(CapturePipelinePolicyTest, WgcSingleFreshHoldRequiresFragileSourceConditions) {
+    EXPECT_TRUE(policy::ShouldAllowSingleFreshWgcHold(true, false, 118, 120, 0.98));
+    EXPECT_TRUE(policy::ShouldAllowSingleFreshWgcHold(false, true, 120, 120, 0.99));
+    EXPECT_FALSE(policy::ShouldAllowSingleFreshWgcHold(false, false, 118, 120, 0.98));
+    EXPECT_FALSE(policy::ShouldAllowSingleFreshWgcHold(true, false, 120, 120, 1.01));
+}
