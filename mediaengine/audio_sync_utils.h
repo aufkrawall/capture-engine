@@ -26,4 +26,15 @@ inline int64_t ComputeBufferedAudioTargetSamples(int sampleRate, int64_t baseLat
     return std::max<int64_t>(0, baseLatencySamples + lagSamples);
 }
 
+inline int64_t ComputeAudioPullLatencyMs(int64_t steadyLatencyMs, bool allSourcesPrimed,
+                                         int64_t maxObservedLateStartMs) {
+    const int64_t baseLatencyMs = std::max<int64_t>(0, steadyLatencyMs);
+    if (allSourcesPrimed) {
+        return baseLatencyMs;
+    }
+
+    const int64_t startupLatencyMs = std::max<int64_t>(baseLatencyMs + 30, maxObservedLateStartMs + 20);
+    return std::clamp<int64_t>(startupLatencyMs, baseLatencyMs, 120);
+}
+
 }  // namespace ce::audio

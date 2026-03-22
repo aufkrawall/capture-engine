@@ -249,6 +249,8 @@ private:
     float m_PrerenderLimit;
 };
 
+class PerformanceMetrics;
+
 // Exported wrapper functions (Capture_ prefixed)
 extern "C" {
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateInstance(const VkInstanceCreateInfo* pCreateInfo,
@@ -298,6 +300,7 @@ void CleanupOverlay(VkDevice device);
 bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, VkSemaphore waitSemaphore,
                    VkSemaphore signalSemaphore, int32_t* fenceWaitUs = nullptr);
 VkSemaphore GetOverlaySemaphore(VkDevice device, uint32_t imageIndex);
+PerformanceMetrics* GetOverlayPerformanceMetrics(VkDevice device);
 void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkExtent2D extent,
                        uint32_t imageCount);
 void CleanupCapture(VkDevice device);

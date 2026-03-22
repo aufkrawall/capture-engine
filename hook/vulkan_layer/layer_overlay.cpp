@@ -460,6 +460,15 @@ VkSemaphore GetOverlaySemaphore(VkDevice device, uint32_t imageIndex) {
     return VK_NULL_HANDLE;
 }
 
+PerformanceMetrics* GetOverlayPerformanceMetrics(VkDevice device) {
+    std::lock_guard<std::mutex> lock(g_OverlayMutex);
+    auto it = g_OverlayStates.find(device);
+    if (it != g_OverlayStates.end() && it->second.initialized) {
+        return it->second.metrics;
+    }
+    return nullptr;
+}
+
 void CleanupOverlay(VkDevice device) {
     std::lock_guard<std::mutex> lock(g_OverlayMutex);
     auto it = g_OverlayStates.find(device);

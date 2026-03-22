@@ -10,6 +10,7 @@
 #include <deque>
 #include <mutex>
 #include <vector>
+#include "../common/performance_metrics.h"
 #include "../common/capture_pacing.h"
 #include "../common/fps_limiter.h"
 #include "../common/perf_logger.h"
@@ -954,6 +955,13 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     // presents via DXGI.
     auto* shm = g_IPCClient.GetSharedMem();
     if (shm) {
+        perfMetrics.sourceCapturePhase = shm->runtimeState.capturePhase.load(std::memory_order_relaxed);
+        perfMetrics.sourceEncoderQueueDepth = shm->encoderQueueDepth.load(std::memory_order_relaxed);
+        perfMetrics.sourceMuxQueueKb =
+            (shm->runtimeState.muxQueueBytes.load(std::memory_order_relaxed) + 1023u) / 1024u;
+        perfMetrics.sourceOverloadFlags = shm->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
+    }
+    if (shm) {
         shm->runtimeState.vulkanPresentThreadId.store(GetCurrentThreadId(), std::memory_order_release);
         shm->runtimeState.vulkanPresentTick.store(GetTickCount64(), std::memory_order_release);
     }
@@ -983,6 +991,13 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     }
 
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceFromQueue(queue);
+    VkDevice queueDevice = VulkanLayerState::Get().GetVkDeviceFromQueue(queue);
+    if (auto* perf = GetOverlayPerformanceMetrics(queueDevice)) {
+        perfMetrics.sourceCurrentFpsTimes100 = static_cast<int32_t>(perf->GetCurrentFPS() * 100.0f + 0.5f);
+        perfMetrics.source1PctLowTimes100 = static_cast<int32_t>(perf->Get1PercentLowFPS() * 100.0f + 0.5f);
+        perfMetrics.sourcePoint1PctLowTimes100 = static_cast<int32_t>(perf->Get01PercentLowFPS() * 100.0f + 0.5f);
+        perfMetrics.sourceFrameTimeStdDevUs = static_cast<int32_t>(perf->GetWindowStdDev() + 0.5);
+    }
 
     // Track the semaphore we should wait on (starts with the game's semaphore)
     VkSemaphore currentWait =
@@ -1000,6 +1015,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         SwapchainData* sd = VulkanLayerState::Get().GetSwapchainData(pPresentInfo->pSwapchains[0]);
         if (sd) {
             uint32_t idx = pPresentInfo->pImageIndices[0];
+            perfMetrics.sourceFrameIndex = idx + 1;
 
             // OPTIMIZATION: Chained semaphores for perfect GPU-side async execution.
             // Game -> Overlay -> Capture -> Present

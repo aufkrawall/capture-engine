@@ -289,6 +289,20 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT Syn
     perfMetrics.api[sizeof(perfMetrics.api) - 1] = '\0';
     static uint64_t s_perfFrameNum = 0;
     perfMetrics.frameNum = ++s_perfFrameNum;
+    if (g_pSharedMem) {
+        perfMetrics.sourceFrameIndex = DXGIShared::GetLatestSourceFrameIndex();
+        perfMetrics.sourceCapturePhase = g_pSharedMem->runtimeState.capturePhase.load(std::memory_order_relaxed);
+        perfMetrics.sourceEncoderQueueDepth = g_pSharedMem->encoderQueueDepth.load(std::memory_order_relaxed);
+        perfMetrics.sourceMuxQueueKb =
+            (g_pSharedMem->runtimeState.muxQueueBytes.load(std::memory_order_relaxed) + 1023u) / 1024u;
+        perfMetrics.sourceOverloadFlags = g_pSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
+    }
+    if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
+        perfMetrics.sourceCurrentFpsTimes100 = static_cast<int32_t>(perf->GetCurrentFPS() * 100.0f + 0.5f);
+        perfMetrics.source1PctLowTimes100 = static_cast<int32_t>(perf->Get1PercentLowFPS() * 100.0f + 0.5f);
+        perfMetrics.sourcePoint1PctLowTimes100 = static_cast<int32_t>(perf->Get01PercentLowFPS() * 100.0f + 0.5f);
+        perfMetrics.sourceFrameTimeStdDevUs = static_cast<int32_t>(perf->GetWindowStdDev() + 0.5);
+    }
 
     // Scope guard to log metrics on any exit path
     auto perfGuard = ce::make_scope_guard([&]() {

@@ -58,10 +58,16 @@ public:
         int dropFadeSamplesRemaining = 0;               // Remaining samples for post-drop transition smoothing
         float dropFadeStartL = 0.0f;                    // Left sample anchor for drop transition
         float dropFadeStartR = 0.0f;                    // Right sample anchor for drop transition
+        int underrunFadeSamplesRemaining = 0;           // Remaining samples for post-underrun fade-in
         uint64_t overflowDropSamples = 0;               // Newest samples dropped before entering the ring buffer
         uint64_t latencyTrimSamples = 0;                // Oldest samples trimmed to keep latency bounded
         uint64_t postResampleTrimSamples = 0;           // Samples discarded from post-resample backlog cap
         uint64_t underrunPadSamples = 0;                // Silence-padded samples due to source underrun
+        int64_t alignedStartMs = -1;                    // First source packet offset relative to recording start
+        int64_t observedLateStartMs = 0;                // Latest observed startup delay used for startup pull slack
+        bool hasAlignedStart = false;                   // True after first packet aligned to recording start
+        bool isPrimed = false;                          // True after source has buffered a startup safety cushion
+        bool pendingUnderrunRecoveryFade = false;       // Arm fade-in when real audio resumes after padded silence
 
         AudioConfig config;
         int track = 0;  // Target track number
@@ -134,10 +140,16 @@ public:
             src.dropFadeSamplesRemaining = 0;
             src.dropFadeStartL = 0.0f;
             src.dropFadeStartR = 0.0f;
+            src.underrunFadeSamplesRemaining = 0;
             src.overflowDropSamples = 0;
             src.latencyTrimSamples = 0;
             src.postResampleTrimSamples = 0;
             src.underrunPadSamples = 0;
+            src.alignedStartMs = -1;
+            src.observedLateStartMs = 0;
+            src.hasAlignedStart = false;
+            src.isPrimed = false;
+            src.pendingUnderrunRecoveryFade = false;
         }
         audioSyncPending.store(false);
     }
@@ -461,10 +473,16 @@ public:
                 src.dropFadeSamplesRemaining = 0;
                 src.dropFadeStartL = 0.0f;
                 src.dropFadeStartR = 0.0f;
+                src.underrunFadeSamplesRemaining = 0;
                 src.overflowDropSamples = 0;
                 src.latencyTrimSamples = 0;
                 src.postResampleTrimSamples = 0;
                 src.underrunPadSamples = 0;
+                src.alignedStartMs = -1;
+                src.observedLateStartMs = 0;
+                src.hasAlignedStart = false;
+                src.isPrimed = false;
+                src.pendingUnderrunRecoveryFade = false;
             }
 
             // Start all audio sources
@@ -578,10 +596,16 @@ public:
             src.dropFadeSamplesRemaining = 0;
             src.dropFadeStartL = 0.0f;
             src.dropFadeStartR = 0.0f;
+            src.underrunFadeSamplesRemaining = 0;
             src.overflowDropSamples = 0;
             src.latencyTrimSamples = 0;
             src.postResampleTrimSamples = 0;
             src.underrunPadSamples = 0;
+            src.alignedStartMs = -1;
+            src.observedLateStartMs = 0;
+            src.hasAlignedStart = false;
+            src.isPrimed = false;
+            src.pendingUnderrunRecoveryFade = false;
         }
 
         // Reset video frame tracking for next recording
@@ -780,6 +804,11 @@ public:
         if (!recording || audioSources.empty())
             return;
 
+        constexpr int SAMPLE_RATE = 48000;
+        constexpr int CHANNELS = 2;
+        constexpr int64_t kSteadyAudioPullLatencyMs = 50;
+        constexpr int64_t kPrimedSourceCushionSamples = SAMPLE_RATE / 50;  // 20ms
+
         // Drive audio from authoritative encoded video timeline once available.
         // This prevents long-run drift when effective delivered frame cadence
         // differs from nominal FPS (e.g. 112fps delivered at 120fps target).
@@ -798,19 +827,28 @@ public:
         }
         const int64_t videoPipelineLagMs = ce::audio::ComputeVideoPipelineLagMs(wallVideoMs, encodedVideoMs);
 
+        bool allSourcesPrimed = true;
+        int64_t maxObservedLateStartMs = 0;
+        for (const auto& src : audioSources) {
+            if (!src.sharedEncoderPtr) {
+                continue;
+            }
+            allSourcesPrimed = allSourcesPrimed && src.isPrimed;
+            maxObservedLateStartMs = std::max(maxObservedLateStartMs, src.observedLateStartMs);
+        }
+
         // Apply a latency offset to allow audio capture to buffer.
         // WASAPI loopback has ~20-50ms latency. If we pull exactly up to the video time,
         // the audio hasn't arrived yet, causing silence padding and subsequent dropping.
-        const int64_t AUDIO_PULL_LATENCY_MS = 50;
-        audioTargetMs -= AUDIO_PULL_LATENCY_MS;
+        const int64_t audioPullLatencyMs =
+            ce::audio::ComputeAudioPullLatencyMs(kSteadyAudioPullLatencyMs, allSourcesPrimed, maxObservedLateStartMs);
+        audioTargetMs -= audioPullLatencyMs;
 
         // Safety: if video elapsed time is somehow negative or 0, skip
         if (audioTargetMs <= 0)
             return;
 
         // 48kHz stereo, calculate total samples needed up to this point
-        const int SAMPLE_RATE = 48000;
-        const int CHANNELS = 2;
         int64_t targetSamples = (audioTargetMs * SAMPLE_RATE) / 1000;
 
         // Ensure tracking vector is sized correctly
@@ -874,6 +912,16 @@ public:
             // Pull from each source with drift compensation and sum into mix buffer
             for (size_t srcIdx : srcIndices) {
                 auto& src = audioSources[srcIdx];
+
+                size_t primedSampleCount = src.postResampleBuffer.size() / CHANNELS;
+                if (src.ringBuffer) {
+                    primedSampleCount += src.ringBuffer->GetAvailable() / CHANNELS;
+                }
+                if (src.hasAlignedStart && !src.isPrimed && primedSampleCount >= (size_t)kPrimedSourceCushionSamples) {
+                    src.isPrimed = true;
+                    DLL_Log("[PullAudio] Source primed - src=%d buffered=%zu samples lateStart=%lldms", (int)srcIdx,
+                            primedSampleCount, src.observedLateStartMs);
+                }
 
                 // Check for dropped samples (ring buffer overflow)
                 size_t droppedFloats = src.ringBuffer->GetAndClearDroppedSamples();
@@ -1050,6 +1098,21 @@ public:
                                     }
                                     src.dropFadeSamplesRemaining -= blendSamples;
                                 }
+                                if (src.pendingUnderrunRecoveryFade) {
+                                    src.underrunFadeSamplesRemaining = SAMPLE_RATE / 200;
+                                    src.pendingUnderrunRecoveryFade = false;
+                                }
+                                if (src.underrunFadeSamplesRemaining > 0) {
+                                    const int kUnderrunFadeSamples = SAMPLE_RATE / 200;
+                                    int blendSamples = std::min(src.underrunFadeSamplesRemaining, outSamples);
+                                    int blendStart = kUnderrunFadeSamples - src.underrunFadeSamplesRemaining;
+                                    for (int s = 0; s < blendSamples; s++) {
+                                        float alpha = (float)(blendStart + s + 1) / kUnderrunFadeSamples;
+                                        outFloats[s * CHANNELS] *= alpha;
+                                        outFloats[s * CHANNELS + 1] *= alpha;
+                                    }
+                                    src.underrunFadeSamplesRemaining -= blendSamples;
+                                }
                                 int numFloats = outSamples * CHANNELS;
                                 src.postResampleBuffer.insert(src.postResampleBuffer.end(), outFloats,
                                                               outFloats + numFloats);
@@ -1092,12 +1155,20 @@ public:
                 }
                 if (toCopy < totalFloats) {
                     size_t padSamples = (totalFloats - toCopy) / CHANNELS;
-                    src.underrunPadSamples += padSamples;
-                    if (padSamples >= (size_t)(SAMPLE_RATE / 200) && dropLogCounter++ % 100 == 0) {
+                    const bool startupPadding = !src.hasAlignedStart || !src.isPrimed;
+                    if (!startupPadding) {
+                        src.underrunPadSamples += padSamples;
+                    }
+                    src.pendingUnderrunRecoveryFade = true;
+                    if (!startupPadding && padSamples >= (size_t)(SAMPLE_RATE / 200) && dropLogCounter++ % 100 == 0) {
                         DLL_Log(
                             "[PullAudio] WARNING: Source underrun - src %d padding %zu samples with silence "
                             "(available=%zu needed=%zu)",
                             (int)srcIdx, padSamples, available / CHANNELS, totalFloats / CHANNELS);
+                    } else if (startupPadding && padSamples >= (size_t)(SAMPLE_RATE / 50) && dropLogCounter++ % 200 == 0) {
+                        DLL_Log("[PullAudio] Startup padding - src %d aligned=%d primed=%d pad=%zu available=%zu need=%zu",
+                                (int)srcIdx, (int)src.hasAlignedStart, (int)src.isPrimed, padSamples,
+                                available / CHANNELS, totalFloats / CHANNELS);
                     }
                 }
                 // If toCopy < totalFloats, the rest is already zero (silence padding)
@@ -1251,20 +1322,24 @@ public:
                 for (size_t srcIdx : srcIndices) {
                     size_t rbLevel = 0;
                     int64_t syncOutput = 0;
+                    int64_t alignedStartMs = -1;
                     uint64_t srcOverflowDropped = 0;
                     uint64_t srcLatencyTrimmed = 0;
                     uint64_t srcPostTrimmed = 0;
                     uint64_t srcUnderrunPadded = 0;
+                    bool srcPrimed = false;
                     if (srcIdx < audioSources.size()) {
                         auto& src = audioSources[srcIdx];
                         if (src.ringBuffer) {
                             rbLevel = src.ringBuffer->GetAvailable() / CHANNELS;
                         }
                         syncOutput = src.syncSamplesOutput;
+                        alignedStartMs = src.alignedStartMs;
                         srcOverflowDropped = src.overflowDropSamples;
                         srcLatencyTrimmed = src.latencyTrimSamples;
                         srcPostTrimmed = src.postResampleTrimSamples;
                         srcUnderrunPadded = src.underrunPadSamples;
+                        srcPrimed = src.isPrimed;
                     }
 
                     overflowDropped += srcOverflowDropped;
@@ -1274,8 +1349,9 @@ public:
 
                     char sourceState[192];
                     std::snprintf(sourceState, sizeof(sourceState),
-                                  "src%zu(rb=%zu sync=%lld ovf=%llu lat=%llu post=%llu pad=%llu)", srcIdx, rbLevel,
-                                  syncOutput, (unsigned long long)srcOverflowDropped,
+                                  "src%zu(rb=%zu sync=%lld start=%lld primed=%d ovf=%llu lat=%llu post=%llu pad=%llu)",
+                                  srcIdx, rbLevel, syncOutput, alignedStartMs, (int)srcPrimed,
+                                  (unsigned long long)srcOverflowDropped,
                                   (unsigned long long)srcLatencyTrimmed, (unsigned long long)srcPostTrimmed,
                                   (unsigned long long)srcUnderrunPadded);
                     if (!sourceSummary.empty()) {
@@ -1556,6 +1632,14 @@ private:
                     lastSeenStartQPC = currentStartQPC;
                     std::fill(sourceTimestamps.begin(), sourceTimestamps.end(), 0);
                     std::fill(sourceLoggedPreStartDrop.begin(), sourceLoggedPreStartDrop.end(), false);
+                    for (auto& src : audioSources) {
+                        src.alignedStartMs = -1;
+                        src.observedLateStartMs = 0;
+                        src.hasAlignedStart = false;
+                        src.isPrimed = false;
+                        src.pendingUnderrunRecoveryFade = false;
+                        src.underrunFadeSamplesRemaining = 0;
+                    }
                 }
             }
 
@@ -1654,6 +1738,9 @@ private:
                                     // First packet alignment using System QPC
                                     int64_t pTime = packet.timestamp;  // Packet comes with Absolute QPC MS
                                     int64_t diff = pTime - startQPC;
+                                    src.alignedStartMs = diff;
+                                    src.observedLateStartMs = std::max<int64_t>(diff, 0);
+                                    src.hasAlignedStart = true;
 
                                     if (diff > 5 && src.ringBuffer) {
                                         // Audio arrived late relative to recording start; pad with
@@ -1673,6 +1760,9 @@ private:
                                                 "late-start src=%d",
                                                 diff, (int)srcIdx);
                                         }
+                                    } else if (diff < -5) {
+                                        DLL_Log("[AudioLoop] First packet leads recording start by %lld ms for src=%d", diff,
+                                                (int)srcIdx);
                                     }
                                 }
 

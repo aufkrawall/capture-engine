@@ -1219,6 +1219,7 @@ void EncoderThreadFunc(const AppConfig& config) {
     std::deque<QueuedFrame> bufferedInjectFrames;
     double smoothedInjectFenceMs = 0.0;
     bool recordingOutputLive = false;
+    bool pendingLiveActivation = false;
     uint64_t startupWarmupStartTick = GetTickCount64();
     uint64_t recordingLiveTick = 0;
     uint32_t hiddenStartupFrames = 0;
@@ -1259,6 +1260,7 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint32_t lastPacketClampCount = 0;
     uint32_t lastNegativePtsCount = 0;
     uint32_t lastNonMonotonicPtsCount = 0;
+    size_t pendingLiveInjectReadyFrames = 0;
     DWORD lastHealthLog = GetTickCount();
     LARGE_INTEGER liveStartQpc = {};
     uint64_t liveTicksOutput = 0;
@@ -1750,16 +1752,14 @@ void EncoderThreadFunc(const AppConfig& config) {
                 ? ce::capture_policy::GetInjectReserveFrames(config.video.useVFR, smoothedInjectFenceMs,
                                                              frameIntervalMs)
                 : 0;
-        if (!recordingOutputLive && g_Recording && g_EncoderRunning) {
+        if (!recordingOutputLive && !pendingLiveActivation && g_Recording && g_EncoderRunning) {
             const uint64_t warmupElapsedMs64 = GetTickCount64() - startupWarmupStartTick;
             const DWORD warmupElapsedMs =
                 warmupElapsedMs64 > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<DWORD>(warmupElapsedMs64);
             if (ce::capture_policy::ShouldCommitRecordingWarmup(useScreenGrab, config.video.useVFR, popped,
                                                                 !bufferedWgcFrames.empty(), bufferedInjectFrames.size(),
                                                                 injectReserveFrames, warmupElapsedMs)) {
-                recordingOutputLive = true;
-                SetCapturePipelinePhase(CapturePipelinePhase::kLive);
-                recordingLiveTick = GetTickCount64();
+                pendingLiveActivation = true;
                 // Reset Bresenham credit for a clean start; keep smoothedInputPerTick
                 // so the EMA calibration from warmup carries over.
                 frameCreditAccumulator = 0.0;
@@ -1770,6 +1770,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 encoderGridTickCount = 0;
                 liveTicksOutput = 0;
                 liveStartQpc = {};
+                pendingLiveInjectReadyFrames = useScreenGrab ? 0 : ce::capture_policy::GetWarmupInjectKeepCount(
+                                                                    smoothedInjectFenceMs, frameIntervalMs);
                 // CRITICAL: Reset nextSampleTime after sleeping one full interval
                 // so the first live tick fires at the correct cadence. During warmup,
                 // nextSampleTime advances freely (frames are discarded), so it can be
@@ -1856,13 +1858,38 @@ void EncoderThreadFunc(const AppConfig& config) {
                 // Reset counters so per-second logs start clean at going-live.
                 g_InjectBufferedTrimmedFrames.store(0, std::memory_order_relaxed);
                 g_InjectCadenceDroppedFrames.store(0, std::memory_order_relaxed);
-                SetRecordingVisibleState(true);
                 LogInfo(
-                    "[EncoderThread] Recording live after %llums hidden warmup (%s, hiddenFrames=%u, "
-                    "inputRate=%.3f)",
+                    "[EncoderThread] Warmup ready after %llums hidden warmup (%s, hiddenFrames=%u, inputRate=%.3f, "
+                    "readyFrames=%zu)",
                     static_cast<unsigned long long>(warmupElapsedMs64), useScreenGrab ? "WGC" : "inject",
-                    hiddenStartupFrames, smoothedInputPerTick);
+                    hiddenStartupFrames, smoothedInputPerTick, pendingLiveInjectReadyFrames);
             }
+        }
+
+        if (pendingLiveActivation) {
+            const bool liveReady = useScreenGrab || bufferedInjectFrames.size() >= pendingLiveInjectReadyFrames;
+            if (!liveReady) {
+                SetCapturePipelinePhase(CapturePipelinePhase::kWarmup);
+                if (popped) {
+                    ++hiddenStartupFrames;
+                    warmupState.hiddenStartupFrames = hiddenStartupFrames;
+                    DiscardQueuedFrame(frame);
+                }
+                continue;
+            }
+
+            pendingLiveActivation = false;
+            recordingOutputLive = true;
+            SetCapturePipelinePhase(CapturePipelinePhase::kLive);
+            recordingLiveTick = GetTickCount64();
+            lastDeferredLineage = InjectFrameLineage{};
+            if (g_HasLastFrame && g_LastFrame.isInjectMode && !useScreenGrab) {
+                g_LastFrame = QueuedFrame{};
+                g_HasLastFrame = false;
+            }
+            SetRecordingVisibleState(true);
+            LogInfo("[EncoderThread] Recording live (%s, hiddenFrames=%u, bufferedInject=%zu)",
+                    useScreenGrab ? "WGC" : "inject", hiddenStartupFrames, bufferedInjectFrames.size());
         }
 
         if (!recordingOutputLive) {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -7,6 +8,7 @@ namespace ce::capture_policy {
 
 constexpr uint32_t kRecordingWarmupMinMs = 120;
 constexpr uint32_t kRecordingWarmupMaxMs = 350;
+constexpr size_t kInjectWarmupCommitFloorFrames = 3;
 constexpr size_t kMaxInjectBufferedHeadroomFrames = 12;
 constexpr size_t kStartupInjectBufferedHeadroomFrames = 48;
 constexpr uint64_t kEncoderStartupWindowMs = 1500;
@@ -42,7 +44,8 @@ inline bool ShouldCommitRecordingWarmup(bool useScreenGrab, bool useVFR, bool po
         return hasBufferedWgcFrame;
     }
 
-    return bufferedInjectFrames >= injectReserveFrames;
+    const size_t minInjectFrames = std::max(injectReserveFrames, kInjectWarmupCommitFloorFrames);
+    return bufferedInjectFrames >= minInjectFrames;
 }
 
 inline size_t GetInjectReserveFrames(bool useVFR, double smoothedInjectFenceMs, double frameIntervalMs) {
@@ -65,7 +68,8 @@ inline size_t GetInjectReserveFrames(bool useVFR, double smoothedInjectFenceMs, 
 }
 
 inline size_t GetWarmupInjectKeepCount(double smoothedInjectFenceMs, double frameIntervalMs) {
-    return GetInjectReserveFrames(false, smoothedInjectFenceMs, frameIntervalMs) + 1;
+    return std::max(GetInjectReserveFrames(false, smoothedInjectFenceMs, frameIntervalMs) + 1,
+                    kInjectWarmupCommitFloorFrames);
 }
 
 inline size_t GetMinBufferedInjectFrames(size_t injectReserveFrames, bool recordingOutputLive) {

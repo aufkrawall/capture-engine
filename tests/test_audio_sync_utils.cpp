@@ -17,3 +17,10 @@ TEST(AudioSyncUtilsTest, BufferedAudioTargetFallsBackToBaseLatencyForInvalidSamp
     EXPECT_EQ(ce::audio::ComputeBufferedAudioTargetSamples(0, 960, 325), 960);
     EXPECT_EQ(ce::audio::ComputeBufferedAudioTargetSamples(-1, 960, 325), 960);
 }
+
+TEST(AudioSyncUtilsTest, AudioPullLatencyUsesStartupSlackUntilSourcesPrime) {
+    EXPECT_EQ(ce::audio::ComputeAudioPullLatencyMs(50, true, 0), 50);
+    EXPECT_EQ(ce::audio::ComputeAudioPullLatencyMs(50, false, 0), 80);
+    EXPECT_EQ(ce::audio::ComputeAudioPullLatencyMs(50, false, 95), 115);
+    EXPECT_EQ(ce::audio::ComputeAudioPullLatencyMs(50, false, 500), 120);
+}

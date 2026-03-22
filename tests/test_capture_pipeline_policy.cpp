@@ -24,7 +24,9 @@ TEST(CapturePipelinePolicyTest, WarmupCommitUsesVfrAndBufferedSourceRules) {
                                                     policy::kRecordingWarmupMinMs));
     EXPECT_FALSE(policy::ShouldCommitRecordingWarmup(false, false, true, false, 1, 2,
                                                      policy::kRecordingWarmupMinMs));
-    EXPECT_TRUE(policy::ShouldCommitRecordingWarmup(false, false, true, false, 2, 2,
+    EXPECT_FALSE(policy::ShouldCommitRecordingWarmup(false, false, true, false, 2, 2,
+                                                      policy::kRecordingWarmupMinMs));
+    EXPECT_TRUE(policy::ShouldCommitRecordingWarmup(false, false, true, false, 3, 2,
                                                     policy::kRecordingWarmupMinMs));
 }
 
@@ -37,7 +39,7 @@ TEST(CapturePipelinePolicyTest, InjectReserveFramesScaleWithFenceLeadTime) {
 }
 
 TEST(CapturePipelinePolicyTest, WarmupKeepCountAndMinimumBufferedFramesFollowReserve) {
-    EXPECT_EQ(policy::GetWarmupInjectKeepCount(0.0, 8.333), 2u);
+    EXPECT_EQ(policy::GetWarmupInjectKeepCount(0.0, 8.333), 3u);
     EXPECT_EQ(policy::GetWarmupInjectKeepCount(19.0, 8.0), 5u);
     EXPECT_EQ(policy::GetMinBufferedInjectFrames(0, false), 0u);
     EXPECT_EQ(policy::GetMinBufferedInjectFrames(3, false), 3u);
