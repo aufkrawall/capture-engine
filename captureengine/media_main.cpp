@@ -889,7 +889,11 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                             qf.sharedHandle = (HANDLE)g_pSharedMem->GetSharedHandle(0);
                             LogDebug("[Inject Thread] Invalid texIdx=%d, using handle 0: %p", texIdx, qf.sharedHandle);
                         }
-                        qf.fenceHandle = (HANDLE)g_pSharedMem->GetFenceShareHandle();
+                        const bool useEncoderTextureFence =
+                            g_pSharedMem->useEncoderTextures.load(std::memory_order_acquire);
+                        qf.fenceHandle =
+                            useEncoderTextureFence ? (HANDLE)g_pSharedMem->encoderTextures.GetFenceHandle()
+                                                  : (HANDLE)g_pSharedMem->GetFenceShareHandle();
                         qf.fenceValue = slot.fenceValue;
                     }
 

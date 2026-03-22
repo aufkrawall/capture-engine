@@ -124,31 +124,42 @@ static uint64_t MakeLuidKey(const LUID& luid) {
     return (static_cast<uint64_t>(luid.HighPart) << 32) | static_cast<uint32_t>(luid.LowPart);
 }
 
-// Detect DXVK by checking if d3d11.dll is NOT from System32 AND has DXVK version info.
-static bool IsDXVKD3D11Active() {
-    if (!IsDllFromProject("d3d11.dll", "dxvk"))
+static bool IsSpecificDxvkWrapperLoaded(const char* dllName) {
+    if (!IsDllFromProject(dllName, "dxvk")) {
         return false;
-    char loadedPath[MAX_PATH] = {};
-    HMODULE hD3D11 = GetModuleHandleA("d3d11.dll");
-    GetModuleFileNameA(hD3D11, loadedPath, MAX_PATH);
-    LayerLog("Vulkan Layer: DXVK d3d11.dll detected at: %s", loadedPath);
-    return true;
+    }
+    return GetModuleHandleA(dllName) != nullptr;
 }
 
-// Unified DXVK detection: checks dxgi.dll, d3d11.dll, and d3d9.dll.
-// Returns true if ANY of them are loaded from outside System32 AND carry DXVK version info.
-static bool IsDXVKActive() {
-    const char* dllNames[] = {"dxgi.dll", "d3d11.dll", "d3d9.dll"};
-    for (const char* dllName : dllNames) {
-        if (IsDllFromProject(dllName, "dxvk")) {
-            HMODULE hMod = GetModuleHandleA(dllName);
-            char loadedPath[MAX_PATH] = {};
-            GetModuleFileNameA(hMod, loadedPath, MAX_PATH);
-            LayerLog("Vulkan Layer: DXVK detected - %s loaded from: %s (not System32)", dllName, loadedPath);
-            return true;
-        }
+enum class VulkanCaptureInteropMode {
+    kNative,
+    kDxvkD3D11,
+    kDxvkD3D9,
+};
+
+static VulkanCaptureInteropMode DetectVulkanInteropMode() {
+    const bool dxvkD3D11 = IsSpecificDxvkWrapperLoaded("d3d11.dll");
+    const bool dxvkD3D9 = IsSpecificDxvkWrapperLoaded("d3d9.dll");
+
+    if (dxvkD3D11) {
+        return VulkanCaptureInteropMode::kDxvkD3D11;
     }
-    return false;
+    if (dxvkD3D9) {
+        return VulkanCaptureInteropMode::kDxvkD3D9;
+    }
+    return VulkanCaptureInteropMode::kNative;
+}
+
+static const char* VulkanInteropModeToString(VulkanCaptureInteropMode mode) {
+    switch (mode) {
+    case VulkanCaptureInteropMode::kNative:
+        return "native";
+    case VulkanCaptureInteropMode::kDxvkD3D11:
+        return "dxvk-d3d11";
+    case VulkanCaptureInteropMode::kDxvkD3D9:
+        return "dxvk-d3d9";
+    }
+    return "unknown";
 }
 
 static D3D11InteropDevice* GetOrCreateD3D11Device(const LUID& luid) {
@@ -807,7 +818,8 @@ static SharedTextureEntry* GetOrCreateSharedTextures(VkDevice vkDev, DeviceDispa
     // If those are unavailable, fall back to D3D11 interop textures and expose
     // dedicated relay handles/fences for the encoder instead of publishing the
     // imported Vulkan-side KMT handles directly.
-    bool dxvkActive = IsDXVKActive();
+    const VulkanCaptureInteropMode interopMode = DetectVulkanInteropMode();
+    const bool allowDxvkEncoderTextures = (interopMode == VulkanCaptureInteropMode::kDxvkD3D11);
 
     // Get D3D11 device
     D3D11InteropDevice* interopDev = GetOrCreateD3D11Device(luid);
@@ -820,14 +832,14 @@ static SharedTextureEntry* GetOrCreateSharedTextures(VkDevice vkDev, DeviceDispa
         }
 
         LayerLog("Vulkan Layer: [Warn] D3D11 interop texture setup failed%s",
-                 dxvkActive ? ", trying Vulkan-native fallback" : "");
-    } else if (!dxvkActive) {
+                 allowDxvkEncoderTextures ? ", trying Vulkan-native fallback" : "");
+    } else if (!allowDxvkEncoderTextures) {
         return nullptr;
     }
 
     // Vulkan-native fallback: only useful for non-DXVK or when D3D11 interop fails completely
-    if (dxvkActive) {
-        LayerLog("Vulkan Layer: DXVK active - trying Vulkan-native shared textures as fallback");
+    if (allowDxvkEncoderTextures) {
+        LayerLog("Vulkan Layer: DXVK d3d11 interop mode active - trying Vulkan-native shared textures as fallback");
         SharedTextureEntry nativeEntry;
         if (CreateVulkanNativeSharedTextures(vkDev, disp, physDev, luid, width, height, vkFormat, nativeEntry)) {
             LayerLog("Vulkan Layer: Vulkan-native fallback succeeded (exported NT handles)");
@@ -874,6 +886,8 @@ struct VulkanCaptureState {
     HANDLE ipcFenceHandle = nullptr;
 
     uint64_t nextEncoderImportRetryFrame = 0;
+    uint32_t queueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    VulkanCaptureInteropMode interopMode = VulkanCaptureInteropMode::kNative;
 };
 
 static std::mutex g_CaptureMutex;
@@ -1085,10 +1099,15 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     SharedTextureEntry* sharedTextures = nullptr;
     auto* mem = g_IPCClient.GetSharedMem();
     bool usingEncoderTextures = false;
-    bool dxvkActive = IsDXVKActive();
+    const VulkanCaptureInteropMode interopMode = DetectVulkanInteropMode();
+    const bool allowDxvkEncoderTextures = (interopMode == VulkanCaptureInteropMode::kDxvkD3D11);
+    LayerLog("Vulkan Layer: Capture interop mode = %s", VulkanInteropModeToString(interopMode));
+    if (interopMode == VulkanCaptureInteropMode::kNative) {
+        LayerLog("Vulkan Layer: Native Vulkan detected - encoder KMT adoption disabled");
+    }
 
-    if (dxvkActive && mem) {
-        // DXVK zero-copy path: import encoder's KMT handles into Vulkan.
+    if (allowDxvkEncoderTextures && mem) {
+        // DXVK D3D11 zero-copy path: import encoder's KMT handles into Vulkan.
 
         // Publish resolution FIRST so the encoder can create textures
         mem->SetWidth(extent.width);
@@ -1143,7 +1162,7 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
                 // Tell encoder to use its own textures directly
                 mem->useEncoderTextures.store(true, std::memory_order_release);
                 usingEncoderTextures = true;
-                LayerLog("Vulkan Layer: DXVK zero-copy: imported %d encoder KMT textures into Vulkan", 4);
+                LayerLog("Vulkan Layer: DXVK d3d11 zero-copy: imported %d encoder KMT textures into Vulkan", 4);
             } else {
                 LayerLog("Vulkan Layer: [Warn] Failed to import encoder KMT textures, falling back to interop");
             }
@@ -1166,39 +1185,8 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     }
 
     if (!usingEncoderTextures) {
-        if (!dxvkActive && mem) {
-            // Non-DXVK: check once for encoder textures; fall through immediately
-            // to IPC relay if not ready (avoids a 5-second startup stall).
-            const int maxWaitMs = 0;
-            const int checkIntervalMs = 10;
-            int waitedMs = 0;
-
-            while (waitedMs < maxWaitMs) {
-                if (mem->encoderTextures.ready.load(std::memory_order_acquire)) {
-                    HANDLE encoderHandles[4];
-                    bool allValid = true;
-                    for (int i = 0; i < 4; i++) {
-                        encoderHandles[i] = (HANDLE)mem->encoderTextures.GetTextureHandle(i);
-                        if (!encoderHandles[i]) {
-                            allValid = false;
-                            break;
-                        }
-                    }
-
-                    if (allValid) {
-                        LayerIPC_SetTextures(encoderHandles, 4, extent.width, extent.height, VkFormatToDXGI(format));
-                        LayerLog("Vulkan Layer: Publishing encoder texture handles");
-                        usingEncoderTextures = true;
-                        break;
-                    }
-                }
-                Sleep(checkIntervalMs);
-                waitedMs += checkIntervalMs;
-            }
-
-            if (!usingEncoderTextures) {
-                LayerLog("Vulkan Layer: Timeout waiting for encoder textures, falling back to IPC relay");
-            }
+        if (!allowDxvkEncoderTextures && mem) {
+            LayerLog("Vulkan Layer: Native Vulkan mode - keeping IPC relay path (encoder KMT adoption disabled)");
         }
 
         // Fallback to our own textures if encoder textures not available
@@ -1224,6 +1212,7 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     state.captureWidth = extent.width;
     state.captureHeight = extent.height;
     state.captureFormat = NormalizeVkFormat((VkFormat)format);
+    state.interopMode = interopMode;
     state.initialized = true;
 
     // Create command pool
@@ -1540,8 +1529,16 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
     if (!disp)
         return;
 
+    if (state.queueFamilyIndex == VK_QUEUE_FAMILY_IGNORED) {
+        state.queueFamilyIndex = VulkanLayerState::Get().GetQueueFamilyIndex(queue);
+        if (state.queueFamilyIndex == VK_QUEUE_FAMILY_IGNORED) {
+            LayerLog("Vulkan Layer: [Warn] Unknown queue family for capture queue; using queue-family-ignored barriers");
+        }
+    }
+
     auto* mem = g_IPCClient.GetSharedMem();
-    if (mem && !mem->useEncoderTextures.load(std::memory_order_acquire) &&
+    const bool allowDxvkEncoderTextures = (state.interopMode == VulkanCaptureInteropMode::kDxvkD3D11);
+    if (allowDxvkEncoderTextures && mem && !mem->useEncoderTextures.load(std::memory_order_acquire) &&
         mem->encoderTextures.kmtReady.load(std::memory_order_acquire) &&
         state.captureFrameCounter >= state.nextEncoderImportRetryFrame) {
         SharedTextureEntry encoderEntry;
@@ -1564,7 +1561,7 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
             uint32_t writeIndex = mem->frameRing.writeIndex.load(std::memory_order_acquire);
             mem->frameRing.readIndex.store(writeIndex, std::memory_order_release);
             mem->useEncoderTextures.store(true, std::memory_order_release);
-            LayerLog("Vulkan Layer: DXVK zero-copy: adopted encoder KMT textures after media startup");
+            LayerLog("Vulkan Layer: DXVK d3d11 zero-copy: adopted encoder KMT textures after media startup");
         } else {
             state.nextEncoderImportRetryFrame = state.captureFrameCounter + 60;
         }
@@ -1613,20 +1610,29 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
     if (disp->fp_vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS)
         return;
 
+    const uint32_t queueFamilyIndex =
+        (state.queueFamilyIndex != VK_QUEUE_FAMILY_IGNORED) ? state.queueFamilyIndex : VK_QUEUE_FAMILY_IGNORED;
+    const uint32_t externalQueueFamily =
+        (queueFamilyIndex != VK_QUEUE_FAMILY_IGNORED) ? VK_QUEUE_FAMILY_EXTERNAL : VK_QUEUE_FAMILY_IGNORED;
+
     // Transition and copy
     VkImageMemoryBarrier srcBarrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     srcBarrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;  // Paranoid: Wait for everything
     srcBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     srcBarrier.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;  // Assume presentable layout from game
     srcBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    srcBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    srcBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     srcBarrier.image = srcImage;
     srcBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
     VkImageMemoryBarrier dstBarrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     dstBarrier.srcAccessMask = 0;
     dstBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    dstBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;  // Discard previous content
+    dstBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
     dstBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    dstBarrier.srcQueueFamilyIndex = externalQueueFamily;
+    dstBarrier.dstQueueFamilyIndex = queueFamilyIndex;
     dstBarrier.image = sharedTextures->vkImages[slotIndex];
     dstBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
@@ -1651,14 +1657,18 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
     srcBarrier2.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
     srcBarrier2.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     srcBarrier2.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    srcBarrier2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    srcBarrier2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     srcBarrier2.image = srcImage;
     srcBarrier2.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
     VkImageMemoryBarrier dstBarrier2 = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     dstBarrier2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    dstBarrier2.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    dstBarrier2.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
     dstBarrier2.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    dstBarrier2.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    dstBarrier2.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    dstBarrier2.srcQueueFamilyIndex = queueFamilyIndex;
+    dstBarrier2.dstQueueFamilyIndex = externalQueueFamily;
     dstBarrier2.image = sharedTextures->vkImages[slotIndex];
     dstBarrier2.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 

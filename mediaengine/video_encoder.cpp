@@ -2457,16 +2457,63 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
             }
             if (bgraTex) {
                 bgraTex->AddRef();
-                // Skip fence synchronization - the D3D12 fence handle may be
-                // incompatible with the D3D11 device, causing OpenSharedFence
-                // to throw SEH exceptions that MinGW cannot catch.
-                // Since both the D3D12 hook and D3D11 encoder use the same GPU,
-                // DirectX's implicit ordering guarantees the work is complete.
-                d3d11Fence = nullptr;
+
+                HANDLE directFenceHandle = fenceHandle;
+                if ((!directFenceHandle || directFenceHandle == INVALID_HANDLE_VALUE) && pSharedMem) {
+                    directFenceHandle = reinterpret_cast<HANDLE>(pSharedMem->encoderTextures.GetFenceHandle());
+                }
+
+                if (directFenceHandle && directFenceHandle != INVALID_HANDLE_VALUE && fenceValue > 0) {
+                    HANDLE directFenceHandleAlt = NormalizeSourceHandleForWow64(directFenceHandle, sourcePid);
+                    const bool hasDirectFenceAlt = (directFenceHandleAlt != directFenceHandle);
+
+                    if (sourcePid > 0 && sourcePid == cachedSourcePid && cachedFenceHandle == directFenceHandle &&
+                        cachedD3D11Fence) {
+                        d3d11Fence = cachedD3D11Fence;
+                        d3d11Fence->AddRef();
+                    } else {
+                        ce::HandleGuard hProcess(OpenProcess(PROCESS_DUP_HANDLE, FALSE, sourcePid));
+                        HRESULT fenceHr = E_FAIL;
+                        if (hProcess) {
+                            ce::HandleGuard dupFence;
+                            if (DuplicateHandle(hProcess.get(), directFenceHandle, GetCurrentProcess(), dupFence.addressof(),
+                                                0, FALSE, DUPLICATE_SAME_ACCESS)) {
+                                fenceHr = CallOpenSharedFence(d3d11Device, dupFence.get(), &d3d11Fence);
+                            }
+                            if (FAILED(fenceHr) && hasDirectFenceAlt) {
+                                ce::HandleGuard dupFenceAlt;
+                                if (DuplicateHandle(hProcess.get(), directFenceHandleAlt, GetCurrentProcess(),
+                                                    dupFenceAlt.addressof(), 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+                                    fenceHr = CallOpenSharedFence(d3d11Device, dupFenceAlt.get(), &d3d11Fence);
+                                }
+                            }
+                        }
+                        if (FAILED(fenceHr) && !g_HandleFailureCache.ShouldSkipFence(directFenceHandle)) {
+                            fenceHr = CallOpenSharedFence(d3d11Device, directFenceHandle, &d3d11Fence);
+                        }
+                        if (FAILED(fenceHr) && hasDirectFenceAlt) {
+                            fenceHr = CallOpenSharedFence(d3d11Device, directFenceHandleAlt, &d3d11Fence);
+                        }
+
+                        if (d3d11Fence) {
+                            if (cachedD3D11Fence) {
+                                cachedD3D11Fence->Release();
+                            }
+                            cachedD3D11Fence = d3d11Fence;
+                            cachedD3D11Fence->AddRef();
+                            cachedFenceHandle = directFenceHandle;
+                            cachedSourcePid = sourcePid;
+                        } else if (encodeFrameCounter < 20) {
+                            DLL_Log("[VideoEncoder] Frame %d: Failed to open encoder-texture fence handle=%p value=%llu pid=%u",
+                                    encodeFrameCounter, directFenceHandle, static_cast<unsigned long long>(fenceValue),
+                                    sourcePid);
+                        }
+                    }
+                }
             }
             if (matchIdx >= 0 && encodeFrameCounter < 10) {
-                DLL_Log("[VideoEncoder] Frame %d: Using encoder-owned texture[%d] directly (DXVK zero-copy)",
-                        encodeFrameCounter, matchIdx);
+                DLL_Log("[VideoEncoder] Frame %d: Using encoder-owned texture[%d] directly (encoder fence=%p value=%llu)",
+                        encodeFrameCounter, matchIdx, fenceHandle, static_cast<unsigned long long>(fenceValue));
             }
         }
 
