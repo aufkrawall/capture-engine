@@ -30,6 +30,12 @@ TEST(AudioSyncUtilsTest, AudioPullLatencyIsTrackScoped) {
     EXPECT_EQ(ce::audio::ComputeAudioPullLatencyMs(50, true, 120), 50);
 }
 
+TEST(AudioSyncUtilsTest, TrackStartupSettledUsesBootstrapOrPrimedSources) {
+    EXPECT_FALSE(ce::audio::IsTrackAudioStartupSettled(false, false));
+    EXPECT_TRUE(ce::audio::IsTrackAudioStartupSettled(true, false));
+    EXPECT_TRUE(ce::audio::IsTrackAudioStartupSettled(false, true));
+}
+
 TEST(AudioSyncUtilsTest, BufferedRealAudioExcludesSyntheticStartupSamples) {
     EXPECT_EQ(ce::audio::ComputeBufferedRealAudioSamples(960, 0), 960u);
     EXPECT_EQ(ce::audio::ComputeBufferedRealAudioSamples(960, 240), 720u);

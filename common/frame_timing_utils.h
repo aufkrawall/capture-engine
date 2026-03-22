@@ -31,7 +31,7 @@ size_t SelectFrameClosestToTimestamp(const FrameContainer& frames, size_t availa
 
 template <typename FrameContainer, typename Predicate>
 size_t SelectFrameClosestToTimestampIf(const FrameContainer& frames, size_t availableCount, int64_t targetTimestampQpc,
-                                      Predicate&& predicate) {
+                                       Predicate&& predicate) {
     if (availableCount == 0 || targetTimestampQpc <= 0) {
         return availableCount;
     }
@@ -52,6 +52,19 @@ size_t SelectFrameClosestToTimestampIf(const FrameContainer& frames, size_t avai
     }
 
     return bestIndex;
+}
+
+template <typename FrameContainer, typename Predicate>
+size_t FindPreviousFrameIndexIf(const FrameContainer& frames, size_t startExclusive, Predicate&& predicate) {
+    const size_t searchStart = std::min(startExclusive, frames.size());
+    for (size_t i = searchStart; i > 0; --i) {
+        const size_t candidateIndex = i - 1;
+        if (predicate(frames[candidateIndex])) {
+            return candidateIndex;
+        }
+    }
+
+    return frames.size();
 }
 
 inline int64_t ComputeIdealOutputQpc(int64_t gridStartQpc, int64_t gridTickCount, int64_t targetIntervalTicks) {

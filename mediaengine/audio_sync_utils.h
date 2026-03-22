@@ -38,6 +38,10 @@ inline int64_t ComputeAudioPullLatencyMs(int64_t steadyLatencyMs, bool allSource
     return std::clamp<int64_t>(startupLatencyMs, baseLatencyMs, 120);
 }
 
+inline bool IsTrackAudioStartupSettled(bool trackBootstrapComplete, bool allSourcesPrimed) {
+    return trackBootstrapComplete || allSourcesPrimed;
+}
+
 inline size_t ComputeBufferedRealAudioSamples(size_t bufferedSamples, uint64_t syntheticBufferedSamples) {
     if (syntheticBufferedSamples >= bufferedSamples) {
         return 0;

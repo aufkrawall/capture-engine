@@ -158,3 +158,16 @@ TEST(CapturePipelinePolicyTest, WgcFreshnessGuardRequiresRecentTimestamp) {
     EXPECT_TRUE(policy::IsWgcTimestampFreshEnough(1300, minFreshNormal));
     EXPECT_FALSE(policy::IsWgcTimestampFreshEnough(1299, minFreshNormal));
 }
+
+TEST(CapturePipelinePolicyTest, WgcReservePressureActivatesOnlyWithSustainedSingleFrameTicks) {
+    EXPECT_FALSE(policy::IsWgcReservePressureActive(12, 20, 120));
+    EXPECT_FALSE(policy::IsWgcReservePressureActive(20, 20, 120));
+    EXPECT_TRUE(policy::IsWgcReservePressureActive(50, 80, 120));
+    EXPECT_TRUE(policy::IsWgcReservePressureActive(6, 8, 30));
+}
+
+TEST(CapturePipelinePolicyTest, WgcReserveBiasPrefersEarlierFreshFrameWhenDifferenceIsSmall) {
+    EXPECT_TRUE(policy::ShouldPreferEarlierFreshWgcFrameToPreserveReserve(1000, 1040, 1020, 100, false, false));
+    EXPECT_FALSE(policy::ShouldPreferEarlierFreshWgcFrameToPreserveReserve(920, 1040, 1020, 100, false, false));
+    EXPECT_FALSE(policy::ShouldPreferEarlierFreshWgcFrameToPreserveReserve(900, 1040, 1020, 100, true, false));
+}

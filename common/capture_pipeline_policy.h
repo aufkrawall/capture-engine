@@ -23,6 +23,9 @@ constexpr uint32_t kWgcLowSourceMaxSelectionLagTicks = 3;
 constexpr uint32_t kWgcWarmupBufferedFrames = 3;
 constexpr uint32_t kWgcWarmupStableSourceFps = 118;
 constexpr size_t kWgcWarmupFreshFrames = 2;
+constexpr uint32_t kWgcReservePressurePermille = 600;
+constexpr uint32_t kWgcReserveBiasPermille = 250;
+constexpr uint32_t kWgcReserveFragileBiasPermille = 375;
 
 struct WgcAdaptiveTelemetry {
     uint32_t outputFps = 0;
@@ -174,6 +177,17 @@ inline bool ShouldUseWgcLowSourceMode(const WgcAdaptiveTelemetry& telemetry) {
     return ShouldEnterWgcLowSourceMode(telemetry);
 }
 
+inline bool IsWgcReservePressureActive(uint32_t noReserveTickCount, uint32_t queueTickSampleCount,
+                                       uint32_t outputFps) {
+    const uint32_t minSamples = std::max<uint32_t>(outputFps / 4u, 8u);
+    if (queueTickSampleCount < minSamples || queueTickSampleCount == 0) {
+        return false;
+    }
+
+    return static_cast<uint64_t>(noReserveTickCount) * 1000ull >=
+           static_cast<uint64_t>(queueTickSampleCount) * static_cast<uint64_t>(kWgcReservePressurePermille);
+}
+
 inline bool ShouldCommitWgcWarmup(bool poppedFrame, size_t bufferedWgcFrames, uint32_t warmupElapsedMs,
                                   double measuredInputFps, uint32_t outputFps) {
     if (!poppedFrame) {
@@ -214,6 +228,30 @@ inline int64_t GetWgcMinimumFreshTimestampQpc(int64_t lastEmittedSourceQpc, int6
 
 inline bool IsWgcTimestampFreshEnough(int64_t frameTimestampQpc, int64_t minFreshTimestampQpc) {
     return frameTimestampQpc > 0 && (minFreshTimestampQpc <= 0 || frameTimestampQpc >= minFreshTimestampQpc);
+}
+
+inline bool ShouldPreferEarlierFreshWgcFrameToPreserveReserve(int64_t earlierFrameTimestampQpc,
+                                                              int64_t selectedFrameTimestampQpc,
+                                                              int64_t selectionTargetQpc,
+                                                              int64_t targetIntervalTicks,
+                                                              bool reservePressureActive,
+                                                              bool lowSourceMode) {
+    if (earlierFrameTimestampQpc <= 0 || selectedFrameTimestampQpc <= 0 || selectionTargetQpc <= 0 ||
+        targetIntervalTicks <= 0) {
+        return false;
+    }
+
+    const int64_t earlierDistance = earlierFrameTimestampQpc >= selectionTargetQpc
+                                        ? (earlierFrameTimestampQpc - selectionTargetQpc)
+                                        : (selectionTargetQpc - earlierFrameTimestampQpc);
+    const int64_t selectedDistance = selectedFrameTimestampQpc >= selectionTargetQpc
+                                         ? (selectedFrameTimestampQpc - selectionTargetQpc)
+                                         : (selectionTargetQpc - selectedFrameTimestampQpc);
+    const uint32_t biasPermille = (reservePressureActive || lowSourceMode) ? kWgcReserveFragileBiasPermille
+                                                                            : kWgcReserveBiasPermille;
+    const int64_t reserveBiasQpc = std::max<int64_t>((targetIntervalTicks * static_cast<int64_t>(biasPermille)) / 1000,
+                                                     1);
+    return earlierDistance <= (selectedDistance + reserveBiasQpc);
 }
 
 inline size_t ClampWgcSelectionIndexForLowSource(size_t bestIdx, size_t availableCount, size_t bufferedWgcFrames,

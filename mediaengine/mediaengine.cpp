@@ -939,9 +939,11 @@ public:
                 trackMaxObservedLateStartMs = std::max(trackMaxObservedLateStartMs, src.observedLateStartMs);
             }
 
+            const bool trackStartupSettled =
+                ce::audio::IsTrackAudioStartupSettled(trackBootstrapComplete[track], trackAllPrimed);
             const int64_t trackAudioTargetMs =
                 audioTargetMs -
-                ce::audio::ComputeAudioPullLatencyMs(kSteadyAudioPullLatencyMs, trackAllPrimed,
+                ce::audio::ComputeAudioPullLatencyMs(kSteadyAudioPullLatencyMs, trackStartupSettled,
                                                      trackMaxObservedLateStartMs);
             if (trackAudioTargetMs <= 0) {
                 continue;
