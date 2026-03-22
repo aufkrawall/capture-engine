@@ -303,17 +303,6 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
         driftSamples = 0;
     }
 
-    // STARTUP GUARD: Let the ring buffer settle before any pitch correction.
-    // Startup packet bursts and late-start padding are normal and should not be
-    // interpreted as clock drift.
-    const int64_t STARTUP_PERIOD_MS = 15000;
-    if (videoElapsedMs < STARTUP_PERIOD_MS) {
-        if (largeSkipCounter_++ % 100 == 0) {
-            DLL_Log("[AudioResampler] Startup period (%lldms) - skipping pitch correction", videoElapsedMs);
-        }
-        return;
-    }
-
     // Transition from fast to steady mode after 10 seconds
     if (fastModeActive && videoElapsedMs > 10000) {
         fastModeActive = false;

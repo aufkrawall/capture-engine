@@ -1001,6 +1001,12 @@ void CheckAndInstallHooks() {
   static bool s_vulkanActive = false;
   if (!s_checkedForVulkan || s_vulkanActive) {
     HMODULE hVulkan = GetModuleHandleW(L"vulkan-1.dll");
+    bool vulkanLayerOwned = false;
+    if (g_pSharedMem) {
+      uint64_t lastVulkan = g_pSharedMem->runtimeState.vulkanPresentTick.load(std::memory_order_acquire);
+      vulkanLayerOwned = g_pSharedMem->runtimeState.vulkanLayerActive.load(std::memory_order_acquire) ||
+                         (lastVulkan != 0 && (GetTickCount64() - lastVulkan) < 2000);
+    }
     bool legacyD3DLoaded = (GetModuleHandleA("d3d9.dll") != nullptr) ||
                            (GetModuleHandleA("d3d8.dll") != nullptr) ||
                            (GetModuleHandleA("ddraw.dll") != nullptr);
@@ -1011,7 +1017,13 @@ void CheckAndInstallHooks() {
                          (GetModuleHandleA("d3d11.dll") != nullptr);
     bool d3dDeviceCreated = WasD3D12DeviceCreated() || d3dDllPresent ||
                             WasD3D11Or10DeviceCreated() || legacyD3DLoaded;
-    if (hVulkan && !d3dDeviceCreated) {
+    if (vulkanLayerOwned) {
+      if (!s_vulkanActive) {
+        EarlyLog("CheckAndInstallHooks: Vulkan layer ownership established, skipping D3D/DXGI hooks");
+      }
+      s_vulkanActive = true;
+      s_checkedForVulkan = true;
+    } else if (hVulkan && !d3dDeviceCreated) {
       if (!s_vulkanActive) {
         EarlyLog("CheckAndInstallHooks: Vulkan detected (vulkan-1.dll, no D3D usage evidence), "
                  "skipping D3D/DXGI hooks");

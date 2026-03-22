@@ -552,6 +552,7 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
                             // Wait up to 30 seconds for graphics API initialization
                             bool ready = false;
                             bool d3d12Loaded = false;
+                            bool loggedModuleEnumFailure = false;
                             int waitMs = 0;
                             for (int i = 0; i < 300 && !ready; i++) {
                                 // CRITICAL FIX: Check if shutdown requested
@@ -604,11 +605,15 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
                                         }
                                     } else {
                                         DWORD err = GetLastError();
-                                        LogInfo("[WMI] %s (PID: %lu) - EnumProcessModules failed (error=%lu)",
-                                                name.c_str(), (unsigned long)pid, (unsigned long)err);
+                                        if (!loggedModuleEnumFailure) {
+                                            LogInfo("[WMI] %s (PID: %lu) - EnumProcessModules failed (error=%lu)",
+                                                    name.c_str(), (unsigned long)pid, (unsigned long)err);
+                                            loggedModuleEnumFailure = true;
+                                        }
                                         // ACCESS_DENIED (5) likely means we can't read due to security.
-                                        // The game might still be D3D12 - wait briefly for graphics init.
-                                        if (err == ERROR_ACCESS_DENIED && i < 10) {
+                                        // The game might still be D3D12 - wait briefly for graphics init,
+                                        // but do not hold non-D3D12/Vulkan titles for a fixed full second.
+                                        if (err == ERROR_ACCESS_DENIED && i < 2) {
                                             CloseHandle(hProcess);
                                             Sleep(100);
                                             waitMs += 100;

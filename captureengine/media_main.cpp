@@ -85,6 +85,48 @@ void StartRecording(const AppConfig& config);
 namespace {
 constexpr int kInjectTextureSlotCount = 8;
 
+bool MediaAudioConfigEquals(const AudioConfig& lhs, const AudioConfig& rhs) {
+    return lhs.enabled == rhs.enabled && lhs.device == rhs.device && lhs.processName == rhs.processName &&
+           lhs.processId == rhs.processId && lhs.sourceType == rhs.sourceType && lhs.tracks == rhs.tracks &&
+           lhs.codec == rhs.codec && lhs.bitrate == rhs.bitrate && lhs.sampleRate == rhs.sampleRate &&
+           lhs.bitDepth == rhs.bitDepth && lhs.downmix == rhs.downmix;
+}
+
+bool MediaScalingConfigEquals(const ScalingConfig& lhs, const ScalingConfig& rhs) {
+    return lhs.enabled == rhs.enabled && lhs.outputResolution == rhs.outputResolution && lhs.quality == rhs.quality &&
+           lhs.sharpness == rhs.sharpness && lhs.outputWidth == rhs.outputWidth && lhs.outputHeight == rhs.outputHeight;
+}
+
+bool MediaVideoConfigEquals(const VideoConfig& lhs, const VideoConfig& rhs) {
+    return lhs.encoder == rhs.encoder && lhs.fps == rhs.fps && lhs.container == rhs.container &&
+           lhs.outputDir == rhs.outputDir && lhs.rateControl == rhs.rateControl && lhs.bitrate == rhs.bitrate &&
+           lhs.maxBitrate == rhs.maxBitrate && lhs.keyframeInterval == rhs.keyframeInterval &&
+           lhs.preset == rhs.preset && lhs.tuning == rhs.tuning && lhs.multipass == rhs.multipass &&
+           lhs.profile == rhs.profile && lhs.lookahead == rhs.lookahead && lhs.aq == rhs.aq &&
+           lhs.bFrames == rhs.bFrames && lhs.bRefMode == rhs.bRefMode && lhs.customOptions == rhs.customOptions &&
+           lhs.captureCursor == rhs.captureCursor && lhs.qp == rhs.qp && lhs.mfRateControl == rhs.mfRateControl &&
+           lhs.mfQuality == rhs.mfQuality && lhs.mfScenario == rhs.mfScenario &&
+           lhs.mfHwEncoding == rhs.mfHwEncoding && lhs.gpuPriority == rhs.gpuPriority &&
+           lhs.bitDepth == rhs.bitDepth && lhs.colorSpace == rhs.colorSpace && lhs.colorRange == rhs.colorRange &&
+           lhs.chromaSubsampling == rhs.chromaSubsampling && lhs.useVFR == rhs.useVFR &&
+           lhs.useVFR_AudioSync == rhs.useVFR_AudioSync && MediaScalingConfigEquals(lhs.scaling, rhs.scaling);
+}
+
+bool MediaEngineConfigEquals(const AppConfig& lhs, const AppConfig& rhs) {
+    if (lhs.debugLogging != rhs.debugLogging || lhs.captureMethod != rhs.captureMethod ||
+        !MediaVideoConfigEquals(lhs.video, rhs.video) || lhs.audioSources.size() != rhs.audioSources.size()) {
+        return false;
+    }
+
+    for (size_t i = 0; i < lhs.audioSources.size(); ++i) {
+        if (!MediaAudioConfigEquals(lhs.audioSources[i], rhs.audioSources[i])) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 uint32_t SaturatingToUint32(uint64_t value) {
     return value > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<uint32_t>(value);
 }
@@ -2799,6 +2841,8 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             LoadConfig(configPath, resolvedConfig, processName);
         }
 
+        const bool mediaConfigChanged = !MediaEngineConfigEquals(config, resolvedConfig);
+
         config = std::move(resolvedConfig);
         activeConfigSourcePid = sourcePid;
         activeConfigProcessName = processName;
@@ -2809,7 +2853,9 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         }
         if (mediaEngineReady) {
             MediaEngine_SetLogCallback(config.debugLogging ? MediaLogCallback : nullptr);
-            MediaEngine_ReloadConfig(&config);
+            if (forceReload || mediaConfigChanged) {
+                MediaEngine_ReloadConfig(&config);
+            }
             if (g_pSharedMem || g_pShmem) {
                 MediaEngine_SetSharedMem(g_pSharedMem, g_pShmem);
             }

@@ -24,3 +24,23 @@ TEST(AudioSyncUtilsTest, AudioPullLatencyUsesStartupSlackUntilSourcesPrime) {
     EXPECT_EQ(ce::audio::ComputeAudioPullLatencyMs(50, false, 95), 115);
     EXPECT_EQ(ce::audio::ComputeAudioPullLatencyMs(50, false, 500), 120);
 }
+
+TEST(AudioSyncUtilsTest, AudioPullLatencyIsTrackScoped) {
+    EXPECT_EQ(ce::audio::ComputeAudioPullLatencyMs(50, false, 120), 120);
+    EXPECT_EQ(ce::audio::ComputeAudioPullLatencyMs(50, true, 120), 50);
+}
+
+TEST(AudioSyncUtilsTest, BufferedRealAudioExcludesSyntheticStartupSamples) {
+    EXPECT_EQ(ce::audio::ComputeBufferedRealAudioSamples(960, 0), 960u);
+    EXPECT_EQ(ce::audio::ComputeBufferedRealAudioSamples(960, 240), 720u);
+    EXPECT_EQ(ce::audio::ComputeBufferedRealAudioSamples(960, 960), 0u);
+    EXPECT_EQ(ce::audio::ComputeBufferedRealAudioSamples(960, 1200), 0u);
+}
+
+TEST(AudioSyncUtilsTest, ConsumingSyntheticSamplesTracksOldestBufferedPortion) {
+    uint64_t syntheticSamples = 480;
+    EXPECT_EQ(ce::audio::ConsumeSyntheticBufferedSamples(syntheticSamples, 120), 120u);
+    EXPECT_EQ(syntheticSamples, 360u);
+    EXPECT_EQ(ce::audio::ConsumeSyntheticBufferedSamples(syntheticSamples, 600), 360u);
+    EXPECT_EQ(syntheticSamples, 0u);
+}
