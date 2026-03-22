@@ -37,6 +37,38 @@ TEST(FrameTimingUtilsTest, SelectFrameClosestToGridBreaksTiesTowardNewerFrame) {
     EXPECT_EQ(bestIndex, 1u);
 }
 
+TEST(FrameTimingUtilsTest, SelectFrameClosestToGridIfSkipsRejectedFrames) {
+    std::deque<QueuedFrame> frames;
+
+    QueuedFrame blocked;
+    blocked.timestamp = 150;
+    blocked.frameIndex = 1;
+    frames.push_back(std::move(blocked));
+
+    QueuedFrame allowed;
+    allowed.timestamp = 162;
+    allowed.frameIndex = 2;
+    frames.push_back(std::move(allowed));
+
+    const size_t bestIndex = SelectFrameClosestToGridIf(frames, frames.size(), 100, 1, 50,
+                                                        [](const QueuedFrame& frame) { return frame.frameIndex == 2; });
+    EXPECT_EQ(bestIndex, 1u);
+}
+
+TEST(FrameTimingUtilsTest, SelectFrameClosestToGridIfReturnsAvailableCountWhenNoFramesMatch) {
+    std::deque<QueuedFrame> frames;
+
+    QueuedFrame frame;
+    frame.timestamp = 150;
+    frame.frameIndex = 3;
+    frames.push_back(std::move(frame));
+
+    const size_t bestIndex =
+        SelectFrameClosestToGridIf(frames, frames.size(), 100, 1, 50,
+                                   [](const QueuedFrame&) { return false; });
+    EXPECT_EQ(bestIndex, frames.size());
+}
+
 TEST(FrameTimingUtilsTest, ComputeSourceDrivenElapsedUsUsesSourceClockWhenMonotonic) {
     SourceTimelineState state;
 
@@ -59,10 +91,22 @@ TEST(FrameTimingUtilsTest, QueuedFrameMovePreservesCaptureOrigin) {
     QueuedFrame input;
     input.captureLeft = 321;
     input.captureTop = 654;
+    input.frameIndex = 77;
+    input.textureIndex = 4;
+    input.enqueueQpc = 12345;
+    input.deferCount = 2;
 
     QueuedFrame moved(std::move(input));
     EXPECT_EQ(moved.captureLeft, 321);
     EXPECT_EQ(moved.captureTop, 654);
+    EXPECT_EQ(moved.frameIndex, 77u);
+    EXPECT_EQ(moved.textureIndex, 4);
+    EXPECT_EQ(moved.enqueueQpc, 12345);
+    EXPECT_EQ(moved.deferCount, 2u);
     EXPECT_EQ(input.captureLeft, 0);
     EXPECT_EQ(input.captureTop, 0);
+    EXPECT_EQ(input.frameIndex, 0u);
+    EXPECT_EQ(input.textureIndex, -1);
+    EXPECT_EQ(input.enqueueQpc, 0);
+    EXPECT_EQ(input.deferCount, 0u);
 }

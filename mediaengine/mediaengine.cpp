@@ -175,6 +175,12 @@ public:
         return 0;
     }
 
+    bool WasLastFrameDeferred() const {
+        if (videoEnc)
+            return videoEnc->WasLastFrameDeferred();
+        return false;
+    }
+
     void ReleaseEncoderTextures() {
         std::lock_guard<std::recursive_mutex> lock(muxMutex);
         if (videoEnc) {
@@ -593,12 +599,12 @@ public:
         }
     }
 
-    void ProcessFrame(uint64_t handle, uint64_t fenceHandle, uint64_t fenceVal, int64_t timestampQPC, int32_t luidLow,
+    bool ProcessFrame(uint64_t handle, uint64_t fenceHandle, uint64_t fenceVal, int64_t timestampQPC, int32_t luidLow,
                       int32_t luidHigh, uint32_t sourcePid, uint32_t width, uint32_t height, uint32_t format,
                       bool isHDR, bool isShmem = false, int shmemSlot = 0) {
         std::lock_guard<std::recursive_mutex> lock(muxMutex);
         if (!videoEnc || !recording)
-            return;
+            return false;
 
         // Use CaptureEngine's steady_clock for duration to avoid Game QPC /
         // Frequency mismatch issues
@@ -635,7 +641,10 @@ public:
         videoEnc->SetAdapterLUID(luidLow, luidHigh);
         bool res = videoEnc->EncodeFrame((HANDLE)handle, (HANDLE)fenceHandle, fenceVal, realElapsedUs, sourcePid, width,
                                          height, format, isHDR, isShmem, shmemSlot);
-        (void)res;  // Avoid unused warn if not logging success here
+
+        if (!res && videoEnc->WasLastFrameDeferred()) {
+            return false;
+        }
 
         // Track last video frame timestamp for audio trimming
         lastVideoFrameMs = realElapsedUs / 1000;
@@ -656,6 +665,44 @@ public:
 
         // PULL MODEL: Encode audio for this video frame (same as screengrab mode)
         PullAndEncodeAudio(debugTimestamp);
+        return res;
+    }
+
+    bool RepeatLastFrame(int64_t timestampQPC) {
+        std::lock_guard<std::recursive_mutex> lock(muxMutex);
+        if (!videoEnc || !recording || firstVideoFrameMs == 0) {
+            return false;
+        }
+
+        auto now = std::chrono::steady_clock::now();
+        int64_t debugTimestamp = (qpcFreq > 0) ? (timestampQPC * 1000) / qpcFreq : timestampQPC;
+        const int64_t steadyElapsedUs =
+            std::chrono::duration_cast<std::chrono::microseconds>(now - this->recordingStartTime).count();
+
+        int64_t realElapsedUs = steadyElapsedUs;
+        if (config.video.useVFR) {
+            realElapsedUs = std::max<int64_t>(timestampQPC, injectTimelineState.lastElapsedUs);
+        }
+        injectTimelineState.lastElapsedUs = std::max(injectTimelineState.lastElapsedUs, realElapsedUs);
+
+        this->videoElapsedMs.store(realElapsedUs / 1000);
+
+        bool res = videoEnc->RepeatLastFrame(realElapsedUs);
+        if (!res) {
+            return false;
+        }
+
+        lastVideoFrameMs = realElapsedUs / 1000;
+        for (size_t i = 0; i < audioSources.size(); i++) {
+            auto& src = audioSources[i];
+            int idx = videoEnc->GetAudioStreamIndex(src.track);
+            if (idx >= 0 && src.encoder) {
+                src.encoder->SetStreamIndex(idx);
+            }
+        }
+
+        PullAndEncodeAudio(debugTimestamp);
+        return true;
     }
 
     // Direct D3D11 texture processing for screengrab mode (zero-copy)
@@ -1733,16 +1780,26 @@ MEDIAENGINE_API void MediaEngine_Shutdown() {
     ReleaseSharedD3D11DeviceGlobals();
 }
 
-MEDIAENGINE_API void MediaEngine_ProcessFrame(uint64_t textureHandle, uint64_t fenceHandle, uint64_t fenceValue,
+MEDIAENGINE_API bool MediaEngine_ProcessFrame(uint64_t textureHandle, uint64_t fenceHandle, uint64_t fenceValue,
                                               int64_t timestamp, int32_t luidLow, int32_t luidHigh, uint32_t sourcePid,
                                               uint32_t width, uint32_t height, uint32_t format, bool isHDR,
                                               bool isShmem, int shmemSlot) {
     std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
     if (g_Engine) {
-        g_Engine->ProcessFrame(textureHandle, fenceHandle, fenceValue, timestamp, luidLow, luidHigh, sourcePid, width,
-                               height, format, isHDR, isShmem, shmemSlot);
+        return g_Engine->ProcessFrame(textureHandle, fenceHandle, fenceValue, timestamp, luidLow, luidHigh, sourcePid,
+                                      width, height, format, isHDR, isShmem, shmemSlot);
     }
+    return false;
 }
+
+MEDIAENGINE_API bool MediaEngine_RepeatLastFrame(int64_t timestamp) {
+    std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
+    if (g_Engine) {
+        return g_Engine->RepeatLastFrame(timestamp);
+    }
+    return false;
+}
+
 MEDIAENGINE_API void MediaEngine_ProcessFrameD3D11(void* texture, int64_t timestamp, uint32_t width, uint32_t height,
                                                    bool isHDR, int32_t captureLeft, int32_t captureTop) {
     std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
@@ -1780,6 +1837,14 @@ MEDIAENGINE_API int64_t MediaEngine_GetLastFrameFenceWaitUs() {
         return g_Engine->GetLastFrameFenceWaitUs();
     }
     return 0;
+}
+
+MEDIAENGINE_API bool MediaEngine_WasLastFrameDeferred() {
+    std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
+    if (g_Engine) {
+        return g_Engine->WasLastFrameDeferred();
+    }
+    return false;
 }
 
 // Shared D3D11 device for screengrab mode - ensures ScreenCapture and

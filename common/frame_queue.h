@@ -37,6 +37,14 @@ struct QueuedFrame {
             other.sourcePid = 0;
             ringIndex = other.ringIndex;
             other.ringIndex = 0;
+            frameIndex = other.frameIndex;
+            other.frameIndex = 0;
+            textureIndex = other.textureIndex;
+            other.textureIndex = -1;
+            enqueueQpc = other.enqueueQpc;
+            other.enqueueQpc = 0;
+            deferCount = other.deferCount;
+            other.deferCount = 0;
             format = other.format;
             other.format = 0;
             texture = other.texture;
@@ -70,6 +78,10 @@ struct QueuedFrame {
     int32_t luidHigh = 0;
     uint32_t sourcePid = 0;
     uint32_t ringIndex = 0;  // Index in the SharedMemory ring buffer
+    uint32_t frameIndex = 0;
+    int32_t textureIndex = -1;
+    int64_t enqueueQpc = 0;
+    uint32_t deferCount = 0;
     uint32_t format = 0;     // DXGI_FORMAT or API-specific format from shared memory
 
     // For framegrab mode (D3D11 texture)

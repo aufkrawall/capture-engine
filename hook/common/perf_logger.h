@@ -28,6 +28,15 @@ struct FrameMetrics {
     int32_t stagingDepth = 0;      // Current staging pipeline occupancy
     int32_t stagingDropped = 0;    // Frames dropped due to full pipeline
     int32_t presentCallUs = 0;     // Actual D3D9/DXGI Present call time
+    uint32_t sourceFrameIndex = 0;
+    uint32_t sourceCapturePhase = 0;
+    uint32_t sourceEncoderQueueDepth = 0;
+    uint32_t sourceMuxQueueKb = 0;
+    uint32_t sourceOverloadFlags = 0;
+    int32_t source1PctLowTimes100 = 0;
+    int32_t sourcePoint1PctLowTimes100 = 0;
+    int32_t sourceFrameTimeStdDevUs = 0;
+    int32_t sourceCurrentFpsTimes100 = 0;
     char api[8] = "";
 };
 
@@ -53,6 +62,11 @@ struct PresentDebugSample {
     int32_t presentCallUs = 0;
     int32_t csvWriteUs = 0;
     uint32_t flags = 0;
+    uint32_t sourceFrameIndex = 0;
+    uint32_t capturePhase = 0;
+    uint32_t encoderQueueDepth = 0;
+    uint32_t muxQueueKb = 0;
+    uint32_t overloadFlags = 0;
     char api[8] = "";
 };
 
@@ -97,6 +111,12 @@ private:
         int32_t wrapperTotalUsMax = 0;
         int32_t presentCallUsMax = 0;
         int32_t csvWriteUsMax = 0;
+        uint64_t livePhaseSamples = 0;
+        uint64_t warmupPhaseSamples = 0;
+        uint64_t drainPhaseSamples = 0;
+        uint64_t maxEncoderQueueDepth = 0;
+        uint64_t maxMuxQueueKb = 0;
+        uint64_t overloadSampleCount = 0;
         uint64_t overlayCacheHitCount = 0;
         uint64_t overlayRebuildCount = 0;
         uint64_t interpolatedFrameCount = 0;

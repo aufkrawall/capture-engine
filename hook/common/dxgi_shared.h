@@ -67,6 +67,8 @@ void RepairVTableHooksIfNeeded();
 // Common helpers
 bool IsVulkanPrimary();
 PerformanceMetrics* GetPerformanceMetrics();
+uint32_t GetLatestSourceFrameIndex();
+void SetLatestSourceFrameIndex(uint32_t frameIndex);
 
 // Exported handlers for specific APIs (implemented in their respective hook
 // files)

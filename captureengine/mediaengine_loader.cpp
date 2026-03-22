@@ -8,6 +8,7 @@ DLL_Log_t DLL_Log = nullptr;
 MediaEngine_Init_t MediaEngine_Init = nullptr;
 MediaEngine_ReloadConfig_t MediaEngine_ReloadConfig = nullptr;
 MediaEngine_ProcessFrame_t MediaEngine_ProcessFrame = nullptr;
+MediaEngine_RepeatLastFrame_t MediaEngine_RepeatLastFrame = nullptr;
 MediaEngine_ProcessFrameD3D11_t MediaEngine_ProcessFrameD3D11 = nullptr;
 MediaEngine_StartRecording_t MediaEngine_StartRecording = nullptr;
 MediaEngine_StopRecording_t MediaEngine_StopRecording = nullptr;
@@ -17,6 +18,7 @@ MediaEngine_ReleaseSharedD3D11Device_t MediaEngine_ReleaseSharedD3D11Device = nu
 MediaEngine_CreateSharedCaptureTextures_t MediaEngine_CreateSharedCaptureTextures = nullptr;
 MediaEngine_GetLastFrameEncodeTimeUs_t MediaEngine_GetLastFrameEncodeTimeUs = nullptr;
 MediaEngine_GetLastFrameFenceWaitUs_t MediaEngine_GetLastFrameFenceWaitUs = nullptr;
+MediaEngine_WasLastFrameDeferred_t MediaEngine_WasLastFrameDeferred = nullptr;
 MediaEngine_Shutdown_t MediaEngine_Shutdown = nullptr;
 MediaEngine_SetSharedMem_t MediaEngine_SetSharedMem = nullptr;
 MediaEngine_LockD3D11_t MediaEngine_LockD3D11 = nullptr;
@@ -73,6 +75,7 @@ bool MediaEngine_Load(const char* exeDir) {
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_Init", &MediaEngine_Init);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_ReloadConfig", &MediaEngine_ReloadConfig);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_ProcessFrame", &MediaEngine_ProcessFrame);
+    success &= GetFunc(g_MediaEngineModule, "MediaEngine_RepeatLastFrame", &MediaEngine_RepeatLastFrame);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_ProcessFrameD3D11", &MediaEngine_ProcessFrameD3D11);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_StartRecording", &MediaEngine_StartRecording);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_StopRecording", &MediaEngine_StopRecording);
@@ -86,6 +89,7 @@ bool MediaEngine_Load(const char* exeDir) {
         GetFunc(g_MediaEngineModule, "MediaEngine_GetLastFrameEncodeTimeUs", &MediaEngine_GetLastFrameEncodeTimeUs);
     success &=
         GetFunc(g_MediaEngineModule, "MediaEngine_GetLastFrameFenceWaitUs", &MediaEngine_GetLastFrameFenceWaitUs);
+    success &= GetFunc(g_MediaEngineModule, "MediaEngine_WasLastFrameDeferred", &MediaEngine_WasLastFrameDeferred);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_Shutdown", &MediaEngine_Shutdown);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_SetSharedMem", &MediaEngine_SetSharedMem);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_LockD3D11", &MediaEngine_LockD3D11);
@@ -115,6 +119,7 @@ void MediaEngine_Unload() {
     MediaEngine_Init = nullptr;
     MediaEngine_ReloadConfig = nullptr;
     MediaEngine_ProcessFrame = nullptr;
+    MediaEngine_RepeatLastFrame = nullptr;
     MediaEngine_ProcessFrameD3D11 = nullptr;
     MediaEngine_StartRecording = nullptr;
     MediaEngine_StopRecording = nullptr;
@@ -124,6 +129,7 @@ void MediaEngine_Unload() {
     MediaEngine_CreateSharedCaptureTextures = nullptr;
     MediaEngine_GetLastFrameEncodeTimeUs = nullptr;
     MediaEngine_GetLastFrameFenceWaitUs = nullptr;
+    MediaEngine_WasLastFrameDeferred = nullptr;
     MediaEngine_Shutdown = nullptr;
     MediaEngine_SetSharedMem = nullptr;
     MediaEngine_LockD3D11 = nullptr;

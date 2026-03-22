@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <cstring>
 #include <filesystem>
+#include "../../common/shared_defs.h"
 #include "hook_common.h"
 
 namespace {
@@ -63,7 +64,9 @@ void PerfLogger::Init(const char* logPath) {
                 "cmdlist_reset_us,render_us,execute_us,"
                 "stretch_rect_us,readback_submit_us,query_wait_us,"
                 "lock_rect_us,d3d11_upload_us,staging_depth,staging_dropped,"
-                "present_call_us,api\n");
+                "present_call_us,source_frame_index,capture_phase,encoder_queue_depth,mux_queue_kb,"
+                "overload_flags,source_1pct_low_x100,source_0_1pct_low_x100,source_frametime_stddev_us,"
+                "source_current_fps_x100,api\n");
         fflush(file_);
         headerWritten_ = true;
         HookLog("PerfLogger: Initialized CSV logging to %s", logPath);
@@ -90,12 +93,15 @@ void PerfLogger::LogFrame(const FrameMetrics& metrics) {
     uint64_t frameNum = frameCount_.fetch_add(1, std::memory_order_relaxed) + 1;
     const int64_t writeStartUs = g_ActivePresentDebugSample ? GetQpcUs() : 0;
 
-    fprintf(file_, "%llu,%lld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%s\n", (unsigned long long)frameNum,
+    fprintf(file_, "%llu,%lld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%u,%u,%u,%u,%u,%d,%d,%d,%d,%s\n", (unsigned long long)frameNum,
             (long long)metrics.qpcUs, metrics.totalUs, metrics.overlayUs, metrics.captureUs, metrics.deviceInitUs,
             metrics.prerenderWaitUs, metrics.fpsLimitWaitUs, metrics.fenceWaitUs, metrics.cmdListResetUs,
             metrics.renderUs, metrics.executeUs, metrics.stretchRectUs, metrics.readbackSubmitUs, metrics.queryWaitUs,
             metrics.lockRectUs, metrics.d3d11UploadUs, metrics.stagingDepth, metrics.stagingDropped,
-            metrics.presentCallUs, metrics.api);
+            metrics.presentCallUs, metrics.sourceFrameIndex, metrics.sourceCapturePhase, metrics.sourceEncoderQueueDepth,
+            metrics.sourceMuxQueueKb, metrics.sourceOverloadFlags, metrics.source1PctLowTimes100,
+            metrics.sourcePoint1PctLowTimes100, metrics.sourceFrameTimeStdDevUs, metrics.sourceCurrentFpsTimes100,
+            metrics.api);
 
     if (g_ActivePresentDebugSample) {
         g_ActivePresentDebugSample->csvWriteUs = static_cast<int32_t>(GetQpcUs() - writeStartUs);
@@ -149,6 +155,25 @@ void PerfLogger::CommitDebugSample(const PresentDebugSample& sample) {
     summary.fpsLimiterUsSum += sample.fpsLimiterUs;
     AccumulateSample(sample.presentCallUs, summary.presentCallUsSum, summary.presentCallUsMax);
     AccumulateSample(sample.csvWriteUs, summary.csvWriteUsSum, summary.csvWriteUsMax);
+    summary.maxEncoderQueueDepth = std::max<uint64_t>(summary.maxEncoderQueueDepth, sample.encoderQueueDepth);
+    summary.maxMuxQueueKb = std::max<uint64_t>(summary.maxMuxQueueKb, sample.muxQueueKb);
+    if (sample.overloadFlags != 0) {
+        summary.overloadSampleCount++;
+    }
+    switch (static_cast<CapturePipelinePhase>(sample.capturePhase)) {
+    case CapturePipelinePhase::kWarmup:
+        summary.warmupPhaseSamples++;
+        break;
+    case CapturePipelinePhase::kLive:
+        summary.livePhaseSamples++;
+        break;
+    case CapturePipelinePhase::kDrain:
+    case CapturePipelinePhase::kStopping:
+        summary.drainPhaseSamples++;
+        break;
+    default:
+        break;
+    }
 
     if ((sample.flags & kPresentSampleFlagOverlayCacheHit) != 0) {
         summary.overlayCacheHitCount++;
@@ -176,7 +201,8 @@ void PerfLogger::CommitDebugSample(const PresentDebugSample& sample) {
         "swapchain_acquire avg=%.3f ms, metrics_update avg=%.3f ms, process_frame_external avg=%.3f ms, "
         "process_frame avg=%.3f ms, overlay_build avg=%.3f ms, overlay_render avg=%.3f ms, capture avg=%.3f ms, "
         "fps_limiter avg=%.3f ms, present_call avg=%.3f ms max=%.3f ms, csv_write avg=%.3f ms max=%.3f ms, "
-        "cache_hits=%llu, rebuilds=%llu, interpolated=%llu, mutex_busy=%llu, allocator_busy=%llu",
+        "cache_hits=%llu, rebuilds=%llu, interpolated=%llu, mutex_busy=%llu, allocator_busy=%llu, "
+        "phases[live=%llu warmup=%llu drain=%llu], maxEncQ=%llu, maxMux=%lluKB, overload=%llu",
         sample.api[0] ? sample.api : "DXGI", (unsigned long long)summary.sampleCount,
         (unsigned long long)kDetailedSampleInterval, AvgUsToMs(summary.wrapperTotalUsSum, sampleCount),
         UsToMs(summary.wrapperTotalUsMax), AvgUsToMs(summary.swapchainAcquireUsSum, sampleCount),
@@ -187,7 +213,10 @@ void PerfLogger::CommitDebugSample(const PresentDebugSample& sample) {
         UsToMs(summary.presentCallUsMax), AvgUsToMs(summary.csvWriteUsSum, sampleCount), UsToMs(summary.csvWriteUsMax),
         (unsigned long long)summary.overlayCacheHitCount, (unsigned long long)summary.overlayRebuildCount,
         (unsigned long long)summary.interpolatedFrameCount, (unsigned long long)summary.mutexBusyCount,
-        (unsigned long long)summary.allocatorBusyCount);
+        (unsigned long long)summary.allocatorBusyCount, (unsigned long long)summary.livePhaseSamples,
+        (unsigned long long)summary.warmupPhaseSamples, (unsigned long long)summary.drainPhaseSamples,
+        (unsigned long long)summary.maxEncoderQueueDepth, (unsigned long long)summary.maxMuxQueueKb,
+        (unsigned long long)summary.overloadSampleCount);
     ResetDebugSummaryLocked();
 }
 

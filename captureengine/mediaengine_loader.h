@@ -17,10 +17,11 @@ typedef void (*MediaEngine_SetLogCallback_t)(LogCallback cb);
 typedef void (*DLL_Log_t)(const char* fmt, ...);
 typedef bool (*MediaEngine_Init_t)(const AppConfig* config);
 typedef void (*MediaEngine_ReloadConfig_t)(const AppConfig* config);
-typedef void (*MediaEngine_ProcessFrame_t)(uint64_t textureHandle, uint64_t fenceHandle, uint64_t fenceValue,
+typedef bool (*MediaEngine_ProcessFrame_t)(uint64_t textureHandle, uint64_t fenceHandle, uint64_t fenceValue,
                                            int64_t timestamp, int32_t luidLow, int32_t luidHigh, uint32_t sourcePid,
                                            uint32_t width, uint32_t height, uint32_t format, bool isHDR, bool isShmem,
                                            int shmemSlot);
+typedef bool (*MediaEngine_RepeatLastFrame_t)(int64_t timestamp);
 typedef void (*MediaEngine_ProcessFrameD3D11_t)(void* texture, int64_t timestamp, uint32_t width, uint32_t height,
                                                 bool isHDR, int32_t captureLeft, int32_t captureTop);
 typedef bool (*MediaEngine_StartRecording_t)();
@@ -32,6 +33,7 @@ typedef bool (*MediaEngine_CreateSharedCaptureTextures_t)(uint32_t width, uint32
                                                           struct SharedMemoryLayout* sharedMem);
 typedef int64_t (*MediaEngine_GetLastFrameEncodeTimeUs_t)();
 typedef int64_t (*MediaEngine_GetLastFrameFenceWaitUs_t)();
+typedef bool (*MediaEngine_WasLastFrameDeferred_t)();
 typedef void (*MediaEngine_Shutdown_t)();
 typedef void (*MediaEngine_SetSharedMem_t)(void* pSharedMem, void* pShmem);
 typedef void (*MediaEngine_LockD3D11_t)();
@@ -44,6 +46,7 @@ extern DLL_Log_t DLL_Log;
 extern MediaEngine_Init_t MediaEngine_Init;
 extern MediaEngine_ReloadConfig_t MediaEngine_ReloadConfig;
 extern MediaEngine_ProcessFrame_t MediaEngine_ProcessFrame;
+extern MediaEngine_RepeatLastFrame_t MediaEngine_RepeatLastFrame;
 extern MediaEngine_ProcessFrameD3D11_t MediaEngine_ProcessFrameD3D11;
 extern MediaEngine_StartRecording_t MediaEngine_StartRecording;
 extern MediaEngine_StopRecording_t MediaEngine_StopRecording;
@@ -53,6 +56,7 @@ extern MediaEngine_ReleaseSharedD3D11Device_t MediaEngine_ReleaseSharedD3D11Devi
 extern MediaEngine_CreateSharedCaptureTextures_t MediaEngine_CreateSharedCaptureTextures;
 extern MediaEngine_GetLastFrameEncodeTimeUs_t MediaEngine_GetLastFrameEncodeTimeUs;
 extern MediaEngine_GetLastFrameFenceWaitUs_t MediaEngine_GetLastFrameFenceWaitUs;
+extern MediaEngine_WasLastFrameDeferred_t MediaEngine_WasLastFrameDeferred;
 extern MediaEngine_Shutdown_t MediaEngine_Shutdown;
 extern MediaEngine_SetSharedMem_t MediaEngine_SetSharedMem;
 extern MediaEngine_LockD3D11_t MediaEngine_LockD3D11;

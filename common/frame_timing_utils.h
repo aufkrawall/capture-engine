@@ -30,6 +30,33 @@ size_t SelectFrameClosestToGrid(const FrameContainer& frames, size_t availableCo
     return bestIndex;
 }
 
+template <typename FrameContainer, typename Predicate>
+size_t SelectFrameClosestToGridIf(const FrameContainer& frames, size_t availableCount, int64_t gridStartQpc,
+                                  int64_t gridTickCount, int64_t targetIntervalTicks, Predicate&& predicate) {
+    if (availableCount == 0 || gridStartQpc <= 0 || targetIntervalTicks <= 0) {
+        return availableCount;
+    }
+
+    const int64_t idealQpc = gridStartQpc + gridTickCount * targetIntervalTicks;
+    size_t bestIndex = availableCount;
+    int64_t bestDistance = 0;
+
+    for (size_t i = 0; i < availableCount; ++i) {
+        if (!predicate(frames[i])) {
+            continue;
+        }
+
+        const int64_t distance = AbsoluteTimestampDistance(frames[i].timestamp, idealQpc);
+        if (bestIndex == availableCount || distance < bestDistance ||
+            (distance == bestDistance && frames[i].timestamp > frames[bestIndex].timestamp)) {
+            bestDistance = distance;
+            bestIndex = i;
+        }
+    }
+
+    return bestIndex;
+}
+
 struct SourceTimelineState {
     int64_t startSourceQpc = 0;
     int64_t lastElapsedUs = 0;

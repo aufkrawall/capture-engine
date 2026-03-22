@@ -16,6 +16,7 @@
 #include "../common/perf_logger.h"
 #include "../common/performance_metrics.h"
 #include "hook_common.h"
+#include "../common/dxgi_shared.h"
 
 // External overlay functions (implemented in dx11_hook.cpp / dx12_hook.cpp)
 extern void DrawDX11Overlay(IDXGISwapChain* pSwapChain);
@@ -663,6 +664,17 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     DWORD threadId = GetCurrentThreadId();
     static std::atomic<int> s_presentCallCount{0};
     int callCount = s_presentCallCount.fetch_add(1);
+
+    SharedMemoryLayout* debugSharedMem = (g_IPC && g_IPC->GetSharedMem()) ? g_IPC->GetSharedMem() : g_pSharedMem;
+    if (activeDebugSample && debugSharedMem) {
+        activeDebugSample->sourceFrameIndex = DXGIShared::GetLatestSourceFrameIndex();
+        activeDebugSample->capturePhase = debugSharedMem->runtimeState.capturePhase.load(std::memory_order_relaxed);
+        activeDebugSample->encoderQueueDepth = debugSharedMem->encoderQueueDepth.load(std::memory_order_relaxed);
+        activeDebugSample->muxQueueKb =
+            (debugSharedMem->runtimeState.muxQueueBytes.load(std::memory_order_relaxed) + 1023u) / 1024u;
+        activeDebugSample->overloadFlags =
+            debugSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
+    }
 
     // CRITICAL FIX: Lock mutex to protect swapchain pointer access
     // This prevents race conditions with DestructionCallback running on another

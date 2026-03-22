@@ -25,10 +25,14 @@ MEDIAENGINE_API bool MediaEngine_Init(const AppConfig* config);
 MEDIAENGINE_API void MediaEngine_ReloadConfig(const AppConfig* config);
 
 // Process a frame from D3D12 shared handle (inject mode)
-MEDIAENGINE_API void MediaEngine_ProcessFrame(uint64_t textureHandle, uint64_t fenceHandle, uint64_t fenceValue,
+MEDIAENGINE_API bool MediaEngine_ProcessFrame(uint64_t textureHandle, uint64_t fenceHandle, uint64_t fenceValue,
                                               int64_t timestamp, int32_t luidLow, int32_t luidHigh, uint32_t sourcePid,
                                               uint32_t width, uint32_t height, uint32_t format, bool isHDR,
                                               bool isShmem = false, int shmemSlot = 0);
+
+// Re-emit the previously encoded video frame content as a true duplicate.
+// Returns false if no prior frame exists or the duplicate encode failed.
+MEDIAENGINE_API bool MediaEngine_RepeatLastFrame(int64_t timestamp);
 
 // Process a frame from D3D11 texture directly (framegrab mode - zero copy)
 // texture: D3D11 texture in RGB/BGRA/FP16 format (caller retains ownership)
@@ -64,6 +68,11 @@ MEDIAENGINE_API int64_t MediaEngine_GetLastFrameEncodeTimeUs();
 
 // Get the fence wait duration of the last frame (in microseconds)
 MEDIAENGINE_API int64_t MediaEngine_GetLastFrameFenceWaitUs();
+
+// Returns true when the most recent inject-frame encode was deferred because the
+// shared fence was not ready yet. False means either success or a non-deferrable
+// failure.
+MEDIAENGINE_API bool MediaEngine_WasLastFrameDeferred();
 
 // Shutdown and cleanup
 MEDIAENGINE_API void MediaEngine_Shutdown();

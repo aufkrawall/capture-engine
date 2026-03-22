@@ -181,6 +181,18 @@ namespace fs = std::filesystem;
 namespace {
 enum class OutputRangeMode { kLimited, kFull };
 
+template <typename AtomicT>
+void UpdateAtomicPeak(AtomicT& peak, uint32_t value) {
+    uint32_t current = peak.load(std::memory_order_relaxed);
+    while (value > current && !peak.compare_exchange_weak(current, value, std::memory_order_relaxed,
+                                                          std::memory_order_relaxed)) {
+    }
+}
+
+uint32_t SaturatingToUint32(uint64_t value) {
+    return value > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<uint32_t>(value);
+}
+
 struct ResolvedVideoFormat {
     AVPixelFormat codecPixFmt = AV_PIX_FMT_NONE;
     AVPixelFormat d3d11SwFormat = AV_PIX_FMT_NONE;
@@ -560,6 +572,12 @@ static void FreeD3D11Tex(void* opaque, uint8_t* data) {
         tex->Release();
 }
 
+static void FreeScopedAvFrame(AVFrame** frame) {
+    if (frame && *frame) {
+        av_frame_free(frame);
+    }
+}
+
 VideoEncoder::VideoEncoder()
     : fmtCtx(nullptr),
       codecCtx(nullptr),
@@ -929,6 +947,50 @@ bool VideoEncoder::PrepareD3D11TextureForEncode(ID3D11Texture2D* srcTexture, ID3
 
     d3d11Context->CopyResource(dstTexture, normalizedTexture);
     normalizedTexture->Release();
+    return true;
+}
+
+bool VideoEncoder::CacheRepeatFrameTexture(ID3D11Texture2D* sourceTexture) {
+    if (!sourceTexture || !d3d11Device || !d3d11Context) {
+        return false;
+    }
+
+    D3D11_TEXTURE2D_DESC srcDesc = {};
+    sourceTexture->GetDesc(&srcDesc);
+
+    D3D11_TEXTURE2D_DESC cacheDesc = srcDesc;
+    cacheDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    cacheDesc.MiscFlags = 0;
+    cacheDesc.CPUAccessFlags = 0;
+    cacheDesc.Usage = D3D11_USAGE_DEFAULT;
+
+    bool needsRecreate = true;
+    if (repeatFrameTexture) {
+        D3D11_TEXTURE2D_DESC existingDesc = {};
+        repeatFrameTexture->GetDesc(&existingDesc);
+        needsRecreate = existingDesc.Width != cacheDesc.Width || existingDesc.Height != cacheDesc.Height ||
+                        existingDesc.Format != cacheDesc.Format || existingDesc.BindFlags != cacheDesc.BindFlags ||
+                        existingDesc.ArraySize != cacheDesc.ArraySize || existingDesc.MipLevels != cacheDesc.MipLevels ||
+                        existingDesc.SampleDesc.Count != cacheDesc.SampleDesc.Count ||
+                        existingDesc.SampleDesc.Quality != cacheDesc.SampleDesc.Quality;
+    }
+
+    if (needsRecreate) {
+        if (repeatFrameTexture) {
+            repeatFrameTexture->Release();
+            repeatFrameTexture = nullptr;
+        }
+
+        HRESULT hr = d3d11Device->CreateTexture2D(&cacheDesc, nullptr, &repeatFrameTexture);
+        if (FAILED(hr)) {
+            DLL_Log("[VideoEncoder] Failed to create repeat-frame texture: HR=%x fmt=%d %ux%u", hr, cacheDesc.Format,
+                    cacheDesc.Width, cacheDesc.Height);
+            return false;
+        }
+    }
+
+    D3D11ScopedLock lock;
+    d3d11Context->CopyResource(repeatFrameTexture, sourceTexture);
     return true;
 }
 
@@ -1705,6 +1767,11 @@ void VideoEncoder::BeginDeferredRecording() {
     codecOpenFailed = false;
     encodedDurationUs.store(0, std::memory_order_relaxed);
     lastAssignedVideoPts = -1;
+    lastFrameDeferred.store(false, std::memory_order_relaxed);
+    if (repeatFrameTexture) {
+        repeatFrameTexture->Release();
+        repeatFrameTexture = nullptr;
+    }
 
     audioPacketCount = 0;
     videoPacketCount = 0;
@@ -1958,6 +2025,7 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
     // gap for every 9ms step.  Compute each frame's exact duration from the
     // sequential PTS difference so it always matches the actual PTS spacing.
     if (pkt->stream_index == stream->index) {
+        int64_t preClampDuration = pkt->duration;
         int fps = codecCtx->framerate.num;
         if (fps <= 0)
             fps = 60;
@@ -1993,10 +2061,26 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
         }
         if (pkt->duration <= 0)
             pkt->duration = 1;
+        if (pkt->duration != preClampDuration) {
+            packetDurationClampCount.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 
     // Track authoritative encoded video duration from packet timeline.
     if (pkt->stream_index == stream->index) {
+        if (pkt->pts < 0 || pkt->dts < 0) {
+            negativePtsCount.fetch_add(1, std::memory_order_relaxed);
+        }
+        int64_t packetTimelinePts = (pkt->pts != AV_NOPTS_VALUE) ? pkt->pts : pkt->dts;
+        if (lastQueuedVideoPts != AV_NOPTS_VALUE && packetTimelinePts != AV_NOPTS_VALUE && packetTimelinePts < lastQueuedVideoPts) {
+            nonMonotonicPtsCount.fetch_add(1, std::memory_order_relaxed);
+            DLL_Log("[VideoEncoder] WARNING: non-monotonic packet pts prev=%lld cur=%lld dur=%lld",
+                    static_cast<long long>(lastQueuedVideoPts), static_cast<long long>(packetTimelinePts),
+                    static_cast<long long>(pkt->duration));
+        }
+        if (packetTimelinePts != AV_NOPTS_VALUE) {
+            lastQueuedVideoPts = packetTimelinePts;
+        }
         int64_t packetPts = (pkt->pts != AV_NOPTS_VALUE) ? pkt->pts : pkt->dts;
         if (packetPts != AV_NOPTS_VALUE) {
             int64_t packetDuration = pkt->duration;
@@ -2021,6 +2105,7 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
     // Instead apply backpressure to the encode thread.
     // If storage is extremely slow, this will manifest as stutter/dropped input
     // frames (FrameQueue will drop/duplicate), but the bitstream stays valid.
+    uint64_t backpressureWaitUs = 0;
     for (;;) {
         size_t qBytes = currentQueueBytes.load(std::memory_order_relaxed);
         if (qBytes <= MAX_QUEUE_BYTES) {
@@ -2028,6 +2113,7 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
         }
 
         lastMuxOverloadTickMs.store(GetTickCount64(), std::memory_order_relaxed);
+        muxBackpressureCount.fetch_add(1, std::memory_order_relaxed);
         PublishRuntimeState();
 
         static int overloadLogCount = 0;
@@ -2039,13 +2125,22 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
         }
 
         // Wait briefly for writer to drain.
+        const auto waitStart = std::chrono::steady_clock::now();
         std::unique_lock<std::mutex> lock(queueMutex);
         queueCV.wait_for(lock, std::chrono::milliseconds(2), [this] {
             return currentQueueBytes.load(std::memory_order_relaxed) <= MAX_QUEUE_BYTES || isStopping || !writerRunning;
         });
+        backpressureWaitUs += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                              std::chrono::steady_clock::now() - waitStart)
+                              .count());
         if (isStopping || !writerRunning) {
             break;
         }
+    }
+    if (backpressureWaitUs > 0) {
+        const uint32_t waitUs32 = SaturatingToUint32(backpressureWaitUs);
+        muxBackpressureWaitUs.store(waitUs32, std::memory_order_relaxed);
+        UpdateAtomicPeak(muxBackpressureMaxWaitUs, waitUs32);
     }
 
     AVPacket* clonePkt = av_packet_clone(pkt);
@@ -2054,7 +2149,10 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
             std::lock_guard<std::mutex> lock(queueMutex);
             packetQueue.push(clonePkt);
             currentQueueBytes += clonePkt->size + sizeof(AVPacket);
+            currentQueuePackets.store(SaturatingToUint32(packetQueue.size()), std::memory_order_relaxed);
         }
+        UpdateAtomicPeak(peakQueueBytes, SaturatingToUint32(currentQueueBytes.load(std::memory_order_relaxed)));
+        UpdateAtomicPeak(peakQueuePackets, currentQueuePackets.load(std::memory_order_relaxed));
         PublishRuntimeState();
         queueCV.notify_one();
     }
@@ -2085,6 +2183,24 @@ void VideoEncoder::PublishRuntimeState() {
     size_t qBytes = currentQueueBytes.load(std::memory_order_relaxed);
     uint32_t qBytes32 = (qBytes > 0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)qBytes;
     pSharedMem->runtimeState.muxQueueBytes.store(qBytes32, std::memory_order_relaxed);
+    pSharedMem->runtimeState.muxQueuePackets.store(currentQueuePackets.load(std::memory_order_relaxed),
+                                                   std::memory_order_relaxed);
+    pSharedMem->runtimeState.muxQueuePeakBytes.store(peakQueueBytes.load(std::memory_order_relaxed),
+                                                     std::memory_order_relaxed);
+    pSharedMem->runtimeState.muxQueuePeakPackets.store(peakQueuePackets.load(std::memory_order_relaxed),
+                                                       std::memory_order_relaxed);
+    pSharedMem->runtimeState.muxBackpressureCount.store(muxBackpressureCount.load(std::memory_order_relaxed),
+                                                        std::memory_order_relaxed);
+    pSharedMem->runtimeState.muxBackpressureWaitUs.store(muxBackpressureWaitUs.load(std::memory_order_relaxed),
+                                                         std::memory_order_relaxed);
+    pSharedMem->runtimeState.muxBackpressureMaxWaitUs.store(muxBackpressureMaxWaitUs.load(std::memory_order_relaxed),
+                                                            std::memory_order_relaxed);
+    pSharedMem->runtimeState.packetDurationClamps.store(packetDurationClampCount.load(std::memory_order_relaxed),
+                                                        std::memory_order_relaxed);
+    pSharedMem->runtimeState.negativePtsCount.store(negativePtsCount.load(std::memory_order_relaxed),
+                                                    std::memory_order_relaxed);
+    pSharedMem->runtimeState.nonMonotonicPtsCount.store(nonMonotonicPtsCount.load(std::memory_order_relaxed),
+                                                        std::memory_order_relaxed);
 }
 
 bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t fenceValue, int64_t timestamp,
@@ -2092,6 +2208,8 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                                int shmemSlot) {
     if (!recordingRequested)
         return false;
+
+    lastFrameDeferred.store(false, std::memory_order_relaxed);
 
     // Debug: Log every 60th frame entry to verify loop
     if (encodeFrameCounter % 60 == 0) {
@@ -2253,14 +2371,15 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         needsCounterReset = true;  // Mark that we need to reset on first frame
     }
 
-    if (inputFrameCount - lastLogFrameCount >= fpsLogIntervalFrames) {
+    if (outputFrameCount - lastLogFrameCount >= fpsLogIntervalFrames) {
         if (startPts >= 0 && timestamp > startPts) {
             // Inject-mode timestamps are in microseconds.
             double elapsedSec = (double)(timestamp - startPts) / 1000000.0;
-            double outputFps = (elapsedSec > 0.001) ? ((double)inputFrameCount / elapsedSec) : 0.0;
-            DLL_Log("[FPS] Output: %.1f frames, %.1f fps over %.1fs", (double)inputFrameCount, outputFps, elapsedSec);
+            double outputFps = (elapsedSec > 0.001) ? ((double)outputFrameCount / elapsedSec) : 0.0;
+            DLL_Log("[FPS] Output: %.1f frames, %.1f fps over %.1fs", (double)outputFrameCount, outputFps,
+                    elapsedSec);
         }
-        lastLogFrameCount = inputFrameCount;
+        lastLogFrameCount = outputFrameCount;
     }
 
     // Reset counters on new recording
@@ -2709,6 +2828,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                 bgraTex->Release();
                 d3d11Fence->Release();
                 d3d11Fence = nullptr;
+                lastFrameDeferred.store(true, std::memory_order_relaxed);
                 return false;
             }
         }
@@ -2934,6 +3054,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     // Update global stats
     g_framesEncoded++;
     outputFrameCount++;
+    CacheRepeatFrameTexture(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
     g_totalFenceWait += stats.fenceWaitMs;
     g_totalColorConvert += stats.colorConvertMs;
     g_totalEncode += stats.encodeMs;
@@ -3302,6 +3423,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         success = sendFrame(d3d11Frame);
         if (success) {
             outputFrameCount++;
+            CacheRepeatFrameTexture(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
         }
     }
 
@@ -3351,6 +3473,190 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         }
     }
 
+    av_frame_free(&d3d11Frame);
+    return true;
+}
+
+bool VideoEncoder::RepeatLastFrame(int64_t timestamp) {
+    if (!recordingRequested) {
+        return false;
+    }
+
+    lastFrameDeferred.store(false, std::memory_order_relaxed);
+
+    if (!repeatFrameTexture) {
+        DLL_Log("[VideoEncoder] RepeatLastFrame requested without cached frame");
+        return false;
+    }
+
+    if (!d3d11Device || !d3d11Context || !EnsureDevice()) {
+        return false;
+    }
+
+    if (!fileOpened) {
+        DLL_Log("[VideoEncoder] RepeatLastFrame requested before output file was opened");
+        return false;
+    }
+
+    inputFrameCount++;
+
+    const int fpsLogIntervalFrames = (savedConfig.fps > 0) ? savedConfig.fps : 60;
+    if (startPts < 0) {
+        startPts = timestamp;
+        needsCounterReset = true;
+    }
+    if (outputFrameCount - lastLogFrameCount >= fpsLogIntervalFrames) {
+        if (startPts >= 0 && timestamp > startPts) {
+            double elapsedSec = static_cast<double>(timestamp - startPts) / 1000000.0;
+            double outputFps = (elapsedSec > 0.001) ? (static_cast<double>(outputFrameCount) / elapsedSec) : 0.0;
+            DLL_Log("[FPS] Output: %.1f frames, %.1f fps over %.1fs", static_cast<double>(outputFrameCount), outputFps,
+                    elapsedSec);
+        }
+        lastLogFrameCount = outputFrameCount;
+    }
+    if (needsCounterReset) {
+        encodeFrameCounter = 0;
+        lastLogFrameCount = 0;
+        needsCounterReset = false;
+        DLL_Log("[VideoEncoder] Reset frameCounter for repeated-frame path");
+    }
+
+    encodeFrameCounter++;
+    duplicatedFrameCount++;
+
+    FrameStats stats;
+    stats.frameNumber = encodeFrameCounter;
+    stats.ptsMs = timestamp / 1000;
+    double expectedFrameMs = 1000.0 / codecCtx->framerate.num;
+    if (g_lastFramePts >= 0) {
+        stats.actualPtsDiff = (timestamp - g_lastFramePts) / 1000;
+        stats.expectedPtsDiff = static_cast<int64_t>(expectedFrameMs);
+    }
+    g_lastFramePts = timestamp;
+
+    auto frameStart = PerfTimer::now();
+
+    AVFrame* d3d11Frame = av_frame_alloc();
+    if (!d3d11Frame) {
+        return false;
+    }
+
+    d3d11Frame->format = AV_PIX_FMT_D3D11;
+    d3d11Frame->width = codecCtx->width;
+    d3d11Frame->height = codecCtx->height;
+    d3d11Frame->hw_frames_ctx = av_buffer_ref(d3d11FramesCtx);
+
+    auto beforeConvert = PerfTimer::now();
+    const int frameRet = av_hwframe_get_buffer(d3d11FramesCtx, d3d11Frame, 0);
+    if (frameRet < 0 || !d3d11Frame->data[0]) {
+        DLL_Log("[VideoEncoder] RepeatLastFrame failed to allocate D3D11 HW frame: %d", frameRet);
+        av_frame_free(&d3d11Frame);
+        return false;
+    }
+
+    {
+        D3D11ScopedLock lock;
+        d3d11Context->CopyResource(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]), repeatFrameTexture);
+    }
+
+    auto afterConvert = PerfTimer::now();
+    ApplyFrameColorMetadata(d3d11Frame, codecCtx);
+
+    int64_t targetPts = 0;
+    if (savedConfig.useVFR && startPts >= 0) {
+        targetPts = timestamp - startPts;
+    } else {
+        targetPts = (lastAssignedVideoPts >= 0) ? (lastAssignedVideoPts + 1) : 0;
+    }
+
+    AVPacket* pkt = av_packet_alloc();
+    if (!pkt) {
+        av_frame_free(&d3d11Frame);
+        return false;
+    }
+
+    int packetCount = 0;
+    auto drainPackets = [&]() {
+        while (true) {
+            int ret = avcodec_receive_packet(codecCtx, pkt);
+            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+                break;
+            }
+            if (ret < 0) {
+                char errbuf[AV_ERROR_MAX_STRING_SIZE];
+                av_strerror(ret, errbuf, AV_ERROR_MAX_STRING_SIZE);
+                DLL_Log("[VideoEncoder] RepeatLastFrame receive_packet failed: %d (%s)", ret, errbuf);
+                break;
+            }
+
+            packetCount++;
+            pkt->stream_index = stream->index;
+            pkt->duration = savedConfig.useVFR ? (1000000 / std::max(savedConfig.fps, 1)) : 1;
+            if (onPacket) {
+                onPacket(pkt);
+            }
+            av_packet_unref(pkt);
+        }
+    };
+
+    auto sendFrame = [&](AVFrame* frame) -> bool {
+        drainPackets();
+        int ret = avcodec_send_frame(codecCtx, frame);
+        int retries = 0;
+        while (ret == AVERROR(EAGAIN) && retries < 10) {
+            if (retries == 0) {
+                lastEncoderOverloadTickMs.store(GetTickCount64(), std::memory_order_relaxed);
+                PublishRuntimeState();
+            }
+            drainPackets();
+            ret = avcodec_send_frame(codecCtx, frame);
+            retries++;
+        }
+        if (ret < 0 && ret != AVERROR(EAGAIN)) {
+            char errbuf[AV_ERROR_MAX_STRING_SIZE];
+            av_strerror(ret, errbuf, AV_ERROR_MAX_STRING_SIZE);
+            DLL_Log("[VideoEncoder] RepeatLastFrame send_frame failed: %d (%s)", ret, errbuf);
+            return false;
+        }
+        drainPackets();
+        return true;
+    };
+
+    d3d11Frame->pts = targetPts;
+    lastAssignedVideoPts = d3d11Frame->pts;
+
+    auto encodeStart = PerfTimer::now();
+    const bool success = sendFrame(d3d11Frame);
+    auto afterEncode = PerfTimer::now();
+
+    if (!success) {
+        av_packet_free(&pkt);
+        av_frame_free(&d3d11Frame);
+        return false;
+    }
+
+    stats.textureOpenMs = 0.0;
+    stats.colorConvertMs = PerfTimer::elapsed_ms(beforeConvert, afterConvert);
+    stats.encodeMs = PerfTimer::elapsed_ms(encodeStart, afterEncode);
+    stats.totalMs = PerfTimer::elapsed_ms(frameStart, afterEncode);
+    stats.packetsProduced = packetCount;
+
+    lastEncodeTimeUs = static_cast<int64_t>(PerfTimer::elapsed_ms(beforeConvert, afterEncode) * 1000.0);
+    lastFenceWaitUs = 0;
+
+    g_framesEncoded++;
+    outputFrameCount++;
+    g_totalFenceWait += stats.fenceWaitMs;
+    g_totalColorConvert += stats.colorConvertMs;
+    g_totalEncode += stats.encodeMs;
+    if (stats.totalMs > g_maxFrameTime) {
+        g_maxFrameTime = stats.totalMs;
+    }
+    if (stats.totalMs > expectedFrameMs * 2.0) {
+        g_slowFrameCount++;
+    }
+
+    av_packet_free(&pkt);
     av_frame_free(&d3d11Frame);
     return true;
 }
@@ -3411,6 +3717,10 @@ void VideoEncoder::CleanupResources() {
     if (cachedD3D11Fence) {
         cachedD3D11Fence->Release();
         cachedD3D11Fence = nullptr;
+    }
+    if (repeatFrameTexture) {
+        repeatFrameTexture->Release();
+        repeatFrameTexture = nullptr;
     }
     cachedFenceHandle = nullptr;
     cachedSourcePid = 0;
@@ -3478,7 +3788,18 @@ void VideoEncoder::CleanupResources() {
     nextOutputTime_ms = -1;
     lastEncodeTimeUs = 0;
     lastFenceWaitUs = 0;
+    lastFrameDeferred.store(false, std::memory_order_relaxed);
     encodedDurationUs.store(0, std::memory_order_relaxed);
+    currentQueuePackets.store(0, std::memory_order_relaxed);
+    peakQueueBytes.store(0, std::memory_order_relaxed);
+    peakQueuePackets.store(0, std::memory_order_relaxed);
+    muxBackpressureCount.store(0, std::memory_order_relaxed);
+    muxBackpressureWaitUs.store(0, std::memory_order_relaxed);
+    muxBackpressureMaxWaitUs.store(0, std::memory_order_relaxed);
+    packetDurationClampCount.store(0, std::memory_order_relaxed);
+    negativePtsCount.store(0, std::memory_order_relaxed);
+    nonMonotonicPtsCount.store(0, std::memory_order_relaxed);
+    lastQueuedVideoPts = AV_NOPTS_VALUE;
     lastAssignedVideoPts = -1;
     asyncWriteErrorCount = 0;
     cursorUpdateCounter = 0;
@@ -3555,8 +3876,16 @@ void VideoEncoder::Stop() {
     recordingRequested = false;
 
     if (wasRecording) {
-        DLL_Log("[VideoEncoder] Recording stats: input=%lld output=%lld skipped=%lld duplicated=%lld", inputFrameCount,
-                outputFrameCount, skippedFrameCount, duplicatedFrameCount);
+        const uint32_t phase = pSharedMem ? pSharedMem->runtimeState.capturePhase.load(std::memory_order_relaxed) :
+                                            static_cast<uint32_t>(CapturePipelinePhase::kIdle);
+        const uint32_t totalFrames = pSharedMem ? pSharedMem->runtimeState.framesEncoded.load(std::memory_order_relaxed) : 0;
+        const uint32_t liveFrames = pSharedMem ? pSharedMem->runtimeState.liveFramesEncoded.load(std::memory_order_relaxed) : 0;
+        const uint32_t drainFrames = pSharedMem ? pSharedMem->runtimeState.drainFramesEncoded.load(std::memory_order_relaxed) : 0;
+        DLL_Log(
+            "[VideoEncoder] Recording stats: input=%lld output=%lld runtime=%u skipped=%lld duplicated=%lld phase=%s live=%u drain=%u backpressure=%u peakMux=%uKB peakPkts=%u",
+            inputFrameCount, outputFrameCount, totalFrames, skippedFrameCount, duplicatedFrameCount, CapturePipelinePhaseToString(phase),
+            liveFrames, drainFrames, muxBackpressureCount.load(std::memory_order_relaxed),
+            peakQueueBytes.load(std::memory_order_relaxed) / 1024u, peakQueuePackets.load(std::memory_order_relaxed));
 
         // Final packet type distribution summary
         if (packetStats.totalPackets > 0) {
@@ -5769,6 +6098,10 @@ int64_t VideoEncoder::GetLastFrameEncodeTimeUs() const {
 int64_t VideoEncoder::GetLastFrameFenceWaitUs() const {
     return lastFenceWaitUs;
 }
+
+bool VideoEncoder::WasLastFrameDeferred() const {
+    return lastFrameDeferred.load(std::memory_order_relaxed);
+}
 // Async Packet Writer Loop
 void VideoEncoder::AsyncWriteLoop() {
     DLL_Log("[VideoEncoder] Async Writer Thread Started");
@@ -5783,14 +6116,15 @@ void VideoEncoder::AsyncWriteLoop() {
         while (!packetQueue.empty()) {
             AVPacket* pkt = packetQueue.front();
             packetQueue.pop();
+            currentQueuePackets.store(SaturatingToUint32(packetQueue.size()), std::memory_order_relaxed);
 
             size_t pktSize = pkt->size + sizeof(AVPacket);
             currentQueueBytes -= pktSize;
 
             lock.unlock();  // Release lock while doing I/O
 
-            if (fileOpened && fmtCtx) {
-                int ret = av_interleaved_write_frame(fmtCtx, pkt);
+                if (fileOpened && fmtCtx) {
+                    int ret = av_interleaved_write_frame(fmtCtx, pkt);
                 if (ret < 0) {
                     if (asyncWriteErrorCount++ < 10) {
                         char errbuf[AV_ERROR_MAX_STRING_SIZE];
@@ -5804,6 +6138,7 @@ void VideoEncoder::AsyncWriteLoop() {
             }
 
             av_packet_free(&pkt);
+            PublishRuntimeState();
             lock.lock();  // Re-acquire lock
         }
 

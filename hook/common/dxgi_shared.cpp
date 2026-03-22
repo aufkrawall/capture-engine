@@ -114,6 +114,7 @@ std::atomic<uint64_t> g_PresentCallCounter{0};
 
 // Global metrics for DXGI-based APIs
 static PerformanceMetrics g_DXGIPerfMetrics;
+static std::atomic<uint32_t> g_LatestSourceFrameIndex{0};
 
 // Recursion detection globals (avoiding thread_local which requires runtime
 // init)
@@ -334,6 +335,14 @@ static void ApplySwapChainOverrides(IDXGISwapChain* pSwapChain) {
 
 PerformanceMetrics* GetPerformanceMetrics() {
     return &g_DXGIPerfMetrics;
+}
+
+uint32_t GetLatestSourceFrameIndex() {
+    return g_LatestSourceFrameIndex.load(std::memory_order_relaxed);
+}
+
+void SetLatestSourceFrameIndex(uint32_t frameIndex) {
+    g_LatestSourceFrameIndex.store(frameIndex, std::memory_order_relaxed);
 }
 
 APIType DetectAPIType(IDXGISwapChain* pSwapChain) {

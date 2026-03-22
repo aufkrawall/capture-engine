@@ -5507,6 +5507,20 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     perfMetrics.api[sizeof(perfMetrics.api) - 1] = '\0';
     static uint64_t s_perfFrameNum = 0;
     perfMetrics.frameNum = ++s_perfFrameNum;
+    if (g_pSharedMem) {
+        perfMetrics.sourceFrameIndex = DXGIShared::GetLatestSourceFrameIndex();
+        perfMetrics.sourceCapturePhase = g_pSharedMem->runtimeState.capturePhase.load(std::memory_order_relaxed);
+        perfMetrics.sourceEncoderQueueDepth = g_pSharedMem->encoderQueueDepth.load(std::memory_order_relaxed);
+        perfMetrics.sourceMuxQueueKb =
+            (g_pSharedMem->runtimeState.muxQueueBytes.load(std::memory_order_relaxed) + 1023u) / 1024u;
+        perfMetrics.sourceOverloadFlags = g_pSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
+    }
+    if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
+        perfMetrics.sourceCurrentFpsTimes100 = static_cast<int32_t>(perf->GetCurrentFPS() * 100.0f + 0.5f);
+        perfMetrics.source1PctLowTimes100 = static_cast<int32_t>(perf->Get1PercentLowFPS() * 100.0f + 0.5f);
+        perfMetrics.sourcePoint1PctLowTimes100 = static_cast<int32_t>(perf->Get01PercentLowFPS() * 100.0f + 0.5f);
+        perfMetrics.sourceFrameTimeStdDevUs = static_cast<int32_t>(perf->GetWindowStdDev() + 0.5);
+    }
     PresentDebugSample* activeDebugSample = PerfLogger::Get().GetActiveDebugSample();
     const int64_t processFrameStartUs = activeDebugSample ? PerfLogger::GetQpcUs() : 0;
 
@@ -8378,6 +8392,17 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                 std::atomic_thread_fence(std::memory_order_release);
                                 slot.valid.store(1, std::memory_order_release);
                                 shm->frameRing.writeIndex.store(wIdx + 1, std::memory_order_release);
+                                DXGIShared::SetLatestSourceFrameIndex(desc.frameNumber);
+                                static uint64_t s_lastPublishLineageLogTick = 0;
+                                uint64_t nowTick = GetTickCount64();
+                                if (nowTick - s_lastPublishLineageLogTick >= 1000) {
+                                    HookLog("DX12: Publish frame=%u ring=%u tex=%d fence=%llu ts=%llu bb=%u depth=%u",
+                                            desc.frameNumber, wIdx, desc.textureIndex,
+                                            static_cast<unsigned long long>(desc.fenceValue),
+                                            static_cast<unsigned long long>(desc.presentTime), bbIdx,
+                                            static_cast<unsigned>(wIdx - rIdx));
+                                    s_lastPublishLineageLogTick = nowTick;
+                                }
                             } else
                                 shm->frameRing.droppedFrames.fetch_add(1, std::memory_order_relaxed);
                         }

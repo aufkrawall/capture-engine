@@ -44,6 +44,11 @@ public:
                      uint32_t sourcePid, int width, int height, int format, bool isHDR, bool isShmem = false,
                      int shmemSlot = 0);
 
+    // Re-emit the previously encoded video frame content as a true duplicate.
+    // Used by the host CFR scheduler when a live tick has no fresh source frame
+    // or when an inject frame is deferred.
+    bool RepeatLastFrame(int64_t timestamp);
+
     // Encode a D3D11 texture directly (framegrab mode - zero copy)
     bool EncodeFrameD3D11(ID3D11Texture2D* texture, int64_t pts, uint32_t frameWidth, uint32_t frameHeight, bool isHDR,
                           int32_t captureLeft, int32_t captureTop);
@@ -72,6 +77,7 @@ public:
     int64_t GetEncodedDurationUs() const;      // Get exact duration of encoded video in microseconds
     int64_t GetLastFrameEncodeTimeUs() const;  // Get duration of last frame encoding (excluding wait)
     int64_t GetLastFrameFenceWaitUs() const;   // Get duration of last fence wait (GPU wait)
+    bool WasLastFrameDeferred() const;
 
     int AddAudioStream(const AudioConfig& config, AVCodecContext* audioCtx = nullptr, int track = -1);
 
@@ -207,13 +213,29 @@ private:
     std::atomic<uint64_t> lastEncoderOverloadTickMs{0};
     std::atomic<uint64_t> lastMuxOverloadTickMs{0};
     std::atomic<int64_t> encodedDurationUs{0};  // Authoritative encoded video end
+    std::atomic<uint32_t> currentQueuePackets{0};
+    std::atomic<uint32_t> peakQueueBytes{0};
+    std::atomic<uint32_t> peakQueuePackets{0};
+    std::atomic<uint32_t> muxBackpressureCount{0};
+    std::atomic<uint32_t> muxBackpressureWaitUs{0};
+    std::atomic<uint32_t> muxBackpressureMaxWaitUs{0};
+    std::atomic<uint32_t> packetDurationClampCount{0};
+    std::atomic<uint32_t> negativePtsCount{0};
+    std::atomic<uint32_t> nonMonotonicPtsCount{0};
+    int64_t lastQueuedVideoPts = AV_NOPTS_VALUE;
 
     // Frame counting and logging state (was static, now members for proper reset)
     int encodeFrameCounter = 0;         // Frames encoded in current recording
     int64_t lastAssignedVideoPts = -1;  // Last input frame PTS assigned to encoder
     int64_t lastEncodeTimeUs = 0;       // Duration of last frame encoding (pure encode time)
     int64_t lastFenceWaitUs = 0;        // Duration of last fence wait
+    std::atomic<bool> lastFrameDeferred{false};
     HANDLE fenceEvent = nullptr;
+
+    // Cached copy of the most recently encoded video frame *after* all
+    // conversion/compositing. Repeating this texture produces a true duplicate
+    // even when source shared-handle slots have already been reused.
+    ID3D11Texture2D* repeatFrameTexture = nullptr;
 
     int64_t lastLogFrameCount = 0;  // Last frame count when we logged FPS
     bool needsCounterReset = true;  // Signals start of new recording
@@ -365,6 +387,7 @@ private:
                                       int captureOriginX = 0, int captureOriginY = 0);
     bool ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture2D** nv12Output, bool cursorVisible = false,
                            int cursorX = 0, int cursorY = 0, bool allowDirectInputView = true);
+    bool CacheRepeatFrameTexture(ID3D11Texture2D* sourceTexture);
     bool EnsureSwapRBShader();
     ID3D11Texture2D* RenderFullscreenCopy(ID3D11Texture2D* input, uint32_t w, uint32_t h, DXGI_FORMAT inputSrvFormat,
                                           DXGI_FORMAT outputFormat, ID3D11Texture2D*& cachedTexture,

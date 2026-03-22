@@ -30,7 +30,8 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 12: Added runtime coordination flags for cross-API overlay ownership
 // Version 13: Added SharedGraphicsConfig::forceMipBiasClamp override field
 // Version 14: Added captureRequested so hooks can warm up capture before REC goes live
-static constexpr uint32_t SHARED_MEMORY_VERSION = 15;
+// Version 16: Added capture cadence/telemetry diagnostics fields
+static constexpr uint32_t SHARED_MEMORY_VERSION = 16;
 
 // Minimum supported version for backward compatibility
 static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
@@ -266,6 +267,34 @@ enum CaptureRuntimeFlags : uint32_t {
     kCaptureRuntimeFlagInjectOverlayActive = 1u << 1,  // Inject hook is active in a game
 };
 
+enum class CapturePipelinePhase : uint32_t {
+    kIdle = 0,
+    kWarmup = 1,
+    kLive = 2,
+    kDrain = 3,
+    kStopping = 4,
+};
+
+inline const char* CapturePipelinePhaseToString(CapturePipelinePhase phase) {
+    switch (phase) {
+    case CapturePipelinePhase::kIdle:
+        return "idle";
+    case CapturePipelinePhase::kWarmup:
+        return "warmup";
+    case CapturePipelinePhase::kLive:
+        return "live";
+    case CapturePipelinePhase::kDrain:
+        return "drain";
+    case CapturePipelinePhase::kStopping:
+        return "stopping";
+    }
+    return "unknown";
+}
+
+inline const char* CapturePipelinePhaseToString(uint32_t phase) {
+    return CapturePipelinePhaseToString(static_cast<CapturePipelinePhase>(phase));
+}
+
 struct alignas(8) CaptureState {
     std::atomic<int64_t> recordingStartTime{0};  // File-output / REC-indicator start time
     std::atomic<double> currentFPS{0.0};         // Atomic to prevent torn reads
@@ -278,6 +307,52 @@ struct alignas(8) CaptureState {
 
     std::atomic<uint32_t> encoderOverloadFlags{0};
     std::atomic<uint32_t> muxQueueBytes{0};
+    std::atomic<uint32_t> muxQueuePackets{0};
+    std::atomic<uint32_t> muxQueuePeakBytes{0};
+    std::atomic<uint32_t> muxQueuePeakPackets{0};
+    std::atomic<uint32_t> muxBackpressureCount{0};
+    std::atomic<uint32_t> muxBackpressureWaitUs{0};
+    std::atomic<uint32_t> muxBackpressureMaxWaitUs{0};
+
+    std::atomic<uint32_t> capturePhase{static_cast<uint32_t>(CapturePipelinePhase::kIdle)};
+    std::atomic<uint32_t> sourceFramesReceived{0};
+    std::atomic<uint32_t> framesQueued{0};
+    std::atomic<uint32_t> framesEncoded{0};
+    std::atomic<uint32_t> liveFramesEncoded{0};
+    std::atomic<uint32_t> drainFramesEncoded{0};
+    std::atomic<uint32_t> invalidFrameMetadata{0};
+    std::atomic<uint32_t> invalidSharedHandles{0};
+    std::atomic<uint32_t> injectPacingDrops{0};
+    std::atomic<uint32_t> injectCadenceDrops{0};
+    std::atomic<uint32_t> injectTrimmedFrames{0};
+    std::atomic<uint32_t> deferredFrames{0};
+    std::atomic<uint32_t> repeatedDeferredFrames{0};
+    std::atomic<uint32_t> consecutiveDeferredFrames{0};
+    std::atomic<uint32_t> maxConsecutiveDeferredFrames{0};
+    std::atomic<uint32_t> duplicateFramesNoSource{0};
+    std::atomic<uint32_t> duplicateFramesDeferred{0};
+    std::atomic<uint32_t> duplicateFramesTimerRebase{0};
+    std::atomic<uint32_t> duplicateFramesDrain{0};
+    std::atomic<uint32_t> consecutiveDuplicateFrames{0};
+    std::atomic<uint32_t> maxConsecutiveDuplicateFrames{0};
+    std::atomic<uint32_t> frameIndexRegressions{0};
+    std::atomic<uint32_t> textureReuseAnomalies{0};
+    std::atomic<uint32_t> sourceTimestampRegressions{0};
+    std::atomic<uint32_t> sourceTimestampStalls{0};
+    std::atomic<uint32_t> timerRebases{0};
+    std::atomic<uint32_t> bufferedInjectDepthPeak{0};
+    std::atomic<uint32_t> encoderQueuePeakDepth{0};
+    std::atomic<uint32_t> packetDurationClamps{0};
+    std::atomic<uint32_t> negativePtsCount{0};
+    std::atomic<uint32_t> nonMonotonicPtsCount{0};
+    std::atomic<uint32_t> frameAgeAvgUs{0};
+    std::atomic<uint32_t> frameAgeMaxUs{0};
+    std::atomic<uint32_t> selectionErrorAvgUs{0};
+    std::atomic<uint32_t> selectionErrorMaxUs{0};
+    std::atomic<int32_t> selectionErrorSignedAvgUs{0};
+    std::atomic<uint32_t> selectionEarlyMaxUs{0};
+    std::atomic<uint32_t> selectionLateMaxUs{0};
+    std::atomic<uint32_t> oldestBufferedFrameAgeUs{0};
 
     // Command flags (controller -> media process via shared memory)
     // Using std::atomic for proper cross-process visibility and memory ordering
