@@ -1,5 +1,6 @@
 // clang-format off
 #include <windows.h>
+#include <avrt.h>
 #include <d3d11.h>
 #include <psapi.h>
 #include <timeapi.h>
@@ -28,6 +29,7 @@
 #include "wgc_capture.h"
 
 #ifdef _MSC_VER
+#pragma comment(lib, "avrt.lib")
 #pragma comment(lib, "winmm.lib")
 #endif
 
@@ -730,6 +732,79 @@ static std::string GetLocalConfigPath() {
     return path.substr(0, path.find_last_of("\\/")) + "\\config.ini";
 }
 
+class ScopedMmcssTask {
+public:
+    ScopedMmcssTask(const wchar_t* taskName, AVRT_PRIORITY priority) {
+        DWORD taskIndex = 0;
+        handle_ = AvSetMmThreadCharacteristicsW(taskName, &taskIndex);
+        if (handle_) {
+            AvSetMmThreadPriority(handle_, priority);
+        }
+    }
+
+    ~ScopedMmcssTask() {
+        if (handle_) {
+            AvRevertMmThreadCharacteristics(handle_);
+        }
+    }
+
+    ScopedMmcssTask(const ScopedMmcssTask&) = delete;
+    ScopedMmcssTask& operator=(const ScopedMmcssTask&) = delete;
+
+private:
+    HANDLE handle_ = nullptr;
+};
+
+static void DisableCurrentThreadPowerThrottling() {
+    THREAD_POWER_THROTTLING_STATE throttlingState = {};
+    throttlingState.Version = THREAD_POWER_THROTTLING_CURRENT_VERSION;
+    throttlingState.ControlMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED;
+    throttlingState.StateMask = 0;
+    SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &throttlingState, sizeof(throttlingState));
+}
+
+static void WaitUntilQpcTarget(HANDLE timer, int64_t targetQpc, int64_t qpcFrequency) {
+    if (targetQpc <= 0 || qpcFrequency <= 0) {
+        return;
+    }
+
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    int64_t diff = targetQpc - now.QuadPart;
+    if (diff <= 0) {
+        return;
+    }
+
+    int64_t diffUs = (diff * 1000000) / qpcFrequency;
+    constexpr int64_t kTimerTrimUs = 400;
+    if (timer && diffUs > kTimerTrimUs) {
+        LARGE_INTEGER dueTime;
+        dueTime.QuadPart = -static_cast<int64_t>(static_cast<double>(diffUs - kTimerTrimUs) * 10.0);
+        if (SetWaitableTimer(timer, &dueTime, 0, NULL, NULL, FALSE)) {
+            WaitForSingleObject(timer, static_cast<DWORD>(((diffUs - kTimerTrimUs) / 1000) + 5));
+        }
+    }
+
+    for (;;) {
+        QueryPerformanceCounter(&now);
+        diff = targetQpc - now.QuadPart;
+        if (diff <= 0) {
+            break;
+        }
+
+        diffUs = (diff * 1000000) / qpcFrequency;
+        if (diffUs > 3000) {
+            Sleep(1);
+        } else if (diffUs > 1000) {
+            Sleep(0);
+        } else if (diffUs > 200) {
+            SwitchToThread();
+        } else {
+            YieldProcessor();
+        }
+    }
+}
+
 static void ApplyMediaProcessPriority(const AppConfig& config) {
     DWORD priorityClass = NORMAL_PRIORITY_CLASS;
     if (config.processPriority == "idle")
@@ -1318,6 +1393,9 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
 void EncoderThreadFunc(const AppConfig& config) {
     LogInfo("[EncoderThread] Started");
 
+    DisableCurrentThreadPowerThrottling();
+    ScopedMmcssTask encoderMmcssTask(L"Pro Audio", AVRT_PRIORITY_HIGH);
+
     g_FrameQueue.StartRecording();
     SetCapturePipelinePhase(CapturePipelinePhase::kWarmup);
 
@@ -1430,6 +1508,7 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint32_t wgcAncientSelectionCount = 0;
     uint32_t wgcFreshSelectionMissCount = 0;
     uint32_t wgcHeldFreshFrameTickCount = 0;
+    uint32_t cfrCatchupTicksExecuted = 0;
     uint32_t wgcReserveSpendTickCount = 0;
     uint32_t wgcStaleUniqueFallbackCount = 0;
     bool wgcLowSourceModeActive = false;
@@ -1526,33 +1605,46 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
         }
 
-        const int64_t selectionGridTick = (!config.video.useVFR && recordingOutputLive) ? (encoderGridTickCount + 1)
-                                                                                         : encoderGridTickCount;
+        uint32_t outputShortfallTicks = 0;
+        if (!config.video.useVFR && recordingOutputLive) {
+            LARGE_INTEGER shortfallNow;
+            QueryPerformanceCounter(&shortfallNow);
+            if (liveStartQpc.QuadPart > 0 && targetIntervalTicks > 0 && shortfallNow.QuadPart > liveStartQpc.QuadPart) {
+                const uint64_t elapsedTicks =
+                    static_cast<uint64_t>(shortfallNow.QuadPart - liveStartQpc.QuadPart) / static_cast<uint64_t>(targetIntervalTicks);
+                liveTicksScheduled = std::max<uint64_t>(liveTicksScheduled, elapsedTicks);
+                outputShortfallTicks = ce::capture_policy::GetCfrOutputShortfallTicks(liveTicksScheduled, liveTicksOutput);
+            }
+        }
+
+        const bool frameAvailableForCatchup = IsActiveScreenGrab() ? (!bufferedWgcFrames.empty()) : (!bufferedInjectFrames.empty());
+        const bool shouldCatchUpToWallClock =
+            !config.video.useVFR && recordingOutputLive &&
+            ce::capture_policy::ShouldCfrCatchUpToWallClock(outputShortfallTicks, IsActiveScreenGrab(),
+                                                            frameAvailableForCatchup, g_HasLastFrame);
+        const uint32_t catchupTicksThisLoop = shouldCatchUpToWallClock ? std::min<uint32_t>(outputShortfallTicks, 3u) : 0u;
+
+        const int64_t selectionGridTick = (!config.video.useVFR && recordingOutputLive)
+                                             ? (encoderGridTickCount + 1)
+                                             : encoderGridTickCount;
         int64_t scheduledSampleQpc = 0;
+        int64_t encoderLateQpc = 0;
         uint32_t encoderLateTickCount = 0;
         if (g_EncoderRunning) {
             scheduledSampleQpc = nextSampleTime.QuadPart;
             LARGE_INTEGER now;
             QueryPerformanceCounter(&now);
             int64_t waitTicks = nextSampleTime.QuadPart - now.QuadPart;
-            if (!config.video.useVFR && targetIntervalTicks > 0 && waitTicks < 0) {
-                const uint64_t lateTicks = static_cast<uint64_t>(-waitTicks) /
-                                           static_cast<uint64_t>(targetIntervalTicks);
-                encoderLateTickCount = SaturatingToUint32(lateTicks);
+            if (waitTicks > 0) {
+                WaitUntilQpcTarget(hTimer, scheduledSampleQpc, qpcFreq.QuadPart);
             }
 
-            if (waitTicks > 0 && hTimer) {
-                int64_t wait100ns = (waitTicks * 10000000) / qpcFreq.QuadPart;
-                LARGE_INTEGER dueTime;
-                dueTime.QuadPart = -wait100ns;
-                if (SetWaitableTimer(hTimer, &dueTime, 0, NULL, NULL, FALSE)) {
-                    WaitForSingleObject(hTimer, INFINITE);
-                }
-            } else if (waitTicks > qpcFreq.QuadPart / 1000) {
-                int64_t waitMs = (waitTicks * 1000) / qpcFreq.QuadPart;
-                if (waitMs > 1) {
-                    Sleep((DWORD)waitMs - 1);
-                }
+            QueryPerformanceCounter(&now);
+            if (!config.video.useVFR && targetIntervalTicks > 0 && now.QuadPart > scheduledSampleQpc) {
+                encoderLateQpc = now.QuadPart - scheduledSampleQpc;
+                const uint64_t lateTicks = static_cast<uint64_t>(encoderLateQpc) /
+                                           static_cast<uint64_t>(targetIntervalTicks);
+                encoderLateTickCount = SaturatingToUint32(lateTicks);
             }
 
             nextSampleTime.QuadPart += targetIntervalTicks;
@@ -1561,17 +1653,17 @@ void EncoderThreadFunc(const AppConfig& config) {
             // Once recording is live, preserve the fixed-rate output grid even when
             // the thread wakes late. Skipping CFR ticks creates 16.7/25/133ms packet
             // gaps that are far more visible in the file than a short catch-up burst.
-            QueryPerformanceCounter(&now);
             if (!recordingOutputLive && now.QuadPart > nextSampleTime.QuadPart + targetIntervalTicks * 2) {
                 nextSampleTime = now;
-            } else if (recordingOutputLive && now.QuadPart > nextSampleTime.QuadPart + targetIntervalTicks * 2) {
+            } else if (recordingOutputLive && encoderLateQpc > targetIntervalTicks * 2) {
                 static uint32_t s_lateTickLogCount = 0;
                 s_lateTickLogCount++;
                 if (s_lateTickLogCount <= 5 || s_lateTickLogCount % 120 == 0) {
-                    int64_t overshootTicks =
-                        (now.QuadPart - nextSampleTime.QuadPart + targetIntervalTicks - 1) / targetIntervalTicks;
-                    LogInfo("[EncoderThread] Timer jitter: preserving CFR grid while late by %lld ticks (count=%u)",
-                            (long long)overshootTicks, s_lateTickLogCount);
+                    int64_t overshootTicks = (encoderLateQpc + targetIntervalTicks - 1) / targetIntervalTicks;
+                    const int64_t overshootUs = (encoderLateQpc * 1000000) / qpcFreq.QuadPart;
+                    LogInfo(
+                        "[EncoderThread] Timer jitter: preserving CFR grid while late by %lld ticks (%lld us, count=%u)",
+                        (long long)overshootTicks, (long long)overshootUs, s_lateTickLogCount);
                 }
             }
         }
@@ -2445,10 +2537,8 @@ void EncoderThreadFunc(const AppConfig& config) {
         const bool isDrainPhase = !g_Recording.load(std::memory_order_acquire);
         const bool isLivePhase = recordingOutputLive && !isDrainPhase;
         const bool scheduledLiveCfrTick = consumesCfrTick && isLivePhase;
-        uint32_t outputShortfallTicks = 0;
         if (scheduledLiveCfrTick) {
             encoderGridTickCount = selectionGridTick;
-            ++liveTicksScheduled;
             outputShortfallTicks = ce::capture_policy::GetCfrOutputShortfallTicks(liveTicksScheduled, liveTicksOutput);
             ++wgcQueueTickSampleCount;
             if (useScreenGrab) {
@@ -2517,6 +2607,51 @@ void EncoderThreadFunc(const AppConfig& config) {
                 s_lastDupLogTick = nowTick;
             }
         };
+        auto emitCatchupRepeats = [&](const InjectFrameLineage* duplicateLineage) {
+            if (!scheduledLiveCfrTick || catchupTicksThisLoop <= 1 || !MediaEngine_RepeatLastFrame || !g_HasLastFrame) {
+                return;
+            }
+
+            for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
+                const int64_t repeatScheduledQpc = scheduledSampleQpc + static_cast<int64_t>(extraTick) * targetIntervalTicks;
+                LARGE_INTEGER repeatStartEnc, repeatEndEnc;
+                QueryPerformanceCounter(&repeatStartEnc);
+                bool repeatSucceeded = MediaEngine_RepeatLastFrame(repeatScheduledQpc);
+                bool repeatDeferred = MediaEngine_WasLastFrameDeferred && MediaEngine_WasLastFrameDeferred();
+                QueryPerformanceCounter(&repeatEndEnc);
+                if (!repeatSucceeded || repeatDeferred) {
+                    cadenceCounters.liveTickMissCount++;
+                    break;
+                }
+
+                const double currentEncodeMs =
+                    (double)(repeatEndEnc.QuadPart - repeatStartEnc.QuadPart) * 1000.0 / qpcFreq.QuadPart;
+                const double pureEncodeMs = (double)MediaEngine_GetLastFrameEncodeTimeUs() / 1000.0;
+                if (pureEncodeMs > 0.0) {
+                    if (smoothedEncodeMs == 0.0) {
+                        smoothedEncodeMs = pureEncodeMs;
+                    } else {
+                        smoothedEncodeMs = smoothedEncodeMs * 0.95 + pureEncodeMs * 0.05;
+                    }
+                }
+                g_IsEncoderBottlenecked.store(smoothedEncodeMs > frameIntervalMs * 0.95, std::memory_order_relaxed);
+
+                if (g_pSharedMem) {
+                    if (currentEncodeMs > frameIntervalMs * 1.10) {
+                        g_pSharedMem->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    g_pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
+                    g_pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
+                }
+
+                recordDuplicate(&g_LastFrame, duplicateLineage, false, false, false);
+                cadenceCounters.liveTickEmitCount++;
+                cadenceCounters.liveTickDuplicateCount++;
+                ++liveTicksOutput;
+                ++encoderGridTickCount;
+                ++cfrCatchupTicksExecuted;
+            }
+        };
 
         if ((!frameToProcess || wantsTrueRepeatLastFrame) && scheduledLiveCfrTick && MediaEngine_RepeatLastFrame) {
             LARGE_INTEGER repeatStartEnc, repeatEndEnc;
@@ -2537,6 +2672,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 } else {
                     smoothedEncodeMs = smoothedEncodeMs * 0.95 + pureEncodeMs * 0.05;
                 }
+                g_IsEncoderBottlenecked.store(smoothedEncodeMs > frameIntervalMs * 0.95, std::memory_order_relaxed);
                 if (g_pSharedMem && currentEncodeMs > frameIntervalMs * 1.10) {
                     g_pSharedMem->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
                     g_pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
@@ -2551,6 +2687,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 cadenceCounters.liveTickEmitCount++;
                 cadenceCounters.liveTickDuplicateCount++;
                 ++liveTicksOutput;
+                emitCatchupRepeats(duplicateLineage.IsValid() ? &duplicateLineage : nullptr);
             } else {
                 cadenceCounters.liveTickMissCount++;
             }
@@ -2635,6 +2772,18 @@ void EncoderThreadFunc(const AppConfig& config) {
 
             encodeCurrentFrame();
 
+            QueryPerformanceCounter(&endEnc);
+            double currentEncodeMs = (double)(endEnc.QuadPart - startEnc.QuadPart) * 1000.0 / qpcFreq.QuadPart;
+            double pureEncodeMs = (double)MediaEngine_GetLastFrameEncodeTimeUs() / 1000.0;
+            if (pureEncodeMs > 0.0) {
+                if (smoothedEncodeMs == 0.0) {
+                    smoothedEncodeMs = pureEncodeMs;
+                } else {
+                    smoothedEncodeMs = smoothedEncodeMs * 0.95 + pureEncodeMs * 0.05;
+                }
+            }
+            g_IsEncoderBottlenecked.store(smoothedEncodeMs > frameIntervalMs * 0.95, std::memory_order_relaxed);
+
             if (popped && frameToProcess->isInjectMode) {
                 if (encodeDeferred) {
                     const InjectFrameLineage deferredLineage = MakeInjectFrameLineage(*frameToProcess);
@@ -2686,17 +2835,6 @@ void EncoderThreadFunc(const AppConfig& config) {
                     }
                 }
 
-                QueryPerformanceCounter(&endEnc);
-                double currentEncodeMs = (double)(endEnc.QuadPart - startEnc.QuadPart) * 1000.0 / qpcFreq.QuadPart;
-
-                double pureEncodeMs = (double)MediaEngine_GetLastFrameEncodeTimeUs() / 1000.0;
-
-                if (smoothedEncodeMs == 0.0) {
-                    smoothedEncodeMs = pureEncodeMs;
-                } else {
-                    smoothedEncodeMs = smoothedEncodeMs * 0.95 + pureEncodeMs * 0.05;
-                }
-
                 if (g_pSharedMem && currentEncodeMs > frameIntervalMs * 1.10) {
                     g_pSharedMem->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
                 }
@@ -2709,9 +2847,6 @@ void EncoderThreadFunc(const AppConfig& config) {
                         smoothedInjectFenceMs = smoothedInjectFenceMs * 0.90 + currentFenceMs * 0.10;
                     }
                 }
-
-                g_IsEncoderBottlenecked.store(smoothedEncodeMs > frameIntervalMs * 0.95, std::memory_order_relaxed);
-
                 static DWORD lastWarningTime = 0;
                 if (smoothedEncodeMs > frameIntervalMs * 0.85) {
                     DWORD now = GetTickCount();
@@ -2825,6 +2960,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                 if (consumesCfrTick && isLivePhase) {
                     ++liveTicksOutput;
                 }
+                const InjectFrameLineage catchupLineage = frameToProcess ? MakeInjectFrameLineage(*frameToProcess)
+                                                                         : InjectFrameLineage{};
+                emitCatchupRepeats(catchupLineage.IsValid() ? &catchupLineage : nullptr);
             } else if (scheduledLiveCfrTick) {
                 cadenceCounters.liveTickMissCount++;
             }
@@ -2914,7 +3052,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 cadenceCounters.outputScheduleLateMaxUs,
                 avgWgcSelectionErrorUs, wgcSelectionErrorMaxUs, avgSignedWgcSelectionErrorUs, wgcSelectionEarlyMaxUs,
                 wgcSelectionLateMaxUs, wgcHoldForNextTickCount, wgcHeldFreshFrameTickCount, wgcReserveSpendTickCount,
-                wgcStaleUniqueFallbackCount,
+                cfrCatchupTicksExecuted,
                 cadenceCounters.consecutiveDeferredFrames, cadenceCounters.maxConsecutiveDeferredFrames,
                 cadenceCounters.consecutiveDuplicateFrames, cadenceCounters.maxConsecutiveDuplicateFrames,
                 dupNoSource - lastDuplicateReasonNoSource, dupDeferred - lastDuplicateReasonDeferred,
@@ -2950,6 +3088,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             wgcSelectionLateMaxUs = 0;
             wgcHoldForNextTickCount = 0;
             wgcHeldFreshFrameTickCount = 0;
+            cfrCatchupTicksExecuted = 0;
             wgcReserveSpendTickCount = 0;
             wgcAdaptiveThrottleAdjustments = 0;
             wgcNoFreshTickCount = 0;

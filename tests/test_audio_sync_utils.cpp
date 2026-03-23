@@ -33,6 +33,17 @@ TEST(AudioSyncUtilsTest, AudioPullLatencyIsTrackScoped) {
     EXPECT_EQ(ce::audio::ComputeAudioPullLatencyMs(kSteadyPullLatencyMs, true, 120), kSteadyPullLatencyMs);
 }
 
+TEST(AudioSyncUtilsTest, AudioPullQuantumDefersOnlySmallSteadyStatePulls) {
+    EXPECT_TRUE(ce::audio::ShouldDeferAudioPullUntilQuantum(0, true, false));
+    EXPECT_TRUE(ce::audio::ShouldDeferAudioPullUntilQuantum(
+        ce::audio::kDefaultAudioPullQuantumSamples - 1, true, false));
+    EXPECT_FALSE(ce::audio::ShouldDeferAudioPullUntilQuantum(
+        ce::audio::kDefaultAudioPullQuantumSamples, true, false));
+    EXPECT_FALSE(ce::audio::ShouldDeferAudioPullUntilQuantum(240, true, false));
+    EXPECT_FALSE(ce::audio::ShouldDeferAudioPullUntilQuantum(120, false, false));
+    EXPECT_FALSE(ce::audio::ShouldDeferAudioPullUntilQuantum(120, true, true));
+}
+
 TEST(AudioSyncUtilsTest, LatencyAdjustedDriftRemovesIntentionalPullOffset) {
     EXPECT_EQ(ce::audio::ComputeLatencyAdjustedAvDriftMs(-20, 20), 0);
     EXPECT_EQ(ce::audio::ComputeLatencyAdjustedAvDriftMs(-50, 20), -30);

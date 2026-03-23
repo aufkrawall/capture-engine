@@ -602,32 +602,38 @@ public:
     }
 
     void StopRecording() {
+        int64_t endUs = 0;
         {
             std::lock_guard<std::recursive_mutex> lock(muxMutex);
             if (!recording)
                 return;
-            recording = false;
-        }
 
-        // Set recording end timestamp on all audio encoders BEFORE stopping audio
-        // thread This ensures audio is trimmed to match the last video frame
-        // exactly NEW: Use exact encoded video duration for sample-perfect sync
-        if (videoEnc) {
-            int64_t durationUs = videoEnc->GetExpectedFinalDurationUs();
-            if (durationUs <= 0)
-                durationUs = videoEnc->GetEncodedDurationUs();
-            int64_t endUs = durationUs;
+            // Set recording end timestamp on all audio encoders BEFORE stopping
+            // the audio thread so the final drain and flush both target the exact
+            // encoded video length.
+            if (videoEnc) {
+                int64_t durationUs = videoEnc->GetExpectedFinalDurationUs();
+                if (durationUs <= 0)
+                    durationUs = videoEnc->GetEncodedDurationUs();
+                endUs = durationUs;
 
-            DLL_Log(
-                "MediaEngine: Setting audio end time. Start: %lld us, Dur: %lld "
-                "us, End: %lld us",
-                0LL, durationUs, endUs);
+                DLL_Log(
+                    "MediaEngine: Setting audio end time. Start: %lld us, Dur: %lld "
+                    "us, End: %lld us",
+                    0LL, durationUs, endUs);
 
-            for (auto& src : audioSources) {
-                if (src.sharedEncoderPtr) {
-                    src.sharedEncoderPtr->SetRecordingEndUs(endUs);
+                for (auto& src : audioSources) {
+                    if (src.sharedEncoderPtr) {
+                        src.sharedEncoderPtr->SetRecordingEndUs(endUs);
+                    }
+                }
+
+                if (endUs > 0) {
+                    PullAndEncodeAudio(endUs / 1000, true);
                 }
             }
+
+            recording = false;
         }
 
         // Stop audio thread first
@@ -800,6 +806,10 @@ public:
         return true;
     }
 
+    bool IsWgcCfrRecording() const {
+        return config.captureMethod != "inject" && !config.video.useVFR;
+    }
+
     // Direct D3D11 texture processing for screengrab mode (zero-copy)
     // Direct D3D11 texture processing for screengrab mode (zero-copy)
     void ProcessFrameD3D11(void* texture, int64_t timestampQPC, uint32_t width, uint32_t height, bool isHDR,
@@ -871,7 +881,7 @@ public:
 
     // PULL MODEL: Pull audio from RingBuffers and encode based on Video PTS
     // This version properly groups sources by track and mixes before encoding
-    void PullAndEncodeAudio(int64_t videoTimestampMs) {
+    void PullAndEncodeAudio(int64_t videoTimestampMs, bool forceDrain = false) {
         if (!recording || audioSources.empty())
             return;
 
@@ -999,9 +1009,22 @@ public:
             }
 
             size_t firstSrcIdx = srcIndices[0];
-            int64_t samplesToEncode = targetSamples - encodedSamplesPerSource[firstSrcIdx];
-            if (samplesToEncode <= 0)
+            int64_t pendingSamples = targetSamples - encodedSamplesPerSource[firstSrcIdx];
+            if (pendingSamples <= 0)
                 continue;
+
+            if (ce::audio::ShouldDeferAudioPullUntilQuantum(pendingSamples, trackStartupSettled, forceDrain)) {
+                continue;
+            }
+
+            int64_t samplesToEncode = pendingSamples;
+            if (trackStartupSettled && !forceDrain) {
+                const int64_t quantumSamples = ce::audio::kDefaultAudioPullQuantumSamples;
+                samplesToEncode = (samplesToEncode / quantumSamples) * quantumSamples;
+                if (samplesToEncode <= 0) {
+                    continue;
+                }
+            }
 
             const int64_t MAX_GAP_SAMPLES = (SAMPLE_RATE * 2);
             const int64_t MAX_SILENCE_CHUNK = SAMPLE_RATE / 2;
@@ -1082,7 +1105,10 @@ public:
                         }
                     }
 
-                    if ((int64_t)rbAvailable >= kMinCompensationBufferSamples) {
+                    const bool allowLiveDriftCompensation = !IsWgcCfrRecording() &&
+                                                            src.alignedStartMs >= 0 &&
+                                                            !(src.sourceType == AudioConfig::AppAudio && !src.hasAlignedStart);
+                    if (allowLiveDriftCompensation && (int64_t)rbAvailable >= kMinCompensationBufferSamples) {
                         int64_t rbError = (int64_t)rbAvailable - targetLatencySamples;
                         int64_t fakeExpectedSamples = src.syncSamplesOutput - rbError;
                         int64_t correctedVideoTimeMs = (fakeExpectedSamples * 1000) / SAMPLE_RATE;
@@ -1095,6 +1121,10 @@ public:
                             DLL_Log(
                                 "[PullAudio] Src %d Buffer Level: %zu (Err: %lld, target=%lld, pipelineLag=%lldms) -> Comp Drift: %lld",
                                 (int)srcIdx, rbAvailable, rbError, targetLatencySamples, videoPipelineLagMs, rbError);
+                        }
+                    } else if (!allowLiveDriftCompensation) {
+                        if (driftLogCounter++ % 2000 == 0) {
+                            DLL_Log("[PullAudio] Src %d drift compensation disabled for WGC CFR stability", (int)srcIdx);
                         }
                     } else if (driftLogCounter++ % 2000 == 0) {
                         DLL_Log("[PullAudio] Src %d Buffer low (%zu) - holding drift compensation", (int)srcIdx,

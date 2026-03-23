@@ -7,6 +7,20 @@
 namespace ce::audio {
 
 constexpr int64_t kDefaultSteadyAudioPullLatencyMs = 0;
+constexpr int64_t kDefaultAudioPullQuantumSamples = 240;
+
+inline bool ShouldDeferAudioPullUntilQuantum(int64_t pendingSamples, bool trackStartupSettled, bool forceDrain,
+                                             int64_t quantumSamples = kDefaultAudioPullQuantumSamples) {
+    if (forceDrain || !trackStartupSettled) {
+        return false;
+    }
+
+    if (pendingSamples <= 0) {
+        return true;
+    }
+
+    return pendingSamples < std::max<int64_t>(1, quantumSamples);
+}
 
 inline int64_t ComputeVideoPipelineLagMs(int64_t wallVideoMs, int64_t encodedVideoMs) {
     if (wallVideoMs <= 0 || encodedVideoMs <= 0 || wallVideoMs <= encodedVideoMs) {
