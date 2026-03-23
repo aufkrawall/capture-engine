@@ -69,3 +69,7 @@ AGENTS.md
 telemetry-id
 compile_commands.json
 common/build_version.h
+ffprobe_err.txt
+CUsersTestUsertemp_ffprobe.json
+CUsersTestUsertemp_ffprobe2.json
+.gitignore

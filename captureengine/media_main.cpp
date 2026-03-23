@@ -1733,21 +1733,24 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
 
             // Hidden warmup can rebase freely because those frames are discarded.
-            // Once recording is live, preserve the fixed-rate output grid even when
-            // the thread wakes late. Skipping CFR ticks creates 16.7/25/133ms packet
-            // gaps that are far more visible in the file than a short catch-up burst.
+            // Once recording is live, skip ahead when significantly late to prevent
+            // linear accumulation of encoder timer drift.  The buffered WGC frames
+            // provide continuity — the output PTS gap is filled from the frame pool.
             if (!recordingOutputLive && now.QuadPart > nextSampleTime.QuadPart + targetIntervalTicks * 2) {
                 nextSampleTime = now;
-            } else if (recordingOutputLive && encoderLateQpc > targetIntervalTicks * 2) {
+            } else if (recordingOutputLive && encoderLateTickCount >= 2) {
                 static uint32_t s_lateTickLogCount = 0;
                 s_lateTickLogCount++;
-                if (s_lateTickLogCount <= 5 || s_lateTickLogCount % 120 == 0) {
-                    int64_t overshootTicks = (encoderLateQpc + targetIntervalTicks - 1) / targetIntervalTicks;
-                    const int64_t overshootUs = (encoderLateQpc * 1000000) / qpcFreq.QuadPart;
+                int64_t overshootTicks = (encoderLateQpc + targetIntervalTicks - 1) / targetIntervalTicks;
+                const int64_t overshootUs = (encoderLateQpc * 1000000) / qpcFreq.QuadPart;
+                if (s_lateTickLogCount <= 10 || s_lateTickLogCount % 60 == 0) {
                     LogInfo(
-                        "[EncoderThread] Timer jitter: preserving CFR grid while late by %lld ticks (%lld us, count=%u)",
+                        "[EncoderThread] Timer skip-ahead: late by %lld ticks (%lld us), rebasing (count=%u)",
                         (long long)overshootTicks, (long long)overshootUs, s_lateTickLogCount);
                 }
+                // Reset nextSampleTime to current time + 1 tick interval
+                // so the timer wakes on time from now on.
+                nextSampleTime.QuadPart = now.QuadPart + targetIntervalTicks;
             }
         }
 
@@ -1784,7 +1787,9 @@ void EncoderThreadFunc(const AppConfig& config) {
 
                 // Update input frame rate predictor with raw timestamps of
                 // newly arrived frames, then snap each to the ideal grid.
-                if (sampleWgcCadenceTick && !drainedScreenGrabFrames.empty()) {
+                // Always feed the predictor (even when encoder is late) so it
+                // can calibrate the source FPS for Bresenham pacing and logging.
+                if (!drainedScreenGrabFrames.empty()) {
                     // Phase 1: Feed raw timestamps to predictor (order
                     // doesn't matter for Update — it just tracks intervals).
                     for (auto& drainedFrame : drainedScreenGrabFrames) {
@@ -1949,6 +1954,8 @@ void EncoderThreadFunc(const AppConfig& config) {
 
                 const double creditPerTick = smoothedInputPerTick;
                 frameCreditAccumulator += creditPerTick;
+                // Prevent unbounded credit accumulation when game FPS > encoder FPS
+                frameCreditAccumulator = std::min(frameCreditAccumulator, 5.0);
 
                 // Discard excess WGC frames only under clear overcapture pressure.
                 while (encoderLateTickCount == 0 && !wgcLowSourceModeActive && !wgcReservePressureActive &&
@@ -2277,6 +2284,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 // with Bresenham-even distribution for smoothest decimation.
                 double creditPerTick = smoothedInputPerTick;
                 frameCreditAccumulator += creditPerTick;
+                // Prevent unbounded credit accumulation when game FPS > encoder FPS
+                frameCreditAccumulator = std::min(frameCreditAccumulator, 5.0);
 
                 // Discard excess frames when overcapturing (Bresenham skip).
                 // Each discarded frame represents one "step" in the Bresenham
