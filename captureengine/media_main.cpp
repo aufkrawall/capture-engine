@@ -89,6 +89,30 @@ void StartRecording(const AppConfig& config);
 namespace {
 constexpr int kInjectTextureSlotCount = 8;
 
+// Encoder-bottleneck EMA parameters.  The smoothing factor (alpha) controls
+// how quickly the EMA reacts to encode-time changes.  Hysteresis avoids
+// bang-bang oscillation: we enter bottleneck at a higher threshold and exit
+// at a significantly lower one.
+constexpr double kEncodeEmaAlpha = 0.10;
+constexpr double kBottleneckEnterRatio = 0.95;  // smoothedEncodeMs > 95% of frame interval → enter
+constexpr double kBottleneckExitRatio = 0.75;   // smoothedEncodeMs < 75% of frame interval → exit
+
+// Update g_IsEncoderBottlenecked with hysteresis to prevent rapid toggling.
+inline void UpdateEncoderBottleneckFlag(double smoothedEncodeMs, double frameIntervalMs) {
+    const bool currentlyBottlenecked = g_IsEncoderBottlenecked.load(std::memory_order_relaxed);
+    if (currentlyBottlenecked) {
+        // Exit bottleneck only when encode time drops well below the frame budget
+        if (smoothedEncodeMs < frameIntervalMs * kBottleneckExitRatio) {
+            g_IsEncoderBottlenecked.store(false, std::memory_order_relaxed);
+        }
+    } else {
+        // Enter bottleneck when encode time approaches the frame budget
+        if (smoothedEncodeMs > frameIntervalMs * kBottleneckEnterRatio) {
+            g_IsEncoderBottlenecked.store(true, std::memory_order_relaxed);
+        }
+    }
+}
+
 bool MediaAudioConfigEquals(const AudioConfig& lhs, const AudioConfig& rhs) {
     return lhs.enabled == rhs.enabled && lhs.device == rhs.device && lhs.processName == rhs.processName &&
            lhs.processId == rhs.processId && lhs.sourceType == rhs.sourceType && lhs.tracks == rhs.tracks &&
@@ -381,6 +405,28 @@ struct CadenceHealthCounters {
     uint32_t outputScheduleEarlyMaxUs = 0;
     uint32_t outputScheduleLateMaxUs = 0;
 
+    // Hold-time histogram: how many output ticks each unique source frame was
+    // shown for.  holdHist[0]=frames shown 1 tick, holdHist[1]=2 ticks, …
+    // holdHist[kHoldHistBuckets-1]=6+ ticks.  Even distribution → smooth video.
+    static constexpr uint32_t kHoldHistBuckets = 6;
+    uint32_t holdHist[kHoldHistBuckets] = {};
+    uint32_t holdTicksRunning = 0;  // ticks the current source frame has been shown
+
+    void CommitHoldRun() {
+        if (holdTicksRunning > 0) {
+            const uint32_t bucket = std::min(holdTicksRunning, kHoldHistBuckets) - 1;
+            holdHist[bucket]++;
+            holdTicksRunning = 0;
+        }
+    }
+
+    // Input frame rate predictor diagnostics (updated per-second)
+    uint32_t srcFpsX100 = 0;        // smoothed input FPS * 100
+    uint32_t srcJitterUs = 0;       // smoothed jitter in microseconds
+    uint32_t encCycleAvgUs = 0;     // encoder cycle time EMA in microseconds
+    uint32_t encCycleMaxUs = 0;     // max encoder cycle time in microseconds
+    uint32_t dupTimestampCount = 0; // frames with duplicate timestamps per second
+
     void Reset() {
         *this = {};
     }
@@ -550,6 +596,17 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
     // the best frame each output tick. Pre-throttling WGC to the output FPS
     // throws away temporal information that helps smooth 140 -> 120 style cases.
     g_WgcCap->SetTargetFps(0);
+
+    // For CFR recording, disable the encoder-bottleneck throttle at the WGC
+    // callback level.  The throttle is all-or-nothing (bang-bang) and its slow
+    // EMA causes boom-bust oscillation that starves the Bresenham credit
+    // accumulator, producing irregular frame-hold patterns (visible judder).
+    // The encoder thread's buffer cap + Bresenham skip already provide smooth
+    // backpressure, so the throttle is both unnecessary and harmful for CFR.
+    if (!config.video.useVFR) {
+        g_WgcCap->SetThrottleFlag(nullptr);
+        LogInfo("[Media] WGC CFR mode: encoder-bottleneck throttle disabled (buffer cap provides backpressure)");
+    }
     if (g_pSharedMem) {
         g_pSharedMem->runtimeState.wgcTargetFps.store(0, std::memory_order_relaxed);
     }
@@ -1469,6 +1526,10 @@ void EncoderThreadFunc(const AppConfig& config) {
     std::array<uint32_t, kInjectTextureSlotCount> lastEncodedFrameByTextureIndex{};
     InjectFrameLineage lastDeferredLineage;
     CadenceHealthCounters cadenceCounters;
+    InputFrameRatePredictor wgcInputPredictor;
+    double smoothedEncCycleMs = 0.0;
+    uint32_t encCycleMaxMs = 0;
+    uint32_t dupTimestampCount = 0;
     uint32_t lastDuplicateReasonNoSource = 0;
     uint32_t lastDuplicateReasonDeferred = 0;
     uint32_t lastDuplicateReasonTimerRebase = 0;
@@ -1544,6 +1605,8 @@ void EncoderThreadFunc(const AppConfig& config) {
         }
     };
     while (g_EncoderRunning || g_FrameQueue.Size() > 0 || !bufferedWgcFrames.empty() || !bufferedInjectFrames.empty()) {
+        LARGE_INTEGER cycleStartQpc;
+        QueryPerformanceCounter(&cycleStartQpc);
         if (g_pSharedMem) {
             if (!g_Recording.load(std::memory_order_acquire)) {
                 g_pSharedMem->runtimeState.capturePhase.store(static_cast<uint32_t>(CapturePipelinePhase::kDrain),
@@ -1622,7 +1685,9 @@ void EncoderThreadFunc(const AppConfig& config) {
             !config.video.useVFR && recordingOutputLive &&
             ce::capture_policy::ShouldCfrCatchUpToWallClock(outputShortfallTicks, IsActiveScreenGrab(),
                                                             frameAvailableForCatchup, g_HasLastFrame);
-        const uint32_t catchupTicksThisLoop = shouldCatchUpToWallClock ? std::min<uint32_t>(outputShortfallTicks, 3u) : 0u;
+        const uint32_t catchupTicksThisLoop = shouldCatchUpToWallClock
+                                               ? ce::capture_policy::GetCfrCatchupTicksThisLoop(outputShortfallTicks)
+                                               : 0u;
 
         const int64_t selectionGridTick = (!config.video.useVFR && recordingOutputLive)
                                              ? (encoderGridTickCount + 1)
@@ -1698,6 +1763,29 @@ void EncoderThreadFunc(const AppConfig& config) {
                 }
 
                 const bool sampleWgcCadenceTick = !(recordingOutputLive && encoderLateTickCount > 0);
+
+                // Update input frame rate predictor and snap timestamps to a
+                // regular grid to eliminate jitter-induced hold-pattern
+                // irregularity.
+                if (sampleWgcCadenceTick && !drainedScreenGrabFrames.empty()) {
+                    for (auto& bufFrame : bufferedWgcFrames) {
+                        if (!bufFrame.isInjectMode && bufFrame.timestamp > 0) {
+                            const int64_t originalTs = bufFrame.timestamp;
+                            wgcInputPredictor.Update(originalTs, qpcFreq.QuadPart);
+                            const int64_t idealTs = wgcInputPredictor.GetIdealTimestamp(originalTs);
+                            if (idealTs != originalTs) {
+                                bufFrame.timestamp = idealTs;
+                            }
+                            // Count duplicate timestamps (same as previous
+                            // frame) for diagnostics.
+                            static int64_t s_lastWgcSrcQpc = 0;
+                            if (originalTs == s_lastWgcSrcQpc) {
+                                ++dupTimestampCount;
+                            }
+                            s_lastWgcSrcQpc = originalTs;
+                        }
+                    }
+                }
 
                 // Track frame arrival rate for Bresenham pacing
                 if (sampleWgcCadenceTick) {
@@ -2341,6 +2429,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                 liveTicksOutput = 0;
                 liveTicksScheduled = 0;
                 liveStartQpc = {};
+                wgcInputPredictor.Reset();
+                smoothedEncCycleMs = 0.0;
+                encCycleMaxMs = 0;
+                dupTimestampCount = 0;
                 wgcRecentDeliveredFps = 0;
                 wgcRecentDeliveredMin250Fps = 0;
                 wgcRecentDeliveredMin500Fps = 0;
@@ -2631,10 +2723,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                     if (smoothedEncodeMs == 0.0) {
                         smoothedEncodeMs = pureEncodeMs;
                     } else {
-                        smoothedEncodeMs = smoothedEncodeMs * 0.95 + pureEncodeMs * 0.05;
+                        smoothedEncodeMs = smoothedEncodeMs * (1.0 - kEncodeEmaAlpha) + pureEncodeMs * kEncodeEmaAlpha;
                     }
                 }
-                g_IsEncoderBottlenecked.store(smoothedEncodeMs > frameIntervalMs * 0.95, std::memory_order_relaxed);
+                UpdateEncoderBottleneckFlag(smoothedEncodeMs, frameIntervalMs);
 
                 if (g_pSharedMem) {
                     if (currentEncodeMs > frameIntervalMs * 1.10) {
@@ -2647,6 +2739,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 recordDuplicate(&g_LastFrame, duplicateLineage, false, false, false);
                 cadenceCounters.liveTickEmitCount++;
                 cadenceCounters.liveTickDuplicateCount++;
+                cadenceCounters.holdTicksRunning++;
                 ++liveTicksOutput;
                 ++encoderGridTickCount;
                 ++cfrCatchupTicksExecuted;
@@ -2670,9 +2763,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                 if (smoothedEncodeMs == 0.0) {
                     smoothedEncodeMs = pureEncodeMs;
                 } else {
-                    smoothedEncodeMs = smoothedEncodeMs * 0.95 + pureEncodeMs * 0.05;
+                    smoothedEncodeMs = smoothedEncodeMs * (1.0 - kEncodeEmaAlpha) + pureEncodeMs * kEncodeEmaAlpha;
                 }
-                g_IsEncoderBottlenecked.store(smoothedEncodeMs > frameIntervalMs * 0.95, std::memory_order_relaxed);
+                UpdateEncoderBottleneckFlag(smoothedEncodeMs, frameIntervalMs);
                 if (g_pSharedMem && currentEncodeMs > frameIntervalMs * 1.10) {
                     g_pSharedMem->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
                     g_pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
@@ -2686,6 +2779,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                                 duplicateFromDeferred, duplicateFromTimerRebase);
                 cadenceCounters.liveTickEmitCount++;
                 cadenceCounters.liveTickDuplicateCount++;
+                cadenceCounters.holdTicksRunning++;
                 ++liveTicksOutput;
                 emitCatchupRepeats(duplicateLineage.IsValid() ? &duplicateLineage : nullptr);
             } else {
@@ -2779,10 +2873,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                 if (smoothedEncodeMs == 0.0) {
                     smoothedEncodeMs = pureEncodeMs;
                 } else {
-                    smoothedEncodeMs = smoothedEncodeMs * 0.95 + pureEncodeMs * 0.05;
+                    smoothedEncodeMs = smoothedEncodeMs * (1.0 - kEncodeEmaAlpha) + pureEncodeMs * kEncodeEmaAlpha;
                 }
             }
-            g_IsEncoderBottlenecked.store(smoothedEncodeMs > frameIntervalMs * 0.95, std::memory_order_relaxed);
+            UpdateEncoderBottleneckFlag(smoothedEncodeMs, frameIntervalMs);
 
             if (popped && frameToProcess->isInjectMode) {
                 if (encodeDeferred) {
@@ -2953,8 +3047,11 @@ void EncoderThreadFunc(const AppConfig& config) {
                 if (consumesCfrTick && isLivePhase) {
                     if (isDuplicate) {
                         cadenceCounters.liveTickDuplicateCount++;
+                        cadenceCounters.holdTicksRunning++;
                     } else {
                         cadenceCounters.liveTickUniqueCount++;
+                        cadenceCounters.CommitHoldRun();
+                        cadenceCounters.holdTicksRunning = 1;
                     }
                 }
                 if (consumesCfrTick && isLivePhase) {
@@ -2970,6 +3067,29 @@ void EncoderThreadFunc(const AppConfig& config) {
 
         if (popped && !frame.isInjectMode && frame.texture) {
             frame.texture->Release();
+        }
+
+        // Track full encoder cycle time (wake through end of iteration)
+        {
+            LARGE_INTEGER cycleEndQpc;
+            QueryPerformanceCounter(&cycleEndQpc);
+            const double cycleMs =
+                static_cast<double>(cycleEndQpc.QuadPart - cycleStartQpc.QuadPart) * 1000.0 / qpcFreq.QuadPart;
+            if (smoothedEncCycleMs < 0.001) {
+                smoothedEncCycleMs = cycleMs;
+            } else {
+                smoothedEncCycleMs = smoothedEncCycleMs * 0.85 + cycleMs * 0.15;
+            }
+            encCycleMaxMs = std::max(encCycleMaxMs, static_cast<uint32_t>(cycleMs * 1000.0));
+            // Log encode spikes > 10ms (pure encode, not full cycle)
+            if (smoothedEncodeMs > 10.0) {
+                static uint32_t s_spikeLogCount = 0;
+                ++s_spikeLogCount;
+                if (s_spikeLogCount <= 5 || s_spikeLogCount % 120 == 0) {
+                    LogInfo("[EncoderThread] Spike: encode=%.2fms cycle=%.2fms frame=%llu", smoothedEncodeMs, cycleMs,
+                            static_cast<unsigned long long>(liveTicksOutput));
+                }
+            }
         }
 
         if (g_pSharedMem && GetTickCount() - lastHealthLog >= 1000) {
@@ -3044,8 +3164,25 @@ void EncoderThreadFunc(const AppConfig& config) {
             state.wgcStarvedTickCount.store(wgcNoFreshTickCount, std::memory_order_relaxed);
             state.wgcSingleFrameTickCount.store(wgcNoReserveTickCount, std::memory_order_relaxed);
 
+            // Flush the in-progress hold run into the histogram before logging,
+            // but preserve the running count so it continues into the next interval.
+            const uint32_t savedHoldTicks = cadenceCounters.holdTicksRunning;
+            cadenceCounters.CommitHoldRun();
+
+            // Compute input frame rate predictor diagnostics
+            const uint32_t srcFpsX100Val = wgcInputPredictor.IsCalibrated()
+                                               ? static_cast<uint32_t>(wgcInputPredictor.GetPredictedFps(qpcFreq.QuadPart) * 100.0)
+                                               : 0u;
+            const uint32_t srcJitterUsVal =
+                wgcInputPredictor.IsCalibrated()
+                    ? static_cast<uint32_t>(wgcInputPredictor.GetJitterUs(qpcFreq.QuadPart))
+                    : 0u;
+            const uint32_t dupTsPerSec = dupTimestampCount;
+            dupTimestampCount = 0;
+            encCycleMaxMs = 0;
+
             LogInfo(
-                "[Cadence Health] Phase=%s | AgeAvg=%uus AgeMax=%uus | SelAvg=%uus SelMax=%uus SelBias=%dus EarlyMax=%uus LateMax=%uus | WgcSelAvg=%uus WgcSelMax=%uus WgcSelBias=%dus WgcEarly=%uus WgcLate=%uus Hold=%u HoldFresh=%u Spend=%u CatchUp=%u | DefStreak=%u/%u DupStreak=%u/%u | DupSrc=%u DupDef=%u DupTimer=%u DupDrain=%u | TickEmit=%u TickUnique=%u TickDup=%u TickMiss=%u | LiveWall=%lluus LiveTicks=%llu Shortfall=%u FreshMiss=%upm BufAvg=%upm BufMin=%u NoFresh=%u NoReserve=%u | TsReg=%u TsStall=%u | InvalidMeta=%u InvalidHandle=%u | PktClamp=%u NegPTS=%u NonMonoPTS=%u | WgcThr=%u Adj=%u",
+                "[Cadence Health] Phase=%s | AgeAvg=%uus AgeMax=%uus | SelAvg=%uus SelMax=%uus SelBias=%dus EarlyMax=%uus LateMax=%uus | WgcSelAvg=%uus WgcSelMax=%uus WgcSelBias=%dus WgcEarly=%uus WgcLate=%uus Hold=%u HoldFresh=%u Spend=%u CatchUp=%u | DefStreak=%u/%u DupStreak=%u/%u | DupSrc=%u DupDef=%u DupTimer=%u DupDrain=%u | TickEmit=%u TickUnique=%u TickDup=%u TickMiss=%u | HoldHist=%u/%u/%u/%u/%u/%u | LiveWall=%lluus LiveTicks=%llu Shortfall=%u FreshMiss=%upm BufAvg=%upm BufMin=%u NoFresh=%u NoReserve=%u | TsReg=%u TsStall=%u | InvalidMeta=%u InvalidHandle=%u | PktClamp=%u NegPTS=%u NonMonoPTS=%u | WgcThr=%u Adj=%u | EncEma=%.2fms Bottleneck=%d | SrcFps=%.2f SrcJitter=%uus DupTs=%u EncCycle=%.2fms",
                 CapturePipelinePhaseToString(state.capturePhase.load(std::memory_order_relaxed)), avgFrameAgeUs,
                 cadenceCounters.frameAgeMaxUs, avgSelectionErrorUs, cadenceCounters.outputScheduleErrorMaxUs,
                 avgSignedSelectionErrorUs, cadenceCounters.outputScheduleEarlyMaxUs,
@@ -3059,6 +3196,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 dupTimer - lastDuplicateReasonTimerRebase, dupDrain - lastDuplicateReasonDrain,
                 cadenceCounters.liveTickEmitCount, cadenceCounters.liveTickUniqueCount,
                 cadenceCounters.liveTickDuplicateCount, cadenceCounters.liveTickMissCount,
+                cadenceCounters.holdHist[0], cadenceCounters.holdHist[1], cadenceCounters.holdHist[2],
+                cadenceCounters.holdHist[3], cadenceCounters.holdHist[4], cadenceCounters.holdHist[5],
                 static_cast<unsigned long long>(liveWallElapsedUs), static_cast<unsigned long long>(liveTicksOutput),
                 outputShortfallTicks, wgcNoFreshTickPermille, bufferedAtTickAvgPermille, bufferedAtTickMinValue,
                 wgcNoFreshTickCount, wgcNoReserveTickCount,
@@ -3066,7 +3205,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                 invalidMeta - lastInvalidMetaCount, invalidHandle - lastInvalidHandleCount,
                 packetClamps - lastPacketClampCount, negativePts - lastNegativePtsCount,
                 nonMonotonicPts - lastNonMonotonicPtsCount,
-                g_WgcAdaptiveTargetFps.load(std::memory_order_relaxed), wgcAdaptiveThrottleAdjustments);
+                g_WgcAdaptiveTargetFps.load(std::memory_order_relaxed), wgcAdaptiveThrottleAdjustments,
+                smoothedEncodeMs, g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ? 1 : 0,
+                srcFpsX100Val / 100.0, srcJitterUsVal, dupTsPerSec, smoothedEncCycleMs);
 
             lastDuplicateReasonNoSource = dupNoSource;
             lastDuplicateReasonDeferred = dupDeferred;
@@ -3080,6 +3221,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             lastNegativePtsCount = negativePts;
             lastNonMonotonicPtsCount = nonMonotonicPts;
             cadenceCounters.Reset();
+            cadenceCounters.holdTicksRunning = savedHoldTicks;  // Preserve in-progress hold run
             wgcSelectionErrorAccumUs = 0;
             wgcSelectionErrorSignedAccumUs = 0;
             wgcSelectionErrorSamples = 0;

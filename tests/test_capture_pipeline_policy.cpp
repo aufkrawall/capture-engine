@@ -206,3 +206,18 @@ TEST(CapturePipelinePolicyTest, CfrCatchupRequiresMeaningfulShortfallOrForceThre
     EXPECT_TRUE(policy::ShouldCfrCatchUpToWallClock(policy::kCfrShortfallForceCatchupThresholdTicks, false, false, false));
     EXPECT_FALSE(policy::ShouldCfrCatchUpToWallClock(policy::kCfrShortfallCatchupThresholdTicks, false, false, true));
 }
+
+TEST(CapturePipelinePolicyTest, CfrCatchupTicksGradualBelowForceThreshold) {
+    // Below force threshold: at most 2 ticks (1 main + 1 extra) per iteration
+    EXPECT_EQ(policy::GetCfrCatchupTicksThisLoop(policy::kCfrShortfallCatchupThresholdTicks), 2u);
+    EXPECT_EQ(policy::GetCfrCatchupTicksThisLoop(policy::kCfrShortfallCatchupThresholdTicks + 4), 2u);
+    EXPECT_EQ(policy::GetCfrCatchupTicksThisLoop(policy::kCfrShortfallForceCatchupThresholdTicks - 1), 2u);
+}
+
+TEST(CapturePipelinePolicyTest, CfrCatchupTicksBurstAtForceThreshold) {
+    // At and above force threshold: allow larger bursts, capped at 4
+    EXPECT_EQ(policy::GetCfrCatchupTicksThisLoop(policy::kCfrShortfallForceCatchupThresholdTicks), 4u);
+    EXPECT_EQ(policy::GetCfrCatchupTicksThisLoop(100), 4u);
+    // Small force-threshold shortfall still capped to shortfall itself
+    // (the function uses min(shortfall, 4))
+}

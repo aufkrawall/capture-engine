@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <algorithm>
+#include <cmath>
 
 inline int64_t AbsoluteTimestampDistance(int64_t lhs, int64_t rhs) {
     return (lhs >= rhs) ? (lhs - rhs) : (rhs - lhs);
@@ -183,7 +184,7 @@ struct SourceTimelineState {
 };
 
 inline int64_t ComputeSourceDrivenElapsedUs(int64_t qpcFreq, int64_t frameTimestampQpc, int64_t steadyElapsedUs,
-                                            SourceTimelineState& state) {
+                                             SourceTimelineState& state) {
     if (qpcFreq > 0 && frameTimestampQpc > 0) {
         if (state.startSourceQpc <= 0) {
             state.startSourceQpc = frameTimestampQpc;
@@ -201,3 +202,102 @@ inline int64_t ComputeSourceDrivenElapsedUs(int64_t qpcFreq, int64_t frameTimest
     state.lastElapsedUs = std::max(steadyElapsedUs, state.lastElapsedUs);
     return state.lastElapsedUs;
 }
+
+// Smooths the input frame delivery rate and snaps raw timestamps to a regular
+// grid.  This prevents irregular frame hold patterns (e.g. 2:1:3:1) caused by
+// jittery WGC delivery or duplicate timestamps.
+class InputFrameRatePredictor {
+public:
+    void Reset() {
+        smoothedIntervalQpc_ = 0.0;
+        smoothedJitterQpc_ = 0.0;
+        lastInputQpc_ = 0;
+        gridOriginQpc_ = 0;
+        frameCount_ = 0;
+        jitterEmaUpdates_ = 0;
+    }
+
+    // Called each time a new source frame arrives.  Returns the smoothed
+    // interval in QPC ticks (0 if not yet calibrated).
+    int64_t Update(int64_t frameQpc, int64_t qpcFreq) {
+        if (qpcFreq <= 0) {
+            return 0;
+        }
+
+        if (lastInputQpc_ <= 0 || frameQpc <= lastInputQpc_) {
+            lastInputQpc_ = frameQpc;
+            gridOriginQpc_ = frameQpc;
+            return 0;
+        }
+
+        const int64_t rawInterval = frameQpc - lastInputQpc_;
+        lastInputQpc_ = frameQpc;
+        ++frameCount_;
+
+        if (frameCount_ <= 1) {
+            smoothedIntervalQpc_ = static_cast<double>(rawInterval);
+            smoothedJitterQpc_ = 0.0;
+            gridOriginQpc_ = frameQpc;
+            return rawInterval;
+        }
+
+        double alpha = 0.3;
+        if (frameCount_ < 8) {
+            alpha = 0.6;
+        } else if (smoothedIntervalQpc_ > 1.0) {
+            double deviation = std::abs(static_cast<double>(rawInterval) - smoothedIntervalQpc_) / smoothedIntervalQpc_;
+            if (deviation > 0.20) {
+                alpha = 0.5;
+            }
+        }
+
+        smoothedIntervalQpc_ = smoothedIntervalQpc_ * (1.0 - alpha) + static_cast<double>(rawInterval) * alpha;
+
+        const double absJitter = std::abs(static_cast<double>(rawInterval) - smoothedIntervalQpc_);
+        ++jitterEmaUpdates_;
+        const double jitterAlpha = jitterEmaUpdates_ < 8 ? 0.5 : 0.1;
+        smoothedJitterQpc_ = smoothedJitterQpc_ * (1.0 - jitterAlpha) + absJitter * jitterAlpha;
+
+        return static_cast<int64_t>(smoothedIntervalQpc_ + 0.5);
+    }
+
+    // Snap a raw QPC timestamp to the nearest position on the predicted
+    // regular grid.  This produces smooth frame timing even when actual
+    // delivery is jittery.
+    int64_t GetIdealTimestamp(int64_t rawQpc) const {
+        if (smoothedIntervalQpc_ < 1.0 || gridOriginQpc_ <= 0 || rawQpc <= 0) {
+            return rawQpc;
+        }
+
+        const double interval = smoothedIntervalQpc_;
+        const double elapsed = static_cast<double>(rawQpc - gridOriginQpc_);
+        const double gridPosition = round(elapsed / interval) * interval;
+        return gridOriginQpc_ + static_cast<int64_t>(gridPosition + 0.5);
+    }
+
+    double GetPredictedFps(int64_t qpcFreq) const {
+        if (smoothedIntervalQpc_ < 1.0 || qpcFreq <= 0) {
+            return 0.0;
+        }
+        return static_cast<double>(qpcFreq) / smoothedIntervalQpc_;
+    }
+
+    double GetJitterUs(int64_t qpcFreq) const {
+        if (smoothedJitterQpc_ < 0.5 || qpcFreq <= 0) {
+            return 0.0;
+        }
+        return smoothedJitterQpc_ * 1000000.0 / static_cast<double>(qpcFreq);
+    }
+
+    bool IsCalibrated() const { return frameCount_ >= 4; }
+
+    double SmoothedIntervalQpc() const { return smoothedIntervalQpc_; }
+
+private:
+    double smoothedIntervalQpc_ = 0.0;
+    double smoothedJitterQpc_ = 0.0;
+    int64_t lastInputQpc_ = 0;
+    int64_t gridOriginQpc_ = 0;
+    uint32_t frameCount_ = 0;
+    uint32_t jitterEmaUpdates_ = 0;
+};

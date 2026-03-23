@@ -1241,7 +1241,7 @@ public:
                         src.underrunPadSamples += padSamples;
                     }
                     src.pendingUnderrunRecoveryFade = true;
-                    if (!startupPadding && padSamples >= (size_t)(SAMPLE_RATE / 200) && dropLogCounter++ % 100 == 0) {
+                    if (!startupPadding && src.alignedStartMs >= 0 && padSamples >= (size_t)(SAMPLE_RATE / 200) && dropLogCounter++ % 100 == 0) {
                         DLL_Log("[PullAudio] WARNING: Source underrun - src %d padding %zu samples with silence (available=%zu needed=%zu)",
                                 (int)srcIdx, padSamples, available / CHANNELS, totalFloats / CHANNELS);
                     } else if (startupPadding && padSamples >= (size_t)(SAMPLE_RATE / 50) && dropLogCounter++ % 200 == 0) {

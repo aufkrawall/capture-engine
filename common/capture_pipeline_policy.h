@@ -29,7 +29,7 @@ constexpr uint32_t kWgcReserveFragileBiasPermille = 375;
 constexpr uint32_t kWgcSingleFreshHoldInputPermille = 995;
 constexpr uint32_t kWgcSteadyReserveBuildInputPermille = 995;
 constexpr uint32_t kWgcSelectionDelayTicks = 1;
-constexpr uint32_t kCfrShortfallCatchupThresholdTicks = 6;
+constexpr uint32_t kCfrShortfallCatchupThresholdTicks = 2;
 constexpr uint32_t kCfrShortfallForceCatchupThresholdTicks = 18;
 
 inline uint32_t GetCfrOutputShortfallTicks(uint64_t liveTicksScheduled, uint64_t liveTicksOutput) {
@@ -53,6 +53,19 @@ inline bool ShouldCfrCatchUpToWallClock(uint32_t outputShortfallTicks, bool useS
     }
 
     return useScreenGrab ? (frameAvailable || hasLastFrame) : frameAvailable;
+}
+
+// Returns the maximum number of output ticks to emit in a single encoder loop
+// iteration when catching up.  The value includes the main tick itself, so
+// "2" means 1 main + 1 extra repeat.  This keeps catch-up gradual (at most 1
+// extra frame per iteration) to prevent visible judder from multi-frame bursts.
+// Only at the force threshold do we allow larger bursts.
+inline uint32_t GetCfrCatchupTicksThisLoop(uint32_t outputShortfallTicks) {
+    if (outputShortfallTicks >= kCfrShortfallForceCatchupThresholdTicks) {
+        return std::min(outputShortfallTicks, 4u);
+    }
+    // Gradual: emit at most 1 extra frame (2 total ticks) per iteration
+    return 2u;
 }
 
 struct WgcAdaptiveTelemetry {
