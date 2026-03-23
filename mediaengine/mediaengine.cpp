@@ -1235,6 +1235,18 @@ public:
                     activeSources++;
                 }
                 if (toCopy < totalFloats) {
+                    // Underrun: apply a short fade-out on the last real samples
+                    // before the silence boundary to prevent audible clicks.
+                    if (toCopy > 0) {
+                        constexpr int kFadeSamples = 8;  // ~0.17ms at 48kHz
+                        int realSamples = static_cast<int>(toCopy / CHANNELS);
+                        int fadeStart = std::max(0, realSamples - kFadeSamples);
+                        for (int s = fadeStart; s < realSamples; ++s) {
+                            float alpha = static_cast<float>(realSamples - s) / static_cast<float>(kFadeSamples + 1);
+                            srcData[s * CHANNELS + 0] *= alpha;
+                            srcData[s * CHANNELS + 1] *= alpha;
+                        }
+                    }
                     size_t padSamples = (totalFloats - toCopy) / CHANNELS;
                     const bool startupPadding = !src.bootstrapComplete;
                     if (!startupPadding) {

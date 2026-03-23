@@ -1332,10 +1332,14 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     // AV1 NVENC driver warning: known driver bug (FFmpeg #11390, March 2026) where
     // the encoder sometimes writes HEVC time_code SEI messages into AV1 bitstreams,
     // producing undecodeable output.  Log a warning so users can correlate issues.
+    // Mitigation: set repeat_pps=1 to force PPS repetition which avoids the buggy
+    // code path in some driver versions.
     if (codec && codec->name && strstr(codec->name, "av1") != nullptr) {
         DLL_Log(
             "[VideoEncoder] NOTE: av1_nvenc has a known driver bug (FFmpeg #11390) that can "
             "produce undecodeable bitstreams. If video artifacts occur, update GPU driver.");
+        av_dict_set_int(&opts, "repeat_pps", 1, 0);
+        DLL_Log("[VideoEncoder] Applied av1_nvenc mitigation: repeat_pps=1");
     }
 
     stream = avformat_new_stream(fmtCtx, codec);
@@ -3494,8 +3498,14 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
 
     av_packet_free(&pkt);
 
-    // Log individual slow frames for debugging
-    if (totalMs > expectedFrameMs * 2.0) {
+    // Log individual slow frames for debugging.  Flag frames that exceed
+    // the tick budget (>expectedFrameMs) as spikes, and frames that exceed
+    // 2× the budget as SLOW for additional diagnostics.
+    if (totalMs > expectedFrameMs) {
+        // Compute total output bytes for this frame
+        int64_t totalBytes = 0;
+        // packetCount already represents the number of packets produced
+        std::string severity = (totalMs > expectedFrameMs * 2.0) ? "SLOW!" : "SPIKE";
         std::string features = "";
         if (savedConfig.lookahead)
             features += "Lookahead ";
@@ -3507,9 +3517,9 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
             features += "Multipass ";
 
         DLL_Log(
-            "[Framegrab PERF] Frame %d: total=%.2fms (SLOW!) convert=%.2f "
+            "[Framegrab PERF] Frame %d: total=%.2fms (%s) convert=%.2f "
             "encode=%.2f packets=%d [Features: %s]",
-            encodeFrameCounter, totalMs, convertMs, encodeMs, packetCount, features.c_str());
+            encodeFrameCounter, totalMs, severity.c_str(), convertMs, encodeMs, packetCount, features.c_str());
     }
 
     // Log periodic stats (about once per second at the configured FPS)

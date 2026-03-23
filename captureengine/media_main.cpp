@@ -1529,6 +1529,7 @@ void EncoderThreadFunc(const AppConfig& config) {
     InputFrameRatePredictor wgcInputPredictor;
     double smoothedEncCycleMs = 0.0;
     uint32_t encCycleMaxMs = 0;
+    uint32_t encodeSpikeCountThisSecond = 0;
     uint32_t dupTimestampCount = 0;
     uint32_t lastDuplicateReasonNoSource = 0;
     uint32_t lastDuplicateReasonDeferred = 0;
@@ -1779,19 +1780,13 @@ void EncoderThreadFunc(const AppConfig& config) {
                     drainedScreenGrabFrames.push_back(std::move(temp));
                 }
 
-                for (auto& drainedFrame : drainedScreenGrabFrames) {
-                    bufferedWgcFrames.push_back(std::move(drainedFrame));
-                }
-
                 const bool sampleWgcCadenceTick = !(recordingOutputLive && encoderLateTickCount > 0);
 
-                // Update input frame rate predictor with raw timestamps of
-                // newly arrived frames, then snap each to the ideal grid.
+                // Phase 1: Feed raw timestamps to predictor BEFORE moving
+                // frames to the buffer (std::move invalidates source object).
                 // Always feed the predictor (even when encoder is late) so it
                 // can calibrate the source FPS for Bresenham pacing and logging.
                 if (!drainedScreenGrabFrames.empty()) {
-                    // Phase 1: Feed raw timestamps to predictor (order
-                    // doesn't matter for Update — it just tracks intervals).
                     for (auto& drainedFrame : drainedScreenGrabFrames) {
                         if (!drainedFrame.isInjectMode && drainedFrame.timestamp > 0) {
                             wgcInputPredictor.Update(drainedFrame.timestamp, qpcFreq.QuadPart);
@@ -1802,17 +1797,23 @@ void EncoderThreadFunc(const AppConfig& config) {
                             s_lastWgcSrcQpc = drainedFrame.timestamp;
                         }
                     }
-                    // Phase 2: Snap timestamps to ideal grid on the newly
-                    // added frames at the tail of the buffer.
-                    if (wgcInputPredictor.IsCalibrated()) {
-                        const size_t newCount = drainedScreenGrabFrames.size();
-                        const size_t bufSize = bufferedWgcFrames.size();
-                        const size_t snapStart = bufSize > newCount ? bufSize - newCount : 0;
-                        for (size_t i = snapStart; i < bufSize; ++i) {
-                            auto& bf = bufferedWgcFrames[i];
-                            if (!bf.isInjectMode && bf.timestamp > 0) {
-                                bf.timestamp = wgcInputPredictor.GetIdealTimestamp(bf.timestamp);
-                            }
+                }
+
+                // Phase 2: Move drained frames to the main buffer.
+                for (auto& drainedFrame : drainedScreenGrabFrames) {
+                    bufferedWgcFrames.push_back(std::move(drainedFrame));
+                }
+
+                // Phase 3: Snap timestamps to ideal grid on the newly
+                // added frames at the tail of the buffer.
+                if (!drainedScreenGrabFrames.empty() && wgcInputPredictor.IsCalibrated()) {
+                    const size_t newCount = drainedScreenGrabFrames.size();
+                    const size_t bufSize = bufferedWgcFrames.size();
+                    const size_t snapStart = bufSize > newCount ? bufSize - newCount : 0;
+                    for (size_t i = snapStart; i < bufSize; ++i) {
+                        auto& bf = bufferedWgcFrames[i];
+                        if (!bf.isInjectMode && bf.timestamp > 0) {
+                            bf.timestamp = wgcInputPredictor.GetIdealTimestamp(bf.timestamp);
                         }
                     }
                 }
@@ -2472,7 +2473,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 wgcRecentDeliveredMin500Fps = 0;
                 wgcRecentInputMin250Fps = 0;
                 wgcRecentInputMin500Fps = 0;
-                wgcNoFreshTickCount = 0;
+            wgcNoFreshTickCount = 0;
+            encodeSpikeCountThisSecond = 0;
                 wgcQueueTickSampleCount = 0;
                 wgcNoFreshTickPermille = 0;
                 wgcBufferedAtTickSum = 0;
@@ -2739,6 +2741,18 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
 
             for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
+                // Time budget check: if the tick budget is already exhausted,
+                // skip further catchup to avoid cascading latency.
+                LARGE_INTEGER budgetNow;
+                QueryPerformanceCounter(&budgetNow);
+                    const double elapsedFromTickStartMs =
+                    static_cast<double>(budgetNow.QuadPart - cycleStartQpc.QuadPart) * 1000.0 / qpcFreq.QuadPart;
+                if (elapsedFromTickStartMs > frameIntervalMs) {
+                    LogInfo("[EncoderThread] Catchup budget exceeded at extraTick=%u (elapsed=%.2fms > interval=%.2fms), skipping remaining catchup",
+                            extraTick, elapsedFromTickStartMs, frameIntervalMs);
+                    break;
+                }
+
                 const int64_t repeatScheduledQpc = scheduledSampleQpc + static_cast<int64_t>(extraTick) * targetIntervalTicks;
                 LARGE_INTEGER repeatStartEnc, repeatEndEnc;
                 QueryPerformanceCounter(&repeatStartEnc);
@@ -3117,6 +3131,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             encCycleMaxMs = std::max(encCycleMaxMs, static_cast<uint32_t>(cycleMs * 1000.0));
             // Log encode spikes > 10ms (pure encode, not full cycle)
             if (smoothedEncodeMs > 10.0) {
+                ++encodeSpikeCountThisSecond;
                 static uint32_t s_spikeLogCount = 0;
                 ++s_spikeLogCount;
                 if (s_spikeLogCount <= 5 || s_spikeLogCount % 120 == 0) {
@@ -3216,7 +3231,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             encCycleMaxMs = 0;
 
             LogInfo(
-                "[Cadence Health] Phase=%s | AgeAvg=%uus AgeMax=%uus | SelAvg=%uus SelMax=%uus SelBias=%dus EarlyMax=%uus LateMax=%uus | WgcSelAvg=%uus WgcSelMax=%uus WgcSelBias=%dus WgcEarly=%uus WgcLate=%uus Hold=%u HoldFresh=%u Spend=%u CatchUp=%u | DefStreak=%u/%u DupStreak=%u/%u | DupSrc=%u DupDef=%u DupTimer=%u DupDrain=%u | TickEmit=%u TickUnique=%u TickDup=%u TickMiss=%u | HoldHist=%u/%u/%u/%u/%u/%u | LiveWall=%lluus LiveTicks=%llu Shortfall=%u FreshMiss=%upm BufAvg=%upm BufMin=%u NoFresh=%u NoReserve=%u | TsReg=%u TsStall=%u | InvalidMeta=%u InvalidHandle=%u | PktClamp=%u NegPTS=%u NonMonoPTS=%u | WgcThr=%u Adj=%u | EncEma=%.2fms Bottleneck=%d | SrcFps=%.2f SrcJitter=%uus DupTs=%u EncCycle=%.2fms",
+                "[Cadence Health] Phase=%s | AgeAvg=%uus AgeMax=%uus | SelAvg=%uus SelMax=%uus SelBias=%dus EarlyMax=%uus LateMax=%uus | WgcSelAvg=%uus WgcSelMax=%uus WgcSelBias=%dus WgcEarly=%uus WgcLate=%uus Hold=%u HoldFresh=%u Spend=%u CatchUp=%u | DefStreak=%u/%u DupStreak=%u/%u | DupSrc=%u DupDef=%u DupTimer=%u DupDrain=%u | TickEmit=%u TickUnique=%u TickDup=%u TickMiss=%u | HoldHist=%u/%u/%u/%u/%u/%u | LiveWall=%lluus LiveTicks=%llu Shortfall=%u FreshMiss=%upm BufAvg=%upm BufMin=%u NoFresh=%u NoReserve=%u | TsReg=%u TsStall=%u | InvalidMeta=%u InvalidHandle=%u | PktClamp=%u NegPTS=%u NonMonoPTS=%u | WgcThr=%u Adj=%u | EncEma=%.2fms Bottleneck=%d | SrcFps=%.2f SrcJitter=%uus DupTs=%u EncCycle=%.2fms EncSpike=%u",
                 CapturePipelinePhaseToString(state.capturePhase.load(std::memory_order_relaxed)), avgFrameAgeUs,
                 cadenceCounters.frameAgeMaxUs, avgSelectionErrorUs, cadenceCounters.outputScheduleErrorMaxUs,
                 avgSignedSelectionErrorUs, cadenceCounters.outputScheduleEarlyMaxUs,
@@ -3241,7 +3256,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 nonMonotonicPts - lastNonMonotonicPtsCount,
                 g_WgcAdaptiveTargetFps.load(std::memory_order_relaxed), wgcAdaptiveThrottleAdjustments,
                 smoothedEncodeMs, g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ? 1 : 0,
-                srcFpsX100Val / 100.0, srcJitterUsVal, dupTsPerSec, smoothedEncCycleMs);
+                srcFpsX100Val / 100.0, srcJitterUsVal, dupTsPerSec, smoothedEncCycleMs, encodeSpikeCountThisSecond);
 
             lastDuplicateReasonNoSource = dupNoSource;
             lastDuplicateReasonDeferred = dupDeferred;

@@ -208,10 +208,10 @@ TEST(CapturePipelinePolicyTest, CfrCatchupRequiresMeaningfulShortfallOrForceThre
 }
 
 TEST(CapturePipelinePolicyTest, CfrCatchupTicksGradualBelowForceThreshold) {
-    // Below force threshold: at most 2 ticks (1 main + 1 extra) per iteration
-    EXPECT_EQ(policy::GetCfrCatchupTicksThisLoop(policy::kCfrShortfallCatchupThresholdTicks), 2u);
-    EXPECT_EQ(policy::GetCfrCatchupTicksThisLoop(policy::kCfrShortfallCatchupThresholdTicks + 4), 2u);
-    EXPECT_EQ(policy::GetCfrCatchupTicksThisLoop(policy::kCfrShortfallForceCatchupThresholdTicks - 1), 2u);
+    // Below force threshold: no extra ticks (1 total) to avoid encode-spike feedback loop
+    EXPECT_EQ(policy::GetCfrCatchupTicksThisLoop(policy::kCfrShortfallCatchupThresholdTicks), 1u);
+    EXPECT_EQ(policy::GetCfrCatchupTicksThisLoop(policy::kCfrShortfallCatchupThresholdTicks + 4), 1u);
+    EXPECT_EQ(policy::GetCfrCatchupTicksThisLoop(policy::kCfrShortfallForceCatchupThresholdTicks - 1), 1u);
 }
 
 TEST(CapturePipelinePolicyTest, CfrCatchupTicksBurstAtForceThreshold) {

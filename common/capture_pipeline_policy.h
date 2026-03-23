@@ -64,8 +64,10 @@ inline uint32_t GetCfrCatchupTicksThisLoop(uint32_t outputShortfallTicks) {
     if (outputShortfallTicks >= kCfrShortfallForceCatchupThresholdTicks) {
         return std::min(outputShortfallTicks, 4u);
     }
-    // Gradual: emit at most 1 extra frame (2 total ticks) per iteration
-    return 2u;
+    // Gradual: no extra frames — accept the lost tick to avoid encode-spikes
+    // that cause a positive feedback loop (extra encode → late → skip → gap).
+    // The timer skip-ahead recovers timing on the next tick.
+    return 1u;
 }
 
 struct WgcAdaptiveTelemetry {
