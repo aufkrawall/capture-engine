@@ -224,9 +224,24 @@ public:
             return 0;
         }
 
-        if (lastInputQpc_ <= 0 || frameQpc <= lastInputQpc_) {
+        if (lastInputQpc_ <= 0) {
             lastInputQpc_ = frameQpc;
             gridOriginQpc_ = frameQpc;
+            return 0;
+        }
+
+        // Count duplicate timestamps toward calibration so the predictor can
+        // stabilize even when only 1 frame arrives per encoder tick (common
+        // when game FPS ~= encoder FPS).
+        if (frameQpc == lastInputQpc_) {
+            ++frameCount_;
+            return static_cast<int64_t>(smoothedIntervalQpc_ + 0.5);
+        }
+
+        if (frameQpc < lastInputQpc_) {
+            lastInputQpc_ = frameQpc;
+            gridOriginQpc_ = frameQpc;
+            frameCount_ = 0;
             return 0;
         }
 
@@ -234,7 +249,7 @@ public:
         lastInputQpc_ = frameQpc;
         ++frameCount_;
 
-        if (frameCount_ <= 1) {
+        if (frameCount_ <= 2) {
             smoothedIntervalQpc_ = static_cast<double>(rawInterval);
             smoothedJitterQpc_ = 0.0;
             gridOriginQpc_ = frameQpc;

@@ -1606,7 +1606,8 @@ void EncoderThreadFunc(const AppConfig& config) {
     };
     while (g_EncoderRunning || g_FrameQueue.Size() > 0 || !bufferedWgcFrames.empty() || !bufferedInjectFrames.empty()) {
         LARGE_INTEGER cycleStartQpc;
-        QueryPerformanceCounter(&cycleStartQpc);
+        // NOTE: cycleStartQpc is set after timer sleep below to measure
+        // encode processing time, not the full loop including sleep.
         if (g_pSharedMem) {
             if (!g_Recording.load(std::memory_order_acquire)) {
                 g_pSharedMem->runtimeState.capturePhase.store(static_cast<uint32_t>(CapturePipelinePhase::kDrain),
@@ -1705,6 +1706,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
 
             QueryPerformanceCounter(&now);
+            cycleStartQpc = now;  // Start measuring encode processing after timer sleep
             if (!config.video.useVFR && targetIntervalTicks > 0 && now.QuadPart > scheduledSampleQpc) {
                 encoderLateQpc = now.QuadPart - scheduledSampleQpc;
                 const uint64_t lateTicks = static_cast<uint64_t>(encoderLateQpc) /
@@ -1713,6 +1715,22 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
 
             nextSampleTime.QuadPart += targetIntervalTicks;
+
+            // Periodically resync the encoder grid to wall clock time to
+            // prevent systematic drift when encoder ticks are consistently
+            // longer than the target interval.  Without this, the selection
+            // target grows increasingly out of sync with actual frame times.
+            if (recordingOutputLive && encoderGridStartQpc > 0 && targetIntervalTicks > 0 &&
+                liveTicksOutput > 0 && (liveTicksOutput % 60 == 0)) {
+                LARGE_INTEGER resyncNow;
+                QueryPerformanceCounter(&resyncNow);
+                const int64_t idealGridStart =
+                    resyncNow.QuadPart - static_cast<int64_t>(liveTicksOutput) * targetIntervalTicks;
+                const int64_t driftTicks = (idealGridStart - encoderGridStartQpc) / targetIntervalTicks;
+                if (driftTicks >= 2 || driftTicks <= -2) {
+                    encoderGridStartQpc = idealGridStart;
+                }
+            }
 
             // Hidden warmup can rebase freely because those frames are discarded.
             // Once recording is live, preserve the fixed-rate output grid even when
@@ -1764,25 +1782,32 @@ void EncoderThreadFunc(const AppConfig& config) {
 
                 const bool sampleWgcCadenceTick = !(recordingOutputLive && encoderLateTickCount > 0);
 
-                // Update input frame rate predictor and snap timestamps to a
-                // regular grid to eliminate jitter-induced hold-pattern
-                // irregularity.
+                // Update input frame rate predictor with raw timestamps of
+                // newly arrived frames, then snap each to the ideal grid.
                 if (sampleWgcCadenceTick && !drainedScreenGrabFrames.empty()) {
-                    for (auto& bufFrame : bufferedWgcFrames) {
-                        if (!bufFrame.isInjectMode && bufFrame.timestamp > 0) {
-                            const int64_t originalTs = bufFrame.timestamp;
-                            wgcInputPredictor.Update(originalTs, qpcFreq.QuadPart);
-                            const int64_t idealTs = wgcInputPredictor.GetIdealTimestamp(originalTs);
-                            if (idealTs != originalTs) {
-                                bufFrame.timestamp = idealTs;
-                            }
-                            // Count duplicate timestamps (same as previous
-                            // frame) for diagnostics.
+                    // Phase 1: Feed raw timestamps to predictor (order
+                    // doesn't matter for Update — it just tracks intervals).
+                    for (auto& drainedFrame : drainedScreenGrabFrames) {
+                        if (!drainedFrame.isInjectMode && drainedFrame.timestamp > 0) {
+                            wgcInputPredictor.Update(drainedFrame.timestamp, qpcFreq.QuadPart);
                             static int64_t s_lastWgcSrcQpc = 0;
-                            if (originalTs == s_lastWgcSrcQpc) {
+                            if (drainedFrame.timestamp == s_lastWgcSrcQpc) {
                                 ++dupTimestampCount;
                             }
-                            s_lastWgcSrcQpc = originalTs;
+                            s_lastWgcSrcQpc = drainedFrame.timestamp;
+                        }
+                    }
+                    // Phase 2: Snap timestamps to ideal grid on the newly
+                    // added frames at the tail of the buffer.
+                    if (wgcInputPredictor.IsCalibrated()) {
+                        const size_t newCount = drainedScreenGrabFrames.size();
+                        const size_t bufSize = bufferedWgcFrames.size();
+                        const size_t snapStart = bufSize > newCount ? bufSize - newCount : 0;
+                        for (size_t i = snapStart; i < bufSize; ++i) {
+                            auto& bf = bufferedWgcFrames[i];
+                            if (!bf.isInjectMode && bf.timestamp > 0) {
+                                bf.timestamp = wgcInputPredictor.GetIdealTimestamp(bf.timestamp);
+                            }
                         }
                     }
                 }
@@ -3069,8 +3094,8 @@ void EncoderThreadFunc(const AppConfig& config) {
             frame.texture->Release();
         }
 
-        // Track full encoder cycle time (wake through end of iteration)
-        {
+        // Track encoder processing cycle time (timer wake through end of encode)
+        if (cycleStartQpc.QuadPart > 0) {
             LARGE_INTEGER cycleEndQpc;
             QueryPerformanceCounter(&cycleEndQpc);
             const double cycleMs =
