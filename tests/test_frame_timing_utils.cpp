@@ -204,6 +204,23 @@ TEST(FrameTimingUtilsTest, ComputeIdealOutputQpcUsesPreviousGridTick) {
     EXPECT_EQ(ComputeIdealOutputQpc(100, 3, 50), 200);
 }
 
+TEST(FrameTimingUtilsTest, ComputeCfrFrameIndexUsesElapsedTimeFromRecordingStart) {
+    EXPECT_EQ(ComputeCfrFrameIndexForElapsedUs(0, 60, -1), 0);
+    EXPECT_EQ(ComputeCfrFrameIndexForElapsedUs(16667, 60, 0), 1);
+    EXPECT_EQ(ComputeCfrFrameIndexForElapsedUs(33333, 60, 1), 2);
+}
+
+TEST(FrameTimingUtilsTest, ComputeCfrFrameIndexRemainsMonotonicAcrossRepeatedTimestamps) {
+    EXPECT_EQ(ComputeCfrFrameIndexForElapsedUs(50000, 60, 3), 4);
+    EXPECT_EQ(ComputeCfrFrameIndexForElapsedUs(50000, 60, 4), 5);
+}
+
+TEST(FrameTimingUtilsTest, ComputeNextCfrFrameIndexAdvancesSequentially) {
+    EXPECT_EQ(ComputeNextCfrFrameIndex(-1), 0);
+    EXPECT_EQ(ComputeNextCfrFrameIndex(0), 1);
+    EXPECT_EQ(ComputeNextCfrFrameIndex(119), 120);
+}
+
 TEST(FrameTimingUtilsTest, SelectFrameClosestToGridUsesPreviousGridTickPhase) {
     std::deque<QueuedFrame> frames;
 
@@ -238,12 +255,6 @@ TEST(FrameTimingUtilsTest, ShouldHoldFrameForNextTickWhenFrameIsMuchCloserToNext
     const int64_t idealQpc = ComputeIdealOutputQpc(100, 3, 50);  // 200
     EXPECT_TRUE(ShouldHoldFrameForNextTick(248, idealQpc, 50, 2));
     EXPECT_FALSE(ShouldHoldFrameForNextTick(224, idealQpc, 50, 2));
-}
-
-TEST(FrameTimingUtilsTest, ShouldHoldFrameForNextTickWithBiasAllowsReserveBuildingNearMidpoint) {
-    const int64_t idealQpc = ComputeIdealOutputQpc(100, 3, 50);  // 200
-    EXPECT_FALSE(ShouldHoldFrameForNextTickWithBias(224, idealQpc, 50, 2, 0));
-    EXPECT_TRUE(ShouldHoldFrameForNextTickWithBias(224, idealQpc, 50, 2, 5));
 }
 
 TEST(FrameTimingUtilsTest, ComputeSourceDrivenElapsedUsUsesSourceClockWhenMonotonic) {

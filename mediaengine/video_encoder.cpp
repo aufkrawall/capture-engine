@@ -1,6 +1,7 @@
 #include "video_encoder.h"
 #include "../common/raii_helpers.h"
 #include "../common/shared_defs.h"
+#include "../common/frame_timing_utils.h"
 #include "mediaengine.h"
 #include "video_encoder_options.h"
 
@@ -3001,15 +3002,19 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     }
 
     int64_t targetPts = 0;
+    int64_t elapsedUs = timestamp - startPts;
+    if (elapsedUs < 0) {
+        elapsedUs = 0;
+    }
     if (savedConfig.useVFR && startPts >= 0) {
         // VFR: PTS in microseconds, matches time_base 1/1000000.
-        targetPts = timestamp - startPts;
+        targetPts = elapsedUs;
     } else {
         // CFR: the capture thread already emits frames on the exact output cadence
         // and explicitly replays the previous frame when the source falls behind.
         // Encode every received frame as the next sequential CFR tick so timing
         // jitter in this process does not trigger a second round of skip/dup logic.
-        targetPts = (lastAssignedVideoPts >= 0) ? (lastAssignedVideoPts + 1) : 0;
+        targetPts = ComputeNextCfrFrameIndex(lastAssignedVideoPts);
     }
 
     // 5. Encode (Direct D3D11 Frame) - with proper packet draining
@@ -3392,7 +3397,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         // explicitly repeats the last frame when no fresh source frame arrives.
         // Stamp each received frame onto the next sequential CFR slot instead of
         // resampling elapsed wall time again here.
-        targetPts = (lastAssignedVideoPts >= 0) ? (lastAssignedVideoPts + 1) : 0;
+        targetPts = ComputeNextCfrFrameIndex(lastAssignedVideoPts);
     }
 
     // Encode
@@ -3610,10 +3615,14 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp) {
     ApplyFrameColorMetadata(d3d11Frame, codecCtx);
 
     int64_t targetPts = 0;
+    int64_t elapsedUs = timestamp - startPts;
+    if (elapsedUs < 0) {
+        elapsedUs = 0;
+    }
     if (savedConfig.useVFR && startPts >= 0) {
-        targetPts = timestamp - startPts;
+        targetPts = elapsedUs;
     } else {
-        targetPts = (lastAssignedVideoPts >= 0) ? (lastAssignedVideoPts + 1) : 0;
+        targetPts = ComputeNextCfrFrameIndex(lastAssignedVideoPts);
     }
 
     AVPacket* pkt = av_packet_alloc();
@@ -6135,6 +6144,9 @@ int64_t VideoEncoder::GetEncodedDurationUs() const {
         return 0;
 
     // Fallback for early startup before first packet is emitted.
+    if (lastAssignedVideoPts >= 0) {
+        return GetExpectedFinalDurationUs();
+    }
     return av_rescale(encodeFrameCounter, 1000000 * (int64_t)codecCtx->framerate.den, codecCtx->framerate.num);
 }
 

@@ -28,6 +28,32 @@ constexpr uint32_t kWgcReserveBiasPermille = 250;
 constexpr uint32_t kWgcReserveFragileBiasPermille = 375;
 constexpr uint32_t kWgcSingleFreshHoldInputPermille = 995;
 constexpr uint32_t kWgcSteadyReserveBuildInputPermille = 995;
+constexpr uint32_t kWgcSelectionDelayTicks = 1;
+constexpr uint32_t kCfrShortfallCatchupThresholdTicks = 6;
+constexpr uint32_t kCfrShortfallForceCatchupThresholdTicks = 18;
+
+inline uint32_t GetCfrOutputShortfallTicks(uint64_t liveTicksScheduled, uint64_t liveTicksOutput) {
+    return liveTicksScheduled > liveTicksOutput
+               ? static_cast<uint32_t>(std::min<uint64_t>(liveTicksScheduled - liveTicksOutput, 0xFFFFFFFFull))
+               : 0u;
+}
+
+inline bool ShouldCfrCatchUpToWallClock(uint32_t outputShortfallTicks, bool useScreenGrab, bool frameAvailable,
+                                        bool hasLastFrame) {
+    if (outputShortfallTicks == 0) {
+        return false;
+    }
+
+    if (outputShortfallTicks >= kCfrShortfallForceCatchupThresholdTicks) {
+        return true;
+    }
+
+    if (outputShortfallTicks < kCfrShortfallCatchupThresholdTicks) {
+        return false;
+    }
+
+    return useScreenGrab ? (frameAvailable || hasLastFrame) : frameAvailable;
+}
 
 struct WgcAdaptiveTelemetry {
     uint32_t outputFps = 0;
@@ -218,8 +244,20 @@ inline int64_t GetWgcMaxSelectionLagQpc(int64_t targetIntervalTicks, bool lowSou
     return targetIntervalTicks * maxLagTicks;
 }
 
+inline int64_t GetWgcSelectionTargetQpc(int64_t scheduledSampleQpc, int64_t fallbackTargetQpc,
+                                        int64_t targetIntervalTicks, bool recordingOutputLive) {
+    int64_t selectionTargetQpc = scheduledSampleQpc > 0 ? scheduledSampleQpc : fallbackTargetQpc;
+    if (!recordingOutputLive || selectionTargetQpc <= 0 || targetIntervalTicks <= 0 || kWgcSelectionDelayTicks == 0) {
+        return selectionTargetQpc;
+    }
+
+    const int64_t delayedSelectionTargetQpc =
+        selectionTargetQpc - (targetIntervalTicks * static_cast<int64_t>(kWgcSelectionDelayTicks));
+    return delayedSelectionTargetQpc > 0 ? delayedSelectionTargetQpc : selectionTargetQpc;
+}
+
 inline int64_t GetWgcMinimumFreshTimestampQpc(int64_t lastEmittedSourceQpc, int64_t scheduledSampleQpc,
-                                              int64_t targetIntervalTicks, bool lowSourceMode) {
+                                               int64_t targetIntervalTicks, bool lowSourceMode) {
     int64_t minFreshTimestampQpc = lastEmittedSourceQpc > 0 ? (lastEmittedSourceQpc + 1) : 0;
     const int64_t maxSelectionLagQpc = GetWgcMaxSelectionLagQpc(targetIntervalTicks, lowSourceMode);
     if (scheduledSampleQpc > 0 && maxSelectionLagQpc > 0) {

@@ -73,6 +73,8 @@ public:
         bool isPrimed = false;                          // True after source has buffered a startup safety cushion
         bool bootstrapComplete = false;                 // True after startup backlog is settled and live sync may engage
         bool pendingUnderrunRecoveryFade = false;       // Arm fade-in when real audio resumes after padded silence
+        uint64_t pendingLatencyTrimSamples = 0;         // Aggregated trim samples since the last periodic log
+        uint32_t pendingLatencyTrimEvents = 0;          // Aggregated trim events since the last periodic log
 
         AudioConfig config;
         int track = 0;  // Target track number
@@ -875,10 +877,11 @@ public:
 
         constexpr int SAMPLE_RATE = 48000;
         constexpr int CHANNELS = 2;
-        constexpr int64_t kSteadyAudioPullLatencyMs = 50;
+        constexpr int64_t kSteadyAudioPullLatencyMs = ce::audio::kDefaultSteadyAudioPullLatencyMs;
         constexpr int64_t kPrimedSourceCushionSamples = SAMPLE_RATE / 50;  // 20ms
         constexpr int64_t kBootstrapHoldLimitMs = 500;
         constexpr int64_t kBaseTargetLatencySamples = 960;
+        constexpr int64_t kMaxPipelineLagContributionMs = 40;
         constexpr int64_t kRuntimeMaxLeadSamples = SAMPLE_RATE / 10;        // 100ms above target
         constexpr int64_t kRuntimeMaxDropPerCall = SAMPLE_RATE / 200;       // 5ms
         constexpr int64_t kRuntimeDropFadeSamples = SAMPLE_RATE / 200;      // 5ms
@@ -941,17 +944,17 @@ public:
 
             const bool trackStartupSettled =
                 ce::audio::IsTrackAudioStartupSettled(trackBootstrapComplete[track], trackAllPrimed);
-            const int64_t trackAudioTargetMs =
-                audioTargetMs -
+            const int64_t trackAudioPullLatencyMs =
                 ce::audio::ComputeAudioPullLatencyMs(kSteadyAudioPullLatencyMs, trackStartupSettled,
                                                      trackMaxObservedLateStartMs);
+            const int64_t trackAudioTargetMs = audioTargetMs - trackAudioPullLatencyMs;
             if (trackAudioTargetMs <= 0) {
                 continue;
             }
 
             const int64_t targetSamples = (trackAudioTargetMs * SAMPLE_RATE) / 1000;
-            const int64_t targetBufferedSamples =
-                ce::audio::ComputeBufferedAudioTargetSamples(SAMPLE_RATE, kBaseTargetLatencySamples, videoPipelineLagMs);
+            const int64_t targetBufferedSamples = ce::audio::ComputeBufferedAudioTargetSamples(
+                SAMPLE_RATE, kBaseTargetLatencySamples, videoPipelineLagMs, kMaxPipelineLagContributionMs);
 
             bool trackReadyForBootstrap = true;
             for (size_t srcIdx : srcIndices) {
@@ -1042,8 +1045,8 @@ public:
                     size_t retainedSamples = retainedFloats / CHANNELS;
                     ce::audio::ConsumeSyntheticBufferedSamples(src.startupSyntheticRingSamples, retainedSamples);
                     src.latencyTrimSamples += retainedSamples;
-                    DLL_Log("[PullAudio] WARNING: Ring buffer latency trim - %zu oldest samples dropped for src=%d",
-                            retainedSamples, (int)srcIdx);
+                    src.pendingLatencyTrimSamples += retainedSamples;
+                    src.pendingLatencyTrimEvents++;
                 }
 
                 const int64_t targetLatencySamples = targetBufferedSamples;
@@ -1067,6 +1070,8 @@ public:
                             size_t trimmedSamples = trimmedFloats / CHANNELS;
                             ce::audio::ConsumeSyntheticBufferedSamples(src.startupSyntheticRingSamples, trimmedSamples);
                             src.latencyTrimSamples += trimmedSamples;
+                            src.pendingLatencyTrimSamples += trimmedSamples;
+                            src.pendingLatencyTrimEvents++;
                             if (dropLogCounter++ % 500 == 0) {
                                 DLL_Log(
                                     "[PullAudio] Audio latency cap: src %d ahead by %lld samples - trimming %lld (capped from %lld, target=%lld, pipelineLag=%lldms)",
@@ -1352,6 +1357,8 @@ public:
                 int64_t audioSamples = encodedSamplesPerSource[firstSrcIdx];
                 int64_t audioMs = (audioSamples * 1000) / SAMPLE_RATE;
                 int64_t avDrift = audioMs - videoMs;
+                int64_t latencyAdjustedAvDrift =
+                    ce::audio::ComputeLatencyAdjustedAvDriftMs(avDrift, trackAudioPullLatencyMs);
                 int64_t pipelineLagMs = ce::audio::ComputeVideoPipelineLagMs(wallVideoMs, videoMs);
 
                 // Summarize all sources contributing to this track so issues on a
@@ -1418,19 +1425,34 @@ public:
                     sourceSummary = "none";
                 }
 
+                for (size_t srcIdx : srcIndices) {
+                    auto& src = audioSources[srcIdx];
+                    if (src.pendingLatencyTrimEvents > 0) {
+                        DLL_Log(
+                            "[PullAudio] Latency trim summary - src=%zu events=%u samples=%llu total=%llu target=%lld pipelineLag=%lldms",
+                            srcIdx, src.pendingLatencyTrimEvents,
+                            static_cast<unsigned long long>(src.pendingLatencyTrimSamples),
+                            static_cast<unsigned long long>(src.latencyTrimSamples), targetBufferedSamples,
+                            pipelineLagMs);
+                        src.pendingLatencyTrimEvents = 0;
+                        src.pendingLatencyTrimSamples = 0;
+                    }
+                }
+
                 DLL_Log(
                     "[A/V SYNC CHECK] Track %d: Video=%lld ms, Audio=%lld ms, "
-                    "Drift=%lld ms, VideoWall=%lld ms, PipelineLag=%lld ms, Overflow=%llu, "
+                    "Drift=%lld ms, DriftAdj=%lld ms, Pull=%lld ms, VideoWall=%lld ms, PipelineLag=%lld ms, TargetBuf=%lld ms, Overflow=%llu, "
                     "LatencyTrim=%llu, PostTrim=%llu, Pad=%llu, Sources=%s",
-                    track, videoMs, audioMs, avDrift, wallVideoMs, pipelineLagMs, (unsigned long long)overflowDropped,
+                    track, videoMs, audioMs, avDrift, latencyAdjustedAvDrift, trackAudioPullLatencyMs, wallVideoMs,
+                    pipelineLagMs,
+                    (targetBufferedSamples * 1000) / SAMPLE_RATE, (unsigned long long)overflowDropped,
                     (unsigned long long)latencyTrimmed, (unsigned long long)postTrimmed,
                     (unsigned long long)underrunPadded, sourceSummary.c_str());
 
-                if (std::abs(avDrift) > 100) {
+                if (std::abs(latencyAdjustedAvDrift) > 100) {
                     DLL_Log(
-                        "[A/V SYNC WARNING] Track %d drift exceeds 100ms! "
-                        "Investigate potential sync issues.",
-                        track);
+                        "[A/V SYNC WARNING] Track %d adjusted drift exceeds 100ms! raw=%lldms adjusted=%lldms pull=%lldms",
+                        track, avDrift, latencyAdjustedAvDrift, trackAudioPullLatencyMs);
                 }
             }
         }
@@ -1612,31 +1634,26 @@ private:
     // Shared initialization for ring buffer and sync resampler on an AudioSource.
     // Parses sample rate from config (defaults to 48000) and sets up both.
     void InitAudioSourceBuffers(AudioSource& source, const AudioConfig& audioConfig, size_t sourceIdx) {
-        int iSampleRate = 48000;
-        if (audioConfig.sampleRate != "default" && !audioConfig.sampleRate.empty()) {
-            try {
-                iSampleRate = std::stoi(audioConfig.sampleRate);
-            } catch (...) {}
-        }
-        size_t capacity = static_cast<size_t>(iSampleRate) * 2 * 2;
+        constexpr int kMixerSampleRate = 48000;
+        size_t capacity = static_cast<size_t>(kMixerSampleRate) * 2 * 2;
         source.ringBuffer = std::make_unique<AudioRingBuffer>(capacity);
         DLL_Log("MediaEngine::Init RingBuffer created for source %zu. Cap=%zu samples, rate=%d", sourceIdx, capacity,
-                iSampleRate);
+                kMixerSampleRate);
 
         source.syncResampler = std::make_unique<AudioResampler>();
         AudioResampler::InputFormat syncInFmt;
-        syncInFmt.sampleRate = iSampleRate;
+        syncInFmt.sampleRate = kMixerSampleRate;
         syncInFmt.channels = 2;
         syncInFmt.bitsPerSample = 32;
         syncInFmt.validBitsPerSample = 32;
         syncInFmt.isFloat = true;
         syncInFmt.blockAlign = 8;
         AudioResampler::OutputFormat syncOutFmt;
-        syncOutFmt.sampleRate = iSampleRate;
+        syncOutFmt.sampleRate = kMixerSampleRate;
         syncOutFmt.channels = 2;
         syncOutFmt.sampleFmt = AV_SAMPLE_FMT_FLT;
         source.syncResampler->Init(syncInFmt, syncOutFmt);
-        DLL_Log("MediaEngine::Init SyncResampler created for source %zu (rate=%d)", sourceIdx, iSampleRate);
+        DLL_Log("MediaEngine::Init SyncResampler created for source %zu (rate=%d)", sourceIdx, kMixerSampleRate);
     }
 
     void AudioLoop() {

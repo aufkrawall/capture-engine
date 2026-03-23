@@ -87,6 +87,27 @@ inline int64_t ComputeIdealOutputQpc(int64_t gridStartQpc, int64_t gridTickCount
     return gridStartQpc + (gridTickCount - 1) * targetIntervalTicks;
 }
 
+inline int64_t ComputeCfrFrameIndexForElapsedUs(int64_t elapsedUs, int fps, int64_t lastAssignedFrameIndex) {
+    if (fps <= 0) {
+        fps = 60;
+    }
+
+    if (elapsedUs < 0) {
+        elapsedUs = 0;
+    }
+
+    const int64_t roundedFrameIndex = (elapsedUs * static_cast<int64_t>(fps) + 500000) / 1000000;
+    if (lastAssignedFrameIndex < 0) {
+        return roundedFrameIndex;
+    }
+
+    return std::max<int64_t>(roundedFrameIndex, lastAssignedFrameIndex + 1);
+}
+
+inline int64_t ComputeNextCfrFrameIndex(int64_t lastAssignedFrameIndex) {
+    return lastAssignedFrameIndex >= 0 ? (lastAssignedFrameIndex + 1) : 0;
+}
+
 inline bool ShouldHoldFrameForNextTick(int64_t frameTimestampQpc, int64_t idealQpc, int64_t targetIntervalTicks,
                                        int64_t holdSlackQpc) {
     if (frameTimestampQpc <= 0 || idealQpc <= 0 || targetIntervalTicks <= 0) {
@@ -100,22 +121,6 @@ inline bool ShouldHoldFrameForNextTick(int64_t frameTimestampQpc, int64_t idealQ
     const int64_t currentDistance = AbsoluteTimestampDistance(frameTimestampQpc, idealQpc);
     const int64_t nextDistance = AbsoluteTimestampDistance(frameTimestampQpc, idealQpc + targetIntervalTicks);
     return nextDistance + std::max<int64_t>(holdSlackQpc, 0) < currentDistance;
-}
-
-inline bool ShouldHoldFrameForNextTickWithBias(int64_t frameTimestampQpc, int64_t idealQpc, int64_t targetIntervalTicks,
-                                               int64_t holdSlackQpc, int64_t holdBiasQpc) {
-    if (frameTimestampQpc <= 0 || idealQpc <= 0 || targetIntervalTicks <= 0) {
-        return false;
-    }
-
-    if (frameTimestampQpc <= idealQpc) {
-        return false;
-    }
-
-    const int64_t currentDistance = AbsoluteTimestampDistance(frameTimestampQpc, idealQpc);
-    const int64_t nextDistance = AbsoluteTimestampDistance(frameTimestampQpc, idealQpc + targetIntervalTicks);
-    return nextDistance + std::max<int64_t>(holdSlackQpc, 0) <
-           currentDistance + std::max<int64_t>(holdBiasQpc, 0);
 }
 
 template <typename FrameContainer>

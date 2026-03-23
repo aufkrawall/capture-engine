@@ -159,6 +159,13 @@ TEST(CapturePipelinePolicyTest, WgcFreshnessGuardRequiresRecentTimestamp) {
     EXPECT_FALSE(policy::IsWgcTimestampFreshEnough(1299, minFreshNormal));
 }
 
+TEST(CapturePipelinePolicyTest, WgcSelectionTargetDelaysLiveSelectionByOneTick) {
+    EXPECT_EQ(policy::GetWgcSelectionTargetQpc(1500, 1400, 100, true), 1400);
+    EXPECT_EQ(policy::GetWgcSelectionTargetQpc(1500, 1400, 100, false), 1500);
+    EXPECT_EQ(policy::GetWgcSelectionTargetQpc(0, 1400, 100, true), 1300);
+    EXPECT_EQ(policy::GetWgcSelectionTargetQpc(50, 40, 100, true), 50);
+}
+
 TEST(CapturePipelinePolicyTest, WgcReservePressureActivatesOnlyWithSustainedSingleFrameTicks) {
     EXPECT_FALSE(policy::IsWgcReservePressureActive(12, 20, 120));
     EXPECT_FALSE(policy::IsWgcReservePressureActive(20, 20, 120));
@@ -184,4 +191,18 @@ TEST(CapturePipelinePolicyTest, WgcSteadyReserveBuildRequiresHealthyNearTargetSo
     EXPECT_TRUE(policy::ShouldAllowSteadyStateWgcReserveBuild(121, 120, 1.02));
     EXPECT_FALSE(policy::ShouldAllowSteadyStateWgcReserveBuild(119, 120, 1.02));
     EXPECT_FALSE(policy::ShouldAllowSteadyStateWgcReserveBuild(120, 120, 0.98));
+}
+
+TEST(CapturePipelinePolicyTest, CfrOutputShortfallTicksIsClampedToPositiveDelta) {
+    EXPECT_EQ(policy::GetCfrOutputShortfallTicks(0, 0), 0u);
+    EXPECT_EQ(policy::GetCfrOutputShortfallTicks(10, 10), 0u);
+    EXPECT_EQ(policy::GetCfrOutputShortfallTicks(25, 20), 5u);
+}
+
+TEST(CapturePipelinePolicyTest, CfrCatchupRequiresMeaningfulShortfallOrForceThreshold) {
+    EXPECT_FALSE(policy::ShouldCfrCatchUpToWallClock(0, true, true, true));
+    EXPECT_FALSE(policy::ShouldCfrCatchUpToWallClock(policy::kCfrShortfallCatchupThresholdTicks - 1, true, true, true));
+    EXPECT_TRUE(policy::ShouldCfrCatchUpToWallClock(policy::kCfrShortfallCatchupThresholdTicks, true, true, false));
+    EXPECT_TRUE(policy::ShouldCfrCatchUpToWallClock(policy::kCfrShortfallForceCatchupThresholdTicks, false, false, false));
+    EXPECT_FALSE(policy::ShouldCfrCatchUpToWallClock(policy::kCfrShortfallCatchupThresholdTicks, false, false, true));
 }

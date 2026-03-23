@@ -8,9 +8,10 @@ TEST(AudioSyncUtilsTest, ComputesVideoPipelineLagOnlyWhenEncodedVideoLagsWallClo
     EXPECT_EQ(ce::audio::ComputeVideoPipelineLagMs(4600, 0), 0);
 }
 
-TEST(AudioSyncUtilsTest, BufferedAudioTargetIncludesVideoPipelineLag) {
-    EXPECT_EQ(ce::audio::ComputeBufferedAudioTargetSamples(48000, 960, 325), 16560);
+TEST(AudioSyncUtilsTest, BufferedAudioTargetIncludesBoundedVideoPipelineLag) {
+    EXPECT_EQ(ce::audio::ComputeBufferedAudioTargetSamples(48000, 960, 325), 2880);
     EXPECT_EQ(ce::audio::ComputeBufferedAudioTargetSamples(48000, 960, 0), 960);
+    EXPECT_EQ(ce::audio::ComputeBufferedAudioTargetSamples(48000, 960, 20), 1920);
 }
 
 TEST(AudioSyncUtilsTest, BufferedAudioTargetFallsBackToBaseLatencyForInvalidSampleRate) {
@@ -19,15 +20,23 @@ TEST(AudioSyncUtilsTest, BufferedAudioTargetFallsBackToBaseLatencyForInvalidSamp
 }
 
 TEST(AudioSyncUtilsTest, AudioPullLatencyUsesStartupSlackUntilSourcesPrime) {
-    EXPECT_EQ(ce::audio::ComputeAudioPullLatencyMs(50, true, 0), 50);
-    EXPECT_EQ(ce::audio::ComputeAudioPullLatencyMs(50, false, 0), 80);
-    EXPECT_EQ(ce::audio::ComputeAudioPullLatencyMs(50, false, 95), 115);
-    EXPECT_EQ(ce::audio::ComputeAudioPullLatencyMs(50, false, 500), 120);
+    constexpr int64_t kSteadyPullLatencyMs = ce::audio::kDefaultSteadyAudioPullLatencyMs;
+    EXPECT_EQ(ce::audio::ComputeAudioPullLatencyMs(kSteadyPullLatencyMs, true, 0), kSteadyPullLatencyMs);
+    EXPECT_EQ(ce::audio::ComputeAudioPullLatencyMs(kSteadyPullLatencyMs, false, 0), 30);
+    EXPECT_EQ(ce::audio::ComputeAudioPullLatencyMs(kSteadyPullLatencyMs, false, 95), 115);
+    EXPECT_EQ(ce::audio::ComputeAudioPullLatencyMs(kSteadyPullLatencyMs, false, 500), 120);
 }
 
 TEST(AudioSyncUtilsTest, AudioPullLatencyIsTrackScoped) {
-    EXPECT_EQ(ce::audio::ComputeAudioPullLatencyMs(50, false, 120), 120);
-    EXPECT_EQ(ce::audio::ComputeAudioPullLatencyMs(50, true, 120), 50);
+    constexpr int64_t kSteadyPullLatencyMs = ce::audio::kDefaultSteadyAudioPullLatencyMs;
+    EXPECT_EQ(ce::audio::ComputeAudioPullLatencyMs(kSteadyPullLatencyMs, false, 120), 120);
+    EXPECT_EQ(ce::audio::ComputeAudioPullLatencyMs(kSteadyPullLatencyMs, true, 120), kSteadyPullLatencyMs);
+}
+
+TEST(AudioSyncUtilsTest, LatencyAdjustedDriftRemovesIntentionalPullOffset) {
+    EXPECT_EQ(ce::audio::ComputeLatencyAdjustedAvDriftMs(-20, 20), 0);
+    EXPECT_EQ(ce::audio::ComputeLatencyAdjustedAvDriftMs(-50, 20), -30);
+    EXPECT_EQ(ce::audio::ComputeLatencyAdjustedAvDriftMs(15, 20), 35);
 }
 
 TEST(AudioSyncUtilsTest, TrackStartupSettledUsesBootstrapOrPrimedSources) {

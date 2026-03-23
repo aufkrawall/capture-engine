@@ -6,6 +6,8 @@
 
 namespace ce::audio {
 
+constexpr int64_t kDefaultSteadyAudioPullLatencyMs = 0;
+
 inline int64_t ComputeVideoPipelineLagMs(int64_t wallVideoMs, int64_t encodedVideoMs) {
     if (wallVideoMs <= 0 || encodedVideoMs <= 0 || wallVideoMs <= encodedVideoMs) {
         return 0;
@@ -14,14 +16,15 @@ inline int64_t ComputeVideoPipelineLagMs(int64_t wallVideoMs, int64_t encodedVid
 }
 
 inline int64_t ComputeBufferedAudioTargetSamples(int sampleRate, int64_t baseLatencySamples,
-                                                 int64_t videoPipelineLagMs) {
+                                                 int64_t videoPipelineLagMs, int64_t maxLagContributionMs = 40) {
     if (sampleRate <= 0) {
         return std::max<int64_t>(0, baseLatencySamples);
     }
 
     int64_t lagSamples = 0;
     if (videoPipelineLagMs > 0) {
-        lagSamples = (videoPipelineLagMs * sampleRate) / 1000;
+        const int64_t boundedLagMs = std::clamp<int64_t>(videoPipelineLagMs, 0, std::max<int64_t>(0, maxLagContributionMs));
+        lagSamples = (boundedLagMs * sampleRate) / 1000;
     }
 
     return std::max<int64_t>(0, baseLatencySamples + lagSamples);
@@ -36,6 +39,10 @@ inline int64_t ComputeAudioPullLatencyMs(int64_t steadyLatencyMs, bool allSource
 
     const int64_t startupLatencyMs = std::max<int64_t>(baseLatencyMs + 30, maxObservedLateStartMs + 20);
     return std::clamp<int64_t>(startupLatencyMs, baseLatencyMs, 120);
+}
+
+inline int64_t ComputeLatencyAdjustedAvDriftMs(int64_t rawAvDriftMs, int64_t intentionalPullLatencyMs) {
+    return rawAvDriftMs + std::max<int64_t>(intentionalPullLatencyMs, 0);
 }
 
 inline bool IsTrackAudioStartupSettled(bool trackBootstrapComplete, bool allSourcesPrimed) {
