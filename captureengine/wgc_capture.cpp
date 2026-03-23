@@ -240,6 +240,7 @@ public:
     int32_t cachedHeight_ = 0;
 
     std::mutex frameMutex_;
+    std::mutex callbackDrainMutex_;
     int64_t lastFrameTime_ = 0;
     bool frameReady_ = false;
     uint32_t frameWidth_ = 0;
@@ -289,6 +290,8 @@ public:
     std::atomic<uint32_t> pacingSkipCount_{0};
     std::atomic<uint32_t> throttleSkipCount_{0};
     std::atomic<uint32_t> staleSkipCount_{0};
+    std::atomic<uint32_t> staleDuplicateTimestampCount_{0};
+    std::atomic<uint32_t> staleOutOfOrderTimestampCount_{0};
     std::atomic<uint32_t> cursorOnlySkipCount_{0};
     std::atomic<uint32_t> poolDropCount_{0};
     bool dirtyRegionModeEnabled_ = false;
@@ -469,6 +472,8 @@ public:
         pacingSkipCount_.store(0, std::memory_order_relaxed);
         throttleSkipCount_.store(0, std::memory_order_relaxed);
         staleSkipCount_.store(0, std::memory_order_relaxed);
+        staleDuplicateTimestampCount_.store(0, std::memory_order_relaxed);
+        staleOutOfOrderTimestampCount_.store(0, std::memory_order_relaxed);
         cursorOnlySkipCount_.store(0, std::memory_order_relaxed);
         poolDropCount_.store(0, std::memory_order_relaxed);
         lastCopyUs_.store(0, std::memory_order_relaxed);
@@ -1051,6 +1056,111 @@ public:
         return false;
     }
 
+    bool ProcessCapturedFrame(winrt::Direct3D11CaptureFrame winrtFrame, WGCCapturedFrame* outputFrame) {
+        if (!winrtFrame) {
+            return false;
+        }
+
+        inputFrameCount_.fetch_add(1, std::memory_order_relaxed);
+        RecordInputFrameEvent();
+
+        const int64_t sourceFrameQpc = GetFrameSourceQpc(winrtFrame);
+        if (targetIntervalQPC_ > 0 && nextCaptureQPC_ > 0 && sourceFrameQpc > 0 && sourceFrameQpc < nextCaptureQPC_) {
+            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+            pacingSkipCount_.fetch_add(1, std::memory_order_relaxed);
+            winrtFrame.Close();
+            return false;
+        }
+
+        if (throttleFlag_ && throttleFlag_->load(std::memory_order_relaxed)) {
+            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+            throttleSkipCount_.fetch_add(1, std::memory_order_relaxed);
+            winrtFrame.Close();
+            return false;
+        }
+
+        if (IsStaleSourceFrameQpc(sourceFrameQpc)) {
+            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+            staleSkipCount_.fetch_add(1, std::memory_order_relaxed);
+            const int64_t lastDeliveredSourceQpc = lastDeliveredSourceQpc_.load(std::memory_order_relaxed);
+            if (sourceFrameQpc == lastDeliveredSourceQpc) {
+                staleDuplicateTimestampCount_.fetch_add(1, std::memory_order_relaxed);
+            } else if (sourceFrameQpc < lastDeliveredSourceQpc) {
+                staleOutOfOrderTimestampCount_.fetch_add(1, std::memory_order_relaxed);
+            }
+            winrtFrame.Close();
+            return false;
+        }
+
+        bool success = false;
+        auto surface = winrtFrame.Surface();
+        IDirect3DDxgiInterfaceAccess* access = nullptr;
+
+        if (SUCCEEDED(surface.as<IUnknown>()->QueryInterface(IID_IDirect3DDxgiInterfaceAccess, (void**)&access)) &&
+            access) {
+            ID3D11Texture2D* texture = nullptr;
+            if (SUCCEEDED(access->GetInterface(__uuidof(ID3D11Texture2D), (void**)&texture)) && texture) {
+                D3D11_TEXTURE2D_DESC desc;
+                texture->GetDesc(&desc);
+
+                if (!formatDetected_) {
+                    formatDetected_ = true;
+                    LogInfo("[WGC] Source format: fmt=%d %ux%u", desc.Format, desc.Width, desc.Height);
+                }
+
+                if (ShouldSkipCursorOnlyDirtyFrame(winrtFrame, desc.Width, desc.Height)) {
+                    skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+                    cursorOnlySkipCount_.fetch_add(1, std::memory_order_relaxed);
+                    texture->Release();
+                    access->Release();
+                    winrtFrame.Close();
+                    return false;
+                }
+
+                ID3D11Texture2D* copiedTexture = nullptr;
+                int64_t copyCompleteQpc = 0;
+                if (CopyFrameToPool(texture, desc, sourceFrameQpc, &copiedTexture, copyCompleteQpc)) {
+                    const int64_t deliveredTimestamp = sourceFrameQpc > 0 ? sourceFrameQpc : copyCompleteQpc;
+                    if (sourceFrameQpc > 0) {
+                        lastDeliveredSourceQpc_.store(sourceFrameQpc, std::memory_order_relaxed);
+                    }
+                    RecordDeliveredFrameEvent();
+                    MaybeRecheckHDR();
+
+                    int32_t captureLeft = 0;
+                    int32_t captureTop = 0;
+                    GetCaptureOrigin(captureLeft, captureTop);
+
+                    if (outputFrame) {
+                        outputFrame->texture = copiedTexture;
+                        outputFrame->width = desc.Width;
+                        outputFrame->height = desc.Height;
+                        outputFrame->timestamp = deliveredTimestamp;
+                        outputFrame->isHDR = captureIsHDR_;
+                        outputFrame->captureLeft = captureLeft;
+                        outputFrame->captureTop = captureTop;
+                    } else {
+                        auto cb = frameCallback_.load(std::memory_order_acquire);
+                        if (cb) {
+                            cb(copiedTexture, desc.Width, desc.Height, deliveredTimestamp, captureIsHDR_, captureLeft,
+                               captureTop);
+                        } else {
+                            SafeRelease(copiedTexture);
+                        }
+                    }
+
+                    callbackFrameCount_.fetch_add(1, std::memory_order_relaxed);
+                    success = true;
+                }
+                texture->Release();
+            }
+            access->Release();
+        }
+
+        winrtFrame.Close();
+        return success;
+    }
+
     void OnFrameArrived(winrt::Direct3D11CaptureFramePool const& sender, winrt::IInspectable const&) {
         // Use global atomic for inflight count - survives Impl destruction
         // to prevent use-after-free on WinRT thread pool callbacks
@@ -1067,93 +1177,21 @@ public:
             return;
         }
 
-        auto winrtFrame = sender.TryGetNextFrame();
-        if (!winrtFrame) {
-            return;
-        }
-        inputFrameCount_.fetch_add(1, std::memory_order_relaxed);
-        RecordInputFrameEvent();
-
-        // Throttle: skip GPU copy if we're capturing faster than target FPS.
-        // Always drain TryGetNextFrame above to return buffers to the pool.
-        const int64_t sourceFrameQpc = GetFrameSourceQpc(winrtFrame);
-        if (targetIntervalQPC_ > 0 && nextCaptureQPC_ > 0 && sourceFrameQpc > 0 && sourceFrameQpc < nextCaptureQPC_) {
-            // Too soon - skip this frame to reduce GPU bandwidth
-            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
-            pacingSkipCount_.fetch_add(1, std::memory_order_relaxed);
-            winrtFrame.Close();
+        std::lock_guard<std::mutex> lock(callbackDrainMutex_);
+        if (!alive_.load(std::memory_order_acquire)) {
             return;
         }
 
-        // External throttle: skip GPU copy when encoder is bottlenecked.
-        if (throttleFlag_ && throttleFlag_->load(std::memory_order_relaxed)) {
-            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
-            throttleSkipCount_.fetch_add(1, std::memory_order_relaxed);
-            winrtFrame.Close();
-            return;
-        }
-
-        if (IsStaleSourceFrameQpc(sourceFrameQpc)) {
-            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
-            staleSkipCount_.fetch_add(1, std::memory_order_relaxed);
-            winrtFrame.Close();
-            return;
-        }
-
-        auto surface = winrtFrame.Surface();
-        IDirect3DDxgiInterfaceAccess* access = nullptr;
-
-        if (SUCCEEDED(surface.as<IUnknown>()->QueryInterface(IID_IDirect3DDxgiInterfaceAccess, (void**)&access)) &&
-            access) {
-            ID3D11Texture2D* texture = nullptr;
-            if (SUCCEEDED(access->GetInterface(__uuidof(ID3D11Texture2D), (void**)&texture)) && texture) {
-                D3D11_TEXTURE2D_DESC desc;
-                texture->GetDesc(&desc);
-
-                // Log source format on first frame
-                if (!formatDetected_) {
-                    formatDetected_ = true;
-                    LogInfo("[WGC] Source format: fmt=%d %ux%u", desc.Format, desc.Width, desc.Height);
-                }
-
-                if (ShouldSkipCursorOnlyDirtyFrame(winrtFrame, desc.Width, desc.Height)) {
-                    skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
-                    cursorOnlySkipCount_.fetch_add(1, std::memory_order_relaxed);
-                    texture->Release();
-                    access->Release();
-                    winrtFrame.Close();
-                    return;
-                }
-
-                ID3D11Texture2D* copiedTexture = nullptr;
-                int64_t copyCompleteQpc = 0;
-                if (CopyFrameToPool(texture, desc, sourceFrameQpc, &copiedTexture, copyCompleteQpc)) {
-                    if (sourceFrameQpc > 0) {
-                        lastDeliveredSourceQpc_.store(sourceFrameQpc, std::memory_order_relaxed);
-                    }
-                    RecordDeliveredFrameEvent();
-                    auto cb = frameCallback_.load(std::memory_order_acquire);
-                    if (cb) {
-                        MaybeRecheckHDR();
-                        int32_t captureLeft = 0;
-                        int32_t captureTop = 0;
-                        GetCaptureOrigin(captureLeft, captureTop);
-                        cb(copiedTexture, desc.Width, desc.Height, sourceFrameQpc > 0 ? sourceFrameQpc : copyCompleteQpc,
-                           captureIsHDR_, captureLeft, captureTop);
-                    } else {
-                        SafeRelease(copiedTexture);
-                    }
-
-                    callbackFrameCount_.fetch_add(1, std::memory_order_relaxed);
-                }
-                texture->Release();
+        bool processedFrame = false;
+        while (alive_.load(std::memory_order_acquire)) {
+            auto winrtFrame = sender.TryGetNextFrame();
+            if (!winrtFrame) {
+                break;
             }
-            access->Release();
+            processedFrame = ProcessCapturedFrame(std::move(winrtFrame), nullptr) || processedFrame;
         }
 
-        winrtFrame.Close();
-
-        if (frameArrivedEvent_) {
+        if (processedFrame && frameArrivedEvent_) {
             SetEvent(frameArrivedEvent_);
         }
     }  // decrementGuard destructor fires here, decrementing inflightCallbacks_
@@ -1445,79 +1483,8 @@ public:
             // No new frame available
             return false;
         }
-        inputFrameCount_.fetch_add(1, std::memory_order_relaxed);
-        RecordInputFrameEvent();
-
-        const int64_t sourceFrameQpc = GetFrameSourceQpc(latestWinrtFrame);
-        if (targetIntervalQPC_ > 0 && nextCaptureQPC_ > 0 && sourceFrameQpc > 0 && sourceFrameQpc < nextCaptureQPC_) {
-            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
-            pacingSkipCount_.fetch_add(1, std::memory_order_relaxed);
-            latestWinrtFrame.Close();
-            return false;
-        }
-
-        if (throttleFlag_ && throttleFlag_->load(std::memory_order_relaxed)) {
-            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
-            throttleSkipCount_.fetch_add(1, std::memory_order_relaxed);
-            latestWinrtFrame.Close();
-            return false;
-        }
-
-        if (IsStaleSourceFrameQpc(sourceFrameQpc)) {
-            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
-            staleSkipCount_.fetch_add(1, std::memory_order_relaxed);
-            latestWinrtFrame.Close();
-            return false;
-        }
-
-        // Process the latest frame
-        bool success = false;
-        auto surface = latestWinrtFrame.Surface();
-        IDirect3DDxgiInterfaceAccess* access = nullptr;
-
-        if (SUCCEEDED(surface.as<IUnknown>()->QueryInterface(IID_IDirect3DDxgiInterfaceAccess, (void**)&access)) &&
-            access) {
-            ID3D11Texture2D* texture = nullptr;
-            if (SUCCEEDED(access->GetInterface(__uuidof(ID3D11Texture2D), (void**)&texture)) && texture) {
-                D3D11_TEXTURE2D_DESC desc;
-                texture->GetDesc(&desc);
-
-                if (!formatDetected_) {
-                    formatDetected_ = true;
-                    LogInfo("[WGC] Source format: fmt=%d %ux%u", desc.Format, desc.Width, desc.Height);
-                }
-
-                if (ShouldSkipCursorOnlyDirtyFrame(latestWinrtFrame, desc.Width, desc.Height)) {
-                    skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
-                    cursorOnlySkipCount_.fetch_add(1, std::memory_order_relaxed);
-                    texture->Release();
-                    access->Release();
-                    latestWinrtFrame.Close();
-                    return false;
-                }
-
-                int64_t copyCompleteQpc = 0;
-                if (CopyFrameToPool(texture, desc, sourceFrameQpc, &frame.texture, copyCompleteQpc)) {
-                    if (sourceFrameQpc > 0) {
-                        lastDeliveredSourceQpc_.store(sourceFrameQpc, std::memory_order_relaxed);
-                    }
-                    RecordDeliveredFrameEvent();
-                    frame.width = desc.Width;
-                    frame.height = desc.Height;
-                    frame.timestamp = sourceFrameQpc > 0 ? sourceFrameQpc : copyCompleteQpc;
-                    MaybeRecheckHDR();
-                    frame.isHDR = captureIsHDR_;
-                    GetCaptureOrigin(frame.captureLeft, frame.captureTop);
-                    callbackFrameCount_.fetch_add(1, std::memory_order_relaxed);
-                    success = true;
-                }
-                texture->Release();
-            }
-            access->Release();
-        }
-
-        latestWinrtFrame.Close();
-        return success;
+        frame = WGCCapturedFrame{};
+        return ProcessCapturedFrame(std::move(latestWinrtFrame), &frame);
     }
 #else
     // Stub implementation when WGC headers not available
@@ -1937,6 +1904,22 @@ uint32_t WGCCapture::GetThrottleSkipCount() const {
 uint32_t WGCCapture::GetStaleSkipCount() const {
 #if HAS_WGC
     return impl_ ? impl_->staleSkipCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetStaleDuplicateTimestampCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->staleDuplicateTimestampCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetStaleOutOfOrderTimestampCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->staleOutOfOrderTimestampCount_.load(std::memory_order_relaxed) : 0;
 #else
     return 0;
 #endif

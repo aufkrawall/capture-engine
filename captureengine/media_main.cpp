@@ -1136,6 +1136,8 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
     uint32_t lastPacingSkipCount = 0;
     uint32_t lastThrottleSkipCount = 0;
     uint32_t lastStaleSkipCount = 0;
+    uint32_t lastStaleDuplicateTsCount = 0;
+    uint32_t lastStaleOutOfOrderTsCount = 0;
     uint32_t lastCursorSkipCount = 0;
     uint32_t lastPoolDropCount = 0;
     uint32_t lastDuplicateCount = 0;
@@ -1153,6 +1155,8 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             lastPacingSkipCount = 0;
             lastThrottleSkipCount = 0;
             lastStaleSkipCount = 0;
+            lastStaleDuplicateTsCount = 0;
+            lastStaleOutOfOrderTsCount = 0;
             lastCursorSkipCount = 0;
             lastPoolDropCount = 0;
             lastDuplicateCount = 0;
@@ -1168,6 +1172,8 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             lastPacingSkipCount = g_WgcCap->GetPacingSkipCount();
             lastThrottleSkipCount = g_WgcCap->GetThrottleSkipCount();
             lastStaleSkipCount = g_WgcCap->GetStaleSkipCount();
+            lastStaleDuplicateTsCount = g_WgcCap->GetStaleDuplicateTimestampCount();
+            lastStaleOutOfOrderTsCount = g_WgcCap->GetStaleOutOfOrderTimestampCount();
             lastCursorSkipCount = g_WgcCap->GetCursorOnlySkipCount();
             lastPoolDropCount = g_WgcCap->GetPoolDropCount();
             if (g_pSharedMem) {
@@ -1187,6 +1193,8 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             uint32_t currentPacingSkipCount = g_WgcCap->GetPacingSkipCount();
             uint32_t currentThrottleSkipCount = g_WgcCap->GetThrottleSkipCount();
             uint32_t currentStaleSkipCount = g_WgcCap->GetStaleSkipCount();
+            uint32_t currentStaleDuplicateTsCount = g_WgcCap->GetStaleDuplicateTimestampCount();
+            uint32_t currentStaleOutOfOrderTsCount = g_WgcCap->GetStaleOutOfOrderTimestampCount();
             uint32_t currentCursorSkipCount = g_WgcCap->GetCursorOnlySkipCount();
             uint32_t currentPoolDropCount = g_WgcCap->GetPoolDropCount();
             uint32_t inputFrames = currentInputCount - lastInputCount;
@@ -1196,6 +1204,8 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             uint32_t pacingSkipDelta = currentPacingSkipCount - lastPacingSkipCount;
             uint32_t throttleSkipDelta = currentThrottleSkipCount - lastThrottleSkipCount;
             uint32_t staleSkipDelta = currentStaleSkipCount - lastStaleSkipCount;
+            uint32_t staleDuplicateTsDelta = currentStaleDuplicateTsCount - lastStaleDuplicateTsCount;
+            uint32_t staleOutOfOrderTsDelta = currentStaleOutOfOrderTsCount - lastStaleOutOfOrderTsCount;
             uint32_t cursorSkipDelta = currentCursorSkipCount - lastCursorSkipCount;
             uint32_t poolDropDelta = currentPoolDropCount - lastPoolDropCount;
             uint32_t queuedFrames = deliveredFrames >= hostDropDelta ? (deliveredFrames - hostDropDelta) : 0;
@@ -1272,14 +1282,15 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
 
             LogInfo(
                 "[WGC Perf] Input: %u | Queued: %u | DropFull: %u | DropPace: %u | DropThrottle: %u | "
-                "DropStale: %u | DropCursor: %u | DropPool: %u | HostQ: %u | EncQ: %u | Dup: %u | Late: %u | "
+                "DropStale: %u (DupTs=%u OOO=%u) | DropCursor: %u | DropPool: %u | HostQ: %u | EncQ: %u | Dup: %u | Late: %u | "
                 "SrcAvg: %lldus | JitAvg: %lldus | JitMax: %lldus | Src->Copy: %lld/%lldus | Deliv: %u | "
                 "MinIn250/500: %u/%u | MinDel250/500: %u/%u | FreshMiss: %upm | BufAvg: %upm | BufMin: %u | "
                 "NoFresh: %u | NoReserve: %u | SelAvg: %uus "
                 "SelBias: %dus | Copy: %lldus | Encode: %lldus | Fence: %lldus | Throttle: %u | Mux: %uKB | "
                 "Overload: 0x%X",
                 inputFrames, queuedFrames, hostDropDelta, pacingSkipDelta, throttleSkipDelta, staleSkipDelta,
-                cursorSkipDelta, poolDropDelta, static_cast<uint32_t>(g_FrameQueue.Size()), encoderQueueDepth, dupDelta,
+                staleDuplicateTsDelta, staleOutOfOrderTsDelta, cursorSkipDelta, poolDropDelta,
+                static_cast<uint32_t>(g_FrameQueue.Size()), encoderQueueDepth, dupDelta,
                 lateDelta, srcIntervalAvgUs, srcJitterAvgUs, srcJitterMaxUs, srcToCopyAvgUs, srcToCopyMaxUs,
                 deliveredRatePerSec, inputMin250Fps, inputMin500Fps, deliveredMin250Fps, deliveredMin500Fps,
                 queueEmptyPermille, bufferedAtTickAvgPermille, bufferedAtTickMin, starvedTicks, singleFrameTicks,
@@ -1292,6 +1303,8 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             lastPacingSkipCount = currentPacingSkipCount;
             lastThrottleSkipCount = currentThrottleSkipCount;
             lastStaleSkipCount = currentStaleSkipCount;
+            lastStaleDuplicateTsCount = currentStaleDuplicateTsCount;
+            lastStaleOutOfOrderTsCount = currentStaleOutOfOrderTsCount;
             lastCursorSkipCount = currentCursorSkipCount;
             lastPoolDropCount = currentPoolDropCount;
             lastDiagTime = now;

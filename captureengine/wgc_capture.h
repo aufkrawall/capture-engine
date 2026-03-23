@@ -114,6 +114,8 @@ public:
     uint32_t GetPacingSkipCount() const;
     uint32_t GetThrottleSkipCount() const;
     uint32_t GetStaleSkipCount() const;
+    uint32_t GetStaleDuplicateTimestampCount() const;
+    uint32_t GetStaleOutOfOrderTimestampCount() const;
     uint32_t GetCursorOnlySkipCount() const;
     uint32_t GetPoolDropCount() const;
 
