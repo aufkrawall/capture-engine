@@ -178,3 +178,10 @@ TEST(CapturePipelinePolicyTest, WgcSingleFreshHoldRequiresFragileSourceCondition
     EXPECT_FALSE(policy::ShouldAllowSingleFreshWgcHold(false, false, 118, 120, 0.98));
     EXPECT_FALSE(policy::ShouldAllowSingleFreshWgcHold(true, false, 120, 120, 1.01));
 }
+
+TEST(CapturePipelinePolicyTest, WgcSteadyReserveBuildRequiresHealthyNearTargetSource) {
+    EXPECT_TRUE(policy::ShouldAllowSteadyStateWgcReserveBuild(120, 120, 1.00));
+    EXPECT_TRUE(policy::ShouldAllowSteadyStateWgcReserveBuild(121, 120, 1.02));
+    EXPECT_FALSE(policy::ShouldAllowSteadyStateWgcReserveBuild(119, 120, 1.02));
+    EXPECT_FALSE(policy::ShouldAllowSteadyStateWgcReserveBuild(120, 120, 0.98));
+}

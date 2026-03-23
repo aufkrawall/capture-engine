@@ -1803,9 +1803,22 @@ void EncoderThreadFunc(const AppConfig& config) {
                             return candidate.timestamp > 0 && candidate.timestamp > lastEmittedWgcSourceQpc;
                         };
                         const int64_t holdSlackQpc = targetIntervalTicks / 16;
-                        const bool allowSingleFreshHold = ce::capture_policy::ShouldAllowSingleFreshWgcHold(
+                        const bool allowFragileSingleFreshHold = ce::capture_policy::ShouldAllowSingleFreshWgcHold(
                             wgcReservePressureActive, wgcLowSourceModeActive, wgcRecentInputMin250Fps,
                             static_cast<uint32_t>(config.video.fps), smoothedInputPerTick);
+                        const bool allowSteadyStateReserveBuild =
+                            ce::capture_policy::ShouldAllowSteadyStateWgcReserveBuild(
+                                wgcRecentInputMin250Fps, static_cast<uint32_t>(config.video.fps), smoothedInputPerTick);
+                        const bool allowSingleFreshHold = allowFragileSingleFreshHold || allowSteadyStateReserveBuild;
+                        const bool allowReservePreservingEarlierFreshSelection =
+                            allowFragileSingleFreshHold || allowSteadyStateReserveBuild;
+                        const int64_t reserveBuildBiasQpc = allowSteadyStateReserveBuild
+                                                                ? std::max<int64_t>(
+                                                                      (targetIntervalTicks * static_cast<int64_t>(
+                                                                                                 ce::capture_policy::kWgcReserveBiasPermille)) /
+                                                                          1000,
+                                                                      1)
+                                                                : 0;
 
                         if (availableCount == 1) {
                             const bool frontFresh = isFreshWgcCandidate(bufferedWgcFrames.front());
@@ -1822,8 +1835,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                                 }
                             } else if (allowSingleFreshHold && g_HasLastFrame &&
                                        !g_LastFrame.isInjectMode &&
-                                       ShouldHoldFrameForNextTick(bufferedWgcFrames.front().timestamp, selectionTargetQpc,
-                                                                  targetIntervalTicks, holdSlackQpc)) {
+                                       ShouldHoldFrameForNextTickWithBias(bufferedWgcFrames.front().timestamp,
+                                                                          selectionTargetQpc, targetIntervalTicks,
+                                                                          holdSlackQpc, reserveBuildBiasQpc)) {
                                 frameCreditAccumulator = std::min(frameCreditAccumulator, 1.0);
                                 skipWgcPopThisTick = true;
                                 ++wgcHoldForNextTickCount;
@@ -1874,9 +1888,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                                         bufferedWgcFrames, bestIdx + 1, isFreshWgcCandidate);
                                     if (nextFreshIdx >= availableCount && allowSingleFreshHold && g_HasLastFrame &&
                                         !g_LastFrame.isInjectMode &&
-                                        ShouldHoldFrameForNextTick(bufferedWgcFrames[bestIdx].timestamp,
-                                                                   selectionTargetQpc, targetIntervalTicks,
-                                                                   holdSlackQpc)) {
+                                        ShouldHoldFrameForNextTickWithBias(bufferedWgcFrames[bestIdx].timestamp,
+                                                                           selectionTargetQpc, targetIntervalTicks,
+                                                                           holdSlackQpc, reserveBuildBiasQpc)) {
                                         frameCreditAccumulator = std::min(frameCreditAccumulator, 1.0);
                                         skipWgcPopThisTick = true;
                                         ++wgcHoldForNextTickCount;
@@ -1884,7 +1898,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                                     }
                                 }
 
-                                if (!skipWgcPopThisTick && allowSingleFreshHold && bestIdx + 1 == availableCount) {
+                                if (!skipWgcPopThisTick && allowReservePreservingEarlierFreshSelection &&
+                                    bestIdx + 1 == availableCount) {
                                     const size_t previousFreshIdx =
                                         FindPreviousFrameIndexIf(bufferedWgcFrames, bestIdx, isFreshWgcCandidate);
                                     if (previousFreshIdx < availableCount &&

@@ -27,6 +27,7 @@ constexpr uint32_t kWgcReservePressurePermille = 600;
 constexpr uint32_t kWgcReserveBiasPermille = 250;
 constexpr uint32_t kWgcReserveFragileBiasPermille = 375;
 constexpr uint32_t kWgcSingleFreshHoldInputPermille = 995;
+constexpr uint32_t kWgcSteadyReserveBuildInputPermille = 995;
 
 struct WgcAdaptiveTelemetry {
     uint32_t outputFps = 0;
@@ -268,6 +269,16 @@ inline bool ShouldAllowSingleFreshWgcHold(bool reservePressureActive, bool lowSo
 
     const double holdInputThreshold = static_cast<double>(kWgcSingleFreshHoldInputPermille) / 1000.0;
     return smoothedInputPerTick < holdInputThreshold;
+}
+
+inline bool ShouldAllowSteadyStateWgcReserveBuild(uint32_t recentInputMin250Fps, uint32_t outputFps,
+                                                  double smoothedInputPerTick) {
+    if (outputFps == 0 || recentInputMin250Fps < outputFps) {
+        return false;
+    }
+
+    const double reserveBuildThreshold = static_cast<double>(kWgcSteadyReserveBuildInputPermille) / 1000.0;
+    return smoothedInputPerTick >= reserveBuildThreshold;
 }
 
 inline size_t ClampWgcSelectionIndexForLowSource(size_t bestIdx, size_t availableCount, size_t bufferedWgcFrames,

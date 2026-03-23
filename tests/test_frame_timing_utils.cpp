@@ -240,6 +240,12 @@ TEST(FrameTimingUtilsTest, ShouldHoldFrameForNextTickWhenFrameIsMuchCloserToNext
     EXPECT_FALSE(ShouldHoldFrameForNextTick(224, idealQpc, 50, 2));
 }
 
+TEST(FrameTimingUtilsTest, ShouldHoldFrameForNextTickWithBiasAllowsReserveBuildingNearMidpoint) {
+    const int64_t idealQpc = ComputeIdealOutputQpc(100, 3, 50);  // 200
+    EXPECT_FALSE(ShouldHoldFrameForNextTickWithBias(224, idealQpc, 50, 2, 0));
+    EXPECT_TRUE(ShouldHoldFrameForNextTickWithBias(224, idealQpc, 50, 2, 5));
+}
+
 TEST(FrameTimingUtilsTest, ComputeSourceDrivenElapsedUsUsesSourceClockWhenMonotonic) {
     SourceTimelineState state;
 

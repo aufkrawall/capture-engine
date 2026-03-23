@@ -102,6 +102,22 @@ inline bool ShouldHoldFrameForNextTick(int64_t frameTimestampQpc, int64_t idealQ
     return nextDistance + std::max<int64_t>(holdSlackQpc, 0) < currentDistance;
 }
 
+inline bool ShouldHoldFrameForNextTickWithBias(int64_t frameTimestampQpc, int64_t idealQpc, int64_t targetIntervalTicks,
+                                               int64_t holdSlackQpc, int64_t holdBiasQpc) {
+    if (frameTimestampQpc <= 0 || idealQpc <= 0 || targetIntervalTicks <= 0) {
+        return false;
+    }
+
+    if (frameTimestampQpc <= idealQpc) {
+        return false;
+    }
+
+    const int64_t currentDistance = AbsoluteTimestampDistance(frameTimestampQpc, idealQpc);
+    const int64_t nextDistance = AbsoluteTimestampDistance(frameTimestampQpc, idealQpc + targetIntervalTicks);
+    return nextDistance + std::max<int64_t>(holdSlackQpc, 0) <
+           currentDistance + std::max<int64_t>(holdBiasQpc, 0);
+}
+
 template <typename FrameContainer>
 size_t SelectFrameClosestToGrid(const FrameContainer& frames, size_t availableCount, int64_t gridStartQpc,
                                 int64_t gridTickCount, int64_t targetIntervalTicks) {
