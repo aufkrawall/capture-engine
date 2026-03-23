@@ -16,12 +16,16 @@ CADENCE_STARVED_RE = re.compile(r"(?:Starved|NoFresh)=(\d+)")
 CADENCE_SINGLE_RE = re.compile(r"(?:Single|NoReserve)=(\d+)")
 CADENCE_HOLD_FRESH_RE = re.compile(r"HoldFresh=(\d+)")
 CADENCE_SPEND_RE = re.compile(r"Spend=(\d+)")
+CADENCE_CATCHUP_RE = re.compile(r"CatchUp=(\d+)")
 
 PERF_INPUT_RE = re.compile(r"\bInput:\s*(\d+)")
 PERF_DELIV_RE = re.compile(r"\bDeliv:\s*(\d+)")
 PERF_MININ_RE = re.compile(r"\bMinIn250/500:\s*(\d+)/(\d+)")
 PERF_MINDEL_RE = re.compile(r"\bMinDel250/500:\s*(\d+)/(\d+)")
 PERF_DROPSTALE_RE = re.compile(r"\bDropStale:\s*(\d+)")
+PERF_DROPSTALE_DETAIL_RE = re.compile(
+    r"\bDropStale:\s*\d+\s*\(DupTs=(\d+)\s+OOO=(\d+)\)"
+)
 PERF_DROPPACE_RE = re.compile(r"\bDropPace:\s*(\d+)")
 PERF_JITAVG_RE = re.compile(r"\bJitAvg:\s*(\d+)us")
 PERF_THR_RE = re.compile(r"\bThrottle:\s*(\d+)")
@@ -63,6 +67,12 @@ def summarize_group(name, items):
     print(f"  avg input fps: {safe_mean([item['input'] for item in items]):.2f}")
     print(f"  avg stale drops: {safe_mean([item['drop_stale'] for item in items]):.2f}")
     print(
+        f"  avg stale dup-ts: {safe_mean([item['drop_stale_dup_ts'] for item in items]):.2f}"
+    )
+    print(
+        f"  avg stale ooo: {safe_mean([item['drop_stale_ooo'] for item in items]):.2f}"
+    )
+    print(
         f"  avg empty permille: {safe_mean([item['empty_pm'] for item in items]):.2f}"
     )
     print(
@@ -74,6 +84,9 @@ def summarize_group(name, items):
     )
     print(
         f"  avg reserve-spend ticks: {safe_mean([item['reserve_spend'] for item in items]):.2f}"
+    )
+    print(
+        f"  avg catch-up ticks: {safe_mean([item['catch_up'] for item in items]):.2f}"
     )
     print(f"  avg shortfall: {safe_mean([item['shortfall'] for item in items]):.2f}")
 
@@ -111,6 +124,9 @@ def main():
         if "[WGC Perf]" in line:
             min_in_250, min_in_500 = extract_pair(PERF_MININ_RE, line)
             min_del_250, min_del_500 = extract_pair(PERF_MINDEL_RE, line)
+            drop_stale_dup_ts, drop_stale_ooo = extract_pair(
+                PERF_DROPSTALE_DETAIL_RE, line
+            )
             last_perf = {
                 "line": lineno,
                 "input": extract(PERF_INPUT_RE, line),
@@ -120,6 +136,8 @@ def main():
                 "min_del_250": min_del_250,
                 "min_del_500": min_del_500,
                 "drop_stale": extract(PERF_DROPSTALE_RE, line),
+                "drop_stale_dup_ts": drop_stale_dup_ts,
+                "drop_stale_ooo": drop_stale_ooo,
                 "drop_pace": extract(PERF_DROPPACE_RE, line),
                 "jitter": extract(PERF_JITAVG_RE, line),
                 "throttle": extract(PERF_THR_RE, line),
@@ -140,6 +158,7 @@ def main():
                     "single": extract(CADENCE_SINGLE_RE, line),
                     "hold_fresh": extract(CADENCE_HOLD_FRESH_RE, line),
                     "reserve_spend": extract(CADENCE_SPEND_RE, line),
+                    "catch_up": extract(CADENCE_CATCHUP_RE, line),
                 }
             )
             samples.append(sample_with_problems(sample))
@@ -194,7 +213,8 @@ def main():
         print(
             "  perf_line={perf} cadence_line={cad} tick_dup={tick_dup} perf_dup={perf_dup} "
             "thr={thr} deliv={deliv} min_del250={min_del_250} min_in250={min_in_250} "
-            "drop_stale={drop_stale} hold_fresh={hold_fresh} reserve_spend={reserve_spend} "
+            "drop_stale={drop_stale} dup_ts={drop_stale_dup_ts} ooo={drop_stale_ooo} "
+            "hold_fresh={hold_fresh} reserve_spend={reserve_spend} catch_up={catch_up} "
             "empty={empty_pm} buf_avg={buf_avg_pm} buf_min={buf_min} "
             "starved={starved} shortfall={shortfall}".format(
                 perf=item["line"],
@@ -206,8 +226,11 @@ def main():
                 min_del_250=item["min_del_250"],
                 min_in_250=item["min_in_250"],
                 drop_stale=item["drop_stale"],
+                drop_stale_dup_ts=item["drop_stale_dup_ts"],
+                drop_stale_ooo=item["drop_stale_ooo"],
                 hold_fresh=item["hold_fresh"],
                 reserve_spend=item["reserve_spend"],
+                catch_up=item["catch_up"],
                 empty_pm=item["empty_pm"],
                 buf_avg_pm=item["buf_avg_pm"],
                 buf_min=item["buf_min"],

@@ -260,6 +260,8 @@ public:
     // QPC frequency cached for timestamp conversion
     int64_t qpcFreq_ = 0;
     std::atomic<int64_t> lastDeliveredSourceQpc_{0};
+    std::atomic<int64_t> lastObservedRawSourceQpc_{0};
+    std::atomic<int64_t> lastAssignedSourceQpc_{0};
 
     // Callback function for direct frame processing.
     // Atomic raw function pointer: only static functions (or nullptr) are ever
@@ -478,6 +480,8 @@ public:
         poolDropCount_.store(0, std::memory_order_relaxed);
         lastCopyUs_.store(0, std::memory_order_relaxed);
         lastDeliveredSourceQpc_.store(0, std::memory_order_relaxed);
+        lastObservedRawSourceQpc_.store(0, std::memory_order_relaxed);
+        lastAssignedSourceQpc_.store(0, std::memory_order_relaxed);
         lastObservedSourceQpc_ = 0;
         smoothedSourceIntervalQpc_ = 0;
         sourceIntervalSamples_ = 0;
@@ -611,6 +615,38 @@ public:
 
         const int64_t lastDeliveredSourceQpc = lastDeliveredSourceQpc_.load(std::memory_order_relaxed);
         return lastDeliveredSourceQpc > 0 && sourceFrameQpc <= lastDeliveredSourceQpc;
+    }
+
+    bool IsOutOfOrderRawSourceFrameQpc(int64_t sourceFrameQpc) const {
+        if (sourceFrameQpc <= 0) {
+            return false;
+        }
+
+        const int64_t lastObservedRawSourceQpc = lastObservedRawSourceQpc_.load(std::memory_order_relaxed);
+        return lastObservedRawSourceQpc > 0 && sourceFrameQpc < lastObservedRawSourceQpc;
+    }
+
+    int64_t NormalizeSourceFrameQpc(int64_t sourceFrameQpc) {
+        if (sourceFrameQpc <= 0) {
+            return 0;
+        }
+
+        const int64_t rawSourceFrameQpc = sourceFrameQpc;
+        const int64_t lastObservedRawSourceQpc = lastObservedRawSourceQpc_.load(std::memory_order_relaxed);
+        const int64_t lastAssignedSourceQpc = lastAssignedSourceQpc_.load(std::memory_order_relaxed);
+        if (lastAssignedSourceQpc > 0 && rawSourceFrameQpc <= lastAssignedSourceQpc) {
+            sourceFrameQpc = lastAssignedSourceQpc + 1;
+        } else if (lastObservedRawSourceQpc > 0 && rawSourceFrameQpc == lastObservedRawSourceQpc) {
+            sourceFrameQpc = lastObservedRawSourceQpc + 1;
+        }
+
+        if (rawSourceFrameQpc > lastObservedRawSourceQpc) {
+            lastObservedRawSourceQpc_.store(rawSourceFrameQpc, std::memory_order_relaxed);
+        }
+        if (sourceFrameQpc > lastAssignedSourceQpc) {
+            lastAssignedSourceQpc_.store(sourceFrameQpc, std::memory_order_relaxed);
+        }
+        return sourceFrameQpc;
     }
 
     bool RefreshCursorMetrics(HCURSOR cursorHandle) {
@@ -975,8 +1011,9 @@ public:
         return true;
     }
 
-    bool CopyFrameToPool(ID3D11Texture2D* sourceTexture, const D3D11_TEXTURE2D_DESC& sourceDesc, int64_t sourceFrameQpc,
-                         ID3D11Texture2D** out, int64_t& copyCompleteQpc) {
+    bool CopyFrameToPool(ID3D11Texture2D* sourceTexture, const D3D11_TEXTURE2D_DESC& sourceDesc,
+                         int64_t sourceFrameQpc, int64_t rawSourceFrameQpc, ID3D11Texture2D** out,
+                         int64_t& copyCompleteQpc) {
         if (!sourceTexture || !out) {
             return false;
         }
@@ -1025,8 +1062,9 @@ public:
                 copyUs = ((copyEnd.QuadPart - copyStart.QuadPart) * 1000000) / qpcFreq_;
             }
             lastCopyUs_.store(copyUs, std::memory_order_relaxed);
-            RecordSourceTimingSample(sourceFrameQpc);
-            RecordSourceToCopyLatency(sourceFrameQpc, copyEnd.QuadPart);
+            const int64_t timingSourceQpc = rawSourceFrameQpc > 0 ? rawSourceFrameQpc : sourceFrameQpc;
+            RecordSourceTimingSample(timingSourceQpc);
+            RecordSourceToCopyLatency(timingSourceQpc, copyEnd.QuadPart);
 
             lastCapturedQPC_ = sourceFrameQpc;
             if (targetIntervalQPC_ > 0) {
@@ -1064,7 +1102,16 @@ public:
         inputFrameCount_.fetch_add(1, std::memory_order_relaxed);
         RecordInputFrameEvent();
 
-        const int64_t sourceFrameQpc = GetFrameSourceQpc(winrtFrame);
+        const int64_t rawSourceFrameQpc = GetFrameSourceQpc(winrtFrame);
+        if (IsOutOfOrderRawSourceFrameQpc(rawSourceFrameQpc)) {
+            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+            staleSkipCount_.fetch_add(1, std::memory_order_relaxed);
+            staleOutOfOrderTimestampCount_.fetch_add(1, std::memory_order_relaxed);
+            winrtFrame.Close();
+            return false;
+        }
+
+        const int64_t sourceFrameQpc = NormalizeSourceFrameQpc(rawSourceFrameQpc);
         if (targetIntervalQPC_ > 0 && nextCaptureQPC_ > 0 && sourceFrameQpc > 0 && sourceFrameQpc < nextCaptureQPC_) {
             skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
             pacingSkipCount_.fetch_add(1, std::memory_order_relaxed);
@@ -1119,7 +1166,8 @@ public:
 
                 ID3D11Texture2D* copiedTexture = nullptr;
                 int64_t copyCompleteQpc = 0;
-                if (CopyFrameToPool(texture, desc, sourceFrameQpc, &copiedTexture, copyCompleteQpc)) {
+                if (CopyFrameToPool(texture, desc, sourceFrameQpc, rawSourceFrameQpc, &copiedTexture,
+                                    copyCompleteQpc)) {
                     const int64_t deliveredTimestamp = sourceFrameQpc > 0 ? sourceFrameQpc : copyCompleteQpc;
                     if (sourceFrameQpc > 0) {
                         lastDeliveredSourceQpc_.store(sourceFrameQpc, std::memory_order_relaxed);
