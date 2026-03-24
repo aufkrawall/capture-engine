@@ -57,16 +57,17 @@ inline bool ShouldCfrCatchUpToWallClock(uint32_t outputShortfallTicks, bool useS
 
 // Returns the maximum number of output ticks to emit in a single encoder loop
 // iteration when catching up.  The value includes the main tick itself, so
-// "2" means 1 main + 1 extra repeat.  This keeps catch-up gradual (at most 1
-// extra frame per iteration) to prevent visible judder from multi-frame bursts.
-// Only at the force threshold do we allow larger bursts.
+// "2" means 1 main + 1 extra repeat.  Generic CFR stays conservative below the
+// force threshold to avoid turning small deficits into broad encode spikes.
 inline uint32_t GetCfrCatchupTicksThisLoop(uint32_t outputShortfallTicks) {
     if (outputShortfallTicks >= kCfrShortfallForceCatchupThresholdTicks) {
         return std::min(outputShortfallTicks, 4u);
     }
-    // Gradual: no extra frames — accept the lost tick to avoid encode-spikes
-    // that cause a positive feedback loop (extra encode → late → skip → gap).
-    // The timer skip-ahead recovers timing on the next tick.
+
+    // Gradual: no extra frames — accept the lost tick to avoid encode-spike
+    // feedback loops (extra encode -> late -> skip -> gap). Capture modes that
+    // have richer buffer telemetry, such as WGC, can opt into a more specific
+    // helper below.
     return 1u;
 }
 
@@ -98,6 +99,23 @@ inline bool ShouldAllowWgcExtraCatchupTicks(bool encoderBottlenecked, size_t buf
     }
 
     return outputShortfallTicks >= kCfrShortfallForceCatchupThresholdTicks;
+}
+
+inline uint32_t GetWgcCatchupTicksThisLoop(bool encoderBottlenecked, size_t bufferedWgcFrames,
+                                           double frameCreditAccumulator, uint32_t outputShortfallTicks) {
+    const uint32_t baseCatchupTicks = GetCfrCatchupTicksThisLoop(outputShortfallTicks);
+    if (baseCatchupTicks > 1u) {
+        return baseCatchupTicks;
+    }
+
+    if (outputShortfallTicks < kCfrShortfallCatchupThresholdTicks) {
+        return baseCatchupTicks;
+    }
+
+    return ShouldAllowWgcExtraCatchupTicks(encoderBottlenecked, bufferedWgcFrames, frameCreditAccumulator,
+                                           outputShortfallTicks)
+               ? 2u
+               : baseCatchupTicks;
 }
 
 struct WgcAdaptiveTelemetry {

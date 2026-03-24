@@ -974,6 +974,7 @@ public:
             int64_t trackMaxObservedLateStartMs = 0;
             for (size_t srcIdx : srcIndices) {
                 auto& src = audioSources[srcIdx];
+                const bool isAppAudioSource = (src.sourceType == AudioConfig::AppAudio);
 
                 size_t primedSampleCount = ce::audio::ComputeBufferedRealAudioSamples(
                     src.postResampleBuffer.size() / CHANNELS, src.startupSyntheticPostSamples);
@@ -992,7 +993,8 @@ public:
                         (unsigned long long)src.startupSyntheticPostSamples, src.observedLateStartMs);
                 }
 
-                trackAllPrimed = trackAllPrimed && src.isPrimed;
+                trackAllPrimed = trackAllPrimed &&
+                                 ce::audio::IsSourceStartupPrimed(src.isPrimed, src.hasAlignedStart, isAppAudioSource);
                 trackMaxObservedLateStartMs = std::max(trackMaxObservedLateStartMs, src.observedLateStartMs);
             }
 
@@ -1010,14 +1012,14 @@ public:
                 SAMPLE_RATE, kBaseTargetLatencySamples, videoPipelineLagMs, kMaxPipelineLagContributionMs);
 
             bool trackReadyForBootstrap = true;
+            const size_t requiredBootstrapSamples = static_cast<size_t>(std::max<int64_t>(targetSamples, 0));
             for (size_t srcIdx : srcIndices) {
                 auto& src = audioSources[srcIdx];
-                bool srcReady = src.bootstrapComplete;
-                if (!srcReady) {
-                    const size_t bufferedTimelineSamples = GetBufferedTimelineSamples(src);
-                    srcReady = src.hasAlignedStart && src.isPrimed &&
-                               bufferedTimelineSamples >= static_cast<size_t>(std::max<int64_t>(targetSamples, 0));
-                }
+                const bool isAppAudioSource = (src.sourceType == AudioConfig::AppAudio);
+                const size_t bufferedTimelineSamples = GetBufferedTimelineSamples(src);
+                const bool srcReady = ce::audio::IsSourceBootstrapReady(
+                    src.bootstrapComplete, src.hasAlignedStart, src.isPrimed, isAppAudioSource, bufferedTimelineSamples,
+                    requiredBootstrapSamples);
                 trackReadyForBootstrap = trackReadyForBootstrap && srcReady;
             }
 
@@ -1039,7 +1041,14 @@ public:
                     const int64_t dropBeforeLive = static_cast<int64_t>(bufferedTimelineSamples) -
                                                    (std::max<int64_t>(targetSamples, 0) + targetBufferedSamples);
                     if (dropBeforeLive > 0) {
-                        bootstrapTrimmed += DropOldestBufferedSamples(src, static_cast<size_t>(dropBeforeLive));
+                        const size_t droppedSamples =
+                            DropOldestBufferedSamples(src, static_cast<size_t>(dropBeforeLive));
+                        bootstrapTrimmed += droppedSamples;
+                        if (droppedSamples > 0) {
+                            // Bootstrap trims can otherwise start playback mid-waveform
+                            // and create an audible click/distortion in the first live audio.
+                            src.pendingUnderrunRecoveryFade = true;
+                        }
                     }
                     src.bootstrapComplete = true;
                 }

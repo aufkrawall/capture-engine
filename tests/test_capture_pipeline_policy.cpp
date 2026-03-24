@@ -241,10 +241,19 @@ TEST(CapturePipelinePolicyTest, CfrCatchupRequiresMeaningfulShortfallOrForceThre
 }
 
 TEST(CapturePipelinePolicyTest, CfrCatchupTicksGradualBelowForceThreshold) {
-    // Below force threshold: no extra ticks (1 total) to avoid encode-spike feedback loop
+    // Generic CFR stays conservative below the force threshold.
     EXPECT_EQ(policy::GetCfrCatchupTicksThisLoop(policy::kCfrShortfallCatchupThresholdTicks), 1u);
     EXPECT_EQ(policy::GetCfrCatchupTicksThisLoop(policy::kCfrShortfallCatchupThresholdTicks + 4), 1u);
     EXPECT_EQ(policy::GetCfrCatchupTicksThisLoop(policy::kCfrShortfallForceCatchupThresholdTicks - 1), 1u);
+}
+
+TEST(CapturePipelinePolicyTest, WgcCatchupTicksRecoverModerateShortfallWhenHealthy) {
+    EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(false, 2, 1.0, policy::kCfrShortfallCatchupThresholdTicks), 2u);
+    EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(false, 4, 2.0, policy::kCfrShortfallForceCatchupThresholdTicks - 1),
+              2u);
+    EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(true, 4, 2.0, policy::kCfrShortfallCatchupThresholdTicks), 1u);
+    EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(false, 1, 2.0, policy::kCfrShortfallCatchupThresholdTicks), 1u);
+    EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(false, 4, 0.5, policy::kCfrShortfallCatchupThresholdTicks), 1u);
 }
 
 TEST(CapturePipelinePolicyTest, CfrCatchupTicksBurstAtForceThreshold) {
@@ -253,4 +262,9 @@ TEST(CapturePipelinePolicyTest, CfrCatchupTicksBurstAtForceThreshold) {
     EXPECT_EQ(policy::GetCfrCatchupTicksThisLoop(100), 4u);
     // Small force-threshold shortfall still capped to shortfall itself
     // (the function uses min(shortfall, 4))
+}
+
+TEST(CapturePipelinePolicyTest, WgcCatchupTicksStillBurstAtForceThreshold) {
+    EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(false, 2, 1.0, policy::kCfrShortfallForceCatchupThresholdTicks), 4u);
+    EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(true, 2, 0.0, policy::kCfrShortfallForceCatchupThresholdTicks), 4u);
 }

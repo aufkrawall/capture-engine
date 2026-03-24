@@ -29,15 +29,16 @@ inline int64_t ComputeVideoPipelineLagMs(int64_t wallVideoMs, int64_t encodedVid
     return wallVideoMs - encodedVideoMs;
 }
 
-inline int64_t ComputeBufferedAudioTargetSamples(int sampleRate, int64_t baseLatencySamples,
-                                                 int64_t videoPipelineLagMs, int64_t maxLagContributionMs = 40) {
+inline int64_t ComputeBufferedAudioTargetSamples(int sampleRate, int64_t baseLatencySamples, int64_t videoPipelineLagMs,
+                                                 int64_t maxLagContributionMs = 40) {
     if (sampleRate <= 0) {
         return std::max<int64_t>(0, baseLatencySamples);
     }
 
     int64_t lagSamples = 0;
     if (videoPipelineLagMs > 0) {
-        const int64_t boundedLagMs = std::clamp<int64_t>(videoPipelineLagMs, 0, std::max<int64_t>(0, maxLagContributionMs));
+        const int64_t boundedLagMs =
+            std::clamp<int64_t>(videoPipelineLagMs, 0, std::max<int64_t>(0, maxLagContributionMs));
         lagSamples = (boundedLagMs * sampleRate) / 1000;
     }
 
@@ -61,6 +62,24 @@ inline int64_t ComputeLatencyAdjustedAvDriftMs(int64_t rawAvDriftMs, int64_t int
 
 inline bool IsTrackAudioStartupSettled(bool trackBootstrapComplete, bool allSourcesPrimed) {
     return trackBootstrapComplete || allSourcesPrimed;
+}
+
+inline bool IsOptionalUnstartedAppAudioSource(bool isAppAudioSource, bool hasAlignedStart) {
+    return isAppAudioSource && !hasAlignedStart;
+}
+
+inline bool IsSourceStartupPrimed(bool sourceIsPrimed, bool hasAlignedStart, bool isAppAudioSource) {
+    return sourceIsPrimed || IsOptionalUnstartedAppAudioSource(isAppAudioSource, hasAlignedStart);
+}
+
+inline bool IsSourceBootstrapReady(bool sourceBootstrapComplete, bool hasAlignedStart, bool sourceIsPrimed,
+                                   bool isAppAudioSource, size_t bufferedTimelineSamples,
+                                   size_t requiredTimelineSamples) {
+    if (sourceBootstrapComplete || IsOptionalUnstartedAppAudioSource(isAppAudioSource, hasAlignedStart)) {
+        return true;
+    }
+
+    return hasAlignedStart && sourceIsPrimed && bufferedTimelineSamples >= requiredTimelineSamples;
 }
 
 inline size_t ComputeBufferedRealAudioSamples(size_t bufferedSamples, uint64_t syntheticBufferedSamples) {

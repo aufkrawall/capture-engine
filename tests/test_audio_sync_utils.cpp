@@ -35,10 +35,9 @@ TEST(AudioSyncUtilsTest, AudioPullLatencyIsTrackScoped) {
 
 TEST(AudioSyncUtilsTest, AudioPullQuantumDefersOnlySmallSteadyStatePulls) {
     EXPECT_TRUE(ce::audio::ShouldDeferAudioPullUntilQuantum(0, true, false));
-    EXPECT_TRUE(ce::audio::ShouldDeferAudioPullUntilQuantum(
-        ce::audio::kDefaultAudioPullQuantumSamples - 1, true, false));
-    EXPECT_FALSE(ce::audio::ShouldDeferAudioPullUntilQuantum(
-        ce::audio::kDefaultAudioPullQuantumSamples, true, false));
+    EXPECT_TRUE(
+        ce::audio::ShouldDeferAudioPullUntilQuantum(ce::audio::kDefaultAudioPullQuantumSamples - 1, true, false));
+    EXPECT_FALSE(ce::audio::ShouldDeferAudioPullUntilQuantum(ce::audio::kDefaultAudioPullQuantumSamples, true, false));
     EXPECT_FALSE(ce::audio::ShouldDeferAudioPullUntilQuantum(240, true, false));
     EXPECT_FALSE(ce::audio::ShouldDeferAudioPullUntilQuantum(120, false, false));
     EXPECT_FALSE(ce::audio::ShouldDeferAudioPullUntilQuantum(120, true, true));
@@ -54,6 +53,25 @@ TEST(AudioSyncUtilsTest, TrackStartupSettledUsesBootstrapOrPrimedSources) {
     EXPECT_FALSE(ce::audio::IsTrackAudioStartupSettled(false, false));
     EXPECT_TRUE(ce::audio::IsTrackAudioStartupSettled(true, false));
     EXPECT_TRUE(ce::audio::IsTrackAudioStartupSettled(false, true));
+}
+
+TEST(AudioSyncUtilsTest, OptionalUnstartedAppAudioDoesNotBlockStartupPriming) {
+    EXPECT_TRUE(ce::audio::IsOptionalUnstartedAppAudioSource(true, false));
+    EXPECT_FALSE(ce::audio::IsOptionalUnstartedAppAudioSource(true, true));
+    EXPECT_FALSE(ce::audio::IsOptionalUnstartedAppAudioSource(false, false));
+
+    EXPECT_TRUE(ce::audio::IsSourceStartupPrimed(false, false, true));
+    EXPECT_FALSE(ce::audio::IsSourceStartupPrimed(false, true, true));
+    EXPECT_FALSE(ce::audio::IsSourceStartupPrimed(false, false, false));
+    EXPECT_TRUE(ce::audio::IsSourceStartupPrimed(true, true, false));
+}
+
+TEST(AudioSyncUtilsTest, BootstrapReadinessIgnoresOnlyUnstartedAppAudio) {
+    EXPECT_TRUE(ce::audio::IsSourceBootstrapReady(false, false, false, true, 0, 240));
+    EXPECT_FALSE(ce::audio::IsSourceBootstrapReady(false, true, false, true, 240, 240));
+    EXPECT_FALSE(ce::audio::IsSourceBootstrapReady(false, false, false, false, 0, 240));
+    EXPECT_TRUE(ce::audio::IsSourceBootstrapReady(false, true, true, false, 240, 240));
+    EXPECT_TRUE(ce::audio::IsSourceBootstrapReady(true, false, false, false, 0, 240));
 }
 
 TEST(AudioSyncUtilsTest, BufferedRealAudioExcludesSyntheticStartupSamples) {

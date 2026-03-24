@@ -1691,14 +1691,20 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
         }
 
+        const bool activeScreenGrab = IsActiveScreenGrab();
         const bool frameAvailableForCatchup =
-            IsActiveScreenGrab() ? (!bufferedWgcFrames.empty()) : (!bufferedInjectFrames.empty());
+            activeScreenGrab ? (!bufferedWgcFrames.empty()) : (!bufferedInjectFrames.empty());
         const bool shouldCatchUpToWallClock =
             !config.video.useVFR && recordingOutputLive &&
-            ce::capture_policy::ShouldCfrCatchUpToWallClock(outputShortfallTicks, IsActiveScreenGrab(),
+            ce::capture_policy::ShouldCfrCatchUpToWallClock(outputShortfallTicks, activeScreenGrab,
                                                             frameAvailableForCatchup, g_HasLastFrame);
         const uint32_t catchupTicksThisLoop =
-            shouldCatchUpToWallClock ? ce::capture_policy::GetCfrCatchupTicksThisLoop(outputShortfallTicks) : 0u;
+            shouldCatchUpToWallClock
+                ? (activeScreenGrab ? ce::capture_policy::GetWgcCatchupTicksThisLoop(
+                                          g_IsEncoderBottlenecked.load(std::memory_order_relaxed),
+                                          bufferedWgcFrames.size(), frameCreditAccumulator, outputShortfallTicks)
+                                    : ce::capture_policy::GetCfrCatchupTicksThisLoop(outputShortfallTicks))
+                : 0u;
 
         const int64_t selectionGridTick =
             (!config.video.useVFR && recordingOutputLive) ? (encoderGridTickCount + 1) : encoderGridTickCount;
@@ -2756,10 +2762,13 @@ void EncoderThreadFunc(const AppConfig& config) {
                 QueryPerformanceCounter(&budgetNow);
                 const double elapsedFromTickStartMs =
                     static_cast<double>(budgetNow.QuadPart - cycleStartQpc.QuadPart) * 1000.0 / qpcFreq.QuadPart;
+                const bool allowWgcCatchupBudget = useScreenGrab && catchupTicksThisLoop > 1;
                 const bool allowForceCatchupBudget =
                     useScreenGrab &&
                     outputShortfallTicks >= ce::capture_policy::kCfrShortfallForceCatchupThresholdTicks;
-                const double catchupBudgetMs = allowForceCatchupBudget ? (frameIntervalMs * 2.0) : frameIntervalMs;
+                const double catchupBudgetMs = allowForceCatchupBudget ? (frameIntervalMs * 3.0)
+                                               : allowWgcCatchupBudget ? (frameIntervalMs * 2.0)
+                                                                       : frameIntervalMs;
                 if (elapsedFromTickStartMs > catchupBudgetMs) {
                     LogInfo(
                         "[EncoderThread] Catchup budget exceeded at extraTick=%u (elapsed=%.2fms > budget=%.2fms), "
@@ -2826,9 +2835,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                         }
 
                         const int64_t catchupTimelineElapsedUs = computeLiveTimelineElapsedUs(repeatScheduledQpc);
-                        if (!MediaEngine_ProcessFrameD3D11(g_LastFrame.texture, g_LastFrame.timestamp, g_LastFrame.width,
-                                                           g_LastFrame.height, g_LastFrame.isHDR, g_LastFrame.captureLeft,
-                                                           g_LastFrame.captureTop, catchupTimelineElapsedUs)) {
+                        if (!MediaEngine_ProcessFrameD3D11(g_LastFrame.texture, g_LastFrame.timestamp,
+                                                           g_LastFrame.width, g_LastFrame.height, g_LastFrame.isHDR,
+                                                           g_LastFrame.captureLeft, g_LastFrame.captureTop,
+                                                           catchupTimelineElapsedUs)) {
                             cadenceCounters.liveTickMissCount++;
                             break;
                         }
@@ -3074,10 +3084,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                 } else {
                     const int64_t liveTimelineElapsedUs =
                         scheduledLiveCfrTick ? computeLiveTimelineElapsedUs(scheduledSampleQpc) : -1;
-                    encodeSucceeded = MediaEngine_ProcessFrameD3D11(
-                        frameToProcess->texture, frameToProcess->timestamp, frameToProcess->width, frameToProcess->height,
-                        frameToProcess->isHDR, frameToProcess->captureLeft, frameToProcess->captureTop,
-                        liveTimelineElapsedUs);
+                    encodeSucceeded = MediaEngine_ProcessFrameD3D11(frameToProcess->texture, frameToProcess->timestamp,
+                                                                    frameToProcess->width, frameToProcess->height,
+                                                                    frameToProcess->isHDR, frameToProcess->captureLeft,
+                                                                    frameToProcess->captureTop, liveTimelineElapsedUs);
                     encodeDeferred = false;
                 }
             };
