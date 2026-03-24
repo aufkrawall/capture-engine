@@ -1079,6 +1079,9 @@ WINDOWS_FFMPEG_RUNTIME_DEPS = [
     "libc++.dll",
     "libunwind.dll",
 ]
+WINDOWS_SANITIZER_RUNTIME_DEPS = [
+    "libclang_rt.asan_dynamic-x86_64.dll",
+]
 LINUX_FFMPEG_RUNTIME_DEPS = [
     "libbz2-1.dll",
     "libxml2-16.dll",
@@ -1168,6 +1171,36 @@ def remove_redundant_root_runtime_dlls(root_dir: str, runtime_deps: List[str]) -
             log(f"Removed redundant root runtime DLL {dep_name}")
         else:
             log(f"WARNING: Could not remove redundant root runtime DLL {dep_name}")
+
+
+def sync_windows_sanitizer_runtime_dlls(target_dir: str) -> None:
+    if IS_LINUX:
+        return
+
+    clang_bin = os.path.join(MSYS2_DIR, "clang64", "bin")
+    os.makedirs(target_dir, exist_ok=True)
+    for dll_name in WINDOWS_SANITIZER_RUNTIME_DEPS:
+        src = os.path.join(clang_bin, dll_name)
+        if not os.path.exists(src):
+            raise RuntimeError(f"Missing sanitizer runtime DLL: {src}")
+        dst = os.path.join(target_dir, dll_name)
+        if not safe_copy_file(src, dst):
+            raise RuntimeError(f"Failed to copy sanitizer runtime DLL {dll_name} to {target_dir}")
+        log(f"Copied sanitizer runtime DLL {dll_name}")
+
+
+def remove_stale_windows_sanitizer_runtime_dlls(target_dir: str) -> None:
+    if IS_LINUX:
+        return
+
+    for dll_name in WINDOWS_SANITIZER_RUNTIME_DEPS:
+        dll_path = os.path.join(target_dir, dll_name)
+        if not os.path.exists(dll_path):
+            continue
+        if safe_delete_file(dll_path):
+            log(f"Removed stale sanitizer runtime DLL {dll_name}")
+        else:
+            log(f"WARNING: Could not remove stale sanitizer runtime DLL {dll_name}")
 
 
 def get_msys_license_root():
@@ -3611,6 +3644,10 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             [msys_bin],
         )
         remove_redundant_root_runtime_dlls(BIN_DIR, WINDOWS_FFMPEG_RUNTIME_DEPS)
+        if env.get("CE_SANITIZE") == "1":
+            sync_windows_sanitizer_runtime_dlls(BIN_DIR)
+        else:
+            remove_stale_windows_sanitizer_runtime_dlls(BIN_DIR)
 
     # 6. Compile Test Applications (DX9/10/11/12, Vulkan, OpenGL; x64/x86)
     x86_env_for_tests = None
