@@ -17,6 +17,7 @@ CADENCE_SINGLE_RE = re.compile(r"(?:Single|NoReserve)=(\d+)")
 CADENCE_HOLD_FRESH_RE = re.compile(r"HoldFresh=(\d+)")
 CADENCE_SPEND_RE = re.compile(r"Spend=(\d+)")
 CADENCE_CATCHUP_RE = re.compile(r"CatchUp=(\d+)")
+CADENCE_CATCH_FRESH_RE = re.compile(r"CatchFresh=(\d+)")
 
 PERF_INPUT_RE = re.compile(r"\bInput:\s*(\d+)")
 PERF_DELIV_RE = re.compile(r"\bDeliv:\s*(\d+)")
@@ -87,6 +88,9 @@ def summarize_group(name, items):
     )
     print(
         f"  avg catch-up ticks: {safe_mean([item['catch_up'] for item in items]):.2f}"
+    )
+    print(
+        f"  avg fresh catch-up ticks: {safe_mean([item['catch_fresh'] for item in items]):.2f}"
     )
     print(f"  avg shortfall: {safe_mean([item['shortfall'] for item in items]):.2f}")
 
@@ -159,6 +163,7 @@ def main():
                     "hold_fresh": extract(CADENCE_HOLD_FRESH_RE, line),
                     "reserve_spend": extract(CADENCE_SPEND_RE, line),
                     "catch_up": extract(CADENCE_CATCHUP_RE, line),
+                    "catch_fresh": extract(CADENCE_CATCH_FRESH_RE, line),
                 }
             )
             samples.append(sample_with_problems(sample))
@@ -214,7 +219,7 @@ def main():
             "  perf_line={perf} cadence_line={cad} tick_dup={tick_dup} perf_dup={perf_dup} "
             "thr={thr} deliv={deliv} min_del250={min_del_250} min_in250={min_in_250} "
             "drop_stale={drop_stale} dup_ts={drop_stale_dup_ts} ooo={drop_stale_ooo} "
-            "hold_fresh={hold_fresh} reserve_spend={reserve_spend} catch_up={catch_up} "
+            "hold_fresh={hold_fresh} reserve_spend={reserve_spend} catch_up={catch_up} catch_fresh={catch_fresh} "
             "empty={empty_pm} buf_avg={buf_avg_pm} buf_min={buf_min} "
             "starved={starved} shortfall={shortfall}".format(
                 perf=item["line"],
@@ -231,6 +236,7 @@ def main():
                 hold_fresh=item["hold_fresh"],
                 reserve_spend=item["reserve_spend"],
                 catch_up=item["catch_up"],
+                catch_fresh=item["catch_fresh"],
                 empty_pm=item["empty_pm"],
                 buf_avg_pm=item["buf_avg_pm"],
                 buf_min=item["buf_min"],

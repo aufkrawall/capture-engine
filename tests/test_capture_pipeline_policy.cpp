@@ -170,6 +170,14 @@ TEST(CapturePipelinePolicyTest, WgcSelectionTargetDelaysLiveSelectionByOneTick) 
     EXPECT_EQ(policy::GetWgcSelectionTargetQpc(50, 40, 100, true), 50);
 }
 
+TEST(CapturePipelinePolicyTest, WgcSelectionDelayStopsWhenBehindOrReserveIsGone) {
+    EXPECT_TRUE(policy::ShouldApplyWgcSelectionDelay(true, 0, false, true));
+    EXPECT_FALSE(policy::ShouldApplyWgcSelectionDelay(true, 1, false, true));
+    EXPECT_FALSE(policy::ShouldApplyWgcSelectionDelay(true, 0, true, true));
+    EXPECT_FALSE(policy::ShouldApplyWgcSelectionDelay(true, 0, false, false));
+    EXPECT_FALSE(policy::ShouldApplyWgcSelectionDelay(false, 0, false, true));
+}
+
 TEST(CapturePipelinePolicyTest, WgcReservePressureActivatesOnlyWithSustainedSingleFrameTicks) {
     EXPECT_FALSE(policy::IsWgcReservePressureActive(12, 20, 120));
     EXPECT_FALSE(policy::IsWgcReservePressureActive(20, 20, 120));
@@ -203,6 +211,14 @@ TEST(CapturePipelinePolicyTest, WgcFreshFrameHoldStopsWhenAlreadyBehindOrPressur
     EXPECT_FALSE(policy::ShouldHoldSingleFreshWgcFrame(true, false, 118, 120, 0.98, 0, true, false));
     EXPECT_FALSE(policy::ShouldHoldSingleFreshWgcFrame(true, false, 118, 120, 0.98, 0, false, true));
     EXPECT_FALSE(policy::ShouldHoldSingleFreshWgcFrame(false, false, 120, 120, 1.00, 0, false, false));
+}
+
+TEST(CapturePipelinePolicyTest, WgcExtraCatchupRequiresSurplusAndNoEncoderBottleneck) {
+    EXPECT_TRUE(policy::ShouldAllowWgcExtraCatchupTicks(false, 2, 1.0));
+    EXPECT_TRUE(policy::ShouldAllowWgcExtraCatchupTicks(false, 4, 2.5));
+    EXPECT_FALSE(policy::ShouldAllowWgcExtraCatchupTicks(true, 4, 2.5));
+    EXPECT_FALSE(policy::ShouldAllowWgcExtraCatchupTicks(false, 1, 2.5));
+    EXPECT_FALSE(policy::ShouldAllowWgcExtraCatchupTicks(false, 4, 0.99));
 }
 
 TEST(CapturePipelinePolicyTest, CfrOutputShortfallTicksIsClampedToPositiveDelta) {

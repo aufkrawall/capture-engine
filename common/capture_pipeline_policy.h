@@ -70,6 +70,28 @@ inline uint32_t GetCfrCatchupTicksThisLoop(uint32_t outputShortfallTicks) {
     return 1u;
 }
 
+inline bool ShouldApplyWgcSelectionDelay(bool recordingOutputLive, uint32_t outputShortfallTicks,
+                                         bool encoderBottlenecked, bool reserveAvailableAtTickStart) {
+    if (!recordingOutputLive || kWgcSelectionDelayTicks == 0) {
+        return false;
+    }
+
+    if (outputShortfallTicks > 0 || encoderBottlenecked || !reserveAvailableAtTickStart) {
+        return false;
+    }
+
+    return true;
+}
+
+inline bool ShouldAllowWgcExtraCatchupTicks(bool encoderBottlenecked, size_t bufferedWgcFrames,
+                                            double frameCreditAccumulator) {
+    if (encoderBottlenecked || bufferedWgcFrames <= 1) {
+        return false;
+    }
+
+    return frameCreditAccumulator >= 1.0;
+}
+
 struct WgcAdaptiveTelemetry {
     uint32_t outputFps = 0;
     uint32_t recentDeliveredFps = 0;

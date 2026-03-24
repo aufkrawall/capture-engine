@@ -36,9 +36,13 @@ MEDIAENGINE_API bool MediaEngine_RepeatLastFrame(int64_t timestamp);
 
 // Process a frame from D3D11 texture directly (framegrab mode - zero copy)
 // texture: D3D11 texture in RGB/BGRA/FP16 format (caller retains ownership)
-// timestamp: Frame timestamp in milliseconds
+// timestamp: Source frame timestamp in QPC ticks
+// timelineElapsedUs: Optional CFR timeline override in microseconds since the first
+//                    emitted video frame. Pass -1 to derive timing from the media
+//                    engine's steady clock as before.
 MEDIAENGINE_API void MediaEngine_ProcessFrameD3D11(void* texture, int64_t timestamp, uint32_t width, uint32_t height,
-                                                   bool isHDR, int32_t captureLeft, int32_t captureTop);
+                                                   bool isHDR, int32_t captureLeft, int32_t captureTop,
+                                                   int64_t timelineElapsedUs);
 
 // Start Recording (Create file, start encoders)
 MEDIAENGINE_API bool MediaEngine_StartRecording();

@@ -814,7 +814,7 @@ public:
     // Direct D3D11 texture processing for screengrab mode (zero-copy)
     // Direct D3D11 texture processing for screengrab mode (zero-copy)
     void ProcessFrameD3D11(void* texture, int64_t timestampQPC, uint32_t width, uint32_t height, bool isHDR,
-                           int32_t captureLeft, int32_t captureTop) {
+                           int32_t captureLeft, int32_t captureTop, int64_t timelineElapsedUs) {
         std::lock_guard<std::recursive_mutex> lock(muxMutex);
         if (!videoEnc || !recording)
             return;
@@ -846,8 +846,13 @@ public:
             // CFR output cadence is already driven by the encoder thread's fixed-rate
             // sample loop. Feeding the video encoder WGC source timestamps here causes
             // avoidable skip/dup churn when callback cadence jitters around that output
-            // grid, so prefer the sample-clock timeline instead.
+            // grid, so prefer the sample-clock timeline instead.  Catch-up paths can
+            // provide an explicit CFR slot time so buffered fresh frames land on the
+            // intended output grid instead of collapsing onto the current wall-clock.
             realElapsedUs = std::max(steadyElapsedUs, d3d11TimelineState.lastElapsedUs);
+            if (timelineElapsedUs >= 0) {
+                realElapsedUs = std::max(realElapsedUs, timelineElapsedUs);
+            }
         }
         d3d11TimelineState.lastElapsedUs = realElapsedUs;
 
@@ -2042,10 +2047,12 @@ MEDIAENGINE_API bool MediaEngine_RepeatLastFrame(int64_t timestamp) {
 }
 
 MEDIAENGINE_API void MediaEngine_ProcessFrameD3D11(void* texture, int64_t timestamp, uint32_t width, uint32_t height,
-                                                   bool isHDR, int32_t captureLeft, int32_t captureTop) {
+                                                   bool isHDR, int32_t captureLeft, int32_t captureTop,
+                                                   int64_t timelineElapsedUs) {
     std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
     if (g_Engine)
-        g_Engine->ProcessFrameD3D11(texture, timestamp, width, height, isHDR, captureLeft, captureTop);
+        g_Engine->ProcessFrameD3D11(texture, timestamp, width, height, isHDR, captureLeft, captureTop,
+                                    timelineElapsedUs);
 }
 
 MEDIAENGINE_API bool MediaEngine_CreateSharedCaptureTextures(uint32_t width, uint32_t height, uint32_t format,
