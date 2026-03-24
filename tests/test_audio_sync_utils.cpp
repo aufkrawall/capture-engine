@@ -95,3 +95,27 @@ TEST(AudioSyncUtilsTest, ConsumingSyntheticSamplesTracksOldestBufferedPortion) {
     EXPECT_EQ(ce::audio::ConsumeSyntheticBufferedSamples(syntheticSamples, 600), 360u);
     EXPECT_EQ(syntheticSamples, 0u);
 }
+
+TEST(AudioSyncUtilsTest, PacketTimelineAdjustmentIgnoresSmallClockSkew) {
+    const auto adjustment = ce::audio::ComputePacketTimelineAdjustment(1008, 960, 48);
+    EXPECT_EQ(adjustment.gapSamples, 0);
+    EXPECT_EQ(adjustment.overlapSamples, 0);
+}
+
+TEST(AudioSyncUtilsTest, PacketTimelineAdjustmentComputesTimelineGap) {
+    const auto adjustment = ce::audio::ComputePacketTimelineAdjustment(1320, 960, 48);
+    EXPECT_EQ(adjustment.gapSamples, 360);
+    EXPECT_EQ(adjustment.overlapSamples, 0);
+}
+
+TEST(AudioSyncUtilsTest, PacketTimelineAdjustmentComputesPacketOverlap) {
+    const auto adjustment = ce::audio::ComputePacketTimelineAdjustment(720, 960, 48);
+    EXPECT_EQ(adjustment.gapSamples, 0);
+    EXPECT_EQ(adjustment.overlapSamples, 240);
+}
+
+TEST(AudioSyncUtilsTest, PacketTimelineAdjustmentClampsNegativePacketStarts) {
+    const auto adjustment = ce::audio::ComputePacketTimelineAdjustment(-200, 0, 48);
+    EXPECT_EQ(adjustment.gapSamples, 0);
+    EXPECT_EQ(adjustment.overlapSamples, 0);
+}

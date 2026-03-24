@@ -9,6 +9,11 @@ namespace ce::audio {
 constexpr int64_t kDefaultSteadyAudioPullLatencyMs = 0;
 constexpr int64_t kDefaultAudioPullQuantumSamples = 240;
 
+struct PacketTimelineAdjustment {
+    int64_t gapSamples = 0;
+    int64_t overlapSamples = 0;
+};
+
 inline bool ShouldDeferAudioPullUntilQuantum(int64_t pendingSamples, bool trackStartupSettled, bool forceDrain,
                                              int64_t quantumSamples = kDefaultAudioPullQuantumSamples) {
     if (forceDrain || !trackStartupSettled) {
@@ -105,6 +110,24 @@ inline uint64_t ConsumeSyntheticBufferedSamples(uint64_t& syntheticBufferedSampl
     const uint64_t syntheticConsumed = std::min<uint64_t>(syntheticBufferedSamples, consumedSamples);
     syntheticBufferedSamples -= syntheticConsumed;
     return syntheticConsumed;
+}
+
+inline PacketTimelineAdjustment ComputePacketTimelineAdjustment(int64_t packetStartSamples, int64_t writtenTimelineSamples,
+                                                               int64_t slopSamples = 0) {
+    PacketTimelineAdjustment adjustment;
+    const int64_t clampedPacketStartSamples = std::max<int64_t>(0, packetStartSamples);
+    const int64_t clampedWrittenTimelineSamples = std::max<int64_t>(0, writtenTimelineSamples);
+    const int64_t deltaSamples = clampedPacketStartSamples - clampedWrittenTimelineSamples;
+    if (std::abs(deltaSamples) <= std::max<int64_t>(0, slopSamples)) {
+        return adjustment;
+    }
+
+    if (deltaSamples > 0) {
+        adjustment.gapSamples = deltaSamples;
+    } else {
+        adjustment.overlapSamples = -deltaSamples;
+    }
+    return adjustment;
 }
 
 }  // namespace ce::audio
