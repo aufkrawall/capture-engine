@@ -116,6 +116,26 @@ public:
      */
     void AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSamplesOutput);
 
+    int32_t GetCurrentCompensationDelta() const {
+        return currentDelta;
+    }
+
+    int32_t GetMaxCompensationDelta() const {
+        return outFmt.sampleRate > 0 ? (outFmt.sampleRate * COMPENSATION_PERIOD_SEC) / 100 : 0;
+    }
+
+    double GetCurrentCompensationPercent() const {
+        const int32_t maxPeriodSamples = outFmt.sampleRate * COMPENSATION_PERIOD_SEC;
+        if (maxPeriodSamples <= 0) {
+            return 0.0;
+        }
+        return (double)currentDelta * 100.0 / maxPeriodSamples;
+    }
+
+    bool IsTargetCompensationSaturated() const {
+        return targetSaturated_;
+    }
+
     /**
      * Reset the resampler internal state and buffers.
      */
@@ -163,6 +183,7 @@ private:
     // Per-instance log counters (avoid static race conditions)
     int largeSkipCounter_ = 0;
     int limitLogCounter_ = 0;
+    bool targetSaturated_ = false;
 
     // Detect and handle 24-bit in 32-bit container
     AVSampleFormat DetermineInputFormat() const;

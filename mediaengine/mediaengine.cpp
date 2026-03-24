@@ -1185,15 +1185,32 @@ public:
                     } else if (isWgcCfrRecording &&
                                (int64_t)rbAvailable > targetLatencySamples + kWgcCfrLeadWarningSamples &&
                                dropLogCounter++ % 500 == 0) {
+                        const bool targetCompensationSaturated =
+                            allowWgcSteadyStateDriftCompensation &&
+                            src.syncResampler->IsTargetCompensationSaturated();
+                        const int32_t currentCompensationDelta =
+                            allowWgcSteadyStateDriftCompensation
+                                ? src.syncResampler->GetCurrentCompensationDelta()
+                                : 0;
+                        const int32_t maxCompensationDelta =
+                            allowWgcSteadyStateDriftCompensation ? src.syncResampler->GetMaxCompensationDelta()
+                                                                 : 0;
+                        const double currentCompensationPercent =
+                            allowWgcSteadyStateDriftCompensation ? src.syncResampler->GetCurrentCompensationPercent()
+                                                                 : 0.0;
                         DLL_Log(allowWgcSteadyStateDriftCompensation
                                     ? "[PullAudio] WGC CFR lead warning: src %d ahead by %lld samples (target=%lld, "
-                                      "pipelineLag=%lldms). Steady-state drift correction is active to unwind source "
-                                      "clock lead without live trimming."
+                                      "pipelineLag=%lldms). Steady-state drift correction is active "
+                                      "(corr=%d/%d per 10s, %.3f%%, sat=%d)%s"
                                     : "[PullAudio] WGC CFR lead warning: src %d ahead by %lld samples (target=%lld, "
                                       "pipelineLag=%lldms). Live trimming disabled to preserve pitch; inspect encoder "
                                       "throughput or source clock drift.",
                                 (int)srcIdx, (int64_t)rbAvailable - targetLatencySamples, targetLatencySamples,
-                                videoPipelineLagMs);
+                                videoPipelineLagMs, currentCompensationDelta, maxCompensationDelta,
+                                currentCompensationPercent, targetCompensationSaturated ? 1 : 0,
+                                targetCompensationSaturated
+                                    ? " - source clock mismatch exceeds the current pitch-safe correction budget"
+                                    : "");
                     }
 
                     const bool canUseLiveDriftCompensation =

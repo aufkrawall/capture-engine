@@ -272,6 +272,7 @@ void AudioResampler::ResetClockTracking() {
     integralError = 0.0;
     lastCompensationTimeMs = 0;
     fastModeActive = true;
+    targetSaturated_ = false;
 }
 
 void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSamplesOutput) {
@@ -358,7 +359,8 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
     maxDelta = (outFmt.sampleRate * COMPENSATION_PERIOD_SEC) / 100;
 
     // Log extreme correction (Logic Debug)
-    if (std::abs(targetDelta) > maxDelta) {
+    targetSaturated_ = std::abs(targetDelta) > maxDelta;
+    if (targetSaturated_) {
         if (limitLogCounter_++ % 100 == 0) {
             DLL_Log("[AudioResampler] PI Saturated! Req=%d, Max=%d", targetDelta, maxDelta);
         }
@@ -371,9 +373,12 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
         targetDelta = -maxDelta;
 
     // 2. RATE LIMITING STAGE (Inertia)
-    // Favor artifact-free ramp-up, but unwind stale correction much faster once the
-    // error has settled or changed direction.
-    const int32_t maxRise = 10;
+    // Favor artifact-free ramp-up, but if the PI controller is already pinned near
+    // the configured correction ceiling, reach that ceiling much faster. This keeps
+    // persistent steady-state source-clock lead from growing for tens of seconds
+    // while still preserving the same maximum pitch correction limit.
+    const bool aggressiveRiseNeeded = std::abs(targetDelta) >= ((maxDelta * 3) / 4);
+    const int32_t maxRise = aggressiveRiseNeeded ? 40 : 10;
     const int32_t maxFall = 40;
 
     if (currentDelta < targetDelta) {
