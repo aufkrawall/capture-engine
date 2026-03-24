@@ -3381,6 +3381,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             const uint32_t muxBackpressureCount = state.muxBackpressureCount.load(std::memory_order_relaxed);
             const uint32_t muxBackpressureWaitUs = state.muxBackpressureWaitUs.load(std::memory_order_relaxed);
             const uint32_t muxBackpressureMaxWaitUs = state.muxBackpressureMaxWaitUs.load(std::memory_order_relaxed);
+            const uint32_t oldestBufferedFrameAgeUs = state.oldestBufferedFrameAgeUs.load(std::memory_order_relaxed);
             uint64_t liveWallElapsedUs = 0;
             if (recordingOutputLive && liveStartQpc.QuadPart > 0 && targetIntervalTicks > 0 && liveTicksScheduled > 0) {
                 LARGE_INTEGER nowQpc;
@@ -3392,6 +3393,14 @@ void EncoderThreadFunc(const AppConfig& config) {
                         ce::capture_policy::GetCfrOutputShortfallTicks(liveTicksScheduled, liveTicksOutput);
                 }
             }
+            const double shortfallDurationMs =
+                ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs);
+            const double sustainableOutputFps = ce::capture_policy::GetEncoderSustainableOutputFps(smoothedEncodeMs);
+            const uint32_t encoderBudgetUtilizationPermille =
+                ce::capture_policy::GetEncoderBudgetUtilizationPermille(smoothedEncodeMs, frameIntervalMs);
+            const bool encoderTooSlowForTarget =
+                ce::capture_policy::IsEncoderTooSlowForTargetFps(smoothedEncodeMs, frameIntervalMs, outputFps);
+            const double oldestBufferedFrameAgeMs = static_cast<double>(oldestBufferedFrameAgeUs) / 1000.0;
 
             const uint32_t bufferedAtTickAvgPermille =
                 wgcQueueTickSampleCount > 0
@@ -3429,12 +3438,13 @@ void EncoderThreadFunc(const AppConfig& config) {
                 "Hold=%u HoldFresh=%u Spend=%u CatchUp=%u CatchFresh=%u | DefStreak=%u/%u DupStreak=%u/%u | DupSrc=%u "
                 "DupDef=%u "
                 "DupTimer=%u DupDrain=%u | TickEmit=%u TickUnique=%u TickDup=%u TickMiss=%u | "
-                "HoldHist=%u/%u/%u/%u/%u/%u | LiveWall=%lluus LiveTicks=%llu Shortfall=%u FreshMiss=%upm BufAvg=%upm "
-                "BufMin=%u NoFresh=%u NoReserve=%u | WgcAct Fresh=%u DupSrc=%u DropObs=%u SelMiss=%u StaleUni=%u "
+                "HoldHist=%u/%u/%u/%u/%u/%u | LiveWall=%lluus LiveTicks=%llu Shortfall=%u/%.1fms FreshMiss=%upm "
+                "BufAvg=%upm BufMin=%u NoFresh=%u NoReserve=%u Oldest=%.1fms | WgcAct Fresh=%u DupSrc=%u DropObs=%u "
+                "SelMiss=%u StaleUni=%u "
                 "Ancient=%u RepFreshMiss=%u RepHold=%u RepLate=%u RepCatch=%u | TsReg=%u TsStall=%u TimerRebase=%u | "
                 "InvalidMeta=%u InvalidHandle=%u | PktClamp=%u NegPTS=%u NonMonoPTS=%u | WgcThr=%u Adj=%u | Over=0x%X "
-                "MuxQ=%uKB/%u MuxBp=%u Wait=%uus Max=%uus | EncEma=%.2fms Bottleneck=%d | SrcFps=%.2f SrcJitter=%uus "
-                "DupTs=%u EncCycle=%.2fms EncSpike=%u",
+                "MuxQ=%uKB/%u MuxBp=%u Wait=%uus Max=%uus | EncEma=%.2fms Budget=%upm Sust=%.1ffps TooSlow=%d "
+                "Bottleneck=%d | SrcFps=%.2f SrcJitter=%uus DupTs=%u EncCycle=%.2fms EncSpike=%u",
                 CapturePipelinePhaseToString(state.capturePhase.load(std::memory_order_relaxed)), avgFrameAgeUs,
                 cadenceCounters.frameAgeMaxUs, avgSelectionErrorUs, cadenceCounters.outputScheduleErrorMaxUs,
                 avgSignedSelectionErrorUs, cadenceCounters.outputScheduleEarlyMaxUs,
@@ -3450,36 +3460,48 @@ void EncoderThreadFunc(const AppConfig& config) {
                 cadenceCounters.holdHist[1], cadenceCounters.holdHist[2], cadenceCounters.holdHist[3],
                 cadenceCounters.holdHist[4], cadenceCounters.holdHist[5],
                 static_cast<unsigned long long>(liveWallElapsedUs), static_cast<unsigned long long>(liveTicksOutput),
-                outputShortfallTicks, wgcNoFreshTickPermille, bufferedAtTickAvgPermille, bufferedAtTickMinValue,
-                wgcNoFreshTickCount, wgcNoReserveTickCount, wgcSelectFreshCount, wgcSelectDuplicateSourceCount,
-                wgcDropObsoleteCount, wgcFreshSelectionMissCount, wgcStaleUniqueFallbackCount, wgcAncientSelectionCount,
-                wgcRepeatNoFreshCount, wgcRepeatPolicyHoldCount, wgcRepeatTimerLateCount, wgcRepeatCatchupCount,
-                tsRegress - lastTimestampRegressionCount, tsStall - lastTimestampStallCount, timerRebases,
-                invalidMeta - lastInvalidMetaCount, invalidHandle - lastInvalidHandleCount,
-                packetClamps - lastPacketClampCount, negativePts - lastNegativePtsCount,
-                nonMonotonicPts - lastNonMonotonicPtsCount, g_WgcAdaptiveTargetFps.load(std::memory_order_relaxed),
-                wgcAdaptiveThrottleAdjustments, overloadFlags, (muxQueueBytes + 1023u) / 1024u, muxQueuePackets,
-                muxBackpressureCount, muxBackpressureWaitUs, muxBackpressureMaxWaitUs, smoothedEncodeMs,
-                g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ? 1 : 0, srcFpsX100Val / 100.0, srcJitterUsVal,
-                dupTsPerSec, smoothedEncCycleMs, encodeSpikeCountThisSecond);
+                outputShortfallTicks, shortfallDurationMs, wgcNoFreshTickPermille, bufferedAtTickAvgPermille,
+                bufferedAtTickMinValue, wgcNoFreshTickCount, wgcNoReserveTickCount, oldestBufferedFrameAgeMs,
+                wgcSelectFreshCount, wgcSelectDuplicateSourceCount, wgcDropObsoleteCount, wgcFreshSelectionMissCount,
+                wgcStaleUniqueFallbackCount, wgcAncientSelectionCount, wgcRepeatNoFreshCount, wgcRepeatPolicyHoldCount,
+                wgcRepeatTimerLateCount, wgcRepeatCatchupCount, tsRegress - lastTimestampRegressionCount,
+                tsStall - lastTimestampStallCount, timerRebases, invalidMeta - lastInvalidMetaCount,
+                invalidHandle - lastInvalidHandleCount, packetClamps - lastPacketClampCount,
+                negativePts - lastNegativePtsCount, nonMonotonicPts - lastNonMonotonicPtsCount,
+                g_WgcAdaptiveTargetFps.load(std::memory_order_relaxed), wgcAdaptiveThrottleAdjustments, overloadFlags,
+                (muxQueueBytes + 1023u) / 1024u, muxQueuePackets, muxBackpressureCount, muxBackpressureWaitUs,
+                muxBackpressureMaxWaitUs, smoothedEncodeMs, encoderBudgetUtilizationPermille, sustainableOutputFps,
+                encoderTooSlowForTarget ? 1 : 0, g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ? 1 : 0,
+                srcFpsX100Val / 100.0, srcJitterUsVal, dupTsPerSec, smoothedEncCycleMs, encodeSpikeCountThisSecond);
 
             static uint64_t s_lastWgcCapacityWarnTick = 0;
+            static uint32_t s_wgcCapacityLimitedStreakSeconds = 0;
             if (useScreenGrab && recordingOutputLive) {
                 const bool encoderPressure = g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ||
                                              (overloadFlags & 0x1u) != 0 || smoothedEncodeMs >= frameIntervalMs;
                 const bool muxPressure = (overloadFlags & 0x2u) != 0 || muxBackpressureWaitUs > 0;
+                const bool capacityLimitedThisSecond =
+                    (encoderPressure || muxPressure) && (outputShortfallTicks > 0 || oldestBufferedFrameAgeUs > 0);
+                s_wgcCapacityLimitedStreakSeconds =
+                    capacityLimitedThisSecond ? (s_wgcCapacityLimitedStreakSeconds + 1) : 0;
                 const uint64_t nowTick = GetTickCount64();
                 if ((encoderPressure || muxPressure) && (nowTick - s_lastWgcCapacityWarnTick) >= 5000) {
                     const char* limiter = encoderPressure && muxPressure ? "encoder+mux"
                                           : encoderPressure              ? "encoder"
                                                                          : "mux";
+                    const char* warningPrefix =
+                        encoderTooSlowForTarget ? "Encoder cannot sustain target" : "Output limited";
                     LogWarn(
-                        "[WGC CFR] Output limited by %s: encode=%.2fms budget=%.2fms muxQ=%uKB/%u muxWait=%uus "
-                        "shortfall=%u noFresh=%upm",
-                        limiter, smoothedEncodeMs, frameIntervalMs, (muxQueueBytes + 1023u) / 1024u, muxQueuePackets,
-                        muxBackpressureWaitUs, outputShortfallTicks, wgcNoFreshTickPermille);
+                        "[WGC CFR] %s (%s): target=%ufps sustain=%.1ffps encode=%.2fms budget=%.2fms util=%upm "
+                        "shortfall=%u/%.1fms oldest=%.1fms streak=%us muxQ=%uKB/%u muxWait=%uus noFresh=%upm",
+                        warningPrefix, limiter, outputFps, sustainableOutputFps, smoothedEncodeMs, frameIntervalMs,
+                        encoderBudgetUtilizationPermille, outputShortfallTicks, shortfallDurationMs,
+                        oldestBufferedFrameAgeMs, s_wgcCapacityLimitedStreakSeconds, (muxQueueBytes + 1023u) / 1024u,
+                        muxQueuePackets, muxBackpressureWaitUs, wgcNoFreshTickPermille);
                     s_lastWgcCapacityWarnTick = nowTick;
                 }
+            } else {
+                s_wgcCapacityLimitedStreakSeconds = 0;
             }
 
             lastDuplicateReasonNoSource = dupNoSource;

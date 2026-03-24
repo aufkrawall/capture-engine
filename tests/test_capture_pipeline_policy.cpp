@@ -268,3 +268,19 @@ TEST(CapturePipelinePolicyTest, WgcCatchupTicksStillBurstAtForceThreshold) {
     EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(false, 2, 1.0, policy::kCfrShortfallForceCatchupThresholdTicks), 4u);
     EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(true, 2, 0.0, policy::kCfrShortfallForceCatchupThresholdTicks), 4u);
 }
+
+TEST(CapturePipelinePolicyTest, EncoderCapacityDiagnosticsQuantifyBudgetAndShortfall) {
+    EXPECT_NEAR(policy::GetCfrShortfallDurationMs(3, 8.333333), 25.0, 0.01);
+    EXPECT_DOUBLE_EQ(policy::GetCfrShortfallDurationMs(0, 8.333333), 0.0);
+
+    EXPECT_NEAR(policy::GetEncoderSustainableOutputFps(8.333333), 120.0, 0.05);
+    EXPECT_DOUBLE_EQ(policy::GetEncoderSustainableOutputFps(0.0), 0.0);
+
+    EXPECT_EQ(policy::GetEncoderBudgetUtilizationPermille(8.333333, 8.333333), 1000u);
+    EXPECT_EQ(policy::GetEncoderBudgetUtilizationPermille(4.166666, 8.333333), 500u);
+    EXPECT_EQ(policy::GetEncoderBudgetUtilizationPermille(0.0, 8.333333), 0u);
+
+    EXPECT_TRUE(policy::IsEncoderTooSlowForTargetFps(9.50, 8.333333, 120));
+    EXPECT_FALSE(policy::IsEncoderTooSlowForTargetFps(8.20, 8.333333, 120));
+    EXPECT_FALSE(policy::IsEncoderTooSlowForTargetFps(0.0, 8.333333, 120));
+}

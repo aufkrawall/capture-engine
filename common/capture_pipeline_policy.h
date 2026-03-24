@@ -118,6 +118,42 @@ inline uint32_t GetWgcCatchupTicksThisLoop(bool encoderBottlenecked, size_t buff
                : baseCatchupTicks;
 }
 
+inline double GetCfrShortfallDurationMs(uint32_t outputShortfallTicks, double frameIntervalMs) {
+    if (outputShortfallTicks == 0 || frameIntervalMs <= 0.0) {
+        return 0.0;
+    }
+
+    return static_cast<double>(outputShortfallTicks) * frameIntervalMs;
+}
+
+inline double GetEncoderSustainableOutputFps(double encodeMs) {
+    if (encodeMs <= 0.0) {
+        return 0.0;
+    }
+
+    return 1000.0 / encodeMs;
+}
+
+inline uint32_t GetEncoderBudgetUtilizationPermille(double encodeMs, double frameIntervalMs) {
+    if (encodeMs <= 0.0 || frameIntervalMs <= 0.0) {
+        return 0u;
+    }
+
+    const double utilizationPermille = (encodeMs * 1000.0) / frameIntervalMs;
+    const double clampedPermille = std::clamp(utilizationPermille, 0.0, 1000000.0);
+    return static_cast<uint32_t>(clampedPermille + 0.5);
+}
+
+inline bool IsEncoderTooSlowForTargetFps(double encodeMs, double frameIntervalMs, uint32_t targetFps,
+                                         double toleranceFps = 0.5) {
+    if (frameIntervalMs <= 0.0 || targetFps == 0u) {
+        return false;
+    }
+
+    const double sustainableFps = GetEncoderSustainableOutputFps(encodeMs);
+    return sustainableFps > 0.0 && sustainableFps + toleranceFps < static_cast<double>(targetFps);
+}
+
 struct WgcAdaptiveTelemetry {
     uint32_t outputFps = 0;
     uint32_t recentDeliveredFps = 0;
