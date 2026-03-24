@@ -6,6 +6,7 @@
 #include "../common/logging.h"
 
 #include <algorithm>
+#include <cctype>
 #include <sstream>
 #include <string>
 
@@ -14,62 +15,18 @@ static constexpr COLORREF kColWarnText = RGB(255, 20, 20);
 static constexpr COLORREF kColScreenshotText = RGB(20, 255, 20);
 
 namespace {
-bool GetWindowClientRectInScreen(HWND hwnd, RECT& rect) {
-    RECT clientRect = {};
-    if (!GetClientRect(hwnd, &clientRect)) {
-        return false;
-    }
+std::string NormalizeProcessName(std::string value) {
+    static constexpr const char* kTrimChars = " \t\r\n\"";
 
-    POINT topLeft = {clientRect.left, clientRect.top};
-    POINT bottomRight = {clientRect.right, clientRect.bottom};
-    if (!ClientToScreen(hwnd, &topLeft) || !ClientToScreen(hwnd, &bottomRight)) {
-        return false;
-    }
+    const size_t first = value.find_first_not_of(kTrimChars);
+    if (first == std::string::npos)
+        return {};
 
-    rect.left = topLeft.x;
-    rect.top = topLeft.y;
-    rect.right = bottomRight.x;
-    rect.bottom = bottomRight.y;
-    return true;
-}
-
-bool RectNearlyMatches(const RECT& lhs, const RECT& rhs, LONG tolerance) {
-    auto absDiff = [](LONG a, LONG b) -> LONG { return (a >= b) ? (a - b) : (b - a); };
-
-    return absDiff(lhs.left, rhs.left) <= tolerance && absDiff(lhs.top, rhs.top) <= tolerance &&
-           absDiff(lhs.right, rhs.right) <= tolerance && absDiff(lhs.bottom, rhs.bottom) <= tolerance;
-}
-
-bool IsWindowFullscreenLike(HWND hwnd) {
-    if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd)) {
-        return false;
-    }
-
-    HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-    if (!monitor) {
-        return false;
-    }
-
-    MONITORINFO monitorInfo = {sizeof(monitorInfo)};
-    if (!GetMonitorInfo(monitor, &monitorInfo)) {
-        return false;
-    }
-
-    RECT windowRect = {};
-    RECT clientRect = {};
-    const bool haveWindowRect = GetWindowRect(hwnd, &windowRect) != FALSE;
-    const bool haveClientRect = GetWindowClientRectInScreen(hwnd, clientRect);
-    constexpr LONG kFullscreenTolerancePx = 8;
-
-    if (!haveWindowRect && !haveClientRect) {
-        return false;
-    }
-
-    const bool windowMatchesMonitor =
-        haveWindowRect && RectNearlyMatches(windowRect, monitorInfo.rcMonitor, kFullscreenTolerancePx);
-    const bool clientMatchesMonitor =
-        haveClientRect && RectNearlyMatches(clientRect, monitorInfo.rcMonitor, kFullscreenTolerancePx);
-    return windowMatchesMonitor || clientMatchesMonitor;
+    const size_t last = value.find_last_not_of(kTrimChars);
+    value = value.substr(first, last - first + 1);
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return value;
 }
 }  // namespace
 
@@ -124,18 +81,18 @@ bool PseudoOverlay::IsForegroundTarget() {
             size_t lastSlash = exeName.find_last_of("\\/");
             if (lastSlash != std::string::npos)
                 exeName = exeName.substr(lastSlash + 1);
-            std::transform(exeName.begin(), exeName.end(), exeName.begin(), ::tolower);
+            exeName = NormalizeProcessName(exeName);
 
             std::stringstream ss(config_.processList);
             std::string item;
             while (std::getline(ss, item, '|')) {
-                if (!item.empty()) {
-                    std::string t = item;
-                    std::transform(t.begin(), t.end(), t.begin(), ::tolower);
-                    if (exeName == t) {
-                        match = true;
-                        break;
-                    }
+                std::string normalizedItem = NormalizeProcessName(item);
+                if (normalizedItem.empty())
+                    continue;
+
+                if (exeName == normalizedItem) {
+                    match = true;
+                    break;
                 }
             }
         }
@@ -240,7 +197,6 @@ void PseudoOverlay::UpdateOverlay() {
             ShowWindow(hWarn_, SW_HIDE);
         lastOv_ = {};
         lastWarnVis_ = false;
-        suspendedForFullscreen_ = false;
         return;
     }
 
@@ -252,29 +208,6 @@ void PseudoOverlay::UpdateOverlay() {
             ShowWindow(hWarn_, SW_HIDE);
         lastOv_ = {};
         lastWarnVis_ = false;
-        suspendedForFullscreen_ = false;
-        return;
-    }
-
-    HWND hFg = GetForegroundWindow();
-    const bool fullscreenTargetActive = IsForegroundTarget() && IsWindowFullscreenLike(hFg);
-    if (fullscreenTargetActive) {
-        if (!suspendedForFullscreen_) {
-            LogInfo("[PseudoOverlay] Suspending layered overlay while fullscreen target is active");
-            suspendedForFullscreen_ = true;
-        }
-        if (IsWindowVisible(hOv_))
-            ShowWindow(hOv_, SW_HIDE);
-        if (IsWindowVisible(hWarn_))
-            ShowWindow(hWarn_, SW_HIDE);
-        lastOv_ = {};
-        lastWarnVis_ = false;
-        return;
-    }
-
-    if (suspendedForFullscreen_) {
-        LogInfo("[PseudoOverlay] Restoring overlay after fullscreen target lost focus");
-        suspendedForFullscreen_ = false;
         return;
     }
 
@@ -368,12 +301,14 @@ void PseudoOverlay::UpdateOverlay() {
 
     if (doUpdateInd) {
         if (indAlpha > 0) {
-            const bool wasVisible = IsWindowVisible(hOv_) != FALSE;
-            SetWindowPos(hOv_, wasVisible ? nullptr : HWND_TOPMOST, winX, winY, fullS, fullS,
-                         SWP_NOACTIVATE | SWP_SHOWWINDOW | (wasVisible ? SWP_NOZORDER : 0));
+            if (!IsWindowVisible(hOv_))
+                ShowWindow(hOv_, SW_SHOWNA);
+            SetWindowPos(hOv_, HWND_TOPMOST, winX, winY, fullS, fullS, SWP_NOACTIVATE | SWP_SHOWWINDOW);
         } else {
-            if (!config_.alwaysRender && IsWindowVisible(hOv_))
-                ShowWindow(hOv_, SW_HIDE);
+            if (!config_.alwaysRender) {
+                SetWindowPos(hOv_, HWND_TOPMOST, 0, 0, 0, 0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_HIDEWINDOW);
+            }
         }
 
         // Capture locals for the static draw callback
@@ -473,13 +408,13 @@ void PseudoOverlay::UpdateOverlay() {
             return;
 
         if (warnAlpha > 0) {
-            const bool wasVisible = IsWindowVisible(hWarn_) != FALSE;
-            SetWindowPos(hWarn_, wasVisible ? nullptr : HWND_TOPMOST, 0, 0, 0, 0,
-                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW |
-                             (wasVisible ? SWP_NOZORDER : 0));
+            if (!IsWindowVisible(hWarn_))
+                ShowWindow(hWarn_, SW_SHOWNA);
+            SetWindowPos(hWarn_, HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
         } else {
-            if (IsWindowVisible(hWarn_))
-                ShowWindow(hWarn_, SW_HIDE);
+            SetWindowPos(hWarn_, HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_HIDEWINDOW);
         }
 
         // Check if cached bitmap needs refresh
@@ -757,7 +692,6 @@ void PseudoOverlay::Shutdown() {
     warnActive_ = false;
     warnVisible_ = false;
     warnCycleStart_ = 0;
-    suspendedForFullscreen_ = false;
 
     initialized_ = false;
     instance_ = nullptr;

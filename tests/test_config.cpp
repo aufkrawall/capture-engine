@@ -89,6 +89,21 @@ TEST_F(ConfigTest, ParseValues) {
     EXPECT_EQ(config.video.bitrate, "50Mbps");
 }
 
+TEST_F(ConfigTest, PseudoOverlayProcessListIsNormalized) {
+    std::string iniContent =
+        "[pseudo-overlay]\n"
+        "enabled=true\n"
+        "process_list=  FortniteClient-Win64-Shipping.exe | | \" StrangeBrigade_DX12.exe \" |  \n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_TRUE(config.pseudoOverlay.enabled);
+    EXPECT_EQ(config.pseudoOverlay.processList, "FortniteClient-Win64-Shipping.exe|StrangeBrigade_DX12.exe");
+}
+
 TEST_F(ConfigTest, LegacyPerfMetricsLoggingEnablesUnifiedDebugLogging) {
     std::string iniContent =
         "[General]\n"

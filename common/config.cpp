@@ -17,6 +17,26 @@ std::string Trim(const std::string& s, const char* chars = " \t\r\n\"()") {
     return res;
 }
 
+static std::string NormalizePseudoOverlayProcessList(const std::string& raw) {
+    std::stringstream ss(raw);
+    std::string item;
+    std::string normalized;
+    bool first = true;
+
+    while (std::getline(ss, item, '|')) {
+        std::string trimmed = Trim(item, " \t\r\n\"");
+        if (trimmed.empty())
+            continue;
+
+        if (!first)
+            normalized += '|';
+        normalized += trimmed;
+        first = false;
+    }
+
+    return normalized;
+}
+
 // Split string by unquoted colons (quotes prevent splitting)
 static std::vector<std::string> SplitUnquoted(const std::string& s) {
     std::vector<std::string> parts;
@@ -1124,7 +1144,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         // Process list is pipe-delimited in INI (same as OBSIndicator convention)
         if (procList.size() > 2048)
             procList.resize(2048);
-        config.pseudoOverlay.processList = procList;
+        config.pseudoOverlay.processList = NormalizePseudoOverlayProcessList(procList);
     }
 
     // Hotkeys
