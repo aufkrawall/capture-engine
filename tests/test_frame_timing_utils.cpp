@@ -232,6 +232,18 @@ TEST(FrameTimingUtilsTest, ComputeNextCfrFrameIndexAdvancesSequentially) {
     EXPECT_EQ(ComputeNextCfrFrameIndex(119), 120);
 }
 
+TEST(FrameTimingUtilsTest, ResolveCfrTimelineElapsedUsPrefersExplicitTimelineOverLateWallClock) {
+    EXPECT_EQ(ResolveCfrTimelineElapsedUs(120000, 100000, 83333), 100000);
+}
+
+TEST(FrameTimingUtilsTest, ResolveCfrTimelineElapsedUsFallsBackToSteadyClockWhenNoOverrideExists) {
+    EXPECT_EQ(ResolveCfrTimelineElapsedUs(120000, -1, 83333), 120000);
+}
+
+TEST(FrameTimingUtilsTest, ResolveCfrTimelineElapsedUsStaysMonotonicWhenOverrideRegresses) {
+    EXPECT_EQ(ResolveCfrTimelineElapsedUs(120000, 90000, 100000), 100000);
+}
+
 TEST(FrameTimingUtilsTest, SelectFrameClosestToGridUsesPreviousGridTickPhase) {
     std::deque<QueuedFrame> frames;
 

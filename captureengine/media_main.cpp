@@ -2826,9 +2826,12 @@ void EncoderThreadFunc(const AppConfig& config) {
                         }
 
                         const int64_t catchupTimelineElapsedUs = computeLiveTimelineElapsedUs(repeatScheduledQpc);
-                        MediaEngine_ProcessFrameD3D11(g_LastFrame.texture, g_LastFrame.timestamp, g_LastFrame.width,
-                                                      g_LastFrame.height, g_LastFrame.isHDR, g_LastFrame.captureLeft,
-                                                      g_LastFrame.captureTop, catchupTimelineElapsedUs);
+                        if (!MediaEngine_ProcessFrameD3D11(g_LastFrame.texture, g_LastFrame.timestamp, g_LastFrame.width,
+                                                           g_LastFrame.height, g_LastFrame.isHDR, g_LastFrame.captureLeft,
+                                                           g_LastFrame.captureTop, catchupTimelineElapsedUs)) {
+                            cadenceCounters.liveTickMissCount++;
+                            break;
+                        }
                         QueryPerformanceCounter(&catchupEndEnc);
 
                         const double currentEncodeMs =
@@ -3069,10 +3072,12 @@ void EncoderThreadFunc(const AppConfig& config) {
                         frameToProcess->shmemSlot);
                     encodeDeferred = MediaEngine_WasLastFrameDeferred && MediaEngine_WasLastFrameDeferred();
                 } else {
-                    MediaEngine_ProcessFrameD3D11(frameToProcess->texture, frameToProcess->timestamp,
-                                                  frameToProcess->width, frameToProcess->height, frameToProcess->isHDR,
-                                                  frameToProcess->captureLeft, frameToProcess->captureTop, -1);
-                    encodeSucceeded = true;
+                    const int64_t liveTimelineElapsedUs =
+                        scheduledLiveCfrTick ? computeLiveTimelineElapsedUs(scheduledSampleQpc) : -1;
+                    encodeSucceeded = MediaEngine_ProcessFrameD3D11(
+                        frameToProcess->texture, frameToProcess->timestamp, frameToProcess->width, frameToProcess->height,
+                        frameToProcess->isHDR, frameToProcess->captureLeft, frameToProcess->captureTop,
+                        liveTimelineElapsedUs);
                     encodeDeferred = false;
                 }
             };

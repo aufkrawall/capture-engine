@@ -40,6 +40,77 @@ static void TrimD3D11Residency(ID3D11Device* device, ID3D11DeviceContext* contex
     }
 }
 
+namespace {
+
+bool HasValidStreamTimeBase(const AVStream* stream) {
+    return stream && stream->time_base.num > 0 && stream->time_base.den > 0;
+}
+
+void ApplyFinalStreamDurations(AVFormatContext* fmtCtx, int64_t finalDurationUs) {
+    if (!fmtCtx || finalDurationUs <= 0) {
+        return;
+    }
+
+    fmtCtx->duration = av_rescale_q(finalDurationUs, AVRational{1, 1000000}, AV_TIME_BASE_Q);
+    for (unsigned int i = 0; i < fmtCtx->nb_streams; ++i) {
+        AVStream* stream = fmtCtx->streams[i];
+        if (!HasValidStreamTimeBase(stream)) {
+            continue;
+        }
+
+        const int64_t streamDuration = av_rescale_q(finalDurationUs, AVRational{1, 1000000}, stream->time_base);
+        if (streamDuration > 0) {
+            stream->duration = streamDuration;
+        }
+    }
+}
+
+void LogFinalDurationSummary(AVFormatContext* fmtCtx, int64_t finalDurationUs, uint32_t muxBackpressureEvents,
+                             uint32_t peakQueueBytes, uint32_t peakQueuePackets, bool encoderOverloaded,
+                             bool muxOverloaded) {
+    if (!fmtCtx || finalDurationUs <= 0) {
+        return;
+    }
+
+    int64_t maxStreamDeltaUs = 0;
+    int64_t maxVideoDurationUs = 0;
+    int64_t minAudioDurationUs = 0;
+    int64_t maxAudioDurationUs = 0;
+    uint32_t videoStreamCount = 0;
+    uint32_t audioStreamCount = 0;
+    for (unsigned int i = 0; i < fmtCtx->nb_streams; ++i) {
+        AVStream* stream = fmtCtx->streams[i];
+        if (!HasValidStreamTimeBase(stream) || stream->duration <= 0 || !stream->codecpar) {
+            continue;
+        }
+
+        const int64_t streamDurationUs = av_rescale_q(stream->duration, stream->time_base, AVRational{1, 1000000});
+        const int64_t durationDeltaUs =
+            streamDurationUs >= finalDurationUs ? (streamDurationUs - finalDurationUs) : (finalDurationUs - streamDurationUs);
+        maxStreamDeltaUs = std::max(maxStreamDeltaUs, durationDeltaUs);
+
+        if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            ++videoStreamCount;
+            maxVideoDurationUs = std::max(maxVideoDurationUs, streamDurationUs);
+        } else if (stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+            ++audioStreamCount;
+            if (minAudioDurationUs == 0 || streamDurationUs < minAudioDurationUs) {
+                minAudioDurationUs = streamDurationUs;
+            }
+            maxAudioDurationUs = std::max(maxAudioDurationUs, streamDurationUs);
+        }
+    }
+
+    DLL_Log(
+        "[VideoEncoder] Final durations: target=%lld us video=%lld us audioMin=%lld us audioMax=%lld us maxDelta=%lld us "
+        "streams(v=%u a=%u) overload(encoder=%d mux=%d) backpressure=%u peakMux=%uKB peakPkts=%u",
+        finalDurationUs, maxVideoDurationUs, minAudioDurationUs, maxAudioDurationUs, maxStreamDeltaUs, videoStreamCount,
+        audioStreamCount, encoderOverloaded ? 1 : 0, muxOverloaded ? 1 : 0, muxBackpressureEvents, peakQueueBytes / 1024u,
+        peakQueuePackets);
+}
+
+}  // namespace
+
 // D3D11 exception safety for MinGW/clang
 // MinGW uses DWARF exception handling (libgcc) which cannot catch Windows SEH
 // exceptions. D3D11 raises SEH exceptions (e.g., 0xE06D7363) for invalid handles.
@@ -3988,16 +4059,12 @@ void VideoEncoder::Stop() {
         if (fmtCtx) {
             int64_t finalDurationUs = encodedDurationUs.load(std::memory_order_relaxed);
             if (finalDurationUs > 0) {
-                fmtCtx->duration = av_rescale_q(finalDurationUs, AVRational{1, 1000000}, AV_TIME_BASE_Q);
-                for (unsigned int i = 0; i < fmtCtx->nb_streams; ++i) {
-                    AVStream* st = fmtCtx->streams[i];
-                    if (st && st->codecpar && st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
-                        int64_t stDuration = av_rescale_q(finalDurationUs, AVRational{1, 1000000}, st->time_base);
-                        if (stDuration > 0) {
-                            st->duration = stDuration;
-                        }
-                    }
-                }
+                ApplyFinalStreamDurations(fmtCtx, finalDurationUs);
+                LogFinalDurationSummary(fmtCtx, finalDurationUs, muxBackpressureCount.load(std::memory_order_relaxed),
+                                        peakQueueBytes.load(std::memory_order_relaxed),
+                                        peakQueuePackets.load(std::memory_order_relaxed),
+                                        lastEncoderOverloadTickMs.load(std::memory_order_relaxed) > 0,
+                                        lastMuxOverloadTickMs.load(std::memory_order_relaxed) > 0);
             }
             av_write_trailer(fmtCtx);
             if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
@@ -6285,16 +6352,12 @@ void VideoEncoder::AsyncWriteLoop() {
                 // Set container duration so seekers and players see a valid duration
                 int64_t finalDurationUs = encodedDurationUs.load(std::memory_order_relaxed);
                 if (finalDurationUs > 0) {
-                    fmtCtx->duration = av_rescale_q(finalDurationUs, AVRational{1, 1000000}, AV_TIME_BASE_Q);
-                    for (unsigned int i = 0; i < fmtCtx->nb_streams; ++i) {
-                        AVStream* st = fmtCtx->streams[i];
-                        if (st && st->codecpar && st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
-                            int64_t stDuration = av_rescale_q(finalDurationUs, AVRational{1, 1000000}, st->time_base);
-                            if (stDuration > 0) {
-                                st->duration = stDuration;
-                            }
-                        }
-                    }
+                    ApplyFinalStreamDurations(fmtCtx, finalDurationUs);
+                    LogFinalDurationSummary(fmtCtx, finalDurationUs, muxBackpressureCount.load(std::memory_order_relaxed),
+                                            peakQueueBytes.load(std::memory_order_relaxed),
+                                            peakQueuePackets.load(std::memory_order_relaxed),
+                                            lastEncoderOverloadTickMs.load(std::memory_order_relaxed) > 0,
+                                            lastMuxOverloadTickMs.load(std::memory_order_relaxed) > 0);
                     DLL_Log("[VideoEncoder] Async Finalize: Container duration set to %lld us", finalDurationUs);
                 }
                 av_write_trailer(fmtCtx);

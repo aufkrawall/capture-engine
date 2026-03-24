@@ -118,6 +118,12 @@ inline int64_t ComputeNextCfrFrameIndex(int64_t lastAssignedFrameIndex) {
     return lastAssignedFrameIndex >= 0 ? (lastAssignedFrameIndex + 1) : 0;
 }
 
+inline int64_t ResolveCfrTimelineElapsedUs(int64_t steadyElapsedUs, int64_t explicitTimelineElapsedUs,
+                                           int64_t lastElapsedUs) {
+    const int64_t candidateElapsedUs = explicitTimelineElapsedUs >= 0 ? explicitTimelineElapsedUs : steadyElapsedUs;
+    return std::max(candidateElapsedUs, lastElapsedUs);
+}
+
 inline bool ShouldHoldFrameForNextTick(int64_t frameTimestampQpc, int64_t idealQpc, int64_t targetIntervalTicks,
                                        int64_t holdSlackQpc) {
     if (frameTimestampQpc <= 0 || idealQpc <= 0 || targetIntervalTicks <= 0) {

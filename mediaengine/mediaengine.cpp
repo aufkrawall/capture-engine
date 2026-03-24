@@ -114,6 +114,25 @@ public:
         return videoElapsedMs.load();
     }
 
+    int64_t GetCommittedVideoElapsedUs(int64_t fallbackElapsedUs) const {
+        if (config.video.useVFR || !videoEnc) {
+            return fallbackElapsedUs;
+        }
+
+        const int64_t encodedDurationUs = videoEnc->GetEncodedDurationUs();
+        return encodedDurationUs > 0 ? encodedDurationUs : fallbackElapsedUs;
+    }
+
+    void CommitVideoElapsedUs(SourceTimelineState& timelineState, int64_t elapsedUs) {
+        if (elapsedUs < 0) {
+            return;
+        }
+
+        timelineState.lastElapsedUs = std::max(timelineState.lastElapsedUs, elapsedUs);
+        this->videoElapsedMs.store(elapsedUs / 1000);
+        lastVideoFrameMs = elapsedUs / 1000;
+    }
+
     size_t GetBufferedTimelineSamples(const AudioSource& src) const {
         constexpr size_t kChannels = 2;
 
@@ -756,10 +775,9 @@ public:
         int64_t realElapsedUs = steadyElapsedUs;
         if (config.video.useVFR) {
             realElapsedUs = ComputeSourceDrivenElapsedUs(qpcFreq, timestampQPC, steadyElapsedUs, injectTimelineState);
+        } else {
+            realElapsedUs = ResolveCfrTimelineElapsedUs(steadyElapsedUs, -1, injectTimelineState.lastElapsedUs);
         }
-
-        // Update Atomic Member (for Audio Thread / Pull) — keep ms for audio sync
-        this->videoElapsedMs.store(realElapsedUs / 1000);
 
         // Maybe we want preview later? For now, recording only.
         videoEnc->SetAdapterLUID(luidLow, luidHigh);
@@ -769,9 +787,12 @@ public:
         if (!res && videoEnc->WasLastFrameDeferred()) {
             return false;
         }
+        if (!res) {
+            return false;
+        }
 
-        // Track last video frame timestamp for audio trimming
-        lastVideoFrameMs = realElapsedUs / 1000;
+        const int64_t committedElapsedUs = GetCommittedVideoElapsedUs(realElapsedUs);
+        CommitVideoElapsedUs(injectTimelineState, committedElapsedUs);
 
         // Update audio stream index for all sources
         for (size_t i = 0; i < audioSources.size(); i++) {
@@ -788,7 +809,7 @@ public:
         }
 
         // PULL MODEL: Encode audio for this video frame (same as screengrab mode)
-        PullAndEncodeAudio(realElapsedUs / 1000);
+        PullAndEncodeAudio(committedElapsedUs / 1000);
         return res;
     }
 
@@ -799,24 +820,23 @@ public:
         }
 
         auto now = std::chrono::steady_clock::now();
-        int64_t debugTimestamp = (qpcFreq > 0) ? (timestampQPC * 1000) / qpcFreq : timestampQPC;
         const int64_t steadyElapsedUs =
             std::chrono::duration_cast<std::chrono::microseconds>(now - this->recordingStartTime).count();
 
         int64_t realElapsedUs = steadyElapsedUs;
         if (config.video.useVFR) {
             realElapsedUs = ComputeSourceDrivenElapsedUs(qpcFreq, timestampQPC, steadyElapsedUs, injectTimelineState);
+        } else {
+            realElapsedUs = ResolveCfrTimelineElapsedUs(steadyElapsedUs, -1, injectTimelineState.lastElapsedUs);
         }
-        injectTimelineState.lastElapsedUs = std::max(injectTimelineState.lastElapsedUs, realElapsedUs);
-
-        this->videoElapsedMs.store(realElapsedUs / 1000);
 
         bool res = videoEnc->RepeatLastFrame(realElapsedUs);
         if (!res) {
             return false;
         }
 
-        lastVideoFrameMs = realElapsedUs / 1000;
+        const int64_t committedElapsedUs = GetCommittedVideoElapsedUs(realElapsedUs);
+        CommitVideoElapsedUs(injectTimelineState, committedElapsedUs);
         for (size_t i = 0; i < audioSources.size(); i++) {
             auto& src = audioSources[i];
             int idx = videoEnc->GetAudioStreamIndex(src.track);
@@ -825,7 +845,7 @@ public:
             }
         }
 
-        PullAndEncodeAudio(realElapsedUs / 1000);
+        PullAndEncodeAudio(committedElapsedUs / 1000);
         return true;
     }
 
@@ -835,11 +855,11 @@ public:
 
     // Direct D3D11 texture processing for screengrab mode (zero-copy)
     // Direct D3D11 texture processing for screengrab mode (zero-copy)
-    void ProcessFrameD3D11(void* texture, int64_t timestampQPC, uint32_t width, uint32_t height, bool isHDR,
+    bool ProcessFrameD3D11(void* texture, int64_t timestampQPC, uint32_t width, uint32_t height, bool isHDR,
                            int32_t captureLeft, int32_t captureTop, int64_t timelineElapsedUs) {
         std::lock_guard<std::recursive_mutex> lock(muxMutex);
         if (!videoEnc || !recording)
-            return;
+            return false;
 
         auto now = std::chrono::steady_clock::now();
         int64_t debugTimestamp = (qpcFreq > 0) ? (timestampQPC * 1000) / qpcFreq : timestampQPC;
@@ -871,24 +891,16 @@ public:
             // grid, so prefer the sample-clock timeline instead.  Catch-up paths can
             // provide an explicit CFR slot time so buffered fresh frames land on the
             // intended output grid instead of collapsing onto the current wall-clock.
-            realElapsedUs = std::max(steadyElapsedUs, d3d11TimelineState.lastElapsedUs);
-            if (timelineElapsedUs >= 0) {
-                realElapsedUs = std::max(realElapsedUs, timelineElapsedUs);
-            }
+            realElapsedUs =
+                ResolveCfrTimelineElapsedUs(steadyElapsedUs, timelineElapsedUs, d3d11TimelineState.lastElapsedUs);
         }
-        d3d11TimelineState.lastElapsedUs = realElapsedUs;
-
-        // Drive WGC video/audio timing from source timestamps for VFR and from the
-        // fixed-rate encoder sample clock for CFR.  In CFR mode, videoElapsedMs is
-        // a fallback for audio sync only — the authoritative target is encodedDurationUs
-        // from PullAndEncodeAudio, which tracks the encoder's actual output timeline.
-        this->videoElapsedMs.store(realElapsedUs / 1000);
-
-        videoEnc->EncodeFrameD3D11((ID3D11Texture2D*)texture, realElapsedUs, width, height, isHDR, captureLeft,
-                                   captureTop);
-
-        // Track last video frame timestamp for audio trimming
-        lastVideoFrameMs = realElapsedUs / 1000;
+        if (!videoEnc->EncodeFrameD3D11((ID3D11Texture2D*)texture, realElapsedUs, width, height, isHDR, captureLeft,
+                                        captureTop)) {
+            DLL_Log("MediaEngine: D3D11 frame encode failed at ts=%lld", debugTimestamp);
+            return false;
+        }
+        const int64_t committedElapsedUs = GetCommittedVideoElapsedUs(realElapsedUs);
+        CommitVideoElapsedUs(d3d11TimelineState, committedElapsedUs);
 
         // Update audio stream index for all sources
         for (size_t i = 0; i < audioSources.size(); i++) {
@@ -904,7 +916,8 @@ public:
         }
 
         // PULL MODEL: Encode audio for this video frame
-        PullAndEncodeAudio(realElapsedUs / 1000);
+        PullAndEncodeAudio(committedElapsedUs / 1000);
+        return true;
     }
 
     // PULL MODEL: Pull audio from RingBuffers and encode against the relative
@@ -2105,13 +2118,15 @@ MEDIAENGINE_API bool MediaEngine_RepeatLastFrame(int64_t timestamp) {
     return false;
 }
 
-MEDIAENGINE_API void MediaEngine_ProcessFrameD3D11(void* texture, int64_t timestamp, uint32_t width, uint32_t height,
+MEDIAENGINE_API bool MediaEngine_ProcessFrameD3D11(void* texture, int64_t timestamp, uint32_t width, uint32_t height,
                                                    bool isHDR, int32_t captureLeft, int32_t captureTop,
                                                    int64_t timelineElapsedUs) {
     std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
-    if (g_Engine)
-        g_Engine->ProcessFrameD3D11(texture, timestamp, width, height, isHDR, captureLeft, captureTop,
-                                    timelineElapsedUs);
+    if (g_Engine) {
+        return g_Engine->ProcessFrameD3D11(texture, timestamp, width, height, isHDR, captureLeft, captureTop,
+                                           timelineElapsedUs);
+    }
+    return false;
 }
 
 MEDIAENGINE_API bool MediaEngine_CreateSharedCaptureTextures(uint32_t width, uint32_t height, uint32_t format,
