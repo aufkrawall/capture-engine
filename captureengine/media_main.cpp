@@ -2059,12 +2059,11 @@ void EncoderThreadFunc(const AppConfig& config) {
 
                         if (!skipWgcPopThisTick && bestIdx + 1 == availableCount && g_HasLastFrame &&
                             !g_LastFrame.isInjectMode && encoderLateTickCount == 0 && selectionTargetQpc > 0) {
-                            const bool allowPolicyHold =
-                                ce::capture_policy::ShouldAllowSingleFreshWgcHold(
-                                    wgcReservePressureActive, wgcLowSourceModeActive, wgcRecentInputMin250Fps,
-                                    outputFps, smoothedInputPerTick) ||
-                                ce::capture_policy::ShouldAllowSteadyStateWgcReserveBuild(
-                                    wgcRecentInputMin250Fps, outputFps, smoothedInputPerTick);
+                            const bool allowPolicyHold = ce::capture_policy::ShouldHoldSingleFreshWgcFrame(
+                                wgcReservePressureActive, wgcLowSourceModeActive, wgcRecentInputMin250Fps, outputFps,
+                                smoothedInputPerTick, outputShortfallTicks,
+                                g_IsEncoderBottlenecked.load(std::memory_order_relaxed),
+                                wgcReserveAvailableAtTickStart);
                             const int64_t holdSlackQpc = std::max<int64_t>(targetIntervalTicks / 8, 1);
                             if (allowPolicyHold &&
                                 ShouldHoldFrameForNextTick(bufferedWgcFrames[bestIdx].timestamp, selectionTargetQpc,
@@ -2640,13 +2639,13 @@ void EncoderThreadFunc(const AppConfig& config) {
 
         auto recordDuplicate = [&](const QueuedFrame* duplicateFrame, const InjectFrameLineage* duplicateLineage,
                                    bool duplicateFromDrainReason, bool duplicateFromDeferredReason,
-                                   bool duplicateFromTimerRebaseReason) {
+                                   bool duplicateFromTimerRebaseReason, bool duplicateFromCatchupReason = false) {
             cadenceCounters.consecutiveDuplicateFrames++;
             cadenceCounters.maxConsecutiveDuplicateFrames =
                 std::max(cadenceCounters.maxConsecutiveDuplicateFrames, cadenceCounters.consecutiveDuplicateFrames);
-            const bool duplicateFromNoSource =
-                !duplicateFromDrainReason && !duplicateFromDeferredReason && !duplicateFromTimerRebaseReason;
-            if (useScreenGrab && duplicateFromNoSource) {
+            const bool duplicateFromSourceGap = !duplicateFromDrainReason && !duplicateFromDeferredReason &&
+                                                !duplicateFromTimerRebaseReason && !duplicateFromCatchupReason;
+            if (useScreenGrab && duplicateFromSourceGap) {
                 if (encoderLateTickCount == 0) {
                     frameCreditAccumulator = std::min(frameCreditAccumulator, bufferedWgcFrames.empty() ? 0.25 : 0.50);
                 }
@@ -2690,8 +2689,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
         };
         auto emitCatchupRepeats = [&](const InjectFrameLineage* duplicateLineage) {
-            if (useScreenGrab || !scheduledLiveCfrTick || catchupTicksThisLoop <= 1 || !MediaEngine_RepeatLastFrame ||
-                !g_HasLastFrame) {
+            if (!scheduledLiveCfrTick || catchupTicksThisLoop <= 1 || !MediaEngine_RepeatLastFrame || !g_HasLastFrame) {
                 return;
             }
 
@@ -2742,7 +2740,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                     g_pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
                 }
 
-                recordDuplicate(&g_LastFrame, duplicateLineage, false, false, false);
+                recordDuplicate(&g_LastFrame, duplicateLineage, false, false, false, true);
                 ++wgcRepeatCatchupCount;
                 cadenceCounters.liveTickEmitCount++;
                 cadenceCounters.liveTickDuplicateCount++;

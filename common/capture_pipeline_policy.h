@@ -344,6 +344,18 @@ inline bool ShouldAllowSteadyStateWgcReserveBuild(uint32_t recentInputMin250Fps,
     return smoothedInputPerTick >= reserveBuildThreshold;
 }
 
+inline bool ShouldHoldSingleFreshWgcFrame(bool reservePressureActive, bool lowSourceMode, uint32_t recentInputMin250Fps,
+                                          uint32_t outputFps, double smoothedInputPerTick,
+                                          uint32_t outputShortfallTicks, bool encoderBottlenecked,
+                                          bool reserveAvailableAtTickStart) {
+    if (outputShortfallTicks > 0 || encoderBottlenecked || reserveAvailableAtTickStart) {
+        return false;
+    }
+
+    return ShouldAllowSingleFreshWgcHold(reservePressureActive, lowSourceMode, recentInputMin250Fps, outputFps,
+                                         smoothedInputPerTick);
+}
+
 inline size_t ClampWgcSelectionIndexForLowSource(size_t bestIdx, size_t availableCount, size_t bufferedWgcFrames,
                                                  uint32_t recentDeliveredFps, uint32_t outputFps,
                                                  uint32_t emptyTickPermille) {
