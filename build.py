@@ -26,12 +26,14 @@ import glob
 import shutil
 import tarfile
 import subprocess
+import urllib.error
 import urllib.request
 import time
 import datetime
 import hashlib
 import platform
 import shlex
+import site
 import stat
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from multiprocessing import cpu_count
@@ -63,6 +65,7 @@ COMMON_WARNING_FLAGS = [
     "-Wno-unused-parameter",
 ]
 COMMON_WINDOWS_COMPILE_FLAGS = ["-D_WIN32_WINNT=0x0A00", "-DNOMINMAX"]
+COMMON_DEBUG_INFO_FLAGS = ["-g1"]  # Minimal debug info for crash symbolication with low size impact
 
 # x86-64-v3 requires AVX2 (Haswell 2013+), provides ~10-20% performance boost
 # Used only for the host process (captureengine.exe) where CPU is controlled.
@@ -120,16 +123,13 @@ HOOK_OPT_FLAGS_X86 = [
 ] + COMMON_HARDENING_FLAGS
 
 # Linker optimization flags
-# -g1 keeps minimal DWARF info (function names + file/line) for crash symbolication
-# without meaningfully increasing binary size.  The separate --strip-debug step
-# below removes it from the final shipped binary but keeps a .debug file for
-# post-mortem analysis.
+# Keep minimal DWARF info in shipped binaries for crash dumps and post-mortem
+# analysis. This has a small size cost but no meaningful runtime cost.
 LD_OPT_FLAGS = [
     "-Wl,--gc-sections",
     "-Wl,--dynamicbase",  # ASLR
     "-Wl,--nxcompat",  # DEP/NX
-    "-g1",  # Minimal debug info for crash symbolication
-]
+] + COMMON_DEBUG_INFO_FLAGS
 
 # x64-only linker flags (high-entropy ASLR not supported on x86)
 LD_OPT_FLAGS_X64 = [
@@ -144,7 +144,8 @@ CURRENT_BUILD_NUMBER = 0  # Set by bump_and_write_build_version()
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 BUILD_DIR = os.path.join(PROJECT_ROOT, BUILD_DIR_NAME)
-MSYS2_URL = "https://repo.msys2.org/distrib/x86_64/msys2-base-x86_64-20240113.tar.xz"
+MSYS2_DIST_URL = "https://repo.msys2.org/distrib/x86_64/"
+MSYS2_DEFAULT_TARBALL = "msys2-base-x86_64-20260322.tar.xz"
 MSYS2_DIR = os.path.join(BUILD_DIR, "msys64")
 OBJ_DIR = os.path.join(BUILD_DIR, "obj")
 BIN_DIR = os.path.join(BUILD_DIR, "bin")
@@ -172,7 +173,7 @@ def make_cpp_cflags(
     suppress_microsoft_exception_spec: bool = False,
     production_build: bool = False,
 ) -> List[str]:
-    flags = CPP_STD_FLAGS + opt_flags + (arch_flags or []) + COMMON_WARNING_FLAGS
+    flags = CPP_STD_FLAGS + opt_flags + COMMON_DEBUG_INFO_FLAGS + (arch_flags or []) + COMMON_WARNING_FLAGS
     if suppress_microsoft_exception_spec:
         flags.append("-Wno-microsoft-exception-spec")
     flags += COMMON_WINDOWS_COMPILE_FLAGS
@@ -236,6 +237,54 @@ def safe_extract_tar(archive: tarfile.TarFile, destination: str) -> None:
         if member_abs != dest_abs and not member_abs.startswith(dest_abs + os.sep):
             raise RuntimeError(f"Unsafe archive member path: {member.name}")
     archive.extractall(dest_abs, filter="data")
+
+
+def is_ci_environment() -> bool:
+    return any(os.environ.get(var) for var in ("CI", "GITHUB_ACTIONS", "TF_BUILD", "BUILD_BUILDID"))
+
+
+def is_virtual_environment() -> bool:
+    return getattr(sys, "base_prefix", sys.prefix) != sys.prefix or hasattr(sys, "real_prefix")
+
+
+def should_bootstrap_python_tools(args: List[str]) -> bool:
+    if not is_ci_environment():
+        return True
+    return not args or "--lint" in args or "--format" in args
+
+
+def _url_exists(url: str) -> bool:
+    request = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(request, timeout=30):
+            return True
+    except Exception:
+        return False
+
+
+def resolve_msys2_url() -> str:
+    override = os.environ.get("CE_MSYS2_URL", "").strip()
+    if override:
+        log(f"Using MSYS2 base archive override: {override}")
+        return override
+
+    fallback_url = MSYS2_DIST_URL + MSYS2_DEFAULT_TARBALL
+    if _url_exists(fallback_url):
+        return fallback_url
+
+    log(f"MSYS2 fallback snapshot unavailable: {MSYS2_DEFAULT_TARBALL}; resolving latest available archive...")
+    request = urllib.request.Request(MSYS2_DIST_URL, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        html = response.read().decode("utf-8", errors="replace")
+
+    matches = re.findall(r'href="(msys2-base-x86_64-(\d{8})\.tar\.xz)"', html)
+    if not matches:
+        raise RuntimeError(f"Could not resolve a downloadable MSYS2 base archive from {MSYS2_DIST_URL}")
+
+    latest_name, _ = max(matches, key=lambda item: item[1])
+    resolved_url = MSYS2_DIST_URL + latest_name
+    log(f"Resolved latest MSYS2 base archive: {latest_name}")
+    return resolved_url
 
 
 def patch_amf_header():
@@ -715,18 +764,34 @@ def setup_msys2():
         download_msys2_packages_for_linux()
         return
 
-    if not os.path.exists(MSYS2_DIR):
+    msys_bash = os.path.join(MSYS2_DIR, "usr", "bin", "bash.exe")
+    if not os.path.exists(msys_bash):
         log("Downloading MSYS2...")
         os.makedirs(BUILD_DIR, exist_ok=True)
-        tar_path = os.path.join(BUILD_DIR, "msys2.tar.xz")
+        msys2_url = resolve_msys2_url()
+        tar_name = os.path.basename(msys2_url)
+        tar_path = os.path.join(BUILD_DIR, tar_name)
         if not os.path.exists(tar_path):
-            urllib.request.urlretrieve(MSYS2_URL, tar_path)
+            log(f"Downloading MSYS2 base archive: {tar_name}")
+            temp_tar_path = tar_path + ".tmp"
+            try:
+                if os.path.exists(temp_tar_path):
+                    os.remove(temp_tar_path)
+                urllib.request.urlretrieve(msys2_url, temp_tar_path)
+                os.replace(temp_tar_path, tar_path)
+            finally:
+                if os.path.exists(temp_tar_path):
+                    os.remove(temp_tar_path)
+        else:
+            log(f"Using cached MSYS2 base archive: {tar_name}")
 
         log("Extracting MSYS2...")
         with tarfile.open(tar_path) as f:
             safe_extract_tar(f, BUILD_DIR)
 
         msys_bash = os.path.join(MSYS2_DIR, "usr", "bin", "bash.exe")
+        if not os.path.exists(msys_bash):
+            raise RuntimeError(f"MSYS2 extraction finished, but {msys_bash} was not created")
         clear_stale_msys2_pacman_lock()
         run_command([msys_bash, "-lc", "pacman-key --init"])
         clear_stale_msys2_pacman_lock()
@@ -768,10 +833,24 @@ def check_mingw_packages():
 
 def check_python_lsp_tools():
     """Check and install Python LSP/lint/format tools for better IDE support."""
-    # Ensure user's local bin is in PATH for installed tools
-    user_local_bin = os.path.expanduser("~/.local/bin")
-    if user_local_bin not in os.environ.get("PATH", ""):
-        os.environ["PATH"] = user_local_bin + os.pathsep + os.environ.get("PATH", "")
+    user_scripts_dir = os.path.join(site.getuserbase(), "Scripts" if IS_WINDOWS else "bin")
+    if user_scripts_dir not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = user_scripts_dir + os.pathsep + os.environ.get("PATH", "")
+
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "--version"],
+            capture_output=True,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        log("pip not found. Bootstrapping with ensurepip...")
+        try:
+            subprocess.run([sys.executable, "-m", "ensurepip", "--upgrade"], check=True)
+        except subprocess.CalledProcessError as e:
+            log(f"Warning: Failed to bootstrap pip: {e}")
+            log("  Optional Python tooling bootstrap skipped.")
+            return
 
     tools = ["pyright", "flake8", "black"]
 
@@ -785,15 +864,31 @@ def check_python_lsp_tools():
         except (subprocess.CalledProcessError, FileNotFoundError):
             log(f"{tool} not found. Installing via pip...")
             try:
-                # On Linux with externally-managed Python, use --break-system-packages
-                cmd = [sys.executable, "-m", "pip", "install", tool]
-                if IS_LINUX:
+                cmd = [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "--disable-pip-version-check",
+                    "--upgrade-strategy",
+                    "only-if-needed",
+                ]
+                if not is_virtual_environment():
+                    cmd.append("--user")
+                if IS_LINUX and not is_virtual_environment():
                     cmd.append("--break-system-packages")
+                cmd.append(tool)
                 subprocess.run(cmd, check=True)
                 log(f"{tool} installed successfully.")
             except subprocess.CalledProcessError as e:
                 log(f"Warning: Failed to install {tool}: {e}")
-                log(f"  Install manually: pip install {tool} --break-system-packages")
+                manual_flags = []
+                if not is_virtual_environment():
+                    manual_flags.append("--user")
+                if IS_LINUX and not is_virtual_environment():
+                    manual_flags.append("--break-system-packages")
+                suffix = " " + " ".join(manual_flags) if manual_flags else ""
+                log(f"  Install manually: python -m pip install{suffix} {tool}")
 
 
 def get_system_ffmpeg_flags():
@@ -942,6 +1037,7 @@ WINDOWS_FFMPEG_RUNTIME_DEPS = [
     "libva_win32.dll",
     "libva.dll",
     "libvpl-2.dll",
+    "libSvtAv1Enc-4.dll",
     "libc++.dll",
     "libunwind.dll",
 ]
@@ -1025,6 +1121,17 @@ def sync_ffmpeg_runtime_dlls(ffmpeg_bin_src, ffmpeg_bin_dst, runtime_deps, extra
         log(f"Copied runtime dep {dep} to ffmpeg dir")
 
 
+def remove_redundant_root_runtime_dlls(root_dir: str, runtime_deps: List[str]) -> None:
+    for dep_name in sorted(set(runtime_deps)):
+        dep_path = os.path.join(root_dir, dep_name)
+        if not os.path.exists(dep_path):
+            continue
+        if safe_delete_file(dep_path):
+            log(f"Removed redundant root runtime DLL {dep_name}")
+        else:
+            log(f"WARNING: Could not remove redundant root runtime DLL {dep_name}")
+
+
 def get_msys_license_root():
     if IS_LINUX:
         return os.path.join(get_linux_msys2_dir(), "clang64", "share", "licenses")
@@ -1039,23 +1146,70 @@ def copy_bundled_runtime_licenses(licenses_dst, ffmpeg_bin_dst):
     license_specs = [
         (
             "libiconv-2.dll",
-            os.path.join(license_root, "libiconv", "COPYING.LIB"),
-            "LGPLv2.1_libiconv.txt",
+            [
+                (
+                    os.path.join(license_root, "libiconv", "COPYING.LIB"),
+                    "LGPLv2.1_libiconv.txt",
+                ),
+            ],
         ),
         (
             "libvpl-2.dll",
-            os.path.join(license_root, "libvpl", "LICENSE"),
-            "MIT_libvpl.txt",
+            [
+                (
+                    os.path.join(license_root, "libvpl", "LICENSE"),
+                    "MIT_libvpl.txt",
+                ),
+            ],
         ),
         (
             "libc++.dll",
-            os.path.join(license_root, "libc++", "LICENSE"),
-            "Apache-2.0_with_LLVM-exception_llvm-runtime.txt",
+            [
+                (
+                    os.path.join(license_root, "libc++", "LICENSE"),
+                    "Apache-2.0_with_LLVM-exception_llvm-runtime.txt",
+                ),
+            ],
         ),
         (
             "libunwind.dll",
-            os.path.join(license_root, "libunwind", "LICENSE"),
-            "Apache-2.0_with_LLVM-exception_llvm-runtime.txt",
+            [
+                (
+                    os.path.join(license_root, "libunwind", "LICENSE"),
+                    "Apache-2.0_with_LLVM-exception_llvm-runtime.txt",
+                ),
+            ],
+        ),
+        (
+            "libva.dll",
+            [
+                (
+                    os.path.join(license_root, "libva", "COPYING"),
+                    "MIT_libva.txt",
+                ),
+            ],
+        ),
+        (
+            "libva_win32.dll",
+            [
+                (
+                    os.path.join(license_root, "libva", "COPYING"),
+                    "MIT_libva.txt",
+                ),
+            ],
+        ),
+        (
+            "libSvtAv1Enc-4.dll",
+            [
+                (
+                    os.path.join(license_root, "svt-av1", "LICENSE"),
+                    "BSD-3-Clause-Clear_svt-av1.txt",
+                ),
+                (
+                    os.path.join(license_root, "svt-av1", "PATENTS.md"),
+                    "AOM-Patent-License-1.0_svt-av1.txt",
+                ),
+            ],
         ),
     ]
 
@@ -1063,24 +1217,27 @@ def copy_bundled_runtime_licenses(licenses_dst, ffmpeg_bin_dst):
     copied_license_names = set()
     mapped_runtime_dlls = set()
 
-    for dll_name, src, dst_name in license_specs:
+    for dll_name, outputs in license_specs:
         dll_name_lower = dll_name.lower()
         if dll_name_lower not in bundled_dlls:
             continue
         mapped_runtime_dlls.add(dll_name_lower)
-        if not os.path.exists(src):
-            raise RuntimeError(f"Missing bundled runtime license source: {src}")
-        dst_name_lower = dst_name.lower()
-        if dst_name_lower in copied_license_names:
-            continue
-        dst = os.path.join(licenses_dst, dst_name)
-        if not safe_copy_file(src, dst):
-            raise RuntimeError(f"Failed to copy bundled runtime license {dst_name}")
-        copied_license_names.add(dst_name_lower)
-        log(f"Copied bundled runtime license {dst_name}")
+        for src, dst_name in outputs:
+            if not os.path.exists(src):
+                raise RuntimeError(f"Missing bundled runtime license source: {src}")
+            dst_name_lower = dst_name.lower()
+            if dst_name_lower in copied_license_names:
+                continue
+            dst = os.path.join(licenses_dst, dst_name)
+            if not safe_copy_file(src, dst):
+                raise RuntimeError(f"Failed to copy bundled runtime license {dst_name}")
+            copied_license_names.add(dst_name_lower)
+            log(f"Copied bundled runtime license {dst_name}")
 
     known_ffmpeg_prefixes = (
         "avcodec-",
+        "avdevice-",
+        "avfilter-",
         "avformat-",
         "avutil-",
         "swresample-",
@@ -2706,7 +2863,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         layer_dll,
     ]
 
-    ldflags.extend(LD_OPT_FLAGS)  # Strip debug sections, reduce binary size
+    ldflags.extend(LD_OPT_FLAGS)  # Keep hardening and minimal symbol info for crash dumps
     if arch == "x64":
         ldflags.extend(LD_OPT_FLAGS_X64)  # High-entropy ASLR (x64 only)
     if arch == "x86":
@@ -3187,14 +3344,9 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
 
                 # For shared build, linking usually requires -Lpath -lavcodec.
                 # We need to make sure the DLLs are findable at runtime.
-                # Since they are in bin/ffmpeg, we might need to SetDllDirectory in app code or move them to bin/.
-                # User asked for bin/ffmpeg. MediaEngine needs to handle it or we use DelayLoad.
-                # DelayLoad is complex with MinGW.
-                # Let's just link normally. User must assume bin/ffmpeg is in PATH or simple copy for dev.
-                # Actually, standard Windows search path includes current dir.
-                # If they are in bin/ffmpeg, they are NOT in current dir of captureengine.exe (bin).
-                # We might need a manifest or SetDllDirectory.
-                # For now, just link.
+                # FFmpeg shared libraries stay isolated under bin/ffmpeg.
+                # captureengine/mediaengine_loader.cpp sets SetDllDirectoryA(<exeDir>\ffmpeg)
+                # before loading mediaengine.dll, so these delay-loaded imports resolve from there.
 
                 me_dll = os.path.join(BIN_DIR, "mediaengine.dll")
                 me_lib = os.path.join(BIN_DIR, "libmediaengine.dll.a")
@@ -3205,7 +3357,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
                     "-static-libgcc",
                     "-static-libstdc++",
                     "-Wl,--gc-sections",
-                    "-s",
                     "-Wl,--allow-multiple-definition",
                     "-lole32",
                     "-lmfplat",
@@ -3357,7 +3508,6 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             "-Wl,--dynamicbase",  # ASLR
             "-Wl,--high-entropy-va",  # High-entropy 64-bit ASLR
             "-Wl,--nxcompat",  # DEP/NX
-            "-s",
             "-ld3d11",
             "-ldxgi",
             "-luser32",
@@ -3410,45 +3560,18 @@ def compile_project(env, clang_bin, skip_updates=False, should_run_tests=False):
             sys.exit(1)
         safe_delete_file(temp_ce_exe)
 
-    # Copy FFmpeg runtime DLLs to ffmpeg/ subdirectory (NOT main directory)
+    # Copy FFmpeg runtime DLLs only to ffmpeg/ so CaptureEngine stays uncluttered.
     if not IS_LINUX:
         ffmpeg_bin_src = os.path.join(FFMPEG_DIR, "bin")
         ffmpeg_bin_dst = os.path.join(BIN_DIR, "ffmpeg")
-        os.makedirs(ffmpeg_bin_dst, exist_ok=True)
-        if os.path.isdir(ffmpeg_bin_src):
-            for dll_name in os.listdir(ffmpeg_bin_src):
-                if dll_name.lower().endswith(".dll"):
-                    src = os.path.join(ffmpeg_bin_src, dll_name)
-                    dst = os.path.join(ffmpeg_bin_dst, dll_name)
-                    if os.path.exists(src):
-                        shutil.copy2(src, dst)
         msys_bin = os.path.join(MSYS2_DIR, "clang64", "bin")
-        for dep_name in [
-            "libva.dll",
-            "libva_win32.dll",
-            "libvpl-2.dll",
-            "libSvtAv1Enc-4.dll",
-            "libiconv-2.dll",
-            "libc++.dll",
-        ]:
-            src = os.path.join(msys_bin, dep_name)
-            dst = os.path.join(ffmpeg_bin_dst, dep_name)
-            if os.path.exists(src):
-                shutil.copy2(src, dst)
-        # Also copy MSYS2 runtime deps (libva, libvpl, SVT-AV1, iconv, libc++)
-        msys_bin = os.path.join(MSYS2_DIR, "clang64", "bin")
-        for dep_name in [
-            "libva.dll",
-            "libva_win32.dll",
-            "libvpl-2.dll",
-            "libSvtAv1Enc-4.dll",
-            "libiconv-2.dll",
-            "libc++.dll",
-        ]:
-            src = os.path.join(msys_bin, dep_name)
-            dst = os.path.join(BIN_DIR, dep_name)
-            if os.path.exists(src):
-                shutil.copy2(src, dst)
+        sync_ffmpeg_runtime_dlls(
+            ffmpeg_bin_src,
+            ffmpeg_bin_dst,
+            WINDOWS_FFMPEG_RUNTIME_DEPS,
+            [msys_bin],
+        )
+        remove_redundant_root_runtime_dlls(BIN_DIR, WINDOWS_FFMPEG_RUNTIME_DEPS)
 
     # 6. Compile Test Applications (DX9/10/11/12, Vulkan, OpenGL; x64/x86)
     x86_env_for_tests = None
@@ -3646,12 +3769,15 @@ def main():
             except Exception:
                 pass
 
+    args = sys.argv[1:]
     setup_msys2()
-    check_python_lsp_tools()
+    if should_bootstrap_python_tools(args):
+        check_python_lsp_tools()
+    else:
+        log("Skipping optional Python tooling bootstrap in CI for non-lint build")
     env, clang_bin = get_env()
 
     # Parse flags
-    args = sys.argv[1:]
     default_quality_mode = len(args) == 0
     skip_updates = "--skip-updates" in sys.argv
     run_tests_flag = "--run-tests" in sys.argv
