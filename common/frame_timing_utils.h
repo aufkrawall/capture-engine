@@ -88,6 +88,15 @@ inline int64_t ComputeIdealOutputQpc(int64_t gridStartQpc, int64_t gridTickCount
     return gridStartQpc + (gridTickCount - 1) * targetIntervalTicks;
 }
 
+inline int64_t ComputeWgcSelectionTargetQpc(int64_t scheduledSampleQpc, int64_t gridStartQpc, int64_t gridTickCount,
+                                            int64_t targetIntervalTicks) {
+    if (scheduledSampleQpc > 0) {
+        return scheduledSampleQpc;
+    }
+
+    return ComputeIdealOutputQpc(gridStartQpc, gridTickCount, targetIntervalTicks);
+}
+
 inline int64_t ComputeCfrFrameIndexForElapsedUs(int64_t elapsedUs, int fps, int64_t lastAssignedFrameIndex) {
     if (fps <= 0) {
         fps = 60;

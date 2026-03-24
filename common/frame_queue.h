@@ -51,6 +51,8 @@ struct QueuedFrame {
             other.texture = nullptr;
             timestamp = other.timestamp;
             other.timestamp = 0;
+            rawTimestamp = other.rawTimestamp;
+            other.rawTimestamp = 0;
             width = other.width;
             other.width = 0;
             height = other.height;
@@ -59,6 +61,8 @@ struct QueuedFrame {
             other.isInjectMode = false;
             isHDR = other.isHDR;
             other.isHDR = false;
+            duplicateSourceTimestamp = other.duplicateSourceTimestamp;
+            other.duplicateSourceTimestamp = false;
             captureLeft = other.captureLeft;
             other.captureLeft = 0;
             captureTop = other.captureTop;
@@ -89,10 +93,12 @@ struct QueuedFrame {
 
     // Common fields
     int64_t timestamp = 0;
+    int64_t rawTimestamp = 0;
     uint32_t width = 0;
     uint32_t height = 0;
     bool isInjectMode = false;  // true = use inject fields, false = use framegrab fields
     bool isHDR = false;         // New: Signals Rec.2100 PQ content
+    bool duplicateSourceTimestamp = false;
     int32_t captureLeft = 0;    // Screen-space origin for partial-capture cursor overlay
     int32_t captureTop = 0;
 

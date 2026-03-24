@@ -268,7 +268,8 @@ public:
     // stored, so std::function overhead and its non-atomic nature are avoided.
     // This eliminates the data race between the WinRT callback thread (reader)
     // and the main thread (writer during start/stop recording).
-    using DirectFrameCallbackFn = void (*)(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, bool, int32_t, int32_t);
+    using DirectFrameCallbackFn =
+        void (*)(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool, bool, int32_t, int32_t);
     std::atomic<DirectFrameCallbackFn> frameCallback_{nullptr};
     std::atomic<uint32_t> callbackFrameCount_{0};
     std::atomic<uint32_t> inputFrameCount_{0};
@@ -294,6 +295,7 @@ public:
     std::atomic<uint32_t> staleSkipCount_{0};
     std::atomic<uint32_t> staleDuplicateTimestampCount_{0};
     std::atomic<uint32_t> staleOutOfOrderTimestampCount_{0};
+    std::atomic<uint32_t> normalizedDuplicateTimestampCount_{0};
     std::atomic<uint32_t> cursorOnlySkipCount_{0};
     std::atomic<uint32_t> poolDropCount_{0};
     bool dirtyRegionModeEnabled_ = false;
@@ -476,6 +478,7 @@ public:
         staleSkipCount_.store(0, std::memory_order_relaxed);
         staleDuplicateTimestampCount_.store(0, std::memory_order_relaxed);
         staleOutOfOrderTimestampCount_.store(0, std::memory_order_relaxed);
+        normalizedDuplicateTimestampCount_.store(0, std::memory_order_relaxed);
         cursorOnlySkipCount_.store(0, std::memory_order_relaxed);
         poolDropCount_.store(0, std::memory_order_relaxed);
         lastCopyUs_.store(0, std::memory_order_relaxed);
@@ -626,7 +629,10 @@ public:
         return lastObservedRawSourceQpc > 0 && sourceFrameQpc < lastObservedRawSourceQpc;
     }
 
-    int64_t NormalizeSourceFrameQpc(int64_t sourceFrameQpc) {
+    int64_t NormalizeSourceFrameQpc(int64_t sourceFrameQpc, bool* duplicateSourceTimestamp = nullptr) {
+        if (duplicateSourceTimestamp) {
+            *duplicateSourceTimestamp = false;
+        }
         if (sourceFrameQpc <= 0) {
             return 0;
         }
@@ -635,8 +641,16 @@ public:
         const int64_t lastObservedRawSourceQpc = lastObservedRawSourceQpc_.load(std::memory_order_relaxed);
         const int64_t lastAssignedSourceQpc = lastAssignedSourceQpc_.load(std::memory_order_relaxed);
         if (lastAssignedSourceQpc > 0 && rawSourceFrameQpc <= lastAssignedSourceQpc) {
+            if (duplicateSourceTimestamp) {
+                *duplicateSourceTimestamp = true;
+            }
+            normalizedDuplicateTimestampCount_.fetch_add(1, std::memory_order_relaxed);
             sourceFrameQpc = lastAssignedSourceQpc + 1;
         } else if (lastObservedRawSourceQpc > 0 && rawSourceFrameQpc == lastObservedRawSourceQpc) {
+            if (duplicateSourceTimestamp) {
+                *duplicateSourceTimestamp = true;
+            }
+            normalizedDuplicateTimestampCount_.fetch_add(1, std::memory_order_relaxed);
             sourceFrameQpc = lastObservedRawSourceQpc + 1;
         }
 
@@ -1111,7 +1125,8 @@ public:
             return false;
         }
 
-        const int64_t sourceFrameQpc = NormalizeSourceFrameQpc(rawSourceFrameQpc);
+        bool duplicateSourceTimestamp = false;
+        const int64_t sourceFrameQpc = NormalizeSourceFrameQpc(rawSourceFrameQpc, &duplicateSourceTimestamp);
         if (targetIntervalQPC_ > 0 && nextCaptureQPC_ > 0 && sourceFrameQpc > 0 && sourceFrameQpc < nextCaptureQPC_) {
             skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
             pacingSkipCount_.fetch_add(1, std::memory_order_relaxed);
@@ -1184,14 +1199,16 @@ public:
                         outputFrame->width = desc.Width;
                         outputFrame->height = desc.Height;
                         outputFrame->timestamp = deliveredTimestamp;
+                        outputFrame->rawTimestamp = rawSourceFrameQpc;
                         outputFrame->isHDR = captureIsHDR_;
                         outputFrame->captureLeft = captureLeft;
                         outputFrame->captureTop = captureTop;
+                        outputFrame->duplicateSourceTimestamp = duplicateSourceTimestamp;
                     } else {
                         auto cb = frameCallback_.load(std::memory_order_acquire);
                         if (cb) {
-                            cb(copiedTexture, desc.Width, desc.Height, deliveredTimestamp, captureIsHDR_, captureLeft,
-                               captureTop);
+                            cb(copiedTexture, desc.Width, desc.Height, deliveredTimestamp, rawSourceFrameQpc,
+                               captureIsHDR_, duplicateSourceTimestamp, captureLeft, captureTop);
                         } else {
                             SafeRelease(copiedTexture);
                         }
@@ -1814,8 +1831,8 @@ HANDLE WGCCapture::GetFrameArrivedEvent() const {
 #endif
 }
 
-void WGCCapture::SetDirectFrameCallback(
-    std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, bool, int32_t, int32_t)> callback) {
+void WGCCapture::SetDirectFrameCallback(std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t,
+                                                           bool, bool, int32_t, int32_t)> callback) {
 #if HAS_WGC
     if (impl_) {
         // Extract the raw function pointer from std::function.
@@ -1984,6 +2001,14 @@ uint32_t WGCCapture::GetCursorOnlySkipCount() const {
 uint32_t WGCCapture::GetPoolDropCount() const {
 #if HAS_WGC
     return impl_ ? impl_->poolDropCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetNormalizedDuplicateTimestampCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->normalizedDuplicateTimestampCount_.load(std::memory_order_relaxed) : 0;
 #else
     return 0;
 #endif

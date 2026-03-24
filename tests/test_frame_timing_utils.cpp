@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <deque>
+#include <utility>
 #include "../common/frame_queue.h"
 #include "../common/frame_timing_utils.h"
 
@@ -204,6 +205,16 @@ TEST(FrameTimingUtilsTest, ComputeIdealOutputQpcUsesPreviousGridTick) {
     EXPECT_EQ(ComputeIdealOutputQpc(100, 3, 50), 200);
 }
 
+TEST(FrameTimingUtilsTest, ComputeWgcSelectionTargetPrefersScheduledSampleQpc) {
+    EXPECT_EQ(ComputeWgcSelectionTargetQpc(250, 100, 3, 50), 250);
+    EXPECT_EQ(ComputeWgcSelectionTargetQpc(0, 100, 3, 50), 200);
+}
+
+TEST(FrameTimingUtilsTest, ComputeWgcSelectionTargetUsesGridWhenScheduledSampleMissing) {
+    EXPECT_EQ(ComputeWgcSelectionTargetQpc(0, 1200, 1, 100), 1200);
+    EXPECT_EQ(ComputeWgcSelectionTargetQpc(0, 1200, 4, 100), 1500);
+}
+
 TEST(FrameTimingUtilsTest, ComputeCfrFrameIndexUsesElapsedTimeFromRecordingStart) {
     EXPECT_EQ(ComputeCfrFrameIndexForElapsedUs(0, 60, -1), 0);
     EXPECT_EQ(ComputeCfrFrameIndexForElapsedUs(16667, 60, 0), 1);
@@ -283,6 +294,8 @@ TEST(FrameTimingUtilsTest, QueuedFrameMovePreservesCaptureOrigin) {
     input.textureIndex = 4;
     input.enqueueQpc = 12345;
     input.deferCount = 2;
+    input.rawTimestamp = 54321;
+    input.duplicateSourceTimestamp = true;
 
     QueuedFrame moved(std::move(input));
     EXPECT_EQ(moved.captureLeft, 321);
@@ -291,10 +304,14 @@ TEST(FrameTimingUtilsTest, QueuedFrameMovePreservesCaptureOrigin) {
     EXPECT_EQ(moved.textureIndex, 4);
     EXPECT_EQ(moved.enqueueQpc, 12345);
     EXPECT_EQ(moved.deferCount, 2u);
+    EXPECT_EQ(moved.rawTimestamp, 54321);
+    EXPECT_TRUE(moved.duplicateSourceTimestamp);
     EXPECT_EQ(input.captureLeft, 0);
     EXPECT_EQ(input.captureTop, 0);
     EXPECT_EQ(input.frameIndex, 0u);
     EXPECT_EQ(input.textureIndex, -1);
     EXPECT_EQ(input.enqueueQpc, 0);
     EXPECT_EQ(input.deferCount, 0u);
+    EXPECT_EQ(input.rawTimestamp, 0);
+    EXPECT_FALSE(input.duplicateSourceTimestamp);
 }

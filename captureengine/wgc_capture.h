@@ -17,9 +17,11 @@ struct WGCCapturedFrame {
     uint32_t width = 0;
     uint32_t height = 0;
     int64_t timestamp = 0;  // QPC ticks (same unit as inject mode)
+    int64_t rawTimestamp = 0;
     bool isHDR = false;     // True when the captured target is currently HDR/PQ
     int32_t captureLeft = 0;
     int32_t captureTop = 0;
+    bool duplicateSourceTimestamp = false;
 };
 
 // Windows Graphics Capture implementation
@@ -86,8 +88,8 @@ public:
 
     // OBS-style direct callback: frames processed directly in WinRT callback
     // Callback receives: texture, width, height, QPC timestamp, HDR flag, capture origin
-    void SetDirectFrameCallback(
-        std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, bool, int32_t, int32_t)> callback);
+    void SetDirectFrameCallback(std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool,
+                                                   bool, int32_t, int32_t)> callback);
 
     // Get count of frames processed via direct callback
     uint32_t GetCallbackFrameCount() const;
@@ -118,6 +120,7 @@ public:
     uint32_t GetStaleOutOfOrderTimestampCount() const;
     uint32_t GetCursorOnlySkipCount() const;
     uint32_t GetPoolDropCount() const;
+    uint32_t GetNormalizedDuplicateTimestampCount() const;
 
     // Throttle capture rate to avoid wasting GPU bandwidth on excess frames.
     // Set to target recording FPS. 0 disables throttle.

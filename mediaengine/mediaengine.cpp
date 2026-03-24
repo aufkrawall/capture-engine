@@ -782,7 +782,7 @@ public:
 
         int64_t realElapsedUs = steadyElapsedUs;
         if (config.video.useVFR) {
-            realElapsedUs = std::max<int64_t>(timestampQPC, injectTimelineState.lastElapsedUs);
+            realElapsedUs = ComputeSourceDrivenElapsedUs(qpcFreq, timestampQPC, steadyElapsedUs, injectTimelineState);
         }
         injectTimelineState.lastElapsedUs = std::max(injectTimelineState.lastElapsedUs, realElapsedUs);
 
