@@ -1,8 +1,8 @@
 #pragma once
 
-#include <algorithm>
 #include <stddef.h>
 #include <stdint.h>
+#include <algorithm>
 
 namespace ce::capture_policy {
 
@@ -90,9 +90,9 @@ struct WarmupTransitionState {
     uint32_t hiddenStartupFrames = 0;
 };
 
-inline bool ShouldCommitRecordingWarmup(bool useScreenGrab, bool useVFR, bool poppedFrame,
-                                        bool hasBufferedWgcFrame, size_t bufferedInjectFrames,
-                                        size_t injectReserveFrames, uint32_t warmupElapsedMs) {
+inline bool ShouldCommitRecordingWarmup(bool useScreenGrab, bool useVFR, bool poppedFrame, bool hasBufferedWgcFrame,
+                                        size_t bufferedInjectFrames, size_t injectReserveFrames,
+                                        uint32_t warmupElapsedMs) {
     if (!poppedFrame) {
         return false;
     }
@@ -196,8 +196,10 @@ inline bool ShouldEnterWgcLowSourceMode(const WgcAdaptiveTelemetry& telemetry) {
         return false;
     }
 
-    return telemetry.recentDeliveredFps < telemetry.outputFps || telemetry.recentDeliveredMin250Fps < telemetry.outputFps ||
-           telemetry.recentDeliveredMin500Fps < telemetry.outputFps || telemetry.recentInputMin250Fps < telemetry.outputFps ||
+    return telemetry.recentDeliveredFps < telemetry.outputFps ||
+           telemetry.recentDeliveredMin250Fps < telemetry.outputFps ||
+           telemetry.recentDeliveredMin500Fps < telemetry.outputFps ||
+           telemetry.recentInputMin250Fps < telemetry.outputFps ||
            telemetry.recentInputMin500Fps < telemetry.outputFps ||
            telemetry.emptyTickPermille >= kWgcLowSourceEmptyTickPermille;
 }
@@ -220,8 +222,7 @@ inline bool ShouldUseWgcLowSourceMode(const WgcAdaptiveTelemetry& telemetry) {
     return ShouldEnterWgcLowSourceMode(telemetry);
 }
 
-inline bool IsWgcReservePressureActive(uint32_t noReserveTickCount, uint32_t queueTickSampleCount,
-                                       uint32_t outputFps) {
+inline bool IsWgcReservePressureActive(uint32_t noReserveTickCount, uint32_t queueTickSampleCount, uint32_t outputFps) {
     const uint32_t minSamples = std::max<uint32_t>(outputFps / 4u, 8u);
     if (queueTickSampleCount < minSamples || queueTickSampleCount == 0) {
         return false;
@@ -254,8 +255,8 @@ inline int64_t GetWgcMaxSelectionLagQpc(int64_t targetIntervalTicks, bool lowSou
         return 0;
     }
 
-    const int64_t maxLagTicks =
-        lowSourceMode ? static_cast<int64_t>(kWgcLowSourceMaxSelectionLagTicks) : static_cast<int64_t>(kWgcMaxSelectionLagTicks);
+    const int64_t maxLagTicks = lowSourceMode ? static_cast<int64_t>(kWgcLowSourceMaxSelectionLagTicks)
+                                              : static_cast<int64_t>(kWgcMaxSelectionLagTicks);
     return targetIntervalTicks * maxLagTicks;
 }
 
@@ -272,7 +273,7 @@ inline int64_t GetWgcSelectionTargetQpc(int64_t scheduledSampleQpc, int64_t fall
 }
 
 inline int64_t GetWgcMinimumFreshTimestampQpc(int64_t lastEmittedSourceQpc, int64_t scheduledSampleQpc,
-                                               int64_t targetIntervalTicks, bool lowSourceMode) {
+                                              int64_t targetIntervalTicks, bool lowSourceMode) {
     int64_t minFreshTimestampQpc = lastEmittedSourceQpc > 0 ? (lastEmittedSourceQpc + 1) : 0;
     const int64_t maxSelectionLagQpc = GetWgcMaxSelectionLagQpc(targetIntervalTicks, lowSourceMode);
     if (scheduledSampleQpc > 0 && maxSelectionLagQpc > 0) {
@@ -281,16 +282,26 @@ inline int64_t GetWgcMinimumFreshTimestampQpc(int64_t lastEmittedSourceQpc, int6
     return minFreshTimestampQpc;
 }
 
+inline int64_t GetWgcStaleUniqueFallbackMinTimestampQpc(int64_t lastEmittedSourceQpc, int64_t selectionTargetQpc,
+                                                        int64_t targetIntervalTicks, bool lowSourceMode) {
+    int64_t minTimestampQpc = lastEmittedSourceQpc > 0 ? (lastEmittedSourceQpc + 1) : 0;
+    const int64_t maxSelectionLagQpc = GetWgcMaxSelectionLagQpc(targetIntervalTicks, lowSourceMode);
+    if (selectionTargetQpc > 0 && maxSelectionLagQpc > 0 && targetIntervalTicks > 0) {
+        // When the queue is underfed, allow one extra output tick of lag before we
+        // prefer repeating the previous frame over consuming unique source content.
+        minTimestampQpc = std::max(minTimestampQpc, selectionTargetQpc - maxSelectionLagQpc - targetIntervalTicks);
+    }
+    return minTimestampQpc;
+}
+
 inline bool IsWgcTimestampFreshEnough(int64_t frameTimestampQpc, int64_t minFreshTimestampQpc) {
     return frameTimestampQpc > 0 && (minFreshTimestampQpc <= 0 || frameTimestampQpc >= minFreshTimestampQpc);
 }
 
 inline bool ShouldPreferEarlierFreshWgcFrameToPreserveReserve(int64_t earlierFrameTimestampQpc,
                                                               int64_t selectedFrameTimestampQpc,
-                                                              int64_t selectionTargetQpc,
-                                                              int64_t targetIntervalTicks,
-                                                              bool reservePressureActive,
-                                                              bool lowSourceMode) {
+                                                              int64_t selectionTargetQpc, int64_t targetIntervalTicks,
+                                                              bool reservePressureActive, bool lowSourceMode) {
     if (earlierFrameTimestampQpc <= 0 || selectedFrameTimestampQpc <= 0 || selectionTargetQpc <= 0 ||
         targetIntervalTicks <= 0) {
         return false;
@@ -302,16 +313,15 @@ inline bool ShouldPreferEarlierFreshWgcFrameToPreserveReserve(int64_t earlierFra
     const int64_t selectedDistance = selectedFrameTimestampQpc >= selectionTargetQpc
                                          ? (selectedFrameTimestampQpc - selectionTargetQpc)
                                          : (selectionTargetQpc - selectedFrameTimestampQpc);
-    const uint32_t biasPermille = (reservePressureActive || lowSourceMode) ? kWgcReserveFragileBiasPermille
-                                                                            : kWgcReserveBiasPermille;
-    const int64_t reserveBiasQpc = std::max<int64_t>((targetIntervalTicks * static_cast<int64_t>(biasPermille)) / 1000,
-                                                     1);
+    const uint32_t biasPermille =
+        (reservePressureActive || lowSourceMode) ? kWgcReserveFragileBiasPermille : kWgcReserveBiasPermille;
+    const int64_t reserveBiasQpc =
+        std::max<int64_t>((targetIntervalTicks * static_cast<int64_t>(biasPermille)) / 1000, 1);
     return earlierDistance <= (selectedDistance + reserveBiasQpc);
 }
 
-inline bool ShouldAllowSingleFreshWgcHold(bool reservePressureActive, bool lowSourceMode,
-                                          uint32_t recentInputMin250Fps, uint32_t outputFps,
-                                          double smoothedInputPerTick) {
+inline bool ShouldAllowSingleFreshWgcHold(bool reservePressureActive, bool lowSourceMode, uint32_t recentInputMin250Fps,
+                                          uint32_t outputFps, double smoothedInputPerTick) {
     if (!(reservePressureActive || lowSourceMode) || outputFps == 0) {
         return false;
     }

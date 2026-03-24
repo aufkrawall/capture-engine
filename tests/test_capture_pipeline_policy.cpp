@@ -4,30 +4,22 @@
 namespace policy = ce::capture_policy;
 
 TEST(CapturePipelinePolicyTest, WarmupCommitRequiresPoppedFrame) {
-    EXPECT_FALSE(policy::ShouldCommitRecordingWarmup(false, false, false, true, 4, 2,
-                                                     policy::kRecordingWarmupMaxMs));
+    EXPECT_FALSE(policy::ShouldCommitRecordingWarmup(false, false, false, true, 4, 2, policy::kRecordingWarmupMaxMs));
 }
 
 TEST(CapturePipelinePolicyTest, WarmupCommitHonorsMinAndMaxThresholds) {
-    EXPECT_FALSE(policy::ShouldCommitRecordingWarmup(false, false, true, false, 8, 2,
-                                                     policy::kRecordingWarmupMinMs - 1));
-    EXPECT_TRUE(policy::ShouldCommitRecordingWarmup(false, false, true, false, 0, 4,
-                                                    policy::kRecordingWarmupMaxMs));
+    EXPECT_FALSE(
+        policy::ShouldCommitRecordingWarmup(false, false, true, false, 8, 2, policy::kRecordingWarmupMinMs - 1));
+    EXPECT_TRUE(policy::ShouldCommitRecordingWarmup(false, false, true, false, 0, 4, policy::kRecordingWarmupMaxMs));
 }
 
 TEST(CapturePipelinePolicyTest, WarmupCommitUsesVfrAndBufferedSourceRules) {
-    EXPECT_TRUE(policy::ShouldCommitRecordingWarmup(false, true, true, false, 0, 3,
-                                                    policy::kRecordingWarmupMinMs));
-    EXPECT_FALSE(policy::ShouldCommitRecordingWarmup(true, false, true, false, 0, 0,
-                                                     policy::kRecordingWarmupMinMs));
-    EXPECT_TRUE(policy::ShouldCommitRecordingWarmup(true, false, true, true, 0, 0,
-                                                    policy::kRecordingWarmupMinMs));
-    EXPECT_FALSE(policy::ShouldCommitRecordingWarmup(false, false, true, false, 1, 2,
-                                                     policy::kRecordingWarmupMinMs));
-    EXPECT_FALSE(policy::ShouldCommitRecordingWarmup(false, false, true, false, 2, 2,
-                                                      policy::kRecordingWarmupMinMs));
-    EXPECT_TRUE(policy::ShouldCommitRecordingWarmup(false, false, true, false, 3, 2,
-                                                    policy::kRecordingWarmupMinMs));
+    EXPECT_TRUE(policy::ShouldCommitRecordingWarmup(false, true, true, false, 0, 3, policy::kRecordingWarmupMinMs));
+    EXPECT_FALSE(policy::ShouldCommitRecordingWarmup(true, false, true, false, 0, 0, policy::kRecordingWarmupMinMs));
+    EXPECT_TRUE(policy::ShouldCommitRecordingWarmup(true, false, true, true, 0, 0, policy::kRecordingWarmupMinMs));
+    EXPECT_FALSE(policy::ShouldCommitRecordingWarmup(false, false, true, false, 1, 2, policy::kRecordingWarmupMinMs));
+    EXPECT_FALSE(policy::ShouldCommitRecordingWarmup(false, false, true, false, 2, 2, policy::kRecordingWarmupMinMs));
+    EXPECT_TRUE(policy::ShouldCommitRecordingWarmup(false, false, true, false, 3, 2, policy::kRecordingWarmupMinMs));
 }
 
 TEST(CapturePipelinePolicyTest, InjectReserveFramesScaleWithFenceLeadTime) {
@@ -82,14 +74,14 @@ TEST(CapturePipelinePolicyTest, AutoWgcFallbackPolicyUsesSourcePidAwareDelayAndG
     EXPECT_FALSE(policy::ShouldTriggerAutoWgcFallback(false, false, true, true, 500, 42));
     EXPECT_FALSE(policy::ShouldTriggerAutoWgcFallback(false, true, false, true, 500, 42));
     EXPECT_FALSE(policy::ShouldTriggerAutoWgcFallback(false, true, true, false, 500, 42));
-    EXPECT_FALSE(policy::ShouldTriggerAutoWgcFallback(false, true, true, true,
-                                                      policy::kAutoWgcFallbackDelayNoPidMs, 0));
-    EXPECT_TRUE(policy::ShouldTriggerAutoWgcFallback(false, true, true, true,
-                                                     policy::kAutoWgcFallbackDelayNoPidMs + 1, 0));
-    EXPECT_FALSE(policy::ShouldTriggerAutoWgcFallback(false, true, true, true,
-                                                      policy::kAutoWgcFallbackDelayWithPidMs, 7));
-    EXPECT_TRUE(policy::ShouldTriggerAutoWgcFallback(false, true, true, true,
-                                                     policy::kAutoWgcFallbackDelayWithPidMs + 1, 7));
+    EXPECT_FALSE(
+        policy::ShouldTriggerAutoWgcFallback(false, true, true, true, policy::kAutoWgcFallbackDelayNoPidMs, 0));
+    EXPECT_TRUE(
+        policy::ShouldTriggerAutoWgcFallback(false, true, true, true, policy::kAutoWgcFallbackDelayNoPidMs + 1, 0));
+    EXPECT_FALSE(
+        policy::ShouldTriggerAutoWgcFallback(false, true, true, true, policy::kAutoWgcFallbackDelayWithPidMs, 7));
+    EXPECT_TRUE(
+        policy::ShouldTriggerAutoWgcFallback(false, true, true, true, policy::kAutoWgcFallbackDelayWithPidMs + 1, 7));
 }
 
 TEST(CapturePipelinePolicyTest, WgcLowSourceModePrefersBufferCushionDuringUnderfeed) {
@@ -159,6 +151,18 @@ TEST(CapturePipelinePolicyTest, WgcFreshnessGuardRequiresRecentTimestamp) {
     EXPECT_FALSE(policy::IsWgcTimestampFreshEnough(1299, minFreshNormal));
 }
 
+TEST(CapturePipelinePolicyTest, WgcStaleUniqueFallbackAllowsOneExtraTickOfLag) {
+    const int64_t targetIntervalTicks = 100;
+    EXPECT_EQ(policy::GetWgcStaleUniqueFallbackMinTimestampQpc(1000, 1500, targetIntervalTicks, false), 1200);
+    EXPECT_EQ(policy::GetWgcStaleUniqueFallbackMinTimestampQpc(1000, 1500, targetIntervalTicks, true), 1100);
+}
+
+TEST(CapturePipelinePolicyTest, WgcStaleUniqueFallbackStillRequiresNewSourceTimestamp) {
+    const int64_t targetIntervalTicks = 100;
+    EXPECT_EQ(policy::GetWgcStaleUniqueFallbackMinTimestampQpc(1499, 1500, targetIntervalTicks, false), 1500);
+    EXPECT_EQ(policy::GetWgcStaleUniqueFallbackMinTimestampQpc(1500, 1500, targetIntervalTicks, false), 1501);
+}
+
 TEST(CapturePipelinePolicyTest, WgcSelectionTargetDelaysLiveSelectionByOneTick) {
     EXPECT_EQ(policy::GetWgcSelectionTargetQpc(1500, 1400, 100, true), 1400);
     EXPECT_EQ(policy::GetWgcSelectionTargetQpc(1500, 1400, 100, false), 1500);
@@ -203,7 +207,8 @@ TEST(CapturePipelinePolicyTest, CfrCatchupRequiresMeaningfulShortfallOrForceThre
     EXPECT_FALSE(policy::ShouldCfrCatchUpToWallClock(0, true, true, true));
     EXPECT_FALSE(policy::ShouldCfrCatchUpToWallClock(policy::kCfrShortfallCatchupThresholdTicks - 1, true, true, true));
     EXPECT_TRUE(policy::ShouldCfrCatchUpToWallClock(policy::kCfrShortfallCatchupThresholdTicks, true, true, false));
-    EXPECT_TRUE(policy::ShouldCfrCatchUpToWallClock(policy::kCfrShortfallForceCatchupThresholdTicks, false, false, false));
+    EXPECT_TRUE(
+        policy::ShouldCfrCatchUpToWallClock(policy::kCfrShortfallForceCatchupThresholdTicks, false, false, false));
     EXPECT_FALSE(policy::ShouldCfrCatchUpToWallClock(policy::kCfrShortfallCatchupThresholdTicks, false, false, true));
 }
 

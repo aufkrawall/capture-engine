@@ -12,11 +12,11 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include "../common/frame_timing_utils.h"
 #include "audio_resampler.h"
 #include "audio_ring_buffer.h"  // Pull Model Buffer
 #include "audio_sync_utils.h"
 #include "video_encoder.h"
-#include "../common/frame_timing_utils.h"
 
 extern "C" {
 extern ID3D11Device* g_SharedD3D11Device;
@@ -65,16 +65,17 @@ public:
         uint64_t postResampleTrimSamples = 0;           // Samples discarded from post-resample backlog cap
         uint64_t underrunPadSamples = 0;                // Silence-padded samples due to source underrun
         uint64_t startupSyntheticRingSamples = 0;       // Startup silence still queued in ringBuffer (48k samples/ch)
-        uint64_t startupSyntheticResamplerSamples = 0;  // Startup silence already read from ringBuffer into syncResampler
-        uint64_t startupSyntheticPostSamples = 0;       // Startup silence staged in postResampleBuffer
-        int64_t alignedStartMs = -1;                    // First source packet offset relative to recording start
-        int64_t observedLateStartMs = 0;                // Latest observed startup delay used for startup pull slack
-        bool hasAlignedStart = false;                   // True after first packet aligned to recording start
-        bool isPrimed = false;                          // True after source has buffered a startup safety cushion
-        bool bootstrapComplete = false;                 // True after startup backlog is settled and live sync may engage
-        bool pendingUnderrunRecoveryFade = false;       // Arm fade-in when real audio resumes after padded silence
-        uint64_t pendingLatencyTrimSamples = 0;         // Aggregated trim samples since the last periodic log
-        uint32_t pendingLatencyTrimEvents = 0;          // Aggregated trim events since the last periodic log
+        uint64_t startupSyntheticResamplerSamples =
+            0;                                     // Startup silence already read from ringBuffer into syncResampler
+        uint64_t startupSyntheticPostSamples = 0;  // Startup silence staged in postResampleBuffer
+        int64_t alignedStartMs = -1;               // First source packet offset relative to recording start
+        int64_t observedLateStartMs = 0;           // Latest observed startup delay used for startup pull slack
+        bool hasAlignedStart = false;              // True after first packet aligned to recording start
+        bool isPrimed = false;                     // True after source has buffered a startup safety cushion
+        bool bootstrapComplete = false;            // True after startup backlog is settled and live sync may engage
+        bool pendingUnderrunRecoveryFade = false;  // Arm fade-in when real audio resumes after padded silence
+        uint64_t pendingLatencyTrimSamples = 0;    // Aggregated trim samples since the last periodic log
+        uint32_t pendingLatencyTrimEvents = 0;     // Aggregated trim events since the last periodic log
 
         AudioConfig config;
         int track = 0;  // Target track number
@@ -765,7 +766,7 @@ public:
         }
 
         // PULL MODEL: Encode audio for this video frame (same as screengrab mode)
-        PullAndEncodeAudio(debugTimestamp);
+        PullAndEncodeAudio(realElapsedUs / 1000);
         return res;
     }
 
@@ -802,7 +803,7 @@ public:
             }
         }
 
-        PullAndEncodeAudio(debugTimestamp);
+        PullAndEncodeAudio(realElapsedUs / 1000);
         return true;
     }
 
@@ -876,12 +877,12 @@ public:
         }
 
         // PULL MODEL: Encode audio for this video frame
-        PullAndEncodeAudio(debugTimestamp);
+        PullAndEncodeAudio(realElapsedUs / 1000);
     }
 
-    // PULL MODEL: Pull audio from RingBuffers and encode based on Video PTS
-    // This version properly groups sources by track and mixes before encoding
-    void PullAndEncodeAudio(int64_t videoTimestampMs, bool forceDrain = false) {
+    // PULL MODEL: Pull audio from RingBuffers and encode against the relative
+    // recording timeline that also drives CFR video emission.
+    void PullAndEncodeAudio(int64_t videoTimelineMs, bool forceDrain = false) {
         if (!recording || audioSources.empty())
             return;
 
@@ -892,14 +893,16 @@ public:
         constexpr int64_t kBootstrapHoldLimitMs = 500;
         constexpr int64_t kBaseTargetLatencySamples = 960;
         constexpr int64_t kMaxPipelineLagContributionMs = 40;
-        constexpr int64_t kRuntimeMaxLeadSamples = SAMPLE_RATE / 10;        // 100ms above target
-        constexpr int64_t kRuntimeMaxDropPerCall = SAMPLE_RATE / 200;       // 5ms
-        constexpr int64_t kRuntimeDropFadeSamples = SAMPLE_RATE / 200;      // 5ms
+        constexpr int64_t kRuntimeMaxLeadSamples = SAMPLE_RATE / 10;    // 100ms above target
+        constexpr int64_t kRuntimeMaxDropPerCall = SAMPLE_RATE / 200;   // 5ms
+        constexpr int64_t kRuntimeDropFadeSamples = SAMPLE_RATE / 200;  // 5ms
         constexpr int64_t kMinCompensationBufferSamples = kBaseTargetLatencySamples / 4;
+        constexpr int64_t kWgcCfrLeadWarningSamples = SAMPLE_RATE / 5;  // 200ms
 
+        const bool isWgcCfrRecording = IsWgcCfrRecording();
         const int64_t wallVideoMs = this->videoElapsedMs.load();
         int64_t encodedVideoMs = 0;
-        int64_t audioTargetMs = videoTimestampMs;
+        int64_t audioTargetMs = videoTimelineMs;
         if (videoEnc) {
             int64_t encodedVideoUs = videoEnc->GetEncodedDurationUs();
             if (encodedVideoUs > 0) {
@@ -942,7 +945,8 @@ public:
                     primedSampleCount >= static_cast<size_t>(kPrimedSourceCushionSamples)) {
                     src.isPrimed = true;
                     DLL_Log(
-                        "[PullAudio] Source primed - src=%d realBuffered=%zu samples synthetic(ring=%llu inflight=%llu post=%llu) lateStart=%lldms",
+                        "[PullAudio] Source primed - src=%d realBuffered=%zu samples synthetic(ring=%llu inflight=%llu "
+                        "post=%llu) lateStart=%lldms",
                         (int)srcIdx, primedSampleCount, (unsigned long long)src.startupSyntheticRingSamples,
                         (unsigned long long)src.startupSyntheticResamplerSamples,
                         (unsigned long long)src.startupSyntheticPostSamples, src.observedLateStartMs);
@@ -954,9 +958,8 @@ public:
 
             const bool trackStartupSettled =
                 ce::audio::IsTrackAudioStartupSettled(trackBootstrapComplete[track], trackAllPrimed);
-            const int64_t trackAudioPullLatencyMs =
-                ce::audio::ComputeAudioPullLatencyMs(kSteadyAudioPullLatencyMs, trackStartupSettled,
-                                                     trackMaxObservedLateStartMs);
+            const int64_t trackAudioPullLatencyMs = ce::audio::ComputeAudioPullLatencyMs(
+                kSteadyAudioPullLatencyMs, trackStartupSettled, trackMaxObservedLateStartMs);
             const int64_t trackAudioTargetMs = audioTargetMs - trackAudioPullLatencyMs;
             if (trackAudioTargetMs <= 0) {
                 continue;
@@ -1032,13 +1035,15 @@ public:
             if (samplesToEncode > MAX_GAP_SAMPLES && !initialTrackCatchup) {
                 warpCount++;
                 DLL_Log(
-                    "[PullAudio] Large A/V gap (%.2f sec) on track %d - inserting silence (warp #%d). target=%lld, encoded=%lld",
+                    "[PullAudio] Large A/V gap (%.2f sec) on track %d - inserting silence (warp #%d). target=%lld, "
+                    "encoded=%lld",
                     (double)samplesToEncode / SAMPLE_RATE, track, warpCount, targetSamples,
                     encodedSamplesPerSource[firstSrcIdx]);
 
                 for (size_t srcIdx : srcIndices) {
                     if (audioSources[srcIdx].ringBuffer) {
-                        size_t skippedFloats = audioSources[srcIdx].ringBuffer->Skip(audioSources[srcIdx].ringBuffer->GetAvailable());
+                        size_t skippedFloats =
+                            audioSources[srcIdx].ringBuffer->Skip(audioSources[srcIdx].ringBuffer->GetAvailable());
                         ce::audio::ConsumeSyntheticBufferedSamples(audioSources[srcIdx].startupSyntheticRingSamples,
                                                                    skippedFloats / CHANNELS);
                     }
@@ -1075,8 +1080,9 @@ public:
                 const int64_t targetLatencySamples = targetBufferedSamples;
                 if (src.bootstrapComplete && src.syncResampler && src.syncResampler->IsReady()) {
                     size_t rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
-                    if ((int64_t)rbAvailable > targetLatencySamples + kRuntimeMaxLeadSamples) {
-                        int64_t dropSamplesTotal = (int64_t)rbAvailable - (targetLatencySamples + kRuntimeMaxLeadSamples);
+                    if (!isWgcCfrRecording && (int64_t)rbAvailable > targetLatencySamples + kRuntimeMaxLeadSamples) {
+                        int64_t dropSamplesTotal =
+                            (int64_t)rbAvailable - (targetLatencySamples + kRuntimeMaxLeadSamples);
                         int64_t dropSamples = std::min(dropSamplesTotal, kRuntimeMaxDropPerCall);
                         if (dropSamples > 0 && src.ringBuffer) {
                             if (src.postResampleBuffer.size() >= CHANNELS) {
@@ -1097,17 +1103,28 @@ public:
                             src.pendingLatencyTrimEvents++;
                             if (dropLogCounter++ % 500 == 0) {
                                 DLL_Log(
-                                    "[PullAudio] Audio latency cap: src %d ahead by %lld samples - trimming %lld (capped from %lld, target=%lld, pipelineLag=%lldms)",
+                                    "[PullAudio] Audio latency cap: src %d ahead by %lld samples - trimming %lld "
+                                    "(capped from %lld, target=%lld, pipelineLag=%lldms)",
                                     (int)srcIdx, (int64_t)rbAvailable - targetLatencySamples, trimmedSamples,
                                     dropSamplesTotal, targetLatencySamples, videoPipelineLagMs);
                             }
                             rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
                         }
+                    } else if (isWgcCfrRecording &&
+                               (int64_t)rbAvailable > targetLatencySamples + kWgcCfrLeadWarningSamples &&
+                               dropLogCounter++ % 500 == 0) {
+                        DLL_Log(
+                            "[PullAudio] WGC CFR lead warning: src %d ahead by %lld samples (target=%lld, "
+                            "pipelineLag=%lldms). "
+                            "Live trimming disabled to preserve pitch; inspect encoder throughput or source clock "
+                            "drift.",
+                            (int)srcIdx, (int64_t)rbAvailable - targetLatencySamples, targetLatencySamples,
+                            videoPipelineLagMs);
                     }
 
-                    const bool allowLiveDriftCompensation = !IsWgcCfrRecording() &&
-                                                            src.alignedStartMs >= 0 &&
-                                                            !(src.sourceType == AudioConfig::AppAudio && !src.hasAlignedStart);
+                    const bool allowLiveDriftCompensation =
+                        !isWgcCfrRecording && src.alignedStartMs >= 0 &&
+                        !(src.sourceType == AudioConfig::AppAudio && !src.hasAlignedStart);
                     if (allowLiveDriftCompensation && (int64_t)rbAvailable >= kMinCompensationBufferSamples) {
                         int64_t rbError = (int64_t)rbAvailable - targetLatencySamples;
                         int64_t fakeExpectedSamples = src.syncSamplesOutput - rbError;
@@ -1119,12 +1136,14 @@ public:
 
                         if (driftLogCounter++ % 1000 == 0 && abs(rbError) > 100) {
                             DLL_Log(
-                                "[PullAudio] Src %d Buffer Level: %zu (Err: %lld, target=%lld, pipelineLag=%lldms) -> Comp Drift: %lld",
+                                "[PullAudio] Src %d Buffer Level: %zu (Err: %lld, target=%lld, pipelineLag=%lldms) -> "
+                                "Comp Drift: %lld",
                                 (int)srcIdx, rbAvailable, rbError, targetLatencySamples, videoPipelineLagMs, rbError);
                         }
                     } else if (!allowLiveDriftCompensation) {
                         if (driftLogCounter++ % 2000 == 0) {
-                            DLL_Log("[PullAudio] Src %d drift compensation disabled for WGC CFR stability", (int)srcIdx);
+                            DLL_Log("[PullAudio] Src %d drift compensation disabled for WGC CFR stability",
+                                    (int)srcIdx);
                         }
                     } else if (driftLogCounter++ % 2000 == 0) {
                         DLL_Log("[PullAudio] Src %d Buffer low (%zu) - holding drift compensation", (int)srcIdx,
@@ -1155,8 +1174,8 @@ public:
                         }
 
                         size_t actualReadSamples = actualRead / CHANNELS;
-                        uint64_t syntheticReadSamples =
-                            ce::audio::ConsumeSyntheticBufferedSamples(src.startupSyntheticRingSamples, actualReadSamples);
+                        uint64_t syntheticReadSamples = ce::audio::ConsumeSyntheticBufferedSamples(
+                            src.startupSyntheticRingSamples, actualReadSamples);
                         src.startupSyntheticResamplerSamples += syntheticReadSamples;
 
                         uint8_t** resampledData = nullptr;
@@ -1176,8 +1195,10 @@ public:
                                         float alpha = (float)(blendStart + s + 1) / kDropFadeSamples;
                                         float inL = outFloats[s * CHANNELS];
                                         float inR = outFloats[s * CHANNELS + 1];
-                                        outFloats[s * CHANNELS] = src.dropFadeStartL + (inL - src.dropFadeStartL) * alpha;
-                                        outFloats[s * CHANNELS + 1] = src.dropFadeStartR + (inR - src.dropFadeStartR) * alpha;
+                                        outFloats[s * CHANNELS] =
+                                            src.dropFadeStartL + (inL - src.dropFadeStartL) * alpha;
+                                        outFloats[s * CHANNELS + 1] =
+                                            src.dropFadeStartR + (inR - src.dropFadeStartR) * alpha;
                                         src.dropFadeStartL = outFloats[s * CHANNELS];
                                         src.dropFadeStartR = outFloats[s * CHANNELS + 1];
                                     }
@@ -1215,9 +1236,11 @@ public:
                     ce::audio::ConsumeSyntheticBufferedSamples(src.startupSyntheticPostSamples, excess / CHANNELS);
                     src.postResampleTrimSamples += excess / CHANNELS;
                     if (dropLogCounter++ % 100 == 0) {
-                        DLL_Log("[PullAudio] WARNING: Post-resample buffer trim - src %d dropping %zu samples (buffer=%zu cap=%zu)",
-                                (int)srcIdx, excess / CHANNELS, src.postResampleBuffer.size() / CHANNELS,
-                                MAX_POST_RESAMPLE_FLOATS / CHANNELS);
+                        DLL_Log(
+                            "[PullAudio] WARNING: Post-resample buffer trim - src %d dropping %zu samples (buffer=%zu "
+                            "cap=%zu)",
+                            (int)srcIdx, excess / CHANNELS, src.postResampleBuffer.size() / CHANNELS,
+                            MAX_POST_RESAMPLE_FLOATS / CHANNELS);
                     }
                     src.postResampleBuffer.erase(src.postResampleBuffer.begin(),
                                                  src.postResampleBuffer.begin() + (std::ptrdiff_t)excess);
@@ -1253,13 +1276,19 @@ public:
                         src.underrunPadSamples += padSamples;
                     }
                     src.pendingUnderrunRecoveryFade = true;
-                    if (!startupPadding && src.alignedStartMs >= 0 && padSamples >= (size_t)(SAMPLE_RATE / 200) && dropLogCounter++ % 100 == 0) {
-                        DLL_Log("[PullAudio] WARNING: Source underrun - src %d padding %zu samples with silence (available=%zu needed=%zu)",
-                                (int)srcIdx, padSamples, available / CHANNELS, totalFloats / CHANNELS);
-                    } else if (startupPadding && padSamples >= (size_t)(SAMPLE_RATE / 50) && dropLogCounter++ % 200 == 0) {
-                        DLL_Log("[PullAudio] Startup padding - src %d aligned=%d primed=%d boot=%d pad=%zu available=%zu need=%zu",
-                                (int)srcIdx, (int)src.hasAlignedStart, (int)src.isPrimed, (int)src.bootstrapComplete,
-                                padSamples, available / CHANNELS, totalFloats / CHANNELS);
+                    if (!startupPadding && src.alignedStartMs >= 0 && padSamples >= (size_t)(SAMPLE_RATE / 200) &&
+                        dropLogCounter++ % 100 == 0) {
+                        DLL_Log(
+                            "[PullAudio] WARNING: Source underrun - src %d padding %zu samples with silence "
+                            "(available=%zu needed=%zu)",
+                            (int)srcIdx, padSamples, available / CHANNELS, totalFloats / CHANNELS);
+                    } else if (startupPadding && padSamples >= (size_t)(SAMPLE_RATE / 50) &&
+                               dropLogCounter++ % 200 == 0) {
+                        DLL_Log(
+                            "[PullAudio] Startup padding - src %d aligned=%d primed=%d boot=%d pad=%zu available=%zu "
+                            "need=%zu",
+                            (int)srcIdx, (int)src.hasAlignedStart, (int)src.isPrimed, (int)src.bootstrapComplete,
+                            padSamples, available / CHANNELS, totalFloats / CHANNELS);
                     }
                 }
 
@@ -1450,14 +1479,13 @@ public:
 
                     char sourceState[192];
                     std::snprintf(sourceState, sizeof(sourceState),
-                                  "src%zu(rb=%zu sync=%lld start=%lld primed=%d boot=%d synth=%llu/%llu/%llu ovf=%llu lat=%llu boottrim=%llu post=%llu pad=%llu)",
+                                  "src%zu(rb=%zu sync=%lld start=%lld primed=%d boot=%d synth=%llu/%llu/%llu ovf=%llu "
+                                  "lat=%llu boottrim=%llu post=%llu pad=%llu)",
                                   srcIdx, rbLevel, syncOutput, alignedStartMs, (int)srcPrimed, (int)srcBootstrapped,
                                   (unsigned long long)srcSyntheticRing, (unsigned long long)srcSyntheticInflight,
-                                  (unsigned long long)srcSyntheticPost,
-                                  (unsigned long long)srcOverflowDropped,
+                                  (unsigned long long)srcSyntheticPost, (unsigned long long)srcOverflowDropped,
                                   (unsigned long long)srcLatencyTrimmed, (unsigned long long)srcBootstrapTrimmed,
-                                  (unsigned long long)srcPostTrimmed,
-                                  (unsigned long long)srcUnderrunPadded);
+                                  (unsigned long long)srcPostTrimmed, (unsigned long long)srcUnderrunPadded);
                     if (!sourceSummary.empty()) {
                         sourceSummary += "; ";
                     }
@@ -1471,7 +1499,8 @@ public:
                     auto& src = audioSources[srcIdx];
                     if (src.pendingLatencyTrimEvents > 0) {
                         DLL_Log(
-                            "[PullAudio] Latency trim summary - src=%zu events=%u samples=%llu total=%llu target=%lld pipelineLag=%lldms",
+                            "[PullAudio] Latency trim summary - src=%zu events=%u samples=%llu total=%llu target=%lld "
+                            "pipelineLag=%lldms",
                             srcIdx, src.pendingLatencyTrimEvents,
                             static_cast<unsigned long long>(src.pendingLatencyTrimSamples),
                             static_cast<unsigned long long>(src.latencyTrimSamples), targetBufferedSamples,
@@ -1483,17 +1512,18 @@ public:
 
                 DLL_Log(
                     "[A/V SYNC CHECK] Track %d: Video=%lld ms, Audio=%lld ms, "
-                    "Drift=%lld ms, DriftAdj=%lld ms, Pull=%lld ms, VideoWall=%lld ms, PipelineLag=%lld ms, TargetBuf=%lld ms, Overflow=%llu, "
+                    "Drift=%lld ms, DriftAdj=%lld ms, Pull=%lld ms, VideoWall=%lld ms, PipelineLag=%lld ms, "
+                    "TargetBuf=%lld ms, Overflow=%llu, "
                     "LatencyTrim=%llu, PostTrim=%llu, Pad=%llu, Sources=%s",
                     track, videoMs, audioMs, avDrift, latencyAdjustedAvDrift, trackAudioPullLatencyMs, wallVideoMs,
-                    pipelineLagMs,
-                    (targetBufferedSamples * 1000) / SAMPLE_RATE, (unsigned long long)overflowDropped,
+                    pipelineLagMs, (targetBufferedSamples * 1000) / SAMPLE_RATE, (unsigned long long)overflowDropped,
                     (unsigned long long)latencyTrimmed, (unsigned long long)postTrimmed,
                     (unsigned long long)underrunPadded, sourceSummary.c_str());
 
                 if (std::abs(latencyAdjustedAvDrift) > 100) {
                     DLL_Log(
-                        "[A/V SYNC WARNING] Track %d adjusted drift exceeds 100ms! raw=%lldms adjusted=%lldms pull=%lldms",
+                        "[A/V SYNC WARNING] Track %d adjusted drift exceeds 100ms! raw=%lldms adjusted=%lldms "
+                        "pull=%lldms",
                         track, avDrift, latencyAdjustedAvDrift, trackAudioPullLatencyMs);
                 }
             }
@@ -1873,7 +1903,8 @@ private:
                                         silenceFloats -= silenceFloats % 2;
                                         if (silenceFloats > 0) {
                                             std::vector<float> silence(silenceFloats, 0.0f);
-                                            size_t writtenSilenceFloats = src.ringBuffer->Write(silence.data(), silenceFloats);
+                                            size_t writtenSilenceFloats =
+                                                src.ringBuffer->Write(silence.data(), silenceFloats);
                                             src.startupSyntheticRingSamples += writtenSilenceFloats / 2;
                                             DLL_Log(
                                                 "[AudioLoop] Inserted %lld ms silence for "
@@ -1881,8 +1912,8 @@ private:
                                                 diff, (int)srcIdx);
                                         }
                                     } else if (diff < -5) {
-                                        DLL_Log("[AudioLoop] First packet leads recording start by %lld ms for src=%d", diff,
-                                                (int)srcIdx);
+                                        DLL_Log("[AudioLoop] First packet leads recording start by %lld ms for src=%d",
+                                                diff, (int)srcIdx);
                                     }
                                 }
 
