@@ -47,6 +47,8 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_EQ(config.video.scaling.sharpness, 100);
     EXPECT_FALSE(config.graphics.forceMipBiasClamp);
     EXPECT_EQ(config.graphics.backbufferCount, -1);
+    EXPECT_TRUE(config.overlay.captureIncludeOverlay);
+    EXPECT_TRUE(config.overlay.screenshotIncludeOverlay);
 
     std::ifstream generated(missingFile);
     ASSERT_TRUE(generated.is_open());
@@ -57,6 +59,8 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("sharpness=100"), std::string::npos);
     EXPECT_NE(generatedText.find("; backbuffer_count, affecting vsync"), std::string::npos);
     EXPECT_NE(generatedText.find("backbuffer_count=-1"), std::string::npos);
+    EXPECT_NE(generatedText.find("capture_include_overlay=true"), std::string::npos);
+    EXPECT_NE(generatedText.find("screenshot_include_overlay=true"), std::string::npos);
     EXPECT_EQ(generatedText.find("perf_metrics_logging="), std::string::npos);
     EXPECT_EQ(generatedText.find("nvidia_smooth_motion_compat="), std::string::npos);
     EXPECT_EQ(generatedText.find("\nvfr="), std::string::npos);
@@ -87,6 +91,23 @@ TEST_F(ConfigTest, ParseValues) {
     EXPECT_EQ(config.video.encoder, "av1_nvenc");
     EXPECT_EQ(config.video.fps, 60);
     EXPECT_EQ(config.video.bitrate, "50Mbps");
+}
+
+TEST_F(ConfigTest, ParseOverlayInclusionOptions) {
+    std::string iniContent =
+        "[Overlay]\n"
+        "enabled=true\n"
+        "capture_include_overlay=false\n"
+        "screenshot_include_overlay=false\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_TRUE(config.overlay.showOverlay);
+    EXPECT_FALSE(config.overlay.captureIncludeOverlay);
+    EXPECT_FALSE(config.overlay.screenshotIncludeOverlay);
 }
 
 TEST_F(ConfigTest, PseudoOverlayProcessListIsNormalized) {

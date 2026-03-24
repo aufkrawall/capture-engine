@@ -32,7 +32,8 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 14: Added captureRequested so hooks can warm up capture before REC goes live
 // Version 16: Added capture cadence/telemetry diagnostics fields
 // Version 17: Added WGC-specific source cadence/jitter/throttle telemetry
-static constexpr uint32_t SHARED_MEMORY_VERSION = 19;
+// Version 20: Added OverlayConfig::screenshotIncludeOverlay
+static constexpr uint32_t SHARED_MEMORY_VERSION = 20;
 
 // Minimum supported version for backward compatibility
 static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
@@ -172,7 +173,8 @@ enum class LogLevel : int { Error = 0, Warn = 1, Info = 2, Debug = 3 };
 struct OverlayConfig {
     // Master toggle
     bool showOverlay;
-    bool captureIncludeOverlay;  // Include overlay in video recordings
+    bool captureIncludeOverlay;     // Include overlay in video recordings
+    bool screenshotIncludeOverlay;  // Include overlay in screenshots
     // Display Elements
     bool showFPS;
     bool showFrameTime;  // Frame time graph
@@ -278,16 +280,16 @@ enum class CapturePipelinePhase : uint32_t {
 
 inline const char* CapturePipelinePhaseToString(CapturePipelinePhase phase) {
     switch (phase) {
-    case CapturePipelinePhase::kIdle:
-        return "idle";
-    case CapturePipelinePhase::kWarmup:
-        return "warmup";
-    case CapturePipelinePhase::kLive:
-        return "live";
-    case CapturePipelinePhase::kDrain:
-        return "drain";
-    case CapturePipelinePhase::kStopping:
-        return "stopping";
+        case CapturePipelinePhase::kIdle:
+            return "idle";
+        case CapturePipelinePhase::kWarmup:
+            return "warmup";
+        case CapturePipelinePhase::kLive:
+            return "live";
+        case CapturePipelinePhase::kDrain:
+            return "drain";
+        case CapturePipelinePhase::kStopping:
+            return "stopping";
     }
     return "unknown";
 }

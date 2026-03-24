@@ -4102,6 +4102,44 @@ static void DrawDX9Overlay(IDirect3DDevice9* device) {
     g_InOverlayRender = false;
 }
 
+static void CompleteDX9Screenshot(SharedMemoryLayout* shm) {
+    if (!shm)
+        return;
+
+    shm->runtimeState.cmdTakeScreenshot.store(false, std::memory_order_release);
+    shm->runtimeState.ackScreenshotTaken.store(true, std::memory_order_release);
+    shm->runtimeState.notificationType.store(1, std::memory_order_release);
+    shm->runtimeState.notificationExpiry.store(GetTickCount64() + 3000ULL, std::memory_order_release);
+}
+
+static void CaptureDX9Screenshot(IDirect3DDevice9* device, SharedMemoryLayout* shm) {
+    if (!device || !shm)
+        return;
+
+    IDirect3DSurface9* bb = nullptr;
+    if (SUCCEEDED(device->GetRenderTarget(0, &bb)) && bb) {
+        D3DSURFACE_DESC bbDesc;
+        bb->GetDesc(&bbDesc);
+
+        IDirect3DSurface9* staging = nullptr;
+        if (SUCCEEDED(device->CreateOffscreenPlainSurface(bbDesc.Width, bbDesc.Height, bbDesc.Format, D3DPOOL_SYSTEMMEM,
+                                                          &staging, NULL))) {
+            if (SUCCEEDED(device->GetRenderTargetData(bb, staging))) {
+                D3DLOCKED_RECT locked;
+                if (SUCCEEDED(staging->LockRect(&locked, NULL, D3DLOCK_READONLY))) {
+                    WriteBMPFileAsync(shm->runtimeState.screenshotPath, static_cast<const uint8_t*>(locked.pBits),
+                                      bbDesc.Width, bbDesc.Height, locked.Pitch);
+                    staging->UnlockRect();
+                }
+            }
+            staging->Release();
+        }
+        bb->Release();
+    }
+
+    CompleteDX9Screenshot(shm);
+}
+
 // Performance measurement
 struct PresentTiming {
     int64_t startTime;
@@ -4117,6 +4155,7 @@ static thread_local bool g_overlayDrawnBeforePresent = false;
 // Tracks whether the overlay was redrawn from a nested EndScene during Present.
 static thread_local bool g_overlayDrawnInPresentEndScene = false;
 static thread_local bool g_captureDeferredToPresentEndScene = false;
+static thread_local bool g_screenshotDeferredToPresentEndScene = false;
 static thread_local bool g_sawPresentNestedEndScene = false;
 static std::atomic<bool> g_PreferOverlayInPresentEndScene{false};
 
@@ -4217,6 +4256,7 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
 
         g_overlayDrawnInPresentEndScene = false;
         g_captureDeferredToPresentEndScene = false;
+        g_screenshotDeferredToPresentEndScene = false;
         g_sawPresentNestedEndScene = false;
 
         static bool luidReported = false;
@@ -4314,8 +4354,15 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
             }
         }
         bool preferEndSceneOverlay = shouldDrawOverlay && endSceneHookActive;
-        const bool deferCaptureToPresentEndScene = captureIncludeOverlay && shouldDrawOverlay &&
+        const bool captureAfterOverlay = captureIncludeOverlay;
+        const bool captureBeforeOverlay = !captureAfterOverlay;
+        const bool screenshotRequested = shm && shm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire);
+        const bool screenshotAfterOverlay =
+            screenshotRequested && shouldDrawOverlay && (shm ? shm->overlayConfig.screenshotIncludeOverlay : true);
+        const bool screenshotBeforeOverlay = screenshotRequested && !screenshotAfterOverlay;
+        const bool deferCaptureToPresentEndScene = captureAfterOverlay && shouldDrawOverlay &&
                                                    g_PreferOverlayInPresentEndScene.load(std::memory_order_acquire);
+        const bool deferScreenshotToPresentEndScene = screenshotAfterOverlay && preferEndSceneOverlay;
 
         // Lambda for overlay drawing — skip if EndScene already handled it for this frame
         auto doOverlay = [&]() {
@@ -4401,45 +4448,26 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
             // Don't cleanup when recording stops - keep initialized for next recording
         };
 
-        // Order capture/overlay based on config
-        if (captureIncludeOverlay) {
-            doOverlay();  // Draw overlay first
-            doCapture();  // Then capture (includes overlay)
-        } else {
-            doCapture();  // Capture first (clean frame)
-            doOverlay();  // Then draw overlay (visible but not recorded)
-        }
-
-        // SCREENSHOT: DX9 path
-        if (ipc && ipc->GetSharedMem()) {
-            SharedMemoryLayout* shm = ipc->GetSharedMem();
-            if (shm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire)) {
-                IDirect3DSurface9* bb = nullptr;
-                if (SUCCEEDED(device->GetRenderTarget(0, &bb)) && bb) {
-                    D3DSURFACE_DESC bbDesc;
-                    bb->GetDesc(&bbDesc);
-
-                    IDirect3DSurface9* staging = nullptr;
-                    if (SUCCEEDED(device->CreateOffscreenPlainSurface(bbDesc.Width, bbDesc.Height, bbDesc.Format,
-                                                                      D3DPOOL_SYSTEMMEM, &staging, NULL))) {
-                        if (SUCCEEDED(device->GetRenderTargetData(bb, staging))) {
-                            D3DLOCKED_RECT locked;
-                            if (SUCCEEDED(staging->LockRect(&locked, NULL, D3DLOCK_READONLY))) {
-                                WriteBMPFileAsync(shm->runtimeState.screenshotPath,
-                                                  static_cast<const uint8_t*>(locked.pBits), bbDesc.Width,
-                                                  bbDesc.Height, locked.Pitch);
-                                staging->UnlockRect();
-                            }
-                        }
-                        staging->Release();
-                    }
-                    bb->Release();
-                }
-                shm->runtimeState.cmdTakeScreenshot.store(false, std::memory_order_release);
-                shm->runtimeState.ackScreenshotTaken.store(true, std::memory_order_release);
-                shm->runtimeState.notificationType.store(1, std::memory_order_release);
-                shm->runtimeState.notificationExpiry.store(GetTickCount64() + 3000ULL, std::memory_order_release);
+        auto doScreenshot = [&]() {
+            if (screenshotRequested && shm) {
+                CaptureDX9Screenshot(device, shm);
             }
+        };
+
+        if (captureBeforeOverlay) {
+            doCapture();
+        }
+        if (screenshotBeforeOverlay) {
+            doScreenshot();
+        }
+        doOverlay();
+        if (captureAfterOverlay) {
+            doCapture();
+        }
+        if (deferScreenshotToPresentEndScene) {
+            g_screenshotDeferredToPresentEndScene = true;
+        } else if (screenshotAfterOverlay) {
+            doScreenshot();
         }
 
         QueryPerformanceCounter(&qpc);
@@ -4637,6 +4665,7 @@ void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer) {
             }
         }
         g_captureDeferredToPresentEndScene = false;
+        g_screenshotDeferredToPresentEndScene = false;
         g_overlayDrawnBeforePresent = false;
         g_overlayDrawnInPresentEndScene = false;
         g_sawPresentNestedEndScene = false;
@@ -4702,6 +4731,10 @@ static HRESULT STDMETHODCALLTYPE DetourEndScene(IDirect3DDevice9* device) {
                 captureBackBuffer->Release();
             }
             g_captureDeferredToPresentEndScene = false;
+        }
+        if (g_screenshotDeferredToPresentEndScene && shm) {
+            CaptureDX9Screenshot(device, shm);
+            g_screenshotDeferredToPresentEndScene = false;
         }
         return oEndScene(device);
     }

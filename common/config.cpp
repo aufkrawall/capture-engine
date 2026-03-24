@@ -244,6 +244,8 @@ overlay_whitelist=(
 enabled=true
 ; capture_include_overlay - Values: true, false
 capture_include_overlay=true
+; screenshot_include_overlay - Values: true, false
+screenshot_include_overlay=true
 ; position - Values: TopLeft, TopRight, BottomLeft, BottomRight
 position=TopLeft
 ; padding - Values: integer >= 0
@@ -908,6 +910,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     // Overlay
     config.overlay.showOverlay = GetBool("Overlay", "enabled", true);
     config.overlay.captureIncludeOverlay = GetBool("Overlay", "capture_include_overlay", true);
+    config.overlay.screenshotIncludeOverlay = GetBool("Overlay", "screenshot_include_overlay", true);
 
     std::string pos = GetStr("Overlay", "position", "TopLeft");
     if (pos == "TopRight")

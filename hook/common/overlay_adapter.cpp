@@ -35,12 +35,13 @@ OverlayAdapter g_OverlayAdapter;
 namespace {
 bool OverlayConfigEquals(const OverlayConfig& a, const OverlayConfig& b) {
     return a.showOverlay == b.showOverlay && a.captureIncludeOverlay == b.captureIncludeOverlay &&
-           a.showFPS == b.showFPS && a.showFrameTime == b.showFrameTime && a.showCPU == b.showCPU &&
-           a.showGPU == b.showGPU && a.showRAM == b.showRAM && a.showVRAM == b.showVRAM &&
-           a.showRecording == b.showRecording && a.showFG == b.showFG && a.position == b.position &&
-           a.padding == b.padding && a.compactMode == b.compactMode && a.horizontalMode == b.horizontalMode &&
-           a.fontSize == b.fontSize && a.roundedCorners == b.roundedCorners && a.bgColor == b.bgColor &&
-           a.bgAlpha == b.bgAlpha && a.fpsColor == b.fpsColor && a.cpuColor == b.cpuColor && a.gpuColor == b.gpuColor &&
+           a.screenshotIncludeOverlay == b.screenshotIncludeOverlay && a.showFPS == b.showFPS &&
+           a.showFrameTime == b.showFrameTime && a.showCPU == b.showCPU && a.showGPU == b.showGPU &&
+           a.showRAM == b.showRAM && a.showVRAM == b.showVRAM && a.showRecording == b.showRecording &&
+           a.showFG == b.showFG && a.position == b.position && a.padding == b.padding &&
+           a.compactMode == b.compactMode && a.horizontalMode == b.horizontalMode && a.fontSize == b.fontSize &&
+           a.roundedCorners == b.roundedCorners && a.bgColor == b.bgColor && a.bgAlpha == b.bgAlpha &&
+           a.fpsColor == b.fpsColor && a.cpuColor == b.cpuColor && a.gpuColor == b.gpuColor &&
            a.ramColor == b.ramColor && a.vramColor == b.vramColor && a.frametimeColor == b.frametimeColor &&
            a.textColor == b.textColor && a.textOutline == b.textOutline && a.textOutlineColor == b.textOutlineColor &&
            a.textOutlineThickness == b.textOutlineThickness && a.loadColorLow == b.loadColorLow &&

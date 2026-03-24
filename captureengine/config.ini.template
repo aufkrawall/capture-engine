@@ -243,6 +243,8 @@ downmix=false
 enabled=true
 ; capture_include_overlay - Values: true, false
 capture_include_overlay=true
+; screenshot_include_overlay - Values: true, false
+screenshot_include_overlay=true
 ; position - Values: TopLeft, TopRight, BottomLeft, BottomRight
 position=TopLeft
 ; padding - Values: integer >= 0

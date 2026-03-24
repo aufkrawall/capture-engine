@@ -86,6 +86,9 @@ static bool g_FirstGameSwapchainCreated = false;
 // Forces overlay and capture to use the same backbuffer index within one frame.
 // This eliminates index races on FLIP swapchains.
 static thread_local int g_ForcedCaptureBackBufferIndex = -1;
+// Capture can optionally reuse the RTV that overlay rendered to on this frame.
+// Leave this off when capture must happen before overlay.
+static thread_local bool g_CaptureUsesOverlayRTV = false;
 // Re-entrancy guard: prevents mutual recursion with other Present hooks (e.g. Steam overlay)
 thread_local bool g_InPresentHook = false;
 
@@ -278,6 +281,7 @@ static bool ShouldSkipWindowForNvPresent(HWND hwnd) {
 void CleanupDX11Resources(bool releaseDeviceContext = true);
 void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame);
 void DrawDX11Overlay(IDXGISwapChain* pSwapChain);
+static void ProcessDX11FrameWithOverlayOrdering(IDXGISwapChain* pSwapChain);
 static void InstallVTableHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pContext, IDXGISwapChain* pSwapChain);
 static void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit);
 
@@ -295,7 +299,8 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT Syn
         perfMetrics.sourceEncoderQueueDepth = g_pSharedMem->encoderQueueDepth.load(std::memory_order_relaxed);
         perfMetrics.sourceMuxQueueKb =
             (g_pSharedMem->runtimeState.muxQueueBytes.load(std::memory_order_relaxed) + 1023u) / 1024u;
-        perfMetrics.sourceOverloadFlags = g_pSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
+        perfMetrics.sourceOverloadFlags =
+            g_pSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
     }
     if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
         perfMetrics.sourceCurrentFpsTimes100 = static_cast<int32_t>(perf->GetCurrentFPS() * 100.0f + 0.5f);
@@ -492,8 +497,8 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain* pSwapChain, UINT Sy
         }
     }
 
-    // Non-wrapper path: Draw overlay via vtable hook
-    DrawDX11Overlay(pSwapChain);
+    // Non-wrapper path: Process overlay, capture, and screenshots via the shared ordering helper
+    HandleDX11ProcessFrame(pSwapChain, true);
 
     // If window was invalid during overlay rendering, skip Present to avoid crash
     if (HookIsShuttingDown()) {
@@ -1037,9 +1042,8 @@ void CleanupDX11Resources(bool releaseDeviceContext) {
 extern void DrawDX11Overlay(IDXGISwapChain* pSwapChain);
 
 void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame) {
-    if (!pSwapChain)
-        return;
-    DrawDX11Overlay(pSwapChain);
+    (void)isRealFrame;
+    ProcessDX11FrameWithOverlayOrdering(pSwapChain);
 }
 
 void HandleDX11ResizeBegin() {
@@ -1716,9 +1720,9 @@ public:
 
         ID3D11Texture2D* backbuffer = nullptr;
 
-        // Prefer the exact RTV resource used for overlay rendering in this frame.
-        // This guarantees capture uses the same backbuffer that overlay drew to.
-        if (!isDX10Mode && g_mainRenderTargetView) {
+        // When capture is intentionally ordered after overlay, prefer the RTV
+        // resource that overlay rendered to on this frame.
+        if (!isDX10Mode && g_CaptureUsesOverlayRTV && g_mainRenderTargetView) {
             ID3D11Resource* rtResource = nullptr;
             g_mainRenderTargetView->GetResource(&rtResource);
             if (rtResource) {
@@ -1803,9 +1807,122 @@ public:
 
 static DX11Capture g_DX11Capture;
 
-// Called from DXGI SwapChain wrapper for frame capture (wrapper-only
-// architecture)
-void DX11_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
+static OverlayConfig GetActiveDX11OverlayConfig(SharedMemoryLayout* shm) {
+    OverlayConfig cfg{};
+    cfg.captureIncludeOverlay = true;
+    cfg.screenshotIncludeOverlay = true;
+    if (shm) {
+        cfg = shm->ReadOverlayConfig();
+    }
+    return cfg;
+}
+
+static void CompleteRequestedDX11Screenshot(SharedMemoryLayout* shm) {
+    if (!shm)
+        return;
+
+    shm->runtimeState.cmdTakeScreenshot.store(false, std::memory_order_release);
+    shm->runtimeState.ackScreenshotTaken.store(true, std::memory_order_release);
+    shm->runtimeState.notificationType.store(1, std::memory_order_release);
+    shm->runtimeState.notificationExpiry.store(GetTickCount64() + 3000ULL, std::memory_order_release);
+}
+
+static void CaptureDX11Screenshot(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm) {
+    ID3D11Texture2D* backbuffer = nullptr;
+    UINT bbIdx = ResolveDX11BackBufferIndex(pSwapChain);
+    pSwapChain->GetBuffer(bbIdx, IID_PPV_ARGS(&backbuffer));
+    if (backbuffer) {
+        ID3D11Device* device = nullptr;
+        backbuffer->GetDevice(&device);
+        if (device) {
+            ID3D11DeviceContext* context = nullptr;
+            device->GetImmediateContext(&context);
+            if (context) {
+                D3D11_TEXTURE2D_DESC bbDesc;
+                backbuffer->GetDesc(&bbDesc);
+                bool isHDR =
+                    (bbDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM || bbDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT);
+                if (isHDR) {
+                    bool isPQ = (bbDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM);
+                    std::string rawPath(shm->runtimeState.screenshotPath);
+                    rawPath += ".raw";
+                    SaveD3D11TextureAsHDR(device, context, backbuffer, isPQ, rawPath.c_str());
+                } else {
+                    SaveD3D11TextureAsBMP(device, context, backbuffer, shm->runtimeState.screenshotPath);
+                }
+                context->Release();
+            }
+            device->Release();
+        }
+        backbuffer->Release();
+    }
+
+    CompleteRequestedDX11Screenshot(shm);
+}
+
+static void CaptureDX10Screenshot(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm) {
+    ID3D10Device* device = nullptr;
+    if (FAILED(pSwapChain->GetDevice(__uuidof(ID3D10Device), (void**)&device))) {
+        ID3D10Device1* device10_1 = nullptr;
+        if (FAILED(pSwapChain->GetDevice(__uuidof(ID3D10Device1), (void**)&device10_1))) {
+            CompleteRequestedDX11Screenshot(shm);
+            return;
+        }
+        device = device10_1;
+    }
+
+    ID3D10Texture2D* backbuffer = nullptr;
+    UINT bbIdx = ResolveDX11BackBufferIndex(pSwapChain);
+    if (SUCCEEDED(pSwapChain->GetBuffer(bbIdx, __uuidof(ID3D10Texture2D), (void**)&backbuffer))) {
+        D3D10_TEXTURE2D_DESC bbDesc;
+        backbuffer->GetDesc(&bbDesc);
+
+        D3D10_TEXTURE2D_DESC stagingDesc = bbDesc;
+        stagingDesc.Usage = D3D10_USAGE_STAGING;
+        stagingDesc.BindFlags = 0;
+        stagingDesc.CPUAccessFlags = D3D10_CPU_ACCESS_READ;
+        stagingDesc.MiscFlags = 0;
+
+        ID3D10Texture2D* staging = nullptr;
+        if (SUCCEEDED(device->CreateTexture2D(&stagingDesc, nullptr, &staging))) {
+            device->CopyResource(staging, backbuffer);
+            D3D10_MAPPED_TEXTURE2D mapped;
+            if (SUCCEEDED(staging->Map(0, D3D10_MAP_READ, 0, &mapped))) {
+                WriteBMPFileAsync(shm->runtimeState.screenshotPath, static_cast<const uint8_t*>(mapped.pData),
+                                  bbDesc.Width, bbDesc.Height, mapped.RowPitch);
+                staging->Unmap(0);
+            }
+            staging->Release();
+        }
+        backbuffer->Release();
+    }
+
+    device->Release();
+    CompleteRequestedDX11Screenshot(shm);
+}
+
+static void CaptureRequestedDX11Screenshot(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm) {
+    if (!shm)
+        return;
+
+    ID3D10Device* device10 = nullptr;
+    if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D10Device), (void**)&device10))) {
+        device10->Release();
+        CaptureDX10Screenshot(pSwapChain, shm);
+        return;
+    }
+
+    ID3D10Device1* device10_1 = nullptr;
+    if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D10Device1), (void**)&device10_1))) {
+        device10_1->Release();
+        CaptureDX10Screenshot(pSwapChain, shm);
+        return;
+    }
+
+    CaptureDX11Screenshot(pSwapChain, shm);
+}
+
+static void ProcessDX11FrameWithOverlayOrdering(IDXGISwapChain* pSwapChain) {
     if (!pSwapChain)
         return;
 
@@ -1813,58 +1930,48 @@ void DX11_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
     g_ForcedCaptureBackBufferIndex = static_cast<int>(frameBufferIndex);
     auto indexGuard = ce::make_scope_guard([]() { g_ForcedCaptureBackBufferIndex = -1; });
 
-    // Draw overlay FIRST so it is included in the captured frame
-    HandleDX11ProcessFrame(pSwapChain, true);
+    SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+    OverlayConfig overlayCfg = GetActiveDX11OverlayConfig(shm);
+    const bool shouldDrawOverlay = shm && overlayCfg.showOverlay;
+    const bool captureAfterOverlay = shouldDrawOverlay && overlayCfg.captureIncludeOverlay;
+    const bool screenshotRequested = shm && shm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire);
+    const bool screenshotAfterOverlay = shouldDrawOverlay && overlayCfg.screenshotIncludeOverlay;
 
-    // CAPTURE: Copy frame after overlay is drawn (overlay now visible in recording)
-    if (g_IPC && g_IPC->IsRecording()) {
-        SharedMemoryLayout* shm = g_IPC->GetSharedMem();
-        if (!ShouldSkipCaptureForTargetCadence(shm, "DX11")) {
+    auto doCapture = [&](bool afterOverlay) {
+        if (g_IPC && g_IPC->IsRecording() && !ShouldSkipCaptureForTargetCadence(shm, "DX11")) {
+            g_CaptureUsesOverlayRTV = afterOverlay;
+            auto captureGuard = ce::make_scope_guard([]() { g_CaptureUsesOverlayRTV = false; });
             g_DX11Capture.CaptureFrame(pSwapChain);
         }
-    }
+    };
 
-    // SCREENSHOT: Take a single screenshot if requested via shared memory
-    if (g_IPC && g_IPC->GetSharedMem()) {
-        SharedMemoryLayout* shm = g_IPC->GetSharedMem();
-        if (shm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire)) {
-            // Get backbuffer
-            ID3D11Texture2D* backbuffer = nullptr;
-            UINT bbIdx = ResolveDX11BackBufferIndex(pSwapChain);
-            pSwapChain->GetBuffer(bbIdx, IID_PPV_ARGS(&backbuffer));
-            if (backbuffer) {
-                ID3D11Device* device = nullptr;
-                backbuffer->GetDevice(&device);
-                if (device) {
-                    ID3D11DeviceContext* context = nullptr;
-                    device->GetImmediateContext(&context);
-                    if (context) {
-                        // Check format: HDR textures use R10G10B10A2 or R16G16B16A16F
-                        D3D11_TEXTURE2D_DESC bbDesc;
-                        backbuffer->GetDesc(&bbDesc);
-                        bool isHDR = (bbDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM ||
-                                      bbDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT);
-                        if (isHDR) {
-                            bool isPQ = (bbDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM);
-                            std::string rawPath(shm->runtimeState.screenshotPath);
-                            rawPath += ".raw";
-                            SaveD3D11TextureAsHDR(device, context, backbuffer, isPQ, rawPath.c_str());
-                        } else {
-                            SaveD3D11TextureAsBMP(device, context, backbuffer, shm->runtimeState.screenshotPath);
-                        }
-                        context->Release();
-                    }
-                    device->Release();
-                }
-                backbuffer->Release();
-            }
-            // Signal completion and show notification
-            shm->runtimeState.cmdTakeScreenshot.store(false, std::memory_order_release);
-            shm->runtimeState.ackScreenshotTaken.store(true, std::memory_order_release);
-            shm->runtimeState.notificationType.store(1, std::memory_order_release);
-            shm->runtimeState.notificationExpiry.store(GetTickCount64() + 3000ULL, std::memory_order_release);
+    auto doScreenshot = [&]() {
+        if (screenshotRequested) {
+            CaptureRequestedDX11Screenshot(pSwapChain, shm);
         }
+    };
+
+    if (!captureAfterOverlay) {
+        doCapture(false);
     }
+    if (screenshotRequested && !screenshotAfterOverlay) {
+        doScreenshot();
+    }
+    if (shouldDrawOverlay) {
+        DrawDX11Overlay(pSwapChain);
+    }
+    if (captureAfterOverlay) {
+        doCapture(true);
+    }
+    if (screenshotRequested && screenshotAfterOverlay) {
+        doScreenshot();
+    }
+}
+
+// Called from DXGI SwapChain wrapper for frame capture (wrapper-only
+// architecture)
+void DX11_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
+    HandleDX11ProcessFrame(pSwapChain, true);
 }
 
 // Helper to force rebind of all samplers (triggering our DetourSetSamplers)
@@ -2000,42 +2107,6 @@ static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int fr
             if (width > 0 && height > 0) {
                 g_OverlayAdapter.RenderOverlay(width, height);
             }
-        }
-    }
-
-    // SCREENSHOT: DX10 path — use D3D10 staging texture for CPU readback
-    if (g_IPC && g_IPC->GetSharedMem()) {
-        SharedMemoryLayout* shm = g_IPC->GetSharedMem();
-        if (shm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire)) {
-            IDXGISwapChain* sc = pSwapChain;
-            ID3D10Texture2D* backbuffer = nullptr;
-            if (SUCCEEDED(sc->GetBuffer(0, __uuidof(ID3D10Texture2D), (void**)&backbuffer))) {
-                D3D10_TEXTURE2D_DESC bbDesc;
-                backbuffer->GetDesc(&bbDesc);
-
-                D3D10_TEXTURE2D_DESC stagingDesc = bbDesc;
-                stagingDesc.Usage = D3D10_USAGE_STAGING;
-                stagingDesc.BindFlags = 0;
-                stagingDesc.CPUAccessFlags = D3D10_CPU_ACCESS_READ;
-                stagingDesc.MiscFlags = 0;
-
-                ID3D10Texture2D* staging = nullptr;
-                if (SUCCEEDED(device->CreateTexture2D(&stagingDesc, nullptr, &staging))) {
-                    device->CopyResource(staging, backbuffer);
-                    D3D10_MAPPED_TEXTURE2D mapped;
-                    if (SUCCEEDED(staging->Map(0, D3D10_MAP_READ, 0, &mapped))) {
-                        WriteBMPFileAsync(shm->runtimeState.screenshotPath, static_cast<const uint8_t*>(mapped.pData),
-                                          bbDesc.Width, bbDesc.Height, mapped.RowPitch);
-                        staging->Unmap(0);
-                    }
-                    staging->Release();
-                }
-                backbuffer->Release();
-            }
-            shm->runtimeState.cmdTakeScreenshot.store(false, std::memory_order_release);
-            shm->runtimeState.ackScreenshotTaken.store(true, std::memory_order_release);
-            shm->runtimeState.notificationType.store(1, std::memory_order_release);
-            shm->runtimeState.notificationExpiry.store(GetTickCount64() + 3000ULL, std::memory_order_release);
         }
     }
 
@@ -2568,23 +2639,7 @@ static void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
 
 namespace DXGIShared {
 void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame) {
-    if (!pSwapChain)
-        return;
-
-    UINT frameBufferIndex = ResolveDX11BackBufferIndex(pSwapChain);
-    g_ForcedCaptureBackBufferIndex = static_cast<int>(frameBufferIndex);
-    auto indexGuard = ce::make_scope_guard([]() { g_ForcedCaptureBackBufferIndex = -1; });
-
-    // Draw overlay FIRST so it's included in the captured frame
-    DrawDX11Overlay(pSwapChain);
-
-    // Capture frame AFTER overlay is drawn
-    if (g_IPC && g_IPC->IsRecording()) {
-        SharedMemoryLayout* shm = g_IPC->GetSharedMem();
-        if (!ShouldSkipCaptureForTargetCadence(shm, "DX11")) {
-            g_DX11Capture.CaptureFrame(pSwapChain);
-        }
-    }
+    ::HandleDX11ProcessFrame(pSwapChain, isRealFrame);
 }
 
 void HandleDX11ResizeBegin() {

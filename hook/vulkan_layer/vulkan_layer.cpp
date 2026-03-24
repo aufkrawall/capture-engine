@@ -10,10 +10,10 @@
 #include <deque>
 #include <mutex>
 #include <vector>
-#include "../common/performance_metrics.h"
 #include "../common/capture_pacing.h"
 #include "../common/fps_limiter.h"
 #include "../common/perf_logger.h"
+#include "../common/performance_metrics.h"
 #include "layer_main.h"  // For LayerLog and g_LayerState
 
 // Reentrancy guard shared with other hooks (defined here for the layer)
@@ -1017,19 +1017,35 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
             uint32_t idx = pPresentInfo->pImageIndices[0];
             perfMetrics.sourceFrameIndex = idx + 1;
 
-            // OPTIMIZATION: Chained semaphores for perfect GPU-side async execution.
-            // Game -> Overlay -> Capture -> Present
+            // OPTIMIZATION: Keep overlay/capture queue work GPU-ordered while letting config choose whether
+            // screenshots and capture happen before or after overlay submission.
             VkSemaphore overlayDone = GetOverlaySemaphore(sd->device, idx);
+            OverlayConfig overlayCfg{};
+            overlayCfg.captureIncludeOverlay = true;
+            overlayCfg.screenshotIncludeOverlay = true;
+            if (shm) {
+                overlayCfg = shm->ReadOverlayConfig();
+            }
+            const bool overlayEnabled = !preferDX9Path && shm && overlayCfg.showOverlay;
+            const bool captureRequested = shm && shm->runtimeState.captureRequested.load(std::memory_order_acquire);
+            const bool screenshotRequested = shm && shm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire);
+            const bool captureAfterOverlay = captureRequested && overlayEnabled && overlayCfg.captureIncludeOverlay;
+            const bool captureBeforeOverlay = captureRequested && !captureAfterOverlay;
+            const bool screenshotAfterOverlay =
+                screenshotRequested && overlayEnabled && overlayCfg.screenshotIncludeOverlay;
+            const bool screenshotBeforeOverlay = screenshotRequested && !screenshotAfterOverlay;
 
-            if (!preferDX9Path && shm && shm->ReadOverlayConfig().showOverlay) {
-                // Measure ONLY the actual CPU overhead of overlay work
-                // Fence wait is tracked separately (it's GPU sync, not our overhead)
+            auto doOverlay = [&]() {
+                if (!overlayEnabled)
+                    return;
+
+                // Measure ONLY the actual CPU overhead of overlay work.
+                // Fence wait is tracked separately (it's GPU sync, not our overhead).
                 int32_t fenceWaitUs = 0;
                 int64_t overlayStartUs = PerfLogger::GetQpcUs();
                 bool overlayRendered = RenderOverlay(sd->device, queue, idx, currentWait, overlayDone, &fenceWaitUs);
                 perfMetrics.overlayUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - overlayStartUs);
                 perfMetrics.fenceWaitUs = fenceWaitUs;
-                // Subtract fence wait from overlay time to get actual CPU work
                 if (fenceWaitUs > 0 && perfMetrics.overlayUs > fenceWaitUs) {
                     perfMetrics.overlayUs -= fenceWaitUs;
                 }
@@ -1037,27 +1053,31 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                     currentWait = overlayDone;
                     modified = true;
                 }
-            }
+            };
 
-            if (shm && shm->runtimeState.captureRequested.load(std::memory_order_acquire)) {
+            auto doCapture = [&]() {
+                if (!captureRequested || !shm)
+                    return;
                 if (shm->throttleCapture.load(std::memory_order_acquire)) {
-                    // Skip capture to let encoder catch up
-                } else if (ShouldSkipCaptureForTargetCadence(shm, "Vulkan")) {
-                    // Skip capture to maintain target FPS cadence
-                } else {
-                    int64_t captureStartUs = PerfLogger::GetQpcUs();
-                    VkSemaphore captureDone = GetCaptureSemaphore(sd->device, idx);
-                    CaptureFrame(sd->device, queue, sd->images[idx], idx, currentWait, captureDone);
-                    perfMetrics.captureUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - captureStartUs);
-                    if (captureDone != VK_NULL_HANDLE) {
-                        currentWait = captureDone;
-                        modified = true;
-                    }
+                    return;
                 }
-            }
+                if (ShouldSkipCaptureForTargetCadence(shm, "Vulkan")) {
+                    return;
+                }
 
-            // SCREENSHOT: Vulkan path — readback from swapchain image via staging buffer
-            if (shm && shm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire)) {
+                int64_t captureStartUs = PerfLogger::GetQpcUs();
+                VkSemaphore captureDone = GetCaptureSemaphore(sd->device, idx);
+                CaptureFrame(sd->device, queue, sd->images[idx], idx, currentWait, captureDone);
+                perfMetrics.captureUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - captureStartUs);
+                if (captureDone != VK_NULL_HANDLE) {
+                    currentWait = captureDone;
+                    modified = true;
+                }
+            };
+
+            auto doScreenshot = [&]() {
+                if (!screenshotRequested || !shm)
+                    return;
                 DeviceDispatch* vkDisp = VulkanLayerState::Get().GetDeviceDispatch(sd->device);
                 if (vkDisp && idx < sd->images.size()) {
                     TakeVulkanScreenshot(vkDisp, sd->device, queue, sd->images[idx], sd->extent.width,
@@ -1067,6 +1087,20 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                 shm->runtimeState.ackScreenshotTaken.store(true, std::memory_order_release);
                 shm->runtimeState.notificationType.store(1, std::memory_order_release);
                 shm->runtimeState.notificationExpiry.store(GetTickCount64() + 3000ULL, std::memory_order_release);
+            };
+
+            if (captureBeforeOverlay) {
+                doCapture();
+            }
+            if (screenshotBeforeOverlay) {
+                doScreenshot();
+            }
+            doOverlay();
+            if (captureAfterOverlay) {
+                doCapture();
+            }
+            if (screenshotAfterOverlay) {
+                doScreenshot();
             }
         }
     }

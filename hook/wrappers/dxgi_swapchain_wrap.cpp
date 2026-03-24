@@ -16,7 +16,6 @@
 #include "../common/perf_logger.h"
 #include "../common/performance_metrics.h"
 #include "hook_common.h"
-#include "../common/dxgi_shared.h"
 
 // External overlay functions (implemented in dx11_hook.cpp / dx12_hook.cpp)
 extern void DrawDX11Overlay(IDXGISwapChain* pSwapChain);

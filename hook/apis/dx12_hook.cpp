@@ -962,6 +962,127 @@ static std::atomic<bool> g_CreatingTempSwapchain{false};
 //       Use std::lock_guard with std::adopt_lock when using try_lock().
 static std::recursive_mutex g_OverlayMutex;
 static std::recursive_mutex g_DX12CaptureMutex;
+
+static OverlayConfig GetActiveDX12OverlayConfig(SharedMemoryLayout* shm) {
+    OverlayConfig cfg{};
+    cfg.captureIncludeOverlay = true;
+    cfg.screenshotIncludeOverlay = true;
+    if (shm) {
+        cfg = shm->ReadOverlayConfig();
+    }
+    return cfg;
+}
+
+static bool ShouldUseConfirmedPostSLForOverlayIncludedWork(const OverlayConfig& cfg) {
+    return cfg.showOverlay && g_PostSLOverlayActive.load(std::memory_order_acquire) &&
+           g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+}
+
+static void CompleteRequestedDX12Screenshot(SharedMemoryLayout* shm) {
+    if (!shm)
+        return;
+
+    shm->runtimeState.cmdTakeScreenshot.store(false, std::memory_order_release);
+    shm->runtimeState.ackScreenshotTaken.store(true, std::memory_order_release);
+    shm->runtimeState.notificationType.store(1, std::memory_order_release);
+    shm->runtimeState.notificationExpiry.store(GetTickCount64() + 3000ULL, std::memory_order_release);
+}
+
+static void CaptureRequestedDX12Screenshot(IDXGISwapChain3* sc3, SharedMemoryLayout* shm,
+                                           ID3D12CommandQueue* queueOverride = nullptr) {
+    if (!sc3 || !shm)
+        return;
+
+    ID3D12Device* dx12Device = g_Device.load();
+    ID3D12CommandQueue* dx12Queue = queueOverride ? queueOverride : g_CommandQueue.load();
+    if (dx12Device && dx12Queue) {
+        UINT bbIdx = sc3->GetCurrentBackBufferIndex();
+        ID3D12Resource* backBuffer = nullptr;
+        if (SUCCEEDED(sc3->GetBuffer(bbIdx, IID_PPV_ARGS(&backBuffer)))) {
+            D3D12_RESOURCE_DESC desc = backBuffer->GetDesc();
+            bool isHDR =
+                (desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM || desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT);
+            if (isHDR) {
+                bool isPQ = (desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM);
+                std::string rawPath(shm->runtimeState.screenshotPath);
+                rawPath += ".raw";
+                SaveDX12TextureAsHDR(dx12Device, dx12Queue, backBuffer, isPQ, rawPath.c_str());
+            } else {
+                SaveDX12TextureAsBMP(dx12Device, dx12Queue, backBuffer, shm->runtimeState.screenshotPath);
+            }
+            backBuffer->Release();
+        }
+    }
+
+    CompleteRequestedDX12Screenshot(shm);
+}
+
+static void PublishDX12CapturedFrame(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm,
+                                     ID3D12CommandQueue* captureQueue, bool hasCurrentBackBufferIdx,
+                                     UINT currentBackBufferIdx) {
+    if (!pSwapChain || !shm || !captureQueue)
+        return;
+    if (shm->throttleCapture.load(std::memory_order_acquire))
+        return;
+
+    if (!g_SharedCaptureD3D12.IsActive())
+        g_SharedCaptureD3D12.Initialize(g_Device.load(), pSwapChain);
+    if (!g_SharedCaptureD3D12.IsActive())
+        return;
+
+    std::lock_guard<std::recursive_mutex> capLock(g_DX12CaptureMutex);
+    UINT bbIdx = 0;
+    if (hasCurrentBackBufferIdx) {
+        bbIdx = currentBackBufferIdx;
+    } else {
+        IDXGISwapChain3* sc3 = nullptr;
+        pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3));
+        bbIdx = sc3 ? sc3->GetCurrentBackBufferIndex() : 0;
+        if (sc3)
+            sc3->Release();
+    }
+
+    if (!g_SharedCaptureD3D12.CaptureFrame(captureQueue, bbIdx))
+        return;
+
+    SharedFrameDescriptor desc;
+    if (!g_SharedCaptureD3D12.GetCurrentFrame(&desc))
+        return;
+
+    for (UINT i = 0; i < SharedCaptureD3D12::kSharedTextureCount; ++i) {
+        shm->SetSharedHandle(static_cast<int>(i), (uint64_t)g_SharedCaptureD3D12.GetSharedHandle((int)i));
+    }
+    shm->SetFenceShareHandle((uint64_t)g_SharedCaptureD3D12.GetFenceShareHandle());
+    shm->SetWidth(desc.width);
+    shm->SetHeight(desc.height);
+    shm->SetFormat(desc.format);
+
+    uint32_t wIdx = shm->frameRing.writeIndex.load(std::memory_order_acquire);
+    uint32_t rIdx = shm->frameRing.readIndex.load(std::memory_order_acquire);
+    if ((uint32_t)(wIdx - rIdx) < (uint32_t)FRAME_RING_SIZE) {
+        FrameSlot& slot = shm->frameRing.slots[wIdx % FRAME_RING_SIZE];
+        slot.fenceValue = desc.fenceValue;
+        slot.timestamp = desc.presentTime;
+        slot.frameIndex = desc.frameNumber;
+        slot.textureIndex = desc.textureIndex;
+        slot.sourcePid = GetCurrentProcessId();
+        std::atomic_thread_fence(std::memory_order_release);
+        slot.valid.store(1, std::memory_order_release);
+        shm->frameRing.writeIndex.store(wIdx + 1, std::memory_order_release);
+        DXGIShared::SetLatestSourceFrameIndex(desc.frameNumber);
+        static uint64_t s_lastPublishLineageLogTick = 0;
+        uint64_t nowTick = GetTickCount64();
+        if (nowTick - s_lastPublishLineageLogTick >= 1000) {
+            HookLog("DX12: Publish frame=%u ring=%u tex=%d fence=%llu ts=%llu bb=%u depth=%u", desc.frameNumber, wIdx,
+                    desc.textureIndex, static_cast<unsigned long long>(desc.fenceValue),
+                    static_cast<unsigned long long>(desc.presentTime), bbIdx, static_cast<unsigned>(wIdx - rIdx));
+            s_lastPublishLineageLogTick = nowTick;
+        }
+    } else {
+        shm->frameRing.droppedFrames.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
 static std::atomic<bool> g_InSwapchainResizeCleanup{false};
 
 // Frame counter for post-ImGui-init delay (skip first frame to let GPU
@@ -5250,6 +5371,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     bool usedRealECL = false;
     bool usedOrigECL = false;
     bool usedVirtualCall = false;
+    ID3D12CommandQueue* submittedQueue = queue;
 
     // Pre-submit device health check — if the device is already removed
     // (e.g. after FG teardown), skip the ECL to avoid triggering ERR_GFX_STATE.
@@ -5312,6 +5434,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         if (scQueueDiffers) {
             // Direct submission on scQueue — backbuffers belong to this queue.
             // Bypass SL's wrapper entirely (routes to origGame → wrong queue).
+            submittedQueue = scQueue;
             s_insidePostSLOverlayECL = true;
             scQueue->ExecuteCommandLists(1, lists);
             s_insidePostSLOverlayECL = false;
@@ -5324,6 +5447,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             s_scQSubmitLog++;
         } else if (realQ && realECLPtr) {
             // Direct submission: bypass SL's wrapper entirely
+            submittedQueue = realQ;
             s_insidePostSLOverlayECL = true;
             realECLPtr(realQ, 1, lists);
             s_insidePostSLOverlayECL = false;
@@ -5338,6 +5462,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             // Bootstrap: submit through SL's wrapper to capture real queue on first call
             ID3D12CommandQueue* slQueue = g_SLWrapperQueue.load(std::memory_order_acquire);
             if (slQueue) {
+                submittedQueue = slQueue;
                 s_insidePostSLOverlayECL = true;
                 slQueue->ExecuteCommandLists(1, lists);
                 s_insidePostSLOverlayECL = false;
@@ -5374,6 +5499,20 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         } else {
             queue->ExecuteCommandLists(1, lists);
             usedVirtualCall = true;
+        }
+    }
+
+    if (rendered) {
+        SharedMemoryLayout* postSLShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+        OverlayConfig postSLOverlayCfg = GetActiveDX12OverlayConfig(postSLShm);
+        bool isRealFrame = g_FGCompat.IsCurrentFrameReal();
+        if (postSLShm && g_IPC && g_IPC->IsRecording() && isRealFrame && postSLOverlayCfg.showOverlay &&
+            postSLOverlayCfg.captureIncludeOverlay) {
+            PublishDX12CapturedFrame(pSwapChain, postSLShm, submittedQueue, true, bufIdx);
+        }
+        if (postSLShm && postSLShm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire) &&
+            postSLOverlayCfg.showOverlay && postSLOverlayCfg.screenshotIncludeOverlay) {
+            CaptureRequestedDX12Screenshot(sc3, postSLShm, submittedQueue);
         }
     }
 
@@ -5513,7 +5652,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         perfMetrics.sourceEncoderQueueDepth = g_pSharedMem->encoderQueueDepth.load(std::memory_order_relaxed);
         perfMetrics.sourceMuxQueueKb =
             (g_pSharedMem->runtimeState.muxQueueBytes.load(std::memory_order_relaxed) + 1023u) / 1024u;
-        perfMetrics.sourceOverloadFlags = g_pSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
+        perfMetrics.sourceOverloadFlags =
+            g_pSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
     }
     if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
         perfMetrics.sourceCurrentFpsTimes100 = static_cast<int32_t>(perf->GetCurrentFPS() * 100.0f + 0.5f);
@@ -6529,6 +6669,14 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
 
     UINT currentBackBufferIdx = 0;
     bool hasCurrentBackBufferIdx = false;
+    SharedMemoryLayout* captureShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+    OverlayConfig captureOverlayCfg = GetActiveDX12OverlayConfig(captureShm);
+    const bool captureWantsOverlay = captureOverlayCfg.showOverlay && captureOverlayCfg.captureIncludeOverlay;
+    const bool captureUsePostSL = processCapture && g_IPC && g_IPC->IsRecording() && captureWantsOverlay &&
+                                  ShouldUseConfirmedPostSLForOverlayIncludedWork(captureOverlayCfg);
+    const bool captureAfterOverlay =
+        processCapture && g_IPC && g_IPC->IsRecording() && captureWantsOverlay && !captureUsePostSL;
+    const bool captureBeforeOverlay = processCapture && g_IPC && g_IPC->IsRecording() && !captureWantsOverlay;
     bool delayOverlayRenderAfterSyncInit = false;
     bool suppressOverlayRenderForLoadedStartupOverlay = false;
     bool delayOverlayRenderAfterResourcePrime = false;
@@ -7413,6 +7561,12 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 }
             }
             s_lastProcessFrameTime = now;
+        }
+
+        if (captureBeforeOverlay) {
+            int64_t captureStartUs = PerfLogger::GetQpcUs();
+            PublishDX12CapturedFrame(pSwapChain, captureShm, gameQueue, hasCurrentBackBufferIdx, currentBackBufferIdx);
+            perfMetrics.captureUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - captureStartUs);
         }
 
         if (!skipOverlayDraw) {
@@ -8341,76 +8495,10 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
     }
 
     // Change 6: Remove verbose debug logging - keep only error logging
-    if (processCapture && g_IPC && g_IPC->IsRecording()) {
+    if (captureAfterOverlay) {
         int64_t captureStartUs = PerfLogger::GetQpcUs();
-        SharedMemoryLayout* shm = g_IPC->GetSharedMem();
-        if (shm) {
-            if (shm->throttleCapture.load(std::memory_order_acquire)) {
-                // Skip capture to let encoder catch up
-            } else {
-                if (!g_SharedCaptureD3D12.IsActive())
-                    g_SharedCaptureD3D12.Initialize(g_Device.load(), pSwapChain);
-                if (g_SharedCaptureD3D12.IsActive()) {
-                    std::lock_guard<std::recursive_mutex> capLock(g_DX12CaptureMutex);
-                    // Keep capture submission on the same queue selection as overlay/present
-                    // work to avoid cross-queue sync jitter.
-                    ID3D12CommandQueue* captureQueue = gameQueue;
-                    UINT bbIdx = 0;
-                    if (hasCurrentBackBufferIdx) {
-                        bbIdx = currentBackBufferIdx;
-                    } else {
-                        IDXGISwapChain3* sc3 = nullptr;
-                        pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3));
-                        bbIdx = sc3 ? sc3->GetCurrentBackBufferIndex() : 0;
-                        if (sc3)
-                            sc3->Release();
-                    }
-                    if (captureQueue && g_SharedCaptureD3D12.CaptureFrame(captureQueue, bbIdx)) {
-                        SharedFrameDescriptor desc;
-                        if (g_SharedCaptureD3D12.GetCurrentFrame(&desc)) {
-                            for (UINT i = 0; i < SharedCaptureD3D12::kSharedTextureCount; ++i) {
-                                shm->SetSharedHandle(static_cast<int>(i),
-                                                     (uint64_t)g_SharedCaptureD3D12.GetSharedHandle((int)i));
-                            }
-                            shm->SetFenceShareHandle((uint64_t)g_SharedCaptureD3D12.GetFenceShareHandle());
-                            shm->SetWidth(desc.width);
-                            shm->SetHeight(desc.height);
-                            shm->SetFormat(desc.format);
-                            // CRITICAL FIX: Use acquire ordering to see consumer's readIndex
-                            // updates
-                            uint32_t wIdx = shm->frameRing.writeIndex.load(std::memory_order_acquire);
-                            uint32_t rIdx = shm->frameRing.readIndex.load(std::memory_order_acquire);
-                            if ((uint32_t)(wIdx - rIdx) < (uint32_t)FRAME_RING_SIZE) {
-                                FrameSlot& slot = shm->frameRing.slots[wIdx % FRAME_RING_SIZE];
-                                slot.fenceValue = desc.fenceValue;
-                                slot.timestamp = desc.presentTime;
-                                slot.frameIndex = desc.frameNumber;
-                                slot.textureIndex = desc.textureIndex;
-                                slot.sourcePid = GetCurrentProcessId();
-                                // CRITICAL FIX: Add release fence before setting valid flag
-                                // Ensures all slot fields are visible to consumer before valid=1
-                                std::atomic_thread_fence(std::memory_order_release);
-                                slot.valid.store(1, std::memory_order_release);
-                                shm->frameRing.writeIndex.store(wIdx + 1, std::memory_order_release);
-                                DXGIShared::SetLatestSourceFrameIndex(desc.frameNumber);
-                                static uint64_t s_lastPublishLineageLogTick = 0;
-                                uint64_t nowTick = GetTickCount64();
-                                if (nowTick - s_lastPublishLineageLogTick >= 1000) {
-                                    HookLog("DX12: Publish frame=%u ring=%u tex=%d fence=%llu ts=%llu bb=%u depth=%u",
-                                            desc.frameNumber, wIdx, desc.textureIndex,
-                                            static_cast<unsigned long long>(desc.fenceValue),
-                                            static_cast<unsigned long long>(desc.presentTime), bbIdx,
-                                            static_cast<unsigned>(wIdx - rIdx));
-                                    s_lastPublishLineageLogTick = nowTick;
-                                }
-                            } else
-                                shm->frameRing.droppedFrames.fetch_add(1, std::memory_order_relaxed);
-                        }
-                    }
-                }
-            }
-            perfMetrics.captureUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - captureStartUs);
-        }
+        PublishDX12CapturedFrame(pSwapChain, captureShm, gameQueue, hasCurrentBackBufferIdx, currentBackBufferIdx);
+        perfMetrics.captureUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - captureStartUs);
     }
 }
 
@@ -8605,39 +8693,25 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
     if (processCapture && ShouldSkipCaptureForTargetCadence()) {
         processCapture = false;
     }
+
+    SharedMemoryLayout* screenshotShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+    OverlayConfig screenshotOverlayCfg = GetActiveDX12OverlayConfig(screenshotShm);
+    const bool screenshotRequested =
+        screenshotShm && screenshotShm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire);
+    const bool screenshotWantsOverlay =
+        screenshotRequested && screenshotOverlayCfg.showOverlay && screenshotOverlayCfg.screenshotIncludeOverlay;
+    const bool screenshotUsePostSL =
+        screenshotWantsOverlay && ShouldUseConfirmedPostSLForOverlayIncludedWork(screenshotOverlayCfg);
+    if (screenshotRequested && !screenshotWantsOverlay) {
+        CaptureRequestedDX12Screenshot(sc3, screenshotShm);
+    }
+
     // For interpolated frames, only render overlay (no capture processing) since
     // the backbuffer content is from the FG engine, not a real game frame.
     ProcessFrame(sc3, processCapture);
 
-    // SCREENSHOT: DX12 path — readback heap copy on the game's D3D12 device
-    if (g_IPC && g_IPC->GetSharedMem()) {
-        SharedMemoryLayout* shm = g_IPC->GetSharedMem();
-        if (shm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire)) {
-            ID3D12Device* dx12Device = g_Device.load();
-            ID3D12CommandQueue* dx12Queue = g_CommandQueue.load();
-            if (dx12Device && dx12Queue) {
-                UINT bbIdx = sc3->GetCurrentBackBufferIndex();
-                ID3D12Resource* backBuffer = nullptr;
-                if (SUCCEEDED(sc3->GetBuffer(bbIdx, IID_PPV_ARGS(&backBuffer)))) {
-                    D3D12_RESOURCE_DESC desc = backBuffer->GetDesc();
-                    bool isHDR =
-                        (desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM || desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT);
-                    if (isHDR) {
-                        bool isPQ = (desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM);
-                        std::string rawPath(shm->runtimeState.screenshotPath);
-                        rawPath += ".raw";
-                        SaveDX12TextureAsHDR(dx12Device, dx12Queue, backBuffer, isPQ, rawPath.c_str());
-                    } else {
-                        SaveDX12TextureAsBMP(dx12Device, dx12Queue, backBuffer, shm->runtimeState.screenshotPath);
-                    }
-                    backBuffer->Release();
-                }
-            }
-            shm->runtimeState.cmdTakeScreenshot.store(false, std::memory_order_release);
-            shm->runtimeState.ackScreenshotTaken.store(true, std::memory_order_release);
-            shm->runtimeState.notificationType.store(1, std::memory_order_release);
-            shm->runtimeState.notificationExpiry.store(GetTickCount64() + 3000ULL, std::memory_order_release);
-        }
+    if (screenshotWantsOverlay && !screenshotUsePostSL) {
+        CaptureRequestedDX12Screenshot(sc3, screenshotShm);
     }
 
     sc3->Release();

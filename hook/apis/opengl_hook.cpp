@@ -1042,8 +1042,12 @@ static void SwapBegin(HDC hdc) {
                     hdc, shm, (int)shouldDraw, (int)(g_IPC && g_IPC->IsRecording()));
 
             bool captureIncludeOverlay = shm ? shm->overlayConfig.captureIncludeOverlay : true;
+            bool screenshotIncludeOverlay = shm ? shm->overlayConfig.screenshotIncludeOverlay : true;
             bool shouldDrawOverlay = shouldDraw;
             bool isRecording = g_IPC && g_IPC->IsRecording();
+            const bool screenshotRequested = shm && shm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire);
+            const bool screenshotAfterOverlay = screenshotRequested && shouldDrawOverlay && screenshotIncludeOverlay;
+            const bool screenshotBeforeOverlay = screenshotRequested && !screenshotAfterOverlay;
 
             // Lambda for capture operation
             auto doCapture = [hdc, isRecording]() {
@@ -1070,41 +1074,43 @@ static void SwapBegin(HDC hdc) {
                 }
             };
 
-            // Order capture/overlay based on config
-            if (captureIncludeOverlay) {
-                doOverlay();  // Draw overlay first
-                if (!g_LegacyContext)
-                    doCapture();  // Then capture
-            } else {
-                if (!g_LegacyContext)
-                    doCapture();  // Capture first
-                doOverlay();      // Then draw overlay
-            }
+            auto completeScreenshot = [shm]() {
+                if (!shm)
+                    return;
+                shm->runtimeState.cmdTakeScreenshot.store(false, std::memory_order_release);
+                shm->runtimeState.ackScreenshotTaken.store(true, std::memory_order_release);
+                shm->runtimeState.notificationType.store(1, std::memory_order_release);
+                shm->runtimeState.notificationExpiry.store(GetTickCount64() + 3000ULL, std::memory_order_release);
+            };
 
-            // SCREENSHOT: OpenGL path — use glReadPixels
-            if (g_IPC && g_IPC->GetSharedMem()) {
-                SharedMemoryLayout* shm = g_IPC->GetSharedMem();
-                if (shm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire)) {
-                    if (pglReadPixels) {
-                        // Get viewport dimensions from the DC window
-                        RECT rc;
-                        if (GetClientRect(WindowFromDC(hdc), &rc)) {
-                            int w = rc.right;
-                            int h = rc.bottom;
-                            if (w > 0 && h > 0) {
-                                std::vector<uint8_t> pixels(w * h * 4);
-                                pglReadPixels(0, 0, w, h, 0x80E1 /*GL_BGRA*/, 0x1401 /*GL_UNSIGNED_BYTE*/,
-                                              pixels.data());
-                                WriteBMPFileAsync(shm->runtimeState.screenshotPath, pixels.data(), w, h, w * 4);
-                            }
+            auto doScreenshot = [hdc, shm, completeScreenshot]() {
+                if (!shm)
+                    return;
+                if (pglReadPixels) {
+                    // Get viewport dimensions from the DC window
+                    RECT rc;
+                    if (GetClientRect(WindowFromDC(hdc), &rc)) {
+                        int w = rc.right;
+                        int h = rc.bottom;
+                        if (w > 0 && h > 0) {
+                            std::vector<uint8_t> pixels(w * h * 4);
+                            pglReadPixels(0, 0, w, h, 0x80E1 /*GL_BGRA*/, 0x1401 /*GL_UNSIGNED_BYTE*/, pixels.data());
+                            WriteBMPFileAsync(shm->runtimeState.screenshotPath, pixels.data(), w, h, w * 4);
                         }
                     }
-                    shm->runtimeState.cmdTakeScreenshot.store(false, std::memory_order_release);
-                    shm->runtimeState.ackScreenshotTaken.store(true, std::memory_order_release);
-                    shm->runtimeState.notificationType.store(1, std::memory_order_release);
-                    shm->runtimeState.notificationExpiry.store(GetTickCount64() + 3000ULL, std::memory_order_release);
                 }
-            }
+                completeScreenshot();
+            };
+
+            if (!g_LegacyContext && !captureIncludeOverlay)
+                doCapture();
+            if (screenshotBeforeOverlay)
+                doScreenshot();
+            doOverlay();
+            if (!g_LegacyContext && captureIncludeOverlay)
+                doCapture();
+            if (screenshotAfterOverlay)
+                doScreenshot();
         }
     }
     g_SwapRecurse++;
