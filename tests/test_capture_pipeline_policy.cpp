@@ -231,6 +231,17 @@ TEST(CapturePipelinePolicyTest, CfrOutputShortfallTicksIsClampedToPositiveDelta)
     EXPECT_EQ(policy::GetCfrOutputShortfallTicks(25, 20), 5u);
 }
 
+TEST(CapturePipelinePolicyTest, AdjustedScheduledTicksSubtractDiscardedTimerDebt) {
+    EXPECT_EQ(policy::GetAdjustedCfrScheduledTicks(100, 16), 84u);
+    EXPECT_EQ(policy::GetAdjustedCfrScheduledTicks(12, 16), 0u);
+}
+
+TEST(CapturePipelinePolicyTest, TimerRebaseDiscardDropsOnlyOutstandingShortfall) {
+    EXPECT_EQ(policy::GetCfrTimerRebaseDiscardTicks(100, 0, 84), 16u);
+    EXPECT_EQ(policy::GetCfrTimerRebaseDiscardTicks(221, 16, 203), 2u);
+    EXPECT_EQ(policy::GetCfrTimerRebaseDiscardTicks(221, 18, 203), 0u);
+}
+
 TEST(CapturePipelinePolicyTest, CfrCatchupRequiresMeaningfulShortfallOrForceThreshold) {
     EXPECT_FALSE(policy::ShouldCfrCatchUpToWallClock(0, true, true, true));
     EXPECT_FALSE(policy::ShouldCfrCatchUpToWallClock(policy::kCfrShortfallCatchupThresholdTicks - 1, true, true, true));

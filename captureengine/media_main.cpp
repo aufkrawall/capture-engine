@@ -1546,6 +1546,7 @@ void EncoderThreadFunc(const AppConfig& config) {
     LARGE_INTEGER liveStartQpc = {};
     uint64_t liveTicksOutput = 0;
     uint64_t liveTicksScheduled = 0;
+    uint64_t liveTicksDiscardedByTimerRebase = 0;
     uint64_t wgcSelectionErrorAccumUs = 0;
     int64_t wgcSelectionErrorSignedAccumUs = 0;
     uint32_t wgcSelectionErrorSamples = 0;
@@ -1612,6 +1613,18 @@ void EncoderThreadFunc(const AppConfig& config) {
             lastWarmupWgcSourceQpc = queuedFrame.timestamp;
             ++wgcFreshWarmupFrameCount;
         }
+    };
+    auto updateLiveCfrShortfall = [&](int64_t nowQpc) {
+        if (config.video.useVFR || !recordingOutputLive || liveStartQpc.QuadPart <= 0 || targetIntervalTicks <= 0 ||
+            nowQpc <= liveStartQpc.QuadPart) {
+            liveTicksScheduled = 0;
+            return 0u;
+        }
+        const uint64_t elapsedTicks =
+            static_cast<uint64_t>(nowQpc - liveStartQpc.QuadPart) / static_cast<uint64_t>(targetIntervalTicks);
+        liveTicksScheduled =
+            ce::capture_policy::GetAdjustedCfrScheduledTicks(elapsedTicks, liveTicksDiscardedByTimerRebase);
+        return ce::capture_policy::GetCfrOutputShortfallTicks(liveTicksScheduled, liveTicksOutput);
     };
     while (g_EncoderRunning || g_FrameQueue.Size() > 0 || !bufferedWgcFrames.empty() || !bufferedInjectFrames.empty()) {
         LARGE_INTEGER cycleStartQpc;
@@ -1682,29 +1695,28 @@ void EncoderThreadFunc(const AppConfig& config) {
         if (!config.video.useVFR && recordingOutputLive) {
             LARGE_INTEGER shortfallNow;
             QueryPerformanceCounter(&shortfallNow);
-            if (liveStartQpc.QuadPart > 0 && targetIntervalTicks > 0 && shortfallNow.QuadPart > liveStartQpc.QuadPart) {
-                const uint64_t elapsedTicks = static_cast<uint64_t>(shortfallNow.QuadPart - liveStartQpc.QuadPart) /
-                                              static_cast<uint64_t>(targetIntervalTicks);
-                liveTicksScheduled = std::max<uint64_t>(liveTicksScheduled, elapsedTicks);
-                outputShortfallTicks =
-                    ce::capture_policy::GetCfrOutputShortfallTicks(liveTicksScheduled, liveTicksOutput);
-            }
+            outputShortfallTicks = updateLiveCfrShortfall(shortfallNow.QuadPart);
         }
 
         const bool activeScreenGrab = IsActiveScreenGrab();
         const bool frameAvailableForCatchup =
             activeScreenGrab ? (!bufferedWgcFrames.empty()) : (!bufferedInjectFrames.empty());
-        const bool shouldCatchUpToWallClock =
-            !config.video.useVFR && recordingOutputLive &&
-            ce::capture_policy::ShouldCfrCatchUpToWallClock(outputShortfallTicks, activeScreenGrab,
-                                                            frameAvailableForCatchup, g_HasLastFrame);
-        const uint32_t catchupTicksThisLoop =
-            shouldCatchUpToWallClock
-                ? (activeScreenGrab ? ce::capture_policy::GetWgcCatchupTicksThisLoop(
-                                          g_IsEncoderBottlenecked.load(std::memory_order_relaxed),
-                                          bufferedWgcFrames.size(), frameCreditAccumulator, outputShortfallTicks)
-                                    : ce::capture_policy::GetCfrCatchupTicksThisLoop(outputShortfallTicks))
-                : 0u;
+        bool shouldCatchUpToWallClock = false;
+        uint32_t catchupTicksThisLoop = 0;
+        auto recomputeCatchupPolicy = [&]() {
+            shouldCatchUpToWallClock =
+                !config.video.useVFR && recordingOutputLive &&
+                ce::capture_policy::ShouldCfrCatchUpToWallClock(outputShortfallTicks, activeScreenGrab,
+                                                                frameAvailableForCatchup, g_HasLastFrame);
+            catchupTicksThisLoop =
+                shouldCatchUpToWallClock
+                    ? (activeScreenGrab ? ce::capture_policy::GetWgcCatchupTicksThisLoop(
+                                              g_IsEncoderBottlenecked.load(std::memory_order_relaxed),
+                                              bufferedWgcFrames.size(), frameCreditAccumulator, outputShortfallTicks)
+                                        : ce::capture_policy::GetCfrCatchupTicksThisLoop(outputShortfallTicks))
+                    : 0u;
+        };
+        recomputeCatchupPolicy();
 
         const int64_t selectionGridTick =
             (!config.video.useVFR && recordingOutputLive) ? (encoderGridTickCount + 1) : encoderGridTickCount;
@@ -1761,9 +1773,22 @@ void EncoderThreadFunc(const AppConfig& config) {
                 }
                 int64_t overshootTicks = (encoderLateQpc + targetIntervalTicks - 1) / targetIntervalTicks;
                 const int64_t overshootUs = (encoderLateQpc * 1000000) / qpcFreq.QuadPart;
+                uint32_t droppedShortfallTicks = 0;
+                if (liveStartQpc.QuadPart > 0 && now.QuadPart > liveStartQpc.QuadPart) {
+                    const uint64_t elapsedTicks = static_cast<uint64_t>(now.QuadPart - liveStartQpc.QuadPart) /
+                                                  static_cast<uint64_t>(targetIntervalTicks);
+                    droppedShortfallTicks = ce::capture_policy::GetCfrTimerRebaseDiscardTicks(
+                        elapsedTicks, liveTicksDiscardedByTimerRebase, liveTicksOutput);
+                }
+                liveTicksDiscardedByTimerRebase += droppedShortfallTicks;
+                outputShortfallTicks = updateLiveCfrShortfall(now.QuadPart);
+                recomputeCatchupPolicy();
                 if (s_lateTickLogCount <= 10 || s_lateTickLogCount % 60 == 0) {
-                    LogInfo("[EncoderThread] Timer skip-ahead: late by %lld ticks (%lld us), rebasing (count=%u)",
-                            (long long)overshootTicks, (long long)overshootUs, s_lateTickLogCount);
+                    LogInfo(
+                        "[EncoderThread] Timer skip-ahead: late by %lld ticks (%lld us), rebasing "
+                        "(count=%u, dropShortfall=%u, discardTotal=%llu)",
+                        (long long)overshootTicks, (long long)overshootUs, s_lateTickLogCount, droppedShortfallTicks,
+                        static_cast<unsigned long long>(liveTicksDiscardedByTimerRebase));
                 }
                 // Reset nextSampleTime to current time + 1 tick interval
                 // so the timer wakes on time from now on.
@@ -2455,6 +2480,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 encoderGridTickCount = 0;
                 liveTicksOutput = 0;
                 liveTicksScheduled = 0;
+                liveTicksDiscardedByTimerRebase = 0;
                 liveStartQpc = {};
                 wgcInputPredictor.Reset();
                 smoothedEncCycleMs = 0.0;
@@ -3389,8 +3415,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 if (nowQpc.QuadPart > liveStartQpc.QuadPart) {
                     liveWallElapsedUs =
                         static_cast<uint64_t>((nowQpc.QuadPart - liveStartQpc.QuadPart) * 1000000 / qpcFreq.QuadPart);
-                    outputShortfallTicks =
-                        ce::capture_policy::GetCfrOutputShortfallTicks(liveTicksScheduled, liveTicksOutput);
+                    outputShortfallTicks = updateLiveCfrShortfall(nowQpc.QuadPart);
                 }
             }
             const double shortfallDurationMs =

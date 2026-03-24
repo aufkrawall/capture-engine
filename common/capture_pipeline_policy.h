@@ -38,6 +38,15 @@ inline uint32_t GetCfrOutputShortfallTicks(uint64_t liveTicksScheduled, uint64_t
                : 0u;
 }
 
+inline uint64_t GetAdjustedCfrScheduledTicks(uint64_t elapsedTicks, uint64_t discardedTicks) {
+    return elapsedTicks > discardedTicks ? (elapsedTicks - discardedTicks) : 0ull;
+}
+
+inline uint32_t GetCfrTimerRebaseDiscardTicks(uint64_t elapsedTicks, uint64_t discardedTicks,
+                                              uint64_t liveTicksOutput) {
+    return GetCfrOutputShortfallTicks(GetAdjustedCfrScheduledTicks(elapsedTicks, discardedTicks), liveTicksOutput);
+}
+
 inline bool ShouldCfrCatchUpToWallClock(uint32_t outputShortfallTicks, bool useScreenGrab, bool frameAvailable,
                                         bool hasLastFrame) {
     if (outputShortfallTicks == 0) {
