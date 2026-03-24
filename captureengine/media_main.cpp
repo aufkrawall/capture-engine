@@ -2072,6 +2072,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                             std::max<size_t>(maxBufferedWgcFrames,
                                              std::min<size_t>(static_cast<size_t>(encoderLateTickCount) + 4u, 12u));
                     }
+                    if (outputShortfallTicks > 0) {
+                        maxBufferedWgcFrames = std::max<size_t>(maxBufferedWgcFrames, 12u);
+                    }
                 }
                 while (bufferedWgcFrames.size() > maxBufferedWgcFrames) {
                     QueuedFrame stale = std::move(bufferedWgcFrames.front());
@@ -2085,8 +2088,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 frameCreditAccumulator = std::min(frameCreditAccumulator, 5.0);
 
                 // Discard excess WGC frames only under clear overcapture pressure.
-                while (encoderLateTickCount == 0 && !wgcLowSourceModeActive && !wgcReservePressureActive &&
-                       frameCreditAccumulator >= 2.0 && bufferedWgcFrames.size() > 1) {
+                while (outputShortfallTicks == 0 && encoderLateTickCount == 0 && !wgcLowSourceModeActive &&
+                       !wgcReservePressureActive && frameCreditAccumulator >= 2.0 && bufferedWgcFrames.size() > 1) {
                     QueuedFrame excess = std::move(bufferedWgcFrames.front());
                     bufferedWgcFrames.pop_front();
                     ReleaseQueuedFrameTexture(excess);
@@ -2736,14 +2739,14 @@ void EncoderThreadFunc(const AppConfig& config) {
 
             if (useScreenGrab && !ce::capture_policy::ShouldAllowWgcExtraCatchupTicks(
                                      g_IsEncoderBottlenecked.load(std::memory_order_relaxed), bufferedWgcFrames.size(),
-                                     frameCreditAccumulator)) {
+                                     frameCreditAccumulator, outputShortfallTicks)) {
                 return;
             }
 
             for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                 if (useScreenGrab && !ce::capture_policy::ShouldAllowWgcExtraCatchupTicks(
                                          g_IsEncoderBottlenecked.load(std::memory_order_relaxed),
-                                         bufferedWgcFrames.size(), frameCreditAccumulator)) {
+                                         bufferedWgcFrames.size(), frameCreditAccumulator, outputShortfallTicks)) {
                     break;
                 }
 

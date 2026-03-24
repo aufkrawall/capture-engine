@@ -84,12 +84,16 @@ inline bool ShouldApplyWgcSelectionDelay(bool recordingOutputLive, uint32_t outp
 }
 
 inline bool ShouldAllowWgcExtraCatchupTicks(bool encoderBottlenecked, size_t bufferedWgcFrames,
-                                            double frameCreditAccumulator) {
+                                            double frameCreditAccumulator, uint32_t outputShortfallTicks) {
     if (encoderBottlenecked || bufferedWgcFrames <= 1) {
         return false;
     }
 
-    return frameCreditAccumulator >= 1.0;
+    if (frameCreditAccumulator >= 1.0) {
+        return true;
+    }
+
+    return outputShortfallTicks >= kCfrShortfallForceCatchupThresholdTicks;
 }
 
 struct WgcAdaptiveTelemetry {
