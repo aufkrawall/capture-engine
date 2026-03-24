@@ -60,6 +60,18 @@ inline int64_t ComputeLatencyAdjustedAvDriftMs(int64_t rawAvDriftMs, int64_t int
     return rawAvDriftMs + std::max<int64_t>(intentionalPullLatencyMs, 0);
 }
 
+inline bool ShouldAllowWgcSteadyStateDriftCompensation(bool trackStartupSettled, int64_t videoPipelineLagMs,
+                                                       int64_t bufferedSamples, int64_t targetLatencySamples,
+                                                       int64_t leadWarningSamples) {
+    if (!trackStartupSettled || videoPipelineLagMs > 0 || bufferedSamples <= 0) {
+        return false;
+    }
+
+    const int64_t boundedTargetSamples = std::max<int64_t>(0, targetLatencySamples);
+    const int64_t leadSamples = bufferedSamples - boundedTargetSamples;
+    return leadSamples >= std::max<int64_t>(1, leadWarningSamples);
+}
+
 inline bool IsTrackAudioStartupSettled(bool trackBootstrapComplete, bool allSourcesPrimed) {
     return trackBootstrapComplete || allSourcesPrimed;
 }

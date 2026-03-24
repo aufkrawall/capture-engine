@@ -1147,6 +1147,11 @@ public:
                 const int64_t targetLatencySamples = targetBufferedSamples;
                 if (src.bootstrapComplete && src.syncResampler && src.syncResampler->IsReady()) {
                     size_t rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
+                    const bool allowWgcSteadyStateDriftCompensation =
+                        isWgcCfrRecording &&
+                        ce::audio::ShouldAllowWgcSteadyStateDriftCompensation(
+                            trackStartupSettled, videoPipelineLagMs, static_cast<int64_t>(rbAvailable),
+                            targetLatencySamples, kWgcCfrLeadWarningSamples);
                     if (!isWgcCfrRecording && (int64_t)rbAvailable > targetLatencySamples + kRuntimeMaxLeadSamples) {
                         int64_t dropSamplesTotal =
                             (int64_t)rbAvailable - (targetLatencySamples + kRuntimeMaxLeadSamples);
@@ -1180,41 +1185,49 @@ public:
                     } else if (isWgcCfrRecording &&
                                (int64_t)rbAvailable > targetLatencySamples + kWgcCfrLeadWarningSamples &&
                                dropLogCounter++ % 500 == 0) {
-                        DLL_Log(
-                            "[PullAudio] WGC CFR lead warning: src %d ahead by %lld samples (target=%lld, "
-                            "pipelineLag=%lldms). "
-                            "Live trimming disabled to preserve pitch; inspect encoder throughput or source clock "
-                            "drift.",
-                            (int)srcIdx, (int64_t)rbAvailable - targetLatencySamples, targetLatencySamples,
-                            videoPipelineLagMs);
+                        DLL_Log(allowWgcSteadyStateDriftCompensation
+                                    ? "[PullAudio] WGC CFR lead warning: src %d ahead by %lld samples (target=%lld, "
+                                      "pipelineLag=%lldms). Steady-state drift correction is active to unwind source "
+                                      "clock lead without live trimming."
+                                    : "[PullAudio] WGC CFR lead warning: src %d ahead by %lld samples (target=%lld, "
+                                      "pipelineLag=%lldms). Live trimming disabled to preserve pitch; inspect encoder "
+                                      "throughput or source clock drift.",
+                                (int)srcIdx, (int64_t)rbAvailable - targetLatencySamples, targetLatencySamples,
+                                videoPipelineLagMs);
                     }
 
+                    const bool canUseLiveDriftCompensation =
+                        src.alignedStartMs >= 0 && !(src.sourceType == AudioConfig::AppAudio && !src.hasAlignedStart);
                     const bool allowLiveDriftCompensation =
-                        !isWgcCfrRecording && src.alignedStartMs >= 0 &&
-                        !(src.sourceType == AudioConfig::AppAudio && !src.hasAlignedStart);
-                    if (allowLiveDriftCompensation && (int64_t)rbAvailable >= kMinCompensationBufferSamples) {
-                        int64_t rbError = (int64_t)rbAvailable - targetLatencySamples;
-                        int64_t fakeExpectedSamples = src.syncSamplesOutput - rbError;
-                        int64_t correctedVideoTimeMs = (fakeExpectedSamples * 1000) / SAMPLE_RATE;
-                        if (correctedVideoTimeMs < 0)
-                            correctedVideoTimeMs = 0;
+                        canUseLiveDriftCompensation && (!isWgcCfrRecording || allowWgcSteadyStateDriftCompensation);
+                    if (allowLiveDriftCompensation) {
+                        if ((int64_t)rbAvailable >= kMinCompensationBufferSamples) {
+                            int64_t rbError = (int64_t)rbAvailable - targetLatencySamples;
+                            int64_t fakeExpectedSamples = src.syncSamplesOutput - rbError;
+                            int64_t correctedVideoTimeMs = (fakeExpectedSamples * 1000) / SAMPLE_RATE;
+                            if (correctedVideoTimeMs < 0)
+                                correctedVideoTimeMs = 0;
 
-                        src.syncResampler->AdjustForClockDrift(correctedVideoTimeMs, src.syncSamplesOutput);
+                            src.syncResampler->AdjustForClockDrift(correctedVideoTimeMs, src.syncSamplesOutput);
 
-                        if (driftLogCounter++ % 1000 == 0 && abs(rbError) > 100) {
-                            DLL_Log(
-                                "[PullAudio] Src %d Buffer Level: %zu (Err: %lld, target=%lld, pipelineLag=%lldms) -> "
-                                "Comp Drift: %lld",
-                                (int)srcIdx, rbAvailable, rbError, targetLatencySamples, videoPipelineLagMs, rbError);
-                        }
-                    } else if (!allowLiveDriftCompensation) {
-                        if (driftLogCounter++ % 2000 == 0) {
-                            DLL_Log("[PullAudio] Src %d drift compensation disabled for WGC CFR stability",
-                                    (int)srcIdx);
+                            if (driftLogCounter++ % 1000 == 0 && abs(rbError) > 100) {
+                                DLL_Log(isWgcCfrRecording
+                                            ? "[PullAudio] Src %d steady-state WGC clock correction: %zu "
+                                              "(Err: %lld, target=%lld, pipelineLag=%lldms) -> Comp Drift: %lld"
+                                            : "[PullAudio] Src %d Buffer Level: %zu (Err: %lld, target=%lld, "
+                                              "pipelineLag=%lldms) -> Comp Drift: %lld",
+                                        (int)srcIdx, rbAvailable, rbError, targetLatencySamples, videoPipelineLagMs,
+                                        rbError);
+                            }
+                        } else if (driftLogCounter++ % 2000 == 0) {
+                            DLL_Log("[PullAudio] Src %d Buffer low (%zu) - holding drift compensation", (int)srcIdx,
+                                    rbAvailable);
                         }
                     } else if (driftLogCounter++ % 2000 == 0) {
-                        DLL_Log("[PullAudio] Src %d Buffer low (%zu) - holding drift compensation", (int)srcIdx,
-                                rbAvailable);
+                        DLL_Log(isWgcCfrRecording
+                                    ? "[PullAudio] Src %d drift compensation disabled for WGC CFR stability window"
+                                    : "[PullAudio] Src %d drift compensation disabled",
+                                (int)srcIdx);
                     }
                 }
 
