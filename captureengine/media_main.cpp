@@ -2756,11 +2756,15 @@ void EncoderThreadFunc(const AppConfig& config) {
                 QueryPerformanceCounter(&budgetNow);
                 const double elapsedFromTickStartMs =
                     static_cast<double>(budgetNow.QuadPart - cycleStartQpc.QuadPart) * 1000.0 / qpcFreq.QuadPart;
-                if (elapsedFromTickStartMs > frameIntervalMs) {
+                const bool allowForceCatchupBudget =
+                    useScreenGrab &&
+                    outputShortfallTicks >= ce::capture_policy::kCfrShortfallForceCatchupThresholdTicks;
+                const double catchupBudgetMs = allowForceCatchupBudget ? (frameIntervalMs * 2.0) : frameIntervalMs;
+                if (elapsedFromTickStartMs > catchupBudgetMs) {
                     LogInfo(
-                        "[EncoderThread] Catchup budget exceeded at extraTick=%u (elapsed=%.2fms > interval=%.2fms), "
+                        "[EncoderThread] Catchup budget exceeded at extraTick=%u (elapsed=%.2fms > budget=%.2fms), "
                         "skipping remaining catchup",
-                        extraTick, elapsedFromTickStartMs, frameIntervalMs);
+                        extraTick, elapsedFromTickStartMs, catchupBudgetMs);
                     break;
                 }
 
