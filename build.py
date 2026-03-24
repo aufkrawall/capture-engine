@@ -211,6 +211,7 @@ PACKAGES = [
     "mingw-w64-clang-x86_64-gtest",
     "mingw-w64-clang-x86_64-amf-headers",
     "mingw-w64-clang-x86_64-onevpl",  # For QSV
+    "mingw-w64-clang-x86_64-svt-av1",  # For libsvtav1 / AVIF screenshots
     "mingw-w64-clang-x86_64-lld",  # For delay-load support (x64 + x86 cross-compile)
     "mingw-w64-clang-x86_64-clang-tools-extra",  # For clang-format
     "make",
@@ -285,6 +286,41 @@ def resolve_msys2_url() -> str:
     resolved_url = MSYS2_DIST_URL + latest_name
     log(f"Resolved latest MSYS2 base archive: {latest_name}")
     return resolved_url
+
+
+def verify_windows_ffmpeg_pkg_config_deps() -> None:
+    if IS_LINUX:
+        return
+
+    pkg_config_exe = os.path.join(MSYS2_DIR, "clang64", "bin", "pkg-config.exe")
+    if not os.path.exists(pkg_config_exe):
+        raise RuntimeError(f"Missing pkg-config executable: {pkg_config_exe}")
+
+    clang_bin = os.path.join(MSYS2_DIR, "clang64", "bin")
+    usr_bin = os.path.join(MSYS2_DIR, "usr", "bin")
+    clang_pkgconfig = to_unix(os.path.join(MSYS2_DIR, "clang64", "lib", "pkgconfig"))
+    probe_env = os.environ.copy()
+    probe_env["PATH"] = os.pathsep.join([clang_bin, usr_bin, probe_env.get("PATH", "")])
+    probe_env["PKG_CONFIG_PATH"] = clang_pkgconfig
+
+    required = [
+        ("vpl", "mingw-w64-clang-x86_64-onevpl"),
+        ("SvtAv1Enc", "mingw-w64-clang-x86_64-svt-av1"),
+    ]
+    missing = []
+    for pkg_name, package_name in required:
+        result = subprocess.run(
+            [pkg_config_exe, "--exists", pkg_name],
+            env=probe_env,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            missing.append((pkg_name, package_name))
+
+    if missing:
+        missing_summary = ", ".join(f"{pkg_name} ({package_name})" for pkg_name, package_name in missing)
+        raise RuntimeError(f"Missing MSYS2 FFmpeg dependency pkg-config entries: {missing_summary}")
 
 
 def patch_amf_header():
@@ -807,6 +843,7 @@ def setup_msys2():
     clear_stale_msys2_pacman_lock()
     run_command([msys_bash, "-lc", pkg_cmd], input_str="\n")
     patch_amf_header()
+    verify_windows_ffmpeg_pkg_config_deps()
 
 
 def check_mingw_packages():
@@ -912,6 +949,7 @@ LINUX_MSYS2_PACKAGES = [
     "mingw-w64-clang-x86_64-libgme",
     "mingw-w64-clang-x86_64-libva",
     "mingw-w64-clang-x86_64-libvpl",
+    "mingw-w64-clang-x86_64-svt-av1",
     "mingw-w64-clang-x86_64-libwinpthread",
 ]
 
@@ -1288,6 +1326,7 @@ class FFmpegBuilder:
         # Add MSYS2 paths for system libs (vpl, etc.)
         msys_inc = to_unix(os.path.join(self.msys, "clang64", "include"))
         msys_lib = to_unix(os.path.join(self.msys, "clang64", "lib"))
+        msys_pkgconfig = to_unix(os.path.join(self.msys, "clang64", "lib", "pkgconfig"))
 
         env["CC"] = "clang"
         env["CXX"] = "clang++"
@@ -1295,7 +1334,7 @@ class FFmpegBuilder:
         env["CXXFLAGS"] = f"-O3 -ffunction-sections -fdata-sections -I{self.prefix}/include -I{msys_inc}"
         env["LDFLAGS"] = f"-Wl,--gc-sections -L{self.prefix}/lib -L{msys_lib}"
         env["PKG_CONFIG"] = f"{pkg_config} --static"
-        env["PKG_CONFIG_PATH"] = f"{self.prefix}/lib/pkgconfig"
+        env["PKG_CONFIG_PATH"] = os.pathsep.join([f"{self.prefix}/lib/pkgconfig", msys_pkgconfig])
         env["MSYSTEM"] = "CLANG64"  # Ensure we are treated as MinGW-Clang
 
         return env
