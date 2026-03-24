@@ -60,6 +60,7 @@ public:
         float dropFadeStartR = 0.0f;                    // Right sample anchor for drop transition
         int underrunFadeSamplesRemaining = 0;           // Remaining samples for post-underrun fade-in
         uint64_t overflowDropSamples = 0;               // Newest samples dropped before entering the ring buffer
+        uint64_t retainedNewestTrimSamples = 0;         // Oldest samples discarded by ring headroom retention
         uint64_t latencyTrimSamples = 0;                // Oldest samples trimmed to keep latency bounded
         uint64_t bootstrapTrimSamples = 0;              // Oldest startup samples trimmed before the track goes live
         uint64_t postResampleTrimSamples = 0;           // Samples discarded from post-resample backlog cap
@@ -74,8 +75,11 @@ public:
         bool isPrimed = false;                     // True after source has buffered a startup safety cushion
         bool bootstrapComplete = false;            // True after startup backlog is settled and live sync may engage
         bool pendingUnderrunRecoveryFade = false;  // Arm fade-in when real audio resumes after padded silence
+        uint64_t pendingRetainedTrimSamples = 0;   // Aggregated ring-headroom trims since the last periodic log
+        uint32_t pendingRetainedTrimEvents = 0;    // Aggregated ring-headroom trim events since the last periodic log
         uint64_t pendingLatencyTrimSamples = 0;    // Aggregated trim samples since the last periodic log
         uint32_t pendingLatencyTrimEvents = 0;     // Aggregated trim events since the last periodic log
+        uint64_t lastRetainedTrimWarnTick = 0;     // Rate-limit explicit retained-audio warnings
 
         AudioConfig config;
         int track = 0;  // Target track number
@@ -195,6 +199,7 @@ public:
             src.dropFadeStartR = 0.0f;
             src.underrunFadeSamplesRemaining = 0;
             src.overflowDropSamples = 0;
+            src.retainedNewestTrimSamples = 0;
             src.latencyTrimSamples = 0;
             src.bootstrapTrimSamples = 0;
             src.postResampleTrimSamples = 0;
@@ -208,6 +213,11 @@ public:
             src.isPrimed = false;
             src.bootstrapComplete = false;
             src.pendingUnderrunRecoveryFade = false;
+            src.pendingRetainedTrimSamples = 0;
+            src.pendingRetainedTrimEvents = 0;
+            src.pendingLatencyTrimSamples = 0;
+            src.pendingLatencyTrimEvents = 0;
+            src.lastRetainedTrimWarnTick = 0;
         }
         audioSyncPending.store(false);
     }
@@ -537,6 +547,7 @@ public:
                 src.dropFadeStartR = 0.0f;
                 src.underrunFadeSamplesRemaining = 0;
                 src.overflowDropSamples = 0;
+                src.retainedNewestTrimSamples = 0;
                 src.latencyTrimSamples = 0;
                 src.bootstrapTrimSamples = 0;
                 src.postResampleTrimSamples = 0;
@@ -550,6 +561,11 @@ public:
                 src.isPrimed = false;
                 src.bootstrapComplete = false;
                 src.pendingUnderrunRecoveryFade = false;
+                src.pendingRetainedTrimSamples = 0;
+                src.pendingRetainedTrimEvents = 0;
+                src.pendingLatencyTrimSamples = 0;
+                src.pendingLatencyTrimEvents = 0;
+                src.lastRetainedTrimWarnTick = 0;
             }
 
             // Start all audio sources
@@ -671,6 +687,7 @@ public:
             src.dropFadeStartR = 0.0f;
             src.underrunFadeSamplesRemaining = 0;
             src.overflowDropSamples = 0;
+            src.retainedNewestTrimSamples = 0;
             src.latencyTrimSamples = 0;
             src.bootstrapTrimSamples = 0;
             src.postResampleTrimSamples = 0;
@@ -684,6 +701,11 @@ public:
             src.isPrimed = false;
             src.bootstrapComplete = false;
             src.pendingUnderrunRecoveryFade = false;
+            src.pendingRetainedTrimSamples = 0;
+            src.pendingRetainedTrimEvents = 0;
+            src.pendingLatencyTrimSamples = 0;
+            src.pendingLatencyTrimEvents = 0;
+            src.lastRetainedTrimWarnTick = 0;
         }
 
         // Reset video frame tracking for next recording
@@ -1077,9 +1099,27 @@ public:
                 if (retainedFloats > 0) {
                     size_t retainedSamples = retainedFloats / CHANNELS;
                     ce::audio::ConsumeSyntheticBufferedSamples(src.startupSyntheticRingSamples, retainedSamples);
+                    src.retainedNewestTrimSamples += retainedSamples;
+                    src.pendingRetainedTrimSamples += retainedSamples;
+                    src.pendingRetainedTrimEvents++;
                     src.latencyTrimSamples += retainedSamples;
                     src.pendingLatencyTrimSamples += retainedSamples;
                     src.pendingLatencyTrimEvents++;
+                    if (isWgcCfrRecording) {
+                        const uint64_t nowTick = GetTickCount64();
+                        if (nowTick - src.lastRetainedTrimWarnTick >= 1000) {
+                            const size_t rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
+                            const size_t rbCapacity = src.ringBuffer->GetCapacity() / CHANNELS;
+                            DLL_Log(
+                                "[PullAudio] WARNING: WGC CFR audio headroom exhausted - trimmed %zu oldest samples "
+                                "for src=%d to retain newest audio (buffered=%zu target=%lld cap=%zu "
+                                "pipelineLag=%lldms). This may cause audible discontinuities; encoder/capture "
+                                "throughput is behind real time.",
+                                retainedSamples, (int)srcIdx, rbAvailable, targetBufferedSamples, rbCapacity,
+                                videoPipelineLagMs);
+                            src.lastRetainedTrimWarnTick = nowTick;
+                        }
+                    }
                 }
 
                 const int64_t targetLatencySamples = targetBufferedSamples;
@@ -1440,6 +1480,7 @@ public:
                 // Summarize all sources contributing to this track so issues on a
                 // secondary app/system source are visible in the periodic sync log.
                 uint64_t overflowDropped = 0;
+                uint64_t retainedTrimmed = 0;
                 uint64_t latencyTrimmed = 0;
                 uint64_t postTrimmed = 0;
                 uint64_t underrunPadded = 0;
@@ -1449,6 +1490,7 @@ public:
                     int64_t syncOutput = 0;
                     int64_t alignedStartMs = -1;
                     uint64_t srcOverflowDropped = 0;
+                    uint64_t srcRetainedTrimmed = 0;
                     uint64_t srcLatencyTrimmed = 0;
                     uint64_t srcBootstrapTrimmed = 0;
                     uint64_t srcPostTrimmed = 0;
@@ -1466,6 +1508,7 @@ public:
                         syncOutput = src.syncSamplesOutput;
                         alignedStartMs = src.alignedStartMs;
                         srcOverflowDropped = src.overflowDropSamples;
+                        srcRetainedTrimmed = src.retainedNewestTrimSamples;
                         srcLatencyTrimmed = src.latencyTrimSamples;
                         srcBootstrapTrimmed = src.bootstrapTrimSamples;
                         srcPostTrimmed = src.postResampleTrimSamples;
@@ -1478,6 +1521,7 @@ public:
                     }
 
                     overflowDropped += srcOverflowDropped;
+                    retainedTrimmed += srcRetainedTrimmed;
                     latencyTrimmed += srcLatencyTrimmed;
                     postTrimmed += srcPostTrimmed;
                     underrunPadded += srcUnderrunPadded;
@@ -1485,12 +1529,13 @@ public:
                     char sourceState[192];
                     std::snprintf(sourceState, sizeof(sourceState),
                                   "src%zu(rb=%zu sync=%lld start=%lld primed=%d boot=%d synth=%llu/%llu/%llu ovf=%llu "
-                                  "lat=%llu boottrim=%llu post=%llu pad=%llu)",
+                                  "rtrim=%llu lat=%llu boottrim=%llu post=%llu pad=%llu)",
                                   srcIdx, rbLevel, syncOutput, alignedStartMs, (int)srcPrimed, (int)srcBootstrapped,
                                   (unsigned long long)srcSyntheticRing, (unsigned long long)srcSyntheticInflight,
                                   (unsigned long long)srcSyntheticPost, (unsigned long long)srcOverflowDropped,
-                                  (unsigned long long)srcLatencyTrimmed, (unsigned long long)srcBootstrapTrimmed,
-                                  (unsigned long long)srcPostTrimmed, (unsigned long long)srcUnderrunPadded);
+                                  (unsigned long long)srcRetainedTrimmed, (unsigned long long)srcLatencyTrimmed,
+                                  (unsigned long long)srcBootstrapTrimmed, (unsigned long long)srcPostTrimmed,
+                                  (unsigned long long)srcUnderrunPadded);
                     if (!sourceSummary.empty()) {
                         sourceSummary += "; ";
                     }
@@ -1502,6 +1547,17 @@ public:
 
                 for (size_t srcIdx : srcIndices) {
                     auto& src = audioSources[srcIdx];
+                    if (src.pendingRetainedTrimEvents > 0) {
+                        DLL_Log(
+                            "[PullAudio] Retained-audio trim summary - src=%zu events=%u samples=%llu total=%llu "
+                            "target=%lld pipelineLag=%lldms",
+                            srcIdx, src.pendingRetainedTrimEvents,
+                            static_cast<unsigned long long>(src.pendingRetainedTrimSamples),
+                            static_cast<unsigned long long>(src.retainedNewestTrimSamples), targetBufferedSamples,
+                            pipelineLagMs);
+                        src.pendingRetainedTrimEvents = 0;
+                        src.pendingRetainedTrimSamples = 0;
+                    }
                     if (src.pendingLatencyTrimEvents > 0) {
                         DLL_Log(
                             "[PullAudio] Latency trim summary - src=%zu events=%u samples=%llu total=%llu target=%lld "
@@ -1518,12 +1574,12 @@ public:
                 DLL_Log(
                     "[A/V SYNC CHECK] Track %d: Video=%lld ms, Audio=%lld ms, "
                     "Drift=%lld ms, DriftAdj=%lld ms, Pull=%lld ms, VideoWall=%lld ms, PipelineLag=%lld ms, "
-                    "TargetBuf=%lld ms, Overflow=%llu, "
+                    "TargetBuf=%lld ms, Overflow=%llu, RetainTrim=%llu, "
                     "LatencyTrim=%llu, PostTrim=%llu, Pad=%llu, Sources=%s",
                     track, videoMs, audioMs, avDrift, latencyAdjustedAvDrift, trackAudioPullLatencyMs, wallVideoMs,
                     pipelineLagMs, (targetBufferedSamples * 1000) / SAMPLE_RATE, (unsigned long long)overflowDropped,
-                    (unsigned long long)latencyTrimmed, (unsigned long long)postTrimmed,
-                    (unsigned long long)underrunPadded, sourceSummary.c_str());
+                    (unsigned long long)retainedTrimmed, (unsigned long long)latencyTrimmed,
+                    (unsigned long long)postTrimmed, (unsigned long long)underrunPadded, sourceSummary.c_str());
 
                 if (std::abs(latencyAdjustedAvDrift) > 100) {
                     DLL_Log(
@@ -1712,7 +1768,10 @@ private:
     // Parses sample rate from config (defaults to 48000) and sets up both.
     void InitAudioSourceBuffers(AudioSource& source, const AudioConfig& audioConfig, size_t sourceIdx) {
         constexpr int kMixerSampleRate = 48000;
-        size_t capacity = static_cast<size_t>(kMixerSampleRate) * 2 * 2;
+        // Keep enough buffered audio headroom so WGC CFR can survive multi-second
+        // video shortfall without silently discarding old audio and causing crackle.
+        constexpr size_t kAudioRingBufferSeconds = 8;
+        size_t capacity = static_cast<size_t>(kMixerSampleRate) * kAudioRingBufferSeconds * 2;
         source.ringBuffer = std::make_unique<AudioRingBuffer>(capacity);
         DLL_Log("MediaEngine::Init RingBuffer created for source %zu. Cap=%zu samples, rate=%d", sourceIdx, capacity,
                 kMixerSampleRate);

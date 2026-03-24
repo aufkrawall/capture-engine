@@ -14,6 +14,7 @@ from typing import NoReturn
 
 LOG_PATTERNS = {
     "audio_latency_cap": re.compile(r"\[PullAudio\] Audio latency cap:"),
+    "audio_retain_trim": re.compile(r"\[PullAudio\] WARNING: WGC CFR audio headroom exhausted"),
     "wgc_cfr_lead_warning": re.compile(r"\[PullAudio\] WGC CFR lead warning:"),
     "audio_large_gap": re.compile(r"\[PullAudio\] Large A/V gap"),
     "audio_underrun": re.compile(r"\[PullAudio\] WARNING: Source underrun"),
