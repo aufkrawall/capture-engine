@@ -41,6 +41,7 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit(VkQueue queue, uint32_t submitCount, c
     // Use TLS caching for performance
     if (queue == tls_LastQueue && tls_LastDispatch) {
         if (fence != VK_NULL_HANDLE) {}
+        VulkanLayerState::Get().NoteQueueSubmit(queue);
         return tls_LastDispatch->fp_vkQueueSubmit(queue, submitCount, pSubmits, fence);
     }
 
@@ -56,6 +57,7 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit(VkQueue queue, uint32_t submitCount, c
     // Track fence for prerender limiting
     if (fence != VK_NULL_HANDLE) {}
 
+    VulkanLayerState::Get().NoteQueueSubmit(queue);
     return disp->fp_vkQueueSubmit(queue, submitCount, pSubmits, fence);
 }
 
@@ -65,6 +67,7 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit2(VkQueue queue, uint32_t submitCount, 
     // Use TLS caching for performance
     if (queue == tls_LastQueue && tls_LastDispatch) {
         if (fence != VK_NULL_HANDLE) {}
+        VulkanLayerState::Get().NoteQueueSubmit(queue);
         return tls_LastDispatch->fp_vkQueueSubmit2(queue, submitCount, pSubmits, fence);
     }
 
@@ -80,6 +83,7 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit2(VkQueue queue, uint32_t submitCount, 
     // Track fence for prerender limiting
     if (fence != VK_NULL_HANDLE) {}
 
+    VulkanLayerState::Get().NoteQueueSubmit(queue);
     return disp->fp_vkQueueSubmit2(queue, submitCount, pSubmits, fence);
 }
 
@@ -87,6 +91,7 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit2(VkQueue queue, uint32_t submitCount, 
 VkResult VKAPI_CALL Capture_vkQueueSubmit2KHR(VkQueue queue, uint32_t submitCount, const VkSubmitInfo2* pSubmits,
                                               VkFence fence) {
     if (queue == tls_LastQueue && tls_LastDispatch) {
+        VulkanLayerState::Get().NoteQueueSubmit(queue);
         return tls_LastDispatch->fp_vkQueueSubmit2KHR(queue, submitCount, pSubmits, fence);
     }
 
@@ -99,6 +104,7 @@ VkResult VKAPI_CALL Capture_vkQueueSubmit2KHR(VkQueue queue, uint32_t submitCoun
     tls_LastQueue = queue;
     tls_LastDispatch = disp;
 
+    VulkanLayerState::Get().NoteQueueSubmit(queue);
     return disp->fp_vkQueueSubmit2KHR(queue, submitCount, pSubmits, fence);
 }
 

@@ -893,6 +893,45 @@ struct VulkanCaptureState {
 static std::mutex g_CaptureMutex;
 static std::unordered_map<VkDevice, VulkanCaptureState> g_CaptureStates;
 
+static bool EnsureCaptureCommandResources(VulkanCaptureState& state, DeviceDispatch* disp, VkDevice device,
+                                          uint32_t queueFamilyIndex) {
+    if (!disp || queueFamilyIndex == VK_QUEUE_FAMILY_IGNORED || state.commandBuffers.empty()) {
+        return false;
+    }
+
+    if (state.commandPool != VK_NULL_HANDLE && state.queueFamilyIndex == queueFamilyIndex) {
+        return true;
+    }
+
+    if (state.commandPool != VK_NULL_HANDLE) {
+        if (disp->fp_vkDeviceWaitIdle) {
+            disp->fp_vkDeviceWaitIdle(device);
+        }
+        disp->fp_vkDestroyCommandPool(device, state.commandPool, nullptr);
+        state.commandPool = VK_NULL_HANDLE;
+    }
+
+    VkCommandPoolCreateInfo poolInfo = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, nullptr,
+                                        VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, queueFamilyIndex};
+    if (disp->fp_vkCreateCommandPool(device, &poolInfo, nullptr, &state.commandPool) != VK_SUCCESS) {
+        LayerLog("Vulkan Layer: Failed to create capture command pool for queue family %u", queueFamilyIndex);
+        return false;
+    }
+
+    VkCommandBufferAllocateInfo cbInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr, state.commandPool,
+                                          VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                                          static_cast<uint32_t>(state.commandBuffers.size())};
+    if (disp->fp_vkAllocateCommandBuffers(device, &cbInfo, state.commandBuffers.data()) != VK_SUCCESS) {
+        LayerLog("Vulkan Layer: Failed to allocate capture command buffers for queue family %u", queueFamilyIndex);
+        disp->fp_vkDestroyCommandPool(device, state.commandPool, nullptr);
+        state.commandPool = VK_NULL_HANDLE;
+        return false;
+    }
+
+    state.queueFamilyIndex = queueFamilyIndex;
+    return true;
+}
+
 // Helper to get LUID from Vulkan Physical Device
 static bool GetLUIDFromPhysicalDevice(VkPhysicalDevice physDev, LUID* outLuid) {
     InstanceDispatch* instDisp =
@@ -1215,17 +1254,7 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     state.interopMode = interopMode;
     state.initialized = true;
 
-    // Create command pool
-    VkCommandPoolCreateInfo poolInfo = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, nullptr,
-                                        VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, 0};
-    if (disp->fp_vkCreateCommandPool(device, &poolInfo, nullptr, &state.commandPool) != VK_SUCCESS) {
-        return;
-    }
-
     state.commandBuffers.resize(imageCount);
-    VkCommandBufferAllocateInfo cbInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr, state.commandPool,
-                                          VK_COMMAND_BUFFER_LEVEL_PRIMARY, imageCount};
-    disp->fp_vkAllocateCommandBuffers(device, &cbInfo, state.commandBuffers.data());
 
     state.copyFences.resize(imageCount);
     VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr, VK_FENCE_CREATE_SIGNALED_BIT};
@@ -1509,8 +1538,8 @@ VkSemaphore GetCaptureSemaphore(VkDevice device, uint32_t imageIndex) {
     return VK_NULL_HANDLE;
 }
 
-void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t imageIndex, VkSemaphore waitSemaphore,
-                  VkSemaphore signalSemaphore) {
+void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t imageIndex,
+                  const VkSemaphore* waitSemaphores, uint32_t waitSemaphoreCount, VkSemaphore signalSemaphore) {
     std::lock_guard<std::mutex> lock(g_CaptureMutex);
 
     auto it = g_CaptureStates.find(device);
@@ -1529,11 +1558,25 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
     if (!disp)
         return;
 
-    if (state.queueFamilyIndex == VK_QUEUE_FAMILY_IGNORED) {
-        state.queueFamilyIndex = VulkanLayerState::Get().GetQueueFamilyIndex(queue);
-        if (state.queueFamilyIndex == VK_QUEUE_FAMILY_IGNORED) {
-            LayerLog("Vulkan Layer: [Warn] Unknown queue family for capture queue; using queue-family-ignored barriers");
+    const uint32_t queueFamilyIndex = VulkanLayerState::Get().GetQueueFamilyIndex(queue);
+    if (queueFamilyIndex == VK_QUEUE_FAMILY_IGNORED) {
+        static std::atomic<int> s_unknownQueueLogCount{0};
+        if (s_unknownQueueLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+            LayerLog("Vulkan Layer: Capture skipped because present queue family is unknown");
         }
+        return;
+    }
+
+    if (!VulkanLayerState::Get().QueueSupportsTransfer(queue)) {
+        static std::atomic<int> s_nonTransferQueueLogCount{0};
+        if (s_nonTransferQueueLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+            LayerLog("Vulkan Layer: Capture skipped on queue family %u without transfer support", queueFamilyIndex);
+        }
+        return;
+    }
+
+    if (!EnsureCaptureCommandResources(state, disp, device, queueFamilyIndex)) {
+        return;
     }
 
     auto* mem = g_IPCClient.GetSharedMem();
@@ -1610,10 +1653,7 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
     if (disp->fp_vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS)
         return;
 
-    const uint32_t queueFamilyIndex =
-        (state.queueFamilyIndex != VK_QUEUE_FAMILY_IGNORED) ? state.queueFamilyIndex : VK_QUEUE_FAMILY_IGNORED;
-    const uint32_t externalQueueFamily =
-        (queueFamilyIndex != VK_QUEUE_FAMILY_IGNORED) ? VK_QUEUE_FAMILY_EXTERNAL : VK_QUEUE_FAMILY_IGNORED;
+    const uint32_t externalQueueFamily = VK_QUEUE_FAMILY_EXTERNAL;
 
     // Transition and copy
     VkImageMemoryBarrier srcBarrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
@@ -1723,21 +1763,23 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
     }
 
     // Wait Semaphores
-    uint64_t waitValue = 0;
+    std::vector<uint64_t> waitValues;
+    std::vector<VkPipelineStageFlags> waitStages;
     uint32_t waitCount = 0;
-    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 
-    if (waitSemaphore != VK_NULL_HANDLE) {
-        submit.waitSemaphoreCount = 1;
-        submit.pWaitSemaphores = &waitSemaphore;
-        submit.pWaitDstStageMask = &waitStage;
-        waitCount = 1;
+    if (waitSemaphores && waitSemaphoreCount > 0) {
+        waitStages.assign(waitSemaphoreCount, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        submit.waitSemaphoreCount = waitSemaphoreCount;
+        submit.pWaitSemaphores = waitSemaphores;
+        submit.pWaitDstStageMask = waitStages.data();
+        waitValues.assign(waitSemaphoreCount, 0);
+        waitCount = waitSemaphoreCount;
     }
 
     // Prepare Timeline Info
     VkTimelineSemaphoreSubmitInfo timelineSubmit = {VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
     timelineSubmit.waitSemaphoreValueCount = waitCount;
-    timelineSubmit.pWaitSemaphoreValues = waitCount > 0 ? &waitValue : nullptr;
+    timelineSubmit.pWaitSemaphoreValues = waitCount > 0 ? waitValues.data() : nullptr;
     timelineSubmit.signalSemaphoreValueCount = signalCount;
     timelineSubmit.pSignalSemaphoreValues = signalValues;
 
@@ -1770,9 +1812,20 @@ void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t ima
 // Reads pixels from the swapchain image using a staging buffer.
 // Uses the Vulkan dispatch table and creates a one-shot command buffer.
 void TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, VkImage srcImage, uint32_t width,
-                          uint32_t height, VkFormat format, const char* outputPath) {
+                          uint32_t height, VkFormat format, const VkSemaphore* waitSemaphores,
+                          uint32_t waitSemaphoreCount, const char* outputPath) {
     if (!disp || !device || !srcImage || width == 0 || height == 0 || !outputPath)
         return;
+
+    const uint32_t queueFamilyIndex = VulkanLayerState::Get().GetQueueFamilyIndex(queue);
+    if (queueFamilyIndex == VK_QUEUE_FAMILY_IGNORED) {
+        HookLog("[Screenshot] Vulkan: Queue family unknown, skipping screenshot");
+        return;
+    }
+    if (!VulkanLayerState::Get().QueueSupportsTransfer(queue)) {
+        HookLog("[Screenshot] Vulkan: Queue family %u lacks transfer support, skipping screenshot", queueFamilyIndex);
+        return;
+    }
 
     // Calculate row pitch (4 bytes per pixel for BGRA/RGBA)
     uint32_t rowPitch = width * 4;
@@ -1829,7 +1882,7 @@ void TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, 
 
     // Create command pool
     VkCommandPoolCreateInfo poolInfo = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-    poolInfo.queueFamilyIndex = 0;  // Present queue family
+    poolInfo.queueFamilyIndex = queueFamilyIndex;
     poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
 
     VkCommandPool cmdPool = VK_NULL_HANDLE;
@@ -1900,6 +1953,13 @@ void TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, 
     VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &cmdBuf;
+    std::vector<VkPipelineStageFlags> waitStages;
+    if (waitSemaphores && waitSemaphoreCount > 0) {
+        waitStages.assign(waitSemaphoreCount, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        submitInfo.waitSemaphoreCount = waitSemaphoreCount;
+        submitInfo.pWaitSemaphores = waitSemaphores;
+        submitInfo.pWaitDstStageMask = waitStages.data();
+    }
     disp->fp_vkQueueSubmit(queue, 1, &submitInfo, fence);
 
     // Wait up to 500ms

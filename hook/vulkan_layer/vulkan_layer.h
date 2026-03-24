@@ -49,6 +49,7 @@ struct DeviceDispatch {
     PFN_vkGetDeviceProcAddr fp_vkGetDeviceProcAddr = nullptr;
     PFN_vkDestroyDevice fp_vkDestroyDevice = nullptr;
     PFN_vkGetDeviceQueue fp_vkGetDeviceQueue = nullptr;
+    PFN_vkGetDeviceQueue2 fp_vkGetDeviceQueue2 = nullptr;
     PFN_vkQueueSubmit fp_vkQueueSubmit = nullptr;
     PFN_vkQueueSubmit2 fp_vkQueueSubmit2 = nullptr;
     PFN_vkQueueSubmit2KHR fp_vkQueueSubmit2KHR = nullptr;
@@ -146,6 +147,9 @@ struct SwapchainData {
     uint32_t currentImageIndex = 0;
     bool overlayInitialized = false;
     bool captureEnabled = false;
+    std::atomic<uint32_t> lastAcquireThreadId{0};
+    std::atomic<uint64_t> lastAcquireTick{0};
+    std::atomic<bool> asyncPresentDetected{false};
 };
 
 // Singleton state manager
@@ -166,10 +170,16 @@ public:
         std::lock_guard<std::recursive_mutex> lock(m_Lock);
         m_Queues.erase(queue);
         m_QueueFamilies.erase(queue);
+        m_QueueFlags.erase(queue);
     }
     DeviceDispatch* GetDeviceFromQueue(VkQueue queue);
     VkDevice GetVkDeviceFromQueue(VkQueue queue);
     uint32_t GetQueueFamilyIndex(VkQueue queue);
+    uint32_t GetQueueFlags(VkQueue queue);
+    bool QueueSupportsGraphics(VkQueue queue);
+    bool QueueSupportsTransfer(VkQueue queue);
+    void NoteQueueSubmit(VkQueue queue);
+    uint32_t GetLastSubmitThreadId(VkDevice device);
 
     void RegisterSwapchain(VkSwapchainKHR swapchain, SwapchainData* data);
     void UnregisterSwapchain(VkSwapchainKHR swapchain);
@@ -228,9 +238,11 @@ private:
     std::unordered_map<VkDevice, DeviceDispatch*> m_Devices;
     std::unordered_map<VkQueue, VkDevice> m_Queues;
     std::unordered_map<VkQueue, uint32_t> m_QueueFamilies;
+    std::unordered_map<VkQueue, uint32_t> m_QueueFlags;
     std::unordered_map<VkSwapchainKHR, SwapchainData*> m_Swapchains;
     std::unordered_map<VkSurfaceKHR, HWND> m_Surfaces;
     std::unordered_map<VkPhysicalDevice, VkInstance> m_PhysDevToInstance;
+    std::unordered_map<VkDevice, uint32_t> m_DeviceLastSubmitThreadIds;
 
     // Generation counter to invalidate TLS swapchain caches on unregister
     std::atomic<uint64_t> m_SwapchainGeneration{0};
@@ -264,6 +276,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
 VKAPI_ATTR void VKAPI_CALL Capture_vkDestroyDevice(VkDevice device, const VkAllocationCallbacks* pAllocator);
 VKAPI_ATTR void VKAPI_CALL Capture_vkGetDeviceQueue(VkDevice device, uint32_t queueFamilyIndex, uint32_t queueIndex,
                                                     VkQueue* pQueue);
+VKAPI_ATTR void VKAPI_CALL Capture_vkGetDeviceQueue2(VkDevice device, const VkDeviceQueueInfo2* pQueueInfo,
+                                                     VkQueue* pQueue);
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueueSubmit(VkQueue queue, uint32_t submitCount, const VkSubmitInfo* pSubmits,
                                                      VkFence fence);
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueueSubmit2(VkQueue queue, uint32_t submitCount,
@@ -297,16 +311,17 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateWin32SurfaceKHR(VkInstance instan
 void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkExtent2D extent,
                        uint32_t imageCount, VkImage* images, HWND window);
 void CleanupOverlay(VkDevice device);
-bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, VkSemaphore waitSemaphore,
-                   VkSemaphore signalSemaphore, int32_t* fenceWaitUs = nullptr);
+bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const VkSemaphore* waitSemaphores,
+                   uint32_t waitSemaphoreCount, VkSemaphore signalSemaphore, int32_t* fenceWaitUs = nullptr);
 VkSemaphore GetOverlaySemaphore(VkDevice device, uint32_t imageIndex);
 PerformanceMetrics* GetOverlayPerformanceMetrics(VkDevice device);
 void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkExtent2D extent,
                        uint32_t imageCount);
 void CleanupCapture(VkDevice device);
-void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t imageIndex, VkSemaphore waitSemaphore,
-                  VkSemaphore signalSemaphore);
+void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t imageIndex,
+                  const VkSemaphore* waitSemaphores, uint32_t waitSemaphoreCount, VkSemaphore signalSemaphore);
 VkSemaphore GetCaptureSemaphore(VkDevice device, uint32_t imageIndex);
 
 void TakeVulkanScreenshot(struct DeviceDispatch* disp, VkDevice device, VkQueue queue, VkImage srcImage, uint32_t width,
-                          uint32_t height, VkFormat format, const char* outputPath);
+                          uint32_t height, VkFormat format, const VkSemaphore* waitSemaphores,
+                          uint32_t waitSemaphoreCount, const char* outputPath);

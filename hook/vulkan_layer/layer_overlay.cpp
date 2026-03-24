@@ -53,7 +53,7 @@ struct OverlayState {
     VkFormat format = VK_FORMAT_B8G8R8A8_UNORM;
     PerformanceMetrics* metrics = nullptr;
     bool needsWindowHook = false;
-    uint32_t queueFamilyIndex = 0;
+    uint32_t queueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 
     // OverlayAdapter for content rendering
     OverlayAdapter* overlayAdapter = nullptr;
@@ -89,6 +89,43 @@ static uint32_t FindGraphicsQueueFamily(VkPhysicalDevice physDevice, InstanceDis
         }
     }
     return 0;  // Fallback to 0 if not found
+}
+
+static bool RecreateOverlayCommandResources(OverlayState& state, DeviceDispatch* disp, uint32_t queueFamilyIndex) {
+    if (!disp || queueFamilyIndex == VK_QUEUE_FAMILY_IGNORED || state.commandBuffers.empty()) {
+        return false;
+    }
+
+    if (state.commandPool != VK_NULL_HANDLE) {
+        if (disp->fp_vkDeviceWaitIdle) {
+            disp->fp_vkDeviceWaitIdle(state.device);
+        }
+        disp->fp_vkDestroyCommandPool(state.device, state.commandPool, nullptr);
+        state.commandPool = VK_NULL_HANDLE;
+    }
+
+    VkCommandPoolCreateInfo cpInfo = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    cpInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    cpInfo.queueFamilyIndex = queueFamilyIndex;
+
+    if (disp->fp_vkCreateCommandPool(state.device, &cpInfo, nullptr, &state.commandPool) != VK_SUCCESS) {
+        LayerLog("Vulkan Layer: Failed to create overlay command pool for queue family %u", queueFamilyIndex);
+        return false;
+    }
+
+    VkCommandBufferAllocateInfo cbInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    cbInfo.commandPool = state.commandPool;
+    cbInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cbInfo.commandBufferCount = static_cast<uint32_t>(state.commandBuffers.size());
+    if (disp->fp_vkAllocateCommandBuffers(state.device, &cbInfo, state.commandBuffers.data()) != VK_SUCCESS) {
+        LayerLog("Vulkan Layer: Failed to allocate overlay command buffers for queue family %u", queueFamilyIndex);
+        disp->fp_vkDestroyCommandPool(state.device, state.commandPool, nullptr);
+        state.commandPool = VK_NULL_HANDLE;
+        return false;
+    }
+
+    state.queueFamilyIndex = queueFamilyIndex;
+    return true;
 }
 
 // Helper function to cleanup partially initialized state
@@ -278,21 +315,6 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     }
     LayerLog("Vulkan Layer: InitializeOverlay - Render pass created");
 
-    // Create command pool
-    LayerLog(
-        "Vulkan Layer: InitializeOverlay - Creating command pool "
-        "(queueFamily=%d)...",
-        graphicsQueueFamily);
-    VkCommandPoolCreateInfo cpInfo = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-    cpInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    cpInfo.queueFamilyIndex = graphicsQueueFamily;
-
-    if (disp->fp_vkCreateCommandPool(device, &cpInfo, nullptr, &state.commandPool) != VK_SUCCESS) {
-        LayerLog("Vulkan Layer: Failed to create command pool");
-        return;
-    }
-    LayerLog("Vulkan Layer: InitializeOverlay - Command pool created");
-
     // Create framebuffers, image views, fences, semaphores
     LayerLog("Vulkan Layer: InitializeOverlay - Creating %d framebuffers...", imageCount);
     state.imageViews.resize(imageCount);
@@ -326,12 +348,12 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         disp->fp_vkCreateSemaphore(device, &semInfo, nullptr, &state.semaphores[i]);
     }
 
-    LayerLog("Vulkan Layer: InitializeOverlay - Allocating command buffers...");
-    VkCommandBufferAllocateInfo cbInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    cbInfo.commandPool = state.commandPool;
-    cbInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cbInfo.commandBufferCount = imageCount;
-    disp->fp_vkAllocateCommandBuffers(device, &cbInfo, state.commandBuffers.data());
+    LayerLog("Vulkan Layer: InitializeOverlay - Creating command pool (queueFamily=%d)...", graphicsQueueFamily);
+    if (!RecreateOverlayCommandResources(state, disp, graphicsQueueFamily)) {
+        CleanupOverlayState(state, device, disp);
+        return;
+    }
+    LayerLog("Vulkan Layer: InitializeOverlay - Command pool created");
 
     // Create OverlayAdapter for this device
     LayerLog("Vulkan Layer: InitializeOverlay - Creating OverlayAdapter...");
@@ -532,8 +554,8 @@ void CleanupOverlay(VkDevice device) {
 
 // Render overlay using OverlayAdapter
 // fenceWaitUs returns the time spent waiting for fence (previous frame sync)
-bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, VkSemaphore waitSemaphore,
-                   VkSemaphore signalSemaphore, int32_t* fenceWaitUs) {
+bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const VkSemaphore* waitSemaphores,
+                   uint32_t waitSemaphoreCount, VkSemaphore signalSemaphore, int32_t* fenceWaitUs) {
     // Early out if overlay is disabled (use seqlock for consistent read)
     if (g_IPCClient.GetSharedMem() && !g_IPCClient.GetSharedMem()->ReadOverlayConfig().showOverlay) {
         return false;
@@ -558,6 +580,28 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, VkSemaph
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (!disp)
         return false;
+
+    const uint32_t queueFamilyIndex = VulkanLayerState::Get().GetQueueFamilyIndex(queue);
+    if (queueFamilyIndex == VK_QUEUE_FAMILY_IGNORED) {
+        static std::atomic<int> s_unknownQueueLogCount{0};
+        if (s_unknownQueueLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+            LayerLog("Vulkan Layer: Overlay skipped because present queue family is unknown");
+        }
+        return false;
+    }
+
+    if (!VulkanLayerState::Get().QueueSupportsGraphics(queue)) {
+        static std::atomic<int> s_nonGraphicsQueueLogCount{0};
+        if (s_nonGraphicsQueueLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+            LayerLog("Vulkan Layer: Overlay skipped on non-graphics present queue family %u", queueFamilyIndex);
+        }
+        return false;
+    }
+
+    if ((state.commandPool == VK_NULL_HANDLE || state.queueFamilyIndex != queueFamilyIndex) &&
+        !RecreateOverlayCommandResources(state, disp, queueFamilyIndex)) {
+        return false;
+    }
 
     // Deferred window hook
     if (state.needsWindowHook) {
@@ -698,11 +742,12 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, VkSemaph
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &cmd;
 
-    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    if (waitSemaphore != VK_NULL_HANDLE) {
-        submitInfo.waitSemaphoreCount = 1;
-        submitInfo.pWaitSemaphores = &waitSemaphore;
-        submitInfo.pWaitDstStageMask = &waitStage;
+    std::vector<VkPipelineStageFlags> waitStages;
+    if (waitSemaphores && waitSemaphoreCount > 0) {
+        waitStages.assign(waitSemaphoreCount, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+        submitInfo.waitSemaphoreCount = waitSemaphoreCount;
+        submitInfo.pWaitSemaphores = waitSemaphores;
+        submitInfo.pWaitDstStageMask = waitStages.data();
     }
 
     if (signalSemaphore != VK_NULL_HANDLE) {

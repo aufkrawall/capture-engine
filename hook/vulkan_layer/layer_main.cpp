@@ -369,6 +369,8 @@ extern "C" __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetI
             return (PFN_vkVoidFunction)Capture_vkCreateWin32SurfaceKHR;
         if (strcmp(pName, "vkGetDeviceQueue") == 0)
             return (PFN_vkVoidFunction)Capture_vkGetDeviceQueue;
+        if (strcmp(pName, "vkGetDeviceQueue2") == 0)
+            return (PFN_vkVoidFunction)Capture_vkGetDeviceQueue2;
         if (strcmp(pName, "vkQueueSubmit") == 0)
             return (PFN_vkVoidFunction)Capture_vkQueueSubmit;
         if (strcmp(pName, "vkQueueSubmit2") == 0)
@@ -413,6 +415,8 @@ extern "C" __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetD
     if (whitelisted) {
         if (strcmp(pName, "vkGetDeviceQueue") == 0)
             return (PFN_vkVoidFunction)Capture_vkGetDeviceQueue;
+        if (strcmp(pName, "vkGetDeviceQueue2") == 0)
+            return (PFN_vkVoidFunction)Capture_vkGetDeviceQueue2;
         if (strcmp(pName, "vkCreateSwapchainKHR") == 0)
             return (PFN_vkVoidFunction)Capture_vkCreateSwapchainKHR;
         if (strcmp(pName, "vkDestroySwapchainKHR") == 0)

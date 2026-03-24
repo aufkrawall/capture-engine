@@ -176,6 +176,30 @@ void VulkanLayerState::RegisterQueue(VkQueue queue, VkDevice device, uint32_t fa
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     m_Queues[queue] = device;
     m_QueueFamilies[queue] = familyIndex;
+
+    uint32_t queueFlags = 0;
+    auto deviceIt = m_Devices.find(device);
+    if (deviceIt != m_Devices.end() && deviceIt->second) {
+        VkPhysicalDevice physicalDevice = deviceIt->second->physicalDevice;
+        auto physToInstanceIt = m_PhysDevToInstance.find(physicalDevice);
+        if (physToInstanceIt != m_PhysDevToInstance.end()) {
+            auto instanceIt = m_Instances.find(physToInstanceIt->second);
+            if (instanceIt != m_Instances.end() && instanceIt->second &&
+                instanceIt->second->fp_vkGetPhysicalDeviceQueueFamilyProperties) {
+                uint32_t queueFamilyCount = 0;
+                instanceIt->second->fp_vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount,
+                                                                                nullptr);
+                if (familyIndex < queueFamilyCount) {
+                    std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
+                    instanceIt->second->fp_vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount,
+                                                                                    queueFamilies.data());
+                    queueFlags = queueFamilies[familyIndex].queueFlags;
+                }
+            }
+        }
+    }
+
+    m_QueueFlags[queue] = queueFlags;
 }
 
 DeviceDispatch* VulkanLayerState::GetDeviceFromQueue(VkQueue queue) {
@@ -202,6 +226,36 @@ uint32_t VulkanLayerState::GetQueueFamilyIndex(VkQueue queue) {
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     auto it = m_QueueFamilies.find(queue);
     return (it != m_QueueFamilies.end()) ? it->second : VK_QUEUE_FAMILY_IGNORED;
+}
+
+uint32_t VulkanLayerState::GetQueueFlags(VkQueue queue) {
+    std::lock_guard<std::recursive_mutex> lock(m_Lock);
+    auto it = m_QueueFlags.find(queue);
+    return (it != m_QueueFlags.end()) ? it->second : 0;
+}
+
+bool VulkanLayerState::QueueSupportsGraphics(VkQueue queue) {
+    return (GetQueueFlags(queue) & VK_QUEUE_GRAPHICS_BIT) != 0;
+}
+
+bool VulkanLayerState::QueueSupportsTransfer(VkQueue queue) {
+    const uint32_t flags = GetQueueFlags(queue);
+    return (flags & (VK_QUEUE_TRANSFER_BIT | VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) != 0;
+}
+
+void VulkanLayerState::NoteQueueSubmit(VkQueue queue) {
+    std::lock_guard<std::recursive_mutex> lock(m_Lock);
+    auto queueIt = m_Queues.find(queue);
+    if (queueIt == m_Queues.end()) {
+        return;
+    }
+    m_DeviceLastSubmitThreadIds[queueIt->second] = GetCurrentThreadId();
+}
+
+uint32_t VulkanLayerState::GetLastSubmitThreadId(VkDevice device) {
+    std::lock_guard<std::recursive_mutex> lock(m_Lock);
+    auto it = m_DeviceLastSubmitThreadIds.find(device);
+    return (it != m_DeviceLastSubmitThreadIds.end()) ? it->second : 0;
 }
 
 void VulkanLayerState::RegisterSwapchain(VkSwapchainKHR swapchain, SwapchainData* data) {
@@ -380,6 +434,7 @@ void PopulateDeviceDispatch(DeviceDispatch* dispatch, VkDevice device, PFN_vkGet
     dispatch->fp_vkGetDeviceProcAddr = gdpa;
     dispatch->fp_vkDestroyDevice = (PFN_vkDestroyDevice)gdpa(device, "vkDestroyDevice");
     dispatch->fp_vkGetDeviceQueue = (PFN_vkGetDeviceQueue)gdpa(device, "vkGetDeviceQueue");
+    dispatch->fp_vkGetDeviceQueue2 = (PFN_vkGetDeviceQueue2)gdpa(device, "vkGetDeviceQueue2");
     dispatch->fp_vkQueueSubmit = (PFN_vkQueueSubmit)gdpa(device, "vkQueueSubmit");
     dispatch->fp_vkQueueSubmit2 = (PFN_vkQueueSubmit2)gdpa(device, "vkQueueSubmit2");
     dispatch->fp_vkQueueSubmit2KHR = (PFN_vkQueueSubmit2KHR)gdpa(device, "vkQueueSubmit2KHR");
@@ -779,6 +834,19 @@ VKAPI_ATTR void VKAPI_CALL Capture_vkGetDeviceQueue(VkDevice device, uint32_t qu
     }
 }
 
+VKAPI_ATTR void VKAPI_CALL Capture_vkGetDeviceQueue2(VkDevice device, const VkDeviceQueueInfo2* pQueueInfo,
+                                                     VkQueue* pQueue) {
+    DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
+    if (!disp || !disp->fp_vkGetDeviceQueue2 || !pQueueInfo) {
+        return;
+    }
+
+    disp->fp_vkGetDeviceQueue2(device, pQueueInfo, pQueue);
+    if (pQueue && *pQueue != VK_NULL_HANDLE) {
+        VulkanLayerState::Get().RegisterQueue(*pQueue, device, pQueueInfo->queueFamilyIndex);
+    }
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
                                                             const VkSwapchainCreateInfoKHR* pCreateInfo,
                                                             const VkAllocationCallbacks* pAllocator,
@@ -970,11 +1038,42 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     bool isFirstHook = !g_InPresentHook;
     g_InPresentHook = true;
 
+    SwapchainData* sd = nullptr;
+    if (g_LayerState.whitelisted && pPresentInfo && pPresentInfo->swapchainCount > 0) {
+        sd = VulkanLayerState::Get().GetSwapchainData(pPresentInfo->pSwapchains[0]);
+    }
+
+    DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceFromQueue(queue);
+    VkDevice queueDevice = VulkanLayerState::Get().GetVkDeviceFromQueue(queue);
+
+    bool asyncPresentDetected = false;
+    if (sd) {
+        const uint32_t acquireThreadId = sd->lastAcquireThreadId.load(std::memory_order_acquire);
+        const uint64_t lastAcquireTick = sd->lastAcquireTick.load(std::memory_order_acquire);
+        if (acquireThreadId != 0 && acquireThreadId != GetCurrentThreadId() && lastAcquireTick != 0 &&
+            (GetTickCount64() - lastAcquireTick) < 2000ULL) {
+            if (!sd->asyncPresentDetected.exchange(true, std::memory_order_acq_rel)) {
+                LayerLog("Vulkan Layer: Async present detected for swapchain %p; moving limiter off present thread",
+                         sd->swapchain);
+            }
+        }
+        asyncPresentDetected = sd->asyncPresentDetected.load(std::memory_order_acquire);
+    }
+    if (!asyncPresentDetected && queueDevice != VK_NULL_HANDLE) {
+        const uint32_t lastSubmitThreadId = VulkanLayerState::Get().GetLastSubmitThreadId(queueDevice);
+        if (lastSubmitThreadId != 0 && lastSubmitThreadId != GetCurrentThreadId()) {
+            asyncPresentDetected = true;
+            if (sd) {
+                sd->asyncPresentDetected.store(true, std::memory_order_release);
+            }
+        }
+    }
+
     if (isFirstHook) {
         // For DXVK: FPS limiter runs in DX9 hook (game thread) instead.
         // This vkQueuePresent runs on DXVK's CS thread — blocking here
         // doesn't limit the game's actual render rate.
-        if (!preferDX9Path) {
+        if (!preferDX9Path && !asyncPresentDetected) {
             g_SharedFpsLimiter.SetIPCClient(&g_IPCClient);
             g_SharedFpsLimiter.Apply();
         }
@@ -982,16 +1081,12 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         // Apply CPU prerender limit - only if we have valid device and queue
         // tracking
         float prerenderLimit = VulkanLayerState::Get().GetPrerenderLimit();
-        if (prerenderLimit >= 0.0f) {
-            VkDevice device = VulkanLayerState::Get().GetVkDeviceFromQueue(queue);
-            if (device != VK_NULL_HANDLE && queue != VK_NULL_HANDLE) {
-                ApplyPrerenderLimitVulkan(device, queue, prerenderLimit);
+        if (prerenderLimit >= 0.0f && !asyncPresentDetected && VulkanLayerState::Get().QueueSupportsGraphics(queue)) {
+            if (queueDevice != VK_NULL_HANDLE && queue != VK_NULL_HANDLE) {
+                ApplyPrerenderLimitVulkan(queueDevice, queue, prerenderLimit);
             }
         }
     }
-
-    DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceFromQueue(queue);
-    VkDevice queueDevice = VulkanLayerState::Get().GetVkDeviceFromQueue(queue);
     if (auto* perf = GetOverlayPerformanceMetrics(queueDevice)) {
         perfMetrics.sourceCurrentFpsTimes100 = static_cast<int32_t>(perf->GetCurrentFPS() * 100.0f + 0.5f);
         perfMetrics.source1PctLowTimes100 = static_cast<int32_t>(perf->Get1PercentLowFPS() * 100.0f + 0.5f);
@@ -999,9 +1094,11 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         perfMetrics.sourceFrameTimeStdDevUs = static_cast<int32_t>(perf->GetWindowStdDev() + 0.5);
     }
 
-    // Track the semaphore we should wait on (starts with the game's semaphore)
-    VkSemaphore currentWait =
-        (pPresentInfo && pPresentInfo->waitSemaphoreCount > 0) ? pPresentInfo->pWaitSemaphores[0] : VK_NULL_HANDLE;
+    const VkSemaphore* currentWaitSemaphores = (pPresentInfo && pPresentInfo->waitSemaphoreCount > 0)
+                                                   ? pPresentInfo->pWaitSemaphores
+                                                   : nullptr;
+    uint32_t currentWaitSemaphoreCount = pPresentInfo ? pPresentInfo->waitSemaphoreCount : 0;
+    std::vector<VkSemaphore> chainedWaitSemaphores;
     bool modified = false;
     if (preferDX9Path) {
         static int dxvkPresentSkipLogCount = 0;
@@ -1012,7 +1109,6 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     }
 
     if (g_LayerState.whitelisted && pPresentInfo && pPresentInfo->swapchainCount > 0) {
-        SwapchainData* sd = VulkanLayerState::Get().GetSwapchainData(pPresentInfo->pSwapchains[0]);
         if (sd) {
             uint32_t idx = pPresentInfo->pImageIndices[0];
             perfMetrics.sourceFrameIndex = idx + 1;
@@ -1043,14 +1139,17 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                 // Fence wait is tracked separately (it's GPU sync, not our overhead).
                 int32_t fenceWaitUs = 0;
                 int64_t overlayStartUs = PerfLogger::GetQpcUs();
-                bool overlayRendered = RenderOverlay(sd->device, queue, idx, currentWait, overlayDone, &fenceWaitUs);
+                bool overlayRendered = RenderOverlay(sd->device, queue, idx, currentWaitSemaphores,
+                                                     currentWaitSemaphoreCount, overlayDone, &fenceWaitUs);
                 perfMetrics.overlayUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - overlayStartUs);
                 perfMetrics.fenceWaitUs = fenceWaitUs;
                 if (fenceWaitUs > 0 && perfMetrics.overlayUs > fenceWaitUs) {
                     perfMetrics.overlayUs -= fenceWaitUs;
                 }
                 if (overlayRendered) {
-                    currentWait = overlayDone;
+                    chainedWaitSemaphores.assign(1, overlayDone);
+                    currentWaitSemaphores = chainedWaitSemaphores.data();
+                    currentWaitSemaphoreCount = 1;
                     modified = true;
                 }
             };
@@ -1067,10 +1166,13 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
 
                 int64_t captureStartUs = PerfLogger::GetQpcUs();
                 VkSemaphore captureDone = GetCaptureSemaphore(sd->device, idx);
-                CaptureFrame(sd->device, queue, sd->images[idx], idx, currentWait, captureDone);
+                CaptureFrame(sd->device, queue, sd->images[idx], idx, currentWaitSemaphores, currentWaitSemaphoreCount,
+                             captureDone);
                 perfMetrics.captureUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - captureStartUs);
                 if (captureDone != VK_NULL_HANDLE) {
-                    currentWait = captureDone;
+                    chainedWaitSemaphores.assign(1, captureDone);
+                    currentWaitSemaphores = chainedWaitSemaphores.data();
+                    currentWaitSemaphoreCount = 1;
                     modified = true;
                 }
             };
@@ -1081,7 +1183,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                 DeviceDispatch* vkDisp = VulkanLayerState::Get().GetDeviceDispatch(sd->device);
                 if (vkDisp && idx < sd->images.size()) {
                     TakeVulkanScreenshot(vkDisp, sd->device, queue, sd->images[idx], sd->extent.width,
-                                         sd->extent.height, sd->format, shm->runtimeState.screenshotPath);
+                                         sd->extent.height, sd->format, currentWaitSemaphores,
+                                         currentWaitSemaphoreCount, shm->runtimeState.screenshotPath);
                 }
                 shm->runtimeState.cmdTakeScreenshot.store(false, std::memory_order_release);
                 shm->runtimeState.ackScreenshotTaken.store(true, std::memory_order_release);
@@ -1109,9 +1212,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     VkPresentInfoKHR presentInfoCopy;
     if (pPresentInfo && modified) {
         presentInfoCopy = *pPresentInfo;
-        if (currentWait != VK_NULL_HANDLE) {
-            presentInfoCopy.waitSemaphoreCount = 1;
-            presentInfoCopy.pWaitSemaphores = &currentWait;
+        if (currentWaitSemaphores && currentWaitSemaphoreCount > 0) {
+            presentInfoCopy.waitSemaphoreCount = currentWaitSemaphoreCount;
+            presentInfoCopy.pWaitSemaphores = currentWaitSemaphores;
         } else {
             // If we have no wait semaphore (e.g. game didn't provide one and we
             // didn't add one), we must ensure we don't pass garbage.
@@ -1146,6 +1249,18 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkAcquireNextImageKHR(VkDevice device, Vk
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (!disp || !disp->fp_vkAcquireNextImageKHR)
         return VK_ERROR_INITIALIZATION_FAILED;
+
+    SwapchainData* sd = VulkanLayerState::Get().GetSwapchainData(swapchain);
+    const bool preferDX9Path = IsDXVKD3D9WrapperLoaded() && !IsDXVKD3D11WrapperLoaded();
+    if (sd) {
+        sd->lastAcquireThreadId.store(GetCurrentThreadId(), std::memory_order_release);
+        sd->lastAcquireTick.store(GetTickCount64(), std::memory_order_release);
+        if (sd->asyncPresentDetected.load(std::memory_order_acquire) && !preferDX9Path) {
+            g_SharedFpsLimiter.SetIPCClient(&g_IPCClient);
+            g_SharedFpsLimiter.Apply();
+        }
+    }
+
     return disp->fp_vkAcquireNextImageKHR(device, swapchain, timeout, semaphore, fence, pImageIndex);
 }
 
