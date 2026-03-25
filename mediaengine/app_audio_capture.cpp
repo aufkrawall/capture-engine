@@ -429,11 +429,6 @@ bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {
         packetQueue.clear();
     }
 
-    m_lastRealTime = std::chrono::steady_clock::time_point{};
-    m_synthesizedMs = 0;
-    m_heartbeatInit = false;
-    m_silenceLogCounter_ = 0;
-
     isCapturing.store(true);
     captureThread = std::thread(&AppAudioCapture::CaptureLoop, this);
 
@@ -463,10 +458,6 @@ void AppAudioCapture::CleanupCapture() {
     }
 
     activeStreamFlags = 0;
-    m_lastRealTime = std::chrono::steady_clock::time_point{};
-    m_synthesizedMs = 0;
-    m_heartbeatInit = false;
-    m_silenceLogCounter_ = 0;
 }
 
 void AppAudioCapture::CaptureLoop() {
@@ -481,13 +472,14 @@ void AppAudioCapture::CaptureLoop() {
     UINT64 devicePosition;
 
     UINT64 qpcPosition;
-    uint64_t lastQpcPosition = 0;  // Track QPC in 100-ns units for synthesis continuity
 
-    // Debug: Drift tracking variables (non-static to support multiple instances)
-    uint64_t firstDevicePos = 0;
+    // Debug: Track packet-timeline drift using devicePosition when available,
+    // otherwise fall back to the cumulative captured frame count.
+    uint64_t firstLogicalFramePos = 0;
     uint64_t firstQpcPos = 0;
     bool firstSet = false;
     int logCounter = 0;
+    uint64_t logicalFrameCursor = 0;
 
     while (isCapturing.load() && !shouldStop.load()) {
         // Check if target process is still running
@@ -510,139 +502,31 @@ void AppAudioCapture::CaptureLoop() {
             continue;
         }
 
-        // Heartbeat for silence synthesis - use high-resolution timer
-        // NOTE: These must be non-static to support multiple AppAudioCapture
-        // instances (e.g., one for game, one for Brave) - each needs independent
-        // timing
-        auto& lastRealTime = m_lastRealTime;
-        int64_t& synthesizedMs = m_synthesizedMs;
-        bool& heartbeatInit = m_heartbeatInit;
-
-        if (!heartbeatInit) {
-            lastRealTime = std::chrono::steady_clock::now();
-            synthesizedMs = 0;
-            heartbeatInit = true;
-        }
-
         if (packetLength == 0) {
-            // WASAPI Process Loopback stops sending packets during silence.
-            // We must synthesize silence to keep the AudioEncoder pipeline alive.
-            // Otherwise, large gaps accumulate and trigger the "Gap Too Large" cap
-            // logic later.
-
-            // HIGH-PRECISION TIMING: Calculate actual elapsed time since last real
-            // packet
-            auto now = std::chrono::steady_clock::now();
-            auto realElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastRealTime).count();
-
-            // Synthesize silence to catch up to real time (in 20ms chunks)
-            while (synthesizedMs + 20 <= realElapsedMs) {
-                // Use pwfx if available, otherwise defaults
-                int sampleRate = 48000;
-                int channels = 2;
-                int bitsPerSample = 32;
-                int blockAlign = 8;
-                bool isFloat = true;
-                int validBits = 32;
-
-                if (pwfx) {
-                    sampleRate = pwfx->nSamplesPerSec;
-                    channels = pwfx->nChannels;
-                    bitsPerSample = pwfx->wBitsPerSample;
-                    blockAlign = pwfx->nBlockAlign;
-
-                    if (pwfx->wFormatTag == WAVE_FORMAT_IEEE_FLOAT) {
-                        isFloat = true;
-                    } else if (pwfx->wFormatTag == WAVE_FORMAT_EXTENSIBLE) {
-                        WAVEFORMATEXTENSIBLE* wfex = reinterpret_cast<WAVEFORMATEXTENSIBLE*>(pwfx);
-                        if (IsIEEEFloat(wfex->SubFormat))
-                            isFloat = true;
-                        else
-                            isFloat = false;
-                    } else {
-                        isFloat = false;
-                    }
-                    validBits = bitsPerSample;  // simplified
-                }
-
-                int samples = sampleRate / 50;  // 20ms
-                int bytesPerSample = bitsPerSample / 8;
-                // If blockAlign is set, use it for safer size calc
-                if (blockAlign == 0)
-                    blockAlign = channels * bytesPerSample;
-
-                size_t byteCount = samples * blockAlign;
-
-                AudioPacket silencePacket;
-
-                // CRITICAL: Ensure QPC continuity.
-                // Don't just sample "Now", calculate strictly from previous position to
-                // avoid jitter.
-                // Valid packet updates lastQpcPosition. If we are pure synthesis
-                // (start), init it.
-                if (lastQpcPosition == 0) {
-                    LARGE_INTEGER qpc;
-                    QueryPerformanceCounter(&qpc);
-                    LARGE_INTEGER freq;
-                    QueryPerformanceFrequency(&freq);
-                    lastQpcPosition = ce::audio::RawQpcToHundredNanoseconds(qpc.QuadPart, freq.QuadPart);
-                }
-
-                // Advance logical QPC by 20ms in the same 100-ns units returned by WASAPI.
-                uint64_t qpcIncrement = ce::audio::kHundredNanosecondsPerSecond / 50;
-                lastQpcPosition += qpcIncrement;
-
-                silencePacket.timestamp = (int64_t)ce::audio::HundredNanosecondsToMilliseconds(lastQpcPosition);
-                silencePacket.devicePosition = 0;
-                silencePacket.qpcPosition = lastQpcPosition;
-
-                silencePacket.data.resize(byteCount, 0);  // Zeroed
-
-                // Populate format info
-                silencePacket.channels = channels;
-                silencePacket.sampleRate = sampleRate;
-                silencePacket.bitsPerSample = bitsPerSample;
-                silencePacket.blockAlign = blockAlign;
-                silencePacket.isFloat = isFloat;
-                silencePacket.validBitsPerSample = validBits;
-
-                {
-                    std::lock_guard<std::mutex> lock(queueMutex);
-                    packetQueue.push_back(std::move(silencePacket));
-                    // Log every ~1s (50 calls)
-                    if (m_silenceLogCounter_++ % 50 == 0) {
-                        DLL_Log("[AppAudio] Synthesizing silence (source idle) QPC=%llu", lastQpcPosition);
-                    }
-                }
-
-                // Advance synthesized time by 20ms
-                synthesizedMs += 20;
-            }
-
+            // Let MediaEngine's pull-side underrun handling generate timeline
+            // silence. Synthesizing silence here races the real packet cadence and
+            // can silently inflate the app-audio timeline.
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
         }
-
-        // Valid packet received, reset heartbeat for silence synthesis
-        lastRealTime = std::chrono::steady_clock::now();
-        synthesizedMs = 0;
-        heartbeatInit = true;
 
         while (packetLength != 0 && isCapturing.load()) {
             hr = pCaptureClient->GetBuffer(&pData, &numFramesAvailable, &flags, &devicePosition, &qpcPosition);
             if (FAILED(hr))
                 break;
 
-            // Debug: Check drift
-            if (!firstSet && devicePosition > 0) {
-                firstDevicePos = devicePosition;
+            const uint64_t logicalFramePos = devicePosition > 0 ? devicePosition : logicalFrameCursor;
+
+            // Debug: Check drift. Process loopback often reports devicePosition=0,
+            // so fall back to the cumulative frame count to keep telemetry alive.
+            if (!firstSet && qpcPosition > 0) {
+                firstLogicalFramePos = logicalFramePos;
                 firstQpcPos = qpcPosition;
                 firstSet = true;
-                // Use targetProcessName/PID to identify the source in logs
-                DLL_Log("[AppAudioCapture] Source Sync Start (%lu): DevPos=%llu QPC=%llu", targetPID.load(),
-                        firstDevicePos, firstQpcPos);
-            } else if (firstSet && logCounter++ % 500 == 0) {  // Log every ~5 seconds
-                double samplesDuration = (double)(devicePosition - firstDevicePos) / pwfx->nSamplesPerSec;
+                DLL_Log("[AppAudioCapture] Source Sync Start (%lu): Frames=%llu QPC=%llu", targetPID.load(),
+                        firstLogicalFramePos, firstQpcPos);
+            } else if (firstSet && qpcPosition > firstQpcPos && logCounter++ % 500 == 0) {  // ~5 seconds
+                double samplesDuration = (double)(logicalFramePos - firstLogicalFramePos) / pwfx->nSamplesPerSec;
                 double qpcDuration = ce::audio::HundredNanosecondsToSeconds(qpcPosition - firstQpcPos);
                 double driftMs = (samplesDuration - qpcDuration) * 1000.0;
 
@@ -662,9 +546,6 @@ void AppAudioCapture::CaptureLoop() {
             packet.validBitsPerSample = 0;
             packet.devicePosition = devicePosition;  // Store for debug drift analysis
             packet.qpcPosition = qpcPosition;        // Store for debug drift analysis
-
-            // CRITICAL: Update lastQpcPosition for synthesis continuity
-            lastQpcPosition = qpcPosition;
 
             // Check for float format
             packet.isFloat = false;
@@ -693,6 +574,12 @@ void AppAudioCapture::CaptureLoop() {
             {
                 std::lock_guard<std::mutex> lock(queueMutex);
                 packetQueue.push_back(packet);
+            }
+
+            if (devicePosition > 0) {
+                logicalFrameCursor = devicePosition + numFramesAvailable;
+            } else {
+                logicalFrameCursor += numFramesAvailable;
             }
 
             pCaptureClient->ReleaseBuffer(numFramesAvailable);

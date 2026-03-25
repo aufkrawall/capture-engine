@@ -151,10 +151,4 @@ private:
     HANDLE activationCompleteEvent = nullptr;
     HRESULT activationResult = 0x80004005;  // E_FAIL
 
-    // Per-instance silence synthesis timing (NOT static - each instance needs
-    // independent timing)
-    std::chrono::steady_clock::time_point m_lastRealTime{};
-    int64_t m_synthesizedMs = 0;
-    bool m_heartbeatInit = false;
-    int m_silenceLogCounter_ = 0;
 };

@@ -47,6 +47,13 @@ inline uint32_t GetCfrTimerRebaseDiscardTicks(uint64_t elapsedTicks, uint64_t di
     return GetCfrOutputShortfallTicks(GetAdjustedCfrScheduledTicks(elapsedTicks, discardedTicks), liveTicksOutput);
 }
 
+inline bool ShouldDiscardCfrTimerRebaseDebt(bool useScreenGrab) {
+    // Inject can safely abandon timer debt because it has no buffered real-time source
+    // cadence to recover. WGC must preserve live shortfall so catch-up and diagnostics
+    // see the real wall-clock deficit instead of silently shortening the file.
+    return !useScreenGrab;
+}
+
 inline bool ShouldCfrCatchUpToWallClock(uint32_t outputShortfallTicks, bool useScreenGrab, bool frameAvailable,
                                         bool hasLastFrame) {
     if (outputShortfallTicks == 0) {

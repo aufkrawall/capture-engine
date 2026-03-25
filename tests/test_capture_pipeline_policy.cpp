@@ -242,6 +242,11 @@ TEST(CapturePipelinePolicyTest, TimerRebaseDiscardDropsOnlyOutstandingShortfall)
     EXPECT_EQ(policy::GetCfrTimerRebaseDiscardTicks(221, 18, 203), 0u);
 }
 
+TEST(CapturePipelinePolicyTest, TimerRebaseDebtDiscardIsDisabledForWgc) {
+    EXPECT_FALSE(policy::ShouldDiscardCfrTimerRebaseDebt(true));
+    EXPECT_TRUE(policy::ShouldDiscardCfrTimerRebaseDebt(false));
+}
+
 TEST(CapturePipelinePolicyTest, CfrCatchupRequiresMeaningfulShortfallOrForceThreshold) {
     EXPECT_FALSE(policy::ShouldCfrCatchUpToWallClock(0, true, true, true));
     EXPECT_FALSE(policy::ShouldCfrCatchUpToWallClock(policy::kCfrShortfallCatchupThresholdTicks - 1, true, true, true));

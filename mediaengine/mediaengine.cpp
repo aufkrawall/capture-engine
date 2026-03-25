@@ -932,7 +932,10 @@ public:
             return false;
         }
         const int64_t committedElapsedUs = GetCommittedVideoElapsedUs(realElapsedUs);
-        CommitVideoElapsedUs(d3d11TimelineState, committedElapsedUs);
+        // Keep the WGC live timeline anchored to the scheduled CFR wall clock even
+        // when the encoder has fallen behind. Audio diagnostics and buffering logic
+        // need to see that shortfall rather than the shortened encoded duration.
+        CommitVideoElapsedUs(d3d11TimelineState, realElapsedUs);
 
         // Update audio stream index for all sources
         for (size_t i = 0; i < audioSources.size(); i++) {
@@ -1401,6 +1404,12 @@ public:
                     }
                     size_t padSamples = (totalFloats - toCopy) / CHANNELS;
                     const bool startupPadding = !src.bootstrapComplete;
+                    if (padSamples > 0 && src.hasAlignedStart) {
+                        // Pull-side silence now represents the source timeline during
+                        // underruns/idle gaps, so keep packet-QPC stitching in step
+                        // with what we already emitted.
+                        src.qpcAlignedWrittenSamples += padSamples;
+                    }
                     if (!startupPadding) {
                         src.underrunPadSamples += padSamples;
                     }
@@ -1863,13 +1872,19 @@ private:
     // Parses sample rate from config (defaults to 48000) and sets up both.
     void InitAudioSourceBuffers(AudioSource& source, const AudioConfig& audioConfig, size_t sourceIdx) {
         constexpr int kMixerSampleRate = 48000;
-        // Keep enough buffered audio headroom so WGC CFR can survive multi-second
-        // video shortfall without silently discarding old audio and causing crackle.
-        constexpr size_t kAudioRingBufferSeconds = 8;
-        size_t capacity = static_cast<size_t>(kMixerSampleRate) * kAudioRingBufferSeconds * 2;
+        constexpr size_t kDefaultAudioRingBufferSeconds = 8;
+        // Heavy WGC CFR overload runs can fall tens of seconds behind real time even
+        // while audio/video file durations still stay mathematically equal. Give WGC
+        // enough retention headroom to avoid destructive oldest-audio trims in those
+        // runs so we preserve pitch and avoid crackle while diagnostics report the
+        // underlying encoder shortfall honestly.
+        constexpr size_t kWgcCfrAudioRingBufferSeconds = 30;
+        const bool isWgcCfrPath = config.captureMethod != "inject" && !config.video.useVFR;
+        const size_t ringBufferSeconds = isWgcCfrPath ? kWgcCfrAudioRingBufferSeconds : kDefaultAudioRingBufferSeconds;
+        size_t capacity = static_cast<size_t>(kMixerSampleRate) * ringBufferSeconds * 2;
         source.ringBuffer = std::make_unique<AudioRingBuffer>(capacity);
-        DLL_Log("MediaEngine::Init RingBuffer created for source %zu. Cap=%zu samples, rate=%d", sourceIdx, capacity,
-                kMixerSampleRate);
+        DLL_Log("MediaEngine::Init RingBuffer created for source %zu. Cap=%zu samples (%zus), rate=%d", sourceIdx,
+                capacity, ringBufferSeconds, kMixerSampleRate);
 
         source.syncResampler = std::make_unique<AudioResampler>();
         AudioResampler::InputFormat syncInFmt;

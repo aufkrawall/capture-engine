@@ -1774,7 +1774,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 int64_t overshootTicks = (encoderLateQpc + targetIntervalTicks - 1) / targetIntervalTicks;
                 const int64_t overshootUs = (encoderLateQpc * 1000000) / qpcFreq.QuadPart;
                 uint32_t droppedShortfallTicks = 0;
-                if (liveStartQpc.QuadPart > 0 && now.QuadPart > liveStartQpc.QuadPart) {
+                const bool discardTimerDebt = ce::capture_policy::ShouldDiscardCfrTimerRebaseDebt(activeScreenGrab);
+                if (discardTimerDebt && liveStartQpc.QuadPart > 0 && now.QuadPart > liveStartQpc.QuadPart) {
                     const uint64_t elapsedTicks = static_cast<uint64_t>(now.QuadPart - liveStartQpc.QuadPart) /
                                                   static_cast<uint64_t>(targetIntervalTicks);
                     droppedShortfallTicks = ce::capture_policy::GetCfrTimerRebaseDiscardTicks(
@@ -1786,9 +1787,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                 if (s_lateTickLogCount <= 10 || s_lateTickLogCount % 60 == 0) {
                     LogInfo(
                         "[EncoderThread] Timer skip-ahead: late by %lld ticks (%lld us), rebasing "
-                        "(count=%u, dropShortfall=%u, discardTotal=%llu)",
+                        "(count=%u, dropShortfall=%u, discardTotal=%llu, preserveShortfall=%u)",
                         (long long)overshootTicks, (long long)overshootUs, s_lateTickLogCount, droppedShortfallTicks,
-                        static_cast<unsigned long long>(liveTicksDiscardedByTimerRebase));
+                        static_cast<unsigned long long>(liveTicksDiscardedByTimerRebase), discardTimerDebt ? 0u : 1u);
                 }
                 // Reset nextSampleTime to current time + 1 tick interval
                 // so the timer wakes on time from now on.
