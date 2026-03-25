@@ -33,7 +33,7 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 16: Added capture cadence/telemetry diagnostics fields
 // Version 17: Added WGC-specific source cadence/jitter/throttle telemetry
 // Version 20: Added OverlayConfig::screenshotIncludeOverlay
-static constexpr uint32_t SHARED_MEMORY_VERSION = 20;
+static constexpr uint32_t SHARED_MEMORY_VERSION = 21;
 
 // Minimum supported version for backward compatibility
 static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
@@ -367,6 +367,7 @@ struct alignas(8) CaptureState {
     std::atomic<uint32_t> wgcDeliveredMin500Fps{0};
     std::atomic<uint32_t> wgcInputMin250Fps{0};
     std::atomic<uint32_t> wgcInputMin500Fps{0};
+    std::atomic<uint32_t> wgcAudioLeadExcessSamples{0};
     std::atomic<uint32_t> wgcQueueEmptyTickPermille{0};
     std::atomic<uint32_t> wgcBufferedAtTickAvgPermille{0};
     std::atomic<uint32_t> wgcBufferedAtTickMin{0};

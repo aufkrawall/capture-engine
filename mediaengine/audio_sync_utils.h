@@ -14,6 +14,11 @@ struct PacketTimelineAdjustment {
     int64_t overlapSamples = 0;
 };
 
+struct WgcAudioLagTargets {
+    int64_t driftLagMs = 0;
+    int64_t targetBufferLagMs = 0;
+};
+
 inline bool ShouldDeferAudioPullUntilQuantum(int64_t pendingSamples, bool trackStartupSettled, bool forceDrain,
                                              int64_t quantumSamples = kDefaultAudioPullQuantumSamples) {
     if (forceDrain || !trackStartupSettled) {
@@ -66,6 +71,41 @@ inline double ComputeWgcCoverageLossRatio(int64_t videoPipelineLagMs, int64_t bu
 
     const double lossRatio = static_cast<double>(mismatchMs) / static_cast<double>(fullTrimMismatchMs);
     return std::clamp(lossRatio, 0.0, 0.25);
+}
+
+inline int64_t ComputeWgcCoverageBufferedAudioLagMs(int64_t videoPipelineLagMs, int64_t bufferedVideoContentLagMs,
+                                                    int64_t minLagMismatchMs = 120,
+                                                    int64_t maxBufferedLagMs = 300,
+                                                    int64_t lagDivisor = 6) {
+    if (videoPipelineLagMs <= 0 || maxBufferedLagMs <= 0 || lagDivisor <= 0) {
+        return 0;
+    }
+
+    const int64_t mismatchMs = std::max<int64_t>(0, videoPipelineLagMs - std::max<int64_t>(0, bufferedVideoContentLagMs));
+    const int64_t effectiveMismatchMs = mismatchMs - std::max<int64_t>(0, minLagMismatchMs);
+    if (effectiveMismatchMs <= 0) {
+        return 0;
+    }
+
+    return std::clamp<int64_t>(effectiveMismatchMs / lagDivisor, 0, maxBufferedLagMs);
+}
+
+inline WgcAudioLagTargets ComputeWgcAudioLagTargets(int64_t videoPipelineLagMs, int64_t bufferedVideoContentLagMs,
+                                                    bool coverageLossActive, int64_t maxBufferedLagMs = 300) {
+    WgcAudioLagTargets targets{};
+    if (!coverageLossActive) {
+        const int64_t lagMs = std::max<int64_t>(0, videoPipelineLagMs);
+        targets.driftLagMs = lagMs;
+        targets.targetBufferLagMs = lagMs;
+        return targets;
+    }
+
+    targets.driftLagMs = std::max<int64_t>(0, bufferedVideoContentLagMs);
+    targets.targetBufferLagMs =
+        std::max<int64_t>(targets.driftLagMs,
+                          ComputeWgcCoverageBufferedAudioLagMs(videoPipelineLagMs, bufferedVideoContentLagMs, 120,
+                                                               maxBufferedLagMs));
+    return targets;
 }
 
 inline int64_t ComputeWgcCoverageLossTrimSamples(int64_t samplesToEncode, double coverageLossRatio,

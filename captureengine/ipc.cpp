@@ -307,6 +307,7 @@ bool IPCManager::GetLatestFrame(SharedMemoryLayout& outState) {
     outState.runtimeState.wgcDeliveredMin500Fps = pSharedMem->runtimeState.wgcDeliveredMin500Fps.load();
     outState.runtimeState.wgcInputMin250Fps = pSharedMem->runtimeState.wgcInputMin250Fps.load();
     outState.runtimeState.wgcInputMin500Fps = pSharedMem->runtimeState.wgcInputMin500Fps.load();
+    outState.runtimeState.wgcAudioLeadExcessSamples = pSharedMem->runtimeState.wgcAudioLeadExcessSamples.load();
     outState.runtimeState.wgcQueueEmptyTickPermille = pSharedMem->runtimeState.wgcQueueEmptyTickPermille.load();
     outState.runtimeState.wgcBufferedAtTickAvgPermille = pSharedMem->runtimeState.wgcBufferedAtTickAvgPermille.load();
     outState.runtimeState.wgcBufferedAtTickMin = pSharedMem->runtimeState.wgcBufferedAtTickMin.load();

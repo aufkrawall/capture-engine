@@ -32,6 +32,7 @@ constexpr uint32_t kWgcSelectionDelayTicks = 1;
 constexpr uint32_t kWgcCoverageDelayMaxTicks = 32;
 constexpr uint32_t kCfrShortfallCatchupThresholdTicks = 2;
 constexpr uint32_t kCfrShortfallForceCatchupThresholdTicks = 18;
+constexpr double kWgcSevereShortfallDurationMs = 500.0;
 
 inline uint32_t GetCfrOutputShortfallTicks(uint64_t liveTicksScheduled, uint64_t liveTicksOutput) {
     return liveTicksScheduled > liveTicksOutput
@@ -148,24 +149,51 @@ inline double GetCfrShortfallDurationMs(uint32_t outputShortfallTicks, double fr
     return static_cast<double>(outputShortfallTicks) * frameIntervalMs;
 }
 
+inline bool HasWgcSevereLiveShortfall(double shortfallDurationMs,
+                                      double severeShortfallDurationMs = kWgcSevereShortfallDurationMs) {
+    return shortfallDurationMs >= std::max(0.0, severeShortfallDurationMs);
+}
+
+inline bool ShouldClampWgcCoverageCatchupToSingleTick(bool coverageRepeatActive, bool encoderTooSlowForTarget,
+                                                      double shortfallDurationMs) {
+    return coverageRepeatActive && encoderTooSlowForTarget && !HasWgcSevereLiveShortfall(shortfallDurationMs);
+}
+
+inline double GetWgcForceCatchupBudgetFrameMultiplier(double shortfallDurationMs) {
+    return HasWgcSevereLiveShortfall(shortfallDurationMs) ? 4.0 : 3.0;
+}
+
 inline bool HasWgcUnrecoverableCoverageLoss(double shortfallDurationMs, double oldestBufferedFrameAgeMs,
-                                            double minPipelineLagMs = 250.0, double minLagMismatchMs = 120.0) {
+                                            double audioLeadExcessMs = -1.0, double minPipelineLagMs = 250.0,
+                                            double minLagMismatchMs = 120.0, double minAudioLeadMs = 40.0) {
     if (shortfallDurationMs < minPipelineLagMs) {
         return false;
     }
 
     const double clampedBufferedAgeMs = std::max(0.0, oldestBufferedFrameAgeMs);
-    return shortfallDurationMs > clampedBufferedAgeMs + minLagMismatchMs;
+    const double mismatchMs = shortfallDurationMs - clampedBufferedAgeMs;
+    if (mismatchMs <= minLagMismatchMs) {
+        return false;
+    }
+
+    if (audioLeadExcessMs >= 0.0 && audioLeadExcessMs < minAudioLeadMs) {
+        return false;
+    }
+
+    return true;
 }
 
 inline double ComputeWgcCoverageLossRepeatRatio(double shortfallDurationMs, double oldestBufferedFrameAgeMs,
-                                                double fullRepeatMismatchMs = 1500.0,
+                                                double audioLeadExcessMs = -1.0, double fullRepeatMismatchMs = 1500.0,
                                                 double minLagMismatchMs = 120.0) {
     if (fullRepeatMismatchMs <= 0.0) {
         return 0.0;
     }
 
-    const double mismatchMs = std::max(0.0, shortfallDurationMs - std::max(0.0, oldestBufferedFrameAgeMs));
+    double mismatchMs = std::max(0.0, shortfallDurationMs - std::max(0.0, oldestBufferedFrameAgeMs));
+    if (audioLeadExcessMs >= 0.0) {
+        mismatchMs = std::min(mismatchMs, std::max(0.0, audioLeadExcessMs));
+    }
     const double effectiveMismatchMs = std::max(0.0, mismatchMs - std::max(0.0, minLagMismatchMs));
     if (effectiveMismatchMs <= 0.0) {
         return 0.0;

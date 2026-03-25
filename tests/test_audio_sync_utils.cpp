@@ -71,6 +71,23 @@ TEST(AudioSyncUtilsTest, WgcCoverageLossRatioTracksDeliveredFpsDeficit) {
     EXPECT_NEAR(ce::audio::ComputeWgcCoverageLossRatio(16034, 12), 0.25, 0.000001);
 }
 
+TEST(AudioSyncUtilsTest, WgcCoverageBufferedAudioLagAddsBoundedHistoricalCushion) {
+    EXPECT_EQ(ce::audio::ComputeWgcCoverageBufferedAudioLagMs(0, 0), 0);
+    EXPECT_EQ(ce::audio::ComputeWgcCoverageBufferedAudioLagMs(300, 220), 0);
+    EXPECT_EQ(ce::audio::ComputeWgcCoverageBufferedAudioLagMs(500, 20), 60);
+    EXPECT_EQ(ce::audio::ComputeWgcCoverageBufferedAudioLagMs(2000, 0), 300);
+}
+
+TEST(AudioSyncUtilsTest, WgcCoverageAudioLagTargetsKeepDriftAndBufferLagSeparate) {
+    const auto normal = ce::audio::ComputeWgcAudioLagTargets(325, 12, false);
+    EXPECT_EQ(normal.driftLagMs, 325);
+    EXPECT_EQ(normal.targetBufferLagMs, 325);
+
+    const auto coverage = ce::audio::ComputeWgcAudioLagTargets(5430, 17, true);
+    EXPECT_EQ(coverage.driftLagMs, 17);
+    EXPECT_EQ(coverage.targetBufferLagMs, 300);
+}
+
 TEST(AudioSyncUtilsTest, WgcCoverageLossTrimSamplesUsesFractionalAccumulatorAndCap) {
     double accumulator = 0.0;
     EXPECT_EQ(ce::audio::ComputeWgcCoverageLossTrimSamples(240, 0.05, accumulator, 48), 12);

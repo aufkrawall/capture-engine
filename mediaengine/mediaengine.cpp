@@ -1013,6 +1013,7 @@ public:
         constexpr int64_t kBootstrapHoldLimitMs = 500;
         constexpr int64_t kBaseTargetLatencySamples = 960;
         constexpr int64_t kMaxPipelineLagContributionMs = 40;
+        constexpr int64_t kWgcCoverageLossMaxBufferedLagMs = 300;
         constexpr int64_t kRuntimeMaxLeadSamples = SAMPLE_RATE / 10;    // 100ms above target
         constexpr int64_t kRuntimeMaxDropPerCall = SAMPLE_RATE / 200;   // 5ms
         constexpr int64_t kRuntimeDropFadeSamples = SAMPLE_RATE / 200;  // 5ms
@@ -1059,8 +1060,17 @@ public:
             wgcCoverageLossActive = ce::audio::HasWgcUnrecoverableCoverageLoss(
                 wgcTargetFps, videoPipelineLagMs, wgcBufferedVideoContentLagMs);
         }
-        const int64_t effectiveWgcVideoLagMs =
-            (isWgcCfrRecording && wgcCoverageLossActive) ? wgcBufferedVideoContentLagMs : videoPipelineLagMs;
+        const auto wgcAudioLagTargets = ce::audio::ComputeWgcAudioLagTargets(
+            videoPipelineLagMs, wgcBufferedVideoContentLagMs, isWgcCfrRecording && wgcCoverageLossActive,
+            kWgcCoverageLossMaxBufferedLagMs);
+        const int64_t effectiveWgcDriftLagMs = isWgcCfrRecording ? wgcAudioLagTargets.driftLagMs : videoPipelineLagMs;
+        const int64_t effectiveWgcTargetBufferLagMs =
+            isWgcCfrRecording ? wgcAudioLagTargets.targetBufferLagMs : videoPipelineLagMs;
+        const int64_t targetBufferedLagCapMs =
+            (isWgcCfrRecording && wgcCoverageLossActive)
+                ? std::max<int64_t>(kMaxPipelineLagContributionMs, effectiveWgcTargetBufferLagMs)
+                : kMaxPipelineLagContributionMs;
+        uint32_t maxWgcAudioLeadExcessSamples = 0;
 
         if (encodedSamplesPerSource.size() != audioSources.size()) {
             encodedSamplesPerSource.resize(audioSources.size(), 0);
@@ -1113,7 +1123,7 @@ public:
             const int64_t targetSamples = (trackAudioTargetMs * SAMPLE_RATE) / 1000;
             const int64_t targetBufferedSamples = ce::audio::ComputeBufferedAudioTargetSamples(
                 SAMPLE_RATE, kBaseTargetLatencySamples,
-                isWgcCfrRecording ? effectiveWgcVideoLagMs : videoPipelineLagMs, kMaxPipelineLagContributionMs);
+                isWgcCfrRecording ? effectiveWgcTargetBufferLagMs : videoPipelineLagMs, targetBufferedLagCapMs);
 
             bool trackReadyForBootstrap = true;
             const size_t requiredBootstrapSamples = static_cast<size_t>(std::max<int64_t>(targetSamples, 0));
@@ -1254,7 +1264,7 @@ public:
                     const bool allowWgcSteadyStateDriftCompensation =
                         isWgcCfrRecording &&
                         ce::audio::ShouldAllowWgcSteadyStateDriftCompensation(
-                            trackStartupSettled, effectiveWgcVideoLagMs, static_cast<int64_t>(rbAvailable),
+                            trackStartupSettled, effectiveWgcDriftLagMs, static_cast<int64_t>(rbAvailable),
                             targetLatencySamples, kWgcCfrLeadWarningSamples);
                     const bool allowWgcCoverageLossTrim =
                         isWgcCfrRecording && wgcCoverageLossActive && !kWgcPreferVideoRepeatsOverAudioCuts &&
@@ -1373,8 +1383,15 @@ public:
                                 videoPipelineLagMs, currentCompensationDelta, maxCompensationDelta,
                                 currentCompensationPercent, targetCompensationSaturated ? 1 : 0,
                                 targetCompensationSaturated
-                                    ? " - source clock mismatch exceeds the current pitch-safe correction budget"
-                                    : "");
+                                     ? " - source clock mismatch exceeds the current pitch-safe correction budget"
+                                     : "");
+                    }
+                    if (isWgcCfrRecording) {
+                        const int64_t audioLeadExcessSamples =
+                            std::max<int64_t>(0, static_cast<int64_t>(rbAvailable) - targetLatencySamples);
+                        maxWgcAudioLeadExcessSamples = std::max<uint32_t>(
+                            maxWgcAudioLeadExcessSamples,
+                            static_cast<uint32_t>(std::min<int64_t>(audioLeadExcessSamples, INT32_MAX)));
                     }
 
                     const bool canUseLiveDriftCompensation =
@@ -1397,7 +1414,7 @@ public:
                                               "(Err: %lld, target=%lld, pipelineLag=%lldms) -> Comp Drift: %lld"
                                             : "[PullAudio] Src %d Buffer Level: %zu (Err: %lld, target=%lld, "
                                               "pipelineLag=%lldms) -> Comp Drift: %lld",
-                                        (int)srcIdx, rbAvailable, rbError, targetLatencySamples, effectiveWgcVideoLagMs,
+                                        (int)srcIdx, rbAvailable, rbError, targetLatencySamples, effectiveWgcDriftLagMs,
                                         rbError);
                             }
                         } else if (driftLogCounter++ % 2000 == 0) {
@@ -1839,6 +1856,10 @@ public:
                         track, avDrift, latencyAdjustedAvDrift, trackAudioPullLatencyMs);
                 }
             }
+        }
+        if (sharedMemLayout) {
+            sharedMemLayout->runtimeState.wgcAudioLeadExcessSamples.store(
+                isWgcCfrRecording ? maxWgcAudioLeadExcessSamples : 0u, std::memory_order_relaxed);
         }
     }
 
