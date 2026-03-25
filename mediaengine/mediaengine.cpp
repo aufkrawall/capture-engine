@@ -91,6 +91,12 @@ public:
         uint64_t lastPacketTimelineAdjustWarnTick = 0;
         double wgcCoverageLossTrimAccumulator = 0.0;  // Fractional carry for paced overload micro-trims
 
+        // Rate-based drift correction state
+        int64_t prevLeadSamples = 0;      // Previous lead measurement for rate calculation
+        int64_t lastRateUpdateMs = 0;     // Timestamp of last rate correction update
+        int32_t currentRateDelta = 0;     // Current rate correction in samples/10s
+        bool rateCompActive = false;      // Whether rate compensation is currently active
+
         AudioConfig config;
         int track = 0;  // Target track number
         AudioConfig::SourceType sourceType = AudioConfig::SystemAudio;
@@ -1455,43 +1461,82 @@ public:
                             static_cast<uint32_t>(std::min<int64_t>(audioLeadExcessSamples, INT32_MAX)));
                     }
 
-                    const bool canUseLiveDriftCompensation =
-                        src.alignedStartMs >= 0 && !(src.sourceType == AudioConfig::AppAudio && !src.hasAlignedStart);
-                    // Allow drift compensation for WGC CFR whenever source is aligned,
-                    // not just when steady-state conditions are met.  The PI controller
-                    // can correct source-clock drift independently of pipeline lag.
-                    const bool allowLiveDriftCompensation =
-                        canUseLiveDriftCompensation &&
-                        (!isWgcCfrRecording || allowWgcSteadyStateDriftCompensation ||
-                         (trackStartupSettled && static_cast<int64_t>(rbAvailable) >= kMinCompensationBufferSamples));
-                    if (allowLiveDriftCompensation) {
-                        if ((int64_t)rbAvailable >= kMinCompensationBufferSamples) {
-                            int64_t rbError = (int64_t)rbAvailable - targetLatencySamples;
-                            int64_t fakeExpectedSamples = src.syncSamplesOutput - rbError;
-                            int64_t correctedVideoTimeMs = (fakeExpectedSamples * 1000) / SAMPLE_RATE;
-                            if (correctedVideoTimeMs < 0)
-                                correctedVideoTimeMs = 0;
+                    // Rate-based drift correction: measure how fast the lead is
+                    // changing and apply a correction proportional to the rate.
+                    // This replaces the old offset-based PI controller which
+                    // accumulated an enormous integral term from the large lead
+                    // offset and saturated to max correction regardless of actual
+                    // drift rate.
+                    {
+                        const int64_t rbLevel = static_cast<int64_t>(rbAvailable);
+                        if (rbLevel >= kMinCompensationBufferSamples) {
+                            const int64_t currentLead = rbLevel - targetLatencySamples;
+                            const int64_t leadDelta = currentLead - src.prevLeadSamples;
 
-                            src.syncResampler->AdjustForClockDrift(correctedVideoTimeMs, src.syncSamplesOutput);
+                            // Throttle: update every ~100ms to avoid zipper noise.
+                            // Use the same timing as the old PI controller.
+                            constexpr int64_t kRateUpdateIntervalMs = 100;
+                            const int64_t nowVideoMs =
+                                (src.syncSamplesOutput * 1000) / SAMPLE_RATE;
+                            const bool rateUpdateDue = (src.lastRateUpdateMs <= 0) ||
+                                (nowVideoMs - src.lastRateUpdateMs) >= kRateUpdateIntervalMs;
 
-                            if (driftLogCounter++ % 1000 == 0 && abs(rbError) > 100) {
-                                DLL_Log(isWgcCfrRecording
-                                            ? "[PullAudio] Src %d steady-state WGC clock correction: %zu "
-                                              "(Err: %lld, target=%lld, pipelineLag=%lldms) -> Comp Drift: %lld"
-                                            : "[PullAudio] Src %d Buffer Level: %zu (Err: %lld, target=%lld, "
-                                              "pipelineLag=%lldms) -> Comp Drift: %lld",
-                                        (int)srcIdx, rbAvailable, rbError, targetLatencySamples, effectiveWgcDriftLagMs,
-                                        rbError);
+                            if (rateUpdateDue && src.lastRateUpdateMs > 0) {
+                                const int64_t elapsedMs =
+                                    std::max<int64_t>(1, nowVideoMs - src.lastRateUpdateMs);
+                                // Rate of lead change in samples per 10 seconds
+                                const int64_t leadRatePer10s =
+                                    (leadDelta * 10000) / elapsedMs;
+
+                                // Correction proportional to rate.
+                                // High gain (0.8) since we're correcting the rate,
+                                // not the offset.  The lead rate is typically small
+                                // (tens to hundreds of samples per 10s).
+                                int64_t targetCorrection =
+                                    static_cast<int64_t>(leadRatePer10s * 0.8);
+
+                                // Clamp to max budget
+                                const int32_t maxDelta =
+                                    src.syncResampler->GetMaxCompensationDelta();
+                                targetCorrection = std::clamp(
+                                    targetCorrection,
+                                    static_cast<int64_t>(-maxDelta),
+                                    static_cast<int64_t>(maxDelta));
+
+                                // Rate limit: max 400 samples per 10s change per update
+                                constexpr int32_t kMaxRateChange = 400;
+                                int32_t newDelta = static_cast<int32_t>(
+                                    std::clamp(targetCorrection,
+                                        static_cast<int64_t>(src.currentRateDelta) - kMaxRateChange,
+                                        static_cast<int64_t>(src.currentRateDelta) + kMaxRateChange));
+
+                                src.currentRateDelta = newDelta;
+                                src.lastRateUpdateMs = nowVideoMs;
+
+                                // Apply via swr_set_compensation.
+                                // Negate: positive currentRateDelta means audio is
+                                // growing faster than target → need fewer output
+                                // samples → pass negative to swr.
+                                if (newDelta != 0 || src.rateCompActive) {
+                                    int ret = swr_set_compensation(
+                                        src.syncResampler->GetSwrContext(),
+                                        -newDelta,
+                                        SAMPLE_RATE * 10);
+                                    if (ret >= 0) {
+                                        src.rateCompActive = (newDelta != 0);
+                                    }
+                                }
+
+                                if (driftLogCounter++ % 500 == 0) {
+                                    DLL_Log(
+                                        "[PullAudio] Src %zu rate-corr: lead=%lld "
+                                        "delta=%lld rate/10s=%lld corr=%d/%d",
+                                        srcIdx, currentLead, leadDelta,
+                                        leadRatePer10s, newDelta, maxDelta);
+                                }
                             }
-                        } else if (driftLogCounter++ % 2000 == 0) {
-                            DLL_Log("[PullAudio] Src %d Buffer low (%zu) - holding drift compensation", (int)srcIdx,
-                                    rbAvailable);
+                            src.prevLeadSamples = currentLead;
                         }
-                    } else if (driftLogCounter++ % 2000 == 0) {
-                        DLL_Log(isWgcCfrRecording
-                                    ? "[PullAudio] Src %d drift compensation disabled for WGC CFR stability window"
-                                    : "[PullAudio] Src %d drift compensation disabled",
-                                (int)srcIdx);
                     }
                 }
 
