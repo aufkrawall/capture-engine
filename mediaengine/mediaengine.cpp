@@ -1018,6 +1018,7 @@ public:
         constexpr int64_t kRuntimeDropFadeSamples = SAMPLE_RATE / 200;  // 5ms
         constexpr int64_t kMinCompensationBufferSamples = kBaseTargetLatencySamples / 4;
         constexpr int64_t kWgcCfrLeadWarningSamples = SAMPLE_RATE / 5;  // 200ms
+        constexpr int64_t kWgcCoverageLossLeadSlackSamples = SAMPLE_RATE / 25;  // 40ms above target
         constexpr int64_t kWgcCoverageLossMaxDropPerCall = SAMPLE_RATE / 1000;  // 1ms paced overload trim
 
         const bool isWgcCfrRecording = IsWgcCfrRecording();
@@ -1255,13 +1256,13 @@ public:
                             targetLatencySamples, kWgcCfrLeadWarningSamples);
                     const bool allowWgcCoverageLossTrim =
                         isWgcCfrRecording && wgcCoverageLossActive &&
-                        static_cast<int64_t>(rbAvailable) > targetLatencySamples + kWgcCfrLeadWarningSamples;
+                        static_cast<int64_t>(rbAvailable) > targetLatencySamples + kWgcCoverageLossLeadSlackSamples;
                     if (!allowWgcCoverageLossTrim) {
                         src.wgcCoverageLossTrimAccumulator = 0.0;
                     }
                     if (allowWgcCoverageLossTrim) {
                         const int64_t dropSamplesTotal =
-                            static_cast<int64_t>(rbAvailable) - (targetLatencySamples + kWgcCfrLeadWarningSamples);
+                            static_cast<int64_t>(rbAvailable) - (targetLatencySamples + kWgcCoverageLossLeadSlackSamples);
                         int64_t dropSamples = ce::audio::ComputeWgcCoverageLossTrimSamples(
                             samplesToEncode,
                             ce::audio::ComputeWgcCoverageLossRatio(videoPipelineLagMs, wgcBufferedVideoContentLagMs),
@@ -1290,11 +1291,11 @@ public:
                             if (dropLogCounter++ % 500 == 0) {
                                 DLL_Log(
                                     "[PullAudio] WGC overload sync trim: src %d ahead by %lld samples - trimming %zu "
-                                    "(target=%lld, pipelineLag=%lldms, contentLag=%lldms, delivered=%u/%u fps, "
-                                    "ratio=%.3f%%)",
+                                    "(target=%lld, slack=%lld, pipelineLag=%lldms, contentLag=%lldms, delivered=%u/%u "
+                                    "fps, ratio=%.3f%%)",
                                     (int)srcIdx, static_cast<int64_t>(rbAvailable) - targetLatencySamples,
-                                    trimmedSamples, targetLatencySamples, videoPipelineLagMs, wgcBufferedVideoContentLagMs,
-                                    wgcDeliveredFps, wgcTargetFps,
+                                    trimmedSamples, targetLatencySamples, kWgcCoverageLossLeadSlackSamples,
+                                    videoPipelineLagMs, wgcBufferedVideoContentLagMs, wgcDeliveredFps, wgcTargetFps,
                                     ce::audio::ComputeWgcCoverageLossRatio(videoPipelineLagMs, wgcBufferedVideoContentLagMs) *
                                         100.0);
                             }
