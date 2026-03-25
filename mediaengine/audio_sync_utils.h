@@ -34,6 +34,52 @@ inline int64_t ComputeVideoPipelineLagMs(int64_t wallVideoMs, int64_t encodedVid
     return wallVideoMs - encodedVideoMs;
 }
 
+inline int64_t ComputeWgcBufferedVideoContentLagMs(uint32_t oldestBufferedFrameAgeUs) {
+    return oldestBufferedFrameAgeUs == 0 ? 0 : static_cast<int64_t>(oldestBufferedFrameAgeUs / 1000u);
+}
+
+inline bool HasWgcUnrecoverableCoverageLoss(bool encoderOverloaded, uint32_t deliveredFps, uint32_t targetFps,
+                                            int64_t videoPipelineLagMs, int64_t bufferedVideoContentLagMs,
+                                            int64_t minPipelineLagMs = 250, int64_t minLagMismatchMs = 120) {
+    if (!encoderOverloaded || targetFps == 0 || deliveredFps == 0 || deliveredFps >= targetFps) {
+        return false;
+    }
+
+    if (videoPipelineLagMs < minPipelineLagMs) {
+        return false;
+    }
+
+    const int64_t clampedBufferedLagMs = std::max<int64_t>(0, bufferedVideoContentLagMs);
+    return videoPipelineLagMs > clampedBufferedLagMs + minLagMismatchMs;
+}
+
+inline double ComputeWgcCoverageLossRatio(uint32_t deliveredFps, uint32_t targetFps) {
+    if (targetFps == 0 || deliveredFps == 0 || deliveredFps >= targetFps) {
+        return 0.0;
+    }
+
+    const double lossRatio =
+        static_cast<double>(targetFps - deliveredFps) / std::max<double>(1.0, static_cast<double>(targetFps));
+    return std::clamp(lossRatio, 0.0, 0.25);
+}
+
+inline int64_t ComputeWgcCoverageLossTrimSamples(int64_t samplesToEncode, double coverageLossRatio,
+                                                 double& trimAccumulator, int64_t maxDropPerCall) {
+    if (samplesToEncode <= 0 || coverageLossRatio <= 0.0 || maxDropPerCall <= 0) {
+        trimAccumulator = std::max(0.0, trimAccumulator);
+        return 0;
+    }
+
+    trimAccumulator += static_cast<double>(samplesToEncode) * coverageLossRatio;
+    const int64_t desiredDropSamples = static_cast<int64_t>(trimAccumulator);
+    if (desiredDropSamples <= 0) {
+        return 0;
+    }
+
+    trimAccumulator -= static_cast<double>(desiredDropSamples);
+    return std::clamp<int64_t>(desiredDropSamples, 0, maxDropPerCall);
+}
+
 inline int64_t ComputeBufferedAudioTargetSamples(int sampleRate, int64_t baseLatencySamples, int64_t videoPipelineLagMs,
                                                  int64_t maxLagContributionMs = 40) {
     if (sampleRate <= 0) {

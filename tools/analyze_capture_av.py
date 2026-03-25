@@ -15,12 +15,13 @@ from typing import NoReturn
 LOG_PATTERNS = {
     "audio_latency_cap": re.compile(r"\[PullAudio\] Audio latency cap:"),
     "audio_retain_trim": re.compile(r"\[PullAudio\] WARNING: WGC CFR audio headroom exhausted"),
+    "audio_coverage_trim": re.compile(r"\[PullAudio\] WGC overload sync trim:"),
     "wgc_cfr_lead_warning": re.compile(r"\[PullAudio\] WGC CFR lead warning:"),
     "audio_large_gap": re.compile(r"\[PullAudio\] Large A/V gap"),
     "audio_underrun": re.compile(r"\[PullAudio\] WARNING: Source underrun"),
     "audio_overflow": re.compile(r"\[PullAudio\] WARNING: Ring buffer overflow"),
     "audio_silence_fill": re.compile(r"\[PullAudio\] Track \d+ silent - generating"),
-    "wgc_output_limited": re.compile(r"\[WGC CFR\] Output limited by"),
+    "wgc_output_limited": re.compile(r"\[WGC CFR\] (?:Output limited|Encoder cannot sustain target)"),
 }
 
 CADENCE_SELMISS_RE = re.compile(r"SelMiss=(\d+)")

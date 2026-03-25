@@ -56,6 +56,40 @@ TEST(AudioSyncUtilsTest, WgcSteadyStateDriftCompensationRequiresHealthyLargeLead
     EXPECT_FALSE(ce::audio::ShouldAllowWgcSteadyStateDriftCompensation(true, 0, 10559, 960, 9600));
 }
 
+TEST(AudioSyncUtilsTest, WgcCoverageLossDetectionRequiresTrueLagMismatch) {
+    EXPECT_TRUE(ce::audio::HasWgcUnrecoverableCoverageLoss(true, 114, 120, 16034, 12));
+    EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(false, 114, 120, 16034, 12));
+    EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(true, 120, 120, 16034, 12));
+    EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(true, 114, 120, 200, 12));
+    EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(true, 114, 120, 300, 220));
+}
+
+TEST(AudioSyncUtilsTest, WgcCoverageLossRatioTracksDeliveredFpsDeficit) {
+    EXPECT_DOUBLE_EQ(ce::audio::ComputeWgcCoverageLossRatio(120, 120), 0.0);
+    EXPECT_DOUBLE_EQ(ce::audio::ComputeWgcCoverageLossRatio(0, 120), 0.0);
+    EXPECT_NEAR(ce::audio::ComputeWgcCoverageLossRatio(114, 120), 0.05, 0.000001);
+}
+
+TEST(AudioSyncUtilsTest, WgcCoverageLossTrimSamplesUsesFractionalAccumulatorAndCap) {
+    double accumulator = 0.0;
+    EXPECT_EQ(ce::audio::ComputeWgcCoverageLossTrimSamples(240, 0.05, accumulator, 48), 12);
+    EXPECT_NEAR(accumulator, 0.0, 0.000001);
+
+    accumulator = 0.0;
+    EXPECT_EQ(ce::audio::ComputeWgcCoverageLossTrimSamples(240, 0.021, accumulator, 48), 5);
+    EXPECT_NEAR(accumulator, 0.04, 0.000001);
+    EXPECT_EQ(ce::audio::ComputeWgcCoverageLossTrimSamples(240, 0.021, accumulator, 48), 5);
+    EXPECT_NEAR(accumulator, 0.08, 0.000001);
+
+    accumulator = 0.0;
+    EXPECT_EQ(ce::audio::ComputeWgcCoverageLossTrimSamples(240, 0.50, accumulator, 24), 24);
+}
+
+TEST(AudioSyncUtilsTest, WgcBufferedVideoContentLagUsesSharedTelemetryAge) {
+    EXPECT_EQ(ce::audio::ComputeWgcBufferedVideoContentLagMs(0), 0);
+    EXPECT_EQ(ce::audio::ComputeWgcBufferedVideoContentLagMs(12345), 12);
+}
+
 TEST(AudioSyncUtilsTest, TrackStartupSettledUsesBootstrapOrPrimedSources) {
     EXPECT_FALSE(ce::audio::IsTrackAudioStartupSettled(false, false));
     EXPECT_TRUE(ce::audio::IsTrackAudioStartupSettled(true, false));
