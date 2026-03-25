@@ -169,11 +169,6 @@ inline int64_t ComputeLatencyAdjustedAvDriftMs(int64_t rawAvDriftMs, int64_t int
 inline bool ShouldAllowWgcSteadyStateDriftCompensation(bool trackStartupSettled, int64_t videoPipelineLagMs,
                                                         int64_t bufferedSamples, int64_t targetLatencySamples,
                                                         int64_t leadWarningSamples) {
-    // Allow drift compensation once startup is settled and audio is buffered.
-    // Previously this rejected videoPipelineLagMs > 0, which disabled compensation
-    // whenever the encoder was bottlenecked.  The PI controller can still correct
-    // source-clock drift regardless of pipeline lag; it just needs to see the
-    // unbuffered lead error (ring buffer available minus target).
     if (!trackStartupSettled || bufferedSamples <= 0) {
         return false;
     }

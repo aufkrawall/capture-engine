@@ -93,6 +93,7 @@ public:
 
         // Rate-based drift correction state
         int64_t prevLeadSamples = 0;      // Previous lead measurement for rate calculation
+        int64_t prevLeadSnapshotMs = 0;   // Timestamp of the snapshot for rate window
         int64_t lastRateUpdateMs = 0;     // Timestamp of last rate correction update
         int32_t currentRateDelta = 0;     // Current rate correction in samples/10s
         bool rateCompActive = false;      // Whether rate compensation is currently active
@@ -1463,79 +1464,74 @@ public:
 
                     // Rate-based drift correction: measure how fast the lead is
                     // changing and apply a correction proportional to the rate.
-                    // This replaces the old offset-based PI controller which
-                    // accumulated an enormous integral term from the large lead
-                    // offset and saturated to max correction regardless of actual
-                    // drift rate.
                     {
                         const int64_t rbLevel = static_cast<int64_t>(rbAvailable);
                         if (rbLevel >= kMinCompensationBufferSamples) {
                             const int64_t currentLead = rbLevel - targetLatencySamples;
-                            const int64_t leadDelta = currentLead - src.prevLeadSamples;
-
-                            // Throttle: update every ~100ms to avoid zipper noise.
-                            // Use the same timing as the old PI controller.
-                            constexpr int64_t kRateUpdateIntervalMs = 100;
                             const int64_t nowVideoMs =
                                 (src.syncSamplesOutput * 1000) / SAMPLE_RATE;
-                            const bool rateUpdateDue = (src.lastRateUpdateMs <= 0) ||
-                                (nowVideoMs - src.lastRateUpdateMs) >= kRateUpdateIntervalMs;
 
-                            if (rateUpdateDue && src.lastRateUpdateMs > 0) {
-                                const int64_t elapsedMs =
-                                    std::max<int64_t>(1, nowVideoMs - src.lastRateUpdateMs);
-                                // Rate of lead change in samples per 10 seconds
-                                const int64_t leadRatePer10s =
-                                    (leadDelta * 10000) / elapsedMs;
-
-                                // Correction proportional to rate.
-                                // High gain (0.8) since we're correcting the rate,
-                                // not the offset.  The lead rate is typically small
-                                // (tens to hundreds of samples per 10s).
-                                int64_t targetCorrection =
-                                    static_cast<int64_t>(leadRatePer10s * 0.8);
-
-                                // Clamp to max budget
-                                const int32_t maxDelta =
-                                    src.syncResampler->GetMaxCompensationDelta();
-                                targetCorrection = std::clamp(
-                                    targetCorrection,
-                                    static_cast<int64_t>(-maxDelta),
-                                    static_cast<int64_t>(maxDelta));
-
-                                // Rate limit: max 400 samples per 10s change per update
-                                constexpr int32_t kMaxRateChange = 400;
-                                int32_t newDelta = static_cast<int32_t>(
-                                    std::clamp(targetCorrection,
-                                        static_cast<int64_t>(src.currentRateDelta) - kMaxRateChange,
-                                        static_cast<int64_t>(src.currentRateDelta) + kMaxRateChange));
-
-                                src.currentRateDelta = newDelta;
+                            if (src.lastRateUpdateMs <= 0) {
+                                // First call: seed baseline only
+                                src.prevLeadSamples = currentLead;
+                                src.prevLeadSnapshotMs = nowVideoMs;
                                 src.lastRateUpdateMs = nowVideoMs;
+                            } else {
+                                const int64_t snapshotElapsed =
+                                    nowVideoMs - src.prevLeadSnapshotMs;
 
-                                // Apply via swr_set_compensation.
-                                // Negate: positive currentRateDelta means audio is
-                                // growing faster than target → need fewer output
-                                // samples → pass negative to swr.
-                                if (newDelta != 0 || src.rateCompActive) {
-                                    int ret = swr_set_compensation(
-                                        src.syncResampler->GetSwrContext(),
-                                        -newDelta,
-                                        SAMPLE_RATE * 10);
-                                    if (ret >= 0) {
-                                        src.rateCompActive = (newDelta != 0);
+                                if (snapshotElapsed >= 100) {
+                                    // Rate over >=100ms window (filters audio jitter)
+                                    const int64_t leadDelta =
+                                        currentLead - src.prevLeadSamples;
+                                    const int64_t leadRatePer10s =
+                                        (leadDelta * 10000) / snapshotElapsed;
+
+                                    int64_t targetCorrection =
+                                        static_cast<int64_t>(leadRatePer10s * 0.8) +
+                                        static_cast<int64_t>(currentLead * 0.01);
+
+                                    const int32_t maxDelta =
+                                        src.syncResampler->GetMaxCompensationDelta();
+                                    targetCorrection = std::clamp(
+                                        targetCorrection,
+                                        static_cast<int64_t>(-maxDelta),
+                                        static_cast<int64_t>(maxDelta));
+
+                                    constexpr int32_t kMaxRateChange = 800;
+                                    int32_t newDelta = static_cast<int32_t>(
+                                        std::clamp(targetCorrection,
+                                            static_cast<int64_t>(src.currentRateDelta) - kMaxRateChange,
+                                            static_cast<int64_t>(src.currentRateDelta) + kMaxRateChange));
+
+                                    src.currentRateDelta = newDelta;
+
+                                    if (newDelta != 0 || src.rateCompActive) {
+                                        int ret = swr_set_compensation(
+                                            src.syncResampler->GetSwrContext(),
+                                            -newDelta,
+                                            SAMPLE_RATE * 10);
+                                        if (ret >= 0) {
+                                            src.rateCompActive = (newDelta != 0);
+                                        }
                                     }
-                                }
 
-                                if (driftLogCounter++ % 500 == 0) {
-                                    DLL_Log(
-                                        "[PullAudio] Src %zu rate-corr: lead=%lld "
-                                        "delta=%lld rate/10s=%lld corr=%d/%d",
-                                        srcIdx, currentLead, leadDelta,
-                                        leadRatePer10s, newDelta, maxDelta);
+                                    if (driftLogCounter++ % 100 == 0) {
+                                        DLL_Log(
+                                            "[PullAudio] Src %zu rate-corr: lead=%lld "
+                                            "delta=%lld window=%lldms rate/10s=%lld "
+                                            "targetCorr=%lld applied=%d/%d",
+                                            srcIdx, currentLead, leadDelta,
+                                            snapshotElapsed, leadRatePer10s,
+                                            targetCorrection, newDelta, maxDelta);
+                                    }
+
+                                    // Reset snapshot for next window
+                                    src.prevLeadSamples = currentLead;
+                                    src.prevLeadSnapshotMs = nowVideoMs;
                                 }
+                                src.lastRateUpdateMs = nowVideoMs;
                             }
-                            src.prevLeadSamples = currentLead;
                         }
                     }
                 }

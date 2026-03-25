@@ -145,10 +145,6 @@ public:
         return targetSaturated_;
     }
 
-    /**
-     * Get the underlying SwrContext for direct swr_set_compensation calls.
-     * Returns nullptr if not initialized.
-     */
     SwrContext* GetSwrContext() const {
         return swrCtx;
     }
