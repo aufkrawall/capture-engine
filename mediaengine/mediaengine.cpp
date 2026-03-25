@@ -1054,7 +1054,7 @@ public:
             wgcBufferedVideoContentLagMs = ce::audio::ComputeWgcBufferedVideoContentLagMs(
                 runtimeState.oldestBufferedFrameAgeUs.load(std::memory_order_relaxed));
             wgcCoverageLossActive = ce::audio::HasWgcUnrecoverableCoverageLoss(
-                wgcDeliveredFps, wgcTargetFps, videoPipelineLagMs, wgcBufferedVideoContentLagMs);
+                wgcTargetFps, videoPipelineLagMs, wgcBufferedVideoContentLagMs);
         }
         const int64_t effectiveWgcVideoLagMs =
             (isWgcCfrRecording && wgcCoverageLossActive) ? wgcBufferedVideoContentLagMs : videoPipelineLagMs;
@@ -1263,7 +1263,8 @@ public:
                         const int64_t dropSamplesTotal =
                             static_cast<int64_t>(rbAvailable) - (targetLatencySamples + kWgcCfrLeadWarningSamples);
                         int64_t dropSamples = ce::audio::ComputeWgcCoverageLossTrimSamples(
-                            samplesToEncode, ce::audio::ComputeWgcCoverageLossRatio(wgcDeliveredFps, wgcTargetFps),
+                            samplesToEncode,
+                            ce::audio::ComputeWgcCoverageLossRatio(videoPipelineLagMs, wgcBufferedVideoContentLagMs),
                             src.wgcCoverageLossTrimAccumulator, kWgcCoverageLossMaxDropPerCall);
                         dropSamples = std::min(dropSamples, dropSamplesTotal);
                         if (dropSamples > 0 && src.ringBuffer) {
@@ -1294,7 +1295,8 @@ public:
                                     (int)srcIdx, static_cast<int64_t>(rbAvailable) - targetLatencySamples,
                                     trimmedSamples, targetLatencySamples, videoPipelineLagMs, wgcBufferedVideoContentLagMs,
                                     wgcDeliveredFps, wgcTargetFps,
-                                    ce::audio::ComputeWgcCoverageLossRatio(wgcDeliveredFps, wgcTargetFps) * 100.0);
+                                    ce::audio::ComputeWgcCoverageLossRatio(videoPipelineLagMs, wgcBufferedVideoContentLagMs) *
+                                        100.0);
                             }
                             rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
                         }

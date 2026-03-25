@@ -3753,32 +3753,23 @@ void StopRecording() {
 
     LogInfo("[Media] Stopping recording...");
 
-    LARGE_INTEGER stopQpc = {};
-    const bool drainOutstandingWgcTicks =
-        IsActiveScreenGrab() && !g_RecordingUsesVfr.load(std::memory_order_acquire);
-    if (drainOutstandingWgcTicks) {
-        QueryPerformanceCounter(&stopQpc);
-    }
+    const bool immediateWgcStop = IsActiveScreenGrab() && !g_RecordingUsesVfr.load(std::memory_order_acquire);
+    const bool drainOutstandingWgcTicks = false;
 
     g_Recording = false;
     SetCaptureRequestedState(false);
     SetRecordingVisibleState(false);
     SetCapturePipelinePhase(CapturePipelinePhase::kStopping);
-    g_WgcDrainStopQpc.store(stopQpc.QuadPart, std::memory_order_release);
+    g_WgcDrainStopQpc.store(0, std::memory_order_release);
     g_DrainOutstandingWgcTicks.store(drainOutstandingWgcTicks, std::memory_order_release);
-    if (drainOutstandingWgcTicks) {
-        LogInfo("[Media] WGC stop drain armed at qpc=%lld", static_cast<long long>(stopQpc.QuadPart));
-        // Enter drain mode before blocking on WGC shutdown so outstanding live
-        // CFR debt can start draining immediately against the frozen stop QPC.
-        g_EncoderRunning = false;
+    if (immediateWgcStop) {
+        LogInfo("[Media] WGC immediate stop policy active - skipping stop drain so finalization completes immediately");
     }
 
     StopWgcCapturePipeline();
     StopInjectCapturePipeline();
 
-    if (!drainOutstandingWgcTicks) {
-        g_EncoderRunning = false;
-    }
+    g_EncoderRunning = false;
     g_InjectDeliveredFirstFrame.store(false, std::memory_order_release);
     g_RejectInjectFrames.store(false, std::memory_order_release);
     g_AutoWgcFallbackArmed.store(false, std::memory_order_release);

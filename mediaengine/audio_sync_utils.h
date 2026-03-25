@@ -38,10 +38,10 @@ inline int64_t ComputeWgcBufferedVideoContentLagMs(uint32_t oldestBufferedFrameA
     return oldestBufferedFrameAgeUs == 0 ? 0 : static_cast<int64_t>(oldestBufferedFrameAgeUs / 1000u);
 }
 
-inline bool HasWgcUnrecoverableCoverageLoss(uint32_t deliveredFps, uint32_t targetFps, int64_t videoPipelineLagMs,
+inline bool HasWgcUnrecoverableCoverageLoss(uint32_t targetFps, int64_t videoPipelineLagMs,
                                             int64_t bufferedVideoContentLagMs, int64_t minPipelineLagMs = 250,
                                             int64_t minLagMismatchMs = 120) {
-    if (targetFps == 0 || deliveredFps == 0 || deliveredFps >= targetFps) {
+    if (targetFps == 0) {
         return false;
     }
 
@@ -53,13 +53,18 @@ inline bool HasWgcUnrecoverableCoverageLoss(uint32_t deliveredFps, uint32_t targ
     return videoPipelineLagMs > clampedBufferedLagMs + minLagMismatchMs;
 }
 
-inline double ComputeWgcCoverageLossRatio(uint32_t deliveredFps, uint32_t targetFps) {
-    if (targetFps == 0 || deliveredFps == 0 || deliveredFps >= targetFps) {
+inline double ComputeWgcCoverageLossRatio(int64_t videoPipelineLagMs, int64_t bufferedVideoContentLagMs,
+                                          int64_t fullTrimMismatchMs = 16000) {
+    if (fullTrimMismatchMs <= 0) {
         return 0.0;
     }
 
-    const double lossRatio =
-        static_cast<double>(targetFps - deliveredFps) / std::max<double>(1.0, static_cast<double>(targetFps));
+    const int64_t mismatchMs = std::max<int64_t>(0, videoPipelineLagMs - std::max<int64_t>(0, bufferedVideoContentLagMs));
+    if (mismatchMs <= 0) {
+        return 0.0;
+    }
+
+    const double lossRatio = static_cast<double>(mismatchMs) / static_cast<double>(fullTrimMismatchMs);
     return std::clamp(lossRatio, 0.0, 0.25);
 }
 

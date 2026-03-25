@@ -57,18 +57,18 @@ TEST(AudioSyncUtilsTest, WgcSteadyStateDriftCompensationRequiresHealthyLargeLead
 }
 
 TEST(AudioSyncUtilsTest, WgcCoverageLossDetectionRequiresTrueLagMismatch) {
-    EXPECT_TRUE(ce::audio::HasWgcUnrecoverableCoverageLoss(114, 120, 16034, 12));
-    EXPECT_TRUE(ce::audio::HasWgcUnrecoverableCoverageLoss(108, 120, 76837, 0));
-    EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(120, 120, 16034, 12));
-    EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(114, 120, 200, 12));
-    EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(114, 120, 300, 220));
-    EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(0, 120, 16034, 12));
+    EXPECT_TRUE(ce::audio::HasWgcUnrecoverableCoverageLoss(120, 16034, 12));
+    EXPECT_TRUE(ce::audio::HasWgcUnrecoverableCoverageLoss(120, 76837, 0));
+    EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(0, 16034, 12));
+    EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(120, 200, 12));
+    EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(120, 300, 220));
 }
 
 TEST(AudioSyncUtilsTest, WgcCoverageLossRatioTracksDeliveredFpsDeficit) {
-    EXPECT_DOUBLE_EQ(ce::audio::ComputeWgcCoverageLossRatio(120, 120), 0.0);
-    EXPECT_DOUBLE_EQ(ce::audio::ComputeWgcCoverageLossRatio(0, 120), 0.0);
-    EXPECT_NEAR(ce::audio::ComputeWgcCoverageLossRatio(114, 120), 0.05, 0.000001);
+    EXPECT_DOUBLE_EQ(ce::audio::ComputeWgcCoverageLossRatio(0, 0), 0.0);
+    EXPECT_NEAR(ce::audio::ComputeWgcCoverageLossRatio(300, 220), 0.005, 0.000001);
+    EXPECT_NEAR(ce::audio::ComputeWgcCoverageLossRatio(2000, 0), 0.125, 0.000001);
+    EXPECT_NEAR(ce::audio::ComputeWgcCoverageLossRatio(16034, 12), 0.25, 0.000001);
 }
 
 TEST(AudioSyncUtilsTest, WgcCoverageLossTrimSamplesUsesFractionalAccumulatorAndCap) {
