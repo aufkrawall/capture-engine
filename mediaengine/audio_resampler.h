@@ -122,7 +122,7 @@ public:
     }
 
     void SetMaxCompensationPercent(double percent) {
-        maxCompensationPercent_ = std::clamp(percent, 0.1, 3.0);
+        maxCompensationPercent_ = std::clamp(percent, 0.1, 15.0);
     }
 
     int32_t GetMaxCompensationDelta() const {
@@ -174,11 +174,11 @@ private:
     // PI Controller State
     double integralError = 0.0;
     // Steady-state gains (relaxed after initial convergence)
-    static constexpr double kKpSteady = 0.08;   // Proportional
-    static constexpr double kKiSteady = 0.015;  // Integral
+    static constexpr double kKpSteady = 0.12;   // Proportional
+    static constexpr double kKiSteady = 0.025;  // Integral
     // Fast-convergence gains (first 10 seconds of recording)
-    static constexpr double kKpFast = 0.15;  // Proportional (fast mode)
-    static constexpr double kKiFast = 0.03;  // Integral (fast mode)
+    static constexpr double kKpFast = 0.20;  // Proportional (fast mode)
+    static constexpr double kKiFast = 0.04;  // Integral (fast mode)
     // Smoothing alpha: 0.95 = ~20 update time constant (~2s at 10Hz updates)
     static constexpr double kSmoothingAlpha = 0.95;
     static const int COMPENSATION_PERIOD_SEC = 10;

@@ -1021,8 +1021,8 @@ public:
         constexpr int64_t kWgcCfrLeadWarningSamples = SAMPLE_RATE / 5;  // 200ms
         constexpr bool kWgcPreferVideoRepeatsOverAudioCuts = true;
         constexpr double kDefaultMaxCompensationPercent = 1.0;
-        constexpr double kWgcEncoderBottleneckMaxCompensationPercent = 2.0;
-        constexpr double kWgcCoverageLossMaxCompensationPercent = 2.0;
+        constexpr double kWgcEncoderBottleneckMaxCompensationPercent = 10.0;
+        constexpr double kWgcCoverageLossMaxCompensationPercent = 15.0;
         constexpr int64_t kWgcCoverageLossLeadSlackSamples = SAMPLE_RATE / 25;  // 40ms above target
         constexpr int64_t kWgcCoverageLossMaxDropPerCall =
             ce::audio::kDefaultAudioPullQuantumSamples;  // 5ms paced overload trim quantum
@@ -1368,35 +1368,84 @@ public:
                             rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
                         }
                     } else if (isWgcCfrRecording &&
-                               (int64_t)rbAvailable > targetLatencySamples + kWgcCfrLeadWarningSamples &&
-                               dropLogCounter++ % 500 == 0) {
-                        const bool targetCompensationSaturated =
-                            allowWgcSteadyStateDriftCompensation &&
-                            src.syncResampler->IsTargetCompensationSaturated();
-                        const int32_t currentCompensationDelta =
-                            allowWgcSteadyStateDriftCompensation
-                                ? src.syncResampler->GetCurrentCompensationDelta()
-                                : 0;
-                        const int32_t maxCompensationDelta =
-                            allowWgcSteadyStateDriftCompensation ? src.syncResampler->GetMaxCompensationDelta()
-                                                                 : 0;
-                        const double currentCompensationPercent =
-                            allowWgcSteadyStateDriftCompensation ? src.syncResampler->GetCurrentCompensationPercent()
-                                                                 : 0.0;
-                        DLL_Log(allowWgcSteadyStateDriftCompensation
+                               (int64_t)rbAvailable > targetLatencySamples + kWgcCfrLeadWarningSamples) {
+                        // WGC CFR lead is large.  Log diagnostics and do paced trimming
+                        // to prevent unbounded lead growth when the PI controller can't
+                        // keep up with source-clock drift.
+                        constexpr int64_t kWgcLeadHardCapSamples = SAMPLE_RATE / 2;  // 500ms hard cap
+                        const int64_t leadExcess = static_cast<int64_t>(rbAvailable) - targetLatencySamples;
+
+                        if (dropLogCounter++ % 500 == 0) {
+                            const bool targetCompensationSaturated =
+                                allowWgcSteadyStateDriftCompensation &&
+                                src.syncResampler->IsTargetCompensationSaturated();
+                            const int32_t currentCompensationDelta =
+                                allowWgcSteadyStateDriftCompensation
+                                    ? src.syncResampler->GetCurrentCompensationDelta()
+                                    : 0;
+                            const int32_t maxCompensationDelta =
+                                allowWgcSteadyStateDriftCompensation
+                                    ? src.syncResampler->GetMaxCompensationDelta()
+                                    : 0;
+                            const double currentCompensationPercent =
+                                allowWgcSteadyStateDriftCompensation
+                                    ? src.syncResampler->GetCurrentCompensationPercent()
+                                    : 0.0;
+                            DLL_Log(
+                                allowWgcSteadyStateDriftCompensation
                                     ? "[PullAudio] WGC CFR lead warning: src %d ahead by %lld samples (target=%lld, "
                                       "pipelineLag=%lldms, encBottleneck=%d). Steady-state drift correction is active "
                                       "(corr=%d/%d per 10s, %.3f%%, sat=%d, maxBudget=%.1f%%)%s"
                                     : "[PullAudio] WGC CFR lead warning: src %d ahead by %lld samples (target=%lld, "
-                                      "pipelineLag=%lldms, encBottleneck=%d). Live trimming disabled to preserve pitch; "
-                                      "inspect encoder throughput or source clock drift.",
-                                (int)srcIdx, (int64_t)rbAvailable - targetLatencySamples, targetLatencySamples,
-                                videoPipelineLagMs, wgcEncoderBottlenecked ? 1 : 0, currentCompensationDelta,
-                                maxCompensationDelta, currentCompensationPercent, targetCompensationSaturated ? 1 : 0,
+                                      "pipelineLag=%lldms, encBottleneck=%d). Drift compensation now active; "
+                                      "capping lead at %lld samples.",
+                                (int)srcIdx, leadExcess, targetLatencySamples, videoPipelineLagMs,
+                                wgcEncoderBottlenecked ? 1 : 0, currentCompensationDelta, maxCompensationDelta,
+                                currentCompensationPercent, targetCompensationSaturated ? 1 : 0,
                                 maxCompensationPercent,
                                 targetCompensationSaturated
-                                     ? " - source clock mismatch exceeds the current pitch-safe correction budget"
-                                     : "");
+                                    ? " - source clock mismatch exceeds the current pitch-safe correction budget"
+                                    : "");
+                        }
+
+                        // Paced lead trimming when lead exceeds hard cap (500ms).
+                        // Prevents unbounded growth while keeping fades smooth.
+                        if (leadExcess > kWgcLeadHardCapSamples && src.ringBuffer) {
+                            const int64_t excessAboveCap = leadExcess - kWgcLeadHardCapSamples;
+                            const int64_t maxTrimThisCall =
+                                std::min(excessAboveCap, kWgcCoverageLossMaxDropPerCall);
+                            if (maxTrimThisCall > 0) {
+                                if (src.postResampleBuffer.size() >= CHANNELS) {
+                                    size_t base = src.postResampleBuffer.size() - CHANNELS;
+                                    src.dropFadeStartL = src.postResampleBuffer[base];
+                                    src.dropFadeStartR = src.postResampleBuffer[base + 1];
+                                } else {
+                                    src.dropFadeStartL = 0.0f;
+                                    src.dropFadeStartR = 0.0f;
+                                }
+                                src.dropFadeSamplesRemaining = (int)kRuntimeDropFadeSamples;
+
+                                size_t trimmedFloats =
+                                    src.ringBuffer->Skip((size_t)maxTrimThisCall * CHANNELS);
+                                size_t trimmedSamples = trimmedFloats / CHANNELS;
+                                ce::audio::ConsumeSyntheticBufferedSamples(
+                                    src.startupSyntheticRingSamples, trimmedSamples);
+                                src.coverageLossTrimSamples += trimmedSamples;
+                                src.pendingCoverageLossTrimSamples += trimmedSamples;
+                                src.pendingCoverageLossTrimEvents++;
+                                src.latencyTrimSamples += trimmedSamples;
+                                src.pendingLatencyTrimSamples += trimmedSamples;
+                                src.pendingLatencyTrimEvents++;
+                                if (dropLogCounter++ % 100 == 0) {
+                                    DLL_Log(
+                                        "[PullAudio] WGC CFR lead cap trim: src %d lead=%lld (cap=%lld) - "
+                                        "trimmed %lld samples",
+                                        (int)srcIdx, leadExcess, kWgcLeadHardCapSamples,
+                                        (long long)trimmedSamples);
+                                }
+                                rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
+                            }
+                        }
                     }
                     if (isWgcCfrRecording) {
                         const int64_t audioLeadExcessSamples =
@@ -1408,8 +1457,13 @@ public:
 
                     const bool canUseLiveDriftCompensation =
                         src.alignedStartMs >= 0 && !(src.sourceType == AudioConfig::AppAudio && !src.hasAlignedStart);
+                    // Allow drift compensation for WGC CFR whenever source is aligned,
+                    // not just when steady-state conditions are met.  The PI controller
+                    // can correct source-clock drift independently of pipeline lag.
                     const bool allowLiveDriftCompensation =
-                        canUseLiveDriftCompensation && (!isWgcCfrRecording || allowWgcSteadyStateDriftCompensation);
+                        canUseLiveDriftCompensation &&
+                        (!isWgcCfrRecording || allowWgcSteadyStateDriftCompensation ||
+                         (trackStartupSettled && static_cast<int64_t>(rbAvailable) >= kMinCompensationBufferSamples));
                     if (allowLiveDriftCompensation) {
                         if ((int64_t)rbAvailable >= kMinCompensationBufferSamples) {
                             int64_t rbError = (int64_t)rbAvailable - targetLatencySamples;

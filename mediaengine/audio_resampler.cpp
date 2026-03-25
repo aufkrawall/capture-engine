@@ -377,9 +377,12 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
     // the configured correction ceiling, reach that ceiling much faster. This keeps
     // persistent steady-state source-clock lead from growing for tens of seconds
     // while still preserving the same maximum pitch correction limit.
-    const bool aggressiveRiseNeeded = std::abs(targetDelta) >= ((maxDelta * 3) / 4);
-    const int32_t maxRise = aggressiveRiseNeeded ? 40 : 10;
-    const int32_t maxFall = 40;
+    // Aggressive thresholds scale with the compensation budget so larger budgets
+    // (e.g. WGC CFR encoder bottleneck at 5%) converge in reasonable time.
+    const int32_t quarterBudget = (maxDelta * 1) / 4;
+    const bool aggressiveRiseNeeded = std::abs(targetDelta) >= quarterBudget;
+    const int32_t maxRise = aggressiveRiseNeeded ? std::max<int32_t>(80, maxDelta / 4) : 20;
+    const int32_t maxFall = std::max<int32_t>(80, maxDelta / 4);
 
     if (currentDelta < targetDelta) {
         currentDelta += maxRise;
