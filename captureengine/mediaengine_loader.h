@@ -22,6 +22,7 @@ typedef bool (*MediaEngine_ProcessFrame_t)(uint64_t textureHandle, uint64_t fenc
                                            uint32_t width, uint32_t height, uint32_t format, bool isHDR, bool isShmem,
                                            int shmemSlot);
 typedef bool (*MediaEngine_RepeatLastFrame_t)(int64_t timestamp);
+typedef bool (*MediaEngine_RepeatLastFrameWithTimeline_t)(int64_t timestamp, int64_t timelineElapsedUs);
 typedef bool (*MediaEngine_ProcessFrameD3D11_t)(void* texture, int64_t timestamp, uint32_t width, uint32_t height,
                                                 bool isHDR, int32_t captureLeft, int32_t captureTop,
                                                 int64_t timelineElapsedUs);
@@ -48,6 +49,7 @@ extern MediaEngine_Init_t MediaEngine_Init;
 extern MediaEngine_ReloadConfig_t MediaEngine_ReloadConfig;
 extern MediaEngine_ProcessFrame_t MediaEngine_ProcessFrame;
 extern MediaEngine_RepeatLastFrame_t MediaEngine_RepeatLastFrame;
+extern MediaEngine_RepeatLastFrameWithTimeline_t MediaEngine_RepeatLastFrameWithTimeline;
 extern MediaEngine_ProcessFrameD3D11_t MediaEngine_ProcessFrameD3D11;
 extern MediaEngine_StartRecording_t MediaEngine_StartRecording;
 extern MediaEngine_StopRecording_t MediaEngine_StopRecording;

@@ -664,9 +664,21 @@ public:
             // the audio thread so the final drain and flush both target the exact
             // encoded video length.
             if (videoEnc) {
-                int64_t durationUs = videoEnc->GetExpectedFinalDurationUs();
-                if (durationUs <= 0)
-                    durationUs = videoEnc->GetEncodedDurationUs();
+                int64_t expectedDurationUs = videoEnc->GetExpectedFinalDurationUs();
+                int64_t encodedDurationUs = videoEnc->GetEncodedDurationUs();
+                int64_t durationUs = expectedDurationUs > 0 ? expectedDurationUs : encodedDurationUs;
+                if (IsWgcCfrRecording()) {
+                    const int64_t wallDurationUs =
+                        std::max<int64_t>(d3d11TimelineState.lastElapsedUs, videoElapsedMs.load() * 1000);
+                    if (durationUs <= 0) {
+                        durationUs = wallDurationUs;
+                    }
+
+                    DLL_Log(
+                        "MediaEngine: WGC stop durations. Expected: %lld us, Encoded: %lld us, Wall: %lld us, "
+                        "Selected: %lld us",
+                        expectedDurationUs, encodedDurationUs, wallDurationUs, durationUs);
+                }
                 endUs = durationUs;
 
                 DLL_Log(
@@ -841,6 +853,10 @@ public:
     }
 
     bool RepeatLastFrame(int64_t timestampQPC) {
+        return RepeatLastFrame(timestampQPC, -1);
+    }
+
+    bool RepeatLastFrame(int64_t timestampQPC, int64_t timelineElapsedUs) {
         std::lock_guard<std::recursive_mutex> lock(muxMutex);
         if (!videoEnc || !recording || firstVideoFrameMs == 0) {
             return false;
@@ -850,11 +866,14 @@ public:
         const int64_t steadyElapsedUs =
             std::chrono::duration_cast<std::chrono::microseconds>(now - this->recordingStartTime).count();
 
+        const bool wgcCfrRecording = IsWgcCfrRecording();
         int64_t realElapsedUs = steadyElapsedUs;
         if (config.video.useVFR) {
             realElapsedUs = ComputeSourceDrivenElapsedUs(qpcFreq, timestampQPC, steadyElapsedUs, injectTimelineState);
+        } else if (wgcCfrRecording) {
+            realElapsedUs = ResolveCfrTimelineElapsedUs(steadyElapsedUs, timelineElapsedUs, d3d11TimelineState.lastElapsedUs);
         } else {
-            realElapsedUs = ResolveCfrTimelineElapsedUs(steadyElapsedUs, -1, injectTimelineState.lastElapsedUs);
+            realElapsedUs = ResolveCfrTimelineElapsedUs(steadyElapsedUs, timelineElapsedUs, injectTimelineState.lastElapsedUs);
         }
 
         bool res = videoEnc->RepeatLastFrame(realElapsedUs);
@@ -863,7 +882,8 @@ public:
         }
 
         const int64_t committedElapsedUs = GetCommittedVideoElapsedUs(realElapsedUs);
-        CommitVideoElapsedUs(injectTimelineState, committedElapsedUs);
+        CommitVideoElapsedUs(wgcCfrRecording ? d3d11TimelineState : injectTimelineState,
+                             wgcCfrRecording ? realElapsedUs : committedElapsedUs);
         for (size_t i = 0; i < audioSources.size(); i++) {
             auto& src = audioSources[i];
             int idx = videoEnc->GetAudioStreamIndex(src.track);
@@ -2252,6 +2272,14 @@ MEDIAENGINE_API bool MediaEngine_RepeatLastFrame(int64_t timestamp) {
     std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
     if (g_Engine) {
         return g_Engine->RepeatLastFrame(timestamp);
+    }
+    return false;
+}
+
+MEDIAENGINE_API bool MediaEngine_RepeatLastFrameWithTimeline(int64_t timestamp, int64_t timelineElapsedUs) {
+    std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
+    if (g_Engine) {
+        return g_Engine->RepeatLastFrame(timestamp, timelineElapsedUs);
     }
     return false;
 }

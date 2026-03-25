@@ -37,6 +37,9 @@ static std::atomic<bool> g_Running{true};
 static std::atomic<bool> g_Recording{false};
 static std::atomic<bool> g_EncoderRunning{false};
 static std::atomic<bool> g_IsEncoderBottlenecked{false};
+static std::atomic<bool> g_RecordingUsesVfr{false};
+static std::atomic<bool> g_DrainOutstandingWgcTicks{false};
+static std::atomic<int64_t> g_WgcDrainStopQpc{0};
 
 BOOL WINAPI MediaConsoleHandler(DWORD ctrlType) {
     // Handle all console events including Windows shutdown/logoff
@@ -1620,13 +1623,21 @@ void EncoderThreadFunc(const AppConfig& config) {
             liveTicksScheduled = 0;
             return 0u;
         }
+        int64_t scheduledUntilQpc = nowQpc;
+        if (!g_Recording.load(std::memory_order_acquire)) {
+            const int64_t drainStopQpc = g_WgcDrainStopQpc.load(std::memory_order_acquire);
+            if (drainStopQpc > liveStartQpc.QuadPart) {
+                scheduledUntilQpc = drainStopQpc;
+            }
+        }
         const uint64_t elapsedTicks =
-            static_cast<uint64_t>(nowQpc - liveStartQpc.QuadPart) / static_cast<uint64_t>(targetIntervalTicks);
+            static_cast<uint64_t>(scheduledUntilQpc - liveStartQpc.QuadPart) / static_cast<uint64_t>(targetIntervalTicks);
         liveTicksScheduled =
             ce::capture_policy::GetAdjustedCfrScheduledTicks(elapsedTicks, liveTicksDiscardedByTimerRebase);
         return ce::capture_policy::GetCfrOutputShortfallTicks(liveTicksScheduled, liveTicksOutput);
     };
-    while (g_EncoderRunning || g_FrameQueue.Size() > 0 || !bufferedWgcFrames.empty() || !bufferedInjectFrames.empty()) {
+    while (g_EncoderRunning || g_DrainOutstandingWgcTicks.load(std::memory_order_acquire) || g_FrameQueue.Size() > 0 ||
+           !bufferedWgcFrames.empty() || !bufferedInjectFrames.empty()) {
         LARGE_INTEGER cycleStartQpc;
         // NOTE: cycleStartQpc is set after timer sleep below to measure
         // encode processing time, not the full loop including sleep.
@@ -1697,6 +1708,21 @@ void EncoderThreadFunc(const AppConfig& config) {
             QueryPerformanceCounter(&shortfallNow);
             outputShortfallTicks = updateLiveCfrShortfall(shortfallNow.QuadPart);
         }
+        if (!g_Recording.load(std::memory_order_acquire) && recordingOutputLive &&
+            g_DrainOutstandingWgcTicks.load(std::memory_order_acquire)) {
+            const bool canDrainOutstandingTicks = g_HasLastFrame || !bufferedWgcFrames.empty();
+            if (outputShortfallTicks == 0 || !canDrainOutstandingTicks) {
+                if (outputShortfallTicks == 0) {
+                    LogInfo("[EncoderThread] WGC stop drain complete: scheduled=%llu output=%llu",
+                            static_cast<unsigned long long>(liveTicksScheduled),
+                            static_cast<unsigned long long>(liveTicksOutput));
+                } else {
+                    LogWarn("[EncoderThread] WGC stop drain aborted: no frame available for outstanding shortfall=%u",
+                            outputShortfallTicks);
+                }
+                g_DrainOutstandingWgcTicks.store(false, std::memory_order_release);
+            }
+        }
 
         const bool activeScreenGrab = IsActiveScreenGrab();
         const bool frameAvailableForCatchup =
@@ -1723,77 +1749,85 @@ void EncoderThreadFunc(const AppConfig& config) {
         int64_t scheduledSampleQpc = 0;
         int64_t encoderLateQpc = 0;
         uint32_t encoderLateTickCount = 0;
-        if (g_EncoderRunning) {
+        bool drainingOutstandingLiveTicks =
+            !g_EncoderRunning && g_DrainOutstandingWgcTicks.load(std::memory_order_acquire) && recordingOutputLive &&
+            !config.video.useVFR;
+        if (g_EncoderRunning || drainingOutstandingLiveTicks) {
             scheduledSampleQpc = nextSampleTime.QuadPart;
             LARGE_INTEGER now;
             QueryPerformanceCounter(&now);
-            int64_t waitTicks = nextSampleTime.QuadPart - now.QuadPart;
-            if (waitTicks > 0) {
-                WaitUntilQpcTarget(hTimer, scheduledSampleQpc, qpcFreq.QuadPart);
-            }
-
-            QueryPerformanceCounter(&now);
-            cycleStartQpc = now;  // Start measuring encode processing after timer sleep
-            if (!config.video.useVFR && targetIntervalTicks > 0 && now.QuadPart > scheduledSampleQpc) {
-                encoderLateQpc = now.QuadPart - scheduledSampleQpc;
-                const uint64_t lateTicks =
-                    static_cast<uint64_t>(encoderLateQpc) / static_cast<uint64_t>(targetIntervalTicks);
-                encoderLateTickCount = SaturatingToUint32(lateTicks);
-            }
-
-            nextSampleTime.QuadPart += targetIntervalTicks;
-
-            // Periodically resync the encoder grid to wall clock time to
-            // prevent systematic drift when encoder ticks are consistently
-            // longer than the target interval.  Without this, the selection
-            // target grows increasingly out of sync with actual frame times.
-            if (recordingOutputLive && encoderGridStartQpc > 0 && targetIntervalTicks > 0 && liveTicksOutput > 0 &&
-                (liveTicksOutput % 60 == 0)) {
-                LARGE_INTEGER resyncNow;
-                QueryPerformanceCounter(&resyncNow);
-                const int64_t idealGridStart =
-                    resyncNow.QuadPart - static_cast<int64_t>(liveTicksOutput) * targetIntervalTicks;
-                const int64_t driftTicks = (idealGridStart - encoderGridStartQpc) / targetIntervalTicks;
-                if (driftTicks >= 2 || driftTicks <= -2) {
-                    encoderGridStartQpc = idealGridStart;
+            if (g_EncoderRunning) {
+                int64_t waitTicks = nextSampleTime.QuadPart - now.QuadPart;
+                if (waitTicks > 0) {
+                    WaitUntilQpcTarget(hTimer, scheduledSampleQpc, qpcFreq.QuadPart);
                 }
-            }
 
-            // Hidden warmup can rebase freely because those frames are discarded.
-            // Once recording is live, skip ahead when significantly late to prevent
-            // linear accumulation of encoder timer drift.  The buffered WGC frames
-            // provide continuity — the output PTS gap is filled from the frame pool.
-            if (!recordingOutputLive && now.QuadPart > nextSampleTime.QuadPart + targetIntervalTicks * 2) {
-                nextSampleTime = now;
-            } else if (recordingOutputLive && encoderLateTickCount >= 2) {
-                static uint32_t s_lateTickLogCount = 0;
-                s_lateTickLogCount++;
-                if (g_pSharedMem) {
-                    g_pSharedMem->runtimeState.timerRebases.fetch_add(1, std::memory_order_relaxed);
+                QueryPerformanceCounter(&now);
+                cycleStartQpc = now;  // Start measuring encode processing after timer sleep
+                if (!config.video.useVFR && targetIntervalTicks > 0 && now.QuadPart > scheduledSampleQpc) {
+                    encoderLateQpc = now.QuadPart - scheduledSampleQpc;
+                    const uint64_t lateTicks =
+                        static_cast<uint64_t>(encoderLateQpc) / static_cast<uint64_t>(targetIntervalTicks);
+                    encoderLateTickCount = SaturatingToUint32(lateTicks);
                 }
-                int64_t overshootTicks = (encoderLateQpc + targetIntervalTicks - 1) / targetIntervalTicks;
-                const int64_t overshootUs = (encoderLateQpc * 1000000) / qpcFreq.QuadPart;
-                uint32_t droppedShortfallTicks = 0;
-                const bool discardTimerDebt = ce::capture_policy::ShouldDiscardCfrTimerRebaseDebt(activeScreenGrab);
-                if (discardTimerDebt && liveStartQpc.QuadPart > 0 && now.QuadPart > liveStartQpc.QuadPart) {
-                    const uint64_t elapsedTicks = static_cast<uint64_t>(now.QuadPart - liveStartQpc.QuadPart) /
-                                                  static_cast<uint64_t>(targetIntervalTicks);
-                    droppedShortfallTicks = ce::capture_policy::GetCfrTimerRebaseDiscardTicks(
-                        elapsedTicks, liveTicksDiscardedByTimerRebase, liveTicksOutput);
+
+                nextSampleTime.QuadPart += targetIntervalTicks;
+
+                // Periodically resync the encoder grid to wall clock time to
+                // prevent systematic drift when encoder ticks are consistently
+                // longer than the target interval.  Without this, the selection
+                // target grows increasingly out of sync with actual frame times.
+                if (recordingOutputLive && encoderGridStartQpc > 0 && targetIntervalTicks > 0 && liveTicksOutput > 0 &&
+                    (liveTicksOutput % 60 == 0)) {
+                    LARGE_INTEGER resyncNow;
+                    QueryPerformanceCounter(&resyncNow);
+                    const int64_t idealGridStart =
+                        resyncNow.QuadPart - static_cast<int64_t>(liveTicksOutput) * targetIntervalTicks;
+                    const int64_t driftTicks = (idealGridStart - encoderGridStartQpc) / targetIntervalTicks;
+                    if (driftTicks >= 2 || driftTicks <= -2) {
+                        encoderGridStartQpc = idealGridStart;
+                    }
                 }
-                liveTicksDiscardedByTimerRebase += droppedShortfallTicks;
-                outputShortfallTicks = updateLiveCfrShortfall(now.QuadPart);
-                recomputeCatchupPolicy();
-                if (s_lateTickLogCount <= 10 || s_lateTickLogCount % 60 == 0) {
-                    LogInfo(
-                        "[EncoderThread] Timer skip-ahead: late by %lld ticks (%lld us), rebasing "
-                        "(count=%u, dropShortfall=%u, discardTotal=%llu, preserveShortfall=%u)",
-                        (long long)overshootTicks, (long long)overshootUs, s_lateTickLogCount, droppedShortfallTicks,
-                        static_cast<unsigned long long>(liveTicksDiscardedByTimerRebase), discardTimerDebt ? 0u : 1u);
+
+                // Hidden warmup can rebase freely because those frames are discarded.
+                // Once recording is live, skip ahead when significantly late to prevent
+                // linear accumulation of encoder timer drift.  The buffered WGC frames
+                // provide continuity — the output PTS gap is filled from the frame pool.
+                if (!recordingOutputLive && now.QuadPart > nextSampleTime.QuadPart + targetIntervalTicks * 2) {
+                    nextSampleTime = now;
+                } else if (recordingOutputLive && encoderLateTickCount >= 2) {
+                    static uint32_t s_lateTickLogCount = 0;
+                    s_lateTickLogCount++;
+                    if (g_pSharedMem) {
+                        g_pSharedMem->runtimeState.timerRebases.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    int64_t overshootTicks = (encoderLateQpc + targetIntervalTicks - 1) / targetIntervalTicks;
+                    const int64_t overshootUs = (encoderLateQpc * 1000000) / qpcFreq.QuadPart;
+                    uint32_t droppedShortfallTicks = 0;
+                    const bool discardTimerDebt = ce::capture_policy::ShouldDiscardCfrTimerRebaseDebt(activeScreenGrab);
+                    if (discardTimerDebt && liveStartQpc.QuadPart > 0 && now.QuadPart > liveStartQpc.QuadPart) {
+                        const uint64_t elapsedTicks = static_cast<uint64_t>(now.QuadPart - liveStartQpc.QuadPart) /
+                                                      static_cast<uint64_t>(targetIntervalTicks);
+                        droppedShortfallTicks = ce::capture_policy::GetCfrTimerRebaseDiscardTicks(
+                            elapsedTicks, liveTicksDiscardedByTimerRebase, liveTicksOutput);
+                    }
+                    liveTicksDiscardedByTimerRebase += droppedShortfallTicks;
+                    outputShortfallTicks = updateLiveCfrShortfall(now.QuadPart);
+                    recomputeCatchupPolicy();
+                    if (s_lateTickLogCount <= 10 || s_lateTickLogCount % 60 == 0) {
+                        LogInfo(
+                            "[EncoderThread] Timer skip-ahead: late by %lld ticks (%lld us), rebasing "
+                            "(count=%u, dropShortfall=%u, discardTotal=%llu, preserveShortfall=%u)",
+                            (long long)overshootTicks, (long long)overshootUs, s_lateTickLogCount, droppedShortfallTicks,
+                            static_cast<unsigned long long>(liveTicksDiscardedByTimerRebase), discardTimerDebt ? 0u : 1u);
+                    }
+                    // Reset nextSampleTime to current time + 1 tick interval
+                    // so the timer wakes on time from now on.
+                    nextSampleTime.QuadPart = now.QuadPart + targetIntervalTicks;
                 }
-                // Reset nextSampleTime to current time + 1 tick interval
-                // so the timer wakes on time from now on.
-                nextSampleTime.QuadPart = now.QuadPart + targetIntervalTicks;
+            } else {
+                cycleStartQpc = now;
+                nextSampleTime.QuadPart += targetIntervalTicks;
             }
         }
 
@@ -2442,6 +2476,15 @@ void EncoderThreadFunc(const AppConfig& config) {
         }
 
         const bool useScreenGrab = IsActiveScreenGrab();
+        const bool hasRepeatLastFramePath =
+            !config.video.useVFR &&
+            ((useScreenGrab && MediaEngine_RepeatLastFrameWithTimeline) || MediaEngine_RepeatLastFrame);
+        auto repeatLastFrameForScheduledQpc = [&](int64_t scheduledQpc) {
+            if (useScreenGrab && !config.video.useVFR && MediaEngine_RepeatLastFrameWithTimeline) {
+                return MediaEngine_RepeatLastFrameWithTimeline(scheduledQpc, computeLiveTimelineElapsedUs(scheduledQpc));
+            }
+            return MediaEngine_RepeatLastFrame && MediaEngine_RepeatLastFrame(scheduledQpc);
+        };
         const bool warmupCaptureModeChanged = ce::capture_policy::ResetWarmupOnCaptureModeChange(
             recordingOutputLive, useScreenGrab, GetTickCount64(), warmupState);
         if (warmupCaptureModeChanged || !useScreenGrab) {
@@ -2672,7 +2715,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 frameToProcess = &g_LastFrame;
             }
         } else if (g_HasLastFrame && g_EncoderRunning && g_Recording) {
-            if (!config.video.useVFR && MediaEngine_RepeatLastFrame) {
+            if (hasRepeatLastFramePath) {
                 wantsTrueRepeatLastFrame = true;
                 isDuplicate = true;
             } else {
@@ -2684,13 +2727,24 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
         }
 
-        if (!g_EncoderRunning && !popped) {
+        const bool refreshedDrainOutstandingLiveTicks =
+            !g_EncoderRunning && g_DrainOutstandingWgcTicks.load(std::memory_order_acquire) && recordingOutputLive &&
+            !config.video.useVFR;
+        if (!popped && !drainingOutstandingLiveTicks && refreshedDrainOutstandingLiveTicks) {
+            LogInfo("[EncoderThread] WGC stop drain picked up mid-cycle");
+            continue;
+        }
+        drainingOutstandingLiveTicks = refreshedDrainOutstandingLiveTicks;
+
+        if (!g_EncoderRunning && !popped && !drainingOutstandingLiveTicks) {
             break;
         }
 
-        const bool consumesCfrTick = !config.video.useVFR && g_EncoderRunning && g_Recording;
+        const bool consumesCfrTick =
+            !config.video.useVFR && ((g_EncoderRunning && g_Recording) || drainingOutstandingLiveTicks);
         const bool isDrainPhase = !g_Recording.load(std::memory_order_acquire);
-        const bool isLivePhase = recordingOutputLive && !isDrainPhase;
+        const bool isLivePhase = recordingOutputLive && (g_Recording.load(std::memory_order_acquire) ||
+                                                         drainingOutstandingLiveTicks);
         const bool scheduledLiveCfrTick = consumesCfrTick && isLivePhase;
         if (scheduledLiveCfrTick) {
             encoderGridTickCount = selectionGridTick;
@@ -2944,14 +2998,14 @@ void EncoderThreadFunc(const AppConfig& config) {
                     break;
                 }
 
-                if (!MediaEngine_RepeatLastFrame) {
+                if (!hasRepeatLastFramePath) {
                     cadenceCounters.liveTickMissCount++;
                     break;
                 }
 
                 LARGE_INTEGER repeatStartEnc, repeatEndEnc;
                 QueryPerformanceCounter(&repeatStartEnc);
-                bool repeatSucceeded = MediaEngine_RepeatLastFrame(repeatScheduledQpc);
+                bool repeatSucceeded = repeatLastFrameForScheduledQpc(repeatScheduledQpc);
                 bool repeatDeferred = MediaEngine_WasLastFrameDeferred && MediaEngine_WasLastFrameDeferred();
                 QueryPerformanceCounter(&repeatEndEnc);
                 if (!repeatSucceeded || repeatDeferred) {
@@ -2990,15 +3044,15 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
         };
 
-        if ((!frameToProcess || wantsTrueRepeatLastFrame) && scheduledLiveCfrTick && MediaEngine_RepeatLastFrame) {
+        if ((!frameToProcess || wantsTrueRepeatLastFrame) && scheduledLiveCfrTick && hasRepeatLastFramePath) {
             LARGE_INTEGER repeatStartEnc, repeatEndEnc;
             QueryPerformanceCounter(&repeatStartEnc);
-            const bool duplicateFromDrain = false;
+            const bool duplicateFromDrain = isDrainPhase;
             bool duplicateFromDeferred = false;
             const bool duplicateFromTimerRebase = encoderLateTickCount >= 2;
             const InjectFrameLineage duplicateLineage =
                 g_HasLastFrame ? MakeInjectFrameLineage(g_LastFrame) : InjectFrameLineage{};
-            bool encodeSucceeded = MediaEngine_RepeatLastFrame(scheduledSampleQpc);
+            bool encodeSucceeded = repeatLastFrameForScheduledQpc(scheduledSampleQpc);
             bool encodeDeferred = MediaEngine_WasLastFrameDeferred && MediaEngine_WasLastFrameDeferred();
             QueryPerformanceCounter(&repeatEndEnc);
 
@@ -3168,10 +3222,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                         s_lastDeferredLogTick = nowTick;
                     }
 
-                    if (consumesCfrTick && isLivePhase && MediaEngine_RepeatLastFrame) {
+                    if (consumesCfrTick && isLivePhase && hasRepeatLastFramePath) {
                         isDuplicate = true;
                         duplicateFromDeferred = true;
-                        encodeSucceeded = MediaEngine_RepeatLastFrame(scheduledSampleQpc);
+                        encodeSucceeded = repeatLastFrameForScheduledQpc(scheduledSampleQpc);
                         encodeDeferred = MediaEngine_WasLastFrameDeferred && MediaEngine_WasLastFrameDeferred();
                         if (!encodeSucceeded || encodeDeferred) {
                             if (scheduledLiveCfrTick) {
@@ -3639,6 +3693,9 @@ void StartRecording(const AppConfig& config) {
 
     g_Recording = true;
     g_EncoderRunning = true;
+    g_RecordingUsesVfr.store(config.video.useVFR, std::memory_order_release);
+    g_DrainOutstandingWgcTicks.store(false, std::memory_order_release);
+    g_WgcDrainStopQpc.store(0, std::memory_order_release);
 
     g_EncoderThread = std::thread(EncoderThreadFunc, std::ref(config));
     SetThreadPriority(reinterpret_cast<HANDLE>(g_EncoderThread.native_handle()), THREAD_PRIORITY_HIGHEST);
@@ -3677,20 +3734,37 @@ void StopRecording() {
 
     LogInfo("[Media] Stopping recording...");
 
+    LARGE_INTEGER stopQpc = {};
+    const bool drainOutstandingWgcTicks =
+        IsActiveScreenGrab() && !g_RecordingUsesVfr.load(std::memory_order_acquire);
+    if (drainOutstandingWgcTicks) {
+        QueryPerformanceCounter(&stopQpc);
+    }
+
     g_Recording = false;
     SetCaptureRequestedState(false);
     SetRecordingVisibleState(false);
     SetCapturePipelinePhase(CapturePipelinePhase::kStopping);
+    g_WgcDrainStopQpc.store(stopQpc.QuadPart, std::memory_order_release);
+    g_DrainOutstandingWgcTicks.store(drainOutstandingWgcTicks, std::memory_order_release);
+    if (drainOutstandingWgcTicks) {
+        LogInfo("[Media] WGC stop drain armed at qpc=%lld", static_cast<long long>(stopQpc.QuadPart));
+        // Enter drain mode before blocking on WGC shutdown so outstanding live
+        // CFR debt can start draining immediately against the frozen stop QPC.
+        g_EncoderRunning = false;
+    }
 
     StopWgcCapturePipeline();
     StopInjectCapturePipeline();
 
-    g_EncoderRunning = false;
+    if (!drainOutstandingWgcTicks) {
+        g_EncoderRunning = false;
+    }
     g_InjectDeliveredFirstFrame.store(false, std::memory_order_release);
     g_RejectInjectFrames.store(false, std::memory_order_release);
     g_AutoWgcFallbackArmed.store(false, std::memory_order_release);
 
-    JoinThreadWithTimeout(g_EncoderThread, 10000, "encoder");
+    JoinThreadWithTimeout(g_EncoderThread, 60000, "encoder");
 
     g_FrameQueue.Clear();
     ResetLastQueuedFrameCache();
@@ -3721,6 +3795,9 @@ void StopRecording() {
         g_pSharedMem->throttleCapture.store(false, std::memory_order_release);
     }
 
+    g_DrainOutstandingWgcTicks.store(false, std::memory_order_release);
+    g_WgcDrainStopQpc.store(0, std::memory_order_release);
+    g_RecordingUsesVfr.store(false, std::memory_order_release);
     SetActiveScreenGrab(false);
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
 
