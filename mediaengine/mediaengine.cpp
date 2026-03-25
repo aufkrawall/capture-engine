@@ -1020,6 +1020,8 @@ public:
         constexpr int64_t kMinCompensationBufferSamples = kBaseTargetLatencySamples / 4;
         constexpr int64_t kWgcCfrLeadWarningSamples = SAMPLE_RATE / 5;  // 200ms
         constexpr bool kWgcPreferVideoRepeatsOverAudioCuts = true;
+        constexpr double kDefaultMaxCompensationPercent = 1.0;
+        constexpr double kWgcCoverageLossMaxCompensationPercent = 1.25;
         constexpr int64_t kWgcCoverageLossLeadSlackSamples = SAMPLE_RATE / 25;  // 40ms above target
         constexpr int64_t kWgcCoverageLossMaxDropPerCall =
             ce::audio::kDefaultAudioPullQuantumSamples;  // 5ms paced overload trim quantum
@@ -1260,6 +1262,10 @@ public:
 
                 const int64_t targetLatencySamples = targetBufferedSamples;
                 if (src.bootstrapComplete && src.syncResampler && src.syncResampler->IsReady()) {
+                    const double maxCompensationPercent =
+                        (isWgcCfrRecording && wgcCoverageLossActive) ? kWgcCoverageLossMaxCompensationPercent
+                                                                     : kDefaultMaxCompensationPercent;
+                    src.syncResampler->SetMaxCompensationPercent(maxCompensationPercent);
                     size_t rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
                     const bool allowWgcSteadyStateDriftCompensation =
                         isWgcCfrRecording &&

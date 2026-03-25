@@ -339,10 +339,10 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
     // 1. Integral Term
     integralError += smoothedDrift;
 
-    // Anti-Windup: Clamp Integral term
-    // Max correction +/- 1% speed to prevent audible pitch shifts.
-    // In 10 seconds, 1% is 0.01 * 48000 * 10 = 4800 samples
-    const double MAX_INTEGRAL_CORRECTION = (outFmt.sampleRate * COMPENSATION_PERIOD_SEC) * 0.01;
+    // Anti-Windup: Clamp Integral term to the configured maximum correction
+    // budget so drift recovery stays bounded and pitch-safe.
+    const double MAX_INTEGRAL_CORRECTION =
+        (outFmt.sampleRate * COMPENSATION_PERIOD_SEC) * (maxCompensationPercent_ / 100.0);
     if (integralError * activeKi > MAX_INTEGRAL_CORRECTION)
         integralError = MAX_INTEGRAL_CORRECTION / activeKi;
     if (integralError * activeKi < -MAX_INTEGRAL_CORRECTION)
@@ -355,8 +355,8 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
     targetDelta = (int32_t)correction;
 
     // 3. Absolute Safety Limits
-    // +/- 1% of total period samples to prevent audible pitch shifts
-    maxDelta = (outFmt.sampleRate * COMPENSATION_PERIOD_SEC) / 100;
+    // Clamp to the configured total-period correction budget.
+    maxDelta = GetMaxCompensationDelta();
 
     // Log extreme correction (Logic Debug)
     targetSaturated_ = std::abs(targetDelta) > maxDelta;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -120,8 +121,16 @@ public:
         return currentDelta;
     }
 
+    void SetMaxCompensationPercent(double percent) {
+        maxCompensationPercent_ = std::clamp(percent, 0.1, 2.0);
+    }
+
     int32_t GetMaxCompensationDelta() const {
-        return outFmt.sampleRate > 0 ? (outFmt.sampleRate * COMPENSATION_PERIOD_SEC) / 100 : 0;
+        return outFmt.sampleRate > 0
+                   ? static_cast<int32_t>((outFmt.sampleRate * COMPENSATION_PERIOD_SEC * maxCompensationPercent_) /
+                                          100.0 +
+                                          0.5)
+                   : 0;
     }
 
     double GetCurrentCompensationPercent() const {
@@ -179,6 +188,7 @@ private:
 
     // Rate limiting updates
     int64_t lastCompensationTimeMs = 0;
+    double maxCompensationPercent_ = 1.0;
 
     // Per-instance log counters (avoid static race conditions)
     int largeSkipCounter_ = 0;
