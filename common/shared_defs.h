@@ -373,6 +373,7 @@ struct alignas(8) CaptureState {
     std::atomic<uint32_t> wgcBufferedAtTickMin{0};
     std::atomic<uint32_t> wgcStarvedTickCount{0};
     std::atomic<uint32_t> wgcSingleFrameTickCount{0};
+    std::atomic<uint32_t> encoderBottlenecked{0};  // 1 when encoder can't sustain target FPS
 
     // Command flags (controller -> media process via shared memory)
     // Using std::atomic for proper cross-process visibility and memory ordering

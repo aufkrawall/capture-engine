@@ -44,13 +44,22 @@ inline int64_t ComputeWgcBufferedVideoContentLagMs(uint32_t oldestBufferedFrameA
 }
 
 inline bool HasWgcUnrecoverableCoverageLoss(uint32_t targetFps, int64_t videoPipelineLagMs,
-                                            int64_t bufferedVideoContentLagMs, int64_t minPipelineLagMs = 250,
+                                            int64_t bufferedVideoContentLagMs, bool encoderBottlenecked = false,
+                                            uint32_t wgcDeliveredFps = 0, int64_t minPipelineLagMs = 250,
                                             int64_t minLagMismatchMs = 120) {
     if (targetFps == 0) {
         return false;
     }
 
     if (videoPipelineLagMs < minPipelineLagMs) {
+        return false;
+    }
+
+    // When the encoder is bottlenecked but WGC is delivering frames at or near
+    // the target rate, the pipeline lag is caused by encoder slowness rather
+    // than actual frame loss.  Suppress coverage loss detection to prevent
+    // false-positive audio trimming.
+    if (encoderBottlenecked && wgcDeliveredFps > 0 && wgcDeliveredFps + 2 >= targetFps) {
         return false;
     }
 

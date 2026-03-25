@@ -101,17 +101,26 @@ constexpr double kBottleneckEnterRatio = 0.95;  // smoothedEncodeMs > 95% of fra
 constexpr double kBottleneckExitRatio = 0.75;   // smoothedEncodeMs < 75% of frame interval → exit
 
 // Update g_IsEncoderBottlenecked with hysteresis to prevent rapid toggling.
+// Also publishes the state to shared memory so the MediaEngine audio sync
+// logic can distinguish encoder lag from WGC frame loss.
 inline void UpdateEncoderBottleneckFlag(double smoothedEncodeMs, double frameIntervalMs) {
     const bool currentlyBottlenecked = g_IsEncoderBottlenecked.load(std::memory_order_relaxed);
+    bool newState = currentlyBottlenecked;
     if (currentlyBottlenecked) {
         // Exit bottleneck only when encode time drops well below the frame budget
         if (smoothedEncodeMs < frameIntervalMs * kBottleneckExitRatio) {
-            g_IsEncoderBottlenecked.store(false, std::memory_order_relaxed);
+            newState = false;
         }
     } else {
         // Enter bottleneck when encode time approaches the frame budget
         if (smoothedEncodeMs > frameIntervalMs * kBottleneckEnterRatio) {
-            g_IsEncoderBottlenecked.store(true, std::memory_order_relaxed);
+            newState = true;
+        }
+    }
+    if (newState != currentlyBottlenecked) {
+        g_IsEncoderBottlenecked.store(newState, std::memory_order_relaxed);
+        if (g_pSharedMem) {
+            g_pSharedMem->runtimeState.encoderBottlenecked.store(newState ? 1u : 0u, std::memory_order_relaxed);
         }
     }
 }
@@ -250,6 +259,7 @@ void ResetRuntimeDiagnostics(SharedMemoryLayout* sharedMem) {
     state.wgcBufferedAtTickMin.store(0, std::memory_order_relaxed);
     state.wgcStarvedTickCount.store(0, std::memory_order_relaxed);
     state.wgcSingleFrameTickCount.store(0, std::memory_order_relaxed);
+    state.encoderBottlenecked.store(0, std::memory_order_relaxed);
 }
 
 bool IsActiveScreenGrab() {

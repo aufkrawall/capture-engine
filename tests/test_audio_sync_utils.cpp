@@ -178,3 +178,34 @@ TEST(AudioSyncUtilsTest, PacketTimelineAdjustmentClampsNegativePacketStarts) {
     EXPECT_EQ(adjustment.gapSamples, 0);
     EXPECT_EQ(adjustment.overlapSamples, 0);
 }
+
+// --- Encoder bottleneck gating tests ---
+
+TEST(AudioSyncUtilsTest, CoverageLossSuppressedWhenEncoderBottleneckedAndWgcDeliveringFrames) {
+    // Encoder bottlenecked but WGC delivers at target rate → NOT coverage loss
+    EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(120, 500, 0, true, 120));
+    EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(120, 500, 0, true, 119));
+    // Within +2 tolerance
+    EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(120, 500, 0, true, 118));
+}
+
+TEST(AudioSyncUtilsTest, CoverageLossNotSuppressedWhenEncoderBottleneckedButWgcUnderdelivering) {
+    // Encoder bottlenecked AND WGC delivers well below target → real coverage loss
+    EXPECT_TRUE(ce::audio::HasWgcUnrecoverableCoverageLoss(120, 500, 0, true, 100));
+    EXPECT_TRUE(ce::audio::HasWgcUnrecoverableCoverageLoss(120, 500, 0, true, 0));
+}
+
+TEST(AudioSyncUtilsTest, CoverageLossNotSuppressedWhenNotBottlenecked) {
+    // Not bottlenecked, high lag → coverage loss detected as before
+    EXPECT_TRUE(ce::audio::HasWgcUnrecoverableCoverageLoss(120, 500, 0, false, 120));
+    EXPECT_TRUE(ce::audio::HasWgcUnrecoverableCoverageLoss(120, 500, 0, false, 0));
+}
+
+TEST(AudioSyncUtilsTest, CoverageLossDefaultParamsBackwardCompatible) {
+    // Default params (encoderBottlenecked=false, wgcDeliveredFps=0) behave as before
+    EXPECT_TRUE(ce::audio::HasWgcUnrecoverableCoverageLoss(120, 16034, 12));
+    EXPECT_TRUE(ce::audio::HasWgcUnrecoverableCoverageLoss(120, 76837, 0));
+    EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(0, 16034, 12));
+    EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(120, 200, 12));
+    EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(120, 300, 220));
+}

@@ -1021,7 +1021,8 @@ public:
         constexpr int64_t kWgcCfrLeadWarningSamples = SAMPLE_RATE / 5;  // 200ms
         constexpr bool kWgcPreferVideoRepeatsOverAudioCuts = true;
         constexpr double kDefaultMaxCompensationPercent = 1.0;
-        constexpr double kWgcCoverageLossMaxCompensationPercent = 1.25;
+        constexpr double kWgcEncoderBottleneckMaxCompensationPercent = 2.0;
+        constexpr double kWgcCoverageLossMaxCompensationPercent = 2.0;
         constexpr int64_t kWgcCoverageLossLeadSlackSamples = SAMPLE_RATE / 25;  // 40ms above target
         constexpr int64_t kWgcCoverageLossMaxDropPerCall =
             ce::audio::kDefaultAudioPullQuantumSamples;  // 5ms paced overload trim quantum
@@ -1051,16 +1052,19 @@ public:
         int64_t wgcBufferedVideoContentLagMs = 0;
         bool wgcCoverageLossActive = false;
         uint32_t wgcOverloadFlags = 0u;
+        bool wgcEncoderBottlenecked = false;
         if (isWgcCfrRecording && sharedMemLayout) {
             const auto& runtimeState = sharedMemLayout->runtimeState;
             wgcOverloadFlags = runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
+            wgcEncoderBottlenecked = runtimeState.encoderBottlenecked.load(std::memory_order_relaxed) != 0;
             const uint32_t telemetryTargetFps = runtimeState.wgcTargetFps.load(std::memory_order_relaxed);
             wgcTargetFps = telemetryTargetFps > 0 ? telemetryTargetFps : wgcTargetFps;
             wgcDeliveredFps = runtimeState.wgcDeliveredFramesPerSec.load(std::memory_order_relaxed);
             wgcBufferedVideoContentLagMs = ce::audio::ComputeWgcBufferedVideoContentLagMs(
                 runtimeState.oldestBufferedFrameAgeUs.load(std::memory_order_relaxed));
             wgcCoverageLossActive = ce::audio::HasWgcUnrecoverableCoverageLoss(
-                wgcTargetFps, videoPipelineLagMs, wgcBufferedVideoContentLagMs);
+                wgcTargetFps, videoPipelineLagMs, wgcBufferedVideoContentLagMs, wgcEncoderBottlenecked,
+                wgcDeliveredFps);
         }
         const auto wgcAudioLagTargets = ce::audio::ComputeWgcAudioLagTargets(
             videoPipelineLagMs, wgcBufferedVideoContentLagMs, isWgcCfrRecording && wgcCoverageLossActive,
@@ -1263,8 +1267,9 @@ public:
                 const int64_t targetLatencySamples = targetBufferedSamples;
                 if (src.bootstrapComplete && src.syncResampler && src.syncResampler->IsReady()) {
                     const double maxCompensationPercent =
-                        (isWgcCfrRecording && wgcCoverageLossActive) ? kWgcCoverageLossMaxCompensationPercent
-                                                                     : kDefaultMaxCompensationPercent;
+                        (isWgcCfrRecording && wgcCoverageLossActive)    ? kWgcCoverageLossMaxCompensationPercent
+                        : (isWgcCfrRecording && wgcEncoderBottlenecked) ? kWgcEncoderBottleneckMaxCompensationPercent
+                                                                        : kDefaultMaxCompensationPercent;
                     src.syncResampler->SetMaxCompensationPercent(maxCompensationPercent);
                     size_t rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
                     const bool allowWgcSteadyStateDriftCompensation =
@@ -1380,14 +1385,15 @@ public:
                                                                  : 0.0;
                         DLL_Log(allowWgcSteadyStateDriftCompensation
                                     ? "[PullAudio] WGC CFR lead warning: src %d ahead by %lld samples (target=%lld, "
-                                      "pipelineLag=%lldms). Steady-state drift correction is active "
-                                      "(corr=%d/%d per 10s, %.3f%%, sat=%d)%s"
+                                      "pipelineLag=%lldms, encBottleneck=%d). Steady-state drift correction is active "
+                                      "(corr=%d/%d per 10s, %.3f%%, sat=%d, maxBudget=%.1f%%)%s"
                                     : "[PullAudio] WGC CFR lead warning: src %d ahead by %lld samples (target=%lld, "
-                                      "pipelineLag=%lldms). Live trimming disabled to preserve pitch; inspect encoder "
-                                      "throughput or source clock drift.",
+                                      "pipelineLag=%lldms, encBottleneck=%d). Live trimming disabled to preserve pitch; "
+                                      "inspect encoder throughput or source clock drift.",
                                 (int)srcIdx, (int64_t)rbAvailable - targetLatencySamples, targetLatencySamples,
-                                videoPipelineLagMs, currentCompensationDelta, maxCompensationDelta,
-                                currentCompensationPercent, targetCompensationSaturated ? 1 : 0,
+                                videoPipelineLagMs, wgcEncoderBottlenecked ? 1 : 0, currentCompensationDelta,
+                                maxCompensationDelta, currentCompensationPercent, targetCompensationSaturated ? 1 : 0,
+                                maxCompensationPercent,
                                 targetCompensationSaturated
                                      ? " - source clock mismatch exceeds the current pitch-safe correction budget"
                                      : "");
@@ -1843,12 +1849,14 @@ public:
                 DLL_Log(
                     "[A/V SYNC CHECK] Track %d: Video=%lld ms, Audio=%lld ms, "
                     "Drift=%lld ms, DriftAdj=%lld ms, Pull=%lld ms, VideoWall=%lld ms, PipelineLag=%lld ms, "
-                    "ContentLag=%lld ms, CovMode=%d, Delivered=%u/%u, Over=0x%x, TargetBuf=%lld ms, Overflow=%llu, "
+                    "ContentLag=%lld ms, CovMode=%d, EncBottleneck=%d, Delivered=%u/%u, Over=0x%x, "
+                    "TargetBuf=%lld ms, Overflow=%llu, "
                     "RetainTrim=%llu, CoverageTrim=%llu, LatencyTrim=%llu, PostTrim=%llu, Pad=%llu, QpcGap=%llu, "
                     "QpcOverlap=%llu, Sources=%s",
                     track, videoMs, audioMs, avDrift, latencyAdjustedAvDrift, trackAudioPullLatencyMs, wallVideoMs,
                     pipelineLagMs, isWgcCfrRecording ? wgcBufferedVideoContentLagMs : pipelineLagMs,
-                    wgcCoverageLossActive ? 1 : 0, wgcDeliveredFps, wgcTargetFps, wgcOverloadFlags,
+                    wgcCoverageLossActive ? 1 : 0, wgcEncoderBottlenecked ? 1 : 0, wgcDeliveredFps, wgcTargetFps,
+                    wgcOverloadFlags,
                     (targetBufferedSamples * 1000) / SAMPLE_RATE, (unsigned long long)overflowDropped,
                     (unsigned long long)retainedTrimmed, (unsigned long long)coverageLossTrimmed,
                     (unsigned long long)latencyTrimmed, (unsigned long long)postTrimmed,
