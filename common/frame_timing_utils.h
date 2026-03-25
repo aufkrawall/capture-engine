@@ -124,6 +124,17 @@ inline int64_t ResolveCfrTimelineElapsedUs(int64_t steadyElapsedUs, int64_t expl
     return std::max(candidateElapsedUs, lastElapsedUs);
 }
 
+inline int64_t ResolveAuthoritativeCfrTimelineElapsedUs(int64_t steadyElapsedUs, int64_t explicitTimelineElapsedUs,
+                                                        int64_t lastElapsedUs) {
+    if (explicitTimelineElapsedUs >= 0) {
+        return explicitTimelineElapsedUs;
+    }
+    if (lastElapsedUs > 0) {
+        return lastElapsedUs;
+    }
+    return std::max<int64_t>(steadyElapsedUs, 0);
+}
+
 inline bool ShouldHoldFrameForNextTick(int64_t frameTimestampQpc, int64_t idealQpc, int64_t targetIntervalTicks,
                                        int64_t holdSlackQpc) {
     if (frameTimestampQpc <= 0 || idealQpc <= 0 || targetIntervalTicks <= 0) {

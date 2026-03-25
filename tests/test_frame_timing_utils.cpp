@@ -244,6 +244,18 @@ TEST(FrameTimingUtilsTest, ResolveCfrTimelineElapsedUsStaysMonotonicWhenOverride
     EXPECT_EQ(ResolveCfrTimelineElapsedUs(120000, 90000, 100000), 100000);
 }
 
+TEST(FrameTimingUtilsTest, ResolveAuthoritativeCfrTimelineElapsedUsTrustsExplicitTimelineOverInflatedHistory) {
+    EXPECT_EQ(ResolveAuthoritativeCfrTimelineElapsedUs(120000, 100000, 140000), 100000);
+}
+
+TEST(FrameTimingUtilsTest, ResolveAuthoritativeCfrTimelineElapsedUsReusesPriorTimelineWhenOverrideMissing) {
+    EXPECT_EQ(ResolveAuthoritativeCfrTimelineElapsedUs(140000, -1, 100000), 100000);
+}
+
+TEST(FrameTimingUtilsTest, ResolveAuthoritativeCfrTimelineElapsedUsFallsBackToSteadyClockOnFirstFrame) {
+    EXPECT_EQ(ResolveAuthoritativeCfrTimelineElapsedUs(120000, -1, 0), 120000);
+}
+
 TEST(FrameTimingUtilsTest, SelectFrameClosestToGridUsesPreviousGridTickPhase) {
     std::deque<QueuedFrame> frames;
 

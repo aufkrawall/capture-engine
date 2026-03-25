@@ -871,7 +871,8 @@ public:
         if (config.video.useVFR) {
             realElapsedUs = ComputeSourceDrivenElapsedUs(qpcFreq, timestampQPC, steadyElapsedUs, injectTimelineState);
         } else if (wgcCfrRecording) {
-            realElapsedUs = ResolveCfrTimelineElapsedUs(steadyElapsedUs, timelineElapsedUs, d3d11TimelineState.lastElapsedUs);
+            realElapsedUs =
+                ResolveAuthoritativeCfrTimelineElapsedUs(steadyElapsedUs, timelineElapsedUs, d3d11TimelineState.lastElapsedUs);
         } else {
             realElapsedUs = ResolveCfrTimelineElapsedUs(steadyElapsedUs, timelineElapsedUs, injectTimelineState.lastElapsedUs);
         }
@@ -943,8 +944,8 @@ public:
             // grid, so prefer the sample-clock timeline instead.  Catch-up paths can
             // provide an explicit CFR slot time so buffered fresh frames land on the
             // intended output grid instead of collapsing onto the current wall-clock.
-            realElapsedUs =
-                ResolveCfrTimelineElapsedUs(steadyElapsedUs, timelineElapsedUs, d3d11TimelineState.lastElapsedUs);
+            realElapsedUs = ResolveAuthoritativeCfrTimelineElapsedUs(steadyElapsedUs, timelineElapsedUs,
+                                                                     d3d11TimelineState.lastElapsedUs);
         }
         if (!videoEnc->EncodeFrameD3D11((ID3D11Texture2D*)texture, realElapsedUs, width, height, isHDR, captureLeft,
                                         captureTop)) {
