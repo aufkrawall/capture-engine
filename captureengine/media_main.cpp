@@ -1703,6 +1703,7 @@ void EncoderThreadFunc(const AppConfig& config) {
         }
 
         uint32_t outputShortfallTicks = 0;
+        const bool activeScreenGrab = IsActiveScreenGrab();
         if (!config.video.useVFR && recordingOutputLive) {
             LARGE_INTEGER shortfallNow;
             QueryPerformanceCounter(&shortfallNow);
@@ -1710,21 +1711,39 @@ void EncoderThreadFunc(const AppConfig& config) {
         }
         if (!g_Recording.load(std::memory_order_acquire) && recordingOutputLive &&
             g_DrainOutstandingWgcTicks.load(std::memory_order_acquire)) {
-            const bool canDrainOutstandingTicks = g_HasLastFrame || !bufferedWgcFrames.empty();
+            const bool mediaEngineCanRepeatLastFrame =
+                activeScreenGrab && MediaEngine_CanRepeatLastFrame && MediaEngine_CanRepeatLastFrame();
+            const bool canDrainOutstandingTicks = ce::capture_policy::CanDrainOutstandingWgcTicks(
+                g_FrameQueue.Size() > 0, !bufferedWgcFrames.empty(), g_HasLastFrame, mediaEngineCanRepeatLastFrame);
+            static uint64_t s_lastStopDrainProgressLogTick = 0;
+            const uint64_t nowTick = GetTickCount64();
+            if (outputShortfallTicks > 0 && nowTick - s_lastStopDrainProgressLogTick >= 5000) {
+                LogInfo(
+                    "[EncoderThread] WGC stop drain progress: shortfall=%u/%.1fms queue=%u buffered=%zu hostLast=%d "
+                    "cachedRepeat=%d",
+                    outputShortfallTicks, ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs),
+                    static_cast<unsigned>(g_FrameQueue.Size()), bufferedWgcFrames.size(), g_HasLastFrame ? 1 : 0,
+                    mediaEngineCanRepeatLastFrame ? 1 : 0);
+                s_lastStopDrainProgressLogTick = nowTick;
+            }
             if (outputShortfallTicks == 0 || !canDrainOutstandingTicks) {
                 if (outputShortfallTicks == 0) {
                     LogInfo("[EncoderThread] WGC stop drain complete: scheduled=%llu output=%llu",
                             static_cast<unsigned long long>(liveTicksScheduled),
                             static_cast<unsigned long long>(liveTicksOutput));
                 } else {
-                    LogWarn("[EncoderThread] WGC stop drain aborted: no frame available for outstanding shortfall=%u",
-                            outputShortfallTicks);
+                    LogWarn(
+                        "[EncoderThread] WGC stop drain aborted: no frame available for outstanding shortfall=%u/%.1fms "
+                        "(queue=%u buffered=%zu hostLast=%d cachedRepeat=%d)",
+                        outputShortfallTicks, ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs),
+                        static_cast<unsigned>(g_FrameQueue.Size()), bufferedWgcFrames.size(), g_HasLastFrame ? 1 : 0,
+                        mediaEngineCanRepeatLastFrame ? 1 : 0);
                 }
+                s_lastStopDrainProgressLogTick = 0;
                 g_DrainOutstandingWgcTicks.store(false, std::memory_order_release);
             }
         }
 
-        const bool activeScreenGrab = IsActiveScreenGrab();
         const bool frameAvailableForCatchup =
             activeScreenGrab ? (!bufferedWgcFrames.empty()) : (!bufferedInjectFrames.empty());
         bool shouldCatchUpToWallClock = false;

@@ -303,6 +303,11 @@ public:
         return false;
     }
 
+    bool CanRepeatLastFrame() {
+        std::lock_guard<std::recursive_mutex> lock(muxMutex);
+        return videoEnc && recording && firstVideoFrameMs != 0 && videoEnc->CanRepeatLastFrame();
+    }
+
     void ReleaseEncoderTextures() {
         std::lock_guard<std::recursive_mutex> lock(muxMutex);
         if (videoEnc) {
@@ -1038,19 +1043,18 @@ public:
             isWgcCfrRecording ? static_cast<uint32_t>(config.video.fps > 0 ? config.video.fps : 1) : 0u;
         uint32_t wgcDeliveredFps = 0u;
         int64_t wgcBufferedVideoContentLagMs = 0;
-        bool wgcEncoderOverloaded = false;
         bool wgcCoverageLossActive = false;
+        uint32_t wgcOverloadFlags = 0u;
         if (isWgcCfrRecording && sharedMemLayout) {
             const auto& runtimeState = sharedMemLayout->runtimeState;
-            const uint32_t overloadFlags = runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
+            wgcOverloadFlags = runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
             const uint32_t telemetryTargetFps = runtimeState.wgcTargetFps.load(std::memory_order_relaxed);
             wgcTargetFps = telemetryTargetFps > 0 ? telemetryTargetFps : wgcTargetFps;
             wgcDeliveredFps = runtimeState.wgcDeliveredFramesPerSec.load(std::memory_order_relaxed);
             wgcBufferedVideoContentLagMs = ce::audio::ComputeWgcBufferedVideoContentLagMs(
                 runtimeState.oldestBufferedFrameAgeUs.load(std::memory_order_relaxed));
-            wgcEncoderOverloaded = (overloadFlags & 0x1u) != 0u;
             wgcCoverageLossActive = ce::audio::HasWgcUnrecoverableCoverageLoss(
-                wgcEncoderOverloaded, wgcDeliveredFps, wgcTargetFps, videoPipelineLagMs, wgcBufferedVideoContentLagMs);
+                wgcDeliveredFps, wgcTargetFps, videoPipelineLagMs, wgcBufferedVideoContentLagMs);
         }
         const int64_t effectiveWgcVideoLagMs =
             (isWgcCfrRecording && wgcCoverageLossActive) ? wgcBufferedVideoContentLagMs : videoPipelineLagMs;
@@ -1799,10 +1803,12 @@ public:
                 DLL_Log(
                     "[A/V SYNC CHECK] Track %d: Video=%lld ms, Audio=%lld ms, "
                     "Drift=%lld ms, DriftAdj=%lld ms, Pull=%lld ms, VideoWall=%lld ms, PipelineLag=%lld ms, "
-                    "ContentLag=%lld ms, TargetBuf=%lld ms, Overflow=%llu, RetainTrim=%llu, CoverageTrim=%llu, "
-                    "LatencyTrim=%llu, PostTrim=%llu, Pad=%llu, QpcGap=%llu, QpcOverlap=%llu, Sources=%s",
+                    "ContentLag=%lld ms, CovMode=%d, Delivered=%u/%u, Over=0x%x, TargetBuf=%lld ms, Overflow=%llu, "
+                    "RetainTrim=%llu, CoverageTrim=%llu, LatencyTrim=%llu, PostTrim=%llu, Pad=%llu, QpcGap=%llu, "
+                    "QpcOverlap=%llu, Sources=%s",
                     track, videoMs, audioMs, avDrift, latencyAdjustedAvDrift, trackAudioPullLatencyMs, wallVideoMs,
                     pipelineLagMs, isWgcCfrRecording ? wgcBufferedVideoContentLagMs : pipelineLagMs,
+                    wgcCoverageLossActive ? 1 : 0, wgcDeliveredFps, wgcTargetFps, wgcOverloadFlags,
                     (targetBufferedSamples * 1000) / SAMPLE_RATE, (unsigned long long)overflowDropped,
                     (unsigned long long)retainedTrimmed, (unsigned long long)coverageLossTrimmed,
                     (unsigned long long)latencyTrimmed, (unsigned long long)postTrimmed,
@@ -2384,6 +2390,14 @@ MEDIAENGINE_API bool MediaEngine_RepeatLastFrameWithTimeline(int64_t timestamp, 
     std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
     if (g_Engine) {
         return g_Engine->RepeatLastFrame(timestamp, timelineElapsedUs);
+    }
+    return false;
+}
+
+MEDIAENGINE_API bool MediaEngine_CanRepeatLastFrame() {
+    std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
+    if (g_Engine) {
+        return g_Engine->CanRepeatLastFrame();
     }
     return false;
 }

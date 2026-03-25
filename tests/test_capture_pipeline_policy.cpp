@@ -30,6 +30,14 @@ TEST(CapturePipelinePolicyTest, InjectReserveFramesScaleWithFenceLeadTime) {
     EXPECT_EQ(policy::GetInjectReserveFrames(true, 19.0, 8.0), 0u);
 }
 
+TEST(CapturePipelinePolicyTest, WgcStopDrainAcceptsAnyRepeatableFrameSource) {
+    EXPECT_TRUE(policy::CanDrainOutstandingWgcTicks(false, false, true, false));
+    EXPECT_TRUE(policy::CanDrainOutstandingWgcTicks(false, false, false, true));
+    EXPECT_TRUE(policy::CanDrainOutstandingWgcTicks(true, false, false, false));
+    EXPECT_TRUE(policy::CanDrainOutstandingWgcTicks(false, true, false, false));
+    EXPECT_FALSE(policy::CanDrainOutstandingWgcTicks(false, false, false, false));
+}
+
 TEST(CapturePipelinePolicyTest, WarmupKeepCountAndMinimumBufferedFramesFollowReserve) {
     EXPECT_EQ(policy::GetWarmupInjectKeepCount(0.0, 8.333), 3u);
     EXPECT_EQ(policy::GetWarmupInjectKeepCount(19.0, 8.0), 5u);

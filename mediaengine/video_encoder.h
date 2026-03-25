@@ -77,6 +77,7 @@ public:
     int64_t GetEncodedDurationUs() const;      // Get exact duration of encoded video in microseconds
     int64_t GetLastFrameEncodeTimeUs() const;  // Get duration of last frame encoding (excluding wait)
     int64_t GetLastFrameFenceWaitUs() const;   // Get duration of last fence wait (GPU wait)
+    bool CanRepeatLastFrame() const;
     bool WasLastFrameDeferred() const;
 
     int AddAudioStream(const AudioConfig& config, AVCodecContext* audioCtx = nullptr, int track = -1);

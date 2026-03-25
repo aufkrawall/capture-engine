@@ -57,11 +57,12 @@ TEST(AudioSyncUtilsTest, WgcSteadyStateDriftCompensationRequiresHealthyLargeLead
 }
 
 TEST(AudioSyncUtilsTest, WgcCoverageLossDetectionRequiresTrueLagMismatch) {
-    EXPECT_TRUE(ce::audio::HasWgcUnrecoverableCoverageLoss(true, 114, 120, 16034, 12));
-    EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(false, 114, 120, 16034, 12));
-    EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(true, 120, 120, 16034, 12));
-    EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(true, 114, 120, 200, 12));
-    EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(true, 114, 120, 300, 220));
+    EXPECT_TRUE(ce::audio::HasWgcUnrecoverableCoverageLoss(114, 120, 16034, 12));
+    EXPECT_TRUE(ce::audio::HasWgcUnrecoverableCoverageLoss(108, 120, 76837, 0));
+    EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(120, 120, 16034, 12));
+    EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(114, 120, 200, 12));
+    EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(114, 120, 300, 220));
+    EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(0, 120, 16034, 12));
 }
 
 TEST(AudioSyncUtilsTest, WgcCoverageLossRatioTracksDeliveredFpsDeficit) {

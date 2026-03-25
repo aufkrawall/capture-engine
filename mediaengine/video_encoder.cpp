@@ -6235,6 +6235,10 @@ int64_t VideoEncoder::GetLastFrameFenceWaitUs() const {
     return lastFenceWaitUs;
 }
 
+bool VideoEncoder::CanRepeatLastFrame() const {
+    return recordingRequested && repeatFrameTexture != nullptr;
+}
+
 bool VideoEncoder::WasLastFrameDeferred() const {
     return lastFrameDeferred.load(std::memory_order_relaxed);
 }

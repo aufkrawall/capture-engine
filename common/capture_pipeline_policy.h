@@ -71,6 +71,11 @@ inline bool ShouldCfrCatchUpToWallClock(uint32_t outputShortfallTicks, bool useS
     return useScreenGrab ? (frameAvailable || hasLastFrame) : frameAvailable;
 }
 
+inline bool CanDrainOutstandingWgcTicks(bool queuedWgcFrameAvailable, bool bufferedWgcFrameAvailable, bool hasLastFrame,
+                                        bool mediaEngineCanRepeatLastFrame) {
+    return queuedWgcFrameAvailable || bufferedWgcFrameAvailable || hasLastFrame || mediaEngineCanRepeatLastFrame;
+}
+
 // Returns the maximum number of output ticks to emit in a single encoder loop
 // iteration when catching up.  The value includes the main tick itself, so
 // "2" means 1 main + 1 extra repeat.  Generic CFR stays conservative below the
