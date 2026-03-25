@@ -81,8 +81,9 @@ inline int64_t ComputeWgcCoverageLossTrimSamples(int64_t samplesToEncode, double
         return 0;
     }
 
-    trimAccumulator -= static_cast<double>(desiredDropSamples);
-    return std::clamp<int64_t>(desiredDropSamples, 0, maxDropPerCall);
+    const int64_t appliedDropSamples = std::clamp<int64_t>(desiredDropSamples, 0, maxDropPerCall);
+    trimAccumulator -= static_cast<double>(appliedDropSamples);
+    return appliedDropSamples;
 }
 
 inline int64_t ComputeBufferedAudioTargetSamples(int sampleRate, int64_t baseLatencySamples, int64_t videoPipelineLagMs,

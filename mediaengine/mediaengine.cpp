@@ -1018,8 +1018,10 @@ public:
         constexpr int64_t kRuntimeDropFadeSamples = SAMPLE_RATE / 200;  // 5ms
         constexpr int64_t kMinCompensationBufferSamples = kBaseTargetLatencySamples / 4;
         constexpr int64_t kWgcCfrLeadWarningSamples = SAMPLE_RATE / 5;  // 200ms
+        constexpr bool kWgcPreferVideoRepeatsOverAudioCuts = true;
         constexpr int64_t kWgcCoverageLossLeadSlackSamples = SAMPLE_RATE / 25;  // 40ms above target
-        constexpr int64_t kWgcCoverageLossMaxDropPerCall = SAMPLE_RATE / 1000;  // 1ms paced overload trim
+        constexpr int64_t kWgcCoverageLossMaxDropPerCall =
+            ce::audio::kDefaultAudioPullQuantumSamples;  // 5ms paced overload trim quantum
 
         const bool isWgcCfrRecording = IsWgcCfrRecording();
         const int64_t wallVideoMs = this->videoElapsedMs.load();
@@ -1255,7 +1257,7 @@ public:
                             trackStartupSettled, effectiveWgcVideoLagMs, static_cast<int64_t>(rbAvailable),
                             targetLatencySamples, kWgcCfrLeadWarningSamples);
                     const bool allowWgcCoverageLossTrim =
-                        isWgcCfrRecording && wgcCoverageLossActive &&
+                        isWgcCfrRecording && wgcCoverageLossActive && !kWgcPreferVideoRepeatsOverAudioCuts &&
                         static_cast<int64_t>(rbAvailable) > targetLatencySamples + kWgcCoverageLossLeadSlackSamples;
                     if (!allowWgcCoverageLossTrim) {
                         src.wgcCoverageLossTrimAccumulator = 0.0;
@@ -1301,6 +1303,18 @@ public:
                             }
                             rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
                         }
+                    } else if (isWgcCfrRecording && wgcCoverageLossActive && kWgcPreferVideoRepeatsOverAudioCuts &&
+                               static_cast<int64_t>(rbAvailable) > targetLatencySamples + kWgcCoverageLossLeadSlackSamples &&
+                               dropLogCounter++ % 500 == 0) {
+                        DLL_Log(
+                            "[PullAudio] WGC coverage loss active: preserving audio continuity and expecting host video "
+                            "repeats to absorb mismatch (src=%d ahead=%lld target=%lld slack=%lld pipelineLag=%lldms "
+                            "contentLag=%lldms delivered=%u/%u fps ratio=%.3f%%)",
+                            (int)srcIdx, static_cast<int64_t>(rbAvailable) - targetLatencySamples, targetLatencySamples,
+                            kWgcCoverageLossLeadSlackSamples, videoPipelineLagMs, wgcBufferedVideoContentLagMs,
+                            wgcDeliveredFps, wgcTargetFps,
+                            ce::audio::ComputeWgcCoverageLossRatio(videoPipelineLagMs, wgcBufferedVideoContentLagMs) *
+                                100.0);
                     } else if (!isWgcCfrRecording &&
                                (int64_t)rbAvailable > targetLatencySamples + kRuntimeMaxLeadSamples) {
                         int64_t dropSamplesTotal =

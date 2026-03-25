@@ -84,6 +84,13 @@ TEST(AudioSyncUtilsTest, WgcCoverageLossTrimSamplesUsesFractionalAccumulatorAndC
 
     accumulator = 0.0;
     EXPECT_EQ(ce::audio::ComputeWgcCoverageLossTrimSamples(240, 0.50, accumulator, 24), 24);
+    EXPECT_NEAR(accumulator, 96.0, 0.000001);
+    EXPECT_EQ(ce::audio::ComputeWgcCoverageLossTrimSamples(240, 0.0, accumulator, 24), 0);
+    EXPECT_NEAR(accumulator, 96.0, 0.000001);
+
+    accumulator = 0.0;
+    EXPECT_EQ(ce::audio::ComputeWgcCoverageLossTrimSamples(960, 0.25, accumulator, 240), 240);
+    EXPECT_NEAR(accumulator, 0.0, 0.000001);
 }
 
 TEST(AudioSyncUtilsTest, WgcBufferedVideoContentLagUsesSharedTelemetryAge) {

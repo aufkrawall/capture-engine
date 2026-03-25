@@ -38,6 +38,24 @@ TEST(CapturePipelinePolicyTest, WgcStopDrainAcceptsAnyRepeatableFrameSource) {
     EXPECT_FALSE(policy::CanDrainOutstandingWgcTicks(false, false, false, false));
 }
 
+TEST(CapturePipelinePolicyTest, WgcCoverageLossRepeatPolicyRequiresLagMismatch) {
+    EXPECT_TRUE(policy::HasWgcUnrecoverableCoverageLoss(6333.0, 23.0));
+    EXPECT_FALSE(policy::HasWgcUnrecoverableCoverageLoss(200.0, 0.0));
+    EXPECT_FALSE(policy::HasWgcUnrecoverableCoverageLoss(300.0, 220.0));
+
+    EXPECT_DOUBLE_EQ(policy::ComputeWgcCoverageLossRepeatRatio(0.0, 0.0), 0.0);
+    EXPECT_DOUBLE_EQ(policy::ComputeWgcCoverageLossRepeatRatio(300.0, 220.0), 0.0);
+    EXPECT_NEAR(policy::ComputeWgcCoverageLossRepeatRatio(500.0, 100.0), 0.186666, 0.000001);
+    EXPECT_NEAR(policy::ComputeWgcCoverageLossRepeatRatio(2000.0, 0.0), 0.35, 0.000001);
+    EXPECT_NEAR(policy::ComputeWgcCoverageLossRepeatRatio(16034.0, 12.0), 0.35, 0.000001);
+
+    EXPECT_EQ(policy::GetWgcCoverageDelayTicks(0, 0.0, 8.333), 0u);
+    EXPECT_EQ(policy::GetWgcCoverageDelayTicks(30, 220.0, 8.333), 0u);
+    EXPECT_EQ(policy::GetWgcCoverageDelayTicks(31, 0.0, 8.333), 31u);
+    EXPECT_EQ(policy::GetWgcCoverageDelayTicks(60, 0.0, 8.333), policy::kWgcCoverageDelayMaxTicks);
+    EXPECT_EQ(policy::GetWgcCoverageDelayTicks(31, 100.0, 8.333), 19u);
+}
+
 TEST(CapturePipelinePolicyTest, WarmupKeepCountAndMinimumBufferedFramesFollowReserve) {
     EXPECT_EQ(policy::GetWarmupInjectKeepCount(0.0, 8.333), 3u);
     EXPECT_EQ(policy::GetWarmupInjectKeepCount(19.0, 8.0), 5u);

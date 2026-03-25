@@ -29,6 +29,7 @@ constexpr uint32_t kWgcReserveFragileBiasPermille = 375;
 constexpr uint32_t kWgcSingleFreshHoldInputPermille = 995;
 constexpr uint32_t kWgcSteadyReserveBuildInputPermille = 995;
 constexpr uint32_t kWgcSelectionDelayTicks = 1;
+constexpr uint32_t kWgcCoverageDelayMaxTicks = 32;
 constexpr uint32_t kCfrShortfallCatchupThresholdTicks = 2;
 constexpr uint32_t kCfrShortfallForceCatchupThresholdTicks = 18;
 
@@ -145,6 +146,51 @@ inline double GetCfrShortfallDurationMs(uint32_t outputShortfallTicks, double fr
     }
 
     return static_cast<double>(outputShortfallTicks) * frameIntervalMs;
+}
+
+inline bool HasWgcUnrecoverableCoverageLoss(double shortfallDurationMs, double oldestBufferedFrameAgeMs,
+                                            double minPipelineLagMs = 250.0, double minLagMismatchMs = 120.0) {
+    if (shortfallDurationMs < minPipelineLagMs) {
+        return false;
+    }
+
+    const double clampedBufferedAgeMs = std::max(0.0, oldestBufferedFrameAgeMs);
+    return shortfallDurationMs > clampedBufferedAgeMs + minLagMismatchMs;
+}
+
+inline double ComputeWgcCoverageLossRepeatRatio(double shortfallDurationMs, double oldestBufferedFrameAgeMs,
+                                                double fullRepeatMismatchMs = 1500.0,
+                                                double minLagMismatchMs = 120.0) {
+    if (fullRepeatMismatchMs <= 0.0) {
+        return 0.0;
+    }
+
+    const double mismatchMs = std::max(0.0, shortfallDurationMs - std::max(0.0, oldestBufferedFrameAgeMs));
+    const double effectiveMismatchMs = std::max(0.0, mismatchMs - std::max(0.0, minLagMismatchMs));
+    if (effectiveMismatchMs <= 0.0) {
+        return 0.0;
+    }
+
+    return std::clamp(effectiveMismatchMs / fullRepeatMismatchMs, 0.0, 0.35);
+}
+
+inline uint32_t GetWgcCoverageDelayTicks(uint32_t outputShortfallTicks, double oldestBufferedFrameAgeMs,
+                                         double frameIntervalMs,
+                                         uint32_t maxDelayTicks = kWgcCoverageDelayMaxTicks) {
+    if (outputShortfallTicks == 0 || frameIntervalMs <= 0.0 || maxDelayTicks == 0) {
+        return 0;
+    }
+
+    const double shortfallDurationMs = GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs);
+    if (!HasWgcUnrecoverableCoverageLoss(shortfallDurationMs, oldestBufferedFrameAgeMs)) {
+        return 0;
+    }
+
+    const uint32_t bufferedAgeTicks = static_cast<uint32_t>(
+        std::clamp(oldestBufferedFrameAgeMs / frameIntervalMs, 0.0, static_cast<double>(outputShortfallTicks)));
+    const uint32_t desiredDelayTicks =
+        outputShortfallTicks > bufferedAgeTicks ? (outputShortfallTicks - bufferedAgeTicks) : 0u;
+    return std::min(desiredDelayTicks, maxDelayTicks);
 }
 
 inline double GetEncoderSustainableOutputFps(double encodeMs) {
