@@ -1019,7 +1019,7 @@ public:
         constexpr int64_t kPrimedSourceCushionSamples = SAMPLE_RATE / 50;  // 20ms
         constexpr int64_t kBootstrapHoldLimitMs = 500;
         constexpr int64_t kBaseTargetLatencySamples = 960;
-        constexpr int64_t kMaxPipelineLagContributionMs = 40;
+        constexpr int64_t kMaxPipelineLagContributionMs = 10000;
         constexpr int64_t kWgcCoverageLossMaxBufferedLagMs = 300;
         constexpr int64_t kRuntimeMaxLeadSamples = SAMPLE_RATE / 10;    // 100ms above target
         constexpr int64_t kRuntimeMaxDropPerCall = SAMPLE_RATE / 200;   // 5ms
@@ -1374,13 +1374,14 @@ public:
                             }
                             rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
                         }
-                    } else if (isWgcCfrRecording &&
-                               (int64_t)rbAvailable > targetLatencySamples + kWgcCfrLeadWarningSamples) {
+                    } else if (isWgcCfrRecording) {
+                        const int64_t expectedLeadSamplesForCap = kBaseTargetLatencySamples + (effectiveWgcDriftLagMs * SAMPLE_RATE / 1000);
+                        if (static_cast<int64_t>(rbAvailable) > expectedLeadSamplesForCap + kWgcCfrLeadWarningSamples) {
                         // WGC CFR lead is large.  Log diagnostics and do paced trimming
                         // to prevent unbounded lead growth when the PI controller can't
                         // keep up with source-clock drift.
                         constexpr int64_t kWgcLeadHardCapSamples = SAMPLE_RATE / 2;  // 500ms hard cap
-                        const int64_t leadExcess = static_cast<int64_t>(rbAvailable) - targetLatencySamples;
+                        const int64_t leadExcess = static_cast<int64_t>(rbAvailable) - expectedLeadSamplesForCap;
 
                         if (dropLogCounter++ % 500 == 0) {
                             const bool targetCompensationSaturated =
@@ -1403,10 +1404,10 @@ public:
                                     ? "[PullAudio] WGC CFR lead warning: src %d ahead by %lld samples (target=%lld, "
                                       "pipelineLag=%lldms, encBottleneck=%d). Steady-state drift correction is active "
                                       "(corr=%d/%d per 10s, %.3f%%, sat=%d, maxBudget=%.1f%%)%s"
-                                    : "[PullAudio] WGC CFR lead warning: src %d ahead by %lld samples (target=%lld, "
+                                    : "[PullAudio] WGC CFR lead warning: src %d ahead by %lld samples (expected=%lld, "
                                       "pipelineLag=%lldms, encBottleneck=%d). Drift compensation now active; "
                                       "capping lead at %lld samples.",
-                                (int)srcIdx, leadExcess, targetLatencySamples, videoPipelineLagMs,
+                                (int)srcIdx, leadExcess, expectedLeadSamplesForCap, videoPipelineLagMs,
                                 wgcEncoderBottlenecked ? 1 : 0, currentCompensationDelta, maxCompensationDelta,
                                 currentCompensationPercent, targetCompensationSaturated ? 1 : 0,
                                 maxCompensationPercent,
@@ -1453,52 +1454,44 @@ public:
                                 rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
                             }
                         }
+                        }
                     }
                     if (isWgcCfrRecording) {
+                        const int64_t expectedLeadForMax = kBaseTargetLatencySamples + (effectiveWgcDriftLagMs * SAMPLE_RATE / 1000);
                         const int64_t audioLeadExcessSamples =
-                            std::max<int64_t>(0, static_cast<int64_t>(rbAvailable) - targetLatencySamples);
+                            std::max<int64_t>(0, static_cast<int64_t>(rbAvailable) - expectedLeadForMax);
                         maxWgcAudioLeadExcessSamples = std::max<uint32_t>(
                             maxWgcAudioLeadExcessSamples,
                             static_cast<uint32_t>(std::min<int64_t>(audioLeadExcessSamples, INT32_MAX)));
                     }
 
-                    // Rate-based drift correction: measure how fast the lead is
-                    // changing and apply a correction proportional to the rate.
+                    // Drift correction: compute true drift (accounting for expected pipeline lag)
+                    // and apply a proportional pitch correction to gradually erase it.
                     {
                         const int64_t rbLevel = static_cast<int64_t>(rbAvailable);
                         if (rbLevel >= kMinCompensationBufferSamples) {
-                            const int64_t currentLead = rbLevel - targetLatencySamples;
+                            const int64_t expectedLead = kBaseTargetLatencySamples + (effectiveWgcDriftLagMs * SAMPLE_RATE / 1000);
+                            const int64_t trueDrift = rbLevel - expectedLead;
                             const int64_t nowVideoMs =
                                 (src.syncSamplesOutput * 1000) / SAMPLE_RATE;
 
                             if (src.lastRateUpdateMs <= 0) {
-                                // First call: seed baseline only
-                                src.prevLeadSamples = currentLead;
-                                src.prevLeadSnapshotMs = nowVideoMs;
                                 src.lastRateUpdateMs = nowVideoMs;
                             } else {
-                                const int64_t snapshotElapsed =
-                                    nowVideoMs - src.prevLeadSnapshotMs;
+                                const int64_t updateElapsed = nowVideoMs - src.lastRateUpdateMs;
 
-                                if (snapshotElapsed >= 100) {
-                                    // Rate over >=100ms window (filters audio jitter)
-                                    const int64_t leadDelta =
-                                        currentLead - src.prevLeadSamples;
-                                    const int64_t leadRatePer10s =
-                                        (leadDelta * 10000) / snapshotElapsed;
+                                // Update compensation every 500ms
+                                if (updateElapsed >= 500) {
+                                    // True drift > 0 means buffer is too full (clock is fast).
+                                    // We want swresample to consume MORE input, so sample_delta must be POSITIVE.
+                                    // Wait, earlier I established: sample_delta = +trueDrift.
+                                    int64_t targetCorrection = trueDrift;
 
-                                    int64_t targetCorrection =
-                                        static_cast<int64_t>(leadRatePer10s * 0.8) +
-                                        static_cast<int64_t>(currentLead * 0.01);
+                                    const int32_t maxDelta = src.syncResampler->GetMaxCompensationDelta();
+                                    targetCorrection = std::clamp(targetCorrection, static_cast<int64_t>(-maxDelta), static_cast<int64_t>(maxDelta));
 
-                                    const int32_t maxDelta =
-                                        src.syncResampler->GetMaxCompensationDelta();
-                                    targetCorrection = std::clamp(
-                                        targetCorrection,
-                                        static_cast<int64_t>(-maxDelta),
-                                        static_cast<int64_t>(maxDelta));
-
-                                    constexpr int32_t kMaxRateChange = 800;
+                                    // Slew rate limit to prevent harsh pitch jumps
+                                    constexpr int32_t kMaxRateChange = 1500;
                                     int32_t newDelta = static_cast<int32_t>(
                                         std::clamp(targetCorrection,
                                             static_cast<int64_t>(src.currentRateDelta) - kMaxRateChange,
@@ -1507,6 +1500,10 @@ public:
                                     src.currentRateDelta = newDelta;
 
                                     if (newDelta != 0 || src.rateCompActive) {
+                                        // Pass -newDelta because if we want to consume more input, we need swr to output FEWER samples for the same input.
+                                        // Wait, swr_set_compensation(ctx, sample_delta, comp_distance).
+                                        // If sample_delta < 0, it drops output samples. To produce the same total output, it consumes MORE input.
+                                        // So we pass -newDelta!
                                         int ret = swr_set_compensation(
                                             src.syncResampler->GetSwrContext(),
                                             -newDelta,
@@ -1516,21 +1513,17 @@ public:
                                         }
                                     }
 
-                                    if (driftLogCounter++ % 100 == 0) {
+                                    if (driftLogCounter++ % 10 == 0) {
                                         DLL_Log(
-                                            "[PullAudio] Src %zu rate-corr: lead=%lld "
-                                            "delta=%lld window=%lldms rate/10s=%lld "
-                                            "targetCorr=%lld applied=%d/%d",
-                                            srcIdx, currentLead, leadDelta,
-                                            snapshotElapsed, leadRatePer10s,
-                                            targetCorrection, newDelta, maxDelta);
+                                            "[PullAudio] Src %zu drift-corr: trueDrift=%lld "
+                                            "(rb=%lld expected=%lld pipelineLag=%lldms) "
+                                            "applied=%d/%d (max=%.1f%%)",
+                                            srcIdx, trueDrift, rbLevel, expectedLead, effectiveWgcDriftLagMs,
+                                            newDelta, maxDelta, maxCompensationPercent);
                                     }
 
-                                    // Reset snapshot for next window
-                                    src.prevLeadSamples = currentLead;
-                                    src.prevLeadSnapshotMs = nowVideoMs;
+                                    src.lastRateUpdateMs = nowVideoMs;
                                 }
-                                src.lastRateUpdateMs = nowVideoMs;
                             }
                         }
                     }
