@@ -1906,7 +1906,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 // Once recording is live, skip ahead when significantly late to prevent
                 // linear accumulation of encoder timer drift.  The buffered WGC frames
                 // provide continuity — the output PTS gap is filled from the frame pool.
-                const uint32_t timerRebaseThreshold = (recordingOutputLive && activeScreenGrab && !config.video.useVFR) ? 8 : 2;
+                const uint32_t timerRebaseThreshold = (recordingOutputLive && activeScreenGrab && !config.video.useVFR) ? 10000 : 2;
                 if (!recordingOutputLive && now.QuadPart > nextSampleTime.QuadPart + targetIntervalTicks * 2) {
                     nextSampleTime = now;
                 } else if (recordingOutputLive && encoderLateTickCount >= timerRebaseThreshold) {
@@ -2123,6 +2123,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 return false;
             }
 
+            /*
             if (liveSelectionTargetQpc > 0 && candidateSelectionTimestamp > liveSelectionTargetQpc && g_HasLastFrame &&
                 !g_LastFrame.isInjectMode) {
                 ++wgcFreshSelectionMissCount;
@@ -2131,6 +2132,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 }
                 return false;
             }
+            */
 
             if (!usingFreshCandidateSet) {
                 ++wgcStaleUniqueFallbackCount;
@@ -3033,7 +3035,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
 
             for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
-                if (useScreenGrab && !ce::capture_policy::ShouldAllowWgcExtraCatchupTicks(
+                if (useScreenGrab && config.video.useVFR && !ce::capture_policy::ShouldAllowWgcExtraCatchupTicks(
                                          encoderTooSlowForTargetCurrent,
                                          bufferedWgcFrames.size(), frameCreditAccumulator, outputShortfallTicks)) {
                     break;
@@ -3060,9 +3062,11 @@ void EncoderThreadFunc(const AppConfig& config) {
                 if (elapsedFromTickStartMs > catchupBudgetMs) {
                     LogInfo(
                         "[EncoderThread] Catchup budget exceeded at extraTick=%u (elapsed=%.2fms > budget=%.2fms), "
-                        "skipping remaining catchup",
+                        "skipping remaining catchup (unless CFR sync requires it)",
                         extraTick, elapsedFromTickStartMs, catchupBudgetMs);
-                    break;
+                    if (config.video.useVFR || outputShortfallTicks == 0) {
+                        break;
+                    }
                 }
 
                 const int64_t repeatScheduledQpc =

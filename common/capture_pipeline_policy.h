@@ -28,7 +28,7 @@ constexpr uint32_t kWgcReserveBiasPermille = 250;
 constexpr uint32_t kWgcReserveFragileBiasPermille = 375;
 constexpr uint32_t kWgcSingleFreshHoldInputPermille = 995;
 constexpr uint32_t kWgcSteadyReserveBuildInputPermille = 995;
-constexpr uint32_t kWgcSelectionDelayTicks = 1;
+constexpr uint32_t kWgcSelectionDelayTicks = 2;
 constexpr uint32_t kWgcCoverageDelayMaxTicks = 32;
 constexpr uint32_t kCfrShortfallCatchupThresholdTicks = 2;
 constexpr uint32_t kCfrShortfallForceCatchupThresholdTicks = 18;
@@ -83,9 +83,6 @@ inline bool CanDrainOutstandingWgcTicks(bool queuedWgcFrameAvailable, bool buffe
 // iteration when catching up.  The value includes the main tick itself, so
 // "2" means 1 main + 1 extra repeat.
 inline uint32_t GetCfrCatchupTicksThisLoop(uint32_t outputShortfallTicks, bool encoderBottlenecked = false) {
-    if (encoderBottlenecked) {
-        return 1u;
-    }
     if (outputShortfallTicks >= kCfrShortfallForceCatchupThresholdTicks) {
         return std::min(outputShortfallTicks, 4u);
     }
@@ -101,19 +98,11 @@ inline bool ShouldApplyWgcSelectionDelay(bool recordingOutputLive, uint32_t outp
         return false;
     }
 
-    if (outputShortfallTicks > 0 || encoderBottlenecked || !reserveAvailableAtTickStart) {
-        return false;
-    }
-
     return true;
 }
 
 inline bool ShouldAllowWgcExtraCatchupTicks(bool encoderBottlenecked, size_t bufferedWgcFrames,
                                             double frameCreditAccumulator, uint32_t outputShortfallTicks) {
-    if (encoderBottlenecked) {
-        return false;
-    }
-
     if (outputShortfallTicks >= kCfrShortfallCatchupThresholdTicks) {
         return true;
     }
@@ -131,10 +120,6 @@ inline bool ShouldAllowWgcExtraCatchupTicks(bool encoderBottlenecked, size_t buf
 
 inline uint32_t GetWgcCatchupTicksThisLoop(bool encoderBottlenecked, size_t bufferedWgcFrames,
                                            double frameCreditAccumulator, uint32_t outputShortfallTicks) {
-    if (encoderBottlenecked) {
-        return 1u;
-    }
-
     const uint32_t baseCatchupTicks = GetCfrCatchupTicksThisLoop(outputShortfallTicks);
     if (baseCatchupTicks > 1u) {
         return baseCatchupTicks;
@@ -165,7 +150,8 @@ inline bool HasWgcSevereLiveShortfall(double shortfallDurationMs,
 
 inline bool ShouldClampWgcCoverageCatchupToSingleTick(bool coverageRepeatActive, bool encoderTooSlowForTarget,
                                                       double shortfallDurationMs) {
-    return coverageRepeatActive && encoderTooSlowForTarget && !HasWgcSevereLiveShortfall(shortfallDurationMs);
+    // Never clamp CFR catchup ticks. Sync depends on catching up.
+    return false;
 }
 
 inline double GetWgcForceCatchupBudgetFrameMultiplier(double shortfallDurationMs) {
