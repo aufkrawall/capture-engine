@@ -6,7 +6,7 @@
 
 namespace ce::audio {
 
-constexpr int64_t kDefaultSteadyAudioPullLatencyMs = 0;
+constexpr int64_t kDefaultSteadyAudioPullLatencyMs = 60;
 constexpr int64_t kDefaultAudioPullQuantumSamples = 240;
 
 struct PacketTimelineAdjustment {

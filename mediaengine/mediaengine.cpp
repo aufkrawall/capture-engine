@@ -1126,7 +1126,7 @@ public:
 
             const bool trackStartupSettled =
                 ce::audio::IsTrackAudioStartupSettled(trackBootstrapComplete[track], trackAllPrimed);
-            const int64_t trackAudioPullLatencyMs = ce::audio::ComputeAudioPullLatencyMs(
+            const int64_t trackAudioPullLatencyMs = forceDrain ? 0 : ce::audio::ComputeAudioPullLatencyMs(
                 kSteadyAudioPullLatencyMs, trackStartupSettled, trackMaxObservedLateStartMs);
             const int64_t trackAudioTargetMs = audioTargetMs - trackAudioPullLatencyMs;
             if (trackAudioTargetMs <= 0) {
