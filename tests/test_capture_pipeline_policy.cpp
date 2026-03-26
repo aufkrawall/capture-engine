@@ -282,9 +282,14 @@ TEST(CapturePipelinePolicyTest, TimerRebaseDiscardDropsOnlyOutstandingShortfall)
     EXPECT_EQ(policy::GetCfrTimerRebaseDiscardTicks(221, 18, 203), 0u);
 }
 
-TEST(CapturePipelinePolicyTest, TimerRebaseDebtDiscardIsDisabledForWgc) {
-    EXPECT_FALSE(policy::ShouldDiscardCfrTimerRebaseDebt(true));
+TEST(CapturePipelinePolicyTest, TimerRebaseDebtDiscardIsEnabledForInjectOnly) {
+    // Inject can safely discard timer debt because it lacks a continuous source
+    // timeline.
     EXPECT_TRUE(policy::ShouldDiscardCfrTimerRebaseDebt(false));
+
+    // WGC must NOT discard timer rebase debt to avoid track length mismatches
+    // when the encoder falls consistently behind.
+    EXPECT_FALSE(policy::ShouldDiscardCfrTimerRebaseDebt(true));
 }
 
 TEST(CapturePipelinePolicyTest, CfrCatchupRequiresMeaningfulShortfallOrForceThreshold) {

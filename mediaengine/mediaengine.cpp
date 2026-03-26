@@ -1018,7 +1018,7 @@ public:
         constexpr int64_t kSteadyAudioPullLatencyMs = ce::audio::kDefaultSteadyAudioPullLatencyMs;
         constexpr int64_t kPrimedSourceCushionSamples = SAMPLE_RATE / 50;  // 20ms
         constexpr int64_t kBootstrapHoldLimitMs = 500;
-        constexpr int64_t kBaseTargetLatencySamples = 960;
+        constexpr int64_t kBaseTargetLatencySamples = (kSteadyAudioPullLatencyMs * SAMPLE_RATE) / 1000;
         constexpr int64_t kMaxPipelineLagContributionMs = 10000;
         constexpr int64_t kWgcCoverageLossMaxBufferedLagMs = 300;
         constexpr int64_t kRuntimeMaxLeadSamples = SAMPLE_RATE / 10;    // 100ms above target
@@ -1038,11 +1038,17 @@ public:
         const int64_t wallVideoMs = this->videoElapsedMs.load();
         int64_t encodedVideoMs = 0;
         int64_t audioTargetMs = videoTimelineMs;
-        if (videoEnc) {
+        if (videoEnc && !isWgcCfrRecording) {
             int64_t encodedVideoUs = videoEnc->GetEncodedDurationUs();
             if (encodedVideoUs > 0) {
                 encodedVideoMs = encodedVideoUs / 1000;
                 audioTargetMs = encodedVideoMs;
+            }
+        }
+        if (isWgcCfrRecording && videoEnc) {
+            int64_t encodedVideoUs = videoEnc->GetEncodedDurationUs();
+            if (encodedVideoUs > 0) {
+                encodedVideoMs = encodedVideoUs / 1000;
             }
         }
         if (audioTargetMs <= 0) {

@@ -51,8 +51,10 @@ inline uint32_t GetCfrTimerRebaseDiscardTicks(uint64_t elapsedTicks, uint64_t di
 
 inline bool ShouldDiscardCfrTimerRebaseDebt(bool useScreenGrab) {
     // Inject can safely abandon timer debt because it has no buffered real-time source
-    // cadence to recover. WGC must preserve live shortfall so catch-up and diagnostics
-    // see the real wall-clock deficit instead of silently shortening the file.
+    // cadence to recover. WGC must NOT discard timer debt. If WGC discards timer debt,
+    // the total output frames will fall short of the CFR target over time, causing the
+    // video track length to be shorter than real time. To maintain exact A/V sync and
+    // track length matching, WGC must preserve this debt and drain it at the end of capture.
     return !useScreenGrab;
 }
 
