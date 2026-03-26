@@ -9,6 +9,11 @@ inline int64_t AbsoluteTimestampDistance(int64_t lhs, int64_t rhs) {
     return (lhs >= rhs) ? (lhs - rhs) : (rhs - lhs);
 }
 
+template <typename Frame>
+inline int64_t GetFrameSelectionTimestamp(const Frame& frame) {
+    return frame.selectionTimestamp > 0 ? frame.selectionTimestamp : frame.timestamp;
+}
+
 template <typename FrameContainer>
 size_t SelectFrameClosestToTimestamp(const FrameContainer& frames, size_t availableCount, int64_t targetTimestampQpc) {
     if (availableCount <= 1 || targetTimestampQpc <= 0) {
@@ -16,12 +21,13 @@ size_t SelectFrameClosestToTimestamp(const FrameContainer& frames, size_t availa
     }
 
     size_t bestIndex = 0;
-    int64_t bestDistance = AbsoluteTimestampDistance(frames[0].timestamp, targetTimestampQpc);
+    int64_t bestDistance = AbsoluteTimestampDistance(GetFrameSelectionTimestamp(frames[0]), targetTimestampQpc);
 
     for (size_t i = 1; i < availableCount; ++i) {
-        const int64_t distance = AbsoluteTimestampDistance(frames[i].timestamp, targetTimestampQpc);
+        const int64_t distance = AbsoluteTimestampDistance(GetFrameSelectionTimestamp(frames[i]), targetTimestampQpc);
         if (distance < bestDistance ||
-            (distance == bestDistance && frames[i].timestamp > frames[bestIndex].timestamp)) {
+            (distance == bestDistance &&
+             GetFrameSelectionTimestamp(frames[i]) > GetFrameSelectionTimestamp(frames[bestIndex]))) {
             bestDistance = distance;
             bestIndex = i;
         }
@@ -44,9 +50,10 @@ size_t SelectFrameClosestToTimestampIf(const FrameContainer& frames, size_t avai
             continue;
         }
 
-        const int64_t distance = AbsoluteTimestampDistance(frames[i].timestamp, targetTimestampQpc);
+        const int64_t distance = AbsoluteTimestampDistance(GetFrameSelectionTimestamp(frames[i]), targetTimestampQpc);
         if (bestIndex == availableCount || distance < bestDistance ||
-            (distance == bestDistance && frames[i].timestamp > frames[bestIndex].timestamp)) {
+            (distance == bestDistance &&
+             GetFrameSelectionTimestamp(frames[i]) > GetFrameSelectionTimestamp(frames[bestIndex]))) {
             bestDistance = distance;
             bestIndex = i;
         }
@@ -159,11 +166,13 @@ size_t SelectFrameClosestToGrid(const FrameContainer& frames, size_t availableCo
 
     const int64_t idealQpc = ComputeIdealOutputQpc(gridStartQpc, gridTickCount, targetIntervalTicks);
     size_t bestIndex = 0;
-    int64_t bestDistance = AbsoluteTimestampDistance(frames[0].timestamp, idealQpc);
+    int64_t bestDistance = AbsoluteTimestampDistance(GetFrameSelectionTimestamp(frames[0]), idealQpc);
 
     for (size_t i = 1; i < availableCount; ++i) {
-        const int64_t distance = AbsoluteTimestampDistance(frames[i].timestamp, idealQpc);
-        if (distance < bestDistance || (distance == bestDistance && frames[i].timestamp > frames[bestIndex].timestamp)) {
+        const int64_t distance = AbsoluteTimestampDistance(GetFrameSelectionTimestamp(frames[i]), idealQpc);
+        if (distance < bestDistance ||
+            (distance == bestDistance &&
+             GetFrameSelectionTimestamp(frames[i]) > GetFrameSelectionTimestamp(frames[bestIndex]))) {
             bestDistance = distance;
             bestIndex = i;
         }
@@ -188,9 +197,10 @@ size_t SelectFrameClosestToGridIf(const FrameContainer& frames, size_t available
             continue;
         }
 
-        const int64_t distance = AbsoluteTimestampDistance(frames[i].timestamp, idealQpc);
+        const int64_t distance = AbsoluteTimestampDistance(GetFrameSelectionTimestamp(frames[i]), idealQpc);
         if (bestIndex == availableCount || distance < bestDistance ||
-            (distance == bestDistance && frames[i].timestamp > frames[bestIndex].timestamp)) {
+            (distance == bestDistance &&
+             GetFrameSelectionTimestamp(frames[i]) > GetFrameSelectionTimestamp(frames[bestIndex]))) {
             bestDistance = distance;
             bestIndex = i;
         }

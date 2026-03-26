@@ -515,6 +515,7 @@ static void QueueWgcFrame(ID3D11Texture2D* texture, uint32_t width, uint32_t hei
     qf.height = height;
     qf.timestamp = timestamp;
     qf.rawTimestamp = rawTimestamp;
+    qf.selectionTimestamp = timestamp;
     qf.duplicateSourceTimestamp = duplicateSourceTimestamp;
     LARGE_INTEGER enqueueQpc;
     QueryPerformanceCounter(&enqueueQpc);
@@ -551,6 +552,7 @@ static QueuedFrame MakeQueuedWgcFrame(WGCCapturedFrame&& frame) {
     qf.height = frame.height;
     qf.timestamp = frame.timestamp;
     qf.rawTimestamp = frame.rawTimestamp;
+    qf.selectionTimestamp = frame.timestamp;
     LARGE_INTEGER enqueueQpc;
     QueryPerformanceCounter(&enqueueQpc);
     qf.enqueueQpc = enqueueQpc.QuadPart;
@@ -1534,6 +1536,10 @@ void EncoderThreadFunc(const AppConfig& config) {
     std::vector<WGCCapturedFrame> drainedWgcCapturedFrames;
     drainedWgcCapturedFrames.reserve(8);
     std::deque<QueuedFrame> bufferedWgcFrames;
+    std::vector<size_t> wgcFreshCandidateIndices;
+    wgcFreshCandidateIndices.reserve(64);
+    std::vector<size_t> wgcFallbackCandidateIndices;
+    wgcFallbackCandidateIndices.reserve(64);
     std::vector<QueuedFrame> drainedInjectFrames;
     drainedInjectFrames.reserve(8);
     std::deque<QueuedFrame> bufferedInjectFrames;
@@ -1600,6 +1606,7 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint32_t wgcSelectionEarlyMaxUs = 0;
     uint32_t wgcSelectionLateMaxUs = 0;
     uint32_t wgcHoldForNextTickCount = 0;
+    uint32_t wgcSelectionDelayTickCount = 0;
     uint32_t wgcAdaptiveThrottleAdjustments = 0;
     WgcAdaptiveThrottleMode wgcAdaptiveThrottleMode = WgcAdaptiveThrottleMode::kOff;
     uint32_t wgcRecentDeliveredFps = 0;
@@ -1932,15 +1939,16 @@ void EncoderThreadFunc(const AppConfig& config) {
 
         const auto computeWgcSelectionTargetForTick = [&](int64_t scheduledQpcForTick, int64_t selectionGridTickForTick,
                                                           bool applyLiveDelay) {
-            (void)applyLiveDelay;
-            if (scheduledQpcForTick > 0) {
-                return scheduledQpcForTick;
-            }
-            return ComputeIdealOutputQpc(encoderGridStartQpc, selectionGridTickForTick, targetIntervalTicks);
+            const int64_t fallbackTargetQpc =
+                ComputeIdealOutputQpc(encoderGridStartQpc, selectionGridTickForTick, targetIntervalTicks);
+            return ce::capture_policy::GetWgcSelectionTargetQpc(
+                scheduledQpcForTick, fallbackTargetQpc, targetIntervalTicks, recordingOutputLive && applyLiveDelay);
         };
         const auto computeWgcSelectionTargetQpc = [&](bool applyLiveDelay) {
             return computeWgcSelectionTargetForTick(scheduledSampleQpc, selectionGridTick, applyLiveDelay);
         };
+        const auto computeLiveWgcSelectionTargetQpc = [&]() { return computeWgcSelectionTargetQpc(false); };
+        const auto computeDelayedWgcSelectionTargetQpc = [&]() { return computeWgcSelectionTargetQpc(true); };
         const auto computeLiveTimelineElapsedUs = [&](int64_t scheduledQpcForTick) -> int64_t {
             if (liveStartQpc.QuadPart <= 0 || qpcFreq.QuadPart <= 0) {
                 return -1;
@@ -1958,8 +1966,10 @@ void EncoderThreadFunc(const AppConfig& config) {
         uint32_t wgcBufferedAtTickStart = 0;
         bool wgcFreshAvailableAtTickStart = false;
         bool wgcReserveAvailableAtTickStart = false;
+        bool wgcSelectionDelayAppliedThisTick = false;
         const uint32_t outputFps = std::max<uint32_t>(1u, static_cast<uint32_t>(config.video.fps));
-        auto tryPopBufferedWgcFrameForTarget = [&](int64_t selectionTargetQpc, QueuedFrame* selectedFrame,
+        auto tryPopBufferedWgcFrameForTarget = [&](int64_t selectionTargetQpc, int64_t liveSelectionTargetQpc,
+                                                   bool selectionDelayApplied, QueuedFrame* selectedFrame,
                                                    bool* repeatedBecauseNoFrameCoverage = nullptr) {
             if (repeatedBecauseNoFrameCoverage) {
                 *repeatedBecauseNoFrameCoverage = false;
@@ -1968,21 +1978,31 @@ void EncoderThreadFunc(const AppConfig& config) {
                 return false;
             }
 
-            if (selectionTargetQpc > 0) {
-                while (bufferedWgcFrames.size() > 1) {
-                    const QueuedFrame& current = bufferedWgcFrames[0];
-                    const QueuedFrame& next = bufferedWgcFrames[1];
-                    const bool sameTimestamp = current.timestamp > 0 && current.timestamp == next.timestamp;
-                    const bool nextAlreadyCoversTarget = next.timestamp > 0 && next.timestamp <= selectionTargetQpc;
-                    if (!sameTimestamp && !nextAlreadyCoversTarget) {
-                        break;
-                    }
+            const bool lowSourceMode = wgcLowSourceModeActive;
+            const int64_t effectiveSelectionTargetQpc = selectionTargetQpc > 0 ? selectionTargetQpc : liveSelectionTargetQpc;
+            const int64_t minFreshTimestampQpc =
+                ce::capture_policy::GetWgcMinimumFreshTimestampQpc(lastEmittedWgcSourceQpc, liveSelectionTargetQpc,
+                                                                   targetIntervalTicks, lowSourceMode);
+            const int64_t staleFallbackMinTimestampQpc = ce::capture_policy::GetWgcStaleUniqueFallbackMinTimestampQpc(
+                lastEmittedWgcSourceQpc, effectiveSelectionTargetQpc, targetIntervalTicks, lowSourceMode);
 
-                    QueuedFrame obsolete = std::move(bufferedWgcFrames.front());
-                    bufferedWgcFrames.pop_front();
-                    ReleaseQueuedFrameTexture(obsolete);
-                    ++wgcDropObsoleteCount;
+            while (bufferedWgcFrames.size() > 1) {
+                const QueuedFrame& current = bufferedWgcFrames[0];
+                const QueuedFrame& next = bufferedWgcFrames[1];
+                const bool sameTimestamp = current.timestamp > 0 && current.timestamp == next.timestamp;
+                const bool sameSelectionTimestamp = current.selectionTimestamp > 0 &&
+                                                    current.selectionTimestamp == next.selectionTimestamp;
+                const bool duplicateSelectionCandidate = sameTimestamp || sameSelectionTimestamp;
+                const bool currentTooOld = staleFallbackMinTimestampQpc > 0 && current.timestamp > 0 &&
+                                           current.timestamp < staleFallbackMinTimestampQpc && next.timestamp > current.timestamp;
+                if (!duplicateSelectionCandidate && !currentTooOld) {
+                    break;
                 }
+
+                QueuedFrame obsolete = std::move(bufferedWgcFrames.front());
+                bufferedWgcFrames.pop_front();
+                ReleaseQueuedFrameTexture(obsolete);
+                ++wgcDropObsoleteCount;
             }
 
             if (bufferedWgcFrames.empty()) {
@@ -1993,31 +2013,123 @@ void EncoderThreadFunc(const AppConfig& config) {
                 return false;
             }
 
-            size_t selectedIndex = 0;
-            if (selectionTargetQpc > 0 && bufferedWgcFrames.size() > 1) {
-                const QueuedFrame& candidate = bufferedWgcFrames[0];
-                const QueuedFrame& next = bufferedWgcFrames[1];
-                const bool candidateValid = candidate.timestamp > 0;
-                const bool nextValid = next.timestamp > 0;
-                const bool candidateBeforeTarget = candidateValid && candidate.timestamp <= selectionTargetQpc;
-
-                if (candidateBeforeTarget && nextValid && next.timestamp > selectionTargetQpc) {
-                    const int64_t candidateDistance = selectionTargetQpc - candidate.timestamp;
-                    const int64_t nextDistance = next.timestamp - selectionTargetQpc;
-                    if (nextDistance < candidateDistance) {
-                        selectedIndex = 1;
-                        ++wgcReserveSpendTickCount;
-                    }
+            auto buildCandidateList = [&](std::vector<size_t>* outIndices, bool requireFresh) {
+                if (!outIndices) {
+                    return;
                 }
+                outIndices->clear();
+                for (size_t i = 0; i < bufferedWgcFrames.size(); ++i) {
+                    const QueuedFrame& candidate = bufferedWgcFrames[i];
+                    if (candidate.timestamp <= 0) {
+                        continue;
+                    }
+                    const bool sourceTimestampAdvanced = candidate.timestamp > lastEmittedWgcSourceQpc;
+                    const bool freshEnough = ce::capture_policy::IsWgcTimestampFreshEnough(candidate.timestamp,
+                                                                                           minFreshTimestampQpc);
+                    const bool fallbackFreshEnough =
+                        ce::capture_policy::IsWgcTimestampFreshEnough(candidate.timestamp, staleFallbackMinTimestampQpc);
+                    if (requireFresh) {
+                        if (!(sourceTimestampAdvanced && freshEnough)) {
+                            continue;
+                        }
+                    } else {
+                        if (!(sourceTimestampAdvanced && fallbackFreshEnough)) {
+                            continue;
+                        }
+                    }
+                    outIndices->push_back(i);
+                }
+            };
+
+            buildCandidateList(&wgcFreshCandidateIndices, true);
+            if (wgcFreshCandidateIndices.empty()) {
+                buildCandidateList(&wgcFallbackCandidateIndices, false);
             }
 
-            const QueuedFrame& candidate = bufferedWgcFrames[selectedIndex];
-            if (selectionTargetQpc > 0 && candidate.timestamp > selectionTargetQpc && g_HasLastFrame && !g_LastFrame.isInjectMode) {
+            std::vector<size_t>* candidateIndices =
+                !wgcFreshCandidateIndices.empty() ? &wgcFreshCandidateIndices : &wgcFallbackCandidateIndices;
+            const bool usingFreshCandidateSet = !wgcFreshCandidateIndices.empty();
+
+            if (candidateIndices->empty()) {
                 ++wgcFreshSelectionMissCount;
                 if (repeatedBecauseNoFrameCoverage) {
                     *repeatedBecauseNoFrameCoverage = true;
                 }
                 return false;
+            }
+
+            size_t selectedIndex = candidateIndices->front();
+            if (effectiveSelectionTargetQpc > 0) {
+                size_t bestCandidateOffset = 0;
+                int64_t bestDistance = AbsoluteTimestampDistance(
+                    GetFrameSelectionTimestamp(bufferedWgcFrames[(*candidateIndices)[0]]), effectiveSelectionTargetQpc);
+                for (size_t candidateOffset = 1; candidateOffset < candidateIndices->size(); ++candidateOffset) {
+                    const size_t bufferedIndex = (*candidateIndices)[candidateOffset];
+                    const int64_t candidateDistance = AbsoluteTimestampDistance(
+                        GetFrameSelectionTimestamp(bufferedWgcFrames[bufferedIndex]), effectiveSelectionTargetQpc);
+                    if (candidateDistance < bestDistance ||
+                        (candidateDistance == bestDistance &&
+                         GetFrameSelectionTimestamp(bufferedWgcFrames[bufferedIndex]) >
+                             GetFrameSelectionTimestamp(bufferedWgcFrames[(*candidateIndices)[bestCandidateOffset]]))) {
+                        bestDistance = candidateDistance;
+                        bestCandidateOffset = candidateOffset;
+                    }
+                }
+                selectedIndex = (*candidateIndices)[bestCandidateOffset];
+            }
+
+            selectedIndex = ce::capture_policy::ClampWgcSelectionIndexForLowSource(
+                selectedIndex, bufferedWgcFrames.size(), bufferedWgcFrames.size(), wgcRecentDeliveredFps, outputFps,
+                wgcNoFreshTickPermille);
+
+            if (usingFreshCandidateSet && selectedIndex > 0) {
+                const QueuedFrame& earlierFresh = bufferedWgcFrames[0];
+                const QueuedFrame& chosenFresh = bufferedWgcFrames[selectedIndex];
+                if (earlierFresh.timestamp > lastEmittedWgcSourceQpc && chosenFresh.timestamp > earlierFresh.timestamp &&
+                    ce::capture_policy::ShouldPreferEarlierFreshWgcFrameToPreserveReserve(
+                        earlierFresh.selectionTimestamp > 0 ? earlierFresh.selectionTimestamp : earlierFresh.timestamp,
+                        chosenFresh.selectionTimestamp > 0 ? chosenFresh.selectionTimestamp : chosenFresh.timestamp,
+                        effectiveSelectionTargetQpc, targetIntervalTicks, wgcReservePressureActive, lowSourceMode)) {
+                    selectedIndex = 0;
+                } else {
+                    ++wgcReserveSpendTickCount;
+                }
+            }
+
+            const QueuedFrame& candidate = bufferedWgcFrames[selectedIndex];
+            const int64_t candidateSelectionTimestamp =
+                candidate.selectionTimestamp > 0 ? candidate.selectionTimestamp : candidate.timestamp;
+            const bool canHoldFreshFrame = selectionDelayApplied && selectedIndex == 0 && bufferedWgcFrames.size() == 1 &&
+                                           ce::capture_policy::ShouldHoldSingleFreshWgcFrame(
+                                               wgcReservePressureActive, lowSourceMode, wgcRecentInputMin250Fps,
+                                               outputFps, smoothedInputPerTick, outputShortfallTicks,
+                                               g_IsEncoderBottlenecked.load(std::memory_order_relaxed), false);
+            if (canHoldFreshFrame && effectiveSelectionTargetQpc > 0 &&
+                ShouldHoldFrameForNextTick(candidateSelectionTimestamp, effectiveSelectionTargetQpc, targetIntervalTicks,
+                                           targetIntervalTicks / 10)) {
+                ++wgcHoldForNextTickCount;
+                ++wgcHeldFreshFrameTickCount;
+                if (repeatedBecauseNoFrameCoverage) {
+                    *repeatedBecauseNoFrameCoverage = true;
+                }
+                return false;
+            }
+
+            if (liveSelectionTargetQpc > 0 && candidateSelectionTimestamp > liveSelectionTargetQpc && g_HasLastFrame &&
+                !g_LastFrame.isInjectMode) {
+                ++wgcFreshSelectionMissCount;
+                if (repeatedBecauseNoFrameCoverage) {
+                    *repeatedBecauseNoFrameCoverage = true;
+                }
+                return false;
+            }
+
+            if (!usingFreshCandidateSet) {
+                ++wgcStaleUniqueFallbackCount;
+                if (effectiveSelectionTargetQpc > 0 && candidateSelectionTimestamp + targetIntervalTicks <
+                                                      effectiveSelectionTargetQpc) {
+                    ++wgcAncientSelectionCount;
+                }
             }
 
             for (size_t i = 0; i < selectedIndex; ++i) {
@@ -2114,6 +2226,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                     for (auto& drainedFrame : drainedScreenGrabFrames) {
                         if (!drainedFrame.isInjectMode && drainedFrame.timestamp > 0) {
                             wgcInputPredictor.Update(drainedFrame.timestamp, qpcFreq.QuadPart);
+                            drainedFrame.selectionTimestamp = wgcInputPredictor.GetIdealTimestamp(drainedFrame.timestamp);
                             static int64_t s_lastWgcSrcQpc = 0;
                             if (drainedFrame.timestamp == s_lastWgcSrcQpc) {
                                 ++dupTimestampCount;
@@ -2165,11 +2278,62 @@ void EncoderThreadFunc(const AppConfig& config) {
                     wgcRecentInputMin500Fps = g_WgcCap->GetInputMin500Fps();
                 }
 
-                wgcReservePressureActive = false;
-                wgcLowSourceModeActive = false;
                 wgcCoverageDelayTicksCurrent = 0;
 
-                wgcLowSourceStateChangeTick = 0;
+                const uint64_t wgcPolicyNowTick = GetTickCount64();
+                const ce::capture_policy::WgcAdaptiveTelemetry wgcAdaptiveTelemetry = {
+                    outputFps,
+                    wgcRecentDeliveredFps,
+                    wgcRecentDeliveredMin250Fps,
+                    wgcRecentDeliveredMin500Fps,
+                    wgcRecentInputMin250Fps,
+                    wgcRecentInputMin500Fps,
+                    0u,
+                    wgcNoFreshTickPermille,
+                    static_cast<uint32_t>(std::min<size_t>(bufferedWgcFrames.size(), 0xFFFFFFFFull)),
+                    0u,
+                    0.0,
+                };
+                wgcReservePressureActive =
+                    ce::capture_policy::IsWgcReservePressureActive(wgcNoReserveTickCount, wgcQueueTickSampleCount,
+                                                                   outputFps);
+                const bool shouldEnterWgcLowSourceMode =
+                    ce::capture_policy::ShouldEnterWgcLowSourceMode(wgcAdaptiveTelemetry);
+                const bool shouldExitWgcLowSourceMode =
+                    ce::capture_policy::ShouldExitWgcLowSourceMode(wgcAdaptiveTelemetry);
+                if (!wgcLowSourceModeActive) {
+                    if (shouldEnterWgcLowSourceMode) {
+                        if (wgcLowSourceStateChangeTick == 0) {
+                            wgcLowSourceStateChangeTick = wgcPolicyNowTick;
+                        } else if ((wgcPolicyNowTick - wgcLowSourceStateChangeTick) >=
+                                   ce::capture_policy::kWgcLowSourceEnterHoldMs) {
+                            wgcLowSourceModeActive = true;
+                            wgcLowSourceStateChangeTick = 0;
+                            LogInfo("[WGC CFR] Low-source mode entered: src=%u/%u/%u input=%u/%u empty=%upm buffered=%zu",
+                                    wgcRecentDeliveredFps, wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps,
+                                    wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
+                                    bufferedWgcFrames.size());
+                        }
+                    } else {
+                        wgcLowSourceStateChangeTick = 0;
+                    }
+                } else {
+                    if (shouldExitWgcLowSourceMode) {
+                        if (wgcLowSourceStateChangeTick == 0) {
+                            wgcLowSourceStateChangeTick = wgcPolicyNowTick;
+                        } else if ((wgcPolicyNowTick - wgcLowSourceStateChangeTick) >=
+                                   ce::capture_policy::kWgcLowSourceExitHoldMs) {
+                            wgcLowSourceModeActive = false;
+                            wgcLowSourceStateChangeTick = 0;
+                            LogInfo("[WGC CFR] Low-source mode exited: src=%u/%u/%u input=%u/%u empty=%upm buffered=%zu",
+                                    wgcRecentDeliveredFps, wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps,
+                                    wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
+                                    bufferedWgcFrames.size());
+                        }
+                    } else {
+                        wgcLowSourceStateChangeTick = 0;
+                    }
+                }
 
                 if (g_WgcCap && recordingOutputLive && g_Recording && targetIntervalTicks > 0) {
                     const uint32_t currentTargetFps = g_WgcCap->GetTargetFps();
@@ -2206,6 +2370,12 @@ void EncoderThreadFunc(const AppConfig& config) {
                     wgcReserveAvailableAtTickStart = false;
                     inspectBufferedWgcCoverageForTarget(computeWgcSelectionTargetQpc(false), &wgcFreshAvailableAtTickStart,
                                                         &wgcReserveAvailableAtTickStart);
+                    wgcSelectionDelayAppliedThisTick = ce::capture_policy::ShouldApplyWgcSelectionDelay(
+                        recordingOutputLive, outputShortfallTicks,
+                        g_IsEncoderBottlenecked.load(std::memory_order_relaxed), wgcReserveAvailableAtTickStart);
+                    if (wgcSelectionDelayAppliedThisTick) {
+                        ++wgcSelectionDelayTickCount;
+                    }
                 }
 
                 if (!g_EncoderRunning && !bufferedWgcFrames.empty()) {
@@ -2213,10 +2383,14 @@ void EncoderThreadFunc(const AppConfig& config) {
                     bufferedWgcFrames.pop_front();
                     popped = true;
                 } else if (!bufferedWgcFrames.empty()) {
-                    const int64_t selectionTargetQpc = (encoderGridStartQpc > 0 && targetIntervalTicks > 0)
-                                                           ? computeWgcSelectionTargetQpc(false)
-                                                           : 0;
-                    if (tryPopBufferedWgcFrameForTarget(selectionTargetQpc, &frame)) {
+                    const int64_t liveSelectionTargetQpc =
+                        (encoderGridStartQpc > 0 && targetIntervalTicks > 0) ? computeLiveWgcSelectionTargetQpc() : 0;
+                    const int64_t delayedSelectionTargetQpc =
+                        (encoderGridStartQpc > 0 && targetIntervalTicks > 0) ? computeDelayedWgcSelectionTargetQpc() : 0;
+                    const int64_t effectiveSelectionTargetQpc =
+                        wgcSelectionDelayAppliedThisTick ? delayedSelectionTargetQpc : liveSelectionTargetQpc;
+                    if (tryPopBufferedWgcFrameForTarget(effectiveSelectionTargetQpc, liveSelectionTargetQpc,
+                                                        wgcSelectionDelayAppliedThisTick, &frame)) {
                         popped = true;
                     }
                 }
@@ -2868,7 +3042,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                     const int64_t catchupSelectionTargetQpc =
                         computeWgcSelectionTargetForTick(repeatScheduledQpc, catchupGridTick, false);
                     QueuedFrame catchupFrame;
-                    if (tryPopBufferedWgcFrameForTarget(catchupSelectionTargetQpc, &catchupFrame)) {
+                    if (tryPopBufferedWgcFrameForTarget(catchupSelectionTargetQpc, catchupSelectionTargetQpc, false,
+                                                        &catchupFrame)) {
                         if (g_HasLastFrame && !g_LastFrame.isInjectMode && g_LastFrame.texture) {
                             g_LastFrame.texture->Release();
                         }
@@ -2948,7 +3123,8 @@ void EncoderThreadFunc(const AppConfig& config) {
 
                         if (catchupSelectionTargetQpc > 0 && g_LastFrame.timestamp > 0) {
                             const int64_t signedSelectionErrorUs =
-                                ((g_LastFrame.timestamp - catchupSelectionTargetQpc) * 1000000) / qpcFreq.QuadPart;
+                                ((GetFrameSelectionTimestamp(g_LastFrame) - catchupSelectionTargetQpc) * 1000000) /
+                                qpcFreq.QuadPart;
                             const int64_t absoluteSelectionErrorUs =
                                 signedSelectionErrorUs >= 0 ? signedSelectionErrorUs : -signedSelectionErrorUs;
                             cadenceCounters.selectionErrorAccumUs += static_cast<uint64_t>(absoluteSelectionErrorUs);
@@ -3117,11 +3293,15 @@ void EncoderThreadFunc(const AppConfig& config) {
                     : 0;
             int64_t signedSelectionErrorUs = 0;
             int64_t absoluteSelectionErrorUs = 0;
-            const int64_t selectionMetricTargetQpc = !frameToProcess->isInjectMode ? computeWgcSelectionTargetQpc(false)
-                                                                                    : idealQpc;
+            const int64_t selectionMetricTargetQpc = !frameToProcess->isInjectMode
+                                                         ? (wgcSelectionDelayAppliedThisTick
+                                                                ? computeDelayedWgcSelectionTargetQpc()
+                                                                : computeLiveWgcSelectionTargetQpc())
+                                                         : idealQpc;
             if (selectionMetricTargetQpc > 0) {
-                signedSelectionErrorUs =
-                    ((frameToProcess->timestamp - selectionMetricTargetQpc) * 1000000) / qpcFreq.QuadPart;
+                const int64_t selectionTimestampQpc =
+                    !frameToProcess->isInjectMode ? GetFrameSelectionTimestamp(*frameToProcess) : frameToProcess->timestamp;
+                signedSelectionErrorUs = ((selectionTimestampQpc - selectionMetricTargetQpc) * 1000000) / qpcFreq.QuadPart;
                 absoluteSelectionErrorUs =
                     signedSelectionErrorUs >= 0 ? signedSelectionErrorUs : -signedSelectionErrorUs;
             }
@@ -3517,7 +3697,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             LogInfo(
                 "[Cadence Health] Phase=%s | AgeAvg=%uus AgeMax=%uus | SelAvg=%uus SelMax=%uus SelBias=%dus "
                 "EarlyMax=%uus LateMax=%uus | WgcSelAvg=%uus WgcSelMax=%uus WgcSelBias=%dus WgcEarly=%uus WgcLate=%uus "
-                "Hold=%u HoldFresh=%u Spend=%u CatchUp=%u CatchFresh=%u | DefStreak=%u/%u DupStreak=%u/%u | DupSrc=%u "
+                "Hold=%u HoldFresh=%u Delay=%u Spend=%u CatchUp=%u CatchFresh=%u | DefStreak=%u/%u DupStreak=%u/%u | DupSrc=%u "
                 "DupDef=%u "
                 "DupTimer=%u DupDrain=%u | TickEmit=%u TickUnique=%u TickDup=%u TickMiss=%u | "
                 "HoldHist=%u/%u/%u/%u/%u/%u | LiveWall=%lluus LiveTicks=%llu Shortfall=%u/%.1fms FreshMiss=%upm "
@@ -3533,7 +3713,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 avgSignedSelectionErrorUs, cadenceCounters.outputScheduleEarlyMaxUs,
                 cadenceCounters.outputScheduleLateMaxUs, avgWgcSelectionErrorUs, wgcSelectionErrorMaxUs,
                 avgSignedWgcSelectionErrorUs, wgcSelectionEarlyMaxUs, wgcSelectionLateMaxUs, wgcHoldForNextTickCount,
-                wgcHeldFreshFrameTickCount, wgcReserveSpendTickCount, cfrCatchupTicksExecuted, wgcFreshCatchupCount,
+                wgcHeldFreshFrameTickCount, wgcSelectionDelayTickCount, wgcReserveSpendTickCount,
+                cfrCatchupTicksExecuted, wgcFreshCatchupCount,
                 cadenceCounters.consecutiveDeferredFrames, cadenceCounters.maxConsecutiveDeferredFrames,
                 cadenceCounters.consecutiveDuplicateFrames, cadenceCounters.maxConsecutiveDuplicateFrames,
                 dupNoSource - lastDuplicateReasonNoSource, dupDeferred - lastDuplicateReasonDeferred,
@@ -3610,6 +3791,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             wgcSelectionLateMaxUs = 0;
             wgcHoldForNextTickCount = 0;
             wgcHeldFreshFrameTickCount = 0;
+            wgcSelectionDelayTickCount = 0;
             cfrCatchupTicksExecuted = 0;
             wgcFreshCatchupCount = 0;
             wgcReserveSpendTickCount = 0;

@@ -53,6 +53,8 @@ struct QueuedFrame {
             other.timestamp = 0;
             rawTimestamp = other.rawTimestamp;
             other.rawTimestamp = 0;
+            selectionTimestamp = other.selectionTimestamp;
+            other.selectionTimestamp = 0;
             width = other.width;
             other.width = 0;
             height = other.height;
@@ -94,6 +96,7 @@ struct QueuedFrame {
     // Common fields
     int64_t timestamp = 0;
     int64_t rawTimestamp = 0;
+    int64_t selectionTimestamp = 0;
     uint32_t width = 0;
     uint32_t height = 0;
     bool isInjectMode = false;  // true = use inject fields, false = use framegrab fields
