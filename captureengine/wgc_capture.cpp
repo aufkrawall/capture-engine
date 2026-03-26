@@ -1539,28 +1539,38 @@ public:
         }
     }
 
-    bool GetNextFrame(WGCCapturedFrame& frame) {
-        if (!framePool_)
-            return false;
+    size_t DrainPendingFrames(std::vector<WGCCapturedFrame>& frames, size_t maxFrames) {
+        if (!framePool_) {
+            return 0;
+        }
 
-        // Simple drain-style polling: get the latest available frame
-        winrt::Direct3D11CaptureFrame latestWinrtFrame = nullptr;
+        frames.clear();
         winrt::Direct3D11CaptureFrame nextFrame = nullptr;
-
-        // Drain pool to get latest frame (drop older frames)
         while ((nextFrame = framePool_.TryGetNextFrame()) != nullptr) {
-            if (latestWinrtFrame) {
-                latestWinrtFrame.Close();  // Release older frame
+            WGCCapturedFrame frame{};
+            if (!ProcessCapturedFrame(std::move(nextFrame), &frame) || !frame.texture) {
+                continue;
             }
-            latestWinrtFrame = nextFrame;
+
+            frames.push_back(std::move(frame));
+            if (maxFrames > 0 && frames.size() > maxFrames) {
+                WGCCapturedFrame stale = std::move(frames.front());
+                frames.erase(frames.begin());
+                SafeRelease(stale.texture);
+            }
         }
 
-        if (!latestWinrtFrame) {
-            // No new frame available
+        return frames.size();
+    }
+
+    bool GetNextFrame(WGCCapturedFrame& frame) {
+        std::vector<WGCCapturedFrame> frames;
+        frames.reserve(1);
+        if (DrainPendingFrames(frames, 1) == 0) {
             return false;
         }
-        frame = WGCCapturedFrame{};
-        return ProcessCapturedFrame(std::move(latestWinrtFrame), &frame);
+        frame = std::move(frames.back());
+        return frame.texture != nullptr;
     }
 #else
     // Stub implementation when WGC headers not available
@@ -1821,6 +1831,20 @@ bool WGCCapture::GetNextFrame(WGCCapturedFrame& frame) {
     if (!capturing_)
         return false;
     return impl_->GetNextFrame(frame);
+}
+
+size_t WGCCapture::DrainPendingFrames(std::vector<WGCCapturedFrame>& frames, size_t maxFrames) {
+#if HAS_WGC
+    if (!capturing_ || !impl_) {
+        frames.clear();
+        return 0;
+    }
+    return impl_->DrainPendingFrames(frames, maxFrames);
+#else
+    (void)maxFrames;
+    frames.clear();
+    return 0;
+#endif
 }
 
 bool WGCCapture::GetCaptureOrigin(int32_t& left, int32_t& top) const {

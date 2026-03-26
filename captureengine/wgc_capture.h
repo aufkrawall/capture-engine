@@ -6,6 +6,7 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <vector>
 
 // Forward declarations to avoid including WinRT headers in public interface
 struct ID3D11Texture2D;
@@ -69,6 +70,11 @@ public:
     // Caller must release texture when done
     // Timestamp is in QPC ticks (consistent with inject mode)
     bool GetNextFrame(WGCCapturedFrame& frame);
+
+    // Drain all currently pending captured frames, oldest to newest, keeping at
+    // most the newest maxFrames entries when maxFrames > 0. Caller must release
+    // textures in the returned frames when done.
+    size_t DrainPendingFrames(std::vector<WGCCapturedFrame>& frames, size_t maxFrames = 0);
 
     // Set whether the cursor should be included in the WGC capture session.
     void SetCaptureCursor(bool enabled);

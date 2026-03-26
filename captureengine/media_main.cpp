@@ -561,6 +561,13 @@ static QueuedFrame MakeQueuedWgcFrame(WGCCapturedFrame&& frame) {
     return qf;
 }
 
+static void ReleaseWgcCapturedFrame(WGCCapturedFrame& frame) {
+    if (frame.texture) {
+        frame.texture->Release();
+        frame.texture = nullptr;
+    }
+}
+
 static void ResetInjectFrameRingToLatest(const char* reason) {
     if (!g_pSharedMem) {
         return;
@@ -1524,6 +1531,8 @@ void EncoderThreadFunc(const AppConfig& config) {
     };
     std::vector<QueuedFrame> drainedScreenGrabFrames;
     drainedScreenGrabFrames.reserve(8);
+    std::vector<WGCCapturedFrame> drainedWgcCapturedFrames;
+    drainedWgcCapturedFrames.reserve(8);
     std::deque<QueuedFrame> bufferedWgcFrames;
     std::vector<QueuedFrame> drainedInjectFrames;
     drainedInjectFrames.reserve(8);
@@ -2010,6 +2019,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                     return false;
                 }
 
+                bestIdx = ce::capture_policy::ClampWgcSelectionIndexForLowSource(
+                    bestIdx, availableCount, bufferedWgcFrames.size(), wgcRecentDeliveredMin250Fps, outputFps,
+                    wgcNoFreshTickPermille);
+
                 const int64_t minFreshTimestampQpc = ce::capture_policy::GetWgcMinimumFreshTimestampQpc(
                     lastEmittedWgcSourceQpc, selectionTargetQpc, targetIntervalTicks, wgcLowSourceModeActive);
                 const int64_t staleUniqueFallbackMinTimestampQpc =
@@ -2111,14 +2124,19 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
             smoothedInjectFenceMs = 0.0;
             if (!config.video.useVFR) {
-                // CFR WGC: poll the WGC frame pool directly on the encoder tick
-                // and keep only the newest sampled frame. This avoids callback-
-                // queue burst churn and lets the encoder thread own cadence.
+                // CFR WGC: drain a bounded set of source frames directly from the
+                // WGC frame pool on each encoder tick so selection still has a
+                // small temporal window to choose from, but without routing burst
+                // traffic through the generic host queue.
                 drainedScreenGrabFrames.clear();
+                drainedWgcCapturedFrames.clear();
                 if (g_WgcCap) {
-                    WGCCapturedFrame polledFrame;
-                    if (g_WgcCap->GetNextFrame(polledFrame) && polledFrame.texture) {
-                        drainedScreenGrabFrames.push_back(MakeQueuedWgcFrame(std::move(polledFrame)));
+                    constexpr size_t kMaxWgcFramesPerTick = 6;
+                    g_WgcCap->DrainPendingFrames(drainedWgcCapturedFrames, kMaxWgcFramesPerTick);
+                    for (auto& capturedFrame : drainedWgcCapturedFrames) {
+                        if (capturedFrame.texture) {
+                            drainedScreenGrabFrames.push_back(MakeQueuedWgcFrame(std::move(capturedFrame)));
+                        }
                     }
                 }
 
@@ -2146,12 +2164,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                     }
                 }
 
-                // Phase 2: Replace any stale host-side WGC reserve with the most
-                // recent sampled frame. The last emitted frame cache still backs
-                // repeats when a tick has no fresh WGC frame.
-                if (!drainedScreenGrabFrames.empty()) {
-                    ClearBufferedWgcFrames();
-                }
+                // Phase 2: append newly drained WGC frames and keep the host-side
+                // reserve shallow. This restores timestamp-aware selection for
+                // >target source cadence without letting callback bursts create a
+                // deep unstable queue.
                 for (auto& drainedFrame : drainedScreenGrabFrames) {
                     bufferedWgcFrames.push_back(std::move(drainedFrame));
                 }
@@ -2306,9 +2322,17 @@ void EncoderThreadFunc(const AppConfig& config) {
                 // Prevent unbounded credit accumulation when game FPS > encoder FPS
                 frameCreditAccumulator = std::min(frameCreditAccumulator, 5.0);
 
+                const size_t minBufferedWgcFrames =
+                    (recordingOutputLive && !wgcLowSourceModeActive && !wgcReservePressureActive &&
+                     ce::capture_policy::ShouldAllowSteadyStateWgcReserveBuild(wgcRecentInputMin250Fps, outputFps,
+                                                                              smoothedInputPerTick))
+                        ? 2u
+                        : 1u;
+
                 // Discard excess WGC frames only under clear overcapture pressure.
                 while (outputShortfallTicks == 0 && encoderLateTickCount == 0 && !wgcLowSourceModeActive &&
-                       !wgcReservePressureActive && frameCreditAccumulator >= 2.0 && bufferedWgcFrames.size() > 1) {
+                       !wgcReservePressureActive && frameCreditAccumulator >= 2.0 &&
+                       bufferedWgcFrames.size() > minBufferedWgcFrames) {
                     QueuedFrame excess = std::move(bufferedWgcFrames.front());
                     bufferedWgcFrames.pop_front();
                     ReleaseQueuedFrameTexture(excess);
@@ -3893,7 +3917,7 @@ void StartRecording(const AppConfig& config) {
             SetActiveScreenGrab(false);
             return;
         }
-        LogInfo("[Media] Active recording path: WGC direct callback (source cadence -> %d fps output)",
+        LogInfo("[Media] Active recording path: WGC bounded pull-drain CFR (%d fps output)",
                 config.video.fps);
     } else if (!useScreenGrab) {
         if (config.captureMethod == "auto" && g_WgcCap && g_AutoWgcFallbackArmed.load(std::memory_order_acquire)) {
@@ -4757,9 +4781,8 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                     StopInjectCapturePipeline();
                     if (StartWgcRecordingCapture(config)) {
                         SetActiveScreenGrab(true);
-                        LogInfo(
-                            "[Media] Active recording path switched to WGC direct callback "
-                            "(auto fallback from inject)");
+                        LogInfo("[Media] Active recording path switched to WGC bounded pull-drain CFR "
+                                "(auto fallback from inject)");
                     } else {
                         LogWarn("[Media] WGC fallback failed; inject monitoring remains unavailable");
                     }

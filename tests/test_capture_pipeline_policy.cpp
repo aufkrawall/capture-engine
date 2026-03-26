@@ -240,6 +240,11 @@ TEST(CapturePipelinePolicyTest, WgcSteadyReserveBuildRequiresHealthyNearTargetSo
     EXPECT_FALSE(policy::ShouldAllowSteadyStateWgcReserveBuild(120, 120, 0.98));
 }
 
+TEST(CapturePipelinePolicyTest, WgcLowSourceClampLeavesHealthyQueueSelectionAlone) {
+    EXPECT_EQ(policy::ClampWgcSelectionIndexForLowSource(2, 4, 4, 120, 120, 20), 2u);
+    EXPECT_EQ(policy::ClampWgcSelectionIndexForLowSource(3, 5, 5, 122, 120, 10), 3u);
+}
+
 TEST(CapturePipelinePolicyTest, WgcFreshFrameHoldStopsWhenAlreadyBehindOrPressured) {
     EXPECT_TRUE(policy::ShouldHoldSingleFreshWgcFrame(true, false, 118, 120, 0.98, 0, false, false));
     EXPECT_FALSE(policy::ShouldHoldSingleFreshWgcFrame(true, false, 118, 120, 0.98, 1, false, false));
