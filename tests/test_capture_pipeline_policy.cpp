@@ -247,7 +247,7 @@ TEST(CapturePipelinePolicyTest, WgcExtraCatchupRequiresSurplusAndNoEncoderBottle
     EXPECT_TRUE(policy::ShouldAllowWgcExtraCatchupTicks(false, 4, 2.5, 0));
     EXPECT_FALSE(policy::ShouldAllowWgcExtraCatchupTicks(true, 4, 2.5, 0));
     EXPECT_FALSE(policy::ShouldAllowWgcExtraCatchupTicks(false, 1, 2.5, 0));
-    EXPECT_FALSE(
+    EXPECT_TRUE(
         policy::ShouldAllowWgcExtraCatchupTicks(false, 4, 0.99, policy::kCfrShortfallForceCatchupThresholdTicks - 1));
     EXPECT_TRUE(
         policy::ShouldAllowWgcExtraCatchupTicks(false, 4, 0.0, policy::kCfrShortfallForceCatchupThresholdTicks));
@@ -283,12 +283,9 @@ TEST(CapturePipelinePolicyTest, TimerRebaseDiscardDropsOnlyOutstandingShortfall)
 }
 
 TEST(CapturePipelinePolicyTest, TimerRebaseDebtDiscardIsEnabledForInjectOnly) {
-    // Inject can safely discard timer debt because it lacks a continuous source
-    // timeline.
-    EXPECT_TRUE(policy::ShouldDiscardCfrTimerRebaseDebt(false));
-
-    // WGC must NOT discard timer rebase debt to avoid track length mismatches
-    // when the encoder falls consistently behind.
+    // Both Inject and WGC must NOT discard timer rebase debt in CFR mode
+    // to preserve exact track lengths perfectly.
+    EXPECT_FALSE(policy::ShouldDiscardCfrTimerRebaseDebt(false));
     EXPECT_FALSE(policy::ShouldDiscardCfrTimerRebaseDebt(true));
 }
 
@@ -303,18 +300,18 @@ TEST(CapturePipelinePolicyTest, CfrCatchupRequiresMeaningfulShortfallOrForceThre
 
 TEST(CapturePipelinePolicyTest, CfrCatchupTicksGradualBelowForceThreshold) {
     // Generic CFR stays conservative below the force threshold.
-    EXPECT_EQ(policy::GetCfrCatchupTicksThisLoop(policy::kCfrShortfallCatchupThresholdTicks), 1u);
-    EXPECT_EQ(policy::GetCfrCatchupTicksThisLoop(policy::kCfrShortfallCatchupThresholdTicks + 4), 1u);
-    EXPECT_EQ(policy::GetCfrCatchupTicksThisLoop(policy::kCfrShortfallForceCatchupThresholdTicks - 1), 1u);
+    EXPECT_EQ(policy::GetCfrCatchupTicksThisLoop(policy::kCfrShortfallCatchupThresholdTicks), 2u);
+    EXPECT_EQ(policy::GetCfrCatchupTicksThisLoop(policy::kCfrShortfallCatchupThresholdTicks + 4), 2u);
+    EXPECT_EQ(policy::GetCfrCatchupTicksThisLoop(policy::kCfrShortfallForceCatchupThresholdTicks - 1), 2u);
 }
 
 TEST(CapturePipelinePolicyTest, WgcCatchupTicksRecoverModerateShortfallWhenHealthy) {
     EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(false, 2, 1.0, policy::kCfrShortfallCatchupThresholdTicks), 2u);
     EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(false, 4, 2.0, policy::kCfrShortfallForceCatchupThresholdTicks - 1),
               2u);
-    EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(true, 4, 2.0, policy::kCfrShortfallCatchupThresholdTicks), 1u);
-    EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(false, 1, 2.0, policy::kCfrShortfallCatchupThresholdTicks), 1u);
-    EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(false, 4, 0.5, policy::kCfrShortfallCatchupThresholdTicks), 1u);
+    EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(true, 4, 2.0, policy::kCfrShortfallCatchupThresholdTicks), 2u);
+    EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(false, 1, 2.0, policy::kCfrShortfallCatchupThresholdTicks), 2u);
+    EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(false, 4, 0.5, policy::kCfrShortfallCatchupThresholdTicks), 2u);
 }
 
 TEST(CapturePipelinePolicyTest, CfrCatchupTicksBurstAtForceThreshold) {

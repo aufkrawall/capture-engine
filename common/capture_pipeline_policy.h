@@ -50,12 +50,11 @@ inline uint32_t GetCfrTimerRebaseDiscardTicks(uint64_t elapsedTicks, uint64_t di
 }
 
 inline bool ShouldDiscardCfrTimerRebaseDebt(bool useScreenGrab) {
-    // Inject can safely abandon timer debt because it has no buffered real-time source
-    // cadence to recover. WGC must NOT discard timer debt. If WGC discards timer debt,
+    // Both WGC and Inject must NOT discard timer debt in CFR mode. If timer debt is discarded,
     // the total output frames will fall short of the CFR target over time, causing the
     // video track length to be shorter than real time. To maintain exact A/V sync and
-    // track length matching, WGC must preserve this debt and drain it at the end of capture.
-    return !useScreenGrab;
+    // track length matching, we must preserve this debt and drain it at the end of capture.
+    return false;
 }
 
 inline bool ShouldCfrCatchUpToWallClock(uint32_t outputShortfallTicks, bool useScreenGrab, bool frameAvailable,
@@ -82,17 +81,14 @@ inline bool CanDrainOutstandingWgcTicks(bool queuedWgcFrameAvailable, bool buffe
 
 // Returns the maximum number of output ticks to emit in a single encoder loop
 // iteration when catching up.  The value includes the main tick itself, so
-// "2" means 1 main + 1 extra repeat.  Generic CFR stays conservative below the
-// force threshold to avoid turning small deficits into broad encode spikes.
+// "2" means 1 main + 1 extra repeat.
 inline uint32_t GetCfrCatchupTicksThisLoop(uint32_t outputShortfallTicks) {
     if (outputShortfallTicks >= kCfrShortfallForceCatchupThresholdTicks) {
         return std::min(outputShortfallTicks, 4u);
     }
-
-    // Gradual: no extra frames — accept the lost tick to avoid encode-spike
-    // feedback loops (extra encode -> late -> skip -> gap). Capture modes that
-    // have richer buffer telemetry, such as WGC, can opt into a more specific
-    // helper below.
+    if (outputShortfallTicks >= kCfrShortfallCatchupThresholdTicks) {
+        return 2u;
+    }
     return 1u;
 }
 
@@ -111,6 +107,11 @@ inline bool ShouldApplyWgcSelectionDelay(bool recordingOutputLive, uint32_t outp
 
 inline bool ShouldAllowWgcExtraCatchupTicks(bool encoderBottlenecked, size_t bufferedWgcFrames,
                                             double frameCreditAccumulator, uint32_t outputShortfallTicks) {
+    // If we have pure timer shortfall, we MUST catch up to prevent PTS gaps in CFR video!
+    if (outputShortfallTicks >= kCfrShortfallCatchupThresholdTicks) {
+        return true;
+    }
+
     if (bufferedWgcFrames <= 1) {
         return false;
     }

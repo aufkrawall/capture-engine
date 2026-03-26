@@ -1860,9 +1860,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                 // Once recording is live, skip ahead when significantly late to prevent
                 // linear accumulation of encoder timer drift.  The buffered WGC frames
                 // provide continuity — the output PTS gap is filled from the frame pool.
+                const uint32_t timerRebaseThreshold = (recordingOutputLive && activeScreenGrab && !config.video.useVFR) ? 8 : 2;
                 if (!recordingOutputLive && now.QuadPart > nextSampleTime.QuadPart + targetIntervalTicks * 2) {
                     nextSampleTime = now;
-                } else if (recordingOutputLive && encoderLateTickCount >= 2) {
+                } else if (recordingOutputLive && encoderLateTickCount >= timerRebaseThreshold) {
                     static uint32_t s_lateTickLogCount = 0;
                     s_lateTickLogCount++;
                     if (g_pSharedMem) {
@@ -3123,7 +3124,9 @@ void EncoderThreadFunc(const AppConfig& config) {
 
                     // Coverage-loss policy may intentionally hold fresh catch-up here
                     // so the existing repeat path can absorb the mismatch instead.
-                    if (!heldByPolicy) {
+                    // For pure CFR shortfall, we MUST NOT break here! We must fall through
+                    // to repeatLastFrameForScheduledQpc to fill the timeline gaps!
+                    if (!heldByPolicy && !(!config.video.useVFR && outputShortfallTicks > 0)) {
                         break;
                     }
                 }
