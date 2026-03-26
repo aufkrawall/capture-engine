@@ -46,6 +46,25 @@ bool HasValidStreamTimeBase(const AVStream* stream) {
     return stream && stream->time_base.num > 0 && stream->time_base.den > 0;
 }
 
+int64_t ComputeTargetVideoPts(int64_t timestampUs, bool useVfr, int64_t startPts, int64_t lastAssignedVideoPts) {
+    int64_t elapsedUs = timestampUs - startPts;
+    if (elapsedUs < 0) {
+        elapsedUs = 0;
+    }
+
+    if (useVfr && startPts >= 0) {
+        return elapsedUs;
+    }
+
+    // In CFR mode the host capture thread already owns the output slot schedule
+    // and explicitly emits repeats for missing source ticks. Re-sampling elapsed
+    // wall time here can skip CFR slot numbers whenever the encoder loop wakes
+    // up late or rebases its timer, which creates permanent PTS holes (e.g.
+    // 0,1,17,18,...) and visible judder even if the host later catches up.
+    // Every encode call therefore advances by exactly one CFR slot.
+    return ComputeNextCfrFrameIndex(lastAssignedVideoPts);
+}
+
 void ApplyFinalStreamDurations(AVFormatContext* fmtCtx, int64_t finalDurationUs) {
     if (!fmtCtx || finalDurationUs <= 0) {
         return;
@@ -3076,21 +3095,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         DLL_Log("[VideoEncoder] Recording started at PTS %lld us", startPts.load());
     }
 
-    int64_t targetPts = 0;
-    int64_t elapsedUs = timestamp - startPts;
-    if (elapsedUs < 0) {
-        elapsedUs = 0;
-    }
-    if (savedConfig.useVFR && startPts >= 0) {
-        // VFR: PTS in microseconds, matches time_base 1/1000000.
-        targetPts = elapsedUs;
-    } else {
-        // CFR: the capture thread already emits frames on the exact output cadence
-        // and explicitly replays the previous frame when the source falls behind.
-        // Encode every received frame as the next sequential CFR tick so timing
-        // jitter in this process does not trigger a second round of skip/dup logic.
-        targetPts = ComputeCfrFrameIndexForElapsedUs(elapsedUs, savedConfig.fps, lastAssignedVideoPts);
-    }
+    const int64_t targetPts = ComputeTargetVideoPts(timestamp, savedConfig.useVFR, startPts, lastAssignedVideoPts);
 
     // 5. Encode (Direct D3D11 Frame) - with proper packet draining
     AVPacket* pkt = av_packet_alloc();
@@ -3157,7 +3162,6 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     bool success = true;
 
     d3d11Frame->pts = targetPts;
-    lastAssignedVideoPts = d3d11Frame->pts;
 
     if (success) {
         success = sendFrame(d3d11Frame);
@@ -3177,6 +3181,13 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     stats.packetsProduced = packetCount;
 
     av_packet_free(&pkt);
+
+    if (!success) {
+        av_frame_free(&d3d11Frame);
+        return false;
+    }
+
+    lastAssignedVideoPts = d3d11Frame->pts;
 
     // Update global stats
     g_framesEncoded++;
@@ -3459,21 +3470,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         DLL_Log("[VideoEncoder] Framegrab recording started at PTS %lld us", startPts.load());
     }
 
-    int64_t targetPts = 0;
-    int64_t elapsedUs = pts - startPts;
-    if (elapsedUs < 0)
-        elapsedUs = 0;
-
-    if (savedConfig.useVFR) {
-        // VFR: PTS in microseconds, matches time_base 1/1000000
-        targetPts = elapsedUs;
-    } else {
-        // CFR: the capture thread already drives a fixed-rate output schedule and
-        // explicitly repeats the last frame when no fresh source frame arrives.
-        // Stamp each received frame onto the next sequential CFR slot instead of
-        // resampling elapsed wall time again here.
-        targetPts = ComputeCfrFrameIndexForElapsedUs(elapsedUs, savedConfig.fps, lastAssignedVideoPts);
-    }
+    const int64_t targetPts = ComputeTargetVideoPts(pts, savedConfig.useVFR, startPts, lastAssignedVideoPts);
 
     // Encode
     AVPacket* pkt = av_packet_alloc();
@@ -3539,7 +3536,6 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     bool success = true;
 
     d3d11Frame->pts = targetPts;
-    lastAssignedVideoPts = d3d11Frame->pts;
 
     // Debug: Log input frame PTS
     if (encodeFrameCounter < 20 || encodeFrameCounter % 100 == 0) {
@@ -3549,6 +3545,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     if (success) {
         success = sendFrame(d3d11Frame);
         if (success) {
+            lastAssignedVideoPts = d3d11Frame->pts;
             outputFrameCount++;
             CacheRepeatFrameTexture(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
         }
@@ -3695,16 +3692,7 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp) {
     auto afterConvert = PerfTimer::now();
     ApplyFrameColorMetadata(d3d11Frame, codecCtx);
 
-    int64_t targetPts = 0;
-    int64_t elapsedUs = timestamp - startPts;
-    if (elapsedUs < 0) {
-        elapsedUs = 0;
-    }
-    if (savedConfig.useVFR && startPts >= 0) {
-        targetPts = elapsedUs;
-    } else {
-        targetPts = ComputeCfrFrameIndexForElapsedUs(elapsedUs, savedConfig.fps, lastAssignedVideoPts);
-    }
+    const int64_t targetPts = ComputeTargetVideoPts(timestamp, savedConfig.useVFR, startPts, lastAssignedVideoPts);
 
     AVPacket* pkt = av_packet_alloc();
     if (!pkt) {
@@ -3760,7 +3748,6 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp) {
     };
 
     d3d11Frame->pts = targetPts;
-    lastAssignedVideoPts = d3d11Frame->pts;
 
     auto encodeStart = PerfTimer::now();
     const bool success = sendFrame(d3d11Frame);
@@ -3780,6 +3767,8 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp) {
 
     lastEncodeTimeUs = static_cast<int64_t>(PerfTimer::elapsed_ms(beforeConvert, afterEncode) * 1000.0);
     lastFenceWaitUs = 0;
+
+    lastAssignedVideoPts = d3d11Frame->pts;
 
     g_framesEncoded++;
     outputFrameCount++;

@@ -1598,6 +1598,7 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint32_t wgcCoverageDelayTicksCurrent = 0;
     double wgcAudioLeadExcessMsCurrent = 0.0;
     bool wgcCoverageRepeatActiveCurrent = false;
+    bool encoderTooSlowForTargetCurrent = false;
     bool wgcLowSourceModeActive = false;
     bool wgcReservePressureActive = false;
     uint64_t wgcLowSourceStateChangeTick = 0;
@@ -1786,7 +1787,7 @@ void EncoderThreadFunc(const AppConfig& config) {
         };
         auto recomputeCatchupPolicy = [&]() {
             const uint32_t targetOutputFpsForPolicy = std::max<uint32_t>(1u, static_cast<uint32_t>(config.video.fps));
-            const bool encoderTooSlowForTargetNow = ce::capture_policy::IsEncoderTooSlowForTargetFps(
+            encoderTooSlowForTargetCurrent = ce::capture_policy::IsEncoderTooSlowForTargetFps(
                 smoothedEncodeMs, frameIntervalMs, targetOutputFpsForPolicy);
             const double shortfallDurationMs =
                 ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs);
@@ -1799,13 +1800,14 @@ void EncoderThreadFunc(const AppConfig& config) {
             catchupTicksThisLoop =
                 shouldCatchUpToWallClock
                     ? (activeScreenGrab ? ce::capture_policy::GetWgcCatchupTicksThisLoop(
-                                               encoderTooSlowForTargetNow,
+                                               encoderTooSlowForTargetCurrent,
                                                bufferedWgcFrames.size(), frameCreditAccumulator, outputShortfallTicks)
-                                         : ce::capture_policy::GetCfrCatchupTicksThisLoop(outputShortfallTicks, encoderTooSlowForTargetNow))
+                                         : ce::capture_policy::GetCfrCatchupTicksThisLoop(outputShortfallTicks,
+                                                                                         encoderTooSlowForTargetCurrent))
                     : 0u;
             if (activeScreenGrab &&
                 ce::capture_policy::ShouldClampWgcCoverageCatchupToSingleTick(
-                    wgcCoverageRepeatActiveCurrent, encoderTooSlowForTargetNow, shortfallDurationMs)) {
+                    wgcCoverageRepeatActiveCurrent, encoderTooSlowForTargetCurrent, shortfallDurationMs)) {
                 catchupTicksThisLoop = std::min<uint32_t>(catchupTicksThisLoop, 1u);
             }
         };
@@ -2283,6 +2285,14 @@ void EncoderThreadFunc(const AppConfig& config) {
                 const bool scheduledWgcTelemetryTick =
                     !config.video.useVFR && g_EncoderRunning && g_Recording && recordingOutputLive;
                 wgcCoverageDelayTicksCurrent = 0;
+                if (recordingOutputLive) {
+                    const double oldestBufferedFrameAgeMs = static_cast<double>(wgcOldestBufferedFrameAgeUs) / 1000.0;
+                    wgcCoverageDelayTicksCurrent = ce::capture_policy::GetWgcCoverageDelayTicks(
+                        outputShortfallTicks, oldestBufferedFrameAgeMs, frameIntervalMs);
+                    if (!wgcCoverageRepeatActiveCurrent) {
+                        wgcCoverageDelayTicksCurrent = 0;
+                    }
+                }
                 if (scheduledWgcTelemetryTick) {
                     wgcTelemetryTickArmed = true;
                     wgcBufferedAtTickStart = static_cast<uint32_t>(bufferedWgcFrames.size());
@@ -2947,14 +2957,14 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
 
             if (useScreenGrab && !ce::capture_policy::ShouldAllowWgcExtraCatchupTicks(
-                                     g_IsEncoderBottlenecked.load(std::memory_order_relaxed), bufferedWgcFrames.size(),
+                                     encoderTooSlowForTargetCurrent, bufferedWgcFrames.size(),
                                      frameCreditAccumulator, outputShortfallTicks)) {
                 return;
             }
 
             for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                 if (useScreenGrab && !ce::capture_policy::ShouldAllowWgcExtraCatchupTicks(
-                                         g_IsEncoderBottlenecked.load(std::memory_order_relaxed),
+                                         encoderTooSlowForTargetCurrent,
                                          bufferedWgcFrames.size(), frameCreditAccumulator, outputShortfallTicks)) {
                     break;
                 }
@@ -3872,17 +3882,20 @@ void StopRecording() {
 
     LogInfo("[Media] Stopping recording...");
 
-    const bool immediateWgcStop = IsActiveScreenGrab() && !g_RecordingUsesVfr.load(std::memory_order_acquire);
-    const bool drainOutstandingWgcTicks = false;
+    const bool drainOutstandingWgcTicks = IsActiveScreenGrab() && !g_RecordingUsesVfr.load(std::memory_order_acquire);
+    LARGE_INTEGER stopQpc = {};
+    if (drainOutstandingWgcTicks) {
+        QueryPerformanceCounter(&stopQpc);
+    }
 
     g_Recording = false;
     SetCaptureRequestedState(false);
     SetRecordingVisibleState(false);
     SetCapturePipelinePhase(CapturePipelinePhase::kStopping);
-    g_WgcDrainStopQpc.store(0, std::memory_order_release);
+    g_WgcDrainStopQpc.store(drainOutstandingWgcTicks ? stopQpc.QuadPart : 0, std::memory_order_release);
     g_DrainOutstandingWgcTicks.store(drainOutstandingWgcTicks, std::memory_order_release);
-    if (immediateWgcStop) {
-        LogInfo("[Media] WGC immediate stop policy active - skipping stop drain so finalization completes immediately");
+    if (drainOutstandingWgcTicks) {
+        LogInfo("[Media] WGC CFR stop drain armed - encoder will finish outstanding CFR ticks before finalizing");
     }
 
     StopWgcCapturePipeline();

@@ -38,6 +38,12 @@ TEST(CapturePipelinePolicyTest, WgcStopDrainAcceptsAnyRepeatableFrameSource) {
     EXPECT_FALSE(policy::CanDrainOutstandingWgcTicks(false, false, false, false));
 }
 
+TEST(CapturePipelinePolicyTest, WgcStopDrainRequiresCfrRepeatSourceBeforeAbort) {
+    EXPECT_FALSE(policy::CanDrainOutstandingWgcTicks(false, false, false, false));
+    EXPECT_TRUE(policy::CanDrainOutstandingWgcTicks(false, false, true, false));
+    EXPECT_TRUE(policy::CanDrainOutstandingWgcTicks(false, false, false, true));
+}
+
 TEST(CapturePipelinePolicyTest, WgcCoverageLossRepeatPolicyRequiresLagMismatch) {
     EXPECT_TRUE(policy::HasWgcUnrecoverableCoverageLoss(6333.0, 23.0));
     EXPECT_TRUE(policy::HasWgcUnrecoverableCoverageLoss(6333.0, 23.0, 80.0));
