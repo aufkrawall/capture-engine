@@ -3205,6 +3205,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                         ++encoderGridTickCount;
                         ++cfrCatchupTicksExecuted;
                         ++wgcFreshCatchupCount;
+                        nextSampleTime.QuadPart += targetIntervalTicks;
                         continue;
                     }
 
@@ -3260,6 +3261,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 ++liveTicksOutput;
                 ++encoderGridTickCount;
                 ++cfrCatchupTicksExecuted;
+                nextSampleTime.QuadPart += targetIntervalTicks;
             }
         };
 
@@ -4204,7 +4206,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                 g_WgcCap = std::make_unique<WGCCapture>();
                 if (g_WgcCap->Init(d3dDevice)) {
                     // Connect encoder bottleneck flag to WGC for throttle
-                    g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
+                    g_WgcCap->SetThrottleFlag(nullptr);
                     LogInfo("[Media] WGC support initialized%s",
                             IsPreferredScreenGrab() ? "" : " (standby for auto fallback)");
                 } else {
@@ -4248,7 +4250,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     auto ensureWgcStandby = [&]() -> bool {
         if (g_WgcCap) {
             g_WgcCap->SetCaptureCursor(config.video.captureCursor);
-            g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
+            g_WgcCap->SetThrottleFlag(nullptr);
             return true;
         }
         if (!ensureWgcDevice()) {
@@ -4260,7 +4262,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             return false;
         }
         g_WgcCap->SetCaptureCursor(config.video.captureCursor);
-        g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
+        g_WgcCap->SetThrottleFlag(nullptr);
         return true;
     };
     auto releaseIdleWgcResources = [&]() {
@@ -4374,7 +4376,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     auto primeWgcMonitorTarget = [&](HMONITOR targetMonitor = NULL) -> bool {
         if (targetMonitor == NULL && currentCapturedWindow == NULL && !currentTargetPrefersInject && g_WgcCap) {
             g_WgcCap->SetCaptureCursor(config.video.captureCursor);
-            g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
+            g_WgcCap->SetThrottleFlag(nullptr);
             SetPreferredScreenGrab(true);
             return true;
         }
@@ -4401,7 +4403,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         }
 
         g_WgcCap->SetCaptureCursor(config.video.captureCursor);
-        g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
+        g_WgcCap->SetThrottleFlag(nullptr);
         SetPreferredScreenGrab(true);
         currentCapturedWindow = NULL;
         currentTargetPrefersInject = false;
@@ -4415,7 +4417,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
 
         if (currentCapturedWindow == targetWindow && g_WgcCap && !currentTargetPrefersInject) {
             g_WgcCap->SetCaptureCursor(config.video.captureCursor);
-            g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
+            g_WgcCap->SetThrottleFlag(nullptr);
             SetPreferredScreenGrab(true);
             return true;
         }
@@ -4429,7 +4431,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         g_WgcCap = std::make_unique<WGCCapture>();
         if (g_WgcCap->InitForWindow(d3dDevice, targetWindow)) {
             g_WgcCap->SetCaptureCursor(config.video.captureCursor);
-            g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
+            g_WgcCap->SetThrottleFlag(nullptr);
             SetPreferredScreenGrab(true);
             currentCapturedWindow = targetWindow;
             currentTargetPrefersInject = false;
