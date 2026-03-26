@@ -3089,7 +3089,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         // and explicitly replays the previous frame when the source falls behind.
         // Encode every received frame as the next sequential CFR tick so timing
         // jitter in this process does not trigger a second round of skip/dup logic.
-        targetPts = ComputeNextCfrFrameIndex(lastAssignedVideoPts);
+        targetPts = ComputeCfrFrameIndexForElapsedUs(elapsedUs, savedConfig.fps, lastAssignedVideoPts);
     }
 
     // 5. Encode (Direct D3D11 Frame) - with proper packet draining
@@ -3472,7 +3472,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         // explicitly repeats the last frame when no fresh source frame arrives.
         // Stamp each received frame onto the next sequential CFR slot instead of
         // resampling elapsed wall time again here.
-        targetPts = ComputeNextCfrFrameIndex(lastAssignedVideoPts);
+        targetPts = ComputeCfrFrameIndexForElapsedUs(elapsedUs, savedConfig.fps, lastAssignedVideoPts);
     }
 
     // Encode
@@ -3703,7 +3703,7 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp) {
     if (savedConfig.useVFR && startPts >= 0) {
         targetPts = elapsedUs;
     } else {
-        targetPts = ComputeNextCfrFrameIndex(lastAssignedVideoPts);
+        targetPts = ComputeCfrFrameIndexForElapsedUs(elapsedUs, savedConfig.fps, lastAssignedVideoPts);
     }
 
     AVPacket* pkt = av_packet_alloc();
