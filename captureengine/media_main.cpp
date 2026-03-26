@@ -83,6 +83,13 @@ static std::atomic<uint32_t> g_InjectBufferedTrimmedFrames{0};
 static std::atomic<uint32_t> g_InjectCadenceDroppedFrames{0};
 static std::atomic<uint32_t> g_WgcAdaptiveTargetFps{0};
 
+struct WgcRetargetRequest {
+    HWND window = NULL;
+    HMONITOR monitor = NULL;
+    bool preferMonitor = false;
+    bool active = false;
+};
+
 // Forward declaration
 void InjectCaptureThreadFunc(const AppConfig& config);
 void WgcCaptureThreadFunc(const AppConfig& config);
@@ -447,6 +454,7 @@ struct CadenceHealthCounters {
 enum class WgcAdaptiveThrottleMode : uint32_t {
     kOff = 0,
     kHeadroom108 = 1,
+    kHeadroom125 = 2,
 };
 
 InjectFrameLineage MakeInjectFrameLineage(const QueuedFrame& frame) {
@@ -2343,16 +2351,43 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                             static_cast<double>(cadenceCounters.liveTickEmitCount)
                                                       : 0.0;
                     const uint32_t averageJitterUs = SaturatingToUint32(g_WgcCap->GetSourceJitterAvgUs());
+                    const uint32_t poolDropCount = g_WgcCap->GetPoolDropCount();
+                    const uint32_t queueDepth = static_cast<uint32_t>(std::min<size_t>(bufferedWgcFrames.size(), 0xFFFFFFFFull));
                     wgcRecentDeliveredFps = g_WgcCap->GetDeliveredRatePerSec();
                     wgcRecentDeliveredMin250Fps = g_WgcCap->GetDeliveredMin250Fps();
                     wgcRecentDeliveredMin500Fps = g_WgcCap->GetDeliveredMin500Fps();
                     wgcRecentInputMin250Fps = g_WgcCap->GetInputMin250Fps();
                     wgcRecentInputMin500Fps = g_WgcCap->GetInputMin500Fps();
-                    (void)averageJitterUs;
-                    (void)duplicateRatio;
 
-                    if (wgcAdaptiveThrottleMode != WgcAdaptiveThrottleMode::kOff) {
+                    const bool sharedDeviceFallbackActive =
+                        g_WgcCap->GetLastCopyTimeUs() > static_cast<int64_t>(frameIntervalMs * 1000.0 * 0.55);
+                    const bool sustainedPressure = g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ||
+                                                  queueDepth >= 8u || poolDropCount > 0 ||
+                                                  wgcNoFreshTickPermille >= ce::capture_policy::kWgcReservePressurePermille ||
+                                                  duplicateRatio > 0.18 || averageJitterUs > 2500u ||
+                                                  sharedDeviceFallbackActive;
+                    const bool severePressure = queueDepth >= 12u || poolDropCount >= 2u ||
+                                               averageJitterUs > 5000u || duplicateRatio > 0.30 ||
+                                               ce::capture_policy::IsEncoderTooSlowForTargetFps(smoothedEncodeMs,
+                                                                                                 frameIntervalMs, outputFps,
+                                                                                                 2.0);
+
+                    if (severePressure) {
+                        desiredTargetFps = std::max<uint32_t>(outputFps, static_cast<uint32_t>(std::ceil(outputFps * 1.08)));
+                        wgcAdaptiveThrottleMode = WgcAdaptiveThrottleMode::kHeadroom108;
+                    } else if (sustainedPressure) {
+                        desiredTargetFps = std::max<uint32_t>(outputFps, static_cast<uint32_t>(std::ceil(outputFps * 1.25)));
+                        wgcAdaptiveThrottleMode = WgcAdaptiveThrottleMode::kHeadroom125;
+                    } else {
                         wgcAdaptiveThrottleMode = WgcAdaptiveThrottleMode::kOff;
+                    }
+
+                    if (desiredTargetFps > 0 && wgcRecentInputMin250Fps > 0) {
+                        desiredTargetFps = std::min(desiredTargetFps, wgcRecentInputMin250Fps);
+                        if (desiredTargetFps <= outputFps) {
+                            desiredTargetFps = 0;
+                            wgcAdaptiveThrottleMode = WgcAdaptiveThrottleMode::kOff;
+                        }
                     }
 
                     if (desiredTargetFps != currentTargetFps) {
@@ -4251,6 +4286,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     DWORD lastWindowScanTime = 0;
     HWND currentCapturedWindow = NULL;
     bool currentTargetPrefersInject = false;
+    WgcRetargetRequest pendingWgcRetarget;
     uint32_t lastSourcePid = 0;
     uint32_t activeConfigSourcePid = 0;
     std::string activeConfigProcessName;
@@ -4258,6 +4294,16 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     auto clearCurrentWgcTarget = [&]() {
         currentCapturedWindow = NULL;
         currentTargetPrefersInject = false;
+        pendingWgcRetarget = {};
+    };
+
+    auto queueWgcRetarget = [&](HWND targetWindow, HMONITOR targetMonitor, bool preferMonitor, const char* reason) {
+        pendingWgcRetarget.window = targetWindow;
+        pendingWgcRetarget.monitor = targetMonitor;
+        pendingWgcRetarget.preferMonitor = preferMonitor || targetWindow == NULL;
+        pendingWgcRetarget.active = true;
+        LogWarn("[Media] Queued WGC retarget: %s (window=0x%p monitor=0x%p monitorOnly=%d)", reason,
+                targetWindow, targetMonitor, pendingWgcRetarget.preferMonitor ? 1 : 0);
     };
 
     auto refreshActiveConfig = [&](bool forceReload) -> std::string {
@@ -4323,8 +4369,8 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         return true;
     };
 
-    auto primeWgcMonitorTarget = [&]() -> bool {
-        if (currentCapturedWindow == NULL && !currentTargetPrefersInject && g_WgcCap) {
+    auto primeWgcMonitorTarget = [&](HMONITOR targetMonitor = NULL) -> bool {
+        if (targetMonitor == NULL && currentCapturedWindow == NULL && !currentTargetPrefersInject && g_WgcCap) {
             g_WgcCap->SetCaptureCursor(config.video.captureCursor);
             g_WgcCap->SetThrottleFlag(&g_IsEncoderBottlenecked);
             SetPreferredScreenGrab(true);
@@ -4337,7 +4383,17 @@ int MediaProcessMain(const AppConfig& initialConfig) {
 
         g_WgcCap.reset();
         g_WgcCap = std::make_unique<WGCCapture>();
-        if (!g_WgcCap->Init(d3dDevice)) {
+        bool initOk = false;
+        if (targetMonitor) {
+            initOk = g_WgcCap->InitForMonitor(d3dDevice, targetMonitor);
+            if (!initOk) {
+                LogWarn("[Media] Failed to init WGC for monitor 0x%p, falling back to primary", targetMonitor);
+            }
+        }
+        if (!initOk) {
+            initOk = g_WgcCap->Init(d3dDevice);
+        }
+        if (!initOk) {
             g_WgcCap.reset();
             return false;
         }
@@ -4386,6 +4442,46 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             SetPreferredScreenGrab(false);
             clearCurrentWgcTarget();
             return false;
+        }
+        return true;
+    };
+
+    auto applyPendingWgcRetarget = [&]() -> bool {
+        if (!pendingWgcRetarget.active) {
+            return false;
+        }
+
+        WgcRetargetRequest request = pendingWgcRetarget;
+        pendingWgcRetarget = {};
+
+        const bool restartActiveCapture = g_Recording && IsActiveScreenGrab();
+        if (restartActiveCapture) {
+            StopWgcCapturePipeline();
+        }
+
+        if (!request.preferMonitor && request.window && !IsWindow(request.window)) {
+            request.window = NULL;
+            request.preferMonitor = true;
+        }
+
+        bool primed = false;
+        if (!request.preferMonitor && request.window) {
+            primed = primeWgcWindowTarget(request.window, true);
+        }
+        if (!primed) {
+            primed = primeWgcMonitorTarget(request.monitor);
+        }
+        if (!primed) {
+            LogWarn("[Media] Failed to apply queued WGC retarget");
+            return false;
+        }
+
+        if (restartActiveCapture) {
+            if (!StartWgcRecordingCapture(config)) {
+                LogError("[Media] Failed to restart WGC capture after retarget");
+                return false;
+            }
+            LogInfo("[Media] WGC capture restarted after retarget");
         }
         return true;
     };
@@ -4541,6 +4637,27 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         }
 
         if (g_pSharedMem) {
+            if (g_WgcCap && g_Recording && IsActiveScreenGrab() && g_WgcCap->NeedsReset()) {
+                HWND currentWindow = NULL;
+                HMONITOR currentMonitor = NULL;
+                g_WgcCap->GetTargetIdentity(&currentWindow, &currentMonitor);
+                const std::string resetReason = g_WgcCap->ConsumeResetReason();
+                queueWgcRetarget(currentWindow, currentMonitor, currentWindow == NULL,
+                                 resetReason.empty() ? "runtime reset requested" : resetReason.c_str());
+            }
+
+            if (g_WgcCap && g_Recording && IsActiveScreenGrab() && g_WgcCap->IsWindowTarget() &&
+                !g_WgcCap->IsTargetWindowValid()) {
+                HWND currentWindow = NULL;
+                HMONITOR currentMonitor = NULL;
+                g_WgcCap->GetTargetIdentity(&currentWindow, &currentMonitor);
+                queueWgcRetarget(NULL, currentMonitor, true, "target window invalid during recording");
+            }
+
+            if (pendingWgcRetarget.active && g_Recording && IsActiveScreenGrab()) {
+                applyPendingWgcRetarget();
+            }
+
             if (LoadAcquire(g_pSharedMem->runtimeState.cmdStartRecording)) {
                 StoreRelease(g_pSharedMem->runtimeState.cmdStartRecording, false);
                 if (!g_Recording) {

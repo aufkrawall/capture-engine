@@ -142,6 +142,7 @@ private:
 // ============================================================================
 AppAudioCapture::AppAudioCapture() {
     activationCompleteEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    captureEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 }
 
 AppAudioCapture::~AppAudioCapture() {
@@ -149,6 +150,10 @@ AppAudioCapture::~AppAudioCapture() {
     if (activationCompleteEvent) {
         CloseHandle(activationCompleteEvent);
         activationCompleteEvent = nullptr;
+    }
+    if (captureEvent_) {
+        CloseHandle(captureEvent_);
+        captureEvent_ = nullptr;
     }
 }
 
@@ -202,7 +207,8 @@ bool AppAudioCapture::StartByPID(DWORD processId) {
     targetPID.store(processId);
     targetProcessName.clear();
 
-    return InitializeCaptureForPID(processId);
+    BeginAsyncStartForPID(processId);
+    return true;
 }
 
 bool AppAudioCapture::StartByName(const std::string& processName) {
@@ -232,6 +238,16 @@ bool AppAudioCapture::StartByName(const std::string& processName) {
 void AppAudioCapture::Stop() {
     shouldStop.store(true);
 
+    {
+        std::lock_guard<std::mutex> lock(startMutex);
+        if (pendingStartFuture.valid()) {
+            pendingStartFuture.wait();
+            pendingStartFuture.get();
+        }
+        asyncStartInProgress.store(false, std::memory_order_release);
+        startPendingValid.store(false, std::memory_order_release);
+    }
+
     // Stop monitoring
     isMonitoring.store(false);
     if (monitorThread.joinable()) {
@@ -251,6 +267,11 @@ void AppAudioCapture::Stop() {
 }
 
 bool AppAudioCapture::GetNextPacket(AudioPacket& packet) {
+    FinalizePendingAsyncStart();
+    if (!isCapturing.load(std::memory_order_acquire) && !isMonitoring.load(std::memory_order_acquire) &&
+        targetPID.load(std::memory_order_acquire) != 0 && !asyncStartInProgress.load(std::memory_order_acquire)) {
+        targetPID.store(0, std::memory_order_release);
+    }
     std::lock_guard<std::mutex> lock(queueMutex);
     if (packetQueue.empty())
         return false;
@@ -265,6 +286,64 @@ void AppAudioCapture::DiscardPendingPackets() {
         DLL_Log("[AppAudioCapture] Discarding %zu queued packets for PID %lu", packetQueue.size(), targetPID.load());
         packetQueue.clear();
     }
+}
+
+void AppAudioCapture::BeginAsyncStartForPID(DWORD pid) {
+    std::lock_guard<std::mutex> lock(startMutex);
+    if (pendingStartFuture.valid()) {
+        pendingStartFuture.wait();
+        const bool started = pendingStartFuture.get();
+        if (!started) {
+            DLL_Log("[AppAudioCapture] Async start failed for PID %lu", targetPID.load());
+        }
+    }
+
+    asyncStartInProgress.store(true, std::memory_order_release);
+    startPendingValid.store(false, std::memory_order_release);
+    pendingStartFuture = std::async(std::launch::async, [this, pid]() {
+        const bool ok = InitializeCaptureForPID(pid);
+        startPendingResult.store(ok, std::memory_order_release);
+        startPendingValid.store(true, std::memory_order_release);
+        asyncStartInProgress.store(false, std::memory_order_release);
+        return ok;
+    });
+}
+
+void AppAudioCapture::FinalizePendingAsyncStart() {
+    if (!startPendingValid.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(startMutex);
+    if (pendingStartFuture.valid() &&
+        pendingStartFuture.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+        const bool ok = pendingStartFuture.get();
+        startPendingValid.store(false, std::memory_order_release);
+        if (ok) {
+            DLL_Log("[AppAudioCapture] Async start completed for PID %lu", targetPID.load());
+        } else {
+            DLL_Log("[AppAudioCapture] Async start failed for PID %lu", targetPID.load());
+        }
+        if (!ok && !isMonitoring.load(std::memory_order_acquire)) {
+            targetPID.store(0, std::memory_order_release);
+        }
+    }
+}
+
+bool AppAudioCapture::StartCaptureThreadForCurrentClient() {
+    // Clear any stale packets
+    {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        packetQueue.clear();
+    }
+
+    if (captureThread.joinable()) {
+        captureThread.join();
+    }
+
+    isCapturing.store(true, std::memory_order_release);
+    captureThread = std::thread(&AppAudioCapture::CaptureLoop, this);
+    return true;
 }
 
 bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {
@@ -347,7 +426,7 @@ bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {
     }
 
     // KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
-    static const GUID KSDATAFORMAT_SUBTYPE_IEEE_FLOAT = {
+    const GUID kKsDataFormatSubtypeIeeeFloat = {
         0x00000003, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
 
     pwfx = (WAVEFORMATEX*)CoTaskMemAlloc(sizeof(WAVEFORMATEXTENSIBLE));
@@ -367,7 +446,7 @@ bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {
     wfex->Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
     wfex->Samples.wValidBitsPerSample = 32;
     wfex->dwChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
-    wfex->SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
+    wfex->SubFormat = kKsDataFormatSubtypeIeeeFloat;
 
     // Initialize audio client - per Microsoft sample, use LOOPBACK +
     // AUTOCONVERTPCM AUTOCONVERTPCM tells Windows to convert the process audio to
@@ -404,6 +483,15 @@ bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {
     }
     activeStreamFlags = streamFlags;
 
+    if ((activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 && captureEvent_) {
+        ResetEvent(captureEvent_);
+        hr = pAudioClient->SetEventHandle(captureEvent_);
+        if (FAILED(hr)) {
+            DLL_Log("[AppAudioCapture] SetEventHandle failed: 0x%x, reverting to polling", hr);
+            activeStreamFlags &= ~AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
+        }
+    }
+
     // Get capture client
     hr = pAudioClient->GetService(__uuidof(IAudioCaptureClient), reinterpret_cast<void**>(&pCaptureClient));
     if (FAILED(hr)) {
@@ -423,19 +511,18 @@ bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {
     DLL_Log("[AppAudioCapture] Started: PID=%lu channels=%d rate=%d bits=%d", pid, pwfx->nChannels,
             pwfx->nSamplesPerSec, pwfx->wBitsPerSample);
 
-    // Clear any stale packets
-    {
-        std::lock_guard<std::mutex> lock(queueMutex);
-        packetQueue.clear();
-    }
+    DLL_Log("[AppAudioCapture] Capture mode: %s", (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0
+                                                     ? "event-driven"
+                                                     : "polling");
 
-    isCapturing.store(true);
-    captureThread = std::thread(&AppAudioCapture::CaptureLoop, this);
-
-    return true;
+    return StartCaptureThreadForCurrentClient();
 }
 
 void AppAudioCapture::CleanupCapture() {
+    if (captureEvent_) {
+        ResetEvent(captureEvent_);
+    }
+
     // Match AudioCapture teardown: process loopback uses LOOPBACK streams too, and
     // releasing the interfaces directly avoids the crash-sensitive Stop() path.
     if (pAudioClient && (activeStreamFlags & AUDCLNT_STREAMFLAGS_LOOPBACK) == 0) {
@@ -480,15 +567,28 @@ void AppAudioCapture::CaptureLoop() {
     bool firstSet = false;
     int logCounter = 0;
     uint64_t logicalFrameCursor = 0;
+    uint64_t lastProcessCheckTick = 0;
 
     while (isCapturing.load() && !shouldStop.load()) {
-        // Check if target process is still running
-        if (!IsProcessRunning(targetPID.load())) {
-            DLL_Log("[AppAudioCapture] Target process %lu exited", targetPID.load());
-            break;
+        const uint64_t nowTick = GetTickCount64();
+        if (nowTick - lastProcessCheckTick >= 500) {
+            lastProcessCheckTick = nowTick;
+            if (!IsProcessRunning(targetPID.load())) {
+                DLL_Log("[AppAudioCapture] Target process %lu exited", targetPID.load());
+                targetPID.store(0, std::memory_order_release);
+                break;
+            }
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        if ((activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 && captureEvent_) {
+            const DWORD waitResult = WaitForSingleObject(captureEvent_, 200);
+            if (waitResult == WAIT_FAILED) {
+                DLL_Log("[AppAudioCapture] WaitForSingleObject failed: 0x%lx", GetLastError());
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+        } else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
 
         hr = pCaptureClient->GetNextPacketSize(&packetLength);
         if (FAILED(hr)) {
@@ -497,16 +597,11 @@ void AppAudioCapture::CaptureLoop() {
                 DLL_Log("[AppAudioCapture] GetNextPacketSize failed: 0x%x", hr);
             }
 
-            // If error, also sleep and synth silence? No, usually fatal or transient.
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
             continue;
         }
 
         if (packetLength == 0) {
-            // Let MediaEngine's pull-side underrun handling generate timeline
-            // silence. Synthesizing silence here races the real packet cadence and
-            // can silently inflate the app-audio timeline.
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
         }
 
@@ -573,6 +668,9 @@ void AppAudioCapture::CaptureLoop() {
 
             {
                 std::lock_guard<std::mutex> lock(queueMutex);
+                if (packetQueue.size() >= kMaxQueuedPackets) {
+                    packetQueue.pop_front();
+                }
                 packetQueue.push_back(packet);
             }
 
@@ -591,6 +689,7 @@ void AppAudioCapture::CaptureLoop() {
 
     DLL_Log("[AppAudioCapture] Capture loop exited");
     isCapturing.store(false);
+    startPendingValid.store(false, std::memory_order_release);
     if (SUCCEEDED(coInitHr) && coInitHr != S_FALSE) {
         CoUninitialize();
     }
@@ -600,6 +699,15 @@ void AppAudioCapture::ProcessMonitorLoop() {
     DLL_Log("[AppAudioCapture] Monitor loop started for '%s'", targetProcessName.c_str());
 
     while (isMonitoring.load() && !shouldStop.load()) {
+        FinalizePendingAsyncStart();
+
+        if (asyncStartInProgress.load(std::memory_order_acquire)) {
+            for (int i = 0; i < 5 && isMonitoring.load() && !shouldStop.load(); ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            continue;
+        }
+
         // Check if we're already capturing
         if (isCapturing.load()) {
             // Check if target process is still running
@@ -619,12 +727,7 @@ void AppAudioCapture::ProcessMonitorLoop() {
             if (pid != 0) {
                 DLL_Log("[AppAudioCapture] Found process '%s' with PID %lu", targetProcessName.c_str(), pid);
                 targetPID.store(pid);
-                if (InitializeCaptureForPID(pid)) {
-                    DLL_Log("[AppAudioCapture] Started capture for discovered process");
-                } else {
-                    DLL_Log("[AppAudioCapture] Failed to start capture for PID %lu", pid);
-                    targetPID.store(0);
-                }
+                BeginAsyncStartForPID(pid);
             }
         }
 

@@ -6,6 +6,7 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <string>
 #include <vector>
 
 // Forward declarations to avoid including WinRT headers in public interface
@@ -142,6 +143,12 @@ public:
     // Returns true when the captured display output runs at >8 bpc, even if
     // the actual capture texture fell back to an 8-bit format.
     bool IsHighPrecisionSource() const;
+
+    bool IsWindowTarget() const;
+    bool IsTargetWindowValid() const;
+    void GetTargetIdentity(HWND* hwnd, HMONITOR* hmonitor) const;
+    bool NeedsReset() const;
+    std::string ConsumeResetReason();
 
     // Force-reset WGC session to stop in-flight callbacks (emergency cleanup)
     void ForceReset();

@@ -42,6 +42,12 @@ public:
     }
 
 private:
+    struct AnchorInfo {
+        RECT monitorRect = {0, 0, 0, 0};
+        HWND window = NULL;
+        UINT dpi = 96;
+    };
+
     // Overlay state tracking (to avoid redundant UpdateLayeredWindow calls)
     struct OvState {
         int x = -1, y = -1, s = -1;
@@ -53,7 +59,10 @@ private:
     bool IsForegroundTarget();
 
     // Check if inject overlay is active in a hooked game (via shared memory)
+    bool EnsureSharedMemoryMapping();
     bool IsInjectOverlayActive();
+    AnchorInfo ResolveAnchorInfo();
+    void UpdateScaleForDpi(UINT dpi);
 
     // GDI rendering helpers
     void InitGDI();
@@ -93,6 +102,9 @@ private:
     HBITMAP oldBmWarn_ = NULL;
     HFONT fontWarn_ = NULL;
     SIZE sizeWarn_ = {0, 0};
+    UINT currentDpi_ = 96;
+    uint32_t mappedInjectPid_ = 0;
+    uint32_t lastEncoderOverloadFlags_ = 0;
 
     // Timer ID
     static constexpr UINT_PTR kTimerId = 1001;
@@ -112,5 +124,6 @@ private:
     // Shared memory handles for inject overlay detection
     HANDLE hDiscoveryMap_ = NULL;
     HANDLE hSharedMemMap_ = NULL;
+    struct DiscoveryInfo* pDiscovery_ = nullptr;
     struct SharedMemoryLayout* pSharedMem_ = nullptr;
 };

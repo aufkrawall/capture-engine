@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <chrono>
 #include <deque>
+#include <string>
 #include <mutex>
 #include "../common/frame_timing_utils.h"
 #include "../common/rate_window_utils.h"
@@ -202,6 +203,12 @@ class WGCCapture::Impl {
 public:
 #if HAS_WGC
     ~Impl() {
+        if (item_) {
+            try {
+                item_.Closed(itemClosedToken_);
+            } catch (...) {
+            }
+        }
         ReleaseTexturePool();
         SafeRelease(latestFrame_);
         SafeRelease(cachedTexture_);
@@ -340,8 +347,34 @@ public:
     bool borderlessCapture_ = false;
     UINT outputBitsPerColor_ = 8;
     DXGI_COLOR_SPACE_TYPE outputColorSpace_ = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+    std::atomic<bool> resetNeeded_{false};
+    std::mutex resetReasonMutex_;
+    std::string resetReason_;
+    winrt::event_token itemClosedToken_{};
     std::atomic<ULONGLONG> lastHDRCheckTick_{0};
     std::atomic<bool> hdrRecheckPending_{false};
+
+    void FlagResetNeeded(const char* reason) {
+        resetNeeded_.store(true, std::memory_order_release);
+        if (reason && *reason) {
+            std::lock_guard<std::mutex> lock(resetReasonMutex_);
+            if (resetReason_.empty()) {
+                resetReason_ = reason;
+            }
+        }
+    }
+
+    bool NeedsReset() const {
+        return resetNeeded_.load(std::memory_order_acquire);
+    }
+
+    std::string ConsumeResetReason() {
+        resetNeeded_.store(false, std::memory_order_release);
+        std::lock_guard<std::mutex> lock(resetReasonMutex_);
+        std::string reason = resetReason_;
+        resetReason_.clear();
+        return reason;
+    }
 
     void PerformHDRRecheck() {
         const ULONGLONG now = GetTickCount64();
@@ -487,6 +520,11 @@ public:
     }
 
     void ResetStats() {
+        resetNeeded_.store(false, std::memory_order_relaxed);
+        {
+            std::lock_guard<std::mutex> lock(resetReasonMutex_);
+            resetReason_.clear();
+        }
         callbackFrameCount_.store(0, std::memory_order_relaxed);
         inputFrameCount_.store(0, std::memory_order_relaxed);
         sourceIntervalAvgUs_.store(0, std::memory_order_relaxed);
@@ -1179,6 +1217,19 @@ public:
             return false;
         }
 
+        if (targetWindow_) {
+            if (!IsWindow(targetWindow_)) {
+                FlagResetNeeded("target window became invalid");
+                winrtFrame.Close();
+                return false;
+            }
+            if (IsIconic(targetWindow_)) {
+                FlagResetNeeded("target window minimized");
+                winrtFrame.Close();
+                return false;
+            }
+        }
+
         inputFrameCount_.fetch_add(1, std::memory_order_relaxed);
         RecordInputFrameEvent();
 
@@ -1231,6 +1282,17 @@ public:
             if (SUCCEEDED(access->GetInterface(__uuidof(ID3D11Texture2D), (void**)&texture)) && texture) {
                 D3D11_TEXTURE2D_DESC desc;
                 texture->GetDesc(&desc);
+
+                if (frameWidth_ != 0 && frameHeight_ != 0 &&
+                    (desc.Width != frameWidth_ || desc.Height != frameHeight_)) {
+                    LogWarn("[WGC] Source size changed from %ux%u to %ux%u", frameWidth_, frameHeight_, desc.Width,
+                            desc.Height);
+                    FlagResetNeeded("capture size changed");
+                    texture->Release();
+                    access->Release();
+                    winrtFrame.Close();
+                    return false;
+                }
 
                 if (!formatDetected_) {
                     formatDetected_ = true;
@@ -1306,6 +1368,17 @@ public:
 
         // Check if Impl is still alive
         if (!alive_.load(std::memory_order_acquire)) {
+            return;
+        }
+
+        if (NeedsReset()) {
+            while (alive_.load(std::memory_order_acquire)) {
+                auto winrtFrame = sender.TryGetNextFrame();
+                if (!winrtFrame) {
+                    break;
+                }
+                winrtFrame.Close();
+            }
             return;
         }
 
@@ -1392,6 +1465,10 @@ public:
         }
 
         item_ = item;
+        itemClosedToken_ = item_.Closed([this](auto&&, auto&&) {
+            LogWarn("[WGC] Capture item closed by OS");
+            FlagResetNeeded("capture item closed");
+        });
         targetMonitor_ = hmon;
         targetWindow_ = nullptr;
         return true;
@@ -1417,6 +1494,10 @@ public:
         }
 
         item_ = item;
+        itemClosedToken_ = item_.Closed([this](auto&&, auto&&) {
+            LogWarn("[WGC] Window capture item closed by OS");
+            FlagResetNeeded("window capture item closed");
+        });
         targetWindow_ = hwnd;
         targetMonitor_ = nullptr;
         return true;
@@ -1425,6 +1506,12 @@ public:
     bool StartCapture(uint32_t& width, uint32_t& height, bool captureCursor) {
         if (!item_ || !winrtDevice_)
             return false;
+
+        resetNeeded_.store(false, std::memory_order_relaxed);
+        {
+            std::lock_guard<std::mutex> lock(resetReasonMutex_);
+            resetReason_.clear();
+        }
 
         // Cache QPC frequency for timestamp and throttle calculations
         LARGE_INTEGER freq;
@@ -1439,6 +1526,8 @@ public:
         auto size = item_.Size();
         width = size.Width;
         height = size.Height;
+        frameWidth_ = width;
+        frameHeight_ = height;
         UpdateCaptureFormatSelection();
 
         // CRITICAL: Must use CreateFreeThreaded (not Create) because we have no
@@ -1587,6 +1676,8 @@ public:
         ReleasePendingFramesLocked();
         ReleaseTexturePool();
         borderlessCapture_ = false;
+        frameWidth_ = 0;
+        frameHeight_ = 0;
 
         SafeRelease(cachedTexture_);
         frameReady_ = false;
@@ -2187,11 +2278,66 @@ bool WGCCapture::IsHighPrecisionSource() const {
     return false;
 }
 
+bool WGCCapture::IsWindowTarget() const {
+#if HAS_WGC
+    return impl_ && impl_->targetWindow_ != nullptr;
+#else
+    return false;
+#endif
+}
+
+bool WGCCapture::IsTargetWindowValid() const {
+#if HAS_WGC
+    return impl_ && (!impl_->targetWindow_ || IsWindow(impl_->targetWindow_));
+#else
+    return false;
+#endif
+}
+
+void WGCCapture::GetTargetIdentity(HWND* hwnd, HMONITOR* hmonitor) const {
+#if HAS_WGC
+    if (hwnd) {
+        *hwnd = impl_ ? impl_->targetWindow_ : nullptr;
+    }
+    if (hmonitor) {
+        *hmonitor = impl_ ? impl_->targetMonitor_ : nullptr;
+    }
+#else
+    if (hwnd) {
+        *hwnd = nullptr;
+    }
+    if (hmonitor) {
+        *hmonitor = nullptr;
+    }
+#endif
+}
+
+bool WGCCapture::NeedsReset() const {
+#if HAS_WGC
+    return impl_ && impl_->NeedsReset();
+#else
+    return false;
+#endif
+}
+
+std::string WGCCapture::ConsumeResetReason() {
+#if HAS_WGC
+    return impl_ ? impl_->ConsumeResetReason() : std::string();
+#else
+    return {};
+#endif
+}
+
 void WGCCapture::ForceReset() {
 #if HAS_WGC
     capturing_ = false;
 
     if (impl_) {
+        HWND targetWindow = impl_->targetWindow_;
+        HMONITOR targetMonitor = impl_->targetMonitor_;
+        const bool wasWindowCapture = targetWindow != nullptr;
+        const bool wasMonitorCapture = targetMonitor != nullptr && targetWindow == nullptr;
+
         // Clear the active direct-frame callback before tearing down
         impl_->frameCallback_.store(nullptr, std::memory_order_release);
 
@@ -2224,6 +2370,23 @@ void WGCCapture::ForceReset() {
         impl_ = std::make_unique<Impl>();
         if (!impl_->InitializeDevices(device_)) {
             LogError("[WGC] ForceReset failed to reinitialize capture devices");
+            return;
+        }
+
+        if (device_) {
+            if (!impl_->CreateWinRTDevice()) {
+                LogError("[WGC] ForceReset failed to rebuild WinRT device");
+                return;
+            }
+            if (wasWindowCapture && targetWindow) {
+                if (!impl_->CreateForWindow(targetWindow)) {
+                    LogWarn("[WGC] ForceReset failed to recreate window target");
+                }
+            } else if (wasMonitorCapture && targetMonitor) {
+                if (!impl_->CreateForMonitor(targetMonitor)) {
+                    LogWarn("[WGC] ForceReset failed to recreate monitor target");
+                }
+            }
         }
 
         LogWarn("[WGC] ForceReset complete - WGC session recreated");

@@ -528,6 +528,8 @@ void ToggleRecording() {
             g_Recording = false;
             if (g_Tray)
                 g_Tray->SetRecordingState(false);
+            if (g_PseudoOverlay)
+                g_PseudoOverlay->SetRecordingState(false);
             return;
         }
 
@@ -536,6 +538,8 @@ void ToggleRecording() {
             g_Recording = false;
             if (g_Tray)
                 g_Tray->SetRecordingState(false);
+            if (g_PseudoOverlay)
+                g_PseudoOverlay->SetRecordingState(false);
             return;
         }
 
@@ -552,6 +556,8 @@ void ToggleRecording() {
                 } else {
                     LogError("[Controller] Recording start failed");
                     g_Recording = false;
+                    if (g_PseudoOverlay)
+                        g_PseudoOverlay->SetRecordingState(false);
                 }
             }
         }

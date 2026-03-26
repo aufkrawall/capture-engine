@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <sstream>
 #include <string>
 
@@ -28,6 +29,35 @@ std::string NormalizeProcessName(std::string value) {
                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     return value;
 }
+
+bool GetMonitorRectForWindow(HWND hwnd, RECT* rect) {
+    if (!rect) {
+        return false;
+    }
+
+    HMONITOR monitor = hwnd ? MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+                            : MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
+    if (!monitor) {
+        return false;
+    }
+
+    MONITORINFO monitorInfo = {};
+    monitorInfo.cbSize = sizeof(monitorInfo);
+    if (!GetMonitorInfo(monitor, &monitorInfo)) {
+        return false;
+    }
+
+    *rect = monitorInfo.rcMonitor;
+    return true;
+}
+
+UINT GetResolvedWindowDpi(HWND hwnd) {
+    UINT dpi = hwnd ? GetDpiForWindow(hwnd) : 0u;
+    if (dpi == 0) {
+        dpi = GetDpiForSystem();
+    }
+    return dpi == 0 ? 96u : dpi;
+}
 }  // namespace
 
 // ---- Static instance pointer for wndproc routing ----
@@ -45,6 +75,33 @@ PseudoOverlay::~PseudoOverlay() {
 
 int PseudoOverlay::S(int v) const {
     return static_cast<int>(static_cast<float>(v) * scale_);
+}
+
+void PseudoOverlay::UpdateScaleForDpi(UINT dpi) {
+    const UINT resolvedDpi = dpi == 0 ? 96u : dpi;
+    if (resolvedDpi == currentDpi_ && fontWarn_) {
+        return;
+    }
+
+    currentDpi_ = resolvedDpi;
+    scale_ = static_cast<float>(currentDpi_) / 96.0f;
+    sizeWarn_ = {0, 0};
+    lastWarnMsg_.clear();
+
+    if (bmWarn_) {
+        if (hdcWarn_ && oldBmWarn_) {
+            SelectObject(hdcWarn_, oldBmWarn_);
+        }
+        DeleteObject(bmWarn_);
+        bmWarn_ = NULL;
+    }
+
+    if (fontWarn_) {
+        DeleteObject(fontWarn_);
+        fontWarn_ = NULL;
+    }
+
+    fontWarn_ = CreateFontA(-S(40), 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, 0, 0, "Segoe UI");
 }
 
 // ---- Foreground process detection (ported from OBSIndicator) ----
@@ -107,52 +164,101 @@ bool PseudoOverlay::IsForegroundTarget() {
 
 // ---- Inject overlay detection via shared memory ----
 
-bool PseudoOverlay::IsInjectOverlayActive() {
-    // Lazy-open shared memory on first call
-    if (!pSharedMem_) {
+bool PseudoOverlay::EnsureSharedMemoryMapping() {
+    if (!hDiscoveryMap_) {
         hDiscoveryMap_ = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
-        if (!hDiscoveryMap_)
+        if (!hDiscoveryMap_) {
             return false;
+        }
+    }
 
-        DiscoveryInfo* pDisc =
+    if (!pDiscovery_) {
+        pDiscovery_ =
             (DiscoveryInfo*)MapViewOfFile(hDiscoveryMap_, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
-        if (!pDisc) {
-            CloseHandle(hDiscoveryMap_);
-            hDiscoveryMap_ = NULL;
-            return false;
-        }
-
-        uint32_t magic = pDisc->GetMagic();
-        uint32_t pid = pDisc->GetInjectPid();
-        UnmapViewOfFile(pDisc);
-
-        if (magic != DISCOVERY_MAGIC || pid == 0) {
-            CloseHandle(hDiscoveryMap_);
-            hDiscoveryMap_ = NULL;
-            return false;
-        }
-
-        wchar_t sharedMemName[64];
-        GenerateSharedMemName(sharedMemName, 64, pid);
-        hSharedMemMap_ = OpenFileMappingW(FILE_MAP_READ, FALSE, sharedMemName);
-        if (!hSharedMemMap_) {
-            CloseHandle(hDiscoveryMap_);
-            hDiscoveryMap_ = NULL;
-            return false;
-        }
-
-        pSharedMem_ =
-            (SharedMemoryLayout*)MapViewOfFile(hSharedMemMap_, FILE_MAP_READ, 0, 0, sizeof(SharedMemoryLayout));
-        if (!pSharedMem_) {
-            CloseHandle(hSharedMemMap_);
-            hSharedMemMap_ = NULL;
+        if (!pDiscovery_) {
             CloseHandle(hDiscoveryMap_);
             hDiscoveryMap_ = NULL;
             return false;
         }
     }
 
-    return pSharedMem_->runtimeState.HasRuntimeFlag(kCaptureRuntimeFlagInjectOverlayActive);
+    if (pDiscovery_->GetMagic() != DISCOVERY_MAGIC) {
+        return false;
+    }
+
+    const uint32_t injectPid = pDiscovery_->GetInjectPid();
+    if (injectPid == 0) {
+        if (pSharedMem_) {
+            UnmapViewOfFile(pSharedMem_);
+            pSharedMem_ = nullptr;
+        }
+        if (hSharedMemMap_) {
+            CloseHandle(hSharedMemMap_);
+            hSharedMemMap_ = NULL;
+        }
+        mappedInjectPid_ = 0;
+        return false;
+    }
+
+    if (pSharedMem_ && mappedInjectPid_ == injectPid) {
+        return true;
+    }
+
+    if (pSharedMem_) {
+        UnmapViewOfFile(pSharedMem_);
+        pSharedMem_ = nullptr;
+    }
+    if (hSharedMemMap_) {
+        CloseHandle(hSharedMemMap_);
+        hSharedMemMap_ = NULL;
+    }
+
+    wchar_t sharedMemName[64];
+    GenerateSharedMemName(sharedMemName, 64, injectPid);
+    hSharedMemMap_ = OpenFileMappingW(FILE_MAP_READ, FALSE, sharedMemName);
+    if (!hSharedMemMap_) {
+        mappedInjectPid_ = 0;
+        return false;
+    }
+
+    pSharedMem_ =
+        (SharedMemoryLayout*)MapViewOfFile(hSharedMemMap_, FILE_MAP_READ, 0, 0, sizeof(SharedMemoryLayout));
+    if (!pSharedMem_) {
+        CloseHandle(hSharedMemMap_);
+        hSharedMemMap_ = NULL;
+        mappedInjectPid_ = 0;
+        return false;
+    }
+
+    mappedInjectPid_ = injectPid;
+    return true;
+}
+
+bool PseudoOverlay::IsInjectOverlayActive() {
+    return EnsureSharedMemoryMapping() &&
+           pSharedMem_->runtimeState.HasRuntimeFlag(kCaptureRuntimeFlagInjectOverlayActive);
+}
+
+PseudoOverlay::AnchorInfo PseudoOverlay::ResolveAnchorInfo() {
+    AnchorInfo anchor;
+
+    HWND anchorWindow = GetForegroundWindow();
+    if (!anchorWindow || !IsWindow(anchorWindow)) {
+        anchorWindow = GetDesktopWindow();
+    }
+
+    RECT monitorRect = {};
+    if (!GetMonitorRectForWindow(anchorWindow, &monitorRect)) {
+        monitorRect.left = 0;
+        monitorRect.top = 0;
+        monitorRect.right = GetSystemMetrics(SM_CXSCREEN);
+        monitorRect.bottom = GetSystemMetrics(SM_CYSCREEN);
+    }
+
+    anchor.monitorRect = monitorRect;
+    anchor.window = anchorWindow;
+    anchor.dpi = GetResolvedWindowDpi(anchorWindow);
+    return anchor;
 }
 
 // ---- GDI helpers ----
@@ -164,7 +270,7 @@ void PseudoOverlay::InitGDI() {
         oldBmWarn_ = (HBITMAP)GetCurrentObject(hdcWarn_, OBJ_BITMAP);
     ReleaseDC(NULL, hdcScreen);
 
-    fontWarn_ = CreateFontA(-S(40), 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, 0, 0, "Arial");
+    UpdateScaleForDpi(currentDpi_);
 }
 
 void PseudoOverlay::CleanupGDI() {
@@ -211,8 +317,13 @@ void PseudoOverlay::UpdateOverlay() {
         return;
     }
 
-    int sw = GetSystemMetrics(SM_CXSCREEN);
-    int sh = GetSystemMetrics(SM_CYSCREEN);
+    const AnchorInfo anchor = ResolveAnchorInfo();
+    UpdateScaleForDpi(anchor.dpi);
+
+    const int monitorLeft = anchor.monitorRect.left;
+    const int monitorTop = anchor.monitorRect.top;
+    const int sw = anchor.monitorRect.right - anchor.monitorRect.left;
+    const int sh = anchor.monitorRect.bottom - anchor.monitorRect.top;
     int p = config_.pad;
     int s = config_.size;
     int fullS = s + p;
@@ -235,6 +346,8 @@ void PseudoOverlay::UpdateOverlay() {
         winX = sw - fullS;
         winY = sh - fullS;
     }  // BR
+    winX += monitorLeft;
+    winY += monitorTop;
 
     // Indicator offsets (relative to window)
     int indX = 0, indY = 0;
@@ -484,20 +597,20 @@ void PseudoOverlay::UpdateOverlay() {
         int wH = sizeWarn_.cy;
 
         if (config_.pos == 3) {
-            wx = off;
-            wy = p;
+            wx = monitorLeft + off;
+            wy = monitorTop + p;
         }  // TL
         else if (config_.pos == 2) {
-            wx = sw - off - wW;
-            wy = p;
+            wx = monitorLeft + sw - off - wW;
+            wy = monitorTop + p;
         }  // TR
         else if (config_.pos == 1) {
-            wx = off;
-            wy = sh - p - wH;
+            wx = monitorLeft + off;
+            wy = monitorTop + sh - p - wH;
         }  // BL
         else {
-            wx = sw - off - wW;
-            wy = sh - p - wH - S(40);
+            wx = monitorLeft + sw - off - wW;
+            wy = monitorTop + sh - p - wH - S(40);
         }  // BR
 
         POINT ptDst = {wx, wy};
@@ -514,6 +627,12 @@ void PseudoOverlay::UpdateOverlay() {
 // ---- Window procedures ----
 
 LRESULT CALLBACK PseudoOverlay::IndicatorWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    if (m == WM_MOUSEACTIVATE) {
+        return MA_NOACTIVATE;
+    }
+    if (m == WM_NCHITTEST) {
+        return HTTRANSPARENT;
+    }
     if (m == WM_TIMER && w == kTimerId && instance_ && instance_->initialized_) {
         PseudoOverlay* self = instance_;
         ULONGLONG now = GetTickCount64();
@@ -574,6 +693,15 @@ LRESULT CALLBACK PseudoOverlay::IndicatorWndProc(HWND h, UINT m, WPARAM w, LPARA
             lastScreenshotNotifyUntil = current;
         }
 
+        if (self->config_.showEncoderOverloadWarn && self->EnsureSharedMemoryMapping() && self->pSharedMem_) {
+            const uint32_t overloadFlags =
+                self->pSharedMem_->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
+            if (overloadFlags != 0 && self->lastEncoderOverloadFlags_ == 0) {
+                self->TriggerEncoderOverloadWarning();
+            }
+            self->lastEncoderOverloadFlags_ = overloadFlags;
+        }
+
         // Periodic refresh in info mode
         if (self->config_.mode == 0)
             self->UpdateOverlay();
@@ -584,6 +712,12 @@ LRESULT CALLBACK PseudoOverlay::IndicatorWndProc(HWND h, UINT m, WPARAM w, LPARA
 }
 
 LRESULT CALLBACK PseudoOverlay::WarningWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    if (m == WM_MOUSEACTIVATE) {
+        return MA_NOACTIVATE;
+    }
+    if (m == WM_NCHITTEST) {
+        return HTTRANSPARENT;
+    }
     return DefWindowProc(h, m, w, l);
 }
 
@@ -594,7 +728,9 @@ bool PseudoOverlay::Init(HINSTANCE hInstance) {
         return true;
 
     instance_ = this;
-    scale_ = static_cast<float>(GetDpiForSystem()) / 96.0f;
+    currentDpi_ = 96;
+    scale_ = 1.0f;
+    UpdateScaleForDpi(GetDpiForSystem());
 
     InitGDI();
 
@@ -610,8 +746,8 @@ bool PseudoOverlay::Init(HINSTANCE hInstance) {
     }
 
     // Create indicator overlay window
-    hOv_ = CreateWindowExA(WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW, kIndicatorClass, "",
-                           WS_POPUP, 0, 0, 0, 0, NULL, NULL, hInstance, 0);
+    hOv_ = CreateWindowExA(WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                           kIndicatorClass, "", WS_POPUP, 0, 0, 0, 0, NULL, NULL, hInstance, 0);
     if (!hOv_) {
         LogError("[PseudoOverlay] Failed to create indicator overlay window");
         CleanupGDI();
@@ -632,8 +768,8 @@ bool PseudoOverlay::Init(HINSTANCE hInstance) {
     }
 
     // Create warning overlay window
-    hWarn_ = CreateWindowExA(WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW, kWarningClass, "",
-                             WS_POPUP, 0, 0, 0, 0, NULL, NULL, hInstance, 0);
+    hWarn_ = CreateWindowExA(WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                             kWarningClass, "", WS_POPUP, 0, 0, 0, 0, NULL, NULL, hInstance, 0);
     if (!hWarn_) {
         LogError("[PseudoOverlay] Failed to create warning overlay window");
         DestroyWindow(hOv_);
@@ -675,6 +811,10 @@ void PseudoOverlay::Shutdown() {
         UnmapViewOfFile(pSharedMem_);
         pSharedMem_ = nullptr;
     }
+    if (pDiscovery_) {
+        UnmapViewOfFile(pDiscovery_);
+        pDiscovery_ = nullptr;
+    }
     if (hSharedMemMap_) {
         CloseHandle(hSharedMemMap_);
         hSharedMemMap_ = NULL;
@@ -692,6 +832,8 @@ void PseudoOverlay::Shutdown() {
     warnActive_ = false;
     warnVisible_ = false;
     warnCycleStart_ = 0;
+    mappedInjectPid_ = 0;
+    lastEncoderOverloadFlags_ = 0;
 
     initialized_ = false;
     instance_ = nullptr;
@@ -704,6 +846,8 @@ void PseudoOverlay::Shutdown() {
 void PseudoOverlay::UpdateConfig(const PseudoOverlayConfig& cfg) {
     bool wasEnabled = config_.enabled;
     config_ = cfg;
+    lastWarnMsg_.clear();
+    sizeWarn_ = {0, 0};
 
     if (wasEnabled && !cfg.enabled) {
         // Disable overlay: hide windows

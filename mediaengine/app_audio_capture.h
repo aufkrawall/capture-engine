@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <deque>
+#include <future>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -102,12 +103,17 @@ public:
     static bool IsSupported();
 
 private:
+    static constexpr size_t kMaxQueuedPackets = 64;
+
     // Internal activation handler (implements
     // IActivateAudioInterfaceCompletionHandler)
     class ActivationHandler;
 
     // Initialize capture for the given PID (called internally)
     bool InitializeCaptureForPID(DWORD pid);
+    bool StartCaptureThreadForCurrentClient();
+    void BeginAsyncStartForPID(DWORD pid);
+    void FinalizePendingAsyncStart();
 
     // Cleanup capture resources
     void CleanupCapture();
@@ -147,8 +153,15 @@ private:
     std::mutex queueMutex;
     std::deque<AudioPacket> packetQueue;
 
+    std::mutex startMutex;
+    std::future<bool> pendingStartFuture;
+    std::atomic<bool> asyncStartInProgress{false};
+    std::atomic<bool> startPendingResult{false};
+    std::atomic<bool> startPendingValid{false};
+
     // Event for async activation completion
     HANDLE activationCompleteEvent = nullptr;
+    HANDLE captureEvent_ = nullptr;
     HRESULT activationResult = 0x80004005;  // E_FAIL
-
+    
 };
