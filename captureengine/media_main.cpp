@@ -2804,8 +2804,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                     }
                 }
                 QueryPerformanceCounter(&nextSampleTime);
-                liveStartQpc = nextSampleTime;
-                encoderGridStartQpc = liveStartQpc.QuadPart;
+                liveStartQpc.QuadPart = 0; // Set after first frame's encoder initialization delay to avoid initial judder
+                encoderGridStartQpc = nextSampleTime.QuadPart;
                 // Flush stale warmup frames from ALL buffers.  During the gap
                 // between capture start and encoder readiness, frames accumulate
                 // in the shmem ring → g_FrameQueue → bufferedInjectFrames.
@@ -3590,6 +3590,18 @@ void EncoderThreadFunc(const AppConfig& config) {
                     }
                 }
                 if (consumesCfrTick && isLivePhase) {
+                    if (liveStartQpc.QuadPart == 0 && liveTicksOutput == 0) {
+                        LARGE_INTEGER afterInit;
+                        QueryPerformanceCounter(&afterInit);
+                        liveStartQpc = afterInit;
+                        // For the selection grid, we treat the first frame as tick 1.
+                        // To align future idealQpc calculations perfectly with scheduledSampleQpc, 
+                        // we must offset the anchor back by one target interval.
+                        encoderGridStartQpc = liveStartQpc.QuadPart - targetIntervalTicks;
+                        // Start the CFR timeline exactly 1 tick from now, skipping the init delay entirely
+                        nextSampleTime.QuadPart = liveStartQpc.QuadPart + targetIntervalTicks;
+                        LogInfo("[EncoderThread] Anchored CFR live timeline after first frame (init delay skipped)");
+                    }
                     ++liveTicksOutput;
                 }
                 const InjectFrameLineage catchupLineage =
