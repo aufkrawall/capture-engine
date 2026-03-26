@@ -225,11 +225,11 @@ public:
 
     ID3D11Texture2D* latestFrame_ = nullptr;
     std::deque<WGCCapturedFrame> pendingFrames_;
-    static constexpr size_t kMaxPendingFrames = 24;
+    static constexpr size_t kMaxPendingFrames = 48;
 
     // Texture pool for zero-copy pipeline: each frame gets its own texture
     // so the encoder can consume frame N while frame N+1 is being copied.
-    static constexpr int TEXTURE_POOL_SIZE = 6;                    // Enough for 120fps + encoder latency
+    static constexpr int TEXTURE_POOL_SIZE = 12;                   // Enough for 120fps + short encoder/callback spikes
     ID3D11Texture2D* texturePool_[TEXTURE_POOL_SIZE] = {};         // Encoder-device textures
     ID3D11Texture2D* captureTexturePool_[TEXTURE_POOL_SIZE] = {};  // Capture-device views when split
     IDXGIKeyedMutex* captureTextureMutexPool_[TEXTURE_POOL_SIZE] = {};
@@ -340,14 +340,12 @@ public:
     bool borderlessCapture_ = false;
     UINT outputBitsPerColor_ = 8;
     DXGI_COLOR_SPACE_TYPE outputColorSpace_ = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
-    ULONGLONG lastHDRCheckTick_ = 0;
+    std::atomic<ULONGLONG> lastHDRCheckTick_{0};
+    std::atomic<bool> hdrRecheckPending_{false};
 
-    // Periodically re-check HDR state (handles mid-capture HDR toggle in Windows settings)
-    void MaybeRecheckHDR() {
-        ULONGLONG now = GetTickCount64();
-        if (now - lastHDRCheckTick_ < 2000)  // Re-check every 2 seconds
-            return;
-        lastHDRCheckTick_ = now;
+    void PerformHDRRecheck() {
+        const ULONGLONG now = GetTickCount64();
+        lastHDRCheckTick_.store(now, std::memory_order_relaxed);
 
         if (!targetMonitor_)
             return;
@@ -361,6 +359,32 @@ public:
                 captureIsHDR_ = newHDR;
             }
         }
+    }
+
+    // Periodically re-check HDR state (handles mid-capture HDR toggle in Windows settings)
+    // but keep the DXGI probe off the WinRT callback hot path.
+    void RequestHDRRecheckIfDue() {
+        const ULONGLONG now = GetTickCount64();
+        const ULONGLONG lastCheckTick = lastHDRCheckTick_.load(std::memory_order_relaxed);
+        if (now - lastCheckTick < 2000) {
+            return;
+        }
+
+        hdrRecheckPending_.store(true, std::memory_order_relaxed);
+    }
+
+    void MaybePerformDeferredHDRRecheck() {
+        if (!hdrRecheckPending_.exchange(false, std::memory_order_relaxed)) {
+            return;
+        }
+
+        const ULONGLONG now = GetTickCount64();
+        const ULONGLONG lastCheckTick = lastHDRCheckTick_.load(std::memory_order_relaxed);
+        if (now - lastCheckTick < 2000) {
+            return;
+        }
+
+        PerformHDRRecheck();
     }
 
     const char* DescribeCaptureFormat() const {
@@ -1231,7 +1255,7 @@ public:
                         lastDeliveredSourceQpc_.store(sourceFrameQpc, std::memory_order_relaxed);
                     }
                     RecordDeliveredFrameEvent();
-                    MaybeRecheckHDR();
+                    RequestHDRRecheckIfDue();
 
                     int32_t captureLeft = 0;
                     int32_t captureTop = 0;
@@ -1602,6 +1626,7 @@ public:
             return 0;
         }
 
+        MaybePerformDeferredHDRRecheck();
         frames.clear();
         std::lock_guard<std::mutex> lock(frameMutex_);
         while (!pendingFrames_.empty()) {
