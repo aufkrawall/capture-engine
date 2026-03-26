@@ -3072,8 +3072,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 const int64_t repeatScheduledQpc =
                     scheduledSampleQpc + static_cast<int64_t>(extraTick) * targetIntervalTicks;
 
-                const bool allowFreshCatchup = !encoderTooSlowForTargetCurrent && 
-                                               !g_IsEncoderBottlenecked.load(std::memory_order_relaxed);
+                const bool allowFreshCatchup = true; // Always allow fresh catchup for CFR
                 if (allowFreshCatchup && useScreenGrab && MediaEngine_ProcessFrameD3D11 && !bufferedWgcFrames.empty()) {
                     const int64_t catchupGridTick = encoderGridTickCount + 1;
                     const int64_t catchupSelectionTargetQpc =
@@ -3159,6 +3158,14 @@ void EncoderThreadFunc(const AppConfig& config) {
                         }
 
                         if (catchupSelectionTargetQpc > 0 && g_LastFrame.timestamp > 0) {
+                            if (encoderTooSlowForTargetCurrent) {
+                                static uint64_t s_lastCatchupLog = 0;
+                                uint64_t nowTick = GetTickCount64();
+                                if (nowTick - s_lastCatchupLog >= 1000) {
+                                    LogInfo("[EncoderThread] CFR Catchup applied using fresh frame (encoder slow, but preserving smoothness)");
+                                    s_lastCatchupLog = nowTick;
+                                }
+                            }
                             const int64_t signedSelectionErrorUs =
                                 ((GetFrameSelectionTimestamp(g_LastFrame) - catchupSelectionTargetQpc) * 1000000) /
                                 qpcFreq.QuadPart;
