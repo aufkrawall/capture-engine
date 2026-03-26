@@ -9,6 +9,7 @@
 #include <dxgi1_6.h>
 #include <algorithm>
 #include <chrono>
+#include <deque>
 #include <mutex>
 #include "../common/frame_timing_utils.h"
 #include "../common/rate_window_utils.h"
@@ -223,6 +224,8 @@ public:
     winrt::IDirect3DDevice winrtDevice_{nullptr};
 
     ID3D11Texture2D* latestFrame_ = nullptr;
+    std::deque<WGCCapturedFrame> pendingFrames_;
+    static constexpr size_t kMaxPendingFrames = 24;
 
     // Texture pool for zero-copy pipeline: each frame gets its own texture
     // so the encoder can consume frame N while frame N+1 is being copied.
@@ -499,6 +502,45 @@ public:
         lastCapturedQPC_ = 0;
         nextCaptureQPC_ = 0;
         lastCursorScreenPosValid_ = false;
+        std::lock_guard<std::mutex> lock(frameMutex_);
+        while (!pendingFrames_.empty()) {
+            WGCCapturedFrame stale = std::move(pendingFrames_.front());
+            pendingFrames_.pop_front();
+            SafeRelease(stale.texture);
+        }
+    }
+
+    void ReleasePendingFramesLocked() {
+        while (!pendingFrames_.empty()) {
+            WGCCapturedFrame stale = std::move(pendingFrames_.front());
+            pendingFrames_.pop_front();
+            SafeRelease(stale.texture);
+        }
+    }
+
+    void QueuePendingFrame(WGCCapturedFrame&& frame) {
+        if (!frame.texture) {
+            return;
+        }
+
+        const int64_t frameKey = frame.rawTimestamp > 0 ? frame.rawTimestamp : frame.timestamp;
+        std::lock_guard<std::mutex> lock(frameMutex_);
+        if (!pendingFrames_.empty()) {
+            WGCCapturedFrame& lastPending = pendingFrames_.back();
+            const int64_t lastKey = lastPending.rawTimestamp > 0 ? lastPending.rawTimestamp : lastPending.timestamp;
+            if (frameKey > 0 && lastKey > 0 && frameKey == lastKey) {
+                SafeRelease(lastPending.texture);
+                lastPending = std::move(frame);
+                return;
+            }
+        }
+
+        pendingFrames_.push_back(std::move(frame));
+        while (pendingFrames_.size() > kMaxPendingFrames) {
+            WGCCapturedFrame stale = std::move(pendingFrames_.front());
+            pendingFrames_.pop_front();
+            SafeRelease(stale.texture);
+        }
     }
 
     void RecordInputFrameEvent() {
@@ -640,18 +682,18 @@ public:
         const int64_t rawSourceFrameQpc = sourceFrameQpc;
         const int64_t lastObservedRawSourceQpc = lastObservedRawSourceQpc_.load(std::memory_order_relaxed);
         const int64_t lastAssignedSourceQpc = lastAssignedSourceQpc_.load(std::memory_order_relaxed);
-        if (lastAssignedSourceQpc > 0 && rawSourceFrameQpc <= lastAssignedSourceQpc) {
+        if (lastAssignedSourceQpc > 0 && rawSourceFrameQpc < lastAssignedSourceQpc) {
             if (duplicateSourceTimestamp) {
                 *duplicateSourceTimestamp = true;
             }
             normalizedDuplicateTimestampCount_.fetch_add(1, std::memory_order_relaxed);
-            sourceFrameQpc = lastAssignedSourceQpc + 1;
+            sourceFrameQpc = lastAssignedSourceQpc;
         } else if (lastObservedRawSourceQpc > 0 && rawSourceFrameQpc == lastObservedRawSourceQpc) {
             if (duplicateSourceTimestamp) {
                 *duplicateSourceTimestamp = true;
             }
             normalizedDuplicateTimestampCount_.fetch_add(1, std::memory_order_relaxed);
-            sourceFrameQpc = lastObservedRawSourceQpc + 1;
+            sourceFrameQpc = lastObservedRawSourceQpc;
         }
 
         if (rawSourceFrameQpc > lastObservedRawSourceQpc) {
@@ -1127,7 +1169,8 @@ public:
 
         bool duplicateSourceTimestamp = false;
         const int64_t sourceFrameQpc = NormalizeSourceFrameQpc(rawSourceFrameQpc, &duplicateSourceTimestamp);
-        if (targetIntervalQPC_ > 0 && nextCaptureQPC_ > 0 && sourceFrameQpc > 0 && sourceFrameQpc < nextCaptureQPC_) {
+        if (!duplicateSourceTimestamp && targetIntervalQPC_ > 0 && nextCaptureQPC_ > 0 && sourceFrameQpc > 0 &&
+            sourceFrameQpc < nextCaptureQPC_) {
             skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
             pacingSkipCount_.fetch_add(1, std::memory_order_relaxed);
             winrtFrame.Close();
@@ -1141,7 +1184,7 @@ public:
             return false;
         }
 
-        if (IsStaleSourceFrameQpc(sourceFrameQpc)) {
+        if (!duplicateSourceTimestamp && IsStaleSourceFrameQpc(sourceFrameQpc)) {
             skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
             staleSkipCount_.fetch_add(1, std::memory_order_relaxed);
             const int64_t lastDeliveredSourceQpc = lastDeliveredSourceQpc_.load(std::memory_order_relaxed);
@@ -1184,7 +1227,7 @@ public:
                 if (CopyFrameToPool(texture, desc, sourceFrameQpc, rawSourceFrameQpc, &copiedTexture,
                                     copyCompleteQpc)) {
                     const int64_t deliveredTimestamp = sourceFrameQpc > 0 ? sourceFrameQpc : copyCompleteQpc;
-                    if (sourceFrameQpc > 0) {
+                    if (sourceFrameQpc > 0 && !duplicateSourceTimestamp) {
                         lastDeliveredSourceQpc_.store(sourceFrameQpc, std::memory_order_relaxed);
                     }
                     RecordDeliveredFrameEvent();
@@ -1242,12 +1285,26 @@ public:
             return;
         }
 
-        // Pull mode: leave frames in the WGC frame pool and only wake the
-        // consumer. Draining here would race with GetNextFrame() and collapse
-        // the pool before the encoder thread can sample the latest frame on its
-        // own schedule.
+        // Pull mode: drain promptly into an internal bounded queue so the
+        // encoder thread only performs CFR scheduling. This preserves recent
+        // temporal history across callback bursts and avoids coupling source
+        // collection to encoder wakeups.
         if (!frameCallback_.load(std::memory_order_acquire)) {
-            if (frameArrivedEvent_) {
+            bool processedFrame = false;
+            while (alive_.load(std::memory_order_acquire)) {
+                auto winrtFrame = sender.TryGetNextFrame();
+                if (!winrtFrame) {
+                    break;
+                }
+
+                WGCCapturedFrame frame{};
+                if (ProcessCapturedFrame(std::move(winrtFrame), &frame) && frame.texture) {
+                    QueuePendingFrame(std::move(frame));
+                    processedFrame = true;
+                }
+            }
+
+            if (processedFrame && frameArrivedEvent_) {
                 SetEvent(frameArrivedEvent_);
             }
             return;
@@ -1503,6 +1560,7 @@ public:
 
         std::lock_guard<std::mutex> lock(frameMutex_);
         SafeRelease(latestFrame_);
+        ReleasePendingFramesLocked();
         ReleaseTexturePool();
         borderlessCapture_ = false;
 
@@ -1545,14 +1603,10 @@ public:
         }
 
         frames.clear();
-        winrt::Direct3D11CaptureFrame nextFrame = nullptr;
-        while ((nextFrame = framePool_.TryGetNextFrame()) != nullptr) {
-            WGCCapturedFrame frame{};
-            if (!ProcessCapturedFrame(std::move(nextFrame), &frame) || !frame.texture) {
-                continue;
-            }
-
-            frames.push_back(std::move(frame));
+        std::lock_guard<std::mutex> lock(frameMutex_);
+        while (!pendingFrames_.empty()) {
+            frames.push_back(std::move(pendingFrames_.front()));
+            pendingFrames_.pop_front();
             if (maxFrames > 0 && frames.size() > maxFrames) {
                 WGCCapturedFrame stale = std::move(frames.front());
                 frames.erase(frames.begin());
