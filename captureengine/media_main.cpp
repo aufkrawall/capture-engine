@@ -1801,7 +1801,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                     ? (activeScreenGrab ? ce::capture_policy::GetWgcCatchupTicksThisLoop(
                                                encoderTooSlowForTargetNow,
                                                bufferedWgcFrames.size(), frameCreditAccumulator, outputShortfallTicks)
-                                         : ce::capture_policy::GetCfrCatchupTicksThisLoop(outputShortfallTicks))
+                                         : ce::capture_policy::GetCfrCatchupTicksThisLoop(outputShortfallTicks, encoderTooSlowForTargetNow))
                     : 0u;
             if (activeScreenGrab &&
                 ce::capture_policy::ShouldClampWgcCoverageCatchupToSingleTick(

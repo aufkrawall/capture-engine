@@ -82,7 +82,10 @@ inline bool CanDrainOutstandingWgcTicks(bool queuedWgcFrameAvailable, bool buffe
 // Returns the maximum number of output ticks to emit in a single encoder loop
 // iteration when catching up.  The value includes the main tick itself, so
 // "2" means 1 main + 1 extra repeat.
-inline uint32_t GetCfrCatchupTicksThisLoop(uint32_t outputShortfallTicks) {
+inline uint32_t GetCfrCatchupTicksThisLoop(uint32_t outputShortfallTicks, bool encoderBottlenecked = false) {
+    if (encoderBottlenecked) {
+        return 1u;
+    }
     if (outputShortfallTicks >= kCfrShortfallForceCatchupThresholdTicks) {
         return std::min(outputShortfallTicks, 4u);
     }
@@ -107,16 +110,15 @@ inline bool ShouldApplyWgcSelectionDelay(bool recordingOutputLive, uint32_t outp
 
 inline bool ShouldAllowWgcExtraCatchupTicks(bool encoderBottlenecked, size_t bufferedWgcFrames,
                                             double frameCreditAccumulator, uint32_t outputShortfallTicks) {
-    // If we have pure timer shortfall, we MUST catch up to prevent PTS gaps in CFR video!
+    if (encoderBottlenecked) {
+        return false;
+    }
+
     if (outputShortfallTicks >= kCfrShortfallCatchupThresholdTicks) {
         return true;
     }
 
     if (bufferedWgcFrames <= 1) {
-        return false;
-    }
-
-    if (encoderBottlenecked && outputShortfallTicks < kCfrShortfallForceCatchupThresholdTicks) {
         return false;
     }
 
@@ -129,6 +131,10 @@ inline bool ShouldAllowWgcExtraCatchupTicks(bool encoderBottlenecked, size_t buf
 
 inline uint32_t GetWgcCatchupTicksThisLoop(bool encoderBottlenecked, size_t bufferedWgcFrames,
                                            double frameCreditAccumulator, uint32_t outputShortfallTicks) {
+    if (encoderBottlenecked) {
+        return 1u;
+    }
+
     const uint32_t baseCatchupTicks = GetCfrCatchupTicksThisLoop(outputShortfallTicks);
     if (baseCatchupTicks > 1u) {
         return baseCatchupTicks;
