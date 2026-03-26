@@ -1842,7 +1842,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             wgcAudioLeadExcessMsCurrent = loadWgcAudioLeadExcessMs();
             wgcCoverageRepeatActiveCurrent = computeWgcCoverageRepeatActive(wgcAudioLeadExcessMsCurrent);
             shouldCatchUpToWallClock =
-                !config.video.useVFR && recordingOutputLive && !activeScreenGrab &&
+                !config.video.useVFR && recordingOutputLive &&
                 ce::capture_policy::ShouldCfrCatchUpToWallClock(outputShortfallTicks, activeScreenGrab,
                                                                 frameAvailableForCatchup, g_HasLastFrame);
             catchupTicksThisLoop = shouldCatchUpToWallClock
@@ -1891,7 +1891,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 // longer than the target interval.  Without this, the selection
                 // target grows increasingly out of sync with actual frame times.
                 if (recordingOutputLive && encoderGridStartQpc > 0 && targetIntervalTicks > 0 && liveTicksOutput > 0 &&
-                    (liveTicksOutput % 60 == 0)) {
+                    (liveTicksOutput % 60 == 0) && outputShortfallTicks < 2) {
                     LARGE_INTEGER resyncNow;
                     QueryPerformanceCounter(&resyncNow);
                     const int64_t idealGridStart =
@@ -3029,10 +3029,6 @@ void EncoderThreadFunc(const AppConfig& config) {
         };
         auto emitCatchupRepeats = [&](const InjectFrameLineage* duplicateLineage) {
             if (!scheduledLiveCfrTick || catchupTicksThisLoop <= 1 || !g_HasLastFrame) {
-                return;
-            }
-
-            if (useScreenGrab) {
                 return;
             }
 
