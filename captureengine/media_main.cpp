@@ -3072,7 +3072,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                 const int64_t repeatScheduledQpc =
                     scheduledSampleQpc + static_cast<int64_t>(extraTick) * targetIntervalTicks;
 
-                if (useScreenGrab && MediaEngine_ProcessFrameD3D11 && !bufferedWgcFrames.empty()) {
+                const bool allowFreshCatchup = !encoderTooSlowForTargetCurrent && 
+                                               !g_IsEncoderBottlenecked.load(std::memory_order_relaxed);
+                if (allowFreshCatchup && useScreenGrab && MediaEngine_ProcessFrameD3D11 && !bufferedWgcFrames.empty()) {
                     const int64_t catchupGridTick = encoderGridTickCount + 1;
                     const int64_t catchupSelectionTargetQpc =
                         computeWgcSelectionTargetForTick(repeatScheduledQpc, catchupGridTick, false);
