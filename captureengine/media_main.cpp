@@ -542,6 +542,25 @@ static void QueueWgcFrame(ID3D11Texture2D* texture, uint32_t width, uint32_t hei
     }
 }
 
+static QueuedFrame MakeQueuedWgcFrame(WGCCapturedFrame&& frame) {
+    QueuedFrame qf;
+    qf.isInjectMode = false;
+    qf.texture = frame.texture;
+    frame.texture = nullptr;
+    qf.width = frame.width;
+    qf.height = frame.height;
+    qf.timestamp = frame.timestamp;
+    qf.rawTimestamp = frame.rawTimestamp;
+    LARGE_INTEGER enqueueQpc;
+    QueryPerformanceCounter(&enqueueQpc);
+    qf.enqueueQpc = enqueueQpc.QuadPart;
+    qf.isHDR = frame.isHDR;
+    qf.duplicateSourceTimestamp = frame.duplicateSourceTimestamp;
+    qf.captureLeft = frame.captureLeft;
+    qf.captureTop = frame.captureTop;
+    return qf;
+}
+
 static void ResetInjectFrameRingToLatest(const char* reason) {
     if (!g_pSharedMem) {
         return;
@@ -604,7 +623,11 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
     }
 
     g_WgcCap->SetCaptureCursor(config.video.captureCursor);
-    g_WgcCap->SetDirectFrameCallback(QueueWgcFrame);
+    if (config.video.useVFR) {
+        g_WgcCap->SetDirectFrameCallback(QueueWgcFrame);
+    } else {
+        g_WgcCap->SetDirectFrameCallback(nullptr);
+    }
     g_WgcCap->ResetStats();
     g_IsEncoderBottlenecked.store(false, std::memory_order_relaxed);
     g_WgcAdaptiveTargetFps.store(0, std::memory_order_relaxed);
@@ -621,6 +644,7 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
     // backpressure, so the throttle is both unnecessary and harmful for CFR.
     if (!config.video.useVFR) {
         g_WgcCap->SetThrottleFlag(nullptr);
+        LogInfo("[Media] WGC CFR mode: pull-latest sampling enabled, callback queue bypassed");
         LogInfo("[Media] WGC CFR mode: encoder-bottleneck throttle disabled (buffer cap provides backpressure)");
     }
     if (g_pSharedMem) {
@@ -2087,16 +2111,20 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
             smoothedInjectFenceMs = 0.0;
             if (!config.video.useVFR) {
-                // CFR WGC: buffer source-cadence frames, maintain a shallow pool,
-                // then select the frame closest to the encoder output grid.
+                // CFR WGC: poll the WGC frame pool directly on the encoder tick
+                // and keep only the newest sampled frame. This avoids callback-
+                // queue burst churn and lets the encoder thread own cadence.
                 drainedScreenGrabFrames.clear();
+                if (g_WgcCap) {
+                    WGCCapturedFrame polledFrame;
+                    if (g_WgcCap->GetNextFrame(polledFrame) && polledFrame.texture) {
+                        drainedScreenGrabFrames.push_back(MakeQueuedWgcFrame(std::move(polledFrame)));
+                    }
+                }
+
                 QueuedFrame temp;
                 while (g_FrameQueue.Pop(temp, 0)) {
-                    if (g_RejectInjectFrames.load(std::memory_order_acquire) && temp.isInjectMode) {
-                        DiscardQueuedFrame(temp);
-                        continue;
-                    }
-                    drainedScreenGrabFrames.push_back(std::move(temp));
+                    DiscardQueuedFrame(temp);
                 }
 
                 const bool sampleWgcCadenceTick = !(recordingOutputLive && encoderLateTickCount > 0);
@@ -2118,7 +2146,12 @@ void EncoderThreadFunc(const AppConfig& config) {
                     }
                 }
 
-                // Phase 2: Move drained frames to the main buffer.
+                // Phase 2: Replace any stale host-side WGC reserve with the most
+                // recent sampled frame. The last emitted frame cache still backs
+                // repeats when a tick has no fresh WGC frame.
+                if (!drainedScreenGrabFrames.empty()) {
+                    ClearBufferedWgcFrames();
+                }
                 for (auto& drainedFrame : drainedScreenGrabFrames) {
                     bufferedWgcFrames.push_back(std::move(drainedFrame));
                 }

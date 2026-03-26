@@ -1242,6 +1242,17 @@ public:
             return;
         }
 
+        // Pull mode: leave frames in the WGC frame pool and only wake the
+        // consumer. Draining here would race with GetNextFrame() and collapse
+        // the pool before the encoder thread can sample the latest frame on its
+        // own schedule.
+        if (!frameCallback_.load(std::memory_order_acquire)) {
+            if (frameArrivedEvent_) {
+                SetEvent(frameArrivedEvent_);
+            }
+            return;
+        }
+
         std::lock_guard<std::mutex> lock(callbackDrainMutex_);
         if (!alive_.load(std::memory_order_acquire)) {
             return;
