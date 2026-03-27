@@ -2010,12 +2010,15 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
 
             const bool lowSourceMode = wgcLowSourceModeActive;
+            const bool deepUnderfeed = ce::capture_policy::IsWgcDeepUnderfeed(
+                outputFps, wgcRecentDeliveredMin250Fps, wgcRecentInputMin250Fps, wgcNoFreshTickPermille);
             const int64_t effectiveSelectionTargetQpc = selectionTargetQpc > 0 ? selectionTargetQpc : liveSelectionTargetQpc;
             const int64_t minFreshTimestampQpc =
                 ce::capture_policy::GetWgcMinimumFreshTimestampQpc(lastEmittedWgcSourceQpc, liveSelectionTargetQpc,
                                                                    targetIntervalTicks, lowSourceMode);
             const int64_t staleFallbackMinTimestampQpc = ce::capture_policy::GetWgcStaleUniqueFallbackMinTimestampQpc(
-                lastEmittedWgcSourceQpc, effectiveSelectionTargetQpc, targetIntervalTicks, lowSourceMode);
+                lastEmittedWgcSourceQpc, effectiveSelectionTargetQpc, targetIntervalTicks, lowSourceMode,
+                deepUnderfeed);
 
             while (bufferedWgcFrames.size() > 1) {
                 const QueuedFrame& current = bufferedWgcFrames[0];
@@ -2110,8 +2113,8 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
 
             selectedIndex = ce::capture_policy::ClampWgcSelectionIndexForLowSource(
-                selectedIndex, bufferedWgcFrames.size(), bufferedWgcFrames.size(), wgcRecentDeliveredFps, outputFps,
-                wgcNoFreshTickPermille);
+                selectedIndex, bufferedWgcFrames.size(), bufferedWgcFrames.size(), wgcRecentDeliveredFps,
+                wgcRecentInputMin250Fps, outputFps, wgcNoFreshTickPermille);
 
             if (usingFreshCandidateSet && selectedIndex > 0) {
                 const QueuedFrame& earlierFresh = bufferedWgcFrames[0];
@@ -2120,7 +2123,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                     ce::capture_policy::ShouldPreferEarlierFreshWgcFrameToPreserveReserve(
                         earlierFresh.selectionTimestamp > 0 ? earlierFresh.selectionTimestamp : earlierFresh.timestamp,
                         chosenFresh.selectionTimestamp > 0 ? chosenFresh.selectionTimestamp : chosenFresh.timestamp,
-                        effectiveSelectionTargetQpc, targetIntervalTicks, wgcReservePressureActive, lowSourceMode)) {
+                        effectiveSelectionTargetQpc, targetIntervalTicks, wgcReservePressureActive, lowSourceMode,
+                        deepUnderfeed)) {
                     selectedIndex = 0;
                 } else {
                     ++wgcReserveSpendTickCount;
@@ -2134,7 +2138,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                                            ce::capture_policy::ShouldHoldSingleFreshWgcFrame(
                                                wgcReservePressureActive, lowSourceMode, wgcRecentInputMin250Fps,
                                                outputFps, smoothedInputPerTick, outputShortfallTicks,
-                                               g_IsEncoderBottlenecked.load(std::memory_order_relaxed), false);
+                                               g_IsEncoderBottlenecked.load(std::memory_order_relaxed), false,
+                                               deepUnderfeed);
             if (canHoldFreshFrame && effectiveSelectionTargetQpc > 0 &&
                 ShouldHoldFrameForNextTick(candidateSelectionTimestamp, effectiveSelectionTargetQpc, targetIntervalTicks,
                                            targetIntervalTicks / 10)) {
