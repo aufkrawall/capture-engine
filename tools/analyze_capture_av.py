@@ -65,6 +65,13 @@ def run_ffprobe_json(ffprobe, args):
         fail(f"ffprobe returned invalid JSON: {exc}")
 
 
+def build_read_interval(start_time, duration):
+    if duration <= 0.0:
+        return None
+    safe_start = max(0.0, start_time)
+    return f"{safe_start:.6f}%+{duration:.6f}"
+
+
 def parse_float(value, default=0.0):
     if value in (None, "", "N/A"):
         return default
@@ -132,18 +139,18 @@ def analyze_streams(ffprobe, capture_path):
     return format_info, video_streams, audio_streams
 
 
-def analyze_video_timing(ffprobe, capture_path):
-    frame_data = run_ffprobe_json(
-        ffprobe,
-        [
-            "-select_streams",
-            "v:0",
-            "-show_frames",
-            "-show_entries",
-            "frame=best_effort_timestamp_time,pkt_duration_time",
-            str(capture_path),
-        ],
-    )
+def analyze_video_timing(ffprobe, capture_path, read_interval=None):
+    args = [
+        "-select_streams",
+        "v:0",
+        "-show_frames",
+        "-show_entries",
+        "frame=best_effort_timestamp_time,pkt_duration_time",
+    ]
+    if read_interval:
+        args.extend(["-read_intervals", read_interval])
+    args.append(str(capture_path))
+    frame_data = run_ffprobe_json(ffprobe, args)
     if not isinstance(frame_data, dict):
         fail("ffprobe video frame output was not a JSON object")
     frames = frame_data.get("frames", [])
@@ -160,6 +167,7 @@ def analyze_video_timing(ffprobe, capture_path):
             "frame_count": 0,
             "first_pts": 0.0,
             "last_pts": 0.0,
+            "frame_end": 0.0,
             "duration": 0.0,
             "delta_histogram": collections.Counter(),
             "delta_mean": 0.0,
@@ -171,12 +179,14 @@ def analyze_video_timing(ffprobe, capture_path):
     durations = [parse_float(frame.get("pkt_duration_time")) for frame in typed_frames]
     deltas = [round(pts[i] - pts[i - 1], 6) for i in range(1, len(pts))]
     last_duration = durations[-1] if durations else 0.0
+    frame_end = pts[-1] + last_duration
     return {
         "source": "full-scan",
         "frame_count": len(pts),
         "first_pts": pts[0],
         "last_pts": pts[-1],
-        "duration": pts[-1] + last_duration,
+        "frame_end": frame_end,
+        "duration": max(frame_end - pts[0], 0.0),
         "delta_histogram": collections.Counter(deltas),
         "delta_mean": safe_mean(deltas),
         "delta_min": min(deltas) if deltas else 0.0,
@@ -206,6 +216,7 @@ def analyze_video_stream_metadata(stream_info, format_duration):
         "frame_count": frame_count,
         "first_pts": start_time,
         "last_pts": last_pts,
+        "frame_end": start_time + duration,
         "duration": duration,
         "delta_histogram": delta_histogram,
         "delta_mean": delta,
@@ -266,18 +277,18 @@ def analyze_video_duplicate_runs(ffmpeg, capture_path, scale_width):
     }
 
 
-def analyze_audio_stream(ffprobe, capture_path, audio_ordinal, stream_info):
-    frame_data = run_ffprobe_json(
-        ffprobe,
-        [
-            "-select_streams",
-            f"a:{audio_ordinal}",
-            "-show_frames",
-            "-show_entries",
-            "frame=nb_samples,best_effort_timestamp_time,pkt_duration_time",
-            str(capture_path),
-        ],
-    )
+def analyze_audio_stream(ffprobe, capture_path, audio_ordinal, stream_info, read_interval=None):
+    args = [
+        "-select_streams",
+        f"a:{audio_ordinal}",
+        "-show_frames",
+        "-show_entries",
+        "frame=nb_samples,best_effort_timestamp_time,pkt_duration_time",
+    ]
+    if read_interval:
+        args.extend(["-read_intervals", read_interval])
+    args.append(str(capture_path))
+    frame_data = run_ffprobe_json(ffprobe, args)
     if not isinstance(frame_data, dict):
         fail("ffprobe audio frame output was not a JSON object")
     frames = frame_data.get("frames", [])
@@ -397,6 +408,135 @@ def print_top_histogram(name, histogram, limit=6):
         print(f"  {key}: {count}")
 
 
+def analyze_window(ffprobe, ffmpeg, capture_path, audio_streams, start_time, duration, framehash, framehash_width):
+    read_interval = build_read_interval(start_time, duration)
+    video_timing = analyze_video_timing(ffprobe, capture_path, read_interval=read_interval)
+    audio_tracks = [
+        analyze_audio_stream(ffprobe, capture_path, audio_ordinal, stream_info, read_interval=read_interval)
+        for audio_ordinal, stream_info in enumerate(audio_streams)
+    ]
+    duplicate_runs = None
+    if framehash and duration > 0.0:
+        duplicate_runs = analyze_video_duplicate_runs_segment(
+            ffmpeg, capture_path, framehash_width, start_time, duration
+        )
+
+    video_duration = video_timing["duration"]
+    audio_lengths = [track["decoded_duration"] for track in audio_tracks]
+    audio_duration_spread = (max(audio_lengths) - min(audio_lengths)) if audio_lengths else 0.0
+    video_audio_max_delta = (
+        max(abs(track["decoded_duration"] - video_duration) for track in audio_tracks) if audio_tracks else 0.0
+    )
+    return {
+        "start_time": start_time,
+        "duration": duration,
+        "video": video_timing,
+        "audio": audio_tracks,
+        "duplicate_runs": duplicate_runs,
+        "audio_duration_spread": audio_duration_spread,
+        "video_audio_max_delta": video_audio_max_delta,
+    }
+
+
+def analyze_video_duplicate_runs_segment(ffmpeg, capture_path, scale_width, start_time, duration):
+    result = run_command(
+        [
+            str(ffmpeg),
+            "-v",
+            "error",
+            "-ss",
+            f"{max(0.0, start_time):.6f}",
+            "-t",
+            f"{duration:.6f}",
+            "-i",
+            str(capture_path),
+            "-map",
+            "0:v:0",
+            "-an",
+            "-sn",
+            "-dn",
+            "-vf",
+            f"scale={scale_width}:-2:flags=fast_bilinear,format=gray",
+            "-f",
+            "framemd5",
+            "-",
+        ]
+    )
+    hashes = []
+    for line in result.stdout.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 6:
+            continue
+        hashes.append(parts[-1])
+
+    run_lengths = []
+    if hashes:
+        current_run = 1
+        for index in range(1, len(hashes)):
+            if hashes[index] == hashes[index - 1]:
+                current_run += 1
+            else:
+                run_lengths.append(current_run)
+                current_run = 1
+        run_lengths.append(current_run)
+
+    repeated_runs = [run for run in run_lengths if run > 1]
+    return {
+        "framehash_count": len(hashes),
+        "run_count": len(run_lengths),
+        "repeated_run_count": len(repeated_runs),
+        "repeated_frame_count": sum(run - 1 for run in repeated_runs),
+        "longest_run": max(run_lengths) if run_lengths else 0,
+        "repeated_histogram": collections.Counter(repeated_runs),
+    }
+
+
+def print_window_summary(name, window):
+    print(f"window_{name}:")
+    print(
+        "  start={start:.6f} duration={duration:.6f} video_frames={frames} video_duration={video_duration:.6f}".format(
+            start=window["start_time"],
+            duration=window["duration"],
+            frames=window["video"]["frame_count"],
+            video_duration=window["video"]["duration"],
+        )
+    )
+    print(
+        "  delta_mean={mean:.6f} delta_min={delta_min:.6f} delta_max={delta_max:.6f} delta_stdev={stdev:.6f}".format(
+            mean=window["video"]["delta_mean"],
+            delta_min=window["video"]["delta_min"],
+            delta_max=window["video"]["delta_max"],
+            stdev=window["video"]["delta_stdev"],
+        )
+    )
+    print(
+        f"  audio_duration_spread={window['audio_duration_spread']:.6f} max_video_audio_duration_delta={window['video_audio_max_delta']:.6f}"
+    )
+    if window["duplicate_runs"] is None:
+        print("  duplicate_runs=skipped")
+    else:
+        print(
+            "  duplicate_runs framehash_frames={framehash_count} repeated_runs={repeated_runs} repeated_frames={repeated_frames} longest_run={longest}".format(
+                framehash_count=window["duplicate_runs"]["framehash_count"],
+                repeated_runs=window["duplicate_runs"]["repeated_run_count"],
+                repeated_frames=window["duplicate_runs"]["repeated_frame_count"],
+                longest=window["duplicate_runs"]["longest_run"],
+            )
+        )
+    for track in window["audio"]:
+        print(
+            "  a:{ordinal} samples={samples} duration={duration:.6f} start={start:.6f} end={end:.6f}".format(
+                ordinal=track["audio_ordinal"],
+                samples=track["sample_total"],
+                duration=track["decoded_duration"],
+                start=track["frame_start"],
+                end=track["frame_end"],
+            )
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Analyze a capture file for CFR timing, duplicate-frame runs, and exact audio track alignment."
@@ -420,6 +560,12 @@ def main():
         type=int,
         default=320,
         help="Downscale width for duplicate-run frame hashing when --framehash is enabled (default: 320)",
+    )
+    parser.add_argument(
+        "--window-seconds",
+        type=float,
+        default=10.0,
+        help="Analyze first/middle/last windows of this many seconds using ffprobe frame scans (default: 10)",
     )
     args = parser.parse_args()
 
@@ -454,6 +600,27 @@ def main():
     video_audio_max_delta = (
         max(abs(track["decoded_duration"] - video_duration) for track in audio_tracks) if audio_tracks else 0.0
     )
+    window_duration = max(0.0, min(args.window_seconds, format_duration if format_duration > 0.0 else args.window_seconds))
+    windows = {}
+    if window_duration > 0.0 and format_duration > 0.0:
+        middle_start = max(0.0, (format_duration / 2.0) - (window_duration / 2.0))
+        last_start = max(0.0, format_duration - window_duration)
+        window_specs = {
+            "first": 0.0,
+            "middle": middle_start,
+            "last": last_start,
+        }
+        for name, start_time in window_specs.items():
+            windows[name] = analyze_window(
+                args.ffprobe,
+                args.ffmpeg,
+                args.capture,
+                audio_streams,
+                start_time,
+                window_duration,
+                args.framehash,
+                args.framehash_width,
+            )
 
     print(f"capture: {args.capture}")
     print(f"container_duration: {format_seconds(format_duration)}")
@@ -563,6 +730,12 @@ def main():
                 mux=int(log_summary["saw_mux_overload"]),
             )
         )
+        print()
+
+    if windows:
+        print("windows:")
+        for name in ("first", "middle", "last"):
+            print_window_summary(name, windows[name])
         print()
 
     print("summary:")

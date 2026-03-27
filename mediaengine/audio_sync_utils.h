@@ -103,7 +103,11 @@ inline WgcAudioLagTargets ComputeWgcAudioLagTargets(int64_t videoPipelineLagMs, 
                                                     bool coverageLossActive, int64_t maxBufferedLagMs = 300) {
     WgcAudioLagTargets targets{};
     if (!coverageLossActive) {
-        const int64_t lagMs = std::max<int64_t>(0, videoPipelineLagMs);
+        // In steady-state CFR recording the video encoder can temporarily fall behind
+        // wall clock while still preserving the exact slot timeline. Audio should not
+        // absorb that encoder backlog as permanent extra latency; only real buffered
+        // content lag should influence the target buffer in the non-coverage-loss case.
+        const int64_t lagMs = std::max<int64_t>(0, bufferedVideoContentLagMs);
         targets.driftLagMs = lagMs;
         targets.targetBufferLagMs = lagMs;
         return targets;

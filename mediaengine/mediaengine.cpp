@@ -697,9 +697,7 @@ public:
                 if (IsWgcCfrRecording()) {
                     const int64_t wallDurationUs =
                         std::max<int64_t>(d3d11TimelineState.lastElapsedUs, videoElapsedMs.load() * 1000);
-                    if (durationUs <= 0) {
-                        durationUs = wallDurationUs;
-                    }
+                    durationUs = std::max(durationUs, wallDurationUs);
 
                     DLL_Log(
                         "MediaEngine: WGC stop durations. Expected: %lld us, Encoded: %lld us, Wall: %lld us, "
@@ -924,7 +922,8 @@ public:
             }
         }
 
-        PullAndEncodeAudio(committedElapsedUs / 1000);
+        const int64_t audioTimelineMs = (wgcCfrRecording ? realElapsedUs : committedElapsedUs) / 1000;
+        PullAndEncodeAudio(audioTimelineMs);
         return true;
     }
 
@@ -1002,8 +1001,10 @@ public:
             DLL_Log("MediaEngine: ScreenGrab frame ts=%lld %dx%d", debugTimestamp, width, height);
         }
 
-        // PULL MODEL: Encode audio for this video frame
-        PullAndEncodeAudio(committedElapsedUs / 1000);
+        // PULL MODEL: WGC CFR audio follows the authoritative scheduled timeline
+        // rather than the lagging committed encoder duration so the final mux stays
+        // sample-exact even when video temporarily builds backlog.
+        PullAndEncodeAudio(realElapsedUs / 1000);
         return true;
     }
 
@@ -1089,9 +1090,12 @@ public:
         const auto wgcAudioLagTargets = ce::audio::ComputeWgcAudioLagTargets(
             videoPipelineLagMs, wgcBufferedVideoContentLagMs, isWgcCfrRecording && wgcCoverageLossActive,
             kWgcCoverageLossMaxBufferedLagMs);
-        const int64_t effectiveWgcDriftLagMs = (isWgcCfrRecording ? wgcAudioLagTargets.driftLagMs : videoPipelineLagMs) + timelineShortfallMs;
+        const int64_t effectiveWgcDriftLagMs =
+            (isWgcCfrRecording ? wgcAudioLagTargets.driftLagMs : videoPipelineLagMs) +
+            (isWgcCfrRecording ? 0 : timelineShortfallMs);
         const int64_t effectiveWgcTargetBufferLagMs =
-            (isWgcCfrRecording ? wgcAudioLagTargets.targetBufferLagMs : videoPipelineLagMs) + timelineShortfallMs;
+            (isWgcCfrRecording ? wgcAudioLagTargets.targetBufferLagMs : videoPipelineLagMs) +
+            (isWgcCfrRecording ? 0 : timelineShortfallMs);
         const int64_t targetBufferedLagCapMs =
             (isWgcCfrRecording && wgcCoverageLossActive)
                 ? std::max<int64_t>(kMaxPipelineLagContributionMs, effectiveWgcTargetBufferLagMs)
@@ -1816,10 +1820,14 @@ public:
             if (trackSyncCheckCounter++ % 1200 == 0 && firstSrcIdx < encodedSamplesPerSource.size()) {
                 int64_t wallVideoMs = videoElapsedMs.load();
                 int64_t videoMs = wallVideoMs;
+                int64_t encodedVideoMs = wallVideoMs;
                 if (videoEnc) {
                     int64_t encodedVideoUs = videoEnc->GetEncodedDurationUs();
                     if (encodedVideoUs > 0) {
-                        videoMs = encodedVideoUs / 1000;
+                        encodedVideoMs = encodedVideoUs / 1000;
+                        if (!isWgcCfrRecording) {
+                            videoMs = encodedVideoMs;
+                        }
                     }
                 }
                 int64_t audioSamples = encodedSamplesPerSource[firstSrcIdx];
@@ -1949,12 +1957,13 @@ public:
 
                 DLL_Log(
                     "[A/V SYNC CHECK] Track %d: Video=%lld ms, Audio=%lld ms, "
-                    "Drift=%lld ms, DriftAdj=%lld ms, Pull=%lld ms, VideoWall=%lld ms, PipelineLag=%lld ms, "
+                    "Drift=%lld ms, DriftAdj=%lld ms, Pull=%lld ms, VideoWall=%lld ms, VideoEnc=%lld ms, PipelineLag=%lld ms, "
                     "ContentLag=%lld ms, CovMode=%d, EncBottleneck=%d, Delivered=%u/%u, Over=0x%x, "
                     "TargetBuf=%lld ms, Overflow=%llu, "
                     "RetainTrim=%llu, CoverageTrim=%llu, LatencyTrim=%llu, PostTrim=%llu, Pad=%llu, QpcGap=%llu, "
                     "QpcOverlap=%llu, Sources=%s",
                     track, videoMs, audioMs, avDrift, latencyAdjustedAvDrift, trackAudioPullLatencyMs, wallVideoMs,
+                    encodedVideoMs,
                     pipelineLagMs, isWgcCfrRecording ? wgcBufferedVideoContentLagMs : pipelineLagMs,
                     wgcCoverageLossActive ? 1 : 0, wgcEncoderBottlenecked ? 1 : 0, wgcDeliveredFps, wgcTargetFps,
                     wgcOverloadFlags,

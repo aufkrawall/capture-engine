@@ -1613,6 +1613,8 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint32_t wgcSelectionErrorMaxUs = 0;
     uint32_t wgcSelectionEarlyMaxUs = 0;
     uint32_t wgcSelectionLateMaxUs = 0;
+    uint32_t wgcSelectionTargetClampCount = 0;
+    uint32_t wgcSelectionTargetClampMaxUs = 0;
     uint32_t wgcHoldForNextTickCount = 0;
     uint32_t wgcSelectionDelayTickCount = 0;
     uint32_t wgcAdaptiveThrottleAdjustments = 0;
@@ -1957,6 +1959,20 @@ void EncoderThreadFunc(const AppConfig& config) {
         };
         const auto computeLiveWgcSelectionTargetQpc = [&]() { return computeWgcSelectionTargetQpc(false); };
         const auto computeDelayedWgcSelectionTargetQpc = [&]() { return computeWgcSelectionTargetQpc(true); };
+        const auto clampWgcSelectionTargetQpc = [&](int64_t selectionTargetQpc, int64_t liveNowQpc) {
+            const bool encoderBottlenecked = g_IsEncoderBottlenecked.load(std::memory_order_relaxed);
+            const int64_t clampedSelectionTargetQpc = ce::capture_policy::ClampWgcSelectionTargetToLiveQpc(
+                selectionTargetQpc, liveNowQpc, targetIntervalTicks, wgcLowSourceModeActive, outputShortfallTicks,
+                encoderBottlenecked);
+            if (clampedSelectionTargetQpc > selectionTargetQpc) {
+                const uint64_t clampDeltaUs = static_cast<uint64_t>(clampedSelectionTargetQpc - selectionTargetQpc) *
+                                              1000000ull / static_cast<uint64_t>(qpcFreq.QuadPart);
+                ++wgcSelectionTargetClampCount;
+                wgcSelectionTargetClampMaxUs =
+                    std::max(wgcSelectionTargetClampMaxUs, SaturatingToUint32(clampDeltaUs));
+            }
+            return clampedSelectionTargetQpc;
+        };
         const auto computeLiveTimelineElapsedUs = [&](int64_t scheduledQpcForTick) -> int64_t {
             if (liveStartQpc.QuadPart <= 0 || qpcFreq.QuadPart <= 0) {
                 return -1;
@@ -2402,10 +2418,14 @@ void EncoderThreadFunc(const AppConfig& config) {
                 const bool scheduledWgcTelemetryTick =
                     !config.video.useVFR && g_EncoderRunning && g_Recording && recordingOutputLive;
                 if (scheduledWgcTelemetryTick) {
+                    LARGE_INTEGER selectionNowQpc;
+                    QueryPerformanceCounter(&selectionNowQpc);
                     wgcTelemetryTickArmed = true;
                     wgcBufferedAtTickStart = static_cast<uint32_t>(bufferedWgcFrames.size());
                     wgcReserveAvailableAtTickStart = false;
-                    inspectBufferedWgcCoverageForTarget(computeWgcSelectionTargetQpc(false), &wgcFreshAvailableAtTickStart,
+                    inspectBufferedWgcCoverageForTarget(
+                        clampWgcSelectionTargetQpc(computeWgcSelectionTargetQpc(false), selectionNowQpc.QuadPart),
+                        &wgcFreshAvailableAtTickStart,
                                                         &wgcReserveAvailableAtTickStart);
                     wgcSelectionDelayAppliedThisTick = ce::capture_policy::ShouldApplyWgcSelectionDelay(
                         recordingOutputLive, outputShortfallTicks,
@@ -2420,10 +2440,16 @@ void EncoderThreadFunc(const AppConfig& config) {
                     bufferedWgcFrames.pop_front();
                     popped = true;
                 } else if (!bufferedWgcFrames.empty()) {
+                    LARGE_INTEGER selectionNowQpc;
+                    QueryPerformanceCounter(&selectionNowQpc);
                     const int64_t liveSelectionTargetQpc =
-                        (encoderGridStartQpc > 0 && targetIntervalTicks > 0) ? computeLiveWgcSelectionTargetQpc() : 0;
+                        (encoderGridStartQpc > 0 && targetIntervalTicks > 0)
+                            ? clampWgcSelectionTargetQpc(computeLiveWgcSelectionTargetQpc(), selectionNowQpc.QuadPart)
+                            : 0;
                     const int64_t delayedSelectionTargetQpc =
-                        (encoderGridStartQpc > 0 && targetIntervalTicks > 0) ? computeDelayedWgcSelectionTargetQpc() : 0;
+                        (encoderGridStartQpc > 0 && targetIntervalTicks > 0)
+                            ? clampWgcSelectionTargetQpc(computeDelayedWgcSelectionTargetQpc(), selectionNowQpc.QuadPart)
+                            : 0;
                     const int64_t effectiveSelectionTargetQpc =
                         wgcSelectionDelayAppliedThisTick ? delayedSelectionTargetQpc : liveSelectionTargetQpc;
                     if (tryPopBufferedWgcFrameForTarget(effectiveSelectionTargetQpc, liveSelectionTargetQpc,
@@ -3090,8 +3116,11 @@ void EncoderThreadFunc(const AppConfig& config) {
 
                 if (allowFreshCatchup && useScreenGrab && MediaEngine_ProcessFrameD3D11 && !bufferedWgcFrames.empty()) {
                     const int64_t catchupGridTick = encoderGridTickCount + 1;
-                    const int64_t catchupSelectionTargetQpc =
-                        computeWgcSelectionTargetForTick(repeatScheduledQpc, catchupGridTick, false);
+                    LARGE_INTEGER catchupNowQpc;
+                    QueryPerformanceCounter(&catchupNowQpc);
+                    const int64_t catchupSelectionTargetQpc = clampWgcSelectionTargetQpc(
+                        computeWgcSelectionTargetForTick(repeatScheduledQpc, catchupGridTick, false),
+                        catchupNowQpc.QuadPart);
                     QueuedFrame catchupFrame;
                     if (tryPopBufferedWgcFrameForTarget(catchupSelectionTargetQpc, catchupSelectionTargetQpc, false,
                                                         &catchupFrame)) {
@@ -3770,7 +3799,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             LogInfo(
                 "[Cadence Health] Phase=%s | AgeAvg=%uus AgeMax=%uus | SelAvg=%uus SelMax=%uus SelBias=%dus "
                 "EarlyMax=%uus LateMax=%uus | WgcSelAvg=%uus WgcSelMax=%uus WgcSelBias=%dus WgcEarly=%uus WgcLate=%uus "
-                "Hold=%u HoldFresh=%u Delay=%u Spend=%u CatchUp=%u CatchFresh=%u | DefStreak=%u/%u DupStreak=%u/%u | DupSrc=%u "
+                "Hold=%u HoldFresh=%u Delay=%u Spend=%u CatchUp=%u CatchFresh=%u LiveClamp=%u/%uus | DefStreak=%u/%u DupStreak=%u/%u | DupSrc=%u "
                 "DupDef=%u "
                 "DupTimer=%u DupDrain=%u | TickEmit=%u TickUnique=%u TickDup=%u TickMiss=%u | "
                 "HoldHist=%u/%u/%u/%u/%u/%u | LiveWall=%lluus LiveTicks=%llu Shortfall=%u/%.1fms FreshMiss=%upm "
@@ -3787,7 +3816,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 cadenceCounters.outputScheduleLateMaxUs, avgWgcSelectionErrorUs, wgcSelectionErrorMaxUs,
                 avgSignedWgcSelectionErrorUs, wgcSelectionEarlyMaxUs, wgcSelectionLateMaxUs, wgcHoldForNextTickCount,
                 wgcHeldFreshFrameTickCount, wgcSelectionDelayTickCount, wgcReserveSpendTickCount,
-                cfrCatchupTicksExecuted, wgcFreshCatchupCount,
+                cfrCatchupTicksExecuted, wgcFreshCatchupCount, wgcSelectionTargetClampCount,
+                wgcSelectionTargetClampMaxUs,
                 cadenceCounters.consecutiveDeferredFrames, cadenceCounters.maxConsecutiveDeferredFrames,
                 cadenceCounters.consecutiveDuplicateFrames, cadenceCounters.maxConsecutiveDuplicateFrames,
                 dupNoSource - lastDuplicateReasonNoSource, dupDeferred - lastDuplicateReasonDeferred,
@@ -3862,6 +3892,8 @@ void EncoderThreadFunc(const AppConfig& config) {
             wgcSelectionErrorMaxUs = 0;
             wgcSelectionEarlyMaxUs = 0;
             wgcSelectionLateMaxUs = 0;
+            wgcSelectionTargetClampCount = 0;
+            wgcSelectionTargetClampMaxUs = 0;
             wgcHoldForNextTickCount = 0;
             wgcHeldFreshFrameTickCount = 0;
             wgcSelectionDelayTickCount = 0;

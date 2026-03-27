@@ -446,6 +446,30 @@ inline int64_t GetWgcSelectionTargetQpc(int64_t scheduledSampleQpc, int64_t fall
     return delayedSelectionTargetQpc > 0 ? delayedSelectionTargetQpc : selectionTargetQpc;
 }
 
+inline int64_t ClampWgcSelectionTargetToLiveQpc(int64_t selectionTargetQpc, int64_t liveNowQpc,
+                                                int64_t targetIntervalTicks, bool lowSourceMode,
+                                                uint32_t outputShortfallTicks, bool encoderBottlenecked,
+                                                uint32_t severeShortfallThresholdTicks =
+                                                    kCfrShortfallCatchupThresholdTicks) {
+    if (selectionTargetQpc <= 0 || liveNowQpc <= 0 || targetIntervalTicks <= 0) {
+        return selectionTargetQpc;
+    }
+
+    int64_t maxLiveLagQpc = GetWgcMaxSelectionLagQpc(targetIntervalTicks, lowSourceMode);
+    if (maxLiveLagQpc <= 0) {
+        return selectionTargetQpc;
+    }
+
+    if (encoderBottlenecked || outputShortfallTicks >= severeShortfallThresholdTicks) {
+        maxLiveLagQpc = std::min<int64_t>(maxLiveLagQpc, targetIntervalTicks);
+    } else {
+        maxLiveLagQpc = std::min<int64_t>(maxLiveLagQpc, targetIntervalTicks * 2);
+    }
+
+    const int64_t liveSelectionFloorQpc = liveNowQpc - maxLiveLagQpc;
+    return std::max(selectionTargetQpc, liveSelectionFloorQpc);
+}
+
 inline int64_t GetWgcMinimumFreshTimestampQpc(int64_t lastEmittedSourceQpc, int64_t scheduledSampleQpc,
                                               int64_t targetIntervalTicks, bool lowSourceMode) {
     int64_t minFreshTimestampQpc = lastEmittedSourceQpc > 0 ? (lastEmittedSourceQpc + 1) : 0;
