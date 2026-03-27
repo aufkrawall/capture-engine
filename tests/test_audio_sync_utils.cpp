@@ -89,12 +89,14 @@ TEST(AudioSyncUtilsTest, WgcCoverageAudioLagTargetsKeepDriftAndBufferLagSeparate
 }
 
 TEST(AudioSyncUtilsTest, WgcSteadyStateBufferedAudioLagAddsBoundedCushionForDegradedDelivery) {
-    EXPECT_EQ(ce::audio::ComputeWgcSteadyStateBufferedAudioLagMs(0, 0, false), 0);
-    EXPECT_EQ(ce::audio::ComputeWgcSteadyStateBufferedAudioLagMs(120, 120, false), 0);
-    EXPECT_EQ(ce::audio::ComputeWgcSteadyStateBufferedAudioLagMs(120, 100, false), 20);
-    EXPECT_EQ(ce::audio::ComputeWgcSteadyStateBufferedAudioLagMs(120, 83, false), 37);
-    EXPECT_EQ(ce::audio::ComputeWgcSteadyStateBufferedAudioLagMs(120, 118, true), 20);
-    EXPECT_EQ(ce::audio::ComputeWgcSteadyStateBufferedAudioLagMs(120, 0, true), 80);
+    EXPECT_EQ(ce::audio::ComputeWgcSteadyStateBufferedAudioLagMs(0, 0, 0, 0, false, 0, 0, 0), 0);
+    EXPECT_EQ(ce::audio::ComputeWgcSteadyStateBufferedAudioLagMs(120, 120, 120, 120, false, 0, 2, 0), 0);
+    EXPECT_EQ(ce::audio::ComputeWgcSteadyStateBufferedAudioLagMs(120, 100, 100, 100, false, 0, 2, 0), 20);
+    EXPECT_EQ(ce::audio::ComputeWgcSteadyStateBufferedAudioLagMs(120, 83, 83, 83, false, 0, 2, 0), 37);
+    EXPECT_EQ(ce::audio::ComputeWgcSteadyStateBufferedAudioLagMs(120, 118, 118, 118, true, 0, 2, 0), 20);
+    EXPECT_EQ(ce::audio::ComputeWgcSteadyStateBufferedAudioLagMs(120, 0, 0, 0, true, 0, 0, 0), 80);
+    EXPECT_EQ(ce::audio::ComputeWgcSteadyStateBufferedAudioLagMs(120, 155, 116, 138, true, 403, 0, 46), 80);
+    EXPECT_EQ(ce::audio::ComputeWgcSteadyStateBufferedAudioLagMs(120, 135, 116, 130, false, 180, 1, 18), 40);
 }
 
 TEST(AudioSyncUtilsTest, WgcPositiveCompensationHysteresisKeepsGuardBandNearTarget) {

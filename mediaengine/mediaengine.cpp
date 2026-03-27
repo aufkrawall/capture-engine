@@ -1084,10 +1084,15 @@ public:
         uint32_t wgcTargetFps =
             isWgcCfrRecording ? static_cast<uint32_t>(config.video.fps > 0 ? config.video.fps : 1) : 0u;
         uint32_t wgcDeliveredFps = 0u;
+        uint32_t wgcDeliveredMin250Fps = 0u;
+        uint32_t wgcDeliveredMin500Fps = 0u;
         int64_t wgcBufferedVideoContentLagMs = 0;
         bool wgcCoverageLossActive = false;
         uint32_t wgcOverloadFlags = 0u;
         bool wgcEncoderBottlenecked = false;
+        uint32_t wgcQueueEmptyTickPermille = 0u;
+        uint32_t wgcBufferedAtTickMin = 0u;
+        uint32_t wgcSingleFrameTickCount = 0u;
         if (isWgcCfrRecording && sharedMemLayout) {
             const auto& runtimeState = sharedMemLayout->runtimeState;
             wgcOverloadFlags = runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
@@ -1095,8 +1100,13 @@ public:
             const uint32_t telemetryTargetFps = runtimeState.wgcTargetFps.load(std::memory_order_relaxed);
             wgcTargetFps = telemetryTargetFps > 0 ? telemetryTargetFps : wgcTargetFps;
             wgcDeliveredFps = runtimeState.wgcDeliveredFramesPerSec.load(std::memory_order_relaxed);
+            wgcDeliveredMin250Fps = runtimeState.wgcDeliveredMin250Fps.load(std::memory_order_relaxed);
+            wgcDeliveredMin500Fps = runtimeState.wgcDeliveredMin500Fps.load(std::memory_order_relaxed);
             wgcBufferedVideoContentLagMs = ce::audio::ComputeWgcBufferedVideoContentLagMs(
                 runtimeState.oldestBufferedFrameAgeUs.load(std::memory_order_relaxed));
+            wgcQueueEmptyTickPermille = runtimeState.wgcQueueEmptyTickPermille.load(std::memory_order_relaxed);
+            wgcBufferedAtTickMin = runtimeState.wgcBufferedAtTickMin.load(std::memory_order_relaxed);
+            wgcSingleFrameTickCount = runtimeState.wgcSingleFrameTickCount.load(std::memory_order_relaxed);
             wgcCoverageLossActive = ce::audio::HasWgcUnrecoverableCoverageLoss(
                 wgcTargetFps, videoPipelineLagMs, wgcBufferedVideoContentLagMs, wgcEncoderBottlenecked,
                 wgcDeliveredFps);
@@ -1107,7 +1117,9 @@ public:
         const int64_t wgcSteadyStateBufferedAudioLagMs =
             (isWgcCfrRecording && !wgcCoverageLossActive)
                 ? ce::audio::ComputeWgcSteadyStateBufferedAudioLagMs(
-                      wgcTargetFps, wgcDeliveredFps, wgcEncoderBottlenecked)
+                      wgcTargetFps, wgcDeliveredFps, wgcDeliveredMin250Fps, wgcDeliveredMin500Fps,
+                      wgcEncoderBottlenecked, wgcQueueEmptyTickPermille, wgcBufferedAtTickMin,
+                      wgcSingleFrameTickCount)
                 : 0;
         const int64_t effectiveWgcDriftLagMs =
             (isWgcCfrRecording ? wgcAudioLagTargets.driftLagMs : videoPipelineLagMs) +

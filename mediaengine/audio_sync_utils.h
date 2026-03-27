@@ -122,14 +122,26 @@ inline WgcAudioLagTargets ComputeWgcAudioLagTargets(int64_t videoPipelineLagMs, 
 }
 
 inline int64_t ComputeWgcSteadyStateBufferedAudioLagMs(uint32_t targetFps, uint32_t deliveredFps,
-                                                       bool encoderBottlenecked, int64_t minLagMs = 20,
-                                                       int64_t maxLagMs = 80, int64_t lagDivisor = 8) {
+                                                       uint32_t deliveredMin250Fps, uint32_t deliveredMin500Fps,
+                                                       bool encoderBottlenecked, uint32_t queueEmptyTickPermille,
+                                                       uint32_t bufferedAtTickMin, uint32_t singleFrameTickCount,
+                                                       int64_t minLagMs = 20, int64_t degradedLagMs = 40,
+                                                       int64_t severeLagMs = 80, int64_t maxLagMs = 80,
+                                                       int64_t lagDivisor = 8) {
     if (targetFps == 0 || maxLagMs <= 0 || lagDivisor <= 0) {
         return 0;
     }
 
+    uint32_t effectiveDeliveredFps = deliveredFps;
+    if (deliveredMin250Fps > 0) {
+        effectiveDeliveredFps = std::min(effectiveDeliveredFps, deliveredMin250Fps);
+    }
+    if (deliveredMin500Fps > 0) {
+        effectiveDeliveredFps = std::min(effectiveDeliveredFps, deliveredMin500Fps);
+    }
+
     const int64_t fpsDeficit =
-        std::max<int64_t>(0, static_cast<int64_t>(targetFps) - static_cast<int64_t>(deliveredFps));
+        std::max<int64_t>(0, static_cast<int64_t>(targetFps) - static_cast<int64_t>(effectiveDeliveredFps));
     const int64_t frameIntervalMs = std::max<int64_t>(1, 1000 / static_cast<int64_t>(targetFps));
     int64_t lagMs = 0;
     if (fpsDeficit > 0) {
@@ -138,6 +150,18 @@ inline int64_t ComputeWgcSteadyStateBufferedAudioLagMs(uint32_t targetFps, uint3
 
     if (encoderBottlenecked) {
         lagMs = std::max<int64_t>(lagMs, minLagMs);
+    }
+
+    const bool degradedQueueHealth =
+        queueEmptyTickPermille >= 125 || bufferedAtTickMin <= 1 || singleFrameTickCount >= targetFps / 4;
+    const bool severeQueueHealth =
+        queueEmptyTickPermille >= 250 || bufferedAtTickMin == 0 || singleFrameTickCount >= targetFps / 2;
+    if (degradedQueueHealth) {
+        lagMs = std::max<int64_t>(lagMs, degradedLagMs);
+    }
+    if (severeQueueHealth &&
+        (encoderBottlenecked || effectiveDeliveredFps + 2 < targetFps)) {
+        lagMs = std::max<int64_t>(lagMs, severeLagMs);
     }
 
     return std::clamp<int64_t>(lagMs, 0, maxLagMs);
