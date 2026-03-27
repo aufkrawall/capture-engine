@@ -265,6 +265,11 @@ public:
             src.lastRetainedTrimWarnTick = 0;
             src.lastPacketTimelineAdjustWarnTick = 0;
             src.wgcCoverageLossTrimAccumulator = 0.0;
+            src.prevLeadSamples = 0;
+            src.prevLeadSnapshotMs = 0;
+            src.lastRateUpdateMs = 0;
+            src.currentRateDelta = 0;
+            src.rateCompActive = false;
         }
         audioSyncPending.store(false);
     }
@@ -628,6 +633,11 @@ public:
                 src.lastRetainedTrimWarnTick = 0;
                 src.lastPacketTimelineAdjustWarnTick = 0;
                 src.wgcCoverageLossTrimAccumulator = 0.0;
+                src.prevLeadSamples = 0;
+                src.prevLeadSnapshotMs = 0;
+                src.lastRateUpdateMs = 0;
+                src.currentRateDelta = 0;
+                src.rateCompActive = false;
             }
 
             // Start all audio sources
@@ -785,6 +795,11 @@ public:
             src.lastRetainedTrimWarnTick = 0;
             src.lastPacketTimelineAdjustWarnTick = 0;
             src.wgcCoverageLossTrimAccumulator = 0.0;
+            src.prevLeadSamples = 0;
+            src.prevLeadSnapshotMs = 0;
+            src.lastRateUpdateMs = 0;
+            src.currentRateDelta = 0;
+            src.rateCompActive = false;
         }
 
         // Reset video frame tracking for next recording
@@ -1300,6 +1315,22 @@ public:
                         ce::audio::ShouldAllowWgcSteadyStateDriftCompensation(
                             trackStartupSettled, effectiveWgcDriftLagMs, static_cast<int64_t>(rbAvailable),
                             targetLatencySamples, kWgcCfrLeadWarningSamples);
+                    const int64_t expectedLeadSamplesForCorrection =
+                        kBaseTargetLatencySamples + (effectiveWgcDriftLagMs * SAMPLE_RATE / 1000);
+                    if (isWgcCfrRecording && src.currentRateDelta > 0 &&
+                        (static_cast<int64_t>(rbAvailable) <= expectedLeadSamplesForCorrection ||
+                         !allowWgcSteadyStateDriftCompensation)) {
+                        // Once WGC lead has been spent, immediately clear any remaining
+                        // consume-more-input compensation. Letting a stale positive rate
+                        // correction linger here drains the source into an underrun storm.
+                        if (swr_set_compensation(src.syncResampler->GetSwrContext(), 0, SAMPLE_RATE * 10) >= 0) {
+                            src.prevLeadSamples = 0;
+                            src.prevLeadSnapshotMs = 0;
+                            src.lastRateUpdateMs = 0;
+                            src.currentRateDelta = 0;
+                            src.rateCompActive = false;
+                        }
+                    }
                     const bool allowWgcCoverageLossTrim =
                         isWgcCfrRecording && wgcCoverageLossActive && !kWgcPreferVideoRepeatsOverAudioCuts &&
                         static_cast<int64_t>(rbAvailable) > targetLatencySamples + kWgcCoverageLossLeadSlackSamples;
@@ -1391,7 +1422,7 @@ public:
                             rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
                         }
                     } else if (isWgcCfrRecording) {
-                        const int64_t expectedLeadSamplesForCap = kBaseTargetLatencySamples + (effectiveWgcDriftLagMs * SAMPLE_RATE / 1000);
+                        const int64_t expectedLeadSamplesForCap = expectedLeadSamplesForCorrection;
                         if (static_cast<int64_t>(rbAvailable) > expectedLeadSamplesForCap + kWgcCfrLeadWarningSamples) {
                         // WGC CFR lead is large.  Log diagnostics and do paced trimming
                         // to prevent unbounded lead growth when the PI controller can't
@@ -1666,12 +1697,6 @@ public:
                     }
                     size_t padSamples = (totalFloats - toCopy) / CHANNELS;
                     const bool startupPadding = !src.bootstrapComplete;
-                    if (padSamples > 0 && src.hasAlignedStart) {
-                        // Pull-side silence now represents the source timeline during
-                        // underruns/idle gaps, so keep packet-QPC stitching in step
-                        // with what we already emitted.
-                        src.qpcAlignedWrittenSamples += padSamples;
-                    }
                     if (!startupPadding) {
                         src.underrunPadSamples += padSamples;
                     }

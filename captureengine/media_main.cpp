@@ -1839,6 +1839,8 @@ void EncoderThreadFunc(const AppConfig& config) {
             const uint32_t targetOutputFpsForPolicy = std::max<uint32_t>(1u, static_cast<uint32_t>(config.video.fps));
             encoderTooSlowForTargetCurrent = ce::capture_policy::IsEncoderTooSlowForTargetFps(
                 smoothedEncodeMs, frameIntervalMs, targetOutputFpsForPolicy);
+            const bool encoderCatchupBottleneckedCurrent =
+                encoderTooSlowForTargetCurrent || g_IsEncoderBottlenecked.load(std::memory_order_relaxed);
             const double shortfallDurationMs =
                 ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs);
             wgcAudioLeadExcessMsCurrent = loadWgcAudioLeadExcessMs();
@@ -1851,7 +1853,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 catchupTicksThisLoop = 0u;
             } else if (activeScreenGrab) {
                 catchupTicksThisLoop = ce::capture_policy::GetWgcCatchupTicksThisLoop(
-                    encoderTooSlowForTargetCurrent, bufferedWgcFrames.size(), frameCreditAccumulator,
+                    encoderCatchupBottleneckedCurrent, bufferedWgcFrames.size(), frameCreditAccumulator,
                     outputShortfallTicks, targetOutputFpsForPolicy, wgcRecentDeliveredMin250Fps,
                     wgcRecentInputMin250Fps, wgcNoFreshTickPermille, wgcLowSourceModeActive);
             } else {
@@ -1860,7 +1862,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
             if (activeScreenGrab &&
                 ce::capture_policy::ShouldClampWgcCoverageCatchupToSingleTick(
-                    wgcCoverageRepeatActiveCurrent, encoderTooSlowForTargetCurrent, shortfallDurationMs)) {
+                    wgcCoverageRepeatActiveCurrent, encoderCatchupBottleneckedCurrent, shortfallDurationMs)) {
                 catchupTicksThisLoop = std::min<uint32_t>(catchupTicksThisLoop, 1u);
             }
         };
