@@ -121,6 +121,28 @@ inline WgcAudioLagTargets ComputeWgcAudioLagTargets(int64_t videoPipelineLagMs, 
     return targets;
 }
 
+inline int64_t ComputeWgcSteadyStateBufferedAudioLagMs(uint32_t targetFps, uint32_t deliveredFps,
+                                                       bool encoderBottlenecked, int64_t minLagMs = 20,
+                                                       int64_t maxLagMs = 80, int64_t lagDivisor = 8) {
+    if (targetFps == 0 || maxLagMs <= 0 || lagDivisor <= 0) {
+        return 0;
+    }
+
+    const int64_t fpsDeficit =
+        std::max<int64_t>(0, static_cast<int64_t>(targetFps) - static_cast<int64_t>(deliveredFps));
+    const int64_t frameIntervalMs = std::max<int64_t>(1, 1000 / static_cast<int64_t>(targetFps));
+    int64_t lagMs = 0;
+    if (fpsDeficit > 0) {
+        lagMs = (fpsDeficit * frameIntervalMs) / lagDivisor;
+    }
+
+    if (encoderBottlenecked) {
+        lagMs = std::max<int64_t>(lagMs, minLagMs);
+    }
+
+    return std::clamp<int64_t>(lagMs, 0, maxLagMs);
+}
+
 inline int64_t ComputeWgcCoverageLossTrimSamples(int64_t samplesToEncode, double coverageLossRatio,
                                                  double& trimAccumulator, int64_t maxDropPerCall) {
     if (samplesToEncode <= 0 || coverageLossRatio <= 0.0 || maxDropPerCall <= 0) {
