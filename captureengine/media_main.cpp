@@ -3059,20 +3059,28 @@ void EncoderThreadFunc(const AppConfig& config) {
                            ce::capture_policy::GetWgcForceCatchupBudgetFrameMultiplier(shortfallDurationMs))
                                                : allowWgcCatchupBudget ? (frameIntervalMs * 2.0)
                                                                        : frameIntervalMs;
+                bool allowFreshCatchup = true; // Always allow fresh catchup for CFR by default
                 if (elapsedFromTickStartMs > catchupBudgetMs) {
-                    LogInfo(
-                        "[EncoderThread] Catchup budget exceeded at extraTick=%u (elapsed=%.2fms > budget=%.2fms), "
-                        "skipping remaining catchup (unless CFR sync requires it)",
-                        extraTick, elapsedFromTickStartMs, catchupBudgetMs);
+                    static uint64_t s_lastBudgetLog = 0;
+                    uint64_t nowTick = GetTickCount64();
+                    if (nowTick - s_lastBudgetLog >= 1000) {
+                        LogInfo(
+                            "[EncoderThread] Catchup budget exceeded at extraTick=%u (elapsed=%.2fms > budget=%.2fms). "
+                            "Switching to duplicate frames to preserve CFR timeline without stalling.",
+                            extraTick, elapsedFromTickStartMs, catchupBudgetMs);
+                        s_lastBudgetLog = nowTick;
+                    }
                     if (config.video.useVFR || outputShortfallTicks == 0) {
                         break;
+                    } else {
+                        // CFR must not break to avoid timeline holes, but we must stop using expensive fresh frames!
+                        allowFreshCatchup = false;
                     }
                 }
 
                 const int64_t repeatScheduledQpc =
                     scheduledSampleQpc + static_cast<int64_t>(extraTick) * targetIntervalTicks;
 
-                const bool allowFreshCatchup = true; // Always allow fresh catchup for CFR
                 if (allowFreshCatchup && useScreenGrab && MediaEngine_ProcessFrameD3D11 && !bufferedWgcFrames.empty()) {
                     const int64_t catchupGridTick = encoderGridTickCount + 1;
                     const int64_t catchupSelectionTargetQpc =
