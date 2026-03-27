@@ -190,7 +190,8 @@ TEST(CapturePipelinePolicyTest, WgcStaleUniqueFallbackAllowsOneExtraTickOfLag) {
     const int64_t targetIntervalTicks = 100;
     EXPECT_EQ(policy::GetWgcStaleUniqueFallbackMinTimestampQpc(1000, 1500, targetIntervalTicks, false, false), 1200);
     EXPECT_EQ(policy::GetWgcStaleUniqueFallbackMinTimestampQpc(1000, 1500, targetIntervalTicks, true, false), 1100);
-    EXPECT_EQ(policy::GetWgcStaleUniqueFallbackMinTimestampQpc(1000, 1500, targetIntervalTicks, true, true), 900);
+    EXPECT_EQ(policy::GetWgcStaleUniqueFallbackMinTimestampQpc(1000, 1500, targetIntervalTicks, true, true), 1001);
+    EXPECT_EQ(policy::GetWgcStaleUniqueFallbackMinTimestampQpc(100, 1500, targetIntervalTicks, true, true), 700);
 }
 
 TEST(CapturePipelinePolicyTest, WgcStaleUniqueFallbackStillRequiresNewSourceTimestamp) {
@@ -247,10 +248,12 @@ TEST(CapturePipelinePolicyTest, WgcLowSourceClampLeavesHealthyQueueSelectionAlon
     EXPECT_EQ(policy::ClampWgcSelectionIndexForLowSource(3, 5, 5, 122, 122, 120, 10), 3u);
 }
 
-TEST(CapturePipelinePolicyTest, WgcDeepUnderfeedDisablesReservePreservationBias) {
+TEST(CapturePipelinePolicyTest, WgcDeepUnderfeedKeepsSparseBurstReserveWhenCandidateIsClose) {
     EXPECT_TRUE(policy::IsWgcDeepUnderfeed(120, 80, 82, 420));
     EXPECT_FALSE(policy::IsWgcDeepUnderfeed(120, 118, 120, 40));
     EXPECT_EQ(policy::ClampWgcSelectionIndexForLowSource(3, 4, 2, 40, 44, 120, 420), 3u);
+    EXPECT_FALSE(policy::ShouldPreferEarlierFreshWgcFrameToPreserveReserve(930, 1040, 1020, 100, false, false, false));
+    EXPECT_TRUE(policy::ShouldPreferEarlierFreshWgcFrameToPreserveReserve(930, 1040, 1020, 100, false, false, true));
 }
 
 TEST(CapturePipelinePolicyTest, WgcFreshFrameHoldStopsWhenAlreadyBehindOrPressured) {

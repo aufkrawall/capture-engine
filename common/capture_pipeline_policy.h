@@ -26,6 +26,7 @@ constexpr size_t kWgcWarmupFreshFrames = 2;
 constexpr uint32_t kWgcReservePressurePermille = 600;
 constexpr uint32_t kWgcReserveBiasPermille = 250;
 constexpr uint32_t kWgcReserveFragileBiasPermille = 375;
+constexpr uint32_t kWgcDeepUnderfeedReserveBiasPermille = 750;
 constexpr uint32_t kWgcSingleFreshHoldInputPermille = 995;
 constexpr uint32_t kWgcSteadyReserveBuildInputPermille = 995;
 constexpr uint32_t kWgcSelectionDelayTicks = 2;
@@ -35,7 +36,7 @@ constexpr uint32_t kCfrShortfallForceCatchupThresholdTicks = 18;
 constexpr double kWgcSevereShortfallDurationMs = 500.0;
 constexpr uint32_t kWgcDeepUnderfeedMarginFps = 8;
 constexpr uint32_t kWgcDeepUnderfeedEmptyTickPermille = 350;
-constexpr uint32_t kWgcDeepUnderfeedStaleFallbackLagTicks = 3;
+constexpr uint32_t kWgcDeepUnderfeedStaleFallbackLagTicks = 5;
 
 inline uint32_t GetCfrOutputShortfallTicks(uint64_t liveTicksScheduled, uint64_t liveTicksOutput) {
     return liveTicksScheduled > liveTicksOutput
@@ -547,10 +548,6 @@ inline bool ShouldPreferEarlierFreshWgcFrameToPreserveReserve(int64_t earlierFra
         return false;
     }
 
-    if (deepUnderfeed) {
-        return false;
-    }
-
     const int64_t earlierDistance = earlierFrameTimestampQpc >= selectionTargetQpc
                                         ? (earlierFrameTimestampQpc - selectionTargetQpc)
                                         : (selectionTargetQpc - earlierFrameTimestampQpc);
@@ -558,7 +555,9 @@ inline bool ShouldPreferEarlierFreshWgcFrameToPreserveReserve(int64_t earlierFra
                                          ? (selectedFrameTimestampQpc - selectionTargetQpc)
                                          : (selectionTargetQpc - selectedFrameTimestampQpc);
     const uint32_t biasPermille =
-        (reservePressureActive || lowSourceMode) ? kWgcReserveFragileBiasPermille : kWgcReserveBiasPermille;
+        deepUnderfeed ? kWgcDeepUnderfeedReserveBiasPermille
+                      : (reservePressureActive || lowSourceMode) ? kWgcReserveFragileBiasPermille
+                                                                : kWgcReserveBiasPermille;
     const int64_t reserveBiasQpc =
         std::max<int64_t>((targetIntervalTicks * static_cast<int64_t>(biasPermille)) / 1000, 1);
     return earlierDistance <= (selectedDistance + reserveBiasQpc);
