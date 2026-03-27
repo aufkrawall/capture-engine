@@ -1847,10 +1847,17 @@ void EncoderThreadFunc(const AppConfig& config) {
                 !config.video.useVFR && recordingOutputLive &&
                 ce::capture_policy::ShouldCfrCatchUpToWallClock(outputShortfallTicks, activeScreenGrab,
                                                                 frameAvailableForCatchup, g_HasLastFrame);
-            catchupTicksThisLoop = shouldCatchUpToWallClock
-                                       ? ce::capture_policy::GetCfrCatchupTicksThisLoop(outputShortfallTicks,
-                                                                                       encoderTooSlowForTargetCurrent)
-                                       : 0u;
+            if (!shouldCatchUpToWallClock) {
+                catchupTicksThisLoop = 0u;
+            } else if (activeScreenGrab) {
+                catchupTicksThisLoop = ce::capture_policy::GetWgcCatchupTicksThisLoop(
+                    encoderTooSlowForTargetCurrent, bufferedWgcFrames.size(), frameCreditAccumulator,
+                    outputShortfallTicks, targetOutputFpsForPolicy, wgcRecentDeliveredMin250Fps,
+                    wgcRecentInputMin250Fps, wgcNoFreshTickPermille, wgcLowSourceModeActive);
+            } else {
+                catchupTicksThisLoop =
+                    ce::capture_policy::GetCfrCatchupTicksThisLoop(outputShortfallTicks, encoderTooSlowForTargetCurrent);
+            }
             if (activeScreenGrab &&
                 ce::capture_policy::ShouldClampWgcCoverageCatchupToSingleTick(
                     wgcCoverageRepeatActiveCurrent, encoderTooSlowForTargetCurrent, shortfallDurationMs)) {

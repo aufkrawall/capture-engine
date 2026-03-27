@@ -697,7 +697,6 @@ public:
                 if (IsWgcCfrRecording()) {
                     const int64_t wallDurationUs =
                         std::max<int64_t>(d3d11TimelineState.lastElapsedUs, videoElapsedMs.load() * 1000);
-                    durationUs = std::max(durationUs, wallDurationUs);
 
                     DLL_Log(
                         "MediaEngine: WGC stop durations. Expected: %lld us, Encoded: %lld us, Wall: %lld us, "

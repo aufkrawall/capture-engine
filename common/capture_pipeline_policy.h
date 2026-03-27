@@ -103,6 +103,7 @@ inline bool ShouldApplyWgcSelectionDelay(bool recordingOutputLive, uint32_t outp
 
 inline bool ShouldAllowWgcExtraCatchupTicks(bool encoderBottlenecked, size_t bufferedWgcFrames,
                                             double frameCreditAccumulator, uint32_t outputShortfallTicks) {
+    (void)encoderBottlenecked;
     if (outputShortfallTicks >= kCfrShortfallCatchupThresholdTicks) {
         return true;
     }
@@ -118,21 +119,44 @@ inline bool ShouldAllowWgcExtraCatchupTicks(bool encoderBottlenecked, size_t buf
     return outputShortfallTicks >= kCfrShortfallForceCatchupThresholdTicks;
 }
 
-inline uint32_t GetWgcCatchupTicksThisLoop(bool encoderBottlenecked, size_t bufferedWgcFrames,
-                                           double frameCreditAccumulator, uint32_t outputShortfallTicks) {
-    const uint32_t baseCatchupTicks = GetCfrCatchupTicksThisLoop(outputShortfallTicks);
-    if (baseCatchupTicks > 1u) {
-        return baseCatchupTicks;
+inline bool IsWgcSourceHealthyForLiveCatchup(uint32_t outputFps, uint32_t recentDeliveredMin250Fps,
+                                             uint32_t recentInputMin250Fps, uint32_t noFreshTickPermille,
+                                             bool lowSourceMode) {
+    if (lowSourceMode || outputFps == 0) {
+        return false;
     }
 
+    const uint32_t deliveredRecoveryFloor = outputFps > 2 ? (outputFps - 2) : outputFps;
+    return recentDeliveredMin250Fps >= deliveredRecoveryFloor && recentInputMin250Fps >= outputFps &&
+           noFreshTickPermille < kWgcLowSourceEmptyTickPermille;
+}
+
+inline uint32_t GetWgcCatchupTicksThisLoop(bool encoderBottlenecked, size_t bufferedWgcFrames,
+                                           double frameCreditAccumulator, uint32_t outputShortfallTicks,
+                                           uint32_t outputFps, uint32_t recentDeliveredMin250Fps,
+                                           uint32_t recentInputMin250Fps, uint32_t noFreshTickPermille,
+                                           bool lowSourceMode) {
     if (outputShortfallTicks < kCfrShortfallCatchupThresholdTicks) {
+        return 1u;
+    }
+
+    if (IsWgcSourceHealthyForLiveCatchup(outputFps, recentDeliveredMin250Fps, recentInputMin250Fps,
+                                         noFreshTickPermille, lowSourceMode)) {
+        // When WGC is already delivering near-target fresh content, draining
+        // historical shortfall via live duplicate bursts is visually worse than
+        // carrying that debt and letting stop-drain close the exact CFR count.
+        return 1u;
+    }
+
+    const uint32_t baseCatchupTicks = GetCfrCatchupTicksThisLoop(outputShortfallTicks, encoderBottlenecked);
+    if (baseCatchupTicks > 1u) {
         return baseCatchupTicks;
     }
 
     return ShouldAllowWgcExtraCatchupTicks(encoderBottlenecked, bufferedWgcFrames, frameCreditAccumulator,
                                            outputShortfallTicks)
                ? 2u
-               : baseCatchupTicks;
+               : 1u;
 }
 
 inline double GetCfrShortfallDurationMs(uint32_t outputShortfallTicks, double frameIntervalMs) {
