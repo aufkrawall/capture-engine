@@ -1650,8 +1650,13 @@ void EncoderThreadFunc(const AppConfig& config) {
     bool wgcCoverageRepeatActiveCurrent = false;
     bool encoderTooSlowForTargetCurrent = false;
     bool wgcLowSourceModeActive = false;
+    bool wgcLiveRecoveryModeActive = false;
     bool wgcReservePressureActive = false;
     uint64_t wgcLowSourceStateChangeTick = 0;
+    uint64_t wgcLiveRecoveryStateChangeTick = 0;
+    bool wgcSourceStarvedCurrent = false;
+    bool wgcSchedulerLimitedCurrent = false;
+    bool wgcEncoderRecoveryLimitedCurrent = false;
     int64_t lastEmittedWgcSourceQpc = 0;
     int64_t lastWarmupWgcSourceQpc = 0;
     uint32_t wgcFreshWarmupFrameCount = 0;
@@ -1860,6 +1865,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                 catchupTicksThisLoop =
                     ce::capture_policy::GetCfrCatchupTicksThisLoop(outputShortfallTicks, encoderTooSlowForTargetCurrent);
             }
+            if (activeScreenGrab && wgcLiveRecoveryModeActive) {
+                catchupTicksThisLoop = std::min<uint32_t>(catchupTicksThisLoop, 1u);
+            }
             if (activeScreenGrab &&
                 ce::capture_policy::ShouldClampWgcCoverageCatchupToSingleTick(
                     wgcCoverageRepeatActiveCurrent, encoderCatchupBottleneckedCurrent, shortfallDurationMs)) {
@@ -1961,7 +1969,8 @@ void EncoderThreadFunc(const AppConfig& config) {
             const int64_t fallbackTargetQpc =
                 ComputeIdealOutputQpc(encoderGridStartQpc, selectionGridTickForTick, targetIntervalTicks);
             return ce::capture_policy::GetWgcSelectionTargetQpc(
-                scheduledQpcForTick, fallbackTargetQpc, targetIntervalTicks, recordingOutputLive && applyLiveDelay);
+                scheduledQpcForTick, fallbackTargetQpc, targetIntervalTicks,
+                recordingOutputLive && applyLiveDelay && !wgcLiveRecoveryModeActive);
         };
         const auto computeWgcSelectionTargetQpc = [&](bool applyLiveDelay) {
             return computeWgcSelectionTargetForTick(scheduledSampleQpc, selectionGridTick, applyLiveDelay);
@@ -1971,8 +1980,8 @@ void EncoderThreadFunc(const AppConfig& config) {
         const auto clampWgcSelectionTargetQpc = [&](int64_t selectionTargetQpc, int64_t liveNowQpc) {
             const bool encoderBottlenecked = g_IsEncoderBottlenecked.load(std::memory_order_relaxed);
             const int64_t clampedSelectionTargetQpc = ce::capture_policy::ClampWgcSelectionTargetToLiveQpc(
-                selectionTargetQpc, liveNowQpc, targetIntervalTicks, wgcLowSourceModeActive, outputShortfallTicks,
-                encoderBottlenecked);
+                selectionTargetQpc, liveNowQpc, targetIntervalTicks, wgcLowSourceModeActive,
+                wgcLiveRecoveryModeActive, outputShortfallTicks, encoderBottlenecked);
             if (clampedSelectionTargetQpc > selectionTargetQpc) {
                 const uint64_t clampDeltaUs = static_cast<uint64_t>(clampedSelectionTargetQpc - selectionTargetQpc) *
                                               1000000ull / static_cast<uint64_t>(qpcFreq.QuadPart);
@@ -2116,7 +2125,7 @@ void EncoderThreadFunc(const AppConfig& config) {
 
             selectedIndex = ce::capture_policy::ClampWgcSelectionIndexForLowSource(
                 selectedIndex, bufferedWgcFrames.size(), bufferedWgcFrames.size(), wgcRecentDeliveredFps,
-                wgcRecentInputMin250Fps, outputFps, wgcNoFreshTickPermille);
+                wgcRecentInputMin250Fps, outputFps, wgcNoFreshTickPermille, wgcLiveRecoveryModeActive);
 
             if (usingFreshCandidateSet && selectedIndex > 0) {
                 const QueuedFrame& earlierFresh = bufferedWgcFrames[0];
@@ -2126,7 +2135,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                         earlierFresh.selectionTimestamp > 0 ? earlierFresh.selectionTimestamp : earlierFresh.timestamp,
                         chosenFresh.selectionTimestamp > 0 ? chosenFresh.selectionTimestamp : chosenFresh.timestamp,
                         effectiveSelectionTargetQpc, targetIntervalTicks, wgcReservePressureActive, lowSourceMode,
-                        deepUnderfeed)) {
+                        deepUnderfeed, wgcLiveRecoveryModeActive)) {
                     selectedIndex = 0;
                 } else {
                     ++wgcReserveSpendTickCount;
@@ -2334,6 +2343,11 @@ void EncoderThreadFunc(const AppConfig& config) {
                     0u,
                     0.0,
                 };
+                wgcSourceStarvedCurrent = ce::capture_policy::IsWgcSourceStarved(wgcAdaptiveTelemetry);
+                wgcSchedulerLimitedCurrent = ce::capture_policy::IsWgcSchedulerDeliveryLimited(wgcAdaptiveTelemetry);
+                wgcEncoderRecoveryLimitedCurrent =
+                    g_IsEncoderBottlenecked.load(std::memory_order_relaxed) &&
+                    outputShortfallTicks >= ce::capture_policy::kWgcRecoveryEnterShortfallTicks;
                 wgcReservePressureActive =
                     ce::capture_policy::IsWgcReservePressureActive(wgcNoReserveTickCount, wgcQueueTickSampleCount,
                                                                    outputFps);
@@ -2372,6 +2386,51 @@ void EncoderThreadFunc(const AppConfig& config) {
                         }
                     } else {
                         wgcLowSourceStateChangeTick = 0;
+                    }
+                }
+
+                const bool shouldEnterWgcLiveRecoveryMode = ce::capture_policy::ShouldEnterWgcLiveRecoveryMode(
+                    wgcAdaptiveTelemetry, outputShortfallTicks, g_IsEncoderBottlenecked.load(std::memory_order_relaxed));
+                const bool shouldExitWgcLiveRecoveryMode = ce::capture_policy::ShouldExitWgcLiveRecoveryMode(
+                    wgcAdaptiveTelemetry, outputShortfallTicks, g_IsEncoderBottlenecked.load(std::memory_order_relaxed));
+                if (!wgcLiveRecoveryModeActive) {
+                    if (shouldEnterWgcLiveRecoveryMode) {
+                        if (wgcLiveRecoveryStateChangeTick == 0) {
+                            wgcLiveRecoveryStateChangeTick = wgcPolicyNowTick;
+                        } else if ((wgcPolicyNowTick - wgcLiveRecoveryStateChangeTick) >=
+                                   ce::capture_policy::kWgcRecoveryEnterHoldMs) {
+                            wgcLiveRecoveryModeActive = true;
+                            wgcLiveRecoveryStateChangeTick = 0;
+                            LogInfo(
+                                "[WGC CFR] Live-recovery entered: srcStarved=%d schedLimited=%d encLimited=%d shortfall=%u/%.1fms src=%u/%u/%u input=%u/%u empty=%upm buffered=%zu",
+                                wgcSourceStarvedCurrent ? 1 : 0, wgcSchedulerLimitedCurrent ? 1 : 0,
+                                wgcEncoderRecoveryLimitedCurrent ? 1 : 0, outputShortfallTicks,
+                                ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs),
+                                wgcRecentDeliveredFps, wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps,
+                                wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
+                                bufferedWgcFrames.size());
+                        }
+                    } else {
+                        wgcLiveRecoveryStateChangeTick = 0;
+                    }
+                } else {
+                    if (shouldExitWgcLiveRecoveryMode) {
+                        if (wgcLiveRecoveryStateChangeTick == 0) {
+                            wgcLiveRecoveryStateChangeTick = wgcPolicyNowTick;
+                        } else if ((wgcPolicyNowTick - wgcLiveRecoveryStateChangeTick) >=
+                                   ce::capture_policy::kWgcRecoveryExitHoldMs) {
+                            wgcLiveRecoveryModeActive = false;
+                            wgcLiveRecoveryStateChangeTick = 0;
+                            LogInfo(
+                                "[WGC CFR] Live-recovery exited: shortfall=%u/%.1fms src=%u/%u/%u input=%u/%u empty=%upm buffered=%zu",
+                                outputShortfallTicks,
+                                ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs),
+                                wgcRecentDeliveredFps, wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps,
+                                wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
+                                bufferedWgcFrames.size());
+                        }
+                    } else {
+                        wgcLiveRecoveryStateChangeTick = 0;
                     }
                 }
 
@@ -2441,9 +2500,11 @@ void EncoderThreadFunc(const AppConfig& config) {
                         clampWgcSelectionTargetQpc(computeWgcSelectionTargetQpc(false), selectionNowQpc.QuadPart),
                         &wgcFreshAvailableAtTickStart,
                                                         &wgcReserveAvailableAtTickStart);
-                    wgcSelectionDelayAppliedThisTick = ce::capture_policy::ShouldApplyWgcSelectionDelay(
-                        recordingOutputLive, outputShortfallTicks,
-                        g_IsEncoderBottlenecked.load(std::memory_order_relaxed), wgcReserveAvailableAtTickStart);
+                    wgcSelectionDelayAppliedThisTick =
+                        !wgcLiveRecoveryModeActive && ce::capture_policy::ShouldApplyWgcSelectionDelay(
+                                                         recordingOutputLive, outputShortfallTicks,
+                                                         g_IsEncoderBottlenecked.load(std::memory_order_relaxed),
+                                                         wgcReserveAvailableAtTickStart);
                     if (wgcSelectionDelayAppliedThisTick) {
                         ++wgcSelectionDelayTickCount;
                     }
@@ -2746,6 +2807,11 @@ void EncoderThreadFunc(const AppConfig& config) {
             ResetWarmupWgcFreshness();
             wgcLowSourceModeActive = false;
             wgcLowSourceStateChangeTick = 0;
+            wgcLiveRecoveryModeActive = false;
+            wgcLiveRecoveryStateChangeTick = 0;
+            wgcSourceStarvedCurrent = false;
+            wgcSchedulerLimitedCurrent = false;
+            wgcEncoderRecoveryLimitedCurrent = false;
         }
         startupWarmupStartTick = warmupState.startupWarmupStartTick;
         hiddenStartupFrames = warmupState.hiddenStartupFrames;
@@ -3823,7 +3889,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 "TimerRebase=%u | "
                 "InvalidMeta=%u InvalidHandle=%u | PktClamp=%u NegPTS=%u NonMonoPTS=%u | WgcThr=%u Adj=%u | Over=0x%X "
                 "MuxQ=%uKB/%u MuxBp=%u Wait=%uus Max=%uus | EncEma=%.2fms Budget=%upm Sust=%.1ffps TooSlow=%d "
-                "Bottleneck=%d | SrcFps=%.2f SrcJitter=%uus DupTs=%u EncCycle=%.2fms EncSpike=%u",
+                "Bottleneck=%d | LowSrc=%d Recover=%d Cause=S%d/D%d/E%d | SrcFps=%.2f SrcJitter=%uus DupTs=%u EncCycle=%.2fms EncSpike=%u",
                 CapturePipelinePhaseToString(state.capturePhase.load(std::memory_order_relaxed)), avgFrameAgeUs,
                 cadenceCounters.frameAgeMaxUs, avgSelectionErrorUs, cadenceCounters.outputScheduleErrorMaxUs,
                 avgSignedSelectionErrorUs, cadenceCounters.outputScheduleEarlyMaxUs,
@@ -3855,6 +3921,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                 (muxQueueBytes + 1023u) / 1024u, muxQueuePackets, muxBackpressureCount, muxBackpressureWaitUs,
                 muxBackpressureMaxWaitUs, smoothedEncodeMs, encoderBudgetUtilizationPermille, sustainableOutputFps,
                 encoderTooSlowForTarget ? 1 : 0, g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ? 1 : 0,
+                wgcLowSourceModeActive ? 1 : 0, wgcLiveRecoveryModeActive ? 1 : 0,
+                wgcSourceStarvedCurrent ? 1 : 0, wgcSchedulerLimitedCurrent ? 1 : 0,
+                wgcEncoderRecoveryLimitedCurrent ? 1 : 0,
                 srcFpsX100Val / 100.0, srcJitterUsVal, dupTsPerSec, smoothedEncCycleMs, encodeSpikeCountThisSecond);
 
             static uint64_t s_lastWgcCapacityWarnTick = 0;

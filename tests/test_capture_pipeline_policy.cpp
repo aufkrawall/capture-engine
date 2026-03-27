@@ -166,6 +166,7 @@ TEST(CapturePipelinePolicyTest, WgcLowSourceSelectionClampProtectsFragileQueue) 
     EXPECT_EQ(policy::ClampWgcSelectionIndexForLowSource(3, 4, 2, 116, 116, 120, 130), 0u);
     EXPECT_EQ(policy::ClampWgcSelectionIndexForLowSource(3, 4, 2, 119, 119, 120, 90), 1u);
     EXPECT_EQ(policy::ClampWgcSelectionIndexForLowSource(1, 4, 4, 130, 130, 120, 10), 1u);
+    EXPECT_EQ(policy::ClampWgcSelectionIndexForLowSource(3, 4, 2, 116, 116, 120, 130, true), 3u);
 }
 
 TEST(CapturePipelinePolicyTest, WgcLowSourceDropPolicyKeepsFrontFrameWhenQueueFragile) {
@@ -205,6 +206,38 @@ TEST(CapturePipelinePolicyTest, WgcSelectionTargetDelaysLiveSelectionByTwoTicks)
     EXPECT_EQ(policy::GetWgcSelectionTargetQpc(1500, 1400, 100, false), 1500);
     EXPECT_EQ(policy::GetWgcSelectionTargetQpc(0, 1400, 100, true), 1200);
     EXPECT_EQ(policy::GetWgcSelectionTargetQpc(50, 40, 100, true), 50);
+}
+
+TEST(CapturePipelinePolicyTest, WgcLiveRecoveryModeTracksSourceSchedulerAndEncoderStress) {
+    policy::WgcAdaptiveTelemetry telemetry{};
+    telemetry.outputFps = 120;
+    telemetry.recentDeliveredFps = 82;
+    telemetry.recentDeliveredMin250Fps = 80;
+    telemetry.recentDeliveredMin500Fps = 80;
+    telemetry.recentInputMin250Fps = 78;
+    telemetry.recentInputMin500Fps = 78;
+    telemetry.emptyTickPermille = 40;
+
+    EXPECT_TRUE(policy::IsWgcSourceStarved(telemetry));
+    EXPECT_FALSE(policy::IsWgcSchedulerDeliveryLimited(telemetry));
+    EXPECT_TRUE(policy::ShouldEnterWgcLiveRecoveryMode(telemetry, 4, false));
+
+    telemetry.recentInputMin250Fps = 122;
+    telemetry.recentInputMin500Fps = 122;
+    EXPECT_FALSE(policy::IsWgcSourceStarved(telemetry));
+    EXPECT_TRUE(policy::IsWgcSchedulerDeliveryLimited(telemetry));
+    EXPECT_TRUE(policy::ShouldEnterWgcLiveRecoveryMode(telemetry, 4, false));
+
+    telemetry.recentDeliveredFps = 121;
+    telemetry.recentDeliveredMin250Fps = 120;
+    telemetry.recentDeliveredMin500Fps = 120;
+    telemetry.emptyTickPermille = 20;
+    EXPECT_FALSE(policy::IsWgcSchedulerDeliveryLimited(telemetry));
+    EXPECT_TRUE(policy::ShouldEnterWgcLiveRecoveryMode(telemetry, policy::kWgcRecoveryEnterShortfallTicks, true));
+
+    telemetry.bufferedWgcFrames = 2;
+    EXPECT_FALSE(policy::ShouldExitWgcLiveRecoveryMode(telemetry, 2, false));
+    EXPECT_TRUE(policy::ShouldExitWgcLiveRecoveryMode(telemetry, 1, false));
 }
 
 TEST(CapturePipelinePolicyTest, WgcSelectionDelayIsUnconditional) {
@@ -277,6 +310,11 @@ TEST(CapturePipelinePolicyTest, WgcExtraCatchupRequiresSurplusAndNoEncoderBottle
     EXPECT_TRUE(policy::ShouldAllowWgcExtraCatchupTicks(true, 4, 0.0, policy::kCfrShortfallForceCatchupThresholdTicks));
 }
 
+TEST(CapturePipelinePolicyTest, WgcCatchupStaysSingleTickWhenSourceIsDegraded) {
+    EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(false, 4, 2.0, 8, 120, 80, 82, 0, true), 1u);
+    EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(false, 4, 2.0, 8, 120, 84, 84, 420, false), 1u);
+}
+
 TEST(CapturePipelinePolicyTest, WgcHealthySourcePrefersSmoothnessOverLiveCatchup) {
     EXPECT_TRUE(policy::IsWgcSourceHealthyForLiveCatchup(120, 118, 120, 0, false));
     EXPECT_FALSE(policy::IsWgcSourceHealthyForLiveCatchup(120, 116, 120, 0, false));
@@ -300,6 +338,13 @@ TEST(CapturePipelinePolicyTest, WgcCoverageCatchupClampRelaxesAtSevereShortfall)
     EXPECT_FALSE(policy::ShouldClampWgcCoverageCatchupToSingleTick(false, true, 300.0));
     EXPECT_DOUBLE_EQ(policy::GetWgcForceCatchupBudgetFrameMultiplier(250.0), 3.0);
     EXPECT_DOUBLE_EQ(policy::GetWgcForceCatchupBudgetFrameMultiplier(500.0), 4.0);
+}
+
+TEST(CapturePipelinePolicyTest, WgcLiveRecoveryClampHugsLiveTimeAndDisablesReserveBias) {
+    EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, false, false, 0, false), 1400);
+    EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, false, true, 20, true), 1500);
+    EXPECT_FALSE(policy::ShouldPreferEarlierFreshWgcFrameToPreserveReserve(1000, 1040, 1020, 100, true, true, true,
+                                                                           true));
 }
 
 TEST(CapturePipelinePolicyTest, CfrOutputShortfallTicksIsClampedToPositiveDelta) {
