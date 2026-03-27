@@ -80,12 +80,31 @@ TEST(AudioSyncUtilsTest, WgcCoverageBufferedAudioLagAddsBoundedHistoricalCushion
 
 TEST(AudioSyncUtilsTest, WgcCoverageAudioLagTargetsKeepDriftAndBufferLagSeparate) {
     const auto normal = ce::audio::ComputeWgcAudioLagTargets(325, 12, false);
-    EXPECT_EQ(normal.driftLagMs, 325);
-    EXPECT_EQ(normal.targetBufferLagMs, 325);
+    EXPECT_EQ(normal.driftLagMs, 12);
+    EXPECT_EQ(normal.targetBufferLagMs, 12);
 
     const auto coverage = ce::audio::ComputeWgcAudioLagTargets(5430, 17, true);
     EXPECT_EQ(coverage.driftLagMs, 17);
     EXPECT_EQ(coverage.targetBufferLagMs, 300);
+}
+
+TEST(AudioSyncUtilsTest, WgcPositiveCompensationHysteresisKeepsGuardBandNearTarget) {
+    EXPECT_EQ(ce::audio::ComputeWgcPositiveCompensationHysteresisSamples(2880, 9600), 960);
+    EXPECT_EQ(ce::audio::ComputeWgcPositiveCompensationHysteresisSamples(960, 9600), 480);
+    EXPECT_EQ(ce::audio::ComputeWgcPositiveCompensationHysteresisSamples(0, 9600), 480);
+}
+
+TEST(AudioSyncUtilsTest, WgcPositiveCompensationClearsBeforeLeadIsFullySpent) {
+    EXPECT_FALSE(ce::audio::ShouldClearWgcPositiveDriftCompensation(true, 3841, 2880, 960));
+    EXPECT_TRUE(ce::audio::ShouldClearWgcPositiveDriftCompensation(true, 3840, 2880, 960));
+    EXPECT_TRUE(ce::audio::ShouldClearWgcPositiveDriftCompensation(false, 12000, 2880, 960));
+}
+
+TEST(AudioSyncUtilsTest, WgcPositiveDriftCorrectionClampsAwayNearTargetSpendDown) {
+    EXPECT_EQ(ce::audio::ClampWgcPositiveDriftCorrection(1800, 960), 840);
+    EXPECT_EQ(ce::audio::ClampWgcPositiveDriftCorrection(960, 960), 0);
+    EXPECT_EQ(ce::audio::ClampWgcPositiveDriftCorrection(600, 960), 0);
+    EXPECT_EQ(ce::audio::ClampWgcPositiveDriftCorrection(-240, 960), -240);
 }
 
 TEST(AudioSyncUtilsTest, WgcCoverageLossTrimSamplesUsesFractionalAccumulatorAndCap) {

@@ -182,6 +182,34 @@ inline bool ShouldAllowWgcSteadyStateDriftCompensation(bool trackStartupSettled,
     return leadSamples >= std::max<int64_t>(1, leadWarningSamples);
 }
 
+inline int64_t ComputeWgcPositiveCompensationHysteresisSamples(int64_t targetLatencySamples,
+                                                               int64_t leadWarningSamples,
+                                                               int64_t quantumSamples = kDefaultAudioPullQuantumSamples) {
+    const int64_t boundedQuantumSamples = std::max<int64_t>(1, quantumSamples);
+    const int64_t baseHysteresisSamples =
+        std::max<int64_t>(boundedQuantumSamples * 2, std::max<int64_t>(0, targetLatencySamples) / 3);
+    const int64_t maxHysteresisSamples = std::max<int64_t>(baseHysteresisSamples, leadWarningSamples / 4);
+    return std::clamp<int64_t>(baseHysteresisSamples, boundedQuantumSamples, maxHysteresisSamples);
+}
+
+inline bool ShouldClearWgcPositiveDriftCompensation(bool allowSteadyStateDriftCompensation,
+                                                    int64_t bufferedSamples, int64_t expectedLeadSamples,
+                                                    int64_t hysteresisSamples) {
+    if (!allowSteadyStateDriftCompensation) {
+        return true;
+    }
+
+    return bufferedSamples <= expectedLeadSamples + std::max<int64_t>(0, hysteresisSamples);
+}
+
+inline int64_t ClampWgcPositiveDriftCorrection(int64_t targetCorrection, int64_t hysteresisSamples) {
+    if (targetCorrection <= 0) {
+        return targetCorrection;
+    }
+
+    return std::max<int64_t>(0, targetCorrection - std::max<int64_t>(0, hysteresisSamples));
+}
+
 inline bool IsTrackAudioStartupSettled(bool trackBootstrapComplete, bool allSourcesPrimed) {
     return trackBootstrapComplete || allSourcesPrimed;
 }

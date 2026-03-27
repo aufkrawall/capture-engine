@@ -1317,9 +1317,13 @@ public:
                             targetLatencySamples, kWgcCfrLeadWarningSamples);
                     const int64_t expectedLeadSamplesForCorrection =
                         kBaseTargetLatencySamples + (effectiveWgcDriftLagMs * SAMPLE_RATE / 1000);
+                    const int64_t wgcPositiveCompensationHysteresisSamples =
+                        ce::audio::ComputeWgcPositiveCompensationHysteresisSamples(
+                            targetLatencySamples, kWgcCfrLeadWarningSamples);
                     if (isWgcCfrRecording && src.currentRateDelta > 0 &&
-                        (static_cast<int64_t>(rbAvailable) <= expectedLeadSamplesForCorrection ||
-                         !allowWgcSteadyStateDriftCompensation)) {
+                        ce::audio::ShouldClearWgcPositiveDriftCompensation(
+                            allowWgcSteadyStateDriftCompensation, static_cast<int64_t>(rbAvailable),
+                            expectedLeadSamplesForCorrection, wgcPositiveCompensationHysteresisSamples)) {
                         // Once WGC lead has been spent, immediately clear any remaining
                         // consume-more-input compensation. Letting a stale positive rate
                         // correction linger here drains the source into an underrun storm.
@@ -1534,6 +1538,14 @@ public:
                                     // Wait, earlier I established: sample_delta = +trueDrift.
                                     int64_t targetCorrection = trueDrift;
 
+                                    if (isWgcCfrRecording && targetCorrection > 0) {
+                                        targetCorrection = allowWgcSteadyStateDriftCompensation
+                                                       ? ce::audio::ClampWgcPositiveDriftCorrection(
+                                                           targetCorrection,
+                                                           wgcPositiveCompensationHysteresisSamples)
+                                                       : 0;
+                                    }
+
                                     const int32_t maxDelta = src.syncResampler->GetMaxCompensationDelta();
                                     targetCorrection = std::clamp(targetCorrection, static_cast<int64_t>(-maxDelta), static_cast<int64_t>(maxDelta));
 
@@ -1699,6 +1711,15 @@ public:
                     const bool startupPadding = !src.bootstrapComplete;
                     if (!startupPadding) {
                         src.underrunPadSamples += padSamples;
+                        if (src.syncResampler && src.syncResampler->IsReady() && src.rateCompActive) {
+                            if (swr_set_compensation(src.syncResampler->GetSwrContext(), 0, SAMPLE_RATE * 10) >= 0) {
+                                src.prevLeadSamples = 0;
+                                src.prevLeadSnapshotMs = 0;
+                                src.lastRateUpdateMs = 0;
+                                src.currentRateDelta = 0;
+                                src.rateCompActive = false;
+                            }
+                        }
                     }
                     src.pendingUnderrunRecoveryFade = true;
                     if (!startupPadding && src.alignedStartMs >= 0 && padSamples >= (size_t)(SAMPLE_RATE / 200) &&
