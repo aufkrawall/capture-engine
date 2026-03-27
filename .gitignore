@@ -29,7 +29,6 @@
 *.csv
 *.dmp
 *.ps1
-test_loop.py
 compile.log
 build.log
 git-clean.log
@@ -73,7 +72,5 @@ ffprobe_err.txt
 CUsersTestUsertemp_ffprobe.json
 CUsersTestUsertemp_ffprobe2.json
 .gitignore
-analysis/analyze_packets.py
 analysis/streams.txt
-tools/analyze_capture_av.py
-tools/analyze_capture_av.py
+
