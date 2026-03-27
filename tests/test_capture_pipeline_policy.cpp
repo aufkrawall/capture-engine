@@ -283,6 +283,12 @@ TEST(CapturePipelinePolicyTest, WgcHealthySourcePrefersSmoothnessOverLiveCatchup
     EXPECT_FALSE(policy::IsWgcSourceHealthyForLiveCatchup(120, 118, 119, 0, false));
     EXPECT_FALSE(policy::IsWgcSourceHealthyForLiveCatchup(120, 118, 120, 100, false));
     EXPECT_FALSE(policy::IsWgcSourceHealthyForLiveCatchup(120, 118, 120, 0, true));
+
+    EXPECT_TRUE(policy::IsWgcSourceHealthyEnoughToSuppressEncoderLimitedCatchup(120, 120, 0, false));
+    EXPECT_TRUE(policy::IsWgcSourceHealthyEnoughToSuppressEncoderLimitedCatchup(120, 124, 40, false));
+    EXPECT_FALSE(policy::IsWgcSourceHealthyEnoughToSuppressEncoderLimitedCatchup(120, 119, 0, false));
+    EXPECT_FALSE(policy::IsWgcSourceHealthyEnoughToSuppressEncoderLimitedCatchup(120, 124, 100, false));
+    EXPECT_FALSE(policy::IsWgcSourceHealthyEnoughToSuppressEncoderLimitedCatchup(120, 124, 0, true));
 }
 
 TEST(CapturePipelinePolicyTest, WgcCoverageCatchupClampRelaxesAtSevereShortfall) {
@@ -343,6 +349,9 @@ TEST(CapturePipelinePolicyTest, WgcCatchupTicksRecoverModerateShortfallWhenHealt
     EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(false, 4, 2.0, policy::kCfrShortfallForceCatchupThresholdTicks - 1,
                                                  120, 124, 130, 0, false),
               1u);
+    EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(true, 4, 2.0, policy::kCfrShortfallCatchupThresholdTicks, 120, 112,
+                                                 124, 0, false),
+              1u);
     EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(true, 4, 2.0, policy::kCfrShortfallCatchupThresholdTicks, 120, 110,
                                                  112, 0, true),
               2u);
@@ -365,6 +374,9 @@ TEST(CapturePipelinePolicyTest, CfrCatchupTicksBurstAtForceThreshold) {
 TEST(CapturePipelinePolicyTest, WgcCatchupTicksStillBurstAtForceThreshold) {
     EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(false, 2, 1.0, policy::kCfrShortfallForceCatchupThresholdTicks, 120,
                                                  118, 120, 0, false),
+              1u);
+    EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(true, 4, 2.0, policy::kCfrShortfallForceCatchupThresholdTicks, 120,
+                                                 112, 124, 0, false),
               1u);
     EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(true, 2, 0.0, policy::kCfrShortfallForceCatchupThresholdTicks, 120,
                                                  84, 84, 200, true),

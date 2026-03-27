@@ -135,6 +135,17 @@ inline bool IsWgcSourceHealthyForLiveCatchup(uint32_t outputFps, uint32_t recent
            noFreshTickPermille < kWgcLowSourceEmptyTickPermille;
 }
 
+inline bool IsWgcSourceHealthyEnoughToSuppressEncoderLimitedCatchup(uint32_t outputFps,
+                                                                    uint32_t recentInputMin250Fps,
+                                                                    uint32_t noFreshTickPermille,
+                                                                    bool lowSourceMode) {
+    if (lowSourceMode || outputFps == 0) {
+        return false;
+    }
+
+    return recentInputMin250Fps >= outputFps && noFreshTickPermille < kWgcLowSourceEmptyTickPermille;
+}
+
 inline bool IsWgcDeepUnderfeed(uint32_t outputFps, uint32_t recentDeliveredMin250Fps,
                                uint32_t recentInputMin250Fps, uint32_t emptyTickPermille) {
     if (outputFps == 0) {
@@ -162,6 +173,15 @@ inline uint32_t GetWgcCatchupTicksThisLoop(bool encoderBottlenecked, size_t buff
         // When WGC is already delivering near-target fresh content, draining
         // historical shortfall via live duplicate bursts is visually worse than
         // carrying that debt and letting stop-drain close the exact CFR count.
+        return 1u;
+    }
+
+    if (encoderBottlenecked &&
+        IsWgcSourceHealthyEnoughToSuppressEncoderLimitedCatchup(outputFps, recentInputMin250Fps,
+                                                                noFreshTickPermille, lowSourceMode)) {
+        // When the encoder is the limiter but WGC input is still healthy, live
+        // catch-up drains audio buffers and produces visibly uneven repeat
+        // bursts without improving source coverage. Carry the debt instead.
         return 1u;
     }
 
