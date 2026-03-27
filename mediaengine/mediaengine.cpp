@@ -1058,6 +1058,13 @@ public:
             return;
         }
 
+        auto now = std::chrono::steady_clock::now();
+        int64_t steadyElapsedUs = 0;
+        if (this->recordingStartTime.time_since_epoch().count() > 0) {
+            steadyElapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(now - this->recordingStartTime).count();
+        }
+        const int64_t timelineShortfallMs = std::max<int64_t>(0, (steadyElapsedUs / 1000) - audioTargetMs);
+
         const int64_t videoPipelineLagMs = ce::audio::ComputeVideoPipelineLagMs(wallVideoMs, encodedVideoMs);
         uint32_t wgcTargetFps =
             isWgcCfrRecording ? static_cast<uint32_t>(config.video.fps > 0 ? config.video.fps : 1) : 0u;
@@ -1082,9 +1089,9 @@ public:
         const auto wgcAudioLagTargets = ce::audio::ComputeWgcAudioLagTargets(
             videoPipelineLagMs, wgcBufferedVideoContentLagMs, isWgcCfrRecording && wgcCoverageLossActive,
             kWgcCoverageLossMaxBufferedLagMs);
-        const int64_t effectiveWgcDriftLagMs = isWgcCfrRecording ? wgcAudioLagTargets.driftLagMs : videoPipelineLagMs;
+        const int64_t effectiveWgcDriftLagMs = (isWgcCfrRecording ? wgcAudioLagTargets.driftLagMs : videoPipelineLagMs) + timelineShortfallMs;
         const int64_t effectiveWgcTargetBufferLagMs =
-            isWgcCfrRecording ? wgcAudioLagTargets.targetBufferLagMs : videoPipelineLagMs;
+            (isWgcCfrRecording ? wgcAudioLagTargets.targetBufferLagMs : videoPipelineLagMs) + timelineShortfallMs;
         const int64_t targetBufferedLagCapMs =
             (isWgcCfrRecording && wgcCoverageLossActive)
                 ? std::max<int64_t>(kMaxPipelineLagContributionMs, effectiveWgcTargetBufferLagMs)

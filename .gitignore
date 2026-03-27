@@ -73,3 +73,5 @@ ffprobe_err.txt
 CUsersTestUsertemp_ffprobe.json
 CUsersTestUsertemp_ffprobe2.json
 .gitignore
+analysis/analyze_packets.py
+analysis/streams.txt

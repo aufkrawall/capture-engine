@@ -3060,14 +3060,21 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                : allowWgcCatchupBudget ? (frameIntervalMs * 2.0)
                                                                        : frameIntervalMs;
                 bool allowFreshCatchup = true; // Always allow fresh catchup for CFR by default
-                if (elapsedFromTickStartMs > catchupBudgetMs) {
+                
+                // For CFR recording, video smoothness is paramount. We have a 32-frame deep queue
+                // (~266ms at 120fps) to absorb temporary encoder spikes. We only force duplicate frames
+                // if we are severely behind (e.g. > 150ms delay) to prevent runaway latency.
+                // Otherwise, we process the fresh frame to preserve the correct visual pacing.
+                const double cfrSmoothnessToleranceMs = (!config.video.useVFR && useScreenGrab) ? 150.0 : 0.0;
+                
+                if (elapsedFromTickStartMs > catchupBudgetMs + cfrSmoothnessToleranceMs) {
                     static uint64_t s_lastBudgetLog = 0;
                     uint64_t nowTick = GetTickCount64();
                     if (nowTick - s_lastBudgetLog >= 1000) {
                         LogInfo(
-                            "[EncoderThread] Catchup budget exceeded at extraTick=%u (elapsed=%.2fms > budget=%.2fms). "
+                            "[EncoderThread] Catchup budget exceeded at extraTick=%u (elapsed=%.2fms > budget=%.2fms + tol=%.2fms). "
                             "Switching to duplicate frames to preserve CFR timeline without stalling.",
-                            extraTick, elapsedFromTickStartMs, catchupBudgetMs);
+                            extraTick, elapsedFromTickStartMs, catchupBudgetMs, cfrSmoothnessToleranceMs);
                         s_lastBudgetLog = nowTick;
                     }
                     if (config.video.useVFR || outputShortfallTicks == 0) {
