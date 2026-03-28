@@ -738,11 +738,12 @@ public:
                     }
                 }
 
-                if (endUs > 0 && !IsWgcCfrRecording()) {
-                    // WGC CFR: the encoder thread's PTS-based audio timeline already
-                    // covers the full video duration during drain, so a forceDrain pull
-                    // is not needed (and would race with the drain).
-                    PullAndEncodeAudio(endUs / 1000, true);
+                if (endUs > 0) {
+                    // WGC CFR: use PTS-based target so audio matches video exactly.
+                    // The encoder thread's drain already covers most audio; this final
+                    // pull fills any remaining gap without racing (drain is done by now).
+                    const int64_t wgcAudioTargetMs = IsWgcCfrRecording() ? ComputeWgcCfrAudioTimelineMs() : (endUs / 1000);
+                    PullAndEncodeAudio(wgcAudioTargetMs, true);
                 }
             }
 
@@ -916,15 +917,19 @@ public:
 
     bool RepeatLastFrame(int64_t timestampQPC, int64_t timelineElapsedUs) {
         std::lock_guard<std::recursive_mutex> lock(muxMutex);
-        if (!videoEnc || !recording || firstVideoFrameMs == 0) {
+        const bool wgcCfrRecording = IsWgcCfrRecording();
+        // WGC CFR: allow audio pull during drain even when recording==false,
+        // so the encoder thread can feed audio per drain frame instead of
+        // relying on a single forceDrain pull at the very end.
+        if (!videoEnc || firstVideoFrameMs == 0)
             return false;
-        }
+        if (!recording && !wgcCfrRecording)
+            return false;
 
         auto now = std::chrono::steady_clock::now();
         const int64_t steadyElapsedUs =
             std::chrono::duration_cast<std::chrono::microseconds>(now - this->recordingStartTime).count();
 
-        const bool wgcCfrRecording = IsWgcCfrRecording();
         int64_t realElapsedUs = steadyElapsedUs;
         if (config.video.useVFR) {
             realElapsedUs = ComputeSourceDrivenElapsedUs(qpcFreq, timestampQPC, steadyElapsedUs, injectTimelineState);
