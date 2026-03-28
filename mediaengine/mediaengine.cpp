@@ -1011,25 +1011,34 @@ public:
 
         if (this->firstVideoFrameMs == 0) {
             this->firstVideoFrameMs = debugTimestamp;
-            
+
             // For WGC CFR, we strictly anchor audio to 'now' (when the first frame actually arrives)
             // instead of the WGC source frame's original desktop capture time. The WGC frame could be
-            // stale by 1.8s if DWM buffered it, making audio insert 1.8s of silence and shifting 
+            // stale by 1.8s if DWM buffered it, making audio insert 1.8s of silence and shifting
             // the entire track, causing the video to freeze 1-2s BEFORE audio during playback.
             int64_t anchorQPC = timestampQPC;
             if (IsWgcCfrRecording()) {
                 LARGE_INTEGER qpcNow;
                 QueryPerformanceCounter(&qpcNow);
                 anchorQPC = qpcNow.QuadPart;
-                DLL_Log("MediaEngine: WGC CFR overriding audio anchor from %lld to %lld", timestampQPC, anchorQPC);
+                int64_t anchorDeltaQpc = anchorQPC - timestampQPC;
+                int64_t anchorDeltaMs = (qpcFreq > 0) ? (anchorDeltaQpc * 1000) / qpcFreq : 0;
+                DLL_Log(
+                    "MediaEngine: WGC CFR overriding audio anchor from %lld to %lld "
+                    "(delta=%lldms)",
+                    timestampQPC, anchorQPC, anchorDeltaMs);
+                for (auto& src : audioSources) {
+                    if (src.sharedEncoderPtr) {
+                        src.sharedEncoderPtr->SetAnchorOffsetMs(anchorDeltaMs);
+                    }
+                }
             }
 
             this->recordingStartTime = now;
-            const int64_t startQpc100ns =
-                (qpcFreq > 0 && anchorQPC > 0)
-                    ? static_cast<int64_t>(ce::audio::RawQpcToHundredNanoseconds(static_cast<uint64_t>(anchorQPC),
-                                                                                 static_cast<uint64_t>(qpcFreq)))
-                    : 0;
+            const int64_t startQpc100ns = (qpcFreq > 0 && anchorQPC > 0)
+                                              ? static_cast<int64_t>(ce::audio::RawQpcToHundredNanoseconds(
+                                                    static_cast<uint64_t>(anchorQPC), static_cast<uint64_t>(qpcFreq)))
+                                              : 0;
             // Start of recording logic
             DLL_Log(
                 "MediaEngine: First D3D11 frame at %lld ms (QPC: %lld) "
@@ -1189,11 +1198,15 @@ public:
                       wgcEncoderBottlenecked, wgcQueueEmptyTickPermille, wgcBufferedAtTickMin, wgcSingleFrameTickCount)
                 : 0;
         const int64_t effectiveWgcDriftLagMs =
-            (isWgcCfrRecording ? (kWgcPreferVideoRepeatsOverAudioCuts ? videoPipelineLagMs : wgcAudioLagTargets.driftLagMs) : videoPipelineLagMs) +
+            (isWgcCfrRecording
+                 ? (kWgcPreferVideoRepeatsOverAudioCuts ? videoPipelineLagMs : wgcAudioLagTargets.driftLagMs)
+                 : videoPipelineLagMs) +
             (isWgcCfrRecording ? 0 : timelineShortfallMs);
         const int64_t effectiveWgcTargetBufferLagMs =
             (isWgcCfrRecording
-                 ? std::max<int64_t>(kWgcPreferVideoRepeatsOverAudioCuts ? videoPipelineLagMs : wgcAudioLagTargets.targetBufferLagMs, wgcSteadyStateBufferedAudioLagMs)
+                 ? std::max<int64_t>(
+                       kWgcPreferVideoRepeatsOverAudioCuts ? videoPipelineLagMs : wgcAudioLagTargets.targetBufferLagMs,
+                       wgcSteadyStateBufferedAudioLagMs)
                  : videoPipelineLagMs) +
             (isWgcCfrRecording ? 0 : timelineShortfallMs);
         const int64_t targetBufferedLagCapMs =
@@ -1242,10 +1255,13 @@ public:
 
             const bool trackStartupSettled =
                 ce::audio::IsTrackAudioStartupSettled(trackBootstrapComplete[track], trackAllPrimed);
-            const int64_t trackAudioPullLatencyMs =
+            int64_t trackAudioPullLatencyMs =
                 forceDrain ? 0
                            : ce::audio::ComputeAudioPullLatencyMs(kSteadyAudioPullLatencyMs, trackStartupSettled,
                                                                   trackMaxObservedLateStartMs);
+            if (isWgcCfrRecording && trackStartupSettled && trackAllPrimed) {
+                trackAudioPullLatencyMs = std::min<int64_t>(trackAudioPullLatencyMs, 30);
+            }
             const int64_t trackAudioTargetMs = audioTargetMs - trackAudioPullLatencyMs;
             if (trackAudioTargetMs <= 0) {
                 continue;
@@ -1618,9 +1634,10 @@ public:
                                         ce::audio::ShouldActivateTier2Trim(trueDrift, SAMPLE_RATE,
                                                                            kTier2DriftThresholdMs) &&
                                         src.ringBuffer) {
+                                        const int64_t tier2TrimBudget = ce::audio::ComputeTier2TrimBudget(
+                                            trueDrift, SAMPLE_RATE, kRuntimeMaxDropPerCall);
                                         const int64_t absDriftSamples = std::abs(trueDrift);
-                                        const int64_t tier2MaxTrim =
-                                            std::min(absDriftSamples / 10, kRuntimeMaxDropPerCall);
+                                        const int64_t tier2MaxTrim = std::min(absDriftSamples / 10, tier2TrimBudget);
                                         if (tier2MaxTrim > 0 && static_cast<int64_t>(rbAvailable) >
                                                                     targetLatencySamples + kRuntimeDropFadeSamples) {
                                             if (src.postResampleBuffer.size() >= CHANNELS) {
@@ -2522,9 +2539,10 @@ private:
                                 if (startQpc100ns > 0 && packet.qpcPosition >= static_cast<uint64_t>(startQpc100ns)) {
                                     const uint64_t packetStartDelta100ns =
                                         packet.qpcPosition - static_cast<uint64_t>(startQpc100ns);
-                                    const int64_t packetStartSamples = static_cast<int64_t>(
-                                        (packetStartDelta100ns * static_cast<uint64_t>(targetFmt.sampleRate)) /
-                                        ce::audio::kHundredNanosecondsPerSecond);
+                                    const int64_t packetStartSamples =
+                                        static_cast<int64_t>((packetStartDelta100ns *
+                                                              static_cast<uint64_t>(targetFmt.sampleRate) * 9994ULL) /
+                                                             (ce::audio::kHundredNanosecondsPerSecond * 10000ULL));
                                     const auto timelineAdjustment = ce::audio::ComputePacketTimelineAdjustment(
                                         packetStartSamples, static_cast<int64_t>(src.qpcAlignedWrittenSamples),
                                         targetFmt.sampleRate / 1000);

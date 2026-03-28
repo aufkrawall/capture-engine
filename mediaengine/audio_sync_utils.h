@@ -273,6 +273,19 @@ inline bool ShouldActivateTier2Trim(int64_t trueDriftSamples, int sampleRate, in
     return std::abs(trueDriftSamples) > thresholdSamples;
 }
 
+inline int64_t ComputeTier2TrimBudget(int64_t trueDriftSamples, int sampleRate, int64_t baseQuantumSamples,
+                                      int64_t largeDriftThresholdMs = 100, int64_t maxTrimMs = 20) {
+    if (sampleRate <= 0)
+        return baseQuantumSamples;
+    const int64_t largeThresholdSamples = (sampleRate * largeDriftThresholdMs) / 1000;
+    if (std::abs(trueDriftSamples) <= largeThresholdSamples) {
+        return baseQuantumSamples;
+    }
+    const int64_t proportionalTrim = std::abs(trueDriftSamples) / 10;
+    const int64_t maxTrimSamples = (sampleRate * maxTrimMs) / 1000;
+    return std::clamp<int64_t>(proportionalTrim, baseQuantumSamples, maxTrimSamples);
+}
+
 inline bool IsTrackAudioStartupSettled(bool trackBootstrapComplete, bool allSourcesPrimed) {
     return trackBootstrapComplete || allSourcesPrimed;
 }

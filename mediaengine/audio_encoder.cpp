@@ -322,17 +322,25 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
         recordingStartUs = deferredStartUs;
         recordingEndUs = 0;
         firstTimestamp = -1;
-        samplesCount = 0;           // CRITICAL: Reset to 0 for fresh start
-        resampledSamplesTotal = 0;  // Reset resampler output counter
+        samplesCount = 0;
+        resampledSamplesTotal = 0;
         lastPacketTimestampMs = 0;
         pendingFrameDurations.clear();
-        lastInputTimestamp = -1;  // CRITICAL: Reset to prevent false discontinuity detection
+        lastInputTimestamp = -1;
         if (audioFifo)
             av_audio_fifo_reset(audioFifo);
         if (resampler)
-            resampler->Reset();  // FULL RESET (Clears buffers + drift)
+            resampler->Reset();
 
-        DLL_Log("[AudioEnc] Reset complete - audio will start from PTS=0 with fade-in");
+        int fifoFrameSize = codecCtx->frame_size;
+        if (fifoFrameSize == 0)
+            fifoFrameSize = 4096;
+        fifoPtsOffset_ = fifoFrameSize;
+
+        DLL_Log(
+            "[AudioEnc] Reset complete - audio will start from PTS=%lld "
+            "(fifo=%lld, anchor=%lld) with fade-in",
+            (long long)(fifoPtsOffset_ + anchorPtsOffset_), (long long)fifoPtsOffset_, (long long)anchorPtsOffset_);
     }
 
     // CRITICAL: Discard audio samples that arrive before first video frame
@@ -632,15 +640,15 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
         // Video: pts = frame_number (0, 1, 2, 3...)
         // Audio: pts = samples_encoded (0, 4096, 8192...)
         // Both are constant-rate clocks that stay perfectly synchronized
-        frame->pts = samplesCount;
+        frame->pts = samplesCount + fifoPtsOffset_ + anchorPtsOffset_;
 
         // Debug: Log first 10 frames for each encoder to track PTS
         if (frameLogCounter++ < 10) {
             DLL_Log(
                 "[AudioEnc] FRAME PTS DEBUG: pts=%lld (%.3f sec) "
-                "samplesCount=%lld streamIdx=%d",
-                (long long)frame->pts, (double)frame->pts / codecCtx->sample_rate, (long long)samplesCount,
-                streamIndex);
+                "samplesCount=%lld streamIdx=%d ptsOffset=%lld",
+                (long long)frame->pts, (double)frame->pts / codecCtx->sample_rate, (long long)samplesCount, streamIndex,
+                (long long)(fifoPtsOffset_ + anchorPtsOffset_));
         }
 
         // Encode frame
@@ -754,8 +762,10 @@ void AudioEncoder::Stop() {
     fifoLogCounter = 0;
     frameLogCounter = 0;
     noPacketCount = 0;
-    wasDroppingSamples = false;  // Reset FIFO overflow tracking
+    wasDroppingSamples = false;
     totalDroppedSamples = 0;
+    fifoPtsOffset_ = 0;
+    anchorPtsOffset_ = 0;
 
     // Clear any pending packets
     for (auto* pkt : pendingPackets) {
@@ -989,7 +999,7 @@ void AudioEncoder::Flush() {
                 }
             }
 
-            frame->pts = samplesCount;
+            frame->pts = samplesCount + fifoPtsOffset_ + anchorPtsOffset_;
             samplesCount += samplesToSend;
 
             ret = avcodec_send_frame(codecCtx, frame);
