@@ -743,7 +743,16 @@ public:
                     // The encoder thread's drain already covers most audio; this final
                     // pull fills any remaining gap without racing (drain is done by now).
                     const int64_t wgcAudioTargetMs = IsWgcCfrRecording() ? ComputeWgcCfrAudioTimelineMs() : (endUs / 1000);
+                    const int64_t minEncodedBefore = encodedSamplesPerSource.empty() ? 0 :
+                        *std::min_element(encodedSamplesPerSource.begin(), encodedSamplesPerSource.end());
                     PullAndEncodeAudio(wgcAudioTargetMs, true);
+                    const int64_t minEncodedAfter = encodedSamplesPerSource.empty() ? 0 :
+                        *std::min_element(encodedSamplesPerSource.begin(), encodedSamplesPerSource.end());
+                    DLL_Log("[StopAudio] forceDrain: targetMs=%lld minEncodedBefore=%lld minEncodedAfter=%lld "
+                            "pulled=%lld samples (%.1f ms)",
+                            wgcAudioTargetMs, minEncodedBefore, minEncodedAfter,
+                            minEncodedAfter - minEncodedBefore,
+                            (double)(minEncodedAfter - minEncodedBefore) / 48.0);
                 }
             }
 
@@ -754,6 +763,23 @@ public:
         audioRunning = false;
         if (audioThread.joinable()) {
             audioThread.join();
+        }
+
+        // Final A/V sync diagnostic before stopping sources
+        {
+            constexpr int SAMPLE_RATE = 48000;
+            const int64_t expectedVideoMs = videoEnc ? (videoEnc->GetExpectedFinalDurationUs() / 1000) : 0;
+            const int64_t expectedVideoSamples = (expectedVideoMs * SAMPLE_RATE) / 1000;
+            for (size_t i = 0; i < audioSources.size() && i < encodedSamplesPerSource.size(); i++) {
+                const int64_t encSamples = encodedSamplesPerSource[i];
+                const int64_t diffSamples = encSamples - expectedVideoSamples;
+                const double diffMs = (double)diffSamples * 1000.0 / SAMPLE_RATE;
+                DLL_Log("[StopAudio] Source %zu: encodedSamples=%lld expectedVideoSamples=%lld diff=%+lld (%+.1f ms) "
+                        "track=%d",
+                        i, encSamples, expectedVideoSamples, diffSamples, diffMs, audioSources[i].track);
+            }
+            DLL_Log("[StopAudio] Video: expectedDuration=%lld ms (%lld samples)", expectedVideoMs,
+                    expectedVideoSamples);
         }
 
         // Stop all audio sources
@@ -1066,7 +1092,7 @@ public:
         constexpr int64_t kWgcCfrLeadWarningSamples = SAMPLE_RATE / 5;  // 200ms
         constexpr bool kWgcPreferVideoRepeatsOverAudioCuts = true;
         constexpr double kDefaultMaxCompensationPercent = 1.0;
-        constexpr double kTier1MaxPitchPercent = 0.05;
+        constexpr double kTier1MaxPitchPercent = 0.5;  // 0.5% covers ~2400 samples/10s at 48kHz
         constexpr int64_t kTier2DriftThresholdMs = 20;
         constexpr int64_t kWgcCoverageLossLeadSlackSamples = SAMPLE_RATE / 25;  // 40ms above target
         constexpr int64_t kWgcCoverageLossMaxDropPerCall =
