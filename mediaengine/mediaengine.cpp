@@ -1189,11 +1189,11 @@ public:
                       wgcEncoderBottlenecked, wgcQueueEmptyTickPermille, wgcBufferedAtTickMin, wgcSingleFrameTickCount)
                 : 0;
         const int64_t effectiveWgcDriftLagMs =
-            (isWgcCfrRecording ? wgcAudioLagTargets.driftLagMs : videoPipelineLagMs) +
+            (isWgcCfrRecording ? (kWgcPreferVideoRepeatsOverAudioCuts ? videoPipelineLagMs : wgcAudioLagTargets.driftLagMs) : videoPipelineLagMs) +
             (isWgcCfrRecording ? 0 : timelineShortfallMs);
         const int64_t effectiveWgcTargetBufferLagMs =
             (isWgcCfrRecording
-                 ? std::max<int64_t>(wgcAudioLagTargets.targetBufferLagMs, wgcSteadyStateBufferedAudioLagMs)
+                 ? std::max<int64_t>(kWgcPreferVideoRepeatsOverAudioCuts ? videoPipelineLagMs : wgcAudioLagTargets.targetBufferLagMs, wgcSteadyStateBufferedAudioLagMs)
                  : videoPipelineLagMs) +
             (isWgcCfrRecording ? 0 : timelineShortfallMs);
         const int64_t targetBufferedLagCapMs =
