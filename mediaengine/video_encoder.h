@@ -224,6 +224,8 @@ private:
     std::atomic<uint32_t> negativePtsCount{0};
     std::atomic<uint32_t> nonMonotonicPtsCount{0};
     int64_t lastQueuedVideoPts = AV_NOPTS_VALUE;
+    int audioWriteLogCount = 0;
+    std::atomic<int64_t> lastMuxerVideoPtsUs{0};
 
     // Frame counting and logging state (was static, now members for proper reset)
     int encodeFrameCounter = 0;         // Frames encoded in current recording
