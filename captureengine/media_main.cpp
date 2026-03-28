@@ -1907,7 +1907,12 @@ void EncoderThreadFunc(const AppConfig& config) {
                 }
 
                 nextSampleTime.QuadPart += targetIntervalTicks;
+            } else {
+                nextSampleTime.QuadPart += targetIntervalTicks;
+                cycleStartQpc = now;
+            }
 
+            if (g_EncoderRunning) {
                 // Periodically resync the encoder grid to wall clock time to
                 // prevent systematic drift when encoder ticks are consistently
                 // longer than the target interval.  Without this, the selection

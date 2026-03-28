@@ -742,17 +742,22 @@ public:
                     // WGC CFR: use PTS-based target so audio matches video exactly.
                     // The encoder thread's drain already covers most audio; this final
                     // pull fills any remaining gap without racing (drain is done by now).
-                    const int64_t wgcAudioTargetMs = IsWgcCfrRecording() ? ComputeWgcCfrAudioTimelineMs() : (endUs / 1000);
-                    const int64_t minEncodedBefore = encodedSamplesPerSource.empty() ? 0 :
-                        *std::min_element(encodedSamplesPerSource.begin(), encodedSamplesPerSource.end());
+                    const int64_t wgcAudioTargetMs =
+                        IsWgcCfrRecording() ? ComputeWgcCfrAudioTimelineMs() : (endUs / 1000);
+                    const int64_t minEncodedBefore =
+                        encodedSamplesPerSource.empty()
+                            ? 0
+                            : *std::min_element(encodedSamplesPerSource.begin(), encodedSamplesPerSource.end());
                     PullAndEncodeAudio(wgcAudioTargetMs, true);
-                    const int64_t minEncodedAfter = encodedSamplesPerSource.empty() ? 0 :
-                        *std::min_element(encodedSamplesPerSource.begin(), encodedSamplesPerSource.end());
-                    DLL_Log("[StopAudio] forceDrain: targetMs=%lld minEncodedBefore=%lld minEncodedAfter=%lld "
-                            "pulled=%lld samples (%.1f ms)",
-                            wgcAudioTargetMs, minEncodedBefore, minEncodedAfter,
-                            minEncodedAfter - minEncodedBefore,
-                            (double)(minEncodedAfter - minEncodedBefore) / 48.0);
+                    const int64_t minEncodedAfter =
+                        encodedSamplesPerSource.empty()
+                            ? 0
+                            : *std::min_element(encodedSamplesPerSource.begin(), encodedSamplesPerSource.end());
+                    DLL_Log(
+                        "[StopAudio] forceDrain: targetMs=%lld minEncodedBefore=%lld minEncodedAfter=%lld "
+                        "pulled=%lld samples (%.1f ms)",
+                        wgcAudioTargetMs, minEncodedBefore, minEncodedAfter, minEncodedAfter - minEncodedBefore,
+                        (double)(minEncodedAfter - minEncodedBefore) / 48.0);
                 }
             }
 
@@ -774,9 +779,10 @@ public:
                 const int64_t encSamples = encodedSamplesPerSource[i];
                 const int64_t diffSamples = encSamples - expectedVideoSamples;
                 const double diffMs = (double)diffSamples * 1000.0 / SAMPLE_RATE;
-                DLL_Log("[StopAudio] Source %zu: encodedSamples=%lld expectedVideoSamples=%lld diff=%+lld (%+.1f ms) "
-                        "track=%d",
-                        i, encSamples, expectedVideoSamples, diffSamples, diffMs, audioSources[i].track);
+                DLL_Log(
+                    "[StopAudio] Source %zu: encodedSamples=%lld expectedVideoSamples=%lld diff=%+lld (%+.1f ms) "
+                    "track=%d",
+                    i, encSamples, expectedVideoSamples, diffSamples, diffMs, audioSources[i].track);
             }
             DLL_Log("[StopAudio] Video: expectedDuration=%lld ms (%lld samples)", expectedVideoMs,
                     expectedVideoSamples);
@@ -983,8 +989,7 @@ public:
             }
         }
 
-        const int64_t audioTimelineMs =
-            wgcCfrRecording ? ComputeWgcCfrAudioTimelineMs() : (committedElapsedUs / 1000);
+        const int64_t audioTimelineMs = wgcCfrRecording ? ComputeWgcCfrAudioTimelineMs() : (committedElapsedUs / 1000);
         PullAndEncodeAudio(audioTimelineMs);
         return true;
     }
@@ -1006,10 +1011,23 @@ public:
 
         if (this->firstVideoFrameMs == 0) {
             this->firstVideoFrameMs = debugTimestamp;
+            
+            // For WGC CFR, we strictly anchor audio to 'now' (when the first frame actually arrives)
+            // instead of the WGC source frame's original desktop capture time. The WGC frame could be
+            // stale by 1.8s if DWM buffered it, making audio insert 1.8s of silence and shifting 
+            // the entire track, causing the video to freeze 1-2s BEFORE audio during playback.
+            int64_t anchorQPC = timestampQPC;
+            if (IsWgcCfrRecording()) {
+                LARGE_INTEGER qpcNow;
+                QueryPerformanceCounter(&qpcNow);
+                anchorQPC = qpcNow.QuadPart;
+                DLL_Log("MediaEngine: WGC CFR overriding audio anchor from %lld to %lld", timestampQPC, anchorQPC);
+            }
+
             this->recordingStartTime = now;
             const int64_t startQpc100ns =
-                (qpcFreq > 0 && timestampQPC > 0)
-                    ? static_cast<int64_t>(ce::audio::RawQpcToHundredNanoseconds(static_cast<uint64_t>(timestampQPC),
+                (qpcFreq > 0 && anchorQPC > 0)
+                    ? static_cast<int64_t>(ce::audio::RawQpcToHundredNanoseconds(static_cast<uint64_t>(anchorQPC),
                                                                                  static_cast<uint64_t>(qpcFreq)))
                     : 0;
             // Start of recording logic

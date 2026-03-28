@@ -6270,14 +6270,12 @@ void VideoEncoder::AsyncWriteLoop() {
                         AVStream* vst = fmtCtx->streams[stream->index];
                         int64_t lastVUs = lastMuxerVideoPtsUs.load(std::memory_order_relaxed);
                         DLL_Log("[MuxAudio] pkt#%d pts=%lld tb=%d/%d ptsUs=%lld lastVideoPtsUs=%lld diffMs=%lld",
-                                audioWriteLogCount, (long long)pkt->pts,
-                                ast->time_base.num, ast->time_base.den,
-                                aPtsUs, lastVUs, (aPtsUs - lastVUs) / 1000);
+                                audioWriteLogCount, (long long)pkt->pts, ast->time_base.num, ast->time_base.den, aPtsUs,
+                                lastVUs, (aPtsUs - lastVUs) / 1000);
                     }
                 } else {
-                    lastMuxerVideoPtsUs.store(
-                        av_rescale_q(pkt->pts, stream->time_base, AVRational{1, 1000000}),
-                        std::memory_order_relaxed);
+                    lastMuxerVideoPtsUs.store(av_rescale_q(pkt->pts, stream->time_base, AVRational{1, 1000000}),
+                                              std::memory_order_relaxed);
                 }
                 int ret = av_interleaved_write_frame(fmtCtx, pkt);
                 if (ret < 0) {
