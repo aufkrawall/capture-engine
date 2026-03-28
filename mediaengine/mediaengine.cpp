@@ -142,6 +142,18 @@ public:
         return encodedDurationUs > 0 ? encodedDurationUs : fallbackElapsedUs;
     }
 
+    // WGC CFR: compute the PTS-based audio timeline in milliseconds.
+    // The encoder grid has a 1-tick offset (encoderGridStartQpc = liveStartQpc -
+    // targetIntervalTicks), so computeLiveTimelineElapsedUs for frame N returns
+    // (N-1)*intervalUs instead of N*intervalUs.  Using GetExpectedFinalDurationUs()
+    // (which is PTS-based) gives the exact N*intervalUs that the video encoder
+    // produces, keeping audio and video timelines aligned through drain and stop.
+    int64_t ComputeWgcCfrAudioTimelineMs() const {
+        if (!videoEnc)
+            return 0;
+        return videoEnc->GetExpectedFinalDurationUs() / 1000;
+    }
+
     void CommitVideoElapsedUs(SourceTimelineState& timelineState, int64_t elapsedUs) {
         if (elapsedUs < 0) {
             return;
@@ -726,7 +738,10 @@ public:
                     }
                 }
 
-                if (endUs > 0) {
+                if (endUs > 0 && !IsWgcCfrRecording()) {
+                    // WGC CFR: the encoder thread's PTS-based audio timeline already
+                    // covers the full video duration during drain, so a forceDrain pull
+                    // is not needed (and would race with the drain).
                     PullAndEncodeAudio(endUs / 1000, true);
                 }
             }
@@ -937,7 +952,8 @@ public:
             }
         }
 
-        const int64_t audioTimelineMs = (wgcCfrRecording ? realElapsedUs : committedElapsedUs) / 1000;
+        const int64_t audioTimelineMs =
+            wgcCfrRecording ? ComputeWgcCfrAudioTimelineMs() : (committedElapsedUs / 1000);
         PullAndEncodeAudio(audioTimelineMs);
         return true;
     }
@@ -1016,10 +1032,11 @@ public:
             DLL_Log("MediaEngine: ScreenGrab frame ts=%lld %dx%d", debugTimestamp, width, height);
         }
 
-        // PULL MODEL: WGC CFR audio follows the authoritative scheduled timeline
-        // rather than the lagging committed encoder duration so the final mux stays
-        // sample-exact even when video temporarily builds backlog.
-        PullAndEncodeAudio(realElapsedUs / 1000);
+        // PULL MODEL: WGC CFR audio follows the PTS-based scheduled timeline
+        // (GetExpectedFinalDurationUs) rather than the encoder grid time, which has
+        // a 1-tick offset that would leave audio 8ms short by the end of recording.
+        const int64_t audioTargetMs = IsWgcCfrRecording() ? ComputeWgcCfrAudioTimelineMs() : (realElapsedUs / 1000);
+        PullAndEncodeAudio(audioTargetMs);
         return true;
     }
 
