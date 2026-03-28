@@ -140,10 +140,8 @@ inline bool IsWgcSourceHealthyForLiveCatchup(uint32_t outputFps, uint32_t recent
            noFreshTickPermille < kWgcLowSourceEmptyTickPermille;
 }
 
-inline bool IsWgcSourceHealthyEnoughToSuppressEncoderLimitedCatchup(uint32_t outputFps,
-                                                                    uint32_t recentInputMin250Fps,
-                                                                    uint32_t noFreshTickPermille,
-                                                                    bool lowSourceMode) {
+inline bool IsWgcSourceHealthyEnoughToSuppressEncoderLimitedCatchup(uint32_t outputFps, uint32_t recentInputMin250Fps,
+                                                                    uint32_t noFreshTickPermille, bool lowSourceMode) {
     if (lowSourceMode || outputFps == 0) {
         return false;
     }
@@ -151,15 +149,13 @@ inline bool IsWgcSourceHealthyEnoughToSuppressEncoderLimitedCatchup(uint32_t out
     return recentInputMin250Fps >= outputFps && noFreshTickPermille < kWgcLowSourceEmptyTickPermille;
 }
 
-inline bool IsWgcDeepUnderfeed(uint32_t outputFps, uint32_t recentDeliveredMin250Fps,
-                               uint32_t recentInputMin250Fps, uint32_t emptyTickPermille) {
+inline bool IsWgcDeepUnderfeed(uint32_t outputFps, uint32_t recentDeliveredMin250Fps, uint32_t recentInputMin250Fps,
+                               uint32_t emptyTickPermille) {
     if (outputFps == 0) {
         return false;
     }
 
-    const uint32_t severeFloor = outputFps > kWgcDeepUnderfeedMarginFps
-                                     ? (outputFps - kWgcDeepUnderfeedMarginFps)
-                                     : 0u;
+    const uint32_t severeFloor = outputFps > kWgcDeepUnderfeedMarginFps ? (outputFps - kWgcDeepUnderfeedMarginFps) : 0u;
     return recentDeliveredMin250Fps < severeFloor || recentInputMin250Fps < severeFloor ||
            emptyTickPermille >= kWgcDeepUnderfeedEmptyTickPermille;
 }
@@ -173,17 +169,16 @@ inline uint32_t GetWgcCatchupTicksThisLoop(bool encoderBottlenecked, size_t buff
         return 1u;
     }
 
-    if (IsWgcSourceHealthyForLiveCatchup(outputFps, recentDeliveredMin250Fps, recentInputMin250Fps,
-                                         noFreshTickPermille, lowSourceMode)) {
+    if (IsWgcSourceHealthyForLiveCatchup(outputFps, recentDeliveredMin250Fps, recentInputMin250Fps, noFreshTickPermille,
+                                         lowSourceMode)) {
         // When WGC is already delivering near-target fresh content, draining
         // historical shortfall via live duplicate bursts is visually worse than
         // carrying that debt and letting stop-drain close the exact CFR count.
         return 1u;
     }
 
-    if (encoderBottlenecked &&
-        IsWgcSourceHealthyEnoughToSuppressEncoderLimitedCatchup(outputFps, recentInputMin250Fps,
-                                                                noFreshTickPermille, lowSourceMode)) {
+    if (encoderBottlenecked && IsWgcSourceHealthyEnoughToSuppressEncoderLimitedCatchup(
+                                   outputFps, recentInputMin250Fps, noFreshTickPermille, lowSourceMode)) {
         // When the encoder is the limiter but WGC input is still healthy, live
         // catch-up drains audio buffers and produces visibly uneven repeat
         // bursts without improving source coverage. Carry the debt instead.
@@ -272,8 +267,7 @@ inline double ComputeWgcCoverageLossRepeatRatio(double shortfallDurationMs, doub
 }
 
 inline uint32_t GetWgcCoverageDelayTicks(uint32_t outputShortfallTicks, double oldestBufferedFrameAgeMs,
-                                         double frameIntervalMs,
-                                         uint32_t maxDelayTicks = kWgcCoverageDelayMaxTicks) {
+                                         double frameIntervalMs, uint32_t maxDelayTicks = kWgcCoverageDelayMaxTicks) {
     if (outputShortfallTicks == 0 || frameIntervalMs <= 0.0 || maxDelayTicks == 0) {
         return 0;
     }
@@ -567,12 +561,10 @@ inline int64_t GetWgcSelectionTargetQpc(int64_t scheduledSampleQpc, int64_t fall
     return delayedSelectionTargetQpc > 0 ? delayedSelectionTargetQpc : selectionTargetQpc;
 }
 
-inline int64_t ClampWgcSelectionTargetToLiveQpc(int64_t selectionTargetQpc, int64_t liveNowQpc,
-                                                int64_t targetIntervalTicks, bool lowSourceMode,
-                                                bool liveRecoveryMode, uint32_t outputShortfallTicks,
-                                                bool encoderBottlenecked,
-                                                uint32_t severeShortfallThresholdTicks =
-                                                    kCfrShortfallCatchupThresholdTicks) {
+inline int64_t ClampWgcSelectionTargetToLiveQpc(
+    int64_t selectionTargetQpc, int64_t liveNowQpc, int64_t targetIntervalTicks, bool lowSourceMode,
+    bool liveRecoveryMode, uint32_t outputShortfallTicks, bool encoderBottlenecked,
+    uint32_t severeShortfallThresholdTicks = kCfrShortfallCatchupThresholdTicks) {
     if (selectionTargetQpc <= 0 || liveNowQpc <= 0 || targetIntervalTicks <= 0) {
         return selectionTargetQpc;
     }
@@ -625,8 +617,7 @@ inline bool ShouldPreferEarlierFreshWgcFrameToPreserveReserve(int64_t earlierFra
                                                               int64_t selectedFrameTimestampQpc,
                                                               int64_t selectionTargetQpc, int64_t targetIntervalTicks,
                                                               bool reservePressureActive, bool lowSourceMode,
-                                                              bool deepUnderfeed,
-                                                              bool liveRecoveryMode = false) {
+                                                              bool deepUnderfeed, bool liveRecoveryMode = false) {
     if (earlierFrameTimestampQpc <= 0 || selectedFrameTimestampQpc <= 0 || selectionTargetQpc <= 0 ||
         targetIntervalTicks <= 0) {
         return false;
@@ -642,10 +633,9 @@ inline bool ShouldPreferEarlierFreshWgcFrameToPreserveReserve(int64_t earlierFra
     const int64_t selectedDistance = selectedFrameTimestampQpc >= selectionTargetQpc
                                          ? (selectedFrameTimestampQpc - selectionTargetQpc)
                                          : (selectionTargetQpc - selectedFrameTimestampQpc);
-    const uint32_t biasPermille =
-        deepUnderfeed ? kWgcDeepUnderfeedReserveBiasPermille
-                      : (reservePressureActive || lowSourceMode) ? kWgcReserveFragileBiasPermille
-                                                                : kWgcReserveBiasPermille;
+    const uint32_t biasPermille = deepUnderfeed                              ? kWgcDeepUnderfeedReserveBiasPermille
+                                  : (reservePressureActive || lowSourceMode) ? kWgcReserveFragileBiasPermille
+                                                                             : kWgcReserveBiasPermille;
     const int64_t reserveBiasQpc =
         std::max<int64_t>((targetIntervalTicks * static_cast<int64_t>(biasPermille)) / 1000, 1);
     return earlierDistance <= (selectedDistance + reserveBiasQpc);
@@ -689,8 +679,7 @@ inline bool ShouldHoldSingleFreshWgcFrame(bool reservePressureActive, bool lowSo
 
 inline size_t ClampWgcSelectionIndexForLowSource(size_t bestIdx, size_t availableCount, size_t bufferedWgcFrames,
                                                  uint32_t recentDeliveredFps, uint32_t recentInputMin250Fps,
-                                                 uint32_t outputFps,
-                                                 uint32_t emptyTickPermille,
+                                                 uint32_t outputFps, uint32_t emptyTickPermille,
                                                  bool liveRecoveryMode = false) {
     if (availableCount <= 1) {
         return 0;

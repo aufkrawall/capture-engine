@@ -73,24 +73,25 @@ inline double ComputeWgcCoverageLossRatio(int64_t videoPipelineLagMs, int64_t bu
         return 0.0;
     }
 
-    const int64_t mismatchMs = std::max<int64_t>(0, videoPipelineLagMs - std::max<int64_t>(0, bufferedVideoContentLagMs));
+    const int64_t mismatchMs =
+        std::max<int64_t>(0, videoPipelineLagMs - std::max<int64_t>(0, bufferedVideoContentLagMs));
     if (mismatchMs <= 0) {
         return 0.0;
     }
 
     const double lossRatio = static_cast<double>(mismatchMs) / static_cast<double>(fullTrimMismatchMs);
-    return std::clamp(lossRatio, 0.0, 0.25);
+    return std::clamp(lossRatio, 0.0, 0.05);
 }
 
 inline int64_t ComputeWgcCoverageBufferedAudioLagMs(int64_t videoPipelineLagMs, int64_t bufferedVideoContentLagMs,
-                                                    int64_t minLagMismatchMs = 120,
-                                                    int64_t maxBufferedLagMs = 300,
+                                                    int64_t minLagMismatchMs = 120, int64_t maxBufferedLagMs = 300,
                                                     int64_t lagDivisor = 6) {
     if (videoPipelineLagMs <= 0 || maxBufferedLagMs <= 0 || lagDivisor <= 0) {
         return 0;
     }
 
-    const int64_t mismatchMs = std::max<int64_t>(0, videoPipelineLagMs - std::max<int64_t>(0, bufferedVideoContentLagMs));
+    const int64_t mismatchMs =
+        std::max<int64_t>(0, videoPipelineLagMs - std::max<int64_t>(0, bufferedVideoContentLagMs));
     const int64_t effectiveMismatchMs = mismatchMs - std::max<int64_t>(0, minLagMismatchMs);
     if (effectiveMismatchMs <= 0) {
         return 0;
@@ -114,10 +115,9 @@ inline WgcAudioLagTargets ComputeWgcAudioLagTargets(int64_t videoPipelineLagMs, 
     }
 
     targets.driftLagMs = std::max<int64_t>(0, bufferedVideoContentLagMs);
-    targets.targetBufferLagMs =
-        std::max<int64_t>(targets.driftLagMs,
-                          ComputeWgcCoverageBufferedAudioLagMs(videoPipelineLagMs, bufferedVideoContentLagMs, 120,
-                                                               maxBufferedLagMs));
+    targets.targetBufferLagMs = std::max<int64_t>(
+        targets.driftLagMs,
+        ComputeWgcCoverageBufferedAudioLagMs(videoPipelineLagMs, bufferedVideoContentLagMs, 120, maxBufferedLagMs));
     return targets;
 }
 
@@ -159,8 +159,7 @@ inline int64_t ComputeWgcSteadyStateBufferedAudioLagMs(uint32_t targetFps, uint3
     if (degradedQueueHealth) {
         lagMs = std::max<int64_t>(lagMs, degradedLagMs);
     }
-    if (severeQueueHealth &&
-        (encoderBottlenecked || effectiveDeliveredFps + 2 < targetFps)) {
+    if (severeQueueHealth && (encoderBottlenecked || effectiveDeliveredFps + 2 < targetFps)) {
         lagMs = std::max<int64_t>(lagMs, severeLagMs);
     }
 
@@ -175,6 +174,7 @@ inline int64_t ComputeWgcCoverageLossTrimSamples(int64_t samplesToEncode, double
     }
 
     trimAccumulator += static_cast<double>(samplesToEncode) * coverageLossRatio;
+    trimAccumulator = std::min(trimAccumulator, static_cast<double>(maxDropPerCall) * 2.0);
     const int64_t desiredDropSamples = static_cast<int64_t>(trimAccumulator);
     if (desiredDropSamples <= 0) {
         return 0;
@@ -217,8 +217,8 @@ inline int64_t ComputeLatencyAdjustedAvDriftMs(int64_t rawAvDriftMs, int64_t int
 }
 
 inline bool ShouldAllowWgcSteadyStateDriftCompensation(bool trackStartupSettled, int64_t videoPipelineLagMs,
-                                                        int64_t bufferedSamples, int64_t targetLatencySamples,
-                                                        int64_t leadWarningSamples) {
+                                                       int64_t bufferedSamples, int64_t targetLatencySamples,
+                                                       int64_t leadWarningSamples) {
     if (!trackStartupSettled || bufferedSamples <= 0) {
         return false;
     }
@@ -228,9 +228,9 @@ inline bool ShouldAllowWgcSteadyStateDriftCompensation(bool trackStartupSettled,
     return leadSamples >= std::max<int64_t>(1, leadWarningSamples);
 }
 
-inline int64_t ComputeWgcPositiveCompensationHysteresisSamples(int64_t targetLatencySamples,
-                                                               int64_t leadWarningSamples,
-                                                               int64_t quantumSamples = kDefaultAudioPullQuantumSamples) {
+inline int64_t ComputeWgcPositiveCompensationHysteresisSamples(
+    int64_t targetLatencySamples, int64_t leadWarningSamples,
+    int64_t quantumSamples = kDefaultAudioPullQuantumSamples) {
     const int64_t boundedQuantumSamples = std::max<int64_t>(1, quantumSamples);
     const int64_t baseHysteresisSamples =
         std::max<int64_t>(boundedQuantumSamples * 2, std::max<int64_t>(0, targetLatencySamples) / 3);
@@ -238,9 +238,8 @@ inline int64_t ComputeWgcPositiveCompensationHysteresisSamples(int64_t targetLat
     return std::clamp<int64_t>(baseHysteresisSamples, boundedQuantumSamples, maxHysteresisSamples);
 }
 
-inline bool ShouldClearWgcPositiveDriftCompensation(bool allowSteadyStateDriftCompensation,
-                                                    int64_t bufferedSamples, int64_t expectedLeadSamples,
-                                                    int64_t hysteresisSamples) {
+inline bool ShouldClearWgcPositiveDriftCompensation(bool allowSteadyStateDriftCompensation, int64_t bufferedSamples,
+                                                    int64_t expectedLeadSamples, int64_t hysteresisSamples) {
     if (!allowSteadyStateDriftCompensation) {
         return true;
     }
@@ -254,6 +253,24 @@ inline int64_t ClampWgcPositiveDriftCorrection(int64_t targetCorrection, int64_t
     }
 
     return std::max<int64_t>(0, targetCorrection - std::max<int64_t>(0, hysteresisSamples));
+}
+
+inline int32_t ComputeTier1CompensationDelta(int64_t trueDriftSamples, int64_t compensationWindowSamples,
+                                             double maxPitchPercent = 0.05) {
+    const int32_t maxDelta = static_cast<int32_t>(compensationWindowSamples * maxPitchPercent / 100.0 + 0.5);
+    if (maxDelta <= 0) {
+        return 0;
+    }
+    return static_cast<int32_t>(
+        std::clamp(trueDriftSamples, static_cast<int64_t>(-maxDelta), static_cast<int64_t>(maxDelta)));
+}
+
+inline bool ShouldActivateTier2Trim(int64_t trueDriftSamples, int sampleRate, int64_t thresholdMs = 20) {
+    if (sampleRate <= 0) {
+        return false;
+    }
+    const int64_t thresholdSamples = (static_cast<int64_t>(sampleRate) * thresholdMs) / 1000;
+    return std::abs(trueDriftSamples) > thresholdSamples;
 }
 
 inline bool IsTrackAudioStartupSettled(bool trackBootstrapComplete, bool allSourcesPrimed) {
@@ -291,8 +308,9 @@ inline uint64_t ConsumeSyntheticBufferedSamples(uint64_t& syntheticBufferedSampl
     return syntheticConsumed;
 }
 
-inline PacketTimelineAdjustment ComputePacketTimelineAdjustment(int64_t packetStartSamples, int64_t writtenTimelineSamples,
-                                                               int64_t slopSamples = 0) {
+inline PacketTimelineAdjustment ComputePacketTimelineAdjustment(int64_t packetStartSamples,
+                                                                int64_t writtenTimelineSamples,
+                                                                int64_t slopSamples = 0) {
     PacketTimelineAdjustment adjustment;
     const int64_t clampedPacketStartSamples = std::max<int64_t>(0, packetStartSamples);
     const int64_t clampedWrittenTimelineSamples = std::max<int64_t>(0, writtenTimelineSamples);

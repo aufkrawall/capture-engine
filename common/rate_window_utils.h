@@ -1,9 +1,9 @@
 #pragma once
 
-#include <algorithm>
-#include <array>
 #include <stddef.h>
 #include <stdint.h>
+#include <algorithm>
+#include <array>
 #include <limits>
 
 namespace ce::rate_window {
@@ -82,7 +82,8 @@ public:
         const uint64_t historyFloor = currentBucket >= (BucketCount - 1) ? currentBucket - (BucketCount - 1) : 0;
         const uint64_t observedFloor = std::max(firstSampleBucket_, historyFloor);
         const uint64_t searchStart = observedFloor + sampleBucketSpan - 1;
-        const uint64_t searchFloor = currentBucket >= (lookbackBucketSpan - 1) ? currentBucket - (lookbackBucketSpan - 1) : 0;
+        const uint64_t searchFloor =
+            currentBucket >= (lookbackBucketSpan - 1) ? currentBucket - (lookbackBucketSpan - 1) : 0;
         const uint64_t firstEndBucket = std::max(searchStart, searchFloor + sampleBucketSpan - 1);
         if (firstEndBucket > currentBucket) {
             return RatePerSecond(nowMs, sampleWindowMs);

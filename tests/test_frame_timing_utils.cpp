@@ -70,9 +70,8 @@ TEST(FrameTimingUtilsTest, SelectFrameClosestToTimestampIfSkipsRejectedFrames) {
     allowed.frameIndex = 2;
     frames.push_back(std::move(allowed));
 
-    const size_t bestIndex =
-        SelectFrameClosestToTimestampIf(frames, frames.size(), 160,
-                                        [](const QueuedFrame& frame) { return frame.frameIndex == 2; });
+    const size_t bestIndex = SelectFrameClosestToTimestampIf(
+        frames, frames.size(), 160, [](const QueuedFrame& frame) { return frame.frameIndex == 2; });
     EXPECT_EQ(bestIndex, 1u);
 }
 
@@ -195,8 +194,7 @@ TEST(FrameTimingUtilsTest, SelectFrameClosestToGridIfReturnsAvailableCountWhenNo
     frames.push_back(std::move(frame));
 
     const size_t bestIndex =
-        SelectFrameClosestToGridIf(frames, frames.size(), 100, 1, 50,
-                                   [](const QueuedFrame&) { return false; });
+        SelectFrameClosestToGridIf(frames, frames.size(), 100, 1, 50, [](const QueuedFrame&) { return false; });
     EXPECT_EQ(bestIndex, frames.size());
 }
 

@@ -152,12 +152,12 @@ static VulkanCaptureInteropMode DetectVulkanInteropMode() {
 
 static const char* VulkanInteropModeToString(VulkanCaptureInteropMode mode) {
     switch (mode) {
-    case VulkanCaptureInteropMode::kNative:
-        return "native";
-    case VulkanCaptureInteropMode::kDxvkD3D11:
-        return "dxvk-d3d11";
-    case VulkanCaptureInteropMode::kDxvkD3D9:
-        return "dxvk-d3d9";
+        case VulkanCaptureInteropMode::kNative:
+            return "native";
+        case VulkanCaptureInteropMode::kDxvkD3D11:
+            return "dxvk-d3d11";
+        case VulkanCaptureInteropMode::kDxvkD3D9:
+            return "dxvk-d3d9";
     }
     return "unknown";
 }

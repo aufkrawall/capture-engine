@@ -343,8 +343,8 @@ TEST(CapturePipelinePolicyTest, WgcCoverageCatchupClampRelaxesAtSevereShortfall)
 TEST(CapturePipelinePolicyTest, WgcLiveRecoveryClampHugsLiveTimeAndDisablesReserveBias) {
     EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, false, false, 0, false), 1400);
     EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, false, true, 20, true), 1500);
-    EXPECT_FALSE(policy::ShouldPreferEarlierFreshWgcFrameToPreserveReserve(1000, 1040, 1020, 100, true, true, true,
-                                                                           true));
+    EXPECT_FALSE(
+        policy::ShouldPreferEarlierFreshWgcFrameToPreserveReserve(1000, 1040, 1020, 100, true, true, true, true));
 }
 
 TEST(CapturePipelinePolicyTest, CfrOutputShortfallTicksIsClampedToPositiveDelta) {
@@ -423,8 +423,8 @@ TEST(CapturePipelinePolicyTest, WgcCatchupTicksStillBurstAtForceThreshold) {
     EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(true, 4, 2.0, policy::kCfrShortfallForceCatchupThresholdTicks, 120,
                                                  112, 124, 0, false),
               1u);
-    EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(true, 2, 0.0, policy::kCfrShortfallForceCatchupThresholdTicks, 120,
-                                                 84, 84, 200, true),
+    EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(true, 2, 0.0, policy::kCfrShortfallForceCatchupThresholdTicks, 120, 84,
+                                                 84, 200, true),
               4u);
 }
 

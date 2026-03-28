@@ -127,9 +127,8 @@ public:
 
     int32_t GetMaxCompensationDelta() const {
         return outFmt.sampleRate > 0
-                   ? static_cast<int32_t>((outFmt.sampleRate * COMPENSATION_PERIOD_SEC * maxCompensationPercent_) /
-                                          100.0 +
-                                          0.5)
+                   ? static_cast<int32_t>(
+                         (outFmt.sampleRate * COMPENSATION_PERIOD_SEC * maxCompensationPercent_) / 100.0 + 0.5)
                    : 0;
     }
 

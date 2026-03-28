@@ -1094,9 +1094,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         perfMetrics.sourceFrameTimeStdDevUs = static_cast<int32_t>(perf->GetWindowStdDev() + 0.5);
     }
 
-    const VkSemaphore* currentWaitSemaphores = (pPresentInfo && pPresentInfo->waitSemaphoreCount > 0)
-                                                   ? pPresentInfo->pWaitSemaphores
-                                                   : nullptr;
+    const VkSemaphore* currentWaitSemaphores =
+        (pPresentInfo && pPresentInfo->waitSemaphoreCount > 0) ? pPresentInfo->pWaitSemaphores : nullptr;
     uint32_t currentWaitSemaphoreCount = pPresentInfo ? pPresentInfo->waitSemaphoreCount : 0;
     std::vector<VkSemaphore> chainedWaitSemaphores;
     bool modified = false;

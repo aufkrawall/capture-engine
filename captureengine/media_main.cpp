@@ -1702,8 +1702,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 scheduledUntilQpc = drainStopQpc;
             }
         }
-        const uint64_t elapsedTicks =
-            static_cast<uint64_t>(scheduledUntilQpc - liveStartQpc.QuadPart) / static_cast<uint64_t>(targetIntervalTicks);
+        const uint64_t elapsedTicks = static_cast<uint64_t>(scheduledUntilQpc - liveStartQpc.QuadPart) /
+                                      static_cast<uint64_t>(targetIntervalTicks);
         liveTicksScheduled =
             ce::capture_policy::GetAdjustedCfrScheduledTicks(elapsedTicks, liveTicksDiscardedByTimerRebase);
         return ce::capture_policy::GetCfrOutputShortfallTicks(liveTicksScheduled, liveTicksOutput);
@@ -1795,7 +1795,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 LogInfo(
                     "[EncoderThread] WGC stop drain progress: shortfall=%u/%.1fms queue=%u buffered=%zu hostLast=%d "
                     "cachedRepeat=%d",
-                    outputShortfallTicks, ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs),
+                    outputShortfallTicks,
+                    ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs),
                     static_cast<unsigned>(g_FrameQueue.Size()), bufferedWgcFrames.size(), g_HasLastFrame ? 1 : 0,
                     mediaEngineCanRepeatLastFrame ? 1 : 0);
                 s_lastStopDrainProgressLogTick = nowTick;
@@ -1807,9 +1808,11 @@ void EncoderThreadFunc(const AppConfig& config) {
                             static_cast<unsigned long long>(liveTicksOutput));
                 } else {
                     LogWarn(
-                        "[EncoderThread] WGC stop drain aborted: no frame available for outstanding shortfall=%u/%.1fms "
+                        "[EncoderThread] WGC stop drain aborted: no frame available for outstanding "
+                        "shortfall=%u/%.1fms "
                         "(queue=%u buffered=%zu hostLast=%d cachedRepeat=%d)",
-                        outputShortfallTicks, ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs),
+                        outputShortfallTicks,
+                        ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs),
                         static_cast<unsigned>(g_FrameQueue.Size()), bufferedWgcFrames.size(), g_HasLastFrame ? 1 : 0,
                         mediaEngineCanRepeatLastFrame ? 1 : 0);
                 }
@@ -1837,8 +1840,8 @@ void EncoderThreadFunc(const AppConfig& config) {
             const double shortfallDurationMs =
                 ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs);
             const double oldestBufferedFrameAgeMs = static_cast<double>(wgcOldestBufferedFrameAgeUs) / 1000.0;
-            return ce::capture_policy::HasWgcUnrecoverableCoverageLoss(
-                shortfallDurationMs, oldestBufferedFrameAgeMs, audioLeadExcessMs);
+            return ce::capture_policy::HasWgcUnrecoverableCoverageLoss(shortfallDurationMs, oldestBufferedFrameAgeMs,
+                                                                       audioLeadExcessMs);
         };
         auto recomputeCatchupPolicy = [&]() {
             const uint32_t targetOutputFpsForPolicy = std::max<uint32_t>(1u, static_cast<uint32_t>(config.video.fps));
@@ -1862,8 +1865,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                     outputShortfallTicks, targetOutputFpsForPolicy, wgcRecentDeliveredMin250Fps,
                     wgcRecentInputMin250Fps, wgcNoFreshTickPermille, wgcLowSourceModeActive);
             } else {
-                catchupTicksThisLoop =
-                    ce::capture_policy::GetCfrCatchupTicksThisLoop(outputShortfallTicks, encoderTooSlowForTargetCurrent);
+                catchupTicksThisLoop = ce::capture_policy::GetCfrCatchupTicksThisLoop(outputShortfallTicks,
+                                                                                      encoderTooSlowForTargetCurrent);
             }
             if (activeScreenGrab && wgcLiveRecoveryModeActive) {
                 catchupTicksThisLoop = std::min<uint32_t>(catchupTicksThisLoop, 1u);
@@ -1881,9 +1884,9 @@ void EncoderThreadFunc(const AppConfig& config) {
         int64_t scheduledSampleQpc = 0;
         int64_t encoderLateQpc = 0;
         uint32_t encoderLateTickCount = 0;
-        bool drainingOutstandingLiveTicks =
-            !g_EncoderRunning && g_DrainOutstandingWgcTicks.load(std::memory_order_acquire) && recordingOutputLive &&
-            !config.video.useVFR;
+        bool drainingOutstandingLiveTicks = !g_EncoderRunning &&
+                                            g_DrainOutstandingWgcTicks.load(std::memory_order_acquire) &&
+                                            recordingOutputLive && !config.video.useVFR;
         if (g_EncoderRunning || drainingOutstandingLiveTicks) {
             scheduledSampleQpc = nextSampleTime.QuadPart;
             LARGE_INTEGER now;
@@ -1925,7 +1928,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 // Once recording is live, skip ahead when significantly late to prevent
                 // linear accumulation of encoder timer drift.  The buffered WGC frames
                 // provide continuity — the output PTS gap is filled from the frame pool.
-                const uint32_t timerRebaseThreshold = (recordingOutputLive && activeScreenGrab && !config.video.useVFR) ? 10000 : 2;
+                const uint32_t timerRebaseThreshold =
+                    (recordingOutputLive && activeScreenGrab && !config.video.useVFR) ? 10000 : 2;
                 if (!recordingOutputLive && now.QuadPart > nextSampleTime.QuadPart + targetIntervalTicks * 2) {
                     nextSampleTime = now;
                 } else if (recordingOutputLive && encoderLateTickCount >= timerRebaseThreshold) {
@@ -1951,8 +1955,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                         LogInfo(
                             "[EncoderThread] Timer skip-ahead: late by %lld ticks (%lld us), rebasing "
                             "(count=%u, dropShortfall=%u, discardTotal=%llu, preserveShortfall=%u)",
-                            (long long)overshootTicks, (long long)overshootUs, s_lateTickLogCount, droppedShortfallTicks,
-                            static_cast<unsigned long long>(liveTicksDiscardedByTimerRebase), discardTimerDebt ? 0u : 1u);
+                            (long long)overshootTicks, (long long)overshootUs, s_lateTickLogCount,
+                            droppedShortfallTicks, static_cast<unsigned long long>(liveTicksDiscardedByTimerRebase),
+                            discardTimerDebt ? 0u : 1u);
                     }
                     // Reset nextSampleTime to current time + 1 tick interval
                     // so the timer wakes on time from now on.
@@ -1980,14 +1985,13 @@ void EncoderThreadFunc(const AppConfig& config) {
         const auto clampWgcSelectionTargetQpc = [&](int64_t selectionTargetQpc, int64_t liveNowQpc) {
             const bool encoderBottlenecked = g_IsEncoderBottlenecked.load(std::memory_order_relaxed);
             const int64_t clampedSelectionTargetQpc = ce::capture_policy::ClampWgcSelectionTargetToLiveQpc(
-                selectionTargetQpc, liveNowQpc, targetIntervalTicks, wgcLowSourceModeActive,
-                wgcLiveRecoveryModeActive, outputShortfallTicks, encoderBottlenecked);
+                selectionTargetQpc, liveNowQpc, targetIntervalTicks, wgcLowSourceModeActive, wgcLiveRecoveryModeActive,
+                outputShortfallTicks, encoderBottlenecked);
             if (clampedSelectionTargetQpc > selectionTargetQpc) {
                 const uint64_t clampDeltaUs = static_cast<uint64_t>(clampedSelectionTargetQpc - selectionTargetQpc) *
                                               1000000ull / static_cast<uint64_t>(qpcFreq.QuadPart);
                 ++wgcSelectionTargetClampCount;
-                wgcSelectionTargetClampMaxUs =
-                    std::max(wgcSelectionTargetClampMaxUs, SaturatingToUint32(clampDeltaUs));
+                wgcSelectionTargetClampMaxUs = std::max(wgcSelectionTargetClampMaxUs, SaturatingToUint32(clampDeltaUs));
             }
             return clampedSelectionTargetQpc;
         };
@@ -2023,10 +2027,10 @@ void EncoderThreadFunc(const AppConfig& config) {
             const bool lowSourceMode = wgcLowSourceModeActive;
             const bool deepUnderfeed = ce::capture_policy::IsWgcDeepUnderfeed(
                 outputFps, wgcRecentDeliveredMin250Fps, wgcRecentInputMin250Fps, wgcNoFreshTickPermille);
-            const int64_t effectiveSelectionTargetQpc = selectionTargetQpc > 0 ? selectionTargetQpc : liveSelectionTargetQpc;
-            const int64_t minFreshTimestampQpc =
-                ce::capture_policy::GetWgcMinimumFreshTimestampQpc(lastEmittedWgcSourceQpc, liveSelectionTargetQpc,
-                                                                   targetIntervalTicks, lowSourceMode);
+            const int64_t effectiveSelectionTargetQpc =
+                selectionTargetQpc > 0 ? selectionTargetQpc : liveSelectionTargetQpc;
+            const int64_t minFreshTimestampQpc = ce::capture_policy::GetWgcMinimumFreshTimestampQpc(
+                lastEmittedWgcSourceQpc, liveSelectionTargetQpc, targetIntervalTicks, lowSourceMode);
             const int64_t staleFallbackMinTimestampQpc = ce::capture_policy::GetWgcStaleUniqueFallbackMinTimestampQpc(
                 lastEmittedWgcSourceQpc, effectiveSelectionTargetQpc, targetIntervalTicks, lowSourceMode,
                 deepUnderfeed);
@@ -2035,11 +2039,12 @@ void EncoderThreadFunc(const AppConfig& config) {
                 const QueuedFrame& current = bufferedWgcFrames[0];
                 const QueuedFrame& next = bufferedWgcFrames[1];
                 const bool sameTimestamp = current.timestamp > 0 && current.timestamp == next.timestamp;
-                const bool sameSelectionTimestamp = current.selectionTimestamp > 0 &&
-                                                    current.selectionTimestamp == next.selectionTimestamp;
+                const bool sameSelectionTimestamp =
+                    current.selectionTimestamp > 0 && current.selectionTimestamp == next.selectionTimestamp;
                 const bool duplicateSelectionCandidate = sameTimestamp || sameSelectionTimestamp;
                 const bool currentTooOld = staleFallbackMinTimestampQpc > 0 && current.timestamp > 0 &&
-                                           current.timestamp < staleFallbackMinTimestampQpc && next.timestamp > current.timestamp;
+                                           current.timestamp < staleFallbackMinTimestampQpc &&
+                                           next.timestamp > current.timestamp;
                 if (!duplicateSelectionCandidate && !currentTooOld) {
                     break;
                 }
@@ -2069,10 +2074,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                         continue;
                     }
                     const bool sourceTimestampAdvanced = candidate.timestamp > lastEmittedWgcSourceQpc;
-                    const bool freshEnough = ce::capture_policy::IsWgcTimestampFreshEnough(candidate.timestamp,
-                                                                                           minFreshTimestampQpc);
-                    const bool fallbackFreshEnough =
-                        ce::capture_policy::IsWgcTimestampFreshEnough(candidate.timestamp, staleFallbackMinTimestampQpc);
+                    const bool freshEnough =
+                        ce::capture_policy::IsWgcTimestampFreshEnough(candidate.timestamp, minFreshTimestampQpc);
+                    const bool fallbackFreshEnough = ce::capture_policy::IsWgcTimestampFreshEnough(
+                        candidate.timestamp, staleFallbackMinTimestampQpc);
                     if (requireFresh) {
                         if (!(sourceTimestampAdvanced && freshEnough)) {
                             continue;
@@ -2130,7 +2135,8 @@ void EncoderThreadFunc(const AppConfig& config) {
             if (usingFreshCandidateSet && selectedIndex > 0) {
                 const QueuedFrame& earlierFresh = bufferedWgcFrames[0];
                 const QueuedFrame& chosenFresh = bufferedWgcFrames[selectedIndex];
-                if (earlierFresh.timestamp > lastEmittedWgcSourceQpc && chosenFresh.timestamp > earlierFresh.timestamp &&
+                if (earlierFresh.timestamp > lastEmittedWgcSourceQpc &&
+                    chosenFresh.timestamp > earlierFresh.timestamp &&
                     ce::capture_policy::ShouldPreferEarlierFreshWgcFrameToPreserveReserve(
                         earlierFresh.selectionTimestamp > 0 ? earlierFresh.selectionTimestamp : earlierFresh.timestamp,
                         chosenFresh.selectionTimestamp > 0 ? chosenFresh.selectionTimestamp : chosenFresh.timestamp,
@@ -2145,15 +2151,15 @@ void EncoderThreadFunc(const AppConfig& config) {
             const QueuedFrame& candidate = bufferedWgcFrames[selectedIndex];
             const int64_t candidateSelectionTimestamp =
                 candidate.selectionTimestamp > 0 ? candidate.selectionTimestamp : candidate.timestamp;
-            const bool canHoldFreshFrame = selectionDelayApplied && selectedIndex == 0 && bufferedWgcFrames.size() == 1 &&
-                                           ce::capture_policy::ShouldHoldSingleFreshWgcFrame(
-                                               wgcReservePressureActive, lowSourceMode, wgcRecentInputMin250Fps,
-                                               outputFps, smoothedInputPerTick, outputShortfallTicks,
-                                               g_IsEncoderBottlenecked.load(std::memory_order_relaxed), false,
-                                               deepUnderfeed);
+            const bool canHoldFreshFrame =
+                selectionDelayApplied && selectedIndex == 0 && bufferedWgcFrames.size() == 1 &&
+                ce::capture_policy::ShouldHoldSingleFreshWgcFrame(
+                    wgcReservePressureActive, lowSourceMode, wgcRecentInputMin250Fps, outputFps, smoothedInputPerTick,
+                    outputShortfallTicks, g_IsEncoderBottlenecked.load(std::memory_order_relaxed), false,
+                    deepUnderfeed);
             if (canHoldFreshFrame && effectiveSelectionTargetQpc > 0 &&
-                ShouldHoldFrameForNextTick(candidateSelectionTimestamp, effectiveSelectionTargetQpc, targetIntervalTicks,
-                                           targetIntervalTicks / 10)) {
+                ShouldHoldFrameForNextTick(candidateSelectionTimestamp, effectiveSelectionTargetQpc,
+                                           targetIntervalTicks, targetIntervalTicks / 10)) {
                 ++wgcHoldForNextTickCount;
                 ++wgcHeldFreshFrameTickCount;
                 if (repeatedBecauseNoFrameCoverage) {
@@ -2175,8 +2181,8 @@ void EncoderThreadFunc(const AppConfig& config) {
 
             if (!usingFreshCandidateSet) {
                 ++wgcStaleUniqueFallbackCount;
-                if (effectiveSelectionTargetQpc > 0 && candidateSelectionTimestamp + targetIntervalTicks <
-                                                      effectiveSelectionTargetQpc) {
+                if (effectiveSelectionTargetQpc > 0 &&
+                    candidateSelectionTimestamp + targetIntervalTicks < effectiveSelectionTargetQpc) {
                     ++wgcAncientSelectionCount;
                 }
             }
@@ -2275,7 +2281,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                     for (auto& drainedFrame : drainedScreenGrabFrames) {
                         if (!drainedFrame.isInjectMode && drainedFrame.timestamp > 0) {
                             wgcInputPredictor.Update(drainedFrame.timestamp, qpcFreq.QuadPart);
-                            drainedFrame.selectionTimestamp = wgcInputPredictor.GetIdealTimestamp(drainedFrame.timestamp);
+                            drainedFrame.selectionTimestamp =
+                                wgcInputPredictor.GetIdealTimestamp(drainedFrame.timestamp);
                             static int64_t s_lastWgcSrcQpc = 0;
                             if (drainedFrame.timestamp == s_lastWgcSrcQpc) {
                                 ++dupTimestampCount;
@@ -2348,9 +2355,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 wgcEncoderRecoveryLimitedCurrent =
                     g_IsEncoderBottlenecked.load(std::memory_order_relaxed) &&
                     outputShortfallTicks >= ce::capture_policy::kWgcRecoveryEnterShortfallTicks;
-                wgcReservePressureActive =
-                    ce::capture_policy::IsWgcReservePressureActive(wgcNoReserveTickCount, wgcQueueTickSampleCount,
-                                                                   outputFps);
+                wgcReservePressureActive = ce::capture_policy::IsWgcReservePressureActive(
+                    wgcNoReserveTickCount, wgcQueueTickSampleCount, outputFps);
                 const bool shouldEnterWgcLowSourceMode =
                     ce::capture_policy::ShouldEnterWgcLowSourceMode(wgcAdaptiveTelemetry);
                 const bool shouldExitWgcLowSourceMode =
@@ -2363,10 +2369,11 @@ void EncoderThreadFunc(const AppConfig& config) {
                                    ce::capture_policy::kWgcLowSourceEnterHoldMs) {
                             wgcLowSourceModeActive = true;
                             wgcLowSourceStateChangeTick = 0;
-                            LogInfo("[WGC CFR] Low-source mode entered: src=%u/%u/%u input=%u/%u empty=%upm buffered=%zu",
-                                    wgcRecentDeliveredFps, wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps,
-                                    wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
-                                    bufferedWgcFrames.size());
+                            LogInfo(
+                                "[WGC CFR] Low-source mode entered: src=%u/%u/%u input=%u/%u empty=%upm buffered=%zu",
+                                wgcRecentDeliveredFps, wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps,
+                                wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
+                                bufferedWgcFrames.size());
                         }
                     } else {
                         wgcLowSourceStateChangeTick = 0;
@@ -2379,10 +2386,11 @@ void EncoderThreadFunc(const AppConfig& config) {
                                    ce::capture_policy::kWgcLowSourceExitHoldMs) {
                             wgcLowSourceModeActive = false;
                             wgcLowSourceStateChangeTick = 0;
-                            LogInfo("[WGC CFR] Low-source mode exited: src=%u/%u/%u input=%u/%u empty=%upm buffered=%zu",
-                                    wgcRecentDeliveredFps, wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps,
-                                    wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
-                                    bufferedWgcFrames.size());
+                            LogInfo(
+                                "[WGC CFR] Low-source mode exited: src=%u/%u/%u input=%u/%u empty=%upm buffered=%zu",
+                                wgcRecentDeliveredFps, wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps,
+                                wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
+                                bufferedWgcFrames.size());
                         }
                     } else {
                         wgcLowSourceStateChangeTick = 0;
@@ -2390,9 +2398,11 @@ void EncoderThreadFunc(const AppConfig& config) {
                 }
 
                 const bool shouldEnterWgcLiveRecoveryMode = ce::capture_policy::ShouldEnterWgcLiveRecoveryMode(
-                    wgcAdaptiveTelemetry, outputShortfallTicks, g_IsEncoderBottlenecked.load(std::memory_order_relaxed));
+                    wgcAdaptiveTelemetry, outputShortfallTicks,
+                    g_IsEncoderBottlenecked.load(std::memory_order_relaxed));
                 const bool shouldExitWgcLiveRecoveryMode = ce::capture_policy::ShouldExitWgcLiveRecoveryMode(
-                    wgcAdaptiveTelemetry, outputShortfallTicks, g_IsEncoderBottlenecked.load(std::memory_order_relaxed));
+                    wgcAdaptiveTelemetry, outputShortfallTicks,
+                    g_IsEncoderBottlenecked.load(std::memory_order_relaxed));
                 if (!wgcLiveRecoveryModeActive) {
                     if (shouldEnterWgcLiveRecoveryMode) {
                         if (wgcLiveRecoveryStateChangeTick == 0) {
@@ -2402,7 +2412,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                             wgcLiveRecoveryModeActive = true;
                             wgcLiveRecoveryStateChangeTick = 0;
                             LogInfo(
-                                "[WGC CFR] Live-recovery entered: srcStarved=%d schedLimited=%d encLimited=%d shortfall=%u/%.1fms src=%u/%u/%u input=%u/%u empty=%upm buffered=%zu",
+                                "[WGC CFR] Live-recovery entered: srcStarved=%d schedLimited=%d encLimited=%d "
+                                "shortfall=%u/%.1fms src=%u/%u/%u input=%u/%u empty=%upm buffered=%zu",
                                 wgcSourceStarvedCurrent ? 1 : 0, wgcSchedulerLimitedCurrent ? 1 : 0,
                                 wgcEncoderRecoveryLimitedCurrent ? 1 : 0, outputShortfallTicks,
                                 ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs),
@@ -2422,7 +2433,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                             wgcLiveRecoveryModeActive = false;
                             wgcLiveRecoveryStateChangeTick = 0;
                             LogInfo(
-                                "[WGC CFR] Live-recovery exited: shortfall=%u/%.1fms src=%u/%u/%u input=%u/%u empty=%upm buffered=%zu",
+                                "[WGC CFR] Live-recovery exited: shortfall=%u/%.1fms src=%u/%u/%u input=%u/%u "
+                                "empty=%upm buffered=%zu",
                                 outputShortfallTicks,
                                 ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs),
                                 wgcRecentDeliveredFps, wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps,
@@ -2443,7 +2455,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                       : 0.0;
                     const uint32_t averageJitterUs = SaturatingToUint32(g_WgcCap->GetSourceJitterAvgUs());
                     const uint32_t poolDropCount = g_WgcCap->GetPoolDropCount();
-                    const uint32_t queueDepth = static_cast<uint32_t>(std::min<size_t>(bufferedWgcFrames.size(), 0xFFFFFFFFull));
+                    const uint32_t queueDepth =
+                        static_cast<uint32_t>(std::min<size_t>(bufferedWgcFrames.size(), 0xFFFFFFFFull));
                     wgcRecentDeliveredFps = g_WgcCap->GetDeliveredRatePerSec();
                     wgcRecentDeliveredMin250Fps = g_WgcCap->GetDeliveredMin250Fps();
                     wgcRecentDeliveredMin500Fps = g_WgcCap->GetDeliveredMin500Fps();
@@ -2452,22 +2465,23 @@ void EncoderThreadFunc(const AppConfig& config) {
 
                     const bool sharedDeviceFallbackActive =
                         g_WgcCap->GetLastCopyTimeUs() > static_cast<int64_t>(frameIntervalMs * 1000.0 * 0.55);
-                    const bool sustainedPressure = g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ||
-                                                  queueDepth >= 8u || poolDropCount > 0 ||
-                                                  wgcNoFreshTickPermille >= ce::capture_policy::kWgcReservePressurePermille ||
-                                                  duplicateRatio > 0.18 || averageJitterUs > 2500u ||
-                                                  sharedDeviceFallbackActive;
-                    const bool severePressure = queueDepth >= 12u || poolDropCount >= 2u ||
-                                               averageJitterUs > 5000u || duplicateRatio > 0.30 ||
-                                               ce::capture_policy::IsEncoderTooSlowForTargetFps(smoothedEncodeMs,
-                                                                                                 frameIntervalMs, outputFps,
-                                                                                                 2.0);
+                    const bool sustainedPressure =
+                        g_IsEncoderBottlenecked.load(std::memory_order_relaxed) || queueDepth >= 8u ||
+                        poolDropCount > 0 ||
+                        wgcNoFreshTickPermille >= ce::capture_policy::kWgcReservePressurePermille ||
+                        duplicateRatio > 0.18 || averageJitterUs > 2500u || sharedDeviceFallbackActive;
+                    const bool severePressure = queueDepth >= 12u || poolDropCount >= 2u || averageJitterUs > 5000u ||
+                                                duplicateRatio > 0.30 ||
+                                                ce::capture_policy::IsEncoderTooSlowForTargetFps(
+                                                    smoothedEncodeMs, frameIntervalMs, outputFps, 2.0);
 
                     if (severePressure) {
-                        desiredTargetFps = std::max<uint32_t>(outputFps, static_cast<uint32_t>(std::ceil(outputFps * 1.08)));
+                        desiredTargetFps =
+                            std::max<uint32_t>(outputFps, static_cast<uint32_t>(std::ceil(outputFps * 1.08)));
                         wgcAdaptiveThrottleMode = WgcAdaptiveThrottleMode::kHeadroom108;
                     } else if (sustainedPressure) {
-                        desiredTargetFps = std::max<uint32_t>(outputFps, static_cast<uint32_t>(std::ceil(outputFps * 1.25)));
+                        desiredTargetFps =
+                            std::max<uint32_t>(outputFps, static_cast<uint32_t>(std::ceil(outputFps * 1.25)));
                         wgcAdaptiveThrottleMode = WgcAdaptiveThrottleMode::kHeadroom125;
                     } else {
                         wgcAdaptiveThrottleMode = WgcAdaptiveThrottleMode::kOff;
@@ -2498,13 +2512,12 @@ void EncoderThreadFunc(const AppConfig& config) {
                     wgcReserveAvailableAtTickStart = false;
                     inspectBufferedWgcCoverageForTarget(
                         clampWgcSelectionTargetQpc(computeWgcSelectionTargetQpc(false), selectionNowQpc.QuadPart),
-                        &wgcFreshAvailableAtTickStart,
-                                                        &wgcReserveAvailableAtTickStart);
+                        &wgcFreshAvailableAtTickStart, &wgcReserveAvailableAtTickStart);
                     wgcSelectionDelayAppliedThisTick =
-                        !wgcLiveRecoveryModeActive && ce::capture_policy::ShouldApplyWgcSelectionDelay(
-                                                         recordingOutputLive, outputShortfallTicks,
-                                                         g_IsEncoderBottlenecked.load(std::memory_order_relaxed),
-                                                         wgcReserveAvailableAtTickStart);
+                        !wgcLiveRecoveryModeActive &&
+                        ce::capture_policy::ShouldApplyWgcSelectionDelay(
+                            recordingOutputLive, outputShortfallTicks,
+                            g_IsEncoderBottlenecked.load(std::memory_order_relaxed), wgcReserveAvailableAtTickStart);
                     if (wgcSelectionDelayAppliedThisTick) {
                         ++wgcSelectionDelayTickCount;
                     }
@@ -2523,7 +2536,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                             : 0;
                     const int64_t delayedSelectionTargetQpc =
                         (encoderGridStartQpc > 0 && targetIntervalTicks > 0)
-                            ? clampWgcSelectionTargetQpc(computeDelayedWgcSelectionTargetQpc(), selectionNowQpc.QuadPart)
+                            ? clampWgcSelectionTargetQpc(computeDelayedWgcSelectionTargetQpc(),
+                                                         selectionNowQpc.QuadPart)
                             : 0;
                     const int64_t effectiveSelectionTargetQpc =
                         wgcSelectionDelayAppliedThisTick ? delayedSelectionTargetQpc : liveSelectionTargetQpc;
@@ -2797,7 +2811,8 @@ void EncoderThreadFunc(const AppConfig& config) {
             ((useScreenGrab && MediaEngine_RepeatLastFrameWithTimeline) || MediaEngine_RepeatLastFrame);
         auto repeatLastFrameForScheduledQpc = [&](int64_t scheduledQpc) {
             if (useScreenGrab && !config.video.useVFR && MediaEngine_RepeatLastFrameWithTimeline) {
-                return MediaEngine_RepeatLastFrameWithTimeline(scheduledQpc, computeLiveTimelineElapsedUs(scheduledQpc));
+                return MediaEngine_RepeatLastFrameWithTimeline(scheduledQpc,
+                                                               computeLiveTimelineElapsedUs(scheduledQpc));
             }
             return MediaEngine_RepeatLastFrame && MediaEngine_RepeatLastFrame(scheduledQpc);
         };
@@ -2910,7 +2925,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                     }
                 }
                 QueryPerformanceCounter(&nextSampleTime);
-                liveStartQpc.QuadPart = 0; // Set after first frame's encoder initialization delay to avoid initial judder
+                liveStartQpc.QuadPart =
+                    0;  // Set after first frame's encoder initialization delay to avoid initial judder
                 encoderGridStartQpc = nextSampleTime.QuadPart;
                 // Flush stale warmup frames from ALL buffers.  During the gap
                 // between capture start and encoder readiness, frames accumulate
@@ -3051,9 +3067,9 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
         }
 
-        const bool refreshedDrainOutstandingLiveTicks =
-            !g_EncoderRunning && g_DrainOutstandingWgcTicks.load(std::memory_order_acquire) && recordingOutputLive &&
-            !config.video.useVFR;
+        const bool refreshedDrainOutstandingLiveTicks = !g_EncoderRunning &&
+                                                        g_DrainOutstandingWgcTicks.load(std::memory_order_acquire) &&
+                                                        recordingOutputLive && !config.video.useVFR;
         if (!popped && !drainingOutstandingLiveTicks && refreshedDrainOutstandingLiveTicks) {
             LogInfo("[EncoderThread] WGC stop drain picked up mid-cycle");
             continue;
@@ -3067,8 +3083,8 @@ void EncoderThreadFunc(const AppConfig& config) {
         const bool consumesCfrTick =
             !config.video.useVFR && ((g_EncoderRunning && g_Recording) || drainingOutstandingLiveTicks);
         const bool isDrainPhase = !g_Recording.load(std::memory_order_acquire);
-        const bool isLivePhase = recordingOutputLive && (g_Recording.load(std::memory_order_acquire) ||
-                                                         drainingOutstandingLiveTicks);
+        const bool isLivePhase =
+            recordingOutputLive && (g_Recording.load(std::memory_order_acquire) || drainingOutstandingLiveTicks);
         const bool scheduledLiveCfrTick = consumesCfrTick && isLivePhase;
         if (scheduledLiveCfrTick) {
             encoderGridTickCount = selectionGridTick;
@@ -3141,9 +3157,10 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
 
             for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
-                if (useScreenGrab && config.video.useVFR && !ce::capture_policy::ShouldAllowWgcExtraCatchupTicks(
-                                         encoderTooSlowForTargetCurrent,
-                                         bufferedWgcFrames.size(), frameCreditAccumulator, outputShortfallTicks)) {
+                if (useScreenGrab && config.video.useVFR &&
+                    !ce::capture_policy::ShouldAllowWgcExtraCatchupTicks(
+                        encoderTooSlowForTargetCurrent, bufferedWgcFrames.size(), frameCreditAccumulator,
+                        outputShortfallTicks)) {
                     break;
                 }
 
@@ -3163,22 +3180,23 @@ void EncoderThreadFunc(const AppConfig& config) {
                     allowForceCatchupBudget
                         ? (frameIntervalMs *
                            ce::capture_policy::GetWgcForceCatchupBudgetFrameMultiplier(shortfallDurationMs))
-                                               : allowWgcCatchupBudget ? (frameIntervalMs * 2.0)
-                                                                       : frameIntervalMs;
-                bool allowFreshCatchup = true; // Always allow fresh catchup for CFR by default
-                
+                    : allowWgcCatchupBudget ? (frameIntervalMs * 2.0)
+                                            : frameIntervalMs;
+                bool allowFreshCatchup = true;  // Always allow fresh catchup for CFR by default
+
                 // For CFR recording, video smoothness is paramount. We have a 32-frame deep queue
                 // (~266ms at 120fps) to absorb temporary encoder spikes. We only force duplicate frames
                 // if we are severely behind (e.g. > 150ms delay) to prevent runaway latency.
                 // Otherwise, we process the fresh frame to preserve the correct visual pacing.
                 const double cfrSmoothnessToleranceMs = (!config.video.useVFR && useScreenGrab) ? 150.0 : 0.0;
-                
+
                 if (elapsedFromTickStartMs > catchupBudgetMs + cfrSmoothnessToleranceMs) {
                     static uint64_t s_lastBudgetLog = 0;
                     uint64_t nowTick = GetTickCount64();
                     if (nowTick - s_lastBudgetLog >= 1000) {
                         LogInfo(
-                            "[EncoderThread] Catchup budget exceeded at extraTick=%u (elapsed=%.2fms > budget=%.2fms + tol=%.2fms). "
+                            "[EncoderThread] Catchup budget exceeded at extraTick=%u (elapsed=%.2fms > budget=%.2fms + "
+                            "tol=%.2fms). "
                             "Switching to duplicate frames to preserve CFR timeline without stalling.",
                             extraTick, elapsedFromTickStartMs, catchupBudgetMs, cfrSmoothnessToleranceMs);
                         s_lastBudgetLog = nowTick;
@@ -3286,7 +3304,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                                 static uint64_t s_lastCatchupLog = 0;
                                 uint64_t nowTick = GetTickCount64();
                                 if (nowTick - s_lastCatchupLog >= 1000) {
-                                    LogInfo("[EncoderThread] CFR Catchup applied using fresh frame (encoder slow, but preserving smoothness)");
+                                    LogInfo(
+                                        "[EncoderThread] CFR Catchup applied using fresh frame (encoder slow, but "
+                                        "preserving smoothness)");
                                     s_lastCatchupLog = nowTick;
                                 }
                             }
@@ -3463,15 +3483,17 @@ void EncoderThreadFunc(const AppConfig& config) {
                     : 0;
             int64_t signedSelectionErrorUs = 0;
             int64_t absoluteSelectionErrorUs = 0;
-            const int64_t selectionMetricTargetQpc = !frameToProcess->isInjectMode
-                                                         ? (wgcSelectionDelayAppliedThisTick
-                                                                ? computeDelayedWgcSelectionTargetQpc()
-                                                                : computeLiveWgcSelectionTargetQpc())
-                                                         : idealQpc;
+            const int64_t selectionMetricTargetQpc =
+                !frameToProcess->isInjectMode
+                    ? (wgcSelectionDelayAppliedThisTick ? computeDelayedWgcSelectionTargetQpc()
+                                                        : computeLiveWgcSelectionTargetQpc())
+                    : idealQpc;
             if (selectionMetricTargetQpc > 0) {
-                const int64_t selectionTimestampQpc =
-                    !frameToProcess->isInjectMode ? GetFrameSelectionTimestamp(*frameToProcess) : frameToProcess->timestamp;
-                signedSelectionErrorUs = ((selectionTimestampQpc - selectionMetricTargetQpc) * 1000000) / qpcFreq.QuadPart;
+                const int64_t selectionTimestampQpc = !frameToProcess->isInjectMode
+                                                          ? GetFrameSelectionTimestamp(*frameToProcess)
+                                                          : frameToProcess->timestamp;
+                signedSelectionErrorUs =
+                    ((selectionTimestampQpc - selectionMetricTargetQpc) * 1000000) / qpcFreq.QuadPart;
                 absoluteSelectionErrorUs =
                     signedSelectionErrorUs >= 0 ? signedSelectionErrorUs : -signedSelectionErrorUs;
             }
@@ -3726,7 +3748,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                         QueryPerformanceCounter(&afterInit);
                         liveStartQpc = afterInit;
                         // For the selection grid, we treat the first frame as tick 1.
-                        // To align future idealQpc calculations perfectly with scheduledSampleQpc, 
+                        // To align future idealQpc calculations perfectly with scheduledSampleQpc,
                         // we must offset the anchor back by one target interval.
                         encoderGridStartQpc = liveStartQpc.QuadPart - targetIntervalTicks;
                         // Start the CFR timeline exactly 1 tick from now, skipping the init delay entirely
@@ -3879,17 +3901,21 @@ void EncoderThreadFunc(const AppConfig& config) {
             LogInfo(
                 "[Cadence Health] Phase=%s | AgeAvg=%uus AgeMax=%uus | SelAvg=%uus SelMax=%uus SelBias=%dus "
                 "EarlyMax=%uus LateMax=%uus | WgcSelAvg=%uus WgcSelMax=%uus WgcSelBias=%dus WgcEarly=%uus WgcLate=%uus "
-                "Hold=%u HoldFresh=%u Delay=%u Spend=%u CatchUp=%u CatchFresh=%u LiveClamp=%u/%uus | DefStreak=%u/%u DupStreak=%u/%u | DupSrc=%u "
+                "Hold=%u HoldFresh=%u Delay=%u Spend=%u CatchUp=%u CatchFresh=%u LiveClamp=%u/%uus | DefStreak=%u/%u "
+                "DupStreak=%u/%u | DupSrc=%u "
                 "DupDef=%u "
                 "DupTimer=%u DupDrain=%u | TickEmit=%u TickUnique=%u TickDup=%u TickMiss=%u | "
                 "HoldHist=%u/%u/%u/%u/%u/%u | LiveWall=%lluus LiveTicks=%llu Shortfall=%u/%.1fms FreshMiss=%upm "
-                "BufAvg=%upm BufMin=%u NoFresh=%u NoReserve=%u Oldest=%.1fms LeadExcess=%.1fms | WgcAct Fresh=%u DupSrc=%u DropObs=%u "
+                "BufAvg=%upm BufMin=%u NoFresh=%u NoReserve=%u Oldest=%.1fms LeadExcess=%.1fms | WgcAct Fresh=%u "
+                "DupSrc=%u DropObs=%u "
                 "SelMiss=%u StaleUni=%u "
-                "Ancient=%u RepFreshMiss=%u RepHold=%u RepCov=%u CovDelay=%u RepLate=%u RepCatch=%u | TsReg=%u TsStall=%u "
+                "Ancient=%u RepFreshMiss=%u RepHold=%u RepCov=%u CovDelay=%u RepLate=%u RepCatch=%u | TsReg=%u "
+                "TsStall=%u "
                 "TimerRebase=%u | "
                 "InvalidMeta=%u InvalidHandle=%u | PktClamp=%u NegPTS=%u NonMonoPTS=%u | WgcThr=%u Adj=%u | Over=0x%X "
                 "MuxQ=%uKB/%u MuxBp=%u Wait=%uus Max=%uus | EncEma=%.2fms Budget=%upm Sust=%.1ffps TooSlow=%d "
-                "Bottleneck=%d | LowSrc=%d Recover=%d Cause=S%d/D%d/E%d | SrcFps=%.2f SrcJitter=%uus DupTs=%u EncCycle=%.2fms EncSpike=%u",
+                "Bottleneck=%d | LowSrc=%d Recover=%d Cause=S%d/D%d/E%d | SrcFps=%.2f SrcJitter=%uus DupTs=%u "
+                "EncCycle=%.2fms EncSpike=%u",
                 CapturePipelinePhaseToString(state.capturePhase.load(std::memory_order_relaxed)), avgFrameAgeUs,
                 cadenceCounters.frameAgeMaxUs, avgSelectionErrorUs, cadenceCounters.outputScheduleErrorMaxUs,
                 avgSignedSelectionErrorUs, cadenceCounters.outputScheduleEarlyMaxUs,
@@ -3897,34 +3923,32 @@ void EncoderThreadFunc(const AppConfig& config) {
                 avgSignedWgcSelectionErrorUs, wgcSelectionEarlyMaxUs, wgcSelectionLateMaxUs, wgcHoldForNextTickCount,
                 wgcHeldFreshFrameTickCount, wgcSelectionDelayTickCount, wgcReserveSpendTickCount,
                 cfrCatchupTicksExecuted, wgcFreshCatchupCount, wgcSelectionTargetClampCount,
-                wgcSelectionTargetClampMaxUs,
-                cadenceCounters.consecutiveDeferredFrames, cadenceCounters.maxConsecutiveDeferredFrames,
-                cadenceCounters.consecutiveDuplicateFrames, cadenceCounters.maxConsecutiveDuplicateFrames,
-                dupNoSource - lastDuplicateReasonNoSource, dupDeferred - lastDuplicateReasonDeferred,
-                dupTimer - lastDuplicateReasonTimerRebase, dupDrain - lastDuplicateReasonDrain,
-                cadenceCounters.liveTickEmitCount, cadenceCounters.liveTickUniqueCount,
-                cadenceCounters.liveTickDuplicateCount, cadenceCounters.liveTickMissCount, cadenceCounters.holdHist[0],
-                cadenceCounters.holdHist[1], cadenceCounters.holdHist[2], cadenceCounters.holdHist[3],
-                cadenceCounters.holdHist[4], cadenceCounters.holdHist[5],
-                static_cast<unsigned long long>(liveWallElapsedUs), static_cast<unsigned long long>(liveTicksOutput),
-                outputShortfallTicks, shortfallDurationMs, wgcNoFreshTickPermille, bufferedAtTickAvgPermille,
-                bufferedAtTickMinValue, wgcNoFreshTickCount, wgcNoReserveTickCount, oldestBufferedFrameAgeMs,
-                wgcAudioLeadExcessMsCurrent,
-                wgcSelectFreshCount, wgcSelectDuplicateSourceCount, wgcDropObsoleteCount, wgcFreshSelectionMissCount,
+                wgcSelectionTargetClampMaxUs, cadenceCounters.consecutiveDeferredFrames,
+                cadenceCounters.maxConsecutiveDeferredFrames, cadenceCounters.consecutiveDuplicateFrames,
+                cadenceCounters.maxConsecutiveDuplicateFrames, dupNoSource - lastDuplicateReasonNoSource,
+                dupDeferred - lastDuplicateReasonDeferred, dupTimer - lastDuplicateReasonTimerRebase,
+                dupDrain - lastDuplicateReasonDrain, cadenceCounters.liveTickEmitCount,
+                cadenceCounters.liveTickUniqueCount, cadenceCounters.liveTickDuplicateCount,
+                cadenceCounters.liveTickMissCount, cadenceCounters.holdHist[0], cadenceCounters.holdHist[1],
+                cadenceCounters.holdHist[2], cadenceCounters.holdHist[3], cadenceCounters.holdHist[4],
+                cadenceCounters.holdHist[5], static_cast<unsigned long long>(liveWallElapsedUs),
+                static_cast<unsigned long long>(liveTicksOutput), outputShortfallTicks, shortfallDurationMs,
+                wgcNoFreshTickPermille, bufferedAtTickAvgPermille, bufferedAtTickMinValue, wgcNoFreshTickCount,
+                wgcNoReserveTickCount, oldestBufferedFrameAgeMs, wgcAudioLeadExcessMsCurrent, wgcSelectFreshCount,
+                wgcSelectDuplicateSourceCount, wgcDropObsoleteCount, wgcFreshSelectionMissCount,
                 wgcStaleUniqueFallbackCount, wgcAncientSelectionCount, wgcRepeatNoFreshCount, wgcRepeatPolicyHoldCount,
-                wgcCoverageRepeatHoldCount, wgcCoverageDelayTicksCurrent, wgcRepeatTimerLateCount, wgcRepeatCatchupCount,
-                tsRegress - lastTimestampRegressionCount,
-                tsStall - lastTimestampStallCount, timerRebases, invalidMeta - lastInvalidMetaCount,
-                invalidHandle - lastInvalidHandleCount, packetClamps - lastPacketClampCount,
-                negativePts - lastNegativePtsCount, nonMonotonicPts - lastNonMonotonicPtsCount,
-                g_WgcAdaptiveTargetFps.load(std::memory_order_relaxed), wgcAdaptiveThrottleAdjustments, overloadFlags,
-                (muxQueueBytes + 1023u) / 1024u, muxQueuePackets, muxBackpressureCount, muxBackpressureWaitUs,
-                muxBackpressureMaxWaitUs, smoothedEncodeMs, encoderBudgetUtilizationPermille, sustainableOutputFps,
-                encoderTooSlowForTarget ? 1 : 0, g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ? 1 : 0,
-                wgcLowSourceModeActive ? 1 : 0, wgcLiveRecoveryModeActive ? 1 : 0,
-                wgcSourceStarvedCurrent ? 1 : 0, wgcSchedulerLimitedCurrent ? 1 : 0,
-                wgcEncoderRecoveryLimitedCurrent ? 1 : 0,
-                srcFpsX100Val / 100.0, srcJitterUsVal, dupTsPerSec, smoothedEncCycleMs, encodeSpikeCountThisSecond);
+                wgcCoverageRepeatHoldCount, wgcCoverageDelayTicksCurrent, wgcRepeatTimerLateCount,
+                wgcRepeatCatchupCount, tsRegress - lastTimestampRegressionCount, tsStall - lastTimestampStallCount,
+                timerRebases, invalidMeta - lastInvalidMetaCount, invalidHandle - lastInvalidHandleCount,
+                packetClamps - lastPacketClampCount, negativePts - lastNegativePtsCount,
+                nonMonotonicPts - lastNonMonotonicPtsCount, g_WgcAdaptiveTargetFps.load(std::memory_order_relaxed),
+                wgcAdaptiveThrottleAdjustments, overloadFlags, (muxQueueBytes + 1023u) / 1024u, muxQueuePackets,
+                muxBackpressureCount, muxBackpressureWaitUs, muxBackpressureMaxWaitUs, smoothedEncodeMs,
+                encoderBudgetUtilizationPermille, sustainableOutputFps, encoderTooSlowForTarget ? 1 : 0,
+                g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ? 1 : 0, wgcLowSourceModeActive ? 1 : 0,
+                wgcLiveRecoveryModeActive ? 1 : 0, wgcSourceStarvedCurrent ? 1 : 0, wgcSchedulerLimitedCurrent ? 1 : 0,
+                wgcEncoderRecoveryLimitedCurrent ? 1 : 0, srcFpsX100Val / 100.0, srcJitterUsVal, dupTsPerSec,
+                smoothedEncCycleMs, encodeSpikeCountThisSecond);
 
             static uint64_t s_lastWgcCapacityWarnTick = 0;
             static uint32_t s_wgcCapacityLimitedStreakSeconds = 0;
@@ -4089,8 +4113,7 @@ void StartRecording(const AppConfig& config) {
             SetActiveScreenGrab(false);
             return;
         }
-        LogInfo("[Media] Active recording path: WGC bounded pull-drain CFR (%d fps output)",
-                config.video.fps);
+        LogInfo("[Media] Active recording path: WGC bounded pull-drain CFR (%d fps output)", config.video.fps);
     } else if (!useScreenGrab) {
         if (config.captureMethod == "auto" && g_WgcCap && g_AutoWgcFallbackArmed.load(std::memory_order_acquire)) {
             LogInfo("[Media] Active recording path: inject shared-memory capture (WGC auto-fallback armed)");
@@ -4455,8 +4478,8 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         pendingWgcRetarget.monitor = targetMonitor;
         pendingWgcRetarget.preferMonitor = preferMonitor || targetWindow == NULL;
         pendingWgcRetarget.active = true;
-        LogWarn("[Media] Queued WGC retarget: %s (window=0x%p monitor=0x%p monitorOnly=%d)", reason,
-                targetWindow, targetMonitor, pendingWgcRetarget.preferMonitor ? 1 : 0);
+        LogWarn("[Media] Queued WGC retarget: %s (window=0x%p monitor=0x%p monitorOnly=%d)", reason, targetWindow,
+                targetMonitor, pendingWgcRetarget.preferMonitor ? 1 : 0);
     };
 
     auto refreshActiveConfig = [&](bool forceReload) -> std::string {
@@ -5035,8 +5058,9 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                     StopInjectCapturePipeline();
                     if (StartWgcRecordingCapture(config)) {
                         SetActiveScreenGrab(true);
-                        LogInfo("[Media] Active recording path switched to WGC bounded pull-drain CFR "
-                                "(auto fallback from inject)");
+                        LogInfo(
+                            "[Media] Active recording path switched to WGC bounded pull-drain CFR "
+                            "(auto fallback from inject)");
                     } else {
                         LogWarn("[Media] WGC fallback failed; inject monitoring remains unavailable");
                     }

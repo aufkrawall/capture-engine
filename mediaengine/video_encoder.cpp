@@ -1,7 +1,7 @@
 #include "video_encoder.h"
+#include "../common/frame_timing_utils.h"
 #include "../common/raii_helpers.h"
 #include "../common/shared_defs.h"
-#include "../common/frame_timing_utils.h"
 #include "mediaengine.h"
 #include "video_encoder_options.h"
 
@@ -104,8 +104,8 @@ void LogFinalDurationSummary(AVFormatContext* fmtCtx, int64_t finalDurationUs, u
         }
 
         const int64_t streamDurationUs = av_rescale_q(stream->duration, stream->time_base, AVRational{1, 1000000});
-        const int64_t durationDeltaUs =
-            streamDurationUs >= finalDurationUs ? (streamDurationUs - finalDurationUs) : (finalDurationUs - streamDurationUs);
+        const int64_t durationDeltaUs = streamDurationUs >= finalDurationUs ? (streamDurationUs - finalDurationUs)
+                                                                            : (finalDurationUs - streamDurationUs);
         maxStreamDeltaUs = std::max(maxStreamDeltaUs, durationDeltaUs);
 
         if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
@@ -121,11 +121,12 @@ void LogFinalDurationSummary(AVFormatContext* fmtCtx, int64_t finalDurationUs, u
     }
 
     DLL_Log(
-        "[VideoEncoder] Final durations: target=%lld us video=%lld us audioMin=%lld us audioMax=%lld us maxDelta=%lld us "
+        "[VideoEncoder] Final durations: target=%lld us video=%lld us audioMin=%lld us audioMax=%lld us maxDelta=%lld "
+        "us "
         "streams(v=%u a=%u) overload(encoder=%d mux=%d) backpressure=%u peakMux=%uKB peakPkts=%u",
         finalDurationUs, maxVideoDurationUs, minAudioDurationUs, maxAudioDurationUs, maxStreamDeltaUs, videoStreamCount,
-        audioStreamCount, encoderOverloaded ? 1 : 0, muxOverloaded ? 1 : 0, muxBackpressureEvents, peakQueueBytes / 1024u,
-        peakQueuePackets);
+        audioStreamCount, encoderOverloaded ? 1 : 0, muxOverloaded ? 1 : 0, muxBackpressureEvents,
+        peakQueueBytes / 1024u, peakQueuePackets);
 }
 
 }  // namespace
@@ -275,9 +276,8 @@ enum class OutputRangeMode { kLimited, kFull };
 template <typename AtomicT>
 void UpdateAtomicPeak(AtomicT& peak, uint32_t value) {
     uint32_t current = peak.load(std::memory_order_relaxed);
-    while (value > current && !peak.compare_exchange_weak(current, value, std::memory_order_relaxed,
-                                                          std::memory_order_relaxed)) {
-    }
+    while (value > current &&
+           !peak.compare_exchange_weak(current, value, std::memory_order_relaxed, std::memory_order_relaxed)) {}
 }
 
 uint32_t SaturatingToUint32(uint64_t value) {
@@ -1061,7 +1061,8 @@ bool VideoEncoder::CacheRepeatFrameTexture(ID3D11Texture2D* sourceTexture) {
         repeatFrameTexture->GetDesc(&existingDesc);
         needsRecreate = existingDesc.Width != cacheDesc.Width || existingDesc.Height != cacheDesc.Height ||
                         existingDesc.Format != cacheDesc.Format || existingDesc.BindFlags != cacheDesc.BindFlags ||
-                        existingDesc.ArraySize != cacheDesc.ArraySize || existingDesc.MipLevels != cacheDesc.MipLevels ||
+                        existingDesc.ArraySize != cacheDesc.ArraySize ||
+                        existingDesc.MipLevels != cacheDesc.MipLevels ||
                         existingDesc.SampleDesc.Count != cacheDesc.SampleDesc.Count ||
                         existingDesc.SampleDesc.Quality != cacheDesc.SampleDesc.Quality;
     }
@@ -2167,7 +2168,8 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
             negativePtsCount.fetch_add(1, std::memory_order_relaxed);
         }
         int64_t packetTimelinePts = (pkt->pts != AV_NOPTS_VALUE) ? pkt->pts : pkt->dts;
-        if (lastQueuedVideoPts != AV_NOPTS_VALUE && packetTimelinePts != AV_NOPTS_VALUE && packetTimelinePts < lastQueuedVideoPts) {
+        if (lastQueuedVideoPts != AV_NOPTS_VALUE && packetTimelinePts != AV_NOPTS_VALUE &&
+            packetTimelinePts < lastQueuedVideoPts) {
             nonMonotonicPtsCount.fetch_add(1, std::memory_order_relaxed);
             DLL_Log("[VideoEncoder] WARNING: non-monotonic packet pts prev=%lld cur=%lld dur=%lld",
                     static_cast<long long>(lastQueuedVideoPts), static_cast<long long>(packetTimelinePts),
@@ -2225,9 +2227,9 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
         queueCV.wait_for(lock, std::chrono::milliseconds(2), [this] {
             return currentQueueBytes.load(std::memory_order_relaxed) <= MAX_QUEUE_BYTES || isStopping || !writerRunning;
         });
-        backpressureWaitUs += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-                              std::chrono::steady_clock::now() - waitStart)
-                              .count());
+        backpressureWaitUs += static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - waitStart)
+                .count());
         if (isStopping || !writerRunning) {
             break;
         }
@@ -2471,8 +2473,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
             // Inject-mode timestamps are in microseconds.
             double elapsedSec = (double)(timestamp - startPts) / 1000000.0;
             double outputFps = (elapsedSec > 0.001) ? ((double)outputFrameCount / elapsedSec) : 0.0;
-            DLL_Log("[FPS] Output: %.1f frames, %.1f fps over %.1fs", (double)outputFrameCount, outputFps,
-                    elapsedSec);
+            DLL_Log("[FPS] Output: %.1f frames, %.1f fps over %.1fs", (double)outputFrameCount, outputFps, elapsedSec);
         }
         lastLogFrameCount = outputFrameCount;
     }
@@ -2571,8 +2572,8 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                         HRESULT fenceHr = E_FAIL;
                         if (hProcess) {
                             ce::HandleGuard dupFence;
-                            if (DuplicateHandle(hProcess.get(), directFenceHandle, GetCurrentProcess(), dupFence.addressof(),
-                                                0, FALSE, DUPLICATE_SAME_ACCESS)) {
+                            if (DuplicateHandle(hProcess.get(), directFenceHandle, GetCurrentProcess(),
+                                                dupFence.addressof(), 0, FALSE, DUPLICATE_SAME_ACCESS)) {
                                 fenceHr = CallOpenSharedFence(d3d11Device, dupFence.get(), &d3d11Fence);
                             }
                             if (FAILED(fenceHr) && hasDirectFenceAlt) {
@@ -2599,16 +2600,19 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                             cachedFenceHandle = directFenceHandle;
                             cachedSourcePid = sourcePid;
                         } else if (encodeFrameCounter < 20) {
-                            DLL_Log("[VideoEncoder] Frame %d: Failed to open encoder-texture fence handle=%p value=%llu pid=%u",
-                                    encodeFrameCounter, directFenceHandle, static_cast<unsigned long long>(fenceValue),
-                                    sourcePid);
+                            DLL_Log(
+                                "[VideoEncoder] Frame %d: Failed to open encoder-texture fence handle=%p value=%llu "
+                                "pid=%u",
+                                encodeFrameCounter, directFenceHandle, static_cast<unsigned long long>(fenceValue),
+                                sourcePid);
                         }
                     }
                 }
             }
             if (matchIdx >= 0 && encodeFrameCounter < 10) {
-                DLL_Log("[VideoEncoder] Frame %d: Using encoder-owned texture[%d] directly (encoder fence=%p value=%llu)",
-                        encodeFrameCounter, matchIdx, fenceHandle, static_cast<unsigned long long>(fenceValue));
+                DLL_Log(
+                    "[VideoEncoder] Frame %d: Using encoder-owned texture[%d] directly (encoder fence=%p value=%llu)",
+                    encodeFrameCounter, matchIdx, fenceHandle, static_cast<unsigned long long>(fenceValue));
             }
         }
 
@@ -4002,15 +4006,20 @@ void VideoEncoder::Stop() {
     recordingRequested = false;
 
     if (wasRecording) {
-        const uint32_t phase = pSharedMem ? pSharedMem->runtimeState.capturePhase.load(std::memory_order_relaxed) :
-                                            static_cast<uint32_t>(CapturePipelinePhase::kIdle);
-        const uint32_t totalFrames = pSharedMem ? pSharedMem->runtimeState.framesEncoded.load(std::memory_order_relaxed) : 0;
-        const uint32_t liveFrames = pSharedMem ? pSharedMem->runtimeState.liveFramesEncoded.load(std::memory_order_relaxed) : 0;
-        const uint32_t drainFrames = pSharedMem ? pSharedMem->runtimeState.drainFramesEncoded.load(std::memory_order_relaxed) : 0;
+        const uint32_t phase = pSharedMem ? pSharedMem->runtimeState.capturePhase.load(std::memory_order_relaxed)
+                                          : static_cast<uint32_t>(CapturePipelinePhase::kIdle);
+        const uint32_t totalFrames =
+            pSharedMem ? pSharedMem->runtimeState.framesEncoded.load(std::memory_order_relaxed) : 0;
+        const uint32_t liveFrames =
+            pSharedMem ? pSharedMem->runtimeState.liveFramesEncoded.load(std::memory_order_relaxed) : 0;
+        const uint32_t drainFrames =
+            pSharedMem ? pSharedMem->runtimeState.drainFramesEncoded.load(std::memory_order_relaxed) : 0;
         DLL_Log(
-            "[VideoEncoder] Recording stats: input=%lld output=%lld runtime=%u skipped=%lld duplicated=%lld phase=%s live=%u drain=%u backpressure=%u peakMux=%uKB peakPkts=%u",
-            inputFrameCount, outputFrameCount, totalFrames, skippedFrameCount, duplicatedFrameCount, CapturePipelinePhaseToString(phase),
-            liveFrames, drainFrames, muxBackpressureCount.load(std::memory_order_relaxed),
+            "[VideoEncoder] Recording stats: input=%lld output=%lld runtime=%u skipped=%lld duplicated=%lld phase=%s "
+            "live=%u drain=%u backpressure=%u peakMux=%uKB peakPkts=%u",
+            inputFrameCount, outputFrameCount, totalFrames, skippedFrameCount, duplicatedFrameCount,
+            CapturePipelinePhaseToString(phase), liveFrames, drainFrames,
+            muxBackpressureCount.load(std::memory_order_relaxed),
             peakQueueBytes.load(std::memory_order_relaxed) / 1024u, peakQueuePackets.load(std::memory_order_relaxed));
 
         // Final packet type distribution summary
@@ -6252,8 +6261,8 @@ void VideoEncoder::AsyncWriteLoop() {
 
             lock.unlock();  // Release lock while doing I/O
 
-                if (fileOpened && fmtCtx) {
-                    int ret = av_interleaved_write_frame(fmtCtx, pkt);
+            if (fileOpened && fmtCtx) {
+                int ret = av_interleaved_write_frame(fmtCtx, pkt);
                 if (ret < 0) {
                     if (asyncWriteErrorCount++ < 10) {
                         char errbuf[AV_ERROR_MAX_STRING_SIZE];
@@ -6346,7 +6355,8 @@ void VideoEncoder::AsyncWriteLoop() {
                 int64_t finalDurationUs = encodedDurationUs.load(std::memory_order_relaxed);
                 if (finalDurationUs > 0) {
                     ApplyFinalStreamDurations(fmtCtx, finalDurationUs);
-                    LogFinalDurationSummary(fmtCtx, finalDurationUs, muxBackpressureCount.load(std::memory_order_relaxed),
+                    LogFinalDurationSummary(fmtCtx, finalDurationUs,
+                                            muxBackpressureCount.load(std::memory_order_relaxed),
                                             peakQueueBytes.load(std::memory_order_relaxed),
                                             peakQueuePackets.load(std::memory_order_relaxed),
                                             lastEncoderOverloadTickMs.load(std::memory_order_relaxed) > 0,

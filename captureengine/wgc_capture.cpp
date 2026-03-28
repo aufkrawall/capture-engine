@@ -10,11 +10,11 @@
 #include <algorithm>
 #include <chrono>
 #include <deque>
-#include <string>
 #include <mutex>
+#include <string>
 #include "../common/frame_timing_utils.h"
-#include "../common/rate_window_utils.h"
 #include "../common/logging.h"
+#include "../common/rate_window_utils.h"
 #include "mediaengine_loader.h"
 
 // Global inflight callback counter - outlives WGCCapture::Impl destruction
@@ -206,8 +206,7 @@ public:
         if (item_) {
             try {
                 item_.Closed(itemClosedToken_);
-            } catch (...) {
-            }
+            } catch (...) {}
         }
         ReleaseTexturePool();
         SafeRelease(latestFrame_);
@@ -278,8 +277,8 @@ public:
     // stored, so std::function overhead and its non-atomic nature are avoided.
     // This eliminates the data race between the WinRT callback thread (reader)
     // and the main thread (writer during start/stop recording).
-    using DirectFrameCallbackFn =
-        void (*)(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool, bool, int32_t, int32_t);
+    using DirectFrameCallbackFn = void (*)(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool, bool, int32_t,
+                                           int32_t);
     std::atomic<DirectFrameCallbackFn> frameCallback_{nullptr};
     std::atomic<uint32_t> callbackFrameCount_{0};
     std::atomic<uint32_t> inputFrameCount_{0};
@@ -580,13 +579,12 @@ public:
         }
     }
 
-    void QueuePendingFrame(WGCCapturedFrame&& frame) {
+    void EnqueueFrameInternal(WGCCapturedFrame&& frame) {
         if (!frame.texture) {
             return;
         }
 
         const int64_t frameKey = frame.rawTimestamp > 0 ? frame.rawTimestamp : frame.timestamp;
-        std::lock_guard<std::mutex> lock(frameMutex_);
         if (!pendingFrames_.empty()) {
             WGCCapturedFrame& lastPending = pendingFrames_.back();
             const int64_t lastKey = lastPending.rawTimestamp > 0 ? lastPending.rawTimestamp : lastPending.timestamp;
@@ -603,6 +601,11 @@ public:
             pendingFrames_.pop_front();
             SafeRelease(stale.texture);
         }
+    }
+
+    void QueuePendingFrame(WGCCapturedFrame&& frame) {
+        std::lock_guard<std::mutex> lock(frameMutex_);
+        EnqueueFrameInternal(std::move(frame));
     }
 
     void RecordInputFrameEvent() {
@@ -670,8 +673,8 @@ public:
 
         sourceToCopyLatencyAccumUs_ += static_cast<uint64_t>(latencyUs);
         sourceToCopyLatencySamples_++;
-        sourceToCopyLatencyAvgUs_.store(
-            static_cast<int64_t>(sourceToCopyLatencyAccumUs_ / sourceToCopyLatencySamples_), std::memory_order_relaxed);
+        sourceToCopyLatencyAvgUs_.store(static_cast<int64_t>(sourceToCopyLatencyAccumUs_ / sourceToCopyLatencySamples_),
+                                        std::memory_order_relaxed);
         sourceToCopyLatencyMaxUsValue_ =
             std::max<uint32_t>(sourceToCopyLatencyMaxUsValue_, static_cast<uint32_t>(latencyUs));
         sourceToCopyLatencyMaxUs_.store(sourceToCopyLatencyMaxUsValue_, std::memory_order_relaxed);
@@ -1129,9 +1132,8 @@ public:
         return true;
     }
 
-    bool CopyFrameToPool(ID3D11Texture2D* sourceTexture, const D3D11_TEXTURE2D_DESC& sourceDesc,
-                         int64_t sourceFrameQpc, int64_t rawSourceFrameQpc, ID3D11Texture2D** out,
-                         int64_t& copyCompleteQpc) {
+    bool CopyFrameToPool(ID3D11Texture2D* sourceTexture, const D3D11_TEXTURE2D_DESC& sourceDesc, int64_t sourceFrameQpc,
+                         int64_t rawSourceFrameQpc, ID3D11Texture2D** out, int64_t& copyCompleteQpc) {
         if (!sourceTexture || !out) {
             return false;
         }
@@ -1388,16 +1390,19 @@ public:
         // collection to encoder wakeups.
         if (!frameCallback_.load(std::memory_order_acquire)) {
             bool processedFrame = false;
-            while (alive_.load(std::memory_order_acquire)) {
-                auto winrtFrame = sender.TryGetNextFrame();
-                if (!winrtFrame) {
-                    break;
-                }
+            {
+                std::lock_guard<std::mutex> lock(frameMutex_);
+                while (alive_.load(std::memory_order_acquire)) {
+                    auto winrtFrame = sender.TryGetNextFrame();
+                    if (!winrtFrame) {
+                        break;
+                    }
 
-                WGCCapturedFrame frame{};
-                if (ProcessCapturedFrame(std::move(winrtFrame), &frame) && frame.texture) {
-                    QueuePendingFrame(std::move(frame));
-                    processedFrame = true;
+                    WGCCapturedFrame frame{};
+                    if (ProcessCapturedFrame(std::move(winrtFrame), &frame) && frame.texture) {
+                        EnqueueFrameInternal(std::move(frame));
+                        processedFrame = true;
+                    }
                 }
             }
 
@@ -2036,8 +2041,9 @@ HANDLE WGCCapture::GetFrameArrivedEvent() const {
 #endif
 }
 
-void WGCCapture::SetDirectFrameCallback(std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t,
-                                                           bool, bool, int32_t, int32_t)> callback) {
+void WGCCapture::SetDirectFrameCallback(
+    std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool, bool, int32_t, int32_t)>
+        callback) {
 #if HAS_WGC
     if (impl_) {
         // Extract the raw function pointer from std::function.

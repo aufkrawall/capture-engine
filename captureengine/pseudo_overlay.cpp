@@ -173,8 +173,7 @@ bool PseudoOverlay::EnsureSharedMemoryMapping() {
     }
 
     if (!pDiscovery_) {
-        pDiscovery_ =
-            (DiscoveryInfo*)MapViewOfFile(hDiscoveryMap_, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
+        pDiscovery_ = (DiscoveryInfo*)MapViewOfFile(hDiscoveryMap_, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
         if (!pDiscovery_) {
             CloseHandle(hDiscoveryMap_);
             hDiscoveryMap_ = NULL;
@@ -221,8 +220,7 @@ bool PseudoOverlay::EnsureSharedMemoryMapping() {
         return false;
     }
 
-    pSharedMem_ =
-        (SharedMemoryLayout*)MapViewOfFile(hSharedMemMap_, FILE_MAP_READ, 0, 0, sizeof(SharedMemoryLayout));
+    pSharedMem_ = (SharedMemoryLayout*)MapViewOfFile(hSharedMemMap_, FILE_MAP_READ, 0, 0, sizeof(SharedMemoryLayout));
     if (!pSharedMem_) {
         CloseHandle(hSharedMemMap_);
         hSharedMemMap_ = NULL;
@@ -419,8 +417,7 @@ void PseudoOverlay::UpdateOverlay() {
             SetWindowPos(hOv_, HWND_TOPMOST, winX, winY, fullS, fullS, SWP_NOACTIVATE | SWP_SHOWWINDOW);
         } else {
             if (!config_.alwaysRender) {
-                SetWindowPos(hOv_, HWND_TOPMOST, 0, 0, 0, 0,
-                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_HIDEWINDOW);
+                SetWindowPos(hOv_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_HIDEWINDOW);
             }
         }
 
@@ -523,11 +520,9 @@ void PseudoOverlay::UpdateOverlay() {
         if (warnAlpha > 0) {
             if (!IsWindowVisible(hWarn_))
                 ShowWindow(hWarn_, SW_SHOWNA);
-            SetWindowPos(hWarn_, HWND_TOPMOST, 0, 0, 0, 0,
-                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            SetWindowPos(hWarn_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
         } else {
-            SetWindowPos(hWarn_, HWND_TOPMOST, 0, 0, 0, 0,
-                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_HIDEWINDOW);
+            SetWindowPos(hWarn_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_HIDEWINDOW);
         }
 
         // Check if cached bitmap needs refresh

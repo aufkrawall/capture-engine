@@ -88,7 +88,7 @@ struct QueuedFrame {
     int32_t textureIndex = -1;
     int64_t enqueueQpc = 0;
     uint32_t deferCount = 0;
-    uint32_t format = 0;     // DXGI_FORMAT or API-specific format from shared memory
+    uint32_t format = 0;  // DXGI_FORMAT or API-specific format from shared memory
 
     // For framegrab mode (D3D11 texture)
     ID3D11Texture2D* texture = nullptr;  // AddRef'd by producer, Release'd by consumer
@@ -102,7 +102,7 @@ struct QueuedFrame {
     bool isInjectMode = false;  // true = use inject fields, false = use framegrab fields
     bool isHDR = false;         // New: Signals Rec.2100 PQ content
     bool duplicateSourceTimestamp = false;
-    int32_t captureLeft = 0;    // Screen-space origin for partial-capture cursor overlay
+    int32_t captureLeft = 0;  // Screen-space origin for partial-capture cursor overlay
     int32_t captureTop = 0;
 
     // For shmem fallback (D3D9 Win11)

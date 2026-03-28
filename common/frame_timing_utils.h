@@ -220,7 +220,7 @@ struct SourceTimelineState {
 };
 
 inline int64_t ComputeSourceDrivenElapsedUs(int64_t qpcFreq, int64_t frameTimestampQpc, int64_t steadyElapsedUs,
-                                             SourceTimelineState& state) {
+                                            SourceTimelineState& state) {
     if (qpcFreq > 0 && frameTimestampQpc > 0) {
         if (state.startSourceQpc <= 0) {
             state.startSourceQpc = frameTimestampQpc;
@@ -340,9 +340,13 @@ public:
         return smoothedJitterQpc_ * 1000000.0 / static_cast<double>(qpcFreq);
     }
 
-    bool IsCalibrated() const { return frameCount_ >= 4; }
+    bool IsCalibrated() const {
+        return frameCount_ >= 4;
+    }
 
-    double SmoothedIntervalQpc() const { return smoothedIntervalQpc_; }
+    double SmoothedIntervalQpc() const {
+        return smoothedIntervalQpc_;
+    }
 
 private:
     double smoothedIntervalQpc_ = 0.0;

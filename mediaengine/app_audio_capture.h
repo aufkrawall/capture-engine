@@ -163,5 +163,4 @@ private:
     HANDLE activationCompleteEvent = nullptr;
     HANDLE captureEvent_ = nullptr;
     HRESULT activationResult = 0x80004005;  // E_FAIL
-    
 };

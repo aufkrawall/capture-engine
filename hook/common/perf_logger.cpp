@@ -93,15 +93,15 @@ void PerfLogger::LogFrame(const FrameMetrics& metrics) {
     uint64_t frameNum = frameCount_.fetch_add(1, std::memory_order_relaxed) + 1;
     const int64_t writeStartUs = g_ActivePresentDebugSample ? GetQpcUs() : 0;
 
-    fprintf(file_, "%llu,%lld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%u,%u,%u,%u,%u,%d,%d,%d,%d,%s\n", (unsigned long long)frameNum,
-            (long long)metrics.qpcUs, metrics.totalUs, metrics.overlayUs, metrics.captureUs, metrics.deviceInitUs,
-            metrics.prerenderWaitUs, metrics.fpsLimitWaitUs, metrics.fenceWaitUs, metrics.cmdListResetUs,
-            metrics.renderUs, metrics.executeUs, metrics.stretchRectUs, metrics.readbackSubmitUs, metrics.queryWaitUs,
-            metrics.lockRectUs, metrics.d3d11UploadUs, metrics.stagingDepth, metrics.stagingDropped,
-            metrics.presentCallUs, metrics.sourceFrameIndex, metrics.sourceCapturePhase, metrics.sourceEncoderQueueDepth,
-            metrics.sourceMuxQueueKb, metrics.sourceOverloadFlags, metrics.source1PctLowTimes100,
-            metrics.sourcePoint1PctLowTimes100, metrics.sourceFrameTimeStdDevUs, metrics.sourceCurrentFpsTimes100,
-            metrics.api);
+    fprintf(file_, "%llu,%lld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%u,%u,%u,%u,%u,%d,%d,%d,%d,%s\n",
+            (unsigned long long)frameNum, (long long)metrics.qpcUs, metrics.totalUs, metrics.overlayUs,
+            metrics.captureUs, metrics.deviceInitUs, metrics.prerenderWaitUs, metrics.fpsLimitWaitUs,
+            metrics.fenceWaitUs, metrics.cmdListResetUs, metrics.renderUs, metrics.executeUs, metrics.stretchRectUs,
+            metrics.readbackSubmitUs, metrics.queryWaitUs, metrics.lockRectUs, metrics.d3d11UploadUs,
+            metrics.stagingDepth, metrics.stagingDropped, metrics.presentCallUs, metrics.sourceFrameIndex,
+            metrics.sourceCapturePhase, metrics.sourceEncoderQueueDepth, metrics.sourceMuxQueueKb,
+            metrics.sourceOverloadFlags, metrics.source1PctLowTimes100, metrics.sourcePoint1PctLowTimes100,
+            metrics.sourceFrameTimeStdDevUs, metrics.sourceCurrentFpsTimes100, metrics.api);
 
     if (g_ActivePresentDebugSample) {
         g_ActivePresentDebugSample->csvWriteUs = static_cast<int32_t>(GetQpcUs() - writeStartUs);
@@ -161,18 +161,18 @@ void PerfLogger::CommitDebugSample(const PresentDebugSample& sample) {
         summary.overloadSampleCount++;
     }
     switch (static_cast<CapturePipelinePhase>(sample.capturePhase)) {
-    case CapturePipelinePhase::kWarmup:
-        summary.warmupPhaseSamples++;
-        break;
-    case CapturePipelinePhase::kLive:
-        summary.livePhaseSamples++;
-        break;
-    case CapturePipelinePhase::kDrain:
-    case CapturePipelinePhase::kStopping:
-        summary.drainPhaseSamples++;
-        break;
-    default:
-        break;
+        case CapturePipelinePhase::kWarmup:
+            summary.warmupPhaseSamples++;
+            break;
+        case CapturePipelinePhase::kLive:
+            summary.livePhaseSamples++;
+            break;
+        case CapturePipelinePhase::kDrain:
+        case CapturePipelinePhase::kStopping:
+            summary.drainPhaseSamples++;
+            break;
+        default:
+            break;
     }
 
     if ((sample.flags & kPresentSampleFlagOverlayCacheHit) != 0) {

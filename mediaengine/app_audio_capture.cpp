@@ -511,9 +511,8 @@ bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {
     DLL_Log("[AppAudioCapture] Started: PID=%lu channels=%d rate=%d bits=%d", pid, pwfx->nChannels,
             pwfx->nSamplesPerSec, pwfx->wBitsPerSample);
 
-    DLL_Log("[AppAudioCapture] Capture mode: %s", (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0
-                                                     ? "event-driven"
-                                                     : "polling");
+    DLL_Log("[AppAudioCapture] Capture mode: %s",
+            (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 ? "event-driven" : "polling");
 
     return StartCaptureThreadForCurrentClient();
 }

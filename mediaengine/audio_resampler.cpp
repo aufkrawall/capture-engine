@@ -175,7 +175,9 @@ bool AudioResampler::Process(const uint8_t* inputData, int inputBytes, uint8_t**
 
     // Calculate maximum output samples
     int64_t delay = swr_get_delay(swrCtx, inFmt.sampleRate);
-    int maxOutputSamples = av_rescale_rnd(delay + inputSamplesCount, outFmt.sampleRate, inFmt.sampleRate, AV_ROUND_UP);
+    int64_t maxOutputSamples64 =
+        av_rescale_rnd(delay + inputSamplesCount, outFmt.sampleRate, inFmt.sampleRate, AV_ROUND_UP);
+    int maxOutputSamples = static_cast<int>(std::min<int64_t>(maxOutputSamples64, INT_MAX / 2));
 
     // Allocate output buffer
     uint8_t** outBuf = nullptr;
@@ -259,6 +261,7 @@ bool AudioResampler::Reset() {
     if (!swrCtx)
         return false;
 
+    swr_convert(swrCtx, nullptr, 0, nullptr, 0);
     int ret = swr_init(swrCtx);
     ResetClockTracking();
     return (ret >= 0);
@@ -319,9 +322,9 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
     // has settled or flipped sign. Decay the integral inside the deadband, and
     // drop stored bias immediately when the live error opposes it.
     if (driftSamples == 0) {
-        integralError *= 0.5;
+        integralError *= 0.9;
     } else if ((driftSamples > 0 && integralError < 0.0) || (driftSamples < 0 && integralError > 0.0)) {
-        integralError = 0.0;
+        integralError *= 0.5;
     }
 
     // 1. SMOOTHING STAGE (Low Pass Filter)
@@ -381,15 +384,14 @@ void AudioResampler::AdjustForClockDrift(int64_t videoElapsedMs, int64_t audioSa
     // (e.g. WGC CFR encoder bottleneck at 5%) converge in reasonable time.
     const int32_t quarterBudget = (maxDelta * 1) / 4;
     const bool aggressiveRiseNeeded = std::abs(targetDelta) >= quarterBudget;
-    const int32_t maxRise = aggressiveRiseNeeded ? std::max<int32_t>(80, maxDelta / 4) : 20;
-    const int32_t maxFall = std::max<int32_t>(80, maxDelta / 4);
+    const int32_t maxSlew = aggressiveRiseNeeded ? std::max<int32_t>(80, maxDelta / 4) : 20;
 
     if (currentDelta < targetDelta) {
-        currentDelta += maxRise;
+        currentDelta += maxSlew;
         if (currentDelta > targetDelta)
             currentDelta = targetDelta;
     } else if (currentDelta > targetDelta) {
-        currentDelta -= maxFall;
+        currentDelta -= maxSlew;
         if (currentDelta < targetDelta)
             currentDelta = targetDelta;
     }
